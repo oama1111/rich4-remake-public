@@ -10,6 +10,7 @@
 
 import { CHARACTERS } from '@rich4/data';
 import {
+  autoAction,
   decideAction,
   isAiTurn,
   newGame,
@@ -89,7 +90,9 @@ function scheduleAi(): void {
     clearTimeout(aiTimer);
     aiTimer = null;
   }
-  if (!aiAutoPlay || !isAiTurn(state)) return;
+  // ★ 出局者的回合由引擎推进，与「是否开着托管」无关——
+  //   否则人类玩家一破产，整局就停在他身上不动了。
+  if (autoAction(state) === null && (!aiAutoPlay || !isAiTurn(state))) return;
   aiTimer = window.setTimeout(() => {
     aiTimer = null;
     const action = decideAction({ state, map });

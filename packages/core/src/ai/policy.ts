@@ -21,6 +21,7 @@ import type { LandInfo, MapNode, Rich4Map } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, housingIndexOf } from '../rules/land.ts';
 import { isAiControlled } from '../state/types.ts';
+import { autoAction } from '../state/reduce.ts';
 
 /**
  * 性格参数。
@@ -100,6 +101,10 @@ function reserveFloor(p: Player, personality: AiPersonality): number {
 export function decideAction(ctx: AiContext): Action | null {
   const { state, map } = ctx;
   const personality = ctx.personality ?? DEFAULT_PERSONALITY;
+  // ★ 出局者的回合由引擎推进，不经过策略——见 state/reduce.ts 的 autoAction。
+  //   放在 isAiTurn 之前：出局者恰恰**不满足** isAiControlled。
+  const auto = autoAction(state);
+  if (auto !== null) return auto;
   if (!isAiTurn(state)) return null;
 
   switch (state.phase) {

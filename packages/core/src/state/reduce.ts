@@ -18,6 +18,12 @@ import type { MapNode, LandInfo, FacilityInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent } from '../rules/rent.ts';
 import { transferMoney } from '../rules/payment.ts';
+import {
+  markPlayerBankrupt,
+  resolveBankruptcyOutcome,
+} from '../rules/bankruptcy.ts';
+import { releaseTickets } from '../places/lottery.ts';
+import { WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from './types.ts';
 import { calculateFacilityToll } from '../rules/facility.ts';
 import { adjustTollByGod } from '../rules/god-toll.ts';
 import { facilityIndexOf } from '../rules/land.ts';
@@ -43,7 +49,8 @@ import {
   availableNumbers,
   numbersOf,
 } from '../places/lottery.ts';
-import { calculatePlayerWealth } from '../rules/wealth.ts';
+import { calculatePlayerWealth, updatePriceIndex } from '../rules/wealth.ts';
+import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 
 /**
  * 归约所需的地图静态数据（只读，不进状态，避免快照臃肿）。
@@ -294,7 +301,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
             land,
             state.priceIndex,
           );
-          return { ...state, players: out.players, phase: 'turnEnd' };
+          const paid: GameState = { ...state, players: out.players, phase: 'turnEnd' };
+          // ★ 付不起就破产——这是对局能真正结束的唯一途径
+          return out.bankrupted ? applyBankruptcy(paid, state.currentPlayer) : paid;
         }
       }
     }
@@ -361,9 +370,24 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         p.blocking = tickBlocking(p.blocking).blocking;
       });
 
+      // ★ 物价指数在回合边界采样一次。
+      //   @source `00419033 call 0x41cf67`（推进日期）之后
+      //   `0041cfbf call 0x423acf`（更新物价指数），每回合一次。
+      //   它**只增不减**，是后期通货膨胀的唯一来源——不接这条，
+      //   经济永远不会升温，租金永远追不上身家。
+      const wealthOf = (p: Player): number =>
+        calculatePlayerWealth(p, allEffectiveLands(ticked, topo), topo.facilities ?? []);
+      const priceIndex = updatePriceIndex(
+        ticked.players,
+        wealthOf,
+        DEFAULT_INITIAL_FUND,
+        ticked.priceIndex,
+      );
+
       const next = nextAlivePlayer(ticked, state.currentPlayer);
       return {
         ...ticked,
+        priceIndex,
         currentPlayer: next,
         phase: 'turnStart',
         dice: [],
@@ -373,6 +397,27 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       };
     }
   }
+}
+
+/**
+ * 引擎自行推进的 action —— 不归任何人决策的那一类。
+ *
+ * ★ 已出局的玩家既不会被人类操作（他没有 UI 了），也不归 AI
+ *   （`isAiControlled` 对出局者为假）。但**他的回合仍要走完**：
+ *   `startTurn` 判定 skip 落到 `turnEnd`，`turnEnd` 再轮转到下一个
+ *   在场玩家。若没人发出这两个 action，整局会**卡死在尸体身上**——
+ *   这正是先前「跑 1769 回合后停住、三人还在场却不再前进」的原因。
+ *
+ * 这不是策略（出局者没有任何选择余地），而是规则，故放在引擎侧：
+ * 任何驱动循环（热座 UI / AI / 联机）都应先问它，再去问玩家。
+ */
+export function autoAction(state: GameState): Action | null {
+  if (state.phase === 'gameOver') return null;
+  const p = state.players[state.currentPlayer];
+  if (p === undefined || isAlive(p)) return null;
+  if (state.phase === 'turnStart') return { type: 'startTurn' };
+  if (state.phase === 'turnEnd') return { type: 'endTurn' };
+  return null;
 }
 
 /** 轮转到下一个在场玩家；无人在场时保持原样 */
@@ -617,4 +662,84 @@ function settleFacility(state: GameState, fac: FacilityInfo): GameState {
 
   const r = transferMoney(state.players, [], state.pool, payer, ownerIdx, god.toll, 0);
   return { ...state, players: r.players, pool: r.pool, phase: 'turnEnd' };
+}
+
+// ============================================================
+//  破产与终局
+// ============================================================
+
+/** 在场人数 */
+function aliveCount(state: GameState): number {
+  return state.players.filter((p) => isAlive(p)).length;
+}
+
+/** 人类玩家数 —— 决定终局码（见 rules/bankruptcy.ts） */
+function humanCount(state: GameState): number {
+  return state.players.filter((p) => (p.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN).length;
+}
+
+/**
+ * 处理一名玩家破产。
+ *
+ * ★ 与原版一致的关键一条（见 rules/bankruptcy.ts 的 resolveBankruptcyOutcome）：
+ *   **当破产导致对局结束时，地产清算与拍卖被整个跳过**，
+ *   破产者名下的地产原样留在地图上。
+ *   这条由 `Save0.dat` 实证——最后破产的玩家仍持有 10 块地与 2 张牌。
+ *
+ * 故此处先判终局，再决定要不要清算。
+ */
+export function applyBankruptcy(state: GameState, playerIndex: number): GameState {
+  const victim = state.players[playerIndex];
+  if (victim === undefined || !isAlive(victim)) return state;
+
+  const players = state.players.map((p, i) => (i === playerIndex ? markPlayerBankrupt(p) : p));
+  let next: GameState = { ...state, players };
+
+  const remaining = players.filter((p) => isAlive(p)).length;
+  const outcome = resolveBankruptcyOutcome(remaining, humanCount(state));
+
+  // 樂透号码无论哪条路径都要释放 —— @source 破产处理 VA 0x0040d1a8
+  next = { ...next, lottery: releaseTickets(next.lottery, playerIndex) };
+
+  if (outcome.kind === 'gameOver') {
+    // ★ 终局路径：**跳过清算**，地产原样留着
+    return { ...next, phase: 'gameOver' };
+  }
+
+  // 正常路径：释放名下地产，交给后续拍卖
+  const landOwner = next.landOwner.map((v) => (v === playerIndex + 1 ? 0 : v));
+  return { ...next, landOwner };
+}
+
+/**
+ * 扫描全场，把「现金与存款都见底且负债」的玩家判为破产。
+ *
+ * ⚠️ 这是一个**收口式**的检查，不是原版的触发方式——原版在
+ * `pay_money` 内部两个口袋都空时直接 `call 0x40cd87`。
+ * 本引擎里付款是纯函数，故改为付款后由 reducer 统一收口。
+ * 两者的判据相同（见 rules/payment.ts 的 debitPlayer）。
+ */
+export function settleBankruptcies(state: GameState, bankrupted: readonly number[]): GameState {
+  let next = state;
+  for (const i of bankrupted) {
+    next = applyBankruptcy(next, i);
+    if (next.phase === 'gameOver') break;
+  }
+  return next;
+}
+
+/** 对局是否已结束 */
+export function isGameOver(state: GameState): boolean {
+  return state.phase === 'gameOver' || aliveCount(state) <= 1;
+}
+
+/**
+ * 终局码 —— 与原版 `ref_0046caf8` 同制。
+ *
+ * 1 = 全员出局、2 = 只剩一人且本局只有一名人类、3 = 只剩一人且多名人类。
+ * 返回 0 表示尚未结束。
+ */
+export function gameOverCode(state: GameState): 0 | 1 | 2 | 3 {
+  const outcome = resolveBankruptcyOutcome(aliveCount(state), humanCount(state));
+  return outcome.kind === 'gameOver' ? outcome.code : 0;
 }
