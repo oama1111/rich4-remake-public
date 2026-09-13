@@ -17,6 +17,7 @@ import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent } from '../rules/rent.ts';
+import { tickBlocking } from '../rules/blocking.ts';
 import { purchase } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints, MAX_HAND_CARDS } from '../rules/special-square.ts';
 
@@ -316,23 +317,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     case 'endTurn': {
       if (state.phase !== 'turnEnd') return state;
 
-      // 递减被阻碍玩家的天数计数
-      // ⚠️ 高位是标志位，只递减低 7 位
-      // TODO(M2): 确认递减时机究竟在回合开始还是结束
-      //   （原版在 fcn_0040c912 之外的某处，需定位）
+      // 递减当前玩家的阻碍计数。
+      // ★ 时机已查清（原 TODO）：`00419039 call 0x41c84f`，参数是
+      //   `[0x49910c]` 即**当前玩家**，就在回合边界——与此处一致。
+      // ★ 语义见 rules/blocking.ts：减到 0 时**挂 0x80 而非清零**，
+      //   下一次推进才执行释放流程。先前「保留高位、只减低 7 位」是错的。
       const ticked = withPlayer(state, state.currentPlayer, (p) => {
-        const b = p.blocking;
-        for (const k of ['inHotel', 'inPrison', 'inHospital', 'sleeping', 'sleepWalking'] as const) {
-          const raw = b[k];
-          if (raw === 0) continue;
-          const days = raw & 0x7f;
-          b[k] = days > 0 ? (raw & 0x80) | (days - 1) : 0;
-        }
-        const dis = b.disappearing;
-        if (dis !== 0) {
-          const days = dis & 0x3f;
-          b.disappearing = days > 0 ? (dis & 0xc0) | (days - 1) : 0;
-        }
+        p.blocking = tickBlocking(p.blocking).blocking;
       });
 
       const next = nextAlivePlayer(ticked, state.currentPlayer);

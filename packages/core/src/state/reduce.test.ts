@@ -157,11 +157,43 @@ describe('回合流程', () => {
     expect(s.phase).toBe('turnStart');
   });
 
-  it('天数递减保留高位标志位', () => {
+  it('★ 天数正常递减', () => {
     const st = makeState({ phase: 'turnEnd' });
-    st.players[0]!.blocking.inHospital = 0x80 | 5; // 标志位 + 5 天
+    st.players[0]!.blocking.inHospital = 5;
     const s = reduce(st, { type: 'endTurn' }, ring);
-    expect(s.players[0]!.blocking.inHospital).toBe(0x80 | 4);
+    expect(s.players[0]!.blocking.inHospital).toBe(4);
+  });
+
+  it('★ 减到 0 时挂 0x80 待释放，而不是清零', () => {
+    const st = makeState({ phase: 'turnEnd' });
+    st.players[0]!.blocking.inPrison = 1;
+    const s = reduce(st, { type: 'endTurn' }, ring);
+    expect(s.players[0]!.blocking.inPrison).toBe(0x80);
+  });
+
+  it('★ 下一次推进看到 0x80 才真正清零（释放）', () => {
+    const st = makeState({ phase: 'turnEnd' });
+    st.players[0]!.blocking.inPrison = 0x80;
+    const s = reduce(st, { type: 'endTurn' }, ring);
+    expect(s.players[0]!.blocking.inPrison).toBe(0);
+  });
+
+  it('★ 冬眠/停留不在回合边界递减', () => {
+    const st = makeState({ phase: 'turnEnd' });
+    st.players[0]!.blocking.sleeping = 5;
+    st.players[0]!.blocking.stopping = 3;
+    const s = reduce(st, { type: 'endTurn' }, ring);
+    expect(s.players[0]!.blocking.sleeping).toBe(5);
+    expect(s.players[0]!.blocking.stopping).toBe(3);
+  });
+
+  it('★ 只递减当前玩家（原版传的是 [0x49910c]）', () => {
+    const st = makeState({ phase: 'turnEnd', currentPlayer: 0 });
+    st.players[0]!.blocking.inHospital = 5;
+    st.players[1]!.blocking.inHospital = 5;
+    const s = reduce(st, { type: 'endTurn' }, ring);
+    expect(s.players[0]!.blocking.inHospital).toBe(4);
+    expect(s.players[1]!.blocking.inHospital).toBe(5);
   });
 
   it('出局玩家被跳过', () => {
