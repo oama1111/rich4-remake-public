@@ -28,3 +28,4 @@ export * from './cards/tortoise.ts';
 export * from './cards/buy-land.ts';
 export * from './cards/alliance.ts';
 export * from './cards/average-poor.ts';
+export * from './cards/passive.ts';

@@ -140,6 +140,31 @@ DGROUP: VA 0x463000, RawPtr 398848, RawSize 158720
 ## 四、待补验证
 
 - [x] 股票数值表 —— 已改为直接从 exe 生成，不经 C 转录
+### 已查明：被动卡的触发机制
+
+复仇(18)/嫁祸(19)/免费(20)/免罪(21) 四张卡的 `card_functions` 项都指向
+同一个 2 字节空桩 `xor eax,eax; ret`（VA 0x004420d5），**无法主动使用**。
+
+真实机制是：**有害卡命中目标时，施害卡先查目标是否持有防御卡**。
+
+@source 梦游卡 VA 0x004442f2：
+```asm
+push 0x15              ; 21 = 免罪卡
+push ebx               ; 目标
+call 0x4413ad          ; _rich4_player_has_card(player, cardId)
+cmp  eax, 1 / jne 下一项
+push ebx / call 0x444bb2   ; 免罪卡生效 → 免疫并中止
+push 0x13              ; 19 = 嫁祸卡
+call 0x4413ad
+```
+
+`_rich4_player_has_card`（VA 0x004413ad）扫描该玩家的 **15 个卡槽**
+（`0x499120 + player*15 + i`，循环上界 `cmp ecx, 0xf`），
+与存档中 `rich4_player_cards[60]` = 4 玩家 × 15 槽的布局一致。
+
+**检查顺序有先后**：先免罪卡、后嫁祸卡，免罪命中即中止。
+已实现于 `packages/core/src/cards/passive.ts`。
+
 - [ ] 30 张卡片效果 —— **每张都必须用 `tools/disasm.py card N` 逐张裁决**，
       因为两代 C 版互相矛盾，且 2018 版已证实有错。进度见 `packages/core/src/cards/`
 - [ ] `csrc/loadsave.c` 的存档**写入**路径（目前只验证了读取）
