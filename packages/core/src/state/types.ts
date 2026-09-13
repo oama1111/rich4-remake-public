@@ -93,8 +93,18 @@ export interface Player {
   blocking: BlockingDays;
   /** 被银行拒绝放贷的剩余天数 @source player_info +0x3b days_rejected_by_bank */
   daysRejectedByBank: number;
-  /** 神明附身，见 data 的 GOD 常量 */
+  /**
+   * 附身的神明 —— 存的是**物件下标 + 1**，0 表示无。
+   * @source player_info +0x3f
+   * 真正的神明种类在 `objects_info[godInfo - 1].type`（见 rules/objects.ts）
+   */
   godInfo: number;
+  /**
+   * 另一个物件引用槽 —— 同样是**物件下标 + 1**。
+   * @source player_info +0x40（h 文件名为 f64）
+   * 送神符与破产流程都会把它传给 remove_object。
+   */
+  f64: number;
   /** 手牌（卡片 id，1 基） */
   cards: number[];
   /** 各道具持有量，下标 = 道具 id - 1 */

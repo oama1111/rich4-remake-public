@@ -34,6 +34,7 @@ export function makePlayer(over: Partial<Player> = {}): Player {
     },
     daysRejectedByBank: 0,
     godInfo: 0,
+    f64: 0,
     cards: [],
     tools: new Array<number>(13).fill(0),
     totalWinterSleepDays: 0,
