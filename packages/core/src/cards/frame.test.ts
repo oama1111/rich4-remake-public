@@ -113,3 +113,27 @@ describe('目标校验', () => {
     expect(r.hostilityDeltas).toEqual([]);
   });
 });
+
+describe('★ 接上 confinement：占用表与加刑', () => {
+  it('入狱后占用表被置位', () => {
+    const r = applyFrameCard(four(), 0, tgt(2), 1);
+    expect(r.occupancy[2]).toBe(1);
+  });
+
+  it('免疫时占用表不动', () => {
+    const ps = four([[], [], [PASSIVE_CARDS.ABSOLUTION], []]);
+    const r = applyFrameCard(ps, 0, tgt(2), 1);
+    expect(r.occupancy.every((v) => v === 0)).toBe(true);
+  });
+
+  it('★ 对已在狱中的人再陷害 → 加刑而非覆盖', () => {
+    const ps = four();
+    ps[2] = makePlayer({
+      index: 2,
+      blocking: { ...ps[2]!.blocking, inPrison: 3 },
+    });
+    const r = applyFrameCard(ps, 0, tgt(2), 1);
+    expect(r.outcome).toMatchObject({ kind: 'imprisoned', victim: 2, days: 8 });
+    expect(r.players[2]!.blocking.inPrison).toBe(8);
+  });
+});

@@ -12,6 +12,7 @@
 import type { Player } from '../state/types.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { PASSIVE_CARDS, playerHasCard } from './passive.ts';
+import { CONFINEMENT_SLOTS, KNOWN_PRISON_DAYS, confine } from '../rules/confinement.ts';
 
 /**
  * 敌意增量的物价指数系数。
@@ -46,8 +47,8 @@ export const FRAME_HOSTILITY_FACTOR = 150;
  * ★ 注意这个比较发生在**嫁祸卡改写目标之后**：
  * 你陷害别人、对方用嫁祸卡把账转回你头上，你只关 4 天而不是 5 天。
  */
-export const FRAME_DAYS_SELF = 4;
-export const FRAME_DAYS_OTHER = 5;
+export const FRAME_DAYS_SELF = KNOWN_PRISON_DAYS.self;
+export const FRAME_DAYS_OTHER = KNOWN_PRISON_DAYS.other;
 
 /** 陷害卡的结局 */
 export type FrameOutcome =
@@ -60,6 +61,8 @@ export interface FrameResult {
   ok: boolean;
   error: TargetError | null;
   players: Player[];
+  /** 更新后的监狱占用表 */
+  occupancy: number[];
   /** 敌意变化：目标对出牌者 */
   hostilityDeltas: { from: number; to: number; delta: number }[];
   outcome: FrameOutcome | null;
@@ -89,11 +92,13 @@ export function applyFrameCard(
   target: CardTarget,
   priceIndex: number,
   scapegoatPicker: (from: number) => number = () => -1,
+  occupancy: readonly number[] = new Array<number>(CONFINEMENT_SLOTS).fill(0),
 ): FrameResult {
   const fail = (error: TargetError): FrameResult => ({
     ok: false,
     error,
     players: [...players],
+    occupancy: [...occupancy],
     hostilityDeltas: [],
     outcome: null,
   });
@@ -115,6 +120,7 @@ export function applyFrameCard(
       ok: true,
       error: null,
       players: [...players],
+      occupancy: [...occupancy],
       hostilityDeltas,
       outcome: { kind: 'absolved', absolvedBy: target.index },
     };
@@ -133,16 +139,16 @@ export function applyFrameCard(
   }
 
   // 4. 入狱 —— ★ 比较的是**改写之后**的目标
+  //    走 rules/confinement.ts，从而自动获得「已在狱中则加刑」的语义
   const days = victimIndex === currentPlayer ? FRAME_DAYS_SELF : FRAME_DAYS_OTHER;
-  const next = players.map((p, i) =>
-    i === victimIndex ? { ...p, blocking: { ...p.blocking, inPrison: days } } : p,
-  );
+  const out = confine(players, occupancy, 'prison', victimIndex, days);
 
   return {
     ok: true,
     error: null,
-    players: next,
+    players: out.players,
+    occupancy: out.occupancy,
     hostilityDeltas,
-    outcome: { kind: 'imprisoned', victim: victimIndex, days, redirected },
+    outcome: { kind: 'imprisoned', victim: victimIndex, days: out.days, redirected },
   };
 }
