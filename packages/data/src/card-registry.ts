@@ -69,23 +69,33 @@ export const CARD_IMPLS: readonly CardImpl[] = [
   { id: 5,  name: '換屋卡', va: 0x00442b02, selection: 'ui',   selectionParam: 0xe0c0202, passive: false, status: 'done' },
   { id: 6,  name: '轉向卡', va: 0x00442f4d, selection: 'ui',   selectionParam: 0xe0c0010, passive: false, status: 'done' },
   { id: 7,  name: '改建卡', va: 0x0044309b, selection: 'none', selectionParam: null,       passive: false, status: 'done' },
-  { id: 8,  name: '拍賣卡', va: 0x00443225, selection: 'none', selectionParam: null,       passive: false, status: 'todo' },
+  { id: 8,  name: '拍賣卡', va: 0x00443225, selection: 'none', selectionParam: null,       passive: false, status: 'done' },
   { id: 9,  name: '天使卡', va: 0x004434c0, selection: 'ui',   selectionParam: 0xe0c0006, passive: false, status: 'done' },
   { id: 10, name: '惡魔卡', va: 0x004436e0, selection: 'ui',   selectionParam: 0xe0c0006, passive: false, status: 'done' },
-  { id: 11, name: '怪獸卡', va: 0x00443917, selection: 'ui',   selectionParam: 0xe0c0506, passive: false, status: 'todo' },
+  { id: 11, name: '怪獸卡', va: 0x00443917, selection: 'ui',   selectionParam: 0xe0c0506, passive: false, status: 'done' },
   { id: 12, name: '拆除卡', va: 0x00443b0f, selection: 'ui',   selectionParam: 0xe0c0626, passive: false, status: 'done' },
-  { id: 13, name: '搶奪卡', va: 0x00443e3d, selection: 'ui',   selectionParam: 0xe0c0410, passive: false, status: 'todo' },
+  { id: 13, name: '搶奪卡', va: 0x00443e3d, selection: 'ui',   selectionParam: 0xe0c0410, passive: false, status: 'done' },
   { id: 14, name: '停留卡', va: 0x00443f80, selection: 'ui',   selectionParam: 0xe0c0010, passive: false, status: 'done' },
   { id: 15, name: '冬眠卡', va: 0x004440ea, selection: 'none', selectionParam: null,       passive: false, status: 'done' },
-  { id: 16, name: '夢遊卡', va: 0x004441dc, selection: 'ui',   selectionParam: 0xe0c0710, passive: false, status: 'todo' },
+  { id: 16, name: '夢遊卡', va: 0x004441dc, selection: 'ui',   selectionParam: 0xe0c0710, passive: false, status: 'done' },
   { id: 17, name: '陷害卡', va: 0x004444bf, selection: 'ui',   selectionParam: 0xe0c0710, passive: false, status: 'done' },
   // ── 以下四张为**被动卡**：主动使用直接返回 0 ──
-  { id: 18, name: '復仇卡', va: PASSIVE_STUB_VA, selection: 'none', selectionParam: null, passive: true, status: 'todo' },
-  { id: 19, name: '嫁禍卡', va: PASSIVE_STUB_VA, selection: 'none', selectionParam: null, passive: true, status: 'todo' },
-  { id: 20, name: '免費卡', va: PASSIVE_STUB_VA, selection: 'none', selectionParam: null, passive: true, status: 'todo' },
-  { id: 21, name: '免罪卡', va: PASSIVE_STUB_VA, selection: 'none', selectionParam: null, passive: true, status: 'todo' },
+  //
+  // ★ 它们的 `status: 'done'` 指的是**触发机制已实现**，
+  //   而不是「卡片函数已移植」——原版这四项都指向同一个空桩
+  //   `xor eax,eax; ret`，本来就没有可移植的函数体。
+  //   真正的效果分散在各个触发点：
+  //     復仇18 → cards/sleepwalk.ts（有害卡反弹给出牌者）
+  //     嫁禍19 → cards/frame.ts（改写目标）、cards/passive.ts（过路费换付款人）
+  //     免費20 → cards/passive.ts（过路费归零）、cards/tax.ts
+  //     免罪21 → cards/frame.ts（免疫并中止）
+  //   两个触发点（有害卡命中 / 付过路费）见 cards/passive.ts 顶部说明。
+  { id: 18, name: '復仇卡', va: PASSIVE_STUB_VA, selection: 'none', selectionParam: null, passive: true, status: 'done' },
+  { id: 19, name: '嫁禍卡', va: PASSIVE_STUB_VA, selection: 'none', selectionParam: null, passive: true, status: 'done' },
+  { id: 20, name: '免費卡', va: PASSIVE_STUB_VA, selection: 'none', selectionParam: null, passive: true, status: 'done' },
+  { id: 21, name: '免罪卡', va: PASSIVE_STUB_VA, selection: 'none', selectionParam: null, passive: true, status: 'done' },
   { id: 22, name: '送神符', va: 0x00444c45, selection: 'none', selectionParam: null,       passive: false, status: 'done' },
-  { id: 23, name: '請神符', va: 0x00444e1a, selection: 'ai',   selectionParam: null,       passive: false, status: 'todo' },
+  { id: 23, name: '請神符', va: 0x00444e1a, selection: 'ai',   selectionParam: null,       passive: false, status: 'done' },
   { id: 24, name: '紅卡',   va: 0x00444f25, selection: 'ai',   selectionParam: null,       passive: false, status: 'done' },
   { id: 25, name: '黑卡',   va: 0x0044503f, selection: 'ai',   selectionParam: null,       passive: false, status: 'done' },
   { id: 26, name: '查稅卡', va: 0x004451f0, selection: 'ui',   selectionParam: 0xe0c0410, passive: false, status: 'done' },

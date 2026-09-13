@@ -139,3 +139,45 @@ export function toolsOf(tools: readonly number[], player: number): Map<number, n
 export function hasTool(p: Player, tools: readonly number[], toolId: number): boolean {
   return toolCount(tools, p.index, toolId) > 0;
 }
+
+/**
+ * 收走一个道具。
+ *
+ * @source `take_tool` @ VA 0x00445aa2 —— 与 `give_tool` 完全对称：
+ * ```asm
+ * eax = player*15 + toolId
+ * dl = byte [eax + 0x49915b]
+ * test dl,dl / je 结束              ; 没有就什么都不做
+ * byte [eax + 0x49915b] = dl - 1
+ * cmp ecx, 8 / jg 结束
+ * inc byte [ecx + 0x49731f]          ; ★ 编号 ≤ 8 的把库存**还回去**
+ * ```
+ *
+ * ★ 「还库存」这一条很要紧：道具在原版里是**有限资源**，
+ *   收走不等于销毁。搶奪卡把道具从一人转到另一人时，
+ *   库存先 +1 再 −1，净额不变——这正是它该有的行为。
+ */
+export function takeTool(
+  tools: readonly number[],
+  stock: readonly number[],
+  player: number,
+  toolId: number,
+): GiveToolResult {
+  const nextTools = [...tools];
+  const nextStock = [...stock];
+  const at = player * TOOL_SLOTS_PER_PLAYER + toolId;
+
+  if (toolId < MIN_TOOL_ID || toolId > MAX_TOOL_ID) {
+    return { tools: nextTools, stock: nextStock, given: false };
+  }
+  const have = nextTools[at] ?? 0;
+  // @source test dl,dl / je 结束
+  if (have === 0) return { tools: nextTools, stock: nextStock, given: false };
+
+  nextTools[at] = have - 1;
+  // @source cmp ecx, 8 / jg 结束 / inc byte [toolId + 0x49731f]
+  if (toolId <= STOCKED_TOOL_MAX_ID) {
+    nextStock[toolId] = (nextStock[toolId] ?? 0) + 1;
+  }
+  return { tools: nextTools, stock: nextStock, given: true };
+}

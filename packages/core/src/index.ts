@@ -57,4 +57,6 @@ export * from './cards/dispel.ts';
 export * from './cards/frame.ts';
 export * from './cards/sleepwalk.ts';
 export * from './cards/summon.ts';
+export * from './cards/monster.ts';
+export * from './cards/rob.ts';
 export * from './cards/registry.ts';
