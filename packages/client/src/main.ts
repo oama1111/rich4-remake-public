@@ -23,6 +23,8 @@ import {
 } from '@rich4/core';
 import { loadArchives, loadGround, readMapData, SpriteCache } from './assets.ts';
 import { Hud } from './hud.ts';
+import { SoundPlayer } from './audio.ts';
+import { SOUND_IDS } from '@rich4/assets-pipeline';
 import { BoardRenderer, fitCamera, pickNode, screenToMap, type Camera } from './render.ts';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -69,6 +71,14 @@ let renderer: BoardRenderer;
 let hud: Hud;
 
 /**
+ * 音效。
+ *
+ * ⚠️ 浏览器要求用户手势之后才能出声，故在首次点击/按键时解锁。
+ *   在此之前的播放请求会被安静丢弃。
+ */
+const sound = new SoundPlayer();
+
+/**
  * 原版底图。
  *
  * 节点坐标与底图像素同一个原点，直接按 (0, 0) 铺即可
@@ -94,10 +104,36 @@ const history: Action[] = [];
 function dispatch(action: Action): void {
   const before = state;
   state = reduce(state, action, topo);
-  if (state !== before) history.push(action);
+  if (state !== before) {
+    history.push(action);
+    playSoundFor(before, state);
+  }
   requestRender();
   renderPanel();
   scheduleAi();
+}
+
+/**
+ * 按状态变化放音。
+ *
+ * ⚠️ 只接**能从调用点反查出编号**的那几个事件（见 assets-pipeline 的
+ *   `SOUND_IDS`）。其余事件的音效编号还没查，宁可不响也不乱响。
+ *
+ * ⚠️ 另外：编号与 `Effect.mkf` 的资源号是否直接相等**尚未验证**，
+ *   中间可能还隔着一张表。听起来不对就是这个原因。
+ */
+function playSoundFor(before: GameState, after: GameState): void {
+  // 有人出局
+  const deadBefore = before.players.filter((p) => p.whoPlays === 0).length;
+  const deadAfter = after.players.filter((p) => p.whoPlays === 0).length;
+  if (deadAfter > deadBefore) {
+    sound.play('Effect.mkf', SOUND_IDS.BANKRUPT);
+    return;
+  }
+  // 落在银行
+  if (after.pending?.kind === 'bank' && before.pending?.kind !== 'bank') {
+    sound.play('Effect.mkf', SOUND_IDS.BANK);
+  }
 }
 
 // ============================================================
@@ -367,6 +403,7 @@ function bindInput(): void {
 
   let drag: { x: number; y: number } | null = null;
   canvas.addEventListener('mousedown', (e) => {
+    sound.unlock(); // 浏览器要求在用户手势里建 AudioContext
     drag = { x: e.clientX, y: e.clientY };
   });
   window.addEventListener('mouseup', () => {
@@ -388,6 +425,7 @@ function bindInput(): void {
 
   // ★ 底图调试键。对齐关系解出来之前，这几个键是唯一能看到底图的途径。
   window.addEventListener('keydown', (e) => {
+    sound.unlock();
     const step = e.shiftKey ? 50 : 10;
     switch (e.key.toLowerCase()) {
       case 'g':
@@ -397,6 +435,10 @@ function bindInput(): void {
       case 'f':
         followPlayer = !followPlayer;
         log(followPlayer ? '▶ 镜头跟随当前玩家' : '⏸ 镜头自由');
+        break;
+      case 'm':
+        sound.setMuted(!sound.muted);
+        log(sound.muted ? '⏸ 静音' : '▶ 开声');
         break;
       case '[':
         groundOffset.x -= step;
@@ -467,6 +509,16 @@ async function boot(): Promise<void> {
     requestRender();
     renderPanel();
     log(`地图载入：${map.nodes.length} 个节点、${map.lands.length} 块地`);
+
+    // 音效档案后台拉取。Speaking.mkf 有 57MB，先不装。
+    void fetch('/assets/game/Effect.mkf')
+      .then((r) => (r.ok ? r.arrayBuffer() : null))
+      .then((buf) => {
+        if (buf === null) return;
+        sound.addArchive('Effect.mkf', new Uint8Array(buf));
+        log('音效载入：Effect.mkf（首次点击后开声）');
+      })
+      .catch(() => log('⚠ 音效载入失败'));
 
     // 底图后台解码，不挡住棋盘先出来
     void loadGround(archives, globalMapId).then((g) => {
