@@ -160,3 +160,66 @@ describe('解码', () => {
     expect(sea / total).toBeGreaterThan(0.4);
   });
 });
+
+describe('⚠️ 块摆放仍未解出 —— 把现状钉住', () => {
+  /** 地图 0 的原始块数据 */
+  const raw = (): Uint8Array => load(0).subarray(0x10 + 512);
+  const at = (b: Uint8Array, i: number, x: number, y: number): number =>
+    b[i * GND_TILE_STRIDE + y * 32 + x]!;
+
+  have('★ 块内连贯、块间不连贯 —— 这就是画面上那圈 32 像素错位', () => {
+    const b = raw();
+    // 块内相邻
+    let inner = 0;
+    let n1 = 0;
+    for (let i = 0; i < 5184; i += 7) {
+      for (let y = 0; y < 32; y += 3) {
+        for (let x = 0; x < 31; x += 3) {
+          inner += Math.abs(at(b, i, x, y) - at(b, i, x + 1, y));
+          n1++;
+        }
+      }
+    }
+    inner /= n1;
+
+    // 按行优先拼接时的横向接缝（块 i 的最右列 vs 块 i+1 的最左列）
+    let seam = 0;
+    let n2 = 0;
+    for (let i = 0; i < 5100; i += 7) {
+      for (let y = 0; y < 32; y += 2) {
+        seam += Math.abs(at(b, i, 31, y) - at(b, i + 1, 0, y));
+        n2++;
+      }
+    }
+    seam /= n2;
+
+    // 随机两块的边缘配对（对照组）
+    let ctrl = 0;
+    let n3 = 0;
+    for (let i = 0; i < 5184; i += 11) {
+      const j = (i * 2657 + 13) % 5184;
+      for (let y = 0; y < 32; y += 2) {
+        ctrl += Math.abs(at(b, i, 31, y) - at(b, j, 0, y));
+        n3++;
+      }
+    }
+    ctrl /= n3;
+
+    // 接缝明显好于随机 → 块大致在对的邻域
+    expect(seam).toBeLessThan(ctrl / 2);
+    // 但明显差于块内 → 摆放不精确，这一层还没解完
+    expect(seam).toBeGreaterThan(inner * 1.4);
+  });
+
+  have('★ 5184 块两两不同 —— 不是 tileset 拼贴，是一幅真图', () => {
+    const b = raw();
+    const seen = new Set<string>();
+    for (let i = 0; i < 5184; i++) {
+      let h = 0;
+      for (let k = 0; k < 1024; k += 7) h = (Math.imul(h, 31) + b[i * GND_TILE_STRIDE + k]!) | 0;
+      seen.add(`${h}`);
+    }
+    // 允许极少量哈希碰撞
+    expect(seen.size).toBeGreaterThan(5100);
+  });
+});
