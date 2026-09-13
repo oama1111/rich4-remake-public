@@ -134,7 +134,8 @@ export function markPlayerBankrupt(player: Player): Player {
     totalWinterSleepDays: 0,
     alliedPlayer: 0,
     alliedDays: 0,
-    // +0x5c / +0x60 同在 memset 区间内
+    // +0x4c（敌意）与 +0x5c / +0x60 同在 memset 区间内
+    hostility: [0, 0, 0, 0],
     monthlyPaid: 0,
     monthlyReceived: 0,
     // 保留：index / character / nodeId / lastNodeId / direction / ndices

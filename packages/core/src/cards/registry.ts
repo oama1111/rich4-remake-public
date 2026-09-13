@@ -23,6 +23,7 @@ import { cardImpl } from '@rich4/data';
 import { consumeCard, playerHasCard } from './passive.ts';
 import { housingIndexOf } from '../rules/land.ts';
 import { transferMoney } from '../rules/payment.ts';
+import { applyHostilityDeltas } from '../rules/hostility.ts';
 
 import { applyAverageCashCard } from './average-cash.ts';
 import { applyAveragePoorCard } from './average-poor.ts';
@@ -283,6 +284,9 @@ export function useCard(
     default:
       return fail('notImplemented');
   }
+
+  // 敌意真正落到状态上（updateHostility 内含「敌意上升解除同盟」的副作用）
+  players = applyHostilityDeltas(players, hostilityDeltas);
 
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));

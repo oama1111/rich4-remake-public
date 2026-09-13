@@ -179,3 +179,22 @@ call 0x4413ad
 - [ ] `csrc/loadsave.c` 的存档**写入**路径（目前只验证了读取）
 - [ ] Q15：`total_winter_sleep_days` 是否为误标
 - [ ] Q17：物价指数在 `Save0.dat` 的差异（需原版实机复现）
+
+### 错误 #8（对 #4 的定量确认）：`hostility[6]` → `hostility[4]` + 本月支出/收入
+
+`asm/rich4_player_info.h` 把 0x4c..0x63 记作 `int hostility[6]`。
+实为 `int hostility[4]`（0x4c..0x5b）+ `monthly_paid`(0x5c) + `monthly_received`(0x60)。
+
+双向证据：`update_hostility`（VA 0x0040df69）只按 `b*4` 访问 4 项；
+`pay_money`（VA 0x0041d2c6）对 +0x5c / +0x60 做金额累加。
+详见 `docs/player-struct.md`。
+
+### 险些自造的错误：`0x44ef41` 不是 `update_hostility`
+
+卡片代码里 `call 0x44ef41` 的第三个参数形如「查表取值再 push」，
+极易误读为敌意数值。实际该表存的是**台词字符串指针**
+（`0x481242` → `#0428讓我把它據為己有！！`），函数是 `player_say`。
+
+真正的 `update_hostility` 是 `0x40df69`。本项目代码中所有
+`update_hostility` 注释均指向 0x40df69，未受影响——但这类
+「查表 + push + call」的形状今后一律要先解引用验证再下结论。

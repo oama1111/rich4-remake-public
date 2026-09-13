@@ -115,6 +115,12 @@ export interface Player {
   alliedPlayer: number;
   alliedDays: number;
   /**
+   * 对其他玩家的敌意，4 项，下标 = 对方玩家 index。
+   * @source player_info +0x4c（`[a*0x68 + b*4 + 0x496bb4]`），下限 0、无上限
+   * 更新走 rules/hostility.ts 的 updateHostility（VA 0x0040df69）。
+   */
+  hostility: number[];
+  /**
    * 本月支出累计 @source player_info +0x5c（`add [player*0x68 + 0x496bc4], ebx`）
    *
    * ★ 这两个字段修正了 `rich4-re/asm/rich4_player_info.h` 的错误：

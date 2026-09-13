@@ -190,3 +190,45 @@ describe('地块类卡片', () => {
     expect(r.players[0]!.cards).toEqual([3]);
   });
 });
+
+describe('敌意真正落到状态上', () => {
+  it('★ 均富卡只让**被拉低**的玩家对出牌者产生敌意', () => {
+    // 出牌者是穷人，玩家 2 最富
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cash: 1000, cards: [1] }),
+        makePlayer({ index: 1, cash: 1000 }),
+        makePlayer({ index: 2, cash: 21000 }),
+        makePlayer({ index: 3, cash: 1000 }),
+      ],
+    });
+    const r = useCard(ctx, 1);
+    expect(r.players.map((p) => p.cash)).toEqual([6000, 6000, 6000, 6000]);
+    // 玩家 2 损失 15000 → 敌意 +150，对象是出牌者 0
+    expect(r.players[2]!.hostility[0]).toBe(150);
+    // 拿到钱的人不记敌意
+    expect(r.players[1]!.hostility).toEqual([0, 0, 0, 0]);
+  });
+
+  it('★ 出牌者自己被拉低时不对自己记敌意（a === b 直接返回）', () => {
+    const r = useCard(makeCtx(), 1); // 玩家 0 最富且是出牌者
+    expect(r.players[0]!.hostility).toEqual([0, 0, 0, 0]);
+  });
+
+  it('★ 冬眠卡对盟友产生敌意会当场解除同盟', () => {
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [15], xpos: 10 }),
+        makePlayer({ index: 1, xpos: 10, alliedPlayer: 1, alliedDays: 7 }),
+        makePlayer({ index: 2, xpos: 10 }),
+        makePlayer({ index: 3, xpos: 10 }),
+      ],
+      priceIndex: 2,
+    });
+    // 玩家 1 与玩家 0 结盟（alliedPlayer = 0 + 1）
+    const r = useCard(ctx, 15);
+    expect(r.ok).toBe(true);
+    expect(r.players[1]!.hostility[0]).toBe(2 * 150);
+    expect(r.players[1]!.alliedPlayer).toBe(0);
+  });
+});

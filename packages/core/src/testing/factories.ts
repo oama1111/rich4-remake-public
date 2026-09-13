@@ -40,6 +40,7 @@ export function makePlayer(over: Partial<Player> = {}): Player {
     totalWinterSleepDays: 0,
     alliedPlayer: 0,
     alliedDays: 0,
+    hostility: [0, 0, 0, 0],
     monthlyPaid: 0,
     monthlyReceived: 0,
     ...over,
