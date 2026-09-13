@@ -17,12 +17,19 @@ import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo, FacilityInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent } from '../rules/rent.ts';
-import { transferMoney } from '../rules/payment.ts';
+import { receiveMoney, transferMoney } from '../rules/payment.ts';
 import {
   markPlayerBankrupt,
   resolveBankruptcyOutcome,
 } from '../rules/bankruptcy.ts';
-import { releaseTickets } from '../places/lottery.ts';
+import { LOTTERY_DRAW_DAY, drawLottery, releaseTickets } from '../places/lottery.ts';
+import {
+  refreshTradableShares,
+  tickStockCountdowns,
+  tickStockMarket,
+} from '../places/stock-market.ts';
+import { advanceDate } from '../rules/calendar.ts';
+import { settleMonthlyBank } from '../rules/monthly.ts';
 import { WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from './types.ts';
 import { calculateFacilityToll } from '../rules/facility.ts';
 import { adjustTollByGod } from '../rules/god-toll.ts';
@@ -50,6 +57,7 @@ import {
   numbersOf,
 } from '../places/lottery.ts';
 import { calculatePlayerWealth, updatePriceIndex } from '../rules/wealth.ts';
+import type { StockValuation } from '../rules/wealth.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 
 /**
@@ -376,7 +384,12 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       //   它**只增不减**，是后期通货膨胀的唯一来源——不接这条，
       //   经济永远不会升温，租金永远追不上身家。
       const wealthOf = (p: Player): number =>
-        calculatePlayerWealth(p, allEffectiveLands(ticked, topo), topo.facilities ?? []);
+        calculatePlayerWealth(
+          p,
+          allEffectiveLands(ticked, topo),
+          topo.facilities ?? [],
+          valuationsOf(ticked, p.index),
+        );
       const priceIndex = updatePriceIndex(
         ticked.players,
         wealthOf,
@@ -384,10 +397,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         ticked.priceIndex,
       );
 
-      const next = nextAlivePlayer(ticked, state.currentPlayer);
+      const dayEnd = advanceGameDay({ ...ticked, priceIndex }, topo);
+
+      const next = nextAlivePlayer(dayEnd, state.currentPlayer);
       return {
-        ...ticked,
-        priceIndex,
+        ...dayEnd,
         currentPlayer: next,
         phase: 'turnStart',
         dice: [],
@@ -397,6 +411,99 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       };
     }
   }
+}
+
+/**
+ * 某玩家的持仓估值 —— 把持股数与**当前**股价配对。
+ *
+ * @source `_rich4_calculate_player_wealth` 取的是 `stock_info + 20`
+ *   （见 rules/wealth.ts 的 StockValuation），而不是持仓成本均价。
+ */
+export function valuationsOf(s: GameState, playerIndex: number): StockValuation[] {
+  const held = s.holdings[playerIndex];
+  if (held === undefined) return [];
+  return held.map((h, i) => ({ amount: h.amount, price: s.market.stocks[i]?.price ?? 0 }));
+}
+
+/**
+ * 推进一天 —— 回合边界上跑完的那一整条链。
+ *
+ * @source `00419033 call 0x41cf67`，该函数（VA 0x0041cf67）里的顺序是：
+ * ```asm
+ * 0041cfa1  call advance_date(&[0x497160])   → edi = 是否跨月
+ * 0041cfab  inc  dword [0x4990e4]            ; 总天数
+ * 0041cfbf  call 0x423acf                    ; 物价指数（已在调用方算过）
+ * 0041cff9  12 支股票的停牌/新闻天数各减一
+ * 0041d076  call 0x4291d6                    ; ★ 股市收盘
+ * 0041d080  if ((日期 & 0xff) == 15) call 0x431712   ; ★ 樂透开奖
+ * 0041d099  if (跨月) call 0x439bfa                  ; ★ 月结
+ * ```
+ *
+ * ★ 顺序不是随意的：股市先收盘再开奖，故开奖那一刻的公库已经
+ *   含了当天所有买票钱；月结在最后，利息按结算完的存款算。
+ *
+ * ⚠️ 原版在收盘前 `srand(GetTickCount())`（VA 0x0041d06e）——
+ *   这正是 docs/known-deviations.md 记的那处重播种，本引擎**不做**，
+ *   随机数一路从 `rngState` 顺序取。
+ */
+function advanceGameDay(state: GameState, topo: MapTopology): GameState {
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+
+  // @source 0041cfa1 call 0x452117
+  const { date, newMonth } = advanceDate({
+    year: state.year,
+    month: state.month,
+    day: state.day,
+  });
+
+  // @source 0041c868 call 0x42915a —— 每日重算可成交量
+  let market = refreshTradableShares(state.market, rng);
+  // @source 0041cff9 起的 12 次循环
+  market = tickStockCountdowns(market);
+  // @source 0041d076 call 0x4291d6
+  market = tickStockMarket(market, rng, (i) => commercialValueOf(topo, i));
+
+  let players = state.players;
+  let lottery = state.lottery;
+  let pool = state.pool;
+
+  // @source 0041d080 `and eax, 0xff / cmp eax, 0xf`
+  if (date.day === LOTTERY_DRAW_DAY) {
+    const draw = drawLottery(lottery, pool, rng);
+    lottery = draw.lottery;
+    pool = draw.pool;
+    // @source give_money(中奖者, 公库, 1) —— 旗标 1 即进现金
+    if (draw.winner !== null) players = receiveMoney(players, draw.winner, draw.prize, true);
+  }
+
+  // @source 0041d09e call 0x439bfa
+  if (newMonth) players = players.map((p) => (isAlive(p) ? settleMonthlyBank(p) : p));
+
+  return {
+    ...state,
+    ...date,
+    players,
+    lottery,
+    pool,
+    market,
+    rngState: rng.getState(),
+  };
+}
+
+/**
+ * 股票对应的地图企业资产额。
+ *
+ * ⚠️ 原版取 `commercial[idx].field_0x24`（VA 0x00429279）。本项目的地图
+ * 解析器尚未给上市企业单独建表（`loaders/map.ts` 只解出房产与商业地块），
+ * 故此处返回 null = 「查不到企业」，行情退回用初始股价当参考价。
+ * 这是**明确的降级**而非猜测：接上企业表之前，均值回归的锚点会偏离原版。
+ * 登记为 Q-STOCK-1。
+ */
+function commercialValueOf(topo: MapTopology, commercialIndex: number): number | null {
+  void topo;
+  void commercialIndex;
+  return null;
 }
 
 /**
@@ -541,24 +648,35 @@ function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
  * 其余按抽牌人处理。
  */
 function newsTargets(eventId: number, state: GameState, lands: readonly LandInfo[]): number[] {
-  const countOwned = (i: number): number =>
-    lands.filter((l) => l.owner === i + 1).length;
+  const countOwned = (i: number): number => lands.filter((l) => l.owner === i + 1).length;
 
+  // ★ 只在**在场**玩家里评比。
+  //   @source 新闻 9（VA 0x00449b29）与新闻 8 的同名循环都有
+  //   `cmp byte [player*0x68 + 0x496b7d], 0 / je 跳过`——即 who_plays。
+  //   先前漏了这一条，后果很具体：出局者名下地产为 0，于是**永远**
+  //   是「地产最少者」，新闻 9 会一直往尸体上打钱。
+  const alive: number[] = [];
+  for (let i = 0; i < state.players.length; i++) {
+    const p = state.players[i];
+    if (p !== undefined && isAlive(p)) alive.push(i);
+  }
+  if (alive.length === 0) return [state.currentPlayer];
+
+  // ⚠️ 原版统计的是**两张表**：房产（0x498e84，步长 0x34）与
+  //   商业地块（0x498e88，步长 0x38），都读 +0x19 的 owner。
+  //   本引擎目前只在状态里跟踪房产归属（商业地块的运行时归属未建模），
+  //   故这里少算了商业地块那一半。登记为 Q-NEWS-1。
   switch (eventId) {
     case 8: {
       // 地产最多者
-      let best = 0;
-      for (let i = 1; i < state.players.length; i++) {
-        if (countOwned(i) > countOwned(best)) best = i;
-      }
+      let best = alive[0]!;
+      for (const i of alive) if (countOwned(i) > countOwned(best)) best = i;
       return [best];
     }
     case 9: {
       // 地产最少者
-      let worst = 0;
-      for (let i = 1; i < state.players.length; i++) {
-        if (countOwned(i) < countOwned(worst)) worst = i;
-      }
+      let worst = alive[0]!;
+      for (const i of alive) if (countOwned(i) < countOwned(worst)) worst = i;
       return [worst];
     }
     default:

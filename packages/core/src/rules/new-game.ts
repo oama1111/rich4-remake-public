@@ -20,6 +20,9 @@ import { FORTUNE_DECK_SIZE, NEWS_DECK_SIZE, createDeck } from '../events/deck.ts
 import { WatcomRng } from '../rng/watcom.ts';
 import { CONFINEMENT_SLOTS } from './confinement.ts';
 import { emptyLottery } from '../places/lottery.ts';
+import { newStockMarket } from '../places/stock-market.ts';
+import { EMPTY_HOLDING } from '../places/stock.ts';
+import { STOCKS_PER_MAP } from '@rich4/data';
 import {
   STARTING_TOOLS,
   initialToolStock,
@@ -188,5 +191,9 @@ export function newGame(opts: NewGameOptions): GameState {
     pending: null,
     tools,
     toolStock,
+    // ★ 12 支股票取自本地图那一段（`地图编号 × 12`）
+    market: newStockMarket(globalMapId),
+    // 开局全员空仓 @source `_rich4_player_stocks` 全零
+    holdings: players.map(() => Array.from({ length: STOCKS_PER_MAP }, () => ({ ...EMPTY_HOLDING }))),
   };
 }

@@ -55,6 +55,32 @@ function soak(seed: number, maxTurns: number): SoakResult {
   return { state, steps, events };
 }
 
+/**
+ * 同样跑一局，但每回合把存款按回合前的值还原 —— 等于关掉银行月息。
+ *
+ * 用来把「钱变多」这件事的来源钉死：关掉唯一那台印钞机之后，
+ * 总额必须只减不增。
+ */
+function soakWithoutInterest(seed: number, maxTurns: number): GameState {
+  const map = loadMap();
+  const topo = { nodes: map.nodes, lands: map.lands };
+  let state = newGame({ map, players: players(), seed });
+
+  for (let steps = 0; steps < 200_000; steps++) {
+    const a = decideAction({ state, map });
+    if (a === null) break;
+    const before = state.players.map((p) => p.moneyInBank);
+    const next = reduce(state, a, topo);
+    if (next === state) throw new Error(`卡死于 ${state.phase} / ${a.type}`);
+    state =
+      a.type === 'endTurn'
+        ? { ...next, players: next.players.map((p, i) => ({ ...p, moneyInBank: before[i]! })) }
+        : next;
+    if (state.turnCount >= maxTurns) break;
+  }
+  return state;
+}
+
 describe('★ 长局冒烟', () => {
   run('300 回合不卡死', () => {
     const r = soak(2024, 300);
@@ -73,13 +99,20 @@ describe('★ 长局冒烟', () => {
     expect(r.state.landLevel.some((v) => v > 0)).toBe(true);
   });
 
-  run('★ 钱不会凭空出现——净值 + 公库守恒于初始总额附近', () => {
+  run('★ 钱确实会凭空出现 —— 唯一的印钞机是银行月息', () => {
+    // ⚠️ 这条断言先前写反了（要求「净值 + 公库 ≤ 初始总额」）。
+    //   那是接入日期推进之前的模型：那时没有月结，钱确实只在玩家之间搬。
+    //   现在每跨一个月，无贷款者的存款 ×1.1（rules/monthly.ts，
+    //   证据是 `fmul qword [0x464e88]` 那个 1.1），钱是**真的会变多**的。
     const r = soak(2024, 200);
     const netWorth = r.state.players.reduce((t, p) => t + p.cash + p.moneyInBank, 0);
     const initial = 300_000 * 4;
-    // 买地会把钱变成地产，故净值只会**减少**；公库收走罚款。
-    // 两者之和不应**超过**初始总额——超过就意味着凭空造钱。
-    expect(netWorth + r.state.pool).toBeLessThanOrEqual(initial);
+    expect(netWorth + r.state.pool).toBeGreaterThan(initial);
+
+    // 关掉月息这唯一一台印钞机，总额就该只减不增（钱变成了地产、进了公库）
+    const noInterest = soakWithoutInterest(2024, 200);
+    const frozen = noInterest.players.reduce((t, p) => t + p.cash + p.moneyInBank, 0);
+    expect(frozen + noInterest.pool).toBeLessThanOrEqual(initial);
   });
 
   run('★ 同种子可完整复现', () => {

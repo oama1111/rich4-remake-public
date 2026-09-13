@@ -8,6 +8,7 @@
 import type { Player, GameState } from '../state/types.ts';
 import { WHO_PLAYS_HUMAN } from '../state/types.ts';
 import type { LandInfo, FacilityInfo, MapNode } from '../loaders/map.ts';
+import { newStockMarket } from '../places/stock-market.ts';
 
 export function makePlayer(over: Partial<Player> = {}): Player {
   return {
@@ -78,6 +79,8 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     pending: null,
     tools: new Array<number>(4 * 15).fill(0),
     toolStock: new Array<number>(14).fill(99),
+    market: newStockMarket(0),
+    holdings: [0, 1, 2, 3].map(() => Array.from({ length: 12 }, () => ({ amount: 0, avgCost: 0 }))),
     ...over,
   };
 }

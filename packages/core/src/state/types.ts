@@ -10,6 +10,8 @@
 import type { GameMode } from '../rng/policy.ts';
 import type { EventDeck } from '../events/deck.ts';
 import type { PendingInteraction } from '../rules/interaction.ts';
+import type { StockMarketState } from '../places/stock-market.ts';
+import type { StockHolding } from '../places/stock.ts';
 
 // ============================================================
 //  玩家控制方式
@@ -283,6 +285,17 @@ export interface GameState {
    * 使其行为等同于「不限量」——这样至少不会错误地拒发道具。
    */
   toolStock: number[];
+
+  /**
+   * 股市行情 —— 12 支股票、144 日历史、大盘指数。
+   * @source `_stocks_on_map` 0x496980（12 × 36B）
+   */
+  market: StockMarketState;
+  /**
+   * 各玩家的持仓：`holdings[玩家][股票]`。
+   * @source `_rich4_player_stocks`，每项 8 字节（持股数 + 成本均价 float）
+   */
+  holdings: StockHolding[][];
 }
 
 // ============================================================

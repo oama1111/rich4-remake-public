@@ -18,7 +18,7 @@ const makePlayer = (over: Partial<Player> = {}): Player =>
   basePlayer({ cash: 100_000, moneyInBank: 100_000, ...over });
 
 const stock = (over: Partial<StockState> = {}): StockState =>
-  ({ price: 100, shares: 10_000, f10: 10_000, commercialIndex: 0, ...over });
+  ({ price: 100, shares: 10_000, f10: 10_000, commercialIndex: 0, f6: 0, newsFlag: 0, basePrice: 100, openPrice: 100, volatility: 1, trend: 0, shock: 0, ...over });
 
 describe('股票数值表（来自 exe 二进制）', () => {
   it('96 支 = 8 图 × 12', () => {

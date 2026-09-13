@@ -29,14 +29,18 @@ export const LOTTERY_NUMBERS = 0x24;
 export const LOTTERY_TICKET_PRICE = 0x3e8;
 
 /**
- * 每人可持号上限。
- * @source 开奖前 VA 0x00430b2a 起对各玩家的持号数逐个
- *   `cmp byte [...], 0xa / ja` —— 超过 10 就走另一条分支。
+ * 「有人买太多了」的门槛。
  *
- * ⚠️ 「超过 10 之后发生什么」尚未确认（0x00430b52 分支未解），
- * 故本模块只把它当作**购买上限**，不臆测别的后果。
+ * @source 开奖前 VA 0x00430b2a 起对四名玩家的持号数逐个
+ *   `cmp byte [esp+0x80+i], 0xa / ja 0x430b52`。
+ *
+ * ★ **原先标的「购买上限」是误读**（此处原有一条 ⚠️ 说 0x430b52 分支未解）。
+ *   它根本不限制购买，而是决定**开奖方式**：
+ *   - 四人持号都 ≤ 10 → 在全部 36 个号里随机开（很可能无人中奖）
+ *   - 任何一人 > 10   → **只在已售出的号码里开**，必定有人中奖
+ *   见 `drawLottery`。
  */
-export const LOTTERY_MAX_PER_PLAYER = 10;
+export const LOTTERY_RIG_THRESHOLD = 10;
 
 /**
  * 号码表：下标 = 号码（0..35），值 = **持有者下标 + 1**，0 表示未售出。
@@ -68,17 +72,15 @@ export function numbersOf(t: readonly number[], player: number): number[] {
   return out;
 }
 
-export type BuyFailure =
-  | 'taken'
-  | 'outOfRange'
-  | 'notEnoughCash'
-  | 'tooMany';
+export type BuyFailure = 'taken' | 'outOfRange' | 'notEnoughCash';
 
 export interface BuyResult {
   ok: boolean;
   reason: BuyFailure | null;
   player: Player;
   lottery: LotteryTable;
+  /** 票钱进公库的金额（成功时即票价） */
+  toPool: number;
 }
 
 /**
@@ -92,29 +94,34 @@ export interface BuyResult {
  * call rand / idiv ebx                 ; 随机挑一个
  * …
  * sub dword [player + 0x1c], 0x3e8     ; ★ 直接扣现金
+ * add dword [0x499080],   0x3e8        ; ★ 票钱进公库
  * ```
+ * 人类分支（VA 0x0043000e / 0x00430018）两条指令完全相同。
  *
  * ★ 与买地一样是**就地扣现金**，不走 pay_money，故没有存款级联、
  *   不会触发破产（对比 rules/purchase.ts 与 rules/payment.ts）。
  *
+ * ★ **票钱进公库**（0x499080 即 `GameState.pool`）——这一条先前漏了。
+ *   它很要紧：樂透的奖金就是开奖那一刻的整个公库，故买票既是投注
+ *   也是在给奖池添柴。
+ *
  * ⚠️ 号码由调用方给出。AI 走的是「在未售出的号码里随机挑一个」，
  *   那属于策略而非规则，放在 ai/ 而不是这里。
+ *
+ * ⚠️ 原版**不限制**每人的持号数——先前此处的 `tooMany` 是对
+ *   0x430b2a 那个 10 的误读，已移除（见 `LOTTERY_RIG_THRESHOLD`）。
  */
-export function buyTicket(
-  player: Player,
-  lottery: readonly number[],
-  n: number,
-): BuyResult {
+export function buyTicket(player: Player, lottery: readonly number[], n: number): BuyResult {
   const fail = (reason: BuyFailure): BuyResult => ({
     ok: false,
     reason,
     player,
     lottery: [...lottery],
+    toPool: 0,
   });
 
   if (!Number.isInteger(n) || n < 0 || n >= LOTTERY_NUMBERS) return fail('outOfRange');
   if ((lottery[n] ?? 0) !== 0) return fail('taken');
-  if (numbersOf(lottery, player.index).length >= LOTTERY_MAX_PER_PLAYER) return fail('tooMany');
   // @source cmp dword [player+0x1c], 0x3e8 —— 只看现金
   if (player.cash < LOTTERY_TICKET_PRICE) return fail('notEnoughCash');
 
@@ -126,6 +133,8 @@ export function buyTicket(
     // @source sub dword [player + 0x1c], 0x3e8
     player: { ...player, cash: player.cash - LOTTERY_TICKET_PRICE },
     lottery: next,
+    // @source add dword [0x499080], 0x3e8
+    toPool: LOTTERY_TICKET_PRICE,
   };
 }
 
@@ -146,13 +155,119 @@ export function releaseTickets(lottery: readonly number[], player: number): Lott
   return [...lottery].map((v) => (v === player + 1 ? 0 : v));
 }
 
+// ============================================================
+//  开奖
+// ============================================================
+
 /**
- * ⚠️ **开奖与派彩尚未实现。**
+ * 开奖日 —— 每月 15 号。
  *
- * 已定位：开奖前（VA 0x00430b07）会统计各玩家持号数并逐个与 10 比较，
- * 但中奖号如何产生、奖金如何计算，位于 0x00430b52 之后尚未解开的分支里。
- *
- * 在解出来之前**不提供任何派彩函数**——与其编一个看似合理的公式，
- * 不如让调用方明确地发现这块还没做。
+ * @source 日期推进 VA 0x0041d080：
+ * ```asm
+ * mov eax, [0x497160]      ; 打包日期
+ * and eax, 0xff            ; ★ 低字节即「日」
+ * cmp eax, 0xf             ; 15
+ * jne 跳过
+ * call 0x42ba97            ; （股市周报之类）
+ * call 0x431712            ; ★ 樂透开奖
+ * ```
  */
-export const LOTTERY_DRAW_UNIMPLEMENTED = true;
+export const LOTTERY_DRAW_DAY = 15;
+
+export interface LotteryDrawResult {
+  /** 中奖号码 0..35；无人购票时为 null（原版此时根本不开奖） */
+  number: number | null;
+  /** 中奖者下标；无人中奖为 null */
+  winner: number | null;
+  /** 派给中奖者的金额 —— 开奖那一刻的**整个公库** */
+  prize: number;
+  /** 开奖后的号码表 */
+  lottery: LotteryTable;
+  /** 开奖后的公库 */
+  pool: number;
+  /** 本次是否走了「必定有人中奖」的分支 */
+  rigged: boolean;
+}
+
+/**
+ * 开奖并派彩。
+ *
+ * @source 抽号 VA 0x00430b07 起：
+ * ```asm
+ * ; 先扫一遍号码表，统计各人持号数，并把已售号码收进 buf
+ * for i in 0..35: c = lottery[i]
+ *                 if (c) { count[c]++;  buf[n++] = i + 1 }
+ * ; 四个人的持号数逐个与 10 比较
+ * cmp byte [count+1], 0xa / ja 有人超量
+ * …（共四条）…
+ * 都没超量:  ebx = rand() % 36 + 1          ; ★ 在全部 36 号里开
+ * 有人超量:  ebx = buf[rand() % n]          ; ★ 只在已售号码里开
+ * ```
+ * @source 定中奖者 VA 0x00430d75：`al = [ebx + 0x4990b7]` 即 `lottery[号-1]`
+ * @source 派彩 VA 0x00430ac4：
+ * ```asm
+ * ebx = 中奖者编码；test ebx,ebx / je 跳过
+ * give_money(ebx - 1, [0x499080], 1)     ; ★ 整个公库给中奖者
+ * [0x499080] = 0                          ; 公库清零
+ * memset(0x4990b8, 0, 0x24)               ; 号码表全清
+ * ```
+ *
+ * ★ 两处「无人中奖就什么都不做」很关键：
+ *   1. 一张票都没卖出去时（VA 0x00431720 的循环）根本不开奖
+ *   2. 开出的号没人买时，**公库不清零、号码表不清空**——
+ *      奖金滚存到下一期，已买的号继续有效。
+ *
+ * ⚠️ 随机数由调用方推进（C-DET-1）：两条分支消耗的 `rand()` 次数都恰好是 1，
+ *   但取模的除数不同，故不能在函数外预先取好。
+ */
+export function drawLottery(
+  lottery: readonly number[],
+  pool: number,
+  rng: { next: () => number },
+): LotteryDrawResult {
+  const unchanged = (over: Partial<LotteryDrawResult> = {}): LotteryDrawResult => ({
+    number: null,
+    winner: null,
+    prize: 0,
+    lottery: [...lottery],
+    pool,
+    rigged: false,
+    ...over,
+  });
+
+  // @source 0x00431720 的循环：一张都没卖出就直接返回
+  const sold: number[] = [];
+  const perPlayer = new Map<number, number>();
+  for (let i = 0; i < LOTTERY_NUMBERS; i++) {
+    const c = lottery[i] ?? 0;
+    if (c === 0) continue;
+    sold.push(i);
+    perPlayer.set(c, (perPlayer.get(c) ?? 0) + 1);
+  }
+  if (sold.length === 0) return unchanged();
+
+  // @source 四条 `cmp byte [...], 0xa / ja`
+  const rigged = [...perPlayer.values()].some((n) => n > LOTTERY_RIG_THRESHOLD);
+
+  const number = rigged
+    ? // @source idiv ebx / mov bl, [esp+edx+0x40] —— 从已售号码里挑
+      sold[rng.next() % sold.length]!
+    : // @source mov ebx, 0x24 / idiv / lea ebx,[edx+1] —— 全 36 号随机
+      rng.next() % LOTTERY_NUMBERS;
+
+  const owner = lottery[number] ?? 0;
+  // @source test ebx,ebx / je 0x430afb —— 没人中，公库与号码表原样留着
+  if (owner === 0) return unchanged({ number, rigged });
+
+  return {
+    number,
+    winner: owner - 1,
+    // @source give_money(owner-1, [0x499080], 1)
+    prize: pool,
+    // @source memset(0x4990b8, 0, 0x24)
+    lottery: emptyLottery(),
+    // @source mov dword [0x499080], 0
+    pool: 0,
+    rigged,
+  };
+}

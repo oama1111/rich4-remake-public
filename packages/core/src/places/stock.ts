@@ -28,9 +28,18 @@ export interface StockHolding {
   avgCost: number;
 }
 
-/** 某支股票在本局中的实时状态（从 STOCKS 模板拷贝而来） */
+/**
+ * 某支股票在本局中的实时状态 —— 就是原版 `_stocks_on_map`（0x496980）
+ * 的一条 36 字节记录，字段名按已查明的语义命名，未明者保留原偏移名。
+ *
+ * ★ 字段语义由 `_rich4_stock_daily_tick`（fcn_004291d6）反推，
+ *   见 rules/stock-market.ts 的逐行翻译。表里三个价格字段
+ *   （+12/+16/+20）初值相同，但运行时各司其职：
+ *   +12 是**永不变的参考价**（均值回归的锚），+16 是**今日开盘**，
+ *   +20 是**今日收盘**，也是买卖与估值唯一取用的那个。
+ */
 export interface StockState {
-  /** 当前股价 @source stock_info +20 (float) */
+  /** 当前股价（收盘）@source stock_info +20 (float) */
   price: number;
   /** 可流通股数 @source stock_info +8 (u16) */
   shares: number;
@@ -38,6 +47,30 @@ export interface StockState {
   f10: number;
   /** 对应的地图企业下标；0 表示无 @source stock_info +4 */
   commercialIndex: number;
+  /**
+   * 非 0 则该股**当日不波动**，且趋势被清零。
+   * @source loc_00429470 `cmp byte [+6], 0 / jne → f28 = 0`
+   * 初始表中 96 支全为 0；疑为「新上市/停牌」标记。
+   */
+  f6: number;
+  /**
+   * 新闻剩余天数，**两个 4 位计数器**：
+   * 高半字节 = 利多还剩几天，低半字节 = 利空还剩几天。
+   * 非 0 时当日趋势固定为 ±10%（利多优先），为 0 才照常随机波动。
+   * @source loc_0042921f `test dl, 0xf0`；每日递减见
+   *   stock-market.ts 的 `tickStockCountdowns`（VA 0x0041cff9）
+   */
+  newsFlag: number;
+  /** 参考价 —— 均值回归的锚，全局不变 @source stock_info +12 (float) */
+  basePrice: number;
+  /** 今日开盘价 = 昨日收盘 @source stock_info +16 (float) */
+  openPrice: number;
+  /** 波动系数 @source stock_info +24 (float)，0.40 ~ 2.00 */
+  volatility: number;
+  /** 当日涨跌趋势（百分比，钳在 ±10）@source stock_info +28 (float) */
+  trend: number;
+  /** 当日随机冲击，仅为可观测的中间量 @source stock_info +32 (float) */
+  shock: number;
 }
 
 /** 买入资金来源 */

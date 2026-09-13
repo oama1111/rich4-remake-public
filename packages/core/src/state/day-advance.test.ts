@@ -1,0 +1,136 @@
+/*
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * 回合边界上的那条链：日期 → 股市 → 樂透 → 月结
+ */
+
+import { describe, expect, it } from 'vitest';
+import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
+import { reduce } from './reduce.ts';
+import type { GameState } from './types.ts';
+import { LOTTERY_DRAW_DAY } from '../places/lottery.ts';
+import { newStockMarket } from '../places/stock-market.ts';
+
+const topo = { nodes: [makeNode({ id: 1, adjacent: [1] })] };
+
+const endTurn = (s: GameState): GameState =>
+  reduce({ ...s, phase: 'turnEnd' }, { type: 'endTurn' }, topo);
+
+describe('日期推进', () => {
+  it('★ 每回合过一天', () => {
+    const s = endTurn(makeGameState({ year: 1998, month: 1, day: 1 }));
+    expect([s.year, s.month, s.day]).toEqual([1998, 1, 2]);
+  });
+
+  it('★ 月末跨月', () => {
+    const s = endTurn(makeGameState({ year: 1998, month: 1, day: 31 }));
+    expect([s.year, s.month, s.day]).toEqual([1998, 2, 1]);
+  });
+
+  it('★ 年末跨年', () => {
+    const s = endTurn(makeGameState({ year: 1998, month: 12, day: 31 }));
+    expect([s.year, s.month, s.day]).toEqual([1999, 1, 1]);
+  });
+});
+
+describe('月结', () => {
+  it('★ 跨月时无贷款者的存款 ×1.1', () => {
+    const base = makeGameState({
+      year: 1998,
+      month: 1,
+      day: 31,
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, moneyInBank: 100_000, loan: 0 }),
+      ),
+    });
+    const s = endTurn(base);
+    expect(s.players[0]!.moneyInBank).toBe(110_000);
+  });
+
+  it('★ 有贷款就不发利息', () => {
+    const base = makeGameState({
+      year: 1998,
+      month: 1,
+      day: 31,
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, moneyInBank: 100_000, loan: i === 0 ? 1 : 0 }),
+      ),
+    });
+    const s = endTurn(base);
+    expect(s.players[0]!.moneyInBank).toBe(100_000);
+    expect(s.players[1]!.moneyInBank).toBe(110_000);
+  });
+
+  it('月中不发利息', () => {
+    const base = makeGameState({
+      month: 1,
+      day: 10,
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, moneyInBank: 100_000 })),
+    });
+    expect(endTurn(base).players[0]!.moneyInBank).toBe(100_000);
+  });
+
+  it('★ 出局者不参与月结', () => {
+    const base = makeGameState({
+      month: 1,
+      day: 31,
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, moneyInBank: 100_000, whoPlays: i === 0 ? 0 : 1 }),
+      ),
+    });
+    expect(endTurn(base).players[0]!.moneyInBank).toBe(100_000);
+  });
+});
+
+describe('樂透开奖', () => {
+  const withTickets = (day: number): GameState => {
+    const lottery = new Array<number>(36).fill(0);
+    // 12 张全归玩家 0 → 超过门槛，必定开出已售号码
+    for (let i = 0; i < 12; i++) lottery[i] = 1;
+    return makeGameState({ month: 3, day, lottery, pool: 500_000 });
+  };
+
+  it('★ 每月 15 号才开奖', () => {
+    const notYet = endTurn(withTickets(10));
+    expect(notYet.pool).toBe(500_000);
+    expect(notYet.lottery.filter((v) => v !== 0)).toHaveLength(12);
+  });
+
+  it('★ 15 号开奖：公库全数派给中奖者、号码清空', () => {
+    // day 14 → 推进后是 15
+    const s = endTurn(withTickets(14));
+    expect(s.day).toBe(LOTTERY_DRAW_DAY);
+    expect(s.pool).toBe(0);
+    expect(s.lottery.every((v) => v === 0)).toBe(true);
+    expect(s.players[0]!.cash).toBeGreaterThanOrEqual(500_000);
+  });
+
+  it('★ 无人购票就不开奖，公库原样留着', () => {
+    const s = endTurn(makeGameState({ month: 3, day: 14, pool: 500_000 }));
+    expect(s.day).toBe(15);
+    expect(s.pool).toBe(500_000);
+  });
+});
+
+describe('股市', () => {
+  it('★ 每回合收一次盘 —— 日序号前进、历史被写入', () => {
+    const s = endTurn(makeGameState({ market: newStockMarket(0) }));
+    expect(s.market.day).toBe(1);
+    expect(s.market.history[0]![0]).toBeGreaterThan(0);
+    expect(s.market.index).toBeGreaterThan(0);
+  });
+
+  it('★ 连跑多回合后股价确实动了', () => {
+    let s = makeGameState({ market: newStockMarket(0) });
+    const before = s.market.stocks.map((x) => x.price);
+    for (let i = 0; i < 20; i++) s = endTurn(s);
+    expect(s.market.stocks.map((x) => x.price)).not.toEqual(before);
+  });
+
+  it('★ 随机数从 rngState 顺序取，不重播种', () => {
+    const a = endTurn(makeGameState({ rngState: 12345 }));
+    const b = endTurn(makeGameState({ rngState: 12345 }));
+    expect(a.rngState).toBe(b.rngState);
+    expect(a.rngState).not.toBe(12345);
+    expect(a.market.stocks.map((x) => x.price)).toEqual(b.market.stocks.map((x) => x.price));
+  });
+});
