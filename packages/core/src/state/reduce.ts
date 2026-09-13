@@ -14,11 +14,53 @@ import type { GameState, Player } from './types.ts';
 import { isAlive } from './types.ts';
 import { WatcomRng, rollDice } from '../rng/watcom.ts';
 import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
-import type { MapNode } from '../loaders/map.ts';
+import type { MapNode, LandInfo } from '../loaders/map.ts';
+import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
+import { calculateLandToll } from '../rules/toll.ts';
 
-/** 归约所需的地图拓扑（只读，不进状态，避免快照臃肿） */
+/**
+ * 归约所需的地图静态数据（只读，不进状态，避免快照臃肿）。
+ *
+ * 地块的**实时**归属与等级存在 `GameState.landOwner` / `landLevel` 里，
+ * 这里的 `lands` 只提供不变的模板（名称、地价、房价、租金表）。
+ */
 export interface MapTopology {
   nodes: readonly MapNode[];
+  lands?: readonly LandInfo[];
+}
+
+/** 把静态地块模板与状态中的实时归属合并，得到当前有效的地块 */
+export function effectiveLand(
+  s: GameState,
+  topo: MapTopology,
+  landIndex: number,
+): LandInfo | null {
+  const tpl = topo.lands?.find((l) => l.id === landIndex);
+  if (tpl === undefined) return null;
+  return {
+    ...tpl,
+    owner: s.landOwner[landIndex] ?? tpl.owner,
+    level: s.landLevel[landIndex] ?? tpl.level,
+  };
+}
+
+/** 当前玩家落点所对应的住宅地块下标；非住宅返回 null */
+export function landIndexAtPlayer(s: GameState, topo: MapTopology): number | null {
+  const p = s.players[s.currentPlayer];
+  if (p === undefined) return null;
+  const node = topo.nodes[p.nodeId - 1];
+  if (node === undefined) return null;
+  return housingIndexOf(node.type);
+}
+
+/** 该地图上全部地块的当前有效状态（用于过路费的同区累加） */
+function allEffectiveLands(s: GameState, topo: MapTopology): LandInfo[] {
+  if (topo.lands === undefined) return [];
+  return topo.lands.map((l) => ({
+    ...l,
+    owner: s.landOwner[l.id] ?? l.owner,
+    level: s.landLevel[l.id] ?? l.level,
+  }));
 }
 
 /** 浅拷贝玩家，避免原地修改 */
@@ -151,8 +193,88 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
 
     case 'settle': {
       if (state.phase !== 'settling') return state;
-      // TODO(M2): 落点结算 —— 过路费、买地、事件格、特殊场所
-      //   对照 rich4-re/asm/rich4_player_core_actions.asm(6192 行)
+      const player = state.players[state.currentPlayer];
+      if (player === undefined) return state;
+
+      const landIndex = landIndexAtPlayer(state, topo);
+      // TODO(M2): 特殊格（specialKind 1..16）与设施/企业尚未实现，
+      //   对照 _rich4_handle_player_land_on_node 的 17 路跳表 @0x4197e9
+      if (landIndex === null) return { ...state, phase: 'turnEnd' };
+
+      const land = effectiveLand(state, topo, landIndex);
+      if (land === null) return { ...state, phase: 'turnEnd' };
+
+      switch (landingOnLand(land, state.currentPlayer)) {
+        case 'unowned': {
+          // 买不起或被阻止时直接结束，不给决策机会
+          return canPurchase(land, player, state.priceIndex).ok
+            ? { ...state, phase: 'awaitingDecision' }
+            : { ...state, phase: 'turnEnd' };
+        }
+        case 'own': {
+          return canUpgrade(land, player, state.priceIndex).ok
+            ? { ...state, phase: 'awaitingDecision' }
+            : { ...state, phase: 'turnEnd' };
+        }
+        case 'other': {
+          // 他人地产 → 立即支付过路费
+          const toll = calculateLandToll(
+            allEffectiveLands(state, topo),
+            land.owner,
+            state.priceIndex,
+            land.name,
+          );
+          const ownerIndex = land.owner - 1;
+          const players = state.players.map((p, i) => {
+            if (i === state.currentPlayer) return { ...cloneP(p), cash: p.cash - toll };
+            if (i === ownerIndex) return { ...cloneP(p), cash: p.cash + toll };
+            return p;
+          });
+          return { ...state, players, phase: 'turnEnd' };
+        }
+      }
+    }
+
+    case 'buyLand': {
+      if (state.phase !== 'awaitingDecision') return state;
+      const player = state.players[state.currentPlayer];
+      const landIndex = landIndexAtPlayer(state, topo);
+      if (player === undefined || landIndex === null) return state;
+      const land = effectiveLand(state, topo, landIndex);
+      if (land === null) return state;
+
+      const check = canPurchase(land, player, state.priceIndex);
+      if (!check.ok) return state;
+
+      const paid = withPlayer(state, state.currentPlayer, (p) => {
+        p.cash -= check.price;
+      });
+      const landOwner = [...paid.landOwner];
+      landOwner[landIndex] = state.currentPlayer + 1;
+      return { ...paid, landOwner, phase: 'turnEnd' };
+    }
+
+    case 'upgradeLand': {
+      if (state.phase !== 'awaitingDecision') return state;
+      const player = state.players[state.currentPlayer];
+      const landIndex = landIndexAtPlayer(state, topo);
+      if (player === undefined || landIndex === null) return state;
+      const land = effectiveLand(state, topo, landIndex);
+      if (land === null) return state;
+
+      const check = canUpgrade(land, player, state.priceIndex);
+      if (!check.ok) return state;
+
+      const paid = withPlayer(state, state.currentPlayer, (p) => {
+        p.cash -= check.cost;
+      });
+      const landLevel = [...paid.landLevel];
+      landLevel[landIndex] = land.level + 1;
+      return { ...paid, landLevel, phase: 'turnEnd' };
+    }
+
+    case 'declineDecision': {
+      if (state.phase !== 'awaitingDecision') return state;
       return { ...state, phase: 'turnEnd' };
     }
 

@@ -7,3 +7,5 @@ export * from './state/types.ts';
 export * from './state/actions.ts';
 export * from './state/reduce.ts';
 export * from './rules/turn-start.ts';
+export * from './rules/toll.ts';
+export * from './rules/land.ts';

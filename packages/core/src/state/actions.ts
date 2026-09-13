@@ -39,6 +39,15 @@ export type Action =
   /** 结算落点 */
   | { type: 'settle' }
 
+  /** 买下当前落点的无主地块 */
+  | { type: 'buyLand' }
+
+  /** 在当前落点的自有地块上盖房/升级一级 */
+  | { type: 'upgradeLand' }
+
+  /** 放弃当前的买地/盖房机会 */
+  | { type: 'declineDecision' }
+
   /** 结束当前玩家回合，轮转到下一位 */
   | { type: 'endTurn' };
 
