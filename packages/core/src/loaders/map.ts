@@ -165,7 +165,7 @@ export interface FacilityInfo {
    */
   housePrice: number;
   /**
-   * **按等级索引的费率表**，6 项 uint16，起于 `+0x24`。
+   * 按等级取过路费的**寻址窗口**，6 项 uint16，起于 `+0x24`。
    *
    * @source VA 0x0041a429（设施过路费 type 1/2 分支）：
    * ```asm
@@ -175,8 +175,16 @@ export interface FacilityInfo {
    * bx  = word [eax + 0x24]        ; ★ word[facility + 0x24 + level*2]
    * ```
    *
-   * ⚠️ `rich4-re/csrc/land.h` 只记了单个 `house_price`，
-   * 与住宅 `+0x20` 的 `rentByLevel` 是同一类遗漏。
+   * ⚠️ **下标 0 不是租金**，而是 `housePrice` 本身（同一个 `+0x24`）。
+   * 真正的租金是**等级 1..5**，即下标 1..5（`+0x26`..`+0x2e`）。
+   *
+   * 实证：真实地图里多处形如 `[1000, 750, 1750, 4000, 8000, 15000]`——
+   * 下标 1..5 严格递增，只有下标 0 跳出序列，且恒等于 `housePrice`。
+   * 设施最高等级表（VA 0x00474940）给 type 1/2 的上限正是 **5**，
+   * 与「租金只有 5 档」吻合。
+   *
+   * 原版的寻址就是 `+0x24 + level*2`，等级 0 会读到房价；照搬该寻址，
+   * 不做「修正」——等级 0 的设施本就不该收租。
    */
   rateByLevel: number[];
 }

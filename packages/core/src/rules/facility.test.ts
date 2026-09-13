@@ -4,7 +4,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { makeFacility } from '../testing/factories.ts';
+import { parseMap } from '../loaders/map.ts';
+
+const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
 import {
   FACILITY_TYPE_GAS_STATION,
   FACILITY_TYPE_SHOP_A,
@@ -111,5 +115,54 @@ describe('未知类型不收费', () => {
         multiplier: 5,
       }))).toBe(0);
     }
+  });
+});
+
+// ============================================================
+//  真实地图数据交叉验证
+// ============================================================
+
+describe('★ rateByLevel 由真实地图数据印证', () => {
+  const dir = `${ROOT}/extracted/map`;
+  const run = existsSync(dir) ? it : it.skip;
+
+  run('设施 +0x24 处确为 6 项递增的 uint16 费率表', () => {
+    let checked = 0;
+    for (const f of readdirSync(dir)) {
+      let m;
+      try {
+        m = parseMap(new Uint8Array(readFileSync(`${dir}/${f}`)));
+      } catch {
+        continue;
+      }
+      for (const fa of m.facilities ?? []) {
+        expect(fa.rateByLevel).toHaveLength(6);
+        // housePrice 是 rateByLevel[0] 的别名
+        expect(fa.housePrice).toBe(fa.rateByLevel[0]);
+        // ★ 只有**下标 1..5**（等级 1..5）是租金，且严格递增。
+        //   下标 0 与 housePrice 是同一个 +0x24，跳出序列是正常的。
+        for (let i = 2; i < 6; i++) {
+          expect(fa.rateByLevel[i]!).toBeGreaterThan(fa.rateByLevel[i - 1]!);
+        }
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  run('★ 地图数据里所有设施的 type 都是 0（type 由运行时赋予）', () => {
+    const types = new Set<number>();
+    for (const f of readdirSync(dir)) {
+      try {
+        const m = parseMap(new Uint8Array(readFileSync(`${dir}/${f}`)));
+        for (const fa of m.facilities ?? []) types.add(fa.type);
+      } catch {
+        continue;
+      }
+    }
+    // 这条断言是**记录现状**，不是期望值：
+    // 若日后发现 type 另有来源而使本断言失败，说明找到了答案，
+    // 届时应更新 docs 里的 Q-FAC-1 而不是放宽断言。
+    expect([...types]).toEqual([0]);
   });
 });

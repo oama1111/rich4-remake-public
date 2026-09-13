@@ -42,9 +42,14 @@ export const FACILITY_TYPE_GAS_STATION = 3;
  * bx  = word [eax + 0x24]          ; ★ word[facility + 0x24 + level*2]
  * ```
  *
- * ⚠️ `rich4-re/csrc/land.h` 把 `+0x24` 记成单个 `house_price`。
- * 它其实是**一张按等级索引的表**——与住宅 `+0x20` 的 `rentByLevel`
- * 是同一类遗漏（见 loaders/map.ts 对住宅的说明）。
+ * ⚠️ **下标 0 不是租金**：`+0x24` 同时就是 `housePrice`。
+ * 真正的租金是等级 1..5（`+0x26`..`+0x2e`），共 5 档——
+ * 与设施最高等级表（VA 0x00474940）给 type 1/2 的上限 5 吻合。
+ *
+ * 真实地图里多处形如 `[1000, 750, 1750, 4000, 8000, 15000]`：
+ * 下标 1..5 严格递增，只有下标 0 跳出序列。
+ *
+ * 原版寻址就是 `+0x24 + level*2`，照搬不改。
  */
 export const FACILITY_RATE_TABLE_OFFSET = 0x24;
 
