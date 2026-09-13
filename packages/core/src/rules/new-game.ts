@@ -105,6 +105,8 @@ function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, star
     totalWinterSleepDays: 0,
     alliedPlayer: 0,
     alliedDays: 0,
+    savedTrafficMethod: 0,
+    savedNdices: 0,
     blessing: 0,
     hostility: [0, 0, 0, 0],
     monthlyPaid: 0,

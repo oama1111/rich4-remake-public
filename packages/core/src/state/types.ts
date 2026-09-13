@@ -122,6 +122,16 @@ export interface Player {
   alliedPlayer: number;
   alliedDays: number;
   /**
+   * 梦游前的交通方式，醒来后据此恢复。
+   * @source player_info +0x66（`mov byte [p+0x66], dl` VA 0x0044437f）
+   */
+  savedTrafficMethod: number;
+  /**
+   * 梦游前的骰子数。
+   * @source player_info +0x67（VA 0x0044438b）
+   */
+  savedNdices: number;
+  /**
    * **神明加持值**，有符号 16 位。@source player_info +0x46
    *
    * 决定新聞／命運事件金额的倍率（见 rules/blessing.ts）：

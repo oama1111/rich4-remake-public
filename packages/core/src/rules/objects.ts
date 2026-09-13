@@ -18,6 +18,21 @@ export const OBJECT_COUNT = 0x2e; // 46
 export const OBJECT_ENTRY_SIZE = 24;
 
 /**
+ * 物件表基址与字段偏移。
+ *
+ * @source 解請神符（VA 0x0040ead7）时补齐：
+ * ```
+ * 基址 0x00496d08
+ * +0x00  type      物件种类（byte）
+ * +0x02  nodeId    所在节点（word），0 表示不在地图上
+ * +0x04  state     附身后写入：死神(15) 写 13，其余写 7
+ * +0x05  attached  附身于谁（玩家下标 + 1）
+ * ```
+ * 先前只记了 type 在偏移 0。
+ */
+export const OBJECTS_INFO_BASE = 0x00496d08;
+
+/**
  * 物件的初始类型表（46 项）。
  *
  * ★ 直接从 `rich4.exe` VA 0x0047ed3c 提取，不经任何转录。
