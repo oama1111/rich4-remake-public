@@ -8,7 +8,7 @@
  */
 
 import type { GameState } from '@rich4/core';
-import type { LandInfo, MapNode, Rich4Map } from '@rich4/core';
+import type { MapNode, Rich4Map } from '@rich4/core';
 import type { Sprite, SpriteCache } from './assets.ts';
 import {
   DECOR_RESOURCE,
@@ -16,6 +16,9 @@ import {
   buildingResource,
   chainStoreResource,
   decorImageIndex,
+  facilitySheetBase,
+  facilitySlot,
+  sceneryResource,
   tokenResource,
 } from './assets.ts';
 
@@ -250,29 +253,62 @@ export class BoardRenderer {
    */
   #drawBuildings(map: Rich4Map, state: GameState, cam: Camera): void {
     const ctx = this.#ctx;
-    const drawn: { node: MapNode; land: LandInfo; level: number }[] = [];
+    /** 一件立体物：资源、图号、落点 */
+    const items: { y: number; x: number; res: number; img: number }[] = [];
+
+    // ── 地块建筑 ──
     for (const n of map.nodes) {
       if (n.ref.kind !== 'land') continue;
-      const idx = n.ref.index;
-      const level = state.landLevel[idx] ?? 0;
-      if (level < 1) continue; // @source cmp byte [land+0x1a], 0 / je —— 等级 0 不画建筑
-      const land = map.lands.find((l) => l.id === idx);
+      const landId = n.ref.index;
+      const level = state.landLevel[landId] ?? 0;
+      // @source cmp byte [land+0x1a], 0 / je —— 等级 0 不画建筑
+      if (level < 1) continue;
+      const land = map.lands.find((l) => l.id === landId);
       if (land === undefined) continue;
-      drawn.push({ node: n, land, level });
-    }
-    drawn.sort((a, b) => a.node.y - b.node.y);
-
-    for (const { node, land, level } of drawn) {
       // @source cmp byte [land+0x18], 0 / jne → 连锁店走另一张图集
-      const res = land.type !== 0 ? chainStoreResource(state.globalMapId) : buildingResource(state.globalMapId, level);
+      const res =
+        land.type !== 0
+          ? chainStoreResource(state.globalMapId)
+          : buildingResource(state.globalMapId, level);
       if (res === null) continue;
-      const sp = this.#sprite('map.mkf', res, buildingImageIndex(land.facing), true);
+      items.push({ x: n.x, y: n.y, res, img: buildingImageIndex(land.facing) });
+    }
+
+    // ── 设施（機場/港口…）──
+    const gameStage = state.globalMapId >> 2;
+    const gameMap = state.globalMapId & 3;
+    const base = facilitySheetBase(gameStage, gameMap);
+    for (const f of map.facilities) {
+      items.push({
+        x: f.x,
+        y: f.y,
+        res: base + facilitySlot(f.type, f.level),
+        img: buildingImageIndex(f.facing),
+      });
+    }
+
+    // ── 上市企业与特殊景观：共用「索引 + 38」那套 ──
+    for (const c of map.commercials) {
+      const res = sceneryResource(c.spriteIndex);
+      if (res !== null) items.push({ x: c.x, y: c.y, res, img: 0 });
+    }
+    for (const l of map.landscapes) {
+      const res = sceneryResource(l.spriteIndex);
+      if (res !== null) items.push({ x: l.x, y: l.y, res, img: 0 });
+    }
+
+    // ★ 等距视角下靠后的先画，否则近处的会被远处的盖住
+    items.sort((a, b) => a.y - b.y);
+
+    for (const it of items) {
+      const sp = this.#sprite('map.mkf', it.res, it.img, true);
       if (sp === null) continue;
-      const p = nodeToScreen(node, cam);
+      const sx = (it.x - cam.x) * cam.scale;
+      const sy = (it.y - cam.y) * cam.scale;
       ctx.drawImage(
         sp.bitmap,
-        p.x - sp.anchorX * cam.scale,
-        p.y - sp.anchorY * cam.scale,
+        sx - sp.anchorX * cam.scale,
+        sy - sp.anchorY * cam.scale,
         sp.width * cam.scale,
         sp.height * cam.scale,
       );

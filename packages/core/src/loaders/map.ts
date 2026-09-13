@@ -181,6 +181,8 @@ export interface FacilityInfo {
   owner: number;
   /** @source land.h 0x1a */
   level: number;
+  /** 建筑朝向 0..7 @source facility +0x1b，与地块同制（VA 0x004093c3） */
+  facing: number;
   /** @source land.h 0x1c */
   priceStatus: number;
   /** @source land.h 0x22 */
@@ -220,15 +222,39 @@ export interface FacilityInfo {
 /** 上市企业 */
 export interface CommercialInfo {
   id: number;
+  /** 地图坐标 @source commercial +0x00 / +0x02，与地块同构 */
+  x: number;
+  y: number;
   name: string;
   /** 对应的股票索引 @source rich4_load_map.asm:325 (mov dl, byte [esi+0x19]) */
   stockIndex: number;
+  /**
+   * 精灵索引 @source commercial +0x20 (u16)
+   *
+   * @source 地图加载 VA 0x00407ee4：
+   * ```asm
+   * ax = word [commercial + 0x20]
+   * test / je 跳过                    ; 0 表示没有图
+   * load(map.mkf, ax + 0x26)          ; ★ 资源号 = 索引 + 38
+   * ```
+   */
+  spriteIndex: number;
 }
 
 /** 特殊景观（阿里山、佛光山等） */
 export interface LandscapeInfo {
   id: number;
+  /** 地图坐标 @source landscape +0x00 / +0x02 */
+  x: number;
+  y: number;
   name: string;
+  /**
+   * 精灵索引 @source landscape +0x1a (u16)
+   *
+   * @source 地图加载 VA 0x00407f35，与上市企业同一套：
+   *   `资源号 = 索引 + 0x26`，索引 0 表示没有图。
+   */
+  spriteIndex: number;
 }
 
 export interface Rich4Map {
@@ -355,6 +381,7 @@ export function parseMap(data: Uint8Array): Rich4Map {
       type: data[o + 0x18] ?? 0,
       owner: data[o + 0x19] ?? 0,
       level: data[o + 0x1a] ?? 0,
+      facing: (data[o + 0x1b] ?? 0) & 7,
       priceStatus: data[o + 0x1c] ?? 0,
       landPrice: view.getUint16(o + 0x22, true),
       housePrice: view.getUint16(o + 0x24, true),
@@ -371,8 +398,11 @@ export function parseMap(data: Uint8Array): Rich4Map {
     const o = commercialOff + i * COMMERCIAL_SIZE;
     commercials.push({
       id: i,
+      x: view.getInt16(o + 0x00, true),
+      y: view.getInt16(o + 0x02, true),
       name: readName(data, o + 0x04, 0x14),
       stockIndex: data[o + 0x19] ?? 0,
+      spriteIndex: view.getUint16(o + 0x20, true),
     });
   }
 
@@ -381,7 +411,10 @@ export function parseMap(data: Uint8Array): Rich4Map {
     const o = landscapeOff + i * LANDSCAPE_SIZE;
     landscapes.push({
       id: i,
+      x: view.getInt16(o + 0x00, true),
+      y: view.getInt16(o + 0x02, true),
       name: readName(data, o + 0x04, 0x18),
+      spriteIndex: view.getUint16(o + 0x1a, true),
     });
   }
 

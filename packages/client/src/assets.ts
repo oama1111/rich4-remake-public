@@ -317,3 +317,68 @@ export function buildingImageIndex(facing: number, viewRotation = 0): number {
 export function chainStoreResource(globalMapId: number): number {
   return globalMapId + 0x4f;
 }
+
+/**
+ * 上市企业与特殊景观的精灵：两者共用一套编号。
+ *
+ * @source 地图加载 VA 0x00407ee4（企业，索引在 `commercial + 0x20`）
+ *         与 VA 0x00407f35（景观，索引在 `landscape + 0x1a`）：
+ * ```asm
+ * ax = word [记录 + 偏移]
+ * test ax, ax / je 跳过        ; 0 表示没有图
+ * load(map.mkf, ax + 0x26)     ; ★ 资源号 = 索引 + 38
+ * ```
+ * 实测八张地图的索引落在 134..255，对应资源 172..293，
+ * 与建筑（39..86）不重叠。
+ */
+export const SCENERY_RESOURCE_BASE = 0x26; // 38
+
+/** 企业/景观的精灵索引 → 资源号；索引 0 表示没有图 */
+export function sceneryResource(spriteIndex: number): number | null {
+  return spriteIndex > 0 ? spriteIndex + SCENERY_RESOURCE_BASE : null;
+}
+
+/**
+ * 设施（機場/港口等）的精灵。
+ *
+ * @source 地图加载 VA 0x00407e71 载入 **17 个**资源到 `0x48ae64` 起的数组：
+ * ```asm
+ * if (game_stage == 0)  base = 0x57            ; 87
+ * else                  base = game_map*17 + 0x68   ; 104 + 地图×17
+ * for (i = 0; i < 0x11; i++) [0x48ae64 + i*4] = load(map.mkf, base + i)
+ * ```
+ * 绘制时按 `facility.type` 走一张 5 路跳转表（VA 0x00409412），
+ * 把这 17 个槽分成三段：
+ *
+ * | type | 取槽 |
+ * |---|---|
+ * | 0 | 槽 0 |
+ * | 1 | 槽 `level` |
+ * | 2 | 槽 `5 + level` |
+ * | 3 | 槽 11 |
+ * | 4 | 槽 `11 + level` |
+ *
+ * 5 + 6 + 6 = 17，正好分完。
+ *
+ * ⚠️ 实测地图数据里 `facility.type` **恒为 0**（见 known-deviations 的
+ *   Q-FAC-1），故目前只会用到槽 0。其余分支照抄备用。
+ */
+export function facilitySheetBase(gameStage: number, gameMap: number): number {
+  return gameStage === 0 ? 0x57 : gameMap * 17 + 0x68;
+}
+
+/** 设施的槽号 —— 见 `facilitySheetBase` 的表 */
+export function facilitySlot(type: number, level: number): number {
+  switch (type) {
+    case 1:
+      return level;
+    case 2:
+      return 5 + level;
+    case 3:
+      return 11;
+    case 4:
+      return 11 + level;
+    default:
+      return 0;
+  }
+}
