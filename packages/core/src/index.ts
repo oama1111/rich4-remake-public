@@ -3,6 +3,7 @@ export * from './rng/watcom.ts';
 export * from './rng/policy.ts';
 export * from './loaders/map.ts';
 export * from './loaders/save.ts';
+export * from './loaders/savegame.ts';
 export * from './state/types.ts';
 export * from './state/actions.ts';
 export * from './state/reduce.ts';
