@@ -14,8 +14,9 @@ function player(over: Partial<Player> = {}): Player {
   return {
     index: 0, character: 0, whoPlays: WHO_PLAYS_HUMAN,
     nodeId: 1, lastNodeId: 0, direction: 0, trafficMethod: 0, ndices: 1,
-    cash: 0, moneyInBank: 0, loan: 0, points: 0,
+    cash: 0, moneyInBank: 0, loan: 0, specialFinance: 0, f44: 0, points: 0,
     blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 },
+    daysRejectedByBank: 0,
     godInfo: 0, cards: [], tools: new Array<number>(13).fill(0),
     alliedPlayer: 0, alliedDays: 0, ...over,
   };

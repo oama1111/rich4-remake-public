@@ -77,8 +77,14 @@ export interface Player {
   /** 银行存款（含特别融资） */
   moneyInBank: number;
   loan: number;
+  /** 特别融资 @source player_info +0x28 special_finance */
+  specialFinance: number;
+  /** TODO: semantics unknown @source player_info +0x2c —— 贷款还清时被清零 */
+  f44: number;
   points: number;
   blocking: BlockingDays;
+  /** 被银行拒绝放贷的剩余天数 @source player_info +0x3b days_rejected_by_bank */
+  daysRejectedByBank: number;
   /** 神明附身，见 data 的 GOD 常量 */
   godInfo: number;
   /** 手牌（卡片 id，1 基） */

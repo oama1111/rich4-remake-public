@@ -16,3 +16,5 @@ export * from './rules/setup.ts';
 export * from './rules/bankruptcy.ts';
 export * from './events/deck.ts';
 export * from './events/news.ts';
+export * from './events/fortune.ts';
+export * from './places/bank.ts';

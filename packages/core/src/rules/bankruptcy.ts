@@ -132,6 +132,8 @@ export function markPlayerBankrupt(player: Player): Player {
     cash: 0,
     moneyInBank: 0,
     loan: 0,
+    specialFinance: 0,
+    f44: 0,
     points: 0,
     blocking: {
       inHotel: 0,
@@ -141,6 +143,7 @@ export function markPlayerBankrupt(player: Player): Player {
       sleeping: 0,
       sleepWalking: 0,
     },
+    daysRejectedByBank: 0,
     godInfo: 0,
     alliedPlayer: 0,
     alliedDays: 0,

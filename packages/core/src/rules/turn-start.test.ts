@@ -26,6 +26,8 @@ function makePlayer(over: Partial<Player> = {}): Player {
     cash: 100000,
     moneyInBank: 0,
     loan: 0,
+    specialFinance: 0,
+    f44: 0,
     points: 0,
     blocking: {
       inHotel: 0,
@@ -35,6 +37,7 @@ function makePlayer(over: Partial<Player> = {}): Player {
       sleeping: 0,
       sleepWalking: 0,
     },
+    daysRejectedByBank: 0,
     godInfo: 0,
     cards: [],
     tools: new Array<number>(13).fill(0),
