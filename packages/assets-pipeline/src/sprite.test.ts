@@ -175,3 +175,43 @@ d('encodePng', () => {
     throw new Error('未找到 SPR 资源');
   });
 });
+
+describe('SMP 抠黑', () => {
+  const MAPMKF = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/map.mkf';
+  const has = existsSync(MAPMKF) ? it : it.skip;
+
+  has('★ 特殊格装饰图的纯黑占两成多，且集中在四角 —— 那是抠图用的底色', () => {
+    const arc = new MkfArchive(new Uint8Array(readFileSync(MAPMKF)));
+    const data = arc.read(24);
+    const sheet = parseSpriteSheet(data);
+    expect(sheet).not.toBeNull();
+    if (sheet === null) return;
+    expect(sheet.signature).toBe('SMP');
+
+    const img = decodeImage(sheet, data, 0, { colorKeyBlack: true });
+    const total = img.width * img.height;
+    let clear = 0;
+    for (let i = 3; i < img.rgba.length; i += 4) if (img.rgba[i] === 0) clear++;
+    // 与 SPR 用索引 0 抠图时的占比同一量级
+    expect(clear / total).toBeGreaterThan(0.15);
+    expect(clear / total).toBeLessThan(0.45);
+
+    // 四角必须被抠掉（椭圆图案的外侧）
+    const alphaAt = (x: number, y: number): number => img.rgba[(y * img.width + x) * 4 + 3]!;
+    expect(alphaAt(0, 0)).toBe(0);
+    expect(alphaAt(img.width - 1, 0)).toBe(0);
+    expect(alphaAt(0, img.height - 1)).toBe(0);
+    expect(alphaAt(img.width - 1, img.height - 1)).toBe(0);
+    // 正中必须留着（图案本体）
+    expect(alphaAt(img.width >> 1, img.height >> 1)).toBe(255);
+  });
+
+  has('★ 不开抠黑时仍然全不透明 —— 默认行为没变', () => {
+    const arc = new MkfArchive(new Uint8Array(readFileSync(MAPMKF)));
+    const data = arc.read(24);
+    const sheet = parseSpriteSheet(data);
+    if (sheet === null) return;
+    const img = decodeImage(sheet, data, 0);
+    for (let i = 3; i < img.rgba.length; i += 4 * 337) expect(img.rgba[i]).toBe(255);
+  });
+});

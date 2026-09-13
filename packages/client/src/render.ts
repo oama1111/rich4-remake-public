@@ -10,7 +10,7 @@
 import type { GameState } from '@rich4/core';
 import type { MapNode, Rich4Map } from '@rich4/core';
 import type { Sprite, SpriteCache } from './assets.ts';
-import { tokenResource } from './assets.ts';
+import { DECOR_RESOURCE, decorImageIndex, tokenResource } from './assets.ts';
 
 /** 玩家棋子的颜色——原版每人一色，此处先用可区分的四色占位 */
 const PLAYER_COLORS = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
@@ -140,13 +140,18 @@ export class BoardRenderer {
    * 渲染是同步的而解码是异步的（createImageBitmap），故这里用
    * 「先画能画的，解码完再标脏重画」的策略，而不是让整帧等在 await 上。
    */
-  #sprite(archive: 'Data.mkf' | 'Panel.mkf' | 'map.mkf' | 'jump.mkf', res: number, idx: number): Sprite | null {
-    const key = `${archive}:${res}:${idx}`;
+  #sprite(
+    archive: 'Data.mkf' | 'Panel.mkf' | 'map.mkf' | 'jump.mkf',
+    res: number,
+    idx: number,
+    colorKeyBlack = false,
+  ): Sprite | null {
+    const key = `${archive}:${res}:${idx}:${colorKeyBlack ? 'k' : ''}`;
     const hit = this.#ready.get(key);
     if (hit !== undefined) return hit;
     if (!this.#pending.has(key)) {
       this.#pending.add(key);
-      void this.#sprites.get(archive, res, idx).then((s) => {
+      void this.#sprites.get(archive, res, idx, colorKeyBlack).then((s) => {
         this.#ready.set(key, s);
         this.#pending.delete(key);
         this.#dirty = true;
@@ -178,6 +183,7 @@ export class BoardRenderer {
     }
 
     this.#drawEdges(map, camera);
+    this.#drawDecor(map, camera);
     this.#drawNodes(map, state, camera, hoverNode);
     this.#drawPlayers(map, state, camera);
   }
@@ -199,6 +205,30 @@ export class BoardRenderer {
       }
     }
     ctx.stroke();
+  }
+
+  /**
+   * 特殊格的装饰图（PARK / NEWS / 命運 / BANK …）。
+   *
+   * 画在连线之上、节点之下：原版这些图就是铺在地上的，棋子踩在上面。
+   */
+  #drawDecor(map: Rich4Map, cam: Camera): void {
+    const ctx = this.#ctx;
+    for (const n of map.nodes) {
+      const idx = decorImageIndex(n.decorIndex);
+      if (idx === null) continue;
+      // ★ 装饰图是 SMP，靠抠掉纯黑来融进地面（见 assets-pipeline 的 DecodeOptions）
+      const sp = this.#sprite('map.mkf', DECOR_RESOURCE, idx, true);
+      if (sp === null) continue;
+      const p = nodeToScreen(n, cam);
+      ctx.drawImage(
+        sp.bitmap,
+        p.x - sp.anchorX * cam.scale,
+        p.y - sp.anchorY * cam.scale,
+        sp.width * cam.scale,
+        sp.height * cam.scale,
+      );
+    }
   }
 
   #drawNodes(map: Rich4Map, state: GameState, cam: Camera, hover: number | null): void {

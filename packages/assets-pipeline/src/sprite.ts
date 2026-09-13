@@ -61,13 +61,35 @@ export function parsePalette(palette: Uint8Array): Uint8Array {
  *              否则像素已被转成 RGB565，色彩会错）
  * @param index 图像下标
  */
-export function decodeImage(sheet: SpriteSheet, data: Uint8Array, index: number): DecodedImage {
+export interface DecodeOptions {
+  /**
+   * 把 SMP 里的**纯黑**（RGB555 值 0）当作透明色。
+   *
+   * ★ SMP 本身没有 alpha 通道，但叠在地图上的那些图（特殊格装饰、
+   *   `map.mkf` 资源 24 等）确实需要抠掉底色。证据两条：
+   *   1. 资源 24 的每张图有 22%~27% 是**纯黑**，且集中在四角，
+   *      恰好把中间的椭圆图案框出来——与 SPR 用索引 0 抠图时
+   *      18%~29% 的透明占比是同一个量级。
+   *   2. 原版截图里这些椭圆是**融进草地**的，没有黑框。
+   *
+   * ⚠️ 对**整屏背景**那类 SMP（银行内景、640×480 的底图）不要开：
+   *   那些图里的黑是真的黑。故这是个显式开关，不是默认行为。
+   */
+  colorKeyBlack?: boolean;
+}
+
+export function decodeImage(
+  sheet: SpriteSheet,
+  data: Uint8Array,
+  index: number,
+  options: DecodeOptions = {},
+): DecodedImage {
   const info = sheet.images[index];
   if (info === undefined) throw new RangeError(`图像下标越界: ${index}`);
 
   return sheet.signature === 'SPR'
     ? decodeSpr(info, data, sheet.palette)
-    : decodeSmp(info, data);
+    : decodeSmp(info, data, options.colorKeyBlack ?? false);
 }
 
 /** SPR：8bpp 调色板，索引 0 透明 */
@@ -96,8 +118,8 @@ function decodeSpr(info: GraphInfo, data: Uint8Array, palette: Uint8Array | null
   return { width, height, anchorX: info.x, anchorY: info.y, rgba };
 }
 
-/** SMP：原始 16bpp RGB555，不透明 */
-function decodeSmp(info: GraphInfo, data: Uint8Array): DecodedImage {
+/** SMP：原始 16bpp RGB555；默认不透明，可选把纯黑抠成透明 */
+function decodeSmp(info: GraphInfo, data: Uint8Array, colorKeyBlack: boolean): DecodedImage {
   const { width, height, gsize, dataOffset } = info;
   const count = width * height;
   if (gsize !== count * 2) {
@@ -109,6 +131,8 @@ function decodeSmp(info: GraphInfo, data: Uint8Array): DecodedImage {
 
   for (let p = 0; p < count; p++) {
     const c = view.getUint16(dataOffset + p * 2, true);
+    // @see DecodeOptions.colorKeyBlack —— RGB555 值 0 即纯黑
+    if (colorKeyBlack && c === 0) continue; // 留作 (0,0,0,0)
     const o = p * 4;
     rgba[o + 0] = expand5((c >> 10) & 0x1f);
     rgba[o + 1] = expand5((c >> 5) & 0x1f);

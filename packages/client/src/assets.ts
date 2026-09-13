@@ -95,9 +95,19 @@ export class SpriteCache {
     return sheet;
   }
 
-  /** 取一张精灵；资源或图号不存在时返回 null 而不是抛错 */
-  async get(archive: ArchiveName, resource: number, index: number): Promise<Sprite | null> {
-    const key = `${archive}:${resource}:${index}`;
+  /**
+   * 取一张精灵；资源或图号不存在时返回 null 而不是抛错。
+   *
+   * `colorKeyBlack` 用于叠在地图上的 SMP 图（特殊格装饰等）——
+   * 见 assets-pipeline 的 `DecodeOptions`。
+   */
+  async get(
+    archive: ArchiveName,
+    resource: number,
+    index: number,
+    colorKeyBlack = false,
+  ): Promise<Sprite | null> {
+    const key = `${archive}:${resource}:${index}:${colorKeyBlack ? 'k' : ''}`;
     const hit = this.#sprites.get(key);
     if (hit !== undefined) return hit;
 
@@ -108,7 +118,7 @@ export class SpriteCache {
       return null;
     }
 
-    const img = decodeImage(sheet, data, index);
+    const img = decodeImage(sheet, data, index, { colorKeyBlack });
     if (img.width === 0 || img.height === 0) {
       this.#sprites.set(key, null);
       return null;
@@ -207,4 +217,43 @@ export function walkResources(character: number): [number, number] {
 /** 角色头像 —— `map.mkf` 资源号，7 张表情，取第 0 张即可 */
 export function portraitResource(character: number): number {
   return 27 + character;
+}
+
+// ============================================================
+//  特殊格装饰
+// ============================================================
+
+/**
+ * 特殊格的装饰图都在 `map.mkf` 资源 24（共 58 张）。
+ *
+ * ★ 节点的 `decorIndex` 就是**这 58 张里的 1 基下标**——
+ *   全部八张地图上 `decorIndex` 的最大值恰好是 58，与图数严丝合缝。
+ *
+ *   图是**成对**排列的：偶数号是普通样式，奇数号是外圈带粉色光环的样式。
+ *   多数特殊格取 `decorIndex ∈ {种类×2−1, 种类×2}` 这一对中的一个，
+ *   逐对对上了截图里的图案：
+ *
+ *   | 图对 | 图案 | 对应 specialKind |
+ *   |---|---|---|
+ *   | 0/1 | PARK | 1 公園 |
+ *   | 2/3 | NEWS | 2 新聞 |
+ *   | 4/5 | 藍色問號 | 3 命運 |
+ *   | 6/7 | 鐵欄杆 | 4 監獄 |
+ *   | 8/9 | 紅十字 | 5 醫院 |
+ *   | 10..15 | 三种 GAME | 6/7/8 三个小游戏 |
+ *   | 16/17 | 樂透彩球 | 9 樂透 |
+ *   | 18..23 | $50 / $30 / $10 | 10/11/12 點數 |
+ *   | 24/25 | CARD | 13 卡片 |
+ *   | 26/27 | BANK | 14 銀行 |
+ *   | 28/29 | On sale ITEM | 15 百貨公司 |
+ *   | 30/31 | 六芒星 | 16 魔法屋 |
+ *   | 37..57 | 行星与星座 | 12（星座/行星格与點數共用种类号） |
+ *
+ *   锚点在图**正中**（124×92 的锚点是 (62,46)），即对齐到格心。
+ */
+export const DECOR_RESOURCE = 24;
+
+/** 节点的 `decorIndex` → 资源 24 里的图号；0 表示无装饰 */
+export function decorImageIndex(decorIndex: number): number | null {
+  return decorIndex > 0 ? decorIndex - 1 : null;
 }
