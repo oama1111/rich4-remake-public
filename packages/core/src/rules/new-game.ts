@@ -21,8 +21,8 @@ import { WatcomRng } from '../rng/watcom.ts';
 import { CONFINEMENT_SLOTS } from './confinement.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import {
-  MAX_TOOL_ID,
   STARTING_TOOLS,
+  initialToolStock,
   emptyTools,
   giveTool,
 } from './tools.ts';
@@ -149,10 +149,9 @@ export function newGame(opts: NewGameOptions): GameState {
 
   // ★ 开局给每人发 機器娃娃/路障/地雷/定時炸彈 各一个
   //   @source 开局循环 VA 0x0040727f 起对每个在场玩家的四次 give_tool
-  //   ⚠️ 库存初值未知，故设为足够大，行为等同不限量——
-  //     宁可不限，也不要错误地拒发。
+  //   库存初值取自道具表（编号 1..8 各 10 份，9..13 不限量）
   let tools = emptyTools(players.length);
-  let toolStock = new Array<number>(MAX_TOOL_ID + 1).fill(Number.MAX_SAFE_INTEGER);
+  let toolStock = initialToolStock();
   for (let i = 0; i < players.length; i++) {
     for (const toolId of STARTING_TOOLS) {
       const r = giveTool(tools, toolStock, i, toolId);

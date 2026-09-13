@@ -6,6 +6,7 @@
  */
 
 import type { Player } from '../state/types.ts';
+import { TOOLS } from '@rich4/data';
 
 /**
  * 每个玩家的道具槽位数。
@@ -180,4 +181,20 @@ export function takeTool(
     nextStock[toolId] = (nextStock[toolId] ?? 0) + 1;
   }
   return { tools: nextTools, stock: nextStock, given: true };
+}
+
+/**
+ * 全局库存的初始值。
+ *
+ * @source `rich4_tool_table.c` 每项的第二个字段：
+ *   编号 1..8 各 **10** 份，9..13 为 0。
+ *
+ * ★ 9..13 的 0 **不表示稀缺**——`give_tool` 对编号 > 8 根本不查库存
+ *   （`cmp edx, 8 / jg 跳过`），故它们实际是**不限量**的。
+ *   真正有限的是前 8 个。
+ */
+export function initialToolStock(): number[] {
+  const stock = new Array<number>(MAX_TOOL_ID + 1).fill(0);
+  for (const t of TOOLS) stock[t.id] = t.initAmount;
+  return stock;
 }

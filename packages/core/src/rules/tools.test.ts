@@ -15,6 +15,8 @@ import {
   giveTool,
   toolCount,
   toolsOf,
+  initialToolStock,
+  takeTool,
 } from './tools.ts';
 
 const stock = (n = 99) => new Array<number>(MAX_TOOL_ID + 1).fill(n);
@@ -115,5 +117,77 @@ describe('toolsOf', () => {
     t = giveTool(t, stock(), 1, 7).tools;
     expect([...toolsOf(t, 1).entries()].sort((a, b) => a[0] - b[0])).toEqual([[2, 2], [7, 1]]);
     expect(toolsOf(t, 0).size).toBe(0);
+  });
+});
+
+describe('★ 全局库存的真实语义', () => {
+  it('编号 1..8 各 10 份，9..13 为 0', () => {
+    const s = initialToolStock();
+    for (let id = 1; id <= 8; id++) expect(s[id], `道具${id}`).toBe(10);
+    for (let id = 9; id <= 13; id++) expect(s[id], `道具${id}`).toBe(0);
+  });
+
+  it('★ 9..13 的 0 不表示稀缺——它们不受库存限制，要多少有多少', () => {
+    let t = emptyTools(2);
+    let s = initialToolStock();
+    // 核子飛彈库存是 0，但照发不误
+    for (let i = 0; i < 9; i++) {
+      const r = giveTool(t, s, 0, 13);
+      t = r.tools;
+      s = r.stock;
+    }
+    expect(toolCount(t, 0, 13)).toBe(9); // 一直发到上限 9
+  });
+
+  it('★ 前 8 个才是真正有限的：10 份发完就没了', () => {
+    let t = emptyTools(4);
+    let s = initialToolStock();
+    let given = 0;
+    // 分给 4 个玩家，每人最多 9 个，但库存只有 10
+    for (let round = 0; round < 20; round++) {
+      for (let p = 0; p < 4; p++) {
+        const r = giveTool(t, s, p, 2);
+        if (r.given) given++;
+        t = r.tools;
+        s = r.stock;
+      }
+    }
+    expect(given).toBe(10);
+    expect(s[2]).toBe(0);
+  });
+
+  it('★ 上限 9 与库存 10 相互作用：一个人吃不完一种道具', () => {
+    let t = emptyTools(3);
+    let s = initialToolStock();
+    for (let i = 0; i < 15; i++) {
+      const r = giveTool(t, s, 0, 2);
+      t = r.tools;
+      s = r.stock;
+    }
+    // 玩家 0 被上限卡在 9 个，库存还剩 1
+    expect(toolCount(t, 0, 2)).toBe(9);
+    expect(s[2]).toBe(1);
+    // 剩下那 1 份别人还能拿
+    expect(giveTool(t, s, 1, 2).given).toBe(true);
+  });
+
+  it('★ 收回会把库存还回去，可以再发', () => {
+    let t = emptyTools(3);
+    let s = initialToolStock();
+    // 9 个给玩家 0、1 个给玩家 1 —— 正好把 10 份库存用光
+    for (let i = 0; i < 9; i++) {
+      const r = giveTool(t, s, 0, 2);
+      t = r.tools;
+      s = r.stock;
+    }
+    const last = giveTool(t, s, 1, 2);
+    t = last.tools;
+    s = last.stock;
+    expect(s[2]).toBe(0);
+    expect(giveTool(t, s, 2, 2).given).toBe(false); // 没库存了
+
+    const back = takeTool(t, s, 0, 2);
+    expect(back.stock[2]).toBe(1);
+    expect(giveTool(back.tools, back.stock, 2, 2).given).toBe(true);
   });
 });
