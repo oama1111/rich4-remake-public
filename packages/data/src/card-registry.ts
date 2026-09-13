@@ -75,7 +75,7 @@ export const CARD_IMPLS: readonly CardImpl[] = [
   { id: 11, name: '怪獸卡', va: 0x00443917, selection: 'ui',   selectionParam: 0xe0c0506, passive: false, status: 'todo' },
   { id: 12, name: '拆除卡', va: 0x00443b0f, selection: 'ui',   selectionParam: 0xe0c0626, passive: false, status: 'todo' },
   { id: 13, name: '搶奪卡', va: 0x00443e3d, selection: 'ui',   selectionParam: 0xe0c0410, passive: false, status: 'todo' },
-  { id: 14, name: '停留卡', va: 0x00443f80, selection: 'ui',   selectionParam: 0xe0c0010, passive: false, status: 'todo' },
+  { id: 14, name: '停留卡', va: 0x00443f80, selection: 'ui',   selectionParam: 0xe0c0010, passive: false, status: 'done' },
   { id: 15, name: '冬眠卡', va: 0x004440ea, selection: 'none', selectionParam: null,       passive: false, status: 'done' },
   { id: 16, name: '夢遊卡', va: 0x004441dc, selection: 'ui',   selectionParam: 0xe0c0710, passive: false, status: 'todo' },
   { id: 17, name: '陷害卡', va: 0x004444bf, selection: 'ui',   selectionParam: 0xe0c0710, passive: false, status: 'todo' },

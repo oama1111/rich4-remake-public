@@ -30,6 +30,7 @@ export function makePlayer(over: Partial<Player> = {}): Player {
     blocking: {
       inHotel: 0, disappearing: 0, inPrison: 0,
       inHospital: 0, sleeping: 0, sleepWalking: 0,
+      stopping: 0, tortoiseWalking: 0,
     },
     daysRejectedByBank: 0,
     godInfo: 0,

@@ -55,6 +55,10 @@ export interface BlockingDays {
   sleeping: number;
   /** 梦游中 @source +0x37 —— 不阻碍回合，但会自动走子 */
   sleepWalking: number;
+  /** 停留中 @source +0x38 days_stopping —— 停留卡设为 1 */
+  stopping: number;
+  /** 乌龟行走中 @source +0x39 days_tortoise_walking */
+  tortoiseWalking: number;
 }
 
 export interface Player {
