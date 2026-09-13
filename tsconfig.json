@@ -1,8 +1,20 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/core" },
-    { "path": "./packages/data" },
-    { "path": "./packages/assets-pipeline" }
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/data"
+    },
+    {
+      "path": "./packages/assets-pipeline"
+    },
+    {
+      "path": "./packages/server"
+    },
+    {
+      "path": "./packages/client"
+    }
   ]
 }

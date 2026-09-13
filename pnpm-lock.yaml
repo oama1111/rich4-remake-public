@@ -50,7 +50,14 @@ importers:
 
   packages/data: {}
 
-  packages/server: {}
+  packages/server:
+    dependencies:
+      '@rich4/core':
+        specifier: workspace:*
+        version: link:../core
+      '@rich4/data':
+        specifier: workspace:*
+        version: link:../data
 
 packages:
 
