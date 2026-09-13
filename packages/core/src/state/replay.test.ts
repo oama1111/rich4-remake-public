@@ -28,7 +28,7 @@ interface Recorded {
 /** 跑一局并把 action 序列录下来 */
 function record(seed: number, maxTurns: number): Recorded {
   const map = loadMap();
-  const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
+  const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
   let state = newGame({
     map,
     players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
@@ -51,7 +51,7 @@ function record(seed: number, maxTurns: number): Recorded {
 describe('★ M2 验收：确定性重放', () => {
   run('★ 1000 局同种子同序列，指纹逐局一致', () => {
     const map = loadMap();
-    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
+    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
     // 一局跑 12 回合、跑 1000 遍 —— 覆盖掷骰/走子/买地/事件/日期推进/股市
     const once = (): string => {
       let s = newGame({
@@ -77,7 +77,7 @@ describe('★ M2 验收：确定性重放', () => {
 
   run('★ 录下的 action 序列重放，结果与原局逐字段一致', () => {
     const map = loadMap();
-    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
+    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
     const { final, log } = record(4242, 200);
 
     const fresh = newGame({
@@ -99,7 +99,7 @@ describe('★ M2 验收：确定性重放', () => {
 
   run('★ 从中途切开重放 —— 前半段 + 后半段 = 整段', () => {
     const map = loadMap();
-    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
+    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
     const { final, log } = record(777, 150);
     const fresh = (): GameState =>
       newGame({

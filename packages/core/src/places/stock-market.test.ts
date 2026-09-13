@@ -10,6 +10,7 @@ import {
   MIN_PRICE,
   applyPriceTick,
   applyStockNews,
+  bindCommercials,
   newStockMarket,
   newsTrend,
   refreshTradableShares,
@@ -355,5 +356,36 @@ describe('流通量扰动', () => {
   it('是整数', () => {
     const m = refreshTradableShares(market([stock({ shares: 5137 })]), new WatcomRng(77));
     expect(Number.isInteger(m.stocks[0]!.f10)).toBe(true);
+  });
+});
+
+describe('股票与地图企业的绑定', () => {
+  it('★ 表里的 hasCommercial 会被改写成 1 基企业序号', () => {
+    // @source _rich4_init_stock_commercial VA 0x00428cb1
+    const stocks = [
+      stock({ commercialIndex: 1 }), // 该股有企业
+      stock({ commercialIndex: 0 }), // 没有
+      stock({ commercialIndex: 1 }), // 有，但地图上找不到对应企业
+    ];
+    bindCommercials(stocks, [
+      { id: 7, stockIndex: 0 },
+      { id: 9, stockIndex: 5 },
+    ]);
+    expect(stocks[0]!.commercialIndex).toBe(7);
+    expect(stocks[1]!.commercialIndex).toBe(0);
+    // 找不到对应企业的要清零，否则会拿 1 当企业序号去查
+    expect(stocks[2]!.commercialIndex).toBe(0);
+  });
+
+  it('标了 0 的股票不参与绑定', () => {
+    const stocks = [stock({ commercialIndex: 0 })];
+    bindCommercials(stocks, [{ id: 3, stockIndex: 0 }]);
+    expect(stocks[0]!.commercialIndex).toBe(0);
+  });
+
+  it('★ 不给企业表时各股都按「无企业」处理', () => {
+    const m = newStockMarket(0);
+    // 数值表里 hasCommercial 为 1 的股票此时仍是 1 —— 那是未绑定的原值
+    expect(m.stocks.every((s) => s.commercialIndex === 0 || s.commercialIndex === 1)).toBe(true);
   });
 });

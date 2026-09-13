@@ -239,6 +239,17 @@ export interface CommercialInfo {
    * ```
    */
   spriteIndex: number;
+  /**
+   * 企业资产额 @source commercial +0x24 (u32)
+   *
+   * ★ 股市的**均值回归锚点**就是它：`fcn_004291d6` 在该股有对应企业时取
+   *   `commercial[idx].field_0x24 / 10000` 当参考价，没有企业才退回初始股价
+   *   （见 places/stock-market.ts）。
+   *
+   *   实测能对上：臺灣人壽 400000 → 40，与股票表里的初始价 40 一致；
+   *   地图 1 的四家企业资产额恰好都是初始股价 × 10000 × 0.8。
+   */
+  assetValue: number;
 }
 
 /** 特殊景观（阿里山、佛光山等） */
@@ -403,6 +414,7 @@ export function parseMap(data: Uint8Array): Rich4Map {
       name: readName(data, o + 0x04, 0x14),
       stockIndex: data[o + 0x19] ?? 0,
       spriteIndex: view.getUint16(o + 0x20, true),
+      assetValue: u32(o + 0x24),
     });
   }
 

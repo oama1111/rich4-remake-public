@@ -145,8 +145,46 @@ export interface StockMarketState {
   index: number;
 }
 
-/** 从数值表建一局的行情。`mapId` 决定取哪 12 支。 */
-export function newStockMarket(mapId: number): StockMarketState {
+/**
+ * 把股票与地图上的上市企业绑定。
+ *
+ * @source `_rich4_init_stock_commercial` VA 0x00428cb1：
+ * ```asm
+ * for (esi = 0; esi < 12; esi++) {
+ *     if (word [stocks + esi*36 + 4] == 0) continue;   ; 该股没有对应企业
+ *     for (edx = 1; edx <= num_commercials; edx++)
+ *         if (byte [commercial(edx) + 0x19] == esi) {  ; 企业记的股票下标
+ *             word [stocks + esi*36 + 4] = edx;        ; ★ 改写成 1 基企业序号
+ *             break-ish
+ *         }
+ * }
+ * ```
+ * 也就是说数值表里的 `hasCommercial`（0/1）在开局时会被**改写**成企业序号，
+ * 之后 `commercialIndex` 才是真正可用的下标。
+ */
+export function bindCommercials(
+  stocks: StockState[],
+  commercials: readonly { id: number; stockIndex: number }[],
+): void {
+  for (let i = 0; i < stocks.length; i++) {
+    const s = stocks[i]!;
+    // @source cmp word [+4], 0 / je —— 表里标了 0 的股票没有对应企业
+    if (s.commercialIndex === 0) continue;
+    const c = commercials.find((x) => x.stockIndex === i);
+    s.commercialIndex = c?.id ?? 0;
+  }
+}
+
+/**
+ * 从数值表建一局的行情。`mapId` 决定取哪 12 支。
+ *
+ * `commercials` 给出后会做一次 `bindCommercials`——不给则各股都按
+ * 「没有对应企业」处理，均值回归退回用初始股价当锚点。
+ */
+export function newStockMarket(
+  mapId: number,
+  commercials?: readonly { id: number; stockIndex: number }[],
+): StockMarketState {
   const base = mapId * STOCKS_PER_MAP;
   const stocks: StockState[] = [];
   for (let i = 0; i < STOCKS_PER_MAP; i++) {
@@ -167,6 +205,8 @@ export function newStockMarket(mapId: number): StockMarketState {
       shock: t.f32,
     });
   }
+  if (commercials !== undefined) bindCommercials(stocks, commercials);
+
   return {
     stocks,
     day: 0,

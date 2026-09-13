@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, resolveNodeType, SPECIAL_KIND, NODE_SIZE } from './map.ts';
+import { stocksOfMap } from '@rich4/data';
 
 const MAP_DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map';
 const hasAssets = existsSync(MAP_DIR);
@@ -185,5 +186,63 @@ describe('resolveNodeType', () => {
     expect(resolveNodeType(4003)).toEqual({ kind: 'facility', index: 3 });
     expect(resolveNodeType(6002)).toEqual({ kind: 'commercial', index: 2 });
     expect(resolveNodeType(8001)).toEqual({ kind: 'landscape', index: 1 });
+  });
+});
+
+describe('★ 上市企业与特殊景观', () => {
+  const have = hasAssets ? it : it.skip;
+
+  have('企业带坐标、股票下标、精灵索引与资产额', () => {
+    const m = parseMap(new Uint8Array(readFileSync(`${MAP_DIR}/0001.bin`)));
+    expect(m.commercials.length).toBeGreaterThan(0);
+    for (const c of m.commercials) {
+      expect(c.x).toBeGreaterThan(0);
+      expect(c.y).toBeGreaterThan(0);
+      expect(c.assetValue).toBeGreaterThan(0);
+      // 精灵索引落在「索引 + 38 = 资源号」那一段
+      expect(c.spriteIndex).toBeGreaterThan(100);
+    }
+  });
+
+  have('★ 企业资产额 ÷ 10000 与对应股票的初始价同量级 —— 它就是均值回归的锚', () => {
+    const m = parseMap(new Uint8Array(readFileSync(`${MAP_DIR}/0001.bin`)));
+    const stocks = stocksOfMap(0);
+    for (const c of m.commercials) {
+      const s = stocks[c.stockIndex];
+      if (s === undefined) continue;
+      const anchor = c.assetValue / 10_000;
+      // 实测两者比值在 0.8..1.0 之间（地图 1 的四家恰好都是 0.8）
+      expect(anchor / s.price).toBeGreaterThan(0.5);
+      expect(anchor / s.price).toBeLessThanOrEqual(1.2);
+    }
+  });
+
+  have('景观带坐标与精灵索引', () => {
+    const m = parseMap(new Uint8Array(readFileSync(`${MAP_DIR}/0001.bin`)));
+    expect(m.landscapes.length).toBeGreaterThan(0);
+    const named = m.landscapes.filter((l) => l.name.length > 0);
+    expect(named.length).toBeGreaterThan(0);
+    for (const l of named) {
+      expect(l.spriteIndex).toBeGreaterThan(0);
+    }
+  });
+
+  have('★ 地块与设施都带 0..7 的朝向', () => {
+    const m = parseMap(new Uint8Array(readFileSync(`${MAP_DIR}/0001.bin`)));
+    for (const l of m.lands) {
+      expect(l.facing).toBeGreaterThanOrEqual(0);
+      expect(l.facing).toBeLessThan(8);
+    }
+    for (const f of m.facilities) {
+      expect(f.facing).toBeGreaterThanOrEqual(0);
+      expect(f.facing).toBeLessThan(8);
+    }
+    // 同一区的地块朝向一致 —— 这正是先前把它误当成「风格号」的原因
+    const byName = new Map<string, Set<number>>();
+    for (const l of m.lands) {
+      if (!byName.has(l.name)) byName.set(l.name, new Set());
+      byName.get(l.name)!.add(l.facing);
+    }
+    for (const [name, set] of byName) expect(set.size, `${name} 的朝向不一致`).toBe(1);
   });
 });

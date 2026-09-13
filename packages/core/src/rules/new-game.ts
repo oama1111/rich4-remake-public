@@ -192,7 +192,7 @@ export function newGame(opts: NewGameOptions): GameState {
     tools,
     toolStock,
     // ★ 12 支股票取自本地图那一段（`地图编号 × 12`）
-    market: newStockMarket(globalMapId),
+    market: newStockMarket(globalMapId, map.commercials),
     // 开局全员空仓 @source `_rich4_player_stocks` 全零
     holdings: players.map(() => Array.from({ length: STOCKS_PER_MAP }, () => ({ ...EMPTY_HOLDING }))),
   };

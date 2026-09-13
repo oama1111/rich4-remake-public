@@ -393,7 +393,7 @@ async function boot(): Promise<void> {
 
     const globalMapId = 0;
     map = parseMap(readMapData(archives, globalMapId));
-    topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
+    topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
 
     state = newGame({
       map,

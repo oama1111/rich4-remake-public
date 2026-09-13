@@ -14,7 +14,7 @@ import type { GameState, Player } from './types.ts';
 import { isAlive } from './types.ts';
 import { WatcomRng, rollDice } from '../rng/watcom.ts';
 import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
-import type { MapNode, LandInfo, FacilityInfo } from '../loaders/map.ts';
+import type { MapNode, LandInfo, FacilityInfo, CommercialInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent } from '../rules/rent.ts';
 import { receiveMoney, transferMoney } from '../rules/payment.ts';
@@ -73,6 +73,8 @@ export interface MapTopology {
   lands?: readonly LandInfo[];
   /** 设施表 —— 有了它才能处理设施落点 */
   facilities?: readonly FacilityInfo[];
+  /** 上市企业表 —— 股市的均值回归锚点要用它的资产额 */
+  commercials?: readonly CommercialInfo[];
 }
 
 /** 把静态地块模板与状态中的实时归属合并，得到当前有效的地块 */
@@ -547,18 +549,15 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
 }
 
 /**
- * 股票对应的地图企业资产额。
+ * 股票对应的地图企业资产额 —— 股市均值回归的锚点。
  *
- * ⚠️ 原版取 `commercial[idx].field_0x24`（VA 0x00429279）。本项目的地图
- * 解析器尚未给上市企业单独建表（`loaders/map.ts` 只解出房产与商业地块），
- * 故此处返回 null = 「查不到企业」，行情退回用初始股价当参考价。
- * 这是**明确的降级**而非猜测：接上企业表之前，均值回归的锚点会偏离原版。
- * 登记为 Q-STOCK-1。
+ * @source 原版取 `commercial[idx].field_0x24`（VA 0x00429279），
+ *   下标是 `_rich4_init_stock_commercial` 写进 `stocks_on_map+4` 的
+ *   **1 基**企业序号。
  */
 function commercialValueOf(topo: MapTopology, commercialIndex: number): number | null {
-  void topo;
-  void commercialIndex;
-  return null;
+  const c = topo.commercials?.find((x) => x.id === commercialIndex);
+  return c === undefined ? null : c.assetValue;
 }
 
 /**

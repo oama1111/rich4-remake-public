@@ -34,7 +34,7 @@ interface Played {
 /** 四人电脑对局，一路跑到分出胜负或用光回合预算 */
 function playFullGame(seed: number, maxTurns = 4000): Played {
   const map = loadMap();
-  const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
+  const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
   let state = newGame({
     map,
     players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),

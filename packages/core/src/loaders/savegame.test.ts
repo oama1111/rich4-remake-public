@@ -47,7 +47,7 @@ function played(seed: number, turns: number): { state: GameState; topo: ReturnTy
 }
 
 function topoOf(map: ReturnType<typeof loadMap>) {
-  return { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
+  return { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
 }
 
 describe('新格式', () => {
