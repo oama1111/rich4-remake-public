@@ -64,7 +64,7 @@ export const SELECTION_GROUPS: Readonly<Record<number, string>> = {
 export const CARD_IMPLS: readonly CardImpl[] = [
   { id: 1,  name: '均富卡', va: 0x004420d8, selection: 'none', selectionParam: null,       passive: false, status: 'done' },
   { id: 2,  name: '均貧卡', va: 0x004421b4, selection: 'ui',   selectionParam: 0xe0c0410, passive: false, status: 'todo' },
-  { id: 3,  name: '購地卡', va: 0x00442325, selection: 'none', selectionParam: null,       passive: false, status: 'todo' },
+  { id: 3,  name: '購地卡', va: 0x00442325, selection: 'none', selectionParam: null,       passive: false, status: 'done' },
   { id: 4,  name: '換地卡', va: 0x00442622, selection: 'ui',   selectionParam: 0xe0c0202, passive: false, status: 'todo' },
   { id: 5,  name: '換屋卡', va: 0x00442b02, selection: 'ui',   selectionParam: 0xe0c0202, passive: false, status: 'todo' },
   { id: 6,  name: '轉向卡', va: 0x00442f4d, selection: 'ui',   selectionParam: 0xe0c0010, passive: false, status: 'todo' },
@@ -92,7 +92,7 @@ export const CARD_IMPLS: readonly CardImpl[] = [
   { id: 27, name: '漲價卡', va: 0x0044542d, selection: 'ui',   selectionParam: 0xe0c0006, passive: false, status: 'todo' },
   { id: 28, name: '查封卡', va: 0x00445593, selection: 'ui',   selectionParam: 0xe0c0006, passive: false, status: 'todo' },
   { id: 29, name: '同盟卡', va: 0x00445710, selection: 'ui',   selectionParam: 0xe0c0410, passive: false, status: 'todo' },
-  { id: 30, name: '烏龜卡', va: 0x004458df, selection: 'ui',   selectionParam: 0xe0c0010, passive: false, status: 'todo' },
+  { id: 30, name: '烏龜卡', va: 0x004458df, selection: 'ui',   selectionParam: 0xe0c0010, passive: false, status: 'done' },
 ] as const;
 
 /** 被动卡的编号 */

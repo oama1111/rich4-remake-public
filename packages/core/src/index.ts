@@ -24,3 +24,5 @@ export * from './cards/hibernate.ts';
 export * from './cards/rebuild.ts';
 export * from './cards/target.ts';
 export * from './cards/stay.ts';
+export * from './cards/tortoise.ts';
+export * from './cards/buy-land.ts';

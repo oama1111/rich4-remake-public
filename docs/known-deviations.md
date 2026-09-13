@@ -238,3 +238,43 @@ case 14/15/16:
 并有专门测试 `case 15 + traffic=0 映射到 14` 固化。
 
 > 建议后续向上游 `rich4-re` 反馈此转录错误（DEVELOPMENT_PLAN.md R6）。
+
+### Q-002：购地卡的敌意更新是空操作（原版 bug）
+
+原版 VA 0x004423c4 计算了一个浮点敌意值：
+
+```asm
+ecx = land_price * price_index
+fild  dword [esp]              ; ecx
+fild  word  [esp + 4]          ; level
+fadd  dword [0x46531c]         ; + 2.0
+fdiv  dword [0x465320]         ; / 5.0
+fmulp st(1)                    ; → land_price × pi × (level + 2) / 5
+sub   esp, 8
+fstp  qword [esp]              ; ★ 压入 8 字节 double
+push  edx / push esi
+call  0x40df69                 ; update_hostility
+add   esp, 0x10                ; 清理 16 字节
+```
+
+但 `update_hostility`（VA 0x0040df69）的序言是 `push ebx; push edi`，
+其第三个参数取自 `[esp + 0x14]`，是 **4 字节 int**：
+
+```asm
+0040df69  push ebx
+0040df6a  push edi
+0040df6b  mov  edx, dword [esp + 0xc]    ; arg0 victim
+0040df6f  mov  ebx, dword [esp + 0x10]   ; arg1 from
+0040df97  mov  ecx, dword [esp + 0x14]   ; arg2 delta ← 4 字节
+```
+
+对比均富卡的调用现场，它压的是 `push eax`（int），完全吻合。
+而购地卡压了 double，被调方读到的是**其低 32 位**。
+
+**实测**：在 840 种真实参数组合下（地价 1000~8000、物价指数 1~20、
+等级 0~5），该低 32 位**无一例外为 0**——因为这些结果都是低位为零的
+"整齐"浮点数。
+
+**处置**：按 C-FID-4 原样保留，本实现同样不产生敌意。
+原版意图公式记录在 `packages/core/src/cards/buy-land.ts` 的
+`intendedBuyLandHostility`，并有测试固化「低 32 位恒为 0」这一事实。
