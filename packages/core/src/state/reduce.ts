@@ -14,9 +14,13 @@ import type { GameState, Player } from './types.ts';
 import { isAlive } from './types.ts';
 import { WatcomRng, rollDice } from '../rng/watcom.ts';
 import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
-import type { MapNode, LandInfo } from '../loaders/map.ts';
+import type { MapNode, LandInfo, FacilityInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent } from '../rules/rent.ts';
+import { transferMoney } from '../rules/payment.ts';
+import { calculateFacilityToll } from '../rules/facility.ts';
+import { adjustTollByGod } from '../rules/god-toll.ts';
+import { facilityIndexOf } from '../rules/land.ts';
 import { tickBlocking } from '../rules/blocking.ts';
 import { purchase } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints, MAX_HAND_CARDS } from '../rules/special-square.ts';
@@ -50,6 +54,8 @@ import { calculatePlayerWealth } from '../rules/wealth.ts';
 export interface MapTopology {
   nodes: readonly MapNode[];
   lands?: readonly LandInfo[];
+  /** 设施表 —— 有了它才能处理设施落点 */
+  facilities?: readonly FacilityInfo[];
 }
 
 /** 把静态地块模板与状态中的实时归属合并，得到当前有效的地块 */
@@ -255,8 +261,12 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       }
 
       const landIndex = landIndexAtPlayer(state, topo);
-      // TODO(M2): 设施(4000+)与企业(6000+)尚未实现
-      if (landIndex === null) return { ...state, phase: 'turnEnd' };
+      if (landIndex === null) {
+        // 住宅之外：设施走过路费，企业尚未实现
+        const fac = facilityAtPlayer(state, topo);
+        if (fac !== null) return settleFacility(state, fac);
+        return { ...state, phase: 'turnEnd' };
+      }
 
       const land = effectiveLand(state, topo, landIndex);
       if (land === null) return { ...state, phase: 'turnEnd' };
@@ -553,4 +563,58 @@ function pendingForSpecial(state: GameState, specialKind: number): PendingIntera
 
   if (isUnimplementedPlace(specialKind)) return unimplementedPlace(specialKind);
   return null;
+}
+
+// ============================================================
+//  设施落点
+// ============================================================
+
+/** 玩家脚下的设施；不是设施格则返回 null */
+function facilityAtPlayer(state: GameState, topo: MapTopology): FacilityInfo | null {
+  const p = state.players[state.currentPlayer];
+  if (p === undefined || topo.facilities === undefined) return null;
+  const node = topo.nodes[p.nodeId - 1];
+  if (node === undefined) return null;
+  const idx = facilityIndexOf(node.type);
+  if (idx === null) return null;
+  return topo.facilities.find((f) => f.id === idx) ?? null;
+}
+
+/**
+ * 设施过路费结算。
+ *
+ * ★ 与住宅的两处根本差别（见 rules/facility.ts）：
+ * - 按 `type` 分三路：1/2 是单价 × 转盘倍数，3 是**掷骰步数** × 500 × 交通倍率
+ * - **没有同盟分账**——原版这条路径只有一次 pay_money，
+ *   收款方直接取自 `facility.owner`
+ *
+ * ⚠️ type 1/2 需要一个「转盘倍数」，那是 UI（`0x44090e`）。
+ *   此处先传 1（等同不加成）——转盘接进来之前，type 1/2 的金额会偏低。
+ *   这一点已在 docs/known-deviations.md 记录。
+ */
+function settleFacility(state: GameState, fac: FacilityInfo): GameState {
+  const payer = state.currentPlayer;
+  const me = state.players[payer];
+  if (me === undefined) return { ...state, phase: 'turnEnd' };
+
+  const ownerIdx = fac.owner - 1;
+  // 无主或自己的设施都不收费
+  if (fac.owner === 0 || ownerIdx === payer) return { ...state, phase: 'turnEnd' };
+
+  const base = calculateFacilityToll({
+    facility: fac,
+    rateByLevel: fac.rateByLevel,
+    priceIndex: state.priceIndex,
+    stepsTotal: state.stepsTotal,
+    trafficMethod: me.trafficMethod,
+    multiplier: 1,
+  });
+  if (base === 0) return { ...state, phase: 'turnEnd' };
+
+  // 神明在付款前调整金额（与住宅同一条规则）
+  const god = adjustTollByGod(base, me.godInfo);
+  if (god.toll === 0) return { ...state, phase: 'turnEnd' };
+
+  const r = transferMoney(state.players, [], state.pool, payer, ownerIdx, god.toll, 0);
+  return { ...state, players: r.players, pool: r.pool, phase: 'turnEnd' };
 }

@@ -27,6 +27,20 @@ import { LAND_TYPE_HOUSE } from './toll.ts';
 export const HOUSING_TYPE_MIN = 0x7d0; // 2000（不含）
 export const HOUSING_TYPE_MAX = 0xfa0; // 4000（不含）
 
+/**
+ * 设施的 type 区间。
+ * @source 落点结算 `cmp ebp, 0xfa0 / jle 别处` 与 `cmp ebp, 0x1770 / jge 别处`
+ *   （VA 0x00417946）——与住宅的判法同构，都是**开区间**。
+ */
+export const FACILITY_TYPE_MIN = 0xfa0; // 4000（不含）
+export const FACILITY_TYPE_MAX = 0x1770; // 6000（不含）
+
+/** 由节点 type 取设施下标；不是设施则返回 null */
+export function facilityIndexOf(type: number): number | null {
+  if (type <= FACILITY_TYPE_MIN || type >= FACILITY_TYPE_MAX) return null;
+  return type - FACILITY_TYPE_MIN;
+}
+
 /** 由节点 type 求住宅地块下标；不是住宅则返回 null */
 export function housingIndexOf(type: number): number | null {
   if (type <= HOUSING_TYPE_MIN || type >= HOUSING_TYPE_MAX) return null;
