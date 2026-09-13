@@ -7,6 +7,8 @@ rich4.exe 反汇编工具 —— 项目的最终真值裁决手段
     python3 tools/disasm.py card 1 [行数]            反汇编第 N 张卡的效果函数
     python3 tools/disasm.py table 0x475d5c 30        打印函数指针表
     python3 tools/disasm.py find <hex字节序列>        在文件中搜索字节模式
+    python3 tools/disasm.py xref cash                ★ 交叉引用：谁碰了 player.cash
+    python3 tools/disasm.py xref 0x496b84            同上，也可直接给绝对地址
     python3 tools/disasm.py scan card <N>            ★ 扫描某卡**全部**状态写入
     python3 tools/disasm.py scan card all            ★ 扫描全部 30 张卡
 
@@ -34,6 +36,8 @@ EXE = "/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.e
 
 # ⚠️ 该 PE 的节表 VirtualSize 全为 0（老 Watcom 链接器），
 #    必须用 SizeOfRawData 做 VA→文件偏移换算。
+CODE_VA, CODE_OFF, CODE_SIZE = 0x401000, 1024, 394240
+
 SECTIONS = [
     # (名称,      VA,         文件偏移,  大小)
     ("AUTO",   0x401000,   1024,    394240),  # 代码段
@@ -194,6 +198,60 @@ def scan_card(idx, limit=600) -> None:
         print(f"  {a:08x}  {m:<5} {o}{describe_target(o)}")
 
 
+def xref(const: int, limit: int = 300) -> None:
+    """★ 找出所有**引用某个绝对地址**的指令（字段交叉引用）
+
+    为什么不用线性反汇编：该 PE 的代码段夹杂着数据，从段首一路
+    `md.disasm` 会在数据处**失步**，之后的指令全是错的——实测会漏掉
+    `pay_money` 自己对 cash 的写入。
+
+    这里改为**先按字节搜常量**（小端 4 字节），再对每个命中点向前
+    试 2..8 字节找出恰好覆盖该常量的指令。这样每条结果都是独立
+    对齐的，不受失步影响。
+    """
+    data = load()
+    pat = struct.pack("<I", const)
+    hits = []
+    start = CODE_OFF
+    while True:
+        at = data.find(pat, start)
+        if at < 0 or at >= CODE_OFF + CODE_SIZE:
+            break
+        hits.append(at)
+        start = at + 1
+
+    print(f"# 引用 0x{const:08x} 的指令，共 {len(hits)} 处")
+    md = Cs(CS_ARCH_X86, CS_MODE_32)
+    shown = 0
+    for off in hits:
+        for back in range(2, 9):
+            va = CODE_VA + (off - back - CODE_OFF)
+            got = list(md.disasm(data[off - back: off - back + 16], va))
+            if got and got[0].size > back and f"0x{const:x}" in got[0].op_str:
+                # 目的操作数是内存，且助记符确实会写回才算写入。
+                # ⚠️ `fild` 是**读**（整数装入 x87），`fistp` 才是写。
+                WRITERS = ("mov", "add", "sub", "or", "and", "xor",
+                           "inc", "dec", "fistp", "imul", "neg", "not")
+                dest_mem = got[0].op_str.startswith(("byte ptr [", "word ptr [", "dword ptr ["))
+                mark = "  ← 写入" if dest_mem and got[0].mnemonic in WRITERS else ""
+                print(f"  {got[0].address:08x}  {got[0].mnemonic:<5} {got[0].op_str}{mark}")
+                break
+        else:
+            print(f"  VA 0x{CODE_VA + (off - CODE_OFF):08x}  <未能对齐，可能是数据>")
+        shown += 1
+        if shown >= limit:
+            print(f"  …（其余 {len(hits) - shown} 处已省略）")
+            break
+
+
+# 玩家数组基址 + 字段偏移 → 绝对地址（xref 用名字即可）
+PLAYER_ARRAY_BASE = 0x496b68
+FIELD_ALIASES = {name: PLAYER_ARRAY_BASE + off for off, name in PLAYER_FIELDS.items()}
+FIELD_ALIASES["hostility"] = PLAYER_ARRAY_BASE + 0x4c
+FIELD_ALIASES["monthly_paid"] = PLAYER_ARRAY_BASE + 0x5c
+FIELD_ALIASES["monthly_received"] = PLAYER_ARRAY_BASE + 0x60
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -218,6 +276,12 @@ def main() -> None:
             show_table(int(sys.argv[2], 0), int(sys.argv[3]))
     elif cmd == "find":
         find(sys.argv[2])
+    elif cmd == "xref":
+        arg = sys.argv[2]
+        const = FIELD_ALIASES[arg] if arg in FIELD_ALIASES else int(arg, 0)
+        if arg in FIELD_ALIASES:
+            print(f"# 字段 {arg} → VA 0x{const:08x}")
+        xref(const, int(sys.argv[3]) if len(sys.argv) > 3 else 300)
     elif cmd == "scan":
         if sys.argv[2] != "card":
             sys.exit("目前只支持 `scan card <N|all>`")
