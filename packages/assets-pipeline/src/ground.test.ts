@@ -6,13 +6,15 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import {
+  GND_LAYOUT_OFFSET,
+  GND_PIXEL_OFFSET,
+  GND_TILE_BYTES,
   GND_TILE_HEIGHT,
-  GND_TILE_PIXELS,
-  GND_TILE_STRIDE,
   GND_TILE_WIDTH,
   GroundFormatError,
   decodeGround,
   isGround,
+  readLayout,
 } from './ground.ts';
 
 const DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/map';
@@ -35,20 +37,28 @@ describe('识别', () => {
   });
 });
 
-describe('块尺寸', () => {
-  it('★ 块是 32 × 32 像素，但在文件里占 1026 字节（多出 2 字节）', () => {
-    expect(GND_TILE_WIDTH * GND_TILE_HEIGHT).toBe(GND_TILE_PIXELS);
-    expect(GND_TILE_PIXELS).toBe(1024);
-    expect(GND_TILE_STRIDE).toBe(1026);
+describe('布局', () => {
+  it('★ 三个偏移与原版加载代码一致', () => {
+    // @source memcpy(…, ground+0x10, 0x200)
+    //         [0x48bac4] = ground + 0x210
+    //         [0x48bacc] = ground + 0x2a90
+    expect(GND_LAYOUT_OFFSET).toBe(0x210);
+    expect(GND_PIXEL_OFFSET).toBe(0x2a90);
+    // 排布表正好占满两者之间：5184 项 × 2 字节
+    expect(GND_PIXEL_OFFSET - GND_LAYOUT_OFFSET).toBe(5184 * 2);
   });
 
-  have('★ 文件长度正好是 头 + 调色板 + 块数×1026 —— 一字节不多不少', () => {
+  it('★ 块是 32 × 32 = 1024 字节', () => {
+    expect(GND_TILE_WIDTH * GND_TILE_HEIGHT).toBe(GND_TILE_BYTES);
+    expect(GND_TILE_BYTES).toBe(1024);
+  });
+
+  have('★ 文件长度 = 像素起点 + 块数×1024 —— 一字节不多不少', () => {
     for (let m = 0; m < 8; m++) {
       const d = load(m);
       const view = new DataView(d.buffer, d.byteOffset, d.byteLength);
-      const tilesX = view.getUint16(4, true);
-      const tilesY = view.getUint16(6, true);
-      expect(d.length, `地图 ${m}`).toBe(0x10 + 512 + tilesX * tilesY * GND_TILE_STRIDE);
+      const tiles = view.getUint16(4, true) * view.getUint16(6, true);
+      expect(d.length, `地图 ${m}`).toBe(GND_PIXEL_OFFSET + tiles * GND_TILE_BYTES);
     }
   });
 
@@ -57,34 +67,18 @@ describe('块尺寸', () => {
       const g = decodeGround(load(m));
       expect([g.tilesX, g.tilesY], `地图 ${m}`).toEqual([72, 72]);
       expect([g.width, g.height]).toEqual([2304, 2304]);
+      // 像素区恰好铺满整图
+      expect(g.width * g.height).toBe(5184 * GND_TILE_BYTES);
     }
   });
 
-  have('⚠️ 那 2 字节在块首还是块尾**分辨不出来** —— 别假装能分辨', () => {
-    // 若 2 字节在块首，则按块尾读会让每行末尾接上下一行的开头，
-    // 在第 29→30 列留下明显跳变；反之亦然。实测两种读法在各列上的
-    // 相邻差几乎一样（col29：9.39 vs 9.35），**没有可用的判据**。
-    //
-    // 两种读法只差 2 像素，肉眼也分不出。这条用例存在的意义是把
-    // 「这里是个未决问题」钉住，免得日后有人照着某一种读法去反推别的结论。
-    const d = load(0);
-    const base = 0x10 + 512;
-    const colDiff = (pre: number, col: number): number => {
-      let s = 0;
-      let n = 0;
-      for (let t = 0; t < 5184; t += 3) {
-        const b = base + t * GND_TILE_STRIDE + pre;
-        for (let iy = 0; iy < 32; iy++) {
-          s += Math.abs(d[b + iy * 32 + col]! - d[b + iy * 32 + col + 1]!);
-          n++;
-        }
-      }
-      return s / n;
-    };
-    const a = colDiff(0, 29);
-    const b = colDiff(2, 29);
-    // 两者相差不到 5% —— 即「无法分辨」
-    expect(Math.abs(a - b) / a).toBeLessThan(0.05);
+  have('★ 排布表是 0..5183 的严格排列 —— 八张图都是', () => {
+    for (let m = 0; m < 8; m++) {
+      const layout = readLayout(load(m), 5184);
+      expect(new Set(layout).size, `地图 ${m}`).toBe(5184);
+      expect(Math.min(...layout)).toBe(0);
+      expect(Math.max(...layout)).toBe(5183);
+    }
   });
 });
 
@@ -92,9 +86,7 @@ describe('解码', () => {
   have('★ 输出 RGBA 长度正确且全不透明', () => {
     const g = decodeGround(load(0));
     expect(g.rgba.length).toBe(g.width * g.height * 4);
-    for (let i = 3; i < g.rgba.length; i += 4 * 9973) {
-      expect(g.rgba[i]).toBe(255);
-    }
+    for (let i = 3; i < g.rgba.length; i += 4 * 9973) expect(g.rgba[i]).toBe(255);
   });
 
   have('★ 调色板首项为黑 —— 与 SPR 同制', () => {
@@ -103,7 +95,7 @@ describe('解码', () => {
     expect(view.getUint16(0x10, true)).toBe(0);
   });
 
-  have('★ 调色板 256 项无重复、无高位 —— 确证是 RGB555 而非别的编码', () => {
+  have('★ 调色板 256 项无重复、无高位 —— 确证是 RGB555', () => {
     const d = load(0);
     const view = new DataView(d.buffer, d.byteOffset, d.byteLength);
     const seen = new Set<number>();
@@ -115,24 +107,31 @@ describe('解码', () => {
     expect(seen.size).toBe(256);
   });
 
-  have('★ 解出来的是一幅连贯图像，不是噪声', () => {
-    // 判据：**相邻像素高度相关**。块宽取错会产生横向条纹，
-    // 相邻差随之变大 —— 这正是 38×27 被推翻、改用 32×32 的起点。
+  have('★ 块间接缝与块内一样连贯 —— 用上排布表之后才成立', () => {
+    // ★ 这是整个格式正确性的**核心判据**，也是先前两版解码栽的地方：
+    //   不用排布表时，块内相邻像素差 9.3 而块边界接缝高达 16.4，
+    //   画面上表现为每 32 像素一圈错位（字母被切开）。
+    //   用上排布表后，接缝应当落回块内的水平。
     const g = decodeGround(load(0));
     const sample = (x: number, y: number): number => g.rgba[(y * g.width + x) * 4]!;
-    let adjacent = 0;
-    let distant = 0;
-    let n = 0;
-    for (let y = 100; y < g.height - 100; y += 37) {
-      for (let x = 100; x < g.width - 200; x += 41) {
-        adjacent += Math.abs(sample(x, y) - sample(x + 1, y));
-        distant += Math.abs(sample(x, y) - sample(x + 137, y));
-        n++;
+
+    let inner = 0;
+    let ni = 0;
+    let seam = 0;
+    let ns = 0;
+    for (let y = 64; y < g.height - 64; y += 7) {
+      for (let x = 64; x < g.width - 64; x += 5) {
+        if (x % 32 === 31) {
+          seam += Math.abs(sample(x, y) - sample(x + 1, y));
+          ns++;
+        } else {
+          inner += Math.abs(sample(x, y) - sample(x + 1, y));
+          ni++;
+        }
       }
     }
-    expect(n).toBeGreaterThan(500);
-    // 相邻差应当远小于远距离差
-    expect(adjacent / n).toBeLessThan(distant / n / 2);
+    expect(ns).toBeGreaterThan(300);
+    expect(seam / ns).toBeLessThan((inner / ni) * 1.25);
   });
 
   have('★ 八张底图各不相同 —— 不是同一张图重复了八遍', () => {
@@ -158,68 +157,5 @@ describe('解码', () => {
       total++;
     }
     expect(sea / total).toBeGreaterThan(0.4);
-  });
-});
-
-describe('⚠️ 块摆放仍未解出 —— 把现状钉住', () => {
-  /** 地图 0 的原始块数据 */
-  const raw = (): Uint8Array => load(0).subarray(0x10 + 512);
-  const at = (b: Uint8Array, i: number, x: number, y: number): number =>
-    b[i * GND_TILE_STRIDE + y * 32 + x]!;
-
-  have('★ 块内连贯、块间不连贯 —— 这就是画面上那圈 32 像素错位', () => {
-    const b = raw();
-    // 块内相邻
-    let inner = 0;
-    let n1 = 0;
-    for (let i = 0; i < 5184; i += 7) {
-      for (let y = 0; y < 32; y += 3) {
-        for (let x = 0; x < 31; x += 3) {
-          inner += Math.abs(at(b, i, x, y) - at(b, i, x + 1, y));
-          n1++;
-        }
-      }
-    }
-    inner /= n1;
-
-    // 按行优先拼接时的横向接缝（块 i 的最右列 vs 块 i+1 的最左列）
-    let seam = 0;
-    let n2 = 0;
-    for (let i = 0; i < 5100; i += 7) {
-      for (let y = 0; y < 32; y += 2) {
-        seam += Math.abs(at(b, i, 31, y) - at(b, i + 1, 0, y));
-        n2++;
-      }
-    }
-    seam /= n2;
-
-    // 随机两块的边缘配对（对照组）
-    let ctrl = 0;
-    let n3 = 0;
-    for (let i = 0; i < 5184; i += 11) {
-      const j = (i * 2657 + 13) % 5184;
-      for (let y = 0; y < 32; y += 2) {
-        ctrl += Math.abs(at(b, i, 31, y) - at(b, j, 0, y));
-        n3++;
-      }
-    }
-    ctrl /= n3;
-
-    // 接缝明显好于随机 → 块大致在对的邻域
-    expect(seam).toBeLessThan(ctrl / 2);
-    // 但明显差于块内 → 摆放不精确，这一层还没解完
-    expect(seam).toBeGreaterThan(inner * 1.4);
-  });
-
-  have('★ 5184 块两两不同 —— 不是 tileset 拼贴，是一幅真图', () => {
-    const b = raw();
-    const seen = new Set<string>();
-    for (let i = 0; i < 5184; i++) {
-      let h = 0;
-      for (let k = 0; k < 1024; k += 7) h = (Math.imul(h, 31) + b[i * GND_TILE_STRIDE + k]!) | 0;
-      seen.add(`${h}`);
-    }
-    // 允许极少量哈希碰撞
-    expect(seen.size).toBeGreaterThan(5100);
   });
 });

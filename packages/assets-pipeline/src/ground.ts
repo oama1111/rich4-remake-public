@@ -5,82 +5,58 @@
  * ★ map.mkf 的资源是**成对**的：偶数号是底图，奇数号是地图结构数据。
  *   `map.mkf[地图编号 * 2]`     → 本模块解的 .gnd 底图
  *   `map.mkf[地图编号 * 2 + 1]` → core 的 `parseMap` 解的节点/地块表
- *   先前只用了奇数号那一半，底图一直没解——棋盘因此只能画色块。
  *
- * 格式（由 0000.gnd 逐字节推出，八张图完全一致）：
+ *   资源号的算法来自原版地图加载代码 VA 0x00407af0：
+ *   ```asm
+ *   edx = (short)[0x4991b6]      ; game_stage
+ *   edx <<= 2
+ *   eax = (short)[0x4991b8]      ; game_map
+ *   eax += edx                   ; global_map_id = stage*4 + map
+ *   eax += eax                   ; ★ 资源号 = global_map_id * 2
+ *   call load_resource
+ *   ```
+ *
+ * ## 格式
+ *
  * ```
- * 偏移  长度      内容
- * 0x00  4         魔数 "GND\0"
- * 0x04  2 (u16)   横向块数 = 72
- * 0x06  2 (u16)   纵向块数 = 72
- * 0x08  4 (u32)   块总数 = 5184 = 72 × 72
- * 0x0c  4         恒为 0
- * 0x10  512       调色板：256 项 RGB555（首项为黑，与 SPR 同制）
- * 0x210 5318784   5184 块 × 1026 字节，**按块顺序**排列（先行后列）
+ * 偏移     长度       内容
+ * 0x0000   4          魔数 "GND\0"
+ * 0x0004   2 (u16)    横向块数 = 72
+ * 0x0006   2 (u16)    纵向块数 = 72
+ * 0x0008   4 (u32)    块总数 = 5184 = 72 × 72
+ * 0x000c   4          恒为 0
+ * 0x0010   512        调色板：256 项 RGB555（首项为黑，与 SPR 同制）
+ * 0x0210   10368      ★ 块排布表：5184 项 u16，是 0..5183 的一个**排列**
+ * 0x2a90   5308416    像素：5184 块 × 1024 字节，每块 32×32 的 8bpp 索引
  * ```
- * 每块 1026 字节里，**前 1024 字节是 32 × 32 的 8bpp 调色板索引**（行优先），
- * 末尾 2 字节不属于本块的像素（见下）。整图因此是 `72 × 32 = 2304` 见方。
+ * 整图 `72×32 = 2304` 见方，恰好 `2304 × 2304 = 5308416` 字节。
  *
- * ★ 块尺寸是 **32×32**，不是 1026 的某个因数分解。这一点走过弯路，
- *   值得记下来是怎么定下来的：
+ * ## 三个偏移是从原版读出来的，不是猜的
  *
- *   1. 先按 1026 = 38×27 解，画面**看着**像台湾岛，于是以为对了；
- *      但满图是横向条纹，且节点坐标怎么摆都对不上底图（当时记成 Q-GND-1）。
- *   2. 条纹是**行距取错**的典型症状。改用 32×32 后条纹消失，
- *      图上的「Taiwan」字样变得可读。
- *   3. 决定性证据有两条，都是可复算的：
- *      - **八张图的节点坐标全部落在 2304×2304 之内**（最大 x 2087、
- *        最大 y 2160），而 2736×1944 装不下地图 2 的 y。
- *      - **把地图 0 的 103 个节点原样（偏移 0）画到底图上，整条路线
- *        沿海岸走一圈**，西侧那串支线通向澎湖、东南那串通向绿岛/兰屿。
- *      → 也就是说 **Q-GND-1 不存在**：节点坐标与底图像素同一个原点，
- *        先前那个「需要平移 (+510, −230)」是块宽取错造出来的假象。
+ * 同一段加载代码（VA 0x00407b66 起）把这三处直接写进了全局：
+ * ```asm
+ * memcpy(0x48b6b4, ground + 0x10, 0x200)   ; ★ 调色板：偏移 0x10，512 字节
+ * [0x48bac4] = ground + 0x210              ; ★ 块排布表
+ * [0x48bacc] = ground + 0x2a90             ; ★ 像素数据
+ * ```
+ * `0x2a90 − 0x210 = 0x2880 = 10368 = 5184 × 2`，与「每块一个 u16」严丝合缝。
  *
- *   ⚠️ 最后这条是**形状吻合**，靠肉眼判定，目前没有可靠的数值判据：
- *      用颜色判「是不是海」太弱——岛在图上占很大一块，把节点整体往
- *      岛心平移反而能让「落在陆地上」的计数上升（(+180,+20) 得 87/103，
- *      零偏移 69/103），且那个峰又宽又平。故测试里只断言了站得住的部分
- *      （八张图的节点都在 2304² 内、节点云与陆地质心相称），
- *      没有把「零偏移最优」写成断言。
+ * ## ⚠️ 这里走过很长的弯路，值得记下来
  *
- * ⚠️ **块的摆放位置仍未完全解出——图上有肉眼可见的 32 像素错位。**
+ * 在找到上面那段汇编之前，我按「每块 1026 字节」去解——文件长度减去头和
+ * 调色板恰好能被 5184 整除得 1026，看着很有说服力。先后试过 38×27、
+ * 32×32 加 2 字节等读法，画面**看着**像台湾岛，于是两次都以为解完了，
+ * 还据此提了两个并不存在的问题：Q-GND-1「节点坐标需要平移」、
+ * Q-GND-2「多出的 2 字节在块首还是块尾」。
  *
- *   上一轮提交只说了「条纹消失、Taiwan 字样可读」，**没说清楚还有错位**，
- *   这里补上。把 32×32 的块边界画出来看，字母被切成块后并不相接：
- *   块**内部**是连贯的，块与块之间对不上。
+ * 真相是：**根本没有「每块 1026 字节」这回事**。1026 = 1024 + 2 是把
+ * 「每块 1024 字节像素」和「每块 2 字节排布表项」当成了一条记录。
+ * 块之间那圈对不上的 32 像素错位，正是排布表没被用上的直接后果。
  *
- *   已测得的数字（地图 0，越小越连贯）：
- *   | 量 | 值 |
- *   |---|---|
- *   | 块内相邻像素差 | 9.3 |
- *   | 块内相隔 12 像素 | 13.8 |
- *   | 随机两像素（对照） | 68.0 |
- *   | 按行优先拼接时的块间接缝 | 16.4 ~ 17.6 |
- *
- *   接缝 16.4 远好于随机的 68，说明块**大致在对的邻域**，但远差于块内的
- *   9.3，说明摆放不精确。已排除的假设：整体字节偏移（扫了 0..1026，
- *   没有明显极小值）、每行斜切（k=1 只比 k=0 好一点点）、块重叠
- *   （0..8 列都一样差）、块内上下翻转（更差）、菱形等距摆放
- *   （看着干净是因为块互相覆盖了 3/4，是假象）、块是拼贴复用
- *   （5184 块**两两不同**，不是 tileset）。
- *
- *   一条尚未解释的线索：**索引差 1 的两块，「前一块末 32 字节」与
- *   「后一块首 32 字节」匹配得很好（11.6）**，而「右列 vs 左列」在
- *   索引差 72 时最好（16.4）。这两条指向「按列存储」或「块内列优先」，
- *   但那两种读法会把岛转 90°，与游戏小地图里竖直的台湾岛不符。
- *   两条证据打架，尚未调和。
- *
- *   **现状**：本模块采用「块序行优先 + 块内行优先」——它给出的朝向正确、
- *   块内画面正确、与节点坐标对得上，代价是块间错位。地图**认得出来**，
- *   但**不是像素级正确**，别拿它当最终画面。
- *
- * ⚠️ 那多出来的 2 字节**语义未明，且在块首还是块尾也分辨不出来**。
- *   试过的判据都不成立：若位置取错，每行末尾会接上下一行的开头，
- *   第 29→30 列该留下跳变；实测两种读法在各列上的相邻差几乎一样
- *   （9.39 对 9.35），差不到 5%。两种读法只差 2 像素，肉眼同样分不出。
- *   本模块按「块尾填充」处理（像素取 0..1023），并在测试里把这个
- *   未决问题钉住——不要拿其中任一种读法去反推别的结论。
- *   取值看着像像素（最常见的 0x2020 正是海水色重复）。
+ * 教训：**能整除不等于是记录长度**。当时症状都看见了（字母被切开、
+ * 接缝 16.4 对块内 9.3），却一直在「这些块该怎么摆」的框架里找答案，
+ * 没有回头质疑「块到底是不是 1026 字节」这个前提。
+ * 解开它的是去 exe 里读加载代码——一次反汇编胜过十次统计拟合。
  */
 
 /** 文件魔数 */
@@ -89,14 +65,16 @@ export const GND_MAGIC = 'GND\0';
 export const GND_TILE_WIDTH = 32;
 export const GND_TILE_HEIGHT = 32;
 /** 每块的像素字节数 */
-export const GND_TILE_PIXELS = GND_TILE_WIDTH * GND_TILE_HEIGHT; // 1024
-/** 每块在文件里占的字节数 —— 比像素多 2 字节，见文件头说明 */
-export const GND_TILE_STRIDE = 1026;
-/** 调色板项数与字节数 */
+export const GND_TILE_BYTES = GND_TILE_WIDTH * GND_TILE_HEIGHT; // 1024
+
+/** 调色板项数 */
 export const GND_PALETTE_ENTRIES = 256;
 const PALETTE_OFFSET = 0x10;
 const PALETTE_BYTES = GND_PALETTE_ENTRIES * 2;
-const PIXEL_OFFSET = PALETTE_OFFSET + PALETTE_BYTES; // 0x210
+/** 块排布表 @source `[0x48bac4] = ground + 0x210` */
+export const GND_LAYOUT_OFFSET = PALETTE_OFFSET + PALETTE_BYTES; // 0x210
+/** 像素数据 @source `[0x48bacc] = ground + 0x2a90` */
+export const GND_PIXEL_OFFSET = 0x2a90;
 
 export interface GroundImage {
   /** 整图宽高（像素） */
@@ -114,12 +92,28 @@ export class GroundFormatError extends Error {}
 /** 快速判断一段数据是不是 .gnd */
 export function isGround(data: Uint8Array): boolean {
   return (
-    data.length > PIXEL_OFFSET &&
+    data.length > GND_PIXEL_OFFSET &&
     data[0] === 0x47 &&
     data[1] === 0x4e &&
     data[2] === 0x44 &&
     data[3] === 0x00
   );
+}
+
+/**
+ * 读出块排布表。
+ *
+ * `layout[i]` = 网格第 i 格（行优先）该用哪一块像素数据，
+ * 取值是 0..块数−1 的一个**排列**（实测八张图都是严格排列）。
+ *
+ * ⚠️ 不用它就会得到一幅「块内清晰、块间错位」的图——这正是先前两版
+ *   解码的病根。
+ */
+export function readLayout(data: Uint8Array, tileCount: number): Uint16Array {
+  const out = new Uint16Array(tileCount);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  for (let i = 0; i < tileCount; i++) out[i] = view.getUint16(GND_LAYOUT_OFFSET + i * 2, true);
+  return out;
 }
 
 /**
@@ -140,7 +134,7 @@ export function decodeGround(data: Uint8Array): GroundImage {
   if (tilesX * tilesY !== tileCount) {
     throw new GroundFormatError(`块数不自洽：${tilesX}×${tilesY} ≠ ${tileCount}`);
   }
-  const need = PIXEL_OFFSET + tileCount * GND_TILE_STRIDE;
+  const need = GND_PIXEL_OFFSET + tileCount * GND_TILE_BYTES;
   if (data.length < need) {
     throw new GroundFormatError(`数据长度 ${data.length} 不足 ${need}`);
   }
@@ -156,14 +150,16 @@ export function decodeGround(data: Uint8Array): GroundImage {
     palB[i] = ((v & 31) * 255) / 31;
   }
 
+  const layout = readLayout(data, tileCount);
   const width = tilesX * GND_TILE_WIDTH;
   const height = tilesY * GND_TILE_HEIGHT;
   const rgba = new Uint8Array(width * height * 4);
 
-  // 按块展开。块内行优先，块之间也行优先。
   for (let ty = 0; ty < tilesY; ty++) {
     for (let tx = 0; tx < tilesX; tx++) {
-      const src = PIXEL_OFFSET + (ty * tilesX + tx) * GND_TILE_STRIDE;
+      // ★ 关键：网格位置要经排布表映射到像素块，不是直接按顺序取
+      const block = layout[ty * tilesX + tx] ?? 0;
+      const src = GND_PIXEL_OFFSET + block * GND_TILE_BYTES;
       for (let iy = 0; iy < GND_TILE_HEIGHT; iy++) {
         const dstRow = (ty * GND_TILE_HEIGHT + iy) * width + tx * GND_TILE_WIDTH;
         for (let ix = 0; ix < GND_TILE_WIDTH; ix++) {
@@ -184,8 +180,7 @@ export function decodeGround(data: Uint8Array): GroundImage {
 /**
  * 节点坐标与底图像素**同一个原点，无需任何平移**。
  *
- * 判据见文件头：地图 0 的 103 个节点按 (0, 0) 画上去全部落在岛上。
- * 这个常量存在只是为了让「不要再去发明偏移量」这件事写在代码里——
- * 先前那次以为需要 (+510, −230)，根源是块宽取错，不是真有偏移。
+ * 这个常量存在只是为了把「不要再去发明偏移量」写进代码里：
+ * 先前那次以为需要 (+510, −230)，根源是块尺寸取错，不是真有偏移。
  */
 export const GROUND_ORIGIN = { x: 0, y: 0 } as const;
