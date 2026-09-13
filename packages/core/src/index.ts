@@ -19,6 +19,7 @@ export * from './rules/objects.ts';
 export * from './rules/payment.ts';
 export * from './rules/hostility.ts';
 export * from './rules/purchase.ts';
+export * from './rules/rent.ts';
 export * from './events/deck.ts';
 export * from './events/news.ts';
 export * from './events/fortune.ts';

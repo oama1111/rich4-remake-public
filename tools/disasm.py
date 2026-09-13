@@ -7,6 +7,7 @@ rich4.exe 反汇编工具 —— 项目的最终真值裁决手段
     python3 tools/disasm.py card 1 [行数]            反汇编第 N 张卡的效果函数
     python3 tools/disasm.py table 0x475d5c 30        打印函数指针表
     python3 tools/disasm.py find <hex字节序列>        在文件中搜索字节模式
+    python3 tools/disasm.py callers 0x40df69         ★ 谁调用了这个函数
     python3 tools/disasm.py xref cash                ★ 交叉引用：谁碰了 player.cash
     python3 tools/disasm.py xref 0x496b84            同上，也可直接给绝对地址
     python3 tools/disasm.py scan card <N>            ★ 扫描某卡**全部**状态写入
@@ -252,6 +253,41 @@ FIELD_ALIASES["monthly_paid"] = PLAYER_ARRAY_BASE + 0x5c
 FIELD_ALIASES["monthly_received"] = PLAYER_ARRAY_BASE + 0x60
 
 
+def callers(target: int) -> None:
+    """★ 找出所有 `call <target>` 的位置
+
+    ⚠️ `xref` 找不到调用点：x86 的 `call rel32` 存的是**相对位移**，
+    目标地址根本不在字节流里。这里反过来做——扫描每个 0xE8 字节，
+    按 `目标 = 地址 + 5 + rel32` 反推，命中才报告。
+
+    同样不走线性反汇编，故不受代码段夹杂数据导致的失步影响；
+    代价是数据里凑巧的 0xE8 会造成少量误报，需结合上下文甄别。
+    """
+    data = load()
+    hits = []
+    for off in range(CODE_OFF, CODE_OFF + CODE_SIZE - 5):
+        if data[off] != 0xE8:
+            continue
+        (rel,) = struct.unpack_from("<i", data, off + 1)
+        site = CODE_VA + (off - CODE_OFF)
+        if site + 5 + rel == target:
+            hits.append(site)
+
+    print(f"# call 0x{target:08x} 的调用点，共 {len(hits)} 处")
+    md = Cs(CS_ARCH_X86, CS_MODE_32)
+    for site in hits:
+        # 打印调用点前 3 条指令作为上下文（参数压栈）
+        ctx = []
+        for back in range(4, 32):
+            got = list(md.disasm(data[va_to_off(site - back): va_to_off(site) + 5], site - back))
+            if got and any(i.address == site for i in got):
+                ctx = [i for i in got if i.address <= site][-4:]
+                break
+        print(f"  ── 0x{site:08x}")
+        for i in ctx:
+            print(f"     {i.address:08x}  {i.mnemonic:<6} {i.op_str}")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -276,6 +312,8 @@ def main() -> None:
             show_table(int(sys.argv[2], 0), int(sys.argv[3]))
     elif cmd == "find":
         find(sys.argv[2])
+    elif cmd == "callers":
+        callers(int(sys.argv[2], 0))
     elif cmd == "xref":
         arg = sys.argv[2]
         const = FIELD_ALIASES[arg] if arg in FIELD_ALIASES else int(arg, 0)
