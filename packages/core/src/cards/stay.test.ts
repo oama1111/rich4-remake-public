@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
-import { applyStayCard, STAY_DAYS, STAY_SELECTION_PARAM } from './stay.ts';
+import { applyStayCard, STAY_RAW_SELF, STAY_RAW_OTHER, STAY_SELECTION_PARAM } from './stay.ts';
+import { displayDays } from '../state/types.ts';
 import { targetClassOf } from './target.ts';
 import { makePlayer } from '../testing/factories.ts';
 import { cardImpl } from '@rich4/data';
@@ -20,11 +21,20 @@ describe('停留卡', () => {
     expect(targetClassOf(STAY_SELECTION_PARAM)).toBe('anyPlayer');
   });
 
-  it('把目标的 stopping 设为 1', () => {
-    expect(STAY_DAYS).toBe(1);
+  it('★ 对别人用：写入 1，即停留 2 天', () => {
+    expect(STAY_RAW_OTHER).toBe(0x01);
     const r = applyStayCard(four(), 0, { kind: 'player', index: 2 });
     expect(r.ok).toBe(true);
-    expect(r.players[2]!.blocking.stopping).toBe(1);
+    expect(r.players[2]!.blocking.stopping).toBe(0x01);
+    expect(displayDays(r.players[2]!.blocking.stopping)).toBe(2);
+  });
+
+  it('★ 对自己用：写入 0x80，即停留 1 天（比对别人少一天）', () => {
+    // @source cmp esi,[current] / jne → 1；否则 → 0x80
+    expect(STAY_RAW_SELF).toBe(0x80);
+    const r = applyStayCard(four(), 1, { kind: 'player', index: 1 });
+    expect(r.players[1]!.blocking.stopping).toBe(0x80);
+    expect(displayDays(r.players[1]!.blocking.stopping)).toBe(1);
   });
 
   it('只影响目标，其他玩家不变', () => {
@@ -32,10 +42,8 @@ describe('停留卡', () => {
     expect(r.players.filter((p) => p.blocking.stopping !== 0).length).toBe(1);
   });
 
-  it('★ 可以对自己使用（anyPlayer 组）', () => {
-    const r = applyStayCard(four(), 1, { kind: 'player', index: 1 });
-    expect(r.ok).toBe(true);
-    expect(r.players[1]!.blocking.stopping).toBe(1);
+  it('可以对自己使用（anyPlayer 组）', () => {
+    expect(applyStayCard(four(), 1, { kind: 'player', index: 1 }).ok).toBe(true);
   });
 
   it('目标缺失时失败', () => {
