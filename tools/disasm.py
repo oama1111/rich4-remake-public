@@ -10,8 +10,9 @@ rich4.exe 反汇编工具 —— 项目的最终真值裁决手段
     python3 tools/disasm.py callers 0x40df69         ★ 谁调用了这个函数
     python3 tools/disasm.py xref cash                ★ 交叉引用：谁碰了 player.cash
     python3 tools/disasm.py xref 0x496b84            同上，也可直接给绝对地址
-    python3 tools/disasm.py scan card <N>            ★ 扫描某卡**全部**状态写入
-    python3 tools/disasm.py scan card all            ★ 扫描全部 30 张卡
+    python3 tools/disasm.py scan card <N|all>        ★ 扫描某卡**全部**状态写入
+    python3 tools/disasm.py scan news <N|all>        同上，用于新闻事件
+    python3 tools/disasm.py scan fortune <N|all>     同上，用于命运事件
 
 `scan` 会按函数表推出该卡的**真实地址范围**（到下一张卡为止），
 列出其中所有对玩家/地块/全局状态的写入。用它可以发现
@@ -161,17 +162,18 @@ def describe_target(op: str) -> str:
     return ""
 
 
-def scan_card(idx, limit=600) -> None:
-    """扫描某卡的全部状态写入（按函数表推出真实范围）"""
+def scan_card(idx, limit=600, table="card") -> None:
+    """扫描表中某项的全部状态写入（按函数表推出真实范围）"""
     data = load()
-    base = va_to_off(TABLES["card"][0])
+    tva, tn, _ = TABLES[table]
+    base = va_to_off(tva)
     (fn,) = struct.unpack_from("<I", data, base + idx * 4)
     if fn == 0:
-        print(f"  卡片 {idx}: 被动卡（空桩）")
+        print(f"  {table}[{idx}]: 空项")
         return
     # 下一张卡的地址作为上界（取大于 fn 的最小者）
     others = []
-    for i in range(1, 31):
+    for i in range(tn):
         (p,) = struct.unpack_from("<I", data, base + i * 4)
         if p > fn:
             others.append(p)
@@ -190,7 +192,7 @@ def scan_card(idx, limit=600) -> None:
         if ins.mnemonic in ("mov", "add", "sub", "or", "and", "xor", "inc", "dec"):
             if ins.op_str.startswith(("byte ptr [", "word ptr [", "dword ptr [")):
                 writes.append((ins.address, ins.mnemonic, ins.op_str))
-    print(f"\n# 卡片 {idx}  VA 0x{fn:08x}..0x{end:08x}  ({end - fn} 字节)")
+    print(f"\n# {table}[{idx}]  VA 0x{fn:08x}..0x{end:08x}  ({end - fn} 字节)")
     if over_wide:
         print("  ⚠️ 该卡范围偏大（无可靠上界），尾部写入可能属于相邻函数")
     if not writes:
@@ -329,13 +331,15 @@ def main() -> None:
             print(f"# 字段 {arg} → VA 0x{const:08x}")
         xref(const, int(sys.argv[3]) if len(sys.argv) > 3 else 300)
     elif cmd == "scan":
-        if sys.argv[2] != "card":
-            sys.exit("目前只支持 `scan card <N|all>`")
+        which = sys.argv[2]
+        if which not in TABLES:
+            sys.exit(f"未知表 {which}；可用：{', '.join(TABLES)}")
+        n = TABLES[which][1]
         if sys.argv[3] == "all":
-            for i in range(1, 31):
-                scan_card(i)
+            for i in range(n):
+                scan_card(i, table=which)
         else:
-            scan_card(int(sys.argv[3], 0))
+            scan_card(int(sys.argv[3], 0), table=which)
     else:
         sys.exit(__doc__)
 
