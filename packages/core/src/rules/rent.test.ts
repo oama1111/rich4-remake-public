@@ -142,3 +142,55 @@ describe('物价指数', () => {
     expect(collectRent(players(false), lands, 0, lands[0]!, 7).total).toBe(7000);
   });
 });
+
+describe('★ 神明在付款前调整租金', () => {
+  const withGod = (god: number) => {
+    const ps = players(false);
+    ps[0] = makePlayer({ index: 0, cash: 100000, moneyInBank: 0, godInfo: god });
+    return ps;
+  };
+  const lands = () => scene();
+
+  it('大財神附身 → 全免，且无人收到钱', () => {
+    const r = collectRent(withGod(2), lands(), 0, lands()[0]!, 1);
+    expect(r.baseTotal).toBe(1000);
+    expect(r.total).toBe(0);
+    expect(r.godAdjusted).toBe(true);
+    expect(r.shares).toEqual([]);
+    expect(r.players[0]!.cash).toBe(100000);
+  });
+
+  it('小財神附身 → 只付一半', () => {
+    const r = collectRent(withGod(1), lands(), 0, lands()[0]!, 1);
+    expect(r.total).toBe(500);
+    expect(r.players[0]!.cash).toBe(99500);
+    expect(r.players[1]!.moneyInBank).toBe(500);
+  });
+
+  it('大窮神附身 → 加倍付', () => {
+    const r = collectRent(withGod(6), lands(), 0, lands()[0]!, 1);
+    expect(r.total).toBe(2000);
+    expect(r.players[1]!.moneyInBank).toBe(2000);
+  });
+
+  it('★ 福神附身不影响租金', () => {
+    for (const god of [3, 4]) {
+      const r = collectRent(withGod(god), lands(), 0, lands()[0]!, 1);
+      expect(r.total).toBe(1000);
+      expect(r.godAdjusted).toBe(false);
+    }
+  });
+
+  it('★ 神明调整后，同盟分账之和仍等于实付总额', () => {
+    const ps = players(true);
+    ps[0] = makePlayer({ index: 0, cash: 100000, moneyInBank: 0, godInfo: 1 }); // 小財神
+    const ls = scene({ ownerRent: 1000, allyRent: 500 });
+    const r = collectRent(ps, ls, 0, ls[0]!, 1);
+
+    expect(r.baseTotal).toBe(1500);
+    expect(r.total).toBe(750); // 减半
+    const got = r.shares.reduce((t, s) => t + s.amount, 0);
+    expect(got).toBe(750);
+    expect(100000 - r.players[0]!.cash).toBe(750);
+  });
+});

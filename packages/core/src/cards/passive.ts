@@ -87,3 +87,113 @@ export function consumeCard(player: Player, cardId: number): Player {
   cards.splice(at, 1);
   return { ...player, cards };
 }
+
+// ============================================================
+//  ★ 第二个触发点：付过路费时
+// ============================================================
+
+/*
+ * 被动卡有**两个互不相同的触发点**，卡的组合也不同，别混为一谈：
+ *
+ *   1. **有害卡命中目标**时 → 免罪卡(21) → 嫁祸卡(19)
+ *      见上方 checkDefensiveCards。
+ *
+ *   2. **付过路费**时 → 免费卡(20) → 嫁祸卡(19)
+ *      即本节。住宅（VA 0x00419e34）与设施（VA 0x0041a60e）两条路径
+ *      结构完全相同。
+ */
+
+/**
+ * 付过路费时触发被动卡的门槛。
+ *
+ * @source VA 0x00419e0c / 0x0041a5e6 的同一段移位序列：
+ * ```asm
+ * edx = price_index
+ * eax = edx<<2        ; 4pi
+ * eax = eax - edx     ; 3pi
+ * eax = eax<<3        ; 24pi
+ * eax = eax + edx     ; 25pi
+ * eax = eax<<4        ; 400pi
+ * edx2 = eax
+ * eax = eax<<2        ; 1600pi
+ * eax = eax + edx2    ; ★ 2000pi
+ * ```
+ */
+export const TOLL_PASSIVE_THRESHOLD_FACTOR = 2000;
+
+/**
+ * 这笔过路费是否**贵到**足以触发被动卡。
+ *
+ * @source `cmp ebp, eax / jge 触发` 与
+ *         `cmp ebp, cash+bank / jle 跳过`
+ *
+ * 两个条件**取或**：租金达到 `物价指数 × 2000`，**或者**
+ * 付款方的现金加存款根本不够付。后者是「走投无路才掏底牌」的兜底。
+ */
+export function tollTriggersPassive(
+  toll: number,
+  payer: Player,
+  priceIndex: number,
+): boolean {
+  if (toll >= priceIndex * TOLL_PASSIVE_THRESHOLD_FACTOR) return true;
+  return toll > payer.cash + payer.moneyInBank;
+}
+
+/** 付过路费时被动卡的处理结果 */
+export type TollPassiveOutcome =
+  /** 没有触发，照常付 */
+  | { kind: 'none' }
+  /** 免费卡：租金归零 @source `xor ebp, ebp` */
+  | { kind: 'free' }
+  /** 嫁祸卡：**换一个付款人** @source `mov edi, eax` */
+  | { kind: 'scapegoat'; newPayer: number };
+
+/**
+ * 付过路费时检查被动卡。
+ *
+ * 原版顺序（住宅 VA 0x00419e34 起，设施 0x0041a60e 起结构相同）：
+ * ```asm
+ * ; —— 免费卡 ——
+ * if (toll >= pi*2000 || toll > cash + bank) {
+ *     if (has_card(payer, 0x14)) {            ; 20 = 免费卡
+ *         if (call 0x444a60(payer, owner, toll) == 1)
+ *             ebp = 0;                         ; ★ 租金归零
+ *     }
+ * }
+ * ; —— 嫁祸卡（同样的门槛再判一次）——
+ * if (toll >= pi*2000 || toll > cash + bank) {
+ *     if (has_card(payer, 0x13)) {            ; 19 = 嫁祸卡
+ *         eax = call 0x44476a(payer, ?, toll);
+ *         if (eax != -1) edi = eax;            ; ★ 换付款人，不是免单
+ *     }
+ * }
+ * ```
+ *
+ * ⚠️ 两张卡的效果**根本不同**：免费卡把金额抹成 0，嫁祸卡金额照旧、
+ * 只是换人来付。先前把它们笼统当作「防御卡」是不准确的。
+ *
+ * ⚠️ 门槛被**独立判断两次**。免费卡若把租金抹成 0，第二次判断时
+ * `toll` 已是 0，两个条件都不成立，嫁祸卡自然不会再触发——
+ * 这是原版的自然结果，不需要额外的互斥逻辑。
+ *
+ * @param scapegoatPicker 嫁祸目标由外部（UI/AI）给出，返回 -1 表示放弃。
+ *                        目标选择是表现层职责（C-ARC-2），core 只用结果。
+ */
+export function checkTollPassives(
+  toll: number,
+  payer: Player,
+  priceIndex: number,
+  scapegoatPicker: () => number = () => -1,
+): TollPassiveOutcome {
+  if (tollTriggersPassive(toll, payer, priceIndex)) {
+    if (playerHasCard(payer, PASSIVE_CARDS.FREE)) return { kind: 'free' };
+  }
+  // ★ 门槛重新判一次；若上一步已免单，这里的 toll 传进来就是 0
+  if (tollTriggersPassive(toll, payer, priceIndex)) {
+    if (playerHasCard(payer, PASSIVE_CARDS.SCAPEGOAT)) {
+      const picked = scapegoatPicker();
+      if (picked !== -1) return { kind: 'scapegoat', newPayer: picked };
+    }
+  }
+  return { kind: 'none' };
+}

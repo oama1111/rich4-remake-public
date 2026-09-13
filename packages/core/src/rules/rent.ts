@@ -13,6 +13,7 @@ import type { Player } from '../state/types.ts';
 import type { LandInfo } from '../loaders/map.ts';
 import { calculateLandToll } from './toll.ts';
 import { transferMoney, type Company } from './payment.ts';
+import { adjustTollByGod } from './god-toll.ts';
 
 export interface RentShare {
   /** 收款方玩家下标 */
@@ -23,8 +24,12 @@ export interface RentShare {
 
 export interface RentResult {
   players: Player[];
-  /** 租金总额（地主份 + 同盟份） */
+  /** 租金总额（地主份 + 同盟份，且已按付款方身上的神明调整） */
   total: number;
+  /** 神明调整**之前**的租金，用于对照与提示 */
+  baseTotal: number;
+  /** 是否被神明改过金额 */
+  godAdjusted: boolean;
   /** 实际分账明细，无同盟时只有一项 */
   shares: RentShare[];
   /** 付款方是否因此破产 */
@@ -54,13 +59,17 @@ export interface RentResult {
  * 数学上 `总额 × (同盟份/总额)` 本该恰好等于同盟份，但单精度舍入
  * 会让结果偏离，**这个偏差是原版行为的一部分**（C-FID-2）。
  */
-export function allianceShareOf(ownerToll: number, allyToll: number): number {
+export function allianceShareOf(
+  ownerToll: number,
+  allyToll: number,
+  payable: number = ownerToll + allyToll,
+): number {
   const total = ownerToll + allyToll;
   if (total === 0) return 0;
   // @source fdivp 后 fstp dword —— 单精度（包在 Math.fround 里，C-DET-3 允许）
   const ratio = Math.fround(allyToll / total);
   // @source fild(总额) / fmul / call 0x457dbc / fistp —— 乘回再取整
-  return Math.round(Math.fround(total * ratio));
+  return Math.round(Math.fround(payable * ratio));
 }
 
 /**
@@ -95,9 +104,15 @@ export function collectRent(
 ): RentResult {
   const ownerIdx = land.owner - 1;
   const owner = players[ownerIdx];
-  if (land.owner === 0 || owner === undefined || ownerIdx === payer) {
-    return { players: [...players], total: 0, shares: [], bankrupted: false };
-  }
+  const none = (): RentResult => ({
+    players: [...players],
+    total: 0,
+    baseTotal: 0,
+    godAdjusted: false,
+    shares: [],
+    bankrupted: false,
+  });
+  if (land.owner === 0 || owner === undefined || ownerIdx === payer) return none();
 
   // 连锁店分支不按地块名分组 @source cmp byte [land+0x18], 0 / jne
   const districtName = land.type === 0 ? land.name : null;
@@ -108,9 +123,16 @@ export function collectRent(
   const allyToll =
     allyId === 0 ? 0 : calculateLandToll(lands, allyId, priceIndex, districtName);
 
-  const total = ownerToll + allyToll;
+  const baseTotal = ownerToll + allyToll;
+  if (baseTotal === 0) return none();
+
+  // ★ 神明在**付款之前**调整金额（VA 0x0041d709），
+  //   财神减免、穷神加成、福神不影响。
+  const payerPlayer = players[payer];
+  const god = adjustTollByGod(baseTotal, payerPlayer?.godInfo ?? 0);
+  const total = god.toll;
   if (total === 0) {
-    return { players: [...players], total: 0, shares: [], bankrupted: false };
+    return { ...none(), total: 0, baseTotal, godAdjusted: god.changed };
   }
 
   const shares: RentShare[] = [];
@@ -124,7 +146,8 @@ export function collectRent(
     bankrupted = r.bankrupted;
     shares.push({ payee: ownerIdx, amount: r.paid });
   } else {
-    const allyGets = allianceShareOf(ownerToll, allyToll);
+    // 比例由两份**原始**租金决定，再套到（可能被神明改过的）实付总额上
+    const allyGets = allianceShareOf(ownerToll, allyToll, total);
     const ownerGets = total - allyGets;
     // ★ 顺序照搬：先付地主（0x00419fb4），再付同盟（0x0041a003）
     const r1 = transferMoney(next, companies, 0, payer, ownerIdx, ownerGets, 0);
@@ -138,7 +161,7 @@ export function collectRent(
     bankrupted = r1.bankrupted || r2.bankrupted;
   }
 
-  return { players: next, total, shares, bankrupted };
+  return { players: next, total, baseTotal, godAdjusted: god.changed, shares, bankrupted };
 }
 
 /**
