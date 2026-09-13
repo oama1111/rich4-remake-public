@@ -63,7 +63,10 @@ export interface FortuneEffectContext {
   occupancy?: readonly number[];
   /** `0x44b896` 的结果；2 表示金额翻倍 */
   multiplier?: number;
-  /** 坐牢／住院的天数——由事件文案给出，core 不臆测 */
+  /**
+   * 覆盖坐牢／住院天数。通常**不必给**——天数已在事件表的 `literal` 里
+   * （公告阶段 `mov [0x48c5b4], imm` 的字面常量）。
+   */
   days?: number;
 }
 
@@ -83,8 +86,9 @@ export const IMPLEMENTED_FORTUNE_IDS: readonly number[] = FORTUNE_EVENTS.filter(
  *            现金不够会动存款，两者都空则破产
  * - `give` → `receiveMoney(current, 金额)` 直接加现金，不可能破产
  *
- * 坐牢（33..36）与住院（12/13）走 `confine`，但**天数必须由调用方给出**
- * ——那几个数字在事件文案里，而文案不入库（C-LEG-2）。
+ * 坐牢（33..36）与住院（12/13）走 `confine`，天数取自事件表的 `literal`：
+ * 酒醉大鬧 3 天、防礙風化 5 天、走私毒品 7 天、販賣大補帖 9 天；
+ * 就醫与住院各 3 天。
  */
 export function applyFortuneEffect(
   eventId: number,
@@ -108,10 +112,12 @@ export function applyFortuneEffect(
   const amount = eventAmount(entry, ctx.priceIndex) * (ctx.multiplier === DOUBLE_AMOUNT ? 2 : 1);
 
   if (entry.effects.includes('prison') || entry.effects.includes('hospital')) {
-    if (ctx.days === undefined) return { ...base, unimplemented: true };
+    // 天数取自事件表的 literal（公告阶段写进 [0x48c5b4] 的字面常量）
+    const days = ctx.days ?? entry.literal;
+    if (days === null || days === undefined) return { ...base, unimplemented: true };
     const kind = entry.effects.includes('prison') ? 'prison' : 'hospital';
-    const out = confine(players, occupancy, kind, ctx.currentPlayer, ctx.days);
-    return { ...base, players: out.players, occupancy: out.occupancy };
+    const out = confine(players, occupancy, kind, ctx.currentPlayer, days);
+    return { ...base, players: out.players, occupancy: out.occupancy, amount: days };
   }
 
   // ★ 冒貸：直接给 loan 加钱，不经任何付款通道

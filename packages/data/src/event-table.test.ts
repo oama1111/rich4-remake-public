@@ -10,6 +10,7 @@ import {
   eventAmount,
   fortuneEvent,
   newsEvent,
+  stripEventCode,
 } from './event-table.ts';
 
 const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
@@ -126,5 +127,136 @@ describe('查找', () => {
   it('越界返回 undefined', () => {
     expect(newsEvent(99)).toBeUndefined();
     expect(fortuneEvent(-1)).toBeUndefined();
+  });
+});
+
+// ============================================================
+//  ★ 文案入库后，把「代码推导」与「文案语义」对照起来
+// ============================================================
+
+describe('★ 文案与 exe 中的字节一致', () => {
+  run('每条 text 都等于 textVa 处的 BIG5 串', () => {
+    const d = readFileSync(EXE);
+    let checked = 0;
+    for (const e of [...NEWS_EVENTS, ...FORTUNE_EVENTS]) {
+      if (e.textVa === 0) continue;
+      const o = dataOff(e.textVa);
+      const end = d.indexOf(0, o);
+      const raw = new TextDecoder('big5').decode(d.subarray(o, end));
+      expect(raw, `event va=0x${e.va.toString(16)}`).toBe(e.text);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(60);
+  });
+
+  it('每条文案都以 #NNNN 编号开头', () => {
+    for (const e of [...NEWS_EVENTS, ...FORTUNE_EVENTS]) {
+      if (e.text === '') continue;
+      expect(e.text, `event ${e.id}`).toMatch(/^#\d{4}/);
+    }
+  });
+
+  it('stripEventCode 去掉编号前缀', () => {
+    expect(stripEventCode('#0178abc')).toBe('abc');
+    expect(stripEventCode('没有前缀')).toBe('没有前缀');
+  });
+});
+
+describe('★ 可达性分析出的方向与文案语义吻合', () => {
+  /** 文案里出现这些词就意味着玩家**收钱** */
+  const GAIN = ['撿到', '獲得', '中獎', '領取', '獎勵', '補助', '紅利'];
+  /** 出现这些词意味着玩家**付钱** */
+  const LOSS = ['罰款', '損失', '繳交', '花費', '付保險'];
+
+  it('文案含「撿到/中獎/領取…」的事件，方向都是 give', () => {
+    let n = 0;
+    for (const e of [...NEWS_EVENTS, ...FORTUNE_EVENTS]) {
+      if (e.factor === null) continue;
+      if (!GAIN.some((w) => e.text.includes(w))) continue;
+      expect(e.effects, `${e.text}`).toContain('give');
+      n++;
+    }
+    expect(n).toBeGreaterThanOrEqual(8);
+  });
+
+  it('文案含「罰款/損失/繳交…」的事件，方向都是 pay', () => {
+    let n = 0;
+    for (const e of [...NEWS_EVENTS, ...FORTUNE_EVENTS]) {
+      if (e.factor === null) continue;
+      if (!LOSS.some((w) => e.text.includes(w))) continue;
+      expect(e.effects, `${e.text}`).toContain('pay');
+      n++;
+    }
+    expect(n).toBeGreaterThanOrEqual(6);
+  });
+
+  it('★ 文案含「坐牢」的事件都走 prison', () => {
+    const jail = [...NEWS_EVENTS, ...FORTUNE_EVENTS].filter((e) => e.text.includes('坐牢'));
+    expect(jail.length).toBe(5);
+    for (const e of jail) expect(e.effects, e.text).toContain('prison');
+  });
+
+  it('★ 文案含「住院/就醫」的事件都走 hospital', () => {
+    const hosp = [...FORTUNE_EVENTS].filter(
+      (e) => e.text.includes('住院') || e.text.includes('就醫'),
+    );
+    expect(hosp.length).toBe(2);
+    for (const e of hosp) expect(e.effects, e.text).toContain('hospital');
+  });
+});
+
+describe('★ 文案里的字面数字与代码推导互证', () => {
+  it('news[29] 文案写「坐牢５天」，与 send_to_prison 调用点的 5 一致', () => {
+    expect(newsEvent(29)!.text).toContain('坐牢５天');
+  });
+
+  it('★ 带 %d 的金额事件都有 factor', () => {
+    for (const e of FORTUNE_EVENTS) {
+      // 只看明确以「元」计价的
+      if (!/%d元/.test(e.text)) continue;
+      expect(e.factor, `${e.text}`).not.toBeNull();
+    }
+  });
+
+  it('★ 有 factor 的事件，文案里必有 %d 占位符', () => {
+    for (const e of [...NEWS_EVENTS, ...FORTUNE_EVENTS]) {
+      if (e.factor === null || e.text === '') continue;
+      expect(e.text, `event factor=${e.factor}`).toContain('%d');
+    }
+  });
+});
+
+describe('★ literal 与文案占位符一致', () => {
+  it('有 literal 的事件，文案里必有 %d', () => {
+    for (const e of [...NEWS_EVENTS, ...FORTUNE_EVENTS]) {
+      if (e.literal === null) continue;
+      expect(e.text, `event literal=${e.literal}`).toContain('%d');
+    }
+  });
+
+  it('★ literal 与 factor 互斥——%d 要么来自字面常量，要么来自物价指数', () => {
+    for (const e of [...NEWS_EVENTS, ...FORTUNE_EVENTS]) {
+      expect(e.literal !== null && e.factor !== null, `event ${e.id}`).toBe(false);
+    }
+  });
+
+  it('★ 坐牢事件的刑期：3 / 5 / 7 / 9 天', () => {
+    expect([33, 34, 35, 36].map((id) => fortuneEvent(id)!.literal)).toEqual([3, 5, 7, 9]);
+  });
+
+  it('★ literal 的单位由文案决定——fortune[8] 是百分比不是天数', () => {
+    const e = fortuneEvent(8)!;
+    expect(e.literal).toBe(10);
+    expect(e.text).toContain('％'); // 「損失股票10％」
+    expect(e.text).not.toContain('天');
+  });
+
+  it('走 prison/hospital 的事件都带 literal（天数）', () => {
+    for (const e of [...NEWS_EVENTS, ...FORTUNE_EVENTS]) {
+      if (!e.effects.includes('prison') && !e.effects.includes('hospital')) continue;
+      // news[29] 的天数是写死在文案里的全角「５」，没有 %d，故 literal 为 null
+      if (!e.text.includes('%d')) continue;
+      expect(e.literal, `${e.text}`).not.toBeNull();
+    }
   });
 });

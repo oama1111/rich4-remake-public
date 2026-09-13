@@ -99,22 +99,29 @@ describe('★ 倍率修正', () => {
 });
 
 describe('★ 坐牢／住院', () => {
-  it('天数由调用方给出', () => {
-    const r = applyFortuneEffect(33, ctx({ days: 5 }));
-    expect(r.players[0]!.blocking.inPrison).toBe(5);
+  it('★ 天数取自事件表的 literal，不必由调用方给', () => {
+    const r = applyFortuneEffect(33, ctx());
+    expect(r.unimplemented).toBe(false);
+    expect(r.players[0]!.blocking.inPrison).toBe(3);
     expect(r.occupancy[0]).toBe(1);
   });
 
+  it('★ 四个坐牢事件刑期各不相同：3 / 5 / 7 / 9 天', () => {
+    const days = [33, 34, 35, 36].map(
+      (id) => applyFortuneEffect(id, ctx()).players[0]!.blocking.inPrison,
+    );
+    expect(days).toEqual([3, 5, 7, 9]);
+  });
+
   it('fortune[12] 走医院而不是监狱', () => {
-    const r = applyFortuneEffect(12, ctx({ days: 3 }));
+    const r = applyFortuneEffect(12, ctx());
     expect(r.players[0]!.blocking.inHospital).toBe(3);
     expect(r.players[0]!.blocking.inPrison).toBe(0);
   });
 
-  it('★ 不给天数则标记未实现，而不是瞎猜一个默认值', () => {
-    const r = applyFortuneEffect(33, ctx());
-    expect(r.unimplemented).toBe(true);
-    expect(r.players[0]!.blocking.inPrison).toBe(0);
+  it('调用方仍可覆盖天数', () => {
+    const r = applyFortuneEffect(33, ctx({ days: 99 }));
+    expect(r.players[0]!.blocking.inPrison).toBe(99);
   });
 });
 
