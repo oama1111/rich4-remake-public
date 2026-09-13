@@ -30,6 +30,7 @@ export * from './rules/blocking.ts';
 export * from './rules/confinement.ts';
 export * from './rules/blessing.ts';
 export * from './rules/percentage.ts';
+export * from './rules/tools.ts';
 export * from './events/deck.ts';
 export * from './events/news.ts';
 export * from './events/fortune.ts';

@@ -19,6 +19,12 @@ import { CARD_IMPLS } from '@rich4/data';
 import { FORTUNE_DECK_SIZE, NEWS_DECK_SIZE, createDeck } from '../events/deck.ts';
 import { WatcomRng } from '../rng/watcom.ts';
 import { CONFINEMENT_SLOTS } from './confinement.ts';
+import {
+  MAX_TOOL_ID,
+  STARTING_TOOLS,
+  emptyTools,
+  giveTool,
+} from './tools.ts';
 
 /** 一名参战者的配置 */
 export interface PlayerSetup {
@@ -45,19 +51,21 @@ export interface NewGameOptions {
 /**
  * 每种卡片的初始张数。
  *
- * ⚠️ **尚未从原版取得**。原版的牌堆数量表位置未定位，此处先给一个
- * 中性的均等值，并在 `docs/known-deviations.md` 留了条目。
- * 它只影响抽卡概率分布，不影响任何已验证的规则。
+ * ⚠️ **尚未从原版取得**：牌堆数量表的位置未定位。
+ * 它只影响抽卡的概率分布，不影响任何已验证的规则；
+ * 一旦定位到真值应立刻替换。见 docs/known-deviations.md 的 Q-INIT-1。
  */
-export const PLACEHOLDER_CARDS_PER_KIND = 8;
+export const UNVERIFIED_CARDS_PER_KIND = 8;
 
 /**
  * 起始节点。
  *
- * ⚠️ 原版的起点由地图数据里某个标记决定，**尚未定位**。
- * 暂取 1 号节点；`startNodeId` 可覆盖。
+ * ⚠️ **尚未从原版取得**：地图头里没有起点字段（实测 0001.bin 的
+ * 0x28 之后全为 0），开局代码里也查不到对 `node_id` 的写入。
+ * 起点可能由某个特殊格类型或首次移动决定，待查。
+ * 见 docs/known-deviations.md 的 Q-INIT-2。
  */
-export const PLACEHOLDER_START_NODE = 1;
+export const UNVERIFIED_START_NODE = 1;
 
 function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, startNode: number): Player {
   const money = startingMoney(setup.character, fund);
@@ -92,7 +100,8 @@ function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, star
     godInfo: 0,
     f64: 0,
     cards: [],
-    tools: new Array<number>(13).fill(0),
+    // 道具已移到 GameState 的全局表；此处保留空数组仅为兼容
+    tools: [],
     totalWinterSleepDays: 0,
     alliedPlayer: 0,
     alliedDays: 0,
@@ -119,7 +128,7 @@ export function newGame(opts: NewGameOptions): GameState {
     initialFund = DEFAULT_INITIAL_FUND,
     mode = 'single',
     seed = 1,
-    startNodeId = PLACEHOLDER_START_NODE,
+    startNodeId = UNVERIFIED_START_NODE,
   } = opts;
 
   if (players.length < 2 || players.length > 4) {
@@ -135,6 +144,20 @@ export function newGame(opts: NewGameOptions): GameState {
   const newsDeck = createDeck(rng, NEWS_DECK_SIZE);
   const fortuneDeck = createDeck(rng, FORTUNE_DECK_SIZE);
 
+  // ★ 开局给每人发 機器娃娃/路障/地雷/定時炸彈 各一个
+  //   @source 开局循环 VA 0x0040727f 起对每个在场玩家的四次 give_tool
+  //   ⚠️ 库存初值未知，故设为足够大，行为等同不限量——
+  //     宁可不限，也不要错误地拒发。
+  let tools = emptyTools(players.length);
+  let toolStock = new Array<number>(MAX_TOOL_ID + 1).fill(Number.MAX_SAFE_INTEGER);
+  for (let i = 0; i < players.length; i++) {
+    for (const toolId of STARTING_TOOLS) {
+      const r = giveTool(tools, toolStock, i, toolId);
+      tools = r.tools;
+      toolStock = r.stock;
+    }
+  }
+
   return {
     mode,
     rngState: rng.getState(),
@@ -149,7 +172,7 @@ export function newGame(opts: NewGameOptions): GameState {
     dice: [],
     stepsRemaining: 0,
     stepsTotal: 0,
-    cardAmount: new Array<number>(CARD_IMPLS.length).fill(PLACEHOLDER_CARDS_PER_KIND),
+    cardAmount: new Array<number>(CARD_IMPLS.length).fill(UNVERIFIED_CARDS_PER_KIND),
     landOwner: new Array<number>(landCount).fill(0),
     landLevel: new Array<number>(landCount).fill(0),
     turnCount: 0,
@@ -159,5 +182,7 @@ export function newGame(opts: NewGameOptions): GameState {
     prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     lastEvent: null,
+    tools,
+    toolStock,
   };
 }

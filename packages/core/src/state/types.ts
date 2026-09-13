@@ -108,7 +108,13 @@ export interface Player {
   f64: number;
   /** 手牌（卡片 id，1 基） */
   cards: number[];
-  /** 各道具持有量，下标 = 道具 id - 1 */
+  /**
+   * ⚠️ **已废弃**，保留仅为兼容尚未迁移的调用方。
+   *
+   * 道具在原版里是**全局数组** `[0x0049915b]`（步长 15/人），
+   * 不在玩家结构体内——与手牌 `rich4_player_cards` 同理。
+   * 正确的读写走 `GameState.tools` 与 `rules/tools.ts`。
+   */
   tools: number[];
   /** 冬眠天数累计 @source player_info +0x42 total_winter_sleep_days */
   totalWinterSleepDays: number;
@@ -236,6 +242,22 @@ export interface GameState {
 
   /** 最近一次事件的记录，供表现层显示；不参与规则 */
   lastEvent: { kind: 'news' | 'fortune'; id: number } | null;
+
+  /**
+   * 全局道具表，`tools[player * 15 + toolId]`。
+   * @source [0x0049915b]，步长 15，见 rules/tools.ts
+   */
+  tools: number[];
+
+  /**
+   * 道具的**全局库存**，下标 = 道具编号。
+   * 只有编号 ≤ 8 的道具受此限制。
+   * @source [0x0049731f]
+   *
+   * ⚠️ 初始值**尚未从原版取得**，暂以一个足够大的数代替，
+   * 使其行为等同于「不限量」——这样至少不会错误地拒发道具。
+   */
+  toolStock: number[];
 }
 
 // ============================================================

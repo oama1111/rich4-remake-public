@@ -7,9 +7,10 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
-import { newGame, PLACEHOLDER_CARDS_PER_KIND } from './new-game.ts';
+import { newGame, UNVERIFIED_CARDS_PER_KIND } from './new-game.ts';
 import { DEFAULT_INITIAL_FUND, GAME_INITIAL_FUNDS, startingMoney } from './setup.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
+import { STARTING_TOOLS, toolCount, toolsOf } from './tools.ts';
 
 const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -73,10 +74,27 @@ describe('初始状态', () => {
   run('牌堆按占位值填满', () => {
     const s = newGame({ map: loadMap(), players: setup(2) });
     expect(s.cardAmount).toHaveLength(30);
-    expect(s.cardAmount.every((v) => v === PLACEHOLDER_CARDS_PER_KIND)).toBe(true);
+    expect(s.cardAmount.every((v) => v === UNVERIFIED_CARDS_PER_KIND)).toBe(true);
   });
 
-  run('★ 无人持牌持道具、无债务、无阻碍', () => {
+  run('★ 开局每人发 機器娃娃/路障/地雷/定時炸彈 各一个', () => {
+    const s = newGame({ map: loadMap(), players: setup(4) });
+    for (let i = 0; i < 4; i++) {
+      for (const toolId of STARTING_TOOLS) {
+        expect(toolCount(s.tools, i, toolId), `玩家${i} 道具${toolId}`).toBe(1);
+      }
+      // 只发这四样，其余为 0
+      expect([...toolsOf(s.tools, i).keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 4]);
+    }
+  });
+
+  run('★ 道具槽位是 15/人——13 号核子飛彈不会越界', () => {
+    const s = newGame({ map: loadMap(), players: setup(4) });
+    expect(s.tools).toHaveLength(4 * 15);
+    expect(toolCount(s.tools, 3, 13)).toBe(0); // 能读到而不是 undefined
+  });
+
+  run('★ 无人持牌、无债务、无阻碍', () => {
     const s = newGame({ map: loadMap(), players: setup(4) });
     for (const p of s.players) {
       expect(p.cards).toEqual([]);
