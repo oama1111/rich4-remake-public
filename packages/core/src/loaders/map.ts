@@ -118,9 +118,27 @@ export interface LandInfo {
   landPrice: number;
   /** @source land.h 0x1e */
   housePrice: number;
+  /**
+   * **按等级索引的过路费表**，6 项（等级 0..5），uint16。
+   *
+   * ⚠️ `rich4-re/csrc/land.h` **没有**这个字段，是本项目从过路费函数
+   * 反推并以真实地图数据验证得出的。
+   *
+   * @source rich4_player_core_actions.asm:229 `_rich4_calculate_land_toll`
+   *   ```asm
+   *   mov al, byte [ebx + 0x1a]        ; al = level
+   *   mov ax, word [ebx + eax*2 + 0x20] ; 按等级查表
+   *   ```
+   * 实测（地图0）：台北市 [500,1200,3000,7500,16000,30000]，
+   *   新竹市 [200,500,1200,2800,6000,10000]，第 6、7 项恒为 0。
+   */
+  rentByLevel: number[];
   /** TODO: semantics unknown @source land.h 0x30 名为 flast */
   flast: number;
 }
+
+/** 地块等级上限：`level < 5` 才可续建 @source rich4.asm fcn_0040b110 */
+export const MAX_LAND_LEVEL = 5;
 
 /** 设施地块 @source rich4-re/csrc/land.h struct business_land */
 export interface FacilityInfo {
@@ -261,6 +279,9 @@ export function parseMap(data: Uint8Array): Rich4Map {
       level: data[o + 0x1a] ?? 0,
       landPrice: view.getUint16(o + 0x1c, true),
       housePrice: view.getUint16(o + 0x1e, true),
+      rentByLevel: Array.from({ length: MAX_LAND_LEVEL + 1 }, (_, lv) =>
+        view.getUint16(o + 0x20 + lv * 2, true),
+      ),
       flast: u32(o + 0x30),
     });
   }
