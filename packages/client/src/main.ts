@@ -79,6 +79,15 @@ let ground: ImageBitmap | null = null;
 let showGround = true;
 const groundOffset = { x: 0, y: 0 };
 
+/**
+ * 镜头跟随当前玩家。
+ *
+ * 原版的视野就是**跟着棋子走的**（截图里看到的是 1:1 的局部，
+ * 全局靠右下角的小地图），故默认开启。
+ * 用户一旦自己拖动或缩放视图就自动关掉——别跟玩家抢镜头。
+ */
+let followPlayer = true;
+
 /** 走过的 action —— 回放、联机对账、以及排错都靠它 */
 const history: Action[] = [];
 
@@ -145,6 +154,7 @@ function requestRender(): void {
   requestAnimationFrame(() => {
     renderQueued = false;
     resizeCanvas();
+    if (followPlayer) centerOnCurrentPlayer();
     renderer.draw({
       map,
       state,
@@ -167,6 +177,29 @@ function requestRender(): void {
       requestRender();
     }
   });
+}
+
+/**
+ * 把镜头平滑地移到当前玩家身上。
+ *
+ * 用逼近而非瞬移：棋子一步一步走，镜头硬跟会晃得厉害。
+ * 系数 0.18 是「跟得上但不抖」的经验值，不是原版常量。
+ */
+function centerOnCurrentPlayer(): void {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return;
+  const node = map.nodes[me.nodeId - 1];
+  if (node === undefined) return;
+  const wantX = node.x - canvas.clientWidth / 2 / camera.scale;
+  const wantY = node.y - canvas.clientHeight / 2 / camera.scale;
+  const k = 0.18;
+  camera = {
+    ...camera,
+    x: camera.x + (wantX - camera.x) * k,
+    y: camera.y + (wantY - camera.y) * k,
+  };
+  // 还没到位就继续要下一帧，避免停在半路
+  if (Math.abs(wantX - camera.x) > 0.5 || Math.abs(wantY - camera.y) > 0.5) requestRender();
 }
 
 function resizeCanvas(): void {
@@ -324,6 +357,7 @@ function bindInput(): void {
     const r = canvas.getBoundingClientRect();
     const before = screenToMap(e.clientX - r.left, e.clientY - r.top, camera);
     const k = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    followPlayer = false;
     camera = { ...camera, scale: Math.min(8, Math.max(0.2, camera.scale * k)) };
     const after = screenToMap(e.clientX - r.left, e.clientY - r.top, camera);
     // 以光标为锚点缩放：保持光标下的地图点不动
@@ -340,6 +374,7 @@ function bindInput(): void {
   });
   window.addEventListener('mousemove', (e) => {
     if (drag === null) return;
+    followPlayer = false;
     camera = {
       ...camera,
       x: camera.x - (e.clientX - drag.x) / camera.scale,
@@ -358,6 +393,10 @@ function bindInput(): void {
       case 'g':
         showGround = !showGround;
         log(showGround ? '▶ 显示底图' : '⏸ 隐藏底图');
+        break;
+      case 'f':
+        followPlayer = !followPlayer;
+        log(followPlayer ? '▶ 镜头跟随当前玩家' : '⏸ 镜头自由');
         break;
       case '[':
         groundOffset.x -= step;
@@ -410,7 +449,9 @@ async function boot(): Promise<void> {
     renderer = new BoardRenderer(ctx, sprites);
     hud = new Hud(hudCtx, sprites);
     resizeCanvas();
-    camera = fitCamera(map, canvas.clientWidth, canvas.clientHeight);
+    // ★ 原版是 1:1 的局部视野，全局看右下角小地图
+    camera = { ...fitCamera(map, canvas.clientWidth, canvas.clientHeight), scale: 1 };
+    centerOnCurrentPlayer();
 
     // 开发期调试出口：在控制台里能直接看状态与相机，排错方便
     if (import.meta.env.DEV) {

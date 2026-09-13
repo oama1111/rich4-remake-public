@@ -315,22 +315,43 @@ export class BoardRenderer {
     }
   }
 
+  /**
+   * 格子标记。
+   *
+   * ★ 画成**菱形**而不是圆：底图本身就是等距视角，格线是菱形的
+   *   （原版截图里草地上那圈白色虚线就是），圆形叠上去会明显出戏。
+   *   长宽比 2:1 是等距投影的标准比例。
+   *
+   * ⚠️ 这仍是**占位图形**，不是原版美术：原版每格的底色由绘制槽的
+   *   `[0x48a852]`（归属）与 `[0x48a853]`（朝向）决定，具体画法还没解。
+   *   有主时按玩家色填充，无主时按格子类型给个中性色。
+   */
   #drawNodes(map: Rich4Map, state: GameState, cam: Camera, hover: number | null): void {
     const ctx = this.#ctx;
-    // 缩到很小时仍保证可见——原版是像素画，这里先用几何图形占位
-    const r = Math.max(5, cam.scale * 9);
+    // 等距菱形：半宽 2 × 半高
+    const hw = Math.max(7, cam.scale * 13);
+    const hh = hw / 2;
+
+    const diamond = (x: number, y: number): void => {
+      ctx.beginPath();
+      ctx.moveTo(x, y - hh);
+      ctx.lineTo(x + hw, y);
+      ctx.lineTo(x, y + hh);
+      ctx.lineTo(x - hw, y);
+      ctx.closePath();
+    };
 
     for (const n of map.nodes) {
       const p = nodeToScreen(n, cam);
       const owner = ownerOfNode(n, state);
 
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-      ctx.fillStyle =
-        owner >= 0 ? PLAYER_COLORS[owner] ?? '#888' : nodeBaseColor(n);
+      diamond(p.x, p.y);
+      ctx.fillStyle = owner >= 0 ? (PLAYER_COLORS[owner] ?? '#888') : nodeBaseColor(n);
+      ctx.globalAlpha = owner >= 0 ? 0.85 : 0.55;
       ctx.fill();
-      // 描边让相邻节点在密集处也能分开
-      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.globalAlpha = 1;
+      // 描边让相邻格子在密集处也能分开
+      ctx.strokeStyle = 'rgba(0,0,0,0.45)';
       ctx.lineWidth = 1;
       ctx.stroke();
 
