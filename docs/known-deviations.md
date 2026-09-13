@@ -182,3 +182,59 @@ if (新指数 > 当前指数) 当前指数 = 新指数                  // 只�
 ⚠️ 此解释**尚未证实**。若后续能用原版实机复现「破产当日资产暴涨」
 的场景并观察指数，即可确认或推翻。在此之前，代码按已被 SAVE1 验证的
 公式实现，不做任何迁就 Save0 的特殊处理。
+
+---
+
+## 逆向源自身的错误（本项目已按汇编校正）
+
+### E-001：`csrc/fortune.c` 的 case 15 转录错误
+
+`rich4-re/csrc/fortune.c` 的 `fortune_check()` 中：
+
+```c
+case 15:
+    ch = players[current_player].traffic_method;
+    if (ch > 2) return 0;
+    if (ch == 0) { *v = 15; }        // ← 映射到自己
+    else if (ch == 2) { *v = 16; }
+    return 1;
+```
+
+这破坏了 14/15/16 三个事件的对称性：
+
+| case | traffic=0 | traffic=1 | traffic=2 |
+|---|---|---|---|
+| 14 | 不变(14) | → 15 | → 16 |
+| 15 | **C 版写 → 15** | 不变(15) | → 16 |
+| 16 | → 14 | → 15 | 不变(16) |
+
+按 14 与 16 的规律，case 15 在 `traffic == 0` 时应映射到 **14**。
+
+**汇编证据**（`rich4.asm` `loc_0044bdd1`，即 case 15 的分支）：
+
+```asm
+loc_0044bdd1:
+mov  ch, byte [eax + (_rich4_all_players_state + 17)]   ; traffic_method
+cmp  ch, 2
+ja   short loc_0044be0d                                  ; > 2 → 不可行
+test ch, ch
+jne  short loc_0044bde8
+loc_0044bde0:
+mov  dword [edx], 0xe                                    ; ★ *v = 14，不是 15
+```
+
+另一佐证：整个 `fcn_0044bb4b` 中对 `[edx]` 的写入**只有 7 条指令**
+（`0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x10`），而 C 版在 case 14/15/16 里写了 6 处，
+说明这三个 case 在汇编中共用同一组写入路径。
+
+**统一规律**：
+```
+case 14/15/16:
+    if (traffic_method > 2) return 不可行;
+    eventId = 14 + traffic_method;
+```
+
+**处置**：本项目按**汇编**实现（`packages/core/src/events/fortune.ts`），
+并有专门测试 `case 15 + traffic=0 映射到 14` 固化。
+
+> 建议后续向上游 `rich4-re` 反馈此转录错误（DEVELOPMENT_PLAN.md R6）。
