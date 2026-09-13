@@ -30,3 +30,5 @@ export * from './cards/buy-land.ts';
 export * from './cards/alliance.ts';
 export * from './cards/average-poor.ts';
 export * from './cards/passive.ts';
+export * from './cards/land-cards.ts';
+export * from './cards/tax.ts';
