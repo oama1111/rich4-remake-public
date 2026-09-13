@@ -8,6 +8,7 @@
 
 import type { Player } from '../state/types.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
+import { debitPlayer } from './payment.ts';
 
 // ============================================================
 //  付款级联
@@ -43,33 +44,15 @@ export interface PaymentResult {
 export function payMoney(player: Player, amount: number): PaymentResult {
   if (amount <= 0) return { player, paid: 0, shortfall: 0, bankrupt: false };
 
-  const afterCash = player.cash - amount;
-  if (afterCash >= 0) {
-    return {
-      player: { ...player, cash: afterCash },
-      paid: amount,
-      shortfall: 0,
-      bankrupt: false,
-    };
-  }
-
-  // 现金不足：余下部分从存款扣（afterCash 为负）
-  const afterBank = player.moneyInBank + afterCash;
-  if (afterBank >= 0) {
-    return {
-      player: { ...player, cash: 0, moneyInBank: afterBank },
-      paid: amount,
-      shortfall: 0,
-      bankrupt: false,
-    };
-  }
-
-  // 存款也不足 → 破产
+  // ★ 级联本身由 rules/payment.ts 的 debitPlayer 唯一实现，
+  //   本函数只是「单方扣款」这一常见场景的便捷包装。
+  //   `monthlyPaid` 的累计**不在**此处发生——那属于 transferMoney 的职责。
+  const out = debitPlayer(player.cash, player.moneyInBank, amount, false);
   return {
-    player: { ...player, cash: 0, moneyInBank: 0 },
-    paid: amount + afterBank, // 实际付出 = 全部现金 + 全部存款
-    shortfall: -afterBank,
-    bankrupt: true,
+    player: { ...player, cash: out.cash, moneyInBank: out.bank },
+    paid: out.paid,
+    shortfall: amount - out.paid,
+    bankrupt: out.bankrupted,
   };
 }
 
@@ -151,6 +134,9 @@ export function markPlayerBankrupt(player: Player): Player {
     totalWinterSleepDays: 0,
     alliedPlayer: 0,
     alliedDays: 0,
+    // +0x5c / +0x60 同在 memset 区间内
+    monthlyPaid: 0,
+    monthlyReceived: 0,
     // 保留：index / character / nodeId / lastNodeId / direction / ndices
     // 保留：cards / tools（不在结构体内，见上方说明）
   };

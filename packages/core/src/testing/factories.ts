@@ -7,7 +7,7 @@
  */
 import type { Player, GameState } from '../state/types.ts';
 import { WHO_PLAYS_HUMAN } from '../state/types.ts';
-import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
+import type { LandInfo, FacilityInfo, MapNode } from '../loaders/map.ts';
 
 export function makePlayer(over: Partial<Player> = {}): Player {
   return {
@@ -40,6 +40,8 @@ export function makePlayer(over: Partial<Player> = {}): Player {
     totalWinterSleepDays: 0,
     alliedPlayer: 0,
     alliedDays: 0,
+    monthlyPaid: 0,
+    monthlyReceived: 0,
     ...over,
   };
 }
@@ -61,6 +63,25 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     landOwner: [],
     landLevel: [],
     turnCount: 0,
+    ...over,
+  };
+}
+
+/** 最小可用地图节点 */
+export function makeNode(over: Partial<MapNode> = {}): MapNode {
+  return {
+    id: 1,
+    x: 0,
+    y: 0,
+    name: '',
+    adjacent: [],
+    type: 0,
+    ref: { kind: 'special' },
+    decorIndex: 0,
+    flags: 0,
+    specialKind: 0,
+    noObjects: false,
+    walkable: true,
     ...over,
   };
 }

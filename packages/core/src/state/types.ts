@@ -114,6 +114,16 @@ export interface Player {
   /** 同盟对象：0 表示无，否则为玩家 index + 1 */
   alliedPlayer: number;
   alliedDays: number;
+  /**
+   * 本月支出累计 @source player_info +0x5c（`add [player*0x68 + 0x496bc4], ebx`）
+   *
+   * ★ 这两个字段修正了 `rich4-re/asm/rich4_player_info.h` 的错误：
+   * 它把这一段记成 `hostility[6]`，实为 `hostility[4]` + 本月支出/收入。
+   * 佐证来自 `pay_money`（VA 0x0041d2c6）对二者的读写——见 rules/payment.ts。
+   */
+  monthlyPaid: number;
+  /** 本月收入累计 @source player_info +0x60（`add [player*0x68 + 0x496bc8], ebx`） */
+  monthlyReceived: number;
 }
 
 // ============================================================
