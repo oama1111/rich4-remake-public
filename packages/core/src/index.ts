@@ -11,3 +11,4 @@ export * from './rules/toll.ts';
 export * from './rules/land.ts';
 export * from './rules/special-square.ts';
 export * from './rules/monthly.ts';
+export * from './rules/wealth.ts';
