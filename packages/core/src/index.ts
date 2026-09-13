@@ -32,3 +32,4 @@ export * from './cards/average-poor.ts';
 export * from './cards/passive.ts';
 export * from './cards/land-cards.ts';
 export * from './cards/tax.ts';
+export * from './cards/swap-and-stock.ts';
