@@ -222,3 +222,44 @@ export function commercialUnitPrice(commercialField0x24: number): number {
 
 /** 空仓 */
 export const EMPTY_HOLDING: StockHolding = { amount: 0, avgCost: 0 };
+
+/**
+ * 破产清算：把某人手上所有股票全部卖掉，**钱进公库**。
+ *
+ * @source `_rich4_player_bankrupt` VA 0x0040d16f：
+ * ```asm
+ * edi = player_stocks[player][i].amount
+ * test edi,edi / je 下一支          ; 空仓跳过
+ * push 0                            ; ★ destination = 0 → 进公库
+ * push edi                          ; 全部股数
+ * push ebx                          ; 股票下标
+ * push ecx                          ; 玩家
+ * call _rich4_sell_stock
+ * ```
+ *
+ * ★ 「进公库」这一条要紧：破产者的股票不是凭空蒸发，而是变成公库里的钱，
+ *   之后会由樂透开奖派给某个活人。资金在局内是守恒的。
+ */
+export function liquidateStocks(
+  holdings: readonly StockHolding[],
+  stocks: readonly StockState[],
+  player: Player,
+): { holdings: StockHolding[]; stocks: StockState[]; proceeds: number } {
+  const outHoldings = holdings.map((h) => ({ ...h }));
+  // ★ 卖出会把股数**还回流通盘**（`add word [+8], si`）——
+  //   破产清算同样如此，否则那些股票就凭空从市场上消失了。
+  const outStocks = stocks.map((s) => ({ ...s }));
+  let proceeds = 0;
+
+  for (let i = 0; i < outHoldings.length; i++) {
+    const h = outHoldings[i]!;
+    const s = outStocks[i];
+    // @source test edi,edi / je —— 空仓跳过
+    if (h.amount === 0 || s === undefined) continue;
+    const r = sellStock(player, h, s, h.amount, 'pool');
+    outHoldings[i] = r.holding;
+    outStocks[i] = r.stock;
+    proceeds += r.amount;
+  }
+  return { holdings: outHoldings, stocks: outStocks, proceeds };
+}

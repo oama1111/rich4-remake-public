@@ -23,6 +23,8 @@ import {
   resolveBankruptcyOutcome,
 } from '../rules/bankruptcy.ts';
 import { LOTTERY_DRAW_DAY, drawLottery, releaseTickets } from '../places/lottery.ts';
+import { buyStock, liquidateStocks, sellStock } from '../places/stock.ts';
+import type { TradeResult } from '../places/stock.ts';
 import {
   refreshTradableShares,
   tickStockCountdowns,
@@ -361,6 +363,10 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       return { ...paid, landLevel, phase: 'turnEnd' };
     }
 
+    case 'buyStock':
+    case 'sellStock':
+      return tradeStock(state, action);
+
     case 'declineDecision': {
       if (state.phase !== 'awaitingDecision') return state;
       return { ...state, phase: 'turnEnd' };
@@ -411,6 +417,55 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       };
     }
   }
+}
+
+/**
+ * 买卖股票。
+ *
+ * ★ 交易走的是「柜台」路径（`market`）：买入**从存款扣**、卖出**进存款**
+ *   （@source `sub dword [player+32], eax` / `add dword [player+32], eax`），
+ *   与地图上的上市企业买入（从现金扣）是两回事。
+ *
+ * ⚠️ 不做任何「该不该买」的判断——那是策略。这里只拦**不合法**的：
+ *   下标越界、股数非正、可流通股不够、钱不够、持股不够。
+ *   原版 UI 在按钮层面就不让你越界，故这些检查在原版里体现为
+ *   界面约束而非函数内的分支；本引擎必须自己兜住，否则
+ *   一个构造出来的网络消息就能凭空造钱。
+ */
+function tradeStock(
+  state: GameState,
+  action: { type: 'buyStock' | 'sellStock'; stock: number; shares: number },
+): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || !isAlive(me)) return state;
+  const stock = state.market.stocks[action.stock];
+  const held = state.holdings[state.currentPlayer]?.[action.stock];
+  if (stock === undefined || held === undefined) return state;
+  if (!Number.isInteger(action.shares) || action.shares <= 0) return state;
+
+  const commit = (r: TradeResult): GameState => ({
+    ...state,
+    players: state.players.map((p, i) => (i === state.currentPlayer ? r.player : p)),
+    market: {
+      ...state.market,
+      stocks: state.market.stocks.map((s, i) => (i === action.stock ? r.stock : s)),
+    },
+    holdings: state.holdings.map((row, i) =>
+      i === state.currentPlayer ? row.map((h, j) => (j === action.stock ? r.holding : h)) : row,
+    ),
+  });
+
+  if (action.type === 'buyStock') {
+    // 可流通股不够就买不到
+    if (action.shares > stock.shares) return state;
+    const cost = Math.trunc(action.shares * stock.price);
+    // @source 柜台买入扣的是存款
+    if (cost > me.moneyInBank) return state;
+    return commit(buyStock(me, held, stock, action.shares, 'market'));
+  }
+
+  if (action.shares > held.amount) return state;
+  return commit(sellStock(me, held, stock, action.shares, 'bank'));
 }
 
 /**
@@ -824,9 +879,29 @@ export function applyBankruptcy(state: GameState, playerIndex: number): GameStat
     return { ...next, phase: 'gameOver' };
   }
 
-  // 正常路径：释放名下地产，交给后续拍卖
+  // 正常路径：变卖持股（钱进公库）、释放名下地产，交给后续拍卖
+  //
+  // @source 破产处理 VA 0x0040d16f 的循环：对每支非空仓
+  //   `sell_stock(player, i, 全部股数, 0)`，末位参数 0 即**进公库**。
+  //
+  // ⚠️ 该循环在原版里看不出被终局分支绕过（`cmp esi, 3` 那处是后面的
+  //   地产拍卖，不是终局判定）。此处沿用与变卖手牌/道具相同的处置——
+  //   放在非终局路径上，依据是 rules/bankruptcy.ts 记的 Save0.dat 实证
+  //   （最后破产者仍持有 2 张手牌）。终局时钱进不进公库已无影响，
+  //   故这一处的不确定性不改变任何可观测结果。
+  const liquidated = liquidateStocks(
+    next.holdings[playerIndex] ?? [],
+    next.market.stocks,
+    next.players[playerIndex]!,
+  );
   const landOwner = next.landOwner.map((v) => (v === playerIndex + 1 ? 0 : v));
-  return { ...next, landOwner };
+  return {
+    ...next,
+    landOwner,
+    holdings: next.holdings.map((row, i) => (i === playerIndex ? liquidated.holdings : row)),
+    market: { ...next.market, stocks: liquidated.stocks },
+    pool: next.pool + liquidated.proceeds,
+  };
 }
 
 /**

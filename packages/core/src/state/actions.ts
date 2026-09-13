@@ -48,6 +48,22 @@ export type Action =
   /** 放弃当前的买地/盖房机会 */
   | { type: 'declineDecision' }
 
+  /**
+   * 买入股票。
+   *
+   * ★ 股市**不是一个落点**：原版的证券交易所是随时可开的 HUD 界面
+   *   （买卖的三处调用点 0x0042afc6 / 0x0042c72d / 0x0042d033 都在
+   *   UI 代码段，不在落点处理里）。故它不走 `pending` 那一套，
+   *   而是当前玩家回合内的一个独立 action。
+   *
+   * @param stock  股票下标 0..11
+   * @param shares 股数
+   */
+  | { type: 'buyStock'; stock: number; shares: number }
+
+  /** 卖出股票 @param stock 股票下标 0..11 */
+  | { type: 'sellStock'; stock: number; shares: number }
+
   /** 结束当前玩家回合，轮转到下一位 */
   | { type: 'endTurn' };
 
