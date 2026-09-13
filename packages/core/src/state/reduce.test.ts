@@ -22,6 +22,7 @@ function makePlayer(index: number, over: Partial<Player> = {}): Player {
     nodeId: 1,
     lastNodeId: 0,
     direction: 0,
+    trafficMethod: 0,
     ndices: 1,
     cash: 100000,
     moneyInBank: 0,

@@ -68,6 +68,8 @@ export interface Player {
   /** 上一个节点号，用于判定前进方向 */
   lastNodeId: number;
   direction: number;
+  /** 移动方式 @source player_info +0x11 traffic_method（新聞事件 16/17 依此筛选） */
+  trafficMethod: number;
   /** 骰子数 1..3 */
   ndices: number;
   /** 现金，可为负 @source player_info +0x1c (int32) */

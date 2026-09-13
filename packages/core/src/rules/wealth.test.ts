@@ -19,7 +19,7 @@ const SAVE0 = `${ROOT}/Rich4/Save0.dat`;
 function player(over: Partial<Player> = {}): Player {
   return {
     index: 0, character: 0, whoPlays: WHO_PLAYS_HUMAN,
-    nodeId: 1, lastNodeId: 0, direction: 0, ndices: 1,
+    nodeId: 1, lastNodeId: 0, direction: 0, trafficMethod: 0, ndices: 1,
     cash: 0, moneyInBank: 0, loan: 0, points: 0,
     blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 },
     godInfo: 0, cards: [], tools: new Array<number>(13).fill(0),

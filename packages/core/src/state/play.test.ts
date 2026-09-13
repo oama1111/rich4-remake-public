@@ -18,7 +18,7 @@ const d = existsSync(MAP0) ? describe : describe.skip;
 function makePlayer(index: number, over: Partial<Player> = {}): Player {
   return {
     index, character: index, whoPlays: WHO_PLAYS_HUMAN,
-    nodeId: 1, lastNodeId: 0, direction: 0, ndices: 1,
+    nodeId: 1, lastNodeId: 0, direction: 0, trafficMethod: 0, ndices: 1,
     cash: 500_000, moneyInBank: 0, loan: 0, points: 0,
     blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 },
     godInfo: 0, cards: [], tools: new Array<number>(13).fill(0),
