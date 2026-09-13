@@ -28,8 +28,12 @@ const determinismRules = {
       message: 'C-DET-2: core 内禁止 new Date()。',
     },
     {
-      selector: "BinaryExpression[operator='/'] > :matches(Identifier, MemberExpression)",
-      message: 'C-DET-3: 金额计算必须用整数。除法请用 Math.floor/Math.trunc 显式取整，并注明原版的取整方式。',
+      // 拦截**裸除法**。直接包在 Math.trunc/floor/ceil/round 里的除法是允许的
+      // —— 那正是本规则要求的写法（原版 idiv 即向零取整，对应 Math.trunc）。
+      selector:
+        ":not(CallExpression[callee.object.name='Math'][callee.property.name=/^(trunc|floor|ceil|round)$/]) > BinaryExpression[operator='/']",
+      message:
+        'C-DET-3: 金额计算必须用整数。除法必须直接包在 Math.trunc/floor 里显式取整，并注明原版的取整方式（原版 idiv = 向零取整 = Math.trunc）。',
     },
   ],
 };
