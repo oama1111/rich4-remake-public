@@ -126,6 +126,16 @@ export function stateFingerprint(state: {
   }[];
   landOwner: readonly number[];
   landLevel: readonly number[];
+  /** 公库 —— 樂透奖池与破产清算都汇到这里 */
+  pool: number;
+  /** 樂透号码表 */
+  lottery: readonly number[];
+  /** 道具持有表 */
+  tools: readonly number[];
+  /** 股市 —— 只取收盘价与流通量，历史不入指纹（144 天太长且可由价格推出） */
+  market: { stocks: readonly { price: number; shares: number }[] };
+  /** 各玩家持仓 */
+  holdings: readonly (readonly { amount: number }[])[];
 }): string {
   const parts: (string | number)[] = [
     state.turnCount,
@@ -140,6 +150,16 @@ export function stateFingerprint(state: {
     parts.push(p.index, p.cash, p.moneyInBank, p.loan, p.nodeId, p.whoPlays);
   }
   parts.push('|', ...state.landOwner, '|', ...state.landLevel);
+  // ★ 下面这几项是后来补进引擎的，一度不在指纹里——那意味着
+  //   两端在公库、樂透、股市上分歧时**校验和照样相等**，
+  //   desync 会一直拖到有人破产才暴露。指纹必须覆盖所有会变的共享状态。
+  parts.push('|', state.pool);
+  parts.push('|', ...state.lottery);
+  parts.push('|', ...state.tools);
+  parts.push('|');
+  for (const st of state.market.stocks) parts.push(st.price, st.shares);
+  parts.push('|');
+  for (const row of state.holdings) for (const h of row) parts.push(h.amount);
   return fnv1a(parts.join(','));
 }
 

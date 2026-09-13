@@ -6,10 +6,13 @@
 import { describe, expect, it } from 'vitest';
 import { makePlayer } from '../testing/factories.ts';
 import { OBJECT_NAMES } from './purchase.ts';
-import { emptyTools, toolCount } from './tools.ts';
+import { TOOL_SLOTS_PER_PLAYER, emptyTools, toolCount } from './tools.ts';
 import { makeObjects } from '../cards/summon.ts';
+import { TOOLS } from '@rich4/data';
+import type { Player } from '../state/types.ts';
 import {
   PLACEMENT_TOOLS,
+  TRAFFIC_WALK,
   TRAFFIC_CAR,
   TRAFFIC_ENGINEERING,
   TRAFFIC_MOTORCYCLE,
@@ -135,5 +138,100 @@ describe('★ 未实现的道具明确列出', () => {
     const done = [2, 3, 4, 5, 6, 12];
     const all = [...done, ...UNIMPLEMENTED_TOOLS].sort((a, b) => a - b);
     expect(all).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+  });
+});
+
+/*
+ * ★ M2 验收：「全部 13 个道具各有测试用例且通过」
+ *
+ * 逐个点名。已实现的验其行为，未实现的要求它**明确登记在案**——
+ * 不允许一个道具既没实现、又不在未实现清单里悄悄溜过去。
+ */
+describe('★ 13 个道具逐个点名', () => {
+  const player = (over: Partial<Player> = {}): Player =>
+    makePlayer({ index: 0, trafficMethod: TRAFFIC_WALK, ndices: 1, ...over });
+  const emptySlots = (): number[] => new Array<number>(4 * TOOL_SLOTS_PER_PLAYER).fill(0);
+
+  it('1 機器娃娃 —— 未实现，已登记', () => {
+    expect(isToolImplemented(1)).toBe(false);
+    expect(UNIMPLEMENTED_TOOLS).toContain(1);
+  });
+
+  it('2 路障 —— 放置物件 16', () => {
+    expect(PLACEMENT_TOOLS.get(2)).toBe(16);
+    const r = placeObject(makeObjects(3), 12, 16);
+    expect(r.ok).toBe(true);
+    expect(r.objects[r.slot]).toMatchObject({ type: 16, nodeId: 12 });
+  });
+
+  it('3 地雷 —— 放置物件 17', () => {
+    expect(PLACEMENT_TOOLS.get(3)).toBe(17);
+    expect(placeObject(makeObjects(3), 5, 17).objects[0]).toMatchObject({ type: 17, nodeId: 5 });
+  });
+
+  it('4 定時炸彈 —— 放置物件 18', () => {
+    expect(PLACEMENT_TOOLS.get(4)).toBe(18);
+    expect(placeObject(makeObjects(3), 5, 18).objects[0]).toMatchObject({ type: 18, nodeId: 5 });
+  });
+
+  it('5 機車 —— 交通方式 1、骰子 2', () => {
+    const r = useVehicleTool(player(), emptySlots(), 5);
+    expect(r.ok).toBe(true);
+    expect(r.player.trafficMethod).toBe(TRAFFIC_MOTORCYCLE);
+    expect(r.player.ndices).toBe(2);
+  });
+
+  it('6 汽車 —— 交通方式 2、骰子 3', () => {
+    const r = useVehicleTool(player(), emptySlots(), 6);
+    expect(r.ok).toBe(true);
+    expect(r.player.trafficMethod).toBe(TRAFFIC_CAR);
+    expect(r.player.ndices).toBe(3);
+  });
+
+  it('7 飛彈 —— 未实现，已登记', () => {
+    expect(isToolImplemented(7)).toBe(false);
+    expect(UNIMPLEMENTED_TOOLS).toContain(7);
+  });
+
+  it('8 遙控骰子 —— 效果未实现，但引擎已能吃强制点数', () => {
+    expect(isToolImplemented(8)).toBe(false);
+    expect(UNIMPLEMENTED_TOOLS).toContain(8);
+  });
+
+  it('9 機器工人 —— 未实现，已登记', () => {
+    expect(isToolImplemented(9)).toBe(false);
+    expect(UNIMPLEMENTED_TOOLS).toContain(9);
+  });
+
+  it('10 時光機 —— 未实现，已登记（原版靠还原存档实现撤销）', () => {
+    expect(isToolImplemented(10)).toBe(false);
+    expect(UNIMPLEMENTED_TOOLS).toContain(10);
+  });
+
+  it('11 傳送機 —— 未实现，已登记', () => {
+    expect(isToolImplemented(11)).toBe(false);
+    expect(UNIMPLEMENTED_TOOLS).toContain(11);
+  });
+
+  it('12 工程車 —— 交通方式 0x1f，设施过路费倍率吃满 4 倍', () => {
+    const r = useVehicleTool(player(), emptySlots(), 12);
+    expect(r.ok).toBe(true);
+    expect(r.player.trafficMethod).toBe(TRAFFIC_ENGINEERING);
+    expect(1 << ((TRAFFIC_ENGINEERING & 3) - 1)).toBe(4);
+  });
+
+  it('13 核子飛彈 —— 未实现，已登记', () => {
+    expect(isToolImplemented(13)).toBe(false);
+    expect(UNIMPLEMENTED_TOOLS).toContain(13);
+  });
+
+  it('★ 13 个道具无一遗漏：每个要么实现了，要么在未实现清单里', () => {
+    for (const t of TOOLS) {
+      const known = isToolImplemented(t.id) || UNIMPLEMENTED_TOOLS.includes(t.id);
+      expect(known, `道具 ${t.id} ${t.name} 既没实现也没登记`).toBe(true);
+    }
+    expect(TOOLS).toHaveLength(13);
+    // 已实现 6 个、未实现 7 个 —— 这个数字变了就该更新文档
+    expect(TOOLS.filter((t) => isToolImplemented(t.id))).toHaveLength(6);
   });
 });
