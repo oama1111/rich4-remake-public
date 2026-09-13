@@ -102,6 +102,7 @@ export function makeFacility(over: Partial<FacilityInfo> = {}): FacilityInfo {
   return {
     id: 1, x: 0, y: 0, name: '测试设施', type: 0, owner: 0, level: 0,
     priceStatus: 0, landPrice: 5000, housePrice: 1000,
+    rateByLevel: [1000, 2000, 4000, 8000, 16000, 32000],
     ...over,
   };
 }

@@ -16,7 +16,7 @@ import { parseMap } from '../loaders/map.ts';
 import { parseSave } from '../loaders/save.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
 import type { Player } from '../state/types.ts';
-import { makePlayer as basePlayer } from '../testing/factories.ts';
+import { makePlayer as basePlayer, makeFacility } from '../testing/factories.ts';
 
 /** 本文件显式声明默认资金（0/0），避免依赖共用工厂的默认值 */
 const makePlayer = (over: Partial<Player> = {}): Player =>
@@ -36,12 +36,9 @@ function land(over: Partial<LandInfo> = {}): LandInfo {
   };
 }
 
-function facility(over: Partial<FacilityInfo> = {}): FacilityInfo {
-  return {
-    id: 1, x: 0, y: 0, name: 'F', type: 0, owner: 0, level: 0,
-    priceStatus: 0, landPrice: 5000, housePrice: 1000, ...over,
-  };
-}
+/** 委托共享工厂：新增字段时不必逐个测试文件补 */
+const facility = (over: Partial<FacilityInfo> = {}): FacilityInfo =>
+  makeFacility({ name: 'F', ...over });
 
 describe('calculatePlayerWealth', () => {
   it('基础：现金 + 存款 − 贷款', () => {

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { isNewsFeasible, CONSTRAINED_NEWS_IDS } from './news.ts';
 import type { NewsContext } from './news.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
-import { makePlayer } from '../testing/factories.ts';
+import { makePlayer, makeFacility } from '../testing/factories.ts';
 import { WHO_PLAYS_DEAD } from '../state/types.ts';
 import { NEWS_DECK_SIZE } from './deck.ts';
 
@@ -16,9 +16,9 @@ function land(over: Partial<LandInfo> = {}): LandInfo {
     landPrice: 1000, housePrice: 200, rentByLevel: [0, 0, 0, 0, 0, 0], flast: 0, ...over,
   };
 }
-function facility(over: Partial<FacilityInfo> = {}): FacilityInfo {
-  return { id: 1, x: 0, y: 0, name: 'F', type: 0, owner: 0, level: 0, priceStatus: 0, landPrice: 0, housePrice: 0, ...over };
-}
+/** 委托共享工厂：新增字段时不必逐个测试文件补 */
+const facility = (over: Partial<FacilityInfo> = {}): FacilityInfo =>
+  makeFacility({ name: 'F', landPrice: 0, housePrice: 0, ...over });
 function ctx(over: Partial<NewsContext> = {}): NewsContext {
   return {
     players: [makePlayer()], lands: [], facilities: [],

@@ -20,7 +20,7 @@ import {
 } from './bankruptcy.ts';
 import { OCCUPIED_MASK } from '../loaders/map.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
-import { makePlayer } from '../testing/factories.ts';
+import { makePlayer, makeFacility } from '../testing/factories.ts';
 import { isAlive } from '../state/types.ts';
 import { parseSave } from '../loaders/save.ts';
 import { parseMap } from '../loaders/map.ts';
@@ -37,9 +37,9 @@ function land(over: Partial<LandInfo> = {}): LandInfo {
   };
 }
 
-function facility(over: Partial<FacilityInfo> = {}): FacilityInfo {
-  return { id: 1, x: 0, y: 0, name: 'F', type: 0, owner: 0, level: 0, priceStatus: 0, landPrice: 5000, housePrice: 1000, ...over };
-}
+/** 委托共享工厂：新增字段时不必逐个测试文件补 */
+const facility = (over: Partial<FacilityInfo> = {}): FacilityInfo =>
+  makeFacility({ name: 'F', ...over });
 
 describe('付款级联', () => {
   it('现金足够时只扣现金', () => {

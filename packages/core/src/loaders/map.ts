@@ -157,8 +157,28 @@ export interface FacilityInfo {
   priceStatus: number;
   /** @source land.h 0x22 */
   landPrice: number;
-  /** @source land.h 0x24 */
+  /**
+   * @source land.h 0x24
+   * ⚠️ 这是 `rateByLevel[0]` 的别名，保留是为了兼容既有调用
+   *（`rules/wealth.ts` 的设施估值仍按 `level × housePrice + landPrice`，
+   * 那是**另一处**原版公式，与过路费无关）。
+   */
   housePrice: number;
+  /**
+   * **按等级索引的费率表**，6 项 uint16，起于 `+0x24`。
+   *
+   * @source VA 0x0041a429（设施过路费 type 1/2 分支）：
+   * ```asm
+   * al  = byte [facility + 0x1a]   ; level
+   * eax = eax + eax                ; ×2
+   * eax = eax + edx                ; + 基址
+   * bx  = word [eax + 0x24]        ; ★ word[facility + 0x24 + level*2]
+   * ```
+   *
+   * ⚠️ `rich4-re/csrc/land.h` 只记了单个 `house_price`，
+   * 与住宅 `+0x20` 的 `rentByLevel` 是同一类遗漏。
+   */
+  rateByLevel: number[];
 }
 
 /** 上市企业 */
@@ -301,6 +321,11 @@ export function parseMap(data: Uint8Array): Rich4Map {
       priceStatus: data[o + 0x1c] ?? 0,
       landPrice: view.getUint16(o + 0x22, true),
       housePrice: view.getUint16(o + 0x24, true),
+      // ★ +0x24 其实是**按等级索引的费率表**，不是单个房价。
+      //   见 rules/facility.ts 对 VA 0x0041a429 的说明。
+      rateByLevel: Array.from({ length: 6 }, (_, lv) =>
+        view.getUint16(o + 0x24 + lv * 2, true),
+      ),
     });
   }
 

@@ -86,22 +86,53 @@ export function adjustTollByGod(toll: number, godInfo: number): GodTollResult {
 }
 
 /**
- * 设施过路费与**本次掷骰的总步数**成正比。
+ * 设施过路费的基数。
+ * @source `mov eax, 1 / shl eax, cl` 后的移位链凑出 `500 × k`：
+ * `k → 4k → 3k → 24k → 25k → 100k → 400k → 500k`
+ */
+export const FACILITY_TOLL_BASE = 500;
+
+/**
+ * 由 `traffic_method` 低 2 位得出的费率倍数 `k = 1 << ((tm & 3) - 1)`。
+ *
+ * @source VA 0x0041a4e4：
+ * ```asm
+ * mov  dh, byte [player + 0x11]   ; traffic_method
+ * test dh, 3
+ * je   0x41a581                   ; ★ 低 2 位为 0 → 跳过计算，ebp 仍是 0
+ * mov  al, dh / and al, 3
+ * cl = al - 1
+ * mov eax, 1 / shl eax, cl        ; k = 1 << (tm&3 - 1) → 1 / 2 / 4
+ * ```
+ *
+ * ⚠️ 费率取决于**付款方的交通工具**，不是设施本身的属性。
+ * 低 2 位为 0（没有交通工具）时**完全不收费**。
+ */
+export function trafficMultiplier(trafficMethod: number): number {
+  const low = trafficMethod & 3;
+  if (low === 0) return 0; // @source test dh,3 / je → ebp 保持 xor 出来的 0
+  return 1 << (low - 1);
+}
+
+/**
+ * 设施过路费。
  *
  * @source VA 0x0041a520：
  * ```asm
  * mov  ebp, dword [0x48bafc]      ; ★ 本次掷骰总步数 steps_total
- * imul ebp, eax                   ; × 由设施属性算出的单位费率
+ * imul ebp, eax                   ; × 500k
  * imul ebp, dword [0x4990e8]      ; × 物价指数
  * ```
  *
+ * 即 `步数 × 500 × k × 物价指数`。
+ *
  * 这是设施与住宅的根本差别：住宅按**同区地块的等级租金之和**算，
- * 设施按**你这一掷走了多少步**算。
+ * 与怎么走到的无关；设施按**你这一掷走了多少步**、**坐什么交通工具**算。
  */
 export function facilityToll(
-  unitRate: number,
   stepsTotal: number,
+  trafficMethod: number,
   priceIndex: number,
 ): number {
-  return stepsTotal * unitRate * priceIndex;
+  return stepsTotal * FACILITY_TOLL_BASE * trafficMultiplier(trafficMethod) * priceIndex;
 }
