@@ -13,3 +13,4 @@ export * from './rules/special-square.ts';
 export * from './rules/monthly.ts';
 export * from './rules/wealth.ts';
 export * from './rules/setup.ts';
+export * from './rules/bankruptcy.ts';
