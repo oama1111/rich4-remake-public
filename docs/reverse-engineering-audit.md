@@ -5,7 +5,7 @@
 ## 结论先行
 
 `rich4-re` 是**极有价值的线索来源**，没有它这个项目根本无从下手。
-但它**不是真值**——已发现至少 **6 处实质性错误**，类型各异（工具缺陷、
+但它**不是真值**——已发现至少 **7 处实质性错误**，类型各异（工具缺陷、
 链接配置错误、结构体漏字段、字段误标、代码转录错误）。
 
 **唯一的真值是原版 `Rich4/rich4.exe` 本身。**
@@ -22,6 +22,7 @@
 | 4 | `asm/rich4_player_info.h` | **字段误标** | `hostility[6]` 实为 `hostility[4]` + 2 个独立月度金额字段 | 已以存档实证纠正 |
 | 5 | `csrc/fortune.c` | **代码转录错误** | case 15 写 `*v = 15`，汇编实为 `*v = 14` | 已按汇编实现 |
 | 6 | `asm/rich4_stocks.h` | **字段类型误标** | `player_stock_info { int amount; int _; }` —— 第二字段实为 **float 持仓成本均价**，汇编以 `fmul`/`fstp` 按浮点读写 | 已按汇编实现 |
+| 7 | `csrc/cards.c`（2018 旧版） | **公式错误** | 均富卡的敌意增量写作 `average / 100`，原版实为 `(cash − average) / 100` | 已按 exe 反汇编实现 |
 
 > 另有两处**疑似**误标待确认：
 > - `total_winter_sleep_days`（+0x42）在月度评分中被当作「本月倒楣天数」折算（Q15）
@@ -39,7 +40,8 @@
 | **A** | 原版存档 `Save0.dat` / `SAVE1.DAT` | **真值** | 结构与数值的实证 |
 | **A** | 原版资源文件 `*.mkf` | **真值** | 格式与素材的实证 |
 | B | `rich4-re/asm/*.asm` 反汇编 | 高 | 由 exe 机械转换而来，但**标注**可能错 |
-| C | `rich4-re/csrc/*.c` 人工还原 | 中 | 可读性最好，但**已证实存在转录错误** |
+| C | `rich4-re/asm/rich4_*.c` 人工还原（**2026 新版，在维护**） | 中高 | 上游仍在持续把 asm 转 C，最近一次 2026-09-10 |
+| C | `rich4-re/csrc/*.c` 人工还原（**2018 旧版**） | 中低 | ⚠️ **与新版存在矛盾**，卡片实现尤其不可靠 |
 | C | `rich4-re/*.h` 结构体定义 | 中 | **已证实存在漏字段与误标** |
 | D | `rich4-re/docs/*.txt` | 参考 | 多数正确，但属人工笔记 |
 
@@ -84,6 +86,40 @@ pat = bytes([0x01, 0xc8, 0x02, 0x02])
 
 自洽佐证：`0x47fdf2 + 30*8 = 0x47fee2` 恰为道具表地址，两表在内存中相邻。
 
+### ★ 终极裁决手段：直接反汇编 exe
+
+`tools/disasm.py` 可直接反汇编原版可执行文件，是本项目的最终真值来源：
+
+```bash
+python3 tools/disasm.py table card        # 打印卡片效果函数指针表
+python3 tools/disasm.py card 1 80         # 反汇编第 1 张卡（均富卡）的实现
+python3 tools/disasm.py va 0x00442f4d     # 反汇编任意虚拟地址
+python3 tools/disasm.py find 01c80202     # 按字节模式搜索
+```
+
+已内置的函数指针表：
+
+| 表 | VA | 项数 |
+|---|---|---|
+| `card_functions[]` | 0x475d5c | 31（第 0 项为 NULL 占位） |
+| `events_calls_table[]`（新闻） | 0x475e24 | 36 |
+| `fortune_call_table[]`（命运） | 0x475ef0 | 37 |
+| `magic_house_functions[]` | 0x475724 | 12（每项 16 字节） |
+
+**错误 #7 就是靠它裁决的**：两代 C 版对均富卡的敌意增量各执一词，
+反汇编 `0x00442171` 处为
+
+```asm
+mov  edx, [eax + 0x496b84]   ; players[i].cash
+cmp  esi, edx                 ; esi = average
+jge  0x442190                 ; average >= cash → 跳过
+sub  edx, esi                 ; ★ cash - average
+mov  ecx, 0x64                ; 100
+idiv ecx                      ; ★ (cash - average) / 100
+```
+
+结论：2026 新版正确，2018 旧版错误。
+
 ### PE 映射注意事项
 
 `rich4.exe` 的节表 **VirtualSize 全为 0**（老 Watcom 链接器特征），
@@ -98,8 +134,8 @@ DGROUP: VA 0x463000, RawPtr 398848, RawSize 158720
 ## 四、待补验证
 
 - [x] 股票数值表 —— 已改为直接从 exe 生成，不经 C 转录
-- [ ] `csrc/cards.c`（1385 行卡片实现）——尚未与汇编交叉核对，
-      实现各卡效果时需逐张核对 `rich4_card_*.asm`
+- [ ] 30 张卡片效果 —— **每张都必须用 `tools/disasm.py card N` 逐张裁决**，
+      因为两代 C 版互相矛盾，且 2018 版已证实有错。进度见 `packages/core/src/cards/`
 - [ ] `csrc/loadsave.c` 的存档**写入**路径（目前只验证了读取）
 - [ ] Q15：`total_winter_sleep_days` 是否为误标
 - [ ] Q17：物价指数在 `Save0.dat` 的差异（需原版实机复现）
