@@ -34,6 +34,7 @@ import { applyAllianceCard } from './alliance.ts';
 import { applyTurnCard, applySwapHouseCard } from './turn-and-house.ts';
 import { applyTaxCard } from './tax.ts';
 import { applyDispelCard } from './dispel.ts';
+import { applyFrameCard } from './frame.ts';
 import { applyBuyLandCard } from './buy-land.ts';
 import { applyRebuildCard } from './rebuild.ts';
 import { applySwapLandCard } from './swap-and-stock.ts';
@@ -75,11 +76,16 @@ export interface UseCardContext {
   nodes: readonly MapNode[];
   currentPlayer: number;
   priceIndex: number;
+  /**
+   * 嫁祸卡的新目标选择器（陷害卡等有害卡在被嫁祸时调用）。
+   * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
+   */
+  scapegoatPicker?: (from: number) => number;
 }
 
 /** 本项目已实现效果、可经本入口使用的卡片编号 */
 export const IMPLEMENTED_CARD_IDS: readonly number[] = [
-  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 22, 26, 27, 28, 29, 30,
+  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 17, 22, 26, 27, 28, 29, 30,
 ];
 
 /** 取玩家当前**所站地块**（不是住宅地则返回 null） */
@@ -196,6 +202,15 @@ export function useCard(
       players = r.players;
       defended = r.defended;
       hostilityDeltas = [{ from: targetPlayer, to: cur, delta: r.hostilityDelta }];
+      break;
+    }
+    case 17: {
+      // 陷害卡：嫁祸的新目标由外部给出；core 只用结果（C-ARC-2）
+      const r = applyFrameCard(players, cur, target, ctx.priceIndex, ctx.scapegoatPicker);
+      if (!r.ok) return fail(r.error ?? 'noEffect');
+      players = r.players;
+      hostilityDeltas = r.hostilityDeltas;
+      defended = r.outcome?.kind === 'absolved';
       break;
     }
     case 29: {

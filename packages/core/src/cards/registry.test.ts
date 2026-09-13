@@ -232,3 +232,44 @@ describe('敌意真正落到状态上', () => {
     expect(r.players[1]!.alliedPlayer).toBe(0);
   });
 });
+
+describe('★ 陷害卡经统一入口', () => {
+  const withCard = () =>
+    makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [17] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+      priceIndex: 2,
+    });
+
+  it('目标入狱，敌意落到状态上，卡片被消耗', () => {
+    const r = useCard(withCard(), 17, { kind: 'player', index: 2 });
+    expect(r.ok).toBe(true);
+    expect(r.players[2]!.blocking.inPrison).toBe(5);
+    expect(r.players[2]!.hostility[0]).toBe(2 * 150);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('★ 不能指向自己（0xe0c0710 属 player 类，不含自己）', () => {
+    const r = useCard(withCard(), 17, { kind: 'player', index: 0 });
+    expect(r.error).toBe('cannotTargetSelf');
+  });
+
+  it('目标持免罪卡时记为被防下', () => {
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [17] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2, cards: [21] }),
+        makePlayer({ index: 3 }),
+      ],
+    });
+    const r = useCard(ctx, 17, { kind: 'player', index: 2 });
+    expect(r.ok).toBe(true);
+    expect(r.defended).toBe(true);
+    expect(r.players[2]!.blocking.inPrison).toBe(0);
+  });
+});

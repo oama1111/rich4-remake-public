@@ -78,7 +78,7 @@ export const CARD_IMPLS: readonly CardImpl[] = [
   { id: 14, name: '停留卡', va: 0x00443f80, selection: 'ui',   selectionParam: 0xe0c0010, passive: false, status: 'done' },
   { id: 15, name: '冬眠卡', va: 0x004440ea, selection: 'none', selectionParam: null,       passive: false, status: 'done' },
   { id: 16, name: '夢遊卡', va: 0x004441dc, selection: 'ui',   selectionParam: 0xe0c0710, passive: false, status: 'todo' },
-  { id: 17, name: '陷害卡', va: 0x004444bf, selection: 'ui',   selectionParam: 0xe0c0710, passive: false, status: 'todo' },
+  { id: 17, name: '陷害卡', va: 0x004444bf, selection: 'ui',   selectionParam: 0xe0c0710, passive: false, status: 'done' },
   // ── 以下四张为**被动卡**：主动使用直接返回 0 ──
   { id: 18, name: '復仇卡', va: PASSIVE_STUB_VA, selection: 'none', selectionParam: null, passive: true, status: 'todo' },
   { id: 19, name: '嫁禍卡', va: PASSIVE_STUB_VA, selection: 'none', selectionParam: null, passive: true, status: 'todo' },

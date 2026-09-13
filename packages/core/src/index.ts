@@ -43,4 +43,5 @@ export * from './cards/tax.ts';
 export * from './cards/swap-and-stock.ts';
 export * from './cards/turn-and-house.ts';
 export * from './cards/dispel.ts';
+export * from './cards/frame.ts';
 export * from './cards/registry.ts';
