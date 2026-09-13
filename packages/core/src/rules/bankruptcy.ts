@@ -145,6 +145,7 @@ export function markPlayerBankrupt(player: Player): Player {
     },
     daysRejectedByBank: 0,
     godInfo: 0,
+    totalWinterSleepDays: 0,
     alliedPlayer: 0,
     alliedDays: 0,
     // 保留：index / character / nodeId / lastNodeId / direction / ndices

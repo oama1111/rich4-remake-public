@@ -8,38 +8,17 @@ import { reduce, reduceAll, nextCandidates, nextAlivePlayer } from './reduce.ts'
 import type { MapTopology } from './reduce.ts';
 import type { Action } from './actions.ts';
 import type { GameState, Player } from './types.ts';
-import { WHO_PLAYS_HUMAN, WHO_PLAYS_COMPUTER, WHO_PLAYS_DEAD } from './types.ts';
+import { makePlayer as basePlayer } from '../testing/factories.ts';
+
+/** 本文件的简写：第一参为下标 */
+const makePlayer = (index: number, over: Partial<Player> = {}): Player =>
+  basePlayer({ index, character: index, cash: 500_000, moneyInBank: 0, ...over });
+import { WHO_PLAYS_COMPUTER, WHO_PLAYS_DEAD } from './types.ts';
 import { parseMap } from '../loaders/map.ts';
 
 const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
 const MAP0 = `${ROOT}/extracted/map/0001.bin`;
 
-function makePlayer(index: number, over: Partial<Player> = {}): Player {
-  return {
-    index,
-    character: index,
-    whoPlays: WHO_PLAYS_HUMAN,
-    nodeId: 1,
-    lastNodeId: 0,
-    direction: 0,
-    trafficMethod: 0,
-    ndices: 1,
-    cash: 100000,
-    moneyInBank: 0,
-    loan: 0,
-    specialFinance: 0,
-    f44: 0,
-    points: 0,
-    blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 },
-    daysRejectedByBank: 0,
-    godInfo: 0,
-    cards: [],
-    tools: new Array<number>(13).fill(0),
-    alliedPlayer: 0,
-    alliedDays: 0,
-    ...over,
-  };
-}
 
 function makeState(over: Partial<GameState> = {}): GameState {
   return {

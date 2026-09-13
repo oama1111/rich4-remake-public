@@ -6,21 +6,10 @@ import { describe, expect, it } from 'vitest';
 import { isNewsFeasible, CONSTRAINED_NEWS_IDS } from './news.ts';
 import type { NewsContext } from './news.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
-import type { Player } from '../state/types.ts';
-import { WHO_PLAYS_HUMAN, WHO_PLAYS_DEAD } from '../state/types.ts';
+import { makePlayer } from '../testing/factories.ts';
+import { WHO_PLAYS_DEAD } from '../state/types.ts';
 import { NEWS_DECK_SIZE } from './deck.ts';
 
-function player(over: Partial<Player> = {}): Player {
-  return {
-    index: 0, character: 0, whoPlays: WHO_PLAYS_HUMAN,
-    nodeId: 1, lastNodeId: 0, direction: 0, trafficMethod: 0, ndices: 1,
-    cash: 0, moneyInBank: 0, loan: 0, specialFinance: 0, f44: 0, points: 0,
-    blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 },
-    daysRejectedByBank: 0,
-    godInfo: 0, cards: [], tools: new Array<number>(13).fill(0),
-    alliedPlayer: 0, alliedDays: 0, ...over,
-  };
-}
 function land(over: Partial<LandInfo> = {}): LandInfo {
   return {
     id: 1, x: 0, y: 0, name: 'A', priceStatus: 0, type: 0, owner: 0, level: 0,
@@ -32,7 +21,7 @@ function facility(over: Partial<FacilityInfo> = {}): FacilityInfo {
 }
 function ctx(over: Partial<NewsContext> = {}): NewsContext {
   return {
-    players: [player()], lands: [], facilities: [],
+    players: [makePlayer()], lands: [], facilities: [],
     stockAmount: [[]], commercials: [], stockF6: new Array<number>(12).fill(0),
     flag496b30: 0, flag496b60: 0, checkCommercialOwner: () => false, ...over,
   };
@@ -93,7 +82,7 @@ describe('股票类', () => {
 
   it('★ 已出局玩家的持股不算数', () => {
     const c = ctx({
-      players: [player({ whoPlays: WHO_PLAYS_DEAD })],
+      players: [makePlayer({ whoPlays: WHO_PLAYS_DEAD })],
       stockAmount: [[10, 10]],
     });
     expect(isNewsFeasible(10, c)).toBe(false);
@@ -109,15 +98,15 @@ describe('股票类', () => {
 
 describe('移动方式类（16/17 互补）', () => {
   it('事件 16 需要有 trafficMethod === 0 的在场玩家', () => {
-    expect(isNewsFeasible(16, ctx({ players: [player({ trafficMethod: 0 })] }))).toBe(true);
-    expect(isNewsFeasible(16, ctx({ players: [player({ trafficMethod: 1 })] }))).toBe(false);
+    expect(isNewsFeasible(16, ctx({ players: [makePlayer({ trafficMethod: 0 })] }))).toBe(true);
+    expect(isNewsFeasible(16, ctx({ players: [makePlayer({ trafficMethod: 1 })] }))).toBe(false);
   });
   it('事件 17 需要有 trafficMethod !== 0 的在场玩家', () => {
-    expect(isNewsFeasible(17, ctx({ players: [player({ trafficMethod: 1 })] }))).toBe(true);
-    expect(isNewsFeasible(17, ctx({ players: [player({ trafficMethod: 0 })] }))).toBe(false);
+    expect(isNewsFeasible(17, ctx({ players: [makePlayer({ trafficMethod: 1 })] }))).toBe(true);
+    expect(isNewsFeasible(17, ctx({ players: [makePlayer({ trafficMethod: 0 })] }))).toBe(false);
   });
   it('出局玩家不计入', () => {
-    const c = ctx({ players: [player({ whoPlays: WHO_PLAYS_DEAD, trafficMethod: 0 })] });
+    const c = ctx({ players: [makePlayer({ whoPlays: WHO_PLAYS_DEAD, trafficMethod: 0 })] });
     expect(isNewsFeasible(16, c)).toBe(false);
   });
 });

@@ -5,19 +5,13 @@
 import { describe, expect, it } from 'vitest';
 import { applyAverageCashCard, HOSTILITY_DIVISOR } from './average-cash.ts';
 import type { Player } from '../state/types.ts';
+import { makePlayer } from '../testing/factories.ts';
+
+/** 本文件的简写：按 (下标, 现金, 控制方) 构造 */
+const player = (index: number, cash: number, whoPlays = WHO_PLAYS_HUMAN): Player =>
+  makePlayer({ index, character: index, whoPlays, cash, moneyInBank: 999_999 });
 import { WHO_PLAYS_HUMAN, WHO_PLAYS_COMPUTER, WHO_PLAYS_DEAD } from '../state/types.ts';
 
-function player(index: number, cash: number, whoPlays = WHO_PLAYS_HUMAN): Player {
-  return {
-    index, character: index, whoPlays,
-    nodeId: 1, lastNodeId: 0, direction: 0, trafficMethod: 0, ndices: 1,
-    cash, moneyInBank: 999_999,
-    loan: 0, specialFinance: 0, f44: 0, points: 0,
-    blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 },
-    daysRejectedByBank: 0, godInfo: 0, cards: [], tools: new Array<number>(13).fill(0),
-    alliedPlayer: 0, alliedDays: 0,
-  };
-}
 
 describe('均富卡', () => {
   it('把在场玩家现金拉平到平均值', () => {

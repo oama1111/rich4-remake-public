@@ -17,8 +17,7 @@ import {
 } from './land.ts';
 import { parseMap, MAX_LAND_LEVEL } from '../loaders/map.ts';
 import type { LandInfo } from '../loaders/map.ts';
-import type { Player } from '../state/types.ts';
-import { WHO_PLAYS_HUMAN } from '../state/types.ts';
+import { makePlayer } from '../testing/factories.ts';
 
 const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
 const MAP0 = `${ROOT}/extracted/map/0001.bin`;
@@ -35,18 +34,6 @@ function land(over: Partial<LandInfo> = {}): LandInfo {
   };
 }
 
-function player(over: Partial<Player> = {}): Player {
-  return {
-    index: 0, character: 0, whoPlays: WHO_PLAYS_HUMAN,
-    nodeId: 1, lastNodeId: 0, direction: 0, trafficMethod: 0, ndices: 1,
-    cash: 1_000_000, moneyInBank: 0, loan: 0, specialFinance: 0, f44: 0, points: 0,
-    blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 },
-    daysRejectedByBank: 0,
-    godInfo: 0, cards: [], tools: new Array<number>(13).fill(0),
-    alliedPlayer: 0, alliedDays: 0,
-    ...over,
-  };
-}
 
 describe('housingIndexOf —— type 基数 2000', () => {
   it('区间内映射为 type - 2000', () => {
@@ -95,33 +82,33 @@ describe('upgradeCost —— 房价 × 物价指数', () => {
 
 describe('canPurchase', () => {
   it('无主且钱够 → 可买', () => {
-    const r = canPurchase(land(), player(), 1);
+    const r = canPurchase(land(), makePlayer(), 1);
     expect(r.ok).toBe(true);
     expect(r.price).toBe(1000);
   });
 
   it('已有主 → 不可买', () => {
-    expect(canPurchase(land({ owner: 2 }), player(), 1).reason).toBe('alreadyOwned');
+    expect(canPurchase(land({ owner: 2 }), makePlayer(), 1).reason).toBe('alreadyOwned');
   });
 
   it('梦游中 → 不可买', () => {
-    const p = player();
+    const p = makePlayer();
     p.blocking.sleepWalking = 3;
     expect(canPurchase(land(), p, 1).reason).toBe('sleepWalking');
   });
 
   it('特定神明状态 → 不可买', () => {
-    expect(canPurchase(land(), player({ godInfo: GOD_BLOCKS_PURCHASE }), 1).reason).toBe('godBlocked');
+    expect(canPurchase(land(), makePlayer({ godInfo: GOD_BLOCKS_PURCHASE }), 1).reason).toBe('godBlocked');
   });
 
   it('钱不够 → 不可买', () => {
-    const r = canPurchase(land({ landPrice: 50000 }), player({ cash: 1000 }), 1);
+    const r = canPurchase(land({ landPrice: 50000 }), makePlayer({ cash: 1000 }), 1);
     expect(r.reason).toBe('notEnoughCash');
     expect(r.price).toBe(50000);
   });
 
   it('物价指数会把买不起的地变得更买不起', () => {
-    const p = player({ cash: 3000 });
+    const p = makePlayer({ cash: 3000 });
     expect(canPurchase(land(), p, 1).ok).toBe(true);
     expect(canPurchase(land(), p, 5).ok).toBe(false); // 1000*5 > 3000
   });
@@ -129,37 +116,37 @@ describe('canPurchase', () => {
 
 describe('canUpgrade', () => {
   it('自有住宅未满级且钱够 → 可建', () => {
-    const r = canUpgrade(land({ owner: 1, level: 2 }), player(), 1);
+    const r = canUpgrade(land({ owner: 1, level: 2 }), makePlayer(), 1);
     expect(r.ok).toBe(true);
     expect(r.cost).toBe(200);
   });
 
   it('不是自己的地 → 不可建', () => {
-    expect(canUpgrade(land({ owner: 3 }), player(), 1).reason).toBe('notOwner');
+    expect(canUpgrade(land({ owner: 3 }), makePlayer(), 1).reason).toBe('notOwner');
   });
 
   it('等级已达上限 → 不可建', () => {
     // @source cmp byte [esi+0x1a], 5 / jae → end
-    expect(canUpgrade(land({ owner: 1, level: MAX_LAND_LEVEL }), player(), 1).reason).toBe('maxLevel');
+    expect(canUpgrade(land({ owner: 1, level: MAX_LAND_LEVEL }), makePlayer(), 1).reason).toBe('maxLevel');
   });
 
   it('等级 4 仍可建，5 不可', () => {
-    expect(canUpgrade(land({ owner: 1, level: 4 }), player(), 1).ok).toBe(true);
-    expect(canUpgrade(land({ owner: 1, level: 5 }), player(), 1).ok).toBe(false);
+    expect(canUpgrade(land({ owner: 1, level: 4 }), makePlayer(), 1).ok).toBe(true);
+    expect(canUpgrade(land({ owner: 1, level: 5 }), makePlayer(), 1).ok).toBe(false);
   });
 
   it('连锁店不可升级', () => {
-    expect(canUpgrade(land({ owner: 1, level: 1, type: 1 }), player(), 1).reason).toBe('chainStore');
+    expect(canUpgrade(land({ owner: 1, level: 1, type: 1 }), makePlayer(), 1).reason).toBe('chainStore');
   });
 
   it('梦游中不可建', () => {
-    const p = player();
+    const p = makePlayer();
     p.blocking.sleepWalking = 1;
     expect(canUpgrade(land({ owner: 1 }), p, 1).reason).toBe('sleepWalking');
   });
 
   it('钱不够不可建', () => {
-    expect(canUpgrade(land({ owner: 1, housePrice: 9999 }), player({ cash: 100 }), 1).reason)
+    expect(canUpgrade(land({ owner: 1, housePrice: 9999 }), makePlayer({ cash: 100 }), 1).reason)
       .toBe('notEnoughCash');
   });
 });

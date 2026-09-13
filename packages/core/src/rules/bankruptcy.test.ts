@@ -20,25 +20,14 @@ import {
 } from './bankruptcy.ts';
 import { OCCUPIED_MASK } from '../loaders/map.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
-import type { Player } from '../state/types.ts';
-import { WHO_PLAYS_HUMAN, isAlive } from '../state/types.ts';
+import { makePlayer } from '../testing/factories.ts';
+import { isAlive } from '../state/types.ts';
 import { parseSave } from '../loaders/save.ts';
 import { parseMap } from '../loaders/map.ts';
 
 const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
 const SAVE0 = `${ROOT}/Rich4/Save0.dat`;
 
-function player(over: Partial<Player> = {}): Player {
-  return {
-    index: 0, character: 4, whoPlays: WHO_PLAYS_HUMAN,
-    nodeId: 42, lastNodeId: 41, direction: 2, trafficMethod: 0, ndices: 2,
-    cash: 100_000, moneyInBank: 50_000, loan: 0, specialFinance: 0, f44: 0, points: 300,
-    blocking: { inHotel: 0, disappearing: 0, inPrison: 3, inHospital: 0, sleeping: 0, sleepWalking: 0 },
-    daysRejectedByBank: 0, godInfo: 2, cards: [1, 5, 9], tools: new Array<number>(13).fill(2),
-    alliedPlayer: 3, alliedDays: 5,
-    ...over,
-  };
-}
 
 function land(over: Partial<LandInfo> = {}): LandInfo {
   return {
@@ -54,7 +43,7 @@ function facility(over: Partial<FacilityInfo> = {}): FacilityInfo {
 
 describe('付款级联', () => {
   it('现金足够时只扣现金', () => {
-    const r = payMoney(player(), 30_000);
+    const r = payMoney(makePlayer(), 30_000);
     expect(r.player.cash).toBe(70_000);
     expect(r.player.moneyInBank).toBe(50_000);
     expect(r.bankrupt).toBe(false);
@@ -62,7 +51,7 @@ describe('付款级联', () => {
   });
 
   it('★ 现金不足时自动动用存款', () => {
-    const r = payMoney(player(), 120_000);
+    const r = payMoney(makePlayer(), 120_000);
     expect(r.player.cash).toBe(0);
     expect(r.player.moneyInBank).toBe(30_000); // 50000 - 20000
     expect(r.bankrupt).toBe(false);
@@ -70,14 +59,14 @@ describe('付款级联', () => {
   });
 
   it('恰好用尽现金与存款不算破产', () => {
-    const r = payMoney(player(), 150_000);
+    const r = payMoney(makePlayer(), 150_000);
     expect(r.player.cash).toBe(0);
     expect(r.player.moneyInBank).toBe(0);
     expect(r.bankrupt).toBe(false);
   });
 
   it('★ 现金+存款都不足 → 破产', () => {
-    const r = payMoney(player(), 200_000);
+    const r = payMoney(makePlayer(), 200_000);
     expect(r.bankrupt).toBe(true);
     expect(r.paid).toBe(150_000);      // 掏空所有
     expect(r.shortfall).toBe(50_000);  // 还欠 5 万
@@ -87,25 +76,25 @@ describe('付款级联', () => {
 
   it('★ 贷款额度不会被自动动用来抵付', () => {
     // 原版付款级联只走 cash → bank，不碰 loan
-    const p = player({ cash: 0, moneyInBank: 0, loan: 500_000 });
+    const p = makePlayer({ cash: 0, moneyInBank: 0, loan: 500_000 });
     expect(payMoney(p, 1).bankrupt).toBe(true);
   });
 
   it('金额为 0 或负数不产生变化', () => {
-    const p = player();
+    const p = makePlayer();
     expect(payMoney(p, 0).player).toBe(p);
     expect(payMoney(p, -100).player).toBe(p);
   });
 
   it('不原地修改入参', () => {
-    const p = player();
+    const p = makePlayer();
     const snapshot = JSON.stringify(p);
     payMoney(p, 200_000);
     expect(JSON.stringify(p)).toBe(snapshot);
   });
 
   it('canAfford 与 payMoney 的破产判定一致', () => {
-    const p = player(); // 15 万可用
+    const p = makePlayer(); // 15 万可用
     for (const amount of [1, 149_999, 150_000, 150_001, 999_999]) {
       expect(canAfford(p, amount)).toBe(!payMoney(p, amount).bankrupt);
     }
@@ -115,7 +104,7 @@ describe('付款级联', () => {
 describe('破产状态转换', () => {
   it('★ 清空 0x1c 之后的字段，保留之前的', () => {
     expect(BANKRUPT_CLEAR_FROM).toBe(0x1c);
-    const p = player();
+    const p = makePlayer();
     const b = markPlayerBankrupt(p);
 
     // 被清零（对应 memset(player+0x1c, 0, 0x4c)）
@@ -142,13 +131,13 @@ describe('破产状态转换', () => {
   });
 
   it('who_plays 归零即出局', () => {
-    const b = markPlayerBankrupt(player());
+    const b = markPlayerBankrupt(makePlayer());
     expect(b.whoPlays).toBe(0);
     expect(isAlive(b)).toBe(false);
   });
 
   it('不原地修改入参', () => {
-    const p = player();
+    const p = makePlayer();
     const snapshot = JSON.stringify(p);
     markPlayerBankrupt(p);
     expect(JSON.stringify(p)).toBe(snapshot);

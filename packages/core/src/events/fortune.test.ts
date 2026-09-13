@@ -7,20 +7,8 @@ import { checkFortune, TRAFFIC_EVENT_BASE, CONSTRAINED_FORTUNE_IDS, FORTUNE_DATA
 import type { FortuneContext } from './fortune.ts';
 import { FORTUNE_DECK_SIZE } from './deck.ts';
 import type { LandInfo } from '../loaders/map.ts';
-import type { Player } from '../state/types.ts';
-import { WHO_PLAYS_HUMAN } from '../state/types.ts';
+import { makePlayer } from '../testing/factories.ts';
 
-function player(over: Partial<Player> = {}): Player {
-  return {
-    index: 0, character: 0, whoPlays: WHO_PLAYS_HUMAN,
-    nodeId: 1, lastNodeId: 0, direction: 0, trafficMethod: 0, ndices: 1,
-    cash: 0, moneyInBank: 0, loan: 0, specialFinance: 0, f44: 0, points: 0,
-    blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 },
-    daysRejectedByBank: 0,
-    godInfo: 0, cards: [], tools: new Array<number>(13).fill(0),
-    alliedPlayer: 0, alliedDays: 0, ...over,
-  };
-}
 function land(over: Partial<LandInfo> = {}): LandInfo {
   return {
     id: 1, x: 0, y: 0, name: 'A', priceStatus: 0, type: 0, owner: 0, level: 0,
@@ -29,7 +17,7 @@ function land(over: Partial<LandInfo> = {}): LandInfo {
 }
 function ctx(over: Partial<FortuneContext> = {}): FortuneContext {
   return {
-    currentPlayer: player(), otherPlayers: [], lands: [],
+    currentPlayer: makePlayer(), otherPlayers: [], lands: [],
     stockAmount: new Array<number>(12).fill(0), gameStage: 0, ...over,
   };
 }
@@ -50,11 +38,11 @@ describe('地产类', () => {
 
 describe('其他玩家手牌', () => {
   it('事件 5 需要其他玩家手上有牌', () => {
-    expect(checkFortune(5, ctx({ otherPlayers: [player({ cards: [] })] })).feasible).toBe(false);
-    expect(checkFortune(5, ctx({ otherPlayers: [player({ cards: [3] })] })).feasible).toBe(true);
+    expect(checkFortune(5, ctx({ otherPlayers: [makePlayer({ cards: [] })] })).feasible).toBe(false);
+    expect(checkFortune(5, ctx({ otherPlayers: [makePlayer({ cards: [3] })] })).feasible).toBe(true);
   });
   it('自己的手牌不算', () => {
-    const c = ctx({ currentPlayer: player({ cards: [1, 2, 3] }), otherPlayers: [player({ cards: [] })] });
+    const c = ctx({ currentPlayer: makePlayer({ cards: [1, 2, 3] }), otherPlayers: [makePlayer({ cards: [] })] });
     expect(checkFortune(5, c).feasible).toBe(false);
   });
 });
@@ -71,7 +59,7 @@ describe('股票类', () => {
 });
 
 describe('★ 交通方式重映射', () => {
-  const withTraffic = (t: number) => ctx({ currentPlayer: player({ trafficMethod: t }) });
+  const withTraffic = (t: number) => ctx({ currentPlayer: makePlayer({ trafficMethod: t }) });
 
   it('事件 10/11 要求 traffic 为 1 或 2', () => {
     expect(checkFortune(10, withTraffic(0)).feasible).toBe(false);

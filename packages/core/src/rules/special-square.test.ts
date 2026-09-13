@@ -13,25 +13,12 @@ import {
   SPECIAL_HANDLERS,
 } from './special-square.ts';
 import { SPECIAL_KIND, parseMap } from '../loaders/map.ts';
-import type { Player } from '../state/types.ts';
-import { WHO_PLAYS_HUMAN } from '../state/types.ts';
+import { makePlayer } from '../testing/factories.ts';
 
 const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
 const MAP0 = `${ROOT}/extracted/map/0001.bin`;
 const d = existsSync(MAP0) ? describe : describe.skip;
 
-function player(over: Partial<Player> = {}): Player {
-  return {
-    index: 0, character: 0, whoPlays: WHO_PLAYS_HUMAN,
-    nodeId: 1, lastNodeId: 0, direction: 0, trafficMethod: 0, ndices: 1,
-    cash: 100000, moneyInBank: 0, loan: 0, specialFinance: 0, f44: 0, points: 0,
-    blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 },
-    daysRejectedByBank: 0,
-    godInfo: 0, cards: [], tools: new Array<number>(13).fill(0),
-    alliedPlayer: 0, alliedDays: 0,
-    ...over,
-  };
-}
 
 describe('17 路跳表', () => {
   it('恰好覆盖 kind 0..16', () => {
@@ -63,7 +50,7 @@ describe('17 路跳表', () => {
 
 describe('公園 —— 落地无任何效果', () => {
   it('这是原版行为，不是未实现', () => {
-    const out = settleSpecialSquare(SPECIAL_KIND.PARK, player(), [], 123);
+    const out = settleSpecialSquare(SPECIAL_KIND.PARK, makePlayer(), [], 123);
     expect(out.handler).toBe('noop');
     expect(out.unimplemented).toBe(false); // 关键：不是待办
     expect(out.pointsDelta).toBe(0);
@@ -84,7 +71,7 @@ describe('得点格', () => {
     [SPECIAL_KIND.POINTS_30, 30],
     [SPECIAL_KIND.POINTS_10, 10],
   ])('kind %i 给 %i 点', (kind, pts) => {
-    const out = settleSpecialSquare(kind, player(), [], 1);
+    const out = settleSpecialSquare(kind, makePlayer(), [], 1);
     expect(out.pointsDelta).toBe(pts);
     expect(out.rngState).toBe(1); // 得点不消耗随机数
   });
@@ -101,14 +88,14 @@ describe('卡片格', () => {
   it('按牌堆剩余量抽卡并推进 PRNG', () => {
     const amounts = new Array<number>(30).fill(0);
     amounts[6] = 5; // 只有改建卡
-    const out = settleSpecialSquare(SPECIAL_KIND.CARD, player(), amounts, 1);
+    const out = settleSpecialSquare(SPECIAL_KIND.CARD, makePlayer(), amounts, 1);
     expect(out.handler).toBe('card');
     expect(out.cardDrawn).toBe(7); // 1 基
     expect(out.rngState).not.toBe(1); // 消耗了随机数
   });
 
   it('牌堆为空时抽不到卡', () => {
-    const out = settleSpecialSquare(SPECIAL_KIND.CARD, player(), new Array<number>(30).fill(0), 1);
+    const out = settleSpecialSquare(SPECIAL_KIND.CARD, makePlayer(), new Array<number>(30).fill(0), 1);
     expect(out.cardDrawn).toBe(0);
   });
 });
@@ -127,7 +114,7 @@ describe('尚未实现的格子被如实标记', () => {
     SPECIAL_KIND.DEPARTMENT_STORE,
     SPECIAL_KIND.MAGIC_HOUSE,
   ])('kind %i 标记为 unimplemented', (kind) => {
-    const out = settleSpecialSquare(kind, player(), [], 1);
+    const out = settleSpecialSquare(kind, makePlayer(), [], 1);
     expect(out.unimplemented).toBe(true);
     // 未实现不等于「静默无效果」——状态不被悄悄改动
     expect(out.pointsDelta).toBe(0);
@@ -157,7 +144,7 @@ d('真实地图上的特殊格覆盖率', () => {
     let todo = 0;
     for (const n of map.nodes) {
       if (n.type !== 0) continue;
-      const out = settleSpecialSquare(n.specialKind, player(), [], 1);
+      const out = settleSpecialSquare(n.specialKind, makePlayer(), [], 1);
       if (out.unimplemented) todo++;
       else done++;
     }

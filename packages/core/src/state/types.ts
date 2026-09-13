@@ -63,6 +63,10 @@ export interface Player {
   character: number;
   /** 见 WHO_PLAYS_* 常量 */
   whoPlays: number;
+  /** 屏幕坐标 X @source player_info +0x08（冬眠卡以 xpos==0 判定跳过） */
+  xpos: number;
+  /** 屏幕坐标 Y @source player_info +0x0a */
+  ypos: number;
   /** 所在地图节点号（1 基） */
   nodeId: number;
   /** 上一个节点号，用于判定前进方向 */
@@ -91,6 +95,8 @@ export interface Player {
   cards: number[];
   /** 各道具持有量，下标 = 道具 id - 1 */
   tools: number[];
+  /** 冬眠天数累计 @source player_info +0x42 total_winter_sleep_days */
+  totalWinterSleepDays: number;
   /** 同盟对象：0 表示无，否则为玩家 index + 1 */
   alliedPlayer: number;
   alliedDays: number;

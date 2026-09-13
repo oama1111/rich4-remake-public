@@ -10,24 +10,17 @@ import { parseMap } from '../loaders/map.ts';
 import { parseSave } from '../loaders/save.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
 import type { Player } from '../state/types.ts';
-import { WHO_PLAYS_HUMAN, WHO_PLAYS_DEAD, WHO_PLAYS_COMPUTER } from '../state/types.ts';
+import { makePlayer as basePlayer } from '../testing/factories.ts';
+
+/** 本文件显式声明默认资金（0/0），避免依赖共用工厂的默认值 */
+const makePlayer = (over: Partial<Player> = {}): Player =>
+  basePlayer({ cash: 0, moneyInBank: 0, ...over });
+import { WHO_PLAYS_DEAD, WHO_PLAYS_COMPUTER } from '../state/types.ts';
 
 const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
 const MAP0 = `${ROOT}/extracted/map/0001.bin`;
 const SAVE0 = `${ROOT}/Rich4/Save0.dat`;
 
-function player(over: Partial<Player> = {}): Player {
-  return {
-    index: 0, character: 0, whoPlays: WHO_PLAYS_HUMAN,
-    nodeId: 1, lastNodeId: 0, direction: 0, trafficMethod: 0, ndices: 1,
-    cash: 0, moneyInBank: 0, loan: 0, specialFinance: 0, f44: 0, points: 0,
-    blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 },
-    daysRejectedByBank: 0,
-    godInfo: 0, cards: [], tools: new Array<number>(13).fill(0),
-    alliedPlayer: 0, alliedDays: 0,
-    ...over,
-  };
-}
 
 function land(over: Partial<LandInfo> = {}): LandInfo {
   return {
@@ -46,45 +39,45 @@ function facility(over: Partial<FacilityInfo> = {}): FacilityInfo {
 
 describe('calculatePlayerWealth', () => {
   it('基础：现金 + 存款 − 贷款', () => {
-    const p = player({ cash: 10000, moneyInBank: 5000, loan: 3000 });
+    const p = makePlayer({ cash: 10000, moneyInBank: 5000, loan: 3000 });
     expect(calculatePlayerWealth(p, [], [])).toBe(12000);
   });
 
   it('贷款为负资产', () => {
-    const p = player({ cash: 100, loan: 5000 });
+    const p = makePlayer({ cash: 100, loan: 5000 });
     expect(calculatePlayerWealth(p, [], [])).toBe(-4900);
   });
 
   it('住宅：地价 + 等级 × 房价', () => {
-    const p = player({ cash: 0 });
+    const p = makePlayer({ cash: 0 });
     const lands = [land({ owner: 1, level: 3 })];
     expect(calculatePlayerWealth(p, lands, [])).toBe(1000 + 3 * 200);
   });
 
   it('空地只算地价', () => {
-    expect(calculatePlayerWealth(player(), [land({ owner: 1, level: 0 })], [])).toBe(1000);
+    expect(calculatePlayerWealth(makePlayer(), [land({ owner: 1, level: 0 })], [])).toBe(1000);
   });
 
   it('★ 连锁店与住宅不对称：连锁店加一份房价，不乘等级', () => {
     // @source cmp byte [eax+0x18], 0 / jne → 直接加 house_price
     const chain = [land({ owner: 1, type: 1, level: 5 })];
-    expect(calculatePlayerWealth(player(), chain, [])).toBe(1000 + 200); // 不是 1000 + 5*200
+    expect(calculatePlayerWealth(makePlayer(), chain, [])).toBe(1000 + 200); // 不是 1000 + 5*200
     const house = [land({ owner: 1, type: 0, level: 5 })];
-    expect(calculatePlayerWealth(player(), house, [])).toBe(1000 + 5 * 200);
+    expect(calculatePlayerWealth(makePlayer(), house, [])).toBe(1000 + 5 * 200);
   });
 
   it('只算自己的地产', () => {
     const lands = [land({ id: 1, owner: 1 }), land({ id: 2, owner: 2 }), land({ id: 3, owner: 0 })];
-    expect(calculatePlayerWealth(player(), lands, [])).toBe(1000);
+    expect(calculatePlayerWealth(makePlayer(), lands, [])).toBe(1000);
   });
 
   it('设施：地价 + 等级 × 房价', () => {
     const facs = [facility({ owner: 1, level: 2 })];
-    expect(calculatePlayerWealth(player(), [], facs)).toBe(5000 + 2 * 1000);
+    expect(calculatePlayerWealth(makePlayer(), [], facs)).toBe(5000 + 2 * 1000);
   });
 
   it('多项资产累加', () => {
-    const p = player({ cash: 50000, moneyInBank: 10000, loan: 20000 });
+    const p = makePlayer({ cash: 50000, moneyInBank: 10000, loan: 20000 });
     const lands = [land({ id: 1, owner: 1, level: 2 }), land({ id: 2, owner: 1, type: 1 })];
     const facs = [facility({ owner: 1, level: 1 })];
     expect(calculatePlayerWealth(p, lands, facs)).toBe(
@@ -94,7 +87,7 @@ describe('calculatePlayerWealth', () => {
 
   it('股票按持股 × 股价计入', () => {
     const stocks: StockValuation[] = [{ amount: 10, price: 100 }];
-    expect(calculatePlayerWealth(player({ cash: 500 }), [], [], stocks)).toBe(500 + 1000);
+    expect(calculatePlayerWealth(makePlayer({ cash: 500 }), [], [], stocks)).toBe(500 + 1000);
   });
 
   it('★ 股票逐支截断（非最后统一取整）', () => {
@@ -105,14 +98,14 @@ describe('calculatePlayerWealth', () => {
       { amount: 1, price: 0.6 },
       { amount: 1, price: 0.6 },
     ];
-    expect(calculatePlayerWealth(player({ cash: 0 }), [], [], stocks)).toBe(0);
+    expect(calculatePlayerWealth(makePlayer({ cash: 0 }), [], [], stocks)).toBe(0);
   });
 
   it('固定 12 支股票', () => {
     expect(STOCK_COUNT).toBe(12);
     // 超出 12 支的部分被忽略
     const stocks: StockValuation[] = Array.from({ length: 20 }, () => ({ amount: 1, price: 100 }));
-    expect(calculatePlayerWealth(player(), [], [], stocks)).toBe(12 * 100);
+    expect(calculatePlayerWealth(makePlayer(), [], [], stocks)).toBe(12 * 100);
   });
 });
 
@@ -120,21 +113,21 @@ describe('updatePriceIndex', () => {
   const wealth = (map: Map<number, number>) => (p: Player) => map.get(p.index) ?? 0;
 
   it('平均总资产 ÷ 初始资金', () => {
-    const players = [player({ index: 0 }), player({ index: 1 })];
+    const players = [makePlayer({ index: 0 }), makePlayer({ index: 1 })];
     const w = wealth(new Map([[0, 300_000], [1, 500_000]])); // 平均 400000
     expect(updatePriceIndex(players, w, 100_000, 1)).toBe(4);
   });
 
   it('★ 只升不降', () => {
-    const players = [player({ index: 0 })];
+    const players = [makePlayer({ index: 0 })];
     const w = wealth(new Map([[0, 100_000]])); // 新指数 = 1
     expect(updatePriceIndex(players, w, 100_000, 5)).toBe(5); // 保持 5，不降到 1
   });
 
   it('已出局玩家不计入', () => {
     const players = [
-      player({ index: 0 }),
-      player({ index: 1, whoPlays: WHO_PLAYS_DEAD }),
+      makePlayer({ index: 0 }),
+      makePlayer({ index: 1, whoPlays: WHO_PLAYS_DEAD }),
     ];
     const w = wealth(new Map([[0, 600_000], [1, 0]]));
     // 只算玩家0 → 平均 600000 / 100000 = 6
@@ -142,28 +135,28 @@ describe('updatePriceIndex', () => {
   });
 
   it('电脑玩家同样计入', () => {
-    const players = [player({ index: 0 }), player({ index: 1, whoPlays: WHO_PLAYS_COMPUTER })];
+    const players = [makePlayer({ index: 0 }), makePlayer({ index: 1, whoPlays: WHO_PLAYS_COMPUTER })];
     const w = wealth(new Map([[0, 200_000], [1, 200_000]]));
     expect(updatePriceIndex(players, w, 100_000, 1)).toBe(2);
   });
 
   it('整数除法向零取整', () => {
-    const players = [player({ index: 0 })];
+    const players = [makePlayer({ index: 0 })];
     // 199999 / 100000 = 1.99999 → 1
     expect(updatePriceIndex(players, wealth(new Map([[0, 199_999]])), 100_000, 0)).toBe(1);
   });
 
   it('全员出局时保持原值', () => {
-    const players = [player({ index: 0, whoPlays: WHO_PLAYS_DEAD })];
+    const players = [makePlayer({ index: 0, whoPlays: WHO_PLAYS_DEAD })];
     expect(updatePriceIndex(players, () => 0, 100_000, 3)).toBe(3);
   });
 
   it('初始资金为 0 时保持原值（避免除零）', () => {
-    expect(updatePriceIndex([player()], () => 100, 0, 2)).toBe(2);
+    expect(updatePriceIndex([makePlayer()], () => 100, 0, 2)).toBe(2);
   });
 
   it('负总资产不会把指数拉低', () => {
-    const players = [player({ index: 0 })];
+    const players = [makePlayer({ index: 0 })];
     expect(updatePriceIndex(players, () => -500_000, 100_000, 3)).toBe(3);
   });
 });
@@ -176,7 +169,7 @@ describe.skipIf(!existsSync(MAP0) || !existsSync(SAVE0))('真实存档交叉验�
     expect(alive.length).toBeGreaterThan(0);
 
     for (const sp of alive) {
-      const p = player({
+      const p = makePlayer({
         index: sp.index,
         cash: sp.cash,
         moneyInBank: sp.moneyInBank,
@@ -197,7 +190,7 @@ describe.skipIf(!existsSync(MAP0) || !existsSync(SAVE0))('真实存档交叉验�
     const map = parseMap(save.mapData);
     const players = save.players
       .filter((p) => p.isAlive)
-      .map((sp) => player({ index: sp.index, cash: sp.cash, moneyInBank: sp.moneyInBank, loan: sp.loan }));
+      .map((sp) => makePlayer({ index: sp.index, cash: sp.cash, moneyInBank: sp.moneyInBank, loan: sp.loan }));
 
     const next = updatePriceIndex(
       players,

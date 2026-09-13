@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { evaluateTurnStart, turnController } from './turn-start.ts';
-import type { Player } from '../state/types.ts';
+import { makePlayer } from '../testing/factories.ts';
 import {
   WHO_PLAYS_HUMAN,
   WHO_PLAYS_COMPUTER,
@@ -13,39 +13,6 @@ import {
   displayDays,
 } from '../state/types.ts';
 
-function makePlayer(over: Partial<Player> = {}): Player {
-  return {
-    index: 0,
-    character: 0,
-    whoPlays: WHO_PLAYS_HUMAN,
-    nodeId: 1,
-    lastNodeId: 0,
-    direction: 0,
-    trafficMethod: 0,
-    ndices: 1,
-    cash: 100000,
-    moneyInBank: 0,
-    loan: 0,
-    specialFinance: 0,
-    f44: 0,
-    points: 0,
-    blocking: {
-      inHotel: 0,
-      disappearing: 0,
-      inPrison: 0,
-      inHospital: 0,
-      sleeping: 0,
-      sleepWalking: 0,
-    },
-    daysRejectedByBank: 0,
-    godInfo: 0,
-    cards: [],
-    tools: new Array<number>(13).fill(0),
-    alliedPlayer: 0,
-    alliedDays: 0,
-    ...over,
-  };
-}
 
 describe('evaluateTurnStart —— 与 fcn_0040c912 逐分支对照', () => {
   it('已出局玩家返回 0，不可行动', () => {
