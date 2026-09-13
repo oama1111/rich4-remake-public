@@ -21,3 +21,4 @@ export * from './places/bank.ts';
 export * from './places/stock.ts';
 export * from './cards/average-cash.ts';
 export * from './cards/hibernate.ts';
+export * from './cards/rebuild.ts';
