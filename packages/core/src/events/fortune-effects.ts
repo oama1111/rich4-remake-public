@@ -19,20 +19,19 @@ import type { Player } from '../state/types.ts';
 import { FORTUNE_EVENTS, eventAmount, fortuneEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { confine } from '../rules/confinement.ts';
+import { BLESSING_DOUBLE, blessingMultiplier } from '../rules/blessing.ts';
 
 /**
- * 金额加倍的修正。
+ * 金额倍率档位 —— 转发 `rules/blessing.ts` 的定义。
  *
- * @source 施加阶段先 `call 0x44b896` 取一个结果，为 2 时：
- * ```asm
- * mov esi, [0x48c5b4]
- * add esi, esi            ; ★ 金额翻倍
- * mov [0x48c5b4], esi
- * ```
- * 该函数读 `word [player + 0x46]`，**语义待确认**（疑与道具或神明有关），
- * 故此处把倍率作为参数交由调用方给出，core 不臆测其来源。
+ * @source 施加阶段先 `call 0x44b896` 取档位，`2` 加倍、`1` 归零。
+ * 档位由玩家的神明加持值（+0x46）决定，详见 rules/blessing.ts。
+ *
+ * ★ 先前只实现了「2 → 加倍」，**漏掉了「1 → 归零」**。
+ *   四条提示语（獎金加倍／獎金作廢／罰金加倍／免付罰金）表明
+ *   它是完整的三档倍率，不是一个布尔开关。
  */
-export const DOUBLE_AMOUNT = 2;
+export const DOUBLE_AMOUNT = BLESSING_DOUBLE;
 
 /**
  * 支票跳票后银行拒绝往来的天数。
@@ -61,7 +60,10 @@ export interface FortuneEffectContext {
   priceIndex: number;
   pool?: number;
   occupancy?: readonly number[];
-  /** `0x44b896` 的结果；2 表示金额翻倍 */
+  /**
+   * `0x44b896` 返回的**倍率档位**：2 加倍、1 归零、0 不变。
+   * 由玩家的神明加持值决定，见 rules/blessing.ts 的 blessingLevel()。
+   */
   multiplier?: number;
   /**
    * 覆盖坐牢／住院天数。通常**不必给**——天数已在事件表的 `literal` 里
@@ -109,7 +111,7 @@ export function applyFortuneEffect(
   const entry = fortuneEvent(eventId);
   if (entry === undefined) return { ...base, unimplemented: true };
 
-  const amount = eventAmount(entry, ctx.priceIndex) * (ctx.multiplier === DOUBLE_AMOUNT ? 2 : 1);
+  const amount = eventAmount(entry, ctx.priceIndex) * blessingMultiplier(ctx.multiplier ?? 0);
 
   if (entry.effects.includes('prison') || entry.effects.includes('hospital')) {
     // 天数取自事件表的 literal（公告阶段写进 [0x48c5b4] 的字面常量）

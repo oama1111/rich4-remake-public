@@ -92,9 +92,10 @@ describe('★ 倍率修正', () => {
     expect(r.amount).toBe(20_000);
   });
 
-  it('其他取值不翻倍', () => {
-    expect(applyFortuneEffect(25, ctx({ multiplier: 1 })).amount).toBe(10_000);
+  it('★ 档位 0 与未知取值都按不变处理', () => {
+    expect(applyFortuneEffect(25, ctx({ multiplier: 0 })).amount).toBe(10_000);
     expect(applyFortuneEffect(25, ctx({ multiplier: 3 })).amount).toBe(10_000);
+    expect(applyFortuneEffect(25, ctx()).amount).toBe(10_000);
   });
 });
 
@@ -180,5 +181,29 @@ describe('★ 方向与文案语义一致（表本身的自洽性）', () => {
     for (const id of [12, 13]) {
       expect(fortuneEvent(id)!.effects).toContain('hospital');
     }
+  });
+});
+
+describe('★ 倍率归零档（先前漏掉的那一档）', () => {
+  it('multiplier = 1 时奖金作廢——一分不给', () => {
+    const r = applyFortuneEffect(25, ctx({ multiplier: 1 }));
+    expect(r.amount).toBe(0);
+    expect(r.players[0]!.cash).toBe(100_000);
+  });
+
+  it('★ 同一档位对罚款是「免付」——一分不扣', () => {
+    const r = applyFortuneEffect(16, ctx({ multiplier: 1 }));
+    expect(r.amount).toBe(0);
+    expect(r.players[0]!.cash).toBe(100_000);
+    expect(r.pool).toBe(0);
+    expect(r.bankrupted).toBe(false);
+  });
+
+  it('★ 免付时不会误判破产——哪怕身无分文', () => {
+    const r = applyFortuneEffect(16, ctx({
+      players: [makePlayer({ index: 0, cash: 0, moneyInBank: 0 })],
+      multiplier: 1,
+    }));
+    expect(r.bankrupted).toBe(false);
   });
 });

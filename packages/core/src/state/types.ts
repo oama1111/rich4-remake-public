@@ -115,6 +115,16 @@ export interface Player {
   alliedPlayer: number;
   alliedDays: number;
   /**
+   * **神明加持值**，有符号 16 位。@source player_info +0x46
+   *
+   * 决定新聞／命運事件金额的倍率（见 rules/blessing.ts）：
+   * `> 100` 必定加倍、`50..100` 一半概率加倍、`< 0` 金额归零。
+   *
+   * 由 `sub dword [+0x46], ebx`（VA 0x0040e205）与
+   * `add dword [+0x46], edx`（VA 0x0040ebec）增减，**增减来源尚未定位**。
+   */
+  blessing: number;
+  /**
    * 对其他玩家的敌意，4 项，下标 = 对方玩家 index。
    * @source player_info +0x4c（`[a*0x68 + b*4 + 0x496bb4]`），下限 0、无上限
    * 更新走 rules/hostility.ts 的 updateHostility（VA 0x0040df69）。

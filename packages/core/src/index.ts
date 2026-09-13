@@ -24,6 +24,7 @@ export * from './rules/god-toll.ts';
 export * from './rules/facility.ts';
 export * from './rules/blocking.ts';
 export * from './rules/confinement.ts';
+export * from './rules/blessing.ts';
 export * from './events/deck.ts';
 export * from './events/news.ts';
 export * from './events/fortune.ts';

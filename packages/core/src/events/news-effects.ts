@@ -16,6 +16,7 @@ import type { Player } from '../state/types.ts';
 import { NEWS_EVENTS, eventAmount, newsEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { confine } from '../rules/confinement.ts';
+import { blessingMultiplier } from '../rules/blessing.ts';
 
 export interface NewsEffectResult {
   players: Player[];
@@ -41,6 +42,8 @@ export interface NewsEffectContext {
   occupancy?: readonly number[];
   /** 覆盖天数；通常取自事件表的 literal */
   days?: number;
+  /** 神明加持倍率档位：2 加倍、1 归零、0 不变（见 rules/blessing.ts） */
+  multiplier?: number;
 }
 
 /**
@@ -96,7 +99,7 @@ export function applyNewsEffect(
     return { ...base, unimplemented: true };
   }
 
-  const amount = eventAmount(entry, ctx.priceIndex);
+  const amount = eventAmount(entry, ctx.priceIndex) * blessingMultiplier(ctx.multiplier ?? 0);
   let total = 0;
   let bankrupted = false;
 
