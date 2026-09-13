@@ -131,14 +131,18 @@ d('完整对局推演', () => {
 
     const cash0 = s.players[0]!.cash;
     const cash1 = s.players[1]!.cash;
+    const bank1 = s.players[1]!.moneyInBank;
     s = reduce(s, { type: 'settle' }, topo);
 
+    // ★ 付款方从**现金**出
     expect(s.players[0]!.cash).toBe(cash0 - expected);
-    expect(s.players[1]!.cash).toBe(cash1 + expected);
+    // ★ 地主收进**银行存款**，不是现金（pay_money flags = 0）
+    expect(s.players[1]!.cash).toBe(cash1);
+    expect(s.players[1]!.moneyInBank).toBe(bank1 + expected);
     expect(s.phase).toBe('turnEnd');
   });
 
-  it('★ 过路费是零和的：总现金守恒', () => {
+  it('★ 过路费是零和的：总**净值**守恒（现金不守恒——收款进存款）', () => {
     const topo = topology();
     let s = makeState({ phase: 'settling' });
     const landNode = topo.nodes.find((n) => n.ref.kind === 'land')!;
@@ -149,9 +153,55 @@ d('完整对局推演', () => {
     s.landLevel = [];
     s.landLevel[idx] = 5;
 
-    const before = totalCash(s);
+    const netWorth = (g: typeof s) =>
+      g.players.reduce((t, p) => t + p.cash + p.moneyInBank, 0);
+
+    const beforeCash = totalCash(s);
+    const beforeNet = netWorth(s);
     s = reduce(s, { type: 'settle' }, topo);
-    expect(totalCash(s)).toBe(before);
+
+    // ★ 净值守恒
+    expect(netWorth(s)).toBe(beforeNet);
+    // ★ 但现金**减少**了：付款方从现金出，地主收进存款
+    expect(totalCash(s)).toBeLessThan(beforeCash);
+  });
+
+  it('★ 地主有同盟时，租金按两份合计收取并分账', () => {
+    const topo = topology();
+    const setup = (allied: boolean) => {
+      const s = makeState({ phase: 'settling' });
+      const landNode = topo.nodes.find((n) => n.ref.kind === 'land')!;
+      s.players[0] = makePlayer(0, { nodeId: landNode.id });
+      // 玩家1 与玩家2 结盟（allied_player 存的是下标 + 1）
+      s.players[1] = makePlayer(1, { alliedPlayer: allied ? 3 : 0, moneyInBank: 0 });
+      s.players[2] = makePlayer(2, { alliedPlayer: allied ? 2 : 0, moneyInBank: 0 });
+      const idx = landIndexAtPlayer(s, topo)!;
+      s.landOwner = [];
+      s.landLevel = [];
+      // 同名地块群里，一块归地主、一块归其同盟
+      for (const l of topo.lands!) {
+        if (l.name === topo.lands!.find((x) => x.id === idx)!.name) {
+          s.landOwner[l.id] = l.id === idx ? 2 : 3;
+          s.landLevel[l.id] = 3;
+        }
+      }
+      return reduce(s, { type: 'settle' }, topo);
+    };
+
+    const solo = setup(false);
+    const allied = setup(true);
+
+    const paidSolo = 500_000 - solo.players[0]!.cash;
+    const paidAllied = 500_000 - allied.players[0]!.cash;
+
+    // ★ 结盟后付款方要付得更多（盟友的同名地块并入收租）
+    expect(paidAllied).toBeGreaterThan(paidSolo);
+    // ★ 两人分账，各自都收到钱
+    expect(allied.players[1]!.moneyInBank).toBeGreaterThan(0);
+    expect(allied.players[2]!.moneyInBank).toBeGreaterThan(0);
+    // ★ 分账之和等于付款方付出的总额
+    expect(allied.players[1]!.moneyInBank + allied.players[2]!.moneyInBank)
+      .toBe(paidAllied);
   });
 
   it('买地后再踩上去不再付费（变成自己的）', () => {

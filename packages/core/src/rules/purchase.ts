@@ -42,6 +42,15 @@ import type { Player } from '../state/types.ts';
  *
  * 对照物件名表（VA 0x0047ed76，按类型索引）：
  * 7 = 小衰神、8 = 大衰神、15 = 死神。
+ *
+ * ⚠️ **这不是唯一的附身拦截**，别与另一处混淆：
+ * `rules/land.ts` 的 `GOD_BLOCKS_PURCHASE = 12`（土地公）来自
+ * `loc_0041a013` 处的内联判断 `cmp byte [player+0x3f], 0xc / je end`，
+ * 只作用于**买无主地**这一条分支。
+ *
+ * 两处并存，判据不同、作用面也不同：
+ *   - 12（土地公）→ 只挡「买无主地」
+ *   - 7/8/15（衰神/死神）→ 挡所有走 `call 0x40fa61` 的消费
  */
 export const PURCHASE_BLOCKING_GODS: readonly number[] = [7, 8, 15];
 

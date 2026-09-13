@@ -16,7 +16,8 @@ import { WatcomRng, rollDice } from '../rng/watcom.ts';
 import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
-import { calculateLandToll } from '../rules/toll.ts';
+import { collectRent } from '../rules/rent.ts';
+import { purchase } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints, MAX_HAND_CARDS } from '../rules/special-square.ts';
 
 /**
@@ -247,20 +248,17 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
             : { ...state, phase: 'turnEnd' };
         }
         case 'other': {
-          // 他人地产 → 立即支付过路费
-          const toll = calculateLandToll(
+          // 他人地产 → 立即支付过路费。
+          // ★ 走 rules/rent.ts：含**同盟分账**、存款级联、破产判定与本月收支累计。
+          //   早先这里是裸的 `cash -= toll` / `cash += toll`，四样全缺。
+          const out = collectRent(
+            state.players,
             allEffectiveLands(state, topo),
-            land.owner,
+            state.currentPlayer,
+            land,
             state.priceIndex,
-            land.name,
           );
-          const ownerIndex = land.owner - 1;
-          const players = state.players.map((p, i) => {
-            if (i === state.currentPlayer) return { ...cloneP(p), cash: p.cash - toll };
-            if (i === ownerIndex) return { ...cloneP(p), cash: p.cash + toll };
-            return p;
-          });
-          return { ...state, players, phase: 'turnEnd' };
+          return { ...state, players: out.players, phase: 'turnEnd' };
         }
       }
     }
@@ -276,8 +274,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       const check = canPurchase(land, player, state.priceIndex);
       if (!check.ok) return state;
 
+      // ★ 走 rules/purchase.ts：只扣现金、不动存款、不触发破产，
+      //   并补上 `call 0x40fa61` 的衰神/死神拦截（canPurchase 查的是另一处，
+      //   即 loc_0041a013 对土地公的判定，两者并存）。
+      const bought = purchase(player, check.price);
+      if (!bought.ok) return state;
       const paid = withPlayer(state, state.currentPlayer, (p) => {
-        p.cash -= check.price;
+        p.cash = bought.player.cash;
       });
       const landOwner = [...paid.landOwner];
       landOwner[landIndex] = state.currentPlayer + 1;
@@ -295,8 +298,10 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       const check = canUpgrade(land, player, state.priceIndex);
       if (!check.ok) return state;
 
+      const built = purchase(player, check.cost);
+      if (!built.ok) return state;
       const paid = withPlayer(state, state.currentPlayer, (p) => {
-        p.cash -= check.cost;
+        p.cash = built.player.cash;
       });
       const landLevel = [...paid.landLevel];
       landLevel[landIndex] = land.level + 1;
