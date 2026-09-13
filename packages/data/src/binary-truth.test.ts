@@ -16,6 +16,7 @@ import { TOOLS } from './tools.ts';
 import { CHARACTERS } from './characters.ts';
 import { STOCKS, STOCKS_PER_MAP, stocksOfMap } from './stocks.ts';
 import { CARD_IMPLS, PASSIVE_STUB_VA, PASSIVE_CARD_IDS, NO_SELECTION_CARD_IDS } from './card-registry.ts';
+import { MAGIC_HOUSE_OPTIONS } from './magic-house.ts';
 
 const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
 const d = existsSync(EXE) ? describe : describe.skip;
@@ -47,6 +48,8 @@ const VA = {
   gameStocks: 0x47f072,
   /** 31 项函数指针（第 0 项为 NULL 占位）@source csrc/cards.c 的注释 */
   cardFunctions: 0x475d5c,
+  /** 魔法屋功能表 `_rich4_magic_house_function_info`，每项 16 字节 */
+  magicHouse: 0x475724,
 } as const;
 
 function loadExe(): Buffer {
@@ -210,6 +213,28 @@ d('★ 数值表以 rich4.exe 为基准校验', () => {
   it('无需目标选择的卡片有 7 张', () => {
     // 均富/购地/改建/拍卖/冬眠/送神 + 被动卡除外
     expect(NO_SELECTION_CARD_IDS).toEqual([1, 3, 7, 8, 15, 22]);
+  });
+
+  it('★ 魔法屋 12 个功能名与二进制一致', () => {
+    const exe = loadExe();
+    const base = vaToOffset(VA.magicHouse);
+    expect(MAGIC_HOUSE_OPTIONS).toHaveLength(12);
+
+    // 前 11 项完全按 16 字节结构校验
+    for (let i = 0; i < 11; i++) {
+      const o = base + i * 16;
+      const opt = MAGIC_HOUSE_OPTIONS[i]!;
+      expect(readStringAt(exe, exe.readUInt32LE(o))).toBe(opt.name);
+      expect(exe.readUInt32LE(o + 4)).toBe(opt.frames);
+      expect(exe.readUInt32LE(o + 8)).toBe(opt.x);
+      expect(exe.readUInt32LE(o + 12)).toBe(opt.y);
+    }
+
+    // 第 12 项只有名字可信 —— 表里那 16 字节不符合前 11 项的字段模式
+    const last = base + 11 * 16;
+    expect(readStringAt(exe, exe.readUInt32LE(last))).toBe(MAGIC_HOUSE_OPTIONS[11]!.name);
+    // 记录「为什么不采信」：帧数字段落在了不合理的范围
+    expect(exe.readUInt32LE(last + 4)).toBeGreaterThan(100);
   });
 
   it('★ 五张表全部来自同一可执行文件，无一字段依赖逆向项目的转录', () => {

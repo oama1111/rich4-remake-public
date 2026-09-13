@@ -15,6 +15,7 @@
  */
 
 import { SPECIAL_KIND } from '../loaders/map.ts';
+import { MAGIC_HOUSE_OPTIONS } from '@rich4/data';
 
 /**
  * 落点要求玩家做的决定。
@@ -50,8 +51,11 @@ export type PendingInteraction =
    *
    * ⚠️ 这一项存在的意义是**让缺口可见**：落在百货/魔法屋/小游戏上时，
    * 上层会收到一个明确的「这里还没做」，而不是悄无声息地什么都不发生。
+   *
+   * `options` 在已经把原版选项表解出来（但效果还没实现）的场所上给出，
+   * 让「差多少」具体到条——目前只有魔法屋是这种情况。
    */
-  | { kind: 'unimplemented'; place: string; specialKind: number };
+  | { kind: 'unimplemented'; place: string; specialKind: number; options?: readonly string[] };
 
 /** 各特殊格对应的场所名 —— 仅用于 `unimplemented` 的可读性 */
 const PLACE_NAMES: Readonly<Record<number, string>> = {
@@ -96,11 +100,18 @@ export function isUnimplementedPlace(specialKind: number): boolean {
 
 /** 构造一个「尚未实现」的交互，带上可读的场所名 */
 export function unimplementedPlace(specialKind: number): PendingInteraction {
-  return {
-    kind: 'unimplemented',
+  const base = {
+    kind: 'unimplemented' as const,
     place: PLACE_NAMES[specialKind] ?? `特殊格${specialKind}`,
     specialKind,
   };
+  // ★ 魔法屋的 12 个选项名已从 exe 解出（@rich4/data 的 MAGIC_HOUSE_OPTIONS，
+  //   VA 0x00475724），只是效果还没实现。把它们一并报上去，
+  //   让「魔法屋没做」具体成「这 12 条没做」。
+  if (specialKind === SPECIAL_KIND.MAGIC_HOUSE) {
+    return { ...base, options: MAGIC_HOUSE_OPTIONS.map((o) => o.name) };
+  }
+  return base;
 }
 
 /** 玩家对待决交互给出的答复 */

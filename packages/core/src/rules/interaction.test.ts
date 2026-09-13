@@ -100,3 +100,21 @@ describe('★ 答复必须与待决交互配套', () => {
     expect(responseMatches(p, { kind: 'decline' })).toBe(true);
   });
 });
+
+describe('魔法屋', () => {
+  it('★ 未实现，但把 12 个选项名一并报出来 —— 缺口具体到条', () => {
+    const p = unimplementedPlace(SPECIAL_KIND.MAGIC_HOUSE);
+    expect(p.kind).toBe('unimplemented');
+    if (p.kind !== 'unimplemented') return;
+    expect(p.place).toBe('魔法屋');
+    expect(p.options).toHaveLength(12);
+    expect(p.options).toContain('立刻坐牢三天');
+    expect(p.options).toContain('拍賣當格土地');
+  });
+
+  it('其他未实现场所没有选项表', () => {
+    const p = unimplementedPlace(SPECIAL_KIND.DEPARTMENT_STORE);
+    if (p.kind !== 'unimplemented') return;
+    expect(p.options).toBeUndefined();
+  });
+});
