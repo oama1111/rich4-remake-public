@@ -2,3 +2,4 @@
 export * from './rng/watcom.ts';
 export * from './rng/policy.ts';
 export * from './loaders/map.ts';
+export * from './loaders/save.ts';
