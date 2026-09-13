@@ -63,12 +63,12 @@ let renderer: BoardRenderer;
 /**
  * 原版底图。
  *
- * ⚠️ 默认**不显示**：底图与节点坐标的对齐关系还没解出来（Q-GND-1），
- *   贸然铺上去只会让棋盘看着像是画错了位置。按 G 键可以开关，
- *   方括号键可以调偏移——这是留给继续攻这道题的人用的。
+ * 节点坐标与底图像素同一个原点，直接按 (0, 0) 铺即可
+ * （依据见 assets-pipeline 的 ground.ts）。G 键可开关，
+ * 方括号/分号/引号键微调偏移——留作核对手段。
  */
 let ground: ImageBitmap | null = null;
-let showGround = false;
+let showGround = true;
 const groundOffset = { x: 0, y: 0 };
 
 /** 走过的 action —— 回放、联机对账、以及排错都靠它 */
@@ -417,7 +417,8 @@ async function boot(): Promise<void> {
         log('⚠ 底图未能解出');
         return;
       }
-      log(`底图载入：${g.width}×${g.height}（按 G 显示；与节点坐标尚未对齐，方括号调偏移）`);
+      log(`底图载入：${g.width}×${g.height}（G 键开关）`);
+      requestRender();
     });
     scheduleAi();
   } catch (err) {

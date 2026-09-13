@@ -6,8 +6,9 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import {
-  GND_TILE_BYTES,
   GND_TILE_HEIGHT,
+  GND_TILE_PIXELS,
+  GND_TILE_STRIDE,
   GND_TILE_WIDTH,
   GroundFormatError,
   decodeGround,
@@ -35,9 +36,10 @@ describe('识别', () => {
 });
 
 describe('块尺寸', () => {
-  it('★ 38 × 27 = 1026 字节', () => {
-    expect(GND_TILE_WIDTH * GND_TILE_HEIGHT).toBe(GND_TILE_BYTES);
-    expect(GND_TILE_BYTES).toBe(1026);
+  it('★ 块是 32 × 32 像素，但在文件里占 1026 字节（多出 2 字节）', () => {
+    expect(GND_TILE_WIDTH * GND_TILE_HEIGHT).toBe(GND_TILE_PIXELS);
+    expect(GND_TILE_PIXELS).toBe(1024);
+    expect(GND_TILE_STRIDE).toBe(1026);
   });
 
   have('★ 文件长度正好是 头 + 调色板 + 块数×1026 —— 一字节不多不少', () => {
@@ -46,16 +48,43 @@ describe('块尺寸', () => {
       const view = new DataView(d.buffer, d.byteOffset, d.byteLength);
       const tilesX = view.getUint16(4, true);
       const tilesY = view.getUint16(6, true);
-      expect(d.length, `地图 ${m}`).toBe(0x10 + 512 + tilesX * tilesY * GND_TILE_BYTES);
+      expect(d.length, `地图 ${m}`).toBe(0x10 + 512 + tilesX * tilesY * GND_TILE_STRIDE);
     }
   });
 
-  have('★ 八张图都是 72 × 72 块', () => {
+  have('★ 八张图都是 72 × 72 块 = 2304 见方', () => {
     for (let m = 0; m < 8; m++) {
       const g = decodeGround(load(m));
       expect([g.tilesX, g.tilesY], `地图 ${m}`).toEqual([72, 72]);
-      expect([g.width, g.height]).toEqual([2736, 1944]);
+      expect([g.width, g.height]).toEqual([2304, 2304]);
     }
+  });
+
+  have('⚠️ 那 2 字节在块首还是块尾**分辨不出来** —— 别假装能分辨', () => {
+    // 若 2 字节在块首，则按块尾读会让每行末尾接上下一行的开头，
+    // 在第 29→30 列留下明显跳变；反之亦然。实测两种读法在各列上的
+    // 相邻差几乎一样（col29：9.39 vs 9.35），**没有可用的判据**。
+    //
+    // 两种读法只差 2 像素，肉眼也分不出。这条用例存在的意义是把
+    // 「这里是个未决问题」钉住，免得日后有人照着某一种读法去反推别的结论。
+    const d = load(0);
+    const base = 0x10 + 512;
+    const colDiff = (pre: number, col: number): number => {
+      let s = 0;
+      let n = 0;
+      for (let t = 0; t < 5184; t += 3) {
+        const b = base + t * GND_TILE_STRIDE + pre;
+        for (let iy = 0; iy < 32; iy++) {
+          s += Math.abs(d[b + iy * 32 + col]! - d[b + iy * 32 + col + 1]!);
+          n++;
+        }
+      }
+      return s / n;
+    };
+    const a = colDiff(0, 29);
+    const b = colDiff(2, 29);
+    // 两者相差不到 5% —— 即「无法分辨」
+    expect(Math.abs(a - b) / a).toBeLessThan(0.05);
   });
 });
 
@@ -87,8 +116,8 @@ describe('解码', () => {
   });
 
   have('★ 解出来的是一幅连贯图像，不是噪声', () => {
-    // 判据：**相邻像素高度相关**。块宽取错会产生斜向撕裂，
-    // 横向相邻差会显著变大 —— 这正是当初定下 38 而非 27/54 的依据。
+    // 判据：**相邻像素高度相关**。块宽取错会产生横向条纹，
+    // 相邻差随之变大 —— 这正是 38×27 被推翻、改用 32×32 的起点。
     const g = decodeGround(load(0));
     const sample = (x: number, y: number): number => g.rgba[(y * g.width + x) * 4]!;
     let adjacent = 0;
