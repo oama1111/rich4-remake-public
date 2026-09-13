@@ -60,3 +60,7 @@ src-tauri/gen/
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+# 重新解包的素材（C-LEG-2：同样禁止入库）
+assets-clean/
+../assets-clean/

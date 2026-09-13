@@ -137,7 +137,7 @@ d('精灵表自洽性', () => {
     }
   });
 
-  it('SPR 自带 512 字节调色板，且为调色板+压缩编码（gsize < w*h*2）', () => {
+  it('SPR 自带 512 字节调色板，且为未压缩 8bpp（gsize === w*h）', () => {
     const a = loadArchive('map.mkf');
     let sprs = 0;
     let smallerThanRaw = 0;
@@ -150,12 +150,12 @@ d('精灵表自洽性', () => {
       sprs++;
       for (const g of sheet.images) {
         total++;
-        if (g.gsize < g.width * g.height * 2) smallerThanRaw++;
+        // 实测：SPR 是未压缩 8bpp 调色板位图，恒等于 w*h
+        if (g.gsize === g.width * g.height) smallerThanRaw++;
       }
     }
     expect(sprs).toBeGreaterThan(0);
-    // SPR 是压缩编码，绝大多数图像数据小于等价的原始 16bpp 大小
-    expect(smallerThanRaw / total).toBeGreaterThan(0.9);
+    expect(smallerThanRaw).toBe(total);
   });
 });
 

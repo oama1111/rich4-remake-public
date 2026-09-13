@@ -1,0 +1,177 @@
+/*
+ * 精灵解码验证
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+import { describe, expect, it } from 'vitest';
+import { readFileSync, existsSync } from 'node:fs';
+import { MkfArchive, parseSpriteSheet } from './mkf.ts';
+import { decodeImage, parsePalette, encodePng, TRANSPARENT_INDEX } from './sprite.ts';
+
+const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const hasAssets = existsSync(`${ROOT}/Rich4/map.mkf`);
+const d = hasAssets ? describe : describe.skip;
+
+const ARCHIVES = ['help.mkf', 'jump.mkf', 'Panel.mkf', 'map.mkf', 'Data.mkf'] as const;
+
+function loadArchive(file: string): MkfArchive {
+  return new MkfArchive(new Uint8Array(readFileSync(`${ROOT}/Rich4/${file}`)));
+}
+
+d('像素格式结论验证', () => {
+  it('SPR 恒为 8bpp（gsize === w*h），SMP 恒为 16bpp（gsize === w*h*2）', () => {
+    let spr = 0;
+    let smp = 0;
+    for (const file of ARCHIVES) {
+      const a = loadArchive(file);
+      for (let i = 0; i < a.count; i++) {
+        const sheet = parseSpriteSheet(a.read(i, 'none'));
+        if (sheet === null) continue;
+        for (const g of sheet.images) {
+          if (sheet.signature === 'SPR') {
+            expect(g.gsize, `${file}#${i} SPR 应为 8bpp`).toBe(g.width * g.height);
+            spr++;
+          } else {
+            expect(g.gsize, `${file}#${i} SMP 应为 16bpp`).toBe(g.width * g.height * 2);
+            smp++;
+          }
+        }
+      }
+    }
+    console.log(`  验证 SPR ${spr} 张, SMP ${smp} 张 —— 全部为未压缩位图`);
+    expect(spr).toBeGreaterThan(2000);
+    expect(smp).toBeGreaterThan(0);
+  });
+
+  it('SPR 调色板首项为黑，索引 0 用作透明', () => {
+    const a = loadArchive('map.mkf');
+    for (let i = 0; i < a.count; i++) {
+      const data = a.read(i, 'none');
+      const sheet = parseSpriteSheet(data);
+      if (sheet?.signature !== 'SPR') continue;
+      const pal = parsePalette(sheet.palette!);
+      expect([pal[0], pal[1], pal[2]]).toEqual([0, 0, 0]);
+
+      // 四角应当是透明索引
+      const g = sheet.images[0]!;
+      const px = data.subarray(g.dataOffset, g.dataOffset + g.gsize);
+      expect(px[0]).toBe(TRANSPARENT_INDEX);
+      return;
+    }
+    throw new Error('未找到 SPR 资源');
+  });
+});
+
+d('decodeImage', () => {
+  it('SPR 解码：尺寸正确、透明区 alpha 为 0、非透明区 alpha 为 255', () => {
+    const a = loadArchive('map.mkf');
+    for (let i = 0; i < a.count; i++) {
+      const data = a.read(i, 'none');
+      const sheet = parseSpriteSheet(data);
+      if (sheet?.signature !== 'SPR') continue;
+
+      const img = decodeImage(sheet, data, 0);
+      const g = sheet.images[0]!;
+      expect(img.width).toBe(g.width);
+      expect(img.height).toBe(g.height);
+      expect(img.rgba.length).toBe(g.width * g.height * 4);
+
+      const px = data.subarray(g.dataOffset, g.dataOffset + g.gsize);
+      let transparent = 0;
+      let opaque = 0;
+      for (let p = 0; p < g.width * g.height; p++) {
+        const alpha = img.rgba[p * 4 + 3];
+        if (px[p] === TRANSPARENT_INDEX) {
+          expect(alpha).toBe(0);
+          transparent++;
+        } else {
+          expect(alpha).toBe(255);
+          opaque++;
+        }
+      }
+      expect(transparent).toBeGreaterThan(0);
+      expect(opaque).toBeGreaterThan(0);
+      return;
+    }
+    throw new Error('未找到 SPR 资源');
+  });
+
+  it('SMP 解码：全不透明，色值为 RGB555 扩展', () => {
+    const a = loadArchive('help.mkf');
+    const data = a.read(0, 'none');
+    const sheet = parseSpriteSheet(data)!;
+    expect(sheet.signature).toBe('SMP');
+
+    const img = decodeImage(sheet, data, 0);
+    expect(img.width).toBe(400);
+    expect(img.height).toBe(400);
+    for (let p = 0; p < img.width * img.height; p++) {
+      expect(img.rgba[p * 4 + 3]).toBe(255);
+    }
+  });
+
+  it('锚点被保留，且约为图像中心', () => {
+    const a = loadArchive('Data.mkf');
+    let checked = 0;
+    let centered = 0;
+    for (let i = 0; i < a.count && checked < 200; i++) {
+      const data = a.read(i, 'none');
+      const sheet = parseSpriteSheet(data);
+      if (sheet === null) continue;
+      for (let k = 0; k < sheet.images.length && checked < 200; k++) {
+        const g = sheet.images[k]!;
+        if (g.x === 0 && g.y === 0) continue;
+        const img = decodeImage(sheet, data, k);
+        expect(img.anchorX).toBe(g.x);
+        expect(img.anchorY).toBe(g.y);
+        checked++;
+        // 锚点接近中心（容忍 ±25%）
+        if (Math.abs(g.x - g.width / 2) < g.width * 0.25) centered++;
+      }
+    }
+    expect(checked).toBeGreaterThan(20);
+    expect(centered / checked, '锚点应以中心为主').toBeGreaterThan(0.7);
+  });
+
+  it('能解码全部档案的每一张图像而不抛错', () => {
+    let total = 0;
+    for (const file of ARCHIVES) {
+      const a = loadArchive(file);
+      for (let i = 0; i < a.count; i++) {
+        const data = a.read(i, 'none');
+        const sheet = parseSpriteSheet(data);
+        if (sheet === null) continue;
+        for (let k = 0; k < sheet.images.length; k++) {
+          const img = decodeImage(sheet, data, k);
+          expect(img.rgba.length).toBe(img.width * img.height * 4);
+          total++;
+        }
+      }
+    }
+    console.log(`  成功解码 ${total} 张图像`);
+    expect(total).toBeGreaterThan(10000);
+  });
+});
+
+d('encodePng', () => {
+  it('产出合法 PNG：签名、IHDR 尺寸、IEND 结尾', () => {
+    const a = loadArchive('map.mkf');
+    for (let i = 0; i < a.count; i++) {
+      const data = a.read(i, 'none');
+      const sheet = parseSpriteSheet(data);
+      if (sheet?.signature !== 'SPR') continue;
+      const img = decodeImage(sheet, data, 0);
+      const png = encodePng(img);
+
+      expect(Array.from(png.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const v = new DataView(png.buffer, png.byteOffset, png.byteLength);
+      expect(String.fromCharCode(...png.subarray(12, 16))).toBe('IHDR');
+      expect(v.getUint32(16, false)).toBe(img.width);
+      expect(v.getUint32(20, false)).toBe(img.height);
+      expect(png[24]).toBe(8); // bit depth
+      expect(png[25]).toBe(6); // RGBA
+      expect(String.fromCharCode(...png.subarray(png.length - 8, png.length - 4))).toBe('IEND');
+      return;
+    }
+    throw new Error('未找到 SPR 资源');
+  });
+});
