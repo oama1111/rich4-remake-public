@@ -27,7 +27,7 @@ function land(over: Partial<LandInfo> = {}): LandInfo {
     priceStatus: 0,
     type: LAND_TYPE_HOUSE,
     owner: 0,
-    level: 0,
+    level: 0, facing: 0,
     landPrice: 1000,
     housePrice: 200,
     rentByLevel: [200, 500, 1200, 2800, 6000, 10000],

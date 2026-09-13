@@ -107,7 +107,7 @@ export function makeNode(over: Partial<MapNode> = {}): MapNode {
 export function makeLand(over: Partial<LandInfo> = {}): LandInfo {
   return {
     id: 1, x: 0, y: 0, name: '测试区',
-    priceStatus: 0, type: 0, owner: 0, level: 0,
+    priceStatus: 0, type: 0, owner: 0, level: 0, facing: 0,
     landPrice: 1000, housePrice: 200,
     rentByLevel: [200, 500, 1200, 2800, 6000, 10000],
     flast: 0,

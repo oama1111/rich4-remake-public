@@ -12,7 +12,7 @@ import { NEWS_DECK_SIZE } from './deck.ts';
 
 function land(over: Partial<LandInfo> = {}): LandInfo {
   return {
-    id: 1, x: 0, y: 0, name: 'A', priceStatus: 0, type: 0, owner: 0, level: 0,
+    id: 1, x: 0, y: 0, name: 'A', priceStatus: 0, type: 0, owner: 0, level: 0, facing: 0,
     landPrice: 1000, housePrice: 200, rentByLevel: [0, 0, 0, 0, 0, 0], flast: 0, ...over,
   };
 }

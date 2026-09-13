@@ -8,9 +8,16 @@
  */
 
 import type { GameState } from '@rich4/core';
-import type { MapNode, Rich4Map } from '@rich4/core';
+import type { LandInfo, MapNode, Rich4Map } from '@rich4/core';
 import type { Sprite, SpriteCache } from './assets.ts';
-import { DECOR_RESOURCE, decorImageIndex, tokenResource } from './assets.ts';
+import {
+  DECOR_RESOURCE,
+  buildingImageIndex,
+  buildingResource,
+  chainStoreResource,
+  decorImageIndex,
+  tokenResource,
+} from './assets.ts';
 
 /** 玩家棋子的颜色——原版每人一色，此处先用可区分的四色占位 */
 const PLAYER_COLORS = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
@@ -184,6 +191,7 @@ export class BoardRenderer {
 
     this.#drawEdges(map, camera);
     this.#drawDecor(map, camera);
+    this.#drawBuildings(map, state, camera);
     this.#drawNodes(map, state, camera, hoverNode);
     this.#drawPlayers(map, state, camera);
   }
@@ -221,6 +229,46 @@ export class BoardRenderer {
       const sp = this.#sprite('map.mkf', DECOR_RESOURCE, idx, true);
       if (sp === null) continue;
       const p = nodeToScreen(n, cam);
+      ctx.drawImage(
+        sp.bitmap,
+        p.x - sp.anchorX * cam.scale,
+        p.y - sp.anchorY * cam.scale,
+        sp.width * cam.scale,
+        sp.height * cam.scale,
+      );
+    }
+  }
+
+  /**
+   * 已开发地块上的建筑。
+   *
+   * 资源号与图号的由来见 assets.ts 的 `buildingResource` / `buildingImageIndex`
+   * ——都是从原版加载与绘制代码直接读出来的。
+   *
+   * ⚠️ 按 y 排序后再画：等距视角下靠后的建筑要先画，否则近处的房子
+   *   会被远处的盖住。
+   */
+  #drawBuildings(map: Rich4Map, state: GameState, cam: Camera): void {
+    const ctx = this.#ctx;
+    const drawn: { node: MapNode; land: LandInfo; level: number }[] = [];
+    for (const n of map.nodes) {
+      if (n.ref.kind !== 'land') continue;
+      const idx = n.ref.index;
+      const level = state.landLevel[idx] ?? 0;
+      if (level < 1) continue; // @source cmp byte [land+0x1a], 0 / je —— 等级 0 不画建筑
+      const land = map.lands.find((l) => l.id === idx);
+      if (land === undefined) continue;
+      drawn.push({ node: n, land, level });
+    }
+    drawn.sort((a, b) => a.node.y - b.node.y);
+
+    for (const { node, land, level } of drawn) {
+      // @source cmp byte [land+0x18], 0 / jne → 连锁店走另一张图集
+      const res = land.type !== 0 ? chainStoreResource(state.globalMapId) : buildingResource(state.globalMapId, level);
+      if (res === null) continue;
+      const sp = this.#sprite('map.mkf', res, buildingImageIndex(land.facing), true);
+      if (sp === null) continue;
+      const p = nodeToScreen(node, cam);
       ctx.drawImage(
         sp.bitmap,
         p.x - sp.anchorX * cam.scale,

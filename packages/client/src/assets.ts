@@ -257,3 +257,63 @@ export const DECOR_RESOURCE = 24;
 export function decorImageIndex(decorIndex: number): number | null {
   return decorIndex > 0 ? decorIndex - 1 : null;
 }
+
+// ============================================================
+//  地块建筑
+// ============================================================
+
+/**
+ * 地块建筑的资源号与图号。
+ *
+ * ★ 完全来自原版：地图加载代码 VA 0x00407e0b 一次性载入 5 个等级的图集——
+ * ```asm
+ * esi = game_stage*4 + game_map          ; global_map_id
+ * for (ebx = 0; ebx < 5; ebx++) {
+ *     eax = esi*5 + ebx + 0x27           ; ★ = global_map_id*5 + 等级 + 39
+ *     [0x48ae4c + ebx*4] = load(map.mkf, eax)
+ * }
+ * ```
+ * 而地块绘制代码（VA 0x004091df）按等级取图集：
+ * ```asm
+ * cmp byte [land + 0x1a], 0     ; level
+ * je  空地分支                   ; ★ 等级 0 不画建筑
+ * …
+ * eax = byte [land + 0x1a]
+ * eax = [0x48ae48 + eax*4]      ; ★ 注意基址是 0x48ae48，比装载基址少 4
+ * ```
+ * 两处一联立即得：**等级 L（1..5）→ 资源号 `地图×5 + (L−1) + 39`**。
+ * 这正好解释了先前观察到的「资源 39 起每 5 个一组、组内高度递增」
+ * ——那是同一张地图的五级建筑（空地→店铺→楼→塔→摩天楼）。
+ *
+ * 图号则是**朝向**（VA 0x004091af）：
+ * ```asm
+ * al = byte [land + 0x1b]       ; 地块朝向
+ * al += byte [0x499088]         ; 当前视角旋转
+ * dl = 8 - al ; dl &= 7         ; → 图号 0..7
+ * ```
+ * 这解释了每个建筑资源为何恰好 8 张图。
+ */
+export const BUILDING_RESOURCE_BASE = 0x27; // 39
+export const BUILDING_LEVELS = 5;
+
+/** 某张地图某个等级的建筑资源号；等级 0（空地）没有建筑 */
+export function buildingResource(globalMapId: number, level: number): number | null {
+  if (level < 1 || level > BUILDING_LEVELS) return null;
+  return globalMapId * BUILDING_LEVELS + (level - 1) + BUILDING_RESOURCE_BASE;
+}
+
+/**
+ * 建筑朝向 → 图号。
+ * @source `dl = 8 - (facing + rotation); dl &= 7`
+ */
+export function buildingImageIndex(facing: number, viewRotation = 0): number {
+  return (8 - (facing + viewRotation)) & 7;
+}
+
+/**
+ * 「特殊类型」地块（`land.type != 0`，即连锁店）另有一张图集。
+ * @source VA 0x00407e48：资源号 = `global_map_id + 0x4f`（79）
+ */
+export function chainStoreResource(globalMapId: number): number {
+  return globalMapId + 0x4f;
+}

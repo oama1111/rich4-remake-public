@@ -126,6 +126,22 @@ export interface LandInfo {
   owner: number;
   /** @source land.h 0x1a */
   level: number;
+  /**
+   * 建筑朝向 0..7 @source land.h 0x1b
+   *
+   * @source 地块绘制代码 VA 0x004091af：
+   * ```asm
+   * al = byte [land + 0x1b]
+   * al += byte [0x499088]      ; ★ 加上当前视角旋转
+   * dl = 8 - al
+   * dl &= 7                    ; → 精灵图号 0..7
+   * ```
+   * 这解释了建筑资源为何**每个都有 8 张图**——那是 8 个朝向。
+   *
+   * ⚠️ 先前把这个字节读作「建筑风格」是错的：它取值 0..7 且同区一致，
+   * 看着像风格号，其实是朝向（同一区的房子朝同一个方向，很自然）。
+   */
+  facing: number;
   /** @source land.h 0x1c */
   landPrice: number;
   /** @source land.h 0x1e */
@@ -317,6 +333,7 @@ export function parseMap(data: Uint8Array): Rich4Map {
       type: data[o + 0x18] ?? 0,
       owner: data[o + 0x19] ?? 0,
       level: data[o + 0x1a] ?? 0,
+      facing: (data[o + 0x1b] ?? 0) & 7,
       landPrice: view.getUint16(o + 0x1c, true),
       housePrice: view.getUint16(o + 0x1e, true),
       rentByLevel: Array.from({ length: MAX_LAND_LEVEL + 1 }, (_, lv) =>
