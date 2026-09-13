@@ -23,7 +23,7 @@ function ctx(over: Partial<NewsContext> = {}): NewsContext {
   return {
     players: [makePlayer()], lands: [], facilities: [],
     stockAmount: [[]], commercials: [], stockF6: new Array<number>(12).fill(0),
-    flag496b30: 0, flag496b60: 0, checkCommercialOwner: () => false, ...over,
+    prisonOccupied: 0, hospitalOccupied: 0, checkCommercialOwner: () => false, ...over,
   };
 }
 
@@ -38,14 +38,14 @@ describe('未约束的事件恒可触发', () => {
 });
 
 describe('全局标志类（0/1 与 2/3）', () => {
-  it('事件 0、1 依赖 flag496b30', () => {
-    expect(isNewsFeasible(0, ctx({ flag496b30: 0 }))).toBe(false);
-    expect(isNewsFeasible(1, ctx({ flag496b30: 0 }))).toBe(false);
-    expect(isNewsFeasible(0, ctx({ flag496b30: 1 }))).toBe(true);
+  it('★ 事件 0、1 需要有人在监狱里', () => {
+    expect(isNewsFeasible(0, ctx({ prisonOccupied: 0 }))).toBe(false);
+    expect(isNewsFeasible(1, ctx({ prisonOccupied: 0 }))).toBe(false);
+    expect(isNewsFeasible(0, ctx({ prisonOccupied: 1 }))).toBe(true);
   });
-  it('事件 2、3 依赖 flag496b60', () => {
-    expect(isNewsFeasible(2, ctx({ flag496b60: 0 }))).toBe(false);
-    expect(isNewsFeasible(3, ctx({ flag496b60: 5 }))).toBe(true);
+  it('事件 2、3 依赖 hospitalOccupied', () => {
+    expect(isNewsFeasible(2, ctx({ hospitalOccupied: 0 }))).toBe(false);
+    expect(isNewsFeasible(3, ctx({ hospitalOccupied: 5 }))).toBe(true);
   });
 });
 

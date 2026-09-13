@@ -37,12 +37,34 @@ export interface NewsContext {
   /** 12 支股票的 `stock_info.f6`（偏移 6）@source byte[i*36 + 0x496986] */
   stockF6: readonly number[];
   /**
-   * @source news.c 中的 `dw_496b30` —— 语义未明的全局标志
-   * （破产处理中被按玩家下标清零：`mov byte [edx + 0x496b30], 0`）
+   * **监狱占用表**（8 项字节，VA 0x00496b30），非 0 表示该槽位有人在押。
+   *
+   * ★ 原先记作「语义未明的全局标志」，现已查清：
+   * - 入狱：`mov byte [idx + 0x496b30], 1`（VA 0x0043d674）
+   * - 出狱：`mov byte [idx + 0x496b30], 0`（VA 0x0043d7d5）
+   * - 破产：按玩家下标清零
+   * - 监狱格落点处理开头 `for (i=0;i<8;i++) if (table[i]) break;`
+   *   全为 0（无人在押）时直接返回 —— 即**探监**机制
+   *
+   * 槽位与 `send_to_prison` 的索引一致：**0..3 是玩家，4..7 是地图物件**
+   * （调用点 VA 0x0040ceb6 用的正是 `lea eax, [ebx + 4]`）。
+   *
+   * 此处传入「是否有任何槽位非 0」的聚合值即可。
    */
-  flag496b30: number;
-  /** @source `dw_496b60` —— 同上，语义未明 */
-  flag496b60: number;
+  prisonOccupied: number;
+  /**
+   * **医院占用表**（VA 0x00496b60），与监狱表完全对称。
+   *
+   * ★ 同样已查清：写入点全部落在医院代码段（0x0043de..0x0043ee）——
+   * 入院 `mov byte [idx + 0x496b60], 1`（VA 0x0043ed20），
+   * 出院与破产清零；医院格落点处理开头同样先查该表。
+   *
+   * 监狱表在 0x00496b30，两者相距 0x30；医院代码整体比监狱晚约 0xF30，
+   * 这一对结构从数据到代码都是镜像的。
+   *
+   * 此处传入「是否有任何槽位非 0」的聚合值即可。
+   */
+  hospitalOccupied: number;
   /**
    * @source case 29 的 `fcn_0040d73f(owner - 1)` —— 语义未明的判定
    * 由调用方提供；返回 true 视为满足。
@@ -101,11 +123,13 @@ export function isNewsFeasible(eventId: number, ctx: NewsContext): boolean {
   switch (eventId) {
     case 0:
     case 1:
-      return ctx.flag496b30 !== 0;
+      // 事件 0/1 需要**有人在监狱里**
+      return ctx.prisonOccupied !== 0;
 
     case 2:
     case 3:
-      return ctx.flag496b60 !== 0;
+      // 事件 2/3 需要**有人在医院里**
+      return ctx.hospitalOccupied !== 0;
 
     case 4:
     case 5:
