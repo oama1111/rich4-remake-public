@@ -27,6 +27,7 @@ export * from './rules/confinement.ts';
 export * from './events/deck.ts';
 export * from './events/news.ts';
 export * from './events/fortune.ts';
+export * from './events/fortune-effects.ts';
 export * from './places/bank.ts';
 export * from './places/stock.ts';
 export * from './cards/average-cash.ts';

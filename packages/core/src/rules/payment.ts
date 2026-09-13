@@ -254,3 +254,50 @@ export function transferMoney(
 
   return { players: nextPlayers, companies: nextCompanies, pool: nextPool, paid, bankrupted };
 }
+
+// ============================================================
+//  give_money —— 纯收款，与 pay_money 不对称
+// ============================================================
+
+/**
+ * 给玩家发钱。
+ *
+ * @source VA 0x0041d3f4（紧接 `pay_money` 之后的下一个函数）：
+ * ```asm
+ * test byte [esp + 0x10], 1
+ * je   进存款
+ * add  dword [player + 0x1c], ecx      ; 进现金
+ * jmp  统计
+ * 进存款:
+ * add  dword [player + 0x20], ecx
+ * 统计:
+ * add  dword [player + 0x60], ecx      ; 本月收入累计
+ * if (player == current) 刷新界面
+ * ```
+ *
+ * ★ **它与 `transferMoney` 不对称，这点必须保留**：
+ * 这里只做加法——没有付款方、没有级联、不可能破产。
+ * 命运事件里「撿到钱／中獎／領保險金」走这条；
+ * 「罰款／損失」则走 `transferMoney(current, PARTY_POOL, …)`，
+ * 那条有完整的级联与破产判定。
+ *
+ * @param toCash `flags & 1`；命运事件的调用点传的都是 1，即**进现金**
+ */
+export function receiveMoney(
+  players: readonly Player[],
+  payee: number,
+  amount: number,
+  toCash = true,
+): Player[] {
+  const next = [...players];
+  const p = next[payee];
+  if (p === undefined) return next;
+  next[payee] = {
+    ...p,
+    cash: toCash ? p.cash + amount : p.cash,
+    moneyInBank: toCash ? p.moneyInBank : p.moneyInBank + amount,
+    // @source add dword [player*0x68 + 0x496bc8], ecx
+    monthlyReceived: p.monthlyReceived + amount,
+  };
+  return next;
+}
