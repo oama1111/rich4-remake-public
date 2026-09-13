@@ -3,7 +3,16 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * @source rich4-re/csrc/news.c `check_news()`
- *         （对应 rich4.asm 的 fcn_00448be2 @ VA 0x00448be2）
+ * @source rich4.asm:22422 fcn_00448be2 @ VA 0x00448be2
+ *
+ * ✅ **已与汇编交叉核对**（2026-09-13）：汇编的二分派发结构与 C 版的
+ * 每一组 case 完全吻合 ——
+ *   case 4/5/15  → 同一目标 loc_00448cb4
+ *   case 8/9/12  → 同一目标 loc_00448d54
+ *   case 10/13   → 同一目标 loc_00448da5
+ *   case 6       → 落入 default（C 版确实无此 case）
+ * 鉴于 rich4-re 已被发现多处转录错误，取自 C 代码的逻辑一律须如此核对，
+ * 见 docs/reverse-engineering-audit.md。
  *
  * 「可行」= 该事件在当前局面下有合法作用对象。例如「全员房屋翻新」
  * 需要场上至少有一栋房子，否则跳过、改抽下一张。
@@ -78,8 +87,6 @@ function anyoneHoldsStock(ctx: NewsContext): boolean {
 function anyoneWithTraffic(ctx: NewsContext, wantZero: boolean): boolean {
   return ctx.players.some((p) => {
     if (!isAlive(p)) return false;
-    // traffic_method 暂存于 Player 之外，此处以 direction 占位是错误的——
-    // 该字段尚未纳入 Player 模型，见下方 TODO。
     return wantZero ? p.trafficMethod === 0 : p.trafficMethod !== 0;
   });
 }
