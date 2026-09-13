@@ -6,20 +6,31 @@
 
 # --- 原版资源包与存档（绝对禁止入库）---
 *.mkf
+!assets/game/**/*.mkf
 *.MKF
 *.dat
+!assets/game/**/*.dat
 *.DAT
 *.CFG
+!assets/game/**/*.CFG
 *.cfg
+!assets/game/**/*.cfg
 *.mid
+!assets/game/**/*.mid
 *.MID
+!assets/game/**/*.MID
 *.avi
+!assets/game/**/*.avi
 *.AVI
+!assets/game/**/*.AVI
 *.exe
+!assets/game/**/*.exe
 *.EXE
+!assets/game/**/*.EXE
 
 # --- 素材目录（原始与超分产物一律不入库）---
-assets/original/
+# ★ assets/game/ 现在**入库**（走 LFS），见 .gitattributes 与 docs/assets.md
+# 以下全是**派生物**——由 assets/game/ 经我们自己的管线生成，故不版本化：
 assets/hd/
 assets/upscale-queue/
 assets/upscale-done/
