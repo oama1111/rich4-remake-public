@@ -79,7 +79,19 @@ export interface MapNode {
   type: number;
   /** type 解析结果 */
   ref: NodeRef;
-  /** 装饰/图素索引。**语义待确认**（见 docs/map-format.md §7a） @source 节点 +0x22 */
+  /**
+   * 装饰图素索引。@source 节点 +0x22
+   *
+   * ★ 已缩小范围（仍未完全确定）：实测 0001.bin 上取值全为
+   * **奇数** 1..33（共 17 个不同值），与地图数据资源号
+   * `globalMapId * 2 + 1` 是同一种「×2+1」编码，故真实索引应为
+   * `(decorIndex - 1) / 2`，落在 0..16。
+   *
+   * ⚠️ **住宅与设施的 decorIndex 一律为 0**——它们的外观由
+   * 归属与等级决定，不走这个字段。非 0 值只出现在景观与特殊格上。
+   *
+   * 尚未确定的是它索引进 `map.mkf` 的哪一段资源。
+   */
   decorIndex: number;
   /** 原始 flags @source 节点 +0x24 */
   flags: number;

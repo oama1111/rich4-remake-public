@@ -10,6 +10,8 @@
 
 import { CHARACTERS } from '@rich4/data';
 import {
+  decideAction,
+  isAiTurn,
   newGame,
   reduce,
   parseMap,
@@ -66,7 +68,49 @@ function dispatch(action: Action): void {
   if (state !== before) history.push(action);
   requestRender();
   renderPanel();
+  scheduleAi();
 }
+
+// ============================================================
+//  电脑玩家
+// ============================================================
+
+let aiTimer: number | null = null;
+
+/**
+ * 轮到电脑时自动走。
+ *
+ * ★ AI 产出的 action 与人类点按钮产生的**完全同类**，
+ *   都经由 `dispatch` 走同一个 reduce（C-ARC-4）。
+ *   这里唯一的差别只是「谁按的」和一个便于观战的延时。
+ */
+function scheduleAi(): void {
+  if (aiTimer !== null) {
+    clearTimeout(aiTimer);
+    aiTimer = null;
+  }
+  if (!aiAutoPlay || !isAiTurn(state)) return;
+  aiTimer = window.setTimeout(() => {
+    aiTimer = null;
+    const action = decideAction({ state, map });
+    if (action === null) return;
+    const before = state;
+    state = reduce(state, action, topo);
+    if (state === before) {
+      log(`⚠ AI 在 ${before.phase} 给出无效 action ${action.type}，已停手`);
+      aiAutoPlay = false;
+      renderPanel();
+      return;
+    }
+    history.push(action);
+    requestRender();
+    renderPanel();
+    scheduleAi();
+  }, aiDelayMs);
+}
+
+let aiAutoPlay = true;
+let aiDelayMs = 120;
 
 // ============================================================
 //  渲染循环
@@ -118,10 +162,11 @@ function renderPanel(): void {
       el.className = `player${p.index === state.currentPlayer ? ' active' : ''}`;
       const name = CHARACTERS[p.character]?.name ?? `角色${p.character}`;
       const dead = p.whoPlays === 0 ? '（出局）' : '';
+      const owned = state.landOwner.filter((v) => v === p.index + 1).length;
       el.innerHTML =
         `<div class="name">${name}${dead}</div>` +
         `<div class="money">现金 ${money(p.cash)} ｜ 存款 ${money(p.moneyInBank)}</div>` +
-        `<div class="money">节点 ${p.nodeId} ｜ 手牌 ${p.cards.length}</div>`;
+        `<div class="money">节点 ${p.nodeId} ｜ 手牌 ${p.cards.length} ｜ 地产 ${owned}</div>`;
       return el;
     }),
   );
@@ -154,7 +199,21 @@ function renderActions(): void {
       return el;
     }),
     autoButton(),
+    aiToggleButton(),
   );
+}
+
+/** 观战开关——调试规则时常常要让电脑停下来 */
+function aiToggleButton(): HTMLButtonElement {
+  const el = document.createElement('button');
+  el.textContent = aiAutoPlay ? '电脑：自动' : '电脑：暂停';
+  el.onclick = () => {
+    aiAutoPlay = !aiAutoPlay;
+    log(aiAutoPlay ? '▶ 电脑接管' : '⏸ 电脑暂停');
+    renderPanel();
+    scheduleAi();
+  };
+  return el;
 }
 
 /** 一键把当前回合走完——手点八个按钮太慢，不利于快速验证规则 */
@@ -274,7 +333,7 @@ async function boot(): Promise<void> {
       map,
       globalMapId,
       players: [
-        { character: 0, kind: 'human' },
+        { character: 0, kind: 'computer' },
         { character: 1, kind: 'computer' },
         { character: 2, kind: 'computer' },
         { character: 3, kind: 'computer' },
@@ -300,6 +359,7 @@ async function boot(): Promise<void> {
     requestRender();
     renderPanel();
     log(`地图载入：${map.nodes.length} 个节点、${map.lands.length} 块地`);
+    scheduleAi();
   } catch (err) {
     metaEl.className = 'err';
     metaEl.textContent = `启动失败：${err instanceof Error ? err.message : String(err)}`;
