@@ -2,3 +2,4 @@
 export * from './cards.ts';
 export * from './tools.ts';
 export * from './characters.ts';
+export * from './stocks.ts';

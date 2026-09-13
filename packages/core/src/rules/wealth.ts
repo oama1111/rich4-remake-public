@@ -11,8 +11,8 @@ import type { Player } from '../state/types.ts';
 import { isAlive } from '../state/types.ts';
 import { LAND_TYPE_HOUSE } from './toll.ts';
 
-/** 玩家持有的一支股票 */
-export interface StockHolding {
+/** 估值用的一支股票持仓（持股数 + 市价） */
+export interface StockValuation {
   /** 持股数 @source player_stock_info.amount（每项 8 字节，每人 12 支 = 96 字节） */
   amount: number;
   /**
@@ -49,7 +49,7 @@ export function calculatePlayerWealth(
   player: Player,
   lands: readonly LandInfo[],
   facilities: readonly FacilityInfo[],
-  stocks: readonly StockHolding[] = [],
+  stocks: readonly StockValuation[] = [],
 ): number {
   let total = player.cash + player.moneyInBank - player.loan;
 

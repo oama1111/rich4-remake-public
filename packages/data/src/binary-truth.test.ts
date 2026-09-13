@@ -14,6 +14,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { CARDS } from './cards.ts';
 import { TOOLS } from './tools.ts';
 import { CHARACTERS } from './characters.ts';
+import { STOCKS, STOCKS_PER_MAP, stocksOfMap } from './stocks.ts';
 
 const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
 const d = existsSync(EXE) ? describe : describe.skip;
@@ -36,6 +37,8 @@ const VA = {
   toolTable: 0x47fee2,
   /** 12 项 × 0x68 字节 @source rich4_player_info.h 的注释 */
   characterProfiles: 0x47e80c,
+  /** 96 项 × 36 字节 @source rich4_stocks.h `game_stocks[96]` */
+  gameStocks: 0x47f072,
 } as const;
 
 function loadExe(): Buffer {
@@ -129,12 +132,53 @@ d('★ 数值表以 rich4.exe 为基准校验', () => {
     }
   });
 
-  it('★ 三张表全部来自同一可执行文件，无一字段依赖逆向项目的转录', () => {
+  it('股票表 96 项与二进制逐字段一致', () => {
+    const exe = loadExe();
+    const base = vaToOffset(VA.gameStocks);
+    expect(STOCKS.length).toBe(96);
+    expect(STOCKS_PER_MAP).toBe(12);
+
+    for (let i = 0; i < 96; i++) {
+      const o = base + i * 36;
+      const st = STOCKS[i]!;
+      expect(readStringAt(exe, exe.readUInt32LE(o)), `股票 ${i} 名称`).toBe(st.name);
+      expect(exe.readUInt16LE(o + 4), `${st.name} f4`).toBe(st.hasCommercial);
+      expect(exe[o + 6], `${st.name} f6`).toBe(st.f6);
+      expect(exe[o + 7], `${st.name} f7`).toBe(st.f7);
+      expect(exe.readUInt16LE(o + 8), `${st.name} shares`).toBe(st.shares);
+      expect(exe.readUInt16LE(o + 10), `${st.name} f10`).toBe(st.f10);
+      // f20 是估值与买卖取用的价格字段
+      expect(exe.readFloatLE(o + 20), `${st.name} price`).toBeCloseTo(st.price, 5);
+      expect(exe.readFloatLE(o + 24), `${st.name} volatility`).toBeCloseTo(st.volatility, 5);
+      expect(exe.readFloatLE(o + 28), `${st.name} f28`).toBeCloseTo(st.f28, 5);
+      expect(exe.readUInt32LE(o + 32), `${st.name} f32`).toBe(st.f32);
+    }
+  });
+
+  it('初始表中 f12 == f16 == f20（三者皆为股价）', () => {
+    const exe = loadExe();
+    const base = vaToOffset(VA.gameStocks);
+    for (let i = 0; i < 96; i++) {
+      const o = base + i * 36;
+      const p = exe.readFloatLE(o + 20);
+      expect(exe.readFloatLE(o + 12), `股票 ${i} f12`).toBeCloseTo(p, 5);
+      expect(exe.readFloatLE(o + 16), `股票 ${i} f16`).toBeCloseTo(p, 5);
+    }
+  });
+
+  it('stocksOfMap 按 地图*12 正确切片', () => {
+    expect(stocksOfMap(0).length).toBe(12);
+    expect(stocksOfMap(0)[0]!.name).toBe(STOCKS[0]!.name);
+    expect(stocksOfMap(7)[11]!.name).toBe(STOCKS[95]!.name);
+  });
+
+  it('★ 四张表全部来自同一可执行文件，无一字段依赖逆向项目的转录', () => {
     // 这条是声明性的：上面四项若全通过，即证明 packages/data 的数值
     // 完全独立于 rich4-re 的 .c 文件而成立。
     const exe = loadExe();
     expect(vaToOffset(VA.cardsTable)).toBeLessThan(exe.length);
     expect(vaToOffset(VA.toolTable)).toBeLessThan(exe.length);
     expect(vaToOffset(VA.characterProfiles)).toBeLessThan(exe.length);
+    expect(vaToOffset(VA.gameStocks)).toBeLessThan(exe.length);
   });
 });

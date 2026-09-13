@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { calculatePlayerWealth, updatePriceIndex, STOCK_COUNT } from './wealth.ts';
-import type { StockHolding } from './wealth.ts';
+import type { StockValuation } from './wealth.ts';
 import { parseMap } from '../loaders/map.ts';
 import { parseSave } from '../loaders/save.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
@@ -93,7 +93,7 @@ describe('calculatePlayerWealth', () => {
   });
 
   it('股票按持股 × 股价计入', () => {
-    const stocks: StockHolding[] = [{ amount: 10, price: 100 }];
+    const stocks: StockValuation[] = [{ amount: 10, price: 100 }];
     expect(calculatePlayerWealth(player({ cash: 500 }), [], [], stocks)).toBe(500 + 1000);
   });
 
@@ -101,7 +101,7 @@ describe('calculatePlayerWealth', () => {
     // 原版每支算完就 fistp 截断。两支各 0.6 元：
     //   逐支截断: trunc(0.6+0)=0, trunc(0.6+0)=0 → 0
     //   统一取整: trunc(0.6+0.6)=1
-    const stocks: StockHolding[] = [
+    const stocks: StockValuation[] = [
       { amount: 1, price: 0.6 },
       { amount: 1, price: 0.6 },
     ];
@@ -111,7 +111,7 @@ describe('calculatePlayerWealth', () => {
   it('固定 12 支股票', () => {
     expect(STOCK_COUNT).toBe(12);
     // 超出 12 支的部分被忽略
-    const stocks: StockHolding[] = Array.from({ length: 20 }, () => ({ amount: 1, price: 100 }));
+    const stocks: StockValuation[] = Array.from({ length: 20 }, () => ({ amount: 1, price: 100 }));
     expect(calculatePlayerWealth(player(), [], [], stocks)).toBe(12 * 100);
   });
 });
