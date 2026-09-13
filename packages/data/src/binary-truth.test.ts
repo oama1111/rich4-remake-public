@@ -15,6 +15,7 @@ import { CARDS } from './cards.ts';
 import { TOOLS } from './tools.ts';
 import { CHARACTERS } from './characters.ts';
 import { STOCKS, STOCKS_PER_MAP, stocksOfMap } from './stocks.ts';
+import { CARD_IMPLS, PASSIVE_STUB_VA, PASSIVE_CARD_IDS, NO_SELECTION_CARD_IDS } from './card-registry.ts';
 
 const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
 const d = existsSync(EXE) ? describe : describe.skip;
@@ -29,6 +30,11 @@ const DGROUP_VA = 0x463000;
 const DGROUP_OFF = 398848;
 const DGROUP_SIZE = 158720;
 
+/** 代码段（卡片效果函数等可执行代码位于此） */
+const AUTO_VA = 0x401000;
+const AUTO_OFF = 1024;
+const AUTO_SIZE = 394240;
+
 /** 表在可执行文件中的虚拟地址（由特征字节序列唯一定位得出） */
 const VA = {
   /** 30 项 × 8 字节 */
@@ -39,6 +45,8 @@ const VA = {
   characterProfiles: 0x47e80c,
   /** 96 项 × 36 字节 @source rich4_stocks.h `game_stocks[96]` */
   gameStocks: 0x47f072,
+  /** 31 项函数指针（第 0 项为 NULL 占位）@source csrc/cards.c 的注释 */
+  cardFunctions: 0x475d5c,
 } as const;
 
 function loadExe(): Buffer {
@@ -46,10 +54,13 @@ function loadExe(): Buffer {
 }
 
 function vaToOffset(va: number): number {
-  if (va < DGROUP_VA || va >= DGROUP_VA + DGROUP_SIZE) {
-    throw new RangeError(`VA 0x${va.toString(16)} 不在 DGROUP 内`);
+  if (va >= DGROUP_VA && va < DGROUP_VA + DGROUP_SIZE) {
+    return DGROUP_OFF + (va - DGROUP_VA);
   }
-  return DGROUP_OFF + (va - DGROUP_VA);
+  if (va >= AUTO_VA && va < AUTO_VA + AUTO_SIZE) {
+    return AUTO_OFF + (va - AUTO_VA);
+  }
+  throw new RangeError(`VA 0x${va.toString(16)} 不在 DGROUP 或 AUTO 内`);
 }
 
 const big5 = new TextDecoder('big5');
@@ -172,7 +183,36 @@ d('★ 数值表以 rich4.exe 为基准校验', () => {
     expect(stocksOfMap(7)[11]!.name).toBe(STOCKS[95]!.name);
   });
 
-  it('★ 四张表全部来自同一可执行文件，无一字段依赖逆向项目的转录', () => {
+  it('★ 卡片实现清单的函数地址与 card_functions[] 逐项一致', () => {
+    const exe = loadExe();
+    const base = vaToOffset(VA.cardFunctions);
+    expect(CARD_IMPLS.length).toBe(30);
+    // 第 0 项是 NULL 占位
+    expect(exe.readUInt32LE(base)).toBe(0);
+    for (const impl of CARD_IMPLS) {
+      expect(exe.readUInt32LE(base + impl.id * 4), `${impl.name} 函数地址`).toBe(impl.va);
+    }
+  });
+
+  it('★ 被动卡的函数体确为 `xor eax,eax; ret`（2 字节空桩）', () => {
+    const exe = loadExe();
+    const off = vaToOffset(PASSIVE_STUB_VA);
+    // 31 C0 = xor eax,eax ; C3 = ret
+    expect([exe[off], exe[off + 1], exe[off + 2]]).toEqual([0x31, 0xc0, 0xc3]);
+    // 复仇/嫁祸/免费/免罪 四张
+    expect(PASSIVE_CARD_IDS).toEqual([18, 19, 20, 21]);
+  });
+
+  it('被动卡与均富卡入口仅差 3 字节（空桩紧邻其前）', () => {
+    expect(PASSIVE_STUB_VA + 3).toBe(CARD_IMPLS[0]!.va);
+  });
+
+  it('无需目标选择的卡片有 7 张', () => {
+    // 均富/购地/改建/拍卖/冬眠/送神 + 被动卡除外
+    expect(NO_SELECTION_CARD_IDS).toEqual([1, 3, 7, 8, 15, 22]);
+  });
+
+  it('★ 五张表全部来自同一可执行文件，无一字段依赖逆向项目的转录', () => {
     // 这条是声明性的：上面四项若全通过，即证明 packages/data 的数值
     // 完全独立于 rich4-re 的 .c 文件而成立。
     const exe = loadExe();
@@ -180,5 +220,6 @@ d('★ 数值表以 rich4.exe 为基准校验', () => {
     expect(vaToOffset(VA.toolTable)).toBeLessThan(exe.length);
     expect(vaToOffset(VA.characterProfiles)).toBeLessThan(exe.length);
     expect(vaToOffset(VA.gameStocks)).toBeLessThan(exe.length);
+    expect(vaToOffset(VA.cardFunctions)).toBeLessThan(exe.length);
   });
 });
