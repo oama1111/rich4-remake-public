@@ -19,6 +19,7 @@ import { CARD_IMPLS } from '@rich4/data';
 import { FORTUNE_DECK_SIZE, NEWS_DECK_SIZE, createDeck } from '../events/deck.ts';
 import { WatcomRng } from '../rng/watcom.ts';
 import { CONFINEMENT_SLOTS } from './confinement.ts';
+import { emptyLottery } from '../places/lottery.ts';
 import {
   MAX_TOOL_ID,
   STARTING_TOOLS,
@@ -184,6 +185,8 @@ export function newGame(opts: NewGameOptions): GameState {
     prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     lastEvent: null,
+    lottery: emptyLottery(),
+    pending: null,
     tools,
     toolStock,
   };

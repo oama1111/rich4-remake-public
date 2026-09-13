@@ -9,6 +9,7 @@
 
 import type { GameMode } from '../rng/policy.ts';
 import type { EventDeck } from '../events/deck.ts';
+import type { PendingInteraction } from '../rules/interaction.ts';
 
 // ============================================================
 //  玩家控制方式
@@ -252,6 +253,20 @@ export interface GameState {
 
   /** 最近一次事件的记录，供表现层显示；不参与规则 */
   lastEvent: { kind: 'news' | 'fortune'; id: number } | null;
+
+  /**
+   * 樂透号码表，36 项；值 = 持有者下标 + 1，0 表示未售出。
+   * @source [0x004990b8]，见 places/lottery.ts
+   */
+  lottery: number[];
+
+  /**
+   * 当前**待决的落点交互**；null 表示无需交互。
+   *
+   * ★ 它是规则的一部分：「落在这格上要求玩家做什么」由 core 判定，
+   *   UI 与 AI 都只是作答者。否则两端各猜一套，联机必然对不上。
+   */
+  pending: PendingInteraction | null;
 
   /**
    * 全局道具表，`tools[player * 15 + toolId]`。

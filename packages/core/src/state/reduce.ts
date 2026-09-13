@@ -27,6 +27,19 @@ import { checkFortune } from '../events/fortune.ts';
 import { applyFortuneEffect } from '../events/fortune-effects.ts';
 import { applyNewsEffect } from '../events/news-effects.ts';
 import { anyoneConfined } from '../rules/confinement.ts';
+import {
+  isUnimplementedPlace,
+  needsInteraction,
+  unimplementedPlace,
+  type PendingInteraction,
+} from '../rules/interaction.ts';
+import { loanCapacity } from '../places/bank.ts';
+import {
+  LOTTERY_TICKET_PRICE,
+  availableNumbers,
+  numbersOf,
+} from '../places/lottery.ts';
+import { calculatePlayerWealth } from '../rules/wealth.ts';
 
 /**
  * 归约所需的地图静态数据（只读，不进状态，避免快照臃肿）。
@@ -235,9 +248,10 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         if (node.specialKind === SPECIAL_KIND.NEWS) return drawAndApplyNews(next, topo);
         if (node.specialKind === SPECIAL_KIND.FORTUNE) return drawAndApplyFortune(next);
 
-        // TODO(M2): 樂透/銀行/百貨/魔法屋/監獄/醫院/三个小游戏
-        //   各自需要独立子系统，见 docs/known-deviations.md
-        return next;
+        // 其余特殊格：交给「待决交互」机制。
+        // ★ 这样每一格都**可达**：已实现的给出具体交互，
+        //   未实现的给出一个明确的 unimplemented，而不是静默无事发生。
+        return { ...next, pending: pendingForSpecial(next, node.specialKind) };
       }
 
       const landIndex = landIndexAtPlayer(state, topo);
@@ -495,4 +509,48 @@ function newsTargets(eventId: number, state: GameState, lands: readonly LandInfo
     default:
       return [state.currentPlayer];
   }
+}
+
+// ============================================================
+//  落点交互
+// ============================================================
+
+/**
+ * 这一格要求玩家做什么。
+ *
+ * ★ 由 core 判定而非 UI —— 见 rules/interaction.ts 顶部说明。
+ */
+function pendingForSpecial(state: GameState, specialKind: number): PendingInteraction | null {
+  if (!needsInteraction(specialKind)) return null;
+
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return null;
+
+  // 監獄／醫院：先看有没有人在里面。没人可探就什么都不发生。
+  // @source 落点处理开头 `for (i=0;i<8;i++) if (table[i]) break;` 全 0 即返回
+  if (specialKind === SPECIAL_KIND.PRISON) {
+    return anyoneConfined(state.prisonOccupancy) ? unimplementedPlace(specialKind) : null;
+  }
+  if (specialKind === SPECIAL_KIND.HOSPITAL) {
+    return anyoneConfined(state.hospitalOccupancy) ? unimplementedPlace(specialKind) : null;
+  }
+
+  if (specialKind === SPECIAL_KIND.BANK) {
+    // @source 落点 VA 0x0043667b：拒绝往来期内直接返回
+    if (me.daysRejectedByBank !== 0) return null;
+    const wealth = calculatePlayerWealth(me, [], []);
+    return { kind: 'bank', wealth, loanCapacity: loanCapacity(wealth, me.loan) };
+  }
+
+  if (specialKind === SPECIAL_KIND.LOTTERY) {
+    return {
+      kind: 'lottery',
+      available: availableNumbers(state.lottery),
+      price: LOTTERY_TICKET_PRICE,
+      owned: numbersOf(state.lottery, state.currentPlayer).length,
+    };
+  }
+
+  if (isUnimplementedPlace(specialKind)) return unimplementedPlace(specialKind);
+  return null;
 }

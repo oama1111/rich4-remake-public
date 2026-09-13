@@ -74,6 +74,8 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     prisonOccupancy: new Array<number>(8).fill(0),
     hospitalOccupancy: new Array<number>(8).fill(0),
     lastEvent: null,
+    lottery: new Array<number>(36).fill(0),
+    pending: null,
     tools: new Array<number>(4 * 15).fill(0),
     toolStock: new Array<number>(14).fill(99),
     ...over,
