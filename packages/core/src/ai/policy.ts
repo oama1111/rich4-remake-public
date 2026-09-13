@@ -77,6 +77,10 @@ export function landAttractiveness(
   const mine = sameDistrict.filter((l) => l.owner === ownerId).length;
   // 同区已有几块 → 边际价值加成；整区共几块 → 区块本身的分量
   const synergy = 1 + mine * 0.75;
+  // 缺租金表时退而用地价估个数量级。
+  // C-DET-3 定向豁免：本函数产出的是**启发式评分**，不是金额——
+  // 它只用于 AI 内部比较大小，从不写入任何玩家的钱。
+  // eslint-disable-next-line no-restricted-syntax
   const baseRent = land.rentByLevel[1] ?? land.landPrice / 10;
   return baseRent * synergy * sameDistrict.length;
 }
@@ -167,7 +171,9 @@ function scoreNode(node: MapNode, state: GameState, map: Rich4Map, playerIndex: 
 
   const owner = state.landOwner[idx] ?? 0;
   if (owner === 0) {
-    // 无主地：想买
+    // 无主地：想买。除以 1000 只是把租金量级压到和其他评分项可比，
+    // C-DET-3 定向豁免同 landAttractiveness——这是评分不是金额。
+    // eslint-disable-next-line no-restricted-syntax
     return 10 + landAttractiveness(tpl, map.lands, playerIndex) / 1000;
   }
   if (owner === playerIndex + 1) {
@@ -217,6 +223,7 @@ export function decideAtLanding(
     const affordable = afterBuy >= floor * (1 - personality.aggression);
     // 价值门槛：同区协同越强越值得买
     const worthwhile = worth >= buy.price * (1 - personality.aggression * 0.5);
+    // 上面两个比较都是**评分比较**，不产生任何金额，故不受 C-DET-3 约束
     if (affordable && worthwhile) return { type: 'buyLand' };
   }
 

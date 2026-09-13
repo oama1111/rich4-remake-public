@@ -110,7 +110,7 @@ function scheduleAi(): void {
 }
 
 let aiAutoPlay = true;
-let aiDelayMs = 120;
+const aiDelayMs = 120;
 
 // ============================================================
 //  渲染循环
