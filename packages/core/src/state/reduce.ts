@@ -17,6 +17,7 @@ import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { calculateLandToll } from '../rules/toll.ts';
+import { settleSpecialSquare, addPoints, MAX_HAND_CARDS } from '../rules/special-square.ts';
 
 /**
  * 归约所需的地图静态数据（只读，不进状态，避免快照臃肿）。
@@ -196,9 +197,38 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       const player = state.players[state.currentPlayer];
       if (player === undefined) return state;
 
+      const node = topo.nodes[player.nodeId - 1];
+      if (node === undefined) return { ...state, phase: 'turnEnd' };
+
+      // 特殊格优先：原版按 node.flags & 0xff 走 17 路跳表
+      if (node.specialKind !== 0) {
+        const out = settleSpecialSquare(
+          node.specialKind,
+          player,
+          state.cardAmount,
+          state.rngState,
+        );
+        let next: GameState = { ...state, rngState: out.rngState, phase: 'turnEnd' };
+        if (out.pointsDelta !== 0) {
+          next = withPlayer(next, state.currentPlayer, (p) => {
+            p.points = addPoints(p.points, out.pointsDelta);
+          });
+        }
+        if (out.cardDrawn !== 0) {
+          const cardAmount = [...next.cardAmount];
+          const at = out.cardDrawn - 1;
+          cardAmount[at] = Math.max(0, (cardAmount[at] ?? 0) - 1);
+          next = withPlayer({ ...next, cardAmount }, state.currentPlayer, (p) => {
+            if (p.cards.length < MAX_HAND_CARDS) p.cards.push(out.cardDrawn);
+          });
+        }
+        // TODO(M2): unimplemented 的格子（新聞/命運/監獄/醫院/樂透/銀行/
+        //   百貨/魔法屋/三个小游戏）留待各自子系统
+        return next;
+      }
+
       const landIndex = landIndexAtPlayer(state, topo);
-      // TODO(M2): 特殊格（specialKind 1..16）与设施/企业尚未实现，
-      //   对照 _rich4_handle_player_land_on_node 的 17 路跳表 @0x4197e9
+      // TODO(M2): 设施(4000+)与企业(6000+)尚未实现
       if (landIndex === null) return { ...state, phase: 'turnEnd' };
 
       const land = effectiveLand(state, topo, landIndex);
