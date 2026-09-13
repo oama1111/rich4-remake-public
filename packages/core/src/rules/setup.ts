@@ -18,6 +18,20 @@ import { CHARACTERS } from '@rich4/data';
  */
 export const DEFAULT_INITIAL_FUND = 300_000;
 
+/**
+ * 开局资金的**全部可选档位**。
+ *
+ * @source 开局时 `mov eax, dword [eax*4 + 0x46cb94]` → `mov [0x49908c], eax`
+ *   （VA 0x00407177）。表内恰好 6 项，第 7 项起已是别的数据。
+ *
+ * ★ 这个值不只决定开局发多少钱——`update_price_index` 拿它当除数
+ *   （见 rules/wealth.ts）。**选的初始资金越少，通胀就越快**，
+ *   它实际上是难度旋钮。
+ */
+export const GAME_INITIAL_FUNDS: readonly number[] = [
+  300_000, 200_000, 100_000, 50_000, 30_000, 10_000,
+];
+
 export interface StartingMoney {
   cash: number;
   moneyInBank: number;

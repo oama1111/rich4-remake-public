@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * @source rich4-re/asm/rich4_calculate_player_wealth.asm @ VA 0x004239b9
- * @source rich4-re/asm/rich4_update_price_index.asm      @ VA 0x00423ad0
+ * @source `update_price_index` @ **VA 0x00423acf**
+ *   （rich4-re 记的 0x00423ad0 差一字节，落在 `push ebx` 之后）
+ *
+ * ★ Q17 已结案，见 updatePriceIndex 的注释与 rules/setup.ts 的 GAME_INITIAL_FUNDS。
  */
 
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
@@ -85,6 +88,17 @@ export function calculatePlayerWealth(
 }
 
 /**
+ * 物价指数的除数就是**开局资金**（全局 `[0x49908c]`，见 rules/setup.ts
+ * 的 `GAME_INITIAL_FUNDS`）。
+ *
+ * ★ 两处独立佐证它确实是开局资金：
+ *   1. `Save0.dat` / `SAVE1.DAT` 偏移 0x268A 均为 300000，且开局按该值发钱
+ *   2. 人均总资产 300000 时物价指数恰为 1
+ *
+ * 物价指数开局值 @source mov dword [0x4990e8], 1（VA 0x004073b4） */
+export const INITIAL_PRICE_INDEX = 1;
+
+/**
  * 推进物价指数。
  *
  * ```
@@ -95,6 +109,16 @@ export function calculatePlayerWealth(
  * 这是游戏后期通货膨胀的来源：玩家越富，物价越高，且**永不回落**。
  *
  * ⚠️ 两次除法都是**有符号整数除法**（`idiv`，向零取整），不是浮点。
+ *
+ * ★ **全局唯一的运行时写入点是 VA 0x00423b1b**，由回合推进处
+ *   （VA 0x0041cfbf）每回合调用一次。另两处写入分别是开局置 1
+ *   与读档还原。也就是说物价指数**只在回合边界采样**。
+ *
+ * ★ 这解释了 `Save0.dat` 的疑点（原 Q17 遗留）：该存档指数为 5，
+ *   而按存档当时的状态套公式得 11。因为那是**终局存档**——四人中三人
+ *   已出局，平均只按剩下的巨富一人算，公式值自然高；但最后一次**采样**
+ *   发生在还有多人在场时，平均低得多。
+ *   **存档里的 5 是对的，拿终局状态套公式才是错的。**
  *
  * @source rich4_update_price_index.asm
  * @param players           全体玩家（含已出局者，函数内部按 who_plays 过滤）

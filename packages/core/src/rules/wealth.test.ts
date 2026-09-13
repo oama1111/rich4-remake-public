@@ -4,7 +4,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-import { calculatePlayerWealth, updatePriceIndex, STOCK_COUNT } from './wealth.ts';
+import {
+  INITIAL_PRICE_INDEX,
+  STOCK_COUNT,
+  calculatePlayerWealth,
+  updatePriceIndex,
+} from './wealth.ts';
+import { DEFAULT_INITIAL_FUND, GAME_INITIAL_FUNDS } from './setup.ts';
 import type { StockValuation } from './wealth.ts';
 import { parseMap } from '../loaders/map.ts';
 import { parseSave } from '../loaders/save.ts';
@@ -15,7 +21,7 @@ import { makePlayer as basePlayer } from '../testing/factories.ts';
 /** 本文件显式声明默认资金（0/0），避免依赖共用工厂的默认值 */
 const makePlayer = (over: Partial<Player> = {}): Player =>
   basePlayer({ cash: 0, moneyInBank: 0, ...over });
-import { WHO_PLAYS_DEAD, WHO_PLAYS_COMPUTER } from '../state/types.ts';
+import { WHO_PLAYS_DEAD, WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
 
 const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
 const MAP0 = `${ROOT}/extracted/map/0001.bin`;
@@ -201,5 +207,71 @@ describe.skipIf(!existsSync(MAP0) || !existsSync(SAVE0))('真实存档交叉验�
     // 只升不降：结果不可能小于存档里记录的值
     expect(next).toBeGreaterThanOrEqual(save.priceIndex);
     console.log(`  存档物价指数 ${save.priceIndex} → 推算 ${next}`);
+  });
+});
+
+// ============================================================
+//  ★ Q17 结案：开局资金档位与「只增不减」的后果
+// ============================================================
+
+describe('★ 开局资金档位表（VA 0x46cb94）', () => {
+  it('恰好 6 档，300000 为默认', () => {
+    expect(GAME_INITIAL_FUNDS).toEqual([300_000, 200_000, 100_000, 50_000, 30_000, 10_000]);
+    expect(DEFAULT_INITIAL_FUND).toBe(300_000);
+    expect(INITIAL_PRICE_INDEX).toBe(1);
+  });
+
+  it('★ SAVE1.DAT 验证：人均总资产 300000 → 指数 1', () => {
+    const ps = [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
+    expect(updatePriceIndex(ps, () => 300_000, DEFAULT_INITIAL_FUND, 0)).toBe(1);
+  });
+
+  it('★ 选的初始资金越少，通胀越快', () => {
+    const ps = [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
+    const slow = updatePriceIndex(ps, () => 1_000_000, GAME_INITIAL_FUNDS[0]!, 0);
+    const fast = updatePriceIndex(ps, () => 1_000_000, GAME_INITIAL_FUNDS[5]!, 0);
+    expect(slow).toBe(3);
+    expect(fast).toBe(100);
+  });
+});
+
+describe('★ 只增不减带来的后果', () => {
+  it('经济崩盘也压不回来', () => {
+    const ps = [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
+    expect(updatePriceIndex(ps, () => 0, DEFAULT_INITIAL_FUND, 7)).toBe(7);
+  });
+
+  it('相等时不写（原版用 jle，不是 jl）', () => {
+    const ps = [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
+    expect(updatePriceIndex(ps, () => 300_000, DEFAULT_INITIAL_FUND, 1)).toBe(1);
+  });
+
+  it('连续采样得到的是历史最大值', () => {
+    const ps = [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
+    let idx = INITIAL_PRICE_INDEX;
+    for (const w of [300_000, 2_400_000, 600_000, 300_000]) {
+      idx = updatePriceIndex(ps, () => w, DEFAULT_INITIAL_FUND, idx);
+    }
+    expect(idx).toBe(8); // 峰值之后不回落
+  });
+
+  it('★ 复现 Save0.dat 的疑点：终局只剩一名巨富，公式值远高于存档值', () => {
+    const mk = (cash: number, dead = false) => (i: number) =>
+      makePlayer({ index: i, whoPlays: dead ? WHO_PLAYS_DEAD : WHO_PLAYS_HUMAN, cash });
+    const wealth = [3_300_000, 600_000, 300_000, 300_000];
+    const wealthOf = (p: { index: number }) => wealth[p.index]!;
+
+    // 最后一次**采样**时：四人都还在场
+    const atLastSample = [0, 1, 2, 3].map((i) => mk(wealth[i]!)(i));
+    const sampled = updatePriceIndex(atLastSample, wealthOf, DEFAULT_INITIAL_FUND, 0);
+
+    // 终局状态：三人出局，平均只按剩下的巨富算
+    const atGameOver = [0, 1, 2, 3].map((i) => mk(wealth[i]!, i !== 0)(i));
+    const naive = updatePriceIndex(atGameOver, wealthOf, DEFAULT_INITIAL_FUND, 0);
+
+    expect(sampled).toBe(3);
+    expect(naive).toBe(11);
+    // ★ 拿终局状态套公式会高得多——存档里的低值才是对的
+    expect(naive).toBeGreaterThan(sampled);
   });
 });

@@ -225,10 +225,18 @@ def xref(const: int, limit: int = 300) -> None:
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     shown = 0
     for off in hits:
-        for back in range(2, 9):
+        # ⚠️ 必须从 1 开始：`A3 <disp32>`（mov [addr], eax）与
+        #    `A1 <disp32>`（mov eax, [addr]）的位移就在**第 1 字节**之后。
+        #    起点写成 2 会整类漏掉——曾因此漏检物价指数的唯一运行时写入点
+        #    0x00423b1b，误以为该值只在读档时被赋值。
+        for back in range(1, 9):
             va = CODE_VA + (off - back - CODE_OFF)
             got = list(md.disasm(data[off - back: off - back + 16], va))
-            if got and got[0].size > back and f"0x{const:x}" in got[0].op_str:
+            # ★ 必须是**方括号内**的内存引用才算命中。
+            #    否则 `05 <imm32>` 会被解成 `add eax, 0x4990e8`（立即数），
+            #    在 back=1 处抢先匹配，把真正的 `C7 05` 写入指令挡掉。
+            bracketed = re.search(rf"\[[^\]]*0x{const:x}[^\]]*\]", got[0].op_str) if got else None
+            if got and got[0].size > back and bracketed:
                 # 目的操作数是内存，且助记符确实会写回才算写入。
                 # ⚠️ `fild` 是**读**（整数装入 x87），`fistp` 才是写。
                 WRITERS = ("mov", "add", "sub", "or", "and", "xor",
