@@ -9,7 +9,7 @@
  */
 
 import { MkfArchive, parseSpriteSheet, type SpriteSheet } from '@rich4/assets-pipeline';
-import { decodeImage } from '@rich4/assets-pipeline';
+import { decodeImage, decodeGround, isGround } from '@rich4/assets-pipeline';
 
 /** 原版的资源档案 */
 export const ARCHIVES = ['Data.mkf', 'Panel.mkf', 'map.mkf', 'jump.mkf'] as const;
@@ -141,4 +141,33 @@ export class SpriteCache {
  */
 export function readMapData(archives: LoadedArchives, globalMapId: number): Uint8Array {
   return archives.get('map.mkf').read(globalMapId * 2 + 1);
+}
+
+/**
+ * 读取并解码一张地图的**底图**。
+ *
+ * @source map.mkf 资源号 `globalMapId * 2` —— 与结构数据成对
+ *   （偶数底图、奇数结构），见 assets-pipeline 的 ground.ts。
+ *
+ * ⚠️ 底图与节点坐标**尚未对齐**（Q-GND-1）：节点 x/y 与底图像素不是
+ *   同一个原点，八张图各自拟合出的偏移毫无规律。故本函数只负责解出
+ *   图像，**不做任何位置换算**——对齐关系解出来之前，由调用方决定
+ *   怎么摆，并且要让用户看得出这一层还没对齐。
+ */
+export async function loadGround(
+  archives: LoadedArchives,
+  globalMapId: number,
+): Promise<ImageBitmap | null> {
+  let data: Uint8Array;
+  try {
+    data = archives.get('map.mkf').read(globalMapId * 2);
+  } catch {
+    return null;
+  }
+  if (!isGround(data)) return null;
+
+  const g = decodeGround(data);
+  const rgba = new ImageData(g.width, g.height);
+  rgba.data.set(g.rgba);
+  return createImageBitmap(rgba);
 }

@@ -27,6 +27,14 @@ export interface RenderInput {
   camera: Camera;
   /** 鼠标悬停的节点号，null 表示没有 */
   hoverNode: number | null;
+  /**
+   * 原版底图（map.mkf 偶数号资源解出来的 .gnd）。
+   *
+   * ⚠️ 与节点坐标**尚未对齐**（Q-GND-1），故默认不画。开启后底图按
+   * `groundOffset` 平移——那个偏移目前只能靠肉眼调，不是从原版推出来的。
+   */
+  ground?: ImageBitmap | null;
+  groundOffset?: { x: number; y: number };
 }
 
 /**
@@ -153,6 +161,20 @@ export class BoardRenderer {
 
     ctx.fillStyle = '#0e1016';
     ctx.fillRect(0, 0, width, height);
+
+    if (input.ground !== null && input.ground !== undefined) {
+      const off = input.groundOffset ?? { x: 0, y: 0 };
+      ctx.drawImage(
+        input.ground,
+        (off.x - camera.x) * camera.scale,
+        (off.y - camera.y) * camera.scale,
+        input.ground.width * camera.scale,
+        input.ground.height * camera.scale,
+      );
+      // 底图之上压一层暗色，让棋盘的连线与节点仍然读得出来
+      ctx.fillStyle = 'rgba(10,12,20,0.35)';
+      ctx.fillRect(0, 0, width, height);
+    }
 
     this.#drawEdges(map, camera);
     this.#drawNodes(map, state, camera, hoverNode);

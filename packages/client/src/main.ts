@@ -21,7 +21,7 @@ import {
   type MapTopology,
   type Rich4Map,
 } from '@rich4/core';
-import { loadArchives, readMapData, SpriteCache } from './assets.ts';
+import { loadArchives, loadGround, readMapData, SpriteCache } from './assets.ts';
 import { BoardRenderer, fitCamera, pickNode, screenToMap, type Camera } from './render.ts';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -59,6 +59,17 @@ let state: GameState;
 let camera: Camera;
 let hoverNode: number | null = null;
 let renderer: BoardRenderer;
+
+/**
+ * 原版底图。
+ *
+ * ⚠️ 默认**不显示**：底图与节点坐标的对齐关系还没解出来（Q-GND-1），
+ *   贸然铺上去只会让棋盘看着像是画错了位置。按 G 键可以开关，
+ *   方括号键可以调偏移——这是留给继续攻这道题的人用的。
+ */
+let ground: ImageBitmap | null = null;
+let showGround = false;
+const groundOffset = { x: 0, y: 0 };
 
 /** 走过的 action —— 回放、联机对账、以及排错都靠它 */
 const history: Action[] = [];
@@ -126,7 +137,14 @@ function requestRender(): void {
   requestAnimationFrame(() => {
     renderQueued = false;
     resizeCanvas();
-    renderer.draw({ map, state, camera, hoverNode });
+    renderer.draw({
+      map,
+      state,
+      camera,
+      hoverNode,
+      ground: showGround ? ground : null,
+      groundOffset,
+    });
     // 有精灵在本帧解码完成 → 再画一次，把它们补上
     if (renderer.dirty) {
       renderer.clearDirty();
@@ -316,6 +334,35 @@ function bindInput(): void {
   });
 
   window.addEventListener('resize', requestRender);
+
+  // ★ 底图调试键。对齐关系解出来之前，这几个键是唯一能看到底图的途径。
+  window.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 50 : 10;
+    switch (e.key.toLowerCase()) {
+      case 'g':
+        showGround = !showGround;
+        log(showGround ? '▶ 显示底图' : '⏸ 隐藏底图');
+        break;
+      case '[':
+        groundOffset.x -= step;
+        break;
+      case ']':
+        groundOffset.x += step;
+        break;
+      case ';':
+        groundOffset.y -= step;
+        break;
+      case "'":
+        groundOffset.y += step;
+        break;
+      default:
+        return;
+    }
+    if (e.key !== 'g' && e.key !== 'G') {
+      log(`底图偏移 (${groundOffset.x}, ${groundOffset.y})`);
+    }
+    requestRender();
+  });
 }
 
 // ============================================================
@@ -362,6 +409,16 @@ async function boot(): Promise<void> {
     requestRender();
     renderPanel();
     log(`地图载入：${map.nodes.length} 个节点、${map.lands.length} 块地`);
+
+    // 底图后台解码，不挡住棋盘先出来
+    void loadGround(archives, globalMapId).then((g) => {
+      ground = g;
+      if (g === null) {
+        log('⚠ 底图未能解出');
+        return;
+      }
+      log(`底图载入：${g.width}×${g.height}（按 G 显示；与节点坐标尚未对齐，方括号调偏移）`);
+    });
     scheduleAi();
   } catch (err) {
     metaEl.className = 'err';

@@ -4,4 +4,5 @@
 export * from './mkf.ts';
 export * from './mkf-decompress.ts';
 export * from './sprite.ts';
+export * from './ground.ts';
 export * from './upscale.ts';
