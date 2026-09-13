@@ -235,6 +235,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   gaps['holdings'] = '各玩家持仓在存档中的偏移未验证，已置为空仓';
   gaps['pool'] = '公库金额在存档中的偏移未验证，已置 0';
   gaps['toolStock'] = '道具全局库存在存档中的偏移未验证，已置为初始库存';
+  gaps['commercialShares'] = '各企业的已售股数在存档中的偏移未验证，已按地图初值重置';
   gaps['prisonOccupancy'] = '监狱/医院占用表在存档中的偏移未验证，已置空';
   gaps['newsDeck'] = '牌堆洗牌序在存档中的偏移未验证，已按顺序重建（不影响已抽过的牌）';
   gaps['rngState'] =
@@ -273,6 +274,11 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     market: newStockMarket(save.globalMapId),
     holdings: players.map(() =>
       Array.from({ length: STOCKS_PER_MAP }, () => ({ ...EMPTY_HOLDING })),
+    ),
+    // 下标 = 企业 1 基序号，故长度要多一格
+    commercialShares: Array.from(
+      { length: map.commercials.length + 1 },
+      (_, i) => map.commercials.find((c) => c.id === i)?.shares ?? 0,
     ),
   };
 

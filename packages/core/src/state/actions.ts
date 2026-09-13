@@ -64,6 +64,16 @@ export type Action =
   /** 卖出股票 @param stock 股票下标 0..11 */
   | { type: 'sellStock'; stock: number; shares: number }
 
+  /**
+   * 落在上市企业上时买入其股份。
+   *
+   * ★ 与 `buyStock` 是**两条不同的路**：这一条按「企业资产额 ÷ 10000」
+   *   定价、**从现金付**、扣的是企业自己的可售股数；
+   *   `buyStock` 走股市柜台，按股价、从存款付、扣流通量。
+   *   @source `buy_stock(…, 0)` 与 `buy_stock(…, 非0)` 两个分支
+   */
+  | { type: 'buyShares'; shares: number }
+
   /** 结束当前玩家回合，轮转到下一位 */
   | { type: 'endTurn' };
 

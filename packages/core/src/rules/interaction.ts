@@ -47,6 +47,30 @@ export type PendingInteraction =
    */
   | { kind: 'auction'; entityId: number; basePrice: number; bidders: number[] }
   /**
+   * 上市企业：买多少股。
+   *
+   * @source 落点 VA 0x0041d277：拿到股数后
+   *   `buy_stock(玩家, commercial[+0x19], 股数, 0)`，末位 0 即「从企业买」。
+   *
+   * `unitPrice` = `企业资产额 ÷ 10000`（整数除），**从现金付**，
+   * 与股市柜台那条（从存款付、按股价）是两回事。
+   */
+  | {
+      kind: 'buyShares';
+      /** 1 基企业序号 */
+      commercialId: number;
+      /** 企业名，UI 直接用 */
+      name: string;
+      /** 对应股票下标 0..11 */
+      stock: number;
+      /** 每股价格 */
+      unitPrice: number;
+      /** 企业还剩多少股可卖 */
+      available: number;
+      /** 买家现金 —— 买得起多少股由 UI/AI 自己算 */
+      cash: number;
+    }
+  /**
    * 尚未实现的场所。
    *
    * ⚠️ 这一项存在的意义是**让缺口可见**：落在百货/魔法屋/小游戏上时，
@@ -124,7 +148,8 @@ export type InteractionResponse =
   | { kind: 'bankBorrow'; amount: number }
   | { kind: 'bankRepay'; amount: number }
   | { kind: 'lotteryBuy'; number: number }
-  | { kind: 'auctionBid'; winner: number; price: number };
+  | { kind: 'auctionBid'; winner: number; price: number }
+  | { kind: 'buyShares'; shares: number };
 
 /** 答复与待决交互是否配套——防止 UI 送回驴唇不对马嘴的 action */
 export function responseMatches(
@@ -143,6 +168,8 @@ export function responseMatches(
       return response.kind === 'lotteryBuy';
     case 'auction':
       return response.kind === 'auctionBid';
+    case 'buyShares':
+      return response.kind === 'buyShares';
     default:
       return false;
   }

@@ -86,6 +86,12 @@ export interface TradeResult {
   stock: StockState;
   /** 本次成交金额 */
   amount: number;
+  /**
+   * 从地图企业买入时，该企业的**剩余股数**要减掉这么多。
+   * @source `sub dword [commercial + 0x30], esi`（VA 0x00428db1）
+   * 柜台买入为 0。
+   */
+  commercialSharesTaken: number;
 }
 
 /**
@@ -136,27 +142,37 @@ export function buyStock(
   source: BuySource,
   commercialUnitPrice = 0,
 ): TradeResult {
-  if (shares <= 0) return { player, holding, stock, amount: 0 };
-
-  let cost: number;
-  let nextPlayer: Player;
-
-  if (source === 'market') {
-    cost = Math.trunc(shares * stock.price);
-    // ★ 股市买入从存款扣 @source sub dword [player+32], eax
-    nextPlayer = { ...player, moneyInBank: player.moneyInBank - cost };
-  } else {
-    cost = shares * commercialUnitPrice;
-    // ★ 企业买入从现金扣 @source sub dword [player+28], edx
-    nextPlayer = { ...player, cash: player.cash - cost };
+  if (shares <= 0) {
+    return { player, holding, stock, amount: 0, commercialSharesTaken: 0 };
   }
 
+  if (source === 'market') {
+    // @source 0x00428d6a 起：cost = round(股数 × 股价)
+    const cost = Math.trunc(shares * stock.price);
+    return {
+      // ★ 柜台买入从**存款**扣 @source sub dword [player+32], eax
+      player: { ...player, moneyInBank: player.moneyInBank - cost },
+      holding: recalcAvgCost(holding, shares, cost),
+      // ★ 只有柜台买入才减流通量 @source sub word [+8], si / sub word [+10], si
+      stock: { ...stock, shares: stock.shares - shares, f10: stock.f10 - shares },
+      amount: cost,
+      commercialSharesTaken: 0,
+    };
+  }
+
+  // ── 地图企业买入（loc_00428d7f）──
+  const cost = shares * commercialUnitPrice;
   return {
-    player: nextPlayer,
+    // ★ 企业买入从**现金**扣 @source sub dword [player+28], edx
+    player: { ...player, cash: player.cash - cost },
     holding: recalcAvgCost(holding, shares, cost),
-    // 买入使可流通股数减少 @source sub word [+8], si / sub word [+10], si
-    stock: { ...stock, shares: stock.shares - shares, f10: stock.f10 - shares },
+    // ⚠️ **这一支不动流通量**。先前两支共用一段代码、都减了流通量，
+    //   那是错的：`loc_00428d7f` 里根本没有那两条 `sub word`，
+    //   它减的是**企业自己的剩余股数**（+0x30）。
+    stock,
     amount: cost,
+    // @source sub dword [ecx + 0x30], esi
+    commercialSharesTaken: shares,
   };
 }
 
@@ -186,7 +202,7 @@ export function sellStock(
   destination: SellDestination = 'bank',
 ): TradeResult {
   if (shares <= 0 || holding.amount <= 0) {
-    return { player, holding, stock, amount: 0 };
+    return { player, holding, stock, amount: 0, commercialSharesTaken: 0 };
   }
   const sold = Math.min(shares, holding.amount);
   const remaining = holding.amount - sold;
@@ -202,6 +218,7 @@ export function sellStock(
     holding: { amount: remaining, avgCost: remaining === 0 ? 0 : holding.avgCost },
     stock: { ...stock, shares: stock.shares + sold, f10: stock.f10 + sold },
     amount: proceeds,
+    commercialSharesTaken: 0,
   };
 }
 

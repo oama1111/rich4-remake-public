@@ -296,6 +296,15 @@ export interface GameState {
    * @source `_rich4_player_stocks`，每项 8 字节（持股数 + 成本均价 float）
    */
   holdings: StockHolding[][];
+
+  /**
+   * 各上市企业**还剩多少股可卖**，下标 = 企业 1 基序号。
+   *
+   * @source 地图记录的 `commercial + 0x30`，买入时
+   *   `sub dword [ecx + 0x30], esi`（VA 0x00428db1）。
+   *   它是**运行时**会变的量，故放进状态而不是留在地图表里。
+   */
+  commercialShares: number[];
 }
 
 // ============================================================

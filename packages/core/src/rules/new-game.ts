@@ -22,7 +22,7 @@ import { CONFINEMENT_SLOTS } from './confinement.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
-import { STOCKS_PER_MAP } from '@rich4/data';
+import { STOCKS_PER_MAP, stocksOfMap } from '@rich4/data';
 import {
   STARTING_TOOLS,
   initialToolStock,
@@ -70,6 +70,38 @@ export const UNVERIFIED_CARDS_PER_KIND = 8;
  * 见 docs/known-deviations.md 的 Q-INIT-2。
  */
 export const UNVERIFIED_START_NODE = 1;
+
+/**
+ * 每家公司的总股本。
+ * @source 开局初始化 `mov edx, 0x2710 / sub edx, 流通股数`（VA 0x00407df1）
+ */
+export const COMMERCIAL_TOTAL_SHARES = 0x2710; // 10000
+
+/**
+ * 各上市企业开局**自留**多少股（即还能卖给玩家多少）。
+ *
+ * @source 开局循环 VA 0x00407dd1：
+ * ```asm
+ * dl = byte [commercial + 0x19]        ; 对应股票下标
+ * eax = word [stocks + dl*36 + 8]      ; 该股的流通股数
+ * edx = 0x2710 - eax                   ; ★ 10000 − 流通股数
+ * [commercial + 0x30] = edx
+ * ```
+ *
+ * ⚠️ 地图文件里的 +0x30 **恒为 0**，这个值是开局算出来的，不是读出来的。
+ *   后果很具体：流通股数已是 10000 的公司（如中國信託、大宇百貨）
+ *   自留 0 股，**落在它们格子上买不到股**；只有 5000 股流通的人壽类
+ *   才有 5000 股可卖。
+ */
+function commercialSharesOf(map: Rich4Map, globalMapId: number): number[] {
+  const stocks = stocksOfMap(globalMapId);
+  const out = new Array<number>(map.commercials.length + 1).fill(0);
+  for (const c of map.commercials) {
+    const floating = stocks[c.stockIndex]?.shares ?? 0;
+    out[c.id] = COMMERCIAL_TOTAL_SHARES - floating;
+  }
+  return out;
+}
 
 function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, startNode: number): Player {
   const money = startingMoney(setup.character, fund);
@@ -195,5 +227,7 @@ export function newGame(opts: NewGameOptions): GameState {
     market: newStockMarket(globalMapId, map.commercials),
     // 开局全员空仓 @source `_rich4_player_stocks` 全零
     holdings: players.map(() => Array.from({ length: STOCKS_PER_MAP }, () => ({ ...EMPTY_HOLDING }))),
+    // ★ 各企业的可售股数取自地图记录的 +0x30；下标 = 企业 1 基序号
+    commercialShares: commercialSharesOf(map, globalMapId),
   };
 }

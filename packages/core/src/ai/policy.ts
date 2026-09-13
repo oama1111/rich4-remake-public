@@ -117,7 +117,8 @@ export function decideAction(ctx: AiContext): Action | null {
     case 'settling':
       return { type: 'settle' };
     case 'turnEnd':
-      return { type: 'endTurn' };
+      // 落点可能留下一个待决交互（例如落在上市企业上），先把它答掉
+      return decidePending(state) ?? { type: 'endTurn' };
 
     case 'awaitingDirection':
       return decideDirection(ctx);
@@ -130,6 +131,27 @@ export function decideAction(ctx: AiContext): Action | null {
     default:
       return null;
   }
+}
+
+/**
+ * 回答落点留下的待决交互。
+ *
+ * ⚠️ 只处理**已实现**的那几种；其余返回 null，由调用方继续推进回合——
+ *   未实现的场所会以 `unimplemented` 留在 `pending` 里，上层看得见。
+ */
+export function decidePending(state: GameState): Action | null {
+  const p = state.pending;
+  if (p === null) return null;
+  if (p.kind === 'buyShares') {
+    // 简单策略：留够安全垫，剩下的钱买得起多少买多少，且不超过企业余量。
+    // ★ 这是**策略**不是规则——买不买、买多少原版由 AI 性格决定（M3），
+    //   这里先给一个不会把自己买破产的保守解。
+    if (p.unitPrice <= 0) return null;
+    const spendable = Math.trunc(p.cash / 2);
+    const want = Math.min(Math.trunc(spendable / p.unitPrice), p.available);
+    return want > 0 ? { type: 'buyShares', shares: want } : null;
+  }
+  return null;
 }
 
 /**

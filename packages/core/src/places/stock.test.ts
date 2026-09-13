@@ -171,3 +171,34 @@ describe('与总资产计算的衔接', () => {
     expect(w).toBe(90_000 + 30_000);
   });
 });
+
+describe('★ 两种买入的差别（先前把它们混成了一段）', () => {
+  it('★ 柜台买入减流通量，企业买入不减', () => {
+    const s0 = stock({ shares: 10_000, f10: 10_000 });
+    const market = buyStock(makePlayer({ moneyInBank: 999_999 }), EMPTY_HOLDING, s0, 100, 'market');
+    expect(market.stock.shares).toBe(9_900);
+    expect(market.stock.f10).toBe(9_900);
+
+    // ⚠️ loc_00428d7f 里没有那两条 `sub word`，企业买入**不动流通量**
+    const com = buyStock(makePlayer({ cash: 999_999 }), EMPTY_HOLDING, s0, 100, 'commercial', 40);
+    expect(com.stock.shares).toBe(10_000);
+    expect(com.stock.f10).toBe(10_000);
+  });
+
+  it('★ 企业买入要从企业的剩余股数里扣', () => {
+    // @source sub dword [commercial + 0x30], esi
+    const com = buyStock(makePlayer({ cash: 999_999 }), EMPTY_HOLDING, stock(), 250, 'commercial', 40);
+    expect(com.commercialSharesTaken).toBe(250);
+    expect(com.amount).toBe(250 * 40);
+
+    const market = buyStock(makePlayer({ moneyInBank: 999_999 }), EMPTY_HOLDING, stock(), 250, 'market');
+    expect(market.commercialSharesTaken).toBe(0);
+  });
+
+  it('★ 单价来自企业资产额 ÷ 10000，与股价无关', () => {
+    const s = stock({ price: 999 }); // 股价再高也不影响企业买入
+    const r = buyStock(makePlayer({ cash: 999_999 }), EMPTY_HOLDING, s, 10, 'commercial', commercialUnitPrice(400_000));
+    expect(commercialUnitPrice(400_000)).toBe(40);
+    expect(r.amount).toBe(10 * 40);
+  });
+});

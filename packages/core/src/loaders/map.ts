@@ -250,6 +250,15 @@ export interface CommercialInfo {
    *   地图 1 的四家企业资产额恰好都是初始股价 × 10000 × 0.8。
    */
   assetValue: number;
+  /**
+   * ⚠️ 地图文件里的 +0x30 **恒为 0**，不要用它。
+   *
+   * 该字段是**运行时**的「企业自留股数」，开局由代码算出来
+   * （VA 0x00407dd1）：`10000 − 该股的流通股数`。
+   * 见 `rules/new-game.ts` 的 `commercialSharesOf` 与
+   * `GameState.commercialShares`。保留这个字段只为记录文件里确实是 0。
+   */
+  shares: number;
 }
 
 /** 特殊景观（阿里山、佛光山等） */
@@ -415,6 +424,7 @@ export function parseMap(data: Uint8Array): Rich4Map {
       stockIndex: data[o + 0x19] ?? 0,
       spriteIndex: view.getUint16(o + 0x20, true),
       assetValue: u32(o + 0x24),
+      shares: u32(o + 0x30),
     });
   }
 

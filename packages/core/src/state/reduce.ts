@@ -23,7 +23,7 @@ import {
   resolveBankruptcyOutcome,
 } from '../rules/bankruptcy.ts';
 import { LOTTERY_DRAW_DAY, drawLottery, releaseTickets } from '../places/lottery.ts';
-import { buyStock, liquidateStocks, sellStock } from '../places/stock.ts';
+import { buyStock, commercialUnitPrice, liquidateStocks, sellStock } from '../places/stock.ts';
 import type { TradeResult } from '../places/stock.ts';
 import {
   refreshTradableShares,
@@ -281,9 +281,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
 
       const landIndex = landIndexAtPlayer(state, topo);
       if (landIndex === null) {
-        // 住宅之外：设施走过路费，企业尚未实现
+        // 住宅之外：设施走过路费，上市企业问「买多少股」
         const fac = facilityAtPlayer(state, topo);
         if (fac !== null) return settleFacility(state, fac);
+        const shares = pendingForCommercial(state, topo, node);
+        if (shares !== null) return { ...state, phase: 'turnEnd', pending: shares };
         return { ...state, phase: 'turnEnd' };
       }
 
@@ -368,6 +370,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     case 'buyStock':
     case 'sellStock':
       return tradeStock(state, action);
+
+    case 'buyShares':
+      return buySharesFromCommercial(state, action.shares);
 
     case 'declineDecision': {
       if (state.phase !== 'awaitingDecision') return state;
@@ -468,6 +473,76 @@ function tradeStock(
 
   if (action.shares > held.amount) return state;
   return commit(sellStock(me, held, stock, action.shares, 'bank'));
+}
+
+/**
+ * 买下当前待决企业的股份。
+ *
+ * @source 落点 VA 0x0041d277：`buy_stock(玩家, commercial[+0x19], 股数, 0)`
+ *   末位 0 即「从企业买」那一支 —— 按资产额定价、从现金付、
+ *   扣企业自己的可售股数（`sub dword [commercial+0x30], 股数`）。
+ *
+ * ⚠️ 原版随后还会调 `_rich4_update_commercial_owner` 维护一张
+ *   4 人的持股排名（企业记录 +0x1c..+0x1f），据此决定企业归谁。
+ *   那一段尚未实现，见 known-deviations 的 Q-COM-1。
+ */
+function buySharesFromCommercial(state: GameState, shares: number): GameState {
+  const pending = state.pending;
+  if (pending === null || pending.kind !== 'buyShares') return state;
+  if (!Number.isInteger(shares) || shares <= 0) return state;
+  if (shares > pending.available) return state;
+
+  const me = state.players[state.currentPlayer];
+  const stock = state.market.stocks[pending.stock];
+  const held = state.holdings[state.currentPlayer]?.[pending.stock];
+  if (me === undefined || stock === undefined || held === undefined) return state;
+  if (shares * pending.unitPrice > me.cash) return state;
+
+  const r = buyStock(me, held, stock, shares, 'commercial', pending.unitPrice);
+  const commercialShares = [...state.commercialShares];
+  commercialShares[pending.commercialId] =
+    (commercialShares[pending.commercialId] ?? 0) - r.commercialSharesTaken;
+
+  return {
+    ...state,
+    players: state.players.map((p, i) => (i === state.currentPlayer ? r.player : p)),
+    holdings: state.holdings.map((row, i) =>
+      i === state.currentPlayer ? row.map((h, j) => (j === pending.stock ? r.holding : h)) : row,
+    ),
+    commercialShares,
+    pending: null,
+  };
+}
+
+/**
+ * 落在上市企业上：问玩家要买多少股。
+ *
+ * @source 落点 VA 0x0041d277 —— 拿到股数后调
+ *   `buy_stock(玩家, commercial[+0x19], 股数, 0)`，末位 0 即「从企业买」。
+ *
+ * 按 C-ARC-2，「买几股」是模态 UI 的事，core 只负责把做这个决定所需的
+ * 信息算齐（单价、余量、现金）。
+ */
+function pendingForCommercial(
+  state: GameState,
+  topo: MapTopology,
+  node: MapNode,
+): PendingInteraction | null {
+  if (node.ref.kind !== 'commercial') return null;
+  const commercialId = node.ref.index;
+  const c = topo.commercials?.find((x) => x.id === commercialId);
+  if (c === undefined) return null;
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return null;
+  return {
+    kind: 'buyShares',
+    commercialId: c.id,
+    name: c.name,
+    stock: c.stockIndex,
+    unitPrice: commercialUnitPrice(c.assetValue),
+    available: state.commercialShares[commercialId] ?? 0,
+    cash: me.cash,
+  };
 }
 
 /**
