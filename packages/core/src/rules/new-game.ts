@@ -16,6 +16,9 @@ import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
 import { DEFAULT_INITIAL_FUND, startingMoney } from './setup.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
 import { CARD_IMPLS } from '@rich4/data';
+import { FORTUNE_DECK_SIZE, NEWS_DECK_SIZE, createDeck } from '../events/deck.ts';
+import { WatcomRng } from '../rng/watcom.ts';
+import { CONFINEMENT_SLOTS } from './confinement.ts';
 
 /** 一名参战者的配置 */
 export interface PlayerSetup {
@@ -124,9 +127,17 @@ export function newGame(opts: NewGameOptions): GameState {
   }
 
   const landCount = map.lands.length + 1; // 地块编号从 1 开始
+
+  // ★ 牌堆用**同一个** PRNG 依次洗出——顺序不可调换，
+  //   否则消耗的随机数序列与原版不同，之后所有随机结果都会偏。
+  //   洗完后把推进过的种子写回 rngState。
+  const rng = new WatcomRng(seed >>> 0);
+  const newsDeck = createDeck(rng, NEWS_DECK_SIZE);
+  const fortuneDeck = createDeck(rng, FORTUNE_DECK_SIZE);
+
   return {
     mode,
-    rngState: seed >>> 0,
+    rngState: rng.getState(),
     globalMapId,
     day: 1,
     month: 1,
@@ -142,5 +153,11 @@ export function newGame(opts: NewGameOptions): GameState {
     landOwner: new Array<number>(landCount).fill(0),
     landLevel: new Array<number>(landCount).fill(0),
     turnCount: 0,
+    newsDeck,
+    fortuneDeck,
+    pool: 0,
+    prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
+    hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
+    lastEvent: null,
   };
 }

@@ -65,6 +65,13 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     landOwner: [],
     landLevel: [],
     turnCount: 0,
+    // 测试默认给顺序牌堆——不洗牌，好让用例能指定拿到哪张
+    newsDeck: { order: Array.from({ length: 36 }, (_, i) => i), cursor: 0 },
+    fortuneDeck: { order: Array.from({ length: 37 }, (_, i) => i), cursor: 0 },
+    pool: 0,
+    prisonOccupancy: new Array<number>(8).fill(0),
+    hospitalOccupancy: new Array<number>(8).fill(0),
+    lastEvent: null,
     ...over,
   };
 }

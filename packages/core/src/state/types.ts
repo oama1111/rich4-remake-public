@@ -8,6 +8,7 @@
  */
 
 import type { GameMode } from '../rng/policy.ts';
+import type { EventDeck } from '../events/deck.ts';
 
 // ============================================================
 //  玩家控制方式
@@ -215,6 +216,26 @@ export interface GameState {
 
   /** 回合序号，从 0 开始 */
   turnCount: number;
+
+  /**
+   * 新聞／命運牌堆。开局洗好，用游标依次取用（见 events/deck.ts）。
+   * 两副牌是**独立**的，各有各的游标。
+   */
+  newsDeck: EventDeck;
+  fortuneDeck: EventDeck;
+
+  /** 公库 @source [0x499080] —— 罚款进这里 */
+  pool: number;
+
+  /**
+   * 监狱／医院占用表，各 8 槽（0..3 玩家、4..7 地图物件）。
+   * @source [0x00496b30] / [0x00496b60]，见 rules/confinement.ts
+   */
+  prisonOccupancy: number[];
+  hospitalOccupancy: number[];
+
+  /** 最近一次事件的记录，供表现层显示；不参与规则 */
+  lastEvent: { kind: 'news' | 'fortune'; id: number } | null;
 }
 
 // ============================================================

@@ -86,8 +86,19 @@ describe('初始状态', () => {
     }
   });
 
-  run('种子决定 rngState —— 联机必须由服务器统一下发', () => {
-    expect(newGame({ map: loadMap(), players: setup(2), seed: 12345 }).rngState).toBe(12345);
+  run('★ 种子决定整个开局 —— 联机必须由服务器统一下发', () => {
+    const a = newGame({ map: loadMap(), players: setup(2), seed: 12345 });
+    const b = newGame({ map: loadMap(), players: setup(2), seed: 12345 });
+    expect(a.rngState).toBe(b.rngState);
+    expect(a.newsDeck.order).toEqual(b.newsDeck.order);
+
+    const c = newGame({ map: loadMap(), players: setup(2), seed: 999 });
+    expect(c.rngState).not.toBe(a.rngState);
+  });
+
+  run('★ rngState 不等于种子——开局洗两副牌已消耗随机数', () => {
+    // 这条是有意钉住的：若哪天洗牌被挪走或顺序变了，它会立刻失效提醒
+    expect(newGame({ map: loadMap(), players: setup(2), seed: 12345 }).rngState).not.toBe(12345);
   });
 });
 

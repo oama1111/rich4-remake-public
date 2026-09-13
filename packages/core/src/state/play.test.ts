@@ -8,6 +8,7 @@ import { reduce, nextCandidates, effectiveLand, landIndexAtPlayer } from './redu
 import type { MapTopology } from './reduce.ts';
 import type { GameState, Player } from './types.ts';
 import { makePlayer as basePlayer } from '../testing/factories.ts';
+import { makeGameState } from '../testing/factories.ts';
 
 /** 本文件的简写：第一参为下标 */
 const makePlayer = (index: number, over: Partial<Player> = {}): Player =>
@@ -20,17 +21,14 @@ const MAP0 = `${ROOT}/extracted/map/0001.bin`;
 const d = existsSync(MAP0) ? describe : describe.skip;
 
 
+/** 委托共享工厂——新增 GameState 字段时不必逐个测试文件补 */
 function makeState(over: Partial<GameState> = {}): GameState {
-  return {
-    mode: 'single', rngState: 1, globalMapId: 0,
-    day: 1, month: 1, year: 1998,
+  return makeGameState({
     players: [makePlayer(0), makePlayer(1), makePlayer(2), makePlayer(3)],
-    currentPlayer: 0, phase: 'turnStart', priceIndex: 1,
-    dice: [], stepsRemaining: 0, stepsTotal: 0,
-    cardAmount: new Array<number>(30).fill(0),
-    landOwner: [], landLevel: [], turnCount: 0,
+    landOwner: [],
+    landLevel: [],
     ...over,
-  };
+  });
 }
 
 function topology(): MapTopology {

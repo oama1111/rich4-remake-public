@@ -20,6 +20,13 @@ import { collectRent } from '../rules/rent.ts';
 import { tickBlocking } from '../rules/blocking.ts';
 import { purchase } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints, MAX_HAND_CARDS } from '../rules/special-square.ts';
+import { SPECIAL_KIND } from '../loaders/map.ts';
+import { drawEvent } from '../events/deck.ts';
+import { isNewsFeasible } from '../events/news.ts';
+import { checkFortune } from '../events/fortune.ts';
+import { applyFortuneEffect } from '../events/fortune-effects.ts';
+import { applyNewsEffect } from '../events/news-effects.ts';
+import { anyoneConfined } from '../rules/confinement.ts';
 
 /**
  * 归约所需的地图静态数据（只读，不进状态，避免快照臃肿）。
@@ -224,8 +231,12 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
             if (p.cards.length < MAX_HAND_CARDS) p.cards.push(out.cardDrawn);
           });
         }
-        // TODO(M2): unimplemented 的格子（新聞/命運/監獄/醫院/樂透/銀行/
-        //   百貨/魔法屋/三个小游戏）留待各自子系统
+        // 新聞／命運：抽一张可行的事件并施加其效果
+        if (node.specialKind === SPECIAL_KIND.NEWS) return drawAndApplyNews(next, topo);
+        if (node.specialKind === SPECIAL_KIND.FORTUNE) return drawAndApplyFortune(next);
+
+        // TODO(M2): 樂透/銀行/百貨/魔法屋/監獄/醫院/三个小游戏
+        //   各自需要独立子系统，见 docs/known-deviations.md
         return next;
       }
 
@@ -360,4 +371,128 @@ export function reduceAll(
   let s = state;
   for (const a of actions) s = reduce(s, a, topo);
   return s;
+}
+
+// ============================================================
+//  新聞 / 命運
+// ============================================================
+
+/**
+ * 抽一张**当前局面下可行**的命運事件并施加。
+ *
+ * ⚠️ 牌堆游标无论事件是否可行都会前进（见 events/deck.ts），
+ * 故这里必须把更新后的牌堆写回状态，否则会反复抽到同一张。
+ */
+function drawAndApplyFortune(state: GameState): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return state;
+  const ctx = {
+    currentPlayer: me,
+    otherPlayers: state.players.filter((_, i) => i !== state.currentPlayer),
+    lands: [] as never[],
+    stockAmount: new Array<number>(12).fill(0),
+    gameStage: 0,
+  };
+
+  const draw = drawEvent(state.fortuneDeck, (id) => checkFortune(id, ctx).feasible);
+  const withDeck: GameState = { ...state, fortuneDeck: draw.deck };
+  if (draw.eventId < 0) return withDeck;
+
+  // ★ checkFortune 可能把事件号**重映射**（交通方式相关的 14/15/16 一组），
+  //   施加效果时必须用重映射后的号，否则会施加错事件。
+  const effectiveId = checkFortune(draw.eventId, ctx).eventId;
+
+  const out = applyFortuneEffect(effectiveId, {
+    players: withDeck.players,
+    currentPlayer: withDeck.currentPlayer,
+    priceIndex: withDeck.priceIndex,
+    pool: withDeck.pool,
+    occupancy:
+      // 坐牢与住院共用一个入口，故按事件实际走向取对应的占用表
+      withDeck.prisonOccupancy,
+  });
+
+  return {
+    ...withDeck,
+    players: out.players,
+    pool: out.pool,
+    prisonOccupancy: out.occupancy,
+    lastEvent: { kind: 'fortune', id: effectiveId },
+  };
+}
+
+/**
+ * 抽一张新聞事件并施加。
+ *
+ * ⚠️ 与命運的关键差别：新聞的**受影响者未必是抽牌人**
+ * （「表揚第一大地主」的受益者是地主）。谁符合条件属于**选择**，
+ * 此处按事件语义现场挑；尚不能判定的事件由 applyNewsEffect
+ * 标记 unimplemented，状态不变。
+ */
+function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
+  const lands = allEffectiveLands(state, topo);
+  const draw = drawEvent(state.newsDeck, (id) =>
+    isNewsFeasible(id, {
+      players: state.players,
+      lands,
+      facilities: [],
+      stockAmount: state.players.map(() => []),
+      commercials: [],
+      stockF6: new Array<number>(12).fill(0),
+      prisonOccupied: anyoneConfined(state.prisonOccupancy) ? 1 : 0,
+      hospitalOccupied: anyoneConfined(state.hospitalOccupancy) ? 1 : 0,
+      checkCommercialOwner: () => false,
+    }),
+  );
+  const withDeck: GameState = { ...state, newsDeck: draw.deck };
+  if (draw.eventId < 0) return withDeck;
+
+  const out = applyNewsEffect(draw.eventId, {
+    players: withDeck.players,
+    affected: newsTargets(draw.eventId, withDeck, lands),
+    priceIndex: withDeck.priceIndex,
+    pool: withDeck.pool,
+    occupancy: withDeck.prisonOccupancy,
+  });
+
+  return {
+    ...withDeck,
+    players: out.players,
+    pool: out.pool,
+    prisonOccupancy: out.occupancy,
+    lastEvent: { kind: 'news', id: draw.eventId },
+  };
+}
+
+/**
+ * 新聞事件的受影响者。
+ *
+ * @source 文案里的 `%s` 指明了对象：
+ *   8「第一大地主」/ 9「土地最少者」/ 10「股市第一大戶」
+ * 其余按抽牌人处理。
+ */
+function newsTargets(eventId: number, state: GameState, lands: readonly LandInfo[]): number[] {
+  const countOwned = (i: number): number =>
+    lands.filter((l) => l.owner === i + 1).length;
+
+  switch (eventId) {
+    case 8: {
+      // 地产最多者
+      let best = 0;
+      for (let i = 1; i < state.players.length; i++) {
+        if (countOwned(i) > countOwned(best)) best = i;
+      }
+      return [best];
+    }
+    case 9: {
+      // 地产最少者
+      let worst = 0;
+      for (let i = 1; i < state.players.length; i++) {
+        if (countOwned(i) < countOwned(worst)) worst = i;
+      }
+      return [worst];
+    }
+    default:
+      return [state.currentPlayer];
+  }
 }
