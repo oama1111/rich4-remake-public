@@ -91,7 +91,7 @@ export const CARD_IMPLS: readonly CardImpl[] = [
   { id: 26, name: '查稅卡', va: 0x004451f0, selection: 'ui',   selectionParam: 0xe0c0410, passive: false, status: 'todo' },
   { id: 27, name: '漲價卡', va: 0x0044542d, selection: 'ui',   selectionParam: 0xe0c0006, passive: false, status: 'todo' },
   { id: 28, name: '查封卡', va: 0x00445593, selection: 'ui',   selectionParam: 0xe0c0006, passive: false, status: 'todo' },
-  { id: 29, name: '同盟卡', va: 0x00445710, selection: 'ui',   selectionParam: 0xe0c0410, passive: false, status: 'todo' },
+  { id: 29, name: '同盟卡', va: 0x00445710, selection: 'ui',   selectionParam: 0xe0c0410, passive: false, status: 'done' },
   { id: 30, name: '烏龜卡', va: 0x004458df, selection: 'ui',   selectionParam: 0xe0c0010, passive: false, status: 'done' },
 ] as const;
 

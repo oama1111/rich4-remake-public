@@ -26,3 +26,4 @@ export * from './cards/target.ts';
 export * from './cards/stay.ts';
 export * from './cards/tortoise.ts';
 export * from './cards/buy-land.ts';
+export * from './cards/alliance.ts';
