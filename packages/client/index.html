@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>大富翁4 重制版</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; height: 100vh; display: flex; background: #12141a; color: #e6e8ee;
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
+      }
+      #board { flex: 1; display: block; cursor: crosshair; }
+      #panel {
+        width: 300px; flex: none; padding: 14px; overflow-y: auto;
+        background: #1a1d24; border-left: 1px solid #2a2e38;
+      }
+      h1 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+      .player { padding: 8px; margin-bottom: 6px; border-radius: 6px; background: #22262f; }
+      .player.active { outline: 2px solid #e8d24a; }
+      .player .name { font-weight: 600; }
+      .player .money { font-variant-numeric: tabular-nums; color: #9aa3b2; }
+      .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+      button {
+        padding: 6px 12px; border-radius: 6px; border: 1px solid #3a4050;
+        background: #2a3040; color: #e6e8ee; cursor: pointer; font: inherit;
+      }
+      button:hover:not(:disabled) { background: #343b4d; }
+      button:disabled { opacity: .4; cursor: default; }
+      #log { margin-top: 12px; font-size: 12px; color: #8d95a5; max-height: 40vh; overflow-y: auto; }
+      #log div { padding: 2px 0; border-bottom: 1px solid #232732; }
+      .meta { color: #8d95a5; font-size: 12px; margin-bottom: 10px; }
+      .err { color: #e8524a; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <canvas id="board"></canvas>
+    <aside id="panel">
+      <h1>大富翁4 重制版</h1>
+      <div class="meta" id="meta">载入中…</div>
+      <div id="players"></div>
+      <div class="row" id="actions"></div>
+      <div id="log"></div>
+    </aside>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

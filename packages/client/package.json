@@ -3,9 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "license": "GPL-3.0-or-later",
-  "description": "渲染 + UI + 音频（PixiJS）",
+  "description": "浏览器/Tauri 前端 —— 渲染与输入，不含任何游戏规则",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" }
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@rich4/core": "workspace:*",
+    "@rich4/data": "workspace:*",
+    "@rich4/assets-pipeline": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
 }

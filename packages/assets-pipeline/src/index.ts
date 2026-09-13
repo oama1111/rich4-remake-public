@@ -3,3 +3,4 @@
  * 本包运行在 Node 下，不受 core 的零依赖与确定性约束。 */
 export * from './mkf.ts';
 export * from './mkf-decompress.ts';
+export * from './sprite.ts';
