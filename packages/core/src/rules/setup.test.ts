@@ -1,0 +1,94 @@
+/*
+ * 开局设置验证 —— 直接以原版存档为基准
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+import { describe, expect, it } from 'vitest';
+import { readFileSync, existsSync } from 'node:fs';
+import {
+  startingMoney,
+  DEFAULT_INITIAL_FUND,
+  NO_WIN_CONDITIONS,
+  hasWinConditions,
+} from './setup.ts';
+import { CHARACTERS, characterByKey } from '@rich4/data';
+import { parseSave } from '../loaders/save.ts';
+
+const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const SAVE1 = `${ROOT}/Rich4/SAVE1.DAT`;
+
+describe('初始资金', () => {
+  it('默认 300000（两个原版存档实证）', () => {
+    expect(DEFAULT_INITIAL_FUND).toBe(300_000);
+  });
+
+  it('现金 + 存款 = 初始资金（对全部 12 个角色成立）', () => {
+    for (const ch of CHARACTERS) {
+      const m = startingMoney(ch.id, DEFAULT_INITIAL_FUND);
+      expect(m.cash + m.moneyInBank, ch.name).toBe(DEFAULT_INITIAL_FUND);
+    }
+  });
+
+  it('★ 与 SAVE1.DAT 中三名未行动玩家的拆分精确一致', () => {
+    // 这三条是 init_cash_ratio 语义的直接证据
+    expect(startingMoney(characterByKey('sunxiaomei').id, 300_000))
+      .toEqual({ cash: 150_000, moneyInBank: 150_000 }); // ratio 50
+    expect(startingMoney(characterByKey('atubo').id, 300_000))
+      .toEqual({ cash: 120_000, moneyInBank: 180_000 }); // ratio 40
+    expect(startingMoney(characterByKey('jinbeibei').id, 300_000))
+      .toEqual({ cash: 240_000, moneyInBank: 60_000 });  // ratio 80
+  });
+
+  it('小丹尼 ratio=55 → 165000/135000', () => {
+    // SAVE1 中他显示 150000/150000，因其为当前玩家、已存入 15000（见 F-001）
+    expect(startingMoney(characterByKey('xiaodanni').id, 300_000))
+      .toEqual({ cash: 165_000, moneyInBank: 135_000 });
+  });
+
+  it('不同初始资金按比例缩放', () => {
+    const m = startingMoney(characterByKey('atubo').id, 1_000_000);
+    expect(m).toEqual({ cash: 400_000, moneyInBank: 600_000 });
+  });
+
+  it('整数运算，向零取整', () => {
+    // 忍太郎 ratio=70；777 × 70 / 100 = 543.9 → 543
+    const m = startingMoney(characterByKey('rentailang').id, 777);
+    expect(m.cash).toBe(543);
+    expect(m.moneyInBank).toBe(777 - 543);
+  });
+
+  it('未知角色编号抛错', () => {
+    expect(() => startingMoney(99, 300_000)).toThrow();
+  });
+});
+
+describe('胜负条件', () => {
+  it('默认无限制', () => {
+    expect(hasWinConditions(NO_WIN_CONDITIONS)).toBe(false);
+  });
+
+  it('任一项非 0 即视为有条件', () => {
+    expect(hasWinConditions({ targetDays: 100, targetWealth: 0 })).toBe(true);
+    expect(hasWinConditions({ targetDays: 0, targetWealth: 5_000_000 })).toBe(true);
+  });
+});
+
+describe.skipIf(!existsSync(SAVE1))('SAVE1.DAT 交叉验证', () => {
+  it('每名玩家的现金+存款均等于初始资金', () => {
+    const save = parseSave(new Uint8Array(readFileSync(SAVE1)));
+    for (const p of save.players) {
+      // 该存档中四人（含三名 who_plays=0 者）都还持有完整开局资金
+      expect(p.cash + p.moneyInBank, `玩家${p.index}`).toBe(DEFAULT_INITIAL_FUND);
+    }
+  });
+
+  it('三名未行动玩家的拆分与其角色 ratio 吻合', () => {
+    const save = parseSave(new Uint8Array(readFileSync(SAVE1)));
+    let matched = 0;
+    for (const p of save.players) {
+      const expectM = startingMoney(p.character, DEFAULT_INITIAL_FUND);
+      if (p.cash === expectM.cash && p.moneyInBank === expectM.moneyInBank) matched++;
+    }
+    // 四人中至少三人精确吻合（当前玩家已行动过）
+    expect(matched).toBeGreaterThanOrEqual(3);
+  });
+});
