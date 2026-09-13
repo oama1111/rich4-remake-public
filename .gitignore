@@ -1,0 +1,62 @@
+# ============================================================
+#  C-LEG-2 硬约束：严禁任何原版素材或其衍生物进入版本库
+#  大富翁4 版权归 大宇资讯 / 软星科技 所有
+#  本项目采用「玩家自备原版游戏目录」模式（C-LEG-3）
+# ============================================================
+
+# --- 原版资源包与存档（绝对禁止入库）---
+*.mkf
+*.MKF
+*.dat
+*.DAT
+*.CFG
+*.cfg
+*.mid
+*.MID
+*.avi
+*.AVI
+*.exe
+*.EXE
+
+# --- 素材目录（原始与超分产物一律不入库）---
+assets/original/
+assets/hd/
+assets/upscale-queue/
+assets/upscale-done/
+extracted/
+png/
+
+# --- 黄金测试 fixture 中的原版二进制 ---
+# 注：fixtures/ 下只允许提交「从原版导出的数值断言 JSON」，
+#     不允许提交原版存档本身。
+fixtures/**/*.dat
+fixtures/**/*.mkf
+fixtures/**/*.bin
+
+# --- 用户本地的原版游戏路径配置 ---
+.rich4-path
+*.local.json
+
+# ============================================================
+#  常规忽略
+# ============================================================
+node_modules/
+dist/
+build/
+out/
+*.tsbuildinfo
+coverage/
+.vitest/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
+npm-debug.log*
+pnpm-debug.log*

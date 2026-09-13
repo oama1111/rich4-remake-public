@@ -1,0 +1,26 @@
+{
+  "name": "rich4-remake",
+  "version": "0.1.0",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "description": "大富翁4 高清重制版 — 确定性引擎 + 原生桌面",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc -b --pretty",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint packages --max-warnings=0",
+    "check": "pnpm typecheck && pnpm lint && pnpm test",
+    "unpack": "node --experimental-strip-types packages/assets-pipeline/src/cli-unpack.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0",
+    "vitest": "^2.1.8"
+  }
+}

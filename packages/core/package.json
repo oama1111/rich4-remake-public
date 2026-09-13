@@ -1,0 +1,16 @@
+{
+  "name": "@rich4/core",
+  "version": "0.1.0",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "description": "确定性游戏引擎（零依赖，可跑在浏览器/Node/Worker）",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@rich4/data": "workspace:*"
+  }
+}
