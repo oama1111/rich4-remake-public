@@ -10,3 +10,4 @@ export * from './rules/turn-start.ts';
 export * from './rules/toll.ts';
 export * from './rules/land.ts';
 export * from './rules/special-square.ts';
+export * from './rules/monthly.ts';
