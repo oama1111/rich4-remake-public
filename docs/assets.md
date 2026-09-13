@@ -61,3 +61,51 @@ pnpm --filter @rich4/assets-pipeline extract --game assets/game --out assets-cle
 ⚠️ 若本仓库日后要公开，`assets/game/` 必须移除并改回运行时读取。
 这也是把它单独放在一个目录、且全部走 LFS 的原因之一——
 `git lfs prune` 加上一次历史重写就能干净地摘出去。
+
+---
+
+## 画质升级怎么走
+
+```bash
+# 1. 解包（若还没做过）
+pnpm --filter @rich4/assets-pipeline exec node --experimental-strip-types \
+  src/cli-extract.ts assets/game ../assets-clean
+
+# 2. 生成待办清单
+pnpm upscale plan ../assets-clean assets/hd
+
+# 3. 用**你自己的**工具处理，产物放到 assets/hd/<档案>/<同名文件>
+#    Real-ESRGAN / waifu2x / 在线服务 / 手工重绘都行——本管线不绑定任何模型
+
+# 4. 回填，记下用了什么模型
+pnpm upscale ingest ../assets-clean assets/hd realesrgan-x4plus-anime
+
+# 5. 随时看进度
+pnpm upscale status assets/hd
+```
+
+### 分批与倍率
+
+13,034 张图，面积中位数约 4000 px（约 63×63），故**不是一刀切 4 倍**：
+
+| 批次 | 张数 | 倍率 | 理由 |
+|---|---|---|---|
+| tiny | 4 | ×4 | 边长 ≤ 8，动漫超分模型容易糊边，可单独换模型 |
+| small | 11,799 | ×4 | 绝大多数图素 |
+| medium | 1,144 | ×3 | |
+| large | 87 | ×2 | 640×480 全屏图再放 4 倍是 2560×1920，没必要且拖慢一个数量级 |
+
+### ★ 锚点必须同步缩放（C-AST-6）
+
+原版精灵靠 `graph_info` 的 x/y 对齐。超分后若锚点还是原值，
+**所有精灵会整体偏移**——而且偏得很均匀，看起来像「美术做歪了」
+而不像 bug，极难排查。
+
+管线用**实际输出尺寸**而不是请求倍率来算锚点，因为不少工具会把结果
+对齐到偶数或 4 的倍数，实际倍率与请求值并不完全相等。
+这一步由 `recordResult()` 自动完成，是代码保证而非人工纪律。
+
+### 增量重跑
+
+`ingest` 会跳过已完成且源图未变的任务。换模型时传新的模型名，
+用旧模型做的会被重新列入待办。
