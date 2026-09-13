@@ -10,6 +10,7 @@
 import type { GameState } from '@rich4/core';
 import type { MapNode, Rich4Map } from '@rich4/core';
 import type { Sprite, SpriteCache } from './assets.ts';
+import { tokenResource } from './assets.ts';
 
 /** 玩家棋子的颜色——原版每人一色，此处先用可区分的四色占位 */
 const PLAYER_COLORS = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
@@ -240,8 +241,27 @@ export class BoardRenderer {
 
       const p = nodeToScreen(node, cam);
       const off = seen * Math.max(4, cam.scale * 5);
-      const r = Math.max(4, cam.scale * 7);
 
+      // ★ 原版棋子：锚点在底边中心，故按锚点对齐到格心（C-AST-6）
+      const token = this.#sprite('Panel.mkf', tokenResource(pl.character), 0);
+      if (token !== null) {
+        const w = token.width * cam.scale;
+        const h = token.height * cam.scale;
+        const x = p.x + off - token.anchorX * cam.scale;
+        const y = p.y - off - token.anchorY * cam.scale;
+        if (pl.index === state.currentPlayer) {
+          // 当前玩家脚下画一圈光晕，免得在密集处认不出轮到谁
+          ctx.beginPath();
+          ctx.ellipse(p.x + off, p.y - off, w * 0.42, h * 0.14, 0, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255,236,120,0.55)';
+          ctx.fill();
+        }
+        ctx.drawImage(token.bitmap, x, y, w, h);
+        continue;
+      }
+
+      // 精灵还没解完时退回色块，别让棋子凭空消失
+      const r = Math.max(4, cam.scale * 7);
       ctx.beginPath();
       ctx.arc(p.x + off, p.y - off, r, 0, Math.PI * 2);
       ctx.fillStyle = PLAYER_COLORS[pl.index] ?? '#fff';

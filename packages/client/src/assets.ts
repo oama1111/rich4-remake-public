@@ -171,3 +171,40 @@ export async function loadGround(
   rgba.data.set(g.rgba);
   return createImageBitmap(rgba);
 }
+
+// ============================================================
+//  角色美术
+// ============================================================
+
+/**
+ * 12 个角色的棋子与头像分别在哪个资源。
+ *
+ * ★ 由**资源的图数规律**推出并逐一目视核对：
+ *   `Panel.mkf` 从 27 号起，资源以「多张 / 1 张 / 多张」三连出现——
+ *   27(5) 28(1) 29(5) ｜ 30(5) 31(1) 32(5) ｜ 33(5) 34(1) 35(5) ｜ …
+ *   一直排到 62，恰好 12 组。中间那个**只有 1 张**的是站立姿，
+ *   两侧多张的是行走动画。
+ *
+ *   把 12 组的站立姿排成一行，与 `map.mkf` 27..38 的 12 张头像
+ *   **顺序完全一致**（阿土伯、沙隆巴斯、忍者、錢夫人…直到最后的寶寶），
+ *   两处独立的资源段能对上，故这个映射是可信的。
+ *
+ *   所有棋子的锚点都在**底边中心**（如 58×64 的锚点是 (29,63)），
+ *   正是放到格子上该有的对齐方式（C-AST-6）。
+ */
+export const CHARACTER_COUNT = 12;
+
+/** 角色的站立棋子 —— `Panel.mkf` 资源号 */
+export function tokenResource(character: number): number {
+  return 28 + character * 3;
+}
+
+/** 角色的行走动画 —— 两个方向各一组 */
+export function walkResources(character: number): [number, number] {
+  return [27 + character * 3, 29 + character * 3];
+}
+
+/** 角色头像 —— `map.mkf` 资源号，7 张表情，取第 0 张即可 */
+export function portraitResource(character: number): number {
+  return 27 + character;
+}

@@ -8,14 +8,15 @@
       :root { color-scheme: dark; }
       * { box-sizing: border-box; }
       body {
-        margin: 0; height: 100vh; display: flex; background: #12141a; color: #e6e8ee;
+        margin: 0; height: 100vh; overflow: hidden; display: flex; background: #12141a; color: #e6e8ee;
         font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
       }
-      #board { flex: 1; display: block; cursor: crosshair; }
+      #board { flex: 1 1 0; min-width: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
       #panel {
-        width: 300px; flex: none; padding: 14px; overflow-y: auto;
+        width: 232px; flex: none; padding: 10px; overflow-y: auto;
         background: #1a1d24; border-left: 1px solid #2a2e38;
       }
+      #hud { display: block; width: 200px; height: 488px; image-rendering: pixelated; }
       h1 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
       .player { padding: 8px; margin-bottom: 6px; border-radius: 6px; background: #22262f; }
       .player.active { outline: 2px solid #e8d24a; }
@@ -37,7 +38,7 @@
   <body>
     <canvas id="board"></canvas>
     <aside id="panel">
-      <h1>大富翁4 重制版</h1>
+      <canvas id="hud" width="200" height="488"></canvas>
       <div class="meta" id="meta">载入中…</div>
       <div id="players"></div>
       <div class="row" id="actions"></div>

@@ -22,6 +22,7 @@ import {
   type Rich4Map,
 } from '@rich4/core';
 import { loadArchives, loadGround, readMapData, SpriteCache } from './assets.ts';
+import { Hud } from './hud.ts';
 import { BoardRenderer, fitCamera, pickNode, screenToMap, type Camera } from './render.ts';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -31,6 +32,12 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 const canvas = $<HTMLCanvasElement>('board');
+const hudCanvas = $<HTMLCanvasElement>('hud');
+const hudCtx = (() => {
+  const c = hudCanvas.getContext('2d');
+  if (c === null) throw new Error('无法取得 HUD 绘图上下文');
+  return c;
+})();
 const ctx = (() => {
   const c = canvas.getContext('2d');
   if (c === null) throw new Error('无法取得 2D 绘图上下文');
@@ -59,6 +66,7 @@ let state: GameState;
 let camera: Camera;
 let hoverNode: number | null = null;
 let renderer: BoardRenderer;
+let hud: Hud;
 
 /**
  * 原版底图。
@@ -145,9 +153,17 @@ function requestRender(): void {
       ground: showGround ? ground : null,
       groundOffset,
     });
+    hud.draw({
+      state,
+      map,
+      camera,
+      viewport: { w: canvas.clientWidth, h: canvas.clientHeight },
+      ground,
+    });
     // 有精灵在本帧解码完成 → 再画一次，把它们补上
-    if (renderer.dirty) {
+    if (renderer.dirty || hud.dirty) {
       renderer.clearDirty();
+      hud.clearDirty();
       requestRender();
     }
   });
@@ -392,6 +408,7 @@ async function boot(): Promise<void> {
     });
 
     renderer = new BoardRenderer(ctx, sprites);
+    hud = new Hud(hudCtx, sprites);
     resizeCanvas();
     camera = fitCamera(map, canvas.clientWidth, canvas.clientHeight);
 
