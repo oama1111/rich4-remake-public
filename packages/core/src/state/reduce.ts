@@ -160,6 +160,8 @@ import {
   FACILITY_TYPE,
   WHEEL,
   aiPickFacilityType,
+  RESEARCH_MAX_PROJECT,
+  RESEARCH_MIN_PROJECT,
   aiPickResearchProject,
   calculateFacilityToll,
   startResearch,
@@ -480,9 +482,6 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       // ★ 研究所：只在業主自己的回合推进（@source 0x0041cdc6 `owner == 當前 + 1`），
       //   与其余「回合开始的倒数」在原版是同一个函数（0x0041cc20 一带）。
       snapped = tickOwnResearch(snapped, topo);
-      if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
-        snapped = aiStartResearch(snapped, topo);
-      }
       if (result.sleepWalk) {
         // 梦游：原版立即自动掷骰走子，玩家无法干预
         return reduce({ ...snapped, phase: 'awaitingRoll' }, { type: 'rollDice' }, topo);
@@ -747,7 +746,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     }
 
     case 'research': {
-      // 真人随时可点自己的研究所选项目（原版是設施面板里的点击，见 P2-14）
+      // 落点收尾的研究所面板（pending research）；真人也可随时点自己的研究所（P2-14 的入口）
+      const fromPanel = state.pending?.kind === 'research';
+      if (fromPanel && state.pending?.kind === 'research' && state.pending.facilityId !== action.facilityId) return state;
       const player = state.players[state.currentPlayer];
       if (player === undefined || !isAlive(player)) return state;
       const fac = effectiveFacility(state, topo, action.facilityId);
@@ -761,7 +762,8 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       const facilityResearchDays = [...state.facilityResearchDays];
       facilityResearchProject[fac.id] = started.project;
       facilityResearchDays[fac.id] = started.daysLeft;
-      return { ...state, facilityResearchProject, facilityResearchDays };
+      const next: GameState = { ...state, facilityResearchProject, facilityResearchDays };
+      return fromPanel ? { ...next, pending: null, phase: 'turnEnd' } : next;
     }
 
     case 'buildTarget': {
@@ -795,7 +797,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       });
       const facilityLevel = [...paid.facilityLevel];
       facilityLevel[fac.id] = fac.level + 1;
-      return { ...paid, facilityLevel, pending: null, phase: 'turnEnd' };
+      return afterOwnLab({ ...paid, facilityLevel, pending: null, phase: 'turnEnd' }, topo, fac.id);
     }
 
     case 'upgradeLand': {
@@ -851,7 +853,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       //   `responseMatches` 第一句就是这个），故不只在 awaitingDecision 生效：
       //   银行、樂透、百貨这些柜台也得有办法关门走人。
       if (state.phase === 'awaitingDecision') {
-        return { ...state, pending: null, phase: 'turnEnd' };
+        const done: GameState = { ...state, pending: null, phase: 'turnEnd' };
+        // 不加蓋也照样走到落点收尾：自己的研究所要问研發（0x0041b0b3）
+        return state.pending?.kind === 'upgradeFacility' ? afterOwnLab(done, topo, state.pending.facilityId) : done;
       }
       return state.pending === null ? state : { ...state, pending: null, phase: 'turnEnd' };
     }
@@ -3155,32 +3159,43 @@ function tickOwnResearch(state: GameState, topo: MapTopology): GameState {
   return { ...state, tools, toolStock, facilityResearchProject: project, facilityResearchDays: days };
 }
 
+
 /**
- * 电脑玩家：名下有已建的研究所且没在研發，就开一项 —— 項目取当前等级能开的最高一档。
- *
- * @source 选项目那段的非真人分支 0x004411e7 `ebx = level − 1`。
- * ⚠️ **触发时机是本引擎定的**：原版那段在設施面板的点击处理里（0x0043fae4 的
- *   消息循环），电脑在 AI 总调度的哪一步走进去还没定位。这里放在回合开始，
- *   记为 Q-LAB-1。
+ * 落点收尾：站在**自己的已建研究所**上就开研究所面板 @source 0x0041b0b3..0x0041b109：
+ * ```asm
+ * 0041b0ba  code ∈ 4001..5999（設施）
+ * 0041b0d1  owner == 我 + 1
+ * 0041b0e6  我.+0x37（夢遊）== 0
+ * 0041b0f6  type == 4（研究所） && level != 0
+ * 0041b102  (+0x1c & 0xf) == 0                 ; 没被查封（設施的查封位，T-008 才进状态）
+ * 0041b109  call 0x44101d(設施)                ; 面板：真人 0x4402d7 点选；电脑 0x4411e7
+ * ```
+ * 电脑分支（0x4411e7..0x4411fb）：`項目 = level; 天数 = 5`，**不看是否正在研發**——原样覆盖。
+ * 这一步在加蓋问答**之后**（加蓋在 0x0041a2b3，收尾在 0x0041b0b3）。
  */
-function aiStartResearch(state: GameState, topo: MapTopology): GameState {
+function afterOwnLab(state: GameState, topo: MapTopology, facilityId: number): GameState {
   const me = state.currentPlayer;
-  let next = state;
-  for (const f of topo.facilities ?? []) {
-    if ((next.facilityType[f.id] ?? 0) !== FACILITY_TYPE.lab) continue;
-    if ((next.facilityOwner[f.id] ?? 0) !== me + 1) continue;
-    if ((next.facilityResearchDays[f.id] ?? 0) !== 0) continue;
-    const level = next.facilityLevel[f.id] ?? 0;
-    if (level === 0) continue;
-    const started = startResearch(aiPickResearchProject(level), level);
-    if (started === null) continue;
-    const facilityResearchProject = [...next.facilityResearchProject];
-    const facilityResearchDays = [...next.facilityResearchDays];
-    facilityResearchProject[f.id] = started.project;
-    facilityResearchDays[f.id] = started.daysLeft;
-    next = { ...next, facilityResearchProject, facilityResearchDays };
+  const player = state.players[me];
+  const fac = effectiveFacility(state, topo, facilityId);
+  if (player === undefined || fac === null) return state;
+  if (fac.owner !== me + 1 || fac.type !== FACILITY_TYPE.lab || fac.level === 0) return state;
+  if (player.blocking.sleepWalking !== 0) return state;
+  if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
+    const started = startResearch(aiPickResearchProject(fac.level), fac.level);
+    if (started === null) return state;
+    const facilityResearchProject = [...state.facilityResearchProject];
+    const facilityResearchDays = [...state.facilityResearchDays];
+    facilityResearchProject[fac.id] = started.project;
+    facilityResearchDays[fac.id] = started.daysLeft;
+    return { ...state, facilityResearchProject, facilityResearchDays, phase: 'turnEnd' };
   }
-  return next;
+  const choices: number[] = [];
+  for (let p = RESEARCH_MIN_PROJECT; p <= fac.level && p <= RESEARCH_MAX_PROJECT; p++) choices.push(p);
+  return {
+    ...state,
+    phase: 'awaitingDecision',
+    pending: { kind: 'research', facilityId: fac.id, name: fac.name, level: fac.level, choices },
+  };
 }
 
 /**
@@ -3260,9 +3275,11 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
         },
       };
     }
-    if (!canUpgradeFacility(fac.type, fac.level)) return { ...state, phase: 'turnEnd' };
+    if (!canUpgradeFacility(fac.type, fac.level)) return afterOwnLab({ ...state, phase: 'turnEnd' }, topo, fac.id);
     const cost = facilityUpgradePrice(fac.housePrice, state.priceIndex);
-    if (cost > player.cash || purchaseBlockedBy(player) !== null) return { ...state, phase: 'turnEnd' };
+    if (cost > player.cash || purchaseBlockedBy(player) !== null) {
+      return afterOwnLab({ ...state, phase: 'turnEnd' }, topo, fac.id);
+    }
     return {
       ...state,
       phase: 'awaitingDecision',

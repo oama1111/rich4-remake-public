@@ -29,6 +29,7 @@ function makeCtx(over: Partial<UseCardContext> = {}): UseCardContext {
     nodes: [makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1 })],
     currentPlayer: 0,
     priceIndex: 1,
+    tools: new Array<number>(60).fill(0),
     ...over,
   };
 }
@@ -271,5 +272,75 @@ describe('★ 陷害卡经统一入口', () => {
     expect(r.ok).toBe(true);
     expect(r.defended).toBe(true);
     expect(r.players[2]!.blocking.inPrison).toBe(0);
+  });
+});
+
+
+describe('★ 夢遊卡经统一入口（T-002）', () => {
+  const withCard = () =>
+    makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [16] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+    });
+
+  it('能出：目标梦游 5 天、骰子变 1 颗、交通工具退还成道具，卡片被消耗', () => {
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [16] }),
+        makePlayer({ index: 1, trafficMethod: 1, ndices: 2 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+    });
+    const r = useCard(ctx, 16, { kind: 'player', index: 1 });
+    expect(r.ok).toBe(true);
+    // @source VA 0x0044435e：对别人 5 天
+    expect(r.players[1]!.blocking.sleepWalking).toBe(5);
+    expect(r.players[1]!.trafficMethod).toBe(0);
+    expect(r.players[1]!.ndices).toBe(1);
+    // @source VA 0x0044439b：機車（traffic 1）退还成道具 5
+    expect(r.tools[1 * 15 + 5]).toBe(1);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('★ 不能指向自己（0xe0c0710 属 player 类，不含自己）', () => {
+    const r = useCard(withCard(), 16, { kind: 'player', index: 0 });
+    expect(r.error).toBe('cannotTargetSelf');
+    expect(r.players[0]!.cards).toEqual([16]);
+  });
+
+  it('目标出局 → 不能出（原版选择列表里没有出局者），不扣卡', () => {
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [16] }),
+        makePlayer({ index: 1, whoPlays: 0 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+    });
+    const r = useCard(ctx, 16, { kind: 'player', index: 1 });
+    expect(r.ok).toBe(false);
+    expect(r.players[0]!.cards).toEqual([16]);
+    expect(r.players[1]!.blocking.sleepWalking).toBe(0);
+  });
+
+  it('目标持復仇卡 → 效果反弹给出牌者（自己 4 天）', () => {
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [16] }),
+        makePlayer({ index: 1, cards: [18] }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+    });
+    const r = useCard(ctx, 16, { kind: 'player', index: 1 });
+    expect(r.ok).toBe(true);
+    // @source VA 0x0044435e：对自己 4 天
+    expect(r.players[0]!.blocking.sleepWalking).toBe(4);
+    expect(r.players[1]!.blocking.sleepWalking).toBe(0);
   });
 });

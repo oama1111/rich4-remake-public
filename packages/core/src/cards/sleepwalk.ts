@@ -10,6 +10,7 @@
  */
 
 import type { Player } from '../state/types.ts';
+import { isAlive } from '../state/types.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { PASSIVE_CARDS, playerHasCard } from './passive.ts';
 import { TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
@@ -143,6 +144,8 @@ export function applySleepwalkCard(
 
   const victim0 = players[target.index];
   if (victim0 === undefined) return fail('playerOutOfRange');
+  // 出局者不在原版目标选择列表里（0x446ae8 只画在场玩家）——等价于选不到
+  if (!isAlive(victim0)) return fail('playerOutOfRange');
 
   // ★ 復仇卡：把效果反弹给出牌者
   const reflected = playerHasCard(victim0, PASSIVE_CARDS.REVENGE);

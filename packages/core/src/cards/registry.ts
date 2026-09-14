@@ -28,6 +28,7 @@ import { applyHostilityDeltas } from '../rules/hostility.ts';
 import { applyAverageCashCard } from './average-cash.ts';
 import { applyAveragePoorCard } from './average-poor.ts';
 import { applyHibernateCard } from './hibernate.ts';
+import { applySleepwalkCard } from './sleepwalk.ts';
 import { applyStayCard } from './stay.ts';
 import { applyTortoiseCard } from './tortoise.ts';
 import { applyAllianceCard } from './alliance.ts';
@@ -64,6 +65,8 @@ export interface UseCardResult {
   error: UseCardError | null;
   players: Player[];
   lands: LandInfo[];
+  /** 全局道具表（仅夢遊卡等会改动；其余卡原样返回） */
+  tools: number[];
   hostilityDeltas: HostilityDelta[];
   /** 是否被防御性被动卡挡下 */
   defended: boolean;
@@ -88,6 +91,8 @@ export interface UseCardContext {
   nodes: readonly MapNode[];
   currentPlayer: number;
   priceIndex: number;
+  /** 全局道具表（夢遊卡把交通工具退还成道具时要写） */
+  tools: readonly number[];
   /**
    * 嫁祸卡的新目标选择器（陷害卡等有害卡在被嫁祸时调用）。
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
@@ -97,7 +102,7 @@ export interface UseCardContext {
 
 /** 本项目已实现效果、可经本入口使用的卡片编号 */
 export const IMPLEMENTED_CARD_IDS: readonly number[] = [
-  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 17, 22, 26, 27, 28, 29, 30,
+  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 16, 17, 22, 26, 27, 28, 29, 30,
 ];
 
 /** 取玩家当前**所站地块**（不是住宅地则返回 null） */
@@ -132,6 +137,7 @@ export function useCard(
     error: null,
     players: [...ctx.players],
     lands: [...ctx.lands],
+    tools: [...ctx.tools],
     hostilityDeltas: [],
     defended: false,
     releasedObjects: [],
@@ -161,6 +167,7 @@ export function useCard(
 
   let players: Player[] = [...ctx.players];
   let lands: LandInfo[] = [...ctx.lands];
+  let tools: number[] = [...ctx.tools];
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
   let releasedObjects: number[] = [];
@@ -201,6 +208,16 @@ export function useCard(
       const r = applyHibernateCard(players, cur, ctx.priceIndex);
       players = r.players;
       hostilityDeltas = r.hostilityDeltas;
+      break;
+    }
+    case 16: {
+      // 夢遊卡：交通工具退还成道具，故全局道具表也要跟着结果走
+      const r = applySleepwalkCard(players, cur, target, tools);
+      if (!r.ok) return fail(r.error ?? 'noEffect');
+      players = r.players;
+      tools = r.tools;
+      // @source 復仇卡(18) 把效果反弹给出牌者（applySleepwalkCard 内部处理），
+      //   反弹不算「被防御性被动卡挡下」，defended 保持 false
       break;
     }
     case 22: {
@@ -321,5 +338,5 @@ export function useCard(
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
-  return { ok: true, error: null, players, lands, hostilityDeltas, defended, releasedObjects };
+  return { ok: true, error: null, players, lands, tools, hostilityDeltas, defended, releasedObjects };
 }
