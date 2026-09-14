@@ -178,7 +178,7 @@ cards:
   title: 拍賣卡（8）——把脚下地产送入拍賣 pending
   module: MOD-06
   req: REQ-06.1
-  status: doing
+  status: done
   estimate: 0.5
   depends_on: []
   uses:
@@ -1405,7 +1405,7 @@ cards:
   title: 联机端到端测试：4 客户端同进程跑完整局，与单机同种子逐字节一致
   module: MOD-14
   req: REQ-14
-  status: todo
+  status: done
   estimate: 0.5
   depends_on: [T-071, T-072, T-073, T-074]
   uses: [server/src/index.ts, client/net-client.ts, core/state/reduce.ts (reduceAll)]
