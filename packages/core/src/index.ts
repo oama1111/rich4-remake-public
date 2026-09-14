@@ -50,6 +50,7 @@ export * from './places/stock.ts';
 export * from './places/magic-house.ts';
 export * from './places/minigame.ts';
 export * from './places/calendar.ts';
+export * from './places/special-finance.ts';
 export * from './rules/time-machine.ts';
 export * from './rules/teleport.ts';
 export * from './ai/stock-policy.ts';

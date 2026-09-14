@@ -84,7 +84,7 @@ describe('★ 未实现的场所会明确报出来，而不是静默无事发生
 });
 
 describe('★ 答复必须与待决交互配套', () => {
-  const bank: PendingInteraction = { kind: 'bank', wealth: 1000, loanCapacity: 500 };
+  const bank: PendingInteraction = { kind: 'bank', wealth: 1000, loanCapacity: 500, specialFinance: null };
   const lottery: PendingInteraction = { kind: 'lottery', available: [1, 2], price: 1000, owned: 0 };
 
   it('放弃总是合法', () => {

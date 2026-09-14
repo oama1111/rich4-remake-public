@@ -25,7 +25,7 @@ describe('場所背景', () => {
   });
 
   it('柜台类场所各自配对', () => {
-    expect(sceneFor({ kind: 'bank', wealth: 0, loanCapacity: 0 })).toBe(SCENE.bank);
+    expect(sceneFor({ kind: 'bank', wealth: 0, loanCapacity: 0, specialFinance: null })).toBe(SCENE.bank);
     expect(sceneFor({ kind: 'lottery', available: [], price: 0, owned: 0 })).toBe(
       SCENE.lotteryCounter,
     );

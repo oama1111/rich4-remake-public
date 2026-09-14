@@ -246,6 +246,19 @@ export interface CommercialInfo {
   /** 对应的股票索引 @source rich4_load_map.asm:325 (mov dl, byte [esi+0x19]) */
   stockIndex: number;
   /**
+   * 行業別 @source commercial +0x1a
+   *
+   * ★ **7 就是銀行**（@source VA 0x00436b31 `cmp byte [esi+0x1a], 7`，
+   *   那段是「谁是銀行董事長」的判定）。八张地图上 type 7 的企业**恰好各一家**，
+   *   而且它的 `stockIndex` 恒为 0：
+   *   中國信託・上海銀行・富士銀行・花旗銀行・行星銀行・聚寶銀樓・黃金銀行・假期銀行。
+   *
+   * 其余取值按名字一目了然（**目视归纳，非从 exe 读到**）：
+   * 1 航空、2 飯店、3 電子、4 保險/人壽、5 汽車、6 石油、
+   * 10 百貨、11 建設、12 門派。
+   */
+  type: number;
+  /**
    * 精灵索引 @source commercial +0x20 (u16)
    *
    * @source 地图加载 VA 0x00407ee4：
@@ -442,6 +455,7 @@ export function parseMap(data: Uint8Array): Rich4Map {
       y: view.getInt16(o + 0x02, true),
       name: readName(data, o + 0x04, 0x14),
       stockIndex: data[o + 0x19] ?? 0,
+      type: data[o + 0x1a] ?? 0,
       spriteIndex: view.getUint16(o + 0x20, true),
       assetValue: u32(o + 0x24),
       shares: u32(o + 0x30),

@@ -136,7 +136,19 @@ export type Action =
    * ★ 只在落点留下 `bank` 待决交互时有效。金额由上层给出
    *   （UI 的输入框、AI 的 `loanRatio`），规则一律在 `places/bank.ts`。
    */
-  | { type: 'bank'; op: 'deposit' | 'withdraw' | 'borrow' | 'repay'; amount: number }
+  /**
+   * 銀行柜台。
+   *
+   * ★ `financeBorrow` / `financeRepay` 是**特別融資**，只有銀行董事長
+   *   （持有銀行股票最多的人）能用，且与一般貸款是两笔账 ——
+   *   它不进 `loan`，所以 90 天到期、拒絕往來那一套都不适用。
+   *   见 places/special-finance.ts。
+   */
+  | {
+      type: 'bank';
+      op: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'financeBorrow' | 'financeRepay';
+      amount: number;
+    }
   /** 保釋監獄/醫院里的某个槽位（0..3 玩家、4..7 NPC） */
   /**
    * 樂透：买一个号码。

@@ -45,7 +45,7 @@ function answerable(s: GameState, candidates: Action[]): boolean {
 describe('★ 每一种待决交互都答得掉', () => {
   it('銀行', () => {
     const wealth = 1_000_000;
-    const s = withPending({ kind: 'bank', wealth, loanCapacity: loanCapacity(wealth, 0) });
+    const s = withPending({ kind: 'bank', wealth, loanCapacity: loanCapacity(wealth, 0), specialFinance: null });
     expect(
       answerable(s, [
         { type: 'bank', op: 'deposit', amount: 1000 },
@@ -87,7 +87,7 @@ describe('★ 每一种待决交互都答得掉', () => {
 
   it('★ 放弃对任何交互都管用 —— 这是最后一道保险', () => {
     const kinds: PendingInteraction[] = [
-      { kind: 'bank', wealth: 1000, loanCapacity: 500 },
+      { kind: 'bank', wealth: 1000, loanCapacity: 500, specialFinance: null },
       { kind: 'lottery', available: [1], price: 1000, owned: 0 },
       { kind: 'auction', entityId: 1, basePrice: 100, bidders: [1] },
       { kind: 'minigame', game: 7, name: '七彩氣球', maxScore: 999 },

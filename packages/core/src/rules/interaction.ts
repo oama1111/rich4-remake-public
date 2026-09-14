@@ -37,11 +37,20 @@ export type PendingInteraction =
   /** 自有地：盖或不盖 */
   | { kind: 'upgradeLand'; landId: number; name: string; cost: number }
   /**
-   * 银行：存、取、借、还。
+   * 银行：存、取、借、还，外加董事長专属的特別融資。
+   *
    * @source 落点 VA 0x00436668 —— 先查 `days_rejected_by_bank`，
    *   非 0 直接返回（拒绝往来期内连门都进不去）。
+   *
+   * ★ `specialFinance` 只有**董事長**才有（`null` = 不是董事長 ——
+   *   原版那扇窗户里就看不见人）。见 places/special-finance.ts。
    */
-  | { kind: 'bank'; wealth: number; loanCapacity: number }
+  | {
+      kind: 'bank';
+      wealth: number;
+      loanCapacity: number;
+      specialFinance: { owed: number; available: number } | null;
+    }
   /**
    * 樂透：挑一个没被买走的号码。
    * @source 落点 VA 0x004315cc
@@ -197,6 +206,9 @@ export type InteractionResponse =
   | { kind: 'bankWithdraw'; amount: number }
   | { kind: 'bankBorrow'; amount: number }
   | { kind: 'bankRepay'; amount: number }
+  /** 特別融資：借 / 還。只有銀行董事長能用 */
+  | { kind: 'bankFinanceBorrow'; amount: number }
+  | { kind: 'bankFinanceRepay'; amount: number }
   | { kind: 'lotteryBuy'; number: number }
   | { kind: 'auctionBid'; winner: number; price: number }
   | { kind: 'buyShares'; shares: number }

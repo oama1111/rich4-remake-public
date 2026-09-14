@@ -25,6 +25,14 @@ import {
   teleportPlayer,
 } from '../rules/teleport.ts';
 import { VEHICLE_DICE } from '../rules/tool-effects.ts';
+import {
+  bankChairman,
+  bankReserveCall,
+  borrowSpecial,
+  payFromBank,
+  repaySpecial,
+  specialFinanceAvailable,
+} from '../places/special-finance.ts';
 import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo, FacilityInfo, CommercialInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
@@ -148,6 +156,45 @@ export function effectiveLand(
     level: s.landLevel[landIndex] ?? tpl.level,
     type: s.landType[landIndex] ?? tpl.type,
   };
+}
+
+/**
+ * 这个玩家是不是銀行董事長；是就给出他的特別融資额度。
+ *
+ * ★ 不是董事長返回 `null` —— 原版那扇窗户里根本看不见人
+ *   （@source VA 0x00436b31 起，见 places/special-finance.ts）。
+ */
+function specialFinanceOf(
+  s: GameState,
+  topo: MapTopology,
+  player: number,
+): { owed: number; available: number } | null {
+  if (bankChairman(s, topo.commercials) !== player) return null;
+  const me = s.players[player];
+  if (me === undefined) return null;
+  return { owed: me.specialFinance, available: specialFinanceAvailable(s.players, player) };
+}
+
+/**
+ * 銀行資金準備不足时，让董事長把差額垫上。
+ *
+ * @source VA 0x00436b5c 起，见 places/special-finance.ts 的 `bankReserveCall`。
+ * 扣钱走「先存款、再现金、还不够就破產」（VA 0x00433bd8）。
+ */
+function settleBankReserve(s: GameState, topo: MapTopology): GameState {
+  const call = bankReserveCall(s, topo.commercials, s.currentPlayer);
+  if (call === null) return s;
+  const boss = s.players[call.chairman];
+  if (boss === undefined) return s;
+  const paid = payFromBank(boss, call.shortfall);
+  const after: Player = {
+    ...paid.player,
+    specialFinance: Math.max(0, boss.specialFinance - call.shortfall),
+  };
+  const players = s.players.map((p, i) => (i === call.chairman ? after : p));
+  const next: GameState = { ...s, players };
+  // ⚠️ 垫付到破产这一支原版也有（0x00433c16 调破產）；这里交给统一的破产流程
+  return paid.bankrupt ? settleBankruptcies(next, [call.chairman], topo) : next;
 }
 
 /** 当前玩家落点所对应的住宅地块下标；非住宅返回 null */
@@ -442,13 +489,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           node.specialKind === SPECIAL_KIND.PRISON ||
           node.specialKind === SPECIAL_KIND.HOSPITAL
         ) {
-          return enterVisit(next, node.specialKind);
+          return enterVisit(next, topo, node.specialKind);
         }
 
         // 其余特殊格：交给「待决交互」机制。
         // ★ 这样每一格都**可达**：已实现的给出具体交互，
         //   未实现的给出一个明确的 unimplemented，而不是静默无事发生。
-        return { ...next, pending: pendingForSpecial(next, node.specialKind) };
+        return { ...next, pending: pendingForSpecial(next, topo, node.specialKind) };
       }
 
       const landIndex = landIndexAtPlayer(state, topo);
@@ -604,6 +651,22 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         case 'repay':
           next = repay(me, action.amount);
           break;
+        // ★ 特別融資：只有董事長能用，且**不进 loan**，与一般貸款两笔账
+        case 'financeBorrow': {
+          if (state.pending.specialFinance === null) return state;
+          const r = borrowSpecial(state.players, state.currentPlayer, action.amount);
+          if (r === null || r.error !== null) return state;
+          next = r.player;
+          break;
+        }
+        case 'financeRepay': {
+          if (state.pending.specialFinance === null) return state;
+          const r = repaySpecial(state.players, state.currentPlayer, action.amount);
+          // @source 「您的現金不足」—— 柜台不关，什么也不改
+          if (r === null || r.error !== null) return state;
+          next = r.player;
+          break;
+        }
         default:
           return state;
       }
@@ -613,13 +676,18 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         ...state,
         players: state.players.map((p, i) => (i === state.currentPlayer ? next : p)),
       };
-      // 刷新柜台上显示的数字（额度会随贷款变）
+      // ★ 取款会让「客戶存款總額」变小，可能跌破董事長的已融資额度 ——
+      //   原版就是在取款之后立刻查一次（@source VA 0x0043784d `push 1`）。
+      const settled = action.op === 'withdraw' ? settleBankReserve(after, topo) : after;
+
+      // 刷新柜台上显示的数字（额度会随贷款与融资变）
       return {
-        ...after,
+        ...settled,
         pending: {
           kind: 'bank',
           wealth,
           loanCapacity: loanCapacity(wealth, next.loan),
+          specialFinance: specialFinanceOf(settled, topo, state.currentPlayer),
         },
       };
     }
@@ -1249,7 +1317,7 @@ function characterNameOf(p: Player | undefined): string {
  * @source VA 0x0043d304 / 0x0043e9a4：真人弹保釋窗口，电脑自己掷骰子决定。
  *   见 rules/visit.ts。
  */
-function enterVisit(state: GameState, specialKind: number): GameState {
+function enterVisit(state: GameState, topo: MapTopology, specialKind: number): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return { ...state, phase: 'turnEnd' };
   const kind: ConfinementKind = specialKind === SPECIAL_KIND.PRISON ? 'prison' : 'hospital';
@@ -1259,7 +1327,7 @@ function enterVisit(state: GameState, specialKind: number): GameState {
 
   const human = (me.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN;
   if (human) {
-    return { ...state, pending: pendingForSpecial(state, specialKind) };
+    return { ...state, pending: pendingForSpecial(state, topo, specialKind) };
   }
 
   // 电脑：随机数在 reducer 里掷，AI 保持纯函数
@@ -1896,7 +1964,11 @@ function newsTargets(
  *
  * ★ 由 core 判定而非 UI —— 见 rules/interaction.ts 顶部说明。
  */
-function pendingForSpecial(state: GameState, specialKind: number): PendingInteraction | null {
+function pendingForSpecial(
+  state: GameState,
+  topo: MapTopology,
+  specialKind: number,
+): PendingInteraction | null {
   if (!needsInteraction(specialKind)) return null;
 
   const me = state.players[state.currentPlayer];
@@ -1922,7 +1994,12 @@ function pendingForSpecial(state: GameState, specialKind: number): PendingIntera
     // @source 落点 VA 0x0043667b：拒绝往来期内直接返回
     if (me.daysRejectedByBank !== 0) return null;
     const wealth = calculatePlayerWealth(me, [], []);
-    return { kind: 'bank', wealth, loanCapacity: loanCapacity(wealth, me.loan) };
+    return {
+      kind: 'bank',
+      wealth,
+      loanCapacity: loanCapacity(wealth, me.loan),
+      specialFinance: specialFinanceOf(state, topo, state.currentPlayer),
+    };
   }
 
   if (specialKind === SPECIAL_KIND.LOTTERY) {

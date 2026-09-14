@@ -129,6 +129,32 @@ export function interactionUi(
               fill: (n) => ({ type: 'bank', op: 'repay', amount: n }),
             },
           },
+          // ★ 特別融資 —— 只有銀行董事長看得见这两项
+          //   （原版那扇窗户里的人，持有銀行股票最多才出现）
+          ...(pending.specialFinance === null
+            ? []
+            : [
+                {
+                  label: BANK.specialFinance.text,
+                  action: { type: 'bank' as const, op: 'financeBorrow' as const, amount: pending.specialFinance.available },
+                  amount: {
+                    label: `${BANK.creditLeft.text} ${money(pending.specialFinance.available)}`,
+                    max: pending.specialFinance.available,
+                    step: 1000,
+                    fill: (n: number): Action => ({ type: 'bank', op: 'financeBorrow', amount: n }),
+                  },
+                },
+                {
+                  label: BANK.returnFunds.text,
+                  action: { type: 'bank' as const, op: 'financeRepay' as const, amount: pending.specialFinance.owed },
+                  amount: {
+                    label: `${BANK.currentCredit.text} ${money(pending.specialFinance.owed)}`,
+                    max: pending.specialFinance.owed,
+                    step: 1000,
+                    fill: (n: number): Action => ({ type: 'bank', op: 'financeRepay', amount: n }),
+                  },
+                },
+              ]),
           { label: BUTTON.exit.text, action: { type: 'declineDecision' } },
         ],
       };

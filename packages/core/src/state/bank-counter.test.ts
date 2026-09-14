@@ -17,7 +17,7 @@ function atCounter(over: Partial<GameState> = {}): GameState {
     players: [0, 1, 2, 3].map((i) =>
       makePlayer({ index: i, nodeId: 1, cash: 200_000, moneyInBank: 100_000, loan: 0 }),
     ),
-    pending: { kind: 'bank', wealth, loanCapacity: loanCapacity(wealth, 0) },
+    pending: { kind: 'bank', wealth, loanCapacity: loanCapacity(wealth, 0), specialFinance: null },
     phase: 'turnEnd',
     ...over,
   });
