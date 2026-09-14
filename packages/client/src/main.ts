@@ -31,6 +31,17 @@ import {
   type Sprite,
 } from './assets.ts';
 import { Hud, hitSidebar, type SidebarView } from './hud.ts';
+import {
+  DEFAULT_OPTIONS,
+  OPTIONS_RESOURCE,
+  applyOptionsHit,
+  drawOptions,
+  hitOptions,
+  volumeOf,
+  SIDE_BUTTONS,
+  type GameOptions,
+  type OptionsHit,
+} from './options.ts';
 import { SoundPlayer } from './audio.ts';
 import { MusicPlayer } from './music.ts';
 import {
@@ -111,6 +122,39 @@ let renderer: BoardRenderer;
  *   —— 原版默认哪一个没查证，这里先开日曆（那是它的原生面貌）。
  */
 let sidebarView: SidebarView = 'calendar';
+
+/** 設定屏的取值。@source 字段与范围见 options.ts / RICH4.CFG */
+let options: GameOptions = { ...DEFAULT_OPTIONS };
+/** 进 設定 屏之前待在哪一屏 —— 取消时要回去 */
+let optionsReturn: Screen = 'title';
+/** 右上角三个按钮用哪一组文字：0 標題頁 / 1 遊戲中 */
+let optionsVariant = 0;
+let optionsDraft: GameOptions = { ...DEFAULT_OPTIONS };
+let optionsHot: OptionsHit | null = null;
+
+function openOptions(from: Screen): void {
+  optionsReturn = from;
+  optionsVariant = from === 'game' ? 1 : 0;
+  optionsDraft = { ...options };
+  optionsHot = null;
+  screen = 'options';
+  requestRender();
+}
+
+/** 把設定的取值真的作用到播放器与側欄上 */
+function applyOptions(next: GameOptions): void {
+  const trackChanged = next.track !== options.track;
+  options = next;
+  sound.setMuted(next.sound === 0);
+  sound.volume = volumeOf(next.sound);
+  music.setVolume(next.music === 0 ? 0 : volumeOf(next.music) * 0.25);
+  // ⚠️ 「02 兩者輪流」怎么轮没查证（Q-UI-1），先按小地圖处理
+  sidebarView = next.windowView === 0 ? 'calendar' : 'map';
+  // `Midi.txt` 的前 8 条正好是設定里那 8 首樂曲
+  if (trackChanged || (next.music > 0 && !music.playing)) void playTrack(next.track);
+  if (next.music === 0) music.stop();
+  requestRender();
+}
 let hud: Hud;
 let sprites: SpriteCache | null = null;
 let archives: LoadedArchives;
@@ -350,7 +394,7 @@ const hudOffCtx = (() => {
 })();
 
 /** 当前屏幕 */
-type Screen = 'title' | 'setup' | 'game';
+type Screen = 'title' | 'setup' | 'options' | 'game';
 let screen: Screen = 'title';
 /** 標題畫面上鼠标悬着的按钮 */
 let titleHot: number | null = null;
@@ -371,6 +415,14 @@ function requestRender(): void {
       drawTitle(stageCtx, titleHot, spriteNow);
     } else if (screen === 'setup') {
       drawSetup(stageCtx, setup, setupHot, spriteNow);
+    } else if (screen === 'options') {
+      // 設定是**盖在**原来那一屏上的对话框（原版就是这样）
+      if (optionsReturn === 'game') drawGameStage();
+      else drawTitle(stageCtx, null, spriteNow);
+      stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
+      stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+      drawOptions(stageCtx, optionsDraft, optionsVariant, optionsHot, (i, key = false) =>
+        spriteNow('Data.mkf', OPTIONS_RESOURCE, i, key));
     } else {
       drawGameStage();
     }
@@ -479,6 +531,10 @@ function onToolbar(i: number): void {
   if (i === 5) {
     // 地图图标 —— 切换人物/地图视角
     setViewMode(camera.mode === 'character' ? 'map' : 'character');
+    return;
+  }
+  if (i === 7) {
+    openOptions('game');
     return;
   }
   log(`「${name}」尚未实现`);
@@ -789,7 +845,7 @@ function onTitleButton(id: 'start' | 'load' | 'option' | 'exit' | 'newStage'): v
       log('⚠ 讀取進度：尚未接上（引擎已有存档格式，见 loaders/savegame.ts）');
       break;
     case 'option':
-      log('⚠ 設定：尚未接上（原版这一屏在 rich4_ui_options.asm，4695 行未解）');
+      openOptions('title');
       break;
     case 'exit':
       log('⚠ 離開：桌面版可直接关窗');
@@ -866,6 +922,14 @@ function bindInput(): void {
       }
       return;
     }
+    if (screen === 'options') {
+      const hit = hitOptions(p.x, p.y);
+      if (JSON.stringify(hit) !== JSON.stringify(optionsHot)) {
+        optionsHot = hit;
+        requestRender();
+      }
+      return;
+    }
 
     // ★ 人物视角也能拾取。办法不是去解投影表的逆，而是把每个节点
     //   **正向投一遍**再比屏幕距离（见 render.ts 的 `pickNodeAt`）——
@@ -892,6 +956,29 @@ function bindInput(): void {
     if (screen === 'title') {
       const hit = hitTitle(p.x, p.y, (i) => spriteNow('Data.mkf', TITLE_RESOURCE, i, true));
       if (hit !== null) onTitleButton(hit.id);
+      return;
+    }
+    if (screen === 'options') {
+      const hit = hitOptions(p.x, p.y);
+      if (hit === null) return;
+      if (hit.kind === 'ok') {
+        applyOptions(optionsDraft);
+        screen = optionsReturn;
+        requestRender();
+        return;
+      }
+      if (hit.kind === 'cancel') {
+        screen = optionsReturn;
+        requestRender();
+        return;
+      }
+      if (hit.kind === 'side') {
+        // ⚠️ 这三个按钮各自还有一屏（日期更改/熱鍵設定/遊戲說明 …），都没做
+        log(`⚠「${SIDE_BUTTONS[optionsVariant]?.[hit.index] ?? ''}」尚未實作`);
+        return;
+      }
+      optionsDraft = applyOptionsHit(optionsDraft, hit);
+      requestRender();
       return;
     }
     if (screen === 'setup') {
@@ -1010,6 +1097,15 @@ function bindInput(): void {
       case 'm':
         sound.setMuted(!sound.muted);
         log(sound.muted ? '⏸ 静音' : '▶ 开声');
+        break;
+      case 'escape':
+        if (screen === 'options') {
+          screen = optionsReturn;
+          requestRender();
+        }
+        break;
+      case 'o':
+        if (screen !== 'options') openOptions(screen);
         break;
       case 'v':
         setViewMode(camera.mode === 'character' ? 'map' : 'character');
@@ -1195,6 +1291,7 @@ async function boot(): Promise<void> {
         get hoverNode() { return hoverNode; },
         get screen() { return screen; },
         get setup() { return setup; },
+        get options() { return { saved: options, draft: optionsDraft, variant: optionsVariant }; },
         goto: (s: Screen) => { screen = s; requestRender(); },
         /** 查一张图的尺寸与锚点 —— 命中判定对不上时先看这个 */
         sprite: (archive: 'Data.mkf' | 'Panel.mkf', res: number, idx: number, key = false) => {
