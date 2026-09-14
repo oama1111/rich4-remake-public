@@ -1152,7 +1152,7 @@ cards:
   title: 素材分类器（UI / 地形 tile / 角色精灵 / 背景大图 / 字体）
   module: MOD-11
   req: REQ-11.1
-  status: todo
+  status: done
   estimate: 0.4
   depends_on: []
   uses: [assets-pipeline/src/cli-upscale.ts (cmdPlan), extracted/**/meta.json]

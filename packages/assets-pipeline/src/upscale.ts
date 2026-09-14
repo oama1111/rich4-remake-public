@@ -13,6 +13,8 @@
  *   由代码保证，不依赖人工记得。
  */
 
+import { classifyAsset, type AssetCategory, type AssetEntry as ClassifyAssetEntry } from './classify.ts';
+
 /** 单张图的超分任务 */
 export interface UpscaleTask {
   /** 稳定标识：`档案/资源_图号`，与 extract 产出的文件名一致 */
@@ -27,6 +29,11 @@ export interface UpscaleTask {
   srcAnchorX: number;
   srcAnchorY: number;
   format: 'SPR' | 'SMP';
+  /**
+   * 素材类别（ui/tile/sprite/background/font）—— 决定超分策略
+   * （DEVELOPMENT_PLAN §6 分类处理策略），见 classify.ts。
+   */
+  category: AssetCategory;
   /** 建议的放大倍率 */
   scale: number;
   /** 分到哪一批 */
@@ -98,6 +105,24 @@ export interface AssetEntryLike {
   anchorX: number;
   anchorY: number;
   format: 'SPR' | 'SMP';
+  /** 同一张 sprite sheet 的帧数（缺省按 1 计，分类用） */
+  frames?: number;
+  /** 调色板/来源种类（'spr'/'smp'/'gnd'/'font'，缺省按 format 小写计） */
+  paletteKind?: string;
+}
+
+/** AssetEntryLike → 分类器输入（T-060 的接线处） */
+export function toClassifyEntry(e: AssetEntryLike): ClassifyAssetEntry {
+  return {
+    archive: e.archive,
+    index: e.resource,
+    w: e.width,
+    h: e.height,
+    x: e.anchorX,
+    y: e.anchorY,
+    frames: e.frames ?? 1,
+    paletteKind: e.paletteKind ?? e.format.toLowerCase(),
+  };
 }
 
 export function taskIdOf(e: { archive: string; resource: number; image: number }): string {
@@ -119,6 +144,7 @@ export function planUpscale(entries: readonly AssetEntryLike[]): UpscaleTask[] {
       srcAnchorX: e.anchorX,
       srcAnchorY: e.anchorY,
       format: e.format,
+      category: classifyAsset(toClassifyEntry(e)),
       scale,
       batch,
     };
