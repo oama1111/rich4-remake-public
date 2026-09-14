@@ -136,6 +136,14 @@ export function stateFingerprint(state: {
   market: { stocks: readonly { price: number; shares: number }[] };
   /** 各玩家持仓 */
   holdings: readonly (readonly { amount: number }[])[];
+  /**
+   * 地图物件表 —— 神明在谁身上、还剩几天，炸彈在谁手上、引信到哪了。
+   *
+   * ★ 这些**全是共享状态**：神明改事件金额倍率、拦消费，炸彈到点会
+   *   炸房子送医院。不入指纹，两端就可能一边有神明一边没有，
+   *   而校验和照样相等。
+   */
+  objects: readonly { type: number; nodeId: number; state: number; attached: number }[];
 }): string {
   const parts: (string | number)[] = [
     state.turnCount,
@@ -160,6 +168,8 @@ export function stateFingerprint(state: {
   for (const st of state.market.stocks) parts.push(st.price, st.shares);
   parts.push('|');
   for (const row of state.holdings) for (const h of row) parts.push(h.amount);
+  parts.push('|');
+  for (const o of state.objects) parts.push(o.nodeId, o.state, o.attached);
   return fnv1a(parts.join(','));
 }
 

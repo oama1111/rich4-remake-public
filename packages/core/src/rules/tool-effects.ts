@@ -12,6 +12,7 @@
 import type { Player } from '../state/types.ts';
 import type { MapObject } from '../cards/summon.ts';
 import { TOOL_SLOTS_PER_PLAYER } from './tools.ts';
+import { placeObjectOfType } from './object-landing.ts';
 
 // ============================================================
 //  交通工具
@@ -160,21 +161,21 @@ export interface PlaceResult {
  * 目标格由 `_rich4_select_instance_with_mouse`（0x446ae8）选定，
  * 按 C-ARC-2 作为参数传入。
  *
- * ⚠️ 放置会占用一个**空闲物件槽**。原版的槽位分配策略
- * （找第一个空槽？还是别的）尚未核对，此处取第一个 `nodeId === 0`
- * 且未附身的槽——若日后发现原版另有规则，这里要改。
+ * ★ 槽位**按种类分区**，不是随手找空位——见 `rules/objects.ts` 的
+ *   `slotRangeForType`（@source `place_object` VA 0x0040e033）。
+ *
+ * ⚠️ 先前这里取的是「第一个空槽」，那是**错的**：放一个路障可能占掉
+ *   0 号槽并把它的种类改写成 16，而 0 号槽在原版里永远是小財神。
+ *   物件表的「下标决定种类」是全局不变量，`OBJECT_TYPE_TABLE`、
+ *   `god_info = 下标 + 1`、送神符的类型判定全都依赖它。
  */
 export function placeObject(
   objects: readonly MapObject[],
   nodeId: number,
   objectType: number,
 ): PlaceResult {
-  const slot = objects.findIndex((o) => o.nodeId === 0 && o.attached === 0);
-  if (slot < 0) return { ok: false, objects: [...objects], slot: -1 };
-
-  const next = [...objects];
-  next[slot] = { type: objectType, nodeId, state: 0, attached: 0 };
-  return { ok: true, objects: next, slot };
+  const r = placeObjectOfType(objects, objectType, nodeId);
+  return { ok: r.slot >= 0, objects: r.objects, slot: r.slot };
 }
 
 // ============================================================

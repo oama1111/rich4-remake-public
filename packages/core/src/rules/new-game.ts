@@ -24,6 +24,12 @@ import { newStockMarket } from '../places/stock-market.ts';
 import { emptyOwnership } from '../places/commercial.ts';
 import { makeObjects } from '../cards/summon.ts';
 import { OBJECT_COUNT } from './objects.ts';
+import {
+  INITIAL_OBJECT_TYPES,
+  objectNodeCandidates,
+  pickObjectNode,
+  placeObjectOfType,
+} from './object-landing.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
 import { STOCKS_PER_MAP, stocksOfMap } from '@rich4/data';
 import {
@@ -146,7 +152,9 @@ function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, star
     alliedDays: 0,
     savedTrafficMethod: 0,
     savedNdices: 0,
-    blessing: 0,
+    misfortune: 0,
+    fortune: 0,
+    luck: 0,
     hostility: [0, 0, 0, 0],
     monthlyPaid: 0,
     monthlyReceived: 0,
@@ -198,6 +206,24 @@ export function newGame(opts: NewGameOptions): GameState {
     }
   }
 
+  // ★ 开局把「小的那一半」神明与禮物/寶箱摆上地图
+  //   @source VA 0x00407d6a：type 从 1 到 11 每次 +2，再加 13、14
+  //   ⚠️ 顺序与随机数消耗必须与原版一致：每摆一个抽一次。
+  //   ⚠️ 已占的格子要排除：原版筛候选时查的是节点 flags 的**运行时**
+  //   占用位（`test dword [+0x24], 0x80ffff00`），放下一个就置一位。
+  //   本引擎不在节点上镜像那份状态，故这里改为反查物件表——不排除的话
+  //   八次抽签里出现重叠的概率相当高，实测第一个种子就撞上了。
+  let objects = makeObjects(OBJECT_COUNT);
+  const spots = objectNodeCandidates(map.nodes);
+  const taken = new Set<number>();
+  for (const type of INITIAL_OBJECT_TYPES) {
+    const free = spots.filter((n) => !taken.has(n));
+    const node = pickObjectNode(free, rng.next());
+    if (node === 0) break;
+    taken.add(node);
+    objects = placeObjectOfType(objects, type, node).objects;
+  }
+
   return {
     mode,
     rngState: rng.getState(),
@@ -234,7 +260,7 @@ export function newGame(opts: NewGameOptions): GameState {
     commercialShares: commercialSharesOf(map, globalMapId),
     // 开局各企业无主、排名表全空
     commercialOwners: map.commercials.map(() => emptyOwnership()).concat([emptyOwnership()]),
-    // ★ 46 项物件表（神明/路障/地雷/定時炸彈），开局都不在场上
-    objects: makeObjects(OBJECT_COUNT),
+    // ★ 46 项物件表（神明/路障/地雷/定時炸彈）
+    objects,
   };
 }

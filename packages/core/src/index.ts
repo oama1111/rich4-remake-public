@@ -33,6 +33,7 @@ export * from './rules/blessing.ts';
 export * from './rules/percentage.ts';
 export * from './rules/tools.ts';
 export * from './rules/tool-effects.ts';
+export * from './rules/object-landing.ts';
 export * from './rules/auction.ts';
 export * from './rules/interaction.ts';
 export * from './events/deck.ts';

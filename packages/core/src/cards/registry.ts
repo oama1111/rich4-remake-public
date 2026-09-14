@@ -67,6 +67,18 @@ export interface UseCardResult {
   hostilityDeltas: HostilityDelta[];
   /** 是否被防御性被动卡挡下 */
   defended: boolean;
+  /**
+   * 本次要送回物件表的物件 handle（下标 + 1）。
+   *
+   * ★ 卡片只改玩家结构里的 `godInfo`/`f64` 两个引用；**物件本身**
+   *   （`attached`、修正量退还、搭档登场）要由调用方走
+   *   `rules/object-landing.ts` 的 `releaseObject` 收尾。
+   *
+   * ⚠️ 漏了这一步，送神符就成了「凭空蒸发」：物件的 `attached`
+   *   永远挂在那个玩家身上，`tickGod` 再也够不着它，搭档也不会登场——
+   *   跑几千回合地图上的神明会被一张卡一张卡地抽干。
+   */
+  releasedObjects: number[];
 }
 
 export interface UseCardContext {
@@ -122,6 +134,7 @@ export function useCard(
     lands: [...ctx.lands],
     hostilityDeltas: [],
     defended: false,
+    releasedObjects: [],
   };
   const fail = (error: UseCardError): UseCardResult => ({ ...base, error });
 
@@ -150,6 +163,7 @@ export function useCard(
   let lands: LandInfo[] = [...ctx.lands];
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
+  let releasedObjects: number[] = [];
 
   /** 就地替换一块地 */
   const putLand = (l: LandInfo): void => {
@@ -194,6 +208,7 @@ export function useCard(
       // ★ 什么都没送走时不消耗卡片
       if (!r.ok) return fail('noEffect');
       players = players.map((p, i) => (i === cur ? r.player : p));
+      releasedObjects = r.removed;
       break;
     }
     case 26: {
@@ -306,5 +321,5 @@ export function useCard(
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
-  return { ok: true, error: null, players, lands, hostilityDeltas, defended };
+  return { ok: true, error: null, players, lands, hostilityDeltas, defended, releasedObjects };
 }

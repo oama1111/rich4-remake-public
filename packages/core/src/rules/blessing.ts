@@ -88,7 +88,73 @@ export function blessingLevel(blessing: number, coinFlip: number): number {
   return BLESSING_NONE;
 }
 
-/** 从玩家身上取加持值并算出倍率 */
-export function playerBlessingMultiplier(p: Player, coinFlip: number): number {
-  return blessingMultiplier(blessingLevel(p.blessing, coinFlip));
+// ============================================================
+//  三条调用形态
+// ============================================================
+
+/**
+ * 原版这个函数收**两个开关**，合起来是三种用法。
+ *
+ * @source `callers 0x44b896` 的 15 处调用点，只出现三种压栈组合，
+ *   与函数头的两级分派一一对应：
+ * ```asm
+ * cmp dword [esp+0x14], 0 / jne 0x44b9d3   ; arg0 → 读 +0x48 福運
+ * cmp dword [esp+0x18], 0 / jne 0x44b94b   ; arg1 → 读 +0x46，罰金口吻
+ *                                          ; 都为 0 → 读 +0x46，獎金口吻
+ * ```
+ *
+ * | 组合 | 读哪个字段 | 高值 → | 低值 → | 提示语 |
+ * |---|---|---|---|---|
+ * | `(0,0)` 獎金 | `+0x46` 財運 | 2 加倍 | 1 作廢 | 獎金加倍／獎金作廢 |
+ * | `(0,1)` 罰金 | `+0x46` 財運 | 1 免付 | 2 加倍 | 免付罰金／罰金加倍 |
+ * | `(1,1)` 劫难 | `+0x48` 福運 | 1 逃過 | 2 加倍 | 逃過此劫／倒霉加倍 |
+ *
+ * ★ **注意后两种的档位是反的**：字段值越高越好，而「好」对罚金
+ *   意味着 ×0、对奖金意味着 ×2。原版就是在这两个分支里把
+ *   `mov ebx, 2` 与 `mov ebx, 1` 对调实现的，不是另算一套。
+ *
+ * ⚠️ 先前本模块只实现了 `(0,0)` 一种，把它当成通用规则。
+ *   直接拿去算罚金会**恰好算反**——财神附身反而让你多付一倍。
+ */
+export type BlessingKind =
+  /** 獎金：財運高 → 加倍 */
+  | 'reward'
+  /** 罰金：財運高 → 免付 */
+  | 'penalty'
+  /** 劫难：福運高 → 逃過 */
+  | 'misfortune';
+
+/** 该用法读玩家的哪个字段 */
+export function blessingFieldOf(p: Player, kind: BlessingKind): number {
+  // @source arg0 != 0 → word [player + 0x48]
+  return kind === 'misfortune' ? p.luck : p.fortune;
+}
+
+/**
+ * 按用法算出倍率档位。
+ *
+ * `reward` 直接沿用 `blessingLevel`；另外两种把 1 与 2 对调。
+ * @source 0x44b94b / 0x44b9d3 两段与 0x44b8c1 逐条同构，
+ *   只有 `mov ebx, 1` / `mov ebx, 2` 互换。
+ */
+export function blessingLevelFor(value: number, coinFlip: number, kind: BlessingKind): number {
+  const level = blessingLevel(value, coinFlip);
+  if (kind === 'reward') return level;
+  // @source 高值分支 mov ebx,1；低值分支 mov ebx,2 —— 与 reward 正好相反
+  if (level === BLESSING_DOUBLE) return BLESSING_VOID;
+  if (level === BLESSING_VOID) return BLESSING_DOUBLE;
+  return BLESSING_NONE;
+}
+
+/**
+ * 从玩家身上取值并算出倍率。
+ *
+ * @param kind 默认 `reward`，与本函数改名前的行为一致
+ */
+export function playerBlessingMultiplier(
+  p: Player,
+  coinFlip: number,
+  kind: BlessingKind = 'reward',
+): number {
+  return blessingMultiplier(blessingLevelFor(blessingFieldOf(p, kind), coinFlip, kind));
 }

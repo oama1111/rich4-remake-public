@@ -38,6 +38,14 @@ import { buyCard, buyTool, sellCard, sellTool } from '../places/shop.ts';
 import { CARDS, TOOLS } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
+import {
+  objectNodeCandidates,
+  pickObjectNode,
+  releaseObject,
+  resolveArrival,
+  tickGod,
+} from '../rules/object-landing.ts';
+import { demolishLand } from '../rules/land-mutation.ts';
 import type { TradeResult } from '../places/stock.ts';
 import {
   refreshTradableShares,
@@ -59,7 +67,7 @@ import { isNewsFeasible } from '../events/news.ts';
 import { checkFortune } from '../events/fortune.ts';
 import { applyFortuneEffect } from '../events/fortune-effects.ts';
 import { applyNewsEffect } from '../events/news-effects.ts';
-import { anyoneConfined } from '../rules/confinement.ts';
+import { anyoneConfined, confine } from '../rules/confinement.ts';
 import {
   isUnimplementedPlace,
   needsInteraction,
@@ -226,11 +234,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         p.nodeId = next;
       });
       const remaining = state.stepsRemaining - 1;
-      return {
+      return applyArrival({
         ...moved,
         stepsRemaining: remaining,
         phase: remaining > 0 ? 'moving' : 'settling',
-      };
+      }, topo);
     }
 
     case 'chooseDirection': {
@@ -246,11 +254,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         p.nodeId = action.nodeId;
       });
       const remaining = state.stepsRemaining - 1;
-      return {
+      return applyArrival({
         ...moved,
         stepsRemaining: remaining,
         phase: remaining > 0 ? 'moving' : 'settling',
-      };
+      }, topo);
     }
 
     case 'settle': {
@@ -331,7 +339,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           );
           const paid: GameState = { ...state, players: out.players, phase: 'turnEnd' };
           // ★ 付不起就破产——这是对局能真正结束的唯一途径
-          return out.bankrupted ? applyBankruptcy(paid, state.currentPlayer) : paid;
+          return out.bankrupted ? applyBankruptcy(paid, state.currentPlayer, topo) : paid;
         }
       }
     }
@@ -410,9 +418,19 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       //   `[0x49910c]` 即**当前玩家**，就在回合边界——与此处一致。
       // ★ 语义见 rules/blocking.ts：减到 0 时**挂 0x80 而非清零**，
       //   下一次推进才执行释放流程。先前「保留高位、只减低 7 位」是错的。
-      const ticked = withPlayer(state, state.currentPlayer, (p) => {
+      const blocked = withPlayer(state, state.currentPlayer, (p) => {
         p.blocking = tickBlocking(p.blocking).blocking;
       });
+
+      // ★ 神明的任期也在这里走一天 —— 原版就紧挨着阻碍计数
+      //   （tick_blocking @ 0x41c8d5，神明 @ 0x41cc6c，同一个函数）。
+      //   附身写的 7（死神 13）是天数，减到 0 神明自己走人，搭档登场。
+      const g = tickGod(blocked, state.currentPlayer);
+      const ticked = respawnPartner(
+        { ...blocked, players: g.players, objects: g.objects, tools: g.tools, toolStock: g.toolStock },
+        topo,
+        g.respawn,
+      );
 
       // ★ 物价指数在回合边界采样一次。
       //   @source `00419033 call 0x41cf67`（推进日期）之后
@@ -465,6 +483,131 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
  *   界面约束而非函数内的分支；本引擎必须自己兜住，否则
  *   一个构造出来的网络消息就能凭空造钱。
  */
+/**
+ * 站在这一格上的物件 handle（下标 + 1）；0 表示这格没有物件。
+ *
+ * ⚠️ 判定条件是 **`nodeId` 相同且 `attached === 0`**。
+ *   已经附身或被人带着走的物件，`nodeId` 会跟着主人跑
+ *   （`attach_object` 明写 `objects[i].nodeId = player.nodeId`），
+ *   光比 `nodeId` 会把别人身上的財神当成地上的財神再踩一次。
+ *   原版靠地图格里那一字节（node +0x26）区分，附身时会把它抹掉。
+ */
+function objectHandleAt(state: GameState, nodeId: number): number {
+  for (let i = 0; i < state.objects.length; i++) {
+    const o = state.objects[i];
+    if (o !== undefined && o.nodeId === nodeId && o.attached === 0) return i + 1;
+  }
+  return 0;
+}
+
+/**
+ * 走到一格之后的物件结算。
+ *
+ * ★ 原版这一整套跑在**每走一格**的处理函数里（VA 0x0041b440），
+ *   不是回合末。故这里挂在 `step` / `chooseDirection` 之后，
+ *   而不是 `settle` —— 路障要能在半途拦人，定時炸彈的引信
+ *   要按**格**走，这两件事都做不到「等落点再说」。
+ *
+ * ⚠️ 随机数只在**禮物真的抽到东西**时才推进，见 `randConsumed`。
+ */
+function applyArrival(state: GameState, topo: MapTopology): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || !isAlive(me)) return state;
+
+  const handle = objectHandleAt(state, me.nodeId);
+  // 身上没炸彈、脚下也没东西 → 这一格什么都不会发生，连状态都不必重建
+  if (handle === 0 && me.f64 === 0) return state;
+
+  const node = topo.nodes[me.nodeId - 1];
+  const landIdx = node === undefined ? null : housingIndexOf(node.type);
+  const land = landIdx === null ? null : effectiveLand(state, topo, landIdx);
+
+  // 预支一个随机数；没用掉就不推进（C-DET-4）
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const randValue = rng.next();
+
+  const r = resolveArrival({
+    world: state,
+    playerIndex: state.currentPlayer,
+    handle,
+    landId: land === null ? 0 : land.id,
+    stepsRemaining: state.stepsRemaining,
+    othersHere: state.players
+      .filter((p) => p.index !== me.index && isAlive(p) && p.nodeId === me.nodeId)
+      .map((p) => p.index),
+    randValue,
+  });
+
+  let next: GameState = {
+    ...state,
+    players: r.players,
+    objects: r.objects,
+    tools: r.tools,
+    toolStock: r.toolStock,
+    rngState: r.randConsumed ? rng.getState() : state.rngState,
+  };
+
+  // 路障／惡犬／地雷／爆炸都会把人钉在原地
+  if (r.stopMovement) {
+    next = { ...next, stepsRemaining: 0, phase: 'settling' };
+  }
+
+  // 炸彈把脚下的建筑降一级（連鎖店直接夷平退回住宅）
+  // @source `0x40ab4a(landId, 0)`，与拆除卡同一套，见 rules/land-mutation.ts
+  if (r.demolishLand !== 0 && land !== null) {
+    const d = demolishLand(land, state.priceIndex);
+    const landLevel = [...next.landLevel];
+    landLevel[land.id] = d.land.level;
+    next = { ...next, landLevel };
+  }
+
+  // 住院
+  if (r.hospitalDays !== 0) {
+    const c = confine(next.players, next.hospitalOccupancy, 'hospital', me.index, r.hospitalDays);
+    next = { ...next, players: c.players, hospitalOccupancy: c.occupancy };
+  }
+
+  // 神明离场后，搭档换上来
+  return respawnPartner(next, topo, r.respawn);
+}
+
+/**
+ * 让离场神明的搭档重新登场。
+ *
+ * @source `release_object` 尾部 `place_object(搭档+1, pick_node(原节点), 0, 0)`
+ *   （VA 0x0040e297）。
+ *
+ * ⚠️ 原版的 `pick_node` 传了**参照节点**，会一直重抽直到新位置与原位置
+ *   在 x、y 上都相距 ≥ 300（VA 0x0040ab22）。本引擎没有接那层重抽，
+ *   只抽一次——随机数消耗因此与原版不同（Q-OBJ-2）。
+ *   但「搭档必须登场」这件事本身不能省：不接它，地图上的神明
+ *   被踩一个少一个，长局跑到后面一个物件都不剩。
+ */
+function respawnPartner(
+  state: GameState,
+  topo: MapTopology,
+  respawn: { partner: number; nearNode: number } | null,
+): GameState {
+  if (respawn === null) return state;
+  const objects = state.objects.map((o) => ({ ...o }));
+  const partner = objects[respawn.partner];
+  if (partner === undefined || partner.nodeId !== 0 || partner.attached !== 0) return state;
+
+  // 别叠在已有物件上——原版靠节点 flags 的运行时占用位，本引擎反查物件表
+  const taken = new Set(
+    objects.filter((o) => o.nodeId !== 0 && o.attached === 0).map((o) => o.nodeId),
+  );
+  const spots = objectNodeCandidates(topo.nodes).filter((n) => !taken.has(n));
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const node = pickObjectNode(spots, rng.next());
+  if (node === 0) return state;
+
+  partner.nodeId = node;
+  return { ...state, objects, rngState: rng.getState() };
+}
+
 function tradeStock(
   state: GameState,
   action: { type: 'buyStock' | 'sellStock'; stock: number; shares: number },
@@ -598,7 +741,24 @@ function playCard(
   // 敌意由 registry 算好，这里按增量落到玩家身上
   const players = applyHostilityDeltas(r.players, r.hostilityDeltas);
 
-  return { ...state, players, landOwner, landLevel };
+  // ★ 送神符之类只清了玩家身上的引用，物件本身要在这里收回：
+  //   退还三项修正、清 `attached`、让搭档登场。
+  let next: GameState = { ...state, players, landOwner, landLevel };
+  for (const handle of r.releasedObjects) {
+    const rel = releaseObject(next, handle);
+    next = respawnPartner(
+      {
+        ...next,
+        players: rel.players,
+        objects: rel.objects,
+        tools: rel.tools,
+        toolStock: rel.toolStock,
+      },
+      topo,
+      rel.partner >= 0 ? { partner: rel.partner, nearNode: rel.formerNode } : null,
+    );
+  }
+  return next;
 }
 
 /**
@@ -1150,12 +1310,35 @@ function humanCount(state: GameState): number {
  *
  * 故此处先判终局，再决定要不要清算。
  */
-export function applyBankruptcy(state: GameState, playerIndex: number): GameState {
+export function applyBankruptcy(
+  state: GameState,
+  playerIndex: number,
+  topo: MapTopology = { nodes: [] },
+): GameState {
   const victim = state.players[playerIndex];
   if (victim === undefined || !isAlive(victim)) return state;
 
-  const players = state.players.map((p, i) => (i === playerIndex ? markPlayerBankrupt(p) : p));
-  let next: GameState = { ...state, players };
+  // ★ 先把身上的物件放回去，再清玩家结构 —— 顺序不能反：
+  //   `markPlayerBankrupt` 会把 godInfo/f64 清成 0，清完就再也找不到
+  //   它附着的是哪一个物件，那个物件的 `attached` 会永远挂着，
+  //   既不会被 `tickGod` 减、也不会被任何人踩到 —— 神明就此**凭空消失**。
+  //   实测长局跑到终盘地图上一个物件都不剩，根子就在这。
+  // @source 破产处理 VA 0x0040ce2e / 0x0040ce50：先后把 +0x3f 与 +0x40
+  //   传给 release_object，然后才 memset 玩家结构。
+  let freed: GameState = state;
+  const gone = state.players[playerIndex]!;
+  for (const handle of [gone.godInfo, gone.f64]) {
+    if (handle === 0) continue;
+    const r = releaseObject(freed, handle);
+    freed = respawnPartner(
+      { ...freed, players: r.players, objects: r.objects, tools: r.tools, toolStock: r.toolStock },
+      topo,
+      r.partner >= 0 ? { partner: r.partner, nearNode: r.formerNode } : null,
+    );
+  }
+
+  const players = freed.players.map((p, i) => (i === playerIndex ? markPlayerBankrupt(p) : p));
+  let next: GameState = { ...freed, players };
 
   const remaining = players.filter((p) => isAlive(p)).length;
   const outcome = resolveBankruptcyOutcome(remaining, humanCount(state));
@@ -1201,10 +1384,14 @@ export function applyBankruptcy(state: GameState, playerIndex: number): GameStat
  * 本引擎里付款是纯函数，故改为付款后由 reducer 统一收口。
  * 两者的判据相同（见 rules/payment.ts 的 debitPlayer）。
  */
-export function settleBankruptcies(state: GameState, bankrupted: readonly number[]): GameState {
+export function settleBankruptcies(
+  state: GameState,
+  bankrupted: readonly number[],
+  topo: MapTopology = { nodes: [] },
+): GameState {
   let next = state;
   for (const i of bankrupted) {
-    next = applyBankruptcy(next, i);
+    next = applyBankruptcy(next, i, topo);
     if (next.phase === 'gameOver') break;
   }
   return next;

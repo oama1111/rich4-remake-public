@@ -211,7 +211,9 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     alliedDays: p.alliedDays,
     savedTrafficMethod: p.f67,
     savedNdices: p.f68,
-    blessing: 0,
+    misfortune: 0,
+    fortune: 0,
+    luck: 0,
     // ⚠️ 原版 hostility 实为 4 项；存档里的第 5/6 项是月度累计金额
     //   （见 rules/monthly.ts 的考证），故只取前 4 项。
     hostility: p.hostility.slice(0, 4),

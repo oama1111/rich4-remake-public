@@ -20,6 +20,7 @@ import type { GameState, Player } from '../state/types.ts';
 import type { LandInfo, MapNode, Rich4Map } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, housingIndexOf } from '../rules/land.ts';
+import { purchaseBlockedBy } from '../rules/purchase.ts';
 import { isAiControlled, isAlive } from '../state/types.ts';
 import { useCard } from '../cards/registry.ts';
 import type { CardTarget } from '../cards/target.ts';
@@ -416,6 +417,13 @@ export function decideAtLanding(
   };
 
   const floor = reserveFloor(me, personality);
+
+  // ★ 衰神/大衰神/死神附身时**一切消费都被拦**（`call 0x40fa61`），
+  //   而 `canPurchase` 查的是另一处（土地公只挡买无主地）。
+  //   AI 是纯函数：提一个 reducer 必拒的 action 会被原样重提，
+  //   直接卡死在 awaitingDecision —— 与当初卡片那次是同一类事故。
+  //   故这里先照 `purchase` 的规矩预演一遍。
+  if (purchaseBlockedBy(me) !== null) return { type: 'declineDecision' };
 
   const buy = canPurchase(land, me, state.priceIndex);
   if (buy.ok) {

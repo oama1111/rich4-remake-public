@@ -8,6 +8,7 @@ import { makePlayer } from '../testing/factories.ts';
 import { OBJECT_NAMES } from './purchase.ts';
 import { TOOL_SLOTS_PER_PLAYER, emptyTools, toolCount } from './tools.ts';
 import { makeObjects } from '../cards/summon.ts';
+import { OBJECT_COUNT } from './objects.ts';
 import { TOOLS } from '@rich4/data';
 import type { Player } from '../state/types.ts';
 import {
@@ -99,23 +100,23 @@ describe('★ 放置类道具的物件种类', () => {
     expect(OBJECT_NAMES[18]).toBe('定時炸彈');
   });
 
-  it('放置占用一个空槽', () => {
-    const objs = makeObjects(5);
+  it('放置占用本种类分区里的一个空槽', () => {
+    const objs = makeObjects(OBJECT_COUNT);
     const r = placeObject(objs, 42, 16);
     expect(r.ok).toBe(true);
     expect(r.objects[r.slot]).toMatchObject({ type: 16, nodeId: 42 });
   });
 
-  it('★ 不会覆盖已在地图上的物件', () => {
-    const objs = makeObjects(2);
-    objs[0] = { type: 9, nodeId: 10, state: 0, attached: 0 };
+  it('★ 不会覆盖同区里已在地图上的物件', () => {
+    const objs = makeObjects(OBJECT_COUNT);
+    objs[0x10] = { type: 16, nodeId: 10, state: 0, attached: 0 };
     const r = placeObject(objs, 42, 16);
-    expect(r.slot).toBe(1);
-    expect(r.objects[0]!.nodeId).toBe(10);
+    expect(r.slot).toBe(0x11);
+    expect(r.objects[0x10]!.nodeId).toBe(10);
   });
 
-  it('没有空槽时失败', () => {
-    const objs = makeObjects(2).map((o) => ({ ...o, nodeId: 5 }));
+  it('本区放满时失败', () => {
+    const objs = makeObjects(OBJECT_COUNT).map((o) => ({ ...o, nodeId: 5 }));
     expect(placeObject(objs, 42, 16).ok).toBe(false);
   });
 });
@@ -157,21 +158,44 @@ describe('★ 13 个道具逐个点名', () => {
     expect(UNIMPLEMENTED_TOOLS).toContain(1);
   });
 
-  it('2 路障 —— 放置物件 16', () => {
+  // ★ 槽位是**按种类分区**的（place_object VA 0x0040e033）：
+  //   路障 16..25、地雷 26..35、定時炸彈 36..45。
+  //   先前这里断言的是「落在 0 号槽」——那是把「第一个空槽」当成了
+  //   原版行为，会把 0 号（小財神）槽的种类改写掉。
+  it('2 路障 —— 放置物件 16，落在 16..25 区', () => {
     expect(PLACEMENT_TOOLS.get(2)).toBe(16);
-    const r = placeObject(makeObjects(3), 12, 16);
+    const r = placeObject(makeObjects(OBJECT_COUNT), 12, 16);
     expect(r.ok).toBe(true);
+    expect(r.slot).toBe(0x10);
     expect(r.objects[r.slot]).toMatchObject({ type: 16, nodeId: 12 });
+    // 0 号槽仍是小財神，没被动过
+    expect(r.objects[0]).toMatchObject({ type: 1, nodeId: 0 });
   });
 
-  it('3 地雷 —— 放置物件 17', () => {
+  it('3 地雷 —— 放置物件 17，落在 26..35 区', () => {
     expect(PLACEMENT_TOOLS.get(3)).toBe(17);
-    expect(placeObject(makeObjects(3), 5, 17).objects[0]).toMatchObject({ type: 17, nodeId: 5 });
+    const r = placeObject(makeObjects(OBJECT_COUNT), 5, 17);
+    expect(r.slot).toBe(0x1a);
+    expect(r.objects[0x1a]).toMatchObject({ type: 17, nodeId: 5 });
   });
 
-  it('4 定時炸彈 —— 放置物件 18', () => {
+  it('4 定時炸彈 —— 放置物件 18，落在 36..45 区', () => {
     expect(PLACEMENT_TOOLS.get(4)).toBe(18);
-    expect(placeObject(makeObjects(3), 5, 18).objects[0]).toMatchObject({ type: 18, nodeId: 5 });
+    const r = placeObject(makeObjects(OBJECT_COUNT), 5, 18);
+    expect(r.slot).toBe(0x24);
+    expect(r.objects[0x24]).toMatchObject({ type: 18, nodeId: 5 });
+  });
+
+  it('★ 同一种类放满 10 个之后就放不下了', () => {
+    let objects = makeObjects(OBJECT_COUNT);
+    for (let i = 0; i < 10; i++) {
+      const r = placeObject(objects, i + 1, 16);
+      expect(r.ok).toBe(true);
+      objects = r.objects;
+    }
+    expect(placeObject(objects, 99, 16).ok).toBe(false);
+    // 但地雷区还是空的
+    expect(placeObject(objects, 99, 17).ok).toBe(true);
   });
 
   it('5 機車 —— 交通方式 1、骰子 2', () => {

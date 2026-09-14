@@ -4,6 +4,7 @@ rich4.exe 反汇编工具 —— 项目的最终真值裁决手段
 
 用法:
     python3 tools/disasm.py va 0x004420d8 [行数]     反汇编指定虚拟地址
+    python3 tools/disasm.py dump 0x4749e2 18 2        ★ 原样打印数据表（1/2/4 字节，有符号）
     python3 tools/disasm.py card 1 [行数]            反汇编第 N 张卡的效果函数
     python3 tools/disasm.py table 0x475d5c 30        打印函数指针表
     python3 tools/disasm.py find <hex字节序列>        在文件中搜索字节模式
@@ -298,12 +299,33 @@ def callers(target: int) -> None:
             print(f"     {i.address:08x}  {i.mnemonic:<6} {i.op_str}")
 
 
+def dump(va: int, count: int, width: int) -> None:
+    """原样打印数据表。width = 1/2/4 字节，2/4 按小端且**带符号**解释。
+
+    ★ 带符号很重要：原版的修正量表（如神明的三项加成）里有负数，
+      按无符号读会得到 65526 这种数，一眼看不出它其实是 −10。
+    """
+    data = load()
+    off = va_to_off(va)
+    if off is None:
+        sys.exit(f"VA 0x{va:x} 越界")
+    fmt = {1: "<b", 2: "<h", 4: "<i"}[width]
+    vals = [struct.unpack_from(fmt, data, off + i * width)[0] for i in range(count)]
+    print(f"# 数据 @ VA 0x{va:08x}，{count} × {width} 字节（有符号）")
+    per = 16 // width * 2
+    for row in range(0, count, per):
+        chunk = vals[row: row + per]
+        print(f"  [{row:3d}] " + " ".join(f"{v:6d}" for v in chunk))
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     cmd = sys.argv[1]
 
-    if cmd == "va":
+    if cmd == "dump":
+        dump(int(sys.argv[2], 0), int(sys.argv[3]), int(sys.argv[4]) if len(sys.argv) > 4 else 1)
+    elif cmd == "va":
         disasm(int(sys.argv[2], 0), int(sys.argv[3]) if len(sys.argv) > 3 else 80)
     elif cmd == "card":
         idx = int(sys.argv[2], 0)

@@ -11,6 +11,7 @@ import {
   BLESSING_DOUBLE_THRESHOLD,
   BLESSING_NONE,
   BLESSING_VOID,
+  blessingFieldOf,
   blessingLevel,
   blessingMultiplier,
   playerBlessingMultiplier,
@@ -64,15 +65,45 @@ describe('阈值分档', () => {
 });
 
 describe('从玩家取值', () => {
-  it('默认加持为 0 → 不变', () => {
+  it('默认財運为 0 → 不变', () => {
     expect(playerBlessingMultiplier(makePlayer(), 1)).toBe(1);
   });
 
-  it('负加持 → 金额归零', () => {
-    expect(playerBlessingMultiplier(makePlayer({ blessing: -5 }), 1)).toBe(0);
+  it('負財運 → 獎金归零', () => {
+    expect(playerBlessingMultiplier(makePlayer({ fortune: -5 }), 1)).toBe(0);
   });
 
-  it('高加持 → 加倍', () => {
-    expect(playerBlessingMultiplier(makePlayer({ blessing: 200 }), 0)).toBe(2);
+  it('高財運 → 獎金加倍', () => {
+    expect(playerBlessingMultiplier(makePlayer({ fortune: 200 }), 0)).toBe(2);
+  });
+});
+
+describe('三条调用形态 —— 罰金那两种的档位是反的', () => {
+  // @source callers 0x44b896 只出现 (0,0)/(0,1)/(1,1) 三种压栈组合
+  it('★ 高財運对罰金是**免付**，不是加倍', () => {
+    const rich = makePlayer({ fortune: 200 });
+    expect(playerBlessingMultiplier(rich, 0, 'reward')).toBe(2);
+    expect(playerBlessingMultiplier(rich, 0, 'penalty')).toBe(0);
+  });
+
+  it('★ 負財運对罰金是**加倍**', () => {
+    const poor = makePlayer({ fortune: -5 });
+    expect(playerBlessingMultiplier(poor, 0, 'reward')).toBe(0);
+    expect(playerBlessingMultiplier(poor, 0, 'penalty')).toBe(2);
+  });
+
+  it('劫难读的是福運 +0x48，不是財運', () => {
+    const p = makePlayer({ fortune: 200, luck: -5 });
+    // 財運高但福運为负 → 倒霉加倍
+    expect(playerBlessingMultiplier(p, 0, 'misfortune')).toBe(2);
+    expect(blessingFieldOf(p, 'misfortune')).toBe(-5);
+    expect(blessingFieldOf(p, 'penalty')).toBe(200);
+  });
+
+  it('中间档（0..50）三种用法都不变', () => {
+    const p = makePlayer({ fortune: 10, luck: 10 });
+    expect(playerBlessingMultiplier(p, 1, 'reward')).toBe(1);
+    expect(playerBlessingMultiplier(p, 1, 'penalty')).toBe(1);
+    expect(playerBlessingMultiplier(p, 1, 'misfortune')).toBe(1);
   });
 });
