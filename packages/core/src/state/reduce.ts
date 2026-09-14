@@ -12,7 +12,7 @@
 import type { Action } from './actions.ts';
 import type { GameState, Player } from './types.ts';
 import { isAlive } from './types.ts';
-import { WatcomRng, rollDice } from '../rng/watcom.ts';
+import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
 import { applyNpcEvents, runNpc } from '../rules/npc-walk.ts';
 import {
   ACTOR_DOLL,
@@ -42,6 +42,7 @@ import {
   payFromBank,
   repaySpecial,
   specialFinanceAvailable,
+  chairmanOfIndustry,
 } from '../places/special-finance.ts';
 import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo, FacilityInfo, CommercialInfo } from '../loaders/map.ts';
@@ -116,6 +117,9 @@ import {
   sellCard,
   sellTool,
   toolPrice,
+  drawCardShelf,
+  toolShelf,
+  STORE_INDUSTRY,
 } from '../places/shop.ts';
 import { CARDS, CHARACTERS, TOOLS } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
@@ -126,6 +130,7 @@ import {
   releaseObject,
   resolveArrival,
   tickGod,
+  drawGiftTool,
 } from '../rules/object-landing.ts';
 import { demolishLand } from '../rules/land-mutation.ts';
 import { almsAmount, beggarAt } from '../rules/beggar.ts';
@@ -604,6 +609,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         ) {
           return enterVisit(next, topo, node.specialKind);
         }
+
+        // 百貨公司要先抽货架、董事長还有礼 —— 都要随机数，单独走
+        if (node.specialKind === SPECIAL_KIND.DEPARTMENT_STORE) return enterShop(next, topo);
 
         // 其余特殊格：交给「待决交互」机制。
         // ★ 这样每一格都**可达**：已实现的给出具体交互，
@@ -2669,6 +2677,78 @@ function transferListing(
  *   成功后**保持 `pending`**——原版的商店是个模态窗口，
  *   一次可以买好几样，直到玩家自己关掉（`declineDecision`）。
  */
+/**
+ * 走进百貨公司。
+ *
+ * @source `_rich4_ui_shop_entry`（0x0042e9xx）：
+ * 1. 董事長（行業別 10 那家企業的 owner）是进门的人 → `rand() & 1`：送一件库存里的
+ *    随机道具（0x445ada），否则送一张牌堆里的随机卡（0x441e12）；
+ * 2. 抄一份牌堆，抽 `rand()%10+6` 件卡片上货架（加权、不放回）；
+ * 3. 道具货架 = 1..8 号里库存 > 0 的全部。
+ * 货架进 `pending.cards` / `pending.tools`，买卡只认货架上有的、买一件少一件。
+ */
+function enterShop(state: GameState, topo: MapTopology): GameState {
+  const me = state.currentPlayer;
+  const player = state.players[me];
+  if (player === undefined) return { ...state, phase: 'turnEnd' };
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  let next: GameState = state;
+
+  // ① 董事長進門有禮
+  if (chairmanOfIndustry(next, topo.commercials, STORE_INDUSTRY) === me) {
+    if ((rng.next() & 1) !== 0) {
+      const toolId = drawGiftTool(next.toolStock, rng.next());
+      if (toolId !== 0) {
+        const g = giveTool(next.tools, next.toolStock, me, toolId);
+        next = { ...next, tools: g.tools, toolStock: g.stock };
+      }
+    } else {
+      const cardId = drawRandomCard(rng, next.cardAmount);
+      if (cardId !== 0) {
+        const cardAmount = [...next.cardAmount];
+        cardAmount[cardId - 1] = (cardAmount[cardId - 1] ?? 0) - 1;
+        next = withPlayer({ ...next, cardAmount }, me, (p) => {
+          if (p.cards.length < MAX_HAND_CARDS) p.cards = [...p.cards, cardId];
+        });
+      }
+    }
+  }
+
+  // ② ③ 货架
+  const shelf = drawCardShelf(next.cardAmount, rng);
+  const tools = toolShelf(next.toolStock);
+  const owner = next.players[me]!;
+  return {
+    ...next,
+    rngState: rng.getState(),
+    pending: {
+      kind: 'shop',
+      points: owner.points,
+      cards: shelf.map((id) => ({ id, name: CARDS.find((c) => c.id === id)?.name ?? `卡${id}`, price: cardPrice(id) })),
+      tools: tools.map((id) => ({
+        id,
+        name: TOOLS.find((t) => t.id === id)?.name ?? `道具${id}`,
+        price: toolPrice(id),
+        stock: next.toolStock[id] ?? 0,
+      })),
+      owned: {
+        cards: [...new Set(owner.cards)].map((id) => ({
+          id,
+          name: CARDS.find((c) => c.id === id)?.name ?? `卡${id}`,
+          refund: resellValue(cardPrice(id)),
+        })),
+        tools: [...toolsOf(next.tools, me)].map(([id, count]) => ({
+          id,
+          name: TOOLS.find((x) => x.id === id)?.name ?? `道具${id}`,
+          count,
+          refund: resellValue(toolPrice(id)),
+        })),
+      },
+    },
+  };
+}
+
 function shopAction(state: GameState, action: Action & { type: 'shop' }): GameState {
   const pending = state.pending;
   if (pending === null || pending.kind !== 'shop') return state;
@@ -2690,8 +2770,14 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
 
   switch (action.op) {
     case 'buyCard': {
+      // ★ 只认货架上有的；买一件少一件（货架是从牌堆抽的，牌堆本身由 buyCard 扣）
+      const at = pending.cards.findIndex((c) => c.id === action.id);
+      if (at === -1) return state;
       const r = buyCard(me, action.id);
-      return r.ok ? commit(r.player) : state;
+      if (!r.ok) return state;
+      const bought = commit(r.player);
+      const cards = pending.cards.filter((_, i) => i !== at);
+      return { ...bought, pending: { ...pending, points: r.player.points, cards } };
     }
     case 'sellCard': {
       const r = sellCard(me, action.id);

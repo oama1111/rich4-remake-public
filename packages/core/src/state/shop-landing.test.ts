@@ -10,6 +10,8 @@ import type { GameState } from './types.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import { toolCount } from '../rules/tools.ts';
 import { TRAFFIC_WALK } from '../rules/tool-effects.ts';
+import { initialCardAmounts } from '../rules/new-game.ts';
+import { initialToolStock } from '../rules/tools.ts';
 
 const node = makeNode({ id: 1, adjacent: [1], flags: SPECIAL_KIND.DEPARTMENT_STORE, specialKind: SPECIAL_KIND.DEPARTMENT_STORE });
 const topo = { nodes: [node] };
@@ -17,6 +19,9 @@ const topo = { nodes: [node] };
 function landed(points: number): GameState {
   const s = makeGameState({
     phase: 'settling',
+    // ★ 货架是从牌堆/库存里抽的（0x0042eb05 / 0x0042ec0b），空牌堆抽不出东西
+    cardAmount: initialCardAmounts(),
+    toolStock: initialToolStock(),
     players: [0, 1, 2, 3].map((i) =>
       makePlayer({ index: i, character: i, nodeId: 1, points, trafficMethod: TRAFFIC_WALK }),
     ),
@@ -30,10 +35,11 @@ describe('★ 百貨公司落点', () => {
     expect(s.pending?.kind).toBe('shop');
     if (s.pending?.kind !== 'shop') return;
     expect(s.pending.points).toBe(500);
-    expect(s.pending.cards.length).toBeGreaterThan(20);
-    expect(s.pending.tools.length).toBe(13);
-    // 编号 > 8 的道具不限量 —— 库存那栏给 null
-    expect(s.pending.tools.find((t) => t.id === 12)?.stock).toBeNull();
+    // ★ 货架 6..15 件（0x0042eb05 `rand()%10+6`），不是全部 30 张
+    expect(s.pending.cards.length).toBeGreaterThanOrEqual(6);
+    expect(s.pending.cards.length).toBeLessThanOrEqual(15);
+    // ★ 道具只列 1..8 号（0x0042ec0b `cmp eax, 8`）—— 9..13 只能靠研究所
+    expect(s.pending.tools.map((t) => t.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(s.pending.tools.find((t) => t.id === 6)?.stock).toBeGreaterThan(0);
   });
 
@@ -52,8 +58,10 @@ describe('★ 百貨公司落点', () => {
     expect(s.pending?.kind).toBe('shop');
     // 交互里的點數要刷新，否则界面还显示旧数
     if (s.pending?.kind === 'shop') expect(s.pending.points).toBe(350);
-    s = reduce(s, { type: 'shop', op: 'buyCard', id: 7 }, topo);
-    expect(s.players[0]!.cards).toContain(7);
+    // 买货架上的第一张 —— 不在货架上的卡买不到（0x0042eb15 只列货架）
+    const onShelf = s.pending?.kind === 'shop' ? s.pending.cards[0]!.id : 0;
+    s = reduce(s, { type: 'shop', op: 'buyCard', id: onShelf }, topo);
+    expect(s.players[0]!.cards).toContain(onShelf);
   });
 
   it('點數不够时什么都不发生', () => {

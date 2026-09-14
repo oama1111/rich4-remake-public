@@ -82,13 +82,33 @@ import type { CommercialInfo } from '../loaders/map.ts';
 /** 行業別 7 = 銀行 @source VA 0x00436b31 `cmp byte [esi+0x1a], 7` */
 export const COMMERCIAL_TYPE_BANK = 7;
 
-/** 地图上那家銀行；没有返回 null */
-export function bankCommercial(commercials: readonly CommercialInfo[] | undefined): CommercialInfo | null {
+/** 地图上某个行業的那家企業；没有返回 null。@source 0x00436b31 / 0x0044ba82 / 0x0042e9xx 都是同一种从头扫的循环 */
+export function commercialOfIndustry(
+  commercials: readonly CommercialInfo[] | undefined,
+  industry: number,
+): CommercialInfo | null {
   if (commercials === undefined) return null;
   // @source 循环是**从头扫到尾**、后面的覆盖前面的，故取最后一家
   let found: CommercialInfo | null = null;
-  for (const c of commercials) if (c.type === COMMERCIAL_TYPE_BANK) found = c;
+  for (const c of commercials) if (c.type === industry) found = c;
   return found;
+}
+
+/** 地图上那家銀行；没有返回 null */
+export function bankCommercial(commercials: readonly CommercialInfo[] | undefined): CommercialInfo | null {
+  return commercialOfIndustry(commercials, COMMERCIAL_TYPE_BANK);
+}
+
+/** 某行業那家企業的董事長（玩家下标）；无人持有返回 null */
+export function chairmanOfIndustry(
+  state: GameState,
+  commercials: readonly CommercialInfo[] | undefined,
+  industry: number,
+): number | null {
+  const c = commercialOfIndustry(commercials, industry);
+  if (c === null) return null;
+  const owner = state.commercialOwners[c.id]?.owner ?? 0;
+  return owner === 0 ? null : owner - 1;
 }
 
 /**
