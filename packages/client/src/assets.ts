@@ -496,7 +496,8 @@ export function toolbarIconImage(i: number, pressed = false): number {
  */
 export const TOOLBAR_LABELS: readonly string[] = [
   '說明',
-  '電腦托管',
+  // ★ 不是「電腦托管」——需求方确认这颗是**遊戲設定**（托管另有其键，热键 A）
+  '遊戲設定',
   '提示',
   '讀取進度',
   '儲存進度',

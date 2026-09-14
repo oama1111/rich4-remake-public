@@ -33,7 +33,6 @@
 
 import type { GameState } from '@rich4/core';
 import { deserializeGame, serializeGame } from '@rich4/core';
-import { CHARACTERS } from '@rich4/data';
 import type { Sprite } from './assets.ts';
 import { inRect, type Rect } from './gameui.ts';
 
@@ -41,19 +40,37 @@ import { inRect, type Rect } from './gameui.ts';
 export const SAVELOAD_RESOURCE = 0x208;
 export const SAVELOAD_IMAGE = { load: 0, save: 1 } as const;
 /**
- * 每一行两个 72×72 的格子。
+ * 一行的构成 —— **逐条对着汇编解出来的**（VA 0x00403f4b 起）：
  *
- * - **左格**放存档那一局的**地图缩略图**：资源 520 的图 2..9 正好是八张地图
- *   （台湾、中国…星空、月球、海滩），下标 = `2 + globalMapId`。
- * - **右格**放当时轮到谁：`Data.mkf` 资源 2 是 12 张 72×72 的角色头像
- *   （@source 0x00403da0 `push 2` —— 这一屏专门为此加载了它）。
- * - 图 10 是粉色的**空格底**，空槽时画它。
- *   @source 0x00403f58 `draw([0x48a338] + 0x84, 0x81, edi)`，
- *   `(0x84 − 0x0c)/12 = 10`、x = 0x81 = 129。
+ * ```asm
+ * 00403f55  edi = 72*slot + 0x18                       ; 行 y
+ * 00403f59  draw(资源520 图10, 0x81, edi)               ; ★ 左格：粉色底板，x = 129
+ * 00403f78  if (slot == 0)
+ * 00403f82    draw("AUTO", 0xa5, edi + 0x0f, 2)        ; ★ 只有 0 号槽写 AUTO
+ * 00403f9c  year = [0x48a340] >> 16
+ * 00403fb3  draw("%d" 年, 0xa5, edi + 0x24, 2)          ; 年，居中于 x = 165
+ * 00403fe4  sprintf(buf, "%d/%d", 月, 日)
+ * 00403ffc  draw(buf, 0xa5, edi + 0x39, 2)              ; 月/日
+ * 00404016  图号 = [0x48a33c] + 2 + [0x48a330]*4        ; = 2 + globalMapId
+ * 00404011  draw(资源520 那张图, 0xd1, edi)              ; ★ 中格：地圖縮圖，x = 209
+ * 0040404f  esi = 0x121                                 ; ★ 头像起点 x = 289
+ * 00404056  for (i = 0; i < 存档里的玩家数; i++) {
+ * 00404065    dl = 玩家[i].character                     ; 玩家结构 +0x13
+ * 00404088    draw(资源2 图[character], esi, edi)         ; 72×72 角色头像
+ * 00404091    esi += 0x48                                ; 步进 72
+ *           }
+ * ```
+ *
+ * ★ 也就是说一行是：**粉色底板（上面写年月日）｜ 地圖縮圖 ｜ 四个参与角色的头像**。
+ *   头像铺到 x = 505+72 = 577，底图右缘在 40+555 = 595，正好放得下。
+ *
+ * 存档头也顺带解出来了（VA 0x00403e46 起连着几次 fread）：
+ * `4 字节标识 0x26 ｜ 4 字节日期(日|月<<8|年<<16) ｜ 2 字节 gameMap ｜
+ *  2 字节 gameStage ｜ 4 字节玩家数 ｜ 4 × 0x68 玩家结构`。
  */
 export const MAP_THUMB_BASE = 2;
 export const EMPTY_CELL_IMAGE = 10;
-/** 角色头像所在的资源 @source 0x00403da0 */
+/** 角色头像所在的资源 @source 0x00403da0 `push 2` */
 export const PORTRAIT_RESOURCE = 2;
 
 /** 屏幕位置 @source 0x00403dbd `mov edi, 0x28` / `mov ebp, 0xf` */
@@ -79,9 +96,15 @@ export const SAVELOAD_SIZE = {
  * 信息区从 284（图内 244）起。
  */
 export const ROW = { x: 0x81, y0: 0x18, pitch: 72, size: 72 } as const;
-/** 右格（角色头像）与信息区的起点，屏幕坐标 */
-export const ROW_PORTRAIT_X = SAVELOAD_AT.x + 166;
-export const ROW_INFO_X = SAVELOAD_AT.x + 244;
+/** 底板上那三行字的居中 x @source 0x00403f82 / 0x00403fb3 / 0x00403ffc `push 0xa5` */
+export const ROW_TEXT_X = 0xa5;
+/** 三行字相对行顶的 y @source `edi + 0x0f / 0x24 / 0x39` */
+export const ROW_TEXT_DY = { auto: 0x0f, year: 0x24, date: 0x39 } as const;
+/** 地圖縮圖的 x @source 0x00404011 `push 0xd1` */
+export const ROW_THUMB_X = 0xd1;
+/** 头像起点与步进 @source 0x00404051 `mov esi, 0x121` / 0x00404091 `add esi, 0x48` */
+export const ROW_FACE_X0 = 0x121;
+export const ROW_FACE_PITCH = 0x48;
 
 /** LOAD 有 6 个槽（含自動存檔的 0 号），SAVE 只有 5 个 */
 export const LOAD_SLOTS = 6;
@@ -194,8 +217,6 @@ export type SpriteFn = (
   colorKeyBlack?: boolean,
 ) => Sprite | null;
 
-const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
-
 export function drawSaveLoad(
   ctx: CanvasRenderingContext2D,
   mode: SaveLoadMode,
@@ -224,43 +245,41 @@ export function drawSaveLoad(
       ctx.fillRect(r.x, r.y, r.w, r.h);
     }
 
-    // 左格：地图缩略图；右格：当时轮到的角色。空槽两格都画粉色底。
+    // ★ 一行三段，全照原版：粉底板（写年月日）｜ 地圖縮圖 ｜ 参与角色的头像
     const st = info?.state ?? null;
-    const empty = sprite('Data.mkf', SAVELOAD_RESOURCE, EMPTY_CELL_IMAGE, true);
-    const thumb =
-      st === null
-        ? empty
-        : sprite('Data.mkf', SAVELOAD_RESOURCE, MAP_THUMB_BASE + (st.globalMapId & 7), true);
-    if (thumb !== null) ctx.drawImage(thumb.bitmap, r.x, r.y, ROW.size, ROW.size);
-    const face =
-      st === null
-        ? empty
-        : sprite('Data.mkf', PORTRAIT_RESOURCE, st.players[st.currentPlayer]?.character ?? 0, true);
-    if (face !== null) ctx.drawImage(face.bitmap, ROW_PORTRAIT_X, r.y, ROW.size, ROW.size);
+    const plate = sprite('Data.mkf', SAVELOAD_RESOURCE, EMPTY_CELL_IMAGE, true);
+    if (plate !== null) ctx.drawImage(plate.bitmap, r.x, r.y, ROW.size, ROW.size);
 
-    // ⚠️ 信息区的**文字排版是我们的** —— 原版写了什么、写在哪没解出来；
-    //   只有这块区域的左边界（底图上那条竖线）是量出来的。
-    const cy = r.y + ROW.size / 2;
-    ctx.textAlign = 'left';
-    ctx.font = '15px "PingFang TC", "Microsoft JhengHei", sans-serif';
-    if (info !== undefined && info.error !== null) {
-      ctx.fillStyle = '#a02a20';
-      ctx.fillText(`存檔損毀：${info.error}`, ROW_INFO_X, cy);
-    } else if (st === null) {
-      ctx.fillStyle = '#3a5a4a';
-      // 自動存檔那一格空着时说明它是干什么的（底图上只印了个 0）
-      ctx.fillText(slot === AUTOSAVE_SLOT ? '－ 自動存檔（空）－' : '－ 空 －', ROW_INFO_X, cy);
-    } else {
-      const me = st.players[st.currentPlayer];
-      const name = CHARACTERS[me?.character ?? 0]?.name ?? '';
-      ctx.fillStyle = '#10231a';
-      ctx.fillText(`${st.year} 年 ${st.month} 月 ${st.day} 日`, ROW_INFO_X, cy - 13);
-      ctx.fillText(`${name}　${money(me?.cash ?? 0)}`, ROW_INFO_X, cy + 13);
-      if (slot === AUTOSAVE_SLOT) {
-        ctx.fillStyle = '#3a5a4a';
-        ctx.font = '12px "PingFang TC", sans-serif';
-        ctx.fillText('自動存檔', ROW_INFO_X + 190, cy - 13);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#10231a';
+    if (slot === AUTOSAVE_SLOT) {
+      // @source 0x00403f82：只有 0 号槽写这四个字母
+      ctx.font = 'bold 13px ui-monospace, monospace';
+      ctx.fillText('AUTO', r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.auto);
+    }
+    if (st !== null) {
+      ctx.font = 'bold 15px "PingFang TC", "Microsoft JhengHei", sans-serif';
+      ctx.fillText(String(st.year), r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.year);
+      ctx.font = '14px "PingFang TC", "Microsoft JhengHei", sans-serif';
+      ctx.fillText(`${st.month}/${st.day}`, r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.date);
+
+      const thumb = sprite(
+        'Data.mkf', SAVELOAD_RESOURCE, MAP_THUMB_BASE + (st.globalMapId & 7), true,
+      );
+      if (thumb !== null) ctx.drawImage(thumb.bitmap, ROW_THUMB_X, r.y, ROW.size, ROW.size);
+
+      // ★ 参与这一局的**每个**角色都画出来，不是只画轮到的那个
+      //   @source 0x00404056 的循环，上界是存档头里的玩家数
+      for (let i = 0; i < st.players.length; i++) {
+        const face = sprite('Data.mkf', PORTRAIT_RESOURCE, st.players[i]?.character ?? 0, true);
+        if (face === null) continue;
+        ctx.drawImage(face.bitmap, ROW_FACE_X0 + i * ROW_FACE_PITCH, r.y, ROW.size, ROW.size);
       }
+    } else if (info !== undefined && info.error !== null) {
+      ctx.textAlign = 'left';
+      ctx.font = '14px "PingFang TC", "Microsoft JhengHei", sans-serif';
+      ctx.fillStyle = '#a02a20';
+      ctx.fillText(`存檔損毀：${info.error}`, ROW_THUMB_X, r.y + ROW.size / 2);
     }
   }
 
