@@ -17,9 +17,14 @@ import {
   TRAFFIC_CAR,
   TRAFFIC_ENGINEERING,
   TRAFFIC_MOTORCYCLE,
+  MISSILE_RADIUS,
+  NUKE_RADIUS,
   UNIMPLEMENTED_TOOLS,
   VEHICLE_DICE,
+  blastLand,
+  buildOneLevel,
   isToolImplemented,
+  isValidRemoteDice,
   placeObject,
   useVehicleTool,
 } from './tool-effects.ts';
@@ -122,21 +127,22 @@ describe('★ 放置类道具的物件种类', () => {
 });
 
 describe('★ 未实现的道具明确列出', () => {
-  it('已实现的是 2/3/4（放置）与 5/6/12（交通）', () => {
-    for (const id of [2, 3, 4, 5, 6, 12]) {
+  it('已实现 10 个：放置 2/3/4、交通 5/6/12、飛彈 7/13、骰子 8、工人 9', () => {
+    for (const id of [2, 3, 4, 5, 6, 7, 8, 9, 12, 13]) {
       expect(isToolImplemented(id), `道具${id}`).toBe(true);
     }
   });
 
-  it('其余 7 个标为未实现', () => {
-    expect([...UNIMPLEMENTED_TOOLS].sort((a, b) => a - b)).toEqual([1, 7, 8, 9, 10, 11, 13]);
+  it('★ 只剩 3 个未实现 —— 都卡在 core 之外的东西上', () => {
+    // 1 機器娃娃要先有替身走子系统；10 時光機要状态快照；11 傳送機是三段选择
+    expect([...UNIMPLEMENTED_TOOLS].sort((a, b) => a - b)).toEqual([1, 10, 11]);
     for (const id of UNIMPLEMENTED_TOOLS) {
       expect(isToolImplemented(id), `道具${id}`).toBe(false);
     }
   });
 
   it('13 个道具都有明确归属，没有遗漏', () => {
-    const done = [2, 3, 4, 5, 6, 12];
+    const done = [2, 3, 4, 5, 6, 7, 8, 9, 12, 13];
     const all = [...done, ...UNIMPLEMENTED_TOOLS].sort((a, b) => a - b);
     expect(all).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   });
@@ -212,19 +218,43 @@ describe('★ 13 个道具逐个点名', () => {
     expect(r.player.ndices).toBe(3);
   });
 
-  it('7 飛彈 —— 未实现，已登记', () => {
-    expect(isToolImplemented(7)).toBe(false);
-    expect(UNIMPLEMENTED_TOOLS).toContain(7);
+  it('★ 7 飛彈 —— 半径 100 的方窗，逐块拆一级', () => {
+    expect(isToolImplemented(7)).toBe(true);
+    expect(MISSILE_RADIUS).toBe(100);
+    // 住宅（type 0）掉一级
+    expect(blastLand(2, 3, 0, 1, false)).toMatchObject({ owner: 2, level: 2, type: 0 });
+    // 連鎖店（type 1）被夷平并退回住宅
+    expect(blastLand(2, 4, 1, 1, false)).toMatchObject({ owner: 2, level: 0, type: 0 });
+    // 敌意固定 30 × 物价指数
+    expect(blastLand(2, 3, 0, 5, false).hostility).toBe(150);
+    // 无主地不记敌意
+    expect(blastLand(0, 3, 0, 5, false).hostility).toBe(0);
   });
 
-  it('8 遙控骰子 —— 效果未实现，但引擎已能吃强制点数', () => {
-    expect(isToolImplemented(8)).toBe(false);
-    expect(UNIMPLEMENTED_TOOLS).toContain(8);
+  it('★ 13 核子飛彈 —— 全图，而且**连地契一起烧掉**', () => {
+    expect(isToolImplemented(13)).toBe(true);
+    expect(NUKE_RADIUS).toBe(-1);
+    expect(blastLand(2, 3, 0, 1, true)).toMatchObject({ owner: 0, level: 0, type: 0 });
+    // 敌意按等级计：level × 30 × 物价指数
+    expect(blastLand(2, 3, 0, 2, true).hostility).toBe(3 * 30 * 2);
+    expect(blastLand(2, 0, 0, 2, true).hostility).toBe(0);
   });
 
-  it('9 機器工人 —— 未实现，已登记', () => {
-    expect(isToolImplemented(9)).toBe(false);
-    expect(UNIMPLEMENTED_TOOLS).toContain(9);
+  it('8 遙控骰子 —— 指定点数 1..18，越界不收', () => {
+    expect(isToolImplemented(8)).toBe(true);
+    expect(isValidRemoteDice(1)).toBe(true);
+    expect(isValidRemoteDice(18)).toBe(true);
+    expect(isValidRemoteDice(0)).toBe(false);
+    expect(isValidRemoteDice(19)).toBe(false);
+    expect(isValidRemoteDice(2.5)).toBe(false);
+  });
+
+  it('★ 9 機器工人 —— 免费加蓋一级，连锁店只在 0 级时能盖', () => {
+    expect(isToolImplemented(9)).toBe(true);
+    expect(buildOneLevel(0, 2, 5)).toEqual({ ok: true, level: 3 });
+    expect(buildOneLevel(0, 5, 5)).toEqual({ ok: false, level: 5 });
+    expect(buildOneLevel(1, 0, 5)).toEqual({ ok: true, level: 1 });
+    expect(buildOneLevel(1, 1, 5)).toEqual({ ok: false, level: 1 });
   });
 
   it('10 時光機 —— 未实现，已登记（原版靠还原存档实现撤销）', () => {
@@ -244,18 +274,13 @@ describe('★ 13 个道具逐个点名', () => {
     expect(1 << ((TRAFFIC_ENGINEERING & 3) - 1)).toBe(4);
   });
 
-  it('13 核子飛彈 —— 未实现，已登记', () => {
-    expect(isToolImplemented(13)).toBe(false);
-    expect(UNIMPLEMENTED_TOOLS).toContain(13);
-  });
-
   it('★ 13 个道具无一遗漏：每个要么实现了，要么在未实现清单里', () => {
     for (const t of TOOLS) {
       const known = isToolImplemented(t.id) || UNIMPLEMENTED_TOOLS.includes(t.id);
       expect(known, `道具 ${t.id} ${t.name} 既没实现也没登记`).toBe(true);
     }
     expect(TOOLS).toHaveLength(13);
-    // 已实现 6 个、未实现 7 个 —— 这个数字变了就该更新文档
-    expect(TOOLS.filter((t) => isToolImplemented(t.id))).toHaveLength(6);
+    // 已实现 10 个、未实现 3 个 —— 这个数字变了就该更新文档
+    expect(TOOLS.filter((t) => isToolImplemented(t.id))).toHaveLength(10);
   });
 });

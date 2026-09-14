@@ -266,6 +266,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     dice: [],
     stepsRemaining: 0,
     stepsTotal: 0,
+    forcedDice: 0,
     cardAmount: [...save.cardAmount],
     landOwner: new Array<number>(landCount).fill(0),
     landLevel: new Array<number>(landCount).fill(0),

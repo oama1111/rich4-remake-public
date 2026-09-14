@@ -27,9 +27,15 @@ import { buyStock, commercialUnitPrice, liquidateStocks, sellStock } from '../pl
 import { emptyOwnership, updateCommercialOwner } from '../places/commercial.ts';
 import { useCard } from '../cards/registry.ts';
 import {
+  MISSILE_HOSPITAL_DAYS,
+  MISSILE_HOSTILITY_FACTOR,
+  MISSILE_RADIUS,
   PLACEMENT_TOOLS,
   VEHICLE_TOOLS,
+  blastLand,
+  buildOneLevel,
   isToolImplemented,
+  isValidRemoteDice,
   placeObject,
   useVehicleTool,
 } from '../rules/tool-effects.ts';
@@ -218,11 +224,15 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
 
       const rng = new WatcomRng();
       rng.setState(state.rngState);
-      const { dice, sum } = rollDice(rng, player.ndices, action.forced ?? 0);
+      // ★ 遙控骰子留下的点数优先，且**用完即消**
+      // @source `0x00447285`：读出来就把 [0x475dd8] 清零
+      const forced = state.forcedDice !== 0 ? state.forcedDice : (action.forced ?? 0);
+      const { dice, sum } = rollDice(rng, player.ndices, forced);
 
       return {
         ...state,
         rngState: rng.getState(),
+        forcedDice: 0,
         dice,
         stepsRemaining: sum,
         stepsTotal: sum,
@@ -426,7 +436,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       return playCard(state, topo, action.cardId, action.target ?? { kind: 'none' });
 
     case 'useTool':
-      return useToolAction(state, action.toolId, action.nodeId ?? 0);
+      return useToolAction(state, topo, action.toolId, action.nodeId ?? 0, action.value ?? 0);
 
     case 'shop':
       return shopAction(state, action);
@@ -829,6 +839,113 @@ function applyMagicRequest(
   }
 }
 
+/** 道具编号 */
+const TOOL_MISSILE = 7;
+const TOOL_REMOTE_DICE = 8;
+const TOOL_ROBOT_WORKER = 9;
+const TOOL_NUKE = 13;
+
+/** 某个节点上的住宅；不是住宅返回 null */
+function landAtNode(state: GameState, topo: MapTopology, nodeId: number): LandInfo | null {
+  const node = topo.nodes[nodeId - 1];
+  if (node === undefined) return null;
+  const idx = housingIndexOf(node.type);
+  if (idx === null) return null;
+  return effectiveLand(state, topo, idx);
+}
+
+/**
+ * 打一发飛彈。
+ *
+ * @source `damage_area` VA 0x0040ac7b，参数见 rules/tool-effects.ts 的
+ *   `MISSILE_RADIUS` / `NUKE_RADIUS`。逐块地的效果走 `blastLand`。
+ *
+ * ⚠️ **爆炸范围是本引擎与原版最明确的一处偏离**（Q-TOOL-1）：
+ *   原版把镜头移到目标上，再在一张 440×440 的**视图空间**格子里
+ *   取 ±半径 的方窗（VA 0x0040a45c）。那需要等距投影与镜头，
+ *   规则层拿不到。本引擎改用**节点坐标**的方窗，半径同为 100。
+ *   核子飛彈的半径是 -1（全图），两者**完全一致**，那一发是精确的。
+ */
+function fireMissile(
+  state: GameState,
+  topo: MapTopology,
+  heavy: boolean,
+  targetNode: number,
+): GameState | null {
+  const target = topo.nodes[targetNode - 1];
+  if (target === undefined) return null;
+
+  const inBlast = (n: MapNode): boolean => {
+    if (heavy) return true; // @source 半径 -1：整张图
+    return (
+      Math.abs(n.x - target.x) <= MISSILE_RADIUS && Math.abs(n.y - target.y) <= MISSILE_RADIUS
+    );
+  };
+
+  const landLevel = [...state.landLevel];
+  const landOwner = [...state.landOwner];
+  const deltas: { from: number; to: number; delta: number }[] = [];
+  const hitNodes = new Set<number>();
+
+  for (const n of topo.nodes) {
+    if (!inBlast(n)) continue;
+    hitNodes.add(n.id);
+    // @source flags & 2 —— 住宅
+    const idx = housingIndexOf(n.type);
+    if (idx === null) continue;
+    const land = effectiveLand(state, topo, idx);
+    if (land === null) continue;
+    const out = blastLand(land.owner, land.level, land.type, state.priceIndex, heavy);
+    landLevel[land.id] = out.level;
+    landOwner[land.id] = out.owner;
+    if (out.hostility !== 0 && land.owner !== 0) {
+      deltas.push({ from: land.owner - 1, to: state.currentPlayer, delta: out.hostility });
+    }
+  }
+
+  // @source flags & 0x20 —— 范围里的人：毁车 + 挂上「被炸」标志
+  //   随后统一 `敌意 += 90 × 物价指数` 并送医 3 天（VA 0x004470a1 的循环）
+  // ⚠️ 必须**按下标**改一个工作数组：`confine` 返回的是新数组，
+  //   若边遍历原数组边替换，后面几个人的改动会写到已被丢弃的旧对象上。
+  //   核彈打全图时四个人都在范围里，这个坑一踩一个准。
+  let players: Player[] = state.players.map((p) => ({ ...p }));
+  let hospital = [...state.hospitalOccupancy];
+  const toolStock = [...state.toolStock];
+  for (let i = 0; i < players.length; i++) {
+    const p = players[i];
+    if (p === undefined || !isAlive(p) || !hitNodes.has(p.nodeId)) continue;
+    // @source 飛彈把镜头移到目标处再炸，自己站在别处；核彈打全图，自己也跑不掉
+    if (i === state.currentPlayer && !heavy) continue;
+    deltas.push({
+      from: i,
+      to: state.currentPlayer,
+      delta: MISSILE_HOSTILITY_FACTOR * state.priceIndex,
+    });
+    // @source call 0x40cd07 —— 与地雷同一个毁车流程
+    const b = p.blocking;
+    const immune =
+      b.inHotel !== 0 || b.disappearing !== 0 || b.inPrison !== 0 || b.inHospital !== 0;
+    if (!immune && p.trafficMethod !== 0) {
+      const kind = p.trafficMethod & 3;
+      if (kind === 1) toolStock[5] = (toolStock[5] ?? 0) + 1;
+      else if (kind === 2) toolStock[6] = (toolStock[6] ?? 0) + 1;
+      players[i] = { ...p, trafficMethod: 0, ndices: 1 };
+    }
+    const c = confine(players, hospital, 'hospital', i, MISSILE_HOSPITAL_DAYS);
+    players = c.players.map((q) => ({ ...q }));
+    hospital = c.occupancy;
+  }
+
+  return {
+    ...state,
+    players: applyHostilityDeltas(players, deltas),
+    landLevel,
+    landOwner,
+    hospitalOccupancy: hospital,
+    toolStock,
+  };
+}
+
 /** 某玩家脚下那块住宅；不是住宅返回 null */
 function landAtPlayer(state: GameState, topo: MapTopology, playerIndex: number): LandInfo | null {
   const p = state.players[playerIndex];
@@ -994,11 +1111,47 @@ function tradeStock(
  *   直接 `jmp 结束`、根本不走 take_tool，故那种情况不消耗——
  *   `useVehicleTool` 返回 `ok: false` 正是这个意思。
  */
-function useToolAction(state: GameState, toolId: number, nodeId: number): GameState {
+function useToolAction(
+  state: GameState,
+  topo: MapTopology,
+  toolId: number,
+  nodeId: number,
+  value: number,
+): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined || !isAlive(me)) return state;
   if (!isToolImplemented(toolId)) return state;
   if (toolCount(state.tools, me.index, toolId) <= 0) return state;
+
+  const consume = (next: GameState): GameState => {
+    const taken = takeTool(next.tools, next.toolStock, me.index, toolId);
+    return { ...next, tools: taken.tools, toolStock: taken.stock };
+  };
+
+  // ── 遙控骰子（8）──
+  if (toolId === TOOL_REMOTE_DICE) {
+    // @source `test ebx, ebx / je 结束` —— 没给点数就不消耗道具
+    if (!isValidRemoteDice(value)) return state;
+    return consume({ ...state, forcedDice: value });
+  }
+
+  // ── 機器工人（9）：免费加蓋一级 ──
+  if (toolId === TOOL_ROBOT_WORKER) {
+    const land = landAtNode(state, topo, nodeId);
+    if (land === null) return state;
+    const b = buildOneLevel(land.type, land.level, MAX_LAND_LEVEL);
+    if (!b.ok) return state;
+    const landLevel = [...state.landLevel];
+    landLevel[land.id] = b.level;
+    return consume({ ...state, landLevel });
+  }
+
+  // ── 飛彈（7）／核子飛彈（13）──
+  if (toolId === TOOL_MISSILE || toolId === TOOL_NUKE) {
+    const fired = fireMissile(state, topo, toolId === TOOL_NUKE, nodeId);
+    if (fired === null) return state;
+    return consume(fired);
+  }
 
   // ── 交通工具 ──
   if (VEHICLE_TOOLS.has(toolId)) {

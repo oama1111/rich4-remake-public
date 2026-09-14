@@ -265,6 +265,13 @@ export interface GameState {
   stepsRemaining: number;
   /** 本次掷骰的总步数 @source [0x48bafc] */
   stepsTotal: number;
+  /**
+   * 遙控骰子指定的点数，**一次性**；0 表示没指定。
+   *
+   * @source [0x475dd8]：`0x00447275` 写、`0x00447285` 读完当场清零，
+   *   全局只有掷骰路径上那一个读取点（VA 0x0040d9a4）。
+   */
+  forcedDice: number;
 
   /** 牌堆各卡剩余张数，下标 = 卡片 id - 1 */
   cardAmount: number[];

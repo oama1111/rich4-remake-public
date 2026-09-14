@@ -97,7 +97,14 @@ export type Action =
    * `nodeId` 只对**放置类**道具（路障/地雷/定時炸彈）有意义，
    * 由模态 UI 或 AI 选定（C-ARC-2）。
    */
-  | { type: 'useTool'; toolId: number; nodeId?: number }
+  | {
+      type: 'useTool';
+      toolId: number;
+      /** 放置类与飛彈的目标格；機器工人的目标地块也走这里 */
+      nodeId?: number;
+      /** 遙控骰子指定的点数 1..18 */
+      value?: number;
+    }
 
   /**
    * 在百貨公司买卖。

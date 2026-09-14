@@ -243,6 +243,7 @@ export function newGame(opts: NewGameOptions): GameState {
     dice: [],
     stepsRemaining: 0,
     stepsTotal: 0,
+    forcedDice: 0,
     cardAmount: new Array<number>(CARD_IMPLS.length).fill(UNVERIFIED_CARDS_PER_KIND),
     landOwner: new Array<number>(landCount).fill(0),
     landLevel: new Array<number>(landCount).fill(0),

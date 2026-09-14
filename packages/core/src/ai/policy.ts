@@ -25,7 +25,8 @@ import { buyTool } from '../places/shop.ts';
 import { isAiControlled, isAlive } from '../state/types.ts';
 import { useCard } from '../cards/registry.ts';
 import type { CardTarget } from '../cards/target.ts';
-import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE } from '../rules/tool-effects.ts';
+import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE, buildOneLevel } from '../rules/tool-effects.ts';
+import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
 
@@ -285,8 +286,30 @@ export function decideTool(ctx: AiContext): Action | null {
       return { type: 'useTool', toolId: b.tool };
     }
   }
+
+  // ★ 機器工人：站在自己的地上就免费加一级，纯赚。
+  //   ⚠️ 必须**先预演**——满级的地盖不上去，reduce 会原样退回，
+  //   而 AI 是纯函数，退回一次就会原样重提，卡死在 awaitingRoll。
+  if (toolCount(state.tools, me.index, TOOL_ROBOT_WORKER) > 0) {
+    const node = ctx.map.nodes[me.nodeId - 1];
+    const idx = node === undefined ? null : housingIndexOf(node.type);
+    if (idx !== null) {
+      const tpl = ctx.map.lands.find((l) => l.id === idx);
+      const owner = state.landOwner[idx] ?? 0;
+      const level = state.landLevel[idx] ?? 0;
+      if (tpl !== undefined && owner === me.index + 1) {
+        if (buildOneLevel(tpl.type, level, MAX_LAND_LEVEL).ok) {
+          return { type: 'useTool', toolId: TOOL_ROBOT_WORKER, nodeId: me.nodeId };
+        }
+      }
+    }
+  }
+
   return null;
 }
+
+/** 機器工人的道具编号 */
+const TOOL_ROBOT_WORKER = 9;
 
 /**
  * 回答落点留下的待决交互。

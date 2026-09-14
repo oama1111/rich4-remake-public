@@ -70,6 +70,7 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     dice: [],
     stepsRemaining: 0,
     stepsTotal: 0,
+    forcedDice: 0,
     cardAmount: new Array<number>(30).fill(0),
     landOwner: [],
     landLevel: [],

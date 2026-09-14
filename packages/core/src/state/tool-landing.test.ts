@@ -1,0 +1,176 @@
+/*
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * 機器工人与两枚飛彈 —— 要真地图才测得动
+ */
+
+import { describe, expect, it } from 'vitest';
+import { readFileSync, existsSync } from 'node:fs';
+import { parseMap } from '../loaders/map.ts';
+import { newGame } from '../rules/new-game.ts';
+import { reduce } from './reduce.ts';
+import type { GameState } from './types.ts';
+import { TOOL_SLOTS_PER_PLAYER, toolCount } from '../rules/tools.ts';
+import { MISSILE_RADIUS } from '../rules/tool-effects.ts';
+import { housingIndexOf } from '../rules/land.ts';
+
+const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const run = existsSync(MAP) ? it : it.skip;
+const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
+
+function setup(counts: Record<number, number>) {
+  const map = loadMap();
+  const topo = {
+    nodes: map.nodes,
+    lands: map.lands,
+    facilities: map.facilities,
+    commercials: map.commercials,
+  };
+  const base = newGame({
+    map,
+    players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+    seed: 11,
+  });
+  const tools = [...base.tools];
+  for (const [id, n] of Object.entries(counts)) tools[Number(id)] = n;
+  return { state: { ...base, tools } as GameState, topo, map };
+}
+
+/** 第一个住宅节点 */
+function firstHousingNode(topo: { nodes: readonly { id: number; type: number }[] }) {
+  return topo.nodes.find((n) => housingIndexOf(n.type) !== null);
+}
+
+describe('★ 機器工人（9）', () => {
+  run('在选中的地块上免费加蓋一级 —— 不花钱、不看归属', () => {
+    const { state, topo } = setup({ 9: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const idx = housingIndexOf(node.type)!;
+    // 先把地判给别人，证明「连别人的地都能替他盖」
+    const landOwner = [...state.landOwner];
+    landOwner[idx] = 2;
+    const s: GameState = { ...state, landOwner };
+    const before = s.players[0]!.cash;
+
+    const r = reduce(s, { type: 'useTool', toolId: 9, nodeId: node.id }, topo);
+    expect(r.landLevel[idx]).toBe((s.landLevel[idx] ?? 0) + 1);
+    expect(r.landOwner[idx]).toBe(2);
+    expect(r.players[0]!.cash).toBe(before);
+    expect(toolCount(r.tools, 0, 9)).toBe(0);
+  });
+
+  run('满级的地盖不上去，道具也不消耗', () => {
+    const { state, topo } = setup({ 9: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const idx = housingIndexOf(node.type)!;
+    const landLevel = [...state.landLevel];
+    landLevel[idx] = 5;
+    const s: GameState = { ...state, landLevel };
+    expect(reduce(s, { type: 'useTool', toolId: 9, nodeId: node.id }, topo)).toBe(s);
+  });
+});
+
+describe('★ 飛彈（7）', () => {
+  run('把半径内的房子各拆一级，范围外的不动', () => {
+    const { state, topo } = setup({ 7: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    // 全图都盖到 3 级、判给玩家 1
+    const landLevel = state.landLevel.map(() => 3);
+    const landOwner = state.landOwner.map(() => 2);
+    const s: GameState = { ...state, landLevel, landOwner };
+
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    const target = topo.nodes[node.id - 1]!;
+    let inside = 0;
+    let outside = 0;
+    for (const n of topo.nodes) {
+      const idx = housingIndexOf(n.type);
+      if (idx === null) continue;
+      const near =
+        Math.abs(n.x - target.x) <= MISSILE_RADIUS && Math.abs(n.y - target.y) <= MISSILE_RADIUS;
+      if (near) {
+        expect(r.landLevel[idx], `节点 ${n.id} 在范围内`).toBe(2);
+        inside++;
+      } else {
+        expect(r.landLevel[idx], `节点 ${n.id} 在范围外`).toBe(3);
+        outside++;
+      }
+    }
+    // ★ 这一发必须既炸到东西、又没炸到全图，否则测的是个退化情形
+    expect(inside).toBeGreaterThan(0);
+    expect(outside).toBeGreaterThan(0);
+    expect(toolCount(r.tools, 0, 7)).toBe(0);
+  });
+
+  run('★ 地主记仇 30 × 物价指数', () => {
+    const { state, topo } = setup({ 7: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const idx = housingIndexOf(node.type)!;
+    const landLevel = state.landLevel.map(() => 0);
+    const landOwner = state.landOwner.map(() => 0);
+    landLevel[idx] = 3;
+    landOwner[idx] = 2; // 玩家 1 的地
+    const s: GameState = { ...state, landLevel, landOwner };
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    expect(r.players[1]!.hostility[0]).toBe(30 * s.priceIndex);
+  });
+});
+
+describe('★ 核子飛彈（13）', () => {
+  run('★ 全图 —— 而且连地契一起烧掉', () => {
+    const { state, topo } = setup({ 13: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const landLevel = state.landLevel.map(() => 3);
+    const landOwner = state.landOwner.map(() => 2);
+    const s: GameState = { ...state, landLevel, landOwner };
+
+    const r = reduce(s, { type: 'useTool', toolId: 13, nodeId: node.id }, topo);
+    for (const n of topo.nodes) {
+      const idx = housingIndexOf(n.type);
+      if (idx === null) continue;
+      expect(r.landLevel[idx], `节点 ${n.id}`).toBe(0);
+      expect(r.landOwner[idx], `节点 ${n.id}`).toBe(0);
+    }
+  });
+
+  run('★ 范围里的人住院 3 天、车也没了', () => {
+    const { state, topo } = setup({ 13: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const players = state.players.map((p, i) =>
+      i === 1 ? { ...p, trafficMethod: 2, ndices: 3 } : p,
+    );
+    const s: GameState = { ...state, players };
+    const r = reduce(s, { type: 'useTool', toolId: 13, nodeId: node.id }, topo);
+
+    expect(r.players[1]!.blocking.inHospital).toBe(3);
+    expect(r.players[1]!.trafficMethod).toBe(0);
+    expect(r.players[1]!.ndices).toBe(1);
+    expect(r.hospitalOccupancy[1]).toBe(1);
+    // 敌意 90 × 物价指数
+    expect(r.players[1]!.hostility[0]).toBe(90 * s.priceIndex);
+    // 车回全局库存
+    expect(r.toolStock[6]).toBe((s.toolStock[6] ?? 0) + 1);
+  });
+
+  run('★ 核彈连自己也炸 —— 飛彈不炸自己', () => {
+    const { state, topo } = setup({ 7: 1, 13: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    // 把自己挪到目标格上
+    const players = state.players.map((p, i) => (i === 0 ? { ...p, nodeId: node.id } : p));
+    const s: GameState = { ...state, players };
+
+    const byMissile = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    expect(byMissile.players[0]!.blocking.inHospital).toBe(0);
+
+    const byNuke = reduce(s, { type: 'useTool', toolId: 13, nodeId: node.id }, topo);
+    expect(byNuke.players[0]!.blocking.inHospital).toBe(3);
+  });
+});
+
+void TOOL_SLOTS_PER_PLAYER;

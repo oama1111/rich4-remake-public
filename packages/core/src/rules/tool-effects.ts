@@ -179,29 +179,156 @@ export function placeObject(
 }
 
 // ============================================================
+//  遙控骰子
+// ============================================================
+
+/**
+ * 遙控骰子把指定的点数存在一个**全局的一次性槽**里。
+ *
+ * @source `mov byte [0x475dd8], bl`（VA 0x00447275）写入，
+ *   `0x00447285` 读出并**当场清零**（`mov al, [0x475dd8]` / `mov [0x475dd8], 0`），
+ *   全局只有那一个读取点（VA 0x0040d9a4，掷骰路径上）。
+ *
+ * ★ 所以它是「下一次掷骰用这个数」，用完即消，不是永久生效。
+ *   本引擎存进 `GameState.forcedDice`——之所以进状态而不是当场掷，
+ *   是因为原版用完道具之后还要走一遍正常的掷骰流程（`0x40dd1f`
+ *   只是把回合状态推到「该掷了」）。
+ */
+export const REMOTE_DICE_MIN = 1;
+/** 遙控骰子能指定的最大点数 —— 与三颗骰子的上限一致 */
+export const REMOTE_DICE_MAX = 18;
+
+export function isValidRemoteDice(value: number): boolean {
+  return Number.isInteger(value) && value >= REMOTE_DICE_MIN && value <= REMOTE_DICE_MAX;
+}
+
+// ============================================================
+//  機器工人
+// ============================================================
+
+/**
+ * 機器工人：在选中的地块上**免费加蓋一级**。
+ *
+ * @source `rich4_tool_jiqigongren.asm` 的主干就是
+ *   `select_instance_with_mouse` → `take_tool` → `0x40b110(type)`，
+ *   而 `0x40b110` 正是魔法屋「就地加蓋房屋」用的同一个函数
+ *   （见 places/magic-house.ts）：
+ * ```asm
+ * 住宅(2000..4000): land.type == 0 && level < 5        → level++
+ *                   land.type == 1 && level == 0       → level++
+ * ```
+ *
+ * ★ **不花钱、不看归属**——连别人的地都能替他盖。
+ *   听着奇怪，但 `0x40b110` 从头到尾没碰过 `+0x19`（owner）与任何金额。
+ */
+export interface BuildResult {
+  ok: boolean;
+  /** 加蓋后的等级 */
+  level: number;
+}
+
+export function buildOneLevel(landType: number, level: number, maxLevel: number): BuildResult {
+  // @source cmp byte [land+0x18], 0 / jne …；cmp byte [land+0x1a], 5 / jae 不可建
+  const buildable = landType === 0 ? level < maxLevel : landType === 1 && level === 0;
+  return buildable ? { ok: true, level: level + 1 } : { ok: false, level };
+}
+
+// ============================================================
+//  飛彈与核子飛彈
+// ============================================================
+
+/**
+ * 两枚飛彈的参数。
+ *
+ * @source 两处 `call 0x40ac7b`（damage_area）的压栈：
+ * ```asm
+ * 飛彈  (7):  push 攻击者 / push 0 / push 0x26 / push 0x64   ; 半径 100
+ * 核彈 (13):  push 攻击者 / push 1 / push 0x26 / push -1     ; ★ 半径 -1 = 全图
+ * ```
+ * `0x26 = 0x20|0x4|0x2`：2 打住宅、4 打设施、0x20 打站在范围里的人。
+ */
+export const MISSILE_RADIUS = 0x64;
+export const NUKE_RADIUS = -1;
+export const MISSILE_FLAGS = 0x26;
+
+/** 被炸的人要住院几天 @source `push 3 / call send_to_hospital`（VA 0x004470dc） */
+export const MISSILE_HOSPITAL_DAYS = 3;
+/** 被炸的人对攻击者的敌意 @source 移位串 `3pi → 6pi → 96pi → 90pi` */
+export const MISSILE_HOSTILITY_FACTOR = 90;
+/** 拆房记在地主头上的敌意：飛彈固定 30×物价指数 */
+export const MISSILE_DEMOLISH_HOSTILITY = 30;
+
+/**
+ * 一次爆炸对**一块地**做什么。
+ *
+ * @source `damage_area` VA 0x0040ac7b 的两个分支（住宅 0x0040acdd、
+ *   设施 0x0040adaf，形状完全一样）：
+ * ```asm
+ * if (heavy == 0) {                       ; 飛彈
+ *     敌意(地主, 攻击者, 30 × 物价指数)
+ *     if (level != 0) level--
+ *     if (type != 0) { level = 0; type = 0 }      ; 連鎖店被夷平
+ * } else {                                ; 核彈
+ *     敌意(地主, 攻击者, level × 30 × 物价指数)   ; ★ 按等级计
+ *     owner = 0 ; level = 0 ; type = 0 ; [+0x30] = 0   ; ★ 连地一起没收
+ * }
+ * ```
+ *
+ * ★ 两者的差别不只是范围：飛彈**拆一级**，核彈**连地契一起烧掉**。
+ */
+export interface BlastOutcome {
+  owner: number;
+  level: number;
+  type: number;
+  /** 记在原地主头上的敌意；无主为 0 */
+  hostility: number;
+}
+
+export function blastLand(
+  owner: number,
+  level: number,
+  type: number,
+  priceIndex: number,
+  heavy: boolean,
+): BlastOutcome {
+  const owned = owner !== 0;
+  if (!heavy) {
+    // @source 飛彈：固定 30 × 物价指数
+    const hostility = owned ? MISSILE_DEMOLISH_HOSTILITY * priceIndex : 0;
+    let next = level > 0 ? level - 1 : 0;
+    let nextType = type;
+    if (type !== 0) {
+      next = 0;
+      nextType = 0;
+    }
+    return { owner, level: next, type: nextType, hostility };
+  }
+  // @source 核彈：edx = level*2; eax = (edx<<4) - edx = 30*level; imul 物价指数
+  const hostility = owned ? level * MISSILE_DEMOLISH_HOSTILITY * priceIndex : 0;
+  return { owner: 0, level: 0, type: 0, hostility };
+}
+
+// ============================================================
 //  尚未实现
 // ============================================================
 
 /**
  * 效果**尚未实现**的道具。
  *
- * 各自的入口与已知线索：
- * | 编号 | 道具 | 线索 |
+ * 只剩三个，各自的入口与已知线索：
+ *
+ * | 编号 | 道具 | 卡在哪 |
  * |---|---|---|
- * | 1 | 機器娃娃 | 写 `_rich4_all_special_players_state`(0x498e28) +64..+74，创建一个替身走子 |
- * | 7 | 飛彈 | 选择参数 0x300c0，随后 `push 0x26` |
- * | 8 | 遙控骰子 | 自带一套 UI（`push 0x446774` 为窗口过程），由玩家指定点数 |
- * | 9 | 機器工人 | 选目标后 `_rich4_get_ai_tool_param_value` |
+ * | 1 | 機器娃娃 | 要先有**替身走子**：写 `_rich4_all_special_players_state`(0x498e28) 的 +64..+74，造一个占用 actor 4..7 的分身。整套走子系统尚未实现（见 known-deviations 的 Q-OBJ-3） |
  * | 10 | 時光機 | `call _rich4_restore_last_state`(0x448544) —— **读档式撤销** |
- * | 11 | 傳送機 | 连续三次选择（0x1200036 / 0x2090802 / 0x2090804） |
- * | 13 | 核子飛彈 | 选择参数 0x400c0，`push 0xd` |
+ * | 11 | 傳送機 | 连续三次选择（0x1200036 / 0x2090802 / 0x2090804），末尾把 `0x407a8c(甲, 乙)` 算出的方位写进 `byte [物件*24 + 0x496d09]`，不是简单的「传送到某格」 |
  *
  * ★ 特别记一笔：**時光機是靠还原存档实现撤销的**。
  *   若要在本项目复现，得有一份「上一步状态」的快照——
  *   这与确定性引擎的 action 日志天然契合（重放到前一步即可），
  *   反而比原版更干净。
  */
-export const UNIMPLEMENTED_TOOLS: readonly number[] = [1, 7, 8, 9, 10, 11, 13];
+export const UNIMPLEMENTED_TOOLS: readonly number[] = [1, 10, 11];
 
 export function isToolImplemented(toolId: number): boolean {
   return !UNIMPLEMENTED_TOOLS.includes(toolId);

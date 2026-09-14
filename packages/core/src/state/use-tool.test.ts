@@ -109,3 +109,35 @@ describe('出局者', () => {
     expect(reduce(s, { type: 'useTool', toolId: 6 }, topo)).toBe(s);
   });
 });
+
+describe('★ 遙控骰子（8）', () => {
+  it('指定点数 → 存进 forcedDice，道具被收走', () => {
+    const s = withTools({ 8: 1 });
+    const r = reduce(s, { type: 'useTool', toolId: 8, value: 12 }, topo);
+    expect(r.forcedDice).toBe(12);
+    expect(toolCount(r.tools, 0, 8)).toBe(0);
+  });
+
+  it('★ 下一次掷骰吃掉它，然后**用完即消**', () => {
+    const s = withTools({ 8: 1 });
+    const set = reduce(s, { type: 'useTool', toolId: 8, value: 7 }, topo);
+    const rolled = reduce({ ...set, phase: 'awaitingRoll' }, { type: 'rollDice' }, topo);
+    expect(rolled.dice).toEqual([7]);
+    expect(rolled.stepsRemaining).toBe(7);
+    // @source 0x00447285 读出来就把 [0x475dd8] 清零
+    expect(rolled.forcedDice).toBe(0);
+  });
+
+  it('没给点数（或越界）就不消耗道具', () => {
+    const s = withTools({ 8: 1 });
+    expect(reduce(s, { type: 'useTool', toolId: 8 }, topo)).toBe(s);
+    expect(reduce(s, { type: 'useTool', toolId: 8, value: 99 }, topo)).toBe(s);
+  });
+});
+
+describe('★ 機器工人（9）与飛彈（7/13）需要地图，见 tool-landing.test.ts', () => {
+  it('没有地块信息时机器工人不生效，也不消耗道具', () => {
+    const s = withTools({ 9: 1 });
+    expect(reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo)).toBe(s);
+  });
+});
