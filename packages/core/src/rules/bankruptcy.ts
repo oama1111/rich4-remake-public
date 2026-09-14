@@ -129,6 +129,7 @@ export function markPlayerBankrupt(player: Player): Player {
       tortoiseWalking: 0,
     },
     daysRejectedByBank: 0,
+    bankFreezeDays: 0,
     godInfo: 0,
     f64: 0,
     totalWinterSleepDays: 0,

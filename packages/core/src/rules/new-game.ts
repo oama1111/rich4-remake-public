@@ -233,6 +233,7 @@ function makeInitialPlayer(
       tortoiseWalking: 0,
     },
     daysRejectedByBank: 0,
+    bankFreezeDays: 0,
     godInfo: 0,
     f64: 0,
     cards: [],

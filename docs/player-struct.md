@@ -31,7 +31,8 @@
 | 0x37 | u8 | `days_sleep_walking` | |
 | 0x38 | u8 | `days_stopping` | 停留卡；高位是标志位 |
 | 0x39 | u8 | `days_tortoise_walking` | |
-| 0x3b | u8 | `days_rejected_by_bank` | |
+| 0x3b | u8 | `days_rejected_by_bank` | 支票跳票 `add byte [p+0x3b], 0x1e` |
+| 0x3c | u8 | `bank_freeze_days`（銀行暫停放款） | 新聞 #171 `mov byte [p+0x3c], 0xf`（0x0044aed2）；銀行屏 0x004351ce 显示 `(v & 0x7f)+1` 天 |
 | 0x3d | u8 | `allied_days` | `break_alliance` `[p*0x68 + 0x496ba5]` |
 | 0x3f | u8 | `god_info` | **物件下标 + 1**，非神明种类 |
 | 0x40 | u8 | `f64` | 另一个物件引用槽 |

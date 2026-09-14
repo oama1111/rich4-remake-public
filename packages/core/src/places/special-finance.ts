@@ -159,6 +159,8 @@ export function borrowSpecial(
 ): FinanceResult | null {
   const me = players[self];
   if (me === undefined) return null;
+  // @source 0x00436fdd / 0x004371e5 `cmp byte [+0x3c], 0` —— 特別融資同样停放
+  if (me.bankFreezeDays !== 0) return null;
   const room = specialFinanceAvailable(players, self);
   const take = Math.min(Math.trunc(amount), room);
   if (take <= 0) return null;

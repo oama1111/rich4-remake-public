@@ -16,6 +16,7 @@ import type { Player } from '../state/types.ts';
 import { NEWS_EVENTS, eventAmount, newsEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { confine } from '../rules/confinement.ts';
+import { isAlive } from '../state/types.ts';
 import { blessingMultiplier } from '../rules/blessing.ts';
 
 export interface NewsEffectResult {
@@ -102,6 +103,13 @@ export function applyNewsEffect(
   const amount = eventAmount(entry, ctx.priceIndex) * blessingMultiplier(ctx.multiplier ?? 0);
   let total = 0;
   let bankrupted = false;
+
+  // ★ 銀行擠兌：不看 affected，**所有在场玩家**的 +0x3c 都写成 15 @source 0x0044aeb6..0x0044aed8
+  if (entry.effects.includes('loanFreeze')) {
+    const days = entry.literal ?? 0;
+    const next = players.map((p) => (isAlive(p) ? { ...p, bankFreezeDays: days } : p));
+    return { ...base, players: next, amount: days };
+  }
 
   for (const who of ctx.affected) {
     if (players[who] === undefined) continue;

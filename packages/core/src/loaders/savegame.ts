@@ -107,6 +107,9 @@ function migrate(state: GameState, version: number): GameState {
   // 电脑调度步（2026-09-14 加入）
   if (typeof patched.aiStep !== 'number') patched = { ...patched, aiStep: 0, aiBranch: 0 };
   if (typeof patched.totalMonths !== 'number') patched = { ...patched, totalMonths: 0 };
+  if (patched.players.some((p) => typeof p.bankFreezeDays !== 'number')) {
+    patched = { ...patched, players: patched.players.map((p) => ({ ...p, bankFreezeDays: p.bankFreezeDays ?? 0 })) };
+  }
   if (version === SAVE_FORMAT_VERSION) return patched;
   // 将来：逐版本补齐新增字段
   return patched;
@@ -217,6 +220,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
       tortoiseWalking: p.daysTortoiseWalking,
     },
     daysRejectedByBank: p.daysRejectedByBank,
+    bankFreezeDays: 0,
     godInfo: p.godInfo,
     f64: p.f64,
     cards: [...p.cards],

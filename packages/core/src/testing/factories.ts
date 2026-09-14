@@ -44,6 +44,7 @@ export function makePlayer(over: Partial<Player> = {}): Player {
       stopping: 0, tortoiseWalking: 0,
     },
     daysRejectedByBank: 0,
+    bankFreezeDays: 0,
     godInfo: 0,
     f64: 0,
     cards: [],

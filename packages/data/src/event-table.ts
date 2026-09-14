@@ -44,7 +44,7 @@ export interface EventEntry {
    * 空数组表示效果不落在以上任何一条上（多半作用于企业或地块，
    * 或尚未分析），并非"无效果"。
    */
-  effects: readonly ('pay' | 'give' | 'prison' | 'hospital' | 'loan' | 'bankBan')[];
+  effects: readonly ('pay' | 'give' | 'prison' | 'hospital' | 'loan' | 'bankBan' | 'loanFreeze')[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
   /** 原版提示语（BIG5 解码后） */
@@ -95,7 +95,8 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 19, va: 0x0044a91e, factor: null, effects: [], textVa: 0x465697, text: "#0168%s山洪爆發土地流失", literal: null },
   { id: 20, va: 0x0044ab2c, factor: null, effects: [], textVa: 0x4656af, text: "#0169超級颱風侵襲%s\n多處房屋受損", literal: null },
   { id: 21, va: 0x0044ac99, factor: null, effects: [], textVa: 0x4656d0, text: "#0170龍捲風侵襲%s\n摧毀房屋一棟", literal: null },
-  { id: 22, va: 0x0044ae89, factor: null, effects: [], textVa: 0x4656ef, text: "#0171銀行擠兌停止放款１５天", literal: null },
+  // @source 0x0044aeb6 `mov bh, 0xf` → 所有在场玩家 +0x3c = 15（0x0044aed2）
+  { id: 22, va: 0x0044ae89, factor: null, effects: ['loanFreeze'], textVa: 0x4656ef, text: "#0171銀行擠兌停止放款１５天", literal: 15 },
   { id: 23, va: 0x0044aedb, factor: null, effects: ['give'], textVa: 0x46570b, text: "#0172銀行加發１０％儲金紅利", literal: null },
   { id: 24, va: 0x0044b00a, factor: null, effects: [], textVa: 0x46573c, text: "#0173股市低迷不振重挫崩盤", literal: null },
   { id: 25, va: 0x0044b055, factor: null, effects: [], textVa: 0x465756, text: "#0174股市氣勢如虹全面上漲", literal: null },

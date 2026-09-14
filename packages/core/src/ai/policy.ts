@@ -449,6 +449,8 @@ export function decidePending(state: GameState): Action | null {
   if (p.kind === 'bank') {
     const me = state.players[state.currentPlayer];
     if (me === undefined) return null;
+    // @source 0x004368ce `cmp byte [+0x3c], 0` —— 銀行暫停放款期内電腦不借
+    if (me.bankFreezeDays !== 0) return null;
     const want = Math.min(autoLoanAmount(p.wealth, me.loanRatio), p.loanCapacity);
     return want > 0 ? { type: 'bank', op: 'borrow', amount: want } : null;
   }

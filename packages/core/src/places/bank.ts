@@ -93,7 +93,8 @@ export interface LoanResult {
  * ```
  */
 export function borrow(player: Player, amount: number, wealth: number): LoanResult {
-  if (amount <= 0 || player.daysRejectedByBank !== 0) {
+  // @source 0x004341e1 `cmp byte [+0x3c], 0 / je` —— 銀行暫停放款期内借不到
+  if (amount <= 0 || player.daysRejectedByBank !== 0 || player.bankFreezeDays !== 0) {
     return { player, borrowed: 0 };
   }
   const capacity = loanCapacity(wealth, player.loan);

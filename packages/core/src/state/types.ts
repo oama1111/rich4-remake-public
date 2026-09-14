@@ -162,6 +162,13 @@ export interface Player {
   /** 被银行拒绝放贷的剩余天数 @source player_info +0x3b days_rejected_by_bank */
   daysRejectedByBank: number;
   /**
+   * 「銀行暫停放款」剩余天数 @source player_info +0x3c（先前未名，Q-TURN-1）。
+   * 新聞 #171「銀行擠兌停止放款１５天」把**所有在场玩家**的这一项写成 15（0x0044aeb6..0x0044aed2）；
+   * 銀行屏据此拒贷并显示「銀行暫停放款 還剩%d天」（0x004351ce，`(+0x3c & 0x7f) + 1`）；
+   * 与其它计数一样每輪递减、到 0 挂 0x80、下一輪清零（0x0041cbb8 / 0x0041caba）。
+   */
+  bankFreezeDays: number;
+  /**
    * 附身的神明 —— 存的是**物件下标 + 1**，0 表示无。
    * @source player_info +0x3f
    * 真正的神明种类在 `objects_info[godInfo - 1].type`（见 rules/objects.ts）

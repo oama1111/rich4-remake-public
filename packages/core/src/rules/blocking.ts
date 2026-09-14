@@ -137,7 +137,7 @@ export function displayRemainingDays(raw: number, mask = 0x7f): number {
  * 0041cb4c  +0x39 龜行：同上（不受上面那条 cmp 限制）
  * 0041cb70  +0x38 停留：同上
  * 0041cb94  +0x3b 銀行拒貸：同上
- * 0041cbb8  +0x3c（字段未名）：同上
+ * 0041cbb8  +0x3c 銀行暫停放款（新聞 #171，Q-TURN-1 已解）：同上
  * 0041cbdc  +0x3d 同盟：先 update_hostility(我, 盟友, −20×物價) 与 (盟友, 我, −20×物價)，再 dec；到 0 → 0x80
  * 0041cc4b  +0x3e 保險：同上（本引擎在 startTurn 走，早一拍，见 reduce.ts）
  * ```
@@ -164,6 +164,8 @@ export function tickTurnCounters(player: Player): TurnCounterTick {
   const tortoise = tickBlockingCounter(b.tortoiseWalking);
   const stopping = tickBlockingCounter(b.stopping);
   const rejected = tickBlockingCounter(player.daysRejectedByBank);
+  // @source 0x0041cbb8 +0x3c 銀行暫停放款
+  const frozen = tickBlockingCounter(player.bankFreezeDays);
   const alliedTick = player.alliedDays !== 0 && (player.alliedDays & RELEASE_PENDING) === 0;
   const allied = tickBlockingCounter(player.alliedDays);
   return {
@@ -177,6 +179,7 @@ export function tickTurnCounters(player: Player): TurnCounterTick {
         stopping: stopping.value,
       },
       daysRejectedByBank: rejected.value,
+      bankFreezeDays: frozen.value,
       alliedDays: allied.value,
     },
     wakeFromSleepwalk: sleepWalking.release,
