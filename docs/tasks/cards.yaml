@@ -345,7 +345,7 @@ cards:
   title: 核对 AI 总调度顺序 fcn_00418c55（P1-5）
   module: MOD-09
   req: REQ-09.2
-  status: todo
+  status: done
   estimate: 0.5
   depends_on: []
   uses:
@@ -383,6 +383,32 @@ cards:
   tests: "facility-rules.test.ts：各等级的可选范围；同种子一致。"
   files: [packages/core/src/rules/facility.ts, packages/core/src/state/reduce.ts]
   notes: "Q-LAB-1 结案。"
+
+- id: T-016
+  group: B
+  title: 翻译 AI 卖股 0x0042c79f（调度第 1 步）
+  module: MOD-09
+  req: REQ-09.2
+  status: todo
+  estimate: 1.0
+  depends_on: []
+  uses:
+    - core/ai/stock-policy.ts (decideStockTrade 的兄弟：decideStockSell)
+    - core/ai/policy.ts (awaitingRoll 的 case 1 现在直接 aiNext)
+    - core/places/stock-market.ts (isLimitDown)
+  source: |
+    VA 0x0042c79f..0x0042d0e4：入口两道闸——距還款日 <= 6 天且 存款+現金 < 貸款 → 必须卖；
+    否则 rand()%3 != 0 → 不卖；休市 → 不卖。然后 0x42c844 起逐支打分（与买入侧同款的
+    +0x2c/總天數、+0x24/10000 等指标），选一支卖出，股数规则在 0x42cf7c 之后。
+  input: "state（awaitingRoll，aiStep == 1），topo.commercials"
+  output: "{ type:'sellStock', stock, shares } | null；null 时 policy 发 aiNext"
+  algorithm: |
+    1. 先把「必须卖」闸门写成 mustSell(me, today)；rand()%3 用 aiRoll 替身（D-004）。
+    2. 打分逐段翻译成小函数（带 VA），与买入侧共用 recentAverage / stockScoreInput。
+    3. 跌停不能卖（柜台会拒）→ 跳过，避免 AI 提一个必拒的 action。
+  tests: "stock-policy.test.ts：必须卖闸门、三分之一闸门、跌停跳过、同种子一致。"
+  files: [packages/core/src/ai/stock-policy.ts, packages/core/src/ai/policy.ts]
+  notes: "做完把 policy.ts 的 case 1 接上。"
 
 # ============================================================
 #  C · 表现层 22 屏（client）

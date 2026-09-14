@@ -417,6 +417,17 @@ export interface GameState {
   turnCount: number;
 
   /**
+   * ★ 电脑回合掷骰前的**调度步** @source VA 0x00418dc6：
+   *   0 买股（0x42bf03）→ 1 卖股（0x42c79f）→ 2 用卡或用道具 → 3 掷骰。
+   * 进 2 之前 reducer 顺手做原版夹在中间的三件事：特別融資收回（0x436b0a(0)）、
+   * 公佈欄（0x4284be）、`rand() & 1` 定本回合用卡还是用道具（写进 `aiBranch`）。
+   * 每回合 startTurn 清零；真人回合不用（策略层不看）。
+   */
+  aiStep: number;
+  /** 1 = 本回合用卡，0 = 用道具 @source 0x00418e18 `call rand / test al, 1` */
+  aiBranch: number;
+
+  /**
    * 每个玩家的「回合开始快照」，供時光機（道具 10）还原。
    *
    * ★ 原版是同一套东西：`[0x48cb80 + 玩家 × 0x2718]`，只给真人存

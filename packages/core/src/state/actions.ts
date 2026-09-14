@@ -202,6 +202,11 @@ export type Action =
   | { type: 'auction'; winner: number; price: number }
   | { type: 'bail'; slot: number }
   | { type: 'minigame'; score: number | null }
+  /**
+   * 电脑回合的调度步前进一格（见 GameState.aiStep）。只有当前玩家是电脑、
+   * 且在 awaitingRoll 时合法；策略层在某一步「没事可做」时发它。
+   */
+  | { type: 'aiNext' }
   | { type: 'endTurn' };
 
 export type ActionType = Action['type'];

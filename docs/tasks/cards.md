@@ -1,11 +1,11 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **67** 张卡，估算 **36.6** 单元，已完成 1.3。
+共 **68** 张卡，估算 **37.6** 单元，已完成 1.8。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
 | A | 核心契约与卡片接线（core） | 12 | 4.8 |
-| B | AI 保真（core/ai） | 3 | 1.8 |
+| B | AI 保真（core/ai） | 4 | 2.8 |
 | C | 表现层 22 屏（client） | 37 | 22.1 |
 | D | 画质升级管线（assets-pipeline） | 7 | 3.2 |
 | E | 联网对战（server + client） | 8 | 4.7 |
@@ -27,8 +27,9 @@
 | [T-011](#t-011) | 魔法屋男性效果不影响四大惡人；路障/地雷对 NPC 的行为核对（P0-11 道具侧） | MOD-05 | REQ-05.1 | `todo` | 0.3 | — |
 | [T-012](#t-012) | 找到 NPC 记录 +14 halted / +15 single_step 的写入点并接进 runNpc（P0-12） | MOD-05 | REQ-05.2 | `todo` | 0.5 | — |
 | [T-013](#t-013) | 翻译股票打分函数 0x0042c075，AI 买哪一支（P1-4） | MOD-09 | REQ-09.1 | `done` | 1.0 | — |
-| [T-014](#t-014) | 核对 AI 总调度顺序 fcn_00418c55（P1-5） | MOD-09 | REQ-09.2 | `todo` | 0.5 | — |
+| [T-014](#t-014) | 核对 AI 总调度顺序 fcn_00418c55（P1-5） | MOD-09 | REQ-09.2 | `done` | 0.5 | — |
 | [T-015](#t-015) | AI 研發项目选择按研究所 UI 的电脑分支定案（P1-6） | MOD-09 | REQ-09.3 | `todo` | 0.3 | — |
+| [T-016](#t-016) | 翻译 AI 卖股 0x0042c79f（调度第 1 步） | MOD-09 | REQ-09.2 | `todo` | 1.0 | — |
 | [T-020](#t-020) | 新增 core 指令 setAi{player, whoPlays, aiFlags, personality}（託管AI 的规则侧） | MOD-04 | REQ-12.1 | `todo` | 0.2 | — |
 | [T-021](#t-021) | 託管AI 屏（工具列 #3） | MOD-12 | REQ-12.1 | `todo` | 0.6 | T-020 |
 | [T-022](#t-022) | 個人資產表屏（工具列 #7） | MOD-12 | REQ-12.2 | `todo` | 0.5 | — |
@@ -619,7 +620,7 @@
 
 **核对 AI 总调度顺序 fcn_00418c55（P1-5）**
 
-- 模块 `MOD-09` · 需求 `REQ-09.2` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-09` · 需求 `REQ-09.2` · 状态 `done` · 估算 0.5 单元
 - 依赖：无（可立即开工）
 - 证据：fcn_00418c55：买股 → 卖股 → fcn_00436b0a → 买地/盖房 → rand&1 → 用卡/用道具
 
@@ -691,6 +692,47 @@
 - packages/core/src/state/reduce.ts
 
 > Q-LAB-1 结案。
+
+### T-016
+
+**翻译 AI 卖股 0x0042c79f（调度第 1 步）**
+
+- 模块 `MOD-09` · 需求 `REQ-09.2` · 状态 `todo` · 估算 1.0 单元
+- 依赖：无（可立即开工）
+- 证据：VA 0x0042c79f..0x0042d0e4：入口两道闸——距還款日 <= 6 天且 存款+現金 < 貸款 → 必须卖；
+否则 rand()%3 != 0 → 不卖；休市 → 不卖。然后 0x42c844 起逐支打分（与买入侧同款的
++0x2c/總天數、+0x24/10000 等指标），选一支卖出，股数规则在 0x42cf7c 之后。
+
+**依赖的其他类 / 文件**
+
+- core/ai/stock-policy.ts (decideStockTrade 的兄弟：decideStockSell)
+- core/ai/policy.ts (awaitingRoll 的 case 1 现在直接 aiNext)
+- core/places/stock-market.ts (isLimitDown)
+
+**期望输入**
+
+    state（awaitingRoll，aiStep == 1），topo.commercials
+
+**期望输出**
+
+    { type:'sellStock', stock, shares } | null；null 时 policy 发 aiNext
+
+**核心逻辑 / 算法指导**
+
+    1. 先把「必须卖」闸门写成 mustSell(me, today)；rand()%3 用 aiRoll 替身（D-004）。
+    2. 打分逐段翻译成小函数（带 VA），与买入侧共用 recentAverage / stockScoreInput。
+    3. 跌停不能卖（柜台会拒）→ 跳过，避免 AI 提一个必拒的 action。
+
+**验收测试**
+
+    stock-policy.test.ts：必须卖闸门、三分之一闸门、跌停跳过、同种子一致。
+
+**涉及文件**
+
+- packages/core/src/ai/stock-policy.ts
+- packages/core/src/ai/policy.ts
+
+> 做完把 policy.ts 的 case 1 接上。
 
 ## C · 表现层 22 屏（client）
 

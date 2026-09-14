@@ -140,8 +140,19 @@ export function decideAction(ctx: AiContext): Action | null {
     case 'turnStart':
       return { type: 'startTurn' };
     case 'awaitingRoll':
-      // ★ 掷骰前是出牌/用道具/炒股的时机 —— 原版也是在这个阶段
-      return decideCard(ctx) ?? decideTool(ctx) ?? decideStockTrade(state, map) ?? { type: 'rollDice' };
+      // ★ 掷骰前的顺序照 0x00418dc6：买股 → 卖股 → [特別融資收回 → 公佈欄 → rand&1] → 用卡 | 用道具 → 掷骰
+      //   中括号里三件在 reducer 的 aiAdvance 里做；这里按 aiStep 只答当前那一步
+      switch (state.aiStep) {
+        case 0:
+          return decideStockTrade(state, map) ?? { type: 'aiNext' };
+        case 1:
+          // 卖股 0x0042c79f 尚未翻译（T-016）—— 先跳过
+          return { type: 'aiNext' };
+        case 2:
+          return (state.aiBranch === 1 ? decideCard(ctx) : decideTool(ctx)) ?? { type: 'aiNext' };
+        default:
+          return { type: 'rollDice' };
+      }
     case 'moving':
       return { type: 'step' };
     case 'settling':

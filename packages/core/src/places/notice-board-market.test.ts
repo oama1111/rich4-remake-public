@@ -146,7 +146,14 @@ describe('★ AI 怎么用公佈欄 —— 判据', () => {
 //  AI 回合真的会动板
 // ============================================================
 
-describe('★ 电脑回合开局会用公佈欄（在 reducer 里掷）', () => {
+/** 原版公佈欄那一步在买股卖股之后（0x00418e13）：startTurn 后再推两步调度才轮到它 */
+function toBoardStep(state: GameState): GameState {
+  let s = reduce(state, { type: 'startTurn' }, topo);
+  s = reduce(s, { type: 'aiNext' }, topo);
+  return reduce(s, { type: 'aiNext' }, topo);
+}
+
+describe('★ 电脑回合会用公佈欄（在 reducer 里掷，跨进调度第 2 步时）', () => {
   function aiWithTools(seed: number): GameState {
     const s = makeGameState({
       players: [0, 1].map((i) => makePlayer({ index: i, nodeId: 1, cash: 100_000, whoPlays: 2, personality: 0 })),
@@ -167,7 +174,7 @@ describe('★ 电脑回合开局会用公佈欄（在 reducer 里掷）', () => 
   it('扫一批种子：总有些回合挂出路障，且價 = 3000 × 物價', () => {
     let listedSeeds = 0;
     for (let seed = 1; seed <= 120; seed++) {
-      const after = reduce(aiWithTools(seed), { type: 'startTurn' }, topo);
+      const after = toBoardStep(aiWithTools(seed));
       const it = after.noticeBoard[0]?.[0];
       if (it) {
         listedSeeds++;
@@ -181,13 +188,13 @@ describe('★ 电脑回合开局会用公佈欄（在 reducer 里掷）', () => 
 
   it('真人回合不动板', () => {
     const s = { ...aiWithTools(7), players: aiWithTools(7).players.map((p) => ({ ...p, whoPlays: WHO_PLAYS_HUMAN })) };
-    const after = reduce(s, { type: 'startTurn' }, topo);
+    const after = toBoardStep(s);
     expect(after.noticeBoard[0]?.every((x) => x === null)).toBe(true);
   });
 
   it('同一种子重放一致（C-DET-4）', () => {
-    const a = reduce(aiWithTools(11), { type: 'startTurn' }, topo);
-    const b = reduce(aiWithTools(11), { type: 'startTurn' }, topo);
+    const a = toBoardStep(aiWithTools(11));
+    const b = toBoardStep(aiWithTools(11));
     expect(a.noticeBoard).toEqual(b.noticeBoard);
     expect(a.rngState).toBe(b.rngState);
   });

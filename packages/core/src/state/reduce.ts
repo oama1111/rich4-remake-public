@@ -11,7 +11,7 @@
 
 import type { Action } from './actions.ts';
 import type { GameState, Player } from './types.ts';
-import { isAlive } from './types.ts';
+import { isAiControlled, isAlive } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
 import { applyNpcEvents, runNpc } from '../rules/npc-walk.ts';
 import {
@@ -471,12 +471,8 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         return { ...state, phase: 'turnEnd' };
       }
       // ★ 時光機的后悔药：真人回合开局先拍一张快照（@source VA 0x004480a0）
-      let snapped = snapshotOnTurnStart(state);
-      // ★ 电脑的公佈欄回合（AI 总调度里 `fcn_00436b0a` 那一步）：三道随机闸都在
-      //   reducer 里掷，AI 策略层不碰随机数（与保釋同一做法）。
-      if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
-        snapped = aiNoticeBoardTurn(snapped, topo);
-      }
+      //   电脑的调度步归零（公佈欄那一步挪到了 aiAdvance：原版是买股卖股之后才轮到它）
+      let snapped: GameState = { ...snapshotOnTurnStart(state), aiStep: 0, aiBranch: 0 };
       // @source 0x0041cc4b：保險期每日 −1，归零挂 0x80，下一次推进清掉 —— 与阻碍计数同一套
       snapped = withPlayer(snapped, snapped.currentPlayer, (p) => {
         p.insuranceDays = tickBlockingCounter(p.insuranceDays).value;
@@ -825,16 +821,24 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
 
     case 'buyStock':
     case 'sellStock':
-      return tradeStock(state, action);
+      return afterAiStep(state, tradeStock(state, action), topo, action.type === 'buyStock' ? 1 : 2);
+
+    case 'aiNext': {
+      // @source 0x00418dc6 的顺序：策略层在某一步没事可做就发它把步数推进
+      if (state.phase !== 'awaitingRoll') return state;
+      const me = state.players[state.currentPlayer];
+      if (me === undefined || !isAiControlled(me)) return state;
+      return aiAdvance(state, topo, state.aiStep + 1);
+    }
 
     case 'buyShares':
       return buySharesFromCommercial(state, action.shares);
 
     case 'useCard':
-      return playCard(state, topo, action.cardId, action.target ?? { kind: 'none' });
+      return afterAiStep(state, playCard(state, topo, action.cardId, action.target ?? { kind: 'none' }), topo, 3);
 
     case 'useTool':
-      return useToolAction(state, topo, action.toolId, action.nodeId ?? 0, action.value ?? 0);
+      return afterAiStep(state, useToolAction(state, topo, action.toolId, action.nodeId ?? 0, action.value ?? 0), topo, 3);
 
     case 'shop':
       return shopAction(state, action);
@@ -1868,6 +1872,7 @@ function playCard(
       nodes: topo.nodes,
       currentPlayer: state.currentPlayer,
       priceIndex: state.priceIndex,
+      tools: state.tools,
       // 嫁祸的新目标：交给上层决定；没给就放弃转嫁（返回 -1）
       scapegoatPicker: () => -1,
     },
@@ -1892,7 +1897,7 @@ function playCard(
 
   // ★ 送神符之类只清了玩家身上的引用，物件本身要在这里收回：
   //   退还三项修正、清 `attached`、让搭档登场。
-  let next: GameState = { ...state, players, landOwner, landLevel, landType };
+  let next: GameState = { ...state, players, landOwner, landLevel, landType, tools: r.tools };
   for (const handle of r.releasedObjects) {
     const rel = releaseObject(next, handle);
     next = respawnPartner(
@@ -2421,6 +2426,61 @@ function pendingForSpecial(
  *   物品转移按类型走各自既有的路子（持股、地產归属、道具、手牌），
  *   **不另起一套**。
  */
+/**
+ * ★ 电脑回合掷骰前的调度 @source VA 0x00418dc6：
+ * ```asm
+ * 00418de6  call 0x42bf03            ; 买股（ai/stock-policy.ts）
+ * 00418df4  call 0x42c79f            ; 卖股（未译，T-016）
+ * 00418dfe  push 0 / call 0x436b0a   ; 特別融資收回：非董事長却欠着的人当场全额还
+ * 00418e06  cmp [0x46caf8], 0 / jne  ; 终局码非 0 就不再往下
+ * 00418e13  call 0x4284be            ; 公佈欄（1/15 挂、1/3 重估、1/4 买）
+ * 00418e18  call rand / test al, 1   ; 1 → 用卡（0x441baa），0 → 用道具（0x447d97）
+ * ```
+ * 策略层每次只能给一个 action，所以把这条顺序拆成 `aiStep`：
+ * 0 买股 → 1 卖股 → 2 用卡|用道具 → 3 掷骰。跨进 2 的那一刻做中间三件事。
+ */
+function aiAdvance(state: GameState, topo: MapTopology, step: number): GameState {
+  let s = state;
+  if (s.aiStep < 2 && step >= 2) {
+    s = sweepSpecialFinance(s, topo);
+    if (s.phase !== 'awaitingRoll') return { ...s, aiStep: step };
+    // ★ 三道随机闸都在 reducer 里掷，AI 策略层不碰随机数（与保釋同一做法）
+    s = aiNoticeBoardTurn(s, topo);
+    const rng = new WatcomRng();
+    rng.setState(s.rngState);
+    const branch = rng.next() & 1;
+    s = { ...s, rngState: rng.getState(), aiBranch: branch };
+  }
+  return s.aiStep >= step ? s : { ...s, aiStep: step };
+}
+
+/** 电脑在 awaitingRoll 做完某一步后把调度步推到 `step`；真人或没生效的 action 原样返回 */
+function afterAiStep(before: GameState, after: GameState, topo: MapTopology, step: number): GameState {
+  if (after === before || before.phase !== 'awaitingRoll' || after.phase !== 'awaitingRoll') return after;
+  const me = before.players[before.currentPlayer];
+  if (me === undefined || !isAiControlled(me)) return after;
+  return aiAdvance(after, topo, step);
+}
+
+/**
+ * 特別融資收回 @source VA 0x00436c6d（`0x436b0a(0)`）：
+ * 除銀行董事長以外、还欠着特別融資的在场玩家，当场全额扣回
+ * （存款 → 现金 → 破產，0x433bd8），再把欠额清零。没有董事長时人人都收。
+ */
+function sweepSpecialFinance(state: GameState, topo: MapTopology): GameState {
+  const chairman = bankChairman(state, topo.commercials);
+  let s = state;
+  for (let i = 0; i < s.players.length; i++) {
+    if (i === chairman) continue;
+    const p = s.players[i];
+    if (p === undefined || !isAlive(p) || p.specialFinance === 0) continue;
+    const r = payFromBank(p, p.specialFinance);
+    s = { ...s, players: s.players.map((q, k) => (k === i ? { ...r.player, specialFinance: 0 } : q)) };
+    if (r.bankrupt) s = applyBankruptcy(s, i, topo);
+  }
+  return s;
+}
+
 /**
  * 电脑玩家的公佈欄回合 —— 挂东西 / 重估 / 买别人的，逐条照 VA 0x0042886e。
  * 规则常量与判据见 places/notice-board.ts 的 AI 一节。

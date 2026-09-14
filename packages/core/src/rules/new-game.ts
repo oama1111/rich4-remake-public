@@ -386,6 +386,8 @@ export function newGame(opts: NewGameOptions): GameState {
     facilityResearchDays: facilityFieldFromMap(map, () => 0),
     companyFunds: new Array<number>(map.commercials.length + 1).fill(0),
     companyProfit: new Array<number>(map.commercials.length + 1).fill(0),
+    aiStep: 0,
+    aiBranch: 0,
     noticeBoard: emptyBoard(),
     specialActors: initialSpecialActors(),
     turnCount: 0,

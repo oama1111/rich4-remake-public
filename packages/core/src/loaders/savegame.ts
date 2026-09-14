@@ -101,9 +101,11 @@ export function deserializeGame(text: string): GameState {
 /** 旧版本存档的迁移。目前只有版本 1，留好接口。 */
 function migrate(state: GameState, version: number): GameState {
   // 同版本内新增的可选数组：缺了就按零补齐（companyProfit 于 2026-09-14 加入）
-  const patched: GameState = Array.isArray(state.companyProfit)
+  let patched: GameState = Array.isArray(state.companyProfit)
     ? state
     : { ...state, companyProfit: (state.companyFunds ?? []).map(() => 0) };
+  // 电脑调度步（2026-09-14 加入）
+  if (typeof patched.aiStep !== 'number') patched = { ...patched, aiStep: 0, aiBranch: 0 };
   if (version === SAVE_FORMAT_VERSION) return patched;
   // 将来：逐版本补齐新增字段
   return patched;
@@ -306,6 +308,8 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     facilityResearchDays: facilityFieldFromMap(map, () => 0),
     companyFunds: new Array<number>(map.commercials.length + 1).fill(0),
     companyProfit: new Array<number>(map.commercials.length + 1).fill(0),
+    aiStep: 0,
+    aiBranch: 0,
     prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     lastEvent: null,
