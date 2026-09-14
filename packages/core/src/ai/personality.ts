@@ -161,3 +161,31 @@ export function traitsOf(character: number): CharacterTraits {
   if (c === undefined) return { ...DEFAULT_TRAITS };
   return { aiFlags: c.f22, personality: c.f23, loanRatio: c.f24, stockRatio: c.f26 };
 }
+
+// ============================================================
+//  f23 個性 × f7 凶狠度：AI 出牌/用道具的闸门
+// ============================================================
+
+/**
+ * ★ 每张卡、每件道具都有个 **f7 = 凶狠度 0..2**（§7.1 / §7.2 最后一列）。
+ *   AI 用它之前先过一道闸（VA 0x0041e69e，`ai_use_card` 的调度入口）：
+ * ```asm
+ * 0041e6a4  edx = card_table[action].f7           ; [0x47fdf1 + action×8]（道具在 31..43，表紧接）
+ * 0041e6b2  eax = 當前玩家.個性 (+0x17)
+ * 0041e6bd  edx -= eax
+ * 0041e6c1  if (edx >= 2) 不用                     ; 差两档：从不
+ * 0041e6c9  if (edx == 1 && rand() % 3 != 0) 不用  ; 差一档：1/3
+ * 0041e6e6  照做
+ * ```
+ *   乖寶寶（0）只随手用 f7=0 的，f7=1 的三次里用一次，f7=2 的（均富/均貧/惡魔/冬眠/
+ *   陷害/嫁禍…）从不；大老奸（2）什么都用。
+ *
+ * @param roll  那次 `rand() % 3` 的结果（0..2）。策略层拿不到随机源，由调用方给一个
+ *              **确定性的替身**（见 policy.ts 的 `gateRoll`），记 D-004。
+ */
+export function personalityAllows(f7: number, personality: number, roll: number): boolean {
+  const gap = f7 - personality;
+  if (gap >= 2) return false;
+  if (gap === 1) return roll === 0;
+  return true;
+}

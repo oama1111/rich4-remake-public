@@ -4,16 +4,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { CHARACTERS } from '@rich4/data';
-import {
-  AI_USES_CARDS,
-  AI_USES_TOOLS,
-  aiCanUseCards,
-  aiCanUseTools,
-  autoLoanAmount,
-  stockBudget,
-  traitsOf,
-} from './personality.ts';
+import { CARDS, CHARACTERS } from '@rich4/data';
+import { AI_USES_CARDS, AI_USES_TOOLS, aiCanUseCards, aiCanUseTools, autoLoanAmount, personalityAllows, stockBudget, traitsOf } from './personality.ts';
 
 describe('f22：AI 能力位', () => {
   it('★ 12 个角色全是 3 —— 它是「AI 设置」的开关，不是角色差异', () => {
@@ -98,5 +90,34 @@ describe('从角色表取默认值', () => {
       CHARACTERS.map((c) => `${c.f22}/${c.f23}/${c.f24}/${c.f26}/${c.initCashRatio}`),
     );
     expect(shapes.size).toBeGreaterThanOrEqual(10);
+  });
+});
+
+// ============================================================
+//  f23 個性 × f7 凶狠度 闸门
+// ============================================================
+
+describe('★ 個性闸门 @source 0x0041e69e', () => {
+  it('差两档从不、差一档看那次 rand()%3、不差照做', () => {
+    // 乖寶寶(0) vs f7=2：从不
+    for (const roll of [0, 1, 2]) expect(personalityAllows(2, 0, roll)).toBe(false);
+    // 乖寶寶 vs f7=1：roll == 0 才用
+    expect(personalityAllows(1, 0, 0)).toBe(true);
+    expect(personalityAllows(1, 0, 1)).toBe(false);
+    expect(personalityAllows(1, 0, 2)).toBe(false);
+    // 普通人(1) vs f7=2：三分之一；vs f7=1：照做
+    expect(personalityAllows(2, 1, 0)).toBe(true);
+    expect(personalityAllows(2, 1, 2)).toBe(false);
+    expect(personalityAllows(1, 1, 2)).toBe(true);
+    // 大老奸(2) 什么都用
+    for (const f7 of [0, 1, 2]) for (const roll of [0, 1, 2]) expect(personalityAllows(f7, 2, roll)).toBe(true);
+  });
+
+  it('★ f7 = 2 的卡正是那几张狠牌', () => {
+    const names = CARDS.filter((c) => c.f7 === 2).map((c) => c.name);
+    expect(names).toContain('均富卡');
+    expect(names).toContain('惡魔卡');
+    expect(names).toContain('冬眠卡');
+    expect(names).toContain('陷害卡');
   });
 });

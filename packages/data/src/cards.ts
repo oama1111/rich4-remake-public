@@ -20,7 +20,11 @@ export interface CardDef {
   price: number;
   /** TODO: semantics unknown @source card.h f6 —— 取值 0 或 2 */
   f6: number;
-  /** TODO: semantics unknown @source card.h f7 —— 取值 0、1 或 2 */
+  /**
+   * ★ **凶狠度 0..2** —— AI 出牌的個性闸门：`f7 − 個性 ≥ 2` 从不打、`== 1` 三分之一、
+   *   `≤ 0` 照打（VA 0x0041e69e；表 `[0x47fdf1 + id×8]` 就是本字段）。
+   *   道具表的 f7 同义（公佈欄挂牌 / 逛店也用它）。见 core/ai/personality.ts。
+   */
   f7: number;
 }
 

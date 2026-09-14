@@ -27,7 +27,8 @@ import { useCard } from '../cards/registry.ts';
 import type { CardTarget } from '../cards/target.ts';
 import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE, buildOneLevel } from '../rules/tool-effects.ts';
 import { MAX_LAND_LEVEL } from '../loaders/map.ts';
-import { aiCanUseCards, aiCanUseTools, autoLoanAmount } from './personality.ts';
+import { CARDS, TOOLS } from '@rich4/data';
+import { aiCanUseCards, aiCanUseTools, autoLoanAmount, personalityAllows } from './personality.ts';
 import { toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
 import { decideStockTrade } from './stock-policy.ts';
@@ -186,8 +187,13 @@ export function decideCard(ctx: AiContext): Action | null {
       target,
     ).ok;
 
+  // ★ 個性闸门（VA 0x0041e69e）：f7 − 個性 ≥ 2 从不、== 1 三分之一、≤ 0 照做
+  const gated = (cardId: number): boolean => {
+    const f7 = CARDS.find((c) => c.id === cardId)?.f7 ?? 0;
+    return personalityAllows(f7, me.personality, gateRoll(state, cardId));
+  };
   const play = (cardId: number, target: CardTarget = { kind: 'none' }): Action | null =>
-    willWork(cardId, target) ? { type: 'useCard', cardId, target } : null;
+    gated(cardId) && willWork(cardId, target) ? { type: 'useCard', cardId, target } : null;
 
   const has = (id: number): boolean => me.cards.includes(id);
   const rivals = state.players.filter((p) => p.index !== me.index && isAlive(p));
@@ -286,7 +292,13 @@ export function decideTool(ctx: AiContext): Action | null {
     { tool: 6, traffic: TRAFFIC_CAR },
     { tool: 5, traffic: TRAFFIC_MOTORCYCLE },
   ];
+  // ★ 同一道個性闸门也管道具（跳表 31..43 就是道具 1..13，f7 同位）
+  const gatedTool = (toolId: number): boolean => {
+    const f7 = TOOLS.find((t) => t.id === toolId)?.f7 ?? 0;
+    return personalityAllows(f7, me.personality, gateRoll(state, 30 + toolId));
+  };
   for (const b of better) {
+    if (!gatedTool(b.tool)) continue;
     if (me.trafficMethod === b.traffic) break; // 已经是更好的了
     if (toolCount(state.tools, me.index, b.tool) > 0) {
       return { type: 'useTool', toolId: b.tool };
@@ -319,6 +331,17 @@ export function decideTool(ctx: AiContext): Action | null {
 
 /** 機器工人的道具编号 */
 const TOOL_ROBOT_WORKER = 9;
+
+/**
+ * 闸门里那次 `rand() % 3` 的**确定性替身**。
+ *
+ * ⚠️ 策略层是纯函数、碰不得随机源（否则 reducer 拒一次它就原样重提）。这里用
+ *   `(rngState ^ action) % 3` —— 同一状态下同一张牌的结论固定，重放一致（C-DET-4），
+ *   分布上也是三分之一，但**不是**原版那次 `rand()` 的序列。记 D-004。
+ */
+function gateRoll(state: GameState, action: number): number {
+  return (((state.rngState >>> 0) ^ (action * 0x9e3779b1)) >>> 0) % 3;
+}
 
 /**
  * 回答落点留下的待决交互。
