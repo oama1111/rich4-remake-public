@@ -35,8 +35,16 @@ import { OBJECT_SLOT_BASE, type ConfinementKind } from './confinement.ts';
  * @source `dword [slot*4 + 0x47ed5a]`——该表就是物件名表 0x47ed76 往前
  *   挪 28 字节，故下标 4..7 落在「小偷/強盜/流氓/間諜」这四个名字上。
  *
- * ⚠️ 本引擎**还没有这四个 NPC**（他们会在地图上游走、偷东西），
- *   占用表的 4..7 槽永远是空的。保釋他们这条路因此走不到。
+ * ★ **开局他们并不都在監獄：小偷(4)/強盜(5) 蹲監獄，流氓(6)/間諜(7) 躺醫院。**
+ *   @source 0x00407351 四条 `mov byte [...], 1`，详见 rules/special-actors.ts
+ *   的 `INITIAL_ACTOR_PLACE`。占用表由 `initialConfinement()` 播种，
+ *   所以**开局第一次探監就能保釋到人**。
+ *
+ * ★ 保釋他们**不是**只把槽清零：他会当场从監獄/醫院那一格上路，
+ *   走 `rand()%9+2` 步，主人记成保釋他的人（见 `releaseNpc`）。
+ *   在路上踩到惡犬会被咬进醫院，且**不会自己出院**——只能再花 300 點券捞。
+ *
+ * ⚠️ 还没做的是他们**走到别的格子上做什么**（十八条落点分支里的十七条），
  *   见 known-deviations 的 Q-NPC-1。
  */
 export const INMATE_NAMES: readonly string[] = ['小偷', '強盜', '流氓', '間諜'];

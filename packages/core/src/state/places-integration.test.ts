@@ -133,8 +133,12 @@ describe('★ 監獄／醫院：没人在押就什么都不发生（探监机制
     expect(r.pending?.kind).toBe('bail');
     if (r.pending?.kind !== 'bail') return;
     expect(r.pending.place).toBe('prison');
-    expect(r.pending.candidates).toHaveLength(1);
+    // ★ 三个：1 号玩家，外加**开局就蹲在里面的**小偷(槽4)与強盜(槽5)。
+    //   开局監獄并不是空的 —— 见 rules/special-actors.ts 的 INITIAL_ACTOR_PLACE。
+    expect(r.pending.candidates.map((c) => c.slot)).toEqual([1, 4, 5]);
     expect(r.pending.candidates[0]).toMatchObject({ slot: 1, player: 1, cost: 30 });
+    expect(r.pending.candidates[1]).toMatchObject({ slot: 4, player: -1, name: '小偷', cost: 300 });
+    expect(r.pending.candidates[2]).toMatchObject({ slot: 5, player: -1, name: '強盜', cost: 300 });
   });
 
   run('★ 电脑访客不弹窗 —— 在 reducer 里自己掷完', () => {

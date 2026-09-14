@@ -21,7 +21,7 @@
  *   uint16 last_node_id; // +6
  *   uint8  owner;        // +8   ★ 主人（玩家下标）
  *   uint8  direction;    // +9
- *   uint8  f10;          // +10
+ *   uint8  place;        // +10  ★ 0 在场 / 1 監獄 / 2 醫院 / 3 未出场
  *   uint8  state;        // +11  出獄置 1；节点类型 == 4 时 |= 0x80
  *   uint8  f12_13[2];    // +12..13
  *   uint8  halted;       // +14  非 0 → 这一步不走，收场
@@ -60,8 +60,58 @@ export const SPECIAL_ACTOR_COUNT = 5;
  */
 export const ACTOR_DOLL = 8;
 
-/** 四个 NPC 的 actor 号，与監獄占用表的槽 4..7 是**同一批人** */
+/** 四个 NPC 的 actor 号，与監獄／醫院占用表的槽 4..7 是**同一批人** */
 export const NPC_ACTORS: readonly number[] = [4, 5, 6, 7];
+
+/**
+ * 替身的去处 —— 记录的 `+10`。
+ *
+ * @source 三处赋值互相印证：
+ * - `0x0043d71f` 送進監獄  `[+10] = 1`
+ * - `0x0043ee37` 送進醫院  `[+10] = 2`
+ * - `0x0043d7f0` 保釋出獄  `[+10] = 0`（機器娃娃上路那处同样写 0）
+ * - 初值表 `0x0047ecec` 里機器娃娃是 3
+ */
+export const ACTOR_PLACE = {
+  /** 在棋盘上走 */
+  board: 0,
+  prison: 1,
+  hospital: 2,
+  /** 还没出场（機器娃娃平时就在这个态） */
+  offBoard: 3,
+} as const;
+export type ActorPlace = (typeof ACTOR_PLACE)[keyof typeof ACTOR_PLACE];
+
+/**
+ * ★ **开局时四个 NPC 并不都在監獄：兩個蹲監獄、兩個躺醫院。**
+ *
+ * 这是需求方指出来的，回 exe 逐字证实了，而且连是**哪两个**都写死了：
+ *
+ * ```asm
+ * 0040731b  memcpy(0x498e28, 0x47ecec, 0x50)   ; ★ 五个替身记录的初值
+ * 0040732d  memset(0x496b30, 0, 8)             ; 監獄占用表清零
+ * 0040733e  memset(0x496b60, 0, 8)             ; 醫院占用表清零
+ * 0040734f  dh = 1
+ * 00407351  [0x496b34] = dh                    ; 監獄槽 4 = 小偷
+ * 00407357  [0x496b35] = dh                    ; 監獄槽 5 = 強盜
+ * 0040735d  [0x496b66] = dh                    ; 醫院槽 6 = 流氓
+ * 00407363  [0x496b67] = dh                    ; 醫院槽 7 = 間諜
+ * ```
+ *
+ * 那张初值表 `0x47ecec` 的 80 字节我 dump 了，除 `+10` 外**全是 0**，
+ * 而 `+10` 依次是 **1 / 1 / 2 / 2 / 3** —— 与上面四条赋值严丝合缝，
+ * 也是 `ACTOR_PLACE` 语义的第三条独立证据。
+ *
+ * ⚠️ `node_id` 初值是 **0** —— 关着的人**不在棋盘上**，
+ *   被保釋出来时才从監獄/醫院那一格起步（见 `releaseNpc`）。
+ */
+export const INITIAL_ACTOR_PLACE: readonly ActorPlace[] = [
+  ACTOR_PLACE.prison, //   4 小偷
+  ACTOR_PLACE.prison, //   5 強盜
+  ACTOR_PLACE.hospital, // 6 流氓
+  ACTOR_PLACE.hospital, // 7 間諜
+  ACTOR_PLACE.offBoard, // 8 機器娃娃
+];
 
 /**
  * 四个 NPC 的名字，与 `rules/visit.ts` 的 `INMATE_NAMES` 同源同序。
@@ -104,21 +154,50 @@ export interface SpecialActor {
   owner: number;
   /** 还剩几步 */
   stepsRemaining: number;
+  /** 在哪儿：棋盘 / 監獄 / 醫院 / 未出场 */
+  place: ActorPlace;
 }
 
-/** 不在场的替身 */
+/** 收场（機器娃娃走完、或还没出场） */
 export function idleActor(): SpecialActor {
-  return { nodeId: 0, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: 0 };
+  return {
+    nodeId: 0,
+    lastNodeId: 0,
+    direction: 0,
+    owner: 0,
+    stepsRemaining: 0,
+    place: ACTOR_PLACE.offBoard,
+  };
 }
 
-/** 开局的五个空位 */
+/**
+ * 开局的五个 —— **不是五个空位**：小偷/強盜在監獄，流氓/間諜在醫院，
+ * 機器娃娃未出场。见 `INITIAL_ACTOR_PLACE`。
+ */
 export function initialSpecialActors(): SpecialActor[] {
-  return Array.from({ length: SPECIAL_ACTOR_COUNT }, idleActor);
+  return INITIAL_ACTOR_PLACE.map((place) => ({ ...idleActor(), place }));
 }
 
-/** 这个替身在不在场上 */
+/** 这个替身在不在棋盘上走 */
 export function actorActive(a: SpecialActor | undefined): boolean {
-  return a !== undefined && a.nodeId > 0;
+  return a !== undefined && a.nodeId > 0 && a.place === ACTOR_PLACE.board;
+}
+
+/**
+ * 开局的監獄／醫院占用表。
+ *
+ * ★ 与 `initialSpecialActors()` 是**同一件事的两面**：占用表管「探監时
+ *   列得出谁」，替身记录管「他放出来之后从哪儿走」。两处必须一致，
+ *   否则会出现「探得到却放不出来」或反过来的鬼状态。
+ */
+export function initialConfinement(kind: 'prison' | 'hospital', slots: number): number[] {
+  const want = kind === 'prison' ? ACTOR_PLACE.prison : ACTOR_PLACE.hospital;
+  const occ = new Array<number>(slots).fill(0);
+  INITIAL_ACTOR_PLACE.forEach((place, i) => {
+    const actor = SPECIAL_ACTOR_BASE + i;
+    if (place === want && actor < slots) occ[actor] = 1;
+  });
+  return occ;
 }
 
 // ============================================================
@@ -191,6 +270,7 @@ export function spawnDoll(state: GameState, owner: number): SpecialActor | null 
     direction: p.direction,
     owner,
     stepsRemaining: DOLL_STEPS,
+    place: ACTOR_PLACE.board,
   };
 }
 
@@ -214,13 +294,52 @@ export function spawnDoll(state: GameState, owner: number): SpecialActor | null 
  * ⚠️ `last_node = 0` 是有讲究的：`pickNextNode` 拿 `prev === 0` 当
  *   「没有来路」，于是出獄第一步**四个方向都可以走**，不受「不走回头路」限制。
  */
-export function releaseNpc(prisonNodeId: number, owner: number, steps: number): SpecialActor {
+export function releaseNpc(gateNodeId: number, owner: number, steps: number): SpecialActor {
   return {
-    nodeId: prisonNodeId,
+    nodeId: gateNodeId,
     lastNodeId: 0,
     direction: 0,
     owner,
     stepsRemaining: steps,
+    place: ACTOR_PLACE.board,
+  };
+}
+
+/**
+ * NPC 在路上被**惡犬**咬了 —— 进醫院。
+ *
+ * ★ 这条是需求方点出来的，回 exe 证实了，而且**玩家与 NPC 走的是同一段**：
+ *
+ * ```asm
+ * 0041b837  ; 惡犬那一支
+ * 0041b83d  if ([0x48baf8] != 0) goto 结束      ; 没停下来就不咬
+ * 0041b847  release_object(0xb)                  ; 狗自己消失
+ * 0041b855  if (actor >= 4) goto 0x41b8a7        ; NPC 跳过「说台词」那段
+ * 0041b8a7  ; ★ 两条路在这里合流
+ * 0041b8e0  [0x48baf8] = 0                       ; 剩余步数清零 —— 走不动了
+ * 0041b8e6  send_to_hospital(actor, 3)           ; ★ 对 NPC 同样调用
+ * ```
+ *
+ * `send_to_hospital` 的 NPC 分支（VA 0x0043ee0f）：
+ *
+ * ```asm
+ * 0043ee0f  if (actor >= 8) return               ; ★ 機器娃娃咬不着
+ * 0043ee33  node.flags &= ~(0x100 << actor)      ; 从格子上撤掉
+ * 0043ee37  [+10] = 2                            ; ★ 在醫院
+ * 0043ee40  [+11..15] = 0
+ * 0043ee62  [0x496b60 + actor] = 1               ; 醫院占用表
+ * ```
+ *
+ * ⚠️ **天数参数对 NPC 是白给的** —— 那一支只把占用表置 1，不写任何计数，
+ *   所以 NPC 不会自己出院，只能等人花 300 點券保釋（见 `rules/visit.ts`）。
+ *   这正是需求方说的「玩家可以选择继续支付 300 点把他们救出来」。
+ */
+export function npcBittenByDog(actor: SpecialActor): SpecialActor {
+  return {
+    ...idleActor(),
+    place: ACTOR_PLACE.hospital,
+    // ★ 主人不清 —— 原版那一支只动 +10 与 +11..15，没碰 +8
+    owner: actor.owner,
   };
 }
 

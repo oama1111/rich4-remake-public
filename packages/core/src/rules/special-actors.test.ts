@@ -6,7 +6,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   ACTOR_DOLL,
+  ACTOR_PLACE,
   DOLL_STEPS,
+  INITIAL_ACTOR_PLACE,
   NPC_ACTORS,
   NPC_NAMES,
   NPC_STEP_MIN,
@@ -15,7 +17,9 @@ import {
   SPECIAL_ACTOR_COUNT,
   actorActive,
   idleActor,
+  initialConfinement,
   initialSpecialActors,
+  npcBittenByDog,
   isSpecialActor,
   npcSteps,
   releaseNpc,
@@ -30,6 +34,7 @@ import { reduce, type MapTopology } from '../state/reduce.ts';
 import { UNIMPLEMENTED_TOOLS } from './tool-effects.ts';
 import { TOOL_SLOTS_PER_PLAYER, giveTool, toolCount } from './tools.ts';
 import type { MapObject } from '../cards/summon.ts';
+import { SPECIAL_KIND } from '../loaders/map.ts';
 
 describe('★ 行动者编号：玩家 0..3 之外还有 4..8', () => {
   it('四个 NPC 是 4..7，機器娃娃是 8', () => {
@@ -57,12 +62,55 @@ describe('★ 行动者编号：玩家 0..3 之外还有 4..8', () => {
     expect(NPC_NAMES).toEqual(INMATE_NAMES);
   });
 
-  it('开局五个都不在场', () => {
+  it('开局五个都不在棋盘上', () => {
     const a = initialSpecialActors();
     expect(a).toHaveLength(SPECIAL_ACTOR_COUNT);
     expect(a.every((x) => !actorActive(x))).toBe(true);
     expect(actorActive(idleActor())).toBe(false);
     expect(actorActive(undefined)).toBe(false);
+  });
+});
+
+describe('★ 开局：兩個蹲監獄、兩個躺醫院 —— 不是四个全在監獄', () => {
+  it('小偷/強盜在監獄，流氓/間諜在醫院，機器娃娃未出场', () => {
+    // 与初值表 0x47ecec 的 +10 一字不差：1 / 1 / 2 / 2 / 3
+    expect(INITIAL_ACTOR_PLACE).toEqual([1, 1, 2, 2, 3]);
+    const byName = Object.fromEntries(
+      NPC_NAMES.map((n, i) => [n, INITIAL_ACTOR_PLACE[i]]),
+    );
+    expect(byName['小偷']).toBe(ACTOR_PLACE.prison);
+    expect(byName['強盜']).toBe(ACTOR_PLACE.prison);
+    expect(byName['流氓']).toBe(ACTOR_PLACE.hospital);
+    expect(byName['間諜']).toBe(ACTOR_PLACE.hospital);
+    expect(INITIAL_ACTOR_PLACE[specialSlotOf(ACTOR_DOLL)]).toBe(ACTOR_PLACE.offBoard);
+  });
+
+  it('★ 占用表与替身记录说的是同一件事', () => {
+    // @source 00407351 [0x496b34]=1 / [0x496b35]=1 / [0x496b66]=1 / [0x496b67]=1
+    expect(initialConfinement('prison', 8)).toEqual([0, 0, 0, 0, 1, 1, 0, 0]);
+    expect(initialConfinement('hospital', 8)).toEqual([0, 0, 0, 0, 0, 0, 1, 1]);
+  });
+
+  it('关着的人不在棋盘上 —— node_id 初值是 0', () => {
+    for (const a of initialSpecialActors()) expect(a.nodeId).toBe(0);
+  });
+});
+
+describe('★ 惡犬咬 NPC —— 进醫院，等人花 300 點券捞', () => {
+  it('从棋盘上撤下来，落到醫院', () => {
+    const walking = releaseNpc(40, 2, 6);
+    const bitten = npcBittenByDog(walking);
+    expect(bitten.place).toBe(ACTOR_PLACE.hospital);
+    expect(bitten.nodeId).toBe(0);
+    expect(actorActive(bitten)).toBe(false);
+  });
+
+  it('★ 剩余步数清零 —— 被咬了就走不动了 @source 0x0041b8e0', () => {
+    expect(npcBittenByDog(releaseNpc(40, 2, 6)).stepsRemaining).toBe(0);
+  });
+
+  it('★ 主人不清 —— 原版那一支只动 +10 与 +11..15，没碰 +8', () => {
+    expect(npcBittenByDog(releaseNpc(40, 3, 6)).owner).toBe(3);
   });
 });
 
@@ -100,6 +148,7 @@ describe('上路', () => {
       direction: 5,
       owner: 0,
       stepsRemaining: DOLL_STEPS,
+      place: ACTOR_PLACE.board,
     });
   });
 
@@ -117,6 +166,7 @@ describe('上路', () => {
       direction: 0,
       owner: 2,
       stepsRemaining: 7,
+      place: ACTOR_PLACE.board,
     });
   });
 });
@@ -135,7 +185,7 @@ function objs(...at: number[]): MapObject[] {
 describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
   it('走满九步，路径含起点共十格', () => {
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
       [],
       line,
     );
@@ -145,7 +195,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
   it('沿途的物件被清掉，不在路上的不动', () => {
     const before = objs(3, 7, 40);
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
       before,
       line,
     );
@@ -160,7 +210,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
 
   it('★ 起点那一格不扫 —— 娃娃是走出去才踩到格子的', () => {
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
       objs(1),
       line,
     );
@@ -171,7 +221,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
   it('★ 附身状态一并清掉 —— 被请走的神明不该还挂在谁身上', () => {
     const attached: MapObject[] = [{ type: 1, nodeId: 5, state: 3, attached: 2 }];
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
       attached,
       line,
     );
@@ -180,7 +230,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
 
   it('走完就收场 —— 替身不留在场上', () => {
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 1, stepsRemaining: DOLL_STEPS },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 1, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
       [],
       line,
     );
@@ -190,7 +240,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
   it('走到死路就停 —— 不会原地打转刷步数', () => {
     // 只连一格：2 之后无处可去
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
       [],
       (from) => (from === 1 ? 2 : 0),
     );
@@ -271,5 +321,81 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
     const b = reduce(s, { type: 'useTool', toolId: 1 }, forked);
     expect(b.rngState).toBe(a.rngState);
     expect(b.objects).toEqual(a.objects);
+  });
+});
+
+// ============================================================
+//  保釋 → 上路
+// ============================================================
+
+describe('★ 保釋 NPC —— 他会当场从監獄/醫院那一格上路', () => {
+  /** 一张只有四格的小图，2 号是監獄 */
+  const topo: MapTopology = {
+    nodes: [
+      makeNode({ id: 1, adjacent: [2] }),
+      makeNode({ id: 2, adjacent: [1, 3], specialKind: SPECIAL_KIND.PRISON }),
+      makeNode({ id: 3, adjacent: [2, 4] }),
+      makeNode({ id: 4, adjacent: [3] }),
+    ],
+  };
+
+  function visiting(slot: number) {
+    return makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 2, points: 900 })),
+      prisonOccupancy: initialConfinement('prison', 8),
+      phase: 'turnEnd',
+      pending: {
+        kind: 'bail',
+        place: 'prison',
+        candidates: [{ slot, player: -1, name: NPC_NAMES[slot - 4] ?? '', cost: 300, affordable: true }],
+        points: 900,
+      },
+    });
+  }
+
+  it('花 300 點券把小偷放出来，他从監獄那一格起步', () => {
+    const s = visiting(4);
+    const after = reduce(s, { type: 'bail', slot: 4 }, topo);
+    expect(after.players[0]?.points).toBe(600);
+    expect(after.prisonOccupancy[4]).toBe(0);
+
+    const thief = after.specialActors[0]!;
+    expect(thief.place).toBe(ACTOR_PLACE.board);
+    expect(thief.nodeId).toBe(2); // 監獄那一格
+    expect(thief.lastNodeId).toBe(0);
+    expect(actorActive(thief)).toBe(true);
+  });
+
+  it('★ 主人是保釋他的人 —— 不是他自己', () => {
+    const s = { ...visiting(5), currentPlayer: 2 };
+    const after = reduce(s, { type: 'bail', slot: 5 }, topo);
+    expect(after.specialActors[1]?.owner).toBe(2);
+  });
+
+  it('★ 步数落在 2..10，且消耗了随机数', () => {
+    const s = visiting(4);
+    const after = reduce(s, { type: 'bail', slot: 4 }, topo);
+    const steps = after.specialActors[0]!.stepsRemaining;
+    expect(steps).toBeGreaterThanOrEqual(NPC_STEP_MIN);
+    expect(steps).toBeLessThanOrEqual(NPC_STEP_MIN + NPC_STEP_SPAN - 1);
+    expect(after.rngState).not.toBe(s.rngState);
+  });
+
+  it('保釋玩家（槽 0..3）不碰替身表', () => {
+    const occ = initialConfinement('prison', 8);
+    occ[1] = 1;
+    const s = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 2, points: 900 })),
+      prisonOccupancy: occ,
+      phase: 'turnEnd',
+      pending: {
+        kind: 'bail',
+        place: 'prison',
+        candidates: [{ slot: 1, player: 1, name: '', cost: 30, affordable: true }],
+        points: 900,
+      },
+    });
+    const after = reduce(s, { type: 'bail', slot: 1 }, topo);
+    expect(after.specialActors).toEqual(s.specialActors);
   });
 });

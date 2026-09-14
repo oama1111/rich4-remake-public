@@ -23,7 +23,7 @@ import { WatcomRng } from '../rng/watcom.ts';
 import { CONFINEMENT_SLOTS } from './confinement.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { emptyBoard } from '../places/notice-board.ts';
-import { initialSpecialActors } from './special-actors.ts';
+import { initialConfinement, initialSpecialActors } from './special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { emptyOwnership } from '../places/commercial.ts';
 import { makeObjects } from '../cards/summon.ts';
@@ -303,8 +303,10 @@ export function newGame(opts: NewGameOptions): GameState {
     newsDeck,
     fortuneDeck,
     pool: 0,
-    prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
-    hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
+    // ★ 开局**不是空的**：小偷/強盜蹲監獄，流氓/間諜躺醫院。
+    //   @source 0x00407351 四条 `mov byte [...], 1`，见 rules/special-actors.ts
+    prisonOccupancy: initialConfinement('prison', CONFINEMENT_SLOTS),
+    hospitalOccupancy: initialConfinement('hospital', CONFINEMENT_SLOTS),
     lastEvent: null,
     lottery: emptyLottery(),
     pending: null,

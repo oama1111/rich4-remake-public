@@ -15,6 +15,8 @@ import { isAlive } from './types.ts';
 import { WatcomRng, rollDice } from '../rng/watcom.ts';
 import {
   ACTOR_DOLL,
+  npcSteps,
+  releaseNpc,
   runDoll,
   spawnDoll,
   specialSlotOf,
@@ -775,7 +777,23 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       const occ = place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
       const r = applyBail(state.players, occ, place, state.currentPlayer, action.slot);
       if (!r.ok) return { ...state, pending: null, phase: 'turnEnd' };
-      const paid: GameState = { ...state, players: r.players, pending: null, phase: 'turnEnd' };
+      let paid: GameState = { ...state, players: r.players, pending: null, phase: 'turnEnd' };
+
+      // ★ 保釋的若是 NPC（槽 4..7），他会**当场上路** —— 从監獄/醫院那一格
+      //   起步走 rand()%9+2 步，主人记成保釋他的人。
+      //   @source 0x0043d7e0（出獄）/ 0x0043ee8f（出院），两段同构。
+      const slotIdx = specialSlotOf(action.slot);
+      if (slotIdx >= 0) {
+        const gate = gateNodeOf(topo, place);
+        if (gate > 0) {
+          const rng = new WatcomRng();
+          rng.setState(paid.rngState);
+          const specialActors = [...paid.specialActors];
+          specialActors[slotIdx] = releaseNpc(gate, state.currentPlayer, npcSteps(rng));
+          paid = { ...paid, specialActors, rngState: rng.getState() };
+        }
+      }
+
       return place === 'prison'
         ? { ...paid, prisonOccupancy: r.occupancy }
         : { ...paid, hospitalOccupancy: r.occupancy };
@@ -1160,6 +1178,18 @@ function applyMagicRequest(
     default:
       return state;
   }
+}
+
+/**
+ * 監獄／醫院那一格的节点号。
+ *
+ * ★ 原版存在两个全局里（`[0x48bae0]` 監獄、`[0x48bae2]` 醫院，
+ *   由两个释放函数 0x0043d7f9 / 0x0043eeb0 用到）；本引擎不镜像全局，
+ *   现查地图 —— 每张图各有且仅有一格。
+ */
+function gateNodeOf(topo: MapTopology, kind: ConfinementKind): number {
+  const want = kind === 'prison' ? SPECIAL_KIND.PRISON : SPECIAL_KIND.HOSPITAL;
+  return topo.nodes.find((n) => n.specialKind === want)?.id ?? 0;
 }
 
 /** 道具编号 */
