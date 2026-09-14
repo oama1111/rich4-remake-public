@@ -77,6 +77,19 @@ import {
   type DialogHit,
 } from './dialog.ts';
 import type { SpriteFn } from './gameui.ts';
+import {
+  AUTOSAVE_SLOT,
+  LOAD_SLOTS,
+  SAVE_SLOTS,
+  drawSaveLoad,
+  hitSaveLoad,
+  outsideSaveLoad,
+  readSlots,
+  slotOfRow,
+  writeSlot,
+  type SaveLoadMode,
+  type SlotInfo,
+} from './saveload.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import {
@@ -149,6 +162,80 @@ let amountPage: AmountPage | null = null;
 let dialogHot: DialogHit | null = null;
 let advanceHot = false;
 
+// ── 存讀檔屏 ───────────────────────────────────────────────
+let saveLoadMode: SaveLoadMode = 'load';
+let saveLoadReturn: Screen = 'title';
+let saveLoadSlots: SlotInfo[] = [];
+let saveLoadHot: number | null = null;
+
+function openSaveLoad(mode: SaveLoadMode, from: Screen): void {
+  saveLoadMode = mode;
+  saveLoadReturn = from;
+  saveLoadSlots = readSlots(mode === 'load' ? LOAD_SLOTS : SAVE_SLOTS + 1);
+  saveLoadHot = null;
+  screen = 'saveload';
+  requestRender();
+}
+
+function closeSaveLoad(): void {
+  screen = saveLoadReturn;
+  saveLoadHot = null;
+  requestRender();
+}
+
+/** 选中了某一行 */
+function onSaveLoadRow(row: number): void {
+  const slot = slotOfRow(saveLoadMode, row);
+  if (saveLoadMode === 'save') {
+    const err = writeSlot(slot, state);
+    log(err === null ? `▶ 已存入第 ${slot} 格` : `⚠ 存檔失敗：${err}`);
+    if (err === null) closeSaveLoad();
+    else saveLoadSlots = readSlots(SAVE_SLOTS + 1);
+    requestRender();
+    return;
+  }
+  const info = saveLoadSlots.find((x) => x.slot === slot);
+  if (info === undefined || info.state === null) {
+    log(info !== undefined && info.error !== null ? `⚠ 第 ${slot} 格讀不出來：${info.error}` : `⚠ 第 ${slot} 格是空的`);
+    return;
+  }
+  loadState(info.state);
+}
+
+/**
+ * 把读出来的状态接上。
+ *
+ * ★ 地图要跟着换：存档里记着 `globalMapId`，不换的话棋子会落在另一张图的
+ *   节点号上 —— 那种错不会立刻报，会在几步之后以「走到了奇怪的地方」出现。
+ */
+function loadState(next: GameState): void {
+  map = parseMap(readMapData(archives, next.globalMapId));
+  topo = {
+    nodes: map.nodes,
+    lands: map.lands,
+    facilities: map.facilities,
+    commercials: map.commercials,
+  };
+  state = next;
+  history.length = 0;
+  hoverNode = null;
+  amountPage = null;
+  const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? 1];
+  camera = characterCamera(first?.x ?? 0, first?.y ?? 0, camera?.view ?? 0);
+  screen = 'game';
+  log(`▶ 讀檔：地圖 ${next.globalMapId}　${next.year}/${next.month}/${next.day}`);
+
+  ground = null;
+  void loadGround(archives, next.globalMapId).then((g) => {
+    ground = g;
+    requestRender();
+  });
+  requestRender();
+  renderPanel();
+  scheduleAi();
+  scheduleHumanTurn();
+}
+
 /**
  * 人类回合里那些**没得选**的步骤，由这个定时器自己走完。
  *
@@ -173,6 +260,24 @@ const STEP_MS = [220, 120, 60] as const;
 function humanDelay(): number {
   if (!options.animation) return 0;
   return STEP_MS[Math.max(0, Math.min(2, options.speed))] ?? 120;
+}
+
+/**
+ * 自動存檔。
+ *
+ * @source RICH4.CFG offset 4 `auto save: 01 enabled`；原版的自動存檔占
+ *   **0 号槽**，所以 LOAD 屏比 SAVE 屏多一行（见 saveload.ts）。
+ *
+ * ⚠️ 什么时机存、存几次，原版没查证。这里取「每个真人回合开始存一次」——
+ *   与時光機的快照同一个时机，也是最有用的那个点。
+ */
+function autosaveIfEnabled(): void {
+  if (!options.autoSave) return;
+  if (screen !== 'game') return;
+  if (state.phase !== 'awaitingRoll') return;
+  if (isAiTurn(state)) return;
+  const err = writeSlot(AUTOSAVE_SLOT, state);
+  if (err !== null) log(`⚠ 自動存檔失敗：${err}`);
 }
 
 function scheduleHumanTurn(): void {
@@ -451,6 +556,7 @@ function dispatch(action: Action): void {
   renderPanel();
   scheduleAi();
   scheduleHumanTurn();
+  autosaveIfEnabled();
 }
 
 /**
@@ -567,7 +673,7 @@ const hudOffCtx = (() => {
 })();
 
 /** 当前屏幕 */
-type Screen = 'title' | 'setup' | 'options' | 'game';
+type Screen = 'title' | 'setup' | 'options' | 'saveload' | 'game';
 let screen: Screen = 'title';
 /** 標題畫面上鼠标悬着的按钮 */
 let titleHot: number | null = null;
@@ -588,6 +694,13 @@ function requestRender(): void {
       drawTitle(stageCtx, titleHot, spriteNow);
     } else if (screen === 'setup') {
       drawSetup(stageCtx, setup, setupHot, spriteNow);
+    } else if (screen === 'saveload') {
+      // 盖在原来那一屏上（原版也是这样）
+      if (saveLoadReturn === 'game') drawGameStage();
+      else drawTitle(stageCtx, null, spriteNow);
+      stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
+      stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+      drawSaveLoad(stageCtx, saveLoadMode, saveLoadSlots, saveLoadHot, uiSprite);
     } else if (screen === 'options') {
       // 設定是**盖在**原来那一屏上的对话框（原版就是这样）
       if (optionsReturn === 'game') drawGameStage();
@@ -718,6 +831,15 @@ function onToolbar(i: number): void {
   }
   if (i === 7) {
     openOptions('game');
+    return;
+  }
+  // ⚠️ 图标与功能的对应关系还没解（Q-UI-3），3/4 是按软盘图标认的
+  if (i === 3) {
+    openSaveLoad('load', 'game');
+    return;
+  }
+  if (i === 4) {
+    openSaveLoad('save', 'game');
     return;
   }
   log(`「${name}」尚未实现`);
@@ -998,7 +1120,7 @@ function onTitleButton(id: 'start' | 'load' | 'option' | 'exit' | 'newStage'): v
       requestRender();
       break;
     case 'load':
-      log('⚠ 讀取進度：尚未接上（引擎已有存档格式，见 loaders/savegame.ts）');
+      openSaveLoad('load', 'title');
       break;
     case 'option':
       openOptions('title');
@@ -1079,6 +1201,14 @@ function bindInput(): void {
       }
       return;
     }
+    if (screen === 'saveload') {
+      const hit = hitSaveLoad(saveLoadMode, p.x, p.y);
+      if (hit !== saveLoadHot) {
+        saveLoadHot = hit;
+        requestRender();
+      }
+      return;
+    }
     if (screen === 'options') {
       const hit = hitOptions(p.x, p.y);
       if (JSON.stringify(hit) !== JSON.stringify(optionsHot)) {
@@ -1139,6 +1269,13 @@ function bindInput(): void {
     if (screen === 'title') {
       const hit = hitTitle(p.x, p.y, (i) => spriteNow('Data.mkf', TITLE_RESOURCE, i, true));
       if (hit !== null) onTitleButton(hit.id);
+      return;
+    }
+    if (screen === 'saveload') {
+      const row = hitSaveLoad(saveLoadMode, p.x, p.y);
+      if (row !== null) onSaveLoadRow(row);
+      // ★ 点在屏外就退出 —— 原版有取消钮，那颗还没认出来
+      else if (outsideSaveLoad(saveLoadMode, p.x, p.y)) closeSaveLoad();
       return;
     }
     if (screen === 'options') {
@@ -1322,6 +1459,8 @@ function bindInput(): void {
         if (screen === 'options') {
           screen = optionsReturn;
           requestRender();
+        } else if (screen === 'saveload') {
+          closeSaveLoad();
         }
         break;
       case 'o':
