@@ -141,7 +141,7 @@ export function decideAction(ctx: AiContext): Action | null {
       return { type: 'startTurn' };
     case 'awaitingRoll':
       // ★ 掷骰前是出牌/用道具/炒股的时机 —— 原版也是在这个阶段
-      return decideCard(ctx) ?? decideTool(ctx) ?? decideStockTrade(state) ?? { type: 'rollDice' };
+      return decideCard(ctx) ?? decideTool(ctx) ?? decideStockTrade(state, map) ?? { type: 'rollDice' };
     case 'moving':
       return { type: 'step' };
     case 'settling':

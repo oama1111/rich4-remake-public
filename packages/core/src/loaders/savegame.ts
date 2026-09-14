@@ -100,9 +100,13 @@ export function deserializeGame(text: string): GameState {
 
 /** 旧版本存档的迁移。目前只有版本 1，留好接口。 */
 function migrate(state: GameState, version: number): GameState {
-  if (version === SAVE_FORMAT_VERSION) return state;
+  // 同版本内新增的可选数组：缺了就按零补齐（companyProfit 于 2026-09-14 加入）
+  const patched: GameState = Array.isArray(state.companyProfit)
+    ? state
+    : { ...state, companyProfit: (state.companyFunds ?? []).map(() => 0) };
+  if (version === SAVE_FORMAT_VERSION) return patched;
   // 将来：逐版本补齐新增字段
-  return state;
+  return patched;
 }
 
 /** 必须存在的字段 —— 缺一个就说明这份存档不能用 */
@@ -301,6 +305,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     facilityResearchProject: facilityFieldFromMap(map, () => 0),
     facilityResearchDays: facilityFieldFromMap(map, () => 0),
     companyFunds: new Array<number>(map.commercials.length + 1).fill(0),
+    companyProfit: new Array<number>(map.commercials.length + 1).fill(0),
     prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     lastEvent: null,

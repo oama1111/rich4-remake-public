@@ -81,3 +81,4 @@ packages/desktop/src-tauri/target/
 packages/desktop/src-tauri/gen/
 packages/client/dist-web/
 .gstack/
+__pycache__/

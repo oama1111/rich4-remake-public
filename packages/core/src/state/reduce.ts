@@ -2944,10 +2944,15 @@ function payCompany(
   amount: number,
 ): GameState {
   if (amount <= 0) return state;
-  const companies: Company[] = state.companyFunds.map((f) => ({ funds: f, fundsMirror: f }));
+  // ★ +0x28 与 +0x2c 同进同出（0x0041d3a5/0x0041d3a9）；分紅只清前者
+  const companies: Company[] = state.companyFunds.map((f, i) => ({
+    funds: f,
+    fundsMirror: state.companyProfit[i] ?? 0,
+  }));
   const r = transferMoney(state.players, companies, state.pool, payer, companyParty(commercialId), amount, 0);
   const companyFunds = r.companies.map((c) => c.funds);
-  const paid: GameState = { ...state, players: r.players, pool: r.pool, companyFunds };
+  const companyProfit = r.companies.map((c) => c.fundsMirror);
+  const paid: GameState = { ...state, players: r.players, pool: r.pool, companyFunds, companyProfit };
   return r.bankrupted ? applyBankruptcy(paid, payer, topo) : paid;
 }
 

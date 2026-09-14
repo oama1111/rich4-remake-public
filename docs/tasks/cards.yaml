@@ -18,7 +18,7 @@ cards:
   title: 扩展 CardTarget 联合类型与 validateTarget
   module: MOD-06
   req: REQ-06.1
-  status: todo
+  status: doing
   estimate: 0.3
   depends_on: []
   uses:
@@ -320,7 +320,7 @@ cards:
   title: 翻译股票打分函数 0x0042c075，AI 买哪一支（P1-4）
   module: MOD-09
   req: REQ-09.1
-  status: todo
+  status: done
   estimate: 1.0
   depends_on: []
   uses:

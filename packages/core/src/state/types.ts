@@ -515,6 +515,13 @@ export interface GameState {
    * 每月 15 日按持股比例分给股东后清零（0x0042bd42）；間諜「取走盈餘」拿的也是它。
    */
   companyFunds: number[];
+  /**
+   * 各企業的**累計盈餘**（从不清零），下标 = 企業 id。@source commercial +0x2c。
+   * `pay_money` 对企業一方的每笔增减都同时写 +0x28 与 +0x2c（0x0041d2e6/0x0041d2ea、
+   * 0x0041d3a5/0x0041d3a9），分紅只清 +0x28。AI 选股用它除以總天數（[0x499084]）
+   * 当「月均盈餘」看（0x0042c612..0x0042c638）。
+   */
+  companyProfit: number[];
 
   /**
    * 地图物件表，46 项 —— 神明、路障、地雷、定時炸彈都住在这里。
