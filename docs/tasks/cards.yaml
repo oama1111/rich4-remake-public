@@ -273,7 +273,7 @@ cards:
   title: 魔法屋男性效果不影响四大惡人；路障/地雷对 NPC 的行为核对（P0-11 道具侧）
   module: MOD-05
   req: REQ-05.1
-  status: todo
+  status: doing
   estimate: 0.3
   depends_on: []
   uses:
@@ -295,7 +295,7 @@ cards:
   title: 找到 NPC 记录 +14 halted / +15 single_step 的写入点并接进 runNpc（P0-12）
   module: MOD-05
   req: REQ-05.2
-  status: todo
+  status: doing
   estimate: 0.5
   depends_on: []
   uses:
