@@ -1,0 +1,1388 @@
+# 大富翁4 高清重制版 · 原子任务卡片
+# 来源：docs/PRD.md v1.0 · DEVELOPMENT_PLAN.md v1.3 §11
+# 用 `python3 tools/task-cards.py check|render` 校验与生成可读版。
+version: 1
+groups:
+  A: 核心契约与卡片接线（core）
+  B: AI 保真（core/ai）
+  C: 表现层 22 屏（client）
+  D: 画质升级管线（assets-pipeline）
+  E: 联网对战（server + client）
+
+cards:
+# ============================================================
+#  A · 核心契约与卡片接线
+# ============================================================
+- id: T-001
+  group: A
+  title: 扩展 CardTarget 联合类型与 validateTarget
+  module: MOD-06
+  req: REQ-06.1
+  status: todo
+  estimate: 0.3
+  depends_on: []
+  uses:
+    - core/cards/target.ts (CardTarget, TargetClass, targetClassOf, validateTarget)
+    - core/state/actions.ts (useCard.target)
+    - core/ai/policy.ts (toCardTarget) —— 只读，不改
+  source: "card-registry.ts 的 selectionParam 分组；PRD §4.2"
+  input: |
+    CardTarget 新增变体：
+      { kind: 'facility'; facilityId }  { kind: 'stock'; index }  { kind: 'object'; objectIndex }
+      { kind: 'actor'; actor: 4..8 }    { kind: 'node'; nodeId }
+    TargetClass 新增：'landOrFacility' | 'stock' | 'object' | 'playerOrActor'
+  output: |
+    validateTarget(cls, target, cur, playerCount, extra?) → TargetError | null
+    - 'land' 类接受 entity 与 facility；'player' 类在 allowActor 时接受 actor
+    - 越界：facilityId/objectIndex/stock 范围由 extra { facilityCount, objectCount, stockCount } 给
+  algorithm: |
+    1. 只加类型与校验，不动任何卡的效果。
+    2. targetClassOf：0xe0c0506/0626（怪獸/拆除）→ 'landOrFacility'；0xe0c0006（天使/惡魔/漲價/查封）→ 'landOrFacility'；
+       0xe0c0202（換地/換屋）保持 'land'。紅/黑（selection:'ai'）→ 'stock'；請神 → 'object'。
+    3. validateTarget 按类别判 kind 匹配 + 下标范围；不匹配返回 'wrongTargetKind'。
+    4. 旧测试必须原样通过（向后兼容：entity 仍合法）。
+  tests: |
+    target.test.ts：每个新变体各一条合法 + 一条越界；旧用例不变。
+  files: [packages/core/src/cards/target.ts, packages/core/src/cards/target.test.ts]
+  notes: 这是契约卡，T-003..T-010 依赖它。
+
+- id: T-002
+  group: A
+  title: 把夢遊卡（16）接进 registry
+  module: MOD-06
+  req: REQ-06.1
+  status: todo
+  estimate: 0.2
+  depends_on: []
+  uses:
+    - core/cards/sleepwalk.ts (applySleepwalkCard)
+    - core/cards/registry.ts (useCard switch)
+    - core/state/types.ts (Player.blocking.sleepWalking)
+  source: "VA 0x004441dc（rich4_card_mengyouka.asm）"
+  input: "useCard(ctx, 16, { kind:'player', index })"
+  output: "players[index].blocking.sleepWalking 按原版置值；ok=true 后扣卡；目标在冬眠/已梦游/持復仇卡时按原版处理"
+  algorithm: |
+    1. registry.ts 增加 case 16：调用 applySleepwalkCard(players, cur, target)。
+    2. 失败（r.ok=false）→ fail(r.error ?? 'noEffect')，不扣卡。
+    3. 敌意增量按 sleepwalk.ts 返回值合入 hostilityDeltas。
+  tests: "registry.test.ts：能出（目标正常）/ 不能出（目标是自己、目标出局）各一条。"
+  files: [packages/core/src/cards/registry.ts, packages/core/src/cards/registry.test.ts]
+  notes: ""
+
+- id: T-003
+  group: A
+  title: 搶奪卡（13）增加「抢卡片」路径并接进 registry
+  module: MOD-06
+  req: REQ-06.1
+  status: todo
+  estimate: 0.5
+  depends_on: [T-001]
+  uses:
+    - core/cards/rob.ts (applyRobCard —— 现只有道具路径)
+    - core/rules/tools.ts (takeTool, giveTool)
+    - core/cards/registry.ts
+  source: |
+    效果函数 VA 0x0044192a：返回值 ebx 带 0x8000 → 道具路径（0x445aa2 take_tool + 0x445a4d give_tool）；
+    否则 → 卡片路径（0x441343 从对方手牌移除 + 0x4412e4 给自己）。AI 走卡片路径（[0x48be5c] = 卡号）。
+  input: |
+    useCard(ctx, 13, { kind:'player', index, steal: { kind:'card'|'tool', id } })
+    —— 在 CardTarget.player 上加可选字段 steal（T-001 已预留扩展位，本卡定义它）
+  output: |
+    card：对方 cards 去掉一张 id，自己 cards 加一张；对方没有该卡 → fail('nothingToRob')
+    tool：沿用现有 takeTool/giveTool（自己该道具已 9 件时凭空消失，照原版）
+  algorithm: |
+    1. rob.ts 新增 applyRobCardCard(players, cur, targetIndex, cardId)：
+         if !players[target].cards.includes(cardId) → fail
+         victim.cards = remove one occurrence；me.cards.push(cardId)（手牌上限 15，超出按原版 0x4412e4 的行为：查它是否拒收）
+    2. registry case 13：按 steal.kind 分派；steal 缺省 → fail('targetRequired')。
+    3. 敌意：对方对我 +（按 0x44192a 末尾的 update_hostility 调用值，读出来填 @source）。
+  tests: "rob.test.ts：抢卡成功/对方没有/手牌满；抢道具沿用旧测试。registry.test.ts 各一条。"
+  files: [packages/core/src/cards/rob.ts, packages/core/src/cards/registry.ts, packages/core/src/cards/target.ts]
+  notes: "手牌上限与拒收行为若解不出，登记 Q-CARD-3。"
+
+- id: T-004
+  group: A
+  title: 請神符（23）接进 registry，目标为物件下标
+  module: MOD-06
+  req: REQ-06.1
+  status: todo
+  estimate: 0.3
+  depends_on: [T-001]
+  uses:
+    - core/cards/summon.ts (applySummonCard, attachObject, summonableObjects, canAttach)
+    - core/state/reduce.ts (playCard：把 objects 传进 ctx 并把结果写回)
+    - core/rules/objects.ts (GOD_MODIFIERS)
+  source: "VA 0x00444e1a（真人分支弹 UI；AI 分支 0x444d1a 取最近的神）"
+  input: "useCard(ctx, 23, { kind:'object', objectIndex })；ctx 增加 objects: MapObject[]"
+  output: "objects[objectIndex-1].attached = cur+1；player.godInfo/f64 置位；三项修正加到玩家（fortune/misfortune/luck）"
+  algorithm: |
+    1. UseCardContext 增加 objects（只读）；UseCardResult 增加 objects（写回）。
+    2. registry case 23：if !summonableObjects(objects).includes(objectIndex) → fail('noEffect')；
+       r = applySummonCard(player, objects, objectIndex)；写回 player 与 objects。
+    3. reduce.ts playCard：把 r.objects 合回 state.objects，并按 rules/objects.ts 的 attach 规则加修正（已有 attachObject 内含）。
+  tests: "registry.test.ts：请到（attached 变化、修正变化）/ 请不到（已附身、不在地图上）。"
+  files: [packages/core/src/cards/registry.ts, packages/core/src/state/reduce.ts]
+  notes: "原版 UI 选神的坐标/资源在 T-025 目标拾取里做。"
+
+- id: T-005
+  group: A
+  title: 紅卡（24）/ 黑卡（25）接进 registry，目标为股票下标
+  module: MOD-06
+  req: REQ-06.1
+  status: todo
+  estimate: 0.4
+  depends_on: [T-001]
+  uses:
+    - core/cards/swap-and-stock.ts (applyRedCard, applyBlackCard)
+    - core/places/stock.ts (StockState.f6, newsFlag)
+    - core/places/stock-market.ts (marketOpenOn, isLimitUp/Down)
+    - core/state/reduce.ts (playCard 需把 market 传进 ctx)
+  source: "紅卡 VA 0x00444f25、黑卡 0x0044503f；每日倒数 0x0041cff9（f6 与 newsFlag 高低半字节）"
+  input: "useCard(ctx, 24|25, { kind:'stock', index })；ctx 增加 market"
+  output: "market.stocks[index] 的 f6 / newsFlag 按原版置数（紅：利多天数；黑：利空天数）；休市日/停牌中 fail"
+  algorithm: |
+    1. 先用 disasm 读 0x444f25 / 0x44503f：写入的是 f6 还是 newsFlag 的哪个半字节、写几天（当前 swap-and-stock.ts 的 stockF7 命名要按结论改）。
+    2. registry：if !marketOpenOn(...) → fail('marketClosed')；if stocks[i].f6 != 0 → fail('noEffect')。
+    3. 结果写回 UseCardResult.market；reduce.ts 合回 state.market。
+  tests: "swap-and-stock.test.ts：置数正确、休市拒绝、重复使用拒绝；registry.test.ts 各一条。"
+  files: [packages/core/src/cards/swap-and-stock.ts, packages/core/src/cards/registry.ts, packages/core/src/state/reduce.ts]
+  notes: "行情里怎样消费这两个计数（利多/利空影响 trend）已在 stock-market.ts；本卡只管写入。"
+
+- id: T-006
+  group: A
+  title: 怪獸卡（11）接进 registry，支持地块与設施目标
+  module: MOD-06
+  req: REQ-06.1
+  status: todo
+  estimate: 0.4
+  depends_on: [T-001]
+  uses:
+    - core/cards/monster.ts (applyMonsterCard)
+    - core/state/reduce.ts (playCard：facility 目标要合回 facilityLevel)
+    - core/rules/hostility.ts
+  source: "VA 0x00443917（rich4_card_guaishouka.asm）"
+  input: "useCard(ctx, 11, { kind:'entity', entityId } | { kind:'facility', facilityId })"
+  output: "目标等级按原版降（读汇编定：降到 0 还是 −n）；敌意 victim→cur +值；无主/等级 0 → fail"
+  algorithm: |
+    1. 读 0x443917：确认对地块与設施各做什么（等级、是否清 owner）。
+    2. monster.ts 泛化为 applyMonster(entity: {owner, level}) → {level', hostilityDelta}。
+    3. registry case 11：按 target.kind 取 land 或 facility；UseCardResult 增加 facilities 写回。
+    4. reduce.ts playCard：facilities 合回 facilityLevel（owner 不变）。
+  tests: "monster.test.ts：地块/設施各「有效/无主/0 级」三条；registry.test.ts。"
+  files: [packages/core/src/cards/monster.ts, packages/core/src/cards/registry.ts, packages/core/src/state/reduce.ts]
+  notes: ""
+
+- id: T-007
+  group: A
+  title: 拍賣卡（8）——把脚下地产送入拍賣 pending
+  module: MOD-06
+  req: REQ-06.1
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses:
+    - core/rules/auction.ts (拍賣规则：底价、竞价者、成交)
+    - core/rules/interaction.ts (PendingInteraction.auction)
+    - core/cards/registry.ts, core/state/reduce.ts
+  source: "VA 0x00443225（rich4_card_paimaika.asm）；拍賣屏 Panel.mkf #26"
+  input: "useCard(ctx, 8, { kind:'none' })，玩家站在**别人**的地块/設施上"
+  output: "state.pending = { kind:'auction', entityId, basePrice, bidders }；扣卡；phase='awaitingDecision'"
+  algorithm: |
+    1. 读 0x443225：底价公式（地價+房價×等级）×物價？谁能竞价（所有活着的玩家？含原地主？），成交后钱给谁（原地主）。
+    2. registry 不能直接产生 pending（它只返回 players/lands），故 UseCardResult 增加 `followUp?: PendingInteraction`；
+       reduce.ts playCard 看到 followUp 就设 pending 与 phase。
+    3. 复用 rules/auction.ts 的成交逻辑（已被魔法屋/破產拍賣用）。
+  tests: "registry.test.ts：站在别人的地 → pending.auction；无主/自己的 → fail。auction 成交后归属转移沿用旧测试。"
+  files: [packages/core/src/cards/registry.ts, packages/core/src/state/reduce.ts, packages/core/src/rules/auction.ts]
+  notes: "拍賣屏本身是 T-033。"
+
+- id: T-008
+  group: A
+  title: 天使/惡魔/拆除/漲價/查封 五张地块类卡支持設施目标
+  module: MOD-06
+  req: REQ-06.1
+  status: todo
+  estimate: 0.6
+  depends_on: [T-001]
+  uses:
+    - core/cards/land-cards.ts (applyAngelCard, applyDevilCard, applyDemolishCard, applyRaisePriceCard, applySealCard)
+    - core/state/reduce.ts (facility 写回：facilityLevel / facilityOwner / priceStatus 等价物)
+  source: "各卡 VA 见 card-registry.ts；設施分支在同一函数里按 code 4001..5999 走"
+  input: "useCard(ctx, 9|10|12|27|28, { kind:'facility', facilityId })"
+  output: "設施等级/归属/涨价标记按原版变化；漲價/查封对設施是单个而非同區"
+  algorithm: |
+    1. 每张卡先读汇编的設施分支：等级上限用 FACILITY_MAX_LEVEL[type]；拆除清 owner 时是否退钱。
+    2. land-cards.ts 的函数泛化：接收 {owner, level, maxLevel} 返回新值；地块调用方传 maxLevel=5。
+    3. 漲價/查封对設施：需要一个 facilityPriceStatus[] 状态（现只有地块的 priceStatus）——在 GameState 加数组，new-game 初始化，月結/结算处读它。
+  tests: "land-cards.test.ts 每张卡設施分支各两条；reduce 层一条端到端（用卡→facilityLevel 变）。"
+  files: [packages/core/src/cards/land-cards.ts, packages/core/src/cards/registry.ts, packages/core/src/state/types.ts, packages/core/src/state/reduce.ts]
+  notes: "facilityPriceStatus 影响 T-021 資產表与月結，改完跑 full-game soak。"
+
+- id: T-009
+  group: A
+  title: AI 的 toCardTarget 覆盖全部目标类型（消除 Q-CARD-2 顺延）
+  module: MOD-09
+  req: Q-CARD-2
+  status: todo
+  estimate: 0.2
+  depends_on: [T-001, T-003, T-004, T-005, T-006, T-007, T-008]
+  uses:
+    - core/ai/policy.ts (toCardTarget, decideCard)
+    - core/ai/card-policy.ts (AiCardTarget, AiCardChoice.stealCard/facilityType)
+  source: "PRD §3 MOD-09 decideCard 伪代码"
+  input: "AiCardChoice"
+  output: "CardTarget（不再返回 null）；搶奪卡带 steal:{kind:'card', id: stealCard}"
+  algorithm: |
+    facility → {kind:'facility'}；stock → {kind:'stock'}；object → {kind:'object'}；
+    改建卡对公園：facilityType 通过 useCard 的 extra 传（在 T-008 定义的接口上）。
+    known-deviations 的 Q-CARD-2 改为「已解决」，保留历史。
+  tests: "card-policy.test.ts / policy.test.ts：每种目标一条「AI 选中 → useCard ok」。"
+  files: [packages/core/src/ai/policy.ts, docs/known-deviations.md]
+  notes: ""
+
+- id: T-010
+  group: A
+  title: 停留/轉向/烏龜卡可指向四大惡人与機器娃娃（P0-11 卡片侧）
+  module: MOD-05
+  req: REQ-05.1
+  status: todo
+  estimate: 0.6
+  depends_on: [T-001]
+  uses:
+    - core/rules/special-actors.ts (SpecialActor: direction, stepsRemaining, halted)
+    - core/cards/stay.ts, turn-and-house.ts, tortoise.ts
+    - core/state/reduce.ts (playCard：actor 目标不走 players 路径)
+  source: |
+    选择掩码 0x446ae8 / 0x445e4d / 0x446656（未解）；
+    需求方口述：控制卡对四大惡人有效、魔法屋男性效果不影响他们（docs/original-ui.md）。
+  input: "useCard(ctx, 14|6|30, { kind:'actor', actor })"
+  output: |
+    停留：specialActors[actor-4].halted = 停留天数（同真人）
+    轉向：direction 取反，lastNodeId/nodeId 互换
+    烏龜：stepsRemaining 走法改为每回合 1 格（沿用 tortoise 的天数字段，NPC 记录里放 +15 single_step）
+  algorithm: |
+    1. 先用 disasm 读三处掩码：bit 含义可能是「可选目标类别位图」（玩家位 0..3、NPC 位 4..7）。解出即按它；解不出按口述实现并登记 Q-NPC-3。
+    2. registry：actor 目标不进 players 路径；返回 UseCardResult.actors（写回 specialActors）。
+    3. 每张卡对 NPC 的效果只改 SpecialActor 字段，不改玩家。
+  tests: "3 卡 × 4 NPC + 機器娃娃 各一条；对不在棋盘上的 NPC（place≠board）fail。"
+  files: [packages/core/src/cards/registry.ts, packages/core/src/rules/special-actors.ts, packages/core/src/state/reduce.ts]
+  notes: ""
+
+- id: T-011
+  group: A
+  title: 魔法屋男性效果不影响四大惡人；路障/地雷对 NPC 的行为核对（P0-11 道具侧）
+  module: MOD-05
+  req: REQ-05.1
+  status: todo
+  estimate: 0.3
+  depends_on: []
+  uses:
+    - core/places/magic-house.ts
+    - core/rules/npc-walk.ts (runNpc：TRAP_TO_TOOL 已处理踩到路障/地雷/炸彈)
+  source: "docs/original-ui.md 口述；魔法屋 VA 见 places/magic-house.ts 头注释"
+  input: "魔法屋 12 功能的目标集合"
+  output: "凡按性别筛目标的功能，候选只含玩家，不含 specialActors"
+  algorithm: |
+    1. 列出魔法屋里按「男性」筛的功能，确认其候选生成函数只遍历 players。
+    2. 写一条测试：NPC 在场时使用该功能，specialActors 不变。
+    3. 路障/地雷：跑 npc-walk.test.ts 现有用例，确认 NPC 踩到即触发且回家（已实现），补一条「路障拦停 NPC」。
+  tests: "magic-house.test.ts +1；npc-walk.test.ts +1"
+  files: [packages/core/src/places/magic-house.test.ts, packages/core/src/rules/npc-walk.test.ts]
+  notes: "大概率是纯验证卡；若发现魔法屋确实会选到 NPC，改候选函数。"
+
+- id: T-012
+  group: A
+  title: 找到 NPC 记录 +14 halted / +15 single_step 的写入点并接进 runNpc（P0-12）
+  module: MOD-05
+  req: REQ-05.2
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses:
+    - tools/disasm.py (xref 0x498e28+14 / +15 的各 NPC 槽地址)
+    - core/rules/special-actors.ts, npc-walk.ts
+  source: "读点 0x0040de1a / 0x0040de34；表 0x498e28 步长 16，槽 = 4 + actor"
+  input: "写入点的汇编"
+  output: "runNpc 在对应事件（被路障拦、被停留卡、烏龜）置 halted / single_step；每日倒数"
+  algorithm: |
+    1. 对 5 个槽分别 xref +14/+15 的绝对地址（0x498e28 + i*16 + 14/15），找 mov 写入。
+    2. 若写入点在卡片/道具效果里 → 与 T-010 合并语义；若在走子里 → 在 runNpc 里置位。
+    3. 找不到：登记 Q-NPC-2，写明查过的地址。
+  tests: "special-actors.test.ts：halted 倒数到 0 才走；single_step 每回合一格。"
+  files: [packages/core/src/rules/npc-walk.ts, packages/core/src/rules/special-actors.ts, docs/known-deviations.md]
+  notes: ""
+
+# ============================================================
+#  B · AI 保真
+# ============================================================
+- id: T-013
+  group: B
+  title: 翻译股票打分函数 0x0042c075，AI 买哪一支（P1-4）
+  module: MOD-09
+  req: REQ-09.1
+  status: todo
+  estimate: 1.0
+  depends_on: []
+  uses:
+    - core/ai/stock-policy.ts (decideStockTrade)
+    - core/places/stock-market.ts (StockState, isLimitUp)
+    - core/places/company.ts (companyFunds 累積盈餘)
+    - data/stocks.ts
+  source: "VA 0x0042c075 起约 700 行；企業 +0x24 資產額、+0x2c 累積盈餘"
+  input: "state.market.stocks[12], state.holdings[me], commercials[], companyFunds[], me.cash, me.stockRatio"
+  output: "scoreStock(j) → number；pickStockToBuy(state) → index | -1；买多少股沿用现有 stockRatio 预算"
+  algorithm: |
+    1. 逐段翻译打分：每个指标写成独立小函数（如 trendScore、valueScore、holdingPenalty），带 VA。
+    2. 浮点部分用 Math.fround 保持单精度顺序；整数部分 Math.trunc。
+    3. 跳过漲停、休市（已有闸）；打分相同取下标小的（原版循环顺序）。
+    4. 卖出侧若同函数内 → 一并翻译；否则另开卡。
+  tests: "stock-policy.test.ts：3 个构造局面手算分数与排序一致；同种子重放一致；soak 不卡死。"
+  files: [packages/core/src/ai/stock-policy.ts, packages/core/src/ai/stock-policy.test.ts]
+  notes: "把 Q-AI-1 结案。"
+
+- id: T-014
+  group: B
+  title: 核对 AI 总调度顺序 fcn_00418c55（P1-5）
+  module: MOD-09
+  req: REQ-09.2
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses:
+    - core/ai/policy.ts (decideAction 的 awaitingRoll 分支)
+    - core/ai/card-policy.ts, tool-policy.ts, stock-policy.ts
+  source: "fcn_00418c55：买股 → 卖股 → fcn_00436b0a → 买地/盖房 → rand&1 → 用卡/用道具"
+  input: "state（awaitingRoll）"
+  output: "decideAction 按原版顺序返回第一条可行 action；rand&1 用 aiRoll 替身"
+  algorithm: |
+    1. 读 0x418c55，确认每一步的调用与早退条件；fcn_00436b0a 是什么（可能是公佈欄）。
+    2. 因为每帧只返回一个 action，用「本回合已做过哪些步」的隐式判据：例如买股后 holdings 变了就不会再买；
+       若原版一回合内每步至多一次，需要 state 里记 turnStep 位图（新字段 aiTurnMask，endTurn 清零）。
+    3. 一回合最多一卡一道具（0x441cf0 每回合调一次）在此一并落实。
+  tests: "policy.test.ts：构造局面让每步都可行，验证顺序；重放一致。"
+  files: [packages/core/src/ai/policy.ts, packages/core/src/state/types.ts, packages/core/src/state/reduce.ts]
+  notes: "新增 state 字段要更新 savegame 版本或给默认值。"
+
+- id: T-015
+  group: B
+  title: AI 研發项目选择按研究所 UI 的电脑分支定案（P1-6）
+  module: MOD-09
+  req: REQ-09.3
+  status: todo
+  estimate: 0.3
+  depends_on: []
+  uses:
+    - core/rules/facility.ts (aiPickResearchProject, startResearch)
+    - core/state/reduce.ts (aiStartResearch)
+  source: "研究所屏字串 → xref → UI 函数里 cmp byte [player+0x15], 2 的分支"
+  input: "facilityLevel, cash, 已有道具"
+  output: "project 1..5"
+  algorithm: |
+    1. 定位电脑分支；若是 rand()%level+1 之类，把随机搬到 reducer（已有精神：AI 随机在 reducer 掷）。
+    2. 替换 aiPickResearchProject 的占位实现，带 VA。
+  tests: "facility-rules.test.ts：各等级的可选范围；同种子一致。"
+  files: [packages/core/src/rules/facility.ts, packages/core/src/state/reduce.ts]
+  notes: "Q-LAB-1 结案。"
+
+# ============================================================
+#  C · 表现层 22 屏（client）
+#  共同方法（每张卡都遵守，不再重复）：
+#   ① disasm find 屏上字串 → xref → UI 函数 VA，写进文件头 @source
+#   ② 控件 (x,y,w,h) 与资源号从汇编 push 序列抄，不目测
+#   ③ 每个可点区域一个 hitXxx(x,y) 纯函数 + 单测；命中只做 dispatch(action)
+#   ④ 对照 docs/original-screens.md 截图核对
+# ============================================================
+- id: T-020
+  group: C
+  title: 新增 core 指令 setAi{player, whoPlays, aiFlags, personality}（託管AI 的规则侧）
+  module: MOD-04
+  req: REQ-12.1
+  status: todo
+  estimate: 0.2
+  depends_on: []
+  uses:
+    - core/state/actions.ts, reduce.ts
+    - core/state/types.ts (Player.whoPlays / aiFlags / personality)
+  source: "Data.mkf #77 託管AI 对话框；docs/original-screens.md S3（14 条字串）"
+  input: "{ type:'setAi', player, whoPlays: 1|2, aiFlags?: 0..3, personality?: 0..2 }"
+  output: "对应玩家字段改写；任何阶段都可用；出局者拒绝"
+  algorithm: |
+    1. reduce 增加 case：校验 player 活着、字段范围；只改这三个字段。
+    2. 若把当前玩家从真人切成电脑且 phase=awaitingRoll，下一帧由 client 的 scheduleAi 自然接管——core 不做别的。
+  tests: "reduce 测试：切换后 isAiControlled 变；越界拒绝（返回原对象）。"
+  files: [packages/core/src/state/actions.ts, packages/core/src/state/reduce.ts]
+  notes: "联机时该指令只允许改自己的座位（T-070 校验）。"
+
+- id: T-021
+  group: C
+  title: "託管AI 屏（工具列 #3）"
+  module: MOD-12
+  req: REQ-12.1
+  status: todo
+  estimate: 0.6
+  depends_on: [T-020]
+  uses:
+    - client/dialog.ts (对话框皮肤), client/assets.ts (SpriteCache)
+    - client/main.ts (onToolbar case 2 → 打开)
+  source: "Data.mkf #77；S3：三种個性 乖寶寶/普通人/大老奸、會用卡/會用道具 开关、託管 开关，坐标见 original-screens.md"
+  input: "state.players[]（whoPlays/aiFlags/personality）"
+  output: "点击 → dispatch(setAi{...})；ESC/关闭钮回到棋盘"
+  algorithm: |
+    1. aiSettings.ts：常量表 ROWS（每位玩家一行：头像、託管钮、两个能力开关、三个個性单选）来自 S3 坐标。
+    2. drawAiSettings(ctx, state)、hitAiSettings(x,y) → {player, control} | null。
+    3. main.ts：Screen 增加 'aiSettings'；命中即 dispatch。
+  tests: "aiSettings.test.ts：hit 覆盖每个控件；越界 null。"
+  files: [packages/client/src/ai-settings.ts, packages/client/src/ai-settings.test.ts, packages/client/src/main.ts]
+  notes: ""
+
+- id: T-022
+  group: C
+  title: "個人資產表屏（工具列 #7）"
+  module: MOD-12
+  req: REQ-12.2
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses:
+    - core/rules/wealth.ts (wealthOf)
+    - core/state/reduce.ts (valuationsOf)
+    - client/dialog.ts
+  source: "Panel.mkf #9；S7 字段：現金/存款/貸款/地產/股票/總資產 等"
+  input: "state, topo, 当前玩家"
+  output: "只读屏；关闭钮/ESC 回棋盘"
+  algorithm: |
+    1. assetSheet.ts：LABELS[]（文字、x、y、对齐）从汇编抄；数值全部来自 wealthOf/valuationsOf，不在 client 里加减。
+    2. 千分位与货币格式沿用 hud.ts 的 formatMoney。
+  tests: "assetSheet.test.ts：layout 快照 + hitClose。"
+  files: [packages/client/src/asset-sheet.ts, packages/client/src/asset-sheet.test.ts]
+  notes: ""
+
+- id: T-023
+  group: C
+  title: 資產表下的三张清單（資產/地產/股票）翻页
+  module: MOD-12
+  req: REQ-12.2
+  status: todo
+  estimate: 0.5
+  depends_on: [T-022]
+  uses:
+    - client/asset-sheet.ts
+    - core/state/reduce.ts (allEffectiveLands/Facilities, valuationsOf)
+  source: "S7 三个页签；行高/列位从同一 UI 函数抄"
+  input: "state, topo"
+  output: "页签切换；地產清單列出地块/設施（名、等级、估值）；股票清單列持仓、成本、市值"
+  algorithm: |
+    1. 三个纯函数 assetRows / estateRows / stockRows(state, topo) → string[][]。
+    2. 超过一页时分页钮；页数 = ceil(rows/每页行数)。
+  tests: "rows 函数：给定构造状态输出行数与内容。"
+  files: [packages/client/src/asset-sheet.ts]
+  notes: ""
+
+- id: T-024
+  group: C
+  title: "道具欄浮窗（工具列 #8，5×3 = 15 格）"
+  module: MOD-12
+  req: REQ-12.3
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses:
+    - core/rules/tools.ts (toolCount, toolsOf)
+    - core/rules/tool-effects.ts (能否用的预判)
+    - client/main.ts (dispatch useTool)
+  source: "S8：紧排 15 格，图标 + 数量；道具图标资源号见 data/tools.ts"
+  input: "state.tools, currentPlayer"
+  output: "点击一格 → 无目标道具直接 dispatch(useTool{toolId})；放置类/指向类 → 进入 T-026 拾取模式"
+  algorithm: |
+    1. inventory.ts：GRID{ x,y,cols:5,rows:3,cell }；cellRect(i)；hitInventory(x,y) → 槽下标。
+    2. 只显示数量 > 0 的道具，按 id 升序紧排（原版顺序核对 S8）。
+    3. 用不了（tool-effects 预判 false）的格子灰显，点击无效。
+  tests: "inventory.test.ts：排布、hit、灰显判定。"
+  files: [packages/client/src/inventory.ts, packages/client/src/inventory.test.ts]
+  notes: ""
+
+- id: T-025
+  group: C
+  title: "卡片欄浮窗（工具列 #9）"
+  module: MOD-12
+  req: REQ-12.3
+  status: todo
+  estimate: 0.4
+  depends_on: [T-024]
+  uses:
+    - client/inventory.ts (同一套网格)
+    - data/cards.ts, card-registry.ts (selection 类型)
+    - core/cards/registry.ts (useCard 预判)
+  source: "S9"
+  input: "state.players[cur].cards"
+  output: "无目标卡直接 dispatch(useCard)；需目标 → T-026 拾取模式，拾取完成再 dispatch"
+  algorithm: |
+    1. 复用 inventory.ts 的网格，数据源换成 cards（可重复出现同一张）。
+    2. 被动卡（18–21）灰显不可点。
+  tests: "cardsPanel.test.ts"
+  files: [packages/client/src/inventory.ts]
+  notes: ""
+
+- id: T-026
+  group: C
+  title: 目标拾取模式（选玩家 / 地块 / 設施 / 物件 / 格子）
+  module: MOD-12
+  req: REQ-12.3
+  status: todo
+  estimate: 0.8
+  depends_on: [T-001]
+  uses:
+    - client/render.ts (pickNodeAt, nodeToScreen)
+    - core/cards/target.ts (targetClassOf, validateTarget)
+    - client/main.ts (输入状态机)
+  source: "原版选目标：地图上高亮可选格；玩家目标弹头像列表（S 截图待补）"
+  input: "{ cardId | toolId, targetClass }"
+  output: "CardTarget / useTool.nodeId；ESC 取消"
+  algorithm: |
+    1. picking.ts：状态 { kind, cardOrTool, candidates: Set<nodeId|playerIndex|objectIndex> }。
+    2. candidates 由 core 预判生成：对每个候选跑一次 useCard/useTool 的空跑（ok 才算候选）——保持 client 无规则。
+    3. 渲染：候选格描边；点击命中 → 组装 target → dispatch；未命中忽略。
+  tests: "picking.test.ts：候选生成用构造状态；点击映射。"
+  files: [packages/client/src/picking.ts, packages/client/src/picking.test.ts, packages/client/src/main.ts]
+  notes: "AI 不用此模块（它在 core/ai 里选）。"
+
+- id: T-027
+  group: C
+  title: 側欄四页（日历 / 月历 / 小地图 / 持股）
+  module: MOD-12
+  req: REQ-12.4
+  status: todo
+  estimate: 0.6
+  depends_on: []
+  uses:
+    - client/hud.ts (Hud, SidebarView, hitSidebar)
+    - core/places/calendar.ts
+  source: "Panel.mkf #0 图 0..3；S6/S10–S12 字段与底部固定钮位置"
+  input: "state（year/month/day、holdings、market）"
+  output: "四页切换；底部钮固定"
+  algorithm: |
+    1. SidebarView 增加 'holdings'；每页一个 drawXxx(ctx, state)。
+    2. 底部钮矩形从汇编抄；hitSidebarButton(x,y) → 页号。
+  tests: "hud.test.ts：hit 与页切换。"
+  files: [packages/client/src/hud.ts]
+  notes: ""
+
+- id: T-028
+  group: C
+  title: 小地圖旋转钮（地圖向左/右旋轉）
+  module: MOD-12
+  req: REQ-12.5
+  status: todo
+  estimate: 0.2
+  depends_on: []
+  uses:
+    - client/render.ts (view 0..7), client/hotkeys.ts, client/hud.ts
+  source: "S6 两颗箭头钮；熱鍵表「地圖向左旋轉/向右旋轉」"
+  input: "点击/熱鍵"
+  output: "view = (view ± 1) & 7；重绘"
+  algorithm: "hud.ts 加两个矩形与 hit；main.ts rotateView(±1) 已有。"
+  tests: "hud.test.ts +2"
+  files: [packages/client/src/hud.ts, packages/client/src/main.ts]
+  notes: ""
+
+- id: T-029
+  group: C
+  title: 銀行屏（存/取/貸/還 + 特別融資）
+  module: MOD-12
+  req: REQ-12.6
+  status: todo
+  estimate: 0.8
+  depends_on: []
+  uses:
+    - core/places/bank.ts, special-finance.ts
+    - client/dialog.ts (AmountPage 填数页)
+    - client/scenes.ts (SCENE.bank = 23)
+  source: "Panel.mkf #23；docs/original-ui.md U-3：白卡左申請/右償還；董事長多一条額度；rich4_ui_bank.asm 的坐标"
+  input: "pending{bank}, player 财务字段"
+  output: "dispatch(bank{op, amount})；金额来自填数页；超额由 core 拒绝（返回原 state）时屏上提示"
+  algorithm: |
+    1. bankScreen.ts：六个钮矩形 + 四行数字（現金/存款/貸款/融資）位置；董事長时多画一行。
+    2. 点钮 → 打开 AmountPage(op)，确认 → dispatch。
+    3. 利率、上限只显示 core 算出的值（bank.ts 导出 interestRate/loanLimit）。
+  tests: "bankScreen.test.ts：hit 六钮、董事長行显隐。"
+  files: [packages/client/src/bank-screen.ts, packages/client/src/bank-screen.test.ts, packages/client/src/interactions.ts]
+  notes: ""
+
+- id: T-030
+  group: C
+  title: 股市屏（行情列表 + 买/卖）
+  module: MOD-12
+  req: REQ-12.7
+  status: todo
+  estimate: 0.8
+  depends_on: []
+  uses:
+    - core/places/stock-market.ts (stockStatus, marketOpenOn)
+    - core/state/reduce.ts (valuationsOf)
+    - client/dialog.ts (AmountPage)
+  source: "Panel.mkf #75；U-5；rich4_ui_stock.asm"
+  input: "state.market, holdings[cur]"
+  output: "dispatch(buyStock/sellStock{stock, shares})；漲停/跌停/停牌/休市按状态显示提示色"
+  algorithm: |
+    1. stockScreen.ts：12 行表格（名、現價、漲跌、持股）；行矩形 hitRow。
+    2. 选中行 + 买/卖钮 → AmountPage（股数）→ dispatch。
+    3. 休市日整屏只读并显示「今日休市」。
+  tests: "stockScreen.test.ts：行 hit、状态色映射（用 stockStatus）。"
+  files: [packages/client/src/stock-screen.ts, packages/client/src/stock-screen.test.ts]
+  notes: ""
+
+- id: T-031
+  group: C
+  title: 持股彙總屏（買股份 / 企業董事長）
+  module: MOD-12
+  req: REQ-12.7
+  status: todo
+  estimate: 0.5
+  depends_on: [T-030]
+  uses:
+    - core/places/commercial.ts (排名/董事長)
+    - client/stock-screen.ts
+  source: "Panel.mkf #76；pending{buyShares}"
+  input: "pending{buyShares}, commercialShares, commercialOwners"
+  output: "dispatch(buyShares{shares})"
+  algorithm: "复用 stock-screen 的表格组件；显示各企業前四持股与董事長；买股份走 AmountPage。"
+  tests: "hit + 排名显示"
+  files: [packages/client/src/stock-screen.ts]
+  notes: ""
+
+- id: T-032
+  group: C
+  title: 商店屏（卡片/道具切换、买、卖自己的）
+  module: MOD-12
+  req: REQ-12.8
+  status: todo
+  estimate: 0.8
+  depends_on: []
+  uses:
+    - core/places/shop.ts (货架、买卖价)
+    - client/scenes.ts (SCENE.shop = 10)
+  source: "Panel.mkf #10；U-2：右上三角切换卡/道具；右下自己的可卖；rich4_shop.asm"
+  input: "pending{shop}（cards[], tools[]）, 玩家 cards/tools"
+  output: "dispatch(shop{op:buyCard|buyTool|sellCard|sellTool, id, count})"
+  algorithm: |
+    1. shopScreen.ts：货架网格（上）、自己的网格（下）、切换三角、离开钮；价格取 core 的 cardPrice/toolPrice×物價。
+    2. 点货架格 → 买；点自己的格 → 卖；数量多件时 AmountPage。
+  tests: "shopScreen.test.ts：网格 hit、切换、买不起灰显。"
+  files: [packages/client/src/shop-screen.ts, packages/client/src/shop-screen.test.ts]
+  notes: ""
+
+- id: T-033
+  group: C
+  title: 公佈欄屏（挂 / 撤 / 买 / 出价输入）
+  module: MOD-12
+  req: REQ-12.9
+  status: todo
+  estimate: 0.8
+  depends_on: []
+  uses:
+    - core/places/notice-board.ts (LISTING, 四种市價)
+    - client/dialog.ts (AmountPage)
+  source: "Panel.mkf #73；S13 版式（路障 3,000 元示例）"
+  input: "state.noticeBoard[玩家][槽]"
+  output: "dispatch(noticeBoard{op:'list',kind,id,price} | withdraw | buy)"
+  algorithm: |
+    1. boardScreen.ts：四位玩家各一列槽位；自己的列可撤、可挂（挂 → 选物 → 填价）；别人的列可买。
+    2. 市價默认值来自 core 的 *ListPrice；卖家可改。
+  tests: "boardScreen.test.ts"
+  files: [packages/client/src/board-screen.ts, packages/client/src/board-screen.test.ts]
+  notes: ""
+
+- id: T-034
+  group: C
+  title: 拍賣屏（PASS / +1000 / +5000、挥锤动画）
+  module: MOD-12
+  req: REQ-12.10
+  status: todo
+  estimate: 0.8
+  depends_on: []
+  uses:
+    - core/rules/auction.ts (竞价规则、AI 出价)
+    - client/scenes.ts (SCENE.auction = 26)
+  source: "Panel.mkf #26；U-7：左挥锤、右 Q 版小人与加价钮"
+  input: "pending{auction: entityId, basePrice, bidders}"
+  output: "dispatch(auction{winner, price})：真人按钮出价；AI 出价由 core 的 auction 规则算（client 只播放）"
+  algorithm: |
+    1. 竞价回合状态机放 client（谁轮到、当前价）；每轮询问 core：aiBid(state, bidder) → 价或 pass（若 auction.ts 没有，先补到 core，作为本卡的前置小改）。
+    2. 三次无人加价 → dispatch(auction{winner, price})。
+    3. 挥锤动画：三帧循环，节拍按「動畫過程」设定。
+  tests: "auctionScreen.test.ts：状态机（加价/PASS/流拍）。"
+  files: [packages/client/src/auction-screen.ts, packages/client/src/auction-screen.test.ts, packages/core/src/rules/auction.ts]
+  notes: "拍賣卡（T-007）与破產拍賣都走这屏。"
+
+- id: T-035
+  group: C
+  title: 樂透投注屏
+  module: MOD-12
+  req: REQ-12.11
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses:
+    - core/places/lottery.ts
+    - client/scenes.ts (SCENE.lotteryCounter = 12)
+  source: "Panel.mkf #12；U-8 貓女、獎池"
+  input: "pending{lottery: available[], price, owned}"
+  output: "dispatch(lottery{number})"
+  algorithm: "号码网格（可买的亮、已卖的灰）、獎池数字、离开钮；点号码 → dispatch。"
+  tests: "lotteryScreen.test.ts"
+  files: [packages/client/src/lottery-screen.ts]
+  notes: ""
+
+- id: T-036
+  group: C
+  title: 樂透開獎动画屏
+  module: MOD-12
+  req: REQ-12.11
+  status: todo
+  estimate: 0.5
+  depends_on: [T-035]
+  uses:
+    - core/places/lottery.ts (開獎结果已在 state.lastEvent / lottery)
+    - client/scenes.ts (SCENE.lotteryDraw = 15)
+  source: "Panel.mkf #15；摇球动画帧"
+  input: "開獎结果（中奖号、得主、金额）"
+  output: "纯播放；结束后关闭"
+  algorithm: "摇球 N 帧 → 停在中奖号 → 显示得主；「動畫過程」关闭时直接显示结果。"
+  tests: "帧序列纯函数测试"
+  files: [packages/client/src/lottery-screen.ts]
+  notes: ""
+
+- id: T-037
+  group: C
+  title: 魔法屋屏（外圈 12 功能悬停高亮 + 中央文字 + 音）
+  module: MOD-12
+  req: REQ-12.12
+  status: todo
+  estimate: 0.8
+  depends_on: []
+  uses:
+    - core/places/magic-house.ts, data/magic-house.ts (12 功能文案)
+    - client/audio.ts
+  source: "Panel.mkf #18；U-9"
+  input: "pending{magic}"
+  output: "dispatch 选中的功能（响应形状见 interaction.ts）"
+  algorithm: |
+    1. 12 个扇区的命中用角度：atan2(y-cy, x-cx) → 扇区号；半径范围从汇编抄。
+    2. 悬停：高亮扇区 + 中央显示该功能文案；点击 → dispatch。
+    3. 音效编号：SOUND_IDS 里没有的先不放（不乱响）。
+  tests: "magicScreen.test.ts：角度→扇区映射 12 条。"
+  files: [packages/client/src/magic-screen.ts, packages/client/src/magic-screen.test.ts]
+  notes: ""
+
+- id: T-038
+  group: C
+  title: 監獄 / 醫院保釋屏（八个位子，含四大惡人）
+  module: MOD-12
+  req: REQ-12.13
+  status: todo
+  estimate: 0.6
+  depends_on: []
+  uses:
+    - core/rules/visit.ts, confinement.ts, special-actors.ts
+    - client/scenes.ts (prison 63 / hospital 65)
+  source: "Panel.mkf #63 / #65；NPC 保釋 300 點"
+  input: "pending{bail: slots[]}, prisonOccupancy/hospitalOccupancy, specialActors"
+  output: "dispatch(bail{slot}) 或 decline"
+  algorithm: "八个位子矩形；有人的位子画头像（玩家或 NPC）与保釋价；点 → dispatch。"
+  tests: "bailScreen.test.ts"
+  files: [packages/client/src/bail-screen.ts]
+  notes: ""
+
+- id: T-039
+  group: C
+  title: 旅館 / 購物中心轉盤动画
+  module: MOD-12
+  req: REQ-12.14
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses:
+    - core/rules/facility.ts (WHEEL_TABLE, spinWheel 的结果已在 state)
+  source: "表 0x475d0c；D-003（真人点击时机不复刻，结果由 core 定）"
+  input: "本次轉盤的起点与落点槽号（reduce 记进 lastEvent 或新字段 lastWheel）"
+  output: "纯播放：指针从起点走到落点；「動畫過程」关闭直接显示"
+  algorithm: "若 state 没记轉盤过程，先在 core 加 lastWheel{wheel, start, stop}（小改，带测试）。"
+  tests: "帧序列纯函数测试"
+  files: [packages/client/src/wheel.ts, packages/core/src/state/reduce.ts]
+  notes: "素材待认：先用 12 格圆盘的占位绘制，资源号找到后替换。"
+
+- id: T-040
+  group: C
+  title: 研究所选項目屏
+  module: MOD-12
+  req: REQ-12.14
+  status: todo
+  estimate: 0.4
+  depends_on: []
+  uses:
+    - core/rules/facility.ts (RESEARCH_MIN/MAX_PROJECT, researchTool)
+  source: "研究所屏字串 → xref；素材待认"
+  input: "facilityId, facilityLevel（决定可选項目数）"
+  output: "dispatch(research{facilityId, project})"
+  algorithm: "列表 1..level 的項目（名 = 研发出的道具名）；点 → dispatch。"
+  tests: "researchScreen.test.ts"
+  files: [packages/client/src/research-screen.ts]
+  notes: ""
+
+- id: T-041
+  group: C
+  title: 每月結算 + 頒獎屏
+  module: MOD-12
+  req: REQ-12.15
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses:
+    - core/rules/monthly.ts (月結结果需可读：在 state 记 lastMonthly 或由 reduce 返回摘要)
+  source: "Panel.mkf #25；U-15"
+  input: "月結摘要（各玩家收入/支出/利息/頒獎）"
+  output: "只读屏；确认后继续"
+  algorithm: "若 core 没有摘要，先加 state.lastMonthly（小改）；屏只排版。"
+  tests: "layout 快照"
+  files: [packages/client/src/monthly-screen.ts, packages/core/src/state/reduce.ts]
+  notes: ""
+
+- id: T-042
+  group: C
+  title: 小游戏一：企鵝挖寶（specialKind 6）
+  module: MOD-12
+  req: REQ-12.16
+  status: todo
+  estimate: 1.0
+  depends_on: []
+  uses:
+    - core/places/minigame.ts (只收 score)
+    - client/scenes.ts (SCENE.penguinDig = 80)
+  source: "Panel.mkf #80；mkf 11；玩法先看原版录屏/口述（Q-MINI-1）"
+  input: "pending{minigame: kind}"
+  output: "dispatch(minigame{score|null})；玩法状态机全部在 client"
+  algorithm: |
+    1. 先写 docs/original-ui.md 的玩法描述（需求方提供），再实现。
+    2. 状态机：开始 → 玩家操作 N 回合 → 结算分数 → dispatch。
+    3. 随机用 client 自己的 PRNG（分数进 core 才是确定性的边界）。
+  tests: "状态机纯函数测试"
+  files: [packages/client/src/minigame-penguin.ts]
+  notes: "玩法未知前 blocked。"
+
+- id: T-043
+  group: C
+  title: 小游戏二：七彩氣球（specialKind 7）
+  module: MOD-12
+  req: REQ-12.16
+  status: todo
+  estimate: 1.0
+  depends_on: []
+  uses: [core/places/minigame.ts, "client/scenes.ts (SCENE.balloons = 91)"]
+  source: "Panel.mkf #91；mkf 19"
+  input: "pending{minigame}"
+  output: "dispatch(minigame{score|null})"
+  algorithm: "同 T-042。"
+  tests: "状态机测试"
+  files: [packages/client/src/minigame-balloon.ts]
+  notes: "玩法未知前 blocked。"
+
+- id: T-044
+  group: C
+  title: 小游戏三（mkf 22，先认玩法与资源）
+  module: MOD-12
+  req: REQ-12.16
+  status: blocked
+  estimate: 1.0
+  depends_on: []
+  uses: [core/places/minigame.ts]
+  source: "mkf 22；Q-MINI-1"
+  input: "pending{minigame}"
+  output: "dispatch(minigame{score|null})"
+  algorithm: "先解资源与玩法，再照 T-042。"
+  tests: "状态机测试"
+  files: [packages/client/src/minigame-3.ts]
+  notes: "需求方确认是哪个小游戏后解除 blocked。"
+
+- id: T-045
+  group: C
+  title: "輔助說明屏（工具列 #1）"
+  module: MOD-12
+  req: REQ-12.17
+  status: todo
+  estimate: 0.4
+  depends_on: []
+  uses: [client/assets.ts]
+  source: "help.mkf；工具列 #1「遊戲百科」"
+  input: "help.mkf 的页图"
+  output: "翻页浏览；关闭"
+  algorithm: "help.mkf 加进 ARCHIVES；页索引 0..n；上一页/下一页/关闭三钮。"
+  tests: "hit 测试"
+  files: [packages/client/src/help-screen.ts, packages/client/src/assets.ts]
+  notes: ""
+
+- id: T-046
+  group: C
+  title: 走子补间动画与时序（玩家棋子）
+  module: MOD-12
+  req: REQ-12.18
+  status: todo
+  estimate: 1.0
+  depends_on: []
+  uses:
+    - client/render.ts (BoardRenderer, characterSprite, directionalImage)
+    - client/main.ts (step 节拍与 humanDelay)
+  source: "jump.mkf 72 组动画；rich4_animate_object.asm；原版录屏逐帧"
+  input: "before/after 两个 state 的 nodeId；「遊戲速度/動畫過程」设定"
+  output: "每步 step 之间播放 N 帧插值（起点→终点，跳跃弧线），帧数与速度档对应"
+  algorithm: |
+    1. tween.ts：帧序列纯函数 framesFor(from, to, speed) → {x,y,frame}[]。
+    2. main.ts：dispatch(step) 后不立刻再 step，等 tween 播完再派下一步。
+    3. 「動畫過程」关闭 → 帧数 0。
+  tests: "framesFor 的帧数/端点测试；与录屏比对误差 <2 帧（人工）"
+  files: [packages/client/src/tween.ts, packages/client/src/main.ts]
+  notes: ""
+
+- id: T-047
+  group: C
+  title: 四大惡人与機器娃娃的棋子渲染与走子动画
+  module: MOD-12
+  req: REQ-12.18
+  status: todo
+  estimate: 0.6
+  depends_on: [T-046]
+  uses:
+    - core/rules/special-actors.ts (SpecialActor.nodeId/direction/place)
+    - client/render.ts, client/tween.ts
+  source: "NPC 精灵资源号（Data.mkf，待认）；docs/original-screens.md"
+  input: "state.specialActors"
+  output: "place=board 的 NPC 画在其 nodeId；被释放后逐格动画"
+  algorithm: "BoardRenderer 增加 actors 层；NPC 一次走多格时按 T-046 的 tween 串播。"
+  tests: "渲染输入映射测试"
+  files: [packages/client/src/render.ts]
+  notes: ""
+
+- id: T-048
+  group: C
+  title: 開局跳伞过场（可跳过）
+  module: MOD-12
+  req: REQ-12.19
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses: [client/main.ts (startGame), client/assets.ts]
+  source: "U-10；Airplane.avi / 跳伞精灵（待认）"
+  input: "开局玩家列表与起点"
+  output: "过场播放 → 落到各自起点 → 进入第一回合；点击跳过"
+  algorithm: "过场是纯表现：不派任何 action；结束后才 dispatch(startTurn)。"
+  tests: "跳过逻辑测试"
+  files: [packages/client/src/intro.ts]
+  notes: "avi 不解码，用精灵帧复刻。"
+
+- id: T-049
+  group: C
+  title: 船（海路）棋子形态
+  module: MOD-12
+  req: REQ-12.19
+  status: todo
+  estimate: 0.4
+  depends_on: [T-046]
+  uses: [client/render.ts, "core/loaders/map.ts (节点 flags/type 判海路)"]
+  source: "U-11；海路格的 type/flags 位（map-format.md）"
+  input: "玩家所在节点是否海路"
+  output: "海路上用船精灵代替角色精灵"
+  algorithm: "isSeaNode(node) 纯函数（从 map-format 抄位）；characterSprite 分支。"
+  tests: "isSeaNode 测试"
+  files: [packages/client/src/render.ts]
+  notes: ""
+
+- id: T-050
+  group: C
+  title: 地塊归属彩边 + GO 钮三态 + 標題音效
+  module: MOD-12
+  req: REQ-12.19
+  status: todo
+  estimate: 0.4
+  depends_on: []
+  uses: [client/render.ts, client/gameui.ts (GO_IMAGE), client/title.ts, client/audio.ts]
+  source: "U-14 彩边；GO 钮态见 gameui.ts；U-1 標題音效编号（SOUND_IDS）"
+  input: "landOwner/facilityOwner；phase；标题进入"
+  output: "地块按 owner 颜色描边；GO 钮 normal/hot/disabled；标题播音效"
+  algorithm: "颜色取 CHARACTERS[character].color（C-ENG-2 先实测字节序）。"
+  tests: "颜色映射测试"
+  files: [packages/client/src/render.ts, packages/client/src/title.ts]
+  notes: ""
+
+- id: T-051
+  group: C
+  title: 解析 Speaking.mkf 語音索引（1375 段 → 事件/角色映射表）
+  module: MOD-11
+  req: REQ-12.20
+  status: todo
+  estimate: 0.8
+  depends_on: []
+  uses: [assets-pipeline/src/audio.ts, tools/disasm.py]
+  source: "rich4_player_say_on_events.asm；Speaking.mkf"
+  input: "asm 里的 (角色, 事件) → 資源号 计算式"
+  output: "data/speech.ts：speechIndex(character, event) → number，带 @source"
+  algorithm: "找到索引公式（通常 base + character×stride + event）；用 mkf 条目数反推验证。"
+  tests: "binary-truth：条目数与公式覆盖一致"
+  files: [packages/data/src/speech.ts]
+  notes: "Q9/Q11 结案。"
+
+- id: T-052
+  group: C
+  title: 語音触发点接线（playSoundFor 扩展）
+  module: MOD-12
+  req: REQ-12.20
+  status: todo
+  estimate: 0.5
+  depends_on: [T-051]
+  uses: [client/main.ts (playSoundFor), client/audio.ts, data/speech.ts]
+  source: "rich4_player_say_on_events.asm 的触发点列表"
+  input: "before/after state"
+  output: "在对应事件（买地、收租、破產、中奖…）播该角色语音；「音效」关闭则静音"
+  algorithm: "把 playSoundFor 改成事件探测器列表：detectors[] 每个返回 event|null；命中即 play(Speaking, speechIndex(...))。"
+  tests: "detectors 单测（构造 before/after）"
+  files: [packages/client/src/main.ts, packages/client/src/speech.ts]
+  notes: ""
+
+- id: T-053
+  group: C
+  title: 存档落到文件（Tauri fs，6 槽 + 自动）
+  module: MOD-13
+  req: REQ-12.21
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses: [client/host.ts, client/saveload.ts, core/loaders/savegame.ts (serializeGame/deserializeGame)]
+  source: "原版 SAVE0..5.DAT 槽位；Q-SAVE-1"
+  input: "slot 0..6, GameState"
+  output: "桌面：$APPDATA/rich4/SAVEn.json；浏览器：localStorage 兜底"
+  algorithm: "host.ts 加 readSave/writeSave/listSaves（Tauri command 或 localStorage）；saveload.ts 的行数据从 listSaves 来。"
+  tests: "saveload.test.ts：往返一致"
+  files: [packages/client/src/host.ts, packages/desktop/src-tauri/src/main.rs]
+  notes: ""
+
+- id: T-054
+  group: C
+  title: 读原版 SAVE*.DAT 进游戏（导入入口 + 缺口提示）
+  module: MOD-12
+  req: REQ-12.21
+  status: todo
+  estimate: 0.4
+  depends_on: [T-053]
+  uses: [core/loaders/save.ts (parseSave), savegame.ts (importOriginalSave), client/saveload.ts]
+  source: "docs 存档格式 §7.6"
+  input: "用户选中的 .DAT 文件"
+  output: "state = importOriginalSave(...).state；gaps 列表弹窗告知"
+  algorithm: "读档屏加「匯入原版存檔」钮 → pickFile → parseSave → importOriginalSave → loadState。"
+  tests: "fixtures 的两份原版存档导入后 isGameOver=false 且资产对齐"
+  files: [packages/client/src/saveload.ts, packages/client/src/main.ts]
+  notes: ""
+
+- id: T-055
+  group: C
+  title: Windows 构建（Tauri）
+  module: MOD-13
+  req: REQ-12.22
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses: [packages/desktop/src-tauri/tauri.conf.json]
+  source: "—"
+  input: "CI runner windows-latest"
+  output: ".msi / .exe，素材随包"
+  algorithm: "GitHub Actions 矩阵；资源路径用 Tauri resolveResource 而非硬编码；字体回退检查繁体显示。"
+  tests: "CI 构建成功 + 冒烟启动到标题"
+  files: [.github/workflows/build.yml]
+  notes: ""
+
+- id: T-056
+  group: C
+  title: Linux 构建（Tauri，AppImage）
+  module: MOD-13
+  req: REQ-12.22
+  status: todo
+  estimate: 0.5
+  depends_on: [T-055]
+  uses: [.github/workflows/build.yml]
+  source: "—"
+  input: "ubuntu-latest"
+  output: "AppImage"
+  algorithm: "同 T-055；webkit2gtk 依赖列进 workflow。"
+  tests: "CI 构建成功"
+  files: [.github/workflows/build.yml]
+  notes: ""
+
+# ============================================================
+#  D · 画质升级管线（assets-pipeline）
+# ============================================================
+- id: T-060
+  group: D
+  title: 素材分类器（UI / 地形 tile / 角色精灵 / 背景大图 / 字体）
+  module: MOD-11
+  req: REQ-11.1
+  status: todo
+  estimate: 0.4
+  depends_on: []
+  uses: [assets-pipeline/src/cli-upscale.ts (cmdPlan), extracted/**/meta.json]
+  source: "DEVELOPMENT_PLAN §6 步骤 2 分类表；docs/assets.md"
+  input: "AssetEntry{ archive, index, w, h, x, y, frames, paletteKind }"
+  output: "category: 'ui'|'tile'|'sprite'|'background'|'font'，写进 upscale-queue/manifest.json"
+  algorithm: |
+    规则按优先级：档案名（Panel.mkf → ui）→ 尺寸（32×32 且来自 GND → tile；≥ 640×480 → background）
+    → 帧数 > 1 → sprite → 字形档案 → font；其余 ui。每条规则一个纯函数，可单测。
+  tests: "classify.test.ts：每类 2 个样本"
+  files: [packages/assets-pipeline/src/classify.ts, packages/assets-pipeline/src/classify.test.ts]
+  notes: ""
+
+- id: T-061
+  group: D
+  title: 按帧切片 + Alpha 分离，产出 upscale-queue/
+  module: MOD-11
+  req: REQ-11.1
+  status: todo
+  estimate: 0.6
+  depends_on: [T-060]
+  uses: [assets-pipeline/src/sprite.ts (decodeSprite), cli-upscale.ts]
+  source: "C-AST-4（Alpha 分离）、C-AST-5（按帧）"
+  input: "extracted PNG + meta；分类结果"
+  output: "upscale-queue/rgb/<id>_f<n>.png、alpha/<id>_f<n>.png、manifest.json（原尺寸、锚点、类别、模型建议）"
+  algorithm: |
+    每帧：rgb = 颜色通道（透明像素填最近不透明色，避免黑边）；alpha = 单通道灰度。
+    manifest 记 sha256 便于回填校验。
+  tests: "往返：切片→合并（不放大）逐字节等于原图"
+  files: [packages/assets-pipeline/src/slice.ts, packages/assets-pipeline/src/slice.test.ts]
+  notes: ""
+
+- id: T-062
+  group: D
+  title: 回填校验：尺寸恰 4×、Alpha 合并、去彩边
+  module: MOD-11
+  req: REQ-11.1
+  status: todo
+  estimate: 0.6
+  depends_on: [T-061]
+  uses: [cli-upscale.ts (cmdIngest)]
+  source: "C-AST-3（构图不变）"
+  input: "assets/upscale-done/rgb|alpha 同名 PNG"
+  output: "合并后的 RGBA 帧；不合格项列表（尺寸错、缺 alpha、哈希不匹配）"
+  algorithm: |
+    1. 尺寸 ≠ 4× → 拒绝并列出。
+    2. alpha 放大后二值化阈值 128（避免半透明毛边）；边缘 1px 内 RGB 用最近不透明像素填。
+    3. 去彩边：对 alpha 边界像素做 3×3 中值。
+  tests: "构造 8×8 样本；坏尺寸被拒"
+  files: [packages/assets-pipeline/src/merge.ts, packages/assets-pipeline/src/merge.test.ts]
+  notes: ""
+
+- id: T-063
+  group: D
+  title: 重拼精灵 + 锚点 ×4 + 写 hd-manifest.json
+  module: MOD-11
+  req: REQ-11.1
+  status: todo
+  estimate: 0.4
+  depends_on: [T-062]
+  uses: [assets/hd-manifest.json, cli-upscale.ts]
+  source: "C-AST-6"
+  input: "合并后的帧 + 原 meta"
+  output: "assets/hd/<档案>/<资源>-<图>.png + meta（x×4, y×4）；manifest 记模型/参数/输入输出哈希"
+  algorithm: "帧顺序与原 meta 一致；manifest 条目幂等（同哈希不重写）。"
+  tests: "锚点 ×4；manifest 幂等"
+  files: [packages/assets-pipeline/src/assemble.ts]
+  notes: ""
+
+- id: T-064
+  group: D
+  title: 地形 tile 接缝检查
+  module: MOD-11
+  req: REQ-11.1
+  status: todo
+  estimate: 0.5
+  depends_on: [T-063]
+  uses: [assets-pipeline/src/ground.ts (布局表)]
+  source: "C-AST-7"
+  input: "hd tiles + GND 布局"
+  output: "报告：相邻 tile 边缘色差 > 阈值的坐标；可选自动修补（边缘 2px 双向羽化）"
+  algorithm: "对布局里每对相邻 tile 取边缘列/行，算平均 ΔE；> 阈值记录。"
+  tests: "人造接缝被检出；无缝样本 0 报告"
+  files: [packages/assets-pipeline/src/seams.ts]
+  notes: ""
+
+- id: T-065
+  group: D
+  title: SpriteCache 按图优先读 hd，缺则回退原图
+  module: MOD-12
+  req: REQ-11.1
+  status: todo
+  estimate: 0.4
+  depends_on: [T-063]
+  uses: [client/assets.ts (SpriteCache), client/host.ts (assetBase)]
+  source: "PRD §4.5"
+  input: "get(archive, resource, image)"
+  output: "hd 存在 → 4× 位图 + 锚点 ×4，渲染时按 stage 缩放；否则原图"
+  algorithm: "查 hd-manifest 内存索引（启动时读一次）；纹理按需加载并 LRU 释放（C-PERF-2）。"
+  tests: "回退路径测试；内存上限测试（模拟）"
+  files: [packages/client/src/assets.ts]
+  notes: ""
+
+- id: T-066
+  group: D
+  title: 并排比对页（原图 / HD）供人工过审
+  module: MOD-11
+  req: REQ-11.1
+  status: todo
+  estimate: 0.3
+  depends_on: [T-063]
+  uses: [cli-upscale.ts]
+  source: "DEVELOPMENT_PLAN §10.2"
+  input: "hd-manifest"
+  output: "assets/hd-review.html（静态，本地打开）"
+  algorithm: "每条目一行：原图（放大 4× 最近邻）| HD；可按类别筛。"
+  tests: "生成不抛错；条目数一致"
+  files: [packages/assets-pipeline/src/review.ts]
+  notes: ""
+
+# ============================================================
+#  E · 联网对战（server + client）
+# ============================================================
+- id: T-070
+  group: E
+  title: WebSocket 服务器主循环（join / intent / 广播）
+  module: MOD-14
+  req: REQ-14.1
+  status: todo
+  estimate: 0.8
+  depends_on: []
+  uses: [server/src/room.ts (Room), core/net/protocol.ts (ClientMessage/ServerMessage), ws]
+  source: "PRD §3 MOD-14 伪代码"
+  input: "ws 连接；ClientMessage"
+  output: "ServerMessage 广播；每房间一个 Room"
+  algorithm: |
+    onMessage(join): 版本不符 → error；取/建 Room；assignSeat；send joined；broadcast room。
+    onMessage(intent): room.submit(seat, action) → ok 则 broadcast action{seq}，否则 error{reason}。
+    setAi 指令只允许改自己的座位。
+  tests: "server.test.ts：两个内存 ws 客户端；非法 intent 不占序号"
+  files: [packages/server/src/index.ts, packages/server/src/server.test.ts]
+  notes: "C-LEG-5：不做公开大厅。"
+
+- id: T-071
+  group: E
+  title: 座位分配与断线重连（同名复用座位、since(seq) 补发）
+  module: MOD-14
+  req: REQ-14.1
+  status: todo
+  estimate: 0.6
+  depends_on: [T-070]
+  uses: [server/src/room.ts (since)]
+  source: "PRD §4.4"
+  input: "join{name} 来自断线中的座位；可选 lastSeq"
+  output: "joined{seat 同前}；补发 since(lastSeq ?? 0) 的全部 action"
+  algorithm: "Room 维护 seatState: connected|disconnected|ai；重连即 connected 并停掉接管计时器。"
+  tests: "断开→重连→fingerprint 与服务器一致"
+  files: [packages/server/src/room.ts, packages/server/src/index.ts]
+  notes: ""
+
+- id: T-072
+  group: E
+  title: checksum / desync 检测与处理
+  module: MOD-14
+  req: REQ-14.1
+  status: todo
+  estimate: 0.4
+  depends_on: [T-070]
+  uses: [core/net/protocol.ts (stateFingerprint)]
+  source: "PRD §4.4"
+  input: "checksum{seq, hash}"
+  output: "不一致 → desync 广播；该客户端自动请求全量重放（since(0)）重建"
+  algorithm: "Room 记每 10 seq 的 fingerprint 环形表；比对；desync 后客户端丢弃本地状态重放。"
+  tests: "人为篡改客户端状态触发 desync 并自愈"
+  files: [packages/server/src/room.ts, packages/client/src/net-client.ts]
+  notes: ""
+
+- id: T-073
+  group: E
+  title: AI 补位（掉线 30s 后服务器代打，重连归还）
+  module: MOD-14
+  req: REQ-14.3
+  status: todo
+  estimate: 0.5
+  depends_on: [T-071]
+  uses: [core/ai/policy.ts (decideAction), server/src/room.ts]
+  source: "DEVELOPMENT_PLAN §6 步骤 3"
+  input: "座位 disconnected 超时"
+  output: "座位标 kind:'computer'（不改 core 的 whoPlays，只在服务器侧产 action）；每步 submit 同一路径"
+  algorithm: "定时器 → 循环 decideAction(mirror) → submit(seat, action) 直到轮到别人；重连即停。"
+  tests: "掉线玩家的回合被推进；重连后不再代打"
+  files: [packages/server/src/room.ts]
+  notes: ""
+
+- id: T-074
+  group: E
+  title: 客户端联机模块 net-client（连接、发意图、按 seq 应用）
+  module: MOD-12
+  req: REQ-14.2
+  status: todo
+  estimate: 0.8
+  depends_on: [T-070]
+  uses: [client/main.ts (dispatch), core/net/protocol.ts]
+  source: "PRD §3 MOD-14 REQ-14.2"
+  input: "url, room, name"
+  output: "onStart → newGame(seed...)；onAction → dispatchLocal；本地输入 → send intent（不直接 dispatch）"
+  algorithm: |
+    mode = 'online' 时 main.ts 的 dispatch 改为 send intent；只有服务器回的 action 才进 reduce。
+    seq 乱序 → 请求 since(last)。每 10 seq 发 checksum。
+  tests: "假服务器（内存）往返；乱序恢复"
+  files: [packages/client/src/net-client.ts, packages/client/src/main.ts]
+  notes: ""
+
+- id: T-075
+  group: E
+  title: 掷骰本地预测动画（结果以服务器为准）
+  module: MOD-12
+  req: REQ-14.2
+  status: todo
+  estimate: 0.3
+  depends_on: [T-074]
+  uses: [client/dialog.ts (drawDice), net-client.ts]
+  source: "—"
+  input: "本地点 GO"
+  output: "立刻播骰子滚动动画；收到 action{rollDice} 后停在真实点数"
+  algorithm: "动画不读 state.dice；收到 action 后再 dispatch 并定格。"
+  tests: "帧序列测试"
+  files: [packages/client/src/dice-anim.ts]
+  notes: ""
+
+- id: T-076
+  group: E
+  title: 联机大厅 UI（建房/加房/座位/角色/地图/开始）
+  module: MOD-12
+  req: REQ-14.4
+  status: todo
+  estimate: 0.8
+  depends_on: [T-074]
+  uses: [client/setup.ts (复用開局设置的角色/地图控件), net-client.ts]
+  source: "复用 setup.ts 版式；无原版对照"
+  input: "RoomInfo"
+  output: "房主 start → 服务器广播 start"
+  algorithm: "大厅 = setup 屏 + 座位联机态；非房主控件只读。"
+  tests: "hit 测试；座位同步渲染"
+  files: [packages/client/src/lobby.ts]
+  notes: "这是本项目唯一无原版对照的屏，风格向 setup.ts 靠。"
+
+- id: T-077
+  group: E
+  title: 联机端到端测试：4 客户端同进程跑完整局，与单机同种子逐字节一致
+  module: MOD-14
+  req: REQ-14
+  status: todo
+  estimate: 0.5
+  depends_on: [T-071, T-072, T-073, T-074]
+  uses: [server/src/index.ts, client/net-client.ts, core/state/reduce.ts (reduceAll)]
+  source: "C-DET-4；DEVELOPMENT_PLAN §6 步骤 3 验收"
+  input: "seed, map, 4 个 AI 座位"
+  output: "四份客户端状态 fingerprint 相同 == 单机 reduceAll 的 fingerprint"
+  algorithm: "内存 ws；AI 由服务器代打（T-073 路径）；结束后比对。"
+  tests: "本卡即测试"
+  files: [packages/server/src/e2e.test.ts]
+  notes: ""

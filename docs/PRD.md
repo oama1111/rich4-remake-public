@@ -721,7 +721,12 @@ C→S checksum{seq,hash}（每 10 步）  S: 不一致 → S→all desync{seq,ex
 
 ---
 
-## 附录 A · 文件速查
+## 附录 A · 任务卡片
+
+本文的每条 `REQ` 已拆成原子卡片：`docs/tasks/cards.yaml`（来源）/ `docs/tasks/cards.md`（可读版）。
+卡片字段与用法见 `docs/tasks/README.md`；`python3 tools/task-cards.py next` 列出可开工的卡。
+
+## 附录 B · 文件速查
 
 | 想改什么 | 去哪 |
 |---|---|
@@ -735,6 +740,7 @@ C→S checksum{seq,hash}（每 10 步）  S: 不一致 → S→all desync{seq,ex
 | 存档格式 | `core/loaders/savegame.ts` |
 | 联机协议 | `core/net/protocol.ts` |
 
-## 附录 B · 版本记录
+## 附录 C · 版本记录
 
 - v1.0（2026-09-14）：首版。对应 `DEVELOPMENT_PLAN.md` v1.3。
+- v1.1（2026-09-14）：附录 A 挂接 67 张原子任务卡片。
