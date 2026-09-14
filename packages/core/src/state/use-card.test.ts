@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
+import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 import { IMPLEMENTED_CARD_IDS } from '../cards/registry.ts';
@@ -112,5 +112,68 @@ describe('★ 出牌入口', () => {
     expect(IMPLEMENTED_CARD_IDS).not.toContain(99);
     const s = give(state, 0, 99);
     expect(reduce(s, { type: 'useCard', cardId: 99 }, topo)).toBe(s);
+  });
+});
+
+describe('★ T-008：設施目标经 reduce 端到端落回 GameState', () => {
+  // 一处 3 级旅館（玩家 2 持有）+ 站在別处的出牌者
+  function facScene(facOver: Parameters<typeof makeFacility>[0] = {}, stateOver: Partial<GameState> = {}) {
+    const node = makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1, adjacent: [1] });
+    const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
+    const fac = makeFacility({ id: 1, type: 1, level: 3, owner: 2, ...facOver });
+    const state = makeGameState({
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: 1, cash: 100_000 }),
+      ),
+      facilityType: [0, fac.type],
+      facilityLevel: [0, fac.level],
+      facilityOwner: [0, fac.owner],
+      ...stateOver,
+    });
+    return { state, topo: { nodes: [node], lands: [land], facilities: [fac] } };
+  }
+
+  it('惡魔卡（10）：facilityLevel/facilityType 真的落回 GameState，敌意也落上', () => {
+    const { state, topo } = facScene();
+    const s = give(state, 0, 10);
+    const after = reduce(s, { type: 'useCard', cardId: 10, target: { kind: 'facility', facilityId: 1 } }, topo);
+    expect(after.facilityLevel[1]).toBe(0);
+    expect(after.facilityType[1]).toBe(0);
+    expect(after.facilityOwner[1]).toBe(2); // 归属保留
+    // 敌意 = 3 × 30 × 物价指数1，记在玩家 1 → 玩家 0
+    expect(after.players[1]!.hostility[0]).toBeGreaterThan(0);
+    expect(after.players[0]!.cards).toHaveLength(0);
+  });
+
+  it('天使卡（9）：0 级空地首建，buildType 落进 facilityType', () => {
+    const { state, topo } = facScene({ type: 0, level: 0, owner: 0 });
+    const s = give(state, 0, 9);
+    const after = reduce(s, { type: 'useCard', cardId: 9, target: { kind: 'facility', facilityId: 1, buildType: 4 } }, topo);
+    expect(after.facilityType[1]).toBe(4);
+    expect(after.facilityLevel[1]).toBe(1);
+  });
+
+  it('漲價卡（27）：設施 priceStatus 经 reduce 持久化（不再是地图静态值）', () => {
+    const { state, topo } = facScene();
+    const s = give(state, 0, 27);
+    const after = reduce(s, { type: 'useCard', cardId: 27, target: { kind: 'facility', facilityId: 1 } }, topo);
+    expect(after.facilityPriceStatus[1]).toBe(0x50);
+  });
+
+  it('漲價卡（27）对地块：landPriceStatus 经 reduce 持久化', () => {
+    const { state, topo } = facScene();
+    const s = give(state, 0, 27);
+    const after = reduce(s, { type: 'useCard', cardId: 27, target: { kind: 'entity', entityId: 1 } }, topo);
+    expect(after.landPriceStatus[1]).toBe(0x50);
+  });
+
+  it('★ 查封卡（28）封到研究所：facilityResearchDays 被清零', () => {
+    const { state, topo } = facScene({ type: 4, level: 2 }, {
+      facilityResearchDays: [0, 7],
+    });
+    const s = give(state, 0, 28);
+    const after = reduce(s, { type: 'useCard', cardId: 28, target: { kind: 'facility', facilityId: 1 } }, topo);
+    expect(after.facilityPriceStatus[1]).toBe(0x51);
+    expect(after.facilityResearchDays[1]).toBe(0);
   });
 });

@@ -6,11 +6,14 @@
  * 共用底座见 rules/land-mutation.ts 与 cards/target.ts。
  */
 
-import type { LandInfo } from '../loaders/map.ts';
+import type { FacilityInfo, LandInfo } from '../loaders/map.ts';
 import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
 import { PRICE_STATUS, demolishLand } from '../rules/land-mutation.ts';
 import type { DemolishResult } from '../rules/land-mutation.ts';
+import { MUTATE_DEMOLISH_ONE, MUTATE_FLATTEN, mutateFacility } from './monster.ts';
+import { MONSTER_HOSTILITY_PER_LEVEL } from './monster.ts';
+import { FACILITY_MAX_LEVEL } from '../rules/facility.ts';
 
 // ============================================================
 //  天使卡（9）—— 升级地块
@@ -123,4 +126,125 @@ export function applySealCard(
   districtName: string,
 ): { lands: LandInfo[]; affected: number[] } {
   return applyDistrictMark(lands, districtName, PRICE_STATUS.SEALED);
+}
+
+// ============================================================
+//  設施分支 —— 天使 / 惡魔 / 拆除对設施同样生效
+// ============================================================
+
+// 最高等级表（公園 1、旅館 5、購物中心 5、加油站 1、研究所 5）
+// 见 rules/facility.ts 的 FACILITY_MAX_LEVEL @source 0x00474940
+
+export interface AngelFacilityResult {
+  ok: boolean;
+  facility: FacilityInfo;
+  /**
+   * 原版返回值：`0x81` 表示本次升到了 5 级（天使卡只凭
+   *   `test al, 0x80` 放音效），`1` 表示建成/升级，`0` 表示没动。
+   *   core 不需要音效，但保留档位以便测试比对。
+   */
+  resultCode: number;
+}
+
+/**
+ * 天使卡对設施：`fcn_0040b110` 的設施分支（VA 0x0040b170..0x0040b220）。
+ *
+ * @source
+ * ```asm
+ * cmp byte [fac + 0x1a], 0     ; level == 0？
+ * jne 升级
+ * ; —— 首建：种类由外部给（AI 自己 rand()%4+1、別人 0=公園、
+ * ;    真人走 UI 选择器 0x440aac），此处由参数传入
+ * mov byte [fac + 0x18], 种类
+ * mov byte [fac + 0x1a], 1
+ * 升级:
+ * mov al, byte [type + 0x474940]   ; 该种类的最高等级
+ * cmp [fac + 0x1a], al
+ * jae 返回 0                        ; 已满级 → 不动
+ * inc byte [fac + 0x1a]
+ * ; 升到 5 级时返回 0x81，否则返回 1
+ * ```
+ */
+export function applyAngelFacilityCard(
+  facility: FacilityInfo,
+  buildType: number,
+): AngelFacilityResult {
+  if (facility.level === 0) {
+    // 首建：种类由 target.buildType 给（缺省 0 = 公園）
+    return { ok: true, facility: { ...facility, type: buildType, level: 1 }, resultCode: 1 };
+  }
+  const maxLevel = FACILITY_MAX_LEVEL[facility.type] ?? 0;
+  if (facility.level >= maxLevel) {
+    // @source jae → 返回 0：满级不动
+    return { ok: false, facility, resultCode: 0 };
+  }
+  const level = facility.level + 1;
+  // @source 升到 5 级返回 0x81
+  return { ok: true, facility: { ...facility, level }, resultCode: level >= 5 ? 0x81 : 1 };
+}
+
+export interface DevilFacilityResult {
+  ok: boolean;
+  facility: FacilityInfo;
+  /** 敌意变化：原主对出牌者（无主设施不记） */
+  hostilityDeltas: { from: number; to: number; delta: number }[];
+}
+
+/**
+ * 惡魔卡对設施：敌意同怪獸式（等级 × 30 × 物价指数，无主不记），
+ * 再单个夷平（level=0、type=0 退回公園）。
+ *
+ * @source VA 0x004437a7（惡魔卡敌意段，与怪獸卡同式）
+ *   + VA 0x0040ac5e（mutate mode 2 設施分支）；
+ *   尾部的 `call 0x40dffa` 是表现层刷新，core 无可落副作用。
+ */
+export function applyDevilFacilityCard(
+  facility: FacilityInfo,
+  priceIndex: number,
+  currentPlayer: number,
+): DevilFacilityResult {
+  const hostilityDeltas =
+    facility.owner === 0
+      ? []
+      : [
+          {
+            from: facility.owner - 1,
+            to: currentPlayer,
+            delta: facility.level * MONSTER_HOSTILITY_PER_LEVEL * priceIndex,
+          },
+        ];
+  const out = mutateFacility(facility, MUTATE_FLATTEN);
+  return { ok: out.changed, facility: out.facility, hostilityDeltas };
+}
+
+export interface DemolishFacilityResult {
+  ok: boolean;
+  facility: FacilityInfo;
+  /** 平坦敌意：30 × 物价指数（不按等级），无主不记 */
+  hostilityDelta: number;
+  /** 被拆设施原主（玩家下标）；无主时为 -1 */
+  victim: number;
+}
+
+/**
+ * 拆除卡对設施：拆一级；拆到 0 级时种类归零（退回公園）。
+ * 敌意与地块路径同样是**平坦 30 × 物价指数**（不按等级）。
+ *
+ * @source VA 0x00443cee..0x00443d1d（拆除卡設施段：
+ *   `dec byte [fac+0x1a]`、0 级时 `mov byte [fac+0x18], 0`、
+ *   敌意 `pi*30 → 0x40df69`、`cmp byte [fac+0x19], 0 / je 不记`）
+ *   + mutate mode 0 設施分支（VA 0x0040abdb）
+ */
+export function applyDemolishFacilityCard(
+  facility: FacilityInfo,
+  priceIndex: number,
+): DemolishFacilityResult {
+  const out = mutateFacility(facility, MUTATE_DEMOLISH_ONE);
+  const owned = facility.owner !== 0;
+  return {
+    ok: out.changed,
+    facility: out.facility,
+    hostilityDelta: owned ? priceIndex * 30 : 0,
+    victim: owned ? facility.owner - 1 : -1,
+  };
 }

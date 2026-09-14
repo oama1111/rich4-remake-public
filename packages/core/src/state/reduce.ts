@@ -249,6 +249,7 @@ export function effectiveFacility(
     owner: s.facilityOwner[facilityId] ?? tpl.owner,
     level: s.facilityLevel[facilityId] ?? tpl.level,
     type: s.facilityType[facilityId] ?? tpl.type,
+    priceStatus: s.facilityPriceStatus[facilityId] ?? tpl.priceStatus,
   };
 }
 
@@ -269,6 +270,7 @@ export function effectiveLand(
     owner: s.landOwner[landIndex] ?? tpl.owner,
     level: s.landLevel[landIndex] ?? tpl.level,
     type: s.landType[landIndex] ?? tpl.type,
+    priceStatus: s.landPriceStatus[landIndex] ?? tpl.priceStatus,
   };
 }
 
@@ -2087,20 +2089,30 @@ function playCard(
   // ★ `type` 也要落回去：改建卡改的就是它，先前漏掉导致那张卡看着生效
   //   实际下一次读地块又变回原样
   const landType = [...state.landType];
+  const landPriceStatus = [...state.landPriceStatus];
   for (const l of r.lands) {
     landOwner[l.id] = l.owner;
     landLevel[l.id] = l.level;
     landType[l.id] = l.type;
+    landPriceStatus[l.id] = l.priceStatus;
   }
 
   // 設施同理：怪獸卡改的是 level/type，owner 也可能被未来的卡动到，一并合回
   const facilityOwner = [...state.facilityOwner];
   const facilityLevel = [...state.facilityLevel];
   const facilityType = [...state.facilityType];
+  const facilityPriceStatus = [...state.facilityPriceStatus];
   for (const f of r.facilities) {
     facilityOwner[f.id] = f.owner;
     facilityLevel[f.id] = f.level;
     facilityType[f.id] = f.type;
+    facilityPriceStatus[f.id] = f.priceStatus;
+  }
+
+  // 查封卡封到研究所时，+0x1e（研发剩余天数）被清零 @source 0x004456d5
+  const facilityResearchDays = [...state.facilityResearchDays];
+  for (const facId of r.researchReset) {
+    facilityResearchDays[facId] = 0;
   }
 
   // 敌意由 registry 算好，这里按增量落到玩家身上
@@ -2108,7 +2120,7 @@ function playCard(
 
   // ★ 送神符之类只清了玩家身上的引用，物件本身要在这里收回：
   //   退还三项修正、清 `attached`、让搭档登场。
-  let next: GameState = { ...state, players, landOwner, landLevel, landType, facilityOwner, facilityLevel, facilityType, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market };
+  let next: GameState = { ...state, players, landOwner, landLevel, landType, landPriceStatus, facilityOwner, facilityLevel, facilityType, facilityPriceStatus, facilityResearchDays, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market };
   for (const handle of r.releasedObjects) {
     const rel = releaseObject(next, handle);
     next = respawnPartner(

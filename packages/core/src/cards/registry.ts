@@ -44,16 +44,20 @@ import { applyFrameCard } from './frame.ts';
 import { applyBuyLandCard } from './buy-land.ts';
 import { applyRebuildCard } from './rebuild.ts';
 import { applyRobCard, applyRobCardCard } from './rob.ts';
-import { applyMonsterCard, applyMonsterFacilityCard } from './monster.ts';
+import { applyMonsterCard, applyMonsterFacilityCard, MONSTER_HOSTILITY_PER_LEVEL } from './monster.ts';
 import { applyRedCard, applyBlackCard, applySwapLandCard } from './swap-and-stock.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import {
   applyAngelCard,
+  applyAngelFacilityCard,
   applyDevilCard,
+  applyDevilFacilityCard,
   applyDemolishCard,
+  applyDemolishFacilityCard,
   applyRaisePriceCard,
   applySealCard,
 } from './land-cards.ts';
+import { markFacility, PRICE_STATUS } from '../rules/land-mutation.ts';
 
 export type HostilityDelta = { from: number; to: number; delta: number };
 
@@ -110,6 +114,14 @@ export interface UseCardResult {
    * registry 只产出描述，由 reduce 落进 `state.pending` 并切相。
    */
   followUp: PendingInteraction | null;
+  /**
+   * 本次要**清研发天数**的設施 id（查封卡(28) 命中研究所(type 4) 时：
+   * 原版把 `fac + 0x1e` 清零）。registry 只列出 id，由 reduce 写
+   * `facilityResearchDays`（研发项目 +0x1d 不动）。
+   * @source 查封卡 VA 0x004456cb: `cmp [fac+0x18], 4 / jne 跳过;
+   *   mov byte [fac+0x1e], 0` —— **只有研究所才清**
+   */
+  researchReset: number[];
 }
 
 export interface UseCardContext {
@@ -201,6 +213,7 @@ export function useCard(
     defended: false,
     releasedObjects: [],
     followUp: null,
+    researchReset: [],
   };
   const fail = (error: UseCardError): UseCardResult => ({ ...base, error });
 
@@ -241,6 +254,7 @@ export function useCard(
   let defended = false;
   let releasedObjects: number[] = [];
   let followUp: PendingInteraction | null = null;
+  const researchReset: number[] = [];
 
   /** 就地替换一块地 */
   const putLand = (l: LandInfo): void => {
@@ -477,16 +491,63 @@ export function useCard(
       break;
     }
     case 9: {
+      // 天使卡 VA 0x004434c0：地块是**同區批量**（遍历同名地块各升一级，
+      //   0x443541..0x4435e4）；設施是单个（fcn_0040b110 設施分支）
+      if (target.kind === 'facility') {
+        const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
+        if (fac === null) return fail('facilityOutOfRange');
+        const r = applyAngelFacilityCard(fac, target.buildType ?? 0);
+        // 满级不动 → 不生效不扣卡（原版返回 0）
+        if (!r.ok) return fail('noEffect');
+        facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
+        break;
+      }
       if (targetLand === null) return fail('landNotFound');
-      putLand(applyAngelCard(targetLand));
+      lands = lands.map((l) => (l.name === targetLand.name ? applyAngelCard(l) : l));
       break;
     }
     case 10: {
+      // 惡魔卡 VA 0x004436e0：地块同區批量夷平，**每块有主地**记敌意
+      //   （等级×30×物价指数，0x4437a7，与怪獸同式）；設施单个
+      if (target.kind === 'facility') {
+        const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
+        if (fac === null) return fail('facilityOutOfRange');
+        const r = applyDevilFacilityCard(fac, ctx.priceIndex, cur);
+        if (!r.ok) return fail('noEffect');
+        facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
+        hostilityDeltas = r.hostilityDeltas;
+        break;
+      }
       if (targetLand === null) return fail('landNotFound');
-      putLand(applyDevilCard(targetLand));
+      const deltas: HostilityDelta[] = [];
+      lands = lands.map((l) => {
+        if (l.name !== targetLand.name) return l;
+        if (l.owner !== 0) {
+          deltas.push({
+            from: l.owner - 1,
+            to: cur,
+            delta: l.level * MONSTER_HOSTILITY_PER_LEVEL * ctx.priceIndex,
+          });
+        }
+        return applyDevilCard(l);
+      });
+      hostilityDeltas = deltas;
       break;
     }
     case 12: {
+      if (target.kind === 'facility') {
+        // 拆除卡設施段 VA 0x00443cee..0x00443d1d：单个拆一级，
+        //   拆到 0 级退回公園；敌意平坦 30×物价指数（不按级），无主不记
+        const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
+        if (fac === null) return fail('facilityOutOfRange');
+        const r = applyDemolishFacilityCard(fac, ctx.priceIndex);
+        if (!r.ok) return fail('noEffect');
+        facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
+        if (r.victim >= 0) {
+          hostilityDeltas = [{ from: r.victim, to: cur, delta: r.hostilityDelta }];
+        }
+        break;
+      }
       if (targetLand === null) return fail('landNotFound');
       const r = applyDemolishCard(targetLand, ctx.priceIndex);
       putLand(r.land);
@@ -498,6 +559,19 @@ export function useCard(
     }
     case 27:
     case 28: {
+      if (target.kind === 'facility') {
+        // 漲價 VA 0x0044542d / 查封 VA 0x00445593：設施是**单个**
+        //   写 +0x1c = 0x50/0x51（地块侧才是同區批量）
+        const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
+        if (fac === null) return fail('facilityOutOfRange');
+        const status = cardId === 27 ? PRICE_STATUS.RAISED : PRICE_STATUS.SEALED;
+        const r = markFacility(fac, status);
+        facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
+        // @source 查封卡 `cmp [fac+0x18], 4 / jne 跳过; mov byte [fac+0x1e], 0`
+        //   —— **只有研究所（type 4）**才清研发天数
+        if (r.extraCleared && fac.type === 4) researchReset.push(fac.id);
+        break;
+      }
       if (targetLand === null) return fail('landNotFound');
       const r =
         cardId === 27
@@ -541,5 +615,5 @@ export function useCard(
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, respawns, hostilityDeltas, defended, releasedObjects, followUp };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset };
 }

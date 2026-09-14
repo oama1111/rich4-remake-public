@@ -34,8 +34,13 @@ export type CardTarget =
     }
   /** 指向某块地（住宅/连锁店，用实体 id 表示） */
   | { kind: 'entity'; entityId: number }
-  /** 指向某个設施（公園/旅館/購物中心/加油站/研究所），id 1 基 */
-  | { kind: 'facility'; facilityId: number }
+  /**
+   * 指向某个設施（公園/旅館/購物中心/加油站/研究所），id 1 基。
+   * `buildType` 仅天使卡（9）首建（level==0）时使用：要建的设施种类，
+   * 由外部选定（C-ARC-2）——AI 自己有钱时 `rand()%4+1`、对別人给 0（公園）、
+   * 真人走 UI 选择器（VA 0x00440aac）；缺省 0 = 公園。
+   */
+  | { kind: 'facility'; facilityId: number; buildType?: number }
   /** 指向某支股票（紅/黑卡），下标 0 基，与 commercial.stockIndex 对齐 */
   | { kind: 'stock'; index: number }
   /** 指向某个物件（請神符），下标 1 基（原版物件 handle = 下标 + 1） */

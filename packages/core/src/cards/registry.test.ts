@@ -680,3 +680,89 @@ describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
     expect(r.players[0]!.cards).toEqual([8]);
   });
 });
+
+describe('★ T-008：五张地块卡对設施目标', () => {
+  const facCtx = (cardId: number, fac: ReturnType<typeof makeFacility>) =>
+    makeCtx({
+      players: [makePlayer({ index: 0, cards: [cardId] }), makePlayer({ index: 1 })],
+      facilities: [fac],
+    });
+
+  it('天使卡：0 级空地按 buildType 首建', () => {
+    const ctx = facCtx(9, makeFacility({ id: 1, type: 0, level: 0 }));
+    const r = useCard(ctx, 9, { kind: 'facility', facilityId: 1, buildType: 2 });
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]).toMatchObject({ type: 2, level: 1 });
+    expect(r.players[0]!.cards).toEqual([]); // 生效扣卡
+  });
+
+  it('天使卡：满级設施不动也不扣卡', () => {
+    const ctx = facCtx(9, makeFacility({ id: 1, type: 0, level: 1 })); // 公園 max=1
+    const r = useCard(ctx, 9, { kind: 'facility', facilityId: 1 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('noEffect');
+    expect(r.players[0]!.cards).toEqual([9]);
+  });
+
+  it('惡魔卡：夷平設施并按等级记敌意', () => {
+    const ctx = facCtx(10, makeFacility({ id: 1, type: 1, level: 3, owner: 2 }));
+    const r = useCard(ctx, 10, { kind: 'facility', facilityId: 1 });
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]).toMatchObject({ type: 0, level: 0, owner: 2 });
+    expect(r.hostilityDeltas).toEqual([{ from: 1, to: 0, delta: 90 }]); // 3×30×pi1
+  });
+
+  it('惡魔卡对地块：同區批量夷平、每块有主地各记一笔敌意', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [10] }), makePlayer({ index: 1 })],
+      priceIndex: 1,
+    });
+    // defaultLands：id1 台北市无主 lv0、id2 台北市主2 lv1、id3 高雄市主3 lv2
+    const r = useCard(ctx, 10, { kind: 'entity', entityId: 2 });
+    expect(r.ok).toBe(true);
+    expect(r.lands.find((l) => l.id === 1)!.level).toBe(0);
+    expect(r.lands.find((l) => l.id === 2)!.level).toBe(0);
+    expect(r.lands.find((l) => l.id === 3)!.level).toBe(2); // 不同区不动
+    expect(r.hostilityDeltas).toEqual([{ from: 1, to: 0, delta: 30 }]); // 仅 id2 有主
+  });
+
+  it('拆除卡：設施掉一级，敌意平坦 30×物价指数', () => {
+    const ctx = facCtx(12, makeFacility({ id: 1, type: 1, level: 2, owner: 2 }));
+    const r = useCard(ctx, 12, { kind: 'facility', facilityId: 1 });
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]).toMatchObject({ type: 1, level: 1 });
+    expect(r.hostilityDeltas).toEqual([{ from: 1, to: 0, delta: 30 }]);
+  });
+
+  it('拆除卡：設施拆到 0 级退回公園', () => {
+    const ctx = facCtx(12, makeFacility({ id: 1, type: 1, level: 1, owner: 0 }));
+    const r = useCard(ctx, 12, { kind: 'facility', facilityId: 1 });
+    expect(r.facilities[0]).toMatchObject({ type: 0, level: 0 });
+    expect(r.hostilityDeltas).toEqual([]); // 无主不记
+  });
+
+  it('漲價卡：設施单个标记 0x50', () => {
+    const ctx = facCtx(27, makeFacility({ id: 1, type: 1, level: 2 }));
+    const r = useCard(ctx, 27, { kind: 'facility', facilityId: 1 });
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]!.priceStatus).toBe(0x50);
+    expect(r.researchReset).toEqual([]);
+  });
+
+  it('★ 查封卡：封到研究所才清研发天数（+0x1e）', () => {
+    const lab = facCtx(28, makeFacility({ id: 1, type: 4, level: 2 }));
+    const r1 = useCard(lab, 28, { kind: 'facility', facilityId: 1 });
+    expect(r1.facilities[0]!.priceStatus).toBe(0x51);
+    expect(r1.researchReset).toEqual([1]);
+    // 非研究所：只标记，不清研发
+    const hotel = facCtx(28, makeFacility({ id: 1, type: 1, level: 2 }));
+    const r2 = useCard(hotel, 28, { kind: 'facility', facilityId: 1 });
+    expect(r2.facilities[0]!.priceStatus).toBe(0x51);
+    expect(r2.researchReset).toEqual([]);
+  });
+
+  it('設施 id 越界 → facilityOutOfRange', () => {
+    const ctx = facCtx(9, makeFacility({ id: 1, type: 0, level: 0 }));
+    expect(useCard(ctx, 9, { kind: 'facility', facilityId: 9 }).error).toBe('facilityOutOfRange');
+  });
+});

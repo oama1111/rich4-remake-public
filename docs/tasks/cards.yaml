@@ -205,7 +205,7 @@ cards:
   title: 天使/惡魔/拆除/漲價/查封 五张地块类卡支持設施目标
   module: MOD-06
   req: REQ-06.1
-  status: todo
+  status: done
   estimate: 0.6
   depends_on: [T-001]
   uses:

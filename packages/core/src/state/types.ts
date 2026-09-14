@@ -387,6 +387,16 @@ export interface GameState {
   landTenure: number[];
 
   /**
+   * 地块的状态标记（0 正常 / 0x50 漲價 / 0x51 查封），下标 = 地块 id。
+   *
+   * @source housing_land +0x17：漲價卡 0x004454ef `mov byte [land+0x17], 0x50`、
+   *   查封卡 0x00445659 `..., 0x51`。
+   * ★ 没有这一项，漲價/查封卡经 reduce 打出去就被丢弃 —— playCard 先前
+   *   只合回 owner/level/type 三个数组。
+   */
+  landPriceStatus: number[];
+
+  /**
    * 設施的归属／等级／种类／上次過路費／地契到期 —— 与地块那五项同构，
    * 下标 = 設施 id。
    *
@@ -400,6 +410,12 @@ export interface GameState {
   facilityLevel: number[];
   /** 建筑种类 0 公園 / 1 旅館 / 2 購物中心 / 3 加油站 / 4 研究所；地图里恒为 0，首建时才定 */
   facilityType: number[];
+  /**
+   * 設施的状态标记（0 正常 / 0x50 漲價 / 0x51 查封），下标 = 設施 id。
+   * @source business_land +0x1c：漲價卡 0x0044553e `mov byte [fac+0x1c], 0x50`、
+   *   查封卡 0x004456cb `..., 0x51`。与地块不同，这两张卡对設施**只标记单个**。
+   */
+  facilityPriceStatus: number[];
   facilityLastToll: number[];
   facilityTenure: number[];
   /**

@@ -377,11 +377,13 @@ export function newGame(opts: NewGameOptions): GameState {
     totalMonths: 0,
     landLastToll: new Array<number>(landCount).fill(0),
     landTenure: new Array<number>(landCount).fill(0),
+    landPriceStatus: new Array<number>(landCount).fill(0),
     // ★ 地图数据里設施的 owner/level/type 都是 0（见 facility.test.ts 那条实证），
     //   但照地块的做法从地图播种，免得日后某张图不是 0 时悄悄漏掉
     facilityOwner: facilityFieldFromMap(map, (f) => f.owner),
     facilityLevel: facilityFieldFromMap(map, (f) => f.level),
     facilityType: facilityFieldFromMap(map, (f) => f.type),
+    facilityPriceStatus: facilityFieldFromMap(map, (f) => f.priceStatus),
     facilityLastToll: facilityFieldFromMap(map, () => 0),
     facilityTenure: facilityFieldFromMap(map, () => 0),
     facilityResearchProject: facilityFieldFromMap(map, () => 0),
