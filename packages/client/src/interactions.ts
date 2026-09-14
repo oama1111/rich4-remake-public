@@ -202,11 +202,10 @@ export function interactionUi(
         title: PLACE.departmentStore.text,
         detail:
           `${FIELD.points.text} ${pending.points}` +
-          `　（買得起 ${affordableCards.length} 種卡、${affordableTools.length} 種道具）` +
-          // ★ 道具栏满了是原版明说的一条，别静默失败
-          (pending.tools.length > 0 && affordableTools.length === 0
-            ? `　${NOTICE.toolBoxFull.text.replace('\n\n', '')}`
-            : ''),
+          `　（買得起 ${affordableCards.length} 種卡、${affordableTools.length} 種道具）`,
+        // ⚠️ 原版还有一句「道具欄已滿\n\n無法購買！」（NOTICE.toolBoxFull），
+        //   但 `pending` 里没带「道具栏满没满」这个事实，光看「买得起几种」
+        //   分不出是**没点券**还是**栏满了** —— 拿来当满栏提示会误报，故不显示。
         choices: [
           ...affordableTools.map((t) => ({
             label: `${t.name} ${t.price}點`,

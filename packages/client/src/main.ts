@@ -12,6 +12,7 @@ import { CHARACTERS } from '@rich4/data';
 import {
   autoAction,
   VEHICLE_DICE,
+  teleportPlayer,
   decideAction,
   isAiTurn,
   newGame,
@@ -79,6 +80,7 @@ import {
 } from './dialog.ts';
 import type { SpriteFn } from './gameui.ts';
 import { HOTKEY, hotkeyOf } from './hotkeys.ts';
+import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
 import {
   AUTOSAVE_SLOT,
   LOAD_SLOTS,
@@ -301,6 +303,11 @@ function scheduleHumanTurn(): void {
 
 /** 当前这一步是不是「没得选」的 —— 是就返回它，否则 null */
 function mechanicalAction(): Action | null {
+  // ★ **有待决交互就一律停下**，跟阶段无关。
+  //   銀行/樂透/百貨/拍賣 这几种落点给出 pending 时阶段已经是 `turnEnd`，
+  //   而 `turnEnd` 在下面是要自动 `endTurn` 的 —— 那会把交互一起清掉，
+  //   于是真人永远进不了这几个场所。
+  if (state.pending !== null && state.pending.kind !== 'none') return null;
   switch (state.phase) {
     case 'turnStart':
       return { type: 'startTurn' };
@@ -842,6 +849,12 @@ function requestRender(): void {
 
 /** 把游戏画面的三块摆到舞台上 */
 function drawGameStage(): void {
+  const dlgNow = currentDialog();
+  const scene = screen === 'game' ? sceneFor(state.pending) : null;
+  if (scene !== null && dlgNow !== null) {
+    drawSceneStage(scene, dlgNow);
+    return;
+  }
   if (followPlayer) centerOnCurrentPlayer();
 
   renderer.draw({
@@ -878,6 +891,28 @@ function drawGameStage(): void {
     sidebarView,
   });
   stageCtx.drawImage(hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y);
+}
+
+/**
+ * 场所屏：整屏一张原版底图，对话框盖在上面。
+ *
+ * ★ 原版的銀行/樂透/百貨/拍賣/監獄/醫院/小游戏都是**整屏**的，不是在棋盘上
+ *   弹个框。底图是哪一张见 `scenes.ts`。
+ *
+ * ⚠️ 每一屏自己的控件都还没做，上面盖的仍是通用对话框（Q-SCENE-1）。
+ *   对话框仍然画进棋盘那块离屏画布，好让命中判定与平时**走同一条路**——
+ *   只是这次把棋盘本身清空，让底图透出来。
+ */
+function drawSceneStage(resource: number, ui: InteractionUi): void {
+  const bg = spriteNow(SCENE_ARCHIVE, resource, 0);
+  if (bg !== null) stageCtx.drawImage(bg.bitmap, 0, 0, SCREEN_W, SCREEN_H);
+  else {
+    stageCtx.fillStyle = '#1a1d24';
+    stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+  }
+  boardCtx.clearRect(0, 0, LAYOUT.board.w, LAYOUT.board.h);
+  drawDialog(boardCtx, uiSprite, ui, amountPage, dialogHot);
+  stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
 }
 
 /** 舞台 → 窗口：整数倍放大、居中、不插值 */
@@ -1739,6 +1774,24 @@ async function boot(): Promise<void> {
         goto: (s: Screen) => { screen = s; requestRender(); },
         /** 直接派一个 action —— 自动化测试用，走的与人点按钮同一条路 */
         dispatch: (a: Action) => { dispatch(a); },
+        /**
+         * 把当前玩家挪到某一格并结算 —— **只给自动化测试用**。
+         * 走的是引擎的傳送機规则（rules/teleport.ts）加一次 settle，
+         * 不是另开一条后门。
+         */
+        warp: (nodeId: number) => {
+          const moved = teleportPlayer(state, map.nodes, state.currentPlayer, nodeId);
+          if (moved === null) return false;
+          // settle 只在 settling 阶段生效，所以先把阶段摆过去
+          state = { ...moved, phase: 'settling' };
+          dispatch({ type: 'settle' });
+          return true;
+        },
+        /** 地图上所有特殊格：`{ 节点号: specialKind }` */
+        specials: () =>
+          Object.fromEntries(
+            map.nodes.filter((n) => n.specialKind !== 0).map((n) => [n.id, n.specialKind]),
+          ),
         /** 当前这一帧对话框上有哪些按钮（棋盘区坐标），给自动化点用 */
         dialog: () => {
           const ui = currentDialog();
