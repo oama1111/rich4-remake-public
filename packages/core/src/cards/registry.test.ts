@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { makeLand, makeNode, makePlayer } from '../testing/factories.ts';
+import { makeFacility, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { useCard, type UseCardContext } from './registry.ts';
 import { HOUSING_TYPE_MIN } from '../rules/land.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
@@ -51,6 +51,7 @@ function makeCtx(over: Partial<UseCardContext> = {}): UseCardContext {
     objects: [],
     market: makeMarket(),
     marketOpen: true,
+    facilities: [],
     ...over,
   };
 }
@@ -549,5 +550,62 @@ describe('★ 紅卡/黑卡经统一入口（T-005）', () => {
 
   it('股票下标越界 → stockOutOfRange', () => {
     expect(useCard(ctxWithCard(24), 24, { kind: 'stock', index: 99 }).error).toBe('stockOutOfRange');
+  });
+});
+
+describe('★ 怪獸卡经统一入口（T-006）', () => {
+  const ctxWithMonster = (over: Partial<UseCardContext> = {}) =>
+    makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [11] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+      ],
+      ...over,
+    });
+
+  it('地块目标：夷平等级、保留归属、记敌意并扣卡', () => {
+    const ctx = ctxWithMonster({
+      lands: [makeLand({ id: 1, owner: 3, level: 4 })],
+    });
+    const r = useCard(ctx, 11, { kind: 'entity', entityId: 1 });
+    expect(r.ok).toBe(true);
+    expect(r.lands[0]!.level).toBe(0);
+    expect(r.lands[0]!.owner).toBe(3);
+    expect(r.hostilityDeltas).toEqual([{ from: 2, to: 0, delta: 4 * 30 * 1 }]);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('設施目标：等级与种类归零、归属保留、敌意同式', () => {
+    const ctx = ctxWithMonster({
+      facilities: [makeFacility({ id: 1, owner: 3, level: 2, type: 1 })],
+    });
+    const r = useCard(ctx, 11, { kind: 'facility', facilityId: 1 });
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]).toMatchObject({ level: 0, type: 0, owner: 3 });
+    expect(r.hostilityDeltas).toEqual([{ from: 2, to: 0, delta: 2 * 30 * 1 }]);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('0 级設施 → fail(noEffect) 且不扣卡', () => {
+    const ctx = ctxWithMonster({
+      facilities: [makeFacility({ id: 1, owner: 3, level: 0 })],
+    });
+    const r = useCard(ctx, 11, { kind: 'facility', facilityId: 1 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('noEffect');
+    expect(r.players[0]!.cards).toEqual([11]);
+  });
+
+  it('設施下标越界 → facilityOutOfRange', () => {
+    const ctx = ctxWithMonster({
+      facilities: [makeFacility({ id: 1, level: 2 })],
+    });
+    expect(useCard(ctx, 11, { kind: 'facility', facilityId: 9 }).error).toBe('facilityOutOfRange');
+  });
+
+  it('空地目标 → fail(noEffect)', () => {
+    const ctx = ctxWithMonster({ lands: [makeLand({ id: 1, owner: 2, level: 0 })] });
+    expect(useCard(ctx, 11, { kind: 'entity', entityId: 1 }).error).toBe('noEffect');
   });
 });

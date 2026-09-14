@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **68** 张卡，估算 **37.6** 单元，已完成 5.3。
+共 **72** 张卡，估算 **39.3** 单元，已完成 5.7。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -9,6 +9,7 @@
 | C | 表现层 22 屏（client） | 37 | 22.1 |
 | D | 画质升级管线（assets-pipeline） | 7 | 3.2 |
 | E | 联网对战（server + client） | 8 | 4.7 |
+| F | 规则补缺（known-deviations 剩余 Q 项） | 4 | 1.7 |
 
 ## 索引
 
@@ -19,7 +20,7 @@
 | [T-003](#t-003) | 搶奪卡（13）增加「抢卡片」路径并接进 registry | MOD-06 | REQ-06.1 | `done` | 0.5 | T-001 |
 | [T-004](#t-004) | 請神符（23）接进 registry，目标为物件下标 | MOD-06 | REQ-06.1 | `done` | 0.3 | T-001 |
 | [T-005](#t-005) | 紅卡（24）/ 黑卡（25）接进 registry，目标为股票下标 | MOD-06 | REQ-06.1 | `done` | 0.4 | T-001 |
-| [T-006](#t-006) | 怪獸卡（11）接进 registry，支持地块与設施目标 | MOD-06 | REQ-06.1 | `doing` | 0.4 | T-001 |
+| [T-006](#t-006) | 怪獸卡（11）接进 registry，支持地块与設施目标 | MOD-06 | REQ-06.1 | `done` | 0.4 | T-001 |
 | [T-007](#t-007) | 拍賣卡（8）——把脚下地产送入拍賣 pending | MOD-06 | REQ-06.1 | `todo` | 0.5 | — |
 | [T-008](#t-008) | 天使/惡魔/拆除/漲價/查封 五张地块类卡支持設施目标 | MOD-06 | REQ-06.1 | `todo` | 0.6 | T-001 |
 | [T-009](#t-009) | AI 的 toCardTarget 覆盖全部目标类型（消除 Q-CARD-2 顺延） | MOD-09 | Q-CARD-2 | `todo` | 0.2 | T-001, T-003, T-004, T-005, T-006, T-007, T-008 |
@@ -82,6 +83,10 @@
 | [T-075](#t-075) | 掷骰本地预测动画（结果以服务器为准） | MOD-12 | REQ-14.2 | `todo` | 0.3 | T-074 |
 | [T-076](#t-076) | 联机大厅 UI（建房/加房/座位/角色/地图/开始） | MOD-12 | REQ-14.4 | `todo` | 0.8 | T-074 |
 | [T-077](#t-077) | 联机端到端测试：4 客户端同进程跑完整局，与单机同种子逐字节一致 | MOD-14 | REQ-14 | `todo` | 0.5 | T-071, T-072, T-073, T-074 |
+| [T-080](#t-080) | 停牌中柜台不能买卖（Q-STOCK-3） | MOD-07 | Q-STOCK-3 | `doing` | 0.1 | — |
+| [T-081](#t-081) | 保險理賠接线：找齐 0x44ba63 的调用点（Q-INS-1） | MOD-07 | Q-INS-1 | `todo` | 0.6 | — |
+| [T-082](#t-082) | 設施收費前的三条免收 + 免費卡自动使用 + 死神顯靈由他人賠償（Q-FAC-2） | MOD-05 | Q-FAC-2 | `todo` | 0.8 | — |
+| [T-083](#t-083) | 魔法屋「就地加蓋房屋」对設施生效（Q-MAGIC-2） | MOD-07 | Q-MAGIC-2 | `todo` | 0.2 | — |
 
 ## A · 核心契约与卡片接线（core）
 
@@ -302,7 +307,7 @@
 
 **怪獸卡（11）接进 registry，支持地块与設施目标**
 
-- 模块 `MOD-06` · 需求 `REQ-06.1` · 状态 `doing` · 估算 0.4 单元
+- 模块 `MOD-06` · 需求 `REQ-06.1` · 状态 `done` · 估算 0.4 单元
 - 依赖：T-001
 - 被依赖：T-009
 - 证据：VA 0x00443917（rich4_card_guaishouka.asm）
@@ -2558,4 +2563,148 @@
 **涉及文件**
 
 - packages/server/src/e2e.test.ts
+
+## F · 规则补缺（known-deviations 剩余 Q 项）
+
+### T-080
+
+**停牌中柜台不能买卖（Q-STOCK-3）**
+
+- 模块 `MOD-07` · 需求 `Q-STOCK-3` · 状态 `doing` · 估算 0.1 单元
+- 依赖：无（可立即开工）
+- 证据：0x0042aef4 / 0x0042b02f `cmp byte [股票 + 0x02], 0 / jne 跳过`
+
+**依赖的其他类 / 文件**
+
+- core/state/reduce.ts (tradeStock)
+- core/places/stock.ts (StockState.f6)
+
+**期望输入**
+
+    buyStock / sellStock 指令，目标股票 f6 != 0
+
+**期望输出**
+
+    reduce 原样返回（拒绝）；AI 侧选股/賣股已跳过停牌股
+
+**核心逻辑 / 算法指导**
+
+    tradeStock 在漲跌停判定前加一条 `if (stock.f6 !== 0) return state`。
+
+**验收测试**
+
+    stock-limits.test.ts：停牌时买/卖都拒；倒数归零后能买。
+
+**涉及文件**
+
+- packages/core/src/state/reduce.ts
+- packages/core/src/places/stock-limits.test.ts
+
+### T-081
+
+**保險理賠接线：找齐 0x44ba63 的调用点（Q-INS-1）**
+
+- 模块 `MOD-07` · 需求 `Q-INS-1` · 状态 `todo` · 估算 0.6 单元
+- 依赖：无（可立即开工）
+- 证据：0x44ba63(玩家, 損失, 旗标)；已知调用点 0x0041a82d（旅館）；其余用 callers 定位
+
+**依赖的其他类 / 文件**
+
+- core/places/company.ts (insurancePayout)
+- core/state/reduce.ts (旅館住店 / 被狗咬 / 踩雷 / 炸彈 / 監獄 各处損失)
+
+**期望输入**
+
+    玩家在保險期内（insuranceDays != 0）蒙受的每一笔損失
+
+**期望输出**
+
+    保險公司（行業別 4 的企業）pay_money(公司, 玩家, 損失, 1) 進現金；公司盈餘相应减少
+
+**核心逻辑 / 算法指导**
+
+    1. `callers 0x0044ba63` 列全；逐个对到本引擎的损失点。
+    2. 每处在扣款之后调 insurancePayout(state, player, loss)；没有保險公司的地图不赔。
+
+**验收测试**
+
+    每个调用点一条：有保險期赔、没有不赔；公司盈餘为负也照赔（读 exe 定）。
+
+**涉及文件**
+
+- packages/core/src/state/reduce.ts
+- packages/core/src/places/company.ts
+
+### T-082
+
+**設施收費前的三条免收 + 免費卡自动使用 + 死神顯靈由他人賠償（Q-FAC-2）**
+
+- 模块 `MOD-05` · 需求 `Q-FAC-2` · 状态 `todo` · 估算 0.8 单元
+- 依赖：无（可立即开工）
+- 证据：0x0041a3cc（設施收費）走与住宅相同的 0x41d559：房屋查封中 / 與%s同盟中 / 死神顯靈；免費卡 0x0041a670；死神賠償 0x40fbb8 @ 0x0041a6a3
+
+**依赖的其他类 / 文件**
+
+- core/state/reduce.ts (settleFacility)
+- core/rules/rent.ts / toll.ts（住宅那边同一函数的三条免收）
+- core/cards/registry.ts 只读
+
+**期望输入**
+
+    踩到别人的設施
+
+**期望输出**
+
+    查封中不收；与地主同盟不收；地主身上是死神则不收且改由『他人賠償』；toll >= 2000×物價 或 付不起 → 自动用免費卡（手里有才）
+
+**核心逻辑 / 算法指导**
+
+    1. 先看住宅那边这三条在本引擎哪儿（grep 同盟/死神/查封），把判定抽成共用函数。
+    2. settleFacility 在算出 toll 之后依次套用；免費卡自动使用走 registry 的 useCard(20) 路径（被动卡的自动触发）。
+    3. 死神賠償：读 0x40fbb8 定谁赔多少。
+
+**验收测试**
+
+    三条免收各一条；免費卡两种触发；死神賠償一条。
+
+**涉及文件**
+
+- packages/core/src/state/reduce.ts
+- packages/core/src/rules/rent.ts
+
+> 設施查封位本身要 T-008 才进状态；这里先接同盟与死神两条，查封留钩子。
+
+### T-083
+
+**魔法屋「就地加蓋房屋」对設施生效（Q-MAGIC-2）**
+
+- 模块 `MOD-07` · 需求 `Q-MAGIC-2` · 状态 `todo` · 估算 0.2 单元
+- 依赖：无（可立即开工）
+- 证据：0x40b110 对設施同样生效
+
+**依赖的其他类 / 文件**
+
+- core/places/magic-house.ts (applyMagicRequest build)
+- core/state/reduce.ts (freeBuildFacility)
+
+**期望输入**
+
+    魔法屋选中「就地加蓋」，目标站在設施上
+
+**期望输出**
+
+    設施等级 +1（不超上限），与住宅同价（免费）
+
+**核心逻辑 / 算法指导**
+
+    build 分支：目标节点 ref 是 facility → freeBuildFacility；否则原路。
+
+**验收测试**
+
+    magic-house.test.ts +2
+
+**涉及文件**
+
+- packages/core/src/places/magic-house.ts
+- packages/core/src/state/reduce.ts
 

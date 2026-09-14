@@ -16,7 +16,7 @@
  */
 
 import type { Player } from '../state/types.ts';
-import type { LandInfo, MapNode } from '../loaders/map.ts';
+import type { FacilityInfo, LandInfo, MapNode } from '../loaders/map.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { targetClassOfCard, validateTarget } from './target.ts';
 import type { MapObject } from './summon.ts';
@@ -42,6 +42,7 @@ import { applyFrameCard } from './frame.ts';
 import { applyBuyLandCard } from './buy-land.ts';
 import { applyRebuildCard } from './rebuild.ts';
 import { applyRobCard, applyRobCardCard } from './rob.ts';
+import { applyMonsterCard, applyMonsterFacilityCard } from './monster.ts';
 import { applyRedCard, applyBlackCard, applySwapLandCard } from './swap-and-stock.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import {
@@ -80,6 +81,8 @@ export interface UseCardResult {
   objects: MapObject[];
   /** 股票行情（仅紅/黑卡会改动；其余卡原样返回） */
   market: StockMarketState;
+  /** 設施表（仅怪獸卡等会改动；其余卡原样返回） */
+  facilities: FacilityInfo[];
   /**
    * 效果执行中需要**重新登场的搭档**（請神符挤走旧神时，
    * 旧神的搭档要回到地图上）。落点选择交给 reduce 的 respawnPartner。
@@ -122,6 +125,8 @@ export interface UseCardContext {
    * 由调用方算好传入，registry 不做日期推算。
    */
   marketOpen: boolean;
+  /** 設施表（怪獸卡等可指向設施的卡要读/写） */
+  facilities: readonly FacilityInfo[];
   /**
    * 嫁祸卡的新目标选择器（陷害卡等有害卡在被嫁祸时调用）。
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
@@ -131,7 +136,7 @@ export interface UseCardContext {
 
 /** 本项目已实现效果、可经本入口使用的卡片编号 */
 export const IMPLEMENTED_CARD_IDS: readonly number[] = [
-  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+  1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 22, 23, 24, 25, 26, 27, 28, 29, 30,
 ];
 
 /** 取玩家当前**所站地块**（不是住宅地则返回 null） */
@@ -170,6 +175,7 @@ export function useCard(
     toolStock: [...ctx.toolStock],
     objects: [...ctx.objects],
     market: ctx.market,
+    facilities: [...ctx.facilities],
     respawns: [],
     hostilityDeltas: [],
     defended: false,
@@ -191,6 +197,7 @@ export function useCard(
   const targetError = validateTarget(cls, target, cur, ctx.players.length, {
     objectCount: ctx.objects.length,
     stockCount: ctx.market.stocks.length,
+    facilityCount: ctx.facilities.reduce((m, f) => Math.max(m, f.id), 0),
   });
   if (targetError !== null) return fail(targetError);
 
@@ -207,6 +214,7 @@ export function useCard(
   let toolStock: number[] = [...ctx.toolStock];
   let objects: MapObject[] = [...ctx.objects];
   let market: StockMarketState = ctx.market;
+  let facilities: FacilityInfo[] = [...ctx.facilities];
   const respawns: { partner: number; nearNode: number }[] = [];
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
@@ -366,6 +374,25 @@ export function useCard(
     }
 
     // ── 地块目标 ───────────────────────────────────────
+    case 11: {
+      // 怪獸卡 VA 0x00443917：敌意先按原等级算（level×30×物价指数，无主不记），
+      //   再 mutate mode 2 夷平 —— 地块与設施两条路径完全同构
+      if (target.kind === 'facility') {
+        const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
+        if (fac === null) return fail('facilityOutOfRange');
+        const r = applyMonsterFacilityCard(fac, ctx.priceIndex, cur);
+        if (!r.ok) return fail('noEffect');
+        facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
+        hostilityDeltas = r.hostilityDeltas;
+        break;
+      }
+      if (targetLand === null) return fail('landNotFound');
+      const r = applyMonsterCard(targetLand, ctx.priceIndex, cur);
+      if (!r.ok) return fail('noEffect');
+      putLand(r.land);
+      hostilityDeltas = r.hostilityDeltas;
+      break;
+    }
     case 4:
     case 5: {
       const here = standingLand(ctx, cur);
@@ -444,5 +471,5 @@ export function useCard(
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, respawns, hostilityDeltas, defended, releasedObjects };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, respawns, hostilityDeltas, defended, releasedObjects };
 }

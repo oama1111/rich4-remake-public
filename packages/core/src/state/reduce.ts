@@ -1761,6 +1761,8 @@ function tradeStock(
   // @source fcn_00428d01 —— 休市日柜台不开门
   if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day)) return state;
   // @source 0x0042af13 `cmp eax, 1` 漲停無法買進；0x0042b046 `cmp eax, 3` 跌停無法賣出
+  // @source 0x0042aef4 / 0x0042b02f `cmp byte [股票 + 0x02], 0 / jne 跳过` —— 停牌倒数非 0 时柜台不理
+  if (stock.f6 !== 0) return state;
   if (action.type === 'buyStock' && isLimitUp(stock.openPrice, stock.price)) return state;
   if (action.type === 'sellStock' && isLimitDown(stock.openPrice, stock.price)) return state;
 
@@ -1986,6 +1988,7 @@ function playCard(
       objects: state.objects,
       market: state.market,
       marketOpen: marketOpenOn(state.globalMapId, state.year, state.month, state.day),
+      facilities: allEffectiveFacilities(state, topo),
       // 嫁祸的新目标：交给上层决定；没给就放弃转嫁（返回 -1）
       scapegoatPicker: () => -1,
     },
@@ -2005,12 +2008,22 @@ function playCard(
     landType[l.id] = l.type;
   }
 
+  // 設施同理：怪獸卡改的是 level/type，owner 也可能被未来的卡动到，一并合回
+  const facilityOwner = [...state.facilityOwner];
+  const facilityLevel = [...state.facilityLevel];
+  const facilityType = [...state.facilityType];
+  for (const f of r.facilities) {
+    facilityOwner[f.id] = f.owner;
+    facilityLevel[f.id] = f.level;
+    facilityType[f.id] = f.type;
+  }
+
   // 敌意由 registry 算好，这里按增量落到玩家身上
   const players = applyHostilityDeltas(r.players, r.hostilityDeltas);
 
   // ★ 送神符之类只清了玩家身上的引用，物件本身要在这里收回：
   //   退还三项修正、清 `attached`、让搭档登场。
-  let next: GameState = { ...state, players, landOwner, landLevel, landType, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market };
+  let next: GameState = { ...state, players, landOwner, landLevel, landType, facilityOwner, facilityLevel, facilityType, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market };
   for (const handle of r.releasedObjects) {
     const rel = releaseObject(next, handle);
     next = respawnPartner(

@@ -11,7 +11,7 @@
  *   怪獸卡用的是 **mode 2**。
  */
 
-import type { LandInfo } from '../loaders/map.ts';
+import type { FacilityInfo, LandInfo } from '../loaders/map.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
 
 /** `mutate_land` 的三种模式 */
@@ -121,4 +121,95 @@ export function applyMonsterCard(
 
   const out = mutateLand(land, MUTATE_FLATTEN);
   return { ok: out.changed, land: out.land, hostilityDeltas };
+}
+
+// ============================================================
+//  設施分支（entityId 落在 0xfa0..0x1770，VA 0x0040abdb 起）
+// ============================================================
+
+export interface FacilityMutateResult {
+  facility: FacilityInfo;
+  changed: boolean;
+}
+
+/**
+ * 改造一处设施 —— `mutate_land` 的設施分支（VA 0x0040abdb..0x0040ac76），
+ * 与住宅地分支同构，但记录长 56 字节、字段语义略有不同：
+ *
+ * @source
+ * ```asm
+ * ; mode 0 —— 拆一级
+ * cl = [fac+0x1a]; test cl,cl; je 不变
+ * [fac+0x1a] = cl - 1
+ * if (结果 == 0) { [fac+0x18] = 0; call 0x40dffa }   ; 拆到 0 级退回公園
+ *
+ * ; mode 1 —— 清归属
+ * [fac+0x19] = 0; [fac+0x1a] = 0; [fac+0x18] = 0; [fac+0x34] = 0
+ *
+ * ; mode 2 —— 夷平
+ * if ([fac+0x1a] == 0) 不变
+ * [fac+0x1a] = 0; [fac+0x18] = 0; call 0x40dffa
+ * ```
+ *
+ * ★ 与地块分支的两处不同：
+ *   - mode 0 没有「连锁店直接清空」的说法，但拆到 0 级时**种类归零（退回公園）**；
+ *   - `0x40dffa` 是表现层的设施重建/刷新，core 无可落副作用。
+ *   归属同样保留（mode 2 不动 +0x19）。
+ */
+export function mutateFacility(facility: FacilityInfo, mode: number): FacilityMutateResult {
+  switch (mode) {
+    case MUTATE_DEMOLISH_ONE: {
+      if (facility.level === 0) return { facility, changed: false };
+      const level = facility.level - 1;
+      // @source jne 0x40ac71 —— 拆到 0 级才清种类（退回公園）
+      return {
+        facility: level === 0 ? { ...facility, level, type: 0 } : { ...facility, level },
+        changed: true,
+      };
+    }
+    case MUTATE_CLEAR_OWNER:
+      return { facility: { ...facility, owner: 0, level: 0, type: 0 }, changed: true };
+    case MUTATE_FLATTEN: {
+      if (facility.level === 0) return { facility, changed: false };
+      return { facility: { ...facility, level: 0, type: 0 }, changed: true };
+    }
+    default:
+      return { facility, changed: false };
+  }
+}
+
+export interface MonsterFacilityResult {
+  ok: boolean;
+  facility: FacilityInfo;
+  /** 敌意变化：原主对出牌者 */
+  hostilityDeltas: { from: number; to: number; delta: number }[];
+}
+
+/**
+ * 怪獸卡踏**设施**：与地块路径完全同构 —— 敌意先按原等级算好
+ * （`level × 30 × 物价指数`，无主设施不记），再 mode 2 夷平。
+ *
+ * @source VA 0x004439e8..0x00443a2f（怪獸卡的設施敌意段：
+ *   `dl = [fac+0x1a]; 30×level×[0x4990e8] → 0x40df69`，
+ *   `cmp byte [fac+0x19], 0 / je 跳过敌意`）+ mutate mode 2（0x0040ac5e）
+ */
+export function applyMonsterFacilityCard(
+  facility: FacilityInfo,
+  priceIndex: number,
+  currentPlayer: number,
+): MonsterFacilityResult {
+  // @source cmp byte [ebx+0x19], 0 / je —— 无主设施不记敌意
+  const hostilityDeltas =
+    facility.owner === 0
+      ? []
+      : [
+          {
+            from: facility.owner - 1,
+            to: currentPlayer,
+            delta: facility.level * MONSTER_HOSTILITY_PER_LEVEL * priceIndex,
+          },
+        ];
+
+  const out = mutateFacility(facility, MUTATE_FLATTEN);
+  return { ok: out.changed, facility: out.facility, hostilityDeltas };
 }
