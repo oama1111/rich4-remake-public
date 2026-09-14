@@ -23,6 +23,7 @@ import { WatcomRng } from '../rng/watcom.ts';
 import { CONFINEMENT_SLOTS } from './confinement.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { emptyBoard } from '../places/notice-board.ts';
+import { initialSpecialActors } from './special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { emptyOwnership } from '../places/commercial.ts';
 import { makeObjects } from '../cards/summon.ts';
@@ -296,6 +297,7 @@ export function newGame(opts: NewGameOptions): GameState {
     // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取
     landType: landTypeFromMap(map, landCount),
     noticeBoard: emptyBoard(),
+    specialActors: initialSpecialActors(),
     turnCount: 0,
     snapshots: [null, null, null, null],
     newsDeck,

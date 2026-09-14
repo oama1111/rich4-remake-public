@@ -14,6 +14,12 @@ import type { GameState, Player } from './types.ts';
 import { isAlive } from './types.ts';
 import { WatcomRng, rollDice } from '../rng/watcom.ts';
 import {
+  ACTOR_DOLL,
+  runDoll,
+  spawnDoll,
+  specialSlotOf,
+} from '../rules/special-actors.ts';
+import {
   TOOL_TIME_MACHINE,
   restoreSnapshot,
   snapshotOnTurnStart,
@@ -1157,6 +1163,7 @@ function applyMagicRequest(
 }
 
 /** 道具编号 */
+const TOOL_ROBOT_DOLL = 1;
 const TOOL_MISSILE = 7;
 const TOOL_REMOTE_DICE = 8;
 const TOOL_ROBOT_WORKER = 9;
@@ -1490,6 +1497,27 @@ function useToolAction(
     // 还原之后要把道具扣掉，所以在**还原后的**状态上扣
     const taken = takeTool(back.tools, back.toolStock, me.index, toolId);
     return { ...back, tools: taken.tools, toolStock: taken.stock };
+  }
+
+  // ── 機器娃娃（1）：放一个替身出去，沿路九格把物件全扫掉 ──
+  if (toolId === TOOL_ROBOT_DOLL) {
+    const doll = spawnDoll(state, me.index);
+    if (doll === null) return state;
+    // ★ 替身与玩家共用一套走子规则（不走回头路、封路位、岔路随机），
+    //   所以这里直接把 `pickNextNode` 交给它，不另造一套（C-ARC-2）。
+    const rng = new WatcomRng();
+    rng.setState(state.rngState);
+    const swept = runDoll(doll, state.objects, (from, prev) =>
+      pickNextNode(topo, from, prev, rng) ?? 0,
+    );
+    const specialActors = [...state.specialActors];
+    specialActors[specialSlotOf(ACTOR_DOLL)] = swept.actor;
+    return consume({
+      ...state,
+      objects: swept.objects,
+      specialActors,
+      rngState: rng.getState(),
+    });
   }
 
   // ── 遙控骰子（8）──

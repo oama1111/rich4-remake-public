@@ -35,7 +35,7 @@ function withTool(): ReturnType<typeof makeGameState> {
 describe('時光機', () => {
   it('不在「未实现」名单里了', () => {
     expect(UNIMPLEMENTED_TOOLS).not.toContain(TOOL_TIME_MACHINE);
-    expect(UNIMPLEMENTED_TOOLS).toEqual([1]);
+    expect(UNIMPLEMENTED_TOOLS).toEqual([]);
   });
 
   it('★ 只给真人存快照 —— 电脑玩家用不了（@source 0x004480a0 test …,1）', () => {

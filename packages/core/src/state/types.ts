@@ -15,6 +15,7 @@ import type { StockHolding } from '../places/stock.ts';
 import type { CommercialOwnership } from '../places/commercial.ts';
 import type { Listing } from '../places/notice-board.ts';
 import type { MapObject } from '../cards/summon.ts';
+import type { SpecialActor } from '../rules/special-actors.ts';
 
 // ============================================================
 //  玩家控制方式
@@ -343,6 +344,15 @@ export interface GameState {
    *   别人付**现金**买走。见 places/notice-board.ts。
    */
   noticeBoard: (Listing | null)[][];
+
+  /**
+   * 棋盘上会走路的**非玩家**五个：小偷／強盜／流氓／間諜／機器娃娃。
+   *
+   * ★ 原版把它们与玩家一样当作「行动者」（`[0x49910c]` 取值 4..8），
+   *   共用一张 5 × 16 字节的表。下标 = actor − 4。
+   *   见 rules/special-actors.ts。
+   */
+  specialActors: SpecialActor[];
 
   /** 回合序号，从 0 开始 */
   turnCount: number;

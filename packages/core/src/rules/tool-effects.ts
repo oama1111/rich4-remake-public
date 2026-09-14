@@ -315,17 +315,21 @@ export function blastLand(
 /**
  * 效果**尚未实现**的道具。
  *
- * 只剩一个：
+ * ★ **空的 —— 13 件全部接上了。**
  *
- * | 编号 | 道具 | 卡在哪 |
- * |---|---|---|
- * | 1 | 機器娃娃 | 要先有**替身走子**：写 `_rich4_all_special_players_state`(0x498e28) 的 +64..+74，造一个占用 actor 4..7 的分身。整套走子系统尚未实现（见 known-deviations 的 Q-OBJ-3） |
+ * 最后一件是 1 機器娃娃，它卡在「替身走子」上：原版把它当作**行动者 8**
+ * （`[0x49910c] = 8`），位置写进 `_rich4_all_special_players_state`(0x498e28)
+ * 的第 4 项。这套系统现已实现，见 rules/special-actors.ts。
  *
- * ✅ 10 時光機 —— 靠还原「回合开始快照」做撤销，见 rules/time-machine.ts
- * ✅ 11 傳送機 —— 搬地產 / 搬人两路已做，設施那一路见 Q-TOOL-2，
- *                见 rules/teleport.ts
+ * ✅ 1  機器娃娃 —— 放一个替身走九格，沿路把物件全扫掉，见 rules/special-actors.ts
+ * ✅ 10 時光機   —— 靠还原「回合开始快照」做撤销，见 rules/time-machine.ts
+ * ✅ 11 傳送機   —— 搬地產 / 搬人两路已做，設施那一路见 Q-TOOL-2，
+ *                  见 rules/teleport.ts
+ *
+ * ⚠️ 这个常量**保留不删**：往后要是某条效果需要临时退场，
+ *   得有地方明确说「这件还没做」，而不是让它悄悄变成空操作。
  */
-export const UNIMPLEMENTED_TOOLS: readonly number[] = [1];
+export const UNIMPLEMENTED_TOOLS: readonly number[] = [];
 
 export function isToolImplemented(toolId: number): boolean {
   return !UNIMPLEMENTED_TOOLS.includes(toolId);

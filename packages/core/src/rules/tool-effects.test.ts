@@ -127,24 +127,20 @@ describe('★ 放置类道具的物件种类', () => {
 });
 
 describe('★ 未实现的道具明确列出', () => {
-  it('已实现 10 个：放置 2/3/4、交通 5/6/12、飛彈 7/13、骰子 8、工人 9', () => {
-    for (const id of [2, 3, 4, 5, 6, 7, 8, 9, 12, 13]) {
+  it('★ 13 件全部实现', () => {
+    for (let id = 1; id <= 13; id++) {
       expect(isToolImplemented(id), `道具${id}`).toBe(true);
     }
   });
 
-  it('★ 只剩 1 个未实现 —— 卡在替身走子上', () => {
-    // 1 機器娃娃要先有替身走子系统；10 時光機要状态快照；11 傳送機是三段选择
-    expect([...UNIMPLEMENTED_TOOLS].sort((a, b) => a - b)).toEqual([1]);
+  it('★ 未实现清单已清空 —— 最后一件是機器娃娃（替身走子）', () => {
+    expect([...UNIMPLEMENTED_TOOLS]).toEqual([]);
+  });
+
+  it('清单里若再进新条目，必定同时不被认为已实现', () => {
     for (const id of UNIMPLEMENTED_TOOLS) {
       expect(isToolImplemented(id), `道具${id}`).toBe(false);
     }
-  });
-
-  it('13 个道具都有明确归属，没有遗漏', () => {
-    const done = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
-    const all = [...done, ...UNIMPLEMENTED_TOOLS].sort((a, b) => a - b);
-    expect(all).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   });
 });
 
@@ -159,9 +155,9 @@ describe('★ 13 个道具逐个点名', () => {
     makePlayer({ index: 0, trafficMethod: TRAFFIC_WALK, ndices: 1, ...over });
   const emptySlots = (): number[] => new Array<number>(4 * TOOL_SLOTS_PER_PLAYER).fill(0);
 
-  it('1 機器娃娃 —— 未实现，已登记', () => {
-    expect(isToolImplemented(1)).toBe(false);
-    expect(UNIMPLEMENTED_TOOLS).toContain(1);
+  it('1 機器娃娃 —— 已实现：替身走九格，沿路扫物件', () => {
+    expect(isToolImplemented(1)).toBe(true);
+    expect(UNIMPLEMENTED_TOOLS).not.toContain(1);
   });
 
   // ★ 槽位是**按种类分区**的（place_object VA 0x0040e033）：
@@ -282,7 +278,7 @@ describe('★ 13 个道具逐个点名', () => {
       expect(known, `道具 ${t.id} ${t.name} 既没实现也没登记`).toBe(true);
     }
     expect(TOOLS).toHaveLength(13);
-    // 已实现 12 个、未实现 1 个 —— 这个数字变了就该更新文档
-    expect(TOOLS.filter((t) => isToolImplemented(t.id))).toHaveLength(12);
+    // ★ 13 个**全部**实现 —— 这个数字掉下来就该更新文档
+    expect(TOOLS.filter((t) => isToolImplemented(t.id))).toHaveLength(13);
   });
 });

@@ -49,8 +49,8 @@ function withTool(): ReturnType<typeof makeGameState> {
 }
 
 describe('傳送機', () => {
-  it('只剩機器娃娃没做了', () => {
-    expect(UNIMPLEMENTED_TOOLS).toEqual([1]);
+  it('道具已全部实现', () => {
+    expect(UNIMPLEMENTED_TOOLS).toEqual([]);
   });
 
   it('★ 选择器的三段编码 —— @source cmp 0x7d0 / 0xfa0 / 0x1770', () => {

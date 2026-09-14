@@ -23,6 +23,7 @@ import type { SaveGame } from './save.ts';
 import type { Rich4Map } from './map.ts';
 import { landTypeFromMap } from '../rules/new-game.ts';
 import { emptyBoard } from '../places/notice-board.ts';
+import { initialSpecialActors } from '../rules/special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
@@ -251,6 +252,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   gaps['commercialOwners'] = '各企业的归属与持股排名在存档中的偏移未验证，已置为无主';
   gaps['objects'] = '地图物件表（神明/路障/地雷）在存档 0x0204 起，解析器尚未回读，已置空';
   gaps['prisonOccupancy'] = '监狱/医院占用表在存档中的偏移未验证，已置空';
+  gaps['specialActors'] = '替身走子表（0x498e28，5 × 16 字节）在存档中的偏移未验证，已置为全不在场';
   gaps['newsDeck'] = '牌堆洗牌序在存档中的偏移未验证，已按顺序重建（不影响已抽过的牌）';
   gaps['rngState'] =
     '原版不存随机数状态（原版对局本就不可复现），读档后必须由宿主注入新种子';
@@ -283,6 +285,9 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     newsDeck: { order: Array.from({ length: 36 }, (_, i) => i), cursor: 0 },
     fortuneDeck: { order: Array.from({ length: 37 }, (_, i) => i), cursor: 0 },
     pool: 0,
+    // ★ 替身（小偷/強盜/流氓/間諜/機器娃娃）在原版存档里的偏移未验证。
+    //   它们只在「走到一半」时才非空，读档时一律当作不在场。
+    specialActors: initialSpecialActors(),
     prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     lastEvent: null,
