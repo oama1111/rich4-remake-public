@@ -8,4 +8,5 @@ export * from './ground.ts';
 export * from './audio.ts';
 export * from './midi.ts';
 export * from './classify.ts';
+export * from './slice.ts';
 export * from './upscale.ts';

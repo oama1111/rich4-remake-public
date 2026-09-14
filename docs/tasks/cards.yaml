@@ -1171,7 +1171,7 @@ cards:
   title: 按帧切片 + Alpha 分离，产出 upscale-queue/
   module: MOD-11
   req: REQ-11.1
-  status: todo
+  status: done
   estimate: 0.6
   depends_on: [T-060]
   uses: [assets-pipeline/src/sprite.ts (decodeSprite), cli-upscale.ts]

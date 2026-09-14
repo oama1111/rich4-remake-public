@@ -13,6 +13,7 @@
  * 调色板：SPR 资源头部的 512 字节 = 256 项 uint16 小端 RGB555。
  */
 
+import { inflateSync } from 'node:zlib';
 import type { SpriteSheet, GraphInfo } from './mkf.ts';
 
 /** SPR 中代表透明的调色板索引 */
@@ -257,4 +258,163 @@ function adler32(data: Uint8Array): number {
     b = (b + a) % 65521;
   }
   return ((b << 16) | a) >>> 0;
+}
+
+// ============================================================
+//  PNG 解码 —— encodePng 的逆运算，供切片/回填读图
+// ============================================================
+
+export class PngFormatError extends Error {}
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/** 各色彩类型的每像素字节数（仅支持 8bit：0=灰度 2=RGB 4=灰度+Alpha 6=RGBA） */
+const COLOR_TYPE_BPP: Record<number, number> = { 0: 1, 2: 3, 4: 2, 6: 4 };
+
+/**
+ * 解码 PNG → RGBA8888。
+ *
+ * 支持非交错的 8bit 灰度/RGB/灰度+Alpha/RGBA，五种 scanline filter
+ * 全部还原（自己 encodePng 的产物恒为 filter 0 + zlib store，
+ * 但外部超分工具回传的图会用真压缩与各类 filter，必须都能读）。
+ *
+ * 锚点无处可得（PNG 不存），恒为 0/0——锚点以 manifest 为准。
+ */
+export function decodePng(bytes: Uint8Array): DecodedImage {
+  if (bytes.length < 8 || !PNG_SIGNATURE.every((b, i) => bytes[i] === b)) {
+    throw new PngFormatError('不是 PNG（签名不符）');
+  }
+
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = -1;
+  const idatParts: Uint8Array[] = [];
+  let sawIend = false;
+
+  let at = 8;
+  while (at + 8 <= bytes.length) {
+    const len = u32be(bytes, at);
+    const type = String.fromCharCode(bytes[at + 4]!, bytes[at + 5]!, bytes[at + 6]!, bytes[at + 7]!);
+    const data = bytes.subarray(at + 8, at + 8 + len);
+    if (data.length < len) throw new PngFormatError(`块 ${type} 长度越界`);
+    if (type === 'IHDR') {
+      if (len !== 13) throw new PngFormatError('IHDR 长度不是 13');
+      width = u32be(data, 0);
+      height = u32be(data, 4);
+      bitDepth = data[8]!;
+      colorType = data[9]!;
+      if (data[12] !== 0) throw new PngFormatError('不支持交错（interlaced）PNG');
+    } else if (type === 'IDAT') {
+      idatParts.push(data);
+    } else if (type === 'IEND') {
+      sawIend = true;
+      break;
+    }
+    at += 12 + len;
+  }
+  if (!sawIend) throw new PngFormatError('缺少 IEND');
+  if (width === 0 || height === 0) throw new PngFormatError('缺少 IHDR 或尺寸为 0');
+  if (bitDepth !== 8) throw new PngFormatError(`仅支持 8bit PNG（收到 ${bitDepth}bit）`);
+  const bpp = COLOR_TYPE_BPP[colorType];
+  if (bpp === undefined) throw new PngFormatError(`不支持的色彩类型 ${colorType}`);
+
+  const compressed = new Uint8Array(idatParts.reduce((s, p) => s + p.length, 0));
+  {
+    let o = 0;
+    for (const p of idatParts) {
+      compressed.set(p, o);
+      o += p.length;
+    }
+  }
+  const raw = new Uint8Array(inflateSync(compressed));
+
+  const stride = width * bpp;
+  const expected = height * (1 + stride);
+  if (raw.length < expected) {
+    throw new PngFormatError(`像素数据不足：${raw.length} < ${expected}`);
+  }
+
+  // 还原 scanline filter（0=None 1=Sub 2=Up 3=Average 4=Paeth）
+  const px = new Uint8Array(height * stride);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (1 + stride)]!;
+    const rowIn = y * (1 + stride) + 1;
+    const rowOut = y * stride;
+    const prevOut = (y - 1) * stride;
+    for (let x = 0; x < stride; x++) {
+      const v = raw[rowIn + x]!;
+      const a = x >= bpp ? px[rowOut + x - bpp]! : 0; // 左
+      const b = y > 0 ? px[prevOut + x]! : 0; // 上
+      const c = x >= bpp && y > 0 ? px[prevOut + x - bpp]! : 0; // 左上
+      let out: number;
+      switch (filter) {
+        case 0:
+          out = v;
+          break;
+        case 1:
+          out = v + a;
+          break;
+        case 2:
+          out = v + b;
+          break;
+        case 3:
+          out = v + ((a + b) >> 1);
+          break;
+        case 4:
+          out = v + paeth(a, b, c);
+          break;
+        default:
+          throw new PngFormatError(`未知 filter 类型 ${filter}（第 ${y} 行）`);
+      }
+      px[rowOut + x] = out & 0xff;
+    }
+  }
+
+  // 统一到 RGBA8888
+  const n = width * height;
+  const rgba = new Uint8ClampedArray(n * 4);
+  for (let i = 0; i < n; i++) {
+    const s = i * bpp;
+    const o = i * 4;
+    if (colorType === 0) {
+      const g = px[s]!;
+      rgba[o] = g;
+      rgba[o + 1] = g;
+      rgba[o + 2] = g;
+      rgba[o + 3] = 255;
+    } else if (colorType === 2) {
+      rgba[o] = px[s]!;
+      rgba[o + 1] = px[s + 1]!;
+      rgba[o + 2] = px[s + 2]!;
+      rgba[o + 3] = 255;
+    } else if (colorType === 4) {
+      const g = px[s]!;
+      rgba[o] = g;
+      rgba[o + 1] = g;
+      rgba[o + 2] = g;
+      rgba[o + 3] = px[s + 1]!;
+    } else {
+      rgba[o] = px[s]!;
+      rgba[o + 1] = px[s + 1]!;
+      rgba[o + 2] = px[s + 2]!;
+      rgba[o + 3] = px[s + 3]!;
+    }
+  }
+
+  return { width, height, anchorX: 0, anchorY: 0, rgba };
+}
+
+function paeth(a: number, b: number, c: number): number {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  return pb <= pc ? b : c;
+}
+
+/** 大端读 uint32（Uint8Array 没有 Buffer 的 readUInt32BE） */
+function u32be(b: Uint8Array, at: number): number {
+  return ((b[at]! << 24) | (b[at + 1]! << 16) | (b[at + 2]! << 8) | b[at + 3]!) >>> 0;
 }

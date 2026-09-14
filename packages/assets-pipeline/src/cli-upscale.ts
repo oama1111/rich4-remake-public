@@ -26,6 +26,8 @@ import {
   type AssetEntryLike,
   type UpscaleManifest,
 } from './upscale.ts';
+import { decodePng, encodePng } from './sprite.ts';
+import { buildQueueFrame, sliceFrame, type QueueManifest } from './slice.ts';
 
 /**
  * 由 hd 目录推出清单路径：与之**同级**、不在其内。
@@ -39,7 +41,11 @@ function manifestPath(hdDir: string): string {
 }
 
 function sha256(path: string): string {
-  return createHash('sha256').update(readFileSync(path)).digest('hex').slice(0, 16);
+  return sha256Bytes(readFileSync(path));
+}
+
+function sha256Bytes(data: Uint8Array): string {
+  return createHash('sha256').update(data).digest('hex').slice(0, 16);
 }
 
 /** 读 PNG 的 IHDR 取尺寸——不必解码整张图 */
@@ -90,6 +96,67 @@ export function cmdPlan(cleanDir: string, hdDir: string): void {
   console.log(`\n清单：${manifestPath(hdDir)}`);
   console.log(`\n下一步：把 ${cleanDir} 里的图按批次喂给你的超分工具，`);
   console.log(`产物放到 ${hdDir}/<档案>/<同名文件>，然后跑 ingest 回填。`);
+}
+
+// ============================================================
+//  slice —— 按帧切片 + Alpha 分离，产出 upscale-queue/（T-061）
+// ============================================================
+
+/**
+ * 把 assets-clean 的每张图切成 rgb + alpha 两张，写入队列目录：
+ *   <queueDir>/rgb/<档案>/<资源>_f<帧>.png
+ *   <queueDir>/alpha/<档案>/<资源>_f<帧>.png
+ *   <queueDir>/manifest.json   原尺寸、锚点、类别、模型建议、两张图的 sha256
+ *
+ * 外部超分工具分别放大 rgb 与 alpha（倍率必须一致），产物由
+ * T-062 校验、T-063 盖回重拼。
+ *
+ * @param limit 只切前 N 张（试跑/抽查用；不传则全量）
+ */
+export function cmdSlice(cleanDir: string, queueDir: string, limit?: number): void {
+  const entries = loadSourceManifest(cleanDir);
+  const tasks = planUpscale(entries);
+  const chosen = limit === undefined ? tasks : tasks.slice(0, limit);
+
+  const frames: QueueManifest['frames'] = [];
+  let done = 0;
+  for (const task of chosen) {
+    const img = decodePng(new Uint8Array(readFileSync(join(cleanDir, task.input))));
+    const { rgb, alpha } = sliceFrame(img);
+    const rgbPng = encodePng(rgb);
+    const alphaPng = encodePng(alpha);
+
+    const frame = buildQueueFrame(task, {
+      rgbSha256: sha256Bytes(rgbPng),
+      alphaSha256: sha256Bytes(alphaPng),
+    });
+    const rgbPath = join(queueDir, frame.rgb);
+    const alphaPath = join(queueDir, frame.alpha);
+    mkdirSync(dirname(rgbPath), { recursive: true });
+    mkdirSync(dirname(alphaPath), { recursive: true });
+    writeFileSync(rgbPath, rgbPng);
+    writeFileSync(alphaPath, alphaPng);
+    frames.push(frame);
+    done++;
+    if (done % 1000 === 0) console.log(`  …已切 ${done} / ${chosen.length}`);
+  }
+
+  const manifest: QueueManifest = {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    frames,
+  };
+  mkdirSync(queueDir, { recursive: true });
+  const manifestFile = join(queueDir, 'manifest.json');
+  writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  console.log(`已切 ${frames.length} 帧 → ${queueDir}/（rgb/ + alpha/）`);
+  const byCategory = new Map<string, number>();
+  for (const f of frames) byCategory.set(f.category, (byCategory.get(f.category) ?? 0) + 1);
+  for (const [category, n] of byCategory) {
+    console.log(`  ${category.padEnd(10)} ${String(n).padStart(6)} 帧  建议模型 ${frames.find((f) => f.category === category)!.model}`);
+  }
+  console.log(`清单：${manifestFile}`);
 }
 
 // ============================================================
@@ -204,6 +271,10 @@ function main(argv: string[]): void {
       if (rest.length < 2) throw new Error('用法: plan <assets-clean> <hd>');
       cmdPlan(rest[0]!, rest[1]!);
       break;
+    case 'slice':
+      if (rest.length < 2) throw new Error('用法: slice <assets-clean> <upscale-queue> [前N张]');
+      cmdSlice(rest[0]!, rest[1]!, rest[2] === undefined ? undefined : Number(rest[2]));
+      break;
     case 'status':
       if (rest.length < 1) throw new Error('用法: status <hd>');
       cmdStatus(rest[0]!);
@@ -218,6 +289,7 @@ function main(argv: string[]): void {
           '画质升级管线',
           '',
           '  plan   <assets-clean> <hd>          生成待办清单',
+          '  slice  <assets-clean> <queue> [N]   按帧切片 + Alpha 分离（T-061）',
           '  status <hd>                         看进度',
           '  ingest <assets-clean> <hd> [模型]   回填已完成的产物',
         ].join('\n'),
