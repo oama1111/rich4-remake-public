@@ -217,6 +217,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     totalWinterSleepDays: p.totalWinterSleepDays,
     alliedPlayer: p.alliedPlayer,
     alliedDays: p.alliedDays,
+    insuranceDays: p.daysAssurance,
     savedTrafficMethod: p.f67,
     savedNdices: p.f68,
     misfortune: 0,
@@ -289,6 +290,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     //   它们只在「走到一半」时才非空，读档时一律当作不在场。
     specialActors: initialSpecialActors(),
     landTenureIndex: 0,
+    totalDays: 0,
     landLastToll: new Array<number>(landCount).fill(0),
     landTenure: new Array<number>(landCount).fill(0),
     facilityOwner: facilityFieldFromMap(map, (f) => f.owner),
@@ -298,6 +300,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     facilityTenure: facilityFieldFromMap(map, () => 0),
     facilityResearchProject: facilityFieldFromMap(map, () => 0),
     facilityResearchDays: facilityFieldFromMap(map, () => 0),
+    companyFunds: new Array<number>(map.commercials.length + 1).fill(0),
     prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     lastEvent: null,

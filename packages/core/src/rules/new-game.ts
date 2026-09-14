@@ -241,6 +241,7 @@ function makeInitialPlayer(
     totalWinterSleepDays: 0,
     alliedPlayer: 0,
     alliedDays: 0,
+    insuranceDays: 0,
     savedTrafficMethod: 0,
     savedNdices: 0,
     misfortune: 0,
@@ -371,6 +372,7 @@ export function newGame(opts: NewGameOptions): GameState {
     // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取
     landType: landTypeFromMap(map, landCount),
     landTenureIndex: landTenure,
+    totalDays: 0,
     landLastToll: new Array<number>(landCount).fill(0),
     landTenure: new Array<number>(landCount).fill(0),
     // ★ 地图数据里設施的 owner/level/type 都是 0（见 facility.test.ts 那条实证），
@@ -382,6 +384,7 @@ export function newGame(opts: NewGameOptions): GameState {
     facilityTenure: facilityFieldFromMap(map, () => 0),
     facilityResearchProject: facilityFieldFromMap(map, () => 0),
     facilityResearchDays: facilityFieldFromMap(map, () => 0),
+    companyFunds: new Array<number>(map.commercials.length + 1).fill(0),
     noticeBoard: emptyBoard(),
     specialActors: initialSpecialActors(),
     turnCount: 0,

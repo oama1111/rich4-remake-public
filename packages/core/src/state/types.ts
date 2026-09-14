@@ -189,6 +189,12 @@ export interface Player {
   alliedPlayer: number;
   alliedDays: number;
   /**
+   * 保險期剩余天数 @source player_info +0x3e（save.ts 叫 daysAssurance）。
+   * 踩保險公司投保 `+= 天数 & 0x7f`（0x0041ac74），每日 −1、归零挂 0x80（0x0041cc4b）；
+   * 非 0 时意外損失由保險公司理賠（0x0044ba63）。截图 S7/S10 的「保險期 N天」就是它。
+   */
+  insuranceDays: number;
+  /**
    * 梦游前的交通方式，醒来后据此恢复。
    * @source player_info +0x66（`mov byte [p+0x66], dl` VA 0x0044437f）
    */
@@ -305,6 +311,9 @@ export interface GameState {
    *   買地/買設施时按它查年限表 `0x004751f0` 写到期日。见 rules/facility.ts。
    */
   landTenureIndex: number;
+
+  /** 開局以来的总天数 @source `[0x4990e4]`，每日推进 `inc`（0x0041cfab）；電腦公司按它收費 */
+  totalDays: number;
 
   /** 本次掷骰的点数明细；未掷骰时为空 */
   dice: number[];
@@ -500,6 +509,12 @@ export interface GameState {
    *   见 places/commercial.ts。
    */
   commercialOwners: CommercialOwnership[];
+  /**
+   * 各企業的**累積盈餘**（有符号），下标 = 企業 id。@source commercial +0x28。
+   * 别人踩上来交的費进这里（`pay_money(…, 100 + 企業下标, …)`，0x0041b022），
+   * 每月 15 日按持股比例分给股东后清零（0x0042bd42）；間諜「取走盈餘」拿的也是它。
+   */
+  companyFunds: number[];
 
   /**
    * 地图物件表，46 项 —— 神明、路障、地雷、定時炸彈都住在这里。

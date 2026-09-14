@@ -68,6 +68,8 @@ export type Action =
    * @source 对话框收尾 0x004411f8；电脑不走这条（reducer 在回合开始替它选）。
    */
   | { type: 'research'; facilityId: number; project: number }
+  /** 建設公司：选中要免费加蓋的那处地（实体编码 0x7d0+地块 / 0xfa0+設施） */
+  | { type: 'buildTarget'; entityId: number }
 
   /** 放弃当前的买地/盖房机会 */
   | { type: 'declineDecision' }

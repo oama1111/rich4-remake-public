@@ -404,6 +404,11 @@ export function decidePending(state: GameState): Action | null {
     if (!affordable) return { type: 'declineDecision' };
     return p.kind === 'buyFacility' ? { type: 'buyFacility' } : { type: 'upgradeFacility' };
   }
+  if (p.kind === 'chooseBuildTarget') {
+    // 电脑在 reducer 里已按 0x40b455 挑过；走到这里的是被托管的真人 —— 取第一个可选
+    const t = p.choices[0];
+    return t === undefined ? { type: 'declineDecision' } : { type: 'buildTarget', entityId: t };
+  }
   if (p.kind === 'buildFacility') {
     // 走到这里的只会是被托管的真人（电脑在 reducer 里已抽完）：照电脑的口味，
     // 不蓋公園，取可选里最小的非 0 种类 —— 确定性的

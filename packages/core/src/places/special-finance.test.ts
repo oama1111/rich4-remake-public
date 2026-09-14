@@ -19,7 +19,7 @@ import {
 } from './special-finance.ts';
 
 const comm = (over: Partial<CommercialInfo>): CommercialInfo => ({
-  id: 1, x: 0, y: 0, name: '測試', stockIndex: 0, type: 0,
+  id: 1, x: 0, y: 0, name: '測試', stockIndex: 0, landPrice: 0, type: 0,
   spriteIndex: 0, assetValue: 0, shares: 0, ...over,
 });
 

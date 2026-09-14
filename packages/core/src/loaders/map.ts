@@ -252,6 +252,11 @@ export interface CommercialInfo {
   /** 对应的股票索引 @source rich4_load_map.asm:325 (mov dl, byte [esi+0x19]) */
   stockIndex: number;
   /**
+   * 收費基数（与地块的「地價」同一位置语义）@source commercial +0x22 (u16)。
+   * 别人踩上来的旅遊費/保險費/修車費/門派費都按它乘（0x0041abda / 0x0041ac50 / 0x0041acba / 0x0041ae23）。
+   */
+  landPrice: number;
+  /**
    * 行業別 @source commercial +0x1a
    *
    * ★ **7 就是銀行**（@source VA 0x00436b31 `cmp byte [esi+0x1a], 7`，
@@ -463,6 +468,7 @@ export function parseMap(data: Uint8Array): Rich4Map {
       stockIndex: data[o + 0x19] ?? 0,
       type: data[o + 0x1a] ?? 0,
       spriteIndex: view.getUint16(o + 0x20, true),
+      landPrice: view.getUint16(o + 0x22, true),
       assetValue: u32(o + 0x24),
       shares: u32(o + 0x30),
     });

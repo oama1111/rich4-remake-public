@@ -120,6 +120,20 @@ export function interactionUi(
         ],
       };
 
+    // ★ 建設公司：原版是点地图选一处自己的地（0x446ae8）；先用按钮列出可选项，画面属 P2
+    case 'chooseBuildTarget':
+      return {
+        title: pending.name,
+        detail: pending.charge ? '選一處加蓋一級，工程費 = 該地地價 × 物價指數' : '董事長免費加蓋一級',
+        choices: [
+          ...pending.choices.map((id) => ({
+            label: id >= 0xfa0 ? `設施 #${id - 0xfa0}` : `土地 #${id - 0x7d0}`,
+            action: { type: 'buildTarget' as const, entityId: id },
+          })),
+          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
+        ],
+      };
+
     case 'bank':
       return {
         title: BANK.greeting.text.replace('%s', CHARACTERS[me?.character ?? 0]?.name ?? ''),

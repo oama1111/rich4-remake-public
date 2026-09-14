@@ -56,6 +56,7 @@ export * from './rules/teleport.ts';
 export * from './rules/special-actors.ts';
 export * from './rules/npc-actions.ts';
 export * from './rules/npc-walk.ts';
+export * from './places/company.ts';
 export * from './ai/stock-policy.ts';
 export * from './cards/average-cash.ts';
 export * from './cards/hibernate.ts';

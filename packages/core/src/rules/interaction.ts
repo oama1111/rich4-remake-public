@@ -52,6 +52,13 @@ export type PendingInteraction =
   /** 自己的設施（等级 ≥ 1）：加蓋一级。价 = 房價 × 物價指數 */
   | { kind: 'upgradeFacility'; facilityId: number; name: string; cost: number; level: number }
   /**
+   * 建設公司：选一处自己的地免费加蓋一级。
+   * @source 0x0041acd1（别人的建設公司，之后付工程費）/ 0x0041aa3c（自家的，免费）。
+   *   真人用 `0x446ae8` 点地图选，电脑走 `0x40b455`（reducer 里直接挑）。
+   * `choices` 是可加蓋的实体编码（0x7d0 + 地块 / 0xfa0 + 設施）；`charge` 是选完要不要付工程費。
+   */
+  | { kind: 'chooseBuildTarget'; commercialId: number; name: string; choices: readonly number[]; charge: boolean }
+  /**
    * 银行：存、取、借、还，外加董事長专属的特別融資。
    *
    * @source 落点 VA 0x00436668 —— 先查 `days_rejected_by_bank`，
@@ -231,6 +238,7 @@ export type InteractionResponse =
   | { kind: 'buyFacility' }
   | { kind: 'buildFacility'; facilityType: number }
   | { kind: 'upgradeFacility' }
+  | { kind: 'buildTarget'; entityId: number }
   | { kind: 'bankDeposit'; amount: number }
   | { kind: 'bankWithdraw'; amount: number }
   | { kind: 'bankBorrow'; amount: number }
@@ -267,6 +275,8 @@ export function responseMatches(
       return response.kind === 'buildFacility';
     case 'upgradeFacility':
       return response.kind === 'upgradeFacility';
+    case 'chooseBuildTarget':
+      return response.kind === 'buildTarget';
     case 'bank':
       return response.kind.startsWith('bank');
     case 'lottery':

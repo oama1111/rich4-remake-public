@@ -20,6 +20,7 @@ import type { WatcomRng } from '../rng/watcom.ts';
 import { isAlive } from '../state/types.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import { PAY_FLAG_CREDIT_TO_CASH, transferMoney } from './payment.ts';
+import { emptyOwnership, ownerOf } from '../places/commercial.ts';
 import {
   OBJECT_TYPE_GIFT,
   OBJECT_TYPE_TREASURE,
@@ -83,6 +84,11 @@ export type NpcEvent =
   | { kind: 'protection'; landlord: number; amount: number }
   /** 間諜取走過路費 —— 与 protection 同一入账口（`push 0` → 進存款） */
   | { kind: 'toll'; landlord: number; amount: number }
+  /**
+   * 間諜取走上市企業的累積盈餘：`amount` 有符号，负数 = 主人替企業主掏钱。
+   * 取完**不清**公司盈餘（那段没有写回），照抄。
+   */
+  | { kind: 'surplus'; landlord: number; amount: number; company: number }
   | { kind: 'home'; place: 'prison' | 'hospital'; node: number };
 
 /**
@@ -224,7 +230,16 @@ export function runNpc(
       }
     }
 
-    // ⚠️ 間諜的「取走盈餘」（上市企業 +0x28）仍没做 —— 缺累積盈餘字段，见 Q-NPC-1。
+    // ── ⑦ 間諜踩到别人的上市企業 → 取走累積盈餘（可能是负的：主人替企業主掏钱）──
+    // @source 0x0041c6e6..0x0041c780：`edi = 企業.+0x28; if (edi == 0) 结束; pay_money(企業主, 主人, edi, 0)`
+    if (actor === NPC.spy && node !== undefined && node.ref.kind === 'commercial') {
+      const cid = node.ref.index;
+      const chairman = ownerOf(state.commercialOwners[cid] ?? emptyOwnership());
+      const surplus = state.companyFunds[cid] ?? 0;
+      if (chairman >= 0 && chairman !== owner && surplus !== 0) {
+        events.push({ kind: 'surplus', landlord: chairman, amount: surplus, company: cid });
+      }
+    }
   }
 
   // 走完收场
@@ -365,6 +380,16 @@ export function applyNpcEvents(
         players = [...r.players];
         pool = r.pool;
         if (r.bankrupted) bankrupted.push(e.from);
+        break;
+      }
+      case 'surplus': {
+        // pay_money(企業主, 主人, edi, 0) 且 edi 可为负 —— 负数就反向转，同样進存款
+        const from = e.amount > 0 ? e.landlord : owner;
+        const to = e.amount > 0 ? owner : e.landlord;
+        const r = transferMoney(players, [], pool, from, to, Math.abs(e.amount), 0);
+        players = [...r.players];
+        pool = r.pool;
+        if (r.bankrupted) bankrupted.push(from);
         break;
       }
       case 'protection':

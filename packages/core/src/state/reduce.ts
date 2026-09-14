@@ -47,7 +47,7 @@ import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo, FacilityInfo, CommercialInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent } from '../rules/rent.ts';
-import { receiveMoney, transferMoney } from '../rules/payment.ts';
+import { companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
 import {
   markPlayerBankrupt,
   resolveBankruptcyOutcome,
@@ -56,7 +56,7 @@ import { LOTTERY_DRAW_DAY, drawLottery, releaseTickets } from '../places/lottery
 import { buyStock, commercialUnitPrice, liquidateStocks, sellStock,
   recalcAvgCost,
 } from '../places/stock.ts';
-import { emptyOwnership, updateCommercialOwner } from '../places/commercial.ts';
+import { emptyOwnership, ownerOf, updateCommercialOwner } from '../places/commercial.ts';
 import { useCard } from '../cards/registry.ts';
 import {
   MISSILE_HOSPITAL_DAYS,
@@ -96,6 +96,18 @@ import {
   type ListingKind,
 } from '../places/notice-board.ts';
 import { isLimitDown, isLimitUp, marketOpenOn } from '../places/stock-market.ts';
+import {
+  DIVIDEND_DAY,
+  INDUSTRY,
+  addInsuranceDays,
+  aiPickConstructionTarget,
+  applyDividend,
+  chairmanEffect,
+  companyDividends,
+  companyFeeOnLanding,
+  industryUsesWheel,
+} from '../places/company.ts';
+import { tickBlockingCounter } from '../rules/blocking.ts';
 import {
   buyCard,
   buyTool,
@@ -460,6 +472,10 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
         snapped = aiNoticeBoardTurn(snapped, topo);
       }
+      // @source 0x0041cc4b：保險期每日 −1，归零挂 0x80，下一次推进清掉 —— 与阻碍计数同一套
+      snapped = withPlayer(snapped, snapped.currentPlayer, (p) => {
+        p.insuranceDays = tickBlockingCounter(p.insuranceDays).value;
+      });
       // ★ 研究所：只在業主自己的回合推进（@source 0x0041cdc6 `owner == 當前 + 1`），
       //   与其余「回合开始的倒数」在原版是同一个函数（0x0041cc20 一带）。
       snapped = tickOwnResearch(snapped, topo);
@@ -600,8 +616,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         // 住宅之外：设施走过路费，上市企业问「买多少股」
         const fac = facilityAtPlayer(state, topo);
         if (fac !== null) return landOnFacility(state, topo, fac);
-        const shares = pendingForCommercial(state, topo, node);
-        if (shares !== null) return { ...state, phase: 'turnEnd', pending: shares };
+        if (node.ref.kind === 'commercial') return landOnCompany(state, topo, node);
         return { ...state, phase: 'turnEnd' };
       }
 
@@ -743,6 +758,23 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       facilityResearchProject[fac.id] = started.project;
       facilityResearchDays[fac.id] = started.daysLeft;
       return { ...state, facilityResearchProject, facilityResearchDays };
+    }
+
+    case 'buildTarget': {
+      if (state.pending?.kind !== 'chooseBuildTarget') return state;
+      const pend = state.pending;
+      if (!pend.choices.includes(action.entityId)) return state;
+      const built = freeBuildEntity(state, topo, action.entityId, -1);
+      if (built === null) return state;
+      let next: GameState = { ...built, pending: null };
+      if (pend.charge) {
+        // @source 0x0041adc0：工程費 = 那处地的地價 × 物價，付给公司
+        const fee = entityLandPrice(next, topo, action.entityId) * next.priceIndex;
+        next = payCompany(next, topo, state.currentPlayer, pend.commercialId, fee);
+        if (next.phase === 'gameOver') return next;
+        if (!isAlive(next.players[state.currentPlayer]!)) return { ...next, phase: 'turnEnd', pending: null };
+      }
+      return afterCompany(next, topo, pend.commercialId);
     }
 
     case 'upgradeFacility': {
@@ -2019,7 +2051,24 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   let lottery = state.lottery;
   let pool = state.pool;
 
-  // @source 0041d080 `and eax, 0xff / cmp eax, 0xf`
+  // @source 0041d080 `cmp eax, 0xf` → 先 0x42ba97 上市公司分紅，再 0x431712 樂透開獎
+  const companyFunds = [...state.companyFunds];
+  const dividendBankrupts: number[] = [];
+  if (date.day === DIVIDEND_DAY) {
+    for (const c of topo.commercials ?? []) {
+      const holdings = players.map((_, p) => state.holdings[p]?.[c.stockIndex]?.amount ?? 0);
+      const d = companyDividends(companyFunds[c.id] ?? 0, holdings, players);
+      for (const row of d.rows) {
+        const pl = players[row.player];
+        if (pl === undefined) continue;
+        const r = applyDividend(pl, row.amount);
+        players = players.map((x, i) => (i === row.player ? r.player : x));
+        if (r.bankrupt) dividendBankrupts.push(row.player);
+      }
+      // @source 0x0042bd37 `test ebp, ebp / je` —— 有人持股才清零
+      if (d.cleared) companyFunds[c.id] = 0;
+    }
+  }
   if (date.day === LOTTERY_DRAW_DAY) {
     const draw = drawLottery(lottery, pool, rng);
     lottery = draw.lottery;
@@ -2052,9 +2101,11 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     }
   }
 
-  return {
+  let out: GameState = {
     ...state,
     ...date,
+    // @source 0041cfab `inc dword [0x4990e4]`
+    totalDays: state.totalDays + 1,
     players,
     lottery,
     pool,
@@ -2063,8 +2114,12 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     landTenure,
     facilityOwner,
     facilityTenure,
+    companyFunds,
     rngState: rng.getState(),
   };
+  // @source 0x0042beba `call 0x40cd87` —— 负紅利把人压破產
+  for (const who of dividendBankrupts) out = applyBankruptcy(out, who, topo);
+  return out;
 }
 
 /**
@@ -2701,6 +2756,15 @@ function freeBuildFacility(
   if (node === undefined) return null;
   const idx = facilityIndexOf(node.type);
   if (idx === null) return null;
+  return freeBuildFacilityById(state, topo, idx, chosenType);
+}
+
+function freeBuildFacilityById(
+  state: GameState,
+  topo: MapTopology,
+  idx: number,
+  chosenType: number,
+): GameState | null {
   const fac = effectiveFacility(state, topo, idx);
   if (fac === null) return null;
   const me = state.currentPlayer;
@@ -2732,6 +2796,177 @@ function freeBuildFacility(
   if (!canUpgradeFacility(fac.type, fac.level)) return null;
   facilityLevel[idx] = fac.level + 1;
   return { ...state, facilityLevel };
+}
+
+/**
+ * 按实体编码免费加蓋一级（建設公司那一路）：0x7d0+地块 → 住宅那套；0xfa0+設施 → 設施那套。
+ * `chosenType` 只对等级 0 的設施有意义（真人 −1 = 没选 → 失败）。
+ */
+function freeBuildEntity(
+  state: GameState,
+  topo: MapTopology,
+  entityId: number,
+  chosenType: number,
+): GameState | null {
+  const e = decodeEstate(entityId);
+  if (e.kind === 'land') {
+    const land = effectiveLand(state, topo, e.index);
+    if (land === null) return null;
+    const b = buildOneLevel(land.type, land.level, MAX_LAND_LEVEL);
+    if (!b.ok) return null;
+    const landLevel = [...state.landLevel];
+    landLevel[land.id] = b.level;
+    return { ...state, landLevel };
+  }
+  return freeBuildFacilityById(state, topo, e.index, chosenType);
+}
+
+/** 实体（地块/設施）的地價 —— 建設公司算工程費用 @source 0x0041adc7 / 0x0041ade3 */
+function entityLandPrice(state: GameState, topo: MapTopology, entityId: number): number {
+  const e = decodeEstate(entityId);
+  if (e.kind === 'land') return effectiveLand(state, topo, e.index)?.landPrice ?? 0;
+  return effectiveFacility(state, topo, e.index)?.landPrice ?? 0;
+}
+
+/** 当前玩家名下可加蓋的实体编码（给建設公司的选择框） */
+function buildableEntities(state: GameState, topo: MapTopology, player: number, human: boolean): number[] {
+  const out: number[] = [];
+  for (const l of topo.lands ?? []) {
+    if ((state.landOwner[l.id] ?? 0) !== player + 1) continue;
+    const eff = effectiveLand(state, topo, l.id);
+    if (eff !== null && buildOneLevel(eff.type, eff.level, MAX_LAND_LEVEL).ok) out.push(0x7d0 + l.id);
+  }
+  for (const f of topo.facilities ?? []) {
+    if ((state.facilityOwner[f.id] ?? 0) !== player + 1) continue;
+    const level = state.facilityLevel[f.id] ?? 0;
+    const type = state.facilityType[f.id] ?? 0;
+    // 真人对等级 0 的設施还得选种类，那个界面属 P2 —— 先不列进来
+    if (level === 0 && human) continue;
+    if (level === 0 || canUpgradeFacility(type, level)) out.push(0xfa0 + f.id);
+  }
+  return out;
+}
+
+/**
+ * 玩家付一笔費给公司 —— 进 `companyFunds`，付款走 `transferMoney`（现金→存款→破產）。
+ * @source 0x0041b022 `pay_money(付款人, 企業編碼 − 0x170c, 費, 0)`
+ */
+function payCompany(
+  state: GameState,
+  topo: MapTopology,
+  payer: number,
+  commercialId: number,
+  amount: number,
+): GameState {
+  if (amount <= 0) return state;
+  const companies: Company[] = state.companyFunds.map((f) => ({ funds: f, fundsMirror: f }));
+  const r = transferMoney(state.players, companies, state.pool, payer, companyParty(commercialId), amount, 0);
+  const companyFunds = r.companies.map((c) => c.funds);
+  const paid: GameState = { ...state, players: r.players, pool: r.pool, companyFunds };
+  return r.bankrupted ? applyBankruptcy(paid, payer, topo) : paid;
+}
+
+/** 公司落点收尾：照原版走到出口时再问一次「是否認購股份」（0x0041d1a9） */
+function afterCompany(state: GameState, topo: MapTopology, commercialId: number): GameState {
+  const me = state.players[state.currentPlayer];
+  const node = me === undefined ? undefined : topo.nodes[me.nodeId - 1];
+  const shares = node === undefined ? null : pendingForCommercial(state, topo, node);
+  if (shares !== null && shares.kind === 'buyShares' && shares.commercialId === commercialId) {
+    return { ...state, phase: 'turnEnd', pending: shares };
+  }
+  return { ...state, phase: 'turnEnd', pending: null };
+}
+
+/**
+ * 走到上市企業上。
+ *
+ * @source 0x0041a9ca（自家）/ 0x0041ab6d（别人的）；规则本体在 places/company.ts。
+ *   出口一律回到 0x0041b067 → `0x41d1a9`：那里再问「是否認購股份」，故三路之后都接 afterCompany。
+ */
+function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): GameState {
+  const ref = node.ref;
+  if (ref.kind !== 'commercial') return { ...state, phase: 'turnEnd' };
+  const c = topo.commercials?.find((x) => x.id === ref.index);
+  const me = state.currentPlayer;
+  const player = state.players[me];
+  if (c === undefined || player === undefined) return { ...state, phase: 'turnEnd' };
+  const chairman = ownerOf(state.commercialOwners[c.id] ?? emptyOwnership());
+  const human = (player.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN;
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+
+  // ── 自家公司：董事長的好处 ──
+  if (chairman === me) {
+    const eff = chairmanEffect(c.type, c.type === INDUSTRY.insurance ? rng.next() : 0);
+    let next: GameState = { ...state, rngState: rng.getState() };
+    if (eff.kind === 'insurance') {
+      next = withPlayer(next, me, (p) => {
+        p.insuranceDays = addInsuranceDays(p.insuranceDays, eff.days);
+      });
+    } else if (eff.kind === 'construction') {
+      if (!human) {
+        const target = aiPickConstructionTarget(
+          me, topo.lands ?? [], next.landOwner, next.landLevel, next.landType,
+          topo.facilities ?? [], next.facilityOwner, next.facilityLevel, next.facilityType,
+        );
+        if (target !== 0) next = freeBuildEntity(next, topo, target, -1) ?? next;
+      } else {
+        const choices = buildableEntities(next, topo, me, true);
+        if (choices.length > 0) {
+          return {
+            ...next,
+            phase: 'turnEnd',
+            pending: { kind: 'chooseBuildTarget', commercialId: c.id, name: c.name, choices, charge: false },
+          };
+        }
+      }
+    }
+    return afterCompany(next, topo, c.id);
+  }
+
+  // ── 无主：只问認購 ──
+  if (chairman < 0) return afterCompany(state, topo, c.id);
+
+  // ── 别人的：按行業收費 ──
+  const fee = companyFeeOnLanding(
+    c.type, c.landPrice, state.priceIndex, state.totalDays, player.trafficMethod, state.stepsTotal,
+    industryUsesWheel(c.type) ? rng.next() : 0,
+  );
+  let next: GameState = { ...state, rngState: rng.getState() };
+  if (fee.kind === 'fee') {
+    next = payCompany(next, topo, me, c.id, fee.amount);
+  } else if (fee.kind === 'insurance') {
+    next = withPlayer(next, me, (p) => {
+      p.insuranceDays = addInsuranceDays(p.insuranceDays, fee.days);
+    });
+    next = payCompany(next, topo, me, c.id, fee.amount);
+  } else if (fee.kind === 'construction') {
+    if (!human) {
+      const target = aiPickConstructionTarget(
+        me, topo.lands ?? [], next.landOwner, next.landLevel, next.landType,
+        topo.facilities ?? [], next.facilityOwner, next.facilityLevel, next.facilityType,
+      );
+      if (target !== 0) {
+        const built = freeBuildEntity(next, topo, target, -1);
+        if (built !== null) {
+          next = payCompany(built, topo, me, c.id, entityLandPrice(built, topo, target) * built.priceIndex);
+        }
+      }
+    } else {
+      const choices = buildableEntities(next, topo, me, true);
+      if (choices.length > 0) {
+        return {
+          ...next,
+          phase: 'turnEnd',
+          pending: { kind: 'chooseBuildTarget', commercialId: c.id, name: c.name, choices, charge: true },
+        };
+      }
+    }
+  }
+  // 付費付到破產：人已出局，但阶段得收到 turnEnd，否则没人能推进这个回合
+  if (next.phase === 'gameOver') return next;
+  if (!isAlive(next.players[me]!)) return { ...next, phase: 'turnEnd', pending: null };
+  return afterCompany(next, topo, c.id);
 }
 
 /**
