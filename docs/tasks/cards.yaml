@@ -129,7 +129,7 @@ cards:
   title: 紅卡（24）/ 黑卡（25）接进 registry，目标为股票下标
   module: MOD-06
   req: REQ-06.1
-  status: doing
+  status: done
   estimate: 0.4
   depends_on: [T-001]
   uses:

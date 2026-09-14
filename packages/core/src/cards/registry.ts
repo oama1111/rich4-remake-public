@@ -42,7 +42,8 @@ import { applyFrameCard } from './frame.ts';
 import { applyBuyLandCard } from './buy-land.ts';
 import { applyRebuildCard } from './rebuild.ts';
 import { applyRobCard, applyRobCardCard } from './rob.ts';
-import { applySwapLandCard } from './swap-and-stock.ts';
+import { applyRedCard, applyBlackCard, applySwapLandCard } from './swap-and-stock.ts';
+import type { StockMarketState } from '../places/stock-market.ts';
 import {
   applyAngelCard,
   applyDevilCard,
@@ -62,7 +63,8 @@ export type UseCardError =
   | 'noEffect'
   | 'nothingToRob'
   | 'landNotFound'
-  | 'notStandingOnLand';
+  | 'notStandingOnLand'
+  | 'marketClosed';
 
 /** 卡片使用的结果 */
 export interface UseCardResult {
@@ -76,6 +78,8 @@ export interface UseCardResult {
   toolStock: number[];
   /** 地图物件表（仅請神符等会改动；其余卡原样返回） */
   objects: MapObject[];
+  /** 股票行情（仅紅/黑卡会改动；其余卡原样返回） */
+  market: StockMarketState;
   /**
    * 效果执行中需要**重新登场的搭档**（請神符挤走旧神时，
    * 旧神的搭档要回到地图上）。落点选择交给 reduce 的 respawnPartner。
@@ -111,6 +115,13 @@ export interface UseCardContext {
   toolStock: readonly number[];
   /** 地图物件表（請神符要读/写） */
   objects: readonly MapObject[];
+  /** 股票行情（紅/黑卡写 newsFlag） */
+  market: StockMarketState;
+  /**
+   * 今天股市开不开门（= `marketOpenOn(globalMapId, 年, 月, 日)`）。
+   * 由调用方算好传入，registry 不做日期推算。
+   */
+  marketOpen: boolean;
   /**
    * 嫁祸卡的新目标选择器（陷害卡等有害卡在被嫁祸时调用）。
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
@@ -120,7 +131,7 @@ export interface UseCardContext {
 
 /** 本项目已实现效果、可经本入口使用的卡片编号 */
 export const IMPLEMENTED_CARD_IDS: readonly number[] = [
-  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 22, 23, 26, 27, 28, 29, 30,
+  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 22, 23, 24, 25, 26, 27, 28, 29, 30,
 ];
 
 /** 取玩家当前**所站地块**（不是住宅地则返回 null） */
@@ -158,6 +169,7 @@ export function useCard(
     tools: [...ctx.tools],
     toolStock: [...ctx.toolStock],
     objects: [...ctx.objects],
+    market: ctx.market,
     respawns: [],
     hostilityDeltas: [],
     defended: false,
@@ -178,6 +190,7 @@ export function useCard(
   const cls = targetClassOfCard(impl);
   const targetError = validateTarget(cls, target, cur, ctx.players.length, {
     objectCount: ctx.objects.length,
+    stockCount: ctx.market.stocks.length,
   });
   if (targetError !== null) return fail(targetError);
 
@@ -193,6 +206,7 @@ export function useCard(
   let tools: number[] = [...ctx.tools];
   let toolStock: number[] = [...ctx.toolStock];
   let objects: MapObject[] = [...ctx.objects];
+  let market: StockMarketState = ctx.market;
   const respawns: { partner: number; nearNode: number }[] = [];
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
@@ -397,6 +411,29 @@ export function useCard(
       break;
     }
 
+    // ── 股票目标 ───────────────────────────────────────
+    case 24:
+    case 25: {
+      // 紅卡 VA 0x00444f25 / 黑卡 VA 0x0044503f：整字节写 newsFlag
+      // ⚠️ 下面两道护栏原版卡片函数里没有（真人走股市屏 UI 天然避开，
+      //   AI 选股参数 0x41e6f2(0) 也只挑可交易股），属引擎护栏，
+      //   与 willWork 防空跑同一动机 —— 已登记，非静默偏差。
+      if (!ctx.marketOpen) return fail('marketClosed');
+      if (target.kind !== 'stock') return fail('wrongTargetKind');
+      const stock = market.stocks[target.index];
+      if (stock === undefined) return fail('stockOutOfRange');
+      // f6 非 0 = 停牌中，当日不波动，置数无意义 @source loc_00429470
+      if (stock.f6 !== 0) return fail('noEffect');
+      const r =
+        cardId === 24
+          ? applyRedCard(market.stocks, target.index)
+          : applyBlackCard(market.stocks, target.index);
+      if (r.affected < 0) return fail('stockOutOfRange');
+      market = { ...market, stocks: r.stocks };
+      // 紅卡无敌意段；黑卡尾部的敌意循环是原版 bug（恒为 0），均不落敌意
+      break;
+    }
+
     default:
       return fail('notImplemented');
   }
@@ -407,5 +444,5 @@ export function useCard(
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, respawns, hostilityDeltas, defended, releasedObjects };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, respawns, hostilityDeltas, defended, releasedObjects };
 }

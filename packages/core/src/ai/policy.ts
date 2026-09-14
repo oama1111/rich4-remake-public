@@ -22,6 +22,7 @@ import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, facilityIndexOf, housingIndexOf } from '../rules/land.ts';
 import { purchaseBlockedBy } from '../rules/purchase.ts';
 import { buyTool } from '../places/shop.ts';
+import { marketOpenOn } from '../places/stock-market.ts';
 import { isAiControlled } from '../state/types.ts';
 import { useCard } from '../cards/registry.ts';
 import type { CardTarget } from '../cards/target.ts';
@@ -219,6 +220,8 @@ export function decideCard(ctx: AiContext): Action | null {
         tools: state.tools,
         toolStock: state.toolStock,
         objects: state.objects,
+        market: state.market,
+        marketOpen: marketOpenOn(state.globalMapId, state.year, state.month, state.day),
         scapegoatPicker: () => -1,
       },
       cardId,

@@ -7,6 +7,23 @@ import { describe, expect, it } from 'vitest';
 import { makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { useCard, type UseCardContext } from './registry.ts';
 import { HOUSING_TYPE_MIN } from '../rules/land.ts';
+import type { StockMarketState } from '../places/stock-market.ts';
+import type { StockState } from '../places/stock.ts';
+import { STOCK_COUNT } from '../rules/wealth.ts';
+
+const makeStock = (over: Partial<StockState> = {}): StockState => ({
+  price: 100, shares: 10_000, f10: 10_000, commercialIndex: 0, f6: 0,
+  newsFlag: 0, basePrice: 100, openPrice: 100, volatility: 1, trend: 0, shock: 0,
+  ...over,
+});
+
+const makeMarket = (over: Partial<StockMarketState> = {}): StockMarketState => ({
+  stocks: Array.from({ length: STOCK_COUNT }, () => makeStock()),
+  day: 0,
+  history: [],
+  index: 1000,
+  ...over,
+});
 
 /** 三块地，id 与 housingIndexOf(节点 type) 对齐 */
 function defaultLands() {
@@ -32,6 +49,8 @@ function makeCtx(over: Partial<UseCardContext> = {}): UseCardContext {
     tools: new Array<number>(60).fill(0),
     toolStock: new Array<number>(14).fill(0),
     objects: [],
+    market: makeMarket(),
+    marketOpen: true,
     ...over,
   };
 }
@@ -484,5 +503,51 @@ describe('★ 請神符经统一入口（T-004）', () => {
     expect(r.players[0]!.fortune).toBe(150);
     // 旧神下标 1 < 12 → 搭档（下标 0）要重新登场，nearNode = 旧神记录的节点
     expect(r.respawns).toEqual([{ partner: 0, nearNode: 10 }]);
+  });
+});
+
+describe('★ 紅卡/黑卡经统一入口（T-005）', () => {
+  const ctxWithCard = (cardId: number, over: Partial<UseCardContext> = {}) =>
+    makeCtx({
+      players: [makePlayer({ index: 0, cards: [cardId] }), makePlayer({ index: 1 })],
+      ...over,
+    });
+
+  it('紅卡(24)把目标股 newsFlag 置为 0x20（利多 2 天）并扣卡', () => {
+    const r = useCard(ctxWithCard(24), 24, { kind: 'stock', index: 3 });
+    expect(r.ok).toBe(true);
+    expect(r.market.stocks[3]!.newsFlag).toBe(0x20);
+    expect(r.players[0]!.cards).toEqual([]);
+    // 其余股票不动
+    expect(r.market.stocks.filter((s) => s.newsFlag !== 0).length).toBe(1);
+  });
+
+  it('黑卡(25)把目标股 newsFlag 置为 0x02（利空 2 天）并扣卡', () => {
+    const r = useCard(ctxWithCard(25), 25, { kind: 'stock', index: 5 });
+    expect(r.ok).toBe(true);
+    expect(r.market.stocks[5]!.newsFlag).toBe(0x02);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('休市日 fail(marketClosed) 且不扣卡（引擎护栏，原版走股市屏 UI 天然避开）', () => {
+    const ctx = ctxWithCard(24, { marketOpen: false });
+    const r = useCard(ctx, 24, { kind: 'stock', index: 3 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('marketClosed');
+    expect(r.players[0]!.cards).toEqual([24]);
+  });
+
+  it('停牌中（f6 ≠ 0）fail(noEffect) 且不扣卡', () => {
+    const market = makeMarket();
+    market.stocks[3] = makeStock({ f6: 2 });
+    const ctx = ctxWithCard(25, { market });
+    const r = useCard(ctx, 25, { kind: 'stock', index: 3 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('noEffect');
+    expect(r.players[0]!.cards).toEqual([25]);
+  });
+
+  it('股票下标越界 → stockOutOfRange', () => {
+    expect(useCard(ctxWithCard(24), 24, { kind: 'stock', index: 99 }).error).toBe('stockOutOfRange');
   });
 });
