@@ -73,12 +73,24 @@ import {
 } from '../rules/tool-effects.ts';
 import { STOCKED_TOOL_MAX_ID, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
 import {
+  AI_BOARD_LIST_CHANCE,
+  AI_BOARD_REPRICE_CHANCE,
+  AI_BOARD_SHOP_CHANCE,
+  AI_CARD_LIST_MIN_HAND,
   LISTING,
+  aiWantsListedEstate,
+  aiWantsListedStock,
+  aiWantsToListTool,
   canBuyListing,
+  cardListPrice,
   decodeEstate,
+  duplicateCards,
   emptyColumn,
+  estateListPrice,
+  isColumnFull,
   listItem,
   settlePayment,
+  toolListPrice,
   withdrawItem,
   type Listing,
   type ListingKind,
@@ -438,7 +450,12 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         return { ...state, phase: 'turnEnd' };
       }
       // ★ 時光機的后悔药：真人回合开局先拍一张快照（@source VA 0x004480a0）
-      const snapped = snapshotOnTurnStart(state);
+      let snapped = snapshotOnTurnStart(state);
+      // ★ 电脑的公佈欄回合（AI 总调度里 `fcn_00436b0a` 那一步）：三道随机闸都在
+      //   reducer 里掷，AI 策略层不碰随机数（与保釋同一做法）。
+      if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
+        snapped = aiNoticeBoardTurn(snapped, topo);
+      }
       if (result.sleepWalk) {
         // 梦游：原版立即自动掷骰走子，玩家无法干预
         return reduce({ ...snapped, phase: 'awaitingRoll' }, { type: 'rollDice' }, topo);
@@ -2300,6 +2317,105 @@ function pendingForSpecial(
  *   物品转移按类型走各自既有的路子（持股、地產归属、道具、手牌），
  *   **不另起一套**。
  */
+/**
+ * 电脑玩家的公佈欄回合 —— 挂东西 / 重估 / 买别人的，逐条照 VA 0x0042886e。
+ * 规则常量与判据见 places/notice-board.ts 的 AI 一节。
+ */
+function aiNoticeBoardTurn(state: GameState, topo: MapTopology): GameState {
+  const me = state.currentPlayer;
+  const player = state.players[me];
+  if (player === undefined || !isAlive(player)) return state;
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  let next: GameState = state;
+
+  // ── ① 1/15：挂一样东西 ──
+  if (rng.next() % AI_BOARD_LIST_CHANCE === 0) {
+    let listed = false;
+    let mine = next.noticeBoard[me] ?? emptyColumn();
+    // 卡片：手牌 > 12 且有重复的
+    if (player.cards.length > AI_CARD_LIST_MIN_HAND) {
+      const dup = duplicateCards(player.cards);
+      if (dup.length > 0) {
+        const id = dup[rng.next() % dup.length]!;
+        // @source 0x0042891b 板满就先撤第 0 格
+        if (isColumnFull(mine)) mine = withdrawItem(mine, 0) ?? mine;
+        const col = listItem(mine, { kind: LISTING.card, id, price: cardListPrice(id, next.priceIndex), amount: 0 });
+        if (col !== null) {
+          mine = col;
+          listed = true;
+        }
+      }
+    }
+    // 道具：没挂成卡片才看
+    if (!listed) {
+      const candidates: number[] = [];
+      for (const t of TOOLS) {
+        const n = toolCount(next.tools, me, t.id);
+        if (aiWantsToListTool(n, t.f7, player.personality)) candidates.push(t.id);
+      }
+      if (candidates.length > 0) {
+        const id = candidates[rng.next() % candidates.length]!;
+        if (isColumnFull(mine)) mine = withdrawItem(mine, 0) ?? mine;
+        const col = listItem(mine, { kind: LISTING.tool, id, price: toolListPrice(id, next.priceIndex), amount: 0 });
+        if (col !== null) mine = col;
+      }
+    }
+    next = { ...next, noticeBoard: next.noticeBoard.map((c, i) => (i === me ? mine : c)) };
+  }
+
+  // ── ② 1/3：按当前物價重估自己挂着的道具/卡片 ──
+  if (rng.next() % AI_BOARD_REPRICE_CHANCE === 0) {
+    const mine = (next.noticeBoard[me] ?? emptyColumn()).map((it) => {
+      if (it === null) return it;
+      if (it.kind === LISTING.tool) return { ...it, price: toolListPrice(it.id, next.priceIndex) };
+      if (it.kind === LISTING.card) return { ...it, price: cardListPrice(it.id, next.priceIndex) };
+      return it;
+    });
+    next = { ...next, noticeBoard: next.noticeBoard.map((c, i) => (i === me ? mine : c)) };
+  }
+
+  // ── ③ 1/4：去买别人挂的股票或地產，成交一件即止 ──
+  if (rng.next() % AI_BOARD_SHOP_CHANCE === 0) {
+    outer: for (let seller = 0; seller < next.players.length; seller++) {
+      if (seller === me) continue;
+      const him = next.players[seller];
+      if (him === undefined || !isAlive(him)) continue;
+      const col = next.noticeBoard[seller] ?? emptyColumn();
+      for (let slot = 0; slot < col.length; slot++) {
+        const it = col[slot];
+        if (it === null || it === undefined) continue;
+        let want = false;
+        if (it.kind === LISTING.stock) {
+          want = aiWantsListedStock(it.price, it.amount, next.market.stocks[it.id]?.price ?? 0);
+        } else if (it.kind === LISTING.estate) {
+          const e = decodeEstate(it.id);
+          const v =
+            e.kind === 'land'
+              ? effectiveLand(next, topo, e.index)
+              : effectiveFacility(next, topo, e.index);
+          if (v === null) continue;
+          const valuation = estateListPrice(v.landPrice, v.level, v.housePrice, next.priceIndex);
+          want = aiWantsListedEstate(it.price, valuation, next.players[me]?.cash ?? 0);
+        }
+        if (!want) continue;
+        const bought = noticeBoardAction({ ...next, rngState: rng.getState() }, topo, {
+          type: 'noticeBoard',
+          op: 'buy',
+          seller,
+          slot,
+        });
+        if (bought !== next) {
+          next = bought;
+          break outer;
+        }
+      }
+    }
+  }
+
+  return { ...next, rngState: rng.getState() };
+}
+
 function noticeBoardAction(
   state: GameState,
   topo: MapTopology,
@@ -2374,8 +2490,7 @@ function ownsListing(
     case LISTING.estate: {
       const e = decodeEstate(id);
       if (e.kind === 'land') return (state.landOwner[e.index] ?? 0) === player + 1;
-      // ⚠️ 設施的归属还没进状态（同 Q-TOOL-2），故設施暂时挂不了
-      return false;
+      return (state.facilityOwner[e.index] ?? 0) === player + 1;
     }
     case LISTING.tool:
       return toolCount(state.tools, player, id) > 0;
@@ -2413,12 +2528,18 @@ function transferListing(
     }
     case LISTING.estate: {
       const e = decodeEstate(item.id);
-      if (e.kind !== 'land') return null;
-      // @source 0x004257c3 `mov byte [地塊+0x19], 當前玩家+1`
-      const landOwner = [...state.landOwner];
-      if (landOwner[e.index] !== seller + 1) return null;
-      landOwner[e.index] = buyer + 1;
-      return { ...state, landOwner };
+      // @source 0x004257c3 `mov byte [地塊或設施 + 0x19], 當前玩家+1` —— 两路汇合到同一句，
+      //   只改归属；等级/种类/到期日都留在原处
+      if (e.kind === 'land') {
+        const landOwner = [...state.landOwner];
+        if (landOwner[e.index] !== seller + 1) return null;
+        landOwner[e.index] = buyer + 1;
+        return { ...state, landOwner };
+      }
+      const facilityOwner = [...state.facilityOwner];
+      if (facilityOwner[e.index] !== seller + 1) return null;
+      facilityOwner[e.index] = buyer + 1;
+      return { ...state, facilityOwner };
     }
     case LISTING.tool: {
       // @source 0x0042580d `take_tool(賣家, id)` + 0x00425826 `give_tool(買家, id)`

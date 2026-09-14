@@ -76,7 +76,7 @@
 
 import type { GameState, Player } from '../state/types.ts';
 import { isAlive } from '../state/types.ts';
-import { CARDS } from '@rich4/data';
+import { CARDS, TOOLS } from '@rich4/data';
 import { MAX_HAND_CARDS } from '../rules/special-square.ts';
 import { toolCount } from '../rules/tools.ts';
 
@@ -233,4 +233,107 @@ export function settlePayment(
     buyer: { ...buyer, cash: buyer.cash - price },
     seller: { ...seller, cash: seller.cash + price },
   };
+}
+
+// ============================================================
+//  四种類型的「市價」—— 挂牌对话框里那句「請輸入欲拍賣的價格（市價：%d元）」
+// ============================================================
+
+/**
+ * 道具的市價，与卡片同一形状：`標價 × 100 × 物價指數`。
+ * @source 真人挂道具 VA 0x00426af8 `mov bl, [道具表 + id*8 + 5]; imul 0x64; imul 物價`；
+ *   AI 挂道具 0x00428a0b 同式。截图 S13 的「路障 市價 3,000元」= 30 × 100 × 1 ✓
+ */
+export function toolListPrice(toolId: number, priceIndex: number): number {
+  const price = TOOLS.find((t) => t.id === toolId)?.price ?? 0;
+  return price * CARD_LIST_MULTIPLIER * priceIndex;
+}
+
+/**
+ * 股票的市價 = `round(股數 × 現價)`。
+ * @source VA 0x00425f1e：`fild 股數 / fmul dword [股票表 + 36*i + 0x18 現價] / call round`
+ */
+export function stockListPrice(shares: number, marketPrice: number): number {
+  return Math.round(shares * marketPrice);
+}
+
+/**
+ * 地產／設施的市價 = `(地價 + 等級 × 房價) × 物價指數` —— 与 `rules/wealth.ts` 的估值同式。
+ * @source VA 0x004265b9（地產 +0x1c/+0x1e/+0x1a）与 0x004265e5（設施 +0x22/+0x24/+0x1a）
+ */
+export function estateListPrice(
+  landPrice: number,
+  level: number,
+  housePrice: number,
+  priceIndex: number,
+): number {
+  return (landPrice + level * housePrice) * priceIndex;
+}
+
+// ============================================================
+//  AI 怎么用公佈欄 —— 三道随机闸 + 两条挂牌规则 + 两条买入规则
+// ============================================================
+
+/**
+ * @source AI 公佈欄回合 VA 0x0042886e 起（就是 AI 总调度里的 `fcn_00436b0a` 那一步）：
+ * ```asm
+ * 0042886e  if (rand() % 15 != 0) goto 重估          ; ★ 1/15 才考虑挂东西
+ * 0042889a  if (手牌 <= 12) goto 挂道具              ; 卡片只在手牌 > 12 张时挂
+ * 004288a9  候选 = 手上有**重复**的卡；随机挑一张
+ * 0042891b  板满就先撤第 0 格（0x4247d5）
+ * 00428935  挂 kind 4，價 = 標價 × 100 × 物價
+ * 00428958  没挂成卡片才看道具：
+ * 00428974  候选 = 数量 >= 3 的，或 数量 != 0 且 道具.f7 − 個性 == 2 的；随机挑一个
+ * 00428a0b  挂 kind 3，價 = 標價 × 100 × 物價
+ * 00428a37  if (rand() % 3 != 0) goto 买             ; ★ 1/3 概率重估自己挂着的道具/卡片價
+ * 00428ae8  if (rand() % 4 != 0) 结束                ; ★ 1/4 概率去买别人的
+ * 00428b05  逐个其他在场玩家、逐格：
+ * 00428b59    kind 1 股票：round(標價 / 股數) < 現價 → 买
+ * 00428bc6    kind 2 地產：3 × 估值 > 標價 且 cash > 2 × 標價 → 买
+ *             其余類型不买；成交一件即止（ebp = 1）
+ * ```
+ *
+ * ★ `f7 − 個性 == 2` 这一条把道具表的 **f7** 解出了一半：它是道具的「凶狠度」
+ *   0..2（飛彈/時光機/工程車/核彈 是 2）。乖寶寶（個性 0）会把凶狠度 2 的道具
+ *   挂出去卖掉，大老奸（個性 2）永远不会因这条卖东西。见 Q4。
+ */
+export const AI_BOARD_LIST_CHANCE = 15;
+export const AI_BOARD_REPRICE_CHANCE = 3;
+export const AI_BOARD_SHOP_CHANCE = 4;
+/** 手牌**超过**这个数才考虑挂卡 @source `cmp eax, 0xc / jle` */
+export const AI_CARD_LIST_MIN_HAND = 12;
+/** 道具数量到这个数就考虑挂 @source `cmp ch, 3 / jae` */
+export const AI_TOOL_LIST_MIN_COUNT = 3;
+
+/** 手上重复的卡片编号（去重后） @source 0x004288a9 的双重循环 */
+export function duplicateCards(hand: readonly number[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < hand.length; i++) {
+    for (let j = 0; j < hand.length; j++) {
+      if (i === j) continue;
+      if (hand[i] === hand[j]) {
+        const id = hand[j]!;
+        if (!out.includes(id)) out.push(id);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** 这件道具 AI 想不想挂出去 @source 0x00428990..0x004289b5 */
+export function aiWantsToListTool(count: number, toolF7: number, personality: number): boolean {
+  if (count >= AI_TOOL_LIST_MIN_COUNT) return true;
+  return count !== 0 && toolF7 - personality === 2;
+}
+
+/** 别人挂的股票值不值得买 @source 0x00428b5e..0x00428bac */
+export function aiWantsListedStock(listedPrice: number, shares: number, marketPrice: number): boolean {
+  if (shares <= 0) return false;
+  return Math.round(listedPrice / shares) < marketPrice;
+}
+
+/** 别人挂的地產值不值得买 @source 0x00428c63..0x00428c81 */
+export function aiWantsListedEstate(listedPrice: number, valuation: number, cash: number): boolean {
+  return valuation * 3 > listedPrice && cash > listedPrice * 2;
 }
