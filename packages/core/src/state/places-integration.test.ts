@@ -74,11 +74,22 @@ describe('★ 樂透', () => {
 });
 
 describe('★ 未实现的场所会明确报出来', () => {
-  run('魔法屋给出 unimplemented 而不是静默', () => {
+  run('三个小游戏给出 unimplemented 而不是静默', () => {
+    const { map, topo: t } = topo();
+    const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.PENGUIN_DIG);
+    if (s === null) return;
+    expect(reduce(s, { type: 'settle' }, t).pending?.kind).toBe('unimplemented');
+  });
+
+  run('★ 魔法屋已实现 —— 即时结算，不留待决交互', () => {
     const { map, topo: t } = topo();
     const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.MAGIC_HOUSE);
     if (s === null) return;
-    expect(reduce(s, { type: 'settle' }, t).pending?.kind).toBe('unimplemented');
+    const r = reduce(s, { type: 'settle' }, t);
+    expect(r.pending).toBeNull();
+    expect(r.phase).toBe('turnEnd');
+    // 转盘一定转了 —— 随机数状态必然推进
+    expect(r.rngState).not.toBe(s.rngState);
   });
 
   run('★ 百貨公司已实现 —— 给出的是商店交互', () => {

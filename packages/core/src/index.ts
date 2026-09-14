@@ -45,6 +45,7 @@ export * from './events/news-effects.ts';
 export * from './places/bank.ts';
 export * from './places/lottery.ts';
 export * from './places/stock.ts';
+export * from './places/magic-house.ts';
 export * from './cards/average-cash.ts';
 export * from './cards/hibernate.ts';
 export * from './cards/rebuild.ts';

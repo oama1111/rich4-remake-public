@@ -21,6 +21,7 @@ import type { LandInfo, MapNode, Rich4Map } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, housingIndexOf } from '../rules/land.ts';
 import { purchaseBlockedBy } from '../rules/purchase.ts';
+import { buyTool } from '../places/shop.ts';
 import { isAiControlled, isAlive } from '../state/types.ts';
 import { useCard } from '../cards/registry.ts';
 import type { CardTarget } from '../cards/target.ts';
@@ -301,10 +302,12 @@ export function decidePending(state: GameState): Action | null {
     //   其次补放置类道具。都买不起就关门（由调用方发 declineDecision）。
     const me = state.players[state.currentPlayer];
     if (me === undefined) return null;
-    const canBuy = (id: number): boolean => {
-      const t = p.tools.find((x) => x.id === id);
-      return t !== undefined && t.price <= p.points && (t.stock === null || t.stock > 0);
-    };
+    // ★ 不能只看「买得起 + 有货」——`buyTool` 还会因**每人每种上限 9**
+    //   而拒绝（`give_tool` 的 `toolLimit`）。AI 是纯函数，提一个 reducer
+    //   必拒的 action 就会被原样重提，卡死在 turnEnd/shop。
+    //   与卡片、买地两次事故同一类，处理办法也一样：**先预演一遍**。
+    const canBuy = (id: number): boolean =>
+      buyTool(me, state.tools, state.toolStock, id).ok;
     // 已有更好的车就别买了
     if (me.trafficMethod !== TRAFFIC_CAR && canBuy(6)) {
       return { type: 'shop', op: 'buyTool', id: 6 };

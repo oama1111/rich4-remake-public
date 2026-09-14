@@ -185,6 +185,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     direction: p.direction,
     trafficMethod: p.trafficMethod,
     ndices: p.ndices,
+    isMale: !p.isFemale,
     cash: p.cash,
     moneyInBank: p.moneyInBank,
     loan: p.loan,

@@ -86,6 +86,17 @@ export interface Player {
   trafficMethod: number;
   /** 骰子数 1..3 */
   ndices: number;
+  /**
+   * 性别。@source player_info +0x14 `sex`，**非 0 是男、0 是女**。
+   *
+   * ★ 编码由魔法屋的两条目标筛选器独立印证：
+   *   `所有男生` 要求 `cmp byte [+0x14], 0 / je 跳过`（非 0 才收），
+   *   `所有女生` 反之（VA 0x00431c02 / 0x00431c31）。
+   *
+   * 取自角色表（`@rich4/data` 的 `isFemale`），开局定下就不再变——
+   * 破产的 `memset(player + 0x1c, 0, 0x4c)` 够不着它。
+   */
+  isMale: boolean;
   /** 现金，可为负 @source player_info +0x1c (int32) */
   cash: number;
   /** 银行存款（含特别融资） */

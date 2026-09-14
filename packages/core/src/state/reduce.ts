@@ -47,6 +47,12 @@ import {
 } from '../rules/object-landing.ts';
 import { demolishLand } from '../rules/land-mutation.ts';
 import { almsAmount, beggarAt } from '../rules/beggar.ts';
+import {
+  applyMagicEffect,
+  spinMagicHouse,
+  type MagicNodeInfo,
+  type MagicRequest,
+} from '../places/magic-house.ts';
 import type { TradeResult } from '../places/stock.ts';
 import {
   refreshTradableShares,
@@ -62,7 +68,7 @@ import { facilityIndexOf } from '../rules/land.ts';
 import { tickBlocking } from '../rules/blocking.ts';
 import { purchase } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints, MAX_HAND_CARDS } from '../rules/special-square.ts';
-import { SPECIAL_KIND } from '../loaders/map.ts';
+import { MAX_LAND_LEVEL, SPECIAL_KIND } from '../loaders/map.ts';
 import { drawEvent } from '../events/deck.ts';
 import { isNewsFeasible } from '../events/news.ts';
 import { checkFortune } from '../events/fortune.ts';
@@ -295,6 +301,8 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         // 新聞／命運：抽一张可行的事件并施加其效果
         if (node.specialKind === SPECIAL_KIND.NEWS) return drawAndApplyNews(next, topo);
         if (node.specialKind === SPECIAL_KIND.FORTUNE) return drawAndApplyFortune(next);
+        // 魔法屋：两个转盘一转就结算，中间没有玩家决策
+        if (node.specialKind === SPECIAL_KIND.MAGIC_HOUSE) return runMagicHouse(next, topo);
 
         // 其余特殊格：交给「待决交互」机制。
         // ★ 这样每一格都**可达**：已实现的给出具体交互，
@@ -646,6 +654,156 @@ function respawnPartner(
 
   partner.nodeId = node;
   return { ...state, objects, rngState: rng.getState() };
+}
+
+/**
+ * 魔法屋 —— 转两个转盘，然后对被点到的人逐一施加效果。
+ *
+ * ★ 它**不是待决交互**：原版两个转盘都是自己转的（`rand()`），
+ *   玩家一次也插不上手，所以按即时结算处理，与新聞/命運同类。
+ *
+ * @source 转盘 VA 0x0043390b，效果派发 0x00431caa。见 places/magic-house.ts。
+ */
+function runMagicHouse(state: GameState, topo: MapTopology): GameState {
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const lands = allEffectiveLands(state, topo);
+  const facilities = topo.facilities ?? [];
+
+  const owns = (playerIndex: number, needDeveloped: boolean): number => {
+    let n = 0;
+    // @source 先扫地块表再扫设施表，两者都比 `owner == p + 1`
+    for (const l of lands) {
+      if (l.owner !== playerIndex + 1) continue;
+      if (needDeveloped && l.level === 0) continue;
+      n++;
+    }
+    for (const f of facilities) {
+      if (f.owner !== playerIndex + 1) continue;
+      if (needDeveloped && f.level === 0) continue;
+      n++;
+    }
+    return n;
+  };
+
+  const targetCtx = {
+    players: state.players,
+    landCountOf: (i: number) => owns(i, false),
+    houseCountOf: (i: number) => owns(i, true),
+    wealthOf: (i: number) => {
+      const p = state.players[i];
+      if (p === undefined) return 0;
+      return calculatePlayerWealth(p, lands, facilities, valuationsOf(state, i));
+    },
+  };
+
+  const spin = spinMagicHouse(targetCtx, state.currentPlayer, () => rng.next());
+
+  const nodeOf = (playerIndex: number): MagicNodeInfo | null => {
+    const p = state.players[playerIndex];
+    if (p === undefined) return null;
+    const n = topo.nodes[p.nodeId - 1];
+    if (n === undefined) return null;
+    // @source cmp ebx, 0x7d0 / jle 跳过；cmp ebx, 0x1770 / jge 跳过
+    //   住宅(2000..4000) 与设施(4000..6000) 都算，景观与特殊格不算
+    const buildable = housingIndexOf(n.type) !== null || facilityIndexOf(n.type) !== null;
+    return { type: n.type, buildable };
+  };
+
+  const r = applyMagicEffect(spin.option, spin.targets, {
+    players: state.players,
+    cardAmount: state.cardAmount,
+    tools: state.tools,
+    toolStock: state.toolStock,
+    priceIndex: state.priceIndex,
+    initiator: state.currentPlayer,
+    nodeOf,
+    nextRandom: () => rng.next(),
+  });
+
+  let next: GameState = {
+    ...state,
+    rngState: rng.getState(),
+    players: applyHostilityDeltas(r.players, r.hostilityDeltas),
+    cardAmount: r.cardAmount,
+    tools: r.tools,
+    toolStock: r.toolStock,
+    phase: 'turnEnd',
+  };
+
+  for (const req of r.requests) {
+    next = applyMagicRequest(next, topo, req);
+    if (next.phase === 'gameOver') return next;
+  }
+  return next;
+}
+
+/** 魔法屋里跨子系统的那几件事 */
+function applyMagicRequest(
+  state: GameState,
+  topo: MapTopology,
+  req: MagicRequest,
+): GameState {
+  switch (req.kind) {
+    // @source for (i = 0; i < 3; i++) call 0x44db81
+    case 'drawFortune': {
+      let s = state;
+      for (let i = 0; i < req.amount; i++) {
+        // 命運事件按**被点到的那个人**结算，故临时把行动者切过去
+        const drawn = drawAndApplyFortune({ ...s, currentPlayer: req.player });
+        s = { ...drawn, currentPlayer: state.currentPlayer };
+        if (s.phase === 'gameOver') return s;
+      }
+      return { ...s, phase: 'turnEnd' };
+    }
+    case 'prison':
+    case 'hospital': {
+      const kind = req.kind === 'prison' ? 'prison' : 'hospital';
+      const occ = kind === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+      const c = confine(state.players, occ, kind, req.player, req.amount);
+      return kind === 'prison'
+        ? { ...state, players: c.players, prisonOccupancy: c.occupancy }
+        : { ...state, players: c.players, hospitalOccupancy: c.occupancy };
+    }
+    // @source 0x40b110(type)：住宅 level < 5 可建；連鎖店只有 level == 0 时可建
+    case 'build': {
+      const land = landAtPlayer(state, topo, req.player);
+      if (land === null) return state;
+      const isChain = land.type !== 0;
+      const buildable = isChain ? land.level === 0 : land.level < MAX_LAND_LEVEL;
+      if (!buildable) return state;
+      const landLevel = [...state.landLevel];
+      landLevel[land.id] = land.level + 1;
+      return { ...state, landLevel };
+    }
+    // @source 0x40ab4a(type, 0)：与拆除卡、炸彈同一套
+    case 'demolish': {
+      const land = landAtPlayer(state, topo, req.player);
+      if (land === null) return state;
+      const d = demolishLand(land, state.priceIndex);
+      const landLevel = [...state.landLevel];
+      landLevel[land.id] = d.land.level;
+      return { ...state, landLevel };
+    }
+    // @source run_auction(player, 1) @ 0x43bde5
+    // ⚠️ 拍卖是**模态 UI**（出价由人给），按 C-ARC-2 不能在 reducer 里跑完。
+    //   本引擎把它挂成待决交互，由上层作答——与银行拍卖同一条路。
+    case 'auction':
+      return state;
+    default:
+      return state;
+  }
+}
+
+/** 某玩家脚下那块住宅；不是住宅返回 null */
+function landAtPlayer(state: GameState, topo: MapTopology, playerIndex: number): LandInfo | null {
+  const p = state.players[playerIndex];
+  if (p === undefined) return null;
+  const node = topo.nodes[p.nodeId - 1];
+  if (node === undefined) return null;
+  const idx = housingIndexOf(node.type);
+  if (idx === null) return null;
+  return effectiveLand(state, topo, idx);
 }
 
 function tradeStock(

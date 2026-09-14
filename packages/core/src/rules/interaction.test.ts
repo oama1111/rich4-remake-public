@@ -48,15 +48,16 @@ describe('★ 哪些格子需要玩家做决定', () => {
 });
 
 describe('★ 未实现的场所会明确报出来，而不是静默无事发生', () => {
-  it('魔法屋标为未实现；百貨公司已实现，不该再在名单里', () => {
-    expect(isUnimplementedPlace(SPECIAL_KIND.MAGIC_HOUSE)).toBe(true);
-    // 百貨公司接上了（places/shop.ts），从未实现名单里摘掉了
+  it('★ 名单只剩三个小游戏 —— 百貨公司与魔法屋都已实现', () => {
+    // 百貨公司接上了（places/shop.ts）、魔法屋接上了（places/magic-house.ts），
+    // 两者都从未实现名单里摘掉了
     expect(isUnimplementedPlace(SPECIAL_KIND.DEPARTMENT_STORE)).toBe(false);
+    expect(isUnimplementedPlace(SPECIAL_KIND.MAGIC_HOUSE)).toBe(false);
   });
 
   it('带可读场所名', () => {
-    const p = unimplementedPlace(SPECIAL_KIND.MAGIC_HOUSE);
-    expect(p).toMatchObject({ kind: 'unimplemented', place: '魔法屋' });
+    const p = unimplementedPlace(SPECIAL_KIND.PENGUIN_DIG);
+    expect(p).toMatchObject({ kind: 'unimplemented', place: '企鵝挖寶' });
   });
 
   it('三个小游戏也在列', () => {
@@ -103,18 +104,15 @@ describe('★ 答复必须与待决交互配套', () => {
 });
 
 describe('魔法屋', () => {
-  it('★ 未实现，但把 12 个选项名一并报出来 —— 缺口具体到条', () => {
-    const p = unimplementedPlace(SPECIAL_KIND.MAGIC_HOUSE);
-    expect(p.kind).toBe('unimplemented');
-    if (p.kind !== 'unimplemented') return;
-    expect(p.place).toBe('魔法屋');
-    expect(p.options).toHaveLength(12);
-    expect(p.options).toContain('立刻坐牢三天');
-    expect(p.options).toContain('拍賣當格土地');
+  // 这一条先前是「未实现，但把 12 个选项名报出来」。效果与目标两张跳表
+  // 都解出来之后（places/magic-house.ts），魔法屋改为**即时结算**，
+  // 不再产生任何待决交互——与新聞/命運同类。
+  it('★ 已实现 —— 不再报 unimplemented', () => {
+    expect(isUnimplementedPlace(SPECIAL_KIND.MAGIC_HOUSE)).toBe(false);
   });
 
-  it('其他未实现场所没有选项表', () => {
-    const p = unimplementedPlace(SPECIAL_KIND.DEPARTMENT_STORE);
+  it('尚未实现的场所没有选项表', () => {
+    const p = unimplementedPlace(SPECIAL_KIND.BALLOON);
     if (p.kind !== 'unimplemented') return;
     expect(p.options).toBeUndefined();
   });
