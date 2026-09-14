@@ -25,7 +25,8 @@ import {
 import { loadArchives, loadGround, readMapData, SpriteCache } from './assets.ts';
 import { Hud, hitHudButton } from './hud.ts';
 import { SoundPlayer } from './audio.ts';
-import { SOUND_IDS } from '@rich4/assets-pipeline';
+import { MusicPlayer } from './music.ts';
+import { MIDI_PLAYLIST, SOUND_IDS } from '@rich4/assets-pipeline';
 import {
   BoardRenderer,
   characterCamera,
@@ -91,6 +92,48 @@ let hud: Hud;
  *   在此之前的播放请求会被安静丢弃。
  */
 const sound = new SoundPlayer();
+
+/**
+ * 背景音乐。
+ *
+ * ⚠️ 与音效一样，得等用户手势之后才能出声；第一次点击时连音乐一起解锁，
+ *   顺手放第一首。曲目顺序照 `MIDI_PLAYLIST`（取自游戏目录的 `Midi.txt`）。
+ */
+const music = new MusicPlayer();
+/** 当前播到清单里的第几首 */
+let musicTrack = 0;
+let musicStarted = false;
+
+async function playTrack(index: number): Promise<void> {
+  const name = MIDI_PLAYLIST[((index % MIDI_PLAYLIST.length) + MIDI_PLAYLIST.length) % MIDI_PLAYLIST.length];
+  if (name === undefined) return;
+  musicTrack = index;
+  try {
+    // ⚠️ 磁盘上的文件名是小写（midi01.mid），`Midi.txt` 里是大写；
+    //   大小写敏感的文件系统上按实际文件名取，取不到就试另一种写法。
+    let res = await fetch(`/assets/game/${name}`);
+    if (!res.ok) res = await fetch(`/assets/game/${name.toLowerCase()}`);
+    if (!res.ok) {
+      log(`⚠ 找不到配乐 ${name}`);
+      return;
+    }
+    music.play(name, new Uint8Array(await res.arrayBuffer()));
+    log(`♪ ${name}`);
+    renderPanel();
+  } catch {
+    log(`⚠ 配乐 ${name} 载入失败`);
+  }
+}
+
+/** 第一次用户手势：把音效与音乐一起解锁 */
+function unlockAudio(): void {
+  sound.unlock();
+  music.unlock();
+  if (!musicStarted) {
+    musicStarted = true;
+    void playTrack(0);
+  }
+}
 
 /**
  * 原版底图。
@@ -465,7 +508,35 @@ function renderActions(): void {
     }),
     autoButton(),
     aiToggleButton(),
+    ...musicButtons(),
   );
+}
+
+/** 配乐控制：上一首 / 播停 / 下一首 */
+function musicButtons(): HTMLButtonElement[] {
+  const mk = (label: string, title: string, fn: () => void): HTMLButtonElement => {
+    const el = document.createElement('button');
+    el.textContent = label;
+    el.title = title;
+    el.onclick = () => {
+      unlockAudio();
+      fn();
+      renderPanel();
+    };
+    return el;
+  };
+  return [
+    mk('♪◀', '上一首', () => void playTrack(musicTrack - 1)),
+    mk(
+      music.playing ? `♪ ${music.current}` : '♪ 播放',
+      '配乐开关',
+      () => {
+        if (music.playing) music.stop();
+        else void playTrack(musicTrack);
+      },
+    ),
+    mk('♪▶', '下一首', () => void playTrack(musicTrack + 1)),
+  ];
 }
 
 /** 观战开关——调试规则时常常要让电脑停下来 */
@@ -580,7 +651,7 @@ function bindInput(): void {
 
   let drag: { x: number; y: number } | null = null;
   canvas.addEventListener('mousedown', (e) => {
-    sound.unlock(); // 浏览器要求在用户手势里建 AudioContext
+    unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
     const r = canvas.getBoundingClientRect();
     const tool = hitToolbar(e.clientX - r.left, e.clientY - r.top);
     if (tool !== null) {
@@ -613,7 +684,7 @@ function bindInput(): void {
 
   // 小地图上方那排视角按钮
   hudCanvas.addEventListener('mousedown', (e) => {
-    sound.unlock();
+    unlockAudio();
     const r = hudCanvas.getBoundingClientRect();
     const hit = hitHudButton(e.clientX - r.left, e.clientY - r.top);
     if (hit === null) return;
@@ -626,7 +697,7 @@ function bindInput(): void {
 
   // ★ 底图调试键。对齐关系解出来之前，这几个键是唯一能看到底图的途径。
   window.addEventListener('keydown', (e) => {
-    sound.unlock();
+    unlockAudio();
     const step = e.shiftKey ? 50 : 10;
     switch (e.key.toLowerCase()) {
       case 'g':

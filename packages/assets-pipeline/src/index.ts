@@ -6,4 +6,5 @@ export * from './mkf-decompress.ts';
 export * from './sprite.ts';
 export * from './ground.ts';
 export * from './audio.ts';
+export * from './midi.ts';
 export * from './upscale.ts';
