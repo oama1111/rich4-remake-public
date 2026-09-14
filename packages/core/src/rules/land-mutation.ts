@@ -139,3 +139,31 @@ export function isSealed(priceStatus: number): boolean {
 export function isRaised(priceStatus: number): boolean {
   return priceStatus === PRICE_STATUS.RAISED;
 }
+
+// ============================================================
+//  每日递减 —— 涨价/查封状态的有效期
+// ============================================================
+
+/**
+ * 涨价/查封状态**每天**递减一档（高 nibble = 剩余天数）。
+ *
+ * @source VA 0x0041d114（地块 +0x17）/ 0x0041d160（設施 +0x1c）：
+ * ```asm
+ * mov cl, byte [land + 0x17]
+ * test cl, 0xf0 / je 下一块        ; 高 nibble 为 0 → 不动
+ * ch = cl − 0x10; [land+0x17] = ch ; 高 nibble −1
+ * test ch, 0xf0 / jne 下一块
+ * mov byte [land + 0x17], 0        ; ★ 减到底 → 整字节清零（0x0041d129，
+ *                                  ;   查封位一起清）
+ * ```
+ *
+ * ★ 这两个循环（0x0041d0ff 起）在 `cmp edi,1 / jne 0x41d0ff` 的跨月守卫
+ *   **之外** —— 是**每天**执行，不是每月。涨价卡写 0x50 即 5 天有效期：
+ *   0x50 → 0x40 → … → 0x10 → 0。查封 0x51 同理，第 5 天减成 0x01
+ *   时被整字节清 0，故查封位不会残存。
+ */
+export function sweepPriceStatus(status: number): number {
+  if ((status & 0xf0) === 0) return status;
+  const next = status - 0x10;
+  return (next & 0xf0) === 0 ? 0 : next;
+}

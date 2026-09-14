@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 12.1。
+共 **73** 张卡，估算 **39.8** 单元，已完成 12.6。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -87,7 +87,7 @@
 | [T-081](#t-081) | 保險理賠接线：找齐 0x44ba63 的调用点（Q-INS-1） | MOD-07 | Q-INS-1 | `done` | 0.6 | — |
 | [T-082](#t-082) | 設施收費前的三条免收 + 免費卡自动使用 + 死神顯靈由他人賠償（Q-FAC-2） | MOD-05 | Q-FAC-2 | `done` | 0.8 | — |
 | [T-083](#t-083) | 魔法屋「就地加蓋房屋」对設施生效（Q-MAGIC-2） | MOD-07 | Q-MAGIC-2 | `done` | 0.2 | — |
-| [T-084](#t-084) | 查封／漲價的涨价位进状态并按月递减（Q-LAND-2 + T-008 的設施部分） | MOD-05 | Q-LAND-2 | `todo` | 0.5 | — |
+| [T-084](#t-084) | 查封／漲價的涨价位进状态并按天递减（Q-LAND-2 + T-008 的設施部分） | MOD-05 | Q-LAND-2 | `done` | 0.5 | — |
 
 ## A · 核心契约与卡片接线（core）
 
@@ -2713,22 +2713,23 @@
 
 ### T-084
 
-**查封／漲價的涨价位进状态并按月递减（Q-LAND-2 + T-008 的設施部分）**
+**查封／漲價的涨价位进状态并按天递减（Q-LAND-2 + T-008 的設施部分）**
 
-- 模块 `MOD-05` · 需求 `Q-LAND-2` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-05` · 需求 `Q-LAND-2` · 状态 `done` · 估算 0.5 单元
 - 依赖：无（可立即开工）
-- 证据：查封卡 0x51 / 漲價卡高半字节；月末递减 0x0041d114（地块 +0x17）与 0x0041d160（設施 +0x1c）
+- 证据：查封卡 0x51 / 漲價卡高半字节；每日递减 0x0041d114（地块 +0x17）与 0x0041d160（設施 +0x1c）；租金翻倍 0x00419b09
 
 **依赖的其他类 / 文件**
 
 - core/state/types.ts
-- core/state/reduce.ts (playCard 写回、advanceGameDay 的月末递减)
+- core/state/reduce.ts (playCard 写回、advanceGameDay 的每日递减)
 - core/rules/land-mutation.ts
 - core/rules/toll-flow.ts (tollExemption 读它)
+- core/rules/rent.ts (collectRent 涨价翻倍)
 
 **期望输入**
 
-    查封卡/漲價卡效果；每月推进
+    查封卡/漲價卡效果；每日推进
 
 **期望输出**
 
@@ -2737,15 +2738,20 @@
 **核心逻辑 / 算法指导**
 
     1. 两个数组，开局从地图初值抄；playCard 把 lands[].priceStatus 落回；設施同理（T-008 接上后）。
-    2. advanceGameDay：跨月时高半字节 −0x10，减到 0 清零（0x0041d114/0x0041d160）；查封位的清法读 0x0041d12d。
-    3. 读取方：tollExemption、涨价倍率（calculateLandToll 的 applyPriceStatus）。
+    2. advanceGameDay：高半字节每天 −0x10，减到 0 整字节清零（0x0041d114/0x0041d160/0x0041d129）。
+       ★ 递减循环在 `cmp edi,1 / jne 0x41d0ff` 的跨月守卫之外，是每天不是每月——卡面先写「按月」，
+       回汇编核实后改正（PRD 未写节奏，以 exe 为准）。
+    3. 读取方：tollExemption（查封免收）、collectRent 地主份 ×2（0x00419b09，同盟份不翻）、
+       設施租金 applyPriceStatus ×2。
 
 **验收测试**
 
-    查封后免收、月末解封；漲價后租金翻倍、月末回落。
+    查封后免收、5 天后解封；漲價后租金翻倍、5 天后回落。
 
 **涉及文件**
 
 - packages/core/src/state/types.ts
 - packages/core/src/state/reduce.ts
+- packages/core/src/rules/land-mutation.ts
+- packages/core/src/rules/rent.ts
 

@@ -534,12 +534,15 @@ wiki 的「各項目時間不同」与 exe 不符）、只在業主自己的回�
 里没有可停下来问的地方（要加 pending + 屏，属 P2），先让真人走電腦那一套判据。P2 做
 选目标屏（T-026）时把它换成 pending。
 
-### Q-LAND-2：查封／漲價的涨价位没进状态
+### ~~Q-LAND-2~~：查封／漲價的涨价位没进状态（**已结案 2026-09-14，T-008 + T-084**）
 
-查封卡写 `land+0x17 = 0x51`、漲價卡写高半字节，`land-mutation.ts` 都有；但 `playCard` 只把
-owner/level/type 落回状态，`priceStatus` 丢在临时对象里，月末递减（0x0041d114）也没接。
-于是「房屋查封中免收」眼下只能对地图静态值生效。要补 `landPriceStatus[]`（与 T-008 的
-`facilityPriceStatus[]` 一起）。
+查封卡写 `land+0x17 = 0x51`、漲價卡写高半字节。已补 `landPriceStatus[]` /
+`facilityPriceStatus[]`（T-008：new-game/savegame 初始化、playCard 落回、
+`effectiveLand`/`effectiveFacility` 读状态值），读取方全部接通：
+`tollExemption` 查封免收、`collectRent` 地主份 ×2（0x00419b09，同盟份不翻）、
+設施租金 `applyPriceStatus` ×2。递减也接上（T-084 `sweepPriceStatus`）——
+回汇编核实：0x0041d0ff 起的两个循环在 `cmp edi,1 / jne 0x41d0ff` 的跨月守卫
+**之外**，是**每天** −0x10（0x50/0x51 撑 5 天），不是早先以为的按月。
 
 ---
 

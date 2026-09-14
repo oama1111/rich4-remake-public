@@ -1494,20 +1494,23 @@ cards:
 
 - id: T-084
   group: F
-  title: 查封／漲價的涨价位进状态并按月递减（Q-LAND-2 + T-008 的設施部分）
+  title: 查封／漲價的涨价位进状态并按天递减（Q-LAND-2 + T-008 的設施部分）
   module: MOD-05
   req: Q-LAND-2
-  status: todo
+  status: done
   estimate: 0.5
   depends_on: []
-  uses: [core/state/types.ts, core/state/reduce.ts (playCard 写回、advanceGameDay 的月末递减), core/rules/land-mutation.ts, core/rules/toll-flow.ts (tollExemption 读它)]
-  source: "查封卡 0x51 / 漲價卡高半字节；月末递减 0x0041d114（地块 +0x17）与 0x0041d160（設施 +0x1c）"
-  input: "查封卡/漲價卡效果；每月推进"
+  uses: [core/state/types.ts, core/state/reduce.ts (playCard 写回、advanceGameDay 的每日递减), core/rules/land-mutation.ts, core/rules/toll-flow.ts (tollExemption 读它), core/rules/rent.ts (collectRent 涨价翻倍)]
+  source: "查封卡 0x51 / 漲價卡高半字节；每日递减 0x0041d114（地块 +0x17）与 0x0041d160（設施 +0x1c）；租金翻倍 0x00419b09"
+  input: "查封卡/漲價卡效果；每日推进"
   output: "GameState.landPriceStatus[] / facilityPriceStatus[]；免收与漲價按状态值判"
   algorithm: |
     1. 两个数组，开局从地图初值抄；playCard 把 lands[].priceStatus 落回；設施同理（T-008 接上后）。
-    2. advanceGameDay：跨月时高半字节 −0x10，减到 0 清零（0x0041d114/0x0041d160）；查封位的清法读 0x0041d12d。
-    3. 读取方：tollExemption、涨价倍率（calculateLandToll 的 applyPriceStatus）。
-  tests: "查封后免收、月末解封；漲價后租金翻倍、月末回落。"
-  files: [packages/core/src/state/types.ts, packages/core/src/state/reduce.ts]
+    2. advanceGameDay：高半字节每天 −0x10，减到 0 整字节清零（0x0041d114/0x0041d160/0x0041d129）。
+       ★ 递减循环在 `cmp edi,1 / jne 0x41d0ff` 的跨月守卫之外，是每天不是每月——卡面先写「按月」，
+       回汇编核实后改正（PRD 未写节奏，以 exe 为准）。
+    3. 读取方：tollExemption（查封免收）、collectRent 地主份 ×2（0x00419b09，同盟份不翻）、
+       設施租金 applyPriceStatus ×2。
+  tests: "查封后免收、5 天后解封；漲價后租金翻倍、5 天后回落。"
+  files: [packages/core/src/state/types.ts, packages/core/src/state/reduce.ts, packages/core/src/rules/land-mutation.ts, packages/core/src/rules/rent.ts]
   notes: ""

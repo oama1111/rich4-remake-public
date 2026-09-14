@@ -118,12 +118,18 @@ export function collectRent(
   const districtName = land.type === 0 ? land.name : null;
   const ownerToll = calculateLandToll(lands, land.owner, priceIndex, districtName);
 
+  // @source 0x00419b09 `cmp byte [land+0x17], 0 / je 不翻 / add ebp, ebp`
+  //   —— 落点地块带涨价/查封标记时，**地主那份**租金 ×2；
+  //   翻倍只落在 ebp（地主租金）上，同盟那份不跟着翻。
+  //   （查封情形在更上游的 0x41d559 九种免收里就拦下了，走不到这里。）
+  const ownerPart = land.priceStatus !== 0 ? ownerToll + ownerToll : ownerToll;
+
   // @source mov al, byte [(owner)*0x68 + 0x496ba9] —— 地主的同盟对象
   const allyId = owner.alliedPlayer;
   const allyToll =
     allyId === 0 ? 0 : calculateLandToll(lands, allyId, priceIndex, districtName);
 
-  const baseTotal = ownerToll + allyToll;
+  const baseTotal = ownerPart + allyToll;
   if (baseTotal === 0) return none();
 
   // ★ 神明在**付款之前**调整金额（VA 0x0041d709），

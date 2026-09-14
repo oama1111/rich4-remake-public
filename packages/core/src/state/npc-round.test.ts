@@ -114,3 +114,50 @@ describe('★ 總月數 @source [0x499084]', () => {
     expect(feb2.totalDays).toBe(2);
   });
 });
+
+describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起', () => {
+  // currentPlayer 3（最后一名）endTurn → 跨轮 → advanceGameDay
+  const day = (s: GameState): GameState =>
+    reduce({ ...s, phase: 'turnEnd', currentPlayer: 3 }, { type: 'endTurn' }, ring);
+
+  it('landPriceStatus / facilityPriceStatus 每天 −0x10', () => {
+    const s = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
+      landPriceStatus: [0, 0x50, 0x51, 0],
+      facilityPriceStatus: [0, 0x51, 0x20],
+    });
+    const after = day(s);
+    expect(after.landPriceStatus).toEqual([0, 0x40, 0x41, 0]);
+    expect(after.facilityPriceStatus).toEqual([0, 0x41, 0x10]);
+  });
+
+  it('★ 查封 5 天后整字节解封（查封位不残存）', () => {
+    let s = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
+      landPriceStatus: [0, 0x51],
+    });
+    for (let i = 0; i < 4; i++) {
+      s = day(s);
+      expect(s.landPriceStatus[1]).not.toBe(0); // 前 4 天仍封着
+    }
+    s = day(s);
+    expect(s.landPriceStatus[1]).toBe(0); // 第 5 天解封
+  });
+
+  it('★ 漲價 5 天后回落', () => {
+    let s = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
+      facilityPriceStatus: [0, 0x50],
+    });
+    for (let i = 0; i < 5; i++) s = day(s);
+    expect(s.facilityPriceStatus[1]).toBe(0);
+  });
+
+  it('高 nibble 为 0 的状态不被误伤', () => {
+    const s = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
+      landPriceStatus: [0, 0, 1],
+    });
+    expect(day(s).landPriceStatus).toEqual([0, 0, 1]);
+  });
+});

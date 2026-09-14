@@ -194,3 +194,26 @@ describe('★ 神明在付款前调整租金', () => {
     expect(100000 - r.players[0]!.cash).toBe(750);
   });
 });
+
+describe('★ 涨价标记：地主那份租金 ×2 @source 0x00419b09', () => {
+  it('无同盟：落点地块 priceStatus 非 0 → 总租金翻倍', () => {
+    const lands = scene();
+    const raised = lands.map((l, i) => (i === 0 ? { ...l, priceStatus: 0x50 } : l));
+    const r = collectRent(players(false), raised, 0, raised[0]!, 1);
+    expect(r.total).toBe(2000);
+    expect(r.shares).toEqual([{ payee: 1, amount: 2000 }]);
+  });
+
+  it('★ 同盟：只有地主那份翻倍，盟友那份不跟着翻', () => {
+    // 原版 `add ebp, ebp` 只落在地主租金（ebp）上
+    const lands = scene();
+    const raised = lands.map((l, i) => (i === 0 ? { ...l, priceStatus: 0x50 } : l));
+    const r = collectRent(players(true), raised, 0, raised[0]!, 1);
+    expect(r.baseTotal).toBe(2500); // 1000×2 + 500
+  });
+
+  it('priceStatus 为 0 不翻倍（回归）', () => {
+    const lands = scene();
+    expect(collectRent(players(false), lands, 0, lands[0]!, 1).total).toBe(1000);
+  });
+});

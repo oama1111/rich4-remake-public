@@ -140,7 +140,7 @@ import {
   tickGod,
   drawGiftTool,
 } from '../rules/object-landing.ts';
-import { demolishLand } from '../rules/land-mutation.ts';
+import { demolishLand, sweepPriceStatus } from '../rules/land-mutation.ts';
 import { almsAmount, beggarAt } from '../rules/beggar.ts';
 import {
   MINIGAME_MAX_SCORE,
@@ -2324,9 +2324,13 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   // @source 0041d09e call 0x439bfa
   if (newMonth) players = players.map((p) => (isAlive(p) ? settleMonthlyBank(p) : p));
 
-  // @source 0041d0ff 起：逐块地、逐处設施
-  //   ① 涨价/查封的高 nibble 每天 −0x10，减到 0 就整字节清零（见 sweepPriceStatus）
+  // @source 0041d0ff 起：逐块地、逐处設施 —— 这组循环在
+  //   `cmp edi,1 / jne 0x41d0ff` 的跨月守卫**之外**，**每天**都跑：
+  //   ① 涨价/查封的高 nibble 每天 −0x10，减到 0 就整字节清零（sweepPriceStatus，
+  //      @source 0x0041d114 地块 / 0x0041d160 設施 / 0x0041d129 清查封位）
   //   ② 到期日 == 今天 → owner = 0、到期日 = 0（房子留着）
+  const landPriceStatus = state.landPriceStatus.map(sweepPriceStatus);
+  const facilityPriceStatus = state.facilityPriceStatus.map(sweepPriceStatus);
   const today = packDate(date);
   const landOwner = [...state.landOwner];
   const landTenure = [...state.landTenure];
@@ -2358,8 +2362,10 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     market,
     landOwner,
     landTenure,
+    landPriceStatus,
     facilityOwner,
     facilityTenure,
+    facilityPriceStatus,
     companyFunds,
     rngState: rng.getState(),
   };

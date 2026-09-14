@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   demolishLand, markLand, markFacility, isSealed, isRaised,
+  sweepPriceStatus,
   PRICE_STATUS, DEMOLISH_HOSTILITY_FACTOR,
 } from './land-mutation.ts';
 import { makeLand, makeFacility } from '../testing/factories.ts';
@@ -76,5 +77,38 @@ describe('状态标记', () => {
     const l = makeLand();
     markLand(l, PRICE_STATUS.SEALED);
     expect(l.priceStatus).toBe(0);
+  });
+});
+
+describe('★ 每日递减 sweepPriceStatus @source 0x0041d114 / 0x0041d160', () => {
+  it('高 nibble 每天 −0x10', () => {
+    expect(sweepPriceStatus(0x50)).toBe(0x40);
+    expect(sweepPriceStatus(0x51)).toBe(0x41);
+    expect(sweepPriceStatus(0x20)).toBe(0x10);
+  });
+
+  it('★ 减到底 → 整字节清零（0x0041d129，查封位一起清）', () => {
+    expect(sweepPriceStatus(0x10)).toBe(0);
+    expect(sweepPriceStatus(0x11)).toBe(0); // 不会残存 0x01
+  });
+
+  it('高 nibble 为 0 → 不动', () => {
+    expect(sweepPriceStatus(0)).toBe(0);
+    expect(sweepPriceStatus(0x01)).toBe(0x01); // test cl,0xf0 / je 跳过
+  });
+
+  it('涨价 5 天归零、查封 5 天解封（完整序列）', () => {
+    let raised = 0x50;
+    let sealed = 0x51;
+    const raisedSeq = [raised];
+    const sealedSeq = [sealed];
+    for (let i = 0; i < 5; i++) {
+      raised = sweepPriceStatus(raised);
+      sealed = sweepPriceStatus(sealed);
+      raisedSeq.push(raised);
+      sealedSeq.push(sealed);
+    }
+    expect(raisedSeq).toEqual([0x50, 0x40, 0x30, 0x20, 0x10, 0]);
+    expect(sealedSeq).toEqual([0x51, 0x41, 0x31, 0x21, 0x11, 0]);
   });
 });
