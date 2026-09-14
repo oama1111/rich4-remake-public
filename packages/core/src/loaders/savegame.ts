@@ -21,7 +21,7 @@
 import type { GameState } from '../state/types.ts';
 import type { SaveGame } from './save.ts';
 import type { Rich4Map } from './map.ts';
-import { landTypeFromMap } from '../rules/new-game.ts';
+import { facilityFieldFromMap, landTypeFromMap } from '../rules/new-game.ts';
 import { emptyBoard } from '../places/notice-board.ts';
 import { initialSpecialActors } from '../rules/special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
@@ -288,6 +288,14 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     // ★ 替身（小偷/強盜/流氓/間諜/機器娃娃）在原版存档里的偏移未验证。
     //   它们只在「走到一半」时才非空，读档时一律当作不在场。
     specialActors: initialSpecialActors(),
+    landTenureIndex: 0,
+    landLastToll: new Array<number>(landCount).fill(0),
+    landTenure: new Array<number>(landCount).fill(0),
+    facilityOwner: facilityFieldFromMap(map, (f) => f.owner),
+    facilityLevel: facilityFieldFromMap(map, (f) => f.level),
+    facilityType: facilityFieldFromMap(map, (f) => f.type),
+    facilityLastToll: facilityFieldFromMap(map, () => 0),
+    facilityTenure: facilityFieldFromMap(map, () => 0),
     prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     lastEvent: null,

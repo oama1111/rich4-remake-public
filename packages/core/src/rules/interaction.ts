@@ -37,6 +37,21 @@ export type PendingInteraction =
   /** 自有地：盖或不盖 */
   | { kind: 'upgradeLand'; landId: number; name: string; cost: number }
   /**
+   * 无主設施：买或不买。问句与買地共用同一条原文（@source 0x0041a8a5 push 0x4639e1）。
+   * 价 = 地價 × 物價指數。
+   */
+  | { kind: 'buyFacility'; facilityId: number; name: string; price: number }
+  /**
+   * 自己的**空地**設施（等级 0）：选五种建筑之一并蓋第一级。
+   *
+   * @source 0x0041a1f2 `cmp level, 0 / jne 加蓋`；真人走 `0x440aac` 选种类，
+   *   电脑 `rand() % 4 + 1`。价 = 地價 × 物價指數（与買地相同）。
+   * `choices` 是 0..4 全部五种 —— 真人可以选公園，电脑抽不到而已。
+   */
+  | { kind: 'buildFacility'; facilityId: number; name: string; price: number; choices: readonly number[] }
+  /** 自己的設施（等级 ≥ 1）：加蓋一级。价 = 房價 × 物價指數 */
+  | { kind: 'upgradeFacility'; facilityId: number; name: string; cost: number; level: number }
+  /**
    * 银行：存、取、借、还，外加董事長专属的特別融資。
    *
    * @source 落点 VA 0x00436668 —— 先查 `days_rejected_by_bank`，
@@ -213,6 +228,9 @@ export type InteractionResponse =
   | { kind: 'decline' }
   | { kind: 'buyLand' }
   | { kind: 'upgradeLand' }
+  | { kind: 'buyFacility' }
+  | { kind: 'buildFacility'; facilityType: number }
+  | { kind: 'upgradeFacility' }
   | { kind: 'bankDeposit'; amount: number }
   | { kind: 'bankWithdraw'; amount: number }
   | { kind: 'bankBorrow'; amount: number }
@@ -243,6 +261,12 @@ export function responseMatches(
       return response.kind === 'buyLand';
     case 'upgradeLand':
       return response.kind === 'upgradeLand';
+    case 'buyFacility':
+      return response.kind === 'buyFacility';
+    case 'buildFacility':
+      return response.kind === 'buildFacility';
+    case 'upgradeFacility':
+      return response.kind === 'upgradeFacility';
     case 'bank':
       return response.kind.startsWith('bank');
     case 'lottery':

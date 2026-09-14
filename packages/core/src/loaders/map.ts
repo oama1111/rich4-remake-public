@@ -178,7 +178,13 @@ export interface LandInfo {
    *   新竹市 [200,500,1200,2800,6000,10000]，第 6、7 项恒为 0。
    */
   rentByLevel: number[];
-  /** TODO: semantics unknown @source land.h 0x30 名为 flast */
+  /**
+   * 地契到期日（打包日期 年<<16|月<<8|日），0 = 無限期。地图里恒为 0。
+   *
+   * ★ 就是 `land.h` 里那个「语义未明」的 `flast`：買地时按開局「土地權限」写入
+   *   （0x0041a108），每日推进到期归无主（0x0041d12d）。运行时值住在
+   *   `GameState.landTenure`，这里只是模板初值。见 rules/facility.ts。
+   */
   flast: number;
 }
 

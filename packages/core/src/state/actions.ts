@@ -54,6 +54,16 @@ export type Action =
   /** 在当前落点的自有地块上盖房/升级一级 */
   | { type: 'upgradeLand' }
 
+  /** 买下当前落点的无主設施 @source 0x0041a86b */
+  | { type: 'buyFacility' }
+  /**
+   * 在自己的空地設施上选一种建筑蓋第一级。
+   * @param facilityType 0 公園 / 1 旅館 / 2 購物中心 / 3 加油站 / 4 研究所
+   */
+  | { type: 'buildFacility'; facilityType: number }
+  /** 给自己的設施加蓋一级 @source 0x0041a2b3 */
+  | { type: 'upgradeFacility' }
+
   /** 放弃当前的买地/盖房机会 */
   | { type: 'declineDecision' }
 

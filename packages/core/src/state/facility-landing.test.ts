@@ -46,6 +46,14 @@ function scene(over: { type?: number; owner?: number; traffic?: number; steps?: 
   });
 
   const base = newGame({ map, players: players(), seed: 1 });
+  // ★ 归属/等级/种类现在住在状态里（facilityOwner/Level/Type），静态模板只是开局初值。
+  //   先前这里把它们写在 makeFacility 上——reducer 已不再从那儿读。
+  const facilityOwner = [...base.facilityOwner];
+  const facilityLevel = [...base.facilityLevel];
+  const facilityType = [...base.facilityType];
+  facilityOwner[idx] = fac.owner;
+  facilityLevel[idx] = fac.level;
+  facilityType[idx] = fac.type;
   const state: GameState = {
     ...base,
     players: base.players.map((p, i) =>
@@ -53,6 +61,9 @@ function scene(over: { type?: number; owner?: number; traffic?: number; steps?: 
         ? { ...p, nodeId: facNode.id, trafficMethod: over.traffic ?? 1, cash: 100_000, moneyInBank: 0 }
         : { ...p, cash: 100_000, moneyInBank: 0 },
     ),
+    facilityOwner,
+    facilityLevel,
+    facilityType,
     stepsTotal: over.steps ?? 4,
     phase: 'settling',
   };

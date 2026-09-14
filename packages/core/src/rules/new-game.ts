@@ -79,6 +79,8 @@ export interface NewGameOptions {
    * 这解释了 `jump.mkf` 为什么每个角色有走路／機車／汽車三套侧视动画。
    */
   startingVehicle?: number;
+  /** 土地權限档位 0..5，默认 0 = 無限期 @source `[0x46cb48]` → `[0x499110]` */
+  landTenure?: number;
 }
 
 
@@ -214,6 +216,17 @@ export function landTypeFromMap(map: Rich4Map, landCount: number): number[] {
   return out;
 }
 
+/** 設施表的某个字段读成数组，下标 = 設施 id（0 号空着，与地块同制） */
+export function facilityFieldFromMap(
+  map: Rich4Map,
+  pick: (f: Rich4Map['facilities'][number]) => number,
+): number[] {
+  const n = map.facilities.reduce((m, f) => Math.max(m, f.id), 0) + 1;
+  const out = new Array<number>(n).fill(0);
+  for (const f of map.facilities) out[f.id] = pick(f);
+  return out;
+}
+
 export function newGame(opts: NewGameOptions): GameState {
   const {
     map,
@@ -224,6 +237,7 @@ export function newGame(opts: NewGameOptions): GameState {
     seed = 1,
     startNodeId = UNVERIFIED_START_NODE,
     startingVehicle: vehicle = 0,
+    landTenure = 0,
   } = opts;
 
   if (players.length < 2 || players.length > 4) {
@@ -296,6 +310,16 @@ export function newGame(opts: NewGameOptions): GameState {
     landLevel: new Array<number>(landCount).fill(0),
     // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取
     landType: landTypeFromMap(map, landCount),
+    landTenureIndex: landTenure,
+    landLastToll: new Array<number>(landCount).fill(0),
+    landTenure: new Array<number>(landCount).fill(0),
+    // ★ 地图数据里設施的 owner/level/type 都是 0（见 facility.test.ts 那条实证），
+    //   但照地块的做法从地图播种，免得日后某张图不是 0 时悄悄漏掉
+    facilityOwner: facilityFieldFromMap(map, (f) => f.owner),
+    facilityLevel: facilityFieldFromMap(map, (f) => f.level),
+    facilityType: facilityFieldFromMap(map, (f) => f.type),
+    facilityLastToll: facilityFieldFromMap(map, () => 0),
+    facilityTenure: facilityFieldFromMap(map, () => 0),
     noticeBoard: emptyBoard(),
     specialActors: initialSpecialActors(),
     turnCount: 0,

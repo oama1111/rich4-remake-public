@@ -231,3 +231,165 @@ export function calculateFacilityToll(input: FacilityTollInput): number {
       return 0;
   }
 }
+
+// ============================================================
+//  轉盤（旅館 / 購物中心 / 保險）
+// ============================================================
+
+/**
+ * 轉盤的格子表 —— **12 格一圈，数字格与空格交错**。
+ *
+ * @source 表 `0x00475d0c`，每种轉盤 12 字节，`0xff` 是空格：
+ * ```
+ * 轉盤 0            [ 1,ff, 0,ff, 1,ff, 2,ff, 3,ff, 2,ff]   （航空公司「旅遊費」用）
+ * 轉盤 1  旅館      [ff,ff, 1,ff,ff, 4,ff, 3,ff,ff, 2,ff]   ← 住几天
+ * 轉盤 2  購物中心  [ 1,ff, 6,ff, 5,ff, 4,ff, 3,ff, 2,ff]   ← 消費倍數
+ * 轉盤 3  保險      [ 5,ff, 3,ff,30,ff,20,ff,15,ff,10,ff]   ← 投保天数
+ * ```
+ *
+ * **怎么转**（@source 0x0043f7c6 起步、0x0043f127 每帧步进）：
+ * ```asm
+ * 0043f7da  [0x48c50c] = rand() % 12             ; ★ 随机起点
+ * 0043f127  每帧 [0x48c50c] = ([0x48c50c] + 1) % 12   ; 顺时针一格一格走
+ * 0043f9fa  停在第一个 != 0xff 的格子上           ; 空格不算数，继续走
+ * 0043facb  return byte [0x475d0c + 轉盤 * 12 + 格子]
+ * ```
+ *
+ * ⚠️ 真人那一路的**总步数与点击时机有关**（`0x0043f84f` 起的状态机在
+ *   真人未点击时最多再转 0x28 帧），所以原版真人转轮盘**不可复现**；
+ *   AI 那一路步数固定。两者的**分布**相同：起点均匀，结果 = 起点之后第一个
+ *   数字格。本引擎对所有人都用这条，记为 D-003。
+ *
+ * 由此算出的分布（旅館为例）：1 天 4/12、2 天 3/12、3 天 2/12、4 天 3/12。
+ */
+export const WHEEL_SLOTS = 12;
+export const WHEEL_BLANK = 0xff;
+export const WHEEL_TABLE: readonly (readonly number[])[] = [
+  [1, 0xff, 0, 0xff, 1, 0xff, 2, 0xff, 3, 0xff, 2, 0xff],
+  [0xff, 0xff, 1, 0xff, 0xff, 4, 0xff, 3, 0xff, 0xff, 2, 0xff],
+  [1, 0xff, 6, 0xff, 5, 0xff, 4, 0xff, 3, 0xff, 2, 0xff],
+  [5, 0xff, 3, 0xff, 30, 0xff, 20, 0xff, 15, 0xff, 10, 0xff],
+];
+export const WHEEL = { travel: 0, hotel: 1, mall: 2, insurance: 3 } as const;
+
+/**
+ * 转一次轮盘。`randValue` 由调用方从 `WatcomRng` 取（C-DET-1）。
+ * 返回停在的数字；表全是空格时返回 0（原版不存在这种表）。
+ */
+export function spinWheel(wheel: number, randValue: number): number {
+  const table = WHEEL_TABLE[wheel];
+  if (table === undefined) return 0;
+  let slot = ((randValue % WHEEL_SLOTS) + WHEEL_SLOTS) % WHEEL_SLOTS;
+  for (let i = 0; i < WHEEL_SLOTS; i++) {
+    const v = table[slot] ?? WHEEL_BLANK;
+    if (v !== WHEEL_BLANK) return v;
+    slot = (slot + 1) % WHEEL_SLOTS;
+  }
+  return 0;
+}
+
+// ============================================================
+//  地契年限（開局的「土地權限」）
+// ============================================================
+
+/**
+ * 「土地權限」下拉的六档 → 打包日期增量（年<<16 | 月<<8 | 日）。
+ *
+ * @source 表 `0x004751f0` dump 出来是 `(0, 0x20000, 0x10000, 0x600, 0x300, 0x100)`，
+ *   即 無限期 / 2 年 / 1 年 / 6 個月 / 3 個月 / 1 個月。
+ *   買地時 `land.+0x30 = add_date(today, 表[[0x499110]])`（0x0041a108），
+ *   買設施時写 `+0x34`（0x0041a978）；`[0x499110]` 就是開局那一项。
+ */
+export const LAND_TENURE_TABLE: readonly number[] = [0, 0x20000, 0x10000, 0x600, 0x300, 0x100];
+export const LAND_TENURE_UNLIMITED = 0;
+
+/**
+ * 打包日期相加，**月份溢出进位到年**。
+ *
+ * @source `0x004521cb`：
+ * ```asm
+ * eax = a + b
+ * if ((b >> 8) & 0xff != 0 && (eax & 0xff00) > 0xc00) eax += 0xf400   ; 月 > 12：+1 年 −12 月
+ * ```
+ * ⚠️ **日不进位**——原版就没处理日溢出（增量表里日恒为 0，所以不会撞上）。
+ */
+export function addPackedDate(a: number, b: number): number {
+  let out = (a + b) >>> 0;
+  if (((b >>> 8) & 0xff) !== 0 && (out & 0xff00) > 0xc00) out = (out + 0xf400) >>> 0;
+  return out;
+}
+
+/** 買下地產/設施時写进去的到期日；無限期为 0 */
+export function tenureExpiry(todayPacked: number, tenureIndex: number): number {
+  const delta = LAND_TENURE_TABLE[tenureIndex] ?? 0;
+  if (delta === 0) return 0;
+  return addPackedDate(todayPacked, delta);
+}
+
+/**
+ * 每日推进时的到期扫描 —— **到期即归无主，房子留着**。
+ *
+ * @source VA 0x0041d12d（地块）/ 0x0041d179（設施），两段同构：
+ * ```asm
+ * if (到期日 == today) { owner = 0; 到期日 = 0 }
+ * ```
+ * ★ 比的是 `==` 不是 `>=`：错过那一天（例如读档回到更晚的日子）就永远不到期。
+ *   照抄，不改。
+ */
+export function tenureExpiresToday(expiryPacked: number, todayPacked: number): boolean {
+  return expiryPacked !== 0 && expiryPacked === todayPacked;
+}
+
+// ============================================================
+//  買、首建、加蓋
+// ============================================================
+
+/**
+ * 五种建筑的名字。@source 名字指针表 `0x475150` → 0x00463847 起的五个串
+ * （原文带全角空格：`公  園`、`旅  館`）。
+ */
+export const FACILITY_NAMES: readonly string[] = ['公  園', '旅  館', '購物中心', '加油站', '研究所'];
+
+/** 買下无主設施 = 地價 × 物價指數 @source 0x0041a88c `movzx ebp, word [+0x22]; imul 物價` */
+export function facilityBuyPrice(landPrice: number, priceIndex: number): number {
+  return landPrice * priceIndex;
+}
+/** 首建（等级 0 → 1）同样按地價算 @source 0x0041a1fc */
+export function facilityBuildPrice(landPrice: number, priceIndex: number): number {
+  return landPrice * priceIndex;
+}
+/** 加蓋（等级 ≥ 1）按房價算 @source 0x0041a2d5 `movzx ebp, word [+0x24]; imul 物價` */
+export function facilityUpgradePrice(housePrice: number, priceIndex: number): number {
+  return housePrice * priceIndex;
+}
+
+/**
+ * 这一级还能不能再蓋。@source 0x0041a2c2 `cmp level, byte [0x474940 + type] / jae 结束`
+ */
+export function canUpgradeFacility(type: number, level: number): boolean {
+  return level < (FACILITY_MAX_LEVEL[type] ?? 0);
+}
+
+/**
+ * AI 首建时选哪种建筑 —— `rand() % 4 + 1`。
+ *
+ * @source 0x0041a23e：
+ * ```asm
+ * call rand / idiv 4 / inc edx / mov [設施 + 0x18], dl
+ * ```
+ * ★ 所以电脑**永远不蓋公園**（0），只在 旅館/購物中心/加油站/研究所 里抽。
+ */
+export function aiPickFacilityType(randValue: number): number {
+  return (randValue % 4) + 1;
+}
+
+/**
+ * 旅館住宿的「本月意外損失」记账金额 = 2000 × 天数 × 物價指數。
+ * @source 0x0041a805 起那串移位（(x×4−x)×8+x = 25x；×16 = 400x；×5 = 2000x）
+ *   然后 `call 0x44ba63(住客, 该值, 0)`。
+ * ⚠️ 这不是再付一笔钱：`0x44ba63` 是「记損失 + 若在保險期由保險公司理賠」，
+ *   本引擎只把它记进 `monthlyLost`，理賠等保險公司落点做了再接（P0-15）。
+ */
+export function hotelStayLoss(days: number, priceIndex: number): number {
+  return 2000 * days * priceIndex;
+}

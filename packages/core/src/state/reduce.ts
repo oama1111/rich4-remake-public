@@ -122,10 +122,24 @@ import {
   tickStockCountdowns,
   tickStockMarket,
 } from '../places/stock-market.ts';
-import { advanceDate } from '../rules/calendar.ts';
+import { advanceDate, packDate } from '../rules/calendar.ts';
 import { settleMonthlyBank } from '../rules/monthly.ts';
 import { WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from './types.ts';
-import { calculateFacilityToll } from '../rules/facility.ts';
+import {
+  FACILITY_TYPE,
+  WHEEL,
+  aiPickFacilityType,
+  calculateFacilityToll,
+  canUpgradeFacility,
+  facilityBuildPrice,
+  facilityBuyPrice,
+  facilityUpgradePrice,
+  hotelStayLoss,
+  spinWheel,
+  tenureExpiresToday,
+  tenureExpiry,
+} from '../rules/facility.ts';
+import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { adjustTollByGod } from '../rules/god-toll.ts';
 import { facilityIndexOf } from '../rules/land.ts';
 import { tickBlocking } from '../rules/blocking.ts';
@@ -170,6 +184,31 @@ export interface MapTopology {
   facilities?: readonly FacilityInfo[];
   /** 上市企业表 —— 股市的均值回归锚点要用它的资产额 */
   commercials?: readonly CommercialInfo[];
+}
+
+/**
+ * 把静态設施模板与状态中的实时归属/等级/种类合并 —— 与 `effectiveLand` 同构。
+ *
+ * ★ 所有要看「這處設施現在是誰的、幾級、什麼建築」的地方都必須走这里，
+ *   直接读 `topo.facilities` 拿到的是地图初值（全 0）。
+ */
+export function effectiveFacility(
+  s: GameState,
+  topo: MapTopology,
+  facilityId: number,
+): FacilityInfo | null {
+  const tpl = topo.facilities?.find((f) => f.id === facilityId);
+  if (tpl === undefined) return null;
+  return {
+    ...tpl,
+    owner: s.facilityOwner[facilityId] ?? tpl.owner,
+    level: s.facilityLevel[facilityId] ?? tpl.level,
+    type: s.facilityType[facilityId] ?? tpl.type,
+  };
+}
+
+export function allEffectiveFacilities(s: GameState, topo: MapTopology): FacilityInfo[] {
+  return (topo.facilities ?? []).map((f) => effectiveFacility(s, topo, f.id) ?? f);
 }
 
 /** 把静态地块模板与状态中的实时归属合并，得到当前有效的地块 */
@@ -532,7 +571,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       if (landIndex === null) {
         // 住宅之外：设施走过路费，上市企业问「买多少股」
         const fac = facilityAtPlayer(state, topo);
-        if (fac !== null) return settleFacility(state, fac);
+        if (fac !== null) return landOnFacility(state, topo, fac);
         const shares = pendingForCommercial(state, topo, node);
         if (shares !== null) return { ...state, phase: 'turnEnd', pending: shares };
         return { ...state, phase: 'turnEnd' };
@@ -584,7 +623,10 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
             land,
             state.priceIndex,
           );
-          const paid: GameState = { ...state, players: out.players, phase: 'turnEnd' };
+          // @source 0x0041a00b `mov [land + 0x2c], ebp` —— 记下这一笔（間諜要用）
+          const landLastToll = [...state.landLastToll];
+          landLastToll[land.id] = out.total;
+          const paid: GameState = { ...state, players: out.players, landLastToll, phase: 'turnEnd' };
           // ★ 付不起就破产——这是对局能真正结束的唯一途径
           return out.bankrupted ? applyBankruptcy(paid, state.currentPlayer, topo) : paid;
         }
@@ -612,7 +654,66 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       });
       const landOwner = [...paid.landOwner];
       landOwner[landIndex] = state.currentPlayer + 1;
-      return { ...paid, landOwner, pending: null, phase: 'turnEnd' };
+      // @source 0x0041a108：土地權限非無限期时写到期日（flast）
+      const landTenure = [...paid.landTenure];
+      landTenure[landIndex] = tenureExpiry(packDate(state), state.landTenureIndex);
+      return { ...paid, landOwner, landTenure, pending: null, phase: 'turnEnd' };
+    }
+
+    // ── 設施：買 / 首建（选种类）/ 加蓋 ──
+    // @source 0x0041a86b / 0x0041a1f2 / 0x0041a2b3，三条各自查一遍衰神拦截
+    case 'buyFacility': {
+      if (state.phase !== 'awaitingDecision' || state.pending?.kind !== 'buyFacility') return state;
+      const player = state.players[state.currentPlayer];
+      const fac = facilityAtPlayer(state, topo);
+      if (player === undefined || fac === null || fac.owner !== 0) return state;
+      const bought = purchase(player, facilityBuyPrice(fac.landPrice, state.priceIndex));
+      if (!bought.ok) return state;
+      const paid = withPlayer(state, state.currentPlayer, (p) => {
+        p.cash = bought.player.cash;
+      });
+      const facilityOwner = [...paid.facilityOwner];
+      facilityOwner[fac.id] = state.currentPlayer + 1;
+      // @source 0x0041a978 `mov [設施 + 0x34], eax`
+      const facilityTenure = [...paid.facilityTenure];
+      facilityTenure[fac.id] = tenureExpiry(packDate(state), state.landTenureIndex);
+      return { ...paid, facilityOwner, facilityTenure, pending: null, phase: 'turnEnd' };
+    }
+
+    case 'buildFacility': {
+      if (state.phase !== 'awaitingDecision' || state.pending?.kind !== 'buildFacility') return state;
+      const player = state.players[state.currentPlayer];
+      const fac = facilityAtPlayer(state, topo);
+      if (player === undefined || fac === null) return state;
+      if (fac.owner !== state.currentPlayer + 1 || fac.level !== 0) return state;
+      if (!state.pending.choices.includes(action.facilityType)) return state;
+      const bought = purchase(player, facilityBuildPrice(fac.landPrice, state.priceIndex));
+      if (!bought.ok) return state;
+      const paid = withPlayer(state, state.currentPlayer, (p) => {
+        p.cash = bought.player.cash;
+      });
+      const facilityType = [...paid.facilityType];
+      const facilityLevel = [...paid.facilityLevel];
+      facilityType[fac.id] = action.facilityType;
+      facilityLevel[fac.id] = 1;
+      return { ...paid, facilityType, facilityLevel, pending: null, phase: 'turnEnd' };
+    }
+
+    case 'upgradeFacility': {
+      if (state.phase !== 'awaitingDecision' || state.pending?.kind !== 'upgradeFacility') return state;
+      const player = state.players[state.currentPlayer];
+      const fac = facilityAtPlayer(state, topo);
+      if (player === undefined || fac === null) return state;
+      if (fac.owner !== state.currentPlayer + 1 || fac.level === 0) return state;
+      if (!canUpgradeFacility(fac.type, fac.level)) return state;
+      const bought = purchase(player, facilityUpgradePrice(fac.housePrice, state.priceIndex));
+      if (!bought.ok) return state;
+      const paid = withPlayer(state, state.currentPlayer, (p) => {
+        p.cash = bought.player.cash;
+      });
+      const facilityLevel = [...paid.facilityLevel];
+      facilityLevel[fac.id] = fac.level + 1;
+      return { ...paid, facilityLevel, pending: null, phase: 'turnEnd' };
     }
 
     case 'upgradeLand': {
@@ -870,7 +971,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         calculatePlayerWealth(
           p,
           allEffectiveLands(ticked, topo),
-          topo.facilities ?? [],
+          allEffectiveFacilities(ticked, topo),
           valuationsOf(ticked, p.index),
         );
       const priceIndex = updatePriceIndex(
@@ -1088,7 +1189,7 @@ function runMagicHouse(state: GameState, topo: MapTopology): GameState {
   const rng = new WatcomRng();
   rng.setState(state.rngState);
   const lands = allEffectiveLands(state, topo);
-  const facilities = topo.facilities ?? [];
+  const facilities = allEffectiveFacilities(state, topo);
 
   const owns = (playerIndex: number, needDeveloped: boolean): number => {
     let n = 0;
@@ -1866,6 +1967,27 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   // @source 0041d09e call 0x439bfa
   if (newMonth) players = players.map((p) => (isAlive(p) ? settleMonthlyBank(p) : p));
 
+  // @source 0041d0ff 起：逐块地、逐处設施
+  //   ① 涨价/查封的高 nibble 每天 −0x10，减到 0 就整字节清零（见 sweepPriceStatus）
+  //   ② 到期日 == 今天 → owner = 0、到期日 = 0（房子留着）
+  const today = packDate(date);
+  const landOwner = [...state.landOwner];
+  const landTenure = [...state.landTenure];
+  for (let i = 0; i < landTenure.length; i++) {
+    if (tenureExpiresToday(landTenure[i] ?? 0, today)) {
+      landOwner[i] = 0;
+      landTenure[i] = 0;
+    }
+  }
+  const facilityOwner = [...state.facilityOwner];
+  const facilityTenure = [...state.facilityTenure];
+  for (let i = 0; i < facilityTenure.length; i++) {
+    if (tenureExpiresToday(facilityTenure[i] ?? 0, today)) {
+      facilityOwner[i] = 0;
+      facilityTenure[i] = 0;
+    }
+  }
+
   return {
     ...state,
     ...date,
@@ -1873,6 +1995,10 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     lottery,
     pool,
     market,
+    landOwner,
+    landTenure,
+    facilityOwner,
+    facilityTenure,
     rngState: rng.getState(),
   };
 }
@@ -2008,7 +2134,7 @@ function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
 
   const out = applyNewsEffect(draw.eventId, {
     players: withDeck.players,
-    affected: newsTargets(draw.eventId, withDeck, lands, topo.facilities ?? []),
+    affected: newsTargets(draw.eventId, withDeck, lands, allEffectiveFacilities(state, topo)),
     priceIndex: withDeck.priceIndex,
     pool: withDeck.pool,
     occupancy: withDeck.prisonOccupancy,
@@ -2373,29 +2499,131 @@ function facilityAtPlayer(state: GameState, topo: MapTopology): FacilityInfo | n
   if (node === undefined) return null;
   const idx = facilityIndexOf(node.type);
   if (idx === null) return null;
-  return topo.facilities.find((f) => f.id === idx) ?? null;
+  // ★ 走 effective —— 归属/等级/种类都在状态里，静态表是开局初值
+  return effectiveFacility(state, topo, idx);
 }
 
 /**
- * 设施过路费结算。
+ * 走到設施上 —— 原版 0x0041a199 起的整段，按「谁的」分三路：
+ *
+ * ```asm
+ * 0041a1b9  if (owner == 0)          goto 買（0x0041a86b）
+ * 0041a1d6  if (owner != 我)         goto 收費（0x0041a370）
+ * 0041a1f2  if (level == 0)          goto 首建・选种类（0x0041a1fc）
+ *           else                     goto 加蓋（0x0041a2b3）
+ * ```
+ *
+ * 收費那一路（0x0041a370）：
+ * ```asm
+ * 0041a377  if (level == 0) 结束                ; 空地不收
+ * 0041a386  if (type == 0 公園) 结束
+ * 0041a38f  if (type >= 4 研究所) 结束
+ * 0041a3cc  call 0x41d559(地主, 涨价位, 费名)   ; 查封中/同盟中/死神 → 免收
+ * 0041a404  按 type 分三路（见 rules/facility.ts）
+ * 0041a75e  mov [設施 + 0x30], 實付                ; ★ 记下上次過路費（間諜要用）
+ * 0041a768  if (type == 1 旅館) 住店（0x0041a7aa）
+ * ```
+ *
+ * ⚠️ 收費前的三条免收（查封／同盟／死神顯靈）与住宅那条共用 `0x41d559`，
+ *   本引擎的住宅那边已在 rules/rent.ts 做了同盟分账；設施这一路**没有同盟分账**
+ *   （只一次 pay_money），照原版。查封／死神两条見 Q-FAC-2。
+ */
+function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo): GameState {
+  const me = state.currentPlayer;
+  const player = state.players[me];
+  if (player === undefined) return { ...state, phase: 'turnEnd' };
+
+  // ── 无主：买不买 ──
+  if (fac.owner === 0) {
+    // @source 0x0041a86b `cmp [+0x37] 梦游, 0 / jne 结束`；`cmp [+0x3f] 神明, 0xc / je 结束`（土地公）
+    const price = facilityBuyPrice(fac.landPrice, state.priceIndex);
+    if (price > player.cash || purchaseBlockedBy(player) !== null) return { ...state, phase: 'turnEnd' };
+    return {
+      ...state,
+      phase: 'awaitingDecision',
+      pending: { kind: 'buyFacility', facilityId: fac.id, name: fac.name, price },
+    };
+  }
+
+  // ── 自己的：首建 / 加蓋 ──
+  if (fac.owner === me + 1) {
+    // @source 0x0041a1de `cmp [+0x37], 0 / jne 结束` —— 梦游中不能建
+    if (player.blocking.sleepWalking !== 0) return { ...state, phase: 'turnEnd' };
+    if (fac.level === 0) {
+      const price = facilityBuildPrice(fac.landPrice, state.priceIndex);
+      if (price > player.cash || purchaseBlockedBy(player) !== null) return { ...state, phase: 'turnEnd' };
+      // @source 0x0041a21f `cmp who_plays, 1 / jne` —— 不是真人就 `rand() % 4 + 1` 当场定种类
+      if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
+        const rng = new WatcomRng();
+        rng.setState(state.rngState);
+        const chosen = aiPickFacilityType(rng.next());
+        const bought = purchase(player, price);
+        if (!bought.ok) return { ...state, rngState: rng.getState(), phase: 'turnEnd' };
+        const paid = withPlayer({ ...state, rngState: rng.getState() }, me, (p) => {
+          p.cash = bought.player.cash;
+        });
+        const facilityType = [...paid.facilityType];
+        const facilityLevel = [...paid.facilityLevel];
+        facilityType[fac.id] = chosen;
+        facilityLevel[fac.id] = 1;
+        return { ...paid, facilityType, facilityLevel, phase: 'turnEnd' };
+      }
+      return {
+        ...state,
+        phase: 'awaitingDecision',
+        pending: {
+          kind: 'buildFacility',
+          facilityId: fac.id,
+          name: fac.name,
+          price,
+          choices: [0, 1, 2, 3, 4],
+        },
+      };
+    }
+    if (!canUpgradeFacility(fac.type, fac.level)) return { ...state, phase: 'turnEnd' };
+    const cost = facilityUpgradePrice(fac.housePrice, state.priceIndex);
+    if (cost > player.cash || purchaseBlockedBy(player) !== null) return { ...state, phase: 'turnEnd' };
+    return {
+      ...state,
+      phase: 'awaitingDecision',
+      pending: { kind: 'upgradeFacility', facilityId: fac.id, name: fac.name, cost, level: fac.level },
+    };
+  }
+
+  // ── 别人的：收費 ──
+  return settleFacility(state, topo, fac);
+}
+
+/**
+ * 设施过路费结算（别人的設施）。
  *
  * ★ 与住宅的两处根本差别（见 rules/facility.ts）：
- * - 按 `type` 分三路：1/2 是单价 × 转盘倍数，3 是**掷骰步数** × 500 × 交通倍率
- * - **没有同盟分账**——原版这条路径只有一次 pay_money，
- *   收款方直接取自 `facility.owner`
+ * - 按 `type` 分三路：1 旅館 / 2 購物中心 是单价 × 轉盤，3 加油站 是**掷骰步数** × 500 × 交通倍率
+ * - **没有同盟分账**——原版这条路径只有一次 pay_money，收款方直接取自 `facility.owner`
  *
- * ⚠️ type 1/2 需要一个「转盘倍数」，那是 UI（`0x44090e`）。
- *   此处先传 1（等同不加成）——转盘接进来之前，type 1/2 的金额会偏低。
- *   这一点已在 docs/known-deviations.md 记录。
+ * 旅館那一路轉盤转出来的数**既是倍数也是住几天**（@source 0x0041a460 起，
+ * 同一个 eax 先乘单价、再写进 `+0x32 days_in_hotel`）。
  */
-function settleFacility(state: GameState, fac: FacilityInfo): GameState {
+function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo): GameState {
   const payer = state.currentPlayer;
   const me = state.players[payer];
   if (me === undefined) return { ...state, phase: 'turnEnd' };
 
   const ownerIdx = fac.owner - 1;
-  // 无主或自己的设施都不收费
-  if (fac.owner === 0 || ownerIdx === payer) return { ...state, phase: 'turnEnd' };
+  // @source 0x0041a377 空地不收；0x0041a386/0x0041a38f 公園、研究所不收
+  if (fac.level === 0) return { ...state, phase: 'turnEnd' };
+  if (fac.type === FACILITY_TYPE.park || fac.type === FACILITY_TYPE.lab) return { ...state, phase: 'turnEnd' };
+
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  let multiplier = 1;
+  let hotelDays = 0;
+  if (fac.type === FACILITY_TYPE.hotel) {
+    multiplier = spinWheel(WHEEL.hotel, rng.next());
+    hotelDays = multiplier;
+  } else if (fac.type === FACILITY_TYPE.mall) {
+    multiplier = spinWheel(WHEEL.mall, rng.next());
+  }
 
   const base = calculateFacilityToll({
     facility: fac,
@@ -2403,16 +2631,32 @@ function settleFacility(state: GameState, fac: FacilityInfo): GameState {
     priceIndex: state.priceIndex,
     stepsTotal: state.stepsTotal,
     trafficMethod: me.trafficMethod,
-    multiplier: 1,
+    multiplier,
   });
-  if (base === 0) return { ...state, phase: 'turnEnd' };
+  const withRng: GameState = { ...state, rngState: rng.getState() };
+  if (base === 0) return { ...withRng, phase: 'turnEnd' };
 
   // 神明在付款前调整金额（与住宅同一条规则）
   const god = adjustTollByGod(base, me.godInfo);
-  if (god.toll === 0) return { ...state, phase: 'turnEnd' };
+  if (god.toll === 0) return { ...withRng, phase: 'turnEnd' };
 
-  const r = transferMoney(state.players, [], state.pool, payer, ownerIdx, god.toll, 0);
-  return { ...state, players: r.players, pool: r.pool, phase: 'turnEnd' };
+  const r = transferMoney(withRng.players, [], withRng.pool, payer, ownerIdx, god.toll, 0);
+  // @source 0x0041a75e `mov [設施 + 0x30], ebp` —— 记的是**这一笔**，不是累计
+  const facilityLastToll = [...withRng.facilityLastToll];
+  facilityLastToll[fac.id] = god.toll;
+  let paid: GameState = { ...withRng, players: r.players, pool: r.pool, facilityLastToll, phase: 'turnEnd' };
+
+  // @source 0x0041a7aa 旅館：住 N 天、記「本月意外損失」2000×N×物價、倒楣天数 +N
+  if (hotelDays > 0 && !r.bankrupted) {
+    paid = withPlayer(paid, payer, (p) => {
+      // @source 0x0041a7f4 `[+0x32] = 天数 − 1`，为 0 时挂 0x80（当天就出）
+      const left = hotelDays - 1;
+      p.blocking = { ...p.blocking, inHotel: left === 0 ? RELEASE_PENDING : left };
+      p.totalWinterSleepDays += hotelDays;
+      p.monthlyPaid += hotelStayLoss(hotelDays, state.priceIndex);
+    });
+  }
+  return r.bankrupted ? applyBankruptcy(paid, payer, topo) : paid;
 }
 
 // ============================================================

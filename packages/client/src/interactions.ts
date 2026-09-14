@@ -14,7 +14,7 @@
  *   UI 自己再算一遍就等于把规则抄了第二份，迟早两边对不上。
  */
 
-import type { Action, GameState, PendingInteraction } from '@rich4/core';
+import { FACILITY_NAMES, type Action, type GameState, type PendingInteraction } from '@rich4/core';
 import { BAIL, BANK, BUTTON, CHARACTERS, FIELD, NOTICE, PLACE, PROMPT, formatOriginal } from '@rich4/data';
 
 const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
@@ -77,6 +77,45 @@ export function interactionUi(
           `\n${FIELD.cash.text} ${money(cash)}`,
         choices: [
           { label: BUTTON.ok.text, action: { type: 'upgradeLand' } },
+          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
+        ],
+      };
+
+    // ★ 買設施与買地共用同一句原文（@source 0x0041a8a5 push 0x4639e1）
+    case 'buyFacility':
+      return {
+        title: '',
+        detail:
+          formatOriginal(PROMPT.buyLand.text, pending.name, pending.price) +
+          `\n${FIELD.cash.text} ${money(cash)}`,
+        choices: [
+          { label: BUTTON.ok.text, action: { type: 'buyFacility' } },
+          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
+        ],
+      };
+
+    // ★ 原版是一屏五种建筑让你点（0x440aac）；这里先用五颗按钮，画面属 P2-14
+    case 'buildFacility':
+      return {
+        title: pending.name,
+        detail: `建築費用 ${money(pending.price)}　${FIELD.cash.text} ${money(cash)}`,
+        choices: [
+          ...pending.choices.map((t) => ({
+            label: FACILITY_NAMES[t] ?? `建築${t}`,
+            action: { type: 'buildFacility' as const, facilityType: t },
+          })),
+          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
+        ],
+      };
+
+    case 'upgradeFacility':
+      return {
+        title: '',
+        detail:
+          formatOriginal(PROMPT.upgradeLand.text, pending.name, pending.cost) +
+          `\n${FIELD.cash.text} ${money(cash)}`,
+        choices: [
+          { label: BUTTON.ok.text, action: { type: 'upgradeFacility' } },
           { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
         ],
       };

@@ -299,6 +299,13 @@ export interface GameState {
   /** 物价指数 @source player_core_actions 的 _rich4_price_index */
   priceIndex: number;
 
+  /**
+   * 開局的「土地權限」档位 0..5（無限期 / 2年 / 1年 / 6個月 / 3個月 / 1個月）。
+   * @source `[0x499110]`（開局 `mov [0x499110], [0x46cb48]`，VA 0x00407373）；
+   *   買地/買設施时按它查年限表 `0x004751f0` 写到期日。见 rules/facility.ts。
+   */
+  landTenureIndex: number;
+
   /** 本次掷骰的点数明细；未掷骰时为空 */
   dice: number[];
   /** 剩余步数 @source [0x48baf8] */
@@ -336,6 +343,43 @@ export interface GameState {
    *   —— 改建卡看着生效、下一帧又变回去。
    */
   landType: number[];
+
+  /**
+   * 地块**上一次**收到的過路費，下标 = 地块 id。
+   *
+   * @source 住宅过路费付完之后 `mov [land + 0x2c], ebp`（VA 0x0041a00b）——
+   *   是 **mov 不是 add**：记的是最近一笔，不是累计。
+   *   它只有一个消费者：**間諜**踩上来「取走過路費」（VA 0x0041c597）。
+   */
+  landLastToll: number[];
+
+  /**
+   * 地契到期日（打包日期 年<<16|月<<8|日），0 = 無限期。下标 = 地块 id。
+   *
+   * @source 這就是 `land.h` 里那个「语义未明」的 **`flast`(+0x30)**：
+   *   買地时 `if ([0x499110] != 0) land.+0x30 = today + 年限表[[0x499110]]`
+   *   （VA 0x0041a108，年限表 0x004751f0），每日推进时
+   *   `if (land.+0x30 == today) { owner = 0; +0x30 = 0 }`（VA 0x0041d12d）。
+   *   即開局「土地權限」那一项：到期地契**归无主，房子留着**。
+   */
+  landTenure: number[];
+
+  /**
+   * 設施的归属／等级／种类／上次過路費／地契到期 —— 与地块那五项同构，
+   * 下标 = 設施 id。
+   *
+   * ★ 先前 `topo.facilities` 是只读静态数据，設施**买不了、蓋不了、也不会
+   *   到期**；傳送機搬設施、公佈欄挂設施、流氓按实时归属勒索都因此卡住。
+   *   @source 設施结构 +0x19 / +0x1a / +0x18 / +0x30 / +0x34
+   *   （VA 0x0041a926 買、0x0041a27c 首建、0x0041a35f 加蓋、0x0041a75e 記費、
+   *   0x0041a978 到期日）。
+   */
+  facilityOwner: number[];
+  facilityLevel: number[];
+  /** 建筑种类 0 公園 / 1 旅館 / 2 購物中心 / 3 加油站 / 4 研究所；地图里恒为 0，首建时才定 */
+  facilityType: number[];
+  facilityLastToll: number[];
+  facilityTenure: number[];
 
   /**
    * 公佈欄 —— 每个玩家 7 个挂牌槽。

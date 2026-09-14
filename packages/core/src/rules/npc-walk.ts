@@ -81,6 +81,8 @@ export type NpcEvent =
   | { kind: 'card'; victim: number; card: number }
   | { kind: 'robBank'; from: number; amount: number }
   | { kind: 'protection'; landlord: number; amount: number }
+  /** 間諜取走過路費 —— 与 protection 同一入账口（`push 0` → 進存款） */
+  | { kind: 'toll'; landlord: number; amount: number }
   | { kind: 'home'; place: 'prison' | 'hospital'; node: number };
 
 /**
@@ -211,7 +213,18 @@ export function runNpc(
       }
     }
 
-    // ⚠️ 間諜的取過路費／取盈餘没做 —— 缺的是累加器不是规则，见 Q-NPC-1。
+    // ── ⑥ 間諜踩到别人的地產／設施 → 取走上一次收的過路費 ──
+    // @source 地產 0x0041c597 `edi = [land + 0x2c]`；設施 0x0041c6bd `edi = [設施 + 0x30]`
+    //   两个字段都是「上一笔」（写入处是 mov 不是 add），本引擎叫 lastToll。
+    //   ⚠️ 原版取完**不清零**（那两段没有写回），所以同一块地能被反复取 —— 照抄。
+    if (actor === NPC.spy && node !== undefined) {
+      const t = spyTollAt(state, node);
+      if (t !== null && t.landlord !== owner && t.amount > 0) {
+        events.push({ kind: 'toll', landlord: t.landlord, amount: t.amount });
+      }
+    }
+
+    // ⚠️ 間諜的「取走盈餘」（上市企業 +0x28）仍没做 —— 缺累積盈餘字段，见 Q-NPC-1。
   }
 
   // 走完收场
@@ -244,8 +257,33 @@ export function thugFeeAt(
   }
   if (ref.kind === 'facility') {
     const f = map.facilities?.find((x) => x.id === ref.index);
-    if (f === undefined || f.owner === 0) return null;
-    return { landlord: f.owner - 1, amount: facilityProtectionFee(f.landPrice, state.priceIndex) };
+    if (f === undefined) return null;
+    // 归属取**实时**的 facilityOwner，静态表里恒为 0
+    const owner = state.facilityOwner[f.id] ?? 0;
+    if (owner === 0) return null;
+    return { landlord: owner - 1, amount: facilityProtectionFee(f.landPrice, state.priceIndex) };
+  }
+  return null;
+}
+
+/**
+ * 間諜在这一格能取走多少、从谁那儿取；取不到返回 `null`。
+ * 地產读 `landLastToll`，設施读 `facilityLastToll`；无主或没收过租的取不到。
+ */
+export function spyTollAt(
+  state: GameState,
+  node: MapNode,
+): { landlord: number; amount: number } | null {
+  const ref = node.ref;
+  if (ref.kind === 'land') {
+    const landlord = state.landOwner[ref.index] ?? 0;
+    if (landlord === 0) return null;
+    return { landlord: landlord - 1, amount: state.landLastToll[ref.index] ?? 0 };
+  }
+  if (ref.kind === 'facility') {
+    const landlord = state.facilityOwner[ref.index] ?? 0;
+    if (landlord === 0) return null;
+    return { landlord: landlord - 1, amount: state.facilityLastToll[ref.index] ?? 0 };
   }
   return null;
 }
@@ -329,8 +367,9 @@ export function applyNpcEvents(
         if (r.bankrupted) bankrupted.push(e.from);
         break;
       }
-      case 'protection': {
-        // @source `push 0` —— bit0 未置 = **進存款**
+      case 'protection':
+      case 'toll': {
+        // @source `push 0` —— bit0 未置 = **進存款**（0x0041c576 / 0x0041c5xx 两处同）
         const r = transferMoney(players, [], pool, e.landlord, owner, e.amount, 0);
         players = [...r.players];
         pool = r.pool;

@@ -384,6 +384,27 @@ export function decidePending(state: GameState): Action | null {
     if (me.cash < p.price * 4) return null;
     return { type: 'lottery', number: n };
   }
+  // ★ 設施：買/加蓋 按与買地同一套「留够安全垫」的口径；
+  //   首建（选建筑种类）**不在这里**——原版 AI 是 `rand() % 4 + 1`，
+  //   随机数不能进 AI，故 reducer 对电脑玩家直接抽（见 landOnFacility）。
+  if (p.kind === 'buyFacility' || p.kind === 'upgradeFacility') {
+    const me = state.players[state.currentPlayer];
+    if (me === undefined) return null;
+    const cost = p.kind === 'buyFacility' ? p.price : p.cost;
+    // decidePending 拿不到 ctx.personality —— 与其余 pending 一样按默认性格算安全垫
+    const personality = DEFAULT_PERSONALITY;
+    const floor = reserveFloor(me, personality);
+    const after = me.cash - cost;
+    const affordable = after >= floor * (1 - personality.aggression);
+    if (!affordable) return { type: 'declineDecision' };
+    return p.kind === 'buyFacility' ? { type: 'buyFacility' } : { type: 'upgradeFacility' };
+  }
+  if (p.kind === 'buildFacility') {
+    // 走到这里的只会是被托管的真人（电脑在 reducer 里已抽完）：照电脑的口味，
+    // 不蓋公園，取可选里最小的非 0 种类 —— 确定性的
+    const t = p.choices.find((c) => c !== 0) ?? p.choices[0];
+    return t === undefined ? null : { type: 'buildFacility', facilityType: t };
+  }
   if (p.kind === 'buyShares') {
     // 简单策略：留够安全垫，剩下的钱买得起多少买多少，且不超过企业余量。
     // ★ 这是**策略**不是规则——买不买、买多少原版由 AI 性格决定（M3），
