@@ -219,7 +219,10 @@ export function interactionUi(
       };
 
     case 'shop': {
-      // ★ 百貨公司花的是**點券**，不是錢
+      // ★ 這一屏花的是**點券**，不是錢。
+      //   需求方描述的原版长这样：左侧是可买的卡片列表、右下是自己已有的卡片
+      //   （点了卖掉换點數）、右上角一个三角钮切到道具商店。
+      //   本引擎还没做那一屏的版式，但**买与卖两边都在这里出**，功能是全的。
       const affordableTools = pending.tools.filter(
         (t) => t.price <= pending.points && (t.stock === null || t.stock > 0),
       );
@@ -228,18 +231,27 @@ export function interactionUi(
         title: PLACE.departmentStore.text,
         detail:
           `${FIELD.points.text} ${pending.points}` +
-          `　（買得起 ${affordableCards.length} 種卡、${affordableTools.length} 種道具）`,
-        // ⚠️ 原版还有一句「道具欄已滿\n\n無法購買！」（NOTICE.toolBoxFull），
-        //   但 `pending` 里没带「道具栏满没满」这个事实，光看「买得起几种」
-        //   分不出是**没点券**还是**栏满了** —— 拿来当满栏提示会误报，故不显示。
+          `　買得起 ${affordableCards.length} 種卡、${affordableTools.length} 種道具` +
+          (pending.owned.cards.length + pending.owned.tools.length > 0
+            ? `　手上 ${pending.owned.cards.length} 種卡、${pending.owned.tools.length} 種道具可賣`
+            : ''),
         choices: [
           ...affordableTools.map((t) => ({
-            label: `${t.name} ${t.price}點`,
+            label: `${BUTTON.buy.text} ${t.name} ${t.price}點`,
             action: { type: 'shop' as const, op: 'buyTool' as const, id: t.id },
           })),
-          ...affordableCards.slice(0, 10).map((c) => ({
-            label: `${c.name} ${c.price}點`,
+          ...affordableCards.slice(0, 8).map((c) => ({
+            label: `${BUTTON.buy.text} ${c.name} ${c.price}點`,
             action: { type: 'shop' as const, op: 'buyCard' as const, id: c.id },
+          })),
+          // ★ 卖 —— 退九成點數（places/shop.ts 的 resellValue）
+          ...pending.owned.cards.map((c) => ({
+            label: `${BUTTON.sell.text} ${c.name} +${c.refund}點`,
+            action: { type: 'shop' as const, op: 'sellCard' as const, id: c.id },
+          })),
+          ...pending.owned.tools.map((t) => ({
+            label: `${BUTTON.sell.text} ${t.name}×${t.count} +${t.refund}點`,
+            action: { type: 'shop' as const, op: 'sellTool' as const, id: t.id, count: 1 },
           })),
           { label: BUTTON.exit.text, action: { type: 'declineDecision' } },
         ],

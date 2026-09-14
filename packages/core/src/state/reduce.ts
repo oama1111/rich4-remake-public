@@ -43,7 +43,9 @@ import {
   resolveBankruptcyOutcome,
 } from '../rules/bankruptcy.ts';
 import { LOTTERY_DRAW_DAY, drawLottery, releaseTickets } from '../places/lottery.ts';
-import { buyStock, commercialUnitPrice, liquidateStocks, sellStock } from '../places/stock.ts';
+import { buyStock, commercialUnitPrice, liquidateStocks, sellStock,
+  recalcAvgCost,
+} from '../places/stock.ts';
 import { emptyOwnership, updateCommercialOwner } from '../places/commercial.ts';
 import { useCard } from '../cards/registry.ts';
 import {
@@ -59,8 +61,27 @@ import {
   placeObject,
   useVehicleTool,
 } from '../rules/tool-effects.ts';
-import { STOCKED_TOOL_MAX_ID, takeTool, toolCount } from '../rules/tools.ts';
-import { buyCard, buyTool, sellCard, sellTool } from '../places/shop.ts';
+import { STOCKED_TOOL_MAX_ID, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
+import {
+  LISTING,
+  canBuyListing,
+  decodeEstate,
+  emptyColumn,
+  listItem,
+  settlePayment,
+  withdrawItem,
+  type Listing,
+  type ListingKind,
+} from '../places/notice-board.ts';
+import {
+  buyCard,
+  buyTool,
+  cardPrice,
+  resellValue,
+  sellCard,
+  sellTool,
+  toolPrice,
+} from '../places/shop.ts';
 import { CARDS, CHARACTERS, TOOLS } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
@@ -621,6 +642,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
 
     case 'shop':
       return shopAction(state, action);
+
+    case 'noticeBoard':
+      return noticeBoardAction(state, topo, action);
 
     case 'declineDecision': {
       // ★ 「不了」对**任何**待决交互都合法（rules/interaction.ts 的
@@ -2024,11 +2048,176 @@ function pendingForSpecial(
         // @source give_tool 对编号 > 8 不查库存（见 rules/tools.ts）
         stock: t.id <= STOCKED_TOOL_MAX_ID ? (state.toolStock[t.id] ?? 0) : null,
       })),
+      // ★ 手上有什么也要带出来 —— 这一屏能把卡片/道具卖回去换點數（退九成）
+      owned: {
+        cards: [...new Set(me.cards)].map((id) => ({
+          id,
+          name: CARDS.find((c) => c.id === id)?.name ?? `卡${id}`,
+          refund: resellValue(cardPrice(id)),
+        })),
+        tools: [...toolsOf(state.tools, state.currentPlayer)].map(([id, count]) => ({
+          id,
+          name: TOOLS.find((x) => x.id === id)?.name ?? `道具${id}`,
+          count,
+          refund: resellValue(toolPrice(id)),
+        })),
+      },
     };
   }
 
   if (isUnimplementedPlace(specialKind)) return unimplementedPlace(specialKind);
   return null;
+}
+
+/**
+ * 公佈欄：挂牌、撤件、买下别人的东西。
+ *
+ * ★ 规则全在 `places/notice-board.ts`，这里只接驳状态与物品转移。
+ *   物品转移按类型走各自既有的路子（持股、地產归属、道具、手牌），
+ *   **不另起一套**。
+ */
+function noticeBoardAction(
+  state: GameState,
+  topo: MapTopology,
+  action: Action & { type: 'noticeBoard' },
+): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || !isAlive(me)) return state;
+  const board = state.noticeBoard;
+
+  if (action.op === 'withdraw') {
+    const col = withdrawItem(board[state.currentPlayer] ?? emptyColumn(), action.slot);
+    if (col === null) return state;
+    return { ...state, noticeBoard: board.map((c, i) => (i === state.currentPlayer ? col : c)) };
+  }
+
+  if (action.op === 'list') {
+    // @source 0x00427ee6：七格满了就挂不上（原版弹「公佈欄已滿，請先撤件！」）
+    const mine = board[state.currentPlayer] ?? emptyColumn();
+    if (!Number.isInteger(action.price) || action.price <= 0) return state;
+    if (!ownsListing(state, topo, state.currentPlayer, action.kind, action.id, action.amount ?? 0)) {
+      return state;
+    }
+    const col = listItem(mine, {
+      kind: action.kind as ListingKind,
+      id: action.id,
+      price: Math.trunc(action.price),
+      amount: Math.trunc(action.amount ?? 0),
+    });
+    if (col === null) return state;
+    return { ...state, noticeBoard: board.map((c, i) => (i === state.currentPlayer ? col : c)) };
+  }
+
+  // ── 买 ──
+  const seller = action.seller;
+  const item = board[seller]?.[action.slot] ?? null;
+  if (canBuyListing(state, state.currentPlayer, seller, item) !== null || item === null) {
+    return state;
+  }
+  const moved = transferListing(state, topo, state.currentPlayer, seller, item);
+  if (moved === null) return state;
+  const buyerP = moved.players[state.currentPlayer];
+  const sellerP = moved.players[seller];
+  if (buyerP === undefined || sellerP === undefined) return state;
+  // @source 0x004258ac `pay_money(買家, 賣家, 價, 0)` —— 付的是**现金**
+  const paid = settlePayment(buyerP, sellerP, item.price);
+  const players = moved.players.map((p, i) =>
+    i === state.currentPlayer ? paid.buyer : i === seller ? paid.seller : p,
+  );
+  // 成交后那一格要撤掉
+  const col = withdrawItem(moved.noticeBoard[seller] ?? emptyColumn(), action.slot);
+  return {
+    ...moved,
+    players,
+    noticeBoard: moved.noticeBoard.map((c, i) => (i === seller ? (col ?? c) : c)),
+  };
+}
+
+/** 挂牌前先确认「这东西确实是你的」—— 否则谁都能挂别人的地 */
+function ownsListing(
+  state: GameState,
+  topo: MapTopology,
+  player: number,
+  kind: number,
+  id: number,
+  amount: number,
+): boolean {
+  const p = state.players[player];
+  if (p === undefined) return false;
+  switch (kind) {
+    case LISTING.stock:
+      return amount > 0 && (state.holdings[player]?.[id]?.amount ?? 0) >= amount;
+    case LISTING.estate: {
+      const e = decodeEstate(id);
+      if (e.kind === 'land') return (state.landOwner[e.index] ?? 0) === player + 1;
+      // ⚠️ 設施的归属还没进状态（同 Q-TOOL-2），故設施暂时挂不了
+      return false;
+    }
+    case LISTING.tool:
+      return toolCount(state.tools, player, id) > 0;
+    case LISTING.card:
+      return p.cards.includes(id);
+    default:
+      return false;
+  }
+}
+
+/** 按类型把东西从卖家转到买家；转不动返回 null */
+function transferListing(
+  state: GameState,
+  topo: MapTopology,
+  buyer: number,
+  seller: number,
+  item: Listing,
+): GameState | null {
+  switch (item.kind) {
+    case LISTING.stock: {
+      // @source 0x0042565c：买家持股 += 股數、卖家 −=；卖家清零时均价也归零
+      const holdings = state.holdings.map((row) => row.map((h) => ({ ...h })));
+      const from = holdings[seller]?.[item.id];
+      const to = holdings[buyer]?.[item.id];
+      if (from === undefined || to === undefined || from.amount < item.amount) return null;
+      // 买家的均价按「原成本 + 买价」重算，走与柜台买入同一条
+      // `recalcAvgCost`（原版把均价存成 32 位 float，那里已经对齐了精度）
+      const next = recalcAvgCost(to, item.amount, item.price);
+      to.amount = next.amount;
+      to.avgCost = next.avgCost;
+      from.amount -= item.amount;
+      // @source 0x004256bc：卖家清零时均价也归零
+      if (from.amount === 0) from.avgCost = 0;
+      return { ...state, holdings };
+    }
+    case LISTING.estate: {
+      const e = decodeEstate(item.id);
+      if (e.kind !== 'land') return null;
+      // @source 0x004257c3 `mov byte [地塊+0x19], 當前玩家+1`
+      const landOwner = [...state.landOwner];
+      if (landOwner[e.index] !== seller + 1) return null;
+      landOwner[e.index] = buyer + 1;
+      return { ...state, landOwner };
+    }
+    case LISTING.tool: {
+      // @source 0x0042580d `take_tool(賣家, id)` + 0x00425826 `give_tool(買家, id)`
+      const taken = takeTool(state.tools, state.toolStock, seller, item.id);
+      const given = giveTool(taken.tools, taken.stock, buyer, item.id);
+      if (!given.given) return null;
+      return { ...state, tools: given.tools, toolStock: given.stock };
+    }
+    case LISTING.card: {
+      // @source 0x0042587a 移除卖家的、0x00425893 给买家
+      const players = state.players.map((p) => ({ ...p, cards: [...p.cards] }));
+      const from = players[seller];
+      const to = players[buyer];
+      if (from === undefined || to === undefined) return null;
+      const at = from.cards.indexOf(item.id);
+      if (at < 0) return null;
+      from.cards.splice(at, 1);
+      to.cards.push(item.id);
+      return { ...state, players };
+    }
+    default:
+      return null;
+  }
 }
 
 /**

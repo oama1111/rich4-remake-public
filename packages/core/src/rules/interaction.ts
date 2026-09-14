@@ -99,6 +99,17 @@ export type PendingInteraction =
       cards: { id: number; name: string; price: number }[];
       /** 可买的道具：编号、標價、全局库存（编号 > 8 不限量，给 null） */
       tools: { id: number; name: string; price: number; stock: number | null }[];
+      /**
+       * **自己手上**的卡片与道具 —— 这一屏能卖，退九成點數。
+       *
+       * ★ 需求方描述这一屏时说得很清楚：「右下侧是自己已有的卡片列表，
+       *   点击可以卖出自己的卡片换得点数」。规则引擎里 `sellCard`/`sellTool`
+       *   一直有，只是 `pending` 没把「你手上有什么」带出来，界面便无从显示。
+       */
+      owned: {
+        cards: { id: number; name: string; refund: number }[];
+        tools: { id: number; name: string; count: number; refund: number }[];
+      };
     }
   /**
    * 小游戏：企鵝挖寶 / 七彩氣球 / 喜從天降。

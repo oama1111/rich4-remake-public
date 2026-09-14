@@ -30,7 +30,7 @@ describe('場所背景', () => {
       SCENE.lotteryCounter,
     );
     // ★ 棋盤上那格叫「百貨公司」，屏却是卡片商店／道具商店（Panel #10）
-    expect(sceneFor({ kind: 'shop', points: 0, tools: [], cards: [] })).toBe(SCENE.shop);
+    expect(sceneFor({ kind: 'shop', points: 0, tools: [], cards: [], owned: { cards: [], tools: [] } })).toBe(SCENE.shop);
     expect(SCENE.shop).toBe(10);
     expect(sceneFor({ kind: 'auction', entityId: 1, basePrice: 0, bidders: [] })).toBe(SCENE.auction);
   });

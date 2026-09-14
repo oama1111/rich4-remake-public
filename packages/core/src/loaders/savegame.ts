@@ -22,6 +22,7 @@ import type { GameState } from '../state/types.ts';
 import type { SaveGame } from './save.ts';
 import type { Rich4Map } from './map.ts';
 import { landTypeFromMap } from '../rules/new-game.ts';
+import { emptyBoard } from '../places/notice-board.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
@@ -276,6 +277,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     landLevel: new Array<number>(landCount).fill(0),
     // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取
     landType: landTypeFromMap(map, landCount),
+    noticeBoard: emptyBoard(),
     turnCount: 0,
     snapshots: [null, null, null, null],
     newsDeck: { order: Array.from({ length: 36 }, (_, i) => i), cursor: 0 },

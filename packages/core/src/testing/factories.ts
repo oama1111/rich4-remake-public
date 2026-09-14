@@ -9,6 +9,7 @@ import type { Player, GameState } from '../state/types.ts';
 import { WHO_PLAYS_HUMAN } from '../state/types.ts';
 import { slotsFrom } from '../loaders/map.ts';
 import type { LandInfo, FacilityInfo, MapNode } from '../loaders/map.ts';
+import { emptyBoard } from '../places/notice-board.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { makeObjects } from '../cards/summon.ts';
 import { OBJECT_COUNT } from '../rules/objects.ts';
@@ -79,6 +80,7 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     landOwner: [],
     landLevel: [],
     landType: [],
+    noticeBoard: emptyBoard(),
     turnCount: 0,
     snapshots: [null, null, null, null] as (string | null)[],
     // 测试默认给顺序牌堆——不洗牌，好让用例能指定拿到哪张

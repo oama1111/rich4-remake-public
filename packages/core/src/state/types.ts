@@ -13,6 +13,7 @@ import type { PendingInteraction } from '../rules/interaction.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import type { StockHolding } from '../places/stock.ts';
 import type { CommercialOwnership } from '../places/commercial.ts';
+import type { Listing } from '../places/notice-board.ts';
 import type { MapObject } from '../cards/summon.ts';
 
 // ============================================================
@@ -325,6 +326,14 @@ export interface GameState {
    *   —— 改建卡看着生效、下一帧又变回去。
    */
   landType: number[];
+
+  /**
+   * 公佈欄 —— 每个玩家 7 个挂牌槽。
+   *
+   * ★ 玩家（含电脑）可以把**股票／地產／道具／卡片**挂上去卖，
+   *   别人付**现金**买走。见 places/notice-board.ts。
+   */
+  noticeBoard: (Listing | null)[][];
 
   /** 回合序号，从 0 开始 */
   turnCount: number;

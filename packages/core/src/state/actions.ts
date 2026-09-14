@@ -119,6 +119,27 @@ export type Action =
    * ★ 花的是**點數**（地图上「得５０點」那类格子攒的），不是钱。
    *   商店是模态窗口，一次可买卖多样，关掉走 `declineDecision`。
    */
+  /**
+   * 公佈欄 —— 玩家之间的二级市场。
+   *
+   * - `list`：把自己的东西挂上去（`kind` 见 places/notice-board.ts 的 `LISTING`）
+   * - `withdraw`：撤件
+   * - `buy`：买下**别人**挂的那一件，付现金
+   *
+   * ★ 这是从汇编里解出来的一整套机制，先前引擎完全没有。
+   */
+  | {
+      type: 'noticeBoard';
+      op: 'list';
+      kind: number;
+      id: number;
+      price: number;
+      /** 只有股票用：股數 */
+      amount?: number;
+    }
+  | { type: 'noticeBoard'; op: 'withdraw'; slot: number }
+  | { type: 'noticeBoard'; op: 'buy'; seller: number; slot: number }
+
   | { type: 'shop'; op: 'buyCard' | 'sellCard'; id: number }
   | { type: 'shop'; op: 'buyTool' | 'sellTool'; id: number; count?: number }
 
