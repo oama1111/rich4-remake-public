@@ -50,18 +50,21 @@ export const MAX_TOOL_COUNT = 9;
 export const STOCKED_TOOL_MAX_ID = 8;
 
 /**
- * 开局发给每个玩家的道具。
+ * 開局發的道具。
  *
- * @source 开局循环 VA 0x0040727f 起，对每个在场玩家连续四次：
+ * @source VA 0x00407281 起，对**每个参与的**玩家连发**六次** `give_tool`：
  * ```asm
- * push 1 / push ebx / call 0x445a4d
- * push 2 / push ebx / call 0x445a4d
- * push 3 / push ebx / call 0x445a4d
- * push 4 / push ebx / call 0x445a4d
+ * 00407281  push 1 / push ebx / call 0x445a4d     ; 機器娃娃
+ * 0040728c  push 2                                 ; 路障
+ * 00407297  push 3                                 ; 地雷
+ * 004072a2  push 4                                 ; 定時炸彈
+ * 004072ad  push 8                                 ; ★ 遙控骰子
+ * 004072b8  push 9                                 ; ★ 機器工人
  * ```
- * 即 機器娃娃、路障、地雷、定時炸彈 各一个。
+ * ⚠️ 先前这里只写了 `[1,2,3,4]` —— 少了 8 与 9 两件。那不是有意简化，
+ *   是当时只读到了前四次调用。
  */
-export const STARTING_TOOLS: readonly number[] = [1, 2, 3, 4];
+export const STARTING_TOOLS: readonly number[] = [1, 2, 3, 4, 8, 9];
 
 export interface GiveToolResult {
   tools: number[];

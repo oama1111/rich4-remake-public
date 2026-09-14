@@ -95,10 +95,13 @@ describe('★ 编号 ≤ 8 才受全局库存限制', () => {
 });
 
 describe('开局道具', () => {
-  it('★ 是 機器娃娃/路障/地雷/定時炸彈', () => {
-    expect(STARTING_TOOLS).toEqual([1, 2, 3, 4]);
+  it('★ 六件：機器娃娃/路障/地雷/定時炸彈/遙控骰子/機器工人', () => {
+    // ⚠️ 先前这里写的是 [1,2,3,4] —— 少了 8 与 9。开局那段连发**六次**
+    //   give_tool（@source VA 0x00407281 / 0x0040728c / 0x00407297 /
+    //   0x004072a2 / 0x004072ad / 0x004072b8）
+    expect(STARTING_TOOLS).toEqual([1, 2, 3, 4, 8, 9]);
     const names = STARTING_TOOLS.map((id) => TOOLS.find((t) => t.id === id)?.name);
-    expect(names).toEqual(['機器娃娃', '路障', '地雷', '定時炸彈']);
+    expect(names).toEqual(['機器娃娃', '路障', '地雷', '定時炸彈', '遙控骰子', '機器工人']);
   });
 });
 

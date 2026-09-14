@@ -33,6 +33,7 @@ import {
   pickObjectNode,
   placeObjectOfType,
 } from './object-landing.ts';
+import { TRAFFIC_REFUND } from './tool-effects.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
 import { STOCKS_PER_MAP, stocksOfMap } from '@rich4/data';
 import {
@@ -62,7 +63,24 @@ export interface NewGameOptions {
   seed?: number;
   /** 所有人的起始节点。原版是地图上的固定起点，尚未定位，故可注入 */
   startNodeId?: number;
+  /**
+   * 開局自帶載具：0 走路 / 1 機車 / 2 汽車。
+   *
+   * ★ 原版是个**全局设置**（`[0x0046cb44]`），开局屏上选，对所有玩家一律生效：
+   * ```asm
+   * ; VA 0x00407219
+   * dl = byte [0x46cb44]
+   * [player + 0x11] = dl                  ; traffic_method
+   * if (dl != 0) byte[0x497323 + dl]--    ; ★ 扣那件交通工具的全局库存
+   * dl = byte[0x46cb44] + 1
+   * [player + 0x12] = dl                  ; ★ ndices = traffic + 1
+   * ```
+   * 这解释了 `jump.mkf` 为什么每个角色有走路／機車／汽車三套侧视动画。
+   */
+  startingVehicle?: number;
 }
+
+
 
 /**
  * 每种卡片的初始张数。
@@ -115,7 +133,13 @@ function commercialSharesOf(map: Rich4Map, globalMapId: number): number[] {
   return out;
 }
 
-function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, startNode: number): Player {
+function makeInitialPlayer(
+  index: number,
+  setup: PlayerSetup,
+  fund: number,
+  startNode: number,
+  vehicle: number,
+): Player {
   const money = startingMoney(setup.character, fund);
   return {
     index,
@@ -126,8 +150,9 @@ function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, star
     nodeId: startNode,
     lastNodeId: startNode,
     direction: 0,
-    trafficMethod: 1,
-    ndices: 1,
+    // @source VA 0x00407219：交通工具与骰子数都由开局设置定，`ndices = traffic + 1`
+    trafficMethod: vehicle,
+    ndices: vehicle + 1,
     // @source player_info +0x14 sex：非 0 是男。取自角色表，开局定下不再变
     isMale: !(CHARACTERS[setup.character]?.isFemale ?? false),
     // @source +0x16/+0x17/+0x18/+0x1a 都是开局从角色表拷进来的性格旋钮
@@ -197,6 +222,7 @@ export function newGame(opts: NewGameOptions): GameState {
     mode = 'single',
     seed = 1,
     startNodeId = UNVERIFIED_START_NODE,
+    startingVehicle: vehicle = 0,
   } = opts;
 
   if (players.length < 2 || players.length > 4) {
@@ -212,11 +238,17 @@ export function newGame(opts: NewGameOptions): GameState {
   const newsDeck = createDeck(rng, NEWS_DECK_SIZE);
   const fortuneDeck = createDeck(rng, FORTUNE_DECK_SIZE);
 
-  // ★ 开局给每人发 機器娃娃/路障/地雷/定時炸彈 各一个
-  //   @source 开局循环 VA 0x0040727f 起对每个在场玩家的四次 give_tool
+  // ★ 开局给每人发六件道具（見 rules/tools.ts 的 STARTING_TOOLS）
   //   库存初值取自道具表（编号 1..8 各 10 份，9..13 不限量）
   let tools = emptyTools(players.length);
   let toolStock = initialToolStock();
+  // @source VA 0x00407225：自帶載具也要从那件交通工具的全局库存里扣
+  if (vehicle !== 0) {
+    const vid = TRAFFIC_REFUND.get(vehicle) ?? 0;
+    if (vid !== 0) {
+      toolStock = toolStock.map((n, i) => (i === vid ? Math.max(0, n - players.length) : n));
+    }
+  }
   for (let i = 0; i < players.length; i++) {
     for (const toolId of STARTING_TOOLS) {
       const r = giveTool(tools, toolStock, i, toolId);
@@ -250,7 +282,7 @@ export function newGame(opts: NewGameOptions): GameState {
     day: 1,
     month: 1,
     year: 1998,
-    players: players.map((s, i) => makeInitialPlayer(i, s, initialFund, startNodeId)),
+    players: players.map((s, i) => makeInitialPlayer(i, s, initialFund, startNodeId, vehicle)),
     currentPlayer: 0,
     phase: 'turnStart',
     priceIndex: INITIAL_PRICE_INDEX,

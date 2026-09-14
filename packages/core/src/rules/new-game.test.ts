@@ -77,14 +77,14 @@ describe('初始状态', () => {
     expect(s.cardAmount.every((v) => v === UNVERIFIED_CARDS_PER_KIND)).toBe(true);
   });
 
-  run('★ 开局每人发 機器娃娃/路障/地雷/定時炸彈 各一个', () => {
+  run('★ 开局每人发六件道具各一个', () => {
     const s = newGame({ map: loadMap(), players: setup(4) });
     for (let i = 0; i < 4; i++) {
       for (const toolId of STARTING_TOOLS) {
         expect(toolCount(s.tools, i, toolId), `玩家${i} 道具${toolId}`).toBe(1);
       }
-      // 只发这四样，其余为 0
-      expect([...toolsOf(s.tools, i).keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 4]);
+      // 只发这六样，其余为 0
+      expect([...toolsOf(s.tools, i).keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 8, 9]);
     }
   });
 
@@ -129,5 +129,46 @@ describe('参数校验', () => {
 
   run('2 人局也能开', () => {
     expect(newGame({ map: loadMap(), players: setup(2) }).players).toHaveLength(2);
+  });
+});
+
+describe('開局自帶載具', () => {
+  /**
+   * ★ 原版是个**全局设置**（`[0x0046cb44]`），开局屏上选一次，对所有玩家一律生效：
+   * ```asm
+   * ; VA 0x00407219
+   * dl = byte [0x46cb44]
+   * [player + 0x11] = dl                  ; traffic_method
+   * if (dl != 0) byte[0x497323 + dl]--    ; 扣那件交通工具的全局库存
+   * dl = byte[0x46cb44] + 1
+   * [player + 0x12] = dl                  ; ★ ndices = traffic + 1
+   * ```
+   * 这也解释了 jump.mkf 为什么每个角色有走路／機車／汽車三套侧视动画。
+   */
+  run('默认走路：一颗骰子', () => {
+    const s = newGame({ map: loadMap(), players: setup(4) });
+    for (const p of s.players) {
+      expect(p.trafficMethod).toBe(0);
+      expect(p.ndices).toBe(1);
+    }
+  });
+
+  run('★ 選機車 → 全员两颗骰子', () => {
+    const s = newGame({ map: loadMap(), players: setup(4), startingVehicle: 1 });
+    for (const p of s.players) {
+      expect(p.trafficMethod).toBe(1);
+      expect(p.ndices).toBe(2);
+    }
+  });
+
+  run('★ 選汽車 → 全员三颗骰子，且库存被扣', () => {
+    const base = newGame({ map: loadMap(), players: setup(4) });
+    const s = newGame({ map: loadMap(), players: setup(4), startingVehicle: 2 });
+    for (const p of s.players) {
+      expect(p.trafficMethod).toBe(2);
+      expect(p.ndices).toBe(3);
+    }
+    // 汽車是道具 6，四个人各领一件
+    expect(s.toolStock[6]).toBe((base.toolStock[6] ?? 0) - 4);
   });
 });
