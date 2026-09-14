@@ -12,9 +12,11 @@ import {
   TOOL_TELEPORTER,
   decodeTeleport,
   pickFacingAt,
+  teleportFacility,
   teleportLand,
   teleportPlayer,
 } from './teleport.ts';
+import type { GameState } from '../state/types.ts';
 import { UNIMPLEMENTED_TOOLS } from './tool-effects.ts';
 import { linkBlockedMask } from '../state/reduce.ts';
 
@@ -51,6 +53,69 @@ function withTool(): ReturnType<typeof makeGameState> {
 describe('傳送機', () => {
   it('道具已全部实现', () => {
     expect(UNIMPLEMENTED_TOOLS).toEqual([]);
+  });
+
+  describe('★ 搬設施 @source 0x004475d8 —— 与搬地產同构，多搬到期日、只清不搬上次過路費', () => {
+    /** 往任意状态里塞一件傳送機（本文件的 withTool() 是自带状态的） */
+    function armed(s: GameState): GameState {
+      const given = giveTool(emptyTools(4), initialToolStock(), 0, TOOL_TELEPORTER);
+      return { ...s, tools: given.tools, toolStock: given.stock };
+    }
+    function two(): GameState {
+      const s = makeGameState({
+        players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1 })),
+        phase: 'awaitingRoll',
+      });
+      const facilityOwner = [...s.facilityOwner];
+      const facilityLevel = [...s.facilityLevel];
+      const facilityType = [...s.facilityType];
+      const facilityTenure = [...s.facilityTenure];
+      const facilityLastToll = [...s.facilityLastToll];
+      facilityOwner[1] = 2;
+      facilityLevel[1] = 3;
+      facilityType[1] = 2;
+      facilityTenure[1] = 0x7d00401;
+      facilityLastToll[1] = 8000;
+      facilityLastToll[5] = 300;
+      return { ...s, facilityOwner, facilityLevel, facilityType, facilityTenure, facilityLastToll };
+    }
+
+    it('归属、等级、种类、到期日整块搬走，源头清零', () => {
+      const r = teleportFacility(two(), 1, 5)!;
+      expect(r.facilityOwner[5]).toBe(2);
+      expect(r.facilityLevel[5]).toBe(3);
+      expect(r.facilityType[5]).toBe(2);
+      expect(r.facilityTenure[5]).toBe(0x7d00401);
+      expect(r.facilityOwner[1]).toBe(0);
+      expect(r.facilityLevel[1]).toBe(0);
+      expect(r.facilityType[1]).toBe(0);
+      expect(r.facilityTenure[1]).toBe(0);
+    });
+
+    it('★ 上次過路費：源清零、新址保持原样（0x0044760f 只写源）', () => {
+      const r = teleportFacility(two(), 1, 5)!;
+      expect(r.facilityLastToll[1]).toBe(0);
+      expect(r.facilityLastToll[5]).toBe(300);
+    });
+
+    it('无主設施搬不动；搬到自己身上也不行', () => {
+      expect(teleportFacility(two(), 2, 5)).toBeNull();
+      expect(teleportFacility(two(), 1, 1)).toBeNull();
+    });
+
+    it('经 useTool 走設施编码（4000 + id）那一路，并消耗道具', () => {
+      const s = armed(two());
+      const after = reduce(s, { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 4001, value: 4005 }, cross);
+      expect(after.facilityOwner[5]).toBe(2);
+      expect(after.facilityOwner[1]).toBe(0);
+      expect(toolCount(after.tools, 0, TOOL_TELEPORTER)).toBe(0);
+    });
+
+    it('地產↔設施混搬没有这一路 —— 不消耗道具', () => {
+      const s = armed(two());
+      const after = reduce(s, { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 2001, value: 4005 }, cross);
+      expect(after).toBe(s);
+    });
   });
 
   it('★ 选择器的三段编码 —— @source cmp 0x7d0 / 0xfa0 / 0x1770', () => {

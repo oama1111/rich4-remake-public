@@ -32,6 +32,7 @@ import {
   decodeTeleport,
   teleportLand,
   teleportPlayer,
+  teleportFacility,
 } from '../rules/teleport.ts';
 import { VEHICLE_DICE } from '../rules/tool-effects.ts';
 import {
@@ -1624,6 +1625,10 @@ function teleportWith(
   if (from?.kind === 'land' && to?.kind === 'land') {
     return teleportLand(state, from.index, to.index);
   }
+  if (from?.kind === 'facility' && to?.kind === 'facility') {
+    return teleportFacility(state, from.index, to.index);
+  }
+  // 地產↔設施 混搬原版没有这一路（三段编码各走各的）
   if (from?.kind === 'facility' || to?.kind === 'facility') return null;
   // 搬人：source 是玩家下标 + 1，target 是节点号
   const playerIndex = source - 1;

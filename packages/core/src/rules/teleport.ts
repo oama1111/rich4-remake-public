@@ -150,6 +150,42 @@ export function teleportLand(state: GameState, from: number, to: number): GameSt
 }
 
 /**
+ * 把一处設施整个搬到另一处設施上 —— 与 `teleportLand` 同构，多搬一项**到期日**。
+ *
+ * @source VA 0x004475d8 起（在 `rich4.exe` 里逐行对过）：
+ * ```asm
+ * 004475d8  mov bl, [源 + 0x19] / mov [标 + 0x19], bl / mov [源 + 0x19], 0    ; owner
+ * 004475e5  mov bl, [源 + 0x1a] / mov [标 + 0x1a], bl / mov [源 + 0x1a], 0    ; level
+ * 004475f2  mov bl, [源 + 0x18] / mov [标 + 0x18], bl / mov [源 + 0x18], 0    ; type
+ * 004475ff  mov ecx,[源 + 0x34] / mov [标 + 0x34], ecx / mov [源 + 0x34], 0   ; 地契到期日
+ * 0044760f  mov dword [源 + 0x30], 0                                         ; ★ 上次過路費：只清源，不搬
+ * ```
+ * ⚠️ rich4-re 的 `rich4_tool_chuansongji.asm` 140..173 行**漏了最后那一句**——
+ *   又一处 C 级线索与 exe 不符。新址的 `+0x30` 保持原样（不写），
+ *   所以間諜在搬来的新址取到的是**新址原来那笔**，在空掉的旧址什么也取不到。
+ */
+export function teleportFacility(state: GameState, from: number, to: number): GameState | null {
+  if (from === to) return null;
+  const owner = state.facilityOwner[from] ?? 0;
+  if (owner === 0) return null;
+  const facilityOwner = [...state.facilityOwner];
+  const facilityLevel = [...state.facilityLevel];
+  const facilityType = [...state.facilityType];
+  const facilityTenure = [...state.facilityTenure];
+  const facilityLastToll = [...state.facilityLastToll];
+  facilityOwner[to] = owner;
+  facilityLevel[to] = state.facilityLevel[from] ?? 0;
+  facilityType[to] = state.facilityType[from] ?? 0;
+  facilityTenure[to] = state.facilityTenure[from] ?? 0;
+  facilityOwner[from] = 0;
+  facilityLevel[from] = 0;
+  facilityType[from] = 0;
+  facilityTenure[from] = 0;
+  facilityLastToll[from] = 0;
+  return { ...state, facilityOwner, facilityLevel, facilityType, facilityTenure, facilityLastToll };
+}
+
+/**
  * 把一个玩家传送到某一格。
  *
  * @source 0x004477e2：写 `node_id`、`last_node_id`、`direction`、`xpos/ypos`，

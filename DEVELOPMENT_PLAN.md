@@ -802,7 +802,7 @@ upscale-queue/
 | # | 做什么 | 去哪找 | 验收 | 前置 |
 |---|---|---|---|---|
 | ~~**P0-1**~~ ✅ | **設施的归属与等级进状态**（2026-09-14 完成：`facilityOwner/Level/Type/LastToll/Tenure`，買/首建/加蓋/三种收費/旅館住店全接，`facility-rules.test.ts` 31 条）：`GameState` 加 `facilityOwner[]` / `facilityLevel[]`（照 `landType` 的做法），開局从地图读初值；買設施/加蓋/查歸屬全部改读它 | 落点结算 0x0041a404 附近的設施分支；`rules/facility.ts` | 現有設施测试不变；新增「買下設施后归属可见」测试 | — |
-| **P0-2** | **傳送機搬設施**（Q-TOOL-2）：`rich4_tool_chuansongji.asm` 的 `4000 < v < 6000` 一路 | 同上；原版搬 +0x19/+0x1a/+0x18/+0x34 | 三路都有测试；`teleport.test.ts` 的「設施那一路没做」断言反转 | P0-1 |
+| ~~**P0-2**~~ ✅ | **傳送機搬設施**（2026-09-14：`teleportFacility` @ 0x004475d8，五条测试；顺带抓到 rich4-re 漏一句清 +0x30）：`rich4_tool_chuansongji.asm` 的 `4000 < v < 6000` 一路 | 同上；原版搬 +0x19/+0x1a/+0x18/+0x34 | 三路都有测试；`teleport.test.ts` 的「設施那一路没做」断言反转 | P0-1 |
 | **P0-3** | **公佈欄挂設施** + 股票/地產/道具的「市價」（Q-BOARD-1 之 1、2）：卡片的 `標價×100×物價指數` 已证实（截图 S13 路障 3,000 元），其余三种的公式去挂牌那段读 | 挂牌 VA 0x004288f5 起；「請輸入欲拍賣的價格（市價：%d元）」的 %d 怎么算 | 四种類型的市價各一条测试；`ownsListing` 对設施不再恒 false | P0-1 |
 | **P0-4** ◐ | **間諜取過路費 ✅ / 取盈餘 ⬜**（写入点找到了：0x0041a00b/0x0041a75e 是 mov 上一笔；取盈餘等 P0-15 的企業盈餘字段）（Q-NPC-1 之 1）：① 定位地块 `+0x2c`、設施 `+0x30`、企業 `+0x28` 三个累加器的**写入点**（大概率在收租 `pay_money` 之后的同一处，或每月結算里）；② `GameState` 加 `landTollPool[]`/`facilityTollPool[]`/`companySurplus[]`；③ 在写入点累加；④ `npc-walk.ts` 接上 `spy` 两条 | `xref` 不到（动态寻址），改从收租/月結代码顺着读：`0x0041d2c6` 的调用点、`rules/monthly.ts` 对应的 `fcn_00437e61` | 「間諜踩别人的地取走累计租金」「踩亏损公司主人反掏钱」两条测试 | — |
 | **P0-5** | **研究所**：① 找研發時間写入点（`+0x1e` 的另一处写；業主停留时的选项目 UI，从「研究所」名字表 0x475150 的引用 `0x004179d2` 等处顺）；② 每回合在業主回合开头调 `tickResearch`；③ 給 `pending` 加 `research` 交互（选 1..level 的項目） | `rules/facility.ts` 已有 `tickResearch`/`researchTool`；VA 0x0041cdb0 | 「業主停留可选項目」「等级不够不能选」「N 天后道具到手」「拆楼作废」四条 | P0-1 |

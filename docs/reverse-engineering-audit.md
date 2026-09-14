@@ -23,6 +23,7 @@
 | 5 | `csrc/fortune.c` | **代码转录错误** | case 15 写 `*v = 15`，汇编实为 `*v = 14` | 已按汇编实现 |
 | 6 | `asm/rich4_stocks.h` | **字段类型误标** | `player_stock_info { int amount; int _; }` —— 第二字段实为 **float 持仓成本均价**，汇编以 `fmul`/`fstp` 按浮点读写 | 已按汇编实现 |
 | 7 | `csrc/cards.c`（2018 旧版） | **公式错误** | 均富卡的敌意增量写作 `average / 100`，原版实为 `(cash − average) / 100` | 已按 exe 反汇编实现 |
+| 8 | `asm/rich4_tool_chuansongji.asm` 140..173 | **漏指令** | 搬設施那段少了 exe 里的 `0044760f mov dword [源+0x30], 0`（清源头的上次過路費）| 已按 exe 实现（`teleportFacility`） |
 
 > 两处原先**疑似**误标的字段，现已澄清（均非错误）：
 > - ~~`total_winter_sleep_days`（+0x42）~~ ✅ **命名无误**。冬眠卡（VA 0x004440ea）

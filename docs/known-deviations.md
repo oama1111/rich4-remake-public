@@ -1241,11 +1241,14 @@ mov  ecx, 0x40000000                  ; 掩码 bit30，每试一个槽右移一�
 `effectiveLand` / `allEffectiveLands` 都改读它。钉在
 `packages/core/src/state/land-type.test.ts`。
 
-### Q-TOOL-2：傳送機的「搬設施」那一路没做（**前置已解除**）
+### ~~Q-TOOL-2~~：傳送機的「搬設施」那一路（**已结案 2026-09-14**）
 
-★ 2026-09-14：設施的归属/等级/种类/上次過路費/到期日已进状态
-（`facilityOwner/Level/Type/LastToll/Tenure`），買/首建/加蓋/到期都通了。
-搬設施本身只剩接线（DEVELOPMENT_PLAN §11 P0-2）。
+設施的五项进状态后接上了（`rules/teleport.ts` 的 `teleportFacility`，
+@source VA 0x004475d8）。搬 +0x19/+0x1a/+0x18/+0x34（归属/等级/种类/到期日），
+源头清零；**`+0x30` 上次過路費只清源、不搬到新址**（0x0044760f）——
+这一句 rich4-re 的 `rich4_tool_chuansongji.asm` 140..173 行**漏了**，
+又一处 C 级线索与 exe 不符（记入 reverse-engineering-audit 的错误清单）。
+三路（地產／設施／人）现在都有测试。下面是原先的记录：
 
 `rich4_tool_chuansongji.asm` 按选择器编码分三路：
 
