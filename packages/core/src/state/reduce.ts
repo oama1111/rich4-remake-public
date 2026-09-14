@@ -54,7 +54,7 @@ import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo, FacilityInfo, CommercialInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent } from '../rules/rent.ts';
-import { companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
+import { PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
 import {
   markPlayerBankrupt,
   resolveBankruptcyOutcome,
@@ -127,7 +127,7 @@ import {
   toolShelf,
   STORE_INDUSTRY,
 } from '../places/shop.ts';
-import { CARDS, CHARACTERS, TOOLS } from '@rich4/data';
+import { CARDS, CHARACTERS, TOOLS, fortuneEvent, newsEvent } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
@@ -685,7 +685,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         }
         // 新聞／命運：抽一张可行的事件并施加其效果
         if (node.specialKind === SPECIAL_KIND.NEWS) return drawAndApplyNews(next, topo);
-        if (node.specialKind === SPECIAL_KIND.FORTUNE) return drawAndApplyFortune(next);
+        if (node.specialKind === SPECIAL_KIND.FORTUNE) return drawAndApplyFortune(next, topo);
         // 魔法屋：两个转盘一转就结算，中间没有玩家决策
         if (node.specialKind === SPECIAL_KIND.MAGIC_HOUSE) return runMagicHouse(next, topo);
         // 小游戏：电脑玩家直接按「不玩」出口结算，真人才挂待决交互
@@ -1333,7 +1333,7 @@ function applyArrival(state: GameState, topo: MapTopology): GameState {
   // 住院
   if (r.hospitalDays !== 0) {
     const c = confine(next.players, next.hospitalOccupancy, 'hospital', me.index, r.hospitalDays);
-    next = { ...next, players: c.players, hospitalOccupancy: c.occupancy };
+    next = insureConfinement({ ...next, players: c.players, hospitalOccupancy: c.occupancy }, topo, me.index, r.hospitalDays);
   }
 
   // 神明离场后，搭档换上来
@@ -1470,7 +1470,7 @@ function applyMagicRequest(
       let s = state;
       for (let i = 0; i < req.amount; i++) {
         // 命運事件按**被点到的那个人**结算，故临时把行动者切过去
-        const drawn = drawAndApplyFortune({ ...s, currentPlayer: req.player });
+        const drawn = drawAndApplyFortune({ ...s, currentPlayer: req.player }, topo);
         s = { ...drawn, currentPlayer: state.currentPlayer };
         if (s.phase === 'gameOver') return s;
       }
@@ -1481,9 +1481,10 @@ function applyMagicRequest(
       const kind = req.kind === 'prison' ? 'prison' : 'hospital';
       const occ = kind === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
       const c = confine(state.players, occ, kind, req.player, req.amount);
-      return kind === 'prison'
+      const confined: GameState = kind === 'prison'
         ? { ...state, players: c.players, prisonOccupancy: c.occupancy }
         : { ...state, players: c.players, hospitalOccupancy: c.occupancy };
+      return insureConfinement(confined, topo, req.player, req.amount);
     }
     // @source 0x40b110(type)：住宅 level < 5 可建；連鎖店只有 level == 0 时可建
     case 'build': {
@@ -1624,8 +1625,13 @@ function fireMissile(
     players = c.players.map((q) => ({ ...q }));
     hospital = c.occupancy;
   }
+  // 保險：住院的意外損失（send_to_hospital 里 0x0043edf8）
+  const insured = new Set<number>();
+  players.forEach((q, i) => {
+    if (q.blocking.inHospital !== 0 && state.players[i]?.blocking.inHospital === 0) insured.add(i);
+  });
 
-  return {
+  let out: GameState = {
     ...state,
     players: applyHostilityDeltas(players, deltas),
     landLevel,
@@ -1633,6 +1639,8 @@ function fireMissile(
     hospitalOccupancy: hospital,
     toolStock,
   };
+  for (const i of insured) out = insureConfinement(out, topo, i, MISSILE_HOSPITAL_DAYS);
+  return out;
 }
 
 /** 某玩家脚下那块住宅；不是住宅返回 null */
@@ -2331,7 +2339,7 @@ export function reduceAll(
  * ⚠️ 牌堆游标无论事件是否可行都会前进（见 events/deck.ts），
  * 故这里必须把更新后的牌堆写回状态，否则会反复抽到同一张。
  */
-function drawAndApplyFortune(state: GameState): GameState {
+function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return state;
   const ctx = {
@@ -2360,13 +2368,25 @@ function drawAndApplyFortune(state: GameState): GameState {
       withDeck.prisonOccupancy,
   });
 
-  return {
+  let applied: GameState = {
     ...withDeck,
     players: out.players,
     pool: out.pool,
     prisonOccupancy: out.occupancy,
     lastEvent: { kind: 'fortune', id: effectiveId },
   };
+  // ★ 保險理賠的三处命運调用点：坐牢/住院走 send_to_*（0x0043d749 / 0x0043edf8）；
+  //   「冒貸」（id 2，0x0044c218）与「行人闖越馬路罰款」（id 14，0x0044cf11）直接赔金额
+  const entry = fortuneEvent(effectiveId);
+  if (entry !== undefined && !out.unimplemented) {
+    const me = withDeck.currentPlayer;
+    if (entry.effects.includes('prison') || entry.effects.includes('hospital')) {
+      applied = insureConfinement(applied, topo, me, out.amount);
+    } else if (entry.effects.includes('loan') || effectiveId === FORTUNE_JAYWALK_FINE) {
+      applied = insurancePayoutTo(applied, topo, me, out.amount);
+    }
+  }
+  return applied;
 }
 
 /**
@@ -2403,13 +2423,21 @@ function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
     occupancy: withDeck.prisonOccupancy,
   });
 
-  return {
+  let applied: GameState = {
     ...withDeck,
     players: out.players,
     pool: out.pool,
     prisonOccupancy: out.occupancy,
     lastEvent: { kind: 'news', id: draw.eventId },
   };
+  // 新聞的坐牢/住院也走 send_to_*，保險期内赔 2000×天×物價
+  const entry = newsEvent(draw.eventId);
+  if (entry !== undefined && !out.unimplemented && (entry.effects.includes('prison') || entry.effects.includes('hospital'))) {
+    for (const who of newsTargets(draw.eventId, withDeck, lands, allEffectiveFacilities(state, topo))) {
+      applied = insureConfinement(applied, topo, who, out.amount);
+    }
+  }
+  return applied;
 }
 
 /**
@@ -3125,6 +3153,42 @@ function buildableEntities(state: GameState, topo: MapTopology, player: number, 
 }
 
 /**
+ * 保險理賠 @source 0x0044ba63(玩家, 損失, 旗标)：
+ * ```asm
+ * 0044ba74  if (玩家.+0x3e 保險期 == 0) return
+ * 0044ba82  ebx = 第一家 行業別 == 4（保險）的企業（从头扫，命中即停）
+ * 0044bad8  pay_money(100 + ebx, 玩家, 損失, 1)      ; ★ 第三个参数没用到，一律進現金
+ * ```
+ * 六个调用点（Q-INS-1 已找齐）：住旅館的 2000×天×物價（0x0041a82d 落点 / 0x0040d425 通用住店）、
+ * 坐牢 2000×天×物價（0x0043d749）、住院 2000×天×物價（0x0043edf8）、命運「冒貸」的金额（0x0044c218）、
+ * 命運「行人闖越馬路罰款」（0x0044cf11）。
+ * ⚠️ 没有保險公司的地图上原版会写到企業表外（ebx = 家数 + 1），本引擎不赔，记 Q-INS-2。
+ */
+export function insurancePayoutTo(state: GameState, topo: MapTopology, index: number, loss: number): GameState {
+  const p = state.players[index];
+  if (p === undefined || !isAlive(p) || p.insuranceDays === 0 || loss <= 0) return state;
+  const co = (topo.commercials ?? []).find((c) => c.type === INDUSTRY.insurance);
+  if (co === undefined) return state;
+  const companies: Company[] = state.companyFunds.map((f, i) => ({ funds: f, fundsMirror: state.companyProfit[i] ?? 0 }));
+  const r = transferMoney(state.players, companies, state.pool, companyParty(co.id), index, loss, PAY_FLAG_CREDIT_TO_CASH);
+  return {
+    ...state,
+    players: r.players,
+    pool: r.pool,
+    companyFunds: r.companies.map((c) => c.funds),
+    companyProfit: r.companies.map((c) => c.fundsMirror),
+  };
+}
+
+/** 住店／坐牢／住院的「意外損失」= 2000 × 天 × 物價，保險期内由保險公司赔 @source 0x0040d402 / 0x0043d72c / 0x0043edd9 */
+/** 命運「行人闖越馬路罰款」的事件号（0x0044cd99，尾部 0x0044cf11 调保險） */
+const FORTUNE_JAYWALK_FINE = 14;
+
+function insureConfinement(state: GameState, topo: MapTopology, index: number, days: number): GameState {
+  return insurancePayoutTo(state, topo, index, hotelStayLoss(days, state.priceIndex));
+}
+
+/**
  * 玩家付一笔費给公司 —— 进 `companyFunds`，付款走 `transferMoney`（现金→存款→破產）。
  * @source 0x0041b022 `pay_money(付款人, 企業編碼 − 0x170c, 費, 0)`
  */
@@ -3480,6 +3544,8 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
       p.totalWinterSleepDays += hotelDays;
       p.monthlyPaid += hotelStayLoss(hotelDays, state.priceIndex);
     });
+    // @source 0x0041a82d：保險期内由保險公司赔这笔損失
+    paid = insureConfinement(paid, topo, payer, hotelDays);
   }
   return r.bankrupted ? applyBankruptcy(paid, payer, topo) : paid;
 }

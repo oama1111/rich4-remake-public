@@ -136,3 +136,15 @@ describe('★ 休市日不走行情', () => {
     }
   });
 });
+
+describe('★ 停牌中柜台不能买卖 @source 0x0042aef4 / 0x0042b02f', () => {
+  it('f6 != 0 时买、卖都拒；归零后能买', () => {
+    const s = trader(weekdayNotHoliday());
+    const halted = { ...s, market: { ...s.market, stocks: s.market.stocks.map((x, i) => (i === 0 ? { ...x, f6: 2 } : x)) } };
+    expect(reduce(halted, { type: 'buyStock', stock: 0, shares: 10 }, topo)).toBe(halted);
+    const bought = reduce(s, { type: 'buyStock', stock: 0, shares: 10 }, topo);
+    const haltedHeld = { ...bought, market: { ...bought.market, stocks: bought.market.stocks.map((x, i) => (i === 0 ? { ...x, f6: 1 } : x)) } };
+    expect(reduce(haltedHeld, { type: 'sellStock', stock: 0, shares: 10 }, topo)).toBe(haltedHeld);
+    expect(reduce(s, { type: 'buyStock', stock: 0, shares: 10 }, topo)).not.toBe(s);
+  });
+});

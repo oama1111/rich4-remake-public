@@ -1421,7 +1421,7 @@ cards:
   title: 停牌中柜台不能买卖（Q-STOCK-3）
   module: MOD-07
   req: Q-STOCK-3
-  status: doing
+  status: done
   estimate: 0.1
   depends_on: []
   uses: [core/state/reduce.ts (tradeStock), core/places/stock.ts (StockState.f6)]
@@ -1438,7 +1438,7 @@ cards:
   title: 保險理賠接线：找齐 0x44ba63 的调用点（Q-INS-1）
   module: MOD-07
   req: Q-INS-1
-  status: todo
+  status: done
   estimate: 0.6
   depends_on: []
   uses: [core/places/company.ts (insurancePayout), core/state/reduce.ts (旅館住店 / 被狗咬 / 踩雷 / 炸彈 / 監獄 各处損失)]
