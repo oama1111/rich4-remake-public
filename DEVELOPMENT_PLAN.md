@@ -362,7 +362,11 @@ rich4-remake/
 
 | 子任务 | 对照源 | 单元 |
 |---|---|---|
-| 回合流程、掷骰、走子、岔路选择 | `rich4_player_core_actions.asm`(6192)、`rich4_calculate_direction.asm` | 3 |
+| 回合流程、掷骰、走子、朝向 | `rich4_player_core_actions.asm`(6192)、`rich4_calculate_direction.asm` | 3 |
+
+> ⚠️ 「岔路选择」曾被列在这里，是**误解**：原版在岔路口不问玩家，
+> 筛掉回头路与被封的槽之后 `rand()` 随机挑（VA 0x0040c12c）。
+> 见 docs/known-deviations.md 的「岔路口选方向」一节。
 | 地产：买地/盖房/升级/收租/抵押 | `land.h`、`rich4_player_core_actions.asm` | 2 |
 | 物价指数、资产结算、破产判定 | `rich4_update_price_index.asm`、`rich4_calculate_player_wealth.asm`、`rich4_player_bankrupt.asm` | 1 |
 | 30 张卡片 | `csrc/cards.c`(1385) + 29 个 `rich4_card_*.asm` | 3 |
