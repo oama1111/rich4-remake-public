@@ -15,6 +15,7 @@
  */
 
 import { SPECIAL_KIND } from '../loaders/map.ts';
+import type { ConfinementKind } from './confinement.ts';
 
 /**
  * 落点要求玩家做的决定。
@@ -101,6 +102,25 @@ export type PendingInteraction =
       maxScore: number;
     }
   /**
+   * 探監／探病：花點券**保釋**里面的人。
+   *
+   * @source 監獄落点 0x0043d304 / 醫院落点 0x0043e9a4，见 rules/visit.ts
+   */
+  | {
+      kind: 'bail';
+      /** 'prison' | 'hospital' */
+      place: ConfinementKind;
+      candidates: {
+        slot: number;
+        player: number;
+        name: string;
+        cost: number;
+        affordable: boolean;
+      }[];
+      /** 访客手上的點券 */
+      points: number;
+    }
+  /**
    * 尚未实现的场所。
    *
    * ⚠️ 这一项存在的意义是**让缺口可见**：落在百货/魔法屋/小游戏上时，
@@ -114,8 +134,12 @@ export type PendingInteraction =
 
 /** 各特殊格对应的场所名 —— 仅用于 `unimplemented` 的可读性 */
 const PLACE_NAMES: Readonly<Record<number, string>> = {
-  [SPECIAL_KIND.PRISON]: '監獄',
-  [SPECIAL_KIND.HOSPITAL]: '醫院',
+  // ★ **空的** —— 17 种特殊格已全部接上规则：
+  //   公園/新聞/命運/監獄/醫院/三个小游戏/樂透/三种點數格/卡片/
+  //   銀行/百貨公司/魔法屋。
+  //   这张表与 `unimplemented` 那一路**保留不删**：往后要是解出新的
+  //   特殊格类型、或者某条规则要临时退场，得有地方明确说「这里还没做」，
+  //   而不是悄无声息地什么都不发生。
 };
 
 /**
@@ -175,7 +199,9 @@ export type InteractionResponse =
   | { kind: 'shopSellCard'; cardId: number }
   | { kind: 'shopSellTool'; toolId: number; count: number }
   /** 小游戏玩完了，报上得分；`null` 表示没玩（按 50..69 抽） */
-  | { kind: 'minigameScore'; score: number | null };
+  | { kind: 'minigameScore'; score: number | null }
+  /** 保釋某个槽位的人 */
+  | { kind: 'bail'; slot: number };
 
 /** 答复与待决交互是否配套——防止 UI 送回驴唇不对马嘴的 action */
 export function responseMatches(
@@ -200,6 +226,8 @@ export function responseMatches(
       return response.kind.startsWith('shop');
     case 'minigame':
       return response.kind === 'minigameScore';
+    case 'bail':
+      return response.kind === 'bail';
     default:
       return false;
   }

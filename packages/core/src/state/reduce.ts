@@ -35,7 +35,7 @@ import {
 } from '../rules/tool-effects.ts';
 import { STOCKED_TOOL_MAX_ID, takeTool, toolCount } from '../rules/tools.ts';
 import { buyCard, buyTool, sellCard, sellTool } from '../places/shop.ts';
-import { CARDS, TOOLS } from '@rich4/data';
+import { CARDS, CHARACTERS, TOOLS } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
 import {
@@ -81,7 +81,8 @@ import { isNewsFeasible } from '../events/news.ts';
 import { checkFortune } from '../events/fortune.ts';
 import { applyFortuneEffect } from '../events/fortune-effects.ts';
 import { applyNewsEffect } from '../events/news-effects.ts';
-import { anyoneConfined, confine } from '../rules/confinement.ts';
+import { anyoneConfined, confine, type ConfinementKind } from '../rules/confinement.ts';
+import { applyBail, bailCandidates, decideBail } from '../rules/visit.ts';
 import {
   isUnimplementedPlace,
   needsInteraction,
@@ -312,6 +313,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         if (node.specialKind === SPECIAL_KIND.MAGIC_HOUSE) return runMagicHouse(next, topo);
         // 小游戏：电脑玩家直接按「不玩」出口结算，真人才挂待决交互
         if (isMinigame(node.specialKind)) return enterMinigame(next, node.specialKind);
+        // 探監／探病：同样是电脑自己拿主意、真人才弹窗
+        if (
+          node.specialKind === SPECIAL_KIND.PRISON ||
+          node.specialKind === SPECIAL_KIND.HOSPITAL
+        ) {
+          return enterVisit(next, node.specialKind);
+        }
 
         // 其余特殊格：交给「待决交互」机制。
         // ★ 这样每一格都**可达**：已实现的给出具体交互，
@@ -426,6 +434,18 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     case 'declineDecision': {
       if (state.phase !== 'awaitingDecision') return state;
       return { ...state, phase: 'turnEnd' };
+    }
+
+    case 'bail': {
+      if (state.pending === null || state.pending.kind !== 'bail') return state;
+      const place = state.pending.place;
+      const occ = place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+      const r = applyBail(state.players, occ, place, state.currentPlayer, action.slot);
+      if (!r.ok) return { ...state, pending: null, phase: 'turnEnd' };
+      const paid: GameState = { ...state, players: r.players, pending: null, phase: 'turnEnd' };
+      return place === 'prison'
+        ? { ...paid, prisonOccupancy: r.occupancy }
+        : { ...paid, hospitalOccupancy: r.occupancy };
     }
 
     case 'minigame': {
@@ -873,6 +893,53 @@ function settleMinigame(state: GameState, score: number | null): GameState {
     p.points = addPoints(p.points, gained);
   });
   return { ...next, phase: 'turnEnd' };
+}
+
+/** 角色名 —— 保釋提示语要用 */
+function characterNameOf(p: Player | undefined): string {
+  if (p === undefined) return '？';
+  return CHARACTERS[p.character]?.name ?? `玩家${p.index + 1}`;
+}
+
+/**
+ * 落在監獄/醫院格上。
+ *
+ * @source VA 0x0043d304 / 0x0043e9a4：真人弹保釋窗口，电脑自己掷骰子决定。
+ *   见 rules/visit.ts。
+ */
+function enterVisit(state: GameState, specialKind: number): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return { ...state, phase: 'turnEnd' };
+  const kind: ConfinementKind = specialKind === SPECIAL_KIND.PRISON ? 'prison' : 'hospital';
+  const occ = kind === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+  // @source 占用表全空即返回
+  if (!anyoneConfined(occ)) return { ...state, phase: 'turnEnd' };
+
+  const human = (me.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN;
+  if (human) {
+    return { ...state, pending: pendingForSpecial(state, specialKind) };
+  }
+
+  // 电脑：随机数在 reducer 里掷，AI 保持纯函数
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  // decideBail 最多用三个随机数；多备无妨，用几个由它告诉我们
+  const rolls = [rng.next(), rng.next(), rng.next()];
+  const d = decideBail(me.bailStyle, occ, me.points, rolls);
+
+  // ★ 只推进**真正用掉**的那几个 —— 多推一个，整条随机序列就与原版错位
+  const after = new WatcomRng();
+  after.setState(state.rngState);
+  for (let i = 0; i < d.randomsUsed; i++) after.next();
+  const rolled: GameState = { ...state, rngState: after.getState(), phase: 'turnEnd' };
+  if (d.slot < 0) return rolled;
+
+  const r = applyBail(rolled.players, occ, kind, state.currentPlayer, d.slot);
+  if (!r.ok) return rolled;
+  const paid: GameState = { ...rolled, players: r.players };
+  return kind === 'prison'
+    ? { ...paid, prisonOccupancy: r.occupancy }
+    : { ...paid, hospitalOccupancy: r.occupancy };
 }
 
 function tradeStock(
@@ -1408,11 +1475,18 @@ function pendingForSpecial(state: GameState, specialKind: number): PendingIntera
 
   // 監獄／醫院：先看有没有人在里面。没人可探就什么都不发生。
   // @source 落点处理开头 `for (i=0;i<8;i++) if (table[i]) break;` 全 0 即返回
-  if (specialKind === SPECIAL_KIND.PRISON) {
-    return anyoneConfined(state.prisonOccupancy) ? unimplementedPlace(specialKind) : null;
-  }
-  if (specialKind === SPECIAL_KIND.HOSPITAL) {
-    return anyoneConfined(state.hospitalOccupancy) ? unimplementedPlace(specialKind) : null;
+  if (specialKind === SPECIAL_KIND.PRISON || specialKind === SPECIAL_KIND.HOSPITAL) {
+    const kind: ConfinementKind = specialKind === SPECIAL_KIND.PRISON ? 'prison' : 'hospital';
+    const occ = kind === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+    if (!anyoneConfined(occ)) return null;
+    return {
+      kind: 'bail',
+      place: kind,
+      candidates: bailCandidates(occ, state.players, me.points, (i) =>
+        characterNameOf(state.players[i]),
+      ),
+      points: me.points,
+    };
   }
 
   if (specialKind === SPECIAL_KIND.BANK) {

@@ -128,6 +128,8 @@ function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, star
     ndices: 1,
     // @source player_info +0x14 sex：非 0 是男。取自角色表，开局定下不再变
     isMale: !(CHARACTERS[setup.character]?.isFemale ?? false),
+    // @source player_info +0x17 —— 取自角色表的 f23，见 rules/visit.ts
+    bailStyle: CHARACTERS[setup.character]?.f23 ?? 0,
     cash: money.cash,
     moneyInBank: money.moneyInBank,
     loan: 0,

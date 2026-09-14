@@ -116,6 +116,8 @@ export type Action =
    *   引擎按原版的「不玩」出口抽 50..69。玩了就把分数报上来，
    *   作为 action 参数进日志，重放时照样对得上（C-DET-4）。
    */
+  /** 保釋監獄/醫院里的某个槽位（0..3 玩家、4..7 NPC） */
+  | { type: 'bail'; slot: number }
   | { type: 'minigame'; score: number | null }
   | { type: 'endTurn' };
 

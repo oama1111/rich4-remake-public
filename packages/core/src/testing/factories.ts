@@ -25,6 +25,7 @@ export function makePlayer(over: Partial<Player> = {}): Player {
     trafficMethod: 0,
     ndices: 1,
     isMale: true,
+    bailStyle: 0,
     cash: 100_000,
     moneyInBank: 50_000,
     loan: 0,

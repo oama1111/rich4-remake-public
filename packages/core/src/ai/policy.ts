@@ -324,6 +324,15 @@ export function decidePending(state: GameState): Action | null {
   // ★ 小游戏：AI 从来不玩（原版 `who_plays != 1` 直接走「不玩」出口）。
   //   真人被托管时也走这条——托管的意思就是让 AI 替你打，不该弹出玩法。
   if (p.kind === 'minigame') return { type: 'minigame', score: null };
+  // ★ 保釋：电脑玩家那条路在 reducer 里就掷完了（随机数不能进 AI），
+  //   走到这里的只会是**被托管的真人**。按 `bailStyle` 的精神保守处理：
+  //   救得起同伴就救，不去放犯人。
+  if (p.kind === 'bail') {
+    const cheap = p.candidates
+      .filter((c) => c.affordable && c.player >= 0)
+      .sort((a, b) => a.cost - b.cost)[0];
+    return cheap === undefined ? null : { type: 'bail', slot: cheap.slot };
+  }
   if (p.kind === 'buyShares') {
     // 简单策略：留够安全垫，剩下的钱买得起多少买多少，且不超过企业余量。
     // ★ 这是**策略**不是规则——买不买、买多少原版由 AI 性格决定（M3），

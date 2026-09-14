@@ -5,7 +5,8 @@
  * @source rich4-re/asm/rich4_characters.c —— const player_info rich4_character_profiles[12]
  * @source rich4-re/docs/characters.txt —— 角色编号对照
  *
- * ⚠️ f22 / f23 / f24 / f26 的语义**尚未确认**（DEVELOPMENT_PLAN.md Q3）。
+ * ⚠️ f22 / f24 / f26 的语义**尚未确认**（DEVELOPMENT_PLAN.md Q3）。
+ * ★ f23 已解出：**保釋倾向**，见 `@rich4/core` 的 `rules/visit.ts` 的 `BAIL_STYLE`。
  *    这四个字段在 12 个角色间取值各不相同，高度疑似 AI 性格参数。
  *    按 C-FID-2 保留原始字段名，**禁止臆测命名**。
  */
@@ -31,6 +32,11 @@ export interface CharacterDef {
   /** TODO: semantics unknown —— 12 个角色全为 3 */
   f22: number;
   /** TODO: semantics unknown —— 取值 0 / 1 / 2，疑似 AI 性格分类 */
+  /**
+   * ★ **保釋倾向**，0/1/2 —— 落在監獄/醫院格上时电脑保釋谁。
+   *   0 只救玩家、2 只放犯人、1 居中。见 `rules/visit.ts` 的 `BAIL_STYLE`。
+   *   它被拷进玩家结构的 +0x17（`Player.bailStyle`）。
+   */
   f23: number;
   /** TODO: semantics unknown —— 取值 0..100 */
   f24: number;

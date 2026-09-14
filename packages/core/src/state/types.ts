@@ -97,6 +97,15 @@ export interface Player {
    * 破产的 `memset(player + 0x1c, 0, 0x4c)` 够不着它。
    */
   isMale: boolean;
+  /**
+   * 保釋倾向。@source player_info +0x17，取值 0/1/2。
+   *
+   * ★ 这就是 `@rich4/data` 的 `characters.ts` 里那个「语义尚未确认」的
+   *   **`f23`**：監獄与醫院两处落点各自对它做同一套三路判断
+   *   （VA 0x0043d3ee / 0x0043ea9a），决定电脑玩家保釋谁。
+   *   取值含义见 `rules/visit.ts` 的 `BAIL_STYLE`。
+   */
+  bailStyle: number;
   /** 现金，可为负 @source player_info +0x1c (int32) */
   cash: number;
   /** 银行存款（含特别融资） */

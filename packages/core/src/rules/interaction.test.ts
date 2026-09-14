@@ -55,9 +55,10 @@ describe('★ 未实现的场所会明确报出来，而不是静默无事发生
     expect(isUnimplementedPlace(SPECIAL_KIND.MAGIC_HOUSE)).toBe(false);
   });
 
-  it('带可读场所名', () => {
-    const p = unimplementedPlace(SPECIAL_KIND.PRISON);
-    expect(p).toMatchObject({ kind: 'unimplemented', place: '監獄' });
+  // 名单空了，但机制留着：往后解出新的特殊格类型时还得有地方报「没做」
+  it('不认识的特殊格仍会报出来，而不是静默', () => {
+    const p = unimplementedPlace(99);
+    expect(p).toMatchObject({ kind: 'unimplemented', place: '特殊格99', specialKind: 99 });
   });
 
   it('★ 三个小游戏已实现 —— 落点只产出一笔點券', () => {
@@ -70,9 +71,10 @@ describe('★ 未实现的场所会明确报出来，而不是静默无事发生
     }
   });
 
-  it('★ 名单只剩監獄與醫院 —— 探监流程还没做', () => {
-    expect(isUnimplementedPlace(SPECIAL_KIND.PRISON)).toBe(true);
-    expect(isUnimplementedPlace(SPECIAL_KIND.HOSPITAL)).toBe(true);
+  it('★ 名单已经空了 —— 17 种特殊格全部接上规则', () => {
+    for (let kind = 0; kind <= 16; kind++) {
+      expect(isUnimplementedPlace(kind), `kind ${kind}`).toBe(false);
+    }
   });
 
   it('★ 银行与乐透**不**在未实现之列——它们有规则了', () => {
@@ -102,7 +104,7 @@ describe('★ 答复必须与待决交互配套', () => {
   });
 
   it('未实现的场所不接受任何实质答复', () => {
-    const p = unimplementedPlace(SPECIAL_KIND.PRISON);
+    const p = unimplementedPlace(99);
     expect(responseMatches(p, { kind: 'buyLand' })).toBe(false);
     expect(responseMatches(p, { kind: 'decline' })).toBe(true);
   });
@@ -117,7 +119,7 @@ describe('魔法屋', () => {
   });
 
   it('尚未实现的场所没有选项表', () => {
-    const p = unimplementedPlace(SPECIAL_KIND.PRISON);
+    const p = unimplementedPlace(99);
     if (p.kind !== 'unimplemented') return;
     expect(p.options).toBeUndefined();
   });

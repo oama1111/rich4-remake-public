@@ -119,15 +119,33 @@ describe('★ 監獄／醫院：没人在押就什么都不发生（探监机制
     expect(reduce(s, { type: 'settle' }, t).pending).toBeNull();
   });
 
-  run('★ 有人在押时才给出交互', () => {
+  run('★ 真人访客 + 有人在押 → 给出保釋交互', () => {
     const { map, topo: t } = topo();
-    const base = newGame({ map, players: players() });
+    const base = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'human' as const })),
+    });
     const s0 = standOn(base, map, SPECIAL_KIND.PRISON);
     if (s0 === null) return;
     const occ = [...s0.prisonOccupancy];
     occ[1] = 1;
     const r = reduce({ ...s0, prisonOccupancy: occ }, { type: 'settle' }, t);
-    expect(r.pending?.kind).toBe('unimplemented');
+    expect(r.pending?.kind).toBe('bail');
+    if (r.pending?.kind !== 'bail') return;
+    expect(r.pending.place).toBe('prison');
+    expect(r.pending.candidates).toHaveLength(1);
+    expect(r.pending.candidates[0]).toMatchObject({ slot: 1, player: 1, cost: 30 });
+  });
+
+  run('★ 电脑访客不弹窗 —— 在 reducer 里自己掷完', () => {
+    const { map, topo: t } = topo();
+    const s0 = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.PRISON);
+    if (s0 === null) return;
+    const occ = [...s0.prisonOccupancy];
+    occ[1] = 1;
+    const r = reduce({ ...s0, prisonOccupancy: occ }, { type: 'settle' }, t);
+    expect(r.pending).toBeNull();
+    expect(r.phase).toBe('turnEnd');
   });
 });
 
