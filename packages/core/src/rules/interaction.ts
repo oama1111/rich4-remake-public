@@ -85,6 +85,22 @@ export type PendingInteraction =
       tools: { id: number; name: string; price: number; stock: number | null }[];
     }
   /**
+   * 小游戏：企鵝挖寶 / 七彩氣球 / 喜從天降。
+   *
+   * ★ 规则上只产出一笔點券。玩法本身是表现层的事，
+   *   分数作为答复送回来（`minigameScore`）；不玩就按 50..69 抽一个。
+   *
+   * @source 落点跳表第 6/7/8 项，见 places/minigame.ts
+   */
+  | {
+      kind: 'minigame';
+      /** 6/7/8，见 `MINIGAME` */
+      game: number;
+      name: string;
+      /** 分数上限 —— 超出会被夹回来 */
+      maxScore: number;
+    }
+  /**
    * 尚未实现的场所。
    *
    * ⚠️ 这一项存在的意义是**让缺口可见**：落在百货/魔法屋/小游戏上时，
@@ -98,9 +114,6 @@ export type PendingInteraction =
 
 /** 各特殊格对应的场所名 —— 仅用于 `unimplemented` 的可读性 */
 const PLACE_NAMES: Readonly<Record<number, string>> = {
-  [SPECIAL_KIND.PENGUIN_DIG]: '企鵝挖寶',
-  [SPECIAL_KIND.BALLOON]: '七彩氣球',
-  [SPECIAL_KIND.GIFT_FROM_SKY]: '喜從天降',
   [SPECIAL_KIND.PRISON]: '監獄',
   [SPECIAL_KIND.HOSPITAL]: '醫院',
 };
@@ -160,7 +173,9 @@ export type InteractionResponse =
   | { kind: 'shopBuyCard'; cardId: number }
   | { kind: 'shopBuyTool'; toolId: number }
   | { kind: 'shopSellCard'; cardId: number }
-  | { kind: 'shopSellTool'; toolId: number; count: number };
+  | { kind: 'shopSellTool'; toolId: number; count: number }
+  /** 小游戏玩完了，报上得分；`null` 表示没玩（按 50..69 抽） */
+  | { kind: 'minigameScore'; score: number | null };
 
 /** 答复与待决交互是否配套——防止 UI 送回驴唇不对马嘴的 action */
 export function responseMatches(
@@ -183,6 +198,8 @@ export function responseMatches(
       return response.kind === 'buyShares';
     case 'shop':
       return response.kind.startsWith('shop');
+    case 'minigame':
+      return response.kind === 'minigameScore';
     default:
       return false;
   }

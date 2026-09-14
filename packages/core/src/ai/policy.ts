@@ -321,6 +321,9 @@ export function decidePending(state: GameState): Action | null {
     }
     return null;
   }
+  // ★ 小游戏：AI 从来不玩（原版 `who_plays != 1` 直接走「不玩」出口）。
+  //   真人被托管时也走这条——托管的意思就是让 AI 替你打，不该弹出玩法。
+  if (p.kind === 'minigame') return { type: 'minigame', score: null };
   if (p.kind === 'buyShares') {
     // 简单策略：留够安全垫，剩下的钱买得起多少买多少，且不超过企业余量。
     // ★ 这是**策略**不是规则——买不买、买多少原版由 AI 性格决定（M3），

@@ -109,6 +109,14 @@ export type Action =
   | { type: 'shop'; op: 'buyTool' | 'sellTool'; id: number; count?: number }
 
   /** 结束当前玩家回合，轮转到下一位 */
+  /**
+   * 小游戏结算。
+   *
+   * ★ `score` 为 `null` 表示**没玩**（电脑玩家、或玩法未实现）——
+   *   引擎按原版的「不玩」出口抽 50..69。玩了就把分数报上来，
+   *   作为 action 参数进日志，重放时照样对得上（C-DET-4）。
+   */
+  | { type: 'minigame'; score: number | null }
   | { type: 'endTurn' };
 
 export type ActionType = Action['type'];

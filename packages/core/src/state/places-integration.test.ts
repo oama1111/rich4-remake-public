@@ -74,11 +74,21 @@ describe('★ 樂透', () => {
 });
 
 describe('★ 未实现的场所会明确报出来', () => {
-  run('三个小游戏给出 unimplemented 而不是静默', () => {
+  run('★ 三个小游戏已实现 —— 电脑玩家直接拿 50..69 點券', () => {
     const { map, topo: t } = topo();
-    const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.PENGUIN_DIG);
-    if (s === null) return;
-    expect(reduce(s, { type: 'settle' }, t).pending?.kind).toBe('unimplemented');
+    for (const kind of [
+      SPECIAL_KIND.PENGUIN_DIG,
+      SPECIAL_KIND.BALLOON,
+      SPECIAL_KIND.GIFT_FROM_SKY,
+    ]) {
+      const s = standOn(newGame({ map, players: players() }), map, kind);
+      if (s === null) continue;
+      const r = reduce(s, { type: 'settle' }, t);
+      expect(r.pending, `kind ${kind}`).toBeNull();
+      const gained = r.players[s.currentPlayer]!.points - s.players[s.currentPlayer]!.points;
+      expect(gained, `kind ${kind}`).toBeGreaterThanOrEqual(50);
+      expect(gained, `kind ${kind}`).toBeLessThanOrEqual(69);
+    }
   });
 
   run('★ 魔法屋已实现 —— 即时结算，不留待决交互', () => {
@@ -129,5 +139,72 @@ describe('★ 即时结算的格子不产生交互', () => {
       if (s === null) continue;
       expect(reduce(s, { type: 'settle' }, t).pending, `kind ${kind}`).toBeNull();
     }
+  });
+});
+
+describe('★ 小游戏：真人要玩，电脑不玩', () => {
+  run('真人落在小游戏格上 → 挂待决交互，等玩法报分', () => {
+    const { map, topo: t } = topo();
+    const base = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'human' as const })),
+    });
+    const s = standOn(base, map, SPECIAL_KIND.PENGUIN_DIG);
+    if (s === null) return;
+    const r = reduce(s, { type: 'settle' }, t);
+    expect(r.pending?.kind).toBe('minigame');
+    if (r.pending?.kind !== 'minigame') return;
+    expect(r.pending.name).toBe('企鵝挖寶');
+    // ★ 还没结算 —— 點券一分没变，随机数也没动
+    expect(r.players[s.currentPlayer]!.points).toBe(s.players[s.currentPlayer]!.points);
+    expect(r.rngState).toBe(s.rngState);
+  });
+
+  run('★ 报分之后點券入账，且不消耗随机数', () => {
+    const { map, topo: t } = topo();
+    const base = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'human' as const })),
+    });
+    const s = standOn(base, map, SPECIAL_KIND.BALLOON);
+    if (s === null) return;
+    const waiting = reduce(s, { type: 'settle' }, t);
+    const done = reduce(waiting, { type: 'minigame', score: 321 }, t);
+    expect(done.players[s.currentPlayer]!.points).toBe(
+      s.players[s.currentPlayer]!.points + 321,
+    );
+    expect(done.pending).toBeNull();
+    expect(done.phase).toBe('turnEnd');
+    // 玩了就不抽随机数 —— 与原版「真人那条路一次 rand() 都不调」一致
+    expect(done.rngState).toBe(waiting.rngState);
+  });
+
+  run('★ 报 null 表示没玩 —— 退回 50..69', () => {
+    const { map, topo: t } = topo();
+    const base = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'human' as const })),
+    });
+    const s = standOn(base, map, SPECIAL_KIND.GIFT_FROM_SKY);
+    if (s === null) return;
+    const waiting = reduce(s, { type: 'settle' }, t);
+    const done = reduce(waiting, { type: 'minigame', score: null }, t);
+    const gained = done.players[s.currentPlayer]!.points - s.players[s.currentPlayer]!.points;
+    expect(gained).toBeGreaterThanOrEqual(50);
+    expect(gained).toBeLessThanOrEqual(69);
+    expect(done.rngState).not.toBe(waiting.rngState);
+  });
+
+  run('★ 报一个天文数字也只能拿到 999', () => {
+    const { map, topo: t } = topo();
+    const base = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'human' as const })),
+    });
+    const s = standOn(base, map, SPECIAL_KIND.PENGUIN_DIG);
+    if (s === null) return;
+    const waiting = reduce(s, { type: 'settle' }, t);
+    const done = reduce(waiting, { type: 'minigame', score: 9_999_999 }, t);
+    expect(done.players[s.currentPlayer]!.points - s.players[s.currentPlayer]!.points).toBe(999);
   });
 });

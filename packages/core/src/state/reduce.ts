@@ -48,6 +48,13 @@ import {
 import { demolishLand } from '../rules/land-mutation.ts';
 import { almsAmount, beggarAt } from '../rules/beggar.ts';
 import {
+  MINIGAME_MAX_SCORE,
+  MINIGAME_NAMES,
+  autoMinigameScore,
+  clampMinigameScore,
+  isMinigame,
+} from '../places/minigame.ts';
+import {
   applyMagicEffect,
   spinMagicHouse,
   type MagicNodeInfo,
@@ -303,6 +310,8 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         if (node.specialKind === SPECIAL_KIND.FORTUNE) return drawAndApplyFortune(next);
         // 魔法屋：两个转盘一转就结算，中间没有玩家决策
         if (node.specialKind === SPECIAL_KIND.MAGIC_HOUSE) return runMagicHouse(next, topo);
+        // 小游戏：电脑玩家直接按「不玩」出口结算，真人才挂待决交互
+        if (isMinigame(node.specialKind)) return enterMinigame(next, node.specialKind);
 
         // 其余特殊格：交给「待决交互」机制。
         // ★ 这样每一格都**可达**：已实现的给出具体交互，
@@ -417,6 +426,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     case 'declineDecision': {
       if (state.phase !== 'awaitingDecision') return state;
       return { ...state, phase: 'turnEnd' };
+    }
+
+    case 'minigame': {
+      if (state.pending === null || state.pending.kind !== 'minigame') return state;
+      return settleMinigame({ ...state, pending: null }, action.score);
     }
 
     case 'endTurn': {
@@ -804,6 +818,61 @@ function landAtPlayer(state: GameState, topo: MapTopology, playerIndex: number):
   const idx = housingIndexOf(node.type);
   if (idx === null) return null;
   return effectiveLand(state, topo, idx);
+}
+
+/**
+ * 走到小游戏格上。
+ *
+ * @source 落点跳表第 6/7/8 项 + 三个小游戏共用的「不玩」出口 0x00415457：
+ * ```asm
+ * if (player.who_plays != 1) goto 不玩     ; ★ 电脑玩家从来不玩
+ * if ([0x497159] == 0)       goto 不玩     ; 设置里关掉了
+ * …玩…
+ * ```
+ * 真人才需要把玩法跑起来，故只有真人会挂待决交互。
+ */
+function enterMinigame(state: GameState, specialKind: number): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return state;
+  // @source cmp byte [player + 0x15], 1 / jne 不玩
+  const human = (me.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN;
+  if (!human) return settleMinigame(state, null);
+
+  return {
+    ...state,
+    pending: {
+      kind: 'minigame',
+      game: specialKind,
+      name: MINIGAME_NAMES[specialKind] ?? `小游戏${specialKind}`,
+      maxScore: MINIGAME_MAX_SCORE,
+    },
+  };
+}
+
+/**
+ * 小游戏结算 —— 规则上只有一件事：點券 += 得分。
+ *
+ * @param score 玩出来的分；`null` 表示没玩，按 `50 + rand() % 20` 抽
+ *
+ * ⚠️ 随机数**只在没玩时才推进**，与原版一致：真人玩完那条路上
+ *   原版一次 `rand()` 都不调（分数来自玩法本身）。
+ */
+function settleMinigame(state: GameState, score: number | null): GameState {
+  let rngState = state.rngState;
+  let gained: number;
+  if (score === null) {
+    const rng = new WatcomRng();
+    rng.setState(rngState);
+    gained = autoMinigameScore(rng.next());
+    rngState = rng.getState();
+  } else {
+    gained = clampMinigameScore(score);
+  }
+  // @source add word [player + 0x30], ax
+  const next = withPlayer({ ...state, rngState }, state.currentPlayer, (p) => {
+    p.points = addPoints(p.points, gained);
+  });
+  return { ...next, phase: 'turnEnd' };
 }
 
 function tradeStock(

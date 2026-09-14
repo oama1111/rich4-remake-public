@@ -56,18 +56,23 @@ describe('★ 未实现的场所会明确报出来，而不是静默无事发生
   });
 
   it('带可读场所名', () => {
-    const p = unimplementedPlace(SPECIAL_KIND.PENGUIN_DIG);
-    expect(p).toMatchObject({ kind: 'unimplemented', place: '企鵝挖寶' });
+    const p = unimplementedPlace(SPECIAL_KIND.PRISON);
+    expect(p).toMatchObject({ kind: 'unimplemented', place: '監獄' });
   });
 
-  it('三个小游戏也在列', () => {
+  it('★ 三个小游戏已实现 —— 落点只产出一笔點券', () => {
     for (const k of [
       SPECIAL_KIND.PENGUIN_DIG,
       SPECIAL_KIND.BALLOON,
       SPECIAL_KIND.GIFT_FROM_SKY,
     ]) {
-      expect(isUnimplementedPlace(k), `kind ${k}`).toBe(true);
+      expect(isUnimplementedPlace(k), `kind ${k}`).toBe(false);
     }
+  });
+
+  it('★ 名单只剩監獄與醫院 —— 探监流程还没做', () => {
+    expect(isUnimplementedPlace(SPECIAL_KIND.PRISON)).toBe(true);
+    expect(isUnimplementedPlace(SPECIAL_KIND.HOSPITAL)).toBe(true);
   });
 
   it('★ 银行与乐透**不**在未实现之列——它们有规则了', () => {
@@ -97,7 +102,7 @@ describe('★ 答复必须与待决交互配套', () => {
   });
 
   it('未实现的场所不接受任何实质答复', () => {
-    const p = unimplementedPlace(SPECIAL_KIND.MAGIC_HOUSE);
+    const p = unimplementedPlace(SPECIAL_KIND.PRISON);
     expect(responseMatches(p, { kind: 'buyLand' })).toBe(false);
     expect(responseMatches(p, { kind: 'decline' })).toBe(true);
   });
@@ -112,7 +117,7 @@ describe('魔法屋', () => {
   });
 
   it('尚未实现的场所没有选项表', () => {
-    const p = unimplementedPlace(SPECIAL_KIND.BALLOON);
+    const p = unimplementedPlace(SPECIAL_KIND.PRISON);
     if (p.kind !== 'unimplemented') return;
     expect(p.options).toBeUndefined();
   });
