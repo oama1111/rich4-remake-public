@@ -9,10 +9,15 @@ import { makeFacility } from '../testing/factories.ts';
 import { parseMap } from '../loaders/map.ts';
 
 const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+import { TOOLS } from '@rich4/data';
 import {
+  FACILITY_MAX_LEVEL,
+  FACILITY_TYPE,
   FACILITY_TYPE_GAS_STATION,
   FACILITY_TYPE_SHOP_A,
   FACILITY_TYPE_SHOP_B,
+  researchTool,
+  tickResearch,
   applyPriceStatus,
   calculateFacilityToll,
   shopToll,
@@ -164,5 +169,71 @@ describe('★ rateByLevel 由真实地图数据印证', () => {
     // 若日后发现 type 另有来源而使本断言失败，说明找到了答案，
     // 届时应更新 docs 里的 Q-FAC-1 而不是放宽断言。
     expect([...types]).toEqual([0]);
+  });
+});
+
+// ============================================================
+//  五种设施的身份，与研究所
+// ============================================================
+
+describe('★ 五种设施的名字与最高等级', () => {
+  it('0 公園 / 1 旅館 / 2 購物中心 / 3 加油站 / 4 研究所', () => {
+    expect(FACILITY_TYPE).toEqual({ park: 0, hotel: 1, mall: 2, gasStation: 3, lab: 4 });
+  });
+
+  it('★ 最高等级表 0x00474940 = [1,5,5,1,5]', () => {
+    expect(FACILITY_MAX_LEVEL).toEqual([1, 5, 5, 1, 5]);
+    // 公園与加油站只有一级，另外三种五级
+    expect(FACILITY_MAX_LEVEL[FACILITY_TYPE.park]).toBe(1);
+    expect(FACILITY_MAX_LEVEL[FACILITY_TYPE.gasStation]).toBe(1);
+    for (const t of [FACILITY_TYPE.hotel, FACILITY_TYPE.mall, FACILITY_TYPE.lab]) {
+      expect(FACILITY_MAX_LEVEL[t]).toBe(5);
+    }
+  });
+
+  it('旧名仍指向同一个 type —— 不破坏既有调用', () => {
+    expect(FACILITY_TYPE_SHOP_A).toBe(FACILITY_TYPE.hotel);
+    expect(FACILITY_TYPE_SHOP_B).toBe(FACILITY_TYPE.mall);
+    expect(FACILITY_TYPE_GAS_STATION).toBe(FACILITY_TYPE.gasStation);
+  });
+});
+
+describe('★ 研究所：道具 9..13 的唯一来源', () => {
+  it('★ 研發項目 + 8 = 道具编号 @source 0x0041ce1b `add eax, 8`', () => {
+    expect([1, 2, 3, 4, 5].map(researchTool)).toEqual([9, 10, 11, 12, 13]);
+  });
+
+  it('★ 正好是 initAmount 为 0 的那五件 —— 它们不进全局库存', () => {
+    const developed = [1, 2, 3, 4, 5].map(researchTool);
+    const zeroStock = TOOLS.filter((t) => t.initAmount === 0).map((t) => t.id);
+    expect(developed).toEqual(zeroStock);
+    expect(TOOLS.filter((t) => t.initAmount === 0).map((t) => t.name)).toEqual([
+      '機器工人', '時光機', '傳送機', '工程車', '核子飛彈',
+    ]);
+  });
+
+  it('每天倒数一格，归零才出货', () => {
+    const st = { project: 3, daysLeft: 2 };
+    let r = tickResearch(st, 5);
+    expect(r.produced).toBe(0);
+    expect(r.next.daysLeft).toBe(1);
+    r = tickResearch(r.next, 5);
+    expect(r.produced).toBe(11); // 傳送機
+    expect(r.next.daysLeft).toBe(0);
+  });
+
+  it('没在研發就什么也不做', () => {
+    const st = { project: 0, daysLeft: 0 };
+    expect(tickResearch(st, 5)).toEqual({ next: st, produced: 0 });
+  });
+
+  it('★ 項目等级高过设施等级就作废 —— 直接清零，不是暂停', () => {
+    const r = tickResearch({ project: 5, daysLeft: 9 }, 3);
+    expect(r.produced).toBe(0);
+    expect(r.next.daysLeft).toBe(0);
+  });
+
+  it('等级正好够就照常推进', () => {
+    expect(tickResearch({ project: 3, daysLeft: 5 }, 3).next.daysLeft).toBe(4);
   });
 });

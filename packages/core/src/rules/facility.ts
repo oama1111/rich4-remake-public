@@ -4,14 +4,28 @@
  *
  * ★ 以原版 exe 反汇编为准，落点结算函数内 VA 0x0041a404 起。
  *
- * 设施按 `type`（+0x18）分三种收费方式，**互不相同**：
+ * ★ **五种设施的名字已全部对定**（先前 type 1/2 只敢叫「百貨類 A/B」）：
  *
- * | type | 例子 | 计费方式 |
- * |---|---|---|
- * | 1 | 百貨類 | 单价 × **转盘倍数** |
- * | 2 | 百貨類 | 同上，只是转盘素材不同（`0x44090e` 的第一个参数 1 / 2） |
- * | 3 | 加油站 | **掷骰步数** × 500 × 交通工具倍率 |
- * | 其他 | — | 不收费 |
+ * | type | 建築 | 最高等級 | 计费方式 |
+ * |---|---|---|---|
+ * | 0 | **公園** | 1 | 不收费 |
+ * | 1 | **旅館** | 5 | 单价 × 转盘倍数，**外加休息天数** |
+ * | 2 | **購物中心** | 5 | 单价 × 转盘倍数 |
+ * | 3 | **加油站** | 1 | **掷骰步数** × 500 × 交通工具倍率 |
+ * | 4 | **研究所** | 5 | 不收费；每级可研發一种道具，见下 |
+ *
+ * 三条独立证据互相咬合：
+ *
+ * 1. **名字指针表** `[type*4 + 0x475150]`（@source 0x004179d2 等 10 处引用）
+ *    指向 `0x00463847` 起的五个串：`公  園 / 旅  館 / 購物中心 / 加油站 / 研究所`。
+ * 2. **最高等级表** `0x00474940` dump 出来是 `[1, 5, 5, 1, 5]` —— 与上面一一对应。
+ * 3. **提示文案**分得清 1 与 2：
+ *    `%s的旅館\n\n請進來休息...`（0x00465224）对
+ *    `%s的購物中心\n\n您的消費倍數為...`（0x0046523c）。
+ *    这正解释了两者「只是转盘素材不同」的表象 ——
+ *    旅館那个转盘**同时决定住几天**。
+ *
+ * ⚠️ 等级名另有一张表 `[level*4 + 0x475164]`：`０級/一級/二級/…`。
  *
  * @source 分派：
  * ```asm
@@ -26,10 +40,99 @@
 import type { FacilityInfo } from '../loaders/map.ts';
 import { facilityToll } from './god-toll.ts';
 
-export const FACILITY_TYPE_SHOP_A = 1;
-export const FACILITY_TYPE_SHOP_B = 2;
-/** 加油站 @source 提示文案 `加油站`（VA 0x0046385e）与 `×%d`（0x00463913） */
-export const FACILITY_TYPE_GAS_STATION = 3;
+/** @source 名字表 `[type*4 + 0x475150]` → 0x00463847 起五个串 */
+export const FACILITY_TYPE = {
+  park: 0,
+  hotel: 1,
+  mall: 2,
+  gasStation: 3,
+  lab: 4,
+} as const;
+
+/** @source 最高等级表 0x00474940 = `[1, 5, 5, 1, 5]` */
+export const FACILITY_MAX_LEVEL: readonly number[] = [1, 5, 5, 1, 5];
+
+/** ⚠️ 旧名，保留只为不破坏既有调用方；新代码用 `FACILITY_TYPE` */
+export const FACILITY_TYPE_SHOP_A = FACILITY_TYPE.hotel;
+export const FACILITY_TYPE_SHOP_B = FACILITY_TYPE.mall;
+export const FACILITY_TYPE_GAS_STATION = FACILITY_TYPE.gasStation;
+
+// ============================================================
+//  研究所（type 4）—— 道具 9..13 的唯一来源
+// ============================================================
+
+/**
+ * ★ **研發出来的道具编号 = 研發項目 + 8。**
+ *
+ * @source 每回合的研發推进 VA 0x0041cdb0（一个遍历所有设施的循环）：
+ * ```asm
+ * 0041cdb0  cl = 設施.+0x1e                 ; ★ 剩余研發天數
+ * 0041cdb3  if (cl == 0) continue
+ * 0041cdbd  dl = 設施.+0x19                 ; 業主（1 基）
+ * 0041cdc6  if (dl != [0x49910c] + 1) continue  ; ★ 只在**業主自己的回合**倒数
+ * 0041cdca  al = 設施.+0x1d                 ; ★ 研發項目 1..5
+ * 0041cdcd  if (al > 設施.+0x1a) goto 作废   ; ★ 項目等级高过设施等级 → 作废
+ * 0041cdd6  設施.+0x1e = cl - 1
+ * 0041cdd9  if (还没归零) continue
+ * 0041cdea  道具名 = [項目*8 + 0x47ff1a]
+ * 0041cdf2  msg("%s開發完成！", 道具名)      ; 串 0x00463b68
+ * 0041ce1b  eax = 項目 + 8                  ; ★★ 道具编号
+ * 0041ce25  give_tool(當前玩家, eax)
+ * 0041ce2f  作废: 設施.+0x1e = 0
+ * ```
+ *
+ * ★★ 这解开了 `@rich4/data` 里一个长期没解释的巧合：
+ *   **道具 9..13 的 `initAmount` 全是 0、`f6` 全是 2**，
+ *   而别的道具 `initAmount` 都是 10。原因就是它们**不进全局库存**——
+ *   `機器工人(9)/時光機(10)/傳送機(11)/工程車(12)/核子飛彈(13)`
+ *   只能靠研究所研發出来，一级一种，顺序与编号完全一致。
+ *
+ * ⚠️ **研發時間**（写 `+0x1e` 的那一处）还没定位 —— 業主停留时选项目的那个
+ *   界面没找到。所以本引擎只实现了「倒数与产出」，**起始天数由调用方给**。
+ */
+export const RESEARCH_TOOL_BASE = 8;
+/** 研究所的研發項目下标范围（同时也是所需的设施等级） */
+export const RESEARCH_MIN_PROJECT = 1;
+export const RESEARCH_MAX_PROJECT = 5;
+
+/** 研發項目 → 道具编号 @source 0x0041ce1b `add eax, 8` */
+export function researchTool(project: number): number {
+  return project + RESEARCH_TOOL_BASE;
+}
+
+export interface ResearchState {
+  /** 研發項目 1..5；0 = 没在研發 @source 設施 +0x1d */
+  project: number;
+  /** 剩余天数；0 = 没在研發 @source 設施 +0x1e */
+  daysLeft: number;
+}
+
+export interface ResearchTick {
+  next: ResearchState;
+  /** 研發成功时产出的道具编号；否则 0 */
+  produced: number;
+}
+
+/**
+ * 把一处研究所的研發推进一天。
+ *
+ * ★ 三条都不显然，全部照 exe：
+ * - **只在業主自己的回合推进**（调用方负责只在轮到業主时调用）；
+ * - **項目等级高过设施等级就作废**（拆了楼，研發也跟着黄）——
+ *   `+0x1e` 直接清零，不是暂停；
+ * - 归零那一刻才 `give_tool`，**不检查道具上限**（給不出去就凭空消失，
+ *   与搶奪卡同理，见 cards/rob.ts）。
+ */
+export function tickResearch(state: ResearchState, facilityLevel: number): ResearchTick {
+  if (state.daysLeft === 0) return { next: state, produced: 0 };
+  // @source `cmp al, byte [ebx+0x1a] / ja 作废`
+  if (state.project > facilityLevel) {
+    return { next: { project: state.project, daysLeft: 0 }, produced: 0 };
+  }
+  const daysLeft = state.daysLeft - 1;
+  if (daysLeft > 0) return { next: { project: state.project, daysLeft }, produced: 0 };
+  return { next: { project: state.project, daysLeft: 0 }, produced: researchTool(state.project) };
+}
 
 /**
  * 设施的**按等级费率表**，6 项 uint16，位于 `facility + 0x24`。
