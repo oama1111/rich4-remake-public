@@ -310,7 +310,7 @@ export function landIndexAtPlayer(s: GameState, topo: MapTopology): number | nul
 }
 
 /** 该地图上全部地块的当前有效状态（用于过路费的同区累加） */
-function allEffectiveLands(s: GameState, topo: MapTopology): LandInfo[] {
+export function allEffectiveLands(s: GameState, topo: MapTopology): LandInfo[] {
   if (topo.lands === undefined) return [];
   return topo.lands.map((l) => ({
     ...l,

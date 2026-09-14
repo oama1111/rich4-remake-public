@@ -22,13 +22,15 @@ import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, housingIndexOf } from '../rules/land.ts';
 import { purchaseBlockedBy } from '../rules/purchase.ts';
 import { buyTool } from '../places/shop.ts';
-import { isAiControlled, isAlive } from '../state/types.ts';
+import { isAiControlled } from '../state/types.ts';
 import { useCard } from '../cards/registry.ts';
 import type { CardTarget } from '../cards/target.ts';
 import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE, buildOneLevel } from '../rules/tool-effects.ts';
 import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { CARDS, TOOLS } from '@rich4/data';
 import { aiCanUseCards, aiCanUseTools, autoLoanAmount, personalityAllows } from './personality.ts';
+import { aiCardChoice, aiRoll, cardsToConsider, type AiCardTarget, type CardAiView } from './card-policy.ts';
+import { allEffectiveFacilities, allEffectiveLands, type MapTopology } from '../state/reduce.ts';
 import { toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
 import { decideStockTrade } from './stock-policy.ts';
@@ -149,9 +151,15 @@ export function decideAction(ctx: AiContext): Action | null {
  * ★ 这是**策略**不是规则：能不能出、出了会怎样一律由
  *   `cards/registry.ts` 说了算，这里只回答「值不值」。
  *
- * ⚠️ 原版的出牌时机与取舍由 AI 性格决定（角色表的 f23/f24/f26，
- *   语义尚未证实，见本文件顶部），故这里先给一套**保守而讲道理**的规则：
- *   只在能明确得利时出牌，不为出而出。
+ * 流程照原版 AI 回合的出牌段（VA 0x00441d09..0x00441e07）：
+ *   1. `aiCanUseCards`（角色表 f22 bit0）；
+ *   2. `cardsToConsider`：手牌 > 8 时从随机起点环形取 8 张；
+ *   3. 每张先过個性闸门 `personalityAllows`（0x0041e69e），再问该卡的判定函数
+ *      `aiCardChoice`（跳表 0x475324，见 card-policy.ts）；
+ *   4. 第一张肯出的就打，**一回合最多一张**。
+ *
+ * ⚠️ 引擎目前接不住的目标（設施/股票/物件，Q-CARD-2）与 registry 尚未接线的卡
+ *   会被 `willWork` 拦下，此时顺延到下一张 —— 原版会直接打出，属已知偏差。
  */
 export function decideCard(ctx: AiContext): Action | null {
   const { state, map } = ctx;
@@ -160,6 +168,10 @@ export function decideCard(ctx: AiContext): Action | null {
   // @source `test byte [player + 0x16], 1 / je 跳过`（VA 0x00441d09）
   //   角色表的 f22 第 0 位：这个 AI 会不会出牌
   if (!aiCanUseCards(me.aiFlags)) return null;
+
+  const topo: MapTopology = map;
+  const lands = allEffectiveLands(state, topo);
+  const facilities = allEffectiveFacilities(state, topo);
 
   /**
    * ★ 出牌前**先空跑一遍规则**，只有确定会生效才真出。
@@ -173,11 +185,7 @@ export function decideCard(ctx: AiContext): Action | null {
     useCard(
       {
         players: state.players,
-        lands: map.lands.map((l) => ({
-          ...l,
-          owner: state.landOwner[l.id] ?? l.owner,
-          level: state.landLevel[l.id] ?? l.level,
-        })),
+        lands,
         nodes: map.nodes,
         currentPlayer: state.currentPlayer,
         priceIndex: state.priceIndex,
@@ -192,82 +200,35 @@ export function decideCard(ctx: AiContext): Action | null {
     const f7 = CARDS.find((c) => c.id === cardId)?.f7 ?? 0;
     return personalityAllows(f7, me.personality, gateRoll(state, cardId));
   };
-  const play = (cardId: number, target: CardTarget = { kind: 'none' }): Action | null =>
-    gated(cardId) && willWork(cardId, target) ? { type: 'useCard', cardId, target } : null;
 
-  const has = (id: number): boolean => me.cards.includes(id);
-  const rivals = state.players.filter((p) => p.index !== me.index && isAlive(p));
-  if (rivals.length === 0) return null;
-
-  const wealth = (p: Player): number => p.cash + p.moneyInBank;
-  const richest = rivals.reduce((a, b) => (wealth(b) > wealth(a) ? b : a));
-  const myCash = me.cash;
-
-  // ── 均富卡：自己比平均穷才划算 ──
-  if (has(1)) {
-    const alive = state.players.filter((p) => isAlive(p));
-    // C-DET-3 定向豁免：这是**策略比较**，不写入任何玩家的钱。
-    // 为免歧义仍显式取整。
-    const avg = Math.trunc(alive.reduce((t, p) => t + p.cash, 0) / alive.length);
-    if (myCash * 5 < avg * 4) {
-      const a = play(1);
-      if (a !== null) return a;
-    }
+  const view: CardAiView = { state, topo, meIndex: state.currentPlayer, me, lands, facilities };
+  // @source 0x00441d4a：手牌 > 8 时 `rand() % 张数` 当起点
+  const hand = cardsToConsider(me.cards, aiRoll(state, 0x441d4a, me.cards.length));
+  for (const cardId of hand) {
+    if (!gated(cardId)) continue;
+    const choice = aiCardChoice(cardId, view);
+    if (choice === null) continue;
+    const target = toCardTarget(choice.target, state.currentPlayer);
+    if (target === null) continue;
+    if (willWork(cardId, target)) return { type: 'useCard', cardId, target };
   }
-
-  // ── 均貧卡：把最富的拉下来 ──
-  if (has(2) && wealth(richest) > wealth(me) * 1.5) {
-    const a = play(2, { kind: 'player', index: richest.index });
-    if (a !== null) return a;
-  }
-
-  // ── 購地卡：站在别人的地上且买得起 ──
-  const here = map.nodes[me.nodeId - 1];
-  const landIdx = here === undefined ? null : housingIndexOf(here.type);
-  if (has(3) && landIdx !== null) {
-    const owner = state.landOwner[landIdx] ?? 0;
-    const tpl = map.lands.find((l) => l.id === landIdx);
-    if (owner !== 0 && owner !== me.index + 1 && tpl !== undefined) {
-      const level = state.landLevel[landIdx] ?? 0;
-      const price = (tpl.landPrice + tpl.housePrice * level) * state.priceIndex;
-      if (price <= myCash) {
-        const a = play(3);
-        if (a !== null) return a;
-      }
-    }
-  }
-
-  // ── 改建卡：站在自己没满级的地上 ──
-  if (has(7) && landIdx !== null && (state.landOwner[landIdx] ?? 0) === me.index + 1) {
-    if ((state.landLevel[landIdx] ?? 0) < 5) {
-      const a = play(7);
-      if (a !== null) return a;
-    }
-  }
-
-  // ── 停留 / 烏龜：拖住最富的那个 ──
-  if (has(14)) {
-    const a = play(14, { kind: 'player', index: richest.index });
-    if (a !== null) return a;
-  }
-  if (has(30)) {
-    const a = play(30, { kind: 'player', index: richest.index });
-    if (a !== null) return a;
-  }
-
-  // ── 查稅卡：查最富的 ──
-  if (has(26)) {
-    const a = play(26, { kind: 'player', index: richest.index });
-    if (a !== null) return a;
-  }
-
-  // ── 送神符：身上有神就送走（好坏由 core 判，这里只在有附身时试） ──
-  if (has(22) && me.godInfo !== 0) {
-    const a = play(22);
-    if (a !== null) return a;
-  }
-
   return null;
+}
+
+/** AI 目标 → 引擎目标；引擎接不住的（設施/股票/物件）给 null，见 Q-CARD-2 */
+export function toCardTarget(t: AiCardTarget, meIndex: number): CardTarget | null {
+  switch (t.kind) {
+    case 'none':
+      return { kind: 'none' };
+    case 'self':
+      return { kind: 'player', index: meIndex };
+    case 'player':
+      return { kind: 'player', index: t.index };
+    case 'land':
+      return { kind: 'entity', entityId: t.landId };
+    default:
+      return null;
+  }
 }
 
 /**
