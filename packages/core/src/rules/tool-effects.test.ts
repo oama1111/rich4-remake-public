@@ -133,16 +133,16 @@ describe('★ 未实现的道具明确列出', () => {
     }
   });
 
-  it('★ 只剩 3 个未实现 —— 都卡在 core 之外的东西上', () => {
+  it('★ 只剩 1 个未实现 —— 卡在替身走子上', () => {
     // 1 機器娃娃要先有替身走子系统；10 時光機要状态快照；11 傳送機是三段选择
-    expect([...UNIMPLEMENTED_TOOLS].sort((a, b) => a - b)).toEqual([1, 10, 11]);
+    expect([...UNIMPLEMENTED_TOOLS].sort((a, b) => a - b)).toEqual([1]);
     for (const id of UNIMPLEMENTED_TOOLS) {
       expect(isToolImplemented(id), `道具${id}`).toBe(false);
     }
   });
 
   it('13 个道具都有明确归属，没有遗漏', () => {
-    const done = [2, 3, 4, 5, 6, 7, 8, 9, 12, 13];
+    const done = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
     const all = [...done, ...UNIMPLEMENTED_TOOLS].sort((a, b) => a - b);
     expect(all).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   });
@@ -257,14 +257,16 @@ describe('★ 13 个道具逐个点名', () => {
     expect(buildOneLevel(1, 1, 5)).toEqual({ ok: false, level: 1 });
   });
 
-  it('10 時光機 —— 未实现，已登记（原版靠还原存档实现撤销）', () => {
-    expect(isToolImplemented(10)).toBe(false);
-    expect(UNIMPLEMENTED_TOOLS).toContain(10);
+  it('10 時光機 —— 已实现：还原回合开始的快照', () => {
+    // ✅ 已实现：靠「回合开始快照 + 还原」，见 rules/time-machine.ts
+    expect(isToolImplemented(10)).toBe(true);
+    expect(UNIMPLEMENTED_TOOLS).not.toContain(10);
   });
 
-  it('11 傳送機 —— 未实现，已登记', () => {
-    expect(isToolImplemented(11)).toBe(false);
-    expect(UNIMPLEMENTED_TOOLS).toContain(11);
+  it('11 傳送機 —— 已实现：搬地產 / 搬人', () => {
+    // ✅ 已实现：搬地產与搬人两路，見 rules/teleport.ts
+    expect(isToolImplemented(11)).toBe(true);
+    expect(UNIMPLEMENTED_TOOLS).not.toContain(11);
   });
 
   it('12 工程車 —— 交通方式 0x1f，设施过路费倍率吃满 4 倍', () => {
@@ -280,7 +282,7 @@ describe('★ 13 个道具逐个点名', () => {
       expect(known, `道具 ${t.id} ${t.name} 既没实现也没登记`).toBe(true);
     }
     expect(TOOLS).toHaveLength(13);
-    // 已实现 10 个、未实现 3 个 —— 这个数字变了就该更新文档
-    expect(TOOLS.filter((t) => isToolImplemented(t.id))).toHaveLength(10);
+    // 已实现 12 个、未实现 1 个 —— 这个数字变了就该更新文档
+    expect(TOOLS.filter((t) => isToolImplemented(t.id))).toHaveLength(12);
   });
 });

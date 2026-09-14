@@ -297,8 +297,32 @@ export interface GameState {
   /** 地块等级（0..5，`< 5` 才可续建 @source fcn_0040b110） */
   landLevel: number[];
 
+  /**
+   * 地块种类（住宅 / 連鎖店），下标 = 地块 id。
+   *
+   * ★ 它**会变**，所以不能只从地图静态数据读：
+   *   - 改建卡把住宅与連鎖店对调（`xor ah, 1`，见 cards/rebuild.ts）
+   *   - 傳送機把整块地的归属、等级、种类一起搬走（见 rules/teleport.ts）
+   *   原版直接改地块结构的 `+0x18`。
+   *
+   * ⚠️ 先前只把 `owner` 与 `level` 落回状态，`type` 的改动**被悄悄丢掉**了
+   *   —— 改建卡看着生效、下一帧又变回去。
+   */
+  landType: number[];
+
   /** 回合序号，从 0 开始 */
   turnCount: number;
+
+  /**
+   * 每个玩家的「回合开始快照」，供時光機（道具 10）还原。
+   *
+   * ★ 原版是同一套东西：`[0x48cb80 + 玩家 × 0x2718]`，只给真人存
+   *   （@source VA 0x004480a0）。见 rules/time-machine.ts。
+   *
+   * ⚠️ 存的是序列化后的字符串而不是对象 —— 一来天然深拷贝，二来
+   *   避免「状态里套状态」的递归类型。
+   */
+  snapshots: (string | null)[];
 
   /**
    * 新聞／命運牌堆。开局洗好，用游标依次取用（见 events/deck.ts）。

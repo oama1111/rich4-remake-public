@@ -78,7 +78,9 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     cardAmount: new Array<number>(30).fill(0),
     landOwner: [],
     landLevel: [],
+    landType: [],
     turnCount: 0,
+    snapshots: [null, null, null, null] as (string | null)[],
     // 测试默认给顺序牌堆——不洗牌，好让用例能指定拿到哪张
     newsDeck: { order: Array.from({ length: 36 }, (_, i) => i), cursor: 0 },
     fortuneDeck: { order: Array.from({ length: 37 }, (_, i) => i), cursor: 0 },

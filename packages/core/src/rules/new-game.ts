@@ -175,6 +175,18 @@ function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, star
  * - 物价指数取原版开局值 1
  * - 地产全部无主、等级为 0，长度与地图的地块数对齐
  */
+/**
+ * 从地图读出各地块的初始种类。
+ *
+ * ★ 之后它会被改建卡（`type ^ 1`）与傳送機改掉，所以必须进状态；
+ *   每次回地图静态数据取的话，那些改动等于没发生。
+ */
+export function landTypeFromMap(map: Rich4Map, landCount: number): number[] {
+  const out = new Array<number>(landCount).fill(0);
+  for (const l of map.lands) out[l.id] = l.type;
+  return out;
+}
+
 export function newGame(opts: NewGameOptions): GameState {
   const {
     map,
@@ -248,7 +260,10 @@ export function newGame(opts: NewGameOptions): GameState {
     cardAmount: new Array<number>(CARD_IMPLS.length).fill(UNVERIFIED_CARDS_PER_KIND),
     landOwner: new Array<number>(landCount).fill(0),
     landLevel: new Array<number>(landCount).fill(0),
+    // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取
+    landType: landTypeFromMap(map, landCount),
     turnCount: 0,
+    snapshots: [null, null, null, null],
     newsDeck,
     fortuneDeck,
     pool: 0,

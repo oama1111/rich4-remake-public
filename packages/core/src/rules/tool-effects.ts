@@ -315,20 +315,17 @@ export function blastLand(
 /**
  * 效果**尚未实现**的道具。
  *
- * 只剩三个，各自的入口与已知线索：
+ * 只剩一个：
  *
  * | 编号 | 道具 | 卡在哪 |
  * |---|---|---|
  * | 1 | 機器娃娃 | 要先有**替身走子**：写 `_rich4_all_special_players_state`(0x498e28) 的 +64..+74，造一个占用 actor 4..7 的分身。整套走子系统尚未实现（见 known-deviations 的 Q-OBJ-3） |
- * | 10 | 時光機 | `call _rich4_restore_last_state`(0x448544) —— **读档式撤销** |
- * | 11 | 傳送機 | 连续三次选择（0x1200036 / 0x2090802 / 0x2090804），末尾把 `0x407a8c(甲, 乙)` 算出的方位写进 `byte [物件*24 + 0x496d09]`，不是简单的「传送到某格」 |
  *
- * ★ 特别记一笔：**時光機是靠还原存档实现撤销的**。
- *   若要在本项目复现，得有一份「上一步状态」的快照——
- *   这与确定性引擎的 action 日志天然契合（重放到前一步即可），
- *   反而比原版更干净。
+ * ✅ 10 時光機 —— 靠还原「回合开始快照」做撤销，见 rules/time-machine.ts
+ * ✅ 11 傳送機 —— 搬地產 / 搬人两路已做，設施那一路见 Q-TOOL-2，
+ *                见 rules/teleport.ts
  */
-export const UNIMPLEMENTED_TOOLS: readonly number[] = [1, 10, 11];
+export const UNIMPLEMENTED_TOOLS: readonly number[] = [1];
 
 export function isToolImplemented(toolId: number): boolean {
   return !UNIMPLEMENTED_TOOLS.includes(toolId);

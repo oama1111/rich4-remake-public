@@ -13,6 +13,17 @@ import type { Action } from './actions.ts';
 import type { GameState, Player } from './types.ts';
 import { isAlive } from './types.ts';
 import { WatcomRng, rollDice } from '../rng/watcom.ts';
+import {
+  TOOL_TIME_MACHINE,
+  restoreSnapshot,
+  snapshotOnTurnStart,
+} from '../rules/time-machine.ts';
+import {
+  TOOL_TELEPORTER,
+  decodeTeleport,
+  teleportLand,
+  teleportPlayer,
+} from '../rules/teleport.ts';
 import { VEHICLE_DICE } from '../rules/tool-effects.ts';
 import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo, FacilityInfo, CommercialInfo } from '../loaders/map.ts';
@@ -135,6 +146,7 @@ export function effectiveLand(
     ...tpl,
     owner: s.landOwner[landIndex] ?? tpl.owner,
     level: s.landLevel[landIndex] ?? tpl.level,
+    type: s.landType[landIndex] ?? tpl.type,
   };
 }
 
@@ -154,6 +166,7 @@ function allEffectiveLands(s: GameState, topo: MapTopology): LandInfo[] {
     ...l,
     owner: s.landOwner[l.id] ?? l.owner,
     level: s.landLevel[l.id] ?? l.level,
+    type: s.landType[l.id] ?? l.type,
   }));
 }
 
@@ -307,11 +320,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         // 被阻碍或已出局 → 直接进入回合结束（天数递减在 endTurn 处理）
         return { ...state, phase: 'turnEnd' };
       }
+      // ★ 時光機的后悔药：真人回合开局先拍一张快照（@source VA 0x004480a0）
+      const snapped = snapshotOnTurnStart(state);
       if (result.sleepWalk) {
         // 梦游：原版立即自动掷骰走子，玩家无法干预
-        return reduce({ ...state, phase: 'awaitingRoll' }, { type: 'rollDice' }, topo);
+        return reduce({ ...snapped, phase: 'awaitingRoll' }, { type: 'rollDice' }, topo);
       }
-      return { ...state, phase: 'awaitingRoll' };
+      return { ...snapped, phase: 'awaitingRoll' };
     }
 
     case 'setDiceCount': {
@@ -1321,6 +1336,36 @@ function tradeStock(
  *   直接 `jmp 结束`、根本不走 take_tool，故那种情况不消耗——
  *   `useVehicleTool` 返回 `ok: false` 正是这个意思。
  */
+/**
+ * 傳送機的三路分派。
+ *
+ * `nodeId` 与 `value` 都是**选择器编码**（见 rules/teleport.ts）：
+ * - `2000 < v < 4000` → 住宅地，下标 `v − 2000`
+ * - `4000 < v < 6000` → 設施
+ * - 其余当作节点号（搬人那一路）
+ *
+ * ⚠️ 設施那一路本引擎**没做**：設施的归属与等级还没进状态
+ *   （`topo.facilities` 是只读的静态数据）。给了設施编码就当无效，
+ *   道具不消耗。记在 known-deviations 的 Q-TOOL-2。
+ */
+function teleportWith(
+  state: GameState,
+  topo: MapTopology,
+  source: number,
+  target: number,
+): GameState | null {
+  const from = decodeTeleport(source);
+  const to = decodeTeleport(target);
+  if (from?.kind === 'land' && to?.kind === 'land') {
+    return teleportLand(state, from.index, to.index);
+  }
+  if (from?.kind === 'facility' || to?.kind === 'facility') return null;
+  // 搬人：source 是玩家下标 + 1，target 是节点号
+  const playerIndex = source - 1;
+  if (playerIndex < 0 || playerIndex >= state.players.length) return null;
+  return teleportPlayer(state, topo.nodes, playerIndex, target);
+}
+
 function useToolAction(
   state: GameState,
   topo: MapTopology,
@@ -1337,6 +1382,23 @@ function useToolAction(
     const taken = takeTool(next.tools, next.toolStock, me.index, toolId);
     return { ...next, tools: taken.tools, toolStock: taken.stock };
   };
+
+  // ── 傳送機（11）：搬地產 / 搬設施 / 搬人 ──
+  if (toolId === TOOL_TELEPORTER) {
+    const moved = teleportWith(state, topo, nodeId, value);
+    if (moved === null) return state; // 选不出合法的源/目标 → 不消耗道具
+    return consume(moved);
+  }
+
+  // ── 時光機（10）：把这一回合退回去重来 ──
+  if (toolId === TOOL_TIME_MACHINE) {
+    const back = restoreSnapshot(state);
+    // @source `test eax, eax / je loc_00447423` —— 没快照就**不消耗道具**
+    if (back === null) return state;
+    // 还原之后要把道具扣掉，所以在**还原后的**状态上扣
+    const taken = takeTool(back.tools, back.toolStock, me.index, toolId);
+    return { ...back, tools: taken.tools, toolStock: taken.stock };
+  }
 
   // ── 遙控骰子（8）──
   if (toolId === TOOL_REMOTE_DICE) {
@@ -1430,9 +1492,13 @@ function playCard(
 
   const landOwner = [...state.landOwner];
   const landLevel = [...state.landLevel];
+  // ★ `type` 也要落回去：改建卡改的就是它，先前漏掉导致那张卡看着生效
+  //   实际下一次读地块又变回原样
+  const landType = [...state.landType];
   for (const l of r.lands) {
     landOwner[l.id] = l.owner;
     landLevel[l.id] = l.level;
+    landType[l.id] = l.type;
   }
 
   // 敌意由 registry 算好，这里按增量落到玩家身上
@@ -1440,7 +1506,7 @@ function playCard(
 
   // ★ 送神符之类只清了玩家身上的引用，物件本身要在这里收回：
   //   退还三项修正、清 `attached`、让搭档登场。
-  let next: GameState = { ...state, players, landOwner, landLevel };
+  let next: GameState = { ...state, players, landOwner, landLevel, landType };
   for (const handle of r.releasedObjects) {
     const rel = releaseObject(next, handle);
     next = respawnPartner(
