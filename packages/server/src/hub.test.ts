@@ -1,0 +1,221 @@
+/*
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * 集线器：加入／开局／意图／重连补发／校验和／掉线代打 —— 全用内存连接
+ */
+import { describe, expect, it } from 'vitest';
+import { readFileSync, existsSync } from 'node:fs';
+import {
+  PROTOCOL_VERSION,
+  WHO_PLAYS_AUTOPILOT,
+  WHO_PLAYS_HUMAN,
+  newGame,
+  parseMap,
+  reduce,
+  stateFingerprint,
+  type Action,
+  type GameState,
+  type ServerMessage,
+} from '@rich4/core';
+import { RoomHub, type Conn } from './hub.ts';
+
+const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const run = existsSync(MAP) ? it : it.skip;
+const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
+
+class FakeConn implements Conn {
+  readonly inbox: ServerMessage[] = [];
+  send(msg: ServerMessage): void {
+    this.inbox.push(msg);
+  }
+  last<T extends ServerMessage['t']>(t: T): Extract<ServerMessage, { t: T }> | undefined {
+    for (let i = this.inbox.length - 1; i >= 0; i--) {
+      const m = this.inbox[i]!;
+      if (m.t === t) return m as Extract<ServerMessage, { t: T }>;
+    }
+    return undefined;
+  }
+  count(t: ServerMessage['t']): number {
+    return this.inbox.filter((m) => m.t === t).length;
+  }
+}
+
+function hubWith(map = loadMap(), takeoverAfterMs = 1000) {
+  return new RoomHub({ map, globalMapId: 0, seedFor: () => 4242, takeoverAfterMs });
+}
+
+/** 客户端侧的镜像：只按服务器广播的 action 顺序重放 */
+function mirror(map: ReturnType<typeof loadMap>, conn: FakeConn): GameState {
+  const topo = { nodes: map.nodes, lands: map.lands };
+  const start = conn.last('start')!;
+  let s = newGame({ map, globalMapId: 0, seed: start.seed, players: start.seats.map((x) => ({ character: x.character, kind: x.kind })), mode: 'multiplayer' });
+  for (const m of conn.inbox) if (m.t === 'action') s = reduce(s, m.action, topo);
+  return s;
+}
+
+describe('★ 加入与开局', () => {
+  run('版本不符拒；依次占座；房主开局后空座补电脑并广播 start', () => {
+    const hub = hubWith();
+    const a = new FakeConn();
+    const b = new FakeConn();
+    const ha = hub.connect(a);
+    ha.onMessage({ t: 'join', version: 99, room: 'r', name: 'A' });
+    expect(a.last('error')?.message).toContain('协议版本');
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    const hb = hub.connect(b);
+    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    expect(ha.seat).toBe(0);
+    expect(hb.seat).toBe(1);
+    expect(a.last('room')?.room.seats.map((s) => s.name)).toEqual(['A', 'B']);
+    // 只有房主能开局
+    hb.onMessage({ t: 'start' });
+    expect(b.last('error')?.message).toContain('房主');
+    ha.onMessage({ t: 'start' });
+    const st = b.last('start')!;
+    expect(st.seed).toBe(4242);
+    expect(st.seats.map((s) => s.kind)).toEqual(['human', 'human', 'computer', 'computer']);
+    expect(hub.roomInfo('r')?.started).toBe(true);
+    // 开局后不再放新人
+    const c = new FakeConn();
+    hub.connect(c).onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'C' });
+    expect(c.last('error')?.message).toContain('已满');
+  });
+});
+
+describe('★ 意图与广播', () => {
+  run('合法意图被编号广播给所有人；非法的只回 error 且不占序号；不是你的回合也拒', () => {
+    const map = loadMap();
+    const hub = hubWith(map);
+    const a = new FakeConn();
+    const b = new FakeConn();
+    const ha = hub.connect(a);
+    const hb = hub.connect(b);
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    ha.onMessage({ t: 'start' });
+    hb.onMessage({ t: 'intent', action: { type: 'startTurn' } });
+    expect(b.last('error')?.message).toContain('notYourTurn');
+    ha.onMessage({ t: 'intent', action: { type: 'rollDice' } }); // turnStart 阶段掷骰非法
+    expect(a.last('error')?.message).toContain('illegalAction');
+    expect(a.count('action')).toBe(0);
+    ha.onMessage({ t: 'intent', action: { type: 'startTurn' } });
+    expect(a.count('action')).toBe(1);
+    expect(b.last('action')).toMatchObject({ seq: 0, action: { type: 'startTurn' } });
+    // 客户端按广播重放 == 服务器镜像
+    expect(stateFingerprint(mirror(map, b))).toBe(hub.room('r')!.fingerprint);
+  });
+
+  run('★ 轮到电脑座位时服务器自己替它走完，直到轮回真人', () => {
+    const map = loadMap();
+    const hub = hubWith(map);
+    const a = new FakeConn();
+    const ha = hub.connect(a);
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'start' }); // 1..3 号全是电脑
+    // 真人把自己的回合走完
+    const play = (act: Action) => ha.onMessage({ t: 'intent', action: act });
+    play({ type: 'startTurn' });
+    let guard = 0;
+    while (hub.room('r')!.currentSeat === 0 && guard++ < 50) {
+      const s = hub.room('r')!.state;
+      const next: Action =
+        s.phase === 'awaitingRoll' ? { type: 'rollDice' }
+        : s.phase === 'moving' ? { type: 'step' }
+        : s.phase === 'settling' ? { type: 'settle' }
+        : s.phase === 'awaitingDecision' ? { type: 'declineDecision' }
+        : { type: 'endTurn' };
+      play(next);
+    }
+    // 三个电脑的回合应当已经由服务器推完，又轮回 0 号
+    expect(hub.room('r')!.currentSeat).toBe(0);
+    expect(hub.room('r')!.state.turnCount).toBe(4);
+    expect(a.count('action')).toBeGreaterThan(8);
+    expect(stateFingerprint(mirror(map, a))).toBe(hub.room('r')!.fingerprint);
+  });
+});
+
+describe('★ 校验和与失步', () => {
+  run('指纹一致不响；不一致广播 desync', () => {
+    const map = loadMap();
+    const hub = hubWith(map);
+    const a = new FakeConn();
+    const ha = hub.connect(a);
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'start' });
+    ha.onMessage({ t: 'intent', action: { type: 'startTurn' } });
+    const seq = a.last('action')!.seq;
+    ha.onMessage({ t: 'checksum', seq, hash: hub.room('r')!.fingerprintAt(seq)! });
+    expect(a.count('desync')).toBe(0);
+    ha.onMessage({ t: 'checksum', seq, hash: 'bogus' });
+    expect(a.last('desync')).toMatchObject({ seq, got: 'bogus', seat: 0 });
+  });
+});
+
+describe('★ 掉线：重连补发、超时代打、归还', () => {
+  run('断线后同名重连认回座位并补发漏掉的 action（since 之后）', () => {
+    const map = loadMap();
+    const hub = hubWith(map);
+    const a = new FakeConn();
+    const b = new FakeConn();
+    const ha = hub.connect(a);
+    const hb = hub.connect(b);
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    ha.onMessage({ t: 'start' });
+    ha.onMessage({ t: 'intent', action: { type: 'startTurn' } });
+    hb.onClose(100);
+    expect(a.last('room')?.room.seats[1]?.connected).toBe(false);
+    ha.onMessage({ t: 'intent', action: { type: 'rollDice' } });
+    const b2 = new FakeConn();
+    const hb2 = hub.connect(b2);
+    hb2.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B', since: 0 });
+    expect(hb2.seat).toBe(1);
+    expect(b2.last('start')?.seed).toBe(4242);
+    expect(b2.inbox.filter((m) => m.t === 'action').map((m) => (m as { seq: number }).seq)).toEqual([1]);
+    // 全量重连
+    const b3 = new FakeConn();
+    hb2.onClose(200);
+    hub.connect(b3).onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    expect(b3.inbox.filter((m) => m.t === 'action').length).toBe(2);
+  });
+
+  run('★ 超时后由电脑代打（镜像里 setAi 託管）；重连归还', () => {
+    const map = loadMap();
+    const hub = hubWith(map, 1000);
+    const a = new FakeConn();
+    const b = new FakeConn();
+    const ha = hub.connect(a);
+    const hb = hub.connect(b);
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    ha.onMessage({ t: 'start' });
+    // A 走完自己的回合，轮到 B；B 早已断线
+    hb.onClose(0);
+    const play = (act: Action) => ha.onMessage({ t: 'intent', action: act });
+    play({ type: 'startTurn' });
+    let guard = 0;
+    while (hub.room('r')!.currentSeat === 0 && guard++ < 50) {
+      const s = hub.room('r')!.state;
+      play(
+        s.phase === 'awaitingRoll' ? { type: 'rollDice' }
+        : s.phase === 'moving' ? { type: 'step' }
+        : s.phase === 'settling' ? { type: 'settle' }
+        : s.phase === 'awaitingDecision' ? { type: 'declineDecision' }
+        : { type: 'endTurn' },
+      );
+    }
+    expect(hub.room('r')!.currentSeat).toBe(1);
+    // 没到超时：不动
+    expect(hub.sweepDisconnected(500)).toEqual([]);
+    expect(hub.room('r')!.currentSeat).toBe(1);
+    // 超时：託管 + 立刻代打，直到又轮回真人 A
+    expect(hub.sweepDisconnected(1500)).toEqual([{ roomId: 'r', seat: 1 }]);
+    expect(hub.room('r')!.state.players[1]!.whoPlays).toBe(WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT);
+    expect(hub.room('r')!.currentSeat).toBe(0);
+    // 重连：改回真人
+    const b2 = new FakeConn();
+    hub.connect(b2).onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    expect(hub.room('r')!.state.players[1]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    // 客户端 A 按广播重放仍与服务器一致（含 setAi 两条系统 action）
+    expect(stateFingerprint(mirror(map, a))).toBe(hub.room('r')!.fingerprint);
+  });
+});

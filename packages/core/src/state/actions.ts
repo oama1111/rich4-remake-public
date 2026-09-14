@@ -207,6 +207,12 @@ export type Action =
    * 且在 awaitingRoll 时合法；策略层在某一步「没事可做」时发它。
    */
   | { type: 'aiNext' }
+  /**
+   * 託管 / 取消託管（工具列「託管AI」，Data.mkf #77）：改一名玩家的 `whoPlays`。
+   * 联机时由服务器在真人掉线超时后发（`WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT`），重连归还。
+   * 只接受 1（真人）/ 2（電腦）/ 5（真人託管）三种值；出局者拒。
+   */
+  | { type: 'setAi'; player: number; whoPlays: number }
   | { type: 'endTurn' };
 
 export type ActionType = Action['type'];

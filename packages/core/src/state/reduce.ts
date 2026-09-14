@@ -163,7 +163,7 @@ import {
 } from '../places/stock-market.ts';
 import { advanceDate, packDate } from '../rules/calendar.ts';
 import { settleMonthlyBank } from '../rules/monthly.ts';
-import { WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from './types.ts';
+import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from './types.ts';
 import {
   FACILITY_TYPE,
   WHEEL,
@@ -1158,6 +1158,17 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     case 'minigame': {
       if (state.pending === null || state.pending.kind !== 'minigame') return state;
       return settleMinigame({ ...state, pending: null }, action.score);
+    }
+
+    case 'setAi': {
+      // 託管 / 取消託管：只改 whoPlays（1 真人 / 2 電腦 / 5 真人託管）；出局者与非法值拒
+      const target = state.players[action.player];
+      if (target === undefined || !isAlive(target)) return state;
+      const allowed = [WHO_PLAYS_HUMAN, WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT];
+      if (!allowed.includes(action.whoPlays) || target.whoPlays === action.whoPlays) return state;
+      return withPlayer(state, action.player, (p) => {
+        p.whoPlays = action.whoPlays;
+      });
     }
 
     case 'endTurn': {

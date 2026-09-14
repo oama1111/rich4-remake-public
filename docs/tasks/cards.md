@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 7.4。
+共 **73** 张卡，估算 **39.8** 单元，已完成 9.9。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -31,7 +31,7 @@
 | [T-014](#t-014) | 核对 AI 总调度顺序 fcn_00418c55（P1-5） | MOD-09 | REQ-09.2 | `done` | 0.5 | — |
 | [T-015](#t-015) | AI 研發项目选择按研究所 UI 的电脑分支定案（P1-6） | MOD-09 | REQ-09.3 | `done` | 0.3 | — |
 | [T-016](#t-016) | 翻译 AI 卖股 0x0042c79f（调度第 1 步） | MOD-09 | REQ-09.2 | `done` | 1.0 | — |
-| [T-020](#t-020) | 新增 core 指令 setAi{player, whoPlays, aiFlags, personality}（託管AI 的规则侧） | MOD-04 | REQ-12.1 | `todo` | 0.2 | — |
+| [T-020](#t-020) | 新增 core 指令 setAi{player, whoPlays, aiFlags, personality}（託管AI 的规则侧） | MOD-04 | REQ-12.1 | `done` | 0.2 | — |
 | [T-021](#t-021) | 託管AI 屏（工具列 #3） | MOD-12 | REQ-12.1 | `todo` | 0.6 | T-020 |
 | [T-022](#t-022) | 個人資產表屏（工具列 #7） | MOD-12 | REQ-12.2 | `todo` | 0.5 | — |
 | [T-023](#t-023) | 資產表下的三张清單（資產/地產/股票）翻页 | MOD-12 | REQ-12.2 | `todo` | 0.5 | T-022 |
@@ -75,10 +75,10 @@
 | [T-064](#t-064) | 地形 tile 接缝检查 | MOD-11 | REQ-11.1 | `todo` | 0.5 | T-063 |
 | [T-065](#t-065) | SpriteCache 按图优先读 hd，缺则回退原图 | MOD-12 | REQ-11.1 | `todo` | 0.4 | T-063 |
 | [T-066](#t-066) | 并排比对页（原图 / HD）供人工过审 | MOD-11 | REQ-11.1 | `todo` | 0.3 | T-063 |
-| [T-070](#t-070) | WebSocket 服务器主循环（join / intent / 广播） | MOD-14 | REQ-14.1 | `todo` | 0.8 | — |
-| [T-071](#t-071) | 座位分配与断线重连（同名复用座位、since(seq) 补发） | MOD-14 | REQ-14.1 | `todo` | 0.6 | T-070 |
-| [T-072](#t-072) | checksum / desync 检测与处理 | MOD-14 | REQ-14.1 | `todo` | 0.4 | T-070 |
-| [T-073](#t-073) | AI 补位（掉线 30s 后服务器代打，重连归还） | MOD-14 | REQ-14.3 | `todo` | 0.5 | T-071 |
+| [T-070](#t-070) | WebSocket 服务器主循环（join / intent / 广播） | MOD-14 | REQ-14.1 | `done` | 0.8 | — |
+| [T-071](#t-071) | 座位分配与断线重连（同名复用座位、since(seq) 补发） | MOD-14 | REQ-14.1 | `done` | 0.6 | T-070 |
+| [T-072](#t-072) | checksum / desync 检测与处理 | MOD-14 | REQ-14.1 | `done` | 0.4 | T-070 |
+| [T-073](#t-073) | AI 补位（掉线 30s 后服务器代打，重连归还） | MOD-14 | REQ-14.3 | `done` | 0.5 | T-071 |
 | [T-074](#t-074) | 客户端联机模块 net-client（连接、发意图、按 seq 应用） | MOD-12 | REQ-14.2 | `todo` | 0.8 | T-070 |
 | [T-075](#t-075) | 掷骰本地预测动画（结果以服务器为准） | MOD-12 | REQ-14.2 | `todo` | 0.3 | T-074 |
 | [T-076](#t-076) | 联机大厅 UI（建房/加房/座位/角色/地图/开始） | MOD-12 | REQ-14.4 | `todo` | 0.8 | T-074 |
@@ -361,22 +361,23 @@
 
 **期望输入**
 
-    useCard(ctx, 8, { kind:'none' })，玩家站在**别人**的地块/設施上
+    useCard(ctx, 8, { kind:'none' })，玩家站在地块/設施格上（原版不挑主：自己的、无主的也照拍，见 notes）
 
 **期望输出**
 
-    state.pending = { kind:'auction', entityId, basePrice, bidders }；扣卡；phase='awaitingDecision'
+    state.pending = { kind:'auction', entityId, basePrice, bidders, facility? }；扣卡；phase='awaitingDecision'
 
 **核心逻辑 / 算法指导**
 
-    1. 读 0x443225：底价公式（地價+房價×等级）×物價？谁能竞价（所有活着的玩家？含原地主？），成交后钱给谁（原地主）。
+    1. 读 0x443225：底价 = round(地价×(1+等级×0.5))×物價（run_auction 0x43bde5，設施分支同式读 +0x22）；
+       竞价者 = 活着且非地主的玩家；成交款进公库（不给原主）；流拍 → 变无主。
     2. registry 不能直接产生 pending（它只返回 players/lands），故 UseCardResult 增加 `followUp?: PendingInteraction`；
        reduce.ts playCard 看到 followUp 就设 pending 与 phase。
-    3. 复用 rules/auction.ts 的成交逻辑（已被魔法屋/破產拍賣用）。
+    3. 复用 rules/auction.ts 的成交逻辑（已被魔法屋/破產拍賣用）；設施结算新增 settleFacilityAuction。
 
 **验收测试**
 
-    registry.test.ts：站在别人的地 → pending.auction；无主/自己的 → fail。auction 成交后归属转移沿用旧测试。
+    registry.test.ts：站在别人的地 → followUp.auction；自己的/无主的也照拍（敌意仅无主不记）；脚下非地块/設施 → fail。auction.test.ts：設施底价/结算 + 敌意 bug 用例。
 
 **涉及文件**
 
@@ -384,7 +385,7 @@
 - packages/core/src/state/reduce.ts
 - packages/core/src/rules/auction.ts
 
-> 拍賣屏本身是 T-033。
+> 拍賣屏本身是 T-033。两处与初稿卡面不符、按 asm 改：① 原版不拦「自己的/无主的」（0x443282 只拦无主记敌意）； ② 敌意增量是 double 压栈给 int 形参的原版 bug（地价×物價×(等级+2)/5 的低 32 位，常规地价恒为 0）， 照原样复刻于 auctionCardHostility，与黑卡敌意段同类。
 
 ### T-008
 
@@ -746,7 +747,7 @@
 
 **新增 core 指令 setAi{player, whoPlays, aiFlags, personality}（託管AI 的规则侧）**
 
-- 模块 `MOD-04` · 需求 `REQ-12.1` · 状态 `todo` · 估算 0.2 单元
+- 模块 `MOD-04` · 需求 `REQ-12.1` · 状态 `done` · 估算 0.2 单元
 - 依赖：无（可立即开工）
 - 被依赖：T-021
 - 证据：Data.mkf #77 託管AI 对话框；docs/original-screens.md S3（14 条字串）
@@ -2289,7 +2290,7 @@
 
 **WebSocket 服务器主循环（join / intent / 广播）**
 
-- 模块 `MOD-14` · 需求 `REQ-14.1` · 状态 `todo` · 估算 0.8 单元
+- 模块 `MOD-14` · 需求 `REQ-14.1` · 状态 `done` · 估算 0.8 单元
 - 依赖：无（可立即开工）
 - 被依赖：T-071, T-072, T-074
 - 证据：PRD §3 MOD-14 伪代码
@@ -2320,16 +2321,17 @@
 
 **涉及文件**
 
-- packages/server/src/index.ts
-- packages/server/src/server.test.ts
+- packages/server/src/hub.ts
+- packages/server/src/ws-server.ts
+- packages/server/src/hub.test.ts
 
-> C-LEG-5：不做公开大厅。
+> C-LEG-5：不做公开大厅。集线器 hub.ts 与传输无关（内存连接可测）；ws 适配器运行时动态 import，起真服务器前 `pnpm --filter @rich4/server add ws`（离线 store 里没有）。
 
 ### T-071
 
 **座位分配与断线重连（同名复用座位、since(seq) 补发）**
 
-- 模块 `MOD-14` · 需求 `REQ-14.1` · 状态 `todo` · 估算 0.6 单元
+- 模块 `MOD-14` · 需求 `REQ-14.1` · 状态 `done` · 估算 0.6 单元
 - 依赖：T-070
 - 被依赖：T-073, T-077
 - 证据：PRD §4.4
@@ -2363,7 +2365,7 @@
 
 **checksum / desync 检测与处理**
 
-- 模块 `MOD-14` · 需求 `REQ-14.1` · 状态 `todo` · 估算 0.4 单元
+- 模块 `MOD-14` · 需求 `REQ-14.1` · 状态 `done` · 估算 0.4 单元
 - 依赖：T-070
 - 被依赖：T-077
 - 证据：PRD §4.4
@@ -2397,7 +2399,7 @@
 
 **AI 补位（掉线 30s 后服务器代打，重连归还）**
 
-- 模块 `MOD-14` · 需求 `REQ-14.3` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-14` · 需求 `REQ-14.3` · 状态 `done` · 估算 0.5 单元
 - 依赖：T-071
 - 被依赖：T-077
 - 证据：DEVELOPMENT_PLAN §6 步骤 3

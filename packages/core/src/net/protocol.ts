@@ -28,9 +28,13 @@ export type ClientMessage =
       t: 'join';
       version: number;
       room: string;
-      /** 昵称，仅用于显示 */
+      /** 昵称，仅用于显示；断线重连靠它认回原座位 */
       name: string;
+      /** 重连时：本地已施加到第几号 action（含），服务器从下一号补发；不带 = 全量补发 */
+      since?: number;
     }
+  /** 房主（0 号座）开局：空座由电脑补位，服务器广播 start */
+  | { t: 'start' }
   /**
    * 提交一个意图。
    *
@@ -86,6 +90,8 @@ export interface SeatInfo {
   character: number;
   /** 空座由电脑补位 */
   kind: 'human' | 'computer';
+  /** 真人座位此刻是否在线（服务器维护；断线超时后由电脑代打，重连归还） */
+  connected?: boolean;
 }
 
 export interface RoomInfo {

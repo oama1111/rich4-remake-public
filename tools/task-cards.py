@@ -139,6 +139,16 @@ def parse(text: str) -> dict:
             key, _, rest = st.strip().partition(':')
             rest = rest.strip()
             i += 1
+            # 跨行的双引号标量："..." 开头但本行没闭合 → 续读到以 " 结尾的那一行（YAML 折叠成空格）
+            if rest.startswith('"') and not (len(rest) > 1 and rest.endswith('"') and not rest.endswith('\\"')):
+                buf = [rest]
+                while i < n:
+                    cont = lines[i].strip()
+                    i += 1
+                    buf.append(cont)
+                    if cont.endswith('"'):
+                        break
+                rest = ' '.join(buf)
             if rest == '|' or rest == '>':
                 buf = []
                 while i < n and (lines[i].strip() == '' or indent(lines[i]) > ind):

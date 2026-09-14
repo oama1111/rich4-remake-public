@@ -18,6 +18,9 @@
 import type { Action } from '../state/actions.ts';
 
 /** 一条已定序的 action */
+/** 服务器发起的 action 在日志里的座位号 */
+export const SYSTEM_SEAT = -1;
+
 export interface SequencedAction {
   seq: number;
   action: Action;
@@ -118,6 +121,20 @@ export class Sequencer {
     }
 
     const sequenced: SequencedAction = { seq: this.#seq++, action, seat };
+    this.#log.push(sequenced);
+    return { accepted: true, reason: null, sequenced };
+  }
+
+  /**
+   * 服务器自己发起的 action（掉线代打的 `setAi`、系统性调整），不受「轮到谁」限制，
+   * 但仍要过合法性校验；日志里座位记 `SYSTEM_SEAT`。
+   */
+  submitSystem(action: Action, apply?: (a: Action) => boolean): AcceptResult {
+    if (!this.#running) return { accepted: false, reason: 'notRunning', sequenced: null };
+    if (apply !== undefined && !apply(action)) {
+      return { accepted: false, reason: 'illegalAction', sequenced: null };
+    }
+    const sequenced: SequencedAction = { seq: this.#seq++, action, seat: SYSTEM_SEAT };
     this.#log.push(sequenced);
     return { accepted: true, reason: null, sequenced };
   }

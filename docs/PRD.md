@@ -569,6 +569,7 @@ landOnLand(state, land):
 ### MOD-14 `packages/server` —— 联机服务器（步骤 3）
 
 - **职责**：**服务器权威**。每个房间持有一份 core 镜像状态 + `Sequencer`；客户端只发**意图**（`intent{action}`），服务器校验后编号广播；随机数只在服务器消耗（客户端的 `rngState` 通过重放同步）。
+- **已实现（2026-09-14，T-070..T-073）**：`hub.ts` `RoomHub`（与传输无关：`connect(conn) → ClientHandle{onMessage,onClose}`，`sweepDisconnected(now)`），`ws-server.ts` `startWsServer(opts)`（运行时动态 import `ws`）。协议新增 `join.since?`、`{t:'start'}`（房主开局，空座补电脑）、`SeatInfo.connected?`；`Sequencer.submitSystem` / `Room.submitSystem` 承载服务器发起的 `setAi`（掉线超时託管、重连归还）；`Room.fingerprintAt(seq)` 供 checksum 比对；轮到电脑座位时服务器用 core 的 `decideAction` 代打直到轮回真人。
 - **现有 API（`room.ts`）**
   - `new Room({ id, map, globalMapId, seed, seats })`；`start()`；`submit(seat, action) → { ok, broadcast{seq, action} } | { ok:false, reason }`；`since(seq)`（重连补发）；`fingerprint`；`currentSeat`。
   - `submit` 的 `apply` 回调 = `reduce(mirror, action) !== mirror`，**非法 action 不占序号**。

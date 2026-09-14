@@ -12,6 +12,7 @@
 
 import {
   Sequencer,
+  decideAction,
   newGame,
   reduce,
   stateFingerprint,
@@ -47,6 +48,8 @@ export class Room {
   readonly #sequencer: Sequencer;
   #mirror: GameState;
   #started = false;
+  /** 每条被接受的 action 施加后的指纹，按序号存，供 checksum 比对 */
+  readonly #fingerprints = new Map<number, string>();
 
   constructor(opts: RoomOptions) {
     this.id = opts.id;
@@ -87,6 +90,21 @@ export class Room {
     return this.#sequencer.length;
   }
 
+  /** 镜像状态（只读用途：AI 代打、调试） */
+  get state(): GameState {
+    return this.#mirror;
+  }
+
+  /** 第 seq 号 action 施加后的指纹；没记录返回 null */
+  fingerprintAt(seq: number): string | null {
+    return this.#fingerprints.get(seq) ?? null;
+  }
+
+  /** 让 core 的 AI 替当前座位拿主意（电脑座位或掉线代打） */
+  decideForCurrent(): Action | null {
+    return decideAction({ state: this.#mirror, map: this.#map });
+  }
+
   start(): void {
     this.#started = true;
     this.#sequencer.start();
@@ -118,6 +136,22 @@ export class Room {
     }
     // 校验通过时 advanced 必然已被赋值
     this.#mirror = advanced as unknown as GameState;
+    this.#fingerprints.set(r.sequenced.seq, stateFingerprint(this.#mirror));
+    return { ok: true, broadcast: { seq: r.sequenced.seq, action } };
+  }
+
+  /** 服务器发起的 action（不受回合限制），同样先在镜像上验过再编号 */
+  submitSystem(action: Action): { ok: true; broadcast: Broadcast } | { ok: false; reason: string } {
+    let advanced: GameState | null = null;
+    const r = this.#sequencer.submitSystem(action, (a) => {
+      const next = reduce(this.#mirror, a, this.#topo);
+      if (next === this.#mirror) return false;
+      advanced = next;
+      return true;
+    });
+    if (!r.accepted || r.sequenced === null) return { ok: false, reason: r.reason ?? 'rejected' };
+    this.#mirror = advanced as unknown as GameState;
+    this.#fingerprints.set(r.sequenced.seq, stateFingerprint(this.#mirror));
     return { ok: true, broadcast: { seq: r.sequenced.seq, action } };
   }
 

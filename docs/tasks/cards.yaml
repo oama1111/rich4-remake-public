@@ -186,16 +186,19 @@ cards:
     - core/rules/interaction.ts (PendingInteraction.auction)
     - core/cards/registry.ts, core/state/reduce.ts
   source: "VA 0x00443225（rich4_card_paimaika.asm）；拍賣屏 Panel.mkf #26"
-  input: "useCard(ctx, 8, { kind:'none' })，玩家站在**别人**的地块/設施上"
-  output: "state.pending = { kind:'auction', entityId, basePrice, bidders }；扣卡；phase='awaitingDecision'"
+  input: "useCard(ctx, 8, { kind:'none' })，玩家站在地块/設施格上（原版不挑主：自己的、无主的也照拍，见 notes）"
+  output: "state.pending = { kind:'auction', entityId, basePrice, bidders, facility? }；扣卡；phase='awaitingDecision'"
   algorithm: |
-    1. 读 0x443225：底价公式（地價+房價×等级）×物價？谁能竞价（所有活着的玩家？含原地主？），成交后钱给谁（原地主）。
+    1. 读 0x443225：底价 = round(地价×(1+等级×0.5))×物價（run_auction 0x43bde5，設施分支同式读 +0x22）；
+       竞价者 = 活着且非地主的玩家；成交款进公库（不给原主）；流拍 → 变无主。
     2. registry 不能直接产生 pending（它只返回 players/lands），故 UseCardResult 增加 `followUp?: PendingInteraction`；
        reduce.ts playCard 看到 followUp 就设 pending 与 phase。
-    3. 复用 rules/auction.ts 的成交逻辑（已被魔法屋/破產拍賣用）。
-  tests: "registry.test.ts：站在别人的地 → pending.auction；无主/自己的 → fail。auction 成交后归属转移沿用旧测试。"
+    3. 复用 rules/auction.ts 的成交逻辑（已被魔法屋/破產拍賣用）；設施结算新增 settleFacilityAuction。
+  tests: "registry.test.ts：站在别人的地 → followUp.auction；自己的/无主的也照拍（敌意仅无主不记）；脚下非地块/設施 → fail。auction.test.ts：設施底价/结算 + 敌意 bug 用例。"
   files: [packages/core/src/cards/registry.ts, packages/core/src/state/reduce.ts, packages/core/src/rules/auction.ts]
-  notes: "拍賣屏本身是 T-033。"
+  notes: "拍賣屏本身是 T-033。两处与初稿卡面不符、按 asm 改：① 原版不拦「自己的/无主的」（0x443282 只拦无主记敌意）；
+    ② 敌意增量是 double 压栈给 int 形参的原版 bug（地价×物價×(等级+2)/5 的低 32 位，常规地价恒为 0），
+    照原样复刻于 auctionCardHostility，与黑卡敌意段同类。"
 
 - id: T-008
   group: A
@@ -424,7 +427,7 @@ cards:
   title: 新增 core 指令 setAi{player, whoPlays, aiFlags, personality}（託管AI 的规则侧）
   module: MOD-04
   req: REQ-12.1
-  status: todo
+  status: done
   estimate: 0.2
   depends_on: []
   uses:
@@ -1278,7 +1281,7 @@ cards:
   title: WebSocket 服务器主循环（join / intent / 广播）
   module: MOD-14
   req: REQ-14.1
-  status: todo
+  status: done
   estimate: 0.8
   depends_on: []
   uses: [server/src/room.ts (Room), core/net/protocol.ts (ClientMessage/ServerMessage), ws]
@@ -1290,15 +1293,15 @@ cards:
     onMessage(intent): room.submit(seat, action) → ok 则 broadcast action{seq}，否则 error{reason}。
     setAi 指令只允许改自己的座位。
   tests: "server.test.ts：两个内存 ws 客户端；非法 intent 不占序号"
-  files: [packages/server/src/index.ts, packages/server/src/server.test.ts]
-  notes: "C-LEG-5：不做公开大厅。"
+  files: [packages/server/src/hub.ts, packages/server/src/ws-server.ts, packages/server/src/hub.test.ts]
+  notes: "C-LEG-5：不做公开大厅。集线器 hub.ts 与传输无关（内存连接可测）；ws 适配器运行时动态 import，起真服务器前 `pnpm --filter @rich4/server add ws`（离线 store 里没有）。"
 
 - id: T-071
   group: E
   title: 座位分配与断线重连（同名复用座位、since(seq) 补发）
   module: MOD-14
   req: REQ-14.1
-  status: todo
+  status: done
   estimate: 0.6
   depends_on: [T-070]
   uses: [server/src/room.ts (since)]
@@ -1315,7 +1318,7 @@ cards:
   title: checksum / desync 检测与处理
   module: MOD-14
   req: REQ-14.1
-  status: todo
+  status: done
   estimate: 0.4
   depends_on: [T-070]
   uses: [core/net/protocol.ts (stateFingerprint)]
@@ -1332,7 +1335,7 @@ cards:
   title: AI 补位（掉线 30s 后服务器代打，重连归还）
   module: MOD-14
   req: REQ-14.3
-  status: todo
+  status: done
   estimate: 0.5
   depends_on: [T-071]
   uses: [core/ai/policy.ts (decideAction), server/src/room.ts]
