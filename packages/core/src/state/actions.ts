@@ -99,6 +99,15 @@ export type Action =
    */
   | { type: 'useTool'; toolId: number; nodeId?: number }
 
+  /**
+   * 在百貨公司买卖。
+   *
+   * ★ 花的是**點數**（地图上「得５０點」那类格子攒的），不是钱。
+   *   商店是模态窗口，一次可买卖多样，关掉走 `declineDecision`。
+   */
+  | { type: 'shop'; op: 'buyCard' | 'sellCard'; id: number }
+  | { type: 'shop'; op: 'buyTool' | 'sellTool'; id: number; count?: number }
+
   /** 结束当前玩家回合，轮转到下一位 */
   | { type: 'endTurn' };
 

@@ -71,6 +71,21 @@ export type PendingInteraction =
       cash: number;
     }
   /**
+   * 百貨公司：买卖卡片与道具，**花的是點數**。
+   *
+   * @source `_rich4_player_buy_card` / `_rich4_player_buy_tool`
+   *   都从玩家 +0x30（點數）扣，不动现金。
+   */
+  | {
+      kind: 'shop';
+      /** 手上的點數 —— 买得起什么由 UI/AI 自己算 */
+      points: number;
+      /** 可买的卡片：编号与標價 */
+      cards: { id: number; name: string; price: number }[];
+      /** 可买的道具：编号、標價、全局库存（编号 > 8 不限量，给 null） */
+      tools: { id: number; name: string; price: number; stock: number | null }[];
+    }
+  /**
    * 尚未实现的场所。
    *
    * ⚠️ 这一项存在的意义是**让缺口可见**：落在百货/魔法屋/小游戏上时，
@@ -86,7 +101,6 @@ const PLACE_NAMES: Readonly<Record<number, string>> = {
   [SPECIAL_KIND.PENGUIN_DIG]: '企鵝挖寶',
   [SPECIAL_KIND.BALLOON]: '七彩氣球',
   [SPECIAL_KIND.GIFT_FROM_SKY]: '喜從天降',
-  [SPECIAL_KIND.DEPARTMENT_STORE]: '百貨公司',
   [SPECIAL_KIND.MAGIC_HOUSE]: '魔法屋',
   [SPECIAL_KIND.PRISON]: '監獄',
   [SPECIAL_KIND.HOSPITAL]: '醫院',
@@ -149,7 +163,11 @@ export type InteractionResponse =
   | { kind: 'bankRepay'; amount: number }
   | { kind: 'lotteryBuy'; number: number }
   | { kind: 'auctionBid'; winner: number; price: number }
-  | { kind: 'buyShares'; shares: number };
+  | { kind: 'buyShares'; shares: number }
+  | { kind: 'shopBuyCard'; cardId: number }
+  | { kind: 'shopBuyTool'; toolId: number }
+  | { kind: 'shopSellCard'; cardId: number }
+  | { kind: 'shopSellTool'; toolId: number; count: number };
 
 /** 答复与待决交互是否配套——防止 UI 送回驴唇不对马嘴的 action */
 export function responseMatches(
@@ -170,6 +188,8 @@ export function responseMatches(
       return response.kind === 'auctionBid';
     case 'buyShares':
       return response.kind === 'buyShares';
+    case 'shop':
+      return response.kind.startsWith('shop');
     default:
       return false;
   }

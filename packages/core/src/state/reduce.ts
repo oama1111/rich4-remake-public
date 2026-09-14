@@ -33,7 +33,9 @@ import {
   placeObject,
   useVehicleTool,
 } from '../rules/tool-effects.ts';
-import { takeTool, toolCount } from '../rules/tools.ts';
+import { STOCKED_TOOL_MAX_ID, takeTool, toolCount } from '../rules/tools.ts';
+import { buyCard, buyTool, sellCard, sellTool } from '../places/shop.ts';
+import { CARDS, TOOLS } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
 import type { TradeResult } from '../places/stock.ts';
@@ -392,6 +394,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     case 'useTool':
       return useToolAction(state, action.toolId, action.nodeId ?? 0);
 
+    case 'shop':
+      return shopAction(state, action);
+
     case 'declineDecision': {
       if (state.phase !== 'awaitingDecision') return state;
       return { ...state, phase: 'turnEnd' };
@@ -435,6 +440,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         ...dayEnd,
         currentPlayer: next,
         phase: 'turnStart',
+        // ★ 待决交互属于**那个玩家的那个回合**，不能带进下一回合。
+        //   商店这类模态窗口尤其明显：不清掉，下家一上来就站在别人的柜台前。
+        pending: null,
         dice: [],
         stepsRemaining: 0,
         stepsTotal: 0,
@@ -996,8 +1004,72 @@ function pendingForSpecial(state: GameState, specialKind: number): PendingIntera
     };
   }
 
+  if (specialKind === SPECIAL_KIND.DEPARTMENT_STORE) {
+    // ★ 百貨公司花的是**點數**，不是钱
+    return {
+      kind: 'shop',
+      points: me.points,
+      cards: CARDS.map((c) => ({ id: c.id, name: c.name, price: c.price })),
+      tools: TOOLS.map((t) => ({
+        id: t.id,
+        name: t.name,
+        price: t.price,
+        // @source give_tool 对编号 > 8 不查库存（见 rules/tools.ts）
+        stock: t.id <= STOCKED_TOOL_MAX_ID ? (state.toolStock[t.id] ?? 0) : null,
+      })),
+    };
+  }
+
   if (isUnimplementedPlace(specialKind)) return unimplementedPlace(specialKind);
   return null;
+}
+
+/**
+ * 在百貨公司买卖。
+ *
+ * ★ 规则全在 `places/shop.ts`，这里只接驳状态。
+ *   成功后**保持 `pending`**——原版的商店是个模态窗口，
+ *   一次可以买好几样，直到玩家自己关掉（`declineDecision`）。
+ */
+function shopAction(state: GameState, action: Action & { type: 'shop' }): GameState {
+  const pending = state.pending;
+  if (pending === null || pending.kind !== 'shop') return state;
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || !isAlive(me)) return state;
+
+  const commit = (
+    player: Player,
+    tools: readonly number[] = state.tools,
+    stock: readonly number[] = state.toolStock,
+  ): GameState => ({
+    ...state,
+    players: state.players.map((p, i) => (i === state.currentPlayer ? player : p)),
+    tools: [...tools],
+    toolStock: [...stock],
+    // 刷新待决交互里的點數，商店还开着
+    pending: { ...pending, points: player.points },
+  });
+
+  switch (action.op) {
+    case 'buyCard': {
+      const r = buyCard(me, action.id);
+      return r.ok ? commit(r.player) : state;
+    }
+    case 'sellCard': {
+      const r = sellCard(me, action.id);
+      return r.ok ? commit(r.player) : state;
+    }
+    case 'buyTool': {
+      const r = buyTool(me, state.tools, state.toolStock, action.id);
+      return r.ok ? commit(r.player, r.tools, r.stock) : state;
+    }
+    case 'sellTool': {
+      const r = sellTool(me, state.tools, state.toolStock, action.id, action.count ?? 1);
+      return r.ok ? commit(r.player, r.tools, r.stock) : state;
+    }
+    default:
+      return state;
+  }
 }
 
 // ============================================================

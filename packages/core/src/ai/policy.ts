@@ -295,6 +295,28 @@ export function decideTool(ctx: AiContext): Action | null {
 export function decidePending(state: GameState): Action | null {
   const p = state.pending;
   if (p === null) return null;
+  if (p.kind === 'shop') {
+    // ★ 优先把交通工具买到手：骰子从 1 变 3，是全局最划算的一笔。
+    //   其次补放置类道具。都买不起就关门（由调用方发 declineDecision）。
+    const me = state.players[state.currentPlayer];
+    if (me === undefined) return null;
+    const canBuy = (id: number): boolean => {
+      const t = p.tools.find((x) => x.id === id);
+      return t !== undefined && t.price <= p.points && (t.stock === null || t.stock > 0);
+    };
+    // 已有更好的车就别买了
+    if (me.trafficMethod !== TRAFFIC_CAR && canBuy(6)) {
+      return { type: 'shop', op: 'buyTool', id: 6 };
+    }
+    if (
+      me.trafficMethod !== TRAFFIC_CAR &&
+      me.trafficMethod !== TRAFFIC_MOTORCYCLE &&
+      canBuy(5)
+    ) {
+      return { type: 'shop', op: 'buyTool', id: 5 };
+    }
+    return null;
+  }
   if (p.kind === 'buyShares') {
     // 简单策略：留够安全垫，剩下的钱买得起多少买多少，且不超过企业余量。
     // ★ 这是**策略**不是规则——买不买、买多少原版由 AI 性格决定（M3），

@@ -48,9 +48,10 @@ describe('★ 哪些格子需要玩家做决定', () => {
 });
 
 describe('★ 未实现的场所会明确报出来，而不是静默无事发生', () => {
-  it('百货与魔法屋标为未实现', () => {
-    expect(isUnimplementedPlace(SPECIAL_KIND.DEPARTMENT_STORE)).toBe(true);
+  it('魔法屋标为未实现；百貨公司已实现，不该再在名单里', () => {
     expect(isUnimplementedPlace(SPECIAL_KIND.MAGIC_HOUSE)).toBe(true);
+    // 百貨公司接上了（places/shop.ts），从未实现名单里摘掉了
+    expect(isUnimplementedPlace(SPECIAL_KIND.DEPARTMENT_STORE)).toBe(false);
   });
 
   it('带可读场所名', () => {

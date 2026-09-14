@@ -92,13 +92,10 @@ describe('★ M2 验收：完整一局', () => {
     expect(r.deaths[1]! - r.deaths[0]!).toBeGreaterThan(100);
   });
 
-  run('⚠️ AI 暂时用不上道具 —— 卡在两处缺口上，不是 AI 的问题', () => {
-    // 这条**故意断言「用不上」**，把两处缺口钉住，等任一处补上就会失败提醒：
-    //   1. 开局只发 機器娃娃/路障/地雷/定時炸彈（1..4），**没有交通工具**；
-    //      車子要去百貨/道具店买，而那两处还没实现 → AI 的换车逻辑永远不触发
-    //   2. 放置类道具放下去之后**没有任何东西会踩到它**——物件落点效果
-    //      尚未实现（见 known-deviations 的 Q-OBJ-1），放了等于没放，
-    //      所以 AI 也不该去放
+  run('★ AI 真的会用道具 —— 百貨公司一通，道具经济就活了', () => {
+    // 这条先前是反向断言（「一个都没用」），因为当时卡在两处：
+    //   开局不发交通工具，而車子要去百貨公司买——那时百貨还没实现。
+    // 现在百貨接上了，AI 会用點數买汽車再换乘，道具终于被用起来。
     const map = loadMap();
     const topo = {
       nodes: map.nodes,
@@ -112,15 +109,18 @@ describe('★ M2 验收：完整一局', () => {
       seed: 2024,
     });
     let used = 0;
+    let bought = 0;
     for (let i = 0; i < 200_000 && state.turnCount < 2000; i++) {
       const a = decideAction({ state, map });
       if (a === null) break;
       if (a.type === 'useTool') used++;
+      if (a.type === 'shop') bought++;
       const next = reduce(state, a, topo);
       if (next === state) break;
       state = next;
     }
-    expect(used, '道具能用了？那就把这条测试连同上面的注释一起更新').toBe(0);
+    expect(bought, '两千回合里一次都没在百貨公司买过东西').toBeGreaterThan(0);
+    expect(used, '买了道具却一个也没用').toBeGreaterThan(0);
   });
 
   run('★ AI 真的会出牌 —— 卡片系统不再是死代码', () => {

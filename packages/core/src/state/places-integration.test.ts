@@ -74,14 +74,19 @@ describe('★ 樂透', () => {
 });
 
 describe('★ 未实现的场所会明确报出来', () => {
-  run('百货/魔法屋给出 unimplemented 而不是静默', () => {
+  run('魔法屋给出 unimplemented 而不是静默', () => {
     const { map, topo: t } = topo();
-    for (const kind of [SPECIAL_KIND.DEPARTMENT_STORE, SPECIAL_KIND.MAGIC_HOUSE]) {
-      const s = standOn(newGame({ map, players: players() }), map, kind);
-      if (s === null) continue;
-      const r = reduce(s, { type: 'settle' }, t);
-      expect(r.pending?.kind, `kind ${kind}`).toBe('unimplemented');
-    }
+    const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.MAGIC_HOUSE);
+    if (s === null) return;
+    expect(reduce(s, { type: 'settle' }, t).pending?.kind).toBe('unimplemented');
+  });
+
+  run('★ 百貨公司已实现 —— 给出的是商店交互', () => {
+    const { map, topo: t } = topo();
+    const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.DEPARTMENT_STORE);
+    if (s === null) return;
+    const r = reduce(s, { type: 'settle' }, t);
+    expect(r.pending?.kind).toBe('shop');
   });
 });
 
