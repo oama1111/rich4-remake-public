@@ -24,6 +24,7 @@ import {
 } from '../rules/bankruptcy.ts';
 import { LOTTERY_DRAW_DAY, drawLottery, releaseTickets } from '../places/lottery.ts';
 import { buyStock, commercialUnitPrice, liquidateStocks, sellStock } from '../places/stock.ts';
+import { emptyOwnership, updateCommercialOwner } from '../places/commercial.ts';
 import type { TradeResult } from '../places/stock.ts';
 import {
   refreshTradableShares,
@@ -468,11 +469,35 @@ function tradeStock(
     const cost = Math.trunc(action.shares * stock.price);
     // @source 柜台买入扣的是存款
     if (cost > me.moneyInBank) return state;
-    return commit(buyStock(me, held, stock, action.shares, 'market'));
+    // @source buy_stock 末尾无条件重排企业名次 —— 柜台买入同样触发
+    return reownCommercial(
+      commit(buyStock(me, held, stock, action.shares, 'market')),
+      action.stock,
+      state.currentPlayer,
+    );
   }
 
   if (action.shares > held.amount) return state;
   return commit(sellStock(me, held, stock, action.shares, 'bank'));
+}
+
+/**
+ * 买入股票之后重排对应企业的持股名次。
+ *
+ * @source `_rich4_buy_stock` 末尾无条件调 `_rich4_update_commercial_owner`
+ *   —— **柜台买入与企业买入都会触发**，不只是后者。
+ *
+ * ⚠️ 卖出**不触发**（`_rich4_sell_stock` 里没有这一步），故卖光股票
+ *   并不会立刻让出企业归属，要等下一次有人买入才重排。照搬原版。
+ */
+function reownCommercial(state: GameState, stockIndex: number, buyer: number): GameState {
+  const commercialId = state.market.stocks[stockIndex]?.commercialIndex ?? 0;
+  if (commercialId === 0) return state;
+  const prev = state.commercialOwners[commercialId] ?? emptyOwnership();
+  const r = updateCommercialOwner(prev, buyer, (p) => state.holdings[p]?.[stockIndex]?.amount ?? 0);
+  const commercialOwners = [...state.commercialOwners];
+  commercialOwners[commercialId] = r.ownership;
+  return { ...state, commercialOwners };
 }
 
 /**
@@ -503,7 +528,7 @@ function buySharesFromCommercial(state: GameState, shares: number): GameState {
   commercialShares[pending.commercialId] =
     (commercialShares[pending.commercialId] ?? 0) - r.commercialSharesTaken;
 
-  return {
+  const next: GameState = {
     ...state,
     players: state.players.map((p, i) => (i === state.currentPlayer ? r.player : p)),
     holdings: state.holdings.map((row, i) =>
@@ -512,6 +537,7 @@ function buySharesFromCommercial(state: GameState, shares: number): GameState {
     commercialShares,
     pending: null,
   };
+  return reownCommercial(next, pending.stock, state.currentPlayer);
 }
 
 /**
@@ -754,7 +780,7 @@ function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
 
   const out = applyNewsEffect(draw.eventId, {
     players: withDeck.players,
-    affected: newsTargets(draw.eventId, withDeck, lands),
+    affected: newsTargets(draw.eventId, withDeck, lands, topo.facilities ?? []),
     priceIndex: withDeck.priceIndex,
     pool: withDeck.pool,
     occupancy: withDeck.prisonOccupancy,
@@ -776,8 +802,17 @@ function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
  *   8「第一大地主」/ 9「土地最少者」/ 10「股市第一大戶」
  * 其余按抽牌人处理。
  */
-function newsTargets(eventId: number, state: GameState, lands: readonly LandInfo[]): number[] {
-  const countOwned = (i: number): number => lands.filter((l) => l.owner === i + 1).length;
+function newsTargets(
+  eventId: number,
+  state: GameState,
+  lands: readonly LandInfo[],
+  facilities: readonly FacilityInfo[],
+): number[] {
+  // ★ 原版扫**两张表**：房产（0x498e84，步长 0x34）与商业地块
+  //   （0x498e88，步长 0x38），都读 +0x19 的 owner。
+  const countOwned = (i: number): number =>
+    lands.filter((l) => l.owner === i + 1).length +
+    facilities.filter((f) => f.owner === i + 1).length;
 
   // ★ 只在**在场**玩家里评比。
   //   @source 新闻 9（VA 0x00449b29）与新闻 8 的同名循环都有
@@ -791,10 +826,6 @@ function newsTargets(eventId: number, state: GameState, lands: readonly LandInfo
   }
   if (alive.length === 0) return [state.currentPlayer];
 
-  // ⚠️ 原版统计的是**两张表**：房产（0x498e84，步长 0x34）与
-  //   商业地块（0x498e88，步长 0x38），都读 +0x19 的 owner。
-  //   本引擎目前只在状态里跟踪房产归属（商业地块的运行时归属未建模），
-  //   故这里少算了商业地块那一半。登记为 Q-NEWS-1。
   switch (eventId) {
     case 8: {
       // 地产最多者

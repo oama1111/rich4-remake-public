@@ -82,6 +82,7 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     market: newStockMarket(0),
     holdings: [0, 1, 2, 3].map(() => Array.from({ length: 12 }, () => ({ amount: 0, avgCost: 0 }))),
     commercialShares: [],
+    commercialOwners: [],
     ...over,
   };
 }

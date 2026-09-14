@@ -21,6 +21,7 @@ import { WatcomRng } from '../rng/watcom.ts';
 import { CONFINEMENT_SLOTS } from './confinement.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { newStockMarket } from '../places/stock-market.ts';
+import { emptyOwnership } from '../places/commercial.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
 import { STOCKS_PER_MAP, stocksOfMap } from '@rich4/data';
 import {
@@ -229,5 +230,7 @@ export function newGame(opts: NewGameOptions): GameState {
     holdings: players.map(() => Array.from({ length: STOCKS_PER_MAP }, () => ({ ...EMPTY_HOLDING }))),
     // ★ 各企业的可售股数取自地图记录的 +0x30；下标 = 企业 1 基序号
     commercialShares: commercialSharesOf(map, globalMapId),
+    // 开局各企业无主、排名表全空
+    commercialOwners: map.commercials.map(() => emptyOwnership()).concat([emptyOwnership()]),
   };
 }

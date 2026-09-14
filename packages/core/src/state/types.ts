@@ -12,6 +12,7 @@ import type { EventDeck } from '../events/deck.ts';
 import type { PendingInteraction } from '../rules/interaction.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import type { StockHolding } from '../places/stock.ts';
+import type { CommercialOwnership } from '../places/commercial.ts';
 
 // ============================================================
 //  玩家控制方式
@@ -305,6 +306,15 @@ export interface GameState {
    *   它是**运行时**会变的量，故放进状态而不是留在地图表里。
    */
   commercialShares: number[];
+
+  /**
+   * 各上市企业的归属与持股排名，下标 = 企业 1 基序号。
+   *
+   * @source 企业记录 `+0x18`（拥有者）与 `+0x1c..+0x1f`（4 人排名表），
+   *   每次买入股票后由 `_rich4_update_commercial_owner` 重排。
+   *   见 places/commercial.ts。
+   */
+  commercialOwners: CommercialOwnership[];
 }
 
 // ============================================================

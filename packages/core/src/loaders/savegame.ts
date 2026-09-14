@@ -24,6 +24,7 @@ import type { Rich4Map } from './map.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
+import { emptyOwnership } from '../places/commercial.ts';
 import { STOCKS_PER_MAP } from '@rich4/data';
 import { emptyTools, initialToolStock, TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
 import { CONFINEMENT_SLOTS } from '../rules/confinement.ts';
@@ -236,6 +237,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   gaps['pool'] = '公库金额在存档中的偏移未验证，已置 0';
   gaps['toolStock'] = '道具全局库存在存档中的偏移未验证，已置为初始库存';
   gaps['commercialShares'] = '各企业的已售股数在存档中的偏移未验证，已按地图初值重置';
+  gaps['commercialOwners'] = '各企业的归属与持股排名在存档中的偏移未验证，已置为无主';
   gaps['prisonOccupancy'] = '监狱/医院占用表在存档中的偏移未验证，已置空';
   gaps['newsDeck'] = '牌堆洗牌序在存档中的偏移未验证，已按顺序重建（不影响已抽过的牌）';
   gaps['rngState'] =
@@ -276,6 +278,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
       Array.from({ length: STOCKS_PER_MAP }, () => ({ ...EMPTY_HOLDING })),
     ),
     // 下标 = 企业 1 基序号，故长度要多一格
+    commercialOwners: Array.from({ length: map.commercials.length + 1 }, () => emptyOwnership()),
     commercialShares: Array.from(
       { length: map.commercials.length + 1 },
       (_, i) => map.commercials.find((c) => c.id === i)?.shares ?? 0,

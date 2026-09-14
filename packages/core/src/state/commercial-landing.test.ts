@@ -113,3 +113,50 @@ describe('★ 上市企业落点', () => {
     expect(reduce(noPending, { type: 'buyShares', shares: 5 }, topo)).toBe(noPending);
   });
 });
+
+describe('★ 买入后企业归属重排', () => {
+  have('★ 买了就成了这家公司的老板', () => {
+    const { state, topo } = landOnCommercial();
+    if (state.pending === null || state.pending.kind !== 'buyShares') {
+      throw new Error('没拿到待决交互');
+    }
+    const { commercialId } = state.pending;
+    expect(state.commercialOwners[commercialId]?.owner).toBe(0); // 开局无主
+
+    const after = reduce(state, { type: 'buyShares', shares: 10 }, topo);
+    // 玩家 0 → 编码 1
+    expect(after.commercialOwners[commercialId]?.owner).toBe(1);
+    expect(after.commercialOwners[commercialId]?.ranking[0]).toBe(1);
+  });
+
+  have('★ 柜台买入同样会重排 —— 不只是企业落点', () => {
+    const { state, topo } = landOnCommercial();
+    if (state.pending === null || state.pending.kind !== 'buyShares') {
+      throw new Error('没拿到待决交互');
+    }
+    const { stock, commercialId } = state.pending;
+    // 给足存款走柜台
+    const rich: GameState = {
+      ...state,
+      pending: null,
+      players: state.players.map((p, i) => (i === 0 ? { ...p, moneyInBank: 9_999_999 } : p)),
+    };
+    const after = reduce(rich, { type: 'buyStock', stock, shares: 50 }, topo);
+    expect(after.commercialOwners[commercialId]?.owner).toBe(1);
+  });
+
+  have('★ 卖出不重排 —— 原版 sell_stock 里没有这一步', () => {
+    const { state, topo } = landOnCommercial();
+    if (state.pending === null || state.pending.kind !== 'buyShares') {
+      throw new Error('没拿到待决交互');
+    }
+    const { stock, commercialId } = state.pending;
+    const bought = reduce(state, { type: 'buyShares', shares: 10 }, topo);
+    expect(bought.commercialOwners[commercialId]?.owner).toBe(1);
+
+    const sold = reduce(bought, { type: 'sellStock', stock, shares: 10 }, topo);
+    expect(sold.holdings[0]![stock]!.amount).toBe(0);
+    // 持股已清零，但归属仍挂在他名下 —— 照搬原版
+    expect(sold.commercialOwners[commercialId]?.owner).toBe(1);
+  });
+});
