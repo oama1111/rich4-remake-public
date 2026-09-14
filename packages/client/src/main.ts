@@ -31,8 +31,9 @@ import {
   characterCamera,
   fitCamera,
   hitToolbar,
-  pickNode,
+  pickNodeAt,
   screenToMap,
+  worldToScreen,
   type Camera,
 } from './render.ts';
 import { TOOLBAR_LABELS } from './assets.ts';
@@ -532,18 +533,17 @@ function nextAutoAction(): Action | null {
 
 function bindInput(): void {
   canvas.addEventListener('mousemove', (e) => {
-    // ⚠️ 人物视角下的拾取要**反解投影表**，还没做；
-    //   这里先不猜——宁可不高亮，也别高亮错的格子。
-    if (camera.mode !== 'map') {
-      if (hoverNode !== null) {
-        hoverNode = null;
-        requestRender();
-      }
-      return;
-    }
+    // ★ 人物视角现在也能拾取了。办法不是去解投影表的逆，而是把每个节点
+    //   **正向投一遍**再比屏幕距离（见 render.ts 的 `pickNodeAt`）——
+    //   用的就是绘制时那张表，所以「看得见的就点得到」。
     const r = canvas.getBoundingClientRect();
-    const m = screenToMap(e.clientX - r.left, e.clientY - r.top, camera);
-    const hit = pickNode(map, m.x, m.y);
+    const hit = pickNodeAt(
+      map,
+      e.clientX - r.left,
+      e.clientY - r.top,
+      camera,
+      { w: canvas.clientWidth, h: canvas.clientHeight },
+    );
     if (hit !== hoverNode) {
       hoverNode = hit;
       requestRender();
@@ -754,13 +754,38 @@ async function boot(): Promise<void> {
     camera = characterCamera(first?.x ?? 0, first?.y ?? 0, 0);
     centerOnCurrentPlayer();
 
-    // 开发期调试出口：在控制台里能直接看状态与相机，排错方便
+    // 开发期调试出口：在控制台里能直接看状态与相机，排错方便。
+    //
+    // ★ 多出来的三项是给**拾取**排错用的：棋盘画在 canvas 上，
+    //   浏览器自动化看不见里面，投影或相机一出错只能靠猜。
+    //   有 `project` / `pick` 就能在控制台里直接问「这一点是哪个节点」。
     if (import.meta.env.DEV) {
       (globalThis as unknown as { __rich4?: unknown }).__rich4 = {
         get map() { return map; },
         get state() { return state; },
         get camera() { return camera; },
         get history() { return history; },
+        get hoverNode() { return hoverNode; },
+        viewport: () => ({ w: canvas.clientWidth, h: canvas.clientHeight }),
+        /** 某个节点此刻画在屏幕的哪里；不在视野内返回 null */
+        project: (nodeId: number) => {
+          const n = map.nodes[nodeId - 1];
+          if (n === undefined) return null;
+          return worldToScreen(n.x, n.y, camera, {
+            w: canvas.clientWidth,
+            h: canvas.clientHeight,
+          });
+        },
+        /** 屏幕坐标落在哪个节点上 —— 与鼠标走的是同一条路径 */
+        pick: (sx: number, sy: number, radius?: number) =>
+          pickNodeAt(
+            map,
+            sx,
+            sy,
+            camera,
+            { w: canvas.clientWidth, h: canvas.clientHeight },
+            radius,
+          ),
       };
     }
 

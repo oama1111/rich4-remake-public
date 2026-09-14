@@ -125,7 +125,10 @@ export function screenToMap(sx: number, sy: number, cam: Camera): { x: number; y
 }
 
 /**
- * 找出离给定地图坐标最近的节点。
+ * 找出离给定**地图坐标**最近的节点。
+ *
+ * ⚠️ 它只认地图坐标 —— 要从鼠标位置拾取请用 `pickNodeAt`，
+ *   那个两种视角都对。这个留着是给小地图之类已经在地图坐标里的调用方。
  *
  * ⚠️ 原版的拾取是像素级的（窗口过程里按精灵 alpha 命中测试），
  * 这里先用「最近且在阈值内」近似。等精灵锚点全部验证过之后可以换成
@@ -605,4 +608,44 @@ function nodeBaseColor(node: MapNode): string {
     default:
       return node.specialKind !== 0 ? '#e0c65a' : '#6b7280';
   }
+}
+
+/**
+ * 屏幕坐标 → 节点号，**两种视角都管用**。
+ *
+ * ★ 这里不去解投影的逆，而是把每个节点**正向投一遍**再比屏幕距离。
+ *   理由有三：
+ *   - 用的就是绘制时那张表（`projectWorld`），所以「看得见的就点得到」，
+ *     不会出现画在这、点在那的错位；
+ *   - 投影在 29×29 窗口外直接返回 null，逆变换要另外处理这个边界，
+ *     正向投则天然跳过；
+ *   - 103 个节点，一次遍历的开销可以忽略。
+ *
+ * ⚠️ 先前的拾取走 `screenToMap` + `pickNode`，而 `screenToMap` **只实现了
+ *   地图视角**的平移缩放。在人物视角下它算出来的地图坐标是错的，
+ *   于是悬停高亮和岔路点击全都指向别的格子。
+ */
+export function pickNodeAt(
+  map: Rich4Map,
+  sx: number,
+  sy: number,
+  cam: Camera,
+  viewport: { w: number; h: number },
+  radius = 24,
+): number | null {
+  let best: number | null = null;
+  let bestDist = radius * radius;
+  for (const n of map.nodes) {
+    const p = worldToScreen(n.x, n.y, cam, viewport);
+    // 人物视角下越出窗口的节点根本没画，自然也点不到
+    if (p === null) continue;
+    const dx = p.x - sx;
+    const dy = p.y - sy;
+    const d = dx * dx + dy * dy;
+    if (d < bestDist) {
+      bestDist = d;
+      best = n.id;
+    }
+  }
+  return best;
 }
