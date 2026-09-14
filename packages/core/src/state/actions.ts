@@ -11,6 +11,8 @@
  *          单机局同样可完整回放。
  */
 
+import type { CardTarget } from '../cards/target.ts';
+
 export type Action =
   /**
    * 注入新的随机种子。
@@ -73,6 +75,18 @@ export type Action =
    *   @source `buy_stock(…, 0)` 与 `buy_stock(…, 非0)` 两个分支
    */
   | { type: 'buyShares'; shares: number }
+
+  /**
+   * 出一张手牌。
+   *
+   * ★ 卡片的效果早就逐张实现好了（`cards/` 下 30 个模块），但一直
+   *   **没有入口能从对局里打出来**——本 action 就是那个入口。
+   *
+   * `target` 由模态 UI 或 AI 给出（C-ARC-2：选人选地不进 core）。
+   * 不需要目标的卡（购地/改建等）作用于玩家**当前所站地块**，
+   * 传 `{ kind: 'none' }` 即可。
+   */
+  | { type: 'useCard'; cardId: number; target?: CardTarget }
 
   /** 结束当前玩家回合，轮转到下一位 */
   | { type: 'endTurn' };

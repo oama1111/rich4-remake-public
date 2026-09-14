@@ -20,7 +20,9 @@ import type { GameState, Player } from '../state/types.ts';
 import type { LandInfo, MapNode, Rich4Map } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, housingIndexOf } from '../rules/land.ts';
-import { isAiControlled } from '../state/types.ts';
+import { isAiControlled, isAlive } from '../state/types.ts';
+import { useCard } from '../cards/registry.ts';
+import type { CardTarget } from '../cards/target.ts';
 import { autoAction } from '../state/reduce.ts';
 
 /**
@@ -111,7 +113,8 @@ export function decideAction(ctx: AiContext): Action | null {
     case 'turnStart':
       return { type: 'startTurn' };
     case 'awaitingRoll':
-      return { type: 'rollDice' };
+      // ★ 掷骰前是出牌的时机 —— 原版也是在这个阶段用卡/道具
+      return decideCard(ctx) ?? { type: 'rollDice' };
     case 'moving':
       return { type: 'step' };
     case 'settling':
@@ -131,6 +134,125 @@ export function decideAction(ctx: AiContext): Action | null {
     default:
       return null;
   }
+}
+
+/**
+ * 该不该出张牌，出哪张。
+ *
+ * ★ 这是**策略**不是规则：能不能出、出了会怎样一律由
+ *   `cards/registry.ts` 说了算，这里只回答「值不值」。
+ *
+ * ⚠️ 原版的出牌时机与取舍由 AI 性格决定（角色表的 f23/f24/f26，
+ *   语义尚未证实，见本文件顶部），故这里先给一套**保守而讲道理**的规则：
+ *   只在能明确得利时出牌，不为出而出。
+ */
+export function decideCard(ctx: AiContext): Action | null {
+  const { state, map } = ctx;
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || me.cards.length === 0) return null;
+
+  /**
+   * ★ 出牌前**先空跑一遍规则**，只有确定会生效才真出。
+   *
+   * 这不是保险起见——是必须的：`useCard` 失败时 reduce 原样返回状态，
+   * 而 AI 是纯函数（为了可回放，见 C-DET-4），下一帧会**再提议同一张牌**，
+   * 于是活锁。既有的买地/盖房走的也是这条路子（问 `canPurchase`），
+   * 出牌照办即可，规则仍只有 registry 一份。
+   */
+  const willWork = (cardId: number, target: CardTarget): boolean =>
+    useCard(
+      {
+        players: state.players,
+        lands: map.lands.map((l) => ({
+          ...l,
+          owner: state.landOwner[l.id] ?? l.owner,
+          level: state.landLevel[l.id] ?? l.level,
+        })),
+        nodes: map.nodes,
+        currentPlayer: state.currentPlayer,
+        priceIndex: state.priceIndex,
+        scapegoatPicker: () => -1,
+      },
+      cardId,
+      target,
+    ).ok;
+
+  const play = (cardId: number, target: CardTarget = { kind: 'none' }): Action | null =>
+    willWork(cardId, target) ? { type: 'useCard', cardId, target } : null;
+
+  const has = (id: number): boolean => me.cards.includes(id);
+  const rivals = state.players.filter((p) => p.index !== me.index && isAlive(p));
+  if (rivals.length === 0) return null;
+
+  const wealth = (p: Player): number => p.cash + p.moneyInBank;
+  const richest = rivals.reduce((a, b) => (wealth(b) > wealth(a) ? b : a));
+  const myCash = me.cash;
+
+  // ── 均富卡：自己比平均穷才划算 ──
+  if (has(1)) {
+    const alive = state.players.filter((p) => isAlive(p));
+    // C-DET-3 定向豁免：这是**策略比较**，不写入任何玩家的钱。
+    // 为免歧义仍显式取整。
+    const avg = Math.trunc(alive.reduce((t, p) => t + p.cash, 0) / alive.length);
+    if (myCash * 5 < avg * 4) {
+      const a = play(1);
+      if (a !== null) return a;
+    }
+  }
+
+  // ── 均貧卡：把最富的拉下来 ──
+  if (has(2) && wealth(richest) > wealth(me) * 1.5) {
+    const a = play(2, { kind: 'player', index: richest.index });
+    if (a !== null) return a;
+  }
+
+  // ── 購地卡：站在别人的地上且买得起 ──
+  const here = map.nodes[me.nodeId - 1];
+  const landIdx = here === undefined ? null : housingIndexOf(here.type);
+  if (has(3) && landIdx !== null) {
+    const owner = state.landOwner[landIdx] ?? 0;
+    const tpl = map.lands.find((l) => l.id === landIdx);
+    if (owner !== 0 && owner !== me.index + 1 && tpl !== undefined) {
+      const level = state.landLevel[landIdx] ?? 0;
+      const price = (tpl.landPrice + tpl.housePrice * level) * state.priceIndex;
+      if (price <= myCash) {
+        const a = play(3);
+        if (a !== null) return a;
+      }
+    }
+  }
+
+  // ── 改建卡：站在自己没满级的地上 ──
+  if (has(7) && landIdx !== null && (state.landOwner[landIdx] ?? 0) === me.index + 1) {
+    if ((state.landLevel[landIdx] ?? 0) < 5) {
+      const a = play(7);
+      if (a !== null) return a;
+    }
+  }
+
+  // ── 停留 / 烏龜：拖住最富的那个 ──
+  if (has(14)) {
+    const a = play(14, { kind: 'player', index: richest.index });
+    if (a !== null) return a;
+  }
+  if (has(30)) {
+    const a = play(30, { kind: 'player', index: richest.index });
+    if (a !== null) return a;
+  }
+
+  // ── 查稅卡：查最富的 ──
+  if (has(26)) {
+    const a = play(26, { kind: 'player', index: richest.index });
+    if (a !== null) return a;
+  }
+
+  // ── 送神符：身上有神就送走（好坏由 core 判，这里只在有附身时试） ──
+  if (has(22) && me.godInfo !== 0) {
+    const a = play(22);
+    if (a !== null) return a;
+  }
+
+  return null;
 }
 
 /**

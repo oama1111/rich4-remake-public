@@ -25,6 +25,9 @@ import {
 import { LOTTERY_DRAW_DAY, drawLottery, releaseTickets } from '../places/lottery.ts';
 import { buyStock, commercialUnitPrice, liquidateStocks, sellStock } from '../places/stock.ts';
 import { emptyOwnership, updateCommercialOwner } from '../places/commercial.ts';
+import { useCard } from '../cards/registry.ts';
+import type { CardTarget } from '../cards/target.ts';
+import { applyHostilityDeltas } from '../rules/hostility.ts';
 import type { TradeResult } from '../places/stock.ts';
 import {
   refreshTradableShares,
@@ -375,6 +378,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     case 'buyShares':
       return buySharesFromCommercial(state, action.shares);
 
+    case 'useCard':
+      return playCard(state, topo, action.cardId, action.target ?? { kind: 'none' });
+
     case 'declineDecision': {
       if (state.phase !== 'awaitingDecision') return state;
       return { ...state, phase: 'turnEnd' };
@@ -479,6 +485,58 @@ function tradeStock(
 
   if (action.shares > held.amount) return state;
   return commit(sellStock(me, held, stock, action.shares, 'bank'));
+}
+
+/**
+ * 打出一张手牌。
+ *
+ * ★ 卡片效果本身全在 `cards/registry.ts`，这里只做**状态接驳**：
+ *   把 `GameState` 拆成 `UseCardContext` 要的形状，再把结果合回去。
+ *   一行新规则都不加。
+ *
+ * ⚠️ 合并 `lands` 时只取**归属与等级**两项写回 `landOwner` / `landLevel`
+ *   ——地价、租金表这些是地图静态数据，卡片不会改它们，
+ *   真要改也该改地图表而不是状态。
+ *
+ * ⚠️ 只在 `ok` 时才落地。原版多处是 `test eax,eax / je end` 之后才扣卡，
+ *   registry 已经照此实现，故失败时状态原样返回（连卡都不扣）。
+ */
+function playCard(
+  state: GameState,
+  topo: MapTopology,
+  cardId: number,
+  target: CardTarget,
+): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || !isAlive(me)) return state;
+
+  const lands = allEffectiveLands(state, topo);
+  const r = useCard(
+    {
+      players: state.players,
+      lands,
+      nodes: topo.nodes,
+      currentPlayer: state.currentPlayer,
+      priceIndex: state.priceIndex,
+      // 嫁祸的新目标：交给上层决定；没给就放弃转嫁（返回 -1）
+      scapegoatPicker: () => -1,
+    },
+    cardId,
+    target,
+  );
+  if (!r.ok) return state;
+
+  const landOwner = [...state.landOwner];
+  const landLevel = [...state.landLevel];
+  for (const l of r.lands) {
+    landOwner[l.id] = l.owner;
+    landLevel[l.id] = l.level;
+  }
+
+  // 敌意由 registry 算好，这里按增量落到玩家身上
+  const players = applyHostilityDeltas(r.players, r.hostilityDeltas);
+
+  return { ...state, players, landOwner, landLevel };
 }
 
 /**

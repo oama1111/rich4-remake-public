@@ -31,10 +31,23 @@ interface Played {
   deaths: number[];
 }
 
-/** 四人电脑对局，一路跑到分出胜负或用光回合预算 */
-function playFullGame(seed: number, maxTurns = 4000): Played {
+/**
+ * 四人电脑对局，一路跑到分出胜负或用光回合预算。
+ *
+ * ⚠️ 回合预算从 4000 提到 8000，是因为 **AI 开始会出牌了**：
+ *   均富卡把现金拉平、停留/烏龜卡拖住领先者，都是**反淘汰**的机制，
+ *   对局因此明显变长（种子 2024 从 2123 回合变成 6660）。
+ *   这是规则本来的样子，不是卡死——长跑验证过 20000 回合内
+ *   种子 2024 与 31337 都能分出胜负。
+ */
+function playFullGame(seed: number, maxTurns = 8000): Played {
   const map = loadMap();
-  const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+  const topo = {
+    nodes: map.nodes,
+    lands: map.lands,
+    facilities: map.facilities,
+    commercials: map.commercials,
+  };
   let state = newGame({
     map,
     players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
@@ -75,6 +88,33 @@ describe('★ M2 验收：完整一局', () => {
     expect(r.deaths.length).toBe(3);
     // 三个人在不同回合出局——若同一回合全死，多半是结算逻辑串了
     expect(new Set(r.deaths).size).toBe(3);
+    // 间隔要拉得开：均富卡这类反淘汰机制会把差距一次次抹平
+    expect(r.deaths[1]! - r.deaths[0]!).toBeGreaterThan(100);
+  });
+
+  run('★ AI 真的会出牌 —— 卡片系统不再是死代码', () => {
+    const map = loadMap();
+    const topo = {
+      nodes: map.nodes,
+      lands: map.lands,
+      facilities: map.facilities,
+      commercials: map.commercials,
+    };
+    let state = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+      seed: 2024,
+    });
+    let played = 0;
+    for (let i = 0; i < 200_000 && state.turnCount < 2000; i++) {
+      const a = decideAction({ state, map });
+      if (a === null) break;
+      if (a.type === 'useCard') played++;
+      const next = reduce(state, a, topo);
+      if (next === state) break;
+      state = next;
+    }
+    expect(played, '两千回合里一张牌都没出过').toBeGreaterThan(0);
   });
 
   run('★ 换个种子至少也能把人打出局', () => {
@@ -85,7 +125,7 @@ describe('★ M2 验收：完整一局', () => {
     //   这里只要求局面确实在推进：有人出局。
     let withDeaths = 0;
     for (const seed of [1, 42, 31337]) {
-      if (playFullGame(seed, 3000).deaths.length > 0) withDeaths++;
+      if (playFullGame(seed, 4000).deaths.length > 0) withDeaths++;
     }
     expect(withDeaths).toBeGreaterThan(0);
   });
