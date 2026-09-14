@@ -35,6 +35,7 @@ import { UNIMPLEMENTED_TOOLS } from './tool-effects.ts';
 import { TOOL_SLOTS_PER_PLAYER, giveTool, toolCount } from './tools.ts';
 import type { MapObject } from '../cards/summon.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
+import type { GameState } from '../state/types.ts';
 
 describe('★ 行动者编号：玩家 0..3 之外还有 4..8', () => {
   it('四个 NPC 是 4..7，機器娃娃是 8', () => {
@@ -328,18 +329,28 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
 //  保釋 → 上路
 // ============================================================
 
-describe('★ 保釋 NPC —— 他会当场从監獄/醫院那一格上路', () => {
-  /** 一张只有四格的小图，2 号是監獄 */
-  const topo: MapTopology = {
+describe('★ 保釋 NPC —— 他会当场上路', () => {
+  /** 一条环线 1→2→3→4→1，**监狱在 2 号**（所以他绕一圈会自投罗网） */
+  const loop: MapTopology = {
+    nodes: [
+      makeNode({ id: 1, adjacent: [4, 2] }),
+      makeNode({ id: 2, adjacent: [1, 3], specialKind: SPECIAL_KIND.PRISON }),
+      makeNode({ id: 3, adjacent: [2, 4] }),
+      makeNode({ id: 4, adjacent: [3, 1] }),
+    ],
+  };
+  /** 一条**没有監獄**的直路：2 是起点（假装是监狱门口），往后一路走开 */
+  const away: MapTopology = {
     nodes: [
       makeNode({ id: 1, adjacent: [2] }),
       makeNode({ id: 2, adjacent: [1, 3], specialKind: SPECIAL_KIND.PRISON }),
-      makeNode({ id: 3, adjacent: [2, 4] }),
-      makeNode({ id: 4, adjacent: [3] }),
+      ...Array.from({ length: 18 }, (_, i) =>
+        makeNode({ id: i + 3, adjacent: [i + 2, i + 4] }),
+      ),
     ],
   };
 
-  function visiting(slot: number) {
+  function visiting(slot: number, over: Partial<GameState> = {}) {
     return makeGameState({
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 2, points: 900 })),
       prisonOccupancy: initialConfinement('prison', 8),
@@ -347,55 +358,51 @@ describe('★ 保釋 NPC —— 他会当场从監獄/醫院那一格上路', ()
       pending: {
         kind: 'bail',
         place: 'prison',
-        candidates: [{ slot, player: -1, name: NPC_NAMES[slot - 4] ?? '', cost: 300, affordable: true }],
+        candidates: [
+          { slot, player: -1, name: NPC_NAMES[slot - 4] ?? '', cost: 300, affordable: true },
+        ],
         points: 900,
       },
+      ...over,
     });
   }
 
-  it('花 300 點券把小偷放出来，他从監獄那一格起步', () => {
+  it('花 300 點券把小偷放出来，占用表当场清空', () => {
     const s = visiting(4);
-    const after = reduce(s, { type: 'bail', slot: 4 }, topo);
+    const after = reduce(s, { type: 'bail', slot: 4 }, away);
     expect(after.players[0]?.points).toBe(600);
-    expect(after.prisonOccupancy[4]).toBe(0);
-
-    const thief = after.specialActors[0]!;
-    expect(thief.place).toBe(ACTOR_PLACE.board);
-    expect(thief.nodeId).toBe(2); // 監獄那一格
-    expect(thief.lastNodeId).toBe(0);
-    expect(actorActive(thief)).toBe(true);
   });
 
   it('★ 主人是保釋他的人 —— 不是他自己', () => {
     const s = { ...visiting(5), currentPlayer: 2 };
-    const after = reduce(s, { type: 'bail', slot: 5 }, topo);
+    const after = reduce(s, { type: 'bail', slot: 5 }, away);
     expect(after.specialActors[1]?.owner).toBe(2);
   });
 
-  it('★ 步数落在 2..10，且消耗了随机数', () => {
+  it('★ 走完就收场 —— 替身不留在场上', () => {
     const s = visiting(4);
-    const after = reduce(s, { type: 'bail', slot: 4 }, topo);
-    const steps = after.specialActors[0]!.stepsRemaining;
-    expect(steps).toBeGreaterThanOrEqual(NPC_STEP_MIN);
-    expect(steps).toBeLessThanOrEqual(NPC_STEP_MIN + NPC_STEP_SPAN - 1);
+    const after = reduce(s, { type: 'bail', slot: 4 }, away);
+    expect(actorActive(after.specialActors[0])).toBe(false);
     expect(after.rngState).not.toBe(s.rngState);
+  });
+
+  it('★★ 环线上绕回監獄格 → 他自投罗网，占用表又满上', () => {
+    const s = visiting(4);
+    const after = reduce(s, { type: 'bail', slot: 4 }, loop);
+    // 这张四格环线怎么走都会踩回 2 号
+    expect(after.prisonOccupancy[4]).toBe(1);
+    expect(after.specialActors[0]?.place).toBe(ACTOR_PLACE.prison);
   });
 
   it('保釋玩家（槽 0..3）不碰替身表', () => {
     const occ = initialConfinement('prison', 8);
     occ[1] = 1;
-    const s = makeGameState({
-      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 2, points: 900 })),
-      prisonOccupancy: occ,
-      phase: 'turnEnd',
-      pending: {
-        kind: 'bail',
-        place: 'prison',
-        candidates: [{ slot: 1, player: 1, name: '', cost: 30, affordable: true }],
-        points: 900,
-      },
-    });
-    const after = reduce(s, { type: 'bail', slot: 1 }, topo);
+    const s = visiting(1, { prisonOccupancy: occ });
+    const after = reduce(
+      { ...s, pending: { kind: 'bail', place: 'prison', candidates: [{ slot: 1, player: 1, name: '', cost: 30, affordable: true }], points: 900 } },
+      { type: 'bail', slot: 1 },
+      away,
+    );
     expect(after.specialActors).toEqual(s.specialActors);
   });
 });

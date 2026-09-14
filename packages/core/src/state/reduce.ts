@@ -13,6 +13,7 @@ import type { Action } from './actions.ts';
 import type { GameState, Player } from './types.ts';
 import { isAlive } from './types.ts';
 import { WatcomRng, rollDice } from '../rng/watcom.ts';
+import { applyNpcEvents, runNpc } from '../rules/npc-walk.ts';
 import {
   ACTOR_DOLL,
   npcSteps,
@@ -782,21 +783,55 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       // ★ 保釋的若是 NPC（槽 4..7），他会**当场上路** —— 从監獄/醫院那一格
       //   起步走 rand()%9+2 步，主人记成保釋他的人。
       //   @source 0x0043d7e0（出獄）/ 0x0043ee8f（出院），两段同构。
+      let occupancy = r.occupancy;
       const slotIdx = specialSlotOf(action.slot);
       if (slotIdx >= 0) {
         const gate = gateNodeOf(topo, place);
         if (gate > 0) {
           const rng = new WatcomRng();
           rng.setState(paid.rngState);
+          const npc = releaseNpc(gate, state.currentPlayer, npcSteps(rng));
+
+          // ★ 放出来就**立刻上路** —— 原版把 [0x49910c] 切成 4..7 走完再切回，
+          //   期间没有玩家输入，所以对 core 来说这就是同一个动作（与機器娃娃同理）。
+          const walk = runNpc(
+            action.slot,
+            npc,
+            paid,
+            topo,
+            (from, prev) => pickNextNode(topo, from, prev, rng) ?? 0,
+            rng,
+          );
+          const settled = applyNpcEvents(paid, npc.owner, walk.events);
+
           const specialActors = [...paid.specialActors];
-          specialActors[slotIdx] = releaseNpc(gate, state.currentPlayer, npcSteps(rng));
-          paid = { ...paid, specialActors, rngState: rng.getState() };
+          specialActors[slotIdx] = walk.actor;
+          paid = { ...settled.state, specialActors, rngState: rng.getState() };
+
+          // 半路又被收回去了 —— 占用表要跟着改（可能换了一张表）
+          const home = walk.events.find((e) => e.kind === 'home');
+          if (home !== undefined) {
+            const back = [...(home.place === 'prison' ? paid.prisonOccupancy : paid.hospitalOccupancy)];
+            back[action.slot] = 1;
+            paid = home.place === 'prison'
+              ? { ...paid, prisonOccupancy: back }
+              : { ...paid, hospitalOccupancy: back };
+            // 他是从**另一处**被保釋出来的，原表那一格已经清了，不要再写回去
+            if (home.place !== place) occupancy = r.occupancy;
+          }
+
+          // 被榨破产的人逐个收口 —— 与过路费同一条路
+          let after: GameState = place === 'prison'
+            ? { ...paid, prisonOccupancy: home?.place === 'prison' ? paid.prisonOccupancy : occupancy }
+            : { ...paid, hospitalOccupancy: home?.place === 'hospital' ? paid.hospitalOccupancy : occupancy };
+          for (const who of settled.bankrupted) after = applyBankruptcy(after, who, topo);
+          return after;
         }
       }
 
       return place === 'prison'
-        ? { ...paid, prisonOccupancy: r.occupancy }
-        : { ...paid, hospitalOccupancy: r.occupancy };
+        ? { ...paid, prisonOccupancy: occupancy }
+        : { ...paid, hospitalOccupancy: occupancy };
     }
 
     case 'minigame': {
