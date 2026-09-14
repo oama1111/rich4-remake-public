@@ -15,7 +15,7 @@
  */
 
 import type { Action, GameState, PendingInteraction } from '@rich4/core';
-import { CHARACTERS } from '@rich4/data';
+import { BAIL, BANK, BUTTON, CHARACTERS, FIELD, NOTICE, PLACE, PROMPT, formatOriginal } from '@rich4/data';
 
 const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
 
@@ -36,7 +36,7 @@ export interface InteractionChoice {
 }
 
 /** 放弃 —— 任何待决交互都接受它 */
-const decline: InteractionChoice = { label: '不了', action: { type: 'declineDecision' } };
+const decline: InteractionChoice = { label: BUTTON.cancel.text, action: { type: 'declineDecision' } };
 
 /**
  * 把一个待决交互翻译成界面。
@@ -54,26 +54,39 @@ export function interactionUi(
     case 'none':
       return null;
 
+    // ★ 问句用原版的整段文字（@rich4/data 的 messages.ts，逐字对过 exe）。
+    //   我们只补上原版画在别处的「現金」，不改它自己那一句。
     case 'buyLand':
       return {
-        title: '買地',
-        detail: `地價 ${money(pending.price)}　現金 ${money(cash)}`,
-        choices: [{ label: '買下', action: { type: 'buyLand' } }, decline],
+        title: pending.name,
+        detail:
+          formatOriginal(PROMPT.buyLand.text, pending.name, pending.price) +
+          `\n${FIELD.cash.text} ${money(cash)}`,
+        choices: [
+          { label: BUTTON.ok.text, action: { type: 'buyLand' } },
+          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
+        ],
       };
 
     case 'upgradeLand':
       return {
-        title: '蓋房',
-        detail: `造價 ${money(pending.cost)}　現金 ${money(cash)}`,
-        choices: [{ label: '蓋', action: { type: 'upgradeLand' } }, decline],
+        title: pending.name,
+        detail:
+          formatOriginal(PROMPT.upgradeLand.text, pending.name, pending.cost) +
+          `\n${FIELD.cash.text} ${money(cash)}`,
+        choices: [
+          { label: BUTTON.ok.text, action: { type: 'upgradeLand' } },
+          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
+        ],
       };
 
     case 'bank':
       return {
-        title: '銀行',
+        title: BANK.greeting.text.replace('%s', CHARACTERS[me?.character ?? 0]?.name ?? ''),
         detail:
-          `身家 ${money(pending.wealth)}　可貸 ${money(pending.loanCapacity)}` +
-          `　現金 ${money(cash)}　存款 ${money(me?.moneyInBank ?? 0)}　欠款 ${money(me?.loan ?? 0)}`,
+          `${FIELD.totalAssets.text} ${money(pending.wealth)}　${BANK.creditLeft.text} ${money(pending.loanCapacity)}` +
+          `　${FIELD.cash.text} ${money(cash)}　${FIELD.deposit.text} ${money(me?.moneyInBank ?? 0)}` +
+          `　${FIELD.loan.text} ${money(me?.loan ?? 0)}`,
         choices: [
           {
             label: '存款',
@@ -96,7 +109,7 @@ export function interactionUi(
             },
           },
           {
-            label: '借款',
+            label: BANK.applyLoan.text,
             action: { type: 'bank', op: 'borrow', amount: pending.loanCapacity },
             amount: {
               label: '借多少',
@@ -106,7 +119,7 @@ export function interactionUi(
             },
           },
           {
-            label: '還款',
+            label: BANK.repayLoan.text,
             action: { type: 'bank', op: 'repay', amount: me?.loan ?? 0 },
             amount: {
               label: '還多少',
@@ -115,7 +128,7 @@ export function interactionUi(
               fill: (n) => ({ type: 'bank', op: 'repay', amount: n }),
             },
           },
-          { label: '離開', action: { type: 'declineDecision' } },
+          { label: BUTTON.exit.text, action: { type: 'declineDecision' } },
         ],
       };
 
@@ -159,12 +172,13 @@ export function interactionUi(
 
     case 'buyShares':
       return {
-        title: `${pending.name}　入股`,
+        title: pending.name,
         detail:
-          `每股 ${money(pending.unitPrice)}　尚餘 ${pending.available} 股　現金 ${money(pending.cash)}`,
+          formatOriginal(PROMPT.buyShares.text, pending.name, pending.unitPrice) +
+          `\n尚餘 ${pending.available} 股　${FIELD.cash.text} ${money(pending.cash)}`,
         choices: [
           {
-            label: '買入',
+            label: BUTTON.buy.text,
             action: { type: 'buyShares', shares: 1 },
             amount: {
               label: '買幾股',
@@ -173,7 +187,7 @@ export function interactionUi(
               fill: (n) => ({ type: 'buyShares', shares: n }),
             },
           },
-          { label: '不入股', action: { type: 'declineDecision' } },
+          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
         ],
       };
 
@@ -184,8 +198,14 @@ export function interactionUi(
       );
       const affordableCards = pending.cards.filter((c) => c.price <= pending.points);
       return {
-        title: '百貨公司',
-        detail: `點券 ${pending.points}　（買得起 ${affordableCards.length} 種卡、${affordableTools.length} 種道具）`,
+        title: PLACE.departmentStore.text,
+        detail:
+          `${FIELD.points.text} ${pending.points}` +
+          `　（買得起 ${affordableCards.length} 種卡、${affordableTools.length} 種道具）` +
+          // ★ 道具栏满了是原版明说的一条，别静默失败
+          (pending.tools.length > 0 && affordableTools.length === 0
+            ? `　${NOTICE.toolBoxFull.text.replace('\n\n', '')}`
+            : ''),
         choices: [
           ...affordableTools.map((t) => ({
             label: `${t.name} ${t.price}點`,
@@ -195,7 +215,7 @@ export function interactionUi(
             label: `${c.name} ${c.price}點`,
             action: { type: 'shop' as const, op: 'buyCard' as const, id: c.id },
           })),
-          { label: '離開', action: { type: 'declineDecision' } },
+          { label: BUTTON.exit.text, action: { type: 'declineDecision' } },
         ],
       };
     }
@@ -224,14 +244,17 @@ export function interactionUi(
 
     case 'bail':
       return {
-        title: pending.place === 'prison' ? '探監' : '探病',
-        detail: `點券 ${pending.points}`,
+        title: pending.place === 'prison' ? PLACE.prison.text : PLACE.hospital.text,
+        detail: `${BAIL.bailPoints.text} ${formatOriginal(BAIL.pointsN.text, pending.points)}`,
         choices: [
           ...pending.candidates.map((c) => ({
-            label: `保釋 ${c.name}（${c.cost} 點）${c.affordable ? '' : '　點券不足'}`,
+            label:
+              formatOriginal(BAIL.bailWho.text, c.name) +
+              `（${formatOriginal(BAIL.pointsN.text, c.cost)}）` +
+              (c.affordable ? '' : `　${NOTICE.cashShort.text}`),
             action: { type: 'bail' as const, slot: c.slot },
           })),
-          { label: '看看就走', action: { type: 'declineDecision' } },
+          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
         ],
       };
 

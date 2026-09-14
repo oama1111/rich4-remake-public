@@ -27,9 +27,15 @@ export type PendingInteraction =
   /** 无需交互，直接继续 */
   | { kind: 'none' }
   /** 无主地：买或不买 */
-  | { kind: 'buyLand'; landId: number; price: number }
+  /**
+   * ★ `name` 不是多余的：原版的问句本身就是
+   *   `'%s\n\n費用:%d元\n\n是否買下此地？'`（@source VA 0x004639e1），
+   *   地名是这句话的一部分。让 UI 自己拿 landId 回地图里查，就等于把
+   *   「这一格叫什么」这件事散到两处去（C-ARC-2）。
+   */
+  | { kind: 'buyLand'; landId: number; name: string; price: number }
   /** 自有地：盖或不盖 */
-  | { kind: 'upgradeLand'; landId: number; cost: number }
+  | { kind: 'upgradeLand'; landId: number; name: string; cost: number }
   /**
    * 银行：存、取、借、还。
    * @source 落点 VA 0x00436668 —— 先查 `days_rejected_by_bank`，

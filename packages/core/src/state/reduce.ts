@@ -370,7 +370,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           return {
             ...state,
             phase: 'awaitingDecision',
-            pending: { kind: 'buyLand', landId: land.id, price: buy.price },
+            pending: { kind: 'buyLand', landId: land.id, name: land.name, price: buy.price },
           };
         }
         case 'own': {
@@ -381,7 +381,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           return {
             ...state,
             phase: 'awaitingDecision',
-            pending: { kind: 'upgradeLand', landId: land.id, cost: up.cost },
+            pending: { kind: 'upgradeLand', landId: land.id, name: land.name, cost: up.cost },
           };
         }
         case 'other': {
