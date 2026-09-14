@@ -91,6 +91,31 @@ export const FACILITY_TYPE_GAS_STATION = FACILITY_TYPE.gasStation;
  *   界面没找到。所以本引擎只实现了「倒数与产出」，**起始天数由调用方给**。
  */
 export const RESEARCH_TOOL_BASE = 8;
+
+/**
+ * ★ 研發時間**固定 5 天，不分项目**。
+ * @source 选项目的对话框收尾 VA 0x004411f8：
+ * ```asm
+ * 004411e7  (非真人) ebx = level − 1          ; ★ 电脑直接取最高可选项目
+ * 004411ed  if (ebx == −1) 退出               ; 取消 / 等级 0
+ * 004411f6  inc bl
+ * 004411f8  mov [設施 + 0x1d], bl            ; 項目 = 1..level
+ * 004411fb  mov [設施 + 0x1e], 5             ; ★ 天数 = 5
+ * ```
+ * wiki 说「不同項目所需的研發時間不同」—— 与 exe 不符（或是 4Fun 的规则），以 exe 为准。
+ */
+export const RESEARCH_DAYS = 5;
+
+/** 电脑选哪个項目：当前等级能开的最高一档 @source 0x004411e7 `ebx = level − 1; inc` */
+export function aiPickResearchProject(facilityLevel: number): number {
+  return facilityLevel;
+}
+
+/** 開始一项研發；項目必须在 1..等级 之内 */
+export function startResearch(project: number, facilityLevel: number): ResearchState | null {
+  if (project < RESEARCH_MIN_PROJECT || project > facilityLevel || project > RESEARCH_MAX_PROJECT) return null;
+  return { project, daysLeft: RESEARCH_DAYS };
+}
 /** 研究所的研發項目下标范围（同时也是所需的设施等级） */
 export const RESEARCH_MIN_PROJECT = 1;
 export const RESEARCH_MAX_PROJECT = 5;

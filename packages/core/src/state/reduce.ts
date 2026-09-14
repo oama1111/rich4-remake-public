@@ -142,7 +142,10 @@ import {
   FACILITY_TYPE,
   WHEEL,
   aiPickFacilityType,
+  aiPickResearchProject,
   calculateFacilityToll,
+  startResearch,
+  tickResearch,
   canUpgradeFacility,
   facilityBuildPrice,
   facilityBuyPrice,
@@ -456,6 +459,12 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
         snapped = aiNoticeBoardTurn(snapped, topo);
       }
+      // ★ 研究所：只在業主自己的回合推进（@source 0x0041cdc6 `owner == 當前 + 1`），
+      //   与其余「回合开始的倒数」在原版是同一个函数（0x0041cc20 一带）。
+      snapped = tickOwnResearch(snapped, topo);
+      if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
+        snapped = aiStartResearch(snapped, topo);
+      }
       if (result.sleepWalk) {
         // 梦游：原版立即自动掷骰走子，玩家无法干预
         return reduce({ ...snapped, phase: 'awaitingRoll' }, { type: 'rollDice' }, topo);
@@ -715,6 +724,24 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       facilityType[fac.id] = action.facilityType;
       facilityLevel[fac.id] = 1;
       return { ...paid, facilityType, facilityLevel, pending: null, phase: 'turnEnd' };
+    }
+
+    case 'research': {
+      // 真人随时可点自己的研究所选项目（原版是設施面板里的点击，见 P2-14）
+      const player = state.players[state.currentPlayer];
+      if (player === undefined || !isAlive(player)) return state;
+      const fac = effectiveFacility(state, topo, action.facilityId);
+      if (fac === null || fac.type !== FACILITY_TYPE.lab) return state;
+      if (fac.owner !== state.currentPlayer + 1) return state;
+      // @source 0x0041cdb3 `test cl, cl / je` —— 正在研發就不再接新的
+      if ((state.facilityResearchDays[fac.id] ?? 0) !== 0) return state;
+      const started = startResearch(action.project, fac.level);
+      if (started === null) return state;
+      const facilityResearchProject = [...state.facilityResearchProject];
+      const facilityResearchDays = [...state.facilityResearchDays];
+      facilityResearchProject[fac.id] = started.project;
+      facilityResearchDays[fac.id] = started.daysLeft;
+      return { ...state, facilityResearchProject, facilityResearchDays };
     }
 
     case 'upgradeFacility': {
@@ -2627,6 +2654,70 @@ function facilityAtPlayer(state: GameState, topo: MapTopology): FacilityInfo | n
   if (idx === null) return null;
   // ★ 走 effective —— 归属/等级/种类都在状态里，静态表是开局初值
   return effectiveFacility(state, topo, idx);
+}
+
+/**
+ * 当前玩家名下每一处研究所推进一天；到期就发道具。
+ *
+ * @source VA 0x0041cd97 的循环（逐处設施：`type == 4` → 业主是当前玩家 → 倒数）。
+ *   规则本体在 rules/facility.ts 的 `tickResearch`：項目等级高过设施等级就作废，
+ *   归零那一刻 `give_tool(業主, 項目 + 8)`。
+ */
+function tickOwnResearch(state: GameState, topo: MapTopology): GameState {
+  const me = state.currentPlayer;
+  let tools = state.tools;
+  let toolStock = state.toolStock;
+  const project = [...state.facilityResearchProject];
+  const days = [...state.facilityResearchDays];
+  let touched = false;
+  for (const f of topo.facilities ?? []) {
+    if ((state.facilityType[f.id] ?? 0) !== FACILITY_TYPE.lab) continue;
+    if ((state.facilityOwner[f.id] ?? 0) !== me + 1) continue;
+    const r = tickResearch(
+      { project: project[f.id] ?? 0, daysLeft: days[f.id] ?? 0 },
+      state.facilityLevel[f.id] ?? 0,
+    );
+    if (r.next.daysLeft === (days[f.id] ?? 0) && r.produced === 0) continue;
+    touched = true;
+    project[f.id] = r.next.project;
+    days[f.id] = r.next.daysLeft;
+    if (r.produced !== 0) {
+      // @source 0x0041ce25 give_tool —— 不查上限，給不出去就凭空消失（与搶奪卡同理）
+      const g = giveTool(tools, toolStock, me, r.produced);
+      tools = g.tools;
+      toolStock = g.stock;
+    }
+  }
+  if (!touched) return state;
+  return { ...state, tools, toolStock, facilityResearchProject: project, facilityResearchDays: days };
+}
+
+/**
+ * 电脑玩家：名下有已建的研究所且没在研發，就开一项 —— 項目取当前等级能开的最高一档。
+ *
+ * @source 选项目那段的非真人分支 0x004411e7 `ebx = level − 1`。
+ * ⚠️ **触发时机是本引擎定的**：原版那段在設施面板的点击处理里（0x0043fae4 的
+ *   消息循环），电脑在 AI 总调度的哪一步走进去还没定位。这里放在回合开始，
+ *   记为 Q-LAB-1。
+ */
+function aiStartResearch(state: GameState, topo: MapTopology): GameState {
+  const me = state.currentPlayer;
+  let next = state;
+  for (const f of topo.facilities ?? []) {
+    if ((next.facilityType[f.id] ?? 0) !== FACILITY_TYPE.lab) continue;
+    if ((next.facilityOwner[f.id] ?? 0) !== me + 1) continue;
+    if ((next.facilityResearchDays[f.id] ?? 0) !== 0) continue;
+    const level = next.facilityLevel[f.id] ?? 0;
+    if (level === 0) continue;
+    const started = startResearch(aiPickResearchProject(level), level);
+    if (started === null) continue;
+    const facilityResearchProject = [...next.facilityResearchProject];
+    const facilityResearchDays = [...next.facilityResearchDays];
+    facilityResearchProject[f.id] = started.project;
+    facilityResearchDays[f.id] = started.daysLeft;
+    next = { ...next, facilityResearchProject, facilityResearchDays };
+  }
+  return next;
 }
 
 /**

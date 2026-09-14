@@ -89,6 +89,8 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     facilityType: new Array<number>(32).fill(0),
     facilityLastToll: new Array<number>(32).fill(0),
     facilityTenure: new Array<number>(32).fill(0),
+    facilityResearchProject: new Array<number>(32).fill(0),
+    facilityResearchDays: new Array<number>(32).fill(0),
     noticeBoard: emptyBoard(),
     specialActors: initialSpecialActors(),
     turnCount: 0,

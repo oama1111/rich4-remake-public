@@ -63,6 +63,11 @@ export type Action =
   | { type: 'buildFacility'; facilityType: number }
   /** 给自己的設施加蓋一级 @source 0x0041a2b3 */
   | { type: 'upgradeFacility' }
+  /**
+   * 在自己的研究所上选一个研發項目（1..等级），5 天后得到道具 `項目 + 8`。
+   * @source 对话框收尾 0x004411f8；电脑不走这条（reducer 在回合开始替它选）。
+   */
+  | { type: 'research'; facilityId: number; project: number }
 
   /** 放弃当前的买地/盖房机会 */
   | { type: 'declineDecision' }

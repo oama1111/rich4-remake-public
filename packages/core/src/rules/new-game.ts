@@ -320,6 +320,8 @@ export function newGame(opts: NewGameOptions): GameState {
     facilityType: facilityFieldFromMap(map, (f) => f.type),
     facilityLastToll: facilityFieldFromMap(map, () => 0),
     facilityTenure: facilityFieldFromMap(map, () => 0),
+    facilityResearchProject: facilityFieldFromMap(map, () => 0),
+    facilityResearchDays: facilityFieldFromMap(map, () => 0),
     noticeBoard: emptyBoard(),
     specialActors: initialSpecialActors(),
     turnCount: 0,

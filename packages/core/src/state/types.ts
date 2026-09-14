@@ -380,6 +380,12 @@ export interface GameState {
   facilityType: number[];
   facilityLastToll: number[];
   facilityTenure: number[];
+  /**
+   * 研究所的研發：項目 1..5（0 = 没在研發）与剩余天数。下标 = 設施 id。
+   * @source 設施 +0x1d / +0x1e（选项目 0x004411f8，每回合推进 0x0041cdb0）
+   */
+  facilityResearchProject: number[];
+  facilityResearchDays: number[];
 
   /**
    * 公佈欄 —— 每个玩家 7 个挂牌槽。

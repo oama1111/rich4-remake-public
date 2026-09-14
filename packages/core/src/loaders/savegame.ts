@@ -296,6 +296,8 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     facilityType: facilityFieldFromMap(map, (f) => f.type),
     facilityLastToll: facilityFieldFromMap(map, () => 0),
     facilityTenure: facilityFieldFromMap(map, () => 0),
+    facilityResearchProject: facilityFieldFromMap(map, () => 0),
+    facilityResearchDays: facilityFieldFromMap(map, () => 0),
     prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     lastEvent: null,

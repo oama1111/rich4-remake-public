@@ -9,16 +9,19 @@ import {
   FACILITY_NAMES,
   FACILITY_TYPE,
   LAND_TENURE_TABLE,
+  RESEARCH_DAYS,
   WHEEL,
   WHEEL_TABLE,
   addPackedDate,
   aiPickFacilityType,
+  aiPickResearchProject,
   canUpgradeFacility,
   facilityBuildPrice,
   facilityBuyPrice,
   facilityUpgradePrice,
   hotelStayLoss,
   spinWheel,
+  startResearch,
   tenureExpiresToday,
   tenureExpiry,
 } from './facility.ts';
@@ -28,6 +31,7 @@ import { makeFacility, makeGameState, makeNode, makePlayer } from '../testing/fa
 import { reduce, type MapTopology } from '../state/reduce.ts';
 import { FACILITY_TYPE_MIN } from './land.ts';
 import { RELEASE_PENDING } from './blocking.ts';
+import { toolCount } from './tools.ts';
 import { WHO_PLAYS_HUMAN, type GameState } from '../state/types.ts';
 import { NPC } from './npc-actions.ts';
 import { runNpc, spyTollAt } from './npc-walk.ts';
@@ -419,5 +423,90 @@ describe('★ 間諜：取走這塊地上一次收的過路費', () => {
       const w = runNpc(actor, releaseNpc(1, 0, 3), s, spyTopo, (f) => f + 1, rng);
       expect(w.events.filter((e) => e.kind === 'toll'), `actor ${actor}`).toEqual([]);
     }
+  });
+});
+
+// ============================================================
+//  研究所
+// ============================================================
+
+describe('★ 研究所：选項目 → 5 天 → 道具到手', () => {
+  const LAB = 1;
+  const labTopo: MapTopology = {
+    nodes: [makeNode({ id: 1, adjacent: [2] }), makeNode({ id: 2, adjacent: [1] })],
+    lands: [],
+    facilities: [makeFacility({ id: LAB, landPrice: 3000, housePrice: 1500 })],
+  };
+  function lab(level: number, who = WHO_PLAYS_HUMAN, over: Partial<GameState> = {}): GameState {
+    const s = makeGameState({
+      players: [0, 1].map((i) => makePlayer({ index: i, nodeId: 1, cash: 100_000, whoPlays: who })),
+      phase: 'turnStart',
+      ...over,
+    });
+    const facilityOwner = [...s.facilityOwner];
+    const facilityLevel = [...s.facilityLevel];
+    const facilityType = [...s.facilityType];
+    facilityOwner[LAB] = 1;
+    facilityLevel[LAB] = level;
+    facilityType[LAB] = FACILITY_TYPE.lab;
+    return { ...s, facilityOwner, facilityLevel, facilityType };
+  }
+
+  it('研發時間固定 5 天；項目不能超过等级', () => {
+    expect(RESEARCH_DAYS).toBe(5);
+    expect(startResearch(3, 3)).toEqual({ project: 3, daysLeft: 5 });
+    expect(startResearch(4, 3)).toBeNull();
+    expect(startResearch(0, 3)).toBeNull();
+    expect(startResearch(6, 5)).toBeNull();
+  });
+
+  it('★ 电脑选当前等级能开的最高一档 @source 0x004411e7', () => {
+    expect(aiPickResearchProject(1)).toBe(1);
+    expect(aiPickResearchProject(5)).toBe(5);
+  });
+
+  it('真人下 research 指令：写項目与 5 天；别人的研究所、非研究所、正在研發的都拒', () => {
+    const s = lab(3);
+    const r = reduce(s, { type: 'research', facilityId: LAB, project: 2 }, labTopo);
+    expect(r.facilityResearchProject[LAB]).toBe(2);
+    expect(r.facilityResearchDays[LAB]).toBe(5);
+    // 正在研發 → 不接新的
+    expect(reduce(r, { type: 'research', facilityId: LAB, project: 1 }, labTopo)).toBe(r);
+    // 别人的
+    const other = { ...s, currentPlayer: 1 };
+    expect(reduce(other, { type: 'research', facilityId: LAB, project: 1 }, labTopo)).toBe(other);
+  });
+
+  it('★ 只在業主自己的回合倒数；第 5 个回合开始时道具到手（項目 + 8）', () => {
+    let s = reduce(lab(3), { type: 'research', facilityId: LAB, project: 3 }, labTopo);
+    const owner = 0;
+    for (let turn = 1; turn <= 4; turn++) {
+      s = reduce({ ...s, currentPlayer: 1, phase: 'turnStart' }, { type: 'startTurn' }, labTopo); // 对手回合：不动
+      expect(s.facilityResearchDays[LAB]).toBe(5 - (turn - 1));
+      s = reduce({ ...s, currentPlayer: owner, phase: 'turnStart' }, { type: 'startTurn' }, labTopo);
+      expect(s.facilityResearchDays[LAB]).toBe(5 - turn);
+    }
+    expect(toolCount(s.tools, owner, 11)).toBe(0);
+    s = reduce({ ...s, currentPlayer: owner, phase: 'turnStart' }, { type: 'startTurn' }, labTopo);
+    expect(s.facilityResearchDays[LAB]).toBe(0);
+    expect(toolCount(s.tools, owner, 11)).toBe(1); // 傳送機
+  });
+
+  it('★ 拆到等级不够，研發作废（不是暂停）', () => {
+    let s = reduce(lab(3), { type: 'research', facilityId: LAB, project: 3 }, labTopo);
+    const facilityLevel = [...s.facilityLevel];
+    facilityLevel[LAB] = 2;
+    s = { ...s, facilityLevel, phase: 'turnStart' };
+    s = reduce(s, { type: 'startTurn' }, labTopo);
+    expect(s.facilityResearchDays[LAB]).toBe(0);
+    expect(toolCount(s.tools, 0, 11)).toBe(0);
+  });
+
+  it('电脑回合开始会自动开一项（項目 = 等级），真人不会', () => {
+    const ai = reduce(lab(2, 2), { type: 'startTurn' }, labTopo);
+    expect(ai.facilityResearchProject[LAB]).toBe(2);
+    expect(ai.facilityResearchDays[LAB]).toBe(5);
+    const human = reduce(lab(2), { type: 'startTurn' }, labTopo);
+    expect(human.facilityResearchDays[LAB]).toBe(0);
   });
 });
