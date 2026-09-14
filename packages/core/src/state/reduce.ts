@@ -26,6 +26,14 @@ import { LOTTERY_DRAW_DAY, drawLottery, releaseTickets } from '../places/lottery
 import { buyStock, commercialUnitPrice, liquidateStocks, sellStock } from '../places/stock.ts';
 import { emptyOwnership, updateCommercialOwner } from '../places/commercial.ts';
 import { useCard } from '../cards/registry.ts';
+import {
+  PLACEMENT_TOOLS,
+  VEHICLE_TOOLS,
+  isToolImplemented,
+  placeObject,
+  useVehicleTool,
+} from '../rules/tool-effects.ts';
+import { takeTool, toolCount } from '../rules/tools.ts';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
 import type { TradeResult } from '../places/stock.ts';
@@ -381,6 +389,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     case 'useCard':
       return playCard(state, topo, action.cardId, action.target ?? { kind: 'none' });
 
+    case 'useTool':
+      return useToolAction(state, action.toolId, action.nodeId ?? 0);
+
     case 'declineDecision': {
       if (state.phase !== 'awaitingDecision') return state;
       return { ...state, phase: 'turnEnd' };
@@ -485,6 +496,49 @@ function tradeStock(
 
   if (action.shares > held.amount) return state;
   return commit(sellStock(me, held, stock, action.shares, 'bank'));
+}
+
+/**
+ * 用一个道具。
+ *
+ * ★ 效果全在 `rules/tool-effects.ts`，这里只做状态接驳：
+ *   交通工具改玩家的 `trafficMethod` / `ndices` 并把旧车退还成道具；
+ *   放置类占用一个物件槽。
+ *
+ * ⚠️ **只在真正生效时才收走道具**（`takeTool`）。原版换乘同种车时
+ *   直接 `jmp 结束`、根本不走 take_tool，故那种情况不消耗——
+ *   `useVehicleTool` 返回 `ok: false` 正是这个意思。
+ */
+function useToolAction(state: GameState, toolId: number, nodeId: number): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || !isAlive(me)) return state;
+  if (!isToolImplemented(toolId)) return state;
+  if (toolCount(state.tools, me.index, toolId) <= 0) return state;
+
+  // ── 交通工具 ──
+  if (VEHICLE_TOOLS.has(toolId)) {
+    const r = useVehicleTool(me, state.tools, toolId);
+    if (!r.ok) return state; // 已经是同一种车 → 原版不消耗道具
+    const taken = takeTool(r.tools, state.toolStock, me.index, toolId);
+    return {
+      ...state,
+      players: state.players.map((p, i) => (i === state.currentPlayer ? r.player : p)),
+      tools: taken.tools,
+      toolStock: taken.stock,
+    };
+  }
+
+  // ── 放置类 ──
+  const objectType = PLACEMENT_TOOLS.get(toolId);
+  if (objectType !== undefined) {
+    if (nodeId <= 0) return state;
+    const r = placeObject(state.objects, nodeId, objectType);
+    if (!r.ok) return state; // 没有空物件槽
+    const taken = takeTool(state.tools, state.toolStock, me.index, toolId);
+    return { ...state, objects: r.objects, tools: taken.tools, toolStock: taken.stock };
+  }
+
+  return state;
 }
 
 /**

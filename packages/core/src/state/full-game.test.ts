@@ -92,6 +92,37 @@ describe('★ M2 验收：完整一局', () => {
     expect(r.deaths[1]! - r.deaths[0]!).toBeGreaterThan(100);
   });
 
+  run('⚠️ AI 暂时用不上道具 —— 卡在两处缺口上，不是 AI 的问题', () => {
+    // 这条**故意断言「用不上」**，把两处缺口钉住，等任一处补上就会失败提醒：
+    //   1. 开局只发 機器娃娃/路障/地雷/定時炸彈（1..4），**没有交通工具**；
+    //      車子要去百貨/道具店买，而那两处还没实现 → AI 的换车逻辑永远不触发
+    //   2. 放置类道具放下去之后**没有任何东西会踩到它**——物件落点效果
+    //      尚未实现（见 known-deviations 的 Q-OBJ-1），放了等于没放，
+    //      所以 AI 也不该去放
+    const map = loadMap();
+    const topo = {
+      nodes: map.nodes,
+      lands: map.lands,
+      facilities: map.facilities,
+      commercials: map.commercials,
+    };
+    let state = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+      seed: 2024,
+    });
+    let used = 0;
+    for (let i = 0; i < 200_000 && state.turnCount < 2000; i++) {
+      const a = decideAction({ state, map });
+      if (a === null) break;
+      if (a.type === 'useTool') used++;
+      const next = reduce(state, a, topo);
+      if (next === state) break;
+      state = next;
+    }
+    expect(used, '道具能用了？那就把这条测试连同上面的注释一起更新').toBe(0);
+  });
+
   run('★ AI 真的会出牌 —— 卡片系统不再是死代码', () => {
     const map = loadMap();
     const topo = {

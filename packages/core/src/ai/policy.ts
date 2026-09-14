@@ -23,6 +23,8 @@ import { canPurchase, canUpgrade, housingIndexOf } from '../rules/land.ts';
 import { isAiControlled, isAlive } from '../state/types.ts';
 import { useCard } from '../cards/registry.ts';
 import type { CardTarget } from '../cards/target.ts';
+import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE } from '../rules/tool-effects.ts';
+import { toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
 
 /**
@@ -113,8 +115,8 @@ export function decideAction(ctx: AiContext): Action | null {
     case 'turnStart':
       return { type: 'startTurn' };
     case 'awaitingRoll':
-      // ★ 掷骰前是出牌的时机 —— 原版也是在这个阶段用卡/道具
-      return decideCard(ctx) ?? { type: 'rollDice' };
+      // ★ 掷骰前是出牌/用道具的时机 —— 原版也是在这个阶段
+      return decideCard(ctx) ?? decideTool(ctx) ?? { type: 'rollDice' };
     case 'moving':
       return { type: 'step' };
     case 'settling':
@@ -252,6 +254,35 @@ export function decideCard(ctx: AiContext): Action | null {
     if (a !== null) return a;
   }
 
+  return null;
+}
+
+/**
+ * 该不该用道具。
+ *
+ * ⚠️ 与出牌同理，这里只回答「值不值」；能不能用由
+ *   `rules/tool-effects.ts` 说了算。
+ *
+ * 目前只接**交通工具**：升级到骰子更多的车总是划算的，判据明确。
+ * 放置类（路障/地雷/定時炸彈）要选格子、还要判断放哪儿有用，
+ * 那是战术问题，留到性格字段解出来之后再说（M3）。
+ */
+export function decideTool(ctx: AiContext): Action | null {
+  const { state } = ctx;
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return null;
+
+  // 骰子数越多越好：汽車(3) > 機車(2) > 步行(1)
+  const better: readonly { tool: number; traffic: number }[] = [
+    { tool: 6, traffic: TRAFFIC_CAR },
+    { tool: 5, traffic: TRAFFIC_MOTORCYCLE },
+  ];
+  for (const b of better) {
+    if (me.trafficMethod === b.traffic) break; // 已经是更好的了
+    if (toolCount(state.tools, me.index, b.tool) > 0) {
+      return { type: 'useTool', toolId: b.tool };
+    }
+  }
   return null;
 }
 

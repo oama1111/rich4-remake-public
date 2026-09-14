@@ -13,6 +13,7 @@ import type { PendingInteraction } from '../rules/interaction.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import type { StockHolding } from '../places/stock.ts';
 import type { CommercialOwnership } from '../places/commercial.ts';
+import type { MapObject } from '../cards/summon.ts';
 
 // ============================================================
 //  玩家控制方式
@@ -315,6 +316,14 @@ export interface GameState {
    *   见 places/commercial.ts。
    */
   commercialOwners: CommercialOwnership[];
+
+  /**
+   * 地图物件表，46 项 —— 神明、路障、地雷、定時炸彈都住在这里。
+   *
+   * @source `objects_info` [0x00496d08]，每项 24 字节；
+   *   玩家的 `godInfo` 存的就是**这张表的下标 + 1**（见 rules/objects.ts）。
+   */
+  objects: MapObject[];
 }
 
 // ============================================================

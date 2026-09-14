@@ -88,6 +88,17 @@ export type Action =
    */
   | { type: 'useCard'; cardId: number; target?: CardTarget }
 
+  /**
+   * 用一个道具。
+   *
+   * ★ 与卡片同病：道具效果（`rules/tool-effects.ts`）早就实现了，
+   *   但一直没有入口能从对局里用出来。
+   *
+   * `nodeId` 只对**放置类**道具（路障/地雷/定時炸彈）有意义，
+   * 由模态 UI 或 AI 选定（C-ARC-2）。
+   */
+  | { type: 'useTool'; toolId: number; nodeId?: number }
+
   /** 结束当前玩家回合，轮转到下一位 */
   | { type: 'endTurn' };
 
