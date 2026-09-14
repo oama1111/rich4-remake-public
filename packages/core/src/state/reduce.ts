@@ -1700,9 +1700,8 @@ function tradeStock(
  * - `4000 < v < 6000` → 設施
  * - 其余当作节点号（搬人那一路）
  *
- * ⚠️ 設施那一路本引擎**没做**：設施的归属与等级还没进状态
- *   （`topo.facilities` 是只读的静态数据）。给了設施编码就当无效，
- *   道具不消耗。记在 known-deviations 的 Q-TOOL-2。
+ * 設施那一路已接通（`teleportFacility`，P0-2）：設施归属与等级
+ *   已进状态，編码正常生效。地產↔設施 混搬原版没有，仍拒收。
  */
 function teleportWith(
   state: GameState,

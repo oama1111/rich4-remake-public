@@ -19,19 +19,36 @@
 import type { GameState, Player } from '../state/types.ts';
 import type { LandInfo, Rich4Map } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
-import { canPurchase, canUpgrade, housingIndexOf } from '../rules/land.ts';
+import { canPurchase, canUpgrade, facilityIndexOf, housingIndexOf } from '../rules/land.ts';
 import { purchaseBlockedBy } from '../rules/purchase.ts';
 import { buyTool } from '../places/shop.ts';
 import { isAiControlled } from '../state/types.ts';
 import { useCard } from '../cards/registry.ts';
 import type { CardTarget } from '../cards/target.ts';
-import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE, buildOneLevel } from '../rules/tool-effects.ts';
+import {
+  PLACEMENT_TOOLS,
+  TRAFFIC_CAR,
+  TRAFFIC_MOTORCYCLE,
+  VEHICLE_TOOLS,
+  buildOneLevel,
+  placeObject,
+  useVehicleTool,
+} from '../rules/tool-effects.ts';
 import { MAX_LAND_LEVEL } from '../loaders/map.ts';
+import { pickFacingAt } from '../rules/teleport.ts';
+import { canUpgradeFacility } from '../rules/facility.ts';
 import { CARDS, TOOLS } from '@rich4/data';
 import { aiCanUseCards, aiCanUseTools, autoLoanAmount, personalityAllows } from './personality.ts';
 import { aiCardChoice, aiRoll, cardsToConsider, type AiCardTarget, type CardAiView } from './card-policy.ts';
-import { allEffectiveFacilities, allEffectiveLands, type MapTopology } from '../state/reduce.ts';
-import { toolCount } from '../rules/tools.ts';
+import { aiToolChoice, toolsToConsider, TOOL_RING_SALT, type AiToolChoice } from './tool-policy.ts';
+import {
+  allEffectiveFacilities,
+  allEffectiveLands,
+  effectiveFacility,
+  effectiveLand,
+  type MapTopology,
+} from '../state/reduce.ts';
+import { MAX_TOOL_ID, MIN_TOOL_ID, toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
 import { decideStockTrade } from './stock-policy.ts';
 
@@ -232,66 +249,124 @@ export function toCardTarget(t: AiCardTarget, meIndex: number): CardTarget | nul
 }
 
 /**
- * 该不该用道具。
+ * 该不该用道具，用哪件。
  *
- * ⚠️ 与出牌同理，这里只回答「值不值」；能不能用由
- *   `rules/tool-effects.ts` 说了算。
+ * ★ 与出牌同理，这里只回答「值不值」；能不能用由 reduce 的
+ *   `useToolAction` 说了算。
  *
- * 目前只接**交通工具**：升级到骰子更多的车总是划算的，判据明确。
- * 放置类（路障/地雷/定時炸彈）要选格子、还要判断放哪儿有用，
- * 那是战术问题，留到性格字段解出来之后再说（M3）。
+ * 流程照原版 AI 回合的道具段（VA 0x00447f82 起，详见 ai/tool-policy.ts 头部）：
+ *   1. `aiCanUseTools`（角色表 f22 bit1）；
+ *   2. 扫 13 格道具栏收集持有的编号（**跳过 10 時光機**——原版跳过槽下标 9）；
+ *   3. `toolsToConsider`：种类 > 4 时从随机起点**环形取 4 件**；
+ *   4. 每件先过個性闸门（0x420e9a 前半，与卡片同一道），再问跳表判定
+ *      `aiToolChoice`（0x475324 的 31..43 项）；
+ *   5. 第一件肯用、且**预演能生效**的才真用，一回合最多一件。
  */
 export function decideTool(ctx: AiContext): Action | null {
-  const { state } = ctx;
+  const { state, map } = ctx;
   const me = state.players[state.currentPlayer];
   if (me === undefined) return null;
   // @source `test byte [player + 0x16], 2 / je 跳过`（VA 0x00447f87）
   if (!aiCanUseTools(me.aiFlags)) return null;
 
-  // 骰子数越多越好：汽車(3) > 機車(2) > 步行(1)
-  const better: readonly { tool: number; traffic: number }[] = [
-    { tool: 6, traffic: TRAFFIC_CAR },
-    { tool: 5, traffic: TRAFFIC_MOTORCYCLE },
-  ];
-  // ★ 同一道個性闸门也管道具（跳表 31..43 就是道具 1..13，f7 同位）
+  // @source 0x447fa1..0x447fea：扫 13 格道具栏（槽序即编号序），跳过時光機
+  const owned: number[] = [];
+  for (let id = MIN_TOOL_ID; id <= MAX_TOOL_ID; id++) {
+    if (id === TOOL_TIME_MACHINE) continue;
+    if (toolCount(state.tools, me.index, id) > 0) owned.push(id);
+  }
+  if (owned.length === 0) return null;
+
+  const topo: MapTopology = map;
+  const view: CardAiView = {
+    state,
+    topo,
+    meIndex: state.currentPlayer,
+    me,
+    lands: allEffectiveLands(state, topo),
+    facilities: allEffectiveFacilities(state, topo),
+  };
+
+  // ★ 同一道個性闸门也管道具（0x420e9a：f7 − 個性，≥2 从不、==1 时三分之一）
   const gatedTool = (toolId: number): boolean => {
     const f7 = TOOLS.find((t) => t.id === toolId)?.f7 ?? 0;
     return personalityAllows(f7, me.personality, gateRoll(state, 30 + toolId));
   };
-  for (const b of better) {
-    if (!gatedTool(b.tool)) continue;
-    if (me.trafficMethod === b.traffic) break; // 已经是更好的了
-    if (toolCount(state.tools, me.index, b.tool) > 0) {
-      return { type: 'useTool', toolId: b.tool };
-    }
-  }
 
-  // ★ 機器工人：站在自己的地上就免费加一级，纯赚。
-  //   ⚠️ 必须**先预演**——满级的地盖不上去，reduce 会原样退回，
-  //   而 AI 是纯函数，退回一次就会原样重提，卡死在 awaitingRoll。
-  if (toolCount(state.tools, me.index, TOOL_ROBOT_WORKER) > 0) {
-    const node = ctx.map.nodes[me.nodeId - 1];
-    const idx = node === undefined ? null : housingIndexOf(node.type);
-    if (idx !== null) {
-      const tpl = ctx.map.lands.find((l) => l.id === idx);
-      const owner = state.landOwner[idx] ?? 0;
-      const level = state.landLevel[idx] ?? 0;
-      // ★ 种类要读**状态**里的 landType，不是地图模板：改建卡把住宅翻成連鎖店之后
-      //   模板还是 0，预演就会说「能盖」，reducer 却按連鎖店拒掉 —— 种子 7 就卡在这
-      const type = state.landType[idx] ?? tpl?.type ?? 0;
-      if (tpl !== undefined && owner === me.index + 1) {
-        if (buildOneLevel(type, level, MAX_LAND_LEVEL).ok) {
-          return { type: 'useTool', toolId: TOOL_ROBOT_WORKER, nodeId: me.nodeId };
-        }
-      }
-    }
+  for (const toolId of toolsToConsider(owned, aiRoll(state, TOOL_RING_SALT, owned.length))) {
+    if (!gatedTool(toolId)) continue;
+    const choice = aiToolChoice(toolId, view);
+    if (choice === null) continue;
+    const action = toToolAction(toolId, choice, ctx);
+    if (action !== null) return action;
   }
-
   return null;
 }
 
-/** 機器工人的道具编号 */
-const TOOL_ROBOT_WORKER = 9;
+/** 時光機的道具编号——AI 永不主动用（跳表项是 `xor eax,eax; ret`） */
+const TOOL_TIME_MACHINE = 10;
+
+/**
+ * AI 的选择 → 引擎 action；预演不通过的给 null（顺延下一件）。
+ *
+ * ★ 与 decideCard 的 `willWork` 同一动机：AI 是纯函数，reduce 拒收会原样重提 →
+ *   活锁（买地/卡片/机器人加盖都踩过）。原版判定过了就直接执行；本引擎
+ *   「肯用但执行不了」时顺延下一件，属已知偏差，与 Q-CARD-2 同一类。
+ */
+function toToolAction(toolId: number, choice: AiToolChoice, ctx: AiContext): Action | null {
+  const { state, map } = ctx;
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return null;
+  switch (choice.kind) {
+    case 'plain':
+      // 换乘同种车原版 `jmp 结束`、不消耗道具（useVehicleTool 的 ok:false）——那就别出
+      if (VEHICLE_TOOLS.has(toolId) && !useVehicleTool(me, state.tools, toolId).ok) return null;
+      return { type: 'useTool', toolId };
+    case 'place': {
+      const objectType = PLACEMENT_TOOLS.get(toolId);
+      if (objectType === undefined) return null;
+      // 没有空物件槽时 placeObject 拒收（槽按种类分区，见 rules/objects.ts）
+      if (!placeObject(state.objects, choice.nodeId, objectType).ok) return null;
+      return { type: 'useTool', toolId, nodeId: choice.nodeId };
+    }
+    case 'missile':
+      // fireMissile 只在目标节点不存在时拒收
+      return map.nodes[choice.nodeId - 1] === undefined
+        ? null
+        : { type: 'useTool', toolId, nodeId: choice.nodeId };
+    case 'dice':
+      // 步数恒在 1..6 ⊂ isValidRemoteDice 的 1..18
+      return { type: 'useTool', toolId, value: choice.steps };
+    case 'build': {
+      const node = map.nodes[choice.nodeId - 1];
+      if (node === undefined) return null;
+      const li = housingIndexOf(node.type);
+      if (li !== null) {
+        // ★ 种类/等级读**状态**（effectiveLand 已合并 landType）：改建卡把住宅翻成
+        //   連鎖店之后模板还是 0，读模板会预演出「能盖」而被 reducer 拒掉
+        const land = effectiveLand(state, map, li);
+        if (land === null) return null;
+        return buildOneLevel(land.type, land.level, MAX_LAND_LEVEL).ok
+          ? { type: 'useTool', toolId, nodeId: choice.nodeId }
+          : null;
+      }
+      const fi = facilityIndexOf(node.type);
+      if (fi === null) return null;
+      const fac = effectiveFacility(state, map, fi);
+      if (fac === null) return null;
+      // 与 freeBuildFacilityById 同口径：0 级走「定种类首建」，其余查种类上限
+      if (fac.level !== 0 && !canUpgradeFacility(fac.type, fac.level)) return null;
+      return { type: 'useTool', toolId, nodeId: choice.nodeId };
+    }
+    case 'teleportSelf': {
+      // teleportPlayer 的两种拒收：原地不动 / 目标格没有可走的朝向
+      if (choice.nodeId === me.nodeId) return null;
+      if (pickFacingAt(map.nodes, choice.nodeId, me.direction) === null) return null;
+      // 搬人那一路：source = 玩家下标 + 1，target = 节点号（rules/teleport.ts）
+      return { type: 'useTool', toolId, nodeId: me.index + 1, value: choice.nodeId };
+    }
+  }
+}
 
 /**
  * 闸门里那次 `rand() % 3` 的**确定性替身**。
