@@ -176,6 +176,57 @@ describe('★ 任期与破产', () => {
   });
 });
 
+describe('★ 乞丐：破产者的棋子留在地图上', () => {
+  /** 把玩家 1 弄成出局者，钉在玩家 0 下一步会走到的那格 */
+  function setup() {
+    const { state, topo } = fresh();
+    const from = state.players[0]!.nodeId;
+    const to = topo.nodes[from - 1]!.adjacent[0]!;
+    const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+    const start: GameState = {
+      ...state,
+      objects: cleared,
+      players: state.players.map((p, i) =>
+        i === 1 ? { ...p, whoPlays: 0, nodeId: to } : i === 0 ? { ...p, cash: 500_000 } : p,
+      ),
+      phase: 'moving',
+      stepsRemaining: 1,
+      stepsTotal: 1,
+    };
+    return { start, topo, to };
+  }
+
+  run('★ 踩到乞丐 → 掏物价指数 × 1000，钱进公库', () => {
+    const { start, topo } = setup();
+    const after = reduce(start, { type: 'step' }, topo);
+    const amount = start.priceIndex * 1000;
+    expect(after.players[0]!.cash).toBe(500_000 - amount);
+    expect(after.pool).toBe(start.pool + amount);
+  });
+
+  run('★ 收了钱乞丐就换个地方待着 —— 不然会被同一个人反复薅', () => {
+    const { start, topo, to } = setup();
+    const after = reduce(start, { type: 'step' }, topo);
+    expect(after.players[1]!.nodeId).not.toBe(to);
+    expect(after.players[1]!.nodeId).not.toBe(0);
+  });
+
+  run('路过不算 —— 还有步数时不施捨', () => {
+    const { start, topo } = setup();
+    const after = reduce({ ...start, stepsRemaining: 4, stepsTotal: 4 }, { type: 'step' }, topo);
+    expect(after.players[0]!.cash).toBe(500_000);
+  });
+
+  run('同格的人还活着就不施捨', () => {
+    const { start, topo } = setup();
+    const living: GameState = {
+      ...start,
+      players: start.players.map((p, i) => (i === 1 ? { ...p, whoPlays: 2 } : p)),
+    };
+    expect(reduce(living, { type: 'step' }, topo).players[0]!.cash).toBe(500_000);
+  });
+});
+
 describe('★ 确定性没被破坏', () => {
   run('同种子跑 3000 步，两次指纹逐步相同', () => {
     const runOnce = (): string[] => {

@@ -46,6 +46,7 @@ import {
   tickGod,
 } from '../rules/object-landing.ts';
 import { demolishLand } from '../rules/land-mutation.ts';
+import { almsAmount, beggarAt } from '../rules/beggar.ts';
 import type { TradeResult } from '../places/stock.ts';
 import {
   refreshTradableShares,
@@ -501,6 +502,38 @@ function objectHandleAt(state: GameState, nodeId: number): number {
 }
 
 /**
+ * 踩到破产者的棋子 —— 施捨一笔，然后他换个地方待着。
+ *
+ * @source VA 0x0041b5fd，见 `rules/beggar.ts`。
+ *
+ * ⚠️ 乞丐的新位置由 `0x40cc56` → `pick_object_node(原节点)` 挑，
+ *   带**离原地至少 300 像素**的重抽条件，本引擎未接（Q-OBJ-2）。
+ */
+function giveAlmsIfBeggar(state: GameState, topo: MapTopology, nodeId: number): GameState {
+  // @source cmp dword [0x48baf8], 0 / jne 跳过 —— 路过不算
+  if (state.stepsRemaining > 0) return state;
+  const who = beggarAt(state.players, nodeId, state.currentPlayer);
+  if (who < 0) return state;
+
+  const amount = almsAmount(state.priceIndex);
+  // @source pay_money(我, -1, 金额, 0) —— 收款方 -1 即公库
+  const r = transferMoney(state.players, [], state.pool, state.currentPlayer, -1, amount, 0);
+
+  // @source call 0x40cc56 —— 清掉原格的占位，再挑一格把乞丐挪过去
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const spots = objectNodeCandidates(topo.nodes).filter((n) => n !== nodeId);
+  const moved = pickObjectNode(spots, rng.next());
+
+  const players = r.players.map((p, i) =>
+    i === who && moved !== 0 ? { ...p, lastNodeId: p.nodeId, nodeId: moved } : p,
+  );
+  const paid: GameState = { ...state, players, pool: r.pool, rngState: rng.getState() };
+  // 施捨也可能把自己掏空 —— 与过路费同一条收口
+  return r.bankrupted ? applyBankruptcy(paid, state.currentPlayer, topo) : paid;
+}
+
+/**
  * 走到一格之后的物件结算。
  *
  * ★ 原版这一整套跑在**每走一格**的处理函数里（VA 0x0041b440），
@@ -514,38 +547,45 @@ function applyArrival(state: GameState, topo: MapTopology): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined || !isAlive(me)) return state;
 
-  const handle = objectHandleAt(state, me.nodeId);
+  // ★ 物件派发**之前**先过一遍乞丐（原版顺序，VA 0x0041b5fd）
+  const afterAlms = giveAlmsIfBeggar(state, topo, me.nodeId);
+  // 施捨把自己掏破产了 —— 物件那一步不必再走
+  if (afterAlms.phase === 'gameOver' || !isAlive(afterAlms.players[state.currentPlayer]!)) {
+    return afterAlms;
+  }
+
+  const handle = objectHandleAt(afterAlms, me.nodeId);
   // 身上没炸彈、脚下也没东西 → 这一格什么都不会发生，连状态都不必重建
-  if (handle === 0 && me.f64 === 0) return state;
+  if (handle === 0 && me.f64 === 0) return afterAlms;
 
   const node = topo.nodes[me.nodeId - 1];
   const landIdx = node === undefined ? null : housingIndexOf(node.type);
-  const land = landIdx === null ? null : effectiveLand(state, topo, landIdx);
+  const land = landIdx === null ? null : effectiveLand(afterAlms, topo, landIdx);
 
   // 预支一个随机数；没用掉就不推进（C-DET-4）
   const rng = new WatcomRng();
-  rng.setState(state.rngState);
+  rng.setState(afterAlms.rngState);
   const randValue = rng.next();
 
   const r = resolveArrival({
-    world: state,
-    playerIndex: state.currentPlayer,
+    world: afterAlms,
+    playerIndex: afterAlms.currentPlayer,
     handle,
     landId: land === null ? 0 : land.id,
-    stepsRemaining: state.stepsRemaining,
-    othersHere: state.players
+    stepsRemaining: afterAlms.stepsRemaining,
+    othersHere: afterAlms.players
       .filter((p) => p.index !== me.index && isAlive(p) && p.nodeId === me.nodeId)
       .map((p) => p.index),
     randValue,
   });
 
   let next: GameState = {
-    ...state,
+    ...afterAlms,
     players: r.players,
     objects: r.objects,
     tools: r.tools,
     toolStock: r.toolStock,
-    rngState: r.randConsumed ? rng.getState() : state.rngState,
+    rngState: r.randConsumed ? rng.getState() : afterAlms.rngState,
   };
 
   // 路障／惡犬／地雷／爆炸都会把人钉在原地
