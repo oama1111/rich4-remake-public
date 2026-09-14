@@ -41,8 +41,9 @@ import { FACILITY_TYPE } from '../rules/facility.ts';
 // ============================================================
 
 /**
- * AI 的目标描述 —— 比 `CardTarget` 宽：原版能选設施/股票/物件/物件格，
- * 引擎目前只接得住玩家与地块，其余由 policy.ts 判为「暂不可出」（见 Q-CARD-2）。
+ * AI 的目标描述 —— 与 `CardTarget` 一一对应（玩家/地块/設施/股票/物件），
+ * 另加「自己」与「无目标」两个便捷变体；由 policy.ts 的 `toCardTarget`
+ * 折算成引擎目标（T-009 起全类别可出，不再有顺延过滤）。
  */
 export type AiCardTarget =
   | { kind: 'none' }

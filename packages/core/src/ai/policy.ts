@@ -40,7 +40,7 @@ import { pickFacingAt } from '../rules/teleport.ts';
 import { canUpgradeFacility } from '../rules/facility.ts';
 import { CARDS, TOOLS } from '@rich4/data';
 import { aiCanUseCards, aiCanUseTools, autoLoanAmount, personalityAllows } from './personality.ts';
-import { aiCardChoice, aiRoll, cardsToConsider, type AiCardTarget, type CardAiView } from './card-policy.ts';
+import { aiCardChoice, aiRoll, cardsToConsider, type AiCardChoice, type CardAiView } from './card-policy.ts';
 import { aiToolChoice, toolsToConsider, TOOL_RING_SALT, type AiToolChoice } from './tool-policy.ts';
 import {
   allEffectiveFacilities,
@@ -243,26 +243,46 @@ export function decideCard(ctx: AiContext): Action | null {
     if (!gated(cardId)) continue;
     const choice = aiCardChoice(cardId, view);
     if (choice === null) continue;
-    const target = toCardTarget(choice.target, state.currentPlayer);
-    if (target === null) continue;
+    const target = toCardTarget(choice, state.currentPlayer);
     if (willWork(cardId, target)) return { type: 'useCard', cardId, target };
   }
   return null;
 }
 
-/** AI 目标 → 引擎目标；引擎接不住的（設施/股票/物件）给 null，见 Q-CARD-2 */
-export function toCardTarget(t: AiCardTarget, meIndex: number): CardTarget | null {
+/**
+ * AI 目标 → 引擎目标。
+ *
+ * T-009：registry 已接得住設施（T-006 怪獸 / T-008 五卡）、股票（T-005
+ * 紅黑卡）、物件（T-004 請神符），不再有任何类别返回 null —— Q-CARD-2
+ * 的「接不住就顺延」过滤随之撤掉，判定函数说打就打（只剩 `willWork`
+ * 空跑一道，那是防活锁，不是目标过滤）。
+ *
+ * 两个挂在 choice 上的附加参数在这里折进 CardTarget：
+ * - 搶奪卡的 `stealCard` → player 目标的 `steal`（@source `[0x48be5c]`）；
+ * - 改建卡对公園的 `facilityType` → facility 目标的 `buildType`
+ *   （T-008 在 CardTarget 上开的口；天使卡首建也走它）。
+ */
+export function toCardTarget(choice: AiCardChoice, meIndex: number): CardTarget {
+  const t = choice.target;
   switch (t.kind) {
     case 'none':
       return { kind: 'none' };
     case 'self':
       return { kind: 'player', index: meIndex };
     case 'player':
-      return { kind: 'player', index: t.index };
+      return choice.stealCard !== undefined
+        ? { kind: 'player', index: t.index, steal: { kind: 'card', id: choice.stealCard } }
+        : { kind: 'player', index: t.index };
     case 'land':
       return { kind: 'entity', entityId: t.landId };
-    default:
-      return null;
+    case 'facility':
+      return choice.facilityType !== undefined
+        ? { kind: 'facility', facilityId: t.facilityId, buildType: choice.facilityType }
+        : { kind: 'facility', facilityId: t.facilityId };
+    case 'stock':
+      return { kind: 'stock', index: t.index };
+    case 'object':
+      return { kind: 'object', objectIndex: t.objectIndex };
   }
 }
 

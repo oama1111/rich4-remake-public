@@ -14,8 +14,13 @@ import {
   decideAction,
   isAiTurn,
   landAttractiveness,
+  toCardTarget,
 } from './policy.ts';
-import { makeGameState, makeLand, makePlayer } from '../testing/factories.ts';
+import type { AiCardChoice } from './card-policy.ts';
+import { useCard, type UseCardContext } from '../cards/registry.ts';
+import { initialSpecialActors } from '../rules/special-actors.ts';
+import { STOCK_COUNT } from '../rules/wealth.ts';
+import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 
 const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -255,5 +260,74 @@ describe('★ 电脑回合掷骰前的调度步（aiStep）', () => {
     expect(partial.players[1]).toMatchObject({ moneyInBank: 0, cash: 30, specialFinance: 0 });
     const broke = reduce({ ...s, players: s.players.map((p, i) => (i === 1 ? { ...p, specialFinance: 500 } : p)) }, { type: 'aiNext' }, { nodes: [] });
     expect(broke.players[1]!.whoPlays).toBe(0);
+  });
+});
+
+describe('★ T-009：toCardTarget 覆盖全部目标类型，AI 选中 → useCard ok', () => {
+  // 一个能接住各目标类别的 useCard 场景
+  const stock = () => ({
+    price: 100, shares: 10_000, f10: 10_000, commercialIndex: 0, f6: 0,
+    newsFlag: 0, basePrice: 100, openPrice: 100, volatility: 1, trend: 0, shock: 0,
+  });
+  const ctx = (over: Partial<UseCardContext> = {}): UseCardContext => ({
+    players: [
+      makePlayer({ index: 0, cash: 10000, cards: [12, 13, 23, 24] }),
+      makePlayer({ index: 1, cash: 2000, cards: [9] }),
+    ],
+    lands: [makeLand({ id: 1, name: '台北市' })],
+    nodes: [makeNode({ id: 1, type: 1 })],
+    currentPlayer: 0,
+    priceIndex: 1,
+    tools: new Array<number>(60).fill(0),
+    toolStock: new Array<number>(14).fill(0),
+    objects: [{ type: 0, nodeId: 5, state: 0, attached: 0 }],
+    market: { stocks: Array.from({ length: STOCK_COUNT }, stock), day: 0, history: [], index: 1000 },
+    marketOpen: true,
+    facilities: [makeFacility({ id: 1, type: 1, level: 2, owner: 2 })],
+    actors: initialSpecialActors(),
+    ...over,
+  });
+
+  it('none / self / player / land 照旧映射', () => {
+    expect(toCardTarget({ target: { kind: 'none' } }, 0)).toEqual({ kind: 'none' });
+    expect(toCardTarget({ target: { kind: 'self' } }, 2)).toEqual({ kind: 'player', index: 2 });
+    expect(toCardTarget({ target: { kind: 'player', index: 1 } }, 0)).toEqual({ kind: 'player', index: 1 });
+    expect(toCardTarget({ target: { kind: 'land', landId: 3 } }, 0)).toEqual({ kind: 'entity', entityId: 3 });
+  });
+
+  it('★ 不再有任何类别返回 null（Q-CARD-2 的顺延过滤撤掉）', () => {
+    const choices: AiCardChoice[] = [
+      { target: { kind: 'facility', facilityId: 1 } },
+      { target: { kind: 'stock', index: 0 } },
+      { target: { kind: 'object', objectIndex: 1 } },
+      { target: { kind: 'player', index: 1 }, stealCard: 9 },
+    ];
+    for (const c of choices) expect(toCardTarget(c, 0)).not.toBeNull();
+  });
+
+  it('搶奪卡：stealCard 折进 player 目标的 steal，useCard ok', () => {
+    const t = toCardTarget({ target: { kind: 'player', index: 1 }, stealCard: 9 }, 0);
+    expect(t).toEqual({ kind: 'player', index: 1, steal: { kind: 'card', id: 9 } });
+    expect(useCard(ctx(), 13, t).ok).toBe(true);
+  });
+
+  it('設施目标：拆除卡 useCard ok；facilityType 折成 buildType', () => {
+    const t = toCardTarget({ target: { kind: 'facility', facilityId: 1 } }, 0);
+    expect(t).toEqual({ kind: 'facility', facilityId: 1 });
+    expect(useCard(ctx(), 12, t).ok).toBe(true);
+    expect(toCardTarget({ target: { kind: 'facility', facilityId: 1 }, facilityType: 2 }, 0))
+      .toEqual({ kind: 'facility', facilityId: 1, buildType: 2 });
+  });
+
+  it('股票目标：紅卡 useCard ok', () => {
+    const t = toCardTarget({ target: { kind: 'stock', index: 3 } }, 0);
+    expect(t).toEqual({ kind: 'stock', index: 3 });
+    expect(useCard(ctx(), 24, t).ok).toBe(true);
+  });
+
+  it('物件目标：請神符 useCard ok', () => {
+    const t = toCardTarget({ target: { kind: 'object', objectIndex: 1 } }, 0);
+    expect(t).toEqual({ kind: 'object', objectIndex: 1 });
+    expect(useCard(ctx(), 23, t).ok).toBe(true);
   });
 });

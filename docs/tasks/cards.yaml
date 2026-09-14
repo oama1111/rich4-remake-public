@@ -227,7 +227,7 @@ cards:
   title: AI 的 toCardTarget 覆盖全部目标类型（消除 Q-CARD-2 顺延）
   module: MOD-09
   req: Q-CARD-2
-  status: todo
+  status: done
   estimate: 0.2
   depends_on: [T-001, T-003, T-004, T-005, T-006, T-007, T-008]
   uses:
