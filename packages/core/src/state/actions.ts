@@ -123,6 +123,13 @@ export type Action =
    *   引擎按原版的「不玩」出口抽 50..69。玩了就把分数报上来，
    *   作为 action 参数进日志，重放时照样对得上（C-DET-4）。
    */
+  /**
+   * 银行柜台的四种操作。
+   *
+   * ★ 只在落点留下 `bank` 待决交互时有效。金额由上层给出
+   *   （UI 的输入框、AI 的 `loanRatio`），规则一律在 `places/bank.ts`。
+   */
+  | { type: 'bank'; op: 'deposit' | 'withdraw' | 'borrow' | 'repay'; amount: number }
   /** 保釋監獄/醫院里的某个槽位（0..3 玩家、4..7 NPC） */
   | { type: 'bail'; slot: number }
   | { type: 'minigame'; score: number | null }

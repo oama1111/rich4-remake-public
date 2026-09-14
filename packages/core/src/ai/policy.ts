@@ -27,6 +27,7 @@ import { useCard } from '../cards/registry.ts';
 import type { CardTarget } from '../cards/target.ts';
 import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE, buildOneLevel } from '../rules/tool-effects.ts';
 import { MAX_LAND_LEVEL } from '../loaders/map.ts';
+import { aiCanUseCards, aiCanUseTools, autoLoanAmount } from './personality.ts';
 import { toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
 
@@ -155,6 +156,9 @@ export function decideCard(ctx: AiContext): Action | null {
   const { state, map } = ctx;
   const me = state.players[state.currentPlayer];
   if (me === undefined || me.cards.length === 0) return null;
+  // @source `test byte [player + 0x16], 1 / je 跳过`（VA 0x00441d09）
+  //   角色表的 f22 第 0 位：这个 AI 会不会出牌
+  if (!aiCanUseCards(me.aiFlags)) return null;
 
   /**
    * ★ 出牌前**先空跑一遍规则**，只有确定会生效才真出。
@@ -274,6 +278,8 @@ export function decideTool(ctx: AiContext): Action | null {
   const { state } = ctx;
   const me = state.players[state.currentPlayer];
   if (me === undefined) return null;
+  // @source `test byte [player + 0x16], 2 / je 跳过`（VA 0x00447f87）
+  if (!aiCanUseTools(me.aiFlags)) return null;
 
   // 骰子数越多越好：汽車(3) > 機車(2) > 步行(1)
   const better: readonly { tool: number; traffic: number }[] = [
@@ -355,6 +361,17 @@ export function decidePending(state: GameState): Action | null {
       .filter((c) => c.affordable && c.player >= 0)
       .sort((a, b) => a.cost - b.cost)[0];
     return cheap === undefined ? null : { type: 'bail', slot: cheap.slot };
+  }
+  // ★ 银行：按角色的**借贷激进度**（f24）一次性借出身家的某个百分比。
+  // @source 银行落点的 AI 分支 VA 0x004368db，见 ai/personality.ts。
+  // ⚠️ 原版那一句是**赋值** `loan = trunc(身家 × f24 / 100)`，既不叠加
+  //   也不查额度上限；本引擎的 `bankBorrow` 会按额度拦，故这里先夹一次，
+  //   免得提一个必被拒的 action 把自己卡死。
+  if (p.kind === 'bank') {
+    const me = state.players[state.currentPlayer];
+    if (me === undefined) return null;
+    const want = Math.min(autoLoanAmount(p.wealth, me.loanRatio), p.loanCapacity);
+    return want > 0 ? { type: 'bank', op: 'borrow', amount: want } : null;
   }
   if (p.kind === 'buyShares') {
     // 简单策略：留够安全垫，剩下的钱买得起多少买多少，且不超过企业余量。

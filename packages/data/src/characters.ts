@@ -5,8 +5,13 @@
  * @source rich4-re/asm/rich4_characters.c —— const player_info rich4_character_profiles[12]
  * @source rich4-re/docs/characters.txt —— 角色编号对照
  *
- * ⚠️ f22 / f24 / f26 的语义**尚未确认**（DEVELOPMENT_PLAN.md Q3）。
- * ★ f23 已解出：**保釋倾向**，见 `@rich4/core` 的 `rules/visit.ts` 的 `BAIL_STYLE`。
+ * ★ **f22 / f23 / f24 / f26 四个全解出来了**（DEVELOPMENT_PLAN.md 的 Q3 结案）。
+ *   它们是 AI 的性格旋钮，开局拷进玩家结构的 +0x16..+0x1a：
+ *   - f22 **能力位**：bit0 会用卡、bit1 会用道具
+ *   - f23 **保釋倾向** 0/1/2
+ *   - f24 **借贷激进度**：到银行时借身家的百分之几
+ *   - f26 **炒股比例**：把可动用总额的百分之几放进股市
+ *   详见 `@rich4/core` 的 `ai/personality.ts`（含每一条的 @source）。
  *    这四个字段在 12 个角色间取值各不相同，高度疑似 AI 性格参数。
  *    按 C-FID-2 保留原始字段名，**禁止臆测命名**。
  */
@@ -29,20 +34,29 @@ export interface CharacterDef {
   trafficMethod: number;
   /** 初始骰子数 @source rich4_characters.c ndices —— 12 个角色全为 1 */
   ndices: number;
-  /** TODO: semantics unknown —— 12 个角色全为 3 */
+  /**
+   * ★ **AI 能力位** —— bit0 会用卡、bit1 会用道具。
+   *   12 个角色全是 3（两位都开）：它是「AI 设置」对话框的开关，
+   *   不是角色差异。@source `test byte [player+0x16], 1/2`（0x00441d09 / 0x00447f87）。
+   */
   f22: number;
-  /** TODO: semantics unknown —— 取值 0 / 1 / 2，疑似 AI 性格分类 */
   /**
    * ★ **保釋倾向**，0/1/2 —— 落在監獄/醫院格上时电脑保釋谁。
    *   0 只救玩家、2 只放犯人、1 居中。见 `rules/visit.ts` 的 `BAIL_STYLE`。
    *   它被拷进玩家结构的 +0x17（`Player.bailStyle`）。
    */
   f23: number;
-  /** TODO: semantics unknown —— 取值 0..100 */
+  /**
+   * ★ **借贷激进度**（百分比）—— 到银行时 `loan = trunc(身家 × 该值 / 100)`。
+   *   0 表示一辈子不借。@source 银行落点的 AI 分支 VA 0x004368db。
+   */
   f24: number;
   /** 初始现金比例 @source rich4_characters.c init_cash_ratio —— 取值 40..80 */
   initCashRatio: number;
-  /** TODO: semantics unknown —— 取值 0..45 */
+  /**
+   * ★ **炒股比例**（百分比）—— 目标持仓 = `trunc(可动用总额 × 该值 / 100)`，
+   *   上限是存款。0 表示从不碰股票。@source VA 0x0042bfff。
+   */
   f26: number;
 }
 

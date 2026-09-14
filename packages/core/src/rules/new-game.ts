@@ -15,6 +15,7 @@ import type { GameMode } from '../rng/policy.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
 import { DEFAULT_INITIAL_FUND, startingMoney } from './setup.ts';
 import { CHARACTERS } from '@rich4/data';
+import { traitsOf } from '../ai/personality.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
 import { CARD_IMPLS } from '@rich4/data';
 import { FORTUNE_DECK_SIZE, NEWS_DECK_SIZE, createDeck } from '../events/deck.ts';
@@ -128,8 +129,8 @@ function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, star
     ndices: 1,
     // @source player_info +0x14 sex：非 0 是男。取自角色表，开局定下不再变
     isMale: !(CHARACTERS[setup.character]?.isFemale ?? false),
-    // @source player_info +0x17 —— 取自角色表的 f23，见 rules/visit.ts
-    bailStyle: CHARACTERS[setup.character]?.f23 ?? 0,
+    // @source +0x16/+0x17/+0x18/+0x1a 都是开局从角色表拷进来的性格旋钮
+    ...traitsOf(setup.character),
     cash: money.cash,
     moneyInBank: money.moneyInBank,
     loan: 0,

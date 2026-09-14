@@ -16,6 +16,7 @@ export * from './rules/wealth.ts';
 export * from './rules/setup.ts';
 export * from './rules/new-game.ts';
 export * from './ai/policy.ts';
+export * from './ai/personality.ts';
 export * from './net/protocol.ts';
 export * from './net/sequencer.ts';
 export * from './rules/bankruptcy.ts';

@@ -110,8 +110,16 @@ describe('★ 长局冒烟', () => {
     expect(netWorth + r.state.pool).toBeGreaterThan(initial);
 
     // 关掉月息这唯一一台印钞机，总额就该只减不增（钱变成了地产、进了公库）
+    //
+    // ⚠️ **必须减掉贷款**。银行放贷会把钱凭空加进存款
+    //   （`borrow`：`money_in_bank += amount; loan += amount`），
+    //   那不是印钞，是**负债**——净值没变。AI 接上 `loanRatio`（角色表 f24）
+    //   之后它们真的会去借，不减这一项这条断言当场就假。
     const noInterest = soakWithoutInterest(2024, 200);
-    const frozen = noInterest.players.reduce((t, p) => t + p.cash + p.moneyInBank, 0);
+    const frozen = noInterest.players.reduce(
+      (t, p) => t + p.cash + p.moneyInBank - p.loan,
+      0,
+    );
     expect(frozen + noInterest.pool).toBeLessThanOrEqual(initial);
   });
 

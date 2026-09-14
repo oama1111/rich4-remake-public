@@ -95,7 +95,7 @@ import {
   unimplementedPlace,
   type PendingInteraction,
 } from '../rules/interaction.ts';
-import { loanCapacity } from '../places/bank.ts';
+import { borrow, deposit, loanCapacity, repay, withdraw } from '../places/bank.ts';
 import {
   LOTTERY_TICKET_PRICE,
   availableNumbers,
@@ -444,6 +444,45 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     case 'declineDecision': {
       if (state.phase !== 'awaitingDecision') return state;
       return { ...state, phase: 'turnEnd' };
+    }
+
+    case 'bank': {
+      if (state.pending === null || state.pending.kind !== 'bank') return state;
+      const me = state.players[state.currentPlayer];
+      if (me === undefined || !isAlive(me)) return state;
+      const wealth = state.pending.wealth;
+      let next: Player;
+      switch (action.op) {
+        case 'deposit':
+          next = deposit(me, action.amount);
+          break;
+        case 'withdraw':
+          next = withdraw(me, action.amount);
+          break;
+        case 'borrow':
+          next = borrow(me, action.amount, wealth).player;
+          break;
+        case 'repay':
+          next = repay(me, action.amount);
+          break;
+        default:
+          return state;
+      }
+      // 没成交就当没按 —— 但柜台还开着，别把 pending 清掉
+      if (next === me) return state;
+      const after: GameState = {
+        ...state,
+        players: state.players.map((p, i) => (i === state.currentPlayer ? next : p)),
+      };
+      // 刷新柜台上显示的数字（额度会随贷款变）
+      return {
+        ...after,
+        pending: {
+          kind: 'bank',
+          wealth,
+          loanCapacity: loanCapacity(wealth, next.loan),
+        },
+      };
     }
 
     case 'bail': {

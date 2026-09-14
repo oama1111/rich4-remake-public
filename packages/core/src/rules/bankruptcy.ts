@@ -144,6 +144,7 @@ export function markPlayerBankrupt(player: Player): Player {
     monthlyPaid: 0,
     monthlyReceived: 0,
     // 保留：index / character / nodeId / lastNodeId / direction / ndices
+    //      以及 +0x14..+0x1a 的性别与四个性格旋钮 —— memset 从 +0x1c 才开始
     // 保留：cards / tools（不在结构体内，见上方说明）
   };
 }

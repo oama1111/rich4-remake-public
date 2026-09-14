@@ -98,6 +98,21 @@ export interface Player {
    */
   isMale: boolean;
   /**
+   * AI 能力位。@source player_info +0x16（角色表的 `f22`）。
+   * bit0 会用卡、bit1 会用道具，见 `ai/personality.ts`。
+   */
+  aiFlags: number;
+  /**
+   * 借贷激进度，百分比。@source player_info +0x18（角色表的 `f24`）。
+   * 到银行时 `loan = trunc(身家 × 该值 / 100)`。0 表示从不借。
+   */
+  loanRatio: number;
+  /**
+   * 炒股比例，百分比。@source player_info +0x1a（角色表的 `f26`）。
+   * 0 表示从不碰股票。
+   */
+  stockRatio: number;
+  /**
    * 保釋倾向。@source player_info +0x17，取值 0/1/2。
    *
    * ★ 这就是 `@rich4/data` 的 `characters.ts` 里那个「语义尚未确认」的
