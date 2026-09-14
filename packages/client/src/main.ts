@@ -29,10 +29,12 @@ import {
   BoardRenderer,
   characterCamera,
   fitCamera,
+  hitToolbar,
   pickNode,
   screenToMap,
   type Camera,
 } from './render.ts';
+import { TOOLBAR_LABELS } from './assets.ts';
 import { VIEW_COUNT } from '@rich4/data';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -105,6 +107,9 @@ const groundOffset = { x: 0, y: 0 };
  * 用户一旦自己拖动或缩放视图就自动关掉——别跟玩家抢镜头。
  */
 let followPlayer = true;
+
+/** 正按着的工具栏按钮，用来画按下态 */
+let pressedTool: number | null = null;
 
 /** 走过的 action —— 回放、联机对账、以及排错都靠它 */
 const history: Action[] = [];
@@ -206,6 +211,7 @@ function requestRender(): void {
       hoverNode,
       ground: showGround ? ground : null,
       groundOffset,
+      pressedTool,
     });
     hud.draw({
       state,
@@ -251,6 +257,22 @@ function centerOnCurrentPlayer(): void {
   };
   // 还没到位就继续要下一帧，避免停在半路
   if (Math.abs(wantX - camera.x) > 0.5 || Math.abs(wantY - camera.y) > 0.5) requestRender();
+}
+
+/**
+ * 工具栏按钮。
+ *
+ * ⚠️ 大多数按钮**原版具体做什么还没查证**（名字是按图标外观叫的），
+ *   故这里只接能确定的那一个，其余如实记一条「未实现」，不假装有功能。
+ */
+function onToolbar(i: number): void {
+  const name = TOOLBAR_LABELS[i] ?? `按钮${i}`;
+  if (i === 5) {
+    // 地图图标 —— 切换人物/地图视角
+    setViewMode(camera.mode === 'character' ? 'map' : 'character');
+    return;
+  }
+  log(`「${name}」尚未实现`);
 }
 
 /**
@@ -463,10 +485,22 @@ function bindInput(): void {
   let drag: { x: number; y: number } | null = null;
   canvas.addEventListener('mousedown', (e) => {
     sound.unlock(); // 浏览器要求在用户手势里建 AudioContext
+    const r = canvas.getBoundingClientRect();
+    const tool = hitToolbar(e.clientX - r.left, e.clientY - r.top);
+    if (tool !== null) {
+      pressedTool = tool;
+      requestRender();
+      return; // 点在工具栏上就不要同时开始拖动地图
+    }
     drag = { x: e.clientX, y: e.clientY };
   });
   window.addEventListener('mouseup', () => {
     drag = null;
+    if (pressedTool !== null) {
+      onToolbar(pressedTool);
+      pressedTool = null;
+      requestRender();
+    }
   });
   window.addEventListener('mousemove', (e) => {
     if (drag === null) return;

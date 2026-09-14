@@ -16,12 +16,33 @@ import {
   buildingImageIndex,
   buildingResource,
   chainStoreResource,
+  TOOLBAR_ICON_COUNT,
+  TOOLBAR_RESOURCE,
+  TOOLBAR_STRIP_IMAGE,
   decorImageIndex,
   facilitySheetBase,
   facilitySlot,
   sceneryResource,
+  toolbarIconImage,
   tokenResource,
 } from './assets.ts';
+
+/**
+ * 顶部工具栏的摆位。
+ *
+ * ★ 底条是 439×40，上面等距排 11 个图标。间距按游戏截图量得约 39 像素、
+ *   首个图标左边距约 6——`11 × 39 = 429`，正好填满 439 的底条。
+ *
+ * ⚠️ 这两个数是**照截图量的**，不是从 exe 读到的常量。
+ */
+export const TOOLBAR = { x: 0, y: 0, pitch: 39, padX: 6, padY: 3, height: 40 } as const;
+
+/** 点在工具栏的第几个按钮上；没点中返回 null */
+export function hitToolbar(sx: number, sy: number): number | null {
+  if (sy < TOOLBAR.y || sy >= TOOLBAR.y + TOOLBAR.height) return null;
+  const i = Math.floor((sx - TOOLBAR.x - TOOLBAR.padX) / TOOLBAR.pitch);
+  return i >= 0 && i < TOOLBAR_ICON_COUNT ? i : null;
+}
 
 /** 玩家棋子的颜色——原版每人一色，此处先用可区分的四色占位 */
 const PLAYER_COLORS = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
@@ -63,6 +84,8 @@ export interface RenderInput {
   /** 原版底图（map.mkf 偶数号资源解出来的 .gnd） */
   ground?: ImageBitmap | null;
   groundOffset?: { x: number; y: number };
+  /** 正被按下的工具栏按钮下标 */
+  pressedTool?: number | null;
 }
 
 /**
@@ -251,6 +274,7 @@ export class BoardRenderer {
     this.#drawBuildings(map, state, camera, vp);
     this.#drawNodes(map, state, camera, hoverNode, vp);
     this.#drawPlayers(map, state, camera, vp);
+    this.#drawToolbar(input.pressedTool ?? null);
   }
 
   /** 先画连线，让棋盘的走法一眼可见 */
@@ -272,6 +296,23 @@ export class BoardRenderer {
       }
     }
     ctx.stroke();
+  }
+
+  /** 顶部工具栏 —— 原版 `Panel.mkf` 资源 1 的底条 + 11 个图标 */
+  #drawToolbar(pressed: number | null): void {
+    const ctx = this.#ctx;
+    const strip = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, TOOLBAR_STRIP_IMAGE);
+    if (strip !== null) {
+      ctx.drawImage(strip.bitmap, TOOLBAR.x, TOOLBAR.y);
+    }
+    for (let i = 0; i < TOOLBAR_ICON_COUNT; i++) {
+      const icon = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, toolbarIconImage(i, pressed === i));
+      if (icon === null) continue;
+      // 图标在底条内居中：按下态比常态大几像素，故按各自尺寸算
+      const cx = TOOLBAR.x + TOOLBAR.padX + i * TOOLBAR.pitch + TOOLBAR.pitch / 2;
+      const cy = TOOLBAR.y + TOOLBAR.height / 2;
+      ctx.drawImage(icon.bitmap, Math.round(cx - icon.width / 2), Math.round(cy - icon.height / 2));
+    }
   }
 
   /**

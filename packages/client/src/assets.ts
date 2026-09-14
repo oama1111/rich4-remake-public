@@ -382,3 +382,49 @@ export function facilitySlot(type: number, level: number): number {
       return 0;
   }
 }
+
+// ============================================================
+//  顶部工具栏
+// ============================================================
+
+/**
+ * 顶部工具栏在 `Panel.mkf` 资源 1。
+ *
+ * ★ 由资源形状认出来的，并与游戏截图逐个对上：
+ *   - 图 0 是 **439×40 的底条**
+ *   - 图 1..11 是 **11 个图标**（常态）
+ *   - 图 12..22 是同样 11 个图标的**按下态**（尺寸略大）
+ *
+ *   顺序与截图完全一致：? / 電腦 / 燈泡 / 紅存檔 / 綠存檔 / 格子 /
+ *   放大鏡 / 槌子 / CARD / SALE! / 走勢圖。
+ *
+ * ⚠️ 每个按钮**具体做什么**没有全部查证：名字是按图标外观叫的，
+ *   只有几个能从别处推出来。故 UI 上点了没实现的只记一条日志，
+ *   不假装有功能。
+ */
+export const TOOLBAR_RESOURCE = 1;
+export const TOOLBAR_STRIP_IMAGE = 0;
+export const TOOLBAR_ICON_COUNT = 11;
+
+/** 第 i 个图标的图号（常态 / 按下态） */
+export function toolbarIconImage(i: number, pressed = false): number {
+  return 1 + i + (pressed ? TOOLBAR_ICON_COUNT : 0);
+}
+
+/**
+ * 各按钮的名字。
+ * ⚠️ 按图标外观命名，**不是**从 exe 里读到的字符串。
+ */
+export const TOOLBAR_LABELS: readonly string[] = [
+  '說明',
+  '電腦托管',
+  '提示',
+  '讀取進度',
+  '儲存進度',
+  '地圖',
+  '查看',
+  '設定',
+  '卡片',
+  '拍賣',
+  '走勢圖',
+];
