@@ -22,10 +22,18 @@ import {
   type Rich4Map,
 } from '@rich4/core';
 import { loadArchives, loadGround, readMapData, SpriteCache } from './assets.ts';
-import { Hud } from './hud.ts';
+import { Hud, hitHudButton } from './hud.ts';
 import { SoundPlayer } from './audio.ts';
 import { SOUND_IDS } from '@rich4/assets-pipeline';
-import { BoardRenderer, fitCamera, pickNode, screenToMap, type Camera } from './render.ts';
+import {
+  BoardRenderer,
+  characterCamera,
+  fitCamera,
+  pickNode,
+  screenToMap,
+  type Camera,
+} from './render.ts';
+import { VIEW_COUNT } from '@rich4/data';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -226,6 +234,13 @@ function centerOnCurrentPlayer(): void {
   if (me === undefined) return;
   const node = map.nodes[me.nodeId - 1];
   if (node === undefined) return;
+
+  if (camera.mode === 'character') {
+    // 人物视角：摄像机就是**当前玩家所在的那一块**，原版恒在 29×29 窗口正中
+    camera = { ...camera, tileX: node.x >> 5, tileY: node.y >> 5 };
+    return;
+  }
+
   const wantX = node.x - canvas.clientWidth / 2 / camera.scale;
   const wantY = node.y - canvas.clientHeight / 2 / camera.scale;
   const k = 0.18;
@@ -236,6 +251,40 @@ function centerOnCurrentPlayer(): void {
   };
   // 还没到位就继续要下一帧，避免停在半路
   if (Math.abs(wantX - camera.x) > 0.5 || Math.abs(wantY - camera.y) > 0.5) requestRender();
+}
+
+/**
+ * 在人物视角与地图视角之间切换。
+ *
+ * ★ 原版小地图上方那两个按钮就是干这个的。
+ *   人物视角是等距投影、跟着棋子；地图视角是整张底图俯瞰。
+ */
+function setViewMode(mode: 'character' | 'map'): void {
+  if (camera.mode === mode) return;
+  if (mode === 'character') {
+    const me = state.players[state.currentPlayer];
+    const node = me === undefined ? undefined : map.nodes[me.nodeId - 1];
+    camera = characterCamera(node?.x ?? 0, node?.y ?? 0, camera.view);
+    followPlayer = true;
+  } else {
+    camera = { ...fitCamera(map, canvas.clientWidth, canvas.clientHeight), view: camera.view };
+  }
+  log(mode === 'character' ? '▶ 人物视角' : '▶ 地图视角');
+  requestRender();
+  renderPanel();
+}
+
+/**
+ * 转视角。
+ *
+ * ★ 原版有 **8 个视角**、每步 45°，全局 `[0x499088]`。
+ *   建筑精灵各有 8 张图正是为此：图号 = `(8 − (朝向 + 视角)) & 7`。
+ */
+function rotateView(delta: number): void {
+  camera = { ...camera, view: (camera.view + delta + VIEW_COUNT) % VIEW_COUNT };
+  log(`▶ 视角 ${camera.view}`);
+  requestRender();
+  renderPanel();
 }
 
 function resizeCanvas(): void {
@@ -365,6 +414,15 @@ function nextAutoAction(): Action | null {
 
 function bindInput(): void {
   canvas.addEventListener('mousemove', (e) => {
+    // ⚠️ 人物视角下的拾取要**反解投影表**，还没做；
+    //   这里先不猜——宁可不高亮，也别高亮错的格子。
+    if (camera.mode !== 'map') {
+      if (hoverNode !== null) {
+        hoverNode = null;
+        requestRender();
+      }
+      return;
+    }
     const r = canvas.getBoundingClientRect();
     const m = screenToMap(e.clientX - r.left, e.clientY - r.top, camera);
     const hit = pickNode(map, m.x, m.y);
@@ -393,6 +451,7 @@ function bindInput(): void {
     const r = canvas.getBoundingClientRect();
     const before = screenToMap(e.clientX - r.left, e.clientY - r.top, camera);
     const k = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    if (camera.mode !== 'map') return; // 人物视角的缩放由投影表定死，不可调
     followPlayer = false;
     camera = { ...camera, scale: Math.min(8, Math.max(0.2, camera.scale * k)) };
     const after = screenToMap(e.clientX - r.left, e.clientY - r.top, camera);
@@ -411,6 +470,7 @@ function bindInput(): void {
   });
   window.addEventListener('mousemove', (e) => {
     if (drag === null) return;
+    if (camera.mode !== 'map') return; // 人物视角恒以当前玩家为中心，不能拖
     followPlayer = false;
     camera = {
       ...camera,
@@ -419,6 +479,17 @@ function bindInput(): void {
     };
     drag = { x: e.clientX, y: e.clientY };
     requestRender();
+  });
+
+  // 小地图上方那排视角按钮
+  hudCanvas.addEventListener('mousedown', (e) => {
+    sound.unlock();
+    const r = hudCanvas.getBoundingClientRect();
+    const hit = hitHudButton(e.clientX - r.left, e.clientY - r.top);
+    if (hit === null) return;
+    if (hit === 'toggleView') setViewMode(camera.mode === 'character' ? 'map' : 'character');
+    if (hit === 'rotateLeft') rotateView(-1);
+    if (hit === 'rotateRight') rotateView(1);
   });
 
   window.addEventListener('resize', requestRender);
@@ -440,6 +511,15 @@ function bindInput(): void {
         sound.setMuted(!sound.muted);
         log(sound.muted ? '⏸ 静音' : '▶ 开声');
         break;
+      case 'v':
+        setViewMode(camera.mode === 'character' ? 'map' : 'character');
+        return;
+      case 'q':
+        rotateView(-1);
+        return;
+      case 'e':
+        rotateView(1);
+        return;
       case '[':
         groundOffset.x -= step;
         break;
@@ -491,8 +571,9 @@ async function boot(): Promise<void> {
     renderer = new BoardRenderer(ctx, sprites);
     hud = new Hud(hudCtx, sprites);
     resizeCanvas();
-    // ★ 原版是 1:1 的局部视野，全局看右下角小地图
-    camera = { ...fitCamera(map, canvas.clientWidth, canvas.clientHeight), scale: 1 };
+    // ★ 原版开局就是人物视角（等距投影、跟着棋子），全局看右下角小地图
+    const first = map.nodes[state.players[0]?.nodeId ?? 1];
+    camera = characterCamera(first?.x ?? 0, first?.y ?? 0, 0);
     centerOnCurrentPlayer();
 
     // 开发期调试出口：在控制台里能直接看状态与相机，排错方便

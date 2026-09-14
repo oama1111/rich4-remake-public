@@ -50,6 +50,43 @@ export interface HudInput {
   ground: ImageBitmap | null;
 }
 
+/** HUD 上可点的按钮 */
+export type HudButton = 'toggleView' | 'rotateLeft' | 'rotateRight';
+
+/**
+ * 小地图上方的那排按钮。
+ *
+ * ★ 原版在小地图正上方也有一排小按钮（见游戏截图右下角），
+ *   位置照搬，但**图标还没从资源里认出来**，故先用文字/箭头占位。
+ */
+const BUTTON_SIZE = 22;
+const BUTTON_GAP = 4;
+const BUTTON_ROW_Y = PANEL_HEIGHT + 8;
+const BUTTONS: readonly { id: HudButton; label: string; title: string }[] = [
+  { id: 'toggleView', label: '⇄', title: '切换 人物/地图 视角' },
+  { id: 'rotateLeft', label: '↺', title: '左转视角' },
+  { id: 'rotateRight', label: '↻', title: '右转视角' },
+];
+
+/** 按钮在 HUD 画布里的矩形 */
+function buttonRect(i: number): { x: number; y: number; w: number; h: number } {
+  return {
+    x: 2 + i * (BUTTON_SIZE + BUTTON_GAP),
+    y: BUTTON_ROW_Y,
+    w: BUTTON_SIZE,
+    h: BUTTON_SIZE,
+  };
+}
+
+/** 点在 HUD 的哪个按钮上；没点中返回 null */
+export function hitHudButton(x: number, y: number): HudButton | null {
+  for (let i = 0; i < BUTTONS.length; i++) {
+    const r = buttonRect(i);
+    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return BUTTONS[i]!.id;
+  }
+  return null;
+}
+
 const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
 
 export class Hud {
@@ -94,7 +131,38 @@ export class Hud {
     ctx.clearRect(0, 0, width, height);
 
     this.#drawPanel(input);
-    this.#drawMinimap(input, PANEL_HEIGHT + 8);
+    this.#drawButtons(input);
+    this.#drawMinimap(input, BUTTON_ROW_Y + BUTTON_SIZE + 6);
+  }
+
+  /** 小地图上方那排视角按钮 */
+  #drawButtons(input: HudInput): void {
+    const ctx = this.#ctx;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i < BUTTONS.length; i++) {
+      const b = BUTTONS[i]!;
+      const r = buttonRect(i);
+      const on = b.id === 'toggleView' && input.camera.mode === 'character';
+      ctx.fillStyle = on ? '#3a4a66' : '#22262f';
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = '#4a5265';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+      ctx.fillStyle = '#dfe4ee';
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.fillText(b.label, r.x + r.w / 2, r.y + r.h / 2 + 1);
+    }
+    // 当前视角编号，方便核对 8 个朝向
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#8d95a5';
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillText(
+      `${input.camera.mode === 'character' ? '人物' : '地图'}视角 · 方位 ${input.camera.view}`,
+      BUTTONS.length * (BUTTON_SIZE + BUTTON_GAP) + 6,
+      BUTTON_ROW_Y + BUTTON_SIZE / 2 + 1,
+    );
+    ctx.textBaseline = 'alphabetic';
   }
 
   #drawPanel(input: HudInput): void {
@@ -206,12 +274,23 @@ export class Hud {
     // 取景框
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 1;
-    ctx.strokeRect(
-      camera.x * k,
-      top + camera.y * k,
-      (viewport.w / camera.scale) * k,
-      (viewport.h / camera.scale) * k,
-    );
+    if (camera.mode === 'character') {
+      // 人物视角：框住 29×29 的那个可见窗口
+      const span = 29 * 32 * k;
+      ctx.strokeRect(
+        (camera.tileX - 14) * 32 * k,
+        top + (camera.tileY - 14) * 32 * k,
+        span,
+        span,
+      );
+    } else {
+      ctx.strokeRect(
+        camera.x * k,
+        top + camera.y * k,
+        (viewport.w / camera.scale) * k,
+        (viewport.h / camera.scale) * k,
+      );
+    }
     ctx.restore();
   }
 }

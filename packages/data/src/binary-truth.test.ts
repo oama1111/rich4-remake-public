@@ -17,6 +17,13 @@ import { CHARACTERS } from './characters.ts';
 import { STOCKS, STOCKS_PER_MAP, stocksOfMap } from './stocks.ts';
 import { CARD_IMPLS, PASSIVE_STUB_VA, PASSIVE_CARD_IDS, NO_SELECTION_CARD_IDS } from './card-registry.ts';
 import { MAGIC_HOUSE_OPTIONS } from './magic-house.ts';
+import {
+  SUBTILE_MATRIX,
+  VIEW_COUNT,
+  VIEW_SPAN,
+  projectCell,
+  projectionTable,
+} from './projection.ts';
 
 const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
 const d = existsSync(EXE) ? describe : describe.skip;
@@ -50,6 +57,10 @@ const VA = {
   cardFunctions: 0x475d5c,
   /** 魔法屋功能表 `_rich4_magic_house_function_info`，每项 16 字节 */
   magicHouse: 0x475724,
+  /** 等距投影表，8 视角 × 0xd24 字节 */
+  projection: 0x46ccf0,
+  /** 块内亚像素偏移矩阵，8 视角 × 4 个 int8 */
+  subtile: 0x474910,
 } as const;
 
 function loadExe(): Buffer {
@@ -235,6 +246,50 @@ d('★ 数值表以 rich4.exe 为基准校验', () => {
     expect(readStringAt(exe, exe.readUInt32LE(last))).toBe(MAGIC_HOUSE_OPTIONS[11]!.name);
     // 记录「为什么不采信」：帧数字段落在了不合理的范围
     expect(exe.readUInt32LE(last + 4)).toBeGreaterThan(100);
+  });
+
+  it('★ 投影表 8×29×29 与二进制逐项一致', () => {
+    const exe = loadExe();
+    const base = vaToOffset(VA.projection);
+    const t = projectionTable();
+    expect(t.length).toBe(VIEW_COUNT * VIEW_SPAN * VIEW_SPAN * 2);
+
+    for (let v = 0; v < VIEW_COUNT; v++) {
+      for (let r = 0; r < VIEW_SPAN; r++) {
+        for (let c = 0; c < VIEW_SPAN; c++) {
+          const o = base + v * 0xd24 + r * 0x74 + c * 4;
+          const cell = projectCell(v, r, c)!;
+          expect(cell.x, `视角${v} 行${r} 列${c} 的 x`).toBe(exe.readInt16LE(o));
+          expect(cell.y, `视角${v} 行${r} 列${c} 的 y`).toBe(exe.readInt16LE(o + 2));
+        }
+      }
+    }
+  });
+
+  it('★ 摄像机所在格 (14,14) 的表项恒为 (0,0)', () => {
+    for (let v = 0; v < VIEW_COUNT; v++) {
+      expect(projectCell(v, 14, 14), `视角${v}`).toEqual({ x: 0, y: 0 });
+    }
+  });
+
+  it('★ 亚像素矩阵与二进制一致，且与表的行列步长自洽', () => {
+    const exe = loadExe();
+    const base = vaToOffset(VA.subtile);
+    for (let v = 0; v < VIEW_COUNT; v++) {
+      const m = SUBTILE_MATRIX[v]!;
+      for (let i = 0; i < 4; i++) {
+        expect(m[i], `视角${v} 矩阵第 ${i} 项`).toBe(exe.readInt8(base + v * 4 + i));
+      }
+      // 自洽性：矩阵给出的整块位移应当等于表的行列步长
+      const center = projectCell(v, 14, 14)!;
+      const rowStep = projectCell(v, 15, 14)!;
+      const colStep = projectCell(v, 14, 15)!;
+      // dx = 32 即整整一列；按 fcn_00407a2c 算出的位移应当等于列步长
+      expect(-((m[1] * 32) >> 5)).toBe(colStep.x - center.x);
+      expect(-((m[0] * 32) >> 5)).toBe(colStep.y - center.y);
+      expect(-((m[3] * 32) >> 5)).toBe(rowStep.x - center.x);
+      expect(-((m[2] * 32) >> 5)).toBe(rowStep.y - center.y);
+    }
   });
 
   it('★ 五张表全部来自同一可执行文件，无一字段依赖逆向项目的转录', () => {

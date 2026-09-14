@@ -9,6 +9,7 @@
 
 import type { GameState } from '@rich4/core';
 import type { MapNode, Rich4Map } from '@rich4/core';
+import { VIEW_CENTER, VIEW_COUNT, VIEW_SPAN, projectCell, projectWorld } from '@rich4/data';
 import type { Sprite, SpriteCache } from './assets.ts';
 import {
   DECOR_RESOURCE,
@@ -25,11 +26,32 @@ import {
 /** 玩家棋子的颜色——原版每人一色，此处先用可区分的四色占位 */
 const PLAYER_COLORS = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
 
+/**
+ * 视角模式。
+ *
+ * ★ 原版有两种看法，小地图上方那两个按钮就是切它们：
+ * - `character` **人物视角**：等距投影、跟着棋子走，是主要的游戏画面。
+ *   摄像机恒在 29×29 窗口的正中一格，投影查 `@rich4/data` 的投影表。
+ * - `map` **地图视角**：把整张底图平铺出来俯瞰。底图本身就是这个朝向
+ *   （2304 见方的正射图），故这一模式不查表，直接缩放平铺。
+ */
+export type ViewMode = 'character' | 'map';
+
 export interface Camera {
-  /** 视口左上角对应的地图坐标 */
+  /** 地图视角用：视口左上角对应的地图坐标 */
   x: number;
   y: number;
   scale: number;
+  /** 当前模式 */
+  mode: ViewMode;
+  /**
+   * 视角编号 0..7，每步 45°。
+   * @source 原版全局 `[0x499088]`，开局清零
+   */
+  view: number;
+  /** 人物视角用：摄像机所在的**块**坐标（世界坐标 >> 5） */
+  tileX: number;
+  tileY: number;
 }
 
 export interface RenderInput {
@@ -38,22 +60,35 @@ export interface RenderInput {
   camera: Camera;
   /** 鼠标悬停的节点号，null 表示没有 */
   hoverNode: number | null;
-  /**
-   * 原版底图（map.mkf 偶数号资源解出来的 .gnd）。
-   *
-   * ⚠️ 与节点坐标**尚未对齐**（Q-GND-1），故默认不画。开启后底图按
-   * `groundOffset` 平移——那个偏移目前只能靠肉眼调，不是从原版推出来的。
-   */
+  /** 原版底图（map.mkf 偶数号资源解出来的 .gnd） */
   ground?: ImageBitmap | null;
   groundOffset?: { x: number; y: number };
 }
 
 /**
- * 地图节点的屏幕坐标。
+ * 世界坐标 → 屏幕坐标。
  *
- * 节点自带的 x/y 就是原版的屏幕坐标（见 loaders/map.ts），
- * 故这里只做相机变换，不做任何投影。
+ * 人物视角走原版的投影表（见 @rich4/data 的 projection.ts），
+ * 返回的是相对**屏幕中心**的偏移，故要加上视口中心；
+ * 越出 29×29 窗口时返回 null，与原版一样直接不画。
+ *
+ * 地图视角则是简单的平移缩放——底图本身就是正射的。
  */
+export function worldToScreen(
+  x: number,
+  y: number,
+  cam: Camera,
+  viewport: { w: number; h: number },
+): { x: number; y: number } | null {
+  if (cam.mode === 'map') {
+    return { x: (x - cam.x) * cam.scale, y: (y - cam.y) * cam.scale };
+  }
+  const p = projectWorld(cam.view, x, y, cam.tileX, cam.tileY);
+  if (p === null) return null;
+  return { x: viewport.w / 2 + p.x, y: viewport.h / 2 + p.y };
+}
+
+/** 兼容旧调用：地图节点的屏幕坐标（地图视角的平移缩放） */
 export function nodeToScreen(node: MapNode, cam: Camera): { x: number; y: number } {
   return {
     x: (node.x - cam.x) * cam.scale,
@@ -108,7 +143,7 @@ export function mapBounds(map: Rich4Map): { minX: number; minY: number; maxX: nu
   return { minX, minY, maxX, maxY };
 }
 
-/** 让整张地图恰好装进视口 */
+/** 地图视角：让整张地图恰好装进视口 */
 export function fitCamera(map: Rich4Map, viewW: number, viewH: number): Camera {
   const b = mapBounds(map);
   const w = Math.max(1, b.maxX - b.minX);
@@ -119,7 +154,16 @@ export function fitCamera(map: Rich4Map, viewW: number, viewH: number): Camera {
     x: b.minX - margin / 2 / scale,
     y: b.minY - margin / 2 / scale,
     scale,
+    mode: 'map',
+    view: 0,
+    tileX: 0,
+    tileY: 0,
   };
+}
+
+/** 人物视角：摄像机落在某个世界坐标所在的块上 */
+export function characterCamera(x: number, y: number, view = 0): Camera {
+  return { x: 0, y: 0, scale: 1, mode: 'character', view: view % VIEW_COUNT, tileX: x >> 5, tileY: y >> 5 };
 }
 
 export class BoardRenderer {
@@ -173,44 +217,56 @@ export class BoardRenderer {
   draw(input: RenderInput): void {
     const { map, state, camera, hoverNode } = input;
     const ctx = this.#ctx;
-    const { width, height } = ctx.canvas;
+    // ⚠️ 用 **CSS 像素**算视口中心：ctx 上已经挂了 devicePixelRatio 的缩放，
+    //   再拿 canvas.width（设备像素）去算中心会把画面推到一边去。
+    const width = ctx.canvas.clientWidth;
+    const height = ctx.canvas.clientHeight;
+    const dpr = width > 0 ? ctx.canvas.width / width : 1;
 
     ctx.fillStyle = '#0e1016';
     ctx.fillRect(0, 0, width, height);
 
-    if (input.ground !== null && input.ground !== undefined) {
-      const off = input.groundOffset ?? { x: 0, y: 0 };
-      ctx.drawImage(
-        input.ground,
-        (off.x - camera.x) * camera.scale,
-        (off.y - camera.y) * camera.scale,
-        input.ground.width * camera.scale,
-        input.ground.height * camera.scale,
-      );
-      // 底图之上压一层暗色，让棋盘的连线与节点仍然读得出来
-      ctx.fillStyle = 'rgba(10,12,20,0.35)';
-      ctx.fillRect(0, 0, width, height);
+    const ground = input.ground ?? null;
+    if (ground !== null) {
+      if (camera.mode === 'character') {
+        this.#drawGroundProjected(ground, camera, { w: width, h: height }, dpr);
+      } else {
+        const off = input.groundOffset ?? { x: 0, y: 0 };
+        ctx.drawImage(
+          ground,
+          (off.x - camera.x) * camera.scale,
+          (off.y - camera.y) * camera.scale,
+          ground.width * camera.scale,
+          ground.height * camera.scale,
+        );
+        // 地图视角把底图压暗，让棋盘的连线与格子读得出来
+        ctx.fillStyle = 'rgba(10,12,20,0.35)';
+        ctx.fillRect(0, 0, width, height);
+      }
     }
 
-    this.#drawEdges(map, camera);
-    this.#drawDecor(map, camera);
-    this.#drawBuildings(map, state, camera);
-    this.#drawNodes(map, state, camera, hoverNode);
-    this.#drawPlayers(map, state, camera);
+    const vp = { w: width, h: height };
+    this.#drawEdges(map, camera, vp);
+    this.#drawDecor(map, camera, vp);
+    this.#drawBuildings(map, state, camera, vp);
+    this.#drawNodes(map, state, camera, hoverNode, vp);
+    this.#drawPlayers(map, state, camera, vp);
   }
 
   /** 先画连线，让棋盘的走法一眼可见 */
-  #drawEdges(map: Rich4Map, cam: Camera): void {
+  #drawEdges(map: Rich4Map, cam: Camera, vp: { w: number; h: number }): void {
     const ctx = this.#ctx;
     ctx.strokeStyle = 'rgba(150,200,255,0.28)';
-    ctx.lineWidth = Math.max(1.5, cam.scale * 2.5);
+    ctx.lineWidth = cam.mode === 'map' ? Math.max(1.5, cam.scale * 2.5) : 2;
     ctx.beginPath();
     for (const n of map.nodes) {
-      const a = nodeToScreen(n, cam);
+      const a = worldToScreen(n.x, n.y, cam, vp);
+      if (a === null) continue;
       for (const adj of n.adjacent) {
         const m = map.nodes[adj - 1];
         if (m === undefined || m.id < n.id) continue; // 每条边只画一次
-        const b = nodeToScreen(m, cam);
+        const b = worldToScreen(m.x, m.y, cam, vp);
+        if (b === null) continue;
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
       }
@@ -219,25 +275,84 @@ export class BoardRenderer {
   }
 
   /**
+   * 人物视角下的底图 —— 逐块投影成四边形铺出来。
+   *
+   * @source 原版地面绘制 VA 0x00408480 起：每块取**投影表里相邻的四个表项**
+   *   当四角（左上 = (行,列)、右上 = (行,列+1)、右下 = (行+1,列+1)、
+   *   左下 = (行+1,列)），再把该块的 32×32 像素贴进这个四边形。
+   *   相邻块共用角点，故铺出来无缝。
+   *   块的取用同样经排布表：`layout[世界块Y*72 + 世界块X]`
+   *   （`mov di, word [layoutTable + index*2]` / `shl esi, 0xa` 即 ×1024），
+   *   这与 assets-pipeline 解出的格式完全吻合。
+   *
+   * ⚠️ **用仿射近似代替透视**：canvas 2D 没有透视变换，这里按三个角
+   *   （左上/右上/左下）做仿射。实测第四角与原版表值最大差 **2 像素**
+   *   （八个视角、全部 28×28 格里的最差值），肉眼不可辨。
+   */
+  #drawGroundProjected(
+    ground: ImageBitmap,
+    cam: Camera,
+    vp: { w: number; h: number },
+    dpr: number,
+  ): void {
+    const ctx = this.#ctx;
+    const cx = vp.w / 2;
+    const cy = vp.h / 2;
+    const tilesAcross = ground.width >> 5;
+    const tilesDown = ground.height >> 5;
+
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    // 表是 29×29，取相邻角点故只能铺 28×28 格
+    for (let row = 0; row < VIEW_SPAN - 1; row++) {
+      for (let col = 0; col < VIEW_SPAN - 1; col++) {
+        const tx = cam.tileX + col - VIEW_CENTER;
+        const ty = cam.tileY + row - VIEW_CENTER;
+        if (tx < 0 || ty < 0 || tx >= tilesAcross || ty >= tilesDown) continue;
+
+        const tl = projectCell(cam.view, row, col);
+        const tr = projectCell(cam.view, row, col + 1);
+        const bl = projectCell(cam.view, row + 1, col);
+        if (tl === null || tr === null || bl === null) continue;
+
+        // 单位正方形 → 四边形的仿射；略微放大 2% 以盖住相邻块之间的接缝
+        // ⚠️ setTransform 会**顶掉** ctx 上的 dpr 缩放，故这里自己乘回去
+        ctx.setTransform(
+          (tr.x - tl.x) * dpr,
+          (tr.y - tl.y) * dpr,
+          (bl.x - tl.x) * dpr,
+          (bl.y - tl.y) * dpr,
+          (cx + tl.x) * dpr,
+          (cy + tl.y) * dpr,
+        );
+        ctx.drawImage(ground, tx * 32, ty * 32, 32, 32, -0.01, -0.01, 1.02, 1.02);
+      }
+    }
+    ctx.restore();
+  }
+
+  /**
    * 特殊格的装饰图（PARK / NEWS / 命運 / BANK …）。
    *
    * 画在连线之上、节点之下：原版这些图就是铺在地上的，棋子踩在上面。
    */
-  #drawDecor(map: Rich4Map, cam: Camera): void {
+  #drawDecor(map: Rich4Map, cam: Camera, vp: { w: number; h: number }): void {
     const ctx = this.#ctx;
+    const k = cam.mode === 'map' ? cam.scale : 1;
     for (const n of map.nodes) {
       const idx = decorImageIndex(n.decorIndex);
       if (idx === null) continue;
       // ★ 装饰图是 SMP，靠抠掉纯黑来融进地面（见 assets-pipeline 的 DecodeOptions）
       const sp = this.#sprite('map.mkf', DECOR_RESOURCE, idx, true);
       if (sp === null) continue;
-      const p = nodeToScreen(n, cam);
+      const p = worldToScreen(n.x, n.y, cam, vp);
+      if (p === null) continue;
       ctx.drawImage(
         sp.bitmap,
-        p.x - sp.anchorX * cam.scale,
-        p.y - sp.anchorY * cam.scale,
-        sp.width * cam.scale,
-        sp.height * cam.scale,
+        p.x - sp.anchorX * k,
+        p.y - sp.anchorY * k,
+        sp.width * k,
+        sp.height * k,
       );
     }
   }
@@ -251,7 +366,12 @@ export class BoardRenderer {
    * ⚠️ 按 y 排序后再画：等距视角下靠后的建筑要先画，否则近处的房子
    *   会被远处的盖住。
    */
-  #drawBuildings(map: Rich4Map, state: GameState, cam: Camera): void {
+  #drawBuildings(
+    map: Rich4Map,
+    state: GameState,
+    cam: Camera,
+    vp: { w: number; h: number },
+  ): void {
     const ctx = this.#ctx;
     /** 一件立体物：资源、图号、落点 */
     const items: { y: number; x: number; res: number; img: number }[] = [];
@@ -271,7 +391,7 @@ export class BoardRenderer {
           ? chainStoreResource(state.globalMapId)
           : buildingResource(state.globalMapId, level);
       if (res === null) continue;
-      items.push({ x: n.x, y: n.y, res, img: buildingImageIndex(land.facing) });
+      items.push({ x: n.x, y: n.y, res, img: buildingImageIndex(land.facing, cam.view) });
     }
 
     // ── 设施（機場/港口…）──
@@ -283,7 +403,7 @@ export class BoardRenderer {
         x: f.x,
         y: f.y,
         res: base + facilitySlot(f.type, f.level),
-        img: buildingImageIndex(f.facing),
+        img: buildingImageIndex(f.facing, cam.view),
       });
     }
 
@@ -300,17 +420,18 @@ export class BoardRenderer {
     // ★ 等距视角下靠后的先画，否则近处的会被远处的盖住
     items.sort((a, b) => a.y - b.y);
 
+    const k = cam.mode === 'map' ? cam.scale : 1;
     for (const it of items) {
       const sp = this.#sprite('map.mkf', it.res, it.img, true);
       if (sp === null) continue;
-      const sx = (it.x - cam.x) * cam.scale;
-      const sy = (it.y - cam.y) * cam.scale;
+      const p = worldToScreen(it.x, it.y, cam, vp);
+      if (p === null) continue;
       ctx.drawImage(
         sp.bitmap,
-        sx - sp.anchorX * cam.scale,
-        sy - sp.anchorY * cam.scale,
-        sp.width * cam.scale,
-        sp.height * cam.scale,
+        p.x - sp.anchorX * k,
+        p.y - sp.anchorY * k,
+        sp.width * k,
+        sp.height * k,
       );
     }
   }
@@ -326,10 +447,16 @@ export class BoardRenderer {
    *   `[0x48a852]`（归属）与 `[0x48a853]`（朝向）决定，具体画法还没解。
    *   有主时按玩家色填充，无主时按格子类型给个中性色。
    */
-  #drawNodes(map: Rich4Map, state: GameState, cam: Camera, hover: number | null): void {
+  #drawNodes(
+    map: Rich4Map,
+    state: GameState,
+    cam: Camera,
+    hover: number | null,
+    vp: { w: number; h: number },
+  ): void {
     const ctx = this.#ctx;
     // 等距菱形：半宽 2 × 半高
-    const hw = Math.max(7, cam.scale * 13);
+    const hw = cam.mode === 'map' ? Math.max(7, cam.scale * 13) : 15;
     const hh = hw / 2;
 
     const diamond = (x: number, y: number): void => {
@@ -342,7 +469,8 @@ export class BoardRenderer {
     };
 
     for (const n of map.nodes) {
-      const p = nodeToScreen(n, cam);
+      const p = worldToScreen(n.x, n.y, cam, vp);
+      if (p === null) continue;
       const owner = ownerOfNode(n, state);
 
       diamond(p.x, p.y);
@@ -363,7 +491,12 @@ export class BoardRenderer {
     }
   }
 
-  #drawPlayers(map: Rich4Map, state: GameState, cam: Camera): void {
+  #drawPlayers(
+    map: Rich4Map,
+    state: GameState,
+    cam: Camera,
+    vp: { w: number; h: number },
+  ): void {
     const ctx = this.#ctx;
     // 同格多人时错开，否则棋子会完全重叠
     const perNode = new Map<number, number>();
@@ -374,16 +507,18 @@ export class BoardRenderer {
       const seen = perNode.get(pl.nodeId) ?? 0;
       perNode.set(pl.nodeId, seen + 1);
 
-      const p = nodeToScreen(node, cam);
-      const off = seen * Math.max(4, cam.scale * 5);
+      const p = worldToScreen(node.x, node.y, cam, vp);
+      if (p === null) continue;
+      const k = cam.mode === 'map' ? cam.scale : 1;
+      const off = seen * Math.max(4, k * 5);
 
       // ★ 原版棋子：锚点在底边中心，故按锚点对齐到格心（C-AST-6）
       const token = this.#sprite('Panel.mkf', tokenResource(pl.character), 0);
       if (token !== null) {
-        const w = token.width * cam.scale;
-        const h = token.height * cam.scale;
-        const x = p.x + off - token.anchorX * cam.scale;
-        const y = p.y - off - token.anchorY * cam.scale;
+        const w = token.width * k;
+        const h = token.height * k;
+        const x = p.x + off - token.anchorX * k;
+        const y = p.y - off - token.anchorY * k;
         if (pl.index === state.currentPlayer) {
           // 当前玩家脚下画一圈光晕，免得在密集处认不出轮到谁
           ctx.beginPath();
@@ -396,7 +531,7 @@ export class BoardRenderer {
       }
 
       // 精灵还没解完时退回色块，别让棋子凭空消失
-      const r = Math.max(4, cam.scale * 7);
+      const r = Math.max(4, k * 7);
       ctx.beginPath();
       ctx.arc(p.x + off, p.y - off, r, 0, Math.PI * 2);
       ctx.fillStyle = PLAYER_COLORS[pl.index] ?? '#fff';

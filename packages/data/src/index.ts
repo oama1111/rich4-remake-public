@@ -6,3 +6,4 @@ export * from './stocks.ts';
 export * from './card-registry.ts';
 export * from './event-table.ts';
 export * from './magic-house.ts';
+export * from './projection.ts';
