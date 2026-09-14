@@ -52,6 +52,7 @@ export * from './places/minigame.ts';
 export * from './places/calendar.ts';
 export * from './rules/time-machine.ts';
 export * from './rules/teleport.ts';
+export * from './ai/stock-policy.ts';
 export * from './cards/average-cash.ts';
 export * from './cards/hibernate.ts';
 export * from './cards/rebuild.ts';

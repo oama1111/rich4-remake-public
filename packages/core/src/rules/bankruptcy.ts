@@ -116,7 +116,7 @@ export function markPlayerBankrupt(player: Player): Player {
     moneyInBank: 0,
     loan: 0,
     specialFinance: 0,
-    f44: 0,
+    loanDueDate: 0,
     points: 0,
     blocking: {
       inHotel: 0,

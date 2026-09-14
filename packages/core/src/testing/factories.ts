@@ -34,7 +34,7 @@ export function makePlayer(over: Partial<Player> = {}): Player {
     moneyInBank: 50_000,
     loan: 0,
     specialFinance: 0,
-    f44: 0,
+    loanDueDate: 0,
     points: 0,
     blocking: {
       inHotel: 0, disappearing: 0, inPrison: 0,

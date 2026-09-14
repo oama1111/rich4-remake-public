@@ -120,7 +120,7 @@ export interface PlayerState {
   moneyInBank: number;
   loan: number;
   specialFinance: number;
-  f44: number;
+  loanDueDate: number;
   /** 点数 */
   points: number;
   daysInHotel: number;
@@ -237,7 +237,7 @@ function parsePlayer(
     moneyInBank: view.getInt32(o + 0x20, true),
     loan: view.getInt32(o + 0x24, true),
     specialFinance: view.getInt32(o + 0x28, true),
-    f44: view.getUint32(o + 0x2c, true),
+    loanDueDate: view.getUint32(o + 0x2c, true),
     points: view.getUint16(o + 0x30, true),
     daysInHotel: u8(0x32),
     daysDisappearing: u8(0x33),

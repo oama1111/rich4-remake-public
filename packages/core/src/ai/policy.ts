@@ -30,6 +30,7 @@ import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { aiCanUseCards, aiCanUseTools, autoLoanAmount } from './personality.ts';
 import { toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
+import { decideStockTrade } from './stock-policy.ts';
 
 /**
  * 性格参数。
@@ -119,8 +120,8 @@ export function decideAction(ctx: AiContext): Action | null {
     case 'turnStart':
       return { type: 'startTurn' };
     case 'awaitingRoll':
-      // ★ 掷骰前是出牌/用道具的时机 —— 原版也是在这个阶段
-      return decideCard(ctx) ?? decideTool(ctx) ?? { type: 'rollDice' };
+      // ★ 掷骰前是出牌/用道具/炒股的时机 —— 原版也是在这个阶段
+      return decideCard(ctx) ?? decideTool(ctx) ?? decideStockTrade(state) ?? { type: 'rollDice' };
     case 'moving':
       return { type: 'step' };
     case 'settling':

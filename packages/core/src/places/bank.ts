@@ -125,7 +125,7 @@ export function borrow(player: Player, amount: number, wealth: number): LoanResu
  *     player.money_in_bank = 0
  * }
  * player.loan -= amount
- * if (loan == 0) player[+44] = 0      ; 还清时清空 f44
+ * if (loan == 0) player[+44] = 0      ; 还清时清空 loanDueDate
  * ```
  */
 export function repay(player: Player, amount: number): Player {
@@ -145,8 +145,8 @@ export function repay(player: Player, amount: number): Player {
     cash,
     moneyInBank: bank,
     loan,
-    // 还清时清空 f44 @source mov dword [player + 44], edx（edx 此时为 0）
-    f44: loan === 0 ? 0 : player.f44,
+    // 还清时清空 loanDueDate @source mov dword [player + 44], edx（edx 此时为 0）
+    loanDueDate: loan === 0 ? 0 : player.loanDueDate,
   };
 }
 

@@ -195,7 +195,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     moneyInBank: p.moneyInBank,
     loan: p.loan,
     specialFinance: p.specialFinance,
-    f44: p.f44,
+    loanDueDate: p.loanDueDate,
     points: p.points,
     blocking: {
       inHotel: p.daysInHotel,

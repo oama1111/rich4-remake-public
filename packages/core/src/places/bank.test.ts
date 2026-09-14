@@ -105,16 +105,16 @@ describe('还款', () => {
     expect(p.moneyInBank).toBe(40_000); // 只扣了 1 万
   });
 
-  it('★ 还清时 f44 被清零', () => {
-    const p = repay(makePlayer({ loan: 10_000, f44: 12345 }), 10_000);
+  it('★ 还清时 loanDueDate 被清零', () => {
+    const p = repay(makePlayer({ loan: 10_000, loanDueDate: 12345 }), 10_000);
     expect(p.loan).toBe(0);
-    expect(p.f44).toBe(0);
+    expect(p.loanDueDate).toBe(0);
   });
 
-  it('未还清时 f44 保留', () => {
-    const p = repay(makePlayer({ loan: 50_000, f44: 12345 }), 10_000);
+  it('未还清时 loanDueDate 保留', () => {
+    const p = repay(makePlayer({ loan: 50_000, loanDueDate: 12345 }), 10_000);
     expect(p.loan).toBe(40_000);
-    expect(p.f44).toBe(12345);
+    expect(p.loanDueDate).toBe(12345);
   });
 
   it('无负债时不产生变化', () => {

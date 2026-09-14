@@ -128,8 +128,24 @@ export interface Player {
   loan: number;
   /** 特别融资 @source player_info +0x28 special_finance */
   specialFinance: number;
-  /** TODO: semantics unknown @source player_info +0x2c —— 贷款还清时被清零 */
-  f44: number;
+  /**
+   * 還款到期日（打包成 `日 | 月<<8 | 年<<16`），0 表示没欠款。
+   *
+   * ★ 语义已查明（原先标着 TODO）：
+   * ```asm
+   * ; VA 0x00433b88 —— 借款时定日子
+   * if (player.f44 == 0) {
+   *     player.f44 = add_days(今天, 0x5a)      ; ★ 借款后 90 天
+   *     while (isHoliday(player.f44)) 往后顺延 ; 到期日不落在假日上
+   * }
+   * ; VA 0x00433bea —— 还清时清零
+   * ```
+   * 界面上那句「距還款日%d天」（串 0x00464a74）用的就是它。
+   *
+   * ★ 它还是 **AI 炒股的一道闸**：距到期日不足 15 天就不进股市
+   *   （@source VA 0x0042bf5d `date_diff(今天, 到期日) < 0xf` → 直接返回）。
+   */
+  loanDueDate: number;
   points: number;
   blocking: BlockingDays;
   /** 被银行拒绝放贷的剩余天数 @source player_info +0x3b days_rejected_by_bank */

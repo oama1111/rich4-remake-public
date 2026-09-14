@@ -135,7 +135,7 @@ function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, star
     moneyInBank: money.moneyInBank,
     loan: 0,
     specialFinance: 0,
-    f44: 0,
+    loanDueDate: 0,
     points: 0,
     blocking: {
       inHotel: 0,

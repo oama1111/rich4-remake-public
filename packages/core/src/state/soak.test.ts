@@ -12,6 +12,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
+import { holdingsCost, holdingsValue } from '../ai/stock-policy.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 
@@ -105,7 +106,12 @@ describe('★ 长局冒烟', () => {
     //   现在每跨一个月，无贷款者的存款 ×1.1（rules/monthly.ts，
     //   证据是 `fmul qword [0x464e88]` 那个 1.1），钱是**真的会变多**的。
     const r = soak(2024, 200);
-    const netWorth = r.state.players.reduce((t, p) => t + p.cash + p.moneyInBank, 0);
+    // ⚠️ 必须**把持仓算进来**：AI 接上炒股（角色表 f26）之后，存款会变成股票，
+    //   只数 cash + moneyInBank 会看着凭空少一大块。
+    const netWorth = r.state.players.reduce(
+      (t, p) => t + p.cash + p.moneyInBank + holdingsValue(r.state, p.index),
+      0,
+    );
     const initial = 300_000 * 4;
     expect(netWorth + r.state.pool).toBeGreaterThan(initial);
 
@@ -116,8 +122,10 @@ describe('★ 长局冒烟', () => {
     //   那不是印钞，是**负债**——净值没变。AI 接上 `loanRatio`（角色表 f24）
     //   之后它们真的会去借，不减这一项这条断言当场就假。
     const noInterest = soakWithoutInterest(2024, 200);
+    // ⚠️ 这里按**成本**而不是市值算持仓：买入是把钱 1:1 换成成本，成本守恒；
+    //   市值会随行情涨跌，那是账面盈亏，不是新印出来的钱。
     const frozen = noInterest.players.reduce(
-      (t, p) => t + p.cash + p.moneyInBank - p.loan,
+      (t, p) => t + p.cash + p.moneyInBank + holdingsCost(noInterest, p.index) - p.loan,
       0,
     );
     expect(frozen + noInterest.pool).toBeLessThanOrEqual(initial);
