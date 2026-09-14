@@ -26,6 +26,14 @@ import { loadArchives, loadGround, readMapData, SpriteCache } from './assets.ts'
 import { Hud, hitHudButton } from './hud.ts';
 import { SoundPlayer } from './audio.ts';
 import { MusicPlayer } from './music.ts';
+import {
+  assetBase,
+  currentGameDir,
+  isDesktop,
+  hostLog,
+  pickGameDir,
+  type PickResult,
+} from './host.ts';
 import { MIDI_PLAYLIST, SOUND_IDS } from '@rich4/assets-pipeline';
 import {
   BoardRenderer,
@@ -67,6 +75,7 @@ const actionsEl = $('actions');
 const interactionEl = $('interaction');
 
 function log(msg: string): void {
+  hostLog(msg);
   const d = document.createElement('div');
   d.textContent = msg;
   logEl.prepend(d);
@@ -111,8 +120,8 @@ async function playTrack(index: number): Promise<void> {
   try {
     // ⚠️ 磁盘上的文件名是小写（midi01.mid），`Midi.txt` 里是大写；
     //   大小写敏感的文件系统上按实际文件名取，取不到就试另一种写法。
-    let res = await fetch(`/assets/game/${name}`);
-    if (!res.ok) res = await fetch(`/assets/game/${name.toLowerCase()}`);
+    let res = await fetch(`${assetBase()}/${name}`);
+    if (!res.ok) res = await fetch(`${assetBase()}/${name.toLowerCase()}`);
     if (!res.ok) {
       log(`⚠ 找不到配乐 ${name}`);
       return;
@@ -802,10 +811,53 @@ function readSetup(): Setup {
 //  启动
 // ============================================================
 
+/**
+ * 素材不在时的兜底引导。
+ *
+ * ★ **正常情况下不会走到这里**：原版素材已经随包打进 `Resources/game/`，
+ *   双击即可运行，用户看不到任何选目录的界面。
+ *
+ * 只有包内素材缺失（例如从源码直接跑一个未打包的 dev 版）时，
+ * 才退而请用户指一下目录 —— 有个出口总比一句「载入失败」强。
+ */
+async function ensureGameDir(): Promise<void> {
+  if (!isDesktop()) return;
+  if ((await currentGameDir()) !== null) return;
+
+  for (;;) {
+    metaEl.innerHTML =
+      '<b>没找到原版素材</b><br>' +
+      '包内应当自带；这份看来是从源码跑的。请指一下含 Data.mkf、map.mkf、' +
+      'Panel.mkf、jump.mkf 的目录。';
+    const go = document.createElement('button');
+    go.textContent = '选择目录…';
+    actionsEl.replaceChildren(go);
+
+    const picked = await new Promise<PickResult>((resolve) => {
+      go.onclick = () => {
+        go.disabled = true;
+        void pickGameDir().then(resolve);
+      };
+    });
+
+    if (picked.ok && picked.dir !== null) {
+      log(`原版目录：${picked.dir}`);
+      break;
+    }
+    if (picked.error !== null) {
+      log(`⚠ ${picked.error}`);
+      metaEl.innerHTML = `<span class="err">${picked.error}</span>`;
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+  }
+  actionsEl.replaceChildren();
+}
+
 async function boot(): Promise<void> {
   try {
+    await ensureGameDir();
     metaEl.textContent = '正在载入原版素材…';
-    const archives = await loadArchives('/assets/game');
+    const archives = await loadArchives(assetBase());
     const sprites = new SpriteCache(archives);
 
     const setup = readSetup();
@@ -866,7 +918,7 @@ async function boot(): Promise<void> {
     log(`地图载入：${map.nodes.length} 个节点、${map.lands.length} 块地`);
 
     // 音效档案后台拉取。Speaking.mkf 有 57MB，先不装。
-    void fetch('/assets/game/Effect.mkf')
+    void fetch(`${assetBase()}/Effect.mkf`)
       .then((r) => (r.ok ? r.arrayBuffer() : null))
       .then((buf) => {
         if (buf === null) return;
@@ -887,6 +939,9 @@ async function boot(): Promise<void> {
     });
     scheduleAi();
   } catch (err) {
+    const detail = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err);
+    // ★ 桌面壳里看不到控制台，堆栈必须自己送出去
+    hostLog(`启动失败：${detail}`);
     metaEl.className = 'err';
     metaEl.textContent = `启动失败：${err instanceof Error ? err.message : String(err)}`;
     throw err;

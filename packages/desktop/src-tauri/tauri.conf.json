@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "大富翁4 重制版",
+  "version": "0.1.0",
+  "identifier": "com.rich4.remake",
+  "build": {
+    "frontendDist": "../../client/dist-web",
+    "devUrl": "http://localhost:5180",
+    "beforeDevCommand": "pnpm --filter @rich4/client dev",
+    "beforeBuildCommand": "pnpm --filter @rich4/client build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "大富翁4 重制版",
+        "width": 1024,
+        "height": 768,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app"
+    ],
+    "icon": [
+      "icons/icon.png"
+    ],
+    "copyright": "大富翁4 版权归 大宇资讯 / 软星科技 所有。本重制版为个人练习项目。",
+    "shortDescription": "大富翁4 重制版",
+    "longDescription": "大富翁4（1998，大宇/软星）的开源重制版。原版素材已随包附带，双击即可运行。",
+    "resources": [
+      "../../../assets/game/*.mkf",
+      "../../../assets/game/*.mid",
+      "../../../assets/game/Midi.txt"
+    ]
+  }
+}

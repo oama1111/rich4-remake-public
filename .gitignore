@@ -75,3 +75,8 @@ pnpm-debug.log*
 # 重新解包的素材（C-LEG-2：同样禁止入库）
 assets-clean/
 ../assets-clean/
+
+# --- Tauri 构建产物 ---
+packages/desktop/src-tauri/target/
+packages/desktop/src-tauri/gen/
+packages/client/dist-web/

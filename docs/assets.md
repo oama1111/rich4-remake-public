@@ -58,7 +58,11 @@ pnpm --filter @rich4/assets-pipeline extract --game assets/game --out assets-cle
 
 `Rich4/` 仍保留在仓库外且**只读**（C-AST-1），作为对照的原始副本。
 
-⚠️ 若本仓库日后要公开，`assets/game/` 必须移除并改回运行时读取。
+桌面版（`packages/desktop`）再进一步：把 mkf 与配乐打进 `.app` 的
+`Resources/`，**双击即可运行，不问路径**。
+
+⚠️ 若本仓库日后要公开，`assets/game/` 必须移除、`bundle.resources` 去掉，
+并改回运行时读取。
 这也是把它单独放在一个目录、且全部走 LFS 的原因之一——
 `git lfs prune` 加上一次历史重写就能干净地摘出去。
 

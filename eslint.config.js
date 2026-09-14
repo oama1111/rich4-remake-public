@@ -55,7 +55,15 @@ const zeroDepRules = {
 };
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/*.tsbuildinfo', 'src-tauri/**'] },
+  {
+    ignores: [
+      '**/dist/**',
+      '**/dist-web/**',
+      '**/node_modules/**',
+      '**/*.tsbuildinfo',
+      '**/src-tauri/**',
+    ],
+  },
 
   // 基线：全仓库
   ...tseslint.configs.recommended,

@@ -1,4 +1,10 @@
 packages:
   - 'packages/*'
+
+# esbuild 的安装脚本要下它自己的原生二进制（vite 靠它转译）。
+# ⚠️ 这里原本是 `esbuild: set this to true or false` 这句**占位提示**，
+#   pnpm 会因为读不懂它而拒绝安装（ERR_PNPM_IGNORED_BUILDS）。
+#   平时不装依赖时看不出来，一旦有别的工具顺手跑 `pnpm install`
+#   （例如 tauri 的 beforeBuildCommand）就当场炸。
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true

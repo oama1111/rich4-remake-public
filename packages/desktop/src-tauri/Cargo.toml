@@ -1,0 +1,29 @@
+[package]
+name = "rich4-desktop"
+version = "0.1.0"
+description = "大富翁4 重制版 桌面壳"
+edition = "2021"
+rust-version = "1.77"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "rich4_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# ★ 不用 protocol-asset：素材走自定义的 `rich4` 协议（见 lib.rs），
+# 那是自己注册的，不需要 Tauri 的资源协议白名单。
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

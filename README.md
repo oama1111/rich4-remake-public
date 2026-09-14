@@ -6,10 +6,28 @@
 
 ## 素材来源
 
-本项目**不包含任何原版素材**。游戏运行需要你自备正版《大富翁4》安装目录，
-首次启动时指定路径，由程序现场解包（参见 DEVELOPMENT_PLAN.md §5.6 C-LEG-3）。
+原版素材（`assets/game/`）已随仓库入库，桌面版也**随包附带**——
+打出来的 `.app` 双击即可运行，不会问你任何路径。
+
+这是个人练习项目的定位（见 DEVELOPMENT_PLAN.md §5.6 的 C-LEG-2 / C-LEG-3）。
+⚠️ 若日后要公开发布，把 `bundle.resources` 去掉即可回到「玩家自备目录」模式——
+那条读取外部目录的路径始终保留着，只是平时用不到。
 
 原作版权归 **大宇资讯 / 软星科技** 所有。
+
+## 跑起来
+
+```bash
+pnpm install
+
+# 浏览器里玩（开发最快）
+pnpm dev                       # → http://localhost:5180
+#   可选参数：?humans=1&ai=3&map=0&seed=7&chars=0,3,5,7
+
+# 打一个可双击的桌面版
+pnpm --filter @rich4/desktop build
+#   产物：packages/desktop/src-tauri/target/release/bundle/macos/大富翁4 重制版.app
+```
 
 ## 开发
 
