@@ -52,6 +52,13 @@ export type PendingInteraction =
   /** 自己的設施（等级 ≥ 1）：加蓋一级。价 = 房價 × 物價指數 */
   | { kind: 'upgradeFacility'; facilityId: number; name: string; cost: number; level: number }
   /**
+   * 自己的**已建研究所**：落点收尾时选一个研發項目（1..等级）。
+   * @source 0x0041b0b3..0x0041b109：落点结算末尾，`code ∈ 設施 && owner == 我 && 不在夢遊
+   *   && type == 4 && level != 0 && (+0x1c & 0xf) == 0（没被查封）` → 开研究所面板 0x44101d；
+   *   真人在面板里点（0x4402d7），电脑走 0x4411e7 直接选「等级」那一档。
+   */
+  | { kind: 'research'; facilityId: number; name: string; level: number; choices: readonly number[] }
+  /**
    * 建設公司：选一处自己的地免费加蓋一级。
    * @source 0x0041acd1（别人的建設公司，之后付工程費）/ 0x0041aa3c（自家的，免费）。
    *   真人用 `0x446ae8` 点地图选，电脑走 `0x40b455`（reducer 里直接挑）。
@@ -238,6 +245,7 @@ export type InteractionResponse =
   | { kind: 'buyFacility' }
   | { kind: 'buildFacility'; facilityType: number }
   | { kind: 'upgradeFacility' }
+  | { kind: 'research'; project: number }
   | { kind: 'buildTarget'; entityId: number }
   | { kind: 'bankDeposit'; amount: number }
   | { kind: 'bankWithdraw'; amount: number }
@@ -275,6 +283,8 @@ export function responseMatches(
       return response.kind === 'buildFacility';
     case 'upgradeFacility':
       return response.kind === 'upgradeFacility';
+    case 'research':
+      return response.kind === 'research';
     case 'chooseBuildTarget':
       return response.kind === 'buildTarget';
     case 'bank':

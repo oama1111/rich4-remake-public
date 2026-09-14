@@ -23,7 +23,7 @@
  * 出狱／出院流程（那里还有动画与位置移动）。
  */
 
-import type { BlockingDays } from '../state/types.ts';
+import type { BlockingDays, Player } from '../state/types.ts';
 
 /** 刑满待释放标记 @source `or ch, 0x80` */
 export const RELEASE_PENDING = 0x80;
@@ -96,9 +96,9 @@ export interface BlockingTickResult {
  * 就在回合边界，且**只作用于当前玩家**（不是全体）。
  * 紧邻其前的 `call 0x41cf67` 是另一件事——推进日期与物价指数。
  *
- * ⚠️ 只递减 `+0x32..+0x35` 四项（住宿／消失／监狱／医院），
- * 每项都有自己的释放函数。**冬眠、梦游、停留、乌龟不在此处**，
- * 它们在各自的流程里清除——先前把五项一起递减是错的。
+ * ⚠️ `tickBlocking` 只管 `+0x32..+0x35` 四项（住宿／消失／监狱／医院），
+ * 每项都有自己的释放函数。冬眠、梦游、停留、乌龟等**也在同一个函数里**，只是排在
+ * 后面（0x0041caf4 起）——见文件末尾的 `tickTurnCounters`。（先前那句「不在此处」是错的。）
  */
 export function tickBlocking(blocking: BlockingDays): BlockingTickResult {
   const next: BlockingDays = { ...blocking };
@@ -121,4 +121,66 @@ export function tickBlocking(blocking: BlockingDays): BlockingTickResult {
  */
 export function displayRemainingDays(raw: number, mask = 0x7f): number {
   return (raw & mask) + 1;
+}
+
+// ============================================================
+//  ★ 同一函数的后半段：冬眠／梦游／停留／龜行／銀行拒貸／同盟 也在这里走一天
+// ============================================================
+
+/**
+ * ⚠️ 纠正文件头那句「冬眠、梦游、停留、乌龟不在此处」——它们**就在**同一个
+ * 回合边界函数里，只是排在 +0x32..+0x35 之后（0x0041caf4 起）：
+ * ```asm
+ * 0041caf7  cmp dword [p+0x32], 0 / jne 跳过冬眠与梦游   ; ★ 住宿/消失/监狱/医院期间这两项不走
+ * 0041cb04  +0x36 冬眠：dec；到 0 → |0x80
+ * 0041cb28  +0x37 梦游：同上
+ * 0041cb4c  +0x39 龜行：同上（不受上面那条 cmp 限制）
+ * 0041cb70  +0x38 停留：同上
+ * 0041cb94  +0x3b 銀行拒貸：同上
+ * 0041cbb8  +0x3c（字段未名）：同上
+ * 0041cbdc  +0x3d 同盟：先 update_hostility(我, 盟友, −20×物價) 与 (盟友, 我, −20×物價)，再 dec；到 0 → 0x80
+ * 0041cc4b  +0x3e 保險：同上（本引擎在 startTurn 走，早一拍，见 reduce.ts）
+ * ```
+ * 释放（前半段 0x0041c9a7..0x0041caf4）：带 0x80 的清零；梦游醒来还要**把交通工具拿回来**
+ * （0x0041c9bc：按 +0x66 存的方式，道具栏里还有那辆才还，没有就步行、骰子 1）；
+ * 同盟到期走 0x40cc1a 解除双方。
+ */
+export interface TurnCounterTick {
+  player: Player;
+  /** 本次梦游期满（0x80 已清）：调用方去还交通工具 */
+  wakeFromSleepwalk: boolean;
+  /** 本次同盟期满：调用方去解除双方 */
+  allianceExpired: boolean;
+  /** 同盟仍在：调用方给双方敌意各 −20×物價 */
+  alliedTick: boolean;
+}
+
+/** 后半段各项走一天（不含 +0x3c 未名字段与保險）。纯函数，只动这名玩家自己的字段 */
+export function tickTurnCounters(player: Player): TurnCounterTick {
+  const b = player.blocking;
+  const confined = (b.inHotel | b.disappearing | b.inPrison | b.inHospital) !== 0;
+  const sleeping = confined ? { value: b.sleeping, release: false } : tickBlockingCounter(b.sleeping);
+  const sleepWalking = confined ? { value: b.sleepWalking, release: false } : tickBlockingCounter(b.sleepWalking);
+  const tortoise = tickBlockingCounter(b.tortoiseWalking);
+  const stopping = tickBlockingCounter(b.stopping);
+  const rejected = tickBlockingCounter(player.daysRejectedByBank);
+  const alliedTick = player.alliedDays !== 0 && (player.alliedDays & RELEASE_PENDING) === 0;
+  const allied = tickBlockingCounter(player.alliedDays);
+  return {
+    player: {
+      ...player,
+      blocking: {
+        ...b,
+        sleeping: sleeping.value,
+        sleepWalking: sleepWalking.value,
+        tortoiseWalking: tortoise.value,
+        stopping: stopping.value,
+      },
+      daysRejectedByBank: rejected.value,
+      alliedDays: allied.value,
+    },
+    wakeFromSleepwalk: sleepWalking.release,
+    allianceExpired: allied.release,
+    alliedTick,
+  };
 }

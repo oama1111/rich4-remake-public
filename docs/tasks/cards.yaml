@@ -74,7 +74,7 @@ cards:
   title: 搶奪卡（13）增加「抢卡片」路径并接进 registry
   module: MOD-06
   req: REQ-06.1
-  status: todo
+  status: doing
   estimate: 0.5
   depends_on: [T-001]
   uses:
@@ -368,7 +368,7 @@ cards:
   title: AI 研發项目选择按研究所 UI 的电脑分支定案（P1-6）
   module: MOD-09
   req: REQ-09.3
-  status: doing
+  status: done
   estimate: 0.3
   depends_on: []
   uses:

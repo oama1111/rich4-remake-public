@@ -34,7 +34,7 @@ import {
   teleportPlayer,
   teleportFacility,
 } from '../rules/teleport.ts';
-import { VEHICLE_DICE } from '../rules/tool-effects.ts';
+import { TRAFFIC_WALK, VEHICLE_DICE } from '../rules/tool-effects.ts';
 import {
   bankChairman,
   bankReserveCall,
@@ -72,7 +72,7 @@ import {
   placeObject,
   useVehicleTool,
 } from '../rules/tool-effects.ts';
-import { STOCKED_TOOL_MAX_ID, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
+import { STOCKED_TOOL_MAX_ID, TOOL_SLOTS_PER_PLAYER, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
 import {
   AI_BOARD_LIST_CHANCE,
   AI_BOARD_REPRICE_CHANCE,
@@ -123,7 +123,7 @@ import {
 } from '../places/shop.ts';
 import { CARDS, CHARACTERS, TOOLS } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
-import { applyHostilityDeltas } from '../rules/hostility.ts';
+import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
   objectNodeCandidates,
   pickObjectNode,
@@ -178,7 +178,8 @@ import {
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { adjustTollByGod } from '../rules/god-toll.ts';
 import { facilityIndexOf } from '../rules/land.ts';
-import { tickBlocking } from '../rules/blocking.ts';
+import { tickBlocking, tickTurnCounters } from '../rules/blocking.ts';
+import { wakeFromSleepwalk } from '../cards/sleepwalk.ts';
 import { purchase, purchaseBlockedBy } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints, MAX_HAND_CARDS } from '../rules/special-square.ts';
 import { MAX_LAND_LEVEL, SPECIAL_KIND } from '../loaders/map.ts';
@@ -445,6 +446,45 @@ export function directionOf(dx: number, dy: number): number {
   const turns = Math.atan2(-dy, dx) * TURNS_PER_RADIAN;
   const octant = Math.round((((turns % 1) + 1) % 1) * 8) & 7;
   return DIRECTION_REMAP[octant]!;
+}
+
+/**
+ * 回合边界的后半段计数（0x0041caf4 起，见 rules/blocking.ts `tickTurnCounters`）：
+ * 冬眠／梦游／停留／龜行／銀行拒貸／同盟各走一天；梦游醒来把交通工具拿回来
+ * （0x0041c9bc..0x0041ca72），同盟每日互减敌意 20×物價（0x0041cbe5..0x0041cc2e），
+ * 到期解除双方（0x40cc1a）。
+ */
+function tickDailyCounters(state: GameState, index: number): GameState {
+  const me = state.players[index];
+  if (me === undefined) return state;
+  const t = tickTurnCounters(me);
+  let players = state.players.map((p, i) => (i === index ? t.player : p));
+  let tools = state.tools;
+  if (t.wakeFromSleepwalk) {
+    // @source 0x0041c9bc：+0x66 & 3 → 1 機車(道具 5) / 2 汽車(道具 6) / 3 直接恢复；道具栏没那辆就步行
+    const p = players[index]!;
+    const saved = p.savedTrafficMethod & 3;
+    const toolId = saved === 1 ? 5 : saved === 2 ? 6 : 0;
+    const woke = wakeFromSleepwalk(p);
+    if (saved === 3 || (toolId !== 0 && toolCount(tools, index, toolId) !== 0)) {
+      if (toolId !== 0) {
+        tools = [...tools];
+        tools[index * TOOL_SLOTS_PER_PLAYER + toolId] = toolCount(tools, index, toolId) - 1;
+      }
+      players[index] = woke;
+    } else {
+      // @source 0x0041ca60：traffic = 0, ndices = 1
+      players[index] = { ...woke, trafficMethod: TRAFFIC_WALK, ndices: 1 };
+    }
+  }
+  if (t.alliedTick) {
+    const ally = me.alliedPlayer - 1;
+    const delta = -20 * state.priceIndex;
+    players = updateHostility(players, index, ally, delta).players;
+    players = updateHostility(players, ally, index, delta).players;
+  }
+  if (t.allianceExpired) players = breakAlliance(players, index);
+  return { ...state, players, tools };
 }
 
 /**
@@ -1042,9 +1082,12 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       //   `[0x49910c]` 即**当前玩家**，就在回合边界——与此处一致。
       // ★ 语义见 rules/blocking.ts：减到 0 时**挂 0x80 而非清零**，
       //   下一次推进才执行释放流程。先前「保留高位、只减低 7 位」是错的。
-      const blocked = withPlayer(state, state.currentPlayer, (p) => {
-        p.blocking = tickBlocking(p.blocking).blocking;
-      });
+      const blocked = tickDailyCounters(
+        withPlayer(state, state.currentPlayer, (p) => {
+          p.blocking = tickBlocking(p.blocking).blocking;
+        }),
+        state.currentPlayer,
+      );
 
       // ★ 神明的任期也在这里走一天 —— 原版就紧挨着阻碍计数
       //   （tick_blocking @ 0x41c8d5，神明 @ 0x41cc6c，同一个函数）。

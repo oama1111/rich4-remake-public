@@ -208,13 +208,13 @@ describe('回合流程', () => {
     expect(s.players[0]!.blocking.inPrison).toBe(0);
   });
 
-  it('★ 冬眠/停留不在回合边界递减', () => {
+  it('★ 冬眠/停留也在回合边界递减（0x0041caf4 起，同一个函数的后半段）', () => {
     const st = makeState({ phase: 'turnEnd' });
     st.players[0]!.blocking.sleeping = 5;
     st.players[0]!.blocking.stopping = 3;
     const s = reduce(st, { type: 'endTurn' }, ring);
-    expect(s.players[0]!.blocking.sleeping).toBe(5);
-    expect(s.players[0]!.blocking.stopping).toBe(3);
+    expect(s.players[0]!.blocking.sleeping).toBe(4);
+    expect(s.players[0]!.blocking.stopping).toBe(2);
   });
 
   it('★ 只递减当前玩家（原版传的是 [0x49910c]）', () => {

@@ -14,8 +14,8 @@
  *   UI 自己再算一遍就等于把规则抄了第二份，迟早两边对不上。
  */
 
-import { FACILITY_NAMES, type Action, type GameState, type PendingInteraction } from '@rich4/core';
-import { BAIL, BANK, BUTTON, CHARACTERS, FIELD, NOTICE, PLACE, PROMPT, formatOriginal } from '@rich4/data';
+import { FACILITY_NAMES, researchTool, type Action, type GameState, type PendingInteraction } from '@rich4/core';
+import { BAIL, BANK, BUTTON, CHARACTERS, FIELD, NOTICE, PLACE, PROMPT, TOOLS, formatOriginal } from '@rich4/data';
 
 const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
 
@@ -116,6 +116,20 @@ export function interactionUi(
           `\n${FIELD.cash.text} ${money(cash)}`,
         choices: [
           { label: BUTTON.ok.text, action: { type: 'upgradeFacility' } },
+          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
+        ],
+      };
+
+    // ★ 研究所面板（0x44101d）：原版是一屏項目让你点（0x4402d7）；先用按钮，画面属 P2-14 / T-040
+    case 'research':
+      return {
+        title: pending.name,
+        detail: `研究所 ${pending.level} 級　選一個研發項目（固定 5 天）`,
+        choices: [
+          ...pending.choices.map((project) => ({
+            label: TOOLS.find((t) => t.id === researchTool(project))?.name ?? `項目 ${project}`,
+            action: { type: 'research' as const, facilityId: pending.facilityId, project },
+          })),
           { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
         ],
       };

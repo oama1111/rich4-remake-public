@@ -502,11 +502,44 @@ describe('★ 研究所：选項目 → 5 天 → 道具到手', () => {
     expect(toolCount(s.tools, 0, 11)).toBe(0);
   });
 
-  it('电脑回合开始会自动开一项（項目 = 等级），真人不会', () => {
+  it('★ 回合开始不再自动开项目 —— 触发点是落在自己的研究所上（0x0041b0b3）', () => {
     const ai = reduce(lab(2, 2), { type: 'startTurn' }, labTopo);
-    expect(ai.facilityResearchProject[LAB]).toBe(2);
-    expect(ai.facilityResearchDays[LAB]).toBe(5);
-    const human = reduce(lab(2), { type: 'startTurn' }, labTopo);
-    expect(human.facilityResearchDays[LAB]).toBe(0);
+    expect(ai.facilityResearchDays[LAB]).toBe(0);
+  });
+
+  // 站在研究所那一格上结算：节点得真的指向這座設施
+  const onLab: MapTopology = {
+    ...labTopo,
+    nodes: [makeNode({ id: 1, adjacent: [2], type: FACILITY_TYPE_MIN + LAB, ref: { kind: 'facility', index: LAB } }), makeNode({ id: 2, adjacent: [1] })],
+  };
+
+  it('★ 电脑落在自己的研究所：加蓋问答之后当场开一项（項目 = 等级，0x004411e7），覆盖正在研發的', () => {
+    // lab(2, 2)：2 级、电脑；站在研究所上结算 → 先问加蓋（电脑在 decidePending 里答）→ 收尾开项目
+    const settled = reduce({ ...lab(2, 2), phase: 'settling' }, { type: 'settle' }, onLab);
+    // 加蓋问答（买得起时 pending upgradeFacility）；不管答什么，收尾都开研發
+    const after = settled.pending?.kind === 'upgradeFacility' ? reduce(settled, { type: 'declineDecision' }, onLab) : settled;
+    expect(after.phase).toBe('turnEnd');
+    expect(after.facilityResearchProject[LAB]).toBe(2);
+    expect(after.facilityResearchDays[LAB]).toBe(5);
+    // 正在研發时再落一次：原版电脑分支不看进度，直接覆盖成 5 天
+    const mid = { ...after, phase: 'settling' as const, facilityResearchDays: after.facilityResearchDays.map((d, i) => (i === LAB ? 2 : d)) };
+    const again = reduce(mid, { type: 'settle' }, onLab);
+    const again2 = again.pending?.kind === 'upgradeFacility' ? reduce(again, { type: 'declineDecision' }, onLab) : again;
+    expect(again2.facilityResearchDays[LAB]).toBe(5);
+  });
+
+  it('★ 真人落在自己的研究所：加蓋问答之后得到 research 待决，选了就开', () => {
+    const settled = reduce({ ...lab(2), phase: 'settling' }, { type: 'settle' }, onLab);
+    const after = settled.pending?.kind === 'upgradeFacility' ? reduce(settled, { type: 'declineDecision' }, onLab) : settled;
+    expect(after.phase).toBe('awaitingDecision');
+    expect(after.pending).toMatchObject({ kind: 'research', facilityId: LAB, level: 2, choices: [1, 2] });
+    const chosen = reduce(after, { type: 'research', facilityId: LAB, project: 1 }, onLab);
+    expect(chosen.phase).toBe('turnEnd');
+    expect(chosen.pending).toBeNull();
+    expect(chosen.facilityResearchProject[LAB]).toBe(1);
+    // 不选也能走
+    const declined = reduce(after, { type: 'declineDecision' }, onLab);
+    expect(declined.phase).toBe('turnEnd');
+    expect(declined.facilityResearchDays[LAB]).toBe(0);
   });
 });
