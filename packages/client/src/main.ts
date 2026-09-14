@@ -22,8 +22,15 @@ import {
   type MapTopology,
   type Rich4Map,
 } from '@rich4/core';
-import { loadArchives, loadGround, readMapData, SpriteCache } from './assets.ts';
-import { Hud, hitHudButton } from './hud.ts';
+import {
+  loadArchives,
+  loadGround,
+  readMapData,
+  SpriteCache,
+  type LoadedArchives,
+  type Sprite,
+} from './assets.ts';
+import { Hud, hitSidebar, type SidebarView } from './hud.ts';
 import { SoundPlayer } from './audio.ts';
 import { MusicPlayer } from './music.ts';
 import {
@@ -47,6 +54,16 @@ import {
 } from './render.ts';
 import { TOOLBAR_LABELS } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
+import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
+import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
+import {
+  applySetupHit,
+  defaultSetup,
+  drawSetup,
+  hitSetup,
+  type SetupHit,
+  type SetupState,
+} from './setup.ts';
 import { VIEW_COUNT } from '@rich4/data';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -56,12 +73,8 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 const canvas = $<HTMLCanvasElement>('board');
-const hudCanvas = $<HTMLCanvasElement>('hud');
-const hudCtx = (() => {
-  const c = hudCanvas.getContext('2d');
-  if (c === null) throw new Error('无法取得 HUD 绘图上下文');
-  return c;
-})();
+// ⚠️ 側欄不再是独立的 HTML 画布 —— 它是舞台 640×480 里的一块
+//   （见 stage.ts 的 LAYOUT.panel），跟着一起缩放，命中判定也走舞台坐标。
 const ctx = (() => {
   const c = canvas.getContext('2d');
   if (c === null) throw new Error('无法取得 2D 绘图上下文');
@@ -92,7 +105,50 @@ let state: GameState;
 let camera: Camera;
 let hoverNode: number | null = null;
 let renderer: BoardRenderer;
+/**
+ * 右下角那块 200×200 现在显示哪一面。
+ * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流
+ *   —— 原版默认哪一个没查证，这里先开日曆（那是它的原生面貌）。
+ */
+let sidebarView: SidebarView = 'calendar';
 let hud: Hud;
+let sprites: SpriteCache | null = null;
+let archives: LoadedArchives;
+
+/** 開局設定的当前值与悬停 */
+let setup: SetupState = defaultSetup();
+let setupHot: SetupHit | null = null;
+
+/**
+ * 同步取一张图；没解出来的先返回 null 并在后台解，解完再重画一帧。
+ *
+ * ★ 画面是同步画的，而解码是异步的。不能在绘制里 await，
+ *   否则一帧要等十几张图。故「先画能画的，解完再补一帧」。
+ */
+const spriteReady = new Map<string, Sprite | null>();
+const spritePending = new Set<string>();
+let spriteArrived = false;
+function spriteNow(
+  archive: 'Data.mkf' | 'Panel.mkf',
+  resource: number,
+  index: number,
+  colorKeyBlack = false,
+): Sprite | null {
+  const key = `${archive}:${resource}:${index}:${colorKeyBlack ? 'k' : ''}`;
+  const hit = spriteReady.get(key);
+  if (hit !== undefined) return hit;
+  const cache = sprites;
+  if (cache !== null && !spritePending.has(key)) {
+    spritePending.add(key);
+    void cache.get(archive, resource, index, colorKeyBlack).then((s) => {
+      spriteReady.set(key, s);
+      spritePending.delete(key);
+      spriteArrived = true;
+      requestRender();
+    });
+  }
+  return null;
+}
 
 /**
  * 音效。
@@ -257,6 +313,48 @@ const aiDelayMs = 120;
 //  渲染循环
 // ============================================================
 
+/**
+ * 舞台 —— 一块 640×480 的离屏画布，所有画面都先画在它上面。
+ *
+ * ★ 这是「复刻原版画面」的做法：原版就是 640×480 的定屏，各区块位置
+ *   是固定像素。先画满一张 640×480，再**整数倍**放大贴到窗口中央，
+ *   画面比例、取景、像素锐度就全对了。
+ */
+const stage = document.createElement('canvas');
+stage.width = SCREEN_W;
+stage.height = SCREEN_H;
+const stageCtx = (() => {
+  const c = stage.getContext('2d');
+  if (c === null) throw new Error('无法取得舞台绘图上下文');
+  return c;
+})();
+
+/** 棋盘的离屏画布 —— 439×440，正是原版棋盘区的大小 */
+const boardCanvas = document.createElement('canvas');
+boardCanvas.width = LAYOUT.board.w;
+boardCanvas.height = LAYOUT.board.h;
+const boardCtx = (() => {
+  const c = boardCanvas.getContext('2d');
+  if (c === null) throw new Error('无法取得棋盘绘图上下文');
+  return c;
+})();
+
+/** 側欄的离屏画布 —— 200×480 */
+const hudCanvasOff = document.createElement('canvas');
+hudCanvasOff.width = LAYOUT.panel.w;
+hudCanvasOff.height = SCREEN_H;
+const hudOffCtx = (() => {
+  const c = hudCanvasOff.getContext('2d');
+  if (c === null) throw new Error('无法取得側欄绘图上下文');
+  return c;
+})();
+
+/** 当前屏幕 */
+type Screen = 'title' | 'setup' | 'game';
+let screen: Screen = 'title';
+/** 標題畫面上鼠标悬着的按钮 */
+let titleHot: number | null = null;
+
 let renderQueued = false;
 function requestRender(): void {
   if (renderQueued) return;
@@ -264,30 +362,80 @@ function requestRender(): void {
   requestAnimationFrame(() => {
     renderQueued = false;
     resizeCanvas();
-    if (followPlayer) centerOnCurrentPlayer();
-    renderer.draw({
-      map,
-      state,
-      camera,
-      hoverNode,
-      ground: showGround ? ground : null,
-      groundOffset,
-      pressedTool,
-    });
-    hud.draw({
-      state,
-      map,
-      camera,
-      viewport: { w: canvas.clientWidth, h: canvas.clientHeight },
-      ground,
-    });
+
+    stageCtx.imageSmoothingEnabled = false;
+    stageCtx.fillStyle = '#000';
+    stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+
+    if (screen === 'title') {
+      drawTitle(stageCtx, titleHot, spriteNow);
+    } else if (screen === 'setup') {
+      drawSetup(stageCtx, setup, setupHot, spriteNow);
+    } else {
+      drawGameStage();
+    }
+
+    blitStage();
+
     // 有精灵在本帧解码完成 → 再画一次，把它们补上
-    if (renderer.dirty || hud.dirty) {
+    if (renderer.dirty || hud.dirty || spriteArrived) {
       renderer.clearDirty();
       hud.clearDirty();
+      spriteArrived = false;
       requestRender();
     }
   });
+}
+
+/** 把游戏画面的三块摆到舞台上 */
+function drawGameStage(): void {
+  if (followPlayer) centerOnCurrentPlayer();
+
+  renderer.draw({
+    map,
+    state,
+    camera,
+    hoverNode,
+    ground: showGround ? ground : null,
+    groundOffset,
+    pressedTool,
+    viewport: { w: LAYOUT.board.w, h: LAYOUT.board.h },
+  });
+  stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
+
+  // 工具栏画在棋盘上方（直接画到舞台上）
+  renderer.drawToolbarTo(stageCtx, LAYOUT.toolbar.x, LAYOUT.toolbar.y, pressedTool);
+
+  hud.draw({
+    state,
+    map,
+    camera,
+    viewport: { w: LAYOUT.board.w, h: LAYOUT.board.h },
+    ground,
+    sidebarView,
+  });
+  stageCtx.drawImage(hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y);
+}
+
+/** 舞台 → 窗口：整数倍放大、居中、不插值 */
+function blitStage(): void {
+  const m = currentMetrics();
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(stage, m.offsetX, m.offsetY, SCREEN_W * m.scale, SCREEN_H * m.scale);
+}
+
+/** 当前的放大倍数与居中偏移（按**设备像素**算） */
+function currentMetrics(): StageMetrics {
+  return stageMetrics(canvas.width, canvas.height);
+}
+
+/** 鼠标事件 → 舞台坐标；落在舞台外返回 null */
+function eventToStage(e: MouseEvent): { x: number; y: number } | null {
+  const r = canvas.getBoundingClientRect();
+  const dpr = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+  return toStage((e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr, currentMetrics());
 }
 
 /**
@@ -370,14 +518,21 @@ function rotateView(delta: number): void {
   renderPanel();
 }
 
+/**
+ * 画布跟着窗口走。
+ *
+ * ⚠️ 这里**不再挂 devicePixelRatio 变换**：画面是先画进 640×480 的舞台、
+ *   再整数倍放大贴上来的，缩放只该发生一次。再叠一层 dpr 变换会让
+ *   放大倍数变成非整数，像素糊掉——那正是要避免的事。
+ *   高 DPI 屏上多出来的物理像素用更大的整数倍吃掉。
+ */
 function resizeCanvas(): void {
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = Math.round(canvas.clientWidth * dpr);
+  const h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
   }
 }
 
@@ -608,29 +763,154 @@ function nextAutoAction(): Action | null {
 }
 
 // ============================================================
+//  屏幕切换
+// ============================================================
+
+/**
+ * 標題畫面的五个按钮。
+ *
+ * @source 分派表 VA 0x00402566：
+ *   [1] LOAD → `_rich4_ui_load_game`、[2] OPTION → `_rich4_ui_options_entry`，
+ *   其余三个把按钮号 post 回主消息循环由外层处理。
+ *
+ * ⚠️ 本项目目前把 START 与 NEW STAGE 都接到**開局設定**那一屏；
+ *   原版这两者的差别（关卡/剧本）尚未解开，不装作知道。
+ *   LOAD 与 EXIT 也还没接。
+ */
+function onTitleButton(id: 'start' | 'load' | 'option' | 'exit' | 'newStage'): void {
+  switch (id) {
+    case 'start':
+    case 'newStage':
+      screen = 'setup';
+      setupHot = null;
+      requestRender();
+      break;
+    case 'load':
+      log('⚠ 讀取進度：尚未接上（引擎已有存档格式，见 loaders/savegame.ts）');
+      break;
+    case 'option':
+      log('⚠ 設定：尚未接上（原版这一屏在 rich4_ui_options.asm，4695 行未解）');
+      break;
+    case 'exit':
+      log('⚠ 離開：桌面版可直接关窗');
+      break;
+  }
+}
+
+/** 按当前設定开一局 */
+function startGame(): void {
+  const players = Array.from({ length: setup.playerCount }, (_, i) => ({
+    character: setup.characters[i] ?? i,
+    kind: (setup.human[i] ?? false ? 'human' : 'computer') as 'human' | 'computer',
+  }));
+  const seed = (Date.now() & 0x7fffffff) >>> 0;
+
+  map = parseMap(readMapData(archives, setup.mapId));
+  topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+  state = newGame({ map, globalMapId: setup.mapId, players, seed });
+  history.length = 0;
+
+  const first = map.nodes[state.players[0]?.nodeId ?? 1];
+  camera = characterCamera(first?.x ?? 0, first?.y ?? 0, camera?.view ?? 0);
+  hoverNode = null;
+  screen = 'game';
+  log(
+    `開局：地圖 ${setup.mapId}　種子 ${seed}　` +
+      players.map((p, i) => `P${i + 1}${p.kind === 'human' ? '人' : '電'}`).join(' '),
+  );
+
+  // 换地图要重新解底图
+  ground = null;
+  void loadGround(archives, setup.mapId).then((g) => {
+    ground = g;
+    if (g !== null) log(`底圖載入：${g.width}×${g.height}（G 鍵開關）`);
+    requestRender();
+  });
+
+  requestRender();
+  renderPanel();
+  scheduleAi();
+}
+
+// ============================================================
 //  输入
 // ============================================================
 
 function bindInput(): void {
+  // D 键开关调试抽屉 —— 游戏本身的側欄已经画在画布里了
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'd' || e.key === 'D') {
+      document.body.classList.toggle('no-debug');
+      requestRender();
+    }
+  });
+
   canvas.addEventListener('mousemove', (e) => {
-    // ★ 人物视角现在也能拾取了。办法不是去解投影表的逆，而是把每个节点
+    const p = eventToStage(e);
+    if (p === null) return;
+
+    if (screen === 'title') {
+      const hit = hitTitle(p.x, p.y, (i) => spriteNow('Data.mkf', TITLE_RESOURCE, i, true));
+      const next = hit === null ? null : hit.index;
+      if (next !== titleHot) {
+        titleHot = next;
+        requestRender();
+      }
+      return;
+    }
+    if (screen === 'setup') {
+      const hit = hitSetup(p.x, p.y, setup);
+      if (JSON.stringify(hit) !== JSON.stringify(setupHot)) {
+        setupHot = hit;
+        requestRender();
+      }
+      return;
+    }
+
+    // ★ 人物视角也能拾取。办法不是去解投影表的逆，而是把每个节点
     //   **正向投一遍**再比屏幕距离（见 render.ts 的 `pickNodeAt`）——
     //   用的就是绘制时那张表，所以「看得见的就点得到」。
-    const r = canvas.getBoundingClientRect();
-    const hit = pickNodeAt(
-      map,
-      e.clientX - r.left,
-      e.clientY - r.top,
-      camera,
-      { w: canvas.clientWidth, h: canvas.clientHeight },
-    );
+    // ⚠️ 坐标要先减去棋盘区在舞台里的偏移：棋盘不是从 (0,0) 开始的，
+    //   它在工具栏下面。
+    const bx = p.x - LAYOUT.board.x;
+    const by = p.y - LAYOUT.board.y;
+    const inBoard = bx >= 0 && by >= 0 && bx < LAYOUT.board.w && by < LAYOUT.board.h;
+    const hit = inBoard
+      ? pickNodeAt(map, bx, by, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h })
+      : null;
     if (hit !== hoverNode) {
       hoverNode = hit;
       requestRender();
     }
   });
 
-  canvas.addEventListener('click', () => {
+  canvas.addEventListener('click', (e) => {
+    const p = eventToStage(e);
+    if (p === null) return;
+    unlockAudio();
+
+    if (screen === 'title') {
+      const hit = hitTitle(p.x, p.y, (i) => spriteNow('Data.mkf', TITLE_RESOURCE, i, true));
+      if (hit !== null) onTitleButton(hit.id);
+      return;
+    }
+    if (screen === 'setup') {
+      const hit = hitSetup(p.x, p.y, setup);
+      if (hit === null) return;
+      if (hit.kind === 'start') {
+        startGame();
+        return;
+      }
+      if (hit.kind === 'back') {
+        screen = 'title';
+        requestRender();
+        return;
+      }
+      setup = applySetupHit(setup, hit);
+      requestRender();
+      return;
+    }
+
     if (hoverNode === null) return;
     const node = map.nodes[hoverNode - 1];
     if (node === undefined) return;
@@ -645,14 +925,18 @@ function bindInput(): void {
   });
 
   canvas.addEventListener('wheel', (e) => {
+    if (screen !== 'game') return;
     e.preventDefault();
-    const r = canvas.getBoundingClientRect();
-    const before = screenToMap(e.clientX - r.left, e.clientY - r.top, camera);
-    const k = e.deltaY < 0 ? 1.1 : 1 / 1.1;
     if (camera.mode !== 'map') return; // 人物视角的缩放由投影表定死，不可调
+    const p = eventToStage(e);
+    if (p === null) return;
+    const bx = p.x - LAYOUT.board.x;
+    const by = p.y - LAYOUT.board.y;
+    const before = screenToMap(bx, by, camera);
+    const k = e.deltaY < 0 ? 1.1 : 1 / 1.1;
     followPlayer = false;
     camera = { ...camera, scale: Math.min(8, Math.max(0.2, camera.scale * k)) };
-    const after = screenToMap(e.clientX - r.left, e.clientY - r.top, camera);
+    const after = screenToMap(bx, by, camera);
     // 以光标为锚点缩放：保持光标下的地图点不动
     camera = { ...camera, x: camera.x + (before.x - after.x), y: camera.y + (before.y - after.y) };
     requestRender();
@@ -661,13 +945,27 @@ function bindInput(): void {
   let drag: { x: number; y: number } | null = null;
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
-    const r = canvas.getBoundingClientRect();
-    const tool = hitToolbar(e.clientX - r.left, e.clientY - r.top);
+    if (screen !== 'game') return;
+    // ⚠️ 命中判定一律走**舞台坐标**：窗口是整数倍放大且居中的，
+    //   直接拿 clientX/clientY 去比 439×40 的工具栏必然对不上。
+    const p = eventToStage(e);
+    if (p === null) return;
+
+    const tool = hitToolbar(p.x - LAYOUT.toolbar.x, p.y - LAYOUT.toolbar.y);
     if (tool !== null) {
       pressedTool = tool;
       requestRender();
       return; // 点在工具栏上就不要同时开始拖动地图
     }
+    if (hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)) {
+      sidebarView = sidebarView === 'calendar' ? 'map' : 'calendar';
+      requestRender();
+      return;
+    }
+    // 只有棋盘区能拖
+    const bx = p.x - LAYOUT.board.x;
+    const by = p.y - LAYOUT.board.y;
+    if (bx < 0 || by < 0 || bx >= LAYOUT.board.w || by >= LAYOUT.board.h) return;
     drag = { x: e.clientX, y: e.clientY };
   });
   window.addEventListener('mouseup', () => {
@@ -682,24 +980,16 @@ function bindInput(): void {
     if (drag === null) return;
     if (camera.mode !== 'map') return; // 人物视角恒以当前玩家为中心，不能拖
     followPlayer = false;
+    // 窗口像素 → 舞台像素 → 地图单位：舞台是整数倍放大的，少除这一下
+    // 拖动就会比手快 scale 倍
+    const px = (canvas.width / canvas.clientWidth) / currentMetrics().scale;
     camera = {
       ...camera,
-      x: camera.x - (e.clientX - drag.x) / camera.scale,
-      y: camera.y - (e.clientY - drag.y) / camera.scale,
+      x: camera.x - ((e.clientX - drag.x) * px) / camera.scale,
+      y: camera.y - ((e.clientY - drag.y) * px) / camera.scale,
     };
     drag = { x: e.clientX, y: e.clientY };
     requestRender();
-  });
-
-  // 小地图上方那排视角按钮
-  hudCanvas.addEventListener('mousedown', (e) => {
-    unlockAudio();
-    const r = hudCanvas.getBoundingClientRect();
-    const hit = hitHudButton(e.clientX - r.left, e.clientY - r.top);
-    if (hit === null) return;
-    if (hit === 'toggleView') setViewMode(camera.mode === 'character' ? 'map' : 'character');
-    if (hit === 'rotateLeft') rotateView(-1);
-    if (hit === 'rotateRight') rotateView(1);
   });
 
   window.addEventListener('resize', requestRender);
@@ -857,20 +1147,34 @@ async function boot(): Promise<void> {
   try {
     await ensureGameDir();
     metaEl.textContent = '正在载入原版素材…';
-    const archives = await loadArchives(assetBase());
-    const sprites = new SpriteCache(archives);
+    archives = await loadArchives(assetBase());
+    sprites = new SpriteCache(archives);
 
-    const setup = readSetup();
-    map = parseMap(readMapData(archives, setup.globalMapId));
+    // 先用地址栏（或默认值）建一局，好让渲染器与面板有东西可读；
+    // 但**开机停在標題畫面**——真正的开局在玩家点 START 之后。
+    const boot0 = readSetup();
+    map = parseMap(readMapData(archives, boot0.globalMapId));
     topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
-    state = newGame({ map, globalMapId: setup.globalMapId, players: setup.players, seed: setup.seed });
-    log(
-      `开局：地图 ${setup.globalMapId}　种子 ${setup.seed}　` +
-        setup.players.map((p, i) => `P${i + 1}${p.kind === 'human' ? '人' : '电'}`).join(' '),
-    );
+    state = newGame({ map, globalMapId: boot0.globalMapId, players: boot0.players, seed: boot0.seed });
+    setup = {
+      ...defaultSetup(),
+      playerCount: boot0.players.length,
+      characters: boot0.players.map((p) => p.character),
+      human: boot0.players.map((p) => p.kind === 'human'),
+      mapId: boot0.globalMapId,
+    };
+    // ★ `?screen=game` 跳过標題直接开一局 —— 调试与自动化用，正常玩不走这条。
+    //   ⚠️ 必须走 `startGame()` 而不是只把 `screen` 改掉：底图、镜头、
+    //   AI 调度都在那儿；只改屏号会进到一个没有底图的空棋盘。
+    const straightToGame = new URLSearchParams(window.location.search).get('screen') === 'game';
 
-    renderer = new BoardRenderer(ctx, sprites);
-    hud = new Hud(hudCtx, sprites);
+    // ★ 渲染器画进**离屏**画布：棋盘 439×440、側欄 200×480，
+    //   都是原版的固定尺寸；缩放由舞台统一做（见 stage.ts）。
+    renderer = new BoardRenderer(boardCtx, sprites);
+    hud = new Hud(hudOffCtx, sprites);
+    // 解码是异步的，绘制是同步的：图到了要有人把下一帧排上，否则画面停在缺图那一帧
+    renderer.onSpriteReady = requestRender;
+    hud.onSpriteReady = requestRender;
     resizeCanvas();
     // ★ 原版开局就是人物视角（等距投影、跟着棋子），全局看右下角小地图
     const first = map.nodes[state.players[0]?.nodeId ?? 1];
@@ -889,30 +1193,32 @@ async function boot(): Promise<void> {
         get camera() { return camera; },
         get history() { return history; },
         get hoverNode() { return hoverNode; },
-        viewport: () => ({ w: canvas.clientWidth, h: canvas.clientHeight }),
-        /** 某个节点此刻画在屏幕的哪里；不在视野内返回 null */
+        get screen() { return screen; },
+        get setup() { return setup; },
+        goto: (s: Screen) => { screen = s; requestRender(); },
+        /** 查一张图的尺寸与锚点 —— 命中判定对不上时先看这个 */
+        sprite: (archive: 'Data.mkf' | 'Panel.mkf', res: number, idx: number, key = false) => {
+          const s2 = spriteNow(archive, res, idx, key);
+          return s2 === null
+            ? null
+            : { w: s2.width, h: s2.height, ax: s2.anchorX, ay: s2.anchorY };
+        },
+        viewport: () => ({ w: LAYOUT.board.w, h: LAYOUT.board.h }),
+        /** 某个节点此刻画在**棋盘区**的哪里；不在视野内返回 null */
         project: (nodeId: number) => {
           const n = map.nodes[nodeId - 1];
           if (n === undefined) return null;
-          return worldToScreen(n.x, n.y, camera, {
-            w: canvas.clientWidth,
-            h: canvas.clientHeight,
-          });
+          return worldToScreen(n.x, n.y, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h });
         },
         /** 屏幕坐标落在哪个节点上 —— 与鼠标走的是同一条路径 */
         pick: (sx: number, sy: number, radius?: number) =>
-          pickNodeAt(
-            map,
-            sx,
-            sy,
-            camera,
-            { w: canvas.clientWidth, h: canvas.clientHeight },
-            radius,
-          ),
+          pickNodeAt(map, sx, sy, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h }, radius),
       };
     }
 
+    document.body.classList.add('no-debug');
     bindInput();
+    if (straightToGame) startGame();
     requestRender();
     renderPanel();
     log(`地图载入：${map.nodes.length} 个节点、${map.lands.length} 块地`);
@@ -927,17 +1233,11 @@ async function boot(): Promise<void> {
       })
       .catch(() => log('⚠ 音效载入失败'));
 
-    // 底图后台解码，不挡住棋盘先出来
-    void loadGround(archives, setup.globalMapId).then((g) => {
-      ground = g;
-      if (g === null) {
-        log('⚠ 底图未能解出');
-        return;
-      }
-      log(`底图载入：${g.width}×${g.height}（G 键开关）`);
-      requestRender();
-    });
-    scheduleAi();
+    // ⚠️ **不在这里解底图**。它是 2304×2304（530 万像素），
+    //   `createImageBitmap` 一跑就把解码管线占满几秒钟，排在后面的
+    //   標題按钮小图迟迟出不来 —— 表现是「第一下点不动」，
+    //   看起来像命中判定写错了，其实是图还没解出来。
+    //   底图等真的开局了再解（见 startGame）。
   } catch (err) {
     const detail = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err);
     // ★ 桌面壳里看不到控制台，堆栈必须自己送出去

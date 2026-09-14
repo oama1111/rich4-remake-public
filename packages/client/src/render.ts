@@ -86,6 +86,14 @@ export interface RenderInput {
   groundOffset?: { x: number; y: number };
   /** 正被按下的工具栏按钮下标 */
   pressedTool?: number | null;
+  /**
+   * 棋盘区的尺寸。
+   *
+   * ★ 必须显式给出，**不能再从画布尺寸推**：原版的棋盘区是固定的
+   *   439×440（见 stage.ts 的 LAYOUT.board），而画布现在是整个窗口。
+   *   照画布算，一屏里会塞进远超原版的格子数，视角与取景全错。
+   */
+  viewport: { w: number; h: number };
 }
 
 /**
@@ -200,10 +208,23 @@ export class BoardRenderer {
   #ready = new Map<string, Sprite | null>();
   /** 有新精灵解码完成时置位，驱动下一帧重绘 */
   #dirty = false;
+  /**
+   * 解码落地时叫一声。
+   *
+   * ⚠️ 光有 `#dirty` 不够：解码几乎总是在本帧的 rAF 回调**之后**才 resolve，
+   *   那时已经没人再去看这个标志了 —— 画面就永远停在「图还没到」的那一帧。
+   *   （工具栏底条整条不显示，正是这么来的。）
+   */
+  #onReady: (() => void) | null = null;
 
   constructor(ctx: CanvasRenderingContext2D, sprites: SpriteCache) {
     this.#ctx = ctx;
     this.#sprites = sprites;
+  }
+
+  /** 由宿主注入「再画一帧」 */
+  set onSpriteReady(fn: () => void) {
+    this.#onReady = fn;
   }
 
   get dirty(): boolean {
@@ -235,19 +256,20 @@ export class BoardRenderer {
         this.#ready.set(key, s);
         this.#pending.delete(key);
         this.#dirty = true;
+        this.#onReady?.();
       });
     }
     return null;
   }
 
+  /** 只画**棋盘区**。工具栏与側欄由舞台负责摆位（见 stage.ts）。 */
   draw(input: RenderInput): void {
     const { map, state, camera, hoverNode } = input;
     const ctx = this.#ctx;
-    // ⚠️ 用 **CSS 像素**算视口中心：ctx 上已经挂了 devicePixelRatio 的缩放，
-    //   再拿 canvas.width（设备像素）去算中心会把画面推到一边去。
-    const width = ctx.canvas.clientWidth;
-    const height = ctx.canvas.clientHeight;
-    const dpr = width > 0 ? ctx.canvas.width / width : 1;
+    const width = input.viewport.w;
+    const height = input.viewport.h;
+    // 棋盘画进一块 1:1 的离屏画布，缩放交给舞台统一做
+    const dpr = 1;
 
     ctx.fillStyle = '#0e1016';
     ctx.fillRect(0, 0, width, height);
@@ -277,7 +299,25 @@ export class BoardRenderer {
     this.#drawBuildings(map, state, camera, vp);
     this.#drawNodes(map, state, camera, hoverNode, vp);
     this.#drawPlayers(map, state, camera, vp);
-    this.#drawToolbar(input.pressedTool ?? null);
+  }
+
+  /**
+   * 顶部工具栏 —— 画到**舞台**上，不是棋盘上。
+   *
+   * ⚠️ 必须显式收一个 ctx：渲染器自己那块 ctx 是**棋盘的离屏画布**
+   *   （439×440，位于工具栏下方）。往那上面画工具栏，等于画进了棋盘里，
+   *   而且还会被下一帧的棋盘绘制覆盖掉 —— 表现就是工具栏整条不见。
+   */
+  drawToolbarTo(ctx: CanvasRenderingContext2D, x: number, y: number, pressed: number | null): void {
+    const strip = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, TOOLBAR_STRIP_IMAGE);
+    if (strip !== null) ctx.drawImage(strip.bitmap, x, y);
+    for (let i = 0; i < TOOLBAR_ICON_COUNT; i++) {
+      const icon = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, toolbarIconImage(i, pressed === i));
+      if (icon === null) continue;
+      const cx = x + TOOLBAR.padX + i * TOOLBAR.pitch + TOOLBAR.pitch / 2;
+      const cy = y + TOOLBAR.padY + (TOOLBAR.height - TOOLBAR.padY * 2) / 2;
+      ctx.drawImage(icon.bitmap, Math.round(cx - icon.width / 2), Math.round(cy - icon.height / 2));
+    }
   }
 
   /** 先画连线，让棋盘的走法一眼可见 */
@@ -301,22 +341,6 @@ export class BoardRenderer {
     ctx.stroke();
   }
 
-  /** 顶部工具栏 —— 原版 `Panel.mkf` 资源 1 的底条 + 11 个图标 */
-  #drawToolbar(pressed: number | null): void {
-    const ctx = this.#ctx;
-    const strip = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, TOOLBAR_STRIP_IMAGE);
-    if (strip !== null) {
-      ctx.drawImage(strip.bitmap, TOOLBAR.x, TOOLBAR.y);
-    }
-    for (let i = 0; i < TOOLBAR_ICON_COUNT; i++) {
-      const icon = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, toolbarIconImage(i, pressed === i));
-      if (icon === null) continue;
-      // 图标在底条内居中：按下态比常态大几像素，故按各自尺寸算
-      const cx = TOOLBAR.x + TOOLBAR.padX + i * TOOLBAR.pitch + TOOLBAR.pitch / 2;
-      const cy = TOOLBAR.y + TOOLBAR.height / 2;
-      ctx.drawImage(icon.bitmap, Math.round(cx - icon.width / 2), Math.round(cy - icon.height / 2));
-    }
-  }
 
   /**
    * 人物视角下的底图 —— 逐块投影成四边形铺出来。

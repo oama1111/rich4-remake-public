@@ -25,6 +25,75 @@ export const PANEL_WIDTH = 200;
 export const PANEL_HEIGHT = 280;
 
 /**
+ * 右下角那块 200×200。
+ *
+ * ★ 它**不是**我们自己加的调试小地图位，原版就有，而且是**可切换**的：
+ * ```
+ * RICH4.CFG  offset 5:  00 日曆   01 小地圖   02 兩者輪流
+ * ```
+ * （@source rich4-re/docs/rich4_cfg.txt —— 这是配置文件的字段说明，
+ *   不涉及规则，属可信的一类线索。）
+ *
+ * 日曆那一面的底图就在 `Panel.mkf` 资源 2：
+ * - 图 0..3 四季实景，**不带**日曆框（另有他用）
+ * - 图 4..7 同样四季，带太阳/月亮与 `S M T W T F S` 那条星期栏 ← 游戏里用的是这组
+ * - 图 8/9  24×23 亮/暗太阳；图 10/11 20×20 亮/暗月亮（盖在底图那两个上面）
+ */
+export const SIDEBAR = { x: 0, y: PANEL_HEIGHT, w: 200, h: 200 } as const;
+
+/** 资源 2 里日曆底图的起始图号；`+ 季节(0..3)` */
+const CALENDAR_BASE_IMAGE = 4;
+/** 盖在底图那两个上面的亮太阳/亮月亮；见 `#drawCalendar` 的说明 —— 现未使用 */
+export const SUN_BRIGHT_IMAGE = 8;
+export const MOON_BRIGHT_IMAGE = 10;
+
+/**
+ * 日曆底图上各部件的位置 —— **照解出来的位图量的**，不是 exe 里的常量。
+ *
+ * 量法：资源 2 的图 4..7 四张只有背景不同，chrome 完全一致，
+ * 于是「四张里像素完全相同」的那些点就是 chrome 本身。得到：
+ * - 太阳 x 12..31、月亮 x 44..60，都在 y 11..29
+ * - 星期栏七个圆点 y 73..86，中心 x ≈ 30.5 + i × 22.67
+ */
+const CAL = {
+  sun: { x: 10, y: 9 },
+  moon: { x: 42, y: 10 },
+  dow: { x0: 30.5, pitch: 68 / 3, y: 79.5, r: 9 },
+  date: { x: 100, y: 150 },
+} as const;
+
+/** 月份 → 季节 0 春 / 1 夏 / 2 秋 / 3 冬（图 4 绿原、5 海滩、6 红葉、7 雪地） */
+export function seasonOfMonth(month: number): number {
+  const m = ((month - 1) % 12 + 12) % 12 + 1;
+  if (m >= 3 && m <= 5) return 0;
+  if (m >= 6 && m <= 8) return 1;
+  if (m >= 9 && m <= 11) return 2;
+  return 3;
+}
+
+/**
+ * 星期几 0=日..6=六 —— 蔡勒公式（比自己数天数稳）。
+ *
+ * ⚠️ 原版用哪一天当基准没查证；这里按真实公历算，年份就是 `state.year`。
+ */
+export function dayOfWeek(year: number, month: number, day: number): number {
+  let y = year;
+  let m = month;
+  if (m < 3) {
+    m += 12;
+    y -= 1;
+  }
+  const k = y % 100;
+  const j = Math.floor(y / 100);
+  const h =
+    (day + Math.floor((13 * (m + 1)) / 5) + k + Math.floor(k / 4) + Math.floor(j / 4) + 5 * j) % 7;
+  return (h + 6) % 7; // 蔡勒的 0 是星期六
+}
+
+/** 右下角显示哪一面 */
+export type SidebarView = 'calendar' | 'map';
+
+/**
  * 三条数值栏在 200×280 图内的纵向位置。
  *
  * ⚠️ 这几个 y 是**照着解出来的位图量的**，不是从 exe 里读到的常量。
@@ -48,43 +117,19 @@ export interface HudInput {
   viewport: { w: number; h: number };
   /** 原版底图，用作小地图；为 null 时小地图只画节点 */
   ground: ImageBitmap | null;
+  /** 右下角那 200×200 现在显示哪一面 */
+  sidebarView: SidebarView;
 }
-
-/** HUD 上可点的按钮 */
-export type HudButton = 'toggleView' | 'rotateLeft' | 'rotateRight';
 
 /**
- * 小地图上方的那排按钮。
+ * 点在右下角那块 200×200 上吗？
  *
- * ★ 原版在小地图正上方也有一排小按钮（见游戏截图右下角），
- *   位置照搬，但**图标还没从资源里认出来**，故先用文字/箭头占位。
+ * 原版这块是「日曆／小地圖」轮换位（见 `SIDEBAR`），点一下换一面。
+ * ⚠️ 原版是不是用点击来换、还是只认设定与热键，尚未查证。
  */
-const BUTTON_SIZE = 22;
-const BUTTON_GAP = 4;
-const BUTTON_ROW_Y = PANEL_HEIGHT + 8;
-const BUTTONS: readonly { id: HudButton; label: string; title: string }[] = [
-  { id: 'toggleView', label: '⇄', title: '切换 人物/地图 视角' },
-  { id: 'rotateLeft', label: '↺', title: '左转视角' },
-  { id: 'rotateRight', label: '↻', title: '右转视角' },
-];
-
-/** 按钮在 HUD 画布里的矩形 */
-function buttonRect(i: number): { x: number; y: number; w: number; h: number } {
-  return {
-    x: 2 + i * (BUTTON_SIZE + BUTTON_GAP),
-    y: BUTTON_ROW_Y,
-    w: BUTTON_SIZE,
-    h: BUTTON_SIZE,
-  };
-}
-
-/** 点在 HUD 的哪个按钮上；没点中返回 null */
-export function hitHudButton(x: number, y: number): HudButton | null {
-  for (let i = 0; i < BUTTONS.length; i++) {
-    const r = buttonRect(i);
-    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return BUTTONS[i]!.id;
-  }
-  return null;
+export function hitSidebar(x: number, y: number): boolean {
+  return x >= SIDEBAR.x && x < SIDEBAR.x + SIDEBAR.w
+    && y >= SIDEBAR.y && y < SIDEBAR.y + SIDEBAR.h;
 }
 
 const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
@@ -95,10 +140,17 @@ export class Hud {
   readonly #ready = new Map<string, Sprite | null>();
   readonly #pending = new Set<string>();
   #dirty = false;
+  /** 解码落地时叫一声 —— 理由同 `BoardRenderer.#onReady` */
+  #onReady: (() => void) | null = null;
 
   constructor(ctx: CanvasRenderingContext2D, sprites: SpriteCache) {
     this.#ctx = ctx;
     this.#sprites = sprites;
+  }
+
+  /** 由宿主注入「再画一帧」 */
+  set onSpriteReady(fn: () => void) {
+    this.#onReady = fn;
   }
 
   get dirty(): boolean {
@@ -120,6 +172,7 @@ export class Hud {
         this.#ready.set(key, s);
         this.#pending.delete(key);
         this.#dirty = true;
+        this.#onReady?.();
       });
     }
     return null;
@@ -131,38 +184,54 @@ export class Hud {
     ctx.clearRect(0, 0, width, height);
 
     this.#drawPanel(input);
-    this.#drawButtons(input);
-    this.#drawMinimap(input, BUTTON_ROW_Y + BUTTON_SIZE + 6);
+    if (input.sidebarView === 'calendar') this.#drawCalendar(input);
+    else this.#drawMinimap(input, SIDEBAR.y);
   }
 
-  /** 小地图上方那排视角按钮 */
-  #drawButtons(input: HudInput): void {
+  /**
+   * 日曆面：四季底图 + 当日星期的标记 + 年月日。
+   *
+   * ⚠️ 底图是原版的；**星期标记与日期文字的画法是我们补的** —— 原版怎么
+   *   标示「今天」还没从 exe 里认出来（那条星期栏上的红点是烤进图里的，
+   *   四张底图都红在同一个位置，所以它不是动态标记）。记作 Q-UI-1。
+   */
+  #drawCalendar(input: HudInput): void {
     const ctx = this.#ctx;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (let i = 0; i < BUTTONS.length; i++) {
-      const b = BUTTONS[i]!;
-      const r = buttonRect(i);
-      const on = b.id === 'toggleView' && input.camera.mode === 'character';
-      ctx.fillStyle = on ? '#3a4a66' : '#22262f';
-      ctx.fillRect(r.x, r.y, r.w, r.h);
-      ctx.strokeStyle = '#4a5265';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
-      ctx.fillStyle = '#dfe4ee';
-      ctx.font = '14px system-ui, sans-serif';
-      ctx.fillText(b.label, r.x + r.w / 2, r.y + r.h / 2 + 1);
+    const { day, month, year } = input.state;
+    const { x: ox, y: oy, w, h } = SIDEBAR;
+
+    const bg = this.#sprite('Panel.mkf', 2, CALENDAR_BASE_IMAGE + seasonOfMonth(month));
+    if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
+    else {
+      ctx.fillStyle = '#7f9fbf';
+      ctx.fillRect(ox, oy, w, h);
     }
-    // 当前视角编号，方便核对 8 个朝向
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#8d95a5';
-    ctx.font = '11px system-ui, sans-serif';
-    ctx.fillText(
-      `${input.camera.mode === 'character' ? '人物' : '地图'}视角 · 方位 ${input.camera.view}`,
-      BUTTONS.length * (BUTTON_SIZE + BUTTON_GAP) + 6,
-      BUTTON_ROW_Y + BUTTON_SIZE / 2 + 1,
-    );
+
+    // ⚠️ 图 8..11 的亮太阳/亮月亮**故意不画**：底图 4..7 上那两个已经是亮的，
+    //   再盖一层只会错位。这两组多半是昼夜切换用的，而本引擎还没有夜晚——
+    //   等把原版那段绘制代码认出来再说（Q-UI-1）。
+
+    // 今天是星期几
+    const dow = dayOfWeek(year, month, day);
+    ctx.save();
+    ctx.strokeStyle = '#ffe14a';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(ox + CAL.dow.x0 + dow * CAL.dow.pitch, oy + CAL.dow.y, CAL.dow.r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+
+    // 年月日
+    ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
+    ctx.font = 'bold 22px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillStyle = '#fff';
+    const text = `${year} 年 ${month} 月 ${day} 日`;
+    ctx.strokeText(text, ox + CAL.date.x, oy + CAL.date.y);
+    ctx.fillText(text, ox + CAL.date.x, oy + CAL.date.y);
+    ctx.textAlign = 'left';
   }
 
   #drawPanel(input: HudInput): void {
@@ -234,7 +303,7 @@ export class Hud {
   #drawMinimap(input: HudInput, top: number): void {
     const ctx = this.#ctx;
     const { state, map, camera, viewport, ground } = input;
-    const size = PANEL_WIDTH;
+    const size = SIDEBAR.w;
     // 底图是正方形（2304 见方），故小地图也取正方形
     const worldW = ground?.width ?? 2304;
     const worldH = ground?.height ?? 2304;
