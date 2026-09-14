@@ -1921,6 +1921,7 @@ function playCard(
       priceIndex: state.priceIndex,
       tools: state.tools,
       toolStock: state.toolStock,
+      objects: state.objects,
       // 嫁祸的新目标：交给上层决定；没给就放弃转嫁（返回 -1）
       scapegoatPicker: () => -1,
     },
@@ -1945,7 +1946,7 @@ function playCard(
 
   // ★ 送神符之类只清了玩家身上的引用，物件本身要在这里收回：
   //   退还三项修正、清 `attached`、让搭档登场。
-  let next: GameState = { ...state, players, landOwner, landLevel, landType, tools: r.tools, toolStock: r.toolStock };
+  let next: GameState = { ...state, players, landOwner, landLevel, landType, tools: r.tools, toolStock: r.toolStock, objects: r.objects };
   for (const handle of r.releasedObjects) {
     const rel = releaseObject(next, handle);
     next = respawnPartner(
@@ -1959,6 +1960,10 @@ function playCard(
       topo,
       rel.partner >= 0 ? { partner: rel.partner, nearNode: rel.formerNode } : null,
     );
+  }
+  // 請神符挤走旧神时，旧神的搭档在这里重新登场
+  for (const rs of r.respawns) {
+    next = respawnPartner(next, topo, rs);
   }
   return next;
 }

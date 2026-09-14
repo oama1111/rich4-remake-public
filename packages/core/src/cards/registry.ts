@@ -18,7 +18,10 @@
 import type { Player } from '../state/types.ts';
 import type { LandInfo, MapNode } from '../loaders/map.ts';
 import type { CardTarget, TargetError } from './target.ts';
-import { targetClassOf, validateTarget } from './target.ts';
+import { targetClassOfCard, validateTarget } from './target.ts';
+import type { MapObject } from './summon.ts';
+import { summonableObjects } from './summon.ts';
+import { attachGod } from '../rules/object-landing.ts';
 import { cardImpl, CARDS } from '@rich4/data';
 import { consumeCard, playerHasCard } from './passive.ts';
 import { housingIndexOf } from '../rules/land.ts';
@@ -71,6 +74,13 @@ export interface UseCardResult {
   tools: number[];
   /** 道具库存（仅搶奪卡道具路径会改动；其余卡原样返回） */
   toolStock: number[];
+  /** 地图物件表（仅請神符等会改动；其余卡原样返回） */
+  objects: MapObject[];
+  /**
+   * 效果执行中需要**重新登场的搭档**（請神符挤走旧神时，
+   * 旧神的搭档要回到地图上）。落点选择交给 reduce 的 respawnPartner。
+   */
+  respawns: { partner: number; nearNode: number }[];
   hostilityDeltas: HostilityDelta[];
   /** 是否被防御性被动卡挡下 */
   defended: boolean;
@@ -99,6 +109,8 @@ export interface UseCardContext {
   tools: readonly number[];
   /** 道具库存（搶奪卡的道具路径经 take_tool/give_tool 会动库存） */
   toolStock: readonly number[];
+  /** 地图物件表（請神符要读/写） */
+  objects: readonly MapObject[];
   /**
    * 嫁祸卡的新目标选择器（陷害卡等有害卡在被嫁祸时调用）。
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
@@ -108,7 +120,7 @@ export interface UseCardContext {
 
 /** 本项目已实现效果、可经本入口使用的卡片编号 */
 export const IMPLEMENTED_CARD_IDS: readonly number[] = [
-  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 22, 26, 27, 28, 29, 30,
+  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 22, 23, 26, 27, 28, 29, 30,
 ];
 
 /** 取玩家当前**所站地块**（不是住宅地则返回 null） */
@@ -145,6 +157,8 @@ export function useCard(
     lands: [...ctx.lands],
     tools: [...ctx.tools],
     toolStock: [...ctx.toolStock],
+    objects: [...ctx.objects],
+    respawns: [],
     hostilityDeltas: [],
     defended: false,
     releasedObjects: [],
@@ -161,8 +175,10 @@ export function useCard(
   // @source 被动卡的函数体是 `xor eax,eax; ret`，主动使用恒返回 0
   if (impl.passive) return fail('passiveCard');
 
-  const cls = targetClassOf(impl.selectionParam);
-  const targetError = validateTarget(cls, target, cur, ctx.players.length);
+  const cls = targetClassOfCard(impl);
+  const targetError = validateTarget(cls, target, cur, ctx.players.length, {
+    objectCount: ctx.objects.length,
+  });
   if (targetError !== null) return fail(targetError);
 
   const targetPlayer = target.kind === 'player' ? target.index : -1;
@@ -176,6 +192,8 @@ export function useCard(
   let lands: LandInfo[] = [...ctx.lands];
   let tools: number[] = [...ctx.tools];
   let toolStock: number[] = [...ctx.toolStock];
+  let objects: MapObject[] = [...ctx.objects];
+  const respawns: { partner: number; nearNode: number }[] = [];
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
   let releasedObjects: number[] = [];
@@ -261,6 +279,22 @@ export function useCard(
       if (!r.ok) return fail('noEffect');
       players = players.map((p, i) => (i === cur ? r.player : p));
       releasedObjects = r.removed;
+      break;
+    }
+    case 23: {
+      // 請神符：把地图上的物件请到身上 —— @source VA 0x00444e1a → call 0x40ead7
+      if (target.kind !== 'object') return fail('wrongTargetKind');
+      // 只能请「还在地图上、未被附身、种类可附身」的物件
+      if (!summonableObjects(objects).includes(target.objectIndex)) return fail('noEffect');
+      // attachGod = 0x40ead7 完整版：旧神先送走（0x40eb3e）、三项修正（0x0040ebcc 起）
+      const r = attachGod({ players, objects, tools, toolStock }, cur, target.objectIndex);
+      if (!r.ok) return fail('noEffect');
+      players = r.players;
+      objects = r.objects;
+      tools = r.tools;
+      toolStock = r.toolStock;
+      // 被挤走的旧神若有搭档，交给 reduce 重新登场
+      if (r.respawn !== null) respawns.push(r.respawn);
       break;
     }
     case 26: {
@@ -373,5 +407,5 @@ export function useCard(
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
-  return { ok: true, error: null, players, lands, tools, toolStock, hostilityDeltas, defended, releasedObjects };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, respawns, hostilityDeltas, defended, releasedObjects };
 }

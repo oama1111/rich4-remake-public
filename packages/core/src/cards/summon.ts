@@ -112,11 +112,16 @@ export interface SummonResult {
  * objects[i].state    = (type == 15) ? 13 : 7
  * ```
  *
- * ★ `god_info = objectIndex + 1` 这一条印证了 `rules/objects.ts` 早先
- *   从送神符推出的结论——两张卡各自独立给出同一个编码。
+ * ★ `god_info = 下标 + 1`：`0x40eb55` 先把入参（1 基 handle）`dec` 成
+ *   0 基下标，存的时候 `inc al` 还原——所以 `god_info` 就等于**入参 handle**。
+ *   这印证了 `rules/objects.ts` 早先从送神符推出的结论——两张卡各自
+ *   独立给出同一个编码。（本函数早先误写成 `objectIndex + 1`，
+ *   对照 0x40eb55 修正。）
  *
  * ⚠️ 「先送走旧的」只返回 `displaced` 交给调用方，本函数不代为执行——
  *   送神流程另有动画与副作用，属于更外层的职责。
+ * ⚠️ 本函数只搬字段，**不加三项修正**；要完整语义用
+ *   `rules/object-landing.ts` 的 `attachGod`（registry 走的就是它）。
  */
 export function attachObject(
   player: Player,
@@ -154,8 +159,9 @@ export function attachObject(
   return {
     ok: true,
     reason: null,
-    // @source al = objectIndex; inc al; byte [player + 0x3f] = al
-    player: { ...player, godInfo: objectIndex + 1 },
+    // @source 0x40eb55：入参 handle 先 dec 成 0 基下标，存 god_info 时 inc 还原
+    //   —— god_info 值 == 入参 handle（下标 + 1）
+    player: { ...player, godInfo: objectIndex },
     objects: next,
     displaced,
   };

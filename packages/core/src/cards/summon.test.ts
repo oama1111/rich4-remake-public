@@ -49,10 +49,10 @@ describe('★ 可附身性：(type ≤ 12 且 ≠ 11) 或 type == 15', () => {
 });
 
 describe('附身', () => {
-  it('★ god_info 存的是**下标 + 1**', () => {
+  it('★ god_info 存的是**下标 + 1**，即入参 handle 本身（0x40eb55）', () => {
     const r = attachObject(makePlayer({ index: 1, nodeId: 42 }), [obj(), obj()], 2);
     expect(r.ok).toBe(true);
-    expect(r.player.godInfo).toBe(3);
+    expect(r.player.godInfo).toBe(2);
   });
 
   it('物件跟到玩家所在节点，并记下附身于谁', () => {
@@ -72,7 +72,7 @@ describe('附身', () => {
     const p = makePlayer({ godInfo: 5 });
     const r = attachObject(p, [obj()], 1);
     expect(r.displaced).toBe(5);
-    expect(r.player.godInfo).toBe(2); // 新的覆盖旧的
+    expect(r.player.godInfo).toBe(1); // 新的覆盖旧的
   });
 
   it('原本无附身物时 displaced 为 0', () => {

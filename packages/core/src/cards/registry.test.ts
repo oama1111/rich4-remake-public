@@ -31,6 +31,7 @@ function makeCtx(over: Partial<UseCardContext> = {}): UseCardContext {
     priceIndex: 1,
     tools: new Array<number>(60).fill(0),
     toolStock: new Array<number>(14).fill(0),
+    objects: [],
     ...over,
   };
 }
@@ -402,5 +403,86 @@ describe('★ 搶奪卡经统一入口（T-003）', () => {
     expect(r.ok).toBe(false);
     expect(r.players[0]!.cards).toEqual([13]);
     expect(r.players[2]!.cards).toEqual([5]);
+  });
+});
+
+
+describe('★ 請神符经统一入口（T-004）', () => {
+  const god = (over: Partial<{ type: number; nodeId: number; attached: number; state: number }> = {}) => ({
+    type: over.type ?? 2, // 大財神
+    nodeId: over.nodeId ?? 10,
+    state: over.state ?? 0,
+    attached: over.attached ?? 0,
+  });
+  const withCard = (objects: ReturnType<typeof god>[]) =>
+    makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [23], nodeId: 7 }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+      objects,
+    });
+
+  it('请到：godInfo = 物件 handle、物件跟到身上、三项修正加上，卡片被消耗', () => {
+    const r = useCard(withCard([god()]), 23, { kind: 'object', objectIndex: 1 });
+    expect(r.ok).toBe(true);
+    // @source 0x40eb55：god_info == 入参 handle（下标 + 1）
+    expect(r.players[0]!.godInfo).toBe(1);
+    expect(r.objects[0]!.attached).toBe(1); // 玩家下标 + 1
+    expect(r.objects[0]!.nodeId).toBe(7);   // 跟到玩家所在节点
+    expect(r.objects[0]!.state).toBe(7);    // 非死神写 7
+    // @source 0x0040ebcc 起：大財神(2) → misfortune −200 / fortune +150
+    expect(r.players[0]!.misfortune).toBe(-200);
+    expect(r.players[0]!.fortune).toBe(150);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('请不到：物件已被别人附身 → noEffect，不扣卡', () => {
+    const ctx = withCard([god({ attached: 2 })]);
+    const r = useCard(ctx, 23, { kind: 'object', objectIndex: 1 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('noEffect');
+    expect(r.players[0]!.cards).toEqual([23]);
+  });
+
+  it('请不到：物件不在地图上 → noEffect，不扣卡', () => {
+    const ctx = withCard([god({ nodeId: 0 })]);
+    const r = useCard(ctx, 23, { kind: 'object', objectIndex: 1 });
+    expect(r.ok).toBe(false);
+    expect(r.players[0]!.cards).toEqual([23]);
+  });
+
+  it('物件下标越界 → objectOutOfRange', () => {
+    const r = useCard(withCard([god()]), 23, { kind: 'object', objectIndex: 2 });
+    expect(r.error).toBe('objectOutOfRange');
+  });
+
+  it('★ 身上已有神时旧神先被送走（退修正、清附身），搭档列入 respawns', () => {
+    // 身上已有小財神（handle 2 → objects[1]，type 1，已附身于我）
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [23], nodeId: 7, godInfo: 2, misfortune: -100, fortune: 100 }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+      objects: [
+        god({ type: 2 }),                              // 要请的大財神
+        god({ type: 1, attached: 1, state: 7 }),       // 身上的小財神
+      ],
+    });
+    const r = useCard(ctx, 23, { kind: 'object', objectIndex: 1 });
+    expect(r.ok).toBe(true);
+    expect(r.players[0]!.godInfo).toBe(1);
+    // 旧神被释放：清附身、退掉小財神的修正（misfortune −(−100)、fortune −100）
+    expect(r.objects[1]!.attached).toBe(0);
+    expect(r.objects[1]!.nodeId).toBe(0);
+    // −100 +100（退小財神）−200（大財神）= −200；100 −100（退）+150（新）= 150
+    expect(r.players[0]!.misfortune).toBe(-200);
+    expect(r.players[0]!.fortune).toBe(150);
+    // 旧神下标 1 < 12 → 搭档（下标 0）要重新登场，nearNode = 旧神记录的节点
+    expect(r.respawns).toEqual([{ partner: 0, nearNode: 10 }]);
   });
 });

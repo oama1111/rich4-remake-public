@@ -105,7 +105,7 @@ cards:
   title: 請神符（23）接进 registry，目标为物件下标
   module: MOD-06
   req: REQ-06.1
-  status: todo
+  status: done
   estimate: 0.3
   depends_on: [T-001]
   uses:
