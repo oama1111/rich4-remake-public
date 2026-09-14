@@ -11,16 +11,22 @@
 
 import type { Action } from './actions.ts';
 import type { GameState, Player } from './types.ts';
+import type { SpecialActor } from '../rules/special-actors.ts';
 import { isAiControlled, isAlive } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
 import { applyNpcEvents, runNpc } from '../rules/npc-walk.ts';
 import {
   ACTOR_DOLL,
+  NPC_ACTORS,
+  SPECIAL_ACTOR_BASE,
+  actorActive,
   npcSteps,
+  npcTurnSteps,
   releaseNpc,
   runDoll,
   spawnDoll,
   specialSlotOf,
+  tickNpcCounters,
 } from '../rules/special-actors.ts';
 import {
   TOOL_TIME_MACHINE,
@@ -446,6 +452,53 @@ export function directionOf(dx: number, dy: number): number {
   const turns = Math.atan2(-dy, dx) * TURNS_PER_RADIAN;
   const octant = Math.round((((turns % 1) + 1) % 1) * 8) & 7;
   return DIRECTION_REMAP[octant]!;
+}
+
+/**
+ * 一輪结束时四大惡人各走一趟 @source 0x00418f93（下一名行动者依次轮到棋盘上的 4..7）
+ * + 0x0040dd1f（步数：停留 0 / 龜行 1 / 其余 rand()%9+2）+ tick_blocking 的 actor 分支。
+ * 每个人：先走一天计数，再定步数，再逐格结算（与保釋当场那趟同一条 `runNpc`）。
+ */
+function npcRound(state: GameState, topo: MapTopology): GameState {
+  let s = state;
+  for (let slot = 0; slot < NPC_ACTORS.length; slot++) {
+    const actor = s.specialActors[slot];
+    if (!actorActive(actor)) continue;
+    const actorId = SPECIAL_ACTOR_BASE + slot;
+    const rng = new WatcomRng();
+    rng.setState(s.rngState);
+    const ticked = tickNpcCounters(actor!);
+    const steps = npcTurnSteps(ticked, rng);
+    const put = (st: GameState, a: SpecialActor): GameState => {
+      const specialActors = [...st.specialActors];
+      specialActors[slot] = a;
+      return { ...st, specialActors };
+    };
+    if (steps === 0) {
+      s = put({ ...s, rngState: rng.getState() }, ticked);
+      continue;
+    }
+    const walk = runNpc(
+      actorId,
+      { ...ticked, stepsRemaining: steps },
+      s,
+      topo,
+      (from, prev) => pickNextNode(topo, from, prev, rng) ?? 0,
+      rng,
+    );
+    const settled = applyNpcEvents(s, ticked.owner, walk.events);
+    let next = put({ ...settled.state, rngState: rng.getState() }, walk.actor);
+    const home = walk.events.find((e) => e.kind === 'home');
+    if (home !== undefined) {
+      const back = [...(home.place === 'prison' ? next.prisonOccupancy : next.hospitalOccupancy)];
+      back[actorId] = 1;
+      next = home.place === 'prison' ? { ...next, prisonOccupancy: back } : { ...next, hospitalOccupancy: back };
+    }
+    for (const who of settled.bankrupted) next = applyBankruptcy(next, who, topo);
+    s = next;
+    if (s.phase === 'gameOver') break;
+  }
+  return s;
 }
 
 /**
@@ -1110,25 +1163,28 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       //   `0041cfbf call 0x423acf`（更新物价指数），每回合一次。
       //   它**只增不减**，是后期通货膨胀的唯一来源——不接这条，
       //   经济永远不会升温，租金永远追不上身家。
-      const wealthOf = (p: Player): number =>
-        calculatePlayerWealth(
-          p,
-          allEffectiveLands(ticked, topo),
-          allEffectiveFacilities(ticked, topo),
-          valuationsOf(ticked, p.index),
-        );
-      const priceIndex = updatePriceIndex(
-        ticked.players,
-        wealthOf,
-        DEFAULT_INITIAL_FUND,
-        ticked.priceIndex,
-      );
-
-      const dayEnd = advanceGameDay({ ...ticked, priceIndex }, topo);
-
-      const next = nextAlivePlayer(dayEnd, state.currentPlayer);
+      const next = nextAlivePlayer(ticked, state.currentPlayer);
+      // ★ **一輪才是一天** @source 0x00418f93..0x0041902e：cur++ 越过最后一名玩家后先依次轮到
+      //   棋盘上的四大惡人（4..7，+10 == 0 的才算）各走一趟，回到 0 号时 ebx = 1，
+      //   这时才 `call 0x41cf67`（推进日期、物价指数、行情、開獎、月結）。
+      //   先前每个玩家回合都推一天、都更新物价，是错的（见 known-deviations「一輪一天」）。
+      const wraps = next <= state.currentPlayer;
+      let roundEnd: GameState = ticked;
+      if (wraps) {
+        roundEnd = npcRound(roundEnd, topo);
+        if (roundEnd.phase === 'gameOver') return roundEnd;
+        const wealthOf = (p: Player): number =>
+          calculatePlayerWealth(
+            p,
+            allEffectiveLands(roundEnd, topo),
+            allEffectiveFacilities(roundEnd, topo),
+            valuationsOf(roundEnd, p.index),
+          );
+        const priceIndex = updatePriceIndex(roundEnd.players, wealthOf, DEFAULT_INITIAL_FUND, roundEnd.priceIndex);
+        roundEnd = advanceGameDay({ ...roundEnd, priceIndex }, topo);
+      }
       return {
-        ...dayEnd,
+        ...roundEnd,
         currentPlayer: next,
         phase: 'turnStart',
         // ★ 待决交互属于**那个玩家的那个回合**，不能带进下一回合。
@@ -2179,6 +2235,8 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     ...date,
     // @source 0041cfab `inc dword [0x4990e4]`
     totalDays: state.totalDays + 1,
+    // @source 0x0041d0f9 `add [0x499084], edi` —— 跨月才 +1
+    totalMonths: state.totalMonths + (newMonth ? 1 : 0),
     players,
     lottery,
     pool,

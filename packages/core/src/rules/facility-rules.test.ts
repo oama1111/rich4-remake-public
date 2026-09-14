@@ -332,7 +332,8 @@ describe('★ 每日推进：地契到期归无主，房子留着', () => {
       day: 31,
       ...over,
     });
-    return reduce(s, { type: 'endTurn' }, topo);
+    // 一輪才过一天：让最后一名玩家收回合
+    return reduce({ ...s, currentPlayer: s.players.length - 1 }, { type: 'endTurn' }, topo);
   }
 
   it('到期日 == 明天 → 推进一天后 owner 清零、到期日清零、等级不动', () => {

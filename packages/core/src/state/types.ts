@@ -314,6 +314,12 @@ export interface GameState {
 
   /** 開局以来的总天数 @source `[0x4990e4]`，每日推进 `inc`（0x0041cfab）；電腦公司按它收費 */
   totalDays: number;
+  /**
+   * 跨过的**月数**。@source `[0x499084]`：`0x0041d0f9 add [0x499084], edi`，edi 是 advanceDate
+   * 的返回值（跨月为 1），每跨一个月 +1；AI 选股拿它除累計盈餘当「月均盈餘」。
+   * （先前误当成總天數，總天數其实是 `[0x4990e4]`，对应 `totalDays`。）
+   */
+  totalMonths: number;
 
   /** 本次掷骰的点数明细；未掷骰时为空 */
   dice: number[];

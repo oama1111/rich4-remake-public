@@ -86,6 +86,7 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     landType: [],
     landTenureIndex: 0,
     totalDays: 0,
+    totalMonths: 0,
     landLastToll: new Array<number>(64).fill(0),
     landTenure: new Array<number>(64).fill(0),
     facilityOwner: new Array<number>(32).fill(0),

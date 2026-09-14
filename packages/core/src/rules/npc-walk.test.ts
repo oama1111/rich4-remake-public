@@ -55,10 +55,13 @@ describe('走子本身', () => {
     expect(w.events).toEqual([]);
   });
 
-  it('走完就收场', () => {
+  it('★ 走完留在原地、仍在棋盘上，下一輪接着走（0x00418f93 每輪都轮到 +10 == 0 的惡人）', () => {
     const s = makeGameState({ players: [makePlayer({ index: 0, nodeId: 20 })] });
     const w = runNpc(NPC.robber, releaseNpc(1, 0, 3), s, straight(), line, rng());
-    expect(w.actor.nodeId).toBe(0);
+    expect(w.actor.nodeId).toBe(4);
+    expect(w.actor.lastNodeId).toBe(3);
+    expect(w.actor.place).toBe(ACTOR_PLACE.board);
+    expect(w.actor.stepsRemaining).toBe(0);
     expect(w.actor.owner).toBe(0);
   });
 });

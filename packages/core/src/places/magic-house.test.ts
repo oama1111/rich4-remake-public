@@ -290,3 +290,22 @@ describe('转盘怎么转', () => {
     expect(spin.criterion).toBe(0);
   });
 });
+
+// ============================================================
+//  T-011：魔法屋的「男生/女生」等按人筛的功能只在玩家里选，四大惡人不在候选里
+// ============================================================
+
+describe('★ 魔法屋候选只含玩家（四大惡人不受男性效果影响）', () => {
+  it('12 种判据的候选下标都 < 玩家数', () => {
+    const ps = [0, 1, 2, 3].map((i) => makePlayer({ index: i, isMale: i % 2 === 0, cash: 100 + i }));
+    for (let c = 0; c < 12; c++) {
+      const picked = magicTargets(c, {
+        players: ps,
+        wealthOf: (i) => ps[i]?.cash ?? 0,
+        landCountOf: () => 0,
+        houseCountOf: () => 0,
+      });
+      for (const i of picked) expect(i).toBeLessThan(ps.length);
+    }
+  });
+});

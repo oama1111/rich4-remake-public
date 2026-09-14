@@ -44,6 +44,7 @@
 import type { GameState } from '../state/types.ts';
 import type { MapObject } from '../cards/summon.ts';
 import type { WatcomRng } from '../rng/watcom.ts';
+import { tickBlockingCounter } from './blocking.ts';
 
 // ============================================================
 //  谁是替身
@@ -154,6 +155,13 @@ export interface SpecialActor {
   owner: number;
   /** 还剩几步 */
   stepsRemaining: number;
+  /**
+   * 停留天数 @source +14。轮到他时 `!= 0` → 这一趟不走（0x0040de1a）。
+   * 与玩家的阻碍计数同一套：每轮开局递减，到 0 挂 0x80，下一轮清零（0x0041cf19..0x0041cf34）。
+   */
+  halted: number;
+  /** 龜行天数 @source +15。轮到他时 `!= 0` → 只走一步（0x0040de34）；递减同上（0x0041cf3d..） */
+  singleStep: number;
   /** 在哪儿：棋盘 / 監獄 / 醫院 / 未出场 */
   place: ActorPlace;
 }
@@ -166,6 +174,8 @@ export function idleActor(): SpecialActor {
     direction: 0,
     owner: 0,
     stepsRemaining: 0,
+    halted: 0,
+    singleStep: 0,
     place: ACTOR_PLACE.offBoard,
   };
 }
@@ -270,6 +280,8 @@ export function spawnDoll(state: GameState, owner: number): SpecialActor | null 
     direction: p.direction,
     owner,
     stepsRemaining: DOLL_STEPS,
+    halted: 0,
+    singleStep: 0,
     place: ACTOR_PLACE.board,
   };
 }
@@ -301,6 +313,8 @@ export function releaseNpc(gateNodeId: number, owner: number, steps: number): Sp
     direction: 0,
     owner,
     stepsRemaining: steps,
+    halted: 0,
+    singleStep: 0,
     place: ACTOR_PLACE.board,
   };
 }
@@ -423,5 +437,38 @@ export function runDoll(
     objects: objs,
     cleared,
     path,
+  };
+}
+
+// ============================================================
+//  ★ 四大惡人每輪都走一趟（不是放出来走一次就完）
+// ============================================================
+
+/**
+ * 轮到某个惡人时他走几步 @source 0x0040de09..0x0040de64（`0x40dd1f` 的 actor >= 4 分支）：
+ * ```asm
+ * 0040de1a  if (+14 halted != 0)      { 步数 0，[turnrec+5] = 0x82 }   ; 停留：这趟不走
+ * 0040de34  else if (+15 single != 0) { 步数 1 }                        ; 龜行：只走一步
+ * 0040de50  else                      { 步数 = rand() % 9 + 2 }
+ * ```
+ * 誰有资格轮到：下一名行动者的选择（0x00418f93）在最后一名玩家之后依次看 4..7，
+ * `+10 place == 0`（在棋盘上）的才轮到；所以走完没回家的惡人**留在原地，下一輪接着走**。
+ */
+export function npcTurnSteps(actor: SpecialActor, rng: WatcomRng): number {
+  if (actor.halted !== 0) return 0;
+  if (actor.singleStep !== 0) return 1;
+  return npcSteps(rng);
+}
+
+/**
+ * 惡人的两个计数在他**轮到时**各走一天 @source 0x0041ce42 起（tick_blocking 的 actor >= 4 分支）：
+ * 带 0x80 的清零（0x0041cea1 / 0x0041ceb7），否则递减、到 0 挂 0x80（0x0041cf19.. / 0x0041cf3d..）。
+ * 与玩家的 `tickBlockingCounter` 同一套。
+ */
+export function tickNpcCounters(actor: SpecialActor): SpecialActor {
+  return {
+    ...actor,
+    halted: tickBlockingCounter(actor.halted).value,
+    singleStep: tickBlockingCounter(actor.singleStep).value,
   };
 }

@@ -149,6 +149,8 @@ describe('上路', () => {
       direction: 5,
       owner: 0,
       stepsRemaining: DOLL_STEPS,
+      halted: 0,
+      singleStep: 0,
       place: ACTOR_PLACE.board,
     });
   });
@@ -167,6 +169,8 @@ describe('上路', () => {
       direction: 0,
       owner: 2,
       stepsRemaining: 7,
+      halted: 0,
+      singleStep: 0,
       place: ACTOR_PLACE.board,
     });
   });
@@ -186,7 +190,7 @@ function objs(...at: number[]): MapObject[] {
 describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
   it('走满九步，路径含起点共十格', () => {
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
       [],
       line,
     );
@@ -196,7 +200,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
   it('沿途的物件被清掉，不在路上的不动', () => {
     const before = objs(3, 7, 40);
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
       before,
       line,
     );
@@ -211,7 +215,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
 
   it('★ 起点那一格不扫 —— 娃娃是走出去才踩到格子的', () => {
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
       objs(1),
       line,
     );
@@ -222,7 +226,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
   it('★ 附身状态一并清掉 —— 被请走的神明不该还挂在谁身上', () => {
     const attached: MapObject[] = [{ type: 1, nodeId: 5, state: 3, attached: 2 }];
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
       attached,
       line,
     );
@@ -231,7 +235,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
 
   it('走完就收场 —— 替身不留在场上', () => {
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 1, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 1, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
       [],
       line,
     );
@@ -241,7 +245,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
   it('走到死路就停 —— 不会原地打转刷步数', () => {
     // 只连一格：2 之后无处可去
     const r = runDoll(
-      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, place: ACTOR_PLACE.board },
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
       [],
       (from) => (from === 1 ? 2 : 0),
     );

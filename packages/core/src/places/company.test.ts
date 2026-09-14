@@ -280,7 +280,8 @@ describe('★ 每日：保險期倒数；15 日分紅', () => {
     const holdings = base.holdings.map((row, p) => row.map((h, j) => (j === 0 ? { ...h, amount: p === 0 ? 100 : 300 } : h)));
     const companyFunds = [...base.companyFunds];
     companyFunds[CID] = 10_000;
-    const s = { ...base, holdings, companyFunds };
+    // 一輪才过一天：让最后一名玩家收回合
+    const s = { ...base, holdings, companyFunds, currentPlayer: 1 };
     const r = reduce(s, { type: 'endTurn' }, topo);
     expect(r.day).toBe(15);
     expect(r.players[0]?.moneyInBank).toBe(2500);

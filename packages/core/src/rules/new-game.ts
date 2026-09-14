@@ -373,6 +373,7 @@ export function newGame(opts: NewGameOptions): GameState {
     landType: landTypeFromMap(map, landCount),
     landTenureIndex: landTenure,
     totalDays: 0,
+    totalMonths: 0,
     landLastToll: new Array<number>(landCount).fill(0),
     landTenure: new Array<number>(landCount).fill(0),
     // ★ 地图数据里設施的 owner/level/type 都是 0（见 facility.test.ts 那条实证），

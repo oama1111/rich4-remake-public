@@ -37,7 +37,7 @@
  *   0042c52d  avg6 < avg24×0.5                                     → +2
  *   ── 有企業（0x42c5d8）──
  *   0042c5f2  存款 <= 20000×物價         → 0 分
- *   0042c612  S = 總天數 ? trunc(累計盈餘(+0x2c) / 總天數) : 累計盈餘   ; 月均盈餘
+ *   0042c612  S = 總月數 ? trunc(累計盈餘(+0x2c) / 總月數) : 累計盈餘   ; 月均盈餘（[0x499084] 跨月 +1）
  *   0042c084  A = trunc(資產額(+0x24) / 10000)
  *   0042c0a3  0 < S < 5000×物價        → +1
  *   0042c0f3  5000×物價 <= S < 10000×物價 → +2
@@ -181,13 +181,13 @@ export interface StockScoreInput {
 /**
  * 一支股票的分 @source 0x0042c075..0x0042c557。返回 0 = 不考虑。
  *
- * @param moneyInBank 我的存款；@param priceIndex 物價；@param totalDays 總天數（[0x499084]）
+ * @param moneyInBank 我的存款；@param priceIndex 物價；@param totalMonths 總月數（[0x499084]）
  */
 export function scoreStock(
   s: StockScoreInput,
   moneyInBank: number,
   priceIndex: number,
-  totalDays: number,
+  totalMonths: number,
   meIndex: number,
 ): number {
   if (s.f6 !== 0) return 0;
@@ -208,7 +208,7 @@ export function scoreStock(
   // @source 0x0042c5f2：`cmp 20000×物價, 存款 / jge 跳过`
   if (20000 * priceIndex >= moneyInBank) return 0;
   // @source 0x0042c612..0x0042c638：idiv → 向零取整
-  const monthly = totalDays !== 0 ? Math.trunc(c.profit / totalDays) : c.profit;
+  const monthly = totalMonths !== 0 ? Math.trunc(c.profit / totalMonths) : c.profit;
   const asset = Math.trunc(c.assetValue / 10000);
 
   if (monthly > 0 && monthly < 5000 * priceIndex) score += 1;
@@ -313,7 +313,7 @@ export function decideStockTrade(state: GameState, topo?: MapTopology): Action |
 
   const scores = state.market.stocks.map((_, j) => {
     const input = stockScoreInput(state, topo ?? { nodes: [] }, j, state.currentPlayer);
-    return input === null ? 0 : scoreStock(input, me.moneyInBank, state.priceIndex, state.totalDays, state.currentPlayer);
+    return input === null ? 0 : scoreStock(input, me.moneyInBank, state.priceIndex, state.totalMonths, state.currentPlayer);
   });
   const pick = pickRanked(rankStocks(scores), (i) => aiRoll(state, 0x42c690 + i, 24));
   if (pick === -1) return null;
@@ -333,7 +333,7 @@ export function decideStockTrade(state: GameState, topo?: MapTopology): Action |
 export function stockScores(state: GameState, topo: MapTopology, me: Player = state.players[state.currentPlayer]!): number[] {
   return state.market.stocks.map((_, j) => {
     const input = stockScoreInput(state, topo, j, me.index);
-    return input === null ? 0 : scoreStock(input, me.moneyInBank, state.priceIndex, state.totalDays, me.index);
+    return input === null ? 0 : scoreStock(input, me.moneyInBank, state.priceIndex, state.totalMonths, me.index);
   });
 }
 
@@ -422,7 +422,7 @@ export function scoreStockForSale(
   s: SellScoreInput,
   me: { cash: number; moneyInBank: number },
   priceIndex: number,
-  totalDays: number,
+  totalMonths: number,
   meIndex: number,
   mustSell: boolean,
   dayOfMonth: number,
@@ -436,7 +436,7 @@ export function scoreStockForSale(
 
   if (s.company !== null) {
     const c = s.company;
-    const monthly = totalDays !== 0 ? Math.trunc(c.profit / totalDays) : c.profit;
+    const monthly = totalMonths !== 0 ? Math.trunc(c.profit / totalMonths) : c.profit;
     const asset = Math.trunc(c.assetValue / 10000);
     const ratio = s.totalHold === 0 ? 0 : Math.fround(s.myHolding / s.totalHold);
     const mine = c.chairman === meIndex + 1;
@@ -492,7 +492,7 @@ export function decideStockSell(state: GameState, topo: MapTopology): Action | n
     const input = sellScoreInput(state, topo, j, state.currentPlayer);
     return input === null
       ? 0
-      : scoreStockForSale(input, me, state.priceIndex, state.totalDays, state.currentPlayer, mustSell, state.day);
+      : scoreStockForSale(input, me, state.priceIndex, state.totalMonths, state.currentPlayer, mustSell, state.day);
   });
   const pick = pickForSale(scores);
   if (pick === -1) return null;

@@ -12,13 +12,21 @@ import { newStockMarket } from '../places/stock-market.ts';
 
 const topo = { nodes: [makeNode({ id: 1, adjacent: [1] })] };
 
+/** 一輪才过一天（0x00418f93）：让最后一名玩家收回合，回合才会绕回 0 号 */
 const endTurn = (s: GameState): GameState =>
-  reduce({ ...s, phase: 'turnEnd' }, { type: 'endTurn' }, topo);
+  reduce({ ...s, phase: 'turnEnd', currentPlayer: s.players.length - 1 }, { type: 'endTurn' }, topo);
 
 describe('日期推进', () => {
-  it('★ 每回合过一天', () => {
+  it('★ 一輪过一天：最后一名玩家收回合才推日期（0x00418fc3 ebx=1 → 0x41cf67）', () => {
     const s = endTurn(makeGameState({ year: 1998, month: 1, day: 1 }));
     expect([s.year, s.month, s.day]).toEqual([1998, 1, 2]);
+    // 不是最后一名：日期、物价都不动
+    const mid = reduce({ ...makeGameState({ year: 1998, month: 1, day: 1 }), phase: 'turnEnd', currentPlayer: 1 }, { type: 'endTurn' }, topo);
+    expect([mid.year, mid.month, mid.day]).toEqual([1998, 1, 1]);
+    expect(mid.currentPlayer).toBe(2);
+    // 只剩一人时每回合都绕回自己 → 每回合一天
+    const solo = reduce({ ...makeGameState({ year: 1998, month: 1, day: 1, players: [makePlayer({ index: 0 })] }), phase: 'turnEnd' }, { type: 'endTurn' }, topo);
+    expect(solo.day).toBe(2);
   });
 
   it('★ 月末跨月', () => {

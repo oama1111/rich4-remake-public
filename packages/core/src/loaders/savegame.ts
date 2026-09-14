@@ -106,6 +106,7 @@ function migrate(state: GameState, version: number): GameState {
     : { ...state, companyProfit: (state.companyFunds ?? []).map(() => 0) };
   // 电脑调度步（2026-09-14 加入）
   if (typeof patched.aiStep !== 'number') patched = { ...patched, aiStep: 0, aiBranch: 0 };
+  if (typeof patched.totalMonths !== 'number') patched = { ...patched, totalMonths: 0 };
   if (version === SAVE_FORMAT_VERSION) return patched;
   // 将来：逐版本补齐新增字段
   return patched;
@@ -297,6 +298,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     specialActors: initialSpecialActors(),
     landTenureIndex: 0,
     totalDays: 0,
+    totalMonths: 0,
     landLastToll: new Array<number>(landCount).fill(0),
     landTenure: new Array<number>(landCount).fill(0),
     facilityOwner: facilityFieldFromMap(map, (f) => f.owner),

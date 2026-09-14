@@ -242,8 +242,13 @@ export function runNpc(
     }
   }
 
-  // 走完收场
-  return { actor: { ...idleActor(), owner }, path, events };
+  // ★ 走完**留在原地** —— 下一名行动者的选择（0x00418f93）每輪都会轮到棋盘上（+10 == 0）的惡人，
+  //   他下一輪从这儿接着走；只有踩到老家（上面 ①）才回去。先前「走完就收场」是错的。
+  return {
+    actor: { ...start, nodeId: cur, lastNodeId: prev, stepsRemaining: 0, place: ACTOR_PLACE.board },
+    path,
+    events,
+  };
 }
 
 /**
