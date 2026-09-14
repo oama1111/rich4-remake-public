@@ -65,6 +65,13 @@ import {
 } from './render.ts';
 import { TOOLBAR_LABELS } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
+import {
+  drawDialog,
+  hitDialog,
+  layoutDialog,
+  type AmountPage,
+  type DialogHit,
+} from './dialog.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import {
@@ -131,6 +138,80 @@ let optionsReturn: Screen = 'title';
 let optionsVariant = 0;
 let optionsDraft: GameOptions = { ...DEFAULT_OPTIONS };
 let optionsHot: OptionsHit | null = null;
+
+/** 对话框正在填数的那一页；`null` 表示还在选项页 */
+let amountPage: AmountPage | null = null;
+let dialogHot: DialogHit | null = null;
+
+/**
+ * 这一帧棋盘上要不要盖一块对话框。
+ *
+ * ★ 这是「人能不能真的把这局玩下去」的关键：`pending` 给得出，就必须
+ *   答得掉。原先答复控件只在 HTML 调试抽屉里，而抽屉默认是收起的——
+ *   也就是正常开局时**根本没法回答买地**。
+ */
+function currentDialog(): InteractionUi | null {
+  if (screen !== 'game') return null;
+  if (state.phase === 'awaitingDirection') return directionUi();
+  return state.pending === null ? null : interactionUi(state.pending, state);
+}
+
+/** 走完一次对话框交互，回到选项页 */
+function closeAmountPage(): void {
+  amountPage = null;
+  dialogHot = null;
+}
+
+/** 对话框上点到了什么 */
+function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
+  if (hit.kind === 'choice') {
+    const c = ui.choices[hit.index];
+    if (c === undefined) return;
+    // 要填数的选项：先进填数页，别直接派 action
+    if (c.amount !== undefined) {
+      amountPage = { choice: hit.index, value: c.amount.max };
+      dialogHot = null;
+      requestRender();
+      return;
+    }
+    log(ui.title === '' ? `▶ ${c.label}` : `▶ ${ui.title}：${c.label}`);
+    closeAmountPage();
+    dispatch(c.action);
+    return;
+  }
+
+  const page = amountPage;
+  const amount = page === null ? undefined : ui.choices[page.choice]?.amount;
+  if (page === null || amount === undefined) return;
+
+  switch (hit.kind) {
+    case 'amountStep':
+      amountPage = { ...page, value: Math.max(0, Math.min(amount.max, page.value + hit.delta)) };
+      requestRender();
+      return;
+    case 'amountMax':
+      amountPage = { ...page, value: amount.max };
+      requestRender();
+      return;
+    case 'amountCancel':
+      closeAmountPage();
+      requestRender();
+      return;
+    case 'amountOk': {
+      const n = Math.trunc(page.value);
+      closeAmountPage();
+      // ★ 0 等于没做这件事 —— 派一个 0 的 action 只会被引擎原样退回，
+      //   然后交互还留在那儿，看起来像卡住了
+      if (n <= 0) {
+        requestRender();
+        return;
+      }
+      log(`▶ ${ui.title === '' ? '' : `${ui.title}：`}${amount.label} ${n}`);
+      dispatch(amount.fill(n));
+      return;
+    }
+  }
+}
 
 function openOptions(from: Screen): void {
   optionsReturn = from;
@@ -276,6 +357,10 @@ function dispatch(action: Action): void {
   if (state !== before) {
     history.push(action);
     playSoundFor(before, state);
+    // ★ 状态一变，填数页指着的那个选项下标就可能已经不是同一回事了
+    //   （`pending` 换了一种，甚至换了人）。一律收掉。
+    amountPage = null;
+    dialogHot = null;
   }
   requestRender();
   renderPanel();
@@ -453,6 +538,8 @@ function drawGameStage(): void {
     pressedTool,
     viewport: { w: LAYOUT.board.w, h: LAYOUT.board.h },
   });
+  const dlg = currentDialog();
+  if (dlg !== null) drawDialog(boardCtx, dlg, amountPage, dialogHot);
   stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
 
   // 工具栏画在棋盘上方（直接画到舞台上）
@@ -931,6 +1018,21 @@ function bindInput(): void {
       return;
     }
 
+    // 对话框盖在棋盘上：它在的时候，先问它
+    const dlgHover = currentDialog();
+    if (dlgHover !== null) {
+      const h = hitDialog(
+        boardCtx, dlgHover, amountPage,
+        p.x - LAYOUT.board.x, p.y - LAYOUT.board.y,
+      );
+      const next = h === null || h === 'inside' ? null : h;
+      if (JSON.stringify(next) !== JSON.stringify(dialogHot)) {
+        dialogHot = next;
+        requestRender();
+      }
+      if (h !== null) return; // 框上的点不再落到棋盘
+    }
+
     // ★ 人物视角也能拾取。办法不是去解投影表的逆，而是把每个节点
     //   **正向投一遍**再比屏幕距离（见 render.ts 的 `pickNodeAt`）——
     //   用的就是绘制时那张表，所以「看得见的就点得到」。
@@ -996,6 +1098,19 @@ function bindInput(): void {
       setup = applySetupHit(setup, hit);
       requestRender();
       return;
+    }
+
+    // 对话框在的时候，棋盘上的点击一律先给它
+    const dlg = currentDialog();
+    if (dlg !== null) {
+      const h = hitDialog(
+        boardCtx, dlg, amountPage,
+        p.x - LAYOUT.board.x, p.y - LAYOUT.board.y,
+      );
+      if (h !== null) {
+        if (h !== 'inside') onDialogHit(dlg, h);
+        return; // ★ 落在框上但没中按钮也要吃掉，别穿透到棋盘去选格子
+      }
     }
 
     if (hoverNode === null) return;
@@ -1293,6 +1408,23 @@ async function boot(): Promise<void> {
         get setup() { return setup; },
         get options() { return { saved: options, draft: optionsDraft, variant: optionsVariant }; },
         goto: (s: Screen) => { screen = s; requestRender(); },
+        /** 直接派一个 action —— 自动化测试用，走的与人点按钮同一条路 */
+        dispatch: (a: Action) => { dispatch(a); },
+        /** 当前这一帧对话框上有哪些按钮（棋盘区坐标），给自动化点用 */
+        dialog: () => {
+          const ui = currentDialog();
+          if (ui === null) return null;
+          return {
+            title: ui.title,
+            detail: ui.detail,
+            buttons: layoutDialog(boardCtx, ui, amountPage).buttons.map((b) => ({
+              label: b.label,
+              // 换算到舞台坐标，省得调用方再加一次棋盘偏移
+              x: b.rect.x + b.rect.w / 2 + LAYOUT.board.x,
+              y: b.rect.y + b.rect.h / 2 + LAYOUT.board.y,
+            })),
+          };
+        },
         /** 查一张图的尺寸与锚点 —— 命中判定对不上时先看这个 */
         sprite: (archive: 'Data.mkf' | 'Panel.mkf', res: number, idx: number, key = false) => {
           const s2 = spriteNow(archive, res, idx, key);

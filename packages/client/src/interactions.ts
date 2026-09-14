@@ -56,9 +56,10 @@ export function interactionUi(
 
     // ★ 问句用原版的整段文字（@rich4/data 的 messages.ts，逐字对过 exe）。
     //   我们只补上原版画在别处的「現金」，不改它自己那一句。
+    // ★ 不另起标题：原版那一句的第一段本来就是地名，再加个标题栏就重了
     case 'buyLand':
       return {
-        title: pending.name,
+        title: '',
         detail:
           formatOriginal(PROMPT.buyLand.text, pending.name, pending.price) +
           `\n${FIELD.cash.text} ${money(cash)}`,
@@ -70,7 +71,7 @@ export function interactionUi(
 
     case 'upgradeLand':
       return {
-        title: pending.name,
+        title: '',
         detail:
           formatOriginal(PROMPT.upgradeLand.text, pending.name, pending.cost) +
           `\n${FIELD.cash.text} ${money(cash)}`,
@@ -172,7 +173,7 @@ export function interactionUi(
 
     case 'buyShares':
       return {
-        title: pending.name,
+        title: '',
         detail:
           formatOriginal(PROMPT.buyShares.text, pending.name, pending.unitPrice) +
           `\n尚餘 ${pending.available} 股　${FIELD.cash.text} ${money(pending.cash)}`,
