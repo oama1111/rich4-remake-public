@@ -8,7 +8,7 @@
  *   是同一种 action，引擎分不出也不需要分出来源。
  */
 
-import { CHARACTERS } from '@rich4/data';
+import { CHARACTERS, TOOLBAR_TIPS } from '@rich4/data';
 import {
   autoAction,
   decideAction,
@@ -66,7 +66,9 @@ import {
 import { TOOLBAR_LABELS } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 import {
+  drawAdvance,
   drawDialog,
+  hitAdvance,
   hitDialog,
   layoutDialog,
   type AmountPage,
@@ -142,6 +144,69 @@ let optionsHot: OptionsHit | null = null;
 /** 对话框正在填数的那一页；`null` 表示还在选项页 */
 let amountPage: AmountPage | null = null;
 let dialogHot: DialogHit | null = null;
+let advanceHot = false;
+
+/**
+ * 人类回合里那些**没得选**的步骤，由这个定时器自己走完。
+ *
+ * ★ 原版里玩家只按一次「前進」，棋子就自己走完并停在落点上。先前本引擎
+ *   把 `startTurn / step / settle / endTurn` 全做成了调试抽屉里的按钮，
+ *   而抽屉默认收起——于是正常开局时**连骰子都掷不了**。
+ *
+ * 停下来等人的只有三处：`awaitingRoll`（等「前進」）、`awaitingDecision`
+ * 与 `awaitingDirection`（等对话框）。
+ */
+let humanTimer: number | null = null;
+
+/**
+ * 走一步之间隔多久。
+ *
+ * ⚠️ 这三个数是**我们定的**，不是原版的。RICH4.CFG offset 0 说游戏速度
+ *   有 00/01/02 三档（见 options.ts），但每一档具体多少毫秒没查证。
+ */
+const STEP_MS = [220, 120, 60] as const;
+
+function humanDelay(): number {
+  if (!options.animation) return 0;
+  return STEP_MS[Math.max(0, Math.min(2, options.speed))] ?? 120;
+}
+
+function scheduleHumanTurn(): void {
+  if (humanTimer !== null) {
+    clearTimeout(humanTimer);
+    humanTimer = null;
+  }
+  if (screen !== 'game') return;
+  // 轮到电脑就交给 scheduleAi，别两个驱动同时动手
+  if (isAiTurn(state) || autoAction(state) !== null) return;
+  const next = mechanicalAction();
+  if (next === null) return;
+  humanTimer = window.setTimeout(() => {
+    humanTimer = null;
+    dispatch(next);
+  }, humanDelay());
+}
+
+/** 当前这一步是不是「没得选」的 —— 是就返回它，否则 null */
+function mechanicalAction(): Action | null {
+  switch (state.phase) {
+    case 'turnStart':
+      return { type: 'startTurn' };
+    case 'moving':
+      return { type: 'step' };
+    case 'settling':
+      return { type: 'settle' };
+    case 'turnEnd':
+      return { type: 'endTurn' };
+    default:
+      return null; // awaitingRoll / awaitingDecision / awaitingDirection：等人
+  }
+}
+
+/** 轮到人、还没掷骰 */
+function awaitingHumanRoll(): boolean {
+  return screen === 'game' && state.phase === 'awaitingRoll' && !isAiTurn(state);
+}
 
 /**
  * 这一帧棋盘上要不要盖一块对话框。
@@ -365,6 +430,7 @@ function dispatch(action: Action): void {
   requestRender();
   renderPanel();
   scheduleAi();
+  scheduleHumanTurn();
 }
 
 /**
@@ -432,6 +498,7 @@ function scheduleAi(): void {
     requestRender();
     renderPanel();
     scheduleAi();
+    scheduleHumanTurn(); // 电脑走完，轮到人时接着推进机械步骤
   }, aiDelayMs);
 }
 
@@ -540,6 +607,7 @@ function drawGameStage(): void {
   });
   const dlg = currentDialog();
   if (dlg !== null) drawDialog(boardCtx, dlg, amountPage, dialogHot);
+  else if (awaitingHumanRoll()) drawAdvance(boardCtx, TOOLBAR_TIPS.advance.text, advanceHot);
   stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
 
   // 工具栏画在棋盘上方（直接画到舞台上）
@@ -973,6 +1041,7 @@ function startGame(): void {
   requestRender();
   renderPanel();
   scheduleAi();
+  scheduleHumanTurn();
 }
 
 // ============================================================
@@ -1016,6 +1085,17 @@ function bindInput(): void {
         requestRender();
       }
       return;
+    }
+
+    if (awaitingHumanRoll()) {
+      const on = hitAdvance(p.x - LAYOUT.board.x, p.y - LAYOUT.board.y);
+      if (on !== advanceHot) {
+        advanceHot = on;
+        requestRender();
+      }
+      if (on) return;
+    } else if (advanceHot) {
+      advanceHot = false;
     }
 
     // 对话框盖在棋盘上：它在的时候，先问它
@@ -1098,6 +1178,14 @@ function bindInput(): void {
       setup = applySetupHit(setup, hit);
       requestRender();
       return;
+    }
+
+    // 轮到人、还没掷骰：底部那个「前進」
+    if (awaitingHumanRoll()) {
+      if (hitAdvance(p.x - LAYOUT.board.x, p.y - LAYOUT.board.y)) {
+        dispatch({ type: 'rollDice' });
+        return;
+      }
     }
 
     // 对话框在的时候，棋盘上的点击一律先给它
@@ -1212,6 +1300,14 @@ function bindInput(): void {
       case 'm':
         sound.setMuted(!sound.muted);
         log(sound.muted ? '⏸ 静音' : '▶ 开声');
+        break;
+      case ' ':
+      case 'enter':
+        // 「前進指令」——原版是热键（RICH4.CFG offset 0x20），这里也给热键
+        if (awaitingHumanRoll()) {
+          e.preventDefault();
+          dispatch({ type: 'rollDice' });
+        }
         break;
       case 'escape':
         if (screen === 'options') {

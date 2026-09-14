@@ -157,6 +157,38 @@ export const PLACE = {
   landGod: t('土地公', 0x465ec2),
 } as const;
 
+/**
+ * 工具栏/操作项的名字。
+ *
+ * @source 指针表 `0x00476028`，20 项，指向 `0x00465dc0..0x00465e3b` 的一段连续串。
+ *
+ * ⚠️ **哪个图标对应第几项没查证** —— 用到这张表的那段代码没定位到，
+ *   `TOOLBAR_LABELS`（client/assets.ts）里那 11 个名字仍是照图标外观猜的。
+ *   这里先把原文收下来，等映射解出来再替换过去。
+ */
+export const TOOLBAR_TIPS = {
+  gameOps: t('遊戲操作', 0x465dc0),
+  calendar: t('日、月曆', 0x465dc9),
+  landData: t('地產資料', 0x465dd2),
+  otherData: t('其他資料', 0x465ddb),
+  priceIndex: t('物價指數', 0x465de4),
+  stockData: t('股票資料', 0x465ded),
+  fundData: t('資金資料', 0x465df6),
+  load: t('LOAD', 0x465dff),
+  save: t('SAVE', 0x465e04),
+  cards: t('卡片', 0x465e09),
+  trade: t('交易', 0x465e0e),
+  map: t('地圖', 0x465e13),
+  system: t('系統', 0x465e18),
+  stockMarket: t('股市', 0x465e1d),
+  advance: t('前進', 0x465e22),
+  query: t('查詢', 0x465e27),
+  autoPlay: t('託管', 0x465e2c),
+  tools: t('道具', 0x465e31),
+  help: t('說明', 0x465e36),
+  companies: t('公司企業', 0x465e3b),
+} as const;
+
 /** 把 `%s` / `%d` 依次替换掉 —— 原版用的是 C 的 sprintf，这里只做它用到的那两种 */
 export function formatOriginal(fmt: string, ...args: (string | number)[]): string {
   let i = 0;
@@ -173,4 +205,5 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(BANK),
   ...Object.values(BAIL),
   ...Object.values(PLACE),
+  ...Object.values(TOOLBAR_TIPS),
 ];

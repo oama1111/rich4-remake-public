@@ -39,6 +39,43 @@ const MAX_W = 400;
 const FONT_TITLE = 'bold 17px "PingFang TC", "Microsoft JhengHei", sans-serif';
 const FONT_BODY = '14px "PingFang TC", "Microsoft JhengHei", sans-serif';
 
+interface Rect { x: number; y: number; w: number; h: number }
+
+function inRect(x: number, y: number, r: Rect): boolean {
+  return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+/**
+ * 「前進」钮 —— 轮到人、还没掷骰时画在棋盘底部正中。
+ *
+ * ⚠️ 原版**没有这个按钮**：掷骰走的是热键（RICH4.CFG 的「前進指令」，
+ *   见 `rich4-re/docs/rich4_cfg.txt` offset 0x20）。但热键得先有人告诉
+ *   玩家按哪个，界面上又没写，所以这里补一个看得见的。
+ *   字是原版的（`0x00465e22 '前進'`）。
+ */
+export const ADVANCE_BUTTON = { x: 0xdc - 45, y: 396, w: 90, h: 30 } as const;
+
+export function hitAdvance(x: number, y: number): boolean {
+  return inRect(x, y, ADVANCE_BUTTON);
+}
+
+/** 画「前進」钮 */
+export function drawAdvance(ctx: CanvasRenderingContext2D, label: string, hot: boolean): void {
+  const r = ADVANCE_BUTTON;
+  ctx.save();
+  ctx.fillStyle = hot ? '#e8d24a' : '#d6c6a5';
+  ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeStyle = '#6b5a39';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+  ctx.fillStyle = '#2a1d0e';
+  ctx.font = FONT_TITLE;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + 1);
+  ctx.restore();
+}
+
 /** 一次点击可能落在哪 */
 export type DialogHit =
   | { kind: 'choice'; index: number }
@@ -53,17 +90,13 @@ export interface AmountPage {
   value: number;
 }
 
-interface Rect { x: number; y: number; w: number; h: number }
+
 
 interface Layout {
   box: Rect;
   title: string;
   lines: string[];
   buttons: { label: string; rect: Rect; hit: DialogHit }[];
-}
-
-function inRect(x: number, y: number, r: Rect): boolean {
-  return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 }
 
 /** 按框宽折行；原版自己那几段 `\n\n` 先照分 */
