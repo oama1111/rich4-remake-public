@@ -249,7 +249,7 @@ cards:
   title: 停留/轉向/烏龜卡可指向四大惡人与機器娃娃（P0-11 卡片侧）
   module: MOD-05
   req: REQ-05.1
-  status: todo
+  status: done
   estimate: 0.6
   depends_on: [T-001]
   uses:

@@ -7,6 +7,7 @@
 
 import type { Player } from '../state/types.ts';
 import type { LandInfo } from '../loaders/map.ts';
+import type { SpecialActor } from '../rules/special-actors.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { targetClassOf, validateTarget } from './target.ts';
 
@@ -64,6 +65,28 @@ export function applyTurnCard(
     i === target.index ? { ...p, direction: turnAround(p.direction) } : p,
   );
   return { ok: true, error: null, players: next };
+}
+
+/**
+ * 转向卡对**特殊棋子**：掉头逻辑在共用函数 `0x40c78c` 里，
+ * 目标 ≥ 4 时走替身表分支（VA 0x0040c85e）：
+ *
+ * @source
+ * ```asm
+ * lea ecx, [target - 4]
+ * shl ecx, 4
+ * mov dl, byte [ecx + 0x498e31]     ; special.direction (+9)
+ * add dl, 4 / and dl, 7
+ * mov byte [ecx + 0x498e31], dl     ; ★ (direction + 4) & 7，与玩家同式
+ * ```
+ *
+ * ⚠️ 尾部还有一段「在相邻格中 `rand()` 摇一个 ≠ 旧 last_node 的写回
+ *   last_node」（0x0040c8e8，玩家分支 0x0040c834 同款）——需要拓扑与
+ *   掷骰，玩家路径目前也未实现（见 applyTurnCard），两条路保持一致，
+ *   待 last_node 语义进引擎时一并补。
+ */
+export function applyTurnCardToActor(actor: SpecialActor): SpecialActor {
+  return { ...actor, direction: turnAround(actor.direction) };
 }
 
 // ============================================================

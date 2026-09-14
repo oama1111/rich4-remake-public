@@ -177,3 +177,24 @@ describe('★ T-008：設施目标经 reduce 端到端落回 GameState', () => {
     expect(after.facilityResearchDays[1]).toBe(0);
   });
 });
+
+describe('★ T-010：actor 目标经 reduce 端到端落回 specialActors', () => {
+  it('停留卡(14) 对在场惡人：specialActors[slot].halted 真的落回 GameState', () => {
+    const { state, topo } = scene();
+    const s = {
+      ...give(state, 0, 14),
+      specialActors: state.specialActors.map((a, i) =>
+        i === 0 ? { ...a, place: 0 as const, nodeId: 1 } : a,
+      ),
+    };
+    const after = reduce(s, { type: 'useCard', cardId: 14, target: { kind: 'actor', actor: 4 } }, topo);
+    expect(after.specialActors[0]!.halted).toBe(1);
+    expect(after.players[0]!.cards).toHaveLength(0);
+  });
+
+  it('对在監獄的惡人出停留卡：状态原样不动', () => {
+    const { state, topo } = scene();
+    const s = give(state, 0, 14); // 初始 actor 4 在監獄
+    expect(reduce(s, { type: 'useCard', cardId: 14, target: { kind: 'actor', actor: 4 } }, topo)).toBe(s);
+  });
+});

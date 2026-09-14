@@ -223,6 +223,7 @@ export function decideCard(ctx: AiContext): Action | null {
         market: state.market,
         marketOpen: marketOpenOn(state.globalMapId, state.year, state.month, state.day),
         facilities,
+        actors: state.specialActors,
         scapegoatPicker: () => -1,
       },
       cardId,

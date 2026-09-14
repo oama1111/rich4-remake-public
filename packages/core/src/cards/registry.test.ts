@@ -10,6 +10,7 @@ import { HOUSING_TYPE_MIN, FACILITY_TYPE_MIN } from '../rules/land.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import type { StockState } from '../places/stock.ts';
 import { STOCK_COUNT } from '../rules/wealth.ts';
+import { initialSpecialActors } from '../rules/special-actors.ts';
 
 const makeStock = (over: Partial<StockState> = {}): StockState => ({
   price: 100, shares: 10_000, f10: 10_000, commercialIndex: 0, f6: 0,
@@ -52,6 +53,7 @@ function makeCtx(over: Partial<UseCardContext> = {}): UseCardContext {
     market: makeMarket(),
     marketOpen: true,
     facilities: [],
+    actors: initialSpecialActors(),
     ...over,
   };
 }
@@ -764,5 +766,82 @@ describe('★ T-008：五张地块卡对設施目标', () => {
   it('設施 id 越界 → facilityOutOfRange', () => {
     const ctx = facCtx(9, makeFacility({ id: 1, type: 0, level: 0 }));
     expect(useCard(ctx, 9, { kind: 'facility', facilityId: 9 }).error).toBe('facilityOutOfRange');
+  });
+});
+
+describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', () => {
+  // 一个已出场在棋盘上的替身 + 牌在手的玩家
+  const actorCtx = (cardId: number, slot: number, over: Partial<UseCardContext> = {}) => {
+    const actors = initialSpecialActors().map((a, i) =>
+      i === slot ? { ...a, place: 0 as const, nodeId: 12, lastNodeId: 11, direction: 3 } : a,
+    );
+    return makeCtx({
+      players: [makePlayer({ index: 0, cards: [cardId] }), makePlayer({ index: 1 })],
+      actors,
+      ...over,
+    });
+  };
+
+  for (const actor of [4, 5, 6, 7, 8]) {
+    it(`停留卡(14)：actor ${actor} 的 halted 写成 1（= 停 2 天，与别人同款）`, () => {
+      const ctx = actorCtx(14, actor - 4);
+      const r = useCard(ctx, 14, { kind: 'actor', actor });
+      expect(r.ok).toBe(true);
+      expect(r.actors[actor - 4]!.halted).toBe(1);
+      expect(r.players[0]!.cards).toEqual([]); // 生效扣卡
+      // 玩家数组没被动
+      expect(r.players.map((p) => p.blocking.stopping)).toEqual([0, 0]);
+    });
+
+    it(`轉向卡(6)：actor ${actor} 的 direction 掉头（3 → 7）`, () => {
+      const ctx = actorCtx(6, actor - 4);
+      const r = useCard(ctx, 6, { kind: 'actor', actor });
+      expect(r.ok).toBe(true);
+      expect(r.actors[actor - 4]!.direction).toBe(7);
+      expect(r.players.map((p) => p.direction)).toEqual([0, 0]);
+    });
+
+    it(`烏龜卡(30)：actor ${actor} 的 singleStep 写成 3`, () => {
+      const ctx = actorCtx(30, actor - 4);
+      const r = useCard(ctx, 30, { kind: 'actor', actor });
+      expect(r.ok).toBe(true);
+      expect(r.actors[actor - 4]!.singleStep).toBe(3);
+    });
+  }
+
+  it('不在棋盘上的 NPC（place ≠ board）→ noEffect 且不扣卡', () => {
+    // 初始状态：小偷(actor 4)在監獄
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [14] }), makePlayer({ index: 1 })],
+    });
+    const r = useCard(ctx, 14, { kind: 'actor', actor: 4 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('noEffect');
+    expect(r.players[0]!.cards).toEqual([14]);
+  });
+
+  it('未出场的機器娃娃（actor 8 offBoard）→ noEffect', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [30] }), makePlayer({ index: 1 })],
+    });
+    expect(useCard(ctx, 30, { kind: 'actor', actor: 8 }).error).toBe('noEffect');
+  });
+
+  it('actor 越界（9）→ actorOutOfRange', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [14] }), makePlayer({ index: 1 })],
+    });
+    expect(useCard(ctx, 14, { kind: 'actor', actor: 9 }).error).toBe('actorOutOfRange');
+  });
+
+  it('其他卡不接受 actor 目标（均富卡）→ targetNotAllowed', () => {
+    expect(useCard(makeCtx(), 1, { kind: 'actor', actor: 4 }).error).toBe('targetNotAllowed');
+  });
+
+  it('★ 机器娃娃在场时转向卡也生效（0x40c78c 不看种类，只看 ≥4）', () => {
+    const ctx = actorCtx(6, 8 - 4);
+    const r = useCard(ctx, 6, { kind: 'actor', actor: 8 });
+    expect(r.ok).toBe(true);
+    expect(r.actors[4]!.direction).toBe(7);
   });
 });

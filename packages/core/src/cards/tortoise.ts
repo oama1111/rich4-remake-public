@@ -7,6 +7,7 @@
  */
 
 import type { Player } from '../state/types.ts';
+import type { SpecialActor } from '../rules/special-actors.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { targetClassOf, validateTarget } from './target.ts';
 
@@ -59,4 +60,21 @@ export function applyTortoiseCard(
       : p,
   );
   return { ok: true, error: null, players: next, days };
+}
+
+/**
+ * 乌龟卡对**特殊棋子**：写替身记录的 `+15 single_step` = 3。
+ *
+ * @source VA 0x00445a3e（烏龜卡的 `cmp 目标, 4 / jge` 分支）：
+ * ```asm
+ * shl esi, 4                            ; 目标 × 16
+ * mov byte [esi + 0x498df7], 3          ; ★ = special[target-4].single_step = 3
+ * ```
+ * （0x498df7 + target×16 == 0x498e28 + (target−4)×16 + 15）
+ *
+ * 与「对别人」同为 3 天；轮到该替身时 `single_step != 0` → 只走一步
+ * （0x0040de34），递减与玩家同一套（0x0041cf3d..）。
+ */
+export function applyTortoiseCardToActor(actor: SpecialActor): SpecialActor {
+  return { ...actor, singleStep: TORTOISE_DAYS_OTHER };
 }

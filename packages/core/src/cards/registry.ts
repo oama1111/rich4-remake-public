@@ -29,15 +29,17 @@ import { transferMoney } from '../rules/payment.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
 import type { PendingInteraction } from '../rules/interaction.ts';
 import { auctionBasePrice, auctionCardHostility, eligibleBidders } from '../rules/auction.ts';
+import { actorActive, specialSlotOf } from '../rules/special-actors.ts';
+import type { SpecialActor } from '../rules/special-actors.ts';
 
 import { applyAverageCashCard } from './average-cash.ts';
 import { applyAveragePoorCard } from './average-poor.ts';
 import { applyHibernateCard } from './hibernate.ts';
 import { applySleepwalkCard } from './sleepwalk.ts';
-import { applyStayCard } from './stay.ts';
-import { applyTortoiseCard } from './tortoise.ts';
+import { applyStayCard, applyStayCardToActor } from './stay.ts';
+import { applyTortoiseCard, applyTortoiseCardToActor } from './tortoise.ts';
 import { applyAllianceCard } from './alliance.ts';
-import { applyTurnCard, applySwapHouseCard } from './turn-and-house.ts';
+import { applyTurnCard, applyTurnCardToActor, applySwapHouseCard } from './turn-and-house.ts';
 import { applyTaxCard } from './tax.ts';
 import { applyDispelCard } from './dispel.ts';
 import { applyFrameCard } from './frame.ts';
@@ -89,6 +91,11 @@ export interface UseCardResult {
   market: StockMarketState;
   /** 設施表（仅怪獸卡等会改动；其余卡原样返回） */
   facilities: FacilityInfo[];
+  /**
+   * 特殊棋子表（仅停留/轉向/烏龜卡的 actor 目标会改动；
+   * 其余卡原样返回）。下标 = actor − 4，与 `state.specialActors` 同形。
+   */
+  actors: SpecialActor[];
   /**
    * 效果执行中需要**重新登场的搭档**（請神符挤走旧神时，
    * 旧神的搭档要回到地图上）。落点选择交给 reduce 的 respawnPartner。
@@ -146,6 +153,8 @@ export interface UseCardContext {
   marketOpen: boolean;
   /** 設施表（怪獸卡等可指向設施的卡要读/写） */
   facilities: readonly FacilityInfo[];
+  /** 特殊棋子表（停留/轉向/烏龜卡的 actor 目标要读/写） */
+  actors: readonly SpecialActor[];
   /**
    * 嫁祸卡的新目标选择器（陷害卡等有害卡在被嫁祸时调用）。
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
@@ -208,6 +217,7 @@ export function useCard(
     objects: [...ctx.objects],
     market: ctx.market,
     facilities: [...ctx.facilities],
+    actors: [...ctx.actors],
     respawns: [],
     hostilityDeltas: [],
     defended: false,
@@ -232,6 +242,8 @@ export function useCard(
     objectCount: ctx.objects.length,
     stockCount: ctx.market.stocks.length,
     facilityCount: ctx.facilities.reduce((m, f) => Math.max(m, f.id), 0),
+    // REQ-05.1：停留(14)/轉向(6)/烏龜(30) 三卡可指向四大惡人与機器娃娃
+    allowActor: cardId === 6 || cardId === 14 || cardId === 30,
   });
   if (targetError !== null) return fail(targetError);
 
@@ -249,6 +261,7 @@ export function useCard(
   let objects: MapObject[] = [...ctx.objects];
   let market: StockMarketState = ctx.market;
   let facilities: FacilityInfo[] = [...ctx.facilities];
+  let actors: SpecialActor[] = [...ctx.actors];
   const respawns: { partner: number; nearNode: number }[] = [];
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
@@ -304,12 +317,29 @@ export function useCard(
       break;
     }
     case 6: {
+      if (target.kind === 'actor') {
+        // REQ-05.1：轉向卡对特殊棋子 —— 0x40c78c 的 actor ≥ 4 分支
+        const slot = specialSlotOf(target.actor);
+        const a = slot >= 0 ? actors[slot] : undefined;
+        // 不在棋盘上（監獄/醫院/未出场）不生效，不扣卡
+        if (!actorActive(a)) return fail('noEffect');
+        actors = actors.map((x, i) => (i === slot ? applyTurnCardToActor(x) : x));
+        break;
+      }
       const r = applyTurnCard(players, cur, target);
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       break;
     }
     case 14: {
+      if (target.kind === 'actor') {
+        // REQ-05.1：停留卡对特殊棋子 —— VA 0x004440d9 写 +14 halted = 1
+        const slot = specialSlotOf(target.actor);
+        const a = slot >= 0 ? actors[slot] : undefined;
+        if (!actorActive(a)) return fail('noEffect');
+        actors = actors.map((x, i) => (i === slot ? applyStayCardToActor(x) : x));
+        break;
+      }
       const r = applyStayCard(players, cur, target);
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
@@ -379,6 +409,14 @@ export function useCard(
       break;
     }
     case 30: {
+      if (target.kind === 'actor') {
+        // REQ-05.1：烏龜卡对特殊棋子 —— VA 0x00445a3e 写 +15 single_step = 3
+        const slot = specialSlotOf(target.actor);
+        const a = slot >= 0 ? actors[slot] : undefined;
+        if (!actorActive(a)) return fail('noEffect');
+        actors = actors.map((x, i) => (i === slot ? applyTortoiseCardToActor(x) : x));
+        break;
+      }
       const r = applyTortoiseCard(players, cur, target);
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
@@ -615,5 +653,5 @@ export function useCard(
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset };
 }

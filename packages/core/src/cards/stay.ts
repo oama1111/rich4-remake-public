@@ -7,6 +7,7 @@
  */
 
 import type { Player } from '../state/types.ts';
+import type { SpecialActor } from '../rules/special-actors.ts';
 import type { CardTarget } from './target.ts';
 import { targetClassOf, validateTarget } from './target.ts';
 import type { TargetError } from './target.ts';
@@ -79,4 +80,22 @@ export function applyStayCard(
       : p,
   );
   return { ok: true, error: null, players: next, raw };
+}
+
+/**
+ * 停留卡对**特殊棋子**（四大惡人/機器娃娃）：写替身记录的 `+14 halted`。
+ *
+ * @source VA 0x004440d9（停留卡的 `cmp 目标, 4 / jge` 分支）：
+ * ```asm
+ * shl esi, 4                            ; 目标 × 16
+ * mov byte [esi + 0x498df6], 1          ; ★ = special[target-4].halted = 1
+ * ```
+ * （0x498df6 + target×16 == 0x498e28 + (target−4)×16 + 14）
+ *
+ * 写入值与「对别人」相同（raw 1 = 停 2 天）—— NPC 不可能是出牌者自己，
+ * 走不到 0x80 那一支。递减/挂旗与玩家同一套（`tickBlockingCounter`，
+ * @source 0x0041cf19..0x0041cf34）。
+ */
+export function applyStayCardToActor(actor: SpecialActor): SpecialActor {
+  return { ...actor, halted: STAY_RAW_OTHER };
 }
