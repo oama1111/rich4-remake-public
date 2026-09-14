@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeFacility, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { useCard, type UseCardContext } from './registry.ts';
-import { HOUSING_TYPE_MIN } from '../rules/land.ts';
+import { HOUSING_TYPE_MIN, FACILITY_TYPE_MIN } from '../rules/land.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import type { StockState } from '../places/stock.ts';
 import { STOCK_COUNT } from '../rules/wealth.ts';
@@ -607,5 +607,76 @@ describe('★ 怪獸卡经统一入口（T-006）', () => {
   it('空地目标 → fail(noEffect)', () => {
     const ctx = ctxWithMonster({ lands: [makeLand({ id: 1, owner: 2, level: 0 })] });
     expect(useCard(ctx, 11, { kind: 'entity', entityId: 1 }).error).toBe('noEffect');
+  });
+});
+
+describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
+  const ctxOnLand = (landOver: Parameters<typeof makeLand>[0], over: Partial<UseCardContext> = {}) =>
+    makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [8], nodeId: 1 }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+      ],
+      nodes: [makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1 })],
+      lands: [makeLand({ id: 1, landPrice: 2000, ...landOver })],
+      ...over,
+    });
+
+  it('站在别人的地 → followUp 挂拍賣 pending，底价/竞价者按原版', () => {
+    const r = useCard(ctxOnLand({ owner: 3, level: 2 }), 8);
+    expect(r.ok).toBe(true);
+    expect(r.followUp).toEqual({
+      kind: 'auction',
+      entityId: 1,
+      // round(2000 × (1 + 2×0.5)) × 1 = 4000
+      basePrice: 4000,
+      bidders: [0, 1], // 排除地主(玩家2)
+    });
+    // 敌意是 double 压栈的原版 bug：常规地价恒为 0
+    expect(r.hostilityDeltas).toEqual([{ from: 2, to: 0, delta: 0 }]);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('★ 自己的地也照拍（原版不挑主，0x00443282 只拦无主记敌意）', () => {
+    const r = useCard(ctxOnLand({ owner: 1, level: 0 }), 8);
+    expect(r.ok).toBe(true);
+    expect(r.followUp).toMatchObject({ kind: 'auction', bidders: [1, 2] }); // 排除自己（地主）
+  });
+
+  it('无主地：照拍、不记敌意', () => {
+    const r = useCard(ctxOnLand({ owner: 0, level: 0 }), 8);
+    expect(r.ok).toBe(true);
+    expect(r.hostilityDeltas).toEqual([]);
+  });
+
+  it('站在設施格 → 設施拍賣（facility: true）', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [8], nodeId: 1 }), makePlayer({ index: 1 })],
+      nodes: [makeNode({ id: 1, type: FACILITY_TYPE_MIN + 1 })],
+      lands: [],
+      facilities: [makeFacility({ id: 1, owner: 2, level: 1, landPrice: 4000 })],
+    });
+    const r = useCard(ctx, 8);
+    expect(r.ok).toBe(true);
+    expect(r.followUp).toEqual({
+      kind: 'auction',
+      entityId: 1,
+      basePrice: 6000, // round(4000 × 1.5) × 1
+      bidders: [0],
+      facility: true,
+    });
+  });
+
+  it('脚下不是地块/設施 → fail(notStandingOnLand) 不扣卡', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [8], nodeId: 1 })],
+      nodes: [makeNode({ id: 1, type: 0 })],
+      lands: [],
+    });
+    const r = useCard(ctx, 8);
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('notStandingOnLand');
+    expect(r.players[0]!.cards).toEqual([8]);
   });
 });

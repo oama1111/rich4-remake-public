@@ -24,9 +24,11 @@ import { summonableObjects } from './summon.ts';
 import { attachGod } from '../rules/object-landing.ts';
 import { cardImpl, CARDS } from '@rich4/data';
 import { consumeCard, playerHasCard } from './passive.ts';
-import { housingIndexOf } from '../rules/land.ts';
+import { housingIndexOf, facilityIndexOf } from '../rules/land.ts';
 import { transferMoney } from '../rules/payment.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
+import type { PendingInteraction } from '../rules/interaction.ts';
+import { auctionBasePrice, auctionCardHostility, eligibleBidders } from '../rules/auction.ts';
 
 import { applyAverageCashCard } from './average-cash.ts';
 import { applyAveragePoorCard } from './average-poor.ts';
@@ -103,6 +105,11 @@ export interface UseCardResult {
    *   跑几千回合地图上的神明会被一张卡一张卡地抽干。
    */
   releasedObjects: number[];
+  /**
+   * 效果挂出的**待决交互**（目前只有拍賣卡的拍賣）。
+   * registry 只产出描述，由 reduce 落进 `state.pending` 并切相。
+   */
+  followUp: PendingInteraction | null;
 }
 
 export interface UseCardContext {
@@ -136,7 +143,7 @@ export interface UseCardContext {
 
 /** 本项目已实现效果、可经本入口使用的卡片编号 */
 export const IMPLEMENTED_CARD_IDS: readonly number[] = [
-  1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 22, 23, 24, 25, 26, 27, 28, 29, 30,
 ];
 
 /** 取玩家当前**所站地块**（不是住宅地则返回 null） */
@@ -151,6 +158,19 @@ export function standingLand(
   const idx = housingIndexOf(node.type);
   const land = idx === null ? null : (ctx.lands.find((l) => l.id === idx) ?? null);
   return { node, land };
+}
+
+/** 取玩家当前**所站设施**（不是设施格则返回 null） */
+export function standingFacility(
+  ctx: UseCardContext,
+  playerIndex: number,
+): FacilityInfo | null {
+  const p = ctx.players[playerIndex];
+  if (p === undefined) return null;
+  const node = ctx.nodes.find((n) => n.id === p.nodeId);
+  if (node === undefined) return null;
+  const idx = facilityIndexOf(node.type);
+  return idx === null ? null : (ctx.facilities.find((f) => f.id === idx) ?? null);
 }
 
 /**
@@ -180,6 +200,7 @@ export function useCard(
     hostilityDeltas: [],
     defended: false,
     releasedObjects: [],
+    followUp: null,
   };
   const fail = (error: UseCardError): UseCardResult => ({ ...base, error });
 
@@ -219,6 +240,7 @@ export function useCard(
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
   let releasedObjects: number[] = [];
+  let followUp: PendingInteraction | null = null;
 
   /** 就地替换一块地 */
   const putLand = (l: LandInfo): void => {
@@ -350,6 +372,54 @@ export function useCard(
     }
 
     // ── 作用于「落点」的卡 ─────────────────────────────
+    case 8: {
+      // 拍賣卡 VA 0x00443225：拍卖的是**脚下**的地块/設施（读玩家节点
+      //   的 entity，不做目标选择）；原版不挑主 —— 自己的、无主的也照拍，
+      //   只有脚下不是地块/設施时才不生效（不扣卡）。
+      const here = standingLand(ctx, cur);
+      const onLand = here !== null && here.land !== null;
+      const hereFac = onLand ? null : standingFacility(ctx, cur);
+      if (!onLand && hereFac === null) return fail('notStandingOnLand');
+      if (onLand) {
+        const land = here.land!;
+        // @source 0x443282：无主不记敌意；敌意值是 double 压栈的原版 bug
+        //   （低 32 位，常规地价恒为 0），见 auction.ts 的 auctionCardHostility
+        if (land.owner !== 0) {
+          hostilityDeltas = [
+            {
+              from: land.owner - 1,
+              to: cur,
+              delta: auctionCardHostility(land.landPrice, land.level, ctx.priceIndex),
+            },
+          ];
+        }
+        followUp = {
+          kind: 'auction',
+          entityId: land.id,
+          basePrice: auctionBasePrice(land, ctx.priceIndex),
+          bidders: eligibleBidders(players, land),
+        };
+        break;
+      }
+      const fac = hereFac!;
+      if (fac.owner !== 0) {
+        hostilityDeltas = [
+          {
+            from: fac.owner - 1,
+            to: cur,
+            delta: auctionCardHostility(fac.landPrice, fac.level, ctx.priceIndex),
+          },
+        ];
+      }
+      followUp = {
+        kind: 'auction',
+        entityId: fac.id,
+        basePrice: auctionBasePrice(fac, ctx.priceIndex),
+        bidders: eligibleBidders(players, fac),
+        facility: true,
+      };
+      break;
+    }
     case 3: {
       const here = standingLand(ctx, cur);
       if (here === null || here.land === null) return fail('notStandingOnLand');
@@ -471,5 +541,5 @@ export function useCard(
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, respawns, hostilityDeltas, defended, releasedObjects };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, respawns, hostilityDeltas, defended, releasedObjects, followUp };
 }

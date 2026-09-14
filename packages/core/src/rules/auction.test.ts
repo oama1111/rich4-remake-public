@@ -4,12 +4,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { makeLand, makePlayer } from '../testing/factories.ts';
+import { makeFacility, makeLand, makePlayer } from '../testing/factories.ts';
 import {
   AUCTION_LEVEL_FACTOR,
   auctionBasePrice,
+  auctionCardHostility,
   eligibleBidders,
   settleAuction,
+  settleFacilityAuction,
 } from './auction.ts';
 
 const four = () =>
@@ -102,5 +104,45 @@ describe('参与资格', () => {
     const ps = four();
     ps[2] = makePlayer({ index: 2, cash: 0, moneyInBank: 0 });
     expect(eligibleBidders(ps, makeLand({ owner: 0 }))).toContain(2);
+  });
+});
+
+describe('★ 設施起拍价与结算（run_auction 設施分支 0x0043bf3a 起）', () => {
+  it('底价公式与地块同式（地价读 +0x22）', () => {
+    expect(auctionBasePrice(makeFacility({ landPrice: 4000, level: 2 }), 3)).toBe(4000 * 2 * 3);
+  });
+
+  it('流拍 → 設施变无主', () => {
+    const r = settleFacilityAuction(four(), makeFacility({ id: 1, owner: 2, level: 1 }), { winner: -1, price: 0 });
+    expect(r.passedIn).toBe(true);
+    expect(r.facility.owner).toBe(0);
+  });
+
+  it('得标：买家付款进公库、設施归得标者', () => {
+    const r = settleFacilityAuction(four(), makeFacility({ id: 1, owner: 2, level: 1 }), { winner: 3, price: 5000 }, 0);
+    expect(r.facility.owner).toBe(4);
+    expect(r.players[3]!.cash).toBe(95_000);
+    expect(r.pool).toBe(5000);
+  });
+});
+
+describe('★ 拍賣卡敌意 = double 压栈的原版 bug（0x00443286 起）', () => {
+  it('常规地价：double 尾数低 32 位为 0 → 敌意恒为 0', () => {
+    // 1000 × 1 × (0+2)/5 = 400.0 → 0x4079000000000000，低 32 位 = 0
+    expect(auctionCardHostility(1000, 0, 1)).toBe(0);
+    // 2000 × 3 × (4+2)/5 = 7200.0 → 低 32 位仍为 0
+    expect(auctionCardHostility(2000, 4, 3)).toBe(0);
+  });
+
+  it('特大数值：低 32 位是尾数垃圾（可为负），照原样复刻', () => {
+    // 10485765 × 1 × (0+2)/5 = 4194306.0 = 2^22 + 2
+    //   尾数 2^-21 落在低 32 位最高位 → 0x80000000 → int32 最小值
+    expect(auctionCardHostility(10485765, 0, 1)).toBe(-2147483648);
+  });
+
+  it('公式本身是 地价 × 物价 × (等级+2)/5（fadd 2.0 / fdiv 5.0）', () => {
+    // 选一个低 32 位恰有非零尾数的值验证公式：3×(0+2)/5 = 1.2 →
+    // 1.2 = 0x3FF3333333333333 → 低 32 位 = 0x33333333
+    expect(auctionCardHostility(3, 0, 1)).toBe(0x33333333);
   });
 });

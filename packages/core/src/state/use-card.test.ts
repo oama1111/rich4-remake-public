@@ -108,9 +108,9 @@ describe('★ 出牌入口', () => {
 
   it('★ 未实现的卡安静地什么都不做，不抛错也不扣卡', () => {
     const { state, topo } = scene();
-    // 8 拍賣卡尚未实现
-    expect(IMPLEMENTED_CARD_IDS).not.toContain(8);
-    const s = give(state, 0, 8);
-    expect(reduce(s, { type: 'useCard', cardId: 8 }, topo)).toBe(s);
+    // 30 张卡已全部接线，改用未登记的卡号验证同一条「安静失败」路径
+    expect(IMPLEMENTED_CARD_IDS).not.toContain(99);
+    const s = give(state, 0, 99);
+    expect(reduce(s, { type: 'useCard', cardId: 99 }, topo)).toBe(s);
   });
 });

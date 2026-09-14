@@ -68,6 +68,9 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = NEWS_EVENTS.filter(
     (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
 ).map((e) => e.id);
 
+/** 銀行擠兌的停放天数 @source 0x0044aeb6 `mov byte/word [player+0x3c], 15`（写死立即数） */
+export const LOAN_FREEZE_DAYS = 15;
+
 /**
  * 施加一个新聞事件的效果（第二阶段）。
  *
@@ -105,8 +108,10 @@ export function applyNewsEffect(
   let bankrupted = false;
 
   // ★ 銀行擠兌：不看 affected，**所有在场玩家**的 +0x3c 都写成 15 @source 0x0044aeb6..0x0044aed8
+  //   天数 15 是汇编里写死的立即数；文案的「１５」是全角字、没有 %d，
+  //   故 event-table 的 literal 为 null（同 4/29 的既有先例），常数住在这里。
   if (entry.effects.includes('loanFreeze')) {
-    const days = entry.literal ?? 0;
+    const days = LOAN_FREEZE_DAYS;
     const next = players.map((p) => (isAlive(p) ? { ...p, bankFreezeDays: days } : p));
     return { ...base, players: next, amount: days };
   }

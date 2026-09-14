@@ -211,7 +211,7 @@ import {
   buyTicket,
   numbersOf,
 } from '../places/lottery.ts';
-import { settleAuction } from '../rules/auction.ts';
+import { settleAuction, settleFacilityAuction } from '../rules/auction.ts';
 import { calculatePlayerWealth, updatePriceIndex } from '../rules/wealth.ts';
 import type { StockValuation } from '../rules/wealth.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
@@ -1070,6 +1070,29 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
 
     case 'auction': {
       if (state.pending === null || state.pending.kind !== 'auction') return state;
+      // 設施拍卖（拍賣卡踏在設施格上时挂出）——结算走同一条公库付款路径
+      if (state.pending.facility === true) {
+        const facId = state.pending.entityId;
+        const fac = effectiveFacility(state, topo, facId);
+        if (fac === null) return { ...state, pending: null, phase: 'turnEnd' };
+        const fr = settleFacilityAuction(
+          state.players,
+          fac,
+          { winner: action.winner, price: action.price },
+          state.pool,
+        );
+        const facilityOwner = [...state.facilityOwner];
+        facilityOwner[facId] = fr.facility.owner;
+        const fsettled: GameState = {
+          ...state,
+          players: fr.players,
+          facilityOwner,
+          pool: fr.pool,
+          pending: null,
+          phase: 'turnEnd',
+        };
+        return fr.bankrupted ? applyBankruptcy(fsettled, action.winner, topo) : fsettled;
+      }
       const landId = state.pending.entityId;
       const land = effectiveLand(state, topo, landId);
       if (land === null) return { ...state, pending: null, phase: 'turnEnd' };
@@ -2103,6 +2126,10 @@ function playCard(
   // 請神符挤走旧神时，旧神的搭档在这里重新登场
   for (const rs of r.respawns) {
     next = respawnPartner(next, topo, rs);
+  }
+  // 拍賣卡：把竞价挂成待决交互，出价由上层作答（C-ARC-2，模态 UI 不进 core）
+  if (r.followUp !== null) {
+    next = { ...next, pending: r.followUp, phase: 'awaitingDecision' };
   }
   return next;
 }

@@ -89,7 +89,7 @@ export type PendingInteraction =
    * 拍卖：出价。
    * @source `run_auction` VA 0x0043bde5
    */
-  | { kind: 'auction'; entityId: number; basePrice: number; bidders: number[] }
+  | { kind: 'auction'; entityId: number; basePrice: number; bidders: number[]; facility?: boolean }
   /**
    * 上市企业：买多少股。
    *
