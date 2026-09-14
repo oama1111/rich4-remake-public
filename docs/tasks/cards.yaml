@@ -1477,7 +1477,7 @@ cards:
   title: 魔法屋「就地加蓋房屋」对設施生效（Q-MAGIC-2）
   module: MOD-07
   req: Q-MAGIC-2
-  status: todo
+  status: done
   estimate: 0.2
   depends_on: []
   uses: [core/places/magic-house.ts (applyMagicRequest build), core/state/reduce.ts (freeBuildFacility)]

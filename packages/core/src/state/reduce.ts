@@ -1486,7 +1486,7 @@ function runMagicHouse(state: GameState, topo: MapTopology): GameState {
 }
 
 /** 魔法屋里跨子系统的那几件事 */
-function applyMagicRequest(
+export function applyMagicRequest(
   state: GameState,
   topo: MapTopology,
   req: MagicRequest,
@@ -1516,7 +1516,14 @@ function applyMagicRequest(
     // @source 0x40b110(type)：住宅 level < 5 可建；連鎖店只有 level == 0 时可建
     case 'build': {
       const land = landAtPlayer(state, topo, req.player);
-      if (land === null) return state;
+      if (land === null) {
+        // ★ 0x40b110 对設施同样生效（0x0040b170 起）：等级 0 → 電腦（自己的）rand()%4+1 / 别人的 公園，
+        //   真人要选种类（0x440aac，本引擎没那一屏 → 不建，Q-CO-1 同类）；否则 +1 级、不超上限
+        const facIdx = facilityIndexAtPlayer(state, topo, req.player);
+        if (facIdx === null) return state;
+        const built = freeBuildFacilityById(state, topo, facIdx, -1);
+        return built ?? state;
+      }
       const isChain = land.type !== 0;
       const buildable = isChain ? land.level === 0 : land.level < MAX_LAND_LEVEL;
       if (!buildable) return state;
@@ -1671,6 +1678,15 @@ function fireMissile(
 }
 
 /** 某玩家脚下那块住宅；不是住宅返回 null */
+/** 某玩家脚下的設施下标（不在設施上 → null） */
+function facilityIndexAtPlayer(state: GameState, topo: MapTopology, playerIndex: number): number | null {
+  const p = state.players[playerIndex];
+  if (p === undefined) return null;
+  const node = topo.nodes[p.nodeId - 1];
+  if (node === undefined) return null;
+  return facilityIndexOf(node.type);
+}
+
 function landAtPlayer(state: GameState, topo: MapTopology, playerIndex: number): LandInfo | null {
   const p = state.players[playerIndex];
   if (p === undefined) return null;
