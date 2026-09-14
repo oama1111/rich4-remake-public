@@ -1359,7 +1359,7 @@ function enterVisit(state: GameState, topo: MapTopology, specialKind: number): G
   rng.setState(state.rngState);
   // decideBail 最多用三个随机数；多备无妨，用几个由它告诉我们
   const rolls = [rng.next(), rng.next(), rng.next()];
-  const d = decideBail(me.bailStyle, occ, me.points, rolls);
+  const d = decideBail(me.personality, occ, me.points, rolls);
 
   // ★ 只推进**真正用掉**的那几个 —— 多推一个，整条随机序列就与原版错位
   const after = new WatcomRng();

@@ -191,7 +191,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     aiFlags: p.f22,
     loanRatio: p.f24,
     stockRatio: p.f26,
-    bailStyle: p.f23,
+    personality: p.f23,
     cash: p.cash,
     moneyInBank: p.moneyInBank,
     loan: p.loan,

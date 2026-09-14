@@ -969,30 +969,31 @@ function centerOnCurrentPlayer(): void {
 /**
  * 工具栏按钮。
  *
- * ⚠️ 大多数按钮**原版具体做什么还没查证**（名字是按图标外观叫的），
- *   故这里只接能确定的那一个，其余如实记一条「未实现」，不假装有功能。
+ * ★ 十一颗的功能**已全部定死**（实机截图 + 熱鍵表闭合验证，
+ *   见 docs/original-screens.md 第 0 节与 `TOOLBAR_LABELS`）。
+ *   下标与 `TOOLBAR_LABELS` 一致（0 基）。
+ *
+ * ⚠️ 功能确定 ≠ 屏做好了：还没画的那几屏如实记一条「尚未实现」，
+ *   不假装有功能。
  */
 function onToolbar(i: number): void {
   const name = TOOLBAR_LABELS[i] ?? `按钮${i}`;
-  if (i === 5) {
-    // 地图图标 —— 切换人物/地图视角
-    setViewMode(camera.mode === 'character' ? 'map' : 'character');
-    return;
+  switch (i) {
+    case 1: // 遊戲設定
+      openOptions('game');
+      return;
+    case 3: // 讀取進度
+      openSaveLoad('load', 'game');
+      return;
+    case 4: // 儲存進度
+      openSaveLoad('save', 'game');
+      return;
+    case 5: // 大地圖 —— 切换人物/地图视角
+      setViewMode(camera.mode === 'character' ? 'map' : 'character');
+      return;
+    default:
+      log(`「${name}」尚未实现`);
   }
-  if (i === 7) {
-    openOptions('game');
-    return;
-  }
-  // ⚠️ 图标与功能的对应关系还没解（Q-UI-3），3/4 是按软盘图标认的
-  if (i === 3) {
-    openSaveLoad('load', 'game');
-    return;
-  }
-  if (i === 4) {
-    openSaveLoad('save', 'game');
-    return;
-  }
-  log(`「${name}」尚未实现`);
 }
 
 /**

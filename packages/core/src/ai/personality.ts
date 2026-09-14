@@ -9,15 +9,33 @@
  * | 字段 | 玩家偏移 | 含义 |
  * |---|---|---|
  * | f22 | +0x16 | **能力位**：bit0 会用卡、bit1 会用道具 |
- * | f23 | +0x17 | **保釋倾向** 0/1/2（见 `rules/visit.ts`） |
+ * | f23 | +0x17 | **個性** 0 乖寶寶 / 1 普通人 / 2 大老奸（通用闸门，见下） |
  * | f24 | +0x18 | **借贷激进度**：到银行时借身家的百分之几 |
  * | f26 | +0x1a | **炒股比例**：把可动用总额的百分之几放进股市 |
  *
  *   另有 `initCashRatio`(+0x19) 早已解出（开局现金占比，见 rules/setup.ts）。
  *
- * ⚠️ 这四个都能在「AI 设置」对话框里改（VA 0x0041e259 起一口气从
+ * ⚠️ 这四个都能在「**託管AI**」对话框里改（VA 0x0041e259 起一口气从
  *   `[0x48be35..0x48be39]` 拷进 `+0x15..+0x1a`），角色表只是默认值。
  *   本引擎目前只用默认值——设置界面属 M4。
+ *
+ * ★ 那一屏长什么样、每个控件改哪个字节，已由**原版实机截图**逐项对定，
+ *   见 `docs/original-screens.md` 的 S3（资源 `Data.mkf #77`，入口 VA 0x0041e345）。
+ *   它只列 `who_plays` bit0 = 人類 的座位 —— **托管 = 把自己的座位交给 AI**，
+ *   不是调对手的 AI。
+ *
+ * ★ **f23 是一条通用闸门**，不只管保釋（这是截图纠正的一处旧错）：
+ * ```asm
+ * 0041e69e  ; gate(action) —— 每个 AI 行为进来先过这一关
+ * 0041e6a4  edx = [0x47fdf1 + action*8]              ; 该行为「所需个性」
+ * 0041e6b2  eax = 當前玩家.+0x17                      ; 自己的个性
+ * 0041e6bd  edx -= eax
+ * 0041e6c1  if (edx >= 2) return 0                    ; 差两档以上：从不做
+ * 0041e6c9  if (edx == 1 && rand() % 3 != 0) return 0  ; 差一档：1/3 概率做
+ * 0041e6e6  return [0x475324 + action*4]()            ; 够格：照做
+ * ```
+ *   行为表 `0x47fdf1`（步长 8）与跳表 `0x475324`（步长 4）**尚未翻译**，
+ *   记在 known-deviations 的 Q-AI-2。
  */
 
 import { CHARACTERS } from '@rich4/data';
@@ -122,8 +140,8 @@ export function stockBudget(
 export interface CharacterTraits {
   /** f22 能力位 */
   aiFlags: number;
-  /** f23 保釋倾向 */
-  bailStyle: number;
+  /** f23 個性：0 乖寶寶 / 1 普通人 / 2 大老奸 */
+  personality: number;
   /** f24 借贷激进度（百分比） */
   loanRatio: number;
   /** f26 炒股比例（百分比） */
@@ -132,7 +150,7 @@ export interface CharacterTraits {
 
 export const DEFAULT_TRAITS: CharacterTraits = {
   aiFlags: AI_USES_CARDS | AI_USES_TOOLS,
-  bailStyle: 0,
+  personality: 0,
   loanRatio: 0,
   stockRatio: 0,
 };
@@ -141,5 +159,5 @@ export const DEFAULT_TRAITS: CharacterTraits = {
 export function traitsOf(character: number): CharacterTraits {
   const c = CHARACTERS[character];
   if (c === undefined) return { ...DEFAULT_TRAITS };
-  return { aiFlags: c.f22, bailStyle: c.f23, loanRatio: c.f24, stockRatio: c.f26 };
+  return { aiFlags: c.f22, personality: c.f23, loanRatio: c.f24, stockRatio: c.f26 };
 }

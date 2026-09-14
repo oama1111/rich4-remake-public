@@ -41,9 +41,10 @@ export interface CharacterDef {
    */
   f22: number;
   /**
-   * ★ **保釋倾向**，0/1/2 —— 落在監獄/醫院格上时电脑保釋谁。
-   *   0 只救玩家、2 只放犯人、1 居中。见 `rules/visit.ts` 的 `BAIL_STYLE`。
-   *   它被拷进玩家结构的 +0x17（`Player.bailStyle`）。
+   * ★ **個性**，0 乖寶寶 / 1 普通人 / 2 大老奸 —— 名字取自原版「託管AI」
+   *   对话框的实机截图（docs/original-screens.md 的 S3）。
+   *   它被拷进玩家结构的 +0x17（`Player.personality`），是一条**通用**的
+   *   AI 行为闸门；保釋（`rules/visit.ts` 的 `BAIL_STYLE`）只是其消费者之一。
    */
   f23: number;
   /**

@@ -114,14 +114,23 @@ export interface Player {
    */
   stockRatio: number;
   /**
-   * 保釋倾向。@source player_info +0x17，取值 0/1/2。
+   * **個性**：0 乖寶寶 / 1 普通人 / 2 大老奸。
+   * @source player_info +0x17（角色表的 `f23`）
    *
-   * ★ 这就是 `@rich4/data` 的 `characters.ts` 里那个「语义尚未确认」的
-   *   **`f23`**：監獄与醫院两处落点各自对它做同一套三路判断
-   *   （VA 0x0043d3ee / 0x0043ea9a），决定电脑玩家保釋谁。
-   *   取值含义见 `rules/visit.ts` 的 `BAIL_STYLE`。
+   * ★ 名字来自**原版实机截图**：「託管AI」对话框上这三档就印着
+   *   `個 性：乖寶寶 / 普通人 / 大老奸`（见 docs/original-screens.md 的 S3）。
+   *   先前本字段叫 `bailStyle`（「保釋倾向」）—— 那是**以偏概全**：
+   *   保釋只是受它管的行为之一。
+   *
+   * ★ 它在 exe 里是一条**通用闸门**（VA 0x0041e69e）：每个 AI 行为在
+   *   `0x47fdf1` 表里有个「所需个性」，差一档时 1/3 概率做、差两档以上
+   *   从不做。即「乖寶寶只做温良的事，大老奸什么都做」。
+   *   那张表尚未翻译，见 known-deviations 的 Q-AI-2。
+   *
+   * 目前唯一接上的消费者是監獄/醫院的保釋选择
+   *   （VA 0x0043d3ee / 0x0043ea9a），见 `rules/visit.ts` 的 `BAIL_STYLE`。
    */
-  bailStyle: number;
+  personality: number;
   /** 现金，可为负 @source player_info +0x1c (int32) */
   cash: number;
   /** 银行存款（含特别融资） */

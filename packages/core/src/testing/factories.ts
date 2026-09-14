@@ -30,7 +30,7 @@ export function makePlayer(over: Partial<Player> = {}): Player {
     aiFlags: 3,
     loanRatio: 0,
     stockRatio: 0,
-    bailStyle: 0,
+    personality: 0,
     cash: 100_000,
     moneyInBank: 50_000,
     loan: 0,

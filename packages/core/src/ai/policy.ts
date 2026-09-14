@@ -352,7 +352,7 @@ export function decidePending(state: GameState): Action | null {
   //   真人被托管时也走这条——托管的意思就是让 AI 替你打，不该弹出玩法。
   if (p.kind === 'minigame') return { type: 'minigame', score: null };
   // ★ 保釋：电脑玩家那条路在 reducer 里就掷完了（随机数不能进 AI），
-  //   走到这里的只会是**被托管的真人**。按 `bailStyle` 的精神保守处理：
+  //   走到这里的只会是**被托管的真人**。按 `personality` 的精神保守处理：
   //   救得起同伴就救，不去放犯人。
   if (p.kind === 'bail') {
     const cheap = p.candidates
