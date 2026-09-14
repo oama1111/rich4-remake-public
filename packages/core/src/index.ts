@@ -49,6 +49,7 @@ export * from './places/lottery.ts';
 export * from './places/stock.ts';
 export * from './places/magic-house.ts';
 export * from './places/minigame.ts';
+export * from './places/calendar.ts';
 export * from './cards/average-cash.ts';
 export * from './cards/hibernate.ts';
 export * from './cards/rebuild.ts';

@@ -15,7 +15,14 @@
  * 不必自己画框。
  */
 
-import type { GameState, Rich4Map } from '@rich4/core';
+import {
+  daysInMonth,
+  isHoliday,
+  sceneOfMonth,
+  weekdayOf,
+  type GameState,
+  type Rich4Map,
+} from '@rich4/core';
 import { CHARACTERS } from '@rich4/data';
 import { portraitResource, type Sprite, type SpriteCache } from './assets.ts';
 import type { Camera } from './render.ts';
@@ -41,57 +48,73 @@ export const PANEL_HEIGHT = 280;
  */
 export const SIDEBAR = { x: 0, y: PANEL_HEIGHT, w: 200, h: 200 } as const;
 
-/** 资源 2 里日曆底图的起始图号；`+ 季节(0..3)` */
-const CALENDAR_BASE_IMAGE = 4;
-/** 盖在底图那两个上面的亮太阳/亮月亮；见 `#drawCalendar` 的说明 —— 现未使用 */
-export const SUN_BRIGHT_IMAGE = 8;
-export const MOON_BRIGHT_IMAGE = 10;
-
 /**
- * 日曆底图上各部件的位置 —— **照解出来的位图量的**，不是 exe 里的常量。
+ * 日曆那一面的版式 —— **全部**取自 exe。日期与節日的算法在 core 的
+ * `places/calendar.ts`（那边有完整的出处），这里只放坐标。
  *
- * 量法：资源 2 的图 4..7 四张只有背景不同，chrome 完全一致，
- * 于是「四张里像素完全相同」的那些点就是 chrome 本身。得到：
- * - 太阳 x 12..31、月亮 x 44..60，都在 y 11..29
- * - 星期栏七个圆点 y 73..86，中心 x ≈ 30.5 + i × 22.67
+ * 原版把这块 200×200 的绘制分成两个版式（@source VA 0x00416a0a 起）：
+ *
+ * **日曆**（@source VA 0x00416b4c 起）
+ * ```asm
+ * 00416b7c  底图 = 资源2[ 月份季节表[月-1] ]        ; 图 0..3，纯实景
+ * 00416b98  draw(..., 0x1b8, 0x118)                 ; (440, 280) ← 侧栏原点
+ * 00416c29  draw(资源2 图8,  0x1ce, 0x12c)          ; 太阳 (462, 300)
+ * 00416c4b  draw(资源2 图11, 0x1ec, 0x12d)          ; 月亮 (492, 301)
+ * 00416cbf  draw(星期名[今天], 0x1c6, 0x160, 3)      ; (454, 352)
+ * 00416d27  draw("%d"  日,  0x1f4, 0x178, 2)        ; (500, 376)
+ * 00416d72  draw("%d"  年,  0x244, 0x120, 0)        ; (580, 288)
+ * 00416dc7  draw("%d月" 月,  0x1f4, 0x148, 2)        ; (500, 328)
+ * ```
+ *
+ * **月曆**（@source VA 0x00416a0a 起）
+ * ```asm
+ * 00416a38  底图 = 资源2[ 季节 + 4 ]                ; 图 4..7，带星期栏
+ * 00416aa1  esi = 23 × (该月1号是星期几) + 0x1d6    ; 第一格中心 x = 470 + 23w
+ * 00416aa7  edi = 0x17a                             ; 第一行 y = 378
+ * 00416ad3  今天：填 (x−10, y−6, 20, 14) 红底
+ * 00416b33  esi == 0x260(608) → esi = 0x1bf(447)，edi += 0xe(14)   ; 换行
+ * 00416b44  esi += 0x17(23)                          ; 下一格
+ * ```
+ *
+ * ★ 七个格心 x = 470..608（步进 23）减去侧栏原点 440 得 30..168，
+ *   与底图上那条 `S M T W T F S` 的七个圆点**逐像素对得上**——
+ *   两头独立地印证了同一套坐标。
  */
 const CAL = {
-  sun: { x: 10, y: 9 },
-  moon: { x: 42, y: 10 },
-  dow: { x0: 30.5, pitch: 68 / 3, y: 79.5, r: 9 },
-  date: { x: 100, y: 150 },
+  /** 日曆：太阳、月亮（侧栏内坐标） */
+  sun: { x: 0x1ce - 440, y: 0x12c - 280 },
+  moon: { x: 0x1ec - 440, y: 0x12d - 280 },
+  /** 日曆：年 / 月 / 星期 / 日 */
+  year: { x: 0x244 - 440, y: 0x120 - 280 },
+  monthText: { x: 0x1f4 - 440, y: 0x148 - 280 },
+  weekday: { x: 0x1c6 - 440, y: 0x160 - 280 },
+  dayText: { x: 0x1f4 - 440, y: 0x178 - 280 },
+  /** 月曆：格子 */
+  grid: { x0: 0x1d6 - 440, y0: 0x17a - 280, pitch: 0x17, rowH: 0xe, cols: 7 },
+  /** 月曆：今天的红底 */
+  today: { dx: -10, dy: -6, w: 0x14, h: 0xe },
 } as const;
 
-/** 月份 → 季节 0 春 / 1 夏 / 2 秋 / 3 冬（图 4 绿原、5 海滩、6 红葉、7 雪地） */
-export function seasonOfMonth(month: number): number {
-  const m = ((month - 1) % 12 + 12) % 12 + 1;
-  if (m >= 3 && m <= 5) return 0;
-  if (m >= 6 && m <= 8) return 1;
-  if (m >= 9 && m <= 11) return 2;
-  return 3;
-}
+/** 日曆用的两张小图 —— 太阳与（暗）月亮 @source 0x00416c29 / 0x00416c4b */
+const SUN_IMAGE = 8;
+const MOON_IMAGE = 11;
+/** 月曆底图 = 季节 + 4 @source 0x00416a38 `lea ebx, [eax + 4]` */
+const MONTH_VIEW_BASE = 4;
+/** 假日与今天的颜色 @source 0x00416acc / 0x00416b01 `push 0xff0000` */
+const HOLIDAY_COLOR = '#ff0000';
+const PLAIN_COLOR = '#101010';
+
+/** 星期名 @source 串表 `0x0047511c[0..6]` */
+export const WEEKDAY_NAMES: readonly string[] = [
+  '星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六',
+];
 
 /**
- * 星期几 0=日..6=六 —— 蔡勒公式（比自己数天数稳）。
- *
- * ⚠️ 原版用哪一天当基准没查证；这里按真实公历算，年份就是 `state.year`。
+ * 右下角显示哪一面。
+ * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流。
+ *   「日曆」这一面自己又分**日曆**与**月曆**两个版式（见 `CAL`）。
  */
-export function dayOfWeek(year: number, month: number, day: number): number {
-  let y = year;
-  let m = month;
-  if (m < 3) {
-    m += 12;
-    y -= 1;
-  }
-  const k = y % 100;
-  const j = Math.floor(y / 100);
-  const h =
-    (day + Math.floor((13 * (m + 1)) / 5) + k + Math.floor(k / 4) + Math.floor(j / 4) + 5 * j) % 7;
-  return (h + 6) % 7; // 蔡勒的 0 是星期六
-}
-
-/** 右下角显示哪一面 */
-export type SidebarView = 'calendar' | 'map';
+export type SidebarView = 'calendar' | 'month' | 'map';
 
 /**
  * 三条数值栏在 200×280 图内的纵向位置。
@@ -162,13 +185,18 @@ export class Hud {
   }
 
   /** 同步取精灵；未就绪时后台解码并返回 null */
-  #sprite(archive: 'Panel.mkf' | 'map.mkf', res: number, idx: number): Sprite | null {
-    const key = `${archive}:${res}:${idx}`;
+  #sprite(
+    archive: 'Panel.mkf' | 'map.mkf',
+    res: number,
+    idx: number,
+    colorKeyBlack = false,
+  ): Sprite | null {
+    const key = `${archive}:${res}:${idx}:${colorKeyBlack ? 'k' : ''}`;
     const hit = this.#ready.get(key);
     if (hit !== undefined) return hit;
     if (!this.#pending.has(key)) {
       this.#pending.add(key);
-      void this.#sprites.get(archive, res, idx).then((s) => {
+      void this.#sprites.get(archive, res, idx, colorKeyBlack).then((s) => {
         this.#ready.set(key, s);
         this.#pending.delete(key);
         this.#dirty = true;
@@ -185,53 +213,118 @@ export class Hud {
 
     this.#drawPanel(input);
     if (input.sidebarView === 'calendar') this.#drawCalendar(input);
+    else if (input.sidebarView === 'month') this.#drawMonth(input);
     else this.#drawMinimap(input, SIDEBAR.y);
   }
 
   /**
-   * 日曆面：四季底图 + 当日星期的标记 + 年月日。
+   * 日曆面 —— 大图 + 年月日星期。版式全部照 exe，见 `CAL`。
    *
-   * ⚠️ 底图是原版的；**星期标记与日期文字的画法是我们补的** —— 原版怎么
-   *   标示「今天」还没从 exe 里认出来（那条星期栏上的红点是烤进图里的，
-   *   四张底图都红在同一个位置，所以它不是动态标记）。记作 Q-UI-1。
+   * ⚠️ 節日那天原版会**换一张专属插画**（`0x00416bb2` 按節日编号从
+   *   `Data.mkf` 另取一张画进那块 200×200），本引擎还没做：資源号的算法
+   *   要顺着 `[0x00475208]` 那张表，没跟到。记作 Q-CAL-1。
    */
   #drawCalendar(input: HudInput): void {
     const ctx = this.#ctx;
-    const { day, month, year } = input.state;
+    const { day, month, year, globalMapId } = input.state;
     const { x: ox, y: oy, w, h } = SIDEBAR;
 
-    const bg = this.#sprite('Panel.mkf', 2, CALENDAR_BASE_IMAGE + seasonOfMonth(month));
+    const bg = this.#sprite('Panel.mkf', 2, sceneOfMonth(month));
     if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
     else {
       ctx.fillStyle = '#7f9fbf';
       ctx.fillRect(ox, oy, w, h);
     }
 
-    // ⚠️ 图 8..11 的亮太阳/亮月亮**故意不画**：底图 4..7 上那两个已经是亮的，
-    //   再盖一层只会错位。这两组多半是昼夜切换用的，而本引擎还没有夜晚——
-    //   等把原版那段绘制代码认出来再说（Q-UI-1）。
+    // 太阳与月亮 —— 图 0..3 没有烤这两个，所以这里必须画
+    const sun = this.#sprite('Panel.mkf', 2, SUN_IMAGE, true);
+    if (sun !== null) ctx.drawImage(sun.bitmap, ox + CAL.sun.x, oy + CAL.sun.y);
+    const moon = this.#sprite('Panel.mkf', 2, MOON_IMAGE, true);
+    if (moon !== null) ctx.drawImage(moon.bitmap, ox + CAL.moon.x, oy + CAL.moon.y);
 
-    // 今天是星期几
-    const dow = dayOfWeek(year, month, day);
-    ctx.save();
-    ctx.strokeStyle = '#ffe14a';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(ox + CAL.dow.x0 + dow * CAL.dow.pitch, oy + CAL.dow.y, CAL.dow.r, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-
-    // 年月日
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'alphabetic';
-    ctx.font = 'bold 22px "PingFang TC", "Microsoft JhengHei", sans-serif';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0,0,0,0.65)';
-    ctx.fillStyle = '#fff';
-    const text = `${year} 年 ${month} 月 ${day} 日`;
-    ctx.strokeText(text, ox + CAL.date.x, oy + CAL.date.y);
-    ctx.fillText(text, ox + CAL.date.x, oy + CAL.date.y);
+    const holiday = isHoliday(globalMapId, year, month, day);
+    const text = (
+      s: string,
+      at: { x: number; y: number },
+      align: CanvasTextAlign,
+      font: string,
+      fill: string,
+    ): void => {
+      ctx.font = font;
+      ctx.textAlign = align;
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.strokeText(s, ox + at.x, oy + at.y);
+      ctx.fillStyle = fill;
+      ctx.fillText(s, ox + at.x, oy + at.y);
+    };
+    const body = '15px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    text(String(year), CAL.year, 'left', body, PLAIN_COLOR);
+    text(`${month}月`, CAL.monthText, 'center', body, PLAIN_COLOR);
+    text(
+      WEEKDAY_NAMES[weekdayOf(year, month, day)] ?? '',
+      CAL.weekday,
+      'left',
+      body,
+      holiday ? HOLIDAY_COLOR : PLAIN_COLOR,
+    );
+    text(
+      String(day),
+      CAL.dayText,
+      'center',
+      'bold 34px "PingFang TC", "Microsoft JhengHei", sans-serif',
+      holiday ? HOLIDAY_COLOR : PLAIN_COLOR,
+    );
     ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  /**
+   * 月曆面 —— 整月的格子。
+   *
+   * 底图 4..7 上那条 `S M T W T F S` 就是这个版式的表头，格子正好排在它下面。
+   */
+  #drawMonth(input: HudInput): void {
+    const ctx = this.#ctx;
+    const { day, month, year, globalMapId } = input.state;
+    const { x: ox, y: oy, w, h } = SIDEBAR;
+
+    const bg = this.#sprite('Panel.mkf', 2, MONTH_VIEW_BASE + sceneOfMonth(month));
+    if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
+    else {
+      ctx.fillStyle = '#7f9fbf';
+      ctx.fillRect(ox, oy, w, h);
+    }
+
+    const first = weekdayOf(year, month, 1);
+    const total = daysInMonth(year, month);
+    // @source 0x00416aa1：第一格中心 x = 第一格列 + 23 × 该月1号的星期
+    let x = CAL.grid.x0 + CAL.grid.pitch * first;
+    let y = CAL.grid.y0;
+
+    ctx.font = '12px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let d = 1; d <= total; d++) {
+      if (d === day) {
+        // @source 0x00416ad3：今天填一块红底
+        ctx.fillStyle = HOLIDAY_COLOR;
+        ctx.fillRect(ox + x + CAL.today.dx, oy + y + CAL.today.dy, CAL.today.w, CAL.today.h);
+      }
+      ctx.fillStyle = isHoliday(globalMapId, year, month, d) ? HOLIDAY_COLOR : PLAIN_COLOR;
+      if (d === day) ctx.fillStyle = '#ffffff'; // 红底上要看得见
+      ctx.fillText(String(d), ox + x, oy + y);
+
+      // @source 0x00416b33：走到最后一列就折行
+      if (x === CAL.grid.x0 + CAL.grid.pitch * CAL.grid.cols) {
+        x = CAL.grid.x0 - CAL.grid.pitch;
+        y += CAL.grid.rowH;
+      }
+      x += CAL.grid.pitch;
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
   }
 
   #drawPanel(input: HudInput): void {
@@ -249,7 +342,8 @@ export class Hud {
     }
 
     // 头像
-    const face = this.#sprite('map.mkf', portraitResource(me.character), 0);
+    // ★ 头像也是 SMP，黑是抠图底色；不抠就会顶着一块黑框
+    const face = this.#sprite('map.mkf', portraitResource(me.character), 0, true);
     if (face !== null) {
       ctx.drawImage(face.bitmap, PORTRAIT.x, PORTRAIT.y, PORTRAIT.size, PORTRAIT.size);
     }

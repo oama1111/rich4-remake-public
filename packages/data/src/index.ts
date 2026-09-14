@@ -8,3 +8,4 @@ export * from './event-table.ts';
 export * from './magic-house.ts';
 export * from './projection.ts';
 export * from './messages.ts';
+export * from './lunar.ts';

@@ -39,6 +39,7 @@ const ring: MapTopology = {
     y: 0,
     name: `节点${id}`,
     adjacent: [id === 1 ? 4 : id - 1, id === 4 ? 1 : id + 1],
+    adjacentSlots: [id === 1 ? 4 : id - 1, id === 4 ? 1 : id + 1, 0, 0] as [number, number, number, number],
     type: 0,
     ref: { kind: 'special' as const },
     decorIndex: 0,
@@ -59,14 +60,25 @@ describe('nextCandidates —— 不折返', () => {
     expect(nextCandidates(ring, 1, 0).sort()).toEqual([2, 4]);
   });
 
-  it('死路时允许折返，避免卡死', () => {
+  it('★ 死路时候选为空 —— 折返由 pickNextNode 处理，不混进候选里', () => {
     const dead: MapTopology = {
       nodes: [
-        { ...ring.nodes[0]!, id: 1, adjacent: [2] },
-        { ...ring.nodes[1]!, id: 2, adjacent: [1] },
+        { ...ring.nodes[0]!, id: 1, adjacent: [2], adjacentSlots: [2, 0, 0, 0] },
+        { ...ring.nodes[1]!, id: 2, adjacent: [1], adjacentSlots: [1, 0, 0, 0] },
       ],
     };
-    expect(nextCandidates(dead, 2, 1)).toEqual([1]);
+    // @source 0x0040c17c：原版是先筛出候选，**空了才**回到 last_node_id
+    expect(nextCandidates(dead, 2, 1)).toEqual([]);
+  });
+
+  it('★ 封路位按**槽号**生效，不是按剔零后的下标', () => {
+    // 槽 0 通往 4、槽 1 通往 2；封掉槽 0
+    const blocked: MapTopology = {
+      nodes: ring.nodes.map((n) =>
+        n.id === 1 ? { ...n, flags: n.flags | 0x40000000 } : n,
+      ),
+    };
+    expect(nextCandidates(blocked, 1, 0)).toEqual([2]);
   });
 });
 
@@ -116,23 +128,53 @@ describe('回合流程', () => {
       { type: 'step' },
       ring,
     );
-    // 起点 lastNodeId=0，两个方向都可走
-    expect(s.phase).toBe('awaitingDirection');
-    expect(s.players[0]!.nodeId).toBe(1); // 未移动
-  });
-
-  it('选择方向后继续移动', () => {
-    let s = makeState({ phase: 'awaitingDirection', stepsRemaining: 2, stepsTotal: 2 });
-    s = reduce(s, { type: 'chooseDirection', nodeId: 4 }, ring);
-    expect(s.players[0]!.nodeId).toBe(4);
-    expect(s.stepsRemaining).toBe(1);
+    // ★ 起点 lastNodeId=0，两条路都通 —— 原版**不问玩家**，直接 rand() 挑一条
+    //   （@source VA 0x0040c196）。所以这里必定已经走掉一步。
     expect(s.phase).toBe('moving');
+    expect([2, 4]).toContain(s.players[0]!.nodeId);
+    expect(s.stepsRemaining).toBe(1);
   });
 
-  it('非法的方向选择被忽略', () => {
-    const st = makeState({ phase: 'awaitingDirection', stepsRemaining: 2, stepsTotal: 2 });
-    const s = reduce(st, { type: 'chooseDirection', nodeId: 3 }, ring); // 3 不相邻
-    expect(s).toBe(st); // 原样返回
+  it('★ 岔路的随机选路会推进 PRNG —— 否则回放对不上', () => {
+    const st = makeState({ phase: 'moving', stepsRemaining: 2, stepsTotal: 2 });
+    const s = reduce(st, { type: 'step' }, ring);
+    expect(s.rngState).not.toBe(st.rngState);
+  });
+
+  it('只有一条路时不消耗随机数', () => {
+    const st = makeState({ phase: 'moving', stepsRemaining: 2, stepsTotal: 2 });
+    st.players[0]!.lastNodeId = 4; // 从 4 来，只能往 2 去
+    const s = reduce(st, { type: 'step' }, ring);
+    expect(s.players[0]!.nodeId).toBe(2);
+    expect(s.rngState).toBe(st.rngState);
+  });
+
+  it('★ 死路原路返回，而不是卡住', () => {
+    // 1 只连 2，从 2 走到 1 之后无路可走
+    const deadEnd: MapTopology = {
+      nodes: [
+        { ...ring.nodes[0]!, adjacent: [2], adjacentSlots: [2, 0, 0, 0] },
+        { ...ring.nodes[1]!, adjacent: [1], adjacentSlots: [1, 0, 0, 0] },
+      ],
+    };
+    const st = makeState({ phase: 'moving', stepsRemaining: 2, stepsTotal: 2 });
+    st.players[0]!.nodeId = 1;
+    st.players[0]!.lastNodeId = 2;
+    const s = reduce(st, { type: 'step' }, deadEnd);
+    expect(s.players[0]!.nodeId).toBe(2); // @source 0x0040c180
+  });
+
+  it('★ 封路位把那条支线关掉 —— 岔路就退化成单行道', () => {
+    // 节点 1 的槽 1（通往 2）被封 → 从起点只能走 4
+    const blocked: MapTopology = {
+      nodes: ring.nodes.map((n) =>
+        n.id === 1 ? { ...n, flags: n.flags | (0x40000000 >>> 1) } : n,
+      ),
+    };
+    const st = makeState({ phase: 'moving', stepsRemaining: 2, stepsTotal: 2 });
+    const s = reduce(st, { type: 'step' }, blocked);
+    expect(s.players[0]!.nodeId).toBe(4);
+    expect(s.rngState).toBe(st.rngState); // 只剩一条，不掷随机
   });
 
   it('endTurn 轮转到下一位在场玩家并递减天数', () => {
@@ -218,7 +260,6 @@ describe('★ C-DET-4：确定性', () => {
       acts.push({ type: 'rollDice' });
       for (let i = 0; i < 12; i++) {
         acts.push({ type: 'step' });
-        acts.push({ type: 'chooseDirection', nodeId: 2 });
       }
       acts.push({ type: 'settle' });
       acts.push({ type: 'endTurn' });
@@ -274,14 +315,8 @@ describe('在真实地图上推演', () => {
       if (s.phase === 'awaitingRoll') s = reduce(s, { type: 'rollDice' }, topo);
 
       let guard = 0;
-      while (s.phase === 'moving' || s.phase === 'awaitingDirection') {
-        if (s.phase === 'awaitingDirection') {
-          const p = s.players[s.currentPlayer]!;
-          const options = nextCandidates(topo, p.nodeId, p.lastNodeId);
-          s = reduce(s, { type: 'chooseDirection', nodeId: options[0]! }, topo);
-        } else {
-          s = reduce(s, { type: 'step' }, topo);
-        }
+      while (s.phase === 'moving') {
+        s = reduce(s, { type: 'step' }, topo);
         if (++guard > 100) throw new Error('移动未收敛');
       }
       if (s.phase === 'settling') s = reduce(s, { type: 'settle' }, topo);

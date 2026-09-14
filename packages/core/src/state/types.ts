@@ -239,8 +239,6 @@ export type TurnPhase =
   | 'awaitingRoll'
   /** 已掷骰，正在逐步移动 */
   | 'moving'
-  /** 移动中遇到岔路，等待选择方向 */
-  | 'awaitingDirection'
   /** 抵达落点，等待结算 */
   | 'settling'
   /** 落点需要玩家决策（买地/盖房等） */

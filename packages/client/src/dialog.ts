@@ -23,57 +23,145 @@
  */
 
 import type { InteractionUi } from './interactions.ts';
+import {
+  DIALOG_ANCHOR_SCREEN,
+  DIALOG_SKIN_IMAGE,
+  DIALOG_SKIN_RESOURCE,
+  DICE_RESOURCE,
+  DICE_TOGGLE_AT,
+  DICE_TOGGLE_IMAGE,
+  DICE_TOGGLE_SIZE,
+  GO_DEFAULT,
+  GO_IMAGE,
+  GO_RESOURCE,
+  GO_SIZE,
+  YESNO_IMAGE,
+  YESNO_RESOURCE,
+  YESNO_CENTER_SCREEN,
+  YESNO_SIZE,
+  boardRect,
+  diceImage,
+  inRect,
+  toBoard,
+  yesNoHalves,
+  type Rect,
+  type SpriteFn,
+} from './gameui.ts';
 import { LAYOUT } from './stage.ts';
 
-/** 框心 —— 棋盘区内的坐标 @source VA 0x00440c0f `push 0x8c / push 0xdc` */
-export const DIALOG_ANCHOR = { x: 0xdc, y: 0x8c } as const;
+/** 框心（棋盘区坐标）—— 由屏幕坐标换算，见 gameui.ts */
+export const DIALOG_ANCHOR = toBoard(DIALOG_ANCHOR_SCREEN);
 
-const PAD = 14;
+/**
+ * 訊息框在屏幕上的位置 —— 由锚点倒推。
+ * @source VA 0x004191df：`x0 = 0xdc − 图5.anchorX`、`y0 = 0x8c − 图5.anchorY`。
+ * 图 5 是 249×170、锚点 (123,101)，于是框占 (97,39)-(346,209)。
+ */
+export const BOX_SCREEN: Rect = { x: 0xdc - 123, y: 0x8c - 101, w: 249, h: 170 };
+
+/**
+ * 框内可写字的那一块（相对框左上角）。
+ *
+ * ⚠️ 是**照解出来的位图量的**：在图 5 上横切竖切，看颜色跳变——
+ *   平坦的棕色内场是 x 12..230、y 41..160（上面那圈金边与顶部的王冠饰件
+ *   占掉 y 0..40）。原版把字排在哪由绘制代码决定，那段没定位。
+ */
+const INNER = { dx: 12, dy: 41, w: 219, h: 120 } as const;
+
 const LINE_H = 20;
-const TITLE_H = 26;
-const BTN_H = 26;
-const BTN_GAP = 6;
-const BTN_MIN_W = 64;
-const MAX_W = 400;
+const TITLE_H = 24;
+const BTN_H = 24;
+const BTN_GAP = 5;
+const BTN_MIN_W = 56;
 
-const FONT_TITLE = 'bold 17px "PingFang TC", "Microsoft JhengHei", sans-serif';
+const FONT_TITLE = 'bold 16px "PingFang TC", "Microsoft JhengHei", sans-serif';
 const FONT_BODY = '14px "PingFang TC", "Microsoft JhengHei", sans-serif';
 
-interface Rect { x: number; y: number; w: number; h: number }
 
-function inRect(x: number, y: number, r: Rect): boolean {
-  return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+// ============================================================
+//  GO 鈕、骰子数切换、骰子
+// ============================================================
+
+/**
+ * 「GO」鈕 —— 轮到人、还没掷骰时画在棋盘上。
+ *
+ * ★ 这是**原版的按钮**，不是我们加的：`Panel.mkf` 资源 7 图 0/1（72×67 的
+ *   黄底 GO 牌子），默认位置 (180,120)，原版还允许拖着它走。下方那三对
+ *   15×15 的小骰子是**骰子数切换**（1/2/3 颗，对应走路/機車/汽車）。
+ *   全部常量与出处见 `gameui.ts`。
+ *
+ * ⚠️ 原版的「拖动」没做：位置固定在默认值上。
+ */
+export function hitAdvance(x: number, y: number): boolean {
+  return inRect(x, y, boardRect({ ...GO_DEFAULT, ...GO_SIZE }));
+}
+
+/** 骰子数切换钮的第 i 个（棋盘区坐标） */
+export function diceToggleRect(i: number): Rect {
+  return boardRect({
+    x: GO_DEFAULT.x + DICE_TOGGLE_AT.dx,
+    y: GO_DEFAULT.y + DICE_TOGGLE_AT.dy + i * DICE_TOGGLE_AT.pitch,
+    ...DICE_TOGGLE_SIZE,
+  });
+}
+
+/** 点在第几颗骰子的切换钮上（返回颗数 1..maxDice）；没点中返回 null */
+export function hitDiceToggle(x: number, y: number, maxDice: number): number | null {
+  for (let i = 0; i < maxDice; i++) {
+    if (inRect(x, y, diceToggleRect(i))) return i + 1;
+  }
+  return null;
 }
 
 /**
- * 「前進」钮 —— 轮到人、还没掷骰时画在棋盘底部正中。
+ * 画 GO 鈕与骰子数切换。
  *
- * ⚠️ 原版**没有这个按钮**：掷骰走的是热键（RICH4.CFG 的「前進指令」，
- *   见 `rich4-re/docs/rich4_cfg.txt` offset 0x20）。但热键得先有人告诉
- *   玩家按哪个，界面上又没写，所以这里补一个看得见的。
- *   字是原版的（`0x00465e22 '前進'`）。
+ * @param maxDice 这个玩家最多能掷几颗（走路 1、機車 2、汽車 3）
+ * @param ndices  当前选了几颗
  */
-export const ADVANCE_BUTTON = { x: 0xdc - 45, y: 396, w: 90, h: 30 } as const;
+export function drawAdvance(
+  ctx: CanvasRenderingContext2D,
+  sprite: SpriteFn,
+  hot: boolean,
+  maxDice: number,
+  ndices: number,
+): void {
+  const at = toBoard(GO_DEFAULT);
+  const go = sprite('Panel.mkf', GO_RESOURCE, hot ? GO_IMAGE.hot : GO_IMAGE.idle, true);
+  if (go !== null) ctx.drawImage(go.bitmap, at.x, at.y);
 
-export function hitAdvance(x: number, y: number): boolean {
-  return inRect(x, y, ADVANCE_BUTTON);
+  for (let i = 0; i < maxDice; i++) {
+    const pair = DICE_TOGGLE_IMAGE[i];
+    if (pair === undefined) continue;
+    // 亮的那张表示「这一颗算数」
+    const img = sprite('Panel.mkf', GO_RESOURCE, i < ndices ? pair[1] : pair[0], true);
+    if (img === null) continue;
+    const r = diceToggleRect(i);
+    ctx.drawImage(img.bitmap, r.x, r.y);
+  }
 }
 
-/** 画「前進」钮 */
-export function drawAdvance(ctx: CanvasRenderingContext2D, label: string, hot: boolean): void {
-  const r = ADVANCE_BUTTON;
-  ctx.save();
-  ctx.fillStyle = hot ? '#e8d24a' : '#d6c6a5';
-  ctx.fillRect(r.x, r.y, r.w, r.h);
-  ctx.strokeStyle = '#6b5a39';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
-  ctx.fillStyle = '#2a1d0e';
-  ctx.font = FONT_TITLE;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + 1);
-  ctx.restore();
+/**
+ * 画已掷出的骰子 —— 原版是 `Panel.mkf` 资源 3，三颗各六面，
+ * 图号 = `颗号 × 6 + 点数 − 1`（@source VA 0x0041965e）。
+ *
+ * ⚠️ **摆在哪是我们定的**：原版那段（VA 0x00419653）把三颗都画在
+ *   `(edi + 0x55, ebp + 0x91)`，而 `edi/ebp` 来自一块没跟到的临时面板。
+ *   这里摆在 GO 鈕右边，竖着排。
+ */
+export function drawDice(
+  ctx: CanvasRenderingContext2D,
+  sprite: SpriteFn,
+  dice: readonly number[],
+): void {
+  const at = toBoard({ x: GO_DEFAULT.x + GO_SIZE.w + 8, y: GO_DEFAULT.y });
+  let y = at.y;
+  for (let i = 0; i < dice.length; i++) {
+    const img = sprite('Panel.mkf', DICE_RESOURCE, diceImage(i, dice[i] ?? 1), true);
+    if (img === null) continue;
+    ctx.drawImage(img.bitmap, at.x, y);
+    y += img.height + 4;
+  }
 }
 
 /** 一次点击可能落在哪 */
@@ -93,9 +181,14 @@ export interface AmountPage {
 
 
 interface Layout {
+  /** 訊息框整块（棋盘区坐标） */
   box: Rect;
+  /** 框内可写字的那一块 */
+  inner: Rect;
   title: string;
   lines: string[];
+  /** 按钮是不是原版的 YES/NO 控件 */
+  yesNo: boolean;
   buttons: { label: string; rect: Rect; hit: DialogHit }[];
 }
 
@@ -124,8 +217,12 @@ function wrap(ctx: CanvasRenderingContext2D, text: string, maxW: number): string
 /**
  * 算出这一帧对话框的版式。
  *
- * 绘制与命中判定**共用**它 —— 两边各算一遍迟早对不上，那种错还特别难看出来
- * （看得见却点不中）。
+ * 绘制与命中判定**共用**它 —— 两边各算一遍迟早对不上，而且错法特别难看出来
+ * （按钮看得见却点不中）。
+ *
+ * ★ 两个选项时用原版的 YES/NO 控件（`Data.mkf` 资源 440，96×48，居中在
+ *   屏幕 (220,320)）。三个以上时原版走的是各自的专屏（銀行柜台、百貨公司、
+ *   股市…），那些还没做，故先在框下面排一列普通按钮 —— 这一部分是**我们的**。
  */
 export function layoutDialog(
   ctx: CanvasRenderingContext2D,
@@ -133,15 +230,21 @@ export function layoutDialog(
   page: AmountPage | null,
 ): Layout {
   ctx.font = FONT_BODY;
-  const innerW = MAX_W - PAD * 2;
+  const box = boardRect(BOX_SCREEN);
+  const inner: Rect = {
+    x: box.x + INNER.dx,
+    y: box.y + INNER.dy,
+    w: INNER.w,
+    h: INNER.h,
+  };
 
   const choice = page === null ? null : ui.choices[page.choice];
   const amount = choice?.amount;
   const detail =
     page !== null && amount !== undefined
-      ? `${ui.detail}\n\n${amount.label}：${page.value.toLocaleString('en-US')}　（上限 ${amount.max.toLocaleString('en-US')}）`
+      ? `${amount.label}\n${page.value.toLocaleString('en-US')}\n（上限 ${amount.max.toLocaleString('en-US')}）`
       : ui.detail;
-  const lines = wrap(ctx, detail, innerW);
+  const lines = wrap(ctx, detail, inner.w);
 
   const labels: { label: string; hit: DialogHit }[] =
     page !== null && amount !== undefined
@@ -154,15 +257,33 @@ export function layoutDialog(
         ]
       : ui.choices.map((c, i) => ({ label: c.label, hit: { kind: 'choice' as const, index: i } }));
 
-  // 按钮排成几行 —— 先量宽，再装行
+  // ——— 两个选项 → 原版的 YES/NO ———
+  const useYesNo = page === null && ui.choices.length === 2;
+  if (useYesNo) {
+    const halves = yesNoHalves();
+    return {
+      box,
+      inner,
+      title: ui.title,
+      lines,
+      yesNo: true,
+      buttons: [
+        { label: 'YES', rect: boardRect(halves.yes), hit: { kind: 'choice', index: 0 } },
+        { label: 'NO', rect: boardRect(halves.no), hit: { kind: 'choice', index: 1 } },
+      ],
+    };
+  }
+
+  // ——— 其余：框下面排一列按钮（⚠️ 我们的做法，不是原版）———
   ctx.font = FONT_BODY;
-  const widths = labels.map((l) => Math.max(BTN_MIN_W, Math.ceil(ctx.measureText(l.label).width) + 20));
+  const widths = labels.map((l) => Math.max(BTN_MIN_W, Math.ceil(ctx.measureText(l.label).width) + 18));
+  const rowW = box.w;
   const rows: number[][] = [];
   let row: number[] = [];
   let used = 0;
   for (let i = 0; i < labels.length; i++) {
     const w = widths[i]!;
-    if (row.length > 0 && used + BTN_GAP + w > innerW) {
+    if (row.length > 0 && used + BTN_GAP + w > rowW) {
       rows.push(row);
       row = [];
       used = 0;
@@ -172,34 +293,26 @@ export function layoutDialog(
   }
   if (row.length > 0) rows.push(row);
 
-  const titleH = ui.title === '' ? 0 : TITLE_H;
-  const bodyH = lines.length * LINE_H;
-  const btnH = rows.length * BTN_H + Math.max(0, rows.length - 1) * BTN_GAP;
-  const boxH = PAD * 2 + titleH + bodyH + (rows.length > 0 ? BTN_GAP + btnH : 0);
-
-  // ★ 框心就是原版那一点；框顶由高度倒推，故框长高时是**往两边长**的
-  const box: Rect = {
-    x: DIALOG_ANCHOR.x - MAX_W / 2,
-    y: DIALOG_ANCHOR.y - Math.round(boxH / 2),
-    w: MAX_W,
-    h: boxH,
-  };
-  // 别顶出棋盘区
-  box.y = Math.max(4, Math.min(box.y, LAYOUT.board.h - boxH - 4));
-
   const buttons: Layout['buttons'] = [];
-  let by = box.y + PAD + titleH + bodyH + BTN_GAP;
+  let by = box.y + box.h + 4;
   for (const r of rows) {
-    const total = r.reduce((s, i) => s + widths[i]!, 0) + (r.length - 1) * BTN_GAP;
-    let bx = box.x + Math.round((MAX_W - total) / 2);
+    const total = r.reduce((sum, i) => sum + widths[i]!, 0) + (r.length - 1) * BTN_GAP;
+    let bx = box.x + Math.round((rowW - total) / 2);
     for (const i of r) {
-      buttons.push({ label: labels[i]!.label, rect: { x: bx, y: by, w: widths[i]!, h: BTN_H }, hit: labels[i]!.hit });
+      buttons.push({
+        label: labels[i]!.label,
+        rect: { x: bx, y: by, w: widths[i]!, h: BTN_H },
+        hit: labels[i]!.hit,
+      });
       bx += widths[i]! + BTN_GAP;
     }
     by += BTN_H + BTN_GAP;
   }
+  // 排不下就整体上移，别掉出棋盘
+  const overflow = by - LAYOUT.board.h + 4;
+  if (overflow > 0) for (const b of buttons) b.rect.y -= overflow;
 
-  return { box, title: ui.title, lines, buttons };
+  return { box, inner, title: ui.title, lines, yesNo: false, buttons };
 }
 
 /** 棋盘区坐标 → 点中了什么 */
@@ -220,6 +333,7 @@ export function hitDialog(
 /** 画在**棋盘区**的画布上（坐标即棋盘区坐标） */
 export function drawDialog(
   ctx: CanvasRenderingContext2D,
+  sprite: SpriteFn,
   ui: InteractionUi,
   page: AmountPage | null,
   hot: DialogHit | null,
@@ -227,43 +341,70 @@ export function drawDialog(
   const l = layoutDialog(ctx, ui, page);
   ctx.save();
 
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.fillRect(0, 0, LAYOUT.board.w, LAYOUT.board.h);
+  // ——— 框：原版的 Data.mkf 资源 517 图 5 ———
+  const skin = sprite('Data.mkf', DIALOG_SKIN_RESOURCE, DIALOG_SKIN_IMAGE, true);
+  if (skin !== null) {
+    ctx.drawImage(skin.bitmap, l.box.x, l.box.y);
+  } else {
+    ctx.fillStyle = '#6b4a21';
+    ctx.fillRect(l.box.x, l.box.y, l.box.w, l.box.h);
+  }
 
-  // 框：⚠️ 原版那张位图没认出来（Q-UI-2），这里自己画一个同位置的
-  ctx.fillStyle = '#efe7d6';
-  ctx.strokeStyle = '#6b5a39';
-  ctx.lineWidth = 2;
-  ctx.fillRect(l.box.x, l.box.y, l.box.w, l.box.h);
-  ctx.strokeRect(l.box.x + 1, l.box.y + 1, l.box.w - 2, l.box.h - 2);
-
-  let y = l.box.y + PAD;
+  // ——— 文字 ———
+  const cx = l.inner.x + l.inner.w / 2;
+  let y = l.inner.y + 4;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
+  // 金框上的字要够亮，且描一圈黑边才压得住底纹
+  const line = (text: string, font: string, fill: string): void => {
+    ctx.font = font;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+    ctx.strokeText(text, cx, y);
+    ctx.fillStyle = fill;
+    ctx.fillText(text, cx, y);
+  };
   if (l.title !== '') {
-    ctx.font = FONT_TITLE;
-    ctx.fillStyle = '#2a1d0e';
-    ctx.fillText(l.title, DIALOG_ANCHOR.x, y);
+    line(l.title, FONT_TITLE, '#ffe8a5');
     y += TITLE_H;
   }
-  ctx.font = FONT_BODY;
-  ctx.fillStyle = '#2a2a2a';
-  for (const line of l.lines) {
-    ctx.fillText(line, DIALOG_ANCHOR.x, y);
+  for (const t of l.lines) {
+    line(t, FONT_BODY, '#fff6e0');
     y += LINE_H;
   }
 
-  for (const b of l.buttons) {
-    const on = hot !== null && JSON.stringify(hot) === JSON.stringify(b.hit);
-    ctx.fillStyle = on ? '#e8d24a' : '#d6c6a5';
-    ctx.fillRect(b.rect.x, b.rect.y, b.rect.w, b.rect.h);
-    ctx.strokeStyle = '#6b5a39';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(b.rect.x + 0.5, b.rect.y + 0.5, b.rect.w - 1, b.rect.h - 1);
-    ctx.fillStyle = '#2a1d0e';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(b.label, b.rect.x + b.rect.w / 2, b.rect.y + b.rect.h / 2 + 1);
-    ctx.textBaseline = 'top';
+  // ——— 按钮 ———
+  if (l.yesNo) {
+    // 原版控件：整块一张图，哪半亮由图号决定
+    const which =
+      hot?.kind === 'choice' && hot.index === 0
+        ? YESNO_IMAGE.yes
+        : hot?.kind === 'choice' && hot.index === 1
+          ? YESNO_IMAGE.no
+          : YESNO_IMAGE.none;
+    const img = sprite('Data.mkf', YESNO_RESOURCE, which, true);
+    const at = boardRect({
+      x: YESNO_CENTER_SCREEN.x - YESNO_SIZE.w / 2,
+      y: YESNO_CENTER_SCREEN.y - YESNO_SIZE.h / 2,
+      ...YESNO_SIZE,
+    });
+    if (img !== null) ctx.drawImage(img.bitmap, at.x, at.y);
+  } else {
+    for (const b of l.buttons) {
+      const on = hot !== null && JSON.stringify(hot) === JSON.stringify(b.hit);
+      ctx.fillStyle = on ? '#e8d24a' : '#c6a56b';
+      ctx.fillRect(b.rect.x, b.rect.y, b.rect.w, b.rect.h);
+      ctx.strokeStyle = '#4a3110';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(b.rect.x + 0.5, b.rect.y + 0.5, b.rect.w - 1, b.rect.h - 1);
+      ctx.fillStyle = '#2a1d0e';
+      ctx.font = FONT_BODY;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(b.label, b.rect.x + b.rect.w / 2, b.rect.y + b.rect.h / 2 + 1);
+    }
   }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
   ctx.restore();
 }

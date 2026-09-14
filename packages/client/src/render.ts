@@ -24,7 +24,10 @@ import {
   facilitySlot,
   sceneryResource,
   toolbarIconImage,
-  tokenResource,
+  characterSprite,
+  CHARACTER_POSE,
+  directionalImage,
+  screenDirection,
 } from './assets.ts';
 
 /**
@@ -209,6 +212,13 @@ export class BoardRenderer {
   /** 有新精灵解码完成时置位，驱动下一帧重绘 */
   #dirty = false;
   /**
+   * 行走动画的帧号 —— 由宿主按动画节拍推进。
+   *
+   * ⚠️ 原版每个玩家各有一份（`[0x498ea3 + player*0x34]`），换算成帧率的那段
+   *   没解出来。本引擎先共用一个计数器：同一时刻只有一个人在走，看不出差别。
+   */
+  #walkFrame = 0;
+  /**
    * 解码落地时叫一声。
    *
    * ⚠️ 光有 `#dirty` 不够：解码几乎总是在本帧的 rAF 回调**之后**才 resolve，
@@ -233,6 +243,19 @@ export class BoardRenderer {
 
   clearDirty(): void {
     this.#dirty = false;
+  }
+
+  /** 画出节点连线与落点菱形 —— **调试用**，原版没有 */
+  debugNodes = false;
+
+  /** 推进一格行走动画 */
+  advanceWalk(): void {
+    this.#walkFrame = (this.#walkFrame + 1) & 0xff;
+  }
+
+  /** 某个资源里有几张图（同步，只解表头） */
+  #imageCount(archive: 'Data.mkf' | 'Panel.mkf' | 'map.mkf' | 'jump.mkf', res: number): number {
+    return this.#sprites.imageCount(archive, res);
   }
 
   /**
@@ -294,10 +317,13 @@ export class BoardRenderer {
     }
 
     const vp = { w: width, h: height };
-    this.#drawEdges(map, camera, vp);
+    // ⚠️ 原版棋盘上**没有**连线，也没有标落点的菱形 —— 格子长什么样全靠
+    //   底图与建筑图素本身。先前那两层是解地图时的调试辅助，留着就不是复刻了。
+    //   仍然保留代码，`?debug=nodes` 时才画，排错时还用得上。
+    if (this.debugNodes) this.#drawEdges(map, camera, vp);
     this.#drawDecor(map, camera, vp);
     this.#drawBuildings(map, state, camera, vp);
-    this.#drawNodes(map, state, camera, hoverNode, vp);
+    if (this.debugNodes) this.#drawNodes(map, state, camera, hoverNode, vp);
     this.#drawPlayers(map, state, camera, vp);
   }
 
@@ -312,7 +338,10 @@ export class BoardRenderer {
     const strip = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, TOOLBAR_STRIP_IMAGE);
     if (strip !== null) ctx.drawImage(strip.bitmap, x, y);
     for (let i = 0; i < TOOLBAR_ICON_COUNT; i++) {
-      const icon = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, toolbarIconImage(i, pressed === i));
+      // ★ 图标是 SMP，黑色是抠图底色，不抠的话每个图标都顶着一块黑底
+      const icon = this.#sprite(
+        'Panel.mkf', TOOLBAR_RESOURCE, toolbarIconImage(i, pressed === i), true,
+      );
       if (icon === null) continue;
       const cx = x + TOOLBAR.padX + i * TOOLBAR.pitch + TOOLBAR.pitch / 2;
       const cy = y + TOOLBAR.padY + (TOOLBAR.height - TOOLBAR.padY * 2) / 2;
@@ -581,7 +610,19 @@ export class BoardRenderer {
       const off = seen * Math.max(4, k * 5);
 
       // ★ 原版棋子：锚点在底边中心，故按锚点对齐到格心（C-AST-6）
-      const token = this.#sprite('Panel.mkf', tokenResource(pl.character), 0);
+      //
+      // ★ 朝向跟着走位走，不是永远面朝镜头：
+      //   屏幕朝向 = (玩家朝向 + 8 − 视角) & 7（@source VA 0x0040882d），
+      //   图号 = 屏幕朝向 × (图数 / 8) + 帧（@source VA 0x0040883f）。
+      const moving = state.phase === 'moving' && pl.index === state.currentPlayer;
+      const pose = moving ? CHARACTER_POSE.walk : CHARACTER_POSE.stand;
+      const res = characterSprite(pl.character, pose);
+      const count = this.#imageCount('Data.mkf', res);
+      const dir = screenDirection(pl.direction, cam.view);
+      const token =
+        count > 0
+          ? this.#sprite('Data.mkf', res, directionalImage(count, dir, this.#walkFrame))
+          : null;
       if (token !== null) {
         const w = token.width * k;
         const h = token.height * k;

@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-import { reduce, nextCandidates, effectiveLand, landIndexAtPlayer } from './reduce.ts';
+import { reduce, effectiveLand, landIndexAtPlayer } from './reduce.ts';
 import type { MapTopology } from './reduce.ts';
 import type { GameState, Player } from './types.ts';
 import { makePlayer as basePlayer } from '../testing/factories.ts';
@@ -46,14 +46,8 @@ function playTurn(
   if (s.phase === 'awaitingRoll') s = reduce(s, { type: 'rollDice' }, topo);
 
   let guard = 0;
-  while (s.phase === 'moving' || s.phase === 'awaitingDirection') {
-    if (s.phase === 'awaitingDirection') {
-      const p = s.players[s.currentPlayer]!;
-      const options = nextCandidates(topo, p.nodeId, p.lastNodeId);
-      s = reduce(s, { type: 'chooseDirection', nodeId: options[0]! }, topo);
-    } else {
-      s = reduce(s, { type: 'step' }, topo);
-    }
+  while (s.phase === 'moving') {
+    s = reduce(s, { type: 'step' }, topo);
     if (++guard > 100) throw new Error('移动未收敛');
   }
   if (s.phase === 'settling') s = reduce(s, { type: 'settle' }, topo);

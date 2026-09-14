@@ -96,6 +96,17 @@ export class SpriteCache {
   }
 
   /**
+   * 这个资源里有几张图 —— 取不到返回 0。
+   *
+   * ★ 八向精灵要靠它算图号（`图号 = 朝向 × 图数/8 + 帧`，见 assets.ts 的
+   *   `directionalImage`），所以这个数必须能**同步**问出来。它只需要解表头，
+   *   不解像素，很便宜。
+   */
+  imageCount(archive: ArchiveName, resource: number): number {
+    return this.#sheetOf(archive, resource)?.images.length ?? 0;
+  }
+
+  /**
    * 取一张精灵；资源或图号不存在时返回 null 而不是抛错。
    *
    * `colorKeyBlack` 用于叠在地图上的 SMP 图（特殊格装饰等）——
@@ -204,14 +215,82 @@ export async function loadGround(
  */
 export const CHARACTER_COUNT = 12;
 
-/** 角色的站立棋子 —— `Panel.mkf` 资源号 */
-export function tokenResource(character: number): number {
-  return 28 + character * 3;
+/**
+ * 棋子（地图上那个小人）的资源起点。
+ *
+ * @source 载入函数 VA 0x0040b93b：
+ * ```asm
+ * 0040b954  mov al, byte [player + 0x13]   ; character
+ * 0040b95a  edi = al
+ * 0040b95c  edi = edi*4 + al               ; 5c
+ * 0040b961  edi = edi*4 + al               ; 21c
+ * 0040b966  add edi, 0x80                  ; ★ 资源号 = 128 + 21×character
+ * ...      call 0x450441([0x48a0e4], edi + k, 0, 0)   ; [0x48a0e4] = Data.mkf
+ * ```
+ * 每个角色占 **21 个连续资源**，12 个角色 → `Data.mkf` 128..379。
+ *
+ * ★ 每个资源的图数都是 **8 的倍数**，因为棋子有**八个朝向**：
+ * ```asm
+ * 00408810  eax = [精灵集 + 4]          ; 图数
+ * 0040881a  sar eax, 3                  ; 图数 / 8 = 每个朝向的帧数
+ * 00408822  dl = player.direction       ; 世界朝向 0..7
+ * 0040882d  ecx = 8 - [0x499088]        ; ★ 减去当前视角旋转
+ * 00408835  edx = (dl + ecx) & 7        ; 屏幕朝向
+ * 0040883f  mul byte [esp+0x54]         ; al = 每向帧数 × 屏幕朝向
+ * 00408849  add al, ch                  ; + 当前帧
+ * ```
+ * 即 **图号 = 屏幕朝向 × (图数 / 8) + 帧号**。
+ *
+ * ⚠️ 先前本引擎用的是 `Panel.mkf` 28 + 3×character 那一张**正面站姿**，
+ *   所以不管往哪走，小人永远面朝镜头。那批图是别处用的（每组 5/1/5 张，
+ *   连 8 都除不尽），不是棋子。
+ */
+export const CHARACTER_SPRITE_BASE = 0x80;
+export const CHARACTER_SPRITE_STRIDE = 21;
+
+/**
+ * 21 个资源里已经认出来的几个。
+ *
+ * ⚠️ 只有 0/1 是目视确认过的（渲染出来就是站立与九帧行走）。其余按
+ *   「站立 8 张 / 行走 N×8 张 / 拿骰子 N×8 张」三个一组的规律推断，
+ *   **没有逐个对照汇编**，故只在这里记录，代码暂时只用 0 和 1。见 Q-CHAR-1。
+ *
+ * | +k | 角色 0 的图数 | 看上去是 |
+ * |---|---|---|
+ * | 0 | 8 | 走路・站 |
+ * | 1 | 72 | 走路・行走（9 帧） |
+ * | 2 | 72 | 走路・手持骰子 |
+ * | 3..5 | 8/32/32 | 機車 |
+ * | 6..8 | 8/24/32 | 另一种载具 |
+ * | 9..12 | 8/16/32/40 | 工程车 |
+ * | 13..15 | 8/24/32 | 飛行器 |
+ * | 16..17 | 8/72 | 走路（另一套） |
+ * | 18 | 8 | 出局／墓碑位（@source 0x0040b9b7 `edi + 0x12`） |
+ * | 19 | 8 | 白衣（住院？） |
+ * | 20 | 8 | 條紋囚衣（坐牢） |
+ */
+export const CHARACTER_POSE = { stand: 0, walk: 1 } as const;
+
+/** 某个角色某个姿态的 `Data.mkf` 资源号 */
+export function characterSprite(character: number, pose: number): number {
+  return CHARACTER_SPRITE_BASE + character * CHARACTER_SPRITE_STRIDE + pose;
 }
 
-/** 角色的行走动画 —— 两个方向各一组 */
-export function walkResources(character: number): [number, number] {
-  return [27 + character * 3, 29 + character * 3];
+/**
+ * 世界朝向 → 屏幕朝向。
+ * @source 0x0040882d `ecx = 8 - [0x499088]` / `edx = (dir + ecx) & 7`
+ */
+export function screenDirection(direction: number, view: number): number {
+  return (direction + 8 - (view % 8)) & 7;
+}
+
+/**
+ * 八向精灵里第几张图。
+ * @source 0x0040883f `图号 = 屏幕朝向 × (图数 / 8) + 帧号`
+ */
+export function directionalImage(imageCount: number, screenDir: number, frame: number): number {
+  const per = Math.max(1, imageCount >> 3);
+  return screenDir * per + (frame % per);
 }
 
 /** 角色头像 —— `map.mkf` 资源号，7 张表情，取第 0 张即可 */

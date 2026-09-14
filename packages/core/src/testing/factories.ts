@@ -7,6 +7,7 @@
  */
 import type { Player, GameState } from '../state/types.ts';
 import { WHO_PLAYS_HUMAN } from '../state/types.ts';
+import { slotsFrom } from '../loaders/map.ts';
 import type { LandInfo, FacilityInfo, MapNode } from '../loaders/map.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { makeObjects } from '../cards/summon.ts';
@@ -100,12 +101,15 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
 
 /** 最小可用地图节点 */
 export function makeNode(over: Partial<MapNode> = {}): MapNode {
+  const adjacent = over.adjacent ?? [];
   return {
     id: 1,
     x: 0,
     y: 0,
     name: '',
-    adjacent: [],
+    adjacent,
+    // 手工节点没有文件里的槽号，按邻接表顺序补（见 loaders/map.ts 的 slotsFrom）
+    adjacentSlots: slotsFrom(adjacent),
     type: 0,
     ref: { kind: 'special' },
     decorIndex: 0,

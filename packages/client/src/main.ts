@@ -8,11 +8,11 @@
  *   是同一种 action，引擎分不出也不需要分出来源。
  */
 
-import { CHARACTERS, TOOLBAR_TIPS } from '@rich4/data';
+import { CHARACTERS } from '@rich4/data';
 import {
   autoAction,
+  VEHICLE_DICE,
   decideAction,
-  nextCandidates,
   isAiTurn,
   newGame,
   reduce,
@@ -68,12 +68,15 @@ import { interactionUi, type InteractionUi } from './interactions.ts';
 import {
   drawAdvance,
   drawDialog,
+  drawDice,
   hitAdvance,
+  hitDiceToggle,
   hitDialog,
   layoutDialog,
   type AmountPage,
   type DialogHit,
 } from './dialog.ts';
+import type { SpriteFn } from './gameui.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import {
@@ -153,8 +156,9 @@ let advanceHot = false;
  *   把 `startTurn / step / settle / endTurn` 全做成了调试抽屉里的按钮，
  *   而抽屉默认收起——于是正常开局时**连骰子都掷不了**。
  *
- * 停下来等人的只有三处：`awaitingRoll`（等「前進」）、`awaitingDecision`
- * 与 `awaitingDirection`（等对话框）。
+ * 停下来等人的只有两处：`awaitingRoll`（等「前進」）与 `awaitingDecision`
+ * （等对话框）。**岔路没有交互** —— 原版从不问玩家走哪边（见 core 的
+ * `pickNextNode`）。
  */
 let humanTimer: number | null = null;
 
@@ -183,6 +187,7 @@ function scheduleHumanTurn(): void {
   if (next === null) return;
   humanTimer = window.setTimeout(() => {
     humanTimer = null;
+    if (next.type === 'step') renderer.advanceWalk();
     dispatch(next);
   }, humanDelay());
 }
@@ -199,8 +204,23 @@ function mechanicalAction(): Action | null {
     case 'turnEnd':
       return { type: 'endTurn' };
     default:
-      return null; // awaitingRoll / awaitingDecision / awaitingDirection：等人
+      return null; // awaitingRoll / awaitingDecision：等人
   }
+}
+
+/** 给 gameui/dialog 用的同步取图 —— 与 spriteNow 同一个缓存 */
+const uiSprite: SpriteFn = (archive, resource, index, colorKeyBlack = false) =>
+  spriteNow(archive, resource, index, colorKeyBlack);
+
+/**
+ * 这个玩家最多能掷几颗骰子。
+ *
+ * @source 原版把上限放在 `traffic_method`（player +0x11）里：走路 1、機車 2、
+ *   汽車 3（VA 0x004172e6 `al = [+0x11] & 3` 后按 0/1/2/3 走四路跳表）。
+ * ⚠️ 本引擎还没有交通工具，恒为 1；`ndices`（+0x12）已经在模型里了。
+ */
+function maxDiceOf(p: { trafficMethod: number }): number {
+  return VEHICLE_DICE.get(p.trafficMethod & 3) ?? 1;
 }
 
 /** 轮到人、还没掷骰 */
@@ -217,7 +237,6 @@ function awaitingHumanRoll(): boolean {
  */
 function currentDialog(): InteractionUi | null {
   if (screen !== 'game') return null;
-  if (state.phase === 'awaitingDirection') return directionUi();
   return state.pending === null ? null : interactionUi(state.pending, state);
 }
 
@@ -294,8 +313,9 @@ function applyOptions(next: GameOptions): void {
   sound.setMuted(next.sound === 0);
   sound.volume = volumeOf(next.sound);
   music.setVolume(next.music === 0 ? 0 : volumeOf(next.music) * 0.25);
-  // ⚠️ 「02 兩者輪流」怎么轮没查证（Q-UI-1），先按小地圖处理
-  sidebarView = next.windowView === 0 ? 'calendar' : 'map';
+  // 設定里那三项：00 日曆 / 01 小地圖 / 02 兩者輪流（RICH4.CFG offset 5）
+  // ⚠️ 「兩者輪流」怎么轮没查证，先当日曆（点一下可以手动换）
+  sidebarView = next.windowView === 1 ? 'map' : 'calendar';
   // `Midi.txt` 的前 8 条正好是設定里那 8 首樂曲
   if (trackChanged || (next.music > 0 && !music.playing)) void playTrack(next.track);
   if (next.music === 0) music.stop();
@@ -486,6 +506,7 @@ function scheduleAi(): void {
       if (isAiTurn(state)) log(`⚠ 电脑在 ${state.phase} 无事可做，已停手`);
       return;
     }
+    if (action.type === 'step') renderer.advanceWalk();
     const before = state;
     state = reduce(state, action, topo);
     if (state === before) {
@@ -606,8 +627,15 @@ function drawGameStage(): void {
     viewport: { w: LAYOUT.board.w, h: LAYOUT.board.h },
   });
   const dlg = currentDialog();
-  if (dlg !== null) drawDialog(boardCtx, dlg, amountPage, dialogHot);
-  else if (awaitingHumanRoll()) drawAdvance(boardCtx, TOOLBAR_TIPS.advance.text, advanceHot);
+  const me = state.players[state.currentPlayer];
+  if (dlg !== null) {
+    drawDialog(boardCtx, uiSprite, dlg, amountPage, dialogHot);
+  } else if (awaitingHumanRoll() && me !== undefined) {
+    // ★ 原版的 GO 鈕 + 骰子数切换（Panel.mkf 资源 7）
+    drawAdvance(boardCtx, uiSprite, advanceHot, maxDiceOf(me), me.ndices);
+  } else if (state.phase === 'moving' && state.dice.length > 0) {
+    drawDice(boardCtx, uiSprite, state.dice);
+  }
   stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
 
   // 工具栏画在棋盘上方（直接画到舞台上）
@@ -788,12 +816,7 @@ function renderPanel(): void {
  */
 function renderInteraction(): void {
   const pending = state.pending;
-  const ui =
-    state.phase === 'awaitingDirection'
-      ? directionUi()
-      : pending === null
-        ? null
-        : interactionUi(pending, state);
+  const ui = pending === null ? null : interactionUi(pending, state);
   if (ui === null) {
     interactionEl.replaceChildren();
     interactionEl.hidden = true;
@@ -834,28 +857,6 @@ function renderInteraction(): void {
   interactionEl.replaceChildren(head, detail, row);
 }
 
-/**
- * 岔路：把可走的下一格列成按钮。
- *
- * ★ 棋盘上点节点也能选（见输入那一节），但**只有点击**的话玩家
- *   根本看不出哪几格是可选的 —— 原版是把岔路高亮出来的。
- *   在补上高亮之前，先给一组明确的按钮，免得人卡在这一步。
- */
-function directionUi(): InteractionUi | null {
-  const me = state.players[state.currentPlayer];
-  if (me === undefined) return null;
-  const candidates = nextCandidates(topo, me.nodeId, me.lastNodeId);
-  if (candidates.length === 0) return null;
-  return {
-    title: '岔路',
-    detail: `还剩 ${state.stepsRemaining} 步 —— 往哪边走？（也可以直接点棋盘上的格子）`,
-    choices: candidates.map((n) => {
-      const node = map.nodes[n - 1];
-      const where = node?.name !== undefined && node.name !== '' ? `　${node.name}` : '';
-      return { label: `节点 ${n}${where}`, action: { type: 'chooseDirection', nodeId: n } as Action };
-    }),
-  };
-}
 
 /** 按当前阶段给出可用操作——「哪些可用」由 phase 决定，不重复实现规则 */
 function renderActions(): void {
@@ -967,7 +968,7 @@ function nextAutoAction(): Action | null {
       return { type: 'settle' };
     case 'turnEnd':
       return { type: 'endTurn' };
-    // awaitingDecision / awaitingDirection 需要人来决定，停下
+    // awaitingDecision 需要人来决定，停下
     default:
       return null;
   }
@@ -1180,9 +1181,18 @@ function bindInput(): void {
       return;
     }
 
-    // 轮到人、还没掷骰：底部那个「前進」
-    if (awaitingHumanRoll()) {
-      if (hitAdvance(p.x - LAYOUT.board.x, p.y - LAYOUT.board.y)) {
+    // 轮到人、还没掷骰：GO 鈕与它下面那排骰子数切换
+    const meNow = state.players[state.currentPlayer];
+    if (awaitingHumanRoll() && meNow !== undefined) {
+      const bx = p.x - LAYOUT.board.x;
+      const by = p.y - LAYOUT.board.y;
+      // ★ 切换钮盖在 GO 的下缘上，必须先问它，否则永远点不到
+      const n = hitDiceToggle(bx, by, maxDiceOf(meNow));
+      if (n !== null) {
+        dispatch({ type: 'setDiceCount', count: n });
+        return;
+      }
+      if (hitAdvance(bx, by)) {
         dispatch({ type: 'rollDice' });
         return;
       }
@@ -1209,9 +1219,6 @@ function bindInput(): void {
         (node.specialKind !== 0 ? ` 特殊格 ${node.specialKind}` : ''),
     );
     // 岔路选择：只有引擎正处于等待方向时才有意义
-    if (state.phase === 'awaitingDirection') {
-      dispatch({ type: 'chooseDirection', nodeId: node.id });
-    }
   });
 
   canvas.addEventListener('wheel', (e) => {
@@ -1248,7 +1255,9 @@ function bindInput(): void {
       return; // 点在工具栏上就不要同时开始拖动地图
     }
     if (hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)) {
-      sidebarView = sidebarView === 'calendar' ? 'map' : 'calendar';
+      // 日曆 → 月曆 → 小地圖 → 日曆
+      sidebarView =
+        sidebarView === 'calendar' ? 'month' : sidebarView === 'month' ? 'map' : 'calendar';
       requestRender();
       return;
     }
@@ -1481,6 +1490,8 @@ async function boot(): Promise<void> {
     hud = new Hud(hudOffCtx, sprites);
     // 解码是异步的，绘制是同步的：图到了要有人把下一帧排上，否则画面停在缺图那一帧
     renderer.onSpriteReady = requestRender;
+    // 调试辅助层：`?debug=nodes` 才画节点连线与落点菱形（原版没有）
+    renderer.debugNodes = new URLSearchParams(window.location.search).get('debug') === 'nodes';
     hud.onSpriteReady = requestRender;
     resizeCanvas();
     // ★ 原版开局就是人物视角（等距投影、跟着棋子），全局看右下角小地图

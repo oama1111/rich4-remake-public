@@ -66,6 +66,16 @@ export const OCCUPIED_MASK = 0x80ffff00;
 //  类型
 // ============================================================
 
+/**
+ * 由「剔了 0 的邻接表」补出 4 个原始槽。
+ *
+ * ⚠️ 只给**手工构造**的地图（测试、联机造数据）用。真地图的槽号来自
+ *   文件本身，顺序有意义（封路位按槽号存），不能靠这个函数反推。
+ */
+export function slotsFrom(adjacent: readonly number[]): [number, number, number, number] {
+  return [adjacent[0] ?? 0, adjacent[1] ?? 0, adjacent[2] ?? 0, adjacent[3] ?? 0];
+}
+
 export interface MapNode {
   /** 节点号，**从 1 开始** */
   id: number;
@@ -75,6 +85,13 @@ export interface MapNode {
   name: string;
   /** 相邻节点号，已剔除 0（0 表示无连接） */
   adjacent: number[];
+  /**
+   * **原样**的 4 个邻接槽（含 0 表示无连接）。
+   *
+   * ★ 必须留着：封路位是**按槽号**存的，`adjacent` 剔了 0 之后下标就对不上了。
+   * @source 节点 +0x18 起 4 个 uint16
+   */
+  adjacentSlots: [number, number, number, number];
   /** 原始 type 值 @source 节点 +0x20 */
   type: number;
   /** type 解析结果 */
@@ -344,8 +361,10 @@ export function parseMap(data: Uint8Array): Rich4Map {
   for (let i = 1; i <= numNodes; i++) {
     const o = nodeOff + i * NODE_SIZE;
     const adjacent: number[] = [];
+    const adjacentSlots: [number, number, number, number] = [0, 0, 0, 0];
     for (let a = 0; a < 4; a++) {
       const n = view.getUint16(o + 0x18 + a * 2, true);
+      adjacentSlots[a] = n;
       if (n !== 0) adjacent.push(n);
     }
     const type = view.getUint16(o + 0x20, true);
@@ -356,6 +375,7 @@ export function parseMap(data: Uint8Array): Rich4Map {
       y: view.getInt16(o + 0x02, true),
       name: readName(data, o + 0x04, 20),
       adjacent,
+      adjacentSlots,
       type,
       ref: resolveNodeType(type),
       decorIndex: view.getUint16(o + 0x22, true),

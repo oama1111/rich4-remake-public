@@ -35,8 +35,15 @@ export type Action =
   /** 前进一步（逐格移动，便于与动画对齐） */
   | { type: 'step' }
 
-  /** 岔路口选择前进方向 —— 指定下一个节点号 */
-  | { type: 'chooseDirection'; nodeId: number }
+  /**
+   * 選擇骰子數 —— 有車的时候可以少掷几颗。
+   *
+   * ★ 原版把它做成一个热键（RICH4.CFG offset 0x20「選擇骰子數」）加 GO 鈕
+   *   下面那三颗小骰子（`Panel.mkf` 资源 7 图 6..11）。上限由交通工具定：
+   *   走路 1、機車 2、汽車 3（见 rules/tool-effects.ts 的 VEHICLE_DICE）。
+   * @source 画的那段 VA 0x0041736a `dl = player.ndices − 1`，亮到第 ndices 颗
+   */
+  | { type: 'setDiceCount'; count: number }
 
   /** 结算落点 */
   | { type: 'settle' }

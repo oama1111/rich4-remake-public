@@ -7,7 +7,8 @@
  * 「每个按钮的正中一定命中它自己」。
  */
 import { describe, expect, it } from 'vitest';
-import { DIALOG_ANCHOR, hitDialog, layoutDialog } from './dialog.ts';
+import { BOX_SCREEN, hitDialog, layoutDialog } from './dialog.ts';
+import { DIALOG_ANCHOR_SCREEN, YESNO_CENTER_SCREEN, YESNO_SIZE } from './gameui.ts';
 import type { InteractionUi } from './interactions.ts';
 import { LAYOUT } from './stage.ts';
 
@@ -36,24 +37,49 @@ const ui = (over: Partial<InteractionUi> = {}): InteractionUi => ({
 });
 
 describe('对话框版式', () => {
-  it('框心就是原版那一点 —— @source VA 0x00440c0f', () => {
-    expect(DIALOG_ANCHOR).toEqual({ x: 0xdc, y: 0x8c });
+  it('★ 訊息框的位置由原版那两个常量倒推 —— @source VA 0x004191df', () => {
+    // x0 = 0xdc − 图5.anchorX(123)，y0 = 0x8c − 图5.anchorY(101)
+    expect(DIALOG_ANCHOR_SCREEN).toEqual({ x: 0xdc, y: 0x8c });
+    expect(BOX_SCREEN).toEqual({ x: 97, y: 39, w: 249, h: 170 });
+    // 换到棋盘区（原点在屏幕 (0,40)）后仍然摆在同一处
     const l = layoutDialog(fakeCtx(), ui(), null);
-    expect(l.box.x + l.box.w / 2).toBe(DIALOG_ANCHOR.x);
+    expect(l.box).toEqual({ x: 97, y: -1, w: 249, h: 170 });
   });
 
-  it('框不出棋盘区', () => {
+  it('★ 訊息框横向落在棋盘那一栏里 —— 纵向顶边比棋盘高 1 像素，与原版一致', () => {
+    const l = layoutDialog(fakeCtx(), ui(), null);
+    expect(l.box.x).toBeGreaterThanOrEqual(0);
+    expect(l.box.x + l.box.w).toBeLessThanOrEqual(LAYOUT.board.w);
+    // 原版画在屏幕 y=39，而棋盘那一栏从 y=40 起 —— 差的那一行会被裁掉
+    expect(l.box.y).toBe(-1);
+    expect(l.box.y + l.box.h).toBeLessThanOrEqual(LAYOUT.board.h);
+  });
+
+  it('★ 两个选项走原版的 YES/NO 控件，位置是 exe 里那一点', () => {
+    const l = layoutDialog(fakeCtx(), ui(), null);
+    expect(l.yesNo).toBe(true);
+    expect(l.buttons.map((b) => b.label)).toEqual(['YES', 'NO']);
+    // 整块 96×48 居中于屏幕 (220,320) @source 0x00440c7e → 0x00453a69
+    const x0 = YESNO_CENTER_SCREEN.x - YESNO_SIZE.w / 2;
+    expect(l.buttons[0]!.rect.x).toBe(x0);
+    expect(l.buttons[1]!.rect.x).toBe(x0 + YESNO_SIZE.w / 2);
+    expect(l.buttons[0]!.rect.w + l.buttons[1]!.rect.w).toBe(YESNO_SIZE.w);
+  });
+
+  it('三个以上选项退回我们自己排的按钮列（原版那几屏还没做）', () => {
     const many = ui({
-      detail: Array.from({ length: 40 }, (_, i) => `第 ${i} 行`).join('\n'),
-      choices: Array.from({ length: 12 }, (_, i) => ({
+      choices: Array.from({ length: 5 }, (_, i) => ({
         label: `選項${i}`,
         action: { type: 'declineDecision' as const },
       })),
     });
     const l = layoutDialog(fakeCtx(), many, null);
-    expect(l.box.y).toBeGreaterThanOrEqual(0);
-    expect(l.box.x).toBeGreaterThanOrEqual(0);
-    expect(l.box.x + l.box.w).toBeLessThanOrEqual(LAYOUT.board.w);
+    expect(l.yesNo).toBe(false);
+    expect(l.buttons).toHaveLength(5);
+    for (const b of l.buttons) {
+      expect(b.rect.y).toBeGreaterThanOrEqual(0);
+      expect(b.rect.y + b.rect.h).toBeLessThanOrEqual(LAYOUT.board.h);
+    }
   });
 
   it('每个按钮的正中都命中它自己', () => {

@@ -17,7 +17,7 @@
  */
 
 import type { GameState, Player } from '../state/types.ts';
-import type { LandInfo, MapNode, Rich4Map } from '../loaders/map.ts';
+import type { LandInfo, Rich4Map } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, housingIndexOf } from '../rules/land.ts';
 import { purchaseBlockedBy } from '../rules/purchase.ts';
@@ -128,9 +128,6 @@ export function decideAction(ctx: AiContext): Action | null {
     case 'turnEnd':
       // 落点可能留下一个待决交互（例如落在上市企业上），先把它答掉
       return decidePending(state) ?? { type: 'endTurn' };
-
-    case 'awaitingDirection':
-      return decideDirection(ctx);
 
     case 'awaitingDecision':
       return decideAtLanding(state, map, personality);
@@ -398,63 +395,6 @@ export function decidePending(state: GameState): Action | null {
   return null;
 }
 
-/**
- * 岔路选择。
- *
- * 朝「本区自己已有地最多」的方向走——与 `landAttractiveness` 同一逻辑：
- * 凑齐同区才是收益来源。
- */
-export function decideDirection(ctx: AiContext): Action | null {
-  const { state, map } = ctx;
-  const me = state.players[state.currentPlayer];
-  if (me === undefined) return null;
-  const here = map.nodes[me.nodeId - 1];
-  if (here === undefined) return null;
-
-  // 不走回头路：上一个节点排除掉
-  const options = here.adjacent.filter((id) => id !== me.lastNodeId);
-  const candidates = options.length > 0 ? options : here.adjacent;
-  if (candidates.length === 0) return null;
-
-  let best = candidates[0]!;
-  let bestScore = -Infinity;
-  for (const id of candidates) {
-    const node = map.nodes[id - 1];
-    if (node === undefined) continue;
-    const score = scoreNode(node, state, map, me.index);
-    if (score > bestScore) {
-      bestScore = score;
-      best = id;
-    }
-  }
-  return { type: 'chooseDirection', nodeId: best };
-}
-
-/** 给一个节点打分——越高越想去 */
-function scoreNode(node: MapNode, state: GameState, map: Rich4Map, playerIndex: number): number {
-  const idx = housingIndexOf(node.type);
-  if (idx === null) {
-    // 非地产：特殊格略微加分（抽卡/点数多半是好事），其余中性
-    return node.specialKind !== 0 ? 1 : 0;
-  }
-  const tpl = map.lands.find((l) => l.id === idx);
-  if (tpl === undefined) return 0;
-
-  const owner = state.landOwner[idx] ?? 0;
-  if (owner === 0) {
-    // 无主地：想买。除以 1000 只是把租金量级压到和其他评分项可比，
-    // C-DET-3 定向豁免同 landAttractiveness——这是评分不是金额。
-    // eslint-disable-next-line no-restricted-syntax
-    return 10 + landAttractiveness(tpl, map.lands, playerIndex) / 1000;
-  }
-  if (owner === playerIndex + 1) {
-    // 自己的地：可以盖房，略微加分
-    return 5;
-  }
-  // 别人的地：要付过路费，避开——等级越高越要避
-  const level = state.landLevel[idx] ?? 0;
-  return -5 - level * 3;
-}
 
 /**
  * 落点决策：买地 / 盖房 / 放弃。

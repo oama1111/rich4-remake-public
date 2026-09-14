@@ -13,6 +13,7 @@ import type { Action } from './actions.ts';
 import type { GameState, Player } from './types.ts';
 import { isAlive } from './types.ts';
 import { WatcomRng, rollDice } from '../rng/watcom.ts';
+import { VEHICLE_DICE } from '../rules/tool-effects.ts';
 import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo, FacilityInfo, CommercialInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
@@ -169,11 +170,41 @@ function withPlayer(s: GameState, index: number, fn: (p: Player) => void): GameS
 }
 
 /**
+ * 封路位：第 i 个邻接槽被封时，节点 flags 的第 (30 − i) 位为 1。
+ *
+ * @source 走子选路 VA 0x0040c12c：
+ * ```asm
+ * mov  ecx, 0x40000000          ; 掩码从 bit30 起
+ * ...
+ * 0040c144  sar ecx, 1          ; 每试一个槽右移一位 → bit30/29/28/27
+ * 0040c14e  mov dx, [ebx + edx*2 + 0x18]   ; node.adjacent[i]
+ * 0040c159  je  下一个                      ; 槽为 0 → 跳过
+ * 0040c16b  cmp edx, edi / je 下一个        ; ★ 等于 last_node_id → 跳过（不走回头路）
+ * 0040c16f  test [esp+0x24], ecx / jne 下一个 ; ★ 该槽被封 → 跳过
+ * ```
+ *
+ * 八张地图上这几位一共只置了 10 次，且**只出现在岔路节点上**——
+ * 它就是「这条支线此刻不通」的标记。台湾图（地图 0）两个岔路各封掉一条，
+ * 于是那两处实际只剩一条路可走。
+ */
+export function linkBlockedMask(slot: number): number {
+  return 0x40000000 >>> slot;
+}
+
+/**
  * 求出从 `from` 出发、上一步来自 `prev` 时的候选前进节点。
  *
- * 基本规则：不折返。原版另有完整的方向判定（含单向道、转向卡等），
- * TODO: 需对照 `rich4-re/asm/rich4_calculate_direction.asm`(1116 行)
- *       逐条复刻，当前实现仅覆盖「不折返」这一主干规则。
+ * ★ **原版在岔路口不问玩家**。它按上面那段汇编筛一遍（去掉空槽、
+ *   去掉回头路、去掉被封的槽），剩下几个就 `rand() % n` 随机挑一个：
+ * ```asm
+ * 0040c17c  test esi, esi / jne 有候选
+ * 0040c180  next = player.last_node_id      ; ★ 一个都不剩 → 原路返回
+ * 0040c196  call rand / idiv esi            ; ★ 有候选 → 随机挑
+ * ```
+ *
+ * 这纠正了本引擎先前的一处**自创玩法**：原来在 `candidates.length > 1` 时
+ * 会停成 `awaitingDirection` 弹框问玩家走哪边。原版没有这个交互——
+ * 棋子一路向前，遇到岔路由引擎决定，玩家只能靠「向後轉」之类的卡改方向。
  */
 export function nextCandidates(
   topo: MapTopology,
@@ -182,9 +213,73 @@ export function nextCandidates(
 ): number[] {
   const node = topo.nodes[from - 1];
   if (node === undefined) return [];
-  const forward = node.adjacent.filter((n) => n !== prev);
-  // 死路时允许折返，否则玩家会卡住
-  return forward.length > 0 ? forward : [...node.adjacent];
+  const out: number[] = [];
+  for (let slot = 0; slot < 4; slot++) {
+    const n = node.adjacentSlots[slot] ?? 0;
+    if (n === 0) continue;
+    if (n === prev) continue;
+    if ((node.flags & linkBlockedMask(slot)) !== 0) continue;
+    out.push(n);
+  }
+  return out;
+}
+
+/**
+ * 下一格是哪个 —— 含随机选路，故要用并推进 PRNG。
+ *
+ * 返回 `null` 表示这个节点根本不在地图上。
+ */
+export function pickNextNode(
+  topo: MapTopology,
+  from: number,
+  prev: number,
+  rng: WatcomRng,
+): number | null {
+  const node = topo.nodes[from - 1];
+  if (node === undefined) return null;
+  const candidates = nextCandidates(topo, from, prev);
+  // @source 0x0040c180：无候选时回到上一格；上一格也没有（开局第一步）就原地不动
+  if (candidates.length === 0) return prev !== 0 ? prev : from;
+  if (candidates.length === 1) return candidates[0]!;
+  // @source 0x0040c196 `call rand / idiv esi`
+  return candidates[rng.next() % candidates.length]!;
+}
+
+/**
+ * 世界位移 → 八向朝向。
+ *
+ * @source VA 0x0040d639：
+ * ```asm
+ * push dy / push dx / call 0x00454fb4
+ * mov  byte [player + 0x10], al         ; player.direction
+ * ```
+ * 而 `0x00454fb4` 是定点 atan2 加一次量化：
+ * ```asm
+ * 00454fc1  neg ecx                     ; ★ dy 取反（屏幕 y 向下，角度按数学向上算）
+ * 00454fc3  call atan2_16bit            ; → ax ∈ 0..0xffff 表示 0..360°
+ * 00454fc8  shr ax, 0xc                 ; → 0..15（每 22.5°）
+ * 00454fcc  inc ax / shr ax, 1          ; → 四舍五入到 0..8
+ * 00454fd1  and eax, 7                  ; → 八分圆 0..7
+ * 00454fd4  movzx eax, byte [eax + 0x482414]   ; 再查一张 8 字节重映射表
+ * ```
+ * 那张表是 `[2,3,4,5,6,7,0,1]`，即 `direction = (八分圆 + 2) & 7`。
+ */
+export const DIRECTION_REMAP: readonly number[] = [2, 3, 4, 5, 6, 7, 0, 1];
+
+/**
+ * 1 / 2π。
+ *
+ * ⚠️ 写成常量而不是 `x / (2π)`：C-DET-3 那条 lint 规则不准出现裸除法
+ *   （它管的是金额，但规则没法分辨用途）。这里是角度，与钱无关。
+ */
+const TURNS_PER_RADIAN = 0.15915494309189535;
+
+export function directionOf(dx: number, dy: number): number {
+  if (dx === 0 && dy === 0) return 0; // @source 0x00454fe5：两个都是 0 时不改
+  // atan2(-dy, dx) 归一到 0..1 圈，再量化到八分圆
+  const turns = Math.atan2(-dy, dx) * TURNS_PER_RADIAN;
+  const octant = Math.round((((turns % 1) + 1) % 1) * 8) & 7;
+  return DIRECTION_REMAP[octant]!;
 }
 
 /**
@@ -219,6 +314,19 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       return { ...state, phase: 'awaitingRoll' };
     }
 
+    case 'setDiceCount': {
+      // 只在等掷骰时能改；上限由交通工具定
+      if (state.phase !== 'awaitingRoll') return state;
+      const player = state.players[state.currentPlayer];
+      if (player === undefined) return state;
+      const max = VEHICLE_DICE.get(player.trafficMethod & 3) ?? 1;
+      const count = Math.max(1, Math.min(max, Math.trunc(action.count)));
+      if (count === player.ndices) return state;
+      return withPlayer(state, state.currentPlayer, (p) => {
+        p.ndices = count;
+      });
+    }
+
     case 'rollDice': {
       if (state.phase !== 'awaitingRoll') return state;
       const player = state.players[state.currentPlayer];
@@ -248,41 +356,30 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       if (player === undefined) return state;
       if (state.stepsRemaining <= 0) return { ...state, phase: 'settling' };
 
-      const candidates = nextCandidates(topo, player.nodeId, player.lastNodeId);
-      if (candidates.length === 0) return { ...state, phase: 'settling' };
-      if (candidates.length > 1) {
-        // 岔路：交由玩家（或 AI）选择
-        return { ...state, phase: 'awaitingDirection' };
-      }
+      // ★ 岔路**不问玩家**：按原版筛一遍再随机挑（见 `pickNextNode`）。
+      //   随机要走 PRNG，所以状态得带回去，否则回放对不上（C-DET-4）。
+      const rng = new WatcomRng();
+      rng.setState(state.rngState);
+      const next = pickNextNode(topo, player.nodeId, player.lastNodeId, rng);
+      if (next === null) return { ...state, phase: 'settling' };
 
-      const next = candidates[0]!;
+      const from = topo.nodes[player.nodeId - 1];
+      const to = topo.nodes[next - 1];
+      // @source 0x0040d639：朝向由**这一步的位移**求出
+      const facing =
+        from === undefined || to === undefined
+          ? player.direction
+          : directionOf(to.x - from.x, to.y - from.y);
+
       const moved = withPlayer(state, state.currentPlayer, (p) => {
         p.lastNodeId = p.nodeId;
         p.nodeId = next;
+        p.direction = facing;
       });
       const remaining = state.stepsRemaining - 1;
       return applyArrival({
         ...moved,
-        stepsRemaining: remaining,
-        phase: remaining > 0 ? 'moving' : 'settling',
-      }, topo);
-    }
-
-    case 'chooseDirection': {
-      if (state.phase !== 'awaitingDirection') return state;
-      const player = state.players[state.currentPlayer];
-      if (player === undefined) return state;
-
-      const candidates = nextCandidates(topo, player.nodeId, player.lastNodeId);
-      if (!candidates.includes(action.nodeId)) return state; // 非法选择，忽略
-
-      const moved = withPlayer(state, state.currentPlayer, (p) => {
-        p.lastNodeId = p.nodeId;
-        p.nodeId = action.nodeId;
-      });
-      const remaining = state.stepsRemaining - 1;
-      return applyArrival({
-        ...moved,
+        rngState: rng.getState(),
         stepsRemaining: remaining,
         phase: remaining > 0 ? 'moving' : 'settling',
       }, topo);
