@@ -71,12 +71,21 @@ function soakWithoutInterest(seed: number, maxTurns: number): GameState {
     const a = decideAction({ state, map });
     if (a === null) break;
     const before = state.players.map((p) => p.moneyInBank);
+    const costBefore = state.players.map((p) => holdingsCost(state, p.index));
     const next = reduce(state, a, topo);
     if (next === state) throw new Error(`卡死于 ${state.phase} / ${a.type}`);
-    state =
-      a.type === 'endTurn'
-        ? { ...next, players: next.players.map((p, i) => ({ ...p, moneyInBank: before[i]! })) }
-        : next;
+    if (a.type === 'endTurn') {
+      state = { ...next, players: next.players.map((p, i) => ({ ...p, moneyInBank: before[i]! })) };
+    } else if (a.type === 'sellStock') {
+      // ★ 第二台「印钞机」是股市本身：賣出價高于成本的差额（已实现盈亏）由行情凭空给出，
+      //   与月息同理不算「玩家之间搬钱」。AI 接上賣股（T-016）后要把它也冻住：
+      //   把 存款增量 − 成本减少量 从存款里抠回去（亏着卖则补回）。
+      const i = state.currentPlayer;
+      const realized = (next.players[i]!.moneyInBank - before[i]!) - (costBefore[i]! - holdingsCost(next, i));
+      state = { ...next, players: next.players.map((p, k) => (k === i ? { ...p, moneyInBank: p.moneyInBank - realized } : p)) };
+    } else {
+      state = next;
+    }
     if (state.turnCount >= maxTurns) break;
   }
   return state;

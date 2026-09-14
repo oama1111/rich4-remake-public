@@ -235,3 +235,140 @@ describe('★ 选股打分 @source 0x0042c075..0x0042c557', () => {
     expect(stockScoreInput(st, topo, 1, 0)!.company).toBeNull();
   });
 });
+
+// ============================================================
+//  賣股 @source 0x0042c79f
+// ============================================================
+
+import { SELL_RATIO, decideStockSell, lowestHistory, pickForSale, scoreStockForSale, sellScoreInput, type SellScoreInput } from './stock-policy.ts';
+import { loanSellPressure, loanStillUncovered } from '../places/stock-market.ts';
+import { reduce } from '../state/reduce.ts';
+
+function sellInput(over: Partial<SellScoreInput> = {}): SellScoreInput {
+  return {
+    ...input({ myHolding: 100 }),
+    avgCost: 10,
+    openPrice: 10,
+    minHist: 9999,
+    totalHold: 100,
+    ...over,
+  };
+}
+const me = { cash: 100_000, moneyInBank: 100_000 };
+
+describe('★ 還款壓力 @source 0x0042c7bc', () => {
+  it('距還款日 <= 6 天且 現金+存款 < 貸款 才算', () => {
+    const today = { year: 1998, month: 1, day: 5 };
+    const p = { cash: 100, moneyInBank: 100, loan: 1000, loanDueDate: packed(1998, 1, 11) };
+    expect(loanSellPressure(p, today)).toBe(true);
+    expect(loanSellPressure({ ...p, loanDueDate: packed(1998, 1, 12) }, today)).toBe(false);
+    expect(loanSellPressure({ ...p, cash: 900 }, today)).toBe(false);
+    expect(loanSellPressure({ ...p, loan: 0, loanDueDate: 0 }, today)).toBe(false);
+    // 賣到 貸款 × 1.1 才停
+    expect(loanStillUncovered({ cash: 500, moneyInBank: 500, loan: 1000 })).toBe(true);
+    expect(loanStillUncovered({ cash: 600, moneyInBank: 500, loan: 1000 })).toBe(false);
+  });
+});
+
+describe('★ 賣出打分：無企業', () => {
+  it('没持股 / 停牌 / 跌停 → 0', () => {
+    expect(scoreStockForSale(sellInput({ myHolding: 0 }), me, 1, 10, 0, false, 5)).toBe(0);
+    expect(scoreStockForSale(sellInput({ f6: 1 }), me, 1, 10, 0, false, 5)).toBe(0);
+    expect(scoreStockForSale(sellInput({ openPrice: 100, price: 90 }), me, 1, 10, 0, false, 5)).toBe(0);
+  });
+
+  it('gain 那条：round(2·gain − 3)，成本价不动时是 −1', () => {
+    // gain = 1 → round(−1) = −1；其余都不命中
+    expect(scoreStockForSale(sellInput(), me, 1, 10, 0, false, 5)).toBe(-1);
+    // gain = 2 → +1；gain > 1.6 且波动 < 1 → +2
+    expect(scoreStockForSale(sellInput({ price: 20, openPrice: 20, volatility: 0.5 }), me, 1, 10, 0, false, 5)).toBe(1 + 2);
+  });
+
+  it('現價 > 144 日最低×8 且 最低×8 > 成本×1.25 → +2；avg24 > avg6 且 現價 < 開盤 → +2', () => {
+    // minHist 2 → 16；price 20 > 16；16 > 12.5 ✓；gain 2 → +1；volatility 1（不 < 1）
+    expect(scoreStockForSale(sellInput({ price: 20, openPrice: 20, minHist: 2 }), me, 1, 10, 0, false, 5)).toBe(1 + 2);
+    expect(scoreStockForSale(sellInput({ price: 20, openPrice: 21, avg24: 30, avg6: 10 }), me, 1, 10, 0, false, 5)).toBe(1 + 2);
+  });
+
+  it('手头紧（現金+存款 < 30000×物價 / < 16000×物價）各再加 round(2·gain + 1)；壓力下总分 ×2', () => {
+    const poor = { cash: 10_000, moneyInBank: 5_000 };
+    // gain 2：基础 +1；两道各 +5 → 11
+    expect(scoreStockForSale(sellInput({ price: 20, openPrice: 20 }), poor, 1, 10, 0, false, 5)).toBe(11);
+    expect(scoreStockForSale(sellInput({ price: 20, openPrice: 20 }), poor, 1, 10, 0, true, 5)).toBe(22);
+    expect(SELL_RATIO.bigGain).toBe(1.6);
+  });
+});
+
+describe('★ 賣出打分：有企業', () => {
+  const co = (over: Partial<NonNullable<StockScoreInput['company']>> = {}) => company({ assetValue: 100_000, ...over }); // A = 10
+
+  it('公司深亏且我持大头、月中前 → +3；亏 6000 以上且賺 20% 且董事長不是我 → +2', () => {
+    const s = sellInput({ price: 13, openPrice: 13, company: co({ funds: -10_000 }), myHolding: 70, totalHold: 100 });
+    expect(scoreStockForSale(s, me, 1, 10, 0, false, 12)).toBe(3 + 2);
+    // day 15：两条都不算
+    expect(scoreStockForSale(s, me, 1, 10, 0, false, 15)).toBe(0);
+    // 董事長是我：第二条不算
+    expect(scoreStockForSale({ ...s, company: co({ funds: -10_000, chairman: 1 }) }, me, 1, 10, 0, false, 12)).toBe(3);
+  });
+
+  it('月均盈餘平平、現價 >= A×2、賺 30%、持股比例 < 0.4 → +1', () => {
+    const s = sellInput({ price: 20, openPrice: 20, company: co(), myHolding: 10, totalHold: 100 });
+    expect(scoreStockForSale(s, me, 1, 10, 0, false, 5)).toBe(1);
+    expect(scoreStockForSale({ ...s, myHolding: 50 }, me, 1, 10, 0, false, 5)).toBe(0);
+  });
+
+  it('当不了董事長且公司不赚、賺 50% → +1；跌势中 A×2/成本×2 之上（董事長不是我）→ +2；×3（董事長是我）→ +2；壓力 +1', () => {
+    const contest = sellInput({ price: 15, openPrice: 15, shares: 10, company: co({ chairman: 2, chairmanHolding: 1000, remainingShares: 0 }) });
+    expect(scoreStockForSale(contest, me, 1, 10, 0, false, 5)).toBe(1);
+    const falling = sellInput({ price: 25, openPrice: 26, company: co({ chairman: 2, chairmanHolding: 0 }) });
+    // 流通 5000 + 我 100 > 董事長 0 → 「当不了董事長」那条不命中，只有跌势 +2
+    expect(scoreStockForSale(falling, me, 1, 10, 0, false, 5)).toBe(2);
+    const mine = sellInput({ price: 31, openPrice: 32, company: co({ chairman: 1 }) });
+    expect(scoreStockForSale(mine, me, 1, 10, 0, true, 5)).toBe(2 + 1);
+  });
+});
+
+describe('★ 挑哪支、要不要賣', () => {
+  it('分最高且 > 0 的一支；同分先出现的', () => {
+    expect(pickForSale([0, 3, 5, 5])).toBe(2);
+    expect(pickForSale([0, -1, 0])).toBe(-1);
+  });
+
+  it('144 日最低价：只看非 0；没有则 9999', () => {
+    const s = scene();
+    expect(lowestHistory(s, 0)).toBe(10); // scene() 里 0 号股票近 6 日 = 10
+    expect(lowestHistory(s, 1)).toBe(9999);
+  });
+
+  it('★ 没壓力时三分之二的回合不看（aiRoll 替身）；賣出是全部持股', () => {
+    const base = scene();
+    const holdings = base.holdings.map((h, i) => (i === 0 ? h.map((x, j) => (j === 0 ? { amount: 500, avgCost: 1 } : x)) : h));
+    const s = { ...base, holdings };
+    let sold = 0;
+    let looked = 0;
+    for (let seed = 1; seed <= 90; seed++) {
+      const st = { ...s, rngState: seed };
+      const a = decideStockSell(st, { nodes: [] });
+      if (a !== null) {
+        sold++;
+        expect(a).toEqual({ type: 'sellStock', stock: 0, shares: 500 });
+      }
+      if (aiRoll(st, 0x42c802, 3) === 0) looked++;
+    }
+    expect(sold).toBe(looked); // gain = 10 → 分远大于 0，看了就賣
+    expect(sold).toBeGreaterThan(10);
+    expect(sold).toBeLessThan(60);
+  });
+
+  it('★ 壓力下不掷闸；reducer 賣完一支若仍没盖住 貸款×1.1 就把调度步留在 1', () => {
+    const base = scene({ cash: 100, moneyInBank: 100, loan: 100_000, loanDueDate: packed(1998, 1, 8), whoPlays: 2 });
+    const holdings = base.holdings.map((h, i) => (i === 0 ? h.map((x, j) => (j <= 1 ? { amount: 100, avgCost: 1 } : x)) : h));
+    const s = { ...base, holdings, aiStep: 1 };
+    const a = decideStockSell(s, { nodes: [] });
+    expect(a?.type).toBe('sellStock');
+    const after = reduce(s, a!, { nodes: [] });
+    expect(after.aiStep).toBe(1);
+    // 賣掉的那支已经没了，下一帧还会挑另一支
+    expect(sellScoreInput(after, { nodes: [] }, a!.type === 'sellStock' ? a.stock : 0, 0)!.myHolding).toBe(0);
+  });
+});

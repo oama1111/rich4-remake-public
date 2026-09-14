@@ -129,7 +129,7 @@ cards:
   title: 紅卡（24）/ 黑卡（25）接进 registry，目标为股票下标
   module: MOD-06
   req: REQ-06.1
-  status: todo
+  status: doing
   estimate: 0.4
   depends_on: [T-001]
   uses:
@@ -389,7 +389,7 @@ cards:
   title: 翻译 AI 卖股 0x0042c79f（调度第 1 步）
   module: MOD-09
   req: REQ-09.2
-  status: todo
+  status: done
   estimate: 1.0
   depends_on: []
   uses:

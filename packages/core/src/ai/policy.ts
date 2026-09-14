@@ -50,7 +50,7 @@ import {
 } from '../state/reduce.ts';
 import { MAX_TOOL_ID, MIN_TOOL_ID, toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
-import { decideStockTrade } from './stock-policy.ts';
+import { decideStockSell, decideStockTrade } from './stock-policy.ts';
 
 /**
  * 性格参数。
@@ -146,8 +146,7 @@ export function decideAction(ctx: AiContext): Action | null {
         case 0:
           return decideStockTrade(state, map) ?? { type: 'aiNext' };
         case 1:
-          // 卖股 0x0042c79f 尚未翻译（T-016）—— 先跳过
-          return { type: 'aiNext' };
+          return decideStockSell(state, map) ?? { type: 'aiNext' };
         case 2:
           return (state.aiBranch === 1 ? decideCard(ctx) : decideTool(ctx)) ?? { type: 'aiNext' };
         default:

@@ -23,7 +23,7 @@
 import type { StockState } from './stock.ts';
 import type { WatcomRng } from '../rng/watcom.ts';
 import { STOCKS, STOCKS_PER_MAP } from '@rich4/data';
-import { isHoliday } from './calendar.ts';
+import { dayNumberSince1998, isHoliday } from './calendar.ts';
 
 // ============================================================
 //  常量 —— 全部从 rich4.exe 的 .data 段直接读出
@@ -516,4 +516,34 @@ export function isLimitDown(openPrice: number, price: number): boolean {
  */
 export function marketOpenOn(globalMapId: number, year: number, month: number, day: number): boolean {
   return !isHoliday(globalMapId, year, month, day);
+}
+
+// ============================================================
+//  電腦賣股的兩道「還款壓力」判据 @source 0x0042c7bc..0x0042c7f6 / 0x0042d0ae..0x0042d0de
+// ============================================================
+
+/** 距還款日不超过这么多天就算有壓力 @source `cmp eax, 6 / jg` */
+export const SELL_LOAN_DUE_DAYS = 6;
+/** 賣到 現金+存款 ≥ 貸款 × 1.1 才停 @source `fmul [0x464234]` = 1.1 */
+export const SELL_LOAN_COVER_RATIO = 1.1;
+
+/**
+ * 有還款壓力：距還款日 ≤ 6 天且 現金+存款 < 貸款。此时電腦不掷 1/3 的闸、逢股必賣。
+ * `loanDueDate` 为 0 时（没贷款）原版照算日期差，但 貸款 = 0 使第二条永远不成立。
+ */
+export function loanSellPressure(
+  p: { cash: number; moneyInBank: number; loan: number; loanDueDate: number },
+  today: { year: number; month: number; day: number },
+): boolean {
+  if (p.loan <= 0 || p.loanDueDate === 0) return false;
+  const y = p.loanDueDate >>> 16;
+  const m = (p.loanDueDate >>> 8) & 0xff;
+  const d = p.loanDueDate & 0xff;
+  const daysLeft = dayNumberSince1998(y, m, d) - dayNumberSince1998(today.year, today.month, today.day);
+  return daysLeft <= SELL_LOAN_DUE_DAYS && p.cash + p.moneyInBank < p.loan;
+}
+
+/** 壓力下賣完一支后还要不要继续賣：現金+存款 < 貸款 × 1.1 就继续 @source 0x0042d0cd */
+export function loanStillUncovered(p: { cash: number; moneyInBank: number; loan: number }): boolean {
+  return p.cash + p.moneyInBank < p.loan * SELL_LOAN_COVER_RATIO;
 }

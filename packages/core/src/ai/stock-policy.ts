@@ -64,7 +64,7 @@ import { stockBudget } from './personality.ts';
 import { aiRoll } from './card-policy.ts';
 import { dayNumberSince1998 } from '../places/calendar.ts';
 import { HISTORY_DAYS } from '../places/stock-market.ts';
-import { isLimitUp, marketOpenOn } from '../places/stock-market.ts';
+import { isLimitDown, isLimitUp, loanSellPressure, marketOpenOn } from '../places/stock-market.ts';
 
 /** 距還款日不足这么多天就不进股市 @source 0x0042bf65 `cmp eax, 0xf` */
 export const STOCK_LOAN_DUE_GUARD_DAYS = 0xf;
@@ -335,4 +335,168 @@ export function stockScores(state: GameState, topo: MapTopology, me: Player = st
     const input = stockScoreInput(state, topo, j, me.index);
     return input === null ? 0 : scoreStock(input, me.moneyInBank, state.priceIndex, state.totalDays, me.index);
   });
+}
+
+// ============================================================
+//  賣股 @source 0x0042c79f..0x0042d0ee
+// ============================================================
+
+/**
+ * ```
+ * 0042c7bc  壓力 = 距還款日 <= 6 && 現金+存款 < 貸款（loanSellPressure）
+ * 0042c802  没壓力时 rand()%3 != 0 → 不賣（D-004 替身）
+ * 0042c81b  休市 → 不賣
+ * 0042cf7c  逐支（我持股 > 0、没停牌、没跌停）打分，取分最高且 > 0 的一支，**全部賣出**
+ * 0042d0a2  壓力下：現金+存款 < 貸款×1.1 就回头再賣一支（本引擎：aiStep 停在 1，下一帧再来）
+ *
+ * ── 有企業（0x42c872）──  ratio = 我持股 / 全體持股；S = 月均盈餘；A = 資產額/10000；day = 今日
+ * 0042c8fa  盈餘(+0x28) <= −10000×物價 && ratio > 0.6 && 10 < day < 15         → +3
+ * 0042c941  盈餘 <= −6000×物價 && 現價 > 成本×1.2 && 董事長≠我 && 8 < day < 15  → +2
+ * 0042c9b8  S <= 10000×物價 && A×2 <= 現價 && 現價 > 成本×1.3 && ratio < 0.4   → +1
+ * 0042ca26  董事長是别人 && 流通+我+剩余 < 董事長持股 && 盈餘 <= 0 && 現價 >= 成本×1.5 → +1
+ * 0042cadb  A×2 < 現價 && 成本×2 < 現價 && 現價 < 開盤 && 董事長≠我          → +2
+ * 0042cb46  A×3 < 現價 && 成本×3 < 現價 && 現價 < 開盤 && 董事長==我          → +2
+ * 0042cba7  壓力                                                           → +1
+ *
+ * ── 無企業（0x42cbc1）──  gain = 現價/成本；minHist = 144 日里最低的非 0 收盘
+ * 0042cd59  gain > 1.6 && 波动系数 < 1.0                                   → +2
+ * 0042cd8e  現價 > minHist×8 && minHist×8 > 成本×1.25                        → +2
+ * 0042cde4  avg24 > avg6 && 現價 < 開盤                                     → +2
+ * 0042ce19  gain >= −2                                                     → +round((gain−2)/0.5 + 1)
+ * 0042ce5c  現金+存款 < 30000×物價 && gain > 0                              → +round(gain/0.5 + 1)
+ * 0042cec9  現金+存款 < 16000×物價 && gain > 0                              → +round(gain/0.5 + 1)
+ * 0042cf33  壓力                                                           → 分 ×2
+ * ```
+ */
+export const SELL_RATIO = {
+  redRatio: 0.6,
+  gainA: 1.2,
+  gainB: 1.3,
+  gainC: 1.5,
+  assetHigh: 2.0,
+  assetVeryHigh: 3.0,
+  minHistMultiple: 8.0,
+  minHistCost: 1.25,
+  bigGain: 1.6,
+  gainFloor: -2.0,
+} as const;
+
+export interface SellScoreInput extends StockScoreInput {
+  /** 持仓成本均价 */
+  avgCost: number;
+  openPrice: number;
+  /** 144 日里最低的非 0 收盘；没有则 9999 */
+  minHist: number;
+  /** 全體玩家对这支的持股合计 */
+  totalHold: number;
+}
+
+/** 144 日里最低的非 0 收盘 @source 0x0042cbd6（初值 0x461c4000 = 9999.0） */
+export function lowestHistory(state: GameState, stock: number): number {
+  let low = 9999;
+  for (const v of state.market.history[stock] ?? []) if (v !== 0 && v < low) low = v;
+  return low;
+}
+
+export function sellScoreInput(state: GameState, topo: MapTopology, stock: number, meIndex: number): SellScoreInput | null {
+  const base = stockScoreInput(state, topo, stock, meIndex);
+  const st = state.market.stocks[stock];
+  if (base === null || st === undefined) return null;
+  let totalHold = 0;
+  for (const h of state.holdings) totalHold += h?.[stock]?.amount ?? 0;
+  return {
+    ...base,
+    avgCost: state.holdings[meIndex]?.[stock]?.avgCost ?? 0,
+    openPrice: st.openPrice,
+    minHist: lowestHistory(state, stock),
+    totalHold,
+  };
+}
+
+function roundHalf(x: number): number {
+  return Math.round(x);
+}
+
+/** 一支股票的賣出分；0 = 不賣 */
+export function scoreStockForSale(
+  s: SellScoreInput,
+  me: { cash: number; moneyInBank: number },
+  priceIndex: number,
+  totalDays: number,
+  meIndex: number,
+  mustSell: boolean,
+  dayOfMonth: number,
+): number {
+  if (s.myHolding === 0 || s.f6 !== 0) return 0;
+  const limitDown = isLimitDown(s.openPrice, s.price);
+  if (limitDown) return 0;
+  let score = 0;
+  const cost = s.avgCost;
+  const price = s.price;
+
+  if (s.company !== null) {
+    const c = s.company;
+    const monthly = totalDays !== 0 ? Math.trunc(c.profit / totalDays) : c.profit;
+    const asset = Math.trunc(c.assetValue / 10000);
+    const ratio = s.totalHold === 0 ? 0 : Math.fround(s.myHolding / s.totalHold);
+    const mine = c.chairman === meIndex + 1;
+    if (c.funds <= -10000 * priceIndex && ratio > SELL_RATIO.redRatio && dayOfMonth > 10 && dayOfMonth < 15) score += 3;
+    if (c.funds <= -6000 * priceIndex && price > cost * SELL_RATIO.gainA && !mine && dayOfMonth > 8 && dayOfMonth < 15) score += 2;
+    if (monthly <= 10000 * priceIndex && asset * SELL_RATIO.assetHigh <= price && price > cost * SELL_RATIO.gainB && ratio < 0.4) score += 1;
+    if (c.chairman !== 0 && !mine && s.shares + s.myHolding + c.remainingShares < c.chairmanHolding && c.funds <= 0 && price >= cost * SELL_RATIO.gainC) score += 1;
+    if (asset * SELL_RATIO.assetHigh < price && cost * SELL_RATIO.assetHigh < price && price < s.openPrice && !mine) score += 2;
+    if (asset * SELL_RATIO.assetVeryHigh < price && cost * SELL_RATIO.assetVeryHigh < price && price < s.openPrice && mine) score += 2;
+    if (mustSell) score += 1;
+    return score;
+  }
+
+  const gain = cost === 0 ? 0 : Math.fround(price / cost);
+  const min8 = Math.fround(s.minHist * SELL_RATIO.minHistMultiple);
+  if (gain > SELL_RATIO.bigGain && s.volatility < 1.0) score += 2;
+  if (price > min8 && min8 > cost * SELL_RATIO.minHistCost) score += 2;
+  if (s.avg24 > s.avg6 && price < s.openPrice) score += 2;
+  // ÷ 0.5 就是 × 2（精确），避开除法：round((gain − 2) / 0.5 + 1) = round(2·gain − 3)
+  if (gain >= SELL_RATIO.gainFloor) score += roundHalf(2 * gain - 3);
+  const liquid = me.cash + me.moneyInBank;
+  if (liquid < 30000 * priceIndex && gain > 0) score += roundHalf(2 * gain + 1);
+  if (liquid < 16000 * priceIndex && gain > 0) score += roundHalf(2 * gain + 1);
+  if (mustSell) score *= 2;
+  return score;
+}
+
+/** 分最高且 > 0 的一支；同分取先出现的（`cmp best, score / jge`） */
+export function pickForSale(scores: readonly number[]): number {
+  let best = 0;
+  let pick = -1;
+  scores.forEach((sc, j) => {
+    if (sc > best) {
+      best = sc;
+      pick = j;
+    }
+  });
+  return pick;
+}
+
+/**
+ * 電腦這一步賣不賣、賣哪支；不賣返回 `null`。賣就是**全部持股**。
+ * 調度里是第 1 步（`aiStep === 1`），壓力下 reducer 会让它停在第 1 步再来一次。
+ */
+export function decideStockSell(state: GameState, topo: MapTopology): Action | null {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return null;
+  const mustSell = loanSellPressure(me, state);
+  // @source 0x0042c802：没壓力时三分之二的回合根本不看
+  if (!mustSell && aiRoll(state, 0x42c802, 3) !== 0) return null;
+  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day)) return null;
+  const scores = state.market.stocks.map((_, j) => {
+    const input = sellScoreInput(state, topo, j, state.currentPlayer);
+    return input === null
+      ? 0
+      : scoreStockForSale(input, me, state.priceIndex, state.totalDays, state.currentPlayer, mustSell, state.day);
+  });
+  const pick = pickForSale(scores);
+  if (pick === -1) return null;
+  const shares = state.holdings[state.currentPlayer]?.[pick]?.amount ?? 0;
+  if (shares <= 0) return null;
+  return { type: 'sellStock', stock: pick, shares };
 }

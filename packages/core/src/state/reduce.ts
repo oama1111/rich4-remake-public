@@ -96,7 +96,7 @@ import {
   type Listing,
   type ListingKind,
 } from '../places/notice-board.ts';
-import { isLimitDown, isLimitUp, marketOpenOn } from '../places/stock-market.ts';
+import { isLimitDown, isLimitUp, loanSellPressure, loanStillUncovered, marketOpenOn } from '../places/stock-market.ts';
 import {
   DIVIDEND_DAY,
   INDUSTRY,
@@ -862,8 +862,14 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     }
 
     case 'buyStock':
-    case 'sellStock':
-      return afterAiStep(state, tradeStock(state, action), topo, action.type === 'buyStock' ? 1 : 2);
+    case 'sellStock': {
+      const traded = tradeStock(state, action);
+      // @source 0x0042d0a2：還款壓力下賣完一支若 現金+存款 仍 < 貸款×1.1，就回头再賣 —— 调度步停在 1
+      const seller = traded.players[state.currentPlayer];
+      const keepSelling =
+        action.type === 'sellStock' && seller !== undefined && loanSellPressure(seller, traded) && loanStillUncovered(seller);
+      return afterAiStep(state, traded, topo, action.type === 'buyStock' ? 1 : keepSelling ? 1 : 2);
+    }
 
     case 'aiNext': {
       // @source 0x00418dc6 的顺序：策略层在某一步没事可做就发它把步数推进
