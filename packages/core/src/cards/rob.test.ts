@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { makePlayer } from '../testing/factories.ts';
 import { emptyTools, giveTool, takeTool, toolCount } from '../rules/tools.ts';
-import { applyRobCard, robbableTools } from './rob.ts';
+import { applyRobCard, applyRobCardCard, robbableCards, robbableTools } from './rob.ts';
 
 const four = () => [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
 const stock = (n = 50) => new Array<number>(14).fill(n);
@@ -122,5 +122,61 @@ describe('可抢清单', () => {
 
   it('空手则为空', () => {
     expect(robbableTools(emptyTools(4), 0)).toEqual([]);
+  });
+});
+
+
+// ============================================================
+//  卡片路径（T-003，@source 0x441ae2：0x441343 取卡 + 0x4412e4 给卡）
+// ============================================================
+
+describe('搶奪 · 卡片路径', () => {
+  it('卡从目标手牌转到出牌者', () => {
+    const players = four();
+    players[2] = { ...players[2]!, cards: [5, 9, 12] };
+    const r = applyRobCardCard(players, 0, 2, 9);
+    expect(r.ok).toBe(true);
+    expect(r.robbed).toBe(9);
+    expect(r.players[2]!.cards).toEqual([5, 12]);
+    expect(r.players[0]!.cards).toEqual([9]);
+  });
+
+  it('对方没有该卡 → nothingToRob，双方手牌不变', () => {
+    const players = four();
+    players[2] = { ...players[2]!, cards: [5] };
+    players[0] = { ...players[0]!, cards: [1] };
+    const r = applyRobCardCard(players, 0, 2, 9);
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('nothingToRob');
+    expect(r.players[2]!.cards).toEqual([5]);
+    expect(r.players[0]!.cards).toEqual([1]);
+  });
+
+  it('不能抢自己 / 下标越界', () => {
+    expect(applyRobCardCard(four(), 0, 0, 9).error).toBe('cannotTargetSelf');
+    expect(applyRobCardCard(four(), 0, 9, 9).error).toBe('playerOutOfRange');
+  });
+
+  it('★ 手牌满 15 张时先弃价格最低者再收入（0x44128f 同价留先）', () => {
+    // 手牌：14 张停留卡(20 元) + 1 张送神符(10 元)；抢来漲價卡(35 元)
+    const players = four();
+    players[0] = {
+      ...players[0]!,
+      cards: [22, ...new Array<number>(14).fill(14)],
+    };
+    players[2] = { ...players[2]!, cards: [27] };
+    const r = applyRobCardCard(players, 0, 2, 27);
+    expect(r.ok).toBe(true);
+    expect(r.players[0]!.cards).toHaveLength(15);
+    // 最便宜的是送神符(22, 10 元) → 被弃；漲價卡入手
+    expect(r.players[0]!.cards).not.toContain(22);
+    expect(r.players[0]!.cards[14]).toBe(27);
+  });
+
+  it('robbableCards 列出目标手牌供选单使用', () => {
+    const players = four();
+    players[1] = { ...players[1]!, cards: [3, 3, 7] };
+    expect(robbableCards(players, 1)).toEqual([3, 3, 7]);
+    expect(robbableCards(players, 0)).toEqual([]);
   });
 });

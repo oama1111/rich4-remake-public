@@ -22,8 +22,16 @@
 
 /** 卡片目标（REQ-06.1 / REQ-05.1 扩后，与 PRD §4.2 一致） */
 export type CardTarget =
-  /** 指向某个玩家 */
-  | { kind: 'player'; index: number }
+  /**
+   * 指向某个玩家。
+   * `steal` 仅搶奪卡（13）使用：抢什么由外部（UI/AI）选定（C-ARC-2），
+   * 原版是模态选单 `0x004018e7`；缺省时 registry 拒收（targetRequired）。
+   */
+  | {
+      kind: 'player';
+      index: number;
+      steal?: { kind: 'card' | 'tool'; id: number };
+    }
   /** 指向某块地（住宅/连锁店，用实体 id 表示） */
   | { kind: 'entity'; entityId: number }
   /** 指向某个設施（公園/旅館/購物中心/加油站/研究所），id 1 基 */

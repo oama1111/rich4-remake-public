@@ -74,7 +74,7 @@ cards:
   title: 搶奪卡（13）增加「抢卡片」路径并接进 registry
   module: MOD-06
   req: REQ-06.1
-  status: doing
+  status: done
   estimate: 0.5
   depends_on: [T-001]
   uses:

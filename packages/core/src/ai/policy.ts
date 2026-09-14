@@ -218,6 +218,7 @@ export function decideCard(ctx: AiContext): Action | null {
         currentPlayer: state.currentPlayer,
         priceIndex: state.priceIndex,
         tools: state.tools,
+        toolStock: state.toolStock,
         scapegoatPicker: () => -1,
       },
       cardId,

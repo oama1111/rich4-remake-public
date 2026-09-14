@@ -19,7 +19,7 @@ import type { Player } from '../state/types.ts';
 import type { LandInfo, MapNode } from '../loaders/map.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { targetClassOf, validateTarget } from './target.ts';
-import { cardImpl } from '@rich4/data';
+import { cardImpl, CARDS } from '@rich4/data';
 import { consumeCard, playerHasCard } from './passive.ts';
 import { housingIndexOf } from '../rules/land.ts';
 import { transferMoney } from '../rules/payment.ts';
@@ -38,6 +38,7 @@ import { applyDispelCard } from './dispel.ts';
 import { applyFrameCard } from './frame.ts';
 import { applyBuyLandCard } from './buy-land.ts';
 import { applyRebuildCard } from './rebuild.ts';
+import { applyRobCard, applyRobCardCard } from './rob.ts';
 import { applySwapLandCard } from './swap-and-stock.ts';
 import {
   applyAngelCard,
@@ -56,6 +57,7 @@ export type UseCardError =
   | 'notImplemented'
   | 'passiveCard'
   | 'noEffect'
+  | 'nothingToRob'
   | 'landNotFound'
   | 'notStandingOnLand';
 
@@ -67,6 +69,8 @@ export interface UseCardResult {
   lands: LandInfo[];
   /** 全局道具表（仅夢遊卡等会改动；其余卡原样返回） */
   tools: number[];
+  /** 道具库存（仅搶奪卡道具路径会改动；其余卡原样返回） */
+  toolStock: number[];
   hostilityDeltas: HostilityDelta[];
   /** 是否被防御性被动卡挡下 */
   defended: boolean;
@@ -93,6 +97,8 @@ export interface UseCardContext {
   priceIndex: number;
   /** 全局道具表（夢遊卡把交通工具退还成道具时要写） */
   tools: readonly number[];
+  /** 道具库存（搶奪卡的道具路径经 take_tool/give_tool 会动库存） */
+  toolStock: readonly number[];
   /**
    * 嫁祸卡的新目标选择器（陷害卡等有害卡在被嫁祸时调用）。
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
@@ -102,7 +108,7 @@ export interface UseCardContext {
 
 /** 本项目已实现效果、可经本入口使用的卡片编号 */
 export const IMPLEMENTED_CARD_IDS: readonly number[] = [
-  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 16, 17, 22, 26, 27, 28, 29, 30,
+  1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 22, 26, 27, 28, 29, 30,
 ];
 
 /** 取玩家当前**所站地块**（不是住宅地则返回 null） */
@@ -138,6 +144,7 @@ export function useCard(
     players: [...ctx.players],
     lands: [...ctx.lands],
     tools: [...ctx.tools],
+    toolStock: [...ctx.toolStock],
     hostilityDeltas: [],
     defended: false,
     releasedObjects: [],
@@ -168,6 +175,7 @@ export function useCard(
   let players: Player[] = [...ctx.players];
   let lands: LandInfo[] = [...ctx.lands];
   let tools: number[] = [...ctx.tools];
+  let toolStock: number[] = [...ctx.toolStock];
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
   let releasedObjects: number[] = [];
@@ -190,6 +198,33 @@ export function useCard(
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       hostilityDeltas = r.hostilityDeltas;
+      break;
+    }
+    case 13: {
+      // 搶奪卡：steal.kind 决定路径 —— @source 0x441abd `test bh, 0x80`
+      //   卡片路径 0x441343/0x4412e4；道具路径 0x445aa2/0x445a4d
+      if (target.kind !== 'player') return fail('wrongTargetKind');
+      const steal = target.steal;
+      // 抢什么必须由外部选定（原版模态选单 0x4018e7 / AI 参数 0x41e6f2）
+      if (steal === undefined) return fail('targetRequired');
+      let robbedId: number;
+      if (steal.kind === 'card') {
+        const r = applyRobCardCard(players, cur, target.index, steal.id);
+        if (!r.ok) return fail(r.error ?? 'noEffect');
+        players = r.players;
+        robbedId = r.robbed;
+      } else {
+        const r = applyRobCard(players, cur, target, tools, toolStock, steal.id);
+        if (!r.ok) return fail(r.error ?? 'noEffect');
+        tools = r.tools;
+        toolStock = r.stock;
+        robbedId = r.robbed;
+      }
+      // @source 0x443f1a `mov al, [eax*8 + 0x47fdef]` → call 0x40df69：
+      //   敌意增量 = 被抢物在**卡片表** +5 的价格；道具路径也读这张表
+      //  （ebx 已 and 0x7fff），即抢到道具 N 记的是卡片 N 的价 —— 原版如此
+      const robbedPrice = CARDS.find((c) => c.id === robbedId)?.price ?? 0;
+      hostilityDeltas = [{ from: target.index, to: cur, delta: robbedPrice }];
       break;
     }
     case 6: {
@@ -338,5 +373,5 @@ export function useCard(
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
-  return { ok: true, error: null, players, lands, tools, hostilityDeltas, defended, releasedObjects };
+  return { ok: true, error: null, players, lands, tools, toolStock, hostilityDeltas, defended, releasedObjects };
 }

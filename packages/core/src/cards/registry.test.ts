@@ -30,6 +30,7 @@ function makeCtx(over: Partial<UseCardContext> = {}): UseCardContext {
     currentPlayer: 0,
     priceIndex: 1,
     tools: new Array<number>(60).fill(0),
+    toolStock: new Array<number>(14).fill(0),
     ...over,
   };
 }
@@ -342,5 +343,64 @@ describe('★ 夢遊卡经统一入口（T-002）', () => {
     // @source VA 0x0044435e：对自己 4 天
     expect(r.players[0]!.blocking.sleepWalking).toBe(4);
     expect(r.players[1]!.blocking.sleepWalking).toBe(0);
+  });
+});
+
+
+describe('★ 搶奪卡经统一入口（T-003）', () => {
+  it('抢卡路径：对方手牌 −1、自己 +1，敌意 = 被抢卡的价格，卡片被消耗', () => {
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [13] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2, cards: [9, 12] }),
+        makePlayer({ index: 3 }),
+      ],
+    });
+    const r = useCard(ctx, 13, { kind: 'player', index: 2, steal: { kind: 'card', id: 9 } });
+    expect(r.ok).toBe(true);
+    expect(r.players[2]!.cards).toEqual([12]);
+    expect(r.players[0]!.cards).toEqual([9]); // 搶奪卡被消耗，天使卡入手
+    // @source 0x443f1a：敌意增量 = 卡片表 +5（天使卡 price 160）
+    expect(r.players[2]!.hostility[0]).toBe(160);
+  });
+
+  it('抢道具路径：道具经 take_tool/give_tool 转移，敌意读同一张表（原版如此）', () => {
+    const tools = new Array<number>(60).fill(0);
+    tools[2 * 15 + 7] = 1; // 玩家 2 有道具 7
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [13] }), makePlayer({ index: 1 }), makePlayer({ index: 2 }), makePlayer({ index: 3 })],
+      tools,
+    });
+    const r = useCard(ctx, 13, { kind: 'player', index: 2, steal: { kind: 'tool', id: 7 } });
+    expect(r.ok).toBe(true);
+    expect(r.tools[2 * 15 + 7]).toBe(0);
+    expect(r.tools[0 * 15 + 7]).toBe(1);
+    // @source 0x443f1a：道具路径也按卡片表 +5 记敌意（卡片 7 改建卡 price 15）
+    expect(r.players[2]!.hostility[0]).toBe(15);
+  });
+
+  it('没给 steal → targetRequired，不扣卡', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [13] }), makePlayer({ index: 1 }), makePlayer({ index: 2 }), makePlayer({ index: 3 })],
+    });
+    const r = useCard(ctx, 13, { kind: 'player', index: 2 });
+    expect(r.error).toBe('targetRequired');
+    expect(r.players[0]!.cards).toEqual([13]);
+  });
+
+  it('对方没有那张卡 → nothingToRob，不扣卡', () => {
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [13] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2, cards: [5] }),
+        makePlayer({ index: 3 }),
+      ],
+    });
+    const r = useCard(ctx, 13, { kind: 'player', index: 2, steal: { kind: 'card', id: 9 } });
+    expect(r.ok).toBe(false);
+    expect(r.players[0]!.cards).toEqual([13]);
+    expect(r.players[2]!.cards).toEqual([5]);
   });
 });
