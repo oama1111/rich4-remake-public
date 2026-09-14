@@ -38,6 +38,7 @@ import {
   drawOptions,
   hitOptions,
   volumeOf,
+  HOTKEY_NAMES,
   SIDE_BUTTONS,
   type GameOptions,
   type OptionsHit,
@@ -77,6 +78,7 @@ import {
   type DialogHit,
 } from './dialog.ts';
 import type { SpriteFn } from './gameui.ts';
+import { HOTKEY, hotkeyOf } from './hotkeys.ts';
 import {
   AUTOSAVE_SLOT,
   LOAD_SLOTS,
@@ -326,6 +328,119 @@ const uiSprite: SpriteFn = (archive, resource, index, colorKeyBlack = false) =>
  */
 function maxDiceOf(p: { trafficMethod: number }): number {
   return VEHICLE_DICE.get(p.trafficMethod & 3) ?? 1;
+}
+
+/**
+ * 一个熱鍵按下去做什么。返回 `false` 表示「这个键本引擎不管」，
+ * 让调试键那一路有机会接手。
+ *
+ * ⚠️ 名字用 exe 里的原串（`HOTKEY_NAMES`），没实现的功能**明确说出来**。
+ */
+function handleHotkey(fn: number, e: KeyboardEvent): boolean {
+  const name = HOTKEY_NAMES[fn] ?? `功能${fn}`;
+
+  switch (fn) {
+    // ── 对话框上的答复 ──
+    case HOTKEY.yes:
+    case HOTKEY.confirm: {
+      const ui = currentDialog();
+      if (ui === null) return false;
+      onDialogHit(ui, { kind: 'choice', index: 0 });
+      return true;
+    }
+    case HOTKEY.no: {
+      const ui = currentDialog();
+      if (ui === null) return false;
+      onDialogHit(ui, { kind: 'choice', index: Math.min(1, ui.choices.length - 1) });
+      return true;
+    }
+    case HOTKEY.cancel:
+      if (screen === 'options') {
+        screen = optionsReturn;
+        return true;
+      }
+      if (screen === 'saveload') {
+        closeSaveLoad();
+        return true;
+      }
+      return false;
+
+    // ── 回合 ──
+    case HOTKEY.advance:
+      if (!awaitingHumanRoll()) return false;
+      dispatch({ type: 'rollDice' });
+      return true;
+    case HOTKEY.chooseDiceCount: {
+      // 在允许的颗数之间轮换
+      const me = state.players[state.currentPlayer];
+      if (me === undefined || !awaitingHumanRoll()) return false;
+      const max = maxDiceOf(me);
+      dispatch({ type: 'setDiceCount', count: (me.ndices % max) + 1 });
+      return true;
+    }
+
+    // ── 视角 ──
+    case HOTKEY.map:
+      setViewMode(camera.mode === 'character' ? 'map' : 'character');
+      return true;
+    case HOTKEY.rotateLeft:
+      rotateView(-1);
+      return true;
+    case HOTKEY.rotateRight:
+      rotateView(1);
+      return true;
+    case HOTKEY.switchOption:
+    case HOTKEY.switchWindowGroup:
+      // 右下角那块 200×200 轮换：日曆 → 月曆 → 小地圖
+      sidebarView =
+        sidebarView === 'calendar' ? 'month' : sidebarView === 'month' ? 'map' : 'calendar';
+      return true;
+
+    // ── 系统 ──
+    case HOTKEY.system:
+      if (screen !== 'options') openOptions(screen);
+      return true;
+    case HOTKEY.saveGame:
+      if (screen !== 'game') return false;
+      openSaveLoad('save', 'game');
+      return true;
+    case HOTKEY.loadGame:
+      openSaveLoad('load', screen === 'game' ? 'game' : 'title');
+      return true;
+    case HOTKEY.autoPlay:
+      aiAutoPlay = !aiAutoPlay;
+      log(aiAutoPlay ? `▶ ${name}：開` : `⏸ ${name}：關`);
+      scheduleAi();
+      return true;
+
+    // ── 镜头（原版叫「游標」，本引擎拿来平移地图视角）──
+    case HOTKEY.cursorUp:
+    case HOTKEY.cursorDown:
+    case HOTKEY.cursorLeft:
+    case HOTKEY.cursorRight: {
+      if (camera.mode !== 'map') return false;
+      const step = e.shiftKey ? 120 : 40;
+      const dx = fn === HOTKEY.cursorLeft ? -step : fn === HOTKEY.cursorRight ? step : 0;
+      const dy = fn === HOTKEY.cursorUp ? -step : fn === HOTKEY.cursorDown ? step : 0;
+      followPlayer = false;
+      camera = { ...camera, x: camera.x + dx, y: camera.y + dy };
+      return true;
+    }
+
+    // ── 还没有对应屏幕的：说出来，不假装有反应 ──
+    case HOTKEY.stockMarket:
+    case HOTKEY.trade:
+    case HOTKEY.cards:
+    case HOTKEY.tools:
+    case HOTKEY.query:
+    case HOTKEY.help:
+      log(`⚠「${name}」尚未實作`);
+      return true;
+
+    // ── 浏览器里做不了 / 无意义的 ──
+    default:
+      return false;
+  }
 }
 
 /** 轮到人、还没掷骰 */
@@ -1172,14 +1287,6 @@ function startGame(): void {
 // ============================================================
 
 function bindInput(): void {
-  // D 键开关调试抽屉 —— 游戏本身的側欄已经画在画布里了
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'd' || e.key === 'D') {
-      document.body.classList.toggle('no-debug');
-      requestRender();
-    }
-  });
-
   canvas.addEventListener('mousemove', (e) => {
     const p = eventToStage(e);
     if (p === null) return;
@@ -1430,69 +1537,45 @@ function bindInput(): void {
 
   window.addEventListener('resize', requestRender);
 
-  // ★ 底图调试键。对齐关系解出来之前，这几个键是唯一能看到底图的途径。
+  // ── 熱鍵 ──────────────────────────────────────────────
+  //
+  // ★ 键位表照原版的 RICH4.CFG（见 hotkeys.ts），功能名用 exe 里的原串。
+  //   还没有对应屏幕的功能按了只记一条日志 —— 与工具栏上没实现的按钮
+  //   一个待遇：说出来，不假装有反应。
   window.addEventListener('keydown', (e) => {
     unlockAudio();
-    const step = e.shiftKey ? 50 : 10;
-    switch (e.key.toLowerCase()) {
-      case 'g':
+    const fn = hotkeyOf(e);
+    if (fn !== null && handleHotkey(fn, e)) {
+      e.preventDefault();
+      requestRender();
+      return;
+    }
+    // ── 调试键：原版没有，故一律挪到 Ctrl+Shift 上，不跟熱鍵抢 ──
+    if (!e.shiftKey || !(e.ctrlKey || e.metaKey)) return;
+    const step = 10;
+    switch (e.code) {
+      case 'KeyD':
+        document.body.classList.toggle('no-debug');
+        break;
+      case 'KeyG':
         showGround = !showGround;
         log(showGround ? '▶ 显示底图' : '⏸ 隐藏底图');
         break;
-      case 'f':
+      case 'KeyF':
         followPlayer = !followPlayer;
         log(followPlayer ? '▶ 镜头跟随当前玩家' : '⏸ 镜头自由');
         break;
-      case 'm':
+      case 'KeyM':
         sound.setMuted(!sound.muted);
         log(sound.muted ? '⏸ 静音' : '▶ 开声');
         break;
-      case ' ':
-      case 'enter':
-        // 「前進指令」——原版是热键（RICH4.CFG offset 0x20），这里也给热键
-        if (awaitingHumanRoll()) {
-          e.preventDefault();
-          dispatch({ type: 'rollDice' });
-        }
-        break;
-      case 'escape':
-        if (screen === 'options') {
-          screen = optionsReturn;
-          requestRender();
-        } else if (screen === 'saveload') {
-          closeSaveLoad();
-        }
-        break;
-      case 'o':
-        if (screen !== 'options') openOptions(screen);
-        break;
-      case 'v':
-        setViewMode(camera.mode === 'character' ? 'map' : 'character');
-        return;
-      case 'q':
-        rotateView(-1);
-        return;
-      case 'e':
-        rotateView(1);
-        return;
-      case '[':
-        groundOffset.x -= step;
-        break;
-      case ']':
-        groundOffset.x += step;
-        break;
-      case ';':
-        groundOffset.y -= step;
-        break;
-      case "'":
-        groundOffset.y += step;
-        break;
-      default:
-        return;
+      case 'BracketLeft': groundOffset.x -= step; break;
+      case 'BracketRight': groundOffset.x += step; break;
+      case 'Semicolon': groundOffset.y -= step; break;
+      case 'Quote': groundOffset.y += step; break;
+      default: return;
     }
-    if (e.key !== 'g' && e.key !== 'G') {
-      log(`底图偏移 (${groundOffset.x}, ${groundOffset.y})`);
-    }
+    e.preventDefault();
     requestRender();
   });
 }
