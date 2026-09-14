@@ -18,7 +18,7 @@ cards:
   title: 扩展 CardTarget 联合类型与 validateTarget
   module: MOD-06
   req: REQ-06.1
-  status: doing
+  status: done
   estimate: 0.3
   depends_on: []
   uses:

@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  targetClassOf, validateTarget, bitsetOf, indexOfBitset, isCancelled,
+  targetClassOf, targetClassOfCard, validateTarget,
+  bitsetOf, indexOfBitset, isCancelled, ACTOR_MIN, ACTOR_MAX,
 } from './target.ts';
 import type { CardTarget } from './target.ts';
 import { CARD_IMPLS, SELECTION_GROUPS } from '@rich4/data';
@@ -23,9 +24,13 @@ describe('目标类别归类', () => {
     expect(targetClassOf(0xe0c0710)).toBe('player');
   });
 
-  it('地块类参数 → land', () => {
-    for (const p of [0xe0c0202, 0xe0c0006, 0xe0c0506, 0xe0c0626]) {
-      expect(targetClassOf(p)).toBe('land');
+  it('0xe0c0202 → land（换地/换屋仅住宅/连锁店）', () => {
+    expect(targetClassOf(0xe0c0202)).toBe('land');
+  });
+
+  it('0xe0c0006 / 0506 / 0626 → landOrFacility（REQ-06.1：同样作用于設施）', () => {
+    for (const p of [0xe0c0006, 0xe0c0506, 0xe0c0626]) {
+      expect(targetClassOf(p)).toBe('landOrFacility');
     }
   });
 
@@ -40,6 +45,35 @@ describe('目标类别归类', () => {
     for (const key of Object.keys(SELECTION_GROUPS)) {
       expect(targetClassOf(Number(key))).not.toBe('none');
     }
+  });
+});
+
+describe('卡片级目标类别（无 selectionParam 的卡）', () => {
+  const implOf = (id: number) => {
+    const impl = CARD_IMPLS.find((c) => c.id === id);
+    if (impl === undefined) throw new Error(`card ${id} missing`);
+    return impl;
+  };
+
+  it('請神符（23）→ object', () => {
+    expect(targetClassOfCard(implOf(23))).toBe('object');
+  });
+
+  it('紅卡（24）/ 黑卡（25）→ stock', () => {
+    expect(targetClassOfCard(implOf(24))).toBe('stock');
+    expect(targetClassOfCard(implOf(25))).toBe('stock');
+  });
+
+  it('有 selectionParam 的卡与 targetClassOf 一致', () => {
+    for (const impl of CARD_IMPLS) {
+      if (impl.selectionParam === null) continue;
+      expect(targetClassOfCard(impl), impl.name).toBe(targetClassOf(impl.selectionParam));
+    }
+  });
+
+  it('无参数且非 ai 选择的卡 → none', () => {
+    expect(targetClassOfCard(implOf(1))).toBe('none'); // 均富卡 selection 'none'
+    expect(targetClassOfCard(implOf(15))).toBe('none'); // 冬眠卡
   });
 });
 
@@ -78,6 +112,76 @@ describe('目标合法性校验', () => {
   it('地块目标只校验种类', () => {
     expect(validateTarget('land', E(2001), 0)).toBeNull();
     expect(validateTarget('land', E(4001), 0)).toBeNull();
+  });
+
+  it('land 类仍不接受 facility（换地/换屋不换設施）', () => {
+    expect(validateTarget('land', { kind: 'facility', facilityId: 1 }, 0)).toBe('wrongTargetKind');
+  });
+});
+
+describe('目标合法性校验 · 新变体（T-001）', () => {
+  const F = (facilityId: number): CardTarget => ({ kind: 'facility', facilityId });
+  const S = (index: number): CardTarget => ({ kind: 'stock', index });
+  const O = (objectIndex: number): CardTarget => ({ kind: 'object', objectIndex });
+  const A = (actor: number): CardTarget => ({ kind: 'actor', actor });
+  const E = (entityId: number): CardTarget => ({ kind: 'entity', entityId });
+  const P = (index: number): CardTarget => ({ kind: 'player', index });
+
+  it('landOrFacility 同时接受 entity 与 facility', () => {
+    expect(validateTarget('landOrFacility', E(2001), 0)).toBeNull();
+    expect(validateTarget('landOrFacility', F(1), 0)).toBeNull();
+    expect(validateTarget('landOrFacility', P(1), 0)).toBe('wrongTargetKind');
+  });
+
+  it('facility 越界：1..facilityCount', () => {
+    const lim = { facilityCount: 8 };
+    expect(validateTarget('landOrFacility', F(8), 0, 4, lim)).toBeNull();
+    expect(validateTarget('landOrFacility', F(0), 0, 4, lim)).toBe('facilityOutOfRange');
+    expect(validateTarget('landOrFacility', F(9), 0, 4, lim)).toBe('facilityOutOfRange');
+    expect(validateTarget('landOrFacility', F(1.5), 0, 4, lim)).toBe('facilityOutOfRange');
+  });
+
+  it('stock：0 基下标，0..stockCount-1', () => {
+    const lim = { stockCount: 12 };
+    expect(validateTarget('stock', S(0), 0, 4, lim)).toBeNull();
+    expect(validateTarget('stock', S(11), 0, 4, lim)).toBeNull();
+    expect(validateTarget('stock', S(12), 0, 4, lim)).toBe('stockOutOfRange');
+    expect(validateTarget('stock', S(-1), 0, 4, lim)).toBe('stockOutOfRange');
+    expect(validateTarget('stock', E(2001), 0, 4, lim)).toBe('wrongTargetKind');
+  });
+
+  it('object：1 基 handle，1..objectCount', () => {
+    const lim = { objectCount: 46 };
+    expect(validateTarget('object', O(1), 0, 4, lim)).toBeNull();
+    expect(validateTarget('object', O(46), 0, 4, lim)).toBeNull();
+    expect(validateTarget('object', O(0), 0, 4, lim)).toBe('objectOutOfRange');
+    expect(validateTarget('object', O(47), 0, 4, lim)).toBe('objectOutOfRange');
+    expect(validateTarget('object', P(1), 0, 4, lim)).toBe('wrongTargetKind');
+  });
+
+  it('playerOrActor：玩家（含自己）与 actor 4..8', () => {
+    expect(validateTarget('playerOrActor', P(0), 0)).toBeNull(); // 自己
+    expect(validateTarget('playerOrActor', P(3), 0)).toBeNull();
+    expect(validateTarget('playerOrActor', P(4), 0)).toBe('playerOutOfRange');
+    expect(validateTarget('playerOrActor', A(ACTOR_MIN), 0)).toBeNull();
+    expect(validateTarget('playerOrActor', A(ACTOR_MAX), 0)).toBeNull();
+    expect(validateTarget('playerOrActor', A(3), 0)).toBe('actorOutOfRange');
+    expect(validateTarget('playerOrActor', A(9), 0)).toBe('actorOutOfRange');
+    expect(validateTarget('playerOrActor', E(2001), 0)).toBe('wrongTargetKind');
+  });
+
+  it('REQ-05.1：anyPlayer/player 仅在 allowActor 时接受 actor', () => {
+    expect(validateTarget('anyPlayer', A(4), 0)).toBe('wrongTargetKind');
+    expect(validateTarget('player', A(4), 0)).toBe('wrongTargetKind');
+    expect(validateTarget('anyPlayer', A(4), 0, 4, { allowActor: true })).toBeNull();
+    expect(validateTarget('player', A(8), 0, 4, { allowActor: true })).toBeNull();
+    expect(validateTarget('anyPlayer', A(9), 0, 4, { allowActor: true })).toBe('actorOutOfRange');
+  });
+
+  it('不给范围上限时只校验种类（与 land 类一致）', () => {
+    expect(validateTarget('landOrFacility', F(999), 0)).toBeNull();
+    expect(validateTarget('stock', S(999), 0)).toBeNull();
+    expect(validateTarget('object', O(999), 0)).toBeNull();
   });
 });
 

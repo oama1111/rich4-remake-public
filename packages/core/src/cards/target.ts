@@ -20,14 +20,31 @@
  * `count_trailing_zero_u8(...)`。本模块保留该表示以便比对。
  */
 
-/** 卡片目标 */
+/** 卡片目标（REQ-06.1 / REQ-05.1 扩后，与 PRD §4.2 一致） */
 export type CardTarget =
   /** 指向某个玩家 */
   | { kind: 'player'; index: number }
-  /** 指向某块地（住宅/设施/企业，用实体 id 表示） */
+  /** 指向某块地（住宅/连锁店，用实体 id 表示） */
   | { kind: 'entity'; entityId: number }
+  /** 指向某个設施（公園/旅館/購物中心/加油站/研究所），id 1 基 */
+  | { kind: 'facility'; facilityId: number }
+  /** 指向某支股票（紅/黑卡），下标 0 基，与 commercial.stockIndex 对齐 */
+  | { kind: 'stock'; index: number }
+  /** 指向某个物件（請神符），下标 1 基（原版物件 handle = 下标 + 1） */
+  | { kind: 'object'; objectIndex: number }
+  /**
+   * 指向特殊棋子（REQ-05.1）：四大惡人 4..7（小偷/強盜/流氓/間諜）、
+   * 機器娃娃 8 —— 即 `state.specialActors[actor - 4]`
+   */
+  | { kind: 'actor'; actor: number }
+  /** 指向某个棋盘格（放置类道具：路障/地雷/定時炸彈），nodeId 1 基 */
+  | { kind: 'node'; nodeId: number }
   /** 该卡不需要目标 */
   | { kind: 'none' };
+
+/** 特殊棋子的合法编号区间（REQ-05.1） @source PRD §4.2 */
+export const ACTOR_MIN = 4;
+export const ACTOR_MAX = 8;
 
 /**
  * 目标类别 —— 由卡片的选择参数 `0xe0c0XYZ` 归纳得出。
@@ -40,8 +57,20 @@ export type TargetClass =
   | 'anyPlayer'
   /** 玩家 —— 0xe0c0410 / 0xe0c0710 */
   | 'player'
-  /** 地块 —— 0xe0c0202 / 0xe0c0006 / 0xe0c0506 / 0xe0c0626 */
+  /** 地块（仅住宅/连锁店）—— 0xe0c0202 换地/换屋 */
   | 'land'
+  /**
+   * 地块**或設施** —— 0xe0c0006（天使/惡魔/漲價/查封）、
+   * 0xe0c0506（怪獸）、0xe0c0626（拆除）。
+   * @source REQ-06.1：这些卡按原版同样作用于設施
+   */
+  | 'landOrFacility'
+  /** 股票 —— 紅卡/黑卡（selection 'ai'，无 selectionParam） */
+  | 'stock'
+  /** 物件 —— 請神符（selection 'ai'，无 selectionParam） */
+  | 'object'
+  /** 玩家或特殊棋子 —— REQ-05.1 控制类卡对四大惡人/機器娃娃 */
+  | 'playerOrActor'
   | 'none';
 
 /**
@@ -52,7 +81,9 @@ export type TargetClass =
  *               自我目标分支佐证）
  *   0xe0c0410 → 均贫/抢夺/查税/同盟
  *   0xe0c0710 → 梦游/陷害
- *   0xe0c0202 / 0006 / 0506 / 0626 → 各类地块
+ *   0xe0c0202 → 换地/换屋（仅住宅/连锁店）
+ *   0xe0c0006 / 0506 / 0626 → 天使/惡魔/漲價/查封/怪獸/拆除
+ *               （REQ-06.1：按原版同样作用于設施 → landOrFacility）
  */
 export function targetClassOf(selectionParam: number | null): TargetClass {
   if (selectionParam === null) return 'none';
@@ -63,14 +94,40 @@ export function targetClassOf(selectionParam: number | null): TargetClass {
     case 0xe0c0710:
       return 'player';
     case 0xe0c0202:
+      // 换地/换屋只认住宅/连锁店（換的是房契），不认設施
+      return 'land';
     case 0xe0c0006:
     case 0xe0c0506:
     case 0xe0c0626:
-      return 'land';
+      // @source REQ-06.1：天使/惡魔/漲價/查封/怪獸/拆除按原版同样作用于設施
+      return 'landOrFacility';
     default:
       // 未登记的参数：保守起见按「需要目标但类别未知」处理
       return 'none';
   }
+}
+
+/**
+ * 目标类别的**卡片级**判定。
+ *
+ * 紅卡/黑卡/請神符没有 selectionParam（选择不走 `0x446ae8`，原版只有
+ * 电脑参数取值 `0x41e6f2`，登记为 selection 'ai'），光靠参数归不了类，
+ * 必须按卡片本身判：
+ *   - 請神符（23，VA 0x00444e1a）→ object
+ *   - 紅卡（24，VA 0x00444f25）/ 黑卡（25，VA 0x0044503f）→ stock
+ * 其余卡片一律按 selectionParam 归类（与 targetClassOf 相同）。
+ */
+export function targetClassOfCard(impl: {
+  id: number;
+  selection: 'none' | 'ui' | 'ai';
+  selectionParam: number | null;
+}): TargetClass {
+  if (impl.selectionParam !== null) return targetClassOf(impl.selectionParam);
+  if (impl.selection === 'ai') {
+    if (impl.id === 23) return 'object';
+    if (impl.id === 24 || impl.id === 25) return 'stock';
+  }
+  return 'none';
 }
 
 export type TargetError =
@@ -78,7 +135,34 @@ export type TargetError =
   | 'targetNotAllowed'
   | 'wrongTargetKind'
   | 'playerOutOfRange'
-  | 'cannotTargetSelf';
+  | 'cannotTargetSelf'
+  | 'facilityOutOfRange'
+  | 'stockOutOfRange'
+  | 'objectOutOfRange'
+  | 'actorOutOfRange';
+
+/**
+ * 目标校验的附加信息（可选）。
+ * 缺省时不做对应的范围检查（与 'land' 类只校验种类一致）。
+ */
+export interface TargetLimits {
+  /** 設施总数（facilityId 合法范围 1..facilityCount） */
+  facilityCount?: number;
+  /** 股票总数（stock 下标合法范围 0..stockCount-1） */
+  stockCount?: number;
+  /** 物件表长度（objectIndex 合法范围 1..objectCount） */
+  objectCount?: number;
+  /**
+   * REQ-05.1：控制类卡（anyPlayer/player 类）是否允许指向
+   * 特殊棋子（四大惡人/機器娃娃）。
+   */
+  allowActor?: boolean;
+}
+
+/** actor 编号是否合法（4..8：小偷/強盜/流氓/間諜/機器娃娃） */
+function actorInRange(actor: number): boolean {
+  return Number.isInteger(actor) && actor >= ACTOR_MIN && actor <= ACTOR_MAX;
+}
 
 /**
  * 校验目标是否合法。
@@ -87,28 +171,85 @@ export type TargetError =
  * @param target        外部给出的目标
  * @param currentPlayer 出牌者下标
  * @param playerCount   玩家总数
+ * @param extra         范围上限与 actor 闸门（见 TargetLimits）
  */
 export function validateTarget(
   cls: TargetClass,
   target: CardTarget,
   currentPlayer: number,
   playerCount = 4,
+  extra: TargetLimits = {},
 ): TargetError | null {
   if (cls === 'none') {
     return target.kind === 'none' ? null : 'targetNotAllowed';
   }
   if (target.kind === 'none') return 'targetRequired';
 
-  if (cls === 'land') {
-    return target.kind === 'entity' ? null : 'wrongTargetKind';
-  }
+  switch (cls) {
+    case 'land':
+      return target.kind === 'entity' ? null : 'wrongTargetKind';
 
-  // anyPlayer / player
-  if (target.kind !== 'player') return 'wrongTargetKind';
-  if (target.index < 0 || target.index >= playerCount) return 'playerOutOfRange';
-  // 只有 anyPlayer 允许指向自己
-  if (cls === 'player' && target.index === currentPlayer) return 'cannotTargetSelf';
-  return null;
+    case 'landOrFacility': {
+      if (target.kind === 'entity') return null;
+      if (target.kind !== 'facility') return 'wrongTargetKind';
+      if (extra.facilityCount !== undefined) {
+        if (!Number.isInteger(target.facilityId)
+          || target.facilityId < 1
+          || target.facilityId > extra.facilityCount) {
+          return 'facilityOutOfRange';
+        }
+      }
+      return null;
+    }
+
+    case 'stock': {
+      if (target.kind !== 'stock') return 'wrongTargetKind';
+      if (extra.stockCount !== undefined) {
+        if (!Number.isInteger(target.index)
+          || target.index < 0
+          || target.index >= extra.stockCount) {
+          return 'stockOutOfRange';
+        }
+      }
+      return null;
+    }
+
+    case 'object': {
+      if (target.kind !== 'object') return 'wrongTargetKind';
+      if (extra.objectCount !== undefined) {
+        if (!Number.isInteger(target.objectIndex)
+          || target.objectIndex < 1
+          || target.objectIndex > extra.objectCount) {
+          return 'objectOutOfRange';
+        }
+      }
+      return null;
+    }
+
+    case 'playerOrActor': {
+      // REQ-05.1：控制类效果对玩家（含自己）或特殊棋子
+      if (target.kind === 'actor') {
+        return actorInRange(target.actor) ? null : 'actorOutOfRange';
+      }
+      if (target.kind !== 'player') return 'wrongTargetKind';
+      if (target.index < 0 || target.index >= playerCount) return 'playerOutOfRange';
+      return null;
+    }
+
+    case 'anyPlayer':
+    case 'player': {
+      // REQ-05.1：allowActor 时这两类也接受特殊棋子目标
+      if (target.kind === 'actor') {
+        if (extra.allowActor !== true) return 'wrongTargetKind';
+        return actorInRange(target.actor) ? null : 'actorOutOfRange';
+      }
+      if (target.kind !== 'player') return 'wrongTargetKind';
+      if (target.index < 0 || target.index >= playerCount) return 'playerOutOfRange';
+      // 只有 anyPlayer 允许指向自己
+      if (cls === 'player' && target.index === currentPlayer) return 'cannotTargetSelf';
+      return null;
+    }
+  }
 }
 
 // ============================================================

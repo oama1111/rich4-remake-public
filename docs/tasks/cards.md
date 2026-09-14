@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **67** 张卡，估算 **36.6** 单元，已完成 1.0。
+共 **67** 张卡，估算 **36.6** 单元，已完成 1.3。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -14,7 +14,7 @@
 
 | id | 标题 | 模块 | 需求 | 状态 | 单元 | 依赖 |
 |---|---|---|---|---|---|---|
-| [T-001](#t-001) | 扩展 CardTarget 联合类型与 validateTarget | MOD-06 | REQ-06.1 | `doing` | 0.3 | — |
+| [T-001](#t-001) | 扩展 CardTarget 联合类型与 validateTarget | MOD-06 | REQ-06.1 | `done` | 0.3 | — |
 | [T-002](#t-002) | 把夢遊卡（16）接进 registry | MOD-06 | REQ-06.1 | `todo` | 0.2 | — |
 | [T-003](#t-003) | 搶奪卡（13）增加「抢卡片」路径并接进 registry | MOD-06 | REQ-06.1 | `todo` | 0.5 | T-001 |
 | [T-004](#t-004) | 請神符（23）接进 registry，目标为物件下标 | MOD-06 | REQ-06.1 | `todo` | 0.3 | T-001 |
@@ -88,7 +88,7 @@
 
 **扩展 CardTarget 联合类型与 validateTarget**
 
-- 模块 `MOD-06` · 需求 `REQ-06.1` · 状态 `doing` · 估算 0.3 单元
+- 模块 `MOD-06` · 需求 `REQ-06.1` · 状态 `done` · 估算 0.3 单元
 - 依赖：无（可立即开工）
 - 被依赖：T-003, T-004, T-005, T-006, T-008, T-009, T-010, T-026
 - 证据：card-registry.ts 的 selectionParam 分组；PRD §4.2
