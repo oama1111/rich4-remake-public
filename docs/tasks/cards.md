@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **72** 张卡，估算 **39.3** 单元，已完成 6.4。
+共 **73** 张卡，估算 **39.8** 单元，已完成 7.2。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | C | 表现层 22 屏（client） | 37 | 22.1 |
 | D | 画质升级管线（assets-pipeline） | 7 | 3.2 |
 | E | 联网对战（server + client） | 8 | 4.7 |
-| F | 规则补缺（known-deviations 剩余 Q 项） | 4 | 1.7 |
+| F | 规则补缺（known-deviations 剩余 Q 项） | 5 | 2.2 |
 
 ## 索引
 
@@ -21,7 +21,7 @@
 | [T-004](#t-004) | 請神符（23）接进 registry，目标为物件下标 | MOD-06 | REQ-06.1 | `done` | 0.3 | T-001 |
 | [T-005](#t-005) | 紅卡（24）/ 黑卡（25）接进 registry，目标为股票下标 | MOD-06 | REQ-06.1 | `done` | 0.4 | T-001 |
 | [T-006](#t-006) | 怪獸卡（11）接进 registry，支持地块与設施目标 | MOD-06 | REQ-06.1 | `done` | 0.4 | T-001 |
-| [T-007](#t-007) | 拍賣卡（8）——把脚下地产送入拍賣 pending | MOD-06 | REQ-06.1 | `todo` | 0.5 | — |
+| [T-007](#t-007) | 拍賣卡（8）——把脚下地产送入拍賣 pending | MOD-06 | REQ-06.1 | `doing` | 0.5 | — |
 | [T-008](#t-008) | 天使/惡魔/拆除/漲價/查封 五张地块类卡支持設施目标 | MOD-06 | REQ-06.1 | `todo` | 0.6 | T-001 |
 | [T-009](#t-009) | AI 的 toCardTarget 覆盖全部目标类型（消除 Q-CARD-2 顺延） | MOD-09 | Q-CARD-2 | `todo` | 0.2 | T-001, T-003, T-004, T-005, T-006, T-007, T-008 |
 | [T-010](#t-010) | 停留/轉向/烏龜卡可指向四大惡人与機器娃娃（P0-11 卡片侧） | MOD-05 | REQ-05.1 | `todo` | 0.6 | T-001 |
@@ -85,8 +85,9 @@
 | [T-077](#t-077) | 联机端到端测试：4 客户端同进程跑完整局，与单机同种子逐字节一致 | MOD-14 | REQ-14 | `todo` | 0.5 | T-071, T-072, T-073, T-074 |
 | [T-080](#t-080) | 停牌中柜台不能买卖（Q-STOCK-3） | MOD-07 | Q-STOCK-3 | `done` | 0.1 | — |
 | [T-081](#t-081) | 保險理賠接线：找齐 0x44ba63 的调用点（Q-INS-1） | MOD-07 | Q-INS-1 | `done` | 0.6 | — |
-| [T-082](#t-082) | 設施收費前的三条免收 + 免費卡自动使用 + 死神顯靈由他人賠償（Q-FAC-2） | MOD-05 | Q-FAC-2 | `todo` | 0.8 | — |
+| [T-082](#t-082) | 設施收費前的三条免收 + 免費卡自动使用 + 死神顯靈由他人賠償（Q-FAC-2） | MOD-05 | Q-FAC-2 | `done` | 0.8 | — |
 | [T-083](#t-083) | 魔法屋「就地加蓋房屋」对設施生效（Q-MAGIC-2） | MOD-07 | Q-MAGIC-2 | `todo` | 0.2 | — |
+| [T-084](#t-084) | 查封／漲價的涨价位进状态并按月递减（Q-LAND-2 + T-008 的設施部分） | MOD-05 | Q-LAND-2 | `todo` | 0.5 | — |
 
 ## A · 核心契约与卡片接线（core）
 
@@ -347,7 +348,7 @@
 
 **拍賣卡（8）——把脚下地产送入拍賣 pending**
 
-- 模块 `MOD-06` · 需求 `REQ-06.1` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-06` · 需求 `REQ-06.1` · 状态 `doing` · 估算 0.5 单元
 - 依赖：无（可立即开工）
 - 被依赖：T-009
 - 证据：VA 0x00443225（rich4_card_paimaika.asm）；拍賣屏 Panel.mkf #26
@@ -2639,7 +2640,7 @@
 
 **設施收費前的三条免收 + 免費卡自动使用 + 死神顯靈由他人賠償（Q-FAC-2）**
 
-- 模块 `MOD-05` · 需求 `Q-FAC-2` · 状态 `todo` · 估算 0.8 单元
+- 模块 `MOD-05` · 需求 `Q-FAC-2` · 状态 `done` · 估算 0.8 单元
 - 依赖：无（可立即开工）
 - 证据：0x0041a3cc（設施收費）走与住宅相同的 0x41d559：房屋查封中 / 與%s同盟中 / 死神顯靈；免費卡 0x0041a670；死神賠償 0x40fbb8 @ 0x0041a6a3
 
@@ -2706,5 +2707,43 @@
 **涉及文件**
 
 - packages/core/src/places/magic-house.ts
+- packages/core/src/state/reduce.ts
+
+### T-084
+
+**查封／漲價的涨价位进状态并按月递减（Q-LAND-2 + T-008 的設施部分）**
+
+- 模块 `MOD-05` · 需求 `Q-LAND-2` · 状态 `todo` · 估算 0.5 单元
+- 依赖：无（可立即开工）
+- 证据：查封卡 0x51 / 漲價卡高半字节；月末递减 0x0041d114（地块 +0x17）与 0x0041d160（設施 +0x1c）
+
+**依赖的其他类 / 文件**
+
+- core/state/types.ts
+- core/state/reduce.ts (playCard 写回、advanceGameDay 的月末递减)
+- core/rules/land-mutation.ts
+- core/rules/toll-flow.ts (tollExemption 读它)
+
+**期望输入**
+
+    查封卡/漲價卡效果；每月推进
+
+**期望输出**
+
+    GameState.landPriceStatus[] / facilityPriceStatus[]；免收与漲價按状态值判
+
+**核心逻辑 / 算法指导**
+
+    1. 两个数组，开局从地图初值抄；playCard 把 lands[].priceStatus 落回；設施同理（T-008 接上后）。
+    2. advanceGameDay：跨月时高半字节 −0x10，减到 0 清零（0x0041d114/0x0041d160）；查封位的清法读 0x0041d12d。
+    3. 读取方：tollExemption、涨价倍率（calculateLandToll 的 applyPriceStatus）。
+
+**验收测试**
+
+    查封后免收、月末解封；漲價后租金翻倍、月末回落。
+
+**涉及文件**
+
+- packages/core/src/state/types.ts
 - packages/core/src/state/reduce.ts
 

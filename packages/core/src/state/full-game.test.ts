@@ -40,11 +40,13 @@ interface Played {
  *   - 8000 → 12000：地图上开始有**神明**了。小衰神/大衰神/死神附身期间
  *     一切消费被拦（`purchaseBlockedBy`），土地公挡买无主地——买地节奏
  *     被按住，租金起得更慢（种子 2024 变成 8649）。
+ *   - 12000 → 16000：过路费的九种免收（地主被关着/同盟/死神…）、免費卡/嫁禍卡自动使用、
+ *     死神顯靈由他人賠償接上后（T-082），破产更难；种子 2024 于 12083 回合分出胜负。
  *   这都是规则本来的样子，不是卡死：长跑实测种子 2024 于 8649 回合、
  *   31337 于 27702 回合分出胜负，且终局时物件表守恒（6 个神明仍在场，
  *   禮物与寶箱一次性消耗掉——与原版 `i < 12` 才有搭档一致）。
  */
-function playFullGame(seed: number, maxTurns = 12000): Played {
+function playFullGame(seed: number, maxTurns = 16000): Played {
   const map = loadMap();
   const topo = {
     nodes: map.nodes,

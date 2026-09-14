@@ -55,6 +55,8 @@ import type { MapNode, LandInfo, FacilityInfo, CommercialInfo } from '../loaders
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent } from '../rules/rent.ts';
 import { PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
+import { reaperPayer, tollExemption, tollPassiveTail } from '../rules/toll-flow.ts';
+import { PASSIVE_CARDS, consumeCard } from '../cards/passive.ts';
 import {
   markPlayerBankrupt,
   resolveBankruptcyOutcome,
@@ -755,19 +757,44 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           // 他人地产 → 立即支付过路费。
           // ★ 走 rules/rent.ts：含**同盟分账**、存款级联、破产判定与本月收支累计。
           //   早先这里是裸的 `cash -= toll` / `cash += toll`，四样全缺。
-          const out = collectRent(
-            state.players,
-            allEffectiveLands(state, topo),
-            state.currentPlayer,
-            land,
-            state.priceIndex,
-          );
+          // ★ 先过 0x41d559 的九种免收（0x00419a8a）：查封／同盟／死神／地主被关着或睡着 → 一分不收
+          const landlord = state.players[land.owner - 1];
+          if (landlord === undefined || tollExemption(landlord, state.currentPlayer, land.priceStatus) !== null) {
+            return { ...state, phase: 'turnEnd' };
+          }
+          const lands = allEffectiveLands(state, topo);
+          // 先算出費额（collectRent 是纯函数，预演一遍只为拿 total）
+          const preview = collectRent(state.players, lands, state.currentPlayer, land, state.priceIndex);
+          const rng = new WatcomRng();
+          rng.setState(state.rngState);
+          // ★ 尾巴照 0x00419e36 起：免費卡 → 嫁禍卡 → 死神顯靈由他人賠償
+          const tail = tollPassiveTail(state.players, state.currentPlayer, preview.total, state.priceIndex, true, () => rng.next());
+          let players = state.players;
+          let who = state.currentPlayer;
+          if (tail.free) players = players.map((p, i) => (i === who ? consumeCard(p, PASSIVE_CARDS.FREE) : p));
+          if (tail.scapegoat !== -1) {
+            players = players.map((p, i) => (i === who ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p));
+            who = tail.scapegoat;
+          }
+          const total = tail.free ? 0 : preview.total;
+          if (total !== 0) {
+            const reaper = reaperPayer(players, who);
+            if (reaper !== -1) who = reaper;
+          }
+          const withRng: GameState = { ...state, players, rngState: rng.getState() };
+          if (total === 0) {
+            // @source 免費卡抹成 0 后不付；0x0041a00b 仍记这一笔 = 0
+            const landLastToll = [...withRng.landLastToll];
+            landLastToll[land.id] = 0;
+            return { ...withRng, landLastToll, phase: 'turnEnd' };
+          }
+          const out = collectRent(players, lands, who, land, state.priceIndex);
           // @source 0x0041a00b `mov [land + 0x2c], ebp` —— 记下这一笔（間諜要用）
-          const landLastToll = [...state.landLastToll];
+          const landLastToll = [...withRng.landLastToll];
           landLastToll[land.id] = out.total;
-          const paid: GameState = { ...state, players: out.players, landLastToll, phase: 'turnEnd' };
+          const paid: GameState = { ...withRng, players: out.players, landLastToll, phase: 'turnEnd' };
           // ★ 付不起就破产——这是对局能真正结束的唯一途径
-          return out.bankrupted ? applyBankruptcy(paid, state.currentPlayer, topo) : paid;
+          return out.bankrupted ? applyBankruptcy(paid, who, topo) : paid;
         }
       }
     }
@@ -3502,6 +3529,9 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   // @source 0x0041a377 空地不收；0x0041a386/0x0041a38f 公園、研究所不收
   if (fac.level === 0) return { ...state, phase: 'turnEnd' };
   if (fac.type === FACILITY_TYPE.park || fac.type === FACILITY_TYPE.lab) return { ...state, phase: 'turnEnd' };
+  // @source 0x0041a3cc call 0x41d559 —— 九种免收（設施的查封位未进状态，先用地图静态值）
+  const landlord = state.players[ownerIdx];
+  if (landlord === undefined || tollExemption(landlord, payer, fac.priceStatus) !== null) return { ...state, phase: 'turnEnd' };
 
   const rng = new WatcomRng();
   rng.setState(state.rngState);
@@ -3529,15 +3559,29 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   const god = adjustTollByGod(base, me.godInfo);
   if (god.toll === 0) return { ...withRng, phase: 'turnEnd' };
 
-  const r = transferMoney(withRng.players, [], withRng.pool, payer, ownerIdx, god.toll, 0);
+  // ★ 尾巴照 0x0041a648 起：嫁禍卡（設施这条没有免費卡）→ 死神顯靈由他人賠償（費 != 0 或是旅館）
+  const tail = tollPassiveTail(withRng.players, payer, god.toll, state.priceIndex, false, () => rng.next());
+  let players = withRng.players;
+  let who = payer;
+  if (tail.scapegoat !== -1) {
+    players = players.map((p, i) => (i === who ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p));
+    who = tail.scapegoat;
+  }
+  if (god.toll !== 0 || fac.type === FACILITY_TYPE.hotel) {
+    const reaper = reaperPayer(players, who);
+    if (reaper !== -1) who = reaper;
+  }
+  const withTail: GameState = { ...withRng, players, rngState: rng.getState() };
+  const r = transferMoney(withTail.players, [], withTail.pool, who, ownerIdx, god.toll, 0);
   // @source 0x0041a75e `mov [設施 + 0x30], ebp` —— 记的是**这一笔**，不是累计
-  const facilityLastToll = [...withRng.facilityLastToll];
+  const facilityLastToll = [...withTail.facilityLastToll];
   facilityLastToll[fac.id] = god.toll;
-  let paid: GameState = { ...withRng, players: r.players, pool: r.pool, facilityLastToll, phase: 'turnEnd' };
+  let paid: GameState = { ...withTail, players: r.players, pool: r.pool, facilityLastToll, phase: 'turnEnd' };
 
   // @source 0x0041a7aa 旅館：住 N 天、記「本月意外損失」2000×N×物價、倒楣天数 +N
   if (hotelDays > 0 && !r.bankrupted) {
-    paid = withPlayer(paid, payer, (p) => {
+    // ★ 住店的是实际付款的那个人（0x0041a772 起全用 edi）
+    paid = withPlayer(paid, who, (p) => {
       // @source 0x0041a7f4 `[+0x32] = 天数 − 1`，为 0 时挂 0x80（当天就出）
       const left = hotelDays - 1;
       p.blocking = { ...p.blocking, inHotel: left === 0 ? RELEASE_PENDING : left };
@@ -3545,9 +3589,9 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
       p.monthlyPaid += hotelStayLoss(hotelDays, state.priceIndex);
     });
     // @source 0x0041a82d：保險期内由保險公司赔这笔損失
-    paid = insureConfinement(paid, topo, payer, hotelDays);
+    paid = insureConfinement(paid, topo, who, hotelDays);
   }
-  return r.bankrupted ? applyBankruptcy(paid, payer, topo) : paid;
+  return r.bankrupted ? applyBankruptcy(paid, who, topo) : paid;
 }
 
 // ============================================================

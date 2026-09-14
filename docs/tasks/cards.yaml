@@ -178,7 +178,7 @@ cards:
   title: 拍賣卡（8）——把脚下地产送入拍賣 pending
   module: MOD-06
   req: REQ-06.1
-  status: todo
+  status: doing
   estimate: 0.5
   depends_on: []
   uses:
@@ -1457,7 +1457,7 @@ cards:
   title: 設施收費前的三条免收 + 免費卡自动使用 + 死神顯靈由他人賠償（Q-FAC-2）
   module: MOD-05
   req: Q-FAC-2
-  status: todo
+  status: done
   estimate: 0.8
   depends_on: []
   uses: [core/state/reduce.ts (settleFacility), core/rules/rent.ts / toll.ts（住宅那边同一函数的三条免收）, core/cards/registry.ts 只读]
@@ -1487,4 +1487,24 @@ cards:
   algorithm: "build 分支：目标节点 ref 是 facility → freeBuildFacility；否则原路。"
   tests: "magic-house.test.ts +2"
   files: [packages/core/src/places/magic-house.ts, packages/core/src/state/reduce.ts]
+  notes: ""
+
+- id: T-084
+  group: F
+  title: 查封／漲價的涨价位进状态并按月递减（Q-LAND-2 + T-008 的設施部分）
+  module: MOD-05
+  req: Q-LAND-2
+  status: todo
+  estimate: 0.5
+  depends_on: []
+  uses: [core/state/types.ts, core/state/reduce.ts (playCard 写回、advanceGameDay 的月末递减), core/rules/land-mutation.ts, core/rules/toll-flow.ts (tollExemption 读它)]
+  source: "查封卡 0x51 / 漲價卡高半字节；月末递减 0x0041d114（地块 +0x17）与 0x0041d160（設施 +0x1c）"
+  input: "查封卡/漲價卡效果；每月推进"
+  output: "GameState.landPriceStatus[] / facilityPriceStatus[]；免收与漲價按状态值判"
+  algorithm: |
+    1. 两个数组，开局从地图初值抄；playCard 把 lands[].priceStatus 落回；設施同理（T-008 接上后）。
+    2. advanceGameDay：跨月时高半字节 −0x10，减到 0 清零（0x0041d114/0x0041d160）；查封位的清法读 0x0041d12d。
+    3. 读取方：tollExemption、涨价倍率（calculateLandToll 的 applyPriceStatus）。
+  tests: "查封后免收、月末解封；漲價后租金翻倍、月末回落。"
+  files: [packages/core/src/state/types.ts, packages/core/src/state/reduce.ts]
   notes: ""
