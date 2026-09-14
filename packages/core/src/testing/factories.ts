@@ -68,7 +68,9 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     mode: 'single',
     rngState: 1,
     globalMapId: 0,
-    day: 1, month: 1, year: 1998,
+    // ★ 1998-01-05（星期一）—— 1998-01-01 是元旦，節日表首条，股市休市；
+    //   默认日期若落在休市日，所有「随手建个状态就买股票」的测试都会静默失败。
+    day: 5, month: 1, year: 1998,
     players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i })),
     currentPlayer: 0,
     phase: 'turnStart',

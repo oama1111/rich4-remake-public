@@ -21,9 +21,10 @@ function scene(over: Partial<ReturnType<typeof makePlayer>> = {}) {
     players: [0, 1, 2, 3].map((i) =>
       makePlayer({ index: i, cash: 100_000, moneyInBank: 200_000, stockRatio: 50, ...(i === 0 ? over : {}) }),
     ),
+    // ★ 1998-01-01 是元旦（節日表首条）→ 休市，闸二会把 AI 挡在门外；挑个开市的星期一
     year: 1998,
     month: 1,
-    day: 1,
+    day: 5,
     phase: 'awaitingRoll',
   });
   return s;
@@ -37,12 +38,12 @@ describe('AI 炒股', () => {
   it('★ 闸三：距還款日不足 15 天就不进股市（@source 0x0042bf65 cmp eax, 0xf）', () => {
     expect(STOCK_LOAN_DUE_GUARD_DAYS).toBe(15);
     // 到期日正好 15 天之后 —— 还能炒
-    const ok = scene({ loanDueDate: packed(1998, 1, 16) });
-    expect(daysUntil(ok, packed(1998, 1, 16))).toBe(15);
+    const ok = scene({ loanDueDate: packed(1998, 1, 20) });
+    expect(daysUntil(ok, packed(1998, 1, 20))).toBe(15);
     expect(decideStockTrade(ok)).not.toBeNull();
     // 14 天 —— 不炒
-    const guard = scene({ loanDueDate: packed(1998, 1, 15) });
-    expect(daysUntil(guard, packed(1998, 1, 15))).toBe(14);
+    const guard = scene({ loanDueDate: packed(1998, 1, 19) });
+    expect(daysUntil(guard, packed(1998, 1, 19))).toBe(14);
     expect(decideStockTrade(guard)).toBeNull();
     // 没欠款（0）不受这条限制
     expect(decideStockTrade(scene({ loanDueDate: 0 }))).not.toBeNull();

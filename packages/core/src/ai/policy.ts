@@ -131,7 +131,9 @@ export function decideAction(ctx: AiContext): Action | null {
       return decidePending(state) ?? { type: 'endTurn' };
 
     case 'awaitingDecision':
-      return decideAtLanding(state, map, personality);
+      // ★ 設施那三种（買/首建/加蓋）是 pending 而不是地块决策，先让 decidePending 答；
+      //   答不上（真正的買地/盖房）再走 decideAtLanding
+      return decidePending(state) ?? decideAtLanding(state, map, personality);
 
     case 'gameOver':
       return null;
@@ -301,8 +303,11 @@ export function decideTool(ctx: AiContext): Action | null {
       const tpl = ctx.map.lands.find((l) => l.id === idx);
       const owner = state.landOwner[idx] ?? 0;
       const level = state.landLevel[idx] ?? 0;
+      // ★ 种类要读**状态**里的 landType，不是地图模板：改建卡把住宅翻成連鎖店之后
+      //   模板还是 0，预演就会说「能盖」，reducer 却按連鎖店拒掉 —— 种子 7 就卡在这
+      const type = state.landType[idx] ?? tpl?.type ?? 0;
       if (tpl !== undefined && owner === me.index + 1) {
-        if (buildOneLevel(tpl.type, level, MAX_LAND_LEVEL).ok) {
+        if (buildOneLevel(type, level, MAX_LAND_LEVEL).ok) {
           return { type: 'useTool', toolId: TOOL_ROBOT_WORKER, nodeId: me.nodeId };
         }
       }

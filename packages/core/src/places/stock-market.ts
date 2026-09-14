@@ -23,6 +23,7 @@
 import type { StockState } from './stock.ts';
 import type { WatcomRng } from '../rng/watcom.ts';
 import { STOCKS, STOCKS_PER_MAP } from '@rich4/data';
+import { isHoliday } from './calendar.ts';
 
 // ============================================================
 //  常量 —— 全部从 rich4.exe 的 .data 段直接读出
@@ -455,4 +456,64 @@ export function refreshTradableShares(market: StockMarketState, rng: WatcomRng):
     return { ...s, f10: Math.trunc(Math.fround(s.shares * Math.fround(r / 10000))) };
   });
   return { ...market, stocks };
+}
+
+// ============================================================
+//  漲停 / 跌停 与 休市日
+// ============================================================
+
+/**
+ * 漲跌停幅度 ±10%。
+ * @source `fcn_004295ea`：`0x428ec5(開盤, +10.0f)` / `0x428ec5(開盤, −10.0f)`
+ *   —— 常量 `0x41200000` = 10.0、`0xc1200000` = −10.0。
+ *   门槛本身就是本文件的 `applyPriceTick(開盤, ±10)`，含升降单位落档。
+ */
+export const LIMIT_PCT = 10;
+
+/**
+ * 一支股票现在的状态。
+ *
+ * @source `fcn_004295ea(股票)`，比的是 `+0x1c` 現價 与 `+0x18` 開盤：
+ * ```
+ * 現價 > 開盤：現價 >= 落档(開盤 × 1.10) → 1 漲停，否则 0 上涨
+ * 現價 < 開盤：現價 <= 落档(開盤 × 0.90) → 3 跌停，否则 2 下跌
+ * 相等 → 4 持平
+ * ```
+ * 柜台：**漲停無法買進**（0x0042af13 `cmp eax, 1`）、**跌停無法賣出**（0x0042b046 `cmp eax, 3`）。
+ */
+export const STOCK_STATUS = { up: 0, limitUp: 1, down: 2, limitDown: 3, flat: 4 } as const;
+
+export function stockStatus(openPrice: number, price: number): number {
+  // 没有開盤價可比（例如手工造的状态）就当持平 —— 原版 +0x18 永远是个真价，
+  // 这条只为不让缺字段的测试状态被当成「漲停」
+  if (!(openPrice > 0)) return STOCK_STATUS.flat;
+  if (price > openPrice) {
+    return price >= applyPriceTick(openPrice, LIMIT_PCT) ? STOCK_STATUS.limitUp : STOCK_STATUS.up;
+  }
+  if (price < openPrice) {
+    return price <= applyPriceTick(openPrice, -LIMIT_PCT) ? STOCK_STATUS.limitDown : STOCK_STATUS.down;
+  }
+  return STOCK_STATUS.flat;
+}
+
+export function isLimitUp(openPrice: number, price: number): boolean {
+  return stockStatus(openPrice, price) === STOCK_STATUS.limitUp;
+}
+export function isLimitDown(openPrice: number, price: number): boolean {
+  return stockStatus(openPrice, price) === STOCK_STATUS.limitDown;
+}
+
+/**
+ * 今天股市开不开。
+ *
+ * @source `fcn_00428d01`：`[0x4990dc] != 0` 或 `fcn_004523d5(今天) == 1` → 休市。
+ *   `fcn_004523d5` 逐行对过：先 `0x4520a6` 算星期（= `weekdayOf`，星期日→休），
+ *   再 `0x4521f0` 查節日表 `0x0047ff4a` 的首字节 —— **就是 `isHoliday`**。
+ *   `[0x4990dc]` 只在開局清零与每日递减处被写，没有事件把它置非 0，故不建模。
+ *
+ * 休市日：柜台不能买卖（0x0042afe6 那一路直接退），AI 不进场（闸二），
+ * **且当日不走行情**（`0x4291d6` 开头 `call 0x428d01 / cmp eax, 1 / je 结束`）。
+ */
+export function marketOpenOn(globalMapId: number, year: number, month: number, day: number): boolean {
+  return !isHoliday(globalMapId, year, month, day);
 }

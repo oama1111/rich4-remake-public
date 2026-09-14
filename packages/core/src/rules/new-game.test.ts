@@ -8,6 +8,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
 import { newGame, UNVERIFIED_CARDS_PER_KIND } from './new-game.ts';
+import { CARDS } from '@rich4/data';
 import { DEFAULT_INITIAL_FUND, GAME_INITIAL_FUNDS, startingMoney } from './setup.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
 import { STARTING_TOOLS, toolCount, toolsOf } from './tools.ts';
@@ -74,7 +75,10 @@ describe('初始状态', () => {
   run('牌堆按占位值填满', () => {
     const s = newGame({ map: loadMap(), players: setup(2) });
     expect(s.cardAmount).toHaveLength(30);
-    expect(s.cardAmount.every((v) => v === UNVERIFIED_CARDS_PER_KIND)).toBe(true);
+    // ★ 牌堆初值 = 卡片表的 initAmount（@source 0x004071a5），不再是自取的 8
+    expect(s.cardAmount).toEqual(CARDS.map((c) => c.initAmount));
+    expect(s.cardAmount[0]).toBe(1); // 均富卡只有一张
+    expect(UNVERIFIED_CARDS_PER_KIND).toBe(8); // 旧常量仅存档用，不再进状态
   });
 
   run('★ 开局每人发六件道具各一个', () => {

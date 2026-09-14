@@ -14,7 +14,7 @@ import type { GameState, Player } from '../state/types.ts';
 import type { GameMode } from '../rng/policy.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
 import { DEFAULT_INITIAL_FUND, startingMoney } from './setup.ts';
-import { CHARACTERS } from '@rich4/data';
+import { CARDS, CHARACTERS } from '@rich4/data';
 import { traitsOf } from '../ai/personality.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
 import { CARD_IMPLS } from '@rich4/data';
@@ -92,7 +92,29 @@ export interface NewGameOptions {
  * 它只影响抽卡的概率分布，不影响任何已验证的规则；
  * 一旦定位到真值应立刻替换。见 docs/known-deviations.md 的 Q-INIT-1。
  */
+/**
+ * ⚠️ **已废弃**：牌堆初值不是常数，是卡片表的 `initAmount`（見 `initialCardAmounts`）。
+ *   留着只为不破坏旧引用；新代码别用。
+ */
 export const UNVERIFIED_CARDS_PER_KIND = 8;
+
+/**
+ * 牌堆各卡的初始张数 = 卡片表的 `initAmount`（§7.1 那一列）。
+ *
+ * @source 開局 VA 0x004071a5：
+ * ```asm
+ * 004071a5  mov al, byte [ebx*8 + 0x47fdf6]     ; card_table[i].init_amount（+4）
+ * 004071ac  mov byte [ebx + 0x499198], al        ; remain_card_amount[i]
+ * 004071b3  cmp ebx, 0x1e / jl                   ; 30 张
+ * ```
+ * 紧接着 0x004071ba 同样的循环把道具表的 `initAmount` 抄进道具库存（已实现）。
+ * Q-INIT-1 结案。
+ */
+export function initialCardAmounts(): number[] {
+  const out = new Array<number>(CARD_IMPLS.length).fill(0);
+  for (const c of CARDS) if (c.id - 1 < out.length) out[c.id - 1] = c.initAmount;
+  return out;
+}
 
 /**
  * 起始节点。
@@ -102,7 +124,41 @@ export const UNVERIFIED_CARDS_PER_KIND = 8;
  * 起点可能由某个特殊格类型或首次移动决定，待查。
  * 见 docs/known-deviations.md 的 Q-INIT-2。
  */
-export const UNVERIFIED_START_NODE = 1;
+/**
+ * ⚠️ **已废弃**：起始节点不是常数，是**随机抽**的（见 `drawStartNodes`）。
+ *   留着只为 `startNodeId` 这个测试用的覆盖项有个默认值；`0` 表示「照原版随机」。
+ */
+export const UNVERIFIED_START_NODE = 0;
+
+/**
+ * 每个玩家的起始节点 —— **在全图可放物件的节点里随机抽一格**。
+ *
+ * @source 開局摆人 VA 0x004082d9 `call 0x40aa0f` → 结果写进 `node_id`（0x004082fb）。
+ *   `0x40aa0f`：
+ * ```asm
+ * 0040aa1d  for (i = 1; i <= 节点数; i++)
+ * 0040aa37    if (node.flags & 0x80ffff00) continue    ; 特殊格 / 已被占用的都不要
+ * 0040aa40    if (四个邻接全为 0) continue              ; 孤立格不要
+ * 0040aa4c    候选[n++] = i
+ * 0040aa53  return 候选[rand() % n]
+ * ```
+ *   这与物件登场挑格的 `objectNodeCandidates`/`pickObjectNode` 是**同一条**筛选
+ *   （那两个函数就是照它写的），故直接复用。`flags` 的 bits 8..11 是「谁站在这格」，
+ *   所以**后摆的人不会与先摆的人同格** —— 这里按下标顺序逐个抽、逐个排除。
+ *   Q-INIT-2 结案。
+ */
+export function drawStartNodes(
+  nodes: Rich4Map['nodes'],
+  count: number,
+  rng: WatcomRng,
+): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const free = objectNodeCandidates(nodes).filter((n) => !out.includes(n));
+    out.push(pickObjectNode(free, rng.next()));
+  }
+  return out;
+}
 
 /**
  * 每家公司的总股本。
@@ -290,6 +346,8 @@ export function newGame(opts: NewGameOptions): GameState {
     objects = placeObjectOfType(objects, type, node).objects;
   }
 
+  const startNodes = drawStartNodes(map.nodes, players.length, rng);
+
   return {
     mode,
     rngState: rng.getState(),
@@ -297,7 +355,9 @@ export function newGame(opts: NewGameOptions): GameState {
     day: 1,
     month: 1,
     year: 1998,
-    players: players.map((s, i) => makeInitialPlayer(i, s, initialFund, startNodeId, vehicle)),
+    players: players.map((s, i) =>
+      makeInitialPlayer(i, s, initialFund, startNodeId > 0 ? startNodeId : (startNodes[i] ?? 1), vehicle),
+    ),
     currentPlayer: 0,
     phase: 'turnStart',
     priceIndex: INITIAL_PRICE_INDEX,
@@ -305,7 +365,7 @@ export function newGame(opts: NewGameOptions): GameState {
     stepsRemaining: 0,
     stepsTotal: 0,
     forcedDice: 0,
-    cardAmount: new Array<number>(CARD_IMPLS.length).fill(UNVERIFIED_CARDS_PER_KIND),
+    cardAmount: initialCardAmounts(),
     landOwner: new Array<number>(landCount).fill(0),
     landLevel: new Array<number>(landCount).fill(0),
     // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取

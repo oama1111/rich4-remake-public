@@ -14,6 +14,10 @@ const topo = { nodes: [makeNode({ id: 1, adjacent: [1] })] };
 
 function base(over: Partial<GameState> = {}): GameState {
   return makeGameState({
+    // ★ 工厂默认 1998-01-01 是元旦（節日表首条）—— 休市日柜台不开门。挑个开市的星期一。
+    year: 1998,
+    month: 1,
+    day: 5,
     market: newStockMarket(0),
     players: [0, 1, 2, 3].map((i) =>
       makePlayer({ index: i, character: i, cash: 50_000, moneyInBank: 1_000_000 }),
@@ -48,7 +52,8 @@ describe('买入', () => {
       ...s,
       market: {
         ...s.market,
-        stocks: s.market.stocks.map((x, i) => (i === 0 ? { ...x, price: 200 } : x)),
+        // ★ 連 openPrice 一起改：只改現價会被当成一天内涨了 100% → 漲停無法買進
+        stocks: s.market.stocks.map((x, i) => (i === 0 ? { ...x, price: 200, openPrice: 200 } : x)),
       },
     };
     s = act(s, { type: 'buyStock', stock: 0, shares: 100 }); // 再买 100 @200

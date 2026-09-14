@@ -205,10 +205,18 @@ describe('★ M2 验收：完整一局', () => {
   });
 
   run('未分胜负的种子也不会卡死或抛错', () => {
-    // 种子 7 下四人长期僵持——这本身合法，只要引擎一直能推进
+    // 种子 7 在早先的规则集下四人长期僵持；規則补全（設施可买可蓋、四大惡人、
+    // 休市/漲跌停…）之后它在约 760 回合就分出了胜负。两种结局都合法——
+    // 这条测的是「引擎一直能推进、不抛错」，不是某个种子的命运。
     const r = playFullGame(7, 2000);
-    expect(r.turns).toBe(2000);
-    expect(r.state.players.filter((p) => isAlive(p)).length).toBeGreaterThan(1);
+    expect(r.turns).toBeLessThanOrEqual(2000);
+    const alive = r.state.players.filter((p) => isAlive(p)).length;
+    if (r.ended) {
+      expect(alive).toBeLessThanOrEqual(1);
+    } else {
+      expect(r.turns).toBe(2000);
+      expect(alive).toBeGreaterThan(1);
+    }
   });
 
   run('★ 日期随回合推进，月结与开奖都真的跑到了', () => {

@@ -95,6 +95,7 @@ import {
   type Listing,
   type ListingKind,
 } from '../places/notice-board.ts';
+import { isLimitDown, isLimitUp, marketOpenOn } from '../places/stock-market.ts';
 import {
   buyCard,
   buyTool,
@@ -1604,6 +1605,11 @@ function tradeStock(
   const held = state.holdings[state.currentPlayer]?.[action.stock];
   if (stock === undefined || held === undefined) return state;
   if (!Number.isInteger(action.shares) || action.shares <= 0) return state;
+  // @source fcn_00428d01 —— 休市日柜台不开门
+  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day)) return state;
+  // @source 0x0042af13 `cmp eax, 1` 漲停無法買進；0x0042b046 `cmp eax, 3` 跌停無法賣出
+  if (action.type === 'buyStock' && isLimitUp(stock.openPrice, stock.price)) return state;
+  if (action.type === 'sellStock' && isLimitDown(stock.openPrice, stock.price)) return state;
 
   const commit = (r: TradeResult): GameState => ({
     ...state,
@@ -1745,12 +1751,18 @@ function useToolAction(
   // ── 機器工人（9）：免费加蓋一级 ──
   if (toolId === TOOL_ROBOT_WORKER) {
     const land = landAtNode(state, topo, nodeId);
-    if (land === null) return state;
-    const b = buildOneLevel(land.type, land.level, MAX_LAND_LEVEL);
-    if (!b.ok) return state;
-    const landLevel = [...state.landLevel];
-    landLevel[land.id] = b.level;
-    return consume({ ...state, landLevel });
+    if (land !== null) {
+      const b = buildOneLevel(land.type, land.level, MAX_LAND_LEVEL);
+      if (!b.ok) return state;
+      const landLevel = [...state.landLevel];
+      landLevel[land.id] = b.level;
+      return consume({ ...state, landLevel });
+    }
+    // 設施也吃这一件（`0x40b110` 对 0xfa0..0x1770 那一段）：
+    //   等级 0 → 定种类再蓋第一级；等级 ≥ 1 → 不超过该种类上限就 +1
+    const built = freeBuildFacility(state, topo, nodeId, value);
+    if (built === null) return state;
+    return consume(built);
   }
 
   // ── 飛彈（7）／核子飛彈（13）──
@@ -1997,8 +2009,11 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   let market = refreshTradableShares(state.market, rng);
   // @source 0041cff9 起的 12 次循环
   market = tickStockCountdowns(market);
-  // @source 0041d076 call 0x4291d6
-  market = tickStockMarket(market, rng, (i) => commercialValueOf(topo, i));
+  // @source 0041d076 call 0x4291d6 —— 开头 `call 0x428d01 / cmp eax, 1 / je 结束`：
+  //   ★ 休市日（星期日、節日）当天**不走行情**
+  if (marketOpenOn(state.globalMapId, date.year, date.month, date.day)) {
+    market = tickStockMarket(market, rng, (i) => commercialValueOf(topo, i));
+  }
 
   let players = state.players;
   let lottery = state.lottery;
@@ -2657,6 +2672,69 @@ function facilityAtPlayer(state: GameState, topo: MapTopology): FacilityInfo | n
 }
 
 /**
+ * 免费给一处設施加蓋一级（機器工人 / 魔法屋「就地加蓋」共用）。
+ *
+ * @source `0x40b110` 的設施段（0x0040b188 起）：
+ * ```asm
+ * 0040b1a0  if (level == 0) {
+ * 0040b1ad    if (who_plays & 6) {                      ; 电脑 / 托管
+ * 0040b1c1      if (owner == 當前 + 1) type = rand() % 4 + 1
+ * 0040b1dc      else                   type = 0          ; ★ 替别人蓋 → 公園
+ *             } else type = 0x440aac(0)                 ; 真人选种类
+ * 0040b1f4    level = 1
+ *           } else {
+ * 0040b201    if (level >= MAX[type]) 失败
+ * 0040b212    level++
+ *           }
+ * ```
+ * ★ 与住宅那段一样**不看归属**——给别人的地也盖；只是电脑替别人盖的时候一律盖公園。
+ *
+ * @param chosenType 真人对等级 0 的設施要给的种类（0..4）；不给就失败（UI 属 P2-14）
+ */
+function freeBuildFacility(
+  state: GameState,
+  topo: MapTopology,
+  nodeId: number,
+  chosenType: number,
+): GameState | null {
+  const node = topo.nodes[nodeId - 1];
+  if (node === undefined) return null;
+  const idx = facilityIndexOf(node.type);
+  if (idx === null) return null;
+  const fac = effectiveFacility(state, topo, idx);
+  if (fac === null) return null;
+  const me = state.currentPlayer;
+  const player = state.players[me];
+  if (player === undefined) return null;
+
+  const facilityLevel = [...state.facilityLevel];
+  const facilityType = [...state.facilityType];
+  if (fac.level === 0) {
+    let type: number;
+    let rngState = state.rngState;
+    if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
+      if (fac.owner === me + 1) {
+        const rng = new WatcomRng();
+        rng.setState(rngState);
+        type = aiPickFacilityType(rng.next());
+        rngState = rng.getState();
+      } else {
+        type = FACILITY_TYPE.park;
+      }
+    } else {
+      if (!Number.isInteger(chosenType) || chosenType < 0 || chosenType > FACILITY_TYPE.lab) return null;
+      type = chosenType;
+    }
+    facilityType[idx] = type;
+    facilityLevel[idx] = 1;
+    return { ...state, facilityType, facilityLevel, rngState };
+  }
+  if (!canUpgradeFacility(fac.type, fac.level)) return null;
+  facilityLevel[idx] = fac.level + 1;
+  return { ...state, facilityLevel };
+}
+
+/**
  * 当前玩家名下每一处研究所推进一天；到期就发道具。
  *
  * @source VA 0x0041cd97 的循环（逐处設施：`type == 4` → 业主是当前玩家 → 倒数）。
@@ -2956,10 +3034,19 @@ export function applyBankruptcy(
     next.market.stocks,
     next.players[playerIndex]!,
   );
-  const landOwner = next.landOwner.map((v) => (v === playerIndex + 1 ? 0 : v));
+  // @source 破產 0x0040d095 / 0x0040d0d6 两个循环：名下地块与設施
+  //   `owner = 0`、到期日（+0x30 / +0x34）清零，等级留着
+  const mine = (v: number): boolean => v === playerIndex + 1;
+  const landOwner = next.landOwner.map((v) => (mine(v) ? 0 : v));
+  const landTenure = next.landTenure.map((t, i) => (mine(next.landOwner[i] ?? 0) ? 0 : t));
+  const facilityTenure = next.facilityTenure.map((t, i) => (mine(next.facilityOwner[i] ?? 0) ? 0 : t));
+  const facilityOwner = next.facilityOwner.map((v) => (mine(v) ? 0 : v));
   return {
     ...next,
     landOwner,
+    landTenure,
+    facilityOwner,
+    facilityTenure,
     holdings: next.holdings.map((row, i) => (i === playerIndex ? liquidated.holdings : row)),
     market: { ...next.market, stocks: liquidated.stocks },
     pool: next.pool + liquidated.proceeds,

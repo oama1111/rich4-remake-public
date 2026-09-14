@@ -33,6 +33,8 @@ function landOnCommercial(): { state: GameState; topo: ReturnType<typeof topoOf>
   state = {
     ...state,
     phase: 'settling',
+    // ★ newGame 默认从 1998-01-01（元旦，休市）开始；柜台那两条要开市日
+    day: 5,
     players: state.players.map((p, i) => (i === 0 ? { ...p, nodeId: node.id } : p)),
   };
   return { state: reduce(state, { type: 'settle' }, topo), topo };

@@ -30,13 +30,14 @@
  *   所以「低于锚价就买」是自洽的，但**不保证与原版一致**。
  *   记在 known-deviations 的 Q-AI-1。
  *
- * ⚠️ 闸二（股市不开门）也没做：休市规则未解，见 Q-STOCK-1。
+ * ✅ 闸二（股市不开门）已接：`fcn_00428d01` 就是 `isHoliday`（星期日与節日），见 marketOpenOn。
  */
 
 import type { Action } from '../state/actions.ts';
 import type { GameState } from '../state/types.ts';
 import { stockBudget } from './personality.ts';
 import { dayNumberSince1998 } from '../places/calendar.ts';
+import { isLimitUp, marketOpenOn } from '../places/stock-market.ts';
 
 /** 打分时用的定标 —— 只为把比值变成整数比较，取多大都不影响排序 */
 const SCORE_SCALE = 1 << 16;
@@ -92,6 +93,8 @@ export function decideStockTrade(state: GameState): Action | null {
 
   // @source 闸一
   if (me.stockRatio === 0) return null;
+  // @source 闸二：`call 0x428d01 / cmp eax, 1 / je 结束` —— 休市不进场
+  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day)) return null;
   // @source 闸三
   if (me.loanDueDate !== 0 && daysUntil(state, me.loanDueDate) < STOCK_LOAN_DUE_GUARD_DAYS) {
     return null;
@@ -109,6 +112,9 @@ export function decideStockTrade(state: GameState): Action | null {
     const s = state.market.stocks[i];
     if (s === undefined) continue;
     if (s.price <= 0 || s.shares <= 0) continue;
+    // @source 柜台 0x0042af13 `cmp eax, 1` —— 漲停的买不进；AI 是纯函数，
+    //   提一个 reducer 必拒的 buyStock 会被原样重提、卡死在 awaitingRoll
+    if (isLimitUp(s.openPrice, s.price)) continue;
     const shares = Math.floor(budget / s.price);
     if (shares <= 0) continue;
     // ⚠️ 这是个**比值**不是金额，C-DET-3 那条 lint 管不了用途，
