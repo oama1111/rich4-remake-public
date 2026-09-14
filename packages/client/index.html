@@ -33,6 +33,15 @@
       #log div { padding: 2px 0; border-bottom: 1px solid #232732; }
       .meta { color: #8d95a5; font-size: 12px; margin-bottom: 10px; }
       .err { color: #e8524a; white-space: pre-wrap; }
+      #interaction {
+        margin: 10px 0; padding: 10px; border-radius: 8px;
+        background: #232a38; border: 1px solid #3a4a68;
+      }
+      #interaction[hidden] { display: none; }
+      .itx-title { font-weight: 600; color: #e8d24a; margin-bottom: 4px; }
+      .itx-detail { color: #9aa3b2; font-size: 12px; margin-bottom: 8px; }
+      #interaction .row { margin: 0; }
+      #interaction button { padding: 5px 10px; font-size: 12px; }
     </style>
   </head>
   <body>
@@ -41,6 +50,7 @@
       <canvas id="hud" width="200" height="488"></canvas>
       <div class="meta" id="meta">载入中…</div>
       <div id="players"></div>
+      <div id="interaction" hidden></div>
       <div class="row" id="actions"></div>
       <div id="log"></div>
     </aside>

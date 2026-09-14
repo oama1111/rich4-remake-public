@@ -373,6 +373,19 @@ export function decidePending(state: GameState): Action | null {
     const want = Math.min(autoLoanAmount(p.wealth, me.loanRatio), p.loanCapacity);
     return want > 0 ? { type: 'bank', op: 'borrow', amount: want } : null;
   }
+  // 樂透：有余钱就随便买一个号码。
+  // ⚠️ 号码得**确定性**地挑：AI 不能碰随机源（那是 reducer 的事），
+  //   故取可选号码里的第一个，而不是随机一个。原版 AI 是随机挑的，
+  //   这是一处明确的策略差异，不影响规则。
+  if (p.kind === 'lottery') {
+    const me = state.players[state.currentPlayer];
+    if (me === undefined) return null;
+    const n = p.available[0];
+    if (n === undefined) return null;
+    // 留够安全垫再买，别为了一张彩票把自己买穿
+    if (me.cash < p.price * 4) return null;
+    return { type: 'lottery', number: n };
+  }
   if (p.kind === 'buyShares') {
     // 简单策略：留够安全垫，剩下的钱买得起多少买多少，且不超过企业余量。
     // ★ 这是**策略**不是规则——买不买、买多少原版由 AI 性格决定（M3），

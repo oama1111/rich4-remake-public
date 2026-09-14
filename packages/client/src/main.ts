@@ -12,6 +12,7 @@ import { CHARACTERS } from '@rich4/data';
 import {
   autoAction,
   decideAction,
+  nextCandidates,
   isAiTurn,
   newGame,
   reduce,
@@ -35,6 +36,7 @@ import {
   type Camera,
 } from './render.ts';
 import { TOOLBAR_LABELS } from './assets.ts';
+import { interactionUi, type InteractionUi } from './interactions.ts';
 import { VIEW_COUNT } from '@rich4/data';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -60,6 +62,7 @@ const logEl = $('log');
 const metaEl = $('meta');
 const playersEl = $('players');
 const actionsEl = $('actions');
+const interactionEl = $('interaction');
 
 function log(msg: string): void {
   const d = document.createElement('div');
@@ -173,7 +176,12 @@ function scheduleAi(): void {
   aiTimer = window.setTimeout(() => {
     aiTimer = null;
     const action = decideAction({ state, map });
-    if (action === null) return;
+    if (action === null) {
+      // 轮到电脑却拿不出 action —— 这是**卡住**，不是「没事可做」，
+      // 必须说出来。先前这里是静默 return，一个漏掉的 scheduleAi 就此藏了很久。
+      if (isAiTurn(state)) log(`⚠ 电脑在 ${state.phase} 无事可做，已停手`);
+      return;
+    }
     const before = state;
     state = reduce(state, action, topo);
     if (state === before) {
@@ -348,7 +356,86 @@ function renderPanel(): void {
     }),
   );
 
+  renderInteraction();
   renderActions();
+}
+
+/**
+ * 待决交互面板。
+ *
+ * ★ 这是「人能不能真的把这局玩下去」的关键：银行、樂透、百貨、拍賣、
+ *   保釋、小游戏……每一种 `pending` 都得有地方作答，否则轮到真人就卡住。
+ *   控件长什么样由 `interactions.ts` 按 `pending` 翻译，**规则一律不在这边**。
+ */
+function renderInteraction(): void {
+  const pending = state.pending;
+  const ui =
+    state.phase === 'awaitingDirection'
+      ? directionUi()
+      : pending === null
+        ? null
+        : interactionUi(pending, state);
+  if (ui === null) {
+    interactionEl.replaceChildren();
+    interactionEl.hidden = true;
+    return;
+  }
+
+  interactionEl.hidden = false;
+  const head = document.createElement('div');
+  head.className = 'itx-title';
+  head.textContent = ui.title;
+  const detail = document.createElement('div');
+  detail.className = 'itx-detail';
+  detail.textContent = ui.detail;
+
+  const row = document.createElement('div');
+  row.className = 'row';
+  for (const c of ui.choices) {
+    const el = document.createElement('button');
+    el.textContent = c.label;
+    el.onclick = () => {
+      // 需要填数的选项：弹一个输入框，取消就当没点
+      if (c.amount !== undefined) {
+        const raw = window.prompt(`${c.amount.label}（上限 ${c.amount.max}）`, String(c.amount.max));
+        if (raw === null) return;
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n <= 0) return;
+        const capped = Math.min(Math.trunc(n), c.amount.max);
+        log(`▶ ${ui.title}：${c.label} ${capped}`);
+        dispatch(c.amount.fill(capped));
+        return;
+      }
+      log(`▶ ${ui.title}：${c.label}`);
+      dispatch(c.action);
+    };
+    row.append(el);
+  }
+
+  interactionEl.replaceChildren(head, detail, row);
+}
+
+/**
+ * 岔路：把可走的下一格列成按钮。
+ *
+ * ★ 棋盘上点节点也能选（见输入那一节），但**只有点击**的话玩家
+ *   根本看不出哪几格是可选的 —— 原版是把岔路高亮出来的。
+ *   在补上高亮之前，先给一组明确的按钮，免得人卡在这一步。
+ */
+function directionUi(): InteractionUi | null {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return null;
+  const candidates = nextCandidates(topo, me.nodeId, me.lastNodeId);
+  if (candidates.length === 0) return null;
+  return {
+    title: '岔路',
+    detail: `还剩 ${state.stepsRemaining} 步 —— 往哪边走？（也可以直接点棋盘上的格子）`,
+    choices: candidates.map((n) => {
+      const node = map.nodes[n - 1];
+      const where = node?.name !== undefined && node.name !== '' ? `　${node.name}` : '';
+      return { label: `节点 ${n}${where}`, action: { type: 'chooseDirection', nodeId: n } as Action };
+    }),
+  };
 }
 
 /** 按当前阶段给出可用操作——「哪些可用」由 phase 决定，不重复实现规则 */
@@ -407,12 +494,21 @@ function autoButton(): HTMLButtonElement {
     log('▶ 自动走完本回合');
     requestRender();
     renderPanel();
+    // ★ 必须把电脑那边重新叫起来。这里是直接改 `state` 的，没走 `dispatch`，
+    //   而 `scheduleAi` 一向是 `dispatch` 在末尾调的 —— 漏掉这一句，
+    //   人这边一走完，整局就停在下一个电脑玩家身上再也不动了。
+    scheduleAi();
   };
   return el;
 }
 
 /** 当前阶段下「显然该做的那一步」；需要人决策时返回 null */
 function nextAutoAction(): Action | null {
+  // ★ 有待决交互就停手 —— 那是要人拿主意的。
+  //   先前没这一句：银行、樂透、百貨这些是**落点结算后挂在 turnEnd 上**的，
+  //   而 turnEnd 的自动动作是 `endTurn`，`endTurn` 又会把 pending 清掉，
+  //   于是「自动走完本回合」一路把柜台全冲过去，玩家一次也没看见。
+  if (state.pending !== null) return null;
   switch (state.phase) {
     case 'turnStart':
       return { type: 'startTurn' };
@@ -577,6 +673,61 @@ function bindInput(): void {
 }
 
 // ============================================================
+//  开局设置
+// ============================================================
+
+/** 合法的地图编号 —— `gameStage * 4 + gameMap`，0..7 */
+const MAX_GLOBAL_MAP_ID = 7;
+/** 原版最多四人 */
+const MAX_PLAYERS = 4;
+
+interface Setup {
+  globalMapId: number;
+  seed: number;
+  players: { character: number; kind: 'human' | 'computer' }[];
+}
+
+/**
+ * 从地址栏读开局设置。
+ *
+ * ```
+ * ?humans=2&ai=2&map=0&seed=1234&chars=0,3,5,7
+ * ```
+ *
+ * ★ **默认是一人三电脑**，不是四台电脑自己打。先前那样默认，
+ *   人类玩家根本插不上手 —— 待决交互轮不到他，整局只能干看。
+ *   正式的开局界面属于 M4 的后续，这里先让它**能玩**。
+ */
+function readSetup(): Setup {
+  const q = new URLSearchParams(window.location.search);
+  const int = (key: string, dflt: number): number => {
+    const raw = q.get(key);
+    if (raw === null) return dflt;
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.trunc(n) : dflt;
+  };
+
+  const humans = Math.max(0, Math.min(MAX_PLAYERS, int('humans', 1)));
+  const total = Math.max(2, Math.min(MAX_PLAYERS, humans + Math.max(0, int('ai', 3))));
+  const chars = (q.get('chars') ?? '')
+    .split(',')
+    .map((x) => Number(x))
+    .filter((n) => Number.isInteger(n) && n >= 0 && n < CHARACTERS.length);
+
+  const players = Array.from({ length: total }, (_, i) => ({
+    character: chars[i] ?? i,
+    kind: (i < humans ? 'human' : 'computer') as 'human' | 'computer',
+  }));
+
+  return {
+    globalMapId: Math.max(0, Math.min(MAX_GLOBAL_MAP_ID, int('map', 0))),
+    // 种子是**唯一的非确定性入口**，进 action 日志，重放时照样对得上
+    seed: int('seed', 1) >>> 0,
+    players,
+  };
+}
+
+// ============================================================
 //  启动
 // ============================================================
 
@@ -586,21 +737,14 @@ async function boot(): Promise<void> {
     const archives = await loadArchives('/assets/game');
     const sprites = new SpriteCache(archives);
 
-    const globalMapId = 0;
-    map = parseMap(readMapData(archives, globalMapId));
+    const setup = readSetup();
+    map = parseMap(readMapData(archives, setup.globalMapId));
     topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
-
-    state = newGame({
-      map,
-      globalMapId,
-      players: [
-        { character: 0, kind: 'computer' },
-        { character: 1, kind: 'computer' },
-        { character: 2, kind: 'computer' },
-        { character: 3, kind: 'computer' },
-      ],
-      seed: 1,
-    });
+    state = newGame({ map, globalMapId: setup.globalMapId, players: setup.players, seed: setup.seed });
+    log(
+      `开局：地图 ${setup.globalMapId}　种子 ${setup.seed}　` +
+        setup.players.map((p, i) => `P${i + 1}${p.kind === 'human' ? '人' : '电'}`).join(' '),
+    );
 
     renderer = new BoardRenderer(ctx, sprites);
     hud = new Hud(hudCtx, sprites);
@@ -636,7 +780,7 @@ async function boot(): Promise<void> {
       .catch(() => log('⚠ 音效载入失败'));
 
     // 底图后台解码，不挡住棋盘先出来
-    void loadGround(archives, globalMapId).then((g) => {
+    void loadGround(archives, setup.globalMapId).then((g) => {
       ground = g;
       if (g === null) {
         log('⚠ 底图未能解出');

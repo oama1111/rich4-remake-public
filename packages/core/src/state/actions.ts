@@ -131,6 +131,18 @@ export type Action =
    */
   | { type: 'bank'; op: 'deposit' | 'withdraw' | 'borrow' | 'repay'; amount: number }
   /** 保釋監獄/醫院里的某个槽位（0..3 玩家、4..7 NPC） */
+  /**
+   * 樂透：买一个号码。
+   * ★ 就地扣现金 1000，**票钱进公库** —— 奖池就是开奖那刻的整个公库。
+   */
+  | { type: 'lottery'; number: number }
+  /**
+   * 拍卖落槌。
+   *
+   * ⚠️ 竞价过程是模态 UI（谁出到多少），按 C-ARC-2 不进 reducer；
+   *   **结果**作为 action 参数送进来。`winner < 0` 表示流拍。
+   */
+  | { type: 'auction'; winner: number; price: number }
   | { type: 'bail'; slot: number }
   | { type: 'minigame'; score: number | null }
   | { type: 'endTurn' };

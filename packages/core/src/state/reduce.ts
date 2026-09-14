@@ -79,7 +79,7 @@ import { calculateFacilityToll } from '../rules/facility.ts';
 import { adjustTollByGod } from '../rules/god-toll.ts';
 import { facilityIndexOf } from '../rules/land.ts';
 import { tickBlocking } from '../rules/blocking.ts';
-import { purchase } from '../rules/purchase.ts';
+import { purchase, purchaseBlockedBy } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints, MAX_HAND_CARDS } from '../rules/special-square.ts';
 import { MAX_LAND_LEVEL, SPECIAL_KIND } from '../loaders/map.ts';
 import { drawEvent } from '../events/deck.ts';
@@ -99,8 +99,10 @@ import { borrow, deposit, loanCapacity, repay, withdraw } from '../places/bank.t
 import {
   LOTTERY_TICKET_PRICE,
   availableNumbers,
+  buyTicket,
   numbersOf,
 } from '../places/lottery.ts';
+import { settleAuction } from '../rules/auction.ts';
 import { calculatePlayerWealth, updatePriceIndex } from '../rules/wealth.ts';
 import type { StockValuation } from '../rules/wealth.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
@@ -353,14 +355,34 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       switch (landingOnLand(land, state.currentPlayer)) {
         case 'unowned': {
           // 买不起或被阻止时直接结束，不给决策机会
-          return canPurchase(land, player, state.priceIndex).ok
-            ? { ...state, phase: 'awaitingDecision' }
-            : { ...state, phase: 'turnEnd' };
+          //
+          // ★ **两处拦截都要查**：`canPurchase` 查的是土地公那一处
+          //   （只挡买无主地），而衰神/大衰神/死神是在 `purchase` 里
+          //   拦下所有消费（`call 0x40fa61`）。只查前者的话，会给出一个
+          //   `buyLand` 待决交互，然后 `buyLand` 必被 `purchase` 拒掉、
+          //   状态原样返回、交互留在那里 —— 玩家点一百次「買下」也没反应。
+          const buy = canPurchase(land, player, state.priceIndex);
+          if (!buy.ok || purchaseBlockedBy(player) !== null) {
+            return { ...state, phase: 'turnEnd' };
+          }
+          // ★ 价钱由 core 算好放进 `pending`。UI 与联机对端都不该自己再算一遍
+          //   ——算第二份规则，迟早两边对不上（C-ARC-2）。
+          return {
+            ...state,
+            phase: 'awaitingDecision',
+            pending: { kind: 'buyLand', landId: land.id, price: buy.price },
+          };
         }
         case 'own': {
-          return canUpgrade(land, player, state.priceIndex).ok
-            ? { ...state, phase: 'awaitingDecision' }
-            : { ...state, phase: 'turnEnd' };
+          const up = canUpgrade(land, player, state.priceIndex);
+          if (!up.ok || purchaseBlockedBy(player) !== null) {
+            return { ...state, phase: 'turnEnd' };
+          }
+          return {
+            ...state,
+            phase: 'awaitingDecision',
+            pending: { kind: 'upgradeLand', landId: land.id, cost: up.cost },
+          };
         }
         case 'other': {
           // 他人地产 → 立即支付过路费。
@@ -401,7 +423,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       });
       const landOwner = [...paid.landOwner];
       landOwner[landIndex] = state.currentPlayer + 1;
-      return { ...paid, landOwner, phase: 'turnEnd' };
+      return { ...paid, landOwner, pending: null, phase: 'turnEnd' };
     }
 
     case 'upgradeLand': {
@@ -422,7 +444,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       });
       const landLevel = [...paid.landLevel];
       landLevel[landIndex] = land.level + 1;
-      return { ...paid, landLevel, phase: 'turnEnd' };
+      return { ...paid, landLevel, pending: null, phase: 'turnEnd' };
     }
 
     case 'buyStock':
@@ -442,8 +464,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       return shopAction(state, action);
 
     case 'declineDecision': {
-      if (state.phase !== 'awaitingDecision') return state;
-      return { ...state, phase: 'turnEnd' };
+      // ★ 「不了」对**任何**待决交互都合法（rules/interaction.ts 的
+      //   `responseMatches` 第一句就是这个），故不只在 awaitingDecision 生效：
+      //   银行、樂透、百貨这些柜台也得有办法关门走人。
+      if (state.phase === 'awaitingDecision') {
+        return { ...state, pending: null, phase: 'turnEnd' };
+      }
+      return state.pending === null ? state : { ...state, pending: null, phase: 'turnEnd' };
     }
 
     case 'bank': {
@@ -483,6 +510,53 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           loanCapacity: loanCapacity(wealth, next.loan),
         },
       };
+    }
+
+    case 'lottery': {
+      if (state.pending === null || state.pending.kind !== 'lottery') return state;
+      const me = state.players[state.currentPlayer];
+      if (me === undefined || !isAlive(me)) return state;
+      const r = buyTicket(me, state.lottery, action.number);
+      if (!r.ok) return state;
+      return {
+        ...state,
+        players: state.players.map((p, i) => (i === state.currentPlayer ? r.player : p)),
+        lottery: r.lottery,
+        // ★ 票钱进公库 —— 买票既是投注也是在给奖池添柴
+        pool: state.pool + r.toPool,
+        // 柜台还开着，可以接着买；刷新可选号码
+        pending: {
+          kind: 'lottery',
+          available: availableNumbers(r.lottery),
+          price: LOTTERY_TICKET_PRICE,
+          owned: numbersOf(r.lottery, state.currentPlayer).length,
+        },
+      };
+    }
+
+    case 'auction': {
+      if (state.pending === null || state.pending.kind !== 'auction') return state;
+      const landId = state.pending.entityId;
+      const land = effectiveLand(state, topo, landId);
+      if (land === null) return { ...state, pending: null, phase: 'turnEnd' };
+
+      const r = settleAuction(
+        state.players,
+        land,
+        { winner: action.winner, price: action.price },
+        state.pool,
+      );
+      const landOwner = [...state.landOwner];
+      landOwner[landId] = r.land.owner;
+      const settled: GameState = {
+        ...state,
+        players: r.players,
+        landOwner,
+        pool: r.pool,
+        pending: null,
+        phase: 'turnEnd',
+      };
+      return r.bankrupted ? applyBankruptcy(settled, action.winner, topo) : settled;
     }
 
     case 'bail': {
