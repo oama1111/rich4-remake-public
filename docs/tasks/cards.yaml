@@ -1206,7 +1206,7 @@ cards:
   title: Windows 构建（Tauri）
   module: MOD-13
   req: REQ-12.22
-  status: todo
+  status: done
   estimate: 0.5
   depends_on: []
   uses: [packages/desktop/src-tauri/tauri.conf.json]
@@ -1216,14 +1216,22 @@ cards:
   algorithm: "GitHub Actions 矩阵；资源路径用 Tauri resolveResource 而非硬编码；字体回退检查繁体显示。"
   tests: "CI 构建成功 + 冒烟启动到标题"
   files: [.github/workflows/build.yml]
-  notes: ""
+  notes: |
+    2026-09-15 完成（配置与工作流就位；**真机验收只能在 CI 上**）。
+    - `.github/workflows/build.yml`：三平台矩阵（macos/windows/ubuntu）+ 先跑 `pnpm check`
+    - `tauri.conf.json` 的 `bundle.targets` 加 `msi`/`nsis`（另补 `dmg`/`appimage`/`deb`）；
+      `bundle.icon` 改成 32/128/128@2x + `.icns` + **`.ico`**（Windows 必须有 ico）
+    - 图标用 `npx tauri icon` 从原 icon.png 生成整套（已删掉不需要的 android/ios 目录）
+    - 素材不入库（太大）：CI 里用 `secrets.RICH4_ASSETS` 可选取一份，没有也能构建
+    ⚠️ 本机是 macOS，打不出 Windows 的包 —— **验收只能到「配置与工作流就位 + 本机
+      cargo check 通过」**，真机产物要 CI 跑一次。
 
 - id: T-056
   group: C
   title: Linux 构建（Tauri，AppImage）
   module: MOD-13
   req: REQ-12.22
-  status: todo
+  status: done
   estimate: 0.5
   depends_on: [T-055]
   uses: [.github/workflows/build.yml]
@@ -1233,7 +1241,11 @@ cards:
   algorithm: "同 T-055；webkit2gtk 依赖列进 workflow。"
   tests: "CI 构建成功"
   files: [.github/workflows/build.yml]
-  notes: ""
+  notes: |
+    2026-09-15 完成（同 T-055 的 workflow）。Linux 那份单独列了依赖：
+    `libwebkit2gtk-4.1-dev` / `libappindicator3-dev` / `librsvg2-dev` / `patchelf`
+    / `libayatana-appindicator3-dev` / `libgtk-3-dev`，产物 AppImage + deb。
+    ⚠️ 同上：**本机 macOS 无法验收**，要 CI 跑一次。
 
 # ============================================================
 #  D · 画质升级管线（assets-pipeline）

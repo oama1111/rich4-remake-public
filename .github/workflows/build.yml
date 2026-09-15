@@ -1,0 +1,117 @@
+# 桌面三平台构建（T-055 Windows / T-056 Linux / macOS）
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# ★ 为什么必须放 CI：Tauri 只能**在目标平台上**打目标平台的包
+#   （Windows 的 .msi 要在 Windows 上打、Linux 的 AppImage 要在 Linux 上打），
+#   本机是 macOS，所以 Windows/Linux 那两个只能在这里验。
+#
+# ★ 素材随包：`assets/game/*.mkf` 由 tauri.conf.json 的 bundle.resources 带进去，
+#   但**素材不入库**（太大），CI 里要用 `RICH4_ASSETS` 指到一份现成的
+#   （见 README 的「素材」一节）；没有素材时构建仍然能过，只是打出来的包
+#   启动后要用户手选目录。
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: 三绿（typecheck + lint + test）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        env:
+          # 素材是按需的：check 不需要它
+          RICH4_SKIP_ASSETS: '1'
+      - run: pnpm check
+
+  bundle:
+    name: 打包 ${{ matrix.platform }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            args: ''
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: ''
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    # ★ secrets 不能直接出现在 if 里，先落到 env 再判空（GitHub Actions 的老规矩）
+    env:
+      RICH4_ASSETS: ${{ secrets.RICH4_ASSETS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/desktop/src-tauri
+
+      # Linux 的 webkit2gtk 依赖（T-056）
+      - name: Linux 依赖
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev
+
+      - run: pnpm install --frozen-lockfile
+
+      # 素材：CI 上没有（不入库），用 secret 指一份打包缓存；
+      # 没有就跳过 —— 包仍可构建，只是不带素材。
+      - name: 取素材（可选）
+        if: env.RICH4_ASSETS != ''
+        run: |
+          echo "素材来源：$RICH4_ASSETS"
+          mkdir -p assets/game
+          # 允许是一个 tar.gz 的下载地址，或 CI 缓存里的目录
+          case "$RICH4_ASSETS" in
+            http*) curl -fL "$RICH4_ASSETS" -o /tmp/rich4-assets.tar.gz && tar -xzf /tmp/rich4-assets.tar.gz -C assets/game ;;
+            *) cp -R "$RICH4_ASSETS"/. assets/game/ ;;
+          esac
+
+      - name: 打前端
+        run: pnpm --filter @rich4/client build
+
+      - name: 打包
+        # `build` 脚本就是 `tauri build`（见 packages/desktop/package.json）
+        run: pnpm --filter @rich4/desktop build --target ${{ matrix.target }} ${{ matrix.args }}
+
+      - name: 归档产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: rich4-remake-${{ matrix.platform }}
+          # 三平台各自的产物目录都在这几个里
+          path: |
+            packages/desktop/src-tauri/target/**/release/bundle/**
+            packages/desktop/src-tauri/target/**/release/*.exe
+          if-no-files-found: warn

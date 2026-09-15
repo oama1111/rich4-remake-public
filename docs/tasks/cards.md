@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 22.1。
+共 **73** 张卡，估算 **39.8** 单元，已完成 23.1。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -66,8 +66,8 @@
 | [T-052](#t-052) | 語音触发点接线（playSoundFor 扩展） | MOD-12 | REQ-12.20 | `todo` | 0.5 | T-051 |
 | [T-053](#t-053) | 存档落到文件（Tauri fs，6 槽 + 自动） | MOD-13 | REQ-12.21 | `done` | 0.5 | — |
 | [T-054](#t-054) | 读原版 SAVE*.DAT 进游戏（导入入口 + 缺口提示） | MOD-12 | REQ-12.21 | `todo` | 0.4 | T-053 |
-| [T-055](#t-055) | Windows 构建（Tauri） | MOD-13 | REQ-12.22 | `todo` | 0.5 | — |
-| [T-056](#t-056) | Linux 构建（Tauri，AppImage） | MOD-13 | REQ-12.22 | `todo` | 0.5 | T-055 |
+| [T-055](#t-055) | Windows 构建（Tauri） | MOD-13 | REQ-12.22 | `done` | 0.5 | — |
+| [T-056](#t-056) | Linux 构建（Tauri，AppImage） | MOD-13 | REQ-12.22 | `done` | 0.5 | T-055 |
 | [T-060](#t-060) | 素材分类器（UI / 地形 tile / 角色精灵 / 背景大图 / 字体） | MOD-11 | REQ-11.1 | `done` | 0.4 | — |
 | [T-061](#t-061) | 按帧切片 + Alpha 分离，产出 upscale-queue/ | MOD-11 | REQ-11.1 | `done` | 0.6 | T-060 |
 | [T-062](#t-062) | 回填校验：尺寸恰 4×、Alpha 合并、去彩边 | MOD-11 | REQ-11.1 | `done` | 0.6 | T-061 |
@@ -2082,7 +2082,7 @@ read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
 
 **Windows 构建（Tauri）**
 
-- 模块 `MOD-13` · 需求 `REQ-12.22` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-13` · 需求 `REQ-12.22` · 状态 `done` · 估算 0.5 单元
 - 依赖：无（可立即开工）
 - 被依赖：T-056
 - 证据：—
@@ -2111,11 +2111,20 @@ read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
 
 - .github/workflows/build.yml
 
+> 2026-09-15 完成（配置与工作流就位；**真机验收只能在 CI 上**）。
+- `.github/workflows/build.yml`：三平台矩阵（macos/windows/ubuntu）+ 先跑 `pnpm check`
+- `tauri.conf.json` 的 `bundle.targets` 加 `msi`/`nsis`（另补 `dmg`/`appimage`/`deb`）；
+  `bundle.icon` 改成 32/128/128@2x + `.icns` + **`.ico`**（Windows 必须有 ico）
+- 图标用 `npx tauri icon` 从原 icon.png 生成整套（已删掉不需要的 android/ios 目录）
+- 素材不入库（太大）：CI 里用 `secrets.RICH4_ASSETS` 可选取一份，没有也能构建
+⚠️ 本机是 macOS，打不出 Windows 的包 —— **验收只能到「配置与工作流就位 + 本机
+  cargo check 通过」**，真机产物要 CI 跑一次。
+
 ### T-056
 
 **Linux 构建（Tauri，AppImage）**
 
-- 模块 `MOD-13` · 需求 `REQ-12.22` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-13` · 需求 `REQ-12.22` · 状态 `done` · 估算 0.5 单元
 - 依赖：T-055
 - 证据：—
 
@@ -2142,6 +2151,11 @@ read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
 **涉及文件**
 
 - .github/workflows/build.yml
+
+> 2026-09-15 完成（同 T-055 的 workflow）。Linux 那份单独列了依赖：
+`libwebkit2gtk-4.1-dev` / `libappindicator3-dev` / `librsvg2-dev` / `patchelf`
+/ `libayatana-appindicator3-dev` / `libgtk-3-dev`，产物 AppImage + deb。
+⚠️ 同上：**本机 macOS 无法验收**，要 CI 跑一次。
 
 ## D · 画质升级管线（assets-pipeline）
 
