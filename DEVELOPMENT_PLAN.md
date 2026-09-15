@@ -884,12 +884,16 @@ upscale-queue/
 
 ### 已备好、暂不动的两块
 
-- **步骤 2 画质**：管线已在 `packages/assets-pipeline`（`cli-upscale.ts`，`assets/hd-manifest.json`），
-  交接链 `plan → slice → [外部超分 4×] → merge → assemble` 全通（`pnpm upscale`）。`merge` 校验
-  尺寸恰 4×、Alpha 二值化、去彩边（T-062 ✅）；`assemble` 落进 `assets/hd/` 并按**实际输出尺寸**
-  重算锚点（C-AST-6）、写 manifest 条目、幂等不重写（T-063 ✅，已用合成夹具端到端验过）；
-  hd 路径由 `hdRelativePath` 单点定义，等 T-065 的 `SpriteCache` 接上读侧。
-  仍等 P2 定稿哪些图真正上屏再批量跑，避免返工。
+- **步骤 2 画质**：**管线已全线打通**（T-061..T-066 全部 ✅）。交接链
+  `plan → slice → [外部超分 4×] → merge → assemble → review`（`pnpm upscale`）：
+  `merge` 校验尺寸恰 4×、Alpha 二值化、去彩边；`assemble` 落进 `assets/hd/` 并按**实际输出
+  尺寸**重算锚点（C-AST-6）、写 manifest 条目、幂等不重写；`review` 出并排过审页；
+  读侧 `SpriteCache` 按图优先读 hd、缺则回退原图（T-065），hd 路径由 `hdRelativePath`
+  单点定义（写读同一函数）。
+  两条已知缺口：**底图不在超分清单里**（Q-GND-4），**LRU 释放内存需 render.ts 接 onEvict**
+  与桌面端 hd 路由（Q-PERF-1）。
+  仍等 P2 定稿哪些图真正上屏再批量跑，避免返工。`assets/hd/` 目前是空的，故读侧此刻
+  全走回退路径——这是正常状态。
 - **步骤 3 联机**：`packages/server` 已有 `Room`/`Sequencer`/`hub.ts`/`ws-server.ts` + `cli.ts` 可跑的
   WebSocket 服务（T-070..T-073 ✅），客户端 `net-client.ts` 已接进 `main.ts`（T-074 ✅，`?ws=` 进联机）；
   core 的确定性约束（C-DET）一直在 CI 里守着，联机不需要改 core。
