@@ -4,9 +4,10 @@
     {
       "name": "rich4-client",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "5180", "--strictPort"],
+      "runtimeArgs": ["vite"],
       "cwd": "packages/client",
-      "port": 5180
+      "port": 5180,
+      "autoPort": true
     }
   ]
 }
