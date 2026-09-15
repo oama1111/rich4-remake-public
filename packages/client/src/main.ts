@@ -131,6 +131,7 @@ import {
 } from './saveload.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
+import { drawIntro, introDone } from './intro.ts';
 import {
   applySetupHit,
   defaultSetup,
@@ -1078,8 +1079,22 @@ const hudOffCtx = (() => {
 })();
 
 /** 当前屏幕 */
-type Screen = 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'aiSettings' | 'game';
+type Screen = 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'aiSettings' | 'intro' | 'game';
 let screen: Screen = 'title';
+
+/**
+ * 開局跳伞过场（T-048）：起点时刻与「用户跳过」标志。
+ * ★ 纯表现 —— 不派 action，结束只把 screen 放回 game（C-DET-4）。
+ */
+let introStartedAt = 0;
+let introSkipped = false;
+
+/** 过场结束 → 进棋盘 */
+function endIntro(): void {
+  if (screen !== 'intro') return;
+  screen = 'game';
+  requestRender();
+}
 
 /** 託管AI 屏的编辑草稿（原版也是先编一份暂存表、按確定才拷回）——不在这一屏时为 null */
 let aiDraft: AiSettingRow[] | null = null;
@@ -1138,6 +1153,14 @@ function requestRender(): void {
     stageCtx.fillStyle = '#000';
     stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
 
+    if (screen === 'intro') {
+      drawIntro(stageCtx, performance.now() - introStartedAt);
+      // ★ 过场要**逐帧**推进：没播完就再排一帧（与走子补间同一个道理），
+      //   否则只画第一帧就冻住 —— 类型检查与单测都看不出这一条。
+      if (introDone(introStartedAt, performance.now(), introSkipped)) endIntro();
+      else requestRender();
+      return;
+    }
     if (screen === 'title') {
       drawTitle(stageCtx, titleHot, spriteNow);
     } else if (screen === 'setup') {
@@ -1764,7 +1787,10 @@ function startGame(): void {
   const first = map.nodes[state.players[0]?.nodeId ?? 1];
   camera = characterCamera(first?.x ?? 0, first?.y ?? 0, camera?.view ?? 0);
   hoverNode = null;
-  screen = 'game';
+  // ★ 開局先播跳伞过场（T-048）：纯表现、可跳过，之后才进棋盘
+  introStartedAt = performance.now();
+  introSkipped = false;
+  screen = 'intro';
   log(
     `開局：地圖 ${setup.mapId}　種子 ${seed}　` +
       players.map((p, i) => `P${i + 1}${p.kind === 'human' ? '人' : '電'}`).join(' '),
@@ -1899,6 +1925,11 @@ function bindInput(): void {
     if (p === null) return;
     unlockAudio();
 
+    if (screen === 'intro') {
+      introSkipped = true;
+      requestRender();
+      return;
+    }
     if (screen === 'title') {
       const hit = hitTitle(p.x, p.y, (i) => spriteNow('Data.mkf', TITLE_RESOURCE, i, true));
       if (hit !== null) {
@@ -2154,6 +2185,13 @@ function bindInput(): void {
   //   一个待遇：说出来，不假装有反应。
   window.addEventListener('keydown', (e) => {
     unlockAudio();
+    // 开局过场：任意键跳过（原版同样可跳过）
+    if (screen === 'intro') {
+      introSkipped = true;
+      e.preventDefault();
+      requestRender();
+      return;
+    }
     const fn = hotkeyOf(e);
     if (fn !== null && handleHotkey(fn, e)) {
       e.preventDefault();

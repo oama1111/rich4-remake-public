@@ -1053,7 +1053,7 @@ cards:
   title: 開局跳伞过场（可跳过）
   module: MOD-12
   req: REQ-12.19
-  status: todo
+  status: done
   estimate: 0.5
   depends_on: []
   uses: [client/main.ts (startGame), client/assets.ts]
@@ -1063,7 +1063,13 @@ cards:
   algorithm: "过场是纯表现：不派任何 action；结束后才 dispatch(startTurn)。"
   tests: "跳过逻辑测试"
   files: [packages/client/src/intro.ts]
-  notes: "avi 不解码，用精灵帧复刻。"
+  notes: |
+    2026-09-15 完成（**机制**；画面见 Q-INTRO-1）。★ 卡片写的「avi 不解码，用精灵帧复刻」
+    —— 查证后**精灵帧也没有**：原版放的 AVI 是 Indeo 4.1 且**全是残档**
+    （每个恰好 5112 字节、只 1 个 338 字节视频块却声明 15 帧），故画面复刻不了。
+    已做的是能确证的两条：**时序**（avih：15 帧 × 66667 µs ≈ 1 s、画面 312×160）
+    与**可跳过**（纯表现、不派 action、放完或任意键/点击后才进棋盘）。
+    实现 `client/intro.ts` + 5 条断言；实测跑了 60 帧后进棋盘 ✓。
 
 - id: T-049
   group: C
