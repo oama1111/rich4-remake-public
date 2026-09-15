@@ -13,7 +13,8 @@ import type { Rich4Map } from '../loaders/map.ts';
 import type { GameState, Player } from '../state/types.ts';
 import type { GameMode } from '../rng/policy.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
-import { DEFAULT_INITIAL_FUND, startingMoney } from './setup.ts';
+import { DEFAULT_INITIAL_FUND, NO_WIN_CONDITIONS, startingMoney } from './setup.ts';
+import type { WinConditions } from './setup.ts';
 import { CARDS, CHARACTERS } from '@rich4/data';
 import { traitsOf } from '../ai/personality.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
@@ -81,6 +82,14 @@ export interface NewGameOptions {
   startingVehicle?: number;
   /** 土地權限档位 0..5，默认 0 = 無限期 @source `[0x46cb48]` → `[0x499110]` */
   landTenure?: number;
+  /**
+   * 本局的**勝利條件**（遊戲時間 / 勝利條件两条下拉）。
+   *
+   * ★ 由调用方用 `winConditionsOf(资金档, 時間档, 條件档)` 换算好传进来 ——
+   *   原版就是「开局那一刻」把两条下拉查表写进 `[0x49911c]` / `[0x499108]`
+   *   （VA 0x0040737d..0x004073a3），缺省 `NO_WIN_CONDITIONS` = 两条都無限。
+   */
+  winConditions?: WinConditions;
 }
 
 
@@ -296,6 +305,7 @@ export function newGame(opts: NewGameOptions): GameState {
     startNodeId = UNVERIFIED_START_NODE,
     startingVehicle: vehicle = 0,
     landTenure = 0,
+    winConditions = NO_WIN_CONDITIONS,
   } = opts;
 
   if (players.length < 2 || players.length > 4) {
@@ -373,6 +383,10 @@ export function newGame(opts: NewGameOptions): GameState {
     // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取
     landType: landTypeFromMap(map, landCount),
     landTenureIndex: landTenure,
+    // ★ 勝利條件（遊戲時間 / 勝利條件）与土地權限一样，只受开局设置影响
+    //   @source `[0x49911c]` / `[0x499108]`，开局写入 VA 0x0040737d..0x004073a3
+    winConditions,
+    victory: null,
     totalDays: 0,
     totalMonths: 0,
     landLastToll: new Array<number>(landCount).fill(0),

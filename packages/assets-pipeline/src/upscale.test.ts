@@ -9,6 +9,7 @@ import {
   BATCH_RULES,
   classify,
   emptyManifest,
+  hdRelativePath,
   pendingTasks,
   planUpscale,
   recordResult,
@@ -98,6 +99,63 @@ describe('任务标识', () => {
     const a = taskIdOf({ archive: 'Data', resource: 1, image: 2 });
     const b = taskIdOf({ archive: 'Data', resource: 12, image: 0 });
     expect(a).not.toBe(b);
+  });
+});
+
+describe('★ Q-GND-4：地图底图也要进超分清单', () => {
+  /** `cli-extract` 解出来的那条底图 —— 一整张 2304×2304、格式 GND、锚点 0/0 */
+  const ground = (): AssetEntryLike =>
+    entry({
+      archive: 'map',
+      resource: 0,
+      image: 0,
+      file: 'map/0000_000.png',
+      width: 2304,
+      height: 2304,
+      anchorX: 0,
+      anchorY: 0,
+      format: 'GND',
+    });
+
+  it('底图能建出任务（先前它不在清单里，这一条根本不存在）', () => {
+    const tasks = planUpscale([ground()]);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.id).toBe('map/0000_000');
+    expect(tasks[0]!.input).toBe('map/0000_000.png');
+  });
+
+  it('★ 分类是 tile —— 底图是地形，放大后要过 T-064 的接缝检查', () => {
+    // 2304×2304 按尺寸本会落进 background；GND 来源优先，判成 tile（见 classify.ts）
+    expect(planUpscale([ground()])[0]!.category).toBe('tile');
+  });
+
+  it('倍率 4×、落 large 批（与 C-AST-3 一致）', () => {
+    const t = planUpscale([ground()])[0]!;
+    expect(t.scale).toBe(4);
+    expect(t.batch).toBe('large');
+    expect(t.srcWidth).toBe(2304);
+  });
+
+  it('八张底图各自一条，且与结构数据（奇数号资源）不混', () => {
+    const entries: AssetEntryLike[] = [];
+    for (let m = 0; m < 8; m++) entries.push({ ...ground(), resource: m * 2, file: `map/${String(m * 2).padStart(4, '0')}_000.png` });
+    const tasks = planUpscale(entries);
+    expect(tasks.map((t) => t.id)).toEqual([
+      'map/0000_000',
+      'map/0002_000',
+      'map/0004_000',
+      'map/0006_000',
+      'map/0008_000',
+      'map/0010_000',
+      'map/0012_000',
+      'map/0014_000',
+    ]);
+    expect(summarize(tasks).large).toEqual({ count: 8, scale: 4 });
+  });
+
+  it('★ 底图在 hd 里的落点由同一条 hdRelativePath 决定（写读两侧不会漂）', () => {
+    expect(hdRelativePath('map', 0, 0)).toBe('map/0-0.png');
+    expect(hdRelativePath('map', 14, 0)).toBe('map/14-0.png');
   });
 });
 

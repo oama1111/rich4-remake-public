@@ -1579,15 +1579,32 @@ interface HelpState {
   open: boolean;
   chapter: number;
   scroll: number;
+  /** 面板落点的 x（舞台坐标）—— 入口参数，见 `openHelpAt` */
+  panelX: number;
+  /** 面板落点的 y */
+  panelY: number;
 }
 
-const helpState: HelpState = { open: false, chapter: 0, scroll: 0 };
+const helpState: HelpState = {
+  open: false,
+  chapter: 0,
+  scroll: 0,
+  panelX: HELP_PANEL.x,
+  panelY: HELP_PANEL.y,
+};
 
 /** 测试用：把状态放回「没开屏」的样子 */
 export function resetHelp(): void {
   helpState.open = false;
   helpState.chapter = 0;
   helpState.scroll = 0;
+  helpState.panelX = HELP_PANEL.x;
+  helpState.panelY = HELP_PANEL.y;
+}
+
+/** 此刻面板的落点（舞台坐标）—— 测试用 */
+export function helpOrigin(): { x: number; y: number } {
+  return { x: helpState.panelX, y: helpState.panelY };
 }
 
 /** 此刻的章号 / 行偏移（测试用）*/
@@ -1601,6 +1618,10 @@ export const HELP_TOOLBAR_INDEX = 0;
 /**
  * 开屏：章号与行偏移都归 0。
  * @source 入口 0x44eb8d `mov [0x47601c], 0` / `mov [0x476018], 0`
+ *
+ * ⚠️ 面板落点**不在这里定**：入口 `_rich4_ui_help_entry(x, y)` 是带参数的
+ *   （工具列那一路传 (20,60)，設定屏那颗「遊戲說明」传 (−1,−1) 走居中）。
+ *   见 `openHelpAt()`。
  */
 function openHelp(env: UiScreenEnv): void {
   helpState.open = true;
@@ -1610,16 +1631,49 @@ function openHelp(env: UiScreenEnv): void {
 }
 
 /**
+ * 入口 `_rich4_ui_help_entry(x, y)` 的落点规则 —— 纯函数。
+ *
+ * @source 0x0044e4b9：`cmp dword [0x48c5e4], 0xffff / jne`。
+ *   **x 等于 0xffff（入口传 −1）时 x 与 y 都重算**成
+ *   `(0x140 − w/2, 0x0f0 − h/2)`（`sar 1`）—— y 传什么都一样，原版那两条指令
+ *   无条件覆盖。于是 `(-1, -1)` = 400×400 的板子居中在 (120, 40)。
+ */
+export function helpPanelOriginFor(x: number, y: number): { x: number; y: number } {
+  if (x === -1 || x === 0xffff) {
+    return { x: 0x140 - (HELP_PANEL.w >> 1), y: 0x0f0 - (HELP_PANEL.h >> 1) };
+  }
+  return { x, y };
+}
+
+/**
+ * 以**指定落点**开屏 —— `_rich4_ui_help_entry(x, y)`。
+ *
+ * 設定屏右上角那颗「遊戲說明」走的就是这一支：原版 `0x411a96` 是
+ * `push -1 / push -1 / call 0x44eb39`（Q-OPT-1 逐条核过，确实是 −1/−1），
+ * 于是面板落在 (120,40)（居中），盖住整块設定对话框。
+ */
+export function openHelpAt(env: UiScreenEnv, x: number, y: number): void {
+  const at = helpPanelOriginFor(x, y);
+  helpState.panelX = at.x;
+  helpState.panelY = at.y;
+  openHelp(env);
+}
+
+/**
  * 关屏。
  *
  * @source 原版收尾走 `Post_0402_Message`（`loc_0044e546` 的
  *   `play_sound_effect(0x482332, 0)` 那一路）。⚠️ 原版这一屏**没有「关闭」钮** ——
- *   关屏只有右键 / 熱鍵 / 点面板外三条路，本模块只做熱鍵（`Escape` 与右键
- *   由 main.ts 的通用那一路管，不归本屏）。
+ *   关屏只有右键 / 熱鍵 / 点面板外三条路。
  */
 function closeHelp(env: UiScreenEnv): void {
   helpState.open = false;
   env.requestRender();
+}
+
+/** 从外面关（設定屏要按 ESC / 右键把盖在它上面的说明屏收掉）*/
+export function closeHelpScreen(env: UiScreenEnv): void {
+  closeHelp(env);
 }
 
 /**
@@ -1658,6 +1712,8 @@ export const HELP_INDEX_NAMES: readonly string[] = [
 export interface HelpDraw {
   chapter: number;
   scroll: number;
+  /** 面板落点（舞台坐标）；不传 = 工具列那一路的 `HELP_PANEL`（20,60） */
+  origin?: { x: number; y: number };
 }
 
 /** 锚点落点绘制 —— `help.mkf` 的 12 张锚点都是 (0,0)，所以就是左上角贴图 */
@@ -1710,8 +1766,8 @@ export function drawHelpScreen(
   const scroll = clampScroll(chapter, d.scroll);
   const c = HELP_CHAPTERS[chapter];
   if (c === undefined) return;
-  const ox = HELP_PANEL.x;
-  const oy = HELP_PANEL.y;
+  const ox = d.origin?.x ?? HELP_PANEL.x;
+  const oy = d.origin?.y ?? HELP_PANEL.y;
 
   // ── 底图（三列空板：左绿、中珊瑚、右黄）@0x44e02b ──
   drawAt(ctx, sprite(HELP_BG_IMAGE), ox, oy);
@@ -1812,28 +1868,39 @@ export const helpScreen: UiScreen = {
     drawHelpScreen(env.stage, (i) => env.sprite('help.mkf', HELP_RESOURCE, i, false), {
       chapter: helpState.chapter,
       scroll: helpState.scroll,
+      origin: { x: helpState.panelX, y: helpState.panelY },
     });
   },
 
   down(x, y, env) {
     // 舞台坐标 → 面板局部（原版比的就是局部坐标）
-    const hit = hitHelp(x - HELP_PANEL.x, y - HELP_PANEL.y);
+    const hit = hitHelp(x - helpState.panelX, y - helpState.panelY);
     if (hit === null) return;
     applyHelpHit(hit, env);
   },
 
   hotkey(fn, env) {
     // 熱鍵 H（`HOTKEY.help` = 24）开关本屏
-    if (fn !== HOTKEY.help) return false;
-    if (helpState.open) closeHelp(env);
-    else openHelp(env);
-    return true;
+    if (fn === HOTKEY.help) {
+      if (helpState.open) closeHelp(env);
+      else openHelp(env);
+      return true;
+    }
+    // ★ `Escape` = 关掉**最上面那一扇窗**（原版是全局鍵盤处理把顶层窗口收掉）。
+    //   本屏是登记的整屏，main.ts 那条通用的 ESC 只认它自己的 `Screen`，
+    //   认不到这一层 —— 设定屏里按「遊戲說明」推开本屏之后，ESC 就没人接。
+    if (fn === HOTKEY.cancel) {
+      if (!helpState.open) return false;
+      closeHelp(env);
+      return true;
+    }
+    return false;
   },
 
   toolbar(index, env) {
     // 「遊戲百科」= 工具列下标 0 @source 跳表 0x417d39 第 0 项
     if (index !== HELP_TOOLBAR_INDEX) return false;
-    openHelp(env);
+    openHelpAt(env, HELP_PANEL.x, HELP_PANEL.y);
     return true;
   },
 };

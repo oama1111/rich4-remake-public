@@ -42,6 +42,18 @@ export class Room {
   readonly seed: number;
   readonly globalMapId: number;
   readonly seats: SeatInfo[];
+  /**
+   * ★ Q-NET-2：开局时冻结的**大厅设置** —— 每个座位的角色 + 房间地图。
+   *
+   * 为什么是快照而不是可变的：角色/地图只允许在**未开局**时改，而 `Room`
+   * 是开局那一刻才建的（hub 的 `#start`）。开局之后 hub 就不再放行
+   * `setCharacter`/`setMap` 了，所以这份设置从这里起就是死的。
+   *
+   * 权威性也在这里：`newGame` 的 `players`（角色、真人/电脑）与
+   * `globalMapId` 全部取自它，**不读任何客户端上报的本地设置** ——
+   * 否则「我以为我选的是忍者、服务器记的是錢夫人」要到指纹对不上才暴露。
+   */
+  readonly lobby: { globalMapId: number; seats: readonly SeatInfo[] };
 
   readonly #map: Rich4Map;
   readonly #topo: MapTopology;
@@ -56,6 +68,9 @@ export class Room {
     this.seed = opts.seed;
     this.globalMapId = opts.globalMapId;
     this.seats = opts.seats;
+    // ★ 拷一份快照：hub 之后还会改 `Table` 上的座位/地图（比如开局补电脑），
+    //   那些改动不该再影响这一局已经定下的设置。
+    this.lobby = { globalMapId: opts.globalMapId, seats: opts.seats.map((s) => ({ ...s })) };
     this.#map = opts.map;
     // ★ 与客户端 main.ts 的 topo **逐项一致**：少了設施表或企业表，镜像在
     //   設施落点、股市锚点上就会与客户端走岔，指纹对不上却谁也没错。

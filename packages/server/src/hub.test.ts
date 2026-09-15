@@ -151,6 +151,95 @@ describe('★ 校验和与失步', () => {
   });
 });
 
+describe('★ Q-NET-1 失步自愈（resync → replay）', () => {
+  run('篡改校验和触发 desync；resync 拿回全量重放，重建后指纹与服务器相等', () => {
+    const map = loadMap();
+    const hub = hubWith(map);
+    const a = new FakeConn();
+    const ha = hub.connect(a);
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'start' });
+    // 0 号是真人，1..3 是电脑（服务器代打）——把自己的回合走完，出去一长串 action
+    const play = (act: Action) => ha.onMessage({ t: 'intent', action: act });
+    play({ type: 'startTurn' });
+    let guard = 0;
+    while (hub.room('r')!.currentSeat === 0 && guard++ < 50) {
+      const s = hub.room('r')!.state;
+      play(
+        s.phase === 'awaitingRoll' ? { type: 'rollDice' }
+        : s.phase === 'moving' ? { type: 'step' }
+        : s.phase === 'settling' ? { type: 'settle' }
+        : s.phase === 'awaitingDecision' ? { type: 'declineDecision' }
+        : { type: 'endTurn' },
+      );
+    }
+    const seq = a.last('action')!.seq;
+
+    // 客户端本地状态被篡改 → 上报的指纹对不上 → 服务器广播 desync
+    ha.onMessage({ t: 'checksum', seq, hash: 'tampered' });
+    expect(a.last('desync')).toMatchObject({ seq, got: 'tampered', seat: 0 });
+
+    // 客户端请求全量重放
+    a.inbox.length = 0;
+    ha.onMessage({ t: 'resync' });
+    const rep = a.last('replay')!;
+    expect(rep.seed).toBe(4242);
+    expect(rep.through).toBe(hub.room('r')!.sequenceLength - 1);
+    expect(rep.actions.map((x) => x.seq)).toEqual(Array.from({ length: rep.actions.length }, (_, i) => i));
+    expect(rep.actions.length).toBeGreaterThan(1);
+
+    // ★ 用服务器给的参数 newGame + 从头 reduce 整串 → 与服务器镜像同一个指纹
+    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+    let healed = newGame({
+      map,
+      globalMapId: rep.globalMapId,
+      seed: rep.seed,
+      players: rep.seats.map((s) => ({ character: s.character, kind: s.kind })),
+      mode: 'multiplayer',
+    });
+    for (const x of rep.actions) healed = reduce(healed, x.action, topo);
+    expect(stateFingerprint(healed)).toBe(hub.room('r')!.fingerprint);
+  });
+
+  run('★ 反作弊：没进房、冒名、掉线后的连接都拿不到重放；重放也不广播', () => {
+    const map = loadMap();
+    const hub = hubWith(map);
+    const a = new FakeConn();
+    const ha = hub.connect(a);
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'start' });
+    expect(a.count('replay')).toBe(0);
+
+    // ① 从未 join 的连接
+    const b = new FakeConn();
+    hub.connect(b).onMessage({ t: 'resync' });
+    expect(b.count('replay')).toBe(0);
+    expect(b.last('error')?.message).toContain('還沒開局');
+
+    // ② 开局后想冒用还在线的 A 的名字 → 进不来，自然也没有重放
+    const c = new FakeConn();
+    const hc = hub.connect(c);
+    hc.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    expect(hc.seat).toBeNull();
+    hc.onMessage({ t: 'resync' });
+    expect(c.count('replay')).toBe(0);
+
+    // ③ 重放只回请求者，不广播给任何人
+    a.inbox.length = 0;
+    ha.onMessage({ t: 'resync' });
+    expect(a.count('replay')).toBe(1);
+    expect(b.count('replay')).toBe(0);
+    expect(c.count('replay')).toBe(0);
+
+    // ④ 掉线后旧句柄再发 resync 也不再放行（座位已不归这条连接）
+    ha.onClose(100);
+    a.inbox.length = 0;
+    ha.onMessage({ t: 'resync' });
+    expect(a.count('replay')).toBe(0);
+    expect(a.last('error')?.message).toContain('不是該座位');
+  });
+});
+
 describe('★ 不可信输入', () => {
   run('★ 不认识的 action type 被拒绝，镜像不动、服务器不崩', () => {
     const hub = hubWith();

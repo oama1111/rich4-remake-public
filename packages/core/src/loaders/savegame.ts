@@ -33,6 +33,7 @@ import { OBJECT_COUNT } from '../rules/objects.ts';
 import { STOCKS_PER_MAP } from '@rich4/data';
 import { emptyTools, initialToolStock, TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
 import { CONFINEMENT_SLOTS } from '../rules/confinement.ts';
+import { NO_WIN_CONDITIONS } from '../rules/setup.ts';
 
 /** 存档格式版本。字段有增删就 +1，并在 `migrate` 里补上迁移。 */
 export const SAVE_FORMAT_VERSION = 1;
@@ -110,6 +111,12 @@ function migrate(state: GameState, version: number): GameState {
   if (patched.players.some((p) => typeof p.bankFreezeDays !== 'number')) {
     patched = { ...patched, players: patched.players.map((p) => ({ ...p, bankFreezeDays: p.bankFreezeDays ?? 0 })) };
   }
+  // 勝利條件（遊戲時間 / 勝利條件）两个字段于 2026-09-16 加入。
+  // 旧档没有它们 → 按「兩條都無限」补，行为与加字段之前逐字节一致。
+  if (patched.winConditions === undefined) {
+    patched = { ...patched, winConditions: { ...NO_WIN_CONDITIONS } };
+  }
+  if (patched.victory === undefined) patched = { ...patched, victory: null };
   if (version === SAVE_FORMAT_VERSION) return patched;
   // 将来：逐版本补齐新增字段
   return patched;
@@ -268,6 +275,10 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   gaps['objects'] = '地图物件表（神明/路障/地雷）在存档 0x0204 起，解析器尚未回读，已置空';
   gaps['prisonOccupancy'] = '监狱/医院占用表在存档中的偏移未验证，已置空';
   gaps['specialActors'] = '替身走子表（0x498e28，5 × 16 字节）在存档中的偏移未验证，已置为全不在场';
+  gaps['winConditions'] =
+    '勝利條件两个全局在存档里的偏移**已查明**（0x2682 = 目标天数 [0x49911c]、' +
+    '0x2686 = 目标总资产 [0x499108]，见 docs/deviations/Q-SETUP-1.md §5.2），' +
+    '但 loaders/save.ts 的 SaveGame 还没收录这两个字段，故暂时按「两条都無限」导入';
   gaps['newsDeck'] = '牌堆洗牌序在存档中的偏移未验证，已按顺序重建（不影响已抽过的牌）';
   gaps['rngState'] =
     '原版不存随机数状态（原版对局本就不可复现），读档后必须由宿主注入新种子';
@@ -304,6 +315,11 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     //   它们只在「走到一半」时才非空，读档时一律当作不在场。
     specialActors: initialSpecialActors(),
     landTenureIndex: 0,
+    // 原版存档里确实有这两个全局（偏移已知，见 gaps['winConditions']），
+    // 但 SaveGame 还没收录 → 按「無限」导入
+    winConditions: NO_WIN_CONDITIONS,
+    // 导入的是「一局进行中」的状态，不是某条结束路径的结局
+    victory: null,
     totalDays: 0,
     totalMonths: 0,
     landLastToll: new Array<number>(landCount).fill(0),

@@ -33,6 +33,12 @@ const CONFIG_FILE: &str = "settings.json";
 struct Settings {
     /// 原版安装目录
     game_dir: Option<String>,
+    /// 用户自备音色库的**文件名**（就在 `soundfont/` 目录里）。
+    ///
+    /// ⚠️ 存文件名而不是绝对路径：用户换机器/换目录时路径会失效，
+    ///   而音色库是我们**拷进应用数据目录**的，文件名才是稳定的那一个。
+    ///   @see soundfont_dir
+    soundfont: Option<String>,
 }
 
 #[derive(Default)]
@@ -73,6 +79,68 @@ fn repo_game_dir() -> Option<PathBuf> {
     None
 }
 
+// ============================================================
+//  HD 素材目录（Q-PERF-1）
+// ============================================================
+//
+// ★ **HD 产物与 `game_dir` 不同源**：`rich4://localhost/<名>` 原本一律解析到
+//   玩家自备的原版安装目录（`Data.mkf` 那些），而超分管线的产出在仓库/包内的
+//   `assets/hd/`、清单在它的**同级** `assets/hd-manifest.json`。两者放一起会
+//   互相看不见，故协议里单开一条 `hd` 路由（见 `is_hd_path`）。
+//
+// ⚠️ 打包这一层**还没做**：`tauri.conf.json` 的 `resources` 里没有 `assets/hd`，
+//   因为该目录被 .gitignore 排除、干净 clone 里根本不存在，写进去会让没跑过
+//   超分管线的人连构建都过不去。所以现在只有「仓库里跑」（`cargo run` / dev）
+//   能拿到 HD；要把 HD 随包发出去，得先解决「产物不入库但构建需要它」这件事。
+
+/// 这个目录是不是 HD 素材的根（`assets/`）—— 认 `hd/` 子目录或同级清单任一
+fn looks_like_hd_dir(dir: &Path) -> bool {
+    dir.join("hd").is_dir() || dir.join("hd-manifest.json").is_file()
+}
+
+/// 包内的 HD 根；两条候选与 `bundled_game_dir` 同一套落点。
+fn bundled_hd_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let res = app.path().resource_dir().ok()?;
+    let candidates = [
+        res.join("assets"),
+        res.join("_up_").join("_up_").join("_up_").join("assets"),
+    ];
+    candidates.into_iter().find(|p| looks_like_hd_dir(p))
+}
+
+/// 未打包时的兜底：从可执行文件往上找仓库里的 `assets/`。
+fn repo_hd_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?.to_path_buf();
+    for _ in 0..8 {
+        let candidate = dir.join("assets");
+        if looks_like_hd_dir(&candidate) {
+            return Some(candidate);
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+    None
+}
+
+/// HD 素材根目录；两边都没有就返回 `None`（前端照旧整包走原图）。
+fn hd_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    bundled_hd_dir(app).or_else(repo_hd_dir)
+}
+
+/// 是不是 HD 路由。
+///
+/// ★ 判据直接照**前端拼出来的 URL**写，不做字符串改写：
+///   `host.ts` 的 `hdBase()` 给 `rich4://localhost/hd`，而 `loadHdSource` 拉的是
+///   `${hdBase()}-manifest.json` = `rich4://localhost/hd-manifest.json`
+///   （清单与 hd 目录同级，见 `cli-upscale.ts` 的 `manifestPath`）。
+///   前端拼什么，这里就放行什么 —— 两边各写一套前缀正是 T-065 特意避免的漂移。
+///
+/// ⚠️ 只放行这两条：`/hd-manifest.json` 与 `/hd/…`。`/hdx`、`/hd`（不带斜杠）
+///   都不算，免得哪天目录名改了还能被前缀匹配蒙对。
+fn is_hd_path(path: &str) -> bool {
+    path == "/hd-manifest.json" || path.starts_with("/hd/")
+}
+
 fn config_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     let dir = app.path().app_config_dir().ok()?;
     let _ = fs::create_dir_all(&dir);
@@ -107,6 +175,82 @@ fn looks_like_game_dir(dir: &Path) -> bool {
 #[tauri::command]
 fn log_line(text: String) {
     eprintln!("[前端] {text}");
+}
+
+// ============================================================
+//  音色库（Q8）
+// ============================================================
+
+/// 音色库目录：`<系统应用数据目录>/soundfont`，没有就建。
+///
+/// ★ 音色库**由用户自备**（本项目不分发任何 .sf2，见 DEVELOPMENT_PLAN §5.6），
+///   但选中之后**拷进**这里 —— 这样换台机器、或用户把原文件挪走，
+///   下次启动照样能用（设置里只记文件名）。
+fn soundfont_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("取应用数据目录失败：{e}"))?
+        .join("soundfont");
+    fs::create_dir_all(&dir).map_err(|e| format!("建音色库目录失败：{e}"))?;
+    Ok(dir)
+}
+
+/// 一个文件是不是 SoundFont 2。
+///
+/// 只看头 12 字节：`RIFF` + 任意长度 + **3 字节** `sf2`（后面跟第一个 LIST，
+/// 不是 `sf2L`）。`.sf3`（Vorbis 压缩样本）在这里被挡住 —— 播放器不解它。
+fn looks_like_sf2(head: &[u8]) -> bool {
+    head.len() >= 12 && &head[0..4] == b"RIFF" && &head[8..11] == b"sf2"
+}
+
+/// 现在记着的音色库文件；文件不在了就当没设过。
+fn current_soundfont(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let name = load_settings(app).soundfont?;
+    let path = soundfont_dir(app).ok()?.join(&name);
+    path.is_file().then_some(path)
+}
+
+/// 音色库文件名；没装返回 null。前端拿它显示「已装 xxx.sf2」。
+#[tauri::command]
+fn soundfont_status(app: tauri::AppHandle) -> Option<String> {
+    current_soundfont(&app).and_then(|p| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+    })
+}
+
+/// 把用户选的文件收进来：校验 → 拷进 `soundfont/` → 记进设置。
+///
+/// 校验不过就把原因原样报回去（比笼统的「文件不对」有用得多）。
+#[tauri::command]
+fn set_soundfont(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let src = PathBuf::from(&path);
+    if !src.is_file() {
+        return Err(format!("不是一个文件：{path}"));
+    }
+    let head = fs::read(&src).map_err(|e| format!("读不到文件：{e}"))?;
+    if !looks_like_sf2(&head) {
+        return Err("这不像 SoundFont 2（.sf2）。.sf3 暂不支持。".to_string());
+    }
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| "文件名读不出来".to_string())?;
+    let dir = soundfont_dir(&app)?;
+    let dst = dir.join(&name);
+    // 同一个文件就别白拷一遍（音色库动辄几十 MB）
+    if src != dst {
+        fs::copy(&src, &dst).map_err(|e| format!("拷贝失败：{e}"))?;
+    }
+    save_settings(
+        &app,
+        &Settings {
+            game_dir: load_settings(&app).game_dir,
+            soundfont: Some(name.clone()),
+        },
+    );
+    Ok(name)
 }
 
 // ============================================================
@@ -207,6 +351,8 @@ fn set_game_dir(
         &app,
         &Settings {
             game_dir: Some(dir.to_string_lossy().into_owned()),
+            // 换素材目录不该把用户选的音色库一起忘掉
+            soundfont: load_settings(&app).soundfont,
         },
     );
     Ok(dir.to_string_lossy().into_owned())
@@ -279,16 +425,54 @@ pub fn run() {
             let app = ctx.app_handle().clone();
             std::thread::spawn(move || {
                 let state = app.state::<AppState>();
-                let dir = match state.game_dir.lock() {
-                    Ok(g) => g.clone(),
-                    Err(_) => None,
+                let path = request.uri().path();
+                let is_hd = is_hd_path(path);
+                // ★ 音色库走**同一个协议**、单独一条路由：它不在原版安装目录里，
+                //   而在应用数据目录的 `soundfont/`。走 `fetch` 流式读，
+                //   不必把几十 MB 的字节塞进 IPC 的 JSON 里。
+                let is_soundfont = path.starts_with("/soundfont/");
+
+                // ★ 两条来源分流（Q-PERF-1）：`/hd/**` 与 `/hd-manifest.json` 落在
+                //   HD 素材目录，其余照旧落在原版安装目录。两边**不同源**，必须先分。
+                let dir = if is_soundfont {
+                    match soundfont_dir(&app) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("[rich4] 音色库目录不可用：{e}");
+                            responder.respond(not_found());
+                            return;
+                        }
+                    }
+                } else if is_hd {
+                    match hd_dir(&app) {
+                        Some(d) => d,
+                        None => {
+                            // 没跑过超分管线（或包内没带 HD）——这是**正常状态**：
+                            // 404 会让前端 loadHdSource 拿到 null，整包走原图。
+                            eprintln!("[rich4] 没有 HD 素材目录，{} 按「没有 HD」处理", request.uri());
+                            responder.respond(not_found());
+                            return;
+                        }
+                    }
+                } else {
+                    let game = state.game_dir.lock().ok().and_then(|g| g.clone());
+                    match game {
+                        Some(d) => d,
+                        None => {
+                            eprintln!("[rich4] 还没有素材目录，拒绝 {}", request.uri());
+                            responder.respond(not_found());
+                            return;
+                        }
+                    }
                 };
-                let Some(dir) = dir else {
-                    eprintln!("[rich4] 还没有素材目录，拒绝 {}", request.uri());
-                    responder.respond(not_found());
-                    return;
+
+                // `/soundfont/x.sf2` → 去掉前缀，其余（含 `/hd/**`）照旧
+                let rel = if is_soundfont {
+                    path.trim_start_matches("/soundfont")
+                } else {
+                    path
                 };
-                let Some(file) = resolve(&dir, request.uri().path()) else {
+                let Some(file) = resolve(&dir, rel) else {
                     eprintln!("[rich4] 路径不合法：{}", request.uri());
                     responder.respond(not_found());
                     return;
@@ -296,9 +480,15 @@ pub fn run() {
                 match fs::read(&file) {
                     Ok(bytes) => {
                         eprintln!("[rich4] {} → {} 字节", file.display(), bytes.len());
+                        // HD 清单是 JSON（前端 res.json()）；其余一律当二进制流
+                        let content_type = if is_hd && path.ends_with(".json") {
+                            "application/json"
+                        } else {
+                            "application/octet-stream"
+                        };
                         let res = Response::builder()
                             .status(StatusCode::OK)
-                            .header("Content-Type", "application/octet-stream")
+                            .header("Content-Type", content_type)
                             // ★ **必须给 CORS**：页面的 origin 是 `tauri://localhost`，
                             //   素材走的是 `rich4://localhost` —— 这是**跨源请求**。
                             //   少了这三行，fetch 会以一句笼统的 "Load failed" 失败，
@@ -346,6 +536,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_game_dir,
             set_game_dir,
+            soundfont_status,
+            set_soundfont,
             log_line,
             read_save,
             write_save,
@@ -369,9 +561,61 @@ mod tests {
     }
 
     #[test]
+    fn 音色库只认_riff_sf2() {
+        let mut head = vec![0u8; 16];
+        head[0..4].copy_from_slice(b"RIFF");
+        head[8..11].copy_from_slice(b"sf2");
+        assert!(looks_like_sf2(&head));
+        // 4 字节读成 'sf2L' 是这一层最容易犯的错：'sf2' 后面必须允许是任意字节
+        head[11] = b'L';
+        assert!(looks_like_sf2(&head));
+        head[8..11].copy_from_slice(b"sf3");
+        assert!(!looks_like_sf2(&head));
+        assert!(!looks_like_sf2(b"RIFF"));
+    }
+
+    #[test]
     fn percent_decode_基本可用() {
         assert_eq!(percent_decode("Data.mkf"), "Data.mkf");
         assert_eq!(percent_decode("a%20b.mkf"), "a b.mkf");
         assert_eq!(percent_decode("bad%zz"), "bad%zz");
+    }
+
+    /// ★ Q-PERF-1：HD 路由的判据必须与 host.ts 的 `hdBase()` 严丝合缝 ——
+    ///   放行少了，HD 永远 404（静默回退原图，看不出来）；放行多了，
+    ///   原版素材会被拿去 HD 目录里找（同样静默 404）。
+    #[test]
+    fn hd_路由只认前端拼的那两条() {
+        // `hdBase()` + `hdRelativePath()` 拼出来的
+        assert!(is_hd_path("/hd/Data/1-0.png"));
+        assert!(is_hd_path("/hd/map/0-0.png"));
+        // `${hdBase()}-manifest.json`
+        assert!(is_hd_path("/hd-manifest.json"));
+
+        // 原版素材那条路不能被截胡
+        assert!(!is_hd_path("/Data.mkf"));
+        assert!(!is_hd_path("/map.mkf"));
+        // 前缀蒙对不算（目录名改了要立刻暴露，而不是悄悄少一批图）
+        assert!(!is_hd_path("/hd"));
+        assert!(!is_hd_path("/hdx/1.png"));
+        assert!(!is_hd_path("/hd-manifest.json.bak"));
+    }
+
+    /// HD 根的两个判据：`hd/` 子目录、或同级清单
+    #[test]
+    fn hd_根判据() {
+        let base = std::env::temp_dir().join(format!("rich4-hd-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        assert!(!looks_like_hd_dir(&base));
+
+        fs::create_dir_all(base.join("hd")).unwrap();
+        assert!(looks_like_hd_dir(&base), "有 hd/ 子目录就算 HD 根");
+
+        fs::remove_dir_all(base.join("hd")).unwrap();
+        assert!(!looks_like_hd_dir(&base));
+        fs::write(base.join("hd-manifest.json"), "{}").unwrap();
+        assert!(looks_like_hd_dir(&base), "同级清单在也算");
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

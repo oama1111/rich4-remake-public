@@ -8,6 +8,7 @@ import { makeFacility, makeLand, makeNode, makePlayer } from '../testing/factori
 import { useCard, type UseCardContext } from './registry.ts';
 import { HOUSING_TYPE_MIN, FACILITY_TYPE_MIN } from '../rules/land.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
+import { applyPriceTick } from '../places/stock-market.ts';
 import type { StockState } from '../places/stock.ts';
 import { STOCK_COUNT } from '../rules/wealth.ts';
 import { initialSpecialActors } from '../rules/special-actors.ts';
@@ -530,6 +531,25 @@ describe('★ 紅卡/黑卡经统一入口（T-005）', () => {
     expect(r.ok).toBe(true);
     expect(r.market.stocks[5]!.newsFlag).toBe(0x02);
     expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('★ 打完牌**当场**就把当日价按 ±10% 算出来（原版紧跟一句 `call 0x429040`）', () => {
+    // @source 真人那一支在股市屏里（`loc_0042b137` 之后 `call 0x429040(row)`）、
+    //   AI 那一支在卡函数里（写完 0x00444f88 / 0x004450f6 紧接着
+    //   `call 0x429040`，@source 0x00444f91 / 0x004450ff）；
+    //   `0x429040` = core 的 `applyStockNews`（也是 `fcn_00428ec5` 的 ±10%）。
+    const red = useCard(ctxWithCard(24), 24, { kind: 'stock', index: 3 });
+    expect(red.market.stocks[3]!.price).toBe(applyPriceTick(100, 10));
+    expect(red.market.stocks[3]!.price).toBeGreaterThan(100);
+    expect(red.market.stocks[3]!.trend).toBe(10);
+
+    const black = useCard(ctxWithCard(25), 25, { kind: 'stock', index: 5 });
+    expect(black.market.stocks[5]!.price).toBe(applyPriceTick(100, -10));
+    expect(black.market.stocks[5]!.price).toBeLessThan(100);
+    expect(black.market.stocks[5]!.trend).toBe(-10);
+
+    // 其余股票仍旧纹丝不动
+    expect(red.market.stocks[4]!.price).toBe(100);
   });
 
   it('休市日 fail(marketClosed) 且不扣卡（引擎护栏，原版走股市屏 UI 天然避开）', () => {

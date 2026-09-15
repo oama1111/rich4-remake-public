@@ -114,6 +114,12 @@ export function mergeFrame(rgb: DecodedImage, alpha: DecodedImage): DecodedImage
  * 等距时按「源像素行优先序、邻居按 上下左右 序」确定性tie-break）。
  *
  * 全图无不透明像素时返回全 0——rgb 图整体透明，内容本就为空。
+ *
+ * ★ **全不透明时走快路径直接返回**（地图底图就是这种：2304²、放 4× 后 9216²）。
+ *   那时每个像素自己就是 BFS 的源、一步都不会扩散，逐像素抄一遍与 BFS 的结果
+ *   **逐字节相同**；而 BFS 那本账在 9216² 上是一个 8.5M 个 number 的 JS 数组
+ *   （几十 MB，且会把整趟拖慢一个量级）。这一步是 Q-GND-4 选「整张放大」之后
+ *   才浮出来的：底图是唯一一张「面积大到必须考虑这个」的图。
  */
 export function bleedColors(width: number, height: number, rgba: Uint8ClampedArray): Uint8Array {
   const n = width * height;
@@ -123,7 +129,7 @@ export function bleedColors(width: number, height: number, rgba: Uint8ClampedArr
 
   const rgb = new Uint8Array(n * 3);
   const visited = new Uint8Array(n);
-  const queue: number[] = [];
+  let opaque = 0;
 
   // 多源 BFS：所有不透明像素都是第 0 层源，行优先入队保证确定性
   for (let i = 0; i < n; i++) {
@@ -132,9 +138,14 @@ export function bleedColors(width: number, height: number, rgba: Uint8ClampedArr
       rgb[i * 3] = rgba[i * 4]!;
       rgb[i * 3 + 1] = rgba[i * 4 + 1]!;
       rgb[i * 3 + 2] = rgba[i * 4 + 2]!;
-      queue.push(i);
+      opaque++;
     }
   }
+  // ★ 一个透明像素都没有：没有要「传染」的东西，上面那趟已经是最终结果
+  if (opaque === n) return rgb;
+
+  const queue: number[] = [];
+  for (let i = 0; i < n; i++) if (visited[i] === 1) queue.push(i);
 
   // 邻居顺序固定：上、下、左、右（决定等距时的确定性 tie-break）
   const DIRS = [-width, width, -1, 1] as const;

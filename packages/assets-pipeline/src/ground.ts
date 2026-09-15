@@ -87,6 +87,41 @@ export interface GroundImage {
   rgba: Uint8Array;
 }
 
+/**
+ * 底图 → PNG 编码器 / `ImageData` 要的那种 RGBA 视图。
+ *
+ * ★ 是**零拷贝**的视图，不是复制：整图 2304² 就是 21MB，多复制一份纯属浪费。
+ *   （`new Uint8ClampedArray(typedArray)` 会复制，故这里走 buffer/offset 那条构造。）
+ *
+ * 为什么需要它：`DecodedImage.rgba` 是 `Uint8ClampedArray`，而 `decodeGround`
+ * 产出的是 `Uint8Array`（管线内部一律用后者，跨端最省事）。两者的字节布局完全一样，
+ * 中间隔的只是 TypeScript 的类型。
+ */
+export function groundRgba(g: GroundImage): Uint8ClampedArray {
+  return new Uint8ClampedArray(g.rgba.buffer, g.rgba.byteOffset, g.rgba.byteLength);
+}
+
+/**
+ * 反过来：一张解好的 RGBA 图（`decodePng` 的产物）当成底图来用 —— 只补格数。
+ *
+ * 接缝检查（T-064 的 `seams` 那条命令）手里是 PNG 解出来的原图与放大图，
+ * 而两个判据要的是 `GroundImage`。`rgba` 同样走**零拷贝视图**：
+ * 放大图 9216² 上那是 324MB，多复制一份是不能接受的。
+ */
+export function asGroundImage(
+  img: { width: number; height: number; rgba: Uint8ClampedArray },
+  tilesX: number,
+  tilesY: number,
+): GroundImage {
+  return {
+    width: img.width,
+    height: img.height,
+    tilesX,
+    tilesY,
+    rgba: new Uint8Array(img.rgba.buffer, img.rgba.byteOffset, img.rgba.byteLength),
+  };
+}
+
 export class GroundFormatError extends Error {}
 
 /** 快速判断一段数据是不是 .gnd */

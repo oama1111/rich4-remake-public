@@ -23,9 +23,48 @@ export interface CharacterDef {
   /** 原版名称（繁体）。原版字符串含全角空格用于对齐，此处已去除 */
   name: string;
   /**
-   * 玩家代表色。
-   * ⚠️ 字节序（BGR vs RGB）**未经实测验证**（DEVELOPMENT_PLAN.md Q6）。
-   *    使用前必须先验证，不得假定。
+   * 玩家代表色 —— **`0x00RRGGBB`，R 在最高字节**（原 Q6，已结案）。
+   *
+   * ★ 值直接来自 exe 的角色表（`rich4_character_profiles` @VA 0x0047e80c，
+   *   每项 0x68 字节、`color` 在 +0x04；原始字节是 little-endian 的
+   *   `26 61 94 00`，即 dword `0x00946126`）——和这里写的一模一样，无需换序。
+   *
+   * ★ **字节序是数出来的，不是看着像**：
+   *   用法一（归属圈线换色）VA 0x00409866..0x0040987d：
+   *   ```asm
+   *   0040986e  mov edx, [eax + 0x496b6c]   ; player[owner-1].color（32 位原值）
+   *   00409875  call 0x4551f0               ; _rich4_convert_color
+   *   0040987d  mov word [ebp + 0x1fe], ax  ; → 精灵表调色板 #255（255×2）
+   *   ```
+   *   用法二（侧栏名字下那条角色色长条）VA 0x004161f8 起：同一个原值推进
+   *   `fcn_004561be`（填充矩形），里面同样先 `call 0x4551f0`（VA 0x004561c5）。
+   *
+   *   `_rich4_convert_color` @VA 0x004551f0 是个按显示色深分派的跳表
+   *   （`[0x47637c]` = 像素格式号，由 0x004517b0 一带按 DDraw 的
+   *   R/G 掩码探测；`R=0x7c00,G=0x3e0` → 号 0 = RGB555）。
+   *   号 0 的实现 @VA 0x0045523e：
+   *   ```asm
+   *   shld ebx, eax, 0x1d / and ebx, 0x1f   ; 蓝 = 原值 bit 3..7  → 目标 bit 0..4
+   *   shld edx, eax, 0x1a / and edx, 0x3e0  ; 绿 = 原值 bit 11..15→ 目标 bit 5..9
+   *   shr  eax, 9        / and eax, 0x7c00  ; 红 = 原值 bit 19..23→ 目标 bit 10..14
+   *   ```
+   *   ⇒ **byte2 → 红、byte1 → 绿、byte0 → 蓝**，即 `0xRRGGBB`。
+   *   于是約翰喬 `0x946126` 在原版屏上是 `rgb(148, 97, 38)`（土黄／棕），
+   *   而不是按 BGR 读出来的 `rgb(38, 97, 148)`（蓝）。
+   *
+   * ★ 素材侧独立佐证（判据可判定：红↔蓝互为补色，不是「看起来像」）：
+   *   | 角色 | 本值 | RGB 读法 | BGR 读法 | 棋子实测主色（`assets-clean/Data/`）|
+   *   |---|---|---|---|---|
+   *   | 6 宮本寶藏 | 0x00f038 | 绿 (0,240,56) | 黄绿 (56,240,0) | `0254_*` #205000 深绿 |
+   *   | 9 孫小美 | 0xcc1a20 | 红 (204,26,32) | 蓝 (32,26,204) | `0317_*` #e03000 红 |
+   *   | 10 小丹尼 | 0x2017fe | 蓝 (32,23,254) | 红 (254,23,32) | `0338_*` #001070 蓝 |
+   *   | 0 約翰喬 | 0x946126 | 棕 (148,97,38) | 蓝 (38,97,148) | `0128_*` #503010 棕 |
+   *   （棋子资源号 = `0x80 + 21×角色`，见 `client/assets.ts`。溯源测试见 `characters.test.ts`。）
+   *
+   * ⚠️ 唯一的量化差异：原版写进调色板的是**5 位分量**（RGB555），
+   *   即屏上实际是 `rgb(148, 99, 33)`；本项目按 8 位原值画
+   *   （`rgb(148,97,38)`，与 `client/hud.ts` 那条角色色长条同一口径）。
+   *   差 ≤5/255，是 16bpp 显示位深的产物，不另做量化。
    */
   color: number;
   /** 0 = 男, 1 = 女（原版 sex 字段：1 = 男，0 = 女，此处已按直觉反转为 isFemale） */
@@ -92,4 +131,21 @@ export function characterByKey(key: CharacterKey): CharacterDef {
 
 export function characterById(id: number): CharacterDef | undefined {
   return byId.get(id);
+}
+
+/**
+ * `CharacterDef.color` → 屏幕 RGB 三元组。
+ *
+ * ★ 全项目**唯一**的 32 位角色色解码口 —— `client/render.ts` 的归属圈线、
+ *   `client/hud.ts` 的名字色条都走这里，不要再各写一份移位。
+ *
+ * 字节序是 `0xRRGGBB`（R 在高字节）：原版把它送进
+ * `_rich4_convert_color`（VA 0x004551f0 → 号 0 实现 VA 0x0045523e）
+ * 取 byte2/byte1/byte0 分别当红/绿/蓝。逐条取证见 `CharacterDef.color` 的注释。
+ *
+ * @param color 32 位角色色 `0x00RRGGBB`
+ * @returns `[r, g, b]`，各 0..255
+ */
+export function characterColorRgb(color: number): readonly [number, number, number] {
+  return [(color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff];
 }

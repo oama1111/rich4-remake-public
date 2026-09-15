@@ -55,10 +55,18 @@ export function assetBase(): string {
  *   整个目录不存在时 `loadHdSource` 拿不到清单，缓存就整包走原图 —— 这是
  *   正常状态，不是错误。
  *
- * ⚠️ 桌面壳下 `rich4://localhost/<名>` 解析到的是**原版安装目录**，而 hd 产物
- *   在仓库/包内的 `assets/hd/`，两者不同源。桌面端要用上 HD 还得给这个协议
- *   加一条 hd 的路由（属打包范畴，见 Q-PERF-1）。今天 `assets/hd/` 是空的，
- *   所以这条差异还看不出来。
+ * ★ **桌面壳那条路由已经接上了**（Q-PERF-1）：浏览器下这个前缀是
+ *   `/assets/hd`，由 vite 的开发中间件挂出来；桌面下是
+ *   `rich4://localhost/hd`，由 `src-tauri/src/lib.rs` 的 `is_hd_path` 分流到
+ *   **HD 素材目录**（仓库/包内的 `assets/`），而不是原版安装目录。
+ *   清单则拉 `${hdBase()}-manifest.json`（与 hd 目录同级，见 `cli-upscale.ts`
+ *   的 `manifestPath`）—— 也就是 `rich4://localhost/hd-manifest.json`。
+ *   ★ 这三条 URL 的形状是 `hdRelativePath` 之外的**第二个**要写读两侧对齐的点，
+ *   故 Rust 那边的 `is_hd_path` 只放行这两条、不做任何字符串改写。
+ *
+ * ⚠️ 桌面端**打包**还没做：`tauri.conf.json` 的 `resources` 里没有 `assets/hd`
+ *   （干净 clone 里该目录不存在，写进去会让没跑过超分管线的人构建失败）。
+ *   所以 `cargo run` / dev 能拿到 HD，装好的 `.app` 还拿不到。
  */
 export function hdBase(): string {
   return `${assetBase().replace(/\/game$/, '')}/hd`;
@@ -238,5 +246,114 @@ export async function initSaveStore(override?: SaveStore): Promise<void> {
   } catch (e) {
     hostLog(`存檔預載失敗：${String(e)}`);
     store = browserStore();
+  }
+}
+
+// ============================================================
+//  音色库（Q8）
+// ============================================================
+
+/**
+ * 浏览器兜底：让用户选一个 `.sf2`。
+ *
+ * ⚠️ 浏览器没有文件系统，**不落盘** —— 每次打开都得重选一次。这是取舍：
+ *   与其偷偷塞进 IndexedDB（几十 MB 的配额风险、清了还不知道为什么没声），
+ *   不如如实告诉用户「这一份只在本次有效」。
+ */
+function pickSoundFontInBrowser(): Promise<Uint8Array | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.sf2,audio/x-soundfont';
+    input.style.display = 'none';
+    input.onchange = () => {
+      const file = input.files?.[0];
+      input.remove();
+      if (file === undefined) {
+        resolve(null);
+        return;
+      }
+      void file
+        .arrayBuffer()
+        .then((buf) => resolve(new Uint8Array(buf)))
+        .catch(() => resolve(null));
+    };
+    // 用户按取消时 `change` 不触发；`cancel` 目前只有部分浏览器有。
+    // 宁可留一个不 resolve 的 Promise，也不要自作聪明地猜「他选完了」。
+    document.body.append(input);
+    input.click();
+  });
+}
+
+/** 选音色库的结果：`data` 有值就是选到了；`error` 可直接显示给用户 */
+export interface SoundFontPick {
+  data: Uint8Array | null;
+  name: string | null;
+  error: string | null;
+}
+
+/**
+ * 弹一个文件框让用户指一个 `.sf2`，拿回**字节**。
+ *
+ * - 桌面版：Tauri dialog 选文件 → `set_soundfont` 收进
+ *   `<AppData>/soundfont/` → 再从 `rich4://localhost/soundfont/<名>` 读回来。
+ *   收进应用目录是为了**下次自动用**；读回来是为了喂给播放器。
+ * - 浏览器：`<input type=file>`，只在本次有效。
+ *
+ * ⚠️ 音色库**由用户自备**，本项目不分发任何 `.sf2`（DEVELOPMENT_PLAN §5.6）。
+ */
+export async function pickSoundFont(): Promise<SoundFontPick> {
+  const t = tauri();
+  if (t === null) {
+    const data = await pickSoundFontInBrowser();
+    return data === null
+      ? { data: null, name: null, error: null } // 取消不算错
+      : { data, name: '（本次有效，未存档）', error: null };
+  }
+  try {
+    const chosen = await t.core.invoke<string | null>('plugin:dialog|open', {
+      options: {
+        directory: false,
+        multiple: false,
+        title: '选择音色库（.sf2）—— 本项目不附带，需自备',
+        filters: [{ name: 'SoundFont 2', extensions: ['sf2'] }],
+      },
+    });
+    if (chosen === null || chosen === undefined) return { data: null, name: null, error: null };
+    const name = await t.core.invoke<string>('set_soundfont', { path: chosen });
+    const data = await readSoundFont(name);
+    if (data === null) return { data: null, name, error: '音色库收下了，但读不回来' };
+    return { data, name, error: null };
+  } catch (e) {
+    return { data: null, name: null, error: String(e) };
+  }
+}
+
+/**
+ * 启动时把**上次装的**音色库读回来；没装返回 `null`。
+ *
+ * 桌面版才可能有 —— 音色库存在应用数据目录里，浏览器没有这一层。
+ */
+export async function loadSavedSoundFont(): Promise<{ name: string; data: Uint8Array } | null> {
+  const t = tauri();
+  if (t === null) return null;
+  try {
+    const name = await t.core.invoke<string | null>('soundfont_status');
+    if (name === null || name === undefined) return null;
+    const data = await readSoundFont(name);
+    return data === null ? null : { name, data };
+  } catch {
+    return null;
+  }
+}
+
+/** 从 `rich4://localhost/soundfont/<名>` 读回来（桌面版专用） */
+async function readSoundFont(name: string): Promise<Uint8Array | null> {
+  try {
+    const res = await fetch(`rich4://localhost/soundfont/${encodeURIComponent(name)}`);
+    if (!res.ok) return null;
+    return new Uint8Array(await res.arrayBuffer());
+  } catch {
+    return null;
   }
 }

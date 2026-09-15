@@ -2187,8 +2187,8 @@ cards:
   output: "不一致 → desync 广播；该客户端自动请求全量重放（since(0)）重建"
   algorithm: "Room 记每 10 seq 的 fingerprint 环形表；比对；desync 后客户端丢弃本地状态重放。"
   tests: "人为篡改客户端状态触发 desync 并自愈"
-  files: [packages/server/src/room.ts, packages/client/src/net-client.ts]
-  notes: "⚠️ 客户端「自愈」那半还没做，见 known-deviations.md 的 Q-NET-1（本卡标 done 只成立到服务端广播为止）"
+  files: [packages/server/src/room.ts, packages/client/src/net-client.ts, packages/client/src/main.ts]
+  notes: "Q-NET-1 已结案（2026-09-15）：服务端广播 desync；客户端 resync → replay 全量重放并**整体替换**本地状态（main.ts 的 onResync，不走 applyAction）。残留边界（重连是否追帧、resync 未限流、瞒报 checksum 防不住）见 known-deviations.md 的 Q-NET-1 末段。"
 
 - id: T-073
   group: E

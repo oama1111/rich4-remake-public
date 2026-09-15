@@ -3299,8 +3299,9 @@ read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
 
 - packages/server/src/room.ts
 - packages/client/src/net-client.ts
+- packages/client/src/main.ts
 
-> ⚠️ 客户端「自愈」那半还没做，见 known-deviations.md 的 Q-NET-1（本卡标 done 只成立到服务端广播为止）
+> ✅ Q-NET-1 已结案（2026-09-15）：服务端广播 desync；客户端 `resync` → `replay` 全量重放并**整体替换**本地状态（`main.ts` 的 `onResync`，不走 `applyAction`）。残留边界（重连是否追帧、`resync` 未限流、瞒报 checksum 防不住）见 `known-deviations.md` 的 Q-NET-1 末段。
 
 ### T-073
 

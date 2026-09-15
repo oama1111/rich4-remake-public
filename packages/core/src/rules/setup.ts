@@ -62,19 +62,45 @@ export function startingMoney(characterId: number, initialFund: number): Startin
 }
 
 /**
+ * 遊戲時間档位 → **天数**。0 = 無限。
+ *
+ * @source 开局写入 `mov eax, [0x46cb4c] / mov eax, [eax*4 + 0x46cbe8] /
+ *   mov [0x49911c], eax`（VA 0x0040737d..0x00407389）；
+ *   表 dump：`0x46cbe8 = 0, 730, 365, 182, 91, 30`。
+ *
+ * ★ 下拉的**标签**与「土地權限」共用同一批串（两张表的指针值完全相同）：
+ *   `無限期/二年/一年/六個月/三個月/一個月`（表 @0x46cbd0），
+ *   但这里的值前者是**天**、后者是地契年限。
+ */
+export const GAME_TIME_DAYS: readonly number[] = [0, 730, 365, 182, 91, 30];
+
+/**
+ * 勝利條件档位 → **开局资金的倍率**。0 = 無限。
+ *
+ * @source `mov eax, [0x46cb50] / mov edx, [0x49908c] /
+ *   mov eax, [eax*4 + 0x46cc00] / imul eax, edx / mov [0x499108], eax`
+ *   （VA 0x0040738e..0x004073a3）；表 dump：`0x46cc00 = 0, 100, 50, 10, 5, 3`。
+ *
+ * ★ 乘的是**本局真正选中的开局资金**（`[0x49908c]`），不是默认 30 万。
+ */
+export const VICTORY_FACTORS: readonly number[] = [0, 100, 50, 10, 5, 3];
+
+/**
  * 胜负条件。两者皆为 0 时表示**无限制**，对局不会自动结束。
  *
- * @source `fcn_0041d89e`（rich4_player_core_actions.asm:5615）：
+ * @source `fcn_0041d89e`（VA 0x0041d89e）开头：
  *   `if (ref_0049911c == 0 && ref_00499108 == 0) return 0;`
  *   返回 0 即「未达成结束条件」，日期推进得以继续、物价指数得以更新。
  *
- * ⚠️ 两个字段的确切语义**待确认**：由其在存档中的位置与用法推测为
- *    「目标天数」与「目标金额」，但尚无直接证据。两个样本存档中均为 0。
+ * ★ 语义已由 `rich4_new_game.asm` 的开局写入**直接证实**（不再是推测）：
+ *   `targetDays` 就是遊戲時間下拉查 `0x46cbe8` 的结果，
+ *   `targetWealth` 就是勝利條件下拉查 `0x46cc00` 再乘开局资金。
+ *   判定细节见 `rules/victory.ts`。
  */
 export interface WinConditions {
-  /** @source ref_0049911c —— 推测为目标天数 */
+  /** 目标天数 @source ref_0049911c（`0x46cbe8[遊戲時間档]`） */
   targetDays: number;
-  /** @source ref_00499108 —— 推测为目标金额 */
+  /** 目标总资产 @source ref_00499108（`0x46cc00[勝利條件档] × 开局资金`） */
   targetWealth: number;
 }
 
@@ -83,4 +109,31 @@ export const NO_WIN_CONDITIONS: WinConditions = { targetDays: 0, targetWealth: 0
 /** 是否设定了任何胜负条件 */
 export function hasWinConditions(w: WinConditions): boolean {
   return w.targetDays !== 0 || w.targetWealth !== 0;
+}
+
+/**
+ * 把开局屏那三条档位换算成本局的胜负条件 —— 逐句照开局写入复刻。
+ *
+ * ```asm
+ * ; VA 0x0040737d
+ * [0x49911c] = 0x46cbe8[[0x46cb4c]]          ; 遊戲時間 → 天
+ * ; VA 0x0040738e
+ * [0x499108] = 0x46cc00[[0x46cb50]] * [0x49908c]   ; 勝利條件 → 金额
+ * ```
+ *
+ * @param fundIndex    總資金档 0..5（`GAME_INITIAL_FUNDS` / 表 0x46cb94）
+ * @param timeIndex    遊戲時間档 0..5（表 0x46cb4c → 0x46cbe8）
+ * @param victoryIndex 勝利條件档 0..5（表 0x46cb50 → 0x46cc00）
+ */
+export function winConditionsOf(
+  fundIndex: number,
+  timeIndex: number,
+  victoryIndex: number,
+): WinConditions {
+  const fund = GAME_INITIAL_FUNDS[fundIndex] ?? DEFAULT_INITIAL_FUND;
+  return {
+    targetDays: GAME_TIME_DAYS[timeIndex] ?? 0,
+    // imul：整数乘，与开局资金同一档
+    targetWealth: fund * (VICTORY_FACTORS[victoryIndex] ?? 0),
+  };
 }

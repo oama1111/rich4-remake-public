@@ -87,6 +87,9 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     landLevel: [],
     landType: [],
     landTenureIndex: 0,
+    // 勝利條件默认两条都無限（= 加字段之前的行为，见 rules/victory.ts）
+    winConditions: { targetDays: 0, targetWealth: 0 },
+    victory: null,
     totalDays: 0,
     totalMonths: 0,
     landLastToll: new Array<number>(64).fill(0),

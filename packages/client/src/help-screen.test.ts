@@ -52,11 +52,14 @@ import {
   helpArrowDownAt,
   helpArrowUpAt,
   helpChipAt,
+  helpOrigin,
+  helpPanelOriginFor,
   helpPosition,
   helpScreen,
   hitHelp,
   hitHelpBox,
   hitHelpChip,
+  openHelpAt,
   pageCount,
   pageOf,
   resetHelp,
@@ -148,6 +151,28 @@ describe('工具列与落点 @source 0x417d39 / 0x44e4e4', () => {
     const { env } = mkEnv();
     helpScreen.toolbar?.(0, env);
     expect(helpPosition()).toEqual({ chapter: 0, scroll: 0 });
+  });
+
+  it('★ 入口带参数：`(-1,-1)` = 居中 (120,40)；工具列那一路是 (20,60)', () => {
+    // @source 0x0044e4b9：x == 0xffff 时 x 与 y **都**重算成 (0x140−w/2, 0x0f0−h/2)
+    expect(helpPanelOriginFor(-1, -1)).toEqual({ x: 120, y: 40 });
+    expect(helpPanelOriginFor(-1, 40)).toEqual({ x: 120, y: 40 }); // y 被无条件覆盖
+    expect(helpPanelOriginFor(20, 60)).toEqual({ x: 20, y: 60 });
+    expect(helpPanelOriginFor(0xffff, 0xffff)).toEqual({ x: 120, y: 40 });
+  });
+
+  it('★ openHelpAt(-1,-1) 居中开屏；ESC 关掉；再走工具列回来还是 (20,60)', () => {
+    const { env } = mkEnv();
+    openHelpAt(env, -1, -1);
+    expect(helpScreen.active(env)).toBe(true);
+    expect(helpOrigin()).toEqual({ x: 120, y: 40 });
+    expect(helpScreen.hotkey?.(HOTKEY.cancel, env)).toBe(true);
+    expect(helpScreen.active(env)).toBe(false);
+    // 没开屏时 ESC 不认（还回 main.ts 那条通用路）
+    expect(helpScreen.hotkey?.(HOTKEY.cancel, env)).toBe(false);
+    // 工具列那一路把落点放回 (20,60)
+    helpScreen.toolbar?.(0, env);
+    expect(helpOrigin()).toEqual({ x: 20, y: 60 });
   });
 });
 

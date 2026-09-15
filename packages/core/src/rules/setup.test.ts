@@ -9,6 +9,10 @@ import {
   DEFAULT_INITIAL_FUND,
   NO_WIN_CONDITIONS,
   hasWinConditions,
+  GAME_TIME_DAYS,
+  VICTORY_FACTORS,
+  GAME_INITIAL_FUNDS,
+  winConditionsOf,
 } from './setup.ts';
 import { CHARACTERS, characterByKey } from '@rich4/data';
 import { parseSave } from '../loaders/save.ts';
@@ -69,6 +73,30 @@ describe('胜负条件', () => {
   it('任一项非 0 即视为有条件', () => {
     expect(hasWinConditions({ targetDays: 100, targetWealth: 0 })).toBe(true);
     expect(hasWinConditions({ targetDays: 0, targetWealth: 5_000_000 })).toBe(true);
+  });
+});
+
+describe('两条下拉的值表（exe 取证）', () => {
+  it('★ 遊戲時間表 @0x46cbe8 = 0/730/365/182/91/30 天', () => {
+    expect([...GAME_TIME_DAYS]).toEqual([0, 730, 365, 182, 91, 30]);
+  });
+
+  it('★ 勝利條件倍率表 @0x46cc00 = 0/100/50/10/5/3', () => {
+    expect([...VICTORY_FACTORS]).toEqual([0, 100, 50, 10, 5, 3]);
+  });
+
+  it('★ 开局换算 = 开局资金 × 倍率（VA 0x0040737d..0x004073a3）', () => {
+    // 第 1 档资金 20 万 × 100 倍 = 2000 万；730 天
+    expect(winConditionsOf(1, 1, 1)).toEqual({ targetDays: 730, targetWealth: 20_000_000 });
+    // 默认档（0 号资金 30 万、两条下拉第 0 档）→ 两条都無限
+    expect(winConditionsOf(0, 0, 0)).toEqual(NO_WIN_CONDITIONS);
+    // 最低档 1 万 × 3 倍 = 3 万
+    expect(winConditionsOf(5, 5, 5)).toEqual({ targetDays: 30, targetWealth: 30_000 });
+  });
+
+  it('★ 六档资金逐一乘 3 倍（最低那档最容易看出「不是按 30 万算」）', () => {
+    const got = GAME_INITIAL_FUNDS.map((f, i) => winConditionsOf(i, 0, 5).targetWealth);
+    expect(got).toEqual([900_000, 600_000, 300_000, 150_000, 90_000, 30_000]);
   });
 });
 

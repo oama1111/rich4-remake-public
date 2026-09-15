@@ -38,6 +38,7 @@ import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { pickFacingAt } from '../rules/teleport.ts';
 import { canUpgradeFacility } from '../rules/facility.ts';
 import { aiShouldPurchase } from '../rules/purchase.ts';
+import { auctionAiChoice } from '../rules/auction.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 import { CARDS, TOOLS } from '@rich4/data';
 import { aiCanUseCards, aiCanUseTools, autoLoanAmount, personalityAllows } from './personality.ts';
@@ -130,7 +131,10 @@ export function decideAction(ctx: AiContext): Action | null {
     case 'settling':
       return { type: 'settle' };
     case 'turnEnd':
-      // 落点可能留下一个待决交互（例如落在上市企业上），先把它答掉
+      // 落点可能留下一个待决交互（例如落在上市企业上），先把它答掉。
+      // ★ 拍賣例外：轮到真人举牌时 core 不替他把竞价「答掉」（那会清空 pending、
+      //   把屏顶掉）。返回 null 让表现层收那一手 —— 见下面 awaitingDecision。
+      if (state.pending?.kind === 'auction') return decidePending(state);
       return decidePending(state) ?? { type: 'endTurn' };
 
     case 'awaitingDecision': {
@@ -139,13 +143,18 @@ export function decideAction(ctx: AiContext): Action | null {
       const answered = decidePending(state);
       if (answered !== null) return answered;
       const kind = state.pending?.kind;
-      // ★ 其余 pending（拍賣卡挂出的拍賣、研究所面板、未实现的场所）**不能**
-      //   掉进 decideAtLanding —— 那等于拿脚下那块地的决定去顶掉这个交互。
-      //   引擎现在也拒这种张冠李戴（`buyLand`必须 `pending.kind === 'buyLand'`），
-      //   拒了就变成 AI 反复提同一个被拒的 action → 卡死。故这里退出这一格。
+      // ★ 其余 pending（研究所面板、未实现的场所）**不能**掉进 decideAtLanding
+      //   —— 那等于拿脚下那块地的决定去顶掉这个交互。引擎也拒这种张冠李戴
+      //   （`buyLand` 必须 `pending.kind === 'buyLand'`），拒了就变成 AI 反复提
+      //   同一个被拒的 action → 卡死。故这里退出这一格。
       if (kind === undefined || kind === 'buyLand' || kind === 'upgradeLand') {
         return decideAtLanding(state, map);
       }
+      // ★ 拍賣同样**不能**回 `declineDecision`：那一条会把 pending 清空
+      //   （`state/reduce.ts` 的 declineDecision），整场拍卖就此消失、卡白扣。
+      //   `decidePending` 已经处理了「轮到电脑」那一手（返回 auctionBid），
+      //   走到这里说明**轮到真人** —— 交给屏（`client/auction-screen.ts`）。
+      if (kind === 'auction') return null;
       return { type: 'declineDecision' };
     }
 
@@ -383,6 +392,44 @@ function gateRoll(state: GameState, action: number): number {
 }
 
 /**
+ * 拍賣：轮到 `pending.seat` 上那一位时，他这一口怎么出（电脑）。
+ *
+ * @source 拍賣窗口的刷新循环 `loc_0043c4f5` 一带：
+ *   1. `test byte [player + 0x15], 6 / je` 判**是不是电脑**（真人那支等点钮）；
+ *   2. `word [0x48c436 + 槽] == 0` 判**这一家还没出过价**；
+ *   3. `fcn_00439f0d(实体编码, 玩家)` 的心理价位 + `loc_0043b124` 挑档
+ *      + `loc_0043b183` 压价 → 一口。
+ *
+ * ⚠️ **判的是 `pending.seat`，不是 `currentPlayer`**：原版的竞价轮转与回合
+ *   玩家无关（整场拍卖挂在出卡人那个回合里，四家轮流举牌）。
+ * ⚠️ 真人座位返回 `null` —— 他在屏上自己点钮（`client/auction-screen.ts`
+ *   收那一手，`auctionBid` 送回 core 落账）。
+ *
+ * 导出是**故意的**：屏上那条「电脑那一手」也走这一个函数
+ * （不能两条循环各算各的 —— 那是 Q-AUC-1 要消掉的风险）。
+ */
+export function auctionNextBid(
+  state: GameState,
+  pending: Extract<NonNullable<GameState['pending']>, { kind: 'auction' }>,
+): Action | null {
+  const bidder = pending.bidders[pending.seat];
+  if (bidder === undefined) return null;
+  // @source `word [0x48c436 + 槽] == 0` —— 出过价 / 放弃过的座位不再轮到他
+  if ((pending.status[bidder] ?? 'active') !== 'active') return null;
+  const who = state.players[bidder];
+  if (who === undefined || !isAiControlled(who)) return null;
+  // @source `loc_0043b183` 的压价线：最高出价者现金 + 500（出价时记下的快照）
+  const topWho = pending.top < 0 ? undefined : state.players[pending.top];
+  const choice = auctionAiChoice({
+    limit: pending.limits[bidder] ?? 0,
+    price: pending.price,
+    cash: who.cash,
+    topCash: topWho === undefined ? null : pending.topCash,
+  });
+  return { type: 'auctionBid', bidder, status: choice.kind, step: choice.step };
+}
+
+/**
  * 回答落点留下的待决交互。
  *
  * ⚠️ 只处理**已实现**的那几种；其余返回 null，由调用方继续推进回合——
@@ -420,6 +467,10 @@ export function decidePending(state: GameState): Action | null {
     }
     return null;
   }
+  // ★ 拍賣（Q-AUC-1）：竞价循环归 core —— 这一支按原版拍賣窗口的刷新循环
+  //   （`loc_0043c4f5` 一带）决定**这一口**加价多少 / PASS。
+  //   座位状态、心理价位、现价、轮到谁都在 `pending` 里（reduce 开拍时建好）。
+  if (p.kind === 'auction' && 'seat' in p) return auctionNextBid(state, p);
   // ★ 小游戏：AI 从来不玩（原版 `who_plays != 1` 直接走「不玩」出口）。
   //   真人被托管时也走这条——托管的意思就是让 AI 替你打，不该弹出玩法。
   if (p.kind === 'minigame') return { type: 'minigame', score: null };

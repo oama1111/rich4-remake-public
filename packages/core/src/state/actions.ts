@@ -194,10 +194,24 @@ export type Action =
    */
   | { type: 'lottery'; number: number }
   /**
-   * 拍卖落槌。
+   * 拍賣的**一口价** —— 竞价循环由 core 消费（`state/reduce.ts` 的 `auctionBid`）。
    *
-   * ⚠️ 竞价过程是模态 UI（谁出到多少），按 C-ARC-2 不进 reducer；
-   *   **结果**作为 action 参数送进来。`winner < 0` 表示流拍。
+   * ★ Q-AUC-1 定案（2026-09-15）：竞价循环归 core（无头/服务端也要能跑完），
+   *   终端 action 仍是下面的 `auction{winner, price}`，这一条只管**一口**。
+   *
+   * `status`：`'raise'` 加 `step` 元；`'pass'` / `'giveUp'` 不加价
+   * （原版 PASS 与「放棄」结果一样，都永久退出竞价，只是动画不同）。
+   * `bidder` 必须就是 `pending.seat` 上那一位，且那一口要出得起。
+   */
+  | { type: 'auctionBid'; bidder: number; status: 'raise' | 'pass' | 'giveUp'; step: number }
+  /**
+   * 拍卖落槌（**终局**）。
+   *
+   * ⚠️ Q-AUC-1 之后这一条**不再由表现层发** —— 循环归 core 后，终局由
+   *   `auctionBid` 的 reducer 自己判、自己落（见 `rules/auction.ts` 的
+   *   `auctionFinished` / `auctionOutcome`）。保留它是因为「終局形状」是
+   *   既有对外契约（存档/联机/兼容），且 `answerable.test.ts` 钉着它。
+   *   `winner < 0` 表示流拍。
    */
   | { type: 'auction'; winner: number; price: number }
   | { type: 'bail'; slot: number }

@@ -37,9 +37,26 @@ export const ALPHA_THRESHOLD = 128;
 /**
  * 放大后的 alpha 灰度图 → 二值 alpha 灰度图。
  * 输入是 slice 的等灰 RGB 形式（透明度在 r=g=b），输出同形式。
+ *
+ * ★ 已经**就是**「全不透明」的规范形（r=g=b ≥ 阈值、a=255）时原样返回输入 ——
+ *   二值化的结果与输入逐字节相同，而 9216² 上那份副本是 324MB（地图底图
+ *   那一张，Q-GND-4）。判据特意把 a 与 r=g=b 一起查了：只查 r 会漏掉
+ *   「a 不是 255」或「三通道不等灰」的非规范输入，那就不是逐字节相同了。
  */
 export function binarizeAlpha(alpha: DecodedImage, threshold = ALPHA_THRESHOLD): DecodedImage {
   const n = alpha.width * alpha.height;
+  let canonical = true;
+  for (let i = 0; i < n && canonical; i++) {
+    const o = i * 4;
+    const r = alpha.rgba[o]!;
+    canonical =
+      r >= threshold &&
+      r === alpha.rgba[o + 1] &&
+      r === alpha.rgba[o + 2] &&
+      alpha.rgba[o + 3] === 255;
+  }
+  if (canonical) return alpha;
+
   const out = new Uint8ClampedArray(n * 4);
   for (let i = 0; i < n; i++) {
     const v = alpha.rgba[i * 4]! >= threshold ? 255 : 0;
@@ -57,10 +74,16 @@ export function binarizeAlpha(alpha: DecodedImage, threshold = ALPHA_THRESHOLD):
  * 「边界像素」= 自身不透明（alpha>0）且 8 邻域内有透明像素。
  * 中值取**下中值**（偶数个时取第 n/2 小，下标从 0 起），保证确定性。
  * 邻域内除自己外没有不透明像素（孤立点）时保持原色——中值即自身。
+ *
+ * ★ **整张全不透明时原样返回 `img`**（连拷贝都不做）：没有边界像素，
+ *   输出与输入逐字节相同。地图底图就是这样一张 —— 9216² 上那一份
+ *   `new Uint8ClampedArray(rgba)` 是 324MB，白拷一次纯属浪费（Q-GND-4）。
+ *   故 `out` 改成**按需分配**：一次都没改到就根本不分配。
  */
 export function deFringe(img: DecodedImage): DecodedImage {
   const { width, height, rgba } = img;
-  const out = new Uint8ClampedArray(rgba); // 复制，就地改边界
+  // 按需分配：全不透明（没有边界像素）时一个字节都不拷
+  let out: Uint8ClampedArray | null = null;
   const rs: number[] = [];
   const gs: number[] = [];
   const bs: number[] = [];
@@ -103,23 +126,37 @@ export function deFringe(img: DecodedImage): DecodedImage {
         arr.sort((a, b) => a - b);
         return arr[Math.floor((arr.length - 1) / 2)]!;
       };
+      out ??= new Uint8ClampedArray(rgba);
       out[i * 4] = mid(rs);
       out[i * 4 + 1] = mid(gs);
       out[i * 4 + 2] = mid(bs);
     }
   }
 
+  if (out === null) return img;
   return { width, height, anchorX: img.anchorX, anchorY: img.anchorY, rgba: out };
 }
 
 /**
  * 透明区 RGB 重 bleed：边缘 1px 内（及整个透明区）用最近不透明色填。
  * 不透明像素原样保留。
+ *
+ * ★ **全不透明时原样返回 `img`**：没有透明像素可填，输出与输入逐字节相同，
+ *   连 `bleedColors` 那本 BFS 账都不必开（同上，底图那一张）。
  */
 export function rebleedTransparent(img: DecodedImage): DecodedImage {
+  const n = img.width * img.height;
+  let anyTransparent = false;
+  for (let i = 0; i < n; i++) {
+    if (img.rgba[i * 4 + 3] === 0) {
+      anyTransparent = true;
+      break;
+    }
+  }
+  if (!anyTransparent) return img;
+
   const rgb = bleedColors(img.width, img.height, img.rgba);
   const out = new Uint8ClampedArray(img.rgba);
-  const n = img.width * img.height;
   for (let i = 0; i < n; i++) {
     if (img.rgba[i * 4 + 3] !== 0) continue;
     out[i * 4] = rgb[i * 3]!;

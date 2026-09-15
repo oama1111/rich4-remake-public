@@ -196,6 +196,10 @@ export interface SpriteCacheOptions {
    *   释放不了内存。`render.ts` 自己还有一份 `#ready`（绘制时直接用
    *   `sprite.bitmap`），淘汰时得由它把引用一并丢掉，`ImageBitmap.close()`
    *   才不会把**正在画的那一帧**弄成空白。见 Q-PERF-1。
+   *
+   * ⚠️ 本缓存**不止一个持有者**（`render.ts` 与 `hud.ts` 各有一张 `#ready`），
+   *   故除这个构造参数外还提供 `addEvictListener`：后来者再挂一条，不会把
+   *   先挂的挤掉。多条监听全部按注册顺序调用。
    */
   onEvict?: (sprite: Sprite) => void;
   createBitmap?: BitmapFactory;
@@ -219,7 +223,11 @@ export class SpriteCache {
   readonly #hd: HdSource | null;
   readonly #maxSprites: number;
   readonly #maxBytes: number;
-  readonly #onEvict: ((sprite: Sprite) => void) | null;
+  /**
+   * 淘汰监听 —— **列表而不是单个回调**：同一份缓存被 `render.ts` 与 `hud.ts`
+   * 各持有一张 `#ready`，两边都得在淘汰时把自己的引用摘掉（Q-PERF-1）。
+   */
+  readonly #evictListeners: ((sprite: Sprite) => void)[] = [];
   readonly #createBitmap: BitmapFactory;
   readonly #sheets = new Map<string, SpriteSheet | null>();
   /** FLIC 影片缓存 —— 单独一张表，不参与 `#sprites` 的按图 LRU（见 `getFlic`） */
@@ -232,8 +240,19 @@ export class SpriteCache {
     this.#hd = options.hd ?? null;
     this.#maxSprites = options.maxSprites ?? DEFAULT_MAX_SPRITES;
     this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
-    this.#onEvict = options.onEvict ?? null;
+    if (options.onEvict !== undefined) this.#evictListeners.push(options.onEvict);
     this.#createBitmap = options.createBitmap ?? defaultBitmapFactory;
+  }
+
+  /**
+   * 再挂一条淘汰监听。
+   *
+   * ★ 为什么不是「设一个 onEvict 属性」：`render.ts` 拿到的是**别人构造好的**
+   *   那份缓存（构造点在 `main.ts`），而缓存有两个持有者 —— 属性式赋值会让
+   *   后挂的把先挂的悄悄挤掉，症状是「有一边的内存再也放不掉」。列表没有这个问题。
+   */
+  addEvictListener(fn: (sprite: Sprite) => void): void {
+    this.#evictListeners.push(fn);
   }
 
   /** 资源解出的原始字节，按需缓存——解压不便宜 */
@@ -423,7 +442,9 @@ export class SpriteCache {
       const evicted = this.#sprites.get(oldest.value);
       this.#sprites.delete(oldest.value);
       // null 条目（「这个资源没有这张图」）没什么可释放的，不必回调
-      if (evicted !== null && evicted !== undefined) this.#onEvict?.(evicted);
+      if (evicted !== null && evicted !== undefined) {
+        for (const fn of this.#evictListeners) fn(evicted);
+      }
     }
   }
 
@@ -1001,7 +1022,14 @@ export async function loadSetupScene(
  * ★ 节点的 `decorIndex` 就是**这 58 张里的 1 基下标**——
  *   全部八张地图上 `decorIndex` 的最大值恰好是 58，与图数严丝合缝。
  *
- *   图是**成对**排列的：偶数号是普通样式，奇数号是外圈带粉色光环的样式。
+ *   图是**成对**排列的，**按 `decorIndex`（1 基）说**：
+ *   **奇数是普通样式，偶数是外圈带粉色光环的样式**（`decorIndex − 1` 才是 0 基图号，
+ *   所以「光环款」对应的图号反而是偶数）。
+ *   —— ★ 2026-09-16 订正（Q13）：先前这里把奇偶写反了。判据：逐张渲染 58 张图目视 +
+ *   八张地图的取值分布（地图 0/1/2/3/5/6/7 只用 0 与奇数=**无光环款**；
+ *   星座图（地图 4）全部取偶数 4..34=**粉红光环款**）+ `map.mkf` 资源 24 的 SMP 头自洽
+ *   （58 条 `gsize = w*h*2`、Σgsize == 文件尾）。见 `docs/map-format.md` §3.4
+ *   与 `known-deviations.md` 的 Q-SPRITE-1。
  *   多数特殊格取 `decorIndex ∈ {种类×2−1, 种类×2}` 这一对中的一个，
  *   逐对对上了截图里的图案：
  *

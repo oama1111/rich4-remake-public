@@ -253,6 +253,9 @@ describe('★ 只增不减带来的后果', () => {
   });
 
   it('★ 复现 Save0.dat 的疑点：终局只剩一名巨富，公式值远高于存档值', () => {
+    // ⚠️ 本用例的数字是**构造的**，只演示「分母变小 → 指数偏高」这个机制。
+    //   真实存档的逐位复算是 `loaders/savegame.q17.test.ts`：那里存档里的 5
+    //   来自「最后一次采样时在世者是 p0+p1 两人」，不是这里的 3。
     const mk = (cash: number, dead = false) => (i: number) =>
       makePlayer({ index: i, whoPlays: dead ? WHO_PLAYS_DEAD : WHO_PLAYS_HUMAN, cash });
     const wealth = [3_300_000, 600_000, 300_000, 300_000];

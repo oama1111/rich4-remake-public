@@ -21,6 +21,7 @@ import {
   characterSetBase,
   CHARACTER_POSE,
 } from './assets.ts';
+import { assetBase, hdBase } from './host.ts';
 
 // ============================================================
 //  浏览器全局的最小替身
@@ -356,6 +357,71 @@ describe('LRU 上限', () => {
     const c = cacheWith({ resources, maxBytes: 3 });
     for (let i = 0; i < 6; i++) await c.get('Data.mkf', i, 0);
     expect(c.byteSize).toBeLessThanOrEqual(3);
+  });
+});
+
+// ============================================================
+//  ★ Q-PERF-1：淘汰监听是**列表**，不是「一个可被顶掉的回调」
+// ============================================================
+
+describe('★ 淘汰监听（Q-PERF-1）', () => {
+  it('addEvictListener 与构造参数 onEvict 是**并存**的，不会互相顶掉', async () => {
+    const a: string[] = [];
+    const b: string[] = [];
+    // 构造参数先挂（模拟 main.ts 传进来的那个）
+    const withCtor = cacheWith({
+      resources: { 0: spr2x2(), 1: spr3x2(), 2: spr2x2() },
+      maxSprites: 2,
+      onEvict: (s) => a.push(`${s.width}x${s.height}`),
+    });
+    withCtor.addEvictListener((s) => b.push(`${s.width}x${s.height}`));
+
+    await withCtor.get('Data.mkf', 0, 0);
+    await withCtor.get('Data.mkf', 1, 0);
+    await withCtor.get('Data.mkf', 2, 0); // 挤掉第一张
+
+    // ★ 两条都收到 —— 属性式赋值会让后挂的把先挂的挤掉，症状是「有一边的内存放不掉」
+    expect(a).toEqual(['2x2']);
+    expect(b).toEqual(['2x2']);
+    expect(withCtor.size).toBe(2);
+  });
+
+  it('null 条目淘汰时不惊动任何监听（它本来就不占内存）', async () => {
+    const seen: number[] = [];
+    const c = cacheWith({ resources: { 0: spr2x2() }, maxSprites: 1 });
+    c.addEvictListener(() => seen.push(1));
+    await c.get('Data.mkf', 0, 9); // null
+    await c.get('Data.mkf', 0, 0); // 真图，挤掉 null
+    expect(seen).toEqual([]);
+  });
+});
+
+// ============================================================
+//  ★ Q-PERF-1：桌面端 HD 的 URL 形状
+// ============================================================
+
+describe('★ hdBase —— 桌面壳与浏览器各拼各的前缀，路由两侧对齐', () => {
+  const tauriGlobal = (globalThis as unknown as { __TAURI__?: unknown });
+
+  afterEach(() => {
+    delete tauriGlobal.__TAURI__;
+  });
+
+  it('浏览器：与 /assets/game 同源，换成 /assets/hd', () => {
+    expect(assetBase()).toBe('/assets/game');
+    expect(hdBase()).toBe('/assets/hd');
+  });
+
+  it('★ 桌面壳：rich4://localhost/hd —— Rust 那条 is_hd_path 放行的正是它', () => {
+    tauriGlobal.__TAURI__ = { core: { invoke: async () => null } };
+    expect(assetBase()).toBe('rich4://localhost');
+    expect(hdBase()).toBe('rich4://localhost/hd');
+  });
+
+  it('★ 清单 URL 就是把 hd 前缀接上 `-manifest.json`（与产物目录同级）', () => {
+    tauriGlobal.__TAURI__ = { core: { invoke: async () => null } };
+    // loadHdSource 拉的就是 `${base}-manifest.json`，见 assets.test 的 loadHdSource 一节
+    expect(`${hdBase()}-manifest.json`).toBe('rich4://localhost/hd-manifest.json');
   });
 });
 

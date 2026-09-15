@@ -8,6 +8,7 @@ import {
   byArchiveName,
   byFont,
   byFrames,
+  byGroundSource,
   bySize,
   classifyAsset,
   isGroundSourced,
@@ -50,7 +51,30 @@ describe('规则 1：档案名 → ui', () => {
   });
 });
 
-describe('规则 2：尺寸 → tile / background', () => {
+describe('规则 2：GND 来源 → tile（Q-GND-4 的整张底图）', () => {
+  it('★ 整张 2304×2304 的底图仍是 tile，不是 background', () => {
+    // 按尺寸它够 640×480 那一条，但底图是地形 —— 放大后必须过 T-064 的接缝检查
+    expect(byGroundSource(entry({ archive: 'map', w: 2304, h: 2304, paletteKind: 'gnd' }))).toBe('tile');
+    expect(classifyAsset(entry({ archive: 'map', w: 2304, h: 2304, paletteKind: 'gnd' }))).toBe('tile');
+    // 对照：同样尺寸的普通大图还是 background
+    expect(classifyAsset(entry({ archive: 'map', w: 2304, h: 2304, paletteKind: 'spr' }))).toBe(
+      'background',
+    );
+  });
+
+  it('不是 GND 来源这条就管不着', () => {
+    expect(byGroundSource(entry({ paletteKind: 'smp' }))).toBeNull();
+    expect(byGroundSource(entry({ archive: 'map', paletteKind: 'spr' }))).toBeNull();
+  });
+
+  it('★ 档案名优先：Panel 里的 GND 依然算 ui（规则 1 在前）', () => {
+    expect(classifyAsset(entry({ archive: 'Panel.mkf', w: 2304, h: 2304, paletteKind: 'gnd' }))).toBe(
+      'ui',
+    );
+  });
+});
+
+describe('规则 3：尺寸 → tile / background', () => {
   it('32×32 且 GND 来源 → tile', () => {
     expect(bySize(entry({ w: 32, h: 32, paletteKind: 'gnd' }))).toBe('tile');
     // map 归档也算 GND 来源
@@ -73,7 +97,7 @@ describe('规则 2：尺寸 → tile / background', () => {
   });
 });
 
-describe('规则 3：帧数 > 1 → sprite', () => {
+describe('规则 4：帧数 > 1 → sprite', () => {
   it('多帧 → sprite', () => {
     expect(byFrames(entry({ frames: 6 }))).toBe('sprite');
     expect(classifyAsset(entry({ archive: 'Data', w: 96, h: 96, frames: 8 }))).toBe('sprite');
@@ -88,7 +112,7 @@ describe('规则 3：帧数 > 1 → sprite', () => {
   });
 });
 
-describe('规则 4：字形 → font', () => {
+describe('规则 5：字形 → font', () => {
   it('paletteKind 标了 font → font', () => {
     expect(byFont(entry({ paletteKind: 'font' }))).toBe('font');
     expect(classifyAsset(entry({ paletteKind: 'font', frames: 1 }))).toBe('font');

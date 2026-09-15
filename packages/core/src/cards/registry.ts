@@ -27,7 +27,7 @@ import { consumeCard, playerHasCard } from './passive.ts';
 import { housingIndexOf, facilityIndexOf } from '../rules/land.ts';
 import { transferMoney } from '../rules/payment.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
-import type { PendingInteraction } from '../rules/interaction.ts';
+import type { AuctionRequest, PendingInteraction } from '../rules/interaction.ts';
 import { auctionBasePrice, auctionCardHostility, eligibleBidders } from '../rules/auction.ts';
 import { actorActive, specialSlotOf } from '../rules/special-actors.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
@@ -49,6 +49,7 @@ import { applyRobCard, applyRobCardCard } from './rob.ts';
 import { applyMonsterCard, applyMonsterFacilityCard, MONSTER_HOSTILITY_PER_LEVEL } from './monster.ts';
 import { applyRedCard, applyBlackCard, applySwapLandCard } from './swap-and-stock.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
+import { applyStockNews } from '../places/stock-market.ts';
 import {
   applyAngelCard,
   applyAngelFacilityCard,
@@ -119,8 +120,11 @@ export interface UseCardResult {
   /**
    * 效果挂出的**待决交互**（目前只有拍賣卡的拍賣）。
    * registry 只产出描述，由 reduce 落进 `state.pending` 并切相。
+   *
+   * ★ 拍賣那一条是**开拍请求**（`AuctionRequest`）：座位状态 / 心理价位 /
+   *   现价这些要读全局随机状态，只有 reducer 算得出来 —— 见 `openAuction`。
    */
-  followUp: PendingInteraction | null;
+  followUp: PendingInteraction | AuctionRequest | null;
   /**
    * 本次要**清研发天数**的設施 id（查封卡(28) 命中研究所(type 4) 时：
    * 原版把 `fac + 0x1e` 清零）。registry 只列出 id，由 reduce 写
@@ -266,7 +270,8 @@ export function useCard(
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
   let releasedObjects: number[] = [];
-  let followUp: PendingInteraction | null = null;
+  // ★ 拍賣那一条是**开拍请求**（AuctionRequest）：座位/心理价位等由 reduce 补齐
+  let followUp: PendingInteraction | AuctionRequest | null = null;
   const researchReset: number[] = [];
 
   /** 就地替换一块地 */
@@ -639,7 +644,16 @@ export function useCard(
           : applyBlackCard(market.stocks, target.index);
       if (r.affected < 0) return fail('stockOutOfRange');
       market = { ...market, stocks: r.stocks };
-      // 紅卡无敌意段；黑卡尾部的敌意循环是原版 bug（恒为 0），均不落敌意
+      // ★ 写完 `newsFlag` **紧接着**就把那一支的当日价算出来 —— 原版两路都有这一步：
+      //   真人在股市屏的选股模式里（`loc_0042b137` → `call 0x429040(row)`），
+      //   AI 在卡函数里（写完 `0x00444f88` / `0x004450f6` 紧接着就
+      //   `call 0x429040`，@source 0x00444f91 / 0x004450ff）。
+      //   `0x429040` 就是 `applyStockNews`：按 `newsFlag` 取 ±10% 重算价、并覆盖
+      //   当日那一格历史。UI 不写行情（C-ARC-2），所以这一步必须落在 core ——
+      //   少了它，卡的效果要拖到第二天才看得见（且黑卡尾部的价差会是 0）。
+      market = applyStockNews(market, target.index + 1);
+      // 紅卡无敌意段；黑卡尾部的敌意循环是原版 bug（double 压栈被当 int 读，恒为 0），
+      // 均不落敌意
       break;
     }
 

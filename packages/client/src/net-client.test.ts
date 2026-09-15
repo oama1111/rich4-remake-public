@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
-import { PROTOCOL_VERSION, type Action, type ClientMessage, type ServerMessage } from '@rich4/core';
+import { PROTOCOL_VERSION, type Action, type ClientMessage, type SeatInfo, type ServerMessage } from '@rich4/core';
 import { NetClient, netParamsFrom, type NetClientOptions } from './net-client.ts';
 
 function harness(extra: Partial<NetClientOptions> = {}) {
   const sent: ClientMessage[] = [];
   const applied: { action: Action; seq: number }[] = [];
   const events: string[] = [];
+  const resyncs: { seed: number; globalMapId: number; seats: SeatInfo[]; actions: Action[] }[] = [];
   let fp = 0;
   const client = new NetClient(
     { send: (text) => sent.push(JSON.parse(text) as ClientMessage) },
@@ -25,12 +26,22 @@ function harness(extra: Partial<NetClientOptions> = {}) {
       onJoined: (seat) => events.push(`joined:${seat}`),
       onError: (m) => events.push(`error:${m}`),
       onDesync: (d) => events.push(`desync:${d.seq}`),
+      // 模拟上层（main.ts）的「整体替换本地状态」
+      onResync: (r) => {
+        resyncs.push(r);
+        applied.length = 0;
+        fp = 0;
+        r.actions.forEach((action, seq) => {
+          applied.push({ action, seq });
+          fp++;
+        });
+      },
       fingerprint: () => `fp${fp}`,
       ...extra,
     },
   );
   const push = (msg: ServerMessage) => client.receive(JSON.stringify(msg));
-  return { client, sent, applied, events, push };
+  return { client, sent, applied, events, resyncs, push };
 }
 
 const roll: Action = { type: 'rollDice' };
@@ -60,6 +71,37 @@ describe('NetClient', () => {
     h.push({ t: 'desync', seq: 9, expected: 'a', got: 'b', seat: 1 });
     expect(h.events).toEqual(['joined:2', 'room:1', 'start:7', 'error:拒绝', 'desync:9']);
     expect(h.client.room?.seats).toHaveLength(1);
+  });
+
+  it('★ Q-NET-2：setCharacter / setMap 只发请求不先改本地；收到 room 广播才更新座位板', () => {
+    const h = harness();
+    h.client.setCharacter(5);
+    h.client.setMap(1);
+    expect(h.sent).toEqual([
+      { t: 'setCharacter', character: 5 },
+      { t: 'setMap', globalMapId: 1 },
+    ]);
+    // ★ 本地不等确认：刚发出去时本地快照还是空的
+    expect(h.client.room).toBeNull();
+
+    // 服务器校验通过后广播整份房间快照 —— 座位板照它更新
+    h.push({
+      t: 'room',
+      room: {
+        id: 'r1',
+        globalMapId: 1,
+        started: false,
+        seats: [{ seat: 0, name: '小明', character: 5, kind: 'human' }],
+      },
+    });
+    expect(h.client.room?.globalMapId).toBe(1);
+    expect(h.client.room?.seats[0]?.character).toBe(5);
+    expect(h.events).toContain('room:1');
+
+    // 被拒时不会伪造本地改动
+    h.push({ t: 'error', message: '拒絕：這個角色已經有人選了' });
+    expect(h.events).toContain('error:拒絕：這個角色已經有人選了');
+    expect(h.client.room?.seats[0]?.character).toBe(5);
   });
 
   it('★ 广播按序号施加；乱序的先攒着，凑齐再一口气按序施加', () => {
@@ -118,6 +160,85 @@ describe('NetClient', () => {
     h.client.receive('{"t":"whatever"}');
     expect(h.applied).toEqual([]);
     expect(h.events).toEqual([]);
+  });
+
+  it('★ Q-NET-1：desync 自动请求重放；replay 到达后整体替换本地状态并接上序号', () => {
+    const h = harness();
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'action', seq: 1, action: step });
+    expect(h.applied.map((x) => x.seq)).toEqual([0, 1]);
+    expect(h.sent.filter((m) => m.t === 'resync')).toEqual([]);
+
+    // 服务器广播失步（广播给所有人，未必是本座位）
+    h.push({ t: 'desync', seq: 9, expected: 'aaaa', got: 'bbbb', seat: 2 });
+    expect(h.events).toContain('desync:9');
+    expect(h.sent.filter((m) => m.t === 'resync')).toEqual([{ t: 'resync' }]);
+    expect(h.client.resyncing).toBe(true);
+
+    // 未决期间再来的 desync 不重复请求
+    h.push({ t: 'desync', seq: 9, expected: 'aaaa', got: 'bbbb', seat: 2 });
+    expect(h.sent.filter((m) => m.t === 'resync')).toHaveLength(1);
+
+    // 服务器回全量重放 0..4
+    const seats: SeatInfo[] = [{ seat: 0, name: '小明', character: 0, kind: 'human' }];
+    const actions = [roll, step, roll, step, roll];
+    h.push({
+      t: 'replay',
+      seed: 7,
+      globalMapId: 0,
+      seats,
+      through: 4,
+      actions: actions.map((action, seq) => ({ seq, action })),
+    });
+
+    expect(h.resyncs).toHaveLength(1);
+    expect(h.resyncs[0]?.seed).toBe(7);
+    expect(h.resyncs[0]?.actions).toEqual(actions);
+    // ★ 是**替换**不是叠加：旧的 0/1 记录被清掉，重建后是整串
+    expect(h.applied.map((x) => x.seq)).toEqual([0, 1, 2, 3, 4]);
+    expect(h.client.expectedSeq).toBe(5);
+    expect(h.client.resyncing).toBe(false);
+
+    // 之后接着重放末尾往下走；指纹也按重建后的状态算
+    for (let seq = 5; seq <= 9; seq++) h.push({ t: 'action', seq, action: step });
+    expect(h.applied.map((x) => x.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(h.client.expectedSeq).toBe(10);
+    expect(h.sent.filter((m) => m.t === 'checksum')).toEqual([{ t: 'checksum', seq: 9, hash: 'fp10' }]);
+  });
+
+  it('形状不对的 replay 不碰序号；被拒的 resync 之后还能再请求', () => {
+    const h = harness();
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'desync', seq: 0, expected: 'a', got: 'b', seat: 0 });
+    expect(h.client.resyncing).toBe(true);
+    // 缺 through/actions：当没收到，指针不动，但解锁以便重试
+    h.push({ t: 'replay' } as unknown as ServerMessage);
+    expect(h.client.expectedSeq).toBe(1);
+    expect(h.client.resyncing).toBe(false);
+
+    // 服务器回 error（例如还没开局）→ 解锁，下一次 desync 仍会请求
+    h.push({ t: 'desync', seq: 0, expected: 'a', got: 'b', seat: 0 });
+    h.push({ t: 'error', message: '還沒開局' });
+    h.push({ t: 'desync', seq: 0, expected: 'a', got: 'b', seat: 0 });
+    expect(h.sent.filter((m) => m.t === 'resync')).toHaveLength(3);
+  });
+
+  it('replay 会丢掉攒着没施加的旧广播（它们都在重放里了）', () => {
+    const h = harness();
+    h.push({ t: 'action', seq: 1, action: step }); // 缺 0，先攒着
+    expect(h.applied).toEqual([]);
+    h.push({
+      t: 'replay',
+      seed: 1,
+      globalMapId: 0,
+      seats: [],
+      through: 2,
+      actions: [roll, step, roll].map((action, seq) => ({ seq, action })),
+    });
+    expect(h.applied.map((x) => x.seq)).toEqual([0, 1, 2]);
+    // 之后补发来的 1 号是重复的，直接丢
+    h.push({ t: 'action', seq: 1, action: step });
+    expect(h.applied.map((x) => x.seq)).toEqual([0, 1, 2]);
   });
 });
 

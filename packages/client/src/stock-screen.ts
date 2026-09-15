@@ -95,6 +95,35 @@
  * ⚠️ **本卡没做**（另开 T-030b）：图 2 那张「上市公司資訊」详情卡（含 26 张企业图标、
  * 半年走势线图、持股比例）、以及持股页（图 1）每行**各玩家持股数**那一排。
  * 现在换页能看到黄桌子 + 列的动态值（保留股份／累積盈餘），但玩家持股那一排还没画。
+ *
+ * ## ★ 选股模式（紅卡 24 / 黑卡 25）—— Q-PICK-2
+ *
+ * `_rich4_ui_stock_entry(mode)` 的那个参数不是布尔，是**模式**：
+ * 紅卡 `push 1`（VA 0x00444ff8）、黑卡 `push 2`（VA 0x004450bc）、
+ * 工具栏第 11 颗「股市」传 0（买卖）。窗口过程把模式存进 `[0x48c2ed]`
+ * （@source `loc_0042ab75` 的 WM_CREATE `mov byte [0x48c2ed], dl`）。
+ *
+ * 模式 ≠ 0 时这一屏**只干一件事：点一行 → 把选择抛回去**：
+ *
+ * ```asm
+ * loc_0042abbb  ; 0x200 悬停：y ∈ (80, 464) → 行 = (y−80)/32（0 基）
+ *               ;   画一个**白框** fcn_0045620f(surface, 0xf, top, 0x262, 0x20, 0xffffff)
+ * loc_0042b0da  ; 0x202 点击（选择号 ≥ 10 = 某一行）：
+ *               ;   [0x48c2eb] = 选择号 − 0xa
+ *               ;   mode == 1 → newsFlag = 0x20（利多）@source `loc_0042b137`
+ *               ;   mode != 1 → newsFlag = 2  （利空）@source `loc_0042b11e`
+ *               ;   call 0x429040(row)     ; ★ 当场把价格算出来（= core 的 applyStockNews）
+ *               ;   重画该页 → blit → 0x45285e(0x3e8) 停 1 秒 → Post_0402_Message(row)
+ * loc_0042b22f  ; 0x205 右键：page == 0 → 取消（Post(0)）
+ * ```
+ *
+ * ★ **价格是 UI 当场改的，不是等第二天** —— 紅/黑卡都把 `0x429040` 叫了一遍
+ *   （真人这一支在 UI 里、AI 那一支在卡函数里），所以「选中」的反馈就是
+ *   **那一支当场涨/跌 10%**，然后停一秒再抛回卡函数。本引擎把这一步收进
+ *   core（UI 不写行情，C-ARC-2），见 `cards/registry.ts` 的 24/25 分支。
+ *
+ * ★ 抛回去的值是**行号**（1 基，= 股票号）：黑卡拿它去算敌意
+ *   （`[esp + ebx*4 + 0x7c]` 那个 1 基快照数组），所以「取消」（0）时卡不消耗。
  */
 
 import type { GameState } from '@rich4/core';
@@ -268,6 +297,13 @@ export interface StockView {
   hover: number | null;
   /** 选中的行（0 基；null = 没有）*/
   selected: number | null;
+  /**
+   * **选股模式**下悬停的行（0 基；null = 没有）。
+   *
+   * 这一档与原版的普通屏**不是同一套反馈**：模式 ≠ 0 时原版走的是
+   * `loc_0042abbb` 那条支路，只画**白框**（不碰 `hover`/`selected` 那套选中高亮）。
+   */
+  pickHover?: number | null;
 }
 
 // ============================================================
@@ -306,6 +342,83 @@ export function stockRowRect(row: number): { x: number; y: number; w: number; h:
 /** 第 `row` 行文字的 y（flag 6 的右中对齐点）*/
 export function stockRowTextY(row: number): number {
   return STOCK_ROWS.top + row * STOCK_ROWS.height + STOCK_ROWS.textDy;
+}
+
+// ============================================================
+//  选股模式（紅卡 / 黑卡）—— Q-PICK-2
+// ============================================================
+
+/**
+ * `_rich4_ui_stock_entry` 的那个参数。
+ * 1 = 紅卡（利多）、2 = 黑卡（利空）、0 = 普通买卖（本引擎另有 `stockTrade`）。
+ */
+export type StockPickMode = 1 | 2;
+
+/** 紅卡（24）走模式 **1** @source VA 0x00444ff8 `push 1; call 0x42b58f` */
+export const STOCK_PICK_RED: StockPickMode = 1;
+/** 黑卡（25）走模式 **2** @source VA 0x004450bc `push 2; call 0x42b58f` */
+export const STOCK_PICK_BLACK: StockPickMode = 2;
+/** 卡片号 → 模式；不是这两张就返回 `null` */
+export const STOCK_PICK_CARD = { red: 24, black: 25 } as const;
+
+export function stockPickModeOfCard(cardId: number): StockPickMode | null {
+  if (cardId === STOCK_PICK_CARD.red) return STOCK_PICK_RED;
+  if (cardId === STOCK_PICK_CARD.black) return STOCK_PICK_BLACK;
+  return null;
+}
+
+/**
+ * 模式 → 打到该股 `newsFlag` 上的字节。
+ *
+ * @source `loc_0042b137`：`mov byte [eax*4 + 0x496987], 0x20`（模式 1）
+ * @source `loc_0042b11e`：`mov byte [eax*4 + 0x496987], 2`（模式 2）
+ *   —— 与 core `swap-and-stock.ts` 的 `RED_CARD_NEWS_FLAG` / `BLACK_CARD_NEWS_FLAG` 同值。
+ */
+export function stockPickNewsFlag(mode: StockPickMode): number {
+  return mode === STOCK_PICK_RED ? 0x20 : 0x02;
+}
+
+/**
+ * 选中之后停多久才把画面收掉 —— **1 秒** @source `push 0x3e8; call 0x45285e`
+ * （`fcn_0045285e` 是 GetTickCount + PeekMessage 的等待循环）。
+ * 这一秒里玩家看到的就是「那一支已经涨/跌好了」。
+ */
+export const STOCK_PICK_FEEDBACK_MS = 0x3e8;
+
+/**
+ * 悬停反馈 = **整行白框**，不是填充。
+ *
+ * @source `loc_0042ac9e`：`fcn_0045620f(surface, 0xf, 32×行+0x30, 0x262, 0x20, 0xffffff)`
+ *   —— `0x45620f` 是**画框**（首行整行填色，其余只填左右两列，@source VA 0x00456245 起），
+ *   矩形与 `stockRowRect` 完全相同。
+ *
+ * 返回 4 条 1 像素宽的边（上/下/左/右），调用方 `fillRect` 逐条画 ——
+ * 与 canvas 的 `strokeRect`（会把线压在边界两侧）不同，这样与 `draw_rect` 的像素一致。
+ */
+export function stockPickFrameRects(
+  row: number,
+): { x: number; y: number; w: number; h: number }[] {
+  const r = stockRowRect(row);
+  return [
+    { x: r.x, y: r.y, w: r.w, h: 1 }, // 上
+    { x: r.x, y: r.y + r.h - 1, w: r.w, h: 1 }, // 下
+    { x: r.x, y: r.y + 1, w: 1, h: r.h - 2 }, // 左
+    { x: r.x + r.w - 1, y: r.y + 1, w: 1, h: r.h - 2 }, // 右
+  ];
+}
+
+/** 选中之后要发的 action —— 形状与 `core/state/actions.ts` 的 `useCard` 一致 */
+export type StockPickAction = { type: 'useCard'; cardId: number; target: { kind: 'stock'; index: number } };
+
+/**
+ * 「点中第 `row` 行」→ action；行号越界返回 `null`（**不发 action**，卡不消耗）。
+ *
+ * 行号在这里已经是 **0 基下标**（`hitStockRow` 的返回值），正好是 core 的
+ * `CardTarget.stock.index`；原版抛回的是 1 基行号，只在它自己算敌意时用。
+ */
+export function stockPickCardAction(cardId: number, row: number): StockPickAction | null {
+  if (!Number.isInteger(row) || row < 0 || row >= STOCK_ROWS.count) return null;
+  return { type: 'useCard', cardId, target: { kind: 'stock', index: row } };
 }
 
 // ============================================================
@@ -521,6 +634,14 @@ export function drawStockScreen(
     const r = stockRowRect(row);
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
     ctx.fillRect(r.x, r.y, r.w, r.h);
+  }
+
+  // ★ 选股模式（紅卡/黑卡）：悬停反馈是**白框**，不是上面那种填充
+  //   @source `loc_0042ac9e` 的 `fcn_0045620f(…, 0xffffff)`
+  const pick = view.pickHover;
+  if (pick !== undefined && pick !== null && pick >= 0 && pick < STOCK_ROWS.count) {
+    ctx.fillStyle = '#ffffff';
+    for (const r of stockPickFrameRects(pick)) ctx.fillRect(r.x, r.y, r.w, r.h);
   }
 
   for (let i = 0; i < view.rows.length && i < STOCK_ROWS.count; i++) {

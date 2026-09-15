@@ -125,6 +125,50 @@ describe('rebleedTransparent（边缘 1px 内 RGB 用最近不透明色填）', 
   });
 });
 
+// ============================================================
+//  ★ 全不透明快路径（Q-GND-4 的底图：9216² 上一份副本就是 324MB）
+// ============================================================
+
+describe('★ 全不透明的图（地图底图）不产生多余副本', () => {
+  it('binarizeAlpha 对**规范**的全不透明输入原样返回（同一个对象）', () => {
+    const a = grayImage(3, 1, [255, 255, 255]);
+    expect(binarizeAlpha(a)).toBe(a);
+  });
+
+  it('★ 非规范输入仍照常归一化（r≥阈值但 a≠255 / 三通道不等灰）', () => {
+    const weird = makeImage(2, 1, [
+      [255, 255, 255, 0],
+      [200, 100, 50, 255],
+    ]);
+    const out = binarizeAlpha(weird);
+    expect(out).not.toBe(weird);
+    expect([...out.rgba.slice(0, 4)]).toEqual([255, 255, 255, 255]);
+    expect([...out.rgba.slice(4, 8)]).toEqual([255, 255, 255, 255]);
+  });
+
+  it('低于阈值的输入不会被当成「已经二值化」', () => {
+    const a = grayImage(2, 1, [0, 255]);
+    const out = binarizeAlpha(a);
+    expect(out).not.toBe(a);
+    expect([out.rgba[0], out.rgba[4]]).toEqual([0, 255]);
+  });
+
+  it('★ deFringe / rebleedTransparent 在全不透明图上原样返回（不复制、不改）', () => {
+    const merged = makeImage(2, 1, [RED, RED]);
+    expect(deFringe(merged)).toBe(merged);
+    expect(rebleedTransparent(merged)).toBe(merged);
+  });
+
+  it('★ 全不透明图走完 mergeUpscaled：像素一字不变，且没有多出的中间副本', () => {
+    const rgb = makeImage(2, 1, [RED, RED]);
+    const alpha = grayImage(2, 1, [255, 255]);
+    const out = mergeUpscaled(rgb, alpha);
+    expect([...out.rgba]).toEqual([...rgb.rgba]);
+    // 返回的是 mergeFrame 那一份新数组；deFringe/rebleed 没有再各复制一份
+    expect(out.rgba).not.toBe(rgb.rgba);
+  });
+});
+
 describe('mergeUpscaled（8×8 样本全链路）', () => {
   /** 8×8：中央 4×4 红方块，四周透明 */
   const src8 = makeImage(8, 8, Array.from({ length: 64 }, (_, i) => {

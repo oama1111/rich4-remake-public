@@ -8,15 +8,28 @@
  * 以及 0x0040d1e3。也就是说「拍卖」是个被多处复用的子系统，
  * 不是拍賣卡独有的。
  *
- * ★ C-ARC-2：**竞价过程是交互，不进 core**。
- *   原版的出价循环是模态 UI（与卡片目标选择同理），故本模块只负责
- *   两件能被验证的事：**算起拍价**、**按成交结果改归属**。
- *   谁出价、出多少，由外部（UI / AI）决定后作为参数传入。
+ * ## 竞价循环归谁（Q-AUC-1 的定案，2026-09-15）
+ *
+ * 原版的竞价循环**不是一个交互式对话框**，而是窗口过程 `fcn_0043a2dd` 里
+ * 一条 100ms 定时器驱动的循环：每转到一个座位，真人等点钮
+ * （`0x407` 消息）、电脑当场算一口（`fcn_00439f0d` + `0x43b124`），
+ * 每一口之后回 `loc_0043b295` 复查「还剩几个能出价的」。
+ *
+ * 本项目原先把它整条放在表现层（`client/auction-screen.ts`），于是
+ * **无头跑 core 时拍賣永远答不掉**（服务端权威、soak 全 AI 局都卡在这）。
+ * 现在循环立在这里（core 是权威、无头也能跑完），表现层只负责**收集真人**
+ * 的那一口并把 core 的每一口演出来。
+ *
+ * 每个座位的状态（`AuctionSeatStatus`）与原版座位表 `+2` 那个 word 同义：
+ * 0 = 可出价，非 0 = 已出过价/已放棄/不在场。★ **PASS 是永久的** ——
+ * 全文件没有任何一处把 `[0x48c436 + 20i]` 写回 0（入口写一次、PASS 写 1、
+ * 放棄写 4），所以流局的收敛靠的就是「出价的人越出越少」。
  */
 
 import type { FacilityInfo, LandInfo } from '../loaders/map.ts';
 import type { Player } from '../state/types.ts';
 import { transferMoney, PARTY_POOL, type Company } from './payment.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 
 /**
  * 起拍价的等级系数。
@@ -42,22 +55,32 @@ export const AUCTION_LEVEL_FACTOR = 0.5;
  * imul ebx, [0x4990e8]             ; ★ × 物价指数
  * ```
  *
- * 即 **`round(地价 × (1 + 等级 × 0.5)) × 物价指数`**。
+ * 即 **`trunc(地价 × (1 + 等级 × 0.5)) × 物价指数`**。
  *
  * ⚠️ 取整发生在**乘物价指数之前**——先把浮点结果取整，再整数相乘。
  * 顺序换了在多数情况下结果相同，但等级为奇数时会差一点，故照搬。
  *
- * 取整走 x87 的就近取偶（与 rules/percentage.ts 同一个 `0x457dbc`）。
+ * ⚠️ **取整是向零截断，不是就近取偶**：`call 0x457dbc` 的
+ *   `__round_toward_zero`（VA 0x00457dbc，见 `rich4_misc_util.asm`）把
+ *   x87 控制字 **bit10-11（RC）清成 `11` = 向零** 之后才 `frndint`
+ *   （`mov byte [esp + 1], 0x1f` ⇒ CW = 0x0033）：
+ *   ```asm
+ *   __round_toward_zero:
+ *   fnstcw [esp] / push [esp] / mov byte [esp+1], 0x1f / fldcw [esp]
+ *   frndint / fldcw [esp+4] / ret
+ *   ```
+ *   故 `1.5 → 1`、`2.5 → 2`、`1498.5 → 1498`、`1501.5 → 1501`
+ *   （T-034 那一轮把它当成了 `percentage.ts` 的就近取偶，是误读）。
  */
 export function auctionBasePrice(
   entity: { landPrice: number; level: number },
   priceIndex: number,
 ): number {
   const factor = 1 + entity.level * AUCTION_LEVEL_FACTOR;
-  // 这里是**价格**而非评分，但原版就是浮点乘后取整，故如实复刻；
-  // 取整方式与 percentage.ts 的 x87Round 相同。
-  const rounded = x87Round(entity.landPrice * factor);
-  return rounded * priceIndex;
+  // 这里是**价格**而非评分：原版浮点乘之后走 `__round_toward_zero`，
+  // 对非负数就是 `Math.trunc`。产物是**金额**，不豁免 C-DET-3。
+  const truncated = truncTowardZero(entity.landPrice * factor);
+  return truncated * priceIndex;
 }
 
 /**
@@ -102,15 +125,14 @@ const low32Buf = new Float64Array(1);
 const low32View = new Uint32Array(low32Buf.buffer);
 
 /**
- * x87 就近取偶。
- * 与 `rules/percentage.ts` 的同名函数一致——都是 `call 0x00457dbc`。
+ * `__round_toward_zero` @source VA 0x00457dbc。
+ *
+ * 原版把 x87 控制字改成 **RC = 11（向零）** 再 `frndint`，故对非负数就是截断。
+ * 不能用「就近取偶」：`percentage.ts` 的同名函数按就近取偶实现，
+ * 两者在**恰好 .5** 时不同（本文件凡是走 0x457dbc 的地方都按本函数来）。
  */
-function x87Round(v: number): number {
-  const floor = Math.floor(v);
-  const diff = v - floor;
-  if (diff > 0.5) return floor + 1;
-  if (diff < 0.5) return floor;
-  return floor % 2 === 0 ? floor : floor + 1;
+export function truncTowardZero(v: number): number {
+  return Math.trunc(v);
 }
 
 /** 竞价结果——由外部的出价流程给出 */
@@ -260,6 +282,26 @@ export function eligibleBidders(
  */
 export const AUCTION_RAISE_STEPS: readonly number[] = [100, 500, 1000, 5000, 10000];
 
+/**
+ * 压价那一段（`loc_0043b183`）用的余量。
+ *
+ * @source VA 0x0043b1bd `add edi, 0x1f4` —— 线 = **最高出价者现金 + 500**；
+ *   随后的档位判据也是拿 `线 − 现价` 去比 `0x3e8 / 0x1388 / 0x1f4 / 0x64`。
+ */
+export const AUCTION_RAISE_CAP_MARGIN = 500;
+
+/**
+ * `fcn_00439f0d` 里第一次 `rand()` 的**除数**。
+ *
+ * @source `0x465014` 的 f32 —— 从 exe 逐字节 dump 出来是 `0x46fffe00`
+ *   （`python3 tools/disasm.py va 0x465014` ⇒ `fdiv dword [0x465014]`），
+ *   即 **32767.0f**，不是 32766。
+ *
+ * 而 `_libc_rand`（VA 0x00456f2d，MSVC LCG）returns `(state >> 16) & 0x7fff`，
+ * 值域 **0..32767**，故 `rand()/32767.0 ∈ [0,1]`（闭区间右端可取到 1）。
+ */
+export const AUCTION_LIMIT_RAND_DIVISOR = 32767;
+
 export interface AuctionAiInputs {
   /** 待拍实体的等级 @source land+0x1a / facility+0x1a */
   level: number;
@@ -296,7 +338,7 @@ export interface AuctionAiInputs {
  *   「同名地产数」那一项：
  *
  * ```asm
- * factor   = rand()/32766.0 * 0.3 + 0.5          ; [0.5, 0.8]（0x465014/18/20）
+ * factor   = rand()/32767.0 * 0.3 + 0.5          ; [0.5, 0.8]（0x465014/18/20）
  * ratio    = 无主数 / 总数                        ; fdivp
  * scarcity = 6.0 - 4.0 * ratio                   ; 0x465028/2c → 越缺地越高
  * v1 = round( ((level>>1) + 1 + 同名数) × 起拍价 × 物价指数 × scarcity × factor )
@@ -306,15 +348,18 @@ export interface AuctionAiInputs {
  *
  * ⚠️ `v1` 里**乘了两次物价指数**（起拍价本身已经含过一次）—— 原版如此，照抄。
  *
+ * ⚠️ 除数 0x465014 是 **32767.0f**（见 `AUCTION_LIMIT_RAND_DIVISOR`）。
+ *   早先写 32766，是 T-034 那一轮读错的常量 —— 已按 exe 订正。
+ *
  * @param rnd 取 `[0,1)` 的随机数，代表 `rand()/32768`（注入是为单测能钉序列）。
  *   原版 `rand()` 值域 `0..0x7fff`，故 `rand() = rnd() * 32768`。
  */
 export function auctionAiLimit(input: AuctionAiInputs, rnd: () => number): number {
   const rand = (): number => rnd() * 32768;
 
-  // @source fdiv rand() / 32766.0（0x465014 = 32766.0）、×0.3（0x465018）、+0.5（0x465020）
+  // @source fdiv rand() / 32767.0（0x465014 = 32767.0f）、×0.3（0x465018）、+0.5（0x465020）
   // eslint-disable-next-line no-restricted-syntax -- 原版这一段就是浮点（`fdiv`/`fmul`/`fadd`），产出的是**心理价位**不是账目金额
-  const factor = (rand() / 32766) * 0.3 + 0.5;
+  const factor = (rand() / AUCTION_LIMIT_RAND_DIVISOR) * 0.3 + 0.5;
 
   // @source fdivp（无主数 / 总数）、×4.0（0x465028）、fsubr 6.0（0x46502c）
   // eslint-disable-next-line no-restricted-syntax -- 同上，这是「缺地系数」而非金额
@@ -322,12 +367,12 @@ export function auctionAiLimit(input: AuctionAiInputs, rnd: () => number): numbe
 
   const scale = (Math.floor(input.level / 2) + 1 + (input.sameNameOwned ?? 0)) *
     input.basePrice * input.priceIndex;
-  const v1 = x87Round(scale * scarcity * factor);
+  const v1 = truncTowardZero(scale * scarcity * factor);
 
   // @source `imul eax, ecx`（地价 × 物价指数）后 `fmul (rand()/65536 + 3.0)`
   const landValue = input.landPrice * input.priceIndex;
   // eslint-disable-next-line no-restricted-syntax -- 原版 `rand()` 直接除以 65536.0 再乘地价
-  const v2 = x87Round(landValue * (3 + rand() / 65536));
+  const v2 = truncTowardZero(landValue * (3 + rand() / 65536));
 
   return Math.min(v1, v2, input.cash);
 }
@@ -335,20 +380,34 @@ export function auctionAiLimit(input: AuctionAiInputs, rnd: () => number): numbe
 /**
  * 按心理价位挑**加多少** —— 返回 `AUCTION_RAISE_STEPS` 的**金额**，`0` = PASS。
  *
- * @source `loc_0043b124` VA 0x0043b124（电脑玩家那一支）：
+ * @source `loc_0043b124` VA 0x0043b124（电脑玩家那一支；进入前先过
+ *   `0x43b10c` 的 `cmp ecx, [玩家+0x1c] / jle`）：
  * ```asm
- * if (现金 < 现价)             → PASS（先由 loc_0043b08a 之外的 `cmp ecx, cash / jle` 判）
- * if (现价 + 10000 <= 心理价位) → +10000
- * if (现价 +  5000 <= 心理价位) → +5000
- * if (现价 +  1000 <= 心理价位) → +1000
- * if (现价 +   500 <= 心理价位) → +500
- * if (现价 +   100 <= 心理价位) → +100
- * else                          → PASS
+ * if (现金 < 现价)             → PASS（0x43b10c 直接跳到 0x43b17c 给 ebx = 0）
+ * if (现价 + 10000 <= 心理价位) → +10000     ; lea edx,[ecx+0x2710] / cmp edx,esi / jg
+ * if (现价 +  5000 <= 心理价位) → +5000      ; +0x1388
+ * if (现价 +  1000 <= 心理价位) → +1000      ; +0x3e8
+ * if (现价 +   500 <= 心理价位) → +500       ; +0x1f4
+ * if (现价 +   100 <= 心理价位) → +100       ; +0x64
+ * else                          → PASS（ebx = 0）
  * ```
+ * 全部是**有符号**比较（`jle`/`jg`）。
  *
- * 随后还有一段（`loc_0043b183`）：若这一口会**超过「当前最高出价者」的现金 + 500**，
- * 就把档位压到 `最高者现金 + 500 − 现价` 落在哪一档，避免把穷对手逼上绝路。
+ * 随后还有一段（`loc_0043b183`，@source 0x0043b1c7..0x0043b217）：若这一口会
+ * **超过「当前最高出价者」的现金 + 500**（VA 0x0043b1bd 的 `add edi, 0x1f4`），
+ * 就拿 `room = 线 − 现价` 重挑一档：
+ * ```asm
+ * room <  100                → 100      ; cmp 0x64 / jle  +  cmp 0x64 / jg 的落空支
+ * 100 <= room <  500         → 500      ; cmp 0x1f4 / jle + cmp 0x1f4 / jg
+ * 500 <= room < 1000         → 1000     ; cmp 0x3e8 / jle + cmp 0x3e8 / jg
+ * 1000 <= room <= 5000       → 5000     ; cmp 0x3e8 / jle + cmp 0x1388 / jg
+ * room == 500 / 1000 / 5000  → ★ 档位**原样保留**（两边都不命中，原版就这样）
+ * room > 5000                → 档位原样保留
+ * ```
  * 传 `topCash`（无最高者时传 `null`）即启用。
+ *
+ * ⚠️ 压价那一段**只改档位、不保证结果 ≤ 最高者现金 + 500**（`room ∈ [1000,5000]`
+ *   一律给 5000 档，哪怕 room 只有 1000）。照抄，别「改正」。
  */
 export function auctionAiRaise(
   limit: number,
@@ -366,13 +425,17 @@ export function auctionAiRaise(
     }
   }
 
-  // @source loc_0043b183：`cmp esi, edi（心理这一口 vs 最高者现金+500）/ jle 保留`
-  if (topCash !== null && step !== 0 && price + step > topCash + 500) {
-    const room = topCash + 500 - price;
-    if (room > 1000 && room <= 5000) step = 5000;
-    else if (room > 500 && room <= 1000) step = 1000;
-    else if (room > 100 && room <= 500) step = 500;
-    else if (room <= 100) step = 100;
+  // @source loc_0043b183：`add edi, 0x1f4` —— 「最高出价者的现金 + 500」这道线
+  if (topCash !== null && step !== 0 && price + step > topCash + AUCTION_RAISE_CAP_MARGIN) {
+    const room = topCash + AUCTION_RAISE_CAP_MARGIN - price;
+    // ★ 逐条照抄 0x43b1cd..0x43b217 的 `cmp` / `jle` / `jg` **对**，别合并区间：
+    //   `cmp 1000 / jle`（room ≤ 1000 跳过）+ `cmp 5000 / jg`（room > 5000 跳过）
+    //   ⇒ room ∈ [1000, 5000] 走 5000 档（room 恰为 1000 或 5000 都命中）。
+    if (room >= 1000 && room <= 5000) step = 5000;
+    else if (room >= 500 && room < 1000) step = 1000;
+    else if (room >= 100 && room < 500) step = 500;
+    else if (room < 100) step = 100;
+    // ⚠️ room > 5000 时四个区间一个都不命中 → 档位原样保留（原版如此）。
   }
   return step;
 }
@@ -386,3 +449,271 @@ export function auctionAiRaise(
 export function auctionCanAfford(price: number, step: number, cash: number): boolean {
   return price + step <= cash;
 }
+
+// ============================================================
+//  竞价循环（Q-AUC-1：循环归 core，表现层只演）
+// ============================================================
+
+/**
+ * 一个座位还能不能出价。
+ *
+ * ★ 与原版座位表 `+2` 那个 word 同义（0 = 可出价，非 0 = 不可）。
+ *   `'passed'` / `'givenUp'` 在数值上是同一档（原版都写非 0），
+ *   分开只为让表现层能把「放棄」和「PASS」演得不一样。
+ */
+export type AuctionSeatStatus = 'active' | 'passed' | 'givenUp';
+
+/**
+ * 开拍时给每个玩家定座位状态。
+ *
+ * @source 入口 `loc_0043c110` 起那段：
+ * - `who_plays == 0`（出局）→ **连座位都没有**，直接跳过；
+ * - **出不起底价**（`cmp 现金, 底价 / jg`，即 `现金 <= 底价`）→ 状态 8；
+ *   本引擎把 8 与「不可出价」合并成 `'givenUp'`——原版之所以分开，
+ *   只是因为 8 要画另一张图（`giveUp` 那张），规则上是同一档（非 0）；
+ * - 其余 → 0（可出价）。
+ *
+ * ⚠️ 原版建表在 `fcn_00439f0d` **之前**（0x43c5d9 复查状态），故「出不起底价」
+ *   的座位拿到的是心理价位 0。
+ */
+export function auctionSeatStatus(
+  players: readonly Player[],
+  bidders: readonly number[],
+  basePrice: number,
+): AuctionSeatStatus[] {
+  const want = new Set(bidders);
+  return players.map((p, i) => {
+    if (p.whoPlays === 0) return 'givenUp';
+    if (!want.has(i)) return 'givenUp';
+    // @source 0x43c140 `cmp 现金, 底价 / jg` —— 恰好等于底价也出不起
+    return p.cash <= basePrice ? 'givenUp' : 'active';
+  });
+}
+
+/**
+ * 「下一家轮到谁」@source `loc_0043b3c2`：座位号 +1 取模，跳过非「可出价」的。
+ *
+ * 反复绕圈直到有人可出价为止；**一个可出价的都没有时原样返回**
+ * （此时 `auctionFinished` 已经判成流标，这个值不再有人看）。
+ */
+export function auctionAdvanceSeat(
+  bidders: readonly number[],
+  status: readonly AuctionSeatStatus[],
+  from: number,
+): number {
+  const n = bidders.length;
+  if (n === 0) return from;
+  for (let k = 1; k <= n; k++) {
+    const i = (from + k) % n;
+    const player = bidders[i];
+    if (player !== undefined && (status[player] ?? 'active') === 'active') return i;
+  }
+  return from;
+}
+
+/** 从 `currentPlayer` 起找第一个可出价的座位；都没有返回 0 @source 入口的建表顺序 */
+export function auctionFirstSeat(
+  bidders: readonly number[],
+  status: readonly AuctionSeatStatus[],
+  fromPlayer: number,
+): number {
+  const n = bidders.length;
+  if (n === 0) return 0;
+  for (let k = 0; k < n; k++) {
+    const i = (fromPlayer + k) % n;
+    const player = bidders[i];
+    if (player !== undefined && (status[player] ?? 'active') === 'active') return i;
+  }
+  return 0;
+}
+
+/**
+ * 与待拍地块**同名**、且属于该出价者的地块数。
+ *
+ * @source `loc_00439f72`：`strcmp(land[i]+4, 目标+4) == 0 && land[i]+0x19 == 出价者`
+ *   → `inc ebp`。★ **只有地块那一支有这一项**；設施分支（`loc_0043a071`）
+ *   只数无主数，没有同名数。
+ *
+ * `ownerOf` 用来把「运行期归属」覆盖到模板上（调用方传 `effective*` 或状态表）。
+ */
+export function sameNameLandOwned(
+  name: string,
+  player: number,
+  lands: readonly LandInfo[],
+  ownerOf: (id: number, fallback: number) => number,
+): number {
+  let n = 0;
+  for (const l of lands) {
+    if (l.name !== name) continue;
+    if (ownerOf(l.id, l.owner) === player + 1) n += 1;
+  }
+  return n;
+}
+
+/** 設施那一支的「同名数」恒为 0 —— 原版压根不数 @source loc_0043a071 没有 strcmp 段 */
+export function sameNameFacilityOwned(): number {
+  return 0;
+}
+
+/**
+ * 每个可以出价的玩家一份**心理价位**。
+ *
+ * @source 入口 `0x0043c5d9` 那段：对每个「在场、出得起底价、且是电脑」的
+ *   座位调一次 `fcn_00439f0d`，结果存进座位 `+8`（`[0x48c438]`）。
+ *   真人座位留 0（他不是 rand 出来的价，是手点的）。
+ *
+ * 本函数把「算一遍」与「怎么处理各种座位类型」绑在一起，**只在开拍时算一次**。
+ *
+ * ⚠️ **随机源**：原版那三处是 `_libc_rand`（全局 PRNG）。本引擎**不能**在这里
+ *   动 `GameState.rngState`（那会让同一局在不同端上算出不同的心理价位），
+ *   故用 `seed` 派生一条**独立的** WatcomRng —— 算法位级一致，只是序列
+ *   由 `seed` 决定。见 `docs/deviations/T-034.md` 的 D-T034-5（同一条口径）。
+ *
+ * @param seed 调用方给的确定性种子（通常由 `rngState` + 实体号派生）
+ */
+export function auctionAiLimits(
+  entity: AuctionEntity,
+  players: readonly Player[],
+  bidders: readonly number[],
+  seed: number,
+): number[] {
+  const rng = new WatcomRng(seed >>> 0);
+  // ★ 这里把 15 位整数归一成 [0,1) 交给 `auctionAiLimit`（它自己再乘回 32768），
+  //   是**随机数归一化**不是金额计算；原版那三处也全是浮点（`fild`/`fdiv`）。
+  // eslint-disable-next-line no-restricted-syntax -- C-DET-3 的定向豁免（同上）
+  const rand01 = (): number => rng.next() / 32768;
+  const limits = new Array<number>(players.length).fill(0);
+  for (const bidder of bidders) {
+    const p = players[bidder];
+    // 原版只给「可出价的电脑」算；不在场/出局者连座位都没有
+    if (p === undefined || p.whoPlays === 0) continue;
+    limits[bidder] = aiLimitForPlayer(entity, bidder, p, rand01);
+  }
+  return limits;
+}
+
+/**
+ * 待拍产业的「静态属性」—— 只依赖地图与归属，不依赖竞价进度。
+ *
+ * 地块与設施两支的差别只有**地价字段**（`+0x1c` vs `+0x22`）与
+ * 「同名地产数」那一项（只有地块数），故这里用同一张表描述。
+ */
+export interface AuctionEntity {
+  /** 起拍价 `[0x48c488]`（= `auctionBasePrice` 的产物，已含物价指数） */
+  basePrice: number;
+  /** 物价指数 `[0x4990e8]` */
+  priceIndex: number;
+  /** 地价：地块 +0x1c、設施 +0x22 */
+  landPrice: number;
+  /** 等级：地块/設施的 +0x1a */
+  level: number;
+  /** 同一支（地块表 / 設施表）的实体总数 @source `num_lands` / `num_facilities` */
+  total: number;
+  /** 其中无主的条数 @source `loc_00439f72` 的 `inc edi` */
+  unowned: number;
+  /** 这些实体里，**与待拍者同名且属于出价者**的条数（`0x439f72` 的 `inc ebp`） */
+  sameNameOwned: (player: number) => number;
+}
+
+/** 某个出价者的心理价位 —— 把 `AuctionAiInputs` 拼起来之后问 `auctionAiLimit` */
+function aiLimitForPlayer(
+  entity: AuctionEntity,
+  bidder: number,
+  p: Player,
+  rand01: () => number,
+): number {
+  return auctionAiLimit(
+    {
+      level: entity.level,
+      landPrice: entity.landPrice,
+      // @source 0x43a131：最后夹到 `[0x496b84]` = 玩家现金（不是现金 + 存款）
+      cash: p.cash,
+      priceIndex: entity.priceIndex,
+      basePrice: entity.basePrice,
+      total: entity.total,
+      unowned: entity.unowned,
+      sameNameOwned: entity.sameNameOwned(bidder),
+    },
+    rand01,
+  );
+}
+
+/** 一次出价的结果：掏多少钱（0 = PASS）以及是「放棄」还是普通 PASS */
+export interface AuctionAiChoice {
+  step: number;
+  kind: 'raise' | 'pass' | 'giveUp';
+}
+
+/**
+ * 电脑这一口出不出、出多少。
+ *
+ * @source 拍賣窗口的刷新循环（`_rich4_ui_auction` 的 `loc_0043c4f5` 一带）
+ *   在轮到某个座位时做三件事，本函数就是这三件事：
+ *   1. `0x43b10c`：`cmp 现金, 现价 / jle` → **现金 ≤ 现价就 PASS**；
+ *   2. `0x43b124`：拿座位 `+8` 的心理价位挑档（`auctionAiRaise`）；
+ *   3. `0x43b183`：这一口若超过「当前最高出价者现金 + 500」就压档。
+ *
+ * ⚠️ 第 1 条用的是**现金**而不是「现金 + 存款」（@source `+0x1c`）。
+ * ⚠️ 心理价位为 0（不是电脑 / 没算过）时必然 PASS —— 与「出不起」同一条出口。
+ * ★ `kind` 恒为 `'pass'`：原版 AI 那一支**只发 PASS（按钮 0）**，
+ *   「放棄」是真人屏上第 7 颗钮（`ebx == 6` → `loc_0043a43a`），电脑不走。
+ *   保留这个字段是为了让表现层能把两条出口分开演。
+ */
+export function auctionAiChoice(input: {
+  /** 座位 `+8` 的心理价位（上限）；0 = 没算过 */
+  limit: number;
+  /** 现价 `[0x48c488]` */
+  price: number;
+  /** 出价者现金 `player+0x1c` */
+  cash: number;
+  /** 当前最高出价者的现金；还没有人出价传 null（不压档） */
+  topCash: number | null;
+}): AuctionAiChoice {
+  const step = auctionAiRaise(input.limit, input.price, input.cash, input.topCash);
+  return step > 0 ? { step, kind: 'raise' } : { step: 0, kind: 'pass' };
+}
+
+/**
+ * 拍卖结束了吗；结束了就把终局判出来。
+ *
+ * @source `loc_0043b295` VA 0x0043b295：
+ * ```asm
+ * esi = 有人的座位数 ; edi = 状态 != 0 的座位数
+ * if (esi == 0 || esi == edi)                  → 流標
+ * if (esi - edi == 1 && [0x48c4a8] != -1)      → 成交
+ * ```
+ * 即：**一个能出价的都没有 → 流标；只剩最高出价者一个人能出价 → 成交。**
+ * 注意 `esi == 1` 那一条是单独判的（只有一个人能出价时不必减）。
+ */
+export function auctionFinished(pending: {
+  bidders: readonly number[];
+  status: readonly AuctionSeatStatus[];
+  top: number;
+}): boolean {
+  let active = 0;
+  let blocked = 0;
+  for (const i of pending.bidders) {
+    const st = pending.status[i] ?? 'active';
+    if (st === 'active') active += 1;
+    else blocked += 1;
+  }
+  // esi == 0 或 esi == edi（一个能出的都没有）→ 流標
+  if (active === 0) return true;
+  // 只有一个人能出价：原版单独判一条 —— 而且必须**已经有人出过价**才算成交
+  if (active === 1) return pending.top >= 0;
+  // 其余情况看「esi − edi == 1」：只有一个能出价的、且已有人出价 → 成交
+  return active - blocked === 1 && pending.top >= 0;
+}
+
+/** 终局：`winner < 0` = 流拍 */
+export function auctionOutcome(pending: {
+  bidders: readonly number[];
+  status: readonly AuctionSeatStatus[];
+  top: number;
+  price: number;
+  basePrice: number;
+}): { winner: number; price: number } {
+  if (pending.top < 0) return { winner: -1, price: 0 };
+  return { winner: pending.top, price: pending.price };
+}
+

@@ -9,9 +9,13 @@
  */
 
 import {
+  LOBBY_CHARACTER_COUNT,
   PROTOCOL_VERSION,
   WHO_PLAYS_AUTOPILOT,
   WHO_PLAYS_HUMAN,
+  characterTaken,
+  isLobbyCharacter,
+  isLobbyMapId,
   type Action,
   type ClientMessage,
   type Rich4Map,
@@ -37,6 +41,14 @@ export interface HubOptions {
   takeoverAfterMs?: number;
   /** 客户端每几号 action 上报一次校验和（对应客户端约定，仅用于文档） */
   checksumEvery?: number;
+  /**
+   * ★ Q-NET-2 换地图：按全局地图号取地图结构。
+   *
+   * 不给（测试的缺省）＝ 服务器只端得出 `globalMapId` 那一张，
+   *   换别的图会被拒（错误信息是「伺服器沒有這張地圖」）。
+   * 真服务器（`cli.ts`）给一份按需读 `map.mkf` 的实现。
+   */
+  mapFor?: (globalMapId: number) => Rich4Map | null;
 }
 
 interface SeatSlot {
@@ -52,6 +64,11 @@ interface Table {
   id: string;
   seats: SeatSlot[];
   room: Room | null;
+  /**
+   * ★ Q-NET-2 房间地图（大厅设置）。开局前只有房主能改；开局的 `newGame`
+   *   用的就是它 —— **不看**任何客户端上报的本地设置。
+   */
+  globalMapId: number;
 }
 
 /** 一个客户端连接在集线器里的句柄 */
@@ -155,6 +172,52 @@ export class RoomHub {
             }
             return;
           }
+          // ★ Q-NET-1 失步自愈：把**完整** action 日志重放给请求者。
+          //   权限只认 `join` 时绑在这条连接上的座位（下面的所有权检查），
+          //   消息体里没有任何座位/名字可填 —— 所以索取不到别人的重放。
+          //   也谈不上额外泄密：这条连接本来就收得到每一条广播 action。
+          case 'resync': {
+            if (table === null || seat === null || table.room === null) {
+              conn.send({ t: 'error', message: '還沒開局' });
+              return;
+            }
+            if (table.seats[seat]?.conn !== conn) {
+              // 掉线后沿用旧句柄、或别的连接想蹭同一个座位，都在这里挡住
+              conn.send({ t: 'error', message: '拒絕：這條連接不是該座位' });
+              return;
+            }
+            const log = table.room.since(0);
+            // ⚠️ 只回请求者，不广播（重放是给一个人的）
+            conn.send({
+              t: 'replay',
+              seed: table.room.seed,
+              globalMapId: table.room.globalMapId,
+              seats: table.seats.map((s) => ({ ...s.info })),
+              through: log.length === 0 ? -1 : log[log.length - 1]!.seq,
+              actions: log.map((b) => ({ seq: b.seq, action: b.action })),
+            });
+            return;
+          }
+          // ★ Q-NET-2 大厅设置：改**自己**座位的角色。
+          //   座位号取自 `join` 时绑在这条连接上的 `seat`，消息体里没有座位号 ——
+          //   所以「改别人的角色」不是被拒绝，而是根本表达不出来。
+          case 'setCharacter': {
+            if (table === null || seat === null) {
+              conn.send({ t: 'error', message: '還沒進房' });
+              return;
+            }
+            this.#setCharacter(table, seat, msg.character, conn);
+            return;
+          }
+          // ★ Q-NET-2 大厅设置：换房间地图。只有房主（0 号座）。
+          case 'setMap': {
+            if (table === null || seat === null) {
+              conn.send({ t: 'error', message: '還沒進房' });
+              return;
+            }
+            this.#setMap(table, seat, msg.globalMapId, conn);
+            return;
+          }
           default:
             return;
         }
@@ -206,7 +269,7 @@ export class RoomHub {
   #tableFor(id: string): Table {
     let t = this.#tables.get(id);
     if (t === undefined) {
-      t = { id, seats: [], room: null };
+      t = { id, seats: [], room: null, globalMapId: this.#opts.globalMapId };
       this.#tables.set(id, t);
     }
     return t;
@@ -231,7 +294,9 @@ export class RoomHub {
     if (t.seats.length >= this.#opts.seatCount) return null;
     const seat = t.seats.length;
     t.seats.push({
-      info: { seat, name, character: seat, kind: 'human', connected: true },
+      // ★ 角色不能再无脑取 `seat` 了（Q-NET-2）：前面进来的人可能已经把
+      //   这个号改成别的，得挑一个**没人占**的；否则一开局就有人撞车。
+      info: { seat, name, character: this.#freeCharacter(t.seats), kind: 'human', connected: true },
       conn,
       disconnectedAt: null,
       takenOver: false,
@@ -239,30 +304,131 @@ export class RoomHub {
     return seat;
   }
 
+  /**
+   * 挑一个还没被占的角色号（Q-NET-2「角色不能撞车」）。
+   *
+   * ★ 取**最小空号**而不是随机：服务器是权威，同输入必须同结果 ——
+   *   随机补角会让「同一房、同一串消息」在不同机器上补出不同角色。
+   *   （单机那套 `fillComputerSeats` 用随机，是因为它没有联机一致性问题。）
+   */
+  #freeCharacter(seats: readonly SeatSlot[]): number {
+    const used = new Set(seats.map((s) => s.info.character));
+    for (let c = 0; c < LOBBY_CHARACTER_COUNT; c++) if (!used.has(c)) return c;
+    // 座位数（≤4）远小于角色数（12），走不到这里；给个合法号别返回 undefined
+    return seats.length % LOBBY_CHARACTER_COUNT;
+  }
+
   #info(t: Table): RoomInfo {
-    return { id: t.id, seats: t.seats.map((s) => ({ ...s.info })), started: t.room !== null };
+    return {
+      id: t.id,
+      seats: t.seats.map((s) => ({ ...s.info })),
+      started: t.room !== null,
+      // ★ Q-NET-2：地图是房间级设置，跟着 `room` 广播一起同步给所有人
+      globalMapId: t.globalMapId,
+    };
+  }
+
+  /** 按全局地图号取地图；没配 `mapFor` 就只认开局那一张 */
+  #mapFor(globalMapId: number): Rich4Map | null {
+    const { mapFor } = this.#opts;
+    if (mapFor !== undefined) return mapFor(globalMapId) ?? null;
+    return globalMapId === this.#opts.globalMapId ? this.#opts.map : null;
+  }
+
+  /**
+   * Q-NET-2：改自己座位的角色。**服务器校验，不信客户端**。
+   *
+   * 三道闸，缺一不可：
+   *   ① 未开局 —— 角色在 `newGame` 里就烧进局面了，开局后再改会让
+   *      服务器镜像与各客户端当场分歧（而且没有任何 action 能表达这次改动）；
+   *   ② 角色号合法（`isLobbyCharacter`）—— 越界号会在 `newGame` 里查出
+   *      一张不存在的头像，甚至越界读角色表；
+   *   ③ 不与别人撞车（`characterTaken`）—— 同房角色唯一。
+   *
+   * 只有「过闸」才改 `Table` 并广播；被拒时一个字都不动。
+   */
+  #setCharacter(t: Table, seat: number, character: unknown, conn: Conn): void {
+    if (t.room !== null) {
+      conn.send({ t: 'error', message: '已開局：角色不能再改' });
+      return;
+    }
+    if (!isLobbyCharacter(character)) {
+      conn.send({ t: 'error', message: '拒絕：角色編號不合法' });
+      return;
+    }
+    if (characterTaken(t.seats.map((s) => s.info), character, seat)) {
+      conn.send({ t: 'error', message: '拒絕：這個角色已經有人選了' });
+      return;
+    }
+    const slot = t.seats[seat];
+    // 座位必须还是这条连接的（掉线后旧句柄、或已被别人认回）
+    if (slot === undefined || slot.conn !== conn) return;
+    if (slot.info.character === character) return; // 幂等：没变就不广播
+    slot.info.character = character;
+    this.#broadcast(t, { t: 'room', room: this.#info(t) });
+  }
+
+  /**
+   * Q-NET-2：换房间地图。**只有房主（0 号座）、只有未开局**，
+   * 且服务器自己得真有这张图 —— 三条都过才改并广播。
+   *
+   * ⚠️ 地图是**房间级**设置（不是每人的本地设置）：服务器认下之后
+   *   所有人下一次收到 `room` 就都看到新图，开局也照它 `newGame`。
+   */
+  #setMap(t: Table, seat: number, globalMapId: unknown, conn: Conn): void {
+    if (t.room !== null) {
+      conn.send({ t: 'error', message: '已開局：地圖不能再改' });
+      return;
+    }
+    if (seat !== 0) {
+      conn.send({ t: 'error', message: '只有房主（0 號座）能換地圖' });
+      return;
+    }
+    if (!isLobbyMapId(globalMapId)) {
+      conn.send({ t: 'error', message: '拒絕：地圖編號不合法' });
+      return;
+    }
+    if (this.#mapFor(globalMapId) === null) {
+      conn.send({ t: 'error', message: `拒絕：伺服器沒有地圖 ${globalMapId}` });
+      return;
+    }
+    if (t.globalMapId === globalMapId) return; // 幂等
+    t.globalMapId = globalMapId;
+    this.#broadcast(t, { t: 'room', room: this.#info(t) });
   }
 
   #broadcast(t: Table, msg: ServerMessage): void {
     for (const s of t.seats) s.conn?.send(msg);
   }
 
-  /** 开局：空座补电脑，建 Room，广播 start，然后若首位就是电脑就让它走 */
+  /**
+   * 开局：空座补电脑，建 Room，广播 start，然后若首位就是电脑就让它走。
+   *
+   * ★ Q-NET-2：这里的**每一个字段都取自服务器手上的大厅设置**
+   *   （`t.seats` 的角色 + `t.globalMapId`），不读客户端任何本地设置。
+   */
   #start(t: Table): void {
     while (t.seats.length < this.#opts.seatCount) {
       const seat = t.seats.length;
       t.seats.push({
-        info: { seat, name: `電腦${seat + 1}`, character: seat, kind: 'computer' },
+        // 电脑也挑没人占的角色 —— 真人可能已经把 `seat` 号改掉了
+        info: { seat, name: `電腦${seat + 1}`, character: this.#freeCharacter(t.seats), kind: 'computer' },
         conn: null,
         disconnectedAt: null,
         takenOver: false,
       });
     }
+    const map = this.#mapFor(t.globalMapId);
+    if (map === null) {
+      // `setMap` 已经拦过一道；这是「房间建好之后那张图才没了」的兜底
+      this.#broadcast(t, { t: 'error', message: `伺服器沒有地圖 ${t.globalMapId}，無法開局` });
+      return;
+    }
     const seats = t.seats.map((s) => ({ ...s.info }));
     const room = new Room({
       id: t.id,
-      map: this.#opts.map,
-      globalMapId: this.#opts.globalMapId,
+      map,
+      globalMapId: t.globalMapId,
       seed: this.#opts.seedFor(t.id),
       seats,
     });

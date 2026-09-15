@@ -15,7 +15,7 @@ import {
   type GameState,
   type SpecialActor,
 } from '@rich4/core';
-import { CHARACTERS } from '@rich4/data';
+import { CHARACTERS, characterColorRgb } from '@rich4/data';
 import { framesFor, tweenTickCount } from './tween.ts';
 import type { MapNode, Rich4Map } from '@rich4/core';
 import { VIEW_CENTER, VIEW_COUNT, VIEW_SPAN, projectCell, projectWorld } from '@rich4/data';
@@ -94,12 +94,16 @@ export function hitToolbar(sx: number, sy: number): number | null {
  *
  * @source VA 0x0040987d 读的是 `player[owner-1].+0x04`，而该字段开局从角色表的
  *   `color` 拷入（`@rich4/data` 的 `CHARACTERS[i].color`，如約翰喬 0x946126）。
+ *
+ * ★ 字节序 **`0xRRGGBB`**（R 在高字节）已由 exe 数清（原 Q6）：
+ *   原值经 `_rich4_convert_color`（VA 0x004551f0）取 byte2/1/0 当红/绿/蓝，
+ *   再写进精灵表调色板 #255。解码统一走 `@rich4/data` 的 `characterColorRgb`，
+ *   不要在这里再写一份移位（hud.ts 那条角色色长条走的是同一个口）。
  */
 function characterColor(state: GameState, owner: number): readonly [number, number, number] {
   const character = state.players[owner - 1]?.character ?? -1;
   const c = character >= 0 ? CHARACTERS[character]?.color : undefined;
-  const v = c ?? 0xffffff;
-  return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
+  return characterColorRgb(c ?? 0xffffff);
 }
 
 /** 玩家棋子的颜色——原版每人一色，此处先用可区分的四色占位 */
@@ -630,12 +634,78 @@ interface DrawSlot {
   paint: () => void;
 }
 
+/**
+ * 缓存淘汰下来的精灵的**延迟释放**队列（Q-PERF-1）。
+ *
+ * ## 为什么不能就地 `close()`
+ *
+ * `SpriteCache` 的 LRU 只把条目移出它自己那张表 —— 真正握着 `ImageBitmap`
+ * 的是渲染器的 `#ready`（绘制时直接用 `sprite.bitmap`）。所以淘汰时必须有人
+ * 把渲染器那份引用也丢掉，否则内存一点不降（这正是 Q-PERF-1 的症状）。
+ *
+ * 但**也不能在收到淘汰回调的那一刻就 close**：那个位图可能正被本帧画着，
+ * `drawImage` 拿到已关闭的位图会画成空白。淘汰回调发生在**解码完成后的微任务**里
+ * （`#sprites.get(...).then(...)`），也就是两帧之间 —— 于是安全的分界点很清楚：
+ *
+ *   · **淘汰发生时**：只从 `#ready` 摘掉引用并排进本队列 —— 下一帧起不再画它；
+ *   · **下一帧的绘制开始时**（`BoardRenderer.draw` 的**第一件事**）：才真正 `close()`。
+ *     此刻上一帧的 rAF 回调早已整个跑完（画布上的 `drawImage` 是同步落地的），
+ *     队列里每一张都确定「不会再被任何一帧用到」。
+ *
+ * 反过来说：**只要 close 发生在 draw 之内或之前**（而不是之后），就一定安全；
+ * 放在 draw 末尾同样安全，选开头只是因为那时语义最直白 ——「上一帧画完了」。
+ */
+export class DeferredSpriteClose {
+  readonly #queue: Sprite[] = [];
+
+  /**
+   * 淘汰回调的落点：把这个精灵从持有者的表里摘掉并排队等帧边界。
+   *
+   * ★ 返回 0（**不排队**）也是一种正常结果：本渲染器「从没画过它」，
+   *   说明它是**别的持有者**（`hud.ts` 也有一张 `#ready`）在用。那种精灵
+   *   一律不动 —— 见 Q-PERF-1 的「还剩什么没解」。
+   *
+   * @returns 摘掉了几条缓存键（= 这个渲染器持有它的证据）
+   */
+  retire(ready: Map<string, Sprite | null>, sprite: Sprite): number {
+    let removed = 0;
+    for (const [key, held] of ready) {
+      if (held === sprite) {
+        ready.delete(key);
+        removed++;
+      }
+    }
+    if (removed > 0) this.#queue.push(sprite);
+    return removed;
+  }
+
+  /** 帧边界：真正关掉位图。返回释放了几张 */
+  drain(): number {
+    const n = this.#queue.length;
+    for (const sprite of this.#queue) sprite.bitmap.close();
+    this.#queue.length = 0;
+    return n;
+  }
+
+  /** 已摘掉引用、等着帧边界释放的张数（诊断用） */
+  get pending(): number {
+    return this.#queue.length;
+  }
+}
+
 export class BoardRenderer {
   readonly #ctx: CanvasRenderingContext2D;
   readonly #sprites: SpriteCache;
   /** 已请求但尚未解码完成的精灵——避免同一帧内重复发起 */
   readonly #pending = new Set<string>();
   #ready = new Map<string, Sprite | null>();
+  /**
+   * 淘汰下来、等着帧边界释放的精灵（Q-PERF-1）。
+   *
+   * ⚠️ `SpriteCache` 构造在 `main.ts`（本卡不改它），故监听是渲染器**在构造时
+   *   自己挂上去的**（`addEvictListener`），不靠外面接线。
+   */
+  readonly #evicted = new DeferredSpriteClose();
   /** 有新精灵解码完成时置位，驱动下一帧重绘 */
   #dirty = false;
   /**
@@ -707,6 +777,12 @@ export class BoardRenderer {
   constructor(ctx: CanvasRenderingContext2D, sprites: SpriteCache) {
     this.#ctx = ctx;
     this.#sprites = sprites;
+    // ★ Q-PERF-1：缓存淘汰 → 摘掉本渲染器这份引用并排队，帧边界再 close。
+    //   挂在这里而不是构造缓存的地方，是因为构造缓存的 `main.ts` 不是本卡的范围，
+    //   而渲染器本来就拿得到同一份缓存。
+    sprites.addEvictListener((sprite) => {
+      this.#evicted.retire(this.#ready, sprite);
+    });
   }
 
   /** 由宿主注入「再画一帧」 */
@@ -979,6 +1055,10 @@ export class BoardRenderer {
 
   /** 只画**棋盘区**。工具栏与側欄由舞台负责摆位（见 stage.ts）。 */
   draw(input: RenderInput): void {
+    // ★ 帧边界（Q-PERF-1）：上一帧已经整个画完，淘汰下来排着队的精灵现在才轮到 close。
+    //   必须在**用**任何精灵之前做 —— 这样本帧就不会去用一张刚关掉的位图。
+    this.#evicted.drain();
+
     const { map, state, camera, hoverNode } = input;
     const ctx = this.#ctx;
     const width = input.viewport.w;

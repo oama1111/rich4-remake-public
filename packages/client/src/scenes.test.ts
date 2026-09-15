@@ -28,7 +28,20 @@ describe('場所背景', () => {
     expect(sceneFor({ kind: 'lottery', available: [], price: 0, owned: 0 })).toBe(
       SCENE.lotteryCounter,
     );
-    expect(sceneFor({ kind: 'auction', entityId: 1, basePrice: 0, bidders: [] })).toBe(SCENE.auction);
+    expect(
+      sceneFor({
+        kind: 'auction',
+        entityId: 1,
+        basePrice: 0,
+        bidders: [],
+        price: 0,
+        top: -1,
+        topCash: 0,
+        seat: 0,
+        status: [],
+        limits: [],
+      }),
+    ).toBe(SCENE.auction);
   });
 
   it('★ 卡片商店／道具商店**不走这条路** —— 它要叠资源 10 的十几张图，另有整屏实现', () => {

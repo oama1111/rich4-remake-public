@@ -8,11 +8,12 @@
  *   slice    <assets-clean> <queue> [N]     按帧切片 + Alpha 分离（T-061）
  *   merge    <queue> <upscale-done>         回填校验 + Alpha 合并（T-062）
  *   assemble <queue> <upscale-done> <hd>    落进 assets/hd + 写清单（T-063）[模型]
+ *   seams    <hd> <assets-clean> [地图号…]  地图底图的接缝检查（T-064，真实输入）
  *   review   <hd> <assets-clean> [输出]     生成并排过审页（T-066）
  *   status   <hd>                           看进度
  *   ingest   <assets-clean> <hd> [模型]     回填已完成的产物（旧路径，见下）
  *
- * 交接链：plan → slice → [外部超分 4×] → merge → assemble → review。
+ * 交接链：plan → slice → [外部超分 4×] → merge → assemble → seams → review。
  * `ingest` 保留给「产物直接按原名放进 hd 目录」的旧路径，与 assemble 二选一。
  *
  * ★ 交接方式刻意做成「文件 + 清单」而不是直接调某个模型的 API：
@@ -26,6 +27,7 @@ import { basename, dirname, join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
   emptyManifest,
+  hdRelativePath,
   pendingTasks,
   planUpscale,
   recordResult,
@@ -38,6 +40,8 @@ import { buildQueueFrame, sliceFrame, type QueueManifest } from './slice.ts';
 import { mergeUpscaled, validatePair, type MergeRejection } from './merge.ts';
 import { assembleHd, type AssembleIo } from './assemble.ts';
 import { buildReviewRows, renderReviewHtml } from './review.ts';
+import { compareAllSeams, compareTileSeams, type AllSeamHit } from './seams.ts';
+import { asGroundImage, GND_TILE_HEIGHT, GND_TILE_WIDTH } from './ground.ts';
 
 /**
  * 由 hd 目录推出清单路径：与之**同级**、不在其内。
@@ -202,8 +206,8 @@ export function cmdMerge(queueDir: string, doneDir: string): void {
     const alphaRel = frame.alpha.replace(/^alpha\//, '');
     const rgbPath = join(doneDir, 'rgb', rgbRel);
     const alphaPath = join(doneDir, 'alpha', alphaRel);
-    const rgb = existsSync(rgbPath) ? decodePng(new Uint8Array(readFileSync(rgbPath))) : null;
-    const alpha = existsSync(alphaPath) ? decodePng(new Uint8Array(readFileSync(alphaPath))) : null;
+    let rgb = existsSync(rgbPath) ? decodePng(new Uint8Array(readFileSync(rgbPath))) : null;
+    let alpha = existsSync(alphaPath) ? decodePng(new Uint8Array(readFileSync(alphaPath))) : null;
 
     // exactOptionalPropertyTypes：不能塞 undefined，只能不给这个键。
     const hashes: { rgbSha256?: string; alphaSha256?: string } = {};
@@ -220,6 +224,12 @@ export function cmdMerge(queueDir: string, doneDir: string): void {
     }
 
     const merged = mergeUpscaled(rgb!, alpha!);
+    // ★ 合并完就把交出去的那两张解开的图放掉（Q-GND-4 的底图：9216² 每张 324MB）。
+    //   下面 encodePng 自己还要开一份整幅的缓冲，两者叠起来就是这一步的峰值 ——
+    //   实测（底图 9216²）：不放手时 arrayBuffers 峰值 2030MB，放手后少 648MB。
+    //   顺带一提：`mergeUpscaled` 已经把像素抄进 merged 了，这里不碰它们。
+    rgb = null;
+    alpha = null;
     // 锚点同步 ×倍率（C-AST-6）；尺寸已经校验恰为 原图×scale
     const anchored = {
       ...merged,
@@ -302,6 +312,128 @@ export function cmdAssemble(queueDir: string, doneDir: string, hdDir: string, mo
     if (report.broken.length > 20) console.log(`  …还有 ${report.broken.length - 20} 项`);
   }
   console.log(`\n清单：${manifestPath(hdDir)}`);
+}
+
+// ============================================================
+//  seams —— 底图的接缝检查（T-064，真实输入）
+// ============================================================
+
+/** 一张底图查完的结果 */
+export interface GroundSeamSummary {
+  /** 地图号（`global_map_id` = 资源号 / 2） */
+  map: number;
+  id: string;
+  width: number;
+  height: number;
+  scale: number;
+  /** 32px 格线上比了多少条（`compareTileSeams`） */
+  gridChecked: number;
+  /** 格线上报出的新增接缝 */
+  gridSeams: number;
+  /** 逐列/逐行全扫比了多少条（`compareAllSeams`） */
+  allChecked: number;
+  /** 全扫报出的新增接缝（含格线上的） */
+  allSeams: number;
+  /** ★ **非**格线上的新增接缝 —— 逐块放大那条路根本查不到的东西 */
+  offGridSeams: number;
+  /** 增量最大的一条 */
+  worst: AllSeamHit | null;
+}
+
+/**
+ * 底图的接缝检查 —— **T-064 一直缺的那个「真实输入」**（Q-GND-4）。
+ *
+ * 之所以要单独一步，是因为接缝判据是**相对**的：必须同时拿到**原图**与**放大图**
+ * 两张才能算「放大后变差了多少」。`review` 只管并排看，`merge` 只管像素合格与否，
+ * 都不看接缝。
+ *
+ * 两套口径各跑一遍（见 `seams.ts`）：
+ *   · `compareTileSeams` —— 原版 32px 格线，逐块放大那条路的判据；
+ *   · `compareAllSeams`  —— 逐列/逐行全扫，**整张放大**这条路的判据
+ *     （模型内部分块线不在 32px 网格上，前者一条也查不到）。
+ *
+ * @param maps 只查这几张地图；不给就查全部有产物的底图
+ */
+export function cmdSeams(hdDir: string, cleanDir: string, maps?: readonly number[]): GroundSeamSummary[] {
+  const manifest = loadManifest(hdDir);
+  const grounds = manifest.tasks.filter(
+    (t) => t.format === 'GND' && (maps === undefined || maps.includes(Math.floor(t.resource / 2))),
+  );
+
+  if (grounds.length === 0) {
+    console.log('清单里没有底图任务 —— 先重新跑 cli-extract（底图从 Q-GND-4 起才进清单）再 plan。');
+    return [];
+  }
+
+  const out: GroundSeamSummary[] = [];
+  for (const task of grounds) {
+    const map = Math.floor(task.resource / 2);
+    const srcPath = join(cleanDir, task.input);
+    const hdPath = join(hdDir, hdRelativePath(task.archive, task.resource, task.image));
+
+    if (manifest.results[task.id] === undefined || !existsSync(hdPath)) {
+      console.log(`  地图 ${map}：还没有放大产物（${hdRelativePath(task.archive, task.resource, task.image)}），跳过。`);
+      continue;
+    }
+    if (!existsSync(srcPath)) {
+      console.log(`  地图 ${map}：找不到原图 ${srcPath}，跳过。`);
+      continue;
+    }
+
+    try {
+      const origPng = decodePng(new Uint8Array(readFileSync(srcPath)));
+      const upPng = decodePng(new Uint8Array(readFileSync(hdPath)));
+      // `decodePng` 只给像素与尺寸；两条接缝判据要的 `tilesX/tilesY` 是**原版 32px 格**，
+      // 由原图尺寸推出来（底图恒为 2304 = 72×32）——放大图只借用同一套格号。
+      const tilesX = Math.round(origPng.width / GND_TILE_WIDTH);
+      const tilesY = Math.round(origPng.height / GND_TILE_HEIGHT);
+      const orig = asGroundImage(origPng, tilesX, tilesY);
+      const up = asGroundImage(upPng, tilesX, tilesY);
+      const grid = compareTileSeams(orig, up, { tilesX, tilesY });
+      const all = compareAllSeams(orig, up);
+      const offGrid = all.seams.filter((s) => !s.onGrid);
+      const summary: GroundSeamSummary = {
+        map,
+        id: task.id,
+        width: up.width,
+        height: up.height,
+        scale: all.scale,
+        gridChecked: grid.checked,
+        gridSeams: grid.seams.length,
+        allChecked: all.checkedX + all.checkedY,
+        allSeams: all.seams.length,
+        offGridSeams: offGrid.length,
+        worst: all.seams[0] ?? null,
+      };
+      out.push(summary);
+      reportGround(summary);
+    } catch (e) {
+      // 尺寸不合规（不是恰好 ×scale）会让 compareTileSeams 抛错 —— 那是产物的问题，
+      // 报出来而不是让整条命令炸掉，否则一张坏图会把其余地图的检查也挡住。
+      console.log(`  地图 ${map}：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  const bad = out.filter((s) => s.allSeams > 0);
+  console.log(
+    `\n查了 ${out.length} 张底图；${bad.length} 张有新增接缝` +
+      `（其中 ${out.reduce((n, s) => n + s.offGridSeams, 0)} 条落在**非** 32px 格线上）。`,
+  );
+  return out;
+}
+
+/** 单张底图的检查结论 —— 有非格线接缝时把这一行顶出来 */
+function reportGround(s: GroundSeamSummary): void {
+  const mark = s.offGridSeams > 0 ? '★' : ' ';
+  const tail =
+    s.worst === null
+      ? '未见新增接缝'
+      : `最差 +${s.worst.increase.toFixed(2)} ΔE @ (${s.worst.pixel.x},${s.worst.pixel.y})${s.worst.onGrid ? '' : ' [非格线]'}`;
+  console.log(
+    `  ${mark} 地图 ${s.map}  ${s.width}×${s.height}（×${s.scale}）：` +
+      `格线 ${s.gridSeams}/${s.gridChecked}、全扫 ${s.allSeams}/${s.allChecked}` +
+      `（非格线 ${s.offGridSeams}）　${tail}`,
+  );
 }
 
 // ============================================================
@@ -461,6 +593,14 @@ function main(argv: string[]): void {
       if (rest.length < 3) throw new Error('用法: assemble <upscale-queue> <upscale-done> <hd> [模型名]');
       cmdAssemble(rest[0]!, rest[1]!, rest[2]!, rest[3]);
       break;
+    case 'seams':
+      if (rest.length < 2) throw new Error('用法: seams <hd> <assets-clean> [地图号…]');
+      cmdSeams(
+        rest[0]!,
+        rest[1]!,
+        rest.length > 2 ? rest.slice(2).map((n) => Number(n)) : undefined,
+      );
+      break;
     case 'review':
       if (rest.length < 2) throw new Error('用法: review <hd> <assets-clean> [输出.html]');
       cmdReview(rest[0]!, rest[1]!, rest[2]);
@@ -482,6 +622,7 @@ function main(argv: string[]): void {
           '  slice    <assets-clean> <queue> [N]     按帧切片 + Alpha 分离（T-061）',
           '  merge    <queue> <upscale-done>         回填校验 + Alpha 合并（T-062）',
           '  assemble <queue> <upscale-done> <hd>    落进 assets/hd + 写清单（T-063）[模型]',
+          '  seams    <hd> <assets-clean> [地图号…]  地图底图的接缝检查（T-064，真实输入）',
           '  review   <hd> <assets-clean> [输出]     生成并排过审页（T-066）',
           '  status   <hd>                           看进度',
           '  ingest   <assets-clean> <hd> [模型]     回填已完成的产物（旧路径）',

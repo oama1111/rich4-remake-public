@@ -7,7 +7,9 @@
  * 图号 = 序号 + 1、金额从右往左一位一张数字图。
  */
 import { describe, expect, it } from 'vitest';
+import type { Sprite } from './assets.ts';
 import {
+  ATM_BAR_STEP,
   ATM_BUTTONS,
   ATM_DIGIT,
   ATM_KEYS,
@@ -21,9 +23,11 @@ import {
   atmLimit,
   atmKeyOf,
   atmPress,
+  drawAtmBar,
   hitAtmButton,
   type AtmState,
 } from './bank-screen.ts';
+import { ATM_BAR, ATM_PCT_SCALE } from './bank-dynamic.ts';
 
 describe('ATM 面板几何 @source VA 0x4379c9 / 表 0x475888', () => {
   it('★ 面板是资源 24、落 (60,71)', () => {
@@ -142,5 +146,50 @@ describe('ATM 的按键逻辑（纯函数）', () => {
     expect(atmKeyOf(18)).toBeNull();
     expect(atmPress(base, 3)).toEqual(base);
     expect(atmPress(base, 99)).toEqual(base);
+  });
+});
+
+describe('ATM 进度条（Q-BANK-1 / T-029c）@source fcn_00436d3a', () => {
+  /** 假 ctx：逐次记下 drawImage 的 (sx,sy,sw,sh,dx,dy) */
+  const fakeCtx = (): { ctx: CanvasRenderingContext2D; calls: number[][] } => {
+    const calls: number[][] = [];
+    const ctx = {
+      drawImage: (...args: unknown[]) => {
+        // 九参形式：bitmap, sx, sy, sw, sh, dx, dy, dw, dh —— 取后面前 6 个就够定位
+        calls.push((args.slice(1) as number[]).slice(0, 6));
+      },
+    };
+    return { ctx: ctx as unknown as CanvasRenderingContext2D, calls };
+  };
+  /** 所有图都当成 320×338、锚点 (0,0) */
+  const sp = (): Sprite =>
+    ({ bitmap: {} as ImageBitmap, width: 320, height: 338, anchorX: 0, anchorY: 0 }) as Sprite;
+
+  it('★ 满格：只画填充（图 4 的 204×26 → (118,210)），不画空余', () => {
+    const f = fakeCtx();
+    drawAtmBar(f.ctx, sp, 9999, 9999);
+    expect(f.calls).toEqual([[0, 0, ATM_BAR.w, ATM_BAR.h, ATM_BAR.x, ATM_BAR.y]]);
+  });
+
+  it('★ 一半：填充 + 从图 0 的 (58+w,139) 还原空余', () => {
+    const f = fakeCtx();
+    // limit = 3400 → pct = trunc(1700/3400×34) = 17 → w = 102
+    drawAtmBar(f.ctx, sp, 1700, 3400);
+    expect(f.calls).toEqual([
+      [0, 0, 102, 26, 118, 210],
+      [58 + 102, 139, 204 - 102, 26, 118 + 102, 210],
+    ]);
+  });
+
+  it('★ 空条：只还原（整条从图 0 拷回来）', () => {
+    const f = fakeCtx();
+    drawAtmBar(f.ctx, sp, 0, 1000);
+    expect(f.calls).toEqual([[58, 139, 204, 26, 118, 210]]);
+  });
+
+  it('★ 常数：比例 34、一格 6 像素（34×6 = 204 = 条宽）', () => {
+    expect(ATM_PCT_SCALE).toBe(34);
+    expect(ATM_BAR_STEP).toBe(6);
+    expect(ATM_PCT_SCALE * ATM_BAR_STEP).toBe(ATM_BAR.w);
   });
 });

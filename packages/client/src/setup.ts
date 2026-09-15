@@ -540,33 +540,131 @@ export function setupPhase(now: number): { tick: number; scroll: number } {
   return { tick, scroll: (tick * 2) % SCREEN_W };
 }
 
+// ── 点 OK 之后的「拉幕」（原版状态 2）────────────────────
+//
+// 原版点 `OK` 后并不是直接进棋盘：
+//   ① 还空着的座位由**定时器**随机补成電腦（每 10 跳补一个，状态 1）；
+//   ② 补满后换成 **50ms** 的定时器进状态 2：**角色格往左、竖栏往右**滑出屏幕，
+//      底部几个小人**往右走出画面**；
+//   ③ 最后一名小人走出画面（blitter 报告「没画上」）会自动收尾，
+//      中途**按键或点一下**也可以提前收尾。
+//
+// @source `_rich4_init_new_game_callback` 的 `loc_00405eb8`（状态 2 分派）、
+//   `loc_00405f04`（WM_TIMER：改偏移）、`loc_00405f80`（WM_PAINT：画）、
+//   `loc_00405f6a`（按键/点击 → KillTimer 收尾）、`loc_00406091`（最后一名小人
+//   走出画面 → 自己 PostMessage 一个 WM_KEYDOWN）。
+//
+// 变量（VA 均已核）：
+//   `[0x48a3e4]` 角色格 x，初值 10，每跳 `−= [0x48a3fc]`（`sub` @ 0x00405f48）
+//   `[0x48a3e8]` 竖栏 x，初值 0x1bd = 445，每跳 `+= [0x48a3fc]`（`add` @ 0x00405f49）
+//   `[0x48a3fc]` 横向速度，初值 6，每跳 `+= 2`（@ 0x00405f2f）
+//   `[0x48a400]` 小人速度，初值 4，每跳 +1 且**封顶 0x1e = 30**（@ 0x00405f31）
+//   `[0x48a3ec..0x48a3f8]` 四名小人的 x，每跳 `+= [0x48a400]`
+//   `[0x48a3c8]` 场景滚动量 —— 拉幕期间**不再推进**（状态 2 的 WM_TIMER 不碰它）
+
+/** 拉幕的定时器周期：`SetTimer(hwnd, 0, 0x32, …)` = 50ms @source VA 0x00405d0d 段 */
+export const OUTRO_TICK_MS = 0x32;
+
+/** 小人每跳的横向速度上限 @source `cmp ecx, 0x1e`（VA 0x00405f2c） */
+export const OUTRO_WALKER_SPEED_MAX = 0x1e;
+
+/**
+ * 拉幕的第 n 跳（n 从 1 起）。
+ *
+ * ```
+ * 横向速度 = 6 + 2n            ⇒ 角色格/竖栏位移 = Σ(6+2k) = n² + 7n
+ * 小人速度 = min(4 + n, 30)    ⇒ 小人位移      = Σ min(4+k, 30)
+ * ```
+ */
+export function outroOffsets(tick: number): {
+  boardDx: number;
+  panelDx: number;
+  walkerDx: number;
+} {
+  const n = Math.max(0, Math.floor(tick));
+  const slide = n * n + 7 * n;
+  // Σ_{k=1..n} min(4+k, 30) —— 25 跳之后速度封顶，故直接照递推加（n 很小）
+  let walkerDx = 0;
+  for (let k = 1; k <= n; k++) walkerDx += Math.min(4 + k, OUTRO_WALKER_SPEED_MAX);
+  return { boardDx: -slide, panelDx: slide, walkerDx };
+}
+
+/** 拉幕的当前状态：已走的跳数 + 冻结住的背景滚动量 */
+export interface SetupOutro {
+  tick: number;
+  /** 进拉幕那一刻的场景滚动量 —— 原版这期间不推进 `[0x48a3c8]` */
+  scroll: number;
+}
+
+/** 由「开始时刻 + 当前时刻」算拉幕状态 */
+export function setupOutro(now: number, startedAt: number, scroll: number): SetupOutro {
+  return { tick: Math.floor((now - startedAt) / OUTRO_TICK_MS), scroll };
+}
+
+/** 某个座位的小人在拉幕里的落点 */
+export function outroWalkerX(s: SetupState, seat: number, tick: number): number {
+  const base = SEAT_X[s.playerCount - MIN_PLAYERS]?.[seat] ?? 0;
+  return base + outroOffsets(tick).walkerDx;
+}
+
+/**
+ * 画一屏。
+ *
+ * @param outro 非 null 时进「拉幕」（原版状态 2）：角色格往左、竖栏往右、
+ *   小人往右走出画面；场景滚动**冻结**。
+ * @returns **拉幕是否已经收尾** —— 判据与原版一致：最后一名小人的 blit
+ *   **没画上**（`fcn_0045663e` 返回 1，即整个人已经在屏幕右侧之外）。
+ *   非拉幕时恒为 false。
+ *   @source `loc_00406091`：`cmp [eax*4 + 0x48a3d8], 0 / je 继续`，
+ *     非 0（= 没画上）就自己 `PostMessage(WM_KEYDOWN)` 收尾。
+ */
 export function drawSetup(
   ctx: CanvasRenderingContext2D,
   s: SetupState,
   need: Need,
   now: number,
   scene: ImageBitmap | null,
-): void {
+  outro: SetupOutro | null = null,
+): boolean {
+  // 拉幕期间背景滚动不再推进（原版状态 2 的 WM_TIMER 不碰 `[0x48a3c8]`）
   const { tick, scroll } = setupPhase(now);
+  const at = outro === null ? scroll : outro.scroll;
 
   // ① 整屏场景：横向循环滚动。原版是逐行**循环移位**（`fcn_00456180`），
   //    等价于把同一张图贴两遍、一起左移。
   if (scene !== null) {
-    ctx.drawImage(scene, -scroll, 0);
-    ctx.drawImage(scene, SCREEN_W - scroll, 0);
+    ctx.drawImage(scene, -at, 0);
+    ctx.drawImage(scene, SCREEN_W - at, 0);
   } else {
     ctx.fillStyle = '#123049';
     ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
   }
 
   // ② 底部往前走的四个人
-  drawWalkers(ctx, s, need, tick);
+  const lastDrawn = drawWalkers(ctx, s, need, tick, outro);
 
-  drawBoard(ctx, s, need);
-  drawPanel(ctx, s, need);
+  drawBoard(ctx, s, need, outro);
+  drawPanel(ctx, s, need, outro);
+  return outro !== null && !lastDrawn;
 }
 
-function drawWalkers(ctx: CanvasRenderingContext2D, s: SetupState, need: Need, tick: number): void {
+/**
+ * 画底部的小人。
+ *
+ * @returns **最后一名座位的小人这一帧有没有画上** —— 拉幕的收尾判据
+ *   （原版 `fcn_0045663e` 返回 0 = 画上了、1 = 整个人在屏幕外）。
+ */
+function drawWalkers(
+  ctx: CanvasRenderingContext2D,
+  s: SetupState,
+  need: Need,
+  tick: number,
+  outro: SetupOutro | null,
+): boolean {
+  // 拉幕的收尾判据：**最后一名座位**的小人走到屏幕右侧之外。
+  // 初值 true = 「还没看它出去」—— 图还没解出来（`img === null`）时不能算收尾，
+  // 否则素材慢一拍就会把整段拉幕跳过去。
+  let lastDrawn = true;
   for (let seat = 0; seat < s.characters.length && seat < s.playerCount; seat++) {
     const character = s.characters[seat]!;
     const resource = setupWalkResource(character, s.vehicle);
@@ -590,19 +688,33 @@ function drawWalkers(ctx: CanvasRenderingContext2D, s: SetupState, need: Need, t
       }
     }
     if (img === null) continue;
-    const x = SEAT_X[s.playerCount - MIN_PLAYERS]?.[seat] ?? 0;
+    const x = outro === null ? seatXOf(s, seat) : outroWalkerX(s, seat, outro.tick);
     sprite(ctx, img, x, SEAT_Y);
+    // 原版 blitter 的「画没画上」判据：精灵左上角（已减锚点）落在屏幕右侧之外
+    if (seat === s.playerCount - 1) lastDrawn = x - img.anchorX < SCREEN_W;
   }
+  return lastDrawn;
 }
 
-function drawBoard(ctx: CanvasRenderingContext2D, s: SetupState, need: Need): void {
+/** 某个座位的静止落点 @ 0x46cb58 */
+function seatXOf(s: SetupState, seat: number): number {
+  return SEAT_X[s.playerCount - MIN_PLAYERS]?.[seat] ?? 0;
+}
+
+function drawBoard(
+  ctx: CanvasRenderingContext2D,
+  s: SetupState,
+  need: Need,
+  outro: SetupOutro | null,
+): void {
+  const dx = outro === null ? 0 : outroOffsets(outro.tick).boardDx;
   const board = need('jump.mkf', SETUP_UI_RESOURCE, SETUP_UI.board);
-  if (board !== null) ctx.drawImage(board.bitmap, BOARD.x, BOARD.y);
+  if (board !== null) ctx.drawImage(board.bitmap, BOARD.x + dx, BOARD.y);
 
   for (let i = 0; i < CHARACTER_COUNT; i++) {
     const col = i % GRID.cols;
     const row = Math.floor(i / GRID.cols);
-    const x = BOARD.x + col * PORTRAIT + GRID.dx;
+    const x = BOARD.x + dx + col * PORTRAIT + GRID.dx;
     const y = BOARD.y + row * PORTRAIT + GRID.dy;
     const seated = seatOf(s, i);
 
@@ -620,7 +732,7 @@ function drawBoard(ctx: CanvasRenderingContext2D, s: SetupState, need: Need): vo
   if (s.hover < 0 || seatOf(s, s.hover) >= 0) return;
   const col = s.hover % GRID.cols;
   const row = Math.floor(s.hover / GRID.cols);
-  const px = BOARD.x + col * PORTRAIT + PLATE.dx;
+  const px = BOARD.x + dx + col * PORTRAIT + PLATE.dx;
   // 第 0 行往下挪、第 1 行往上挪 —— 两块牌子都落在两行头像中间那条带子上
   const py = BOARD.y + row * PORTRAIT + GRID.dy + (row === 0 ? 0x44 : -0x18);
   multiply(ctx, { x: px, y: py, w: PLATE.w, h: PLATE.h }, PLATE_MULTIPLY);
@@ -637,11 +749,20 @@ function drawBoard(ctx: CanvasRenderingContext2D, s: SetupState, need: Need): vo
   );
 }
 
-function drawPanel(ctx: CanvasRenderingContext2D, s: SetupState, need: Need): void {
+function drawPanel(
+  ctx: CanvasRenderingContext2D,
+  s: SetupState,
+  need: Need,
+  outro: SetupOutro | null,
+): void {
+  const dx = outro === null ? 0 : outroOffsets(outro.tick).panelDx;
   const stage = s.mapId >> 2;
   const mapInStage = s.mapId & 3;
+  // 原版整套竖栏是画进一个 192×461 的缓冲再整体贴出去的，所以拉幕时
+  // 图、红勾、六条标签与数值、按下图**一起**右移。
+  const px0 = PANEL.x + dx;
   const panel = need('jump.mkf', SETUP_UI_RESOURCE, setupPanelImage(stage));
-  if (panel !== null) ctx.drawImage(panel.bitmap, PANEL.x, PANEL.y);
+  if (panel !== null) ctx.drawImage(panel.bitmap, px0, PANEL.y);
 
   // ① 地图行上的红勾。★ 画进竖栏缓冲、锚点 (0,0)：
   //    竖栏内 (150, 20/52/84/116) —— 后者正是 0x46cc80 那张表，也就是各行上沿。
@@ -650,7 +771,7 @@ function drawPanel(ctx: CanvasRenderingContext2D, s: SetupState, need: Need): vo
   if (mark !== null) {
     ctx.drawImage(
       mark.bitmap,
-      PANEL.x + TICK_X - mark.anchorX,
+      px0 + TICK_X - mark.anchorX,
       PANEL.y + TICK_Y[mapInStage]! - mark.anchorY,
     );
   }
@@ -658,8 +779,8 @@ function drawPanel(ctx: CanvasRenderingContext2D, s: SetupState, need: Need): vo
   // ② 六条：左标签（描边白字）+ 右值（黑字、右对齐、垂直居中）
   for (let menu = 0; menu < 6; menu++) {
     const y = PANEL.y + CONFIG_ROW_Y[menu]!;
-    text(ctx, CONFIG_TITLES[menu]!, PANEL.x + CONFIG_LABEL_X, y, CONFIG_FONT, 'left', LABEL_COLOR, '#101010', true);
-    text(ctx, menuItems(s, menu)[menuValue(s, menu)] ?? '', PANEL.x + CONFIG_VALUE_X, y, CONFIG_FONT, 'right', VALUE_COLOR);
+    text(ctx, CONFIG_TITLES[menu]!, px0 + CONFIG_LABEL_X, y, CONFIG_FONT, 'left', LABEL_COLOR, '#101010', true);
+    text(ctx, menuItems(s, menu)[menuValue(s, menu)] ?? '', px0 + CONFIG_VALUE_X, y, CONFIG_FONT, 'right', VALUE_COLOR);
   }
 
   // ③ 按下不放：两颗按钮换按下图，六条下拉的蓝三角换成黄三角
@@ -671,11 +792,11 @@ function drawPanel(ctx: CanvasRenderingContext2D, s: SetupState, need: Need): vo
   if (downImg >= 0) {
     const rect = CONTROL_RECTS[s.pressed]!;
     const down = need('jump.mkf', SETUP_UI_RESOURCE, downImg);
-    if (down !== null) ctx.drawImage(down.bitmap, rect.x, rect.y);
+    if (down !== null) ctx.drawImage(down.bitmap, rect.x + dx, rect.y);
   }
 
-  // ④ 弹开的下拉
-  if (s.openMenu >= 0) drawPopup(ctx, s, need);
+  // ④ 弹开的下拉（拉幕时不可能开着 —— 按 OK 那一下已经把它收掉）
+  if (outro === null && s.openMenu >= 0) drawPopup(ctx, s, need);
 }
 
 /**

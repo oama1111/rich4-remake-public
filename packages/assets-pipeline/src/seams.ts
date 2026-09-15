@@ -360,15 +360,7 @@ export function compareTileSeams(
   const band = Math.max(1, opts.band ?? SEAM_BAND);
   const uBand = band * scale;
 
-  if (scale < 1) throw new Error(`超分倍率 ${scale} 不合理（up ${upscaled.width} / src ${original.width}）`);
-
-  const wantW = original.width * scale;
-  const wantH = original.height * scale;
-  if (upscaled.width !== wantW || upscaled.height !== wantH) {
-    throw new Error(
-      `放大图 ${upscaled.width}×${upscaled.height} 不等于原图 ${original.width}×${original.height} ×${scale} = ${wantW}×${wantH}`,
-    );
-  }
+  requireScaledPair(original, upscaled, scale);
 
   const seams: SeamIncrease[] = [];
   let checked = 0;
@@ -432,6 +424,214 @@ export function compareTileSeams(
 
   seams.sort((p, q) => q.increase - p.increase);
   return { tilesX, tilesY, scale, margin, checked, seams };
+}
+
+/**
+ * 两张图必须**恰好**是 `scale` 倍的关系，否则后面的坐标换算全是错的。
+ * 单独抽出来是因为 `compareTileSeams` 与 `compareAllSeams` 都要这一条。
+ */
+function requireScaledPair(original: GroundImage, upscaled: GroundImage, scale: number): void {
+  if (scale < 1) throw new Error(`超分倍率 ${scale} 不合理（up ${upscaled.width} / src ${original.width}）`);
+  const wantW = original.width * scale;
+  const wantH = original.height * scale;
+  if (upscaled.width !== wantW || upscaled.height !== wantH) {
+    throw new Error(
+      `放大图 ${upscaled.width}×${upscaled.height} 不等于原图 ${original.width}×${original.height} ×${scale} = ${wantW}×${wantH}`,
+    );
+  }
+}
+
+// ============================================================
+//  整张放大：逐列 / 逐行全扫（Q-GND-4 的另一套口径）
+// ============================================================
+
+/**
+ * ★ **底图走「整张放大」时的接缝判据**（Q-GND-4）。
+ *
+ * `compareTileSeams` 只比**原版 32px 格线**上那 10224 条缝（72×72 格）—— 那套口径成立的前提是
+ * 「放大是逐块做的，伪影只会长在块边界上」。整张放大没有这个前提：模型内部若按
+ * 256/400px 分块（Real-ESRGAN 的 `--tile` 就是干这个的），接缝会落在**模型自己的**
+ * 分块线上，与 32px 格毫无关系，`compareTileSeams` 会**一条都查不到**。
+ *
+ * 所以这里换一套口径：**不比格线，比每一条线**。
+ *   · 竖线取**原图每一个像素边界** `xo = band..W−band`（放大图上是 `xo × scale`）全扫，
+ *     横线同理；`compareTileSeams` 查的 72 格线只是其中的 71 条；
+ *   · 每条线仍用「带内均值 ΔE，放大后 − 放大前 > 一个 JND」这条**相对**判据
+ *     （绝对阈值区分不了真地形边界与伪影，见文件头）；
+ *   · 只取 `scale` 的整数倍位置：非整数倍在线在原图里没有对应物，连忠实最近邻
+ *     放大都会在噪声纹理上假报（见 `compareAllSeams` 里的注释）；
+ *   · 报告里带 `onGrid`，把「原版块边界」与「模型自己的分块线」分开：
+ *     ★ **非格线上报出来的，就是逐块放大那条路根本查不到的东西。**
+ *
+ * 取带范围是**整幅的高/宽**（`compareTileSeams` 取的是一格高）。理由：模型固定
+ * 分块时，同一个 `x = k·T` 的竖缝会在每一块行上**共线**地重复，整幅平均不会把它
+ * 稀释掉；反过来，只看一格高更容易被局部高频纹理带偏。代价是对「只在某一小段
+ * 出现的接缝」不敏感 —— 那种伪影本来就少见，且 `findTileSeams` 仍可配合定位。
+ *
+ * 复杂度：预计算每列/每行的 RGB 前缀和（一次 O(W·H)），之后**每条线 O(1)**，
+ * 9216² 的图也只多跑两趟线性扫描，不必对每条线重扫全图。
+ */
+export interface AllSeamHit {
+  side: 'right' | 'bottom';
+  /** 缝的整图像素坐标（**放大图**上）—— 人工去图上找它用 */
+  pixel: { x: number; y: number };
+  /** 放大前这条线的带内均值 ΔE（原图侧，见 `compareAllSeams` 的取法） */
+  before: number;
+  /** 放大后同一条线的带内均值 ΔE */
+  after: number;
+  /** `after - before` */
+  increase: number;
+  /** ★ 这条线落在原图的 32px 块边界上吗（`坐标 % (32×scale) == 0`） */
+  onGrid: boolean;
+}
+
+export interface AllCompareReport {
+  width: number;
+  height: number;
+  scale: number;
+  margin: number;
+  /** 扫过的竖线 / 横线条数 */
+  checkedX: number;
+  checkedY: number;
+  /** 放大后新引入的接缝（含格线上的），按增量降序 */
+  seams: AllSeamHit[];
+}
+
+/** 每列的 RGB 总和的前缀和，长度 `(width + 1) × 3` */
+function columnPrefix(img: GroundImage): Float64Array {
+  const { width, height, rgba } = img;
+  const out = new Float64Array((width + 1) * 3);
+  for (let y = 0; y < height; y++) {
+    let o = y * width * 4;
+    for (let x = 0; x < width; x++, o += 4) {
+      const p = (x + 1) * 3;
+      out[p] = out[p]! + rgba[o]!;
+      out[p + 1] = out[p + 1]! + rgba[o + 1]!;
+      out[p + 2] = out[p + 2]! + rgba[o + 2]!;
+    }
+  }
+  for (let x = 1; x <= width; x++) {
+    const p = x * 3;
+    const q = p - 3;
+    out[p] = out[p]! + out[q]!;
+    out[p + 1] = out[p + 1]! + out[q + 1]!;
+    out[p + 2] = out[p + 2]! + out[q + 2]!;
+  }
+  return out;
+}
+
+/** 每行的 RGB 总和的前缀和，长度 `(height + 1) × 3` */
+function rowPrefix(img: GroundImage): Float64Array {
+  const { width, height, rgba } = img;
+  const out = new Float64Array((height + 1) * 3);
+  for (let y = 0; y < height; y++) {
+    const p = (y + 1) * 3;
+    let o = y * width * 4;
+    for (let x = 0; x < width; x++, o += 4) {
+      out[p] = out[p]! + rgba[o]!;
+      out[p + 1] = out[p + 1]! + rgba[o + 1]!;
+      out[p + 2] = out[p + 2]! + rgba[o + 2]!;
+    }
+  }
+  for (let y = 1; y <= height; y++) {
+    const p = y * 3;
+    const q = p - 3;
+    out[p] = out[p]! + out[q]!;
+    out[p + 1] = out[p + 1]! + out[q + 1]!;
+    out[p + 2] = out[p + 2]! + out[q + 2]!;
+  }
+  return out;
+}
+
+/**
+ * 前缀和上取 `[i0, i1)` 的带内均值（`span` = 每条带的像素个数，
+ * 竖带是「列宽 × 图高」、横带是「行高 × 图宽」）。
+ * 空带返回 `null` —— 调用方据此跳过，绝不能让空带算成黑色（那是巨大的假 ΔE）。
+ */
+function prefixLab(pre: Float64Array, i0: number, i1: number, span: number): Lab | null {
+  const n = (i1 - i0) * span;
+  if (i1 <= i0 || n <= 0) return null;
+  const o0 = i0 * 3;
+  const o1 = i1 * 3;
+  return srgbToLab(
+    (pre[o1]! - pre[o0]!) / n,
+    (pre[o1 + 1]! - pre[o0 + 1]!) / n,
+    (pre[o1 + 2]! - pre[o0 + 2]!) / n,
+  );
+}
+
+export function compareAllSeams(
+  original: GroundImage,
+  upscaled: GroundImage,
+  opts: CompareOptions = {},
+): AllCompareReport {
+  const scale = opts.scale ?? Math.round(upscaled.width / original.width);
+  const margin = opts.margin ?? SEAM_MARGIN;
+  const band = Math.max(1, opts.band ?? SEAM_BAND);
+  const uBand = band * scale;
+
+  requireScaledPair(original, upscaled, scale);
+
+  const oCols = columnPrefix(original);
+  const uCols = columnPrefix(upscaled);
+  const oRows = rowPrefix(original);
+  const uRows = rowPrefix(upscaled);
+
+  const seams: AllSeamHit[] = [];
+  let checkedX = 0;
+  let checkedY = 0;
+
+  // ★ 只在**原图真实的像素边界**上比（x = xo × scale）。理由有两条：
+  //   ① 不是 `scale` 整数倍的那些线在原图里没有对应物，比出来的只是「附近」的基线，
+  //      连忠实最近邻放大都会在噪声纹理上假报（实测：带内均值差可达一个 JND 量级）；
+  //   ② 超分工具的分块尺寸都是偶数/整十（128/192/256/400…），它的分块线仍落在
+  //      这些线上 —— 放宽到非整数倍换不来检测能力，只换来噪声。
+  for (let xo = band; xo + band <= original.width; xo++) {
+    const x = xo * scale;
+    const afterL = prefixLab(uCols, x - uBand, x, upscaled.height);
+    const afterR = prefixLab(uCols, x, x + uBand, upscaled.height);
+    const beforeL = prefixLab(oCols, xo - band, xo, original.height);
+    const beforeR = prefixLab(oCols, xo, xo + band, original.height);
+    if (afterL === null || afterR === null || beforeL === null || beforeR === null) continue;
+
+    checkedX++;
+    const before = deltaE76(beforeL, beforeR);
+    const after = deltaE76(afterL, afterR);
+    if (after - before <= margin) continue;
+    seams.push({
+      side: 'right',
+      pixel: { x, y: Math.floor(upscaled.height / 2) },
+      before,
+      after,
+      increase: after - before,
+      onGrid: xo % GND_TILE_WIDTH === 0,
+    });
+  }
+
+  for (let yo = band; yo + band <= original.height; yo++) {
+    const y = yo * scale;
+    const afterT = prefixLab(uRows, y - uBand, y, upscaled.width);
+    const afterB = prefixLab(uRows, y, y + uBand, upscaled.width);
+    const beforeT = prefixLab(oRows, yo - band, yo, original.width);
+    const beforeB = prefixLab(oRows, yo, yo + band, original.width);
+    if (afterT === null || afterB === null || beforeT === null || beforeB === null) continue;
+
+    checkedY++;
+    const before = deltaE76(beforeT, beforeB);
+    const after = deltaE76(afterT, afterB);
+    if (after - before <= margin) continue;
+    seams.push({
+      side: 'bottom',
+      pixel: { x: Math.floor(upscaled.width / 2), y },
+      before,
+      after,
+      increase: after - before,
+      onGrid: yo % GND_TILE_HEIGHT === 0,
+    });
+  }
+
+  seams.sort((p, q) => q.increase - p.increase);
+  return { width: upscaled.width, height: upscaled.height, scale, margin, checkedX, checkedY, seams };
 }
 
 // ============================================================

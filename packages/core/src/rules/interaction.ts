@@ -16,6 +16,7 @@
 
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import type { ConfinementKind } from './confinement.ts';
+import type { AuctionSeatStatus } from './auction.ts';
 
 /**
  * 落点要求玩家做的决定。
@@ -91,10 +92,65 @@ export type PendingInteraction =
    */
   | { kind: 'lottery'; available: number[]; price: number; owned: number }
   /**
-   * 拍卖：出价。
-   * @source `run_auction` VA 0x0043bde5
+   * 拍卖：竞价循环的**状态**。
+   *
+   * @source `run_auction` VA 0x0043bde5（入口/窗口过程 `fcn_0043a2dd`）
+   *
+   * ★ Q-AUC-1 定案（2026-09-15）：竞价循环归 core —— 原版那条 100ms 定时器
+   *   刷新循环（轮到谁 → 真人点钮 / 电脑算一口 → `loc_0043b295` 复查）
+   *   现在立在 `rules/auction.ts`，`state/reduce.ts` 的 `auctionBid`
+   *   一个 action 走一口。表现层（`client/auction-screen.ts`）只负责
+   *   **收集真人的那一口**并把 core 的每一口演出来。
+   *
+   * 之所以不能像别的交互那样整条留给表现层：`packages/server` 是**无头**跑
+   * core 的（服务器权威），纯 AI 局也走同一条路 —— 没有屏可点，pending
+   * 就永远答不掉（soak 卡死）。
    */
-  | { kind: 'auction'; entityId: number; basePrice: number; bidders: number[]; facility?: boolean }
+  | {
+      kind: 'auction';
+      entityId: number;
+      /** 起拍价 `[0x48c488]` 的初值（= `auctionBasePrice` 的产物） */
+      basePrice: number;
+      /** 可以出价的玩家下标。core 已排除出局者与现任地主 */
+      bidders: number[];
+      /** 設施拍卖（拍賣卡踏在設施格上时挂出） */
+      facility?: boolean;
+      /** 现价 `[0x48c488]`：每一口加价都改写它；还没人出价时 = `basePrice` */
+      price: number;
+      /** 当前最高出价者的**玩家下标**；-1 = 还没人出价 @source `[0x48c4a8]` */
+      top: number;
+      /**
+       * 当前最高出价者**出那一口时的现金** @source `[0x48c438]` 之类的现场快照。
+       * `loc_0043b183` 要拿「最高者的现金 + 500」当压价线，而最高者可能已经
+       * PASS 离场，届时再读他的现金就不是当时那个数了 —— 故出价时记下来。
+       * `top < 0` 时无意义。
+       */
+      topCash: number;
+      /**
+       * 轮到哪个座位（0..3）@source `[0x48c4a4] & 3`。
+       * 座位按玩家下标排，故就是「轮到哪个玩家」。
+       */
+      seat: number;
+      /**
+       * 各座位的状态，下标 = 玩家下标 @source `[0x48c436 + 20i]`：
+       * `'active'` = 0（还能出价）、`'passed'` = 1（已 PASS，★ 永久）、
+       * `'givenUp'` = 4（按了「放棄」/ 出不起，同样永久）。
+       */
+      status: AuctionSeatStatus[];
+      /**
+       * 各座位的**心理价位**（下标 = 玩家下标）@source 座位 `+8` `[0x48c438]`。
+       * 开拍时算一次就定住；真人座位是 0。
+       */
+      limits: number[];
+    }
+  /**
+   * **开拍请求** —— 卡片等调用点能提供的那几项。
+   *
+   * 竞价循环要的其余字段（现价 / 最高者 / 座位状态 / 心理价位）由 core 在
+   * 挂出 pending 时补齐（`state/reduce.ts` 的 `openAuction`）—— 因为
+   * 「心理价位」要读全局随机状态，只有 reducer 手上有。
+   */
+
   /**
    * 上市企业：买多少股。
    *
@@ -192,8 +248,22 @@ export type PendingInteraction =
    */
   | { kind: 'unimplemented'; place: string; specialKind: number; options?: readonly string[] };
 
-/** 各特殊格对应的场所名 —— 仅用于 `unimplemented` 的可读性 */
-const PLACE_NAMES: Readonly<Record<number, string>> = {
+/**
+ * 一段契约：**开拍请求** —— 调用点（拍賣卡等）能提供的那几项。
+ *
+ * 竞价循环要的其余字段（现价 / 最高者 / 座位状态 / 心理价位）由 core 在挂出
+ * pending 时补齐（`state/reduce.ts` 的 `openAuction`）—— 因为「心理价位」
+ * 要读全局随机状态与地图表，只有 reducer 手上有。
+ */
+export type AuctionRequest = Pick<
+  Extract<PendingInteraction, { kind: 'auction' }>,
+  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility'
+>;
+
+/** `auction` 的**完整**形状（竞价循环进行中，字段一定齐） */
+export type AuctionPending = Extract<PendingInteraction, { kind: 'auction' }>;
+
+/** 各特殊格对应的场所名 —— 仅用于 `unimplemented` 的可读性 */const PLACE_NAMES: Readonly<Record<number, string>> = {
   // ★ **空的** —— 17 种特殊格已全部接上规则：
   //   公園/新聞/命運/監獄/醫院/三个小游戏/樂透/三种點數格/卡片/
   //   銀行/百貨公司/魔法屋。
@@ -260,7 +330,13 @@ export type InteractionResponse =
   | { kind: 'bankFinanceBorrow'; amount: number }
   | { kind: 'bankFinanceRepay'; amount: number }
   | { kind: 'lotteryBuy'; number: number }
-  | { kind: 'auctionBid'; winner: number; price: number }
+  /**
+   * 拍賣的一口价 —— 由 core 的循环消费（`state/reduce.ts` 的 `auctionBid`）。
+   *
+   * ★ Q-AUC-1 之前这里是 `auctionBid{winner, price}`（终局），现已改成
+   *   **一口价**：竞价过程本身归 core 了，终局由 core 自己判、自己落。
+   */
+  | { kind: 'auctionBid'; bidder: number; status: 'raise' | 'pass' | 'giveUp'; step: number }
   | { kind: 'buyShares'; shares: number }
   | { kind: 'shopBuyCard'; cardId: number }
   | { kind: 'shopBuyTool'; toolId: number }

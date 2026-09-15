@@ -2,10 +2,12 @@
  * 工具栏摆位
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   actorTokens,
   actorWalkSteps,
+  BoardRenderer,
+  DeferredSpriteClose,
   actorWalkTotalMs,
   actorWalkTriggers,
   DOLL_STAND_RESOURCE,
@@ -20,7 +22,7 @@ import {
   TOOLBAR_RIGHT,
   toolbarIconAt,
 } from './render.ts';
-import { TOOLBAR_ICON_COUNT, TOOLBAR_STRIP_IMAGE } from './assets.ts';
+import { SpriteCache, TOOLBAR_ICON_COUNT, TOOLBAR_STRIP_IMAGE, type Sprite } from './assets.ts';
 import { tweenTickCount } from './tween.ts';
 import { LAYOUT } from './stage.ts';
 import {
@@ -484,5 +486,95 @@ describe('★ T-047 何时起补间（`actorWalkTriggers`）——「被保釋�
     ]);
     expect(jailed.walks).toEqual([{ slot: 0, path: [9, 10, 11, 12] }]);
     expect(jailed.seen.get(0)).toBe(12);
+  });
+});
+
+// ============================================================
+//  ★ Q-PERF-1：淘汰下来的位图在**帧边界**才 close
+// ============================================================
+
+describe('★ DeferredSpriteClose —— 摘引用与 close 分成两步', () => {
+  /** 一个假精灵：位图只记「被 close 过没有」 */
+  const fakeSprite = (): { sprite: Sprite; closed: () => boolean } => {
+    let closed = false;
+    const sprite = {
+      bitmap: {
+        close: () => {
+          closed = true;
+        },
+      },
+      width: 2,
+      height: 2,
+      anchorX: 1,
+      anchorY: 1,
+    } as unknown as Sprite;
+    return { sprite, closed: () => closed };
+  };
+
+  it('★ retire 只摘引用、**不** close —— 还在画的那一帧不能被关掉', () => {
+    const { sprite, closed } = fakeSprite();
+    const ready = new Map<string, Sprite | null>([['Data.mkf:1:0:k:', sprite]]);
+    const q = new DeferredSpriteClose();
+
+    expect(q.retire(ready, sprite)).toBe(1);
+    expect(ready.has('Data.mkf:1:0:k:')).toBe(false);
+    expect(closed()).toBe(false); // ★ 关键：这一帧还没画完
+    expect(q.pending).toBe(1);
+  });
+
+  it('★ drain 才是真正的释放，且只关一次', () => {
+    const { sprite, closed } = fakeSprite();
+    const ready = new Map<string, Sprite | null>([['k', sprite]]);
+    const q = new DeferredSpriteClose();
+    q.retire(ready, sprite);
+
+    expect(q.drain()).toBe(1);
+    expect(closed()).toBe(true);
+    expect(q.pending).toBe(0);
+    // 幂等：没有排队的了
+    expect(q.drain()).toBe(0);
+  });
+
+  it('同一个精灵挂在多个缓存键下（换色/抠黑各一份）→ 全部摘掉', () => {
+    const { sprite } = fakeSprite();
+    const ready = new Map<string, Sprite | null>([
+      ['Data.mkf:1:0:k:', sprite],
+      ['Data.mkf:1:0::', null],
+      ['Data.mkf:1:0::1,2,3', sprite],
+    ]);
+    const q = new DeferredSpriteClose();
+    expect(q.retire(ready, sprite)).toBe(2);
+    expect(ready.size).toBe(1);
+    expect(q.drain()).toBe(1);
+  });
+
+  it('★ 不是本渲染器持有的（hud.ts 那份）→ 不摘、不排队、不 close', () => {
+    const { sprite, closed } = fakeSprite();
+    const ready = new Map<string, Sprite | null>();
+    const q = new DeferredSpriteClose();
+
+    expect(q.retire(ready, sprite)).toBe(0);
+    expect(q.pending).toBe(0);
+    expect(q.drain()).toBe(0);
+    expect(closed()).toBe(false); // 别人还在用，谁也别动它
+  });
+
+  it('★ 渲染器构造时就挂上缓存的淘汰监听（不靠 main.ts 接线）', () => {
+    const cache = new SpriteCache(
+      { get: () => ({ read: () => new Uint8Array(0) }) } as never,
+      {},
+    );
+    const spy = vi.spyOn(cache, 'addEvictListener').mockImplementation(() => {
+      /* 只验接线，不真的收 */
+    });
+
+    // ctx 用不上（只构造、不画）
+    new BoardRenderer({} as CanvasRenderingContext2D, cache);
+
+    // ★ 挂监听这件事发生在构造里 —— 因为 SpriteCache 是在 main.ts 里造就的，
+    //   而 main.ts 不是本卡能改的文件（Q-PERF-1）。
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(typeof spy.mock.calls[0]![0]).toBe('function');
+    spy.mockRestore();
   });
 });

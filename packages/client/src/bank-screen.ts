@@ -42,6 +42,15 @@
  */
 
 import type { ArchiveName, Sprite } from './assets.ts';
+import {
+  ATM_BAR,
+  ATM_PCT_STEP,
+  ATM_PCT_SCALE,
+  atmBarWidth,
+  atmPercent,
+  atmPressedImage,
+  bankSprite,
+} from './bank-dynamic.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type AtmSprite = (
@@ -203,31 +212,97 @@ export function atmButtonCenter(i: number): { x: number; y: number } {
 /**
  * 画面板。
  *
+ * 顺序照原版 `0x401`（`loc_00436f9d`）+ `fcn_00436d3a`：
+ * 面板底（**抠黑**）→ 冻结章 → **当前模式那支高亮图** → 金额数字 → 进度条
+ * → 正被按住那颗的按下图。
+ *
+ * ★ **两颗模式钮只画当前那一支**：@source `loc_00436f9d` 的
+ *   `if (player+0x3c != 0) 画图 2（提款）/ else 画图 1（存款）` ——
+ *   面板底图（图 0）里本来就有两颗钮，图 1/2 是它们的**高亮态**。
+ *
  * @param frozen `bank_freeze_days != 0` —— 盖上「銀行暫停放款」禁止章
+ * @param pressed `[0x48c40b]`（钮序号 + 1；`null`/0 = 没按住）
  */
 export function drawBankAtm(
   ctx: CanvasRenderingContext2D,
   sprite: AtmSprite,
   st: AtmState,
   frozen = false,
+  pressed: number | null = null,
 ): void {
   const ox = ATM_ORIGIN.x;
   const oy = ATM_ORIGIN.y;
-  const at = (index: number, x: number, y: number, key: boolean): void => {
-    const s = sprite('Panel.mkf', ATM_RESOURCE, index, key);
+  const at = (index: number, x: number, y: number): void => {
+    const s = bankSprite(sprite, 'Panel.mkf', ATM_RESOURCE, index);
     if (s !== null) ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
   };
 
-  at(0, ox, oy, false); // 面板底（图 0，锚点 (0,0)）
-  // 两颗模式钮的「手」（图 1 存款 / 图 2 提款），画在各自的矩形左上
-  at(1, ox + ATM_BUTTONS[0]!.x0, oy + ATM_BUTTONS[0]!.y0, false);
-  at(2, ox + ATM_BUTTONS[1]!.x0, oy + ATM_BUTTONS[1]!.y0, false);
+  at(0, ox, oy); // 面板底（图 0，锚点 (0,0)）
   // 「銀行暫停放款」禁止章（图 29，锚点 (14,14)）—— 只在冻结时盖
-  if (frozen) at(ATM_FROZEN_MARK, ATM_FROZEN_AT.x, ATM_FROZEN_AT.y, true);
+  if (frozen) at(ATM_FROZEN_MARK, ATM_FROZEN_AT.x, ATM_FROZEN_AT.y);
+  // 当前模式那颗钮的高亮图 @source `loc_00436f9d`：存款 → 图 1、提款 → 图 2
+  const modeBtn = ATM_BUTTONS[st.mode === 1 ? 1 : 0]!;
+  at(ATM_IMAGE_BASE + (st.mode === 1 ? 1 : 0), ox + modeBtn.x0, oy + modeBtn.y0);
 
   // 金额：从右往左一位一张数字图 @source `fcn_00436d3a`
   for (let k = 0; k < st.digits.length && k < ATM_DIGIT.max; k++) {
     const ch = st.digits.charCodeAt(st.digits.length - 1 - k);
-    at(ATM_DIGIT.first + (ch - 0x30), ATM_DIGIT.x - k * ATM_DIGIT.step, ATM_DIGIT.y, true);
+    at(ATM_DIGIT.first + (ch - 0x30), ATM_DIGIT.x - k * ATM_DIGIT.step, ATM_DIGIT.y);
+  }
+
+  // ── 进度条 @source `fcn_00436d3a` 的三次 `fcn_0045643d` ──
+  drawAtmBar(ctx, sprite, atmAmount(st), atmLimit(st));
+
+  // ── 正被按住那颗的按下图（图 = 码）@source `loc_004371f9` ──
+  const img = pressed === null ? null : atmPressedImage(pressed);
+  if (img !== null && pressed !== null) {
+    const b = ATM_BUTTONS[pressed - 1]!;
+    at(img, ox + b.x0, oy + b.y0);
   }
 }
+
+/**
+ * ATM 的**进度条** @source `fcn_00436d3a`（VA 0x436d3a）：
+ *
+ * ```asm
+ * pct = trunc(atoi(金额) / [0x48c3ec] × 34)      ; [0x464bd0] = 34.0f
+ * ebx = pct × 6                                  ; 一格 6 像素，34×6 = 204 = 条宽
+ * 若 ebx != 0 :  图4 (0,0,ebx,26) → (118,210)
+ * 若 ebx < 204:  图0 (58+ebx,139,204−ebx,26) → (118+ebx,210)
+ * ```
+ * ⚠️ 扣黑表说图 0 是**带透明**贴的，但这里走的是 `fcn_0045643d`（矩形拷贝）——
+ *   所以这条「还原空余部分」的两头都按**原样**搬像素，不做抠黑。
+ */
+export function drawAtmBar(
+  ctx: CanvasRenderingContext2D,
+  sprite: AtmSprite,
+  amount: number,
+  limit: number,
+): void {
+  const w = atmBarWidth(atmPercent(amount, limit));
+  const fill = bankSprite(sprite, 'Panel.mkf', ATM_RESOURCE, ATM_BAR.fillImage);
+  if (w > 0 && fill !== null) {
+    ctx.drawImage(fill.bitmap, 0, 0, w, ATM_BAR.h, ATM_BAR.x, ATM_BAR.y, w, ATM_BAR.h);
+  }
+  if (w < ATM_BAR.w) {
+    const rest = ATM_BAR.w - w;
+    const plate = bankSprite(sprite, 'Panel.mkf', ATM_RESOURCE, 0);
+    if (plate !== null) {
+      ctx.drawImage(
+        plate.bitmap,
+        ATM_BAR.emptySrcX + w,
+        ATM_BAR.emptySrcY,
+        rest,
+        ATM_BAR.h,
+        ATM_BAR.x + w,
+        ATM_BAR.y,
+        rest,
+        ATM_BAR.h,
+      );
+    }
+  }
+}
+
+/** 进度条一格多少像素 / 比例常数 —— 转出去给单测钉 @source `fcn_00436d3a` */
+export const ATM_BAR_STEP = ATM_PCT_STEP;
+export const ATM_BAR_SCALE = ATM_PCT_SCALE;

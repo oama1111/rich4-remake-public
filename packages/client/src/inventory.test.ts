@@ -125,8 +125,16 @@ describe('卡片欄：选一张卡之后走哪条路（T-025）@source VA 0x441c
     expect(r).toEqual({ kind: 'pick', cls: 'land', param: 0xe0c0202 });
   });
 
-  it('★ 紅卡（24，选股票）那类要自己的列表 UI，不进拾取模式', () => {
-    expect(routeCardPick(stateOf([24]), topo, 24)).toEqual({ kind: 'cannot', needsOwnList: true });
+  it('★ 紅卡（24，选股票）那类走**股市屏的选股模式**，不进拾取模式（Q-PICK-2）', () => {
+    // @source 紅卡 VA 0x00444ff8 `push 1; call _rich4_ui_stock_entry`
+    expect(routeCardPick(stateOf([24]), topo, 24)).toEqual({ kind: 'stockPick', mode: 1 });
+    // @source 黑卡 VA 0x004450bc `push 2`
+    expect(routeCardPick(stateOf([25]), topo, 25)).toEqual({ kind: 'stockPick', mode: 2 });
+  });
+
+  it('★ 請神符（23，选物件）不进拾取模式 —— 原版是**自动请最近的一尊**（Q-PICK-2）', () => {
+    // @source VA 0x00444e2e `call 0x444d1a`（没有窗口、没有列表）
+    expect(routeCardPick(stateOf([23]), topo, 23)).toEqual({ kind: 'objectAuto' });
   });
 
   it('★ 不需要目标、且现在出得了的卡 → 直接发', () => {

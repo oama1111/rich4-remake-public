@@ -11,6 +11,8 @@
  * | YES/NO 居中於 (220, 320) | VA 0x00453a69 `x0 = arg − w/2`，调用方 0x00440c7e `push 0x140 / push 0xdc` |
  * | 對話框開在 (0,40)-(440,480) | VA 0x00440bc9 `rect = {0, 0x28, 0x1b8, 0x1e0}` |
  * | GO 鈕可拖动，夹在 640×480 内 | VA 0x00418ac0 `0x280 − w` / 0x00418ae9 `0x1e0 − h` |
+ *
+ * ★ GO 鈕的**位置**（可拖）不在这里 —— 见 `go-button.ts`（含 Q-UI-6 的取证）。
  */
 
 import type { Sprite } from './assets.ts';
@@ -116,9 +118,6 @@ export const DICE_TOGGLE_IMAGE: readonly (readonly [number, number])[] = [
   [10, 11],
 ];
 
-/** GO 鈕的默认位置（屏幕坐标）。@source `[0x475284] = 180`、`[0x475288] = 120` 的初值 */
-export const GO_DEFAULT = { x: 180, y: 120 } as const;
-export const GO_SIZE = { w: 72, h: 67 } as const;
 /**
  * 骰子数切换钮画在 GO 的下方。
  * @source VA 0x00417309 `y + 0x1a`、0x0041731b `x + 7`（暗的那张是 `x + 8`）；
@@ -126,6 +125,12 @@ export const GO_SIZE = { w: 72, h: 67 } as const;
  */
 export const DICE_TOGGLE_AT = { dx: 7, dy: 0x1a, pitch: 19 } as const;
 export const DICE_TOGGLE_SIZE = { w: 15, h: 15 } as const;
+
+/**
+ * ★ GO 鈕的尺寸与默认位置**搬到了 `go-button.ts`**（那里是位置的真值来源，
+ *   拖动也归它管）。这里重新导出一次，免得别处要 import 两个模块。
+ */
+export { GO_BOUNDS, GO_DEFAULT, GO_SIZE } from './go-button.ts';
 
 // ============================================================
 //  骰子（Panel.mkf 资源 3）

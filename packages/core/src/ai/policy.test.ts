@@ -16,6 +16,7 @@ import {
 } from '../state/types.ts';
 import {
   DEFAULT_PERSONALITY,
+  auctionNextBid,
   decideAction,
   decideAtLanding,
   isAiTurn,
@@ -346,5 +347,187 @@ describe('★ T-009：toCardTarget 覆盖全部目标类型，AI 选中 → useC
     const t = toCardTarget({ target: { kind: 'object', objectIndex: 1 } }, 0);
     expect(t).toEqual({ kind: 'object', objectIndex: 1 });
     expect(useCard(ctx(), 23, t).ok).toBe(true);
+  });
+});
+
+// ============================================================
+//  ★ Q-AUC-1：拍賣那一手 —— 电脑必须出价/PASS，而不是退出这一格
+// ============================================================
+
+describe('★ 拍賣：电脑那一手不再走 declineDecision', () => {
+  const LAND = 1;
+  const topo: Rich4Map = {
+    nodes: [
+      makeNode({
+        id: 1,
+        adjacent: [1],
+        type: 0x7d0 + LAND,
+        ref: { kind: 'land', index: LAND },
+      }),
+    ],
+    lands: [makeLand({ id: LAND, name: '測試地', landPrice: 3000, housePrice: 500, owner: 1 })],
+    facilities: [],
+    commercials: [],
+    landscapes: [],
+    dataSize: 0,
+  };
+
+  /**
+   * 手搭一个完整的 `pending{auction}`（字段与 `reduce.openAuction` 同形）。
+   *
+   * ⚠️ `seat` 是**座位下标**（`bidders` 的下标），不是玩家号 —— 与 reducer 同口径。
+   */
+  const pendingAuction = (over: {
+    seat: number;
+    /** 默认两个座位：0 号玩家与 1 号玩家 */
+    bidders?: number[];
+    limits: number[];
+    status?: ('active' | 'passed' | 'givenUp')[];
+    price?: number;
+    top?: number;
+    topCash?: number;
+  }) => {
+    const bidders = over.bidders ?? [0, 1];
+    const seatPlayer = bidders[over.seat] ?? bidders[0]!;
+    return {
+      kind: 'auction' as const,
+      entityId: LAND,
+      basePrice: 3000,
+      bidders,
+      price: over.price ?? 3000,
+      top: over.top ?? -1,
+      topCash: over.topCash ?? 0,
+      seat: over.seat,
+      status:
+        over.status ??
+        [0, 1, 2, 3].map((i) => (i === seatPlayer ? ('active' as const) : ('passed' as const))),
+      limits: over.limits,
+    };
+  };
+
+  const at = (pending: ReturnType<typeof pendingAuction>, players: Partial<Player>[] = []) =>
+    makeGameState({
+      players: [0, 1].map((i) =>
+        makePlayer({ index: i, nodeId: 1, cash: 60_000, ...(players[i] ?? {}) }),
+      ),
+      currentPlayer: 0,
+      pending,
+      phase: 'awaitingDecision',
+    });
+
+  it('★ 轮到电脑 → 给 auctionBid（不是 declineDecision）', () => {
+    const s = at(pendingAuction({ seat: 0, bidders: [0, 1], limits: [20_000, 20_000] }), [
+      { whoPlays: WHO_PLAYS_COMPUTER },
+      { whoPlays: WHO_PLAYS_COMPUTER },
+    ]);
+    const a = decideAction({ state: s, map: topo });
+    expect(a?.type).toBe('auctionBid');
+    if (a?.type !== 'auctionBid') throw new Error('not a bid');
+    expect(a.bidder).toBe(0);
+    expect(a.status).toBe('raise');
+    expect(a.step).toBeGreaterThan(0);
+  });
+
+  it('★ 出价不超过心理价位、也不超过现金', () => {
+    const s = at(pendingAuction({ seat: 0, bidders: [0, 1], limits: [5200, 9999] }), [
+      { whoPlays: WHO_PLAYS_COMPUTER, cash: 100_000 },
+      { whoPlays: WHO_PLAYS_COMPUTER },
+    ]);
+    const a = decideAction({ state: s, map: topo });
+    if (a?.type !== 'auctionBid') throw new Error('not a bid');
+    expect(3000 + a.step).toBeLessThanOrEqual(5200);
+    expect(3000 + a.step).toBeLessThanOrEqual(100_000);
+  });
+
+  it('★ 出不起/心理价位为 0 → PASS（仍然不是 declineDecision）', () => {
+    const s = at(pendingAuction({ seat: 0, bidders: [0, 1], limits: [0, 20_000] }), [
+      { whoPlays: WHO_PLAYS_COMPUTER, cash: 5000 },
+      { whoPlays: WHO_PLAYS_COMPUTER },
+    ]);
+    expect(decideAction({ state: s, map: topo })).toEqual({
+      type: 'auctionBid',
+      bidder: 0,
+      status: 'pass',
+      step: 0,
+    });
+  });
+
+  it('★ 现金 ≤ 现价 → PASS（@source 0x43b10c 的 `cmp / jle`）', () => {
+    const s = at(pendingAuction({ seat: 0, bidders: [0, 1], limits: [20_000, 20_000], price: 9000 }), [
+      { whoPlays: WHO_PLAYS_COMPUTER, cash: 3000 },
+      { whoPlays: WHO_PLAYS_COMPUTER },
+    ]);
+    expect(decideAction({ state: s, map: topo })).toMatchObject({ status: 'pass', step: 0 });
+  });
+
+  it('★ 轮到真人 → 交给屏（返回 null，绝不替他把竞价答掉）', () => {
+    const s = at(pendingAuction({ seat: 0, bidders: [0, 1], limits: [20_000, 20_000] }), [
+      { whoPlays: WHO_PLAYS_HUMAN },
+      { whoPlays: WHO_PLAYS_COMPUTER },
+    ]);
+    expect(decideAction({ state: s, map: topo })).toBeNull();
+  });
+
+  it('★ 被托管的人类座位照打（whoPlays 比特 2）', () => {
+    const s = at(pendingAuction({ seat: 0, bidders: [0, 1], limits: [20_000, 20_000] }), [
+      { whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT },
+      { whoPlays: WHO_PLAYS_COMPUTER },
+    ]);
+    expect(decideAction({ state: s, map: topo })?.type).toBe('auctionBid');
+  });
+
+  it('★ 判的是 pending.seat 那一位，不是 currentPlayer', () => {
+    // currentPlayer = 0（电脑 A），但轮到 seat = 1（电脑 B）
+    const s = at(pendingAuction({ seat: 1, bidders: [0, 1], limits: [0, 20_000] }), [
+      { whoPlays: WHO_PLAYS_COMPUTER },
+      { whoPlays: WHO_PLAYS_COMPUTER },
+    ]);
+    const a = decideAction({ state: s, map: topo });
+    expect(a?.type).toBe('auctionBid');
+    if (a?.type !== 'auctionBid') throw new Error('not a bid');
+    expect(a.bidder).toBe(1); // 不是 currentPlayer(0)
+  });
+
+  it('★ 轮到真人举牌、且开拍人是电脑时：decideAction 让位给屏，屏问 auctionNextBid', () => {
+    // 真人出卡 → currentPlayer 是真人 → `isAiTurn` 为假、`decideAction` 返回 null
+    // 但竞价里轮到的是电脑 B（seat=1）—— 屏必须能拿到他那一口
+    const s = at(pendingAuction({ seat: 1, bidders: [0, 1], limits: [0, 20_000] }), [
+      { whoPlays: WHO_PLAYS_HUMAN },
+      { whoPlays: WHO_PLAYS_COMPUTER },
+    ]);
+    expect(decideAction({ state: s, map: topo })).toBeNull();
+    const p = s.pending;
+    if (p?.kind !== 'auction' || !('seat' in p)) throw new Error('no auction');
+    const a = auctionNextBid(s, p);
+    expect(a?.type).toBe('auctionBid');
+    if (a?.type !== 'auctionBid') throw new Error('not a bid');
+    expect(a.bidder).toBe(1);
+  });
+
+  it('auctionNextBid：座位不是电脑（真人/出局）时返回 null', () => {
+    const p = pendingAuction({ seat: 0, bidders: [0, 1], limits: [20_000, 20_000] });
+    const human = at(p, [{ whoPlays: WHO_PLAYS_HUMAN }, { whoPlays: WHO_PLAYS_COMPUTER }]);
+    expect(auctionNextBid(human, p)).toBeNull();
+    const dead = at(p, [{ whoPlays: 0 }, { whoPlays: WHO_PLAYS_COMPUTER }]);
+    expect(auctionNextBid(dead, p)).toBeNull();
+  });
+
+  it('auctionNextBid：已 PASS / 已放棄的座位返回 null', () => {
+    const p = pendingAuction({
+      seat: 0,
+      bidders: [0, 1],
+      limits: [20_000, 20_000],
+      status: ['passed', 'active'],
+    });
+    const s = at(p, [{ whoPlays: WHO_PLAYS_COMPUTER }, { whoPlays: WHO_PLAYS_COMPUTER }]);
+    expect(auctionNextBid(s, p)).toBeNull();
+  });
+
+  it('★ turnEnd 阶段也照样出价（不能回落成 endTurn 把拍卖清掉）', () => {
+    const s = { ...at(pendingAuction({ seat: 0, bidders: [0, 1], limits: [20_000, 20_000] }), [
+      { whoPlays: WHO_PLAYS_COMPUTER },
+      { whoPlays: WHO_PLAYS_COMPUTER },
+    ]), phase: 'turnEnd' as const };
+    expect(decideAction({ state: s, map: topo })?.type).toBe('auctionBid');
   });
 });

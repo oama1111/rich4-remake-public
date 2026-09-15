@@ -55,6 +55,7 @@
  */
 
 import type { ArchiveName, Sprite } from './assets.ts';
+import { bankSprite } from './bank-dynamic.ts';
 import { FONT_FAMILY } from './font.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
@@ -200,7 +201,7 @@ export function drawBankLoan(
   sprite: LoanSprite,
   view: LoanView,
 ): void {
-  const room = sprite('Panel.mkf', LOAN_RESOURCE, view.chairman ? LOAN_ROOM.chairman : LOAN_ROOM.normal, false);
+  const room = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, view.chairman ? LOAN_ROOM.chairman : LOAN_ROOM.normal);
   if (room !== null) ctx.drawImage(room.bitmap, 0, 0);
 
   if (view.chairman) {
@@ -216,14 +217,14 @@ export function drawBankLoan(
     // 左边那三张钮图：图 16 落 (11,305)/(11,362)、图 18 落 (11,419)
     // @source `fcn_00434186` 的三次 `fcn_004562a5`
     for (const [img, x, y] of [[16, 11, 305], [16, 11, 362], [18, 11, 419]] as const) {
-      const s = sprite('Panel.mkf', LOAN_RESOURCE, img, true);
+      const s = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, img);
       if (s !== null) ctx.drawImage(s.bitmap, x, y);
     }
   } else {
     // 常态：两张白单子上的字 + 窗里那位
     text(ctx, '申請貸款', 345, 345, 26, '#101010', 'center');
     text(ctx, '償還貸款', 530, 345, 26, '#101010', 'center');
-    const blind = sprite('Panel.mkf', LOAN_RESOURCE, LOAN_BLIND_WINDOW.image, true);
+    const blind = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, LOAN_BLIND_WINDOW.image);
     if (blind !== null) {
       ctx.drawImage(
         blind.bitmap,
@@ -235,7 +236,7 @@ export function drawBankLoan(
 
   // 冻结中：给「申請貸款」盖禁止章（图 23）
   if (view.frozen) {
-    const mark = sprite('Panel.mkf', LOAN_RESOURCE, LOAN_FROZEN_MARK.image, true);
+    const mark = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, LOAN_FROZEN_MARK.image);
     if (mark !== null) {
       ctx.drawImage(
         mark.bitmap,

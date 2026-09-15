@@ -90,15 +90,29 @@
    要在 CI 真跑一次并验产物。
 4. **多处界面需要「原版截图仲裁」**：见各 `docs/deviations/T-0xx.md` 的「需中央复核」一节。
 
-**B. 已登记的功能缺口**（`docs/known-deviations.md` 正文 + `docs/deviations/T-*.md`）
-- 表现层边角：Q-BANK-1（貸款屏滑入面板 / 状态机 / ATM 键盘）、Q-OPT-1（設定屏三个黄钮的副屏）、
-  Q-PICK-2（紅卡/黑卡选股票、請神符选物件、遙控骰子的输入 UI）、Q-UI-6（GO 鈕拖动）、
-  Q-SETUP-1（開局設定屏两条未接线）、Q-AUC-1（拍賣卡挂出的拍賣，电脑不出价）。
-- 步骤 2：Q-GND-4（底图不在超分清单）、Q-PERF-1（LRU 的 `onEvict` 未接 + 桌面端 hd 路由）、
-  以及**批量超分本身没跑**。
-- 步骤 3：Q-NET-1（客户端 desync 自愈）、Q-NET-2（大厅改角色/换地图要协议）。
-- 仍未解的数据/逆向条目：Q4（卡片 f6/f7 语义）、Q6（角色 color 字节序）、Q7（AVI 是空占位）、
-  Q8（MIDI 软合成）、Q13（节点 `0x22`）、Q17（Save0 的物价指数）、Q18（胜负条件字段）。
+**B. 已登记的功能缺口 —— 2026-09-16 全部补齐**（明细见 `docs/known-deviations.md` 与 `docs/deviations/`）
+- 表现层边角：**Q-BANK-1** 貸款屏滑入面板/状态机 + ATM 键盘/进度条（`bank-dynamic.ts`）✅、
+  **Q-OPT-1** 設定屏三个副屏（日期頁/熱鍵頁/遊戲說明）+ 通用 YES/NO 框（`options-pages.ts`）✅、
+  **Q-PICK-2** 紅卡·黑卡选股票（股市屏换模式）、請神符（**原版是自动取最近一尊、没有列表**）、
+  遙控骰子（**六颗骰面，1..6，不是 1..18**）✅、**Q-UI-6** GO 鈕拖动（`go-button.ts`）✅、
+  **Q-SETUP-1** 遊戲時間/勝利條件接进引擎 + 開局拉幕动画 ✅、
+  **Q-AUC-1** 拍賣竞价循环搬进 core（无头/联机也能跑完）+ 屏改成回放 ✅。
+- 步骤 2：**Q-GND-4** 底图已进超分清单（`format:'GND'`、整张放大、接缝换 `compareAllSeams` 口径）✅、
+  **Q-PERF-1** LRU 的 `onEvict` 已接（`DeferredSpriteClose`，帧边界安全）+ 桌面端 hd 路由 ✅；
+  **批量超分本身仍未跑**（要外部 AI，见 A 类第 5 条）。
+- 步骤 3：**Q-NET-1** 客户端 desync 自愈（新增 `resync`/`replay` 两条协议）✅、
+  **Q-NET-2** 大厅改角色/换地图（服务器三道闸：未开局/权限/取值）✅。
+- 逆向未解条目：**Q4** 卡片 f6 = exe 里**零引用**（死字段）、f7 = 凶狠度 ✅、
+  **Q6** 角色 color = `0xRRGGBB`（R 在高字节，实测+素材双证）✅、
+  **Q7** AVI 全为残档（**素材缺口，非代码缺口**）✅、**Q13** 节点 `0x22` = `map.mkf#24` 的 1 基下标 ✅、
+  **Q17** Save0 物价指数 5 的原因已查明（分母 2→1，**不是**资产暴涨；公式不改）✅、
+  **Q18** `[0x49911c]`=目标天数、`[0x499108]`=开局资金×倍率 ✅、
+  **Q8** MIDI：新增 SoundFont(`.sf2`) 播放路径 + 用户自备音色库，缺省回退振荡器合成（进行中/见该节）。
+
+**A 类里唯一剩下的「不可在本机完成」项**：
+5. **批量超分本身**：管线已全部就绪、底图也已进清单，但真跑一轮 4× 需要**外部 AI 超分工具**
+   （`pnpm upscale plan → slice → [外部超分] → merge → assemble → review`），本机没有模型；
+   且按 C-LEG 约定，升级产物不入库（只版本化 `assets/hd-manifest.json`）。
 
 ---
 
@@ -619,6 +633,7 @@ landOnLand(state, land):
 
 - **职责**：**服务器权威**。每个房间持有一份 core 镜像状态 + `Sequencer`；客户端只发**意图**（`intent{action}`），服务器校验后编号广播；随机数只在服务器消耗（客户端的 `rngState` 通过重放同步）。
 - **已实现（2026-09-14，T-070..T-073）**：`hub.ts` `RoomHub`（与传输无关：`connect(conn) → ClientHandle{onMessage,onClose}`，`sweepDisconnected(now)`），`ws-server.ts` `startWsServer(opts)`（运行时动态 import `ws`）。协议新增 `join.since?`、`{t:'start'}`（房主开局，空座补电脑）、`SeatInfo.connected?`；`Sequencer.submitSystem` / `Room.submitSystem` 承载服务器发起的 `setAi`（掉线超时託管、重连归还）；`Room.fingerprintAt(seq)` 供 checksum 比对；轮到电脑座位时服务器用 core 的 `decideAction` 代打直到轮回真人。
+- **已实现（Q-NET-1，2026-09-15）**：协议新增 `{t:'resync'}` / `{t:'replay',seed,globalMapId,seats,through,actions[]}`。`resync` 的座位取自 `join` 时绑在这条连接上的 `seat`（消息体里没有座位/名字，且要求该座位此刻仍归这条连接），`replay` 只回请求者。客户端 `NetClient` 收到 `desync` 自动 `resync`，收到 `replay` 后由 `main.ts` 的 `onResync` 用 `newGame` + 从头 reduce 整串 action **整体替换**本地状态。**纯增量消息，`PROTOCOL_VERSION` 不动（仍为 1）。**
 - **现有 API（`room.ts`）**
   - `new Room({ id, map, globalMapId, seed, seats })`；`start()`；`submit(seat, action) → { ok, broadcast{seq, action} } | { ok:false, reason }`；`since(seq)`（重连补发）；`fingerprint`；`currentSeat`。
   - `submit` 的 `apply` 回调 = `reduce(mirror, action) !== mirror`，**非法 action 不占序号**。
@@ -650,6 +665,9 @@ landOnLand(state, land):
     every 10 seq: send checksum{seq, stateFingerprint(state)}
   本地输入: 不直接 dispatch；send intent{action}，等服务器回 action 再 dispatch（服务器权威）
   本地预测（可选）: 掷骰动画先播，结果以 action 为准
+  失步自愈: onServer 'desync' → send resync（未决期间不重复）
+           onServer 'replay' → newGame(seed,seats) + 从头 reduce actions[] **整体替换** state，
+                               序号指针接 through+1，清本屏临时 UI，requestRender
   ```
 - **REQ-14.3 AI 补位**：掉线 30s 后服务器把该座位标 `kind:'computer'`，由服务器用 `decideAction` 为其产 action（走同一条 `submit`）；重连后归还。
 - **REQ-14.4 大厅 UI**：建房/加房/座位/角色/地图/开始；断线提示与重连按钮。
@@ -718,6 +736,8 @@ C→S join{version,room,name}        S→C joined{seat,room}; S→all room{...}
 C→S intent{action}                 S: room.submit → S→all action{seq,action}  |  S→C error{reason}
 C→S checksum{seq,hash}（每 10 步）  S: 不一致 → S→all desync{seq,expected,got,seat}
 断线重连：join 同名 → joined + 从 since(0) 全量重放（或 since(lastSeq)）
+失步自愈（Q-NET-1）：S→all desync → C→S resync → S→C replay{seed,globalMapId,seats,through,actions[]}
+                      （replay 只回请求者；客户端 newGame + 从头 reduce 整串，整体替换本地状态）
 ```
 
 ### 4.5 素材寻址

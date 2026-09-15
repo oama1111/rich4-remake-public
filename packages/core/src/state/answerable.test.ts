@@ -40,6 +40,32 @@ const landTopo: MapTopology = {
   lands: [makeLand({ id: LAND_ID, name: '測試地', landPrice: 1000, housePrice: 200 })],
 };
 
+/**
+ * 补全一个 `pending{auction}` 的开拍字段。
+ *
+ * ★ Q-AUC-1 之后竞价循环归 core，`pending` 里要带现价 / 最高者 / 座位状态 /
+ *   轮到谁 / 心理价位（`state/reduce.ts` 的 `openAuction` 在实际开拍时补齐）。
+ *   这里手写的用例补上同一组字段，好让 `auctionBid` 走得通。
+ */
+function auctionPending(over: {
+  entityId: number;
+  basePrice: number;
+  bidders: number[];
+}): PendingInteraction {
+  return {
+    kind: 'auction',
+    entityId: over.entityId,
+    basePrice: over.basePrice,
+    bidders: over.bidders,
+    price: over.basePrice,
+    top: -1,
+    topCash: 0,
+    seat: 0,
+    status: [0, 1, 2, 3].map((i) => (over.bidders.includes(i) ? ('active' as const) : ('givenUp' as const))),
+    limits: [0, 0, 0, 0],
+  };
+}
+
 function withPending(pending: PendingInteraction, over: Partial<GameState> = {}): GameState {
   return makeGameState({
     players: [0, 1, 2, 3].map((i) =>
@@ -74,7 +100,7 @@ describe('★ 每一种待决交互都答得掉', () => {
   });
 
   it('拍賣', () => {
-    const s = withPending({ kind: 'auction', entityId: 1, basePrice: 5000, bidders: [1, 2] });
+    const s = withPending(auctionPending({ entityId: 1, basePrice: 5000, bidders: [1, 2] }));
     // 流标也算答得掉 —— 原地主照样失去这块地
     expect(answerable(s, [{ type: 'auction', winner: -1, price: 0 }])).toBe(true);
   });
@@ -103,7 +129,7 @@ describe('★ 每一种待决交互都答得掉', () => {
     const kinds: PendingInteraction[] = [
       { kind: 'bank', wealth: 1000, loanCapacity: 500, specialFinance: null },
       { kind: 'lottery', available: [1], price: 1000, owned: 0 },
-      { kind: 'auction', entityId: 1, basePrice: 100, bidders: [1] },
+      auctionPending({ entityId: 1, basePrice: 100, bidders: [1] }),
       { kind: 'minigame', game: 7, name: '七彩氣球', maxScore: 999 },
       { kind: 'bail', place: 'hospital', candidates: [], points: 0 },
       { kind: 'unimplemented', place: '某处', specialKind: 99 },
@@ -149,13 +175,13 @@ describe('★ 给不出来的交互，就不该给', () => {
       });
 
     it('拍賣卡挂出拍賣时，买不走脚下那块无主地', () => {
-      const s = atLand({ pending: { kind: 'auction', entityId: LAND_ID, basePrice: 1000, bidders: [1] } });
+      const s = atLand({ pending: auctionPending({ entityId: LAND_ID, basePrice: 1000, bidders: [1] }) });
       expect(reduce(s, { type: 'buyLand' }, landTopo)).toBe(s);
     });
 
     it('拍賣卡挂出拍賣时，加蓋不了脚下的自有地', () => {
       const s = atLand({
-        pending: { kind: 'auction', entityId: LAND_ID, basePrice: 1000, bidders: [1] },
+        pending: auctionPending({ entityId: LAND_ID, basePrice: 1000, bidders: [1] }),
         landOwner: [0, 1],
       });
       expect(reduce(s, { type: 'upgradeLand' }, landTopo)).toBe(s);

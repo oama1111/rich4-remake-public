@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { GND_TILE_HEIGHT, GND_TILE_WIDTH, type GroundImage } from './ground.ts';
 import {
+  compareAllSeams,
   compareTileSeams,
   deltaE76,
   featherSeams,
@@ -353,6 +354,94 @@ describe('compareTileSeams —— 放大后新增的接缝', () => {
     expect(r.seams).toHaveLength(2);
     expect(r.seams[0]!.tile.x).toBe(1);
     expect(r.seams[0]!.increase).toBeGreaterThan(r.seams[1]!.increase);
+  });
+});
+
+// ============================================================
+//  整张放大：逐列 / 逐行全扫（Q-GND-4 的另一套口径）
+// ============================================================
+
+/** 把 x ≥ x0 的整列各通道加 delta —— 造一条**模型自己**的竖直分块线 */
+function shiftRightOf(img: GroundImage, x0: number, delta: number): void {
+  for (let y = 0; y < img.height; y++) {
+    for (let x = x0; x < img.width; x++) {
+      const o = (y * img.width + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        img.rgba[o + c] = Math.max(0, Math.min(255, img.rgba[o + c]! + delta));
+      }
+    }
+  }
+}
+
+describe('★ compareAllSeams —— 整张放大时的接缝判据', () => {
+  const BAND = 2;
+
+  it('★ 忠实最近邻 ×4：一条都不报（非格线也不报 —— 这是换口径的前提）', () => {
+    const src = noisyGround(4, 3);
+    const r = compareAllSeams(src, nearest4x(src));
+    expect(r.seams).toEqual([]);
+    // 每条原图边界都查过了（两侧各留 band 的余量）
+    expect(r.checkedX).toBe(src.width - 2 * BAND + 1);
+    expect(r.checkedY).toBe(src.height - 2 * BAND + 1);
+    expect(r.scale).toBe(4);
+  });
+
+  it('★ 模型分块线不在 32px 格上：照样报出来，且 onGrid 为 false', () => {
+    const src = noisyGround(4, 3, 11); // 128×96
+    const up = nearest4x(src);
+    // x=100 **不是** 32×4=128 的整数倍 —— 逐块放大那条路永远不会看这条线
+    shiftRightOf(up, 100, 30);
+
+    const r = compareAllSeams(src, up);
+    const hit = r.seams.find((s) => s.side === 'right' && s.pixel.x === 100);
+    expect(hit).toBeDefined();
+    expect(hit!.onGrid).toBe(false);
+    expect(hit!.increase).toBeGreaterThan(2.3);
+    // 而只查格线的那套口径对这条缝一无所知
+    expect(compareTileSeams(src, up).seams.some((s) => s.pixel.x === 100)).toBe(false);
+  });
+
+  it('格线上的接缝：既报出来、onGrid 也为 true（两套口径在格线处必须一致）', () => {
+    const src = noisyGround(4, 3, 12);
+    const up = nearest4x(src);
+    shiftRightOf(up, GND_TILE_WIDTH * 4, 30); // x = 128，正是格线
+
+    const all = compareAllSeams(src, up);
+    const grid = all.seams.find((s) => s.pixel.x === GND_TILE_WIDTH * 4);
+    expect(grid).toBeDefined();
+    expect(grid!.onGrid).toBe(true);
+    // 旧口径同样查得到这条（它只查格线）
+    expect(compareTileSeams(src, up).seams.length).toBeGreaterThan(0);
+  });
+
+  it('横缝同理（下邻那一类）', () => {
+    const src = noisyGround(3, 4, 13);
+    const up = nearest4x(src);
+    for (let y = 100; y < up.height; y++) {
+      for (let x = 0; x < up.width; x++) {
+        const o = (y * up.width + x) * 4;
+        for (let c = 0; c < 3; c++) up.rgba[o + c] = Math.max(0, Math.min(255, up.rgba[o + c]! + 30));
+      }
+    }
+    const r = compareAllSeams(src, up);
+    const hit = r.seams.find((s) => s.side === 'bottom' && s.pixel.y === 100);
+    expect(hit).toBeDefined();
+    expect(hit!.onGrid).toBe(false);
+  });
+
+  it('★ 尺寸不是恰好 ×scale 就抛错（与旧口径同一条守卫）', () => {
+    const src = noisyGround(2, 2);
+    const bad = makeImage(src.width * 4 + 4, src.height * 4, () => [10, 10, 10]);
+    expect(() => compareAllSeams(src, bad)).toThrow(/不等于原图/);
+  });
+
+  it('margin 可覆盖：抬到很高就不再报', () => {
+    const src = noisyGround(4, 3, 14);
+    const up = nearest4x(src);
+    shiftRightOf(up, 100, 30);
+    expect(compareAllSeams(src, up).seams.length).toBeGreaterThan(0);
+    expect(compareAllSeams(src, up, { margin: 500 }).seams).toEqual([]);
+    expect(compareAllSeams(src, up, { margin: 500 }).checkedX).toBe(src.width - 2 * BAND + 1);
   });
 });
 

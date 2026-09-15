@@ -122,8 +122,20 @@ describe('数值表自洽性', () => {
     expect(new Set(CHARACTERS.map((c) => c.key)).size).toBe(CHARACTERS.length);
   });
 
-  it('后 5 个道具初始数量为 0（原版设定：仅能通过商店/事件获得）', () => {
+  it('后 5 个道具初始数量为 0（原版：商店货架只扫前 8 格，这 5 件由研究所研發）', () => {
     const zeros = TOOLS.filter((t) => t.initAmount === 0).map((t) => t.name);
     expect(zeros).toEqual(['機器工人', '時光機', '傳送機', '工程車', '核子飛彈']);
+    // 这 5 件的 f6 全是 2 —— 但 f6 在 exe 里零引用（Q4），机制是硬编码的：
+    // 開局进货 0x004071ba(`cmp ebx,8`) + 研究所 0x0041ce1b(`道具 = 項目 + 8`)
+    expect(TOOLS.filter((t) => t.initAmount === 0).every((t) => t.f6 === 2)).toBe(true);
+  });
+
+  it('★ Q4：道具表 f7（凶狠度）的 0..2 三档都有取自原版的样本', () => {
+    // 0x004289b2 的 `f7 − 個性 == 2` 判据只用到「2」这一档，这里锁住分组
+    expect(TOOLS.filter((t) => t.f7 === 2).map((t) => t.name)).toEqual([
+      '飛彈', '時光機', '工程車', '核子飛彈',
+    ]);
+    expect(TOOLS.every((t) => t.f7 >= 0 && t.f7 <= 2)).toBe(true);
+    expect(CARDS.every((c) => c.f7 >= 0 && c.f7 <= 2)).toBe(true);
   });
 });

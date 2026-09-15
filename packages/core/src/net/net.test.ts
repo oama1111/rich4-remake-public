@@ -9,7 +9,7 @@ import { parseMap } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { reduce } from '../state/reduce.ts';
 import { decideAction } from '../ai/policy.ts';
-import { fnv1a, stateFingerprint, PROTOCOL_VERSION } from './protocol.ts';
+import { fnv1a, stateFingerprint, PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from './protocol.ts';
 import { Sequencer } from './sequencer.ts';
 
 const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
@@ -155,6 +155,53 @@ describe('★ 端到端：两个客户端重放同一串 action 得到同一状�
     for (const e of seq.since(0)) rejoin = reduce(rejoin, e.action, topo);
 
     expect(stateFingerprint(rejoin)).toBe(stateFingerprint(live));
+  });
+
+  run('★ Q-NET-1 失步自愈：全量重放能把漂掉的本地状态整体拉回', () => {
+    const map = loadMap();
+    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+    const seed = 913;
+    const mk = () => newGame({ map, players: allComputer(), seed, mode: 'multiplayer' });
+
+    let live = mk();
+    const seq = new Sequencer({ seats: 4, currentSeat: () => live.currentPlayer });
+    seq.start();
+    for (let i = 0; i < 400 && live.turnCount < 12; i++) {
+      const a = decideAction({ state: live, map });
+      if (a === null) break;
+      seq.submit(live.currentPlayer, a);
+      live = reduce(live, a, topo);
+    }
+    const serverFp = stateFingerprint(live);
+
+    // 客户端「漏了一半 action」（或实现漂了）—— 指纹立刻对不上
+    let broken = mk();
+    let i = 0;
+    for (const e of seq.since(0)) {
+      if (i++ % 2 === 0) broken = reduce(broken, e.action, topo);
+    }
+    expect(stateFingerprint(broken)).not.toBe(serverFp);
+
+    // 服务器回的 `replay` 是**从头**的整串：客户端在空局上重建（不是在 broken 上补）
+    let healed = mk();
+    for (const e of seq.since(0)) healed = reduce(healed, e.action, topo);
+    expect(stateFingerprint(healed)).toBe(serverFp);
+  });
+});
+
+describe('★ Q-NET-1 协议：resync / replay', () => {
+  it('两条消息是协议的一部分（新增，不动 PROTOCOL_VERSION）', () => {
+    const req: ClientMessage = { t: 'resync' };
+    const rep: ServerMessage = {
+      t: 'replay',
+      seed: 1,
+      globalMapId: 0,
+      seats: [],
+      through: -1,
+      actions: [],
+    };
+    expect(req.t).toBe('resync');
+    expect(rep.t).toBe('replay');
   });
 });
 

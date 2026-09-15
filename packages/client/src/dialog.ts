@@ -33,9 +33,7 @@ import {
   DICE_TOGGLE_AT,
   DICE_TOGGLE_IMAGE,
   DICE_TOGGLE_SIZE,
-  GO_DEFAULT,
   GO_RESOURCE,
-  GO_SIZE,
   YESNO_IMAGE,
   YESNO_RESOURCE,
   YESNO_CENTER_SCREEN,
@@ -48,6 +46,7 @@ import {
   type Rect,
   type SpriteFn,
 } from './gameui.ts';
+import { boardToScreen, pointInGo, type GoPos } from './go-button.ts';
 import { LAYOUT } from './stage.ts';
 import { FONT_FAMILY } from './font.ts';
 
@@ -90,27 +89,28 @@ const FONT_BODY = `14px ${FONT_FAMILY}`;
  * ★ 这是**原版的按钮**，不是我们加的：`Panel.mkf` 资源 7 图 0/1（72×67 的
  *   黄底 GO 牌子），默认位置 (180,120)，原版还允许拖着它走。下方那三对
  *   15×15 的小骰子是**骰子数切换**（1/2/3 颗，对应走路/機車/汽車）。
- *   全部常量与出处见 `gameui.ts`。
+ *   全部常量与出处见 `gameui.ts`，**位置与拖动**见 `go-button.ts`。
  *
- * ⚠️ 原版的「拖动」没做：位置固定在默认值上。
+ * @param pos GO 鈕左上角（**棋盘画布**坐标，`GoButton.position()`）——
+ *   原版那个全局是屏幕坐标，拖动会把位置改掉，所以不能再写死默认值。
  */
-export function hitAdvance(x: number, y: number): boolean {
-  return inRect(x, y, boardRect({ ...GO_DEFAULT, ...GO_SIZE }));
+export function hitAdvance(x: number, y: number, pos: GoPos): boolean {
+  return pointInGo(x, y, pos);
 }
 
-/** 骰子数切换钮的第 i 个（棋盘区坐标） */
-export function diceToggleRect(i: number): Rect {
+/** 骰子数切换钮的第 i 个（棋盘画布坐标；跟着 GO 鈕一起走） */
+export function diceToggleRect(i: number, pos: GoPos): Rect {
   return boardRect({
-    x: GO_DEFAULT.x + DICE_TOGGLE_AT.dx,
-    y: GO_DEFAULT.y + DICE_TOGGLE_AT.dy + i * DICE_TOGGLE_AT.pitch,
+    x: boardToScreen(pos).x + DICE_TOGGLE_AT.dx,
+    y: boardToScreen(pos).y + DICE_TOGGLE_AT.dy + i * DICE_TOGGLE_AT.pitch,
     ...DICE_TOGGLE_SIZE,
   });
 }
 
 /** 点在第几颗骰子的切换钮上（返回颗数 1..maxDice）；没点中返回 null */
-export function hitDiceToggle(x: number, y: number, maxDice: number): number | null {
+export function hitDiceToggle(x: number, y: number, maxDice: number, pos: GoPos): number | null {
   for (let i = 0; i < maxDice; i++) {
-    if (inRect(x, y, diceToggleRect(i))) return i + 1;
+    if (inRect(x, y, diceToggleRect(i, pos))) return i + 1;
   }
   return null;
 }
@@ -132,6 +132,7 @@ export function hitDiceToggle(x: number, y: number, maxDice: number): number | n
  * @param goImage 上面算好的图号（`GO_IMAGE` 的某个值 + 闪烁帧）
  * @param maxDice 这个玩家最多能掷几颗（走路 1、機車 2、汽車 3）
  * @param ndices  当前选了几颗
+ * @param pos     GO 鈕左上角（**棋盘画布**坐标，`GoButton.position()`）
  */
 export function drawAdvance(
   ctx: CanvasRenderingContext2D,
@@ -139,8 +140,10 @@ export function drawAdvance(
   goImage: number,
   maxDice: number,
   ndices: number,
+  pos: GoPos,
 ): void {
-  const at = toBoard(GO_DEFAULT);
+  // `pos` 已经是棋盘画布坐标（原版那个全局是屏幕坐标，换算在 `GoButton` 里做过了）
+  const at = pos;
   const go = sprite('Panel.mkf', GO_RESOURCE, goImage, true);
   if (go !== null) ctx.drawImage(go.bitmap, at.x, at.y);
 
@@ -150,7 +153,7 @@ export function drawAdvance(
     // 亮的那张表示「这一颗算数」
     const img = sprite('Panel.mkf', GO_RESOURCE, i < ndices ? pair[1] : pair[0], true);
     if (img === null) continue;
-    const r = diceToggleRect(i);
+    const r = diceToggleRect(i, pos);
     ctx.drawImage(img.bitmap, r.x, r.y);
   }
 }

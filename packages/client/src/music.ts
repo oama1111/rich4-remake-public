@@ -5,19 +5,28 @@
  * ★ C-ARC-2：只读状态，不含任何规则。
  *
  * 原版的 25 首配乐是磁盘上的标准 .mid（见 `MIDI_PLAYLIST`），
- * 浏览器不能直接播。这里把解析出来的音符表排到 WebAudio 的振荡器上。
+ * 浏览器不能直接播。这里把解析出来的音符表排到 WebAudio 上。
  *
- * ⚠️ **这不是还原音色，也不可能是。** 原版听起来什么样取决于当年那块
- *   声卡的 GM 波表；同一份 .mid 在不同机器上本来就不一样。
- *   所以这里明确只做**旋律、节奏、时值**——那些是数据，能做到精确；
- *   音色用几种简单波形按 GM 大类近似，不假装是波表合成。
- *   要真还原，得另外接一个 SoundFont 播放器并让用户自备音色库。
+ * ★ 两个后端，**同一层**（`MidiVoice`，定义在 `soundfont-voice.ts`）：
  *
- * ⚠️ 打击乐（9 号通道）**整条跳过**：那个通道上的「音高」是鼓号不是音高，
- *   用振荡器弹出来只会是一串怪叫。宁可没有鼓，也不要错的鼓。
+ *   | 后端 | 谁在用 | 音色 |
+ *   |---|---|---|
+ *   | `SoundFontVoice` | 用户给了 `.sf2` 音色库 | 音色库里的采样 |
+ *   | `OscillatorVoice` | **没有**音色库（默认） | 几种波形按 GM 大类近似 |
+ *
+ *   ⚠️ **绝不能因为没音色库就播不出声**：没有音色库时一路回退到振荡器，
+ *   旋律/节奏/时值照旧（这些是数据，本来就精确）。
+ *   ⚠️ 音色库**不分发**（C-LEG / DEVELOPMENT_PLAN §5.6），由用户自备。
+ *   装载入口见 `soundfont-pick.ts`；Q8 / Q-MUSIC-1。
+ *
+ * ⚠️ 振荡器后端**打击乐（9 号通道）整条跳过**：那个通道上的「音高」是鼓号
+ *   不是音高，用振荡器弹出来只会是一串怪叫。宁可没有鼓，也不要错的鼓。
+ *   有了音色库则走 bank 128 的鼓组（`SoundFontVoice` 里处理）。
  */
 
 import { parseMidi, DRUM_CHANNEL, type MidiNote, type MidiSong } from '@rich4/assets-pipeline';
+import { SoundFontVoice, type MidiVoice } from './soundfont-voice.ts';
+import type { SoundFont } from './soundfont.ts';
 
 /**
  * GM 音色号 → 波形。
@@ -54,9 +63,78 @@ const SCHEDULE_AHEAD_S = 2.0;
 /** 排程器的心跳 */
 const SCHEDULE_TICK_MS = 500;
 
+/**
+ * 没有音色库时的兜底后端：几种波形按 GM 大类近似。
+ *
+ * 只做**旋律、节奏、时值**——那些是数据，能做到精确；音色是近似。
+ * 原版听起来什么样取决于当年那块声卡的 GM 波表，同一份 .mid 在不同机器上
+ * 本来就不一样，不存在一个可供比对的「原版音色」。
+ */
+export class OscillatorVoice implements MidiVoice {
+  readonly #ctx: AudioContext;
+  readonly #dest: AudioNode;
+  /**
+   * 已经排出去、还没响完的振荡器。
+   *
+   * ⚠️ 停止必须**真的停**：排程是提前 2 秒做的，光把定时器关掉，
+   *   已排出去的音还会继续响两秒。按了停止还在响，那不叫停止。
+   */
+  readonly #live = new Set<OscillatorNode>();
+
+  constructor(ctx: AudioContext, dest: AudioNode) {
+    this.#ctx = ctx;
+    this.#dest = dest;
+  }
+
+  schedule(n: MidiNote, at: number): void {
+    // ⚠️ 打击乐通道跳过 —— 见文件头
+    if (n.channel === DRUM_CHANNEL) return;
+    if (n.duration <= 0) return;
+
+    const osc = this.#ctx.createOscillator();
+    osc.type = waveFor(n.program);
+    osc.frequency.value = freq(n.note);
+
+    const gain = this.#ctx.createGain();
+    // 力度 0..127 → 音量，再留出复音叠加的余量
+    const peak = (n.velocity / 127) * 0.18;
+    const attack = 0.01;
+    const release = Math.min(0.12, n.duration * 0.4);
+    const end = at + n.duration;
+
+    gain.gain.setValueAtTime(0, at);
+    gain.gain.linearRampToValueAtTime(peak, at + attack);
+    gain.gain.setValueAtTime(peak, Math.max(at + attack, end - release));
+    gain.gain.linearRampToValueAtTime(0, end);
+
+    osc.connect(gain).connect(this.#dest);
+    osc.start(at);
+    osc.stop(end + 0.02);
+    this.#live.add(osc);
+    osc.onended = () => {
+      this.#live.delete(osc);
+    };
+  }
+
+  stop(): void {
+    for (const osc of this.#live) {
+      try {
+        osc.stop();
+      } catch {
+        // 已经停过的节点再 stop 会抛，忽略
+      }
+    }
+    this.#live.clear();
+  }
+}
+
 export class MusicPlayer {
   #ctx: AudioContext | null = null;
   #master: GainNode | null = null;
+  /** 当前用的后端。默认振荡器；给了音色库就换成 SoundFont */
+  #voice: MidiVoice | null = null;
+  /** 用户给的音色库；null = 没有（用振荡器兜底） */
+  #font: SoundFont | null = null;
   #song: MidiSong | null = null;
   #name = '';
   /** 曲子里下一个还没排的音符下标 */
@@ -66,13 +144,6 @@ export class MusicPlayer {
   #timer: number | null = null;
   #loop = true;
   #volume = 0.25;
-  /**
-   * 已经排出去、还没响完的振荡器。
-   *
-   * ⚠️ 停止必须**真的停**：排程是提前 2 秒做的，光把定时器关掉，
-   *   已排出去的音还会继续响两秒。按了停止还在响，那不叫停止。
-   */
-  readonly #live = new Set<OscillatorNode>();
 
   get playing(): boolean {
     return this.#timer !== null;
@@ -82,6 +153,14 @@ export class MusicPlayer {
   }
   get volume(): number {
     return this.#volume;
+  }
+  /** 现在用的是不是音色库（面板/日志要如实说） */
+  get usingSoundFont(): boolean {
+    return this.#font !== null;
+  }
+  /** 音色库名；没装返回 null */
+  get soundFontName(): string | null {
+    return this.#font?.name ?? null;
   }
 
   setVolume(v: number): void {
@@ -101,6 +180,63 @@ export class MusicPlayer {
     this.#master.gain.value = this.#volume;
     this.#master.connect(this.#ctx.destination);
     void this.#ctx.resume();
+    this.#voice = this.#makeVoice();
+  }
+
+  /**
+   * 直接挂一个已经建好的 `AudioContext`。
+   *
+   * `unlock()` 只能在**用户手势里**调（浏览器不许在此之前出声），而测试或
+   * 别的宿主可能已经有一个现成的 context。挂上去之后按当前有没有音色库建后端。
+   */
+  attach(ctx: AudioContext, dest: GainNode): void {
+    this.#ctx = ctx;
+    this.#master = dest;
+    dest.gain.value = this.#volume;
+    this.#voice = this.#makeVoice();
+  }
+
+  /**
+   * 装一份音色库（用户自备）。
+   *
+   * ★ 正在放的话**当场换后端重排**：先从当前曲子的头重新排一遍。
+   *   `startedAt` 放在现在，所以听感是「这一首从头再来」，不是静音。
+   *   没在放就只是记下来，下一次 `play()` 用。
+   */
+  setSoundFont(font: SoundFont): void {
+    this.#font = font;
+    if (this.#ctx === null || this.#master === null) return; // 还没解锁，等 unlock
+    const song = this.#song;
+    this.#voice?.stop();
+    this.#voice = this.#makeVoice();
+    if (song !== null) {
+      this.#cursor = 0;
+      this.#startedAt = this.#ctx.currentTime + 0.1;
+      this.#pump();
+    }
+  }
+
+  /** 把装着的音色库卸掉，退回振荡器 */
+  clearSoundFont(): void {
+    if (this.#font === null) return;
+    this.#font = null;
+    if (this.#ctx === null) return;
+    const song = this.#song;
+    this.#voice?.stop();
+    this.#voice = this.#makeVoice();
+    if (song !== null) {
+      this.#cursor = 0;
+      this.#startedAt = this.#ctx.currentTime + 0.1;
+      this.#pump();
+    }
+  }
+
+  #makeVoice(): MidiVoice {
+    const ctx = this.#ctx;
+    const master = this.#master;
+    if (ctx === null || master === null) throw new Error('AudioContext 还没解锁');
+    if (this.#font !== null) return new SoundFontVoice(ctx, master, this.#font);
+    return new OscillatorVoice(ctx, master);
   }
 
   /** 换一首。`data` 是 .mid 的原始字节 */
@@ -113,6 +249,9 @@ export class MusicPlayer {
       this.#song = null;
       return;
     }
+    // 正常路径上 `unlock()` 已经建好后端；这里兜一层是为了「context 就绪但还没
+    // 建后端」（例如测试注入了一个现成的 ctx）时也照样出声
+    this.#voice ??= this.#makeVoice();
     this.#name = name;
     this.#cursor = 0;
     this.#startedAt = this.#ctx.currentTime + 0.1;
@@ -126,14 +265,7 @@ export class MusicPlayer {
       this.#timer = null;
     }
     // ★ 把已排出去但还没响完的音一并掐掉
-    for (const osc of this.#live) {
-      try {
-        osc.stop();
-      } catch {
-        // 已经停过的节点再 stop 会抛，忽略
-      }
-    }
-    this.#live.clear();
+    this.#voice?.stop();
     this.#song = null;
     this.#name = '';
   }
@@ -146,8 +278,8 @@ export class MusicPlayer {
   #pump(): void {
     const ctx = this.#ctx;
     const song = this.#song;
-    const master = this.#master;
-    if (ctx === null || song === null || master === null) return;
+    const voice = this.#voice;
+    if (ctx === null || song === null || voice === null) return;
 
     const horizon = ctx.currentTime + SCHEDULE_AHEAD_S;
     while (this.#cursor < song.notes.length) {
@@ -155,7 +287,7 @@ export class MusicPlayer {
       const at = this.#startedAt + n.time;
       if (at > horizon) break;
       this.#cursor++;
-      this.#emit(ctx, master, n, at);
+      voice.schedule(n, at);
     }
 
     if (this.#cursor >= song.notes.length) {
@@ -169,35 +301,5 @@ export class MusicPlayer {
         }
       }
     }
-  }
-
-  #emit(ctx: AudioContext, master: GainNode, n: MidiNote, at: number): void {
-    // ⚠️ 打击乐通道跳过 —— 见文件头
-    if (n.channel === DRUM_CHANNEL) return;
-    if (n.duration <= 0) return;
-
-    const osc = ctx.createOscillator();
-    osc.type = waveFor(n.program);
-    osc.frequency.value = freq(n.note);
-
-    const gain = ctx.createGain();
-    // 力度 0..127 → 音量，再留出复音叠加的余量
-    const peak = (n.velocity / 127) * 0.18;
-    const attack = 0.01;
-    const release = Math.min(0.12, n.duration * 0.4);
-    const end = at + n.duration;
-
-    gain.gain.setValueAtTime(0, at);
-    gain.gain.linearRampToValueAtTime(peak, at + attack);
-    gain.gain.setValueAtTime(peak, Math.max(at + attack, end - release));
-    gain.gain.linearRampToValueAtTime(0, end);
-
-    osc.connect(gain).connect(master);
-    osc.start(at);
-    osc.stop(end + 0.02);
-    this.#live.add(osc);
-    osc.onended = () => {
-      this.#live.delete(osc);
-    };
   }
 }

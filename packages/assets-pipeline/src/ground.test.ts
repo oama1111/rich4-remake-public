@@ -12,9 +12,12 @@ import {
   GND_TILE_HEIGHT,
   GND_TILE_WIDTH,
   GroundFormatError,
+  asGroundImage,
   decodeGround,
+  groundRgba,
   isGround,
   readLayout,
+  type GroundImage,
 } from './ground.ts';
 
 const DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/map';
@@ -157,5 +160,40 @@ describe('解码', () => {
       total++;
     }
     expect(sea / total).toBeGreaterThan(0.4);
+  });
+});
+
+describe('★ RGBA 视图（Q-GND-4：底图进管线要走 PNG 编解码）', () => {
+  const tiny = (): GroundImage => ({
+    width: 2,
+    height: 1,
+    tilesX: 1,
+    tilesY: 1,
+    rgba: new Uint8Array([1, 2, 3, 255, 4, 5, 6, 255]),
+  });
+
+  it('groundRgba 是同一段 buffer 的视图，不是复制', () => {
+    const g = tiny();
+    const view = groundRgba(g);
+    expect(view.buffer).toBe(g.rgba.buffer);
+    expect([...view]).toEqual([...g.rgba]);
+    // 改视图即改原图 —— 证明没有复制
+    view[0] = 99;
+    expect(g.rgba[0]).toBe(99);
+  });
+
+  it('asGroundImage 反过来也只补格数（零拷贝）', () => {
+    const png = { width: 2, height: 1, rgba: new Uint8ClampedArray([7, 8, 9, 255, 10, 11, 12, 255]) };
+    const g = asGroundImage(png, 1, 1);
+    expect({ w: g.width, h: g.height, tx: g.tilesX, ty: g.tilesY }).toEqual({ w: 2, h: 1, tx: 1, ty: 1 });
+    expect(g.rgba.buffer).toBe(png.rgba.buffer);
+    expect([...g.rgba]).toEqual([...png.rgba]);
+  });
+
+  it('★ 往返：decodeGround → groundRgba → asGroundImage 仍是同一段像素', () => {
+    const g = tiny();
+    const clamped = groundRgba(g);
+    const back = asGroundImage({ width: g.width, height: g.height, rgba: clamped }, g.tilesX, g.tilesY);
+    expect([...back.rgba]).toEqual([...g.rgba]);
   });
 });

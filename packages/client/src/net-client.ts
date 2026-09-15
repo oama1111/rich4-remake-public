@@ -39,6 +39,13 @@ export interface NetClientOptions {
   onError?(message: string): void;
   /** 服务器判定有人失步；`seat` 是谁的校验和不对 */
   onDesync?(info: { seq: number; expected: string; got: string; seat: number }): void;
+  /**
+   * ★ 失步自愈（Q-NET-1）：服务器把**完整** action 日志重放回来了。
+   *
+   * 本地必须以这份参数 `newGame` 再从头 reduce `actions` —— 是**整体替换**
+   * 而不是继续增量施加；`NetClient` 已经把序号指针接成 `actions.length`。
+   */
+  onResync?(replay: { seed: number; globalMapId: number; seats: SeatInfo[]; actions: Action[] }): void;
   /** 本地状态的指纹（发校验和用） */
   fingerprint(): string;
 }
@@ -50,6 +57,8 @@ export class NetClient {
   #expected: number;
   #seat: number | null = null;
   #room: RoomInfo | null = null;
+  /** 已发出 `resync` 还没等到 `replay` —— 期间不再重复请求（desync 是广播，可能连发） */
+  #resyncing = false;
 
   constructor(socket: NetSocket, opts: NetClientOptions) {
     this.#socket = socket;
@@ -88,6 +97,44 @@ export class NetClient {
     this.#send({ t: 'intent', action });
   }
 
+  /**
+   * ★ Q-NET-2 大厅设置：改**自己**座位的角色。
+   *
+   * 只是**请求**：消息里没有座位号（服务器从连接上认），也不会先改本地 ——
+   * 服务器校验通过后广播 `room`，本地照广播更新座位板。
+   * 角色撞车 / 已开局 / 号越界都由服务器拒绝，走 `onError`。
+   */
+  setCharacter(character: number): void {
+    this.#send({ t: 'setCharacter', character });
+  }
+
+  /**
+   * ★ Q-NET-2 大厅设置：换房间地图。
+   *
+   * 只有房主（0 号座）会被服务器接受；非房主发出去只会收到一条 `error`。
+   * 同上：本地不等确认就改，等 `room` 广播回来才算数。
+   */
+  setMap(globalMapId: number): void {
+    this.#send({ t: 'setMap', globalMapId });
+  }
+
+  /**
+   * ★ Q-NET-1：请求**全量重放**。收到 `desync` 广播时自动调用；
+   * 上层也可以手动再要一次（例如发现序号跳号且补发迟迟不到）。
+   *
+   * 同一条连接上只允许一个未决请求 —— `desync` 是广播，可能连着来。
+   */
+  requestResync(): void {
+    if (this.#resyncing) return;
+    this.#resyncing = true;
+    this.#send({ t: 'resync' });
+  }
+
+  /** 是否正等着一份重放 */
+  get resyncing(): boolean {
+    return this.#resyncing;
+  }
+
   /** 收到服务器一条文本 */
   receive(text: string): void {
     let msg: ServerMessage;
@@ -116,8 +163,32 @@ export class NetClient {
         return;
       case 'desync':
         this.#opts.onDesync?.({ seq: msg.seq, expected: msg.expected, got: msg.got, seat: msg.seat });
+        // ★ 自愈：失步的是谁都要重放一份 —— 同一条广播到各端时，
+        //   本机状态也可能已经跟着漂了，只补别人的没有意义。
+        this.requestResync();
         return;
+      case 'replay': {
+        // 网络来的东西不可信：形状不对就当没收到，别把序号指针弄成 NaN
+        if (typeof msg.through !== 'number' || !Array.isArray(msg.actions)) {
+          this.#resyncing = false;
+          return;
+        }
+        // ★ 整体替换：攒着没来得及施加的旧广播一律作废（它们都在重放里了），
+        //   序号指针接到重放末尾的下一号。
+        this.#pending.clear();
+        this.#expected = msg.through + 1;
+        this.#resyncing = false;
+        this.#opts.onResync?.({
+          seed: msg.seed,
+          globalMapId: msg.globalMapId,
+          seats: msg.seats,
+          actions: msg.actions.map((a) => a.action),
+        });
+        return;
+      }
       case 'error':
+        // 请求被拒（例如还没开局）也要解锁，否则此后不再尝试自愈
+        this.#resyncing = false;
         this.#opts.onError?.(msg.message);
         return;
       default:

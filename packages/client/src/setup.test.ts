@@ -9,6 +9,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   CONTROL_RECTS,
+  OUTRO_TICK_MS,
+  OUTRO_WALKER_SPEED_MAX,
   POPUP_IMAGES,
   POPUP_RECTS,
   POPUP_ROW_H,
@@ -23,9 +25,12 @@ import {
   hitSetup,
   menuItems,
   menuValue,
+  outroOffsets,
+  outroWalkerX,
   popupItemAt,
   setupDown,
   setupMove,
+  setupOutro,
   setupUp,
   type SetupState,
 } from './setup.ts';
@@ -260,6 +265,65 @@ describe('地图与鼠标', () => {
     const s = setupMove(defaultSetup(), cellCenter(8).x, cellCenter(8).y);
     expect(s.hover).toBe(8);
     expect(setupMove(s, 300, 300).hover).toBe(-1);
+  });
+});
+
+describe('点 OK 之后的「拉幕」（原版状态 2）', () => {
+  it('★ 定时器周期 50ms，小人速度封顶 30 @0x00405d0d / 0x00405f2c', () => {
+    expect(OUTRO_TICK_MS).toBe(0x32);
+    expect(OUTRO_WALKER_SPEED_MAX).toBe(0x1e);
+  });
+
+  it('★ 角色格往左、竖栏往右，位移 = n²+7n（= Σ(6+2k)，@0x00405f2f/0x00405f48）', () => {
+    const zero = outroOffsets(0);
+    // 第 0 跳还没动（`-0` 与 `0` 数值上相等，故逐个比）
+    expect(zero.boardDx === 0).toBe(true);
+    expect(zero.panelDx).toBe(0);
+    expect(zero.walkerDx).toBe(0);
+    // n=1：横向速度 6+2=8 → 各移 8
+    expect(outroOffsets(1)).toEqual({ boardDx: -8, panelDx: 8, walkerDx: 5 });
+    // n=2：再移 6+4=10 → 共 18；小人 5 + 6 = 11
+    expect(outroOffsets(2)).toEqual({ boardDx: -18, panelDx: 18, walkerDx: 11 });
+    // n=3：再移 12 → 共 30；小人 11 + 7 = 18
+    expect(outroOffsets(3)).toEqual({ boardDx: -30, panelDx: 30, walkerDx: 18 });
+    // 通式
+    for (let n = 0; n <= 40; n++) expect(outroOffsets(n).boardDx).toBe(-(n * n + 7 * n));
+    // 两侧反向且对称
+    for (let n = 0; n <= 40; n++) {
+      expect(outroOffsets(n).panelDx).toBe(-outroOffsets(n).boardDx);
+    }
+  });
+
+  it('★ 小人每跳 +1 直到 30 封顶（@0x00405f31 的 `cmp ecx,0x1e`）', () => {
+    const step = (n: number): number => outroOffsets(n).walkerDx - outroOffsets(n - 1).walkerDx;
+    expect(step(1)).toBe(5); // 4+1
+    expect(step(25)).toBe(29); // 4+25
+    expect(step(26)).toBe(30); // 4+26 → 封顶 30
+    expect(step(40)).toBe(30);
+  });
+
+  it('由时刻算跳数：每 50ms 一跳', () => {
+    expect(setupOutro(1000, 1000, 42)).toEqual({ tick: 0, scroll: 42 });
+    expect(setupOutro(1049, 1000, 42).tick).toBe(0);
+    expect(setupOutro(1050, 1000, 42).tick).toBe(1);
+    expect(setupOutro(1149, 1000, 42).tick).toBe(2);
+    // 场景滚动量在拉幕里被冻结（原版状态 2 不推进 `[0x48a3c8]`）
+    expect(setupOutro(2000, 1000, 42).scroll).toBe(42);
+  });
+
+  it('★ 四人的最后一名小人要到第 31 跳才走出画面（约 1.55s）', () => {
+    const s = seated(4); // 满座，最后一名 = 座位 3，静止落点 55
+    expect(SEAT_X[2]![3]).toBe(55);
+    expect(outroWalkerX(s, 3, 30)).toBeLessThan(640);
+    expect(outroWalkerX(s, 3, 31)).toBeGreaterThanOrEqual(640);
+    // 前面的座位先出去（落点更靠右）
+    expect(outroWalkerX(s, 0, 31)).toBeGreaterThan(outroWalkerX(s, 3, 31));
+  });
+
+  it('小人位移是单调递增的（不会倒着走）', () => {
+    for (let n = 1; n <= 40; n++) {
+      expect(outroWalkerX(seated(4), 3, n)).toBeGreaterThan(outroWalkerX(seated(4), 3, n - 1));
+    }
   });
 });
 

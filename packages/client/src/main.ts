@@ -17,6 +17,8 @@ import {
   isAiTurn,
   PANEL_PAGE_COUNT,
   holidayIndexOf,
+  weekdayOf,
+  dayNumberSince1998,
   DEFAULT_INITIAL_FUND,
   MAX_HAND_CARDS,
   MAX_TOOL_COUNT,
@@ -25,10 +27,12 @@ import {
   parseMap,
   parseSave,
   importOriginalSave,
+  roomMapId,
   STOCK_STATUS,
   stockStatus,
   stateFingerprint,
   toolCount,
+  winConditionsOf,
   type Action,
   type GameState,
   type MapTopology,
@@ -93,9 +97,31 @@ import {
   SIDE_BUTTONS,
   type GameOptions,
 } from './options.ts';
+import {
+  DATE_AT,
+  DATE_CTRL,
+  HOTKEY_AT,
+  HOTKEY_CTRL,
+  HOTKEY_DEFAULT_KEYS,
+  applyDateHit,
+  confirmOutcome,
+  drawDatePage,
+  drawHotkeyPage,
+  drawYesNo,
+  hitDateControl,
+  hitDatePage,
+  hitHotkeyPage,
+  hitYesNo,
+  hotkeyAssign,
+  hotkeySpot,
+  type DateDraft,
+  type OptionsOutcome,
+} from './options-pages.ts';
 import { SoundPlayer } from './audio.ts';
 import { speechEventsFor, speechResourcesFor } from './speech.ts';
 import { MusicPlayer } from './music.ts';
+// Q8：音色库（.sf2）—— 用户自备，有就用采样还原音色，没有就退回振荡器
+import { parseSoundFont } from './soundfont.ts';
 import {
   assetBase,
   currentGameDir,
@@ -103,7 +129,9 @@ import {
   hdBase,
   isDesktop,
   hostLog,
+  loadSavedSoundFont,
   pickGameDir,
+  pickSoundFont,
   type PickResult,
 } from './host.ts';
 import { MIDI_PLAYLIST, MOVE_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
@@ -132,8 +160,9 @@ import {
   type DialogHit,
 } from './dialog.ts';
 import { DICE_FLIC_BASE, GO_IMAGE, type SpriteFn } from './gameui.ts';
+import { goButton } from './go-button.ts';
 import { CHARACTER_POSE, characterSetBase, type LoadedFlic } from './assets.ts';
-import { HOTKEY, hotkeyOf } from './hotkeys.ts';
+import { HOTKEY, hotkeyOf, vkOf } from './hotkeys.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
 import { onMinigameBackgroundReady, setMinigameBackground } from './minigame-bg.ts';
 import {
@@ -179,28 +208,61 @@ import {
   STOCK_PLATE_SELL,
   STOCK_NO_BUY,
   STOCK_NO_SELL,
+  STOCK_PICK_FEEDBACK_MS,
   drawStockScreen,
   hitStockPlate,
   hitStockRow,
   stockCounterClosed,
+  stockPickCardAction,
   stockRowsFrom,
+  type StockPickMode,
   type StockView,
 } from './stock-screen.ts';
 import {
+  DICE_SOUND_CANCEL,
+  DICE_SOUND_PICK,
+  drawDiceChoose,
+  hitDiceFace,
+  remoteDiceAction,
+} from './dice-choose.ts';
+import { nearestSummonableObject, summonCardAction } from './object-pick.ts';
+import {
+  LOAN_BUTTONS,
+  LOAN_EXIT,
   drawBankLoan,
   hitLoanButton,
-  loanActionOf,
   type LoanOp,
 } from './bank-loan.ts';
 import {
   atmAmount,
+  atmLimit,
   atmPress,
   drawBankAtm,
   hitAtmButton,
   type AtmState,
 } from './bank-screen.ts';
 import {
+  ATM_BAR,
+  LOAN_BUBBLE_MS,
+  LOAN_TICK_MS,
+  atmApplyCode,
+  atmCodeOfKey,
+  atmDragToClick,
+  atmSeekAmount,
+  drawLoanBubble,
+  drawLoanPanels,
+  drawLoanPressed,
+  loanDueDays,
+  loanSlideDone,
+  loanSlideStep,
+  loanStart,
+  loanStep,
+  type LoanPanelsView,
+  type LoanUi,
+} from './bank-dynamic.ts';
+import {
   INV_VEHICLE_IMAGE,
+  REMOTE_DICE_TOOL,
   cardEntries,
   drawInventory,
   hitInventory,
@@ -238,6 +300,7 @@ import {
   type BailSlotView,
 } from './bail-screen.ts';
 import { SCREENS } from './screens.ts';
+import { closeHelpScreen, helpScreen, openHelpAt } from './help-screen.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import {
   CURSOR_ARCHIVE,
@@ -255,6 +318,8 @@ import {
   fillComputerSeats,
   setupDown,
   setupMove,
+  setupOutro,
+  setupPhase,
   setupUp,
   type SetupState,
 } from './setup.ts';
@@ -333,6 +398,62 @@ let optionsDraft: GameOptions = { ...DEFAULT_OPTIONS };
  */
 let optionsPressed: number | null = null;
 
+/**
+ * 設定屏上盖着的那一层（Q-OPT-1）：日期頁 / 熱鍵頁 / 通用 YES/NO 框。
+ * `null` = 只有主面板。
+ *
+ * ★ 三者都是原版**另开一扇窗口**的模态层（`fcn_00410ac3` / `fcn_00411122` /
+ *   `fcn_0045367e`），所以在设定屏自己的鼠标处理里分流，不走 `screens.ts`
+ *   那张登记表。「遊戲說明」才是登记的整屏（`help-screen.ts`）。
+ */
+type OptionsSub =
+  | {
+      kind: 'date';
+      /** 正在编辑的日期（原版 `[0x48bb84..87]`）*/
+      draft: DateDraft;
+      /** 开屏那一刻的系统今天（原版 `[0x48bb5c]`，给「熱 鍵」那颗用）*/
+      today: DateDraft;
+      /** 正按住的控件号（原版 `[0x474d78]`）*/
+      pressed: number | null;
+    }
+  | {
+      kind: 'hotkey';
+      /** 28 条键位（原版 `0x48bb10` 那份工作副本）*/
+      keys: number[];
+      /** 正按住的**值**（原版 `[0x48bb9e]`）*/
+      pressed: number | null;
+      /** 正在等按键的那一条（原版 `[0x48bba6]`，1 基）*/
+      capture: number | null;
+      /** 进捕获时存下的旧值（原版 `[0x48bb8c]`，右键取消要还回去）*/
+      oldValue: number;
+      /** 闪白这一拍亮不亮（原版 `[0x48bbaa]`）*/
+      blink: boolean;
+    }
+  | {
+      kind: 'yesno';
+      /** 是哪一颗黄钮（0 重新遊戲 / 1 認輸投降 / 2 結束遊戲）*/
+      side: number;
+      /** 鼠标压在哪一半（1 左 YES / 2 右 NO / `null`）*/
+      hot: number | null;
+    };
+
+let optionsSub: OptionsSub | null = null;
+
+/**
+ * 設定屏「日期更改」改出来的日期（原版 `[0x48bb50]` / `[0x497160]`）。
+ *
+ * ⚠️ 原版这是**下一局的起始日期**，写进 RICH4.CFG；本引擎的 `newGame` 目前把
+ *   开局日期写死成 1998/1/1（core 那边没有这个入参，本轮边界外），所以先把
+ *   它留在客户端，记在 `docs/known-deviations.md` 的 Q-OPT-1。
+ */
+let optionsDate: DateDraft = { year: 1998, month: 1, day: 1 };
+
+/** 熱鍵頁那份键位表（原版 `0x497168` 的 56 字节）。出厂默认 = 表 `0x47edc2` */
+let optionsKeys: number[] = [...HOTKEY_DEFAULT_KEYS];
+
+/** 熱鍵頁等待按键时那条 250ms 的闪白定时器（原版 `SetTimer(hwnd, id, 0xfa, 0)`）*/
+let hotkeyBlinkTimer: number | null = null;
+
 /** 对话框正在填数的那一页；`null` 表示还在选项页 */
 let amountPage: AmountPage | null = null;
 
@@ -344,12 +465,112 @@ let amountPage: AmountPage | null = null;
 let atm: AtmState | null = null;
 let atmFill: ((n: number) => Action) | null = null;
 let atmLabel = '';
+/**
+ * ATM 正被按住的「码」（原版 `[0x48c40b]`，= 钮序号 + 1；`null` = 没按住）。
+ *
+ * 鼠标那一路由按下/抬起各写一次；**键盘那一路原版是「按下 → 假装抬手」**，
+ * 所以这里记一个 `atmCodeAt`，下一拍（`BANK_TICK_MS`）就自动清掉 ——
+ * 效果是按下图只亮一瞬，与「假抬手」同观感。
+ */
+let atmCode: number | null = null;
+let atmCodeAt = 0;
 
 /** 关掉 ATM 面板 */
 function closeAtm(): void {
   atm = null;
   atmFill = null;
+  atmCode = null;
 }
+
+/**
+ * 金额栏拖到屏幕 x 处（原版 `loc_00437413` 的换算）。
+ * 条内 x = 屏 x − 118（`0x76`），换算见 `atmSeekAmount`。
+ */
+function atmSeekTo(screenX: number): void {
+  const st = atm;
+  if (st === null) return;
+  const n = atmSeekAmount(screenX - ATM_BAR.x, atmLimit(st));
+  atm = { ...st, digits: n <= 0 ? '0' : String(n) };
+  requestRender();
+}
+
+/** ↵ 確認：金额定了才发得出去（原版 `loc_004377e6` → `Post_0402_Message`）*/
+function atmConfirm(): void {
+  const st = atm;
+  if (st === null) return;
+  const n = Math.trunc(atmAmount(st));
+  const fill = atmFill;
+  closeAtm();
+  if (n > 0 && fill !== null) {
+    log(`▶ ${atmLabel} ${n}`);
+    dispatch(fill(n));
+  }
+  requestRender();
+}
+
+/**
+ * ATM 那几个键的 VK 码。
+ *
+ * `hotkeys.ts` 的 `vkOf()` 只覆盖熱鍵用得到的那些键，**没有数字与退格** ——
+ * 所以这里补上 ATM 需要的那几类。★ 只认主键盘的 `Digit0..9`（VK 0x30..0x39），
+ * 小键盘的 VK 是 0x60..0x69，原版那张表里**没有**它们，所以这里也不加。
+ * @source `loc_004374ac` 的键表
+ */
+function atmVkOf(e: KeyboardEvent): number | null {
+  const v = vkOf(e);
+  if (v !== null) return v;
+  if (e.code === 'Backspace') return 0x08;
+  if (e.code.startsWith('Digit') && e.code.length === 6) {
+    const d = e.code.charCodeAt(5) - 0x30;
+    if (d >= 0 && d <= 9) return 0x30 + d;
+  }
+  return null;
+}
+
+/**
+ * ATM 的 `0x100`（`WM_KEYDOWN`）：**原版键盘这一支与鼠标共用抬手那套分发**
+ * （`loc_004374ac` 设 `[0x48c40b]` 后 `PostMessage(hwnd, 0x202, 0, 0)`），
+ * 所以这里直接用 `atmApplyCode`（= `loc_0043762d` 的纯函数版）。
+ *
+ * @param code 钮序号 + 1（见 `ATM_KEY_VK`）；`4` = 金额栏
+ */
+function atmKey(code: number): void {
+  const st = atm;
+  if (st === null) return;
+  atmCode = code;
+  atmCodeAt = performance.now();
+  const btn = code - 1;
+  if (btn === 3) {
+    // @source `loc_004375dc`：合成一次金额栏点击，坐标 (0xdc, 0xdf) = (220,223)
+    atmSeekTo(0xdc);
+    return;
+  }
+  if (btn === 2) {
+    closeAtm();
+    requestRender();
+    return;
+  }
+  if (btn === 17) {
+    atmConfirm();
+    return;
+  }
+  if (btn === 0 || btn === 1) {
+    const next = atmPress(st, btn, bankFrozen());
+    if (next !== null) atm = next;
+    requestRender();
+    return;
+  }
+  atm = { ...st, digits: atmApplyCode(st.digits, code, atmLimit(st)) };
+  requestRender();
+}
+
+/**
+ * 貸款屏的界面状态（原版 `[0x48c3dd]` / `[0x48c3d5]` / `[0x48c3e1]` 那一串）。
+ * `null` = 这一屏没开。
+ */
+let loanUi: LoanUi | null = null;
+/** 上一次推进滑入 / 气泡的时刻（原版那 50ms 一拍）*/
+let loanAt = 0;
 
 /** 现在是不是「銀行暫停放款」状态 @source player+0x3c（`bankFreezeDays`）*/
 function bankFrozen(): boolean {
@@ -384,6 +605,134 @@ function openLoanAmount(op: LoanOp): void {
 }
 let dialogHot: DialogHit | null = null;
 
+// ── 貸款屏的动态部分（Q-BANK-1 / T-029c）────────────────────
+//
+// 原版 `fcn_00435062` 是个窗口过程：`0x401` 铺场、`0x405` 说第一句、
+// `0x113` 定时器（50ms）推滑入与气泡、`0x201/0x202/0x205` 收鼠标、
+// `0x409/0x40a` 是填数页回来。那些**纯逻辑**都在 `bank-dynamic.ts`，
+// 本文件只做「事件进来 → 状态机 → effect 接上 IO」。
+
+/** 定时器节拍（原版 `SetTimer(hwnd, 深度, 0x32, 0)` = 50ms）*/
+const BANK_TICK_MS = LOAN_TICK_MS;
+
+/** 气泡是哪一刻挂上的（到点自收，与商店同一支 `fcn_0044ee18`）*/
+let loanBubbleAt = 0;
+
+/** 这一屏开着吗；开着就保证有一份界面状态（对应原版 `0x401` 铺场）*/
+function syncLoanUi(): void {
+  const p = state.pending;
+  if (p === null || p.kind !== 'bank') {
+    loanUi = null;
+    return;
+  }
+  if (loanUi === null) {
+    loanUi = loanStart(true);
+    loanAt = performance.now();
+    loanBubbleAt = loanAt;
+  }
+}
+
+/** 把状态机给出的 effect 接上 IO（原版是 `PostMessage` / `Wait_0402_Message`）*/
+function loanEffect(ui: LoanUi, effect: ReturnType<typeof loanStep>['effect']): void {
+  const hadBubble = loanUi?.bubble ?? null;
+  loanUi = ui;
+  if (hadBubble !== ui.bubble) loanBubbleAt = performance.now();
+  if (effect === null) return;
+  if (effect.kind === 'close') {
+    loanUi = null;
+    dispatch({ type: 'declineDecision' });
+    return;
+  }
+  if (effect.kind === 'openForm') {
+    openLoanAmount(effect.op === 'borrow' ? 'borrow' : 'repay');
+    return;
+  }
+  // 特別融資子对话框（`fcn_00434492`）整屏还没复刻 —— 见 T-029 的未决；
+  // 这里退回「开通用填数页」，至少把金额流程走通
+  openLoanAmount('financeBorrow');
+}
+
+/** 走一步状态机并把 effect 接上 */
+function loanSend(ev: Parameters<typeof loanStep>[1]): void {
+  const ui = loanUi;
+  if (ui === null) return;
+  const r = loanStep(ui, ev);
+  loanEffect(r.ui, r.effect);
+}
+
+/**
+ * 填数页回来了 —— 原版 `0x409`/`0x40a` 拿到 `fcn_00453544` 的返回值那一刻。
+ *
+ * | 状态 | 原版判据 | 结果 |
+ * |---|---|---|
+ * | 借款 | 额 > 0 | `st=7` + 「貸款手續完成」|
+ * | 借款 | 额 = 0 | `st=8`（不挂气泡，下一拍滑回去）|
+ * | 还款 | 额 > 现金+存款 | `st=9` + 「您的現金不足」|
+ * | 还款 | 额 ≤ 现金+存款 | `st=8` + 「還款手續已完成」|
+ */
+function loanFormClosed(amount: number): void {
+  if (loanUi === null) return;
+  const me = state.players[state.currentPlayer];
+  loanSend({
+    kind: 'formClosed',
+    amount,
+    cash: me?.cash ?? 0,
+    deposit: me?.moneyInBank ?? 0,
+  });
+}
+
+/**
+ * 貸款屏每帧走一次（对应原版那支 50ms 的 `0x113` 定时器）：
+ * 推滑入、气泡到点（`fcn_0044ee18` —— **没有气泡时它也返回 1**）、
+ * 键盘按下码那一瞬的清除。
+ */
+function bankTick(now: number): void {
+  if (atmCode !== null && now - atmCodeAt >= BANK_TICK_MS) atmCode = null;
+  if (loanUi === null) return;
+  if (now - loanAt < LOAN_TICK_MS) return;
+  loanAt = now;
+  if (!loanSlideDone(loanUi.slide)) {
+    loanUi = { ...loanUi, slide: loanSlideStep(loanUi.slide) };
+  }
+  const bubble = loanUi.bubble;
+  if (bubble === null || now - loanBubbleAt >= LOAN_BUBBLE_MS) {
+    loanSend({ kind: 'bubbleEnd' });
+  }
+}
+
+/**
+ * 这一刻两块滑入面板该画什么 —— 全部取自玩家记录与全局日期。
+ *
+ * | 面板上 | 原版 |
+ * |---|---|
+ * | 头像 | `[0x498eb0 + 0x34×玩家] + 0xc` = `map.mkf` 资源 `角色+0x1b` 图 0（`portraitResource`）|
+ * | 名字 | `player+0x00` |
+ * | 現金/存款/貸款 | `player+0x1c/0x20/0x24` |
+ * | 年/月/日/星期 | `[0x497160]`（打包日期）+ `0x47511c` 星期名表 |
+ * | 節日插画 | `fcn_004521f0(今天) != −1` 时整张盖掉季节底图 |
+ * | 距還款日 | `player+0x2c`（还款到期日）与今天的天号差 @source `fcn_004521aa` |
+ */
+function loanPanelView(ui: LoanUi): LoanPanelsView {
+  const me = state.players[state.currentPlayer];
+  const today = { year: state.year, month: state.month, day: state.day };
+  const packed = me?.loanDueDate ?? 0;
+  const due =
+    packed === 0
+      ? null
+      : { year: packed >>> 16, month: (packed >>> 8) & 0xff, day: packed & 0xff };
+  return {
+    slide: ui.slide,
+    character: me?.character ?? 0,
+    name: me === undefined ? '' : (CHARACTERS[me.character]?.name ?? ''),
+    money: [me?.cash ?? 0, me?.moneyInBank ?? 0, me?.loan ?? 0],
+    date: today,
+    weekday: weekdayOf(today.year, today.month, today.day),
+    globalMapId: state.globalMapId,
+    holidayArt,
+    dueDays: due === null ? null : loanDueDays(today, due, dayNumberSince1998),
+  };
+}
+
 // ── 股市屏（T-030）────────────────────────────────────────
 /** 现在看的是哪一页（0 行情 / 1 持股） —— 点页码牌换 @source loc_0042aec4 */
 let stockPage = 0;
@@ -405,6 +754,28 @@ let stockAmount: { kind: 'buy' | 'sell'; stock: number; max: number } | null = n
  * 那一屏没有可点的东西：**左键或右键抬起都直接退卡**（`loc_0042aa08`）。
  */
 let stockDetail: number | null = null;
+
+/**
+ * **选股模式**（Q-PICK-2）—— 紅卡/黑卡借股市屏选一支股票。
+ *
+ * 非 `null` 时 `screen === 'stock'` 但这一屏只干「点一行 → 抛回行号」：
+ * 原版就是 `_rich4_ui_stock_entry` 带了参数 1/2（`[0x48c2ed]` 那个模式）。
+ * 悬停反馈是**白框**（`pickHover`），点中之后那一支当场涨/跌 **10%**、停 1 秒再收屏。
+ * @source `loc_0042b0da` / `loc_0042adf3`
+ */
+let stockPick: { cardId: number; mode: StockPickMode } | null = null;
+/**
+ * 选中之后到收屏之间的 1 秒 —— 原版 `0x45285e(0x3e8)` 是**阻塞**等待，
+ * 这里用定时器（`dispatch` 已经把那支股票涨/跌好了，这一秒是给玩家看的）。
+ */
+let stockPickAt: number | null = null;
+
+/**
+ * 遙控骰子那盘点数盘（道具 8，Q-PICK-2）—— 盖在棋盘上的模态小盘。
+ * `hover` = 悬停的骰面 1..6（0/null = 没有）。
+ * @source `rich4_tool_yaokongtouzi.asm` **VA 0x004470f8** 起
+ */
+let dicePick: { hover: number | null } | null = null;
 
 /** 该股对应的地图企业（没上市就返回 null）@source 股票记录 +4 = 企業序号 */
 function stockCommercial(stockIndex: number): { type: number; stockIndex: number } | null {
@@ -458,7 +829,75 @@ function closeStock(): void {
   stockAmount = null;
   amountPage = null;
   dialogHot = null;
+  stockPick = null;
+  stockPickAt = null;
   requestRender();
+}
+
+/**
+ * 开**选股模式**（Q-PICK-2）：紅卡/黑卡借股市屏点一支股票。
+ *
+ * @source 紅卡 VA 0x00444fea 起（`push 1` 在 0x00444ff8）/ 黑卡 VA 0x004450ae 起
+ *   （`push 2` 在 0x004450bc）—— 都是
+ *   `push mode; call _rich4_ui_stock_entry`，参数 1 = 紅、2 = 黑；
+ *   非 0 返回 = 行号（1 基）= 选中的股票。
+ */
+function openStockPick(cardId: number, mode: StockPickMode): void {
+  stockPage = 0;
+  stockHover = null;
+  stockSel = null;
+  stockAmount = null;
+  amountPage = null;
+  dialogHot = null;
+  stockPick = { cardId, mode };
+  stockPickAt = null;
+  screen = 'stock';
+  requestRender();
+}
+
+/**
+ * 选股模式下点中第 `row` 行。
+ *
+ * ★ 原版在**抛回行号之前**先把 `newsFlag` 打上、`0x429040(row)` 当场把价格算出来，
+ *   再停 1 秒（@source `loc_0042b0da` 的 `0x45285e(0x3e8)`）。
+ *   本引擎把「改行情」收在 core（C-ARC-2），所以这里**先 dispatch**——
+ *   那一支当场涨/跌好，屏上停 1 秒给玩家看，然后收屏。
+ */
+function stockPickChoose(row: number): void {
+  const pick = stockPick;
+  if (pick === null || stockPickAt !== null) return;
+  const act = stockPickCardAction(pick.cardId, row);
+  if (act === null) return;
+  // @source `loc_0042b19c` 那一声播的是点中音（0x482322 = 1）
+  sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+  dispatch(act);
+  stockPickAt = performance.now();
+  requestRender();
+  // 反馈这一秒过完就收屏（`closeStock` 顺手把 stockPick 清掉）
+  window.setTimeout(() => {
+    if (stockPick === null) return;
+    if (performance.now() - (stockPickAt ?? 0) < STOCK_PICK_FEEDBACK_MS) return;
+    stockPickAt = null;
+    closeStock();
+  }, STOCK_PICK_FEEDBACK_MS);
+}
+
+/**
+ * 取消选股（右键）：原版 `loc_0042b22f` 在 page == 0 时 Post(0) 抛回 0 ——
+ * 卡不消耗，而 `_rich4_ui_use_card_entry` 见返回 0 就**把卡片欄再开回来**
+ * （@source `loc_00441ce1` 的 `je loc_00441c22`）。故这里也照做。
+ */
+function cancelStockPick(playSound = true): void {
+  const pick = stockPick;
+  if (pick === null) return;
+  // @source `loc_0042b25a` 的 `play_sound_effect(0x482332)` —— 音效 4
+  //   ⚠️ 休市那条路（訊息框 `loc_0042aa08`）**没有**音效，故留一个开关
+  if (playSound) sound.play('Effect.mkf', STOCK_PICK_CANCEL_SOUND);
+  stockPick = null;
+  stockPickAt = null;
+  closeStock();
+  // 抛回 0 ⇒ `_rich4_ui_use_card_entry` 把卡片欄再开回来（@source `loc_00441ce1`）
+  openInventory('cards');
 }
 
 /** 12 支股票的名字 —— core 的状态不带名字，在 `@rich4/data` 的表里 */
@@ -478,8 +917,11 @@ function stockView(): StockView {
     playerNames: state.players.map(
       (p) => CHARACTERS[p.character]?.name ?? `角色${p.character}`,
     ),
-    hover: stockHover,
-    selected: stockSel,
+    // ★ 选股模式走的是**另一条支路**（`loc_0042abbb`）：普通屏那套悬停/选中不画，
+    //   只画一个白框（`pickHover`）
+    hover: stockPick === null ? stockHover : null,
+    selected: stockPick === null ? stockSel : null,
+    pickHover: stockPick === null ? null : stockHover,
   };
 }
 
@@ -796,12 +1238,21 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
     // ── 对话框上的答复 ──
     case HOTKEY.yes:
     case HOTKEY.confirm: {
+      // 設定屏的通用 YES/NO 框先认（原版 `fcn_0045367e` 拿 `[0x497178]` 那把「是」键比）
+      if (optionsSub !== null && optionsSub.kind === 'yesno') {
+        answerYesNo(true);
+        return true;
+      }
       const ui = currentDialog();
       if (ui === null) return false;
       onDialogHit(ui, { kind: 'choice', index: 0 });
       return true;
     }
     case HOTKEY.no: {
+      if (optionsSub !== null && optionsSub.kind === 'yesno') {
+        answerYesNo(false);
+        return true;
+      }
       const ui = currentDialog();
       if (ui === null) return false;
       onDialogHit(ui, { kind: 'choice', index: Math.min(1, ui.choices.length - 1) });
@@ -815,6 +1266,15 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
         return true;
       }
       if (screen === 'options') {
+        // 盖在設定屏上面的层先收（与原版「ESC 关最上面那扇窗」一致）
+        if (helpScreen.active(uiEnv())) {
+          closeHelpScreen(uiEnv());
+          return true;
+        }
+        if (optionsSub !== null) {
+          cancelOptionsSub();
+          return true;
+        }
         optionsPressed = null;
         screen = optionsReturn;
         return true;
@@ -1172,11 +1632,17 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
       return;
     case 'amountCancel':
       closeAmountPage();
+      // ★ 貸款屏（T-029c）：填数页收摊要告诉状态机 —— 原版那是
+      //   `fcn_00453544` 返回 0，`0x409`/`0x40a` 拿它决定下一步（不挂气泡地收尾）
+      loanFormClosed(0);
       requestRender();
       return;
     case 'amountOk': {
       const n = Math.trunc(page.value);
       closeAmountPage();
+      // ★ 先让貸款屏的状态机吃掉这次结果（0x409/0x40a 的语义），再派 action ——
+      //   派完 action 可能整条 `pending` 都换了，那时状态机已经走到位了
+      loanFormClosed(n);
       // ★ 0 等于没做这件事 —— 派一个 0 的 action 只会被引擎原样退回，
       //   然后交互还留在那儿，看起来像卡住了
       if (n <= 0) {
@@ -1195,6 +1661,7 @@ function openOptions(from: Screen): void {
   optionsVariant = from === 'game' ? 1 : 0;
   optionsDraft = { ...options };
   optionsPressed = null;
+  closeOptionsSub();
   screen = 'options';
   requestRender();
 }
@@ -1219,6 +1686,11 @@ const OPTION_SOUND = { click: 1, ok: 2, denied: 3, cancel: 4 } as const;
  * 只有取消/確定/右上角三颗要等抬手（见 `onOptionsUp`）。
  */
 function onOptionsDown(sx: number, sy: number): void {
+  // ── 副屏先接（原版那三扇窗口各有自己的 WM_LBUTTONDOWN）──
+  if (optionsSub !== null) {
+    onOptionsSubDown(sx, sy);
+    return;
+  }
   const x = sx - DIALOG.x;
   const y = sy - DIALOG.y;
   if (x < 0 || y < 0 || x >= DIALOG.w || y >= DIALOG.h) return;
@@ -1265,6 +1737,11 @@ function onOptionsDown(sx: number, sy: number): void {
  *   所以「按住取消 → 拖到对话框外 → 松手」仍然算点了取消。
  */
 function onOptionsUp(): void {
+  // ── 副屏先接（原版那三扇窗口各有自己的 WM_LBUTTONUP）──
+  if (optionsSub !== null) {
+    onOptionsSubUp();
+    return;
+  }
   const ctrl = optionsPressed;
   optionsPressed = null;
   if (ctrl === null) return;
@@ -1286,6 +1763,393 @@ function onOptionsUp(): void {
   onOptionsSide(ctrl - CONTROL.SIDE_0);
 }
 
+// ============================================================
+//  設定屏的三个副屏 —— Q-OPT-1
+// ============================================================
+
+/** 收掉副屏（顺带停掉熱鍵頁那条闪白定时器）*/
+function closeOptionsSub(): void {
+  optionsSub = null;
+  if (hotkeyBlinkTimer !== null) {
+    window.clearInterval(hotkeyBlinkTimer);
+    hotkeyBlinkTimer = null;
+  }
+}
+
+/** 副屏的素材出口：资源号 + 图号 + 抠黑 */
+function optionsSubSprite(resource: number, index: number, colorKeyBlack = false) {
+  return spriteNow('Data.mkf', resource, index, colorKeyBlack);
+}
+
+/** 这一个副屏的素材出口（`optionsSubSprite` 的两参包装，给 `drawYesNo` 用）*/
+function optionsPageSprite(resource: number, index: number, colorKeyBlack?: boolean) {
+  return optionsSubSprite(resource, index, colorKeyBlack ?? false);
+}
+
+/**
+ * 開「日期頁」—— 原版 `0x4119e3`：先把三个钮的字烘进图 2、再取一次系统今天，
+ * 然后开模态窗口（`0x410ac3`）；「確定」抛回来的日期存进 `[0x48bb50]`/`[0x497160]`。
+ */
+function openDatePage(): void {
+  optionsSub = {
+    kind: 'date',
+    draft: { ...optionsDate },
+    today: systemToday(),
+    pressed: null,
+  };
+  requestRender();
+}
+
+/** 開「熱鍵頁」—— 原版 `0x411a86`（模态窗口 `0x411122`，结果没人接）*/
+function openHotkeyPage(): void {
+  optionsSub = {
+    kind: 'hotkey',
+    keys: [...optionsKeys],
+    pressed: null,
+    capture: null,
+    oldValue: 0,
+    blink: false,
+  };
+  requestRender();
+}
+
+/** 系统今天（原版 `fcn_00458331` = DOS 取日期；「熱 鍵」那颗回的就是它）*/
+function systemToday(): DateDraft {
+  const now = new Date();
+  return { year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate() };
+}
+
+/** 熱鍵頁那条 250ms 的闪白 @source `fcn_00411122` 的 `SetTimer(hwnd, id, 0xfa, 0)` */
+function startHotkeyBlink(): void {
+  if (hotkeyBlinkTimer !== null) return;
+  hotkeyBlinkTimer = window.setInterval(() => {
+    if (optionsSub === null || optionsSub.kind !== 'hotkey' || optionsSub.capture === null) {
+      closeOptionsSubTimerOnly();
+      return;
+    }
+    optionsSub = { ...optionsSub, blink: !optionsSub.blink };
+    requestRender();
+  }, 250);
+}
+
+function closeOptionsSubTimerOnly(): void {
+  if (hotkeyBlinkTimer === null) return;
+  window.clearInterval(hotkeyBlinkTimer);
+  hotkeyBlinkTimer = null;
+}
+
+/**
+ * 副屏的**按下**。
+ *
+ * @source 日期頁 `0x410bc8`（命中后按下就贴按下图 / 选中那天 / 放音效）、
+ *   熱鍵頁 `0x4113d9`（命中后按下就压凹那一块 / 放音效）、
+ *   YES/NO 框**没有** WM_LBUTTONDOWN 处理（只认移动与抬手）。
+ */
+function onOptionsSubDown(sx: number, sy: number): void {
+  const sub = optionsSub;
+  if (sub === null) return;
+  if (sub.kind === 'date') {
+    const dx = sx - DATE_AT.x;
+    const dy = sy - DATE_AT.y;
+    const hit = hitDatePage(dx, dy, sub.draft);
+    if (hit === null) {
+      // 命中格块但没落在任何一天上（格与格之间有 2~3px 空档）：原版照样先放
+      // 「按下」音再找格（`0x410e78` 的 `play_sound_effect` 在最前面）。
+      if (hitDateControl(dx, dy) === DATE_CTRL.GRID) sound.play('Effect.mkf', OPTION_SOUND.click);
+      return;
+    }
+    // 音效表 `0x48231a`：微调与日曆格 = 1、熱鍵 = 1、取消 = 4、確定 = 2 @source 0x410d84 起
+    if (hit.kind === 'spin' || hit.kind === 'day' || hit.ctrl === DATE_CTRL.TODAY) {
+      sound.play('Effect.mkf', OPTION_SOUND.click);
+    } else if (hit.ctrl === DATE_CTRL.CANCEL) {
+      sound.play('Effect.mkf', OPTION_SOUND.cancel);
+    } else {
+      sound.play('Effect.mkf', OPTION_SOUND.ok);
+    }
+    // 日曆格是**按下就选中并整屏重画** @source 0x410e78
+    const draft = hit.kind === 'day' ? applyDateHit(sub.draft, hit, sub.today) : sub.draft;
+    optionsSub = { ...sub, draft, pressed: hit.ctrl };
+    requestRender();
+    return;
+  }
+  if (sub.kind === 'hotkey') {
+    const hit = hitHotkeyPage(sx - HOTKEY_AT.x, sy - HOTKEY_AT.y);
+    if (hit === null) return;
+    // 音效表 `0x48231a`：行 / 原始設定 = 1（`0x482322`）、取消 = 4（`0x482332`）、
+    // 確定 = 2（`0x48232a`）@source 0x411657 / 0x4116d9 / 0x4115b8
+    sound.play(
+      'Effect.mkf',
+      hit.kind === 'button' && hit.action === 'cancel'
+        ? OPTION_SOUND.cancel
+        : hit.kind === 'button' && hit.action === 'ok'
+          ? OPTION_SOUND.ok
+          : OPTION_SOUND.click,
+    );
+    optionsSub = { ...sub, pressed: hit.ctrl };
+    requestRender();
+    return;
+  }
+  // YES/NO 框：原版只认 0x200 / 0x202 / 0x205 —— 按下这一下不算。
+  // ⚠️ 但原版开框时 `SetCursorPos(左上+0x16)` 把光标挪进了框里（`0x453719`），
+  //   于是必定先来一发 WM_MOUSEMOVE 把高亮打上；本引擎不挪用户的光标，
+  //   所以这里**按下也记一次高亮**，否则「点一下左半 = 是」在没移动鼠标时无效。
+  if (sub.kind === 'yesno') {
+    const hot = hitYesNo(sx, sy);
+    if (hot !== sub.hot) {
+      optionsSub = { ...sub, hot };
+      requestRender();
+    }
+  }
+}
+
+/**
+ * 副屏的**抬手**（抬手不重新命中判定，直接拿按下时记下的值）。
+ *
+ * @source 日期頁 `0x410f3d` 的跳表 `0x410aa7`；熱鍵頁 `0x41170f`（`0x64 原始設定 /
+ *   0x65 取消 / 0x66 確定 / 1..30 进捕获`）；YES/NO 框 `0x453892`。
+ */
+function onOptionsSubUp(): void {
+  const sub = optionsSub;
+  if (sub === null) return;
+  if (sub.kind === 'date') {
+    const ctrl = sub.pressed;
+    optionsSub = { ...sub, pressed: null };
+    requestRender();
+    if (ctrl === null) return;
+    if (ctrl <= DATE_CTRL.YEAR_DOWN) {
+      const field = ctrl === DATE_CTRL.MONTH_UP || ctrl === DATE_CTRL.MONTH_DOWN ? 'month' : 'year';
+      const delta = ctrl === DATE_CTRL.MONTH_UP || ctrl === DATE_CTRL.YEAR_UP ? -1 : 1;
+      optionsSub = {
+        ...sub,
+        pressed: null,
+        draft: applyDateHit(sub.draft, { kind: 'spin', ctrl, field, delta }, sub.today),
+      };
+      requestRender();
+      return;
+    }
+    if (ctrl === DATE_CTRL.TODAY) {
+      optionsSub = { ...sub, pressed: null, draft: { ...sub.today } };
+      requestRender();
+      return;
+    }
+    if (ctrl === DATE_CTRL.CANCEL) {
+      // 抛 −1 —— 什么都不拷回（`0x41104c`）
+      closeOptionsSub();
+      requestRender();
+      return;
+    }
+    if (ctrl === DATE_CTRL.OK) {
+      // 抛回日期（`0x411081`）→ 存进 `[0x48bb50]` / `[0x497160]`
+      optionsDate = { ...sub.draft };
+      log(`▶ 日期更改：${optionsDate.year} 年 ${optionsDate.month} 月 ${optionsDate.day} 日`);
+      closeOptionsSub();
+      requestRender();
+    }
+    return;
+  }
+  if (sub.kind === 'hotkey') {
+    const ctrl = sub.pressed;
+    optionsSub = { ...sub, pressed: null };
+    requestRender();
+    if (ctrl === null) return;
+    if (ctrl === HOTKEY_CTRL.DEFAULTS) {
+      // 原始設定：出厂默认拷回工作副本，**不关屏** @source 0x411744
+      optionsSub = { ...sub, pressed: null, keys: [...HOTKEY_DEFAULT_KEYS], capture: null };
+      requestRender();
+      return;
+    }
+    if (ctrl === HOTKEY_CTRL.CANCEL) {
+      // 取 消：关屏、不写回 @source 0x41177a
+      closeOptionsSub();
+      requestRender();
+      return;
+    }
+    if (ctrl === HOTKEY_CTRL.OK) {
+      // 確 定：写回 `0x497168` + 存 CFG（`0x411f80`）@source 0x4117bc
+      optionsKeys = [...sub.keys];
+      log('▶ 熱鍵設定：已更新（本引擎还没有 RICH4.CFG 的读写，键位只活在内存里）');
+      closeOptionsSub();
+      requestRender();
+      return;
+    }
+    // 行：进捕获（先把这一条清 0、旧值存起来）@source 0x411804 起
+    const index = hotkeySlotFor(ctrl);
+    if (index === null) return;
+    const keys = [...sub.keys];
+    const oldValue = keys[index] ?? 0;
+    keys[index] = 0;
+    optionsSub = { ...sub, pressed: null, keys, capture: ctrl, oldValue, blink: true };
+    startHotkeyBlink();
+    requestRender();
+    return;
+  }
+  // YES/NO 框：左键抬手才算（`0x453892`）
+  if (sub.kind === 'yesno') {
+    const hot = sub.hot;
+    if (hot === null) return;
+    answerYesNo(hot === 1);
+  }
+}
+
+/**
+ * 熱鍵頁**等按键**时把浏览器事件翻成原版的 VK 码。
+ *
+ * ⚠️ 不复用 `hotkeys.ts` 的 `vkOf()` —— 那只覆盖熱鍵本身用得到的那几个键，
+ *   没有数字 / F1..F12 / 退格 / Home / End / Ins 这些，而原版的键名表
+ *   `0x47edfa` 有 78 项（`Backspace` 到 `'`）。这里按**物理键位**（`e.code`）
+ *   翻，和 `vkOf()` 同一条理由（布局无关）。
+ */
+function captureVk(e: KeyboardEvent): number | null {
+  const c = e.code;
+  if (c.startsWith('Key') && c.length === 4) return c.charCodeAt(3);
+  if (c.startsWith('Digit') && c.length === 6) return 0x30 + Number(c.slice(5));
+  if (c.startsWith('F') && c.length <= 3) {
+    const n = Number(c.slice(1));
+    if (n >= 1 && n <= 12) return 0x70 + (n - 1);
+  }
+  const table: Record<string, number> = {
+    Backspace: 0x08, Tab: 0x09, Enter: 0x0d, NumpadEnter: 0x0d,
+    ControlLeft: 0x11, ControlRight: 0x11, Escape: 0x1b, Space: 0x20,
+    PageUp: 0x21, PageDown: 0x22, End: 0x23, Home: 0x24,
+    ArrowLeft: 0x25, ArrowUp: 0x26, ArrowRight: 0x27, ArrowDown: 0x28,
+    Insert: 0x2d,
+    NumpadMultiply: 0x6a, NumpadAdd: 0x6b, NumpadSubtract: 0x6d, NumpadDivide: 0x6f,
+    Semicolon: 0xba, Equal: 0xbb, Comma: 0xbc, Minus: 0xbd, Period: 0xbe, Slash: 0xbf,
+    Backquote: 0xc0, BracketLeft: 0xdb, Backslash: 0xdc, BracketRight: 0xdd, Quote: 0xde,
+  };
+  return table[c] ?? null;
+}
+
+/**
+ * 熱鍵頁在等按键时收到一个键（原版 `0x41183b`）。
+ *
+ * @source 键名表 `0x47edfa` 里查不到就不理；`CTRL`(0x11) 置 `0x1100`；
+ *   其余 `or` 进低字节；与别的条目撞车就不改。
+ */
+function onHotkeyCapture(code: number): boolean {
+  const sub = optionsSub;
+  if (sub === null || sub.kind !== 'hotkey' || sub.capture === null) return false;
+  const index = hotkeySlotFor(sub.capture);
+  if (index === null) {
+    optionsSub = { ...sub, capture: null };
+    requestRender();
+    return true;
+  }
+  const next = hotkeyAssign(sub.keys, index, code);
+  optionsSub = { ...sub, keys: next ?? sub.keys, capture: next === null ? sub.capture : null };
+  if (next !== null) closeOptionsSubTimerOnly();
+  requestRender();
+  return true;
+}
+
+/** 右键：熱鍵頁先取消捕获（还回旧值），否则关屏；日期頁/YES-NO 关屏 */
+function cancelOptionsSub(): void {
+  const sub = optionsSub;
+  if (sub === null) return;
+  if (sub.kind === 'hotkey' && sub.capture !== null) {
+    const index = hotkeySlotFor(sub.capture);
+    const keys = [...sub.keys];
+    if (index !== null) keys[index] = sub.oldValue;
+    optionsSub = { ...sub, keys, capture: null, blink: false };
+    closeOptionsSubTimerOnly();
+    requestRender();
+    return;
+  }
+  // YES/NO 框右键 = 「否」@source 0x4539a2（与 NO 同一条路）
+  if (sub.kind === 'yesno') {
+    answerYesNo(false);
+    return;
+  }
+  closeOptionsSub();
+  requestRender();
+}
+
+/**
+ * YES/NO 框的结果落地 —— 原版 `fcn_00410838` 的 `cmp eax,1 / jne`：
+ * **答「是」才做**，答「否」（含右键）直接回去。
+ */
+function answerYesNo(yes: boolean): void {
+  const sub = optionsSub;
+  if (sub === null || sub.kind !== 'yesno') return;
+  const outcome = confirmOutcome(sub.side, yes);
+  closeOptionsSub();
+  if (outcome === null) {
+    requestRender();
+    return;
+  }
+  applyOptionsOutcome(outcome);
+}
+
+/**
+ * 遊戲中那三颗答「是」之后的路 —— `[0x474d74] − 2`：1 重新遊戲 / 2 認輸投降 / 3 結束遊戲。
+ *
+ * @source `0x411e4b` 起那张三路跳表：1 → `0x411aa3`（重开）、
+ *   2 → `0x411ae0`（该玩家退出，原版只在 3 人以上的联机里真做）、
+ *   3 → `0x411b46`（存 CFG 后退回标题）。
+ */
+function applyOptionsOutcome(outcome: OptionsOutcome): void {
+  if (outcome === 'restart') {
+    log('▶ 重新遊戲');
+    startGame();
+    return;
+  }
+  if (outcome === 'surrender') {
+    surrenderLocalSeat();
+    return;
+  }
+  log('▶ 結束遊戲：回標題');
+  screen = 'title';
+  requestRender();
+}
+
+/**
+ * 認輸投降 —— 把**本地座位**交给电脑（原版 `0x411ae0` 那条路：该玩家退出、
+ * 由电脑接手；它只在真人多于一人的局里真做，`cmp [0x499104],1 / jle` 单人直接返回）。
+ *
+ * ★ 「交出座位」走的是 core 既有的 `setAi`（服务器掉线代打用的就是它：
+ *   `whoPlays = HUMAN|AUTOPILOT`），**不自己造规则**。
+ */
+function surrenderLocalSeat(): void {
+  const seat = localHumanSeat();
+  if (seat === null) {
+    log('⚠ 認輸投降：本機沒有真人座位');
+    requestRender();
+    return;
+  }
+  const humans = state.players.filter(
+    (p, i) => i !== seat && (p.whoPlays & 0x03) === 0x01 && isAlivePlayer(p),
+  ).length;
+  if (humans === 0) {
+    // 原版 `0x411af1`：只有一个真人时**什么都不做**
+    log('⚠ 認輸投降：只有一位真人（原版這條路也是什麼都不做）');
+    requestRender();
+    return;
+  }
+  const me = state.players[seat];
+  dispatch({
+    type: 'setAi',
+    player: seat,
+    whoPlays: me === undefined ? 0x05 : (me.whoPlays & 0x03) | 0x04,
+  });
+  log(`▶ 認輸投降：${seat + 1} 號座交給電腦`);
+  requestRender();
+}
+
+/** 本地真人座位（原版 `[0x49910c]`）：联机用 `net.seat`，单机取第一个真人 */
+function localHumanSeat(): number | null {
+  if (net !== null) return net.seat;
+  for (let i = 0; i < state.players.length; i++) {
+    const p = state.players[i];
+    if (p !== undefined && (p.whoPlays & 0x03) === 0x01) return i;
+  }
+  return null;
+}
+
+/** 玩家还在场上（`whoPlays & 3 != 0`）—— 与 core `isAlive` 同一条判据 */
+function isAlivePlayer(p: { whoPlays: number }): boolean {
+  return (p.whoPlays & 0x03) !== 0;
+}
+
 /**
  * 右上角三颗黄钮（抬手才算）。
  *
@@ -1295,11 +2159,62 @@ function onOptionsUp(): void {
  *   是 0（標題頁）则直接进那一屏，**没有确认框**。
  */
 function onOptionsSide(index: number): void {
-  // ⚠️ 两条去路都还没做，如实说，不假装有反应：
-  //   標題頁那三颗各自还有一整屏（日期頁 = 资源 3 图 2 + `fcn_00410ac3`；
-  //   熱鍵頁 = 图 1 + `fcn_00411122`；遊戲說明 = `_rich4_ui_help_entry`），
-  //   遊戲中那三颗要先弹 `_rich4_ui_yesno` 再抛 1/2/3 回去。
-  log(`⚠「${SIDE_BUTTONS[optionsVariant]?.[index] ?? ''}」尚未實作`);
+  const label = SIDE_BUTTONS[optionsVariant]?.[index] ?? '';
+  if (optionsVariant !== 0) {
+    // 遊戲中：先弹通用 YES/NO 框（`0x4108ec` 两次 push 0xc8/0x140）
+    optionsSub = { kind: 'yesno', side: index, hot: null };
+    requestRender();
+    return;
+  }
+  // 標題頁：三颗各自推开一整屏 —— 跳表 `[0x474d5c + 4*控件号]`
+  if (index === 0) {
+    openDatePage();
+    return;
+  }
+  if (index === 1) {
+    openHotkeyPage();
+    return;
+  }
+  if (index === 2) {
+    // 遊戲說明 = `_rich4_ui_help_entry(-1, -1)` @source 0x411a96（居中）
+    log(`▶ ${label}`);
+    openHelpAt(uiEnv(), -1, -1);
+    return;
+  }
+}
+
+/** 画盖在設定主面板上的那一层（日期頁 / 熱鍵頁 / YES/NO 框）*/
+function drawOptionsSub(): void {
+  const sub = optionsSub;
+  if (sub === null) return;
+  if (sub.kind === 'date') {
+    drawDatePage(stageCtx, optionsPageSprite, { draft: sub.draft, pressed: sub.pressed });
+    return;
+  }
+  if (sub.kind === 'hotkey') {
+    drawHotkeyPage(stageCtx, optionsPageSprite, HOTKEY_NAMES, {
+      keys: sub.keys,
+      pressed: sub.pressed,
+      capture: hotkeyCaptureSlot(sub),
+      blink: sub.blink,
+    });
+    return;
+  }
+  drawYesNo(stageCtx, optionsPageSprite, sub.hot);
+}
+
+/**
+ * 熱鍵頁的 `值`（`0x48bb9e`）→ 数组下标。
+ * ★ 口径在 `options-pages.ts` 的 `hotkeySpot` / `hotkeyEditSlot` 里（**含原版
+ *   第二列那个差一**），这里只借一下，不另写一份。
+ */
+function hotkeySlotFor(ctrl: number): number | null {
+  return hotkeySpot(ctrl)?.slot ?? null;
+}
+
+/** 等待按键的那一条在数组里的下标（画闪白用）*/
+function hotkeyCaptureSlot(sub: { capture: number | null }): number | null {
+  return sub.capture === null ? null : hotkeySlotFor(sub.capture);
 }
 
 /**
@@ -1376,6 +2291,17 @@ let setup: SetupState = defaultSetup();
 let setupScene: ImageBitmap | null = null;
 /** 场景按哪张地图解的 —— 换地图要重新解 */
 let setupSceneFor = -1;
+
+/**
+ * 点 `OK` 之后那段「拉幕」（原版状态 2）的开始时刻；null = 不在拉幕里。
+ *
+ * ★ 原版点 `OK` 并不是直接进棋盘：先由定时器把空座位补成電腦，再进状态 2 ——
+ *   角色格往左、竖栏往右滑出屏幕、底部小人往右走出画面，**播完**才真的开局。
+ *   见 `setup.ts` 的 `OUTRO_TICK_MS` / `outroOffsets`。
+ */
+let setupOutroAt: number | null = null;
+/** 拉幕开始那一刻的场景滚动量（这期间原版不再推进它） */
+let setupOutroScroll = 0;
 
 /**
  * 按当前地图把开局设定屏的背景场景解出来。
@@ -1631,6 +2557,9 @@ function applyAction(action: Action): void {
     // ★ 商店的界面状态跟着 `pending` 走：进店时快照货架、铺开场；离店时清掉。
     //   放在这里是因为不管谁答的（本地点、AI、服务器广播）都会经过这一条。
     syncShopUi();
+    // ★ 銀行貸款屏的界面状态（T-029c）同理：`pending.kind === 'bank'` 时铺场，
+    //   离场时清掉。状态机自己会跨 action 活着，所以只在**首次**看见它时建。
+    syncLoanUi();
     // ★ 登记的整屏：把「刚刚发生了什么」告诉它们（開獎 / 月結 / 魔法屋靠这个起播）
     {
       const env = uiEnv();
@@ -1745,7 +2674,12 @@ function scheduleAi(): void {
     if (action === null) {
       // 轮到电脑却拿不出 action —— 这是**卡住**，不是「没事可做」，
       // 必须说出来。先前这里是静默 return，一个漏掉的 scheduleAi 就此藏了很久。
-      if (isAiTurn(state)) log(`⚠ 电脑在 ${state.phase} 无事可做，已停手`);
+      // ★ 例外：拍賣 pending 期间 core 会**故意**返回 null —— 竞价循环由
+      //   `auction-screen.ts` 驱动（它每次问 core 的 `auctionNextBid`），
+      //   这里不是卡住，别刷屏（Q-AUC-1）。
+      if (isAiTurn(state) && state.pending?.kind !== 'auction') {
+        log(`⚠ 电脑在 ${state.phase} 无事可做，已停手`);
+      }
       return;
     }
     if (net !== null) {
@@ -2207,8 +3141,9 @@ function shopBuy(page: ShopPage, row: number, now: number): void {
  *   `call tool_functions[道具号]`。**弹窗自己只负责「选」**。
  *
  * ⚠️ 需要目标/数字的那几件（路障/地雷/定時炸彈/飛彈/機器工人/傳送機/工程車/
- *   核子飛彈/遙控骰子）要**先选目标**，那一步是 **T-026**（尚未做）——
- *   这里如实说一声，**不假装能发**（免得发出去一个 nodeId=0 的无效指令）。
+ *   核子飛彈）要先选目标，那一步是 **T-026**。
+ * ★ 遙控骰子（8）不吃棋盘目标 —— 它开的是自己的**六颗骰面盘**（Q-PICK-2），
+ *   参数表里本来就没有它，所以单列一支。
  */
 function applyInventoryPick(): void {
   const id = invPicked;
@@ -2223,6 +3158,11 @@ function applyInventoryPick(): void {
     dispatch({ type: 'useTool', toolId: id });
     return;
   }
+  // ★ 遙控骰子（8）：原版真人那一支直接开点数盘（**VA 0x004470f8** 起），不进拾取模式
+  if (id === REMOTE_DICE_TOOL) {
+    openDicePick();
+    return;
+  }
   // 需要目标的那几件：进拾取模式（T-026）。参数表见 `picking.ts` 的 TOOL_SELECT_PARAM。
   const param = TOOL_SELECT_PARAM.get(id);
   if (param === undefined) {
@@ -2230,6 +3170,37 @@ function applyInventoryPick(): void {
     return;
   }
   startToolPick(id, param);
+}
+
+/**
+ * 开遙控骰子的点数盘（道具 8）—— Q-PICK-2。
+ *
+ * @source `rich4_tool_yaokongtouzi.asm` **VA 0x004470f8** 起：真人那一支读
+ *   `Panel.mkf` **#72**、把盘子贴在 (92,300)，然后 `Wait_0402_Message(fcn_00446774)`
+ *   —— 模态盖在棋盘上。选中的骰面（1..6）写进 `[0x475dd8]`，掷骰时当**总步数**用。
+ */
+function openDicePick(): void {
+  dicePick = { hover: null };
+  requestRender();
+}
+
+/** 点了一颗骰面：发 `useTool{8, value}` 并收盘；`0` = 没点中，什么都不做 */
+function dicePickChoose(face: number): void {
+  const act = remoteDiceAction(face);
+  if (act === null) return;
+  // @source `loc_00446a39` 的 `play_sound_effect(0x482322)` —— 音效 1
+  sound.play('Effect.mkf', DICE_SOUND_PICK);
+  dicePick = null;
+  dispatch(act);
+  requestRender();
+}
+
+/** 取消点数盘（右键）：原版 `loc_00446a66` 的 `Post_0402_Message(0)` —— 道具不消耗 */
+function cancelDicePick(): void {
+  // @source `loc_00446a68` 的 `play_sound_effect(0x482332)` —— 音效 4
+  sound.play('Effect.mkf', DICE_SOUND_CANCEL);
+  dicePick = null;
+  requestRender();
 }
 
 /**
@@ -2258,18 +3229,44 @@ function applyCardPick(cardId: number): void {
     startCardPick(cardId, route.cls, route.param);
     return;
   }
+  // ★ Q-PICK-2：紅卡/黑卡借股市屏选股（原版 `_rich4_ui_stock_entry` 参数 1/2）
+  if (route.kind === 'stockPick') {
+    openStockPick(cardId, route.mode);
+    return;
+  }
+  // ★ Q-PICK-2：請神符**没有选择 UI** —— 原版 `0x444d1a` 自动请最近的那尊；
+  //   一个都请不到时返回 0（卡不消耗）→ 走下面「用不成」那条路。
+  if (route.kind === 'objectAuto') {
+    const handle = nearestSummonableObject(state, topo);
+    const act = summonCardAction(handle);
+    if (act === null) {
+      sound.play('Effect.mkf', SOUND_CARD_FAILED);
+      openInventory('cards');
+      return;
+    }
+    dispatch(act);
+    return;
+  }
   // 用不成：失败音 + 把弹窗开回来（原版的循环）
   sound.play('Effect.mkf', SOUND_CARD_FAILED);
-  if (route.needsOwnList) log('（这张卡要选股票 —— 那类选择界面还没做）');
+  if (route.needsOwnList) log('（这张卡要选目标 —— 那类选择界面还没做）');
   else openInventory('cards');
 }
 
 /**
- * 「这张牌没用成」的音效 —— 音效 **4**
+ * 「这张牌没用成」的音效 —— 音效 **3**
  * @source `_rich4_ui_use_card_entry` VA 0x441cd2 的 `play_sound_effect(0x48233a)`；
- *   音效号表自 `0x48231a` 起，`[0x48233a] = 4`。
+ *   音效号表在 `0x48231a`、**8 字节一项**（`play_sound_effect` 取 `[ptr]`，
+ *   @source VA 0x004542d8），故 `[0x48233a] = 3`。
+ *   ⚠️ 先前这里写 4 并把「4」归给 `0x48233a` —— 4 是 **`0x482332`**（取消）的值。
  */
-const SOUND_CARD_FAILED = 4;
+const SOUND_CARD_FAILED = 3;
+
+/**
+ * 「取消」音效 —— 音效 **4** @source `0x482332`（选股模式右键 `loc_0042b25a`、
+ *   选目标回调右键 `0x4466b8` 都播它）。
+ */
+const STOCK_PICK_CANCEL_SOUND = 4;
 
 /**
  * 「选中了一个目标」的音效 —— 音效 **2**
@@ -2437,6 +3434,8 @@ function requestRender(): void {
     //   否则棋子会停在这一步的第一帧上，直到下一次 dispatch 才动。
     if (screen === 'game' && !renderer.walkDone()) requestRender();
     if (screen === 'game') shopTick(performance.now());
+    // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
+    if (screen === 'game') bankTick(performance.now());
 
     stageCtx.imageSmoothingEnabled = false;
     stageCtx.fillStyle = '#000';
@@ -2480,7 +3479,15 @@ function requestRender(): void {
     } else if (screen === 'setup') {
       // ★ 这一屏的定时器是**一直跑**的（背景在横向循环滚、小人在逐帧走），
       //   所以每次画完都再排一帧 —— 与过场同一个道理 @source VA 0x00404feb
-      drawSetup(stageCtx, setup, spriteNow, performance.now(), setupScene);
+      const now = performance.now();
+      const outro =
+        setupOutroAt === null ? null : setupOutro(now, setupOutroAt, setupOutroScroll);
+      // ★ 拉幕播完（最后一名小人走出画面）→ 这才真的开局。
+      //   原版是自己给自己 PostMessage 一个 WM_KEYDOWN，见 setup.ts 的注释。
+      if (drawSetup(stageCtx, setup, spriteNow, now, setupScene, outro)) {
+        finishSetupOutro();
+        return;
+      }
       requestRender();
     } else if (screen === 'saveload') {
       // 盖在原来那一屏上（原版也是这样）
@@ -2508,6 +3515,8 @@ function requestRender(): void {
         lobbyHot,
         (archive, resource, index) => spriteNow(archive, resource, index),
         (t) => stageCtx.measureText(t).width,
+        // ★ Q-NET-2：房间地图也来自服务器快照（缺省 0 兼容旧快照）
+        roomMapId(lobbyRoom),
       );
     } else if (screen === 'options') {
       // 設定是**盖在**原来那一屏上的对话框（原版就是这样）
@@ -2523,6 +3532,8 @@ function requestRender(): void {
         musicTrack,
         (i, key = false) => spriteNow('Data.mkf', OPTIONS_RESOURCE, i, key),
       );
+      // ── 副屏盖在主面板上（原版是另开一扇窗口）──
+      if (optionsSub !== null) drawOptionsSub();
     } else if (screen === 'stock') {
       // 股市是**整屏**的（原版那扇窗口盖住棋盘），画法与銀行那两屏同一条路
       drawStockScreen(stageCtx, spriteNow, stockView());
@@ -2558,8 +3569,20 @@ function requestRender(): void {
         frozen: bankFrozen(),
         finance: [room + owed, owed, room],
       });
+      // Q-BANK-1：两块**滑入面板**压在底图上 —— 玩家面板 200×280 @(0,y)、
+      // 日期面板 200×200 @(280,y)，y = `[0x48c3d5]` @source fcn_00435062。
+      if (loanUi !== null) {
+        drawLoanPanels(stageCtx, spriteNow, loanPanelView(loanUi));
+        // EXIT 的按下图（图 19）—— 四颗钮里只有它有 @source loc_00435cca
+        drawLoanPressed(stageCtx, spriteNow, loanUi.pressed, {
+          x0: LOAN_BUTTONS[LOAN_EXIT]!.x0,
+          y0: LOAN_BUTTONS[LOAN_EXIT]!.y0,
+        });
+        // 店員那句话（气泡底图 = 资源 23 图 21，锚点落 (240,80)）@source fcn_00434186
+        if (loanUi.bubble !== null) drawLoanBubble(stageCtx, spriteNow, loanUi.bubble.text);
+      }
     }
-    if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen());
+    if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
     if (bank !== null && atm === null && amountPage !== null) {
       // 填数页（`fcn_00453544`）是**另开一个窗口**盖在银行屏上的，所以这里
       // 单独把它画到舞台 —— 不能整块贴回棋盘画布（那样四周会透出地图）。
@@ -2573,6 +3596,12 @@ function requestRender(): void {
       }
     }
 
+    // ── 遙控骰子的点数盘（Q-PICK-2）──
+    // ★ 原版是**另开一扇模态窗口**盖在棋盘上（`_rich4_use_tool_yaokongtouzi` 把
+    //   `Panel.mkf` #72 贴到 (92,300) 之后才进 `Wait_0402_Message`），
+    //   所以这里也画在链尾、盖住底下那一屏。
+    if (dicePick !== null) drawDiceChoose(stageCtx, spriteNow, dicePick.hover);
+
     // 拾取模式的指针图要**解码完才能用**。首帧拿不到就返回 null，
     // 而光标只在 hover 变化时才刷新 —— 于是「一次都没悬停到」时指针会空着。
     // 图到货（spriteArrived）时补一次，这一条不能省。
@@ -2583,7 +3612,16 @@ function requestRender(): void {
     // 有精灵在本帧解码完成 → 再画一次，把它们补上；
     // 骰子在滚也要继续要帧，否则动画只有一格；
     // 商店开着也要一直要帧 —— 原版那儿挂着一个 50ms 的定时器（`SetTimer(hwnd, 0x32, …)`）。
-    if (renderer.dirty || hud.dirty || spriteArrived || diceFx.active || shopUi !== null) {
+    // 銀行貸款屏同理（Q-BANK-1：滑入与气泡都要逐帧看）；ATM 只在键盘那一下补一帧。
+    if (
+      renderer.dirty ||
+      hud.dirty ||
+      spriteArrived ||
+      diceFx.active ||
+      shopUi !== null ||
+      loanUi !== null ||
+      atmCode !== null
+    ) {
       renderer.clearDirty();
       hud.clearDirty();
       spriteArrived = false;
@@ -2694,8 +3732,9 @@ function drawGameStage(): void {
     //   滚完再把 `Panel.mkf` 3 的点数图盖上去定格 500 ms。
     drawDiceFx(boardCtx, performance.now());
   } else if (awaitingHumanRoll() && me !== undefined) {
-    // ★ 原版的 GO 鈕 + 骰子数切换（Panel.mkf 资源 7）
-    drawAdvance(boardCtx, uiSprite, goImageOf(me), maxDiceOf(me), me.ndices);
+    // ★ 原版的 GO 鈕 + 骰子数切换（Panel.mkf 资源 7）。
+    //   位置是**可拖的**（Q-UI-6），存在 `goButton` 里（= 原版 `[0x475284]/[0x475288]`）
+    drawAdvance(boardCtx, uiSprite, goImageOf(me), maxDiceOf(me), me.ndices, goButton.position());
   } else if (state.phase === 'moving' && state.dice.length > 0) {
     drawDice(boardCtx, uiSprite, state.dice, currentScreenDir());
   }
@@ -3164,7 +4203,43 @@ function renderActions(): void {
   );
 }
 
-/** 配乐控制：上一首 / 播停 / 下一首 */
+/**
+ * 让用户自备一个音色库（Q8）。
+ *
+ * ⚠️ **本项目不分发 `.sf2`**（DEVELOPMENT_PLAN §5.6）：原版配乐是 .mid，
+ *   听起来什么样取决于当年那块声卡的波表 —— 想还原就得自己有一份音色库。
+ *   没有音色库也照放：`MusicPlayer` 会退回振荡器（旋律/节奏/时值仍然精确）。
+ *
+ * 桌面版选完会拷进 `<AppData>/soundfont/`，下次自动用；浏览器只在本次有效。
+ */
+async function chooseSoundFont(): Promise<void> {
+  const picked = await pickSoundFont();
+  if (picked.error !== null) {
+    log(`⚠ 音色庫：${picked.error}`);
+    return;
+  }
+  if (picked.data === null) return; // 用户取消，不算错
+  try {
+    music.setSoundFont(parseSoundFont(picked.data, picked.name ?? ''));
+    log(`♪ 音色庫：${picked.name ?? ''}（${music.usingSoundFont ? '已啟用' : '未啟用'}）`);
+  } catch {
+    log('⚠ 音色庫解析失敗 —— 這一檔不是 SoundFont 2');
+  }
+}
+
+/** 启动时把上次装的音色库接回来（桌面版才有） */
+async function restoreSoundFont(): Promise<void> {
+  const saved = await loadSavedSoundFont();
+  if (saved === null) return;
+  try {
+    music.setSoundFont(parseSoundFont(saved.data, saved.name));
+    log(`♪ 音色庫：${saved.name}（上次選的）`);
+  } catch {
+    log('⚠ 上次的音色庫讀不出來，沿用振盪器');
+  }
+}
+
+/** 配乐控制：上一首 / 播停 / 下一首 / 音色库 */
 function musicButtons(): HTMLButtonElement[] {
   const mk = (label: string, title: string, fn: () => void): HTMLButtonElement => {
     const el = document.createElement('button');
@@ -3188,6 +4263,12 @@ function musicButtons(): HTMLButtonElement[] {
       },
     ),
     mk('♪▶', '下一首', () => void playTrack(musicTrack + 1)),
+    // Q8：原版没有这一颗 —— 它是本重制版新增的**音色库**入口（见 known-deviations）
+    mk(
+      music.usingSoundFont ? '♪ 音色庫✓' : '♪ 選音色庫',
+      '音色庫（.sf2，需自備）：有就用採樣還原音色，沒有就退回振盪器',
+      () => void chooseSoundFont(),
+    ),
   ];
 }
 
@@ -3284,6 +4365,7 @@ function onTitleButton(id: 'start' | 'load' | 'option' | 'exit' | 'newStage'): v
       //   NEW STAGE 带进来的是**舞台 1**（`[0x4991b6] = 1`），START 是舞台 0。
       setup = defaultSetup(id === 'newStage' ? 1 : 0);
       setupSceneFor = -1;
+      setupOutroAt = null;
       loadSetupScene(setup.mapId);
       requestRender();
       break;
@@ -3353,6 +4435,19 @@ async function importOriginalSaveFile(): Promise<void> {
   }
 }
 
+/**
+ * 拉幕收尾 —— 真的进棋盘。
+ *
+ * 两条触发路径都与原版一致：
+ * - 自动：最后一名小人走出画面（画的时候发现 blit 没画上）；
+ * - 手动：拉幕期间**按键或再点一下** `@source loc_00405f6a`（0x100 / 0x202 / 0x205）。
+ */
+function finishSetupOutro(): void {
+  if (setupOutroAt === null) return;
+  setupOutroAt = null;
+  startGame();
+}
+
 /** 按当前設定开一局 */
 function startGame(): void {
   // 联机：开局参数（种子、座位）由服务器下发，这里只是「请房主开局」
@@ -3373,14 +4468,19 @@ function startGame(): void {
     globalMapId: setup.mapId,
     players,
     seed,
-    // ★ 开局屏那三条直接决定规则：资金档位（`[0x46cb40]`）、
-    //   自带载具（`[0x46cb44]`）、土地權限（`[0x46cb48]`）
-    // @source `VA 0x00407032`（资金）、`0x00407219`（载具）、`0x00406f6b`（权限）
+    // ★ 開局屏那五条直接决定规则：资金档位（`[0x46cb40]`）、
+    //   自带载具（`[0x46cb44]`）、土地權限（`[0x46cb48]`）、
+    //   遊戲時間与勝利條件（`[0x46cb4c]`/`[0x46cb50]` → `[0x49911c]`/`[0x499108]`）
+    // @source `VA 0x00407032`（资金）、`0x00407219`（载具）、`0x00406f6b`（权限）、
+    //   `0x0040737d..0x004073a3`（勝負條件）
     initialFund: MONEY_VALUES[setup.money] ?? DEFAULT_INITIAL_FUND,
     startingVehicle: setup.vehicle,
     landTenure: setup.land,
+    winConditions: winConditionsOf(setup.money, setup.time, setup.victory),
   });
   history.length = 0;
+  // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
+  goButton.reset();
 
   const first = map.nodes[state.players[0]?.nodeId ?? 1];
   camera = characterCamera(first?.x ?? 0, first?.y ?? 0, camera?.view ?? 0);
@@ -3427,6 +4527,19 @@ function bindInput(): void {
       }
     }
 
+    // ── 遙控骰子的点数盘（Q-PICK-2）：模态，盖在棋盘上 ──
+    //   @source `fcn_00446774` 的 WM_MOUSEMOVE（0x200）：只有**悬停**，
+    //   六个钮都没中也只是把高亮清掉（原版 `[0x48c598] = 0`）。
+    if (dicePick !== null) {
+      const face = hitDiceFace(p.x, p.y);
+      const next = face === 0 ? null : face;
+      if (next !== dicePick.hover) {
+        dicePick = { hover: next };
+        requestRender();
+      }
+      return;
+    }
+
     // ── 股市屏：悬停整行（原版 0x200 那条路）@source loc_0042abbb ──
     if (screen === 'stock') {
       if (stockAmount !== null) return; // 填数页开着：不理会行的悬停
@@ -3438,8 +4551,16 @@ function bindInput(): void {
       return;
     }
 
-    // ── 銀行 ATM 开着时不理会棋盘的悬停 ──
-    if (atm !== null) return;
+    // ── 銀行 ATM（Q-BANK-1）──
+    // ★ `0x200`（`loc_00437904`）**不是悬停高亮**：只有「正按着金额栏」（`[0x48c40b] == 4`）
+    //   时，才把这次移动当成一次点击重发给自己 —— 也就是拖进度条。
+    if (atm !== null) {
+      if (atmDragToClick(atmCode) !== null) {
+        const q = eventToStage(e);
+        if (q !== null) atmSeekTo(q.x);
+      }
+      return;
+    }
 
     // ── 目标拾取（T-026）：光标底下是候选就换指针 @source VA 0x44609b ──
     if (screen === 'game' && pick !== null) {
@@ -3469,6 +4590,8 @@ function bindInput(): void {
       return;
     }
     if (screen === 'setup') {
+      // ★ 拉幕中忽略悬停 —— 原版状态 2 的分派表里没有 0x200（WM_MOUSEMOVE）
+      if (setupOutroAt !== null) return;
       // ★ 悬停音只在**移到一个还没被人选走**的角色上时响一次
       //   @source `VA 0x004051e0`：`cmp byte [该角色状态], 0 / jne` 才 `play_sound_effect`
       const before = setup.hover;
@@ -3483,7 +4606,11 @@ function bindInput(): void {
       return;
     }
     if (screen === 'lobby') {
-      const hit = hitLobby(p.x, p.y, { isHost: isHostSeat(net?.seat ?? null) });
+      const hit = hitLobby(p.x, p.y, {
+        isHost: isHostSeat(net?.seat ?? null),
+        me: net?.seat ?? null,
+        started: lobbyRoom?.started ?? false,
+      });
       if (JSON.stringify(hit) !== JSON.stringify(lobbyHot)) {
         lobbyHot = hit;
         requestRender();
@@ -3509,7 +4636,19 @@ function bindInput(): void {
     }
     // ★ 設定屏**没有悬停高亮** —— 原版窗口过程只认 0xf/0x201/0x202/0x203/0x205/0x401，
     //   压根没有 WM_MOUSEMOVE 那条路。所以这里什么都不做。
-    if (screen === 'options') return;
+    if (screen === 'options') {
+      // ⚠️ 唯一的例外：通用 YES/NO 框**有** WM_MOUSEMOVE（VA 0x00453745）——
+      //   鼠标在哪一半就贴哪一张（左半 = YES、右半 = NO），移出去就贴回素框。
+      const sub = optionsSub;
+      if (sub !== null && sub.kind === 'yesno') {
+        const hot = hitYesNo(p.x, p.y);
+        if (hot !== sub.hot) {
+          optionsSub = { ...sub, hot };
+          requestRender();
+        }
+      }
+      return;
+    }
 
     // 右下角小地图那两颗箭头的**悬停**（原版 VA 0x00418415：鼠标在箭头条上就换成高亮图）
     const hotArrow = sidebarView === 'map' && hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)
@@ -3534,7 +4673,8 @@ function bindInput(): void {
     }
 
     if (awaitingHumanRoll()) {
-      const on = hitAdvance(p.x - LAYOUT.board.x, p.y - LAYOUT.board.y);
+      // GO 鈕底下不做棋盘悬停（原版那块是窗口控件，不是棋盘格）
+      const on = hitAdvance(p.x - LAYOUT.board.x, p.y - LAYOUT.board.y, goButton.position());
       if (on) return;
     }
 
@@ -3632,10 +4772,24 @@ function bindInput(): void {
       return;
     }
     if (screen === 'lobby') {
-      const hit = hitLobby(p.x, p.y, { isHost: isHostSeat(net?.seat ?? null) });
+      const hit = hitLobby(p.x, p.y, {
+        isHost: isHostSeat(net?.seat ?? null),
+        me: net?.seat ?? null,
+        started: lobbyRoom?.started ?? false,
+      });
       if (hit === null) return;
       // 座位只读（座位是服务器分的，见 Q-NET-2），点它不做事
       if (hit.kind === 'seat') return;
+      // ★ Q-NET-2：改角色 / 换地图都只是**发请求** —— 本地一个字都不改，
+      //   等服务器校验后广播 `room` 回来才更新（撞车/非房主/已开局都会被拒）。
+      if (hit.kind === 'character') {
+        net?.setCharacter(hit.character);
+        return;
+      }
+      if (hit.kind === 'map') {
+        net?.setMap(hit.globalMapId);
+        return;
+      }
       if (hit.kind === 'start') {
         net?.start();
         return;
@@ -3669,6 +4823,8 @@ function bindInput(): void {
     // 底下都是棋盘上的交互 —— 其余屏（含個人資產表）到这儿就结束
     if (screen !== 'game') return;
     if (pick !== null) return; // 拾取模式：选中/放弃都走 mouseup 与右键
+    // 遙控骰子的点数盘开着：模态，点击已经在 mousedown 里处理过（Q-PICK-2）
+    if (dicePick !== null) return;
 
     // 轮到人、还没掷骰：GO 鈕与它下面那排骰子数切换
     const meNow = state.players[state.currentPlayer];
@@ -3676,14 +4832,19 @@ function bindInput(): void {
       const bx = p.x - LAYOUT.board.x;
       const by = p.y - LAYOUT.board.y;
       // ★ 切换钮盖在 GO 的下缘上，必须先问它，否则永远点不到
-      const n = hitDiceToggle(bx, by, maxDiceOf(meNow));
+      const n = hitDiceToggle(bx, by, maxDiceOf(meNow), goButton.position());
       if (n !== null) {
         dispatch({ type: 'setDiceCount', count: n });
         return;
       }
-      if (hitAdvance(bx, by)) {
+      // ★ GO 鈕（Q-UI-6）：原版按下这一拍**既掷骰也开始拖**（VA 0x004181d9
+      //   的 `cmp al,0xb` 立刻动作、0x004182c1 的 `cmp al,0xc` 只记拖动），
+      //   抬手那一拍不再动作。`press` 收棋盘画布坐标、锚点收**舞台**坐标
+      //   （位移在两者里等价 —— 画布原点是个常量平移）。
+      const stagePos = { x: p.x, y: p.y };
+      if (goButton.press(bx, by, stagePos)) {
         requestRoll();
-        return;
+        return; // 按在钮上就不再去拖镜头
       }
     }
 
@@ -3744,6 +4905,11 @@ function bindInput(): void {
       }
     }
 
+    // ── 遙控骰子的点数盘（Q-PICK-2）：模态期间只有它能收鼠标 ──
+    //   按下这一拍**只吞掉**（原版 0x201 只记高亮），选中的那一下在**抬手**
+    //   （0x202 = `loc_00446a2c`）；右键的取消走 `contextmenu` 那一路。
+    if (dicePick !== null) return;
+
     // ── 設定屏（原版 0x201）──
     // 每颗控件的**立即动作**都在按下这一刻发生（改值 / 换曲 / 亮灯 / 贴按下图），
     // 只有「取消、確定、右上角三颗」要等抬手。声音也全在按下放。
@@ -3759,6 +4925,9 @@ function bindInput(): void {
     // ★ 角色格与地图行是**按下就生效**；两颗按钮与六条下拉只记下按下状态，
     //   抬手（0x202）才成立。原版就是这样分的 —— `VA 0x004052bc` 那条大跳表。
     if (screen === 'setup') {
+      // ★ 拉幕中：按下（0x201）什么都不做，**抬手**（0x202）才进棋盘 ——
+      //   原版状态 2 的分派表里 0x201 落到 DefWindowProc、0x202 才收尾。
+      if (setupOutroAt !== null) return;
       if (e.button !== 0) return;
       const q = eventToStage(e);
       if (q === null) return;
@@ -3786,7 +4955,12 @@ function bindInput(): void {
       //   （@source `fcn_0042b2ec` 的 0x202/0x205 两路都 `Post_0402_Message(0)`）
       //   —— 所以休市日既看不到行情，也不可能交易。
       if (stockCounterClosed(state)) {
-        if (e.button === 0 || e.button === 2) closeStock();
+        if (e.button === 0 || e.button === 2) {
+          // ★ 选股模式碰上休市：原版这一支走訊息框，任何一下鼠标都 `Post(0)`
+          //   抛回 0 ⇒ 卡不消耗、卡片欄被开回来（且不播取消音）
+          if (stockPick !== null) cancelStockPick(false);
+          else closeStock();
+        }
         return;
       }
       // 详情卡开着：左键或右键都直接退卡 @source `loc_0042aa08`
@@ -3795,6 +4969,16 @@ function bindInput(): void {
         return;
       }
       if (e.button !== 0) return; // 右键走 contextmenu（换页 / 离开）
+      // ★ 选股模式（Q-PICK-2）：整屏只干「点一行 → 把行号抛回去」。
+      //   买卖/换页/详情那一套在这一模式下都够不着 —— 原版点中一行就当场
+      //   `Post_0402_Message` 抛回、窗口随即消失（`loc_0042b0da`）。
+      if (stockPick !== null) {
+        const pq = eventToStage(e);
+        if (pq === null) return;
+        const prow = hitStockRow(pq.x, pq.y);
+        if (prow !== null) stockPickChoose(prow);
+        return;
+      }
       const q = eventToStage(e);
       if (q === null) return;
       if (stockAmount !== null) {
@@ -3836,21 +5020,26 @@ function bindInput(): void {
       return;
     }
 
-    // ── 銀行貸款屏（T-029b）：四颗钮在**舞台坐标**上 @source loc_00435c12 ──
+    // ── 銀行貸款屏（T-029b/T-029c）：四颗钮在**舞台坐标**上 @source loc_00435c12 ──
     const loanNow = bankPending();
     if (e.button === 0 && loanNow !== null && atm === null && amountPage === null) {
       const q = eventToStage(e);
       if (q === null) return;
       const btn = hitLoanButton(q.x, q.y);
-      const op = btn === null ? null : loanActionOf(btn, loanNow.chairman, bankFrozen(), loanNow.hasLoan);
-      if (op === null) return;
-      if (op === 'exit') {
-        log('▶ 離開銀行');
-        dispatch({ type: 'declineDecision' });
-        return;
-      }
-      log(`▶ ${op === 'borrow' ? '申請貸款' : op === 'repay' ? '償還貸款' : op === 'financeBorrow' ? '週轉現金' : '歸還款項'}`);
-      openLoanAmount(op);
+      if (btn === null) return;
+      // ★ Q-BANK-1：**不再直接开填数页** —— 原版先走 `fcn_00435062` 的状态机
+      //   （滑入表单 + 店員一句话），填数页是气泡说完那一刻 `PostMessage(0x409/0x40a)`
+      //   才开的（见 `bank-dynamic.ts` 的 `loanStep`）。
+      const pend = state.pending;
+      const overLimit = pend?.kind === 'bank' ? pend.loanCapacity <= 0 : false;
+      loanSend({
+        kind: 'press',
+        btn,
+        frozen: bankFrozen(),
+        hasLoan: loanNow.hasLoan,
+        chairman: loanNow.chairman,
+        overLimit,
+      });
       return;
     }
 
@@ -3860,6 +5049,15 @@ function bindInput(): void {
       if (q === null) return;
       const btn = hitAtmButton(q.x, q.y);
       if (btn === null) return;
+      // 按下图（`[0x48c40b]` = 钮序号 + 1）@source loc_004371f9
+      atmCode = btn + 1;
+      atmCodeAt = performance.now();
+      // 金额栏（序号 3）：按住就按位置换算金额，之后再拖动由 `mousemove` 接
+      // @source loc_00437413
+      if (btn === 3) {
+        atmSeekTo(q.x);
+        return;
+      }
       const next = atmPress(atm, btn, bankFrozen());
       if (next === null) {
         closeAtm(); // EXIT
@@ -3868,14 +5066,7 @@ function bindInput(): void {
       }
       if (btn === 17) {
         // ↵ 確認：金额定了才发得出去（0 = 没做这件事，原版也直接退回来）
-        const n = Math.trunc(atmAmount(atm));
-        const fill = atmFill;
-        closeAtm();
-        if (n > 0 && fill !== null) {
-          log(`▶ ${atmLabel} ${n}`);
-          dispatch(fill(n));
-        }
-        requestRender();
+        atmConfirm();
         return;
       }
       atm = next;
@@ -4046,9 +5237,38 @@ function bindInput(): void {
         return;
       }
     }
+    // ── 銀行两屏（T-029c）：抬手才收尾 ──
+    //   · 貸款屏 EXIT：`loc_00435ea2`（0x202）—— 按下只记 `[0x48c3e1]`，
+    //     抬手的 **那一下**才出「謝謝您的惠顧」并把状态推到 0xb。
+    //   · ATM：抬手才分发（`loc_0043762d`）—— 本引擎鼠标那一路仍在按下动作，
+    //     这里只把按下图收掉（键盘那一路走的是原版那套「假抬手」，见 `atmKey`）。
+    if (atm !== null) {
+      atmCode = null;
+      requestRender();
+      return;
+    }
+    if (loanUi !== null && amountPage === null) {
+      loanSend({ kind: 'release' });
+      requestRender();
+      return;
+    }
+    // ── 遙控骰子的点数盘（Q-PICK-2）：**抬手**才认 ──
+    //   @source `fcn_00446774` 的 0x202 分支（`loc_00446a2c`）：`[0x48c598] != 0`
+    //   就播确认音并把那一颗抛回去；右键的取消在 `contextmenu` 那一路。
+    if (dicePick !== null) {
+      if (e.button !== 0) return;
+      const q = eventToStage(e);
+      if (q !== null) dicePickChoose(hitDiceFace(q.x, q.y));
+      return;
+    }
     // ── 開局設定屏：抬手才收尾（原版 0x202）──
     // ★ 只认按下那一刻记下的控件号，不看抬手时光标在哪（原版就是这么写的）。
     if (screen === 'setup') {
+      // ★ 拉幕中：**再点一下**就直接进棋盘（原版状态 2 的 0x202 / 0x205）
+      if (setupOutroAt !== null) {
+        finishSetupOutro();
+        return;
+      }
       const pressed = setup.pressed;
       const next = setupUp(setup);
       // ★ 先把按下状态清掉 —— 不然「一个座位都没选就按 OK」会把按钮卡在按下图
@@ -4059,7 +5279,11 @@ function bindInput(): void {
         if (next.characters.length > 0) {
           sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
           setup = fillComputerSeats(next, Math.random);
-          startGame();
+          // ★ 补满座位之后**不直接开局** —— 先播「拉幕」（原版状态 2）：
+          //   角色格往左、竖栏往右、小人往右走出画面，播完（或按键/再点一下）才进棋盘。
+          const now = performance.now();
+          setupOutroScroll = setupPhase(now).scroll;
+          setupOutroAt = now;
         }
         return;
       }
@@ -4075,6 +5299,9 @@ function bindInput(): void {
 
     // ── 設定屏：抬手才收尾（原版 0x202）──
     if (screen === 'options') {
+      // ★ 只认左键：原版的 `0x202` 是左键抬手，右键走 `0x205`（`contextmenu` 那一路）。
+      //   浏览器里右键也会发 mouseup，不加这一条的话「右键 = 否」会变成「是」。
+      if (e.button !== 0) return;
       onOptionsUp();
       return;
     }
@@ -4170,6 +5397,8 @@ function bindInput(): void {
 
     drag = null;
     draggingMinimap = false;
+    // GO 鈕的拖动在**抬手**结束（原版 `WM_LBUTTONUP` VA 0x0041885c 只把 `[0x48be2a]` 清 0）
+    goButton.release();
     if (pressedMinimapArrow !== null) {
       // 抬起才真的转 —— 左箭头 −1、右箭头 +1，都在 8 个视角里回绕
       // @source VA 0x00418707 `[0x499088] = ([0x499088] ∓ 1) & 7`
@@ -4184,6 +5413,18 @@ function bindInput(): void {
     }
   });
   window.addEventListener('mousemove', (e) => {
+    // ── GO 鈕的拖动（Q-UI-6）──
+    // 原版在棋盘窗口过程的 WM_MOUSEMOVE 里（VA 0x00418a73）：位置 = 按下时的鼠标
+    // + 之后每一拍的位移，夹在 `[0, 640−w] × [0, 480−h]`；拖着的时候**不平移镜头**。
+    // 这里听 window（与按下同一条线），鼠标拖出画布也不丢。
+    if (goButton.dragging()) {
+      const q = eventToStage(e);
+      if (q !== null) {
+        goButton.move({ x: q.x, y: q.y });
+        requestRender();
+      }
+      return;
+    }
     if (draggingMinimap) {
       // 按着小地图拖 —— 光标停在哪，镜头就移到哪（原版 VA 0x0041899b 也是这么算的）
       const p = eventToStage(e);
@@ -4225,6 +5466,12 @@ function bindInput(): void {
     // 股市：右键 —— 在持股页就退回行情页，在行情页就离开 @source `loc_0042b22f`
     if (screen === 'stock') {
       e.preventDefault();
+      // ★ 选股模式（Q-PICK-2）：右键 = 取消（原版 `loc_0042b22f` 的 page==0 那支），
+      //   抛回 0 ⇒ 卡不消耗，卡片欄被再开回来（@source `loc_00441ce1`）。
+      if (stockPick !== null) {
+        cancelStockPick();
+        return;
+      }
       if (stockDetail !== null) {
         closeStockDetail();
       } else if (stockAmount !== null) {
@@ -4239,6 +5486,13 @@ function bindInput(): void {
       }
       return;
     }
+    // ── 遙控骰子的点数盘（Q-PICK-2）：右键 = 取消，且不让别的右键分支再动 ──
+    //   @source `fcn_00446774` 的 0x205 分支（`loc_00446a66`）
+    if (dicePick !== null) {
+      e.preventDefault();
+      cancelDicePick();
+      return;
+    }
     // 道具欄浮窗：右键关掉、**什么都不用**（原版 VA 0x445dad 抛回 0）
     if (screen === 'inventory') {
       e.preventDefault();
@@ -4248,6 +5502,15 @@ function bindInput(): void {
     // 設定屏：右键 = 取消（原版 `0x205` → `fcn_0041095b` → 抛回 0）
     if (screen === 'options') {
       e.preventDefault();
+      // 盖在設定屏上面的层先收：登记的整屏（遊戲說明）→ 副屏（日期頁 / 熱鍵頁 / YES-NO）
+      if (helpScreen.active(uiEnv())) {
+        closeHelpScreen(uiEnv());
+        return;
+      }
+      if (optionsSub !== null) {
+        cancelOptionsSub();
+        return;
+      }
       optionsPressed = null;
       screen = optionsReturn;
       requestRender();
@@ -4287,6 +5550,34 @@ function bindInput(): void {
     if (screen === 'intro') {
       introSkipped = true;
       e.preventDefault();
+      requestRender();
+      return;
+    }
+    // ★ 開局設定屏的「拉幕」：任意键直接进棋盘
+    //   @source 原版状态 2 的分派：`cmp eax,0x100 / je loc_00405f6a`（KillTimer 收尾）
+    if (screen === 'setup' && setupOutroAt !== null) {
+      finishSetupOutro();
+      e.preventDefault();
+      return;
+    }
+    // ── 銀行 ATM 收键盘（Q-BANK-1）@source `fcn_00436ef8` 的 0x100（`loc_004374ac`）──
+    //   ★ 原版 ATM 是模态窗口：`WM_KEYDOWN` 先到它手里，所以这一段要在熱鍵之前。
+    //   键位表见 `bank-dynamic.ts` 的 `ATM_KEY_VK`（7 8 9 / 4 5 6 / 1 2 3 / 0 /
+    //   C / Backspace / M=MAX / Enter=↵ / H=拖金额栏）。
+    if (atm !== null && screen === 'game' && amountPage === null) {
+      const code = atmCodeOfKey(atmVkOf(e) ?? -1);
+      if (code !== null) {
+        e.preventDefault();
+        atmKey(code);
+        return;
+      }
+    }
+    // ── 熱鍵頁正在等一个键（原版 `fcn_00411122` 的 WM_KEYDOWN，排在全局熱鍵之前）──
+    if (screen === 'options' && optionsSub !== null && optionsSub.kind === 'hotkey'
+        && optionsSub.capture !== null) {
+      e.preventDefault();
+      // 键名表 `0x47edfa` 里没有的键原版也不理（只是继续等）
+      onHotkeyCapture(captureVk(e) ?? -1);
       requestRender();
       return;
     }
@@ -4507,7 +5798,41 @@ function connectOnline(url: string, room: string, name: string): void {
           applyAction(action);
         },
         onError: (message) => log(`⚠ 伺服器：${message}`),
-        onDesync: (d) => log(`⚠ 失步！第 ${d.seq} 號後 ${d.seat + 1} 號座的校驗和 ${d.got} ≠ ${d.expected}`),
+        onDesync: (d) =>
+          log(`⚠ 失步！第 ${d.seq} 號後 ${d.seat + 1} 號座的校驗和 ${d.got} ≠ ${d.expected}，已請求全量重放`),
+        // ★ Q-NET-1 自愈：服务器把**完整** action 日志重放回来了 → 整体重建本地状态。
+        //   刻意不复用 `applyAction`：那条路会带出动画、音效、AI 排程，
+        //   重放几百条等于把特效重放几百遍。这里是「静默」的 reduce，
+        //   做完只催一帧并重排驱动。
+        onResync: (r) => {
+          map = parseMap(readMapData(archives, r.globalMapId));
+          topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+          state = newGame({
+            map,
+            globalMapId: r.globalMapId,
+            players: r.seats.map((s) => ({ character: s.character, kind: s.kind })),
+            seed: r.seed,
+            mode: 'multiplayer',
+          });
+          history.length = 0;
+          for (const action of r.actions) {
+            state = reduce(state, action, topo);
+            history.push(action);
+          }
+          // 本屏的临时 UI 状态一律收掉：重放可能把 pending 换成了另一种，旧的指认不再成立
+          amountPage = null;
+          dialogHot = null;
+          pick = null;
+          pickHover = null;
+          hoverNode = null;
+          diceFx.cancel();
+          npcWalksDrawn = null;
+          log(`⟳ 失步自愈：重放 ${r.actions.length} 條 action，本地狀態已重建（第 ${r.actions.length} 號）`);
+          requestRender();
+          renderPanel();
+          scheduleAi();
+          scheduleHumanTurn();
+        },
         fingerprint: () => stateFingerprint(state),
       },
     );
@@ -4563,6 +5888,8 @@ async function boot(): Promise<void> {
     const straightToGame = new URLSearchParams(window.location.search).get('screen') === 'game';
     // ★ 存档口（T-053）：桌面版把槽位预载进内存，之后读档屏同步取用
     await initSaveStore();
+    // Q8：上次选的音色库（桌面版存在 <AppData>/soundfont/）接回来再开声
+    void restoreSoundFont();
 
     // ★ 渲染器画进**离屏**画布：棋盘 439×440、側欄 200×480，
     //   都是原版的固定尺寸；缩放由舞台统一做（见 stage.ts）。

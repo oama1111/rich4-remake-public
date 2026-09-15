@@ -38,6 +38,7 @@ import {
 import { CARD_IMPLS, CARDS, TOOLS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { classNeedsItsOwnList } from './picking.ts';
+import { stockPickModeOfCard, type StockPickMode } from './stock-screen.ts';
 import { FONT_FAMILY } from './font.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
@@ -192,11 +193,17 @@ export const REMOTE_DICE_TOOL = 8;
  *   - `pick`    要选目标 → 进 T-026 拾取模式（`cls`/`param` 取自卡片表）
  *   - `cannot`  现在出不了（被动卡、时机不对…）→ 失败音 + 弹窗开回来
  *
+ * ★ Q-PICK-2 补的两路（原版这两类**不进**棋盘拾取窗口）：
+ *   - `stockPick` 紅卡(24)/黑卡(25) → 复用**股市屏**的选股模式（参数 1/2）
+ *   - `objectAuto` 請神符(23) → 原版是 `0x444d1a` 的**自动请最近的神**，没有 UI
+ *
  * ★ 原版**不灰显**被动卡 —— `fcn_00441b0a` 只画卡名、一个字体一个颜色。
  */
 export type CardPickRoute =
   | { kind: 'use' }
   | { kind: 'pick'; cls: TargetClass; param: number }
+  | { kind: 'stockPick'; mode: StockPickMode }
+  | { kind: 'objectAuto' }
   | { kind: 'cannot'; needsOwnList: boolean };
 
 /** 这件道具是不是**不用再问**就能直接发 `useTool` */
@@ -217,6 +224,13 @@ export function routeCardPick(
   const impl = CARD_IMPLS[cardId - 1];
   const cls = impl === undefined ? 'none' : targetClassOfCard(impl);
   if (cls === 'none') return { kind: 'cannot', needsOwnList: false };
+  // ★ 紅卡/黑卡：原版走股市屏的**选股模式**（`_rich4_ui_stock_entry` 参数 1/2）
+  if (cls === 'stock') {
+    const mode = stockPickModeOfCard(cardId);
+    return mode === null ? { kind: 'cannot', needsOwnList: true } : { kind: 'stockPick', mode };
+  }
+  // ★ 請神符：原版**没有列表也没有拾取窗口**，直接请最近的那尊（VA 0x00444d1a）
+  if (cls === 'object') return { kind: 'objectAuto' };
   if (classNeedsItsOwnList(cls)) return { kind: 'cannot', needsOwnList: true };
   return { kind: 'pick', cls, param: impl?.selectionParam ?? 0 };
 }

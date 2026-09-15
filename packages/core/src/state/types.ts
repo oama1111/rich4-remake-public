@@ -16,6 +16,8 @@ import type { CommercialOwnership } from '../places/commercial.ts';
 import type { Listing } from '../places/notice-board.ts';
 import type { MapObject } from '../cards/summon.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
+import type { WinConditions } from '../rules/setup.ts';
+import type { VictoryOutcome } from '../rules/victory.ts';
 
 // ============================================================
 //  玩家控制方式
@@ -342,6 +344,25 @@ export interface GameState {
    *   買地/買設施时按它查年限表 `0x004751f0` 写到期日。见 rules/facility.ts。
    */
   landTenureIndex: number;
+
+  /**
+   * 本局的两条**勝利條件** —— 開局設定屏最后两条下拉，开局写一次、之后不变。
+   *
+   * @source `[0x49911c]`（遊戲時間 → 天）与 `[0x499108]`（勝利條件 → 总资产），
+   *   开局写入 VA 0x0040737d..0x004073a3；判定在日推进的 `fcn_0041d89e`。
+   *   两个值都为 0 = 無限，判定整个跳过（与旧行为逐字节一致）。
+   *   见 `rules/setup.ts` 的 `winConditionsOf` 与 `rules/victory.ts`。
+   */
+  winConditions: WinConditions;
+
+  /**
+   * 因**勝利條件达标**而结束时的结局；null 表示本局不是那样结束的。
+   *
+   * ★ 破产结束那条路不写它（那条路本来就是既有实现，见 `rules/bankruptcy.ts`）。
+   *   它只记「谁赢、为什么赢」，终局码由 `gameOverCode()` 现算。
+   *   @source `fcn_0041d89e` 的 0x0041d915 起：`[0x49910c] = 赢家下标`。
+   */
+  victory: VictoryOutcome | null;
 
   /** 開局以来的总天数 @source `[0x4990e4]`，每日推进 `inc`（0x0041cfab）；電腦公司按它收費 */
   totalDays: number;

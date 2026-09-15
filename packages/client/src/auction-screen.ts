@@ -1,10 +1,24 @@
 /*
- * 拍賣屏（T-034 / U-7）—— PASS / +100 / +500 / +1000 / +5000 / +10000 / 放棄
+ * 拍賣屏（T-034 / U-7 / Q-AUC-1）—— PASS / +100 / +500 / +1000 / +5000 / +10000 / 放棄
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * `pending.kind === 'auction'`（拍賣卡 T-007、破產清算、新聞事件、魔法屋都走这一屏）
- * 时接管整屏。**规则在 core**：起拍价 `auctionBasePrice`、结算 `settleAuction`、
- * AI 心理价位 `auctionAiLimit`。本模块只摆位置、画字、算命中与推进出价轮次。
+ * 时接管整屏。**规则与竞价循环都在 core**：起拍价 `auctionBasePrice`、结算
+ * `settleAuction`、心理价位 `auctionAiLimits`、挑档 `auctionAiRaise`、
+ * 出价循环 `state/reduce.ts` 的 `auctionBid`（一口一个 action）。
+ *
+ * ★ **Q-AUC-1 定案（2026-09-15）：这一屏不再自己跑竞价。**
+ *   原版那条循环是窗口过程里 100ms 定时器驱动的「轮到谁 → 真人点钮 / 电脑
+ *   算一口 → 复查还剩几个能出价的」；先前把它整条放在本屏，导致**无头跑
+ *   core 时拍賣永远答不掉**（服务端权威、纯 AI 局都卡死）。现在循环归 core：
+ *
+ *   | 谁 | 这一口怎么来 |
+ *   |---|---|
+ *   | 电脑 | `decideAction`/`auctionNextBid`（core）算好 → 本屏 dispatch `auctionBid` |
+ *   | 真人 | 本屏收点钮 → dispatch `auctionBid` |
+ *
+ *   终局也由 core 判（`auctionFinished` / `auctionOutcome`）；本屏只把每一口
+ *   **演出来**（挥槌动画、价格、座位状态、消息框）。
  *
  * ## 出处（窗口过程 `fcn_0043a2dd` VA 0x0043a2dd；入口 `_rich4_ui_auction_entry`
  * VA 0x0043bde5；两份都在 `rich4-re/asm/rich4_ui_auction.asm`）
@@ -38,25 +52,14 @@
  *   `cmp byte [eax], '#' / add eax, 5` 跳掉（见 `places/magic-house.ts` 注），
  *   这里直接存**跳掉之后**的字。
  *
- * ## 出价轮次（入口建表 + `0x407` 消息处理）
- *
- * 入口先给每个**在场且出得起底价**的玩家建一个座位（`0x48c434`，每项 20 字节：
- * `{word 玩家号, word 状态, dword 心理价位, dword 图 A, dword 图 B}`），
- * 状态 1..6 = 六种「不在场」（住宿中/消失中/坐牢中/住院中/冬眠中/夢遊中）、
- * 7 = 賣方、8 = 现金不足底价、0 = 可出价。
- * 之后 100ms 的定时器驱动：轮到谁就等谁（真人等点钮、电脑问 `fcn_00439f0d`），
- * 每一口之后回 `loc_0043b295` 复查 —— **只剩最高出价者一个人还能出价就成交，
- * 一个能出的都没有就流标**。
- *
  * ★ 原版把 PASS 记成状态 **1**（于是显示成「住宿中」）—— 见
  *   `docs/deviations/T-034.md` 的 `D-T034-1`，本屏照抄。
  */
 
 import type { PendingInteraction, Player } from '@rich4/core';
 import {
-  auctionAiLimit,
-  auctionAiRaise,
   auctionCanAfford,
+  auctionNextBid,
   effectiveFacility,
   effectiveLand,
   isAiControlled,
@@ -412,7 +415,7 @@ export function auctionEntityImage(
 }
 
 // ============================================================
-//  出价轮次（纯函数）
+//  显示视图（**只读** core 的 pending；循环本身在 core）
 // ============================================================
 
 export type AuctionSeatState = 'canBid' | 'away' | 'seller' | 'broke' | 'passed';
@@ -425,145 +428,66 @@ export interface AuctionSeat {
   state: AuctionSeatState;
   /** `state === 'away'` 时是六种不在场里的哪一号 */
   away: number;
-  /** 原版存在座位 `+8` 的「心理价位」；不是电脑玩家时是 0 @source 0x43c60f */
+  /** core 存在 `pending.limits` 里的「心理价位」；真人座位不读 @source 0x43c60f */
   aiLimit: number;
 }
 
 export interface AuctionRun {
   seats: AuctionSeat[];
-  /** 轮到哪个座位（下标）*/
+  /** 轮到哪个座位（下标）—— 与 core 的 `pending.seat` 同义 */
   current: number;
-  /** 现价（原版 `[0x48c488]`，每一口都改写它）*/
+  /** 现价（原版 `[0x48c488]`，core 的 `pending.price`）*/
   price: number;
   basePrice: number;
   /** 目前最高出价者的座位下标；-1 = 还没人出价 @source `[0x48c4a8]` */
   top: number;
-  /** 连续「无人加价」的次数 */
-  passes: number;
-  /** 已经绕了几圈 */
-  round: number;
   phase: 'bidding' | 'sold' | 'passedIn';
   /** 得标者**玩家下标**；-1 = 流拍 */
   winner: number;
 }
 
 /**
- * 一圈最多走几轮就认输。
+ * 按 core 的 `pending{auction}` 建一份**只读**座位视图。
  *
- * ⚠️ **原版没有这个上限** —— 它靠「PASS 即出局」保证收敛。
- *   本引擎的 AI 也照这条走，但真人与 AI 混桌时若两边都反复加价，
- *   没有上限就会永不结算。这是**安全阀**，不是规则，见 deviations 的 D-T034-4。
+ * @source 入口 `loc_0043c110` 起那段的状态分类：
+ * 卖主 = 7、不在场 = 1..6、出不起底价 = 8、可出价 = 0。
+ * 竞价进行中的 `'passed'` / `'givenUp'` 都是原版的非 0 档（PASS 记 1、
+ * 放棄 记 4），这里按**有没有人出过价**细分，只为把图/字演对：
+ * - 还没人出过价就 givenUp 的 = **出不起底价**（画 status 8 那张）；
+ * - 其余 = PASS 掉的那一格（显示成「住宿中」，见 D-T034-1）。
  */
-export const AUCTION_MAX_ROUNDS = 12;
-
-/**
- * 按原版建座位表 @source 0x43c110 起：逐个玩家看 `who_plays`（0 跳掉），
- * `+0x32..+0x37` 六个计数分别记 1..6；现金 ≤ 底价记 8；卖主记 7；其余记 0。
- *
- * @param bidders `pending.bidders`（core 已排除出局者与现任地主）
- * @param seller 卖主玩家下标；没有传 -1（新聞事件/破產清算那两条路传 -1）
- */
-export function auctionSeats(
+export function seatViewOf(
+  pending: Extract<PendingInteraction, { kind: 'auction' }>,
   players: readonly Player[],
-  bidders: readonly number[],
   seller: number,
-  basePrice: number,
-  aiLimitOf: (player: number, seat: Omit<AuctionSeat, 'aiLimit'>) => number,
 ): AuctionSeat[] {
-  const want = new Set(bidders);
+  const top = pending.top;
+  const status = pending.status;
+  const counted = pending.bidders.filter((i) => (status[i] ?? 'active') !== 'active').length > 0;
   const seats: AuctionSeat[] = [];
-  for (const p of players) {
-    if (p.whoPlays === 0) continue;
-    const isSeller = p.index === seller;
-    if (!isSeller && !want.has(p.index)) continue;
+  for (const i of pending.bidders) {
+    const p = players[i];
+    if (p === undefined) continue;
     const away = awayCodeOf(p);
+    const st = status[i] ?? 'active';
     let state: AuctionSeatState;
-    if (isSeller) state = 'seller';
-    else if (away !== 0) state = 'away';
-    else if (p.cash < basePrice) state = 'broke';
+    if (i === seller) state = 'seller';
+    else if (st !== 'active') {
+      state = counted || top >= 0 ? 'passed' : 'broke';
+      if (p.cash <= pending.basePrice) state = 'broke';
+    } else if (away !== 0) state = 'away';
+    else if (p.cash <= pending.basePrice) state = 'broke';
     else state = 'canBid';
-    const seat: Omit<AuctionSeat, 'aiLimit'> = {
-      player: p.index,
+    seats.push({
+      player: i,
       character: p.character,
       cash: p.cash,
       state,
       away,
-    };
-    // 原版只给「可出价的电脑」算心理价位 @source 0x43c60f
-    const ai = state === 'canBid' && isAiControlled(p) ? aiLimitOf(p.index, seat) : 0;
-    seats.push({ ...seat, aiLimit: ai });
-    if (seats.length >= AUCTION_SEAT.count) break;
+      aiLimit: pending.limits[i] ?? 0,
+    });
   }
   return seats;
-}
-
-/** 还能出价的座位数 @source `loc_0043b295` 的 `esi`（有人的）减 `edi`（状态非 0 的）*/
-export function activeSeatCount(run: AuctionRun): number {
-  return run.seats.filter((s) => s.state === 'canBid').length;
-}
-
-/**
- * 拍卖结束了吗。
- *
- * @source `loc_0043b295`：
- * ```asm
- * esi = 有人的座位数 ; edi = 状态 != 0 的座位数
- * if (esi == 0 || esi == edi)                → 流標（「無人出價，宣佈流標。」）
- * if (esi - edi == 1 && [0x48c4a8] != -1)    → 成交
- * ```
- * 即：**没人能出价 → 流标；只剩最高出价者一个人能出价 → 成交**。
- */
-export function auctionFinished(run: AuctionRun): boolean {
-  if (run.phase !== 'bidding') return true;
-  if (run.seats.length === 0) return true;
-  const active = activeSeatCount(run);
-  if (active === 0) return true;
-  if (active === 1 && run.top >= 0 && run.seats[run.top]?.state === 'canBid') return true;
-  return run.round > AUCTION_MAX_ROUNDS;
-}
-
-/** 结算结果 —— 没人出过价就是流拍（winner = -1）@source `Post_0402_Message([0x48c4a8])` */
-export function auctionOutcome(run: AuctionRun): { winner: number; price: number } {
-  if (run.top < 0) return { winner: -1, price: 0 };
-  return { winner: run.seats[run.top]!.player, price: run.price };
-}
-
-/** 把 `current` 挪到下一个还能出价的座位 @source `loc_0043b3c2` */
-export function auctionAdvance(run: AuctionRun): AuctionRun {
-  const n = run.seats.length;
-  if (n === 0) return run;
-  let round = run.round;
-  for (let k = 1; k <= n; k++) {
-    const i = (run.current + k) % n;
-    if (i <= run.current) round += 1;
-    if (run.seats[i]?.state === 'canBid') return { ...run, current: i, round };
-  }
-  return { ...run, round };
-}
-
-/** 当前这一位加价 `step`，然后把槌子交给下一位 */
-export function auctionRaise(run: AuctionRun, step: number): AuctionRun {
-  if (run.phase !== 'bidding' || step <= 0) return run;
-  const next: AuctionRun = {
-    ...run,
-    seats: run.seats.map((s, i) => (i === run.current ? { ...s } : s)),
-    price: run.price + step,
-    top: run.current,
-    passes: 0,
-  };
-  return auctionAdvance(next);
-}
-
-/**
- * 当前这一位 PASS（或按「放棄」）—— 原版把这一位的状态改成 1，
- * 从此不再轮到他。@source `loc_0043a426`
- */
-export function auctionPass(run: AuctionRun): AuctionRun {
-  if (run.phase !== 'bidding') return run;
-  const seats = run.seats.map((s, i) =>
-    i === run.current ? { ...s, state: 'passed' as const } : s,
-  );
-  return auctionAdvance({ ...run, seats, passes: run.passes + 1 });
 }
 
 // ============================================================
@@ -814,7 +738,7 @@ export function drawAuctionScreen(
     }
 
     // 状态字（1..7）flag 2 在 (590, y+14) @0x43c46d / 现金（0、8）flag 6 在 (620, y+14) @0x43c43c
-    if (code === 0 || code === 8) {
+    if (code === 0 || code === AUCTION_BROKE_CODE) {
       auctionText(
         ctx,
         AUCTION_MONEY_FORMAT.replace('%d', String(seat.cash)),
@@ -859,7 +783,7 @@ export function drawAuctionScreen(
 }
 
 // ============================================================
-//  整屏（UiScreen）
+//  整屏（UiScreen）—— 只收真人的那一口，电脑那一口问 core
 // ============================================================
 
 interface ScreenState {
@@ -871,16 +795,22 @@ interface ScreenState {
   anim: { seat: number; startedAt: number; until: number } | null;
   message: string | null;
   messageUntil: number;
-  /** 下一次让 AI 动 / 结算的时刻 */
+  /** 下一次问 core 要「电脑那一口」的时刻 */
   nextAt: number;
   /** 「請意者出價」这一句已经出过了（真人那一格）*/
   asked: boolean;
-  /** 已经 dispatch 过了 */
-  sent: boolean;
-  /** 结算演出的三个时刻（0 = 没在结算）*/
-  dealMidAt: number;
-  dealEndAt: number;
+  /** 待拍产业缩略图（`pending` 清掉之后结算演出还要用）*/
+  entityImage: number;
+  /** 结算演出：`pending` 已经没了，只剩消息框 */
+  settling: boolean;
+  /** 结算演出消息的收摊时刻（0 = 不排）*/
+  settleUntil: number;
+  /** 结算演出演的是谁（从屏内已知的最高者推出来，见 `finalOutcomeOf`）*/
   outcome: { winner: number; price: number } | null;
+  /** 最后一口加价者的**玩家下标**（`top` 是座位下标，收盘时用它换算）*/
+  topBidder: number;
+  /** 最后一次加价后的现价（`pending` 清掉之后就没地方读了）*/
+  lastPrice: number;
 }
 
 let screen: ScreenState | null = null;
@@ -888,21 +818,6 @@ let screen: ScreenState | null = null;
 function runKey(p: PendingInteraction): string {
   if (p.kind !== 'auction') return '';
   return `${p.entityId}:${p.facility === true ? 'f' : 'l'}:${p.basePrice}`;
-}
-
-/**
- * 心理价位那几次 `rand()` 的替身。
- *
- * ⚠️ 原版就是 `_libc_rand`（0x439f1c）。屏内**不能**去动 `state` 的 PRNG
- *   （那会让存档回放漂移），所以按座位派生一条确定性序列 ——
- *   同一局同一座位每次算出来一样。见 deviations 的 D-T034-5。
- */
-function seatRandom(seed: number): () => number {
-  let s = (seed >>> 0) || 1;
-  return () => {
-    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-    return s / 4294967296;
-  };
 }
 
 /** 待拍实体现在是谁的（0 = 无主）*/
@@ -928,99 +843,120 @@ function entityImageOf(env: UiScreenEnv, pending: PendingInteraction): number {
   return auctionEntityImage(land, false, charOf, 0);
 }
 
-/** 给一个座位算心理价位 —— 计数规则照 `fcn_00439f0d` 的两支 */
-function aiLimitFor(env: UiScreenEnv, pending: PendingInteraction, player: number): number {
-  if (pending.kind !== 'auction') return 0;
-  const facility = pending.facility === true;
-  const p = env.state.players[player];
-  const land = facility ? null : effectiveLand(env.state, env.topo, pending.entityId);
-  const fac = facility ? effectiveFacility(env.state, env.topo, pending.entityId) : null;
-  const all = facility ? (env.topo.facilities ?? []) : (env.topo.lands ?? []);
-  const ownerOf = (id: number, fallback: number): number =>
-    (facility ? env.state.facilityOwner[id] : env.state.landOwner[id]) ?? fallback;
-  const unowned = all.filter((e) => ownerOf(e.id, e.owner) === 0).length;
-  const name = land?.name ?? fac?.name ?? '';
-  // ★ 只有地块那一支数「同名的自家地产」（設施分支没有这一段）@source 0x439f72
-  const sameNameOwned = facility
-    ? 0
-    : all.filter((e) => e.name === name && ownerOf(e.id, e.owner) === player + 1).length;
-  return auctionAiLimit(
-    {
-      level: land?.level ?? fac?.level ?? 0,
-      landPrice: land?.landPrice ?? fac?.landPrice ?? 0,
-      cash: p?.cash ?? 0,
-      priceIndex: env.state.priceIndex,
-      basePrice: pending.basePrice,
-      total: all.length,
-      unowned,
-      sameNameOwned,
-    },
-    seatRandom((player + 1) * 7919 + pending.entityId * 31 + pending.basePrice),
-  );
+/** 从 core 的 `pending` 建屏内视图（现价/最高者/轮到谁都照读，不自己算） */
+function viewOf(env: UiScreenEnv, pending: PendingInteraction): AuctionRun {
+  if (pending.kind !== 'auction') throw new Error('auction-screen: pending 不是 auction');
+  const p = pending;
+  const owner = entityOwnerOf(env, pending);
+  const seller = owner > 0 ? owner - 1 : -1;
+  const seats = seatViewOf(p, env.state.players, seller);
+  return {
+    seats,
+    current: p.seat,
+    price: p.price,
+    top: p.top,
+    basePrice: p.basePrice,
+    phase: 'bidding',
+    winner: -1,
+  };
 }
 
-/** 建一次座位表 + 起拍 @source 0x43c110 起 */
-function startRun(env: UiScreenEnv, pending: PendingInteraction): ScreenState {
-  if (pending.kind !== 'auction') throw new Error('auction-screen: pending 不是 auction');
-  const basePrice = pending.basePrice;
-  const owner = entityOwnerOf(env, pending);
-  const seats = auctionSeats(
-    env.state.players,
-    pending.bidders,
-    owner > 0 ? owner - 1 : -1,
-    basePrice,
-    (player) => aiLimitFor(env, pending, player),
-  );
-  const first = seats.findIndex((s) => s.state === 'canBid');
+function startView(env: UiScreenEnv, pending: PendingInteraction): ScreenState {
+  const run = viewOf(env, pending);
   return {
     key: runKey(pending),
-    run: {
-      seats,
-      current: first < 0 ? 0 : first,
-      price: basePrice,
-      basePrice,
-      top: -1,
-      passes: 0,
-      round: 0,
-      phase: 'bidding',
-      winner: -1,
-    },
+    run,
+    entityImage: entityImageOf(env, pending),
     pressed: null,
     anim: null,
     message: AUCTION_INTRO_TEXT,
     messageUntil: env.now + AUCTION_BOX_MS,
     nextAt: env.now + AUCTION_BOX_MS,
     asked: false,
-    sent: false,
-    dealMidAt: 0,
-    dealEndAt: 0,
+    settling: false,
+    settleUntil: 0,
     outcome: null,
+    topBidder: -1,
+    lastPrice: run.price,
   };
 }
 
+/** 把 core 的 `pending` 变化同步进视图（现价 / 最高者 / 座位状态 / 轮到谁）*/
+function syncView(env: UiScreenEnv, pending: PendingInteraction): void {
+  if (screen === null) return;
+  screen.run = viewOf(env, pending);
+}
+
+/**
+ * 结算演出要演谁。
+ *
+ * ⚠️ `pending` 一被 core 清掉，屏就读不到 `top` 了 —— 所以屏内**自己记**下
+ * 「最后一次加价是谁、加到多少」。终局本来只有两种（`loc_0043b295`）：
+ * 只剩最高者能出价 → 成交；一个能出的都没有 → 流标。这里按同一条口径推：
+ * 有人加过价就是成交（价 = 最后那口），没人加过就是流拍。
+ */
+function finalOutcomeOf(st: ScreenState): { winner: number; price: number } {
+  if (st.topBidder < 0) return { winner: -1, price: 0 };
+  return { winner: st.topBidder, price: st.lastPrice };
+}
+
+/** 走到结算演出：core 已经把 `pending` 清掉了，这里只负责把结果演出来 */
+function beginSettle(env: UiScreenEnv, st: ScreenState, out: { winner: number; price: number }): void {
+  st.settling = true;
+  st.outcome = out;
+  st.anim = null;
+  st.pressed = null;
+  st.run = { ...st.run, phase: out.winner < 0 ? 'passedIn' : 'sold', winner: out.winner, price: out.winner < 0 ? st.run.price : out.price };
+  if (out.winner < 0) {
+    st.message = AUCTION_PASSED_IN_TEXT;
+  } else {
+    st.message = AUCTION_DEAL_FORMAT.replace('%d', String(out.price));
+  }
+  st.messageUntil = env.now + AUCTION_BOX_MS;
+  st.settleUntil = env.now + AUCTION_BOX_MS;
+  env.playEffect(AUCTION_SOUND_DEAL);
+  env.requestRender();
+}
+
+/** 轮到的那一位是不是电脑（是就要问 core 要这一口）*/
 function seatPlayer(env: UiScreenEnv, run: AuctionRun): Player | null {
   const seat = run.seats[run.current];
   if (seat === undefined) return null;
   return env.state.players[seat.player] ?? null;
 }
 
-/** 点得动吗：轮到的这一位不是电脑 @source 0x43bb25 `cmp [0x48c4ac], 3` */
 function humanTurn(env: UiScreenEnv, st: ScreenState): boolean {
-  if (st.sent || st.run.phase !== 'bidding') return false;
+  if (st.settling || st.outcome !== null || st.run.phase !== 'bidding') return false;
   const p = seatPlayer(env, st.run);
   return p !== null && !isAiControlled(p);
 }
 
-/** 让一位（人或电脑）出一口 */
-function applyBid(
+/**
+ * 把这一口送给 core。
+ *
+ * ★ 只有**真人**那一手从这里进（电脑那一手由 `auctionNextBid` 算好、同样
+ *   以 `auctionBid` 送进来）—— 屏内不再自己改现价/座位状态。
+ */
+function applyHumanBid(
   env: UiScreenEnv,
   st: ScreenState,
-  action: { kind: 'raise'; step: number } | { kind: 'pass' },
+  action: { kind: 'raise'; step: number } | { kind: 'pass' | 'giveUp' },
 ): void {
-  const seat = st.run.current;
-  st.run = action.kind === 'raise' ? auctionRaise(st.run, action.step) : auctionPass(st.run);
+  const seat = st.run.seats[st.run.current];
+  if (seat === undefined) return;
+  const status = action.kind === 'raise' ? 'raise' : action.kind;
+  env.dispatch({
+    type: 'auctionBid',
+    bidder: seat.player,
+    status,
+    step: action.kind === 'raise' ? action.step : 0,
+  });
+  if (action.kind === 'raise') {
+    st.topBidder = seat.player;
+    st.lastPrice = st.run.price + action.step;
+  }
   st.anim = {
-    seat,
+    seat: st.run.current,
     startedAt: env.now,
     until: env.now + AUCTION_FRAME_MS * AUCTION_HAMMER_FRAMES,
   };
@@ -1031,92 +967,59 @@ function applyBid(
   env.requestRender();
 }
 
-/** 结算演出：先「N元成交」，再「恭喜X購得此地！」，然后 dispatch */
-function beginSettle(env: UiScreenEnv, st: ScreenState): void {
-  const out = auctionOutcome(st.run);
-  st.run = { ...st.run, phase: out.winner < 0 ? 'passedIn' : 'sold', winner: out.winner };
-  st.outcome = out;
-  st.anim = null;
-  if (out.winner < 0) {
-    st.message = AUCTION_PASSED_IN_TEXT;
-    st.dealMidAt = 0;
-    st.dealEndAt = env.now + AUCTION_BOX_MS;
-  } else {
-    st.message = AUCTION_DEAL_FORMAT.replace('%d', String(out.price));
-    st.dealMidAt = env.now + AUCTION_BOX_MS;
-    st.dealEndAt = env.now + AUCTION_BOX_MS * 2;
-  }
-  st.messageUntil = (st.dealMidAt === 0 ? st.dealEndAt : st.dealMidAt) + AUCTION_BOX_MS;
-  env.playEffect(AUCTION_SOUND_DEAL);
-  env.requestRender();
-}
-
-function finishDeal(env: UiScreenEnv, st: ScreenState): void {
-  const out = st.outcome;
-  st.sent = true;
-  st.message = null;
-  st.messageUntil = 0;
-  env.dispatch({
-    type: 'auction',
-    winner: out === null ? -1 : out.winner,
-    price: out === null ? 0 : out.price,
-  });
-  env.requestRender();
-}
-
 export const auctionScreen: UiScreen = {
   id: 'auction',
 
   active(env: UiScreenEnv): boolean {
-    return env.state.pending?.kind === 'auction';
+    if (env.state.pending?.kind === 'auction') return true;
+    // 结算演出期间 `pending` 已经被 core 清掉，屏还要把结果演完
+    return screen !== null && screen.settling;
   },
 
   tick(env: UiScreenEnv): void {
     const pending = env.state.pending;
     if (pending === null || pending.kind !== 'auction') {
-      screen = null;
+      // core 已经落槌 —— 先起一段结算演出，演完收摊
+      const st = screen;
+      if (st === null) return;
+      if (!st.settling) {
+        beginSettle(env, st, finalOutcomeOf(st));
+        return;
+      }
+      if (st.messageUntil !== 0 && env.now >= st.messageUntil) {
+        st.message = null;
+        st.messageUntil = 0;
+        env.requestRender();
+      }
+      if (env.now >= st.settleUntil) {
+        screen = null;
+        env.requestRender();
+      }
       return;
     }
     if (screen === null || screen.key !== runKey(pending)) {
-      screen = startRun(env, pending);
+      screen = startView(env, pending);
       env.requestRender();
       return;
     }
     const st = screen;
-
+    // 开场那句先走完
     if (st.messageUntil !== 0 && env.now >= st.messageUntil) {
       st.messageUntil = 0;
       st.message = null;
       env.requestRender();
     }
     if (st.anim !== null && env.now < st.anim.until) env.requestRender();
+    if (st.settling || st.outcome !== null) return;
 
-    if (st.sent) return;
+    syncView(env, pending);
 
-    // ── 结算演出 ──
-    if (st.outcome !== null) {
-      if (st.dealMidAt !== 0 && env.now >= st.dealMidAt) {
-        st.dealMidAt = 0;
-        const ch = env.state.players[st.outcome.winner]?.character ?? 0;
-        st.message =
-          AUCTION_WINNER_TEXT[ch] ?? AUCTION_DEAL_FORMAT.replace('%d', String(st.outcome.price));
-        st.messageUntil = st.dealEndAt + AUCTION_BOX_MS;
-        env.requestRender();
-      }
-      if (env.now >= st.dealEndAt) finishDeal(env, st);
-      return;
-    }
-
-    if (auctionFinished(st.run)) {
-      beginSettle(env, st);
-      return;
-    }
-
+    // 只剩一个人能出价 / 一个都出不起 → core 会在下一口之后自己判终局。
+    //   这里不预判：屏只负责「该谁 → 把这一口送出去」。
     const p = seatPlayer(env, st.run);
     if (p === null) return;
     if (!isAiControlled(p)) {
       // 真人：等点钮（原版相位 3）。摆一句「請意者出價」就够，不必续帧。
-      // ⚠️ 开场那句要先走完（`st.message === null` 才轮到这句），否则会被立刻顶掉。
       if (!st.asked && st.message === null) {
         st.asked = true;
         st.message = AUCTION_ASK_FORMAT.replace('%d', String(st.run.price));
@@ -1127,19 +1030,35 @@ export const auctionScreen: UiScreen = {
     }
     if (env.now < st.nextAt) return;
 
-    const seat = st.run.seats[st.run.current]!;
-    const topCash =
-      st.run.top < 0 ? null : (env.state.players[st.run.seats[st.run.top]!.player]?.cash ?? 0);
-    const step = auctionAiRaise(seat.aiLimit, st.run.price, p.cash, topCash);
+    // ★ 电脑那一口**问 core**（与 `decidePending` 同一个函数，不是第二套算法）
+    const bid = auctionNextBid(env.state, pending);
+    if (bid === null || bid.type !== 'auctionBid') return;
     env.playEffect(AUCTION_SOUND_BID);
-    applyBid(env, st, step > 0 ? { kind: 'raise', step } : { kind: 'pass' });
+    const seat = st.run.current;
+    if (bid.status === 'raise') {
+      st.topBidder = bid.bidder;
+      st.lastPrice = st.run.price + bid.step;
+    }
+    env.dispatch(bid);
+    st.anim = {
+      seat,
+      startedAt: env.now,
+      until: env.now + AUCTION_FRAME_MS * AUCTION_HAMMER_FRAMES,
+    };
+    st.message = null;
+    st.messageUntil = 0;
+    st.nextAt = st.anim.until;
+    env.requestRender();
   },
 
   draw(env: UiScreenEnv): void {
     const pending = env.state.pending;
-    if (pending === null || pending.kind !== 'auction') return;
-    if (screen === null || screen.key !== runKey(pending)) screen = startRun(env, pending);
     const st = screen;
+    if (st === null) return;
+    const frozen =
+      pending !== null && pending.kind === 'auction'
+        ? (pending as Extract<PendingInteraction, { kind: 'auction' }>)
+        : null;
     drawAuctionScreen(env.stage, (a, r, i, k) => env.sprite(a, r, i, k), {
       seats: st.run.seats.map((s) => ({
         player: s.player,
@@ -1151,7 +1070,7 @@ export const auctionScreen: UiScreen = {
       current: st.run.current,
       top: st.run.top,
       price: st.run.price,
-      entityImage: entityImageOf(env, pending),
+      entityImage: frozen !== null ? entityImageOf(env, frozen) : st.entityImage,
       pressed: st.pressed,
       humanTurn: humanTurn(env, st),
       animating:
@@ -1166,8 +1085,11 @@ export const auctionScreen: UiScreen = {
     const st = screen;
     if (st === null) return;
     // 结算演出中点任意处 = 跳过（原版按下时 `fcn_0044ee18(1)` 直接收摊）@source 0x43bb25
-    if (st.outcome !== null) {
-      finishDeal(env, st);
+    if (st.settling || st.outcome !== null) {
+      st.message = null;
+      st.messageUntil = 0;
+      st.settleUntil = env.now;
+      env.requestRender();
       return;
     }
     if (!humanTurn(env, st)) return;
@@ -1182,7 +1104,7 @@ export const auctionScreen: UiScreen = {
     if (st === null) return;
     const pressed = st.pressed;
     st.pressed = null;
-    if (pressed === null || st.outcome !== null) return;
+    if (pressed === null || st.settling || st.outcome !== null) return;
     if (!humanTurn(env, st)) return;
     if (hitAuctionButton(x, y) !== pressed) {
       env.requestRender();
@@ -1195,11 +1117,11 @@ export const auctionScreen: UiScreen = {
       // ★ 出不起就整个不响应（连音都不放）@source 0x43a478 `cmp eax, cash / jg`
       if (!auctionCanAfford(st.run.price, btn.step, p.cash)) return;
       env.playEffect(AUCTION_SOUND_BID);
-      applyBid(env, st, { kind: 'raise', step: btn.step });
+      applyHumanBid(env, st, { kind: 'raise', step: btn.step });
       return;
     }
     env.playEffect(AUCTION_SOUND_BID);
-    applyBid(env, st, { kind: 'pass' });
+    applyHumanBid(env, st, { kind: btn.kind });
   },
 };
 

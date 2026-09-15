@@ -202,6 +202,8 @@ import {
   isUnimplementedPlace,
   needsInteraction,
   unimplementedPlace,
+  type AuctionPending,
+  type AuctionRequest,
   type PendingInteraction,
 } from '../rules/interaction.ts';
 import { borrow, deposit, loanCapacity, repay, withdraw } from '../places/bank.ts';
@@ -212,10 +214,24 @@ import {
   buyTicket,
   numbersOf,
 } from '../places/lottery.ts';
-import { settleAuction, settleFacilityAuction } from '../rules/auction.ts';
+import {
+  auctionAdvanceSeat,
+  auctionAiLimits,
+  auctionCanAfford,
+  auctionFinished,
+  auctionFirstSeat,
+  auctionOutcome,
+  auctionSeatStatus,
+  sameNameFacilityOwned,
+  sameNameLandOwned,
+  settleAuction,
+  settleFacilityAuction,
+  type AuctionSeatStatus,
+} from '../rules/auction.ts';
 import { calculatePlayerWealth, updatePriceIndex } from '../rules/wealth.ts';
 import type { StockValuation } from '../rules/wealth.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
+import { checkVictory, clearLosers } from '../rules/victory.ts';
 
 /**
  * 归约所需的地图静态数据（只读，不进状态，避免快照臃肿）。
@@ -273,6 +289,138 @@ export function effectiveLand(
     type: s.landType[landIndex] ?? tpl.type,
     priceStatus: s.landPriceStatus[landIndex] ?? tpl.priceStatus,
   };
+}
+
+/**
+ * 给一个刚挂出来的 `pending{auction}` 补上竞价循环需要的字段。
+ *
+ * @source 拍賣入口 `0x0043c110` 起（建座位表）→ `0x43c5d9`（逐座位
+ *   `fcn_00439f0d` 算心理价位，存座位 `+8`）。
+ *
+ * 三件事：
+ * 1. 座位状态：出局 / 出不起底价 → 非 0（原版还细分 1..6 与 8，本引擎合并）；
+ * 2. 心理价位：**只在开拍时算一次**，种子由 `rngState` 与实体号派生，
+ *    不推进 `rngState`（这样读档/联机两端算出来一模一样，见 auction.ts 的注）；
+ * 3. 现价 = 起拍价、最高出价者 = -1、轮到第一家。
+ *
+ * ★ 放在这里而不是卡片/新聞各自的调用点：开拍这件事有**五个**调用点
+ *   （拍賣卡两处、破产清算、新聞事件、0x40d1e3），把这段逻辑挂一次
+ *   比抄五遍可靠 —— 而且 `auctionBid` 要求这些字段一定在。
+ */
+function openAuction(
+  state: GameState,
+  topo: MapTopology,
+  pending: AuctionRequest,
+): AuctionPending {
+  const status = auctionSeatStatus(state.players, pending.bidders, pending.basePrice);
+  const facility = pending.facility === true;
+  const entity = facility
+    ? (() => {
+        const fac = effectiveFacility(state, topo, pending.entityId);
+        const all = allEffectiveFacilities(state, topo);
+        return {
+          basePrice: pending.basePrice,
+          priceIndex: state.priceIndex,
+          landPrice: fac?.landPrice ?? 0,
+          level: fac?.level ?? 0,
+          total: all.length,
+          unowned: all.filter((f) => f.owner === 0).length,
+          sameNameOwned: sameNameFacilityOwned,
+        };
+      })()
+    : (() => {
+        const land = effectiveLand(state, topo, pending.entityId);
+        const all = allEffectiveLands(state, topo);
+        return {
+          basePrice: pending.basePrice,
+          priceIndex: state.priceIndex,
+          landPrice: land?.landPrice ?? 0,
+          level: land?.level ?? 0,
+          total: all.length,
+          unowned: all.filter((l) => l.owner === 0).length,
+          sameNameOwned: (player: number): number =>
+            sameNameLandOwned(land?.name ?? '', player, all, (id, fallback) =>
+              facility ? (state.facilityOwner[id] ?? fallback) : (state.landOwner[id] ?? fallback),
+            ),
+        };
+      })();
+
+  const seed = (state.rngState ^ Math.imul(pending.entityId + 1, 0x9e3779b1)) >>> 0;
+  return {
+    ...pending,
+    price: pending.basePrice,
+    top: -1,
+    topCash: 0,
+    seat: auctionFirstSeat(pending.bidders, status, state.currentPlayer),
+    status,
+    limits: auctionAiLimits(entity, state.players, pending.bidders, seed),
+  };
+}
+
+/**
+ * 拍卖落槌 —— 地盘/設施两条路共用。
+ *
+ * @source 拍賣卡 VA 0x0044334f / 0x0044346c：`run_auction` 返回 0（流拍）→
+ *   `mov byte [land + 0x19], 0` 变无主；得标者付款进公库
+ *   （见 `rules/auction.ts` 的 `settleAuction` / `settleFacilityAuction`）。
+ */
+function settleAuctionPending(
+  state: GameState,
+  topo: MapTopology,
+  pending: AuctionPending,
+): GameState {
+  const out = auctionOutcome(pending);
+  return settleAuctionExplicit(state, topo, pending, out.winner, out.price);
+}
+
+/**
+ * 拍卖落槌的**显式**版本：成交者与成交价已经定好，只做归属与付款。
+ *
+ * 两条路都用它：
+ * - 竞价循环自己收尾（`settleAuctionPending` 按 `auctionOutcome` 判完再进来）；
+ * - 兼容入口 `{ type: 'auction', winner, price }`（Q-AUC-1 之前由表现层发）。
+ */
+function settleAuctionExplicit(
+  state: GameState,
+  topo: MapTopology,
+  pending: AuctionRequest,
+  w: number,
+  p: number,
+): GameState {
+  const entityId = pending.entityId;
+
+  // 設施拍卖（拍賣卡踏在設施格上时挂出）——结算走同一条公库付款路径
+  if (pending.facility === true) {
+    const fac = effectiveFacility(state, topo, entityId);
+    if (fac === null) return { ...state, pending: null, phase: 'turnEnd' };
+    const fr = settleFacilityAuction(state.players, fac, { winner: w, price: p }, state.pool);
+    const facilityOwner = [...state.facilityOwner];
+    facilityOwner[entityId] = fr.facility.owner;
+    const settled: GameState = {
+      ...state,
+      players: fr.players,
+      facilityOwner,
+      pool: fr.pool,
+      pending: null,
+      phase: 'turnEnd',
+    };
+    return fr.bankrupted ? applyBankruptcy(settled, w, topo) : settled;
+  }
+
+  const land = effectiveLand(state, topo, entityId);
+  if (land === null) return { ...state, pending: null, phase: 'turnEnd' };
+  const r = settleAuction(state.players, land, { winner: w, price: p }, state.pool);
+  const landOwner = [...state.landOwner];
+  landOwner[entityId] = r.land.owner;
+  const settled: GameState = {
+    ...state,
+    players: r.players,
+    landOwner,
+    pool: r.pool,
+    pending: null,
+    phase: 'turnEnd',
+  };
+  return r.bankrupted ? applyBankruptcy(settled, w, topo) : settled;
 }
 
 /**
@@ -1114,52 +1262,72 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       };
     }
 
-    case 'auction': {
-      if (state.pending === null || state.pending.kind !== 'auction') return state;
-      // 設施拍卖（拍賣卡踏在設施格上时挂出）——结算走同一条公库付款路径
-      if (state.pending.facility === true) {
-        const facId = state.pending.entityId;
-        const fac = effectiveFacility(state, topo, facId);
-        if (fac === null) return { ...state, pending: null, phase: 'turnEnd' };
-        const fr = settleFacilityAuction(
-          state.players,
-          fac,
-          { winner: action.winner, price: action.price },
-          state.pool,
-        );
-        const facilityOwner = [...state.facilityOwner];
-        facilityOwner[facId] = fr.facility.owner;
-        const fsettled: GameState = {
-          ...state,
-          players: fr.players,
-          facilityOwner,
-          pool: fr.pool,
-          pending: null,
-          phase: 'turnEnd',
-        };
-        return fr.bankrupted ? applyBankruptcy(fsettled, action.winner, topo) : fsettled;
-      }
-      const landId = state.pending.entityId;
-      const land = effectiveLand(state, topo, landId);
-      if (land === null) return { ...state, pending: null, phase: 'turnEnd' };
+    /**
+     * 拍賣的**一口价** @source 拍賣窗口刷新循环 VA 0x0043c4f5 一带 +
+     *   终局判据 `loc_0043b295` VA 0x0043b295。
+     *
+     * 一个 action 走一口：更新现价/座位状态 → 复查「还剩几个能出价的」
+     * → 该收尾时按 `auctionOutcome` 落槌（结算沿用既有终局形状）。
+     *
+     * ★ 校验三条，任一不过就原样返回（保证 AI/屏重提也不会把状态搞乱）：
+     *   1. `pending` 确实在等这一场拍卖；
+     *   2. `bidder` 就是 `pending.seat` 上那一位（轮到你才能出价）——
+     *      ⚠️ **不要求 `bidder === currentPlayer`**：原版的竞价轮转与
+     *      `currentPlayer` 无关（整场拍卖挂在出卡人那个回合里，四家轮流举牌）；
+     *   3. 加价的那一口出得起（`现价 + step <= 现金`）——
+     *      原版真人那一支是 `cmp / jg 不理会`（0x43a478），电脑那一支由
+     *      心理价位夹住现金（0x43a131）；这里统一把关，杜绝负现金。
+     */
+    case 'auctionBid': {
+      // ★ 只认**完整**的拍賣 pending（带 seat/status/limits 那一支）——
+      //   卡片刚挂出来的「开拍请求」不可能在这一刻被答（reduce 挂出来时就补全了）
+      const pending = state.pending;
+      if (pending === null || pending.kind !== 'auction') return state;
+      if (!('seat' in pending)) return state;
+      const bidder = pending.bidders[pending.seat];
+      if (bidder === undefined || bidder !== action.bidder) return state;
+      if ((pending.status[bidder] ?? 'active') !== 'active') return state;
+      const me = state.players[bidder];
+      if (me === undefined || me.whoPlays === 0) return state;
 
-      const r = settleAuction(
-        state.players,
-        land,
-        { winner: action.winner, price: action.price },
-        state.pool,
-      );
-      const landOwner = [...state.landOwner];
-      landOwner[landId] = r.land.owner;
-      const settled: GameState = {
-        ...state,
-        players: r.players,
-        landOwner,
-        pool: r.pool,
-        pending: null,
-        phase: 'turnEnd',
-      };
-      return r.bankrupted ? applyBankruptcy(settled, action.winner, topo) : settled;
+      const raising = action.status === 'raise';
+      if (raising && (action.step <= 0 || !auctionCanAfford(pending.price, action.step, me.cash))) {
+        return state;
+      }
+
+      const status: AuctionSeatStatus[] = [...pending.status];
+      let price = pending.price;
+      let top = pending.top;
+      let topCash = pending.topCash;
+      if (raising) {
+        // @source 0x43a552 `mov [0x48c488], eax` —— 现价 += 档位
+        price = pending.price + action.step;
+        top = bidder;
+        // @source loc_0043b183 的压价线要的是「最高者出价时的现金」
+        topCash = me.cash;
+      } else {
+        // @source PASS 0x43a426 写 1 / 放棄 0x43a43a 写 4 —— 两者都**永久**
+        //   把这一位踢出竞价（全文件没有一处写回 0）
+        status[bidder] = action.status === 'giveUp' ? 'givenUp' : 'passed';
+      }
+
+      const after = { ...pending, price, top, topCash, status };
+      if (!auctionFinished(after)) {
+        return {
+          ...state,
+          pending: { ...after, seat: auctionAdvanceSeat(after.bidders, status, pending.seat) },
+        };
+      }
+      return settleAuctionPending(state, topo, after as AuctionPending);
+    }
+
+    case 'auction': {
+      // ★ 终局形状的兼容入口（Q-AUC-1 之前由表现层发）。现在 core 自己会落槌，
+      //   但存档/联机/既有测试仍可能送进这一条，照旧处理：
+      //   winner/price 由 action 明说，不依赖 pending 里的竞价进度。
+      const pending = state.pending;
+      if (pending === null || pending.kind !== 'auction') return state;
+      return settleAuctionExplicit(state, topo, pending, action.winner, action.price);
     }
 
     case 'bail': {
@@ -1298,6 +1466,8 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       //   `0041cfbf call 0x423acf`（更新物价指数），每回合一次。
       //   它**只增不减**，是后期通货膨胀的唯一来源——不接这条，
       //   经济永远不会升温，租金永远追不上身家。
+      //   ⚠️ 采样本身现在在 `advanceGameDay` 内部（原版就在这里，
+      //     且在勝負判定**之后**）—— 达标那天不再更新物价指数。
       const next = nextAlivePlayer(ticked, state.currentPlayer);
       // ★ **一輪才是一天** @source 0x00418f93..0x0041902e：cur++ 越过最后一名玩家后先依次轮到
       //   棋盘上的四大惡人（4..7，+10 == 0 的才算）各走一趟，回到 0 号时 ebx = 1，
@@ -1308,15 +1478,10 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       if (wraps) {
         roundEnd = npcRound(roundEnd, topo);
         if (roundEnd.phase === 'gameOver') return roundEnd;
-        const wealthOf = (p: Player): number =>
-          calculatePlayerWealth(
-            p,
-            allEffectiveLands(roundEnd, topo),
-            allEffectiveFacilities(roundEnd, topo),
-            valuationsOf(roundEnd, p.index),
-          );
-        const priceIndex = updatePriceIndex(roundEnd.players, wealthOf, DEFAULT_INITIAL_FUND, roundEnd.priceIndex);
-        roundEnd = advanceGameDay({ ...roundEnd, priceIndex }, topo);
+        roundEnd = advanceGameDay(roundEnd, topo);
+        // ★ 勝利條件（遊戲時間／勝利條件）达标 → 当天就结束，不再进下一回合。
+        //   @source 0x0041cfb1 `call 0x41d89e` / 0x0041cfb9 `je 0x41d1a5`
+        if (roundEnd.phase === 'gameOver') return roundEnd;
       }
       return {
         ...roundEnd,
@@ -2216,9 +2381,23 @@ function playCard(
   for (const rs of r.respawns) {
     next = respawnPartner(next, topo, rs);
   }
-  // 拍賣卡：把竞价挂成待决交互，出价由上层作答（C-ARC-2，模态 UI 不进 core）
+  // 拍賣卡：把竞价挂成待决交互。★ Q-AUC-1 之后竞价循环归 core ——
+  //   挂出来时就把座位表、心理价位、现价、轮到谁一并建好（见 openAuction）。
   if (r.followUp !== null) {
-    next = { ...next, pending: r.followUp, phase: 'awaitingDecision' };
+    if (r.followUp.kind === 'auction') {
+      const opened = openAuction(next, topo, r.followUp);
+      // ★ 一开拍就没人出得起底价（全体 `givenUp`）→ 当场流标。
+      //   原版窗口也是这个下场（`loc_0043b295` 的 `esi == edi` 那一条），
+      //   但引擎里若不在这里结掉，`decidePending` 会拿不到座位（`seat` 落空），
+      //   pending 就永远挂着。
+      if (auctionFinished(opened)) {
+        const out = auctionOutcome(opened);
+        return settleAuctionExplicit(next, topo, opened, out.winner, out.price);
+      }
+      next = { ...next, pending: opened, phase: 'awaitingDecision' };
+    } else {
+      next = { ...next, pending: r.followUp, phase: 'awaitingDecision' };
+    }
   }
   return next;
 }
@@ -2345,6 +2524,10 @@ export function valuationsOf(s: GameState, playerIndex: number): StockValuation[
  * ⚠️ 原版在收盘前 `srand(GetTickCount())`（VA 0x0041d06e）——
  *   这正是 docs/known-deviations.md 记的那处重播种，本引擎**不做**，
  *   随机数一路从 `rngState` 顺序取。
+ *
+ * ★ **勝利條件判定就在本函数里**（原版 `fcn_0041cf67` 也是同一个函数）：
+ *   `inc [0x4990e4]` 之后、更新物价指数之前判一次，达标就**当场返回**
+ *   （行情/開獎/月結/地契到期全部跳过）。见 rules/victory.ts。
  */
 function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   const rng = new WatcomRng();
@@ -2356,6 +2539,46 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     month: state.month,
     day: state.day,
   });
+
+  // ★ 總天數先 +1，再判勝負 —— 比较用的是**加过之后**的值。
+  //   @source 0041cfab `inc dword [0x4990e4]`
+  const totalDays = state.totalDays + 1;
+
+  // 总资产取值器（`_rich4_calculate_player_wealth`）—— 勝負判定与物价指数共用
+  const wealthOf = (p: Player): number =>
+    calculatePlayerWealth(
+      p,
+      allEffectiveLands(state, topo),
+      allEffectiveFacilities(state, topo),
+      valuationsOf(state, p.index),
+    );
+
+  // ── ★ 勝負判定（遊戲時間 / 勝利條件）@source 0041cfb1 `call 0x41d89e` ──
+  //    达成 → 整个日推进当场 return（0x0041cfb9 `je 0x41d1a5`）：
+  //    物价指数、行情、樂透開獎、月結、地契到期**全部不走**。
+  const victory = checkVictory(state.players, wealthOf, state.winConditions, totalDays);
+  if (victory !== null) {
+    return {
+      ...state,
+      ...date,
+      totalDays,
+      // @source 0x0041d915 `mov dword [0x49910c], esi` —— 当前玩家 = 赢家
+      currentPlayer: victory.winner,
+      // @source 0x0041d951 那段循环：除赢家以外**所有人 `who_plays = 0`**
+      //   （只清这一个字节，钱与地产都留着 —— 与破产的 memset 不同）
+      players: clearLosers(state.players, victory.winner),
+      victory,
+      phase: 'gameOver',
+    };
+  }
+
+  // @source 0041cfbf call 0x423acf —— 物价指数（勝負判定之后才走这一步）
+  const priceIndex = updatePriceIndex(
+    state.players,
+    wealthOf,
+    DEFAULT_INITIAL_FUND,
+    state.priceIndex,
+  );
 
   // @source 0041c868 call 0x42915a —— 每日重算可成交量
   let market = refreshTradableShares(state.market, rng);
@@ -2432,6 +2655,8 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     totalDays: state.totalDays + 1,
     // @source 0x0041d0f9 `add [0x499084], edi` —— 跨月才 +1
     totalMonths: state.totalMonths + (newMonth ? 1 : 0),
+    // @source 0x0041cfbf `call 0x423acf`（本函数内算，见上）
+    priceIndex,
     players,
     lottery,
     pool,
@@ -3937,8 +4162,15 @@ export function isGameOver(state: GameState): boolean {
  *
  * 1 = 全员出局、2 = 只剩一人且本局只有一名人类、3 = 只剩一人且多名人类。
  * 返回 0 表示尚未结束。
+ *
+ * ★ **因勝利條件（遊戲時間／勝利條件）达标而结束**的对局不适用上面那套
+ *   「还剩几个人」的推算——原版那条路是拿**赢家是不是真人**定的
+ *   （`fcn_0041d89e` 的收尾，见 `rules/victory.ts` 的 `victoryEndCode`），
+ *   而且收尾时已经把其余人的 `who_plays` 全清了，之后再也数不出来。
+ *   故那座终局码在判定那一刻就存进 `state.victory.code`，这里直接取。
  */
 export function gameOverCode(state: GameState): 0 | 1 | 2 | 3 {
+  if (state.victory !== null) return state.victory.code;
   const outcome = resolveBankruptcyOutcome(aliveCount(state), humanCount(state));
   return outcome.kind === 'gameOver' ? outcome.code : 0;
 }

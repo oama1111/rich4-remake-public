@@ -3,16 +3,25 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
-import type { RoomInfo, SeatInfo } from '@rich4/core';
+import {
+  LOBBY_CHARACTER_COUNT,
+  LOBBY_MAP_COUNT,
+  type RoomInfo,
+  type SeatInfo,
+} from '@rich4/core';
 import {
   BTN_BACK,
   BTN_START,
+  CHAR_PICK,
+  MAP_PICK,
+  characterPickAt,
   drawLobby,
   hitLobby,
   isHostSeat,
   lobbySlots,
   LOBBY_SEATS,
   MAX_SEATS,
+  mapPickAt,
 } from './lobby.ts';
 import type { Sprite } from './assets.ts';
 
@@ -267,5 +276,147 @@ describe('drawLobby', () => {
     const f = fakeCtx();
     drawLobby(f.ctx, lobbySlots(null, null), null, false, false, null, () => null, (t) => t.length * 14);
     expect(f.texts.filter((t) => t === '等待加入…')).toHaveLength(MAX_SEATS);
+  });
+
+  it('★ Q-NET-2：画出角色格与地图缩略图，并标出「我」的角色与当前地图', () => {
+    const f = fakeCtx();
+    const slots = lobbySlots(room([seat({ seat: 0, name: '小明', character: 5 })]), 0);
+    drawLobby(f.ctx, slots, 0, true, false, null, () => portrait(), (t) => t.length * 14, 3);
+    expect(f.texts.some((t) => t.startsWith('角色'))).toBe(true);
+    expect(f.texts.some((t) => t.startsWith('地圖'))).toBe(true);
+    // 座位头像 1 + 12 个角色格 + 8 张地图缩略图
+    expect(f.images).toBe(1 + LOBBY_CHARACTER_COUNT + LOBBY_MAP_COUNT);
+  });
+
+  it('★ Q-NET-2：缩略图抓不到也画得出编号，整块不空', () => {
+    const f = fakeCtx();
+    const slots = lobbySlots(room([seat({ seat: 0 })]), 0);
+    drawLobby(f.ctx, slots, 0, true, false, null, () => null, (t) => t.length * 14, 0);
+    expect(f.texts.filter((t) => t.startsWith('圖 '))).toHaveLength(LOBBY_MAP_COUNT);
+    expect(f.texts.filter((t) => /^\d+$/.test(t))).toHaveLength(LOBBY_CHARACTER_COUNT);
+  });
+});
+
+// ============================================================
+//  Q-NET-2：改角色 / 换地图（本项目新增的控件）
+// ============================================================
+
+/** 网格第 i 格的中心 */
+const pickCenter = (
+  grid: { x: number; y: number; cols: number; cell: number; pitch: number },
+  i: number,
+) => ({
+  x: grid.x + (i % grid.cols) * grid.pitch + Math.floor(grid.cell / 2),
+  y: grid.y + Math.floor(i / grid.cols) * grid.pitch + Math.floor(grid.cell / 2),
+});
+
+describe('★ Q-NET-2 角色挑選格（只能改自己的、未开局才让点）', () => {
+  it('未开局 + 有自己的座位：12 格一格一号，命中的就是角色号', () => {
+    for (let i = 0; i < LOBBY_CHARACTER_COUNT; i++) {
+      const p = pickCenter(CHAR_PICK, i);
+      expect(hitLobby(p.x, p.y, { isHost: false, me: 1 })).toEqual({ kind: 'character', character: i });
+    }
+  });
+
+  it('★ 还没进房（me = null）→ 角色格不可点', () => {
+    const p = pickCenter(CHAR_PICK, 0);
+    expect(hitLobby(p.x, p.y, { isHost: true, me: null })).toBeNull();
+    expect(hitLobby(p.x, p.y, { isHost: true })).toBeNull(); // 缺省也是「还没座位」
+  });
+
+  it('★ 已开局 → 角色格不可点（角色在 newGame 里就定了）', () => {
+    const p = pickCenter(CHAR_PICK, 0);
+    expect(hitLobby(p.x, p.y, { isHost: true, me: 0, started: true })).toBeNull();
+  });
+
+  it('characterPickAt：格间空隙与屏外都返回 −1', () => {
+    expect(characterPickAt(0, 0)).toBe(-1);
+    expect(characterPickAt(CHAR_PICK.x - 1, CHAR_PICK.y + 1)).toBe(-1);
+    expect(characterPickAt(CHAR_PICK.x + CHAR_PICK.cell, CHAR_PICK.y)).toBe(-1);
+    expect(characterPickAt(CHAR_PICK.x + 1, CHAR_PICK.y + CHAR_PICK.cell + 1)).toBe(-1);
+  });
+
+  it('12 格互不重叠（各自的中心只命中自己）', () => {
+    const hits = new Set<string>();
+    for (let i = 0; i < LOBBY_CHARACTER_COUNT; i++) {
+      const p = pickCenter(CHAR_PICK, i);
+      hits.add(JSON.stringify(hitLobby(p.x, p.y, { isHost: false, me: 0 })));
+    }
+    expect(hits.size).toBe(LOBBY_CHARACTER_COUNT);
+  });
+});
+
+describe('★ Q-NET-2 地圖挑選格（只有房主能改）', () => {
+  it('★ 房主点得到 8 张图；非房主整块不可点', () => {
+    for (let i = 0; i < LOBBY_MAP_COUNT; i++) {
+      const p = pickCenter(MAP_PICK, i);
+      expect(hitLobby(p.x, p.y, { isHost: true, me: 0 })).toEqual({ kind: 'map', globalMapId: i });
+      expect(hitLobby(p.x, p.y, { isHost: false, me: 1 })).toBeNull();
+    }
+  });
+
+  it('★ 已开局 → 地图格不可点（房主也不行）', () => {
+    const p = pickCenter(MAP_PICK, 0);
+    expect(hitLobby(p.x, p.y, { isHost: true, me: 0, started: true })).toBeNull();
+  });
+
+  it('mapPickAt：格间空隙与屏外都返回 −1', () => {
+    expect(mapPickAt(0, 0)).toBe(-1);
+    expect(mapPickAt(MAP_PICK.x + MAP_PICK.cell, MAP_PICK.y)).toBe(-1);
+    expect(mapPickAt(MAP_PICK.x + 1, MAP_PICK.y + MAP_PICK.cell + 1)).toBe(-1);
+  });
+
+  it('8 格互不重叠（各自的中心只命中自己）', () => {
+    const hits = new Set<string>();
+    for (let i = 0; i < LOBBY_MAP_COUNT; i++) {
+      const p = pickCenter(MAP_PICK, i);
+      hits.add(JSON.stringify(hitLobby(p.x, p.y, { isHost: true, me: 0 })));
+    }
+    expect(hits.size).toBe(LOBBY_MAP_COUNT);
+  });
+
+  it('★ 四类控件（角色格 / 地图格 / 座位 / 两颗钮）两两不相交', () => {
+    const rects: { name: string; x: number; y: number; w: number; h: number }[] = [];
+    for (let i = 0; i < LOBBY_CHARACTER_COUNT; i++) {
+      const col = i % CHAR_PICK.cols;
+      const row = Math.floor(i / CHAR_PICK.cols);
+      rects.push({
+        name: `char-${i}`,
+        x: CHAR_PICK.x + col * CHAR_PICK.pitch,
+        y: CHAR_PICK.y + row * CHAR_PICK.pitch,
+        w: CHAR_PICK.cell,
+        h: CHAR_PICK.cell,
+      });
+    }
+    for (let i = 0; i < LOBBY_MAP_COUNT; i++) {
+      const col = i % MAP_PICK.cols;
+      const row = Math.floor(i / MAP_PICK.cols);
+      rects.push({
+        name: `map-${i}`,
+        x: MAP_PICK.x + col * MAP_PICK.pitch,
+        y: MAP_PICK.y + row * MAP_PICK.pitch,
+        w: MAP_PICK.cell,
+        h: MAP_PICK.cell,
+      });
+    }
+    for (let i = 0; i < MAX_SEATS; i++) {
+      rects.push({
+        name: `seat-${i}`,
+        x: LOBBY_SEATS.x + i * LOBBY_SEATS.pitch,
+        y: LOBBY_SEATS.y,
+        w: LOBBY_SEATS.w,
+        h: LOBBY_SEATS.h,
+      });
+    }
+    rects.push({ name: 'start', ...BTN_START }, { name: 'leave', ...BTN_BACK });
+
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i]!;
+        const b = rects[j]!;
+        const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+        expect(overlap, `${a.name} × ${b.name}`).toBe(false);
+      }
+    }
   });
 });

@@ -252,3 +252,29 @@ describe('队列清单（upscale-queue/manifest.json）', () => {
     expect(suggestedModel('sprite')).toContain('anime');
   });
 });
+
+// ============================================================
+//  ★ 全不透明快路径（Q-GND-4 的底图）
+// ============================================================
+
+describe('★ 全不透明的图（地图底图）走快路径', () => {
+  it('bleedColors 直接抄 RGB —— 每个像素自己就是源，BFS 一步都不扩散', () => {
+    const img = makeImage(4, 1, [RED, GREEN, BLUE, YELLOW]);
+    const rgb = bleedColors(img.width, img.height, img.rgba);
+    expect([...rgb]).toEqual([
+      200, 10, 20,
+      10, 200, 20,
+      10, 20, 200,
+      220, 210, 30,
+    ]);
+  });
+
+  it('★ 快路径与 BFS 的结论一致：切片往返仍逐字节相等', () => {
+    const img = makeImage(4, 1, [RED, GREEN, BLUE, YELLOW]);
+    const { rgb, alpha } = sliceFrame(img);
+    // 颜色通道原样；alpha 通道全 255（这幅图没有透明像素）
+    expect([...rgb.rgba.slice(0, 12)]).toEqual([200, 10, 20, 255, 10, 200, 20, 255, 10, 20, 200, 255]);
+    expect(alpha.rgba[0]).toBe(255);
+    expect(mergeFrame(rgb, alpha).rgba).toEqual(img.rgba);
+  });
+});

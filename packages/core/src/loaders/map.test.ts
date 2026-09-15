@@ -168,6 +168,61 @@ d('地图解析器 — 8 张原版地图', () => {
     expect(loadMap(7).lands.length).toBe(0);
   });
 
+  // ★ Q13 —— 0x22 decorIndex 的真值（见 map.ts 字段注释 / docs/map-format.md §3.4）
+  describe('★ Q13：decorIndex 是 map.mkf 资源 24（58 张 SMP）的 1 基下标', () => {
+    it('八张地图上取值都在 0..58，且最大值 58 与图库张数严丝合缝', () => {
+      let max = 0;
+      const distinct = new Set<number>();
+      for (let i = 0; i < 8; i++) {
+        for (const n of loadMap(i).nodes) {
+          expect(Number.isInteger(n.decorIndex), `地图${i} 节点${n.id}`).toBe(true);
+          expect(n.decorIndex, `地图${i} 节点${n.id}`).toBeGreaterThanOrEqual(0);
+          expect(n.decorIndex, `地图${i} 节点${n.id}`).toBeLessThanOrEqual(58);
+          max = Math.max(max, n.decorIndex);
+          distinct.add(n.decorIndex);
+        }
+      }
+      expect(max).toBe(58); // 资源 24 恰好 58 张图
+      expect(distinct.size).toBe(56); // 0 + 55 种装饰（实测）
+    });
+
+    it('普通地图（0/1/2/3/5/6/7）只用**奇数** 1..33 —— 无光环款', () => {
+      for (const i of [0, 1, 2, 3, 5, 6, 7]) {
+        const nz = loadMap(i).nodes.filter((n) => n.decorIndex !== 0);
+        expect(nz.length, `地图${i} 有装饰的节点数`).toBeGreaterThan(0);
+        for (const n of nz) {
+          expect(n.decorIndex % 2, `地图${i} 节点${n.id} 的 decorIndex=${n.decorIndex}`).toBe(1);
+          expect(n.decorIndex, `地图${i} 节点${n.id}`).toBeLessThanOrEqual(33);
+        }
+      }
+    });
+
+    it('地图 4（十二星座／太空图）每个节点都有装饰，且用偶数 4..34 + 天体 35..58', () => {
+      const m = loadMap(4);
+      expect(m.nodes.every((n) => n.decorIndex !== 0)).toBe(true);
+      const vals = new Set(m.nodes.map((n) => n.decorIndex));
+      const small = [...vals].filter((v) => v <= 34).sort((a, b) => a - b);
+      const big = [...vals].filter((v) => v >= 35).sort((a, b) => a - b);
+      // 偶数是图库里「带粉红光环」的那一款
+      expect(small).toEqual([4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34]);
+      // 天体图里 37 / 46 两号在本图未被引用（其余 35..58 全用到）
+      expect(big).toEqual(
+        Array.from({ length: 24 }, (_, i) => 35 + i).filter((v) => v !== 37 && v !== 46),
+      );
+    });
+
+    it('普通地图上住宅/设施的装饰一律为 0（外观走各自的表；企业/景观仍有装饰）', () => {
+      for (const i of [0, 1, 2, 3, 5, 6, 7]) {
+        const m = loadMap(i);
+        for (const n of m.nodes) {
+          if (n.ref.kind === 'land' || n.ref.kind === 'facility') {
+            expect(n.decorIndex, `地图${i} 节点${n.id}(${n.name})`).toBe(0);
+          }
+        }
+      }
+    });
+  });
+
   it('dataSize 为正且不超过文件长度', () => {
     for (let i = 0; i < 8; i++) {
       const raw = readFileSync(`${MAP_DIR}/${String(i * 2 + 1).padStart(4, '0')}.bin`);

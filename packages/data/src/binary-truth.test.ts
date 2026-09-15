@@ -134,6 +134,56 @@ d('★ 数值表以 rich4.exe 为基准校验', () => {
     expect(VA.cardsTable + 30 * 8).toBe(VA.toolTable);
   });
 
+  /**
+   * ★ Q4：`f6` 这一列**在可执行文件里没有任何读取点**。
+   *
+   * 每项 8 字节（name_ptr + init/price/f6/f7），字段直读一律用 disp32
+   * （见 0x0041e69e 的 `[eax*8 + 0x47fdf1]`、0x004071a5 的 `[ebx*8 + 0x47fdf6]`），
+   * 所以「f6 被读」必然表现为 `.text` 里出现它的绝对地址。
+   * 这里把整段 `.text` 当字节流扫一遍，两种索引基准（0 基 / 1 基）的
+   * 地址都查；同时用 f7 的地址做**阳性对照**，证明扫描本身有效。
+   */
+  it('★ Q4：卡片/道具表的 f6 在 .text 里零引用（f7 作阳性对照）', () => {
+    const exe = loadExe();
+    const text = exe.subarray(AUTO_OFF, AUTO_OFF + AUTO_SIZE);
+
+    const f6 = new Set<number>();
+    const f7 = new Set<number>();
+    for (let i = 0; i < 30; i++) {
+      f6.add(VA.cardsTable + i * 8 + 6);
+      f6.add(VA.cardsTable + (i + 1) * 8 - 2); // 1 基写法：0x47fdf0 + n*8
+      f7.add(VA.cardsTable + i * 8 + 7);
+      f7.add(VA.cardsTable + (i + 1) * 8 - 1); // 1 基写法：0x47fdf1 + n*8
+    }
+    for (let i = 0; i < 13; i++) {
+      f6.add(VA.toolTable + i * 8 + 6);
+      f6.add(VA.toolTable + (i + 1) * 8 - 2);
+      f7.add(VA.toolTable + i * 8 + 7);
+      f7.add(VA.toolTable + (i + 1) * 8 - 1);
+    }
+
+    let f6Hits = 0;
+    let f7Hits = 0;
+    for (let i = 0; i + 4 <= text.length; i++) {
+      const v = text.readUInt32LE(i);
+      if (f6.has(v)) f6Hits++;
+      else if (f7.has(v)) f7Hits++;
+    }
+
+    expect(f6Hits, 'f6 的地址不应出现在 .text 的任何一条指令里').toBe(0);
+    expect(f7Hits, 'f7 的地址必须扫得到（阳性对照）').toBeGreaterThan(0);
+  });
+
+  it('★ Q4：f6 == 2 的分组（卡片 5 张 / 道具 9..13）', () => {
+    // 纯数据事实；与「研究所研發 / 商店不上架」的硬编码机制相关但非因果
+    expect(CARDS.filter((c) => c.f6 === 2).map((c) => c.id)).toEqual([1, 2, 9, 10, 15]);
+    expect(CARDS.filter((c) => c.f6 !== 0).every((c) => c.f6 === 2)).toBe(true);
+    expect(TOOLS.filter((t) => t.f6 === 2).map((t) => t.id)).toEqual([9, 10, 11, 12, 13]);
+    expect(TOOLS.filter((t) => t.f6 === 1).map((t) => t.id)).toEqual([6, 7, 8]);
+    // f6 == 2 的卡片恰好是价格 ≥ 100 的那 5 张
+    expect(CARDS.filter((c) => c.f6 === 2).every((c) => c.price >= 100)).toBe(true);
+  });
+
   it('角色表 12 项与二进制逐字段一致', () => {
     const exe = loadExe();
     const base = vaToOffset(VA.characterProfiles);

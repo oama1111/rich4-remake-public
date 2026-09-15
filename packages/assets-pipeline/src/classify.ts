@@ -58,7 +58,26 @@ export function byArchiveName(e: AssetEntry): AssetCategory | null {
 }
 
 // ============================================================
-//  规则 2：尺寸 —— GND 32×32 → tile；≥640×480 → background
+//  规则 2：GND 来源 → tile（整张底图也一样）
+// ============================================================
+
+/**
+ * `.gnd` 底图解出来的图 —— **不论多大都算地形**。
+ *
+ * ★ 为什么单列一条而不是塞进 `bySize`：`bySize` 只认「32×32 的 GND」，
+ *   而 Q-GND-4 之后底图是**整张 2304×2304** 进清单的，按尺寸会被
+ *   判成 `background`（那条 ≥640×480 的规则）—— 分类上就错了：
+ *   底图是地形，放大后**必须**过 T-064 的接缝检查（C-AST-7）。
+ *
+ * 判据是 `paletteKind === 'gnd'`（extract 由 `format: 'GND'` 带出来），
+ * 不看档案名也不看尺寸 —— 语义上是「这块数据本身是地形」。
+ */
+export function byGroundSource(e: AssetEntry): AssetCategory | null {
+  return e.paletteKind === 'gnd' ? 'tile' : null;
+}
+
+// ============================================================
+//  规则 3：尺寸 —— GND 32×32 → tile；≥640×480 → background
 // ============================================================
 
 /** 地形 tile 的边长 @source ground.ts 的 GND 布局（32×32 tile） */
@@ -82,7 +101,7 @@ export function bySize(e: AssetEntry): AssetCategory | null {
 }
 
 // ============================================================
-//  规则 3：帧数 > 1 → 角色精灵/动画帧
+//  规则 4：帧数 > 1 → 角色精灵/动画帧
 // ============================================================
 
 export function byFrames(e: AssetEntry): AssetCategory | null {
@@ -90,7 +109,7 @@ export function byFrames(e: AssetEntry): AssetCategory | null {
 }
 
 // ============================================================
-//  规则 4：字形 → font
+//  规则 5：字形 → font
 // ============================================================
 
 /** 字形归档名集合（本作的解包归档里没有独立字形档案，留作数据驱动） */
@@ -108,6 +127,7 @@ export function byFont(e: AssetEntry): AssetCategory | null {
 /** 规则链，按优先级排列；每条返回 null 表示「管不着」 */
 export const CATEGORY_RULES: readonly ((e: AssetEntry) => AssetCategory | null)[] = [
   byArchiveName,
+  byGroundSource,
   bySize,
   byFrames,
   byFont,

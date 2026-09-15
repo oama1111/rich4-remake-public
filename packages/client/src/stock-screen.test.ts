@@ -8,7 +8,13 @@
  * 停牌那格换字、持股两列只在真有持股时画。
  */
 import { describe, expect, it } from 'vitest';
-import { STOCK_STATUS, makeGameState, type GameState } from '@rich4/core';
+import {
+  BLACK_CARD_NEWS_FLAG,
+  RED_CARD_NEWS_FLAG,
+  STOCK_STATUS,
+  makeGameState,
+  type GameState,
+} from '@rich4/core';
 import {
   STOCK_BOSS_MARK,
   STOCK_CLOSED_AT,
@@ -17,6 +23,9 @@ import {
   STOCK_HOLDER_X,
   STOCK_NO_BUY,
   STOCK_NO_SELL,
+  STOCK_PICK_BLACK,
+  STOCK_PICK_FEEDBACK_MS,
+  STOCK_PICK_RED,
   STOCK_PLATE_EXIT,
   STOCK_PLATE_PAGE,
   STOCK_PLATES,
@@ -34,6 +43,10 @@ import {
   magnitudeClass,
   priceText,
   stockCounterClosed,
+  stockPickCardAction,
+  stockPickFrameRects,
+  stockPickModeOfCard,
+  stockPickNewsFlag,
   stockRowRect,
   stockRowTextY,
   stockRowsFrom,
@@ -253,5 +266,72 @@ describe('从局面摊成 12 行', () => {
   it('★ 休市判定用的是日历（元旦休市、平日开市）', () => {
     expect(stockCounterClosed(makeGameState({ month: 1, day: 1 }))).toBe(true);
     expect(stockCounterClosed(makeGameState({ month: 1, day: 5 }))).toBe(false);
+  });
+});
+
+describe('选股模式（紅卡/黑卡）—— Q-PICK-2 @source loc_0042b0da', () => {
+  it('★ 卡号 → 模式：紅卡(24) = 1、黑卡(25) = 2、别的没有', () => {
+    expect(stockPickModeOfCard(24)).toBe(STOCK_PICK_RED);
+    expect(stockPickModeOfCard(25)).toBe(STOCK_PICK_BLACK);
+    expect(stockPickModeOfCard(23)).toBeNull();
+    expect(stockPickModeOfCard(1)).toBeNull();
+  });
+
+  it('★ 模式 → newsFlag 字节：1 → 0x20（利多）、2 → 2（利空）', () => {
+    // 与 core 的两个常量**同值** —— UI 里那次写字节（`loc_0042b137` / `loc_0042b11e`）
+    // 与本引擎 core 里那次写字节（`applyRedCard` / `applyBlackCard`）必须是同一个值
+    expect(stockPickNewsFlag(STOCK_PICK_RED)).toBe(0x20);
+    expect(stockPickNewsFlag(STOCK_PICK_BLACK)).toBe(0x02);
+    expect(stockPickNewsFlag(STOCK_PICK_RED)).toBe(RED_CARD_NEWS_FLAG);
+    expect(stockPickNewsFlag(STOCK_PICK_BLACK)).toBe(BLACK_CARD_NEWS_FLAG);
+  });
+
+  it('★ 选中之后停 1 秒 @source `push 0x3e8; call 0x45285e`', () => {
+    expect(STOCK_PICK_FEEDBACK_MS).toBe(1000);
+  });
+
+  it('★ 悬停反馈是整行**白框**：矩形与 stockRowRect 相同、四条边各占 1 像素', () => {
+    const frame = stockPickFrameRects(3);
+    const r = stockRowRect(3);
+    // 上边
+    expect(frame[0]).toEqual({ x: r.x, y: r.y, w: r.w, h: 1 });
+    // 下边（最后一行像素）
+    expect(frame[1]).toEqual({ x: r.x, y: r.y + r.h - 1, w: r.w, h: 1 });
+    // 左边 / 右边（上下两条已占，故从 y+1 起、高 h−2）
+    expect(frame[2]).toEqual({ x: r.x, y: r.y + 1, w: 1, h: r.h - 2 });
+    expect(frame[3]).toEqual({ x: r.x + r.w - 1, y: r.y + 1, w: 1, h: r.h - 2 });
+    // 第一行的框贴在第一行行情上：y 80..111
+    expect(stockRowRect(0)).toEqual({ x: 15, y: 80, w: 610, h: 32 });
+  });
+
+  it('★ 点中一行 → useCard{cardId, target:{kind:stock, index}}（0 基下标）', () => {
+    expect(stockPickCardAction(24, 3)).toEqual({
+      type: 'useCard',
+      cardId: 24,
+      target: { kind: 'stock', index: 3 },
+    });
+    expect(stockPickCardAction(25, 0)).toEqual({
+      type: 'useCard',
+      cardId: 25,
+      target: { kind: 'stock', index: 0 },
+    });
+  });
+
+  it('★ 行号越界 → null（不发 action、卡不消耗）', () => {
+    expect(stockPickCardAction(24, 12)).toBeNull();
+    expect(stockPickCardAction(24, -1)).toBeNull();
+    // 命中函数给的 0..11 都在范围内
+    expect(stockPickCardAction(24, 11)).not.toBeNull();
+  });
+
+  it('★ 命中还是那条 32 像素的行几何（同一套 hitStockRow）', () => {
+    // 第 1 行：y ∈ (80, 112)
+    expect(hitStockRow(100, 81)).toBe(0);
+    expect(hitStockRow(100, 111)).toBe(0);
+    // 第 2 行
+    expect(hitStockRow(100, 113)).toBe(1);
+    // 第 12 行下边界（464）之外
+    expect(hitStockRow(100, 463)).toBe(11);
+    expect(hitStockRow(100, 464)).toBeNull();
   });
 });

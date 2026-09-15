@@ -15,7 +15,14 @@
 
 import type { Action } from '../state/actions.ts';
 
-/** 协议版本。双方不一致时直接拒绝连接，避免在半路才发现规则对不上 */
+/**
+ * 协议版本。双方不一致时直接拒绝连接，避免在半路才发现规则对不上。
+ *
+ * ★ Q-NET-1 加的 `resync`/`replay` **不动版本号**：这是纯增量消息，
+ *   老客户端不认识 `replay` 会按 `default` 忽略（退回「只喊一声」的旧行为），
+ *   老服务器不认识 `resync` 也只是不答——规则语义没变，不构成「规则对不上」。
+ *   真改了 action 语义或指纹算法时才该 +1。
+ */
 export const PROTOCOL_VERSION = 1;
 
 // ============================================================
@@ -49,7 +56,37 @@ export type ClientMessage =
    * 每回合上报一次，服务器比对。不一致说明有人的实现漂了
    * （或被改过），立刻能发现而不是等到对局后期才表现为诡异分歧。
    */
-  | { t: 'checksum'; seq: number; hash: string };
+  | { t: 'checksum'; seq: number; hash: string }
+  /**
+   * 请求**全量重放** —— 失步自愈（Q-NET-1）。
+   *
+   * ★ 只对**已经 `join` 过的那条连接**有意义：服务器只认 `join` 时绑在
+   *   这条连接上的座位，消息里**不带座位也不带名字**——故拿不到别人的重放。
+   *   权限上也不多给任何东西：这条连接本来就收得到每一条广播 action。
+   */
+  | { t: 'resync' }
+  /**
+   * ★ 大厅设置（Q-NET-2）：改**自己**座位的角色。
+   *
+   * ⚠️ 服务器**必须**校验，不能信客户端：
+   *   · 没进房、或**已经开局** → 拒（角色在 `newGame` 里就固定了，
+   *     开局后再改会和服务器镜像、其他客户端的局面都不一致）；
+   *   · `character` 不是 `0..LOBBY_CHARACTER_COUNT-1` 的整数 → 拒；
+   *   · 该角色已被**别的**座位选了 → 拒（同一房内角色唯一，不能撞车）。
+   *
+   * ★ 消息里**没有 `seat` 字段**是有意的：改的是哪个座位由服务器从**连接**
+   *   上认，客户端连「改别人的角色」这件事都表达不出来 —— 权限不靠客户端自觉。
+   *   服务器接受后广播 `{t:'room', room}`，所有人（含发起者）都照广播更新。
+   */
+  | { t: 'setCharacter'; character: number }
+  /**
+   * ★ 大厅设置（Q-NET-2）：换房间地图。
+   *
+   * ⚠️ 服务器**必须**校验：只有房主（0 号座）、且**未开局**才允许，
+   *   并且服务器自己手上得真有这张地图的数据；任何一条不满足都拒。
+   *   开局时用这份设置（而不是各客户端自己的本地设置）`newGame`。
+   */
+  | { t: 'setMap'; globalMapId: number };
 
 // ============================================================
 //  服务器 → 客户端
@@ -82,6 +119,27 @@ export type ServerMessage =
   | { t: 'action'; seq: number; action: Action }
   /** 校验和不一致 —— 指出是谁、在第几步 */
   | { t: 'desync'; seq: number; expected: string; got: string; seat: number }
+  /**
+   * 全量重放 —— 对 `resync` 的答复（失步自愈，Q-NET-1）。
+   *
+   * 连开局参数一起给：客户端据此 `newGame` 再从头 reduce 整串 action，
+   * 走的是**与单机完全相同**的那条路，故得到的 `stateFingerprint` 与
+   * 服务器镜像必然相等（C-DET-*）。刻意**不传状态快照**——快照要额外
+   * 定义序列化格式，而确定性引擎只要 action 序列就够。
+   *
+   * `actions` 从 0 号起完整连续；`through` = 最后一条的 seq（日志为空则 -1），
+   * 客户端把「下一条期待的序号」接成 `through + 1`。
+   *
+   * ⚠️ 只发给**发起 `resync` 的那条连接**，绝不广播。
+   */
+  | {
+      t: 'replay';
+      seed: number;
+      globalMapId: number;
+      seats: SeatInfo[];
+      through: number;
+      actions: { seq: number; action: Action }[];
+    }
   | { t: 'error'; message: string };
 
 export interface SeatInfo {
@@ -98,6 +156,65 @@ export interface RoomInfo {
   id: string;
   seats: SeatInfo[];
   started: boolean;
+  /**
+   * 房间地图（大厅设置，Q-NET-2）。开局前只有房主（0 号座）能改；
+   * 开局时服务器用这一张 `newGame`，不再看各客户端的本地设置。
+   *
+   * ⚠️ **可选**是有意的：`RoomInfo` 是「房间快照」的通用形状，
+   *   谁构造它都不该被迫填地图（旧测试、监控打印都只关心座位）。
+   *   缺省按 `0` 读（`roomMapId`）。
+   */
+  globalMapId?: number;
+}
+
+/**
+ * 大厅设置的可选范围 —— 与客户端的素材一一对应：
+ * · 角色 12 个（`client/setup.ts` 的 12 张 72×72 头像，`Data.mkf` 资源 2）；
+ * · 地图 8 张（两个舞台 × 四张，`globalMapId` 0..7）。
+ *
+ * ★ 放在 core 是**有意**的：这两个范围是服务器校验的判据，
+ *   客户端与服务器必须用同一份数字；各写一份迟早会漂。
+ */
+export const LOBBY_CHARACTER_COUNT = 12;
+export const LOBBY_MAP_COUNT = 8;
+
+/** `character` 是不是合法的角色号（0..11 的整数） */
+export function isLobbyCharacter(character: unknown): character is number {
+  return (
+    typeof character === 'number' &&
+    Number.isInteger(character) &&
+    character >= 0 &&
+    character < LOBBY_CHARACTER_COUNT
+  );
+}
+
+/** `globalMapId` 是不是合法的地图号（0..7 的整数） */
+export function isLobbyMapId(globalMapId: unknown): globalMapId is number {
+  return (
+    typeof globalMapId === 'number' &&
+    Number.isInteger(globalMapId) &&
+    globalMapId >= 0 &&
+    globalMapId < LOBBY_MAP_COUNT
+  );
+}
+
+/**
+ * 这个角色是不是已经被**别的**座位占了 —— 「角色不能撞车」的唯一判据。
+ *
+ * ★ `exceptSeat` 传自己的座位：改角色时「保持不变」不算撞车，
+ *   否则每个人一进房就处在自撞状态。
+ */
+export function characterTaken(
+  seats: readonly { seat: number; character: number }[],
+  character: number,
+  exceptSeat: number,
+): boolean {
+  return seats.some((s) => s.seat !== exceptSeat && s.character === character);
+}
+
+/** 房间快照里的地图号；服务器没给就按 0 读（旧快照兼容） */
+export function roomMapId(room: RoomInfo | null | undefined): number {
+  return room?.globalMapId ?? 0;
 }
 
 // ============================================================
