@@ -156,6 +156,12 @@ import {
 } from './throw-fx.ts';
 import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
+// ★ 「取消」那一拍的梯子 —— ESC 与右键**共用同一份**（原版就是这么干的：
+//   钩子把取消键变成 `WM_RBUTTONUP 0x205`，主窗口过程只交给栈顶那扇窗）。
+//   取证与全表见 `panel-cancel.ts` 头部。
+import { CANCEL_SOUND, cancelLayerOf, type CancelLayer } from './panel-cancel.ts';
+// ★ 股市柜台的填数页壳 —— 与銀行/公佈欄/上市企業**同一个**通用填数页。
+import { stockAmountForm } from './amount-form.ts';
 import {
   drawAdvance,
   drawDialog,
@@ -237,6 +243,13 @@ import {
 } from './dice-choose.ts';
 import { nearestSummonableObject, summonCardAction } from './object-pick.ts';
 import {
+  drawTip,
+  tipModel,
+  TIP_ARCHIVE,
+  TIP_RESOURCE,
+  type TipModel,
+} from './node-tip.ts';
+import {
   LOAN_BUTTONS,
   LOAN_EXIT,
   drawBankLoan,
@@ -311,7 +324,9 @@ import {
 } from './bail-screen.ts';
 import { SCREENS } from './screens.ts';
 import { openBigMap } from './big-map-screen.ts';
-import { closeHelpScreen, helpScreen, openHelpAt } from './help-screen.ts';
+// ★ 遊戲百科（`helpScreen`）不在这里单独引 —— 它登记在 `screens.ts` 里，
+//   ESC 与右键都走那条登记契约（本屏的 `hotkey` / `contextmenu` 是同一支）。
+import { openHelpAt } from './help-screen.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import {
   CURSOR_ARCHIVE,
@@ -374,6 +389,12 @@ let topo: MapTopology;
 let state: GameState;
 let camera: Camera;
 let hoverNode: number | null = null;
+/**
+ * 名牌浮标（Q-HOVER-1）—— 原版棋盘窗口过程在 `WM_LBUTTONDOWN` 上画、
+ * 在 `WM_LBUTTONUP` / `WM_MOUSEMOVE` 上擦（VA 0x004186bd → `fcn_00417559`，
+ * 擦除是 `fcn_00417c67`）。所以它**只在按住左键期间**挂在屏幕上。
+ */
+let nodeTip: TipModel | null = null;
 let renderer: BoardRenderer;
 /**
  * 右下角那块 200×200 现在显示哪一面。
@@ -983,21 +1004,18 @@ function stockTrade(kind: 'buy' | 'sell'): void {
   requestRender();
 }
 
-/** 把股市的填数页伪装成一个「对话」给通用排版用 */
+/**
+ * 把股市的填数页交给通用排版用。
+ *
+ * ★ 壳子本体在 `amount-form.ts`（那里能单测）—— 它交出的就是
+ *   `interactions.ts` 各条 `amount` 的那种形状，版式/命中一律走
+ *   `dialog.ts` 的 `layoutDialog` / `hitDialog` / `drawDialog`。
+ *   本文件**不**再自己排这一页。
+ */
 function stockAmountUi(): InteractionUi | null {
   const a = stockAmount;
   if (a === null) return null;
-  const name = stockNames()[a.stock] ?? '';
-  const label = a.kind === 'buy' ? '買進股數' : '賣出股數';
-  const fill = (n: number): Action =>
-    a.kind === 'buy'
-      ? { type: 'buyStock', stock: a.stock, shares: n }
-      : { type: 'sellStock', stock: a.stock, shares: n };
-  return {
-    title: '股市',
-    detail: `${name}\n${a.kind === 'buy' ? '買進' : '賣出'}（上限 ${a.max.toLocaleString('en-US')} 股）`,
-    choices: [{ label, amount: { label, max: a.max, step: 1, fill }, action: fill(a.max) }],
-  };
+  return stockAmountForm(a, stockNames()[a.stock] ?? '');
 }
 
 // ── 存讀檔屏 ───────────────────────────────────────────────
@@ -1061,6 +1079,7 @@ function loadState(next: GameState): void {
   state = next;
   history.length = 0;
   hoverNode = null;
+  nodeTip = null; // 换局面/读档时把名牌收掉（Q-HOVER-1）
   amountPage = null;
   const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? 1];
   camera = characterCamera(first?.x ?? 0, first?.y ?? 0, camera?.view ?? 0);
@@ -1237,6 +1256,155 @@ function maxDiceOf(p: { trafficMethod: number }): number {
 }
 
 /**
+ * 「取消」这一拍 —— 从最上面那一层开始收。
+ *
+ * ★ **ESC 与右键都走这里**，因为原版两者本来就是同一条消息：
+ *   全局键盘钩子把 RICH4.CFG 的取消键补成 `WM_RBUTTONUP (0x205)`
+ *   （@source VA 0x004011c3），而主窗口过程只把它交给 `windowCallbacks` 栈顶
+ *   （@source rich4_main VA 0x00401b33）—— 所以每一屏「关窗」的副作用
+ *   （放取消音、清掉选中行、退回上一页、返回 0/−1…）也必须一致。
+ *   梯子本身与逐层的取证 VA 在 `panel-cancel.ts` 的 `CANCEL_LADDER`。
+ *
+ * ⚠️ **不在梯子里**的那一条：右键清掉小地图标记（没有模态窗口时钩子不发 0x205，
+ *   而是置 `[0x46caff]`，@source VA 0x004011af）—— 它只挂右键，见 `contextmenu`。
+ *
+ * @returns true = 这一拍有人接了（调用方该把事件吃掉）
+ */
+function cancelTopPanel(): boolean {
+  const layer = cancelLayerOf({
+    screen,
+    overlay: activeUiScreen() !== null,
+    pick: pick !== null,
+    dicePick: dicePick !== null,
+    atm: atm !== null,
+    dialog: currentDialog() !== null,
+    amountPage: amountPage !== null,
+    optionsSub: optionsSub !== null,
+    stockPick: stockPick !== null,
+    stockDetail: stockDetail !== null,
+    stockAmount: stockAmount !== null,
+    stockPage,
+    shop: shopUi !== null,
+    bail: state.pending?.kind === 'bail',
+    loan: bankPending() !== null,
+  });
+  return layer === null ? false : applyCancelLayer(layer);
+}
+
+/** 真正动手的那一半 —— 与 `cancelLayerOf` **一对一**（梯子上每层恰好一条） */
+function applyCancelLayer(layer: CancelLayer): boolean {
+  switch (layer) {
+    case 'pick':
+      // @source loc_004466b8：可取消的才退；目标必选（`[0x48c594]` bit3）的不认
+      if (pick !== null && pick.cancellable) {
+        sound.play('Effect.mkf', CANCEL_SOUND);
+        endPick();
+      }
+      return true;
+    case 'dicePick':
+      cancelDicePick();
+      return true;
+    // @source loc_0043791e：关面板，★ 不放音
+    case 'atm':
+      closeAtm();
+      requestRender();
+      return true;
+    case 'amountPage': {
+      // @source loc_004534a3：放取消音 → 关填数窗，返回 0（= 没填）
+      const ui = currentDialog();
+      sound.play('Effect.mkf', CANCEL_SOUND);
+      if (ui !== null) onDialogHit(ui, { kind: 'amountCancel' });
+      else closeAmountPage();
+      requestRender();
+      return true;
+    }
+    case 'dialog': {
+      // @source loc_004539a2：放取消音 → 关訊息框，返回 0（= NO）
+      const ui = currentDialog();
+      if (ui === null) return false;
+      sound.play('Effect.mkf', CANCEL_SOUND);
+      cancelDialogChoice(ui);
+      return true;
+    }
+    case 'optionsSub':
+      cancelOptionsSub();
+      return true;
+    // @source fcn_0041095b：关設定屏，返回 0（★ 不放音）
+    case 'options':
+      optionsPressed = null;
+      screen = optionsReturn;
+      requestRender();
+      return true;
+    // @source loc_0041e2ba：关屏 = 取消（草稿不拷回；★ 不放音）
+    case 'aiSettings':
+      closeAiSettings(false);
+      return true;
+    // @source loc_00403934 / loc_00403cf4：放取消音 + 关屏，返回 −1
+    case 'saveload':
+      sound.play('Effect.mkf', CANCEL_SOUND);
+      closeSaveLoad();
+      return true;
+    // @source loc_00424409：关屏（★ 不放音）
+    case 'assets':
+      closeAssets();
+      return true;
+    // @source loc_00441671 / loc_004418b9 / loc_00445dad：关浮窗（★ 不放音）
+    case 'inventory':
+      closeInventory();
+      return true;
+    // @source loc_0042b22f（`[0x48c2ed] != 0`）：放取消音 + 抛回 0 = 卡不消耗
+    case 'stockPick':
+      cancelStockPick();
+      return true;
+    // @source loc_0042aa08：关详情卡，回股市屏（★ 不放音）
+    case 'stockDetail':
+      closeStockDetail();
+      return true;
+    case 'stockAmount':
+      // 填数窗那一条与上面 `amountPage` 同一个 @source（loc_004534a3）
+      sound.play('Effect.mkf', CANCEL_SOUND);
+      stockAmount = null;
+      closeAmountPage();
+      requestRender();
+      return true;
+    case 'stockPage':
+      // @source loc_0042b22f：退回行情页 + **清掉选中行**（`[0x48c2eb] = 0`）
+      stockPage = 0;
+      stockSel = null;
+      requestRender();
+      return true;
+    // @source loc_0042b25a：放取消音 + 关股市屏
+    case 'stock':
+      sound.play('Effect.mkf', CANCEL_SOUND);
+      closeStock();
+      return true;
+    // @source fcn_0042d37f 的 0x205：直接走人（★ 不说道别语、不放音）
+    case 'shop':
+      if (!shopUi?.closing) dispatch({ type: 'declineDecision' });
+      return true;
+    // @source loc_0043d266（監獄）/ loc_0043e7c7（醫院）：关屏，返回 0 = 不保釋
+    case 'bail':
+      bailHot = null;
+      dispatch({ type: 'declineDecision' });
+      return true;
+    // @source loc_00435f6d：放取消音 + 说再见 + 关贷款屏（状态机自己走）
+    case 'loan':
+      loanSend({ kind: 'cancel' });
+      return true;
+  }
+}
+
+/**
+ * 訊息框上「取消」选哪一项 —— 原版 `fcn_0045367e` 的 0x205 是
+ * `Post_0402_Message(0)`，即**返回 0 = NO**；本引擎的对话框把「不了」
+ * 统一写成 `declineDecision`（`rules/interaction.ts` 的 `responseMatches` 认它）。
+ */
+function cancelDialogChoice(ui: InteractionUi): void {
+  const idx = ui.choices.findIndex((c) => c.action.type === 'declineDecision');
+  onDialogHit(ui, { kind: 'choice', index: idx >= 0 ? idx : ui.choices.length - 1 });
+}
+
+/**
  * 一个熱鍵按下去做什么。返回 `false` 表示「这个键本引擎不管」，
  * 让调试键那一路有机会接手。
  *
@@ -1278,36 +1446,9 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
       return true;
     }
     case HOTKEY.cancel:
-      // 拾取模式里 ESC = 放弃（与右键同类）；**目标必选**的不认
-      // @source VA 0x4466b8 的 `test byte [0x48c594], 8`
-      if (screen === 'game' && pick !== null) {
-        if (pick.cancellable) endPick();
-        return true;
-      }
-      if (screen === 'options') {
-        // 盖在設定屏上面的层先收（与原版「ESC 关最上面那扇窗」一致）
-        if (helpScreen.active(uiEnv())) {
-          closeHelpScreen(uiEnv());
-          return true;
-        }
-        if (optionsSub !== null) {
-          cancelOptionsSub();
-          return true;
-        }
-        optionsPressed = null;
-        screen = optionsReturn;
-        return true;
-      }
-      if (screen === 'saveload') {
-        closeSaveLoad();
-        return true;
-      }
-      // 「取消」= 丢掉草稿；原版也是按取消就什么都不拷回
-      if (screen === 'aiSettings') {
-        closeAiSettings(false);
-        return true;
-      }
-      return false;
+      // ★ 原版钩子把这个键补成 `WM_RBUTTONUP (0x205)`（@source VA 0x004011c3），
+      //   所以它与右键**共用同一把梯子** —— 见 `cancelTopPanel`。
+      return cancelTopPanel();
 
     // ── 回合 ──
     case HOTKEY.advance:
@@ -1534,7 +1675,17 @@ const ROLL_WAIT_TIMEOUT_MS = 3000;
 
 /** 掷骰那一段的轮询：数满预动作就掷，掷完继续要帧直到 500 ms 定格走完 */
 function dicePoll(): void {
-  if (!diceFx.active) return;
+  if (!diceFx.active) {
+    // ★★ 骰子那一段播完必须**补一次回合驱动**（2026-09-16 修「掷完骰子人不走」）。
+    //   ⚠️ 必须放在这个**入口**上：骰子播完那一拍正是从这里 return 的，
+    //   写在函数尾部永远跑不到（我第一版就写错了，实测照旧卡住）。
+    //   为什么需要：`scheduleHumanTurn`/`scheduleAi` 都以 `diceFx.active` 为闸，
+    //   而 `rollDice` 那次 `applyAction` 末尾叫它们时动画刚开、当场返回；
+    //   播完若不再叫一次，真人就永远停在 `phase === 'moving'`、棋子一步不走。
+    scheduleAi();
+    scheduleHumanTurn();
+    return;
+  }
   const now = performance.now();
 
   // 预动作：角色「手持骰子的走路」按 tick 推进 —— 与滚骰/走子的走路帧同一个计数器
@@ -2572,6 +2723,8 @@ function applyAction(action: Action): void {
     // ★ 放置類道具（路障/地雷/定時炸彈）真正落地了 → 起播投掷动效 + 落地音。
     //   纯表现，放在这里是因为**联机广播与 AI 也走同一条路**（`dispatch` 的口）。
     if (action.type === 'useTool') startObjectFlight(before, action);
+    // 走子补间（真人 / 联机两条来源都在这一条路上）
+    tweenStepIfMoved(action, before);
   }
   if (state !== before) {
     history.push(action);
@@ -2597,6 +2750,24 @@ function applyAction(action: Action): void {
   scheduleAi();
   scheduleHumanTurn();
   autosaveIfEnabled();
+}
+
+/**
+ * 走一格之后起走子补间。
+ *
+ * ★★ 2026-09-16 修「真人走子是瞬移」：先前**只有 AI 那条**（`scheduleAi` 里的
+ *   `reduce` 直路）调 `startStepTween`，真人走 `dispatch → applyAction` 这条
+ *   完全没起补间 —— 于是自己走的一步直接跳过去，与 T-046 的契约（逐格滑）不符。
+ *   放在 `applyAction` 里统一覆盖「本地点 / 联机广播」两条来源；
+ *   AI 那条不走这里（它自己 `reduce` + 起补间），所以不会重复起。
+ */
+function tweenStepIfMoved(action: Action, before: GameState): void {
+  if (action.type !== 'step') return;
+  if (state === before) return;
+  if (state.players[state.currentPlayer]?.nodeId === before.players[before.currentPlayer]?.nodeId) {
+    return; // 没真的挪窝（例如被阻碍）—— 不起空补间
+  }
+  startStepTween(state.currentPlayer);
 }
 
 /**
@@ -3911,6 +4082,10 @@ function drawGameStage(): void {
   } else if (state.phase === 'moving' && state.dice.length > 0) {
     drawDice(boardCtx, uiSprite, state.dice, currentScreenDir());
   }
+  // ── 名牌浮标（Q-HOVER-1）：原版画在棋盘面上、訊息框那类**独立窗口**之下 ──
+  if (nodeTip !== null && dlg === null) {
+    drawTip(boardCtx, spriteNow(TIP_ARCHIVE, TIP_RESOURCE, nodeTip.image, true), nodeTip);
+  }
   stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
 
   // 工具栏画在棋盘上方（直接画到舞台上）
@@ -4298,19 +4473,26 @@ function renderInteraction(): void {
 
   const row = document.createElement('div');
   row.className = 'row';
-  for (const c of ui.choices) {
+  for (const [idx, c] of ui.choices.entries()) {
     const el = document.createElement('button');
     el.textContent = c.label;
     el.onclick = () => {
-      // 需要填数的选项：弹一个输入框，取消就当没点
+      // 需要填数的选项：**开的是画面上那一个通用填数页**（`dialog.ts` 的
+      // `AmountPage`），不是另弹一个输入框。
+      //
+      // ★ 这里原来用 `window.prompt` —— 那是**第二条数字入口**（原版没有这种东西：
+      //   全游戏只有一个填数窗 `fcn_00453544`）。需求方 2026-09-16 第 1 条要的就是
+      //   「所有涉及输入数字的都用同一个计算器」，故本抽屉也改走那一页。
       if (c.amount !== undefined) {
-        const raw = window.prompt(`${c.amount.label}（上限 ${c.amount.max}）`, String(c.amount.max));
-        if (raw === null) return;
-        const n = Number(raw);
-        if (!Number.isFinite(n) || n <= 0) return;
-        const capped = Math.min(Math.trunc(n), c.amount.max);
-        log(`▶ ${ui.title}：${c.label} ${capped}`);
-        dispatch(c.amount.fill(capped));
+        // 抽屉里这一份 `ui` 与棋盘上那一份是**同一次翻译**（同一个 pending、
+        // 同一段代码），所以下标一一对应。
+        if (currentDialog() === null) {
+          log(`▶ ${c.label}：这一屏自己接管输入（不是通用填数页）`);
+          return;
+        }
+        amountPage = { choice: idx, value: c.amount.max };
+        dialogHot = null;
+        requestRender();
         return;
       }
       log(`▶ ${ui.title}：${c.label}`);
@@ -4672,6 +4854,12 @@ function bindInput(): void {
     const p = eventToStage(e);
     if (p === null) return;
 
+    // ── 名牌浮标：鼠标一动就擦（原版 0x200 那一支 `loc_00418b63` → `fcn_00417c67`）──
+    if (nodeTip !== null) {
+      nodeTip = null;
+      requestRender();
+    }
+
     // ── 登记的整屏（契约见 ui-screen.ts）先接管鼠标 ──
     {
       const overlay = activeUiScreen();
@@ -4997,13 +5185,8 @@ function bindInput(): void {
       }
     }
 
-    if (hoverNode === null) return;
-    const node = map.nodes[hoverNode - 1];
-    if (node === undefined) return;
-    log(
-      `节点 ${node.id}「${node.name || '无名'}」 ${node.ref.kind}` +
-        (node.specialKind !== 0 ? ` 特殊格 ${node.specialKind}` : ''),
-    );
+    // ★ 先前这里会 `log('节点 N「名字」')` —— 那是占位。原版点棋盘格的反馈
+    //   就是一块名牌浮标，它归 `mousedown` 那一拍（Q-HOVER-1），见上面那段。
     // 岔路选择：只有引擎正处于等待方向时才有意义
   });
 
@@ -5390,9 +5573,38 @@ function bindInput(): void {
     const bx = p.x - LAYOUT.board.x;
     const by = p.y - LAYOUT.board.y;
     if (bx < 0 || by < 0 || bx >= LAYOUT.board.w || by >= LAYOUT.board.h) return;
+
+    // ── 名牌浮标（Q-HOVER-1）────────────────────────────────
+    // 原版在棋盘窗口过程的 `WM_LBUTTONDOWN` 那一支里画（VA 0x004186a7）：
+    // `x < 0x1b8` 且 `y > 0x28`（= 棋盘格内、工具栏之下）就查光标底下是什么，
+    // 命中就放一声 `0x482322`（音效 1）并弹一块 `Data.mkf` 517 的名牌。
+    // ★ 弹在**这一拍**，不是 `click` —— 浏览器 `click` 排在 `mouseup` 之后，
+    //   而原版抬手那一下就把名牌擦了（`loc_00418878` → `fcn_00417c67`）。
+    // ★ 整屏/模态（訊息框、过场、保釋、拾取）盖着棋盘时不弹。
+    if (
+      by > 0 &&
+      currentDialog() === null &&
+      sceneFor(state.pending) === null &&
+      state.pending?.kind !== 'bail'
+    ) {
+      const m = tipModel(map, state, bx, by, (wx, wy) =>
+        worldToScreen(wx, wy, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h }),
+      );
+      if (m !== null) {
+        sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK); // @source VA 0x004175c4
+        nodeTip = m;
+        requestRender();
+      }
+    }
+
     drag = { x: e.clientX, y: e.clientY };
   });
   window.addEventListener('mouseup', (e) => {
+    // 名牌浮标：抬手就擦（原版 `loc_00418878` → `fcn_00417c67` 把底图贴回去）
+    if (nodeTip !== null) {
+      nodeTip = null;
+      requestRender();
+    }
     // ── 登记的整屏（契约见 ui-screen.ts）先接管鼠标 ──
     {
       const overlay = activeUiScreen();
@@ -5619,14 +5831,13 @@ function bindInput(): void {
     requestRender();
   });
 
-  // 右键：**在有标记时**点小地图外任意处 → 清掉标记、镜头回到当前玩家
-  // @source VA 0x00418893（WM_RBUTTONUP）：算出的位置与标记相同就 `[0x48be18] = 0`
+  // 右键 = 原版的 `WM_RBUTTONUP (0x205)`：**关掉最上面那一扇窗**
+  // （关不掉的最后一档才是「清掉小地图标记」，@source VA 0x00418893）
   canvas.addEventListener('contextmenu', (e) => {
     // ── 登记的整屏（契约见 ui-screen.ts）：**声明了** `contextmenu` 的屏先收 ──
     // ★ 原版 `WM_RBUTTONUP`（0x205）就是各屏「关掉最上面那扇窗」的那一拍；
     //   大地圖彈窗（`fcn_0040a801`）只有这一条出口。
-    // ⚠️ 只拦**声明了**的屏 —— 没声明的照旧走下面这些分支（設定屏里
-    //   「遊戲說明」那一层就是靠下面 options 那支收的）。
+    // ⚠️ 只拦**声明了**的屏 —— 没声明的照旧走下面的通用梯子。
     {
       const overlay = activeUiScreen();
       if (overlay?.contextmenu !== undefined) {
@@ -5636,79 +5847,17 @@ function bindInput(): void {
         return;
       }
     }
-    // 資產表屏：右键关掉（原版 WM_RBUTTONUP，VA 0x424409）
-    if (screen === 'assets') {
+    // ── 通用取消梯子：与熱鍵 ESC 走的是**同一个函数** ──
+    //   原版两键同源（钩子把取消键补成 0x205），逐层取证见 `panel-cancel.ts`。
+    //   工具栏那几扇（設定 / 託管AI / 存讀檔 / 大地圖 / 個人資產表 / 道具欄 /
+    //   卡片欄 / 股市 / 遊戲百科）全在这把梯子上。
+    if (cancelTopPanel()) {
       e.preventDefault();
-      closeAssets();
       return;
     }
-    // 股市：右键 —— 在持股页就退回行情页，在行情页就离开 @source `loc_0042b22f`
-    if (screen === 'stock') {
-      e.preventDefault();
-      // ★ 选股模式（Q-PICK-2）：右键 = 取消（原版 `loc_0042b22f` 的 page==0 那支），
-      //   抛回 0 ⇒ 卡不消耗，卡片欄被再开回来（@source `loc_00441ce1`）。
-      if (stockPick !== null) {
-        cancelStockPick();
-        return;
-      }
-      if (stockDetail !== null) {
-        closeStockDetail();
-      } else if (stockAmount !== null) {
-        stockAmount = null;
-        closeAmountPage();
-      } else if (stockPage !== 0) {
-        stockPage = 0;
-        stockSel = null;
-        requestRender();
-      } else {
-        closeStock();
-      }
-      return;
-    }
-    // ── 遙控骰子的点数盘（Q-PICK-2）：右键 = 取消，且不让别的右键分支再动 ──
-    //   @source `fcn_00446774` 的 0x205 分支（`loc_00446a66`）
-    if (dicePick !== null) {
-      e.preventDefault();
-      cancelDicePick();
-      return;
-    }
-    // 道具欄浮窗：右键关掉、**什么都不用**（原版 VA 0x445dad 抛回 0）
-    if (screen === 'inventory') {
-      e.preventDefault();
-      closeInventory();
-      return;
-    }
-    // 設定屏：右键 = 取消（原版 `0x205` → `fcn_0041095b` → 抛回 0）
-    if (screen === 'options') {
-      e.preventDefault();
-      // 盖在設定屏上面的层先收：登记的整屏（遊戲說明）→ 副屏（日期頁 / 熱鍵頁 / YES-NO）
-      if (helpScreen.active(uiEnv())) {
-        closeHelpScreen(uiEnv());
-        return;
-      }
-      if (optionsSub !== null) {
-        cancelOptionsSub();
-        return;
-      }
-      optionsPressed = null;
-      screen = optionsReturn;
-      requestRender();
-      return;
-    }
-    // 卡片商店／道具商店：右键 = 走人（原版 WM_RBUTTONUP 直接 `Post_0402_Message`，VA 0x42e888）
-    // ★ 原版这条**不说道别语** —— 那句只在 EXIT 钮上出。
-    if (screen === 'game' && shopUi !== null) {
-      e.preventDefault();
-      if (!shopUi.closing) dispatch({ type: 'declineDecision' });
-      return;
-    }
-    // 目标拾取：右键放弃 —— 但**目标必选**的（选择参数 bit3）右键不认
-    // @source VA 0x4466b8 `test byte [0x48c594], 8 / jne 忽略`
-    if (screen === 'game' && pick !== null) {
-      e.preventDefault();
-      if (pick.cancellable) endPick();
-      return;
-    }
+    // ── 剩这一条**不在梯子里**：右键清掉小地图标记（@source VA 0x00418893）──
+    //   ⚠️ 没有模态窗口时（`callbackSize == 1`）钩子不发 0x205，而是置
+    //   `[0x46caff] = 1`（@source VA 0x004011af），所以 ESC 不做这一条。
     if (screen !== 'game' || minimapMarker === null) return;
     e.preventDefault();
     minimapMarker = null;

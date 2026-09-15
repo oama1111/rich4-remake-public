@@ -783,6 +783,210 @@ export function objectTokens(
   return out;
 }
 
+// ============================================================
+//  ★ Q-LAND-1：地块/设施/企业/景观 —— 这一帧该贴哪张图（纯函数）
+//
+//  原版这四段（`fcn_0040829d` 的 `loc_004090e2` / `loc_004092f4` / `loc_0040953f`
+//  / `loc_00409689`，即 住宅 → 设施 → 企业 → 景观）只做同一件事：
+//  **往绘制槽清单里塞一件立体物**，槽 12 字节 = 精灵 / 标签词 / 归属色 / 图号 /
+//  屏幕 Y / 屏幕 X。这里把这层「状态 → 资源号 + 图号」剥成纯函数，画布那边只负责摆位。
+// ============================================================
+
+/** 一块住宅地块这一帧该画什么（`null` = **一个像素都不画**）*/
+export interface LandArt {
+  /** `map.mkf` 资源号（建筑图集 / 连锁店图集 / 空地 logo 图集）*/
+  resource: number;
+  /** 图号：建筑 = 朝向 + 视角；空地 logo = 角色号 */
+  image: number;
+  /**
+   * 非 0 时按 `player[paletteOwner-1]` 的角色色换掉调色板 #255（1 基玩家号）；
+   * 0 = 不换色。
+   */
+  paletteOwner: number;
+}
+
+/**
+ * 住宅地块 → 该贴哪张图。**三条判据全部取证自 exe**（`ebp` = 地块记录，步长 0x34）：
+ *
+ * ```asm
+ * 004091af  al = byte [land + 0x1b]        ; 朝向
+ *           al += byte [0x499088]          ; ★ 加上当前视角
+ *           dl = 8 - al ; dl &= 7          ; 图号（0..7）
+ * 004091df  cmp byte [land + 0x1a], 0      ; ★ 等级 0？
+ *           je   0x40920f                  ;   → 空地那一支
+ * 004091ee  cmp byte [land + 0x18], 0      ; ★ 连锁店（land.type != 0）？
+ *           jne  0x409208                  ;   → 另一张图集
+ * 004091e5  al = byte [land + 0x19]        ; 归属 → 槽 +6（调色板 #255）
+ * 0040920f  ── 等级 0 那一支 ──
+ * 00409216  cmp byte [land + 0x19], 0      ; ★ 无主？
+ * 0040921a  je   0x40923e                  ;   → 槽 +0（资源）= 0
+ * 0040921c  eax = dword [0x48aea8]         ; ★ 有主：空地 logo 图集（map.mkf #25）
+ * 00409230  al = byte [player[owner-1] + 0x13]  ; ★ 图号 = 角色号（与视角无关）
+ * 0040923e  dword [slot + 0x48a84c] = 0    ; 资源 0
+ * 00409848  test ebp, ebp / je 0x409931    ; ★ 资源 0 的槽**整条跳过**
+ * ```
+ *
+ * ★ 结论（需求方 2026-09-16 报的「开局所有大地块都被占了」正是这一条的反面）：
+ *   **未持有的空地（等级 0 + 无主）在原版里什么都不画**，露出地砖。
+ *   有主但没盖房才画该角色专属的空地 logo（那一支早就实现了）。
+ *
+ * ⚠️ 等级 ≥ 1 且无主时，原版把调色板 #255 写成 0（黑）；本引擎按「不换色」处理。
+ *   该组合（有等级、无主）在原版规则里到不了，登记在 `docs/known-deviations.md`。
+ */
+export function landArt(input: {
+  /** `state.landLevel[i]`（原版运行时写在 `land + 0x1a`）*/
+  level: number;
+  /** `state.landOwner[i]`，**1 基**；0 = 无主 */
+  owner: number;
+  /** 该玩家的 `character`（空地 logo 的图号）；只有「等级 0 + 有主」用得上 */
+  character: number;
+  /** `land.type != 0`（连锁店）*/
+  chain: boolean;
+  /** `land.facing`（记录 +0x1b，0..7）*/
+  facing: number;
+  globalMapId: number;
+  /** 当前视角旋转（`[0x499088]`，0..7）*/
+  view: number;
+}): LandArt | null {
+  if (input.level < 1) {
+    // @source VA 0x00409216 `cmp byte [land+0x19],0` → VA 0x0040923e 资源 = 0
+    // @source VA 0x00409848 `test ebp,ebp / je` → 资源 0 的槽整条跳过
+    if (input.owner === 0) return null;
+    // @source VA 0x0040920f：这一支槽 +6 = 0xff（不换色）；图号 = 角色号
+    return { resource: EMPTY_LAND_LOGO_RESOURCE, image: input.character, paletteOwner: 0 };
+  }
+  // @source VA 0x004091ee（连锁店）与 0x004091e5（按等级）
+  const resource = input.chain
+    ? chainStoreResource(input.globalMapId)
+    : buildingResource(input.globalMapId, input.level);
+  if (resource === null) return null; // 等级 > 5：原版图集表只有 5 级
+  // @source VA 0x004091af：图号 = (8 − (朝向 + 视角)) & 7
+  return {
+    resource,
+    image: buildingImageIndex(input.facing, input.view),
+    paletteOwner: input.owner,
+  };
+}
+
+/** 棋盘上要画的一件**立体物**（建筑 / 设施 / 企业 / 景观）*/
+export interface BuildingArtItem {
+  /** 落点世界坐标 —— 用地块/设施/企业/景观**记录自己的** x/y，不是所在节点的 */
+  x: number;
+  y: number;
+  /** `map.mkf` 资源号 */
+  res: number;
+  /** 图号 */
+  img: number;
+  /** 非空时把精灵调色板 #255 换成这个角色色 */
+  ring?: readonly [number, number, number];
+}
+
+/**
+ * 这一帧棋盘上所有的立体物（**纯函数**，画布无关，可单测）。
+ *
+ * 四张表各一段，与原版逐段对应：
+ *
+ * | 段 | 原版 | 落点 | 图集 | 图号 |
+ * |---|---|---|---|---|
+ * | 住宅地块 | `loc_004090e2` | **地块记录**的 x/y（VA 0x004090fc）| `landArt` | 见 `landArt` |
+ * | 设施 | `loc_004092f4` | 设施记录的 x/y | `facilitySheetBase + facilitySlot(type, level)` | `(8 − (朝向 + 视角)) & 7`（VA 0x004093c3）|
+ * | 上市企业 | `loc_0040953f` | 企业记录的 x/y | `spriteIndex + 38` | `(8 − (朝向 + 视角)) & 7`，朝向在 **+0x1b**（VA 0x0040964d）|
+ * | 特殊景观 | `loc_00409689` | 景观记录的 x/y | `spriteIndex + 38` | `(8 − (朝向 + 视角)) & 7`，朝向在 **+0x18**（VA 0x00409793）|
+ *
+ * ★ **四类的图号都吃视角**（需求方 2026-09-16 问的「旋转视角景物跟不跟着变」）：
+ *   这四张图集实测**每张都恰好 8 个朝向**（`map.mkf` 资源 39..86 建筑、
+ *   87..103 设施、172..293 企业/景观，逐资源数出来的），所以视角一转就换图。
+ *   **只有装饰（`decorIndex` → 资源 24）不吃视角** —— 那一段是单张图直接贴，
+ *   见 `#drawDecor` 上方与 `loc_0040855f`。
+ *
+ * ⚠️ 越出 29×29 窗口的格子由调用方跳过（原版 `cmp esi,0x1c` / `cmp edi,0x1c`）。
+ */
+export function buildingArtItems(
+  map: Rich4Map,
+  state: GameState,
+  view: number,
+): BuildingArtItem[] {
+  const items: BuildingArtItem[] = [];
+
+  // ── 住宅地块 ──
+  for (const n of map.nodes) {
+    if (n.ref.kind !== 'land') continue;
+    const landId = n.ref.index;
+    const land = map.lands.find((l) => l.id === landId);
+    if (land === undefined) continue;
+    const owner = state.landOwner[landId] ?? 0;
+    const art = landArt({
+      level: state.landLevel[landId] ?? 0,
+      owner,
+      character: state.players[owner - 1]?.character ?? 0,
+      chain: land.type !== 0,
+      facing: land.facing,
+      globalMapId: state.globalMapId,
+      view,
+    });
+    // ★ 未持有（且没盖房）→ null → 这一格什么都不画，露出地砖
+    if (art === null) continue;
+    // ★ 用**地块记录自己的 x/y**，不是所在节点的 —— 两者差一格。
+    //   @source 地块绘制 VA 0x004090fc：`movsx eax, word [ebp]` / `movsx edx, word [ebp+2]`，
+    //   而 `ebp` 指的是**地块记录**（+0x1b 取朝向、+0x1a 取等级，都在同一条记录上）。
+    //   实测地图 1：node 39 (1463,239) 与 land 1 (1463,192) 是同一块地，
+    //   y 差 47（约一格半），设施/企业/景观那三处本来就用的自己的坐标，只有地块这里不一致。
+    items.push({
+      x: land.x,
+      y: land.y,
+      res: art.resource,
+      img: art.image,
+      // ★ 外圈那圈线按**所有者的角色专属色**换色（见 assets.ts 的 RING_PALETTE_INDEX）：
+      //   @source VA 0x00409853 —— 槽 +6 非 0xff 时把 `player[owner-1].+0x04`（角色色）
+      //   写进精灵的调色板 #255。
+      ...(art.paletteOwner === 0 ? {} : { ring: characterColor(state, art.paletteOwner) }),
+    });
+  }
+
+  // ── 设施（機場/港口…）──
+  const gameStage = state.globalMapId >> 2;
+  const gameMap = state.globalMapId & 3;
+  const base = facilitySheetBase(gameStage, gameMap);
+  for (const f of map.facilities) {
+    items.push({
+      x: f.x,
+      y: f.y,
+      res: base + facilitySlot(f.type, f.level),
+      // @source VA 0x004093c3：与建筑同一算式，朝向在 facility +0x1b
+      img: buildingImageIndex(f.facing, view),
+      ...(f.owner === 0 ? {} : { ring: characterColor(state, f.owner) }),
+    });
+  }
+
+  // ── 上市企业与特殊景观：共用「索引 + 38」那套 ──
+  for (const c of map.commercials) {
+    const res = sceneryResource(c.spriteIndex);
+    if (res === null) continue;
+    const co = state.commercialOwners[c.id - 1]?.owner ?? 0;
+    items.push({
+      x: c.x,
+      y: c.y,
+      res,
+      // @source VA 0x0040964d：朝向在 commercial +0x1b（实测八张地图都在 0..7）
+      img: buildingImageIndex(c.facing ?? 0, view),
+      ...(co === 0 ? {} : { ring: characterColor(state, co) }),
+    });
+  }
+  for (const l of map.landscapes) {
+    const res = sceneryResource(l.spriteIndex);
+    if (res === null) continue;
+    items.push({
+      x: l.x,
+      y: l.y,
+      res,
+      // @source VA 0x00409793：朝向在 landscape +0x18（实测八张地图都在 0..7）
+      img: buildingImageIndex(l.facing ?? 0, view),
+    });
+  }
+
+  return items;
+}
+
 /** 一条待画的绘制槽：先按 `key` 排序，再依次 `paint` */
 interface DrawSlot {
   key: number;
@@ -936,6 +1140,13 @@ export class BoardRenderer {
     //   挂在这里而不是构造缓存的地方，是因为构造缓存的 `main.ts` 不是本卡的范围，
     //   而渲染器本来就拿得到同一份缓存。
     sprites.addEvictListener((sprite) => {
+      // ★ 淘汰掉的这张可能正被某个棋子槽当「上一张」顶着（`#spriteHeld`）——
+      //   它马上要被 `close()`，绝不能留在手里，否则下一帧会拿一张**已关闭**的
+      //   位图去 `drawImage`（画成空白）。摘掉之后那一槽退回「没有上一张」，
+      //   与新解出来的图之间最多空一帧 —— 与淘汰前的老行为一致。
+      for (const [slotKey, held] of this.#held) {
+        if (held === sprite) this.#held.delete(slotKey);
+      }
       this.#evicted.retire(this.#ready, sprite);
     });
   }
@@ -953,7 +1164,12 @@ export class BoardRenderer {
     this.#dirty = false;
   }
 
-  /** 画出节点连线与落点菱形 —— **调试用**，原版没有 */
+  /**
+   * 调试用：画出节点连线与**节点落点框**。原版两样都没有。
+   *
+   * ⚠️ 落点框**只描边、不填色** —— 先前它给每格填过一块自造底色，
+   *   那正是需求方 2026-09-16 报的「开局所有大地块都被青色占了」。见 `#drawNodes`。
+   */
   debugNodes = false;
 
   /** 推进一帧行走动画 —— **一次 tick 调一次**（不是一格一次） */
@@ -1184,6 +1400,54 @@ export class BoardRenderer {
   }
 
   /**
+   * ★ 某个棋子槽**上一张真的画出去的图** —— 图号换新、新图还没解好时拿它顶着。
+   *
+   * 见 `#spriteHeld`。键是调用方给的槽名（玩家 `p0..p3`、替身 `a0..a4`）。
+   */
+  readonly #held = new Map<string, Sprite>();
+
+  /**
+   * ★ 棋子这一帧要画的那张图 —— **解码没到货时退回本槽上一张**，绝不空一帧。
+   *
+   * 为什么必须这样（需求方 2026-09-16 报的「人物行动时仍然是闪烁的」）：
+   * 原版这里是**常驻指针** —— `read_mkf` 把整组图**同步**读进内存，绘制槽每次
+   * 从 `[0x498eb4 + pose*8 + slot*4]` 读到的东西都非空，所以走子过程中一个 tick
+   * 都不会漏画（`fcn_0040829d` 那句「槽里指针为空就跳过」只对「这个槽压根没有
+   * 图组」成立）。本引擎的精灵是 `createImageBitmap` **异步**解出来的：
+   * 图号一 tick 换一张，`#sprite` 在新图号上**第一次**必然返回 null ——
+   * 照原样跳过就是「有的帧不画」，观感上人物一闪一灭。
+   *
+   * 处置：能画当前帧就画当前帧；画不了就退回**本槽上一张画出来的图**
+   * （同一个人的上一个走姿帧，通常只差一帧、下一帧就追上来了）。
+   * ★ 这不是「改良」：原版那一条**永远画得出来**，退回上一张只是把
+   *   「异步解码晚到一帧」这件事从画面上抹掉，比空一帧接近原版。
+   *
+   * @param slotKey 棋子槽的名字（同一时刻只有一个槽用它的上一张图）
+   * @param res,idx `Data.mkf` 资源号与图号（`directionalImage` 算好的那个）
+   * @param nextIdx 下一帧的图号（`directionalImage(count, dir, frame + 1)`）——
+   *   顺手先解掉，好让走姿不必停在上一帧上；没有下一帧就给 `null`
+   */
+  #spriteHeld(
+    slotKey: string,
+    archive: 'Data.mkf' | 'Panel.mkf' | 'map.mkf' | 'jump.mkf',
+    res: number,
+    idx: number,
+    nextIdx: number | null,
+  ): Sprite | null {
+    const sp = this.#sprite(archive, res, idx);
+    // ★ 顺手把**下一帧**丢进解码队列 —— **不管当前这张有没有到货**：
+    //   一 tick 一帧，而 tick 之间隔着好几个 rAF（20..120 ms），提前一帧请求
+    //   就追得上；追不上才退回上一张。冷启动（这个槽一张图都还没有，例如
+    //   機器娃娃凭空上路）因此也只有**第一帧**画不出来。
+    if (nextIdx !== null && nextIdx !== idx) this.#sprite(archive, res, nextIdx);
+    if (sp !== null) {
+      this.#held.set(slotKey, sp);
+      return sp;
+    }
+    return this.#held.get(slotKey) ?? null;
+  }
+
+  /**
    * 同步取精灵；未就绪时返回 null 并在后台解码。
    *
    * 渲染是同步的而解码是异步的（createImageBitmap），故这里用
@@ -1247,9 +1511,10 @@ export class BoardRenderer {
     }
 
     const vp = { w: width, h: height };
-    // ⚠️ 原版棋盘上**没有**连线，也没有标落点的菱形 —— 格子长什么样全靠
+    // ⚠️ 原版棋盘上**没有**连线，也没有标落点的框 —— 格子长什么样全靠
     //   底图与建筑图素本身。先前那两层是解地图时的调试辅助，留着就不是复刻了。
     //   仍然保留代码，`?debug=nodes` 时才画，排错时还用得上。
+    //   ★ 而且它们**只描边不填色**：未持有的空地原版一个像素都不画（见 `#drawNodes`）。
     if (this.debugNodes) this.#drawEdges(map, camera, vp);
 
     // ★★ 原版的三段式（`fcn_0040829d`，Q-DRAW-1）：
@@ -1294,8 +1559,9 @@ export class BoardRenderer {
     const flight = input.objectFlight ?? null;
     if (flight !== null) this.#drawObjectFlight(flight, camera, nowMs);
 
-    // 调试层画在清单之上（它只是排错用的参考图形，不该被建筑挡住）
-    if (this.debugNodes) this.#drawNodes(map, state, camera, hoverNode, vp);
+    // 调试层画在清单之上（它只是排错用的参考图形，不该被建筑挡住）——
+    // 只有描边，不填色（原版没有「每格一块底色」这种东西，见 `#drawNodes`）
+    if (this.debugNodes) this.#drawNodes(map, camera, hoverNode, vp);
   }
 
   /**
@@ -1534,8 +1800,8 @@ export class BoardRenderer {
   /**
    * 已开发地块上的建筑 —— 收成绘制槽交给调用方统一排序（见 `draw()` 的 ★★）。
    *
-   * 资源号与图号的由来见 assets.ts 的 `buildingResource` / `buildingImageIndex`
-   * ——都是从原版加载与绘制代码直接读出来的。
+   * 「该贴哪张图」整层在纯函数 `buildingArtItems` 里（四张表的判据都带 @source VA），
+   * 这里只管**摆位**：世界坐标 → 屏幕坐标（原版 29×29 窗口外的格子跳过）。
    *
    * ⚠️ 排序键是**屏幕 Y**（`drawKey`），不是世界 y。以前按世界 y 排，
    *   视角一转就对不上原版的画家顺序了。
@@ -1547,92 +1813,9 @@ export class BoardRenderer {
     vp: { w: number; h: number },
   ): DrawSlot[] {
     const ctx = this.#ctx;
-    /** 一件立体物：资源、图号、落点、可选的归属换色 */
-    const items: {
-      x: number;
-      y: number;
-      res: number;
-      img: number;
-      ring?: readonly [number, number, number];
-    }[] = [];
-
-    // ── 地块建筑 ──
-    for (const n of map.nodes) {
-      if (n.ref.kind !== 'land') continue;
-      const landId = n.ref.index;
-      const level = state.landLevel[landId] ?? 0;
-      const owner = state.landOwner[landId] ?? 0;
-      const land = map.lands.find((l) => l.id === landId);
-      if (land === undefined) continue;
-
-      // ★ 等级 0（还没盖房）但有主 → 画该**角色专属**的空地 logo，不画建筑。
-      // @source VA 0x0040920f 的「等级 0」分支：无主不画；有主则用
-      //   `[0x48aea8]`（= map.mkf 资源 25，见 rich4_load_map.asm:477）当图集、
-      //   图号 = `player[owner-1].+0x13`（即 character）。
-      if (level < 1) {
-        if (owner === 0) continue; // 无主空地什么都不画
-        const character = state.players[owner - 1]?.character ?? 0;
-        items.push({
-          x: land.x,
-          y: land.y,
-          res: EMPTY_LAND_LOGO_RESOURCE,
-          img: character,
-        });
-        continue;
-      }
-      // @source cmp byte [land+0x18], 0 / jne → 连锁店走另一张图集
-      const res =
-        land.type !== 0
-          ? chainStoreResource(state.globalMapId)
-          : buildingResource(state.globalMapId, level);
-      if (res === null) continue;
-      // ★ 用**地块记录自己的 x/y**，不是所在节点的 —— 两者差一格。
-      //   @source 地块绘制 VA 0x004090fc：`movsx eax, word [ebp]` / `movsx edx, word [ebp+2]`，
-      //   而 `ebp` 指的是**地块记录**（+0x1b 取朝向、+0x1a 取等级，都在同一条记录上）。
-      //   实测地图 1：node 39 (1463,239) 与 land 1 (1463,192) 是同一块地，
-      //   y 差 47（约一格半），设施/企业/景观那三处本来就用的自己的坐标，只有地块这里不一致。
-      // ★ 外圈那圈线按**所有者的角色专属色**换色（见 assets.ts 的 RING_PALETTE_INDEX）：
-      //   @source VA 0x0040987d —— 绘制槽有归属时把 `player[owner-1].+0x04`（角色色）
-      //   写进精灵的调色板 #255。无主则原样（占位色），但等级≥1 必有主。
-      items.push({
-        x: land.x,
-        y: land.y,
-        res,
-        img: buildingImageIndex(land.facing, cam.view),
-        ...(owner === 0 ? {} : { ring: characterColor(state, owner) }),
-      });
-    }
-
-    // ── 设施（機場/港口…）──
-    const gameStage = state.globalMapId >> 2;
-    const gameMap = state.globalMapId & 3;
-    const base = facilitySheetBase(gameStage, gameMap);
-    for (const f of map.facilities) {
-      items.push({
-        x: f.x,
-        y: f.y,
-        res: base + facilitySlot(f.type, f.level),
-        img: buildingImageIndex(f.facing, cam.view),
-        ...(f.owner === 0 ? {} : { ring: characterColor(state, f.owner) }),
-      });
-    }
-
-    // ── 上市企业与特殊景观：共用「索引 + 38」那套 ──
-    for (const c of map.commercials) {
-      const res = sceneryResource(c.spriteIndex);
-      if (res !== null) {
-        const co = state.commercialOwners[c.id - 1]?.owner ?? 0;
-        items.push({ x: c.x, y: c.y, res, img: 0, ...(co === 0 ? {} : { ring: characterColor(state, co) }) });
-      }
-    }
-    for (const l of map.landscapes) {
-      const res = sceneryResource(l.spriteIndex);
-      if (res !== null) items.push({ x: l.x, y: l.y, res, img: 0 });
-    }
-
     const k = cam.mode === 'map' ? cam.scale : 1;
     const slots: DrawSlot[] = [];
-    for (const it of items) {
+    for (const it of buildingArtItems(map, state, cam.view)) {
       const p = worldToScreen(it.x, it.y, cam, vp);
       // 越出 29×29 窗口的格子原版直接跳过不画，这里保持一致
       if (p === null) continue;
@@ -1655,19 +1838,23 @@ export class BoardRenderer {
   }
 
   /**
-   * 格子标记。
+   * 调试层：每个节点的**落点框**（`?debug=nodes`）—— 只描边，**不填任何颜色**。
    *
-   * ★ 画成**菱形**而不是圆：底图本身就是等距视角，格线是菱形的
-   *   （原版截图里草地上那圈白色虚线就是），圆形叠上去会明显出戏。
-   *   长宽比 2:1 是等距投影的标准比例。
+   * ★ 原版棋盘上**没有**任何「每格一块底色」的东西：`fcn_0040829d` 里逐节点扫的
+   *   只有装饰那一段（`loc_0040855f`，且 `node.decorIndex == 0` 就跳过，VA 0x0040862e
+   *   读它、VA 0x00408657 跳过后一格），其余全来自地块/设施/企业/景观四张表的立体物。
+   *   所以**未持有的空地就是露出地砖，一个像素都不多画**
+   *   （@source VA 0x0040923e：资源 = 0 → @source VA 0x00409848：`test ebp,ebp / je`
+   *   把这一槽整条跳过）。需求方 2026-09-16 报的「开局所有大地块都被青色占了」
+   *   就是这里先前那枚**自造色块**造成的（有主按玩家色、无主按 `nodeBaseColor`
+   *   给的中性色 —— 那套颜色表是重制版自己编的，原版没有）。
    *
-   * ⚠️ 这仍是**占位图形**，不是原版美术：原版每格的底色由绘制槽的
-   *   `[0x48a852]`（归属）与 `[0x48a853]`（朝向）决定，具体画法还没解。
-   *   有主时按玩家色填充，无主时按格子类型给个中性色。
+   * C-FID-1/4 禁改良 ⇒ 这里只留白色描边 + 悬停高亮：排错时看得见落点，
+   * 又不会冒充原版美术。真要「看得出地块归谁」，画的是**建筑自带的归属圈线**
+   * （`buildingArtItems` 的 `ring`），不是这里的框。
    */
   #drawNodes(
     map: Rich4Map,
-    state: GameState,
     cam: Camera,
     hover: number | null,
     vp: { w: number; h: number },
@@ -1689,23 +1876,16 @@ export class BoardRenderer {
     for (const n of map.nodes) {
       const p = worldToScreen(n.x, n.y, cam, vp);
       if (p === null) continue;
-      const owner = ownerOfNode(n, state);
-
       diamond(p.x, p.y);
-      ctx.fillStyle = owner >= 0 ? (PLAYER_COLORS[owner] ?? '#888') : nodeBaseColor(n);
-      ctx.globalAlpha = owner >= 0 ? 0.85 : 0.55;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      // 描边让相邻格子在密集处也能分开
-      ctx.strokeStyle = 'rgba(0,0,0,0.45)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
       if (n.id === hover) {
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 2;
-        ctx.stroke();
+      } else {
+        // 极淡的中性描边：只用来「看见格心在哪」，不冒充任何原版美术
+        ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+        ctx.lineWidth = 1;
       }
+      ctx.stroke();
     }
   }
 
@@ -1756,10 +1936,18 @@ export class BoardRenderer {
       const res = characterSetBase(pl.character, pl.trafficMethod) + pose;
       const count = this.#imageCount('Data.mkf', res);
       const dir = screenDirection(pl.direction, cam.view);
+      // ★ 图号一 tick 换一张（`#walkFrame`）——新图号没解好时**退回本槽上一张**，
+      //   不许整帧不画（否则走子/掷骰预动作时人物一闪一灭，见 `#spriteHeld`）。
       const token =
         count > 0
-          ? this.#sprite('Data.mkf', res, directionalImage(count, dir, this.#walkFrame))
-          : null;
+          ? this.#spriteHeld(
+              `p${pl.index}`,
+              'Data.mkf',
+              res,
+              directionalImage(count, dir, this.#walkFrame),
+              directionalImage(count, dir, this.#walkFrame + 1),
+            )
+          : (this.#held.get(`p${pl.index}`) ?? null);
       if (token !== null) {
         const w = token.width * k;
         const h = token.height * k;
@@ -1855,12 +2043,20 @@ export class BoardRenderer {
       const p = live.get(t.slot) ?? worldToScreen(t.x, t.y, cam, vp);
       if (p === null) continue;
       const count = this.#imageCount('Data.mkf', t.resource);
+      // ★ 走姿一 tick 换一张图 —— 新图号没解好时**退回本槽上一张**（通常是上一帧
+      //   走姿，或上场前的站姿），绝不整帧不画：原版那个槽里的指针常驻非空
+      //   （`read_mkf` 同步读整组图），跳过只对「这个槽压根没有图组」成立。
+      //   照原样跳过 = 人物一闪一灭（需求方 2026-09-16 报的），见 `#spriteHeld`。
       const sp =
         count > 0
-          ? this.#sprite('Data.mkf', t.resource, directionalImage(count, t.screenDir, t.frame))
-          : null;
-      // 图还没解出来就这一帧不画 —— 原版槽里指针为空时同样跳过。
-      // ⚠️ 不退回色块：替身是「憑空多出来的东西」，画错比不画更糟。
+          ? this.#spriteHeld(
+              `a${t.slot}`,
+              'Data.mkf',
+              t.resource,
+              directionalImage(count, t.screenDir, t.frame),
+              directionalImage(count, t.screenDir, t.frame + 1),
+            )
+          : (this.#held.get(`a${t.slot}`) ?? null);
       if (sp === null) continue;
       slots.push({
         key: drawKey(p.y, t.klass),
@@ -1876,29 +2072,6 @@ export class BoardRenderer {
       });
     }
     return slots;
-  }
-}
-
-/** 该节点上的地产归谁——无主或非地产返回 -1 */
-function ownerOfNode(node: MapNode, state: GameState): number {
-  if (node.ref.kind !== 'land') return -1;
-  const owner = state.landOwner[node.ref.index] ?? 0;
-  return owner === 0 ? -1 : owner - 1;
-}
-
-/** 未持有时按格子类型上色，先让棋盘结构可读 */
-function nodeBaseColor(node: MapNode): string {
-  switch (node.ref.kind) {
-    case 'land':
-      return '#8b97a8';
-    case 'facility':
-      return '#c9a15e';
-    case 'commercial':
-      return '#a878c8';
-    case 'landscape':
-      return '#5fa87c';
-    default:
-      return node.specialKind !== 0 ? '#e0c65a' : '#6b7280';
   }
 }
 

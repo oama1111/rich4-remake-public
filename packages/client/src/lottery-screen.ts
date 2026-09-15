@@ -97,6 +97,8 @@ import { LOTTERY } from '@rich4/data';
 import type { Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { FONT_FAMILY } from './font.ts';
+// 取消音（`[0x482332] = 4`）—— 与右键/ESC 那条梯子共用同一个号
+import { CANCEL_SOUND } from './panel-cancel.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type LotSprite = (
@@ -853,6 +855,31 @@ export const lotteryScreen: UiScreen = {
   up(): void {
     // 原版买号在 `WM_LBUTTONDOWN`（0x201）那一下；`WM_LBUTTONUP`（0x202）这一屏
     // **没有分支**（`fcn_0042f7fc` 的 eax 比较里根本没有 0x202）—— 抬手什么都不做。
+  },
+
+  /**
+   * 右键 = 走人（不买）。@source `fcn_0042f7fc` 的 0x205（`loc_0043003d`）：
+   * `play_sound_effect(0, 0x482332)`（音效 4）+ `PostMessage(hwnd, 0x406, 5, 0)` ——
+   * 收到 `0x406` 的 `loc_0042f974` 画上图 2、「拜拜」气泡、状态置 5，
+   * 下一拍 100 ms 定时器才 `_Post_0402_Message(0)` 关屏（返回 0 = 没买）。
+   *
+   * ★ 与 ESC 同源：原版钩子把取消键补成 `WM_RBUTTONUP`（@source VA 0x004011c3）。
+   * ⚠️ 本屏原来只有 ESC 一条出口（需求方第 3 条报的正是这一类）。
+   */
+  contextmenu(_x: number, _y: number, env: UiScreenEnv): void {
+    // 已经在拜拜/收屏/现金不足那几拍：按不动（原版 `cmp dl,3 / ja` 同一条闸）
+    if (ui.dismissed || ui.phase === 'bye' || ui.phase === 'closing' || ui.phase === 'noCash') {
+      return;
+    }
+    if (lotteryPending(env.state) === null) return;
+    env.playEffect(CANCEL_SOUND);
+    ui.picked = null;
+    ui.phase = 'bye';
+    ui.at = env.now;
+    // 先把「拜拜」那一拍定格（dispatch 之后 `pending` 就被 reducer 收了）
+    ui.byeView = lotView(env.state, 'bye', null, ui.eye, ui.mouth, bonusFrameAt(env.now));
+    env.requestRender();
+    env.dispatch({ type: 'declineDecision' });
   },
 };
 

@@ -333,6 +333,22 @@ export interface CommercialInfo {
    * `GameState.commercialShares`。保留这个字段只为记录文件里确实是 0。
    */
   shares: number;
+  /**
+   * 建筑朝向 0..7 @source commercial +0x1b
+   *
+   * ★ 与地块（+0x1b）、设施（+0x1b）**同一制**。绘制企业在 VA 0x0040964d：
+   * ```asm
+   * al = byte [commercial + 0x1b]
+   * al += byte [0x499088]        ; ★ 当前视角
+   * al = (8 - al) & 7            ; → 精灵图号
+   * ```
+   * 企业用的图集（`spriteIndex + 38`）实测**每张恰好 8 个朝向**，所以视角一转就换图。
+   *
+   * ⚠️ 选填：若干测试用手写的 `CommercialInfo` 字面量（本包 places/*.test.ts）
+   * 没有这个字节，渲染端按 0 处理。真实地图解析**一定**会填（实测八张地图
+   * 全部落在 0..7）。
+   */
+  facing?: number;
 }
 
 /** 特殊景观（阿里山、佛光山等） */
@@ -349,6 +365,20 @@ export interface LandscapeInfo {
    *   `资源号 = 索引 + 0x26`，索引 0 表示没有图。
    */
   spriteIndex: number;
+  /**
+   * 建筑朝向 0..7 @source landscape +0x18（记录长 0x1c，字节夹在名称之后、索引之前）
+   *
+   * ★ 绘制景观在 VA 0x00409793：
+   * ```asm
+   * al = byte [landscape + 0x18]
+   * al += byte [0x499088]        ; ★ 当前视角
+   * al = (8 - al) & 7            ; → 精灵图号
+   * ```
+   * 景观图集（`spriteIndex + 38`）同样是**每张 8 个朝向**。
+   *
+   * ⚠️ 选填的理由同 `CommercialInfo.facing`：测试里手写的字面量没有它。
+   */
+  facing?: number;
 }
 
 export interface Rich4Map {
@@ -500,6 +530,8 @@ export function parseMap(data: Uint8Array): Rich4Map {
       name: readName(data, o + 0x04, 0x14),
       stockIndex: data[o + 0x19] ?? 0,
       type: data[o + 0x1a] ?? 0,
+      // 朝向在 +0x1b（绘制企业 VA 0x0040964d 读的就是它）
+      facing: (data[o + 0x1b] ?? 0) & 7,
       spriteIndex: view.getUint16(o + 0x20, true),
       landPrice: view.getUint16(o + 0x22, true),
       assetValue: u32(o + 0x24),
@@ -515,6 +547,8 @@ export function parseMap(data: Uint8Array): Rich4Map {
       x: view.getInt16(o + 0x00, true),
       y: view.getInt16(o + 0x02, true),
       name: readName(data, o + 0x04, 0x18),
+      // 朝向在 +0x18（绘制景观 VA 0x00409793 读的就是它）
+      facing: (data[o + 0x18] ?? 0) & 7,
       spriteIndex: view.getUint16(o + 0x1a, true),
     });
   }

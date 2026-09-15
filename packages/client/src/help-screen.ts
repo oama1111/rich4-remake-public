@@ -107,6 +107,8 @@
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { HOTKEY } from './hotkeys.ts';
 import { FONT_FAMILY } from './font.ts';
+// 取消音（`[0x482332] = 4`）—— 与右键/ESC 那条梯子共用同一个号
+import { CANCEL_SOUND } from './panel-cancel.ts';
 
 /** 这一屏的素材资源 @source 入口 `push 0` 的 `read_mkf` @0x44eb7d */
 export const HELP_RESOURCE = 0;
@@ -1895,6 +1897,21 @@ export const helpScreen: UiScreen = {
       return true;
     }
     return false;
+  },
+
+  /**
+   * 右键 = 关掉本屏。@source `_rich4_ui_help_callback` 的 0x205 → `loc_0044e546`：
+   * `play_sound_effect(0, 0x482332)`（音效 4）+ 放掉那几张图 + `Post_0402_Message(0)`。
+   *
+   * ★ 与上面那条 `Escape` 是**同一个行为**：原版钩子把取消键补成 `WM_RBUTTONUP`
+   *   （@source VA 0x004011c3），主窗口过程只交给 `windowCallbacks` 栈顶。
+   *   少了它，「從工具列開的遊戲百科」就只有 ESC 一条出口（需求方第 3 条）。
+   */
+  contextmenu(_x, _y, env) {
+    if (!helpState.open) return;
+    // 取消音 —— 与 `panel-cancel.ts` 的 `CANCEL_SOUND` 同一个号（`[0x482332] = 4`）
+    env.playEffect(CANCEL_SOUND);
+    closeHelp(env);
   },
 
   toolbar(index, env) {

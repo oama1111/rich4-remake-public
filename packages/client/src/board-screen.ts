@@ -1813,6 +1813,25 @@ function onUp(env: UiScreenEnv): void {
 //  UiScreen
 // ============================================================
 
+/**
+ * 「取消」这一拍：从最上面那一层开始收 —— **ESC 与右键共用**。
+ *
+ * 原版这两键本来就同源（钩子把取消键补成 `WM_RBUTTONUP (0x205)`，
+ * @source VA 0x004011c3），所以本屏也只留这一把梯子：
+ * 填数页 → 详情框 → 选物窗/选单 → 主屏。逐层 VA 见 `boardScreen.contextmenu`。
+ */
+function cancelBoardLayer(env: UiScreenEnv): void {
+  if (ui.mode === 'price') closePrice();
+  else if (ui.mode === 'detail') closeDetail(env);
+  else if (ui.mode !== 'board') {
+    ui.mode = 'board';
+    ui.typeHot = null;
+    ui.pickHot = null;
+    ui.press = null;
+  } else closeAll(env);
+  env.requestRender();
+}
+
 export const boardScreen: UiScreen = {
   id: 'notice-board',
 
@@ -1837,18 +1856,27 @@ export const boardScreen: UiScreen = {
     }
     if (!boardScreen.active(env)) return false;
     if (fn === 5 /* HOTKEY.cancel */) {
-      if (ui.mode === 'price') closePrice();
-      else if (ui.mode === 'detail') closeDetail(env);
-      else if (ui.mode !== 'board') {
-        ui.mode = 'board';
-        ui.typeHot = null;
-        ui.pickHot = null;
-        ui.press = null;
-      } else closeAll(env);
-      env.requestRender();
+      cancelBoardLayer(env);
       return true;
     }
     return false;
+  },
+
+  /**
+   * 右键 = 关掉最上面那一层 —— 与上面的 `Escape` 走**同一个** `cancelBoardLayer`。
+   *
+   * @source 原版的 `0x205` 分支（各层各一支，作用与 ESC 完全一样，因为钩子把
+   *   取消键补成了 `WM_RBUTTONUP`，@source VA 0x004011c3）：
+   * | 当前那一层 | 窗口过程收 0x205 的那一支 |
+   * |---|---|
+   * | 填数页 | `loc_00425fca` / `loc_00426673` / `loc_00426b89` / `loc_00426fa4`（关填数窗，返回 0）|
+   * | 选物窗 | 同上（那一层就是选物窗）|
+   * | 详情框 | `loc_00427b7d`（`fcn_0042704e`：关框 + `Post_0402_Message(0)`）|
+   * | 主屏 | `loc_00428378`（`fcn_00427c21`：`Post_0402_Message(0)` 走人）|
+   */
+  contextmenu(_x, _y, env: UiScreenEnv): void {
+    if (!boardScreen.active(env)) return;
+    cancelBoardLayer(env);
   },
 
   toolbar(index: number, env: UiScreenEnv): boolean {

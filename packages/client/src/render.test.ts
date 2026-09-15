@@ -7,6 +7,7 @@ import {
   actorTokens,
   actorWalkSteps,
   BoardRenderer,
+  buildingArtItems,
   DeferredSpriteClose,
   actorWalkTotalMs,
   actorWalkTriggers,
@@ -16,6 +17,7 @@ import {
   drawKey,
   fitCamera,
   hitToolbar,
+  landArt,
   objectTokens,
   SPECIAL_ACTOR_SPRITE_BASE,
   specialActorImageSet,
@@ -23,14 +25,26 @@ import {
   TOOLBAR_RIGHT,
   toolbarIconAt,
 } from './render.ts';
-import { SpriteCache, TOOLBAR_ICON_COUNT, TOOLBAR_STRIP_IMAGE, type Sprite } from './assets.ts';
+import {
+  buildingResource,
+  chainStoreResource,
+  decorImageIndex,
+  EMPTY_LAND_LOGO_RESOURCE,
+  SpriteCache,
+  TOOLBAR_ICON_COUNT,
+  TOOLBAR_STRIP_IMAGE,
+  type Sprite,
+} from './assets.ts';
 import { tweenTickCount } from './tween.ts';
 import { LAYOUT } from './stage.ts';
 import {
   ACTOR_PLACE,
+  makeFacility,
   makeGameState,
+  makeLand,
   makeNode,
   type GameState,
+  type LandInfo,
   type MapNode,
   type Rich4Map,
   type SpecialActor,
@@ -659,3 +673,154 @@ describe('★ 物件清单（`objectTokens`）—— 放置的三件道具必须
     expect(objectTokens(withObjects([{ type: 15, nodeId: 1 }]), nodes, 0)[0]!.resource).toBe(410);
   });
 });
+
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ *  ★ Q-LAND-1（需求方 2026-09-16 两条）
+ *
+ *  ① 「游戏开局为什么默认所有大地块都被青色归属的公园占了，应该是空地才对」
+ *  ② 「旋转地图视角时地图上的景物是不会跟着变化视角的吗？」
+ *
+ *  取证都来自 `fcn_0040829d` 的四段（住宅 `loc_004090e2` / 设施 `loc_004092f4`
+ *  / 企业 `loc_0040953f` / 景观 `loc_00409689`）：
+ *   - **未持有的空地（等级 0 + 无主）资源号 = 0，资源 0 的槽整条跳过 ⇒ 什么都不画**
+ *     （VA 0x0040923e → VA 0x00409848）。原版没有「每格一块底色」这种东西。
+ *   - 建筑/设施/企业/景观四类的图号**都吃视角**：`(8 − (朝向 + 视角)) & 7`
+ *     （VA 0x004091af / 0x004093c3 / 0x0040964d / 0x00409793），
+ *     因为四张图集实测**每张恰好 8 个朝向**。
+ *   - **只有装饰（`decorIndex` → 资源 24）不吃视角** —— 那一段整段不读 `[0x499088]`
+ *     （`loc_0040855f`，VA 0x0040862e 读 decorIndex）。
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+
+/** 只有一块住宅的小地图（节点挂在同一格上）*/
+function oneLandMap(land: LandInfo): Rich4Map {
+  return {
+    nodes: [makeNode({ id: 1, x: land.x, y: land.y, ref: { kind: 'land', index: land.id } })],
+    lands: [land],
+    facilities: [],
+    commercials: [],
+    landscapes: [],
+    dataSize: 0,
+  } as unknown as Rich4Map;
+}
+
+describe('★ Q-LAND-1 ①：未持有的空地 —— 原版一个像素都不画（露出地砖）', () => {
+  it('★ 等级 0 + 无主 → `null`（既不是色块，也不是空地 logo）', () => {
+    // @source VA 0x00409216 `cmp byte [land+0x19],0` / je → @source VA 0x0040923e 资源 = 0
+    // @source VA 0x00409848 `test ebp,ebp / je 0x409931` —— 资源 0 的槽整条跳过
+    expect(
+      landArt({ level: 0, owner: 0, character: 3, chain: false, facing: 5, globalMapId: 0, view: 0 }),
+    ).toBeNull();
+  });
+
+  it('★ 钉死整条路径：开局（landOwner / landLevel 全 0）棋盘上**一件立体物都没有**', () => {
+    const state = makeGameState({ landOwner: [0], landLevel: [0] });
+    expect(buildingArtItems(oneLandMap(makeLand({ id: 1 })), state, 0)).toEqual([]);
+    // 八个视角全试一遍 —— 不是「某个视角刚好不画」
+    for (let v = 0; v < 8; v++) {
+      expect(buildingArtItems(oneLandMap(makeLand({ id: 1 })), state, v)).toEqual([]);
+    }
+  });
+
+  it('等级 0 + 有主 → 空地 logo（map.mkf #25），图号 = 该玩家的 character', () => {
+    // @source VA 0x0040921c `mov eax,[0x48aea8]` / VA 0x00409230 `al = player[owner-1].+0x13`
+    const art = landArt({ level: 0, owner: 2, character: 5, chain: false, facing: 3, globalMapId: 1, view: 4 });
+    expect(art).toEqual({ resource: EMPTY_LAND_LOGO_RESOURCE, image: 5, paletteOwner: 0 });
+    // ★ 这一支**不读视角**：原版图号用的是角色号，不是 `8 − (朝向 + 视角)`
+    for (let v = 0; v < 8; v++) {
+      const a = landArt({ level: 0, owner: 2, character: 5, chain: false, facing: 3, globalMapId: 1, view: v })!;
+      expect(a).toEqual({ resource: EMPTY_LAND_LOGO_RESOURCE, image: 5, paletteOwner: 0 });
+    }
+  });
+
+  it('走整条路径：有主空地画在**地块记录**的 x/y 上，且不换归属色', () => {
+    // ⚠️ 这两张表是**按地块号（1 基）索引**的，下标 0 空着
+    const state = makeGameState({ landOwner: [0, 2], landLevel: [0, 0] });
+    const land = makeLand({ id: 1, x: 77, y: 88 });
+    expect(buildingArtItems(oneLandMap(land), state, 0)).toEqual([
+      { x: 77, y: 88, res: EMPTY_LAND_LOGO_RESOURCE, img: state.players[1]!.character },
+    ]);
+  });
+
+  it('★ 等级 ≥ 1 → 建筑图集（地图×5 + 等级−1 + 39），图号 = (8 − (朝向+视角)) & 7', () => {
+    // @source VA 0x004091af（图号）与 VA 0x004091e5（按等级取图集）
+    for (let v = 0; v < 8; v++) {
+      const art = landArt({ level: 3, owner: 1, character: 0, chain: false, facing: 2, globalMapId: 1, view: v })!;
+      expect(art.resource).toBe(buildingResource(1, 3));
+      expect(art.image).toBe((8 - (2 + v)) & 7);
+      // 有主 → 调色板 #255 换成该玩家的角色色（1 基玩家号原样带出去）
+      expect(art.paletteOwner).toBe(1);
+    }
+  });
+
+  it('连锁店（land.type != 0）走另一张图集 @source VA 0x004091ee / 0x00409208', () => {
+    const art = landArt({ level: 1, owner: 1, character: 0, chain: true, facing: 0, globalMapId: 2, view: 0 })!;
+    expect(art.resource).toBe(chainStoreResource(2));
+    expect(art.resource).not.toBe(buildingResource(2, 1));
+  });
+
+  it('等级 > 5：原版图集表只有 5 级 → 不画', () => {
+    expect(
+      landArt({ level: 6, owner: 1, character: 0, chain: false, facing: 0, globalMapId: 0, view: 0 }),
+    ).toBeNull();
+  });
+});
+
+describe('★ Q-LAND-1 ②：旋转视角 —— 三类景物都换图，装饰不换', () => {
+  /** 一件设施 + 一家企业 + 一处景观 */
+  const sceneryMap = (): Rich4Map =>
+    ({
+      nodes: [],
+      lands: [],
+      facilities: [makeFacility({ id: 1, x: 10, y: 20, facing: 3, type: 0, level: 0, owner: 0 })],
+      commercials: [
+        {
+          id: 1, x: 30, y: 40, name: '銀行', stockIndex: 0, type: 7, facing: 5,
+          spriteIndex: 140, landPrice: 0, assetValue: 0, shares: 0,
+        },
+      ],
+      landscapes: [{ id: 1, x: 50, y: 60, name: '阿里山', facing: 6, spriteIndex: 150 }],
+      dataSize: 0,
+    }) as unknown as Rich4Map;
+
+  const state = makeGameState({ commercialOwners: [{ owner: 0, ranking: [0, 0, 0, 0] }] });
+
+  it('★ 图号 = (8 − (朝向 + 视角)) & 7：设施/企业/景观各按自己的朝向 @source VA 0x004093c3 / 0x0040964d / 0x00409793', () => {
+    for (let v = 0; v < 8; v++) {
+      const items = buildingArtItems(sceneryMap(), state, v);
+      // 设施 = 舞台0 基号 0x57 + 槽 0；企业/景观 = 精灵索引 + 38
+      expect(items.map((i) => i.res)).toEqual([0x57, 178, 188]);
+      expect(items.map((i) => i.img)).toEqual([(8 - (3 + v)) & 7, (8 - (5 + v)) & 7, (8 - (6 + v)) & 7]);
+    }
+  });
+
+  it('★ 视角转一圈（0..7）：每一类的图号把 0..7 各取一次（图集确实是 8 向）', () => {
+    for (let slot = 0; slot < 3; slot++) {
+      const seen = new Set<number>();
+      for (let v = 0; v < 8; v++) seen.add(buildingArtItems(sceneryMap(), state, v)[slot]!.img);
+      expect([...seen].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+  });
+
+  it('★ 企业/景观的朝向分别读 +0x1b / +0x18 —— 缺字段时按 0 兜底', () => {
+    // 解析器一定填；手写的字面量（其它测试/工具）可能没有这个字节
+    const map = sceneryMap();
+    const noFacing = {
+      ...map,
+      commercials: [{ ...map.commercials[0]!, facing: undefined }],
+      landscapes: [{ ...map.landscapes[0]!, facing: undefined }],
+    } as unknown as Rich4Map;
+    const items = buildingArtItems(noFacing, state, 0);
+    expect(items[1]!.img).toBe(0); // (8 − (0 + 0)) & 7
+    expect(items[2]!.img).toBe(0);
+  });
+
+  it('装饰的图号只由 `decorIndex` 定（1 基 → 0 基），**没有视角这一路**', () => {
+    // @source `loc_0040855f`：整段不读 `[0x499088]`，就是 `decorIndex − 1` 直接贴
+    expect(decorImageIndex(0)).toBeNull();
+    expect(decorImageIndex(1)).toBe(0);
+    expect(decorImageIndex(58)).toBe(57);
+  });
+});
+

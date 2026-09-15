@@ -25,6 +25,16 @@
  *
  * ★ 上一轮卡里写的「候选格描边」是**我们自己想的**，原版没有 —— 按 exe 改成指针。
  *
+ * ## 候选的**落点**必须跟实例走（Q-TOOL-4）
+ *
+ * 原版判「光标底下是什么」用的是**像素级实例表**
+ * （`_rich4_get_instance_from_position` VA 0x40a9d7：`word [0x474938][440*y + x]`），
+ * 命中的是**画在那儿的那个实例**：光标在建筑/白格上 → 地块编码（2000+下标）、
+ * 在設施上 → 設施编码、只有在路面上才是节点号。
+ * 而地块/設施是按**各自的记录坐标**画的，与节点坐标实测差 41..66 屏幕像素
+ * （Q-LAYOUT-4）。先前这里一律把候选挂在节点上，于是「機器工人点自己的白格」
+ * 永远吃红叉 —— 见 `instanceAnchor`。
+ *
  * ⚠️ **没做**：贴边推镜头那一路（方向箭头 + 每 50ms 推一格/一屏）。
  *   它的方向表是 `0x4751b0`（8 个视角各一项），与棋盘旋转共用。已登记
  *   `known-deviations.md` 的 Q-PICK-1。
@@ -48,12 +58,17 @@ export type PickSource =
 
 /** 一个候选目标 */
 export interface PickCandidate {
-  /** 世界坐标落点（命中与画反馈都用它）*/
+  /**
+   * 世界坐标落点（命中与画反馈都用它）。
+   *
+   * ★ **不是**节点坐标：地块/設施画在各自的记录坐标上（见 `instanceAnchor`），
+   *   把它当节点会偏 41..66 屏幕像素，用户点不到。
+   */
   wx: number;
   wy: number;
   /** 组装出来的卡片目标 */
   target: CardTarget;
-  /** 发 `useTool` 时要带的 `nodeId`（0 = 不带）*/
+  /** 发 `useTool` 时要带的 `nodeId`（0 = 不带）—— 引擎的 target 契约一直是**节点号** */
   nodeId: number;
 }
 
@@ -62,7 +77,7 @@ export interface PickSession {
   source: PickSource;
   /** 目标类别（卡片用；道具不分，一律按「所有格子」枚举）*/
   targetClass: TargetClass;
-  /** 这一次的选择参数（决定指针形状与「右键能不能取消」）*/
+  /** 这一次的选择参数（决定指针形状、类别位与「右键能不能取消」）*/
   param: number;
   /**
    * 能不能**右键取消** @source VA 0x4466b8：`test byte [0x48c594], 8` 为真
@@ -131,6 +146,92 @@ export const TOOL_SELECT_PARAM: ReadonlyMap<number, number> = new Map([
   [11, 0x2090001], // 傳送機
 ]);
 
+/**
+ * 选择参数的**类别位** —— 决定「光标底下什么算数」。
+ *
+ * @source VA 0x4461ff 起（窗口过程的悬停判定）逐条 `test byte [0x48c594], X`：
+ * ```asm
+ * 00446235  test byte [0x48c594], 1     ; bit0：**格子**（路面；实例值 < 2000）
+ * 0044624e  test byte [0x48c594], 2     ; bit1：**地块**（2000..4000；路边的白格/建筑）
+ * 0044627d  test byte [0x48c594], 4     ; bit2：**設施**（4000..6000）
+ * 004462b3  test byte [0x48c594], 0x10  ; bit4：玩家棋子（0x80xx）
+ * 004462e7  test byte [0x48c594], 0x20  ; bit5：特殊棋子（四大惡人/娃娃）
+ * ```
+ * 同一个字节里的另两位不是类别：bit3（`8`）= **目标必选**（右键不许取消，
+ * VA 0x4466b8），bit7（`0x80`）= **光标贴边推镜头**（VA 0x44609b）。
+ */
+export const PICK_CLASS = {
+  /** 路面：棋子走的那一格格子 */
+  node: 0x1,
+  /** 地块：路边的**白格**（建筑就画在那儿，见 render.ts 的 Q-LAYOUT-4） */
+  land: 0x2,
+  /** 設施（機場/港口…，画在 `facility.x/y`） */
+  facility: 0x4,
+  /** 目标必选（不是类别） */
+  required: 0x8,
+  player: 0x10,
+  actor: 0x20,
+  /** ★ 「什么都收」：见 `pickClasses` */
+  all: 0x40,
+  edgeScroll: 0x80,
+} as const;
+
+/**
+ * 把选择参数的低 16 位规范化成**真正的类别位**。
+ *
+ * @source VA 0x445ec1（`0x401` 那条初始化）：
+ * ```asm
+ * test byte [0x48c594], 0x40
+ * je   跳过
+ * and  dword [0x48c594], 0x80        ; ★ 只留 bit7，其余（含 bit3）全清
+ * or   byte [0x48c594], 0x37         ; 于是类别 = 格子|地块|設施|玩家|棋子
+ * ```
+ * 飛彈/核子飛彈的选择参数就是这种（`0x300c0` / `0x400c0` 的低 16 位 = `0xc0`）：
+ * 「什么都收、右键可取消、光标贴边推镜头」。
+ */
+export function pickClasses(selectionParam: number): number {
+  const lo = selectionParam & 0xffff;
+  if ((lo & PICK_CLASS.all) !== 0) {
+    const every =
+      PICK_CLASS.node | PICK_CLASS.land | PICK_CLASS.facility | PICK_CLASS.player | PICK_CLASS.actor;
+    return (lo & PICK_CLASS.edgeScroll) | every;
+  }
+  return lo;
+}
+
+/**
+ * 这一次拾取在**这一个节点**上要打的那个**实例**，它的绘制落点。
+ *
+ * ★ 为什么不能一律用节点坐标：原版是按**光标底下的像素**查一张实例表
+ *   （`_rich4_get_instance_from_position` @ VA 0x40a9d7：
+ *   `instance = word [0x474938][440 * y + x]`），光标落在**建筑/白格**上拿到的是
+ *   **地块编码**（2000 + 下标）、落在設施上拿到設施编码、只有在路面上才是节点号。
+ *   而地块/設施是画在**它们自己的 x/y** 上的（@source 绘制 VA 0x004090fc：
+ *   `movsx eax, word [ebp]` / `[ebp+2]`，`ebp` 是地块记录）——
+ *   与本节点实测差 **41..66 屏幕像素**（见 render.ts `#buildingSlots` 的说明
+ *   与 known-deviations 的 Q-LAYOUT-4）。
+ *
+ * ⚠️ 这就是「機器工人点不动自己的地」那一类问题的根：先前候选一律挂在节点
+ *   （**路面**）上，而地块在第 24 像素命中半径之外 —— 用户点白格/房子永远吃红叉。
+ */
+export function instanceAnchor(
+  topo: MapTopology,
+  node: MapTopology['nodes'][number],
+  classes: number,
+): { x: number; y: number } {
+  // ★ 取成 const 局部量：`node.ref` 是可变属性，判别联合的收窄**进不了闭包**
+  const ref = node.ref;
+  if ((classes & PICK_CLASS.land) !== 0 && ref.kind === 'land') {
+    const l = topo.lands?.find((x) => x.id === ref.index);
+    if (l !== undefined) return { x: l.x, y: l.y };
+  }
+  if ((classes & PICK_CLASS.facility) !== 0 && ref.kind === 'facility') {
+    const f = topo.facilities?.find((x) => x.id === ref.index);
+    if (f !== undefined) return { x: f.x, y: f.y };
+  }
+  return { x: node.x, y: node.y };
+}
+
 /** 指针图集 @source VA 0x4020fa 的 `read_mkf(data_mkf, 0, 0, 0)` */
 export const CURSOR_ARCHIVE = 'Data.mkf' as const;
 export const CURSOR_RESOURCE = 0;
@@ -151,12 +252,23 @@ export function classNeedsItsOwnList(cls: TargetClass): boolean {
  *
  * 每一条都拿 core 的预演过一遍（`canUseCard` / `canUseTool`），
  * 所以「什么算数」这件事仍然只有 core 一份实现。
+ *
+ * ★ 候选的**落点**按原版的实例表分开：
+ *   - 路面（格子）→ 节点自己的 x/y；
+ *   - 地块（白格/建筑）→ **地块记录的 x/y**；
+ *   - 設施 → **設施记录的 x/y**。
+ *   原版是「光标落在哪个像素、就查那一像素的实例」（`0x40a9d7`），
+ *   而这三样东西画在**三个不同的地方**（见 `instanceAnchor`）。
+ *
+ * @param param 选择参数（`TOOL_SELECT_PARAM` / 卡片的 `selectionParam`）——
+ *   它的**类别位**决定这一个节点上哪一类实例算数（见 `PICK_CLASS`）。
  */
 export function pickCandidates(
   state: GameState,
   topo: MapTopology,
   source: PickSource,
   cls: TargetClass,
+  param = 0,
 ): PickCandidate[] {
   const nodes = topo.nodes;
   const out: PickCandidate[] = [];
@@ -172,10 +284,24 @@ export function pickCandidates(
   };
 
   // ── 道具：所有格子都算候选，哪一格算数由 core 说了算 ──
+  //
+  // ★ 落点由参数的**类别位**分流（原版就是这么分的）：
+  //   機器工人（`0x2090006`，低 16 位 `0x6` = 地块|設施、**不含格子**）
+  //   → 候选挂在**白格/建筑**上，路面不算数；
+  //   路障/地雷/定時炸彈/傳送機（`0x1` = 只认格子）→ 候选挂在路面上；
+  //   飛彈/核子（`0xc0` → `pickClasses` 展开成 0x37）→ 两处都算。
   if (source.kind === 'tool') {
+    const classes = pickClasses(param);
     for (const n of nodes) {
       const target: CardTarget = { kind: 'node', nodeId: n.id };
-      if (ok(target, n.id)) out.push({ wx: n.x, wy: n.y, target, nodeId: n.id });
+      if (!ok(target, n.id)) continue;
+      if ((classes & PICK_CLASS.node) !== 0) {
+        out.push({ wx: n.x, wy: n.y, target, nodeId: n.id });
+      }
+      const anchor = instanceAnchor(topo, n, classes);
+      if (anchor.x !== n.x || anchor.y !== n.y) {
+        out.push({ wx: anchor.x, wy: anchor.y, target, nodeId: n.id });
+      }
     }
     return out;
   }
@@ -187,10 +313,12 @@ export function pickCandidates(
         // 住宅/連鎖店 → entity；設施 → facility（只有 landOrFacility 收）
         if (n.ref.kind === 'land') {
           const target: CardTarget = { kind: 'entity', entityId: n.ref.index };
-          if (ok(target, n.id)) out.push({ wx: n.x, wy: n.y, target, nodeId: n.id });
+          const p = instanceAnchor(topo, n, PICK_CLASS.land);
+          if (ok(target, n.id)) out.push({ wx: p.x, wy: p.y, target, nodeId: n.id });
         } else if (n.ref.kind === 'facility' && cls === 'landOrFacility') {
           const target: CardTarget = { kind: 'facility', facilityId: n.ref.index };
-          if (ok(target, n.id)) out.push({ wx: n.x, wy: n.y, target, nodeId: n.id });
+          const p = instanceAnchor(topo, n, PICK_CLASS.facility);
+          if (ok(target, n.id)) out.push({ wx: p.x, wy: p.y, target, nodeId: n.id });
         }
       }
       return out;
@@ -253,10 +381,12 @@ export function startPick(
   return {
     source,
     targetClass,
-    // bit3 = 「目标必选」→ 右键不取消 @source VA 0x4466b8 的 `test byte [0x48c594], 8`
-    cancellable: (param & 0x8) === 0,
+    // bit3 = 「目标必选」→ 右键不取消 @source VA 0x4466b8 的 `test byte [0x48c594], 8`。
+    // ★ 读的是**规范化之后**的字节（`0x401` 那条初始化会先按 bit6 展开类别，
+    //   顺手把 bit3 清掉 —— 飛彈/核子一律可取消）。
+    cancellable: (pickClasses(param) & PICK_CLASS.required) === 0,
     param,
-    candidates: pickCandidates(state, topo, source, targetClass),
+    candidates: pickCandidates(state, topo, source, targetClass, param),
   };
 }
 
