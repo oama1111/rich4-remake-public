@@ -27,7 +27,7 @@ import {
   facilitySlot,
   sceneryResource,
   toolbarIconImage,
-  characterSprite,
+  characterSetBase,
   CHARACTER_POSE,
   directionalImage,
   screenDirection,
@@ -759,8 +759,10 @@ export class BoardRenderer {
       //   屏幕朝向 = (玩家朝向 + 8 − 视角) & 7（@source VA 0x0040882d），
       //   图号 = 屏幕朝向 × (图数 / 8) + 帧（@source VA 0x0040883f）。
       const moving = state.phase === 'moving' && pl.index === state.currentPlayer;
+      // ★ 图组按**交通方式**取（走路/機車/汽車/船），组内三张 = 站/走/手持骰子
+      //   @source VA 0x0040bbd8：edi = 0x80 + 角色×21 + 3×traffic_method
       const pose = moving ? CHARACTER_POSE.walk : CHARACTER_POSE.stand;
-      const res = characterSprite(pl.character, pose);
+      const res = characterSetBase(pl.character, pl.trafficMethod) + pose;
       const count = this.#imageCount('Data.mkf', res);
       const dir = screenDirection(pl.direction, cam.view);
       const token =

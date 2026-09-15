@@ -1067,20 +1067,31 @@ cards:
 
 - id: T-049
   group: C
-  title: 船（海路）棋子形态
+  title: 载具棋子形态（走路 / 機車 / 汽車 / 船）
   module: MOD-12
   req: REQ-12.19
-  status: todo
+  status: done
   estimate: 0.4
   depends_on: [T-046]
-  uses: [client/render.ts, "core/loaders/map.ts (节点 flags/type 判海路)"]
-  source: "U-11；海路格的 type/flags 位（map-format.md）"
-  input: "玩家所在节点是否海路"
-  output: "海路上用船精灵代替角色精灵"
-  algorithm: "isSeaNode(node) 纯函数（从 map-format 抄位）；characterSprite 分支。"
-  tests: "isSeaNode 测试"
-  files: [packages/client/src/render.ts]
-  notes: ""
+  uses: [client/render.ts, client/assets.ts (characterSetBase)]
+  source: "U-11；`_rich4_update_player_sprite` VA 0x0040bbd8"
+  input: "玩家的 trafficMethod"
+  output: "按交通方式选角色图组（站 / 走 / 手持骰子）"
+  algorithm: |
+    图组基号 = 0x80 + 角色×21 + (交通方式 & 3)×3，该组三个资源依次是
+    **站 / 走 / 手持骰子**。
+  tests: "characterSetBase 映射测试（四种交通方式各一条 + 越界 & 3）"
+  files: [packages/client/src/assets.ts, packages/client/src/render.ts]
+  notes: |
+    2026-09-15 完成。★ **卡片原写「按海路格判（isSeaNode）」是错的** —— 查 exe 后确认
+    形态只由 `player+0x11`（traffic_method）决定，与地形无关：
+    ```asm
+    mov al, byte [player+0x11] ; and al, 3
+    … eax = 3 × 交通方式 ; add edi, eax    ; edi = 0x80 + 角色×21 + 3t
+    read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
+    ```
+    故 0 走路 → k0..2、1 機車 → k3..5、2 汽車 → k6..8、**3 船 → k9..11**。
+    （先前 assets.ts 里那张表把 k9..12 目测成「工程车」，其实是**船**。）
 
 - id: T-050
   group: C

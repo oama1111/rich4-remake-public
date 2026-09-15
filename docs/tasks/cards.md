@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 20.7。
+共 **73** 张卡，估算 **39.8** 单元，已完成 21.1。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -60,7 +60,7 @@
 | [T-046](#t-046) | 走子补间动画与时序（玩家棋子） | MOD-12 | REQ-12.18 | `done` | 1.0 | — |
 | [T-047](#t-047) | 四大惡人与機器娃娃的棋子渲染与走子动画 | MOD-12 | REQ-12.18 | `todo` | 0.6 | T-046 |
 | [T-048](#t-048) | 開局跳伞过场（可跳过） | MOD-12 | REQ-12.19 | `todo` | 0.5 | — |
-| [T-049](#t-049) | 船（海路）棋子形态 | MOD-12 | REQ-12.19 | `todo` | 0.4 | T-046 |
+| [T-049](#t-049) | 载具棋子形态（走路 / 機車 / 汽車 / 船） | MOD-12 | REQ-12.19 | `done` | 0.4 | T-046 |
 | [T-050](#t-050) | 地塊归属彩边 + GO 钮三态 + 標題音效 | MOD-12 | REQ-12.19 | `done` | 0.4 | — |
 | [T-051](#t-051) | 解析 Speaking.mkf 語音索引（1375 段 → 事件/角色映射表） | MOD-11 | REQ-12.20 | `todo` | 0.8 | — |
 | [T-052](#t-052) | 語音触发点接线（playSoundFor 扩展） | MOD-12 | REQ-12.20 | `todo` | 0.5 | T-051 |
@@ -1833,36 +1833,48 @@
 
 ### T-049
 
-**船（海路）棋子形态**
+**载具棋子形态（走路 / 機車 / 汽車 / 船）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.19` · 状态 `todo` · 估算 0.4 单元
+- 模块 `MOD-12` · 需求 `REQ-12.19` · 状态 `done` · 估算 0.4 单元
 - 依赖：T-046
-- 证据：U-11；海路格的 type/flags 位（map-format.md）
+- 证据：U-11；`_rich4_update_player_sprite` VA 0x0040bbd8
 
 **依赖的其他类 / 文件**
 
 - client/render.ts
-- core/loaders/map.ts (节点 flags/type 判海路)
+- client/assets.ts (characterSetBase)
 
 **期望输入**
 
-    玩家所在节点是否海路
+    玩家的 trafficMethod
 
 **期望输出**
 
-    海路上用船精灵代替角色精灵
+    按交通方式选角色图组（站 / 走 / 手持骰子）
 
 **核心逻辑 / 算法指导**
 
-    isSeaNode(node) 纯函数（从 map-format 抄位）；characterSprite 分支。
+    图组基号 = 0x80 + 角色×21 + (交通方式 & 3)×3，该组三个资源依次是
+    **站 / 走 / 手持骰子**。
 
 **验收测试**
 
-    isSeaNode 测试
+    characterSetBase 映射测试（四种交通方式各一条 + 越界 & 3）
 
 **涉及文件**
 
+- packages/client/src/assets.ts
 - packages/client/src/render.ts
+
+> 2026-09-15 完成。★ **卡片原写「按海路格判（isSeaNode）」是错的** —— 查 exe 后确认
+形态只由 `player+0x11`（traffic_method）决定，与地形无关：
+```asm
+mov al, byte [player+0x11] ; and al, 3
+… eax = 3 × 交通方式 ; add edi, eax    ; edi = 0x80 + 角色×21 + 3t
+read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
+```
+故 0 走路 → k0..2、1 機車 → k3..5、2 汽車 → k6..8、**3 船 → k9..11**。
+（先前 assets.ts 里那张表把 k9..12 目测成「工程车」，其实是**船**。）
 
 ### T-050
 

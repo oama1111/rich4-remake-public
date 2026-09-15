@@ -647,12 +647,30 @@ export const CHARACTER_SPRITE_STRIDE = 21;
  * | 19 | 8 | 白衣（住院？） |
  * | 20 | 8 | 條紋囚衣（坐牢） |
  */
-export const CHARACTER_POSE = { stand: 0, walk: 1 } as const;
+export const CHARACTER_POSE = { stand: 0, walk: 1, dice: 2 } as const;
 
-/** 某个角色某个姿态的 `Data.mkf` 资源号 */
-export function characterSprite(character: number, pose: number): number {
-  return CHARACTER_SPRITE_BASE + character * CHARACTER_SPRITE_STRIDE + pose;
+/**
+ * 某个角色、某种**交通方式**的图组基号 —— 该组三个资源依次是 **站 / 走 / 手持骰子**。
+ *
+ * @source `_rich4_update_player_sprite` VA 0x0040bbd8：
+ * ```asm
+ * mov al, byte [player + 0x11]     ; ★ traffic_method
+ * and al, 3
+ * … eax = 3 × 交通方式
+ * add edi, eax                     ; edi = 0x80 + 角色×21 + 3t
+ * read_mkf(data_mkf, edi)          ; 站
+ * read_mkf(data_mkf, edi + 1)      ; 走
+ * read_mkf(data_mkf, edi + 2)      ; 手持骰子
+ * ```
+ * 于是：0 走路 → k0..2、1 機車 → k3..5、2 汽車 → k6..8、**3 船 → k9..11**。
+ *
+ * ★ 先前这里按「角色+姿态」取图（`0x80 + 角色×21 + 姿态`），**载具那些姿态取不到**
+ *   —— 表格里 k3..12 被目测成「機車/另一种载具/工程车」，其实是四种交通方式各三张。
+ */
+export function characterSetBase(character: number, traffic: number): number {
+  return CHARACTER_SPRITE_BASE + character * CHARACTER_SPRITE_STRIDE + (traffic & 3) * 3;
 }
+
 
 /**
  * 世界朝向 → 屏幕朝向。

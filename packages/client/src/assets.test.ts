@@ -18,6 +18,8 @@ import {
   type HdSource,
   type LoadedArchives,
   type Sprite,
+  characterSetBase,
+  CHARACTER_POSE,
 } from './assets.ts';
 
 // ============================================================
@@ -498,5 +500,35 @@ describe('★ 建筑外圈那圈线按所有者的角色色换色', () => {
     expect(calls).toHaveLength(2);
     expect(rgbAt(a!, 0)).toEqual([1, 2, 3]);
     expect(rgbAt(b!, 0)).toEqual([4, 5, 6]);
+  });
+});
+
+describe('★ 载具图组（T-049）—— 按交通方式取，与地形无关', () => {
+  it('组基号 = 0x80 + 角色×21 + 交通方式×3 @source VA 0x0040bbd8', () => {
+    expect(characterSetBase(0, 0)).toBe(0x80);
+    expect(characterSetBase(0, 1)).toBe(0x83);
+    expect(characterSetBase(0, 2)).toBe(0x86);
+    expect(characterSetBase(0, 3)).toBe(0x89); // ★ 船
+    expect(characterSetBase(1, 0)).toBe(0x80 + 21);
+  });
+
+  it('组内三张 = 站 / 走 / 手持骰子', () => {
+    expect(CHARACTER_POSE.stand).toBe(0);
+    expect(CHARACTER_POSE.walk).toBe(1);
+    expect(CHARACTER_POSE.dice).toBe(2);
+    for (let t = 0; t < 4; t++) {
+      const base = characterSetBase(3, t);
+      expect(base + CHARACTER_POSE.walk - base).toBe(1);
+      expect(base + CHARACTER_POSE.dice - base).toBe(2);
+    }
+  });
+
+  it('交通方式按 `& 3` 回绕（原版 `and al, 3`）', () => {
+    expect(characterSetBase(0, 4)).toBe(characterSetBase(0, 0));
+    expect(characterSetBase(0, 7)).toBe(characterSetBase(0, 3));
+  });
+
+  it('12 个角色 × 21 不越出 Data.mkf 的角色段（0x80..0xEC）', () => {
+    expect(characterSetBase(11, 3) + 2).toBe(0x80 + 11 * 21 + 11);
   });
 });
