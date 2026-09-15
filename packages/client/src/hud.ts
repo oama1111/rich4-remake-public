@@ -16,6 +16,7 @@
  */
 
 import {
+  PANEL_PAGE_COUNT,
   daysInMonth,
   isHoliday,
   sceneOfMonth,
@@ -168,31 +169,79 @@ export function monthCells(year: number, month: number): MonthCell[] {
  */
 export type SidebarView = 'calendar' | 'month' | 'map';
 
+
+// ============================================================
+//  四页（資金 / 地產 / 股票 / 其他）
+// ============================================================
+
 /**
- * 三条数值栏在 200×280 图内的纵向位置 = 底图上那三条浅蓝横栏的**中心**。
+ * 四个 tag 的竖条位置与文字。
  *
- * ★ 这三个数是**从底图量出来的**（沿 x=120 逐行扫冷暖色，冷色段即横栏）：
+ * @source VA 0x00416123（画底图与 tag）：
+ * ```asm
+ * ; 底图 = Panel.mkf 资源 0 的**图[页]**，画在 (440, 0)
+ * mov dl, byte [esi + 0x48be24]      ; 页号（每个玩家一份）
+ * … eax = 12 × 页号
+ * mov eax, [0x48be0c] ; add eax, 0xc ; add eax, edx
+ * call 0x4563f5                      ; fcn_004563f5(surface, 图, 440, 0)
  *
- * | 栏 | y 范围 | 高 | 中心 |
- * |---|---|---|---|
- * | 現金 | 96..128 | 33 | **112** |
- * | 存款 | 160..192 | 33 | **176** |
- * | 總資產 | 224..256 | 33 | **240** |
+ * ; 四个 tag：x = 0x273(627)，字号 0x12(18)，flag 3（正中）
+ * mov edx, [esp + ebx*4 + 0x94]      ; 该 tag 的 y（局部数组）
+ * add edx, 0x14(20)
+ * push 3 / push edx / push 0x273
+ * mov edi, [ebx*4 + 0x475274]        ; 串表：資金/地產/股票/其他
+ * ```
+ * y 表在 `0x415d0d`（4 个 dword `[15, 88, 158, 230]`）复制进栈，再各 **+20**，
+ * 即文字中心落在局部 y = **35 / 108 / 178 / 250**。
  *
- * 间距 **64**。先前写的是 `[112, 172, 232]`（间距 60，目测得来）——
- * 第一栏碰巧对，往下逐栏偏高，到第三栏已差 8 像素（需求方 2026-09-14 指出
- * 「有些偏高」）。底图里连**图标都烘好了**（钱堆／猪扑满／钱堆），
- * 所以文字必须落在栏中心才对得上。
+ * ★ 当前页用 `0x101010`（黑），其余用 `0x404040`（暗灰）—— 见 VA 0x004161a5 / 0x004161e5。
  */
-const ROW_Y = [112, 176, 240] as const;
+export const PANEL_TAGS = [
+  { label: '資金', y: 35 },
+  { label: '地產', y: 108 },
+  { label: '股票', y: 178 },
+  { label: '其他', y: 250 },
+] as const;
+/** tag 文字的 x（侧栏局部）@source `push 0x273` → 627 − 440 */
+export const PANEL_TAG_X = 0x273 - 440;
+/** tag 字号 @source `push 0x12` */
+const PANEL_TAG_SIZE = 0x12;
+const PANEL_TAG_ACTIVE = '#101010';
+const PANEL_TAG_IDLE = '#404040';
+
 /**
- * 数值右对齐到的 x。
- * 横栏的 x 跨度约 8..168，最右 176..199 是那四个彩色竖标签（也烘在底图里），
- * 数值不能压上去，故右对齐在 166 —— 距栏右缘 2 像素。
+ * 四页各自的三行标签。
+ *
+ * @source VA 0x00417eba 起 —— 原版在开局时把 12 个标签**用代码画进那四张页面图**
+ *   （`rich4_draw_text(页面图, 串, 10, y, 0)`），所以 `Panel.mkf` 资源 0 的图里
+ *   只有图标、没有文字。串表在 VA `0x463920` 起：
+ *   `現  金 / 存  款 / 總資產 / 土  地 / 連鎖店 / 設  施 / 總市值 / 成  本 / 經營權 / 點  卷 / 貸  款 / 保險期`
+ *   （串里带双空格是为了对齐，照抄），画的位置 x = 10、y = 80 / 145 / 208、字号 12、flag 0。
  */
-const VALUE_RIGHT = 166;
-/** 头像画在顶栏；尺寸取自 `docs/original-screens.md` S6「72×72 头像」 */
-const PORTRAIT = { x: 8, y: 6, size: 72 } as const;
+export const PANEL_ROWS: readonly (readonly [string, string, string])[] = [
+  ['現  金', '存  款', '總資產'],
+  ['土  地', '連鎖店', '設  施'],
+  ['總市值', '成  本', '經營權'],
+  ['點  卷', '貸  款', '保險期'],
+];
+/** 行标签的 x / y（侧栏局部）@source VA 0x00417eba 的 `push 0xa` 与 `push 0x50/0x91/0xd0` */
+export const PANEL_ROW_LABEL_X = 0xa;
+export const PANEL_ROW_LABEL_Y = [0x50, 0x91, 0xd0] as const;
+/** 行标签字号 @source `push 0xc` */
+const PANEL_LABEL_SIZE = 0xc;
+/**
+ * 每页三行数值的**顶端** y 与右对齐 x。
+ * @source `fcn_00415f69` 的四个页处理函数：一律 `push 1 / push y / push 0x258(600)`，
+ *   flag 1 = 右上 —— 即 `y` 是文字块的**顶边**，x 是右缘。
+ *
+ * ★ 底图上那三条浅蓝横栏的 y 范围约 `96..128 / 160..192 / 224..256`
+ *   （中心 112 / 176 / 240，间距 64）；22 号字落在顶边 102 时视觉中心正好
+ *   ≈ 112 —— **两套数一致**，别只信一套。
+ */
+export const PANEL_VALUE_RIGHT = 0x258 - 440;
+export const PANEL_VALUE_Y = [0x66, 0xa6, 0xe6] as const;
+/** 数值字号 @source `push 0x16` */
+const PANEL_VALUE_SIZE = 0x16;
 
 export interface HudInput {
   state: GameState;
@@ -218,6 +267,13 @@ export interface HudInput {
    * @source VA 0x00416baf 起
    */
   holidayArt: ImageBitmap | null;
+  /**
+   * 側欄现在显示第几页（0 資金 / 1 地產 / 2 股票 / 3 其他）。
+   * **每个玩家一份**（原版 `0x48be24 + 玩家号`），由 PgUp/PgDn 切换。
+   */
+  panelPage: number;
+  /** 该页三行的文字（已按该页的格式排好），与 `PANEL_ROWS[page]` 一一对应 */
+  panelRows: readonly string[];
 }
 
 /**
@@ -386,8 +442,6 @@ export const MINIMAP_ARROW_IMAGE = {
  *   先前我们画成 29 格宽的窗口，那是自己想的（原版没有这个东西）。
  */
 export const MINIMAP_BOX = 30;
-
-const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
 
 export class Hud {
   readonly #ctx: CanvasRenderingContext2D;
@@ -578,8 +632,9 @@ export class Hud {
     const me = input.state.players[input.state.currentPlayer];
     if (me === undefined) return;
 
-    // 背景：原版的「資金」页
-    const bg = this.#sprite('Panel.mkf', 0, 0);
+    // 背景：**该玩家当前那一页**（Panel.mkf 资源 0 的图 0..3）@source VA 0x00416123
+    const page = input.panelPage % PANEL_PAGE_COUNT;
+    const bg = this.#sprite('Panel.mkf', 0, page);
     if (bg !== null) {
       ctx.drawImage(bg.bitmap, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
     } else {
@@ -587,51 +642,67 @@ export class Hud {
       ctx.fillRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
     }
 
+    // 四个 tag（右缘竖条）—— 当前页黑、其余暗灰 @source VA 0x004161e5 / 0x004161a5
+    ctx.font = `${PANEL_TAG_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i < PANEL_TAGS.length; i++) {
+      const tag = PANEL_TAGS[i]!;
+      ctx.fillStyle = i === page ? PANEL_TAG_ACTIVE : PANEL_TAG_IDLE;
+      ctx.fillText(tag.label, PANEL_TAG_X, tag.y);
+    }
+
     // 头像
     // ★ 头像也是 SMP，黑是抠图底色；不抠就会顶着一块黑框
     const face = this.#sprite('map.mkf', portraitResource(me.character), 0, true);
     if (face !== null) {
-      ctx.drawImage(face.bitmap, PORTRAIT.x, PORTRAIT.y, PORTRAIT.size, PORTRAIT.size);
+      // @source VA 0x0041618f `fcn_00456418(surface, 头像图, 0x1e2(482), 0x28(40))`
+      //   —— 那两数是**锚点**落点，故按锚点画（侧栏局部 = 屏幕 − 440）
+      ctx.drawImage(face.bitmap, 0x1e2 - 440 - face.anchorX, 0x28 - face.anchorY);
     }
 
-    // 姓名
-    ctx.fillStyle = '#2a1d0e';
-    ctx.font = 'bold 18px "PingFang TC", "Microsoft JhengHei", sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'alphabetic';
+    // 姓名 ── @source VA 0x00416288 `draw_text(0, 名字, 0x234(564), 0x28(40), 2)`（flag 2 = 正中）
+    ctx.fillStyle = '#101010';
+    ctx.font = `${PANEL_VALUE_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
     const name = CHARACTERS[me.character]?.name ?? `角色${me.character}`;
-    ctx.fillText(name, PORTRAIT.x + PORTRAIT.size + 8, 42);
+    ctx.fillText(name, 0x234 - 440, 0x28);
     if (me.whoPlays === 0) {
       ctx.fillStyle = '#a02a20';
       ctx.font = '12px "PingFang TC", sans-serif';
-      ctx.fillText('（出局）', PORTRAIT.x + PORTRAIT.size + 8, 60);
+      ctx.fillText('（出局）', 0x234 - 440, 0x28 + 18);
     }
 
-    // 三条数值：現金 / 存款 / 總資產
-    const wealth =
-      me.cash +
-      me.moneyInBank +
-      input.state.landOwner.reduce((sum, owner, id) => {
-        if (owner !== me.index + 1) return sum;
-        const land = input.map.lands.find((l) => l.id === id);
-        if (land === undefined) return sum;
-        const level = input.state.landLevel[id] ?? 0;
-        return sum + (land.landPrice + land.housePrice * level) * input.state.priceIndex;
-      }, 0);
-
-    ctx.font = 'bold 15px "PingFang TC", monospace';
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#1d2b1d';
-    const values = [me.cash, me.moneyInBank, wealth];
-    for (let i = 0; i < ROW_Y.length; i++) {
-      ctx.fillText(money(values[i]!), VALUE_RIGHT, ROW_Y[i]!);
-    }
-
-    // 物价指数
+    // 三行标签（**原版是开局画进页面图的**，这里每帧照同样的坐标画）@source VA 0x00417eba
+    const labels = PANEL_ROWS[page] ?? PANEL_ROWS[0]!;
+    ctx.fillStyle = '#101010';
+    ctx.font = `${PANEL_LABEL_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
     ctx.textAlign = 'left';
-    ctx.font = '12px "PingFang TC", sans-serif';
-    ctx.fillStyle = '#43351f';
-    ctx.fillText(`物價指數 ${input.state.priceIndex}`, 10, 268);
+    ctx.textBaseline = 'top';
+    for (let i = 0; i < PANEL_ROW_LABEL_Y.length; i++) {
+      ctx.fillText(labels[i]!, PANEL_ROW_LABEL_X, PANEL_ROW_LABEL_Y[i]!);
+    }
+
+    // 三行数值 —— 每页算的量不同，见 core 的 `panelValues`；文字由调用方
+    // （client/panel.ts 的 `panelRows`）按各页的格式排好再传进来
+    // @source VA 0x004162d4 / 0x00416355 / 0x0041646c / 0x004165e1
+    ctx.font = `${PANEL_VALUE_SIZE}px "PingFang TC", monospace`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#101010';
+    for (let i = 0; i < PANEL_VALUE_Y.length; i++) {
+      ctx.fillText(input.panelRows[i] ?? '', PANEL_VALUE_RIGHT, PANEL_VALUE_Y[i]!);
+    }
+
+    // 物价指数 ── @source VA 0x004161b8 `sprintf(格式 0x4638f5, 指数)` 后
+    //   `draw_text(0, 串, 0x1c2(450), 0x104(260), 0)`；串本身就是「物價指數  %d」
+    //   （5 个汉字 + 两个空格 + %d），故不必自己拼
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = `${PANEL_LABEL_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+    ctx.fillStyle = '#101010';
+    ctx.fillText(`物價指數  ${input.state.priceIndex}`, 0x1c2 - 440, 0x104);
   }
 
   /**

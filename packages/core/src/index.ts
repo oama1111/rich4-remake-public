@@ -7,6 +7,7 @@ export * from './loaders/savegame.ts';
 export * from './state/types.ts';
 export * from './state/actions.ts';
 export * from './state/reduce.ts';
+export * from './state/panel.ts';
 export * from './rules/turn-start.ts';
 export * from './rules/toll.ts';
 export * from './rules/land.ts';

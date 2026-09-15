@@ -15,6 +15,7 @@ import {
   teleportPlayer,
   decideAction,
   isAiTurn,
+  PANEL_PAGE_COUNT,
   holidayIndexOf,
   newGame,
   reduce,
@@ -29,6 +30,8 @@ import {
 import { NetClient, netParamsFrom } from './net-client.ts';
 import { DiceRollAnimation } from './dice-anim.ts';
 import { drawLobby, hitLobby, isHostSeat, lobbySlots, type LobbyHit } from './lobby.ts';
+import { PANEL_ROWS } from './hud.ts';
+import { panelRows } from './panel.ts';
 import {
   aiSettingsDraft,
   applyAiSettingsHit,
@@ -182,6 +185,17 @@ let renderer: BoardRenderer;
  *   —— 原版默认哪一个没查证，这里先开日曆（那是它的原生面貌）。
  */
 let sidebarView: SidebarView = 'calendar';
+
+/**
+ * 右上角面板现在显示第几页（0 資金 / 1 地產 / 2 股票 / 3 其他）—— **每个玩家一份**。
+ *
+ * @source 原版是 4 个字节的数组 `0x48be24 + 玩家号`（VA 0x00417f98 附近
+ *   `mov dword [0x48be24], edi` 开局清零），由 PgUp/PgDn 那对熱鍵切换
+ *   `(页 ∓ 1) & 3`（VA 0x004014b1 / 0x004014ee）。
+ * ★ **点 tag 不换页** —— 原版那四个标签只在绘制处被引用（串表 `0x475274`），
+ *   没有任何命中判定。
+ */
+const panelPages: number[] = [0, 0, 0, 0];
 
 /** 設定屏的取值。@source 字段与范围见 options.ts / RICH4.CFG */
 let options: GameOptions = { ...DEFAULT_OPTIONS };
@@ -446,6 +460,10 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
       // 右下角那块 200×200 轮换：日曆 → 月曆 → 小地圖
       sidebarView =
         sidebarView === 'calendar' ? 'month' : sidebarView === 'month' ? 'map' : 'calendar';
+      return true;
+    case HOTKEY.pageUp:
+    case HOTKEY.pageDown:
+      cyclePanelPage(fn === HOTKEY.pageUp ? -1 : 1);
       return true;
 
     // ── 系统 ──
@@ -1162,6 +1180,8 @@ function drawGameStage(): void {
     pressedMinimapArrow,
     hotMinimapArrow,
     holidayArt,
+    panelPage: panelPages[state.currentPlayer] ?? 0,
+    panelRows: panelRows(state, topo, state.currentPlayer, panelPages[state.currentPlayer] ?? 0),
   });
   stageCtx.drawImage(hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y);
 }
@@ -1251,6 +1271,28 @@ function centerOnCurrentPlayer(): void {
   };
   // 还没到位就继续要下一帧，避免停在半路
   if (Math.abs(wantX - camera.x) > 0.5 || Math.abs(wantY - camera.y) > 0.5) requestRender();
+}
+
+/**
+ * 翻右上角面板的页 —— 只动**当前玩家**那一份。
+ *
+ * @source 熱鍵处理 VA 0x004014b1 / 0x004014ee：
+ * ```asm
+ * mov eax, [0x49910c]                 ; 当前玩家
+ * mov cl, byte [eax + 0x48be24]       ; 它的页号
+ * dec cl                              ; 或 inc cl
+ * mov byte [eax + 0x48be24], cl
+ * mov ch, cl ; and ch, 3
+ * mov byte [eax + 0x48be24], ch       ; ★ (页 ∓ 1) & 3
+ * push 1 / call fcn_00415f69          ; 重画面板
+ * ```
+ */
+function cyclePanelPage(delta: number): void {
+  const i = state.currentPlayer;
+  const cur = panelPages[i] ?? 0;
+  panelPages[i] = (cur + delta + PANEL_PAGE_COUNT) % PANEL_PAGE_COUNT;
+  log(`▶ 面板：${PANEL_ROWS[panelPages[i]!]?.join(' / ')}`);
+  requestRender();
 }
 
 /**
