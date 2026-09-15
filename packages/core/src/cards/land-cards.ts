@@ -90,6 +90,34 @@ export function applyDemolishCard(land: LandInfo, priceIndex: number): DemolishR
 // ============================================================
 
 /**
+ * 拆除卡(12) / 怪獸卡(11) 的**目标限制** —— 不能打自己的，也不能打空地。
+ *
+ * ★ 2026-09-16 补（Q-CARD-1 §4 ①）：原版在**拾取窗**里就把这两种目标挡掉（红叉），
+ *   我们先前只在效果里判「有没有变化」，于是 UI 会让你选自己的地、选空地块。
+ *
+ * @source 拾取跳表 `ref_00445e2d`（VA 0x00445e2d）的**组 4**（`loc_00446457`，
+ *   怪獸卡 `0xe0c0506`）与**组 5**（`loc_004464c3`，拆除卡 `0xe0c0626`），两组同形：
+ * ```asm
+ * cmp code, 0x7d0 / jle → 不是地块，转設施那支（0xfa0 < code < 0x1770）
+ * mov dl, byte [target+0x19]      ; owner（1 基）
+ * mov eax, [current_player] / inc eax
+ * cmp edx, eax / je  拒绝          ; ★ 不能打**自己的**
+ * cmp byte [target+0x1a], 0 / je 拒绝 ; ★ 不能打**空地**（等级 0）
+ * ```
+ * 表的下标 = `((参数 & 0xff00) >> 8) - 1`（VA 0x0044630a 起），
+ * 低字节才是类别位 —— 所以「组」与「类别」是两件事，别混。
+ */
+export function demolishLikeTargetAllowed(
+  owner: number,
+  level: number,
+  currentPlayer: number,
+): boolean {
+  if (owner === currentPlayer + 1) return false; // 自己的
+  if (level === 0) return false; // 空地
+  return true;
+}
+
+/**
  * 拆除卡能打的地图物件种类：**路障 16 / 地雷 17 / 定時炸彈 18**。
  *
  * @source 拾取窗口的额外规则（跳表组 6）VA 0x00446528：

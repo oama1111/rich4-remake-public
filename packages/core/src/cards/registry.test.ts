@@ -609,14 +609,24 @@ describe('★ 怪獸卡经统一入口（T-006）', () => {
     expect(r.players[0]!.cards).toEqual([]);
   });
 
-  it('0 级設施 → fail(noEffect) 且不扣卡', () => {
+  // ★ 2026-09-16 订正（Q-CARD-1 §4①）：原版在**拾取窗**就把「空地 / 自己的」挡掉
+  //   （拾取跳表组 4 `loc_00446457`：`[+0x1a] == 0` 或 `[+0x19] == 我+1` → 红叉），
+  //   所以这里应当在**目标校验**就被拒（`targetNotAllowed`），不是效果算下来没变化。
+  it('0 级設施 → fail(targetNotAllowed) 且不扣卡', () => {
     const ctx = ctxWithMonster({
       facilities: [makeFacility({ id: 1, owner: 3, level: 0 })],
     });
     const r = useCard(ctx, 11, { kind: 'facility', facilityId: 1 });
     expect(r.ok).toBe(false);
-    expect(r.error).toBe('noEffect');
+    expect(r.error).toBe('targetNotAllowed');
     expect(r.players[0]!.cards).toEqual([11]);
+  });
+
+  it('★ 自己的設施也不能打（原版红叉）', () => {
+    const ctx = ctxWithMonster({
+      facilities: [makeFacility({ id: 1, owner: 1, level: 2 })],
+    });
+    expect(useCard(ctx, 11, { kind: 'facility', facilityId: 1 }).error).toBe('targetNotAllowed');
   });
 
   it('設施下标越界 → facilityOutOfRange', () => {
@@ -626,9 +636,14 @@ describe('★ 怪獸卡经统一入口（T-006）', () => {
     expect(useCard(ctx, 11, { kind: 'facility', facilityId: 9 }).error).toBe('facilityOutOfRange');
   });
 
-  it('空地目标 → fail(noEffect)', () => {
+  it('空地目标 → fail(targetNotAllowed)（同上，原版拾取就拒）', () => {
     const ctx = ctxWithMonster({ lands: [makeLand({ id: 1, owner: 2, level: 0 })] });
-    expect(useCard(ctx, 11, { kind: 'entity', entityId: 1 }).error).toBe('noEffect');
+    expect(useCard(ctx, 11, { kind: 'entity', entityId: 1 }).error).toBe('targetNotAllowed');
+  });
+
+  it('★ 自己的地也不能打（原版红叉）', () => {
+    const ctx = ctxWithMonster({ lands: [makeLand({ id: 1, owner: 1, level: 3 })] });
+    expect(useCard(ctx, 11, { kind: 'entity', entityId: 1 }).error).toBe('targetNotAllowed');
   });
 });
 

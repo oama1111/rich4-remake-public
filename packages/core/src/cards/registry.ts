@@ -56,6 +56,7 @@ import {
   applyDevilCard,
   applyDevilFacilityCard,
   applyDemolishCard,
+  demolishLikeTargetAllowed,
   applyDemolishFacilityCard,
   applyDemolishObjectCard,
   applyRaisePriceCard,
@@ -535,6 +536,8 @@ export function useCard(
       if (target.kind === 'facility') {
         const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
         if (fac === null) return fail('facilityOutOfRange');
+        // ★ 不能打自己的 / 不能打空地 @source 拾取跳表组 4 `loc_00446457`
+        if (!demolishLikeTargetAllowed(fac.owner, fac.level, cur)) return fail('targetNotAllowed');
         const r = applyMonsterFacilityCard(fac, ctx.priceIndex, cur);
         if (!r.ok) return fail('noEffect');
         facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
@@ -542,6 +545,10 @@ export function useCard(
         break;
       }
       if (targetLand === null) return fail('landNotFound');
+      // ★ 同上（地块那支）
+      if (!demolishLikeTargetAllowed(targetLand.owner, targetLand.level, cur)) {
+        return fail('targetNotAllowed');
+      }
       const r = applyMonsterCard(targetLand, ctx.priceIndex, cur);
       if (!r.ok) return fail('noEffect');
       putLand(r.land);
@@ -650,6 +657,8 @@ export function useCard(
         //   拆到 0 级退回公園；敌意平坦 30×物价指数（不按级），无主不记
         const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
         if (fac === null) return fail('facilityOutOfRange');
+        // ★ 不能打自己的 / 不能打空地 @source 拾取跳表组 5 `loc_004464c3`
+        if (!demolishLikeTargetAllowed(fac.owner, fac.level, cur)) return fail('targetNotAllowed');
         const r = applyDemolishFacilityCard(fac, ctx.priceIndex);
         if (!r.ok) return fail('noEffect');
         facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
@@ -659,6 +668,10 @@ export function useCard(
         break;
       }
       if (targetLand === null) return fail('landNotFound');
+      // ★ 不能打自己的 / 不能打空地（同設施那支，@source 拾取跳表组 5 `loc_004464c3`）
+      if (!demolishLikeTargetAllowed(targetLand.owner, targetLand.level, cur)) {
+        return fail('targetNotAllowed');
+      }
       const r = applyDemolishCard(targetLand, ctx.priceIndex);
       putLand(r.land);
       // 无主地块不记敌意（victim 为 -1）
