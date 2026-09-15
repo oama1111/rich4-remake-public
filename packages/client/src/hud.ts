@@ -175,26 +175,23 @@ export type SidebarView = 'calendar' | 'month' | 'map';
 // ============================================================
 
 /**
- * 四个 tag 的竖条位置与文字。
+ * 四个 tag 的位置与文字。
  *
- * @source VA 0x00416123（画底图与 tag）：
+ * **位置**来自 exe —— @source VA 0x00416123：
  * ```asm
- * ; 底图 = Panel.mkf 资源 0 的**图[页]**，画在 (440, 0)
- * mov dl, byte [esi + 0x48be24]      ; 页号（每个玩家一份）
- * … eax = 12 × 页号
- * mov eax, [0x48be0c] ; add eax, 0xc ; add eax, edx
- * call 0x4563f5                      ; fcn_004563f5(surface, 图, 440, 0)
- *
- * ; 四个 tag：x = 0x273(627)，字号 0x12(18)，flag 3（正中）
  * mov edx, [esp + ebx*4 + 0x94]      ; 该 tag 的 y（局部数组）
  * add edx, 0x14(20)
- * push 3 / push edx / push 0x273
+ * push 3 / push edx / push 0x273     ; x = 627、flag 3（正中）
  * mov edi, [ebx*4 + 0x475274]        ; 串表：資金/地產/股票/其他
  * ```
- * y 表在 `0x415d0d`（4 个 dword `[15, 88, 158, 230]`）复制进栈，再各 **+20**，
- * 即文字中心落在局部 y = **35 / 108 / 178 / 250**。
+ * y 表在 `0x415d0d`（`[15, 88, 158, 230]`）再各 **+20** → 中心 35 / 108 / 178 / 250。
+ * ★ 与从 `Panel.mkf` 资源 0 图 0 上**实测**的四条彩色竖条中心
+ *   （34.5 / 105.5 / 177.5 / 247.5）逐条吻合，故 exe 的 y 就是竖条中心，保留。
  *
- * ★ 当前页用 `0x101010`（黑），其余用 `0x404040`（暗灰）—— 见 VA 0x004161a5 / 0x004161e5。
+ * **画法**由需求方 2026-09-15 指定，与我们的 exe **不同**：
+ * **竖排、白字、字号小一号**（exe 是横排、深色 `0x101010`/`0x404040`、字号 18）。
+ * 需求方的实机截图上是白字竖排 —— 与我们 exe 属不同 build，
+ * 位置/颜色/排法按需求方定的来，exe 的那套值记在这里备查。
  */
 export const PANEL_TAGS = [
   { label: '資金', y: 35 },
@@ -204,10 +201,15 @@ export const PANEL_TAGS = [
 ] as const;
 /** tag 文字的 x（侧栏局部）@source `push 0x273` → 627 − 440 */
 export const PANEL_TAG_X = 0x273 - 440;
-/** tag 字号 @source `push 0x12` */
-const PANEL_TAG_SIZE = 0x12;
-const PANEL_TAG_ACTIVE = '#101010';
-const PANEL_TAG_IDLE = '#404040';
+/**
+ * tag 字号 —— **需求方指定「小一点」**（exe 是 0x12 = 18，横排）。
+ * 竖排两字时块高 2×14 = 28，正好放进 58 高的竖条；字宽 14 也不超出约 28 的条宽。
+ */
+const PANEL_TAG_SIZE = 14;
+/** 竖排的字距（= 字号，让两字刚好相接） */
+const PANEL_TAG_LINE = PANEL_TAG_SIZE;
+/** tag 文字色 —— 需求方指定白色（exe 是 `0x101010` 当前页 / `0x404040` 其余） */
+const PANEL_TAG_COLOR = '#ffffff';
 
 /**
  * 四页各自的三行标签。
@@ -642,14 +644,16 @@ export class Hud {
       ctx.fillRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
     }
 
-    // 四个 tag（右缘竖条）—— 当前页黑、其余暗灰 @source VA 0x004161e5 / 0x004161a5
+    // 四个 tag（右缘竖条）—— **竖排、白字、小一号**（需求方 2026-09-15 指定）
     ctx.font = `${PANEL_TAG_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (let i = 0; i < PANEL_TAGS.length; i++) {
-      const tag = PANEL_TAGS[i]!;
-      ctx.fillStyle = i === page ? PANEL_TAG_ACTIVE : PANEL_TAG_IDLE;
-      ctx.fillText(tag.label, PANEL_TAG_X, tag.y);
+    ctx.fillStyle = PANEL_TAG_COLOR;
+    for (const tag of PANEL_TAGS) {
+      const chars = [...tag.label];
+      // 整块以竖条中心为准，逐字向下排
+      const y0 = tag.y - ((chars.length - 1) * PANEL_TAG_LINE) / 2;
+      chars.forEach((ch, k) => ctx.fillText(ch, PANEL_TAG_X, y0 + k * PANEL_TAG_LINE));
     }
 
     // 头像
