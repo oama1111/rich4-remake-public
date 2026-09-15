@@ -140,7 +140,7 @@ import {
   pickSoundFont,
   type PickResult,
 } from './host.ts';
-import { MIDI_PLAYLIST, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
+import { MIDI_PLAYLIST, PLACE_TOOL_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
 import {
   BoardRenderer,
   characterCamera,
@@ -199,6 +199,7 @@ import {
 } from './dialog.ts';
 import { DICE_FLIC_BASE, GO_IMAGE, type SpriteFn } from './gameui.ts';
 import { goButton } from './go-button.ts';
+import { moveSoundId } from './move-sound.ts';
 import { CHARACTER_POSE, characterSetBase, type LoadedFlic } from './assets.ts';
 import { HOTKEY, hotkeyOf, vkOf } from './hotkeys.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
@@ -1652,8 +1653,31 @@ function playDiceSound(): void {
 function stepTick(): void {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return;
-  const id = MOVE_SOUND[me.trafficMethod & 3];
-  if (id !== undefined) sound.play('Effect.mkf', id);
+  // ★ 号从 `move-sound.ts` 取（与 exe 的表同源，别再抄第二份映射）。
+  //   @source 走一格放一次：`fcn_0040d7c4` 的 state 2 尾（VA 0x0040d9f2）
+  const id = moveSoundId(me.trafficMethod & 3);
+  sound.play('Effect.mkf', id);
+  // 记住在放哪一个 —— 整趟走完要 Stop（原版 state 1 的 0x0040d8dc 用**同一个索引**），
+  // 否则汽车那 2.72 秒的引擎声会一直响到下一回合（音频层虽然同路会停前一个，
+  // 但那只有「下一格」才触发，走完最后一格没人停）。
+  moveSoundPlaying = id;
+}
+
+/** 正在放的移动音效号（null = 没在放）—— 整趟走完由 `syncMoveSound()` 停掉 */
+let moveSoundPlaying: number | null = null;
+
+/**
+ * 走子整趟结束时把移动音效停掉。
+ *
+ * @source `fcn_0040d7c4` 的 state 1（走子段，VA 0x0040d8d3）：`[0x48baf8] == 0`
+ *   （整趟走完）那一次才 `rich4_stop_sound_effect`（0x0040d8dc），索引是同一个
+ *   `[0x4749d4]`。逐格**不**停 —— 原版就是「每格 Play、整趟完 Stop」。
+ */
+function syncMoveSound(): void {
+  if (moveSoundPlaying === null) return;
+  if (!renderer.walkDone()) return;
+  sound.stop('Effect.mkf', moveSoundPlaying);
+  moveSoundPlaying = null;
 }
 
 // ============================================================
@@ -4154,6 +4178,8 @@ function requestRender(): void {
     // ★ 走子补间要**逐帧**重绘（T-046）：补间没播完就再排一帧，
     //   否则棋子会停在这一步的第一帧上，直到下一次 dispatch 才动。
     if (screen === 'game' && !renderer.walkDone()) requestRender();
+    // ★ 走子整趟结束时停掉移动音效（逐格不停，见 `syncMoveSound`）
+    if (screen === 'game') syncMoveSound();
     // ★ 投掷动效（放置類道具）同理：没播完就再排一帧；播完那一下才放落地音
     //   （原版顺序：动画 → 收尾停 100 ms → 音效，见 `startObjectFlight`）
     if (screen === 'game') tickObjectFlight(performance.now());

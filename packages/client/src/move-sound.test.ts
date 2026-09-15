@@ -195,3 +195,16 @@ describe('★ moveSoundStep —— 这一拍该放音吗', () => {
     expect(ids.filter((i) => i !== null)).toEqual([45, 53]);
   });
 });
+
+describe('★ 接线（2026-09-16）：逐格 Play + 整趟完 Stop', () => {
+  it('★ main.ts 必须用 moveSoundId 取号，并在走完时停掉', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    // 号只有一份来源
+    expect(src).toContain('moveSoundId(me.trafficMethod & 3)');
+    expect(src, '不该再抄第二份映射表').not.toContain('MOVE_SOUND[');
+    // 整趟走完要 Stop（原版 state 1 的 0x0040d8dc 用同一个索引）
+    expect(src).toContain('sound.stop(\'Effect.mkf\', moveSoundPlaying);');
+    expect(src).toContain('syncMoveSound();');
+  });
+});
