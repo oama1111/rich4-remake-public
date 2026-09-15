@@ -1189,7 +1189,7 @@ cards:
   title: 读原版 SAVE*.DAT 进游戏（导入入口 + 缺口提示）
   module: MOD-12
   req: REQ-12.21
-  status: todo
+  status: done
   estimate: 0.4
   depends_on: [T-053]
   uses: [core/loaders/save.ts (parseSave), savegame.ts (importOriginalSave), client/saveload.ts]
@@ -1199,7 +1199,19 @@ cards:
   algorithm: "读档屏加「匯入原版存檔」钮 → pickFile → parseSave → importOriginalSave → loadState。"
   tests: "fixtures 的两份原版存档导入后 isGameOver=false 且资产对齐"
   files: [packages/client/src/saveload.ts, packages/client/src/main.ts]
-  notes: ""
+  notes: |
+    2026-09-15 完成。
+    - 讀取屏左下角加「匯入原版存檔」钮（`importRect` / `hitImport`）——
+      ⚠️ **原版没有这个钮**，是复刻版为「把旧存档带进来」加的，位置是我们定的；
+      `drawSaveLoad` 里画它，只出现在 load 模式。
+    - `main.ts` 的 `pickSaveFile()` 用 `<input type=file>`（浏览器与桌面 webview 同一路），
+      `importOriginalSaveFile()` = `parseSave` → `importOriginalSave(save, 存档自带的地图)`
+      → `loadState`（顺带换地图）。
+    - ⚠️ 卡片写「缺口弹窗告知」，这里走**屏幕日志**（对话框那套是给游戏内交互用的）；
+      缺口内容一字不改：`formatGaps` 逐条「字段：原因」。
+    - core 一侧的「两份原版存档导入后 isGameOver=false、资产对齐」在
+      `savegame.test.ts` 里早就有了；本卡补 3 条客户端断言（钮的几何/只在 load 有/
+      与行命中不重叠 + formatGaps）。
 
 - id: T-055
   group: C

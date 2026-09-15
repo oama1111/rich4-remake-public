@@ -20,6 +20,9 @@ import {
   slotOfRow,
   readSlot,
   readSlots,
+  importRect,
+  hitImport,
+  formatGaps,
 } from './saveload.ts';
 import { SCREEN_H, SCREEN_W } from './stage.ts';
 
@@ -136,5 +139,33 @@ describe('★ 存档槽的读写口（T-053）—— 只测「口」本身，序
     const all = readSlots(3);
     expect(all.map((s) => s.slot)).toEqual([0, 1, 2]);
     expect(all.map((s) => s.state !== null)).toEqual([false, false, false]);
+  });
+});
+
+describe('★ 匯入原版存檔的入口（T-054）', () => {
+  it('钮只在讀取屏有；位置在底图内、不压行', () => {
+    expect(hitImport('load', 48 + 60, 15 + 451 - 32 + 12)).toBe(true);
+    // 儲存屏没有这个钮
+    expect(hitImport('save', 48 + 60, 15 + 451 - 32 + 12)).toBe(false);
+    // 钮落在底图范围内（不越界）
+    const b = importRect('load');
+    const p = panelRect('load');
+    expect(b.x).toBeGreaterThanOrEqual(p.x);
+    expect(b.y + b.h).toBeLessThanOrEqual(p.y + p.h);
+  });
+
+  it('★ 缺口如实翻译，一条一行；没缺口就是空数组', () => {
+    expect(formatGaps({})).toEqual([]);
+    expect(formatGaps({ hostility: '原版没有对应字段', cards: '手牌数对不上' })).toEqual([
+      'hostility：原版没有对应字段',
+      'cards：手牌数对不上',
+    ]);
+  });
+
+  it('匯入钮与行命中不重叠（点钮不会被当成点行）', () => {
+    const b = importRect('load');
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    expect(hitSaveLoad('load', cx, cy)).toBeNull();
   });
 });

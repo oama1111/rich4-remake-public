@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 23.1。
+共 **73** 张卡，估算 **39.8** 单元，已完成 23.5。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -65,7 +65,7 @@
 | [T-051](#t-051) | 解析 Speaking.mkf 語音索引（1375 段 → 事件/角色映射表） | MOD-11 | REQ-12.20 | `todo` | 0.8 | — |
 | [T-052](#t-052) | 語音触发点接线（playSoundFor 扩展） | MOD-12 | REQ-12.20 | `todo` | 0.5 | T-051 |
 | [T-053](#t-053) | 存档落到文件（Tauri fs，6 槽 + 自动） | MOD-13 | REQ-12.21 | `done` | 0.5 | — |
-| [T-054](#t-054) | 读原版 SAVE*.DAT 进游戏（导入入口 + 缺口提示） | MOD-12 | REQ-12.21 | `todo` | 0.4 | T-053 |
+| [T-054](#t-054) | 读原版 SAVE*.DAT 进游戏（导入入口 + 缺口提示） | MOD-12 | REQ-12.21 | `done` | 0.4 | T-053 |
 | [T-055](#t-055) | Windows 构建（Tauri） | MOD-13 | REQ-12.22 | `done` | 0.5 | — |
 | [T-056](#t-056) | Linux 构建（Tauri，AppImage） | MOD-13 | REQ-12.22 | `done` | 0.5 | T-055 |
 | [T-060](#t-060) | 素材分类器（UI / 地形 tile / 角色精灵 / 背景大图 / 字体） | MOD-11 | REQ-11.1 | `done` | 0.4 | — |
@@ -2047,7 +2047,7 @@ read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
 
 **读原版 SAVE*.DAT 进游戏（导入入口 + 缺口提示）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.21` · 状态 `todo` · 估算 0.4 单元
+- 模块 `MOD-12` · 需求 `REQ-12.21` · 状态 `done` · 估算 0.4 单元
 - 依赖：T-053
 - 证据：docs 存档格式 §7.6
 
@@ -2077,6 +2077,19 @@ read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
 
 - packages/client/src/saveload.ts
 - packages/client/src/main.ts
+
+> 2026-09-15 完成。
+- 讀取屏左下角加「匯入原版存檔」钮（`importRect` / `hitImport`）——
+  ⚠️ **原版没有这个钮**，是复刻版为「把旧存档带进来」加的，位置是我们定的；
+  `drawSaveLoad` 里画它，只出现在 load 模式。
+- `main.ts` 的 `pickSaveFile()` 用 `<input type=file>`（浏览器与桌面 webview 同一路），
+  `importOriginalSaveFile()` = `parseSave` → `importOriginalSave(save, 存档自带的地图)`
+  → `loadState`（顺带换地图）。
+- ⚠️ 卡片写「缺口弹窗告知」，这里走**屏幕日志**（对话框那套是给游戏内交互用的）；
+  缺口内容一字不改：`formatGaps` 逐条「字段：原因」。
+- core 一侧的「两份原版存档导入后 isGameOver=false、资产对齐」在
+  `savegame.test.ts` 里早就有了；本卡补 3 条客户端断言（钮的几何/只在 load 有/
+  与行命中不重叠 + formatGaps）。
 
 ### T-055
 

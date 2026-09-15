@@ -20,6 +20,8 @@ import {
   newGame,
   reduce,
   parseMap,
+  parseSave,
+  importOriginalSave,
   stateFingerprint,
   type Action,
   type GameState,
@@ -122,6 +124,8 @@ import {
   LOAD_SLOTS,
   SAVE_SLOTS,
   drawSaveLoad,
+  formatGaps,
+  hitImport,
   hitSaveLoad,
   outsideSaveLoad,
   readSlots,
@@ -1767,6 +1771,60 @@ function onTitleButton(id: 'start' | 'load' | 'option' | 'exit' | 'newStage'): v
   }
 }
 
+/**
+ * 讓用户挑一个原版存档文件（T-054）。
+ *
+ * ★ 用 `<input type=file>` 而不是 Tauri 的对话框：浏览器与桌面 webview
+ *   都能用，一条路两边跑 —— 这屏是唯一需要它的地方，不值得为它分叉。
+ */
+function pickSaveFile(): Promise<Uint8Array | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.DAT,.dat,.BIN,.bin';
+    input.addEventListener('change', () => {
+      const f = input.files?.[0];
+      if (f === undefined) {
+        resolve(null);
+        return;
+      }
+      void f
+        .arrayBuffer()
+        .then((b) => resolve(new Uint8Array(b)))
+        .catch(() => resolve(null));
+    });
+    input.addEventListener('cancel', () => resolve(null));
+    input.click();
+  });
+}
+
+/**
+ * 匯入原版存档（T-054）：读字节 → `parseSave` → `importOriginalSave` → 顶替当前局面。
+ *
+ * ★ 还原不了的字段由 core 列进 `gaps`，这里**如实报出来** —— 不静默补零。
+ *   ⚠️ 卡片写「弹窗告知」，这里走的是屏幕上的日志（本引擎的对话框是给
+ *   游戏内交互用的，为此分叉不值当）；缺口内容一字不改。
+ */
+async function importOriginalSaveFile(): Promise<void> {
+  const bytes = await pickSaveFile();
+  if (bytes === null) return;
+  try {
+    const save = parseSave(bytes);
+    // 存档自带地图号：用它那份地图去还原（地块/设施的静态部分在地图数据里）
+    const savedMap = parseMap(readMapData(archives, save.gameMap));
+    const { state: imported, gaps } = importOriginalSave(save, savedMap);
+    loadState(imported);
+    const lines = formatGaps(gaps);
+    log(
+      lines.length === 0
+        ? '▶ 已匯入原版存檔（無缺口）'
+        : `⚠ 已匯入原版存檔；下列欄位用預設值頂上 —— ${lines.join('；')}`,
+    );
+  } catch (e) {
+    log(`⚠ 匯入原版存檔失敗：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 /** 按当前設定开一局 */
 function startGame(): void {
   // 联机：开局参数（种子、座位）由服务器下发，这里只是「请房主开局」
@@ -1973,6 +2031,11 @@ function bindInput(): void {
       return;
     }
     if (screen === 'saveload') {
+      // 「匯入原版存檔」钮（T-054）—— 先问它，再问行
+      if (hitImport(saveLoadMode, p.x, p.y)) {
+        void importOriginalSaveFile();
+        return;
+      }
       const row = hitSaveLoad(saveLoadMode, p.x, p.y);
       if (row !== null) onSaveLoadRow(row);
       // ★ 点在屏外就退出 —— 原版有取消钮，那颗还没认出来

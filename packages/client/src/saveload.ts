@@ -103,6 +103,32 @@ export const ROW_TEXT_X = 0xa5;
 export const ROW_TEXT_DY = { auto: 0x0f, year: 0x24, date: 0x39 } as const;
 /** 地圖縮圖的 x @source 0x00404011 `push 0xd1` */
 export const ROW_THUMB_X = 0xd1;
+
+/**
+ * 「匯入原版存檔」钮（T-054）。
+ *
+ * ⚠️ **原版没有这个钮** —— 原版只认自己的存档格式，这个入口是复刻版为了
+ *   让玩家把旧存档带进来而加的（需求方在 T-054 里点名要）。位置是我们定的：
+ *   摆在讀取屏底图左下角，不压任何原版控件。
+ */
+export function importRect(mode: SaveLoadMode): Rect {
+  const p = panelRect(mode);
+  return { x: p.x + 8, y: p.y + p.h - 32, w: 118, h: 24 };
+}
+
+/** 点在「匯入原版存檔」钮上吗 */
+export function hitImport(mode: SaveLoadMode, x: number, y: number): boolean {
+  return mode === 'load' && inRect(x, y, importRect(mode));
+}
+
+/**
+ * 把导入缺口翻成人能读的几行 —— **纯函数**，读档屏与日志共用。
+ *
+ * 没缺口时返回空数组（读进来与原版一致）。
+ */
+export function formatGaps(gaps: Readonly<Record<string, string>>): string[] {
+  return Object.entries(gaps).map(([field, why]) => `${field}：${why}`);
+}
 /** 头像起点与步进 @source 0x00404051 `mov esi, 0x121` / 0x00404091 `add esi, 0x48` */
 export const ROW_FACE_X0 = 0x121;
 export const ROW_FACE_PITCH = 0x48;
@@ -216,6 +242,21 @@ export function drawSaveLoad(
 ): void {
   const p = panelRect(mode);
   ctx.save();
+
+  // 「匯入原版存檔」钮（T-054）—— 原版没有，是我们加的入口（见 importRect）
+  if (mode === 'load') {
+    const b = importRect(mode);
+    ctx.fillStyle = '#2a3550';
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.strokeStyle = '#8fa3c8';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+    ctx.fillStyle = '#e8eef8';
+    ctx.font = '13px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('匯入原版存檔', b.x + b.w / 2, b.y + b.h / 2);
+  }
 
   const bg = sprite('Data.mkf', SAVELOAD_RESOURCE, SAVELOAD_IMAGE[mode], true);
   if (bg !== null) ctx.drawImage(bg.bitmap, p.x, p.y);
