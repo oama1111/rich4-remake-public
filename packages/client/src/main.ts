@@ -163,6 +163,11 @@ import {
   type SheetUi,
 } from './asset-sheet.ts';
 import {
+  drawStockDetail,
+  stockDetailFrom,
+  type StockDetailView,
+} from './stock-detail.ts';
+import {
   STOCK_PLATE_BUY,
   STOCK_PLATE_EXIT,
   STOCK_PLATE_INFO,
@@ -381,6 +386,46 @@ let stockSel: number | null = null;
  * 把通用的排版与命中（`drawDialog` / `hitDialog` / `onDialogHit`）复用上。
  */
 let stockAmount: { kind: 'buy' | 'sell'; stock: number; max: number } | null = null;
+/**
+ * 「上市公司資訊」详情卡开着时是**哪一支**（`null` = 没开）。
+ *
+ * @source `loc_0042b203`：`Wait_0402_Message(fcn_00429d65, 选中行−1)`。
+ * 那一屏没有可点的东西：**左键或右键抬起都直接退卡**（`loc_0042aa08`）。
+ */
+let stockDetail: number | null = null;
+
+/** 该股对应的地图企业（没上市就返回 null）@source 股票记录 +4 = 企業序号 */
+function stockCommercial(stockIndex: number): { type: number; stockIndex: number } | null {
+  const comm = state.market.stocks[stockIndex]?.commercialIndex ?? 0;
+  if (comm === 0) return null;
+  const c = map.commercials.find((x) => x.id === comm);
+  return c === undefined ? null : { type: c.type, stockIndex: c.stockIndex };
+}
+
+/** 开详情卡 @source `loc_0042b0b7`（上市公司資訊）/ `loc_0042b1a4`（再点选中那行）*/
+function openStockDetail(stockIndex: number): void {
+  stockDetail = stockIndex;
+  requestRender();
+}
+
+function closeStockDetail(): void {
+  if (stockDetail === null) return;
+  stockDetail = null;
+  requestRender();
+}
+
+/** 详情卡要画的东西 */
+function stockDetailView(): StockDetailView | null {
+  if (stockDetail === null) return null;
+  return stockDetailFrom(
+    state,
+    stockDetail,
+    state.currentPlayer,
+    stockNames(),
+    state.players.map((p) => CHARACTERS[p.character]?.name ?? `角色${p.character}`),
+    stockCommercial(stockDetail),
+  );
+}
 
 function openStock(): void {
   if (screen === 'stock') return;
@@ -397,6 +442,7 @@ function openStock(): void {
 function closeStock(): void {
   if (screen !== 'stock') return;
   screen = 'game';
+  stockDetail = null;
   stockAmount = null;
   amountPage = null;
   dialogHot = null;
@@ -428,7 +474,9 @@ function stockView(): StockView {
 /** 点某一行的**动作**：没选中就先选中；已选中的再点一下 = 上市公司資訊（T-030b 未做）*/
 function stockPickRow(row: number): void {
   if (stockSel === row) {
-    log('「上市公司資訊」详情卡还没做（T-030b）'); // @source loc_0042b1a4 的 PostMessage(0x40b)
+    // 在**已选中**那一行上再点一下 = 开详情卡 @source `loc_0042b1a4` 的 PostMessage(0x40b)
+    log('▶ 上市公司資訊');
+    openStockDetail(row);
     return;
   }
   stockSel = row;
@@ -2219,6 +2267,9 @@ function requestRender(): void {
     } else if (screen === 'stock') {
       // 股市是**整屏**的（原版那扇窗口盖住棋盘），画法与銀行那两屏同一条路
       drawStockScreen(stageCtx, spriteNow, stockView());
+      // 详情卡是**模态**的（原版另开一扇窗口），盖在最上面
+      const detail = stockDetailView();
+      if (detail !== null) drawStockDetail(stageCtx, spriteNow, detail);
       const ui = stockAmountUi();
       if (ui !== null && amountPage !== null) {
         // 填数页照棋盘坐标排版，整体平移过去（`fcn_00453544` 也是另开一窗）
@@ -3390,6 +3441,11 @@ function bindInput(): void {
         if (e.button === 0 || e.button === 2) closeStock();
         return;
       }
+      // 详情卡开着：左键或右键都直接退卡 @source `loc_0042aa08`
+      if (stockDetail !== null) {
+        if (e.button === 0 || e.button === 2) closeStockDetail();
+        return;
+      }
       if (e.button !== 0) return; // 右键走 contextmenu（换页 / 离开）
       const q = eventToStage(e);
       if (q === null) return;
@@ -3420,7 +3476,8 @@ function bindInput(): void {
         } else if (plate === STOCK_PLATE_SELL) {
           stockTrade('sell');
         } else if (plate === STOCK_PLATE_INFO) {
-          log('「上市公司資訊」详情卡还没做（T-030b）');
+          // @source `loc_0042b0b7`：没选行就什么都不做，选了就开那张卡
+          if (stockSel !== null) openStockDetail(stockSel);
         } else if (plate === STOCK_PLATE_EXIT) {
           closeStock();
         }
@@ -3766,7 +3823,9 @@ function bindInput(): void {
     // 股市：右键 —— 在持股页就退回行情页，在行情页就离开 @source `loc_0042b22f`
     if (screen === 'stock') {
       e.preventDefault();
-      if (stockAmount !== null) {
+      if (stockDetail !== null) {
+        closeStockDetail();
+      } else if (stockAmount !== null) {
         stockAmount = null;
         closeAmountPage();
       } else if (stockPage !== 0) {
