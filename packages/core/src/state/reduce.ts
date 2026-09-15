@@ -2489,6 +2489,12 @@ function pendingForCommercial(
   if (c === undefined) return null;
   const me = state.players[state.currentPlayer];
   if (me === undefined) return null;
+  // ★ 进门两道闸 @source `fcn_0041d1a9`（VA 0x0041d857 起）：
+  //   ① `player+0x37 != 0`（**梦游中**）→ 不问；
+  //   ② `who_plays == 0`（已出局）→ 不问。
+  //   两道都在算「上限」之前，所以是**连框都不开**。
+  if (me.blocking.sleepWalking !== 0) return null;
+  if ((me.whoPlays & WHO_PLAYS_MASK) === 0) return null;
   const unitPrice = commercialUnitPrice(c.assetValue);
   const available = state.commercialShares[commercialId] ?? 0;
   const max = shareWindowLimit(unitPrice, me.cash, available);

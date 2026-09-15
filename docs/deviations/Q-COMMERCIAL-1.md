@@ -197,3 +197,19 @@ stopOnIBM:   [moving,2,32,null] [moving,1,33,null] [settling,0,34,null] [turnEnd
 | `fcn_0041d1a9` 进门还有两道闸**没接** | `cmp byte [esi+0x37], 0 / jne 结束`（**梦游中**不问）与 `who_plays == 0`（出局）—— 前者本引擎理论上可达（梦游时路过自家/别家企業），本轮没做，登记在此 |
 | 建設公司董事長那条仍会先挂 `chooseBuildTarget` | 与原版同序（加蓋完才回到 `0x41b067` 问認購），不在本卡范围 |
 | 「路过也弹框」若需求方仍能复现 | 按 §1 的配方录一份 `[phase, stepsRemaining, nodeId, pending.kind]` 轨迹（或一张截图）再回来，本文件就能定位到具体是哪一拍的 |
+
+
+---
+
+## ★ 2026-09-16 补：`fcn_0041d1a9` 进门那两道闸（本条残留项结案）
+
+上一轮记的「还有两道闸没接」已补上，判据 @source `fcn_0041d1a9`（VA 0x0041d857 起），
+两道都在**算上限之前**，所以是**连框都不开**：
+
+| 闸 | 字段 | 判据 |
+|---|---|---|
+| ① 梦游中 | `player+0x37` | `!= 0` → 不问（`state.players[i].blocking.sleepWalking`）|
+| ② 已出局 | `player+0` 的 who_plays | `== 0` → 不问（`whoPlays & WHO_PLAYS_MASK`）|
+
+落码在 `state/reduce.ts` 的 `pendingForCommercial()`；两条用例在
+`state/commercial-landing.test.ts`（各一条，回退实现会红）。

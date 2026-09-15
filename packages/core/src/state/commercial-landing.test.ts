@@ -49,6 +49,48 @@ function topoOf(map: ReturnType<typeof loadMap>) {
   return { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
 }
 
+describe('★ 上市企业落点的进门两道闸 @source fcn_0041d1a9 (VA 0x0041d857 起)', () => {
+  have('★ 梦游中（player+0x37 != 0）连框都不开', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const node = map.nodes.find((n) => n.ref.kind === 'commercial' && n.specialKind === 0)!;
+    let state = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+      seed: 1,
+    });
+    state = {
+      ...state,
+      phase: 'settling',
+      day: 5,
+      players: state.players.map((p, i) =>
+        i === 0
+          ? { ...p, nodeId: node.id, blocking: { ...p.blocking, sleepWalking: 1 } }
+          : p,
+      ),
+    };
+    expect(reduce(state, { type: 'settle' }, topo).pending).toBeNull();
+  });
+
+  have('★ 已出局（who_plays == 0）连框都不开', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const node = map.nodes.find((n) => n.ref.kind === 'commercial' && n.specialKind === 0)!;
+    let state = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+      seed: 1,
+    });
+    state = {
+      ...state,
+      phase: 'settling',
+      day: 5,
+      players: state.players.map((p, i) => (i === 0 ? { ...p, nodeId: node.id, whoPlays: 0 } : p)),
+    };
+    expect(reduce(state, { type: 'settle' }, topo).pending).toBeNull();
+  });
+});
+
 describe('★ 上市企业落点', () => {
   have('★ 落上去会留下一个「买多少股」的待决交互', () => {
     const { state } = landOnCommercial();
