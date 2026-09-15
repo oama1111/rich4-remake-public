@@ -102,6 +102,34 @@ export const SOUND_IDS = {
 } as const;
 
 /**
+ * 走一格时的**移动音效**，下标 = 玩家的 `traffic_method`（`player+0x11`）。
+ *
+ * @source VA 0x0040d9da 起（走完一格、重置走路帧之前）：
+ * ```asm
+ * cmp byte [0x498ea1 + 玩家号], 0
+ * je short loc_0040d9da           ; == 0 → 按交通方式取
+ * mov dword [0x4749d4], 0xf       ; 否则用索引 15（另一支，见下）
+ * …
+ * loc_0040d9da:
+ * mov al, byte [player + 0x11]    ; traffic_method
+ * and al, 3
+ * add eax, 0xb                    ; → 11..14
+ * mov [0x4749d4], eax
+ * loc_0040d9f2:
+ * eax = [0x4749d4] * 8 + 0x48234a ; ★ 8 字节一项的音效表
+ * call rich4_play_sound_effect(表项, 1)
+ * ```
+ * 表 `0x48234a` 的 11..14 项 = **44 / 45 / 46 / 53**，实测时长恰好印证：
+ * 走路 0.22 s（短脚步）、機車 1.50 s、汽車 2.72 s（引擎循环）、船 0.56 s。
+ * （表里 0..3 项是 7/9/10/32，时长 0.09/0.02/0.14/1.46 s —— 那是别的音效，
+ *   别把它们当成移动声。）
+ *
+ * ⚠️ 同一处在 `[0x498ea1 + 玩家号] != 0` 时改播索引 15（音效 47，0.58 s）——
+ *   `[0x498ea1]` 的语义（精灵刚重载？）未查实，本引擎只用按交通方式那一支。
+ */
+export const MOVE_SOUND: readonly number[] = [44, 45, 46, 53];
+
+/**
  * 背景音乐清单，顺序取自游戏目录里的 `Midi.txt`。
  *
  * ⚠️ 文件名在磁盘上是小写（`midi01.mid`），`Midi.txt` 里是大写。

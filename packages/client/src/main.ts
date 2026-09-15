@@ -88,7 +88,7 @@ import {
   pickGameDir,
   type PickResult,
 } from './host.ts';
-import { MIDI_PLAYLIST, SOUND_IDS } from '@rich4/assets-pipeline';
+import { MIDI_PLAYLIST, MOVE_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
 import {
   BoardRenderer,
   characterCamera,
@@ -349,7 +349,7 @@ function scheduleHumanTurn(): void {
   if (next === null) return;
   humanTimer = window.setTimeout(() => {
     humanTimer = null;
-    if (next.type === 'step') renderer.advanceWalk();
+    if (next.type === 'step') stepTick();
     dispatch(next);
   }, humanDelay());
 }
@@ -510,6 +510,22 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
     default:
       return false;
   }
+}
+
+/**
+ * 走一格的两件表现：推进走路帧 + 播该玩家交通方式的移动音效。
+ *
+ * @source 音效 VA 0x0040d9f2（详见 `@rich4/assets-pipeline` 的 `MOVE_SOUND`）：
+ *   走完一格、重置走路帧之前，按 `traffic_method` 从表 `0x48234a` 取
+ *   （走路 44 / 機車 45 / 汽車 46 / 船 53）。
+ *   走路帧的推进在原版是 `inc byte [0x498ea3 + 玩家号]`（VA 0x0040d97c）。
+ */
+function stepTick(): void {
+  renderer.advanceWalk();
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return;
+  const id = MOVE_SOUND[me.trafficMethod & 3];
+  if (id !== undefined) sound.play('Effect.mkf', id);
 }
 
 /** 轮到人、还没掷骰 */
@@ -955,7 +971,7 @@ function scheduleAi(): void {
       net.submit(action);
       return;
     }
-    if (action.type === 'step') renderer.advanceWalk();
+    if (action.type === 'step') stepTick();
     const before = state;
     state = reduce(state, action, topo);
     if (state === before) {
@@ -2294,7 +2310,7 @@ function connectOnline(url: string, room: string, name: string): void {
           scheduleHumanTurn();
         },
         onAction: (action) => {
-          if (action.type === 'step') renderer.advanceWalk();
+          if (action.type === 'step') stepTick();
           applyAction(action);
         },
         onError: (message) => log(`⚠ 伺服器：${message}`),
