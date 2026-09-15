@@ -118,3 +118,125 @@ export function hostLog(text: string): void {
     /* 日志送不出去不该影响游戏 */
   });
 }
+
+// ============================================================
+//  存档槽（T-053）
+// ============================================================
+
+/**
+ * 存档槽的读写口。
+ *
+ * ★ 原版的存档是 `SAVE0.DAT`..`SAVE5.DAT`（6 个槽，0 号是自動存檔）。
+ *   桌面版写成 `<系统应用数据目录>/saves/SAVE<n>.json`（**内容仍是 JSON**，
+ *   不冒充原版二进制格式 —— 那要另一套序列化，见 Q-SAVE-1）；
+ *   浏览器没有文件系统，退回 `localStorage`。
+ */
+export interface SaveStore {
+  read(slot: number): string | null;
+  /** 写不进去（配额满/只读）返回错误说明，成功返回 null */
+  write(slot: number, json: string): string | null;
+  /** 现在存在哪些槽 */
+  slots(): number[];
+}
+
+/** 浏览器兜底：localStorage，键照原版文件名起，一眼能对上 */
+function browserStore(): SaveStore {
+  const key = (slot: number): string => `RICH4-REMAKE:SAVE${slot}.DAT`;
+  const read = (slot: number): string | null => {
+    try {
+      return window.localStorage.getItem(key(slot));
+    } catch {
+      return null; // 隐私模式之类会直接抛
+    }
+  };
+  return {
+    read,
+    write: (slot, json) => {
+      try {
+        window.localStorage.setItem(key(slot), json);
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : '無法寫入存檔區';
+      }
+    },
+    slots: () => {
+      const out: number[] = [];
+      for (let i = 0; i < 8; i++) if (read(i) !== null) out.push(i);
+      return out;
+    },
+  };
+}
+
+/**
+ * 桌面版：**启动时把所有槽读进内存**（`initSaveStore` 干这事），之后同步取用。
+ *
+ * 为什么不全异步：读档屏的每一行都要立刻知道「这槽是空的还是坏的」，
+ * 而 Tauri 的文件 IO 是异步的 —— 于是开机预载一遍、平时读内存；
+ * 写的时候回落到文件（写失败只记一条日志，不打断游戏）。
+ */
+interface DesktopStore extends SaveStore {
+  /** 预载用：直接放进内存，不走文件写回 */
+  seed(slot: number, raw: string): void;
+  markLoaded(): void;
+}
+
+function desktopStore(t: NonNullable<ReturnType<typeof tauri>>): DesktopStore {
+  const cache = new Map<number, string>();
+  let loaded = false;
+  return {
+    read: (slot) => (loaded ? (cache.get(slot) ?? null) : null),
+    write: (slot, json) => {
+      cache.set(slot, json);
+      void t.core.invoke('write_save', { slot, json }).catch((e: unknown) => {
+        hostLog(`存檔寫入失敗：${String(e)}`);
+      });
+      return null;
+    },
+    slots: () => [...cache.keys()].sort((a, b) => a - b),
+    seed: (slot, raw) => {
+      cache.set(slot, raw);
+    },
+    markLoaded: () => {
+      loaded = true;
+    },
+  };
+}
+
+let store: SaveStore | null = null;
+
+/** 当前存档口（未初始化时退回浏览器实现） */
+export function saveStore(): SaveStore {
+  store ??= browserStore();
+  return store;
+}
+
+/**
+ * 启动时调一次。
+ *
+ * - 给了 `override` 就用它（测试注入用）；
+ * - 浏览器下等价于初始化成 localStorage；
+ * - 桌面版把槽位预载进内存；预载失败也不让读档屏整屏崩，退回浏览器实现。
+ */
+export async function initSaveStore(override?: SaveStore): Promise<void> {
+  if (override !== undefined) {
+    store = override;
+    return;
+  }
+  const t = tauri();
+  if (t === null) {
+    store = browserStore();
+    return;
+  }
+  const s = desktopStore(t);
+  store = s;
+  try {
+    for (const slot of await t.core.invoke<number[]>('list_saves')) {
+      const raw = await t.core.invoke<string | null>('read_save', { slot });
+      if (raw !== null) s.seed(slot, raw);
+    }
+    s.markLoaded();
+  } catch (e) {
+    hostLog(`存檔預載失敗：${String(e)}`);
+    store = browserStore();
+  }
+}

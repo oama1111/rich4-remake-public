@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
+import { initSaveStore, saveStore, type SaveStore } from './host.ts';
 import {
   AUTOSAVE_SLOT,
   LOAD_SLOTS,
@@ -17,6 +18,8 @@ import {
   rowRect,
   slotKey,
   slotOfRow,
+  readSlot,
+  readSlots,
 } from './saveload.ts';
 import { SCREEN_H, SCREEN_W } from './stage.ts';
 
@@ -84,5 +87,54 @@ describe('存讀檔屏的版式', () => {
   it('存档键照原版的文件名来', () => {
     expect(slotKey(0)).toBe('RICH4-REMAKE:SAVE0.DAT');
     expect(slotKey(5)).toBe('RICH4-REMAKE:SAVE5.DAT');
+  });
+});
+
+describe('★ 存档槽的读写口（T-053）—— 只测「口」本身，序列化是 core 的事', () => {
+  /** 假的内存存档口，模拟桌面壳那套（预载进内存 + 写回落文件） */
+  function memoryStore(): SaveStore & { files: Map<number, string> } {
+    const files = new Map<number, string>();
+    return {
+      files,
+      read: (slot) => files.get(slot) ?? null,
+      write: (slot, json) => {
+        files.set(slot, json);
+        return null;
+      },
+      slots: () => [...files.keys()].sort((a, b) => a - b),
+    };
+  }
+
+  it('★ 写进去、读出来一致；slots 只列存在的槽', async () => {
+    const store = memoryStore();
+    await initSaveStore(store);
+    expect(saveStore().write(3, 'AAA')).toBeNull();
+    expect(saveStore().write(0, 'BBB')).toBeNull();
+    expect(saveStore().read(3)).toBe('AAA');
+    expect(saveStore().read(1)).toBeNull();
+    expect(saveStore().slots()).toEqual([0, 3]);
+  });
+
+  it('★ 读档屏读空槽：state 与 error 都是 null（空槽不是错）', async () => {
+    await initSaveStore(memoryStore());
+    expect(readSlot(4)).toEqual({ slot: 4, state: null, error: null });
+  });
+
+  it('★ 坏档不抛错，只把说明放进 error（读档屏要能显示出来）', async () => {
+    const store = memoryStore();
+    store.files.set(2, '{ not json');
+    await initSaveStore(store);
+    const info = readSlot(2);
+    expect(info.state).toBeNull();
+    expect(info.error).not.toBeNull();
+  });
+
+  it('readSlots 逐槽给出概览（空槽也在）', async () => {
+    const store = memoryStore();
+    store.files.set(0, 'x');
+    await initSaveStore(store);
+    const all = readSlots(3);
+    expect(all.map((s) => s.slot)).toEqual([0, 1, 2]);
+    expect(all.map((s) => s.state !== null)).toEqual([false, false, false]);
   });
 });

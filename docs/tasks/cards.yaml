@@ -1164,7 +1164,7 @@ cards:
   title: 存档落到文件（Tauri fs，6 槽 + 自动）
   module: MOD-13
   req: REQ-12.21
-  status: todo
+  status: done
   estimate: 0.5
   depends_on: []
   uses: [client/host.ts, client/saveload.ts, core/loaders/savegame.ts (serializeGame/deserializeGame)]
@@ -1173,8 +1173,16 @@ cards:
   output: "桌面：$APPDATA/rich4/SAVEn.json；浏览器：localStorage 兜底"
   algorithm: "host.ts 加 readSave/writeSave/listSaves（Tauri command 或 localStorage）；saveload.ts 的行数据从 listSaves 来。"
   tests: "saveload.test.ts：往返一致"
-  files: [packages/client/src/host.ts, packages/desktop/src-tauri/src/main.rs]
-  notes: ""
+  files: [packages/client/src/host.ts, packages/desktop/src-tauri/src/lib.rs]
+  notes: |
+    2026-09-15 完成。★ 卡片写的 `src/main.rs` 是错的 —— 命令注册与实现都在 **`lib.rs`**
+    （`main.rs` 只有 `run()`），已按实际改卡。
+    实现：`lib.rs` 加 `read_save/write_save/list_saves`（存
+    `<AppData>/saves/SAVE<n>.json`，槽号沿用原版 SAVE0..5）；`host.ts` 加
+    `SaveStore` 抽象（桌面 = 开机预载进内存 + 写回落文件；浏览器 = localStorage）；
+    `saveload.ts` 的 readSlot/writeSlot 改为走这个口；boot 里 `initSaveStore()`。
+    4 条断言（往返一致 / 空槽不是错 / 坏档只记 error / readSlots 概览）。
+    ⚠️ 内容仍是 **JSON**，不是原版二进制格式（那是 Q-SAVE-1）。
 
 - id: T-054
   group: C

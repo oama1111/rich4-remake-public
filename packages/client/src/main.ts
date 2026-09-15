@@ -83,6 +83,7 @@ import { MusicPlayer } from './music.ts';
 import {
   assetBase,
   currentGameDir,
+  initSaveStore,
   hdBase,
   isDesktop,
   hostLog,
@@ -2463,6 +2464,8 @@ async function boot(): Promise<void> {
     //   ⚠️ 必须走 `startGame()` 而不是只把 `screen` 改掉：底图、镜头、
     //   AI 调度都在那儿；只改屏号会进到一个没有底图的空棋盘。
     const straightToGame = new URLSearchParams(window.location.search).get('screen') === 'game';
+    // ★ 存档口（T-053）：桌面版把槽位预载进内存，之后读档屏同步取用
+    await initSaveStore();
 
     // ★ 渲染器画进**离屏**画布：棋盘 439×440、側欄 200×480，
     //   都是原版的固定尺寸；缩放由舞台统一做（见 stage.ts）。

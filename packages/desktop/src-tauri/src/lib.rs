@@ -109,6 +109,67 @@ fn log_line(text: String) {
     eprintln!("[前端] {text}");
 }
 
+// ============================================================
+//  存档槽（T-053）
+// ============================================================
+
+/// 存档目录：`<系统应用数据目录>/saves`，没有就建。
+///
+/// ★ 文件名沿用原版的 `SAVE<n>.DAT` 槽位编号，只是内容换成 JSON
+///   （原版那种二进制存档要另写一套序列化，见 Q-SAVE-1）。
+fn saves_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("取应用数据目录失败：{e}"))?
+        .join("saves");
+    fs::create_dir_all(&dir).map_err(|e| format!("建存档目录失败：{e}"))?;
+    Ok(dir)
+}
+
+fn save_path(app: &tauri::AppHandle, slot: u32) -> Result<PathBuf, String> {
+    if slot > 63 {
+        return Err(format!("槽号越界：{slot}"));
+    }
+    Ok(saves_dir(app)?.join(format!("SAVE{slot}.json")))
+}
+
+/// 读一个槽；不存在返回 `None`（空槽不是错误）。
+#[tauri::command]
+fn read_save(app: tauri::AppHandle, slot: u32) -> Option<String> {
+    fs::read_to_string(save_path(&app, slot).ok()?).ok()
+}
+
+/// 写一个槽。
+#[tauri::command]
+fn write_save(app: tauri::AppHandle, slot: u32, json: String) -> Result<(), String> {
+    let path = save_path(&app, slot)?;
+    fs::write(&path, json).map_err(|e| format!("寫入 {} 失敗：{e}", path.display()))
+}
+
+/// 列出**存在**的槽号。
+#[tauri::command]
+fn list_saves(app: tauri::AppHandle) -> Vec<u32> {
+    let Ok(dir) = saves_dir(&app) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<u32> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_prefix("SAVE")?
+                .strip_suffix(".json")?
+                .parse::<u32>()
+                .ok()
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
 /// 当前记着的目录；没设过返回 null
 #[tauri::command]
 fn get_game_dir(state: State<'_, AppState>) -> Option<String> {
@@ -282,7 +343,14 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_game_dir, set_game_dir, log_line])
+        .invoke_handler(tauri::generate_handler![
+            get_game_dir,
+            set_game_dir,
+            log_line,
+            read_save,
+            write_save,
+            list_saves
+        ])
         .run(tauri::generate_context!())
         .expect("启动失败");
 }

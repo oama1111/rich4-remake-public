@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 21.6。
+共 **73** 张卡，估算 **39.8** 单元，已完成 22.1。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -64,7 +64,7 @@
 | [T-050](#t-050) | 地塊归属彩边 + GO 钮三态 + 標題音效 | MOD-12 | REQ-12.19 | `done` | 0.4 | — |
 | [T-051](#t-051) | 解析 Speaking.mkf 語音索引（1375 段 → 事件/角色映射表） | MOD-11 | REQ-12.20 | `todo` | 0.8 | — |
 | [T-052](#t-052) | 語音触发点接线（playSoundFor 扩展） | MOD-12 | REQ-12.20 | `todo` | 0.5 | T-051 |
-| [T-053](#t-053) | 存档落到文件（Tauri fs，6 槽 + 自动） | MOD-13 | REQ-12.21 | `todo` | 0.5 | — |
+| [T-053](#t-053) | 存档落到文件（Tauri fs，6 槽 + 自动） | MOD-13 | REQ-12.21 | `done` | 0.5 | — |
 | [T-054](#t-054) | 读原版 SAVE*.DAT 进游戏（导入入口 + 缺口提示） | MOD-12 | REQ-12.21 | `todo` | 0.4 | T-053 |
 | [T-055](#t-055) | Windows 构建（Tauri） | MOD-13 | REQ-12.22 | `todo` | 0.5 | — |
 | [T-056](#t-056) | Linux 构建（Tauri，AppImage） | MOD-13 | REQ-12.22 | `todo` | 0.5 | T-055 |
@@ -2002,7 +2002,7 @@ read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
 
 **存档落到文件（Tauri fs，6 槽 + 自动）**
 
-- 模块 `MOD-13` · 需求 `REQ-12.21` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-13` · 需求 `REQ-12.21` · 状态 `done` · 估算 0.5 单元
 - 依赖：无（可立即开工）
 - 被依赖：T-054
 - 证据：原版 SAVE0..5.DAT 槽位；Q-SAVE-1
@@ -2032,7 +2032,16 @@ read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
 **涉及文件**
 
 - packages/client/src/host.ts
-- packages/desktop/src-tauri/src/main.rs
+- packages/desktop/src-tauri/src/lib.rs
+
+> 2026-09-15 完成。★ 卡片写的 `src/main.rs` 是错的 —— 命令注册与实现都在 **`lib.rs`**
+（`main.rs` 只有 `run()`），已按实际改卡。
+实现：`lib.rs` 加 `read_save/write_save/list_saves`（存
+`<AppData>/saves/SAVE<n>.json`，槽号沿用原版 SAVE0..5）；`host.ts` 加
+`SaveStore` 抽象（桌面 = 开机预载进内存 + 写回落文件；浏览器 = localStorage）；
+`saveload.ts` 的 readSlot/writeSlot 改为走这个口；boot 里 `initSaveStore()`。
+4 条断言（往返一致 / 空槽不是错 / 坏档只记 error / readSlots 概览）。
+⚠️ 内容仍是 **JSON**，不是原版二进制格式（那是 Q-SAVE-1）。
 
 ### T-054
 

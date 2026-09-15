@@ -32,6 +32,7 @@
  */
 
 import type { GameState } from '@rich4/core';
+import { saveStore } from './host.ts';
 import { deserializeGame, serializeGame } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import { inRect, type Rect } from './gameui.ts';
@@ -131,13 +132,7 @@ export interface SlotInfo {
  * 坏档**不抛错**：存讀檔屏要能把「这个槽坏了」显示出来，而不是整屏崩掉。
  */
 export function readSlot(slot: number): SlotInfo {
-  let raw: string | null = null;
-  try {
-    raw = window.localStorage.getItem(slotKey(slot));
-  } catch {
-    // 隐私模式之类会直接抛 —— 当作没有存档
-    return { slot, state: null, error: '無法讀取存檔區' };
-  }
+  const raw = saveStore().read(slot);
   if (raw === null) return { slot, state: null, error: null };
   try {
     return { slot, state: deserializeGame(raw), error: null };
@@ -146,14 +141,9 @@ export function readSlot(slot: number): SlotInfo {
   }
 }
 
-/** 写一个槽；写不进去（配额满、隐私模式）返回错误说明 */
+/** 写一个槽；写不进去（配额满、只读目录）返回错误说明 */
 export function writeSlot(slot: number, state: GameState): string | null {
-  try {
-    window.localStorage.setItem(slotKey(slot), serializeGame(state));
-    return null;
-  } catch (e) {
-    return e instanceof Error ? e.message : '無法寫入存檔區';
-  }
+  return saveStore().write(slot, serializeGame(state));
 }
 
 /** 读出全部槽的概览 */
