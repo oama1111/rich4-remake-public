@@ -161,6 +161,29 @@ import {
   toolIsDirect,
 } from './inventory.ts';
 import {
+  SHOP_BUBBLE_MS,
+  SHOP_PAGE,
+  SHOP_SLIDE,
+  SHOP_SLIDE_MS,
+  blinkStart,
+  blinkStep,
+  cellItemAt,
+  drawShopScreen,
+  hitShopCell,
+  hitShopExit,
+  hitShopShelf,
+  hitShopSwitch,
+  shopMessage,
+  shopRows,
+  slideDone,
+  slideStart,
+  slideStep,
+  type ShopBlink,
+  type ShopPage,
+  type ShopShelfRow,
+  type ShopSlide,
+} from './shop-screen.ts';
+import {
   CURSOR_ARCHIVE,
   CURSOR_RESOURCE,
   TOOL_SELECT_PARAM,
@@ -1279,6 +1302,88 @@ function closeInventory(): void {
   requestRender();
 }
 
+// ── 卡片商店／道具商店（百貨公司，P2-8 / U-2）──────────────────
+//
+// ★ 这一屏**不是**另一张 `Screen`，而是「待决交互是这个」时棋盘区的替代画面 ——
+//   原版就是模态开一个窗口，进来时棋盘已经不在画了。
+//
+// 原版把这些全放在一串全局里，这里照抄成一份：
+// | 本模块 | 原版 | 干什么 |
+// |---|---|---|
+// | `page` | `[0x48c310]` | 0 卡片店 / 1 道具店 |
+// | `shown` | `[0x48c349 + 页]` | 本次进店这一页开过场没有 |
+// | `slide` | `[0x48c333] / [0x48c337] / [0x48c33b] / [0x48c33f]` | 货架栏与格子的滑入 |
+// | `pressed` | `[0x48c347]` | 正按住的钮（抬手才动作）|
+// | `bubble` | `[0x4762c4]` | 老板娘那句话 + 到点自收 |
+// | `blink` | `[0x48c32f] / [0x48c314]` | 老板娘脸上那两个小动作 |
+// | `shelf` / `bought` | `[0x48c31c]` / `[0x48c2f8]` | 货架快照 + 已经买掉的行 |
+
+interface ShopUi {
+  page: ShopPage;
+  shown: [boolean, boolean];
+  slide: ShopSlide;
+  /** 上一次推滑入的时刻（原版那 100ms 一帧的节拍）*/
+  slideAt: number;
+  pressed: 'switch' | 'exit' | null;
+  bubble: { text: string; until: number } | null;
+  /** 开店那一刻的货架 —— 买过的行**不从这份快照里去掉** */
+  shelf: { cards: readonly ShopShelfRow[]; tools: readonly ShopShelfRow[] };
+  /** 已经买掉的行下标（原版是把那两个货架数组的对应字节清 0）*/
+  bought: { cards: Set<number>; tools: Set<number> };
+  blink: ShopBlink;
+}
+
+let shopUi: ShopUi | null = null;
+
+/** 原版面板上的两句提示都是 2 秒（`fcn_0044ee18` 的 0x7d0）*/
+function shopSay(ui: ShopUi, text: string, now: number): void {
+  ui.bubble = { text, until: now + SHOP_BUBBLE_MS };
+}
+
+/** 换页：只在本次进店第一次看这一页时才播开场（原版 `[0x48c349 + 页]`）*/
+function shopGotoPage(ui: ShopUi, page: ShopPage, now: number): void {
+  ui.page = page;
+  ui.pressed = null;
+  if (ui.shown[page]) {
+    // 已经开过场：直接摆到位，让它照样走一遍 0x40c（到位后出提示）
+    ui.slide = { panelX: SHOP_SLIDE.panelTo, gridX: SHOP_SLIDE.gridTo, dx: 0, dy: 0 };
+    ui.bubble = null;
+  } else {
+    ui.shown[page] = true;
+    ui.slide = slideStart();
+    shopSay(ui, shopMessage(page, 'entry'), now);
+  }
+  ui.blink = blinkStart();
+}
+
+/** 开店 / 换玩家换局时把界面状态按当前 `pending` 重铺 */
+function syncShopUi(): void {
+  const pending = state.pending;
+  if (pending === null || pending.kind !== 'shop') {
+    shopUi = null;
+    return;
+  }
+  // ★ 只在**第一次**看见这个商店时建快照：那之后的 `pending.cards/tools` 会因为
+  //   买到手而变短，而原版货架上的字是烤进图里的，不会消失。
+  if (shopUi === null) {
+    const ui: ShopUi = {
+      page: SHOP_PAGE.cards,
+      shown: [false, false],
+      slide: slideStart(),
+      pressed: null,
+      bubble: null,
+      shelf: {
+        cards: shopRows(SHOP_PAGE.cards, pending),
+        tools: shopRows(SHOP_PAGE.tools, pending),
+      },
+      bought: { cards: new Set<number>(), tools: new Set<number>() },
+      blink: blinkStart(),
+    };
+    shopUi = ui;
+    shopGotoPage(ui, SHOP_PAGE.cards, performance.now());
+  }
+}
+
 /**
  * 抬手：把选中的道具用出去。
  *
@@ -1531,8 +1636,9 @@ function requestRender(): void {
     blitStage();
 
     // 有精灵在本帧解码完成 → 再画一次，把它们补上；
-    // 骰子在滚也要继续要帧，否则动画只有一格。
-    if (renderer.dirty || hud.dirty || spriteArrived || diceAnim.rolling) {
+    // 骰子在滚也要继续要帧，否则动画只有一格；
+    // 商店开着也要一直要帧 —— 原版那儿挂着一个 50ms 的定时器（`SetTimer(hwnd, 0x32, …)`）。
+    if (renderer.dirty || hud.dirty || spriteArrived || diceAnim.rolling || shopUi !== null) {
       renderer.clearDirty();
       hud.clearDirty();
       spriteArrived = false;
@@ -1541,8 +1647,32 @@ function requestRender(): void {
   });
 }
 
+/**
+ * 商店开着时每帧走一次：滑入、气泡到点自收。
+ *
+ * ★ 滑入**不能按屏幕刷新率走** —— 原版那 8 帧是每 100ms 一帧
+ *   （50ms 的定时器 + `[0x48c348] ^= 1` 隔一次动一下），共约 0.8 秒。
+ *   这么做既对得上原版的手感，也顺手把每帧的绘制省下来。
+ */
+function shopTick(now: number): void {
+  const ui = shopUi;
+  if (ui === null) return;
+  if (!slideDone(ui.slide) && now - ui.slideAt >= SHOP_SLIDE_MS) {
+    ui.slideAt = now;
+    ui.slide = slideStep(ui.slide);
+    // 滑入到位才说「請挑選…」—— 原版是动画走完那一刻才发 0x40d（`loc_0042d75e` 尾）
+    if (slideDone(ui.slide)) shopSay(ui, shopMessage(ui.page, 'hint'), now);
+  }
+  if (ui.bubble !== null && now >= ui.bubble.until) ui.bubble = null;
+}
+
 /** 把游戏画面的三块摆到舞台上 */
 function drawGameStage(): void {
+  // ★ 百貨公司是**整屏**的一屏，不等于在棋盘上盖个框 —— 它一开，棋盘就不画了。
+  if (shopUi !== null && currentDialog() !== null) {
+    drawShopStage();
+    return;
+  }
   const dlgNow = currentDialog();
   const scene = screen === 'game' ? sceneFor(state.pending) : null;
   if (scene !== null && dlgNow !== null) {
@@ -1617,6 +1747,40 @@ function drawSceneStage(resource: number, ui: InteractionUi): void {
   boardCtx.clearRect(0, 0, LAYOUT.board.w, LAYOUT.board.h);
   drawDialog(boardCtx, uiSprite, ui, amountPage, dialogHot);
   stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
+}
+
+/**
+ * 卡片商店／道具商店（百貨公司）整屏 —— P2-8 / U-2。
+ *
+ * ★ 这一屏**不吃通用对话框**：卖点就是那一屏自己的控件（左侧货架、右下格子、
+ *   三角切页钮、EXIT）。位置与命中全在 `shop-screen.ts`，这里只把当前的
+ *   局面喂给它。
+ *
+ */
+function drawShopStage(): void {
+  const ui = shopUi;
+  const pending = state.pending;
+  if (ui === null || pending === null || pending.kind !== 'shop') return;
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return;
+
+  stageCtx.fillStyle = '#000';
+  stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+  drawShopScreen(stageCtx, spriteNow, {
+    page: ui.page,
+    panelX: ui.slide.panelX,
+    gridX: ui.slide.gridX,
+    points: me.points,
+    shelf: ui.page === SHOP_PAGE.cards ? ui.shelf.cards : ui.shelf.tools,
+    cells:
+      ui.page === SHOP_PAGE.cards
+        ? cardEntries(state, state.currentPlayer)
+        : toolEntries(state, state.currentPlayer),
+    bubble: ui.bubble === null ? null : ui.bubble.text,
+    pressed: ui.pressed,
+    // 原版用 `_libc_rand`；这一处纯装饰，不进确定性状态，所以用 `Math.random`
+    blink: blinkStep(ui.blink, ui.page, performance.now(), Math.random),
+  });
 }
 
 /** 舞台 → 窗口：整数倍放大、居中、不插值 */
@@ -2514,7 +2678,13 @@ function bindInput(): void {
       if (q === null) return;
       const slot = hitInventory(q.x, q.y);
       if (slot === null) return;
-      const hit = toolEntries(state, state.currentPlayer).find((it) => it.slot === slot);
+      // ★ 按**当前这一栏**取表 —— 两栏的格子内容不一样（道具号 vs 卡号），
+      //   先前一律查 toolEntries，卡片欄会拿到一个道具号。
+      const entries =
+        invKind === 'tools'
+          ? toolEntries(state, state.currentPlayer)
+          : cardEntries(state, state.currentPlayer);
+      const hit = entries.find((it) => it.slot === slot);
       if (hit === undefined) return;
       invPicked = hit.id;
       sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
