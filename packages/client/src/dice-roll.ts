@@ -192,6 +192,23 @@ export class DiceRollFx {
     if (this.#phase === 'tumble' || this.#phase === 'anticipate') this.#flic = flic;
   }
 
+  /**
+   * 推进子阶段 —— **不依赖绘制**。
+   *
+   * ★★ 2026-09-16 加（长跑抓到的硬卡死）：子阶段的推进原本只挂在
+   *   `flicBitmap()` / `pips()` / `anticipationFrame()` 里，也就是**只有这一帧
+   *   真的画到骰子**才会推进。可一旦有整屏接管盖住棋盘（上市公司分紅 / 樂透開獎 /
+   *   魔法屋 / 百貨公司…），`drawDiceFx()` 就不再被调用 ⇒ 相位永远停在 `tumble`
+   *   ⇒ `active` 恒为真 ⇒ `scheduleAi()` / `scheduleHumanTurn()` / `requestRoll()`
+   *   三处都以它为闸，**整局永久冻死**（实测：AI 停在 `awaitingRoll` 84 秒不动，
+   *   且不再恢复）。
+   *   ⇒ 现在由 `main.ts` 的 `dicePoll`（16 ms 定时器，动画期间一直在跑）调它，
+   *   与画不画无关。
+   */
+  tick(now: number): void {
+    this.#advance(now);
+  }
+
   /** 子阶段到点就自己往下走：tumble → hold → idle */
   #advance(now: number): void {
     if (this.#phase === 'tumble' && now - this.#at >= this.tumbleMs()) {

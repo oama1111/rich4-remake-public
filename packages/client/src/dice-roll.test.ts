@@ -4,6 +4,7 @@
  *
  * 钉住的是**时长与顺序**，不是点数 —— 点数由 core 决定，这里只负责「什么时候画」。
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { DICE_HOLD_MS, DiceRollFx } from './dice-roll.ts';
 import type { LoadedFlic } from './assets.ts';
@@ -115,5 +116,54 @@ describe('DiceRollFx —— 预动作 → 滚骰 → 定格', () => {
     expect(fx.active).toBe(false);
     expect(fx.pips(1000)).toBeNull();
     expect(fx.flicFrame(1000)).toBeNull();
+  });
+});
+
+describe('★ 相位推进不依赖绘制（2026-09-16 长跑抓到的硬卡死）', () => {
+  it('★ 只调 tick()、一次都不画，也必须从 tumble 走到 idle', () => {
+    const fx = new DiceRollFx();
+    const t0 = 1_000_000;
+    fx.begin(t0, 4, 24, 1);
+    fx.roll(t0, [3], null);
+    // 预动作走完 → 进入滚骰
+    fx.markRollRequested();
+    const tRoll = t0 + 4 * 24 + 1;
+    fx.tick(tRoll);
+    // 之后一路只 tick（模拟「整屏接管、棋盘不画」的那段时间）
+    let now = tRoll;
+    for (let i = 0; i < 500 && fx.active; i++) {
+      now += 16;
+      fx.tick(now);
+    }
+    expect(fx.active, '光靠 tick() 就该走完，不能等绘制').toBe(false);
+  });
+
+  it('★ 不调 tick() 时（老行为）相位确实卡住 —— 说明这条闸曾经多脆', () => {
+    const fx = new DiceRollFx();
+    const t0 = 2_000_000;
+    fx.begin(t0, 4, 24, 1);
+    fx.roll(t0, [3], null);
+    fx.markRollRequested();
+    // 只推进时间、不调 tick 也不画
+    expect(fx.active).toBe(true);
+  });
+
+  it('★ main.ts 的 dicePoll 必须真的调它（结构断言，防止又被挪回绘制里）', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain('diceFx.tick(now);');
+  });
+
+  it('★ 被拒的掷骰必须重排驱动，不许静默丢弃（结构断言）', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    // requestRoll 返回布尔：拿不到就说清楚
+    expect(src).toContain('function requestRoll(): boolean');
+    expect(src).toContain('if (diceFx.active) return false;');
+    // 三条调用路（AI / 键盘 / GO 钮）都要能重排
+    expect(src).toContain('if (!requestRoll()) scheduleAi();');
+    expect(src.split('if (!requestRoll()) scheduleHumanTurn();').length - 1).toBe(3);
+    // 自己起动画那条岔路也要挂上 dicePoll（否则没人推进相位）
+    const beginAt = src.indexOf('diceFx.begin(performance.now(), diceAnticipateTicks(me)');
+    const afterBegin = src.slice(beginAt, beginAt + 400);
+    expect(afterBegin, 'applyAction 里自己起的动画也得挂 dicePoll').toContain('setTimeout(dicePoll, 16)');
   });
 });

@@ -1499,7 +1499,8 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
     case HOTKEY.advance:
       if (!awaitingHumanRoll()) return false;
       // ★ 预动作先播，数满每向帧数那一 tick 才真的掷（见 `requestRoll`）
-      requestRoll();
+      //   动画正开着 → 这一次没接走，重排驱动，等它收摊自己来（别让按键白按）
+      if (!requestRoll()) scheduleHumanTurn();
       return true;
     case HOTKEY.chooseDiceCount: {
       // 在允许的颗数之间轮换
@@ -1698,10 +1699,12 @@ function diceAnticipateTicks(me: { character: number; trafficMethod: number }): 
  *
  * 已经在播就什么都不做（幂等）。
  */
-function requestRoll(): void {
-  if (diceFx.active) return;
+function requestRoll(): boolean {
+  // ★ 已经有动画在播 → **这一次没接走**（返回 false）。调用方必须据此重排，
+  //   否则这一拍就此丢失、再没人驱动（2026-09-16 长跑抓到的硬卡死）。
+  if (diceFx.active) return false;
   const me = state.players[state.currentPlayer];
-  if (me === undefined) return;
+  if (me === undefined) return false;
   const count = Math.max(1, Math.min(3, me.ndices || 1));
   diceFlicNow(count);
   diceFx.begin(performance.now(), diceAnticipateTicks(me), tickMs(options.speed), count);
@@ -1709,6 +1712,7 @@ function requestRoll(): void {
   rollRequestedAt = 0;
   requestRender();
   window.setTimeout(dicePoll, 16);
+  return true;
 }
 
 /** 预动作已经推过几帧了 —— 原版是**每 tick 一帧**（VA 0x0040d975 `inc [0x498ea3]`）*/
@@ -1732,6 +1736,10 @@ function dicePoll(): void {
     return;
   }
   const now = performance.now();
+  // ★★ 相位推进必须在**这里**做，不能只靠绘制（2026-09-16 长跑抓到的硬卡死：
+  //   有整屏接管盖住棋盘时 `drawDiceFx()` 不再被调用，相位就永远停在 tumble，
+  //   `active` 恒真 ⇒ 回合驱动全被这道闸挡死、整局冻住）。
+  diceFx.tick(now);
 
   // 预动作：角色「手持骰子的走路」按 tick 推进 —— 与滚骰/走子的走路帧同一个计数器
   if (diceFx.phase === 'anticipate') {
@@ -2782,6 +2790,9 @@ function applyAction(action: Action): void {
         if (me !== undefined) {
           diceFlicNow(Math.max(1, Math.min(3, me.ndices || 1)));
           diceFx.begin(performance.now(), diceAnticipateTicks(me), tickMs(options.speed), me.ndices || 1);
+          // ★ 自己起的动画也要挂上 `dicePoll` —— 这条岔路先前没挂，于是相位没人推进、
+          //   `active` 恒真，回合驱动全被挡死（同一天的第二个卡死来源）。
+          window.setTimeout(dicePoll, 16);
         }
       }
       diceFx.roll(performance.now(), state.dice, diceFlic.get(state.dice.length) ?? null);
@@ -2993,7 +3004,9 @@ function scheduleAi(): void {
     if (action.type === 'step') stepTick();
     // ★ 掷骰先播预动作再掷：拦一道，等 `dicePoll` 里真的 dispatch
     if (action.type === 'rollDice') {
-      requestRoll();
+      // 动画正开着（上一次还没收摊）→ 这一拍没接走，**必须重排**，
+      // 否则电脑永远停在 awaitingRoll（实测卡死 84 秒以上且不自愈）。
+      if (!requestRoll()) scheduleAi();
       return;
     }
     const before = state;
@@ -4906,8 +4919,9 @@ function renderActions(): void {
       el.onclick = () => {
         log(`▶ ${b.label}`);
         // ★ 掷骰这一颗走 `requestRoll` —— 与 GO 鈕同一条路，预动作也会播
-        if (b.action.type === 'rollDice') requestRoll();
-        else dispatch(b.action);
+        if (b.action.type === 'rollDice') {
+          if (!requestRoll()) scheduleHumanTurn();
+        } else dispatch(b.action);
       };
       return el;
     }),
@@ -5941,7 +5955,8 @@ function bindInput(): void {
           return;
         }
         if (goButton.press(gx, gy, { x: p.x, y: p.y })) {
-          requestRoll();
+          // 动画正开着 → 这一按没接走，重排驱动（与 `scheduleAi` 那条同一个道理）
+          if (!requestRoll()) scheduleHumanTurn();
           return; // 按在钮上就不再去拖镜头
         }
       }
