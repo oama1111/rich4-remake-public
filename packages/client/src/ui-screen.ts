@@ -35,7 +35,7 @@
  */
 
 import type { Action, GameState, MapTopology, Rich4Map } from '@rich4/core';
-import type { Sprite } from './assets.ts';
+import type { LoadedFlic, Sprite } from './assets.ts';
 
 /** 交给每一屏的环境 —— 只读的现状 + 三个副作用出口 */
 export interface UiScreenEnv {
@@ -50,6 +50,14 @@ export interface UiScreenEnv {
   readonly stage: CanvasRenderingContext2D;
   /** 按需取图（就是 main.ts 的 `spriteNow`，带 LRU 与 hd 回退） */
   sprite(archive: string, resource: number, index: number, colorKeyBlack?: boolean): Sprite | null;
+  /**
+   * 按需取一段 **FLIC / ANM 影片**（樂透的跑馬燈 `Panel#14`、摇球 `#16`、
+   * 礼花 `#17` 都是这一类）。
+   *
+   * ⚠️ **异步**：第一次问一定返回 `null`（在后台解），解完 main.ts 会自己重画一帧，
+   *   所以屏只要在 `draw` 里照常问一次就行，**别缓存 `null`**。
+   */
+  flic(archive: string, resource: number): LoadedFlic | null;
   dispatch(action: Action): void;
   requestRender(): void;
   log(message: string): void;

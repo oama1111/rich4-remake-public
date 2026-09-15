@@ -59,6 +59,7 @@ import {
   readMapData,
   SpriteCache,
   loadHolidayArt,
+  loadMinigameBackground,
   loadMinimapBackground,
   screenDirection,
   type ArchiveName,
@@ -93,6 +94,7 @@ import {
   type GameOptions,
 } from './options.ts';
 import { SoundPlayer } from './audio.ts';
+import { speechEventsFor, speechResourcesFor } from './speech.ts';
 import { MusicPlayer } from './music.ts';
 import {
   assetBase,
@@ -133,6 +135,7 @@ import { DICE_FLIC_BASE, GO_IMAGE, type SpriteFn } from './gameui.ts';
 import { CHARACTER_POSE, characterSetBase, type LoadedFlic } from './assets.ts';
 import { HOTKEY, hotkeyOf } from './hotkeys.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
+import { onMinigameBackgroundReady, setMinigameBackground } from './minigame-bg.ts';
 import {
   AUTOSAVE_SLOT,
   LOAD_SLOTS,
@@ -651,6 +654,46 @@ function humanDelay(): number {
 }
 
 /**
+ * 替身那一趟**播完了吗** —— 派下一步之前的一道闸（T-047）。
+ *
+ * ★ 为什么 `humanDelay()` 挡不住它：替身的整趟是在**一次** `dispatch` 里跑完的
+ *   （core 的 `npcRound` / `bail` / 道具 1），而它的补间要等下一次 `draw()` 才起得来 ——
+ *   排定时器的那一刻 `renderer.actorWalkRemainingMs()` 还是 0，`lastWalkMs()`
+ *   又只看玩家那条，两个都帮不上忙。不挡的后果：替身滑到一半，下一次
+ *   `dispatch` 就把画面打断（看上去还是瞬移）。
+ *
+ * 判据分两问：
+ *  ① `renderer.walkDone()`（**已含替身那条**）为假 → 正在播，重排定时器即可；
+ *  ② 为真、但 `state.lastNpcWalks` 换过一份新的 → 有一趟刚发生，而 `draw()`
+ *     可能还没轮到它（补间是在 draw 里起的）。这种情况**等一帧（rAF）**再问，
+ *     让 draw() 有机会把补间起起来；同一份只等一次（记进 `npcWalksDrawn`），
+ *     不会为同一趟反复等 —— 「動畫過程」关掉或路径不足两格时补间压根不起，
+ *     那天第二问当场放行，所以**不会死等**。
+ *
+ * 放在**两个自动驱动**（`scheduleHumanTurn` / `scheduleAi`）的定时器回调开头：
+ * 只有它们会「替玩家/电脑」连着派 action；人手点按钮那种 dispatch 不在此列
+ * （那时不会同时有替身在走，见上面 `humanDelay` 的注释）。
+ *
+ * @param reschedule 被挡下时怎么重排（两个驱动各自的排程函数）
+ * @returns true = 已重排，调用方直接 return，别派下一步
+ */
+let npcWalksDrawn: GameState['lastNpcWalks'] | null = null;
+
+function holdForActorWalk(reschedule: () => void): boolean {
+  if (screen !== 'game') return false;
+  if (!renderer.walkDone()) {
+    reschedule();
+    return true;
+  }
+  if (state.lastNpcWalks.length > 0 && state.lastNpcWalks !== npcWalksDrawn) {
+    npcWalksDrawn = state.lastNpcWalks;
+    requestAnimationFrame(reschedule);
+    return true;
+  }
+  return false;
+}
+
+/**
  * 自動存檔。
  *
  * @source RICH4.CFG offset 4 `auto save: 01 enabled`；原版的自動存檔占
@@ -686,6 +729,8 @@ function scheduleHumanTurn(): void {
   if (next === null) return;
   humanTimer = window.setTimeout(() => {
     humanTimer = null;
+    // ★ 节拍闸（T-047）：替身还在滑就重排、绝不派下一步 —— 判据见 holdForActorWalk
+    if (holdForActorWalk(scheduleHumanTurn)) return;
     if (next.type === 'step') stepTick();
     dispatch(next);
   }, humanDelay());
@@ -1600,6 +1645,34 @@ function applyAction(action: Action): void {
 }
 
 /**
+ * `Speaking.mkf` 的**按需装载**（T-052）。
+ *
+ * ★ 它 57MB，开机不装（见 `boot()` 末尾的注释）；第一次真的要说话时才在
+ *   后台拉一次 —— 这就是 `audio.ts` 里「Speaking.mkf 按需再装」那一条的
+ *   「需」。`SoundPlayer.play` 在档案没装时安静丢弃，故**头一句听不到**，
+ *   之后的都能听到。这个取舍是刻意的：不为一次可能的语音拖慢开局。
+ *
+ * ⚠️ 音效关掉时连拉都不拉（`sound.muted`）—— 静音那一条路仍然只有
+ *   `SoundPlayer` 自己在走，这里不另开一条。
+ */
+let speakingLoading = false;
+function ensureSpeakingArchive(): void {
+  if (speakingLoading || sound.muted) return;
+  speakingLoading = true;
+  void fetch(`${assetBase()}/Speaking.mkf`)
+    .then((r) => (r.ok ? r.arrayBuffer() : null))
+    .then((buf) => {
+      if (buf === null) return;
+      sound.addArchive('Speaking.mkf', new Uint8Array(buf));
+      log('語音载入：Speaking.mkf（角色語音）');
+    })
+    .catch(() => {
+      speakingLoading = false; // 失败就允许下次重试
+      log('⚠ 語音载入失败');
+    });
+}
+
+/**
  * 按状态变化放音。
  *
  * ⚠️ 只接**能从调用点反查出编号**的那几个事件（见 assets-pipeline 的
@@ -1607,6 +1680,15 @@ function applyAction(action: Action): void {
  *
  * ⚠️ 另外：编号与 `Effect.mkf` 的资源号是否直接相等**尚未验证**，
  *   中间可能还隔着一张表。听起来不对就是这个原因。
+ *
+ * ★ T-052 起这里还接**角色語音**：`speechEventsFor(before, after)`（见
+ *   `speech.ts`）把状态跃迁翻成 `(玩家, 事件号)`，再由 `speechResourcesFor`
+ *   换算成 `Speaking.mkf` 资源号。探测器本身是纯函数（不读 DOM、不碰音频、
+ *   不动 PRNG），故能单测。
+ *
+ * ⚠️ 原版的 `_rich4_player_say` 是**一句播完再返回**，而这里的两三个
+ *   `sound.play` 是即发即忘 —— 同一动作派生多句时会叠着响。登记在
+ *   `docs/deviations/T-052.md`。
  */
 function playSoundFor(before: GameState, after: GameState): void {
   // 有人出局
@@ -1614,11 +1696,19 @@ function playSoundFor(before: GameState, after: GameState): void {
   const deadAfter = after.players.filter((p) => p.whoPlays === 0).length;
   if (deadAfter > deadBefore) {
     sound.play('Effect.mkf', SOUND_IDS.BANKRUPT);
-    return;
-  }
-  // 落在银行
-  if (after.pending?.kind === 'bank' && before.pending?.kind !== 'bank') {
+  } else if (after.pending?.kind === 'bank' && before.pending?.kind !== 'bank') {
+    // 落在银行
     sound.play('Effect.mkf', SOUND_IDS.BANK);
+  }
+
+  // 角色語音（T-052）。`speechResourceFor` 已经把越界挡在外面 ——
+  // T-051 的 `speechIndex()` 对越界**抛 RangeError**（原版无边界检查），
+  // 表现层不该因此把整局打断，故这里只播合法的那几个。
+  const spoken = speechEventsFor(before, after);
+  if (spoken.length === 0) return;
+  ensureSpeakingArchive();
+  for (const resource of speechResourcesFor(after, spoken)) {
+    sound.play('Speaking.mkf', resource);
   }
 }
 
@@ -1649,6 +1739,8 @@ function scheduleAi(): void {
   if (!localSeatActive()) return;
   aiTimer = window.setTimeout(() => {
     aiTimer = null;
+    // ★ 节拍闸（T-047）：替身还在滑就重排、绝不派下一步 —— 判据见 holdForActorWalk
+    if (holdForActorWalk(scheduleAi)) return;
     const action = decideAction({ state, map });
     if (action === null) {
       // 轮到电脑却拿不出 action —— 这是**卡住**，不是「没事可做」，
@@ -2270,6 +2362,30 @@ let renderQueued = false;
 // ============================================================
 
 /**
+ * 登记的整屏要用的 FLIC／ANM 影片缓存（按 `档案#资源号`）——
+ * 与滚骰那张分开，因为这里的键是档案 + 资源号，不只有 Panel。
+ * 解出来会自己重画一帧（屏里的 `flic()` 因此不需要缓存 `null`）。
+ */
+const uiFlics = new Map<string, LoadedFlic | null>();
+const uiFlicPending = new Set<string>();
+
+function uiFlicNow(archive: string, resource: number): LoadedFlic | null {
+  const key = `${archive}#${resource}`;
+  const hit = uiFlics.get(key);
+  if (hit !== undefined) return hit;
+  const cache = sprites;
+  if (cache !== null && !uiFlicPending.has(key)) {
+    uiFlicPending.add(key);
+    void cache.getFlic(archive as ArchiveName, resource).then((f) => {
+      uiFlics.set(key, f);
+      uiFlicPending.delete(key);
+      requestRender();
+    });
+  }
+  return null;
+}
+
+/**
  * 这一帧交给各屏的环境。
  *
  * ⚠️ 每调一次算一次 `performance.now()` —— 屏幕若要「本帧同一个时刻」，
@@ -2284,6 +2400,7 @@ function uiEnv(): UiScreenEnv {
     now: performance.now(),
     stage: stageCtx,
     sprite: spriteNow,
+    flic: uiFlicNow,
     dispatch,
     requestRender,
     log,
@@ -2309,10 +2426,13 @@ function requestRender(): void {
     // ★ 登记过的整屏每帧收一次 `tick`（不管此刻是不是它在接管）——
     //   演出类屏幕靠它察觉状态变化、推进动画。**屏幕自己要续帧就调
     //   `env.requestRender()`**，别指望这里无条件重排（会转成死循环）。
-    {
-      const env = uiEnv();
-      for (const s of SCREENS) s.tick?.(env);
-    }
+    // ★ 只有**此刻接管整屏的那一屏**收 `tick`（D-T031-4）。
+    //   每一屏的「起播」都走 `event()`（`main.ts` 在 state 变化时统一派），
+    //   `tick` 只负责推进**自己正在播的那一段** —— 所以给没上屏的屏也 tick
+    //   会让它们的动画在别人背后偷跑（分红屏占屏那 3 秒里開獎屏照样在走）。
+    //   **屏幕自己要续帧就调 `env.requestRender()`**，别指望这里无条件重排（会死循环）。
+    const overlay = activeUiScreen();
+    if (overlay !== null) overlay.tick?.(uiEnv());
     // ★ 走子补间要**逐帧**重绘（T-046）：补间没播完就再排一帧，
     //   否则棋子会停在这一步的第一帧上，直到下一次 dispatch 才动。
     if (screen === 'game' && !renderer.walkDone()) requestRender();
@@ -2322,7 +2442,6 @@ function requestRender(): void {
     stageCtx.fillStyle = '#000';
     stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
 
-    const overlay = activeUiScreen();
     if (overlay !== null) {
       // ★ 登记的整屏接管：棋盘、侧栏、工具栏一概不画（原版这些屏也是整屏窗口）
       overlay.draw(uiEnv());
@@ -2553,6 +2672,18 @@ function drawGameStage(): void {
     groundOffset,
     characterPose: characterPoseOf(),
     viewport: { w: LAYOUT.board.w, h: LAYOUT.board.h },
+    // ★ 替身（四大惡人／機器娃娃）那一趟的整趟路径由 core 交出来（T-047）：
+    //   `runNpc` / `runDoll` 的中间格是岔路上 rand() 选的，渲染器事后推不出来，
+    //   所以 core 把它落在 `GameState.lastNpcWalks`（纯表现提示，不进指纹）。
+    actorWalks: state.lastNpcWalks,
+    // 「動畫過程」关掉就不播补间（与玩家那条同一个开关）
+    animation: options.animation,
+    // 一个 tick 多少毫秒：与玩家那条、与 core 的 tick 同一个节拍
+    tickMs: tickMs(options.speed),
+    // 原版 [0x49910c] 为 4..8（替身在行动）时传它，只影响同屏幕 Y 时谁压在上面。
+    // ⚠️ core 目前**不暴露**「此刻是谁在行动」—— 它是一次动作里跑完整趟的，
+    //   没有可以读的中间态，故这里按「没有替身在行动」处理（留空）。
+    currentActor: null,
   });
   const dlg = currentDialog();
   const me = state.players[state.currentPlayer];
@@ -3458,15 +3589,12 @@ function bindInput(): void {
     if (p === null) return;
     unlockAudio();
 
-    // ── 登记的整屏（契约见 ui-screen.ts）先接管鼠标 ──
-    {
-      const overlay = activeUiScreen();
-      if (overlay !== null) {
-        overlay.down?.(p.x, p.y, uiEnv());
-        return;
-      }
-    }
-
+    // ── 登记的整屏（契约见 ui-screen.ts）在的时候不碰棋盘 ──
+    // ★ 真正的事件已经在 `mousedown` / `mouseup` 上派过了（`down` = 按下、`up` = 抬手，
+    //   与契约和原版的 WM_LBUTTONDOWN/UP 一致）。浏览器的 `click` 排在 `mouseup` **之后**，
+    //   所以这里**绝不能**再派一次 —— 早先那版把 `down` 挂在这一路，导致 `up` 比 `down` 先到，
+    //   屏幕的「按下记账、抬手成立」整条时序是反的（T-033 在真浏览器里抓到的）。
+    if (activeUiScreen() !== null) return;
     if (screen === 'intro') {
       introSkipped = true;
       requestRender();
@@ -3603,6 +3731,18 @@ function bindInput(): void {
   let drag: { x: number; y: number } | null = null;
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
+
+    // ── 登记的整屏（契约见 ui-screen.ts）：按下这一拍派 `down` ──
+    // ★ 原版对应的就是 `WM_LBUTTONDOWN`；`mouseup`（= `WM_LBUTTONUP`）派 `up`。
+    //   两者**必须**分派在真的按下/抬手事件上 —— 见 `click` 那一路的注释。
+    if (e.button === 0) {
+      const overlay = activeUiScreen();
+      if (overlay !== null) {
+        const q = eventToStage(e);
+        if (q !== null) overlay.down?.(q.x, q.y, uiEnv());
+        return;
+      }
+    }
 
     // ── 設定屏（原版 0x201）──
     // 每颗控件的**立即动作**都在按下这一刻发生（改值 / 换曲 / 亮灯 / 贴按下图），
@@ -4433,6 +4573,10 @@ async function boot(): Promise<void> {
     // 调试辅助层：`?debug=nodes` 才画节点连线与落点菱形（原版没有）
     renderer.debugNodes = new URLSearchParams(window.location.search).get('debug') === 'nodes';
     hud.onSpriteReady = requestRender;
+    // 財神接金幣那屏的底图（Panel.mkf #92，无头 640×480 RGB555）——`sprite()` 取不到，
+    // 走 raw 出口后交给 `minigame-bg.ts`；图异步到，到了催一帧（见 D-MINI-1）
+    onMinigameBackgroundReady(requestRender);
+    void loadMinigameBackground(archives).then(setMinigameBackground);
     resizeCanvas();
     // ★ 原版开局就是人物视角（等距投影、跟着棋子），全局看右下角小地图
     const first = map.nodes[state.players[0]?.nodeId ?? 1];

@@ -22,6 +22,7 @@
  * | 76 | 1 | **每個人的持股情況彙總** |
  * | 80 | 10 | 企鵝挖寶 |
  * | 91 | 1 | 七彩氣球 |
+ * | 92 | 1 | **財神接金幣（喜從天降）** —— ⚠️ **无头 640×480 RGB555**，不是带头的精灵，`sprite()` 取不到；走 `assets.ts` 的 `readRaw555Resource` |
  * | help #0 | 12 | **輔助說明** —— 点右上角红色问号弹出的游戏内百科 |
  *
  * ⚠️ 上面这张表里，9 / 10 / 25 / 75 / 76 / 73 六项**先前认错了**（当成
@@ -58,6 +59,8 @@ export const SCENE = {
   hospital: 65,
   penguinDig: 80,
   balloons: 91,
+  /** 財神接金幣（喜從天降）—— 无头 640×480 RGB555，不走 `sprite()`，见 `assets.ts` 的 `readRaw555Resource` */
+  giftFromSky: 92,
 } as const;
 
 /** 三个小游戏各自的背景；没认出来的返回 null */
@@ -67,7 +70,16 @@ function minigameScene(game: number): number | null {
       return SCENE.penguinDig;
     case SPECIAL_KIND.BALLOON:
       return SCENE.balloons;
-    // ⚠️ 喜從天降（GIFT_FROM_SKY）那一屏没认出来 —— 没找到对得上的整屏图
+    // ★ 喜從天降（GIFT_FROM_SKY = 8）那一屏的底图 = `Panel.mkf` **#92**
+    //   （`push 0x5c` @0x0041566b，640×480 的无头 RGB555；入口函数
+    //   `_rich4_ui_game_xicongtianjiang` 也印证了「喜從天降」）。
+    //   它是**整屏接管**的一屏（`minigame-screen.ts`，`screens.ts` 早就登记好了），
+    //   不走 `sceneFor` 这条「底图 + 通用对话框」的路；这里给出号是为了
+    //   「每个小游戏配哪张底图」有一处**完整**的答案，且 #92 不是 `sprite()`
+    //   能取的资源 —— 实际画它走 `assets.ts` 的 `readRaw555Resource`
+    //   （见 D-MINI-1，现已接入）。
+    case SPECIAL_KIND.GIFT_FROM_SKY:
+      return SCENE.giftFromSky;
     default:
       return null;
   }

@@ -7,7 +7,14 @@
  *   所有「能不能」「该多少钱」的问题都在 core 里已经答完了。
  */
 
-import type { GameState } from '@rich4/core';
+import {
+  ACTOR_DOLL,
+  ACTOR_PLACE,
+  SPECIAL_ACTOR_BASE,
+  SPECIAL_ACTOR_COUNT,
+  type GameState,
+  type SpecialActor,
+} from '@rich4/core';
 import { CHARACTERS } from '@rich4/data';
 import { framesFor, tweenTickCount } from './tween.ts';
 import type { MapNode, Rich4Map } from '@rich4/core';
@@ -152,6 +159,30 @@ export interface RenderInput {
    *   照画布算，一屏里会塞进远超原版的格子数，视角与取景全错。
    */
   viewport: { w: number; h: number };
+  /**
+   * 四大惡人／機器娃娃这一趟各自走过的格子（T-047）。
+   *
+   * ★ core 一次动作里就把整趟走完、`path` 没落进 state（见 `ActorWalk`），
+   *   所以**只有宿主能把这份路径喂进来**；不给时渲染器退化成
+   *   「只补 `state.lastNodeId → state.nodeId` 这最后一格」。
+   *   同一趟重复提供不会重播（按「落点节点变了」判新趟）。
+   */
+  actorWalks?: readonly ActorWalk[];
+  /**
+   * 「動畫過程」开着吗（原版设定）。关掉就不播补间、直接落格心；
+   * 不给按**开**处理（原版默认是开）。
+   */
+  animation?: boolean;
+  /**
+   * 一个 tick 多少毫秒（见 `tick.ts`）。不给按 20（每一帧都 tick）。
+   * 替身补间只在这里用；玩家那条由 `startWalk()` 的入参给。
+   */
+  tickMs?: number;
+  /**
+   * 当前行动者（原版 `[0x49910c]`）—— 替身在行动时是 4..8。
+   * 只影响绘制槽的类别（同屏幕 Y 时压在上面），不给就当没有替身在行动。
+   */
+  currentActor?: number | null;
 }
 
 /**
@@ -275,6 +306,20 @@ export const DRAW_CLASS = {
   player: 0xc,
   /** 玩家棋子：当前玩家 —— 同 Y 时压在别人上面，免得看不见轮到谁 */
   currentPlayer: 0xd,
+  /**
+   * 四大惡人／機器娃娃的棋子：**非**当前行动者。
+   *
+   * @source `loc_00408928`（`fcn_0040829d` 里替身那一段的 `jne` 分支）
+   * ```asm
+   * 0040…  cmp eax, [_rich4_current_player]
+   *        jne loc_00408928
+   *        or  byte [esi + 0x48a44c], 0xd     ; 当前行动者（与玩家同一个 0xd）
+   * loc_00408928:
+   *        or  byte [esi + 0x48a44c], 8       ; ★ 其余替身是 0x8，**不是玩家的 0xc**
+   * ```
+   * ⇒ 同屏幕 Y 时替身排在玩家**下面**（0x8 < 0xc）。
+   */
+  npc: 0x8,
 } as const;
 
 /**
@@ -294,6 +339,289 @@ export const DRAW_CLASS = {
 export function drawKey(screenY: number, klass: number): number {
   const v = (((screenY & 0xfff) << 4) | klass) & 0xffff;
   return v >= 0x8000 ? v - 0x10000 : v; // 原版按 int16 比
+}
+
+// ============================================================
+//  四大惡人 / 機器娃娃的棋子与走子（T-047）
+// ============================================================
+
+/**
+ * 四個 NPC（actor 4..7）的图组基号 —— **站姿 = 基号，走姿 = 基号 + 1**。
+ *
+ * @source `_rich4_update_player_sprite` 的 actor ≥ 4 分支（VA 0x0040bd4c）：
+ * ```asm
+ * 0040bd43  cmp esi, 8
+ * 0040bd46  jge 0x40bf02                     ; ★ actor 8（機器娃娃）资源写死，另算
+ * 0040bd4c  mov edi, esi
+ * 0040bd4e  shl edi, 2
+ * 0040bd51  add edi, 0x16c                   ; ★ edi = 0x16c + actor×4
+ * 0040be7a  … read_mkf(data, edi)     → [0x498eb4]   ; 站姿（pose 0 / slot 0）
+ * 0040be94  … read_mkf(data, edi + 1) → [0x498ebc]   ; 走姿（pose 1 / slot 0）
+ * ```
+ * ⇒ actor 4/5/6/7 = `Data.mkf` 资源 **380 / 384 / 388 / 392**，与
+ * `NPC_NAMES` 同序（小偷 / 強盜 / 流氓 / 間諜）。目视核过解出的图：
+ * 380 紫衣小偷、384 大漢、388 綠髮流氓、392 光頭間諜。
+ * 每组的站姿图都是 **8 张（8 向各 1 帧）**、走姿图是 8 向 × N 帧，正好对上
+ * 绘制那边 `图数 >> 3 = 每向帧数` 的算法（见 `directionalImage`）。
+ *
+ * ⚠️ 每组还有 `+2`（載具）与 `+3`（夢遊用的走姿）两张变体，本引擎的
+ *   `SpecialActor` 里没有对应的状态字段（原版是 `+12/+13` 两个天数计数器），
+ *   故不接 —— 见 `docs/deviations/T-047.md`。
+ */
+export const SPECIAL_ACTOR_SPRITE_BASE = 0x16c;
+
+/**
+ * 機器娃娃（actor 8）的**站姿**图 —— 资源写死，不与基号连号。
+ * @source VA 0x0040bf02 起（`cmp esi, 8 / jge 0x40bf02`）：
+ *   `0x0040bf37 push 0x209 → read_mkf(data) → [0x498eb4]`（8 张 = 8 向各 1 帧）
+ */
+export const DOLL_STAND_RESOURCE = 0x209;
+
+/**
+ * 機器娃娃（actor 8）的**走姿**图。
+ * @source VA 0x0040bf55 `push 0x20a → read_mkf(data) → [0x498ebc]`
+ *   （40 张 = 8 向 × 5 帧）
+ */
+export const DOLL_WALK_RESOURCE = 0x20a;
+
+/**
+ * 替身（actor 4..8）某个姿态用 `Data.mkf` 里的哪一组图。
+ *
+ * @param walking 原版 `[0x498ea2]`：0 = 站、1 = 走（`fcn_0040dd1f` 起步时置 1，
+ *   停留（`+14 != 0`）那一支置 0）
+ * @returns 资源号；**不是替身**（玩家 0..3、越界）返回 null
+ */
+export function specialActorImageSet(actor: number, walking: boolean): number | null {
+  // @source VA 0x0040bd51：edi = actor×4 + 0x16c
+  if (actor >= SPECIAL_ACTOR_BASE && actor < ACTOR_DOLL) {
+    return SPECIAL_ACTOR_SPRITE_BASE + actor * 4 + (walking ? 1 : 0);
+  }
+  // @source VA 0x0040bf02：actor ≥ 8 那一支资源写死
+  if (actor === ACTOR_DOLL) return walking ? DOLL_WALK_RESOURCE : DOLL_STAND_RESOURCE;
+  return null;
+}
+
+/**
+ * 一个替身**这一趟**走过的格子 —— `runNpc` / `runDoll` 的 `path` 原样（含起点）。
+ *
+ * ★ 为什么由宿主喂进来：core 在一次动作里就把整趟走完（`reduce.ts` 的 `npcRound`
+ *   与 `bail` 两处），`NpcWalk.path` 只回给调用方、**没落进 state**，所以渲染器
+ *   事后无法还原中间格（岔路是 `rand()` 选的，见 `pickNextNode`）。
+ *   原版是逐格 tick 播的，要 1:1 就得把这份路径交给渲染器。
+ */
+export interface ActorWalk {
+  /** 替身下标 = actor − 4（0..4；0..3 = 四大惡人，4 = 機器娃娃） */
+  slot: number;
+  /** 依次经过的节点号，含起点；`path[i] → path[i+1]` 是第 i 格 */
+  path: readonly number[];
+}
+
+/** 替身补间里的一格（世界坐标端点 + 时长） */
+export interface ActorWalkStep {
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  /** 这一格要播几个 tick @source VA 0x0040c5e6 */
+  ticks: number;
+  /** 整趟里、这一格开始前已经过去的 tick 数（帧号要跨格连算） */
+  tickAt: number;
+  /** 这一格从整趟开始算起多少毫秒 */
+  at: number;
+  /** 这一格播多少毫秒 = `ticks × tickMs` */
+  ms: number;
+}
+
+/**
+ * 把一串节点摊成「一格一条」的补间。
+ *
+ * ★ **替身一律走 `dist × 0.125` 那一支** —— 与玩家不同，他们没有交通方式，
+ *   原版在这里根本不查速度表：
+ * @source VA 0x0040c5dd..0x0040c659（`fcn_0040c05c` 的 actor ≥ 4 分支，
+ *   入口是 `0040c06f cmp ecx,4 / jge 0x40c489`）：
+ * ```asm
+ * 0040c5dd  call fsqrt
+ * 0040c5e2  fst  dword [esp+0xc]       ; dist = sqrt(dx² + dy²)（屏幕距离）
+ * 0040c5e6  fmul dword [0x4631dc]      ; ★ dist × 0.125f —— **无条件**，没有 fdivr 那一支
+ * 0040c5ec  fstp dword [esp+0x1c]      ; N_f
+ * 0040c650  fld N_f / call 0x457dbc    ; 向零截断 → [0x4749dc]
+ * ```
+ *   即 `tweenTickCount(dx, dy, 0, /*special*\/ true)` —— 与玩家「乘骑/被抬走」同一条。
+ *
+ * @param nodes 地图节点表（下标 = 节点号 − 1）
+ * @param toScreen 世界坐标 → 屏幕坐标（tick 数按**屏幕**距离算，与 exe 同）
+ */
+export function actorWalkSteps(
+  path: readonly number[],
+  nodes: readonly MapNode[],
+  toScreen: (x: number, y: number) => { x: number; y: number } | null,
+  tickMs: number,
+): ActorWalkStep[] {
+  const steps: ActorWalkStep[] = [];
+  let at = 0;
+  let tickAt = 0;
+  for (let i = 0; i + 1 < path.length; i++) {
+    const a = nodes[(path[i] ?? 0) - 1];
+    const b = nodes[(path[i + 1] ?? 0) - 1];
+    if (a === undefined || b === undefined) break;
+    const sa = toScreen(a.x, a.y);
+    const sb = toScreen(b.x, b.y);
+    const ticks =
+      sa === null || sb === null ? 1 : tweenTickCount(sb.x - sa.x, sb.y - sa.y, 0, true);
+    const ms = ticks * tickMs;
+    steps.push({ from: { x: a.x, y: a.y }, to: { x: b.x, y: b.y }, ticks, tickAt, at, ms });
+    at += ms;
+    tickAt += ticks;
+  }
+  return steps;
+}
+
+/** 一整趟补间要播多久（毫秒）—— 空串返回 0 */
+export function actorWalkTotalMs(steps: readonly ActorWalkStep[]): number {
+  const last = steps[steps.length - 1];
+  return last === undefined ? 0 : last.at + last.ms;
+}
+
+/**
+ * 一个替身这一帧**该怎么画** —— 纯数据，`draw()` 拿它去做 IO。
+ *
+ * 位置给的是**格心**（世界坐标）：在播补间时由 `BoardRenderer` 换成插值点，
+ * 所以这里不管补间。
+ */
+export interface ActorToken {
+  /** 替身下标 = actor − 4（0..4） */
+  slot: number;
+  /** actor 号（4..8） */
+  actor: number;
+  nodeId: number;
+  /** 所在节点的世界坐标 */
+  x: number;
+  y: number;
+  /** `Data.mkf` 图组资源号（站姿或走姿） */
+  resource: number;
+  /** 屏幕朝向 0..7 —— 已含视角旋转 */
+  screenDir: number;
+  /** 走路帧号 @source `[0x498ea3 + actor×0x34]`；站姿恒 0 */
+  frame: number;
+  /** 这一帧用走姿图组吗 */
+  walking: boolean;
+  /** 绘制槽类别：当前行动者 0xd，其余 0x8 */
+  klass: number;
+}
+
+export interface ActorTokenOptions {
+  /** 视角 0..7 @source 全局 `[0x499088]` */
+  view: number;
+  /** 这个槽这一帧在不在播补间（决定站/走姿） */
+  walking?: (slot: number) => boolean;
+  /** 这个槽的走路帧号 */
+  frame?: (slot: number) => number;
+  /** 当前行动者（原版 `[0x49910c]`，替身时是 4..8）；没有替身在行动就传 null */
+  currentActor?: number | null;
+}
+
+/** 「不在棋盘上」的落点哨兵 —— 节点号从 1 起，故 0 不会与任何节点相撞 */
+export const ACTOR_OFF_BOARD = 0;
+
+/**
+ * 「这一帧该给哪些替身起补间」—— **纯函数**（`state.specialActors` → 该起哪些补间）。
+ *
+ * 判据是**落点节点变了**：只有换了落点才可能刚走过一趟。
+ * - `seen` 记上一次画出来的落点（`0` = 当时不在棋盘上）；
+ * - 宿主喂了 `supplied` 就用那个整趟路径（**1:1**）；
+ * - 没喂时只有 `lastNodeId → nodeId` 这最后一格能从 state 推出来 ——
+ *   **中间格 core 没留下**（`NpcWalk.path` 不落 state，岔路又是 `rand()` 选的）。
+ *
+ * ★ 「被保釋出来」那一步也能测到：在監獄时 `seen = 0`，一上路落点就变成节点号。
+ * ★ 首帧（`seen` 里根本没有这个槽 = 進遊戲／讀檔）只记账不播，免得一读档全体滑一段；
+ *   但宿主**明确喂了路径**时照播 —— 那一定是一趟真的刚发生的走子。
+ */
+export function actorWalkTriggers(
+  actors: readonly SpecialActor[],
+  seen: ReadonlyMap<number, number>,
+  supplied?: readonly ActorWalk[],
+): { walks: ActorWalk[]; seen: Map<number, number> } {
+  const bySlot = new Map<number, readonly number[]>();
+  for (const w of supplied ?? []) bySlot.set(w.slot, w.path);
+  const walks: ActorWalk[] = [];
+  const next = new Map<number, number>();
+  for (let slot = 0; slot < SPECIAL_ACTOR_COUNT; slot++) {
+    const a = actors[slot];
+    const path = bySlot.get(slot);
+    // ★ 「在不在盘上」**不能**先于 `supplied` 判 —— 有两趟走完的人已经不在盘上了：
+    //   ① 機器娃娃 `runDoll` 走完就 `idleActor()`（state 里 `nodeId=0 / place=offBoard`）；
+    //   ② 惡人半路踩回監獄／醫院（`place = 監獄/醫院`）。
+    //   先判在盘上会把宿主喂来的整趟路径整条跳过（D-T047-6，实测起 0 条补间）。
+    if (a === undefined || a.place !== ACTOR_PLACE.board || a.nodeId <= 0) {
+      // 落点记账用**路径末格**，这样同一份 `supplied` 不会每帧重播。
+      const endsAt = path === undefined ? ACTOR_OFF_BOARD : (path[path.length - 1] ?? ACTOR_OFF_BOARD);
+      next.set(slot, endsAt);
+      if (path !== undefined && path.length >= 2 && seen.get(slot) !== endsAt) {
+        walks.push({ slot, path });
+      }
+      continue;
+    }
+    const endsAt = path === undefined ? a.nodeId : (path[path.length - 1] ?? a.nodeId);
+    const last = seen.get(slot);
+    next.set(slot, endsAt);
+    if (last === endsAt) continue; // 没换落点 = 还是同一趟
+    if (last === undefined && path === undefined) continue; // 首帧：不播
+    if (path !== undefined) {
+      walks.push({ slot, path });
+    } else if (a.lastNodeId > 0 && a.lastNodeId !== a.nodeId) {
+      walks.push({ slot, path: [a.lastNodeId, a.nodeId] });
+    }
+  }
+  return { walks, seen: next };
+}
+
+/**
+ * `state` → 「棋盘上该画哪些替身、各画哪张图」的映射。**纯函数**，单测直接钉。
+ *
+ * @source `fcn_0040829d` 的替身那一段（VA 0x00408b82 起）：
+ * ```asm
+ * 00408…  cmp byte [edi + 0x498e32], 0    ; +10 place
+ *         jne 跳过                         ; ★ 只有在場（place == 0）才画
+ * 0040…   mov ax, word [edi + 0x498e28]   ; +0 x
+ *         mov dx, word [edi + 0x498e2a]   ; +2 y
+ * 0040…   mov dl, byte [edi + 0x498e31]   ; +9 direction
+ *         （屏幕朝向 = (direction + 8 − 视角) & 7）
+ * 0040…   mov eax, [slot 的图 + 4] / sar eax, 3   ; 每向帧数 = 图数 >> 3
+ *         mul byte [esp + 0x54]             ; × 屏幕朝向
+ *         add al, byte [ebp + 0x498ea3]     ; + 走路帧号
+ * ```
+ */
+export function actorTokens(
+  state: GameState,
+  nodes: readonly MapNode[],
+  opts: ActorTokenOptions,
+): ActorToken[] {
+  const walkingOf = opts.walking ?? ((): boolean => false);
+  const frameOf = opts.frame ?? ((): number => 0);
+  const current = opts.currentActor ?? null;
+  const out: ActorToken[] = [];
+  for (let slot = 0; slot < SPECIAL_ACTOR_COUNT; slot++) {
+    const a = state.specialActors[slot];
+    // @source VA 0x00408b82：`cmp byte [rec + 10], 0 / jne 跳过`
+    if (a === undefined || a.place !== ACTOR_PLACE.board) continue;
+    const node = nodes[a.nodeId - 1];
+    if (node === undefined) continue;
+    const actor = SPECIAL_ACTOR_BASE + slot;
+    const walking = walkingOf(slot);
+    const resource = specialActorImageSet(actor, walking);
+    if (resource === null) continue;
+    out.push({
+      slot,
+      actor,
+      nodeId: a.nodeId,
+      x: node.x,
+      y: node.y,
+      resource,
+      screenDir: screenDirection(a.direction, opts.view),
+      frame: walking ? frameOf(slot) : 0,
+      walking,
+      klass: current === actor ? DRAW_CLASS.currentPlayer : DRAW_CLASS.npc,
+    });
+  }
+  return out;
 }
 
 /** 一条待画的绘制槽：先按 `key` 排序，再依次 `paint` */
@@ -339,6 +667,34 @@ export class BoardRenderer {
     /** 已经推过几次「走路帧」——渲染一帧可能跨多个 tick */
     ticked: number;
   } | null = null;
+  /**
+   * 正在播的替身走子补间 —— **一个替身一条、一条串多格**（T-047）。
+   *
+   * ★ 与玩家那条分开：原版的走路帧计数器每个替身各一份
+   *   （`[0x498ea3 + actor×0x34]`），而且一趟是逐格 tick 串播的
+   *   （`fcn_0040c05c` 的 actor ≥ 4 分支，VA 0x0040c489）。
+   *   ★ 纯表现，不进 state（C-DET-4）；丢了只是少一段平滑。
+   */
+  readonly #actorWalks = new Map<
+    number,
+    { steps: ActorWalkStep[]; start: number; tickMs: number; ticked: number }
+  >();
+  /**
+   * 替身的走路帧号（原始 tick 数，用的时候对「每向帧数」取模）。
+   * @source `fcn_0040c05c` 尾部 VA 0x0040c751：
+   * ```asm
+   * inc byte [0x498ea3 + actor×0x34]        ; ★ 每 tick 一帧
+   * sprite = 走姿图[slot] ; frames = [sprite + 4] >> 3
+   * if ([0x498ea3] == frames) [0x498ea3] = 0
+   * ```
+   * 取模与 exe 等价（`directionalImage` 里 `frame % 每向帧数`），故这里只累加。
+   */
+  readonly #actorFrame = new Map<number, number>();
+  /**
+   * 上一次画出来的替身节点号 —— 用来察觉 `nodeId` 跳变。
+   * 宿主没喂 `actorWalks` 时，只有这个变化能告诉我们「他刚走过」。
+   */
+  readonly #actorSeen = new Map<number, number>();
   /**
    * 解码落地时叫一声。
    *
@@ -414,8 +770,9 @@ export class BoardRenderer {
   /** 这一步的补间播完了吗（没有补间也算播完） */
   walkDone(now = performance.now()): boolean {
     const w = this.#walk;
-    if (w === null) return true;
-    return now - w.start >= w.ticks * w.tickMs;
+    const player = w === null || now - w.start >= w.ticks * w.tickMs;
+    // ★ 替身那条也算进来（T-047）：他们那一趟同样要逐帧重绘，否则画面冻住
+    return player && this.actorWalkDone(now);
   }
 
   /** 丢掉没播完的补间（读档、换屏时用） */
@@ -427,6 +784,134 @@ export class BoardRenderer {
   lastWalkMs(): number {
     const w = this.#walk;
     return w === null ? 0 : w.ticks * w.tickMs;
+  }
+
+  // ── 替身（四大惡人 / 機器娃娃）的走子补间 ──────────────────────────
+
+  /**
+   * 替身这一趟补间**还剩**多久（毫秒）—— 宿主拿它当「等替身走完」的节拍。
+   *
+   * ⚠️ 与玩家那条不同：替身的整趟是在**一次** `dispatch` 里跑完的，
+   *   而补间要等下一次 `draw()` 才起得来，所以 `lastWalkMs()` 帮不上忙 ——
+   *   宿主得在 dispatch **之后**再问这个（见 `docs/deviations/T-047.md`）。
+   */
+  actorWalkRemainingMs(now = performance.now()): number {
+    let best = 0;
+    for (const w of this.#actorWalks.values()) {
+      const left = actorWalkTotalMs(w.steps) - (now - w.start);
+      if (left > best) best = left;
+    }
+    return best;
+  }
+
+  /** 替身补间还在播吗（一条都没有也算播完） */
+  actorWalkDone(now = performance.now()): boolean {
+    let running = false;
+    for (const [slot, w] of [...this.#actorWalks]) {
+      if (now - w.start >= actorWalkTotalMs(w.steps)) this.#actorWalks.delete(slot);
+      else running = true;
+    }
+    return !running;
+  }
+
+  /** 丢掉没播完的替身补间（读档、换屏时用） */
+  cancelActorWalk(): void {
+    this.#actorWalks.clear();
+    this.#actorSeen.clear();
+    this.#actorFrame.clear();
+  }
+
+  /**
+   * 起一条替身补间 —— `path` 依次经过的节点号（含起点）。
+   *
+   * tick 数按**屏幕**距离算，且一律走 `dist × 0.125` 那一支
+   * （见 `actorWalkSteps` 的出处）。
+   */
+  #beginActorWalk(
+    slot: number,
+    nodes: readonly MapNode[],
+    path: readonly number[],
+    enabled: boolean,
+    camera: Camera,
+    vp: { w: number; h: number },
+    tickMs: number,
+    now: number,
+  ): void {
+    this.#actorWalks.delete(slot);
+    if (!enabled || path.length < 2) return;
+    const steps = actorWalkSteps(path, nodes, (x, y) => worldToScreen(x, y, camera, vp), tickMs);
+    if (steps.length === 0) return;
+    this.#actorWalks.set(slot, { steps, start: now, tickMs, ticked: 0 });
+    // @source VA 0x0040deed：起步（`fcn_0040dd1f` 尾）把走路帧清零
+    this.#actorFrame.set(slot, 0);
+    this.#dirty = true;
+  }
+
+  /**
+   * 每帧同步一次「替身在哪儿 → 补间」。
+   *
+   * 判据全在纯函数 `actorWalkTriggers` 里（有单测），这里只负责起补间与换图。
+   */
+  #syncActorWalks(
+    state: GameState,
+    nodes: readonly MapNode[],
+    camera: Camera,
+    vp: { w: number; h: number },
+    supplied: readonly ActorWalk[] | undefined,
+    enabled: boolean,
+    tickMs: number,
+    now: number,
+  ): void {
+    const r = actorWalkTriggers(state.specialActors, this.#actorSeen, supplied);
+    this.#actorSeen.clear();
+    for (const [slot, nodeId] of r.seen) this.#actorSeen.set(slot, nodeId);
+    // 不在棋盘上的槽：把没播完的补间收掉（他可能在半路被送回監獄／醫院）
+    for (const [slot] of [...this.#actorWalks]) {
+      if (r.seen.get(slot) === ACTOR_OFF_BOARD) this.#actorWalks.delete(slot);
+    }
+    for (const w of r.walks) {
+      this.#beginActorWalk(w.slot, nodes, w.path, enabled, camera, vp, tickMs, now);
+    }
+  }
+
+  /**
+   * 替身补间这一帧画在**屏幕**的哪里；没有补间返回 null（调用方按格心画）。
+   *
+   * ★ 一格 = `N` 个 tick、一 tick 一帧，**走完整趟**共用同一份帧号
+   *   （exe 的 `[0x498ea3]` 只在起步时清零）—— 故按「整趟已经过去的 tick 数」
+   *   补齐，跨格连算。
+   */
+  #actorWalkScreen(
+    slot: number,
+    cam: Camera,
+    vp: { w: number; h: number },
+    now: number,
+  ): { x: number; y: number } | null {
+    const w = this.#actorWalks.get(slot);
+    if (w === undefined) return null;
+    const elapsed = now - w.start;
+    if (elapsed >= actorWalkTotalMs(w.steps)) {
+      this.#actorWalks.delete(slot);
+      return null;
+    }
+    let step = w.steps[w.steps.length - 1]!;
+    for (const s of w.steps) {
+      if (elapsed < s.at + s.ms) {
+        step = s;
+        break;
+      }
+    }
+    const a = worldToScreen(step.from.x, step.from.y, cam, vp);
+    const b = worldToScreen(step.to.x, step.to.y, cam, vp);
+    if (a === null || b === null) return null;
+
+    const k = Math.min(step.ticks, Math.floor((elapsed - step.at) / w.tickMs) + 1);
+    const absolute = step.tickAt + k;
+    if (absolute > w.ticked) {
+      this.#actorFrame.set(slot, (this.#actorFrame.get(slot) ?? 0) + (absolute - w.ticked));
+      w.ticked = absolute;
+    }
+    return framesFor(a, b, step.ticks)[k - 1] ?? null;
   }
 
   /**
@@ -539,9 +1024,24 @@ export class BoardRenderer {
     //      高大建筑就再也挡不住从它背后走过的棋子了（需求方 2026-09-15 指出的症状）。
     this.#drawDecor(map, camera, vp);
 
+    // ★ 替身（四大惡人／機器娃娃）的走子补间要先同步：它决定这一帧他们是「站」
+    //   还是「走」、画在哪个插值点上。首帧只记账不播（见 `#syncActorWalks`）。
+    const nowMs = performance.now();
+    this.#syncActorWalks(
+      state,
+      map.nodes,
+      camera,
+      vp,
+      input.actorWalks,
+      input.animation ?? true,
+      input.tickMs ?? 20,
+      nowMs,
+    );
+
     const slots: DrawSlot[] = [
       ...this.#buildingSlots(map, state, camera, vp),
       ...this.#playerSlots(map, state, camera, vp, input.characterPose ?? null),
+      ...this.#actorSlots(map, state, camera, vp, input.currentActor ?? null, nowMs),
     ];
     // 原版用 qsort 比低 16 位 int16；这里用稳定排序，键相同时保持压入顺序（不影响观感）
     slots.sort((a, b) => a.key - b.key);
@@ -945,6 +1445,74 @@ export class BoardRenderer {
           ctx.strokeStyle = pl.index === state.currentPlayer ? '#fff' : 'rgba(0,0,0,0.5)';
           ctx.lineWidth = pl.index === state.currentPlayer ? 3 : 1;
           ctx.stroke();
+        },
+      });
+    }
+    return slots;
+  }
+
+  /**
+   * 四大惡人／機器娃娃的棋子（T-047）—— 与建筑、玩家混在同一条绘制槽清单里排。
+   *
+   * 画法与玩家同构：**锚点对齐到落点**（`fcn_00456770` 会减掉图自带的 x/y，
+   * @source VA 0x0045679b），朝向走同一套「世界朝向 + 8 − 视角」，
+   * 图号走同一套「屏幕朝向 × 每向帧数 + 走路帧」。
+   *
+   * 差别只有三处，全部照 exe：
+   * - 图组是替身专用的（`specialActorImageSet`）；
+   * - 有补间时画在**插值点**上（exe 用的是记录里那两个插值坐标 `+0`/`+2`）；
+   * - 绘制槽类别是 0x8 / 0xd（同 Y 时排在玩家下面，见 `DRAW_CLASS.npc`）。
+   *
+   * ⚠️ exe 在槽里存的是**替身记录自己的 x/y**（走动时是插值值），本引擎的
+   *   `SpecialActor` 没有这两个字段（C-ARC-2：插值坐标不进 state），
+   *   故按「格心 + 补间插值」现算。
+   */
+  #actorSlots(
+    map: Rich4Map,
+    state: GameState,
+    cam: Camera,
+    vp: { w: number; h: number },
+    currentActor: number | null,
+    now: number,
+  ): DrawSlot[] {
+    const ctx = this.#ctx;
+    const slots: DrawSlot[] = [];
+    // ★ 先把补间解出来（它会推进走路帧、顺手清掉播完的），再按它决定站/走姿 ——
+    //   顺序颠倒的话，刚好播完那一刻会多画一帧走姿。
+    const live = new Map<number, { x: number; y: number }>();
+    for (let slot = 0; slot < SPECIAL_ACTOR_COUNT; slot++) {
+      const p = this.#actorWalkScreen(slot, cam, vp, now);
+      if (p !== null) live.set(slot, p);
+    }
+    const tokens = actorTokens(state, map.nodes, {
+      view: cam.view,
+      walking: (slot) => live.has(slot),
+      frame: (slot) => this.#actorFrame.get(slot) ?? 0,
+      currentActor,
+    });
+
+    const k = cam.mode === 'map' ? cam.scale : 1;
+    for (const t of tokens) {
+      const p = live.get(t.slot) ?? worldToScreen(t.x, t.y, cam, vp);
+      if (p === null) continue;
+      const count = this.#imageCount('Data.mkf', t.resource);
+      const sp =
+        count > 0
+          ? this.#sprite('Data.mkf', t.resource, directionalImage(count, t.screenDir, t.frame))
+          : null;
+      // 图还没解出来就这一帧不画 —— 原版槽里指针为空时同样跳过。
+      // ⚠️ 不退回色块：替身是「憑空多出来的东西」，画错比不画更糟。
+      if (sp === null) continue;
+      slots.push({
+        key: drawKey(p.y, t.klass),
+        paint: () => {
+          ctx.drawImage(
+            sp.bitmap,
+            p.x - sp.anchorX * k,
+            p.y - sp.anchorY * k,
+            sp.width * k,
+            sp.height * k,
+          );
         },
       });
     }

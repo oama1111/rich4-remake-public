@@ -1,27 +1,656 @@
 /*
- * 旅館 / 購物中心轉盤动画
+ * 旅館 / 購物中心 的轉盤動畫 —— T-039 / MOD-12 / REQ-12.14
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * ⚠️ **本屏尚未实现**（T-039）。文件先立在这里，是为了让 `screens.ts` 的登记
- *   一次接好 —— 实现的人**只改这一个文件**（外加自己的 `*.test.ts`），
- *   不要动 `main.ts`：契约见 `ui-screen.ts`。
+ * ★ 這一屏**沒有待決交互**：`rules/facility.ts` 的 `spinWheel()`（VA 0x0043facb）
+ *   早把倍數算進 state 了（旅館那個數同時是「住幾天」），本模組只把這一趟
+ *   **起點 → 落點** 轉出來、停一下、自己關屏。D-003：「真人點擊時機不復刻，
+ *   結果由 core 定」。
  *
- * 12 格圆盘，表 `0x475d0c`；结果由 core 定（`rules/facility.ts` 的 `spinWheel`）。
- * D-003 记着「真人点击时机不复刻」—— 本屏只把**指针从起点走到落点**播出来；
- * 「動畫過程」关掉时直接显示结果。
+ * ★ 本屏**不改 core**：起點槽就藏在 `before.rngState` 裡 —— 原版
+ *   `[0x48c50c] = rand() % 12`（VA 0x0043f7da），而 `settleFacility()` 走這條路時
+ *   `before.rngState` 的**第一次 `rand()`** 就是它（那之前一個隨機數都沒取）。
+ *   於是「起點」不必進 state；落點則由 core 的同一個走法（第一個非空格）定。
+ *   這一手與 `magic-screen.ts` 的「用 diff 反推落點」是同一套路，只是這裡連
+ *   隨機數都能重放，反推得更準。
  *
- * 落点是「本次轉盤的起点与落点槽号」，core 里可能还没记（`state` 若无
- * `lastWheel` 这类字段，先加一个带测试的小改写，或从 before/after 的 diff 推）。
- * ⚠️ 素材号待认 —— 找到之前先用占位绘制，别硬编码猜出来的资源号。
+ * ## 出處（窗口過程 `fcn_0043f7c6`；入口 `fcn_0044090e`）
  *
- * 验收：卡片 `docs/tasks/cards.yaml` 的 `tests` 一栏全绿 + `pnpm check` 三绿；
- * 做完把卡片 `status` 改 `done`、跑 `python3 tools/task-cards.py render`。
+ * | 是什麼 | @source |
+ * |---|---|
+ * | 素材 = `Panel.mkf` **資源 `(轉盤 & 3) + 0x44`**（旅館 69 / 購物中心 70）| 0x00440923 `and eax,3` / 0x00440926 `add eax,0x44` |
+ * | 圓盤 = 圖 **`槽 + 2`**（12 張**預先轉好**的 30° 幀），錨點 (82,82) | 0x004409dd `add eax,0x24`(進場畫圖 2) / 0x0043f18d `add edx,2`(槽+2) |
+ * | 圓盤落點 **(0xdc, 0x140) = (220,320)** | 0x004409ce / 0x004409d3；轉動中 0x0043f17d / 0x0043f182 |
+ * | 天使常態 = 圖 **0**（75×61，錨點 (−6,0)），落點 **(0x109, 0xe6) = (265,230)** | 0x004409fe `add eax,0xc` |
+ * | 天使轉動 = 圖 **1**（87×61，錨點 (0,0)），同一落點 | 0x0043f1cc `add eax,0x18` |
+ * | 對話氣泡 = `Data.mkf` **資源 0x205 = 517，圖 6**（271×199，錨點 (127,92)）| 0x004409b6 `mov eax,[0x48bad8]` + 0x004409bb `add eax,0x48`；載入點 rich4_load_map.asm:576 |
+ * | 氣泡落點 **(0xdc, 0x8c) = (220,140)** | 0x004409ac `push 0x8c` / 0x004409b1 `push 0xdc` |
+ * | 氣泡文字 = 表 `0x475cf8` 的第 `轉盤` 項，`sprintf(buf, 該串, 地主名)`，畫在 **(220,140) flag 4（正中）** | 0x00440a20 / 0x00440a35 |
+ * | 字級 **0x10 = 16**、內文 `0xf0f0f0`、陰影 `0x101010`（1px 右下）| 0x0044094e `_rich4_create_font`；陰影畫法 0x0044fc31 起 |
+ * | 起點槽 `[0x48c50c] = rand() % 12`；每格 `+1 % 12`（順時針一格一格走）| 0x0043f7da `call rand` / 0x0043f7eb / 0x0043f127 |
+ * | 停在**第一個非 `0xff` 的格子** | 0x0043f9fa `cmp byte [eax+0x475d0c], 0xff` |
+ * | 一幀最短 **0x24 = 36ms** | 0x0043faab `cmp esi, 0x24 / jb` |
+ * | 快轉段 **0x28 = 40 幀**（之後才進減速）| 0x0043f861 `cmp ebp, 0x28` / 0x0043f84f 判是不是真人 |
+ * | 減速：延遲 1..5，**每一檔走 3 格**進下一檔 | 0x0043f9c7 起 `[esp+0x30] = 3` |
+ * | 停在落點後再等 **0x28 = 40 幀**才關屏 | 0x0043fa19 `cmp ebp, 0x28` |
+ * | 真人（`whoPlays == 1` 且不夢遊）**點一下**就把狀態機往前推（`1→2` / `5→6`）| 0x0043fa66 起 |
+ * | 音效 = `Effect.mkf` **52**（0x34）**循環**播，落地那一下停 | 0x475d4c；起 0x0043f80d、落地 0x0043fa0a、釋放 0x00440a85 |
+ *
+ * ⚠️ **本屏畫在純黑上，原版是畫在棋盤上的**：原版只有那塊 (0,40)-(440,480)
+ *   的離屏快取（`fcn_00451e7e`，0x00440988），底下的棋盤照樣看得見；
+ *   而 `ui-screen.ts` 的契約是「接管的屏自己畫整屏、棋盤不畫」，
+ *   本模組拿不到棋盤那張畫布，故只剩黑底。見 `docs/deviations/T-039.md`。
+ *
+ * ⚠️ **「動畫過程」設定夠不到**：它在 `main.ts` 的 `options.animation`（RICH4.CFG
+ *   offset 1），`UiScreenEnv` 裡沒有；契約不許改，故本屏**恆開動畫**，
+ *   但幀序純函式 `wheelFrameSequence(start, stop, animate = false)` 這一支
+ *   照樣有單測。見 deviations。
+ *
+ * ⚠️ **不播音效**：那個 52 是**循環**音（播在 0x0043f80d、落地停 0x0043fa0a），
+ *   而 `UiScreenEnv.playEffect()` 只有一次性出口、`ARCHIVES` 裡也**沒有**
+ *   `Effect.mkf`（见 assets.ts）。寧可不響也不亂響。
  */
 
-import type { UiScreen } from './ui-screen.ts';
+import { CHARACTERS } from '@rich4/data';
+import {
+  FACILITY_TYPE,
+  WHEEL,
+  WHEEL_BLANK,
+  WHEEL_SLOTS,
+  WHEEL_TABLE,
+  WHO_PLAYS_HUMAN,
+  WHO_PLAYS_MASK,
+  WatcomRng,
+  effectiveFacility,
+  facilityIndexOf,
+  type GameState,
+  type MapTopology,
+} from '@rich4/core';
+import { FONT_FAMILY } from './font.ts';
+import type { ArchiveName, Sprite } from './assets.ts';
+import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+
+/** 取圖（與 `main.ts` 的 `spriteNow` 同一個簽名） */
+export type WheelSprite = (
+  archive: ArchiveName,
+  resource: number,
+  index: number,
+  colorKeyBlack?: boolean,
+) => Sprite | null;
+
+// ============================================================
+//  素材
+// ============================================================
+
+/**
+ * 四個轉盤各占 `Panel.mkf` 一個資源，**資源號 = (轉盤 & 3) + 0x44**。
+ *
+ * @source VA 0x0044093a：`mov eax,[esp+0xac] / and eax,3 / add eax,0x44 / call _read_mkf`
+ *   —— 四個盤因此是 68 航空公司 / **69 旅館** / **70 購物中心** / 71 保險。
+ *   每個資源都是 14 張圖（逐張看過 `assets-clean/Panel/00{68..71}_*.png`）。
+ */
+export const WHEEL_RESOURCE_BASE = 0x44;
+
+/** 轉盤編號 → `Panel.mkf` 資源號 */
+export function wheelResource(wheel: number): number {
+  return WHEEL_RESOURCE_BASE + (wheel & 3);
+}
+
+/**
+ * 一張轉盤資源裡的圖號。
+ *
+ * - **0 = 天使常態**（75×61，錨點 (−6,0)）@source 0x004409fe `add eax,0xc`
+ * - **1 = 天使轉動**（87×61，錨點 (0,0)）@source 0x0043f1cc `add eax,0x18`
+ * - **2..13 = 圓盤的 12 張預轉幀**，第 `槽` 格用圖 `槽 + 2` @source 0x0043f18d
+ *
+ * ★ 圓盤是**預先轉好的 12 張圖**（每張相差 30°），原版不自己旋轉 ——
+ *   所以本模組只要把 `槽 + 2` 那張貼到 (220,320) 就行，不必做角度換算。
+ *   逐張看過：圖 2 的「1」在正上方、圖 5 的「4」在正上方，與 `WHEEL_TABLE[1]`
+ *   的 `槽 2 → 1`、`槽 5 → 4` 對得上。
+ */
+export const WHEEL_CHUNK = {
+  angelIdle: 0,
+  angelSpin: 1,
+  discFirst: 2,
+} as const;
+
+/** 第 `slot` 格畫哪張圓盤圖 @source 0x0043f18d `圖號 = 槽 + 2` */
+export function wheelDiscChunk(slot: number): number {
+  return WHEEL_CHUNK.discFirst + slot;
+}
+
+/**
+ * 對話氣泡：`Data.mkf` **資源 517（0x205）圖 6**，271×199，錨點 (127,92)。
+ *
+ * @source 載入點 `rich4_load_map.asm:576`（`_read_mkf(data_mkf, 0x205, 0, 0)`）；
+ *   繪製點 0x004409bb `add eax,0x48`（0x48/12 = 圖 6）。
+ */
+export const WHEEL_BUBBLE = { archive: 'Data.mkf', resource: 0x205, image: 6 } as const;
+
+/**
+ * 氣泡裡的兩行字 —— 表 `0x475cf8` 指到的四個串，**逐字照抄**（Big5）。
+ *
+ * @source 0x00475cf8 → 0x465210 / 0x465224 / 0x46523c / 0x46525c；
+ *   `%s` 是**地主（業主）的角色名**（呼叫端 0x0041a3f3 `_rich4_strcpy(buf, player+0)`
+ *   抄的就是玩家名，再 `push &buf` 傳進來）。第 5 項 0x465272 屬於另一個
+ *   窗口過程（`fcn_0043f23e`，改建卡那一路），本屏不畫。
+ */
+export const WHEEL_BUBBLE_FMT: readonly string[] = [
+  '%s\n\n送您出國旅遊...',
+  '%s的旅館\n\n請進來休息...',
+  '%s的購物中心\n\n您的消費倍數為...',
+  '%s\n\n您的投保天數為...',
+];
+
+/** `轉盤` + 角色名 → 氣泡文字（`%s` 只有一處，`replace` 即可） */
+export function wheelBubbleText(wheel: number, name: string): string {
+  const fmt = WHEEL_BUBBLE_FMT[wheel];
+  return fmt === undefined ? '' : fmt.replace('%s', name);
+}
+
+// ============================================================
+//  版面（屏幕坐標 640×480）
+// ============================================================
+
+/** 圓盤落點 @source 0x0043f17d / 0x0043f8fe / 0x00440a0e 的 `push 0xdc / push 0x140` */
+export const WHEEL_DISC_AT = { x: 0xdc, y: 0x140 } as const;
+/** 天使落點 @source 0x0043f1bd / 0x00440a01 的 `push 0x109 / push 0xe6` */
+export const WHEEL_ANGEL_AT = { x: 0x109, y: 0xe6 } as const;
+/** 氣泡落點 @source 0x004409ac `push 0x8c` / 0x004409b1 `push 0xdc` */
+export const WHEEL_BUBBLE_AT = { x: 0xdc, y: 0x8c } as const;
+
+/**
+ * 氣泡文字：畫在 **(220,140)、flag 4 = 正中**。
+ *
+ * @source 0x00440a35 `push 4 / push 0x8c / push 0xdc`；
+ *   flag 4 的語義見 `docs/handoff.md` §5 的七路跳表 0x44faa0：
+ *   `x -= w/2; y -= h/2`（VA 0x0044ff2a），即 x/y 是**文字塊的中心**。
+ */
+export const WHEEL_TEXT_AT = { x: 0xdc, y: 0x8c } as const;
+
+/**
+ * 文字樣式。@source 0x0044094e `_rich4_create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`
+ *   —— 第一個色是**內文**、第二個是**陰影**（與魔法屋同一個約定，見 magic-screen.ts）；
+ *   陰影是原地往右下 1px 再畫一遍（VA 0x0044fd54 起那三趟 `DrawTextA`）。
+ *
+ * `lineGap` 是我們補的行距：原版把整串丟給 GDI `DrawTextA`（VA 0x0044fbc9），
+ *   行距是字體自帶的；本倉庫其他多行文字一律用「字級 + 6」（`shop-screen.ts`
+ *   的氣泡、`lottery-screen.ts` 的氣泡、`board-screen.ts` 的訊息框）。
+ */
+export const WHEEL_TEXT = {
+  size: 0x10,
+  fill: '#f0f0f0',
+  shadow: '#101010',
+  lineGap: 6,
+} as const;
+
+/** 舞台字體（與其他屏同一套 CJK 字體棧）*/
+const WHEEL_FONT = FONT_FAMILY;
+
+// ============================================================
+//  幀序（純函式，單測釘住）
+// ============================================================
+
+/** 一幀最短 36ms @source 0x0043faab `cmp esi, 0x24 / jb` */
+export const WHEEL_FRAME_MS = 0x24;
+/** 快轉段 40 幀 @source 0x0043f861 `cmp ebp, 0x28 / jb`（0x0043f84f 判的是「是不是真人」）*/
+export const WHEEL_FAST_STEPS = 0x28;
+/** 減速段每一檔走 3 格 @source 0x0043f9d2 `mov [esp+0x30], 3` */
+export const WHEEL_SLOW_EVERY = 3;
+/** 減速最多到 5 倍慢 @source 0x0043f9df `cmp [esp+0x34], 5 / jl` */
+export const WHEEL_MAX_DELAY = 5;
+/** 停在落點後再等 0x28 = 40 幀才關屏 @source 0x0043fa19 `cmp ebp, 0x28 / jne` */
+export const WHEEL_HOLD_FRAMES = 0x28;
+export const WHEEL_HOLD_MS = WHEEL_HOLD_FRAMES * WHEEL_FRAME_MS;
+
+/**
+ * 減速段從第幾格開始 —— 貼著尾巴的那 12 格（`3 × (5−1)`）。
+ *
+ * ★ 原版是「快轉 40 幀之後開始一檔一檔變慢、慢到 5 倍為止」，
+ *   但那是**點擊／自動**那條時間線決定的（D-003 不復刻）；
+ *   本引擎的總格數是固定的，所以把減速段**貼在尾巴上**，
+ *   保證「最後幾格一定是最慢那一檔」—— 看起來一樣是先快後慢停下來。
+ */
+export function wheelSlowFrom(total: number): number {
+  return Math.max(0, total - WHEEL_SLOW_EVERY * (WHEEL_MAX_DELAY - 1));
+}
+
+/**
+ * 這一趟轉幾格。
+ *
+ * ★ 原版真人那一路的格數**取決於點擊時機**（快轉段一直轉到鬆手為止），
+ *   所以不可復現（D-003）。本引擎固定走 **4 圈 + 起點到落點的距離** ——
+ *   原版自動那一路是快轉 0x28 幀（≡ 3⅓ 圈）再加減速段的十來格，
+ *   四圈多落在同一個量級，看起來一樣是「先快後慢停下來」。
+ *
+ * `stop === start` 時仍要走滿一圈（倍數就是起點那格，不能站著不動）。
+ */
+export const WHEEL_REVOLUTIONS = 4;
+
+/** 從 `start` 往前走到 `stop` 要走幾格（不含起點那一幀） */
+export function wheelSpinSteps(start: number, stop: number): number {
+  const dist = (((stop - start) % WHEEL_SLOTS) + WHEEL_SLOTS) % WHEEL_SLOTS;
+  return WHEEL_SLOTS * WHEEL_REVOLUTIONS + (dist === 0 ? WHEEL_SLOTS : dist);
+}
+
+/** 走過 `step` 格之後正指著哪個槽 —— 順時針一格一格走 @source 0x0043f127 `inc / cmp 0xc` */
+export function wheelSlotAt(start: number, step: number): number {
+  return (((start + step) % WHEEL_SLOTS) + WHEEL_SLOTS) % WHEEL_SLOTS;
+}
+
+/**
+ * 走第 `step` 格（1 基）之前要等幾幀。
+ *
+ * 減速段**貼著尾巴算**：最後 `3 × (5−1) = 12` 格逐檔變慢（延遲 2,3,4,5，每檔 3 格），
+ * 前面全是快轉（延遲 1）。@source 0x0043f9c7 起：步進條件是
+ * `ebp − 上次 = [esp+0x34]`，而 `[esp+0x34]` 每走 3 格 +1、上限 5。
+ */
+export function wheelStepDelay(step: number, total: number): number {
+  const slowFrom = wheelSlowFrom(total);
+  if (step <= slowFrom) return 1;
+  const level = 2 + Math.floor((step - slowFrom - 1) / WHEEL_SLOW_EVERY);
+  return Math.min(WHEEL_MAX_DELAY, level);
+}
+
+/** 第 `step` 格要等多少毫秒 */
+export function wheelStepWait(step: number, total: number): number {
+  return WHEEL_FRAME_MS * wheelStepDelay(step, total);
+}
+
+/**
+ * 這一趟的**完整幀序**（起點 → 落點，含起點那一幀）。
+ *
+ * ★ `animate === false`（原版「動畫過程」關掉）時**只有落點那一幀** ——
+ *   不播動畫、直接顯示結果。本屏目前恆傳 `true`（設定夠不到，見檔頭）。
+ */
+export function wheelFrameSequence(start: number, stop: number, animate = true): number[] {
+  if (!animate) return [stop];
+  const total = wheelSpinSteps(start, stop);
+  const out: number[] = [];
+  for (let step = 0; step <= total; step++) out.push(wheelSlotAt(start, step));
+  return out;
+}
+
+/** 天使這一幀用哪張圖：還在快轉段就是常態那張，進了減速段換成轉動那張 @source 0x0043f883(arg 0) / 0x0043f9b9(arg 1) */
+export function wheelAngelChunk(step: number, total: number): number {
+  return step < wheelSlowFrom(total) ? WHEEL_CHUNK.angelIdle : WHEEL_CHUNK.angelSpin;
+}
+
+/** 一次回放的進度 */
+export interface WheelSpin {
+  /** 起點槽 0..11 */
+  start: number;
+  /** 落點槽 0..11 */
+  stop: number;
+  /** 已經走過的格數 */
+  step: number;
+  /** 這一格是從什麼時候開始等的 */
+  at: number;
+  /** 這一格要等多久 */
+  wait: number;
+}
+
+export function wheelSpinStart(start: number, stop: number, now: number): WheelSpin {
+  const total = wheelSpinSteps(start, stop);
+  return { start, stop, step: 0, at: now, wait: wheelStepWait(1, total) };
+}
+
+/** 這一刻正指著的槽 */
+export function wheelSpinSlot(spin: WheelSpin): number {
+  return wheelSlotAt(spin.start, spin.step);
+}
+
+/** 走完了沒有 */
+export function wheelSpinLanded(spin: WheelSpin): boolean {
+  return spin.step >= wheelSpinSteps(spin.start, spin.stop);
+}
+
+/** 推一格（沒到時間就原樣返回）*/
+export function wheelSpinTick(spin: WheelSpin, now: number): WheelSpin {
+  const total = wheelSpinSteps(spin.start, spin.stop);
+  if (spin.step >= total) return spin;
+  if (now - spin.at < spin.wait) return spin;
+  const step = spin.step + 1;
+  return { ...spin, step, at: now, wait: wheelStepWait(step + 1, total) };
+}
+
+/**
+ * 跳到**減速段的起點** —— 真人點一下就是這個效果。
+ *
+ * @source 0x0043fa7f：真人點一下把 `ebx` 從 1 推到 2（快轉段結束、進減速段），
+ *   或從 5 推到 6（停好之後提早關屏）。原版那一下之後**還要轉十幾格**才停
+ *   （停在哪取決於點擊時機 —— 那正是 D-003 不復刻的部分）；本引擎落點已由
+ *   core 定死，所以「按一下」= 直接進減速段、照樣停在同一個落點上。
+ *   已經進減速段之後再點就沒事了（原版也是）。
+ */
+export function wheelSpinSkipToSlow(spin: WheelSpin, now: number): WheelSpin {
+  const total = wheelSpinSteps(spin.start, spin.stop);
+  const slowFrom = wheelSlowFrom(total);
+  if (spin.step >= slowFrom) return spin;
+  return { ...spin, step: slowFrom, at: now, wait: wheelStepWait(slowFrom + 1, total) };
+}
+
+/**
+ * 這個玩家的點擊對這一屏有沒有作用。
+ *
+ * @source 0x0043fa66 起：`0x202`（左鍵抬起）/ `0x205`（右鍵）/ `0x101`（按鍵）
+ *   三種訊息，且當前玩家 `whoPlays == 1`（`cmp byte[eax+0x496b7d],1 / jne`）
+ *   且 `+0x37`（夢遊）為 0 時，才把狀態機往前推 —— `ebx 1→2`（開始減速）
+ *   或 `ebx 5→6`（停好之後提早關屏）。AI 一路自己走，點了不算。
+ */
+export function wheelClickable(cue: WheelCue): boolean {
+  return cue.human;
+}
+
+// ============================================================
+//  從 before/after 反推這次轉盤
+// ============================================================
+
+/** 這次要回放什麼 */
+export interface WheelCue {
+  /** `WHEEL.hotel` / `WHEEL.mall` */
+  wheel: number;
+  /** 起點槽 0..11（= `rand() % 12`）*/
+  start: number;
+  /** 落點槽 0..11（起點之後第一個非空格）*/
+  stop: number;
+  /** 停在的那個數字（旅館 = 天數、購物中心 = 倍數）*/
+  value: number;
+  /** 設施下標（`state.facilityLastToll` 用的那個）*/
+  facilityId: number;
+  /** 業主（1 基，與 `facilityOwner` 同一套編碼）*/
+  owner: number;
+  /** 付費的那一位（玩家下標）*/
+  payer: number;
+  /** 付費的是不是真人 —— 只有真人的點擊會推狀態機 @source 0x0043fa66 */
+  human: boolean;
+}
+
+/**
+ * 起點之後第一個非空格 —— **與 core 的 `spinWheel()` 是同一個走法**。
+ *
+ * @source 0x0043f127（每格 `+1 % 12`）配 0x0043f9fa（停在第一個 `!= 0xff`）；
+ *   core 的 `spinWheel()` 是同一條，故 `WHEEL_TABLE[wheel][firstFilledSlot(...)]`
+ *   必定等於 `spinWheel(wheel, randValue)`（單測釘住）。
+ */
+export function firstFilledSlot(wheel: number, start: number): number {
+  const table = WHEEL_TABLE[wheel];
+  if (table === undefined) return 0;
+  let slot = ((start % WHEEL_SLOTS) + WHEEL_SLOTS) % WHEEL_SLOTS;
+  for (let i = 0; i < WHEEL_SLOTS; i++) {
+    if ((table[slot] ?? WHEEL_BLANK) !== WHEEL_BLANK) return slot;
+    slot = (slot + 1) % WHEEL_SLOTS;
+  }
+  return slot;
+}
+
+/** 這次轉盤轉出來的那個數 */
+export function wheelValueOf(wheel: number, stop: number): number {
+  const v = WHEEL_TABLE[wheel]?.[stop];
+  return v === undefined || v === WHEEL_BLANK ? 0 : v;
+}
+
+/**
+ * 剛剛是不是轉了一次旅館 / 購物中心的轉盤？是的話把三件事解出來。
+ *
+ * 判據全部**純查 `before` + `topo`**，與 `settleFacility()`（VA 0x0041a370）的
+ * 前置條件一一對應：
+ *
+ * 1. 當前玩家正**站在設施格上**（`facilityIndexOf(node.type)`，節點沒有 `specialKind`）；
+ * 2. 那是一處**別人的** `level > 0` 的 **旅館 / 購物中心**
+ *    —— 自己的走「首建／加蓋」、公園與研究所在收費那一路一開頭就 return（0x0041a386 / 0x0041a38f）；
+ * 3. **隨機數真的動了** —— 查封／同盟／死神那三條免收在**轉盤之前**就 return
+ *    （0x0041a3cc 的 `0x41d559`），那種情況一個 `rand()` 都不取；
+ *    反過來，這一條路上唯一的隨機數消耗就是轉盤的 `rand() % 12`。
+ *
+ * ★ 起點槽 = `new WatcomRng(before.rngState).next() % 12` @source 0x0043f7da。
+ *
+ * ⚠️ 解不出來的三種（都登記在 `docs/deviations/T-039.md`）：① 玩家被傳送／夢遊
+ *   之類的動作改掉了落點（那時 `before` 的節點已經不是設施格）；
+ *   ② 原版**真人**那一路按一下就停、格數取決於點擊時機，本引擎無從得知
+ *   （D-003：結果由 core 定），故起點一律按「第一次 `rand()`」推；
+ *   ③ 同一次 `settle` 裡若在轉盤**之前**還有別的隨機數消耗，起點就會偏一格 ——
+ *   這條路上只有轉盤自己在取隨機數（見上），故不會發生。
+ */
+export function wheelCue(
+  before: GameState,
+  after: GameState,
+  topo: MapTopology,
+): WheelCue | null {
+  const payer = before.currentPlayer;
+  const p = before.players[payer];
+  if (p === undefined) return null;
+  // 轉盤只出現在「結算」這一步
+  if (before.phase !== 'settling') return null;
+  const node = topo.nodes[p.nodeId - 1];
+  if (node === undefined || node.specialKind !== 0) return null;
+  const facilityId = facilityIndexOf(node.type);
+  if (facilityId === null) return null;
+  const fac = effectiveFacility(before, topo, facilityId);
+  if (fac === null) return null;
+  const wheel =
+    fac.type === FACILITY_TYPE.hotel
+      ? WHEEL.hotel
+      : fac.type === FACILITY_TYPE.mall
+        ? WHEEL.mall
+        : -1;
+  if (wheel < 0) return null;
+  if (fac.level === 0 || fac.owner === 0 || fac.owner === payer + 1) return null;
+  // ★ 一個 rand() 都沒取 = 免收那三條之一，原版連轉盤都不開
+  if (before.rngState === after.rngState) return null;
+
+  const rng = new WatcomRng(before.rngState);
+  const start = rng.next() % WHEEL_SLOTS;
+  const stop = firstFilledSlot(wheel, start);
+  return {
+    wheel,
+    start,
+    stop,
+    value: wheelValueOf(wheel, stop),
+    facilityId,
+    owner: fac.owner,
+    payer,
+    human:
+      (p.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN && p.blocking.sleepWalking === 0,
+  };
+}
+
+// ============================================================
+//  繪製（只做 IO）
+// ============================================================
+
+/** 這一幀要畫成什麼樣 */
+export interface WheelDraw {
+  cue: WheelCue;
+  /** 這一刻正指著的槽 */
+  slot: number;
+  /** 天使這一幀用哪張圖（`wheelAngelChunk`）*/
+  angel: number;
+  /** 氣泡裡的兩行字（`wheelBubbleText`）*/
+  text: string;
+}
+
+/** 錨點落點繪製 @source `fcn_00456418`（`to_left = x − src->x`）*/
+function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
+  if (s === null) return;
+  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+}
+
+/** 三張圖原版都走帶透明的 `fcn_00456418`（0x004409c6 / 0x0043f1ae / 0x0043f1d7）*/
+function wheelSprite(sprite: WheelSprite, archive: ArchiveName, resource: number, chunk: number): Sprite | null {
+  return sprite(archive, resource, chunk, true);
+}
+
+/**
+ * 畫整屏。
+ *
+ * 順序照原版：氣泡（0x004409b6）→ 圓盤（0x004409dd）→ 天使（0x004409fe）→ 字（0x00440a35）。
+ * 圓盤壓在氣泡的下緣上、天使又壓在圓盤上，所以三步的**先後不能換**。
+ */
+export function drawWheelScreen(
+  ctx: CanvasRenderingContext2D,
+  sprite: WheelSprite,
+  d: WheelDraw,
+): void {
+  const resource = wheelResource(d.cue.wheel);
+
+  // ── ① 對話氣泡 ──
+  drawAnchored(
+    ctx,
+    wheelSprite(sprite, WHEEL_BUBBLE.archive, WHEEL_BUBBLE.resource, WHEEL_BUBBLE.image),
+    WHEEL_BUBBLE_AT.x,
+    WHEEL_BUBBLE_AT.y,
+  );
+
+  // ── ② 圓盤（預轉好的那一幀）──
+  drawAnchored(
+    ctx,
+    wheelSprite(sprite, 'Panel.mkf', resource, wheelDiscChunk(d.slot)),
+    WHEEL_DISC_AT.x,
+    WHEEL_DISC_AT.y,
+  );
+
+  // ── ③ 天使（壓在圓盤上）──
+  drawAnchored(
+    ctx,
+    wheelSprite(sprite, 'Panel.mkf', resource, d.angel),
+    WHEEL_ANGEL_AT.x,
+    WHEEL_ANGEL_AT.y,
+  );
+
+  // ── ④ 氣泡裡的兩行字（`\n\n` 當空行留著，GDI 就是這麼排的）──
+  const lines = d.text.split('\n');
+  if (lines.length === 0) return;
+  const lh = WHEEL_TEXT.size + WHEEL_TEXT.lineGap;
+  ctx.font = `${WHEEL_TEXT.size}px ${WHEEL_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  lines.forEach((line, i) => {
+    if (line === '') return;
+    const y = WHEEL_TEXT_AT.y + (i - (lines.length - 1) / 2) * lh;
+    // 陰影：原地往右下 1px 再畫一遍 @source 0x0044fd54 起那三趟 DrawTextA
+    ctx.fillStyle = WHEEL_TEXT.shadow;
+    ctx.fillText(line, WHEEL_TEXT_AT.x + 1, y + 1);
+    ctx.fillStyle = WHEEL_TEXT.fill;
+    ctx.fillText(line, WHEEL_TEXT_AT.x, y);
+  });
+}
+
+// ============================================================
+//  屏幕本體
+// ============================================================
+
+interface WheelPlayback {
+  cue: WheelCue;
+  spin: WheelSpin;
+  /** 停在落點上的時刻；`null` = 還在轉 */
+  landedAt: number | null;
+}
+
+/** 現在正在播的那一段；`null` = 沒在播 */
+let playback: WheelPlayback | null = null;
+
+/** 调试 / 单测用：把整屏关掉 */
+export function resetWheelScreen(): void {
+  playback = null;
+}
+
+/** 给单测的只读视图 */
+export function wheelScreenState(): {
+  playing: boolean;
+  cue: WheelCue | null;
+  slot: number;
+  landed: boolean;
+} {
+  return {
+    playing: playback !== null,
+    cue: playback?.cue ?? null,
+    slot: playback === null ? 0 : wheelSpinSlot(playback.spin),
+    landed: playback === null ? false : wheelSpinLanded(playback.spin),
+  };
+}
+
+/** 業主的角色名（原版呼叫端 0x0041a3f3 抄的是玩家名，本引擎角色名在 `@rich4/data`）*/
+function ownerName(env: UiScreenEnv, owner: number): string {
+  const p = env.state.players[owner - 1];
+  return CHARACTERS[p?.character ?? 0]?.name ?? '';
+}
 
 export const wheelScreen: UiScreen = {
   id: 'wheel',
-  active: () => false,
-  draw: () => undefined,
+
+  /** 演出期間接管整屏；停完 `WHEEL_HOLD_MS` 自己關 */
+  active: () => playback !== null,
+
+  draw(env: UiScreenEnv): void {
+    const play = playback;
+    if (play === null) return;
+    const total = wheelSpinSteps(play.spin.start, play.spin.stop);
+    drawWheelScreen(env.stage, env.sprite, {
+      cue: play.cue,
+      slot: wheelSpinSlot(play.spin),
+      angel: wheelAngelChunk(play.spin.step, total),
+      text: wheelBubbleText(play.cue.wheel, ownerName(env, play.cue.owner)),
+    });
+  },
+
+  /**
+   * 真人點一下 = 原版把狀態機往前推：還在快轉就進減速段，已經停好就立刻關屏。
+   * AI 與夢遊中的玩家點了不算 @source 0x0043fa66。
+   */
+  down(_x: number, _y: number, env: UiScreenEnv): void {
+    const play = playback;
+    if (play === null || !wheelClickable(play.cue)) return;
+    if (play.landedAt !== null) {
+      playback = null;
+      env.log('轉盤：按一下提早關屏');
+      env.requestRender();
+      return;
+    }
+    const next = wheelSpinSkipToSlow(play.spin, env.now);
+    if (next === play.spin) return;
+    playback = { ...play, spin: next };
+    env.requestRender();
+  },
+
+  tick(env: UiScreenEnv): void {
+    const play = playback;
+    if (play === null) return;
+    if (play.landedAt !== null) {
+      if (env.now - play.landedAt >= WHEEL_HOLD_MS) {
+        playback = null;
+        env.log('轉盤：演出結束');
+      }
+      env.requestRender();
+      return;
+    }
+    const next = wheelSpinTick(play.spin, env.now);
+    if (next !== play.spin) {
+      const landed = wheelSpinLanded(next);
+      playback = { ...play, spin: next, landedAt: landed ? env.now : null };
+      if (landed) {
+        env.log(`轉盤：停在 ${next.stop} 格（${wheelValueOf(play.cue.wheel, next.stop)}）`);
+      }
+    }
+    // ★ **每一幀都要續幀**（不是只在換格時）—— `tick` 只在 `requestRender`
+    //   排的那一幀裡被調用（見 main.ts 的註釋），中間不續幀這一趟就會斷在
+    //   半路，只能等 GO 鈕那個 500ms 定時器把它撈回來（動畫會一跳一跳）。
+    env.requestRender();
+  },
+
+  /**
+   * 察覺「剛剛轉了一次旅館 / 購物中心的轉盤」。
+   *
+   * ★ 與 `magic-screen.ts` 同一套路：`before → after` 反推。差別是這裡連
+   *   **起點槽**都反得出來 —— 它就在 `before.rngState` 的第一次 `rand()` 裡。
+   */
+  event(before: GameState, after: GameState, env: UiScreenEnv): void {
+    if (playback !== null) return; // 上一段還沒播完
+    if (before === after) return;
+    const cue = wheelCue(before, after, env.topo);
+    if (cue === null) return;
+    playback = { cue, spin: wheelSpinStart(cue.start, cue.stop, env.now), landedAt: null };
+    env.log(`轉盤：起點 ${cue.start} → 落點 ${cue.stop}（${cue.value}）`);
+    env.requestRender();
+  },
 };

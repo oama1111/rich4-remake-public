@@ -31,6 +31,11 @@ import { sharesScreen } from './shares-screen.ts';
 
 export const SCREENS: readonly UiScreen[] = [
   // 演出类（事件起播）放前面：它们一旦在播就压住底下的一切
+  //
+  // ★ `sharesScreen`（每月 15 日的上市公司分紅屏）排在最前 —— 原版在那一天是
+  //   **先分红屏（VA 0x0041d08f `call 0x42ba97`）、后樂透開獎（VA 0x0041d094
+  //   `call 0x431712`）**，两屏都在同一个「日期跨到 15 日」的 action 里起播。
+  sharesScreen,
   lotteryDrawScreen,
   monthlyScreen,
   magicScreen,
@@ -41,7 +46,6 @@ export const SCREENS: readonly UiScreen[] = [
   lotteryScreen,
   researchScreen,
   minigameScreen,
-  sharesScreen,
   // 工具列/熱鍵打开的
   helpScreen,
 ];

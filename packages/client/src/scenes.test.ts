@@ -43,12 +43,14 @@ describe('場所背景', () => {
     expect(prison).not.toBe(hospital);
   });
 
-  it('小游戏：认出来的两个有底图，喜從天降没有', () => {
+  it('小游戏：三个都有底图了（喜從天降 = 无头 640×480 RGB555 的 #92）', () => {
     const mini = (game: number) =>
       sceneFor({ kind: 'minigame', game, name: '', maxScore: 999 });
     expect(mini(SPECIAL_KIND.PENGUIN_DIG)).toBe(SCENE.penguinDig);
     expect(mini(SPECIAL_KIND.BALLOON)).toBe(SCENE.balloons);
-    expect(mini(SPECIAL_KIND.GIFT_FROM_SKY)).toBeNull();
+    // ★ #92 是认出来的（`push 0x5c` @0x0041566b），不是排除法 —— 见 D-MINI-1
+    expect(mini(SPECIAL_KIND.GIFT_FROM_SKY)).toBe(SCENE.giftFromSky);
+    expect(SCENE.giftFromSky).toBe(92);
   });
 
   it('没有交互、或本来就在棋盘上办的，不铺底图', () => {

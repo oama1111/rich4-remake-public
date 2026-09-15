@@ -14,7 +14,7 @@ import { HOLIDAY_ART_SIZE, holidayArtResource } from '@rich4/core';
 import { hdRelativePath, taskIdOf } from '@rich4/assets-pipeline';
 
 /** 原版的资源档案 */
-export const ARCHIVES = ['Data.mkf', 'Panel.mkf', 'map.mkf', 'jump.mkf'] as const;
+export const ARCHIVES = ['Data.mkf', 'Panel.mkf', 'map.mkf', 'jump.mkf', 'help.mkf'] as const;
 export type ArchiveName = (typeof ARCHIVES)[number];
 
 export interface LoadedArchives {
@@ -552,6 +552,101 @@ export async function loadHolidayArt(
   holidayIndex: number,
 ): Promise<ImageBitmap | null> {
   const img = readHolidayArt(archives, globalMapId, holidayIndex);
+  return img === null ? null : createImageBitmap(img);
+}
+
+// ============================================================
+//  无头 RGB555 资源（尺寸由调用方给定）
+// ============================================================
+
+/**
+ * 读一张**没有 SPR/SMP 头**的整块 RGB555 资源 —— 尺寸由**调用方**给定。
+ *
+ * @source 原版的做法：先 `allocate_graph_st(w, h, 0, 0)` 备好一块 `graph_st`，
+ *   再 `read_mkf(档案, 资源号, 0, 0)` 把原始像素**原样读进它的像素区**，
+ *   最后照常 blit。所以资源本身不带尺寸，尺寸只有调用点知道。
+ *   · 節日插画（`Data.mkf`，200×200）：VA 0x00451a5a `allocate_graph_st(0xc8, 0xc8, 0, 0)`
+ *   · 財神接金幣底图（`Panel.mkf` #92，640×480）：
+ *     ```asm
+ *     0041566b  push 0x5c                       ; ★ 资源号 = 92
+ *     0041566d  mov  edx, dword [0x48a05c]      ; [0x48a05c] = Panel.mkf
+ *     00415674  call 0x450441                   ; read_mkf(Panel.mkf, 92, 0, 0)
+ *     0041567c  mov  dword [0x48bd38], eax      ; → 全局底图指针
+ *     ```
+ *     （`0x004155fc` 那支函数就是 `_rich4_ui_game_xicongtianjiang`。）
+ *     640×480 是调用点定的：`Panel/0092.bin` 恰好 614400 字节 = 640×480×2。
+ *     ⚠️ 它**不是**一条 `sprite()` 能取的资源 —— `manifest.json` 里没有它（D-MINI-1），
+ *     故走这个出口，别去改 extract 管线。
+ *
+ * @param archive  档案名（如 `'Panel.mkf'`）
+ * @param resource 资源号（如 92）
+ * @param width    宽 —— **调用方给定，不来自数据**
+ * @param height   高
+ * @returns 解码好的图；资源不存在、或字节数不等于 `width*height*2` 时返回 `null`
+ */
+export function readRaw555Resource(
+  archives: LoadedArchives,
+  archive: ArchiveName,
+  resource: number,
+  width: number,
+  height: number,
+): ImageData | null {
+  let data: Uint8Array;
+  try {
+    data = archives.get(archive).read(resource);
+  } catch {
+    return null;
+  }
+  // 尺寸对不上就宁可空着：这说明 w/h 猜错了（原版把尺寸写在调用点，没有第二处能核对）
+  if (data.length !== width * height * 2) return null;
+  const img = decodeRaw555(width, height, data);
+  return toImageData(img.width, img.height, img.rgba);
+}
+
+/** 同上，直接给出 ImageBitmap */
+export async function loadRaw555Resource(
+  archives: LoadedArchives,
+  archive: ArchiveName,
+  resource: number,
+  width: number,
+  height: number,
+): Promise<ImageBitmap | null> {
+  const img = readRaw555Resource(archives, archive, resource, width, height);
+  return img === null ? null : createImageBitmap(img);
+}
+
+// ============================================================
+//  小游戏整屏底图（財神接金幣 = Panel.mkf #92）
+// ============================================================
+
+/** 財神接金幣那屏的底图资源号 —— `Panel.mkf` **#92** @source VA 0x0041566b `push 0x5c` */
+export const MINIGAME_BG_RES = 0x5c;
+/** 財神接金幣那屏的底图尺寸 @source `Panel/0092.bin` = 614400 字节 = 640×480×2 */
+export const MINIGAME_BG_WIDTH = 640;
+export const MINIGAME_BG_HEIGHT = 480;
+
+/**
+ * 財神接金幣（`specialKind 8 = 喜從天降`）那一屏的底图 —— `Panel.mkf` **#92**。
+ *
+ * @source VA 0x0041566b `push 0x5c` → `read_mkf(Panel.mkf, 0x5c, 0, 0)`
+ *   （入口 `_rich4_ui_game_xicongtianjiang` VA 0x004155fc），
+ *   载入后存在 `[0x48bd38]`、每帧原样贴到整屏。见 `docs/deviations/T-042-044.md` 的 D-MINI-1。
+ */
+export function readMinigameBackground(archives: LoadedArchives): ImageData | null {
+  return readRaw555Resource(
+    archives,
+    'Panel.mkf',
+    MINIGAME_BG_RES,
+    MINIGAME_BG_WIDTH,
+    MINIGAME_BG_HEIGHT,
+  );
+}
+
+/** 同上，直接给出 ImageBitmap */
+export async function loadMinigameBackground(
+  archives: LoadedArchives,
+): Promise<ImageBitmap | null> {
+  const img = readMinigameBackground(archives);
   return img === null ? null : createImageBitmap(img);
 }
 
