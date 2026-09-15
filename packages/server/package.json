@@ -12,6 +12,11 @@
   },
   "dependencies": {
     "@rich4/core": "workspace:*",
-    "@rich4/data": "workspace:*"
+    "@rich4/data": "workspace:*",
+    "ws": "8.18.0",
+    "@rich4/assets-pipeline": "workspace:*"
+  },
+  "scripts": {
+    "start": "node --experimental-transform-types src/cli.ts"
   }
 }

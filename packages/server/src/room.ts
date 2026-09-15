@@ -57,7 +57,14 @@ export class Room {
     this.globalMapId = opts.globalMapId;
     this.seats = opts.seats;
     this.#map = opts.map;
-    this.#topo = { nodes: opts.map.nodes, lands: opts.map.lands };
+    // ★ 与客户端 main.ts 的 topo **逐项一致**：少了設施表或企业表，镜像在
+    //   設施落点、股市锚点上就会与客户端走岔，指纹对不上却谁也没错。
+    this.#topo = {
+      nodes: opts.map.nodes,
+      lands: opts.map.lands,
+      facilities: opts.map.facilities,
+      commercials: opts.map.commercials,
+    };
 
     this.#mirror = newGame({
       map: opts.map,
@@ -125,8 +132,11 @@ export class Room {
     //   只有推进成功才会拿到序号，故日志里绝不会出现无法施加的记录。
     let advanced: GameState | null = null;
     const r = this.#sequencer.submit(seat, action, (a) => {
-      const next = reduce(this.#mirror, a, this.#topo);
-      if (next === this.#mirror) return false;
+      // ★ 网络来的 action 不可信：`type` 不在 Action 联合里时 reduce 的 switch
+      //   没有分支可走，TS 层面是「穷尽」了、运行时却返回 undefined——
+      //   镜像一旦被它顶掉，下一条 stateFingerprint 就把整台服务器带崩。
+      const next = reduce(this.#mirror, a, this.#topo) as GameState | undefined;
+      if (next === undefined || next === this.#mirror) return false;
       advanced = next;
       return true;
     });

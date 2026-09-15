@@ -45,7 +45,8 @@ function hubWith(map = loadMap(), takeoverAfterMs = 1000) {
 
 /** 客户端侧的镜像：只按服务器广播的 action 顺序重放 */
 function mirror(map: ReturnType<typeof loadMap>, conn: FakeConn): GameState {
-  const topo = { nodes: map.nodes, lands: map.lands };
+  // ★ 与 Room / 客户端 main.ts 同一份完整 topo（含設施、企业表），否则重放必然走岔
+  const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
   const start = conn.last('start')!;
   let s = newGame({ map, globalMapId: 0, seed: start.seed, players: start.seats.map((x) => ({ character: x.character, kind: x.kind })), mode: 'multiplayer' });
   for (const m of conn.inbox) if (m.t === 'action') s = reduce(s, m.action, topo);
@@ -147,6 +148,29 @@ describe('★ 校验和与失步', () => {
     expect(a.count('desync')).toBe(0);
     ha.onMessage({ t: 'checksum', seq, hash: 'bogus' });
     expect(a.last('desync')).toMatchObject({ seq, got: 'bogus', seat: 0 });
+  });
+});
+
+describe('★ 不可信输入', () => {
+  run('★ 不认识的 action type 被拒绝，镜像不动、服务器不崩', () => {
+    const hub = hubWith();
+    const a = new FakeConn();
+    const ha = hub.connect(a);
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'start' });
+    a.inbox.length = 0;
+    const fp = hub.room('r')!.fingerprint;
+    ha.onMessage({ t: 'intent', action: { type: 'respond', response: { kind: 'choice', index: 0 } } as unknown as Action });
+    ha.onMessage({ t: 'intent', action: 'rollDice' as unknown as Action });
+    ha.onMessage({ t: 'intent', action: null as unknown as Action });
+    expect(a.inbox.filter((m) => m.t === 'error')).toHaveLength(3);
+    expect(a.inbox.filter((m) => m.t === 'action')).toHaveLength(0);
+    expect(hub.room('r')!.fingerprint).toBe(fp);
+    // 之后照常能玩。★ 开局后 phase 是 turnStart，此时唯一合法动作是 startTurn
+    //   —— 掷骰要等 awaitingRoll（reduce.ts 的 rollDice 分支要求 phase==='awaitingRoll'），
+    //   这里若发 rollDice 会被正常拒绝，测的就不是「服务器没被畸形输入搞坏」了。
+    ha.onMessage({ t: 'intent', action: { type: 'startTurn' } });
+    expect(a.inbox.filter((m) => m.t === 'action').length).toBeGreaterThan(0);
   });
 });
 

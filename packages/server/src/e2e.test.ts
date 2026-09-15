@@ -16,6 +16,7 @@ import {
   stateFingerprint,
   type Action,
   type GameState,
+  type MapTopology,
   type ServerMessage,
 } from '@rich4/core';
 import { RoomHub, type Conn } from './hub.ts';
@@ -27,7 +28,7 @@ class Client implements Conn {
   state: GameState | null = null;
   expected = 0;
   readonly log: Action[] = [];
-  constructor(private readonly map: ReturnType<typeof parseMap>, private readonly topo: { nodes: typeof map.nodes; lands: typeof map.lands }) {}
+  constructor(private readonly map: ReturnType<typeof parseMap>, private readonly topo: MapTopology) {}
   send(msg: ServerMessage): void {
     if (msg.t === 'start') {
       this.state = newGame({
@@ -65,7 +66,8 @@ function scripted(state: GameState, map: ReturnType<typeof parseMap>, seat: numb
 describe('★ 联机端到端', () => {
   run('四客户端 + 服务器代打三個電腦，跑 120 回合：镜像一致，且与单机同决策逐字节一致', () => {
     const map = parseMap(new Uint8Array(readFileSync(MAP)));
-    const topo = { nodes: map.nodes, lands: map.lands };
+    // ★ 客户端与服务器镜像必须用同一份完整 topo（含設施、企业表）
+    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
     const hub = new RoomHub({ map, globalMapId: 0, seedFor: () => 20240914 });
     const host = new Client(map, topo);
     const watchers = [new Client(map, topo), new Client(map, topo), new Client(map, topo)];

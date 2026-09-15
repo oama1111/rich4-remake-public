@@ -140,6 +140,10 @@ export class RoomHub {
               conn.send({ t: 'error', message: '还没开局' });
               return;
             }
+            if (typeof msg.action !== 'object' || msg.action === null || typeof msg.action.type !== 'string') {
+              conn.send({ t: 'error', message: '拒绝：action 格式不对' });
+              return;
+            }
             this.#submit(table, seat, msg.action, conn);
             return;
           }
