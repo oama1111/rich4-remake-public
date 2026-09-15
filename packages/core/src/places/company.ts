@@ -18,6 +18,7 @@ import type { Player } from '../state/types.ts';
 import { isAlive } from '../state/types.ts';
 import { FACILITY_MAX_LEVEL, WHEEL, spinWheel } from '../rules/facility.ts';
 import { MAX_LAND_LEVEL } from '../loaders/map.ts';
+import { truncTowardZero } from '../rules/rounding.ts';
 
 // ============================================================
 //  行業別（commercial +0x1a）
@@ -268,7 +269,7 @@ export interface DividendRow {
  * 0042bd72  company = [股票表[s] + 0x0c]；0 → 这支股票没有公司，跳过
  * 0042bdc3  ebp = Σ 在场玩家的持股                      ; ★ 分母是**玩家持股总和**，不是总股本
  * 0042bc0a  ratio[p] = held[p] ? held[p] / ebp : 0
- * 0042bc90  紅利[p] = round(company.+0x28 × ratio[p])   ; 累積盈餘 × 比例
+ * 0042bc90  紅利[p] = trunc(company.+0x28 × ratio[p])   ; 累積盈餘 × 比例
  * 0042bd37  if (ebp != 0) company.+0x28 = 0             ; ★ 有人持股才清零，没人持股盈餘留着
  * ```
  * 最后（0x0042be83）`存款 += 紅利`；存款为负则并入现金，现金也负就归零并**破產**
@@ -292,9 +293,11 @@ export function companyDividends(
     if (pl === undefined || !isAlive(pl)) continue;
     const held = holdings[p] ?? 0;
     if (held === 0) continue;
-    // @source fild held / fild total / fdivp → 单精度比例；fild 盈餘 / fmul / round
+    // @source fild held / fild total / fdivp → 单精度比例（0x0042bc59 `fstp dword`）；
+    //   0x0042bc90 `fild 盈餘` / 0x0042bc93 `fmul ratio` / 0x0042bc9a
+    //   `call 0x457dbc`（`__round_toward_zero`：**向零截断**，不是就近/四舍五入）
     const ratio = Math.fround(held / total);
-    const amount = Math.round(Math.fround(funds * ratio));
+    const amount = truncTowardZero(Math.fround(funds * ratio));
     if (amount !== 0) rows.push({ player: p, amount });
   }
   return { rows, cleared: true };

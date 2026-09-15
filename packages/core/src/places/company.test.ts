@@ -135,6 +135,18 @@ describe('★ 月中分紅 @source 0x0042bd61', () => {
   it('★ 没人持股：不分、也不清零（盈餘留着累积）', () => {
     expect(companyDividends(10_000, [0, 0, 0, 0], players)).toEqual({ rows: [], cleared: false });
   });
+  it('★ 恰好 .5 时向零截断（0x0042bc9a 的 `call 0x457dbc`）', () => {
+    const two = [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
+    // 两份各半，盈餘 1 ⇒ 0.5：截断 0、Math.round 1（0 不进 rows）
+    expect(companyDividends(1, [1, 1, 0, 0], two).rows).toEqual([]);
+    // 盈餘 3 ⇒ 1.5：截断 1、Math.round 2
+    expect(companyDividends(3, [1, 1, 0, 0], two).rows).toEqual([
+      { player: 0, amount: 1 },
+      { player: 1, amount: 1 },
+    ]);
+    // 盈餘 5 ⇒ 2.5：截断 2
+    expect(companyDividends(5, [1, 1, 0, 0], two).rows[0]?.amount).toBe(2);
+  });
   it('出局的不算', () => {
     const dead = players.map((p, i) => (i === 1 ? { ...p, whoPlays: 0 } : p));
     const d = companyDividends(10_000, [100, 300, 0, 0], dead);

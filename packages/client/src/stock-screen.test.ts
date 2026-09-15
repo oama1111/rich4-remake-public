@@ -5,9 +5,10 @@
  * 坐标照 exe（牌子表 `0x4754c8`、行命中 `loc_0042ae2c`、各行 `draw_text` 的 x），
  * 这里把「容易写错、错了又难看出来的」几条钉住：
  * 牌子命中是**开区间**、行高 32 且第一行从 80 起、小数位跟**价格量级**走、
- * 停牌那格换字、持股两列只在真有持股时画。
+ * 停牌那格换字、持股两列只在真有持股时画、
+ * 以及**未上市的行不读 1 基企业表的第 0 格**（Q-STOCK-7）。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   BLACK_CARD_NEWS_FLAG,
   RED_CARD_NEWS_FLAG,
@@ -37,6 +38,7 @@ import {
   STOCK_SUSPENDED,
   STOCK_VALUE_X,
   changeText,
+  drawStockScreen,
   comma,
   hitStockPlate,
   hitStockRow,
@@ -278,6 +280,66 @@ describe('从局面摊成 12 行', () => {
   });
 });
 
+/**
+ * ★ 未上市（`commercialIndex === 0`）那些行 —— Q-STOCK-7
+ *
+ * 判据 `股票记录 +4`：**1 基企业序号，0 = 这支股票没有上市公司**
+ * （@source `0x00429aa0` / `0x00429d0f` / `0x00429c40` 的 `cmp word [..+0x496984],0`）。
+ *
+ * 这里特意把 **1 基企业表的第 0 格**灌成非零值：老实现对未上市股票就是去读这一格
+ * （`commercialShares[0]` / `companyFunds[0]` / `commercialOwners[0]`），
+ * 于是打出「0」而不是空白；第 0 格有毒，才区分得出「读没读」。
+ */
+describe('★ 未上市的行画什么（Q-STOCK-7）@source 0x00429a99 / 0x00429bd3 / 0x00429c40', () => {
+  /** 第 0 格是毒，第 3 格才是正常企业数据 */
+  function poisoned(commercialIndex: (i: number) => number): GameState {
+    const s = makeGameState();
+    const commercialShares = [...s.commercialShares];
+    const companyFunds = [...s.companyFunds];
+    const commercialOwners = [...s.commercialOwners];
+    commercialShares[0] = 777; // 1 基表的第 0 格 —— 未上市的行**绝不该**读它
+    companyFunds[0] = 888;
+    commercialOwners[0] = { owner: 2, ranking: [2, 0, 0, 0] };
+    commercialShares[3] = 1234; // 企业 +0x30
+    companyFunds[3] = 5678; // 企业 +0x28
+    commercialOwners[3] = { owner: 4, ranking: [4, 0, 0, 0] }; // 企业 +0x18（玩家下标 + 1）
+    const stocks = s.market.stocks.map((x, i) => ({ ...x, commercialIndex: commercialIndex(i) }));
+    return { ...s, market: { ...s.market, stocks }, commercialShares, companyFunds, commercialOwners };
+  }
+
+  it('★ 未上市：保留股份 / 累積盈餘**整格不画**（不是画 0，也不读第 0 格）', () => {
+    const rows = stockRowsFrom(poisoned(() => 0), 0, NAMES);
+    expect(rows).toHaveLength(12);
+    for (const r of rows) {
+      expect(r.listed).toBe(false);
+      expect(r.retained).toBeNull(); // 企业 +0x30 那一格
+      expect(r.surplus).toBeNull(); // 企业 +0x28 那一格
+      expect(r.boss).toBe(0); // 董事長蓝框整格跳过 @source 0x00429bd3
+    }
+  });
+
+  it('★ 已上市（+4 = 3）：照 1 基企业表读 +0x30 / +0x28 / +0x18，别的行不受影响', () => {
+    const rows = stockRowsFrom(poisoned((i) => (i === 5 ? 3 : 0)), 0, NAMES);
+    expect(rows[5]!.listed).toBe(true);
+    expect(rows[5]!.retained).toBe('1,234');
+    expect(rows[5]!.surplus).toBe('5,678');
+    expect(rows[5]!.boss).toBe(4);
+    expect(rows[4]!.retained).toBeNull();
+    expect(rows[4]!.surplus).toBeNull();
+  });
+
+  it('★ 行情页那两列（持有股數 / 平均成本）与 comm 无关：未上市也照画', () => {
+    const s = poisoned(() => 0);
+    const holdings = s.holdings.map((h, p) =>
+      h.map((x, i) => (p === 0 && i === 2 ? { amount: 1200, avgCost: 33.125 } : x)),
+    );
+    const rows = stockRowsFrom({ ...s, holdings }, 0, NAMES);
+    expect(rows[2]!.listed).toBe(false);
+    expect(rows[2]!.shares).toBe('1,200');
+    expect(rows[2]!.cost).toBe('33.13');
+  });
+});
+
 describe('选股模式（紅卡/黑卡）—— Q-PICK-2 @source loc_0042b0da', () => {
   it('★ 卡号 → 模式：紅卡(24) = 1、黑卡(25) = 2、别的没有', () => {
     expect(stockPickModeOfCard(24)).toBe(STOCK_PICK_RED);
@@ -342,5 +404,53 @@ describe('选股模式（紅卡/黑卡）—— Q-PICK-2 @source loc_0042b0da', 
     // 第 12 行下边界（464）之外
     expect(hitStockRow(100, 463)).toBe(11);
     expect(hitStockRow(100, 464)).toBeNull();
+  });
+});
+
+describe('持股页「各玩家持股」零值也要画 @source loc_00429cf9..0x00429c24', () => {
+  it('★ 没持股画成 `0`，不是留空（原版那一圈没有零值判断）', () => {
+    const state = makeGameState();
+    state.market.stocks[0] = {
+      ...state.market.stocks[0]!,
+      price: 100,
+      openPrice: 100,
+      commercialIndex: 1, // 上市 → 走图 1 的持股路径
+    };
+    // 四个玩家都不持股
+    for (let p = 0; p < state.players.length; p++) {
+      state.holdings[p] = state.holdings[p] ?? [];
+      state.holdings[p]![0] = { amount: 0, avgCost: 0 };
+    }
+    const rows = stockRowsFrom(state, 0);
+    expect(rows[0]!.holders.every((n) => n === 0)).toBe(true);
+
+    // 画一遍图 1：四个「0」都要出现（先前 `if (n === 0) continue` 会让它们全消失）
+    const spy = vi.fn();
+    const ctx = {
+      save: spy, restore: spy, beginPath: spy, rect: spy, clip: spy,
+      drawImage: spy, fillRect: spy, strokeRect: spy, fillText: spy, strokeText: spy,
+      fillStyle: '', strokeStyle: '', lineWidth: 0, font: '',
+      textAlign: 'left', textBaseline: 'alphabetic', globalAlpha: 1,
+      imageSmoothingEnabled: false,
+    } as unknown as CanvasRenderingContext2D;
+    drawStockScreen(ctx, () => null, {
+      page: 1,
+      closed: false,
+      deposit: 0,
+      rows,
+      playerNames: state.players.map((_, i) => `P${i + 1}`),
+      hover: null,
+      selected: null,
+      pickHover: null,
+    });
+    // ★ 断言必须钉到**持股那一列的位置**上 —— 整屏别处也有「0」（余额等），
+    //   只数 '0' 的个数会被它们蒙过去（我第一版就是这么写的，回退实现仍然绿）。
+    for (let p = 0; p < state.players.length; p++) {
+      const colX = STOCK_HOLDER_X + p * STOCK_HOLDER_STEP;
+      // fillText(s, x, y)：x 是第 2 个参数（我第一版写成 c[2] 是 y，断言恒假）
+      const at = spy.mock.calls.filter((c) => c[0] === '0' && c[1] === colX);
+      // 12 行都会在这一列画「0」（同一位玩家、每支股票一格），所以是「至少一次」
+      expect(at.length, `第 ${p + 1} 位玩家的持股格应当画出「0」`).toBeGreaterThan(0);
+    }
   });
 });

@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { makeLand, makePlayer } from '../testing/factories.ts';
 import { allianceShareOf, collectRent } from './rent.ts';
 import { LAND_TYPE_HOUSE } from './toll.ts';
+import { truncTowardZero } from './rounding.ts';
 
 /** 地主(玩家1)与同盟(玩家2)各有一块「台北市」 */
 function scene(over: { ownerRent?: number; allyRent?: number } = {}) {
@@ -101,6 +102,24 @@ describe('★ 分账比例走 float32，保留原版的精度损失', () => {
 
   it('总额为 0 时不除零', () => {
     expect(allianceShareOf(0, 0)).toBe(0);
+  });
+
+  it('★ 恰好 .5 时向零截断（0x419f84 的 `call 0x457dbc`），不是 Math.round', () => {
+    // 比例 1/2 精确，实付 1 → 0.5：截断 0、Math.round 1
+    expect(allianceShareOf(1, 1, 1)).toBe(0);
+    expect(allianceShareOf(1, 1, 1)).toBe(truncTowardZero(Math.fround(Math.fround(1 / 2) * 1)));
+    // 实付 3 → 1.5：截断 1、Math.round 2、就近取偶 2
+    expect(allianceShareOf(1, 1, 3)).toBe(1);
+    // 实付 5 → 2.5：截断 2、Math.round 3
+    expect(allianceShareOf(1, 1, 5)).toBe(2);
+  });
+
+  it('★ 每一组都与 truncTowardZero 一致', () => {
+    for (const [own, ally] of [[1, 1], [3, 1], [7, 11], [1000, 333], [123457, 98765]]) {
+      const total = own! + ally!;
+      const ratio = Math.fround(ally! / total);
+      expect(allianceShareOf(own!, ally!)).toBe(truncTowardZero(Math.fround(total * ratio)));
+    }
   });
 
   it('★ 分账后两份之和恒等于总额（地主得 = 总额 - 同盟得）', () => {

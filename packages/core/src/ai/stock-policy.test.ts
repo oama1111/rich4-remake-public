@@ -20,6 +20,7 @@ import {
 } from './stock-policy.ts';
 import { stockBudget } from './personality.ts';
 import { aiRoll } from './card-policy.ts';
+import { truncTowardZero } from '../rules/rounding.ts';
 import { HISTORY_DAYS } from '../places/stock-market.ts';
 import type { GameState } from '../state/types.ts';
 import type { MapTopology } from '../state/reduce.ts';
@@ -119,8 +120,31 @@ describe('AI 炒股', () => {
       ),
     };
     expect(holdingsCost(held, 0)).toBe(70);
-    // 市值按当前股价算，与成本无关
-    expect(holdingsValue(held, 0)).toBe(Math.round(10 * (held.market.stocks[0]?.price ?? 0)));
+    // 市值按当前股价算，与成本无关；取整是 0x42bff1 的 __round_toward_zero（向零截断）
+    expect(holdingsValue(held, 0)).toBe(
+      truncTowardZero(10 * (held.market.stocks[0]?.price ?? 0)),
+    );
+  });
+
+  it('★ 持仓市值逐支向零截断（0x42bff1 的 `call 0x457dbc`）', () => {
+    const s = scene();
+    const withPrice = (price: number, amount: number) => ({
+      ...s,
+      holdings: s.holdings.map((h, i) =>
+        i === 0 ? h.map((x, j) => (j === 0 ? { amount, avgCost: x.avgCost } : x)) : h,
+      ),
+      market: {
+        ...s.market,
+        stocks: s.market.stocks.map((st, j) => (j === 0 ? { ...st, price } : st)),
+      },
+    });
+    // 1 × 2.5 = 2.5：截断 2、Math.round 3
+    expect(holdingsValue(withPrice(2.5, 1), 0)).toBe(2);
+    // 3 × 0.5 = 1.5：截断 1、Math.round 2
+    expect(holdingsValue(withPrice(0.5, 3), 0)).toBe(1);
+    // 3 × 2.5 = 7.5：截断 7、Math.round 8
+    expect(holdingsValue(withPrice(2.5, 3), 0)).toBe(7);
+    expect(holdingsValue(withPrice(2.5, 3), 0)).toBe(truncTowardZero(3 * 2.5));
   });
 });
 

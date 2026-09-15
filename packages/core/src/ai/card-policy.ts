@@ -33,6 +33,7 @@ import { nextCandidates } from '../state/reduce.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
 import { DISPELLABLE_TYPES, objectTypeOf } from '../rules/objects.ts';
 import { ATTACH_STATE_REAPER, canAttach } from '../cards/summon.ts';
+import { truncTowardZero } from '../rules/rounding.ts';
 import { isLimitDown, isLimitUp, marketOpenOn } from '../places/stock-market.ts';
 import { FACILITY_TYPE } from '../rules/facility.ts';
 
@@ -645,11 +646,17 @@ const qingshen: Handler = (view) => {
   return SUMMON_WANTED_OBJECTS.includes(best) ? { target: { kind: 'object', objectIndex: best } } : null;
 };
 
-/** 持仓市值：round(股数 × 成本) @source fild/fmul/round */
+/**
+ * 持仓市值：`trunc(股数 × 均价)`。
+ *
+ * @source 0x00420092 `fild [持股]` / 0x00420099 `fmul [均价]` / 0x004200a0
+ *   `call 0x457dbc`（`__round_toward_zero` = **向零截断**）。
+ *   ⚠️ 原来写成 `Math.round`：恰好 .5 时会多算 1，影响「持仓市值最大的一支」的选择。
+ */
 function holdingValue(view: CardAiView, who: number, j: number): number {
   const h = view.state.holdings[who]?.[j];
   if (h === undefined) return 0;
-  return Math.round(h.amount * h.avgCost);
+  return truncTowardZero(h.amount * h.avgCost);
 }
 function marketOpenToday(view: CardAiView): boolean {
   const s = view.state;

@@ -15,8 +15,8 @@ import {
   propertyValue,
   stockTax,
   stockValue,
-  x87Round,
 } from './percentage.ts';
+import { truncTowardZero } from './rounding.ts';
 
 describe('税率', () => {
   it('三种新聞税都是 5%，红利是 10%', () => {
@@ -25,26 +25,74 @@ describe('税率', () => {
   });
 });
 
-describe('★ x87 就近取偶，与 Math.round 在 .5 处不同', () => {
+describe('★ 0x457dbc 是「向零截断」，不是就近取偶、也不是 Math.round', () => {
   it('非 .5 时与常规四舍五入一致', () => {
-    expect(x87Round(1.2)).toBe(1);
-    expect(x87Round(1.8)).toBe(2);
-    expect(x87Round(-0.2)).toBe(0);
+    expect(truncTowardZero(1.2)).toBe(1);
+    expect(truncTowardZero(1.8)).toBe(1);
+    expect(truncTowardZero(-1.2)).toBe(-1);
   });
 
-  it('★ 恰好 .5 时取偶数，而不是一律向上', () => {
-    expect(x87Round(0.5)).toBe(0);
-    expect(x87Round(1.5)).toBe(2);
-    expect(x87Round(2.5)).toBe(2);
-    expect(x87Round(3.5)).toBe(4);
-    // 对照：Math.round 在这几个点会给出 1/2/3/4
+  it('★ 恰好 .5 时一律向零，不取偶', () => {
+    expect(truncTowardZero(0.5)).toBe(0);
+    expect(truncTowardZero(1.5)).toBe(1);
+    expect(truncTowardZero(2.5)).toBe(2);
+    expect(truncTowardZero(3.5)).toBe(3);
+    // 对照：就近取偶会给 0/2/2/4，Math.round 会给 1/2/3/4
     expect(Math.round(2.5)).toBe(3);
+    // 反例（旧的 x87Round 误读会给 2）：
+    expect(truncTowardZero(1.5)).not.toBe(2);
   });
 
+  it('★ 负数方向：向零截断 ≠ 向下取整、也 ≠ Math.round', () => {
+    // -2.5：截断 -2、floor -3、round -2（-3.5 才和 round 分开）
+    expect(truncTowardZero(-2.5)).toBe(-2);
+    expect(Math.floor(-2.5)).toBe(-3);
+    // -3.5：截断 -3、floor -4、round -3（-4.5 时 round 给 -4、截断给 -4）
+    expect(truncTowardZero(-3.5)).toBe(-3);
+    expect(Math.floor(-3.5)).toBe(-4);
+    // -2.6：截断 -2、Math.round -3 —— 这一条才是实战里真会分叉的
+    expect(truncTowardZero(-2.6)).toBe(-2);
+    expect(Math.round(-2.6)).toBe(-3);
+  });
+});
+
+describe('★ percentageOf = trunc(基数 × 税率)', () => {
   it('★ 实际会撞上：现金 150 的 5% 恰好是 7.5', () => {
     expect(150 * 0.05).toBe(7.5);
-    expect(percentageOf(150, NEWS_TAX_RATE)).toBe(8); // 7.5 → 取偶 → 8
-    expect(percentageOf(50, NEWS_TAX_RATE)).toBe(2); // 2.5 → 取偶 → 2
+    // 原版：7.5 → 向零截断 → 7（就近取偶会给 8）
+    expect(percentageOf(150, NEWS_TAX_RATE)).toBe(7);
+    expect(percentageOf(150, NEWS_TAX_RATE)).toBe(truncTowardZero(150 * 0.05));
+  });
+
+  it('★ 其它恰好 .5 的基数（cash = 20k+10）', () => {
+    expect(10 * 0.05).toBe(0.5);
+    expect(30 * 0.05).toBe(1.5);
+    expect(50 * 0.05).toBe(2.5);
+    expect(90 * 0.05).toBe(4.5);
+    expect(percentageOf(10, NEWS_TAX_RATE)).toBe(0);
+    expect(percentageOf(30, NEWS_TAX_RATE)).toBe(1);
+    expect(percentageOf(50, NEWS_TAX_RATE)).toBe(2);
+    expect(percentageOf(90, NEWS_TAX_RATE)).toBe(4);
+  });
+
+  it('★ 红利 10% 的恰好 .5（存款 = 10k+5）', () => {
+    expect(5 * 0.1).toBe(0.5);
+    expect(15 * 0.1).toBe(1.5);
+    expect(25 * 0.1).toBe(2.5);
+    expect(percentageOf(5, BANK_DIVIDEND_RATE)).toBe(0);
+    expect(percentageOf(15, BANK_DIVIDEND_RATE)).toBe(1);
+    expect(percentageOf(25, BANK_DIVIDEND_RATE)).toBe(2);
+    expect(bankDividend(makePlayer({ moneyInBank: 5 }))).toBe(0);
+    expect(bankDividend(makePlayer({ moneyInBank: 15 }))).toBe(1);
+  });
+
+  it('★ 与 truncTowardZero 逐点一致（含负数）', () => {
+    for (const base of [0, 7, 10, 29, 30, 31, 50, 90, 150, 1050, 12345]) {
+      expect(percentageOf(base, NEWS_TAX_RATE)).toBe(truncTowardZero(base * NEWS_TAX_RATE));
+    }
+    // 负数（原版那几处基数不会是负的，但函数本身必须按同一语义走）
+    expect(percentageOf(-150, NEWS_TAX_RATE)).toBe(-7);
+    expect(percentageOf(-150, NEWS_TAX_RATE)).toBe(truncTowardZero(-150 * NEWS_TAX_RATE));
   });
 });
 
@@ -99,6 +147,13 @@ describe('地價稅', () => {
     expect(propertyTax(0, lands(), facs(), 1)).toBe(300);
   });
 
+  it('★ 恰好 .5 时向零截断：原值 30 → 1.5 → 1', () => {
+    const one = [makeLand({ id: 9, owner: 1, level: 1, landPrice: 10, housePrice: 20 })];
+    expect(propertyValue(0, one, [], 1)).toBe(30);
+    expect(propertyTax(0, one, [], 1)).toBe(1); // 就近取偶会给 2
+    expect(propertyTax(0, one, [], 1)).toBe(truncTowardZero(30 * NEWS_TAX_RATE));
+  });
+
   it('无地产则无税', () => {
     expect(propertyTax(3, lands(), facs(), 1)).toBe(0);
   });
@@ -117,20 +172,30 @@ describe('證交稅', () => {
     expect(stockTax([10, 20, 0], [100, 50, 999])).toBe(100);
   });
 
+  it('★ 恰好 .5 时向零截断：市值 30 → 1.5 → 1', () => {
+    // 市值 10 → 0.5：截断与取偶都是 0，当边界锚点
+    expect(stockTax([1], [10])).toBe(0);
+    // 市值 30 → 1.5：截断 1、就近取偶 2 —— 这一条才分叉
+    expect(stockTax([3], [10])).toBe(1);
+    expect(stockTax([3], [10])).toBe(truncTowardZero(30 * NEWS_TAX_RATE));
+    expect(stockTax([5], [10])).toBe(2); // 2.5 → 2
+  });
+
   it('空仓无税', () => {
     expect(stockTax([], [])).toBe(0);
   });
 });
 
 describe('★ 与查税卡不是同一套机制', () => {
-  it('新聞税 5% 且就近取偶；查税卡 20% 且整数截断', async () => {
+  it('新聞税 5% 且向零截断；查税卡 20% 且整数截断', async () => {
     const { TAX_RATE: cardRate } = await import('../cards/tax.ts');
     expect(NEWS_TAX_RATE).toBe(0.05);
     expect(cardRate).toBe(0.2);
 
-    // 同样的现金，两者结果差得很远，且取整方式也不同
+    // 同样的现金，两者结果差得很远；取整方式同为「向零」但来源不同
+    // （新聞税走 0x457dbc，查税卡走整数乘除）
     const cash = 1050;
-    expect(percentageOf(cash, NEWS_TAX_RATE)).toBe(52); // 52.5 → 取偶 → 52
+    expect(percentageOf(cash, NEWS_TAX_RATE)).toBe(52); // 52.5 → 截断 → 52
     expect(Math.trunc(cash * cardRate)).toBe(210);
   });
 });

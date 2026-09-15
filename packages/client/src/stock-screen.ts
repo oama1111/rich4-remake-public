@@ -92,9 +92,23 @@
  *   `fcn_004291d6`（休市日不跳价）—— 买卖函数里没有这道闸，
  *   但休市时那一屏压根没有能点的东西。
  *
- * ⚠️ **本卡没做**（另开 T-030b）：图 2 那张「上市公司資訊」详情卡（含 26 张企业图标、
- * 半年走势线图、持股比例）、以及持股页（图 1）每行**各玩家持股数**那一排。
- * 现在换页能看到黄桌子 + 列的动态值（保留股份／累積盈餘），但玩家持股那一排还没画。
+ * ⚠️ 图 2 那张「上市公司資訊」详情卡已另有 **T-030b**（`stock-detail.ts`：图 2 底图 +
+ * 26 张企业图标 + 半年走势线 + 持股比例饼）。
+ *
+ * ## ★ 未上市（`stock + 4 == 0`）的行画什么 —— 两页**不一样**（Q-STOCK-7）
+ *
+ * `+4` 是 **1 基企业序号，0 = 这支股票没有上市公司**；两页各有几处按它分叉，
+ * **一处都不能照另一处类推**：
+ *
+ * | 页 | 用 `+4` 的地方 | 未上市时 |
+ * |---|---|---|
+ * | 图 0 行情 | `0x00429aa0` `cmp word [eax*4+0x496984],0 / je 0x429abb` | **只换字色**：青 `0xf0f0` → 白 `0xf0f0f0`（股票名同理 @0x0042b7b0）。六列数字**照画**，行情页没有一处读企业表 |
+ * | 图 1 持股 | `0x00429d0f`（同上，`je 0x429b93`）| 每格白字，**各玩家持股数照画** |
+ * | 图 1 持股 | `0x00429bd3` `cmp … / je 0x429c24` | **董事長那个蓝框整格跳过**（连 `企业+0x18` 都不读）|
+ * | 图 1 持股 | `0x00429c40` `cmp … / je 0x00429d30` | **`保留股份`（企业+0x30）与 `累積盈餘`（企业+0x28）两格整格不画** —— `loc_00429d30` 只建一枚白字字体就 `jmp 0x00429cc1`，把 x=0x208 / x=0x261 两次 `draw_text` 全跳掉 |
+ *
+ * ⇒ 行情页**没有**任何一列依赖企业表；持股页未上市行的 `保留股份` / `累積盈餘`
+ * 是**空白**，不是 `0`，更不能去读 1 基企业表的第 0 格。
  *
  * ## ★ 选股模式（紅卡 24 / 黑卡 25）—— Q-PICK-2
  *
@@ -294,10 +308,17 @@ export interface StockRowView {
   shares: string | null;
   /** 平均成本（`%.2f`）；没持股是 `null` */
   cost: string | null;
-  /** 这一页要画的东西（图 1 那页用）*/
-  retained: string;
-  surplus: string;
-  /** 各玩家持股数（图 1 那页用；0 的不画）*/
+  /** **保留股份**（图 1 那页用）= 企业 `+0x30`；`null` = 这一格不画 */
+  retained: string | null;
+  /** **累積盈餘**（图 1 那页用）= 企业 `+0x28`；`null` = 这一格不画 */
+  surplus: string | null;
+  /**
+   * 各玩家持股数（图 1 那页用）。
+   *
+   * ⚠️ 本引擎画的时候**把 0 跳过了**；原版那一圈没有零值判断、`num_to_currency_string(0)`
+   * 会写出 `"0"`，所以原版**每格都画**。这是一处已知的保真差，
+   * 见 `docs/deviations/Q-STOCK-7.md` 的 **Q-STOCK-7-a**，本轮未动。
+   */
   holders: readonly number[];
   /** 这一支的**董事長**（玩家下标 + 1，0 = 无主）@source `commercial + 0x18` */
   boss: number;
@@ -551,8 +572,8 @@ const EMPTY_ROW: StockRowView = {
   volume: null,
   shares: null,
   cost: null,
-  retained: '',
-  surplus: '',
+  retained: null,
+  surplus: null,
   holders: [],
   boss: 0,
   listed: false,
@@ -586,6 +607,9 @@ export function stockRowsFrom(
     const holders: number[] = [];
     for (let p = 0; p < players; p++) holders.push(state.holdings[p]?.[i]?.amount ?? 0);
     const comm = s.commercialIndex;
+    // ★ 「这支股票有没有上市公司」= 记录 +4 是否为 0（1 基企业序号，0 = 没有）
+    //   @source `loc_00429d0f` / `loc_00429c40` / `loc_0042b7b0` 的 `cmp word [..+0x496984],0`
+    const listed = comm !== 0;
     rows.push({
       name: names[i] ?? '',
       status: stockStatus(s.openPrice, s.price),
@@ -596,11 +620,17 @@ export function stockRowsFrom(
       shares: held > 0 ? comma(held) : null,
       cost: held > 0 ? (holding?.avgCost ?? 0).toFixed(2) : null,
       // 图 1 那页：企业还剩多少股（+0x30）与累積盈餘（+0x28）
-      retained: comma(state.commercialShares[comm] ?? 0),
-      surplus: comma(state.companyFunds[comm] ?? 0),
+      // ★ 未上市时**一个企业字段都不读**（企业表是 1 基的，下标 0 是垃圾），两格整格不画：
+      //   @source `0x00429c40` 的 `cmp word [eax+0x496984],0 / je 0x429d30`
+      //   → `loc_00429d30` 只 create_font 一枚白字就 `jmp 0x00429cc1`，
+      //     跳过 x=0x208 与 x=0x261 那两次 `draw_text`。
+      retained: listed ? comma(state.commercialShares[comm] ?? 0) : null,
+      surplus: listed ? comma(state.companyFunds[comm] ?? 0) : null,
       holders,
-      boss: state.commercialOwners[comm]?.owner ?? 0,
-      listed: comm !== 0,
+      // 董事長（企业 +0x18）：@source `0x00429bd3` 的 `cmp … / je 0x429c24`
+      // —— 未上市时连那个字节都不读，蓝框整格跳过
+      boss: listed ? (state.commercialOwners[comm]?.owner ?? 0) : 0,
+      listed,
     });
   }
   return rows;
@@ -736,7 +766,10 @@ export function drawStockScreen(
       const hc = row.listed ? STOCK_LISTED_COLOR : STOCK_PLAIN_COLOR;
       for (let p = 0; p < row.holders.length; p++) {
         const n = row.holders[p] ?? 0;
-        if (n === 0) continue;
+        // ★ 2026-09-16 订正（Q-STOCK-7-a）：原版这一圈**没有零值判断**
+        //   （`loc_00429cf9`..`0x00429c24` 直接 `num_to_currency_string(持股)` 再画，
+        //   而 `0x452793` 把 0 写成 `"0"`）⇒ **每格都画，没持股就是 `0`**，
+        //   不是留空。先前那句 `if (n === 0) continue` 是本引擎自己加的。
         const hx = STOCK_HOLDER_X + p * STOCK_HOLDER_STEP;
         // 董事长那一格：蓝底 + 黄字 @source `loc_00429ba1`
         if (row.boss === p + 1) {
@@ -747,8 +780,10 @@ export function drawStockScreen(
         }
         text(ctx, comma(n), hx, y, 16, hc, 'right');
       }
-      text(ctx, row.retained, STOCK_RETAINED_X, y, 16, hc, 'right');
-      text(ctx, row.surplus, STOCK_VALUE_X.cost, y, 16, hc, 'right');
+      // ★ 未上市（retained / surplus 为 null）→ 这两格**整格不画**
+      //   @source `0x00429c40` 的 `cmp word [eax+0x496984],0 / je 0x429d30`
+      if (row.retained !== null) text(ctx, row.retained, STOCK_RETAINED_X, y, 16, hc, 'right');
+      if (row.surplus !== null) text(ctx, row.surplus, STOCK_VALUE_X.cost, y, 16, hc, 'right');
     }
   }
 

@@ -30,6 +30,7 @@
  */
 
 import { sceneOfMonth } from '@rich4/core';
+import { appendDigitKey, backspaceKey } from './amount-keys.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
 import { alignFor } from './hud.ts';
@@ -236,15 +237,19 @@ export function atmSeekAmount(barX: number, limit: number): number {
  * | 18 | ↵ | 不在这里处理（调用方发 action）|
  *
  * `digits` 口径与 `bank-screen.ts` 的 `AtmState.digits` 一致（空串 = 还没输入）。
+ *
+ * ★ 数字与退格那两条**不是这一扇窗独有的**：通用填数窗（`fcn_00453544` 的
+ *   `loc_00453189` / `loc_00453156`）逐条一模一样，只有位数上限不同
+ *   （ATM 10 位 / 通用窗 9 位）。故那两条走 `amount-keys.ts` 的
+ *   `appendDigitKey` / `backspaceKey` —— 两扇窗**共用同一份纯函数**。
  */
 export function atmApplyCode(digits: string, code: number, limit: number): string {
   const btn = code - 1;
-  const cur = digits === '' ? '0' : digits;
   switch (btn) {
     case 13: // C
       return '0';
     case 15: // ← 退格 @source 0x43778c：只有一位且不是 '0' 才退回 '0'
-      return cur.length > 1 ? cur.slice(0, -1) : '0';
+      return backspaceKey(digits);
     case 16: // MAX
       return String(Math.max(0, Math.trunc(limit)));
     case 17: // ↵
@@ -256,14 +261,9 @@ export function atmApplyCode(digits: string, code: number, limit: number): strin
   // 数字盘（图 5..16 上印的字）@source 表 0x475914：4..12 = 7 8 9 4 5 6 1 2 3、14 = '0'
   const ch = ATM_DIGIT_CHAR[btn];
   if (ch === undefined) return digits;
-  // @source 0x43787e：满 10 位不再接；开头是 '0' 且这次不是 '0' 就顶掉它
-  if (cur.length >= ATM_DIGIT_MAX) return digits;
-  if (cur === '0' && ch === '0') return digits;
-  const next = (cur === '0' && ch !== '0' ? '' : cur) + ch;
-  // @source 0x4378c2：超过上限就填成上限
-  const n = Number.parseInt(next, 10);
-  if (Number.isFinite(n) && n > limit) return String(Math.max(0, Math.trunc(limit)));
-  return next;
+  // @source 0x43787e：满 10 位不再接；开头是 '0' 且这次不是 '0' 就顶掉它；
+  // @source 0x4378c2：超过上限就填成上限 —— 与通用填数窗同一份
+  return appendDigitKey(digits, ch, limit, ATM_DIGIT_MAX);
 }
 
 /** 钮序号 → 那个键上印的字 @source 表 `0x475914`：`4..12 = 7 8 9 4 5 6 1 2 3`、`14 = '0'` */

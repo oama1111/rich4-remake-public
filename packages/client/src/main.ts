@@ -162,6 +162,8 @@ import { interactionUi, type InteractionUi } from './interactions.ts';
 import { CANCEL_SOUND, cancelLayerOf, type CancelLayer } from './panel-cancel.ts';
 // ★ 股市柜台的填数页壳 —— 与銀行/公佈欄/上市企業**同一个**通用填数页。
 import { stockAmountForm } from './amount-form.ts';
+// ★ 通用填数窗**自己那张键盘表**（@source `loc_00452e4b`）：0-9 / 退格 / C / M / H / Enter。
+import { amountKeyOfVk, amountKeyStep, amountVkOf, type AmountKey } from './amount-keys.ts';
 import {
   drawAdvance,
   drawDialog,
@@ -490,6 +492,21 @@ let hotkeyBlinkTimer: number | null = null;
 let amountPage: AmountPage | null = null;
 
 /**
+ * 通用填数页**开的时候**那串数字是 `"0"`，不是上限。
+ *
+ * @source VA 0x00452c91（`fcn_00452c02` 的 `0x401`＝建窗那一支）：
+ * ```asm
+ * 00452c99  mov byte [0x48caac], 0x30   ; buf[0] = '0'
+ * 00452ca0  mov byte [0x48caad], ah     ; buf[1] = 0
+ * ```
+ * 那扇窗从头到尾只被这几处写过 `[0x48caac]`：建窗（这里）、C（`0x453145`）、
+ * 退格（`0x45317d`）、接数字（`0x4531c4`）、夹上限 / M（`0x4530e9` 的 `itoa`）、
+ * 拖金额栏到最左（`0x45341a`）—— **没有任何一处预填上限**。
+ * ⇒ 想要上限得自己按 `M`（`loc_004530e9`）；「一开窗就按確定」＝ 没填（返回 0）。
+ */
+const AMOUNT_INITIAL = 0;
+
+/**
  * 銀行 ATM 面板（T-029a）—— 原版的「存款/提款」不是通用填数页，
  * 是 `Panel.mkf` 资源 24 那台带数字键盘的 ATM（VA 0x4379c9）。
  * `atmFill` 就是那条选项自带的 `amount.fill`（金额定了才发得出去）。
@@ -631,7 +648,7 @@ function openLoanAmount(op: LoanOp): void {
   );
   const c = idx >= 0 ? ui.choices[idx] : undefined;
   if (c?.amount === undefined) return;
-  amountPage = { choice: idx, value: c.amount.max };
+  amountPage = { choice: idx, value: AMOUNT_INITIAL };
   dialogHot = null;
   requestRender();
 }
@@ -999,7 +1016,7 @@ function stockTrade(kind: 'buy' | 'sell'): void {
     if (held <= 0) return;
     stockAmount = { kind: 'sell', stock: row, max: held };
   }
-  amountPage = { choice: 0, value: stockAmount.max };
+  amountPage = { choice: 0, value: AMOUNT_INITIAL };
   dialogHot = null;
   requestRender();
 }
@@ -1780,7 +1797,7 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
     }
     // 要填数的选项：先进填数页，别直接派 action
     if (c.amount !== undefined) {
-      amountPage = { choice: hit.index, value: c.amount.max };
+      amountPage = { choice: hit.index, value: AMOUNT_INITIAL };
       dialogHot = null;
       requestRender();
       return;
@@ -1828,6 +1845,30 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
       return;
     }
   }
+}
+
+/**
+ * 通用填数页收到**一次按键** —— 与鼠标那一路走同一个出口。
+ *
+ * ★ 原版那扇窗（`fcn_00453544` 的窗口过程 `fcn_00452c02`）在 `0x100` 里把键翻成
+ * 「哪颗钮被按下」的序号，再合成一条 `WM_LBUTTONUP (0x202)`；
+ * 而 0x202 落到 `loc_00452fce` —— **与鼠标抬手是同一段**（`loc_00452d0e`）。
+ * 所以这里也不另开一条路：值变了就写回同一个 `amountPage`，
+ * Enter（序号 3、`loc_00453116` 的 `Post_0402_Message`）就走 `amountOk` 那一支。
+ *
+ * ⚠️ 取消不在那张表里 —— 见 `amount-keys.ts` 头部：ESC 是钩子补成 `0x205` 关的窗。
+ */
+function onAmountKey(ui: InteractionUi, key: AmountKey): void {
+  const page = amountPage;
+  const amount = page === null ? undefined : ui.choices[page.choice]?.amount;
+  if (page === null || amount === undefined) return;
+  const step = amountKeyStep(page.value, amount.max, key);
+  if (step.submit) {
+    onDialogHit(ui, { kind: 'amountOk' });
+    return;
+  }
+  amountPage = { choice: page.choice, value: step.value };
+  requestRender();
 }
 
 function openOptions(from: Screen): void {
@@ -4490,7 +4531,7 @@ function renderInteraction(): void {
           log(`▶ ${c.label}：这一屏自己接管输入（不是通用填数页）`);
           return;
         }
-        amountPage = { choice: idx, value: c.amount.max };
+        amountPage = { choice: idx, value: AMOUNT_INITIAL };
         dialogHot = null;
         requestRender();
         return;
@@ -5887,6 +5928,22 @@ function bindInput(): void {
       finishSetupOutro();
       e.preventDefault();
       return;
+    }
+    // ── 通用填数窗收键盘 @source `fcn_00452c02` 的 0x100（`loc_00452e4b`）──
+    //   ★ 那扇窗**自己**认 0-9 / 退格 / C / M / H / Enter（Q-UI-8 残留项 ③），
+    //   而且它是模态的：`WM_KEYDOWN` 先到它手里 —— 所以这一段也排在熱鍵之前
+    //   （不这么放，C / M / H / Enter 会被 RICH4.CFG 里同名的熱鍵抢走）。
+    //   ⚠️ ESC 不在这张表里：取消键是全局钩子补成 0x205 才关窗的，
+    //   那一条仍由下面的 `cancelTopPanel()`（cancelLayerOf 的 `amountPage` 层）收。
+    if (amountPage !== null && screen === 'game') {
+      const vk = amountVkOf(e);
+      const key = vk === null ? null : amountKeyOfVk(vk);
+      const ui = currentDialog();
+      if (key !== null && ui !== null) {
+        e.preventDefault();
+        onAmountKey(ui, key);
+        return;
+      }
     }
     // ── 銀行 ATM 收键盘（Q-BANK-1）@source `fcn_00436ef8` 的 0x100（`loc_004374ac`）──
     //   ★ 原版 ATM 是模态窗口：`WM_KEYDOWN` 先到它手里，所以这一段要在熱鍵之前。

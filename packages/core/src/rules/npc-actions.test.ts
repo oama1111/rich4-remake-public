@@ -23,6 +23,7 @@ import {
   thiefTakes,
 } from './npc-actions.ts';
 import { NPC_NAMES } from './special-actors.ts';
+import { truncTowardZero } from './rounding.ts';
 import { WatcomRng } from '../rng/watcom.ts';
 import { makePlayer } from '../testing/factories.ts';
 import { isAlive } from '../state/types.ts';
@@ -136,6 +137,23 @@ describe('★ 強盜搶銀行：两成，不是一半', () => {
   it('出局的不被抢', () => {
     const out = players.map((p, i) => (i === 1 ? { ...p, whoPlays: 0 } : p));
     expect(bankRobbery(out, 0, isAlive).map((x) => x.from)).toEqual([3]);
+  });
+
+  it('★ 取整是向零截断（0x0041c383 的 `call 0x457dbc`），不是就近', () => {
+    // 正数存款：分母 5，小数部分只可能是 .0/.2/.4/.6/.8，永远撞不到 .5，
+    // 故这里与 Math.round 同值 —— 断言与 truncTowardZero 逐点一致。
+    for (const bank of [5, 7, 12_345, 99_999]) {
+      const p = [makePlayer({ index: 0, moneyInBank: 1 }), makePlayer({ index: 1, moneyInBank: bank })];
+      expect(bankRobbery(p, 0, isAlive)[0]?.amount).toBe(truncTowardZero((bank * 1) / 5));
+    }
+    // 1 的两成截断成 0 → 不入列
+    const tiny = [makePlayer({ index: 0, moneyInBank: 1 }), makePlayer({ index: 1, moneyInBank: 1 })];
+    expect(bankRobbery(tiny, 0, isAlive)).toEqual([]);
+    // ★ 负数方向才分叉：-13 × 0.2 = -2.6 ⇒ 截断 -2、Math.round -3
+    const neg = [makePlayer({ index: 0, moneyInBank: 1 }), makePlayer({ index: 1, moneyInBank: -13 })];
+    expect(bankRobbery(neg, 0, isAlive)[0]?.amount).toBe(-2);
+    expect(truncTowardZero((-13 * 1) / 5)).toBe(-2);
+    expect(Math.round((-13 * 1) / 5)).toBe(-3);
   });
 });
 

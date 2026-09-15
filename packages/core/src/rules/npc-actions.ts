@@ -30,6 +30,7 @@
 import type { Player } from '../state/types.ts';
 import type { LandInfo } from '../loaders/map.ts';
 import type { WatcomRng } from '../rng/watcom.ts';
+import { truncTowardZero } from './rounding.ts';
 
 // ============================================================
 //  谁是谁
@@ -133,7 +134,8 @@ export interface Robbery {
  * 0041c34f  for (i = 0; i < 玩家数; i++) {
  * 0041c35a    if (player[i].who_plays == 0) continue
  * 0041c373    if (i == 主人) continue              ; ★ 主人自己不被抢
- * 0041c377    金额 = round(player[i].存款 × 0.2)
+ * 0041c377    fild player[i].存款 / fmul 0.2
+ * 0041c383    call 0x457dbc                        ; ★ __round_toward_zero = 向零截断
  * 0041c39b    pay_money(i, 主人, 金额, 5)
  *           }
  * 0041c3f9  msg("強盜搶奪銀行\n\n得款%d元\n\n給%s！", 合计, 主人名)
@@ -153,9 +155,13 @@ export function bankRobbery(
     if (p === undefined) continue;
     if (!isAlivePlayer(p)) continue;
     if (i === owner) continue;
-    // @source `fild 存款 / fmul 0.2 / call round / fistp` —— 银行家舍入由
-    //   Watcom 的 `__CHP` 做，这里用 Math.round；差 0.5 的情形金额上不可见。
-    const amount = Math.round((p.moneyInBank * BANK_ROBBERY_RATIO_NUM) / BANK_ROBBERY_RATIO_DEN);
+    // @source 0x0041c377 `fild 存款` / 0x0041c37d `fmul qword [0x463b60]`(=0.2)
+    //   / 0x0041c383 `call 0x457dbc`（`__round_toward_zero` = **向零截断**）。
+    //   ⚠️ 老的注释说这里是 Watcom `__CHP` 的就近取整 —— 那是误读：
+    //   0x457dbc 就是向零。存款为负时两者会分叉（-13 → 原版 -2、就近 -3）。
+    const amount = truncTowardZero(
+      (p.moneyInBank * BANK_ROBBERY_RATIO_NUM) / BANK_ROBBERY_RATIO_DEN,
+    );
     if (amount === 0) continue;
     out.push({ from: i, amount });
   }

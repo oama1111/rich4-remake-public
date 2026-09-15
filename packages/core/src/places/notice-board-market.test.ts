@@ -39,9 +39,12 @@ describe('★ 四种市價', () => {
     expect(cardListPrice(1, 1)).toBe(20_000);
   });
 
-  it('股票：round(股數 × 現價) @source 0x00425f1e', () => {
+  it('股票：trunc(股數 × 現價) @source 0x00425f1e 的 `call 0x457dbc`', () => {
     expect(stockListPrice(100, 12.5)).toBe(1250);
-    expect(stockListPrice(3, 10.5)).toBe(32); // 31.5 → 32
+    // 31.5：0x457dbc 是 __round_toward_zero（向零截断）⇒ 31，不是 Math.round 的 32
+    expect(stockListPrice(3, 10.5)).toBe(31);
+    expect(stockListPrice(1, 2.5)).toBe(2); // 2.5 → 2
+    expect(stockListPrice(3, 0.5)).toBe(1); // 1.5 → 1
   });
 
   it('地產／設施：(地價 + 等級 × 房價) × 物價 @source 0x004265b9 / 0x004265e5', () => {
@@ -133,6 +136,15 @@ describe('★ AI 怎么用公佈欄 —— 判据', () => {
     expect(aiWantsListedStock(1000, 100, 12)).toBe(true); // 10 < 12
     expect(aiWantsListedStock(1300, 100, 12)).toBe(false);
     expect(aiWantsListedStock(1000, 0, 12)).toBe(false);
+  });
+
+  it('★ 单价恰好 .5 时向零截断（0x00428b77 的 `call 0x457dbc`）', () => {
+    // 5 / 2 = 2.5：截断 2 < 3 → 买；Math.round 会给 3，不小于 3 → 不买
+    expect(aiWantsListedStock(5, 2, 3)).toBe(true);
+    expect(aiWantsListedStock(5, 2, 2)).toBe(false); // 2 < 2 为假
+    // 7 / 2 = 3.5：截断 3
+    expect(aiWantsListedStock(7, 2, 4)).toBe(true);
+    expect(aiWantsListedStock(7, 2, 3)).toBe(false);
   });
 
   it('地產：3 × 估值 > 標價 且 cash > 2 × 標價', () => {

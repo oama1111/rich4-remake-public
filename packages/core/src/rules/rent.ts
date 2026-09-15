@@ -14,6 +14,7 @@ import type { LandInfo } from '../loaders/map.ts';
 import { calculateLandToll } from './toll.ts';
 import { transferMoney, type Company } from './payment.ts';
 import { adjustTollByGod } from './god-toll.ts';
+import { truncTowardZero } from './rounding.ts';
 
 export interface RentShare {
   /** 收款方玩家下标 */
@@ -52,9 +53,14 @@ export interface RentResult {
  * mov ebx, ebp / sub ebx, [esp+0xcc]    ; 地主得 = 总额 - 同盟得
  * ```
  *
+ * ⚠️ `call 0x00457dbc` 是 `__round_toward_zero` —— **向零截断**，
+ *   不是就近取偶、也不是 `Math.round`。比例 0.5 且实付为奇数时两者差 1
+ *   （`allianceShareOf(1, 1, 1)`：原版给 0，`Math.round` 给 1）。
+ *   判据见 `rules/rounding.ts`。
+ *
  * ⚠️ **必须用 float32 而非精确有理数**。原版把比例存成 `dword`（单精度），
- * 再乘回总额取整。`Math.fround` 复现这一步精度损失——去掉它，
- * 在某些金额上会与原版差 1 块钱。
+ *   再乘回总额取整。`Math.fround` 复现这一步精度损失——去掉它，
+ *   在某些金额上会与原版差 1 块钱。
  *
  * 数学上 `总额 × (同盟份/总额)` 本该恰好等于同盟份，但单精度舍入
  * 会让结果偏离，**这个偏差是原版行为的一部分**（C-FID-2）。
@@ -68,8 +74,8 @@ export function allianceShareOf(
   if (total === 0) return 0;
   // @source fdivp 后 fstp dword —— 单精度（包在 Math.fround 里，C-DET-3 允许）
   const ratio = Math.fround(allyToll / total);
-  // @source fild(总额) / fmul / call 0x457dbc / fistp —— 乘回再取整
-  return Math.round(Math.fround(payable * ratio));
+  // @source fild(总额) / fmul / call 0x457dbc（向零截断）/ fistp —— 乘回再截断
+  return truncTowardZero(Math.fround(payable * ratio));
 }
 
 /**

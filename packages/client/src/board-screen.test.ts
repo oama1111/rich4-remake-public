@@ -616,8 +616,12 @@ describe('三路操作的 action 形状 @source core 的 actions.ts', () => {
     expect(listInputLabel(LISTING.card)).toBe('賣出價格');
   });
 
-  it('★ 股票市價就是 core 那条式子的同形（round 不是 trunc）', () => {
-    expect(stockListPrice(3, 25.5)).toBe(77);
+  // ★ 2026-09-16 订正（Q-NUM-1）：这条原来写「round 不是 trunc」并期望 77 —— **反了**。
+  //   原版挂牌市价走 `0x00457dbc`（= `__round_toward_zero`，CW=0x1f7f，RC=向零），
+  //   所以 25.5×3 = 76.5 → **76**。core 的 `truncTowardZero` 才是对的（见 Q-NUM-1.md）。
+  it('★ 股票市價就是 core 那条式子的同形（trunc，向零截断）', () => {
+    expect(stockListPrice(3, 25.5)).toBe(76);
+    expect(stockListPrice(3, -25.5)).toBe(-76); // 向零，不是 floor
   });
 });
 

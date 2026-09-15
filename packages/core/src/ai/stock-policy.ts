@@ -13,7 +13,7 @@
  * 0042bf68      if (eax < 0xf) 结束                   ; ★ 闸三：距還款日不足 15 天就不炒
  *           }
  * 0042bf94  for (i = 0; i < 12; i++)                  ; 持仓市值
- * 0042bfc7      市值 += round(持股[i] × 股价[i])
+ * 0042bfc7      市值 = trunc(市值 + 持股[i] × 股价[i])  ; 0x42bff1 `call 0x457dbc`（向零截断）
  * 0042c002  eax = 存款(+0x20) + 现金(+0x1c)
  * 0042c015  edx = 市值 + eax                          ; 可动用总额
  * 0042c01f  target = trunc(edx × f26 / 100)
@@ -51,7 +51,7 @@
  * ```
  *
  * 然后 `qsort` 按分降序（0x0042bed0），从头扫：0 分跳过；第 i 名以 `rand()%24 <= 12−i`
- * 的概率被选中（0x0042c690），第一个中的就买：股数 = round(可投 / 現價)，不超过可成交量。
+ * 的概率被选中（0x0042c690），第一个中的就买：股数 = trunc(可投 / 現價)，不超过可成交量。
  *
  * ⚠️ 两处替身（D-004 / D-006）：`rand()%24` 用 `aiRoll`；Watcom 的 qsort 不稳定，
  *   同分的先后不可知，本引擎按下标升序。
@@ -65,6 +65,7 @@ import { aiRoll } from './card-policy.ts';
 import { dayNumberSince1998 } from '../places/calendar.ts';
 import { HISTORY_DAYS } from '../places/stock-market.ts';
 import { isLimitDown, isLimitUp, loanSellPressure, marketOpenOn } from '../places/stock-market.ts';
+import { truncTowardZero } from '../rules/rounding.ts';
 
 /** 距還款日不足这么多天就不进股市 @source 0x0042bf65 `cmp eax, 0xf` */
 export const STOCK_LOAN_DUE_GUARD_DAYS = 0xf;
@@ -80,7 +81,12 @@ export function daysUntil(state: GameState, packed: number): number {
   );
 }
 
-/** 当前玩家的持仓市值 @source 0x0042bf94 的循环，逐支 `round(股数 × 股价)` 后累加 */
+/**
+ * 当前玩家的持仓市值 @source 0x0042bf94 的循环：
+ * 每支 `fild 股数 / fmul 股价 / fadd 累计 / call 0x457dbc / fistp`
+ * —— 0x42bff1 那个 `call 0x457dbc` 是 `__round_toward_zero`（**向零截断**），
+ * 不是 `Math.round`。股价带小数时逐支截断会与逐支四舍五入差 1。
+ */
 export function holdingsValue(state: GameState, playerIndex: number): number {
   const held = state.holdings[playerIndex] ?? [];
   let total = 0;
@@ -88,7 +94,8 @@ export function holdingsValue(state: GameState, playerIndex: number): number {
     const amount = held[i]?.amount ?? 0;
     if (amount === 0) continue;
     const price = state.market.stocks[i]?.price ?? 0;
-    total += Math.round(amount * price);
+    // @source 0042bfc7 fmul → 0042bfea fadd → 0042bff1 call 0x457dbc
+    total = truncTowardZero(total + amount * price);
   }
   return total;
 }
@@ -98,6 +105,11 @@ export function holdingsValue(state: GameState, playerIndex: number): number {
  *
  * ★ 查账时要用它而不是市值：买入是把钱 1:1 换成成本，所以成本守恒；
  *   市值会随行情涨跌，那是**账面**盈亏，不是凭空多出来的钱。
+ *
+ * ⚠️ 这里的 `Math.round` **没有** exe 判据：它是本引擎自己的账目守恒工具
+ *   （`state/soak.test.ts` 的「没印钞机时总额只减不增」用它），原版没有
+ *   对应的「持仓成本」概念。故**保持原样**，不与 `holdingsValue` 的
+ *   `__round_toward_zero` 统一 —— 这不是漏改。见 `Q-NUM-1.md` 的 D-QNUM-4。
  */
 export function holdingsCost(state: GameState, playerIndex: number): number {
   const held = state.holdings[playerIndex] ?? [];
@@ -319,8 +331,10 @@ export function decideStockTrade(state: GameState, topo?: MapTopology): Action |
   if (pick === -1) return null;
 
   const stock = state.market.stocks[pick]!;
-  // @source 0x0042c6e2：round(可投 / 現價)；0x0042c716：不超过可成交量
-  let shares = Math.round(budget / stock.price);
+  // @source 0x0042c6e2 `fild 可投 / fdiv 現價` → 0x0042c6ef `call 0x457dbc`
+  //   （`__round_toward_zero`：**向零截断**，不是 Math.round）；
+  //   0x0042c716：不超过可成交量
+  let shares = truncTowardZero(budget / stock.price);
   if (shares === 0) return null;
   if (stock.f10 < shares) shares = stock.f10;
   // 柜台还要求 trunc(股数 × 現價) <= 存款；可投已封顶在存款上，这里只防浮点边角
@@ -362,11 +376,16 @@ export function stockScores(state: GameState, topo: MapTopology, me: Player = st
  * 0042cd59  gain > 1.6 && 波动系数 < 1.0                                   → +2
  * 0042cd8e  現價 > minHist×8 && minHist×8 > 成本×1.25                        → +2
  * 0042cde4  avg24 > avg6 && 現價 < 開盤                                     → +2
- * 0042ce19  gain >= −2                                                     → +round((gain−2)/0.5 + 1)
- * 0042ce5c  現金+存款 < 30000×物價 && gain > 0                              → +round(gain/0.5 + 1)
- * 0042cec9  現金+存款 < 16000×物價 && gain > 0                              → +round(gain/0.5 + 1)
+ * 0042ce19  gain >= +2.0                                                   → +trunc((gain−2)/0.5 + 1)
+ * 0042ce5c  現金+存款 < 30000×物價 && gain > 0                              → +trunc(gain/0.5 + 1)
+ * 0042cec9  現金+存款 < 16000×物價 && gain > 0                              → +trunc(gain/0.5 + 1)
  * 0042cf33  壓力                                                           → 分 ×2
  * ```
+ *
+ * ⚠️ **已知未修**：`gainFloor` 现在是 `-2.0`，但 0x0042ce20 的
+ *   `fcomp dword [0x4641f4]` 比的是 **+2.0**（0x4641f8 那个 −2.0 是紧接着
+ *   `fadd` 的偏移量，不是判据阈值）。这一条**不属于本轮取整订正**，
+ *   照「不许改良」先原样留着并登记，见 `Q-NUM-1.md` 的 D-QNUM-5。
  */
 export const SELL_RATIO = {
   redRatio: 0.6,
@@ -413,8 +432,18 @@ export function sellScoreInput(state: GameState, topo: MapTopology, stock: numbe
   };
 }
 
-function roundHalf(x: number): number {
-  return Math.round(x);
+/**
+ * 賣出打分里那三段加分的取整。
+ *
+ * @source 三段同一形状（0x0042ce38 / 0x0042cea5 / 0x0042cf15 一带）：
+ * ```asm
+ * fadd(-2.0) / fdiv(0.5) 或直接 fdiv(0.5) → fld1 → faddp st(1) → call 0x457dbc
+ * ```
+ * 末尾那个 0x457dbc 是 `__round_toward_zero`（**向零截断**），不是四舍五入。
+ * 原来的 `roundHalf`（`Math.round`）在结果恰为 k+0.5 时会多给 1 分。
+ */
+function saleScoreRound(x: number): number {
+  return truncTowardZero(x);
 }
 
 /** 一支股票的賣出分；0 = 不賣 */
@@ -456,10 +485,10 @@ export function scoreStockForSale(
   if (price > min8 && min8 > cost * SELL_RATIO.minHistCost) score += 2;
   if (s.avg24 > s.avg6 && price < s.openPrice) score += 2;
   // ÷ 0.5 就是 × 2（精确），避开除法：round((gain − 2) / 0.5 + 1) = round(2·gain − 3)
-  if (gain >= SELL_RATIO.gainFloor) score += roundHalf(2 * gain - 3);
+  if (gain >= SELL_RATIO.gainFloor) score += saleScoreRound(2 * gain - 3);
   const liquid = me.cash + me.moneyInBank;
-  if (liquid < 30000 * priceIndex && gain > 0) score += roundHalf(2 * gain + 1);
-  if (liquid < 16000 * priceIndex && gain > 0) score += roundHalf(2 * gain + 1);
+  if (liquid < 30000 * priceIndex && gain > 0) score += saleScoreRound(2 * gain + 1);
+  if (liquid < 16000 * priceIndex && gain > 0) score += saleScoreRound(2 * gain + 1);
   if (mustSell) score *= 2;
   return score;
 }

@@ -32,8 +32,11 @@ const determinismRules = {
       // —— 那正是本规则要求的写法（原版 idiv 即向零取整，对应 Math.trunc）。
       // fround 对应原版把结果存为 32 位 float 的场合（fstp dword），
       // 用它比裸除法更保真，故一并放行。
+      // `truncTowardZero`（rules/rounding.ts，= 原版 `__round_toward_zero`
+      // 0x00457dbc）是唯一那份「原版 x87 取整」实现，语义与 Math.trunc 相同，
+      // 同样属于「显式取整」的合格写法，故一并放行。
       selector:
-        ":not(CallExpression[callee.object.name='Math'][callee.property.name=/^(trunc|floor|ceil|round|fround)$/]) > BinaryExpression[operator='/']",
+        ":not(:matches(CallExpression[callee.object.name='Math'][callee.property.name=/^(trunc|floor|ceil|round|fround)$/], CallExpression[callee.name='truncTowardZero'])) > BinaryExpression[operator='/']",
       message:
         'C-DET-3: 金额计算必须用整数。除法必须直接包在 Math.trunc/floor 里显式取整，并注明原版的取整方式（原版 idiv = 向零取整 = Math.trunc）。',
     },

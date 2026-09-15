@@ -79,6 +79,7 @@ import { isAlive } from '../state/types.ts';
 import { CARDS, TOOLS } from '@rich4/data';
 import { MAX_HAND_CARDS } from '../rules/special-square.ts';
 import { toolCount } from '../rules/tools.ts';
+import { truncTowardZero } from '../rules/rounding.ts';
 
 /** 每个玩家几个槽 @source `0x54 / 12 = 7` */
 export const BOARD_SLOTS = 7;
@@ -250,11 +251,13 @@ export function toolListPrice(toolId: number, priceIndex: number): number {
 }
 
 /**
- * 股票的市價 = `round(股數 × 現價)`。
- * @source VA 0x00425f1e：`fild 股數 / fmul dword [股票表 + 36*i + 0x18 現價] / call round`
+ * 股票的市價 = `trunc(股數 × 現價)`。
+ * @source VA 0x00425f1e：`fild 股數 / fmul dword [股票表 + 36*i + 現價] /
+ *   call 0x457dbc / fistp` —— 0x457dbc 是 `__round_toward_zero`（**向零截断**），
+ *   不是 `Math.round`：`1 股 × 2.5 元 = 2.5` 时原版给 2 而 `Math.round` 给 3。
  */
 export function stockListPrice(shares: number, marketPrice: number): number {
-  return Math.round(shares * marketPrice);
+  return truncTowardZero(shares * marketPrice);
 }
 
 /**
@@ -327,10 +330,22 @@ export function aiWantsToListTool(count: number, toolF7: number, personality: nu
   return count !== 0 && toolF7 - personality === 2;
 }
 
-/** 别人挂的股票值不值得买 @source 0x00428b5e..0x00428bac */
+/**
+ * 别人挂的股票值不值得买 @source 0x00428b5e..0x00428bac
+ *
+ * ```asm
+ * 00428b5e  fild dword [挂单 + 0x4967e4]   ; 挂牌总价
+ * 00428b71  fild dword [挂单 + 0x4967e8]   ; 股数
+ * 00428b75  fdivp
+ * 00428b77  call 0x457dbc                  ; ★ __round_toward_zero：向零截断
+ * 00428ba3  fcomp dword [股票表 + 現價] / jae 不要
+ * ```
+ * 即「`trunc(挂牌总价 / 股数) < 現價` 才买」。`.5` 处与 `Math.round` 差 1
+ * （总价 5、2 股 ⇒ 2.5：原版 2，`Math.round` 3）。
+ */
 export function aiWantsListedStock(listedPrice: number, shares: number, marketPrice: number): boolean {
   if (shares <= 0) return false;
-  return Math.round(listedPrice / shares) < marketPrice;
+  return truncTowardZero(listedPrice / shares) < marketPrice;
 }
 
 /** 别人挂的地產值不值得买 @source 0x00428c63..0x00428c81 */

@@ -30,6 +30,10 @@ import type { FacilityInfo, LandInfo } from '../loaders/map.ts';
 import type { Player } from '../state/types.ts';
 import { transferMoney, PARTY_POOL, type Company } from './payment.ts';
 import { WatcomRng } from '../rng/watcom.ts';
+import { truncTowardZero } from './rounding.ts';
+
+// ★ 全项目只有 `rules/rounding.ts` 一份实现；这里转出去只为兼容既有引用。
+export { truncTowardZero } from './rounding.ts';
 
 /**
  * 起拍价的等级系数。
@@ -62,8 +66,8 @@ export const AUCTION_LEVEL_FACTOR = 0.5;
  *
  * ⚠️ **取整是向零截断，不是就近取偶**：`call 0x457dbc` 的
  *   `__round_toward_zero`（VA 0x00457dbc，见 `rich4_misc_util.asm`）把
- *   x87 控制字 **bit10-11（RC）清成 `11` = 向零** 之后才 `frndint`
- *   （`mov byte [esp + 1], 0x1f` ⇒ CW = 0x0033）：
+ *   x87 控制字 **bit10-11（RC）置成 `11` = 向零** 之后才 `frndint`
+ *   （只改高字节 `mov byte [esp + 1], 0x1f` ⇒ CW = 0x1f7f，PC 仍是扩展精度）：
  *   ```asm
  *   __round_toward_zero:
  *   fnstcw [esp] / push [esp] / mov byte [esp+1], 0x1f / fldcw [esp]
@@ -71,6 +75,8 @@ export const AUCTION_LEVEL_FACTOR = 0.5;
  *   ```
  *   故 `1.5 → 1`、`2.5 → 2`、`1498.5 → 1498`、`1501.5 → 1501`
  *   （T-034 那一轮把它当成了 `percentage.ts` 的就近取偶，是误读）。
+ *
+ * ★ 实现已上提到 `rules/rounding.ts`，本文件不再自留一份。
  */
 export function auctionBasePrice(
   entity: { landPrice: number; level: number },
@@ -125,15 +131,12 @@ const low32Buf = new Float64Array(1);
 const low32View = new Uint32Array(low32Buf.buffer);
 
 /**
- * `__round_toward_zero` @source VA 0x00457dbc。
+ * `__round_toward_zero` @source VA 0x00457dbc —— **已移至 `rules/rounding.ts`**。
  *
- * 原版把 x87 控制字改成 **RC = 11（向零）** 再 `frndint`，故对非负数就是截断。
- * 不能用「就近取偶」：`percentage.ts` 的同名函数按就近取偶实现，
- * 两者在**恰好 .5** 时不同（本文件凡是走 0x457dbc 的地方都按本函数来）。
+ * 本文件原先自留过一份同名实现（与 `percentage.ts` 的就近取偶版重名而语义相反），
+ * 现统一为 `rounding.ts` 的唯一一份，并在文件头 `export { … } from` 转出，
+ * 既有 `import { truncTowardZero } from './auction.ts'` 不受影响。
  */
-export function truncTowardZero(v: number): number {
-  return Math.trunc(v);
-}
 
 /** 竞价结果——由外部的出价流程给出 */
 export interface AuctionOutcome {
