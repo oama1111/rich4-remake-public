@@ -64,6 +64,21 @@ describe('★ 百貨公司落点', () => {
     expect(s.players[0]!.cards).toContain(onShelf);
   });
 
+  it('★ 买一件少一件 —— 卡片与道具**两页都**如此', () => {
+    // @source 原版两页各清自己那一格：卡片 `mov byte [edi+0x48c31c],0`、
+    //   道具 `mov byte [ebx+0x48c2f8],0`（rich4_shop.asm 0x42e1eb / 0x42e466 尾）
+    let s = landed(500);
+    if (s.pending?.kind !== 'shop') throw new Error('商店没开');
+    const shelfTool = s.pending.tools.find((t) => t.id === 6)!.id;
+    const shelfCard = s.pending.cards[0]!.id;
+    s = reduce(s, { type: 'shop', op: 'buyTool', id: shelfTool }, topo);
+    expect(s.pending?.kind === 'shop' && s.pending.tools.some((t) => t.id === shelfTool)).toBe(false);
+    s = reduce(s, { type: 'shop', op: 'buyCard', id: shelfCard }, topo);
+    expect(s.pending?.kind === 'shop' && s.pending.cards.some((c) => c.id === shelfCard)).toBe(false);
+    // ★ 买过的再买一次：reducer 拒绝（返回同一个 state），而不是凭空再来一件
+    expect(reduce(s, { type: 'shop', op: 'buyTool', id: shelfTool }, topo)).toBe(s);
+  });
+
   it('點數不够时什么都不发生', () => {
     const s = landed(10);
     expect(reduce(s, { type: 'shop', op: 'buyTool', id: 6 }, topo)).toBe(s);

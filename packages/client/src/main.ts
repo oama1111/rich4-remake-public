@@ -1863,6 +1863,12 @@ interface ShopUi {
    *   气泡到期（状态 2→3）之后才 `Post_0402_Message` 关窗。
    */
   closing: boolean;
+  /**
+   * 正被按住的**自己那一格** —— 卖成交后画成「凹进去」，抬手复原。
+   * @source `loc_0042e0e4` 调 `fcn_00451b9e`（压入），抬手 `loc_0042e7ec` 调
+   *   `fcn_00451d4e`（复原）并重贴一次格子底图。
+   */
+  pressedCell: number | null;
   /** 开店那一刻的货架 —— 买过的行**不从这份快照里去掉** */
   shelf: { cards: readonly ShopShelfRow[]; tools: readonly ShopShelfRow[] };
   /** 已经买掉的行下标（原版是把那两个货架数组的对应字节清 0）*/
@@ -1911,6 +1917,7 @@ function syncShopUi(): void {
       pressed: null,
       bubble: null,
       closing: false,
+      pressedCell: null,
       shelf: {
         cards: shopRows(SHOP_PAGE.cards, pending),
         tools: shopRows(SHOP_PAGE.tools, pending),
@@ -1961,16 +1968,18 @@ function shopCells(page: ShopPage): ReturnType<typeof cardEntries> {
  * 卖一件（按下即卖，原版在 `WM_LBUTTONDOWN` 里直接调 `fcn_0042d145` / `fcn_0042d1b2`）。
  *
  * @source `loc_0042e148` 卡片、`loc_0042e39c` 道具 —— 都是**点一下卖一件**，不弹确认。
+ * @returns 真的卖掉了才返回 true（空槽／没这东西时原版**不会**做那个按压效果）
  */
-function shopSell(page: ShopPage, slot: number): void {
+function shopSell(page: ShopPage, slot: number): boolean {
   const item = cellItemAt(page, shopCells(page), slot);
-  if (item === null) return;
+  if (item === null) return false;
   sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
   dispatch(
     page === SHOP_PAGE.cards
       ? { type: 'shop', op: 'sellCard', id: item.id }
       : { type: 'shop', op: 'sellTool', id: item.id, count: 1 },
   );
+  return true;
 }
 
 /**
@@ -2496,6 +2505,7 @@ function drawShopStage(): void {
         : toolEntries(state, state.currentPlayer),
     bubble: ui.bubble === null ? null : ui.bubble.text,
     pressed: ui.pressed,
+    pressedCell: ui.pressedCell,
     // 原版用 `_libc_rand`；这一处纯装饰，不进确定性状态，所以用 `Math.random`
     blink: blinkStep(ui.blink, ui.page, performance.now(), Math.random),
   });
@@ -3621,7 +3631,12 @@ function bindInput(): void {
         ui.pressed = hit.at;
         requestRender();
       } else if (hit.at === 'cell') {
-        shopSell(ui.page, hit.slot);
+        // ★ 卖掉了才把这一格画成「按下凹进去」（原版 `loc_0042e0e4` 只在成交后才调
+        //   `fcn_00451b9e`，空槽那条分支直接跳走了）
+        if (shopSell(ui.page, hit.slot)) {
+          ui.pressedCell = hit.slot;
+          requestRender();
+        }
       } else {
         shopBuy(ui.page, hit.row, performance.now());
       }
@@ -3729,10 +3744,16 @@ function bindInput(): void {
 
     // ── 卡片商店／道具商店：抬手才处理那两个钮（原版 0x202 那条跳表 `[0x48c347]`）──
     // ★ 抬手**不再看光标位置** —— 原版认的是按下那一刻记下的状态，照抄。
-    if (screen === 'game' && shopUi !== null && shopUi.pressed !== null) {
+    if (screen === 'game' && shopUi !== null && (shopUi.pressed !== null || shopUi.pressedCell !== null)) {
       const ui = shopUi;
       const pressed = ui.pressed;
       ui.pressed = null;
+      // 按过的那一格抬手复原（原版 `loc_0042e7ec` 的 `fcn_00451d4e` + 重贴底图）
+      if (ui.pressedCell !== null) {
+        ui.pressedCell = null;
+        requestRender();
+        if (pressed === null) return;
+      }
       const now = performance.now();
       if (pressed === 'exit') {
         // 道别那句话说完才真的关门（`shopTick` 里看 `bubble` 到期）

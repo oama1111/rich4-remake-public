@@ -3214,18 +3214,20 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
       return r.ok ? commit(r.player) : state;
     }
     case 'buyTool': {
-      // ⚠️ 这里**故意不**像 buyCard 那样把买掉的那件从 `pending.tools` 里删掉。
+      // ★ 与 buyCard 同构：买一件少一件 —— 原版两页都这么干
+      //   @source `rich4_shop.asm` 0x42e466 尾 `mov byte [ebx + 0x48c2f8], 0`
       //
-      // 原版确实会清（`rich4_shop.asm` 0x42e466 尾 `mov byte [ebx + 0x48c2f8], 0`），
-      // 但那张货架表 `[0x48c2f8]` 住在**商店窗口自己的 BSS 里**，每次开门重建 ——
-      // 它是**界面状态，不是局面状态**。本引擎把它放进了 `pending`，于是「删掉」
-      // 就变成了改局面：AI 的 `decidePending` 会照着 `buyTool(...).ok` 反复提同一件
-      // （它不查货架），删掉之后 reducer 必拒，`soak` 立刻卡死在 `turnEnd / shop`。
-      //
-      // 「买过的那一行不能重复买」由界面按原版的做法自己管：
-      // 开店时快照一份货架，买过的行记进 `shopUi.bought`（见 `client/shop-screen.ts`）。
+      // ⚠️ 这一条**必须**同时保证「AI 不会提一个货架上没有的购买」：
+      //   `ai/policy.ts` 的 shop 分支是按「买得起 + 装得下」挑的，不查货架；
+      //   删掉之后 reducer 会拒，而 AI 是纯函数、被拒就原样重提 —— 立刻卡死在
+      //   `turnEnd / shop`（`soak.test.ts` 抓得住）。所以那边也加了货架判据。
+      const at = pending.tools.findIndex((t) => t.id === action.id);
+      if (at === -1) return state;
       const r = buyTool(me, state.tools, state.toolStock, action.id);
-      return r.ok ? commit(r.player, r.tools, r.stock) : state;
+      if (!r.ok) return state;
+      const bought = commit(r.player, r.tools, r.stock);
+      const tools = pending.tools.filter((_, i) => i !== at);
+      return { ...bought, pending: { ...pending, points: r.player.points, tools } };
     }
     case 'sellTool': {
       const r = sellTool(me, state.tools, state.toolStock, action.id, action.count ?? 1);

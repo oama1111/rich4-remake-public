@@ -16,6 +16,7 @@ import {
   SHOP_CELL_LOCAL,
   SHOP_CELL_ORIGIN,
   SHOP_CHUNK,
+  SHOP_CELL_PRESS,
   SHOP_EXIT_AT,
   SHOP_EXIT_HIT,
   SHOP_FIXED_CHUNK,
@@ -336,6 +337,18 @@ describe('货架行', () => {
       name: '道具1',
       price: 50,
     });
+  });
+});
+
+describe('按下的「凹进去」效果 @source VA 0x42e0e4 / 0x451b9e', () => {
+  it('★ 内容右下各移 1px，上边与左边各压暗 1px（−16 那张表 = 分量减半）', () => {
+    expect(SHOP_CELL_PRESS).toEqual({ shift: 1, edge: 1, edgeAlpha: 0.5 });
+  });
+
+  it('★ 效果范围就是被点中那一格的矩形，不是整块格子底图', () => {
+    const r = shopCellRect(0);
+    expect(r.w).toBe(SHOP_CELL.w);
+    expect(r.h).toBe(SHOP_CELL.h);
   });
 });
 

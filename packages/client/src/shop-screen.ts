@@ -537,7 +537,36 @@ export interface ShopDraw {
   pressed: 'switch' | 'exit' | null;
   /** 这一帧老板娘要换的脸与第二处（见 `blinkStep`）；`undefined` / `null` = 本帧不重画 */
   blink?: { face: number; mouth: number } | null;
+  /** 正被按住的**自己那一格**（见 `SHOP_CELL_PRESS`）；`null` = 没有 */
+  pressedCell?: number | null;
 }
+
+/**
+ * 按下自己那一格时的「凹进去」效果。
+ *
+ * @source `rich4_shop.asm` VA 0x42e0e4（卖卡／卖道具共用的尾巴）：
+ * ```asm
+ * lea eax, [esp + 0x40]     ; 被点中那一格的矩形 (233+80c, 299+56r, 311+80c, 353+56r)
+ * push eax
+ * call fcn_00451b9e         ; ★ 单步，不是动画
+ * ```
+ * `fcn_00451b9e`（VA 0x451b9e）那一步做的是：**逐行 `memcpy(row[i], row[i+1]+1px, w*2-2)`**
+ * —— 内容整体**右下各移 1 像素**；随后两次 `fcn_004552e7(…, -16)` 把**上边一条**与
+ * **左边一条**压暗（`0x485d68 + (-16)*32` 那张表 = 每个 5 位分量减半）。
+ * 抬起时 `fcn_00451d4e`（VA 0x451d4e）反向复原，并重贴一次格子底图。
+ *
+ * ⚠️ 原版那一步是**后台缓冲上的破坏性像素操作**，且最后一行／最后一列**保持原样**
+ *   （`memcpy` 只覆盖 w-1 个像素、循环只到 h-2）。本引擎是每帧重画，所以这里按
+ *   「整体右下移 1px + 压暗上/左两条边」重画一遍 —— 观感一致，但那一行一列的
+ *   「旧内容」细节无法逐像素等同（1px，肉眼不可辨）。
+ */
+export const SHOP_CELL_PRESS = {
+  /** 内容往右下各移这么多像素 */
+  shift: 1,
+  /** 上边／左边压暗的宽度与浓度（−16 在 5 位分量上就是减半）*/
+  edge: 1,
+  edgeAlpha: 0.5,
+} as const;
 
 const SHOP_FONT = '"PingFang TC", "Microsoft JhengHei", sans-serif';
 
@@ -660,17 +689,22 @@ export function drawShopScreen(
   }
 
   // ── 右下 5×3 格 ──
-  drawAnchored(
-    ctx,
-    sprite('Panel.mkf', SHOP_GRID_RESOURCE, SHOP_GRID_CHUNK[cardPage ? 'cards' : 'tools'], false),
-    d.gridX,
-    SHOP_GRID_Y,
+  const gridBase = sprite(
+    'Panel.mkf',
+    SHOP_GRID_RESOURCE,
+    SHOP_GRID_CHUNK[cardPage ? 'cards' : 'tools'],
+    false,
   );
-  for (const e of d.cells) {
-    const col = e.slot % SHOP_CELL.cols;
-    const row = Math.floor(e.slot / SHOP_CELL.cols);
-    const x = d.gridX + SHOP_CELL_ORIGIN.x + col * SHOP_CELL.w;
-    const y = SHOP_GRID_Y + SHOP_CELL_ORIGIN.y + row * SHOP_CELL.h;
+  drawAnchored(ctx, gridBase, d.gridX, SHOP_GRID_Y);
+
+  /** 一格左上角的屏幕坐标（格子底图已滑到位时的**相对**位置，另加 gridX）*/
+  const cellAt = (slot: number): { x: number; y: number } => ({
+    x: d.gridX + SHOP_CELL_ORIGIN.x + (slot % SHOP_CELL.cols) * SHOP_CELL.w,
+    y: SHOP_GRID_Y + SHOP_CELL_ORIGIN.y + Math.floor(slot / SHOP_CELL.cols) * SHOP_CELL.h,
+  });
+
+  /** 画一格的内容（卡片只画名、道具画图标 + 数量）*/
+  const paintCell = (e: ShopCellEntry, x: number, y: number): void => {
     if (cardPage) {
       shopText(
         ctx,
@@ -680,7 +714,7 @@ export function drawShopScreen(
         'center',
         'middle',
       );
-      continue;
+      return;
     }
     // 道具图标 = 资源 11 图「槽 + 2」，锚点由原图给出
     drawAnchored(
@@ -689,14 +723,49 @@ export function drawShopScreen(
       x + SHOP_CELL_LOCAL.iconDx,
       y + SHOP_CELL_LOCAL.iconDy,
     );
-    shopText(
-      ctx,
-      `×${e.count}`,
-      x + SHOP_CELL_LOCAL.countDx,
-      y + SHOP_CELL_LOCAL.countDy,
-      'right',
-      'top',
-    );
+    shopText(ctx, `×${e.count}`, x + SHOP_CELL_LOCAL.countDx, y + SHOP_CELL_LOCAL.countDy, 'right', 'top');
+  };
+
+  for (const e of d.cells) {
+    const { x, y } = cellAt(e.slot);
+    paintCell(e, x, y);
+  }
+
+  // ★ 按下自己那一格：整格内容右下各移 1px，再把上边与左边压暗（见 `SHOP_CELL_PRESS`）
+  //
+  // ⚠️ 效果是作用在**那一格的矩形**上的，与「里面还剩什么」无关 —— 卖出去之后格子已经空了，
+  //   原版照样把那一格压一下（它压的就是屏幕上那 78×54 个像素）。
+  const pressed = d.pressedCell ?? null;
+  if (pressed !== null && pressed >= 0 && pressed < SHOP_SLOTS) {
+    const { x, y } = cellAt(pressed);
+    const { shift, edge, edgeAlpha } = SHOP_CELL_PRESS;
+    ctx.save();
+    // ★ 裁到这一格：移出去的那 1px 不能糊到隔壁格上（原版也从不写矩形之外）
+    ctx.beginPath();
+    ctx.rect(x, y, SHOP_CELL.w, SHOP_CELL.h);
+    ctx.clip();
+    // 连底图那一块一起挪 —— 原版挪的是已经画好的像素
+    if (gridBase !== null) {
+      ctx.drawImage(
+        gridBase.bitmap,
+        SHOP_CELL_ORIGIN.x + (pressed % SHOP_CELL.cols) * SHOP_CELL.w,
+        SHOP_CELL_ORIGIN.y + Math.floor(pressed / SHOP_CELL.cols) * SHOP_CELL.h,
+        SHOP_CELL.w,
+        SHOP_CELL.h,
+        x + shift,
+        y + shift,
+        SHOP_CELL.w,
+        SHOP_CELL.h,
+      );
+    }
+    const still = d.cells.find((e) => e.slot === pressed);
+    if (still !== undefined) paintCell(still, x + shift, y + shift);
+    // 空出来的上边一条与左边一条压暗（−16 那张换算表 = 每个 5 位分量减半）
+    ctx.globalAlpha = edgeAlpha;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(x, y, SHOP_CELL.w, edge);
+    ctx.fillRect(x, y, edge, SHOP_CELL.h);
+    ctx.restore();
   }
 
   // ── 滑入到位后才有的两个钮 ──
