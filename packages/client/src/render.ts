@@ -13,6 +13,7 @@ import { VIEW_CENTER, VIEW_COUNT, VIEW_SPAN, projectCell, projectWorld } from '@
 import type { Sprite, SpriteCache } from './assets.ts';
 import {
   DECOR_RESOURCE,
+  EMPTY_LAND_LOGO_RESOURCE,
   buildingImageIndex,
   buildingResource,
   chainStoreResource,
@@ -481,10 +482,25 @@ export class BoardRenderer {
       if (n.ref.kind !== 'land') continue;
       const landId = n.ref.index;
       const level = state.landLevel[landId] ?? 0;
-      // @source cmp byte [land+0x1a], 0 / je —— 等级 0 不画建筑
-      if (level < 1) continue;
+      const owner = state.landOwner[landId] ?? 0;
       const land = map.lands.find((l) => l.id === landId);
       if (land === undefined) continue;
+
+      // ★ 等级 0（还没盖房）但有主 → 画该**角色专属**的空地 logo，不画建筑。
+      // @source VA 0x0040920f 的「等级 0」分支：无主不画；有主则用
+      //   `[0x48aea8]`（= map.mkf 资源 25，见 rich4_load_map.asm:477）当图集、
+      //   图号 = `player[owner-1].+0x13`（即 character）。
+      if (level < 1) {
+        if (owner === 0) continue; // 无主空地什么都不画
+        const character = state.players[owner - 1]?.character ?? 0;
+        items.push({
+          x: land.x,
+          y: land.y,
+          res: EMPTY_LAND_LOGO_RESOURCE,
+          img: character,
+        });
+        continue;
+      }
       // @source cmp byte [land+0x18], 0 / jne → 连锁店走另一张图集
       const res =
         land.type !== 0

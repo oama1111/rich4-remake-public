@@ -607,6 +607,29 @@ export function buildingImageIndex(facing: number, viewRotation = 0): number {
 }
 
 /**
+ * **空地归属标记** —— 买了地还没盖房（等级 0）时，在格子上画该玩家的专属 logo。
+ *
+ * @source VA 0x0040920f（地块绘制的「等级 0」分支）：
+ * ```asm
+ * 0040920f  byte [esi + 0x48a852] = 0xff      ; 归属标记
+ * 00409216  cmp  byte [ebp + 0x19], 0         ; land.owner == 0 ?
+ * 0040921a  je   不画                          ; 无主就什么都不画
+ * 0040921c  eax = [0x48aea8]                   ; ★ logo 所在的精灵档
+ * 00409227  al  = land.owner
+ * 0040922c  eax = (owner - 1) * 0x68           ; 玩家结构大小 0x68
+ * 00409230  al  = byte [player + 0x13]         ; ★ 图号 = 该玩家的 character
+ * ```
+ * 而 `[0x48aea8]` 的来处在 `rich4_load_map.asm:477`：
+ * ```asm
+ * 00407f68  push 0x19 / push edi / call 0x450441   ; ★ 资源号 25，从 map.mkf 读
+ * ```
+ *
+ * 实测 `map.mkf` 资源 25 是 **12 张 SPR**，正好一个角色一张，且与需求方举的例子
+ * 逐一吻合：約翰喬=牛仔帽、沙隆巴斯=石油桶、錢夫人=钻石。
+ */
+export const EMPTY_LAND_LOGO_RESOURCE = 25;
+
+/**
  * 「特殊类型」地块（`land.type != 0`，即连锁店）另有一张图集。
  * @source VA 0x00407e48：资源号 = `global_map_id + 0x4f`（79）
  */
