@@ -1232,17 +1232,25 @@ cards:
   title: 地形 tile 接缝检查
   module: MOD-11
   req: REQ-11.1
-  status: todo
+  status: done
   estimate: 0.5
   depends_on: [T-063]
   uses: [assets-pipeline/src/ground.ts (布局表)]
-  source: "C-AST-7"
-  input: "hd tiles + GND 布局"
-  output: "报告：相邻 tile 边缘色差 > 阈值的坐标；可选自动修补（边缘 2px 双向羽化）"
-  algorithm: "对布局里每对相邻 tile 取边缘列/行，算平均 ΔE；> 阈值记录。"
-  tests: "人造接缝被检出；无缝样本 0 报告"
-  files: [packages/assets-pipeline/src/seams.ts]
-  notes: ""
+  source: "C-AST-7（其判据已按实测改写，见 DEVELOPMENT_PLAN §5.4）"
+  input: "★ **原图 + 放大图**两张（同图放大前后）＋ GND 布局；不是只看放大图"
+  output: "报告：放大后**新增**的接缝（增量 ΔE 降序）+ 坐标；可选自动修补（边缘 2px 双向羽化）"
+  algorithm: |
+    ★ 判据是**放大前后对比**，不是绝对阈值 —— 这是实测逼出来的结论：
+      原版底图同时有高频纹理（水面/草地）与真地形交界，只看放大图的阈值区分不了
+      它们与超分伪影（逐像素 ΔE>2.3 报 10224/10224，带内均值也报约 60%，而画面肉眼无接缝）。
+    1. compareTileSeams(original, upscaled)：逐条缝算**带内均值** ΔE（先对带内像素求 RGB
+       均值再转 Lab，顺带抹掉高频噪声），after − before > 一个 JND(2.3) 才报。
+    2. 取带宽度两侧按 scale 换算，保证比的是同一段地形长度。
+    3. findTileSeams 保留为**诊断**用途（单图绝对色差），明确标注「真地形边界也会报」。
+    4. featherSeams：两侧各 band 像素成对线性过渡，对侧颜色只从输入快照读（否则越补越糊）。
+  tests: "人造接缝被检出；无缝样本 0 报告；★ 忠实放大 0 误报；★ 噪声纹理不误报；尺寸非整数倍抛错"
+  files: [packages/assets-pipeline/src/seams.ts, packages/assets-pipeline/src/seams.test.ts]
+  notes: "⚠️ 底图目前不在超分清单里（Q-GND-4），无真实输入，只能用合成夹具验；已在真实地图上验证判据（忠实 ×4 报 0/60）。"
 
 - id: T-065
   group: D
