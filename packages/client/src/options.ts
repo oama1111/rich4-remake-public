@@ -2,62 +2,113 @@
  * 設定（OPTION）——原版那一屏
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * ★ 这一屏的**字串与坐标全部取自 exe 的数据表**，不是照截图排的。
- *   入口 `_rich4_ui_options_entry` VA 0x00411b53：
+ * ★ 本文件里的**每一个坐标、每一个取值**都取自 exe 的数据表，不是照底图量的。
+ *   入口 `_rich4_ui_options_entry` VA 0x00411b53，窗口过程 `fcn_004103a3` VA 0x004103a3。
+ *
+ * ## 资源：`Data.mkf` 资源 3，**16 张图**
+ *
+ * ★ 不是 3 张。`png/Data/` 那份旧产物只解出 3 张，别再照它数。
+ *   exe 里的用法把每张图的角色钉死了（下标 = `ctx0 + 0xc + 12*i`，
+ *   每个 `graph_st` 12 字节，见 `csrc/mkf/graph_struct.h`）：
+ *
+ * | 图 | 尺寸 | 角色 | @source |
+ * |---|---|---|---|
+ * | 0 | 347×363 | 主面板底图 | `fcn_0040fd49` 第一笔 |
+ * | 1 | 328×336 | 熱鍵頁底图 | `fcn_00410158` 第一笔 |
+ * | 2 | 199×220 | 日期頁底图 | `fcn_004119e3` / `fcn_0040ff4b` |
+ * | 3 | 62×30 | 取消钮按下 | `fcn_004106c1`（`idx−4 = 3`） |
+ * | 4 | 62×30 | 確定钮按下 | `fcn_004106c1`（`idx−4 = 4`） |
+ * | 5 | 15×16 | **点亮的格子** | `fcn_0040fd49` 的三条进度条 |
+ * | 6 | 101×36 | 右上角钮按下 | `fcn_004105f4` |
+ * | 7/8 | 16×16 | 上/下箭头（带红底） | 日期頁 |
+ * | 9 | 15×15 | **亮着的灯** | `fcn_0040fd49` 的四处灯 + 視窗三选一 |
+ * | 10/11 | 177×174 | 右上角按钮组（標題頁 / 遊戲中） | `0x00411d10` 起按 `arg` 取 |
+ * | 12/13 | 17×11 | 上/下微调 | 日期頁 |
+ * | 14/15 | 56×31 / 80×41 | 蓝钮 / 灰钮 | 日期頁 |
+ *
+ * ★ **哪些图要抠黑**：`fcn_004563f5`（不抠）与 `fcn_00456418`（抠黑，
+ *   多压一个 `0` 当透明色）是两个包装，看调用点就知道：
+ *   底图 0/2、格子 5 走**不抠**；灯 9、按钮 3/4/6、按钮组 10/11、熱鍵頁 1 走**抠黑**。
+ *
+ * ## 底图本身已经画好的东西 —— 不要自己再画
+ *
+ * 底图 0 上已经有：未点亮的格子（深绿、白边）、灯的底座（暗红圆）、
+ * 右上角按钮组、樂曲列表的绿底与行线、取消/確定两颗钮的面。
+ * 运行时只往上**贴**：点亮的格子、亮着的灯、按钮组、按下时的钮面、文字。
+ *
+ * ## 控件矩形表 `0x474b92`（16 项 × 16 字节，left/top/right/bottom）
  *
  * ```asm
- * ; 用 Data.mkf 资源 3 建对话框
- * 00411b67  push 3 / push [0x48a0e4] / call 0x450441    ; → ctx = [0x48bb60]
- *
- * ; ① 主面板上的 12 条文字：串表 0x474a54[i]，坐标表 0x474b38 每项 3 个 word
- * 00411b94  for (i = 0; i < 10; i++)
- *             add_text(ctx+0x0c, str[i], w[3i], w[3i+1], w[3i+2])
- * 00411c7b  add_text(ctx+0x0c, str[10]=取消, 224, 328, 2)
- * 00411caa  add_text(ctx+0x0c, str[11]=確定, 296, 328, 2)
- *
- * ; ② 右上角三个黄按钮：串号随入口参数 arg 走
- * 00411cda  for (i = 12; i < 15; i++)
- *             add_text(widget[arg+10], str[3*arg + i], w[3i], w[3i+1], w[3i+2])
- *
- * ; ③ 热键页 28 条：串表 0x474abc，两列各 14，x=62/208，y 从 33 起每条 +16
- * 00411c20  for (i = 0; i < 28; i++) { add_text(ctx+0x18, hotkey[i], x, y, 2); y += 16;
- *                                      if (i == 14) { x = 0xd0; y = 0x21; } }
- * 00411bdc  三个按钮 原始設定/取 消/確 定 @ x = 52/165/278, y = 296
- *
- * ; ④ 对话框**居中于 640×480**
- * 00411dac  x0 = 0x140 - (对话框宽 >> 1)      ; 320 - w/2
- *           y0 = 0x0f0 - (对话框高 >> 1)      ; 240 - h/2
+ * 004104eb  mov eax, [0x474d74]      ; 控件号
+ *           shl eax, 4
+ *           cmp ebx, [eax + 0x474b92]  ; ebx = relx
+ *           jl  下一个
+ *           cmp esi, [eax + 0x474b96]  ; esi = rely
+ *           jl  下一个
+ *           cmp ebx, [eax + 0x474b9a]  ; right  —— 不含
+ *           jge 下一个
+ *           cmp esi, [eax + 0x474b9e]  ; bottom —— 不含
+ *           jge 下一个
+ * 00410522  jmp dword [eax*4 + 0x41034b]   ; 16 路处理跳表
  * ```
  *
- * ★ 最后那两行是本项目 640×480 定屏的又一条独立证据（另两条：
- *   `Panel.mkf` 资源 1 图 0 是 439×40 的工具栏底条、资源 66 的两张
- *   440×480「NEWS」遮罩正好盖住左半边）。
+ * ★ `png/` 与 `options.ts` 旧版里那些「量出来的」位置，逐条与这张表对不上
+ *   （灯差 (2,1)、視窗三行差 (3,5)、右上角钮差 (3,2)）—— 以这张表为准。
  *
- * ⚠️ 没解出来的：各个控件（进度条、勾选框、列表）本身是 `0x450441`
- *   按资源建出来的，那段没跟进去。故**控件的位置是照底图量的**——
- *   量法见下面每一处的注释。语义则有 RICH4.CFG 的字段说明兜底。
+ * ## 兩个「照着做」而不是「改好」
+ *
+ * 1. **取消/確定是按下去时才贴图 3/4**，而图 3/4 上**没有字** —— 于是按住时
+ *    钮面把字盖掉、看起来是空的。原版就是这样，别自作主张把字补回去。
+ * 2. **按下后拖到别处再松手，仍然算点的是原来那颗** —— `0x00410820` 用的是
+ *    按下时记下的 `[0x474d74]`，松手时不重新命中判定。
  */
 
 import type { Sprite } from './assets.ts';
 
 /** Data.mkf 里这一屏的资源号 */
 export const OPTIONS_RESOURCE = 3;
-/** 图 0 = 主面板 347×363；图 1 = 熱鍵頁 328×336；图 2 = 日期頁 199×220 */
-export const OPTIONS_BG = 0;
-/** 右上角那块黄区（常态 / 另一态），盖在主面板的 (168,2) 上 —— 位置是**逐像素对出来的**（差值 0） */
-const YELLOW_IMAGE = 10;
-const YELLOW_AT = { x: 168, y: 2 } as const;
-/** 選中 / 未選中 的小标记 */
-const MARK_ON = 5;
-const MARK_OFF = 7;
-/** 按钮面 62×30：常态 / 按下 */
-const BUTTON_FACE = 3;
-const BUTTON_FACE_DOWN = 4;
 
-/** 主面板尺寸 @source Data.mkf 资源 3 图 0 */
+/** 资源 3 的 16 张图 —— 名字即角色，逐条 @source 见文件头 */
+export const IMG = {
+  PANEL: 0,
+  HOTKEY_PAGE: 1,
+  DATE_PAGE: 2,
+  CANCEL_DOWN: 3,
+  OK_DOWN: 4,
+  CELL: 5,
+  SIDE_DOWN: 6,
+  ARROW_UP: 7,
+  ARROW_DOWN: 8,
+  LAMP: 9,
+  SIDE_TITLE: 10,
+  SIDE_GAME: 11,
+  SPIN_UP: 12,
+  SPIN_DOWN: 13,
+  BLUE_BUTTON: 14,
+  GREY_BUTTON: 15,
+} as const;
+
+/** 走**抠黑**那支包装（`fcn_00456418`）的图号 */
+export const KEYED_IMAGES: readonly number[] = [
+  IMG.HOTKEY_PAGE,
+  IMG.CANCEL_DOWN,
+  IMG.OK_DOWN,
+  IMG.SIDE_DOWN,
+  IMG.ARROW_UP,
+  IMG.ARROW_DOWN,
+  IMG.LAMP,
+  IMG.SIDE_TITLE,
+  IMG.SIDE_GAME,
+  IMG.SPIN_UP,
+  IMG.SPIN_DOWN,
+  IMG.BLUE_BUTTON,
+  IMG.GREY_BUTTON,
+];
+
+/** 主面板尺寸 @source `Data.mkf` 资源 3 图 0 */
 export const DIALOG_W = 347;
 export const DIALOG_H = 363;
-/** @source VA 0x00411dac：x0 = 320 − w/2，y0 = 240 − h/2 */
+/** @source VA 0x00411dac：x0 = 320 − w/2，y0 = 240 − h/2（`0x140` / `0x0f0`） */
 export const DIALOG = {
   x: 320 - (DIALOG_W >> 1),
   y: 240 - (DIALOG_H >> 1),
@@ -66,16 +117,16 @@ export const DIALOG = {
 } as const;
 
 // ============================================================
-//  文字：串与坐标都是表里的原值
+//  文字
 // ============================================================
 
 /**
- * @source 串 `0x474a54[0..11]`，坐标 `0x474b38[0..11]` 每项三个 word：x、y、对齐码。
+ * 主面板的 12 条文字。
+ * @source 串表 `0x474a54[0..11]`，坐标表 `0x474b38` 每项三个 word：x、y、对齐码。
  *
- * ⚠️ 对齐码只有 5 与 2 两种，**具体含义没查证**。但它跟底图对得上：
- *   码 5 的五条都在 x=14（左栏标题，左对齐说得通），码 2 的七条 x 都落在
- *   对应控件的正中（取消 224 ↔ 按钮 193..255、確定 296 ↔ 265..327），
- *   故本引擎把 5 当左对齐、2 当居中。
+ * ★ 对齐码：`2` = 以 (x,y) 为中心；`5` = 左边贴 x、竖直居中。
+ *   证据：码 5 那五条的 y 正好是各自控件竖直中心（遊戲速度 25 ↔ 速度条 17..33），
+ *   码 2 那些的 (x,y) 落在控件正中（取消 224,328 ↔ 钮 194..256 × 314..344）。
  */
 export const OPTION_LABELS: readonly { text: string; x: number; y: number; align: number }[] = [
   { text: '遊戲速度', x: 14, y: 25, align: 5 },
@@ -105,15 +156,23 @@ export const TRACK_NAMES: readonly string[] = [
 ];
 
 /**
- * 右上角三个黄按钮的文字 —— **随入口参数变**。
- * @source VA 0x00411d10 `str[3*arg + i]`，i = 12..14
- * - arg 0 → 12/13/14 日期更改・熱鍵設定・遊戲說明
- * - arg 1 → 15/16/17 重新遊戲・認輸投降・結束遊戲
+ * 右上角三个黄按钮的文字 —— **随入口参数 `arg` 走**。
+ * @source VA 0x00411cdf `str[3*arg + i]`，i = 12..14
+ * - arg 0（標題頁）→ 12/13/14 日期更改・熱鍵設定・遊戲說明
+ * - arg 1（遊戲中）→ 15/16/17 重新遊戲・認輸投降・結束遊戲
  */
 export const SIDE_BUTTONS: readonly (readonly string[])[] = [
   ['日期更改', '熱鍵設定', '遊戲說明'],
   ['重新遊戲', '認輸投降', '結束遊戲'],
 ];
+
+/** @source 图 10/11 是嵌在主面板里 (168,2) 的那块 177×174 */
+export const SIDE_ART_AT = { x: 168, y: 2 } as const;
+/**
+ * 三个黄钮的字（相对那块按钮组图的坐标）。
+ * @source 坐标表 `0x474b38` 的第 12..14 项：(108,31) (108,85) (108,136)，对齐码 2
+ */
+export const SIDE_TEXT = { x: 108, y: [31, 85, 136] as const };
 
 /** @source 串 `0x474abc[0..27]`，两列各 14 条 —— 熱鍵頁 */
 export const HOTKEY_NAMES: readonly string[] = [
@@ -125,90 +184,98 @@ export const HOTKEY_NAMES: readonly string[] = [
   '託管', '系統', 'SAVE GAME', 'LOAD GAME',
   '輔助說明', '向上換頁', '向下換頁', '結束程式',
 ];
+/** @source VA 0x00411c20：兩列各 14，x = 62 / 208，y 從 33 起每條 +16 */
+export const HOTKEY_COLUMNS = { x: [62, 208] as const, y0: 33, pitch: 16, rows: 14 };
 
 // ============================================================
-//  控件：位置照底图量的
+//  控件表
 // ============================================================
 
-/**
- * 三条格子进度条。
- *
- * ⚠️ 量法：在底图上横切一行，看颜色跳变的位置。
- * - `遊戲速度` y=25 那行：深格 81..95 / 97..111 / 113..127 → 三格，步进 16
- * - `音 樂`   y=90 那行：深格 89..103 起，共五格
- * - `音 效`   y=122 那行：同上
- * 纵向 x=90 那列的跳变给出格子高度：17..33 / 81..97 / 113..129，即 17 高，
- * 顶边 = 文字 y − 8。
- *
- * 档位数与 RICH4.CFG 对得上：`game speed: 00,01,02`、`music/sound: 00~04`。
- */
-export const BARS = {
-  speed: { x: 81, y: 17, cells: 3 },
-  music: { x: 89, y: 81, cells: 5 },
-  sound: { x: 89, y: 113, cells: 5 },
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** 控件号 —— 与 `0x474b92` 的项号、`0x41034b` 跳表的下标一一对应 */
+export const CONTROL = {
+  SPEED_BAR: 0,
+  MUSIC_BAR: 1,
+  SOUND_BAR: 2,
+  SIDE_0: 3,
+  SIDE_1: 4,
+  SIDE_2: 5,
+  TRACK_LIST: 6,
+  CANCEL: 7,
+  OK: 8,
+  ANIM_LAMP: 9,
+  MUSIC_LAMP: 10,
+  SOUND_LAMP: 11,
+  AUTOSAVE_LAMP: 12,
+  WINDOW_0: 13,
+  WINDOW_1: 14,
+  WINDOW_2: 15,
 } as const;
-export const BAR_CELL = { w: 15, h: 17, pitch: 16 } as const;
 
 /**
- * 四个小标记。
- *
- * ⚠️ 量法：底图上洋红色连通块的外接框（11×12）。
- * `動畫過程`(100,51)、`音 樂`(68,83)、`音 效`(68,115)、`自動存檔`(100,147)。
- *
- * ⚠️ 音樂/音效既有标记又有进度条，而 RICH4.CFG 每项只存**一个字节**
- *   （00~04）。本引擎因此把标记当作「0 = 關」的显示与开关，而不是
- *   另一个独立的状态位。原版是不是这么理解的，没查证。
+ * ★ 原版的控件矩形表，**逐字照抄** `0x474b92`。
+ *   判定用左闭右开：`x >= left && x < right`。
  */
-export const MARKS = {
-  animation: { x: 100, y: 51 },
-  music: { x: 68, y: 83 },
-  sound: { x: 68, y: 115 },
-  autoSave: { x: 100, y: 147 },
+export const CONTROL_RECTS: readonly Rect[] = [
+  { x: 81, y: 17, w: 47, h: 16 },   // 0  遊戲速度条（3 格 ×16，右端不含）
+  { x: 89, y: 81, w: 63, h: 16 },   // 1  音 樂条（4 格）
+  { x: 89, y: 113, w: 63, h: 16 },  // 2  音 效条（4 格）
+  { x: 227, y: 14, w: 100, h: 35 }, // 3  右上角钮 1
+  { x: 227, y: 68, w: 100, h: 35 }, // 4  右上角钮 2
+  { x: 227, y: 119, w: 100, h: 35 },// 5  右上角钮 3
+  { x: 18, y: 226, w: 159, h: 119 },// 6  樂曲列表
+  { x: 194, y: 314, w: 62, h: 30 }, // 7  取 消
+  { x: 266, y: 314, w: 62, h: 30 }, // 8  確 定
+  { x: 98, y: 50, w: 15, h: 15 },   // 9  動畫過程 灯
+  { x: 66, y: 82, w: 15, h: 15 },   // 10 音 樂 灯
+  { x: 66, y: 114, w: 15, h: 15 },  // 11 音 效 灯
+  { x: 98, y: 146, w: 15, h: 15 },  // 12 自動存檔 灯
+  { x: 217, y: 214, w: 107, h: 22 },// 13 日、月曆（整行可点）
+  { x: 217, y: 246, w: 107, h: 22 },// 14 縮小地圖（整行可点）
+  { x: 217, y: 278, w: 107, h: 22 },// 15 組合畫面（整行可点）
+];
+
+/** 格子图 15×16，步进 16（@source `fcn_00410537`：`(relx − 81) >> 4`） */
+export const CELL = { w: 15, h: 16, pitch: 16 } as const;
+/** 三条进度条第一格的 x 与各自第一格的 y */
+export const BAR_AT = {
+  speed: { x: 81, y: 17 },
+  music: { x: 89, y: 81 },
+  sound: { x: 89, y: 113 },
 } as const;
-export const MARK_SIZE = { w: 15, h: 16 } as const;
-
-/**
- * 視窗（右下角那块 200×200 显示什么）三选一。
- *
- * ⚠️ 标记框量得 (220,219)/(220,251)/(220,282)，与三条文字 y=226/258/290
- *   一一对应（步进 32，取 219 + 32i）。
- * @source 语义见 RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流
- */
-export const WINDOW_MARKS = { x: 220, y0: 219, pitch: 32, count: 3 } as const;
-
-/**
- * 樂曲列表。
- *
- * ⚠️ 量法：x=100 那列在 y=226/241/256/…/331/345 处有横线 → 8 行，行高 15。
- *   列表框本身 x 13..181。
- */
-export const TRACK_LIST = { x: 16, y: 226, w: 162, rowH: 15, rows: 8 } as const;
-
-/**
- * 右上角三个黄按钮的可点区域。
- *
- * ⚠️ 量法：在黄块图（`YELLOW_IMAGE`）内竖切 x=110、横切 y=31，
- *   得三块 62..157 × 14..46 / 68..100 / 119..151；再加上 `YELLOW_AT`。
- */
-export const SIDE_BUTTON_RECTS = [0, 1, 2].map((i) => ({
-  x: YELLOW_AT.x + 62,
-  y: YELLOW_AT.y + [14, 68, 119][i]!,
-  w: 96,
-  h: 33,
-}));
-
-/**
- * 底部两个按钮。
- *
- * ⚠️ 按钮面是 62×30（图 3/4），文字在按钮内的 (30,14)
- *   @source VA 0x00411d74 `push 0x1e / push 0xe`。
- *   文字在对话框里的 x/y 是表里的 (224,328)/(296,328)，倒推按钮左上角
- *   = 文字位置 − (31,15)。
- */
-export const BOTTOM_BUTTONS = {
-  cancel: { x: 224 - 31, y: 328 - 14 - 1, w: 62, h: 30 },
-  ok: { x: 296 - 31, y: 328 - 14 - 1, w: 62, h: 30 },
+/** 四条灯的贴图位置（＝各自控件的 left/top）@source 0x474c22 / c32 / c42 / c52 */
+export const LAMP_AT = {
+  animation: { x: 98, y: 50 },
+  music: { x: 66, y: 82 },
+  sound: { x: 66, y: 114 },
+  autoSave: { x: 98, y: 146 },
 } as const;
+/** 視窗三选一的灯：x 固定 218（`x + 0xda`），y 查表 `0x474c92` = 218 / 250 / 281 */
+export const WINDOW_LAMP = { x: 218, y: [218, 250, 281] as const };
+
+/** 樂曲列表的行几何 @source `fcn_0040fc57` */
+export const TRACK_ROWS = {
+  /** 行高与行数 */
+  rowH: 15,
+  rows: 8,
+  /** 反白条：(x+0x12, y+0xe2+15i)，159×14，纯红 `0xff0000` */
+  x: 18,
+  y: 226,
+  w: 159,
+  h: 14,
+  /** 行文字：(x+0x1a, y+0xe9+15i)，对齐码 5 */
+  textX: 26,
+  textDY: 7,
+} as const;
+
+/** 字号（原版 `rich4_create_font` 的 size 参数） */
+export const FONT_SIZE = { label: 15, big: 20, list: 12 } as const;
 
 // ============================================================
 //  状态
@@ -234,7 +301,13 @@ export interface GameOptions {
   autoSave: boolean;
   /** 右下角那块显示什么 0/1/2 */
   windowView: number;
-  /** 第几首配乐 0..7 —— `Midi.txt` 的前 8 条正好是这 8 首 */
+  /**
+   * 第几首配乐 0..7 —— `Midi.txt` 的前 8 条正好是这 8 首。
+   *
+   * ⚠️ 原版**没有**把这个存进 cfg：列表里反白的那一行是「当前正在放的那首」
+   *   （`fcn_00454f5b()` 问播放器），点一下**立刻换曲**，取消也不回退。
+   *   本引擎多存一个字段只是为了知道自己点了哪首；反白仍以正在放的那首为准。
+   */
   track: number;
 }
 
@@ -258,16 +331,24 @@ export function volumeOf(level: number): number {
 // ============================================================
 
 export type OptionsHit =
-  | { kind: 'bar'; field: 'speed' | 'music' | 'sound'; value: number }
-  | { kind: 'mark'; field: 'animation' | 'music' | 'sound' | 'autoSave' }
-  | { kind: 'window'; value: number }
-  | { kind: 'track'; value: number }
-  | { kind: 'side'; index: number }
-  | { kind: 'ok' }
-  | { kind: 'cancel' };
+  | { kind: 'bar'; ctrl: number; field: 'speed' | 'music' | 'sound'; value: number }
+  | { kind: 'lamp'; ctrl: number; field: 'animation' | 'music' | 'sound' | 'autoSave' }
+  | { kind: 'window'; ctrl: number; value: number }
+  | { kind: 'track'; ctrl: number; value: number }
+  | { kind: 'side'; ctrl: number; index: number }
+  | { kind: 'cancel'; ctrl: number }
+  | { kind: 'ok'; ctrl: number };
 
-function inRect(x: number, y: number, r: { x: number; y: number; w: number; h: number }): boolean {
+function inRect(x: number, y: number, r: Rect): boolean {
   return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+/** 对话框内坐标 → 控件号；`null` = 没点中任何控件 */
+export function hitControl(x: number, y: number): number | null {
+  for (let i = 0; i < CONTROL_RECTS.length; i++) {
+    if (inRect(x, y, CONTROL_RECTS[i]!)) return i;
+  }
+  return null;
 }
 
 /** 舞台坐标 → 这一屏的命中；`null` 表示没点中任何控件 */
@@ -275,47 +356,71 @@ export function hitOptions(sx: number, sy: number): OptionsHit | null {
   const x = sx - DIALOG.x;
   const y = sy - DIALOG.y;
   if (x < 0 || y < 0 || x >= DIALOG.w || y >= DIALOG.h) return null;
+  const ctrl = hitControl(x, y);
+  if (ctrl === null) return null;
+  return controlHit(ctrl, x, y);
+}
 
-  for (const [field, bar] of Object.entries(BARS) as [keyof typeof BARS, { x: number; y: number; cells: number }][]) {
-    for (let i = 0; i < bar.cells; i++) {
-      const r = { x: bar.x + i * BAR_CELL.pitch, y: bar.y, w: BAR_CELL.w, h: BAR_CELL.h };
-      if (inRect(x, y, r)) return { kind: 'bar', field, value: i };
-    }
+/** 控件号 → 语义命中（按下/松手都走这里） */
+export function controlHit(ctrl: number, x: number, y: number): OptionsHit | null {
+  switch (ctrl) {
+    case CONTROL.SPEED_BAR:
+      // @source fcn_00410537：(relx − 81) >> 4，不 +1
+      return { kind: 'bar', ctrl, field: 'speed', value: clamp(Math.floor((x - 81) / 16), 0, 2) };
+    case CONTROL.MUSIC_BAR:
+      // @source fcn_00410572：(relx − 89) >> 4 再 +1 → 1..4（0 只能靠灯关）
+      return { kind: 'bar', ctrl, field: 'music', value: clamp(Math.floor((x - 89) / 16) + 1, 1, 4) };
+    case CONTROL.SOUND_BAR:
+      // @source fcn_004105b9：同上
+      return { kind: 'bar', ctrl, field: 'sound', value: clamp(Math.floor((x - 89) / 16) + 1, 1, 4) };
+    case CONTROL.SIDE_0:
+    case CONTROL.SIDE_1:
+    case CONTROL.SIDE_2:
+      return { kind: 'side', ctrl, index: ctrl - CONTROL.SIDE_0 };
+    case CONTROL.TRACK_LIST:
+      // @source fcn_00410668：(rely − 0xe2) / 0xf
+      return { kind: 'track', ctrl, value: clamp(Math.floor((y - TRACK_ROWS.y) / TRACK_ROWS.rowH), 0, 7) };
+    case CONTROL.CANCEL:
+      return { kind: 'cancel', ctrl };
+    case CONTROL.OK:
+      return { kind: 'ok', ctrl };
+    case CONTROL.ANIM_LAMP:
+      return { kind: 'lamp', ctrl, field: 'animation' };
+    case CONTROL.MUSIC_LAMP:
+      return { kind: 'lamp', ctrl, field: 'music' };
+    case CONTROL.SOUND_LAMP:
+      return { kind: 'lamp', ctrl, field: 'sound' };
+    case CONTROL.AUTOSAVE_LAMP:
+      return { kind: 'lamp', ctrl, field: 'autoSave' };
+    case CONTROL.WINDOW_0:
+    case CONTROL.WINDOW_1:
+    case CONTROL.WINDOW_2:
+      // @source fcn_004107f3：`[0x474d74] − 0xd`
+      return { kind: 'window', ctrl, value: ctrl - CONTROL.WINDOW_0 };
+    default:
+      return null;
   }
-  for (const [field, m] of Object.entries(MARKS) as [keyof typeof MARKS, { x: number; y: number }][]) {
-    if (inRect(x, y, { ...m, ...MARK_SIZE })) return { kind: 'mark', field };
-  }
-  for (let i = 0; i < WINDOW_MARKS.count; i++) {
-    const r = { x: WINDOW_MARKS.x, y: WINDOW_MARKS.y0 + i * WINDOW_MARKS.pitch, ...MARK_SIZE };
-    // 文字也可点：整行都算
-    if (inRect(x, y, { x: r.x, y: r.y, w: 130, h: MARK_SIZE.h })) return { kind: 'window', value: i };
-  }
-  for (let i = 0; i < TRACK_LIST.rows; i++) {
-    const r = { x: TRACK_LIST.x, y: TRACK_LIST.y + i * TRACK_LIST.rowH, w: TRACK_LIST.w, h: TRACK_LIST.rowH };
-    if (inRect(x, y, r)) return { kind: 'track', value: i };
-  }
-  for (let i = 0; i < SIDE_BUTTON_RECTS.length; i++) {
-    if (inRect(x, y, SIDE_BUTTON_RECTS[i]!)) return { kind: 'side', index: i };
-  }
-  if (inRect(x, y, BOTTOM_BUTTONS.ok)) return { kind: 'ok' };
-  if (inRect(x, y, BOTTOM_BUTTONS.cancel)) return { kind: 'cancel' };
-  return null;
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
 }
 
 /**
  * 把一次点击落到取值上。
  *
- * ⚠️ 音樂/音效的标记是「0 = 關」的开关：关掉记住原来的档位，再开回来
- *   （原版怎么做没查证，见 `MARKS` 的注释）。
+ * ★ 樂曲那一项**不动 `GameOptions.track` 以外的任何东西**：原版点一下就直接换曲，
+ *   所以调用方（main.ts）拿到 `kind === 'track'` 时要立刻起播。
  */
 export function applyOptionsHit(o: GameOptions, hit: OptionsHit): GameOptions {
   switch (hit.kind) {
     case 'bar':
       return { ...o, [hit.field]: hit.value };
-    case 'mark':
+    case 'lamp':
       if (hit.field === 'animation') return { ...o, animation: !o.animation };
       if (hit.field === 'autoSave') return { ...o, autoSave: !o.autoSave };
-      return { ...o, [hit.field]: o[hit.field] === 0 ? 3 : 0 };
+      // @source fcn_0041076e / fcn_0041079c：0 ↔ 4（不是 0 ↔ 3）
+      return { ...o, [hit.field]: o[hit.field] === 0 ? 4 : 0 };
     case 'window':
       return { ...o, windowView: hit.value };
     case 'track':
@@ -332,100 +437,148 @@ export function applyOptionsHit(o: GameOptions, hit: OptionsHit): GameOptions {
 /** 取一张 `Data.mkf` 资源 3 的图；未解码好时返回 null（调用方会被重绘补上） */
 export type OptionsSpriteFn = (index: number, colorKeyBlack?: boolean) => Sprite | null;
 
-const TEXT_FONT = '14px "PingFang TC", "Microsoft JhengHei", sans-serif';
+const FONT = '"PingFang TC", "Microsoft JhengHei", sans-serif';
 const TEXT_COLOR = '#101010';
+/** 列表里的字：白字黑边 @source `create_font(0xc, 0xf0f0f0, 0x101010, …)` */
+const LIST_FILL = '#f0f0f0';
+const OUTLINE = '#101010';
+/** 选中行的红底 @source `fcn_004561be(…, 0xff0000)` */
+const TRACK_SELECTED = '#ff0000';
+
+function blit(
+  ctx: CanvasRenderingContext2D,
+  sprite: OptionsSpriteFn,
+  index: number,
+  x: number,
+  y: number,
+): void {
+  const s = sprite(index, KEYED_IMAGES.includes(index));
+  if (s !== null) ctx.drawImage(s.bitmap, x, y);
+}
+
+/** 白字黑边（原版是点阵字自带描边） */
+function outlinedText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number): void {
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = OUTLINE;
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = LIST_FILL;
+  ctx.fillText(text, x, y);
+}
 
 export function drawOptions(
   ctx: CanvasRenderingContext2D,
   o: GameOptions,
-  /** 右上角三个按钮用哪一组文字（0 標題頁 / 1 遊戲中） */
+  /** 右上角三个钮用哪一组（0 標題頁 / 1 遊戲中） */
   variant: number,
-  hot: OptionsHit | null,
+  /** 当前按住不放的控件号（`null` = 没按）；原版**没有悬停高亮** */
+  pressed: number | null,
+  /** 正在放的那首（反白那一行）@source `fcn_00454f5b()` */
+  playingTrack: number,
   sprite: OptionsSpriteFn,
 ): void {
-  const bg = sprite(OPTIONS_BG);
   ctx.save();
   ctx.translate(DIALOG.x, DIALOG.y);
 
-  if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0);
+  // ——— 底图 0：不抠黑 ———
+  const panel = sprite(IMG.PANEL, false);
+  if (panel !== null) ctx.drawImage(panel.bitmap, 0, 0);
   else {
     ctx.fillStyle = '#6b7b6b';
     ctx.fillRect(0, 0, DIALOG.w, DIALOG.h);
   }
-  const yellow = sprite(YELLOW_IMAGE);
-  if (yellow !== null) ctx.drawImage(yellow.bitmap, YELLOW_AT.x, YELLOW_AT.y);
 
-  // ——— 进度条：已选档位之前的格子点亮 ———
-  for (const [field, bar] of Object.entries(BARS) as [keyof typeof BARS, { x: number; y: number; cells: number }][]) {
-    const value = o[field];
-    for (let i = 0; i < bar.cells; i++) {
-      if (i > value) continue;
-      ctx.fillStyle = i === value ? 'rgba(255,225,74,0.85)' : 'rgba(255,225,74,0.35)';
-      ctx.fillRect(bar.x + i * BAR_CELL.pitch, bar.y, BAR_CELL.w, BAR_CELL.h);
-    }
-  }
+  // ——— 右上角按钮组：10 / 11 按 variant 选 ———
+  blit(ctx, sprite, variant === 0 ? IMG.SIDE_TITLE : IMG.SIDE_GAME, SIDE_ART_AT.x, SIDE_ART_AT.y);
 
-  // ——— 四个小标记 ———
-  const mark = (x: number, y: number, on: boolean): void => {
-    const s = sprite(on ? MARK_ON : MARK_OFF, true);
-    if (s !== null) ctx.drawImage(s.bitmap, x, y);
-    else {
-      ctx.fillStyle = on ? '#c64a31' : '#efefe7';
-      ctx.fillRect(x + 2, y + 2, MARK_SIZE.w - 4, MARK_SIZE.h - 4);
-    }
-  };
-  mark(MARKS.animation.x, MARKS.animation.y, o.animation);
-  mark(MARKS.music.x, MARKS.music.y, o.music > 0);
-  mark(MARKS.sound.x, MARKS.sound.y, o.sound > 0);
-  mark(MARKS.autoSave.x, MARKS.autoSave.y, o.autoSave);
-  for (let i = 0; i < WINDOW_MARKS.count; i++) {
-    mark(WINDOW_MARKS.x, WINDOW_MARKS.y0 + i * WINDOW_MARKS.pitch, o.windowView === i);
-  }
+  // ——— 三条进度条：点亮格 = 图 5，不抠黑，逐格 16 步进 ———
+  // @source fcn_0040fd49：速度 `esi <= 值`（0..值 共 值+1 格）；
+  //                       音樂/音效 `esi < 值`（0..值−1 共 值 格）
+  drawBar(ctx, sprite, BAR_AT.speed, o.speed + 1);
+  drawBar(ctx, sprite, BAR_AT.music, o.music);
+  drawBar(ctx, sprite, BAR_AT.sound, o.sound);
+
+  // ——— 四处灯：亮着才贴图 9（不亮时底图的暗红灯座自己就够） ———
+  lamp(ctx, sprite, LAMP_AT.animation, o.animation);
+  lamp(ctx, sprite, LAMP_AT.music, o.music > 0);
+  lamp(ctx, sprite, LAMP_AT.sound, o.sound > 0);
+  lamp(ctx, sprite, LAMP_AT.autoSave, o.autoSave);
+
+  // ——— 視窗三选一的灯 ———
+  const wy = WINDOW_LAMP.y[clamp(o.windowView, 0, 2)]!;
+  blit(ctx, sprite, IMG.LAMP, WINDOW_LAMP.x, wy);
 
   // ——— 樂曲列表 ———
-  ctx.font = '12px "PingFang TC", "Microsoft JhengHei", sans-serif';
+  ctx.font = `${FONT_SIZE.list}px ${FONT}`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  for (let i = 0; i < TRACK_LIST.rows; i++) {
-    const y = TRACK_LIST.y + i * TRACK_LIST.rowH;
-    if (o.track === i) {
-      ctx.fillStyle = 'rgba(255,225,74,0.55)';
-      ctx.fillRect(TRACK_LIST.x, y, TRACK_LIST.w, TRACK_LIST.rowH);
+  for (let i = 0; i < TRACK_ROWS.rows; i++) {
+    const rowY = TRACK_ROWS.y + i * TRACK_ROWS.rowH;
+    if (i === playingTrack) {
+      ctx.fillStyle = TRACK_SELECTED;
+      ctx.fillRect(TRACK_ROWS.x, rowY, TRACK_ROWS.w, TRACK_ROWS.h);
     }
-    ctx.fillStyle = TEXT_COLOR;
-    ctx.fillText(TRACK_NAMES[i] ?? '', TRACK_LIST.x + 6, y + TRACK_LIST.rowH / 2);
+    outlinedText(ctx, TRACK_NAMES[i] ?? '', TRACK_ROWS.textX, rowY + TRACK_ROWS.textDY);
   }
 
-  // ——— 底部两个按钮 ———
-  for (const [kind, r] of Object.entries(BOTTOM_BUTTONS)) {
-    const down = hot?.kind === kind;
-    const face = sprite(down ? BUTTON_FACE_DOWN : BUTTON_FACE);
-    if (face !== null) ctx.drawImage(face.bitmap, r.x, r.y);
-  }
-
-  // ——— 文字 ———
-  ctx.font = TEXT_FONT;
+  // ——— 文字：先 10 条（15px），再取消/確定（20px），再右上角三条（20px） ———
+  // ★ 上面列表那段把 font 改成了 12px，这里必须**先设回来** ——
+  //   原版是每段各自 `rich4_create_font` 一次，不存在"沿用上一段的字号"。
+  ctx.font = `${FONT_SIZE.label}px ${FONT}`;
   ctx.fillStyle = TEXT_COLOR;
   ctx.textBaseline = 'middle';
-  for (const l of OPTION_LABELS) {
-    ctx.textAlign = l.align === 2 ? 'center' : 'left';
+  ctx.textAlign = 'left';
+  for (const l of OPTION_LABELS.slice(0, 10)) {
     ctx.fillText(l.text, l.x, l.y);
   }
-
-  // 右上角三个按钮的文字：表里给的是**黄块内**坐标，故要加上黄块的位置
-  ctx.textAlign = 'center';
-  const side = SIDE_BUTTONS[variant] ?? SIDE_BUTTONS[0]!;
-  const SIDE_TEXT_Y = [31, 85, 136];
-  for (let i = 0; i < side.length; i++) {
-    if (hot?.kind === 'side' && hot.index === i) {
-      const r = SIDE_BUTTON_RECTS[i]!;
-      ctx.fillStyle = 'rgba(255,225,74,0.35)';
-      ctx.fillRect(r.x, r.y, r.w, r.h);
-      ctx.fillStyle = TEXT_COLOR;
-    }
-    ctx.fillText(side[i]!, YELLOW_AT.x + 108, YELLOW_AT.y + SIDE_TEXT_Y[i]!);
+  ctx.font = `${FONT_SIZE.big}px ${FONT}`;
+  for (const l of OPTION_LABELS.slice(10)) {
+    ctx.textAlign = 'center';
+    ctx.fillText(l.text, l.x, l.y);
   }
+  const side = SIDE_BUTTONS[variant] ?? SIDE_BUTTONS[0]!;
+  ctx.textAlign = 'center';
+  for (let i = 0; i < side.length; i++) {
+    ctx.fillText(side[i]!, SIDE_ART_AT.x + SIDE_TEXT.x, SIDE_ART_AT.y + SIDE_TEXT.y[i]!);
+  }
+
+  // ——— 按下时的钮面：**画在字之后**，原版就是这样把字盖掉的 ———
+  if (pressed === CONTROL.CANCEL) blitRect(ctx, sprite, IMG.CANCEL_DOWN, CONTROL.CANCEL);
+  if (pressed === CONTROL.OK) blitRect(ctx, sprite, IMG.OK_DOWN, CONTROL.OK);
+  if (pressed === CONTROL.SIDE_0 || pressed === CONTROL.SIDE_1 || pressed === CONTROL.SIDE_2) {
+    blitRect(ctx, sprite, IMG.SIDE_DOWN, pressed);
+  }
+
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
   ctx.restore();
+}
+
+function drawBar(
+  ctx: CanvasRenderingContext2D,
+  sprite: OptionsSpriteFn,
+  at: { x: number; y: number },
+  cells: number,
+): void {
+  for (let i = 0; i < cells; i++) {
+    blit(ctx, sprite, IMG.CELL, at.x + i * CELL.pitch, at.y);
+  }
+}
+
+function lamp(
+  ctx: CanvasRenderingContext2D,
+  sprite: OptionsSpriteFn,
+  at: { x: number; y: number },
+  on: boolean,
+): void {
+  if (on) blit(ctx, sprite, IMG.LAMP, at.x, at.y);
+}
+
+function blitRect(
+  ctx: CanvasRenderingContext2D,
+  sprite: OptionsSpriteFn,
+  index: number,
+  ctrl: number,
+): void {
+  const r = CONTROL_RECTS[ctrl]!;
+  blit(ctx, sprite, index, r.x, r.y);
 }

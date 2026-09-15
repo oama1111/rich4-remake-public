@@ -9,7 +9,7 @@
 
 import type { GameState } from '@rich4/core';
 import { CHARACTERS } from '@rich4/data';
-import { TWEEN_FRAME_MS, framesFor, tweenFrameCount } from './tween.ts';
+import { framesFor, tweenTickCount } from './tween.ts';
 import type { MapNode, Rich4Map } from '@rich4/core';
 import { VIEW_CENTER, VIEW_COUNT, VIEW_SPAN, projectCell, projectWorld } from '@rich4/data';
 import type { Sprite, SpriteCache } from './assets.ts';
@@ -108,6 +108,15 @@ export interface RenderInput {
   groundOffset?: { x: number; y: number };
   /** 正被按下的工具栏按钮下标 */
   pressedTool?: number | null;
+  /**
+   * 强制角色摆哪一组图（`CHARACTER_POSE` 的值）；不给就按 phase 推。
+   *
+   * ★ 掷骰那一段原版把 state 设成「掷骰」，角色一直摆**手持骰子**那一组
+   *   （`fcn_0040d7c4` state 2 → `0x498ec4`），直到滚骰 + 500 ms 定格走完、
+   *   状态切成「走子」为止。`state.phase` 在掷骰时会先变成 `moving`，
+   *   故这里必须能盖过去。
+   */
+  characterPose?: number | null;
   /**
    * 棋盘区的尺寸。
    *
@@ -222,6 +231,50 @@ export function characterCamera(x: number, y: number, view = 0): Camera {
   return { x: 0, y: 0, scale: 1, mode: 'character', view: view % VIEW_COUNT, tileX: x >> 5, tileY: y >> 5 };
 }
 
+/**
+ * 绘制槽的**类别** —— 排序键的低 4 位。
+ *
+ * @source `fcn_0040829d`（VA 0x0040829d）构建绘制槽清单时，
+ *   排序键写成 `(屏幕Y & 0xfff) << 4 | 类别`；建筑那一段不 or（= 0），
+ *   玩家那一段 `cmp ebx,[0x49910c]` 决定 0xc/0xd，梦游标记 0xe/0xf。
+ */
+export const DRAW_CLASS = {
+  /**
+   * 建筑（住宅/设施/企业/景观）与地面物件：原版这一段**不 or**，低 4 位就是 0。
+   * ⇒ 与玩家同屏幕 Y 时，建筑先画、人物后画（人物盖住建筑）。
+   */
+  building: 0x0,
+  /** 玩家棋子：非当前玩家 */
+  player: 0xc,
+  /** 玩家棋子：当前玩家 —— 同 Y 时压在别人上面，免得看不见轮到谁 */
+  currentPlayer: 0xd,
+} as const;
+
+/**
+ * 原版绘制槽的排序键。
+ *
+ * @source VA 0x004097cf 起：
+ * ```asm
+ * edx = 屏幕Y ; shl edx,4 ; and edx,0xfff0   ; 屏幕 Y 的低 12 位左移 4，低 4 位留给类别
+ * add edx, 槽号<<16                           ; 高 16 位记槽号，排序后 shr 16 取回
+ * or  byte [..], 类别
+ * qsort(0x48a44c, 槽数, 4, _compare_int16_lt) ; VA 0x004079f9：只比**低 16 位有符号 int16**
+ * ```
+ * ⇒ **按屏幕 Y 升序**（等距视角的画家顺序），同 Y 时按类别分先后。
+ *
+ * ⚠️ 不是按世界 y 排：带视角旋转与透视时，屏幕 Y 与世界 y 的序**不等价**。
+ */
+export function drawKey(screenY: number, klass: number): number {
+  const v = (((screenY & 0xfff) << 4) | klass) & 0xffff;
+  return v >= 0x8000 ? v - 0x10000 : v; // 原版按 int16 比
+}
+
+/** 一条待画的绘制槽：先按 `key` 排序，再依次 `paint` */
+interface DrawSlot {
+  key: number;
+  paint: () => void;
+}
+
 export class BoardRenderer {
   readonly #ctx: CanvasRenderingContext2D;
   readonly #sprites: SpriteCache;
@@ -231,22 +284,33 @@ export class BoardRenderer {
   /** 有新精灵解码完成时置位，驱动下一帧重绘 */
   #dirty = false;
   /**
-   * 行走动画的帧号 —— 由宿主按动画节拍推进。
+   * 行走动画的帧号 —— **一次 tick 进一帧**，走满一轮（每向帧数）回零。
    *
-   * ⚠️ 原版每个玩家各有一份（`[0x498ea3 + player*0x34]`），换算成帧率的那段
-   *   没解出来。本引擎先共用一个计数器：同一时刻只有一个人在走，看不出差别。
+   * @source `fcn_0040c05c` 尾部 VA 0x0040c751：
+   * ```asm
+   * inc byte [0x498ea3 + 玩家号*0x34]      ; ★ 每 tick 一帧，不是每格一帧
+   * frames = (player.sprites[1][slot] → [+4]) >> 3
+   * if ([0x498ea3] == frames) [0x498ea3] = 0
+   * ```
+   * ⚠️ 原版每个玩家各有一份（`[0x498ea3 + player*0x34]`），本引擎先共用一个
+   *   计数器：同一时刻只有一个人在走，看不出差别。
    */
   #walkFrame = 0;
   /**
-   * 正在播的走子补间 —— 世界坐标的起终点 + 起始时刻。
+   * 正在播的走子补间 —— 世界坐标的起终点 + 起始时刻 + 这一格几个 tick。
    * ★ 纯表现：不进 state，丢了只是少一段平滑（C-DET-4）。
    */
   #walk: {
     player: number;
     from: { x: number; y: number };
     to: { x: number; y: number };
-    frames: number;
+    /** 这一格要播几个 tick（@source `fcn_0040c05c` 的 `N`） */
+    ticks: number;
+    /** 一个 tick 多少毫秒（见 `tick.ts`） */
+    tickMs: number;
     start: number;
+    /** 已经推过几次「走路帧」——渲染一帧可能跨多个 tick */
+    ticked: number;
   } | null = null;
   /**
    * 解码落地时叫一声。
@@ -278,19 +342,23 @@ export class BoardRenderer {
   /** 画出节点连线与落点菱形 —— **调试用**，原版没有 */
   debugNodes = false;
 
-  /** 推进一格行走动画 */
-  advanceWalk(): void {
-    this.#walkFrame = (this.#walkFrame + 1) & 0xff;
+  /** 推进一帧行走动画 —— **一次 tick 调一次**（不是一格一次） */
+  advanceWalk(steps = 1): void {
+    this.#walkFrame = (this.#walkFrame + steps) & 0xff;
   }
 
   /**
    * 开始播一步的补间（世界坐标起终点）。
    *
-   * @source VA 0x0040e669 `_rich4_animate_object`：帧数 = `trunc(屏幕距离 × 0.125) + 1`、
-   *   线性等分、每帧 24 ms（细节与出处见 `tween.ts`）。
-   *   ★ 「動畫過程」关掉时调用方根本不调那个函数 —— 这里用 `enabled` 表达同一件事。
+   * @source `fcn_0040c05c`：tick 数 = `trunc(屏幕距离 / 走子速度)`，
+   *   线性等分、**一个 tick 一帧**（细节与出处见 `tween.ts`）。
+   *   ★ 「動畫過程」关掉时原版根本不播 —— 这里用 `enabled` 表达同一件事。
    *
-   * 帧数按**屏幕**距离算，故要传当前的镜头与视口（都来自调用方）。
+   * tick 数按**屏幕**距离算，故要传当前的镜头与视口（都来自调用方）。
+   *
+   * @param traffic 交通方式（0 走路 / 1 機車 / 2 汽車 / 3 船）→ 速度 [8,12,16,8] 像素/tick
+   * @param special 原版 `slot != 0 || (player.flags & 0x30)` 那一支
+   * @param tickMs  一个 tick 多少毫秒（见 `tick.ts`）
    */
   startWalk(
     player: number,
@@ -299,6 +367,9 @@ export class BoardRenderer {
     enabled: boolean,
     camera: Camera,
     vp: { w: number; h: number },
+    traffic = 0,
+    special = false,
+    tickMs = 20,
     now = performance.now(),
   ): void {
     if (!enabled) {
@@ -307,9 +378,9 @@ export class BoardRenderer {
     }
     const a = worldToScreen(from.x, from.y, camera, vp);
     const b = worldToScreen(to.x, to.y, camera, vp);
-    const frames =
-      a === null || b === null ? 0 : tweenFrameCount(b.x - a.x, b.y - a.y);
-    this.#walk = { player, from, to, frames, start: now };
+    const ticks =
+      a === null || b === null ? 1 : tweenTickCount(b.x - a.x, b.y - a.y, traffic, special);
+    this.#walk = { player, from, to, ticks, tickMs, start: now, ticked: 0 };
     this.#dirty = true;
   }
 
@@ -317,7 +388,7 @@ export class BoardRenderer {
   walkDone(now = performance.now()): boolean {
     const w = this.#walk;
     if (w === null) return true;
-    return now - w.start >= w.frames * TWEEN_FRAME_MS;
+    return now - w.start >= w.ticks * w.tickMs;
   }
 
   /** 丢掉没播完的补间（读档、换屏时用） */
@@ -328,7 +399,7 @@ export class BoardRenderer {
   /** 上一条补间要播多久（毫秒）—— 宿主拿它当走一步的节拍 */
   lastWalkMs(): number {
     const w = this.#walk;
-    return w === null ? 0 : w.frames * TWEEN_FRAME_MS;
+    return w === null ? 0 : w.ticks * w.tickMs;
   }
 
   /**
@@ -336,6 +407,9 @@ export class BoardRenderer {
    *
    * ★ 插值走 `framesFor`（纯函数，`tween.ts` 里有单测）——**屏幕坐标**上插值，
    *   与 exe 一致（它就是把两个屏幕端点等分）。
+   *
+   * ★ 顺带把走路帧按**已经过去的 tick 数**补齐 —— 与 exe 一样，
+   *   补间前进一 tick、走路帧就进一帧（`fcn_0040c05c` 同一处）。
    */
   #walkScreen(
     playerIndex: number,
@@ -348,9 +422,13 @@ export class BoardRenderer {
     const a = worldToScreen(w.from.x, w.from.y, cam, vp);
     const b = worldToScreen(w.to.x, w.to.y, cam, vp);
     if (a === null || b === null) return null;
-    const frames = framesFor(a, b);
-    if (frames.length === 0) return null;
-    const k = Math.min(frames.length, Math.floor((now - w.start) / TWEEN_FRAME_MS) + 1);
+
+    const k = Math.min(w.ticks, Math.floor((now - w.start) / w.tickMs) + 1);
+    if (k > w.ticked) {
+      this.#walkFrame = (this.#walkFrame + (k - w.ticked)) & 0xff;
+      w.ticked = k;
+    }
+    const frames = framesFor(a, b, w.ticks);
     return frames[k - 1] ?? null;
   }
 
@@ -423,10 +501,27 @@ export class BoardRenderer {
     //   底图与建筑图素本身。先前那两层是解地图时的调试辅助，留着就不是复刻了。
     //   仍然保留代码，`?debug=nodes` 时才画，排错时还用得上。
     if (this.debugNodes) this.#drawEdges(map, camera, vp);
+
+    // ★★ 原版的三段式（`fcn_0040829d`，Q-DRAW-1）：
+    //   ① 地砖（上面 #drawGroundProjected，直接贴底面，不排队）
+    //   ② 节点装饰（`node.decorIndex` 非 0 的，直接贴 —— 恒在地砖之上、立体物之下）
+    //   ③ **一条统一的绘制槽清单**：建筑、玩家棋子、梦游标记……全塞进同一条，
+    //      按屏幕 Y 排完序再依次贴。
+    //
+    //   ⚠️ 别退回「先建筑后人物」两层：那样人物永远压在所有建筑上，
+    //      高大建筑就再也挡不住从它背后走过的棋子了（需求方 2026-09-15 指出的症状）。
     this.#drawDecor(map, camera, vp);
-    this.#drawBuildings(map, state, camera, vp);
+
+    const slots: DrawSlot[] = [
+      ...this.#buildingSlots(map, state, camera, vp),
+      ...this.#playerSlots(map, state, camera, vp, input.characterPose ?? null),
+    ];
+    // 原版用 qsort 比低 16 位 int16；这里用稳定排序，键相同时保持压入顺序（不影响观感）
+    slots.sort((a, b) => a.key - b.key);
+    for (const s of slots) s.paint();
+
+    // 调试层画在清单之上（它只是排错用的参考图形，不该被建筑挡住）
     if (this.debugNodes) this.#drawNodes(map, state, camera, hoverNode, vp);
-    this.#drawPlayers(map, state, camera, vp);
   }
 
   /**
@@ -557,25 +652,25 @@ export class BoardRenderer {
   }
 
   /**
-   * 已开发地块上的建筑。
+   * 已开发地块上的建筑 —— 收成绘制槽交给调用方统一排序（见 `draw()` 的 ★★）。
    *
    * 资源号与图号的由来见 assets.ts 的 `buildingResource` / `buildingImageIndex`
    * ——都是从原版加载与绘制代码直接读出来的。
    *
-   * ⚠️ 按 y 排序后再画：等距视角下靠后的建筑要先画，否则近处的房子
-   *   会被远处的盖住。
+   * ⚠️ 排序键是**屏幕 Y**（`drawKey`），不是世界 y。以前按世界 y 排，
+   *   视角一转就对不上原版的画家顺序了。
    */
-  #drawBuildings(
+  #buildingSlots(
     map: Rich4Map,
     state: GameState,
     cam: Camera,
     vp: { w: number; h: number },
-  ): void {
+  ): DrawSlot[] {
     const ctx = this.#ctx;
     /** 一件立体物：资源、图号、落点、可选的归属换色 */
     const items: {
-      y: number;
       x: number;
+      y: number;
       res: number;
       img: number;
       ring?: readonly [number, number, number];
@@ -655,23 +750,28 @@ export class BoardRenderer {
       if (res !== null) items.push({ x: l.x, y: l.y, res, img: 0 });
     }
 
-    // ★ 等距视角下靠后的先画，否则近处的会被远处的盖住
-    items.sort((a, b) => a.y - b.y);
-
     const k = cam.mode === 'map' ? cam.scale : 1;
+    const slots: DrawSlot[] = [];
     for (const it of items) {
-      const sp = this.#sprite('map.mkf', it.res, it.img, true, it.ring);
-      if (sp === null) continue;
       const p = worldToScreen(it.x, it.y, cam, vp);
+      // 越出 29×29 窗口的格子原版直接跳过不画，这里保持一致
       if (p === null) continue;
-      ctx.drawImage(
-        sp.bitmap,
-        p.x - sp.anchorX * k,
-        p.y - sp.anchorY * k,
-        sp.width * k,
-        sp.height * k,
-      );
+      slots.push({
+        key: drawKey(p.y, DRAW_CLASS.building),
+        paint: () => {
+          const sp = this.#sprite('map.mkf', it.res, it.img, true, it.ring);
+          if (sp === null) return;
+          ctx.drawImage(
+            sp.bitmap,
+            p.x - sp.anchorX * k,
+            p.y - sp.anchorY * k,
+            sp.width * k,
+            sp.height * k,
+          );
+        },
+      });
     }
+    return slots;
   }
 
   /**
@@ -729,13 +829,22 @@ export class BoardRenderer {
     }
   }
 
-  #drawPlayers(
+  /**
+   * 玩家棋子 —— 同样收成绘制槽，与建筑混在一条清单里排（见 `draw()` 的 ★★）。
+   *
+   * @source 类别 0xc/0xd（`fcn_0040829d` 的 `cmp ebx,[0x49910c]`）：当前玩家同 Y 时压在上面。
+   */
+  #playerSlots(
     map: Rich4Map,
     state: GameState,
     cam: Camera,
     vp: { w: number; h: number },
-  ): void {
+    poseOverride: number | null,
+  ): DrawSlot[] {
     const ctx = this.#ctx;
+    const slots: DrawSlot[] = [];
+    /** 原版绘制槽的排序键（`0x48a44c`） */
+    const nowMs = performance.now();
     // 同格多人时错开，否则棋子会完全重叠
     const perNode = new Map<number, number>();
     for (const pl of state.players) {
@@ -747,8 +856,7 @@ export class BoardRenderer {
 
       // ★ 走子补间（T-046）：棋子按插值位置画，而不是直接落在格心
       const p =
-        this.#walkScreen(pl.index, cam, vp, performance.now()) ??
-        worldToScreen(node.x, node.y, cam, vp);
+        this.#walkScreen(pl.index, cam, vp, nowMs) ?? worldToScreen(node.x, node.y, cam, vp);
       if (p === null) continue;
       const k = cam.mode === 'map' ? cam.scale : 1;
       const off = seen * Math.max(4, k * 5);
@@ -761,7 +869,10 @@ export class BoardRenderer {
       const moving = state.phase === 'moving' && pl.index === state.currentPlayer;
       // ★ 图组按**交通方式**取（走路/機車/汽車/船），组内三张 = 站/走/手持骰子
       //   @source VA 0x0040bbd8：edi = 0x80 + 角色×21 + 3×traffic_method
-      const pose = moving ? CHARACTER_POSE.walk : CHARACTER_POSE.stand;
+      //   ★ 掷骰段由调用方盖成「手持骰子」那一组（`characterPose`）——
+      //     原版整段（预动作 + 滚骰 + 500 ms 定格）都停在那一组上。
+      const override = poseOverride !== null && pl.index === state.currentPlayer ? poseOverride : null;
+      const pose = override ?? (moving ? CHARACTER_POSE.walk : CHARACTER_POSE.stand);
       const res = characterSetBase(pl.character, pl.trafficMethod) + pose;
       const count = this.#imageCount('Data.mkf', res);
       const dir = screenDirection(pl.direction, cam.view);
@@ -772,29 +883,41 @@ export class BoardRenderer {
       if (token !== null) {
         const w = token.width * k;
         const h = token.height * k;
-        const x = p.x + off - token.anchorX * k;
-        const y = p.y - off - token.anchorY * k;
-        if (pl.index === state.currentPlayer) {
-          // 当前玩家脚下画一圈光晕，免得在密集处认不出轮到谁
-          ctx.beginPath();
-          ctx.ellipse(p.x + off, p.y - off, w * 0.42, h * 0.14, 0, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(255,236,120,0.55)';
-          ctx.fill();
-        }
-        ctx.drawImage(token.bitmap, x, y, w, h);
+        slots.push({
+          // 当前玩家同屏幕 Y 时压在其他棋子与建筑之上（原版 0xd vs 0xc/0x0）
+          key: drawKey(p.y, pl.index === state.currentPlayer ? DRAW_CLASS.currentPlayer : DRAW_CLASS.player),
+          paint: () => {
+            const x = p.x + off - token.anchorX * k;
+            const y = p.y - off - token.anchorY * k;
+            if (pl.index === state.currentPlayer) {
+              // 当前玩家脚下画一圈光晕，免得在密集处认不出轮到谁
+              ctx.beginPath();
+              ctx.ellipse(p.x + off, p.y - off, w * 0.42, h * 0.14, 0, 0, Math.PI * 2);
+              ctx.fillStyle = 'rgba(255,236,120,0.55)';
+              ctx.fill();
+            }
+            ctx.drawImage(token.bitmap, x, y, w, h);
+          },
+        });
         continue;
       }
 
       // 精灵还没解完时退回色块，别让棋子凭空消失
       const r = Math.max(4, k * 7);
-      ctx.beginPath();
-      ctx.arc(p.x + off, p.y - off, r, 0, Math.PI * 2);
-      ctx.fillStyle = PLAYER_COLORS[pl.index] ?? '#fff';
-      ctx.fill();
-      ctx.strokeStyle = pl.index === state.currentPlayer ? '#fff' : 'rgba(0,0,0,0.5)';
-      ctx.lineWidth = pl.index === state.currentPlayer ? 3 : 1;
-      ctx.stroke();
+      slots.push({
+        key: drawKey(p.y, pl.index === state.currentPlayer ? DRAW_CLASS.currentPlayer : DRAW_CLASS.player),
+        paint: () => {
+          ctx.beginPath();
+          ctx.arc(p.x + off, p.y - off, r, 0, Math.PI * 2);
+          ctx.fillStyle = PLAYER_COLORS[pl.index] ?? '#fff';
+          ctx.fill();
+          ctx.strokeStyle = pl.index === state.currentPlayer ? '#fff' : 'rgba(0,0,0,0.5)';
+          ctx.lineWidth = pl.index === state.currentPlayer ? 3 : 1;
+          ctx.stroke();
+        },
+      });
     }
+    return slots;
   }
 }
 

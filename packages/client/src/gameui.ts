@@ -134,6 +134,17 @@ export const DICE_TOGGLE_SIZE = { w: 15, h: 15 } as const;
 /** @source VA 0x00419130 `push 3 / … → [0x48be14]` */
 export const DICE_RESOURCE = 3;
 /**
+ * 点数图有几个「颗位」—— 资源 3 共 18 张 = 3 颗 × 6 面。
+ * 每颗的尺寸与锚点都不同（35×41 / 30×36 / 34×40），见 Q-TURN-1 §4。
+ */
+export const DICE_SLOTS = 3;
+/**
+ * 滚骰影片的资源号基值 —— 骰子颗数 n（1/2/3）对应资源 `DICE_FLIC_BASE + n`。
+ * @source VA 0x00419192 的加载循环 `[0x48bdf8 + i*4] = read_mkf(panel, i + 4)`
+ *   与 `fcn_00419572` 的 `[0x48bdf4 + n*4]`。
+ */
+export const DICE_FLIC_BASE = 3;
+/**
  * 第 `slot` 颗骰子、点数 `pips` 用哪张图。
  * @source VA 0x0041965e：`eax = slot*6 + pips − 1`
  * （`shl 2 / sub / add eax,eax` 就是 ×6），资源 3 共 18 张 = 3 颗 × 6 面。

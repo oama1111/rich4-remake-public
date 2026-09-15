@@ -5,6 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import type { RoomInfo, SeatInfo } from '@rich4/core';
 import {
+  BTN_BACK,
+  BTN_START,
   drawLobby,
   hitLobby,
   isHostSeat,
@@ -12,7 +14,6 @@ import {
   LOBBY_SEATS,
   MAX_SEATS,
 } from './lobby.ts';
-import { BTN_BACK, BTN_START } from './setup.ts';
 import type { Sprite } from './assets.ts';
 
 const seat = (over: Partial<SeatInfo> & { seat: number }): SeatInfo => ({

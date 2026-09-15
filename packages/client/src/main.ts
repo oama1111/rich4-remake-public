@@ -8,7 +8,7 @@
  *   是同一种 action，引擎分不出也不需要分出来源。
  */
 
-import { CARD_IMPLS, CHARACTERS, TOOLS } from '@rich4/data';
+import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import {
   autoAction,
   VEHICLE_DICE,
@@ -17,12 +17,18 @@ import {
   isAiTurn,
   PANEL_PAGE_COUNT,
   holidayIndexOf,
+  DEFAULT_INITIAL_FUND,
+  MAX_HAND_CARDS,
+  MAX_TOOL_COUNT,
   newGame,
   reduce,
   parseMap,
   parseSave,
   importOriginalSave,
+  STOCK_STATUS,
+  stockStatus,
   stateFingerprint,
+  toolCount,
   type Action,
   type GameState,
   type MapTopology,
@@ -31,7 +37,8 @@ import {
   type TargetClass,
 } from '@rich4/core';
 import { NetClient, netParamsFrom } from './net-client.ts';
-import { DiceRollAnimation } from './dice-anim.ts';
+import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
+import { tickMs } from './tick.ts';
 import { drawLobby, hitLobby, isHostSeat, lobbySlots, type LobbyHit } from './lobby.ts';
 import { PANEL_ROWS } from './hud.ts';
 import { panelRows } from './panel.ts';
@@ -71,16 +78,18 @@ import {
   type SidebarView,
 } from './hud.ts';
 import {
+  CONTROL,
   DEFAULT_OPTIONS,
+  DIALOG,
   OPTIONS_RESOURCE,
   applyOptionsHit,
+  controlHit,
   drawOptions,
-  hitOptions,
+  hitControl,
   volumeOf,
   HOTKEY_NAMES,
   SIDE_BUTTONS,
   type GameOptions,
-  type OptionsHit,
 } from './options.ts';
 import { SoundPlayer } from './audio.ts';
 import { MusicPlayer } from './music.ts';
@@ -94,7 +103,7 @@ import {
   pickGameDir,
   type PickResult,
 } from './host.ts';
-import { DICE_SOUND, MIDI_PLAYLIST, MOVE_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
+import { MIDI_PLAYLIST, MOVE_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
 import {
   BoardRenderer,
   characterCamera,
@@ -105,12 +114,13 @@ import {
   worldToScreen,
   type Camera,
 } from './render.ts';
-import { TOOLBAR_LABELS } from './assets.ts';
+import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 import {
   drawAdvance,
   drawDialog,
   drawDice,
+  drawDiceFlic,
   hitAdvance,
   hitDiceToggle,
   hitDialog,
@@ -118,7 +128,8 @@ import {
   type AmountPage,
   type DialogHit,
 } from './dialog.ts';
-import { GO_IMAGE, type SpriteFn } from './gameui.ts';
+import { DICE_FLIC_BASE, GO_IMAGE, type SpriteFn } from './gameui.ts';
+import { CHARACTER_POSE, characterSetBase, type LoadedFlic } from './assets.ts';
 import { HOTKEY, hotkeyOf } from './hotkeys.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
 import {
@@ -151,6 +162,34 @@ import {
   hitSheetTab,
   type SheetUi,
 } from './asset-sheet.ts';
+import {
+  STOCK_PLATE_BUY,
+  STOCK_PLATE_EXIT,
+  STOCK_PLATE_INFO,
+  STOCK_PLATE_PAGE,
+  STOCK_PLATE_SELL,
+  STOCK_NO_BUY,
+  STOCK_NO_SELL,
+  drawStockScreen,
+  hitStockPlate,
+  hitStockRow,
+  stockCounterClosed,
+  stockRowsFrom,
+  type StockView,
+} from './stock-screen.ts';
+import {
+  drawBankLoan,
+  hitLoanButton,
+  loanActionOf,
+  type LoanOp,
+} from './bank-loan.ts';
+import {
+  atmAmount,
+  atmPress,
+  drawBankAtm,
+  hitAtmButton,
+  type AtmState,
+} from './bank-screen.ts';
 import {
   INV_VEHICLE_IMAGE,
   cardEntries,
@@ -193,11 +232,13 @@ import {
   type PickSession,
 } from './picking.ts';
 import {
-  applySetupHit,
+  MONEY_VALUES,
   defaultSetup,
   drawSetup,
-  hitSetup,
-  type SetupHit,
+  fillComputerSeats,
+  setupDown,
+  setupMove,
+  setupUp,
   type SetupState,
 } from './setup.ts';
 import { VIEW_COUNT } from '@rich4/data';
@@ -266,11 +307,184 @@ let optionsReturn: Screen = 'title';
 /** 右上角三个按钮用哪一组文字：0 標題頁 / 1 遊戲中 */
 let optionsVariant = 0;
 let optionsDraft: GameOptions = { ...DEFAULT_OPTIONS };
-let optionsHot: OptionsHit | null = null;
+/**
+ * 当前按住不放的控件号（原版 `[0x474d74]`）。
+ *
+ * ★ 两个「照着原版」的点：动作分按下/抬手两半（进度条、灯、視窗、樂曲在**按下**
+ *   就生效；取消/確定/右上角三颗要**抬手**才算），而抬手时**不重新命中判定** ——
+ *   按下后拖到别处再松手，仍算点的是原来那颗（VA 0x00410820 直接用按下时记的值）。
+ */
+let optionsPressed: number | null = null;
 
 /** 对话框正在填数的那一页；`null` 表示还在选项页 */
 let amountPage: AmountPage | null = null;
+
+/**
+ * 銀行 ATM 面板（T-029a）—— 原版的「存款/提款」不是通用填数页，
+ * 是 `Panel.mkf` 资源 24 那台带数字键盘的 ATM（VA 0x4379c9）。
+ * `atmFill` 就是那条选项自带的 `amount.fill`（金额定了才发得出去）。
+ */
+let atm: AtmState | null = null;
+let atmFill: ((n: number) => Action) | null = null;
+let atmLabel = '';
+
+/** 关掉 ATM 面板 */
+function closeAtm(): void {
+  atm = null;
+  atmFill = null;
+}
+
+/** 现在是不是「銀行暫停放款」状态 @source player+0x3c（`bankFreezeDays`）*/
+function bankFrozen(): boolean {
+  return (state.players[state.currentPlayer]?.bankFreezeDays ?? 0) !== 0;
+}
+
+/**
+ * 銀行落点的第 ② 屏（貸款屏，T-029b）开着吗。
+ *
+ * 原版两屏的次序：ATM（`_rich4_ui_bank_atm_entry`）→ 貸款屏（`_rich4_ui_bank_entry`）。
+ * ATM 开着时只画 ATM（它是模態的那一台）。
+ */
+function bankPending(): { chairman: boolean; hasLoan: boolean } | null {
+  const p = state.pending;
+  if (p === null || p.kind !== 'bank') return null;
+  const me = state.players[state.currentPlayer];
+  return { chairman: p.specialFinance !== null, hasLoan: (me?.loan ?? 0) !== 0 };
+}
+
+/** 贷款屏点了一颗钮 → 开对应的**填数页**（沿用银行对话里那一行的上限与 fill）*/
+function openLoanAmount(op: LoanOp): void {
+  const ui = currentDialog();
+  if (ui === null) return;
+  const idx = ui.choices.findIndex(
+    (c) => c.amount !== undefined && c.action.type === 'bank' && c.action.op === op,
+  );
+  const c = idx >= 0 ? ui.choices[idx] : undefined;
+  if (c?.amount === undefined) return;
+  amountPage = { choice: idx, value: c.amount.max };
+  dialogHot = null;
+  requestRender();
+}
 let dialogHot: DialogHit | null = null;
+
+// ── 股市屏（T-030）────────────────────────────────────────
+/** 现在看的是哪一页（0 行情 / 1 持股） —— 点页码牌换 @source loc_0042aec4 */
+let stockPage = 0;
+let stockHover: number | null = null;
+/** 选中的行（0 基）—— 原版 `[0x48c2eb]` 是 1 基，这里换成本地口径 */
+let stockSel: number | null = null;
+/**
+ * 股市那一屏的**填数页**（買進／賣出股数）。
+ *
+ * 原版走的是通用填数函数 `fcn_00453544(上限)`；引擎那条路只服务
+ * `pending` 对话，所以这里拿它自己的那一份状态合成一个「对话」出来，
+ * 把通用的排版与命中（`drawDialog` / `hitDialog` / `onDialogHit`）复用上。
+ */
+let stockAmount: { kind: 'buy' | 'sell'; stock: number; max: number } | null = null;
+
+function openStock(): void {
+  if (screen === 'stock') return;
+  stockPage = 0;
+  stockHover = null;
+  stockSel = null;
+  stockAmount = null;
+  amountPage = null;
+  dialogHot = null;
+  screen = 'stock';
+  requestRender();
+}
+
+function closeStock(): void {
+  if (screen !== 'stock') return;
+  screen = 'game';
+  stockAmount = null;
+  amountPage = null;
+  dialogHot = null;
+  requestRender();
+}
+
+/** 12 支股票的名字 —— core 的状态不带名字，在 `@rich4/data` 的表里 */
+function stockNames(): string[] {
+  return stocksOfMap(state.globalMapId).map((s) => s.name);
+}
+
+/** 这一屏要画的东西 */
+function stockView(): StockView {
+  const me = state.players[state.currentPlayer];
+  return {
+    page: stockPage,
+    closed: stockCounterClosed(state),
+    deposit: me?.moneyInBank ?? 0,
+    rows: stockRowsFrom(state, state.currentPlayer, stockNames()),
+    // 持股页的页头要竖着排各玩家的名字（原版读 `player+0` 那个字符串）
+    playerNames: state.players.map(
+      (p) => CHARACTERS[p.character]?.name ?? `角色${p.character}`,
+    ),
+    hover: stockHover,
+    selected: stockSel,
+  };
+}
+
+/** 点某一行的**动作**：没选中就先选中；已选中的再点一下 = 上市公司資訊（T-030b 未做）*/
+function stockPickRow(row: number): void {
+  if (stockSel === row) {
+    log('「上市公司資訊」详情卡还没做（T-030b）'); // @source loc_0042b1a4 的 PostMessage(0x40b)
+    return;
+  }
+  stockSel = row;
+  requestRender();
+}
+
+/** 買進 / 賣出 @source `loc_0042aee4` / `loc_0042afff` */
+function stockTrade(kind: 'buy' | 'sell'): void {
+  const row = stockSel;
+  if (row === null) return;
+  const st = state.market.stocks[row];
+  const me = state.players[state.currentPlayer];
+  if (st === undefined || me === undefined) return;
+  // 停牌那支两支都不理 @source `cmp byte [stocks+6], 0 / jne 退`
+  if (st.f6 !== 0) return;
+  const status = stockStatus(st.openPrice, st.price);
+  if (kind === 'buy') {
+    if (status === STOCK_STATUS.limitUp) {
+      log(`▶ ${STOCK_NO_BUY}`); // @source 串 0x464088
+      return;
+    }
+    // 上限 = min(流通量, 存款 ÷ 股价) @source `loc_0042af30`
+    const afford = Math.trunc(me.moneyInBank / st.price);
+    const max = Math.min(st.f10, Number.isFinite(afford) ? afford : 0);
+    if (max <= 0) return;
+    stockAmount = { kind: 'buy', stock: row, max };
+  } else {
+    if (status === STOCK_STATUS.limitDown) {
+      log(`▶ ${STOCK_NO_SELL}`); // @source 串 0x464097
+      return;
+    }
+    const held = state.holdings[state.currentPlayer]?.[row]?.amount ?? 0;
+    if (held <= 0) return;
+    stockAmount = { kind: 'sell', stock: row, max: held };
+  }
+  amountPage = { choice: 0, value: stockAmount.max };
+  dialogHot = null;
+  requestRender();
+}
+
+/** 把股市的填数页伪装成一个「对话」给通用排版用 */
+function stockAmountUi(): InteractionUi | null {
+  const a = stockAmount;
+  if (a === null) return null;
+  const name = stockNames()[a.stock] ?? '';
+  const label = a.kind === 'buy' ? '買進股數' : '賣出股數';
+  const fill = (n: number): Action =>
+    a.kind === 'buy'
+      ? { type: 'buyStock', stock: a.stock, shares: n }
+      : { type: 'sellStock', stock: a.stock, shares: n };
+  return {
+    title: '股市',
+    detail: `${name}\n${a.kind === 'buy' ? '買進' : '賣出'}（上限 ${a.max.toLocaleString('en-US')} 股）`,
+    choices: [{ label, amount: { label, max: a.max, step: 1, fill }, action: fill(a.max) }],
+  };
+}
 
 // ── 存讀檔屏 ───────────────────────────────────────────────
 let saveLoadMode: SaveLoadMode = 'load';
@@ -365,20 +579,18 @@ function loadState(next: GameState): void {
 let humanTimer: number | null = null;
 
 /**
- * 走一步之间隔多久。
+ * 两个自动步骤之间隔多久。
  *
- * ⚠️ 这三个数是**我们定的**，不是原版的。RICH4.CFG offset 0 说游戏速度
- *   有 00/01/02 三档（见 options.ts），但每一档具体多少毫秒没查证。
+ * ★ 不再是「我们拍的三个毫秒数」：
+ *   一格要走 `N` 个 tick（`N = trunc(距离 / 走子速度)`，见 `tween.ts`），
+ *   一个 tick 是 `20ms × [6,4,2,0][游戏速度]`（见 `tick.ts`）——
+ *   所以「走一步」的节拍就是这段补间的时长，必须等它播完才走下一步，
+ *   否则棋子会在半路被瞬移打断。
+ *   非走子的步骤（回合开始/结算/收尾）至少等一个 tick。
  */
-const STEP_MS = [220, 120, 60] as const;
-
 function humanDelay(): number {
   if (!options.animation) return 0;
-  // ★ 走子补间播完再走下一步，否则棋子会在半路被瞬移打断（T-046）
-  return Math.max(
-    STEP_MS[Math.max(0, Math.min(2, options.speed))] ?? 120,
-    renderer.lastWalkMs(),
-  );
+  return Math.max(tickMs(options.speed), renderer.lastWalkMs());
 }
 
 /**
@@ -411,6 +623,8 @@ function scheduleHumanTurn(): void {
   if (!localSeatActive()) return;
   // 轮到电脑就交给 scheduleAi，别两个驱动同时动手
   if (isAiTurn(state) || autoAction(state) !== null) return;
+  // 掷骰那一段还在播 —— 交给 dicePoll，别两条驱动同时动手
+  if (diceFx.active) return;
   const next = mechanicalAction();
   if (next === null) return;
   humanTimer = window.setTimeout(() => {
@@ -427,6 +641,9 @@ function mechanicalAction(): Action | null {
   //   而 `turnEnd` 在下面是要自动 `endTurn` 的 —— 那会把交互一起清掉，
   //   于是真人永远进不了这几个场所。
   if (state.pending !== null && state.pending.kind !== 'none') return null;
+  // ★ 掷骰那一段（预动作 + 滚骰 + 500ms 定格）没播完就不许走子 ——
+  //   原版这三段是**串行**的（`fcn_0040d7c4` 每 tick 只走一个状态）。
+  if (diceFx.active) return null;
   switch (state.phase) {
     case 'turnStart':
       return { type: 'startTurn' };
@@ -488,6 +705,7 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
         return true;
       }
       if (screen === 'options') {
+        optionsPressed = null;
         screen = optionsReturn;
         return true;
       }
@@ -505,7 +723,8 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
     // ── 回合 ──
     case HOTKEY.advance:
       if (!awaitingHumanRoll()) return false;
-      dispatch({ type: 'rollDice' });
+      // ★ 预动作先播，数满每向帧数那一 tick 才真的掷（见 `requestRoll`）
+      requestRoll();
       return true;
     case HOTKEY.chooseDiceCount: {
       // 在允许的颗数之间轮换
@@ -597,8 +816,8 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
 /**
  * 一步棋走完后开始播补间。
  *
- * @source VA 0x0040e669 `_rich4_animate_object`（帧数 = 屏幕距离 × 0.125 + 1、
- *   每帧 24 ms、线性）—— 细节与出处见 `client/tween.ts`。
+ * @source `fcn_0040c05c`（VA 0x0040c05c）：tick 数 = `trunc(屏幕距离 / 走子速度)`，
+ *   线性等分、**一个 tick 一帧** —— 细节与出处见 `client/tween.ts`。
  *   起点用 state 里的 `lastNodeId`（core 的 step 会把它设成走之前那一格）。
  */
 function startStepTween(playerIndex: number): void {
@@ -614,6 +833,9 @@ function startStepTween(playerIndex: number): void {
     options.animation,
     camera,
     { w: LAYOUT.board.w, h: LAYOUT.board.h },
+    p.trafficMethod & 3,
+    false,
+    tickMs(options.speed),
   );
 }
 
@@ -624,28 +846,131 @@ function currentScreenDir(): number {
 }
 
 /**
- * 掷骰子的音效 —— 原版在滚骰子那支函数里**连播两次**
- * （@source VA 0x004195ed / 0x00419628，中间夹一次绘制），音效 **10**（0.14 s）。
+ * 滚骰的音效 —— 音效 **10**（0.14 s）。
+ *
+ * @source VA 0x004195ed `fcn_00450cda(0x48235a, 0)` 先把音效登记给影片，
+ *   影片画完（0x00419620）再 `rich4_play_sound_effect(0x48235a)`
+ *   （0x00419628）。`0x48235a` = 音效表 `0x48234a` 的索引 2 → 编号 **10**。
+ *   ⚠️ 「登记给影片」那一支要影片内部有触发帧才会响（`[0x48c850]`），
+ *   本引擎的播放是逐帧画，故只按**影片开播那一刻**响一次。
  */
 function playDiceSound(): void {
-  sound.play('Effect.mkf', DICE_SOUND);
-  sound.play('Effect.mkf', DICE_SOUND);
+  sound.play('Effect.mkf', DICE_ROLL_SOUND);
 }
 
 /**
- * 走一格的两件表现：推进走路帧 + 播该玩家交通方式的移动音效。
+ * 走一格时播该玩家交通方式的移动音效。
  *
  * @source 音效 VA 0x0040d9f2（详见 `@rich4/assets-pipeline` 的 `MOVE_SOUND`）：
  *   走完一格、重置走路帧之前，按 `traffic_method` 从表 `0x48234a` 取
  *   （走路 44 / 機車 45 / 汽車 46 / 船 53）。
- *   走路帧的推进在原版是 `inc byte [0x498ea3 + 玩家号]`（VA 0x0040d97c）。
+ *
+ * ★ 走路**帧**不在这里推了：原版是 `fcn_0040c05c` 每 tick 推一格
+ *   （VA 0x0040c751），而 tick 是跟着补间走的 —— 故交给 `render.ts` 的
+ *   `#walkScreen` 按已过去的 tick 数补齐。见 `known-deviations.md` Q-TURN-1 §5。
  */
 function stepTick(): void {
-  renderer.advanceWalk();
   const me = state.players[state.currentPlayer];
   if (me === undefined) return;
   const id = MOVE_SOUND[me.trafficMethod & 3];
   if (id !== undefined) sound.play('Effect.mkf', id);
+}
+
+// ============================================================
+//  掷骰那一段（预动作 → 滚骰 → 定格）
+// ============================================================
+
+/** 滚骰影片缓存 —— `Panel.mkf` 4/5/6 各是一段 36 帧的 FLIC，解一次就留着 */
+const diceFlic = new Map<number, LoadedFlic | null>();
+const diceFlicPending = new Set<number>();
+
+/** 取滚骰影片；没解出来的先返回 null 并在后台解，解完再重画一帧 */
+function diceFlicNow(count: number): LoadedFlic | null {
+  const hit = diceFlic.get(count);
+  if (hit !== undefined) return hit;
+  const cache = sprites;
+  if (cache !== null && !diceFlicPending.has(count)) {
+    diceFlicPending.add(count);
+    void cache.getFlic('Panel.mkf', DICE_FLIC_BASE + count).then((f) => {
+      diceFlic.set(count, f);
+      diceFlicPending.delete(count);
+      diceFx.attachFlic(f);
+      requestRender();
+    });
+  }
+  return null;
+}
+
+/**
+ * 「手持骰子的走路」每向几帧 —— 预动作要几个 tick。
+ * @source VA 0x0040d975：数到 `图数 / 8` 那一 tick 才掷
+ */
+function diceAnticipateTicks(me: { character: number; trafficMethod: number }): number {
+  const count = sprites?.imageCount('Data.mkf', characterSetBase(me.character, me.trafficMethod) + CHARACTER_POSE.dice) ?? 0;
+  return count > 0 ? Math.max(1, count >> 3) : 9;
+}
+
+/**
+ * 「该掷骰了」的唯一入口。
+ *
+ * ★ 原版**先播预动作再掷**，不是掷完再补动画：`fcn_0040defe` 把状态设成
+ *   2（掷骰），角色播「手持骰子的走路」；数满每向帧数那一 tick 才调
+ *   `fcn_00419572` 去 `rand()%6+1` 并播滚骰影片。所以要在这里拦一道。
+ *
+ * 已经在播就什么都不做（幂等）。
+ */
+function requestRoll(): void {
+  if (diceFx.active) return;
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return;
+  const count = Math.max(1, Math.min(3, me.ndices || 1));
+  diceFlicNow(count);
+  diceFx.begin(performance.now(), diceAnticipateTicks(me), tickMs(options.speed), count);
+  anticipateFrame = 0;
+  rollRequestedAt = 0;
+  requestRender();
+  window.setTimeout(dicePoll, 16);
+}
+
+/** 预动作已经推过几帧了 —— 原版是**每 tick 一帧**（VA 0x0040d975 `inc [0x498ea3]`）*/
+let anticipateFrame = 0;
+/** 催过 `rollDice` 的时刻；用来给联机兜底（服务器不回就收摊） */
+let rollRequestedAt = 0;
+/** 催过之后最多等这么久 —— 联机时服务器不答复不能一直空转 */
+const ROLL_WAIT_TIMEOUT_MS = 3000;
+
+/** 掷骰那一段的轮询：数满预动作就掷，掷完继续要帧直到 500 ms 定格走完 */
+function dicePoll(): void {
+  if (!diceFx.active) return;
+  const now = performance.now();
+
+  // 预动作：角色「手持骰子的走路」按 tick 推进 —— 与滚骰/走子的走路帧同一个计数器
+  if (diceFx.phase === 'anticipate') {
+    const f = diceFx.anticipationFrame(now);
+    if (f > anticipateFrame) {
+      renderer.advanceWalk(f - anticipateFrame);
+      anticipateFrame = f;
+    }
+  }
+
+  if (diceFx.wantsRoll && diceFx.anticipationDone(now)) {
+    diceFx.markRollRequested();
+    rollRequestedAt = now;
+    // ★ 这一刻才真的掷（@source VA 0x0040d9aa 的 `call fcn_00419572`）
+    dispatch({ type: 'rollDice' });
+    // 影片可能还没解完；解完的回调会再挂一次
+    diceFx.attachFlic(diceFlic.get(diceFx.diceCount) ?? null);
+  }
+
+  // 联机兜底：催过之后服务器迟迟不回就收摊，别一直空转
+  if (diceFx.phase === 'anticipate' && rollRequestedAt > 0 && now - rollRequestedAt > ROLL_WAIT_TIMEOUT_MS) {
+    diceFx.cancel();
+    return;
+  }
+
+  if (diceFx.phase === 'tumble') diceFlicNow(diceFx.diceCount);
+  requestRender();
+  if (diceFx.active) window.setTimeout(dicePoll, 16);
 }
 
 /** 轮到人、还没掷骰 */
@@ -688,6 +1013,27 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
   if (hit.kind === 'choice') {
     const c = ui.choices[hit.index];
     if (c === undefined) return;
+    // ★ 存款 / 提款：原版走的是**銀行那台 ATM**（资源 24 的面板 + 数字键盘），
+    //   不是通用填数页 —— 见 bank-screen.ts 头部的取证。
+    if (
+      c.amount !== undefined &&
+      c.action.type === 'bank' &&
+      (c.action.op === 'deposit' || c.action.op === 'withdraw')
+    ) {
+      atm = {
+        mode: c.action.op === 'deposit' ? 0 : 1,
+        digits: '',
+        limits: [
+          c.action.op === 'deposit' ? c.amount.max : 0,
+          c.action.op === 'withdraw' ? c.amount.max : 0,
+        ],
+      };
+      atmFill = c.amount.fill;
+      atmLabel = c.amount.label;
+      dialogHot = null;
+      requestRender();
+      return;
+    }
     // 要填数的选项：先进填数页，别直接派 action
     if (c.amount !== undefined) {
       amountPage = { choice: hit.index, value: c.amount.max };
@@ -738,9 +1084,112 @@ function openOptions(from: Screen): void {
   optionsReturn = from;
   optionsVariant = from === 'game' ? 1 : 0;
   optionsDraft = { ...options };
-  optionsHot = null;
+  optionsPressed = null;
   screen = 'options';
   requestRender();
+}
+
+/**
+ * 設定屏用到的四个音效号 —— **全都从 `0x48231a` 那张指针表里读出来的**
+ * （`play_sound_effect(0, &entry)` 取 `[entry]` 当号）：
+ *
+ * | 号 | 表项 | 谁在用 |
+ * |---|---|---|
+ * | 1 | `0x482322` | 几乎每一颗控件（`fcn_00410537/572/5b9/f4`、`fcn_004107xx`） |
+ * | 2 | `0x48232a` | 確 定（`fcn_004106c1` 的 `(idx−7)^1 = 0`） |
+ * | 3 | `0x48233a` | 樂曲列表在「音樂關著」时（`fcn_00410668` 的 `loc_004106b0`） |
+ * | 4 | `0x482332` | 取 消（`fcn_004106c1` 的 `(idx−7)^1 = 1`） |
+ */
+const OPTION_SOUND = { click: 1, ok: 2, denied: 3, cancel: 4 } as const;
+
+/**
+ * 設定屏**按下**（原版 `0x201` → `fcn_004103a3` 的 `loc_004104af`）。
+ *
+ * 按下这一刻就发生的：改取值、亮灯、点樂曲（**立刻换曲**）、贴按下图、放音效。
+ * 只有取消/確定/右上角三颗要等抬手（见 `onOptionsUp`）。
+ */
+function onOptionsDown(sx: number, sy: number): void {
+  const x = sx - DIALOG.x;
+  const y = sy - DIALOG.y;
+  if (x < 0 || y < 0 || x >= DIALOG.w || y >= DIALOG.h) return;
+  const ctrl = hitControl(x, y);
+  if (ctrl === null) return; // 没点中任何控件 —— 原版把 [0x474d74] 留成 16，什么都不做
+  const hit = controlHit(ctrl, x, y);
+  if (hit === null) return;
+  optionsPressed = ctrl;
+
+  if (hit.kind === 'track') {
+    // 音樂關著就點不動樂曲 —— 原版放「不行」音（音效 3）后原样退回。
+    if (optionsDraft.music === 0) {
+      sound.play('Effect.mkf', OPTION_SOUND.denied);
+      return;
+    }
+    // ★ 原版点一下**立刻换曲**（`fcn_00454d91(行号+1)`），不等「確定」、
+    //   取消也不回退。列表里反白的那一行是「正在放的那首」。
+    optionsDraft = { ...optionsDraft, track: hit.value };
+    void playTrack(hit.value);
+    requestRender();
+    return;
+  }
+
+  if (hit.kind === 'cancel') sound.play('Effect.mkf', OPTION_SOUND.cancel);
+  else if (hit.kind === 'ok') sound.play('Effect.mkf', OPTION_SOUND.ok);
+  else sound.play('Effect.mkf', OPTION_SOUND.click);
+
+  // 这三类按下只贴图，动作留到抬手
+  if (hit.kind === 'cancel' || hit.kind === 'ok' || hit.kind === 'side') {
+    requestRender();
+    return;
+  }
+
+  // ⚠️ 音量**不**当场变 —— 原版也是按「確定」写回 cfg 之后音乐/音效才跟着走
+  //   （`fcn_00410969` 里的 `fcn_004549cf` / `fcn_0045497b`）。
+  optionsDraft = applyOptionsHit(optionsDraft, hit);
+  requestRender();
+}
+
+/**
+ * 設定屏**抬手**（原版 `0x202` → `loc_00410820`）。
+ *
+ * ★ 抬手时**不重新命中判定**：`loc_00410820` 直接拿按下时记下的控件号，
+ *   所以「按住取消 → 拖到对话框外 → 松手」仍然算点了取消。
+ */
+function onOptionsUp(): void {
+  const ctrl = optionsPressed;
+  optionsPressed = null;
+  if (ctrl === null) return;
+  requestRender();
+  // 只有右上角三颗（3..5）与取消/確定（7..8）在抬手时才做事
+  if (ctrl < CONTROL.SIDE_0 || ctrl > CONTROL.OK) return;
+  if (ctrl === CONTROL.CANCEL) {
+    // 取消 = 丢掉草稿，什么都不拷回
+    screen = optionsReturn;
+    requestRender();
+    return;
+  }
+  if (ctrl === CONTROL.OK) {
+    applyOptions(optionsDraft);
+    screen = optionsReturn;
+    requestRender();
+    return;
+  }
+  onOptionsSide(ctrl - CONTROL.SIDE_0);
+}
+
+/**
+ * 右上角三颗黄钮（抬手才算）。
+ *
+ * @source `fcn_00410838`：`[0x48bb58]`（= 入口参数）非 0 就是**遊戲中**进来，
+ *   先弹一个 Yes/No 确认框（`_rich4_ui_yesno(0x140, 0xc8)` = 画在 (320,200)），
+ *   答「是」才把 `[0x474d74] − 2`（1 重新遊戲 / 2 認輸投降 / 3 結束遊戲）抛回去；
+ *   是 0（標題頁）则直接进那一屏，**没有确认框**。
+ */
+function onOptionsSide(index: number): void {
+  // ⚠️ 两条去路都还没做，如实说，不假装有反应：
+  //   標題頁那三颗各自还有一整屏（日期頁 = 资源 3 图 2 + `fcn_00410ac3`；
+  //   熱鍵頁 = 图 1 + `fcn_00411122`；遊戲說明 = `_rich4_ui_help_entry`），
+  //   遊戲中那三颗要先弹 `_rich4_ui_yesno` 再抛 1/2/3 回去。
+  log(`⚠「${SIDE_BUTTONS[optionsVariant]?.[index] ?? ''}」尚未實作`);
 }
 
 /**
@@ -793,7 +1242,6 @@ function closeAiSettings(commit: boolean): void {
 
 /** 把設定的取值真的作用到播放器与側欄上 */
 function applyOptions(next: GameOptions): void {
-  const trackChanged = next.track !== options.track;
   options = next;
   sound.setMuted(next.sound === 0);
   sound.volume = volumeOf(next.sound);
@@ -801,8 +1249,10 @@ function applyOptions(next: GameOptions): void {
   // 設定里那三项：00 日曆 / 01 小地圖 / 02 兩者輪流（RICH4.CFG offset 5）
   // ⚠️ 「兩者輪流」怎么轮没查证，先当日曆（点一下可以手动换）
   sidebarView = next.windowView === 1 ? 'map' : 'calendar';
-  // `Midi.txt` 的前 8 条正好是設定里那 8 首樂曲
-  if (trackChanged || (next.music > 0 && !music.playing)) void playTrack(next.track);
+  // ⚠️ 换曲**不在这里** —— 原版是点列表那一下就立刻换（见 `onOptionsDown`），
+  //   「確定」只负责把 cfg 写回去、并按新的音量档调播放器（VA 0x004109e2）。
+  //   这里只在「音乐本来是关的、现在打开了」时补一次起播。
+  if (next.music > 0 && !music.playing) void playTrack(next.track);
   if (next.music === 0) music.stop();
   requestRender();
 }
@@ -810,9 +1260,29 @@ let hud: Hud;
 let sprites: SpriteCache | null = null;
 let archives: LoadedArchives;
 
-/** 開局設定的当前值与悬停 */
+/** 開局設定的当前值 */
 let setup: SetupState = defaultSetup();
-let setupHot: SetupHit | null = null;
+/** 開局設定那一屏的整屏场景（`jump.mkf` 里那张 640×480，已经压到半亮） */
+let setupScene: ImageBitmap | null = null;
+/** 场景按哪张地图解的 —— 换地图要重新解 */
+let setupSceneFor = -1;
+
+/**
+ * 按当前地图把开局设定屏的背景场景解出来。
+ *
+ * ★ 原版换地图时会重新 `read_mkf` + 换算一遍（`VA 0x00405625`），
+ *   所以这里也只在**地图真的变了**的时候重解。
+ */
+function loadSetupScene(mapId: number): void {
+  if (setupSceneFor === mapId) return;
+  setupSceneFor = mapId;
+  setupScene = null;
+  void loadSetupSceneAsset(archives, mapId).then((bmp) => {
+    if (setupSceneFor !== mapId) return;
+    setupScene = bmp;
+    requestRender();
+  });
+}
 
 /**
  * 同步取一张图；没解出来的先返回 null 并在后台解，解完再重画一帧。
@@ -993,7 +1463,7 @@ let net: NetClient | null = null;
  * 掷骰的本地预测动画（T-075）。纯表现：不读 `state.dice`、不写 state，
  * 故与确定性重放（C-DET-4）无关——`history` 里绝不会出现它。
  */
-const diceAnim = new DiceRollAnimation();
+const diceFx = new DiceRollFx();
 
 /** 只有自己座位的回合才轮到本机做决定（联机）；单机永远是 */
 function localSeatActive(): boolean {
@@ -1002,12 +1472,6 @@ function localSeatActive(): boolean {
 
 function dispatch(action: Action): void {
   if (net !== null) {
-    // ★ 本地预测（T-075）：掷骰这一趟要等服务器往返，先滚起来再说。
-    //   动画**不读 state.dice**，此刻它还是旧的；真点数到了由 applyAction 定格。
-    if (action.type === 'rollDice') {
-      const me = state.players[state.currentPlayer];
-      diceAnim.start(me?.ndices ?? 1, performance.now());
-    }
     net.submit(action);
     return;
   }
@@ -1019,11 +1483,23 @@ function applyAction(action: Action): void {
   const before = state;
   state = reduce(state, action, topo);
   if (state !== before) {
-    // ★ 骰子预测（T-075）**只服务于联机**：服务器答复到了就定格；走出走子
-    //   阶段就收摊（否则定格的骰子会一直挂在画面上，GO 鈕再也不出现）。
-    //   单机从不 start，故这里两件事都是空操作，画面完全照旧。
-    if (action.type === 'rollDice' && net !== null) diceAnim.settle(state.dice);
-    else if (state.phase !== 'moving') diceAnim.cancel();
+    // ★ 掷骰那一段：点数到手 → 开滚。影片没解好先挂着，解完再补。
+    //   纯表现，`diceFx` 不读也不写 state（C-DET-4）。
+    if (action.type === 'rollDice') {
+      // 单机的预动作已经在 `requestRoll` 里起好了；联机时点数由服务器定序，
+      // 本机这一按只负责把动画领走（不动画就自己起一段）。
+      if (!diceFx.active) {
+        const me = state.players[state.currentPlayer];
+        if (me !== undefined) {
+          diceFlicNow(Math.max(1, Math.min(3, me.ndices || 1)));
+          diceFx.begin(performance.now(), diceAnticipateTicks(me), tickMs(options.speed), me.ndices || 1);
+        }
+      }
+      diceFx.roll(performance.now(), state.dice, diceFlic.get(state.dice.length) ?? null);
+      playDiceSound();
+    } else if (state.phase !== 'moving' && !diceFx.active) {
+      diceFx.cancel();
+    }
   }
   if (state !== before) {
     history.push(action);
@@ -1032,6 +1508,9 @@ function applyAction(action: Action): void {
     //   （`pending` 换了一种，甚至换了人）。一律收掉。
     amountPage = null;
     dialogHot = null;
+    // ★ 商店的界面状态跟着 `pending` 走：进店时快照货架、铺开场；离店时清掉。
+    //   放在这里是因为不管谁答的（本地点、AI、服务器广播）都会经过这一条。
+    syncShopUi();
   }
   requestRender();
   renderPanel();
@@ -1102,7 +1581,11 @@ function scheduleAi(): void {
       return;
     }
     if (action.type === 'step') stepTick();
-    if (action.type === 'rollDice') playDiceSound();
+    // ★ 掷骰先播预动作再掷：拦一道，等 `dicePoll` 里真的 dispatch
+    if (action.type === 'rollDice') {
+      requestRoll();
+      return;
+    }
     const before = state;
     const walker = action.type === 'step' ? state.currentPlayer : null;
     state = reduce(state, action, topo);
@@ -1167,7 +1650,7 @@ const hudOffCtx = (() => {
 /** 当前屏幕 */
 type Screen =
   | 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'aiSettings' | 'intro' | 'assets'
-  | 'inventory' | 'game';
+  | 'inventory' | 'stock' | 'game';
 let screen: Screen = 'title';
 
 /**
@@ -1326,6 +1809,12 @@ interface ShopUi {
   slideAt: number;
   pressed: 'switch' | 'exit' | null;
   bubble: { text: string; until: number } | null;
+  /**
+   * 已经按了 EXIT、正等着道别那句话说完再关门。
+   * @source `loc_0042e686`：抬手先出气泡、把 `[0x48c318]` 置 4，
+   *   气泡到期（状态 2→3）之后才 `Post_0402_Message` 关窗。
+   */
+  closing: boolean;
   /** 开店那一刻的货架 —— 买过的行**不从这份快照里去掉** */
   shelf: { cards: readonly ShopShelfRow[]; tools: readonly ShopShelfRow[] };
   /** 已经买掉的行下标（原版是把那两个货架数组的对应字节清 0）*/
@@ -1370,8 +1859,10 @@ function syncShopUi(): void {
       page: SHOP_PAGE.cards,
       shown: [false, false],
       slide: slideStart(),
+      slideAt: 0,
       pressed: null,
       bubble: null,
+      closing: false,
       shelf: {
         cards: shopRows(SHOP_PAGE.cards, pending),
         tools: shopRows(SHOP_PAGE.tools, pending),
@@ -1382,6 +1873,97 @@ function syncShopUi(): void {
     shopUi = ui;
     shopGotoPage(ui, SHOP_PAGE.cards, performance.now());
   }
+}
+
+/** 这一下点在了哪儿 */
+type ShopHit =
+  | { at: 'switch' }
+  | { at: 'exit' }
+  | { at: 'cell'; slot: number }
+  | { at: 'shelf'; row: number }
+  | null;
+
+/**
+ * 判定顺序**照抄原版** `loc_0042de4c` 那四段 `cmp`：
+ * 切页钮 → EXIT → 自己的格子 → 货架。
+ *
+ * ★ 顺序颠倒会点错东西：切页钮的框（542..627）与 EXIT 的框（556..636）在 x 上重叠，
+ *   而且两页的货架 x 范围也几乎一样。
+ */
+function hitShop(x: number, y: number): ShopHit {
+  const ui = shopUi;
+  if (ui === null) return null;
+  if (hitShopSwitch(x, y)) return { at: 'switch' };
+  if (hitShopExit(x, y)) return { at: 'exit' };
+  const slot = hitShopCell(x, y);
+  if (slot !== null) return { at: 'cell', slot };
+  const row = hitShopShelf(ui.page, x, y);
+  if (row !== null) return { at: 'shelf', row };
+  return null;
+}
+
+/** 这一页「自己有什么」—— 卡片按手牌槽、道具按紧排表（与 T-024 同一套）*/
+function shopCells(page: ShopPage): ReturnType<typeof cardEntries> {
+  return page === SHOP_PAGE.cards
+    ? cardEntries(state, state.currentPlayer)
+    : toolEntries(state, state.currentPlayer);
+}
+
+/**
+ * 卖一件（按下即卖，原版在 `WM_LBUTTONDOWN` 里直接调 `fcn_0042d145` / `fcn_0042d1b2`）。
+ *
+ * @source `loc_0042e148` 卡片、`loc_0042e39c` 道具 —— 都是**点一下卖一件**，不弹确认。
+ */
+function shopSell(page: ShopPage, slot: number): void {
+  const item = cellItemAt(page, shopCells(page), slot);
+  if (item === null) return;
+  sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+  dispatch(
+    page === SHOP_PAGE.cards
+      ? { type: 'shop', op: 'sellCard', id: item.id }
+      : { type: 'shop', op: 'sellTool', id: item.id, count: 1 },
+  );
+}
+
+/**
+ * 买一行（按下即买）。
+ *
+ * @source `loc_0042e1eb`（卡片）/ `loc_0042e466`（道具）—— 两道闸的**顺序**不能反：
+ *   先看 `點數` 够不够（不够就弹「點數不足」），再看装不装得下（满了弹「欄已滿」）。
+ *   两道闸都只是弹个气泡，**屏幕不关**。
+ */
+function shopBuy(page: ShopPage, row: number, now: number): void {
+  const ui = shopUi;
+  if (ui === null || state.pending?.kind !== 'shop') return;
+  const rows = page === SHOP_PAGE.cards ? ui.shelf.cards : ui.shelf.tools;
+  const sold = page === SHOP_PAGE.cards ? ui.bought.cards : ui.bought.tools;
+  const item = rows[row];
+  const me = state.players[state.currentPlayer];
+  if (item === undefined || sold.has(row) || me === undefined) return;
+
+  if (me.points < item.price) {
+    shopSay(ui, shopMessage(page, 'notEnough'), now);
+    requestRender();
+    return;
+  }
+  // ★ 卡片看手牌满没满、道具看这一件是不是已经有 9 个 @source `loc_0042e1eb` / `loc_0042e466`
+  const full =
+    page === SHOP_PAGE.cards
+      ? me.cards.length >= MAX_HAND_CARDS
+      : toolCount(state.tools, state.currentPlayer, item.id) >= MAX_TOOL_COUNT;
+  if (full) {
+    shopSay(ui, shopMessage(page, 'full'), now);
+    requestRender();
+    return;
+  }
+
+  sold.add(row);
+  sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+  dispatch(
+    page === SHOP_PAGE.cards
+      ? { type: 'shop', op: 'buyCard', id: item.id }
+      : { type: 'shop', op: 'buyTool', id: item.id },
+  );
 }
 
 /**
@@ -1550,6 +2132,7 @@ function requestRender(): void {
     // ★ 走子补间要**逐帧**重绘（T-046）：补间没播完就再排一帧，
     //   否则棋子会停在这一步的第一帧上，直到下一次 dispatch 才动。
     if (screen === 'game' && !renderer.walkDone()) requestRender();
+    if (screen === 'game') shopTick(performance.now());
 
     stageCtx.imageSmoothingEnabled = false;
     stageCtx.fillStyle = '#000';
@@ -1588,7 +2171,10 @@ function requestRender(): void {
           : null,
       );
     } else if (screen === 'setup') {
-      drawSetup(stageCtx, setup, setupHot, spriteNow);
+      // ★ 这一屏的定时器是**一直跑**的（背景在横向循环滚、小人在逐帧走），
+      //   所以每次画完都再排一帧 —— 与过场同一个道理 @source VA 0x00404feb
+      drawSetup(stageCtx, setup, spriteNow, performance.now(), setupScene);
+      requestRender();
     } else if (screen === 'saveload') {
       // 盖在原来那一屏上（原版也是这样）
       if (saveLoadReturn === 'game') drawGameStage();
@@ -1622,10 +2208,59 @@ function requestRender(): void {
       else drawTitle(stageCtx, null, spriteNow);
       stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
       stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
-      drawOptions(stageCtx, optionsDraft, optionsVariant, optionsHot, (i, key = false) =>
-        spriteNow('Data.mkf', OPTIONS_RESOURCE, i, key));
+      drawOptions(
+        stageCtx,
+        optionsDraft,
+        optionsVariant,
+        optionsPressed,
+        musicTrack,
+        (i, key = false) => spriteNow('Data.mkf', OPTIONS_RESOURCE, i, key),
+      );
+    } else if (screen === 'stock') {
+      // 股市是**整屏**的（原版那扇窗口盖住棋盘），画法与銀行那两屏同一条路
+      drawStockScreen(stageCtx, spriteNow, stockView());
+      const ui = stockAmountUi();
+      if (ui !== null && amountPage !== null) {
+        // 填数页照棋盘坐标排版，整体平移过去（`fcn_00453544` 也是另开一窗）
+        stageCtx.save();
+        stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
+        drawDialog(stageCtx, uiSprite, ui, amountPage, dialogHot);
+        stageCtx.restore();
+      }
     } else {
       drawGameStage();
+    }
+
+    // 銀行落点那两屏（T-029）：貸款屏先铺（整屏 640×480），ATM 是模態的盖它上面；
+    // 若填数页开着，再把棋盘那块（对话框在上面）贴回来 —— 原版的填数页也是
+    // 盖在银行屏上的（`fcn_00453544` 那一声调用就在贷款屏的状态机里）。
+    const bank = bankPending();
+    if (bank !== null && atm === null) {
+      // 三条数额 = 額度 / 已用 / 額度−已用 @source `fcn_00433c20`：
+      // 依次是 `arg`、`player+0x28`、`arg − player+0x28`。
+      // 而 `pending.specialFinance.available` 就是 `額度 − 已用`（core 的
+      // `specialFinanceAvailable`）⇒ 額度 = available + owed。
+      const fin = state.pending?.kind === 'bank' ? state.pending.specialFinance : null;
+      const owed = fin?.owed ?? 0;
+      const room = fin?.available ?? 0;
+      drawBankLoan(stageCtx, spriteNow, {
+        chairman: bank.chairman,
+        frozen: bankFrozen(),
+        finance: [room + owed, owed, room],
+      });
+    }
+    if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen());
+    if (bank !== null && atm === null && amountPage !== null) {
+      // 填数页（`fcn_00453544`）是**另开一个窗口**盖在银行屏上的，所以这里
+      // 单独把它画到舞台 —— 不能整块贴回棋盘画布（那样四周会透出地图）。
+      // 它的排版仍照棋盘坐标走，于是整体平移过去；命中判定也照旧走棋盘坐标。
+      const pageDlg = currentDialog();
+      if (pageDlg !== null) {
+        stageCtx.save();
+        stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
+        drawDialog(stageCtx, uiSprite, pageDlg, amountPage, dialogHot);
+        stageCtx.restore();
+      }
     }
 
     // 拾取模式的指针图要**解码完才能用**。首帧拿不到就返回 null，
@@ -1638,7 +2273,7 @@ function requestRender(): void {
     // 有精灵在本帧解码完成 → 再画一次，把它们补上；
     // 骰子在滚也要继续要帧，否则动画只有一格；
     // 商店开着也要一直要帧 —— 原版那儿挂着一个 50ms 的定时器（`SetTimer(hwnd, 0x32, …)`）。
-    if (renderer.dirty || hud.dirty || spriteArrived || diceAnim.rolling || shopUi !== null) {
+    if (renderer.dirty || hud.dirty || spriteArrived || diceFx.active || shopUi !== null) {
       renderer.clearDirty();
       hud.clearDirty();
       spriteArrived = false;
@@ -1663,7 +2298,38 @@ function shopTick(now: number): void {
     // 滑入到位才说「請挑選…」—— 原版是动画走完那一刻才发 0x40d（`loc_0042d75e` 尾）
     if (slideDone(ui.slide)) shopSay(ui, shopMessage(ui.page, 'hint'), now);
   }
-  if (ui.bubble !== null && now >= ui.bubble.until) ui.bubble = null;
+  if (ui.bubble === null || now < ui.bubble.until) return;
+  ui.bubble = null;
+  // ★ 道别那句话说完才真的关门 @source `loc_0042e686` → 状态 2→3→4
+  if (ui.closing) dispatch({ type: 'declineDecision' });
+}
+
+/**
+ * 画掷骰那一段当前该画的东西。
+ *
+ * ★ 三段串行，全部照 exe：
+ *   预动作 —— 角色播「手持骰子的走路」（由 `characterPoseOf` 交给渲染器，
+ *   这里什么都不画）；滚骰 —— FLIC 逐帧；定格 —— 点数图盖上去留 500 ms。
+ */
+function drawDiceFx(ctx: CanvasRenderingContext2D, now: number): void {
+  if (!diceFx.active) return;
+  const flic = diceFx.flicBitmap(now);
+  if (flic !== null) {
+    drawDiceFlic(ctx, flic, currentScreenDir());
+    return;
+  }
+  // 定格段：点数图盖上去。滚骰段走到这儿只可能是影片还没解好 —— 也先把点数摆出来，
+  // 总比让画面空着强（这一步不是原版行为，是缺素材时的兜底）。
+  const pips = diceFx.pips(now) ?? diceFx.dice;
+  if (pips.length > 0) drawDice(ctx, uiSprite, pips, currentScreenDir());
+}
+
+/**
+ * 掷骰那一段角色摆哪一组图 —— 原版整段都停在「手持骰子」上。
+ * @returns `CHARACTER_POSE` 的值，或 null（不覆盖）
+ */
+function characterPoseOf(): number | null {
+  return diceFx.characterPose === 'dice' ? CHARACTER_POSE.dice : null;
 }
 
 /** 把游戏画面的三块摆到舞台上 */
@@ -1690,16 +2356,17 @@ function drawGameStage(): void {
     ground: showGround ? ground : null,
     groundOffset,
     pressedTool,
+    characterPose: characterPoseOf(),
     viewport: { w: LAYOUT.board.w, h: LAYOUT.board.h },
   });
   const dlg = currentDialog();
   const me = state.players[state.currentPlayer];
   if (dlg !== null) {
     drawDialog(boardCtx, uiSprite, dlg, amountPage, dialogHot);
-  } else if (diceAnim.pipsAt(performance.now()) !== null) {
-    // ★ 本地预测的骰子（T-075）：点 GO 之后、服务器答复之前先滚起来。
-    //   返回 null 就表示「我不参与」，落到下面画权威值。
-    drawDice(boardCtx, uiSprite, diceAnim.pipsAt(performance.now())!, currentScreenDir());
+  } else if (diceFx.active) {
+    // ★ 掷骰那一段（Q-TURN-1 §3/§4）：滚骰是 `Panel.mkf` 4/5/6 的 **FLIC**，
+    //   滚完再把 `Panel.mkf` 3 的点数图盖上去定格 500 ms。
+    drawDiceFx(boardCtx, performance.now());
   } else if (awaitingHumanRoll() && me !== undefined) {
     // ★ 原版的 GO 鈕 + 骰子数切换（Panel.mkf 资源 7）
     drawAdvance(boardCtx, uiSprite, goImageOf(me), maxDiceOf(me), me.ndices);
@@ -1981,6 +2648,9 @@ function onToolbar(i: number): void {
     case 5: // 大地圖 —— 切换人物/地图视角
       setViewMode(camera.mode === 'character' ? 'map' : 'character');
       return;
+    case 10: // 股市（T-030）
+      openStock();
+      return;
     default:
       log(`「${name}」尚未实现`);
   }
@@ -2148,7 +2818,9 @@ function renderActions(): void {
       el.disabled = !b.enabled;
       el.onclick = () => {
         log(`▶ ${b.label}`);
-        dispatch(b.action);
+        // ★ 掷骰这一颗走 `requestRoll` —— 与 GO 鈕同一条路，预动作也会播
+        if (b.action.type === 'rollDice') requestRoll();
+        else dispatch(b.action);
       };
       return el;
     }),
@@ -2264,7 +2936,12 @@ function onTitleButton(id: 'start' | 'load' | 'option' | 'exit' | 'newStage'): v
     case 'start':
     case 'newStage':
       screen = 'setup';
-      setupHot = null;
+      // ★ 原版从標題进来是「新遊戲」（`_rich4_init_new_game(0)`），
+      //   进去就把 12 个角色状态与 6 条设定全部清回默认 @source `VA 0x00406f27` 起。
+      //   调试用的地址栏参数走的是 `?screen=game` 那条路，不经过这一屏。
+      setup = defaultSetup();
+      setupSceneFor = -1;
+      loadSetupScene(setup.mapId);
       requestRender();
       break;
     case 'load':
@@ -2348,7 +3025,18 @@ function startGame(): void {
 
   map = parseMap(readMapData(archives, setup.mapId));
   topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
-  state = newGame({ map, globalMapId: setup.mapId, players, seed });
+  state = newGame({
+    map,
+    globalMapId: setup.mapId,
+    players,
+    seed,
+    // ★ 开局屏那三条直接决定规则：资金档位（`[0x46cb40]`）、
+    //   自带载具（`[0x46cb44]`）、土地權限（`[0x46cb48]`）
+    // @source `VA 0x00407032`（资金）、`0x00407219`（载具）、`0x00406f6b`（权限）
+    initialFund: MONEY_VALUES[setup.money] ?? DEFAULT_INITIAL_FUND,
+    startingVehicle: setup.vehicle,
+    landTenure: setup.land,
+  });
   history.length = 0;
 
   const first = map.nodes[state.players[0]?.nodeId ?? 1];
@@ -2387,6 +3075,20 @@ function bindInput(): void {
     const p = eventToStage(e);
     if (p === null) return;
 
+    // ── 股市屏：悬停整行（原版 0x200 那条路）@source loc_0042abbb ──
+    if (screen === 'stock') {
+      if (stockAmount !== null) return; // 填数页开着：不理会行的悬停
+      const row = hitStockRow(p.x, p.y);
+      if (row !== stockHover) {
+        stockHover = row;
+        requestRender();
+      }
+      return;
+    }
+
+    // ── 銀行 ATM 开着时不理会棋盘的悬停 ──
+    if (atm !== null) return;
+
     // ── 目标拾取（T-026）：光标底下是候选就换指针 @source VA 0x44609b ──
     if (screen === 'game' && pick !== null) {
       const next = hitCandidate(
@@ -2415,9 +3117,15 @@ function bindInput(): void {
       return;
     }
     if (screen === 'setup') {
-      const hit = hitSetup(p.x, p.y, setup);
-      if (JSON.stringify(hit) !== JSON.stringify(setupHot)) {
-        setupHot = hit;
+      // ★ 悬停音只在**移到一个还没被人选走**的角色上时响一次
+      //   @source `VA 0x004051e0`：`cmp byte [该角色状态], 0 / jne` 才 `play_sound_effect`
+      const before = setup.hover;
+      const next = setupMove(setup, p.x, p.y);
+      if (next !== setup) {
+        setup = next;
+        if (next.hover >= 0 && next.hover !== before && !next.characters.includes(next.hover)) {
+          sound.play('Effect.mkf', SOUND_IDS.TITLE_HOVER);
+        }
         requestRender();
       }
       return;
@@ -2447,14 +3155,9 @@ function bindInput(): void {
       }
       return;
     }
-    if (screen === 'options') {
-      const hit = hitOptions(p.x, p.y);
-      if (JSON.stringify(hit) !== JSON.stringify(optionsHot)) {
-        optionsHot = hit;
-        requestRender();
-      }
-      return;
-    }
+    // ★ 設定屏**没有悬停高亮** —— 原版窗口过程只认 0xf/0x201/0x202/0x203/0x205/0x401，
+    //   压根没有 WM_MOUSEMOVE 那条路。所以这里什么都不做。
+    if (screen === 'options') return;
 
     // 右下角小地图那两颗箭头的**悬停**（原版 VA 0x00418415：鼠标在箭头条上就换成高亮图）
     const hotArrow = sidebarView === 'map' && hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)
@@ -2469,6 +3172,9 @@ function bindInput(): void {
       const on = hitAdvance(p.x - LAYOUT.board.x, p.y - LAYOUT.board.y);
       if (on) return;
     }
+
+    // 商店是整屏的：它在的时候棋盘不在画，光标底下也没有「节点」可悬停
+    if (screen === 'game' && shopUi !== null) return;
 
     // 对话框盖在棋盘上：它在的时候，先问它
     const dlgHover = currentDialog();
@@ -2565,45 +3271,13 @@ function bindInput(): void {
       else if (outsideSaveLoad(saveLoadMode, p.x, p.y)) closeSaveLoad();
       return;
     }
-    if (screen === 'options') {
-      const hit = hitOptions(p.x, p.y);
-      if (hit === null) return;
-      if (hit.kind === 'ok') {
-        applyOptions(optionsDraft);
-        screen = optionsReturn;
-        requestRender();
-        return;
-      }
-      if (hit.kind === 'cancel') {
-        screen = optionsReturn;
-        requestRender();
-        return;
-      }
-      if (hit.kind === 'side') {
-        // ⚠️ 这三个按钮各自还有一屏（日期更改/熱鍵設定/遊戲說明 …），都没做
-        log(`⚠「${SIDE_BUTTONS[optionsVariant]?.[hit.index] ?? ''}」尚未實作`);
-        return;
-      }
-      optionsDraft = applyOptionsHit(optionsDraft, hit);
-      requestRender();
-      return;
-    }
-    if (screen === 'setup') {
-      const hit = hitSetup(p.x, p.y, setup);
-      if (hit === null) return;
-      if (hit.kind === 'start') {
-        startGame();
-        return;
-      }
-      if (hit.kind === 'back') {
-        screen = 'title';
-        requestRender();
-        return;
-      }
-      setup = applySetupHit(setup, hit);
-      requestRender();
-      return;
-    }
+    // 設定屏、開局設定屏全在 mousedown / mouseup 上处理（原版 0x201 / 0x202 两条分支），
+    //   `click` 这一路不碰它们 —— 否则同一次点会被处理两遍。
+    if (screen === 'options' || screen === 'setup') return;
+
+    // 商店全在 mousedown / mouseup 上处理（原版 0x201 / 0x202 两条分支），
+    //   `click` 这一路不碰它 —— 否则同一次点会被处理两遍。
+    if (screen === 'game' && shopUi !== null) return;
 
     // 底下都是棋盘上的交互 —— 其余屏（含個人資產表）到这儿就结束
     if (screen !== 'game') return;
@@ -2621,7 +3295,7 @@ function bindInput(): void {
         return;
       }
       if (hitAdvance(bx, by)) {
-        dispatch({ type: 'rollDice' });
+        requestRoll();
         return;
       }
     }
@@ -2670,6 +3344,139 @@ function bindInput(): void {
   let drag: { x: number; y: number } | null = null;
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
+
+    // ── 設定屏（原版 0x201）──
+    // 每颗控件的**立即动作**都在按下这一刻发生（改值 / 换曲 / 亮灯 / 贴按下图），
+    // 只有「取消、確定、右上角三颗」要等抬手。声音也全在按下放。
+    if (screen === 'options') {
+      if (e.button !== 0) return;
+      const q = eventToStage(e);
+      if (q === null) return;
+      onOptionsDown(q.x, q.y);
+      return;
+    }
+
+    // ── 開局設定屏（原版 0x201）──
+    // ★ 角色格与地图行是**按下就生效**；两颗按钮与六条下拉只记下按下状态，
+    //   抬手（0x202）才成立。原版就是这样分的 —— `VA 0x004052bc` 那条大跳表。
+    if (screen === 'setup') {
+      if (e.button !== 0) return;
+      const q = eventToStage(e);
+      if (q === null) return;
+      const before = setup;
+      const next = setupDown(setup, q.x, q.y);
+      setup = next;
+      // 选／取消角色、换地图都放同一颗确认音 @source `VA 0x00405384` / `0x004055c2`
+      if (next !== before) {
+        if (next.characters.length !== before.characters.length) {
+          sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+        } else if (next.mapId !== before.mapId) {
+          sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+          loadSetupScene(next.mapId);
+        } else if (next.playerCount !== before.playerCount || next.vehicle !== before.vehicle) {
+          sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+        }
+      }
+      requestRender();
+      return;
+    }
+
+    // ── 股市屏（T-030）──────────────────────────────────────
+    if (screen === 'stock') {
+      // ★ 休市那一支原版走的是**訊息框**窗口过程：任何一下鼠标都退屏
+      //   （@source `fcn_0042b2ec` 的 0x202/0x205 两路都 `Post_0402_Message(0)`）
+      //   —— 所以休市日既看不到行情，也不可能交易。
+      if (stockCounterClosed(state)) {
+        if (e.button === 0 || e.button === 2) closeStock();
+        return;
+      }
+      if (e.button !== 0) return; // 右键走 contextmenu（换页 / 离开）
+      const q = eventToStage(e);
+      if (q === null) return;
+      if (stockAmount !== null) {
+        // 填数页开着：全部点击先给它（排版照棋盘坐标，命中也照那边算）
+        const ui = stockAmountUi();
+        if (ui !== null) {
+          const h = hitDialog(
+            boardCtx, ui, amountPage,
+            q.x - LAYOUT.board.x, q.y - LAYOUT.board.y,
+          );
+          if (h !== null && h !== 'inside') onDialogHit(ui, h);
+          if (amountPage === null) stockAmount = null; // 確定/取消都会关掉它
+          requestRender();
+        }
+        return;
+      }
+      const plate = hitStockPlate(q.x, q.y);
+      if (plate !== null) {
+        log('▶ 股市：' + ['換頁', '買進', '賣出', '上市公司資訊', '離開'][plate]);
+        if (plate === STOCK_PLATE_PAGE) {
+          // @source `loc_0042aec4`：换页并把选中清掉
+          stockPage = stockPage === 0 ? 1 : 0;
+          stockSel = null;
+          requestRender();
+        } else if (plate === STOCK_PLATE_BUY) {
+          stockTrade('buy');
+        } else if (plate === STOCK_PLATE_SELL) {
+          stockTrade('sell');
+        } else if (plate === STOCK_PLATE_INFO) {
+          log('「上市公司資訊」详情卡还没做（T-030b）');
+        } else if (plate === STOCK_PLATE_EXIT) {
+          closeStock();
+        }
+        return;
+      }
+      const row = hitStockRow(q.x, q.y);
+      if (row !== null) stockPickRow(row);
+      return;
+    }
+
+    // ── 銀行貸款屏（T-029b）：四颗钮在**舞台坐标**上 @source loc_00435c12 ──
+    const loanNow = bankPending();
+    if (e.button === 0 && loanNow !== null && atm === null && amountPage === null) {
+      const q = eventToStage(e);
+      if (q === null) return;
+      const btn = hitLoanButton(q.x, q.y);
+      const op = btn === null ? null : loanActionOf(btn, loanNow.chairman, bankFrozen(), loanNow.hasLoan);
+      if (op === null) return;
+      if (op === 'exit') {
+        log('▶ 離開銀行');
+        dispatch({ type: 'declineDecision' });
+        return;
+      }
+      log(`▶ ${op === 'borrow' ? '申請貸款' : op === 'repay' ? '償還貸款' : op === 'financeBorrow' ? '週轉現金' : '歸還款項'}`);
+      openLoanAmount(op);
+      return;
+    }
+
+    // ── 銀行 ATM 面板（T-029a）──
+    if (atm !== null) {
+      const q = eventToStage(e);
+      if (q === null) return;
+      const btn = hitAtmButton(q.x, q.y);
+      if (btn === null) return;
+      const next = atmPress(atm, btn, bankFrozen());
+      if (next === null) {
+        closeAtm(); // EXIT
+        requestRender();
+        return;
+      }
+      if (btn === 17) {
+        // ↵ 確認：金额定了才发得出去（0 = 没做这件事，原版也直接退回来）
+        const n = Math.trunc(atmAmount(atm));
+        const fill = atmFill;
+        closeAtm();
+        if (n > 0 && fill !== null) {
+          log(`▶ ${atmLabel} ${n}`);
+          dispatch(fill(n));
+        }
+        requestRender();
+        return;
+      }
+      atm = next;
+      requestRender();
+      return;
+    }
 
     // ── 道具欄浮窗（T-024）──
     // 按下只**记下选中项 + 放确认音**，抬手才用出去（VA 0x445c8f / 0x445d84）。
@@ -2738,6 +3545,32 @@ function bindInput(): void {
     // 拾取模式是**模态**的（原版那个窗口盖住整屏）—— 棋盘与工具栏都不再接输入
     if (pick !== null) return;
 
+    // ── 卡片商店／道具商店（P2-8 / U-2）──
+    // ★ 买与卖是**按下**就发生（原版在 `WM_LBUTTONDOWN` 里直接调买卖函数，
+    //   见 `loc_0042e148` 卡片 / `loc_0042e39c` 道具）；两个钮只是记账，动作留给抬手。
+    //   命中顺序见 `hitShop`。
+    if (shopUi !== null) {
+      const ui = shopUi;
+      // 气泡还在时，原版只把气泡收掉（`loc_0042de09` 的 `[0x48c318] != 3` 那条分支），
+      //   不做别的；正在等道别那句话说完也一样不接输入。
+      if (ui.bubble !== null || ui.closing) {
+        ui.bubble = null;
+        requestRender();
+        return;
+      }
+      const hit = hitShop(p.x, p.y);
+      if (hit === null) return;
+      if (hit.at === 'switch' || hit.at === 'exit') {
+        ui.pressed = hit.at;
+        requestRender();
+      } else if (hit.at === 'cell') {
+        shopSell(ui.page, hit.slot);
+      } else {
+        shopBuy(ui.page, hit.row, performance.now());
+      }
+      return;
+    }
+
     // 右上角那四条彩色竖条：**点一下就换页** @source VA 0x004182fa
     // 页号 = `y / 70`；页没变就什么都不做（原版连音效都不放）。
     const tag = hitPanelTag(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y);
@@ -2782,6 +3615,39 @@ function bindInput(): void {
     drag = { x: e.clientX, y: e.clientY };
   });
   window.addEventListener('mouseup', () => {
+    // ── 開局設定屏：抬手才收尾（原版 0x202）──
+    // ★ 只认按下那一刻记下的控件号，不看抬手时光标在哪（原版就是这么写的）。
+    if (screen === 'setup') {
+      const pressed = setup.pressed;
+      const next = setupUp(setup);
+      // ★ 先把按下状态清掉 —— 不然「一个座位都没选就按 OK」会把按钮卡在按下图
+      setup = next;
+      if (pressed === 1) {
+        // `OK` —— 原版至少要有一个真人座位才认，剩下的由电脑补满
+        // @source `VA 0x00405771` 的 `cmp byte [0x48a40d], 0 / je`
+        if (next.characters.length > 0) {
+          sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+          setup = fillComputerSeats(next, Math.random);
+          startGame();
+        }
+        return;
+      }
+      if (pressed === 2) {
+        screen = 'title';
+        requestRender();
+        return;
+      }
+      if (pressed >= 3) sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+      requestRender();
+      return;
+    }
+
+    // ── 設定屏：抬手才收尾（原版 0x202）──
+    if (screen === 'options') {
+      onOptionsUp();
+      return;
+    }
+
     // ── 道具欄浮窗：抬手把选中项用出去（VA 0x445d84）──
     if (screen === 'inventory') {
       applyInventoryPick();
@@ -2803,6 +3669,25 @@ function bindInput(): void {
       }
       return;
     }
+
+    // ── 卡片商店／道具商店：抬手才处理那两个钮（原版 0x202 那条跳表 `[0x48c347]`）──
+    // ★ 抬手**不再看光标位置** —— 原版认的是按下那一刻记下的状态，照抄。
+    if (screen === 'game' && shopUi !== null && shopUi.pressed !== null) {
+      const ui = shopUi;
+      const pressed = ui.pressed;
+      ui.pressed = null;
+      const now = performance.now();
+      if (pressed === 'exit') {
+        // 道别那句话说完才真的关门（`shopTick` 里看 `bubble` 到期）
+        ui.closing = true;
+        shopSay(ui, shopMessage(ui.page, 'bye'), now);
+      } else {
+        shopGotoPage(ui, ui.page === SHOP_PAGE.cards ? SHOP_PAGE.tools : SHOP_PAGE.cards, now);
+      }
+      requestRender();
+      return;
+    }
+
     // ── 目标拾取：抬手才选（原版在 LBUTTONUP 上抛回选中项，VA 0x446656）──
     if (screen === 'game' && pick !== null) {
       const hit = pickHover === null ? undefined : pick.candidates[pickHover];
@@ -2878,10 +3763,40 @@ function bindInput(): void {
       closeAssets();
       return;
     }
+    // 股市：右键 —— 在持股页就退回行情页，在行情页就离开 @source `loc_0042b22f`
+    if (screen === 'stock') {
+      e.preventDefault();
+      if (stockAmount !== null) {
+        stockAmount = null;
+        closeAmountPage();
+      } else if (stockPage !== 0) {
+        stockPage = 0;
+        stockSel = null;
+        requestRender();
+      } else {
+        closeStock();
+      }
+      return;
+    }
     // 道具欄浮窗：右键关掉、**什么都不用**（原版 VA 0x445dad 抛回 0）
     if (screen === 'inventory') {
       e.preventDefault();
       closeInventory();
+      return;
+    }
+    // 設定屏：右键 = 取消（原版 `0x205` → `fcn_0041095b` → 抛回 0）
+    if (screen === 'options') {
+      e.preventDefault();
+      optionsPressed = null;
+      screen = optionsReturn;
+      requestRender();
+      return;
+    }
+    // 卡片商店／道具商店：右键 = 走人（原版 WM_RBUTTONUP 直接 `Post_0402_Message`，VA 0x42e888）
+    // ★ 原版这条**不说道别语** —— 那句只在 EXIT 钮上出。
+    if (screen === 'game' && shopUi !== null) {
+      e.preventDefault();
+      if (!shopUi.closing) dispatch({ type: 'declineDecision' });
       return;
     }
     // 目标拾取：右键放弃 —— 但**目标必选**的（选择参数 bit3）右键不认
@@ -3220,6 +4135,8 @@ async function boot(): Promise<void> {
         get pickSession() { return pick; },
         /** 個人資產表的故事板状态 */
         get sheetUi() { return sheetUi; },
+        /** 卡片商店／道具商店的界面状态（页号、滑入位置、气泡、货架快照）*/
+        get shopUi() { return shopUi; },
         get setup() { return setup; },
         get options() { return { saved: options, draft: optionsDraft, variant: optionsVariant }; },
         goto: (s: Screen) => { screen = s; requestRender(); },

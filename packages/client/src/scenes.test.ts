@@ -12,7 +12,6 @@ import { SPECIAL_KIND } from '@rich4/core';
 describe('場所背景', () => {
   it('★ 几处先前认错的，现在钉住正确的号（见 docs/original-ui.md）', () => {
     expect(SCENE.assets).toBe(9); // 不是股市，是個人資產表
-    expect(SCENE.shop).toBe(10); // 不是魔法屋，是卡片／道具商店
     expect(SCENE.monthlySettle).toBe(25); // 不是百貨公司，是每月結算
     expect(SCENE.stockMarket).toBe(75); // 股市在这儿
     expect(SCENE.shareholdings).toBe(76); // 持股彙總
@@ -29,10 +28,11 @@ describe('場所背景', () => {
     expect(sceneFor({ kind: 'lottery', available: [], price: 0, owned: 0 })).toBe(
       SCENE.lotteryCounter,
     );
-    // ★ 棋盤上那格叫「百貨公司」，屏却是卡片商店／道具商店（Panel #10）
-    expect(sceneFor({ kind: 'shop', points: 0, tools: [], cards: [], owned: { cards: [], tools: [] } })).toBe(SCENE.shop);
-    expect(SCENE.shop).toBe(10);
     expect(sceneFor({ kind: 'auction', entityId: 1, basePrice: 0, bidders: [] })).toBe(SCENE.auction);
+  });
+
+  it('★ 卡片商店／道具商店**不走这条路** —— 它要叠资源 10 的十几张图，另有整屏实现', () => {
+    expect(sceneFor({ kind: 'shop', points: 0, tools: [], cards: [], owned: { cards: [], tools: [] } })).toBeNull();
   });
 
   it('★ 探監與探病是两张不同的底图', () => {

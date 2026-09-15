@@ -29,6 +29,7 @@ import {
   DIALOG_SKIN_IMAGE,
   DIALOG_SKIN_RESOURCE,
   DICE_RESOURCE,
+  DICE_SLOTS,
   DICE_TOGGLE_AT,
   DICE_TOGGLE_IMAGE,
   DICE_TOGGLE_SIZE,
@@ -157,10 +158,16 @@ export function drawAdvance(
  * 画已掷出的骰子 —— 原版是 `Panel.mkf` 资源 3，三颗各六面，
  * 图号 = `颗号 × 6 + 点数 − 1`（@source VA 0x0041965e）。
  *
- * **摆在哪照原版**：基准点 `DICE_AT_BASE`（棋盘局部 (221,193)，即棋盘中央附近）
- * 再按**屏幕朝向**加 `DICE_AT` 的偏移（@source VA 0x004195d6）——
- * 于是骰子落在玩家面朝的那一侧，就是「人物把骰子扔出去」。
- * 原版三颗画在同一点；这里为了看得清，从基准点往下逐颗错开。
+ * **摆在哪逐条照原版**（@source VA 0x0041964f 的绘制循环）：
+ * ```asm
+ * edi = [eax*8 + 0x475224] + 0x88      ; eax = 屏幕朝向
+ * ebp = [eax*8 + 0x475228] + 0x30
+ * fcn_0045663e(面, 那张图, edi + 0x55, ebp + 0x91)
+ *   ; 内部再做 x -= 图自己的锚点x ; y -= 图自己的锚点y
+ * ```
+ * 三颗图的锚点各不相同（见 `known-deviations.md` Q-TURN-1 §4），所以
+ * **不是**同一个点往下叠 —— 这正是「三颗骰子并排躺在地上」的由来：
+ * 第 1 颗 x = 1、第 2 颗 96、第 3 颗 153（宽 35 / 30 / 34）。
  *
  * @param screenDir 玩家朝向换算到屏幕后的方位（`(dir + 8 − view) & 7`）
  */
@@ -172,13 +179,43 @@ export function drawDice(
 ): void {
   const off = DICE_AT[((screenDir % 8) + 8) % 8] ?? [0, 0];
   const at = toBoard({ x: DICE_AT_BASE.x + off[0], y: DICE_AT_BASE.y + off[1] });
-  let y = at.y;
-  for (let i = 0; i < dice.length; i++) {
+  for (let i = 0; i < dice.length && i < DICE_SLOTS; i++) {
     const img = sprite('Panel.mkf', DICE_RESOURCE, diceImage(i, dice[i] ?? 1), true);
     if (img === null) continue;
-    ctx.drawImage(img.bitmap, at.x, y);
-    y += img.height + 4;
+    // ★ 锚点在精灵里（`Sprite.anchorX/Y` = 资源自己的 x/y），按它反推左上角
+    ctx.drawImage(img.bitmap, at.x - img.anchorX, at.y - img.anchorY);
   }
+}
+
+/**
+ * 滚骰的 FLIC 该画在棋盘局部哪里。
+ *
+ * @source VA 0x004195d6：`edi = 0x88 + DX[屏幕朝向]`、`ebp = 0x30 + DY[屏幕朝向]`，
+ *   FLIC 就画在 `(edi, ebp)`，尺寸 189×285。
+ *   `DICE_AT_BASE` 是「点数图的落点」，本函数的原点是**影片左上角** ——
+ *   两者差 `(0x55, 0x91)`。
+ */
+export function diceFlicOrigin(screenDir: number): { x: number; y: number } {
+  const off = DICE_AT[((screenDir % 8) + 8) % 8] ?? [0, 0];
+  return toBoard({
+    x: DICE_AT_BASE.x - 0x55 + off[0],
+    y: DICE_AT_BASE.y - 0x91 + off[1],
+  });
+}
+
+/**
+ * 画滚骰影片的一帧。
+ *
+ * ★ 原版把 FLIC 与点数图**都画进后台面、再整块贴回**（flags bit0 = 保存背景），
+ *   而影片里的索引 0 是抠空的 —— 所以骰子是在棋盘上滚，不是盖一块方框。
+ */
+export function drawDiceFlic(
+  ctx: CanvasRenderingContext2D,
+  frame: ImageBitmap,
+  screenDir: number,
+): void {
+  const at = diceFlicOrigin(screenDir);
+  ctx.drawImage(frame, at.x, at.y);
 }
 
 /** 一次点击可能落在哪 */

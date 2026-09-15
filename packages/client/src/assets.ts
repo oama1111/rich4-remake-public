@@ -8,7 +8,7 @@
  *   不存在「Node 一套、浏览器一套」的漂移风险。
  */
 
-import { MkfArchive, parseSpriteSheet, type SpriteSheet } from '@rich4/assets-pipeline';
+import { MkfArchive, parseSpriteSheet, decodeFlic, type SpriteSheet } from '@rich4/assets-pipeline';
 import { decodeImage, decodeGround, decodeRaw555, isGround, paletteRgb } from '@rich4/assets-pipeline';
 import { HOLIDAY_ART_SIZE, holidayArtResource } from '@rich4/core';
 import { hdRelativePath, taskIdOf } from '@rich4/assets-pipeline';
@@ -60,6 +60,17 @@ export async function loadArchives(base: string): Promise<LoadedArchives> {
  * 每张用 154..312 个像素 —— 就是那圈线。故渲染时把 #255 换成所有者的角色色。
  */
 export const RING_PALETTE_INDEX = 255;
+
+/** 一段解好的 FLIC 影片（逐帧位图） */
+export interface LoadedFlic {
+  frames: ImageBitmap[];
+  width: number;
+  height: number;
+  /** 每帧停留多少毫秒 —— FLIC 头部自带（滚骰是 14） */
+  frameMs: number;
+  /** 释放这一段的位图；释放后再取会重新解 */
+  close: () => void;
+}
 
 /** 一张解码好、可直接 drawImage 的图 */
 export interface Sprite {
@@ -211,6 +222,8 @@ export class SpriteCache {
   readonly #onEvict: ((sprite: Sprite) => void) | null;
   readonly #createBitmap: BitmapFactory;
   readonly #sheets = new Map<string, SpriteSheet | null>();
+  /** FLIC 影片缓存 —— 单独一张表，不参与 `#sprites` 的按图 LRU（见 `getFlic`） */
+  readonly #flics = new Map<string, LoadedFlic | null>();
   readonly #sprites = new Map<string, Sprite | null>();
   readonly #bytes = new Map<string, Uint8Array | null>();
 
@@ -257,6 +270,44 @@ export class SpriteCache {
     const sheet = data === null ? null : parseSpriteSheet(data);
     this.#sheets.set(key, sheet);
     return sheet;
+  }
+
+  /**
+   * 取一段 **FLIC 影片**（`Panel.mkf` 4/5/6 = 滚骰）的逐帧位图。
+   *
+   * ★ 原版的滚骰不是贴图序列，是 FLIC；解码器在 `@rich4/assets-pipeline` 的
+   *   `flic.ts`（算法出处见那里的文件头）。
+   *
+   * ⚠️ 一次 36 帧 × 189×285 就是约 7.7 MB 显存，故**按资源缓存**并在调用方
+   *   不再需要时 `closeDiceFlic()` 释放；不放进 `#sprites` 的 LRU 里 ——
+   *   那里的淘汰粒度是一张图，挡不住这种整段影片。
+   */
+  async getFlic(archive: ArchiveName, resource: number): Promise<LoadedFlic | null> {
+    const key = `${archive}:${resource}:flic`;
+    const hit = this.#flics.get(key);
+    if (hit !== undefined) return hit;
+    const data = this.#bytesOf(archive, resource);
+    const decoded = data === null ? null : decodeFlic(data);
+    if (decoded === null) {
+      this.#flics.set(key, null);
+      return null;
+    }
+    const frames: ImageBitmap[] = [];
+    for (const rgba of decoded.frames) {
+      frames.push(await this.#createBitmap(new ImageData(rgba, decoded.info.width, decoded.info.height)));
+    }
+    const out: LoadedFlic = {
+      frames,
+      width: decoded.info.width,
+      height: decoded.info.height,
+      frameMs: decoded.info.frameMs,
+      close: () => {
+        for (const b of frames) b.close();
+        this.#flics.delete(key);
+      },
+    };
+    this.#flics.set(key, out);
+    return out;
   }
 
   /**
@@ -692,6 +743,157 @@ export function directionalImage(imageCount: number, screenDir: number, frame: n
 /** 角色头像 —— `map.mkf` 资源号，7 张表情，取第 0 张即可 */
 export function portraitResource(character: number): number {
   return 27 + character;
+}
+
+// ============================================================
+//  開局設定屏（選角色／選地圖）—— 全部在 jump.mkf 里
+// ============================================================
+
+/**
+ * 開局設定屏用到的资源（全部在 `jump.mkf`）。
+ *
+ * @source `_rich4_init_new_game` VA 0x00406e93 起：
+ * ```asm
+ * push "JUMP.MKF"                / call load_mkf            → [0x48a3b0]
+ * read_mkf(jump, 舞台×4 + 地图)                              → 0x48a358（整屏场景）
+ * read_mkf(jump, 8)                                          → 0x48a3b8（这一屏的拼件表）
+ * read_mkf(Data, 2)                                          → 0x48a3c0（12 张头像）
+ * ```
+ * ★ **场景图号 = `舞台×4 + 地图`，与 `readMapData`/`loadGround` 同一套地图号编码**，
+ *   所以两个舞台八张地图（TAIWAN/CHINA/JAPAN/U.S.A 与
+ *   STAR/ANCIENT/DINOSAUR/ISLAND）在这里就是 `globalMapId` 本身。
+ */
+export function setupSceneResource(globalMapId: number): number {
+  return globalMapId;
+}
+
+/** 開局設定屏那一批拼件所在的资源 —— `jump.mkf` 资源 8，共 22 张 */
+export const SETUP_UI_RESOURCE = 8;
+
+/**
+ * 资源 8 里各张的用途（尺寸取自实解，用途取自 xref）。
+ *
+ * | 图 | 尺寸 | 用途 |
+ * |---|---|---|
+ * | 0 | 440×155 | 角色格底图（6×2 蓝黄交替格，格子带金边） |
+ * | 1 / 21 | 192×461 | 右侧竖栏整图 —— **舞台 0 / 舞台 1** 各一张（地图名烧在图里） |
+ * | 2 / 3 | 80×40 | `OK` / `EXIT` 两颗按钮的**按下图** |
+ * | 4 | 24×25 | 下拉那条蓝三角的**按下图**（黄三角） |
+ * | 5 | 42×71 | 三行下拉浮窗底图（遊戲人數／行進方式） |
+ * | 6 | 67×140 | 六行下拉浮窗底图（總資金／土地權限／遊戲時間） |
+ * | 7 | 87×140 | 六行下拉浮窗底图（勝利條件，数值最长） |
+ * | 8 | 27×25 | ★ 地图行上那个**红勾**，锚点 (0,0) |
+ * | 9 | 50×52 | 压在一个**头像**正中的红叉（锚点在正中），标记该角色已出局 |
+ * | 10 | 27×27 | （本屏未用，锚点在正中） |
+ *
+ * ⚠️ **表项从 +0xc 起、每条 12 字节**，所以「图 n」= `a3b8 + 0xc + n×12`：
+ * `a3b8 + 0x6c` = 图 **8**、`a3b8 + 0x3c` = 图 **4**、`a3b8 + 0x78` = 图 **9**。
+ * 先前把 `0x6c` 当成「9×12」而取了图 9 —— 差一位，红勾于是落不到勾选框里。
+ *
+ * @source 竖栏整图 `VA 0x00406ff6`：`图号 = 舞台×20 + 1`（舞台 0→1、舞台 1→21）
+ * @source 下拉浮窗底图 `VA 0x0046ccb8`：`[5, 6, 5, 6, 6, 7]`
+ * @source 红勾 `VA 0x0040560d`、下拉三角 `VA 0x004054b5`、头像上的红叉 `VA 0x004042e0`
+ */
+export const SETUP_UI = {
+  board: 0,
+  okDown: 2,
+  exitDown: 3,
+  arrowDown: 4,
+  popup3: 5,
+  popup6: 6,
+  popup6w: 7,
+  tick: 8,
+  characterOut: 9,
+} as const;
+
+/** 右侧竖栏整图的图号 —— 两个舞台各一张 @source VA 0x00406ff6 */
+export function setupPanelImage(stage: number): number {
+  return stage * 20 + 1;
+}
+
+/** 角色头像所在资源 @source `read_mkf(Data.mkf, 2)` VA 0x00406fcd */
+export const SETUP_PORTRAIT_RESOURCE = 2;
+
+/**
+ * 开局设定屏里那个**侧视走动小人**的图号。
+ *
+ * @source `_rich4_select_nth_player` VA 0x00404d55：
+ * ```asm
+ * eax = 角色×3 + [0x46cb44]（行进方式）
+ * read_mkf(jump, eax + 9)          ; ← 资源 9..44 = 12 角色 × 3 载具
+ * ```
+ * ★ 这一批**不是**棋盘上那个八向棋子（那是 `Data.mkf` 0x80+…），
+ *   是 `jump.mkf` 9..44 的侧视图组，只在这一屏用。
+ */
+export function setupWalkResource(character: number, vehicle: number): number {
+  return 9 + character * 3 + (vehicle & 3);
+}
+
+/**
+ * 资源 9..44 各自的**帧数**（12 角色 × 3 载具，按 `角色×3 + 载具` 排）。
+ *
+ * 原版是从资源头里读图数（`mov eax, [资源+4]`，见 `VA 0x00405e5f`），
+ * 这里由 `jump.mkf` 实解抄下来 —— 引擎的取图接口只给单帧，拿不到总数。
+ */
+export const SETUP_WALK_FRAMES: readonly number[] = [
+  20, 10, 8, 20, 10, 8, 7, 11, 9, 20, 11, 11, 20, 10, 8, 11, 11, 11, 21, 11, 9, 20, 11, 11, 10,
+  11, 11, 20, 11, 11, 20, 10, 8, 18, 11, 21,
+];
+
+/** 某个角色、某种行进方式的走动帧数 @source 同上表 */
+export function setupWalkFrames(character: number, vehicle: number): number {
+  return SETUP_WALK_FRAMES[character * 3 + (vehicle & 3)] ?? 1;
+}
+
+/** 开局设定屏那一整屏场景：**没有 SPR/SMP 头**，整块就是 640×480 的 RGB555 */
+export const SETUP_SCENE_W = 640;
+export const SETUP_SCENE_H = 480;
+export const SETUP_SCENE_BYTES = SETUP_SCENE_W * SETUP_SCENE_H * 2;
+
+/**
+ * 解一屏开局设定屏的背景场景。
+ *
+ * @source `_rich4_init_new_game` VA 0x00406e93 起：
+ * ```asm
+ * read_mkf(jump, 舞台×4 + 地图, buf = 0x48a358)     ; 原始像素
+ * fcn_004552b7(0x48a354, 0x48a358, 0x96000, -0x10)  ; ★ 逐像素过一遍换算表
+ * ```
+ * 那张表 @ 0x485d68 −16×32 = `[0,0,1,1,2,2,3,3,…]` —— 每个 5 位分量**除以 2**，
+ * 也就是**整屏压到一半亮度**（否则上面那些面板字看不清）。
+ * 换地图时同一段再跑一次（`VA 0x0040564d`）。
+ */
+export function decodeSetupScene(data: Uint8Array): Uint8ClampedArray | null {
+  if (data.length < SETUP_SCENE_BYTES) return null;
+  const count = SETUP_SCENE_W * SETUP_SCENE_H;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  // 先把「除以 2」落到 5 位分量上，再交给管线那把裸 555 解码器展开 ——
+  // 展开口径（`expand5`）与全项目一致，不另起一套。
+  const halved = new Uint8Array(SETUP_SCENE_BYTES);
+  const out = new DataView(halved.buffer);
+  for (let p = 0; p < count; p++) {
+    const v = view.getUint16(p * 2, true);
+    const half = ((((v >> 10) & 31) >> 1) << 10) | ((((v >> 5) & 31) >> 1) << 5) | ((v & 31) >> 1);
+    out.setUint16(p * 2, half, true);
+  }
+  return decodeRaw555(SETUP_SCENE_W, SETUP_SCENE_H, halved).rgba;
+}
+
+/** 读一屏开局设定屏的场景（解不出来返回 null） */
+export async function loadSetupScene(
+  archives: LoadedArchives,
+  globalMapId: number,
+): Promise<ImageBitmap | null> {
+  let data: Uint8Array;
+  try {
+    data = archives.get('jump.mkf').read(setupSceneResource(globalMapId));
+  } catch {
+    return null;
+  }
+  const rgba = decodeSetupScene(data);
+  if (rgba === null) return null;
+  const image = new ImageData(SETUP_SCENE_W, SETUP_SCENE_H);
+  image.data.set(rgba);
+  return createImageBitmap(image);
 }
 
 // ============================================================

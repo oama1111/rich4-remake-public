@@ -227,7 +227,8 @@ export function interactionUi(
       };
 
     case 'lottery': {
-      // 号码多，全铺出来会淹掉面板；给前 12 个 + 一个「随手买一个」
+      // ★ 一次落点只买一注：选中之后 pending 就收了（原版买完投注屏自行关闭）。
+      // 号码多，全铺出来会淹掉面板；给前 12 个 + 一个「離開」。
       const shown = pending.available.slice(0, 12);
       return {
         title: '樂透',
@@ -286,42 +287,21 @@ export function interactionUi(
       };
 
     case 'shop': {
-      // ★ 這一屏花的是**點券**，不是錢。
-      //   需求方描述的原版长这样：左侧是可买的卡片列表、右下是自己已有的卡片
-      //   （点了卖掉换點數）、右上角一个三角钮切到道具商店。
-      //   本引擎还没做那一屏的版式，但**买与卖两边都在这里出**，功能是全的。
-      const affordableTools = pending.tools.filter(
-        (t) => t.price <= pending.points && (t.stock === null || t.stock > 0),
-      );
-      const affordableCards = pending.cards.filter((c) => c.price <= pending.points);
+      // ★ 這一屏花的是**點數**，不是錢。
+      //
+      // ★★ **这一屏不走通用对话框**（U-2 / P2-8）：原版是整屏一屏，左侧是可买的
+      //   卡片／道具清单、右下是自己的 5×3 格（点了卖掉换點數）、右上角三角钮切页、
+      //   右下 EXIT 走人；位置与命中都在 `shop-screen.ts`，`main.ts` 的
+      //   `drawShopStage` / `hitShop` 直接接管鼠标。
+      //
+      //   这里留一份**最小**的交互壳，只为两件事：
+      //   ① 别的路径（AI、联机广播）问到 `interactionUi` 时有个东西返回；
+      //   ② 万一商店屏没画出来，至少还剩一个「離開」能把这局继续下去。
+      //   买与卖**不在这里出**（否则同一个动作会有两条入口）。
       return {
         title: PLACE.departmentStore.text,
-        detail:
-          `${FIELD.points.text} ${pending.points}` +
-          `　買得起 ${affordableCards.length} 種卡、${affordableTools.length} 種道具` +
-          (pending.owned.cards.length + pending.owned.tools.length > 0
-            ? `　手上 ${pending.owned.cards.length} 種卡、${pending.owned.tools.length} 種道具可賣`
-            : ''),
-        choices: [
-          ...affordableTools.map((t) => ({
-            label: `${BUTTON.buy.text} ${t.name} ${t.price}點`,
-            action: { type: 'shop' as const, op: 'buyTool' as const, id: t.id },
-          })),
-          ...affordableCards.slice(0, 8).map((c) => ({
-            label: `${BUTTON.buy.text} ${c.name} ${c.price}點`,
-            action: { type: 'shop' as const, op: 'buyCard' as const, id: c.id },
-          })),
-          // ★ 卖 —— 退九成點數（places/shop.ts 的 resellValue）
-          ...pending.owned.cards.map((c) => ({
-            label: `${BUTTON.sell.text} ${c.name} +${c.refund}點`,
-            action: { type: 'shop' as const, op: 'sellCard' as const, id: c.id },
-          })),
-          ...pending.owned.tools.map((t) => ({
-            label: `${BUTTON.sell.text} ${t.name}×${t.count} +${t.refund}點`,
-            action: { type: 'shop' as const, op: 'sellTool' as const, id: t.id, count: 1 },
-          })),
-          { label: BUTTON.exit.text, action: { type: 'declineDecision' } },
-        ],
+        detail: `${FIELD.points.text} ${pending.points}`,
+        choices: [{ label: BUTTON.exit.text, action: { type: 'declineDecision' } }],
       };
     }
 

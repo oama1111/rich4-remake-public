@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
-import { fitCamera, hitToolbar, TOOLBAR } from './render.ts';
+import { DRAW_CLASS, drawKey, fitCamera, hitToolbar, TOOLBAR } from './render.ts';
 import { TOOLBAR_ICON_COUNT, TOOLBAR_STRIP_IMAGE } from './assets.ts';
 import { LAYOUT } from './stage.ts';
 import type { Rich4Map } from '@rich4/core';
@@ -88,5 +88,41 @@ describe('fitCamera —— 地图视角要「整张铺满」（S6）', () => {
     const window_ = fitCamera(m, 1280, 960);
     // 窗口大得多，缩放就一定更大；拿窗口尺寸去算，地图会被放大后裁掉大半
     expect(window_.scale).toBeGreaterThan(board.scale);
+  });
+});
+
+describe('★ 绘制槽的排序键（Q-DRAW-1）—— 遮挡关系全靠它', () => {
+  it('主序是**屏幕 Y**：屏幕 Y 小的先画（先画 = 会被后画的盖住）', () => {
+    // 屏幕 Y 小 = 靠后（远），必须先画；这正是等距视角的画家顺序
+    expect(drawKey(100, DRAW_CLASS.building)).toBeLessThan(drawKey(101, DRAW_CLASS.building));
+    expect(drawKey(-50, DRAW_CLASS.building)).toBeLessThan(drawKey(0, DRAW_CLASS.building));
+  });
+
+  it('★ 同屏幕 Y 时：建筑先画、人物后画 —— 这就是「建筑挡得住人物」的机制', () => {
+    const y = 200;
+    // 建筑类别 0x0 < 玩家 0xc/0xd ⇒ 建筑排在前面 ⇒ 后画的人物盖住建筑
+    expect(drawKey(y, DRAW_CLASS.building)).toBeLessThan(drawKey(y, DRAW_CLASS.player));
+    expect(drawKey(y, DRAW_CLASS.player)).toBeLessThan(drawKey(y, DRAW_CLASS.currentPlayer));
+  });
+
+  it('类别只做同 Y 的 tie-break，不会盖过屏幕 Y 的主序', () => {
+    // 屏幕 Y 差 1，键差 16；类别最大 0xf < 16，故跨 Y 时类别翻不过来
+    expect(drawKey(200, DRAW_CLASS.building)).toBeLessThan(drawKey(201, DRAW_CLASS.currentPlayer));
+    // 反例检查：若把类别当主序，这一条会失败
+    expect(drawKey(200, 0xf) - drawKey(200, 0x0)).toBe(0xf);
+  });
+
+  it('★ 关键症状：站在高大建筑**背后**的棋子必须排在建筑前面', () => {
+    // 建筑底座在屏幕 Y=300；棋子站在它背后（屏幕 Y 更小 = 更远）
+    const building = drawKey(300, DRAW_CLASS.building);
+    const behind = drawKey(260, DRAW_CLASS.currentPlayer);
+    const inFront = drawKey(340, DRAW_CLASS.currentPlayer);
+    expect(behind).toBeLessThan(building); // 远处的人先画 ⇒ 被建筑盖住 ✓
+    expect(building).toBeLessThan(inFront); // 近处的人后画 ⇒ 盖住建筑 ✓
+  });
+
+  it('负数屏幕 Y 按 12 位截断后仍排在正数之前（原版就是这么算的）', () => {
+    expect(drawKey(-1, DRAW_CLASS.building)).toBeLessThan(drawKey(0, DRAW_CLASS.building));
+    expect(drawKey(-1, DRAW_CLASS.building)).toBeLessThan(0);
   });
 });

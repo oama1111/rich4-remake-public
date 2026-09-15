@@ -18,14 +18,21 @@
  */
 
 import type { RoomInfo, SeatInfo } from '@rich4/core';
-import { BTN_BACK, BTN_START, SEATS } from './setup.ts';
 import { portraitResource, type ArchiveName, type Sprite } from './assets.ts';
 
 /** 最多几个座位 —— 与开局设置一致（原版四人） */
 export const MAX_SEATS = 4;
 
-/** 座位卡片：直接沿用開局设置的摆位常量 */
-export const LOBBY_SEATS = SEATS;
+/**
+ * 座位卡片：**联机大厅自己的摆位**。
+ *
+ * ⚠️ 先前直接借用開局設定屏的 `SEATS`／`BTN_*`。那一屏照汇编重做之后
+ *   （座位不再是四个方框，而是画面底部四个走动的侧视小人），
+ *   那套常量就不存在了 —— 联机大厅是本项目自己加的屏，本来就该自排各的。
+ */
+export const LOBBY_SEATS = { x: 40, y: 292, pitch: 148, w: 132, h: 106 } as const;
+export const BTN_START = { x: 506, y: 416, w: 110, h: 34 } as const;
+export const BTN_BACK = { x: 398, y: 416, w: 96, h: 34 } as const;
 
 /** 一个座位格子的视图数据 */
 export interface LobbySlot {

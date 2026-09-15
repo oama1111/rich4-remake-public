@@ -8,7 +8,7 @@
  * | 资源 | 图数 | 是哪一屏 |
  * |---|---|---|
  * | 9  | 25 | **個人資產表**（右下角那块是自己持有的卡片／道具欄）|
- * | 10 | 38 | **卡片商店／道具商店**（右上角卡通魔法師，左侧可买的卡片列表，右下是自己的卡片、点了卖成點數；右上角三角钮切到道具商店）|
+ * | 10 | 38 | **卡片商店／道具商店** —— ⚠️ **不走本模块**：它要用这个资源里的十几张图叠出来（底图／老板娘／气泡／货架栏／两个钮／點數底板），由 `shop-screen.ts` 整屏接管 |
  * | 12 | 10 | 樂透投注站（畫面上有隻貓女，還有獎池金額；点了在下面选号码）|
  * | 15 | 47 | 樂透開獎（中间的奖球会**模拟真实滚动摇晃**）|
  * | 18 | 35 | 魔法屋（中间有个女巫；鼠标划过外圈的选项会高亮 + 中间出文字提示 + 提示音）|
@@ -42,8 +42,6 @@ export const SCENE_ARCHIVE = 'Panel.mkf' as const;
 export const SCENE = {
   /** 個人資產表（含自己的卡片／道具欄）*/
   assets: 9,
-  /** 卡片商店／道具商店 —— 就是棋盤上的「百貨公司」格 */
-  shop: 10,
   lotteryCounter: 12,
   lotteryDraw: 15,
   magicHouse: 18,
@@ -85,9 +83,9 @@ export function sceneFor(pending: PendingInteraction | null): number | null {
       return SCENE.bank;
     case 'lottery':
       return SCENE.lotteryCounter;
-    case 'shop':
-      // ★ 棋盤上那格叫「百貨公司」，但屏其实是**卡片商店／道具商店**
-      return SCENE.shop;
+    // ★ 棋盤上那格叫「百貨公司」，但屏其实是**卡片商店／道具商店** ——
+    //   它不在这条「一张底图 + 通用对话框」的路上：那一屏要用 `Panel.mkf` 资源 10
+    //   的十几张图叠出来，由 `shop-screen.ts` 整屏接管（见 `main.ts` 的 `drawShopStage`）。
     case 'auction':
       return SCENE.auction;
     case 'bail':

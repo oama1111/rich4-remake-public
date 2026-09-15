@@ -2,27 +2,36 @@
  * 設定屏的几何与取值
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * ★ 这些数字全部来自 exe 的数据表或原版底图的量测（见 options.ts 的注释）。
- *   它们是「原版长什么样」的断言，不是本引擎的实现细节 —— 谁改了都得回来
- *   解释为什么。
+ * ★ 这些数字**全部来自 exe 的数据表**（`0x474b92` 控件矩形表、`0x474b38` 文字坐标表、
+ *   `0x474a54`/`0x474abc` 串表、`0x41034b` 处理跳表），不是照底图量的。
+ *   它们是「原版长什么样」的断言 —— 谁改了都得回来解释为什么。
  */
 
 import { describe, expect, it } from 'vitest';
 import {
-  BARS,
-  BOTTOM_BUTTONS,
+  BAR_AT,
+  CELL,
+  CONTROL,
+  CONTROL_RECTS,
   DEFAULT_OPTIONS,
   DIALOG,
   HOTKEY_NAMES,
-  MARKS,
+  IMG,
+  LAMP_AT,
   OPTION_LABELS,
+  SIDE_ART_AT,
   SIDE_BUTTONS,
-  TRACK_LIST,
+  SIDE_TEXT,
   TRACK_NAMES,
-  WINDOW_MARKS,
+  TRACK_ROWS,
+  WINDOW_LAMP,
   applyOptionsHit,
+  controlHit,
+  drawOptions,
+  hitControl,
   hitOptions,
   volumeOf,
+  type GameOptions,
 } from './options.ts';
 
 describe('設定屏的版式', () => {
@@ -30,7 +39,6 @@ describe('設定屏的版式', () => {
     // x0 = 0x140 − (w >> 1)，y0 = 0x0f0 − (h >> 1)
     expect(DIALOG.x).toBe(320 - (347 >> 1));
     expect(DIALOG.y).toBe(240 - (363 >> 1));
-    // 整个对话框必须落在 640×480 之内
     expect(DIALOG.x + DIALOG.w).toBeLessThanOrEqual(640);
     expect(DIALOG.y + DIALOG.h).toBeLessThanOrEqual(480);
   });
@@ -52,53 +60,76 @@ describe('設定屏的版式', () => {
     ]);
   });
 
-  it('底部两个按钮的文字正好落在按钮面的正中', () => {
-    for (const r of [BOTTOM_BUTTONS.cancel, BOTTOM_BUTTONS.ok]) {
-      // 按钮面 62×30，文字锚点 (30,14) @source VA 0x00411d74
-      expect(r.w).toBe(62);
-      expect(r.h).toBe(30);
-    }
-    expect(BOTTOM_BUTTONS.cancel.x + 31).toBe(224);
-    expect(BOTTOM_BUTTONS.ok.x + 31).toBe(296);
+  it('16 个控件矩形就是表 0x474b92 里的原值', () => {
+    expect(CONTROL_RECTS.map((r) => [r.x, r.y, r.w, r.h])).toEqual([
+      [81, 17, 47, 16], // 遊戲速度条
+      [89, 81, 63, 16], // 音 樂条
+      [89, 113, 63, 16], // 音 效条
+      [227, 14, 100, 35], // 右上角钮 ×3
+      [227, 68, 100, 35],
+      [227, 119, 100, 35],
+      [18, 226, 159, 119], // 樂曲列表
+      [194, 314, 62, 30], // 取 消
+      [266, 314, 62, 30], // 確 定
+      [98, 50, 15, 15], // 四盏灯
+      [66, 82, 15, 15],
+      [66, 114, 15, 15],
+      [98, 146, 15, 15],
+      [217, 214, 107, 22], // 視窗三行
+      [217, 246, 107, 22],
+      [217, 278, 107, 22],
+    ]);
+    expect(CONTROL_RECTS).toHaveLength(16);
   });
 
-  it('三条进度条的档位数与 RICH4.CFG 对得上', () => {
-    expect(BARS.speed.cells).toBe(3); // offset 0: 00,01,02
-    expect(BARS.music.cells).toBe(5); // offset 2: 00~04
-    expect(BARS.sound.cells).toBe(5); // offset 3: 00~04
+  it('三条进度条的档位数与各自能点出来的范围', () => {
+    // 速度：3 格，(relx − 81) >> 4 → 0..2
+    expect(CONTROL_RECTS[CONTROL.SPEED_BAR]!.w).toBe(3 * CELL.pitch - 1);
+    // 音樂/音效：4 格，(relx − 89) >> 4 **再 +1** → 1..4（0 只能靠灯关）
+    expect(CONTROL_RECTS[CONTROL.MUSIC_BAR]!.w).toBe(4 * CELL.pitch - 1);
+    expect(CONTROL_RECTS[CONTROL.SOUND_BAR]!.w).toBe(4 * CELL.pitch - 1);
   });
 
-  it('每条进度条、每个标记都在对话框内，且彼此不重叠', () => {
-    const boxes: { x: number; y: number; w: number; h: number }[] = [];
-    for (const b of Object.values(BARS)) {
-      boxes.push({ x: b.x, y: b.y, w: b.cells * 16 - 1, h: 17 });
+  it('四条灯与視窗三选的贴图位置就在各自控件的左上角', () => {
+    const at = [
+      [CONTROL.ANIM_LAMP, LAMP_AT.animation],
+      [CONTROL.MUSIC_LAMP, LAMP_AT.music],
+      [CONTROL.SOUND_LAMP, LAMP_AT.sound],
+      [CONTROL.AUTOSAVE_LAMP, LAMP_AT.autoSave],
+    ] as const;
+    for (const [ctrl, p] of at) {
+      expect({ x: CONTROL_RECTS[ctrl]!.x, y: CONTROL_RECTS[ctrl]!.y }).toEqual(p);
     }
-    for (const m of Object.values(MARKS)) boxes.push({ ...m, w: 15, h: 16 });
-    for (const b of boxes) {
-      expect(b.x).toBeGreaterThanOrEqual(0);
-      expect(b.y).toBeGreaterThanOrEqual(0);
-      expect(b.x + b.w).toBeLessThanOrEqual(DIALOG.w);
-      expect(b.y + b.h).toBeLessThanOrEqual(DIALOG.h);
-    }
-    for (let i = 0; i < boxes.length; i++) {
-      for (let j = i + 1; j < boxes.length; j++) {
-        const a = boxes[i]!;
-        const b = boxes[j]!;
-        const hit = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-        expect(hit).toBe(false);
-      }
-    }
+    // 視窗的灯：x 固定 218（`x + 0xda`），y 查表 0x474c92
+    expect(WINDOW_LAMP.x).toBe(218);
+    expect([...WINDOW_LAMP.y]).toEqual([218, 250, 281]);
   });
 
   it('八首樂曲与三组按钮文字都是表里的原串', () => {
     expect(TRACK_NAMES).toHaveLength(8);
     expect(TRACK_NAMES[0]).toBe('1.星際總動員');
     expect(TRACK_NAMES[7]).toBe('8.漫步星空下');
-    expect(TRACK_LIST.rows).toBe(TRACK_NAMES.length);
+    expect(TRACK_ROWS.rows).toBe(TRACK_NAMES.length);
     expect(SIDE_BUTTONS[0]).toEqual(['日期更改', '熱鍵設定', '遊戲說明']);
     expect(SIDE_BUTTONS[1]).toEqual(['重新遊戲', '認輸投降', '結束遊戲']);
-    // 熱鍵頁两列各 14 条 @source VA 0x00411c52 `cmp ebx, 0xe`
+    // 右上角三条文字挂在按钮组图（嵌在主面板 (168,2)）里的 (108, 31/85/136)
+    expect(SIDE_ART_AT).toEqual({ x: 168, y: 2 });
+    expect([SIDE_TEXT.x, ...SIDE_TEXT.y]).toEqual([108, 31, 85, 136]);
+    // 熱鍵頁两列各 14 条 @source VA 0x00411c20 `cmp ebx, 0xe`
     expect(HOTKEY_NAMES).toHaveLength(28);
+  });
+
+  it('资源 3 的图号角色不许挪 —— 每一个都钉在代码里', () => {
+    expect(IMG.PANEL).toBe(0);
+    expect(IMG.HOTKEY_PAGE).toBe(1);
+    expect(IMG.DATE_PAGE).toBe(2);
+    expect(IMG.CANCEL_DOWN).toBe(3);
+    expect(IMG.OK_DOWN).toBe(4);
+    expect(IMG.CELL).toBe(5);
+    expect(IMG.SIDE_DOWN).toBe(6);
+    expect(IMG.LAMP).toBe(9);
+    expect(IMG.SIDE_TITLE).toBe(10);
+    expect(IMG.SIDE_GAME).toBe(11);
   });
 });
 
@@ -110,79 +141,253 @@ describe('設定屏的命中判定', () => {
     expect(hitOptions(639, 479)).toBeNull();
   });
 
+  it('矩形是左闭右开 —— 右/下边界那一个像素不算', () => {
+    const r = CONTROL_RECTS[CONTROL.OK]!;
+    expect(hitControl(r.x, r.y)).toBe(CONTROL.OK);
+    expect(hitControl(r.x + r.w - 1, r.y + r.h - 1)).toBe(CONTROL.OK);
+    expect(hitControl(r.x + r.w, r.y)).toBeNull();
+    expect(hitControl(r.x, r.y + r.h)).toBeNull();
+  });
+
   it('点进度条给出那一格的档位', () => {
-    for (let i = 0; i < BARS.music.cells; i++) {
-      expect(at(BARS.music.x + i * 16 + 7, BARS.music.y + 8)).toEqual({
-        kind: 'bar',
-        field: 'music',
-        value: i,
-      });
-    }
+    expect([0, 1, 2].map((i) => at(BAR_AT.speed.x + i * 16 + 7, BAR_AT.speed.y + 8))).toEqual([
+      { kind: 'bar', ctrl: CONTROL.SPEED_BAR, field: 'speed', value: 0 },
+      { kind: 'bar', ctrl: CONTROL.SPEED_BAR, field: 'speed', value: 1 },
+      { kind: 'bar', ctrl: CONTROL.SPEED_BAR, field: 'speed', value: 2 },
+    ]);
+    // 音樂/音效四格给的是 1..4 —— 第 0 档只能靠灯关出来
+    expect([0, 1, 2, 3].map((i) => {
+      const h = at(BAR_AT.music.x + i * 16 + 7, BAR_AT.music.y + 8);
+      return h?.kind === 'bar' ? h.value : null;
+    })).toEqual([1, 2, 3, 4]);
+    expect(controlHit(CONTROL.SOUND_BAR, BAR_AT.sound.x + 63 - 1, 0)!.kind).toBe('bar');
   });
 
   it('点标记给出那一项', () => {
-    expect(at(MARKS.autoSave.x + 7, MARKS.autoSave.y + 8)).toEqual({
-      kind: 'mark',
+    expect(at(LAMP_AT.autoSave.x + 7, LAMP_AT.autoSave.y + 8)).toEqual({
+      kind: 'lamp',
+      ctrl: CONTROL.AUTOSAVE_LAMP,
       field: 'autoSave',
     });
   });
 
   it('視窗三选一 —— 三行各不相同', () => {
-    const got = [0, 1, 2].map((i) =>
-      at(WINDOW_MARKS.x + 60, WINDOW_MARKS.y0 + i * WINDOW_MARKS.pitch + 8),
-    );
+    const got = [0, 1, 2].map((i) => at(217 + 60, 214 + i * 32 + 8));
     expect(got).toEqual([
-      { kind: 'window', value: 0 },
-      { kind: 'window', value: 1 },
-      { kind: 'window', value: 2 },
+      { kind: 'window', ctrl: CONTROL.WINDOW_0, value: 0 },
+      { kind: 'window', ctrl: CONTROL.WINDOW_1, value: 1 },
+      { kind: 'window', ctrl: CONTROL.WINDOW_2, value: 2 },
     ]);
   });
 
   it('八行樂曲各自可点，且不会串行', () => {
-    for (let i = 0; i < TRACK_LIST.rows; i++) {
-      expect(at(TRACK_LIST.x + 20, TRACK_LIST.y + i * TRACK_LIST.rowH + 7)).toEqual({
+    for (let i = 0; i < TRACK_ROWS.rows; i++) {
+      expect(at(TRACK_ROWS.x + 20, TRACK_ROWS.y + i * TRACK_ROWS.rowH + 7)).toEqual({
         kind: 'track',
+        ctrl: CONTROL.TRACK_LIST,
         value: i,
       });
     }
   });
 
   it('確定与取消分得开', () => {
-    expect(at(BOTTOM_BUTTONS.ok.x + 5, BOTTOM_BUTTONS.ok.y + 5)).toEqual({ kind: 'ok' });
-    expect(at(BOTTOM_BUTTONS.cancel.x + 5, BOTTOM_BUTTONS.cancel.y + 5)).toEqual({ kind: 'cancel' });
+    expect(at(194 + 5, 314 + 5)).toEqual({ kind: 'cancel', ctrl: CONTROL.CANCEL });
+    expect(at(266 + 5, 314 + 5)).toEqual({ kind: 'ok', ctrl: CONTROL.OK });
+  });
+});
+
+describe('設定屏画了什么', () => {
+  type Rec =
+    | { kind: 'img'; index: number; x: number; y: number }
+    | { kind: 'text'; text: string; x: number; y: number; font: string; align: string }
+    | { kind: 'rect'; x: number; y: number; w: number; h: number; fill: string };
+
+  function record(o: GameOptions, variant: number, pressed: number | null, playing: number) {
+    const log: Rec[] = [];
+    let font = '';
+    let textAlign = 'left';
+    let fillStyle = '';
+    const ctx = {
+      save() {},
+      restore() {},
+      translate() {},
+      drawImage(bmp: { id: number }, x: number, y: number) {
+        log.push({ kind: 'img', index: bmp.id, x, y });
+      },
+      fillText(text: string, x: number, y: number) {
+        log.push({ kind: 'text', text, x, y, font, align: textAlign });
+      },
+      strokeText() {},
+      fillRect(x: number, y: number, w: number, h: number) {
+        log.push({ kind: 'rect', x, y, w, h, fill: fillStyle });
+      },
+      get font() {
+        return font;
+      },
+      set font(v: string) {
+        font = v;
+      },
+      get textAlign() {
+        return textAlign;
+      },
+      set textAlign(v: string) {
+        textAlign = v;
+      },
+      get fillStyle() {
+        return fillStyle;
+      },
+      set fillStyle(v: string) {
+        fillStyle = v;
+      },
+      textBaseline: 'alphabetic',
+      strokeStyle: '',
+      lineWidth: 0,
+    } as unknown as CanvasRenderingContext2D;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sprite = ((i: number) => ({ bitmap: { id: i } }) as any) as Parameters<typeof drawOptions>[5];
+    drawOptions(ctx, o, variant, pressed, playing, sprite);
+    return log;
+  }
+
+  const imgs = (log: Rec[], index: number) =>
+    log.filter((r): r is Extract<Rec, { kind: 'img' }> => r.kind === 'img' && r.index === index);
+
+  it('底图与右上角按钮组：variant 选 10 / 11，都贴在 (168,2)', () => {
+    for (const [variant, want] of [
+      [0, IMG.SIDE_TITLE],
+      [1, IMG.SIDE_GAME],
+    ] as const) {
+      const log = record(DEFAULT_OPTIONS, variant, null, 0);
+      expect(log[0]).toEqual({ kind: 'img', index: IMG.PANEL, x: 0, y: 0 });
+      expect(log[1]).toEqual({ kind: 'img', index: want, x: SIDE_ART_AT.x, y: SIDE_ART_AT.y });
+    }
+  });
+
+  it('进度条：速度点亮「值+1」格、音樂/音效点亮「值」格，每格靠图 5', () => {
+    const log = record({ ...DEFAULT_OPTIONS, speed: 1, music: 3, sound: 0 }, 1, null, 0);
+    const cells = imgs(log, IMG.CELL);
+    const row = (y: number) =>
+      cells.filter((c) => c.y === y).map((c) => c.x).sort((a, b) => a - b);
+    // 速度 1 → 2 格 @(81,17) +16 步进
+    expect(row(BAR_AT.speed.y)).toEqual([81, 97]);
+    // 音樂 3 → 3 格
+    expect(row(BAR_AT.music.y)).toEqual([89, 105, 121]);
+    // 音效 0 → 一格都不亮
+    expect(row(BAR_AT.sound.y)).toEqual([]);
+  });
+
+  it('灯：亮着才贴图 9；視窗那一盏贴在 (218, 218/250/281)', () => {
+    const log = record({ ...DEFAULT_OPTIONS, animation: false, music: 0, sound: 4, windowView: 2 }, 1, null, 0);
+    const lamps = imgs(log, IMG.LAMP).map((l) => [l.x, l.y]);
+    // 動畫關、音樂關、自動存檔預設關 → 只剩音效那一盏 + 視窗那一盏
+    expect(lamps).toEqual([
+      [LAMP_AT.sound.x, LAMP_AT.sound.y],
+      [WINDOW_LAMP.x, WINDOW_LAMP.y[2]],
+    ]);
+  });
+
+  it('樂曲列表：正在放的那一行整行红底（159×14），不是选的哪一行', () => {
+    const log = record(DEFAULT_OPTIONS, 1, null, 5);
+    const red = log.filter((r): r is Extract<Rec, { kind: 'rect' }> => r.kind === 'rect');
+    expect(red).toHaveLength(1);
+    expect(red[0]).toMatchObject({ x: TRACK_ROWS.x, y: TRACK_ROWS.y + 5 * TRACK_ROWS.rowH, w: TRACK_ROWS.w, h: TRACK_ROWS.h });
+    // 八行文字都在（白字黑边）
+    for (let i = 0; i < 8; i++) {
+      expect(log.some((r) => r.kind === 'text' && r.text === TRACK_NAMES[i])).toBe(true);
+    }
+  });
+
+  it('字号：面板 15px、取消/確定与右上角三条 20px、列表 12px', () => {
+    const log = record(DEFAULT_OPTIONS, 1, null, 0);
+    const textOf = (t: string) =>
+      log.find((r): r is Extract<Rec, { kind: 'text' }> => r.kind === 'text' && r.text === t);
+    const fontOf = (t: string) => textOf(t)?.font;
+    expect(fontOf('遊戲速度')).toContain('15px');
+    expect(fontOf('取 消')).toContain('20px');
+    expect(fontOf('確 定')).toContain('20px');
+    expect(fontOf('重新遊戲')).toContain('20px');
+    expect(fontOf('1.星際總動員')).toContain('12px');
+    // 对齐：面板那五条左对齐，取消/確定居中
+    const alignOf = (t: string) => textOf(t)?.align ?? null;
+    expect(alignOf('遊戲速度')).toBe('left');
+    expect(alignOf('取 消')).toBe('center');
+  });
+
+  it('按下时贴钮面，且**画在字之后**（原版会把字盖掉）', () => {
+    const log = record(DEFAULT_OPTIONS, 1, CONTROL.CANCEL, 0);
+    const i = log.findIndex((r) => r.kind === 'img' && r.index === IMG.CANCEL_DOWN);
+    const t = log.findIndex((r) => r.kind === 'text' && r.text === '取 消');
+    expect(t).toBeGreaterThanOrEqual(0);
+    expect(i).toBeGreaterThan(t);
+    expect(log[i]).toEqual({
+      kind: 'img',
+      index: IMG.CANCEL_DOWN,
+      x: CONTROL_RECTS[CONTROL.CANCEL]!.x,
+      y: CONTROL_RECTS[CONTROL.CANCEL]!.y,
+    });
+    // 確定 / 左上角那颗没被按住 → 不贴
+    expect(log.some((r) => r.kind === 'img' && r.index === IMG.OK_DOWN)).toBe(false);
+    expect(log.some((r) => r.kind === 'img' && r.index === IMG.SIDE_DOWN)).toBe(false);
+  });
+
+  it('按住右上角钮时贴图 6，位置就那颗的矩形', () => {
+    const log = record(DEFAULT_OPTIONS, 1, CONTROL.SIDE_1, 0);
+    const r = CONTROL_RECTS[CONTROL.SIDE_1]!;
+    expect(log.some((x) => x.kind === 'img' && x.index === IMG.SIDE_DOWN && x.x === r.x && x.y === r.y)).toBe(true);
   });
 });
 
 describe('設定屏的取值', () => {
   it('点进度条直接落成档位', () => {
-    const o = applyOptionsHit(DEFAULT_OPTIONS, { kind: 'bar', field: 'sound', value: 4 });
+    const o = applyOptionsHit(DEFAULT_OPTIONS, {
+      kind: 'bar',
+      ctrl: CONTROL.SOUND_BAR,
+      field: 'sound',
+      value: 4,
+    });
     expect(o.sound).toBe(4);
     // 其余字段一个都不能动
     expect({ ...o, sound: DEFAULT_OPTIONS.sound }).toEqual(DEFAULT_OPTIONS);
   });
 
-  it('音樂/音效的标记是「0 = 關」的开关，关掉再开回到 3', () => {
-    const off = applyOptionsHit(DEFAULT_OPTIONS, { kind: 'mark', field: 'music' });
+  it('音樂/音效的灯是「0 = 關」的开关，关掉再开回到 4（不是 3）', () => {
+    const off = applyOptionsHit(DEFAULT_OPTIONS, {
+      kind: 'lamp',
+      ctrl: CONTROL.MUSIC_LAMP,
+      field: 'music',
+    });
     expect(off.music).toBe(0);
-    expect(applyOptionsHit(off, { kind: 'mark', field: 'music' }).music).toBe(3);
+    // @source fcn_0041076e / fcn_0041079c：`mov byte [0x48bb4a], 4`
+    expect(
+      applyOptionsHit(off, { kind: 'lamp', ctrl: CONTROL.MUSIC_LAMP, field: 'music' }).music,
+    ).toBe(4);
   });
 
   it('動畫/自動存檔是纯开关', () => {
-    const a = applyOptionsHit(DEFAULT_OPTIONS, { kind: 'mark', field: 'animation' });
+    const a = applyOptionsHit(DEFAULT_OPTIONS, {
+      kind: 'lamp',
+      ctrl: CONTROL.ANIM_LAMP,
+      field: 'animation',
+    });
     expect(a.animation).toBe(false);
-    expect(applyOptionsHit(a, { kind: 'mark', field: 'animation' }).animation).toBe(true);
+    expect(
+      applyOptionsHit(a, { kind: 'lamp', ctrl: CONTROL.ANIM_LAMP, field: 'animation' }).animation,
+    ).toBe(true);
   });
 
   it('確定/取消本身不改任何取值', () => {
-    expect(applyOptionsHit(DEFAULT_OPTIONS, { kind: 'ok' })).toEqual(DEFAULT_OPTIONS);
-    expect(applyOptionsHit(DEFAULT_OPTIONS, { kind: 'cancel' })).toEqual(DEFAULT_OPTIONS);
+    expect(applyOptionsHit(DEFAULT_OPTIONS, { kind: 'ok', ctrl: CONTROL.OK })).toEqual(
+      DEFAULT_OPTIONS,
+    );
+    expect(applyOptionsHit(DEFAULT_OPTIONS, { kind: 'cancel', ctrl: CONTROL.CANCEL })).toEqual(
+      DEFAULT_OPTIONS,
+    );
   });
 
   it('音量档 0..4 映到 0..1，且 0 就是静音', () => {
     expect(volumeOf(0)).toBe(0);
     expect(volumeOf(4)).toBe(1);
     expect(volumeOf(2)).toBeCloseTo(0.5);
-    // 越界要夹住，不能给出负数或大于 1
     expect(volumeOf(-3)).toBe(0);
     expect(volumeOf(99)).toBe(1);
   });
