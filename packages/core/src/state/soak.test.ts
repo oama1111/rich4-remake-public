@@ -27,8 +27,8 @@ interface SoakResult {
   events: { news: number; fortune: number };
 }
 
-function soak(seed: number, maxTurns: number): SoakResult {
-  const map = loadMap();
+function soak(seed: number, maxTurns: number, mapPath: string = MAP): SoakResult {
+  const map = parseMap(new Uint8Array(readFileSync(mapPath)));
   const topo = { nodes: map.nodes, lands: map.lands };
   let state = newGame({ map, players: players(), seed });
   const events = { news: 0, fortune: 0 };
@@ -155,4 +155,36 @@ describe('★ 长局冒烟', () => {
       expect(r.state.turnCount, `seed ${seed}`).toBeGreaterThanOrEqual(120);
     }
   });
+});
+
+describe('★ 八张地图都要能玩（2026-09-16 补）', () => {
+  // 地图文件 = `globalMapId * 2 + 1` @source assets.ts 的 readMapData
+  const MAP_IDS = [0, 1, 2, 3, 4, 5, 6, 7];
+  const pathOf = (id: number) =>
+    `/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/${String(id * 2 + 1).padStart(4, '0')}.bin`;
+
+  for (const id of MAP_IDS) {
+    run(`地圖 ${id}：60 回合不卡死、且确实推进了`, () => {
+      const path = pathOf(id);
+      if (!existsSync(path)) return; // 没解出素材时跳过（CI 上没有 assets）
+      const map = parseMap(new Uint8Array(readFileSync(path)));
+      const r = soak(2024, 60, path);
+      expect(r.state.turnCount, `地圖 ${id} 没走满 60 回合`).toBeGreaterThanOrEqual(60);
+      expect(r.steps, `地圖 ${id} 步数异常`).toBeLessThan(50_000);
+      // ★ 地圖 7 是**纯設施图**：实测 101 节点里地块 **0** 块、設施节点 40 个
+      //   （原版就是这么设计的）。所以「有人买地」这条对它不成立 ——
+      //   有地块的图才要求卖出去，没有的就要求它至少有設施可盖。
+      if (map.lands.length > 0) {
+        expect(
+          r.state.landOwner.filter((v) => v !== 0).length,
+          `地圖 ${id} 60 回合后一块地都没卖出去，落点结算可能没接上`,
+        ).toBeGreaterThan(0);
+      } else {
+        expect(
+          map.facilities.length,
+          `地圖 ${id} 既没有地块也没有設施 —— 那张图上没有任何可经营的资产`,
+        ).toBeGreaterThan(0);
+      }
+    });
+  }
 });
