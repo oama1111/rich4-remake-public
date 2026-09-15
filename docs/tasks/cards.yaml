@@ -767,7 +767,6 @@ cards:
     2. 被动卡（18–21）灰显不可点。
   tests: "cardsPanel.test.ts"
   files: [packages/client/src/inventory.ts]
-  status: done
   notes: |
     **2026-09-15 做完。** 上一轮那张取证表有三处要订正（都写在这儿了）。
 
@@ -844,7 +843,6 @@ cards:
     3. 渲染：候选格描边；点击命中 → 组装 target → dispatch；未命中忽略。
   tests: "picking.test.ts：候选生成用构造状态；点击映射。"
   files: [packages/client/src/picking.ts, packages/client/src/picking.test.ts, packages/client/src/main.ts]
-  status: done
   notes: |
     **2026-09-15 做完**（反汇编逐条取证 + 浏览器逐项核过）。
 
@@ -987,9 +985,8 @@ cards:
     3. 利率、上限只显示 core 算出的值（bank.ts 导出 interestRate/loanLimit）。
   tests: "bankScreen.test.ts：hit 六钮、董事長行显隐。"
   files: [packages/client/src/bank-screen.ts, packages/client/src/bank-screen.test.ts, packages/client/src/interactions.ts]
-  status: doing
   notes: |
-    **2026-09-15：先做了「ATM 半屏」（存款/提款），貸款半屏做完取证、留待下一轮。**
+    **2026-09-15：ATM 半屏与貸款屏都已做完并目视核过（T-029 done）。**
 
     ## ★ 先纠正一条：银行落点原版开**两屏**，不是一屏
 
