@@ -47,6 +47,23 @@ export function assetBase(): string {
   return isDesktop() ? 'rich4://localhost' : '/assets/game';
 }
 
+/**
+ * HD 素材的 URL 前缀（REQ-11.1 / T-065）—— 与 `assetBase()` 同源，
+ * 只把最后一节从 `game` 换成 `hd`。
+ *
+ * ⚠️ `assets/hd/` **不进版本库**（.gitignore），由超分管线产出；
+ *   整个目录不存在时 `loadHdSource` 拿不到清单，缓存就整包走原图 —— 这是
+ *   正常状态，不是错误。
+ *
+ * ⚠️ 桌面壳下 `rich4://localhost/<名>` 解析到的是**原版安装目录**，而 hd 产物
+ *   在仓库/包内的 `assets/hd/`，两者不同源。桌面端要用上 HD 还得给这个协议
+ *   加一条 hd 的路由（属打包范畴，见 Q-PERF-1）。今天 `assets/hd/` 是空的，
+ *   所以这条差异还看不出来。
+ */
+export function hdBase(): string {
+  return `${assetBase().replace(/\/game$/, '')}/hd`;
+}
+
 /** 桌面壳记着的原版目录；浏览器下恒为 null */
 export async function currentGameDir(): Promise<string | null> {
   const t = tauri();

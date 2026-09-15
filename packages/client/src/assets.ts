@@ -9,7 +9,8 @@
  */
 
 import { MkfArchive, parseSpriteSheet, type SpriteSheet } from '@rich4/assets-pipeline';
-import { decodeImage, decodeGround, isGround } from '@rich4/assets-pipeline';
+import { decodeImage, decodeGround, isGround, decodePng } from '@rich4/assets-pipeline';
+import { hdRelativePath, taskIdOf } from '@rich4/assets-pipeline';
 
 /** 原版的资源档案 */
 export const ARCHIVES = ['Data.mkf', 'Panel.mkf', 'map.mkf', 'jump.mkf'] as const;
@@ -53,27 +54,168 @@ export interface Sprite {
   anchorY: number;
 }
 
+// ============================================================
+//  HD 素材（REQ-11.1 / T-065）
+// ============================================================
+
+/** 一张图的 HD 记录 —— 锚点已由管线按**实际输出尺寸**缩放好（C-AST-6）*/
+export interface HdEntry {
+  anchorX: number;
+  anchorY: number;
+}
+
+/**
+ * HD 产物的来源。
+ *
+ * 抽成接口是为了**可测**：Node 里既没有 `fetch` 也没有真素材，
+ * 而回退逻辑恰恰是本卡最容易写错的地方（按图回退，不是整包）。
+ */
+export interface HdSource {
+  /** 这张图的 HD 记录；没有（未超分/未回填）返回 null */
+  entry(archive: ArchiveName, resource: number, image: number): HdEntry | null;
+  /** 拉 HD 产物的 PNG 字节；拉不到返回 null */
+  fetchBytes(archive: ArchiveName, resource: number, image: number): Promise<Uint8Array | null>;
+}
+
+/** `Data.mkf` → `Data` —— 清单里的档案名不带扩展名 */
+export function archiveKey(archive: ArchiveName): string {
+  return archive.replace(/\.mkf$/, '');
+}
+
+/** 清单里一条结果至少要有的字段 */
+interface HdResultLike {
+  outAnchorX: number;
+  outAnchorY: number;
+}
+
+export interface HdManifestLike {
+  tasks: { archive: string; resource: number; image: number }[];
+  results: Record<string, HdResultLike | undefined>;
+}
+
+/**
+ * 由清单造一个 `HdSource`。
+ *
+ * ★ 只有**既有任务、又有结果**的图才算有 HD —— 光在 `tasks` 里只说明它
+ *   被规划过（`plan` 一跑就全在里面了），产物根本没生成。
+ *
+ * @param base HD 产物目录的 URL 前缀（如 `/assets/hd`）
+ */
+export function hdSourceFromManifest(base: string, manifest: HdManifestLike): HdSource {
+  const entries = new Map<string, HdEntry>();
+  for (const t of manifest.tasks) {
+    const id = taskIdOf({ archive: t.archive, resource: t.resource, image: t.image });
+    const r = manifest.results[id];
+    if (r !== undefined) entries.set(id, { anchorX: r.outAnchorX, anchorY: r.outAnchorY });
+  }
+
+  const keyOf = (archive: ArchiveName, resource: number, image: number): string =>
+    taskIdOf({ archive: archiveKey(archive), resource, image });
+
+  return {
+    entry: (archive, resource, image) => entries.get(keyOf(archive, resource, image)) ?? null,
+    fetchBytes: async (archive, resource, image) => {
+      const url = `${base}/${hdRelativePath(archiveKey(archive), resource, image)}`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        return new Uint8Array(await res.arrayBuffer());
+      } catch {
+        // 网络/协议层失败一律当作「没有 HD」，回退原图——画质降级好过整屏不显示
+        return null;
+      }
+    },
+  };
+}
+
+/**
+ * 读 `assets/hd-manifest.json` 造 `HdSource`；读不到返回 null（整包走原图）。
+ *
+ * 清单路径与 hd 目录**同级**、名字是 `<目录名>-manifest.json`
+ * （`cli-upscale.ts` 的 `manifestPath` 定的；清单入库、产物不入库）。
+ */
+export async function loadHdSource(base: string): Promise<HdSource | null> {
+  try {
+    const res = await fetch(`${base}-manifest.json`);
+    if (!res.ok) return null;
+    return hdSourceFromManifest(base, (await res.json()) as HdManifestLike);
+  } catch {
+    return null;
+  }
+}
+
+/** 位图工厂 —— 测试注入假实现（Node 里没有 `createImageBitmap`）*/
+export type BitmapFactory = (source: ImageData) => Promise<ImageBitmap>;
+
+const defaultBitmapFactory: BitmapFactory = (source) => createImageBitmap(source);
+
+export interface SpriteCacheOptions {
+  /** HD 来源；不给就整包走原图 */
+  hd?: HdSource;
+  /**
+   * 精灵缓存上限（张）。超过就按 LRU 淘汰最久未用的。
+   *
+   * 4× 素材单张就是原图的 16 倍大，一张 640×480 的底图超分后是 2560×1920
+   * → 约 20MB，几千张就能吃掉 C-PERF-2 的 1.5GB 预算。
+   */
+  maxSprites?: number;
+  /** 原始字节缓存上限（个资源）。解压不便宜，但也不该无限留着 */
+  maxBytes?: number;
+  /**
+   * 淘汰回调 —— 精灵被移出缓存时调用。
+   *
+   * ⚠️ **必须**由持有引用的消费方接上：本缓存的淘汰只把条目移出自己这张表，
+   *   释放不了内存。`render.ts` 自己还有一份 `#ready`（绘制时直接用
+   *   `sprite.bitmap`），淘汰时得由它把引用一并丢掉，`ImageBitmap.close()`
+   *   才不会把**正在画的那一帧**弄成空白。见 Q-PERF-1。
+   */
+  onEvict?: (sprite: Sprite) => void;
+  createBitmap?: BitmapFactory;
+}
+
+/** 默认上限：够覆盖一张地图的全部静态图素，又远低于内存预算 */
+export const DEFAULT_MAX_SPRITES = 4096;
+export const DEFAULT_MAX_BYTES = 256;
+
 /**
  * 精灵缓存。
  *
  * 一张地图上重复出现的图素（地块、建筑、装饰）成百上千，
  * 每次重绘都重新解码会直接拖垮帧率，故按 `档案:资源:图号` 缓存。
+ *
+ * ★ HD 优先、**按图**回退：某一张缺 HD 就这一张用原图，不影响别的图
+ *   （PRD §4.5）。整包回退是错的——那会因为缺一张就把整包降级。
  */
 export class SpriteCache {
   readonly #archives: LoadedArchives;
+  readonly #hd: HdSource | null;
+  readonly #maxSprites: number;
+  readonly #maxBytes: number;
+  readonly #onEvict: ((sprite: Sprite) => void) | null;
+  readonly #createBitmap: BitmapFactory;
   readonly #sheets = new Map<string, SpriteSheet | null>();
   readonly #sprites = new Map<string, Sprite | null>();
   readonly #bytes = new Map<string, Uint8Array | null>();
 
-  constructor(archives: LoadedArchives) {
+  constructor(archives: LoadedArchives, options: SpriteCacheOptions = {}) {
     this.#archives = archives;
+    this.#hd = options.hd ?? null;
+    this.#maxSprites = options.maxSprites ?? DEFAULT_MAX_SPRITES;
+    this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+    this.#onEvict = options.onEvict ?? null;
+    this.#createBitmap = options.createBitmap ?? defaultBitmapFactory;
   }
 
   /** 资源解出的原始字节，按需缓存——解压不便宜 */
   #bytesOf(archive: ArchiveName, resource: number): Uint8Array | null {
     const key = `${archive}:${resource}`;
     const hit = this.#bytes.get(key);
-    if (hit !== undefined) return hit;
+    if (hit !== undefined) {
+      // LRU：命中即移到队尾（Map 保持插入序，队首是最久未用的）
+      this.#bytes.delete(key);
+      this.#bytes.set(key, hit);
+      return hit;
+    }
     let data: Uint8Array | null = null;
     try {
       data = this.#archives.get(archive).read(resource);
@@ -82,6 +224,11 @@ export class SpriteCache {
       data = null;
     }
     this.#bytes.set(key, data);
+    while (this.#bytes.size > this.#maxBytes) {
+      const oldest = this.#bytes.keys().next();
+      if (oldest.done === true) break;
+      this.#bytes.delete(oldest.value);
+    }
     return data;
   }
 
@@ -111,6 +258,8 @@ export class SpriteCache {
    *
    * `colorKeyBlack` 用于叠在地图上的 SMP 图（特殊格装饰等）——
    * 见 assets-pipeline 的 `DecodeOptions`。
+   *
+   * 取图顺序：**HD 优先，缺则回退原图**（按图回退，见 PRD §4.5）。
    */
   async get(
     archive: ArchiveName,
@@ -120,40 +269,105 @@ export class SpriteCache {
   ): Promise<Sprite | null> {
     const key = `${archive}:${resource}:${index}:${colorKeyBlack ? 'k' : ''}`;
     const hit = this.#sprites.get(key);
-    if (hit !== undefined) return hit;
+    if (hit !== undefined) {
+      // LRU：命中即移到队尾
+      this.#sprites.delete(key);
+      this.#sprites.set(key, hit);
+      return hit;
+    }
 
+    const sprite = (await this.#hdSprite(archive, resource, index)) ?? (await this.#originalSprite(archive, resource, index, colorKeyBlack));
+    this.#insert(key, sprite);
+    return sprite;
+  }
+
+  /**
+   * HD 那张。没有记录、拉不到、解不开——一律返回 null 让调用方回退原图。
+   *
+   * ★ **不补 `colorKeyBlack`**：透明性在管线里已经烘进 alpha 了
+   *   （`slice` 把 alpha 单独交出、`merge` 再盖回来），而 AI 放大后
+   *   「纯黑」早已不是精确的 0，按 RGB==0 再抠一次只会抠不动或抠错。
+   */
+  async #hdSprite(archive: ArchiveName, resource: number, index: number): Promise<Sprite | null> {
+    const hd = this.#hd;
+    if (hd === null) return null;
+    const entry = hd.entry(archive, resource, index);
+    if (entry === null) return null;
+
+    const bytes = await hd.fetchBytes(archive, resource, index);
+    if (bytes === null) return null;
+
+    try {
+      const img = decodePng(bytes);
+      if (img.width === 0 || img.height === 0) return null;
+      return {
+        bitmap: await this.#createBitmap(toImageData(img.width, img.height, img.rgba)),
+        width: img.width,
+        height: img.height,
+        // 锚点由清单给出——管线已按**实际输出尺寸**算好（C-AST-6），
+        // 这里不再自己乘 scale：工具常把结果对齐到 4 的倍数，自己算会偏。
+        anchorX: entry.anchorX,
+        anchorY: entry.anchorY,
+      };
+    } catch {
+      // HD 产物损坏不该让这张图消失——回退原图即可
+      return null;
+    }
+  }
+
+  /** 原版档案里的那张 */
+  async #originalSprite(
+    archive: ArchiveName,
+    resource: number,
+    index: number,
+    colorKeyBlack: boolean,
+  ): Promise<Sprite | null> {
     const sheet = this.#sheetOf(archive, resource);
     const data = this.#bytesOf(archive, resource);
-    if (sheet === null || data === null || index >= sheet.images.length) {
-      this.#sprites.set(key, null);
-      return null;
-    }
+    if (sheet === null || data === null || index >= sheet.images.length) return null;
 
     const img = decodeImage(sheet, data, index, { colorKeyBlack });
-    if (img.width === 0 || img.height === 0) {
-      this.#sprites.set(key, null);
-      return null;
-    }
+    if (img.width === 0 || img.height === 0) return null;
 
-    // 先按尺寸建 ImageData 再 set —— 直接把解码出的数组传进构造函数
-    // 会因 ArrayBufferLike 与 ImageDataArray 的类型差异被拒。
-    const rgba = new ImageData(img.width, img.height);
-    rgba.data.set(img.rgba);
-    const sprite: Sprite = {
-      bitmap: await createImageBitmap(rgba),
+    return {
+      bitmap: await this.#createBitmap(toImageData(img.width, img.height, img.rgba)),
       width: img.width,
       height: img.height,
       anchorX: img.anchorX,
       anchorY: img.anchorY,
     };
+  }
+
+  /** 存一条并按 LRU 修剪 */
+  #insert(key: string, sprite: Sprite | null): void {
     this.#sprites.set(key, sprite);
-    return sprite;
+    while (this.#sprites.size > this.#maxSprites) {
+      const oldest = this.#sprites.keys().next();
+      if (oldest.done === true) break;
+      const evicted = this.#sprites.get(oldest.value);
+      this.#sprites.delete(oldest.value);
+      // null 条目（「这个资源没有这张图」）没什么可释放的，不必回调
+      if (evicted !== null && evicted !== undefined) this.#onEvict?.(evicted);
+    }
   }
 
   /** 已缓存的精灵数——用于诊断 */
   get size(): number {
     return this.#sprites.size;
   }
+
+  /** 已缓存的原始字节条目数——用于诊断 */
+  get byteSize(): number {
+    return this.#bytes.size;
+  }
+}
+
+/** 先按尺寸建 ImageData 再 set —— 直接把解码数组传进构造函数会因
+ *  ArrayBufferLike 与 ImageDataArray 的类型差异被拒。 */
+function toImageData(width: number, height: number, rgba: Uint8ClampedArray): ImageData {
+  const out = new ImageData(width, height);
+  out.data.set(rgba);
+  return out;
 }
 
 /**

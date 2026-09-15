@@ -548,6 +548,27 @@ wiki 的「各項目時間不同」与 exe 不符）、只在業主自己的回�
 
 ## 本轮新增的未决问题
 
+### Q-PERF-1：SpriteCache 的 LRU 淘汰**释放不了内存**，且桌面端 HD 还没路由
+
+**症状**：C-PERF-2（内存 < 1.5GB）要求 4× 素材按需加载 + 释放。`SpriteCache`
+（T-065）已经做了 LRU，但**真正占内存的那份引用不在它手上**：
+
+`render.ts` 自己有一份 `#ready`（`Map<string, Sprite | null>`），绘制时直接用
+`sprite.bitmap`。于是把条目移出 `SpriteCache` 只是忘了自己这张表，`ImageBitmap`
+仍被渲染器握着 → 内存不降。而**不能**在淘汰时直接 `bitmap.close()`：那会把
+**正在画的那一帧**弄成空白（`drawImage` 拿到已关闭的位图）。
+
+已经做的：`SpriteCache` 接受 `onEvict(sprite)` 回调，把「我不管了」这件事**告诉**
+消费方，由持有引用的一方决定何时丢引用、何时 close。安全的做法是渲染器把
+`#ready` 也接上这个回调（先丢引用，下一帧起不再绘制它，才轮到 close）。
+
+**还没做的**：把 `render.ts` 的 `#ready` 接到 `onEvict` 上（本卡的文件范围只有
+`assets.ts`）。在那之前，LRU 只保证「不再增长」的语义，不保证内存回落。
+
+**另一条**：桌面壳下 `rich4://localhost/<名>` 解析到的是**原版安装目录**，而
+HD 产物在仓库/包内的 `assets/hd/`，两者不同源 —— 桌面端要用上 HD 得给这个协议
+加一条 hd 路由（属打包范畴）。今天 `assets/hd/` 是空的，所以还看不出来。
+
 ### Q-GND-4：底图**不在超分清单里**，接缝检查目前没有真实输入
 
 `cli-extract` 把地图底图落成**原始的** `assets-clean/map/0000.gnd`（5319312 字节，魔数

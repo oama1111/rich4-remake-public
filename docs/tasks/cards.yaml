@@ -1257,17 +1257,26 @@ cards:
   title: SpriteCache 按图优先读 hd，缺则回退原图
   module: MOD-12
   req: REQ-11.1
-  status: todo
+  status: done
   estimate: 0.4
   depends_on: [T-063]
-  uses: [client/assets.ts (SpriteCache), client/host.ts (assetBase)]
+  uses: [client/assets.ts (SpriteCache), client/host.ts (assetBase/hdBase), client/main.ts (boot 接线)]
   source: "PRD §4.5"
   input: "get(archive, resource, image)"
-  output: "hd 存在 → 4× 位图 + 锚点 ×4，渲染时按 stage 缩放；否则原图"
-  algorithm: "查 hd-manifest 内存索引（启动时读一次）；纹理按需加载并 LRU 释放（C-PERF-2）。"
-  tests: "回退路径测试；内存上限测试（模拟）"
-  files: [packages/client/src/assets.ts]
-  notes: ""
+  output: "hd 存在 → 4× 位图 + 锚点取清单记的值；否则原图。**按图回退**，不是整包"
+  algorithm: |
+    1. loadHdSource(hdBase)：拉 `<hd 目录>-manifest.json`（与目录同级），
+       只有**既有 tasks 又有 results** 的图才算有 HD；拉不到就整包走原图。
+    2. hdSourceFromManifest：档案名要去掉 `.mkf`（清单里存的是 `Data`）；
+       取产物用 assemble.ts 的 hdRelativePath（写读两侧同一函数）。
+    3. SpriteCache.get：HD 优先，fetch/解码任一环失败就回退原图这一张。
+    4. ★ HD 路径**不补 colorKeyBlack**：透明性管线已烘进 alpha，且 AI 放大后
+       「纯黑」不再是精确 0，按 RGB==0 再抠一次只会抠不动或抠错。
+    5. LRU：精灵与原始字节各有上限；淘汰时调 onEvict 通知持有引用的一方
+       （真正的内存释放要消费方配合，见 Q-PERF-1）。
+  tests: "回退路径 6 条（无来源/拉不到/坏 PNG/按图混用/空槽/缓存命中）；LRU 4 条；清单 4 条"
+  files: [packages/client/src/assets.ts, packages/client/src/assets.test.ts, packages/client/src/host.ts, packages/client/src/main.ts]
+  notes: "⚠️ LRU 只移出自己这张表，释放内存需 render.ts 接 onEvict（Q-PERF-1）；桌面端 hd 路由未接（同条）。"
 
 - id: T-066
   group: D

@@ -28,6 +28,7 @@ import { NetClient, netParamsFrom } from './net-client.ts';
 import {
   loadArchives,
   loadGround,
+  loadHdSource,
   readMapData,
   SpriteCache,
   type LoadedArchives,
@@ -51,6 +52,7 @@ import { MusicPlayer } from './music.ts';
 import {
   assetBase,
   currentGameDir,
+  hdBase,
   isDesktop,
   hostLog,
   pickGameDir,
@@ -1866,7 +1868,12 @@ async function boot(): Promise<void> {
     await ensureGameDir();
     metaEl.textContent = '正在载入原版素材…';
     archives = await loadArchives(assetBase());
-    sprites = new SpriteCache(archives);
+
+    // HD 素材可选：拿不到清单（没跑过超分管线、或整个 assets/hd/ 不存在）
+    // 就整包走原图。**按图**回退在 SpriteCache 里（PRD §4.5）。
+    const hdSource = await loadHdSource(hdBase());
+    sprites = new SpriteCache(archives, hdSource === null ? {} : { hd: hdSource });
+    if (hdSource !== null) log('HD 素材：已接上（缺图的按图回退原图）');
 
     // 先用地址栏（或默认值）建一局，好让渲染器与面板有东西可读；
     // 但**开机停在標題畫面**——真正的开局在玩家点 START 之后。

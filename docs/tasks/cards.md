@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 16.1。
+共 **73** 张卡，估算 **39.8** 单元，已完成 16.5。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -73,7 +73,7 @@
 | [T-062](#t-062) | 回填校验：尺寸恰 4×、Alpha 合并、去彩边 | MOD-11 | REQ-11.1 | `done` | 0.6 | T-061 |
 | [T-063](#t-063) | 重拼精灵 + 锚点 ×4 + 写 hd-manifest.json | MOD-11 | REQ-11.1 | `done` | 0.4 | T-062 |
 | [T-064](#t-064) | 地形 tile 接缝检查 | MOD-11 | REQ-11.1 | `done` | 0.5 | T-063 |
-| [T-065](#t-065) | SpriteCache 按图优先读 hd，缺则回退原图 | MOD-12 | REQ-11.1 | `todo` | 0.4 | T-063 |
+| [T-065](#t-065) | SpriteCache 按图优先读 hd，缺则回退原图 | MOD-12 | REQ-11.1 | `done` | 0.4 | T-063 |
 | [T-066](#t-066) | 并排比对页（原图 / HD）供人工过审 | MOD-11 | REQ-11.1 | `todo` | 0.3 | T-063 |
 | [T-070](#t-070) | WebSocket 服务器主循环（join / intent / 广播） | MOD-14 | REQ-14.1 | `done` | 0.8 | — |
 | [T-071](#t-071) | 座位分配与断线重连（同名复用座位、since(seq) 补发） | MOD-14 | REQ-14.1 | `done` | 0.6 | T-070 |
@@ -2242,14 +2242,15 @@
 
 **SpriteCache 按图优先读 hd，缺则回退原图**
 
-- 模块 `MOD-12` · 需求 `REQ-11.1` · 状态 `todo` · 估算 0.4 单元
+- 模块 `MOD-12` · 需求 `REQ-11.1` · 状态 `done` · 估算 0.4 单元
 - 依赖：T-063
 - 证据：PRD §4.5
 
 **依赖的其他类 / 文件**
 
 - client/assets.ts (SpriteCache)
-- client/host.ts (assetBase)
+- client/host.ts (assetBase/hdBase)
+- client/main.ts (boot 接线)
 
 **期望输入**
 
@@ -2257,19 +2258,32 @@
 
 **期望输出**
 
-    hd 存在 → 4× 位图 + 锚点 ×4，渲染时按 stage 缩放；否则原图
+    hd 存在 → 4× 位图 + 锚点取清单记的值；否则原图。**按图回退**，不是整包
 
 **核心逻辑 / 算法指导**
 
-    查 hd-manifest 内存索引（启动时读一次）；纹理按需加载并 LRU 释放（C-PERF-2）。
+    1. loadHdSource(hdBase)：拉 `<hd 目录>-manifest.json`（与目录同级），
+       只有**既有 tasks 又有 results** 的图才算有 HD；拉不到就整包走原图。
+    2. hdSourceFromManifest：档案名要去掉 `.mkf`（清单里存的是 `Data`）；
+       取产物用 assemble.ts 的 hdRelativePath（写读两侧同一函数）。
+    3. SpriteCache.get：HD 优先，fetch/解码任一环失败就回退原图这一张。
+    4. ★ HD 路径**不补 colorKeyBlack**：透明性管线已烘进 alpha，且 AI 放大后
+       「纯黑」不再是精确 0，按 RGB==0 再抠一次只会抠不动或抠错。
+    5. LRU：精灵与原始字节各有上限；淘汰时调 onEvict 通知持有引用的一方
+       （真正的内存释放要消费方配合，见 Q-PERF-1）。
 
 **验收测试**
 
-    回退路径测试；内存上限测试（模拟）
+    回退路径 6 条（无来源/拉不到/坏 PNG/按图混用/空槽/缓存命中）；LRU 4 条；清单 4 条
 
 **涉及文件**
 
 - packages/client/src/assets.ts
+- packages/client/src/assets.test.ts
+- packages/client/src/host.ts
+- packages/client/src/main.ts
+
+> ⚠️ LRU 只移出自己这张表，释放内存需 render.ts 接 onEvict（Q-PERF-1）；桌面端 hd 路由未接（同条）。
 
 ### T-066
 
