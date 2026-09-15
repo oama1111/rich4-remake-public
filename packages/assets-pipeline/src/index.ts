@@ -12,4 +12,5 @@ export * from './slice.ts';
 export * from './merge.ts';
 export * from './assemble.ts';
 export * from './seams.ts';
+export * from './review.ts';
 export * from './upscale.ts';

@@ -1283,16 +1283,23 @@ cards:
   title: 并排比对页（原图 / HD）供人工过审
   module: MOD-11
   req: REQ-11.1
-  status: todo
+  status: done
   estimate: 0.3
   depends_on: [T-063]
-  uses: [cli-upscale.ts]
+  uses: [cli-upscale.ts (cmdReview), assemble.ts (hdRelativePath), upscale.ts (UpscaleManifest)]
   source: "DEVELOPMENT_PLAN §10.2"
-  input: "hd-manifest"
-  output: "assets/hd-review.html（静态，本地打开）"
-  algorithm: "每条目一行：原图（放大 4× 最近邻）| HD；可按类别筛。"
-  tests: "生成不抛错；条目数一致"
-  files: [packages/assets-pipeline/src/review.ts]
+  input: "hd-manifest + hd 目录 + assets-clean 目录"
+  output: "assets/hd-review.html（静态，双击即开，图片走相对路径）"
+  algorithm: |
+    1. buildReviewRows：只列**有产物**的条目（既在 tasks 又在 results）——
+       还在排队的不该进过审页，否则大半是破图；保持清单原顺序。
+       两侧命名各用各的：原图是 extract 的 `input` 名，HD 是 hdRelativePath。
+    2. renderReviewHtml：每行两张图等比并排；原图那侧不预生成 4× 中间产物，
+       直接在 HTML 里用 `image-rendering: pixelated` 撑到 HD 的显示尺寸
+       —— 浏览器放大即最近邻，逐像素等价，却省掉一份 16 倍体积的中间图。
+    3. 按类别下拉筛选；拼进 HTML 的一切都转义。
+  tests: "生成不抛错；条目数一致（卡片数 == 行数 == 图数/2）；只列有产物的；转义；空清单"
+  files: [packages/assets-pipeline/src/review.ts, packages/assets-pipeline/src/review.test.ts, packages/assets-pipeline/src/cli-upscale.ts]
   notes: ""
 
 # ============================================================

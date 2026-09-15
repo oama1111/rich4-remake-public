@@ -8,10 +8,11 @@
  *   slice    <assets-clean> <queue> [N]     按帧切片 + Alpha 分离（T-061）
  *   merge    <queue> <upscale-done>         回填校验 + Alpha 合并（T-062）
  *   assemble <queue> <upscale-done> <hd>    落进 assets/hd + 写清单（T-063）[模型]
+ *   review   <hd> <assets-clean> [输出]     生成并排过审页（T-066）
  *   status   <hd>                           看进度
  *   ingest   <assets-clean> <hd> [模型]     回填已完成的产物（旧路径，见下）
  *
- * 交接链：plan → slice → [外部超分 4×] → merge → assemble。
+ * 交接链：plan → slice → [外部超分 4×] → merge → assemble → review。
  * `ingest` 保留给「产物直接按原名放进 hd 目录」的旧路径，与 assemble 二选一。
  *
  * ★ 交接方式刻意做成「文件 + 清单」而不是直接调某个模型的 API：
@@ -36,6 +37,7 @@ import { decodePng, encodePng } from './sprite.ts';
 import { buildQueueFrame, sliceFrame, type QueueManifest } from './slice.ts';
 import { mergeUpscaled, validatePair, type MergeRejection } from './merge.ts';
 import { assembleHd, type AssembleIo } from './assemble.ts';
+import { buildReviewRows, renderReviewHtml } from './review.ts';
 
 /**
  * 由 hd 目录推出清单路径：与之**同级**、不在其内。
@@ -303,6 +305,39 @@ export function cmdAssemble(queueDir: string, doneDir: string, hdDir: string, mo
 }
 
 // ============================================================
+//  review —— 并排比对页（T-066）
+// ============================================================
+
+/**
+ * 生成静态过审页：左原图（浏览器最近邻 4×）右 HD 产物。
+ *
+ * 输出默认放在 hd 目录**同级**的 `hd-review.html`，图片按相对路径引用，
+ * 故直接双击打开即可（`file://` 也能看）。
+ *
+ * @param outFile 不给就写 `<hd 目录的同级>/hd-review.html`
+ */
+export function cmdReview(hdDir: string, cleanDir: string, outFile?: string): void {
+  const manifest = loadManifest(hdDir);
+  const out = outFile ?? join(dirname(hdDir), 'hd-review.html');
+
+  // 图片相对**输出文件所在目录**引用，挪动 HTML 时整目录一起挪
+  const outDir = dirname(out);
+  const hdBase = relative(outDir, hdDir).replace(/\\/g, '/');
+  const cleanBase = relative(outDir, cleanDir).replace(/\\/g, '/');
+
+  const rows = buildReviewRows(manifest, {
+    hdBase: hdBase === '' ? '.' : hdBase,
+    cleanBase: cleanBase === '' ? '.' : cleanBase,
+  });
+  writeFileSync(out, renderReviewHtml(rows));
+
+  console.log(`过审页：${out}　（${rows.length} / ${manifest.tasks.length} 张有产物）`);
+  if (manifest.tasks.length > rows.length) {
+    console.log(`  还有 ${manifest.tasks.length - rows.length} 张没有产物，未列入。`);
+  }
+}
+
+// ============================================================
 //  status
 // ============================================================
 
@@ -426,6 +461,10 @@ function main(argv: string[]): void {
       if (rest.length < 3) throw new Error('用法: assemble <upscale-queue> <upscale-done> <hd> [模型名]');
       cmdAssemble(rest[0]!, rest[1]!, rest[2]!, rest[3]);
       break;
+    case 'review':
+      if (rest.length < 2) throw new Error('用法: review <hd> <assets-clean> [输出.html]');
+      cmdReview(rest[0]!, rest[1]!, rest[2]);
+      break;
     case 'status':
       if (rest.length < 1) throw new Error('用法: status <hd>');
       cmdStatus(rest[0]!);
@@ -443,6 +482,7 @@ function main(argv: string[]): void {
           '  slice    <assets-clean> <queue> [N]     按帧切片 + Alpha 分离（T-061）',
           '  merge    <queue> <upscale-done>         回填校验 + Alpha 合并（T-062）',
           '  assemble <queue> <upscale-done> <hd>    落进 assets/hd + 写清单（T-063）[模型]',
+          '  review   <hd> <assets-clean> [输出]     生成并排过审页（T-066）',
           '  status   <hd>                           看进度',
           '  ingest   <assets-clean> <hd> [模型]     回填已完成的产物（旧路径）',
         ].join('\n'),

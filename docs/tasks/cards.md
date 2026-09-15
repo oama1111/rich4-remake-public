@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 16.5。
+共 **73** 张卡，估算 **39.8** 单元，已完成 16.8。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -74,7 +74,7 @@
 | [T-063](#t-063) | 重拼精灵 + 锚点 ×4 + 写 hd-manifest.json | MOD-11 | REQ-11.1 | `done` | 0.4 | T-062 |
 | [T-064](#t-064) | 地形 tile 接缝检查 | MOD-11 | REQ-11.1 | `done` | 0.5 | T-063 |
 | [T-065](#t-065) | SpriteCache 按图优先读 hd，缺则回退原图 | MOD-12 | REQ-11.1 | `done` | 0.4 | T-063 |
-| [T-066](#t-066) | 并排比对页（原图 / HD）供人工过审 | MOD-11 | REQ-11.1 | `todo` | 0.3 | T-063 |
+| [T-066](#t-066) | 并排比对页（原图 / HD）供人工过审 | MOD-11 | REQ-11.1 | `done` | 0.3 | T-063 |
 | [T-070](#t-070) | WebSocket 服务器主循环（join / intent / 广播） | MOD-14 | REQ-14.1 | `done` | 0.8 | — |
 | [T-071](#t-071) | 座位分配与断线重连（同名复用座位、since(seq) 补发） | MOD-14 | REQ-14.1 | `done` | 0.6 | T-070 |
 | [T-072](#t-072) | checksum / desync 检测与处理 | MOD-14 | REQ-14.1 | `done` | 0.4 | T-070 |
@@ -2289,33 +2289,43 @@
 
 **并排比对页（原图 / HD）供人工过审**
 
-- 模块 `MOD-11` · 需求 `REQ-11.1` · 状态 `todo` · 估算 0.3 单元
+- 模块 `MOD-11` · 需求 `REQ-11.1` · 状态 `done` · 估算 0.3 单元
 - 依赖：T-063
 - 证据：DEVELOPMENT_PLAN §10.2
 
 **依赖的其他类 / 文件**
 
-- cli-upscale.ts
+- cli-upscale.ts (cmdReview)
+- assemble.ts (hdRelativePath)
+- upscale.ts (UpscaleManifest)
 
 **期望输入**
 
-    hd-manifest
+    hd-manifest + hd 目录 + assets-clean 目录
 
 **期望输出**
 
-    assets/hd-review.html（静态，本地打开）
+    assets/hd-review.html（静态，双击即开，图片走相对路径）
 
 **核心逻辑 / 算法指导**
 
-    每条目一行：原图（放大 4× 最近邻）| HD；可按类别筛。
+    1. buildReviewRows：只列**有产物**的条目（既在 tasks 又在 results）——
+       还在排队的不该进过审页，否则大半是破图；保持清单原顺序。
+       两侧命名各用各的：原图是 extract 的 `input` 名，HD 是 hdRelativePath。
+    2. renderReviewHtml：每行两张图等比并排；原图那侧不预生成 4× 中间产物，
+       直接在 HTML 里用 `image-rendering: pixelated` 撑到 HD 的显示尺寸
+       —— 浏览器放大即最近邻，逐像素等价，却省掉一份 16 倍体积的中间图。
+    3. 按类别下拉筛选；拼进 HTML 的一切都转义。
 
 **验收测试**
 
-    生成不抛错；条目数一致
+    生成不抛错；条目数一致（卡片数 == 行数 == 图数/2）；只列有产物的；转义；空清单
 
 **涉及文件**
 
 - packages/assets-pipeline/src/review.ts
+- packages/assets-pipeline/src/review.test.ts
+- packages/assets-pipeline/src/cli-upscale.ts
 
 ## E · 联网对战（server + client）
 
