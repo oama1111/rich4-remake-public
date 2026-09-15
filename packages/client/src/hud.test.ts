@@ -9,6 +9,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   CAL,
+  CAL_TOGGLE_HIT,
+  hitCalendarToggle,
   MINIMAP_ARROW_IMAGE,
   MINIMAP_BOX,
   MINIMAP_CENTER_MAX,
@@ -140,9 +142,10 @@ describe('★ 日曆文字不压进右缘的彩色标签区', () => {
     expect(CAL.monthText.x + half).toBeLessThan(CONTENT_RIGHT);
   });
 
-  it('★ 星期名与日号都是**居中**（flag 3 / 2），按半个宽度算', () => {
-    // flag 3 与 flag 2 在 0x44faa0 的跳表里指向同一段（正中）
-    expect(CAL.weekday.x + (3 * hanW) / 2).toBeLessThan(CONTENT_RIGHT);
+  it('★ 星期名（竖排，只占一个字宽）与日号都是**水平居中**（flag 3 / 2）', () => {
+    // flag 3 与 flag 2 在 0x44faa0 的跳表里指向同一段：`sub x, 宽/2` —— **只调 x**，
+    // y 是文字块的顶边。星期名是**竖排**（需求方实机截图），所以块宽 = 一个字。
+    expect(CAL.weekday.x + hanW / 2).toBeLessThan(CONTENT_RIGHT);
     expect(CAL.dayText.x + digitW).toBeLessThan(CONTENT_RIGHT);
   });
 
@@ -251,5 +254,66 @@ describe('右上角四条彩色竖条 —— 点一下就换页 @source VA 0x004
     expect(hitPanelTag(PANEL_TAG_HIT.x, 69)).toBe(0);
     expect(hitPanelTag(PANEL_TAG_HIT.x, 70)).toBe(1);
     expect(hitPanelTag(PANEL_TAG_HIT.x, 279)).toBe(3);
+  });
+});
+
+describe('日历那两颗按钮：太阳 / 月亮 @source VA 0x0041838c', () => {
+  it('★ 太阳 = 切到日曆、月亮 = 切到月曆；两颗共用 y ∈ [8, 34]', () => {
+    expect(CAL_TOGGLE_HIT.sun).toEqual({ x0: 8, x1: 34 }); // 448..474 − 440
+    expect(CAL_TOGGLE_HIT.moon).toEqual({ x0: 38, x1: 64 }); // 478..504 − 440
+    expect(CAL_TOGGLE_HIT.y0).toBe(8); // 288 − 280
+    expect(CAL_TOGGLE_HIT.y1).toBe(34); // 314 − 280
+  });
+
+  it('★ 命中：各格的角与中心都认，两栏之间的空隙不认', () => {
+    for (const [x0, x1, want] of [
+      [8, 34, 'calendar'],
+      [38, 64, 'month'],
+    ] as const) {
+      for (const x of [x0, x1, Math.floor((x0 + x1) / 2)]) {
+        for (const y of [8, 34, 20]) {
+          expect(hitCalendarToggle(x, y)).toBe(want);
+        }
+      }
+    }
+    // ★ 34<38 之间那 3 像素是**没有钮**的（原版两颗的框就是不挨着）
+    expect(hitCalendarToggle(35, 20)).toBeNull();
+    expect(hitCalendarToggle(36, 20)).toBeNull();
+    expect(hitCalendarToggle(37, 20)).toBeNull();
+  });
+
+  it('★ 框外不认：上下越界、左右越界', () => {
+    expect(hitCalendarToggle(20, 7)).toBeNull();
+    expect(hitCalendarToggle(20, 35)).toBeNull();
+    expect(hitCalendarToggle(7, 20)).toBeNull();
+    expect(hitCalendarToggle(65, 20)).toBeNull();
+  });
+
+  it('★ 画出来的两张图正好落在各自的框里（太阳 24×23 锚点(12,11)、月亮 20×20 锚点(10,10)）', () => {
+    // 太阳画在 (462,300) → 局部 (22,20)，减锚点 → 左上 (10,9)、右下 (34,32)
+    expect(CAL.sun).toEqual({ x: 22, y: 20 });
+    expect([CAL.sun.x - 12, CAL.sun.y - 11]).toEqual([10, 9]);
+    // 月亮画在 (492,301) → 局部 (52,21)，减锚点 → 左上 (42,11)、右下 (62,31)
+    expect(CAL.moon).toEqual({ x: 52, y: 21 });
+    expect([CAL.moon.x - 10, CAL.moon.y - 10]).toEqual([42, 11]);
+    // 两块都在自己的命中框内
+    for (const [x, y] of [
+      [10, 9],
+      [34, 32],
+    ] as const) {
+      expect(hitCalendarToggle(x, y)).toBe('calendar');
+    }
+    for (const [x, y] of [
+      [42, 11],
+      [62, 31],
+    ] as const) {
+      expect(hitCalendarToggle(x, y)).toBe('month');
+    }
+  });
+
+  it('★ 星期名竖排：块宽只有一个字，居中于 x=14 → 6..22，正好在侧栏里', () => {
+    expect(CAL.weekday.x).toBe(14);
+    expect(CAL.weekday.x - 8).toBe(6);
+    expect(CAL.weekday.x + 8).toBe(22);
   });
 });

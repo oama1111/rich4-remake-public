@@ -114,6 +114,50 @@ export const CAL = {
 /** 日曆用的两张小图 —— 太阳与（暗）月亮 @source 0x00416c29 / 0x00416c4b */
 const SUN_IMAGE = 8;
 const MOON_IMAGE = 11;
+
+/**
+ * 太阳与月亮**是按钮** —— 点它们切换「日曆 / 月曆」两个版式。
+ *
+ * @source VA 0x0041838c 起（棋盘窗口过程里鼠标落在**棋盘之外**的那一支）：
+ * ```asm
+ * 0041835f  cmp byte [0x49715d], 1     ; cfg+5 = 1（純小地圖）→ 两颗钮都不认
+ * 00418366  je  skip
+ * 0041836c  cmp esi, 0x1b8 / jle skip  ; x ≤ 440 → 不在侧栏
+ * 00418378  cmp edx, 0x118 / jle skip  ; y ≤ 280 → 不在下面那块
+ * 00418384  cmp edx, 0x120 / jl  end   ; y ∈ [288, 314]
+ * 00418390  cmp edx, 0x13a / jg  end
+ * 0041839c  cmp esi, 0x1c0 / jl  moon  ; ★ 太阳：x ∈ [448, 474]
+ * 004183a4  cmp esi, 0x1da / jg  moon
+ * 004183ac  cmp byte [0x497164], 0 / je end   ; 已经是日曆 → 什么都不做（连音效都不放）
+ * 004183c4  mov byte [0x497164], 0            ; ★ 切到日曆
+ * 004183d8  cmp esi, 0x1de / jl  end   ; ★ 月亮：x ∈ [478, 504]
+ * 004183e4  cmp esi, 0x1f8 / jg  end
+ * 004183f0  cmp byte [0x497164], 0 / jne end
+ * 0041840c  mov byte [0x497164], 1            ; ★ 切到月曆
+ * ```
+ * 两处都 `play_sound_effect(1)`（`0x482322`）再 `fcn_004169bc` 重画侧栏。
+ *
+ * ★ 图号是写死的：日曆面画 **图 8（亮太阳）+ 图 11（暗月亮）**，
+ *   `图 9 / 图 10`（暗太阳 / 亮月亮）**全程序一次都没用到** ——
+ *   所以这两个钮**没有**「当前在哪一页」的亮暗提示。
+ */
+export const CAL_TOGGLE_HIT = {
+  /** 太阳 = 切到日曆 @source `cmp esi, 0x1c0 / cmp esi, 0x1da` */
+  sun: { x0: 0x1c0 - 440, x1: 0x1da - 440 },
+  /** 月亮 = 切到月曆 @source `cmp esi, 0x1de / cmp esi, 0x1f8` */
+  moon: { x0: 0x1de - 440, x1: 0x1f8 - 440 },
+  /** 两颗共用同一段 y @source `cmp edx, 0x120 / cmp edx, 0x13a` */
+  y0: 0x120 - 280,
+  y1: 0x13a - 280,
+} as const;
+
+/** 点在太阳/月亮上返回要切到哪一面；没点中返回 null。坐标是**侧栏局部**（0..200） */
+export function hitCalendarToggle(x: number, y: number): 'calendar' | 'month' | null {
+  if (y < CAL_TOGGLE_HIT.y0 || y > CAL_TOGGLE_HIT.y1) return null;
+  if (x >= CAL_TOGGLE_HIT.sun.x0 && x <= CAL_TOGGLE_HIT.sun.x1) return 'calendar';
+  if (x >= CAL_TOGGLE_HIT.moon.x0 && x <= CAL_TOGGLE_HIT.moon.x1) return 'month';
+  return null;
+}
 /** 月曆底图 = 季节 + 4 @source 0x00416a38 `lea ebx, [eax + 4]` */
 const MONTH_VIEW_BASE = 4;
 /** 假日与今天的颜色 @source 0x00416acc / 0x00416b01 `push 0xff0000` */
@@ -208,8 +252,22 @@ export const PANEL_TAG_X = 0x273 - 440;
 const PANEL_TAG_SIZE = 14;
 /** 竖排的字距（= 字号，让两字刚好相接） */
 const PANEL_TAG_LINE = PANEL_TAG_SIZE;
-/** tag 文字色 —— 需求方指定白色（exe 是 `0x101010` 当前页 / `0x404040` 其余） */
-const PANEL_TAG_COLOR = '#ffffff';
+/**
+ * tag 文字色 —— **按 exe**。2026-09-15 需求方改口：先前照实机截图用的是白色，
+ * 现在按 exe 改回**深色**。
+ *
+ * @source VA 0x004161a5 / 0x004161f1：
+ * ```asm
+ * 004161e7  mov al, byte [esi + 0x48be24]   ; 该玩家当前页
+ * 004161ed  cmp ebx, eax                    ; ebx = tag 序号
+ * 004161ef  jne 0x4161a5
+ * 004161f1  mov eax, 0x101010               ; ★ 当前页 = 近黑
+ * 004161f6  jmp 0x4161aa
+ * 004161a5  mov eax, 0x404040               ; ★ 其余 = 深灰
+ * ```
+ */
+const PANEL_TAG_COLOR_CURRENT = '#101010';
+const PANEL_TAG_COLOR_OTHER = '#404040';
 
 /**
  * 四条彩色竖条的**命中条**（侧栏局部坐标）。
@@ -578,7 +636,9 @@ export class Hud {
     ): void => {
       ctx.font = font;
       ctx.textAlign = align;
-      ctx.textBaseline = 'middle';
+      // ★ `flag 2/3/4` 在 exe 里**只调 x、不碰 y**（详见 CAL 上方的说明），
+      //   所以 y 是文字块的**顶边**，不是中心。
+      ctx.textBaseline = 'top';
       ctx.lineWidth = 3;
       ctx.strokeStyle = 'rgba(255,255,255,0.85)';
       ctx.strokeText(s, ox + at.x, oy + at.y);
@@ -604,18 +664,22 @@ export class Hud {
 
     text(String(year), CAL.year, 'left', body, PLAIN_COLOR);
     text(`${month}月`, CAL.monthText, 'center', monthFont, PLAIN_COLOR);
-    // ⚠️ **证据冲突，暂按截图惯例画左对齐**：exe 给的是 flag 3，而 `0x44faa0` 的跳表
-    //   里 3 = 正中。可 3 个汉字（「星期日」等，实测串表每项 7 字节 = 6+1）居中于
-    //   側欄局部 x=14 会伸到 -10，**溢出到棋盘上**。是原版点阵字的字宽比系统字窄
-    //   （居中后正好收回来），还是我对 x 的读法有偏差，**没有原版日历页截图可仲裁**。
-    //   见 known-deviations 的 Q-LAYOUT-2 —— 拿一张截图来就能定。
-    text(
-      WEEKDAY_NAMES[weekdayOf(year, month, day)] ?? '',
-      CAL.weekday,
-      'left',
-      small,
-      holiday ? HOLIDAY_COLOR : PLAIN_COLOR,
-    );
+    // ★ 星期名是**竖排**（一个字一行）。
+    //
+    //   这一条是**需求方的实机截图**定的（2026-09-15）：截图上「星期五」三个字上下叠着，
+    //   与侧栏那四个 tag 是同一种排法。串表本身没有换行（`0x47511c` 指针表里
+    //   「星期五」就是 6 字节 + NUL），所以竖排是**绘制侧**的事 ——
+    //   与 tag 一样：`create_font` 的第 5 个参数（`[0x4762dc]`）为 1 时走竖排，
+    //   走横排的那几处（货架、资产表标签）那一项都是 0。
+    //
+    //   ★ 竖排之后这一块只有 **16px 宽**，居中于局部 x=14 → 6..22，**正好在侧栏里**。
+    //     （先前按横排算会得到 −10、以为要溢出到棋盘上 —— 那是读错排法导致的。）
+    const wd = WEEKDAY_NAMES[weekdayOf(year, month, day)] ?? '';
+    const wdFill = holiday ? HOLIDAY_COLOR : PLAIN_COLOR;
+    [...wd].forEach((ch, k) => {
+      // 竖排：x 由 `CAL.weekday.x` 居中，y 从顶边起逐字向下（字距 = 字号）
+      text(ch, { x: CAL.weekday.x, y: CAL.weekday.y + k * PANEL_TAG_LINE }, 'center', small, wdFill);
+    });
     text(
       String(day),
       CAL.dayText,
@@ -677,17 +741,18 @@ export class Hud {
       ctx.fillRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
     }
 
-    // 四个 tag（右缘竖条）—— **竖排、白字、小一号**（需求方 2026-09-15 指定）
+    // 四个 tag（右缘竖条）—— **竖排、小一号**（排法仍按需求方的实机截图，
+    // 颜色 2026-09-15 按 exe 改回深色：当前页 `0x101010`、其余 `0x404040`）
     ctx.font = `${PANEL_TAG_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = PANEL_TAG_COLOR;
-    for (const tag of PANEL_TAGS) {
+    PANEL_TAGS.forEach((tag, i) => {
+      ctx.fillStyle = i === input.panelPage ? PANEL_TAG_COLOR_CURRENT : PANEL_TAG_COLOR_OTHER;
       const chars = [...tag.label];
       // 整块以竖条中心为准，逐字向下排
       const y0 = tag.y - ((chars.length - 1) * PANEL_TAG_LINE) / 2;
       chars.forEach((ch, k) => ctx.fillText(ch, PANEL_TAG_X, y0 + k * PANEL_TAG_LINE));
-    }
+    });
 
     // 头像
     // ★ 头像也是 SMP，黑是抠图底色；不抠就会顶着一块黑框

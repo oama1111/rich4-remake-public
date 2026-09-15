@@ -69,6 +69,7 @@ import {
   Hud,
   SIDEBAR,
   clampCameraCenter,
+  hitCalendarToggle,
   hitMinimapArrow,
   hitMinimapBody,
   hitPanelTag,
@@ -3658,11 +3659,23 @@ function bindInput(): void {
       return; // 点在工具栏上就不要同时开始拖动地图
     }
     if (hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)) {
-      // ★ 右下角那 200×200 —— **只有小地图那一面**有交互（原版 `fcn_00416e6d`）。
-      //   日曆那一面点上去什么都不发生（VA 0x00418415：`cfg+5 == 0` 直接返回）。
+      // ★ 右下角那 200×200 —— **日曆那一面也有两颗钮**：太阳/月亮是「日曆 ↔ 月曆」
+      //   的切换钮（VA 0x0041838c）。**只有純小地圖那一面（cfg+5 = 1）什么都不接。**
       const lx = p.x - LAYOUT.panel.x;
       const ly = p.y - LAYOUT.panel.y - SIDEBAR.y;
-      if (sidebarView !== 'map') return;
+      if (sidebarView !== 'map') {
+        const to = hitCalendarToggle(lx, ly);
+        if (to !== null) {
+          // 已经是这一面 → 什么都不做（原版连音效都不放）
+          if (to !== sidebarView) {
+            sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+            sidebarView = to;
+            requestRender();
+          }
+          return;
+        }
+        return;
+      }
 
       const arrow = hitMinimapArrow(lx, ly);
       if (arrow !== null) {
