@@ -1292,21 +1292,41 @@ cards:
   title: 商店屏（卡片/道具切换、买、卖自己的）
   module: MOD-12
   req: REQ-12.8
-  status: todo
+  status: done
   estimate: 0.8
   depends_on: []
   uses:
     - core/places/shop.ts (货架、买卖价)
-    - client/scenes.ts (SCENE.shop = 10)
-  source: "Panel.mkf #10；U-2：右上三角切换卡/道具；右下自己的可卖；rich4_shop.asm"
-  input: "pending{shop}（cards[], tools[]）, 玩家 cards/tools"
+    - core/state/reduce.ts (买一件少一件；两页一致)
+    - client/inventory.ts (卡片栏/道具栏的两张「自己有什么」表)
+  source: "Panel.mkf #10（38 张）+ #11（17 张）；U-2；rich4_shop.asm"
+  input: "pending{shop}（cards[], tools[]、points）, 玩家 cards/state.tools"
   output: "dispatch(shop{op:buyCard|buyTool|sellCard|sellTool, id, count})"
   algorithm: |
-    1. shopScreen.ts：货架网格（上）、自己的网格（下）、切换三角、离开钮；价格取 core 的 cardPrice/toolPrice×物價。
-    2. 点货架格 → 买；点自己的格 → 卖；数量多件时 AmountPage。
-  tests: "shopScreen.test.ts：网格 hit、切换、买不起灰显。"
+    1. shopScreen.ts：整屏叠图 —— 底图（0/16）、老板娘（2/18）、气泡（15）、左侧货架栏（1/17）、
+       右下 5×3 格（资源 11 图 0/1）、右上三角（13/29 常态、14/30 按下）、EXIT（35/36）、點數底板（37）。
+       ★ 落点一律 `x − 图自带裁切原点`；哪些图要抠黑见 `SHOP_KEYED`。
+    2. 命中顺序：三角 → EXIT → 自己的格 → 货架。买/卖在**按下**、切页/退出在**抬手**。
+    3. 卡片页行距 24×15 行、道具页 48×8 行（**不一样**）；价格就是表里的標價，**不乘物價指數**。
+    4. 进门滑入（栏从左边、格从右边，100ms 一帧共 8 帧）+ 老板娘变脸 + 卖出时那一格「凹进去」。
+  tests: "shop-screen.test.ts：版面常量、四组命中（含开区间端点）、滑入 8 帧、串表 11 条、货架行、格子取件。"
   files: [packages/client/src/shop-screen.ts, packages/client/src/shop-screen.test.ts]
-  notes: ""
+  notes: |
+    **2026-09-15 做完**。整屏按 `rich4_shop.asm` 1:1 重做，替换了原先「资源 10 图 0 当底图 +
+    通用文本对话框」那一版；浏览器里逐项核过（买卡/卖卡/切页/买道具/EXIT/滑入/变脸）。
+
+    ## ★ 这张卡原先有四处写错，已订正（先改卡、再改代码）
+
+    1. **不是「货架网格（上）、自己的网格（下）」** —— 货架是**左侧一栏**
+       （图 1/17，222×462），自己的 5×3 格在**右下**（(227,293)，资源 11）。
+    2. **价格不乘物價指數** —— 原版直接读卡片/道具表 +5 那个字节。
+    3. **没有「买不起灰显」** —— 原版不灰显；點數不够是**点了才弹气泡**（「點數不足」）。
+    4. **没有多件卖 / AmountPage** —— 点一下卖一件（`loc_0042e148` / `loc_0042e39c`）。
+
+    另两处刻意留白（都已复核，非偏离或已登记）见 `known-deviations.md` 的 `D-009`：
+    卖出时那一格「凹进去」的效果**已做**（`SHOP_CELL_PRESS`，唯一差异是那 1px 宽的
+    「旧内容」无法逐像素等同）；货架「买一件少一件」**两页现在一致**，
+    配套的 AI 判据在 `ai/policy.ts::decidePending`（必须查 `p.tools`，否则 soak 卡死）。
 
 - id: T-033
   group: C
