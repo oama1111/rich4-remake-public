@@ -3,41 +3,64 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
-import { DRAW_CLASS, drawKey, fitCamera, hitToolbar, TOOLBAR } from './render.ts';
+import {
+  DRAW_CLASS,
+  drawKey,
+  fitCamera,
+  hitToolbar,
+  TOOLBAR,
+  TOOLBAR_RIGHT,
+  toolbarIconAt,
+} from './render.ts';
 import { TOOLBAR_ICON_COUNT, TOOLBAR_STRIP_IMAGE } from './assets.ts';
 import { LAYOUT } from './stage.ts';
 import type { Rich4Map } from '@rich4/core';
 
-describe('★ 11 个图标在 439 宽的底条里居中', () => {
-  it('两侧留边相等 —— 先前是 6 / 4，图标块整体偏右 1 像素', () => {
-    const used = TOOLBAR.pitch * TOOLBAR_ICON_COUNT;
-    const padLeft = TOOLBAR.padX;
-    const padRight = LAYOUT.toolbar.w - used - TOOLBAR.padX;
-    expect(padLeft).toBe(padRight);
+/*
+ * 工具栏的格 —— `x / 40`，11 格铺满 440。@source fcn_00415d31 与 loc_00418b0a
+ *
+ * 这里钉死的是**间距 40**。先前是 39（拿 439 宽的底条图反推「两侧各留 5」），
+ * 后果是左边图标偏右、右边图标偏左 —— 越靠边歪得越多（需求方 2026-09-15 报）。
+ */
+describe('★ 工具栏：等距 40、从 x=0 起、11 格正好 440', () => {
+  it('★ 间距是 40，不是 39；也没有左边距', () => {
+    expect(TOOLBAR.pitch).toBe(40);
+    expect(TOOLBAR.x).toBe(0);
+    expect(TOOLBAR_RIGHT).toBe(440);
+    expect(TOOLBAR_RIGHT).toBe(TOOLBAR.pitch * TOOLBAR_ICON_COUNT);
   });
 
-  it('图标块的中心与底条的中心重合', () => {
-    const first = TOOLBAR.padX + TOOLBAR.pitch / 2;
-    const last = TOOLBAR.padX + TOOLBAR.pitch * (TOOLBAR_ICON_COUNT - 1) + TOOLBAR.pitch / 2;
-    expect((first + last) / 2).toBe(LAYOUT.toolbar.w / 2);
-  });
-});
-
-describe('hitToolbar 与图标一一对应', () => {
-  it('★ 每个图标格的中心点回它自己', () => {
+  it('★ 图标锚点在每格正中：(i*40 + 20, 20)', () => {
+    expect(TOOLBAR.iconX).toBe(20);
+    expect(TOOLBAR.iconY).toBe(20);
+    expect(toolbarIconAt(0)).toEqual({ x: 20, y: 20 });
+    // 第 11 个：10*40+20 = 420，正好是 [400,440) 的中点
+    expect(toolbarIconAt(10)).toEqual({ x: 420, y: 20 });
     for (let i = 0; i < TOOLBAR_ICON_COUNT; i++) {
-      const cx = TOOLBAR.x + TOOLBAR.padX + i * TOOLBAR.pitch + TOOLBAR.pitch / 2;
-      const cy = TOOLBAR.y + TOOLBAR.height / 2;
-      expect({ i, hit: hitToolbar(cx, cy) }).toMatchObject({ hit: i });
+      const at = toolbarIconAt(i);
+      expect(at.x).toBe(i * TOOLBAR.pitch + TOOLBAR.pitch / 2);
     }
   });
 
-  it('底条之外（含下面一行）→ null', () => {
-    expect(hitToolbar(TOOLBAR.padX + 5, TOOLBAR.height)).toBeNull();
-    expect(hitToolbar(TOOLBAR.padX + 5, -1)).toBeNull();
-    expect(hitToolbar(TOOLBAR.x - 1, 10)).toBeNull();
-    // 底条右端之外（439 之后是側欄）
+  it('★ 每格的左右端点都归自己（40 的整数倍是这一格的开头）', () => {
+    for (let i = 0; i < TOOLBAR_ICON_COUNT; i++) {
+      expect(hitToolbar(i * 40, 20)).toBe(i);
+      expect(hitToolbar(i * 40 + 39, 20)).toBe(i);
+    }
+    // 边界：399 还是第 9 格、400 是第 10 格
+    expect(hitToolbar(399, 20)).toBe(9);
+    expect(hitToolbar(400, 20)).toBe(10);
+  });
+
+  it('★ 440 起是側欄，不算工具栏（原版 `cmp x, 0x1b8`）', () => {
+    expect(hitToolbar(440, 20)).toBeNull();
     expect(hitToolbar(LAYOUT.toolbar.w + 5, 10)).toBeNull();
+  });
+
+  it('工具栏之外：下面那一行、以及负坐标 → null', () => {
+    expect(hitToolbar(20, TOOLBAR.height)).toBeNull();
+    expect(hitToolbar(20, -1)).toBeNull();
+    expect(hitToolbar(TOOLBAR.x - 1, 10)).toBeNull();
   });
 
   it('底条自身的图号是 0', () => {

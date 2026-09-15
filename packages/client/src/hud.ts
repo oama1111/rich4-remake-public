@@ -97,6 +97,56 @@ export const SIDEBAR = { x: 0, y: PANEL_HEIGHT, w: 200, h: 200 } as const;
  *   即 `x`/`y` 是**文字块的中心**（flag 0 除外，那是左上角）——不是左边缘。
  *   这条先前靠截图反推过，读跳表后得到确证。
  */
+/**
+ * `_rich4_draw_text` 的**对齐标志** —— 逐条实读跳表得来的，不是推断。
+ *
+ * @source `VA 0x0044fabc` 的末段：`lea eax,[flag-1] / cmp eax,6 / ja skip /
+ *   jmp [eax*4 + 0x44faa0]`，即**按 `flag − 1` 索引**的 7 路跳表；
+ *   `esi` = 文字宽 + 1、`ebx` = 文字高 + 1，`[esp+0xac]` = x、`[esp+0xb0]` = y。
+ *
+ *   | flag | 目标 | 做什么 |
+ *   |---|---|---|
+ *   | 0 | （`ja` 跳过）| 不调整 → **左上** |
+ *   | 1 | `0x44FF21` | `x -= 宽` → 右上 |
+ *   | **2 / 3 / 4** | `0x44FF2A` → **落入** `0x44FF35` | `x -= 宽/2` 后**接着** `y -= 高/2` → **正中** |
+ *   | 5 | `0x44FF35` | 左·垂直居中 |
+ *   | 6 | `0x44FF42` | 右·垂直居中 |
+ *   | 7 | `0x44FF4B` | 水平居中·底对齐 |
+ *
+ * ★ **flag 2/3/4 两轴都居中**：三条表项指向同一个 `0x44FF2A`，而那一段是
+ *   `mov eax,esi / sar eax,1 / sub [esp+0xac],eax`，紧跟着**顺序**执行
+ *   `0x44FF35` 的 `mov eax,ebx / sar eax,1 / sub [esp+0xb0],eax`
+ *   （`0x44FF2E` 那条 `sub` 长 7 字节，正好接上 `0x44FF35` —— 中间没有跳转）。
+ *   所以 **`x`/`y` 是文字块的中心**，用 CSS 就是 `textBaseline='middle'`。
+ *
+ * ⚠️ 本项目一度记成「flag 2/3/4 只调 x、y 是顶边」，并据此在日曆里按
+ *   `textBaseline='top'` 画 日号/月/星期 —— 那是**把中心当成了顶边**，
+ *   于是这几处文字整体**偏下半个行高**（60 号的日号偏下约 30px）。
+ *   2026-09-15 回 exe 逐条核对后改正。
+ */
+export function alignFor(flag: number): {
+  align: CanvasTextAlign;
+  baseline: CanvasTextBaseline;
+} {
+  switch (flag) {
+    case 1:
+      return { align: 'right', baseline: 'top' };
+    case 2:
+    case 3:
+    case 4:
+      return { align: 'center', baseline: 'middle' };
+    case 5:
+      return { align: 'left', baseline: 'middle' };
+    case 6:
+      return { align: 'right', baseline: 'middle' };
+    case 7:
+      return { align: 'center', baseline: 'bottom' };
+    default:
+      // flag 0 与 >7：不调整 = 左上角
+      return { align: 'left', baseline: 'top' };
+  }
+}
+
 export const CAL = {
   /** 日曆：太阳、月亮（侧栏内坐标） */
   sun: { x: 0x1ce - 440, y: 0x12c - 280 },
@@ -628,23 +678,27 @@ export class Hud {
     if (moon !== null) ctx.drawImage(moon.bitmap, ox + CAL.moon.x, oy + CAL.moon.y);
 
     const holiday = isHoliday(globalMapId, year, month, day);
+    /**
+     * 按**对齐标志**画一条 —— 标志语义见 `alignFor`（flag 2/3 = 正中，故 y 是中心）。
+     * `dy` 供竖排那几处逐字下移用。
+     */
     const text = (
       s: string,
       at: { x: number; y: number },
-      align: CanvasTextAlign,
+      flag: number,
       font: string,
       fill: string,
+      dy = 0,
     ): void => {
+      const { align, baseline } = alignFor(flag);
       ctx.font = font;
       ctx.textAlign = align;
-      // ★ `flag 2/3/4` 在 exe 里**只调 x、不碰 y**（详见 CAL 上方的说明），
-      //   所以 y 是文字块的**顶边**，不是中心。
-      ctx.textBaseline = 'top';
+      ctx.textBaseline = baseline;
       ctx.lineWidth = 3;
       ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-      ctx.strokeText(s, ox + at.x, oy + at.y);
+      ctx.strokeText(s, ox + at.x, oy + at.y + dy);
       ctx.fillStyle = fill;
-      ctx.fillText(s, ox + at.x, oy + at.y);
+      ctx.fillText(s, ox + at.x, oy + at.y + dy);
     };
     // ★ 字号与对齐**全部**取自 exe（VA 0x00416cee..0x00416dd3）：
     //   `set_font` 紧挨在 `sprintf` 之前，作用于**紧接着的那一次** draw。
@@ -675,17 +729,21 @@ export class Hud {
     //     （先前按横排算会得到 −10、以为要溢出到棋盘上 —— 那是读错排法导致的。）
     const wd = WEEKDAY_NAMES[weekdayOf(year, month, day)] ?? '';
     const wdFill = holiday ? HOLIDAY_COLOR : PLAIN_COLOR;
-    [...wd].forEach((ch, k) => {
-      // 竖排：x 由 `CAL.weekday.x` 居中，y 从顶边起逐字向下（字距 = 字号）
-      text(ch, { x: CAL.weekday.x, y: CAL.weekday.y + k * PANEL_TAG_LINE }, 'center', small, wdFill);
+    const chars = [...wd];
+    // 竖排：flag 3 = 正中，`CAL.weekday` 是**整块的中心**（不是首字的顶边）——
+    // 与侧栏四个 tag 同一种摆法（tag 那边也是「整块以竖条中心为准」）。
+    chars.forEach((ch, k) => {
+      text(
+        ch,
+        { x: CAL.weekday.x, y: CAL.weekday.y },
+        3,
+        small,
+        wdFill,
+        (k - (chars.length - 1) / 2) * PANEL_TAG_LINE,
+      );
     });
-    text(
-      String(day),
-      CAL.dayText,
-      'center',
-      dayFont,
-      holiday ? HOLIDAY_COLOR : PLAIN_COLOR,
-    );
+    // 日号 = flag 2（正中）
+    text(String(day), CAL.dayText, 2, dayFont, holiday ? HOLIDAY_COLOR : PLAIN_COLOR);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
   }
@@ -742,24 +800,20 @@ export class Hud {
     const ctx = this.#ctx;
     const { month, year } = input.state;
     const { x: ox, y: oy } = SIDEBAR;
-    const line = (
-      s: string,
-      at: { x: number; y: number },
-      align: CanvasTextAlign,
-      size: number,
-    ): void => {
+    const line = (s: string, at: { x: number; y: number }, flag: number, size: number): void => {
+      const { align, baseline } = alignFor(flag);
       ctx.font = `${size}px ${FONT_FAMILY}`;
       ctx.textAlign = align;
-      // flag 0 / 2 都**只调 x**（跳表 `0x44faa0` 按 `flag−1` 索引），y 是顶边
-      ctx.textBaseline = 'top';
+      ctx.textBaseline = baseline;
       ctx.lineWidth = 3;
       ctx.strokeStyle = 'rgba(255,255,255,0.85)';
       ctx.strokeText(s, ox + at.x, oy + at.y);
       ctx.fillStyle = PLAIN_COLOR;
       ctx.fillText(s, ox + at.x, oy + at.y);
     };
-    line(String(year), CAL.year, 'left', 24);
-    line(`${month}月`, CAL.monthText, 'center', 28);
+    // 年 = flag 0（不调整 = 左上角）；月 = flag 2（**正中**，故 y 是中心）
+    line(String(year), CAL.year, 0, 24);
+    line(`${month}月`, CAL.monthText, 2, 28);
   }
 
   #drawPanel(input: HudInput): void {

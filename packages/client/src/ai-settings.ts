@@ -35,7 +35,6 @@
 
 import type { GameState, Player } from '@rich4/core';
 import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from '@rich4/core';
-import { CHARACTERS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
 
@@ -56,8 +55,16 @@ export const AI_PORTRAIT_BASE = 6;
 /** 对话框尺寸 @source 图 0 */
 export const AI_W = 435;
 export const AI_H = 355;
-/** 居中于 640×480 —— 与 `options.ts` 同一条约定（VA 0x00411dac） */
-export const AI_ORIGIN = { x: 320 - (AI_W >> 1), y: 240 - (AI_H >> 1) } as const;
+/**
+ * 对话框左上角。
+ *
+ * ★ **不是「居中」算出来的**，是 exe 直给的：整个对话框被画进图 0 的缓冲区，
+ *   再整体贴到屏幕的 `(0x66, 0x3e) = (102, 62)`（`fcn_004563f5(dst, 图0, 102, 62)`），
+ *   窗口矩形也是 `InvalidateRect(0x66, 0x3e, 0x219, 0x1a1)` → 435×355。
+ *   先前按 `320 − 435/2` 推出 (103, 63)，**整整差 1 像素**；
+ *   这一屏里所有文字/控件坐标都是对话框相对坐标，1 像素会一路带着走。
+ */
+export const AI_ORIGIN = { x: 0x66, y: 0x3e } as const;
 
 // ============================================================
 //  文字（全部对话框相对坐标，来自反汇编）
@@ -156,43 +163,117 @@ export const AI_LABELS = {
 // ============================================================
 
 /**
- * 五个选项圆点的位置 —— **从底图上量出来的**（找粉红圆点的连通块）：
- * `(193,52) (193,84)` 是「使用卡片 / 使用道具」，`(193,140) (193,172) (193,204)`
- * 是「乖寶寶 / 普通人 / 大老奸」。与上面反汇编的文字 y 逐个对得上（差 ≤1）。
+ * 五个选项圆点的**中心**。
+ *
+ * 出处不是量图，是 `fcn_0041db91` 的两处绘制：亮圆点（图 3，15×15）画在
+ * `(0x120, 107/139)`（屏幕）→ 对话框相对 `(186, 45/77)`，而 `fcn_004562a5` 会
+ * 减掉图自己的锚点（这里是 (0,0)），故圆点中心 = `(186 + 7, 45 + 7) = (193, 52)`。
+ * 三个個性行同理，y 取自表 `0x4752b8 = [195, 227, 259]`（屏幕）→ 中心 140/172/204。
  */
 export const AI_DOT_AT = [52, 84, 140, 172, 204] as const;
 export const AI_DOT_X = 193;
 
-/** 选项行底色图 116×86 里，圆点在自己的 (18,43)；对齐时按它平移 */
-const ROW_IMAGE_DOT = { x: 18, y: 43 } as const;
-/** 一行的高度（相邻圆点间距）*/
-export const AI_ROW_H = 32;
-
 /**
- * 两颗竖排按钮的矩形。
+ * 五个选项行的**命中框 / 悬停框** —— 直接抄 exe 的矩形表。
  *
- * ⚠️ **这两个是推出来的，不是量出来的**：底图右条是颗粒纹理，按颜色切不出干净的
- *   按钮边界。反汇编只给了竖排文字的位置（`確定` y=0x7d=125、`取消` y=0xd5=213），
- *   故按钮取「以文字为中心、宽度撑满右侧粉条（x 365..431）」。
- *   视觉上与原版截图吻合（截图里两颗米色按钮就压在这两处）。
+ * @source 表 `0x4752ae`，每项 4 个 `int16` = `(x0, y0, x1, y1)`（**屏幕**坐标）。
+ *   索引 2..6 依次是「使用卡片 / 使用道具 / 乖寶寶 / 普通人 / 大老奸」：
+ *   `(287,106,383,124) (287,137,383,155) (287,194,383,212) (287,226,383,244) (287,259,383,277)`。
+ *   减掉对话框原点 (102,62) 得相对框 `x 185..281`、y 见下。
  */
-export const AI_BTN_OK = { x: 365, y: 90, w: 66, h: 72 } as const;
-export const AI_BTN_CANCEL = { x: 365, y: 178, w: 66, h: 72 } as const;
+export const AI_OPTION_ROWS = [
+  { x: 185, y: 44, w: 97, h: 19 },
+  { x: 185, y: 75, w: 97, h: 19 },
+  { x: 185, y: 132, w: 97, h: 19 },
+  { x: 185, y: 164, w: 97, h: 19 },
+  { x: 185, y: 197, w: 97, h: 19 },
+] as const;
 
 /**
- * 两条滑槽的矩形。同样**由文字锚点推出**：`現金` 右对齐于 x=191、`存款` 左对齐于
- * x=305，故滑槽落在两者之间；y 取文字基线上下各 10。
+ * 两颗竖排按钮的矩形 —— **从 exe 的矩形表直抄，不再靠猜**。
+ *
+ * @source 表 `0x4752ae` 索引 11/12：`(479,159,519,215)` = 確定、`(479,247,519,303)` = 取消
+ *   （屏幕坐标）→ 相对 `x 377..417`、`y 97..153` / `185..241`。
+ *   按钮中心 x = 397、y = 125 / 213，与竖排文字 anchors 逐个吻合。
+ *
+ * ⚠️ 先前是按「以文字为中心、宽度撑满右侧粉条」**推**出来的 (365,90,66,72) ——
+ *   推导这件事本身就不该做：同一张表里就写着真值。
+ */
+export const AI_BTN_OK = { x: 377, y: 97, w: 41, h: 57 } as const;
+export const AI_BTN_CANCEL = { x: 377, y: 185, w: 41, h: 57 } as const;
+
+/**
+ * 两条滑槽的**可拖动区**矩形（相对坐标）。
+ *
+ * @source 表 `0x4752ae` 索引 13/14：`(310,327,390,351)` 現金、`(310,360,390,384)` 股票 ——
+ *   两张都是 80 宽，由左右两颗箭头夹着（箭头自身是索引 7..10，画在底图里）。
+ *   减对话框原点得相对 `x 208..288`、y `265..289` / `298..322`。
  */
 export const AI_SLIDERS = {
-  cash: { x: 195, y: 267, w: 106, h: 20 },
-  stock: { x: 195, y: 300, w: 106, h: 20 },
+  cash: { x: 208, y: 265, w: 80, h: 24 },
+  stock: { x: 208, y: 298, w: 80, h: 24 },
 } as const;
 
-/** 每位可托管玩家一行：LED 在 (8, edi)，头像在 (80, edi+40)，行距 0x53 = 83 @source VA 0x0041e61c */
+/**
+ * 比例条的**分段填充**：一格 7 宽、22 高、间距 8，第一格在拖动区左边 +1。
+ *
+ * @source `fcn_0041da61`：每格 `fill_rect(0x46caec, 311 + 8k, 328, 7, 22, 0xff0000)`
+ *   （屏幕）→ 相对 `x = 209 + 8k`、y `266`（現金）/ `299`（股票）。
+ *   格数 = `[比例 / 10]`（下文 `AI_RATIO_STEP`）。
+ *
+ * ⚠️ **不是一条连续色条，更不是绿色的** —— 先前画成一条浅绿填充，与原版不符。
+ */
+export const AI_SEG = { dx: 209, dy: 1, w: 7, h: 22, pitch: 8, color: '#ff0000' } as const;
+/** 一档 = 10%，即一格 */
+export const AI_RATIO_STEP = 10;
+
+/**
+ * 滑槽两端那两颗箭头 —— **不是装饰，是 ±10 的档位钮**，也是 100% 的唯一来路。
+ *
+ * @source 表 `0x4752ae` 索引 7..10：`(298,328,309,350) (392,328,403,350) (298,361,309,383) (392,361,403,383)`
+ *   （屏幕）→ 相对 `x 196..207`（左）/ `290..301`（右）。
+ *   按下后走 `loc_0041e15a`（−10，`>10` 才减，否则归 0）与 `loc_0041e191`（+10，`<90` 才加，否则 100）。
+ *
+ * ★ 拖动区是 `310 < x < 390`（**两端都不含**）→ 拖到最右只到 `(389−310)/8×10 = 90`；
+ *   要 100 就得按右箭头。原版这两条路是配套的，少一条就调不出「全存/全投」。
+ */
+export const AI_ARROWS: Record<'cash' | 'stock', readonly { x: number; y: number; w: number; h: number; delta: number }[]> = {
+  cash: [
+    { x: 196, y: 266, w: 12, h: 23, delta: -AI_RATIO_STEP },
+    { x: 290, y: 266, w: 12, h: 23, delta: AI_RATIO_STEP },
+  ],
+  stock: [
+    { x: 196, y: 299, w: 12, h: 23, delta: -AI_RATIO_STEP },
+    { x: 290, y: 299, w: 12, h: 23, delta: AI_RATIO_STEP },
+  ],
+};
+
+/**
+ * 每位可托管玩家一行，行距 `0x53 = 83`，首行 `edi = 8`。@source VA 0x0041e577
+ *
+ * 一行由三样东西叠成（都在**对话框相对坐标**里）：
+ * 1. **行底板** —— 图 1（当前行）/ 图 2（其余），画在 `(8, y)`，116×86。
+ *    这张图与背景同为绿色，肉眼几乎看不出来，**只有上面那个红点显形** ——
+ *    这也是先前把它误当成「一颗 LED」的原因。
+ * 2. **头像** —— 图 `6 + character`，画在 `(0x50, y + 0x28)` = `(80, y+40)`。
+ *    ★ 必须**减锚点**（`fcn_004562a5` 会减，头像锚点约在图心）：
+ *    减完头像占 x 约 38..123，正好落在底板里。
+ * 3. **点亮的圆点** —— 图 3（15×15），画在 `(0x79, y_screen + 0x24)` → 相对 `(19, y+36)`，
+ *    中心 `(26, y+43)` 与底板上烤进的那个暗点重合。托管开着时才画。
+ *
+ * ★ **原版这一屏不画角色名**：入口函数里 14 次 `draw_text` 的串全是
+ *   `ref_00463cxx/dxx` 这种**常量**（十二个标签 + 確定 + 取消），没有任何一处
+ *   从玩家记录里取名字。先前我们自作主张补了一个名字，位置又按「头像左上角 + 74」
+ *   算，正好压在头像上 —— 需求方 2026-09-15 看到的「头像和名字错位」就是这个。
+ */
 export const AI_ROW_FIRST_Y = 8;
 export const AI_ROW_PITCH = 0x53; // 83
-export const AI_LED_AT = { x: 8, dx: 80 } as const;
-export const AI_PORTRAIT_DY = 0x28; // 40
+/** 行底板的 x；116×86 的图 1/图 2 画在这里 */
+export const AI_PLATE_X = 8;
+/** 点亮的圆点相对行首的偏移（图 3 是 15×15、锚点 (0,0)，故这是左上角）*/
+export const AI_LED_AT = { x: 19, dy: 36 } as const;
+/** 头像相对行首的偏移；绘制时要减图自己的锚点 */
+export const AI_PORTRAIT_AT = { x: 0x50, dy: 0x28 } as const;
 
 // ============================================================
 //  草稿
@@ -267,6 +348,8 @@ export type AiSettingsHit =
   | { kind: 'personality'; row: number; value: number }
   /** 两条比例滑槽；`value` 由点击的 x 位置换算 */
   | { kind: 'ratio'; row: number; which: 'cash' | 'stock'; value: number }
+  /** 滑槽两端的箭头：按一下 ±10 */
+  | { kind: 'ratioStep'; row: number; which: 'cash' | 'stock'; delta: number }
   | { kind: 'ok' }
   | { kind: 'cancel' };
 
@@ -274,16 +357,24 @@ const inRect = (x: number, y: number, r: { x: number; y: number; w: number; h: n
   x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
 
 /**
- * 滑槽上点在 x 处的值（0..100，百分比）。
+ * 滑槽上点在 x 处的值（0..100，**只能取 10 的整数倍**）。
  *
- * ★ 除的是 `w - 1` 而不是 `w`：滑槽占的像素是 `x .. x+w-1`（命中区是半开区间），
- *   除以 `w` 的话最右那一格只到 99%，**拖到底也调不出 100%** —— 而「全存银行」
- *   恰恰是最常用的那一档。除以 `w-1` 让首尾两格恰好落在 0 与 100。
+ * @source `loc_0041de44`（WM_LBUTTONUP）：
+ * ```asm
+ * 0041de52  sub esi, word [0x4752ae + idx*8]   ; dx = x − 拖动区左缘
+ * 0041de60  sar eax, 3                          ; dx / 8
+ * 0041de6a  shl eax,2 / add eax,edx / add eax,eax   ; × 10
+ * 0041de77  byte [rec + idx + 0x48be2b] = al    ; 存进现-存 / 股-資比例
+ * ```
+ * 即 `值 = (x − x0) / 8 × 10`（整除）—— 11 档，正好对着 11 格位置；
+ * 右端 `(288−208)/8×10 = 100`，左端 0。
+ *
+ * ⚠️ 先前按「连续百分比」算（除 `w−1` 再四舍五入），于是能拖出 37% 这种
+ *   原版没有的档位，填充也画成了一条连续色条。
  */
 export function ratioFromX(x: number, r: { x: number; w: number }): number {
-  if (r.w <= 1) return 0;
-  const t = (x - r.x) / (r.w - 1);
-  return Math.max(0, Math.min(100, Math.round(t * 100)));
+  const step = Math.floor((x - r.x) / AI_SEG.pitch);
+  return Math.max(0, Math.min(100, step * AI_RATIO_STEP));
 }
 
 /**
@@ -301,37 +392,40 @@ export function hitAiSettings(
 ): AiSettingsHit | null {
   const { x, y } = local;
 
-  // 按钮：先判，免得被下面的行区抢走
+  // ★ 顺序照原版 `loc_0041de95`：**先判玩家行底板，再判那张控件表**。
+  //   两块区域不重叠，但摆成同一个顺序省得以后改动时踩到。
+  for (let n = 0; n < rows.length; n++) {
+    const ry = rowY(n);
+    // 行底板：屏幕 x ∈ (110,226)、y ∈ (70+83n, 153+83n) → 相对 (8, y) 起 116×86
+    if (inRect(x, y, { x: AI_PLATE_X, y: ry, w: 116, h: AI_ROW_PITCH })) {
+      return { kind: 'autopilot', row: n };
+    }
+  }
+
+  // 使用卡片 / 使用道具 / 乖寶寶 / 普通人 / 大老奸 —— 直接用 exe 的矩形表
+  for (let n = 0; n < rows.length; n++) {
+    for (const [k, r] of AI_OPTION_ROWS.entries()) {
+      if (!inRect(x, y, r)) continue;
+      return k < 2
+        ? { kind: 'ability', row: n, bit: k }
+        : { kind: 'personality', row: n, value: k - 2 };
+    }
+  }
+
+  // 两颗按钮
   if (inRect(x, y, AI_BTN_OK)) return { kind: 'ok' };
   if (inRect(x, y, AI_BTN_CANCEL)) return { kind: 'cancel' };
 
   // 那对滑槽改的是「当前玩家」那一行；他不在可编辑之列（电脑/出局）就退回第一行
   const ratioRow = Math.max(0, rows.findIndex((r) => r.player === currentPlayer));
-  if (inRect(x, y, AI_SLIDERS.cash)) {
-    return { kind: 'ratio', row: ratioRow, which: 'cash', value: ratioFromX(x, AI_SLIDERS.cash) };
-  }
-  if (inRect(x, y, AI_SLIDERS.stock)) {
-    return { kind: 'ratio', row: ratioRow, which: 'stock', value: ratioFromX(x, AI_SLIDERS.stock) };
-  }
-
-  for (let n = 0; n < rows.length; n++) {
-    const ry = rowY(n);
-
-    // 托管总开关
-    if (inRect(x, y, { x: AI_LED_AT.x, y: ry, w: 15, h: 15 })) return { kind: 'autopilot', row: n };
-
-    // 两个能力圆点：点圆点或它右边的文字都算
-    for (let k = 0; k < 2; k++) {
-      if (inRect(x, y, { x: AI_DOT_X - 8, y: AI_DOT_AT[k]! - 8, w: 108, h: 16 })) {
-        return { kind: 'ability', row: n, bit: k };
+  for (const which of ['cash', 'stock'] as const) {
+    for (const arrow of AI_ARROWS[which]) {
+      if (inRect(x, y, arrow)) {
+        return { kind: 'ratioStep', row: ratioRow, which, delta: arrow.delta };
       }
     }
-
-    // 三个個性单选
-    for (let k = 0; k < 3; k++) {
-      if (inRect(x, y, { x: AI_DOT_X - 8, y: AI_DOT_AT[2 + k]! - 8, w: 108, h: 16 })) {
-        return { kind: 'personality', row: n, value: k };
-      }
+    if (inRect(x, y, AI_SLIDERS[which])) {
+      return { kind: 'ratio', row: ratioRow, which, value: ratioFromX(x, AI_SLIDERS[which]) };
     }
   }
 
@@ -360,6 +454,14 @@ export function applyAiSettingsHit(rows: readonly AiSettingRow[], hit: AiSetting
       if (hit.which === 'cash') row.cashRatio = hit.value;
       else row.stockRatio = hit.value;
       break;
+    case 'ratioStep': {
+      // @source `loc_0041e15a`（−10，>10 才减否则归 0）/ `loc_0041e191`（+10，<90 才加否则 100）
+      const cur = hit.which === 'cash' ? row.cashRatio : row.stockRatio;
+      const next = Math.max(0, Math.min(100, cur + hit.delta));
+      if (hit.which === 'cash') row.cashRatio = next;
+      else row.stockRatio = next;
+      break;
+    }
   }
   return out;
 }
@@ -393,49 +495,31 @@ export function drawAiSettings(
   ctx.translate(ox, oy);
   ctx.textBaseline = 'top';
 
-  // 底图（含标题条、五个圆点、两条滑槽、两颗按钮面）
+  // 底图（含标题条、五个暗色选项底板、五个暗圆点、两条滑槽与箭头、两颗按钮面）
   const bg = sprite(AI_ARCHIVE, AI_RESOURCE, AI_BG);
   if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0);
 
-  // ★ 未选中的项：把「暗」版行图贴上去覆盖底图自带的亮色。
-  //   对齐靠**行图内嵌的圆点**：图里圆点在 (18,43)，所以
-  //   drawAt = (圆点x − 18, 圆点y − 43)，再按一行的高度裁掉多余部分。
-  //   ⚠️ 裁高度这一下是**本项目自己的做法**：原版图是 116×86（够盖一组），
-  //   而没有跟到它到底盖一行还是一组。见 known-deviations 的 Q-LAYOUT-1。
-  const off = sprite(AI_ARCHIVE, AI_RESOURCE, AI_ROW_OFF);
-  if (off !== null) {
-    rows.forEach((row) => {
-      const flags = rowFlags(row);
-      for (let k = 0; k < flags.length; k++) {
-        if (flags[k]) continue; // 亮着的不盖
-        const dy = AI_DOT_AT[k]!;
-        const x = AI_DOT_X - ROW_IMAGE_DOT.x;
-        const y = dy - ROW_IMAGE_DOT.y;
-        const top = dy - (AI_ROW_H >> 1);
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(x, top, off.width, AI_ROW_H);
-        ctx.clip();
-        ctx.drawImage(off.bitmap, x, y);
-        ctx.restore();
-      }
-    });
-  }
-
-  // 五颗圆点（底图自带，这里再画一次是为了在「暗」版盖过之后仍然看得见状态）
   const dotOn = sprite(AI_ARCHIVE, AI_RESOURCE, AI_DOT);
+
+  // 五个选项：底图里那排暗圆点就是「关」，图 3 那颗亮的是「开」——
+  // **不换底板**（先前拿图 2 去盖一行底色，是把「玩家行底板」当成「选项行底板」用了）。
   if (dotOn !== null) {
     rows.forEach((row) => {
-      const flags = rowFlags(row);
-      flags.forEach((on, k) => {
+      rowFlags(row).forEach((on, k) => {
         if (!on) return;
-        ctx.drawImage(dotOn.bitmap, AI_DOT_X - (dotOn.width >> 1), AI_DOT_AT[k]! - (dotOn.height >> 1));
+        ctx.drawImage(
+          dotOn.bitmap,
+          AI_DOT_X - (dotOn.width >> 1),
+          AI_DOT_AT[k]! - (dotOn.height >> 1),
+        );
       });
     });
   }
 
   // 文字：字号取自反汇编（大字 0x14=20、小字 0x10=16），对齐全按 AI_TEXT 的标志走
-  ctx.fillStyle = '#f0f0f0';
+  ctx.fillStyle = FILL;
+  ctx.strokeStyle = OUTLINE;
+  ctx.lineWidth = 1;
   ctx.font = `20px ${FONT}`;
   label(ctx, AI_LABELS.title, AI_TEXT.title);
   if (rows[0] !== undefined) label(ctx, AI_LABELS.personality, AI_TEXT.personality);
@@ -448,7 +532,7 @@ export function drawAiSettings(
   label(ctx, AI_LABELS.normal, AI_TEXT.normal);
   label(ctx, AI_LABELS.villain, AI_TEXT.villain);
 
-  // 比例：两侧标签 + 滑槽里的**填充**
+  // 比例：两侧标签 + 滑槽里的**分段填充**
   const row0 = rows[0];
   const cash = row0?.cashRatio ?? 0;
   const stock = row0?.stockRatio ?? 0;
@@ -457,35 +541,50 @@ export function drawAiSettings(
   label(ctx, AI_LABELS.stock, AI_TEXT.stock);
   label(ctx, AI_LABELS.fund, AI_TEXT.fund);
 
-  // ★ 只填、不写数字 —— 原版这一屏**没有百分比文字**，它靠条子的填充长度表达。
-  //   加个「50%」上去看着方便，但那是「改良」，C-FID-1/4 明令禁止。
+  // ★ 只填、不写数字 —— 原版这一屏**没有百分比文字**，它靠格数表达。
   fillRatio(ctx, AI_SLIDERS.cash, cash);
   fillRatio(ctx, AI_SLIDERS.stock, stock);
 
-  // 竖排的確定/取消
+  // 竖排的確定/取消 —— ★ **黑字、无描边**，与上面那些白字黑边**不是同一套颜色**。
+  //   @source `set_font(0x14, 0x101010, 0, 2, 1)`：前景 0x101010、描边 0。
+  //   先前一律按白字画，需求方 2026-09-15 报「确认/取消的按钮字体颜色不对」。
   ctx.font = `20px ${FONT}`;
+  ctx.fillStyle = OK_CANCEL_FILL;
+  ctx.strokeStyle = OK_CANCEL_FILL;
   label(ctx, AI_LABELS.ok, AI_TEXT.ok);
   label(ctx, AI_LABELS.cancel, AI_TEXT.cancel);
+  ctx.strokeStyle = OUTLINE;
 
-  // 每位真人一行：LED + 头像 + 名字
-  ctx.font = `15px ${FONT}`;
+  // 每位真人一行：底板 + 头像 + 点亮的圆点。
+  // @source `_rich4_ui_ai_settings_entry` VA 0x0041e61c 那两句 blit
+  //   「当前行」= `[0x48be4c]`，入口里只在 `i == [0x49910c]`（轮到的玩家）时写入；
+  //   轮到的不是真人时它保持 memset 后的 0 —— 与 `sel` 的兜底一致。
+  const sel = Math.max(0, rows.findIndex((r) => r.player === state.currentPlayer));
   rows.forEach((row, n) => {
     const ry = rowY(n);
-    // LED：托管中点亮
+    // ① 行底板：图 1 = 当前行（亮）、图 2 = 其余。锚点是 (0,0)，直接落点
+    const plate = sprite(
+      AI_ARCHIVE, AI_RESOURCE,
+      n === sel ? AI_ROW_ON : AI_ROW_OFF,
+    );
+    if (plate !== null) ctx.drawImage(plate.bitmap, AI_PLATE_X, ry);
+
+    // ② 圆点：托管开着才点亮（底板里那颗暗点已经烤在图上）
     if (dotOn !== null && (row.whoPlays & WHO_PLAYS_AUTOPILOT) !== 0) {
-      ctx.drawImage(dotOn.bitmap, AI_LED_AT.x, ry);
+      ctx.drawImage(dotOn.bitmap, AI_LED_AT.x, ry + AI_LED_AT.dy);
     }
+
+    // ③ 头像：图 `6 + character`，画在 (80, y+40) —— ★ **要减锚点**
     const p = state.players[row.player];
     if (p === undefined) return;
-    // 头像取自**同一张对话框资源**里的 12 张（图 6..17，与開局设置的 12 张同序）——
-    // @source VA 0x0041e634 `add_widget(... x=0x50, y=edi+0x28, 图号由 character 算出)`
     const portrait = sprite(AI_ARCHIVE, AI_RESOURCE, AI_PORTRAIT_BASE + p.character);
     if (portrait !== null) {
-      ctx.drawImage(portrait.bitmap, AI_LED_AT.dx, ry + AI_PORTRAIT_DY);
+      ctx.drawImage(
+        portrait.bitmap,
+        AI_PORTRAIT_AT.x - portrait.anchorX,
+        ry + AI_PORTRAIT_AT.dy - portrait.anchorY,
+      );
     }
-    ctx.fillStyle = '#f0e6d2';
-    const name = CHARACTERS[p.character]?.name ?? `${row.player + 1} 號`;
-    ctx.fillText(name, AI_LED_AT.dx + 74, ry + AI_PORTRAIT_DY + 20);
   });
 
   // 悬停高亮
@@ -513,31 +612,43 @@ export function rowFlags(row: AiSettingRow): boolean[] {
 function hotRect(hit: AiSettingsHit): { x: number; y: number; w: number; h: number } | null {
   switch (hit.kind) {
     case 'autopilot':
-      return { x: AI_LED_AT.x, y: rowY(hit.row), w: 15, h: 15 };
+      return { x: AI_PLATE_X, y: rowY(hit.row), w: 116, h: AI_ROW_PITCH };
     case 'ability':
-      return { x: AI_DOT_X - 8, y: AI_DOT_AT[hit.bit]! - 8, w: 108, h: 16 };
+      return AI_OPTION_ROWS[hit.bit]!;
     case 'personality':
-      return { x: AI_DOT_X - 8, y: AI_DOT_AT[2 + hit.value]! - 8, w: 108, h: 16 };
+      return AI_OPTION_ROWS[2 + hit.value]!;
     case 'ratio':
       return hit.which === 'cash' ? AI_SLIDERS.cash : AI_SLIDERS.stock;
+    case 'ratioStep':
+      return AI_ARROWS[hit.which].find((a) => a.delta === hit.delta) ?? null;
     default:
       return null;
   }
 }
 
-/** 滑槽里按百分比填一格亮色条（原版没有数字，只有填充长度）*/
-function fillRatio(ctx: CanvasRenderingContext2D, r: { x: number; y: number; w: number; h: number }, percent: number): void {
-  const inner = { x: r.x + FILL_INSET, y: r.y + FILL_INSET, w: r.w - FILL_INSET * 2, h: r.h - FILL_INSET * 2 };
-  const filled = Math.round((inner.w * Math.max(0, Math.min(100, percent))) / 100);
-  if (filled <= 0) return;
-  ctx.fillStyle = FILL_COLOR;
-  ctx.fillRect(inner.x, inner.y, filled, inner.h);
+/**
+ * 比例条：**一格一格地填红色方块**，不是一条连续色条。
+ *
+ * @source `fcn_0041da61`：`格数 = [比例 / 10]`，第 k 格画在 `(209 + 8k, 266|299)`、7×22、纯红。
+ */
+function fillRatio(
+  ctx: CanvasRenderingContext2D,
+  r: { x: number; y: number; w: number; h: number },
+  percent: number,
+): void {
+  const cells = Math.floor(Math.max(0, Math.min(100, percent)) / AI_RATIO_STEP);
+  if (cells <= 0) return;
+  ctx.fillStyle = AI_SEG.color;
+  for (let k = 0; k < cells; k++) {
+    ctx.fillRect(AI_SEG.dx + k * AI_SEG.pitch, r.y + AI_SEG.dy, AI_SEG.w, AI_SEG.h);
+  }
 }
 
-/** 填充条相对滑槽四周留的空，免得盖住底图描边 */
-const FILL_INSET = 4;
-/** 填充色：比底图的深绿亮一档，在截图尺寸下能一眼看出长度 */
-const FILL_COLOR = '#8fd45a';
+/** 普通文字：白字 + 黑描边 @source `set_font(0x14, 0xf0f0f0, 0x101010, 3, 1)` */
+const FILL = '#f0f0f0';
+const OUTLINE = '#101010';
+/** 確定/取消：**黑字、无描边** @source `set_font(0x14, 0x101010, 0, 2, 1)` */
+const OK_CANCEL_FILL = '#101010';
 
 /**
  * 按 `align` 画一条文字。
@@ -552,6 +663,9 @@ function label(ctx: CanvasRenderingContext2D, s: string, at: AiTextAt): void {
   }
   ctx.textBaseline = 'middle';
   ctx.textAlign = at.align === 5 ? 'left' : at.align === 6 ? 'right' : 'center';
+  // ★ 原版的字体带一层描边（`set_font` 的第 3 参 0x101010）——
+  //   白字直接落在绿底上会比原版「糊」一圈。先描边再填字。
+  if (ctx.strokeStyle !== ctx.fillStyle) ctx.strokeText(s, at.x, at.y);
   ctx.fillText(s, at.x, at.y);
   ctx.textAlign = 'left';
 }

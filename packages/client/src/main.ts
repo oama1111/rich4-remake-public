@@ -1492,8 +1492,18 @@ function syncHolidayArt(): void {
  */
 let followPlayer = true;
 
-/** 正按着的工具栏按钮，用来画按下态 */
+/** 正按着的工具栏按钮 —— 抬手时按它派发 @source `[0x48be28]`（WM_LBUTTONDOWN 写入） */
 let pressedTool: number | null = null;
+
+/**
+ * 光标底下那个工具栏按钮 —— **只管高亮**。
+ *
+ * ★ 原版的高亮跟「按下」是**两个变量**：`[0x48bde4]` 在 WM_MOUSEMOVE 里
+ *   按 `x/40` 更新（`loc_00418b0a`），鼠标一离开工具栏就置 −1；
+ *   而按下态 `[0x48be28]` 是 WM_LBUTTONDOWN 写的。所以**没按也会亮** ——
+ *   先前只用一个变量，等于把「按下去才亮」当成了原版行为。
+ */
+let hotTool: number | null = null;
 
 /** 走过的 action —— 回放、联机对账、以及排错都靠它 */
 const history: Action[] = [];
@@ -2416,7 +2426,6 @@ function drawGameStage(): void {
     hoverNode,
     ground: showGround ? ground : null,
     groundOffset,
-    pressedTool,
     characterPose: characterPoseOf(),
     viewport: { w: LAYOUT.board.w, h: LAYOUT.board.h },
   });
@@ -2437,7 +2446,7 @@ function drawGameStage(): void {
   stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
 
   // 工具栏画在棋盘上方（直接画到舞台上）
-  renderer.drawToolbarTo(stageCtx, LAYOUT.toolbar.x, LAYOUT.toolbar.y, pressedTool);
+  renderer.drawToolbarTo(stageCtx, LAYOUT.toolbar.x, LAYOUT.toolbar.y, hotTool);
 
   hud.draw({
     state,
@@ -2987,21 +2996,30 @@ function nextAutoAction(): Action | null {
  *
  * @source 分派表 VA 0x00402566：
  *   [1] LOAD → `_rich4_ui_load_game`、[2] OPTION → `_rich4_ui_options_entry`，
- *   其余三个把按钮号 post 回主消息循环由外层处理。
+ *   其余三个把按钮号 post 回主消息循环，由 `ref_00401b78` 那张表接走。
  *
- * ⚠️ 本项目目前把 START 与 NEW STAGE 都接到**開局設定**那一屏；
- *   原版这两者的差别（关卡/剧本）尚未解开，不装作知道。
- *   LOAD 与 EXIT 也还没接。
+ * ★ **START 与 NEW STAGE 的差别已解开**（先前这里挂着「未解开、两者都接去開局設定」）：
+ *   `ref_00401b78` 的 [0] 与 [4] 都落到 `loc_00401cc8`（正常開新局），
+ *   只是 [4] 多走一句 `loc_00401cbf`：
+ *   ```asm
+ *   loc_00401cbf  mov word [0x4991b6], 1   ; ★ 舞台 = 1
+ *   loc_00401cc8  ... call _rich4_init_new_game
+ *   ```
+ *   而 `[0x4991b6]` 正是**舞台**（`loc_00406ff6` 用它取竖栏整图 `舞台×20+1`、
+ *   也用它选 `0x475208` 那张 `[舞台*4 + 地图]` 的资源表）。
+ *   所以 NEW STAGE = 新開一局、但用**第二个舞台的四张新地图**。
  */
 function onTitleButton(id: 'start' | 'load' | 'option' | 'exit' | 'newStage'): void {
   switch (id) {
     case 'start':
     case 'newStage':
       screen = 'setup';
-      // ★ 原版从標題进来是「新遊戲」（`_rich4_init_new_game(0)`），
+      // ★ 原版从標題进来是「新遊戲」（`_rich4_init_new_game`），
       //   进去就把 12 个角色状态与 6 条设定全部清回默认 @source `VA 0x00406f27` 起。
       //   调试用的地址栏参数走的是 `?screen=game` 那条路，不经过这一屏。
-      setup = defaultSetup();
+      //
+      //   NEW STAGE 带进来的是**舞台 1**（`[0x4991b6] = 1`），START 是舞台 0。
+      setup = defaultSetup(id === 'newStage' ? 1 : 0);
       setupSceneFor = -1;
       loadSetupScene(setup.mapId);
       requestRender();
@@ -3227,6 +3245,19 @@ function bindInput(): void {
       : null;
     if (hotArrow !== hotMinimapArrow) {
       hotMinimapArrow = hotArrow;
+      requestRender();
+    }
+
+    // 工具栏的**悬停高亮**（不是按下态）@source VA 0x00418b0a
+    //   按钮号 = `x / 40`，x ≥ 440 或 y ≥ 40 就算离开工具栏 → −1。
+    //   高亮**换了才响一声**（`play_sound_effect(0x48231a)`），且只在移到按钮上时响，
+    //   从按钮移开不响 —— 与標題 / 開局選人那两处是同一条路子。
+    const hotToolNow = shopUi === null && sceneFor(state.pending) === null
+      ? hitToolbar(p.x - LAYOUT.toolbar.x, p.y - LAYOUT.toolbar.y)
+      : null;
+    if (hotToolNow !== hotTool) {
+      hotTool = hotToolNow;
+      if (hotToolNow !== null) sound.play('Effect.mkf', SOUND_IDS.TITLE_HOVER);
       requestRender();
     }
 
@@ -4233,6 +4264,13 @@ async function boot(): Promise<void> {
         get setup() { return setup; },
         get options() { return { saved: options, draft: optionsDraft, variant: optionsVariant }; },
         goto: (s: Screen) => { screen = s; requestRender(); },
+        /**
+         * 按下工具栏第 i 颗按钮 —— 与鼠标点它走**同一个** `onToolbar`。
+         * 只是为了在自动化里能少绕一次 canvas 坐标换算（命中本身有单测钉着）。
+         */
+        toolbar: (i: number) => { onToolbar(i); requestRender(); },
+        /** 光标停在第 i 颗工具栏按钮上（原版 `[0x48bde4]`，只管高亮）*/
+        hoverToolbar: (i: number | null) => { hotTool = i; requestRender(); },
         /** 直接派一个 action —— 自动化测试用，走的与人点按钮同一条路 */
         dispatch: (a: Action) => { dispatch(a); },
         /**

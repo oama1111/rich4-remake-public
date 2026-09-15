@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  alignFor,
   CAL,
   CAL_TOGGLE_HIT,
   hitCalendarToggle,
@@ -142,11 +143,23 @@ describe('★ 日曆文字不压进右缘的彩色标签区', () => {
     expect(CAL.monthText.x + half).toBeLessThan(CONTENT_RIGHT);
   });
 
-  it('★ 星期名（竖排，只占一个字宽）与日号都是**水平居中**（flag 3 / 2）', () => {
-    // flag 3 与 flag 2 在 0x44faa0 的跳表里指向同一段：`sub x, 宽/2` —— **只调 x**，
-    // y 是文字块的顶边。星期名是**竖排**（需求方实机截图），所以块宽 = 一个字。
+  it('★ 星期名（竖排，只占一个字宽）与日号都是**正中**（flag 3 / 2）', () => {
+    // flag 3 与 flag 2 在 0x44faa0 的跳表里指向同一段 `0x44FF2A`：
+    // `x -= 宽/2` 之后**顺序落入** `0x44FF35` 再 `y -= 高/2` —— 即**两轴都居中**。
+    // 星期名是**竖排**（需求方实机截图），所以块宽 = 一个字。
     expect(CAL.weekday.x + hanW / 2).toBeLessThan(CONTENT_RIGHT);
     expect(CAL.dayText.x + digitW).toBeLessThan(CONTENT_RIGHT);
+  });
+
+  it('★ 对齐标志表照 exe 逐条钉死 @source VA 0x0044fabc 末段', () => {
+    // 跳表按 `flag − 1` 索引，7 项；0 与 >7 走 `ja` 那条（不调整）
+    expect(alignFor(0)).toEqual({ align: 'left', baseline: 'top' });
+    expect(alignFor(8)).toEqual({ align: 'left', baseline: 'top' });
+    expect(alignFor(1)).toEqual({ align: 'right', baseline: 'top' });
+    for (const f of [2, 3, 4]) expect(alignFor(f)).toEqual({ align: 'center', baseline: 'middle' });
+    expect(alignFor(5)).toEqual({ align: 'left', baseline: 'middle' });
+    expect(alignFor(6)).toEqual({ align: 'right', baseline: 'middle' });
+    expect(alignFor(7)).toEqual({ align: 'center', baseline: 'bottom' });
   });
 
   it('所有锚点都在 200×200 的側欄内', () => {

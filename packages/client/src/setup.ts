@@ -225,13 +225,28 @@ export interface SetupState {
   hoverItem: number;
 }
 
-/** 原版开局默认：四人、走路、20 万、無限期、無限 @source `loc_00406ff6` 的初值 */
-export function defaultSetup(): SetupState {
+/**
+ * 原版开局默认：四人、走路、20 万、無限期、無限 @source `loc_00406ff6` 的初值
+ *
+ * @param stage **舞台**：0 = 台灣/中國/日本/U.S.A，1 = 星際/古代/恐龍/海島。
+ *
+ * ★ 这一屏的舞台**不是玩家在屏上选的**，是**从標題那两颗钮带进来的**：
+ *   進來的入口先把 `[0x4991b6] = 舞台`、`[0x4991b8] = 地图`，然后
+ *   `loc_00406ff6` 里 `[0x46cb54] = [0x4991b8]`、竖栏整图取 `舞台×20 + 1`。
+ *   即 `mapId = 舞台×4 + 地图`（`[0x46cb54]` 就是「地图」那半截）。
+ *
+ * @source 標題的分派表 `ref_00401b78`：按钮 0（START）→ `init_new_game`，
+ *   按钮 4（**NEW STAGE**）→ **先 `[0x4991b6] = 1` 再走同一条 init_new_game**
+ *   （`loc_00401cbf` 只多一句 `mov word [0x4991b6], 1` 就落到 `loc_00401cc8`）。
+ *   所以「NEW STAGE」= 新開一局、但用第二个舞台的四张新地图。
+ */
+export function defaultSetup(stage = 0): SetupState {
   return {
     playerCount: 4,
     characters: [],
     human: [],
-    mapId: 0,
+    // 舞台×4 + 地图；地图那半截从 0 起（原版 `[0x46cb54] = [0x4991b8]`，標題进来时是 0）
+    mapId: (stage & 1) * 4,
     vehicle: 0,
     money: 1,
     land: 0,
@@ -557,8 +572,23 @@ function drawWalkers(ctx: CanvasRenderingContext2D, s: SetupState, need: Need, t
     const resource = setupWalkResource(character, s.vehicle);
     // ★ 原版每跳把帧号 +1 绕回（`mov eax,[座位+8]` 的图数取自资源头），
     //   所以第 i 跳就是第 i 帧，各人的图数不同、各自取模。
-    const frame = tick % setupWalkFrames(character, s.vehicle);
-    const img = need('jump.mkf', resource, frame);
+    const frames = setupWalkFrames(character, s.vehicle);
+    const frame = tick % frames;
+    // ★ 本仓库的图是**异步解**的，而走子每 100ms 换一帧 ——
+    //   换到的那一帧还没解出来时若直接 `continue`，人物就会**闪一下**，
+    //   这正是需求方 2026-09-15 报的「选完人物后闪烁一会儿才正常」。
+    //   对策：这一帧没有就退回**同组里已经解出来的**那一帧顶着；
+    //   顺便把整组都 `need` 一遍，等于顺手预热（`spriteNow` 会去重请求）。
+    let img = need('jump.mkf', resource, frame);
+    if (img === null) {
+      for (let k = 0; k < frames; k++) {
+        const alt = need('jump.mkf', resource, k);
+        if (alt !== null) {
+          img = alt;
+          break;
+        }
+      }
+    }
     if (img === null) continue;
     const x = SEAT_X[s.playerCount - MIN_PLAYERS]?.[seat] ?? 0;
     sprite(ctx, img, x, SEAT_Y);

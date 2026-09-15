@@ -34,22 +34,51 @@ import {
 } from './assets.ts';
 
 /**
- * 顶部工具栏的摆位。
+ * 顶部工具栏的摆位 —— **等距 40，从 x=0 起铺满 440**。
  *
- * ★ 底条是 439×40，上面等距排 11 个图标，间距 39。
+ * ## 出处（这是唯一一处能定的地方）
  *
- * ★ `padX` **由底条宽度推出，不是量出来的**：
- *   `11 × 39 = 429`，两侧各留 `(439 − 429) / 2 = 5`，图标块才与底条同心。
- *   先前写的是 6（照截图目测），于是整块图标比底条中心**偏右 1 像素** ——
- *   单看工具栏看不出来，与底图边框一对就显形（需求方 2026-09-14 指出）。
- *   `hitToolbar` 用的是同一个 `padX`，所以点击区随之对齐。
+ * `fcn_00415d31`（VA 0x00415d31）既画工具栏也画底条：
+ * ```asm
+ * 00415d6x  blit_rect(dst, 图 0 = res1 的 439×40 底条, 0, 0)
+ * 00415d81  mov eax, ebx          ; ebx = 图标号 0..10
+ *           shl eax, 2  / add eax, ebx / shl eax, 3    ; eax = i*40
+ *           add eax, 0x14        ; ★ 画点 x = i*40 + 20
+ * 00415dc5  push 0x14            ; ★ 画点 y = 20（常态与高亮**同一个 y**）
+ *           lea edx, [ebx + 1]  ; 图号 = i + 1        （i+12 是悬停高亮那一版）
+ *           call fcn_00456418   ; 带锚点的绘制：落点 = 画点 − 图自带的 x/y
+ * ```
+ * 命中判据在 `loc_00418b0a`（WM_MOUSEMOVE）与 `loc_00418670`（WM_LBUTTONDOWN）：
+ * ```asm
+ * 00418b3x  mov ebx, 0x28          ; 40
+ *           idiv ebx               ; ★ 按钮号 = x / 40
+ * 00418b0a  cmp esi, 0x1b8         ; x >= 440 → 不在工具栏（440 起是側欄）
+ *           cmp edx, 0x28          ; y >= 40  → 不在工具栏（40 以下是棋盘）
+ * ```
+ * 即 11 格 `[40i, 40i+40)`，**没有左边距、也不是 39 的间距**。
+ *
+ * ## 先前为什么错
+ *
+ * 之前是照底条图 439 宽反推的「`11×39 = 429`，两侧各留 5」——
+ * 那是拿**底条**的宽度去凑**按钮格**，而原版的按钮格与底条图无关。
+ * 后果正是需求方 2026-09-15 看到的：左边的图标偏右（i=0 我们画在 24.5，
+ * 原版 20）、右边的偏左（i=10 我们 414.5，原版 420），**越靠边歪得越多**。
+ * 同一张等距表也管命中，所以点击区一并归位。
  */
-export const TOOLBAR = { x: 0, y: 0, pitch: 39, padX: 5, padY: 3, height: 40 } as const;
+export const TOOLBAR = { x: 0, y: 0, pitch: 40, iconX: 20, iconY: 20, height: 40 } as const;
 
-/** 点在工具栏的第几个按钮上；没点中返回 null */
+/** 工具栏的右缘（不含）—— 440 起是側欄 @source `cmp esi, 0x1b8` */
+export const TOOLBAR_RIGHT = TOOLBAR.pitch * TOOLBAR_ICON_COUNT;
+
+/** 第 i 个图标要画的**锚点**（原版 `fcn_00456418` 会减掉图自带的 x/y） */
+export function toolbarIconAt(i: number): { x: number; y: number } {
+  return { x: TOOLBAR.x + i * TOOLBAR.pitch + TOOLBAR.iconX, y: TOOLBAR.y + TOOLBAR.iconY };
+}
+
+/** 点在工具栏的第几个按钮上；没点中返回 null @source `idiv 0x28` @ 0x00418b3x */
 export function hitToolbar(sx: number, sy: number): number | null {
   if (sy < TOOLBAR.y || sy >= TOOLBAR.y + TOOLBAR.height) return null;
-  const i = Math.floor((sx - TOOLBAR.x - TOOLBAR.padX) / TOOLBAR.pitch);
+  const i = Math.floor((sx - TOOLBAR.x) / TOOLBAR.pitch);
   return i >= 0 && i < TOOLBAR_ICON_COUNT ? i : null;
 }
 
@@ -106,8 +135,6 @@ export interface RenderInput {
   /** 原版底图（map.mkf 偶数号资源解出来的 .gnd） */
   ground?: ImageBitmap | null;
   groundOffset?: { x: number; y: number };
-  /** 正被按下的工具栏按钮下标 */
-  pressedTool?: number | null;
   /**
    * 强制角色摆哪一组图（`CHARACTER_POSE` 的值）；不给就按 phase 推。
    *
@@ -531,18 +558,22 @@ export class BoardRenderer {
    *   （439×440，位于工具栏下方）。往那上面画工具栏，等于画进了棋盘里，
    *   而且还会被下一帧的棋盘绘制覆盖掉 —— 表现就是工具栏整条不见。
    */
-  drawToolbarTo(ctx: CanvasRenderingContext2D, x: number, y: number, pressed: number | null): void {
+  drawToolbarTo(ctx: CanvasRenderingContext2D, x: number, y: number, hot: number | null): void {
     const strip = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, TOOLBAR_STRIP_IMAGE);
     if (strip !== null) ctx.drawImage(strip.bitmap, x, y);
     for (let i = 0; i < TOOLBAR_ICON_COUNT; i++) {
       // ★ 图标是 SMP，黑色是抠图底色，不抠的话每个图标都顶着一块黑底
       const icon = this.#sprite(
-        'Panel.mkf', TOOLBAR_RESOURCE, toolbarIconImage(i, pressed === i), true,
+        'Panel.mkf', TOOLBAR_RESOURCE, toolbarIconImage(i, hot === i), true,
       );
       if (icon === null) continue;
-      const cx = x + TOOLBAR.padX + i * TOOLBAR.pitch + TOOLBAR.pitch / 2;
-      const cy = y + TOOLBAR.padY + (TOOLBAR.height - TOOLBAR.padY * 2) / 2;
-      ctx.drawImage(icon.bitmap, Math.round(cx - icon.width / 2), Math.round(cy - icon.height / 2));
+      // 原版是 `fcn_00456418`（带锚点）—— 落点 = 画点 − 图自带的 x/y
+      const at = toolbarIconAt(i);
+      ctx.drawImage(
+        icon.bitmap,
+        Math.round(x + at.x - icon.anchorX),
+        Math.round(y + at.y - icon.anchorY),
+      );
     }
   }
 

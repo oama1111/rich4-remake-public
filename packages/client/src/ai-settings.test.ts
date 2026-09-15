@@ -12,11 +12,16 @@ import {
   AI_BTN_OK,
   AI_DOT_AT,
   AI_DOT_X,
+  AI_ARROWS,
   AI_H,
   AI_LED_AT,
+  AI_OPTION_ROWS,
   AI_ORIGIN,
-  AI_ROW_H,
+  AI_PLATE_X,
+  AI_PORTRAIT_AT,
+  AI_RATIO_STEP,
   AI_ROW_PITCH,
+  AI_SEG,
   AI_SLIDERS,
   AI_TEXT,
   AI_W,
@@ -178,20 +183,27 @@ describe('applyAiSettingsHit', () => {
 //  比例换算
 // ============================================================
 
-describe('ratioFromX', () => {
-  const r = { x: 100, w: 100 };
-  it('★ 首尾两格恰好是 0 与 100（少一格就拖不出满档）', () => {
-    expect(ratioFromX(100, r)).toBe(0); // 第 1 格
-    expect(ratioFromX(199, r)).toBe(100); // 最后 1 格（199 = x+w-1）
-    expect(ratioFromX(150, r)).toBe(51); // 中间
+describe('ratioFromX —— (x − x0) / 8 × 10，只能取 10 的整数倍', () => {
+  const r = AI_SLIDERS.cash;
+
+  it('★ 首尾恰好 0 与 100：左端 x0、右端 x0+w', () => {
+    expect(ratioFromX(r.x, r)).toBe(0);
+    expect(ratioFromX(r.x + r.w, r)).toBe(100);
   });
+
+  it('★ 只有 11 档 —— 原版没有 37% 这种值', () => {
+    for (let k = 0; k <= 10; k++) {
+      expect(ratioFromX(r.x + k * AI_SEG.pitch, r)).toBe(k * AI_RATIO_STEP);
+      // 同一格内任意一点都给同一个值
+      expect(ratioFromX(r.x + k * AI_SEG.pitch + AI_SEG.pitch - 1, r)).toBe(k * AI_RATIO_STEP);
+    }
+    expect(ratioFromX(r.x + 3, r)).toBe(0);
+    expect(ratioFromX(r.x + 8, r)).toBe(10);
+  });
+
   it('夹在 0..100（拖出滑槽也不越界）', () => {
     expect(ratioFromX(0, r)).toBe(0);
     expect(ratioFromX(999, r)).toBe(100);
-  });
-  it('宽度不足时不炸', () => {
-    expect(ratioFromX(50, { x: 10, w: 0 })).toBe(0);
-    expect(ratioFromX(50, { x: 10, w: 1 })).toBe(0);
   });
 });
 
@@ -207,8 +219,15 @@ describe('hitAiSettings', () => {
     expect(hit(center(AI_BTN_CANCEL))).toEqual({ kind: 'cancel' });
   });
 
-  it('★ 托管 LED 命中（按行）', () => {
+  it('★ 托管总开关 = 整块行底板（原版判的是 x ∈ (110,226)、y ∈ (70+83n, 153+83n)）', () => {
+    // 底板相对放在 (8, 8)，116×83
+    expect(AI_PLATE_X).toBe(8);
+    expect(AI_ROW_PITCH).toBe(0x53);
     expect(hit({ x: AI_LED_AT.x + 7, y: rowY(0) + 7 })).toEqual({ kind: 'autopilot', row: 0 });
+    // 底板四角都算
+    for (const [x, y] of [[8, 8], [123, 8], [8, 90], [123, 90]] as const) {
+      expect({ x, y, hit: hit({ x, y }) }).toMatchObject({ hit: { kind: 'autopilot', row: 0 } });
+    }
   });
 
   it('★ 五个选项圆点各自命中（点圆点或右边文字都算）', () => {
@@ -225,24 +244,60 @@ describe('hitAiSettings', () => {
     });
   });
 
-  it('★ 滑槽按 x 换算成百分比（首格 0、末格 100）', () => {
+  it('★ 滑槽按 x 换算成档位（首格 0、末格 100）', () => {
     expect(hit({ x: AI_SLIDERS.cash.x, y: AI_SLIDERS.cash.y + 10 })).toEqual({
       kind: 'ratio',
       row: 0,
       which: 'cash',
       value: 0,
     });
-    expect(hit({ x: AI_SLIDERS.cash.x + AI_SLIDERS.cash.w - 1, y: AI_SLIDERS.cash.y + 10 })).toEqual({
-      kind: 'ratio',
-      row: 0,
-      which: 'cash',
-      value: 100,
-    });
     expect(hit({ x: AI_SLIDERS.stock.x + AI_SLIDERS.stock.w - 1, y: AI_SLIDERS.stock.y + 10 })).toEqual({
       kind: 'ratio',
       row: 0,
       which: 'stock',
-      value: 100,
+      value: 90,
+    });
+  });
+
+  it('★ 拖动只到 90% —— 原版的拖动区两端都不含，100% 得按右箭头', () => {
+    // 屏幕 rect (310,327,390,351)，判据是 x > x0 且 x < x1
+    const last = AI_SLIDERS.cash.x + AI_SLIDERS.cash.w - 1;
+    expect(ratioFromX(last, AI_SLIDERS.cash)).toBe(90);
+    expect({ last, hit: hit({ x: last, y: AI_SLIDERS.cash.y + 10 }) }).toMatchObject({
+      hit: { kind: 'ratio', value: 90 },
+    });
+    expect(hit({ x: AI_SLIDERS.cash.x + AI_SLIDERS.cash.w, y: AI_SLIDERS.cash.y + 10 })).toBeNull();
+  });
+
+  it('★ 滑槽两端的箭头是 ±10 的档位钮（100% 只能从这里来）', () => {
+    for (const which of ['cash', 'stock'] as const) {
+      const [left, right] = AI_ARROWS[which];
+      expect(hit(center(left!))).toEqual({ kind: 'ratioStep', row: 0, which, delta: -10 });
+      expect(hit(center(right!))).toEqual({ kind: 'ratioStep', row: 0, which, delta: 10 });
+    }
+    // 夹紧在两档之间：0 再减还是 0、100 再加还是 100
+    const at100 = [{ ...ROWS[0]!, cashRatio: 100, stockRatio: 0 }];
+    expect(applyAiSettingsHit(at100, { kind: 'ratioStep', row: 0, which: 'cash', delta: 10 })[0]!.cashRatio).toBe(100);
+    expect(applyAiSettingsHit(at100, { kind: 'ratioStep', row: 0, which: 'stock', delta: -10 })[0]!.stockRatio).toBe(0);
+    expect(applyAiSettingsHit(at100, { kind: 'ratioStep', row: 0, which: 'cash', delta: -10 })[0]!.cashRatio).toBe(90);
+    expect(applyAiSettingsHit(at100, { kind: 'ratioStep', row: 0, which: 'stock', delta: 10 })[0]!.stockRatio).toBe(10);
+  });
+
+  it('★ 五个选项行用的是 exe 的矩形表，不是「圆点四周各扩 8」', () => {
+    expect(AI_OPTION_ROWS).toHaveLength(5);
+    // 全部 x ∈ [185, 281]（屏幕 287..383 减原点 102）
+    for (const r of AI_OPTION_ROWS) {
+      expect(r.x).toBe(185);
+      expect(r.w).toBe(97);
+      expect(r.h).toBe(19);
+    }
+    // y 依次 44/75/132/164/197（屏幕 106/137/194/226/259 减 62）
+    expect(AI_OPTION_ROWS.map((r) => r.y)).toEqual([44, 75, 132, 164, 197]);
+    // 每行都罩得住自己那颗圆点的中心
+    AI_DOT_AT.forEach((dy, k) => {
+      const r = AI_OPTION_ROWS[k]!;
+      expect(dy).toBeGreaterThan(r.y);
+      expect(dy).toBeLessThan(r.y + r.h);
     });
   });
 
@@ -301,12 +356,33 @@ describe('摆位', () => {
     expect(AI_DOT_X).toBeLessThan(AI_TEXT.useCards.x); // 圆点在文字左边
   });
 
-  it('★ 相邻行的圆点间距正好是一行高，且行高一致', () => {
+  it('★ 相邻行的圆点间距是 32（组内一致）', () => {
     for (const group of [[0, 1], [2, 3, 4]]) {
       for (let i = 1; i < group.length; i++) {
-        expect(AI_DOT_AT[group[i]!]! - AI_DOT_AT[group[i - 1]!]!).toBe(AI_ROW_H);
+        expect(AI_DOT_AT[group[i]!]! - AI_DOT_AT[group[i - 1]!]!).toBe(32);
       }
     }
+  });
+
+  it('★ 头像按锚点落在行底板里（先前不减锚点，于是压到右边去了）', () => {
+    // 头像锚点约在图心（图 6 = 85×71 锚 (42,34)），
+    // 故画在 (80, y+40) 后占 x ≈ 38..123、y ≈ y+6..y+77
+    expect(AI_PORTRAIT_AT.x).toBe(0x50);
+    expect(AI_PORTRAIT_AT.dy).toBe(0x28);
+    const cx = AI_PORTRAIT_AT.x - 42;
+    expect(cx).toBeGreaterThan(AI_PLATE_X); // 比底板左缘靠右
+    expect(cx + 85).toBeLessThanOrEqual(AI_PLATE_X + 116); // 不越出底板
+  });
+
+  it('★ 比例条是「一格一格」的红色方块，不是一条连续绿条', () => {
+    expect(AI_SEG.w).toBe(7);
+    expect(AI_SEG.h).toBe(22);
+    expect(AI_SEG.pitch).toBe(8);
+    expect(AI_SEG.color).toBe('#ff0000');
+    // 最后一格（第 10 格）的右缘仍在拖动区里
+    expect(AI_SEG.dx + 9 * AI_SEG.pitch + AI_SEG.w).toBeLessThanOrEqual(
+      AI_SLIDERS.cash.x + AI_SLIDERS.cash.w + 1,
+    );
   });
 
   it('★ 两颗按钮与两条滑槽都在对话框内且互不重叠', () => {
@@ -371,6 +447,7 @@ describe('drawAiSettings', () => {
       fillText: (t: string) => {
         texts.push(t);
       },
+      strokeText: () => undefined,
       strokeRect: () => undefined,
       measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
     };
@@ -404,12 +481,23 @@ describe('drawAiSettings', () => {
     drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 70, stockRatio: 15 }], null, () => sprite());
 
     expect(f.texts.some((t) => t.includes('%'))).toBe(false);
-    // 两条滑槽各填一格，长度与百分比成正比（宽度落在整数像素上，故容差放到 0.5）
-    expect(f.rects).toHaveLength(2);
-    const cash = f.rects[0]!;
-    const stock = f.rects[1]!;
-    expect(cash.w / stock.w).toBeCloseTo(70 / 15, 0);
-    expect(cash.w).toBeGreaterThan(stock.w);
+    // ★ 格数 = [比例 / 10]：70 → 7 格，15 → 1 格（不是两条按比例的长条）
+    expect(f.rects).toHaveLength(7 + 1);
+    for (const r of f.rects) {
+      expect({ w: r.w, h: r.h }).toEqual({ w: AI_SEG.w, h: AI_SEG.h });
+    }
+    // 每格的 x 依次 +8；两组的 y 各自贴着自己的滑槽
+    const cash = f.rects.slice(0, 7);
+    const stock = f.rects.slice(7);
+    cash.forEach((r, k) => expect(r.x).toBe(AI_SEG.dx + k * AI_SEG.pitch));
+    expect(cash[0]!.y).toBe(AI_SLIDERS.cash.y + AI_SEG.dy);
+    expect(stock[0]!.y).toBe(AI_SLIDERS.stock.y + AI_SEG.dy);
+  });
+
+  it('★ 满档 = 10 格（不是 11 格，也不是「长度铺满」）', () => {
+    const f = fakeCtx();
+    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 100, stockRatio: 100 }], null, () => sprite());
+    expect(f.rects).toHaveLength(20);
   });
 
   it('比例为 0 时不填（免得画出一条 0 宽的线）', () => {
