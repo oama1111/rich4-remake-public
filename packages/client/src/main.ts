@@ -1454,11 +1454,11 @@ function cancelDialogChoice(ui: InteractionUi): void {
  * 一个熱鍵按下去做什么。返回 `false` 表示「这个键本引擎不管」，
  * 让调试键那一路有机会接手。
  *
- * ⚠️ 名字用 exe 里的原串（`HOTKEY_NAMES`），没实现的功能**明确说出来**。
+ * ★ 2026-09-16：原先这里有一句 `const name = HOTKEY_NAMES[fn]` 只服务于
+ *   末尾那句「⚠ 尚未實作」的日志 —— 四个熱鍵（股市/卡片/道具/查詢）接上之后
+ *   日志没了，它也就成了未用变量（eslint 报错）。表本身仍由熱鍵頁用。
  */
 function handleHotkey(fn: number, e: KeyboardEvent): boolean {
-  const name = HOTKEY_NAMES[fn] ?? `功能${fn}`;
-
   // ★ 登记的整屏先认领熱鍵（契约见 ui-screen.ts）
   {
     const env = uiEnv();
@@ -1578,14 +1578,25 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
       return true;
     }
 
-    // ── 还没有对应屏幕的：说出来，不假装有反应 ──
+    // ── 四个熱鍵接到**與工具列同一顆鈕**的入口 ──
+    //   @source 熱鍵表（`rich4_cfg` +16 起，見 `hotkeys.ts`）與工具列跳表
+    //   `0x417d39` 是同一批功能：股市 12 / 卡片 14 / 道具 15 / 查詢 16。
+    //   （13「交易」與 18「輔助說明」由登記屏自己認領，見 `board-screen` / `help-screen`。）
     case HOTKEY.stockMarket:
-    case HOTKEY.trade:
+      if (screen === 'stock') closeStock();
+      else if (screen === 'game') openStock();
+      return true;
     case HOTKEY.cards:
+      if (screen === 'inventory' && invKind === 'cards') closeInventory();
+      else openInventory('cards');
+      return true;
     case HOTKEY.tools:
+      if (screen === 'inventory' && invKind === 'tools') closeInventory();
+      else openInventory('tools');
+      return true;
     case HOTKEY.query:
-    case HOTKEY.help:
-      log(`⚠「${name}」尚未實作`);
+      if (screen === 'assets') closeAssets();
+      else if (screen === 'game') openAssets();
       return true;
 
     // ── 浏览器里做不了 / 无意义的 ──

@@ -82,3 +82,17 @@ describe('熱鍵', () => {
     expect(hotkeyOf(key('Tab'))).toBe(HOTKEY.switchOption);
   });
 });
+
+describe('★ 四个熱鍵必须接到与工具列同一入口（2026-09-16）', () => {
+  it('★ 股市/卡片/道具/查詢 不许再落进「尚未實作」', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    // 那四个 case 都要有真入口
+    for (const call of ['openStock()', "openInventory('cards')", "openInventory('tools')", 'openAssets()']) {
+      expect(src, `熱鍵里应当调用 ${call}`).toContain(call);
+    }
+    // 熱鍵那条 switch 里不该再有「尚未實作」的兜底分支
+    //   （工具列那边仍留着一条 default 日志作安全网，所以只查熱鍵这一段）
+    const hk = src.slice(src.indexOf('function handleHotkey'), src.indexOf('function startStepTween'));
+    expect(hk, '熱鍵里不该再有「尚未實作」').not.toContain('尚未實作');
+  });
+});
