@@ -112,7 +112,7 @@ import {
   type AmountPage,
   type DialogHit,
 } from './dialog.ts';
-import type { SpriteFn } from './gameui.ts';
+import { GO_IMAGE, type SpriteFn } from './gameui.ts';
 import { HOTKEY, hotkeyOf } from './hotkeys.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
 import {
@@ -209,7 +209,6 @@ let optionsHot: OptionsHit | null = null;
 /** 对话框正在填数的那一页；`null` 表示还在选项页 */
 let amountPage: AmountPage | null = null;
 let dialogHot: DialogHit | null = null;
-let advanceHot = false;
 
 // ── 存讀檔屏 ───────────────────────────────────────────────
 let saveLoadMode: SaveLoadMode = 'load';
@@ -1161,7 +1160,7 @@ function drawGameStage(): void {
     drawDice(boardCtx, uiSprite, diceAnim.pipsAt(performance.now())!);
   } else if (awaitingHumanRoll() && me !== undefined) {
     // ★ 原版的 GO 鈕 + 骰子数切换（Panel.mkf 资源 7）
-    drawAdvance(boardCtx, uiSprite, advanceHot, maxDiceOf(me), me.ndices);
+    drawAdvance(boardCtx, uiSprite, goImageOf(me), maxDiceOf(me), me.ndices);
   } else if (state.phase === 'moving' && state.dice.length > 0) {
     drawDice(boardCtx, uiSprite, state.dice);
   }
@@ -1271,6 +1270,44 @@ function centerOnCurrentPlayer(): void {
   };
   // 还没到位就继续要下一帧，避免停在半路
   if (Math.abs(wantX - camera.x) > 0.5 || Math.abs(wantY - camera.y) > 0.5) requestRender();
+}
+
+/**
+ * GO 鈕的闪烁帧 —— 每 500 ms 翻一次（`[0x48bdd4]`）。
+ *
+ * @source `SetTimer(hwnd, 0x1f4, [0x46cad8], 0)`（VA 0x0041801e，周期 = **500 ms**）
+ *   + WM_TIMER 处理 `xor byte [0x48bdd4], 1`（VA 0x00418b7e）。
+ *   ⇒ **不点它也在闪**，一暗一亮。
+ */
+const GO_BLINK_MS = 0x1f4;
+let goBlink = false;
+setInterval(() => {
+  goBlink = !goBlink;
+  // 没在等人掷骰就不用重画（GO 鈕那时根本不显示）
+  if (screen === 'game') requestRender();
+}, GO_BLINK_MS);
+
+/**
+ * 这一帧该用 GO 鈕的哪张图 = **组 + 闪烁帧**。
+ *
+ * @source VA 0x0041724d：
+ * ```asm
+ * xor ebx, ebx
+ * cmp byte [player+0x38], 0    ; 停留中（days_stopping）
+ * je short … / mov ebx, 2      ; → 组 2 = 禁止通行
+ * cmp byte [player+0x39], 0    ; 烏龜中（days_tortoise_walking）
+ * je short … / mov ebx, 4      ; → 组 4 = 烏龜（后写的覆盖，故烏龜优先）
+ * … draw([0x48bdd4] + ebx)     ; ★ 帧 + 组
+ * ```
+ */
+function goImageOf(me: { blocking: { stopping: number; tortoiseWalking: number } }): number {
+  const group =
+    me.blocking.tortoiseWalking !== 0
+      ? GO_IMAGE.tortoise
+      : me.blocking.stopping !== 0
+        ? GO_IMAGE.blocked
+        : GO_IMAGE.idle;
+  return group + (goBlink ? 1 : 0);
 }
 
 /**
@@ -1754,13 +1791,7 @@ function bindInput(): void {
 
     if (awaitingHumanRoll()) {
       const on = hitAdvance(p.x - LAYOUT.board.x, p.y - LAYOUT.board.y);
-      if (on !== advanceHot) {
-        advanceHot = on;
-        requestRender();
-      }
       if (on) return;
-    } else if (advanceHot) {
-      advanceHot = false;
     }
 
     // 对话框盖在棋盘上：它在的时候，先问它

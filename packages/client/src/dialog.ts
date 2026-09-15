@@ -32,7 +32,6 @@ import {
   DICE_TOGGLE_IMAGE,
   DICE_TOGGLE_SIZE,
   GO_DEFAULT,
-  GO_IMAGE,
   GO_RESOURCE,
   GO_SIZE,
   YESNO_IMAGE,
@@ -116,18 +115,30 @@ export function hitDiceToggle(x: number, y: number, maxDice: number): number | n
 /**
  * 画 GO 鈕与骰子数切换。
  *
+ * ★ GO 鈕的图号 = **组 + 帧**（`[0x48bdd4] + ebx`，@source VA 0x004172b9）：
+ * - 组：`[player+0x38]`（停留）非 0 → **2 禁止通行**；`[player+0x39]`（烏龜）非 0
+ *   → **4 烏龜**；否则 **0 普通**。两项都为非 0 时烏龜优先（原版后写的覆盖前面的）。
+ * - 帧：`[0x48bdd4]`，由 **500 ms 的窗口定时器**翻转
+ *   （`SetTimer(hwnd, 0x1f4=500, …)` @source VA 0x0041801e；翻转在 WM_TIMER
+ *   处理里 VA 0x00418b7e `xor byte [0x48bdd4], 1`）。
+ *   ⇒ **不点它也在闪**，一暗一亮。
+ *
+ * ⚠️ 原版**没有**鼠标悬停效果（棋盘窗口过程的 WM_MOUSEMOVE 只处理侧栏/工具栏），
+ *   先前我们用悬停换图，那是自己加的，已去掉。
+ *
+ * @param goImage 上面算好的图号（`GO_IMAGE` 的某个值 + 闪烁帧）
  * @param maxDice 这个玩家最多能掷几颗（走路 1、機車 2、汽車 3）
  * @param ndices  当前选了几颗
  */
 export function drawAdvance(
   ctx: CanvasRenderingContext2D,
   sprite: SpriteFn,
-  hot: boolean,
+  goImage: number,
   maxDice: number,
   ndices: number,
 ): void {
   const at = toBoard(GO_DEFAULT);
-  const go = sprite('Panel.mkf', GO_RESOURCE, hot ? GO_IMAGE.hot : GO_IMAGE.idle, true);
+  const go = sprite('Panel.mkf', GO_RESOURCE, goImage, true);
   if (go !== null) ctx.drawImage(go.bitmap, at.x, at.y);
 
   for (let i = 0; i < maxDice; i++) {
