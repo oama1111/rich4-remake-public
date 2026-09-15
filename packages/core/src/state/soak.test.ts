@@ -29,7 +29,16 @@ interface SoakResult {
 
 function soak(seed: number, maxTurns: number, mapPath: string = MAP): SoakResult {
   const map = parseMap(new Uint8Array(readFileSync(mapPath)));
-  const topo = { nodes: map.nodes, lands: map.lands };
+  // ★ 2026-09-16：这里原来只传了 nodes/lands —— 于是**設施与企业那两条落点路
+  //   从来没被这场长跑考到**（地圖 7 是纯設施图，120 回合一个設施都没卖出去，
+  //   就是这个缺口暴露出来的）。规则里 `topo.facilities` / `topo.commercials`
+  //   缺了就直接不结算，而且**不会报错**。
+  const topo = {
+    nodes: map.nodes,
+    lands: map.lands,
+    facilities: map.facilities,
+    commercials: map.commercials,
+  };
   let state = newGame({ map, players: players(), seed });
   const events = { news: 0, fortune: 0 };
   let lastNews = state.newsDeck.cursor;
@@ -64,7 +73,16 @@ function soak(seed: number, maxTurns: number, mapPath: string = MAP): SoakResult
  */
 function soakWithoutInterest(seed: number, maxTurns: number): GameState {
   const map = loadMap();
-  const topo = { nodes: map.nodes, lands: map.lands };
+  // ★ 2026-09-16：这里原来只传了 nodes/lands —— 于是**設施与企业那两条落点路
+  //   从来没被这场长跑考到**（地圖 7 是纯設施图，120 回合一个設施都没卖出去，
+  //   就是这个缺口暴露出来的）。规则里 `topo.facilities` / `topo.commercials`
+  //   缺了就直接不结算，而且**不会报错**。
+  const topo = {
+    nodes: map.nodes,
+    lands: map.lands,
+    facilities: map.facilities,
+    commercials: map.commercials,
+  };
   let state = newGame({ map, players: players(), seed });
 
   for (let steps = 0; steps < 200_000; steps++) {
@@ -107,6 +125,23 @@ describe('★ 长局冒烟', () => {
     const r = soak(2024, 300);
     expect(r.state.landOwner.filter((v) => v !== 0).length).toBeGreaterThan(0);
     expect(r.state.landLevel.some((v) => v > 0)).toBe(true);
+  });
+
+  run('★ 設施与企业那两条落点路真的被走到过（2026-09-16 补）', () => {
+    // ⚠️ 这两条曾经**整场考不到**：`soak()` 的 topo 只传了 nodes/lands，
+    //   而规则里缺 `topo.facilities` / `topo.commercials` 就直接不结算、**且不报错**。
+    //   现在断言它们确实产生了可观测结果 —— 否则以后再把 topo 传残也没人发现。
+    const r = soak(2024, 300);
+    expect(
+      r.state.facilityOwner.filter((v) => v !== 0).length,
+      '300 回合后没有任何設施有主 —— 設施落点这条路可能没接上',
+    ).toBeGreaterThan(0);
+    expect(
+      r.state.facilityLevel.some((v) => v > 0),
+      '300 回合后没有任何設施升过级',
+    ).toBe(true);
+    const chairs = Object.values(r.state.commercialOwners).filter((o) => o.owner !== 0).length;
+    expect(chairs, '300 回合后没有任何企业有董事长 —— 企业落点这条路可能没接上').toBeGreaterThan(0);
   });
 
   run('★ 钱确实会凭空出现 —— 唯一的印钞机是银行月息', () => {
@@ -168,9 +203,13 @@ describe('★ 八张地图都要能玩（2026-09-16 补）', () => {
       const path = pathOf(id);
       if (!existsSync(path)) return; // 没解出素材时跳过（CI 上没有 assets）
       const map = parseMap(new Uint8Array(readFileSync(path)));
-      const r = soak(2024, 60, path);
-      expect(r.state.turnCount, `地圖 ${id} 没走满 60 回合`).toBeGreaterThanOrEqual(60);
-      expect(r.steps, `地圖 ${id} 步数异常`).toBeLessThan(50_000);
+      // ★ 没有地块的图（地圖 7）设施的**第一次成交要到 60 回合之后** ——
+      //   那张图没有地租收入，而设施贵（实测 60 回合仍无人买得起、120 回合
+      //   20 个里 19 个有主）。所以给它更长的回合数，别把「钱还没攒够」当 bug。
+      const turns = map.lands.length > 0 ? 60 : 120;
+      const r = soak(2024, turns, path);
+      expect(r.state.turnCount, `地圖 ${id} 没走满 ${turns} 回合`).toBeGreaterThanOrEqual(turns);
+      expect(r.steps, `地圖 ${id} 步数异常`).toBeLessThan(100_000);
       // ★ 地圖 7 是**纯設施图**：实测 101 节点里地块 **0** 块、設施节点 40 个
       //   （原版就是这么设计的）。所以「有人买地」这条对它不成立 ——
       //   有地块的图才要求卖出去，没有的就要求它至少有設施可盖。
@@ -180,9 +219,16 @@ describe('★ 八张地图都要能玩（2026-09-16 补）', () => {
           `地圖 ${id} 60 回合后一块地都没卖出去，落点结算可能没接上`,
         ).toBeGreaterThan(0);
       } else {
+        // 没有地块的图（目前只有地圖 7）全靠設施经营 —— 实测 120 回合后
+        // 20 个設施里 19 个有主、8 个升过级，所以这里要求**确实有人买了設施**，
+        // 而不只是「有設施存在」（后者不能证明落点结算接上了）。
         expect(
           map.facilities.length,
           `地圖 ${id} 既没有地块也没有設施 —— 那张图上没有任何可经营的资产`,
+        ).toBeGreaterThan(0);
+        expect(
+          r.state.facilityOwner.filter((v) => v !== 0).length,
+          `地圖 ${id}（无地块）${turns} 回合后一个設施都没卖出去，落点结算可能没接上`,
         ).toBeGreaterThan(0);
       }
     });
