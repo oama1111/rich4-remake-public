@@ -131,6 +131,43 @@ export function paletteRgb(palette: Uint8Array, index: number): [number, number,
   return [expand5((v >> 10) & 31), expand5((v >> 5) & 31), expand5(v & 31)];
 }
 
+/**
+ * 裸的 16bpp RGB555 位图 —— **没有** SPR/SMP 头，整块就是一个 W×H 的像素数组。
+ *
+ * 有这类资源：`Data.mkf` 里那批節日插画就是（每个恰好 `200×200×2 = 80000` 字节）。
+ * 原版的做法是**先备好一个 200×200 的 `graph_st`**（VA 0x00451a5a
+ * `allocate_graph_st(0xc8, 0xc8, 0, 0)` → `[0x48bdcc]`），再把资源原样读进
+ * 它的像素区，最后照常 blit —— 所以资源本身不带尺寸，尺寸是调用方定的。
+ *
+ * @param width  宽（调用方给定，不来自数据）
+ * @param height 高
+ * @param data   像素数据；必须恰好 `width × height × 2` 字节
+ * @param colorKeyBlack 把 RGB555 的 0（纯黑）抠成透明
+ */
+export function decodeRaw555(
+  width: number,
+  height: number,
+  data: Uint8Array,
+  colorKeyBlack = false,
+): DecodedImage {
+  const count = width * height;
+  if (data.length !== count * 2) {
+    throw new Error(`裸 16bpp 位图大小异常: ${data.length} 期望=${count * 2} (${width}x${height})`);
+  }
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const rgba = new Uint8ClampedArray(count * 4);
+  for (let p = 0; p < count; p++) {
+    const c = view.getUint16(p * 2, true);
+    if (colorKeyBlack && c === 0) continue;
+    const o = p * 4;
+    rgba[o + 0] = expand5((c >> 10) & 0x1f);
+    rgba[o + 1] = expand5((c >> 5) & 0x1f);
+    rgba[o + 2] = expand5(c & 0x1f);
+    rgba[o + 3] = 255;
+  }
+  return { width, height, anchorX: 0, anchorY: 0, rgba };
+}
+
 /** SMP：原始 16bpp RGB555；默认不透明，可选把纯黑抠成透明 */
 function decodeSmp(info: GraphInfo, data: Uint8Array, colorKeyBlack: boolean): DecodedImage {
   const { width, height, gsize, dataOffset } = info;

@@ -353,3 +353,40 @@ export function isHoliday(
   const e = (HOLIDAY_TABLE[globalMapId] ?? []).find((x) => x.index === idx);
   return e !== undefined && e.holiday !== 0;
 }
+
+// ============================================================
+//  節日插画
+// ============================================================
+
+/**
+ * 每张地图的**節日插画资源基号**（`Data.mkf`）。
+ *
+ * @source `0x00475208` 起 8 个 word（一张地图一个）：
+ * `[4, 28, 47, 67, 87, 108, 95, 118]`
+ *
+ * 用法（@source VA 0x00416baf 起，`fcn_004521f0` 返回的不是 −1 时）：
+ * ```asm
+ * movsx ebx, word [0x4991b6]      ; 地图号高位
+ * shl   ebx, 2
+ * movsx esi, word [0x4991b8]      ; 地图号低位
+ * add   ebx, esi                  ; 地图号
+ * mov   bx, word [ebx*2 + 0x475208]   ; ★ 本表
+ * and   ebx, 0xffff
+ * add   ebx, eax                  ; + 節日序号 → Data.mkf 的资源号
+ * ```
+ * 即 **`资源号 = 本表[地图号] + 節日序号`**。
+ *
+ * ⚠️ 各图之间**不是等距**（相邻差 24/19/20/20/21/−13/23，且 map6 的 95 < map5 的 108）
+ *   —— 别当成 `基号 + 地图×24` 去推。表里就是这么写的，照抄。
+ */
+export const HOLIDAY_ART_BASE: readonly number[] = [4, 28, 47, 67, 87, 108, 95, 118];
+
+/** 某地图某節日的插画在 `Data.mkf` 里的资源号；不在表内返回 null */
+export function holidayArtResource(globalMapId: number, holidayIndex: number): number | null {
+  const base = HOLIDAY_ART_BASE[globalMapId];
+  if (base === undefined || holidayIndex < 0) return null;
+  return base + holidayIndex;
+}
+
+/** 插画的边长 —— 原版备的是一个 200×200 的 `graph_st` @source VA 0x00451a5a `allocate_graph_st(0xc8, 0xc8, 0, 0)` */
+export const HOLIDAY_ART_SIZE = 0xc8;

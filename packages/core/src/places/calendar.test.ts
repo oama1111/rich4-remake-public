@@ -6,10 +6,13 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { lunarOf, LUNAR_DAYS } from '@rich4/data';
 import {
+  HOLIDAY_ART_BASE,
+  HOLIDAY_ART_SIZE,
   HOLIDAY_TABLE,
   MONTH_SCENE,
   daysInMonth,
   dayNumberSince1998,
+  holidayArtResource,
   holidayIndexOf,
   isHoliday,
   isLeapYear,
@@ -137,5 +140,42 @@ describe('節日', () => {
     // 真实答案是 12/7；原版算 7−3+1 = 5 → 12/5（星期日），差了两天
     expect(nthWeekdayOfMonth(1999, 12, 1, 2)).toBe(5);
     expect(weekdayOf(1999, 12, 7)).toBe(2); // 真正的星期二
+  });
+});
+
+describe('節日插画的资源号 @source 0x00475208', () => {
+  it('★ 表就是 exe 里那 8 个基号，一个不差', () => {
+    expect([...HOLIDAY_ART_BASE]).toEqual([4, 28, 47, 67, 87, 108, 95, 118]);
+  });
+
+  it('★ 资源号 = 基号 + 節日序号', () => {
+    expect(holidayArtResource(0, 0)).toBe(4);
+    expect(holidayArtResource(0, 1)).toBe(5);
+    expect(holidayArtResource(1, 0)).toBe(28);
+    expect(holidayArtResource(7, 3)).toBe(121);
+  });
+
+  it('地图号或節日序号越界一律 null（不抛、不悄悄给个错资源）', () => {
+    expect(holidayArtResource(8, 0)).toBeNull();
+    expect(holidayArtResource(-1, 0)).toBeNull();
+    expect(holidayArtResource(0, -1)).toBeNull();
+  });
+
+  it('★ 各图基号**不等距** —— 不许当成「基号 + 地图×24」去推', () => {
+    const gaps = HOLIDAY_ART_BASE.slice(1).map((v, i) => v - HOLIDAY_ART_BASE[i]!);
+    expect(gaps).toEqual([24, 19, 20, 20, 21, -13, 23]);
+    // map6 比 map5 还小，这条断言就是防「想当然等差数列」
+    expect(HOLIDAY_ART_BASE[6]!).toBeLessThan(HOLIDAY_ART_BASE[5]!);
+  });
+
+  it('★ 开局的 1998-01-01 就是節日，落在表内', () => {
+    // 元旦 = 每张地图的第 1 条節日 → 资源 = 基号 + 1
+    const idx = holidayIndexOf(0, 1998, 1, 1);
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(holidayArtResource(0, idx)).toBe(HOLIDAY_ART_BASE[0]! + idx);
+  });
+
+  it('插画边长是 200（原版备的就是 200×200 的 frame）', () => {
+    expect(HOLIDAY_ART_SIZE).toBe(200);
   });
 });

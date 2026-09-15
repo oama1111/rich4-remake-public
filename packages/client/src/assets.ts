@@ -9,7 +9,8 @@
  */
 
 import { MkfArchive, parseSpriteSheet, type SpriteSheet } from '@rich4/assets-pipeline';
-import { decodeImage, decodeGround, isGround, paletteRgb } from '@rich4/assets-pipeline';
+import { decodeImage, decodeGround, decodeRaw555, isGround, paletteRgb } from '@rich4/assets-pipeline';
+import { HOLIDAY_ART_SIZE, holidayArtResource } from '@rich4/core';
 import { hdRelativePath, taskIdOf } from '@rich4/assets-pipeline';
 
 /** 原版的资源档案 */
@@ -453,6 +454,54 @@ export async function loadGround(
   const rgba = new ImageData(g.width, g.height);
   rgba.data.set(g.rgba);
   return createImageBitmap(rgba);
+}
+
+// ============================================================
+//  節日插画（側欄日曆那塊 200×200）
+// ============================================================
+
+/**
+ * 解出一张節日插画。
+ *
+ * @source VA 0x00416baf 起：`節日那天整张盖掉季节底图` ——
+ *   ```asm
+ *   00416bf3  call 0x450441            ; read_mkf(Data.mkf, 资源号, 旧像素区, 0)
+ *   00416c12  call 0x4563f5            ; 画在 (440, 280)
+ *   ```
+ *   资源号 = `HOLIDAY_ART_BASE[地图号] + 節日序号`（见 core 的 `holidayArtResource`）。
+ *
+ * ★ **这批资源没有 SPR/SMP 头**，整块就是 200×200 的 RGB555（恰好 80000 字节）。
+ *   原版是**先备好一个 200×200 的 `graph_st`**（VA 0x00451a5a
+ *   `allocate_graph_st(0xc8, 0xc8, 0, 0)` → `[0x48bdcc]`）再把资源读进它的像素区，
+ *   所以尺寸来自调用方、不来自数据 —— 不能用 `parseSpriteSheet`（那要求有签名）。
+ */
+export function readHolidayArt(
+  archives: LoadedArchives,
+  globalMapId: number,
+  holidayIndex: number,
+): ImageData | null {
+  const res = holidayArtResource(globalMapId, holidayIndex);
+  if (res === null) return null;
+  let data: Uint8Array;
+  try {
+    data = archives.get('Data.mkf').read(res);
+  } catch {
+    return null;
+  }
+  const n = HOLIDAY_ART_SIZE;
+  if (data.length !== n * n * 2) return null;
+  const img = decodeRaw555(n, n, data);
+  return toImageData(img.width, img.height, img.rgba);
+}
+
+/** 同上，直接给出 ImageBitmap */
+export async function loadHolidayArt(
+  archives: LoadedArchives,
+  globalMapId: number,
+  holidayIndex: number,
+): Promise<ImageBitmap | null> {
+  const img = readHolidayArt(archives, globalMapId, holidayIndex);
+  return img === null ? null : createImageBitmap(img);
 }
 
 // ============================================================

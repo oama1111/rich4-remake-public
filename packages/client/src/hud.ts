@@ -212,6 +212,12 @@ export interface HudInput {
   pressedMinimapArrow: MinimapArrowId | null;
   /** 鼠标悬停的箭头；没悬停返回 null */
   hotMinimapArrow: MinimapArrowId | null;
+  /**
+   * 今天若逢節日，那张专属插画（`Data.mkf` 的 200×200 裸位图）——
+   * 整张盖掉季节底图。非節日或无图时给 null。
+   * @source VA 0x00416baf 起
+   */
+  holidayArt: ImageBitmap | null;
 }
 
 /**
@@ -446,20 +452,25 @@ export class Hud {
   /**
    * 日曆面 —— 大图 + 年月日星期。版式全部照 exe，见 `CAL`。
    *
-   * ⚠️ 節日那天原版会**换一张专属插画**（`0x00416bb2` 按節日编号从
-   *   `Data.mkf` 另取一张画进那块 200×200），本引擎还没做：資源号的算法
-   *   要顺着 `[0x00475208]` 那张表，没跟到。记作 Q-CAL-1。
+   * ★ **節日那天整张换掉底图**：原版取 `Data.mkf` 里按
+   *   `HOLIDAY_ART_BASE[地图号] + 節日序号` 算出的那张 200×200 插画盖上去
+   *   （@source VA 0x00416baf 起，载入在 0x00416bf3、绘制在 0x00416c12）。
+   *   非節日才画季节底图 —— 两者**互斥**，不是叠加。
    */
   #drawCalendar(input: HudInput): void {
     const ctx = this.#ctx;
     const { day, month, year, globalMapId } = input.state;
     const { x: ox, y: oy, w, h } = SIDEBAR;
 
-    const bg = this.#sprite('Panel.mkf', 2, sceneOfMonth(month));
-    if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
-    else {
-      ctx.fillStyle = '#7f9fbf';
-      ctx.fillRect(ox, oy, w, h);
+    if (input.holidayArt !== null) {
+      ctx.drawImage(input.holidayArt, ox, oy, w, h);
+    } else {
+      const bg = this.#sprite('Panel.mkf', 2, sceneOfMonth(month));
+      if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
+      else {
+        ctx.fillStyle = '#7f9fbf';
+        ctx.fillRect(ox, oy, w, h);
+      }
     }
 
     // 太阳与月亮 —— 图 0..3 没有烤这两个，所以这里必须画

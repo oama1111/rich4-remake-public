@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { MkfArchive, parseSpriteSheet } from './mkf.ts';
-import { decodeImage, parsePalette, TRANSPARENT_INDEX } from './sprite.ts';
+import { decodeImage, decodeRaw555, parsePalette, TRANSPARENT_INDEX } from './sprite.ts';
 import { encodePng } from './png.ts';
 
 const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
@@ -214,5 +214,43 @@ describe('SMP 抠黑', () => {
     if (sheet === null) return;
     const img = decodeImage(sheet, data, 0);
     for (let i = 3; i < img.rgba.length; i += 4 * 337) expect(img.rgba[i]).toBe(255);
+  });
+});
+
+describe('裸 16bpp 位图（節日插画那类，没有 SPR/SMP 头）', () => {
+  /** 造一个 W×H 的 RGB555 块；取值 = 该像素的序号（塞进 15 位里） */
+  const block = (w: number, h: number): Uint8Array => {
+    const b = new Uint8Array(w * h * 2);
+    for (let p = 0; p < w * h; p++) {
+      b[p * 2] = p & 0xff;
+      b[p * 2 + 1] = (p >> 8) & 0x7f;
+    }
+    return b;
+  };
+
+  it('★ 尺寸来自调用方，不来自数据 —— 解出来就是 W×H', () => {
+    const img = decodeRaw555(4, 3, block(4, 3));
+    expect(img.width).toBe(4);
+    expect(img.height).toBe(3);
+    expect(img.rgba.length).toBe(4 * 3 * 4);
+  });
+
+  it('★ RGB555 逐位展开：通道 5 位 → 8 位（末位补满，不是简单左移）', () => {
+    // 纯红 = 0x7C00、纯绿 = 0x03E0、纯蓝 = 0x001F
+    const raw = new Uint8Array([0x00, 0x7c, 0xe0, 0x03, 0x1f, 0x00]);
+    const img = decodeRaw555(3, 1, raw);
+    expect(Array.from(img.rgba.slice(0, 4))).toEqual([255, 0, 0, 255]);
+    expect(Array.from(img.rgba.slice(4, 8))).toEqual([0, 255, 0, 255]);
+    expect(Array.from(img.rgba.slice(8, 12))).toEqual([0, 0, 255, 255]);
+  });
+
+  it('默认全不透明；开抠黑才把 RGB555 的 0 抠成透明', () => {
+    const raw = new Uint8Array([0x00, 0x00, 0x00, 0x7c]);
+    expect(Array.from(decodeRaw555(2, 1, raw).rgba.slice(0, 4))).toEqual([0, 0, 0, 255]);
+    expect(Array.from(decodeRaw555(2, 1, raw, true).rgba.slice(0, 4))).toEqual([0, 0, 0, 0]);
+  });
+
+  it('字节数对不上就抛 —— 别拿错资源当图画出个花屏', () => {
+    expect(() => decodeRaw555(4, 3, block(4, 3).subarray(0, 20))).toThrow(/裸 16bpp/);
   });
 });

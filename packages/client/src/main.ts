@@ -15,6 +15,7 @@ import {
   teleportPlayer,
   decideAction,
   isAiTurn,
+  holidayIndexOf,
   newGame,
   reduce,
   parseMap,
@@ -44,6 +45,7 @@ import {
   loadHdSource,
   readMapData,
   SpriteCache,
+  loadHolidayArt,
   loadMinimapBackground,
   type ArchiveName,
   type LoadedArchives,
@@ -774,6 +776,32 @@ function loadMinimapAssets(globalMapId: number): void {
 }
 
 /**
+ * 今天的節日插画（`Data.mkf` 的 200×200 裸位图）。非節日为 null。
+ *
+ * ★ 它随**日期**变，而日期是走子走出来的 —— 所以不挂事件，改成每次渲染时
+ *   「对一遍」：算一下今天该是哪张，与手里那张不同就去取。幂等，且不必去
+ *   猜日期在哪几个动作里会被改。
+ */
+let holidayArt: ImageBitmap | null = null;
+let holidayKey: string | null = null;
+
+function syncHolidayArt(): void {
+  if (archives === null || screen !== 'game') return;
+  const idx = holidayIndexOf(state.globalMapId, state.year, state.month, state.day);
+  const key = `${state.globalMapId}:${idx}`;
+  if (key === holidayKey) return;
+
+  holidayKey = key;
+  holidayArt = null;
+  if (idx < 0) return;
+  void loadHolidayArt(archives, state.globalMapId, idx).then((b) => {
+    if (holidayKey !== key) return; // 期间又翻页了，这张已经过期
+    holidayArt = b;
+    requestRender();
+  });
+}
+
+/**
  * 镜头跟随当前玩家。
  *
  * 原版的视野就是**跟着棋子走的**（截图里看到的是 1:1 的局部，
@@ -1092,6 +1120,7 @@ function drawGameStage(): void {
     drawSceneStage(scene, dlgNow);
     return;
   }
+  syncHolidayArt();
   if (followPlayer) centerOnCurrentPlayer();
 
   renderer.draw({
@@ -1132,6 +1161,7 @@ function drawGameStage(): void {
     minimapMarker,
     pressedMinimapArrow,
     hotMinimapArrow,
+    holidayArt,
   });
   stageCtx.drawImage(hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y);
 }
