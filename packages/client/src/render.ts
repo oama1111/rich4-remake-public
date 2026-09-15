@@ -9,6 +9,7 @@
 
 import type { GameState } from '@rich4/core';
 import { CHARACTERS } from '@rich4/data';
+import { TWEEN_FRAME_MS, framesFor, tweenFrameCount } from './tween.ts';
 import type { MapNode, Rich4Map } from '@rich4/core';
 import { VIEW_CENTER, VIEW_COUNT, VIEW_SPAN, projectCell, projectWorld } from '@rich4/data';
 import type { Sprite, SpriteCache } from './assets.ts';
@@ -237,6 +238,17 @@ export class BoardRenderer {
    */
   #walkFrame = 0;
   /**
+   * 正在播的走子补间 —— 世界坐标的起终点 + 起始时刻。
+   * ★ 纯表现：不进 state，丢了只是少一段平滑（C-DET-4）。
+   */
+  #walk: {
+    player: number;
+    from: { x: number; y: number };
+    to: { x: number; y: number };
+    frames: number;
+    start: number;
+  } | null = null;
+  /**
    * 解码落地时叫一声。
    *
    * ⚠️ 光有 `#dirty` 不够：解码几乎总是在本帧的 rAF 回调**之后**才 resolve，
@@ -269,6 +281,77 @@ export class BoardRenderer {
   /** 推进一格行走动画 */
   advanceWalk(): void {
     this.#walkFrame = (this.#walkFrame + 1) & 0xff;
+  }
+
+  /**
+   * 开始播一步的补间（世界坐标起终点）。
+   *
+   * @source VA 0x0040e669 `_rich4_animate_object`：帧数 = `trunc(屏幕距离 × 0.125) + 1`、
+   *   线性等分、每帧 24 ms（细节与出处见 `tween.ts`）。
+   *   ★ 「動畫過程」关掉时调用方根本不调那个函数 —— 这里用 `enabled` 表达同一件事。
+   *
+   * 帧数按**屏幕**距离算，故要传当前的镜头与视口（都来自调用方）。
+   */
+  startWalk(
+    player: number,
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    enabled: boolean,
+    camera: Camera,
+    vp: { w: number; h: number },
+    now = performance.now(),
+  ): void {
+    if (!enabled) {
+      this.#walk = null;
+      return;
+    }
+    const a = worldToScreen(from.x, from.y, camera, vp);
+    const b = worldToScreen(to.x, to.y, camera, vp);
+    const frames =
+      a === null || b === null ? 0 : tweenFrameCount(b.x - a.x, b.y - a.y);
+    this.#walk = { player, from, to, frames, start: now };
+    this.#dirty = true;
+  }
+
+  /** 这一步的补间播完了吗（没有补间也算播完） */
+  walkDone(now = performance.now()): boolean {
+    const w = this.#walk;
+    if (w === null) return true;
+    return now - w.start >= w.frames * TWEEN_FRAME_MS;
+  }
+
+  /** 丢掉没播完的补间（读档、换屏时用） */
+  cancelWalk(): void {
+    this.#walk = null;
+  }
+
+  /** 上一条补间要播多久（毫秒）—— 宿主拿它当走一步的节拍 */
+  lastWalkMs(): number {
+    const w = this.#walk;
+    return w === null ? 0 : w.frames * TWEEN_FRAME_MS;
+  }
+
+  /**
+   * 走子补间这一帧该画在**屏幕**的哪里；没有补间返回 null（调用方按格心画）。
+   *
+   * ★ 插值走 `framesFor`（纯函数，`tween.ts` 里有单测）——**屏幕坐标**上插值，
+   *   与 exe 一致（它就是把两个屏幕端点等分）。
+   */
+  #walkScreen(
+    playerIndex: number,
+    cam: Camera,
+    vp: { w: number; h: number },
+    now: number,
+  ): { x: number; y: number } | null {
+    const w = this.#walk;
+    if (w === null || w.player !== playerIndex) return null;
+    const a = worldToScreen(w.from.x, w.from.y, cam, vp);
+    const b = worldToScreen(w.to.x, w.to.y, cam, vp);
+    if (a === null || b === null) return null;
+    const frames = framesFor(a, b);
+    if (frames.length === 0) return null;
+    const k = Math.min(frames.length, Math.floor((now - w.start) / TWEEN_FRAME_MS) + 1);
+    return frames[k - 1] ?? null;
   }
 
   /** 某个资源里有几张图（同步，只解表头） */
@@ -662,7 +745,10 @@ export class BoardRenderer {
       const seen = perNode.get(pl.nodeId) ?? 0;
       perNode.set(pl.nodeId, seen + 1);
 
-      const p = worldToScreen(node.x, node.y, cam, vp);
+      // ★ 走子补间（T-046）：棋子按插值位置画，而不是直接落在格心
+      const p =
+        this.#walkScreen(pl.index, cam, vp, performance.now()) ??
+        worldToScreen(node.x, node.y, cam, vp);
       if (p === null) continue;
       const k = cam.mode === 'map' ? cam.scale : 1;
       const off = seen * Math.max(4, k * 5);

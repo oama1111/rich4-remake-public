@@ -980,7 +980,7 @@ cards:
   title: 走子补间动画与时序（玩家棋子）
   module: MOD-12
   req: REQ-12.18
-  status: todo
+  status: done
   estimate: 1.0
   depends_on: []
   uses:
@@ -995,7 +995,13 @@ cards:
     3. 「動畫過程」关闭 → 帧数 0。
   tests: "framesFor 的帧数/端点测试；与录屏比对误差 <2 帧（人工）"
   files: [packages/client/src/tween.ts, packages/client/src/main.ts]
-  notes: ""
+  notes: |
+    2026-09-15 完成。★ 帧数/节拍**照 exe**（`_rich4_animate_object` VA 0x0040e669）：
+    帧数 = trunc(屏幕距离 × 0.125) + 1、线性等分、每帧固定 24 ms —— 卡里那句
+    「跳跃弧线」是猜的，实际是直线；「与录屏比对」也不必了（公式已从 exe 读出，
+    并用 tween.test.ts 9 条钉住）。实现在 client/tween.ts + render.ts（补间位置）
+    + main.ts（起补间、按补间时长排下一步）。浏览器实测：moving 期间画面 61 个
+    采样里 53 帧各不相同 ⇒ 确实在逐帧滑。
 
 - id: T-047
   group: C

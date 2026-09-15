@@ -313,7 +313,11 @@ const STEP_MS = [220, 120, 60] as const;
 
 function humanDelay(): number {
   if (!options.animation) return 0;
-  return STEP_MS[Math.max(0, Math.min(2, options.speed))] ?? 120;
+  // ★ 走子补间播完再走下一步，否则棋子会在半路被瞬移打断（T-046）
+  return Math.max(
+    STEP_MS[Math.max(0, Math.min(2, options.speed))] ?? 120,
+    renderer.lastWalkMs(),
+  );
 }
 
 /**
@@ -511,6 +515,29 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
     default:
       return false;
   }
+}
+
+/**
+ * 一步棋走完后开始播补间。
+ *
+ * @source VA 0x0040e669 `_rich4_animate_object`（帧数 = 屏幕距离 × 0.125 + 1、
+ *   每帧 24 ms、线性）—— 细节与出处见 `client/tween.ts`。
+ *   起点用 state 里的 `lastNodeId`（core 的 step 会把它设成走之前那一格）。
+ */
+function startStepTween(playerIndex: number): void {
+  const p = state.players[playerIndex];
+  if (p === undefined) return;
+  const from = map.nodes[p.lastNodeId - 1];
+  const to = map.nodes[p.nodeId - 1];
+  if (from === undefined || to === undefined) return;
+  renderer.startWalk(
+    playerIndex,
+    { x: from.x, y: from.y },
+    { x: to.x, y: to.y },
+    options.animation,
+    camera,
+    { w: LAYOUT.board.w, h: LAYOUT.board.h },
+  );
 }
 
 /** 当前玩家的朝向换算到屏幕方位 @source VA 0x0040882d */
@@ -990,7 +1017,9 @@ function scheduleAi(): void {
     if (action.type === 'step') stepTick();
     if (action.type === 'rollDice') playDiceSound();
     const before = state;
+    const walker = action.type === 'step' ? state.currentPlayer : null;
     state = reduce(state, action, topo);
+    if (walker !== null && state !== before) startStepTween(walker);
     if (state === before) {
       log(`⚠ AI 在 ${before.phase} 给出无效 action ${action.type}，已停手`);
       aiAutoPlay = false;
@@ -1101,6 +1130,9 @@ function requestRender(): void {
   requestAnimationFrame(() => {
     renderQueued = false;
     resizeCanvas();
+    // ★ 走子补间要**逐帧**重绘（T-046）：补间没播完就再排一帧，
+    //   否则棋子会停在这一步的第一帧上，直到下一次 dispatch 才动。
+    if (screen === 'game' && !renderer.walkDone()) requestRender();
 
     stageCtx.imageSmoothingEnabled = false;
     stageCtx.fillStyle = '#000';
