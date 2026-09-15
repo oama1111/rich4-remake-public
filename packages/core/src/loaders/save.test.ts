@@ -172,3 +172,37 @@ describe('偏移常量自洽', () => {
     expect(OFFSET.toolAmount).toBe(0x690);
   });
 });
+
+describe('★ 勝利條件 / 已過天數 从存档回读（2026-09-16 补，Q-SETUP-1 残留）', () => {
+  it('★ 偏移 0x2682 / 0x2686 是目标天数与目标总资产（两个真存档都选的「無限」）', () => {
+    for (const path of SAVES) {
+      if (!existsSync(path)) continue;
+      const s = load(path);
+      // 两个样本都是 0 —— 那两局选的确实是無限，不是「读不到」
+      expect(s.winTargetDays, `${path} 的目标天数`).toBe(0);
+      expect(s.winTargetWealth, `${path} 的目标总资产`).toBe(0);
+    }
+  });
+
+  it('★ 偏移 0x2692 是已過天數：Save0 = 295、SAVE1 = 0', () => {
+    const s0 = `${ROOT}/Rich4/Save0.dat`;
+    const s1 = `${ROOT}/Rich4/SAVE1.DAT`;
+    if (existsSync(s0)) expect(load(s0).totalDays).toBe(295);
+    if (existsSync(s1)) expect(load(s1).totalDays).toBe(0);
+  });
+
+  it('★ 导入原版存档时这两个值真的进 state（不再一律「無限 / 0」）', async () => {
+    const { importOriginalSave } = await import('./savegame.ts');
+    const path = `${ROOT}/Rich4/Save0.dat`;
+    if (!existsSync(path)) return;
+    const save = load(path);
+    const r = importOriginalSave(save, parseMap(save.mapData));
+    expect(r.state.winConditions).toEqual({
+      targetDays: save.winTargetDays,
+      targetWealth: save.winTargetWealth,
+    });
+    expect(r.state.totalDays).toBe(295);
+    // 这一条 gap 应当**已经消失**（值真的读到了）
+    expect(r.gaps['winConditions']).toBeUndefined();
+  });
+});

@@ -49,7 +49,20 @@ export const OFFSET = {
   playerStocks: 0x21f6,
   stocks: 0x2376,
   currentPlayer: 0x2676,
+  /**
+   * 勝利條件两个全局 —— **与 `[0x49911c]` / `[0x499108]` 同源**
+   * （开局时由 `0x0040737d..0x004073a3` 从 `0x46cbe8` / `0x46cc00` 写进去）。
+   *
+   * ★ 2026-09-16 补（Q-SETUP-1 的残留）：偏移先前只写进了 deviations 文档，
+   *   解析器没收，于是读原版存档一律按「两条都無限」导入。
+   *   实测两个样本（Save0 中局 / SAVE1 开局）都是 0，即那两局选的确实是無限。
+   * @source docs/deviations/Q-SETUP-1.md §5.2
+   */
+  winTargetDays: 0x2682,
+  winTargetWealth: 0x2686,
   priceIndex: 0x268e,
+  /** 已过天数 `[0x4990e4]`（日推进每回合 +1）@source 同上 §5.2 */
+  totalDays: 0x2692,
   /** 卡片牌堆洗牌结果，36 项 @source fcn_00448b81 */
   cardDeck: 0x26fa,
   /** 命运牌堆洗牌结果，37 项 @source fcn_0044baea */
@@ -176,6 +189,18 @@ export interface SaveGame {
   currentPlayer: number;
   /** 物价指数 */
   priceIndex: number;
+  /**
+   *  game_time 档查 `0x46cbe8` 的结果 = 目标天数（0 = 無限）
+   * @source `[0x49911c]`，存档 0x2682
+   */
+  winTargetDays: number;
+  /**
+   * 勝利條件档查 `0x46cc00` 再乘开局资金 = 目标总资产（0 = 無限）
+   * @source `[0x499108]`，存档 0x2686
+   */
+  winTargetWealth: number;
+  /** 已过天数 @source `[0x4990e4]`，存档 0x2692 */
+  totalDays: number;
   /** 牌堆中各种卡片的剩余张数，下标为卡片 id - 1 */
   cardAmount: number[];
   /** 地图数据块（结构同 map.mkf 的地图资源，但含实时归属状态） */
@@ -310,6 +335,9 @@ export function parseSave(data: Uint8Array): SaveGame {
     players,
     currentPlayer: view.getUint32(OFFSET.currentPlayer, true),
     priceIndex: view.getUint32(OFFSET.priceIndex, true),
+    winTargetDays: view.getInt32(OFFSET.winTargetDays, true),
+    winTargetWealth: view.getInt32(OFFSET.winTargetWealth, true),
+    totalDays: view.getUint32(OFFSET.totalDays, true),
     cardAmount,
     mapData,
   };
