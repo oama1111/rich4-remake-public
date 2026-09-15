@@ -791,7 +791,7 @@ cards:
   title: 目标拾取模式（选玩家 / 地块 / 設施 / 物件 / 格子）
   module: MOD-12
   req: REQ-12.3
-  status: todo
+  status: doing
   estimate: 0.8
   depends_on: [T-001]
   uses:
@@ -807,7 +807,79 @@ cards:
     3. 渲染：候选格描边；点击命中 → 组装 target → dispatch；未命中忽略。
   tests: "picking.test.ts：候选生成用构造状态；点击映射。"
   files: [packages/client/src/picking.ts, packages/client/src/picking.test.ts, packages/client/src/main.ts]
-  notes: "AI 不用此模块（它在 core/ai 里选）。"
+  status: done
+  notes: |
+    **2026-09-15 做完**（反汇编逐条取证 + 浏览器逐项核过）。
+
+    ## ★ 先纠正一条：原版的反馈是**鼠标指针变形**，不是棋盘上描边
+
+    上一轮卡里写的「候选格描边」是我们自己想的东西。读 `_rich4_select_instance_callback`
+    （VA 0x445e4d，就是 `_rich4_select_instance_with_mouse` VA 0x446ae8 交给消息循环的
+    那个窗口过程）之后，真相反过来：**那个窗口过程一帧棋盘都不画**（WM_PAINT 只是把
+    离屏面贴回屏幕，VA 0x4466fa），反馈全在指针上：
+
+    | 情形 | 指针 | @source |
+    |---|---|---|
+    | 光标底下**能选** | 换成**那件道具/那张卡自己的光标**（路障→STOP 牌子、地雷→尖刺球、定時炸彈→炸彈、各卡→「卡片」）| VA 0x4465ba |
+    | **不能选** | 换成**红叉**（图 5）| VA 0x4465f4 |
+    | 贴近棋盘四边 | 方向箭头（图 34/40/38…）**并把镜头往那个方向推** | VA 0x44609b 起 |
+
+    指针图集 = **`Data.mkf` 资源 0**（43 张；0/1/2 = 路障/地雷/定時炸彈、
+    5 = 红叉、12 = 卡片、34..40 = 八个方向）@source VA 0x4020fa。
+
+    ## 选择参数：一个数同时管「什么算数」和「指针长什么样」
+
+    两个调用方都只传一个参数（卡是 `selectionParam`、道具见下表）：
+
+    - **低 16 位 = 类别位**：bit0 格子 / bit1 地块 / bit2 設施 / **bit3 目标必选
+      （右键不许取消）** / bit4 玩家 / bit5 特殊棋子。这几条就是
+      `_rich4_select_instance_callback` 里那串 `test byte [0x48c594], …`。
+    - **高 16 位 = 指针形状**：`形状 = 高16位的低字节`、`热点x = 高16位的高字节 + 1`
+      （VA 0x445ec1 的 `xor ah, dh` / `xor bl, dl` 两处**字节**异或）。
+      路障 `1` → 图 0；地雷 `0x10001` → 图 1；定時炸彈 `0x20001` → 图 2；
+      飛彈 `0x300c0` → 图 3；核子飛彈 `0x400c0` → 图 4；
+      各张卡 `0xe0c0XYZ` → 图 12、热点 (15, 10) —— 与 asm 里的
+      `fcn_004021f8(12, 15, 10)` 逐位对上。
+
+    道具的选择参数（`TOOL_SELECT_PARAM`）：路障 `1`、地雷 `0x10001`、
+    定時炸彈 `0x20001`、飛彈 `0x300c0`、核子飛彈 `0x400c0`、
+    機器工人 `0x2090006`、傳送機 `0x2090001`。
+
+    ## 候选合法性：**问 core**，client 不重写规则
+
+    「这一格算不算数」= 空跑一遍规则。为此新增 `core/state/preview.ts`：
+
+    - `canUseCard(state, topo, cardId, target)` —— 包 `useCard`，顺带把
+      **AI 出牌前那个 `willWork` 也改成调它**，两边从此一份实现。
+    - `canUseTool(state, topo, toolId, nodeId, value)` —— 包 `useToolAction`
+      （该函数**被拒时原样返回传入的 state**，故「返回值 !== 原 state」即「会生效」）。
+
+    ⚠️ 预演还会查「牌在不在手上」（`notInHand`）—— 对 UI 正是想要的行为。
+
+    ## 每个类别怎么枚举候选
+
+    | 类别 | 候选落点 |
+    |---|---|
+    | 道具 | **所有格子**（哪一格算数由 `canUseTool` 定）|
+    | land / landOrFacility | 节点里 `ref.kind === 'land'` / `'facility'` 的，取节点的 x/y |
+    | anyPlayer / player | 每个在场玩家的**所在节点**（原版也是点棋子本身，没有「头像列表」）|
+    | playerOrActor | 再加 `state.specialActors`（编号 = 下标 + 4）|
+    | object | `state.objects` 里 `nodeId != 0` 的（下标 + 1）|
+    | **stock** | ✗ 没有棋盘落点 —— 紅卡/黑卡原版走的是另一套（`selection: 'ai'`），要自己的列表 UI |
+
+    ## ★ 顺手修掉两个**下标错位**的真 bug（T-022 / T-024 都中）
+
+    core 的 `state.tools` 下标是 **`玩家×15 + 道具号`**（1 基、0 号空置 ——
+    证据是 `loaders/savegame.ts` 把原版的 `owned[id-1]` 写进 `tools[… + id]`，
+    以及 `toolCount` 的实现）。而两处绘制都按 `道具号 − 1` 读，于是：
+    道具欄与資產表右下那块的**图标与数量整体错了一格**（少显示 13 号、0 号永远空）。
+    图号也各差一格：**资源 0x4a 的图号 = 道具号 − 1**、**资源 11 的图号 = 道具号 + 1**。
+
+    ## 没做的（已登记 `known-deviations.md` 的 Q-PICK-1）
+
+    - **贴边推镜头** + 那四支方向箭头指针（VA 0x44609b 起，方向表 `0x4751b0`）。
+    - 股票（紅/黑卡）与請神符的目标列表 UI。
+    - **遙控骰子**要的是一个 1..18 的点数，不是空间目标 —— 它得有自己那个输入 UI。
 
 - id: T-027
   group: C
