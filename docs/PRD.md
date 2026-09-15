@@ -473,7 +473,9 @@ landOnLand(state, land):
   - `API-11.1 mkfEntries(bytes) / mkfRead(bytes, index) → Uint8Array`；`mkfDecompress(src, outSize)`（自适应霍夫曼 + LZ77，与 C 逐字节一致）。
   - `API-11.2 decodeSprite(bytes) → { frames: { w, h, x, y, rgba }[] }`（SPR 8bpp 调色板 / SMP 16bpp RGB555，均无压缩）；`decodeGround(bytes) → GroundImage`（32×32 tile 布局）。
   - `API-11.3 readWaveInfo`, `parseMidi(bytes) → MidiSong`。
-  - `API-11.4 CLI`：`pnpm unpack`（`assets/game/` → `extracted/`，不入库）；`pnpm upscale plan|slice|merge|status|ingest`（`assets/hd-manifest.json` 记模型/参数/哈希；`slice` 把待超分帧切进 `assets/upscale-queue/`，外部超分后由 `merge` 回填校验并合并回 RGBA）。
+  - `API-11.4 CLI`：`pnpm unpack`（`assets/game/` → `extracted/`，不入库）；`pnpm upscale plan|slice|merge|assemble|status|ingest`（`assets/hd-manifest.json` 记模型/参数/哈希）。
+    完整交接链：`plan` 出清单 → `slice` 把待超分帧切进 `assets/upscale-queue/`（rgb/alpha 分开，C-AST-4/5）→ **[外部超分 4×]** → `merge` 校验（尺寸恰 4×、哈希未变即拒）并合并回 RGBA → `assemble` 按 `hdRelativePath` 落进 `assets/hd/`、锚点按**实际输出尺寸**重算（C-AST-6）、写 manifest 条目（幂等：产物哈希未变则不重写）。
+    `ingest` 保留给「产物直接按原名放进 hd 目录」的旧路径。
 - **REQ-11.1（步骤 2）批量超分与回填**：
   - 输入：`extracted/` 的 PNG + `meta.json`（w/h/x/y 锚点）。
   - 流程（每步一个可单测的纯函数）：分类 → 按帧切片 → 分离 Alpha → **[用户外部超分 4×]** → 合并 Alpha、去彩边（边缘 1px 内按 alpha 加权重采样）→ 重拼 → 锚点 ×4（C-AST-6）→ 接缝检查（相邻 tile 边缘色差 > 阈值即报）→ 写 `assets/hd/<档案>/<同名>`。
@@ -675,6 +677,11 @@ C→S checksum{seq,hash}（每 10 步）  S: 不一致 → S→all desync{seq,ex
 
 `SpriteCache.get(archive ∈ {Data.mkf, Panel.mkf, map.mkf, jump.mkf}, resource, image)`：
 先查 `assets/hd/<archive>/<resource>-<image>.png`（锚点已 ×4），缺则解码原 mkf。角色精灵：`resource = 0x80 + character×21 + pose`，方位图 `directionalImage(count, screenDir, frame)`。
+
+**hd 路径只有一处定义**：`@rich4/assets-pipeline` 导出的 `hdRelativePath(archive, resource, image)`
+（写侧 `assemble.ts`、读侧 client 的 `SpriteCache` 共用，两边各写一份字符串迟早对不上）。
+`<archive>` 是 mkf 主名（`Data`/`Panel`/`map`/`jump`），`<resource>`/`<image>` 均为**十进制、无前导零**。
+产物由 T-063 的 `assemble` 步骤写出（`assets/hd/` 已 gitignore，不入库）。
 
 ---
 

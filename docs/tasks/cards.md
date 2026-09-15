@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 15.2。
+共 **73** 张卡，估算 **39.8** 单元，已完成 15.6。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -71,7 +71,7 @@
 | [T-060](#t-060) | 素材分类器（UI / 地形 tile / 角色精灵 / 背景大图 / 字体） | MOD-11 | REQ-11.1 | `done` | 0.4 | — |
 | [T-061](#t-061) | 按帧切片 + Alpha 分离，产出 upscale-queue/ | MOD-11 | REQ-11.1 | `done` | 0.6 | T-060 |
 | [T-062](#t-062) | 回填校验：尺寸恰 4×、Alpha 合并、去彩边 | MOD-11 | REQ-11.1 | `done` | 0.6 | T-061 |
-| [T-063](#t-063) | 重拼精灵 + 锚点 ×4 + 写 hd-manifest.json | MOD-11 | REQ-11.1 | `todo` | 0.4 | T-062 |
+| [T-063](#t-063) | 重拼精灵 + 锚点 ×4 + 写 hd-manifest.json | MOD-11 | REQ-11.1 | `done` | 0.4 | T-062 |
 | [T-064](#t-064) | 地形 tile 接缝检查 | MOD-11 | REQ-11.1 | `todo` | 0.5 | T-063 |
 | [T-065](#t-065) | SpriteCache 按图优先读 hd，缺则回退原图 | MOD-12 | REQ-11.1 | `todo` | 0.4 | T-063 |
 | [T-066](#t-066) | 并排比对页（原图 / HD）供人工过审 | MOD-11 | REQ-11.1 | `todo` | 0.3 | T-063 |
@@ -2157,35 +2157,44 @@
 
 **重拼精灵 + 锚点 ×4 + 写 hd-manifest.json**
 
-- 模块 `MOD-11` · 需求 `REQ-11.1` · 状态 `todo` · 估算 0.4 单元
+- 模块 `MOD-11` · 需求 `REQ-11.1` · 状态 `done` · 估算 0.4 单元
 - 依赖：T-062
 - 被依赖：T-064, T-065, T-066
-- 证据：C-AST-6
+- 证据：C-AST-6；PRD §4.5（hd 路径命名）
 
 **依赖的其他类 / 文件**
 
 - assets/hd-manifest.json
 - cli-upscale.ts
+- upscale.ts (recordResult)
 
 **期望输入**
 
-    合并后的帧 + 原 meta
+    合并后的帧（`<done>/merged/`）+ 原 meta（队列清单 + manifest.tasks 的数字身份/原尺寸/原锚点）
 
 **期望输出**
 
-    assets/hd/<档案>/<资源>-<图>.png + meta（x×4, y×4）；manifest 记模型/参数/输入输出哈希
+    assets/hd/<档案>/<资源>-<图>.png + manifest 条目（模型/参数/输入输出哈希、outAnchor ×实际倍率）
 
 **核心逻辑 / 算法指导**
 
-    帧顺序与原 meta 一致；manifest 条目幂等（同哈希不重写）。
+    1. 帧顺序按队列清单（= 原素材清单顺序）走。
+    2. 锚点用 upscale 的 recordResult（内部按**实际输出尺寸**缩放）——不是把 scale 乘一下了事，
+       工具常把结果对齐到 4 的倍数，按请求值算会系统性偏移。
+    3. 落盘前校验产物尺寸恰为 原图×scale（与 T-062 同一条规则），不合规不写 hd。
+    4. 幂等：产物哈希与该条目上次记录的 outHash 相同 → 整帧跳过，一个字节都不重写。
 
 **验收测试**
 
-    锚点 ×4；manifest 幂等
+    锚点 ×4；manifest 幂等（连跑两次 written 为空）；尺寸不合规不落盘
 
 **涉及文件**
 
 - packages/assets-pipeline/src/assemble.ts
+- packages/assets-pipeline/src/assemble.test.ts
+- packages/assets-pipeline/src/cli-upscale.ts
+
+> hd 路径由 assemble.ts 的 hdRelativePath **单点定义**，client 的 SpriteCache（T-065）读同一函数（PRD §4.5）。
 
 ### T-064
 

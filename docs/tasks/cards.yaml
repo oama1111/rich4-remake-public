@@ -1210,17 +1210,22 @@ cards:
   title: 重拼精灵 + 锚点 ×4 + 写 hd-manifest.json
   module: MOD-11
   req: REQ-11.1
-  status: todo
+  status: done
   estimate: 0.4
   depends_on: [T-062]
-  uses: [assets/hd-manifest.json, cli-upscale.ts]
-  source: "C-AST-6"
-  input: "合并后的帧 + 原 meta"
-  output: "assets/hd/<档案>/<资源>-<图>.png + meta（x×4, y×4）；manifest 记模型/参数/输入输出哈希"
-  algorithm: "帧顺序与原 meta 一致；manifest 条目幂等（同哈希不重写）。"
-  tests: "锚点 ×4；manifest 幂等"
-  files: [packages/assets-pipeline/src/assemble.ts]
-  notes: ""
+  uses: [assets/hd-manifest.json, cli-upscale.ts, upscale.ts (recordResult)]
+  source: "C-AST-6；PRD §4.5（hd 路径命名）"
+  input: "合并后的帧（`<done>/merged/`）+ 原 meta（队列清单 + manifest.tasks 的数字身份/原尺寸/原锚点）"
+  output: "assets/hd/<档案>/<资源>-<图>.png + manifest 条目（模型/参数/输入输出哈希、outAnchor ×实际倍率）"
+  algorithm: |
+    1. 帧顺序按队列清单（= 原素材清单顺序）走。
+    2. 锚点用 upscale 的 recordResult（内部按**实际输出尺寸**缩放）——不是把 scale 乘一下了事，
+       工具常把结果对齐到 4 的倍数，按请求值算会系统性偏移。
+    3. 落盘前校验产物尺寸恰为 原图×scale（与 T-062 同一条规则），不合规不写 hd。
+    4. 幂等：产物哈希与该条目上次记录的 outHash 相同 → 整帧跳过，一个字节都不重写。
+  tests: "锚点 ×4；manifest 幂等（连跑两次 written 为空）；尺寸不合规不落盘"
+  files: [packages/assets-pipeline/src/assemble.ts, packages/assets-pipeline/src/assemble.test.ts, packages/assets-pipeline/src/cli-upscale.ts]
+  notes: "hd 路径由 assemble.ts 的 hdRelativePath **单点定义**，client 的 SpriteCache（T-065）读同一函数（PRD §4.5）。"
 
 - id: T-064
   group: D

@@ -4,11 +4,15 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * 用法：
- *   plan   <assets-clean> <hd>            生成待办清单
- *   slice  <assets-clean> <queue> [N]     按帧切片 + Alpha 分离（T-061）
- *   merge  <queue> <upscale-done>         回填校验 + Alpha 合并（T-062）
- *   status <hd>                           看进度
- *   ingest <assets-clean> <hd> [模型]     回填已完成的产物
+ *   plan     <assets-clean> <hd>            生成待办清单
+ *   slice    <assets-clean> <queue> [N]     按帧切片 + Alpha 分离（T-061）
+ *   merge    <queue> <upscale-done>         回填校验 + Alpha 合并（T-062）
+ *   assemble <queue> <upscale-done> <hd>    落进 assets/hd + 写清单（T-063）[模型]
+ *   status   <hd>                           看进度
+ *   ingest   <assets-clean> <hd> [模型]     回填已完成的产物（旧路径，见下）
+ *
+ * 交接链：plan → slice → [外部超分 4×] → merge → assemble。
+ * `ingest` 保留给「产物直接按原名放进 hd 目录」的旧路径，与 assemble 二选一。
  *
  * ★ 交接方式刻意做成「文件 + 清单」而不是直接调某个模型的 API：
  *   这样你可以用任何工具（Real-ESRGAN、waifu2x、某个在线服务、
@@ -31,6 +35,7 @@ import {
 import { decodePng, encodePng } from './sprite.ts';
 import { buildQueueFrame, sliceFrame, type QueueManifest } from './slice.ts';
 import { mergeUpscaled, validatePair, type MergeRejection } from './merge.ts';
+import { assembleHd, type AssembleIo } from './assemble.ts';
 
 /**
  * 由 hd 目录推出清单路径：与之**同级**、不在其内。
@@ -97,8 +102,13 @@ export function cmdPlan(cleanDir: string, hdDir: string): void {
     console.log(`  ${batch.padEnd(7)} ${String(info.count).padStart(6)} 张  ×${info.scale}`);
   }
   console.log(`\n清单：${manifestPath(hdDir)}`);
-  console.log(`\n下一步：把 ${cleanDir} 里的图按批次喂给你的超分工具，`);
-  console.log(`产物放到 ${hdDir}/<档案>/<同名文件>，然后跑 ingest 回填。`);
+  console.log(`\n下一步（推荐链路）：`);
+  console.log(`  1. slice   把 ${cleanDir} 切成 rgb/alpha 交出：upscale slice ${cleanDir} <queue>`);
+  console.log(`  2. 用你的超分工具把 <queue>/rgb 与 <queue>/alpha 各自放大 4×（倍率必须一致），`);
+  console.log(`     产物按同名路径放进 <upscale-done>/rgb 与 <upscale-done>/alpha`);
+  console.log(`  3. merge   校验并合并：upscale merge <queue> <upscale-done>`);
+  console.log(`  4. assemble 落进 ${hdDir}/ 并记账：upscale assemble <queue> <upscale-done> ${hdDir}`);
+  console.log(`（旧路径：把产物直接按原名放进 ${hdDir}/<档案>/<同名文件>，然后跑 ingest 回填）`);
 }
 
 // ============================================================
@@ -240,6 +250,59 @@ export function cmdMerge(queueDir: string, doneDir: string): void {
 }
 
 // ============================================================
+//  assemble —— 落进 assets/hd + 写清单（T-063）
+// ============================================================
+
+/**
+ * 把 merge 的产物摆进 `assets/hd/<档案>/<资源>-<图>.png`，并把 manifest 记账。
+ *
+ * 与 merge 的分工：merge 只管像素（校验 + 盖回 RGBA），本步管**命名与记账**
+ * ——两套命名（队列的 `<资源>_f<帧>` 与 client 要读的 `<资源>-<图>`）之间的
+ * 翻译只在这里发生一次。
+ *
+ * @param model 覆盖模型名；不给就用队列里记的每帧建议模型
+ */
+export function cmdAssemble(queueDir: string, doneDir: string, hdDir: string, model?: string): void {
+  const queueManifestPath = join(queueDir, 'manifest.json');
+  if (!existsSync(queueManifestPath)) {
+    throw new Error(`找不到 ${queueManifestPath}，先跑 slice。`);
+  }
+  const queue = JSON.parse(readFileSync(queueManifestPath, 'utf8')) as QueueManifest;
+
+  const io: AssembleIo = {
+    readMerged: (rel) => {
+      const p = join(doneDir, 'merged', rel);
+      return existsSync(p) ? new Uint8Array(readFileSync(p)) : null;
+    },
+    hash: sha256Bytes,
+    write: (rel, bytes) => {
+      const p = join(hdDir, rel);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, bytes);
+    },
+  };
+
+  const before = loadManifest(hdDir);
+  // exactOptionalPropertyTypes：model 缺省时不给这个键
+  const { manifest, report } = assembleHd(before, queue, io, model === undefined ? {} : { model });
+  saveManifest(hdDir, manifest);
+
+  console.log(`落盘 ${report.written.length} 张 → ${hdDir}/`);
+  if (report.skipped.length > 0) console.log(`跳过 ${report.skipped.length} 张（产物哈希未变，一个字节都没重写）。`);
+  if (report.missing.length > 0) console.log(`${report.missing.length} 帧尚未交出产物。`);
+  if (report.unplanned.length > 0) {
+    console.log(`\n⚠️ ${report.unplanned.length} 帧在清单里没有对应任务（队列换过版本？）：`);
+    for (const id of report.unplanned.slice(0, 10)) console.log(`  ${id}`);
+  }
+  if (report.broken.length > 0) {
+    console.log(`\n⚠️ ${report.broken.length} 帧产物不可用（未落盘）：`);
+    for (const b of report.broken.slice(0, 20)) console.log(`  ${b.id}  ${b.detail}`);
+    if (report.broken.length > 20) console.log(`  …还有 ${report.broken.length - 20} 项`);
+  }
+  console.log(`\n清单：${manifestPath(hdDir)}`);
+}
+
+// ============================================================
 //  status
 // ============================================================
 
@@ -359,6 +422,10 @@ function main(argv: string[]): void {
       if (rest.length < 2) throw new Error('用法: merge <upscale-queue> <upscale-done>');
       cmdMerge(rest[0]!, rest[1]!);
       break;
+    case 'assemble':
+      if (rest.length < 3) throw new Error('用法: assemble <upscale-queue> <upscale-done> <hd> [模型名]');
+      cmdAssemble(rest[0]!, rest[1]!, rest[2]!, rest[3]);
+      break;
     case 'status':
       if (rest.length < 1) throw new Error('用法: status <hd>');
       cmdStatus(rest[0]!);
@@ -372,11 +439,12 @@ function main(argv: string[]): void {
         [
           '画质升级管线',
           '',
-          '  plan   <assets-clean> <hd>          生成待办清单',
-          '  slice  <assets-clean> <queue> [N]   按帧切片 + Alpha 分离（T-061）',
-          '  merge  <queue> <upscale-done>       回填校验 + Alpha 合并（T-062）',
-          '  status <hd>                         看进度',
-          '  ingest <assets-clean> <hd> [模型]   回填已完成的产物',
+          '  plan     <assets-clean> <hd>            生成待办清单',
+          '  slice    <assets-clean> <queue> [N]     按帧切片 + Alpha 分离（T-061）',
+          '  merge    <queue> <upscale-done>         回填校验 + Alpha 合并（T-062）',
+          '  assemble <queue> <upscale-done> <hd>    落进 assets/hd + 写清单（T-063）[模型]',
+          '  status   <hd>                           看进度',
+          '  ingest   <assets-clean> <hd> [模型]     回填已完成的产物（旧路径）',
         ].join('\n'),
       );
   }

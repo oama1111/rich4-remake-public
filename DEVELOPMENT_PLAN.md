@@ -879,8 +879,11 @@ upscale-queue/
 ### 已备好、暂不动的两块
 
 - **步骤 2 画质**：管线已在 `packages/assets-pipeline`（`cli-upscale.ts`，`assets/hd-manifest.json`），
-  `pnpm upscale plan/slice/merge/status/ingest` 可用（切片 → 外部超分 → 回填校验合并，`merge` 已做到
-  尺寸恰 4×、Alpha 二值化、去彩边，T-062 ✅）；等 P2 定稿哪些图真正上屏再批量跑，避免返工。
+  交接链 `plan → slice → [外部超分 4×] → merge → assemble` 全通（`pnpm upscale`）。`merge` 校验
+  尺寸恰 4×、Alpha 二值化、去彩边（T-062 ✅）；`assemble` 落进 `assets/hd/` 并按**实际输出尺寸**
+  重算锚点（C-AST-6）、写 manifest 条目、幂等不重写（T-063 ✅，已用合成夹具端到端验过）；
+  hd 路径由 `hdRelativePath` 单点定义，等 T-065 的 `SpriteCache` 接上读侧。
+  仍等 P2 定稿哪些图真正上屏再批量跑，避免返工。
 - **步骤 3 联机**：`packages/server` 已有 `Room`/`Sequencer`/`hub.ts`/`ws-server.ts` + `cli.ts` 可跑的
   WebSocket 服务（T-070..T-073 ✅），客户端 `net-client.ts` 已接进 `main.ts`（T-074 ✅，`?ws=` 进联机）；
   core 的确定性约束（C-DET）一直在 CI 里守着，联机不需要改 core。
