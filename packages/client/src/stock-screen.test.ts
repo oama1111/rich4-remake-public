@@ -51,6 +51,7 @@ import {
   stockRowTextY,
   stockRowsFrom,
   stockStatusColor,
+  stockTrendColor,
 } from './stock-screen.ts';
 
 describe('股市屏几何 @source 表 0x4754c8 / loc_0042ae2c', () => {
@@ -177,6 +178,14 @@ describe('涨跌类的字色与底色框 @source 跳表 ref_004297cf', () => {
     expect(stockStatusColor(STOCK_STATUS.down)).toEqual({ fg: '#00ff00', box: null });
     expect(stockStatusColor(STOCK_STATUS.limitDown)).toEqual({ fg: '#101010', box: '#00d000' });
     expect(stockStatusColor(STOCK_STATUS.flat)).toEqual({ fg: '#f0f0f0', box: null });
+
+    // ★ 涨跌列/交易量列走**第二张表**（跳表 ref_004297e3）—— 跌停在这张表里是**绿字**，
+    //   与成交價那格的「黑字+暗绿框」并不矛盾。需求方 2026-09-16 报的就是这一条。
+    expect(stockTrendColor(STOCK_STATUS.up)).toBe('#ff0000');
+    expect(stockTrendColor(STOCK_STATUS.limitUp)).toBe('#ff0000');
+    expect(stockTrendColor(STOCK_STATUS.down)).toBe('#00ff00');
+    expect(stockTrendColor(STOCK_STATUS.limitDown)).toBe('#00ff00');
+    expect(stockTrendColor(STOCK_STATUS.flat)).toBe('#f0f0f0');
   });
 
   it('★ 两类各自的拒绝语', () => {

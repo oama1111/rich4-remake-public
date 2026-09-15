@@ -482,9 +482,14 @@ export function comma(n: number): string {
 // ============================================================
 
 /**
- * 涨跌类 → 这一行成交價的字色 / 底色框。
+ * 涨跌类 → **成交價那一格**的字色 / 底色框。
  *
- * @source 跳表 `ref_004297cf`：0/1 红系、2/3 绿系、4 白；1 与 3 各带一个框。
+ * @source 跳表 `ref_004297cf`（`jmp dword [eax*4 + 0x4297cf]`，索引 = `fcn_004295ea` 的返回）：
+ *   `loc_004298b9` 0 漲红 / `loc_004298cc` 1 漲停白+暗红框 / `loc_004298f8` 2 跌绿 /
+ *   `loc_00429908` 3 跌停**黑**+暗绿框 / `loc_00429934` 4 平白。
+ *
+ * ⚠️ 这张表**只管成交價那一格**（绘制在 x=0xe1，@source VA 0x0042994c 那一段）。
+ *   涨跌列与交易量列走的是**另一张表**，见 `stockTrendColor()`。
  */
 export function stockStatusColor(status: number): { fg: string; box: string | null } {
   switch (status) {
@@ -498,6 +503,34 @@ export function stockStatusColor(status: number): { fg: string; box: string | nu
       return { fg: '#101010', box: '#00d000' };
     default:
       return { fg: '#f0f0f0', box: null };
+  }
+}
+
+/**
+ * 涨跌类 → **涨跌列与交易量列**的字色 —— 与 `stockStatusColor()` 是**两张不同的表**。
+ *
+ * ★ 2026-09-16 订正：原版在这里**第二次**跳转（`cmp ebx,4 / ja … / jmp [ebx*4 + 0x4297e3]`），
+ *   表 `ref_004297e3` 只分三类：
+ *   ```
+ *   0 漲 / 1 漲停 → loc_004299af  红 0xff0000
+ *   2 跌 / 3 跌停 → loc_004299bf  绿 0x00ff00      ← 跌停是**绿字**，不是黑字
+ *   4 平          → loc_004299cf  白 0xf0f0f0
+ *   ```
+ *   ⇒ 「成交價那格是黑字+暗绿框」与「涨跌列是绿字」**同时成立**，互不矛盾。
+ *   交易量列紧跟在涨跌列之后画、中间没有新建字体（@source VA 0x00429a66 起），所以同色。
+ *
+ * @source VA 0x004299af / 0x004299bf / 0x004299cf（各自 `create_font(0x10, fg, 0x101010, 3, 1)`）
+ */
+export function stockTrendColor(status: number): string {
+  switch (status) {
+    case STOCK_STATUS.up:
+    case STOCK_STATUS.limitUp:
+      return '#ff0000';
+    case STOCK_STATUS.down:
+    case STOCK_STATUS.limitDown:
+      return '#00ff00';
+    default:
+      return '#f0f0f0';
   }
 }
 
@@ -672,6 +705,8 @@ export function drawStockScreen(
     const row = view.rows[i]!;
     const y = stockRowTextY(i);
     const color = stockStatusColor(row.status);
+    // ★ 涨跌 / 交易量是**另一张表**：跌停在这里是绿字（成交價那格才是黑字+暗绿框）
+    const trend = stockTrendColor(row.status);
 
     // 名字的字色也跟「有没有对应企业」走 @source `loc_0042b7a9`
     const nc = row.listed ? STOCK_LISTED_COLOR : STOCK_PLAIN_COLOR;
@@ -683,11 +718,11 @@ export function drawStockScreen(
         ctx.fillRect(STOCK_STATUS_BOX.x, y - 10, STOCK_STATUS_BOX.w, STOCK_STATUS_BOX.h);
       }
       text(ctx, row.price, STOCK_VALUE_X.price, y, 16, color.fg, 'right');
-      text(ctx, row.change, STOCK_VALUE_X.change, y, 16, color.fg, 'right');
+      text(ctx, row.change, STOCK_VALUE_X.change, y, 16, trend, 'right');
       if (row.volume === null) {
         text(ctx, STOCK_SUSPENDED, STOCK_VALUE_X.suspended, y, 16, '#f0f0f0', 'center');
       } else {
-        text(ctx, row.volume, STOCK_VALUE_X.volume, y, 16, color.fg, 'right');
+        text(ctx, row.volume, STOCK_VALUE_X.volume, y, 16, trend, 'right');
       }
       // 持股那两列：有对应企业时是青字，否则白字
       const hc = row.listed ? STOCK_LISTED_COLOR : STOCK_PLAIN_COLOR;
