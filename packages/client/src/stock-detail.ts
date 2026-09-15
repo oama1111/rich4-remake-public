@@ -17,15 +17,46 @@
  * | 股票名（20 号白字，居中）| (320,82) | `loc_00429dae` 的 `push 0x52 / push 0x140` |
  * | 企业图标（图 `索引`，80×112）| (50,107) | 同上 `push 0x6b / push 0x32` |
  *
+ * ## ★ 两支：**有上市公司** / **没有上市公司**
+ *
+ * 贴完底图、画完股票名之后立刻分叉 @source `fcn_00429d65` 的
+ * `mov dx, word [eax + (_stocks_on_map + 4)]` / `test dx, dx` / `je near loc_00429fc5`：
+ * 股票记录 **+4 = 1 基企业序号，0 = 这支股票没有上市公司**（与 `stock-screen.ts`
+ * 的 `listed` 同一个判据）。
+ *
+ * | 画什么 | 有公司（`dx != 0`）| 没有公司（`dx == 0`）|
+ * |---|---|---|
+ * | 企业图标 (50,107) | 表 `0x475530` 查出的图号 | **整格不画** @source `loc_00429f05` |
+ * | (309,123) `本月盈餘` | `currency(企業+0x28)` | **整格不画** |
+ * | (309,162) `平均盈餘` | `currency(企業+0x2c ÷ 總天數)` | **整格不画** |
+ * | (269,203) `經 營 者` | 業主名（`企業+0x18 != 0` 才画）| **整格不画** |
+ * | 右列那 8 个数字 | 一样 | 一样 |
+ *
+ * 分叉点在 `loc_00429dae` 的尾巴：`mov edx,[eax+0x496984] / test dx,dx / je 0x429fc5`
+ * （@source VA **0x00429e9a**–**0x00429ea3**）—— 没有公司直接跳去 `loc_00429fc5`
+ * （跳过图标与左列三格）；有公司则画完图标与左列、若業主为 0 再跳一次
+ * （@source VA **0x00429f99** 的 `cmp byte [esi+0x18],0` / `je 0x429fc5`，只跳掉「經營者」）。
+ * ⇒ **没有公司时卡上只剩右侧那 8 个数字**（左下三格与图标全空）；
+ * 底图、走势线、持股饼图都照旧 —— 原版**没有**第二张「简版卡」底图。
+ *
  * 三列数值，全部 **16 号白字、flag 6（右对齐）**，右边缘 x = **309 / 453 / 589**：
  *
  * | y | 左列（标签在 x=186）| 中列（369）| 右列（505）|
  * |---|---|---|---|
- * | 123 | `本月盈餘` = 企業 +0x28（`companyFunds`）| `成交價` | `交易量`（`%d`，f10）|
- * | 162 | `平均盈餘` = +0x2c ÷ 總天數（`companyProfit / totalDays`）| `漲  跌` | `漲跌幅`（现价与开盘之差 ÷ 开盘 × 100，`%.2f`）|
- * | 203 | `經 營 者` = 業主名字（**居中** x=269）| `週均價`（近 6 日）| `月均價`（近 24 日）|
+ * | 123 | `本月盈餘` = 企業 +0x28（`companyFunds`）★ | `成交價` | `交易量`（`%d`，f10）|
+ * | 162 | `平均盈餘` = +0x2c ÷ 總天數（`companyProfit / totalDays`）★ | `漲  跌` | `漲跌幅`（现价与开盘之差 ÷ 开盘 × 100，`%.2f`）|
+ * | 203 | `經 營 者` = 業主名字（**居中** x=269）★ | `週均價`（近 6 日）| `月均價`（近 24 日）|
  * | 243 | — | — | `歷史高價`（144 日最大）|
  * | 283 | — | — | `歷史低價`（144 日最小）|
+ *
+ * ★ = **只有那一支有上市公司时才画**（见上「两支」）。「漲跌」与「漲跌幅」
+ * 的位数不同：涨跌跟**成交價**一样走 `0x475524` 那张 `%+.*f` 表（同一枚 `dec`），
+ * 漲跌幅恒为 `%.2f`（`ref_00463f64`）。
+ *
+ * ⚠️ 右列那三个统计**无条件画**：高低价各扫满 144 格后**原样 sprintf**
+ * （初值 `高 = 0.0f`、`低 = 10000.0f`，@source VA 0x0042a290 / 0x0042a299），
+ * 一格历史都没有时就照打 `0` 与 `10000`；一个非零项都没有的均价也一样
+ * （原版 `fdivr` 出 NaN，这里按 0 收口，见 `recentAverage` 与 Q-STOCK-6-d）。
  *
  * ★ 那三个均价与高低都是**扫历史环形缓冲**（`[0x497328]`，每支 **144** 个 float）：
  * 均价从「今天往前」数 6 / 24 个**非零**项取平均，高低扫满 144 项。
@@ -43,6 +74,11 @@
  * 从「今天」那一格起画，**遇到 ±0 就停**，最多 144 点
  * ```
  *
+ * 折线画完还有**两个价格标签**（@source `loc_0042a8bf` 起那两段，**12 号**白字）：
+ * 最高价右对齐到 **x=88**、y = 折线最高点的 y **− 8**；最低价同样 x=88、
+ * y = 折线最低点的 y **+ 8**（就是折线左右两端旁边的价签）。它们与高低价格子一样
+ * **无条件画**，两支都有。
+ *
  * ## 持股比例（`loc_0042a324` 起，GDI 的 Pie）
  *
  * 一个圆心 (502,365)、半径 (88,29) 的饼：`ratio = 自己的持股 ÷ 10000`
@@ -54,6 +90,11 @@
  * | 0 < r < 1 | 深红 `0xd00000` 扇（自己那份）+ 深蓝 `0x0000d0` 扇（其余）|
  * | r == 0 | 整个椭圆深红 + 上方那条 `(414,336)-(591,394)` 的深红椭圆 |
  * | r ≥ 1 | 同样两个椭圆，换深蓝 |
+ *
+ * ⚠️ `0 < r < 1` 那一支原版还先铺了**一整块**深红椭圆 `(414,343)-(591,401)`
+ * （@source VA 0x0042a526，被后画的两段扇盖住、只在下缘露几条像素），
+ * 以及一道 `FloodFill(dc,589,374,0)` 的黑边（@source VA 0x0042a638）——
+ * 这两处**本引擎尚未复刻**，理由与取证见 `docs/deviations/Q-STOCK-6.md` 的 a / b。
  *
  * 外框是黑 1px 的椭圆 `(414,343)-(591,401)`，另外两侧各一道短竖线
  * `(414,365)-(414,372)`、`(590,365)-(590,372)`。
@@ -97,6 +138,13 @@ export const DETAIL_VALUE_X = { c1: 0x135, c2: 0x1c5, c3: 0x24d } as const;
 export const DETAIL_VALUE_Y = [0x7b, 0xa2, 0xcb, 0xf3, 0x11b] as const;
 /** 「經營者」那一格是**居中**画的 @source `push 0xcb / push 0x10d` */
 export const DETAIL_BOSS_X = 0x10d;
+
+/**
+ * 走势线旁边那两个价签 @source `loc_0042a8bf` 起的两段 `draw_text`：
+ * `push 0xc` 建的是 **12 号**字（其余数值格是 16 号），`push 0x58` = x=88（右对齐），
+ * y = 折线端点的 y ∓ 8（@source VA 0x0042a952 的 `sub eax,8`、0x0042a9b9 的 `add eax,8`）。
+ */
+export const DETAIL_CHART_TAG = { x: 0x58, size: 0xc, gap: 8 } as const;
 
 /** 走势线 @source `loc_0042a724` 起 */
 export const DETAIL_CHART = {
@@ -240,6 +288,12 @@ export function chartScale(high: number, low: number): number {
   return DETAIL_CHART.half / (mid * DETAIL_CHART.narrowScale);
 }
 
+/** 某个价在走势线上的 y @source `loc_0042a834` 那两段（`fsubr 324` 后截断）*/
+export function chartYAt(high: number, low: number, v: number): number {
+  const mid = (high + low) * 0.5;
+  return Math.trunc(DETAIL_CHART.midY - (v - mid) * chartScale(high, low));
+}
+
 /** 走势线的点（最多 144 个，遇到没写过的就停）@source `loc_0042a834` 那圈 */
 export function chartPoints(
   history: readonly number[],
@@ -247,8 +301,6 @@ export function chartPoints(
   high: number,
   low: number,
 ): { x: number; y: number }[] {
-  const mid = (high + low) * 0.5;
-  const scale = chartScale(high, low);
   const days = DETAIL_CHART.days;
   // 起点：今天那一格写过就从今天起，否则从头
   let i = historyFilled(history[day] ?? 0) ? Math.trunc(day) : 0;
@@ -259,7 +311,7 @@ export function chartPoints(
     if (!historyFilled(v)) break;
     out.push({
       x: Math.trunc(x),
-      y: Math.trunc(DETAIL_CHART.midY - (v - mid) * scale),
+      y: chartYAt(high, low, v),
     });
     i = (i + 1) % days;
     x += DETAIL_CHART.step;
@@ -284,23 +336,44 @@ export function pieEnd(ratio: number): { x: number; y: number } {
 export interface StockDetailView {
   /** 股票名 */
   name: string;
-  /** 企业图标图号 */
-  icon: number;
+  /**
+   * 这支股票有没有上市公司（股票记录 +4 != 0）。
+   * 没有 → 左列三格与图标都不画，就是原版的**简版卡**。
+   */
+  listed: boolean;
+  /**
+   * 企业图标图号；**`null` = 这一格不画**。
+   *
+   * ⚠️ 没有上市公司时原版**整格跳过**（那条路根本没走到 `loc_00429f05` 的贴图）；
+   * 给 0 会被当成「图 0」，而资源 75 的图 0/1 是**两张 640×480 的整屏页**，
+   * 一贴就把整张卡盖掉 —— 那就是需求方看到的「弹窗错误」。
+   */
+  icon: number | null;
   /** 五行 × 三列的数字；`null` = 这一格不画 */
   cells: readonly (readonly (string | null)[])[];
   /** 「經營者」那一格（居中画）*/
   boss: string | null;
   /** 走势线的点 */
   chart: readonly { x: number; y: number }[];
+  /**
+   * 走势线旁边那两个价签（12 号字、右对齐到 x=88、上下各离折线端点 8px）
+   * @source `loc_0042a8bf` 起那两段 —— **两支都画**，没有「没历史就不画」这一说。
+   */
+  chartLabels: {
+    high: string;
+    highY: number;
+    low: string;
+    lowY: number;
+  };
   /** 持股比例 = 自己的持股 ÷ 10000 */
   ratio: number;
 }
 
-/** 一格都没有对应的企业时，那三行留空 */
-const NO_COMMERCIAL: readonly (string | null)[] = [null, null, null];
-
 /**
  * 摊出一张卡。
+ *
+ * ★ 股票记录 +4 为 0（没有上市公司）时走**简版卡**：图标与左列三格都不画，
+ * 右列那 8 个数字照旧（@source `loc_00429dae` 尾部的 `je near loc_00429fc5`）。
  *
  * @param stockIndex 选中那一支（0 基）
  * @param player 看这张卡的人（持股比例按他算）
@@ -321,14 +394,17 @@ export function stockDetailFrom(
   const cls = magnitudeClass(stock.price);
   const history = state.market.history[stockIndex] ?? [];
   const comm = stock.commercialIndex;
+  // ★ 「这支股票有没有上市公司」= 记录 +4 是否为 0，与股市屏的 listed 同一判据
+  const listed = comm !== 0;
   const days = state.totalDays;
 
-  const funds = state.companyFunds[comm] ?? 0;
-  const profit = state.companyProfit[comm] ?? 0;
-  const owner = state.commercialOwners[comm]?.owner ?? 0;
+  // 没有上市公司时**一个企业字段都不读** —— 企业表是 1 基的，下标 0 是垃圾
+  const funds = listed ? state.companyFunds[comm] ?? 0 : 0;
+  const profit = listed ? state.companyProfit[comm] ?? 0 : 0;
+  const owner = listed ? state.commercialOwners[comm]?.owner ?? 0 : 0;
 
-  const month = recentAverage(history, state.market.day, DETAIL_CHART.week);
-  const quarter = recentAverage(history, state.market.day, DETAIL_CHART.month);
+  const week = recentAverage(history, state.market.day, DETAIL_CHART.week);
+  const month = recentAverage(history, state.market.day, DETAIL_CHART.month);
   const { high, low } = historyRange(history);
 
   const chg = stock.price - stock.openPrice;
@@ -336,32 +412,37 @@ export function stockDetailFrom(
   const dec = cls === 0 ? 2 : cls === 1 ? 1 : 0;
 
   const cells: (readonly (string | null)[])[] = [
-    // 第 1 行：本月盈餘 / 成交價 / 交易量
-    [comma(funds), priceText(stock.price), String(stock.f10)],
-    // 第 2 行：平均盈餘 / 漲跌 / 漲跌幅
+    // 第 1 行：本月盈餘（★ 只有上市公司才有）/ 成交價 / 交易量
+    [listed ? comma(funds) : null, priceText(stock.price), String(stock.f10)],
+    // 第 2 行：平均盈餘（★ 只有上市公司才有）/ 漲跌 / 漲跌幅
     [
-      comma(days === 0 ? profit : Math.trunc(profit / days)),
+      listed ? comma(days === 0 ? profit : Math.trunc(profit / days)) : null,
       `${chg < 0 ? '-' : '+'}${Math.abs(chg).toFixed(dec)}`,
       chgPct.toFixed(2),
     ],
     // 第 3 行：經營者（另画）/ 週均價 / 月均價
-    [null, month.toFixed(dec), quarter.toFixed(dec)],
-    // 第 4/5 行：歷史高低
-    NO_COMMERCIAL,
-    NO_COMMERCIAL,
+    [null, week.toFixed(dec), month.toFixed(dec)],
+    // 第 4/5 行：歷史高低 —— ★ 原版**无条件画**（初值 0 与 10000.0f 原样 sprintf）
+    [null, null, high.toFixed(dec)],
+    [null, null, low.toFixed(dec)],
   ];
-  if (high !== 0 || low !== 10000) {
-    cells[3] = [null, null, high.toFixed(dec)];
-    cells[4] = [null, null, low === 10000 ? (0).toFixed(dec) : low.toFixed(dec)];
-  }
 
   const mine = state.holdings[player]?.[stockIndex]?.amount ?? 0;
   return {
     name: names[stockIndex] ?? '',
-    icon: commType === null ? 0 : iconImageOf(state.globalMapId, commType.type, commType.stockIndex),
+    listed,
+    icon: listed && commType !== null
+      ? iconImageOf(state.globalMapId, commType.type, commType.stockIndex)
+      : null,
     cells,
-    boss: owner === 0 ? null : (playerNames[owner - 1] ?? null),
+    boss: listed && owner !== 0 ? (playerNames[owner - 1] ?? null) : null,
     chart: chartPoints(history, state.market.day, high, low),
+    chartLabels: {
+      high: high.toFixed(dec),
+      highY: chartYAt(high, low, high),
+      low: low.toFixed(dec),
+      lowY: chartYAt(high, low, low),
+    },
     ratio: mine / DETAIL_PIE.totalShares,
   };
 }
@@ -407,7 +488,10 @@ export function drawStockDetail(
 
   text(ctx, view.name, DETAIL_TITLE.x, DETAIL_TITLE.y, DETAIL_TITLE.size, '#f0f0f0', 'center');
 
-  const icon = sprite('Panel.mkf', DETAIL_RESOURCE, view.icon, true);
+  // ★ 没有上市公司时原版**整格不画**（图 0 是 640×480 的整屏页，画了就盖住整张卡）
+  const icon = view.icon === null
+    ? null
+    : sprite('Panel.mkf', DETAIL_RESOURCE, view.icon, true);
   if (icon !== null) ctx.drawImage(icon.bitmap, DETAIL_ICON.x, DETAIL_ICON.y);
 
   const cols = [DETAIL_VALUE_X.c1, DETAIL_VALUE_X.c2, DETAIL_VALUE_X.c3];
@@ -439,6 +523,18 @@ export function drawStockDetail(
     ctx.stroke();
     ctx.restore();
   }
+
+  // ── 折线两端旁的两个价签（12 号字、右对齐到 88）@source `loc_0042a8bf` 起 ──
+  text(
+    ctx, view.chartLabels.high,
+    DETAIL_CHART_TAG.x, view.chartLabels.highY - DETAIL_CHART_TAG.gap,
+    DETAIL_CHART_TAG.size, '#f0f0f0', 'right',
+  );
+  text(
+    ctx, view.chartLabels.low,
+    DETAIL_CHART_TAG.x, view.chartLabels.lowY + DETAIL_CHART_TAG.gap,
+    DETAIL_CHART_TAG.size, '#f0f0f0', 'right',
+  );
 
   drawPie(ctx, view.ratio);
 }
