@@ -16,7 +16,7 @@
  *   把性格留成 `AiPersonality` 接口，等那几个字段解出来再接。
  */
 
-import type { GameState, Player } from '../state/types.ts';
+import type { GameState } from '../state/types.ts';
 import type { LandInfo, Rich4Map } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, facilityIndexOf, housingIndexOf } from '../rules/land.ts';
@@ -37,6 +37,8 @@ import {
 import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { pickFacingAt } from '../rules/teleport.ts';
 import { canUpgradeFacility } from '../rules/facility.ts';
+import { aiShouldPurchase } from '../rules/purchase.ts';
+import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 import { CARDS, TOOLS } from '@rich4/data';
 import { aiCanUseCards, aiCanUseTools, autoLoanAmount, personalityAllows } from './personality.ts';
 import { aiCardChoice, aiRoll, cardsToConsider, type AiCardChoice, type CardAiView } from './card-policy.ts';
@@ -91,37 +93,6 @@ export function isAiTurn(state: GameState): boolean {
 }
 
 /**
- * 估一块地值不值得买。
- *
- * 用**同区租金总额**作为价值度量，而不是单看地价——大富翁的收益来自
- * 「凑齐同区」，这一点在 `rules/toll.ts` 里已经证实（住宅按同名地块
- * 逐块累加租金）。故已持有同区地块时，再买一块的边际价值明显更高。
- */
-export function landAttractiveness(
-  land: LandInfo,
-  lands: readonly LandInfo[],
-  playerIndex: number,
-): number {
-  const ownerId = playerIndex + 1;
-  const sameDistrict = lands.filter((l) => l.name === land.name);
-  const mine = sameDistrict.filter((l) => l.owner === ownerId).length;
-  // 同区已有几块 → 边际价值加成；整区共几块 → 区块本身的分量
-  const synergy = 1 + mine * 0.75;
-  // 缺租金表时退而用地价估个数量级。
-  // C-DET-3 定向豁免：本函数产出的是**启发式评分**，不是金额——
-  // 它只用于 AI 内部比较大小，从不写入任何玩家的钱。
-  // eslint-disable-next-line no-restricted-syntax
-  const baseRent = land.rentByLevel[1] ?? land.landPrice / 10;
-  return baseRent * synergy * sameDistrict.length;
-}
-
-/** 买完之后还剩多少现金算安全 */
-function reserveFloor(p: Player, personality: AiPersonality): number {
-  // 以「现金 + 存款」的比例作为垫底线，避免刚买完地就付不起过路费
-  return Math.trunc((p.cash + p.moneyInBank) * personality.cashReserve);
-}
-
-/**
  * 决定 AI 在当前局面下的下一个 action。
  *
  * 只在**需要决策**的阶段给出实质选择；其余阶段返回推进用的 action。
@@ -129,7 +100,9 @@ function reserveFloor(p: Player, personality: AiPersonality): number {
  */
 export function decideAction(ctx: AiContext): Action | null {
   const { state, map } = ctx;
-  const personality = ctx.personality ?? DEFAULT_PERSONALITY;
+  // ⚠️ 落点那两支（買地/買設施/加蓋）**不读性格** —— 原版那层是
+  //   `fcn_0041d7d4` 的一条线，见 `rules/purchase.ts`。性格在
+  //   `decideCard`/`decideTool`（`personalityAllows`）与借贷比例里起作用。
   // ★ 出局者的回合由引擎推进，不经过策略——见 state/reduce.ts 的 autoAction。
   //   放在 isAiTurn 之前：出局者恰恰**不满足** isAiControlled。
   const auto = autoAction(state);
@@ -160,10 +133,21 @@ export function decideAction(ctx: AiContext): Action | null {
       // 落点可能留下一个待决交互（例如落在上市企业上），先把它答掉
       return decidePending(state) ?? { type: 'endTurn' };
 
-    case 'awaitingDecision':
+    case 'awaitingDecision': {
       // ★ 設施那三种（買/首建/加蓋）是 pending 而不是地块决策，先让 decidePending 答；
-      //   答不上（真正的買地/盖房）再走 decideAtLanding
-      return decidePending(state) ?? decideAtLanding(state, map, personality);
+      //   只有真正的買地/盖房才轮到 decideAtLanding。
+      const answered = decidePending(state);
+      if (answered !== null) return answered;
+      const kind = state.pending?.kind;
+      // ★ 其余 pending（拍賣卡挂出的拍賣、研究所面板、未实现的场所）**不能**
+      //   掉进 decideAtLanding —— 那等于拿脚下那块地的决定去顶掉这个交互。
+      //   引擎现在也拒这种张冠李戴（`buyLand`必须 `pending.kind === 'buyLand'`），
+      //   拒了就变成 AI 反复提同一个被拒的 action → 卡死。故这里退出这一格。
+      if (kind === undefined || kind === 'buyLand' || kind === 'upgradeLand') {
+        return decideAtLanding(state, map);
+      }
+      return { type: 'declineDecision' };
+    }
 
     case 'gameOver':
       return null;
@@ -416,8 +400,13 @@ export function decidePending(state: GameState): Action | null {
     //   而拒绝（`give_tool` 的 `toolLimit`）。AI 是纯函数，提一个 reducer
     //   必拒的 action 就会被原样重提，卡死在 turnEnd/shop。
     //   与卡片、买地两次事故同一类，处理办法也一样：**先预演一遍**。
+    // ★ **货架也在这条预演里**：reducer 要求「还在 `pending.tools` 上」才卖
+    //   （买一件少一件，@source rich4_shop.asm 0x42e466 尾
+    //   `mov byte [ebx + 0x48c2f8], 0`）。漏了它，AI 买走车之后再提一次
+    //   同一件，reducer 必拒 → 同样卡死在 turnEnd/shop。
+    const onShelf = (id: number): boolean => p.tools.some((t) => t.id === id);
     const canBuy = (id: number): boolean =>
-      buyTool(me, state.tools, state.toolStock, id).ok;
+      onShelf(id) && buyTool(me, state.tools, state.toolStock, id).ok;
     // 已有更好的车就别买了
     if (me.trafficMethod !== TRAFFIC_CAR && canBuy(6)) {
       return { type: 'shop', op: 'buyTool', id: 6 };
@@ -469,20 +458,23 @@ export function decidePending(state: GameState): Action | null {
     if (me.cash < p.price * 4) return null;
     return { type: 'lottery', number: n };
   }
-  // ★ 設施：買/加蓋 按与買地同一套「留够安全垫」的口径；
-  //   首建（选建筑种类）**不在这里**——原版 AI 是 `rand() % 4 + 1`，
+  // ★ 買設施与買地**同一条判定**（原版两家都 `push 价; call fcn_0041d7d4`）：
+  //   0x0041a8d1 是設施那支，0x0041a0c0 是地块那支。
+  //   加蓋（`upgradeFacility`）原版**没有**这条判定 —— 落点那条分支里
+  //   够钱扣款就盖（见 `landOnFacility`），故这里也不额外设门槛。
+  //   ★ 首建（选建筑种类）**不在这里**——原版 AI 是 `rand() % 4 + 1`，
   //   随机数不能进 AI，故 reducer 对电脑玩家直接抽（见 landOnFacility）。
-  if (p.kind === 'buyFacility' || p.kind === 'upgradeFacility') {
+  if (p.kind === 'buyFacility') {
     const me = state.players[state.currentPlayer];
     if (me === undefined) return null;
-    const cost = p.kind === 'buyFacility' ? p.price : p.cost;
-    // decidePending 拿不到 ctx.personality —— 与其余 pending 一样按默认性格算安全垫
-    const personality = DEFAULT_PERSONALITY;
-    const floor = reserveFloor(me, personality);
-    const after = me.cash - cost;
-    const affordable = after >= floor * (1 - personality.aggression);
-    if (!affordable) return { type: 'declineDecision' };
-    return p.kind === 'buyFacility' ? { type: 'buyFacility' } : { type: 'upgradeFacility' };
+    return aiShouldPurchase(me, p.price, DEFAULT_INITIAL_FUND, state.priceIndex)
+      ? { type: 'buyFacility' }
+      : { type: 'declineDecision' };
+  }
+  if (p.kind === 'upgradeFacility') {
+    const me = state.players[state.currentPlayer];
+    if (me === undefined) return null;
+    return { type: 'upgradeFacility' };
   }
   if (p.kind === 'chooseBuildTarget') {
     // 电脑在 reducer 里已按 0x40b455 挑过；走到这里的是被托管的真人 —— 取第一个可选
@@ -512,13 +504,16 @@ export function decidePending(state: GameState): Action | null {
  * 落点决策：买地 / 盖房 / 放弃。
  *
  * ⚠️ 这里**不重复实现规则**——能不能买、要花多少钱一律问 `canPurchase`
- * 与 `canUpgrade`。AI 只回答「值不值」，不回答「行不行」。
+ * 与 `canUpgrade`；「买不买」这一问，原版有**专门的一条判定**（见下）。
+ *
+ * ★ 原版落点里电脑那两支（`0x0041a0c0` 地块 / `0x0041a8d1` 設施）问的是
+ *   `fcn_0041d7d4(价)`，加蓋那两支（`loc_004198b9` 自有地 / `loc_0041a2b3`
+ *   设施）**根本不问**——`价 > 现金` 才放弃，够钱就扣钱盖。
+ *   故这里也照办：買地/買設施 过 `aiShouldPurchase`，加蓋只看 `canUpgrade`。
+ *   ⚠️ 原版这一层**没有性格、没有"值不值得"**（`fcn_0041d7d4` 只收一个价），
+ *   早先那套 `landAttractiveness` + `reserveFloor` 是自造的，已去掉。
  */
-export function decideAtLanding(
-  state: GameState,
-  map: Rich4Map,
-  personality: AiPersonality,
-): Action {
+export function decideAtLanding(state: GameState, map: Rich4Map): Action {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return { type: 'declineDecision' };
   const node = map.nodes[me.nodeId - 1];
@@ -536,8 +531,6 @@ export function decideAtLanding(
     level: state.landLevel[idx] ?? 0,
   };
 
-  const floor = reserveFloor(me, personality);
-
   // ★ 衰神/大衰神/死神附身时**一切消费都被拦**（`call 0x40fa61`），
   //   而 `canPurchase` 查的是另一处（土地公只挡买无主地）。
   //   AI 是纯函数：提一个 reducer 必拒的 action 会被原样重提，
@@ -546,22 +539,12 @@ export function decideAtLanding(
   if (purchaseBlockedBy(me) !== null) return { type: 'declineDecision' };
 
   const buy = canPurchase(land, me, state.priceIndex);
-  if (buy.ok) {
-    const worth = landAttractiveness(land, map.lands, me.index);
-    // 激进度越高，越容易接受「买完现金见底」
-    const afterBuy = me.cash - buy.price;
-    const affordable = afterBuy >= floor * (1 - personality.aggression);
-    // 价值门槛：同区协同越强越值得买
-    const worthwhile = worth >= buy.price * (1 - personality.aggression * 0.5);
-    // 上面两个比较都是**评分比较**，不产生任何金额，故不受 C-DET-3 约束
-    if (affordable && worthwhile) return { type: 'buyLand' };
+  if (buy.ok && aiShouldPurchase(me, buy.price, DEFAULT_INITIAL_FUND, state.priceIndex)) {
+    return { type: 'buyLand' };
   }
 
-  const up = canUpgrade(land, me, state.priceIndex);
-  if (up.ok) {
-    const afterUp = me.cash - up.cost;
-    if (afterUp >= floor) return { type: 'upgradeLand' };
-  }
+  // @source loc_004198b9 自有地分支：够钱就盖，不留保留额
+  if (canUpgrade(land, me, state.priceIndex).ok) return { type: 'upgradeLand' };
 
   return { type: 'declineDecision' };
 }

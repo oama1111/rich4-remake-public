@@ -8,6 +8,7 @@ import { makePlayer } from '../testing/factories.ts';
 import {
   OBJECT_NAMES,
   PURCHASE_BLOCKING_GODS,
+  aiShouldPurchase,
   buildHousePrice,
   purchase,
   purchaseBlockedBy,
@@ -75,5 +76,44 @@ describe('盖房价', () => {
   it('房价 × 物价指数', () => {
     expect(buildHousePrice(300, 1)).toBe(300);
     expect(buildHousePrice(300, 7)).toBe(2100);
+  });
+});
+
+/**
+ * ★ 电脑买不买 —— `fcn_0041d7d4`（@source VA 0x0041d7d4）
+ *
+ * `保留额 = min(trunc(开局资金 × 0.05), 7000) × 物价指数`，
+ * `现金 + 存款 − 价 > 保留额` 就买。**没有"值不值得"这一层。**
+ */
+describe('★ 电脑的买地判定（一条线，不是评分）', () => {
+  const DEFAULT = 300_000; // 默认开局资金 → 15000 → 封顶 7000
+
+  it('保留额先截、再封顶 7000，最后才乘物价指数', () => {
+    const rich = makePlayer({ cash: 100_000, moneyInBank: 0 });
+    // 100000 − 价 > 7000 ⇒ 价 < 93000
+    expect(aiShouldPurchase(rich, 92_999, DEFAULT, 1)).toBe(true);
+    expect(aiShouldPurchase(rich, 93_000, DEFAULT, 1)).toBe(false);
+    // ★ 封顶发生在乘物价指数**之前**：物价 3 时线是 21000，不是 45000
+    expect(aiShouldPurchase(rich, 78_999, DEFAULT, 3)).toBe(true);
+    expect(aiShouldPurchase(rich, 79_000, DEFAULT, 3)).toBe(false);
+  });
+
+  it('★ 存款算作垫底：现金刚够付价时靠存款过线', () => {
+    const p = makePlayer({ cash: 5000, moneyInBank: 7001 });
+    expect(aiShouldPurchase(p, 5000, DEFAULT, 1)).toBe(true); // 5000 + 7001 − 5000 = 7001 > 7000
+    const q = makePlayer({ cash: 5000, moneyInBank: 7000 });
+    expect(aiShouldPurchase(q, 5000, DEFAULT, 1)).toBe(false); // 恰好等于 → 不买（jle）
+  });
+
+  it('开局资金低时 5% 才是那根线（没到 7000 就不封顶）', () => {
+    const p = makePlayer({ cash: 10_000, moneyInBank: 0 });
+    // 100000 × 5% = 5000 < 7000 ⇒ 10000 − 价 > 5000 ⇒ 价 < 5000
+    expect(aiShouldPurchase(p, 4999, 100_000, 1)).toBe(true);
+    expect(aiShouldPurchase(p, 5000, 100_000, 1)).toBe(false);
+  });
+
+  it('价为 0 时也照线判（不因"不要钱"就必买）', () => {
+    expect(aiShouldPurchase(makePlayer({ cash: 7000, moneyInBank: 0 }), 0, DEFAULT, 1)).toBe(false);
+    expect(aiShouldPurchase(makePlayer({ cash: 7001, moneyInBank: 0 }), 0, DEFAULT, 1)).toBe(true);
   });
 });

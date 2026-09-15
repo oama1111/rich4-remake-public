@@ -2508,3 +2508,94 @@ if (player.f44 == 0) {
    ★ 顺带解出道具表 **f7 = 凶狠度 0..2**（飛彈/時光機/工程車/核彈 为 2）：
    乖寶寶会把凶狠度 2 的道具挂出去卖。记入 Q4。
 4. **槽的 +1 字节**仍未解（挂牌时写 0，全程没见读）。
+
+### ~~買地/加蓋的門檻~~：只能答**落点**留下的那个交互（**已修 2026-09-15**）
+
+**原来的错**：`state/reduce.ts` 的 `case 'buyLand'` / `case 'upgradeLand'` 只查
+`phase === 'awaitingDecision'`。而 `awaitingDecision` 是**所有**待决交互共用的阶段
+（買設施 / 首建选种类 / 加蓋 / 研究所面板 / 拍賣卡挂出的拍賣…），
+于是任何一个别的交互在等答复时，一个 `buyLand`/`upgradeLand` 就能
+把玩家**脚下那块地**买了、把房盖了，顺手把那个交互顶掉。
+（实测：`pending = auction` 时发 `buyLand`，地真的被买走、拍賣连同消失。）
+
+**为什么是错的**：买地只在落点问出来 —— `_rich4_handle_player_land_on_node`
+的地块分支（@source 0x0041a013 无主 / 0x004198b9 自有地），**且只问当前玩家
+脚下那一格**（`word[node+0x20]` → `land_info_ptr + (type−0x7d0)×0x34`，
+归属再与 `current_player + 1` 比）。卡片 / 道具 / 命運 / 新聞 改动建筑
+各有各的路（`cards/registry.ts`、`rules/tool-effects.ts`、`events/`），
+不该从这条缝里挤进来。
+
+**改法**：两个 case 加 `pending.kind` 把关，与 `buyFacility` / `buildFacility` /
+`upgradeFacility` 那三个同一条规矩；`ai/policy.ts` 的 `decideAction` 也**只**在
+`pending.kind` 是 `buyLand`/`upgradeLand` 时才走 `decideAtLanding`
+（否则 AI 会提一个必被拒的 action → 活锁）。回归测试在
+`state/answerable.test.ts` 的「買地/盖房必须就是落点那个交互」。
+
+**同时修的一处显示层**：`client/main.ts` 的 `currentDialog()` 原先只看
+`localSeatActive()`（单机恒为真），于是**电脑回合**的待决交互也弹给人答 ——
+人会替电脑买下电脑脚下那块地。现在 `isAiTurn(state)`（含被托管的人类座位）
+一律不弹，由 `scheduleAi` → `decideAction` 自己答。
+
+### Q-AUC-1：拍賣卡挂出的拍賣，电脑那一手没有出价逻辑（**缺口**）
+
+**现象**：电脑打出拍賣卡（`cards/registry.ts` case 8）→ `pending: auction`，
+而 `ai/policy.ts` 的 `decidePending` 没有 `auction` 分支，AI 于是退出这一格
+（`declineDecision`）—— **拍賣等于没发生**（卡照样扣掉）。
+这不是新引入的（原先也是同一条 exit，只是绕了 `decideAtLanding` 一圈），
+登记待办：原版会开拍賣窗口，电脑各自出价。
+
+**规则在哪**：AI 的出价函数已定位 —— `fcn_00439f0d(实体编码, 玩家)`
+（@source VA 0x00439f0d，`rich4_ui_auction.asm`；调用点 0x0043c5e5，
+在拍賣窗口的刷新循环里：`test byte [player+0x15], 6` 判是不是电脑、
+`word [0x48c436 + 槽] == 0` 判这一家还没出价）。它返回一个**出价上限**，
+写进 `[0x48c438 + 槽]`。常量已从 `.data` 解出：
+
+| 地址 | 类型/值 | 用途 |
+|---|---|---|
+| 0x465014 | f32 32767.0 | `rand()` 归一化 |
+| 0x465018 | f64 0.3 ／ 0x465020 f64 0.5 | `rand/32767×0.3+0.5` ∈ [0.5, 0.8] |
+| 0x465028 | f32 4.0 ／ 0x46502c f32 6.0 | 空地系数 `6 − 无主地数/总地数×4` |
+| 0x465030 | f32 2⁻¹⁶ ／ 0x465034 f32 3.0 | 上限系数 `rand×2⁻¹⁶+3` ∈ [3, 4] |
+
+地块那支（0x00439f0f..0x0043a04f）逐句读下来是
+`出价 = min( ((等级>>1) + 1 + 同區持有数) × 底价 × 空地系数 × r1,
+trunc((rand×2⁻¹⁶ + 3) × 地價 × 物價指數) )`
+（底价 = `[0x48c488]`，注意原版在这句里**又**乘了一次物價指數，照抄别"改正"）。
+設施那支（0x0043a054 起）形状相同、另一套系数，**未逐句读完**。
+**还没看**：出价怎么进入竞价循环（谁先出、加价步长、真人那一屏 0x465xxx 的按钮）。
+
+### ~~Q-AI-3~~：AI 的買地/加蓋判定照 `fcn_0041d7d4` 改写（**已修 2026-09-15**）
+
+**原版**（落点里电脑那一支；真人是弹 `0x440ba8` 对话框）：
+
+- **買地 / 買設施** = `fcn_0041d7d4(价)`（@source VA 0x0041d7d4，两个调用点
+  `0x0041a0c0` 地块 / `0x0041a8d1` 設施）：
+  ```
+  保留额 = min(trunc(開局資金 × 0.05), 7000) × 物價指數
+  买 ⇔ 现金 + 存款 − 价 > 保留额
+  ```
+  系数 0.05 = `.data` 的 f64 `0x463cc8`；上限 7000 来自 `cmp [esp], 0x1b58`（0x0041d7f7）。
+  ★ **没有任何"值不值得"的评分**，就是一条"买完还剩几个钱"的线。
+- **加蓋**（自有地 `loc_004198b9` / 設施 `loc_0041a2b3`）：只看 `价 ≤ 现金`，
+  够就无条件盖一级，**不问任何函数、不留保留额**（钱不够走 0x00419a52 的提示）。
+
+**改前**：`ai/policy.ts` 的 `decideAtLanding` 用的是自造的 `landAttractiveness`
+（同区租金协同评分）+ `reserveFloor(personality)`；`decidePending` 的
+`buyFacility`/`upgradeFacility` 也各有一套保守门槛。四支都与原版不同。
+
+**改后**（2026-09-15）：判定搬进 `rules/purchase.ts` 的 `aiShouldPurchase`
+（带 `AI_PURCHASE_RESERVE_RATIO/CAP` 两个常量与逐句 @source），
+`decideAtLanding`、`decidePending` 的 `buyFacility` 都走它；加蓋两支改为
+`canUpgrade`/`canUpgradeFacility` 过了就做。`landAttractiveness` 与
+`reserveFloor` 随之删除（连带 policy.test.ts 里那两条基于它们的断言）。
+回归测试：`rules/purchase.test.ts` 的「电脑的买地判定」四条边界 +
+`ai/policy.test.ts` 的「买地判定：一条『买完还剩多少』的线」五条。
+
+**⚠️ 仍存的缺口**：`fcn_0041d7d4` 读的 `[0x49908c]` 是**本局的开局资金档位**
+（`rules/setup.ts` 的 `GAME_INITIAL_FUNDS`，可选 30 万..1 万），而本引擎
+**没有把它存进 `GameState`** —— `updatePriceIndex` 也是硬编码
+`DEFAULT_INITIAL_FUND`。故现在一律按 30 万算（→ 15000 → 封顶 7000）。
+"开局资金"这个旋钮（它同时决定通胀速度）要接线时，两处一起改成读状态。
+
+另注意 **`_rich4_calculate_max_purchase_count`（VA 0x0041d89e，系数 f64 0.3 @ 0x463cd0）
+是另一个函数**（"还能买几处"），别与上面那条混。

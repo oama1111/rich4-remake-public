@@ -122,3 +122,54 @@ export function purchase(player: Player, price: number): PurchaseResult {
 export function buildHousePrice(housePrice: number, priceIndex: number): number {
   return housePrice * priceIndex;
 }
+
+// ============================================================
+//  电脑买不买
+// ============================================================
+
+/** 保留额的比例因子 @source `.data` 的 f64 `0x463cc8 = 0.05` */
+export const AI_PURCHASE_RESERVE_RATIO = 0.05;
+/** 保留额的上限 @source `cmp dword [esp], 0x1b58 / jle`（VA 0x0041d7f7）= 7000 */
+export const AI_PURCHASE_RESERVE_CAP = 7000;
+
+/**
+ * 电脑要不要买下这处实体（地块或设施）。
+ *
+ * @source VA 0x0041d7d4 `fcn_0041d7d4(价)` —— 两个调用点，共用同一条判定：
+ *   住宅地 0x0041a013 那支（`test who_plays, 6` 命中就 `push ebp; call`，
+ *   0x0041a0c0 之前）与设施 0x0041a86b 那支（0x0041a8d1）。
+ *   价都是**已含物价指数**的成交价：地块 = `(地價 + 房价×等级) × 物價`、
+ *   设施 = `地價 × 物價`。
+ *
+ * ```asm
+ * fild [0x49908c] / fmul qword 0x463cc8 (=0.05) / __round_toward_zero   ; 开局资金 × 5%
+ * cmp [esp], 0x1b58 (7000) / jle ; 否则 mov [esp], 0x1b58               ; ★ 上限 7000
+ * imul eax, [_rich4_price_index]                                        ; × 物价指数
+ * edx = [player + 0x1c]          ; 现金
+ * edx += [player + 0x20]         ; ★ 再加上**存款**
+ * edx -= 价
+ * cmp edx, 保留额 / jle → 0 ; 否则 → 1
+ * ```
+ *
+ * ★ 要点，别"改良"成评分：
+ *   1. **没有"值不值得"这一层** —— 就是一条"买完还剩多少钱"的线。
+ *      同区协同之类的估价是后来人加的，原版不认。
+ *   2. 存款只是**垫底**，不是能动用的钱：调用点先查过 `价 ≤ 现金`
+ *      （`cmp ebp, [player+0x1c] / jg 放弃`），而真正扣款也只扣现金
+ *      （见本文件的 `purchase`）。判定里的 `+存款` 是原版的写法，照抄。
+ *   3. 那一步乘 0.05 原版走的是 **f64**（`fmul qword` + 向零取整），
+ *      故这里也用浮点乘 —— 与 `Math.trunc` 组合出来的是同一个整数。
+ *
+ * @param initialFund 开局资金档位 `[0x49908c]`，见 `rules/setup.ts`
+ * @param priceIndex 物价指数 `[0x4990e8]`
+ */
+export function aiShouldPurchase(
+  player: Player,
+  price: number,
+  initialFund: number,
+  priceIndex: number,
+): boolean {
+  // @source cmp [esp], 0x1b58 / jle —— 先截再封顶，最后才乘物价指数
+  const reserve = Math.min(Math.trunc(initialFund * AI_PURCHASE_RESERVE_RATIO), AI_PURCHASE_RESERVE_CAP);
+  return player.cash + player.moneyInBank - price > reserve * priceIndex;
+}

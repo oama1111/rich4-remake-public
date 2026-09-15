@@ -831,7 +831,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     }
 
     case 'buyLand': {
-      if (state.phase !== 'awaitingDecision') return state;
+      // ★ 必须是**落点**留下的那一个交互：`buyLand` 只在
+      //   `_rich4_handle_player_land_on_node` 的地块分支里问（0x0041a013）。
+      //   只查 phase 是不够的 —— `awaitingDecision` 是**所有**待决交互共用的阶段
+      //   （買設施/加蓋/研究所/拍賣卡挂出的拍賣…）。漏了 `pending.kind`，
+      //   就等于允许「拿买地去顶掉别人那个待决交互」：卡片/道具/命運改建筑
+      //   各有各的路，不该从这条缝里挤进来。
+      if (state.phase !== 'awaitingDecision' || state.pending?.kind !== 'buyLand') return state;
       const player = state.players[state.currentPlayer];
       const landIndex = landIndexAtPlayer(state, topo);
       if (player === undefined || landIndex === null) return state;
@@ -952,7 +958,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     }
 
     case 'upgradeLand': {
-      if (state.phase !== 'awaitingDecision') return state;
+      // 同 `buyLand`：加蓋只由落点（0x004198b9 自有地分支）问出来，
+      // 必须**就是这个交互**，不能是别的 pending 顺手顶掉。
+      if (state.phase !== 'awaitingDecision' || state.pending?.kind !== 'upgradeLand') return state;
       const player = state.players[state.currentPlayer];
       const landIndex = landIndexAtPlayer(state, topo);
       if (player === undefined || landIndex === null) return state;

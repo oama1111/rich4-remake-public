@@ -5,15 +5,20 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-import { parseMap } from '../loaders/map.ts';
+import { parseMap, type Rich4Map } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { reduce } from '../state/reduce.ts';
-import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_HUMAN } from '../state/types.ts';
+import {
+  WHO_PLAYS_AUTOPILOT,
+  WHO_PLAYS_COMPUTER,
+  WHO_PLAYS_HUMAN,
+  type Player,
+} from '../state/types.ts';
 import {
   DEFAULT_PERSONALITY,
   decideAction,
+  decideAtLanding,
   isAiTurn,
-  landAttractiveness,
   toCardTarget,
 } from './policy.ts';
 import type { AiCardChoice } from './card-policy.ts';
@@ -57,31 +62,56 @@ describe('轮到谁', () => {
   });
 });
 
-describe('★ 地块估值以「同区协同」为核心', () => {
-  const district = (mineCount: number) => {
-    const lands = [
-      makeLand({ id: 1, name: '台北市', rentByLevel: [0, 1000, 0, 0, 0, 0], landPrice: 2000 }),
-      makeLand({ id: 2, name: '台北市', rentByLevel: [0, 1000, 0, 0, 0, 0], landPrice: 2000 }),
-      makeLand({ id: 3, name: '台北市', rentByLevel: [0, 1000, 0, 0, 0, 0], landPrice: 2000 }),
-    ];
-    for (let i = 0; i < mineCount; i++) lands[i]!.owner = 1;
-    return lands;
+/**
+ * ★ 落点的买地判定照原版 `fcn_0041d7d4`，**不是**评分。
+ *
+ * @source VA 0x0041d7d4：
+ *   `保留额 = min(trunc(开局资金 × 0.05), 7000) × 物价指数`，
+ *   `现金 + 存款 − 价 > 保留额` 才买。默认开局资金 300000 → 15000 → **封顶 7000**。
+ * ⚠️ 早先这里用 `landAttractiveness`（同区协同评分）+ 性格保留额，两样都是自造的。
+ */
+describe('★ 买地判定：一条「买完还剩多少」的线', () => {
+  const LAND = 1;
+  const topo: Rich4Map = {
+    nodes: [makeNode({ id: 1, adjacent: [1], type: 0x7d0 + LAND, ref: { kind: 'land', index: LAND } })],
+    lands: [makeLand({ id: LAND, name: '測試地', landPrice: 1000, housePrice: 200 })],
+    facilities: [],
+    commercials: [],
+    landscapes: [],
+    dataSize: 0,
   };
+  // 价 = 地價 × 物價 = 1000
+  const at = (over: Partial<Player> = {}) =>
+    makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 1, cash: 0, moneyInBank: 0, ...over })],
+      phase: 'awaitingDecision',
+    });
 
-  it('同区已持有越多，下一块越值钱', () => {
-    const a = landAttractiveness(district(0)[2]!, district(0), 0);
-    const b = landAttractiveness(district(2)[2]!, district(2), 0);
-    expect(b).toBeGreaterThan(a);
+  it('恰好等于保留额 → 不买（原版是 `jle`，边界归不买）', () => {
+    expect(decideAtLanding(at({ cash: 8000 }), topo)).toEqual({ type: 'declineDecision' });
   });
 
-  it('区块越大整体分量越高', () => {
-    const small = [makeLand({ id: 1, name: 'A', rentByLevel: [0, 1000, 0, 0, 0, 0] })];
-    const big = [1, 2, 3, 4].map((id) =>
-      makeLand({ id, name: 'B', rentByLevel: [0, 1000, 0, 0, 0, 0] }),
-    );
-    expect(landAttractiveness(big[0]!, big, 0)).toBeGreaterThan(
-      landAttractiveness(small[0]!, small, 0),
-    );
+  it('多一块钱 → 买', () => {
+    expect(decideAtLanding(at({ cash: 8001 }), topo)).toEqual({ type: 'buyLand' });
+  });
+
+  it('★ 存款算作垫底：现金刚够付价，靠存款过线', () => {
+    expect(decideAtLanding(at({ cash: 1000, moneyInBank: 7001 }), topo)).toEqual({ type: 'buyLand' });
+  });
+
+  it('现金不够付价 → 放弃（这一条是 canPurchase 挡的，先于上面那条判定）', () => {
+    expect(decideAtLanding(at({ cash: 999, moneyInBank: 999_999 }), topo)).toEqual({
+      type: 'declineDecision',
+    });
+  });
+
+  it('★ 原版那一层没有性格：换性格不改买地结论', () => {
+    // 同一个局面，两种性格（激进度/保留额）都得到同一答案 —— 判定只读钱
+    const s = at({ cash: 8001, whoPlays: WHO_PLAYS_COMPUTER });
+    const timid = decideAction({ state: s, map: topo, personality: { aggression: 0, cashReserve: 0.9 } });
+    const bold = decideAction({ state: s, map: topo, personality: { aggression: 1, cashReserve: 0 } });
+    expect(timid).toEqual({ type: 'buyLand' });
+    expect(bold).toEqual({ type: 'buyLand' });
   });
 });
 
@@ -151,22 +181,9 @@ describe('性格', () => {
     expect(DEFAULT_PERSONALITY.cashReserve).toBeLessThanOrEqual(1);
   });
 
-  run('★ 激进的 AI 比保守的买得多', () => {
-    const map = loadMap();
-    const topo = { nodes: map.nodes, lands: map.lands };
-    const play = (aggression: number) => {
-      let s = newGame({ map, players: allComputer(), seed: 11 });
-      const personality = { aggression, cashReserve: 0.3 };
-      for (let i = 0; i < 3000; i++) {
-        const a = decideAction({ state: s, map, personality });
-        if (a === null) break;
-        s = reduce(s, a, topo);
-        if (s.turnCount >= 60) break;
-      }
-      return s.landOwner.filter((v) => v !== 0).length;
-    };
-    expect(play(0.95)).toBeGreaterThanOrEqual(play(0.05));
-  });
+  // ⚠️ 这里原本有一条「激进的 AI 比保守的买得多」。
+  //   原版落点的买地判定（`fcn_0041d7d4`）**不读性格**，那条断言已不成立，
+  //   故删掉 —— 性格仍然作用于用卡/用道具（`personalityAllows`）与借贷比例。
 });
 
 // ============================================================

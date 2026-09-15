@@ -16,8 +16,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
+import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
+import type { MapTopology } from './reduce.ts';
 import type { GameState } from './types.ts';
 import type { Action } from './actions.ts';
 import type { PendingInteraction } from '../rules/interaction.ts';
@@ -25,6 +26,19 @@ import { loanCapacity } from '../places/bank.ts';
 import { CONFINEMENT_SLOTS } from '../rules/confinement.ts';
 
 const topo = { nodes: [makeNode({ id: 1, adjacent: [1] })] };
+
+/**
+ * 一块住宅地 + 站在它上面的节点（type = 0x7d0 + 地块下标）。
+ *
+ * ★ 下标取 **1** 而不是 0：`housingIndexOf` 判的是**开区间**
+ *   （`type <= 0x7d0 → null`，@source 0x004198b9 的 `jbe`），
+ *   即 type 恰为 2000 的那块在引擎与原版里都取不到 —— 地块下标从 1 起。
+ */
+const LAND_ID = 1;
+const landTopo: MapTopology = {
+  nodes: [makeNode({ id: 1, adjacent: [1], type: 0x7d0 + LAND_ID, ref: { kind: 'land', index: LAND_ID } })],
+  lands: [makeLand({ id: LAND_ID, name: '測試地', landPrice: 1000, housePrice: 200 })],
+};
 
 function withPending(pending: PendingInteraction, over: Partial<GameState> = {}): GameState {
   return makeGameState({
@@ -116,5 +130,63 @@ describe('★ 给不出来的交互，就不该给', () => {
     if (after.pending?.kind === 'buyLand') {
       expect(reduce(after, { type: 'buyLand' }, topo)).not.toBe(after);
     }
+  });
+
+  /**
+   * ★ 買地/盖房**只能**答落点留下的那个交互。
+   *
+   * `awaitingDecision` 是所有待决交互共用的阶段（買設施/加蓋/研究所/
+   * 拍賣卡挂出的拍賣…）。早先这两个 case 只查 phase，于是别的交互在等答复时，
+   * 一个 `buyLand`/`upgradeLand` 就能把玩家的地买了、房盖了，顺手把那个交互顶掉。
+   * 现在按 `pending.kind` 把关（与 `buyFacility` 那几个同一条规矩）。
+   */
+  describe('★ 買地/盖房必须就是落点那个交互', () => {
+    const atLand = (over: Partial<GameState> = {}): GameState =>
+      makeGameState({
+        players: [makePlayer({ index: 0, nodeId: 1, cash: 500_000 })],
+        phase: 'awaitingDecision',
+        ...over,
+      });
+
+    it('拍賣卡挂出拍賣时，买不走脚下那块无主地', () => {
+      const s = atLand({ pending: { kind: 'auction', entityId: LAND_ID, basePrice: 1000, bidders: [1] } });
+      expect(reduce(s, { type: 'buyLand' }, landTopo)).toBe(s);
+    });
+
+    it('拍賣卡挂出拍賣时，加蓋不了脚下的自有地', () => {
+      const s = atLand({
+        pending: { kind: 'auction', entityId: LAND_ID, basePrice: 1000, bidders: [1] },
+        landOwner: [0, 1],
+      });
+      expect(reduce(s, { type: 'upgradeLand' }, landTopo)).toBe(s);
+    });
+
+    it('研究所面板开着时，加蓋不了脚下的自有地', () => {
+      const s = atLand({
+        pending: { kind: 'research', facilityId: 0, name: '研究所', level: 1, choices: [1] },
+        landOwner: [0, 1],
+      });
+      expect(reduce(s, { type: 'upgradeLand' }, landTopo)).toBe(s);
+    });
+
+    // 正对照：落点留下的那个交互，照样答得掉
+    it('落点的買地交互仍然照答', () => {
+      const s = atLand({
+        pending: { kind: 'buyLand', landId: LAND_ID, name: '測試地', price: 1000 },
+      });
+      const after = reduce(s, { type: 'buyLand' }, landTopo);
+      expect(after).not.toBe(s);
+      expect(after.landOwner[LAND_ID]).toBe(1);
+    });
+
+    it('落点的加蓋交互仍然照答', () => {
+      const s = atLand({
+        pending: { kind: 'upgradeLand', landId: LAND_ID, name: '測試地', cost: 200 },
+        landOwner: [0, 1],
+      });
+      const after = reduce(s, { type: 'upgradeLand' }, landTopo);
+      expect(after).not.toBe(s);
+      expect(after.landLevel[LAND_ID]).toBe(1);
+    });
   });
 });
