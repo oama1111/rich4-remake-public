@@ -9,7 +9,7 @@
  */
 
 import { MkfArchive, parseSpriteSheet, type SpriteSheet } from '@rich4/assets-pipeline';
-import { decodeImage, decodeGround, isGround } from '@rich4/assets-pipeline';
+import { decodeImage, decodeGround, isGround, paletteRgb } from '@rich4/assets-pipeline';
 import { hdRelativePath, taskIdOf } from '@rich4/assets-pipeline';
 
 /** 原版的资源档案 */
@@ -43,6 +43,22 @@ export async function loadArchives(base: string): Promise<LoadedArchives> {
     },
   };
 }
+
+/**
+ * **可换色槽** —— 建筑精灵用它画外圈那圈归属线。
+ *
+ * @source VA 0x0040987d：绘制槽遍历时，若有归属就
+ * ```asm
+ * cl  = slot.owner                     ; [esi + 0x48a852]
+ * eax = (cl - 1) * 0x68                ; 玩家结构
+ * edx = [player + 0x04]                ; ★ 角色专属色（开局从角色表拷入）
+ * ax  = convert_color(edx)
+ * [ebp + 0x1fe] = ax                   ; ★ 0x1fe = 255 × 2 → 调色板第 255 项
+ * ```
+ * 实测：各建筑精灵的 #255 是一个**占位色**（0x3FF 青 / 0x7FE0 黄 / 0x7C1F 品红），
+ * 每张用 154..312 个像素 —— 就是那圈线。故渲染时把 #255 换成所有者的角色色。
+ */
+export const RING_PALETTE_INDEX = 255;
 
 /** 一张解码好、可直接 drawImage 的图 */
 export interface Sprite {
@@ -266,8 +282,9 @@ export class SpriteCache {
     resource: number,
     index: number,
     colorKeyBlack = false,
+    ring?: readonly [number, number, number],
   ): Promise<Sprite | null> {
-    const key = `${archive}:${resource}:${index}:${colorKeyBlack ? 'k' : ''}`;
+    const key = `${archive}:${resource}:${index}:${colorKeyBlack ? 'k' : ''}:${ring === undefined ? '' : ring.join(',')}`;
     const hit = this.#sprites.get(key);
     if (hit !== undefined) {
       // LRU：命中即移到队尾
@@ -276,7 +293,9 @@ export class SpriteCache {
       return hit;
     }
 
-    const sprite = (await this.#hdSprite(archive, resource, index)) ?? (await this.#originalSprite(archive, resource, index, colorKeyBlack));
+    const sprite =
+      (await this.#hdSprite(archive, resource, index)) ??
+      (await this.#originalSprite(archive, resource, index, colorKeyBlack, ring));
     this.#insert(key, sprite);
     return sprite;
   }
@@ -324,12 +343,14 @@ export class SpriteCache {
     resource: number,
     index: number,
     colorKeyBlack: boolean,
+    ring?: readonly [number, number, number],
   ): Promise<Sprite | null> {
     const sheet = this.#sheetOf(archive, resource);
     const data = this.#bytesOf(archive, resource);
     if (sheet === null || data === null || index >= sheet.images.length) return null;
 
     const img = decodeImage(sheet, data, index, { colorKeyBlack });
+    if (ring !== undefined) recolorRing(img, sheet.palette, ring);
     if (img.width === 0 || img.height === 0) return null;
 
     return {
@@ -362,6 +383,30 @@ export class SpriteCache {
   /** 已缓存的原始字节条目数——用于诊断 */
   get byteSize(): number {
     return this.#bytes.size;
+  }
+}
+
+/**
+ * 把精灵里「可换色槽」（调色板 #255）的像素换成指定颜色。
+ *
+ * ★ 是按**颜色**匹配而不是按索引 —— 解码出来的是 RGBA，索引已经丢了；
+ *   而 #255 的占位色在各资源里不同，故先从调色板取出它再逐像素比。
+ */
+function recolorRing(
+  img: { rgba: Uint8ClampedArray },
+  palette: Uint8Array | null,
+  to: readonly [number, number, number],
+): void {
+  if (palette === null) return;
+  const [r, g, b] = paletteRgb(palette, RING_PALETTE_INDEX);
+  const [R, G, B] = to;
+  if (r === R && g === G && b === B) return;
+  for (let i = 0; i < img.rgba.length; i += 4) {
+    if (img.rgba[i] === r && img.rgba[i + 1] === g && img.rgba[i + 2] === b && img.rgba[i + 3] !== 0) {
+      img.rgba[i] = R;
+      img.rgba[i + 1] = G;
+      img.rgba[i + 2] = B;
+    }
   }
 }
 

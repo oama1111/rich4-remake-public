@@ -8,6 +8,7 @@
  */
 
 import type { GameState } from '@rich4/core';
+import { CHARACTERS } from '@rich4/data';
 import type { MapNode, Rich4Map } from '@rich4/core';
 import { VIEW_CENTER, VIEW_COUNT, VIEW_SPAN, projectCell, projectWorld } from '@rich4/data';
 import type { Sprite, SpriteCache } from './assets.ts';
@@ -49,6 +50,19 @@ export function hitToolbar(sx: number, sy: number): number | null {
   if (sy < TOOLBAR.y || sy >= TOOLBAR.y + TOOLBAR.height) return null;
   const i = Math.floor((sx - TOOLBAR.x - TOOLBAR.padX) / TOOLBAR.pitch);
   return i >= 0 && i < TOOLBAR_ICON_COUNT ? i : null;
+}
+
+/**
+ * 某个玩家（1 基）的**角色专属色** —— 用于地产/企业外圈那圈归属线。
+ *
+ * @source VA 0x0040987d 读的是 `player[owner-1].+0x04`，而该字段开局从角色表的
+ *   `color` 拷入（`@rich4/data` 的 `CHARACTERS[i].color`，如約翰喬 0x946126）。
+ */
+function characterColor(state: GameState, owner: number): readonly [number, number, number] {
+  const character = state.players[owner - 1]?.character ?? -1;
+  const c = character >= 0 ? CHARACTERS[character]?.color : undefined;
+  const v = c ?? 0xffffff;
+  return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
 }
 
 /** 玩家棋子的颜色——原版每人一色，此处先用可区分的四色占位 */
@@ -273,13 +287,14 @@ export class BoardRenderer {
     res: number,
     idx: number,
     colorKeyBlack = false,
+    ring?: readonly [number, number, number],
   ): Sprite | null {
-    const key = `${archive}:${res}:${idx}:${colorKeyBlack ? 'k' : ''}`;
+    const key = `${archive}:${res}:${idx}:${colorKeyBlack ? 'k' : ''}:${ring === undefined ? '' : ring.join(',')}`;
     const hit = this.#ready.get(key);
     if (hit !== undefined) return hit;
     if (!this.#pending.has(key)) {
       this.#pending.add(key);
-      void this.#sprites.get(archive, res, idx, colorKeyBlack).then((s) => {
+      void this.#sprites.get(archive, res, idx, colorKeyBlack, ring).then((s) => {
         this.#ready.set(key, s);
         this.#pending.delete(key);
         this.#dirty = true;
@@ -474,8 +489,14 @@ export class BoardRenderer {
     vp: { w: number; h: number },
   ): void {
     const ctx = this.#ctx;
-    /** 一件立体物：资源、图号、落点 */
-    const items: { y: number; x: number; res: number; img: number }[] = [];
+    /** 一件立体物：资源、图号、落点、可选的归属换色 */
+    const items: {
+      y: number;
+      x: number;
+      res: number;
+      img: number;
+      ring?: readonly [number, number, number];
+    }[] = [];
 
     // ── 地块建筑 ──
     for (const n of map.nodes) {
@@ -512,7 +533,16 @@ export class BoardRenderer {
       //   而 `ebp` 指的是**地块记录**（+0x1b 取朝向、+0x1a 取等级，都在同一条记录上）。
       //   实测地图 1：node 39 (1463,239) 与 land 1 (1463,192) 是同一块地，
       //   y 差 47（约一格半），设施/企业/景观那三处本来就用的自己的坐标，只有地块这里不一致。
-      items.push({ x: land.x, y: land.y, res, img: buildingImageIndex(land.facing, cam.view) });
+      // ★ 外圈那圈线按**所有者的角色专属色**换色（见 assets.ts 的 RING_PALETTE_INDEX）：
+      //   @source VA 0x0040987d —— 绘制槽有归属时把 `player[owner-1].+0x04`（角色色）
+      //   写进精灵的调色板 #255。无主则原样（占位色），但等级≥1 必有主。
+      items.push({
+        x: land.x,
+        y: land.y,
+        res,
+        img: buildingImageIndex(land.facing, cam.view),
+        ...(owner === 0 ? {} : { ring: characterColor(state, owner) }),
+      });
     }
 
     // ── 设施（機場/港口…）──
@@ -525,13 +555,17 @@ export class BoardRenderer {
         y: f.y,
         res: base + facilitySlot(f.type, f.level),
         img: buildingImageIndex(f.facing, cam.view),
+        ...(f.owner === 0 ? {} : { ring: characterColor(state, f.owner) }),
       });
     }
 
     // ── 上市企业与特殊景观：共用「索引 + 38」那套 ──
     for (const c of map.commercials) {
       const res = sceneryResource(c.spriteIndex);
-      if (res !== null) items.push({ x: c.x, y: c.y, res, img: 0 });
+      if (res !== null) {
+        const co = state.commercialOwners[c.id - 1]?.owner ?? 0;
+        items.push({ x: c.x, y: c.y, res, img: 0, ...(co === 0 ? {} : { ring: characterColor(state, co) }) });
+      }
     }
     for (const l of map.landscapes) {
       const res = sceneryResource(l.spriteIndex);
@@ -543,7 +577,7 @@ export class BoardRenderer {
 
     const k = cam.mode === 'map' ? cam.scale : 1;
     for (const it of items) {
-      const sp = this.#sprite('map.mkf', it.res, it.img, true);
+      const sp = this.#sprite('map.mkf', it.res, it.img, true, it.ring);
       if (sp === null) continue;
       const p = worldToScreen(it.x, it.y, cam, vp);
       if (p === null) continue;

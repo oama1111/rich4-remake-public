@@ -118,6 +118,19 @@ function decodeSpr(info: GraphInfo, data: Uint8Array, palette: Uint8Array | null
   return { width, height, anchorX: info.x, anchorY: info.y, rgba };
 }
 
+/**
+ * 调色板第 `index` 项展开成 RGB888。
+ *
+ * ⚠️ **索引 255 是「可换色槽」**：建筑精灵用它画外圈那圈线，占位色各资源不同
+ *   （实测 0x3FF 青 / 0x7FE0 黄 / 0x7C1F 品红）。原版在 blit 前把这一项改成
+ *   所有者的角色色（VA 0x0040987d `mov word [ebp+0x1fe], ax`，0x1fe = 255×2）。
+ */
+export function paletteRgb(palette: Uint8Array, index: number): [number, number, number] {
+  const at = index * 2;
+  const v = (palette[at] ?? 0) | ((palette[at + 1] ?? 0) << 8);
+  return [expand5((v >> 10) & 31), expand5((v >> 5) & 31), expand5(v & 31)];
+}
+
 /** SMP：原始 16bpp RGB555；默认不透明，可选把纯黑抠成透明 */
 function decodeSmp(info: GraphInfo, data: Uint8Array, colorKeyBlack: boolean): DecodedImage {
   const { width, height, gsize, dataOffset } = info;

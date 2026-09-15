@@ -46,11 +46,18 @@ beforeEach(() => {
  *   Blob 这条就真解一次 PNG 拿尺寸 —— 与浏览器实际做的事等价。
  */
 const fakeBitmapOf = async (source: ImageData | Blob): Promise<ImageBitmap> => {
+  // ★ 把像素一并带上：换色（Q-LAYOUT-8）这类改像素的功能要靠它断言
   if (source instanceof Blob) {
     const img = decodePng(new Uint8Array(await source.arrayBuffer()));
-    return { width: img.width, height: img.height } as unknown as ImageBitmap;
+    return { width: img.width, height: img.height, rgba: img.rgba } as unknown as ImageBitmap;
   }
-  return { width: source.width, height: source.height } as unknown as ImageBitmap;
+  return { width: source.width, height: source.height, rgba: source.data } as unknown as ImageBitmap;
+};
+
+/** 取假位图里第 i 个像素的 RGB */
+const rgbAt = (s: Sprite, i: number): number[] => {
+  const b = s.bitmap as unknown as { rgba: Uint8ClampedArray };
+  return [b.rgba[i * 4]!, b.rgba[i * 4 + 1]!, b.rgba[i * 4 + 2]!];
 };
 
 const bitmapSize = (s: Sprite): { w: number; h: number } => {
@@ -431,5 +438,65 @@ describe('loadHdSource', () => {
     });
     await loadHdSource('/assets/hd');
     expect(seen).toEqual(['/assets/hd-manifest.json']);
+  });
+});
+
+// ============================================================
+//  归属线换色（Q-LAYOUT-8）
+// ============================================================
+
+describe('★ 建筑外圈那圈线按所有者的角色色换色', () => {
+  /**
+   * 造一张 2×2 的 SPR：调色板 #1 = 青、**#255 = 白**（占位色），
+   * 像素用 [#255, #1, #255, #1] —— 正好隔一个。
+   */
+  function sprRing(): Uint8Array {
+    const startOffset = 24;
+    const gsize = 4;
+    const buf = new Uint8Array(startOffset + 512 + gsize);
+    const view = new DataView(buf.buffer);
+    buf.set([0x53, 0x50, 0x52]);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, startOffset, true);
+    view.setInt16(12, 2, true);
+    view.setInt16(14, 2, true);
+    view.setInt16(16, 1, true);
+    view.setInt16(18, 1, true);
+    view.setUint32(20, gsize, true);
+    view.setUint16(startOffset + 0 * 2, 0x0000, true); // #0 黑（索引 0 = 透明）
+    view.setUint16(startOffset + 1 * 2, 0x03ff, true); // #1 青（RGB555 0x3FF，与真实建筑精灵的占位色同值）
+    view.setUint16(startOffset + 255 * 2, 0x7fff, true); // ★ #255 白 = 可换色槽
+    buf.set([255, 1, 255, 1], startOffset + 512);
+    return buf;
+  }
+
+  it('★ 不给 ring → 保持占位色（#255 白、#1 青）', async () => {
+    const cache = cacheWith({ resources: { 0: sprRing() } });
+    const s = await cache.get('Data.mkf', 0, 0);
+    expect(rgbAt(s!, 0)).toEqual([255, 255, 255]); // 槽位像素 = 占位色
+    expect(rgbAt(s!, 1)).toEqual([0, 255, 255]); // 普通像素不受影响
+  });
+
+  it('★ 给了 ring → 只把占位色那批像素换成角色色，别的不动', async () => {
+    const cache = cacheWith({ resources: { 0: sprRing() } });
+    const s = await cache.get('Data.mkf', 0, 0, false, [0x94, 0x61, 0x26]); // 約翰喬色
+    expect(rgbAt(s!, 0)).toEqual([0x94, 0x61, 0x26]); // 槽位像素被换
+    expect(rgbAt(s!, 2)).toEqual([0x94, 0x61, 0x26]); // 另一个槽位像素也被换
+    expect(rgbAt(s!, 1)).toEqual([0, 255, 255]); // ★ 普通像素**原样**
+  });
+
+  it('★ 同一张图、不同 ring 走不同缓存键（不会互相串色）', async () => {
+    const calls: string[] = [];
+    const factory = async (src: ImageData | Blob): Promise<ImageBitmap> => {
+      calls.push(src instanceof Blob ? 'blob' : `${src.width}x${src.height}`);
+      return fakeBitmapOf(src);
+    };
+    const cache = new SpriteCache(fakeArchives({ 0: sprRing() }), { createBitmap: factory });
+    const a = await cache.get('Data.mkf', 0, 0, false, [1, 2, 3]);
+    const b = await cache.get('Data.mkf', 0, 0, false, [4, 5, 6]);
+    await cache.get('Data.mkf', 0, 0, false, [1, 2, 3]); // 命中，不该再解码
+    expect(calls).toHaveLength(2);
+    expect(rgbAt(a!, 0)).toEqual([1, 2, 3]);
+    expect(rgbAt(b!, 0)).toEqual([4, 5, 6]);
   });
 });
