@@ -9,6 +9,7 @@ import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
+import { topoOf } from '../testing/factories.ts';
 
 const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -56,7 +57,7 @@ describe('★ 牌堆在开局就洗好', () => {
 describe('★ 落在命運格会真的抽牌并施加', () => {
   run('游标前进且记下了事件', () => {
     const map = loadMap();
-    const topo = { nodes: map.nodes, lands: map.lands };
+    const topo = topoOf(map);
     const s0 = newGame({ map, players: players(), seed: 5 });
     const s1 = standOn(s0, map, SPECIAL_KIND.FORTUNE);
     if (s1 === null) return; // 这张图没有命運格
@@ -69,7 +70,7 @@ describe('★ 落在命運格会真的抽牌并施加', () => {
 
   run('★ 连续抽不会反复抽到同一张——游标确实在走', () => {
     const map = loadMap();
-    const topo = { nodes: map.nodes, lands: map.lands };
+    const topo = topoOf(map);
     let s = newGame({ map, players: players(), seed: 5 });
     const seen: number[] = [];
     for (let i = 0; i < 6; i++) {
@@ -87,7 +88,7 @@ describe('★ 落在命運格会真的抽牌并施加', () => {
 describe('★ 落在新聞格会抽牌', () => {
   run('游标前进且记下事件', () => {
     const map = loadMap();
-    const topo = { nodes: map.nodes, lands: map.lands };
+    const topo = topoOf(map);
     const s0 = newGame({ map, players: players(), seed: 5 });
     const s1 = standOn(s0, map, SPECIAL_KIND.NEWS);
     if (s1 === null) return;
@@ -101,7 +102,7 @@ describe('★ 落在新聞格会抽牌', () => {
 describe('★ 公园格仍然什么都不发生（原版行为）', () => {
   run('状态除 phase 外不变', () => {
     const map = loadMap();
-    const topo = { nodes: map.nodes, lands: map.lands };
+    const topo = topoOf(map);
     const s0 = newGame({ map, players: players(), seed: 5 });
     const s1 = standOn(s0, map, SPECIAL_KIND.PARK);
     if (s1 === null) return;

@@ -8,7 +8,7 @@
 import type { Player, GameState } from '../state/types.ts';
 import { WHO_PLAYS_HUMAN } from '../state/types.ts';
 import { slotsFrom } from '../loaders/map.ts';
-import type { LandInfo, FacilityInfo, MapNode } from '../loaders/map.ts';
+import type { LandInfo, FacilityInfo, MapNode, Rich4Map } from '../loaders/map.ts';
 import { emptyBoard } from '../places/notice-board.ts';
 import { initialSpecialActors } from '../rules/special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
@@ -172,5 +172,29 @@ export function makeFacility(over: Partial<FacilityInfo> = {}): FacilityInfo {
     priceStatus: 0, landPrice: 5000, housePrice: 1000,
     rateByLevel: [1000, 2000, 4000, 8000, 16000, 32000],
     ...over,
+  };
+}
+
+/**
+ * 从一张真地图造**完整**的 `topo`。
+ *
+ * ★ 2026-09-16 加：先前各测试各自写
+ *   `const topo = { nodes: map.nodes, lands: map.lands }` —— 而规则里
+ *   `topo.facilities` / `topo.commercials` **缺了就直接不结算、且不报错**，
+ *   于是那些测试看着在跑一局，其实**从来没走到設施落点与企业落点**
+ *   （`soak.test.ts` 就是这么瞎了很久，直到地圖 7 那条断言把它照出来）。
+ *   统一走这里，少一个字段就是编译错误，而不是静默跳过。
+ */
+export function topoOf(map: Rich4Map): {
+  nodes: MapNode[];
+  lands: LandInfo[];
+  facilities: FacilityInfo[];
+  commercials: Rich4Map['commercials'];
+} {
+  return {
+    nodes: map.nodes,
+    lands: map.lands,
+    facilities: map.facilities,
+    commercials: map.commercials,
   };
 }

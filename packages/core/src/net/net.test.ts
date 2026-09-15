@@ -11,6 +11,7 @@ import { reduce } from '../state/reduce.ts';
 import { decideAction } from '../ai/policy.ts';
 import { fnv1a, stateFingerprint, PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from './protocol.ts';
 import { Sequencer } from './sequencer.ts';
+import { topoOf } from '../testing/factories.ts';
 
 const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -103,7 +104,7 @@ describe('定序器', () => {
 describe('★ 端到端：两个客户端重放同一串 action 得到同一状态', () => {
   run('模拟一局联机，双方指纹逐步一致', () => {
     const map = loadMap();
-    const topo = { nodes: map.nodes, lands: map.lands };
+    const topo = topoOf(map);
 
     // 服务器下发的开局参数
     const seed = 4242;
@@ -136,7 +137,7 @@ describe('★ 端到端：两个客户端重放同一串 action 得到同一状�
 
   run('★ 掉线重连：从零重放 action 日志能追上', () => {
     const map = loadMap();
-    const topo = { nodes: map.nodes, lands: map.lands };
+    const topo = topoOf(map);
     const seed = 777;
     let live = newGame({ map, players: allComputer(), seed, mode: 'multiplayer' });
     const seq = new Sequencer({ seats: 4, currentSeat: () => live.currentPlayer });
