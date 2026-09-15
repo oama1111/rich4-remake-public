@@ -14,7 +14,7 @@
  * |---|---|
  * | 底图落点 (14,130) | 道具 VA 0x447e7d / 卡片 VA 0x441bfb（`fcn_004563f5(dst, 图, 0xe, 0x82)`）|
  * | 格：5×3、原点 (19,135)、间距 (80,56)、格 80×56 | 命中 VA 0x445c8f，与底图上的分隔线两头对得上 |
- * | 道具图标 = **同一张表的图 `道具号 + 2`**（13 张）| VA 0x447cde `[sheet+0xc+(ebx+2)*12]` |
+ * | 道具图标 = **同一张表的图 `槽 + 2`**（13 张）| VA 0x447cde `[sheet+0xc+(ebx+2)*12]` |
  * | 数量 `×%d` | 格式串 `0x4653e0` |
  * | 卡片格只画**卡名**（不画图标）| VA 0x441b5b `draw_text(sheet, card_table[id].name, …)` |
  * | 道具欄末格「載具徽章」| VA 0x447e08：`traffic_method == 1` → 图 **15**（機車，带禁止标志）；`== 2` → 图 **16**（汽車）|
@@ -65,10 +65,18 @@ export const INV_SLOTS = INV_CELL.cols * INV_CELL.rows;
 
 /** 底图**局部**里各元素的偏移 @source VA 0x447cde（道具）/ 0x441b5b（卡片）*/
 export const INV_LOCAL = {
-  /** 道具图标：锚点落在 (29+80c, 33+56r)，图号 = 道具号 + 2 */
+  /**
+   * 道具图标：锚点落在 (29+80c, 33+56r)。
+   *
+   * ★ 图号 = **槽 + 2**，而槽 = 道具号 − 1（原版 `player_tool_amount` 是 0 基的
+   *   13 格，`ebx` 就是槽号）—— 所以图号 = **道具号 + 1**。
+   *   ⚠️ 本引擎 `state.tools` 的下标是 `玩家×15 + 道具号`（1 基、0 号空置，
+   *   见 `loaders/savegame.ts` 把原版 `owned[id-1]` 写进 `tools[… + id]`），
+   *   与这里的**槽**差 1，别混。
+   */
   iconDx: 0x2d - 0x10,
   iconDy: 0x21,
-  iconFirst: 2,
+  iconFirst: 1,
   /** 数量 `×N`：右上行首（flag 1）在 (79+80c, 23+56r) */
   countDx: 0x2d + 0x22,
   countDy: 0x21 - 0xa,
@@ -127,7 +135,8 @@ export interface InvEntry {
 export function toolEntries(state: GameState, playerIndex: number): InvEntry[] {
   const out: InvEntry[] = [];
   for (let id = 1; id <= TOOLS.length && out.length < INV_SLOTS; id++) {
-    const count = state.tools[playerIndex * 15 + (id - 1)] ?? 0;
+    // ★ 下标 = 玩家×15 + **道具号**（core 的约定，0 号空置）
+    const count = state.tools[playerIndex * 15 + id] ?? 0;
     if (count <= 0) continue;
     out.push({ slot: out.length, id, count });
   }

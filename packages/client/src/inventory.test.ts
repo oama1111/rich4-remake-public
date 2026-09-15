@@ -63,7 +63,7 @@ describe('格子内容（T-024）', () => {
 
   it('★ 道具緊排：数量为 0 的跳过且不占格（S8 截图证实 8 号排第 5 格）', () => {
     const tools = new Array<number>(30).fill(0);
-    for (const id of [1, 2, 3, 4, 8, 9]) tools[id - 1] = 1;
+    for (const id of [1, 2, 3, 4, 8, 9]) tools[id] = 1;
     const got = toolEntries(stateOf(tools), 0);
     expect(got.map((e) => e.slot)).toEqual([0, 1, 2, 3, 4, 5]);
     expect(got.map((e) => e.id)).toEqual([1, 2, 3, 4, 8, 9]);
@@ -72,8 +72,8 @@ describe('格子内容（T-024）', () => {
 
   it('★ 道具数量原样带出来（同一件可以有多个）', () => {
     const tools = new Array<number>(30).fill(0);
-    tools[0] = 3;
-    tools[4] = 7;
+    tools[1] = 3;
+    tools[5] = 7;
     expect(toolEntries(stateOf(tools), 0)).toEqual([
       { slot: 0, id: 1, count: 3 },
       { slot: 1, id: 5, count: 7 },
@@ -82,7 +82,7 @@ describe('格子内容（T-024）', () => {
 
   it('★ 只取**当前玩家**那一行（道具表步长 15）', () => {
     const tools = new Array<number>(30).fill(0);
-    tools[15] = 2; // 玩家 1 的第一个道具
+    tools[15 + 1] = 2; // 玩家 1 的道具 1
     expect(toolEntries(stateOf(tools), 0)).toEqual([]);
     expect(toolEntries(stateOf(tools), 1)).toEqual([{ slot: 0, id: 1, count: 2 }]);
   });

@@ -518,8 +518,10 @@ export function hitSheetBtn(x: number, y: number): number | null {
 export const SHEET_GRID = { x0: 300, dx: 72, dy: 32, wrapAt: 588, cols: 5 } as const;
 export const SHEET_TOOL_GRID_Y0 = 281;
 export const SHEET_CARD_GRID_Y0 = 385;
-/** 道具图集 @source VA 0x4236da 的 `[0x48c274]`（= `read_mkf(panel_mkf, 0x4a, 0, 0)`） */
+/** 道具图集 @source VA 0x4236da 的 `[0x48c274]`（= `read_mkf(panel_mkf, 0x4a, 0, 0)`）*/
 export const SHEET_TOOL_RESOURCE = 0x4a;
+/** 道具件数（资源 0x4a 是 13 张，一张一件；图号 = 道具号 − 1）*/
+export const TOOL_COUNT = 13;
 /** 格内文字：16 号白字 @source VA 0x423215 `create_font(0, 3, 0x101010, 0xffffff, 0x10)` */
 export const SHEET_GRID_TEXT_SIZE = 0x10;
 
@@ -816,12 +818,14 @@ function drawSummary(
   if (p === undefined) return;
 
   // 道具欄：数量为 0 的跳过且不占格 @source VA 0x4236da
+  // ★ 两套下标别混：`state.tools` 是 `玩家×15 + 道具号`（1 基、0 号空置，
+  //   见 core 的 `toolCount`），而**图号** = 槽 = 道具号 − 1（原版 `ebx`）。
   let k = 0;
-  for (let t = 0; t < 13; t++) {
-    const n = state.tools[playerIndex * 15 + t] ?? 0;
+  for (let id = 1; id <= TOOL_COUNT; id++) {
+    const n = state.tools[playerIndex * 15 + id] ?? 0;
     if (n <= 0) continue;
     const { x, y } = sheetCell(k, SHEET_TOOL_GRID_Y0);
-    const icon = sprite('Panel.mkf', SHEET_TOOL_RESOURCE, t, true);
+    const icon = sprite('Panel.mkf', SHEET_TOOL_RESOURCE, id - 1, true);
     if (icon !== null) {
       ctx.drawImage(icon.bitmap, x - 0x10 - icon.anchorX, y - icon.anchorY);
     }

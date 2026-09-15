@@ -1978,7 +1978,7 @@ function teleportWith(
   return teleportPlayer(state, topo.nodes, playerIndex, target);
 }
 
-function useToolAction(
+export function useToolAction(
   state: GameState,
   topo: MapTopology,
   toolId: number,

@@ -158,6 +158,15 @@ import {
   toolIsDirect,
 } from './inventory.ts';
 import {
+  CURSOR_ARCHIVE,
+  CURSOR_RESOURCE,
+  TOOL_SELECT_PARAM,
+  hitCandidate,
+  pickCursorFor,
+  startPick,
+  type PickSession,
+} from './picking.ts';
+import {
   applySetupHit,
   defaultSetup,
   drawSetup,
@@ -446,6 +455,12 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
       return true;
     }
     case HOTKEY.cancel:
+      // 拾取模式里 ESC = 放弃（与右键同类）；**目标必选**的不认
+      // @source VA 0x4466b8 的 `test byte [0x48c594], 8`
+      if (screen === 'game' && pick !== null) {
+        if (pick.cancellable) endPick();
+        return true;
+      }
       if (screen === 'options') {
         screen = optionsReturn;
         return true;
@@ -1181,6 +1196,59 @@ function closeAssets(): void {
  */
 let invPicked: number | null = null;
 
+// ── 目标拾取模式（T-026）──
+// ★ 它是**盖在棋盘上**的一个模式，不是另一屏：原版只是把窗口过程交给模态
+//   消息循环，棋盘照画（VA 0x445e4d）。所以这里是 `screen === 'game' && pick !== null`。
+/** 当前这一次拾取；`null` = 没在拾取 */
+let pick: PickSession | null = null;
+/** 光标底下是第几个候选 */
+let pickHover: number | null = null;
+
+/** 拾取时的自定义指针缓存（用原版指针图集生成 CSS cursor）*/
+const pickCursorCss = new Map<number, string | null>();
+
+/**
+ * 把原版的指针图（`Data.mkf` 资源 0）变成 CSS cursor。
+ *
+ * ★ 原版选目标的反馈**就是换指针**（`fcn_004021f8`，VA 0x4465ba / 0x4465f4），
+ *   棋盘上不画任何东西 —— 所以这里也不在棋盘上画标记。
+ * 返回 `null` 说明图还没解码好；到货后 `spriteArrived` 会让下一帧重来。
+ */
+function pickCursorSprite(shape: number, hotX: number, hotY: number): string | null {
+  const hit = pickCursorCss.get(shape);
+  if (hit !== undefined) return hit;
+  const s = spriteNow(CURSOR_ARCHIVE, CURSOR_RESOURCE, shape, true);
+  if (s === null) return null; // 还没解码：**别缓存**，下一帧再问
+  const c = document.createElement('canvas');
+  c.width = s.width;
+  c.height = s.height;
+  c.getContext('2d')?.drawImage(s.bitmap, 0, 0);
+  const css = `url(${c.toDataURL()}) ${hotX} ${hotY}, auto`;
+  pickCursorCss.set(shape, css);
+  return css;
+}
+
+/** 按当前拾取状态换指针 */
+function refreshPickCursor(): void {
+  if (pick === null) {
+    canvas.style.cursor = '';
+    return;
+  }
+  const shape = pickCursorFor(pick, pickHover !== null);
+  const css = pickCursorSprite(shape.image, shape.hotX, shape.hotY);
+  // 图还没到 → 先别把系统指针藏掉，否则会出现「没有指针」
+  canvas.style.cursor = css ?? '';
+}
+
+/** 结束拾取（`cancel` = 用户放弃）*/
+function endPick(): void {
+  if (pick === null) return;
+  pick = null;
+  pickHover = null;
+  canvas.style.cursor = '';
+  requestRender();
+}
+
 function openInventory(): void {
   if (screen !== 'game') return;
   invPicked = null;
@@ -1213,7 +1281,24 @@ function applyInventoryPick(): void {
     dispatch({ type: 'useTool', toolId: id });
     return;
   }
-  log(`「${TOOLS[id - 1]?.name ?? `道具${id}`}」要先选目标 —— 目标拾取模式（T-026）尚未实现`);
+  // 需要目标的那几件：进拾取模式（T-026）。参数表见 `picking.ts` 的 TOOL_SELECT_PARAM。
+  const param = TOOL_SELECT_PARAM.get(id);
+  if (param === undefined) {
+    log(`「${TOOLS[id - 1]?.name ?? `道具${id}`}」的目标选择原版走的是另一套（还没接）`);
+    return;
+  }
+  startToolPick(id, param);
+}
+
+/** 进「选一格」的拾取模式（道具那一类目标都是格子）*/
+function startToolPick(toolId: number, param: number): void {
+  pick = startPick(state, topo, { kind: 'tool', toolId }, 'none', param);
+  pickHover = null;
+  if (pick.candidates.length === 0) {
+    log(`「${TOOLS[toolId - 1]?.name ?? `道具${toolId}`}」现在没有能放的地方`);
+  }
+  refreshPickCursor();
+  requestRender();
 }
 
 /**
@@ -1355,6 +1440,11 @@ function requestRender(): void {
     } else {
       drawGameStage();
     }
+
+    // 拾取模式的指针图要**解码完才能用**。首帧拿不到就返回 null，
+    // 而光标只在 hover 变化时才刷新 —— 于是「一次都没悬停到」时指针会空着。
+    // 图到货（spriteArrived）时补一次，这一条不能省。
+    if (pick !== null && spriteArrived) refreshPickCursor();
 
     blitStage();
 
@@ -2046,6 +2136,21 @@ function bindInput(): void {
     const p = eventToStage(e);
     if (p === null) return;
 
+    // ── 目标拾取（T-026）：光标底下是候选就换指针 @source VA 0x44609b ──
+    if (screen === 'game' && pick !== null) {
+      const next = hitCandidate(
+        pick,
+        p.x - LAYOUT.board.x,
+        p.y - LAYOUT.board.y,
+        (wx, wy) => worldToScreen(wx, wy, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h }),
+      );
+      if (next !== pickHover) {
+        pickHover = next;
+        refreshPickCursor();
+      }
+      return;
+    }
+
     if (screen === 'title') {
       const hit = hitTitle(p.x, p.y, (i) => spriteNow('Data.mkf', TITLE_RESOURCE, i, true));
       const next = hit === null ? null : hit.index;
@@ -2251,6 +2356,7 @@ function bindInput(): void {
 
     // 底下都是棋盘上的交互 —— 其余屏（含個人資產表）到这儿就结束
     if (screen !== 'game') return;
+    if (pick !== null) return; // 拾取模式：选中/放弃都走 mouseup 与右键
 
     // 轮到人、还没掷骰：GO 鈕与它下面那排骰子数切换
     const meNow = state.players[state.currentPlayer];
@@ -2372,6 +2478,9 @@ function bindInput(): void {
     const p = eventToStage(e);
     if (p === null) return;
 
+    // 拾取模式是**模态**的（原版那个窗口盖住整屏）—— 棋盘与工具栏都不再接输入
+    if (pick !== null) return;
+
     // 右上角那四条彩色竖条：**点一下就换页** @source VA 0x004182fa
     // 页号 = `y / 70`；页没变就什么都不做（原版连音效都不放）。
     const tag = hitPanelTag(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y);
@@ -2437,6 +2546,19 @@ function bindInput(): void {
       }
       return;
     }
+    // ── 目标拾取：抬手才选（原版在 LBUTTONUP 上抛回选中项，VA 0x446656）──
+    if (screen === 'game' && pick !== null) {
+      const hit = pickHover === null ? null : pick.candidates[pickHover];
+      const source = pick.source;
+      endPick();
+      if (hit === undefined || hit === null) return; // 没点中候选 → 什么都不做
+      if (source.kind === 'card') {
+        dispatch({ type: 'useCard', cardId: source.cardId, target: hit.target });
+      } else {
+        dispatch({ type: 'useTool', toolId: source.toolId, nodeId: hit.nodeId });
+      }
+      return;
+    }
 
     drag = null;
     draggingMinimap = false;
@@ -2496,6 +2618,13 @@ function bindInput(): void {
     if (screen === 'inventory') {
       e.preventDefault();
       closeInventory();
+      return;
+    }
+    // 目标拾取：右键放弃 —— 但**目标必选**的（选择参数 bit3）右键不认
+    // @source VA 0x4466b8 `test byte [0x48c594], 8 / jne 忽略`
+    if (screen === 'game' && pick !== null) {
+      e.preventDefault();
+      if (pick.cancellable) endPick();
       return;
     }
     if (screen !== 'game' || minimapMarker === null) return;
@@ -2823,6 +2952,10 @@ async function boot(): Promise<void> {
         get history() { return history; },
         get hoverNode() { return hoverNode; },
         get screen() { return screen; },
+        /** 目标拾取会话（T-026）—— `null` = 没在拾取 */
+        get pickSession() { return pick; },
+        /** 個人資產表的故事板状态 */
+        get sheetUi() { return sheetUi; },
         get setup() { return setup; },
         get options() { return { saved: options, draft: optionsDraft, variant: optionsVariant }; },
         goto: (s: Screen) => { screen = s; requestRender(); },

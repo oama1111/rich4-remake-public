@@ -22,9 +22,8 @@ import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, facilityIndexOf, housingIndexOf } from '../rules/land.ts';
 import { purchaseBlockedBy } from '../rules/purchase.ts';
 import { buyTool } from '../places/shop.ts';
-import { marketOpenOn } from '../places/stock-market.ts';
 import { isAiControlled } from '../state/types.ts';
-import { useCard } from '../cards/registry.ts';
+import { canUseCard } from '../state/preview.ts';
 import type { CardTarget } from '../cards/target.ts';
 import {
   PLACEMENT_TOOLS,
@@ -210,25 +209,7 @@ export function decideCard(ctx: AiContext): Action | null {
    * 出牌照办即可，规则仍只有 registry 一份。
    */
   const willWork = (cardId: number, target: CardTarget): boolean =>
-    useCard(
-      {
-        players: state.players,
-        lands,
-        nodes: map.nodes,
-        currentPlayer: state.currentPlayer,
-        priceIndex: state.priceIndex,
-        tools: state.tools,
-        toolStock: state.toolStock,
-        objects: state.objects,
-        market: state.market,
-        marketOpen: marketOpenOn(state.globalMapId, state.year, state.month, state.day),
-        facilities,
-        actors: state.specialActors,
-        scapegoatPicker: () => -1,
-      },
-      cardId,
-      target,
-    ).ok;
+    canUseCard(state, topo, cardId, target);
 
   // ★ 個性闸门（VA 0x0041e69e）：f7 − 個性 ≥ 2 从不、== 1 三分之一、≤ 0 照做
   const gated = (cardId: number): boolean => {
