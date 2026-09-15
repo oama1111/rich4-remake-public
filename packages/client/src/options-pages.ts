@@ -93,13 +93,22 @@ function outlined(
   size: number,
   fill: string,
   stroke = '#101010',
+  /** 描边宽度 —— **逐处等于 exe 那次 `create_font` 的第 4 个参数**，不是全局常数 */
+  edge = 2,
 ): void {
   ctx.font = `${size}px ${FONT_FAMILY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = stroke;
-  ctx.strokeText(text, x, y);
+  // ★ 两种「不描边」的情况，都是原版自己的写法：
+  //   ① `edge == 0`：原版 `create_font` 那一处传的就是 0；
+  //   ② `stroke === fill`：原版传 `bg == fg`（日期頁的黑字就是这种），
+  //      描边与字同色 —— canvas 的 `strokeText` 会把 15 号 CJK 的笔画缝隙糊死
+  //      （实测就是这个症状），而 GDI 那边是位图膨胀、不会糊。等价做法：不描。
+  if (edge > 0 && stroke !== fill) {
+    ctx.lineWidth = edge;
+    ctx.strokeStyle = stroke;
+    ctx.strokeText(text, x, y);
+  }
   ctx.fillStyle = fill;
   ctx.fillText(text, x, y);
 }
@@ -372,7 +381,7 @@ export function drawDatePage(ctx: CanvasRenderingContext2D, sprite: PageSpriteFn
 
   for (let i = 0; i < DATE_BUTTON_LABELS.length; i++) {
     const at = DATE_BUTTON_TEXT[i]!;
-    outlined(ctx, DATE_BUTTON_LABELS[i]!, at.x, at.y, DATE_FONT_SIZE, DATE_FONT_COLOR);
+    outlined(ctx, DATE_BUTTON_LABELS[i]!, at.x, at.y, DATE_FONT_SIZE, DATE_FONT_COLOR, DATE_FONT_COLOR);
   }
 
   // 月 / 年
@@ -384,16 +393,24 @@ export function drawDatePage(ctx: CanvasRenderingContext2D, sprite: PageSpriteFn
     DATE_FONT_SIZE,
     DATE_FONT_COLOR,
   );
-  outlined(ctx, String(d.draft.year), DATE_YEAR_AT.x, DATE_YEAR_AT.y, DATE_FONT_SIZE, DATE_FONT_COLOR);
+  outlined(
+    ctx,
+    String(d.draft.year),
+    DATE_YEAR_AT.x,
+    DATE_YEAR_AT.y,
+    DATE_FONT_SIZE,
+    DATE_FONT_COLOR,
+    DATE_FONT_COLOR,
+  );
 
   // 日曆格
   for (const c of dateDayCells(d.draft)) {
     if (c.day === d.draft.day) {
       ctx.fillStyle = DATE_SELECTED_FILL;
       ctx.fillRect(c.x + DATE_CELL.boxDX, c.y + DATE_CELL.boxDY, DATE_CELL.boxW, DATE_CELL.boxH);
-      outlined(ctx, String(c.day), c.x, c.y, DATE_FONT_SIZE, '#ffffff');
+      outlined(ctx, String(c.day), c.x, c.y, DATE_FONT_SIZE, '#ffffff', '#101010', 1);
     } else {
-      outlined(ctx, String(c.day), c.x, c.y, DATE_FONT_SIZE, DATE_FONT_COLOR);
+      outlined(ctx, String(c.day), c.x, c.y, DATE_FONT_SIZE, DATE_FONT_COLOR, DATE_FONT_COLOR);
     }
   }
 
@@ -410,7 +427,7 @@ export function drawDatePage(ctx: CanvasRenderingContext2D, sprite: PageSpriteFn
     const r = DATE_RECTS[p]!;
     blit(ctx, sprite, OPTIONS_RESOURCE, DATE_BUTTON_IMG, r.x, r.y, true);
     const at = DATE_BUTTON_TEXT[i]!;
-    outlined(ctx, DATE_BUTTON_LABELS[i]!, at.x, at.y, DATE_FONT_SIZE, DATE_FONT_COLOR);
+    outlined(ctx, DATE_BUTTON_LABELS[i]!, at.x, at.y, DATE_FONT_SIZE, DATE_FONT_COLOR, DATE_FONT_COLOR);
   }
 
   ctx.restore();
@@ -701,7 +718,16 @@ export function drawHotkeyPage(
   // 三个钮的字（入口 0x411bed 往图 1 里写过的那三条）
   for (let i = 0; i < HOTKEY_BUTTON_LABELS.length; i++) {
     const at = HOTKEY_BUTTON_TEXT[i]!;
-    outlined(ctx, HOTKEY_BUTTON_LABELS[i]!, at.x, at.y, HOTKEY_FONT_SIZE, HOTKEY_NAME_COLOR);
+    outlined(
+        ctx,
+        HOTKEY_BUTTON_LABELS[i]!,
+        at.x,
+        at.y,
+        HOTKEY_FONT_SIZE,
+        HOTKEY_NAME_COLOR,
+        '#101010',
+        1,
+      );
   }
 
   // 28 条：左列 0..13、右列 14..27
@@ -709,7 +735,7 @@ export function drawHotkeyPage(
     const col = i < HOTKEY_ROWS ? 0 : 1;
     const row = i - (col === 0 ? 0 : HOTKEY_ROWS);
     const nameAt = hotkeyNameAt(col, row);
-    outlined(ctx, names[i] ?? '', nameAt.x, nameAt.y, HOTKEY_FONT_SIZE, HOTKEY_NAME_COLOR);
+    outlined(ctx, names[i] ?? '', nameAt.x, nameAt.y, HOTKEY_FONT_SIZE, HOTKEY_NAME_COLOR, '#101010', 1);
     const keyAt = hotkeyTextAt(col, row);
     const text = keyText(d.keys[i] ?? 0);
     if (text !== '') {
@@ -741,7 +767,16 @@ export function drawHotkeyPage(
     if (spot !== null) {
       const slot = spot.col === 0 ? pressed - 1 : pressed - 16;
       const nameAt = hotkeyNameAt(spot.col, spot.row);
-      outlined(ctx, names[slot] ?? '', nameAt.x + shift, nameAt.y + shift, HOTKEY_FONT_SIZE, HOTKEY_NAME_COLOR);
+      outlined(
+        ctx,
+        names[slot] ?? '',
+        nameAt.x + shift,
+        nameAt.y + shift,
+        HOTKEY_FONT_SIZE,
+        HOTKEY_NAME_COLOR,
+        '#101010',
+        1,
+      );
       const keyAt = hotkeyTextAt(spot.col, spot.row);
       const text = keyText(d.keys[slot] ?? 0);
       if (text !== '') {
@@ -752,6 +787,8 @@ export function drawHotkeyPage(
           keyAt.y + shift,
           HOTKEY_FONT_SIZE,
           HOTKEY_KEY_COLOR[slot < HOTKEY_FIXED ? 0 : 1]!,
+          '#101010',
+          1,
         );
       }
     } else {

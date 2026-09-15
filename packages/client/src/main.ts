@@ -3309,6 +3309,15 @@ function endIntro(): void {
   if (screen !== 'intro') return;
   screen = 'game';
   requestRender();
+  // ★★ **必须补这一拍**（2026-09-16 修「进游戏后 GO 鈕点不动」）：
+  //   `startGame()` 起的那两个回合驱动都带 `if (screen !== 'game') return`
+  //   （`scheduleAi` / `scheduleHumanTurn`），而开局那一刻 `screen` 还是 `'intro'`，
+  //   于是它们当场返回 —— 过场放完若不再叫一次，真人回合就永远停在
+  //   `phase === 'turnStart'`：`awaitingHumanRoll()` 恒为假 ⇒
+  //   **GO 鈕点不动、骰子也掷不出去**。单测验的是 reduce，看不见驱动这一层，
+  //   只有真进一局才会暴露。
+  scheduleAi();
+  scheduleHumanTurn();
 }
 
 /** 託管AI 屏的编辑草稿（原版也是先编一份暂存表、按確定才拷回）——不在这一屏时为 null */
@@ -4826,27 +4835,9 @@ function bindInput(): void {
     // 遙控骰子的点数盘开着：模态，点击已经在 mousedown 里处理过（Q-PICK-2）
     if (dicePick !== null) return;
 
-    // 轮到人、还没掷骰：GO 鈕与它下面那排骰子数切换
-    const meNow = state.players[state.currentPlayer];
-    if (awaitingHumanRoll() && meNow !== undefined) {
-      const bx = p.x - LAYOUT.board.x;
-      const by = p.y - LAYOUT.board.y;
-      // ★ 切换钮盖在 GO 的下缘上，必须先问它，否则永远点不到
-      const n = hitDiceToggle(bx, by, maxDiceOf(meNow), goButton.position());
-      if (n !== null) {
-        dispatch({ type: 'setDiceCount', count: n });
-        return;
-      }
-      // ★ GO 鈕（Q-UI-6）：原版按下这一拍**既掷骰也开始拖**（VA 0x004181d9
-      //   的 `cmp al,0xb` 立刻动作、0x004182c1 的 `cmp al,0xc` 只记拖动），
-      //   抬手那一拍不再动作。`press` 收棋盘画布坐标、锚点收**舞台**坐标
-      //   （位移在两者里等价 —— 画布原点是个常量平移）。
-      const stagePos = { x: p.x, y: p.y };
-      if (goButton.press(bx, by, stagePos)) {
-        requestRoll();
-        return; // 按在钮上就不再去拖镜头
-      }
-    }
+    // ★ GO 鈕与骰子数切换**不在这里** —— 它们归 `mousedown`（原版是
+    //   `WM_LBUTTONDOWN` 那一拍），见 mousedown 里的同名分支。
+    //   挂在 `click` 上会让按下/抬手的次序反过来（`click` 在 `mouseup` 之后）。
 
     // 对话框在的时候，棋盘上的点击一律先给它
     const dlg = currentDialog();
@@ -5221,6 +5212,30 @@ function bindInput(): void {
       }
       return;
     }
+    // ★★ GO 鈕（Q-UI-6）：**按下这一拍就掷骰 + 起拖**（原版 VA 0x004181d9 的
+    //   `cmp al,0xb` 立刻动作、0x004182c1 的 `cmp al,0xc` 记拖动），抬手只结束拖动。
+    //   ⚠️ 这一支**必须在「棋盘拖动」前面**，否则按 GO 会先被当成拖镜头；
+    //   也**不能**挂在 `click` 上（先前就是这么接的）：浏览器的 `click` 排在
+    //   `mouseup` **之后**，而 `goButton.release()` 在 mouseup 上 ——
+    //   先抬手后按下，按钮会卡在「拖动中」跟着鼠标跑。
+    if (awaitingHumanRoll()) {
+      const me0 = state.players[state.currentPlayer];
+      if (me0 !== undefined) {
+        const gx = p.x - LAYOUT.board.x;
+        const gy = p.y - LAYOUT.board.y;
+        // 切换钮盖在 GO 的下缘上，必须先问它（原版也是先判那几颗）
+        const n = hitDiceToggle(gx, gy, maxDiceOf(me0), goButton.position());
+        if (n !== null) {
+          dispatch({ type: 'setDiceCount', count: n });
+          return;
+        }
+        if (goButton.press(gx, gy, { x: p.x, y: p.y })) {
+          requestRoll();
+          return; // 按在钮上就不再去拖镜头
+        }
+      }
+    }
+
     // 只有棋盘区能拖
     const bx = p.x - LAYOUT.board.x;
     const by = p.y - LAYOUT.board.y;
