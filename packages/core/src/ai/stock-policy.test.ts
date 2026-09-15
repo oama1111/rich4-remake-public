@@ -453,3 +453,28 @@ describe('★ 挑哪支、要不要賣', () => {
     expect(sellScoreInput(after, { nodes: [] }, a!.type === 'sellStock' ? a.stock : 0, 0)!.myHolding).toBe(0);
   });
 });
+
+describe('★ 持股市值的累加要过 f32（D-QNUM-3 订正）@source 0x0042bfb3..0x0042bff6', () => {
+  it('★ 总额 > 2^24 时与纯整数累加会差几块钱 —— 原版每轮 fstp dword 过一趟 f32', () => {
+    const state = makeGameState();
+    state.market.stocks[0] = { ...state.market.stocks[0]!, price: 1, openPrice: 1 };
+    state.market.stocks[1] = { ...state.market.stocks[1]!, price: 1, openPrice: 1 };
+    state.holdings[0] = [
+      { amount: 16_777_217, avgCost: 1 }, // 2^24 + 1，f32 表示不了（会落到 2^24）
+      { amount: 4, avgCost: 1 },
+    ];
+    // 纯整数累加会是 16777221；过一趟 f32 得到 fround(16777217)=16777216，+4 = 16777220
+    expect(holdingsValue(state, 0)).toBe(16_777_220);
+  });
+
+  it('★ 没有跨过 2^24 时与纯整数累加完全一致（正常盘面不受影响）', () => {
+    const state = makeGameState();
+    state.market.stocks[0] = { ...state.market.stocks[0]!, price: 100, openPrice: 100 };
+    state.market.stocks[1] = { ...state.market.stocks[1]!, price: 40, openPrice: 40 };
+    state.holdings[0] = [
+      { amount: 1000, avgCost: 1 },
+      { amount: 500, avgCost: 1 },
+    ];
+    expect(holdingsValue(state, 0)).toBe(100 * 1000 + 40 * 500);
+  });
+});

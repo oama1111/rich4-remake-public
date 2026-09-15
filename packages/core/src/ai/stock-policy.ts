@@ -94,8 +94,17 @@ export function holdingsValue(state: GameState, playerIndex: number): number {
     const amount = held[i]?.amount ?? 0;
     if (amount === 0) continue;
     const price = state.market.stocks[i]?.price ?? 0;
-    // @source 0042bfc7 fmul → 0042bfea fadd → 0042bff1 call 0x457dbc
-    total = truncTowardZero(total + amount * price);
+    // @source 0042bfb3..0042bff6 逐轮：
+    //   fild 持股 → fmul [股价]                （st0 = 股数 × 股价，extended）
+    //   fild [esp+0xe4]（= 上一轮的整数累加器）
+    //   fstp dword [esp+0xe4]                  ; ★ 累加器**过一趟 f32**
+    //   fadd dword [esp+0xe4]                  ; st0 = 本项 + f32(上一轮)
+    //   call 0x457dbc（向零截断）→ fistp 回整数累加器
+    //   ⇒ 累加器是**整数**，但每轮都要过一次 f32（24 位尾数）——
+    //     总额 > 2^24 且不可精确表示时，结果会与纯整数累加差几块钱。
+    //     `Math.fround` 就是这一步（D-QNUM-3 订正：不是「整体用 f32 累加」，
+    //     而是「整数累加器 + 每轮过一次 f32」）。
+    total = truncTowardZero(amount * price + Math.fround(total));
   }
   return total;
 }
