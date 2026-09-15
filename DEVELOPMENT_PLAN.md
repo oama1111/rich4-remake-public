@@ -896,7 +896,7 @@ upscale-queue/
 | ~~**P2-18**~~ ✅ | **走子补间动画与时序**（2026-09-15 完成，T-046） | `rich4_animate_object.asm` | 帧数 = `trunc(屏幕距离×0.125)+1`、线性、每帧 24 ms（VA 0x0040e669）| ⚠️ 四大惡人/機器娃娃那趟**还没接**（他们的移动在 core 里一次算完、不发 `step`），已在卡里记 |
 | ~~**P2-19**~~ ✅ | **開局跳伞过场**（U-10，**机制** ✓ 画面见 Q-INTRO-1）、**载具棋子**（U-11 ✓）、**標題音效**（U-1 ✓）、**地塊归属彩边**（U-14 ✓）、**GO 钮三组图**（Q-UI-4 ✓）、**節日插画**（Q-CAL-1 ✓） | 见各 U/Q 项 | — | T-048/T-049/T-050 均 done |
 | **P2-20** | **語音** `Speaking.mkf`（Q9/Q11） | `rich4_player_say_on_events.asm` | — | 先解索引再接触发点 |
-| **P2-21** | **存档落到文件**（Q-SAVE-1）+ **读原版 SAVE*.DAT** | Tauri fs | `loaders/savegame.ts` | — |
+| ~~**P2-21**~~ ✅ | **存档落到文件**（2026-09-15，T-053；内容仍是 JSON，原版二进制格式见 Q-SAVE-1）+ **读原版 SAVE*.DAT**（T-054） | Tauri fs | `loaders/savegame.ts` | 桌面 `<AppData>/saves/SAVE<n>.json`；浏览器 localStorage |
 | ~~**P2-22**~~ ✅ | **Windows / Linux 构建**（2026-09-15 完成，T-055/T-056） | Tauri | `.github/workflows/build.yml` 三平台矩阵 | ⚠️ 本机 macOS **打不出 Windows/Linux 包** —— 真机验收要 CI 跑一次 |
 
 **P2 出口条件 = 第一阶段（步骤 1）完成**：M4 验收三条（60 FPS / 内存 / 冷启动）；与原版录屏逐帧比对关键动画误差 < 2 帧；三平台构建通过；`known-deviations.md` 里只剩「有意偏差」。**到此向需求方报告「第一阶段完成」。**
