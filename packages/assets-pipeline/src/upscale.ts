@@ -129,6 +129,24 @@ export function toClassifyEntry(e: AssetEntryLike): ClassifyAssetEntry {
   };
 }
 
+/**
+ * hd 产物的相对路径（相对 `assets/hd/`）。
+ *
+ * ★ **这是全项目唯一一处定义**：写侧（`assemble.ts` 的 assembleHd）与读侧
+ *   （client 的 `SpriteCache`，T-065）必须调同一个函数。各写一份字符串的话，
+ *   某天改了前导零或分隔符，症状会是「HD 素材全部静默回退到原图」
+ *   ——不报错，只是画质没提升，极难发现。
+ *
+ * PRD §4.5 给定形式 `<archive>/<resource>-<image>.png`；
+ * `<resource>` 与 `<image>` 均为十进制、**无前导零**。
+ *
+ * ⚠️ 它住在 `upscale.ts`（浏览器安全）而不是 `assemble.ts`：前端要用它拼 URL，
+ *   而 assemble 那条线引了 `png.ts` 的 `node:zlib`（Q-BUILD-1）。
+ */
+export function hdRelativePath(archive: string, resource: number, image: number): string {
+  return `${archive}/${resource}-${image}.png`;
+}
+
 export function taskIdOf(e: { archive: string; resource: number; image: number }): string {
   return `${e.archive}/${String(e.resource).padStart(4, '0')}_${String(e.image).padStart(3, '0')}`;
 }

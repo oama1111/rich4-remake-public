@@ -115,10 +115,25 @@
 |---|---|
 | `data` | 无 |
 | `core` | `data` |
-| `assets-pipeline` | 无（Node API 允许，仅 CLI 用） |
-| `client` | `core`、`data`、`assets-pipeline`（只用解码函数） |
+| `assets-pipeline` | 无（Node API 允许，仅 CLI 与 `node` 出口用） |
+| `client` | `core`、`data`、`assets-pipeline`（**只能用浏览器安全出口**） |
 | `server` | `core`、`data`、`ws` |
 | `desktop` | `client`（构建产物） |
+
+#### ★ `assets-pipeline` 有**两条出口**，前端只许用第一条
+
+| 出口 | 内容 | 谁可以用 |
+|---|---|---|
+| `@rich4/assets-pipeline` | 纯 `Uint8Array` 运算：mkf 容器与解压、SPR/SMP 解码、GND 底图、WAV、MIDI、素材分类、切片与合并、锚点与清单、接缝、过审页 | **所有人**（含 client / server） |
+| `@rich4/assets-pipeline/node` | 用了 `node:*` 的模块：PNG 编解码（`node:zlib`）、`assemble.ts` | **只有 CLI 与测试** |
+
+**为什么要有这条规矩**：vite 会把 `node:` 换成「一访问就抛」的桩。只要前端 import 的
+某个模块（哪怕间接）够得着 `node:`，**整个包加载即失败** —— 症状是页面永远停在
+「载入中…」，而所有单测仍然全绿（它们跑在 Node 下，`node:zlib` 在那儿是真的），
+类型检查与 lint 也看不出。这就是 Q-BUILD-1，从 `b99b459` 一直坏到本轮。
+
+守卫：`packages/assets-pipeline/src/index.test.ts` 沿真实 import 走一遍图，
+断言第一条出口够不着任何 `node:`（**间接路径也算**）。
 
 ### 2.3 唯一的数据流
 
@@ -482,6 +497,11 @@ landOnLand(state, land):
   - `API-11.1 mkfEntries(bytes) / mkfRead(bytes, index) → Uint8Array`；`mkfDecompress(src, outSize)`（自适应霍夫曼 + LZ77，与 C 逐字节一致）。
   - `API-11.2 decodeSprite(bytes) → { frames: { w, h, x, y, rgba }[] }`（SPR 8bpp 调色板 / SMP 16bpp RGB555，均无压缩）；`decodeGround(bytes) → GroundImage`（32×32 tile 布局）。
   - `API-11.3 readWaveInfo`, `parseMidi(bytes) → MidiSong`。
+  - `API-11.5 出口`：上列 API 全在**浏览器安全**出口 `@rich4/assets-pipeline` 上。
+    `decodePng`/`encodePng`（用 `node:zlib`）与 `assembleHd` 在 `@rich4/assets-pipeline/node` 上，
+    **前端不得 import**（见 §2.2）。`hdRelativePath` 是例外中的关键：**写读两侧共用**
+    （`assemble` 写、client 的 `SpriteCache` 读），故它住在浏览器安全的 `upscale.ts` 里。
+    前端要读 PNG 走浏览器原生解码：`createImageBitmap(new Blob([bytes]))`。
   - `API-11.4 CLI`：`pnpm unpack`（`assets/game/` → `extracted/`，不入库）；`pnpm upscale plan|slice|merge|assemble|status|ingest`（`assets/hd-manifest.json` 记模型/参数/哈希）。
     完整交接链：`plan` 出清单 → `slice` 把待超分帧切进 `assets/upscale-queue/`（rgb/alpha 分开，C-AST-4/5）→ **[外部超分 4×]** → `merge` 校验（尺寸恰 4×、哈希未变即拒）并合并回 RGBA → `assemble` 按 `hdRelativePath` 落进 `assets/hd/`、锚点按**实际输出尺寸**重算（C-AST-6）、写 manifest 条目（幂等：产物哈希未变则不重写）。
     `ingest` 保留给「产物直接按原名放进 hd 目录」的旧路径。

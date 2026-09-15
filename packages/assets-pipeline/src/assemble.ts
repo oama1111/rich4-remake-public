@@ -25,28 +25,12 @@
  *   尺寸守卫、锚点这些规矩可以用内存夹具钉死，不必造临时目录。
  */
 
-import { decodePng } from './sprite.ts';
-import { recordResult, type UpscaleManifest, type UpscaleResult } from './upscale.ts';
+import { decodePng } from './png.ts';
+import { hdRelativePath, recordResult, type UpscaleManifest, type UpscaleResult } from './upscale.ts';
 import type { QueueFrame, QueueManifest } from './slice.ts';
 
-// ============================================================
-//  路径契约
-// ============================================================
-
-/**
- * hd 产物的相对路径（相对 `assets/hd/`）。
- *
- * ★ **这是全项目唯一一处定义**：写侧（本模块）与读侧（client 的
- *   `SpriteCache`，T-065）必须调同一个函数。各写一份字符串的话，
- *   某天改了前导零或分隔符，症状会是「HD 素材全部静默回退到原图」
- *   ——不报错，只是画质没提升，极难发现。
- *
- * PRD §4.5 给定形式 `<archive>/<resource>-<image>.png`；
- * `<resource>` 与 `<image>` 均为十进制、**无前导零**。
- */
-export function hdRelativePath(archive: string, resource: number, image: number): string {
-  return `${archive}/${resource}-${image}.png`;
-}
+// 路径契约（hdRelativePath）已挪到 upscale.ts —— 前端也要用它算 URL，
+// 而 assemble 这条线在 node 出口上（见 Q-BUILD-1）。
 
 // ============================================================
 //  IO 口子

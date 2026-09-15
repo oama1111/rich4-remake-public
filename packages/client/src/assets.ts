@@ -9,7 +9,7 @@
  */
 
 import { MkfArchive, parseSpriteSheet, type SpriteSheet } from '@rich4/assets-pipeline';
-import { decodeImage, decodeGround, isGround, decodePng } from '@rich4/assets-pipeline';
+import { decodeImage, decodeGround, isGround } from '@rich4/assets-pipeline';
 import { hdRelativePath, taskIdOf } from '@rich4/assets-pipeline';
 
 /** 原版的资源档案 */
@@ -145,7 +145,7 @@ export async function loadHdSource(base: string): Promise<HdSource | null> {
 }
 
 /** 位图工厂 —— 测试注入假实现（Node 里没有 `createImageBitmap`）*/
-export type BitmapFactory = (source: ImageData) => Promise<ImageBitmap>;
+export type BitmapFactory = (source: ImageData | Blob) => Promise<ImageBitmap>;
 
 const defaultBitmapFactory: BitmapFactory = (source) => createImageBitmap(source);
 
@@ -298,12 +298,15 @@ export class SpriteCache {
     if (bytes === null) return null;
 
     try {
-      const img = decodePng(bytes);
-      if (img.width === 0 || img.height === 0) return null;
+      // ★ 交给**浏览器原生解码**（`createImageBitmap` 直接吃 Blob），不自己解 PNG：
+      //   一是不必把 `decodePng` 拖进前端（它依赖 `node:zlib`，见 Q-BUILD-1），
+      //   二是 4× 的图很大，原生解码比 JS 快得多。
+      const bitmap = await this.#createBitmap(new Blob([bytes as BlobPart], { type: 'image/png' }));
+      if (bitmap.width === 0 || bitmap.height === 0) return null;
       return {
-        bitmap: await this.#createBitmap(toImageData(img.width, img.height, img.rgba)),
-        width: img.width,
-        height: img.height,
+        bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
         // 锚点由清单给出——管线已按**实际输出尺寸**算好（C-AST-6），
         // 这里不再自己乘 scale：工具常把结果对齐到 4 的倍数，自己算会偏。
         anchorX: entry.anchorX,

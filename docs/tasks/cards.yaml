@@ -1284,11 +1284,14 @@ cards:
     1. loadHdSource(hdBase)：拉 `<hd 目录>-manifest.json`（与目录同级），
        只有**既有 tasks 又有 results** 的图才算有 HD；拉不到就整包走原图。
     2. hdSourceFromManifest：档案名要去掉 `.mkf`（清单里存的是 `Data`）；
-       取产物用 assemble.ts 的 hdRelativePath（写读两侧同一函数）。
+       取产物用 upscale.ts 的 hdRelativePath（写读两侧同一函数）。
     3. SpriteCache.get：HD 优先，fetch/解码任一环失败就回退原图这一张。
     4. ★ HD 路径**不补 colorKeyBlack**：透明性管线已烘进 alpha，且 AI 放大后
        「纯黑」不再是精确 0，按 RGB==0 再抠一次只会抠不动或抠错。
-    5. LRU：精灵与原始字节各有上限；淘汰时调 onEvict 通知持有引用的一方
+    5. ★ HD 产物交**浏览器原生解码**（`createImageBitmap(new Blob([bytes]))`），
+       不自己 `decodePng` —— 那会经 `png.ts` 把 `node:zlib` 拖进前端包（Q-BUILD-1）。
+       尺寸取自位图、锚点取自清单，都不需要 JS 解 PNG。
+    6. LRU：精灵与原始字节各有上限；淘汰时调 onEvict 通知持有引用的一方
        （真正的内存释放要消费方配合，见 Q-PERF-1）。
   tests: "回退路径 6 条（无来源/拉不到/坏 PNG/按图混用/空槽/缓存命中）；LRU 4 条；清单 4 条"
   files: [packages/client/src/assets.ts, packages/client/src/assets.test.ts, packages/client/src/host.ts, packages/client/src/main.ts]

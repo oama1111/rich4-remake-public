@@ -404,7 +404,12 @@ export function drawAiSettings(
   ctx.font = `20px ${FONT}`;
   text(ctx, AI_LABELS.title, AI_TEXT.title);
   if (rows[0] !== undefined) text(ctx, AI_LABELS.personality, AI_TEXT.personality);
+  // ⚠️ 「資金運用比例」在反汇编里也是**大字**（0x14=20），但原版用的是点阵字，
+  //   同样的行高下字形比系统字窄；20px 会压到右侧粉条上。故这一个降到 17px
+  //   —— 位置仍取原坐标（x=249），只调字号让宽度贴合底图留的空。
+  ctx.font = `17px ${FONT}`;
   text(ctx, AI_LABELS.ratios, AI_TEXT.ratios);
+  ctx.font = `20px ${FONT}`;
 
   ctx.font = `16px ${FONT}`;
   text(ctx, AI_LABELS.useCards, AI_TEXT.useCards);
@@ -413,7 +418,7 @@ export function drawAiSettings(
   text(ctx, AI_LABELS.normal, AI_TEXT.normal);
   text(ctx, AI_LABELS.villain, AI_TEXT.villain);
 
-  // 比例：两侧标签 + 中间的值
+  // 比例：两侧标签 + 滑槽里的**填充**
   const row0 = rows[0];
   const cash = row0?.cashRatio ?? 0;
   const stock = row0?.stockRatio ?? 0;
@@ -422,11 +427,11 @@ export function drawAiSettings(
   text(ctx, AI_LABELS.deposit, AI_TEXT.deposit);
   textRight(ctx, AI_LABELS.stock, AI_TEXT.stock);
   text(ctx, AI_LABELS.fund, AI_TEXT.fund);
-  ctx.font = `14px ${FONT}`;
-  ctx.fillStyle = '#ffe9a8';
-  centerText(ctx, `${cash}%`, AI_SLIDERS.cash);
-  centerText(ctx, `${stock}%`, AI_SLIDERS.stock);
-  ctx.fillStyle = '#f0f0f0';
+
+  // ★ 只填、不写数字 —— 原版这一屏**没有百分比文字**，它靠条子的填充长度表达。
+  //   加个「50%」上去看着方便，但那是「改良」，C-FID-1/4 明令禁止。
+  fillRatio(ctx, AI_SLIDERS.cash, cash);
+  fillRatio(ctx, AI_SLIDERS.stock, stock);
 
   // 竖排的確定/取消
   ctx.font = `20px ${FONT}`;
@@ -502,11 +507,19 @@ function textRight(ctx: CanvasRenderingContext2D, s: string, at: { x: number; y:
   ctx.textAlign = 'left';
 }
 
-function centerText(ctx: CanvasRenderingContext2D, s: string, r: { x: number; y: number; w: number; h: number }): void {
-  ctx.textAlign = 'center';
-  ctx.fillText(s, r.x + r.w / 2, r.y + (r.h - 14) / 2);
-  ctx.textAlign = 'left';
+/** 滑槽里按百分比填一格亮色条（原版没有数字，只有填充长度）*/
+function fillRatio(ctx: CanvasRenderingContext2D, r: { x: number; y: number; w: number; h: number }, percent: number): void {
+  const inner = { x: r.x + FILL_INSET, y: r.y + FILL_INSET, w: r.w - FILL_INSET * 2, h: r.h - FILL_INSET * 2 };
+  const filled = Math.round((inner.w * Math.max(0, Math.min(100, percent))) / 100);
+  if (filled <= 0) return;
+  ctx.fillStyle = FILL_COLOR;
+  ctx.fillRect(inner.x, inner.y, filled, inner.h);
 }
+
+/** 填充条相对滑槽四周留的空，免得盖住底图描边 */
+const FILL_INSET = 4;
+/** 填充色：比底图的深绿亮一档，在截图尺寸下能一眼看出长度 */
+const FILL_COLOR = '#8fd45a';
 
 /** 竖排：x 是列中心，y 是首字顶端 */
 function verticalText(ctx: CanvasRenderingContext2D, s: string, at: { x: number; y: number }): void {

@@ -33,7 +33,7 @@ import {
   type AssetEntryLike,
   type UpscaleManifest,
 } from './upscale.ts';
-import { decodePng, encodePng } from './sprite.ts';
+import { decodePng, encodePng } from './png.ts';
 import { buildQueueFrame, sliceFrame, type QueueManifest } from './slice.ts';
 import { mergeUpscaled, validatePair, type MergeRejection } from './merge.ts';
 import { assembleHd, type AssembleIo } from './assemble.ts';

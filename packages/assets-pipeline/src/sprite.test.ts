@@ -5,7 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { MkfArchive, parseSpriteSheet } from './mkf.ts';
-import { decodeImage, parsePalette, encodePng, TRANSPARENT_INDEX } from './sprite.ts';
+import { decodeImage, parsePalette, TRANSPARENT_INDEX } from './sprite.ts';
+import { encodePng } from './png.ts';
 
 const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
 const hasAssets = existsSync(`${ROOT}/Rich4/map.mkf`);

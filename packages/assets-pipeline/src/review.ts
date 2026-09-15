@@ -18,8 +18,7 @@
  */
 
 import type { AssetCategory } from './classify.ts';
-import { hdRelativePath } from './assemble.ts';
-import type { UpscaleManifest } from './upscale.ts';
+import { hdRelativePath, type UpscaleManifest } from './upscale.ts';
 
 /** 一行对照 */
 export interface ReviewRow {

@@ -6,10 +6,11 @@
  * 于是幂等、尺寸守卫、锚点这些规矩可以逐个钉死，不必造临时目录。
  */
 import { describe, expect, it } from 'vitest';
-import { assembleHd, hdRelativePath, type AssembleIo } from './assemble.ts';
-import { emptyManifest, planUpscale, type AssetEntryLike, type UpscaleManifest } from './upscale.ts';
+import { assembleHd, type AssembleIo } from './assemble.ts';
+import { emptyManifest, hdRelativePath, planUpscale, type AssetEntryLike, type UpscaleManifest } from './upscale.ts';
 import { buildQueueFrame, SUGGESTED_MODEL, type QueueFrame, type QueueManifest } from './slice.ts';
-import { encodePng, type DecodedImage } from './sprite.ts';
+import { type DecodedImage } from './sprite.ts';
+import { encodePng } from './png.ts';
 
 // ============================================================
 //  夹具

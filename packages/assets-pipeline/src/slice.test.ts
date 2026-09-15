@@ -4,7 +4,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { decodePng, encodePng, PngFormatError, type DecodedImage } from './sprite.ts';
+import { type DecodedImage } from './sprite.ts';
+import { decodePng, encodePng, PngFormatError } from './png.ts';
 import {
   bleedColors,
   buildQueueFrame,

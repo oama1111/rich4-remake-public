@@ -548,7 +548,25 @@ wiki 的「各項目時間不同」与 exe 不符）、只在業主自己的回�
 
 ## 本轮新增的未决问题
 
-### ★ Q-BUILD-1：浏览器构建从 `b99b459` 起就是坏的（`node:zlib` 漏进前端）
+### ~~Q-BUILD-1~~：`node:zlib` 漏进前端 —— **已修（2026-09-14）**
+
+**修法**：按 §2.2 新写的规矩拆成两条出口。
+
+| 动作 | 内容 |
+|---|---|
+| 拆模块 | `sprite.ts` 的 PNG 编解码（154–420 行）整段搬到新的 **`png.ts`**，`node:zlib` 跟着走；`sprite.ts` 只剩纯 `Uint8Array` 运算 |
+| 拆出口 | `index.ts` = 浏览器安全那一层（**不含** `png.ts`、`assemble.ts`）；新增 **`node.ts`** 放这两个，走 `@rich4/assets-pipeline/node` |
+| 挪契约 | `hdRelativePath` 从 `assemble.ts` 挪到 **`upscale.ts`** —— 前端要用它拼 URL，而 assemble 那条线在 node 出口上 |
+| 前端去 PNG | `SpriteCache` 的 HD 路径不再 `decodePng`，改成 `createImageBitmap(new Blob([bytes]))` 交浏览器原生解码（更快，且不必把 zlib 拖进来） |
+| **加守卫** | `src/index.test.ts` 沿真实 import 走图，断言 `index.ts` **间接**也够不着任何 `node:`。这条测试就是防它复发的东西 |
+
+**验证**：`pnpm dev` 起来后页面不再停在「载入中…」，棋盘、工具栏、右侧资产面板均正常渲染；
+託管AI 屏（T-021）**目视核对通过**。
+
+**教训**：`pnpm check`（typecheck + lint + Node 下的单测）**证明不了前端能跑**。
+「这个模块能不能进前端」必须由**出口**表达 + 一条走 import 图的守卫，不能靠谁记得。
+
+### 原 Q-BUILD-1 记录（留档）
 
 **症状**：`pnpm dev` 起来后页面永远停在「载入中…」。控制台：
 

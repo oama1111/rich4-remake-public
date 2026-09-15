@@ -18,7 +18,8 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { MkfArchive, parseSpriteSheet } from './mkf.ts';
-import { decodeImage, encodePng } from './sprite.ts';
+import { decodeImage } from './sprite.ts';
+import { encodePng } from './png.ts';
 
 /** 原版的资源档案。Effect.mkf 里是 RIFF 音效，非图像。 */
 const ARCHIVES = ['Data.mkf', 'Panel.mkf', 'map.mkf', 'jump.mkf', 'Effect.mkf', 'help.mkf'];

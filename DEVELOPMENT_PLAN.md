@@ -350,6 +350,13 @@ rich4-remake/
 > Q-NET-2 大厅改角色/换地图要协议；Q-GND-4 底图不在超分清单里；Q-PERF-1 LRU 释放内存需
 > render.ts 接 onEvict + 桌面端 hd 路由。
 >
+> **★ 2026-09-14 深夜（M4 期间）**：发现并修掉 **Q-BUILD-1** —— `sprite.ts` 一行
+> `import 'node:zlib'` 让**前端包加载即失败**，从 `b99b459` 起一直坏到当时，而
+> `pnpm check` 全绿（单测跑在 Node 下，看不到）。`assets-pipeline` 据此拆成两条出口：
+> `@rich4/assets-pipeline`（浏览器安全，纯 Uint8Array 运算）与
+> `@rich4/assets-pipeline/node`（PNG 编解码 + assemble）。并加了一条**走 import 图的守卫测试**，
+> 断言前端出口间接也够不着 `node:`。**C 组 30 屏的目视验证至此才成为可能。**
+>
 > 未决问题一律登记在 `docs/known-deviations.md`，**不静默跳过**。
 
 #### **M0｜工程地基**　~2 单元　✅ **已完成**

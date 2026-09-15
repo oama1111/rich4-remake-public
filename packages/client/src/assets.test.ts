@@ -7,7 +7,9 @@
  * 于是「按图回退」「LRU」这些最容易写错的规矩可以逐条钉死。
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { encodePng, type DecodedImage, type MkfArchive } from '@rich4/assets-pipeline';
+import { type DecodedImage, type MkfArchive } from '@rich4/assets-pipeline';
+// PNG 编解码走 Node 专用出口（用了 node:zlib，不能进前端包）—— 测试跑在 Node 下，够用
+import { decodePng, encodePng } from '@rich4/assets-pipeline/node';
 import {
   archiveKey,
   hdSourceFromManifest,
@@ -36,9 +38,20 @@ beforeEach(() => {
   (globalThis as unknown as { ImageData: unknown }).ImageData = FakeImageData;
 });
 
-/** 假的位图：只要能读回尺寸，够断言用 */
-const fakeBitmap = (img: { width: number; height: number }): ImageBitmap =>
-  ({ width: img.width, height: img.height }) as unknown as ImageBitmap;
+/**
+ * 假的位图工厂 —— 模拟浏览器的 `createImageBitmap`。
+ *
+ * ★ 两条分支都必要：原图走 ImageData（尺寸现成），**HD 走 Blob**
+ *   （T-065 改成把 PNG 字节交给浏览器原生解码，不再自己 `decodePng`）。
+ *   Blob 这条就真解一次 PNG 拿尺寸 —— 与浏览器实际做的事等价。
+ */
+const fakeBitmapOf = async (source: ImageData | Blob): Promise<ImageBitmap> => {
+  if (source instanceof Blob) {
+    const img = decodePng(new Uint8Array(await source.arrayBuffer()));
+    return { width: img.width, height: img.height } as unknown as ImageBitmap;
+  }
+  return { width: source.width, height: source.height } as unknown as ImageBitmap;
+};
 
 const bitmapSize = (s: Sprite): { w: number; h: number } => {
   const b = s.bitmap as unknown as { width: number; height: number };
@@ -174,7 +187,7 @@ function cacheWith(opts: {
   onEvict?: (s: Sprite) => void;
 }): SpriteCache {
   const base = {
-    createBitmap: (img: { width: number; height: number }) => Promise.resolve(fakeBitmap(img)),
+    createBitmap: fakeBitmapOf,
   };
   return new SpriteCache(fakeArchives(opts.resources ?? { 0: spr2x2() }), {
     ...base,
@@ -255,7 +268,7 @@ describe('HD 优先、按图回退原图', () => {
   });
 
   it('同一张图第二次取走缓存（位图工厂只调一次）', async () => {
-    const createBitmap = vi.fn((img: { width: number; height: number }) => Promise.resolve(fakeBitmap(img)));
+    const createBitmap = vi.fn(fakeBitmapOf);
     const c = new SpriteCache(fakeArchives({ 0: spr2x2() }), { createBitmap });
     await c.get('Data.mkf', 0, 0);
     await c.get('Data.mkf', 0, 0);

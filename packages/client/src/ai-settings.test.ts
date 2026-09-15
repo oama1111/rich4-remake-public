@@ -347,6 +347,7 @@ describe('摆位', () => {
 describe('drawAiSettings', () => {
   function fakeCtx() {
     const texts: string[] = [];
+    const rects: { x: number; y: number; w: number; h: number }[] = [];
     let images = 0;
     const ctx = {
       font: '',
@@ -364,13 +365,23 @@ describe('drawAiSettings', () => {
       drawImage: () => {
         images++;
       },
+      fillRect: (x: number, y: number, w: number, h: number) => {
+        rects.push({ x, y, w, h });
+      },
       fillText: (t: string) => {
         texts.push(t);
       },
       strokeRect: () => undefined,
       measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
     };
-    return { ctx: ctx as unknown as CanvasRenderingContext2D, texts, get images() { return images; } };
+    return {
+      ctx: ctx as unknown as CanvasRenderingContext2D,
+      texts,
+      rects,
+      get images() {
+        return images;
+      },
+    };
   }
 
   const sprite = (): Sprite => ({ bitmap: {} as ImageBitmap, width: 20, height: 20, anchorX: 0, anchorY: 0 });
@@ -388,11 +399,23 @@ describe('drawAiSettings', () => {
     for (const ch of ['確', '定', '取', '消']) expect(f.texts).toContain(ch);
   });
 
-  it('比例值画在滑槽上', () => {
+  it('★ 比例只画**填充**，不画数字（原版没有百分比文字，加数字属「改良」）', () => {
     const f = fakeCtx();
     drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 70, stockRatio: 15 }], null, () => sprite());
-    expect(f.texts).toContain('70%');
-    expect(f.texts).toContain('15%');
+
+    expect(f.texts.some((t) => t.includes('%'))).toBe(false);
+    // 两条滑槽各填一格，长度与百分比成正比（宽度落在整数像素上，故容差放到 0.5）
+    expect(f.rects).toHaveLength(2);
+    const cash = f.rects[0]!;
+    const stock = f.rects[1]!;
+    expect(cash.w / stock.w).toBeCloseTo(70 / 15, 0);
+    expect(cash.w).toBeGreaterThan(stock.w);
+  });
+
+  it('比例为 0 时不填（免得画出一条 0 宽的线）', () => {
+    const f = fakeCtx();
+    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 0, stockRatio: 0 }], null, () => sprite());
+    expect(f.rects).toHaveLength(0);
   });
 
   it('没有草稿（没人是真人）也画得出来', () => {
