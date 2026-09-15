@@ -14,8 +14,10 @@ import {
   MINIMAP_CENTER_MAX,
   MINIMAP_CENTER_MIN,
   clampCameraCenter,
+  PANEL_TAG_HIT,
   hitMinimapArrow,
   hitMinimapBody,
+  hitPanelTag,
   minimapArrowRect,
   minimapAt,
   minimapToWorld,
@@ -226,5 +228,28 @@ describe('小地图箭头与坐标换算 —— 照 exe 的整数运算', () => 
 
   it('取景框是 30×30 的**像素**框（原版框的是当前玩家那个圆点）', () => {
     expect(MINIMAP_BOX).toBe(0x1e);
+  });
+});
+
+describe('右上角四条彩色竖条 —— 点一下就换页 @source VA 0x004182fa', () => {
+  it('★ 命中条是最右 24px、每 70 一格，四条的中心各自命中自己', () => {
+    // 竖条中心 35 / 108 / 178 / 250（exe 的 y 表 +20）
+    for (const [page, center] of [35, 108, 178, 250].entries()) {
+      expect(hitPanelTag(PANEL_TAG_HIT.x, center)).toBe(page);
+      expect(hitPanelTag(PANEL_WIDTH - 1, center)).toBe(page);
+    }
+    // 竖条左边那条缝不认
+    expect(hitPanelTag(PANEL_TAG_HIT.x - 1, 35)).toBeNull();
+    // 面板之外（下半那块 200×200）不认
+    expect(hitPanelTag(PANEL_TAG_HIT.x, PANEL_HEIGHT)).toBeNull();
+    expect(hitPanelTag(PANEL_TAG_HIT.x, -1)).toBeNull();
+  });
+
+  it('★ 每格恰好 70 高（= 面板 280 ÷ 4）', () => {
+    expect(PANEL_TAG_HIT.count * PANEL_TAG_HIT.h).toBe(PANEL_HEIGHT);
+    // 边界：69 属第 0 格、70 属第 1 格
+    expect(hitPanelTag(PANEL_TAG_HIT.x, 69)).toBe(0);
+    expect(hitPanelTag(PANEL_TAG_HIT.x, 70)).toBe(1);
+    expect(hitPanelTag(PANEL_TAG_HIT.x, 279)).toBe(3);
   });
 });

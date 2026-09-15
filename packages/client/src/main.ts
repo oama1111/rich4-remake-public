@@ -63,6 +63,7 @@ import {
   clampCameraCenter,
   hitMinimapArrow,
   hitMinimapBody,
+  hitPanelTag,
   hitSidebar,
   minimapToWorld,
   type MinimapArrowId,
@@ -137,6 +138,14 @@ import {
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import { drawIntro, introDone } from './intro.ts';
+import {
+  activePlayers,
+  drawAssetSheet,
+  hitSheetBtn,
+  hitSheetExit,
+  hitSheetTab,
+  type SheetPress,
+} from './asset-sheet.ts';
 import {
   applySetupHit,
   defaultSetup,
@@ -470,6 +479,9 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
       // 右下角那块 200×200 轮换：日曆 → 月曆 → 小地圖
       sidebarView =
         sidebarView === 'calendar' ? 'month' : sidebarView === 'month' ? 'map' : 'calendar';
+      return true;
+    case HOTKEY.query:
+      openAssets();
       return true;
     case HOTKEY.pageUp:
     case HOTKEY.pageDown:
@@ -1084,8 +1096,42 @@ const hudOffCtx = (() => {
 })();
 
 /** 当前屏幕 */
-type Screen = 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'aiSettings' | 'intro' | 'game';
+type Screen =
+  | 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'aiSettings' | 'intro' | 'assets' | 'game';
 let screen: Screen = 'title';
+
+/**
+ * 個人資產表屏（T-022）当前看的是哪个视图（0 資產總表 / 1 地產清單 / 2 股票清單）。
+ * @source 原版 `[0x4753fc]`，由窗口过程的状态机置（VA 0x42420b `[0x48c284]−2`）。
+ */
+let assetView = 0;
+/**
+ * 本屏显示的是**哪个玩家**。
+ * @source 原版 `[0x48c27c]` —— 开屏时取当前玩家（VA 0x423d6c），点顶栏页签可换（VA 0x424042）。
+ */
+let assetWho = 0;
+/**
+ * 本屏的**按下态** —— 原版只在 `WM_LBUTTONDOWN` 那一下画高亮、`WM_LBUTTONUP` 才动作
+ * （VA 0x424163 钮 / 0x423dd1 EXIT），抬手 0x202 走 `[0x48c284]` 的跳表。
+ * ★ 抬手时**不再看光标位置** —— 原版就认按下那一刻记下的状态。
+ */
+let sheetPress: SheetPress = { btn: null, exit: false };
+
+function openAssets(): void {
+  if (screen === 'game') {
+    assetView = 0;
+    assetWho = state.currentPlayer;
+    sheetPress = { btn: null, exit: false };
+    screen = 'assets';
+    requestRender();
+  }
+}
+
+function closeAssets(): void {
+  if (screen !== 'assets') return;
+  screen = 'game';
+  requestRender();
+}
 
 /**
  * 開局跳伞过场（T-048）：起点时刻与「用户跳过」标志。
@@ -1158,16 +1204,22 @@ function requestRender(): void {
     stageCtx.fillStyle = '#000';
     stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
 
-    if (screen === 'intro') {
-      drawIntro(stageCtx, performance.now() - introStartedAt);
-      // ★ 过场要**逐帧**推进：没播完就再排一帧（与走子补间同一个道理），
-      //   否则只画第一帧就冻住 —— 类型检查与单测都看不出这一条。
-      if (introDone(introStartedAt, performance.now(), introSkipped)) endIntro();
-      else requestRender();
-      return;
-    }
     if (screen === 'title') {
       drawTitle(stageCtx, titleHot, spriteNow);
+    } else if (screen === 'intro') {
+      // ★ 过场要**逐帧**推进：没播完就再排一帧（与走子补间同一个道理），
+      //   否则只画第一帧就冻住 —— 类型检查与单测都看不出这一条。
+      // ★ 也**不能在这里 `return`** —— 见下面 assets 那条的同一条注释：
+      //   `blitStage()` 在这条链末尾，提前返回就是白画（过场此前就是这样，
+      //   一直没显示出来）。
+      drawIntro(stageCtx, performance.now() - introStartedAt);
+      if (introDone(introStartedAt, performance.now(), introSkipped)) endIntro();
+      else requestRender();
+    } else if (screen === 'assets') {
+      // ★ **不要在这里 `return`** —— `blitStage()` 在这条链的末尾，
+      //   提前返回等于画了不上屏（上一轮就是这样：`screen` 都切过去了，
+      //   画面却一直停在棋盘上）。
+      drawAssetSheet(stageCtx, spriteNow, state, topo, assetWho, assetView, sheetPress);
     } else if (screen === 'setup') {
       drawSetup(stageCtx, setup, setupHot, spriteNow);
     } else if (screen === 'saveload') {
@@ -1426,6 +1478,20 @@ function cyclePanelPage(delta: number): void {
 }
 
 /**
+ * 直接把面板切到第 `page` 页 —— **点右上角标签才走这条**。
+ *
+ * @source VA 0x004182fa：页号 = `y / 70`；**与原页相同就整个分支跳过**
+ *   （连确认音都不放），否则放确认音、写 `[player + 0x48be24]`、重画面板。
+ */
+function setPanelPage(i: number, page: number): void {
+  if (panelPages[i] === page) return;
+  sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+  panelPages[i] = page;
+  log(`▶ 面板：${PANEL_ROWS[page]?.join(' / ')}`);
+  requestRender();
+}
+
+/**
  * 小地图局部坐标 → 镜头中心（世界坐标，已夹紧）。
  *
  * @source VA 0x00418591：`世界 = 局部 × 93/8`，再逐轴夹到 `[220, 2084]`。
@@ -1462,6 +1528,9 @@ function onToolbar(i: number): void {
   switch (i) {
     case 1: // 遊戲設定
       openOptions('game');
+      return;
+    case 6: // 個人資產表（T-022）
+      openAssets();
       return;
     case 2: // 託管AI
       openAiSettings('game');
@@ -2082,6 +2151,9 @@ function bindInput(): void {
       return;
     }
 
+    // 底下都是棋盘上的交互 —— 其余屏（含個人資產表）到这儿就结束
+    if (screen !== 'game') return;
+
     // 轮到人、还没掷骰：GO 鈕与它下面那排骰子数切换
     const meNow = state.players[state.currentPlayer];
     if (awaitingHumanRoll() && meNow !== undefined) {
@@ -2143,11 +2215,44 @@ function bindInput(): void {
   let drag: { x: number; y: number } | null = null;
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
+
+    // ── 個人資產表屏（T-022）──
+    // 按下只**记状态 + 画高亮**，动作全留给抬手（原版 VA 0x424049/0x424163/0x423dd1）。
+    if (screen === 'assets') {
+      const q = eventToStage(e);
+      if (q === null) return;
+      // 顶栏页签：原版**按下就换人**（VA 0x424049 里立刻 `[0x48c27c] = 玩家`）
+      const tab = hitSheetTab(q.x, q.y, activePlayers(state).length);
+      if (tab !== null) {
+        const who = activePlayers(state)[tab];
+        if (who !== undefined && who !== assetWho) {
+          assetWho = who;
+          requestRender();
+        }
+        return;
+      }
+      if (hitSheetExit(q.x, q.y)) sheetPress = { btn: null, exit: true };
+      else {
+        const btn = hitSheetBtn(q.x, q.y);
+        if (btn !== null) sheetPress = { btn, exit: false };
+      }
+      if (sheetPress.btn !== null || sheetPress.exit) requestRender();
+      return;
+    }
+
     if (screen !== 'game') return;
     // ⚠️ 命中判定一律走**舞台坐标**：窗口是整数倍放大且居中的，
     //   直接拿 clientX/clientY 去比 439×40 的工具栏必然对不上。
     const p = eventToStage(e);
     if (p === null) return;
+
+    // 右上角那四条彩色竖条：**点一下就换页** @source VA 0x004182fa
+    // 页号 = `y / 70`；页没变就什么都不做（原版连音效都不放）。
+    const tag = hitPanelTag(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y);
+    if (tag !== null) {
+      setPanelPage(state.currentPlayer, tag);
+      return;
+    }
 
     const tool = hitToolbar(p.x - LAYOUT.toolbar.x, p.y - LAYOUT.toolbar.y);
     if (tool !== null) {
@@ -2185,6 +2290,18 @@ function bindInput(): void {
     drag = { x: e.clientX, y: e.clientY };
   });
   window.addEventListener('mouseup', () => {
+    // ── 個人資產表屏：抬手才动作（照原版 0x202 那条跳表 `[0x48c284]−2`）──
+    if (screen === 'assets' && (sheetPress.btn !== null || sheetPress.exit)) {
+      const { btn, exit } = sheetPress;
+      sheetPress = { btn: null, exit: false };
+      if (exit) closeAssets();
+      else if (btn !== null) {
+        assetView = btn;
+        requestRender();
+      }
+      return;
+    }
+
     drag = null;
     draggingMinimap = false;
     if (pressedMinimapArrow !== null) {
@@ -2233,6 +2350,12 @@ function bindInput(): void {
   // 右键：**在有标记时**点小地图外任意处 → 清掉标记、镜头回到当前玩家
   // @source VA 0x00418893（WM_RBUTTONUP）：算出的位置与标记相同就 `[0x48be18] = 0`
   canvas.addEventListener('contextmenu', (e) => {
+    // 資產表屏：右键关掉（原版 WM_RBUTTONUP，VA 0x424409）
+    if (screen === 'assets') {
+      e.preventDefault();
+      closeAssets();
+      return;
+    }
     if (screen !== 'game' || minimapMarker === null) return;
     e.preventDefault();
     minimapMarker = null;

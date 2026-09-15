@@ -75,11 +75,10 @@ describe('panelRows —— 每页的格式', () => {
     const s2 = mkState({
       ...state,
       landOwner: [0, 1, 1],
-      landLevel: [0, 3, 0],
-      landType: [0, 0, 0],
+      landType: [0, 3, 0], // ★ 連鎖店的判据是 type（+0x18），不是 level
     });
     const rows = panelRows(s2, { ...emptyTopo, lands: [ownedLand(1, 3), ownedLand(2, 0)] }, 0, 1);
-    expect(rows).toEqual(['2', '1', '0']); // 土地(2) / 連鎖店(等级≠0 的 1 块) / 設施(0)
+    expect(rows).toEqual(['2', '1', '0']); // 土地(2) / 連鎖店(type≠0 的 1 块) / 設施(0)
     for (const r of rows) expect(r.startsWith('$')).toBe(false);
   });
 

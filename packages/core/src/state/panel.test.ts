@@ -7,7 +7,7 @@
  * 现在四页都按 exe 的四个页处理函数算，故补上断言。
  */
 import { describe, expect, it } from 'vitest';
-import { PANEL_PAGE_COUNT, panelValues } from './panel.ts';
+import { PANEL_PAGE_COUNT, assetCounts, panelValues } from './panel.ts';
 import { makeFacility, makeGameState, makeLand } from '../testing/factories.ts';
 import type { MapTopology } from './reduce.ts';
 
@@ -55,17 +55,34 @@ describe('panelValues —— 四页数值', () => {
   it('★ 地產页：土地 / 連鎖店 / 設施 —— 土地把设施也算进去（原版共用一个累加器）', () => {
     const state = makeGameState({
       landOwner: [0, 1, 1],
-      landLevel: [0, 0, 2],
+      // ★ 連鎖店的判据是**地块的 type（+0x18）**，不是 level —— 见 `assetCounts`
+      landType: [0, 0, 1],
       facilityOwner: [0, 1],
       facilityLevel: [0, 1],
     });
     const v = panelValues(state, topoWith([L1, L2], [F1]), 0);
     // 土地 = 2 块地 + 1 个设施 = 3（@source VA 0x00416355 的 `[esp+0xac]`）
     expect(v.estate[0]).toBe(3);
-    // 連鎖店 = 有房的地块数（等级≠0）= 1
+    // 連鎖店 = type≠0 的地块数 = 1
     expect(v.estate[1]).toBe(1);
     // 設施 = 等级≠0 的设施数 = 1
     expect(v.estate[2]).toBe(1);
+  });
+
+  it('★ 個人資產表四条：土地 / 連鎖店 / 房屋 / 設施（房屋只在 type==0 时算）', () => {
+    // ★ `landOwner` 留空 —— `allEffectiveLands` 在状态数组缺项时回落到地块模板
+    //   自己的 owner，这里就是要用模板的 owner 说话；`facilityOwner` 反过来不能留空
+    //   （`makeGameState` 默认是全 0 的 32 项数组，会把模板 owner 盖成「无主」）。
+    const state = makeGameState({ facilityOwner: [0, 1], facilityLevel: [0, 1] });
+    const lands = [
+      makeLand({ id: 1, owner: 2 }), // 别人的
+      makeLand({ id: 2, owner: 1, type: 0, level: 1 }), // 房屋
+      makeLand({ id: 3, owner: 1, type: 1, level: 1 }), // 連鎖店（type≠0 优先）
+      makeLand({ id: 4, owner: 1, type: 0, level: 0 }), // 空地：两条都不算
+    ];
+    expect(assetCounts(state, topoWith(lands, [makeFacility({ id: 1, owner: 1, level: 1 })]), 0)).toEqual(
+      [4, 1, 1, 1],
+    );
   });
 
   it('别人的地/设施不算我的', () => {

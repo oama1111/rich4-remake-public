@@ -212,6 +212,39 @@ const PANEL_TAG_LINE = PANEL_TAG_SIZE;
 const PANEL_TAG_COLOR = '#ffffff';
 
 /**
+ * 四条彩色竖条的**命中条**（侧栏局部坐标）。
+ *
+ * @source VA 0x004182fa —— 棋盘区之外的鼠标按下会落到这一支：
+ * ```asm
+ * cmp esi, 0x268          ; x < 616 → 不是标签
+ * jl  skip
+ * cmp edx, 0x118          ; y ≥ 280 → 不是标签
+ * jge skip
+ * mov ebx, 0x46           ; 70
+ * mov eax, edx ; idiv ebx ; ★ 页号 = y / 70
+ * cmp eax, 该玩家当前页   ; ★ 已经是这页 → 什么都不做（连音效都不放）
+ * je  skip
+ * play_sound_effect(0x482322) ; 确认音
+ * mov byte [player + 0x48be24], bl   ; 换页
+ * call fcn_00415f69                  ; 重画面板
+ * ```
+ * 即：**最右 24px（局部 x∈[176,200)）、整条 280 高、每 70 一格**。
+ * 四格的页号与四条竖条的中心（35 / 108 / 178 / 250）一一对得上。
+ *
+ * ⚠️ 原版这一支前面有 `cfg+5 == 2` 的闸门 —— 因为 `fcn_00415f69` 在
+ *   `cfg+5 == 2`（兩者輪流）时**整块面板都不画**（VA 0x004166ed 直接 ret），
+ *   没有竖条可点。本引擎任何一态都画面板，故这里不加那道闸门。
+ */
+export const PANEL_TAG_HIT = { x: 176, h: 70, count: 4 } as const;
+
+/** 点在第几条彩色竖条上；没点中返回 null（坐标是**侧栏局部**） */
+export function hitPanelTag(x: number, y: number): number | null {
+  if (x < PANEL_TAG_HIT.x || x >= PANEL_WIDTH) return null;
+  if (y < 0 || y >= PANEL_TAG_HIT.h * PANEL_TAG_HIT.count) return null;
+  return Math.floor(y / PANEL_TAG_HIT.h);
+}
+
+/**
  * 四页各自的三行标签。
  *
  * @source VA 0x00417eba 起 —— 原版在开局时把 12 个标签**用代码画进那四张页面图**

@@ -14,9 +14,14 @@
  * | 2 股票 | 總市值 | 成  本 | 經營權 |
  * | 3 其他 | 點  卷 | 貸  款 | 保險期 |
  *
- * 页号是**每个玩家一份**（`0x48be24 + 玩家号`），由 PgUp/PgDn 那对熱鍵
- * 切换 `(页 ∓ 1) & 3`（VA 0x004014b1 / 0x004014ee）。**点 tag 不换页** ——
- * 标签表 `0x475274` 只在绘制处被引用，没有任何命中判定。
+ * 页号是**每个玩家一份**（`0x48be24 + 玩家号`）。三条切换通路：
+ *   - PgUp/PgDn 熱鍵 → `(页 ∓ 1) & 3`（VA 0x004014b1 / 0x004014ee）；
+ *   - **点右上角那四条彩色竖条** → 页号 = `y / 70`（VA 0x004182fa）。
+ *
+ * ★ 先前这里写着「点 tag 不换页」，**是错的** —— 依据是「标签表 `0x475274`
+ *   只在绘制处被引用」。但原版根本不用那张表做命中判定，而是拿**坐标**算：
+ *   `x ≥ 616 且 y < 280` 就按 `y / 70` 换页。`0x475274` 只是那四页的**名字**。
+ *   （2026-09-15 经需求方提醒后回 exe 复核，见 `known-deviations.md` 的 Q-PANEL-1。）
  */
 
 import type { GameState } from './types.ts';
@@ -43,6 +48,48 @@ export interface PanelPages {
   stocks: PanelRows;
   /** 3 其他：點卷 / 貸款 / 保險期（天） */
   misc: PanelRows;
+}
+
+/**
+ * 個人資產表（S7）中列那四条计数 —— 土地 / 連鎖店 / 房屋 / 設施。
+ *
+ * @source VA 0x00423583（地块循环）与 0x004235c3（设施循环）：
+ * ```asm
+ * 地块: cmp byte [eax+0x19], 我+1 / jne skip      ; 只算我名下的
+ *       inc [esp+0x80]                            ; ★ 两个循环**共用**这一个累加器
+ *       cmp byte [eax+0x18], 0 / je +            ; type（連鎖店/房屋）
+ *       inc esi                                   ; 行2 連鎖店 = type ≠ 0
+ *       cmp byte [eax+0x1a], 0 / je skip          ; level
+ *       inc edi                                   ; 行3 房屋 = type==0 且 level ≠ 0
+ * 设施: inc [esp+0x80] / cmp byte [eax+0x1a],0 / inc ebp   ; 行4 設施 = level ≠ 0
+ * ```
+ * ★ 两个循环共用累加器，所以**行1「土地」其实是不動產总数**（地块 + 设施），
+ *   侧栏地產页的「土地」行也是这么算的（VA 0x00416355 的 `[esp+0xac]`）。
+ * ★ 行2 的判据是**地块的 `type`（+0x18）**，不是 `level` —— `land.h` 写明
+ *   `+0x18: chained store or house`。
+ */
+export function assetCounts(
+  state: GameState,
+  topo: MapTopology,
+  playerIndex: number,
+): readonly [number, number, number, number] {
+  const me = playerIndex + 1;
+  let total = 0;
+  let chainStores = 0;
+  let houses = 0;
+  for (const land of allEffectiveLands(state, topo)) {
+    if (land.owner !== me) continue;
+    total++;
+    if (land.type !== 0) chainStores++;
+    else if (land.level !== 0) houses++;
+  }
+  let developedFacilities = 0;
+  for (const fac of allEffectiveFacilities(state, topo)) {
+    if (fac.owner !== me) continue;
+    total++;
+    if (fac.level !== 0) developedFacilities++;
+  }
+  return [total, chainStores, houses, developedFacilities];
 }
 
 /**
@@ -78,23 +125,9 @@ export function panelValues(
   ];
 
   // ── 1 地產 @source VA 0x00416355 ──
-  //   原版两个循环共用一个累加器 `[esp+0xac]`：
-  //     地块 → 有主的 +1；设施 → 有主的再 +1  ⇒ 行1 其实是**不動產总数**
-  //   行2 = 有主的**地块**里 level≠0 的个数；行3 = 有主的**设施**里 level≠0 的个数
-  let ownedRealEstate = 0;
-  let chainStores = 0;
-  for (const land of lands) {
-    if (land.owner !== me) continue;
-    ownedRealEstate++;
-    if (land.level !== 0) chainStores++;
-  }
-  let developedFacilities = 0;
-  for (const fac of facilities) {
-    if (fac.owner !== me) continue;
-    ownedRealEstate++;
-    if (fac.level !== 0) developedFacilities++;
-  }
-  const estate: PanelRows = [ownedRealEstate, chainStores, developedFacilities];
+  //   侧栏这页只取個人資產表那四条的**前三/第四条**（见 `assetCounts`）。
+  const counts = assetCounts(state, topo, playerIndex);
+  const estate: PanelRows = [counts[0], counts[1], counts[3]];
 
   // ── 2 股票 @source VA 0x0041646c ──
   //   總市值 = Σ trunc(持股 × 股价)、成本 = Σ trunc(持股 × 均价)（逐支向零取整，
