@@ -44,11 +44,22 @@ import {
   loadHdSource,
   readMapData,
   SpriteCache,
+  loadMinimapBackground,
   type ArchiveName,
   type LoadedArchives,
   type Sprite,
 } from './assets.ts';
-import { Hud, hitSidebar, type SidebarView } from './hud.ts';
+import {
+  Hud,
+  SIDEBAR,
+  clampCameraCenter,
+  hitMinimapArrow,
+  hitMinimapBody,
+  hitSidebar,
+  minimapToWorld,
+  type MinimapArrowId,
+  type SidebarView,
+} from './hud.ts';
 import {
   DEFAULT_OPTIONS,
   OPTIONS_RESOURCE,
@@ -256,6 +267,7 @@ function loadState(next: GameState): void {
     ground = g;
     requestRender();
   });
+  loadMinimapAssets(next.globalMapId);
   requestRender();
   renderPanel();
   scheduleAi();
@@ -730,6 +742,38 @@ let showGround = true;
 const groundOffset = { x: 0, y: 0 };
 
 /**
+ * 小地图底图 —— `map.mkf` 资源 `(地图号 + 0x10)` 图 0（200×200 的成品图）。
+ * 换地图时要跟着换，见 `loadMapAssets`。
+ */
+let minimapBg: ImageBitmap | null = null;
+
+/**
+ * 小地图上的**标记点**（世界坐标）。点小地图留下，镜头就停在它上面。
+ *
+ * @source 原版三个全局：`[0x48be18]`（非 0 = 有标记）、
+ *   `[0x48be1c]`/`[0x48be20]`（世界坐标，已夹在 `[220, 2084]`）。
+ *   镜头居中时（`fcn_00415e70`，VA 0x00415e70）**有标记就用标记、否则用当前玩家**；
+ *   走到标记上、或右键点别处，标记就清掉。
+ */
+let minimapMarker: { x: number; y: number } | null = null;
+/** 正按着的小地图箭头（松开才转视角）@source `[0x48be28]` */
+let pressedMinimapArrow: MinimapArrowId | null = null;
+/** 鼠标悬停的小地图箭头 —— 悬停时换成高亮图 @source VA 0x00418415 */
+let hotMinimapArrow: MinimapArrowId | null = null;
+/** 正拖着小地图（按住本体平移镜头）@source `[0x48be29]` / 拖动中 `[0x48be2a]` */
+let draggingMinimap = false;
+
+/** 换地图时重取小地图底图（`map.mkf` 资源 `地图号+0x10` 图 0） */
+function loadMinimapAssets(globalMapId: number): void {
+  if (archives === null) return;
+  minimapBg = null;
+  void loadMinimapBackground(archives, globalMapId).then((b) => {
+    minimapBg = b;
+    requestRender();
+  });
+}
+
+/**
  * 镜头跟随当前玩家。
  *
  * 原版的视野就是**跟着棋子走的**（截图里看到的是 1:1 的局部，
@@ -1083,9 +1127,11 @@ function drawGameStage(): void {
     state,
     map,
     camera,
-    viewport: { w: LAYOUT.board.w, h: LAYOUT.board.h },
-    ground,
+    minimapBg,
     sidebarView,
+    minimapMarker,
+    pressedMinimapArrow,
+    hotMinimapArrow,
   });
   stageCtx.drawImage(hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y);
 }
@@ -1138,12 +1184,26 @@ function eventToStage(e: MouseEvent): { x: number; y: number } | null {
  *
  * 用逼近而非瞬移：棋子一步一步走，镜头硬跟会晃得厉害。
  * 系数 0.18 是「跟得上但不抖」的经验值，不是原版常量。
+ *
+ * ★ **有标记点时不动** —— 原版 `fcn_00415e70`（VA 0x00415e70）是
+ *   「有标记用标记、没标记才用当前玩家」。棋子走到标记上时标记自动清掉，
+ *   镜头随即恢复跟随（原版 VA 0x00418656 `[0x48be18] = 0`）。
  */
 function centerOnCurrentPlayer(): void {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return;
   const node = map.nodes[me.nodeId - 1];
   if (node === undefined) return;
+
+  if (minimapMarker !== null) {
+    // 走到标记上了？那就把标记收掉，镜头交还给棋子
+    if (Math.abs(node.x - minimapMarker.x) <= 16 && Math.abs(node.y - minimapMarker.y) <= 16) {
+      minimapMarker = null;
+      requestRender();
+    } else {
+      return;
+    }
+  }
 
   if (camera.mode === 'character') {
     // 人物视角：摄像机就是**当前玩家所在的那一块**，原版恒在 29×29 窗口正中
@@ -1161,6 +1221,28 @@ function centerOnCurrentPlayer(): void {
   };
   // 还没到位就继续要下一帧，避免停在半路
   if (Math.abs(wantX - camera.x) > 0.5 || Math.abs(wantY - camera.y) > 0.5) requestRender();
+}
+
+/**
+ * 小地图局部坐标 → 镜头中心（世界坐标，已夹紧）。
+ *
+ * @source VA 0x00418591：`世界 = 局部 × 93/8`，再逐轴夹到 `[220, 2084]`。
+ */
+function minimapCenterFromLocal(localX: number, localY: number): { x: number; y: number } {
+  return {
+    x: clampCameraCenter(minimapToWorld(localX)),
+    y: clampCameraCenter(minimapToWorld(localY)),
+  };
+}
+
+/**
+ * 把镜头移到标记点（小地图上那一点）。
+ * @source VA 0x00415e70 `fcn_00415e70`：有标记就用标记，否则用当前玩家
+ */
+function centerOnMarker(): void {
+  if (minimapMarker === null) return;
+  followPlayer = false;
+  camera = characterCamera(minimapMarker.x, minimapMarker.y, camera.view);
 }
 
 /**
@@ -1199,8 +1281,9 @@ function onToolbar(i: number): void {
 /**
  * 在人物视角与地图视角之间切换。
  *
- * ★ 原版小地图上方那两个按钮就是干这个的。
- *   人物视角是等距投影、跟着棋子；地图视角是整张底图俯瞰。
+ * ★ **不是小地图那两颗按钮**（先前这里记错了）。那两颗是**转视角**
+ *   （8 个 45° 方位，见 `rotateView`）。切换这个的是「大地圖」那个动作，
+ *   走 `HOTKEY.map`。
  */
 function setViewMode(mode: 'character' | 'map'): void {
   if (camera.mode === mode) return;
@@ -1520,6 +1603,7 @@ function startGame(): void {
     if (g !== null) log(`底圖載入：${g.width}×${g.height}（G 鍵開關）`);
     requestRender();
   });
+  loadMinimapAssets(setup.mapId);
 
   requestRender();
   renderPanel();
@@ -1585,6 +1669,15 @@ function bindInput(): void {
         requestRender();
       }
       return;
+    }
+
+    // 右下角小地图那两颗箭头的**悬停**（原版 VA 0x00418415：鼠标在箭头条上就换成高亮图）
+    const hotArrow = sidebarView === 'map' && hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)
+      ? hitMinimapArrow(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y - SIDEBAR.y)
+      : null;
+    if (hotArrow !== hotMinimapArrow) {
+      hotMinimapArrow = hotArrow;
+      requestRender();
     }
 
     if (awaitingHumanRoll()) {
@@ -1792,10 +1885,26 @@ function bindInput(): void {
       return; // 点在工具栏上就不要同时开始拖动地图
     }
     if (hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)) {
-      // 日曆 → 月曆 → 小地圖 → 日曆
-      sidebarView =
-        sidebarView === 'calendar' ? 'month' : sidebarView === 'month' ? 'map' : 'calendar';
-      requestRender();
+      // ★ 右下角那 200×200 —— **只有小地图那一面**有交互（原版 `fcn_00416e6d`）。
+      //   日曆那一面点上去什么都不发生（VA 0x00418415：`cfg+5 == 0` 直接返回）。
+      const lx = p.x - LAYOUT.panel.x;
+      const ly = p.y - LAYOUT.panel.y - SIDEBAR.y;
+      if (sidebarView !== 'map') return;
+
+      const arrow = hitMinimapArrow(lx, ly);
+      if (arrow !== null) {
+        // 按下先记账 + 亮起来，**松开才转** —— 原版是按下/抬起两段（VA 0x00418415 / 0x004186cb）
+        pressedMinimapArrow = arrow;
+        requestRender();
+        return;
+      }
+      if (hitMinimapBody(lx, ly)) {
+        // 点小地图本体：把光标处的局部坐标换成世界坐标、夹紧，镜头就停在那儿（可继续拖）
+        minimapMarker = minimapCenterFromLocal(lx, ly);
+        draggingMinimap = true;
+        centerOnMarker();
+        requestRender();
+      }
       return;
     }
     // 只有棋盘区能拖
@@ -1806,6 +1915,14 @@ function bindInput(): void {
   });
   window.addEventListener('mouseup', () => {
     drag = null;
+    draggingMinimap = false;
+    if (pressedMinimapArrow !== null) {
+      // 抬起才真的转 —— 左箭头 −1、右箭头 +1，都在 8 个视角里回绕
+      // @source VA 0x00418707 `[0x499088] = ([0x499088] ∓ 1) & 7`
+      rotateView(pressedMinimapArrow === 1 ? -1 : 1);
+      pressedMinimapArrow = null;
+      requestRender();
+    }
     if (pressedTool !== null) {
       onToolbar(pressedTool);
       pressedTool = null;
@@ -1813,6 +1930,20 @@ function bindInput(): void {
     }
   });
   window.addEventListener('mousemove', (e) => {
+    if (draggingMinimap) {
+      // 按着小地图拖 —— 光标停在哪，镜头就移到哪（原版 VA 0x0041899b 也是这么算的）
+      const p = eventToStage(e);
+      if (p === null) return;
+      const lx = p.x - LAYOUT.panel.x;
+      const ly = p.y - LAYOUT.panel.y - SIDEBAR.y;
+      minimapMarker = minimapCenterFromLocal(
+        Math.min(SIDEBAR.w - 1, Math.max(0, lx)),
+        Math.min(SIDEBAR.h - 1, Math.max(0, ly)),
+      );
+      centerOnMarker();
+      requestRender();
+      return;
+    }
     if (drag === null) return;
     if (camera.mode !== 'map') return; // 人物视角恒以当前玩家为中心，不能拖
     followPlayer = false;
@@ -1825,6 +1956,16 @@ function bindInput(): void {
       y: camera.y - ((e.clientY - drag.y) * px) / camera.scale,
     };
     drag = { x: e.clientX, y: e.clientY };
+    requestRender();
+  });
+
+  // 右键：**在有标记时**点小地图外任意处 → 清掉标记、镜头回到当前玩家
+  // @source VA 0x00418893（WM_RBUTTONUP）：算出的位置与标记相同就 `[0x48be18] = 0`
+  canvas.addEventListener('contextmenu', (e) => {
+    if (screen !== 'game' || minimapMarker === null) return;
+    e.preventDefault();
+    minimapMarker = null;
+    followPlayer = true;
     requestRender();
   });
 
@@ -2043,6 +2184,7 @@ function connectOnline(url: string, room: string, name: string): void {
             ground = g;
             requestRender();
           });
+          loadMinimapAssets(start.globalMapId);
           requestRender();
           renderPanel();
           scheduleAi();

@@ -456,6 +456,73 @@ export async function loadGround(
 }
 
 // ============================================================
+//  小地圖底图
+// ============================================================
+
+/**
+ * 小地圖底图所在资源段的起点 —— `map.mkf` 资源 `(地图号 + 0x10)`。
+ *
+ * @source `_rich4_load_map` 的载入段（VA 0x00407fc0 起，文件
+ *   `rich4-re/asm/rich4_load_map.asm:96`）：
+ * ```asm
+ * movsx eax, word [0x4991b6]     ; 地图号高位
+ * shl   eax, 2
+ * movsx edx, word [0x4991b8]     ; 地图号低位
+ * add   eax, edx                 ; eax = 地图号（= [0x4991b6]×4 + [0x4991b8]）
+ * add   eax, 0x10                ; ★ 资源号 = 地图号 + 0x10
+ * push  eax / push ebx(map.mkf) / call read_mkf
+ * mov   [0x48badc], eax
+ * ```
+ * 上一条命令载入的是 `(地图号)×2` 的底图、再一条是 `(地图号)×2` 的结构数据，
+ * 与 `readMapData`/`loadGround` 那对**同一套地图号编码**，故这里可直接用
+ * `globalMapId`。
+ *
+ * ★ **原版的这两张不是现缩的**：它们是预先算好的成品图。
+ *   · 图 0 = 200×200 → 侧栏右下角那块（VA 0x00416e78 画在 (440, 侧栏顶)）
+ *   · 图 1 = 400×400 → 独立小地图窗口（VA 0x0040a87f 画在 (20, 60)）
+ *   所以侧栏小地图**不该**拿 `.gnd` 底图现缩 —— 缩放比例、取景范围都不同。
+ */
+export const MINIMAP_BG_RESOURCE_BASE = 0x10;
+
+/** 侧栏那块 200×200 用图 0 @source VA 0x00416e78 `add eax, 0xc` */
+export const MINIMAP_BG_IMAGE = 0;
+
+/** 独立小地图窗口那块 400×400 用图 1 @source VA 0x0040a87f `add eax, 0x18` */
+export const MINIMAP_BG_IMAGE_WINDOW = 1;
+
+/**
+ * 解出小地圖底图。
+ *
+ * @param image 图号 —— 侧栏用 `MINIMAP_BG_IMAGE`，独立窗口用 `MINIMAP_BG_IMAGE_WINDOW`
+ */
+export function readMinimapBackground(
+  archives: LoadedArchives,
+  globalMapId: number,
+  image: number = MINIMAP_BG_IMAGE,
+): ImageData | null {
+  let data: Uint8Array;
+  try {
+    data = archives.get('map.mkf').read(globalMapId + MINIMAP_BG_RESOURCE_BASE);
+  } catch {
+    return null;
+  }
+  const sheet = parseSpriteSheet(data);
+  if (sheet === null || image >= sheet.images.length) return null;
+  const img = decodeImage(sheet, data, image, { colorKeyBlack: true });
+  if (img.width === 0 || img.height === 0) return null;
+  return toImageData(img.width, img.height, img.rgba);
+}
+
+/** 同上，但直接给出 ImageBitmap */
+export async function loadMinimapBackground(
+  archives: LoadedArchives,
+  globalMapId: number,
+): Promise<ImageBitmap | null> {
+  const img = readMinimapBackground(archives, globalMapId);
+  return img === null ? null : createImageBitmap(img);
+}
+
+// ============================================================
 //  角色美术
 // ============================================================
 

@@ -198,24 +198,188 @@ export interface HudInput {
   state: GameState;
   map: Rich4Map;
   camera: Camera;
-  /** 视口尺寸，用来在小地图上画取景框 */
-  viewport: { w: number; h: number };
-  /** 原版底图，用作小地图；为 null 时小地图只画节点 */
-  ground: ImageBitmap | null;
+  /** 小地图底图（`map.mkf` 资源 `地图号+0x10` 图 0，200×200）；null 时只画节点 */
+  minimapBg: ImageBitmap | null;
   /** 右下角那 200×200 现在显示哪一面 */
   sidebarView: SidebarView;
+  /**
+   * 小地图上的**标记点**（世界坐标）—— 点小地图留下的十字位置。
+   * null 表示没有。
+   * @source 原版 `[0x48be18]`（非 0 表示有标记）+ `[0x48be1c]`/`[0x48be20]`（坐标）
+   */
+  minimapMarker: { x: number; y: number } | null;
+  /** 正被按下的箭头（1 = 左，2 = 右）；没按返回 null */
+  pressedMinimapArrow: MinimapArrowId | null;
+  /** 鼠标悬停的箭头；没悬停返回 null */
+  hotMinimapArrow: MinimapArrowId | null;
 }
 
 /**
  * 点在右下角那块 200×200 上吗？
  *
- * 原版这块是「日曆／小地圖」轮换位（见 `SIDEBAR`），点一下换一面。
- * ⚠️ 原版是不是用点击来换、还是只认设定与热键，尚未查证。
+ * ★ **原版点这块只是「点」，不会换面。** 换面只有两条路：
+ *   RICH4.CFG offset 5 的设定，或 `HOTKEY.switchOption`/`switchWindowGroup`
+ *   那对热键（VA 0x00401219 起，`[0x49715d] = ([0x49715d] + 1) % 3`）。
+ *   先前「点一下换一面」是我们自己加的（`C-FID-1` 禁止的改良），已去掉。
  */
 export function hitSidebar(x: number, y: number): boolean {
   return x >= SIDEBAR.x && x < SIDEBAR.x + SIDEBAR.w
     && y >= SIDEBAR.y && y < SIDEBAR.y + SIDEBAR.h;
 }
+
+// ============================================================
+//  小地圖（側欄右下角那 200×200）
+// ============================================================
+
+/**
+ * 世界坐标 → 小地图局部坐标（0..200）。
+ *
+ * @source VA 0x00416fb9（侧栏小地图）与 0x0040a8a1（独立小地图窗口），
+ *   两处是同一段被编译出来的定点乘法：
+ * ```asm
+ * mov cx, word [player + 8]      ; 世界 x
+ * mov eax, ecx
+ * shl eax, 2 / sub eax, ecx      ; ×3
+ * shl eax, 2 / sub eax, ecx      ; ×11
+ * shl eax, 3 / add eax, ecx      ; ×89
+ * shl eax, 6                     ; ×64
+ * sar eax, 0x10                  ; (x×89×64) >> 16 == (x×89) >> 10 == x × 89/1024
+ * lea esi, [eax + 0x1b8]         ; + 440 ← 侧栏原点
+ * ```
+ * 独立窗口那处 `shl eax, 7`（`>> 9`），正好是这里的**两倍** ——
+ * 因为它是 400×400、这里是 200×200。
+ *
+ * ★ 2304 × 89 ÷ 1024 = 200.25 → 取整 200。世界宽 2304、这块 200 见方，
+ *   这套整数运算就是原版「把整张图塞进 200×200」的写法。**别改成
+ *   `size / worldW` 的浮点**：差 0.1%，逐像素对不齐。
+ */
+export const MINIMAP_NUM = 89;
+export const MINIMAP_SHIFT = 10;
+
+/** 世界坐标 → 小地图局部坐标（照原版的整数运算） */
+export function minimapAt(world: number): number {
+  return (world * MINIMAP_NUM) >> MINIMAP_SHIFT;
+}
+
+/**
+ * 小地图**局部坐标 → 世界坐标** —— 点小地图时用。
+ *
+ * @source VA 0x00418591（按下）与 0x0041899b（拖动），同一段定点乘法：
+ * ```asm
+ * mov eax, ebx                   ; ebx = 局部 x
+ * shl eax, 2 / sub eax, ebx      ; ×3
+ * shl eax, 0xd                   ; ×8192
+ * mov ebx, eax
+ * shl eax, 5 / sub eax, ebx      ; ×31
+ * sar eax, 0x10                  ; (x×3×8192×31) >> 16 == x × 93/8
+ * ```
+ * ★ 它与 `minimapAt` **不是精确互逆**（93/8 = 11.625 对 1024/89 = 11.5056，
+ *   差 1%）。原版就是这样，照抄 —— 自己「修正」成互逆反而与原版不符。
+ */
+export const MINIMAP_INV_NUM = 93;
+export const MINIMAP_INV_DEN = 8;
+
+/** 小地图局部坐标 → 世界坐标（照原版的整数运算） */
+export function minimapToWorld(local: number): number {
+  return Math.trunc((local * MINIMAP_INV_NUM) / MINIMAP_INV_DEN);
+}
+
+/**
+ * 点小地图时，镜头中心被夹在这个区间。
+ *
+ * @source VA 0x004185d8 起：算出世界坐标后逐轴夹紧 ——
+ * ```asm
+ * cmp ebx, 0xdc(220)   / jge … / mov [0x48be1c], 0xdc
+ * cmp ebx, 0x824(2084)/ jle … / mov [0x48be1c], 0x824
+ * ```
+ * `220 … 2084` 正是 `[220, 2304 − 220]`：棋盘区宽 440，镜头中心离边 220
+ * 时视口刚好贴住世界边界（VA 0x00417f98 `set_draw_area(0, 40, 440, 480)`）。
+ */
+export const MINIMAP_CENTER_MIN = 0xdc; // 220
+export const MINIMAP_CENTER_MAX = 0x824; // 2084
+
+export function clampCameraCenter(world: number): number {
+  return Math.min(MINIMAP_CENTER_MAX, Math.max(MINIMAP_CENTER_MIN, world));
+}
+
+/**
+ * 小地图左上角那两颗**左右箭头**（转视角）。
+ *
+ * @source VA 0x00418415（命中，`fcn_00417e26` 的 WM_LBUTTONDOWN 分支）：
+ * ```asm
+ * sub ebx, 0x1b8          ; ebx = 局部 x
+ * sub esi, ecx            ; esi = 局部 y（ecx = 该态侧栏顶边，见 0x4752aa）
+ * cmp ebx, 3    / jl  → 落回「主体」
+ * cmp ebx, 0x35 / jg  → 落回「主体」      ; 3 <= x <= 53
+ * cmp esi, 3    / jl  → 落回「主体」
+ * cmp esi, 0x1c / jg  → 落回「主体」      ; 3 <= y <= 28
+ * lea edx, [ebx - 3]
+ * mov ebx, 0x19(25) ; idiv ebx ; inc eax  ; ★ 编号 = (x-3)/25 + 1
+ * ```
+ * 画的时候是 `443 + 25×(编号-1)`（VA 0x00416e89 与 0x00416e9c 分别
+ * `+0xfc`(图20) 与 `+0x108`(图21)），与局部 3、28 逐像素吻合。
+ */
+export const MINIMAP_ARROW = { x: 3, y: 3, w: 25, h: 26 } as const;
+
+/** 箭头编号 → 侧栏局部矩形（1 = 左，2 = 右） */
+export function minimapArrowRect(id: MinimapArrowId): { x: number; y: number; w: number; h: number } {
+  return {
+    x: MINIMAP_ARROW.x + (id - 1) * MINIMAP_ARROW.w,
+    y: MINIMAP_ARROW.y,
+    w: MINIMAP_ARROW.w,
+    h: MINIMAP_ARROW.h,
+  };
+}
+
+export type MinimapArrowId = 1 | 2;
+
+/**
+ * 局部坐标落在哪颗箭头上；不在箭头上返回 null。
+ *
+ * ★ 原版的判据是 `x ∈ [3, 53]`，比两颗按钮合起来（3..52）**宽 1 像素**，
+ *   那一像素会算出编号 3 —— 而编号只在 WM_LBUTTONUP 的
+ *   `cmp bl,1 / cmp bl,2`（VA 0x004186f3）处被读，所以编号 3 是死区。
+ *   这里照原样返回 null。
+ */
+export function hitMinimapArrow(localX: number, localY: number): MinimapArrowId | null {
+  const { x, y, w, h } = MINIMAP_ARROW;
+  if (localX < x || localX > x + 2 * w) return null;
+  if (localY < y || localY > y + h - 1) return null;
+  const id = Math.floor((localX - x) / w) + 1;
+  return id === 1 || id === 2 ? id : null;
+}
+
+/** 局部坐标落在小地图**本体**上（不是箭头条，也不是框外） */
+export function hitMinimapBody(localX: number, localY: number): boolean {
+  if (localX < 0 || localX >= SIDEBAR.w) return false;
+  if (localY < 0 || localY >= SIDEBAR.h) return false;
+  return hitMinimapArrow(localX, localY) === null;
+}
+
+/**
+ * 小地图上那两颗箭头的图 —— `Data.mkf` 资源 517。
+ * @source VA 0x00407fdc `[0x48bad8] = read_mkf(Data.mkf, 0x205, 0, 0)`
+ */
+export const MINIMAP_ARROW_RESOURCE = 0x205;
+/**
+ * 图的编号。常态在 VA 0x00416e89/0x00416e9c 由偏移 `+0xfc`/`+0x108` 得出：
+ * `(偏移 − 0x0c) / 12`（精灵表每张 12 字节头，从 `+0x0c` 起）→ **20 / 21**。
+ * 高亮态在 VA 0x00418415 处是 `[0x48bad8] + 0x0c + 12 × (编号 + 0x11)` → **18 / 19**。
+ */
+export const MINIMAP_ARROW_IMAGE = {
+  normal: { 1: 20, 2: 21 },
+  hot: { 1: 18, 2: 19 },
+} as const;
+
+/**
+ * 取景框与标记框的边长 —— **30×30 像素**。
+ * @source VA 0x00417041（取景）与 0x004170c7（标记），两处都
+ *   `push 0x1e(30) / push 0x1e(30)`，并各自 `−0xf(15)` 居中。
+ *
+ * ★ 它框的是**当前玩家那个圆点**，不是「视口能看到的世界范围」——
+ *   先前我们画成 29 格宽的窗口，那是自己想的（原版没有这个东西）。
+ */
+export const MINIMAP_BOX = 30;
 
 const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
 
@@ -248,7 +412,7 @@ export class Hud {
 
   /** 同步取精灵；未就绪时后台解码并返回 null */
   #sprite(
-    archive: 'Panel.mkf' | 'map.mkf',
+    archive: 'Panel.mkf' | 'map.mkf' | 'Data.mkf',
     res: number,
     idx: number,
     colorKeyBlack = false,
@@ -460,19 +624,23 @@ export class Hud {
   }
 
   /**
-   * 小地图。
+   * 小地图（侧栏右下角那 200×200）—— 全部照 `fcn_00416e6d`（VA 0x00416e6d）。
    *
-   * 原版把整张底图缩到右下角，并在上面点出各格与取景框——
-   * 截图里那一小块就是这个。这里照做：底图缩放 + 节点点 + 取景框 + 棋子。
+   * 层次**按原版的绘制顺序**：
+   * ```asm
+   * 00416e78  底图 = [0x48badc] 图0（map.mkf 资源 地图号+0x10 的 200×200 成品图）
+   * 00416e89  左箭头 = [0x48bad8]+0xfc（Data.mkf 517 图20）  画在 (443, 顶+3)
+   * 00416e9c  右箭头 = [0x48bad8]+0x108（图21）              画在 (468, 顶+3)
+   * 00416fb9  各玩家的圆点（按 (世界×89)>>10 定位）
+   * 00417041  当前玩家：30×30 白框，中心在它的圆点上
+   * 004170c7  标记点：30×30 红框（与当前玩家重合时不画）
+   * ```
+   * 底图是**预先算好的成品图**，不是拿 `.gnd` 现缩 —— 比例与取景都不同。
    */
   #drawMinimap(input: HudInput, top: number): void {
     const ctx = this.#ctx;
-    const { state, map, camera, viewport, ground } = input;
+    const { state, map, minimapBg, minimapMarker } = input;
     const size = SIDEBAR.w;
-    // 底图是正方形（2304 见方），故小地图也取正方形
-    const worldW = ground?.width ?? 2304;
-    const worldH = ground?.height ?? 2304;
-    const k = size / Math.max(worldW, worldH);
 
     ctx.save();
     ctx.beginPath();
@@ -481,53 +649,74 @@ export class Hud {
 
     ctx.fillStyle = '#0a1730';
     ctx.fillRect(0, top, size, size);
-    if (ground !== null) ctx.drawImage(ground, 0, top, worldW * k, worldH * k);
+    if (minimapBg !== null) ctx.drawImage(minimapBg, 0, top, minimapBg.width, minimapBg.height);
 
     // 各格
     for (const n of map.nodes) {
       const owner = n.ref.kind === 'land' ? (state.landOwner[n.ref.index] ?? 0) : 0;
       ctx.fillStyle =
         owner === 0 ? 'rgba(240,240,240,0.75)' : (MINIMAP_OWNER[owner - 1] ?? '#fff');
-      ctx.fillRect(n.x * k - 1, top + n.y * k - 1, 3, 3);
+      ctx.fillRect(minimapAt(n.x) - 1, top + minimapAt(n.y) - 1, 3, 3);
     }
 
-    // 棋子
+    // 两颗箭头 —— 画在圆点之前（原版就是这个顺序），状态色见 #arrowImage
+    for (const id of [1, 2] as const) {
+      const r = minimapArrowRect(id);
+      const hot = input.hotMinimapArrow === id || input.pressedMinimapArrow === id;
+      const img = this.#sprite(
+        'Data.mkf',
+        MINIMAP_ARROW_RESOURCE,
+        hot ? MINIMAP_ARROW_IMAGE.hot[id] : MINIMAP_ARROW_IMAGE.normal[id],
+        true,
+      );
+      // ★ `fcn_00456418` 把图按**锚点**摆（VA 0x00455c64 `sub [ebp+0x18], anchorX`），
+      //   所以「画在 (443, 顶+3)」指的是锚点落在那儿。
+      if (img !== null) ctx.drawImage(img.bitmap, r.x - img.anchorX, top + r.y - img.anchorY);
+    }
+
+    // 棋子（圆点），并记下**当前玩家**的圆点位置
+    const me = state.players[state.currentPlayer];
+    let meDot: { x: number; y: number } | null = null;
     for (const p of state.players) {
       if (p.whoPlays === 0) continue;
       const n = map.nodes[p.nodeId - 1];
       if (n === undefined) continue;
+      const dx = minimapAt(n.x);
+      const dy = top + minimapAt(n.y);
+      if (p.index === me?.index) meDot = { x: dx, y: dy };
       ctx.fillStyle = MINIMAP_OWNER[p.index] ?? '#fff';
       ctx.beginPath();
-      ctx.arc(n.x * k, top + n.y * k, 3.5, 0, Math.PI * 2);
+      ctx.arc(dx, dy, 3.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = '#000';
       ctx.lineWidth = 1;
       ctx.stroke();
     }
 
-    // 取景框
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1;
-    if (camera.mode === 'character') {
-      // 人物视角：框住 29×29 的那个可见窗口
-      const span = 29 * 32 * k;
-      ctx.strokeRect(
-        (camera.tileX - 14) * 32 * k,
-        top + (camera.tileY - 14) * 32 * k,
-        span,
-        span,
-      );
-    } else {
-      ctx.strokeRect(
-        camera.x * k,
-        top + camera.y * k,
-        (viewport.w / camera.scale) * k,
-        (viewport.h / camera.scale) * k,
-      );
+    // 取景框：**当前玩家的圆点**上画 30×30 白框 @source VA 0x00417041
+    // 标记框：标记点上画 30×30 红框，与当前玩家重合时不画 @source VA 0x004170c7
+    const box = (cx: number, cy: number, color: string): void => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cx - MINIMAP_BOX / 2, cy - MINIMAP_BOX / 2, MINIMAP_BOX, MINIMAP_BOX);
+    };
+    if (minimapMarker !== null) {
+      const mx = minimapAt(minimapMarker.x);
+      const my = top + minimapAt(minimapMarker.y);
+      if (meDot === null || mx !== meDot.x || my !== meDot.y) box(mx, my, MINIMAP_MARKER_COLOR);
     }
+    if (meDot !== null) box(meDot.x, meDot.y, MINIMAP_VIEW_COLOR);
+
     ctx.restore();
   }
 }
 
 /** 小地图上各玩家的颜色 —— 原版四人四色 */
 const MINIMAP_OWNER = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
+
+/**
+ * 取景框是**白的**、标记框是**红的**。
+ * @source VA 0x00417041 `push 0xffffff` / VA 0x004170c7 `push 0xff0000`
+ */
+const MINIMAP_VIEW_COLOR = '#ffffff';
+const MINIMAP_MARKER_COLOR = '#ff0000';

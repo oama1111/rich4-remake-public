@@ -7,7 +7,24 @@
  * 但一条断言当场就抓住 —— 所以补在这里。
  */
 import { describe, expect, it } from 'vitest';
-import { CAL, monthCells, PANEL_HEIGHT, PANEL_WIDTH, SIDEBAR, WEEKDAY_NAMES } from './hud.ts';
+import {
+  CAL,
+  MINIMAP_ARROW_IMAGE,
+  MINIMAP_BOX,
+  MINIMAP_CENTER_MAX,
+  MINIMAP_CENTER_MIN,
+  clampCameraCenter,
+  hitMinimapArrow,
+  hitMinimapBody,
+  minimapArrowRect,
+  minimapAt,
+  minimapToWorld,
+  monthCells,
+  PANEL_HEIGHT,
+  PANEL_WIDTH,
+  SIDEBAR,
+  WEEKDAY_NAMES,
+} from './hud.ts';
 import { daysInMonth, weekdayOf } from '@rich4/core';
 
 describe('月曆格子 —— 每行恰好 7 格', () => {
@@ -138,5 +155,76 @@ describe('★ 日曆文字不压进右缘的彩色标签区', () => {
 
   it('太阳与月亮并排不重叠', () => {
     expect(CAL.sun.x + 24).toBeLessThanOrEqual(CAL.moon.x);
+  });
+});
+
+describe('小地图箭头与坐标换算 —— 照 exe 的整数运算', () => {
+  it('★ 世界坐标 → 小地图坐标：2304 恰好落到 200', () => {
+    // (x × 89) >> 10。2304 是棋盘的实际宽，200 是这块侧栏的宽 ——
+    // 这就是原版「把整张图塞进 200×200」的写法（浮点 200/2304 会差像素）
+    expect(minimapAt(0)).toBe(0);
+    expect(minimapAt(1152)).toBe(100);
+    expect(minimapAt(2304)).toBe(200);
+    for (const w of [32, 96, 512, 1024, 2048]) expect(minimapAt(w)).toBe((w * 89) >> 10);
+  });
+
+  it('★ 反向用 93/8，与正向**不是**互逆（原版就这样）', () => {
+    expect(minimapToWorld(0)).toBe(0);
+    expect(minimapToWorld(200)).toBe(2325);
+    // 2304 → 200 → 2325，差 1%。照抄原版，不许「修正」成互逆
+    expect(minimapToWorld(minimapAt(2304))).not.toBe(2304);
+  });
+
+  it('★ 镜头中心夹在 [220, 2084] = [220, 2304 − 220]', () => {
+    expect(clampCameraCenter(0)).toBe(0xdc);
+    expect(clampCameraCenter(100)).toBe(0xdc);
+    expect(clampCameraCenter(1152)).toBe(1152);
+    expect(clampCameraCenter(9999)).toBe(0x824);
+    // 两端对称 —— 220 正是棋盘区宽 440 的一半
+    expect(2304 - MINIMAP_CENTER_MAX).toBe(MINIMAP_CENTER_MIN);
+  });
+
+  it('★ 两颗箭头各占 25×26，合起来是 x∈[3,52]、y∈[3,28]', () => {
+    expect(minimapArrowRect(1)).toEqual({ x: 3, y: 3, w: 25, h: 26 });
+    expect(minimapArrowRect(2)).toEqual({ x: 28, y: 3, w: 25, h: 26 });
+    for (const id of [1, 2] as const) {
+      const r = minimapArrowRect(id);
+      expect(hitMinimapArrow(r.x + (r.w >> 1), r.y + (r.h >> 1))).toBe(id);
+    }
+    // 四角也要命中
+    expect(hitMinimapArrow(3, 3)).toBe(1);
+    expect(hitMinimapArrow(27, 28)).toBe(1);
+    expect(hitMinimapArrow(28, 3)).toBe(2);
+    expect(hitMinimapArrow(52, 28)).toBe(2);
+  });
+
+  it('★ x=53 那一像素是死区（原版会算出编号 3，而编号只认 1/2）', () => {
+    // exe 的判据是 x <= 0x35(53)，比两颗按钮合起来（3..52）宽 1 像素
+    expect(hitMinimapArrow(53, 15)).toBeNull();
+  });
+
+  it('箭头条以外不算箭头；本体与箭头条互斥', () => {
+    const outside: readonly (readonly [number, number])[] = [
+      [2, 15], [10, 2], [10, 29], [60, 15], [-1, 15], [10, -1],
+    ];
+    for (const [x, y] of outside) {
+      expect(hitMinimapArrow(x, y)).toBeNull();
+      expect(hitMinimapBody(x, y)).toBe(x >= 0 && y >= 0 && x < SIDEBAR.w && y < SIDEBAR.h);
+    }
+    expect(hitMinimapBody(10, 15)).toBe(false); // 左箭头
+    expect(hitMinimapBody(40, 15)).toBe(false); // 右箭头
+  });
+
+  it('★ 箭头图号与 exe 的偏移对得上', () => {
+    // 常态：`[0x48bad8] + 0xfc / + 0x108`，图号 = (偏移 − 0x0c) / 12
+    expect(MINIMAP_ARROW_IMAGE.normal[1]).toBe((0xfc - 0x0c) / 12);
+    expect(MINIMAP_ARROW_IMAGE.normal[2]).toBe((0x108 - 0x0c) / 12);
+    // 高亮：`0x0c + 12 × (编号 + 0x11)`
+    expect(MINIMAP_ARROW_IMAGE.hot[1]).toBe(1 + 0x11);
+    expect(MINIMAP_ARROW_IMAGE.hot[2]).toBe(2 + 0x11);
+  });
+
+  it('取景框是 30×30 的**像素**框（原版框的是当前玩家那个圆点）', () => {
+    expect(MINIMAP_BOX).toBe(0x1e);
   });
 });
