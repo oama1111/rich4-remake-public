@@ -491,7 +491,12 @@ export class BoardRenderer {
           ? chainStoreResource(state.globalMapId)
           : buildingResource(state.globalMapId, level);
       if (res === null) continue;
-      items.push({ x: n.x, y: n.y, res, img: buildingImageIndex(land.facing, cam.view) });
+      // ★ 用**地块记录自己的 x/y**，不是所在节点的 —— 两者差一格。
+      //   @source 地块绘制 VA 0x004090fc：`movsx eax, word [ebp]` / `movsx edx, word [ebp+2]`，
+      //   而 `ebp` 指的是**地块记录**（+0x1b 取朝向、+0x1a 取等级，都在同一条记录上）。
+      //   实测地图 1：node 39 (1463,239) 与 land 1 (1463,192) 是同一块地，
+      //   y 差 47（约一格半），设施/企业/景观那三处本来就用的自己的坐标，只有地块这里不一致。
+      items.push({ x: land.x, y: land.y, res, img: buildingImageIndex(land.facing, cam.view) });
     }
 
     // ── 设施（機場/港口…）──
