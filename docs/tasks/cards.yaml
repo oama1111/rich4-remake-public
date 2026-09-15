@@ -1598,10 +1598,10 @@ cards:
 
 - id: T-044
   group: C
-  title: 小游戏三（mkf 22，先认玩法与资源）
+  title: 小游戏三：財神接金幣（mkf 22）
   module: MOD-12
   req: REQ-12.16
-  status: blocked
+  status: todo
   estimate: 1.0
   depends_on: []
   uses: [core/places/minigame.ts]
@@ -1611,7 +1611,16 @@ cards:
   algorithm: "先解资源与玩法，再照 T-042。"
   tests: "状态机测试"
   files: [packages/client/src/minigame-3.ts]
-  notes: "需求方确认是哪个小游戏后解除 blocked。"
+  notes: |
+    **2026-09-15 需求方确认玩法：「財神接金幣」** —— 据此解除 blocked。
+
+    ⚠️ 还有两件要在开工时钉死：
+    1. **它对应哪个 `specialKind`**？三个小游戏是 6（企鵝挖寶）/ 7（七彩氣球）/ 8，
+       按排除法应当是 **8 = `GIFT_FROM_SKY`（喜從天降）** —— 名字也贴（天上掉东西、
+       接着算分）。但这是**推断**，要在 `rich4_small_games.asm` 里核过再写死；
+       `scenes.ts` 里那句「喜從天降那一屏没认出来」也要跟着更新。
+    2. 屏幕资源是 `Panel.mkf` **#22**（卡里原写的 mkf 22）——
+       先照 T-042/T-043 的做法把 #22 逐张导出来认用途，再动手。
 
 - id: T-045
   group: C
