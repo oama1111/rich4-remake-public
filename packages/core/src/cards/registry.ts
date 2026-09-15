@@ -17,7 +17,7 @@
 
 import type { Player } from '../state/types.ts';
 import type { FacilityInfo, LandInfo, MapNode } from '../loaders/map.ts';
-import type { CardTarget, TargetError } from './target.ts';
+import type { CardTarget, StandingInstanceKind, TargetError } from './target.ts';
 import { targetClassOfCard, validateTarget } from './target.ts';
 import type { MapObject } from './summon.ts';
 import { summonableObjects } from './summon.ts';
@@ -39,7 +39,7 @@ import { applySleepwalkCard } from './sleepwalk.ts';
 import { applyStayCard, applyStayCardToActor } from './stay.ts';
 import { applyTortoiseCard, applyTortoiseCardToActor } from './tortoise.ts';
 import { applyAllianceCard } from './alliance.ts';
-import { applyTurnCard, applyTurnCardToActor, applySwapHouseCard } from './turn-and-house.ts';
+import { applyTurnCard, applyTurnCardToActor, applySwapHouseCard, applySwapHouseFacilityCard } from './turn-and-house.ts';
 import { applyTaxCard } from './tax.ts';
 import { applyDispelCard } from './dispel.ts';
 import { applyFrameCard } from './frame.ts';
@@ -47,7 +47,7 @@ import { applyBuyLandCard } from './buy-land.ts';
 import { applyRebuildCard } from './rebuild.ts';
 import { applyRobCard, applyRobCardCard } from './rob.ts';
 import { applyMonsterCard, applyMonsterFacilityCard, MONSTER_HOSTILITY_PER_LEVEL } from './monster.ts';
-import { applyRedCard, applyBlackCard, applySwapLandCard } from './swap-and-stock.ts';
+import { applyRedCard, applyBlackCard, applySwapLandCard, applySwapFacilityCard } from './swap-and-stock.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import { applyStockNews } from '../places/stock-market.ts';
 import {
@@ -57,6 +57,7 @@ import {
   applyDevilFacilityCard,
   applyDemolishCard,
   applyDemolishFacilityCard,
+  applyDemolishObjectCard,
   applyRaisePriceCard,
   applySealCard,
 } from './land-cards.ts';
@@ -199,6 +200,27 @@ export function standingFacility(
 }
 
 /**
+ * 玩家脚下那一格的**实例类别** —— 换地/换屋的目标类别由它决定
+ * （见 `target.ts` 的 `StandingInstanceKind`）。
+ *
+ * @source 换地卡 VA 0x00442685 / 0x004428cc：读脚下节点的 `+0x20` 实例编码，
+ *   `0x7d0 < code < 0xfa0` → 地块，`0xfa0 < code < 0x1770` → 設施，
+ *   其余（路面/企業/物件）两张卡都不生效。
+ */
+export function standingInstanceKind(
+  ctx: UseCardContext,
+  playerIndex: number,
+): StandingInstanceKind {
+  const p = ctx.players[playerIndex];
+  if (p === undefined) return null;
+  const node = ctx.nodes.find((n) => n.id === p.nodeId);
+  if (node === undefined) return null;
+  if (housingIndexOf(node.type) !== null) return 'land';
+  if (facilityIndexOf(node.type) !== null) return 'facility';
+  return null;
+}
+
+/**
  * 使用一张卡。
  *
  * 对**没有目标**的卡（购地/改建等），效果作用于玩家当前所站地块。
@@ -241,7 +263,13 @@ export function useCard(
   // @source 被动卡的函数体是 `xor eax,eax; ret`，主动使用恒返回 0
   if (impl.passive) return fail('passiveCard');
 
-  const cls = targetClassOfCard(impl);
+  // ★ 目标类别**跟脚下走**：换地/换屋站地块上就收地块、站設施上就收設施
+  //   （原版在卡片函数里按脚下实例编码换选择参数，见 target.ts 的 targetClassOf）
+  const standing = standingInstanceKind(ctx, cur);
+  // 换地/换屋：脚下既不是地块也不是設施时原版连选择都不开、直接返回 0
+  //   @source 换地卡两条区间之外 VA 0x0044288c → `loc_00442ade` → eax = 0
+  if ((cardId === 4 || cardId === 5) && standing === null) return fail('notStandingOnLand');
+  const cls = targetClassOfCard(impl, standing);
   const targetError = validateTarget(cls, target, cur, ctx.players.length, {
     objectCount: ctx.objects.length,
     stockCount: ctx.market.stocks.length,
@@ -522,6 +550,28 @@ export function useCard(
     }
     case 4:
     case 5: {
+      // ★ 两条分支由**脚下那一格**决定（原版同形：VA 0x00442685 地块 / 0x004428cc 設施）
+      if (target.kind === 'facility') {
+        // 换地/换屋的設施版：脚下設施 ↔ 选中設施
+        const here = standingFacility(ctx, cur);
+        if (here === null) return fail('notStandingOnLand');
+        const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
+        if (fac === null) return fail('facilityOutOfRange');
+        // @source 拾取组 2 VA 0x00446427 `cmp ecx, ebx / je 拒绝`：不能选自己脚下那个
+        if (fac.id === here.id) return fail('noEffect');
+        if (cardId === 4) {
+          // @source VA 0x00442a09 —— 只换 owner（+0x19）
+          const r = applySwapFacilityCard(facilities, here.id, fac.id);
+          if (!r.ok) return fail('noEffect');
+          facilities = r.facilities;
+        } else {
+          // @source 助手 0x40b4f8 設施分支 VA 0x0040b880 —— 换 type（+0x18）与 level（+0x1a）
+          const r = applySwapHouseFacilityCard(facilities, here.id, fac.id);
+          if (!r.ok) return fail('noEffect');
+          facilities = r.facilities;
+        }
+        break;
+      }
       const here = standingLand(ctx, cur);
       if (here === null || here.land === null) return fail('notStandingOnLand');
       if (targetLand === null) return fail('landNotFound');
@@ -578,6 +628,23 @@ export function useCard(
       break;
     }
     case 12: {
+      if (target.kind === 'object') {
+        // ★ 第三支：打**地图物件**（路障 16 / 地雷 17 / 定時炸彈 18）
+        //   @source VA 0x00443d22 `test byte [esp+1], 0x80` → `_rich4_remove_object`
+        const r = applyDemolishObjectCard(
+          { players, objects, tools, toolStock },
+          target.objectIndex,
+        );
+        if (r === null) return fail('noEffect');
+        players = r.players;
+        objects = r.objects;
+        tools = r.tools;
+        toolStock = r.toolStock;
+        // 这三种物件没有搭档（`partnerSlot` 给 -1），保险起见仍按结果处理
+        if (r.partner >= 0) respawns.push({ partner: r.partner, nearNode: r.formerNode });
+        // ⚠️ 原版物件分支**不记敌意**（只有地块/設施两支调 update_hostility）
+        break;
+      }
       if (target.kind === 'facility') {
         // 拆除卡設施段 VA 0x00443cee..0x00443d1d：单个拆一级，
         //   拆到 0 级退回公園；敌意平坦 30×物价指数（不按级），无主不记

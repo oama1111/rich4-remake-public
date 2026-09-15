@@ -6,7 +6,7 @@
  */
 
 import type { Player } from '../state/types.ts';
-import type { LandInfo } from '../loaders/map.ts';
+import type { FacilityInfo, LandInfo } from '../loaders/map.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { targetClassOf, validateTarget } from './target.ts';
@@ -93,18 +93,33 @@ export function applyTurnCardToActor(actor: SpecialActor): SpecialActor {
 //  换屋卡（5）
 // ============================================================
 
-/** 换屋卡的选择参数 @source `push 0xe0c0202` —— 地块组（与换地卡相同） */
+/** 换屋卡的选择参数 —— 与换地卡同一对：脚下地块 0xe0c0202 / 脚下設施 0xe0c0204 */
 export const SWAP_HOUSE_SELECTION_PARAM = 0xe0c0202;
+export const SWAP_HOUSE_FACILITY_SELECTION_PARAM = 0xe0c0204;
 
 /**
- * 换屋卡：**交换两块地上的房子（等级），归属不变**。
+ * 换屋卡：**交换两处房产的房子（种类 + 等级），归属不变**。
  *
- * @source VA 0x00442bed 起反复比较 `[land + 0x1a]`（level），
- * 且不像换地卡那样写 `+0x19`（owner）。
+ * @source 两处房产共用的助手 `0x40b4f8`，其尾部（地块分支 0x0040b6c5、
+ *   設施分支 0x0040b8aa 完全同形）：
+ * ```asm
+ * mov al, byte [ebx + 0x1a]      ; 脚下.等级
+ * mov ah, byte [esi + 0x1a]      ; 选中.等级
+ * mov byte [ebx + 0x1a], ah
+ * mov byte [esi + 0x1a], al      ; ★ 等级互换
+ * mov al, byte [ebx + 0x18]      ; 脚下.种类
+ * mov ah, byte [esi + 0x18]      ; 选中.种类
+ * mov byte [ebx + 0x18], ah
+ * mov byte [esi + 0x18], al      ; ★ 种类也互换（住宅 ↔ 连锁店）
+ * ```
+ * 前段那几十条浮点指令只是「两个图标相向飞过去」的动画（`0x40b555..0x40b6a2`），
+ * core 不复刻。
  *
  * ⚠️ 与换地卡的区别（易混）：
- *   换地卡 → 换 **owner**，房子随地走
- *   换屋卡 → 换 **level**，地还是各自的
+ *   换地卡 → 换 **owner**（`+0x19`），房子随地走
+ *   换屋卡 → 换 **type + level**（`+0x18` / `+0x1a`），地还是各自的
+ *
+ * ⚠️ 先前这里只换 `level`，漏了 `+0x18`（住宅/连锁店）；两条分支同改。
  */
 export function applySwapHouseCard(
   lands: readonly LandInfo[],
@@ -117,9 +132,43 @@ export function applySwapHouseCard(
     return { lands: [...lands], ok: false };
   }
   const next = lands.map((l) => {
-    if (l.id === landIdA) return { ...l, level: b.level };
-    if (l.id === landIdB) return { ...l, level: a.level };
+    if (l.id === landIdA) return { ...l, level: b.level, type: b.type };
+    if (l.id === landIdB) return { ...l, level: a.level, type: a.type };
     return l;
   });
   return { lands: next, ok: true };
+}
+
+/**
+ * 换屋卡对**設施**：同一处助手 `0x40b4f8` 的設施分支（VA 0x0040b880 起），
+ * 交换 **种类 `+0x18` 与等级 `+0x1a`**，归属 `+0x19` 不动。
+ *
+ * @source
+ * ```asm
+ * mov al, byte [esi + 0x1a] / mov ah, byte [ebx + 0x1a]
+ * mov byte [esi + 0x1a], ah / mov byte [ebx + 0x1a], al    ; 等级互换
+ * mov al, byte [esi + 0x18] / mov ah, byte [ebx + 0x18]
+ * mov byte [esi + 0x18], ah / mov byte [ebx + 0x18], al    ; 种类互换
+ * ```
+ *
+ * ⚠️ 种类互换意味着 **旅館 ↔ 購物中心 ↔ 加油站 ↔ 研究所** 都会换（公園也照换），
+ *   等级上限表（`FACILITY_MAX_LEVEL`）**不参与校验** —— 原版就是这么写的，
+ *   照搬不做「改良」。
+ */
+export function applySwapHouseFacilityCard(
+  facilities: readonly FacilityInfo[],
+  facilityIdA: number,
+  facilityIdB: number,
+): { facilities: FacilityInfo[]; ok: boolean } {
+  const a = facilities.find((f) => f.id === facilityIdA);
+  const b = facilities.find((f) => f.id === facilityIdB);
+  if (a === undefined || b === undefined || facilityIdA === facilityIdB) {
+    return { facilities: [...facilities], ok: false };
+  }
+  const next = facilities.map((f) => {
+    if (f.id === facilityIdA) return { ...f, level: b.level, type: b.type };
+    if (f.id === facilityIdB) return { ...f, level: a.level, type: a.type };
+    return f;
+  });
+  return { facilities: next, ok: true };
 }

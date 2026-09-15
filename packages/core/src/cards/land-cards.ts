@@ -11,6 +11,13 @@ import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
 import { PRICE_STATUS, demolishLand } from '../rules/land-mutation.ts';
 import type { DemolishResult } from '../rules/land-mutation.ts';
+import {
+  OBJECT_TYPE_BOMB,
+  OBJECT_TYPE_MINE,
+  OBJECT_TYPE_ROADBLOCK,
+  releaseObject,
+} from '../rules/object-landing.ts';
+import type { ObjectWorld, ReleaseOutcome } from '../rules/object-landing.ts';
 import { MUTATE_DEMOLISH_ONE, MUTATE_FLATTEN, mutateFacility } from './monster.ts';
 import { MONSTER_HOSTILITY_PER_LEVEL } from './monster.ts';
 import { FACILITY_MAX_LEVEL } from '../rules/facility.ts';
@@ -76,6 +83,68 @@ export function applyDevilCard(land: LandInfo): LandInfo {
 /** 拆除卡：复用地块变更底座（住宅掉一级、连锁店夷平） */
 export function applyDemolishCard(land: LandInfo, priceIndex: number): DemolishResult {
   return demolishLand(land, priceIndex);
+}
+
+// ============================================================
+//  拆除卡（12）—— 打**地图物件**那一支
+// ============================================================
+
+/**
+ * 拆除卡能打的地图物件种类：**路障 16 / 地雷 17 / 定時炸彈 18**。
+ *
+ * @source 拾取窗口的额外规则（跳表组 6）VA 0x00446528：
+ * ```asm
+ * test bh, 0x80            ; 编码带 bit15（物件编码 0x8000 | handle<<8）
+ * je   拒绝
+ * ecx = (code >> 8) & 0x7f ; handle
+ * ecx = objects[handle - 1].type
+ * cmp ecx, 0x10 / je 收     ; 路障
+ * cmp ecx, 0x11 / je 收     ; 地雷
+ * cmp ecx, 0x12 / jne 拒绝  ; 定時炸彈
+ * ```
+ * 神明/禮物/寶箱等**不在**可打之列（它们没有这一段编码上的 handle 前缀语义）。
+ */
+export const DEMOLISHABLE_OBJECT_TYPES: readonly number[] = [
+  OBJECT_TYPE_ROADBLOCK,
+  OBJECT_TYPE_MINE,
+  OBJECT_TYPE_BOMB,
+];
+
+/**
+ * 拆除卡对**地图物件**：把那个物件从地图上收回。
+ *
+ * @source 拆除卡 VA 0x00443d22 起（编码走完地块/設施两条区间之后的第三支）：
+ * ```asm
+ * test byte [esp + 1], 0x80     ; ★ 物件编码的 bit15
+ * je   收场                      ; 不是物件 → 什么都不做
+ * esi = ([esp] & 0x7f00) >> 8   ; handle
+ * ... 播一次动画（此处略）...
+ * push esi / call _rich4_remove_object   ; VA 0x0040e14d
+ * ```
+ *
+ * `_rich4_remove_object` 的完整语义已在 `rules/object-landing.ts` 的
+ * `releaseObject` 里逐条译过，这里直接复用：
+ *   - 路障/地雷/定時炸彈 → **回道具库存**（`remain_tool_amount` +1，即道具 2/3/4）
+ *   - 物件从地图上摘掉（`nodeId`/`state`/`attached` 清零）
+ *   - 定時炸彈另清携带者的 `f64`
+ *   - 这三种物件**无搭档**，故不会触发搭档登场
+ *
+ * ⚠️ 原版物件分支**不记敌意**（地块/設施两支各有一处 `update_hostility`，
+ *   第三支没有），故本函数也不产出敌意。
+ *
+ * @returns `null` = 这个 handle 不是「地图上的路障/地雷/定時炸彈」，
+ *          此时原版拾取窗口根本不会放行（红叉），引擎按「不生效、不扣卡」处理。
+ */
+export function applyDemolishObjectCard(
+  world: ObjectWorld,
+  handle: number,
+): ReleaseOutcome | null {
+  const obj = world.objects[handle - 1];
+  if (obj === undefined) return null;
+  // 已不在图上的物件点不到（拾取是像素级命中）
+  if (obj.nodeId === 0) return null;
+  if (!DEMOLISHABLE_OBJECT_TYPES.includes(obj.type)) return null;
+  return releaseObject(world, handle);
 }
 
 // ============================================================

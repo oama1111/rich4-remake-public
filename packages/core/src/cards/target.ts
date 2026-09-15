@@ -70,14 +70,28 @@ export type TargetClass =
   | 'anyPlayer'
   /** 玩家 —— 0xe0c0410 / 0xe0c0710 */
   | 'player'
-  /** 地块（仅住宅/连锁店）—— 0xe0c0202 换地/换屋 */
+  /** 地块（仅住宅/连锁店）—— 0xe0c0202 换地/换屋（脚下是地块时） */
   | 'land'
   /**
-   * 地块**或設施** —— 0xe0c0006（天使/惡魔/漲價/查封）、
-   * 0xe0c0506（怪獸）、0xe0c0626（拆除）。
+   * 只要**設施** —— 0xe0c0204；也是换地/换屋在**脚下是設施**时的类别
+   * （原版此时把选择参数从 0xe0c0202 换成 0xe0c0204）。
+   * @source 换地卡 VA 0x004428cc `push 0xe0c0204`（低字节 0x04 = 只认設施）
+   */
+  | 'facility'
+  /**
+   * 地块**或設施** —— 0xe0c0006（天使/惡魔/漲價/查封）、0xe0c0506（怪獸）。
    * @source REQ-06.1：这些卡按原版同样作用于設施
    */
   | 'landOrFacility'
+  /**
+   * 地块、設施**或地圖物件** —— 只有 0xe0c0626（拆除卡）。
+   *
+   * @source 0xe0c0626 的低字节 = 0x26 = bit1|bit2|**bit5**：
+   *   拾取窗口的 bit5 收「`0x8000 | (物件 handle << 8)`」编码，
+   *   该卡的额外规则（跳表组 6，VA 0x00446528）只放行
+   *   **路障 0x10 / 地雷 0x11 / 定時炸彈 0x12** 三种物件。
+   */
+  | 'landFacilityOrObject'
   /** 股票 —— 紅卡/黑卡（selection 'ai'，无 selectionParam） */
   | 'stock'
   /** 物件 —— 請神符（selection 'ai'，无 selectionParam） */
@@ -87,18 +101,37 @@ export type TargetClass =
   | 'none';
 
 /**
+ * 出牌者**脚下**那一格的实例类别 —— 换地/换屋的目标类别由它决定。
+ *
+ * `null` = 脚下既不是地块也不是設施（路面/其它格），此时那两张卡不生效。
+ * @source 换地卡 VA 0x00442685 / 0x004428cc：先取脚下节点的实例编码
+ *   `word [node + 0x20]`，`0x7d0 < code < 0xfa0` 走**地块**、
+ *   `0xfa0 < code < 0x1770` 走**設施**，两条路各自推一个不同的选择参数。
+ */
+export type StandingInstanceKind = 'land' | 'facility' | null;
+
+/**
  * 由选择参数归类目标类别。
+ *
+ * ★ 换地/换屋（0xe0c0202）的类别**不由卡决定，而由出牌者脚下那一格决定** ——
+ *   原版在卡片函数里先看脚下实例编码，是**地块**就 `push 0xe0c0202`、
+ *   是**設施**就 `push 0xe0c0204`（两个参数的组号相同 = 2，只有类别位不同：
+ *   0x02 地块 / 0x04 設施）。故本函数吃一个 `standing` 入参；
+ *   缺省 `null` 退回「按地块处理」（旧行为，只为不破坏纯参数调用）。
  *
  * @source 实测分组（card-registry.ts）：
  *   0xe0c0010 → 转向/停留/乌龟（**可对自己使用**，由 2026 版 C 的
  *               自我目标分支佐证）
  *   0xe0c0410 → 均贫/抢夺/查税/同盟
  *   0xe0c0710 → 梦游/陷害
- *   0xe0c0202 → 换地/换屋（仅住宅/连锁店）
- *   0xe0c0006 / 0506 / 0626 → 天使/惡魔/漲價/查封/怪獸/拆除
- *               （REQ-06.1：按原版同样作用于設施 → landOrFacility）
+ *   0xe0c0202 → 换地/换屋（脚下是地块 → 地块；脚下是設施 → 0xe0c0204/設施）
+ *   0xe0c0006 / 0506 → 天使/惡魔/漲價/查封/怪獸（地块或設施）
+ *   0xe0c0626 → 拆除（地块 / 設施 / **地图物件**）
  */
-export function targetClassOf(selectionParam: number | null): TargetClass {
+export function targetClassOf(
+  selectionParam: number | null,
+  standing: StandingInstanceKind = null,
+): TargetClass {
   if (selectionParam === null) return 'none';
   switch (selectionParam) {
     case 0xe0c0010:
@@ -107,13 +140,18 @@ export function targetClassOf(selectionParam: number | null): TargetClass {
     case 0xe0c0710:
       return 'player';
     case 0xe0c0202:
-      // 换地/换屋只认住宅/连锁店（換的是房契），不认設施
-      return 'land';
+      // @source 换地卡 VA 0x00442685 `push 0xe0c0202` / 0x004428cc `push 0xe0c0204`
+      return standing === 'facility' ? 'facility' : 'land';
+    case 0xe0c0204:
+      // @source `push 0xe0c0204`（换地/换屋在脚下是設施时用）—— 低字节 0x04 = 只认設施
+      return 'facility';
     case 0xe0c0006:
     case 0xe0c0506:
-    case 0xe0c0626:
-      // @source REQ-06.1：天使/惡魔/漲價/查封/怪獸/拆除按原版同样作用于設施
+      // @source REQ-06.1：天使/惡魔/漲價/查封/怪獸按原版同样作用于設施
       return 'landOrFacility';
+    case 0xe0c0626:
+      // @source 0x00443d22 起的物件分支 + 拾取窗口组 6（0x00446528）
+      return 'landFacilityOrObject';
     default:
       // 未登记的参数：保守起见按「需要目标但类别未知」处理
       return 'none';
@@ -129,13 +167,19 @@ export function targetClassOf(selectionParam: number | null): TargetClass {
  *   - 請神符（23，VA 0x00444e1a）→ object
  *   - 紅卡（24，VA 0x00444f25）/ 黑卡（25，VA 0x0044503f）→ stock
  * 其余卡片一律按 selectionParam 归类（与 targetClassOf 相同）。
+ *
+ * @param standing 出牌者脚下那一格的类别（见 `StandingInstanceKind`）——
+ *   只有换地/换屋（0xe0c0202）会因此改变类别，其余卡片忽略它。
  */
-export function targetClassOfCard(impl: {
-  id: number;
-  selection: 'none' | 'ui' | 'ai';
-  selectionParam: number | null;
-}): TargetClass {
-  if (impl.selectionParam !== null) return targetClassOf(impl.selectionParam);
+export function targetClassOfCard(
+  impl: {
+    id: number;
+    selection: 'none' | 'ui' | 'ai';
+    selectionParam: number | null;
+  },
+  standing: StandingInstanceKind = null,
+): TargetClass {
+  if (impl.selectionParam !== null) return targetClassOf(impl.selectionParam, standing);
   if (impl.selection === 'ai') {
     if (impl.id === 23) return 'object';
     if (impl.id === 24 || impl.id === 25) return 'stock';
@@ -177,6 +221,18 @@ function actorInRange(actor: number): boolean {
   return Number.isInteger(actor) && actor >= ACTOR_MIN && actor <= ACTOR_MAX;
 }
 
+/** 設施下标的范围检查（3 个类别共用一处，避免三份复制） */
+function facilityInRange(facilityId: number, extra: TargetLimits): boolean {
+  if (extra.facilityCount === undefined) return true;
+  return Number.isInteger(facilityId) && facilityId >= 1 && facilityId <= extra.facilityCount;
+}
+
+/** 物件 handle 的范围检查（1 基） */
+function objectInRange(objectIndex: number, extra: TargetLimits): boolean {
+  if (extra.objectCount === undefined) return true;
+  return Number.isInteger(objectIndex) && objectIndex >= 1 && objectIndex <= extra.objectCount;
+}
+
 /**
  * 校验目标是否合法。
  *
@@ -202,17 +258,26 @@ export function validateTarget(
     case 'land':
       return target.kind === 'entity' ? null : 'wrongTargetKind';
 
+    case 'facility': {
+      // @source 0xe0c0204 的低字节 0x04 —— 换地/换屋在脚下是設施时只收設施
+      if (target.kind !== 'facility') return 'wrongTargetKind';
+      return facilityInRange(target.facilityId, extra) ? null : 'facilityOutOfRange';
+    }
+
     case 'landOrFacility': {
       if (target.kind === 'entity') return null;
       if (target.kind !== 'facility') return 'wrongTargetKind';
-      if (extra.facilityCount !== undefined) {
-        if (!Number.isInteger(target.facilityId)
-          || target.facilityId < 1
-          || target.facilityId > extra.facilityCount) {
-          return 'facilityOutOfRange';
-        }
+      return facilityInRange(target.facilityId, extra) ? null : 'facilityOutOfRange';
+    }
+
+    case 'landFacilityOrObject': {
+      // @source 0xe0c0626 的类别位 = 地块|設施|物件，第三支见下方 'object'
+      if (target.kind === 'entity') return null;
+      if (target.kind === 'facility') {
+        return facilityInRange(target.facilityId, extra) ? null : 'facilityOutOfRange';
       }
-      return null;
+      if (target.kind !== 'object') return 'wrongTargetKind';
+      return objectInRange(target.objectIndex, extra) ? null : 'objectOutOfRange';
     }
 
     case 'stock': {
@@ -229,14 +294,7 @@ export function validateTarget(
 
     case 'object': {
       if (target.kind !== 'object') return 'wrongTargetKind';
-      if (extra.objectCount !== undefined) {
-        if (!Number.isInteger(target.objectIndex)
-          || target.objectIndex < 1
-          || target.objectIndex > extra.objectCount) {
-          return 'objectOutOfRange';
-        }
-      }
-      return null;
+      return objectInRange(target.objectIndex, extra) ? null : 'objectOutOfRange';
     }
 
     case 'playerOrActor': {

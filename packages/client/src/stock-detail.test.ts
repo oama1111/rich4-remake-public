@@ -27,6 +27,7 @@ import {
   chartScale,
   chartYAt,
   drawStockDetail,
+  fixedOrNan,
   historyFilled,
   historyRange,
   iconImageOf,
@@ -116,9 +117,19 @@ describe('历史缓冲的统计 @source loc_0042a147 / loc_0042a2b3', () => {
     expect(recentAverage(h, 1, 3)).toBe(10);
   });
 
-  it('★ 一个都没有就返回 0', () => {
-    expect(recentAverage(hist([]), 0, 6)).toBe(0);
-    expect(recentAverage(hist([]), 0, DETAIL_CHART.month)).toBe(0);
+  it('★ 一个都没有时是 NaN（原版 `0/0`），不是 0', () => {
+    // @source 0x0042a18d：`fild 计数` 后 `fdivr 求和` —— 计数 0 → x87 的 QNaN indefinite
+    expect(Number.isNaN(recentAverage(hist([]), 0, 6))).toBe(true);
+    expect(Number.isNaN(recentAverage(hist([]), 0, DETAIL_CHART.month))).toBe(true);
+    // 有值就不受影响
+    expect(recentAverage(hist([10]), 1, 6)).toBe(10);
+  });
+
+  it('★ NaN 那一格打出来是 `-nan`（Watcom `_cvt` 的写法）', () => {
+    // @source 0x45c3b2（真 `_cvt`）→ 0x45d55d 写小写 nan；0/0 的符号位是 1 → 再补 `-`
+    expect(fixedOrNan(NaN, 2)).toBe('-nan');
+    expect(fixedOrNan(12.345, 2)).toBe('12.35');
+    expect(fixedOrNan(12.345, 1)).toBe('12.3');
   });
 
   it('★ 高低扫满 144 格；没有历史时低价的哨兵值要还原成 0', () => {
@@ -353,6 +364,8 @@ describe('从局面摊出一张卡', () => {
   /** 记下「问了哪几张图」与「贴到哪」的假 ctx */
   function fakeCtx() {
     const asked: number[] = [];
+    /** 每次取图连 `colorKeyBlack` 一起记（图标必须**不抠黑**）*/
+    const askedKeyed: { index: number; colorKeyBlack: boolean }[] = [];
     const images: { dx: number; dy: number }[] = [];
     const textAt: { t: string; x: number; y: number; font: string }[] = [];
     const ctx = {
@@ -378,12 +391,14 @@ describe('从局面摊出一张卡', () => {
         textAt.push({ t, x, y, font: ctx.font });
       },
     };
-    const sprite = (_a: unknown, _r: number, index: number) => {
+    const sprite = (_a: unknown, _r: number, index: number, colorKeyBlack = false) => {
       asked.push(index);
+      askedKeyed.push({ index, colorKeyBlack });
       return { bitmap: {} as ImageBitmap, width: 80, height: 112, anchorX: 0, anchorY: 0 };
     };
     return {
       asked,
+      askedKeyed,
       images,
       textAt,
       ctx: ctx as unknown as CanvasRenderingContext2D,
@@ -409,6 +424,12 @@ describe('从局面摊出一张卡', () => {
       { dx: DETAIL_ORIGIN.x, dy: DETAIL_ORIGIN.y },
       { dx: DETAIL_ICON.x, dy: DETAIL_ICON.y },
     ]);
+    // ★ 图标**不抠黑**：原版走不透明 blit（`call 0x4563f5` @0x00429f25）；
+    //   资源 75 是 SMP，電子那台显示器屏 12%、圖 9 有 39.6% 是纯黑，抠了就镂空
+    expect(f.askedKeyed).toEqual([
+      { index: DETAIL_IMAGE, colorKeyBlack: false },
+      { index: 3, colorKeyBlack: false },
+    ]);
   });
 
   it('★ 折线两端的价签按 (88, 折线端点 ∓8) 画、**12 号**字', () => {
@@ -425,3 +446,135 @@ describe('从局面摊出一张卡', () => {
     expect(tag('70.0')!.font.startsWith('12px')).toBe(true);
   });
 });
+
+describe('持股饼的画序 @source loc_0042a3cc 起（三个分支）', () => {
+  interface Arc { cx: number; cy: number; rx: number; ry: number; a0: number; a1: number; ccw: boolean }
+
+  /** 记下每次 `fill`/`stroke` 的颜色与那条路径上的椭圆参数 */
+  function pieCtx() {
+    const fills: { fill: string; arcs: Arc[] }[] = [];
+    const strokes: Arc[][] = [];
+    let path: Arc[] = [];
+    let style = '';
+    const ctx = {
+      get fillStyle(): string {
+        return style;
+      },
+      set fillStyle(v: string) {
+        style = v;
+      },
+      strokeStyle: '',
+      lineWidth: 1,
+      font: '',
+      textAlign: 'left',
+      textBaseline: 'top',
+      save: () => undefined,
+      restore: () => undefined,
+      closePath: () => undefined,
+      moveTo: () => undefined,
+      lineTo: () => undefined,
+      fillText: () => undefined,
+      drawImage: () => undefined,
+      beginPath: () => {
+        path = [];
+      },
+      ellipse: (
+        cx: number, cy: number, rx: number, ry: number,
+        _rot: number, a0: number, a1: number, ccw: boolean,
+      ) => {
+        path.push({ cx, cy, rx, ry, a0, a1, ccw });
+      },
+      fill: () => fills.push({ fill: style, arcs: path.slice() }),
+      stroke: () => strokes.push(path.slice()),
+    };
+    const sprite = () => ({ bitmap: {} as ImageBitmap, width: 80, height: 112, anchorX: 0, anchorY: 0 });
+    return {
+      fills,
+      strokes,
+      ctx: ctx as unknown as CanvasRenderingContext2D,
+      sprite: sprite as unknown as Parameters<typeof drawStockDetail>[1],
+    };
+  }
+
+  const NAMES = Array.from({ length: 12 }, (_, i) => `股${i}`);
+  const PLAYERS = ['甲', '乙', '丙', '丁'];
+
+  /** 只跑「饼」那一段：拿一张真卡把 ratio 换掉、折线清空 */
+  function pieFills(ratio: number) {
+    const base = stockDetailFrom(makeGameState(), 0, 0, NAMES, PLAYERS, null)!;
+    const f = pieCtx();
+    drawStockDetail(f.ctx, f.sprite, { ...base, chart: [], ratio });
+    // 有椭圆的 fill 才是饼那些（文字不走 fill）
+    return f.fills.filter((o) => o.arcs.length > 0);
+  }
+
+  const boxCy = (DETAIL_PIE.box.top + DETAIL_PIE.box.bottom) / 2;
+  const topCy = (DETAIL_PIE.topBox.top + DETAIL_PIE.topBox.bottom) / 2;
+
+  it('★ r == 0 → 两个椭圆都是**深蓝**（其余那支的颜色），不是红', () => {
+    // exe：`push 0xd00000` @0x0042a665 → `Ellipse(box)` @0x0042a681 → `Ellipse(topBox)` @0x0042a71d
+    const fills = pieFills(0);
+    expect(fills.map((o) => o.fill)).toEqual([DETAIL_PIE.rest, DETAIL_PIE.rest]);
+    expect(fills.map((o) => o.arcs[0]!.cy)).toEqual([boxCy, topCy]);
+  });
+
+  it('★ r ≥ 1 → 两个椭圆都是**深红**（自己那份的颜色）@0x0042a6c2', () => {
+    const fills = pieFills(1);
+    expect(fills.map((o) => o.fill)).toEqual([DETAIL_PIE.mine, DETAIL_PIE.mine]);
+    expect(fills.map((o) => o.arcs[0]!.cy)).toEqual([boxCy, topCy]);
+  });
+
+  it('★ 0 < r < 1 → 先铺**底盘椭圆**（深蓝）再两段扇，最后才是 FloodFill 的黑月牙', () => {
+    // @source 0x0042a526 的 `Ellipse(414,343,591,401)` 在两次 `Pie` 之前
+    const fills = pieFills(0.5);
+    expect(fills.map((o) => o.fill)).toEqual([
+      DETAIL_PIE.rest, // ① 底盘 @0x0042a50a
+      DETAIL_PIE.mine, // ② 自己那份（占 ratio）@0x0042a586 那支刷子
+      DETAIL_PIE.rest, // ③ 其余 @0x0042a549 那支刷子
+      '#000000', // ④ FloodFill(dc,589,374,0) @0x0042a638
+    ]);
+    expect(fills[0]!.arcs[0]!.cy).toBe(boxCy);
+    expect(fills[1]!.arcs[0]!.cy).toBe(topCy);
+    // r = 0.5：端点在下半（y = 394 ≥ 365）→ 有那道 7px 竖线 → 月牙只涂它右边
+    const end = pieEnd(0.5);
+    expect(end).toEqual({ x: 502, y: 394 });
+    expect(fills[3]!.arcs[0]!.a1).toBeCloseTo(Math.acos((end.x - DETAIL_PIE.cx) / DETAIL_PIE.rx), 10);
+  });
+
+  it('★ r ≤ 0.25 不涂黑（@0x0042a611 `fcomp 0.25` + `jbe`）', () => {
+    const fills = pieFills(0.1);
+    expect(fills.map((o) => o.fill)).toEqual([DETAIL_PIE.rest, DETAIL_PIE.mine, DETAIL_PIE.rest]);
+  });
+
+  it('★ 端点在上班（y < 365）→ 没有那道竖线，月牙整条连通 0..π', () => {
+    const fills = pieFills(0.9);
+    const end = pieEnd(0.9);
+    expect(end.y).toBeLessThan(DETAIL_PIE.cy);
+    expect(fills.map((o) => o.fill)).toEqual([
+      DETAIL_PIE.rest, DETAIL_PIE.mine, DETAIL_PIE.rest, '#000000',
+    ]);
+    expect(fills[3]!.arcs[0]!.a0).toBe(0);
+    expect(fills[3]!.arcs[0]!.a1).toBe(Math.PI);
+  });
+
+  it('★ 端点 x ≥ 589 时也不涂（@0x0042a627 `cmp …,0x24d` + `jge`）', () => {
+    // r 刚过 0.25 时端点还在最右、xend 仍是 590
+    const end = pieEnd(0.26);
+    expect(end.x).toBeGreaterThanOrEqual(DETAIL_VALUE_X.c3);
+    const fills = pieFills(0.26);
+    expect(fills.map((o) => o.fill)).toEqual([DETAIL_PIE.rest, DETAIL_PIE.mine, DETAIL_PIE.rest]);
+  });
+
+  it('★ 两个椭圆的 black 描边与两道端帽短竖线三支都画 @0x0042a3cc', () => {
+    // `CreatePen(0,1,0)` 选进 DC 后，`Ellipse` / `Pie` / `LineTo` 全用它描边
+    const f = pieCtx();
+    const base = stockDetailFrom(makeGameState(), 0, 0, NAMES, PLAYERS, null)!;
+    drawStockDetail(f.ctx, f.sprite, { ...base, chart: [], ratio: 0 });
+    // 两道端帽（moveTo/lineTo，不落 ellipse）+ 底盘 + 上盘 = 3 次 stroke
+    expect(f.strokes).toHaveLength(3);
+    expect(f.strokes[0]!.length).toBe(0);
+    expect(f.strokes[1]!.map((a) => a.cy)).toEqual([boxCy]);
+    expect(f.strokes[2]!.map((a) => a.cy)).toEqual([topCy]);
+  });
+});
+

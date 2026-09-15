@@ -4,11 +4,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  applySwapLandCard, applyRedCard, applyBlackCard,
-  RED_CARD_NEWS_FLAG, BLACK_CARD_NEWS_FLAG, SWAP_LAND_SELECTION_PARAM,
+  applySwapLandCard, applySwapFacilityCard, applyRedCard, applyBlackCard,
+  RED_CARD_NEWS_FLAG, BLACK_CARD_NEWS_FLAG,
+  SWAP_LAND_SELECTION_PARAM, SWAP_LAND_FACILITY_SELECTION_PARAM,
 } from './swap-and-stock.ts';
 import type { StockState } from '../places/stock.ts';
-import { makeLand } from '../testing/factories.ts';
+import { makeFacility, makeLand } from '../testing/factories.ts';
 import { cardImpl } from '@rich4/data';
 import { STOCK_COUNT } from '../rules/wealth.ts';
 
@@ -55,6 +56,42 @@ describe('换地卡', () => {
     const ls = two();
     applySwapLandCard(ls, 1, 2);
     expect(ls[0]!.owner).toBe(1);
+  });
+});
+
+describe('换地卡 · 設施分支（脚下是設施时原版换 0xe0c0204）', () => {
+  const twoFac = () => [
+    makeFacility({ id: 1, owner: 1, level: 2, type: 1 }),
+    makeFacility({ id: 2, owner: 3, level: 4, type: 2 }),
+  ];
+
+  it('★ 設施参数 0xe0c0204 存在且只认設施', () => {
+    expect(SWAP_LAND_FACILITY_SELECTION_PARAM).toBe(0xe0c0204);
+  });
+
+  it('★ 交换两座設施的归属（+0x19）', () => {
+    // @source VA 0x00442a09
+    const r = applySwapFacilityCard(twoFac(), 1, 2);
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]!.owner).toBe(3);
+    expect(r.facilities[1]!.owner).toBe(1);
+  });
+
+  it('★ 种类（+0x18）与等级（+0x1a）原地不动', () => {
+    const r = applySwapFacilityCard(twoFac(), 1, 2);
+    expect(r.facilities[0]).toMatchObject({ type: 1, level: 2 });
+    expect(r.facilities[1]).toMatchObject({ type: 2, level: 4 });
+  });
+
+  it('同一座設施不可自换；不存在时失败', () => {
+    expect(applySwapFacilityCard(twoFac(), 1, 1).ok).toBe(false);
+    expect(applySwapFacilityCard(twoFac(), 1, 99).ok).toBe(false);
+  });
+
+  it('不原地修改入参', () => {
+    const fs = twoFac();
+    applySwapFacilityCard(fs, 1, 2);
+    expect(fs[0]!.owner).toBe(1);
   });
 });
 

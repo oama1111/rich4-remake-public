@@ -33,6 +33,7 @@ import {
   targetClassOfCard,
   type GameState,
   type MapTopology,
+  type StandingInstanceKind,
   type TargetClass,
 } from '@rich4/core';
 import { CARD_IMPLS, CARDS, TOOLS } from '@rich4/data';
@@ -212,6 +213,22 @@ export function toolIsDirect(id: number): boolean {
 }
 
 /**
+ * 出牌者脚下那一格的实例类别 —— core 的 `targetClassOfCard` 用它定
+ * 换地/换屋的目标类别（脚下是地块 → 地块；脚下是設施 → 設施）。
+ *
+ * ★ 这里只是把地图拓扑读出来，规则仍只有 core 一份（C-ARC-2）。
+ */
+function standingKindOf(state: GameState, topo: MapTopology): StandingInstanceKind {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return null;
+  const node = topo.nodes[me.nodeId - 1];
+  if (node === undefined) return null;
+  if (node.ref.kind === 'land') return 'land';
+  if (node.ref.kind === 'facility') return 'facility';
+  return null;
+}
+
+/**
  * 卡片欄选了一张卡之后走哪条路 —— **纯函数**，把决策表钉在这里以便单测
  * （`main.ts` 只负责照着发 action / 开拾取会话）。
  */
@@ -222,7 +239,7 @@ export function routeCardPick(
 ): CardPickRoute {
   if (canUseCard(state, topo, cardId, { kind: 'none' })) return { kind: 'use' };
   const impl = CARD_IMPLS[cardId - 1];
-  const cls = impl === undefined ? 'none' : targetClassOfCard(impl);
+  const cls = impl === undefined ? 'none' : targetClassOfCard(impl, standingKindOf(state, topo));
   if (cls === 'none') return { kind: 'cannot', needsOwnList: false };
   // ★ 紅卡/黑卡：原版走股市屏的**选股模式**（`_rich4_ui_stock_entry` 参数 1/2）
   if (cls === 'stock') {

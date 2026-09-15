@@ -5,15 +5,21 @@
  * ★ 以原版 exe 反汇编为准。
  */
 
-import type { LandInfo } from '../loaders/map.ts';
+import type { FacilityInfo, LandInfo } from '../loaders/map.ts';
 import type { StockState } from '../places/stock.ts';
 
 // ============================================================
 //  换地卡（4）
 // ============================================================
 
-/** 换地卡的选择参数 @source `push 0xe0c0202` —— 地块组 */
+/**
+ * 换地卡的选择参数 —— 由**脚下那一格**决定用哪一个：
+ *   脚下是地块 → `0xe0c0202`（@source VA 0x00442685）
+ *   脚下是設施 → `0xe0c0204`（@source VA 0x004428cc）
+ * 两者组号相同（2 = 换地/换屋的额外规则），只有类别位不同。
+ */
 export const SWAP_LAND_SELECTION_PARAM = 0xe0c0202;
+export const SWAP_LAND_FACILITY_SELECTION_PARAM = 0xe0c0204;
 
 export interface SwapLandResult {
   lands: LandInfo[];
@@ -47,6 +53,46 @@ export function applySwapLandCard(
     return l;
   });
   return { lands: next, ok: true };
+}
+
+export interface SwapFacilityResult {
+  facilities: FacilityInfo[];
+  ok: boolean;
+}
+
+/**
+ * 换地卡对**設施**：与地块路径完全同形 —— **只换归属**。
+ *
+ * @source 换地卡設施分支 VA 0x00442a09（`edi` = 脚下設施、`esi` = 选中設施，
+ *   `bl` = 脚下設施原主、`[esp]` = 选中設施原主）：
+ * ```asm
+ * mov byte [esi + 0x19], bl     ; 选中設施.owner = 脚下設施原主
+ * mov al, byte [esp]
+ * mov byte [edi + 0x19], al     ; 脚下設施.owner = 选中設施原主
+ * ```
+ *
+ * 只写 `+0x19`（owner）：**等级 `+0x1a` 与种类 `+0x18` 原地不动**
+ * （兩条路径各有一处 `animate_object`，纯表现，不落 core）。
+ *
+ * ⚠️ 與換屋卡（`applySwapHouseFacilityCard`）的区别同地块路径：
+ *   換地換 owner、換屋換 `+0x18/+0x1a`。
+ */
+export function applySwapFacilityCard(
+  facilities: readonly FacilityInfo[],
+  facilityIdA: number,
+  facilityIdB: number,
+): SwapFacilityResult {
+  const a = facilities.find((f) => f.id === facilityIdA);
+  const b = facilities.find((f) => f.id === facilityIdB);
+  if (a === undefined || b === undefined || facilityIdA === facilityIdB) {
+    return { facilities: [...facilities], ok: false };
+  }
+  const next = facilities.map((f) => {
+    if (f.id === facilityIdA) return { ...f, owner: b.owner };
+    if (f.id === facilityIdB) return { ...f, owner: a.owner };
+    return f;
+  });
+  return { facilities: next, ok: true };
 }
 
 // ============================================================

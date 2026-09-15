@@ -4,11 +4,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  turnAround, applyTurnCard, applySwapHouseCard,
+  turnAround, applyTurnCard, applySwapHouseCard, applySwapHouseFacilityCard,
   DIRECTION_COUNT, TURN_AROUND_OFFSET,
 } from './turn-and-house.ts';
 import { applySwapLandCard } from './swap-and-stock.ts';
-import { makePlayer, makeLand } from '../testing/factories.ts';
+import { makePlayer, makeLand, makeFacility } from '../testing/factories.ts';
 
 const four = () => [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i, direction: 1 }));
 
@@ -78,9 +78,46 @@ describe('换屋卡', () => {
     expect(applySwapHouseCard(two(), 1, 99).ok).toBe(false);
   });
 
+  it('★ 种类（+0x18）也跟着换：住宅 ↔ 连锁店', () => {
+    // @source 助手 0x40b4f8 尾部（地块分支 0x0040b6c5）：+0x18 与 +0x1a 一起互换
+    const ls = [
+      makeLand({ id: 1, owner: 1, level: 4, type: 0 }),
+      makeLand({ id: 2, owner: 2, level: 0, type: 1 }),
+    ];
+    const r = applySwapHouseCard(ls, 1, 2);
+    expect(r.lands[0]).toMatchObject({ type: 1, level: 0 });
+    expect(r.lands[1]).toMatchObject({ type: 0, level: 4 });
+  });
+
   it('不原地修改入参', () => {
     const ls = two();
     applySwapHouseCard(ls, 1, 2);
     expect(ls[0]!.level).toBe(4);
+  });
+});
+
+describe('换屋卡 · 設施分支（脚下是設施时原版换 0xe0c0204）', () => {
+  const twoFac = () => [
+    makeFacility({ id: 1, owner: 1, level: 1, type: 3 }),
+    makeFacility({ id: 2, owner: 2, level: 4, type: 1 }),
+  ];
+
+  it('★ 换的是种类 + 等级，归属不动', () => {
+    // @source 助手 0x40b4f8 設施分支 VA 0x0040b880
+    const r = applySwapHouseFacilityCard(twoFac(), 1, 2);
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]).toMatchObject({ type: 1, level: 4, owner: 1 });
+    expect(r.facilities[1]).toMatchObject({ type: 3, level: 1, owner: 2 });
+  });
+
+  it('同一座設施不可自换；不存在时失败', () => {
+    expect(applySwapHouseFacilityCard(twoFac(), 1, 1).ok).toBe(false);
+    expect(applySwapHouseFacilityCard(twoFac(), 1, 99).ok).toBe(false);
+  });
+
+  it('不原地修改入参', () => {
+    const fs = twoFac();
+    applySwapHouseFacilityCard(fs, 1, 2);
+    expect(fs[0]!.level).toBe(1);
   });
 });

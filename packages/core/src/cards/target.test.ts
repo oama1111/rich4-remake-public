@@ -24,14 +24,32 @@ describe('目标类别归类', () => {
     expect(targetClassOf(0xe0c0710)).toBe('player');
   });
 
-  it('0xe0c0202 → land（换地/换屋仅住宅/连锁店）', () => {
+  it('★ 0xe0c0202 → 类别**跟脚下走**：地块 → land、設施 → facility', () => {
+    // 缺省（无状态）仍按地块处理，只为兼容纯参数调用
     expect(targetClassOf(0xe0c0202)).toBe('land');
+    expect(targetClassOf(0xe0c0202, 'land')).toBe('land');
+    // @source 换地卡 VA 0x004428cc `push 0xe0c0204`
+    expect(targetClassOf(0xe0c0202, 'facility')).toBe('facility');
+    expect(targetClassOf(0xe0c0204)).toBe('facility');
+    // 脚下既不是地块也不是設施 → 仍归 land（卡片本体随后会以 notStandingOnLand 拒收）
+    expect(targetClassOf(0xe0c0202, null)).toBe('land');
   });
 
-  it('0xe0c0006 / 0506 / 0626 → landOrFacility（REQ-06.1：同样作用于設施）', () => {
-    for (const p of [0xe0c0006, 0xe0c0506, 0xe0c0626]) {
+  it('★ 只有换地/换屋理会脚下；其余卡片类别不变', () => {
+    for (const p of [0xe0c0010, 0xe0c0410, 0xe0c0710, 0xe0c0006, 0xe0c0506, 0xe0c0626]) {
+      expect(targetClassOf(p, 'facility'), String(p)).toBe(targetClassOf(p));
+    }
+  });
+
+  it('0xe0c0006 / 0506 → landOrFacility（REQ-06.1：同样作用于設施）', () => {
+    for (const p of [0xe0c0006, 0xe0c0506]) {
       expect(targetClassOf(p)).toBe('landOrFacility');
     }
+  });
+
+  it('★ 0xe0c0626 → landFacilityOrObject（拆除卡还收地图物件）', () => {
+    // @source 低字节 0x26 = bit1|bit2|bit5；bit5 那一族只放行 0x10/0x11/0x12
+    expect(targetClassOf(0xe0c0626)).toBe('landFacilityOrObject');
   });
 
   it('★ 清单中每个选择参数都能被归类', () => {
@@ -64,10 +82,24 @@ describe('卡片级目标类别（无 selectionParam 的卡）', () => {
     expect(targetClassOfCard(implOf(25))).toBe('stock');
   });
 
+  it('★ 卡片级归类也吃脚下：换地/换屋站着設施时按設施收', () => {
+    expect(targetClassOfCard(implOf(4), 'facility')).toBe('facility');
+    expect(targetClassOfCard(implOf(5), 'facility')).toBe('facility');
+    expect(targetClassOfCard(implOf(4), 'land')).toBe('land');
+    expect(targetClassOfCard(implOf(5))).toBe('land');
+    // 其余有参数的卡不理会脚下
+    expect(targetClassOfCard(implOf(9), 'facility')).toBe('landOrFacility');
+    expect(targetClassOfCard(implOf(12), 'land')).toBe('landFacilityOrObject');
+  });
+
   it('有 selectionParam 的卡与 targetClassOf 一致', () => {
     for (const impl of CARD_IMPLS) {
       if (impl.selectionParam === null) continue;
       expect(targetClassOfCard(impl), impl.name).toBe(targetClassOf(impl.selectionParam));
+      // 换地/换屋两个参数都要能给出设施类别
+      expect(targetClassOfCard(impl, 'facility'), impl.name).toBe(
+        targetClassOf(impl.selectionParam, 'facility'),
+      );
     }
   });
 
@@ -114,7 +146,18 @@ describe('目标合法性校验', () => {
     expect(validateTarget('land', E(4001), 0)).toBeNull();
   });
 
-  it('land 类仍不接受 facility（换地/换屋不换設施）', () => {
+  it('facility 类只收設施：换地/换屋站在設施上时的类别', () => {
+    expect(validateTarget('facility', { kind: 'facility', facilityId: 1 }, 0)).toBeNull();
+    expect(validateTarget('facility', E(2001), 0)).toBe('wrongTargetKind');
+    expect(validateTarget('facility', N, 0)).toBe('targetRequired');
+    expect(validateTarget('facility', { kind: 'object', objectIndex: 1 }, 0)).toBe('wrongTargetKind');
+    const lim = { facilityCount: 8 };
+    expect(validateTarget('facility', { kind: 'facility', facilityId: 8 }, 0, 4, lim)).toBeNull();
+    expect(validateTarget('facility', { kind: 'facility', facilityId: 9 }, 0, 4, lim))
+      .toBe('facilityOutOfRange');
+  });
+
+  it('land 类仍不接受 facility（脚下是地块时换地/换屋不换設施）', () => {
     expect(validateTarget('land', { kind: 'facility', facilityId: 1 }, 0)).toBe('wrongTargetKind');
   });
 });
@@ -131,6 +174,18 @@ describe('目标合法性校验 · 新变体（T-001）', () => {
     expect(validateTarget('landOrFacility', E(2001), 0)).toBeNull();
     expect(validateTarget('landOrFacility', F(1), 0)).toBeNull();
     expect(validateTarget('landOrFacility', P(1), 0)).toBe('wrongTargetKind');
+  });
+
+  it('★ landFacilityOrObject（拆除卡）：地块 / 設施 / 物件三样都收', () => {
+    expect(validateTarget('landFacilityOrObject', E(2001), 0)).toBeNull();
+    expect(validateTarget('landFacilityOrObject', F(1), 0)).toBeNull();
+    expect(validateTarget('landFacilityOrObject', O(17), 0, 4, { objectCount: 46 })).toBeNull();
+    expect(validateTarget('landFacilityOrObject', O(47), 0, 4, { objectCount: 46 }))
+      .toBe('objectOutOfRange');
+    expect(validateTarget('landFacilityOrObject', F(9), 0, 4, { facilityCount: 8 }))
+      .toBe('facilityOutOfRange');
+    expect(validateTarget('landFacilityOrObject', P(1), 0)).toBe('wrongTargetKind');
+    expect(validateTarget('landFacilityOrObject', { kind: 'none' }, 0)).toBe('targetRequired');
   });
 
   it('facility 越界：1..facilityCount', () => {

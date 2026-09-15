@@ -170,6 +170,14 @@ export const PICK_CLASS = {
   /** 目标必选（不是类别） */
   required: 0x8,
   player: 0x10,
+  /**
+   * bit5 = `0x8000 | (下标 << 8)` 那一族编码。
+   *
+   * ⚠️ 先前只记作「特殊棋子」，但拆除卡（`0xe0c0626`，低字节 `0x26`）的
+   * **地图物件**（路障 16 / 地雷 17 / 定時炸彈 18）走的也是这一位 ——
+   * 见 core 的 `TargetClass` 的 `landFacilityOrObject` 与拾取跳表组 6
+   * @source VA 0x00446528（`test bh, 0x80` + 种类 0x10/0x11/0x12）。
+   */
   actor: 0x20,
   /** ★ 「什么都收」：见 `pickClasses` */
   all: 0x40,
@@ -308,17 +316,38 @@ export function pickCandidates(
 
   switch (cls) {
     case 'land':
-    case 'landOrFacility': {
+    case 'landOrFacility':
+    case 'facility':
+    case 'landFacilityOrObject': {
+      // 类别位决定枚举哪几类实例（原版按参数的类别位分流）：
+      //   land         → 只地块（0xe0c0202：脚下是地块的换地/换屋）
+      //   facility     → 只設施（0xe0c0204：脚下是設施的换地/换屋）
+      //   landOrFacility / landFacilityOrObject → 两样都收
+      const wantLand = cls !== 'facility';
+      const wantFacility = cls !== 'land';
       for (const n of nodes) {
-        // 住宅/連鎖店 → entity；設施 → facility（只有 landOrFacility 收）
-        if (n.ref.kind === 'land') {
+        // 住宅/連鎖店 → entity；設施 → facility
+        if (wantLand && n.ref.kind === 'land') {
           const target: CardTarget = { kind: 'entity', entityId: n.ref.index };
           const p = instanceAnchor(topo, n, PICK_CLASS.land);
           if (ok(target, n.id)) out.push({ wx: p.x, wy: p.y, target, nodeId: n.id });
-        } else if (n.ref.kind === 'facility' && cls === 'landOrFacility') {
+        } else if (wantFacility && n.ref.kind === 'facility') {
           const target: CardTarget = { kind: 'facility', facilityId: n.ref.index };
           const p = instanceAnchor(topo, n, PICK_CLASS.facility);
           if (ok(target, n.id)) out.push({ wx: p.x, wy: p.y, target, nodeId: n.id });
+        }
+      }
+      // 拆除卡（0xe0c0626）的第三类：地图物件（路障/地雷/定時炸彈），
+      // 落点就是它所在那一格 —— 见 core 的 landFacilityOrObject
+      if (cls === 'landFacilityOrObject') {
+        for (let i = 0; i < state.objects.length; i++) {
+          const o = state.objects[i];
+          if (o === undefined || o.nodeId === 0) continue;
+          const pos = at(o.nodeId);
+          const target: CardTarget = { kind: 'object', objectIndex: i + 1 };
+          if (pos !== undefined && ok(target, o.nodeId)) {
+            out.push({ wx: pos.x, wy: pos.y, target, nodeId: o.nodeId });
+          }
         }
       }
       return out;
