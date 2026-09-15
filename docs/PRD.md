@@ -555,9 +555,9 @@ landOnLand(state, land):
 | REQ | 屏 | 资源 | 读 | 派发 | 布局证据 | 备注 |
 |---|---|---|---|---|---|---|
 | REQ-12.1 (P2-1) | 託管AI | ⚠️ **`Panel.mkf #77`**（先前误记为 Data.mkf） | `players[i].whoPlays/aiFlags/personality/cashRatio/stockRatio` | `setAi{player, …}`（五个字段都可选，確定时一次性发） | S3：14 条字串坐标 + 底图 435×355 | 三种個性名：乖寶寶/普通人/大老奸 |
-| REQ-12.2 (P2-2) | 個人資產表 + 三清單 | `Panel.mkf #9` | `wealthOf`、地产/股票清单 | 无 | S7 | 只读 |
+| REQ-12.2 (P2-2) | 個人資產表 + 三清單 | `Panel.mkf #9` **资源 9 的图 0/1/2**（三个视图各一张 640×480） | `panelValues` + `assetCounts`（四条计数） | 无（只读）；顶栏页签换玩家、三颗钮换视图 | S7 | **字段名照原版：`現  金`/`點  卷`（不是「點券」）**；12 个字段标签只画在视图 0；视图 1/2 只画列名，数据行属 T-023 |
 | REQ-12.3 (P2-3) | 道具欄 / 卡片欄 | 浮窗 5×3 | `tools[]/cards[]` | `useTool/useCard`（目标选择进入拾取模式） | S8/S9 | 紧排 15 格 |
-| REQ-12.4 (P2-4) | 側欄四页（**資金 / 地產 / 股票 / 其他**）| `Panel.mkf #0` 图 0..3 | `panelValues`（四页各三值）| 熱鍵 PgUp/PgDn 切页（页号每玩家一份）| S6/S10–S12 | 底部固定一行「物價指數 N」；四页另有头像+名字+角色色长条 |
+| REQ-12.4 (P2-4) | 側欄四页（**資金 / 地產 / 股票 / 其他**）| `Panel.mkf #0` 图 0..3 | `panelValues`（四页各三值）| 熱鍵 PgUp/PgDn 切页；**点右上角四条彩色竖条**也切（页号 = `y / 70`，VA 0x004182fa）；页号每玩家一份 | S6/S10–S12 | 底部固定一行「物價指數 N」；四页另有头像+名字+角色色长条。★ 地產页的「連鎖店」判据是**地块的 `type`（+0x18）≠0**，不是 `level` |
 | REQ-12.5 (P2-5) | 小地圖旋转钮 | — | `view` | 熱鍵「地圖向左/右旋轉」 | S6 | `render.ts` 已有 8 方位 |
 | REQ-12.6 (P2-6) | 銀行屏 | `#23` | `cash/moneyInBank/loan/specialFinance/loanDueDate` | `bank*{amount}` | U-3 | 白卡左申請/右償還；董事長多一条額度 |
 | REQ-12.7 (P2-7) | 股市屏 + 持股彙總 | `#75/#76` | `market`, `holdings`, `valuationsOf` | `buyStock/sellStock` | U-5 | 漲停/跌停/停牌提示 |
