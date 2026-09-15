@@ -303,6 +303,19 @@ export type TurnPhase =
 //  对局状态
 // ============================================================
 
+/**
+ * 一个替身**这一趟**走过的格子 —— `runNpc` / `runDoll` 的 `path` 原样（含起点）。
+ *
+ * ★ 纯表现：只在 `GameState.lastNpcWalks` 这个提示字段里出现，
+ *   渲染器拿它逐格起补间（`client/render.ts` 的 `ActorWalk` 同形）。
+ *   `slot` = actor − 4（0..3 四大惡人，4 機器娃娃）。
+ */
+export interface NpcWalkHint {
+  slot: number;
+  /** 依次经过的节点号，含起点；`path[i] → path[i+1]` 是第 i 格 */
+  path: number[];
+}
+
 export interface GameState {
   mode: GameMode;
   /** PRNG 内部状态。单机存档不持久化此字段（见 rng/policy.ts） */
@@ -497,6 +510,32 @@ export interface GameState {
 
   /** 最近一次事件的记录，供表现层显示；不参与规则 */
   lastEvent: { kind: 'news' | 'fortune'; id: number } | null;
+
+  /**
+   * **上一轮／上一次**替身走出来的整趟路径 —— 纯表现提示（T-047）。
+   *
+   * ★ 为什么要有它：core 一次动作里就把替身整趟走完（`runNpc` / `runDoll`
+   *   逐格算完才回一个 `path`），而 `path` 的中间格是岔路上 `rand()` 选的、
+   *   消费掉的 RNG 状态已经回不去，渲染器事后**推不出来**。原版是逐格 tick 播的，
+   *   要 1:1 就得把这份路径原样交给渲染器（见 `client/render.ts` 的 `ActorWalk`）。
+   *   三个覆写点：`reduce.ts` 的 `npcRound`（一輪里每个在盘上的惡人各一趟）、
+   *   `bail`（保釋当场那一趟）、以及用道具 1 时 `runDoll` 的九格。
+   *
+   * ★ **只保留最近一次**（每次覆写整份，不做累积）—— 它描述的是「刚刚发生了什么」，
+   *   用于起一段补间；累积起来既没有消费者，也会让读档后的画面莫名滑一段。
+   *
+   * ★ **纯表现，不参与任何规则判定**：
+   *   - core 里没有任何规则读它（`grep lastNpcWalks` 只有覆写点与装配点）；
+   *   - **不进 `stateFingerprint`**（`net/protocol.ts`）：那里的形参是一个
+   *     **显式列字段**的结构类型，只取「规则可见」的量，本字段不在其中，
+   *     故 `stateFingerprint(state)` 天然把它排除掉 —— C-DET 的确定性校验
+   *     不受表现差异影响。`state/npc-round.test.ts` 里有一条用例钉住这件事：
+   *     只改这一个字段，指纹必须不变（谁日后把指纹改成 `JSON.stringify(state)`
+   *     之类，那条用例会当场红）。
+   *   - 也因此它**不进 `history`、不进时光机快照**：两者存的是 action / state
+   *     的规则可见部分，读了它反而是把表现混进确定性重放（C-DET-4）。
+   */
+  lastNpcWalks: NpcWalkHint[];
 
   /**
    * 樂透号码表，36 项；值 = 持有者下标 + 1，0 表示未售出。

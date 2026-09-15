@@ -9,3 +9,4 @@ export * from './magic-house.ts';
 export * from './projection.ts';
 export * from './messages.ts';
 export * from './lunar.ts';
+export * from './speech.ts';

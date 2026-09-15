@@ -10,7 +10,7 @@
  */
 
 import type { Action } from './actions.ts';
-import type { GameState, Player } from './types.ts';
+import type { GameState, NpcWalkHint, Player } from './types.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 import { isAiControlled, isAlive } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
@@ -495,6 +495,9 @@ export function directionOf(dx: number, dy: number): number {
  */
 function npcRound(state: GameState, topo: MapTopology): GameState {
   let s = state;
+  // ★ 本轮替身走出来的整趟路径 —— 纯表现提示，覆写 `GameState.lastNpcWalks`
+  //   （见那里的注释）。`runNpc` 的中间格只有这里能拿到，渲染器事后推不出来。
+  const walks: NpcWalkHint[] = [];
   for (let slot = 0; slot < NPC_ACTORS.length; slot++) {
     const actor = s.specialActors[slot];
     if (!actorActive(actor)) continue;
@@ -521,6 +524,8 @@ function npcRound(state: GameState, topo: MapTopology): GameState {
       rng,
     );
     const settled = applyNpcEvents(s, ticked.owner, walk.events);
+    // ★ 把这一趟原样记给表现层（覆写，不累积）—— 只在这一轮里有效
+    walks.push({ slot, path: walk.path });
     let next = put({ ...settled.state, rngState: rng.getState() }, walk.actor);
     const home = walk.events.find((e) => e.kind === 'home');
     if (home !== undefined) {
@@ -532,7 +537,9 @@ function npcRound(state: GameState, topo: MapTopology): GameState {
     s = next;
     if (s.phase === 'gameOver') break;
   }
-  return s;
+  // ★ 覆写整份：`[]` 也是覆写 —— 这一轮没人走，就把上一轮的路径收掉，
+  //   免得渲染器/宿主拿着过期的提示。纯表现字段，改它不影响任何规则（C-DET）。
+  return { ...s, lastNpcWalks: walks };
 }
 
 /**
@@ -1189,7 +1196,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
 
           const specialActors = [...paid.specialActors];
           specialActors[slotIdx] = walk.actor;
-          paid = { ...settled.state, specialActors, rngState: rng.getState() };
+          // ★ 保釋当场那一趟也交给表现层（纯表现提示，覆写；见 GameState.lastNpcWalks）
+          paid = {
+            ...settled.state,
+            specialActors,
+            rngState: rng.getState(),
+            lastNpcWalks: [{ slot: slotIdx, path: walk.path }],
+          };
 
           // 半路又被收回去了 —— 占用表要跟着改（可能换了一张表）
           const home = walk.events.find((e) => e.kind === 'home');
@@ -2038,6 +2051,10 @@ export function useToolAction(
       objects: swept.objects,
       specialActors,
       rngState: rng.getState(),
+      // ★ 機器娃娃那九格同样交给表现层（纯表现提示，覆写）。
+      //   ⚠️ T-047 的偏离单原先把「path 被丢掉」只记在 `npcRound` / `bail` 两处，
+      //   这里同样丢 —— 娃娃是九格，漏了它等于最显眼的那一趟还是瞬移。
+      lastNpcWalks: [{ slot: specialSlotOf(ACTOR_DOLL), path: swept.path }],
     });
   }
 

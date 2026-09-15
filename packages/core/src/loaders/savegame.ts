@@ -324,6 +324,8 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
     lastEvent: null,
+    // 纯表现提示：读档后不播「上一局那趟」（见 state/types.ts 的 GameState.lastNpcWalks）
+    lastNpcWalks: [],
     lottery: emptyLottery(),
     pending: null,
     tools,

@@ -404,6 +404,8 @@ export function newGame(opts: NewGameOptions): GameState {
     prisonOccupancy: initialConfinement('prison', CONFINEMENT_SLOTS),
     hospitalOccupancy: initialConfinement('hospital', CONFINEMENT_SLOTS),
     lastEvent: null,
+    // 纯表现提示：开局没人走过（见 state/types.ts 的 GameState.lastNpcWalks）
+    lastNpcWalks: [],
     lottery: emptyLottery(),
     pending: null,
     tools,
