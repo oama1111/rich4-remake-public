@@ -548,7 +548,69 @@ wiki 的「各項目時間不同」与 exe 不符）、只在業主自己的回�
 
 ## 本轮新增的未决问题
 
-### Q-NET-2：大厅里改不了角色／地图（座位是服务器分配的）
+### ★ Q-BUILD-1：浏览器构建从 `b99b459` 起就是坏的（`node:zlib` 漏进前端）
+
+**症状**：`pnpm dev` 起来后页面永远停在「载入中…」。控制台：
+
+```
+Uncaught Error: Module "node:zlib" has been externalized for browser compatibility
+  at packages/assets-pipeline/src/sprite.ts:1:132
+```
+
+**根因**：`sprite.ts` 顶层有一行 `import { inflateSync } from 'node:zlib'`（`b99b459`
+为 T-061 的 `decodePng` 加的）。而 client 一路 import 到这里：
+
+```
+client/assets.ts  import { decodeImage } from '@rich4/assets-pipeline'
+   → 包入口 index.ts  export * from './sprite.ts'
+      → sprite.ts  import 'node:zlib'      ← vite 把它换成「一访问就抛」的桩
+```
+
+**为什么一直没被发现**：所有测试都在 Node 下跑，`node:zlib` 在那儿是真的；类型检查与
+lint 也看不出。只有真在浏览器/webview 里跑才会炸。**桌面壳的 webview 是同一个前端包，
+所以桌面版同样起不来。**
+
+**这是 `b99b459` 引入的，不是本轮任何改动造成的** —— 该提交是本次会话开始前的 HEAD，
+且 client 那行 import 早于本轮。`git log -S "node:zlib" -- packages/assets-pipeline/src/sprite.ts`
+只有一条命中，就是它。
+
+**为什么它挡着 M4**：C 组 30 屏都要**目视验证**（PRD 要求与实机截图逐项核对）。
+构建不起来就只能靠单测，而那正是「坐标算对了、画出来却不对」这类问题唯一漏得掉的场合。
+
+**怎么修（三条路，倾向第一条）**：
+
+1. **拆包出口**：把 Node 专用的（`png` 的 `decodePng`/`encodePng`、`assemble`、`review`、
+   `cli-*`）从 `index.ts` 的 barrel 里摘出去，另开 `@rich4/assets-pipeline/node`；
+   前端只从 barrel 拿浏览器安全的那些（mkf / sprite 的解码 / ground / audio / midi / …）。
+2. **前端彻底不用 `decodePng`**：HD 产物交给浏览器原生解码
+   （`createImageBitmap(new Blob([bytes]))`）—— 更快，且 T-065 的锚点本来就取自清单，
+   不需要 JS 解 PNG。但**仅此不够**：只要 `sprite.ts` 顶层还 import `node:zlib`，
+   前端 import 这个包就还是会炸。
+3. 把 `inflateSync` 换成 `DecompressionStream('deflate')` 或自写 inflate —— 前者是异步的，
+   会把 `decodePng` 变成 async，波及 CLI 与 T-065。
+
+要先定哪条路，再动代码（按项目规则：先改 PRD §2.2 的依赖方向与 MOD-11 的 API 出口，再改卡）。
+
+### Q-UI-1：「託管AI」屏那两个亮/暗行图的**用法**没跟到
+
+`Panel.mkf` #77 的图 1 / 图 2 是两张 116×86 的选项行底色（图 2 = 图 1 整体压暗
+约六成，实测：亮 `41,115,74` → 暗 `0,66,24`），各内嵌一颗粉红圆点，圆点在图上
+的 (18,43)。**没有跟到的是**：原版把它盖在一行上、还是盖在一组（「使用卡片+使用道具」
+两行 / 「乖寶寶+普通人+大老奸」三行）上 —— 116×86 按 32 像素行距算，正好够盖一组。
+
+本项目的做法：**按行**画，用行图内嵌的圆点对齐到面板上的圆点，再把高度裁到一行
+（32 像素）。亮 = 该项开着、暗 = 关着。视觉上与原版截图一致，但「裁高度」这一步是
+我们自己的选择。日后若从汇编里跟到它真正的用法，改 `ai-settings.ts` 的
+`ROW_IMAGE_DOT` / 裁剪那一段即可。
+
+### Q-BANK-3：`cashRatio`(+0x19) 没有任何规则读它
+
+「託管AI」屏的第一个滑块（現金 ↔ 存款）改的是玩家结构的 `+0x19`，字段已落成
+`Player.cashRatio`、开局从角色表 `f25` 拷入、原版存档也能读回（`SavePlayer.initCashRatio`
+就是 `u8(0x19)`），但**引擎里没有任何规则读它** —— 原版拿它决定「到银行时多少放存款」，
+本引擎未实现该行为。所以它现在是个纯设置值：屏上调得动、存档存得住，不影响 AI 决策。
+
+
 
 T-076 的卡片标题写「建房/加房/座位/角色/地图/开始」，但**座位内容归服务器**：
 `RoomHub.assignSeat` 决定谁坐几号、`start` 消息才带出 `seed / globalMapId / seats`。

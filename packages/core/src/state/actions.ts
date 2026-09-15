@@ -208,11 +208,28 @@ export type Action =
    */
   | { type: 'aiNext' }
   /**
-   * 託管 / 取消託管（工具列「託管AI」，Data.mkf #77）：改一名玩家的 `whoPlays`。
-   * 联机时由服务器在真人掉线超时后发（`WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT`），重连归还。
-   * 只接受 1（真人）/ 2（電腦）/ 5（真人託管）三种值；出局者拒。
+   * 改一名玩家的**託管设置** —— 工具列「託管AI」屏（Data.mkf #77，REQ-12.1）。
+   *
+   * 五个字段**都可选**（给哪个改哪个），字段名与原版玩家结构的偏移一一对应：
+   * `whoPlays`(+0x15 托管开关) / `aiFlags`(+0x16 会用卡·会用道具) /
+   * `personality`(+0x17 個性) / `cashRatio`(+0x19 現金↔存款) / `stockRatio`(+0x1a 股票↔資金)。
+   *
+   * 两个调用方，用法不同：
+   * - **服务器**掉线代打：只发 `whoPlays`（`WHO_PLAYS_HUMAN|WHO_PLAYS_AUTOPILOT`），重连归还；
+   * - **託管AI 屏**按「確定」：一次性发全部五项 —— 原版也是先编辑一份暂存表、
+   *   確定时才拷回玩家结构（`0x0041e577` 起，见 `docs/original-screens.md` S3）。
+   *
+   * 任一字段越界 → 整条拒绝（`reduce` 返回原 state），不做「部分生效」。
    */
-  | { type: 'setAi'; player: number; whoPlays: number }
+  | {
+      type: 'setAi';
+      player: number;
+      whoPlays?: number;
+      aiFlags?: number;
+      personality?: number;
+      cashRatio?: number;
+      stockRatio?: number;
+    }
   | { type: 'endTurn' };
 
 export type ActionType = Action['type'];

@@ -71,8 +71,14 @@ describe('f26：炒股比例', () => {
 });
 
 describe('从角色表取默认值', () => {
-  it('約翰喬：会用卡与道具、只放犯人、借 60%、炒股 30%', () => {
-    expect(traitsOf(0)).toEqual({ aiFlags: 3, personality: 2, loanRatio: 60, stockRatio: 30 });
+  it('約翰喬：会用卡与道具、放犯人（個性 2）、借 60%、炒股 30%、开局现金占 50%', () => {
+    expect(traitsOf(0)).toEqual({
+      aiFlags: 3,
+      personality: 2,
+      cashRatio: 50,
+      loanRatio: 60,
+      stockRatio: 30,
+    });
   });
 
   it('★ 忍太郎是最保守的一个：不借钱、不炒股', () => {
@@ -82,7 +88,13 @@ describe('从角色表取默认值', () => {
   });
 
   it('越界的角色编号退回一套安全默认值', () => {
-    expect(traitsOf(99)).toEqual({ aiFlags: 3, personality: 0, loanRatio: 0, stockRatio: 0 });
+    expect(traitsOf(99)).toEqual({
+      aiFlags: 3,
+      personality: 0,
+      cashRatio: 0,
+      loanRatio: 0,
+      stockRatio: 0,
+    });
   });
 
   it('★ 12 个角色的四元组不是全都一样 —— 性格确实有区分度', () => {

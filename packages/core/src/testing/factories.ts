@@ -29,6 +29,7 @@ export function makePlayer(over: Partial<Player> = {}): Player {
     ndices: 1,
     isMale: true,
     aiFlags: 3,
+    cashRatio: 50,
     loanRatio: 0,
     stockRatio: 0,
     personality: 0,

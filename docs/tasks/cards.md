@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 17.9。
+共 **73** 张卡，估算 **39.8** 单元，已完成 18.5。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -32,7 +32,7 @@
 | [T-015](#t-015) | AI 研發项目选择按研究所 UI 的电脑分支定案（P1-6） | MOD-09 | REQ-09.3 | `done` | 0.3 | — |
 | [T-016](#t-016) | 翻译 AI 卖股 0x0042c79f（调度第 1 步） | MOD-09 | REQ-09.2 | `done` | 1.0 | — |
 | [T-020](#t-020) | 新增 core 指令 setAi{player, whoPlays, aiFlags, personality}（託管AI 的规则侧） | MOD-04 | REQ-12.1 | `done` | 0.2 | — |
-| [T-021](#t-021) | 託管AI 屏（工具列 #3） | MOD-12 | REQ-12.1 | `todo` | 0.6 | T-020 |
+| [T-021](#t-021) | 託管AI 屏（工具列 #3） | MOD-12 | REQ-12.1 | `done` | 0.6 | T-020 |
 | [T-022](#t-022) | 個人資產表屏（工具列 #7） | MOD-12 | REQ-12.2 | `todo` | 0.5 | — |
 | [T-023](#t-023) | 資產表下的三张清單（資產/地產/股票）翻页 | MOD-12 | REQ-12.2 | `todo` | 0.5 | T-022 |
 | [T-024](#t-024) | 道具欄浮窗（工具列 #8，5×3 = 15 格） | MOD-12 | REQ-12.3 | `todo` | 0.5 | — |
@@ -785,38 +785,56 @@
 
 **託管AI 屏（工具列 #3）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.1` · 状态 `todo` · 估算 0.6 单元
+- 模块 `MOD-12` · 需求 `REQ-12.1` · 状态 `done` · 估算 0.6 单元
 - 依赖：T-020
-- 证据：Data.mkf #77；S3：三种個性 乖寶寶/普通人/大老奸、會用卡/會用道具 开关、託管 开关，坐标见 original-screens.md
+- 证据：★ **Panel.mkf #77**（不是 Data.mkf —— 见下）；坐标全部来自 VA 0x0041e345 起的反汇编；S3
 
 **依赖的其他类 / 文件**
 
 - client/dialog.ts (对话框皮肤), client/assets.ts (SpriteCache)
-- client/main.ts (onToolbar case 2 → 打开)
+- client/main.ts (onToolbar case 2 / 熱鍵「託管」→ 打开；Screen 'aiSettings')
+- core/state/reduce.ts (setAi 扩字段), core/state/types.ts (Player.cashRatio)
 
 **期望输入**
 
-    state.players[]（whoPlays/aiFlags/personality）
+    state.players[]（whoPlays/aiFlags/personality/cashRatio/stockRatio）
 
 **期望输出**
 
-    点击 → dispatch(setAi{...})；ESC/关闭钮回到棋盘
+    確定 → 逐条 dispatch(setAi{...})（只发变过的行）；取消/ESC → 什么都不做
 
 **核心逻辑 / 算法指导**
 
-    1. aiSettings.ts：常量表 ROWS（每位玩家一行：头像、託管钮、两个能力开关、三个個性单选）来自 S3 坐标。
-    2. drawAiSettings(ctx, state)、hitAiSettings(x,y) → {player, control} | null。
-    3. main.ts：Screen 增加 'aiSettings'；命中即 dispatch。
+    ★ 档案订正：`original-screens.md` 写的是「Data.mkf 资源 0x4d」，但入口用的是
+      `[0x48a05c]`，而 `[0x48a0e4]` 才是 Data.mkf。实测 Data.mkf #77 是解不出的压缩数据，
+      **Panel.mkf #77 才是那一屏**（435×355 的对话框底图，渲染出来就是那张绿面板）。
+    1. 底图 #0（含标题条、五个圆点、两条滑槽、两颗按钮面）；文字坐标取自反汇编，
+       与底图上的图形逐项吻合（圆点 x=193、文字 x=244，y 差 ≤2）。
+    2. **只列真人座位**（@source VA 0x0041e5a6 `+0x15 & 1`）—— 托管是把**自己**交给 AI。
+    3. 编辑走**草稿**：原版也是先编一份暂存表、按確定才拷回（VA 0x0041e577）。
+       「取消」于是天然等于「什么都不做」，不需要记原始值回滚。
+    4. 比例滑块除以 `w-1` 而非 `w`：滑槽命中区是半开区间，除以 `w` 会让**满档取不到**
+       （拖到底只到 99%），而「全存银行」恰恰是最常用的那一档。
+    5. 5 个字段一起发（引擎的 setAi 五个字段都可选）；引擎侧**任一字段越界即整条拒绝**，
+       不做部分生效。
 
 **验收测试**
 
-    aiSettings.test.ts：hit 覆盖每个控件；越界 null。
+    ai-settings.test.ts 35 条：只列真人 / 五个旋钮的读写 / 比例首尾正是 0 与 100 /
+    控件互不重叠且都在对话框内 / 圆点与文字锚点对得上 / 滑槽改的是「当前玩家」那一行 /
+    竖排文字逐字画 / 精灵全缺也不抛。
+    core/state/set-ai.test.ts 27 条：两种调用方（服务器只发 whoPlays、屏发五项）/
+    越界即整条拒绝（11 条边界 + 「一项越界则合法项也不生效」）/ 只改指定玩家 /
+    cashRatio 初值来自角色表 f25。
 
 **涉及文件**
 
 - packages/client/src/ai-settings.ts
 - packages/client/src/ai-settings.test.ts
 - packages/client/src/main.ts
+- packages/core/src/state/set-ai.test.ts
+
+> ⚠️ 两个亮/暗行图的用法没跟到（Q-UI-1）；cashRatio 目前没有规则读它（Q-BANK-3）。**目视验证被 Q-BUILD-1 挡住**（浏览器构建从 b99b459 起就坏了），本屏只过了单测。
 
 ### T-022
 

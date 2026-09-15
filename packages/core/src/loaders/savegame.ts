@@ -200,6 +200,9 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     ndices: p.ndices,
     isMale: !p.isFemale,
     aiFlags: p.f22,
+    // 原版存档 +0x19 就是現金↔存款比例（parseSave 的 initCashRatio）—— 直接读回，
+    // 不要拿角色表重算：玩家在託管AI 屏上改过之后，存档里的才是当前值
+    cashRatio: p.initCashRatio,
     loanRatio: p.f24,
     stockRatio: p.f26,
     personality: p.f23,

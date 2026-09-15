@@ -448,22 +448,38 @@ cards:
   title: "託管AI 屏（工具列 #3）"
   module: MOD-12
   req: REQ-12.1
-  status: todo
+  status: done
   estimate: 0.6
   depends_on: [T-020]
   uses:
     - client/dialog.ts (对话框皮肤), client/assets.ts (SpriteCache)
-    - client/main.ts (onToolbar case 2 → 打开)
-  source: "Data.mkf #77；S3：三种個性 乖寶寶/普通人/大老奸、會用卡/會用道具 开关、託管 开关，坐标见 original-screens.md"
-  input: "state.players[]（whoPlays/aiFlags/personality）"
-  output: "点击 → dispatch(setAi{...})；ESC/关闭钮回到棋盘"
+    - client/main.ts (onToolbar case 2 / 熱鍵「託管」→ 打开；Screen 'aiSettings')
+    - core/state/reduce.ts (setAi 扩字段), core/state/types.ts (Player.cashRatio)
+  source: "★ **Panel.mkf #77**（不是 Data.mkf —— 见下）；坐标全部来自 VA 0x0041e345 起的反汇编；S3"
+  input: "state.players[]（whoPlays/aiFlags/personality/cashRatio/stockRatio）"
+  output: "確定 → 逐条 dispatch(setAi{...})（只发变过的行）；取消/ESC → 什么都不做"
   algorithm: |
-    1. aiSettings.ts：常量表 ROWS（每位玩家一行：头像、託管钮、两个能力开关、三个個性单选）来自 S3 坐标。
-    2. drawAiSettings(ctx, state)、hitAiSettings(x,y) → {player, control} | null。
-    3. main.ts：Screen 增加 'aiSettings'；命中即 dispatch。
-  tests: "aiSettings.test.ts：hit 覆盖每个控件；越界 null。"
-  files: [packages/client/src/ai-settings.ts, packages/client/src/ai-settings.test.ts, packages/client/src/main.ts]
-  notes: ""
+    ★ 档案订正：`original-screens.md` 写的是「Data.mkf 资源 0x4d」，但入口用的是
+      `[0x48a05c]`，而 `[0x48a0e4]` 才是 Data.mkf。实测 Data.mkf #77 是解不出的压缩数据，
+      **Panel.mkf #77 才是那一屏**（435×355 的对话框底图，渲染出来就是那张绿面板）。
+    1. 底图 #0（含标题条、五个圆点、两条滑槽、两颗按钮面）；文字坐标取自反汇编，
+       与底图上的图形逐项吻合（圆点 x=193、文字 x=244，y 差 ≤2）。
+    2. **只列真人座位**（@source VA 0x0041e5a6 `+0x15 & 1`）—— 托管是把**自己**交给 AI。
+    3. 编辑走**草稿**：原版也是先编一份暂存表、按確定才拷回（VA 0x0041e577）。
+       「取消」于是天然等于「什么都不做」，不需要记原始值回滚。
+    4. 比例滑块除以 `w-1` 而非 `w`：滑槽命中区是半开区间，除以 `w` 会让**满档取不到**
+       （拖到底只到 99%），而「全存银行」恰恰是最常用的那一档。
+    5. 5 个字段一起发（引擎的 setAi 五个字段都可选）；引擎侧**任一字段越界即整条拒绝**，
+       不做部分生效。
+  tests: |
+    ai-settings.test.ts 35 条：只列真人 / 五个旋钮的读写 / 比例首尾正是 0 与 100 /
+    控件互不重叠且都在对话框内 / 圆点与文字锚点对得上 / 滑槽改的是「当前玩家」那一行 /
+    竖排文字逐字画 / 精灵全缺也不抛。
+    core/state/set-ai.test.ts 27 条：两种调用方（服务器只发 whoPlays、屏发五项）/
+    越界即整条拒绝（11 条边界 + 「一项越界则合法项也不生效」）/ 只改指定玩家 /
+    cashRatio 初值来自角色表 f25。
+  files: [packages/client/src/ai-settings.ts, packages/client/src/ai-settings.test.ts, packages/client/src/main.ts, packages/core/src/state/set-ai.test.ts]
+  notes: "⚠️ 两个亮/暗行图的用法没跟到（Q-UI-1）；cashRatio 目前没有规则读它（Q-BANK-3）。**目视验证被 Q-BUILD-1 挡住**（浏览器构建从 b99b459 起就坏了），本屏只过了单测。"
 
 - id: T-022
   group: C

@@ -243,7 +243,12 @@ newsDeck/fortuneDeck  pool（樂透獎池） lottery[]  prisonOccupancy[]/hospit
 turnCount  snapshots[]（時光機）  lastEvent
 ```
 
-`Player`：`index, character, whoPlays(0 出局/1 真人/2 电脑), nodeId, lastNodeId, direction, trafficMethod, ndices, aiFlags, personality, cash, moneyInBank, loan, specialFinance, loanDueDate, points, blocking{inHotel,disappearing,inPrison,inHospital,sleeping,sleepWalking,stopping,tortoiseWalking}, godInfo, f64, cards[], tools[], alliedPlayer, alliedDays, insuranceDays, misfortune/fortune/luck, hostility[4], monthlyPaid/Received`。
+`Player`：`index, character, whoPlays(0 出局/1 真人/2 电脑), nodeId, lastNodeId, direction, trafficMethod, ndices, aiFlags, personality, cashRatio, loanRatio, stockRatio, cash, moneyInBank, loan, specialFinance, loanDueDate, points, blocking{inHotel,disappearing,inPrison,inHospital,sleeping,sleepWalking,stopping,tortoiseWalking}, godInfo, f64, cards[], tools[], alliedPlayer, alliedDays, insuranceDays, misfortune/fortune/luck, hostility[4], monthlyPaid/Received`。
+
+`aiFlags`(+0x16) / `personality`(+0x17) / `cashRatio`(+0x19) / `loanRatio`(+0x18) / `stockRatio`(+0x1a)
+都由**託管AI 屏**（REQ-12.1）编辑。其中 `cashRatio` **目前没有任何规则读它**——原版拿它决定
+「到银行时多少放存款」，本引擎未实现该行为（见 known-deviations 的 Q-BANK-3），故它现在
+只是存取一个设置值，屏上调得动、存得住，但不影响 AI 决策。
 
 #### 回合状态机
 
@@ -262,7 +267,11 @@ turnStart ──startTurn──► awaitingRoll ──rollDice──► moving �
 #### API
 
 - `API-04.1 reduce(state, action, topo): GameState`
-- `API-04.2 Action` 联合类型（全部）：`reseed, startTurn, rollDice{forced?}, step, setDiceCount{count}, settle, buyLand, upgradeLand, buyFacility, buildFacility{facilityType}, upgradeFacility, research{facilityId,project}, buildTarget{entityId}, declineDecision, buyStock/sellStock{stock,shares}, buyShares{shares}, useCard{cardId,target?}, useTool{toolId,nodeId?,target?}, noticeBoard{op:list|withdraw|buy|reprice…}, shop{op:buyCard|sellCard|buyTool|sellTool,id,count?}, lottery{number}, auction{winner,price}, bail{slot}, minigame{score}, bank{...}, endTurn`。
+- `API-04.2 Action` 联合类型（全部）：`reseed, startTurn, rollDice{forced?}, step, setDiceCount{count}, settle, buyLand, upgradeLand, buyFacility, buildFacility{facilityType}, upgradeFacility, research{facilityId,project}, buildTarget{entityId}, declineDecision, buyStock/sellStock{stock,shares}, buyShares{shares}, useCard{cardId,target?}, useTool{toolId,nodeId?,target?}, noticeBoard{op:list|withdraw|buy|reprice…}, shop{op:buyCard|sellCard|buyTool|sellTool,id,count?}, lottery{number}, auction{winner,price}, bail{slot}, minigame{score}, bank{...}, setAi{player,…}, aiNext, endTurn`。
+- `setAi{player, whoPlays?, aiFlags?, personality?, cashRatio?, stockRatio?}`：改一名玩家的託管设置，
+  五个字段**都可选**（给哪个改哪个）。服务器掉线代打只发 `whoPlays`（`WHO_PLAYS_HUMAN|AUTOPILOT`）；
+  **託管AI 屏**按「確定」时一次性发全部五项 —— 原版也是先编辑一份暂存表、確定时才拷回
+  （`0x0041e577` 起，见 `docs/original-screens.md` S3）。任一字段越界即整条拒绝（返回原 state）。
 - `API-04.3 autoAction(state): Action|null` — 出局者/被阻者的回合由引擎自动推进（不经策略）。
 - `API-04.4 reduceAll(state, actions[], topo)` — 重放。
 - `API-04.5 newGame(opts: NewGameOptions): GameState`（在 `rules/new-game.ts`）— `{ map, globalMapId, seed, players: PlayerSetup[], initialCash, landTenure, ... }`。

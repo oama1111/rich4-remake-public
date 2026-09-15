@@ -105,6 +105,17 @@ export interface Player {
    */
   aiFlags: number;
   /**
+   * 現金 ↔ 存款比例，百分比。@source player_info +0x19（角色表的 `f25` = `initCashRatio`）。
+   *
+   * 开局按它分配现金/存款（见 `rules/setup.ts`），之后由**託管AI 屏**编辑
+   * （`docs/original-screens.md` S3 的第一个滑块，VA 0x0041e602 的 `tbl[n][4] = +0x19`）。
+   *
+   * ⚠️ **目前没有任何规则读它**：原版拿它决定「到银行时多少放存款」，本引擎未实现
+   *   该行为（见 known-deviations 的 Q-BANK-3）。所以现在它是个**纯设置值**，
+   *   屏上调得动、存档存得住，但不影响 AI 决策。
+   */
+  cashRatio: number;
+  /**
    * 借贷激进度，百分比。@source player_info +0x18（角色表的 `f24`）。
    * 到银行时 `loan = trunc(身家 × 该值 / 100)`。0 表示从不借。
    */

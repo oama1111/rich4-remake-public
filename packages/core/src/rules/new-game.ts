@@ -214,7 +214,7 @@ function makeInitialPlayer(
     ndices: vehicle + 1,
     // @source player_info +0x14 sex：非 0 是男。取自角色表，开局定下不再变
     isMale: !(CHARACTERS[setup.character]?.isFemale ?? false),
-    // @source +0x16/+0x17/+0x18/+0x1a 都是开局从角色表拷进来的性格旋钮
+    // @source +0x16/+0x17/+0x18/+0x19/+0x1a 都是开局从角色表拷进来的性格旋钮
     ...traitsOf(setup.character),
     cash: money.cash,
     moneyInBank: money.moneyInBank,

@@ -338,6 +338,35 @@ function cloneP(p: Player): Player {
   return { ...p, blocking: { ...p.blocking }, cards: [...p.cards], tools: [...p.tools] };
 }
 
+/**
+ * `setAi` 的五个可选字段各自的合法范围（越界即整条拒绝）。
+ *
+ * - `whoPlays`：只接受 1 真人 / 2 電腦 / 5 真人託管 —— 出局的 0 不能从这一屏设置回去；
+ * - `aiFlags`：能力位只有 bit0 会用卡、bit1 会用道具，故 0..3；
+ * - `personality`：S3 截图上就三档（乖寶寶/普通人/大老奸），故 0..2；
+ * - 两个比例是**百分比**，0..100（`loanRatio` 不在 setAi 里：原版那一屏没有它的滑块）。
+ */
+function isValidAiSetting(a: {
+  whoPlays?: number;
+  aiFlags?: number;
+  personality?: number;
+  cashRatio?: number;
+  stockRatio?: number;
+}): boolean {
+  if (a.whoPlays !== undefined) {
+    const allowed = [WHO_PLAYS_HUMAN, WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT];
+    if (!allowed.includes(a.whoPlays)) return false;
+  }
+  const percent = (v: number): boolean => Number.isInteger(v) && v >= 0 && v <= 100;
+  if (a.aiFlags !== undefined && !Number.isInteger(a.aiFlags)) return false;
+  if (a.aiFlags !== undefined && (a.aiFlags < 0 || a.aiFlags > 3)) return false;
+  if (a.personality !== undefined && !Number.isInteger(a.personality)) return false;
+  if (a.personality !== undefined && (a.personality < 0 || a.personality > 2)) return false;
+  if (a.cashRatio !== undefined && !percent(a.cashRatio)) return false;
+  if (a.stockRatio !== undefined && !percent(a.stockRatio)) return false;
+  return true;
+}
+
 function withPlayer(s: GameState, index: number, fn: (p: Player) => void): GameState {
   const players = s.players.map((p, i) => (i === index ? cloneP(p) : p));
   const target = players[index];
@@ -1186,13 +1215,35 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     }
 
     case 'setAi': {
-      // 託管 / 取消託管：只改 whoPlays（1 真人 / 2 電腦 / 5 真人託管）；出局者与非法值拒
+      // 託管设置：五个字段都可选，给哪个改哪个（见 actions.ts 的注释）。
+      // ★ 任一字段越界就**整条拒绝**，不做「部分生效」——半个设置生效比不改更糟：
+      //   玩家按了確定、屏上显示的和实际存的不一致，而错的那半要到对局里才显形。
       const target = state.players[action.player];
       if (target === undefined || !isAlive(target)) return state;
-      const allowed = [WHO_PLAYS_HUMAN, WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT];
-      if (!allowed.includes(action.whoPlays) || target.whoPlays === action.whoPlays) return state;
+      if (!isValidAiSetting(action)) return state;
+
+      const next = {
+        whoPlays: action.whoPlays ?? target.whoPlays,
+        aiFlags: action.aiFlags ?? target.aiFlags,
+        personality: action.personality ?? target.personality,
+        cashRatio: action.cashRatio ?? target.cashRatio,
+        stockRatio: action.stockRatio ?? target.stockRatio,
+      };
+      // 值没变就别造新对象 —— reduce 靠 `===` 判断「拒绝」，同值返回原 state
+      const same =
+        next.whoPlays === target.whoPlays &&
+        next.aiFlags === target.aiFlags &&
+        next.personality === target.personality &&
+        next.cashRatio === target.cashRatio &&
+        next.stockRatio === target.stockRatio;
+      if (same) return state;
+
       return withPlayer(state, action.player, (p) => {
-        p.whoPlays = action.whoPlays;
+        p.whoPlays = next.whoPlays;
+        p.aiFlags = next.aiFlags;
+        p.personality = next.personality;
+        p.cashRatio = next.cashRatio;
+        p.stockRatio = next.stockRatio;
       });
     }
 

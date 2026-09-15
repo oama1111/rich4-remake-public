@@ -142,6 +142,8 @@ export interface CharacterTraits {
   aiFlags: number;
   /** f23 個性：0 乖寶寶 / 1 普通人 / 2 大老奸 */
   personality: number;
+  /** f25 → player +0x19：現金 ↔ 存款比例（百分比） */
+  cashRatio: number;
   /** f24 借贷激进度（百分比） */
   loanRatio: number;
   /** f26 炒股比例（百分比） */
@@ -151,6 +153,7 @@ export interface CharacterTraits {
 export const DEFAULT_TRAITS: CharacterTraits = {
   aiFlags: AI_USES_CARDS | AI_USES_TOOLS,
   personality: 0,
+  cashRatio: 0,
   loanRatio: 0,
   stockRatio: 0,
 };
@@ -159,7 +162,14 @@ export const DEFAULT_TRAITS: CharacterTraits = {
 export function traitsOf(character: number): CharacterTraits {
   const c = CHARACTERS[character];
   if (c === undefined) return { ...DEFAULT_TRAITS };
-  return { aiFlags: c.f22, personality: c.f23, loanRatio: c.f24, stockRatio: c.f26 };
+  return {
+    aiFlags: c.f22,
+    personality: c.f23,
+    // 角色表里叫 initCashRatio（f25）；开局现金/存款的分配比例，之后由託管AI 屏可改
+    cashRatio: c.initCashRatio,
+    loanRatio: c.f24,
+    stockRatio: c.f26,
+  };
 }
 
 // ============================================================

@@ -29,6 +29,16 @@ import { NetClient, netParamsFrom } from './net-client.ts';
 import { DiceRollAnimation } from './dice-anim.ts';
 import { drawLobby, hitLobby, isHostSeat, lobbySlots, type LobbyHit } from './lobby.ts';
 import {
+  aiSettingsDraft,
+  applyAiSettingsHit,
+  AI_ORIGIN,
+  drawAiSettings,
+  hitAiSettings,
+  rowMatchesPlayer,
+  type AiSettingRow,
+  type AiSettingsHit,
+} from './ai-settings.ts';
+import {
   loadArchives,
   loadGround,
   loadHdSource,
@@ -386,6 +396,11 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
         closeSaveLoad();
         return true;
       }
+      // 「取消」= 丢掉草稿；原版也是按取消就什么都不拷回
+      if (screen === 'aiSettings') {
+        closeAiSettings(false);
+        return true;
+      }
       return false;
 
     // ── 回合 ──
@@ -431,9 +446,9 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
       openSaveLoad('load', screen === 'game' ? 'game' : 'title');
       return true;
     case HOTKEY.autoPlay:
-      aiAutoPlay = !aiAutoPlay;
-      log(aiAutoPlay ? `▶ ${name}：開` : `⏸ ${name}：關`);
-      scheduleAi();
+      // 热键「託管」= 开託管AI 屏（工具列 #3）—— 不是「本机托管开关」
+      if (screen === 'aiSettings') closeAiSettings(false);
+      else if (screen === 'game') openAiSettings('game');
       return true;
 
     // ── 镜头（原版叫「游標」，本引擎拿来平移地图视角）──
@@ -548,6 +563,54 @@ function openOptions(from: Screen): void {
   optionsDraft = { ...options };
   optionsHot = null;
   screen = 'options';
+  requestRender();
+}
+
+/**
+ * 开「託管AI」（工具列 #3 / 热键`託管`）。
+ *
+ * ★ 先把当前设置抄成一份**草稿**：原版也是编辑一份暂存表、按「確定」才拷回
+ *   玩家结构（VA 0x0041e259）。这样「取消」天然就是「什么都不做」，
+ *   不需要记住原始值再回滚。
+ */
+function openAiSettings(from: Screen): void {
+  aiReturn = from;
+  aiDraft = aiSettingsDraft(state);
+  aiHot = null;
+  screen = 'aiSettings';
+  requestRender();
+}
+
+/**
+ * 关掉；`commit` 为真时把草稿里**变过的行**逐条发给引擎。
+ *
+ * 一行一个 `setAi`（引擎的 action 是按玩家给的）；没变过的行不发，
+ * 免得往 `history` 里塞一堆空动作、也免得联机时白占序号。
+ */
+function closeAiSettings(commit: boolean): void {
+  const draft = aiDraft;
+  aiDraft = null;
+  aiHot = null;
+  screen = aiReturn;
+
+  if (commit && draft !== null) {
+    let changed = 0;
+    for (const row of draft) {
+      const p = state.players[row.player];
+      if (p === undefined || rowMatchesPlayer(row, p)) continue;
+      dispatch({
+        type: 'setAi',
+        player: row.player,
+        whoPlays: row.whoPlays,
+        aiFlags: row.aiFlags,
+        personality: row.personality,
+        cashRatio: row.cashRatio,
+        stockRatio: row.stockRatio,
+      });
+      changed++;
+    }
+    log(changed === 0 ? '託管設定：未變更' : `託管設定：已更新 ${changed} 位`);
+  }
   requestRender();
 }
 
@@ -864,8 +927,13 @@ const hudOffCtx = (() => {
 })();
 
 /** 当前屏幕 */
-type Screen = 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'game';
+type Screen = 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'aiSettings' | 'game';
 let screen: Screen = 'title';
+
+/** 託管AI 屏的编辑草稿（原版也是先编一份暂存表、按確定才拷回）——不在这一屏时为 null */
+let aiDraft: AiSettingRow[] | null = null;
+let aiHot: AiSettingsHit | null = null;
+let aiReturn: Screen = 'game';
 
 /** 联机大厅的房间快照（服务器给的；本机不改它）——不在大厅时为 null */
 let lobbyRoom: RoomInfo | null = null;
@@ -927,6 +995,15 @@ function requestRender(): void {
       stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
       stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
       drawSaveLoad(stageCtx, saveLoadMode, saveLoadSlots, saveLoadHot, uiSprite);
+    } else if (screen === 'aiSettings') {
+      // 託管AI 是**盖在棋盘上**的对话框（原版就是这样），与設定同一套画法
+      if (aiReturn === 'game') drawGameStage();
+      stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
+      stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+      const draft = aiDraft ?? [];
+      drawAiSettings(stageCtx, state, draft, aiHot, (archive, resource, index) =>
+        spriteNow(archive, resource, index, true),
+      );
     } else if (screen === 'lobby') {
       drawLobby(
         stageCtx,
@@ -1101,6 +1178,9 @@ function onToolbar(i: number): void {
   switch (i) {
     case 1: // 遊戲設定
       openOptions('game');
+      return;
+    case 2: // 託管AI
+      openAiSettings('game');
       return;
     case 3: // 讀取進度
       openSaveLoad('load', 'game');
@@ -1477,6 +1557,15 @@ function bindInput(): void {
       }
       return;
     }
+    if (screen === 'aiSettings') {
+      // 命中测试用的是**对话框相对坐标**，这里减掉居中偏移
+      const hit = hitAiSettings({ x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y }, aiDraft ?? [], state.currentPlayer);
+      if (JSON.stringify(hit) !== JSON.stringify(aiHot)) {
+        aiHot = hit;
+        requestRender();
+      }
+      return;
+    }
     if (screen === 'saveload') {
       const hit = hitSaveLoad(saveLoadMode, p.x, p.y);
       if (hit !== saveLoadHot) {
@@ -1545,6 +1634,24 @@ function bindInput(): void {
     if (screen === 'title') {
       const hit = hitTitle(p.x, p.y, (i) => spriteNow('Data.mkf', TITLE_RESOURCE, i, true));
       if (hit !== null) onTitleButton(hit.id);
+      return;
+    }
+    if (screen === 'aiSettings') {
+      const hit = hitAiSettings({ x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y }, aiDraft ?? [], state.currentPlayer);
+      if (hit === null) return;
+      if (hit.kind === 'ok') {
+        closeAiSettings(true);
+        return;
+      }
+      if (hit.kind === 'cancel') {
+        closeAiSettings(false);
+        return;
+      }
+      // 其余都是改草稿；改完重画，还没进引擎（按「確定」才发 action）
+      if (aiDraft !== null) {
+        aiDraft = applyAiSettingsHit(aiDraft, hit);
+        requestRender();
+      }
       return;
     }
     if (screen === 'lobby') {
