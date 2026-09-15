@@ -752,7 +752,7 @@ cards:
   title: "卡片欄浮窗（工具列 #9）"
   module: MOD-12
   req: REQ-12.3
-  status: todo
+  status: done
   estimate: 0.4
   depends_on: [T-024]
   uses:
@@ -827,7 +827,7 @@ cards:
   title: 目标拾取模式（选玩家 / 地块 / 設施 / 物件 / 格子）
   module: MOD-12
   req: REQ-12.3
-  status: doing
+  status: done
   estimate: 0.8
   depends_on: [T-001]
   uses:
