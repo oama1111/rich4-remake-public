@@ -1,0 +1,98 @@
+/*
+ * 整屏 UI 的登记契约
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * ★ 为什么有这一层：`main.ts` 是唯一同时握有 `stageCtx` / `state` / `dispatch`
+ *   的地方，但它是四千多行的一个文件。若每一屏都往里面塞自己的绘制与命中，
+ *   两屏同时改这个文件必然互相踩。
+ *
+ *   所以这里定一份**契约**：每一屏是 `src/` 下一个**自己的文件**，导出一个
+ *   `UiScreen`，登记在 `screens.ts`。`main.ts` 只在三处按契约走一遍登记表 ——
+ *   画、鼠标、每帧 —— 一屏一行的改动都不需要再动 `main.ts`。
+ *
+ * ⚠️ 这一层**不含任何规则**（C-ARC-2）：它只是把「谁在接管画面」这件事
+ *   从 main.ts 里摘出来。规则永远在 `@rich4/core`。
+ *
+ * ## 一屏的生命周期（顺序即优先级）
+ *
+ * ```
+ * 每帧：  tick(env)       ← 所有登记的屏都收，用来**察觉**状态变化 / 推进动画
+ * 状态变：event(before, after, env)
+ * 画：    active(env) 为真的**第一屏** draw(env)，其余不画，棋盘也不画
+ * 鼠标：  同一屏的 move / down / up，坐标是**舞台坐标**（0..639 × 0..479）
+ * 工具列：toolbar(i, env) 返回 true 表示这颗钮归本屏
+ * 熱鍵：  hotkey(fn, env) 返回 true 表示已处理（fn 见 hotkeys.ts 的 HOTKEY）
+ * ```
+ *
+ * ## 写一屏的规矩（与 docs/handoff.md 的铁律同源）
+ *
+ * 1. **位置一律从 exe 抄**，不许照截图量。工具：`python3 tools/disasm.py`。
+ *    每个常量和判据都要带 `@source VA`。
+ * 2. **不许改良**：原版没有的东西不要加。
+ * 3. 纯函数（版式 / 命中 / 帧序）放模块顶层并导出，`draw()` 只做 IO —— 这样
+ *    单测不需要 canvas。
+ * 4. 解不出的写进 `docs/known-deviations.md`，不静默。
+ */
+
+import type { Action, GameState, MapTopology, Rich4Map } from '@rich4/core';
+import type { Sprite } from './assets.ts';
+
+/** 交给每一屏的环境 —— 只读的现状 + 三个副作用出口 */
+export interface UiScreenEnv {
+  /** 当前主屏（`title` / `game` / `stock` …），见 main.ts 的 `Screen` */
+  readonly screen: string;
+  readonly state: GameState;
+  readonly topo: MapTopology;
+  readonly map: Rich4Map;
+  /** `performance.now()`，一帧内同一个值 */
+  readonly now: number;
+  /** 整块 640×480 的舞台画布（`stageCtx`）—— 整屏的东西直接画在这上面 */
+  readonly stage: CanvasRenderingContext2D;
+  /** 按需取图（就是 main.ts 的 `spriteNow`，带 LRU 与 hd 回退） */
+  sprite(archive: string, resource: number, index: number, colorKeyBlack?: boolean): Sprite | null;
+  dispatch(action: Action): void;
+  requestRender(): void;
+  log(message: string): void;
+  /** 放一个音效（`Effect.mkf` 的资源号）*/
+  playEffect(id: number): void;
+}
+
+export interface UiScreen {
+  /** 稳定标识，只用于日志与调试（如 `notice-board`）*/
+  readonly id: string;
+
+  /**
+   * 本屏此刻要不要**接管整屏**。
+   *
+   * ⚠️ 必须是**纯查询**：会被高频调用（每次鼠标事件、每帧）。
+   *   要开／关本屏请改本模块自己的开关变量，别在 `active` 里改。
+   */
+  active(env: UiScreenEnv): boolean;
+
+  /** 画整屏。只在 `active` 为真时调用，画布已清成黑色 */
+  draw(env: UiScreenEnv): void;
+
+  /** 鼠标移动（舞台坐标）—— 要重画就自己 `env.requestRender()` */
+  move?(x: number, y: number, env: UiScreenEnv): void;
+  /** 鼠标按下 */
+  down?(x: number, y: number, env: UiScreenEnv): void;
+  /** 鼠标抬起 */
+  up?(x: number, y: number, env: UiScreenEnv): void;
+
+  /**
+   * 每帧一次（**所有**登记的屏都收，不只是 active 的）。
+   *
+   * 两件事：① 推进自己的动画并调 `env.requestRender()` 续帧；
+   * ② 察觉刚刚发生的状态变化（想干净一点就用下面的 `event`）。
+   */
+  tick?(env: UiScreenEnv): void;
+
+  /** 一次 action 让状态变了 —— 演出类屏幕（開獎 / 月結 / 魔法屋）靠它起播 */
+  event?(before: GameState, after: GameState, env: UiScreenEnv): void;
+
+  /** 工具列第 `index` 颗钮被点了；返回 true 表示这颗归本屏 */
+  toolbar?(index: number, env: UiScreenEnv): boolean;
+
+  /** 熱鍵 `fn`（`HOTKEY.*` 的值）被按了；返回 true 表示已处理 */
+  hotkey?(fn: number, env: UiScreenEnv): boolean;
+}

@@ -15,7 +15,7 @@
  */
 
 import { FACILITY_NAMES, researchTool, type Action, type GameState, type PendingInteraction } from '@rich4/core';
-import { BAIL, BANK, BUTTON, CHARACTERS, FIELD, NOTICE, PLACE, PROMPT, TOOLS, formatOriginal } from '@rich4/data';
+import { BAIL, BANK, BUTTON, CHARACTERS, FIELD, PLACE, PROMPT, TOOLS, formatOriginal } from '@rich4/data';
 
 const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
 
@@ -328,19 +328,19 @@ export function interactionUi(
       };
 
     case 'bail':
+      // ★★ **这一屏不走通用对话框**（T-038）：原版是整屏一屏 —— 砖墙/病房底图、
+      //   八个窗格各摆一张脸、右下（医院是左下）一块點券底板，点有人的窗格就保釋；
+      //   位置与命中都在 `bail-screen.ts`，`main.ts` 的 `drawBailStage` / `hitBailSlot`
+      //   直接接管鼠标。
+      //
+      //   这里留一份**最小**的交互壳，只为两件事：
+      //   ① 别的路径问到 `interactionUi` 时有个东西返回；
+      //   ② 万一那一屏没画出来，至少还剩一个「離開」能把这局继续下去。
+      //   保釋本身**不在这里出**（否则同一个动作会有两条入口）。
       return {
         title: pending.place === 'prison' ? PLACE.prison.text : PLACE.hospital.text,
         detail: `${BAIL.bailPoints.text} ${formatOriginal(BAIL.pointsN.text, pending.points)}`,
-        choices: [
-          ...pending.candidates.map((c) => ({
-            label:
-              formatOriginal(BAIL.bailWho.text, c.name) +
-              `（${formatOriginal(BAIL.pointsN.text, c.cost)}）` +
-              (c.affordable ? '' : `　${NOTICE.cashShort.text}`),
-            action: { type: 'bail' as const, slot: c.slot },
-          })),
-          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
-        ],
+        choices: [{ label: BUTTON.cancel.text, action: { type: 'declineDecision' } }],
       };
 
     case 'unimplemented':

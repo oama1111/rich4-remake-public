@@ -229,6 +229,14 @@ import {
   type ShopSlide,
 } from './shop-screen.ts';
 import {
+  canPayOnScreen,
+  drawBailScreen,
+  hitBailSlot,
+  type BailSlotView,
+} from './bail-screen.ts';
+import { SCREENS } from './screens.ts';
+import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import {
   CURSOR_ARCHIVE,
   CURSOR_RESOURCE,
   TOOL_SELECT_PARAM,
@@ -730,6 +738,14 @@ function maxDiceOf(p: { trafficMethod: number }): number {
  */
 function handleHotkey(fn: number, e: KeyboardEvent): boolean {
   const name = HOTKEY_NAMES[fn] ?? `功能${fn}`;
+
+  // ★ 登记的整屏先认领熱鍵（契约见 ui-screen.ts）
+  {
+    const env = uiEnv();
+    for (const s of SCREENS) {
+      if (s.hotkey?.(fn, env) === true) return true;
+    }
+  }
 
   switch (fn) {
     // ── 对话框上的答复 ──
@@ -1570,6 +1586,11 @@ function applyAction(action: Action): void {
     // ★ 商店的界面状态跟着 `pending` 走：进店时快照货架、铺开场；离店时清掉。
     //   放在这里是因为不管谁答的（本地点、AI、服务器广播）都会经过这一条。
     syncShopUi();
+    // ★ 登记的整屏：把「刚刚发生了什么」告诉它们（開獎 / 月結 / 魔法屋靠这个起播）
+    {
+      const env = uiEnv();
+      for (const s of SCREENS) s.event?.(before, state, env);
+    }
   }
   requestRender();
   renderPanel();
@@ -1889,6 +1910,59 @@ interface ShopUi {
 
 let shopUi: ShopUi | null = null;
 
+/**
+ * 光标底下的監獄／醫院槽位 —— 原版 `[0x48c4c4]`，不在那一屏时为 null。
+ *
+ * ★ 它只记录**光标位置**；真正按的是抬手时的坐标（`loc_0043cfdb` 现算）。
+ */
+let bailHot: number | null = null;
+
+/** 当前这一屏的占用表（監獄 / 醫院各一张，见 `rules/visit.ts`）*/
+function bailOccupancy(): readonly number[] {
+  const pending = state.pending;
+  if (pending === null || pending.kind !== 'bail') return [];
+  return pending.place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+}
+
+/**
+ * 每个**有人**的槽位画谁。
+ *
+ * @source `loc_0043d8f2`：`slot < 4` 取 `player[slot].character`；
+ *   4..7 是四个惡人，图号由槽位本身决定（`0xd + slot` / `0x16 + slot`），
+ *   没有 character 可言 —— 这里给 0，取图时用不到。
+ */
+function bailViews(): BailSlotView[] {
+  const out: BailSlotView[] = [];
+  const occ = bailOccupancy();
+  const pending = state.pending;
+  const named = new Map<number, string>();
+  if (pending !== null && pending.kind === 'bail') {
+    for (const c of pending.candidates) named.set(c.slot, c.name);
+  }
+  for (let slot = 0; slot < occ.length; slot++) {
+    if ((occ[slot] ?? 0) === 0) continue;
+    const p = state.players[slot];
+    out.push({
+      slot,
+      character: p?.character ?? 0,
+      // 名字由 core 给（`bailCandidates` 已经按玩家/犯人分好了）；取不到就兜底
+      name: named.get(slot) ?? (p === undefined ? `犯人${slot}` : ''),
+    });
+  }
+  return out;
+}
+
+/** 監獄／醫院那一屏 —— 与商店一样是**整屏**，画它的时候棋盘不画 */
+function drawBailStage(): void {
+  const pending = state.pending;
+  if (pending === null || pending.kind !== 'bail') return;
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return;
+  stageCtx.fillStyle = '#000';
+  stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+  drawBailScreen(stageCtx, pending.place, bailViews(), me.points, bailHot, spriteNow);
+}
+
 /** 原版面板上的两句提示都是 2 秒（`fcn_0044ee18` 的 0x7d0）*/
 function shopSay(ui: ShopUi, text: string, now: number): void {
   ui.bubble = { text, until: now + SHOP_BUBBLE_MS };
@@ -2191,12 +2265,54 @@ function leaveLobby(): void {
 let titleHot: number | null = null;
 
 let renderQueued = false;
+// ============================================================
+//  整屏 UI 的登记表（契约见 ui-screen.ts；表本身在 screens.ts）
+// ============================================================
+
+/**
+ * 这一帧交给各屏的环境。
+ *
+ * ⚠️ 每调一次算一次 `performance.now()` —— 屏幕若要「本帧同一个时刻」，
+ *   自己取一次 `env.now` 存着用。
+ */
+function uiEnv(): UiScreenEnv {
+  return {
+    screen,
+    state,
+    topo,
+    map,
+    now: performance.now(),
+    stage: stageCtx,
+    sprite: spriteNow,
+    dispatch,
+    requestRender,
+    log,
+    playEffect: (id: number) => sound.play('Effect.mkf', id),
+  };
+}
+
+/** 此刻接管整屏的那一屏（登记表里 `active()` 为真的第一项）；没有则 null */
+function activeUiScreen(): UiScreen | null {
+  const env = uiEnv();
+  for (const s of SCREENS) {
+    if (s.active(env)) return s;
+  }
+  return null;
+}
+
 function requestRender(): void {
   if (renderQueued) return;
   renderQueued = true;
   requestAnimationFrame(() => {
     renderQueued = false;
     resizeCanvas();
+    // ★ 登记过的整屏每帧收一次 `tick`（不管此刻是不是它在接管）——
+    //   演出类屏幕靠它察觉状态变化、推进动画。**屏幕自己要续帧就调
+    //   `env.requestRender()`**，别指望这里无条件重排（会转成死循环）。
+    {
+      const env = uiEnv();
+      for (const s of SCREENS) s.tick?.(env);
+    }
     // ★ 走子补间要**逐帧**重绘（T-046）：补间没播完就再排一帧，
     //   否则棋子会停在这一步的第一帧上，直到下一次 dispatch 才动。
     if (screen === 'game' && !renderer.walkDone()) requestRender();
@@ -2206,7 +2322,11 @@ function requestRender(): void {
     stageCtx.fillStyle = '#000';
     stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
 
-    if (screen === 'title') {
+    const overlay = activeUiScreen();
+    if (overlay !== null) {
+      // ★ 登记的整屏接管：棋盘、侧栏、工具栏一概不画（原版这些屏也是整屏窗口）
+      overlay.draw(uiEnv());
+    } else if (screen === 'title') {
       drawTitle(stageCtx, titleHot, spriteNow);
     } else if (screen === 'intro') {
       // ★ 过场要**逐帧**推进：没播完就再排一帧（与走子补间同一个道理），
@@ -2408,6 +2528,11 @@ function drawGameStage(): void {
   // ★ 百貨公司是**整屏**的一屏，不等于在棋盘上盖个框 —— 它一开，棋盘就不画了。
   if (shopUi !== null && currentDialog() !== null) {
     drawShopStage();
+    return;
+  }
+  // ★ 監獄／醫院保釋屏同样是整屏（T-038）—— 棋盘、侧栏全不画
+  if (screen === 'game' && state.pending?.kind === 'bail') {
+    drawBailStage();
     return;
   }
   const dlgNow = currentDialog();
@@ -2694,6 +2819,13 @@ function centerOnMarker(): void {
  */
 function onToolbar(i: number): void {
   const name = TOOLBAR_LABELS[i] ?? `按钮${i}`;
+  // ★ 登记的整屏可以先认领工具列上的钮（契约见 ui-screen.ts）
+  {
+    const env = uiEnv();
+    for (const s of SCREENS) {
+      if (s.toolbar?.(i, env) === true) return;
+    }
+  }
   switch (i) {
     case 1: // 遊戲設定
       openOptions('game');
@@ -3155,6 +3287,15 @@ function bindInput(): void {
     const p = eventToStage(e);
     if (p === null) return;
 
+    // ── 登记的整屏（契约见 ui-screen.ts）先接管鼠标 ──
+    {
+      const overlay = activeUiScreen();
+      if (overlay !== null) {
+        overlay.move?.(p.x, p.y, uiEnv());
+        return;
+      }
+    }
+
     // ── 股市屏：悬停整行（原版 0x200 那条路）@source loc_0042abbb ──
     if (screen === 'stock') {
       if (stockAmount !== null) return; // 填数页开着：不理会行的悬停
@@ -3269,6 +3410,17 @@ function bindInput(): void {
     // 商店是整屏的：它在的时候棋盘不在画，光标底下也没有「节点」可悬停
     if (screen === 'game' && shopUi !== null) return;
 
+    // 監獄／醫院保釋屏：整屏，只记光标在哪个槽位上（原版 0x200 那条路）
+    if (screen === 'game' && state.pending?.kind === 'bail') {
+      const pending = state.pending;
+      const next = hitBailSlot(pending.place, p.x, p.y, bailOccupancy());
+      if (next !== bailHot) {
+        bailHot = next;
+        requestRender();
+      }
+      return;
+    }
+
     // 对话框盖在棋盘上：它在的时候，先问它
     const dlgHover = currentDialog();
     if (dlgHover !== null) {
@@ -3306,6 +3458,15 @@ function bindInput(): void {
     if (p === null) return;
     unlockAudio();
 
+    // ── 登记的整屏（契约见 ui-screen.ts）先接管鼠标 ──
+    {
+      const overlay = activeUiScreen();
+      if (overlay !== null) {
+        overlay.down?.(p.x, p.y, uiEnv());
+        return;
+      }
+    }
+
     if (screen === 'intro') {
       introSkipped = true;
       requestRender();
@@ -3321,6 +3482,9 @@ function bindInput(): void {
       }
       return;
     }
+    // ── 登记的整屏在的时候，`click` 这一路不碰棋盘（同商店那条注释的道理：
+    //   按下的处理已经在 mousedown/mouseup 上做过了，这里再来一次就成两遍）──
+    if (activeUiScreen() !== null) return;
     if (screen === 'aiSettings') {
       const hit = hitAiSettings({ x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y }, aiDraft ?? [], state.currentPlayer);
       if (hit === null) return;
@@ -3371,6 +3535,8 @@ function bindInput(): void {
     // 商店全在 mousedown / mouseup 上处理（原版 0x201 / 0x202 两条分支），
     //   `click` 这一路不碰它 —— 否则同一次点会被处理两遍。
     if (screen === 'game' && shopUi !== null) return;
+    // 監獄／醫院保釋屏同理：整屏接管，别让同一次点再落到通用对话框上
+    if (screen === 'game' && state.pending?.kind === 'bail') return;
 
     // 底下都是棋盘上的交互 —— 其余屏（含個人資產表）到这儿就结束
     if (screen !== 'game') return;
@@ -3730,7 +3896,16 @@ function bindInput(): void {
     if (bx < 0 || by < 0 || bx >= LAYOUT.board.w || by >= LAYOUT.board.h) return;
     drag = { x: e.clientX, y: e.clientY };
   });
-  window.addEventListener('mouseup', () => {
+  window.addEventListener('mouseup', (e) => {
+    // ── 登记的整屏（契约见 ui-screen.ts）先接管鼠标 ──
+    {
+      const overlay = activeUiScreen();
+      if (overlay !== null) {
+        const q = eventToStage(e);
+        if (q !== null) overlay.up?.(q.x, q.y, uiEnv());
+        return;
+      }
+    }
     // ── 開局設定屏：抬手才收尾（原版 0x202）──
     // ★ 只认按下那一刻记下的控件号，不看抬手时光标在哪（原版就是这么写的）。
     if (screen === 'setup') {
@@ -3807,6 +3982,28 @@ function bindInput(): void {
         shopGotoPage(ui, ui.page === SHOP_PAGE.cards ? SHOP_PAGE.tools : SHOP_PAGE.cards, now);
       }
       requestRender();
+      return;
+    }
+
+    // ── 監獄／醫院保釋屏：抬手才保釋（原版 0x202，`loc_0043cef6` / `loc_0043e...`）──
+    if (screen === 'game' && state.pending?.kind === 'bail') {
+      const pending = state.pending;
+      const occupancy = pending.place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+      const q = eventToStage(e);
+      if (q !== null) {
+        const slot = hitBailSlot(pending.place, q.x, q.y, occupancy);
+        if (slot !== null) {
+          // ★ 钱不够就**什么都不做**（原版弹一个「點券不足」的訊息框，见下方偏差记录）。
+          //   够不够用这一屏自己的判据（`>= 赎金`），不是电脑那条更严的。
+          if (canPayOnScreen(state.players[state.currentPlayer]?.points ?? 0, slot)) {
+            dispatch({ type: 'bail', slot });
+            bailHot = null;
+          } else {
+            log('點券不足，付不起這位的保釋金');
+            requestRender();
+          }
+        }
+      }
       return;
     }
 

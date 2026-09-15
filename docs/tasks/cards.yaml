@@ -971,7 +971,7 @@ cards:
   title: 銀行屏（存/取/貸/還 + 特別融資）
   module: MOD-12
   req: REQ-12.6
-  status: todo
+  status: done
   estimate: 0.8
   depends_on: []
   uses:
@@ -1103,7 +1103,7 @@ cards:
   title: 股市屏（Panel.mkf 75 的主表 + 買進/賣出）
   module: MOD-12
   req: REQ-12.7
-  status: doing
+  status: done
   estimate: 0.8
   depends_on: []
   uses:
@@ -1489,7 +1489,7 @@ cards:
   title: 監獄 / 醫院保釋屏（八个位子，含四大惡人）
   module: MOD-12
   req: REQ-12.13
-  status: todo
+  status: done
   estimate: 0.6
   depends_on: []
   uses:
