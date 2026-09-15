@@ -225,6 +225,36 @@ export const SHARES_COMPANY_X = 0x3e; // 62
 /** 表身最右那一列（盈餘合计）@source VA 0x0042bd12 `push 0x23c` */
 export const SHARES_SUM_X = 0x23c; // 572
 
+/**
+ * 最下面那一行左侧的 `紅  利` 标签（flag 2 正中）@source VA 0x0042bbd2 `push 2 / 0x194 / 0x3e`，
+ * 串 @source 0x46417f。它与合计带 [392,416] 的正中 404 对齐。
+ */
+export const SHARES_TOTAL_LABEL = { x: 0x3e, y: 0x194 } as const;
+/** 串 @source 0x46417f（原版就是「紅」+ 两个空格 +「利」）*/
+export const SHARES_TOTAL_LABEL_TEXT = '紅  利';
+
+/**
+ * ★★ **所有 `draw_text` 的坐标都是「底图本地坐标」，不是屏幕绝对坐标。**
+ *
+ * 底图 592×432 贴在 **(24,24)**（`SHARES_AT`），而 exe 里那串 `push flag / y / x`
+ * 的 y、x 全部与底图自己的网格**逐条对齐**（这是量出来的，不是推的）：
+ *
+ * | exe 常量 | 值 | 底图本地网格 |
+ * |---|---|---|
+ * | 标题 y `0x19` | 25 | 顶部蓝带 0..66 |
+ * | 玩家名 / `本月盈餘` y `0x58` | 88 | 表头带 **[72,104]** 中心 88 |
+ * | 公司行 y0 `0x74` + `0x18`×i | 116+24i | 数据行 i = **[104+24i, 128+24i]** 中心 116+24i |
+ * | `紅  利` / 合计行 y `0x194` | 404 | 合计带 [392,416] 中心 404 |
+ * | 公司名列 x `0x3e` | 62 | 第 1 栏（本地 12..108）中心 60 |
+ * | 玩家名 x0 `0xa0` | 160 | 第 2 栏中心 159 |
+ * | 玩家数额 x0 `0xc6` | 198 | 第 2 栏右缘 208 内 10px |
+ * | `本月盈餘` x `0x21e` | 542 | 末栏（本地 502..585）中心 543 |
+ *
+ * ⇒ 画字时必须加上 `SHARES_AT`。先前按屏幕绝对坐标画，整屏文字偏了 (−24,−24)：
+ * 标题跑到蓝带上沿之外、`人名`/`公司` 压在表身边框上、数据行整体高了一行。
+ */
+export const SHARES_TEXT_ORIGIN = SHARES_AT;
+
 /** 字号 @source VA 0x0042bae5（28）/ 0x0042bb1e（12）/ 0x0042bb6b（16）*/
 export const SHARES_FONT = { title: 0x1c, head: 0xc, body: 0x10 } as const;
 
@@ -488,51 +518,85 @@ export function drawSharesScreen(
   const bg = sharesSprite(sprite, SHARES_IMAGE);
   if (bg !== null) ctx.drawImage(bg.bitmap, SHARES_AT.x, SHARES_AT.y);
 
+  // ── ★ 以下所有坐标都是**底图本地坐标**，要加上底图落点（见 `SHARES_TEXT_ORIGIN`）──
+  const ox = SHARES_TEXT_ORIGIN.x;
+  const oy = SHARES_TEXT_ORIGIN.y;
+
   // ── 标题与三个表头（原版写进 chunk 的那一层）──
-  text(ctx, SHARES_TITLE_TEXT, SHARES_TITLE.x, SHARES_TITLE.y, SHARES_TITLE.size, 2, SHARES_TITLE_COLOR);
+  text(
+    ctx,
+    SHARES_TITLE_TEXT,
+    ox + SHARES_TITLE.x,
+    oy + SHARES_TITLE.y,
+    SHARES_TITLE.size,
+    2,
+    SHARES_TITLE_COLOR,
+  );
   text(
     ctx,
     SHARES_HEAD_PERSON_TEXT,
-    SHARES_HEAD_PERSON.x,
-    SHARES_HEAD_PERSON.y,
+    ox + SHARES_HEAD_PERSON.x,
+    oy + SHARES_HEAD_PERSON.y,
     SHARES_FONT.head,
     6,
   );
   text(
     ctx,
     SHARES_HEAD_COMPANY_TEXT,
-    SHARES_HEAD_COMPANY.x,
-    SHARES_HEAD_COMPANY.y,
+    ox + SHARES_HEAD_COMPANY.x,
+    oy + SHARES_HEAD_COMPANY.y,
     SHARES_FONT.head,
     5,
   );
 
   // ── 各玩家的名字（flag 2 正中）与最后一列的 `本月盈餘` ──
   for (const row of view.players) {
-    text(ctx, row.name, playerNameX(row.column), SHARES_COLS.nameY, SHARES_FONT.body, 2);
+    text(ctx, row.name, ox + playerNameX(row.column), oy + SHARES_COLS.nameY, SHARES_FONT.body, 2);
   }
-  text(ctx, SHARES_HEAD_SUM_TEXT, SHARES_HEAD_SUM.x, SHARES_HEAD_SUM.y, SHARES_FONT.body, 2);
+  text(
+    ctx,
+    SHARES_HEAD_SUM_TEXT,
+    ox + SHARES_HEAD_SUM.x,
+    oy + SHARES_HEAD_SUM.y,
+    SHARES_FONT.body,
+    2,
+  );
 
   // ── 一家公司一行：名字 / 各玩家分到的 / 这一家的盈餘合计 ──
   for (let r = 0; r < view.companies.length && r < SHARES_ROWS.count; r++) {
     const company = view.companies[r];
     if (company === undefined) continue;
-    const y = companyRowY(r);
-    text(ctx, company.name, SHARES_COMPANY_X, y, SHARES_FONT.body, 2);
+    const y = oy + companyRowY(r);
+    text(ctx, company.name, ox + SHARES_COMPANY_X, y, SHARES_FONT.body, 2);
     for (const row of view.players) {
       // ★ 0 也要画（原版的 itoa 把 0 转成 "0"，见文件头「数值」）
-      text(ctx, dividendText(row.amounts[r] ?? 0), playerValueX(row.column), y, SHARES_FONT.body, 6);
+      text(
+        ctx,
+        dividendText(row.amounts[r] ?? 0),
+        ox + playerValueX(row.column),
+        y,
+        SHARES_FONT.body,
+        6,
+      );
     }
-    text(ctx, dividendText(company.total), SHARES_SUM_X, y, SHARES_FONT.body, 6);
+    text(ctx, dividendText(company.total), ox + SHARES_SUM_X, y, SHARES_FONT.body, 6);
   }
 
-  // ── 最下面那一行：各玩家的合计 ──
+  // ── 最下面那一行：左边 `紅  利` 标签 + 各玩家的合计 ──
+  text(
+    ctx,
+    SHARES_TOTAL_LABEL_TEXT,
+    ox + SHARES_TOTAL_LABEL.x,
+    oy + SHARES_TOTAL_LABEL.y,
+    SHARES_FONT.body,
+    2,
+  );
   for (const row of view.players) {
     text(
       ctx,
       dividendText(row.total),
-      playerValueX(row.column),
-      SHARES_COLS.totalY,
+      ox + playerValueX(row.column),
+      oy + SHARES_COLS.totalY,
       SHARES_FONT.body,
       6,
     );

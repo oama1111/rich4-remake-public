@@ -36,6 +36,8 @@ import {
   SHARES_ROWS,
   SHARES_SIZE,
   SHARES_SUM_X,
+  SHARES_TOTAL_LABEL,
+  SHARES_TOTAL_LABEL_TEXT,
   SHARES_TITLE,
   SHARES_TITLE_COLOR,
   SHARES_TITLE_TEXT,
@@ -182,24 +184,39 @@ describe('画出来 @source VA 0x0042bac8 起那一串 draw_text', () => {
     const view = sharesView(marketWithTwo(), TOPO, ['甲', '乙', '丙', '丁']);
     drawSharesScreen(ctx, () => null, view);
 
+    // ★ 画字用的是**底图本地坐标 + 底图落点**（见 `SHARES_TEXT_ORIGIN`）
     const find = (s: string) => at.find((t) => t.s === s);
-    expect(find(SHARES_HEAD_PERSON_TEXT)).toMatchObject({ x: SHARES_HEAD_PERSON.x, y: SHARES_HEAD_PERSON.y });
-    expect(find(SHARES_HEAD_COMPANY_TEXT)).toMatchObject({ x: SHARES_HEAD_COMPANY.x, y: SHARES_HEAD_COMPANY.y });
-    expect(find(SHARES_HEAD_SUM_TEXT)).toMatchObject({ x: SHARES_HEAD_SUM.x, y: SHARES_HEAD_SUM.y });
-    expect(find(SHARES_TITLE_TEXT)).toMatchObject({ x: SHARES_TITLE.x, y: SHARES_TITLE.y });
+    const at0 = (x: number, y: number) => ({ x: SHARES_AT.x + x, y: SHARES_AT.y + y });
+    expect(find(SHARES_HEAD_PERSON_TEXT)).toMatchObject(at0(SHARES_HEAD_PERSON.x, SHARES_HEAD_PERSON.y));
+    expect(find(SHARES_HEAD_COMPANY_TEXT)).toMatchObject(at0(SHARES_HEAD_COMPANY.x, SHARES_HEAD_COMPANY.y));
+    expect(find(SHARES_HEAD_SUM_TEXT)).toMatchObject(at0(SHARES_HEAD_SUM.x, SHARES_HEAD_SUM.y));
+    expect(find(SHARES_TITLE_TEXT)).toMatchObject(at0(SHARES_TITLE.x, SHARES_TITLE.y));
+    expect(find(SHARES_TOTAL_LABEL_TEXT)).toMatchObject(
+      at0(SHARES_TOTAL_LABEL.x, SHARES_TOTAL_LABEL.y),
+    );
     // 四位玩家名在同一行 y=0x58，x = 0xa0 + 0x62p
     for (let p = 0; p < 4; p++) {
-      expect(find(['甲', '乙', '丙', '丁'][p]!)).toMatchObject({ x: playerNameX(p), y: SHARES_COLS.nameY });
+      expect(find(['甲', '乙', '丙', '丁'][p]!)).toMatchObject(at0(playerNameX(p), SHARES_COLS.nameY));
     }
     // 一家公司一行：名字在最左、盈餘合计在最右，各玩家数额在 0xc6 + 0x62p
-    expect(at.find((t) => t.s === '某某企業')).toMatchObject({ x: SHARES_COMPANY_X, y: companyRowY(0) });
-    expect(at.find((t) => t.s === '另一家企業')).toMatchObject({ x: SHARES_COMPANY_X, y: companyRowY(1) });
-    expect(at.filter((t) => t.y === companyRowY(0) && t.x === SHARES_SUM_X)).toHaveLength(1);
+    expect(at.find((t) => t.s === '某某企業')).toMatchObject({
+      x: SHARES_AT.x + SHARES_COMPANY_X,
+      y: SHARES_AT.y + companyRowY(0),
+    });
+    expect(at.find((t) => t.s === '另一家企業')).toMatchObject({
+      x: SHARES_AT.x + SHARES_COMPANY_X,
+      y: SHARES_AT.y + companyRowY(1),
+    });
+    expect(at.filter((t) => t.y === SHARES_AT.y + companyRowY(0) && t.x === SHARES_AT.x + SHARES_SUM_X)).toHaveLength(1);
     for (let p = 0; p < 4; p++) {
-      expect(at.some((t) => t.y === companyRowY(0) && t.x === playerValueX(p))).toBe(true);
+      expect(
+        at.some((t) => t.y === SHARES_AT.y + companyRowY(0) && t.x === SHARES_AT.x + playerValueX(p)),
+      ).toBe(true);
     }
     // 玩家合计在最下面那一行
-    expect(at.some((t) => t.y === SHARES_COLS.totalY && t.x === playerValueX(0))).toBe(true);
+    expect(
+      at.some((t) => t.y === SHARES_AT.y + SHARES_COLS.totalY && t.x === SHARES_AT.x + playerValueX(0)),
+    ).toBe(true);
   });
 
   it('★ `0` 也要画出来（原版的 itoa 把 0 转成 "0"，不跳过零值）', () => {
@@ -207,9 +224,9 @@ describe('画出来 @source VA 0x0042bac8 起那一串 draw_text', () => {
     const view = sharesView(marketWithTwo(), TOPO, ['甲', '乙', '丙', '丁']); // 盈餘全 0
     drawSharesScreen(ctx, () => null, view);
     // 第一家那一行：4 位玩家的数额 + 盈餘合计，5 个 "0"
-    expect(at.filter((t) => t.y === companyRowY(0) && t.s === '0')).toHaveLength(5);
+    expect(at.filter((t) => t.y === SHARES_AT.y + companyRowY(0) && t.s === '0')).toHaveLength(5);
     // 最下面那一行：4 位玩家的合计，4 个 "0"
-    expect(at.filter((t) => t.y === SHARES_COLS.totalY && t.s === '0')).toHaveLength(4);
+    expect(at.filter((t) => t.y === SHARES_AT.y + SHARES_COLS.totalY && t.s === '0')).toHaveLength(4);
   });
 
   it('★ 整屏**一次填色都没有** —— 原版这屏没有董事长蓝底（`D-T031-8`）', () => {

@@ -782,11 +782,17 @@ export function drawAuctionScreen(
     const y = auctionSeatY(i);
     const code = auctionSeatCode(seat);
     const swinging = d.animating !== null && d.animating.seat === i ? d.animating : null;
-    // 原版按**状态号**分三路（`loc_0043c4f5` / `loc_0043c43c` / `loc_0043c46d`）：
-    //   0 → 黄色剪影（图 78+角色号）+ 现金
-    //   8 → 现金（再加一张 `3×角色+0x1c` 的姿势图，本屏没做，见 deviations）
-    //   1..7 → 只画状态字（1..6 = 不在场的六种、7 = 賣方），**没有小人**
+    // 原版按**状态号**分三路（@source `loc_0043c4f5` / `loc_0043c43c` / `loc_0043c46d`）：
+    //   0 可出价 → **黄色剪影**（`Panel#26` 图 `0x4e + 角色号`，VA 0x43c528）
+    //              ＋ **这个角色自己的小人**（资源 `3×角色 + 0x1b`，VA 0x43c5b1）＋ 现金
+    //   8 出不起 → 这个角色的小人（资源 `3×角色 + 0x1c`，VA 0x43c49f）＋ 现金，**没有剪影**
+    //   1..7 不在场 / 賣方 → 只画状态字（`0x475b34` 那张表），**没有小人**
+    //
+    // ★ 剪影是**镂空的黑底黄线**（`0026_078` 起 78..89，近黑 79~82% 全在四周），
+    //   它先画、角色后画且**抠黑**，于是黄线留在角色四周 —— 那就是玩家看到的「黄框」。
+    //   先前只画剪影（且把角色错画在状态 7 上），所以框里是空的。见 `docs/deviations/T-034.md`。
     const figureVisible = code === 0;
+    const broke = code === AUCTION_BROKE_CODE;
 
     if (figureVisible) {
       drawAnchored(
@@ -796,19 +802,12 @@ export function drawAuctionScreen(
         y,
       );
     }
-    if (code === 7) {
-      drawAnchored(
-        ctx,
-        auctionCharacterSprite(sprite, seat.character, 'bid', 0),
-        AUCTION_SEAT.figureX,
-        y,
-      );
-    } else if (figureVisible && (i === d.current || swinging !== null)) {
-      // 轮到谁 / 正在挥槌 → 盖上他自己的那张（挥槌时逐帧换）
+    if (figureVisible || broke) {
+      // 轮到谁 / 正在挥槌 → 用挥槌那一串帧；其余用第 0 帧
       const frame = swinging === null ? 0 : hammerFrame(swinging.elapsed);
       drawAnchored(
         ctx,
-        auctionCharacterSprite(sprite, seat.character, 'bid', frame),
+        auctionCharacterSprite(sprite, seat.character, broke ? 'giveUp' : 'bid', frame),
         AUCTION_SEAT.figureX,
         y,
       );
