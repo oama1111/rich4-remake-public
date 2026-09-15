@@ -71,18 +71,22 @@ export interface UpscaleManifest {
 /**
  * 按尺寸把图分批。
  *
- * 为什么要分批而不是一股脑全丢给模型：
- * 1. **小图和大图该用不同倍率**。13,034 张里面积中位数只有 4013 px
- *    （约 63×63），而最大的是 640×480 的全屏图。对 640×480 再放 4 倍
- *    是 2560×1920，既没必要又拖慢一个数量级。
- * 2. 动漫风格的超分模型对**极小图**（边长 ≤ 8）往往产出糊边，
- *    这类图单独成批，便于换模型或干脆用最近邻放大。
+ * ★ 放大倍率**统一 4×**——这是 C-AST-3 硬约束（构图不变，
+ *   「放大倍数统一 4×（640×480 → 2560×1920）」），客户端按统一
+ *   倍率加载 hd 素材；T-062 回填校验也按 4× 拒收。
+ *
+ * 既然倍率一刀切，为什么还要分批？同一批次的图喂给**同一种
+ * 工具/参数组合**：
+ * 1. **小图和大图适合不同工具**。13,034 张里面积中位数只有
+ *    4013 px（约 63×63），最大的是 640×480 全屏图。
+ * 2. 动漫风格超分模型对**极小图**（边长 ≤ 8）往往产出糊边，
+ *    这类图单独成批，便于换模型或改用最近邻放大。
  */
 export const BATCH_RULES = [
   { batch: 'tiny', maxArea: 64, scale: 4 },
   { batch: 'small', maxArea: 16_384, scale: 4 },
-  { batch: 'medium', maxArea: 65_536, scale: 3 },
-  { batch: 'large', maxArea: Number.POSITIVE_INFINITY, scale: 2 },
+  { batch: 'medium', maxArea: 65_536, scale: 4 },
+  { batch: 'large', maxArea: Number.POSITIVE_INFINITY, scale: 4 },
 ] as const;
 
 export function classify(width: number, height: number): { batch: string; scale: number } {
@@ -91,7 +95,7 @@ export function classify(width: number, height: number): { batch: string; scale:
     if (area <= r.maxArea) return { batch: r.batch, scale: r.scale };
   }
   // BATCH_RULES 最后一条是 Infinity，走不到这里
-  return { batch: 'large', scale: 2 };
+  return { batch: 'large', scale: 4 };
 }
 
 /** extract 产出的素材条目（manifest.json 的 images 项） */

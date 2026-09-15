@@ -4,9 +4,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * 用法：
- *   plan   <assets-clean 目录> <hd 目录>          生成待办清单
- *   status <hd 目录>                              看进度
- *   ingest <assets-clean 目录> <hd 目录>          回填已完成的产物
+ *   plan   <assets-clean> <hd>            生成待办清单
+ *   slice  <assets-clean> <queue> [N]     按帧切片 + Alpha 分离（T-061）
+ *   merge  <queue> <upscale-done>         回填校验 + Alpha 合并（T-062）
+ *   status <hd>                           看进度
+ *   ingest <assets-clean> <hd> [模型]     回填已完成的产物
  *
  * ★ 交接方式刻意做成「文件 + 清单」而不是直接调某个模型的 API：
  *   这样你可以用任何工具（Real-ESRGAN、waifu2x、某个在线服务、
@@ -28,6 +30,7 @@ import {
 } from './upscale.ts';
 import { decodePng, encodePng } from './sprite.ts';
 import { buildQueueFrame, sliceFrame, type QueueManifest } from './slice.ts';
+import { mergeUpscaled, validatePair, type MergeRejection } from './merge.ts';
 
 /**
  * 由 hd 目录推出清单路径：与之**同级**、不在其内。
@@ -160,6 +163,83 @@ export function cmdSlice(cleanDir: string, queueDir: string, limit?: number): vo
 }
 
 // ============================================================
+//  merge —— 回填校验 + Alpha 合并 + 去彩边（T-062）
+// ============================================================
+
+/**
+ * 校验并合并 <doneDir>/rgb|alpha 里的超分产物：
+ *   <doneDir>/merged/<档案>/<资源>_f<帧>.png   合格的 RGBA 帧（锚点已 ×倍率）
+ *   <doneDir>/merge-report.json               合格/拒收/缺漏全名单
+ *
+ * 不合格的一律不合并、不写出，只在报告里列出原因（尺寸错、
+ * 缺 alpha、rgb/alpha 互不一致、产物与输入哈希相同）。
+ */
+export function cmdMerge(queueDir: string, doneDir: string): void {
+  const queueManifestPath = join(queueDir, 'manifest.json');
+  if (!existsSync(queueManifestPath)) {
+    throw new Error(`找不到 ${queueManifestPath}，先跑 slice。`);
+  }
+  const queue = JSON.parse(readFileSync(queueManifestPath, 'utf8')) as QueueManifest;
+
+  const rejections: MergeRejection[] = [];
+  const mergedIds: string[] = [];
+  let absent = 0;
+
+  for (const frame of queue.frames) {
+    const rgbRel = frame.rgb.replace(/^rgb\//, '');
+    const alphaRel = frame.alpha.replace(/^alpha\//, '');
+    const rgbPath = join(doneDir, 'rgb', rgbRel);
+    const alphaPath = join(doneDir, 'alpha', alphaRel);
+    const rgb = existsSync(rgbPath) ? decodePng(new Uint8Array(readFileSync(rgbPath))) : null;
+    const alpha = existsSync(alphaPath) ? decodePng(new Uint8Array(readFileSync(alphaPath))) : null;
+
+    // exactOptionalPropertyTypes：不能塞 undefined，只能不给这个键。
+    const hashes: { rgbSha256?: string; alphaSha256?: string } = {};
+    if (rgb !== null) hashes.rgbSha256 = sha256(rgbPath);
+    if (alpha !== null) hashes.alphaSha256 = sha256(alphaPath);
+    const verdict = validatePair(frame, rgb, alpha, hashes);
+    if (verdict.kind === 'absent') {
+      absent++;
+      continue;
+    }
+    if (verdict.kind === 'reject') {
+      rejections.push(verdict.rejection);
+      continue;
+    }
+
+    const merged = mergeUpscaled(rgb!, alpha!);
+    // 锚点同步 ×倍率（C-AST-6）；尺寸已经校验恰为 原图×scale
+    const anchored = {
+      ...merged,
+      anchorX: frame.anchorX * frame.scale,
+      anchorY: frame.anchorY * frame.scale,
+    };
+    const outPath = join(doneDir, 'merged', rgbRel);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, encodePng(anchored));
+    mergedIds.push(frame.id);
+  }
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    merged: mergedIds,
+    rejected: rejections,
+    absent,
+  };
+  mkdirSync(doneDir, { recursive: true });
+  writeFileSync(join(doneDir, 'merge-report.json'), `${JSON.stringify(report, null, 2)}\n`);
+
+  console.log(`合并 ${mergedIds.length} 帧 → ${join(doneDir, 'merged')}/`);
+  if (rejections.length > 0) {
+    console.log(`\n⚠️ 拒收 ${rejections.length} 项：`);
+    for (const r of rejections.slice(0, 20)) console.log(`  ${r.id}  [${r.reason}] ${r.detail}`);
+    if (rejections.length > 20) console.log(`  …还有 ${rejections.length - 20} 项`);
+  }
+  if (absent > 0) console.log(`\n${absent} 帧尚未交出产物。`);
+  console.log(`报告：${join(doneDir, 'merge-report.json')}`);
+}
+
+// ============================================================
 //  status
 // ============================================================
 
@@ -275,6 +355,10 @@ function main(argv: string[]): void {
       if (rest.length < 2) throw new Error('用法: slice <assets-clean> <upscale-queue> [前N张]');
       cmdSlice(rest[0]!, rest[1]!, rest[2] === undefined ? undefined : Number(rest[2]));
       break;
+    case 'merge':
+      if (rest.length < 2) throw new Error('用法: merge <upscale-queue> <upscale-done>');
+      cmdMerge(rest[0]!, rest[1]!);
+      break;
     case 'status':
       if (rest.length < 1) throw new Error('用法: status <hd>');
       cmdStatus(rest[0]!);
@@ -290,6 +374,7 @@ function main(argv: string[]): void {
           '',
           '  plan   <assets-clean> <hd>          生成待办清单',
           '  slice  <assets-clean> <queue> [N]   按帧切片 + Alpha 分离（T-061）',
+          '  merge  <queue> <upscale-done>       回填校验 + Alpha 合并（T-062）',
           '  status <hd>                         看进度',
           '  ingest <assets-clean> <hd> [模型]   回填已完成的产物',
         ].join('\n'),

@@ -35,22 +35,21 @@ const entry = (over: Partial<AssetEntryLike> = {}): AssetEntryLike => ({
 });
 
 describe('分批', () => {
-  it('按面积分四档，越大倍率越低', () => {
+  it('按面积分四档', () => {
     expect(classify(4, 4).batch).toBe('tiny');
     expect(classify(64, 64).batch).toBe('small');
     expect(classify(200, 200).batch).toBe('medium');
     expect(classify(640, 480).batch).toBe('large');
   });
 
-  it('★ 640×480 不做 4 倍——那会变成 2560×1920，既无必要又拖慢一个数量级', () => {
-    expect(classify(640, 480).scale).toBeLessThan(classify(64, 64).scale);
+  it('★ C-AST-3 硬约束：倍率统一 4×（含 640×480 → 2560×1920），批次只为工具分组', () => {
+    expect(classify(4, 4).scale).toBe(4);
+    expect(classify(64, 64).scale).toBe(4);
+    expect(classify(640, 480).scale).toBe(4);
   });
 
-  it('倍率随档位单调不增', () => {
-    const scales = BATCH_RULES.map((r) => r.scale);
-    for (let i = 1; i < scales.length; i++) {
-      expect(scales[i]!).toBeLessThanOrEqual(scales[i - 1]!);
-    }
+  it('BATCH_RULES 全部为 4×', () => {
+    for (const r of BATCH_RULES) expect(r.scale).toBe(4);
   });
 });
 
