@@ -2789,16 +2789,8 @@ function applyAction(action: Action): void {
     } else if (state.phase !== 'moving' && !diceFx.active) {
       diceFx.cancel();
     }
-    // ★ 放置類道具（路障/地雷/定時炸彈）真正落地了 → 起播投掷动效 + 落地音。
-    //   纯表现，放在这里是因为**联机广播与 AI 也走同一条路**（`dispatch` 的口）。
-    if (action.type === 'useTool') startObjectFlight(before, action);
-    // ★ 機器工人（9）原地建屋 → 大锤影片（+ 盖到 5 级时接 `0x20b`）。
-    //   同一条路，故联机广播与 AI 一样有这一段（原版也不分人机）。
-    if (action.type === 'useTool') startBuildFx(before, action);
-    // ★ 卡片 / 請神符的飞行动效（Q-TOOL-5）—— 原版那 23 个 `animate_object`
-    //   调用点。**是否真的播由 exe 的 `who_plays == 1` 闸门定**（纯人类不播，
-    //   见 `throw-fx.ts` 的 `CARD_FLIGHT_SITES`），所以电脑出牌这一条才是主路。
-    if (action.type === 'useCard') startCardFlight(before, action);
+    // 这一条 action 该起哪些表现动效（真人 / 联机广播两条来源都经过这里）
+    startActionFx(action, before);
     // 走子补间（真人 / 联机两条来源都在这一条路上）
     tweenStepIfMoved(action, before);
   }
@@ -2826,6 +2818,26 @@ function applyAction(action: Action): void {
   scheduleAi();
   scheduleHumanTurn();
   autosaveIfEnabled();
+}
+
+/**
+ * 一条 action 落地后该起哪些**表现动效** —— 两条来源（真人 `dispatch → applyAction`、
+ * 电脑 `scheduleAi` 的直路）**共用这一个出口**。
+ *
+ * ★ 2026-09-16 抽出来：先前三处钩子只挂在 `applyAction` 上，而电脑那条是绕开它
+ *   自己 `reduce` 的直路 —— 结果**电脑用道具时看不到任何动效**（投掷 / 大锤），
+ *   卡片飞行只在 AI 那条补了一句。原版这些影片**不分人机**都会播
+ *   （唯一的例外是 20/22 个卡片调用点带 `who_plays == 1` 闸门，见 `throw-fx.ts`）。
+ *
+ * 纯表现：不读也不写 `GameState`（C-DET-4）。
+ */
+function startActionFx(action: Action, before: GameState): void {
+  // 放置類道具（路障/地雷/定時炸彈）真正落地 → 投掷动效 + 落地音
+  if (action.type === 'useTool') startObjectFlight(before, action);
+  // 機器工人（9）原地建屋 → 大锤影片（盖到 5 级时接 `0x20b`）
+  if (action.type === 'useTool') startBuildFx(before, action);
+  // 卡片 / 請神符的飞行动效（Q-TOOL-5）—— 是否真的播由 exe 的闸门定
+  if (action.type === 'useCard') startCardFlight(before, action);
 }
 
 /**
@@ -2988,10 +3000,11 @@ function scheduleAi(): void {
     const walker = action.type === 'step' ? state.currentPlayer : null;
     state = reduce(state, action, topo);
     if (walker !== null && state !== before) startStepTween(walker);
-    // ★ 卡片飞行动效（Q-TOOL-5）：电脑这一步是**绕开 `applyAction` 直路**的
-    //   （它自己 `reduce`），而原版那 23 个调用点里 20 个恰好**只在非人类时播**
-    //   —— 不在这里补一句，这个动效在单机里就一次都看不见。
-    if (state !== before && action.type === 'useCard') startCardFlight(before, action);
+    // ★ 动效出口**与 `applyAction` 共用同一个函数**（Q-TOOL-5 ⑤14）：
+    //   电脑这一步是**绕开 `applyAction` 的直路**（它自己 `reduce`），
+    //   先前只在这里补了 `useCard` —— 于是电脑用道具（路障/地雷/炸彈的投掷、
+    //   機器工人的大锤）**一次动效都看不到**，而原版不分人机都会播。
+    if (state !== before) startActionFx(action, before);
     if (state === before) {
       log(`⚠ AI 在 ${before.phase} 给出无效 action ${action.type}，已停手`);
       aiAutoPlay = false;

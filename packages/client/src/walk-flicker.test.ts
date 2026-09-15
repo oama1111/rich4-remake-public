@@ -33,6 +33,7 @@
  *    屏幕坐标，一个 tick 画一次。本引擎是「一次 dispatch 走完整趟 + 补间回放」，
  *    所以「每一帧都得画出来」这条契约只能由渲染器自己保证 —— 本文件钉住它。
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { BoardRenderer, type Camera } from './render.ts';
 import { SpriteCache, type Sprite } from './assets.ts';
@@ -408,5 +409,21 @@ describe('★ 缓存淘汰时，「上一张」必须一起摘掉（Q-PERF-1 的
     expect((stand!.bitmap as unknown as FakeBitmap).closed.v).toBe(true);
     // 而且不许再把那张已关闭的当「上一张」顶着用
     expect(images.filter((i) => i.bitmap.res === 128)).toHaveLength(0);
+  });
+});
+
+describe('动效出口两条来源共用 @source Q-TOOL-5 ⑤14', () => {
+  it('★ 电脑那条直路也调 startActionFx（否则 AI 用道具看不到动效）', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    // 定义 1 处 + 调用 2 处（applyAction 与 scheduleAi 的直路）
+    const hits = src.split('startActionFx(').length - 1;
+    expect(hits, 'startActionFx 应当有 1 处定义 + 2 处调用').toBe(3);
+    // 两条来源都必须在
+    expect(src).toContain('startActionFx(action, before);');
+    // 三处旧钩子都收进 `startActionFx` 里了 —— 全文件只该出现这 3 次
+    const hooks = src
+      .split('\n')
+      .filter((l) => /if \(action\.type === 'use(Tool|Card)'\) start/.test(l));
+    expect(hooks.length, '三处动效钩子只该在 startActionFx 里各一次').toBe(3);
   });
 });
