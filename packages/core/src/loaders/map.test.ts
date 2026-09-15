@@ -300,4 +300,41 @@ describe('★ 上市企业与特殊景观', () => {
     }
     for (const [name, set] of byName) expect(set.size, `${name} 的朝向不一致`).toBe(1);
   });
+
+  // ★ 研究所那两个字节（Q-HOVER-1 残留项 ① / Q-TOOL-6）：
+  //   `+0x1d` = 研發項目下标、`+0x1e` = 剩余天数。名牌浮标第三行要它们。
+  //   八张地图里**恒为 0**（原版地图没有现成研究所，种类是开局后盖出来的），
+  //   所以这里钉的是「解析器**一定**读那两个字节、且落在 0..255」，
+  //   运行时的值在 `GameState.facilityResearchProject/Days`。
+  have('★ 設施 +0x1d/+0x1e 被解析出来（研究所的項目与倒计时）', () => {
+    for (let mapId = 0; mapId < 8; mapId++) {
+      const m = loadMap(mapId);
+      for (const f of m.facilities) {
+        // 字段一定存在（真实解析路径必填），且是 0..255 的字节
+        expect(f.researchProject).toBeGreaterThanOrEqual(0);
+        expect(f.researchProject).toBeLessThanOrEqual(0xff);
+        expect(f.researchDays).toBeGreaterThanOrEqual(0);
+        expect(f.researchDays).toBeLessThanOrEqual(0xff);
+        // 原版地图数据里没有研究所、也没有在研發的：恒 0
+        expect(f.researchProject).toBe(0);
+        expect(f.researchDays).toBe(0);
+      }
+    }
+  });
+
+  have('★ +0x1d/+0x1e 读的是记录里那两个字节（与手算偏移一致）', () => {
+    const raw = new Uint8Array(readFileSync(`${MAP_DIR}/0001.bin`));
+    const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+    const numFac = view.getUint32(0x10, true);
+    const facOff = view.getUint32(0x14, true);
+    const m = parseMap(raw);
+    for (let i = 1; i <= numFac; i++) {
+      const o = facOff + i * 0x38;
+      const f = m.facilities.find((x) => x.id === i)!;
+      expect(f.researchProject).toBe(raw[o + 0x1d]);
+      expect(f.researchDays).toBe(raw[o + 0x1e]);
+    }
+    // 非空断言：地图 1 确实有設施（否则这条测试是空转）
+    expect(numFac).toBeGreaterThan(0);
+  });
 });

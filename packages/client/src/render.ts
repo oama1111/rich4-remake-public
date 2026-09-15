@@ -19,12 +19,19 @@ import {
 import { CHARACTERS, characterColorRgb } from '@rich4/data';
 import { framesFor, tweenTickCount } from './tween.ts';
 import {
+  attachedFrameIndex,
+  attachedImageIndex,
+  attachedOffset,
+  attachedOwnerVisible,
   flightPosAt,
   objectFacing,
   objectImageIndex,
   objectSpriteResource,
   type ObjectFlight,
 } from './throw-fx.ts';
+// ★ 機器工人建屋影片的落点/尺寸是 exe 里的**常数**（Q-TOOL-6）——
+//   屏幕 (0, 0x28) = 棋盘局部 (0, 0)，整块 440×440。见 `build-fx.ts`。
+import { BUILD_FX_H, BUILD_FX_W, BUILD_FX_X, BUILD_FX_Y } from './build-fx.ts';
 import type { MapNode, Rich4Map } from '@rich4/core';
 import { VIEW_CENTER, VIEW_COUNT, VIEW_SPAN, projectCell, projectWorld } from '@rich4/data';
 import type { Sprite, SpriteCache } from './assets.ts';
@@ -205,6 +212,18 @@ export interface RenderInput {
    *   改由动效层画（见 `draw()` 末尾）。规格与出处见 `throw-fx.ts`。
    */
   objectFlight?: ObjectFlight | null;
+  /**
+   * 正在播的**機器工人建屋影片**（Q-TOOL-6）—— 这一帧该贴的那张图，`null` = 没在播
+   * （或影片还没解好）。
+   *
+   * ★ 它跟上面那套投掷动效**不是一回事**：原版把整段 440×440 的 FLIC
+   *   **原地**盖在棋盘左上角（屏幕 `(0, 0x28)` = 棋盘局部 `(0, 0)`，
+   *   VA 0x00447359/0x0044735a），位置是常数、画面自己会动，
+   *   所以这里只要一张图 + 两个常数，不需要 `from/to`。
+   *   @source `rich4_use_tool_jiqigongren` VA 0x00447295 /
+   *   `fcn_0040b0cd` VA 0x0040b0cd，规格见 `build-fx.ts`。
+   */
+  buildFx?: CanvasImageSource | null;
 }
 
 /**
@@ -778,6 +797,101 @@ export function objectTokens(
       y: node.y,
       resource,
       image: objectImageIndex(objectFacing(node, nodes, directionOf), view),
+    });
+  }
+  return out;
+}
+
+/** 一枚**附身于主人**的地圖物件（神明 / 被请上身的东西）这一帧的规格 */
+export interface AttachedObjectToken {
+  /** 在 `state.objects` 里的下标 */
+  index: number;
+  /** 物件种类 */
+  type: number;
+  /** 主人玩家下标（`objects[i].attached − 1`） */
+  owner: number;
+  /**
+   * 主人**此刻**所在的节点号 —— 落点一律取这里，**不取** `objects[i].nodeId`。
+   *
+   * @source VA 0x00408fc6/0x00408fe5：位置读的是 `ownerBase + 0x496b70/0x496b72`
+   *   （主人的实时像素坐标），物件记录里只有种类与 attached 被用到。
+   *   ⇒ 主人一走，附身的那件就跟着走。
+   */
+  ownerNodeId: number;
+  /** `Data.mkf` 图集资源号（= 0x18c + 种类 − 1） */
+  resource: number;
+  /**
+   * 贴上去的**帧号** = `(8 − 视角 + 主人朝向 + 4) & 7`
+   * —— 与偏移表同源、但**加 4**（神明背对主人）。见 `throw-fx.attachedFrameIndex`。
+   */
+  frame: number;
+  /** 相对主人的**屏幕**像素偏移 @source 表 0x474951 / 0x474991 */
+  offsetX: number;
+  offsetY: number;
+}
+
+/**
+ * `state.objects` 里**附身于人**的那些 → 这一帧画在主人身上的清单
+ * （**纯函数**，画布无关，可单测）。
+ *
+ * ★ 原版这一支在 `fcn_0040829d` 的物件段里，`test dh,dh / **je**` 的**反面**
+ *   （VA 0x00408f9f，`dh = objects_info[i].attached`）—— 落在主人身上：
+ *
+ * ```asm
+ * 00408f95  ebp = i*24
+ * 00408f9f  dh = byte [objects_info[i] + 5]        ; attached
+ * 00408fa5  test dh, dh / je 0x408cd9              ; ★ == 0 才走「放地上」那一支
+ * 00408fad  eax = attached − 1                     ; 主人下标
+ * 00408fb6  ownerBase = eax * 0x68
+ * 00408fbd  cmp dword [ownerBase + 0x496b9a], 0    ; 主人在住店/消失/坐牢/住院 → 整个不画
+ *           jne 跳过
+ * 00408fc6  eax = word [ownerBase + 0x496b70]      ; ★ 用主人的 xpos/ypos（+0x8/+0xa）
+ * 00408fee  ecx = word [ownerBase + 0x496b72]
+ * 00408fd3/00408fee  >> 5 → 格 → − 镜头 → +14 → 越出 0..0x1c 就跳过
+ * 00409026  call fcn_00407a2c                       ; 格内像素偏移 → 屏幕坐标
+ * 00409072  dl = byte [ownerBase + 0x496b78]       ; ★ 用**主人的朝向**（+0x10）
+ * 00409078  eax = 8 / sub eax, [0x499088] / add eax, edx / and eax, 7
+ *                                                   ; 图号 = 8 − 视角 + 主人朝向
+ * 00409090  dl = 图号 + 4 / and dl, 7 → [槽 + 0x48a853]   ; ★ 真正贴的帧 = 图号 + 4
+ * 00408c69/00408c74 屏幕 Y/X += dword [图号*8 + 0x474951 / +0x474955]
+ * 00408f52  eax = [type*4 + 0x49692c]              ; 图集与「放地上」同一张表
+ * ```
+ *
+ * 「放在地上」那一路仍在 `objectTokens` 里，两条互斥（同一个 `attached` 判据的
+ * 两面），所以两件不会同时画出来。
+ *
+ * @param hidden 正在飞的那一件（下标）—— 請神符飞行期间神明已经从地图上摘掉
+ *   （@source VA 0x00444ea8），别在主人身上再画一遍。
+ */
+export function attachedObjectTokens(
+  state: GameState,
+  view: number,
+  hidden: number | null = null,
+): AttachedObjectToken[] {
+  const out: AttachedObjectToken[] = [];
+  for (let i = 0; i < state.objects.length; i++) {
+    if (hidden === i) continue;
+    const o = state.objects[i];
+    if (o === undefined) continue;
+    // @source VA 0x00408fa5 `test dh,dh / je` —— attached == 0 归「放地上」那一路
+    if (o.attached === 0) continue;
+    const owner = state.players[o.attached - 1];
+    if (owner === undefined) continue;
+    // @source VA 0x00408fbd..0x00408fc4
+    if (!attachedOwnerVisible(owner.blocking)) continue;
+    const resource = objectSpriteResource(o.type);
+    if (resource === null) continue;
+    const image = attachedImageIndex(owner.direction, view);
+    const { dx, dy } = attachedOffset(o.type, owner.godInfo, image);
+    out.push({
+      index: i,
+      type: o.type,
+      owner: owner.index,
+      ownerNodeId: owner.nodeId,
+      resource,
+      frame: attachedFrameIndex(image),
+      offsetX: dx,
+      offsetY: dy,
     });
   }
   return out;
@@ -1547,6 +1661,11 @@ export class BoardRenderer {
       //   类别 0 那一段（`fcn_0040829d` 的对象分支不 or 类别位，VA 0x00408efd），
       //   故一起排序、一起贴。先前**整个漏了**（需求方：「放置后看不到」）。
       ...this.#objectSlots(map, state, camera, vp, input.objectFlight ?? null),
+      // ★ **附身于人**的物件（神明 / 被请上身的东西）—— 原版同一个循环的另一支
+      //   （`test dh,dh / je` 的反面，VA 0x00408fa5），画在**主人身上**：
+      //   位置 = 主人的屏幕坐标（走子补间时用插值点）+ 8 向偏移表，
+      //   帧号 = 8 − 视角 + **主人**朝向 + 4。同样与建筑同一档排序。
+      ...this.#attachedObjectSlots(map, state, camera, vp, input.objectFlight ?? null),
       ...this.#playerSlots(map, state, camera, vp, input.characterPose ?? null),
       ...this.#actorSlots(map, state, camera, vp, input.currentActor ?? null, nowMs),
     ];
@@ -1558,6 +1677,15 @@ export class BoardRenderer {
     //   根本不进绘制槽（所以飞着的物件能盖过比它高的建筑）。@source VA 0x0040e669
     const flight = input.objectFlight ?? null;
     if (flight !== null) this.#drawObjectFlight(flight, camera, nowMs);
+
+    // ★ 建屋影片（機器工人）画在**最后**：原版 `fcn_0045144f` 把 FLIC 直接贴到
+    //   后台面/屏幕上（`[0x48c882]` bit0），根本不进绘制槽，位置是常数
+    //   —— 屏幕 `(0, 0x28)` = 棋盘局部 `(0, 0)`，尺寸就是整块 440×440 棋盘。
+    //   @source VA 0x00447350..0x0044735c / 0x0040b0f4..0x0040b0fd
+    const buildFrame = input.buildFx ?? null;
+    if (buildFrame !== null) {
+      this.#ctx.drawImage(buildFrame, BUILD_FX_X, BUILD_FX_Y, BUILD_FX_W, BUILD_FX_H);
+    }
 
     // 调试层画在清单之上（它只是排错用的参考图形，不该被建筑挡住）——
     // 只有描边，不填色（原版没有「每格一块底色」这种东西，见 `#drawNodes`）
@@ -1766,6 +1894,61 @@ export class BoardRenderer {
   }
 
   /**
+   * **附身于人**的物件 —— 画在主人身上（神明跟着棋子跑）。
+   *
+   * 「画哪一张、落在主人哪个偏移」整层在纯函数 `attachedObjectTokens` 里
+   * （判据逐条带 @source VA），这里只管摆位：
+   *
+   * - 落点 = **主人的屏幕坐标**（原版读 `player + 0x8/+0xa`，走子补间中途是插值
+   *   位置 —— 所以这里用 `#walkScreen`，与棋子本体同一处），
+   * - 再加 8 向偏移表（半径 22/10，神明站在主人身侧），
+   * - 越出 29×29 窗口就整条跳过（原版 `cmp esi, 0x1c` 那一对比较）。
+   *
+   * ⚠️ 原版用的是**主人的实时像素位置**，我们这边主人脚下的「同格错开」
+   *   （`#playerSlots` 的 `seen * 5`）是渲染层自己加的，没有对应的 exe 行为，
+   *   故这里**不加** —— 偏移完全来自 exe 的偏移表。
+   */
+  #attachedObjectSlots(
+    map: Rich4Map,
+    state: GameState,
+    cam: Camera,
+    vp: { w: number; h: number },
+    flight: ObjectFlight | null,
+  ): DrawSlot[] {
+    const ctx = this.#ctx;
+    const k = cam.mode === 'map' ? cam.scale : 1;
+    const nowMs = performance.now();
+    const slots: DrawSlot[] = [];
+    for (const t of attachedObjectTokens(state, cam.view, flight?.objectIndex ?? null)) {
+      const owner = state.players[t.owner];
+      if (owner === undefined) continue;
+      const node = map.nodes[owner.nodeId - 1];
+      if (node === undefined) continue;
+      const p =
+        this.#walkScreen(owner.index, cam, vp, nowMs) ?? worldToScreen(node.x, node.y, cam, vp);
+      if (p === null) continue;
+      const x = p.x + t.offsetX * k;
+      const y = p.y + t.offsetY * k;
+      slots.push({
+        // @source VA 0x00408c82/0x00408cb8：与建筑同一档（不 or 类别位）
+        key: drawKey(y, DRAW_CLASS.building),
+        paint: () => {
+          const sp = this.#sprite('Data.mkf', t.resource, t.frame);
+          if (sp === null) return;
+          ctx.drawImage(
+            sp.bitmap,
+            x - sp.anchorX * k,
+            y - sp.anchorY * k,
+            sp.width * k,
+            sp.height * k,
+          );
+        },
+      });
+    }
+    return slots;
+  }
+
+  /**
    * 投掷动效这一帧 —— 把飞着的那件物件贴在插值位置上。
    *
    * @source `_rich4_animate_object`（VA 0x0040e669）：两端点**开播前**换算成
@@ -1781,7 +1964,10 @@ export class BoardRenderer {
     if (at === null) return;
     const res = objectSpriteResource(flight.type);
     if (res === null) return;
-    const img = objectImageIndex(flight.facing, cam.view);
+    // ★ 图号：给了 `image` 就直接用（卡片那一支恒第 0 帧，@source VA 0x0040e6b9
+    //   `xor ebp, ebp` —— 图集 415 只有 1 张图，按角度算会取到不存在的图号），
+    //   否则按 `8 − 视角 + 朝向` 现算（放地上的物件那套，@source VA 0x0040e6a1）。
+    const img = flight.image ?? objectImageIndex(flight.facing, cam.view);
     const sp = this.#sprite('Data.mkf', res, img);
     if (sp === null) return;
     const k = cam.mode === 'map' ? cam.scale : 1;

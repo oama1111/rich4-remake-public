@@ -250,3 +250,143 @@ fstp dword [esp+…]` —— 逐支用**float32**累加；本仓库 `stockValue(
 - `places/notice-board-market.test.ts`：`stockListPrice(3, 10.5)` = 31（原来 32）；
   `aiWantsListedStock(5, 2, 3)` = true（`Math.round` 会因 3.5→…→3 判 false）。
 - `ai/stock-policy.test.ts`：`holdingsValue` 1×2.5 = 2、3×2.5 = 7（原来 3 / 8）。
+
+---
+
+## 5. 后续轮次追加：D-QNUM-2 与 D-QNUM-5 **已结案**（本轮落码）
+
+> 本节**追加**，不改上面的段落；上面第 3 节里 D-QNUM-2 / D-QNUM-5 的
+> 「未改」状态以本节为准。落码者：本轮规则 bug 修复轮。
+
+### 5.1 D-QNUM-2 —— 已修：物价指数乘在截断**之后**
+
+**复取证**（`python3 tools/disasm.py va 0x00449f1b` / `va 0x0044a115`）：
+
+```asm
+; 地價稅
+00449f1b  fild  dword [esp + ebx + 0x94]   ; ★ fild 读的是**原值**（不含物价指数）
+00449f22  fmul  qword [0x4655cc]           ; × 0.05（f64，见 5.3）
+00449f28  call  0x457dbc                   ; 向零截断
+00449f2d  fistp dword [esp + 0xa4]         ; ★ 先写回整数
+00449f34  mov   eax, [esp + 0xa4]
+00449f3b  mov   ebp, [0x4990e8]            ; 物价指数
+00449f41  imul  eax, ebp                   ; ★ 截断**之后**才乘
+00449f4b  mov   [ebx + 0x48c59c], eax
+; 證交稅（同形）
+0044a115  fld   dword [esp + esi + 0x94]
+0044a11c  fmul  qword [0x4655f4]           ; × 0.05
+0044a122  call  0x457dbc                   ; 向零截断
+0044a127  fistp dword [esp + 0xa4]
+0044a135  mov   edx, [0x4990e8]
+0044a13b  imul  eax, edx                   ; ★ 截断之后才乘
+```
+
+判决：**`trunc(基数 × 0.05) × 物价指数`**。旧实现把物价指数乘进基数
+（`trunc(基数 × 指数 × 0.05)`），指数 ≠ 1 且有截断损失时分叉：
+原值 30、指数 3 ⇒ 原版 `trunc(1.5)×3 = 3`，旧式 `trunc(4.5) = 4`。
+
+**落码**：
+- `rules/percentage.ts::propertyValue(playerIndex, lands, facilities)` ——
+  **语义变更**：删掉 `priceIndex` 入参，返回**原值**（与原版 `fild` 读到的
+  同一个累加和）；旧签名 `propertyValue(…, priceIndex)` 的末行 `sum * priceIndex` 删除。
+- `propertyTax(playerIndex, lands, facilities, priceIndex)`
+  = `percentageOf(propertyValue(…), 0.05) * priceIndex`。
+- `stockTax(holdings, prices, priceIndex)` —— **加 `priceIndex` 入参**，
+  = `percentageOf(stockValue(…), 0.05) * priceIndex`（旧签名没有它，等于按指数 1 算）。
+- 调用点普查：`propertyValue` / `stockTax` / `stockValue` 在整个仓库
+  （`packages/*/src`）**只有 `rules/percentage.ts` + 自己的 `percentage.test.ts` 用到**，
+  `src/index.ts` 只是 `export *`；`events/news-effects.ts` 里 11/12/13/23 仍是
+  `unimplemented`（`entry.factor === null` 分支），没有生产调用点需要跟着改。
+  `0x4990e8` 对应的状态字段是 `GameState.priceIndex`。
+
+**顺手核的「别的税/费」**（同一「先取整再乘指数 / 先乘再取整」问题）：
+
+| 项 | VA | 结论 |
+|---|---|---|
+| 所得稅 | `0x00449cee..0x00449d12` | `fild [player+0x1c] / fmul 0.05 / call 0x457dbc / fistp`，**通篇没有 `[0x4990e8]`** ⇒ 不乘物价指数（本仓库 `incomeTax` 一致，无顺序问题） |
+| 儲金紅利 | `0x0044af44..0x0044af5c` | 同上，`fild [player+0x20] / fmul 0.1 / call 0x457dbc`，**无指数** ⇒ `bankDividend` 一致 |
+| 企業費（水費/電費/旅遊費/保險費/修車費/加油費/工程費/幫主費） | `0x0041ab6d` 起，见 `places/company.ts::companyFeeOnLanding` | 全是整数 `imul`，**中间不取整**，指数与其它因子同处一个乘积 ⇒ 不存在顺序分叉 |
+| 拍賣起拍价 | `0x0043be74`（`rules/auction.ts::auctionBasePrice`） | **已经是** `trunc(地价 × 系数) × 物价指数`（上一轮已订正），与本轮同序 |
+
+结论：同一族问题**只有地價稅与證交稅**两处，已全部订正。
+
+**测试**（`rules/percentage.test.ts`，改了 2 条既有期望，逐条理由见文件内注释）：
+- 旧 `propertyValue(0, lands, facs, 3) === 18_000` —— 旧期望建立在「基数含指数」
+  的错读上。原版 `fild` 读到的原值是 6000，指数只在 `imul` 那一步出现；
+  新断言改为 `propertyValue(...) === 6000` + `propertyTax(..., 3) === 900`。
+  （这组数恰好无截断损失，新旧同值；真正的分叉点在下面。）
+- 新增「指数 ≠ 1」：地價稅 原值 30、指数 3 → **3**（≠ 旧式 4）；
+  證交稅 市值 30、指数 3 → **3**；並补「恰好 .5 又被指数放大」的边界
+  （原值 10 → `trunc(0.5)=0` → ×5 = **0**，旧式 2；市值 10、指数 7 → **0**，旧式 3）。
+- `stockTax` 全部调用点补上第三参 `priceIndex`（既有 `stockTax([3],[10])` 等
+  改为 `stockTax([3],[10],1)`，指数 1 时数值不变，故这些期望本身没动）。
+
+### 5.2 D-QNUM-5 —— 已修：`gainFloor` 是 **+2.0**，`−2.0` 是偏移量
+
+**复取证**（`python3 tools/disasm.py va 0x0042ce19`）：
+
+```asm
+0042ce19  fld      dword [esp + 0xe4]        ; gain = 現價/成本（0x42cbc1 fld/fdiv/fstp 算出）
+0042ce20  fcomp    dword [0x4641f4]          ; ★ 0x4641f4 = f32 +2.0
+0042ce26  fnstsw   ax / sahf
+0042ce29  jb       0x42ce5c                  ; ★ gain < 2.0 → 跳过整段
+0042ce2b  fld      dword [esp + 0xe4]
+0042ce32  fadd     dword [0x4641f8]          ; ★ 0x4641f8 = f32 −2.0（**偏移量**）
+0042ce38  fdiv     qword [0x4641fc]          ; 0x4641fc = f64 0.5（步长）
+0042ce3e  fld1 / 0042ce40 faddp st(1)        ; +1
+0042ce42  call     0x457dbc                  ; 向零截断
+0042ce47  fistp    dword [esp + 0xf4]
+0042ce55  add      dword [esp + ebx*4 + 0x80], eax
+```
+
+常量逐一 dump（`read exe` 直读）：
+
+| VA | 字节 | 值 |
+|---|---|---|
+| `0x4641f0` | `00 00 f4 3f` | f32 1.90625（上文另一段的系数） |
+| `0x4641f4` | `00 00 00 40` | **f32 +2.0 ← 判据阈值** |
+| `0x4641f8` | `00 00 00 c0` | **f32 −2.0 ← `fadd` 的偏移量** |
+| `0x4641fc` | `00 00 00 00 00 00 e0 3f` | **f64 0.5 ← `fdiv` 的步长** |
+
+方向：`fcomp` → `fnstsw ax` → `sahf` → `jb`。x87 的 C0 位经 `sahf` 落到 CF，
+`jb` 取 CF=1 ⇒ **`gain < 2.0` 时跳过**；即 `gain >= 2.0` 才加分。
+加分式：`trunc((gain − 2)/0.5 + 1) = trunc(2·gain − 3)`。
+
+**落码**（`ai/stock-policy.ts`）：
+- `SELL_RATIO.gainFloor`：`-2.0` → **`2.0`**（附 +2.0 的完整判据注释）。
+- 新增 `SELL_GAIN_SHIFT = -2.0`（`0x4641f8` 的偏移量），表达式改为
+  `if (gain >= SELL_RATIO.gainFloor) score += saleScoreRound(2 * (gain + SELL_GAIN_SHIFT) + 1)`
+  —— 形状与原版 `fadd(−2.0) → fdiv(0.5) → +1` 一一对应；
+  `÷0.5` 用 `×2`（精确且避开 C-DET-3 的裸除法）。
+- 另两段 `trunc(gain/0.5 + 1)`（`0x0042cea5` / `0x0042cf08`）本来就**没有偏移**、
+  阈值是紧邻的 `liquid < 30000/16000 × 物价指数 && gain > 0`，与本次订正无关，
+  仅补了 `@source` 注释。
+
+**AI 行为会怎么变**：
+- 旧代码在 `gain ∈ (0, 2)` 时把 `trunc(2·gain−3)`（**0 或负数**）加进卖出分：
+  `gain ∈ (0, 0.5]` → −2、`(0.5, 1.25)` → −1、`[1.25, 1.5)` → 0、`[1.5, 2)` → 0。
+  原版这一段是**整段跳过**（不加分，也不倒扣）。
+- 后果：`pickForSale` 只挑**分 > 0** 的一支，旧代码会把「小赚 + 别的条款给了 +2」
+  的持仓压回 0（甚至负数），那一回合 AI **不卖**；订正后被其它条款推到正分就会卖。
+  另外多支竞价时，旧代码系统性压低低 `gain` 那支的排名，会改变卖哪一支。
+- `gain >= 2.0` 的部分**新旧完全一致**（`trunc(2·gain−3)` 只在 `gain ≥ 1.5` 才非负，
+  而新阈值 2.0 > 1.5），所以「大赚」行情的卖出行为不变。
+
+**测试**（`ai/stock-policy.test.ts`，改了 1 条既有期望）：
+- 旧 `scoreStockForSale(sellInput(), …) === -1`（gain = 10/10 = 1.0）——
+  旧期望来自把 −2.0 当阈值。exe 里 `1.0 < 2.0` 直接 `jb` 跳过，原文就是 **0**；
+  新断言改为 `0`。
+- 新增边界：`gainFloor === 2.0`、`SELL_GAIN_SHIFT === -2.0`；
+  恰好 2.0（price 20/cost 10）→ **+1**；19.99 → **0**；20.01 → **+1**；
+  负边界 `gain = −2.0`（负成本构造的纯函数用例）→ **0**。
+- 新增行为用例：`gain = 0.5` 且 `avg24 > avg6 && 現價 < 開盤`（+2）→ 新分 **2、
+  会被卖**；旧式 2−2 = 0 ⇒ `pickForSale` 返回 −1（不卖）。
+
+### 5.3 本轮仍未解 / 未动
+
+- `0x0042ce38` 的 `fdiv qword [0x4641fc]` 是 **f64**，而 gain 是 f32；
+  本仓库以 `Math.fround` 建模 gain、用双精度做 `2·(gain−2)+1`。
+  两者在所有可构造的 f32 gain 上逐点相等（f32 尾数 24 位，`2·gain−3`
+  要么在 Sterbenz 意义下精确、要么本身就是整数），故**未登记为新偏差**。
+- D-QNUM-3（持股市值单精度累加）、D-QNUM-4（`holdingsCost` 的 `Math.round`）、
+  D-QNUM-6（1.3 表调用点归属）本轮**未动**，仍以上文第 3 节为准。

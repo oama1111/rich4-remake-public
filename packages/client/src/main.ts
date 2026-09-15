@@ -20,6 +20,7 @@ import {
   isAiTurn,
   PANEL_PAGE_COUNT,
   holidayIndexOf,
+  housingIndexOf,
   weekdayOf,
   dayNumberSince1998,
   DEFAULT_INITIAL_FUND,
@@ -38,6 +39,7 @@ import {
   toolCount,
   winConditionsOf,
   type Action,
+  type CardTarget,
   type GameState,
   type MapTopology,
   type Rich4Map,
@@ -149,11 +151,30 @@ import {
   type Camera,
 } from './render.ts';
 import {
+  CARD_FLIGHT_IMAGE,
+  CARD_FLIGHT_NO_OBJECT,
+  CARD_FLIGHT_TYPE,
+  THROW_SETTLE_MS,
+  cardFlightPlan,
   flightDone,
   makeObjectFlight,
   objectFacing,
+  type CardFlightPlan,
   type ObjectFlight,
 } from './throw-fx.ts';
+// ★ 機器工人（9）的**原地**建屋动效（Q-TOOL-6）—— 与上面那套投掷动效**不是一回事**：
+//   大锤是整块 440×440 的 FLIC 直接盖在棋盘左上角，不动位置、不进绘制槽。
+import {
+  beginBuildFx,
+  buildClip,
+  buildFxBitmap,
+  BUILD_FX_ARCHIVE,
+  BUILD_TOOL_ID,
+  reachedMaxLandLevel,
+  stepBuildFx,
+  type BuildClipName,
+  type BuildFx,
+} from './build-fx.ts';
 import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 // ★ 「取消」那一拍的梯子 —— ESC 与右键**共用同一份**（原版就是这么干的：
@@ -1179,6 +1200,13 @@ function holdForActorWalk(reschedule: () => void): boolean {
   //   `place_object → animate_object → 音效` 是**阻塞**的（VA 0x00446bf4 起），
   //   不等就会出现「物件还在飞，下一次 dispatch 已经把画面翻页了」。
   if (objectFlight !== null) {
+    reschedule();
+    return true;
+  }
+  // ★ 建屋影片（機器工人）同理，而且原版这一段的阻塞更长
+  //   （大锤 3876 ms + 满级 2772 ms，`fcn_0045144f` 是**同步**播放的）——
+  //   不等就会出现「影片还在放，AI 已经把下一条 action 派完了」。
+  if (buildFx !== null || pendingBuildFx !== null) {
     reschedule();
     return true;
   }
@@ -2764,6 +2792,13 @@ function applyAction(action: Action): void {
     // ★ 放置類道具（路障/地雷/定時炸彈）真正落地了 → 起播投掷动效 + 落地音。
     //   纯表现，放在这里是因为**联机广播与 AI 也走同一条路**（`dispatch` 的口）。
     if (action.type === 'useTool') startObjectFlight(before, action);
+    // ★ 機器工人（9）原地建屋 → 大锤影片（+ 盖到 5 级时接 `0x20b`）。
+    //   同一条路，故联机广播与 AI 一样有这一段（原版也不分人机）。
+    if (action.type === 'useTool') startBuildFx(before, action);
+    // ★ 卡片 / 請神符的飞行动效（Q-TOOL-5）—— 原版那 23 个 `animate_object`
+    //   调用点。**是否真的播由 exe 的 `who_plays == 1` 闸门定**（纯人类不播，
+    //   见 `throw-fx.ts` 的 `CARD_FLIGHT_SITES`），所以电脑出牌这一条才是主路。
+    if (action.type === 'useCard') startCardFlight(before, action);
     // 走子补间（真人 / 联机两条来源都在这一条路上）
     tweenStepIfMoved(action, before);
   }
@@ -2953,6 +2988,10 @@ function scheduleAi(): void {
     const walker = action.type === 'step' ? state.currentPlayer : null;
     state = reduce(state, action, topo);
     if (walker !== null && state !== before) startStepTween(walker);
+    // ★ 卡片飞行动效（Q-TOOL-5）：电脑这一步是**绕开 `applyAction` 直路**的
+    //   （它自己 `reduce`），而原版那 23 个调用点里 20 个恰好**只在非人类时播**
+    //   —— 不在这里补一句，这个动效在单机里就一次都看不见。
+    if (state !== before && action.type === 'useCard') startCardFlight(before, action);
     if (state === before) {
       log(`⚠ AI 在 ${before.phase} 给出无效 action ${action.type}，已停手`);
       aiAutoPlay = false;
@@ -3768,7 +3807,15 @@ function startObjectFlight(
   const a = worldToScreen(from.x, from.y, camera, vp);
   const b = worldToScreen(to.x, to.y, camera, vp);
   const id = PLACE_TOOL_SOUND.get(action.toolId) ?? 0;
-  if (a === null || b === null || (a.x === b.x && a.y === b.y)) {
+  const started = beginObjectFlight({
+    objectIndex: slot,
+    type: objectType,
+    facing: objectFacing(to, map.nodes, directionOf),
+    from: a,
+    to: b,
+    settleMs: THROW_SETTLE_MS,
+  });
+  if (!started) {
     // @source VA 0x0040e6f2：`fcn_00409a23` 换算后两轴都为 0（起点就是落点，
     //   例如把路障放在自己脚下）→ `test edx,edx / jne` + `test ecx,ecx / je`
     //   直接 `loc_0040ea5a` 返回 —— **一帧都不画**，连那 100 ms 也不停，
@@ -3776,18 +3823,290 @@ function startObjectFlight(
     if (id > 0) sound.play('Effect.mkf', id);
     return;
   }
+  objectFlightSound = id;
+}
+
+/**
+ * 起播一条投掷/飞行 —— 两端点在**开播前**换算成屏幕坐标（原版 `fcn_00409a23`
+ * 只做这一次），之后每帧都在屏幕空间线性累加，镜头中途动也不改端点。
+ *
+ * 返回 `false` = 这一条**一帧都不播**：任一端换算不出屏幕坐标，或两点重合
+ * （@source VA 0x0040e6f2 的 `test edx,edx / jne` + `test ecx,ecx / je`）。
+ * 那时调用方自己收尾（放置類道具是**接着就放落地音**）。
+ */
+function beginObjectFlight(args: {
+  objectIndex: number;
+  type: number;
+  facing: number;
+  image?: number;
+  from: { x: number; y: number } | null;
+  to: { x: number; y: number } | null;
+  settleMs?: number;
+}): boolean {
+  const { from, to } = args;
+  if (from === null || to === null) return false;
+  if (from.x === to.x && from.y === to.y) return false;
   // 上一条还没播完就被顶掉（连着的两次使用）：先把它的音放掉，别吞掉
   if (objectFlight !== null) finishObjectFlight();
   objectFlight = makeObjectFlight({
-    objectIndex: slot,
-    type: objectType,
-    facing: objectFacing(to, map.nodes, directionOf),
+    objectIndex: args.objectIndex,
+    type: args.type,
+    facing: args.facing,
+    ...(args.image === undefined ? {} : { image: args.image }),
+    from,
+    to,
+    start: performance.now(),
+    ...(args.settleMs === undefined ? {} : { settleMs: args.settleMs }),
+  });
+  objectFlightSound = 0;
+  requestRender();
+  return true;
+}
+
+// ============================================================
+//  ★ Q-TOOL-5 ①：卡片 / 請神符 的飞行 —— 另外 23 个 `animate_object` 调用点
+// ============================================================
+
+/**
+ * 一次 `useCard` **真的生效了** → 该起就起那段「卡片（或神明）从 A 飞到 B」。
+ *
+ * 规格与 23 个调用点逐条的 VA 见 `throw-fx.ts` 的 `CARD_FLIGHT_SITES`。
+ * 三条要点：
+ *
+ * 1. **飞的是卡片**（22 个点）：原版 `push 0` 当 arg1 ⇒ `animate_object` 走
+ *    `handle == 0` 那一支，画 `Data.mkf` **415**（种类 20 那套图，只有 1 张）
+ *    的**第 0 帧**；棋盘上没有对应物件可藏（`objectIndex = -1`）。
+ * 2. **請神符**（VA 0x00444efa）例外：飞的是**神明自己**那套图，
+ *    方向是**从神明所在的格飞向出牌者**（与原版其余各点反向），arg6 = 0；
+ *    飞行期间那件神明要从棋盘上藏掉（原版 `mov word [objects_info[i]+2], 0`）。
+ * 3. **闸门**：22 个卡片点里 20 个在出牌者 `who_plays == 1`（纯人类）时整段跳过
+ *    —— 这是 exe 的实际行为（同一条函数开头那个字段的另一个用法把 1 钉成人类），
+ *    照抄。故本动效在**电脑出牌**（或被托管）时才看得见。
+ */
+function startCardFlight(
+  before: GameState,
+  action: { type: 'useCard'; cardId: number; target?: CardTarget },
+): void {
+  const me = before.players[before.currentPlayer];
+  if (me === undefined) return;
+  const here = map.nodes[me.nodeId - 1];
+  if (here === undefined) return;
+
+  const plan: CardFlightPlan | null = cardFlightPlan({
+    cardId: action.cardId,
+    whoPlays: me.whoPlays,
+    target: action.target ?? { kind: 'none' },
+    actor: { x: here.x, y: here.y },
+    anchor: {
+      player: (index) => {
+        const p = before.players[index];
+        if (p === undefined) return null;
+        const n = map.nodes[p.nodeId - 1];
+        return n === undefined ? null : { x: n.x, y: n.y };
+      },
+      land: (entityId) => {
+        const l = map.lands.find((x) => x.id === entityId);
+        return l === undefined ? null : { x: l.x, y: l.y };
+      },
+      facility: (facilityId) => {
+        const f = map.facilities.find((x) => x.id === facilityId);
+        return f === undefined ? null : { x: f.x, y: f.y };
+      },
+      object: (objectIndex) => {
+        // ★ 起点取**飞行前**的记录（`before`）：原版先算终点再把它从图上摘掉
+        const o = before.objects[objectIndex - 1];
+        if (o === undefined || o.nodeId <= 0) return null;
+        const n = map.nodes[o.nodeId - 1];
+        if (n === undefined) return null;
+        return {
+          x: n.x,
+          y: n.y,
+          type: o.type,
+          // 原版读 `objects_info[i] + 1`（place_object 写入的朝向）；本引擎没这个字段，
+          // 按同一条规则当场推（与「放地上」那一路共用 `objectFacing`）
+          facing: objectFacing(n, map.nodes, directionOf),
+        };
+      },
+    },
+  });
+  if (plan === null) return;
+
+  const vp = { w: LAYOUT.board.w, h: LAYOUT.board.h };
+  const a = worldToScreen(plan.from.x, plan.from.y, camera, vp);
+  const b = worldToScreen(plan.to.x, plan.to.y, camera, vp);
+  if (plan.sprite.kind === 'card') {
+    beginObjectFlight({
+      objectIndex: CARD_FLIGHT_NO_OBJECT,
+      type: CARD_FLIGHT_TYPE,
+      facing: 0,
+      image: CARD_FLIGHT_IMAGE,
+      from: a,
+      to: b,
+      settleMs: plan.settleMs,
+    });
+    return;
+  }
+  beginObjectFlight({
+    objectIndex: plan.sprite.objectIndex - 1,
+    type: plan.sprite.type,
+    facing: plan.sprite.facing,
     from: a,
     to: b,
-    start: performance.now(),
+    settleMs: plan.settleMs,
   });
-  objectFlightSound = id;
+  // ★ 卡片飞行**没有**收尾音效：23 个调用点后面都没有 `play_sound_effect`
+  //   （`xref 0x4542ce` 在这 23 个点之后一条都没有）—— 与放置類道具不同。
+}
+
+// ============================================================
+//  機器工人（9）的原地建屋动效 —— Q-TOOL-6
+// ============================================================
+
+/**
+ * 正在播的**建屋动效** —— 纯表现，不进 `GameState`（C-DET-4）。
+ *
+ * ★ 原版 `rich4_use_tool_jiqigongren`（VA 0x00447295）的次序是
+ *   **先结算、后播片**：`fcn_0040b110` 把等级 +1（0x00447345）→ 播 `Data.mkf`
+ *   0x229 的大锤（68 帧 × 57 ms）→ 若刚好盖到 5 级（bit7）再接 0x20b
+ *   （66 帧 × 42 ms）→ 最后 `refresh_screen`。规格与逐条 VA 见 `build-fx.ts`。
+ */
+let buildFx: BuildFx | null = null;
+
+/**
+ * 「该播、但影片还没解好」的待播请求（`null` = 没有）——
+ * 原版 `read_mkf` 是**同步**的、解完才 `fcn_0045144f`；浏览器里解 68 帧要几百毫秒，
+ * 所以先挂在这里，`tickBuildFx` 一看到影片到货就起时间轴（音效也在那时才响）。
+ */
+let pendingBuildFx: { maxed: boolean } | null = null;
+
+/** 建屋影片缓存（按资源号）—— 440×440 × 68 帧很占显存，播完就 `close()` */
+const buildFlics = new Map<number, LoadedFlic | null>();
+const buildFlicPending = new Set<number>();
+
+/** 取一段建屋影片（没解过就先挂个异步，本帧返回 null）—— 与 `diceFlicNow` 同一套路 */
+function buildFlicNow(clip: BuildClipName): LoadedFlic | null {
+  const resource = buildClip(clip).resource;
+  const hit = buildFlics.get(resource);
+  if (hit !== undefined) return hit;
+  const cache = sprites;
+  if (cache !== null && !buildFlicPending.has(resource)) {
+    buildFlicPending.add(resource);
+    void cache.getFlic(BUILD_FX_ARCHIVE, resource).then((f) => {
+      buildFlics.set(resource, f);
+      buildFlicPending.delete(resource);
+      requestRender();
+    });
+  }
+  return null;
+}
+
+/** 放掉一段影片的位图（原版是一段一段 `read_mkf` → 播 → `libc_free`，不两段同时占着）*/
+function releaseBuildFlic(resource: number): void {
+  buildFlics.get(resource)?.close();
+  buildFlics.delete(resource);
+}
+
+/** 收摊：影片的位图全放掉（一段 440×440 × 60 多帧 ≈ 52 MB，留着太占显存）*/
+function releaseBuildFlics(): void {
+  for (const f of buildFlics.values()) f?.close();
+  buildFlics.clear();
+}
+
+/** 一段影片开播时放它那条音效 @source VA 0x00447350 `push 0x5b` / 0x0040b0f4 `push 0x5a` */
+function playBuildFxSound(clip: BuildClipName): void {
+  const id = buildClip(clip).sound;
+  if (id > 0) sound.play('Effect.mkf', id);
+}
+
+/**
+ * 一条 `useTool` 用的是機器工人（9）→ 起播建屋动效。
+ *
+ * ★ 只在**状态真的变了**之后调（`applyAction` 里 `state !== before` 那一支）：
+ *   原版是「选到目标就扣道具」，盖不动也照样播（0x004472fb 在 0x00447345 之前）；
+ *   本引擎的既定口径是「只在真正生效时才收走道具」，于是没生效就不播。
+ *   这条差异登记在 `docs/deviations/Q-TOOL-6.md`。
+ *
+ * 「要不要接 0x20b」只认**目标地块**刚好 4 → 5（`fcn_0040b110` 的 bit7）；
+ * 目標是設施时 bit7 不置位（0x0040b1f4），所以設施盖到满级只播大锤。
+ *
+ * ⚠️ 影片**一段一段解**（这里只解第一段；第二段等第一段播完再解）——
+ *   照原版 `read_mkf` → 播 → `libc_free` 的节奏，别把两段 100 MB 一起压在显存里。
+ *   首次用的时候解 68 帧要几百毫秒，所以**解完才起时间轴**（原版也是先
+ *   `read_mkf` 再 `fcn_0045144f`）—— 那之前挂在 `pendingBuildFx` 上，见 `tickBuildFx`。
+ */
+function startBuildFx(before: GameState, action: { type: 'useTool'; toolId: number; nodeId?: number }): void {
+  if (action.toolId !== BUILD_TOOL_ID) return;
+  const nodeId = action.nodeId ?? 0;
+  if (nodeId <= 0) return;
+  const node = map.nodes[nodeId - 1];
+  const landId = node === undefined ? null : housingIndexOf(node.type);
+  const maxed = landId !== null && reachedMaxLandLevel(before.landLevel, state.landLevel, landId);
+  // 上一条还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
+  if (buildFx !== null) {
+    buildFx = null;
+    releaseBuildFlics();
+  }
+  buildFlicNow('hammer');
+  pendingBuildFx = { maxed };
   requestRender();
+}
+
+/**
+ * 每帧推进建屋动效：
+ *   ① 影片还在解 → 解完才起时间轴（原版 `read_mkf` 在前、`fcn_0045144f` 在后）；
+ *   ② 两段都播完 → 收摊（放掉位图）。
+ *
+ * 挂在 `requestRender` 的 rAF 回调里，与走子补间 / 投掷动效同一个套路 ——
+ * 靠**时间轴**推进（`stepBuildFx` 只在到点时才翻片），不无条件续帧。
+ */
+function tickBuildFx(now: number): void {
+  // ── ① 待播：等第一段影片解好 ──
+  const pending = pendingBuildFx;
+  if (pending !== null) {
+    const res = buildClip('hammer').resource;
+    if (!buildFlics.has(res)) {
+      // 还在解（`buildFlicNow` 的 `.then` 会再 `requestRender`）；真取不到就整段放弃，
+      // 免得把 AI 的下一步永远卡在这里（没有素材时不播，只少一段动画）
+      if (buildFlicPending.has(res)) return;
+      pendingBuildFx = null;
+      return;
+    }
+    pendingBuildFx = null;
+    const flic = buildFlics.get(res) ?? null;
+    if (flic === null) return;
+    buildFx = beginBuildFx(performance.now(), pending.maxed);
+    playBuildFxSound('hammer');
+    requestRender();
+    return;
+  }
+  // ── ② 正在播 ──
+  const fx = buildFx;
+  if (fx === null) return;
+  const next = stepBuildFx(fx, now);
+  if (next === null) {
+    buildFx = null;
+    releaseBuildFlics();
+    requestRender();
+    return;
+  }
+  if (next.clip !== fx.clip) {
+    // 翻片：上一段播完就放掉（照原版 `libc_free` 的节奏），下一段这时才解
+    releaseBuildFlic(buildClip(fx.clip).resource);
+    playBuildFxSound(next.clip);
+    buildFlicNow(next.clip);
+  }
+  buildFx = next;
+  requestRender();
+}
+
+/** 这一刻该贴哪一帧（棋盘局部左上角）—— 没在播或影片没到货就是 null */
+function currentBuildFxBitmap(now: number): CanvasImageSource | null {
+  const fx = buildFx;
+  if (fx === null) return null;
+  return buildFxBitmap(fx, now, {
+    hammer: buildFlics.get(buildClip('hammer').resource) ?? null,
+    maxLevel: buildFlics.get(buildClip('maxLevel').resource) ?? null,
+  });
 }
 
 function requestRender(): void {
@@ -3812,6 +4131,8 @@ function requestRender(): void {
     // ★ 投掷动效（放置類道具）同理：没播完就再排一帧；播完那一下才放落地音
     //   （原版顺序：动画 → 收尾停 100 ms → 音效，见 `startObjectFlight`）
     if (screen === 'game') tickObjectFlight(performance.now());
+    // ★ 建屋动效（機器工人）同理：两段时间轴没走完就再排一帧，走完就放掉位图
+    if (screen === 'game') tickBuildFx(performance.now());
     if (screen === 'game') shopTick(performance.now());
     // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
     if (screen === 'game') bankTick(performance.now());
@@ -4107,6 +4428,9 @@ function drawGameStage(): void {
     // 放置類道具的投掷动效（纯表现，不进 state）—— 飞着的那一件由渲染器画在
     // 清单之上，同时把它从静态槽里藏掉（原版动画期间棋盘不重绘）
     objectFlight,
+    // 機器工人（9）的原地建屋影片（Q-TOOL-6）—— 两段 FLIC 合起来 440×440
+    // 盖在棋盘左上角，**不进绘制槽**、也没有自己的落点（落点是常数）。
+    buildFx: currentBuildFxBitmap(performance.now()),
   });
   const dlg = currentDialog();
   const me = state.players[state.currentPlayer];
@@ -6211,6 +6535,11 @@ function connectOnline(url: string, room: string, name: string): void {
           pickHover = null;
           hoverNode = null;
           diceFx.cancel();
+          // ★ 建屋影片也是「这一刻在播」的东西：本地状态已经重建，旧片子不该接着放
+          buildFx = null;
+          pendingBuildFx = null;
+          buildFlicPending.clear();
+          releaseBuildFlics();
           npcWalksDrawn = null;
           log(`⟳ 失步自愈：重放 ${r.actions.length} 條 action，本地狀態已重建（第 ${r.actions.length} 號）`);
           requestRender();

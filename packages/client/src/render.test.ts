@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   actorTokens,
+  attachedObjectTokens,
   actorWalkSteps,
   BoardRenderer,
   buildingArtItems,
@@ -43,9 +44,11 @@ import {
   makeGameState,
   makeLand,
   makeNode,
+  makePlayer,
   type GameState,
   type LandInfo,
   type MapNode,
+  type Player,
   type Rich4Map,
   type SpecialActor,
 } from '@rich4/core';
@@ -671,6 +674,112 @@ describe('★ 物件清单（`objectTokens`）—— 放置的三件道具必须
     // 开局 `INITIAL_PLACED_OBJECTS` 把这些摆在地图上，原版一样会画
     expect(objectTokens(withObjects([{ type: 1, nodeId: 1 }]), nodes, 0)[0]!.resource).toBe(396);
     expect(objectTokens(withObjects([{ type: 15, nodeId: 1 }]), nodes, 0)[0]!.resource).toBe(410);
+  });
+});
+
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ *  ★ Q-TOOL-5 ②：**附身于人**的物件 —— 原版画在主人身上（`test dh,dh / je`
+ *  的反面，VA 0x00408fa5 / 0x00408fad 起）：
+ *    落点 = 主人的实时像素坐标（+0x8/+0xa）+ 8 向偏移表，
+ *    图号 = 8 − 视角 + **主人**朝向，真正贴的帧 = 图号 + 4。
+ *  「放地上」那一路仍归 `objectTokens`（上一段），两条互斥。
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+describe('★ Q-TOOL-5 ②：附身物件的清单（`attachedObjectTokens`）—— 跟着主人跑', () => {
+  const obj = (type: number, nodeId: number, attached: number) => ({ type, nodeId, state: 0, attached });
+
+  /** 两个玩家 + 一张物件表；主人 = 玩家 0 */
+  const scene = (
+    owner: Partial<Player>,
+    objs: { type: number; nodeId: number; attached: number }[],
+    other: Partial<Player> = {},
+  ): GameState =>
+    makeGameState({
+      players: [
+        makePlayer({ index: 0, ...owner }),
+        makePlayer({ index: 1, ...other }),
+      ],
+      objects: objs.map((o) => ({ ...o, state: 0 })),
+    });
+
+  it('★ 请上身的神明（attached != 0）画在主人身上：图集与图号全照 exe', () => {
+    // 小財神 = 种类 1 → 396；attached = 2 ⇒ 主人是玩家 1
+    const tokens = attachedObjectTokens(scene({}, [obj(1, 1, 2)]), 0);
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0]).toMatchObject({
+      index: 0, type: 1, owner: 1, resource: 396, frame: 4, offsetX: -22, offsetY: -10,
+    });
+  });
+
+  it('★ 跟着主人走：落点一律取**主人的** nodeId，物件记录里的 nodeId 不参与', () => {
+    // 物件记录里的 nodeId 故意写成别处（附身时 core 会写主人的节点，但不靠它定位）
+    const s = scene({ nodeId: 3 }, [obj(5, 1, 1)]);
+    expect(attachedObjectTokens(s, 0)[0]!.ownerNodeId).toBe(3);
+    // 主人挪到 7 号格 → 附身的那件跟着挪
+    const moved = { ...s, players: [{ ...s.players[0]!, nodeId: 7 }, s.players[1]!] };
+    expect(attachedObjectTokens(moved, 0)[0]!.ownerNodeId).toBe(7);
+    // 而「放地上」那一份清单**不看** attached 的物件（两条互斥，不会画两遍）
+    expect(objectTokens(s, [makeNode({ id: 1 }), makeNode({ id: 3 }), makeNode({ id: 7 })], 0))
+      .toEqual([]);
+  });
+
+  it('★ 图号 = 8 − 视角 + 主人朝向；真正贴的帧再 +4（神明背对主人）', () => {
+    const s = scene({ direction: 0 }, [obj(5, 1, 1)]);
+    expect(attachedObjectTokens(s, 0)[0]!.frame).toBe(4);
+    expect(attachedObjectTokens(s, 1)[0]!.frame).toBe(3); // 8−1+0+4 = 11 & 7 = 3
+    expect(attachedObjectTokens(s, 7)[0]!.frame).toBe(5); // 8−7+0+4 = 5
+    // 主人的朝向也参与
+    const east = scene({ direction: 2 }, [obj(5, 1, 1)]);
+    expect(attachedObjectTokens(east, 0)[0]!.frame).toBe(6);
+  });
+
+  it('★ 偏移表随图号转：视角一转，神明换到主人另一侧', () => {
+    const s = scene({ direction: 0 }, [obj(5, 1, 1)]);
+    const at = (view: number) => {
+      const t = attachedObjectTokens(s, view)[0]!;
+      return { dx: t.offsetX, dy: t.offsetY };
+    };
+    expect(at(0)).toEqual({ dx: -22, dy: -10 }); // 图号 0
+    expect(at(2)).toEqual({ dx: -10, dy: 22 }); // 图号 6
+    expect(at(4)).toEqual({ dx: 22, dy: 10 }); // 图号 4
+  });
+
+  it('★ 主人住店/消失/坐牢/住院 → 整个不画（@source VA 0x00408fbd 的那个 dword）', () => {
+    const stall = (b: Partial<Player['blocking']>): GameState =>
+      scene({ blocking: { ...makePlayer().blocking, ...b } }, [obj(5, 1, 1)]);
+    expect(attachedObjectTokens(stall({}), 0)).toHaveLength(1);
+    expect(attachedObjectTokens(stall({ inHotel: 1 }), 0)).toEqual([]);
+    expect(attachedObjectTokens(stall({ disappearing: 2 }), 0)).toEqual([]);
+    expect(attachedObjectTokens(stall({ inPrison: 3 }), 0)).toEqual([]);
+    expect(attachedObjectTokens(stall({ inHospital: 4 }), 0)).toEqual([]);
+    // ★ 冬眠（+0x36）**不在**那一个 dword 里 ⇒ 照样画
+    expect(attachedObjectTokens(stall({ sleeping: 5 }), 0)).toHaveLength(1);
+  });
+
+  it('★ 定時炸彈(18) + 主人身上**还有**一个神 → 换外圈那张表（0x474991）', () => {
+    const inner = attachedObjectTokens(scene({ godInfo: 0 }, [obj(18, 1, 1)]), 0)[0]!;
+    expect({ dx: inner.offsetX, dy: inner.offsetY }).toEqual({ dx: -22, dy: -10 });
+    const outer = attachedObjectTokens(scene({ godInfo: 3 }, [obj(18, 1, 1)]), 0)[0]!;
+    expect({ dx: outer.offsetX, dy: outer.offsetY }).toEqual({ dx: -44, dy: -18 });
+    // 不是炸弹就一直是内圈
+    const god = attachedObjectTokens(scene({ godInfo: 3 }, [obj(5, 1, 1)]), 0)[0]!;
+    expect({ dx: god.offsetX, dy: god.offsetY }).toEqual({ dx: -22, dy: -10 });
+  });
+
+  it('正在飞的那一件要藏起来（請神符：原版先把它从地图上摘掉，VA 0x00444ea8）', () => {
+    const s = scene({}, [obj(5, 1, 1), obj(6, 2, 1)]);
+    expect(attachedObjectTokens(s, 0).map((t) => t.index)).toEqual([0, 1]);
+    expect(attachedObjectTokens(s, 0, 0).map((t) => t.index)).toEqual([1]);
+    expect(attachedObjectTokens(s, 0, 1).map((t) => t.index)).toEqual([0]);
+  });
+
+  it('attached == 0（放地上）/ 主人下标越界 / 种类不在表里 → 跳过，不抛', () => {
+    expect(attachedObjectTokens(scene({}, [obj(5, 1, 0)]), 0)).toEqual([]);
+    expect(attachedObjectTokens(scene({}, [obj(5, 1, 9)]), 0)).toEqual([]);
+    expect(attachedObjectTokens(scene({}, [obj(21, 1, 1)]), 0)).toEqual([]);
+    // 惡犬(11)/禮物(13)/寶箱(14)/路障(16) 原版也不附身，但表里只要有类型就照画
+    expect(attachedObjectTokens(scene({}, [obj(16, 1, 1)]), 0)[0]!.resource).toBe(411);
   });
 });
 

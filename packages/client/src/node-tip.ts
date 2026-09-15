@@ -394,7 +394,24 @@ export const FACILITY_TYPE_NAMES: readonly string[] = [
 /** 等级名 @source 表 0x475164（下标 = `facility/land + 0x1a`） */
 export const LEVEL_NAMES: readonly string[] = ['０級', '一級', '二級', '三級', '四級', '五級'];
 
-/** 研究所开发出来的东西 @source 表 0x47ff1a（步长 8，取前 6 项） */
+/**
+ * 研究所「開發出来的東西」的名字 —— 表 **0x47ff1a**，6 项。
+ *
+ * ★★ 这张表**不是一个独立的名字表**，而是 `_tool_table`（0x47fee2）**从第 8 件
+ *   道具起**那 6 行（每行 8 字节 = `{char *name; uint8 init; uint8 price; uint8 f6; uint8 f7}`）：
+ *   ```asm
+ *   00417ad3  mov al, byte [edi + 0x1d]                 ; 項目 1..5
+ *   00417ad8  mov ebx, dword [eax*8 + 0x47ff1a]         ; ★ _tool_table + 56 = 8×7
+ *   0041ce18  mov al, byte [ebx + 0x1d] / add eax, 8    ; 发道具 = 項目 + 8
+ *   ```
+ *   `0x47fee2 + 56 = 0x47ff1a` ⇒ 下标 `i` 指向的是**道具 `i + 8`**，
+ *   所以这 6 个名字**恒等于** `TOOLS[7..12]`（道具 8..13）。
+ *   第二列不是指针，是 `{init_amount, price, f6, f7}` 那 4 个字节
+ *   （实测 遙控骰子那行 = `0x00011e0a` = `{10, 30, 1, 0}`，与 `rich4_tool_table.c` 逐字对上）。
+ *
+ * ⚠️ 名字与 `@rich4/data` 的 `TOOLS` 必须一致 —— `node-tip.test.ts` 有一条断言钉住，
+ *   免得两边各写一份漂移。
+ */
 export const FACILITY_DEV_NAMES: readonly string[] = [
   '遙控骰子', '機器工人', '時光機', '傳送機', '工程車', '核子飛彈',
 ];
@@ -475,14 +492,19 @@ export function tipLines(map: Rich4Map, state: GameState, inst: TipInstance): Ti
     case 'facility': {
       const f = map.facilities[inst.id - 1];
       if (f === undefined) return [];
-      const owner = f.owner;
+      // ★ 原版读的是**运行时那条設施记录**（`blands`，地图数据被就地改写）。
+      //   本引擎拆成「地图模板 + `state.facility*`」，故一律以 state 为准、
+      //   模板兜底（与 `board-screen.ts` 的 `state.facilityLevel[e.index] ?? f.level`
+      //   同一口径）。⚠️ 这是画出研究所第三行的**前提**：設施种类是开局后盖出来的，
+      //   地图模板里 `type` 恒为 0、`level` 恒为 0，照模板读永远落在「空  地」那支。
+      const owner = state.facilityOwner[inst.id] ?? f.owner;
       if (owner !== 0) add(tipPlayerName(state, owner - 1), 0);
-      const level = f.level;
+      const level = state.facilityLevel[inst.id] ?? f.level;
       if (level === 0) {
         add('空  地', TIP_LINE);
         return out;
       }
-      const type = f.type;
+      const type = state.facilityType[inst.id] ?? f.type;
       if (type > 4) return out;
       const name = FACILITY_TYPE_NAMES[type] ?? '';
       if (type === 0) {
@@ -497,8 +519,21 @@ export function tipLines(map: Rich4Map, state: GameState, inst: TipInstance): Ti
       } else {
         add(name, TIP_LINE_TIGHT);
         add(LEVEL_NAMES[level] ?? '', TIP_LINE_TIGHT * 2);
-        // ⚠️ 研究所「开发出来的东西」那一行要靠 `facility + 0x1e`/`+0x1d` 两个字节，
-        //    本引擎的 `FacilityInfo` 没收 —— 见 docs/deviations/Q-HOVER-1.md
+        // ★ 研究所第三行「開發出来的東西」—— 只有 `+0x1e`（还有几天）非 0 才画：
+        //   ```asm
+        //   00417ac2  cmp byte [edi + 0x1e], 0
+        //   00417ac6  je  0x417bfe                 ; 没在研发 → 只两行
+        //   00417ace  add ebx, 0x12                ; 第三行
+        //   00417ad5  mov al, byte [edi + 0x1d]    ; 项目下标
+        //   00417ad8  mov ebx, dword [eax*8 + 0x47ff1a]   ; ★ 名字表（步长 8）
+        //   00417adf  jmp 0x4179d9                 ; 当普通字符串画（没有格式串）
+        //   ```
+        //   ⚠️ 原版**不检查下标范围**（表只有 6 项 0..5），越界会读表外；本引擎给空串。
+        const days = state.facilityResearchDays[inst.id] ?? f.researchDays ?? 0;
+        if (days !== 0) {
+          const project = state.facilityResearchProject[inst.id] ?? f.researchProject ?? 0;
+          add(FACILITY_DEV_NAMES[project] ?? '', TIP_LINE_TIGHT * 3);
+        }
       }
       return out;
     }

@@ -49,8 +49,32 @@
  * ⚠️ 「動畫過程」设定关掉时这一段播不播**没查到**：`animate_object` 本身没有任何
  *   开关检查（整支函数读过），调用点也没有。故本模块不设闸门，照 exe 恒播。
  *   登记在 `docs/deviations/Q-TOOL-1.md`。
+ *
+ * ── Q-TOOL-5 追加：另外 23 个调用点（卡片 / 請神符）────────────────────────
+ *
+ * 全 exe 一共 **26** 个 `animate_object` 调用点：3 个是放置類道具（上面那套），
+ * 另外 **23** 个全在卡片函数里（0x00442xxx..0x004459xx）+ 1 个在請神符里。
+ * 它们有**两种形状**：
+ *
+ * 1. **卡片飞行**（22 个点）：`push 0` 当 arg1（handle = 0）——
+ *    `_rich4_animate_object` 的 0x0040e6b9 那一支就取 `[0x49697c]`（物件图集表
+ *    下标 19 = **物件种类 20** → `Data.mkf` **415**）并 `xor ebp, ebp`（**恒第 0 帧**）。
+ *    415 实测只有 1 张 20×26 图（一张卡片）。
+ * 2. **神明飞回主人**（請神符 23，VA 0x00444efa）：arg1 = 神明的 handle，
+ *    起点是**神明所在的格**、终点是**出牌者**（与卡片**反向**），arg6 = **0**。
+ *
+ * ★ 卡片那 22 个点前面**几乎都**有一条闸门（唯一的例外是天使卡作用于地块那一个，
+ *   VA 0x0044360f，见下面的表）：
+ * ```asm
+ * imul eax, [0x49910c], 0x68
+ * cmp  byte [eax + 0x496b7d], 1     ; who_plays == 1（纯人类）
+ * je   跳过整段                        ; ★ 人类出牌不播；电脑（或被托管）才播
+ * ```
+ *   同一条函数开头就是这个字段的另一个用法（`cmp …,1 / jne AI 选目标`），
+ *   所以 1 = 人类是**两端互证**的，不是猜的。
  */
 
+import { WHO_PLAYS_HUMAN, type CardTarget } from '@rich4/core';
 import { screenDirection } from './assets.ts';
 
 /** 一个屏幕坐标点（棋盘局部像素） */
@@ -109,9 +133,13 @@ export function throwFrameAt(
   };
 }
 
-/** 这条动效总共要播多久（毫秒）= 帧数 × 24 + 100 收尾 */
-export function throwTotalMs(frames: number): number {
-  return Math.max(1, frames) * THROW_FRAME_MS + THROW_SETTLE_MS;
+/** 这条动效总共要播多久（毫秒）= 帧数 × 24 + 收尾停顿
+ *
+ * 收尾停顿缺省 100 ms（三个放置類道具），但**請神符是 0**
+ * （VA 0x00444ebe `push 0` 当 arg6）—— 见 `makeObjectFlight` 的 `settleMs`。
+ */
+export function throwTotalMs(frames: number, settleMs: number = THROW_SETTLE_MS): number {
+  return Math.max(1, frames) * THROW_FRAME_MS + settleMs;
 }
 
 // ============================================================
@@ -223,20 +251,35 @@ export function objectFacing(
  *   （VA 0x0040e6c4 起），之后每帧都在屏幕空间线性累加 —— 镜头中途动也不改端点。
  */
 export interface ObjectFlight {
-  /** 飞的那一件在 `state.objects` 里的下标（静态层要把它藏起来，别画两遍） */
+  /**
+   * 飞的那一件在 `state.objects` 里的下标（静态层要把它藏起来，别画两遍）。
+   * ★ **`-1` = 棋盘上没有这一件**（卡片飞行：原版 arg1 = 0，物件表里没有对应项）。
+   */
   objectIndex: number;
-  /** 物件种类（16 路障 / 17 地雷 / 18 定時炸彈）→ 查图集 */
+  /** 物件种类（16 路障 / 17 地雷 / 18 定時炸彈 / 20 卡片 / 神明 1..15）→ 查图集 */
   type: number;
-  /** 物件朝向（见 `objectFacing`）→ 决定画哪一张 */
+  /** 物件朝向（见 `objectFacing`）→ 决定画哪一张（`image` 给了就不用它） */
   facing: number;
-  /** 屏幕起点 = 角色位置 */
+  /**
+   * 图号。**缺省 = 按 `8 − 视角 + 朝向` 现算**（放地上的物件那套）。
+   *
+   * ★ handle == 0（卡片）那一支恒为 **0**：`xor ebp, ebp` @source VA 0x0040e6b9，
+   *   而卡片图集只有 1 张图，按角度算会取到不存在的图号（画不出来）。
+   */
+  image?: number;
+  /** 屏幕起点 */
   from: ScreenPoint;
-  /** 屏幕终点 = 目标格 */
+  /** 屏幕终点 */
   to: ScreenPoint;
   /** 帧数 = `throwFrameCount(Δx, Δy)` */
   frames: number;
   /** 起播时刻（`performance.now()`） */
   start: number;
+  /**
+   * 收尾停顿毫秒（`animate_object` 的 arg6）。缺省 `THROW_SETTLE_MS` = 100。
+   * @source 請神符 VA 0x00444ebe 是 `push 0` ⇒ 0；三个放置類道具是 `push 0x64`。
+   */
+  settleMs?: number;
 }
 
 /** 造一条投掷 —— 帧数在这里按 exe 的公式定死一次 */
@@ -244,9 +287,11 @@ export function makeObjectFlight(args: {
   objectIndex: number;
   type: number;
   facing: number;
+  image?: number;
   from: ScreenPoint;
   to: ScreenPoint;
   start: number;
+  settleMs?: number;
 }): ObjectFlight {
   return { ...args, frames: throwFrameCount(args.to.x - args.from.x, args.to.y - args.from.y) };
 }
@@ -266,10 +311,387 @@ export function flightPosAt(f: ObjectFlight, now: number): ScreenPoint | null {
 
 /** 这条投掷连收尾停顿一起播完了吗（播完才放落地音、才让静态那件露出来） */
 export function flightDone(f: ObjectFlight, now: number): boolean {
-  return now - f.start >= throwTotalMs(f.frames);
+  return now - f.start >= throwTotalMs(f.frames, f.settleMs);
 }
 
 /** 这一帧还没画完（还要再排一帧）*/
 export function flightRunning(f: ObjectFlight, now: number): boolean {
   return !flightDone(f, now);
+}
+
+// ============================================================
+//  ★ Q-TOOL-5 ①：卡片 / 請神符 的飞行 —— 另外 23 个 `animate_object` 调用点
+// ============================================================
+
+/**
+ * `handle == 0` 那一支用的**物件种类** = 20。
+ *
+ * @source `_rich4_animate_object` VA 0x0040e6b9（`test edx,edx / je` 的目标）：
+ * ```asm
+ * loc_0040e6b9:
+ *   xor ebp, ebp                             ; ★ 帧号恒 0
+ *   mov edi, dword [0x49697c]                ; ★ 图集 = 物件图集表下标 19
+ *   lea ebx, [edi + 0xc]                     ; 取第 0 帧的 graph_st
+ * ```
+ * `0x49697c = 0x49692c + 20*4` ⇒ **种类 20**；`_rich4_load_map` 读的是
+ * `0x18c + (20−1)` = **415**，实测只有 1 张 20×26 的 SPR（一张卡片）。
+ * 这也是全 exe **唯一**一处引用 `0x49697c`（`xref 0x49697c` 只命中 0x0040e6bb）。
+ */
+export const CARD_FLIGHT_TYPE = 20;
+
+/** `handle == 0` 那一支恒画第 0 帧 @source VA 0x0040e6b9 `xor ebp, ebp` */
+export const CARD_FLIGHT_IMAGE = 0;
+
+/**
+ * 卡片飞行用的 `ObjectFlight.objectIndex` —— 棋盘上没有这一件可藏
+ * （静态层按 `hidden` 逐下标比，`-1` 永不命中）。
+ */
+export const CARD_FLIGHT_NO_OBJECT = -1;
+
+/**
+ * 出牌者是**纯人类**时，原版整段跳过飞行动效。
+ *
+ * @source 22 个卡片调用点前面的同一形状（逐点见表 `CARD_FLIGHT_SITES`）：
+ * ```asm
+ * imul eax, dword [0x49910c], 0x68
+ * cmp  byte [eax + 0x496b7d], 1     ; player_info +0x15 = who_plays
+ * je   跳过整段
+ * ```
+ * ★ 同一条函数开头就是这个字段的另一个用法（`cmp …,1 / jne AI 选目标`，
+ *   例如拆除卡 VA 0x00443b1f、路障 VA 0x00446bd9），故 **1 = 人类** 是两端互证。
+ * ★ 比的是**整字节**：人类 + 被托管（`0x05`）**不**等于 1，所以照播 —— 照抄。
+ */
+export function flightAllowed(whoPlays: number): boolean {
+  return whoPlays !== WHO_PLAYS_HUMAN;
+}
+
+/** 一段飞行要飞的目标种类 —— 就是 `CardTarget.kind` 里那四种有坐标的 */
+export type CardFlightTargetKind = 'player' | 'entity' | 'facility' | 'object';
+
+/**
+ * 一个 `animate_object` 调用点的取证记录。
+ *
+ * 表里 **25 行 / 23 个不同的 VA**：怪獸卡(11) 与漲價卡(27) 各只有**一个**调用点，
+ * 却同时服务「地块」与「設施」两种目标（两条分支汇到同一段动画），故各占两行。
+ */
+export interface CardFlightSite {
+  /** 卡片编号（1 基，与 `CARDS` 同序） */
+  readonly cardId: number;
+  /** 这一行服务的 `CardTarget.kind` */
+  readonly target: CardFlightTargetKind;
+  /**
+   * `who_plays == 1`（纯人类）时**整段不播**吗。
+   * ★ 只有两个点是 `false`：天使卡(9)作用于**地块**那一支（VA 0x0044360f）
+   *   与請神符(23)（VA 0x00444efa）—— 那两处的 0x496b7d 比较只用来选目标，不闸动画。
+   */
+  readonly humanSkips: boolean;
+  /** 收尾停顿毫秒（arg6）：`push 0x64` → 100，請神符 `push 0` → 0 */
+  readonly settleMs: number;
+  /** `true` = **从目标飞向出牌者**（只有請神符） */
+  readonly reversed: boolean;
+  /**
+   * 本引擎能不能走到这一支。
+   * `false` 的三行是 core 不接受那种目标（見 `docs/deviations/Q-TOOL-5.md`）：
+   * 換地卡作用于設施、換屋卡作用于設施、拆除卡作用于地圖物件。
+   */
+  readonly supported: boolean;
+  /** 调用点 VA @source */
+  readonly va: number;
+}
+
+/**
+ * 23 个调用点逐条登记（顺序 = 卡片编号，同卡按目标种类）。
+ * 每一行的 `va` 都能用 `python3 tools/disasm.py callers 0x40e669` 复核。
+ */
+export const CARD_FLIGHT_SITES: readonly CardFlightSite[] = [
+  // 均貧卡：把钱从最富的人身上搬到最穷的人 → 卡片飞到**目标玩家**
+  { cardId: 2, target: 'player', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x004422d6 },
+  // 換地卡：换的是「脚下的那块 / 对方那块」，两支互斥
+  { cardId: 4, target: 'entity', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x004427b3 },
+  { cardId: 4, target: 'facility', humanSkips: true, settleMs: 100, reversed: false, supported: false, va: 0x00442a01 },
+  // 換屋卡：同上（脚下的房子 / 对方那栋）—— 本引擎这张卡只认住宅/连锁店
+  { cardId: 5, target: 'entity', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00442c81 },
+  { cardId: 5, target: 'facility', humanSkips: true, settleMs: 100, reversed: false, supported: false, va: 0x00442e9c },
+  // 轉向卡：卡片飞到目标玩家身上（对四大惡人那一支原版把 actor 号当玩家下标算坐标，见 deviation）
+  { cardId: 6, target: 'player', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x0044301c },
+  // 天使卡：地块那一支**没有** who_plays 闸门（原版的不对称，照抄）
+  { cardId: 9, target: 'entity', humanSkips: false, settleMs: 100, reversed: false, supported: true, va: 0x0044360f },
+  { cardId: 9, target: 'facility', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x0044369f },
+  // 惡魔卡：地块（同區批量）/ 設施（单个）
+  { cardId: 10, target: 'entity', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x0044383b },
+  { cardId: 10, target: 'facility', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00443905 },
+  // 怪獸卡：两条分支汇到**同一段**动画（ebx 是地块或設施记录）
+  { cardId: 11, target: 'entity', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00443a6a },
+  { cardId: 11, target: 'facility', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00443a6a },
+  // 拆除卡：地块（同區）/ 設施（单个）/ **地圖物件**（第三个点，本引擎这张卡不收 object 目标）
+  { cardId: 12, target: 'entity', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00443bf1 },
+  { cardId: 12, target: 'facility', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00443cbd },
+  { cardId: 12, target: 'object', humanSkips: true, settleMs: 100, reversed: false, supported: false, va: 0x00443d8f },
+  { cardId: 13, target: 'player', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00443ef7 },
+  { cardId: 14, target: 'player', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00444050 },
+  { cardId: 16, target: 'player', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x004442aa },
+  { cardId: 17, target: 'player', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00444591 },
+  // ★ 請神符：**神明**从它所在的格飞向出牌者，飞完才附身；arg6 = 0；没有 who_plays 闸门
+  { cardId: 23, target: 'object', humanSkips: false, settleMs: 0, reversed: true, supported: true, va: 0x00444efa },
+  { cardId: 26, target: 'player', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x004452c6 },
+  // 漲價卡：地块（同區批量）与設施（单个）汇到同一段动画
+  { cardId: 27, target: 'entity', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00445576 },
+  { cardId: 27, target: 'facility', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x00445576 },
+  { cardId: 29, target: 'player', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x004457e0 },
+  { cardId: 30, target: 'player', humanSkips: true, settleMs: 100, reversed: false, supported: true, va: 0x004459af },
+];
+
+/** 一个世界坐标点（地图像素，与 `land.x/y`、`node.x/y` 同一套） */
+export interface FlightAnchor {
+  x: number;
+  y: number;
+}
+
+/**
+ * 目标位置的解析器 —— 由调用方（`main.ts`）从 `state` / `map` 里查。
+ *
+ * C-ARC-2：本模块不碰规则，也不认识 `map`；「目标是谁」到这里已经定完了。
+ */
+export interface CardFlightAnchors {
+  player(index: number): FlightAnchor | null;
+  land(entityId: number): FlightAnchor | null;
+  facility(facilityId: number): FlightAnchor | null;
+  /** 地圖物件：除了位置还要**种类与朝向**（請神符飞的是物件自己那套图） */
+  object(objectIndex: number): (FlightAnchor & { type: number; facing: number }) | null;
+}
+
+/** 一次出牌该起的那段飞行动效（纯规格；屏幕换算在调用方） */
+export interface CardFlightPlan {
+  /** 飞的是**卡片**（资源 415、恒第 0 帧）还是棋盘上那件**物件**（請神符） */
+  sprite: { kind: 'card' } | { kind: 'object'; objectIndex: number; type: number; facing: number };
+  /** 世界坐标起点 */
+  from: FlightAnchor;
+  /** 世界坐标终点 */
+  to: FlightAnchor;
+  /** 收尾停顿毫秒（arg6） */
+  settleMs: number;
+  /** 飞行期间要从静态层藏起来的那一件（卡片 = null） */
+  hideObjectIndex: number | null;
+}
+
+export interface CardFlightQuery {
+  cardId: number;
+  /** 出牌者 `player_info +0x15` 原字节（人类 == 1） */
+  whoPlays: number;
+  target: CardTarget;
+  /** 出牌者所在位置（原版读 `player + 0x8/+0xa`） */
+  actor: FlightAnchor;
+  anchor: CardFlightAnchors;
+}
+
+/** `CardTarget.kind` → 表里的目标种类；查不到（actor/stock/node/none）返回 null */
+export function cardFlightTargetKind(target: CardTarget): CardFlightTargetKind | null {
+  switch (target.kind) {
+    case 'player':
+      return 'player';
+    case 'entity':
+      return 'entity';
+    case 'facility':
+      return 'facility';
+    case 'object':
+      return 'object';
+    default:
+      return null;
+  }
+}
+
+/**
+ * 找出这次出牌对应的调用点 —— 没有（不需要动效 / 本引擎走不到）返回 null。
+ * 同卡同目标种类只会有一行。
+ */
+export function cardFlightSite(cardId: number, target: CardTarget): CardFlightSite | null {
+  const kind = cardFlightTargetKind(target);
+  if (kind === null) return null;
+  return CARD_FLIGHT_SITES.find((s) => s.cardId === cardId && s.target === kind) ?? null;
+}
+
+/**
+ * 这一次 `useCard` 该起哪段飞行动效 —— `null` = 不起。
+ *
+ * 判据**逐条照 exe**（每一步都指向 `CARD_FLIGHT_SITES` 里那一行的 VA）：
+ * 1. 目标种类得是四种有坐标的之一（actor/stock/node/none 原版也没有这一段）；
+ * 2. 该卡该目标种类得有调用点，且 `supported`；
+ * 3. `humanSkips && whoPlays == 1` → 不播（22 个点里的 20 个如此）；
+ * 4. 目标位置能查到（查不到 = 不在图上，不播）。
+ *
+ * ★ 两端点**完全相同**时不播 —— 这不是本函数的事：`_rich4_animate_object`
+ *   VA 0x0040e6f2 在换算成屏幕坐标后自己 `test/jne + test/je` 直接返回，
+ *   调用方（`main.ts`）照抄那一条。
+ */
+export function cardFlightPlan(q: CardFlightQuery): CardFlightPlan | null {
+  const site = cardFlightSite(q.cardId, q.target);
+  if (site === null || !site.supported) return null;
+  if (site.humanSkips && !flightAllowed(q.whoPlays)) return null;
+
+  let sprite: CardFlightPlan['sprite'] = { kind: 'card' };
+  let hideObjectIndex: number | null = null;
+  let target: FlightAnchor | null = null;
+
+  switch (q.target.kind) {
+    case 'player':
+      target = q.anchor.player(q.target.index);
+      break;
+    case 'entity':
+      target = q.anchor.land(q.target.entityId);
+      break;
+    case 'facility':
+      target = q.anchor.facility(q.target.facilityId);
+      break;
+    case 'object': {
+      const o = q.anchor.object(q.target.objectIndex);
+      if (o === null) break;
+      target = { x: o.x, y: o.y };
+      sprite = { kind: 'object', objectIndex: q.target.objectIndex, type: o.type, facing: o.facing };
+      // @source VA 0x00444ea8 `mov word [objects_info[i] + 2], 0` —— 飞行期间
+      //   神明先从地图上摘掉，飞完才写回并附身（VA 0x00444f02 / 0x00444f18）
+      hideObjectIndex = q.target.objectIndex - 1;
+      break;
+    }
+    default:
+      break;
+  }
+  if (target === null) return null;
+
+  return site.reversed
+    ? { sprite, from: target, to: q.actor, settleMs: site.settleMs, hideObjectIndex }
+    : { sprite, from: q.actor, to: target, settleMs: site.settleMs, hideObjectIndex };
+}
+
+// ============================================================
+//  ★ Q-TOOL-5 ②：**附身于人**的物件画在主人身上
+// ============================================================
+
+/**
+ * 定時炸彈的种类号。
+ * @source `cmp byte [objects_info[i]], 0x12`（VA 0x004090a9）
+ */
+export const OBJECT_TYPE_TIMEBOMB = 18;
+
+/**
+ * 附身物相对主人的**屏幕**偏移表（8 项，按图号取）。
+ *
+ * @source `fcn_0040829d` 的附身那一支 VA 0x00408c65（普通）：
+ * ```asm
+ * 00408c65  esi = [esp+0x54]                    ; ★ 图号（见 `attachedImageIndex`）
+ * 00408c69  eax = dword [esi*8 + 0x474951]      ; dy
+ * 00408c70  add [esp+0x30], eax                 ; 屏幕 Y += dy
+ * 00408c74  eax = dword [esi*8 + 0x474955]      ; dx
+ * 00408c7b  add [esp+0x3c], eax                 ; 屏幕 X += dx
+ * ```
+ * 基址 0x474951，**每项 8 字节**（`+0` = dy、`+4` = dx），8 项正好围成一圈
+ * （半径 22/10 像素 —— 神明站在主人**身侧**，不是正上方）。
+ */
+export const ATTACHED_OFFSETS: readonly { dy: number; dx: number }[] = [
+  { dy: -10, dx: -22 },
+  { dy: -22, dx: -10 },
+  { dy: -22, dx: 10 },
+  { dy: -10, dx: 22 },
+  { dy: 10, dx: 22 },
+  { dy: 22, dx: 10 },
+  { dy: 22, dx: -10 },
+  { dy: 10, dx: -22 },
+];
+
+/**
+ * 主人**已经有神明**时、且附身物是定時炸彈(18) 才用的那一圈 —— 半径放大到 44/18。
+ *
+ * @source VA 0x004090a9..0x004090dd：
+ * ```asm
+ * 004090a9  cmp byte [objects_info[i]], 0x12     ; ★ 种类 == 18 定時炸彈？
+ *           jne 0x408c65                        ;   不是 → 用上面那张表
+ * 004090ba  cmp byte [ownerBase + 0x496ba7], 0   ; ★ 主人 +0x3f = god_info
+ *           je  0x408c65                        ;   主人身上没神 → 还是上面那张表
+ * 004090cb  eax = dword [esi*8 + 0x474991]      ; 换这一张（+0x40 = 8 项之后）
+ * ```
+ * 即「主人身上已经有神 ⇒ 炸弹往外挪一圈，别把神挡了」。
+ */
+export const ATTACHED_OFFSETS_WITH_GOD: readonly { dy: number; dx: number }[] = [
+  { dy: -18, dx: -44 },
+  { dy: -44, dx: -18 },
+  { dy: -44, dx: 18 },
+  { dy: -18, dx: 44 },
+  { dy: 18, dx: 44 },
+  { dy: 44, dx: 18 },
+  { dy: 44, dx: -18 },
+  { dy: 18, dx: -44 },
+];
+
+/**
+ * 附身物的**图号** —— 用**主人**的朝向，不是物件自己的。
+ *
+ * @source VA 0x0040906e..0x00409088：
+ * ```asm
+ * mov dl, byte [ownerBase + 0x496b78]    ; ★ 主人 +0x10 = direction
+ * mov eax, 8 / sub eax, [0x499088]       ; 8 − 视角
+ * add eax, edx / and eax, 7              ; 图号 = 8 − 视角 + 主人朝向
+ * mov [esp+0x54], eax                    ; ← 同时也是偏移表的下标
+ * ```
+ */
+export function attachedImageIndex(ownerDirection: number, view: number): number {
+  return screenDirection(ownerDirection, view);
+}
+
+/**
+ * 真正贴上去的那一帧 = **图号 + 4**。
+ *
+ * @source VA 0x0040908c..0x004090a2：
+ * ```asm
+ * mov dl, byte [esp+0x54]   ; 图号
+ * add dl, 4
+ * and dl, 7
+ * mov byte [槽 + 0x48a853], dl   ; ★ 槽 +7 = 画的时候真正的帧号
+ * ```
+ * 而消费方 `fcn_00456770(surface, graphics, **[槽+7]**, x, y)`（VA 0x004098a0）
+ * 把它当帧号用 —— 所以**神明背对主人**（偏移那一圈它站在主人面朝的方向上）。
+ * 对照：放在地上的物件写的是 `+7 = 图号`（VA 0x00408ef2），两者正好差 4。
+ */
+export function attachedFrameIndex(image: number): number {
+  return (image + 4) & 7;
+}
+
+/**
+ * 附身物这一帧的偏移 —— 定時炸彈(18) 且主人身上已有神时用大圈。
+ *
+ * @param type      物件种类
+ * @param ownerGod  主人的 `godInfo`（**物件下标 + 1**，0 = 没有）
+ * @param image     `attachedImageIndex(主人朝向, 视角)`
+ */
+export function attachedOffset(
+  type: number,
+  ownerGod: number,
+  image: number,
+): { dy: number; dx: number } {
+  const table = type === OBJECT_TYPE_TIMEBOMB && ownerGod !== 0
+    ? ATTACHED_OFFSETS_WITH_GOD
+    : ATTACHED_OFFSETS;
+  return table[image & 7] ?? { dy: 0, dx: 0 };
+}
+
+/**
+ * 主人此刻**不在地图上**时整个不画。
+ *
+ * @source VA 0x00408fbd..0x00408fc4：
+ * ```asm
+ * 00408fb6  eax = (attached − 1) * 0x68          ; 主人记录
+ * 00408fbd  cmp dword [eax + 0x496b9a], 0        ; ★ 主人 +0x32 起的**一个 dword**
+ * 00408fc4  jne 跳过                              ;   住宿/消失/坐牢/住院 任一非 0 → 不画
+ * ```
+ * ★ 只比这**四个字节**（+0x32..+0x35），**不含** `days_sleeping`(+0x36) ——
+ *   所以冬眠中的人身上照样画着神明（与 `isBlocked` 不是同一条判据）。
+ */
+export function attachedOwnerVisible(blocking: {
+  inHotel: number;
+  disappearing: number;
+  inPrison: number;
+  inHospital: number;
+}): boolean {
+  return blocking.inHotel === 0
+    && blocking.disappearing === 0
+    && blocking.inPrison === 0
+    && blocking.inHospital === 0;
 }

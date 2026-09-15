@@ -16,8 +16,10 @@ import {
   makeNode,
   type Rich4Map,
 } from '@rich4/core';
+import { TOOLS } from '@rich4/data';
 import {
   drawTip,
+  FACILITY_DEV_NAMES,
   FACILITY_TYPE_NAMES,
   hitTipInstance,
   LAND_LEVEL_NAMES,
@@ -376,23 +378,151 @@ describe('文本拼法 @source fcn_00417559 的各分支', () => {
 
   it('★ 設施：旅館 = 類別 / 等級 / ×(費率×指數)；加油站 = ×1000；空地只一行', () => {
     const map = testMap();
-    const state = makeGameState({ priceIndex: 2 });
+    // ★ 設施的种类/等级/归属读的是 **state**（原版读的是运行时那条記錄，
+    //   地图模板只是兜底）—— 故这里像 `board-screen.test.ts` 一样显式给 state。
+    //   `newGame` 也是这么填的（`facilityFieldFromMap`，new-game.ts:397-399）。
+    const state = makeGameState({
+      priceIndex: 2,
+      facilityType: [0, 1], // 下标 = 設施 id（1 基）
+      facilityLevel: [0, 1],
+    });
     expect(tipLines(map, state, { kind: 'facility', id: 1 })).toEqual([
       { text: '旅  館', dy: TIP_LINE_TIGHT },
       { text: '一級', dy: TIP_LINE_TIGHT * 2 },
       { text: '×1,500', dy: TIP_LINE_TIGHT * 3 }, // rateByLevel[1]=750 ×2
     ]);
 
-    map.facilities[0]!.type = 3;
+    state.facilityType[1] = 3;
     expect(tipLines(map, state, { kind: 'facility', id: 1 })).toEqual([
       { text: '加油站', dy: TIP_LINE },
       { text: '×1,000', dy: TIP_LINE * 2 },
     ]);
 
-    map.facilities[0]!.level = 0;
+    state.facilityLevel[1] = 0;
     expect(tipLines(map, state, { kind: 'facility', id: 1 })).toEqual([
       { text: '空  地', dy: TIP_LINE },
     ]);
+  });
+
+  it('★ 設施：模板兜底 —— state 那一格没有时读地图记录（与 board-screen 同口径）', () => {
+    const map = testMap();
+    // state 的設施表是空的（缺项）→ 回退到地图模板的 type/level
+    const state = makeGameState({ priceIndex: 2, facilityType: [], facilityLevel: [], facilityOwner: [] });
+    expect(tipLines(map, state, { kind: 'facility', id: 1 })).toEqual([
+      { text: '旅  館', dy: TIP_LINE_TIGHT },
+      { text: '一級', dy: TIP_LINE_TIGHT * 2 },
+      { text: '×1,500', dy: TIP_LINE_TIGHT * 3 },
+    ]);
+  });
+
+  // ============================================================
+  //  研究所第三行（Q-HOVER-1 残留项 ① / Q-TOOL-6）
+  // ============================================================
+
+  it('★ 研究所：三行 = 類別 / 等級 / 開發中的東西 @source VA 0x00417a86', () => {
+    const map = testMap();
+    const state = makeGameState({
+      facilityType: [0, 4],
+      facilityLevel: [0, 3],
+      facilityResearchProject: [0, 3], // 3 → 表 0x47ff1a 第 3 项「傳送機」
+      facilityResearchDays: [0, 5], // 还有 5 天 → 画第三行
+    });
+    expect(tipLines(map, state, { kind: 'facility', id: 1 })).toEqual([
+      { text: '研究所', dy: TIP_LINE_TIGHT },
+      { text: '三級', dy: TIP_LINE_TIGHT * 2 },
+      { text: '傳送機', dy: TIP_LINE_TIGHT * 3 },
+    ]);
+  });
+
+  it('★ 研究所：`+0x1e` 为 0（没在研發）→ 只两行，第三行不画 @source VA 0x00417ac2', () => {
+    const map = testMap();
+    const state = makeGameState({
+      facilityType: [0, 4],
+      facilityLevel: [0, 5],
+      facilityResearchProject: [0, 5], // 就算项目还留着 5
+      facilityResearchDays: [0, 0], // ★ 但天数是 0
+    });
+    expect(tipLines(map, state, { kind: 'facility', id: 1 })).toEqual([
+      { text: '研究所', dy: TIP_LINE_TIGHT },
+      { text: '五級', dy: TIP_LINE_TIGHT * 2 },
+    ]);
+  });
+
+  it('★ 研究所：六项名字表逐项对（0..5 → 遙控骰子…核子飛彈）', () => {
+    const map = testMap();
+    const state = makeGameState({
+      facilityType: [0, 4],
+      facilityLevel: [0, 5],
+      facilityResearchDays: [0, 1],
+      facilityResearchProject: [0, 0],
+    });
+    for (const [project, name] of FACILITY_DEV_NAMES.entries()) {
+      state.facilityResearchProject[1] = project;
+      const lines = tipLines(map, state, { kind: 'facility', id: 1 });
+      expect(lines[2]).toEqual({ text: name, dy: TIP_LINE_TIGHT * 3 });
+    }
+    expect(FACILITY_DEV_NAMES).toEqual([
+      '遙控骰子', '機器工人', '時光機', '傳送機', '工程車', '核子飛彈',
+    ]);
+  });
+
+  it('★ 研究所：项目下标越界（原版没有边界检查）→ 本引擎给空串，不读表外', () => {
+    const map = testMap();
+    const state = makeGameState({
+      facilityType: [0, 4],
+      facilityLevel: [0, 5],
+      facilityResearchDays: [0, 1],
+      facilityResearchProject: [0, 6], // 表只有 0..5
+    });
+    const lines = tipLines(map, state, { kind: 'facility', id: 1 });
+    expect(lines[2]).toEqual({ text: '', dy: TIP_LINE_TIGHT * 3 });
+  });
+
+  it('★ 研究所：有主时业主名占第一行，三行整体下移', () => {
+    const map = testMap();
+    const state = makeGameState({
+      facilityType: [0, 4],
+      facilityLevel: [0, 2],
+      facilityOwner: [0, 1],
+      facilityResearchProject: [0, 2], // 2 → 「時光機」
+      facilityResearchDays: [0, 4],
+    });
+    expect(tipLines(map, state, { kind: 'facility', id: 1 })).toEqual([
+      { text: '約翰喬', dy: 0 },
+      { text: '研究所', dy: TIP_LINE_TIGHT },
+      { text: '二級', dy: TIP_LINE_TIGHT * 2 },
+      { text: '時光機', dy: TIP_LINE_TIGHT * 3 },
+    ]);
+  });
+
+  it('★ 研究所：state 缺项时用地图模板里的 +0x1d/+0x1e 兜底', () => {
+    const map = testMap();
+    map.facilities[0]!.type = 4;
+    map.facilities[0]!.level = 1;
+    map.facilities[0]!.researchProject = 1; // 1 → 「機器工人」
+    map.facilities[0]!.researchDays = 2;
+    const state = makeGameState({
+      facilityType: [],
+      facilityLevel: [],
+      facilityResearchProject: [],
+      facilityResearchDays: [],
+    });
+    expect(tipLines(map, state, { kind: 'facility', id: 1 })).toEqual([
+      { text: '研究所', dy: TIP_LINE_TIGHT },
+      { text: '一級', dy: TIP_LINE_TIGHT * 2 },
+      { text: '機器工人', dy: TIP_LINE_TIGHT * 3 },
+    ]);
+  });
+
+  it('★ 名字表就是 `_tool_table + 56` —— 恒等于道具 8..13 的名字', () => {
+    // @source VA 0x00417ad8 `mov ebx, dword [eax*8 + 0x47ff1a]`；
+    //   `_tool_table` = 0x47fee2、每项 8 字节 ⇒ 0x47fee2 + 8×7 = 0x47ff1a
+    //   ⇒ 下标 i 是**道具 i + 8**（@source VA 0x0041ce18 `add eax, 8`）。
+    expect(FACILITY_DEV_NAMES).toEqual([
+      '遙控骰子', '機器工人', '時光機', '傳送機', '工程車', '核子飛彈',
+    ]);
+    const ids = [8, 9, 10, 11, 12, 13];
+    expect(FACILITY_DEV_NAMES).toEqual(ids.map((id) => TOOLS.find((t) => t.id === id)?.name));
   });
 
   it('★ 玩家棋子 = 角色名（4..7 号是那四个人物）', () => {

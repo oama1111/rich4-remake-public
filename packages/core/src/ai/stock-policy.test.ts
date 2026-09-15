@@ -264,7 +264,7 @@ describe('★ 选股打分 @source 0x0042c075..0x0042c557', () => {
 //  賣股 @source 0x0042c79f
 // ============================================================
 
-import { SELL_RATIO, decideStockSell, lowestHistory, pickForSale, scoreStockForSale, sellScoreInput, type SellScoreInput } from './stock-policy.ts';
+import { SELL_GAIN_SHIFT, SELL_RATIO, decideStockSell, lowestHistory, pickForSale, scoreStockForSale, sellScoreInput, type SellScoreInput } from './stock-policy.ts';
 import { loanSellPressure, loanStillUncovered } from '../places/stock-market.ts';
 import { reduce } from '../state/reduce.ts';
 
@@ -301,11 +301,68 @@ describe('★ 賣出打分：無企業', () => {
     expect(scoreStockForSale(sellInput({ openPrice: 100, price: 90 }), me, 1, 10, 0, false, 5)).toBe(0);
   });
 
-  it('gain 那条：round(2·gain − 3)，成本价不动时是 −1', () => {
-    // gain = 1 → round(−1) = −1；其余都不命中
-    expect(scoreStockForSale(sellInput(), me, 1, 10, 0, false, 5)).toBe(-1);
-    // gain = 2 → +1；gain > 1.6 且波动 < 1 → +2
+  /*
+   * ★ 这一条**改了旧期望**（旧断言是 `.toBe(-1)`，见 Q-NUM-1.md 的 D-QNUM-5）。
+   *
+   * 旧期望建立在「判据阈值 = −2.0」的错读上。exe 是：
+   * ```asm
+   * 0042ce19  fld   dword [esp + 0xe4]        ; gain = 現價/成本（0x42cbc1 算出）
+   * 0042ce20  fcomp dword [0x4641f4]          ; ★ 0x4641f4 = f32 +2.0
+   * 0042ce29  jb    0x42ce5c                  ; gain < 2.0 → 跳过（C0=CF=1）
+   * 0042ce32  fadd  dword [0x4641f8]          ; 0x4641f8 = f32 −2.0（偏移量）
+   * 0042ce38  fdiv  qword [0x4641fc]          ; 0x4641fc = f64 0.5
+   * 0042ce3e  fld1 / 0042ce40 faddp st(1)     ; +1
+   * 0042ce42  call  0x457dbc                  ; 向零截断
+   * ```
+   * gain = 1.0 时 `1.0 < 2.0` ⇒ **跳过整段**，原文就是 **0 分**；
+   * 旧代码把 −2.0 当阈值，于是多算了 `trunc(2×1 − 3) = −1`。
+   * 所以新期望 0 才是原版行为。
+   */
+  it('★ gain 那条：阈值是 +2.0（不是 −2.0），2·(gain−2)+1 向零截断', () => {
+    // gain = 1.0 < 2.0 → 整段跳过 → 0（旧误读给 −1）
+    expect(scoreStockForSale(sellInput(), me, 1, 10, 0, false, 5)).toBe(0);
+    // gain = 0.5（price 5 / cost 10）→ 旧误读 `trunc(2×0.5 − 3) = trunc(−2) = −2`；
+    //   原版跳过 → 0。openPrice 取 5 以免落进「跌停直接 0」那条岔路（0x42cfbb `cmp eax,3`）
+    expect(scoreStockForSale(sellInput({ price: 5, openPrice: 5 }), me, 1, 10, 0, false, 5)).toBe(0);
+    // gain = 2.0 → +trunc(2×(2−2)+1) = +1；gain > 1.6 且波动 < 1 → 再 +2
     expect(scoreStockForSale(sellInput({ price: 20, openPrice: 20, volatility: 0.5 }), me, 1, 10, 0, false, 5)).toBe(1 + 2);
+  });
+
+  it('★ 边界：gain 恰好 / 刚过 / 刚不到 +2.0，以及负的 −2.0', () => {
+    // 门槛常量本身
+    expect(SELL_RATIO.gainFloor).toBe(2.0);
+    expect(SELL_GAIN_SHIFT).toBe(-2.0);
+    // 恰好 2.0（price 20 / cost 10）→ +trunc(1) = +1
+    expect(scoreStockForSale(sellInput({ price: 20, openPrice: 20 }), me, 1, 10, 0, false, 5)).toBe(1);
+    // 刚不到 2.0（19.99/10 = 1.999）→ 跳过 → 0
+    expect(scoreStockForSale(sellInput({ price: 19.99, openPrice: 20 }), me, 1, 10, 0, false, 5)).toBe(0);
+    // 刚过 2.0（20.01/10 = 2.001）→ trunc(1.002) = +1
+    expect(scoreStockForSale(sellInput({ price: 20.01, openPrice: 20 }), me, 1, 10, 0, false, 5)).toBe(1);
+    // 旧的错阈值 −2.0：即使 gain 恰好是 −2.0，原版也（2.0 > −2.0）跳过 → 0。
+    // 用负成本构造这个数学边界，只喂纯函数，不代表游戏里会出现负成本。
+    expect(scoreStockForSale(sellInput({ price: 20, avgCost: -10, openPrice: 20 }), me, 1, 10, 0, false, 5)).toBe(0);
+  });
+
+  /*
+   * ★ AI 行为会怎么变（这是 D-QNUM-5 修好后的**可观测**后果）：
+   *
+   * 旧代码对小赚（gain < 1.5）的持仓**倒扣** 1~2 分，可能把总分压到 ≤ 0
+   * —— `pickForSale` 只挑 > 0 的，于是那一回合干脆不卖。订正后这段在
+   * gain < 2.0 时**不再动分**，被其它条款推到正分的持仓就会照卖。
+   *
+   * 构造：gain = 20/40 = 0.5，另有「avg24 > avg6 且 現價 < 開盤」+2。
+   *   旧：2 + trunc(2×0.5 − 3) = 2 − 2 = 0 → 不卖
+   *   新：2 + 0 = 2 → 卖
+   * gain ≥ 2 的部分新旧完全一致（`trunc(2·gain−3)` 本来就只在 gain ≥ 1.5 才非负）。
+   */
+  it('★ 行为变化：gain 0.5 的持仓不再被倒扣，总分转正后会被卖出', () => {
+    const s = sellInput({ price: 20, avgCost: 40, openPrice: 21, avg24: 30, avg6: 10 });
+    const score = scoreStockForSale(s, me, 1, 10, 0, false, 5);
+    // 旧的 −2 已经不存在；只剩 avg24 > avg6 且 現價 < 開盤 的 +2
+    expect(score).toBe(2);
+    expect(pickForSale([0, score])).toBe(1);
+    // 若分数仍是旧的 0，pickForSale 会返回 −1（不卖）——把这条对照钉住
+    expect(pickForSale([0, 0])).toBe(-1);
   });
 
   it('現價 > 144 日最低×8 且 最低×8 > 成本×1.25 → +2；avg24 > avg6 且 現價 < 開盤 → +2', () => {

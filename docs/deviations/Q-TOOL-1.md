@@ -190,11 +190,11 @@ loc_00408e0e（放在地上的）:
 
 | # | 项 | 现状 | 依据 / 下一步 |
 |---|---|---|---|
-| 1 | **附身于人**的物件（`attached != 0`）画在主人身上 | **没做**：`objectTokens` 直接跳过 | `fcn_0040829d` VA 0x00408f95..0x00408cd9 那一支用主人记录里的 `+8/+0xa` 当落点、并且主人 `+0x32` 那个 dword 非 0（住店/坐牢/住院/消失）时整个不画。这一支要跟「神明跟着棋子跑」一起做，本轮范围只到「放在地上」 |
+| 1 | **附身于人**的物件（`attached != 0`）画在主人身上 | **已做（Q-TOOL-5 ②）**：新增纯函数 `attachedObjectTokens` + `#attachedObjectSlots`，`objectTokens` 那一行未动 | `fcn_0040829d` VA 0x00408f95..0x00408cd9 那一支用主人记录里的 `+8/+0xa` 当落点、并且主人 `+0x32` 那个 dword 非 0（住店/坐牢/住院/消失）时整个不画。偏移表 0x474951 / 0x474991、帧 = 图号 + 4 —— 全部落码并登记在 `Q-TOOL-5.md` |
 | 2 | 「動畫過程」设定关掉时投掷动画播不播 | **恒播**（有意） | `_rich4_animate_object` 整支读过，**没有任何开关检查**，三个调用点也没有。走子补间那边原版是有关卡的（见 `tween.ts` 的 `enabled`），这条却找不到 ⇒ 按 exe 恒播。要改需要先找到 cfg offset 1 的读取点 |
 | 3 | 「物件自己在飞」那套（`objects_info + 6` 计数 + `+8/+0xc` 浮点坐标 + `+0x10/+0x14` 步长） | **没做** | 它由 `fcn_0040fafd`（VA 0x0040fafd）起，**全 exe 只有一个调用点**：`rich4_player_core_actions.asm` 的 0x0041b519，条件是 `[0x49910c] == 8`（機器娃娃那一支），参数是 `special_players_state + 68/70`（= 機器娃娃 tool 开跑时存下的玩家**节点号 / 上一节点号**，@source `rich4_tool_jiqiwawa.asm` 0x00446b7x），飞完再 `remove_object`。与本轮三件道具**无关**（那三件走 `animate_object`）。将来做機器娃娃搬东西时再解 |
 | 4 | 起点取的是**角色所在格心**，不是原版的**实时像素坐标** | 有意简化 | exe 读 `player + 0x8/+0xa`（走子补间中途是插值位置）。本引擎取 `map.nodes[player.nodeId−1]`；使用道具时角色就停在格上，两者相同。只有在**走子补间还没播完就点用道具**时才会差几十像素（而且那时下一个 dispatch 本来就被 `holdForActorWalk` 挡住）|
 | 5 | 帧节拍用 rAF 按时间取帧，不是阻塞 sleep(24−已用时) | 等价实现 | exe 是阻塞主循环；浏览器里不能阻塞。`k = floor((now − start)/24) + 1` 与「每帧至少 24 ms」等价，收尾那 100 ms 也算在 `throwTotalMs` 里，故音效时刻一致 |
 | 6 | `state` 里没有物件**朝向**字段，朝向是渲染时**当场推**的 | 有意 | core 不改规则（`MapObject` 只有 type/nodeId/state/attached）。推法与 `place_object` 逐条同规则（第一个非 0 邻接槽 → `directionOf(本格 − 邻格)`）。四个槽全 0 的孤立格原版算的是「从 0 号空节点出发」，无意义，这里退回 0 |
-| 7 | 另外 23 个 `animate_object` 调用点（卡片/神明那一批飞行动画） | **没做** | 本轮只接三件放置道具。`throw-fx.ts` 的纯函数是通用的，接别处只需再喂一条 `ObjectFlight` |
+| 7 | 另外 23 个 `animate_object` 调用点（卡片/神明那一批飞行动画） | **已做 20 个（Q-TOOL-5 ①）**，3 个接不了（core 没有那种目标） | 23 个点逐条登记在 `throw-fx.ts` 的 `CARD_FLIGHT_SITES`（25 行 / 23 个 VA，每行带 VA、闸门、arg6、方向），`cardFlightPlan` 是纯判据。没接的 3 条与理由见 `Q-TOOL-5.md` 的 ⑤ |
 | 8 | 原版动画期间的**脏矩形擦除**（`fcn_00456469` / `rich4_rect_union`） | 不需要 | 那是「直接往主表面画」才需要的；本引擎每帧整幅重绘 |

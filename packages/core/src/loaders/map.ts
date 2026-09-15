@@ -273,6 +273,39 @@ export interface FacilityInfo {
    * 不做「修正」——等级 0 的设施本就不该收租。
    */
   rateByLevel: number[];
+  /**
+   * **研究所**正在研發的項目下标 `1..5`（0 = 沒在研發）—— 名字表 `0x47ff1a`
+   * 的第 `n` 项，发下来的道具 = `n + 8`。
+   *
+   * @source 設施 `+0x1d`：
+   * ```asm
+   * 004411f8  mov byte [edi + 0x1d], bl   ; ★ 項目 = 研究所等级（1..5）
+   * 0041cdca  mov al, byte [ebx + 0x1d]   ; 每回合推进时读它
+   * 0041ce18  mov al, byte [ebx + 0x1d] / add eax, 8 / receive_tool
+   * ```
+   * 名牌浮标第三行就用它查表（VA 0x00417ad3 `mov al, byte [edi + 0x1d]` →
+   * `mov ebx, dword [eax*8 + 0x47ff1a]`，表步长 8）。
+   *
+   * ⚠️ 选填：若干测试用手写的 `FacilityInfo` 字面量没有它（同
+   * `CommercialInfo.facing` 的处置）。真实地图解析**一定**会填 ——
+   * 但八张地图里这个字节**恒为 0**（原版地图数据里没有现成的研究所，
+   * 設施种类是开局后由玩家盖出来的），运行时的值住在
+   * `GameState.facilityResearchProject`。
+   */
+  researchProject?: number;
+  /**
+   * **研究所**研发的倒计时（天）；`0` = 沒在研發。
+   *
+   * @source 設施 `+0x1e`：`004411fb mov byte [edi + 0x1e], 5`（开工，固定 5 天）→
+   *   `0041cdd6 設施.+0x1e = cl - 1`（每日推进）→ 归零那一下発道具（0x0041ce1b）。
+   *
+   * ★ 名牌浮标那一行**只看它非不非 0**（VA 0x00417ac2
+   *   `cmp byte [edi + 0x1e], 0 / je 结束`）。
+   *
+   * ⚠️ 选填理由同 `researchProject`；运行时的值住在
+   * `GameState.facilityResearchDays`。
+   */
+  researchDays?: number;
 }
 
 /** 上市企业 */
@@ -510,6 +543,11 @@ export function parseMap(data: Uint8Array): Rich4Map {
       level: data[o + 0x1a] ?? 0,
       facing: (data[o + 0x1b] ?? 0) & 7,
       priceStatus: data[o + 0x1c] ?? 0,
+      // ★ +0x1d/+0x1e = 研究所的「研发項目 / 剩余天数」—— 名牌浮标第三行要它们
+      //   （VA 0x00417ac2 / 0x00417ad3）。八张地图里恒为 0，运行时的值在
+      //   `GameState.facilityResearchProject/Days`。
+      researchProject: data[o + 0x1d] ?? 0,
+      researchDays: data[o + 0x1e] ?? 0,
       landPrice: view.getUint16(o + 0x22, true),
       housePrice: view.getUint16(o + 0x24, true),
       // ★ +0x24 其实是**按等级索引的费率表**，不是单个房价。

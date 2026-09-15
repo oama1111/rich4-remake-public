@@ -376,16 +376,16 @@ export function stockScores(state: GameState, topo: MapTopology, me: Player = st
  * 0042cd59  gain > 1.6 && 波动系数 < 1.0                                   → +2
  * 0042cd8e  現價 > minHist×8 && minHist×8 > 成本×1.25                        → +2
  * 0042cde4  avg24 > avg6 && 現價 < 開盤                                     → +2
- * 0042ce19  gain >= +2.0                                                   → +trunc((gain−2)/0.5 + 1)
- * 0042ce5c  現金+存款 < 30000×物價 && gain > 0                              → +trunc(gain/0.5 + 1)
- * 0042cec9  現金+存款 < 16000×物價 && gain > 0                              → +trunc(gain/0.5 + 1)
+ * 0042ce19  gain >= +2.0                                                   → +trunc(2·(gain−2)+1)
+ * 0042ce5c  現金+存款 < 30000×物價 && gain > 0                              → +trunc(2·gain + 1)
+ * 0042cec9  現金+存款 < 16000×物價 && gain > 0                              → +trunc(2·gain + 1)
  * 0042cf33  壓力                                                           → 分 ×2
  * ```
  *
- * ⚠️ **已知未修**：`gainFloor` 现在是 `-2.0`，但 0x0042ce20 的
- *   `fcomp dword [0x4641f4]` 比的是 **+2.0**（0x4641f8 那个 −2.0 是紧接着
- *   `fadd` 的偏移量，不是判据阈值）。这一条**不属于本轮取整订正**，
- *   照「不许改良」先原样留着并登记，见 `Q-NUM-1.md` 的 D-QNUM-5。
+ * ★ `0x0042ce20` 的判据阈值是 **+2.0**（`0x4641f4`），`−2.0`（`0x4641f8`）是
+ *   紧接着 `fadd` 的**偏移量**、不是阈值。旧代码把这两个常量读反，写成
+ *   `gainFloor = -2.0`，于是 `gain ∈ (0, 2)` 时凭空多出 `trunc(2·gain−3)`（0 或负数）。
+ *   已按 exe 订正，见 `Q-NUM-1.md` 的 D-QNUM-5。
  */
 export const SELL_RATIO = {
   redRatio: 0.6,
@@ -397,8 +397,29 @@ export const SELL_RATIO = {
   minHistMultiple: 8.0,
   minHistCost: 1.25,
   bigGain: 1.6,
-  gainFloor: -2.0,
+  /**
+   * 「大赚」加分的**判据阈值**：`0042ce20 fcomp dword [0x4641f4]`，
+   * 而 `0x4641f4` 是 f32 **+2.0**（不是 −2.0）。
+   *
+   * @source 直读 exe 常量：`[0x4641f0] = f32 1.90625`（`00 00 f4 3f`，另一段的系数）、
+   *   `[0x4641f4] = f32 **+2.0**`（`00 00 00 40`，本阈值）、
+   *   `[0x4641f8] = f32 −2.0`（`00 00 00 c0`，下方的偏移量）、
+   *   `[0x4641fc] = f64 0.5`（`00…00 e0 3f`，步长；它的低 dword 恰好是 0）。
+   *
+   * ★ `fcomp` 之后是 `fnstsw ax / sahf / jb 0x42ce5c`：`jb` 取 CF=1，
+   *   而 x87 的 C0（= CF）为 1 表示 ST(0) < 操作数 ⇒ **gain < 2.0 时跳过加分**，
+   *   即 `gain >= 2.0` 才走那段 `fadd −2.0 / fdiv 0.5 / fld1 / faddp / trunc`。
+   */
+  gainFloor: 2.0,
 } as const;
+
+/**
+ * 大赚那段的**偏移量**（不是判据阈值）@source 0x0042ce32 `fadd dword [0x4641f8]`
+ *   / 0x4641f8 = f32 **−2.0**。
+ *
+ * 旧代码把它误当成 `gainFloor`，见 `Q-NUM-1.md` 的 D-QNUM-5。
+ */
+export const SELL_GAIN_SHIFT = -2.0;
 
 export interface SellScoreInput extends StockScoreInput {
   /** 持仓成本均价 */
@@ -484,9 +505,15 @@ export function scoreStockForSale(
   if (gain > SELL_RATIO.bigGain && s.volatility < 1.0) score += 2;
   if (price > min8 && min8 > cost * SELL_RATIO.minHistCost) score += 2;
   if (s.avg24 > s.avg6 && price < s.openPrice) score += 2;
-  // ÷ 0.5 就是 × 2（精确），避开除法：round((gain − 2) / 0.5 + 1) = round(2·gain − 3)
-  if (gain >= SELL_RATIO.gainFloor) score += saleScoreRound(2 * gain - 3);
+  // 三段都收在 `(x + 偏移)/0.5 + 1` 再 `call 0x457dbc`；÷0.5 就是 ×2（精确，
+  // 且避开 C-DET-3 的裸除法），故写作 2·(gain + shift) + 1。
+  // @source 0042ce2b..0042ce42（判据 gain >= +2.0，偏移 −2.0）：
+  //   trunc((gain − 2)/0.5 + 1) = trunc(2·gain − 3)
+  if (gain >= SELL_RATIO.gainFloor) {
+    score += saleScoreRound(2 * (gain + SELL_GAIN_SHIFT) + 1);
+  }
   const liquid = me.cash + me.moneyInBank;
+  // @source 0042ce9e..0042cec2 / 0042cf08..0042cf2c：无偏移，直接 trunc(gain/0.5 + 1)
   if (liquid < 30000 * priceIndex && gain > 0) score += saleScoreRound(2 * gain + 1);
   if (liquid < 16000 * priceIndex && gain > 0) score += saleScoreRound(2 * gain + 1);
   if (mustSell) score *= 2;

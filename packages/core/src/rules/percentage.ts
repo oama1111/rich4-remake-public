@@ -13,6 +13,19 @@
  *
  * ★ 「所得稅」的基数是**现金余额**，不是收入——名字容易误导，
  *   但 `fild dword [player + 0x1c]` 说得很清楚。
+ *
+ * ★ 物价指数的**位置**（D-QNUM-2 已结案）：四条里只有地價稅 / 證交稅
+ *   乘物价指数，而且都是**先 `trunc(基数 × 税率)`、再整数 `imul [0x4990e8]`**：
+ *   ```asm
+ *   00449f22  fmul  qword [0x4655cc]      ; 地價稅 × 0.05
+ *   00449f28  call  0x457dbc             ; 向零截断
+ *   00449f41  imul  eax, [0x4990e8]      ; ★ 截断之后才 × 物价指数
+ *   0044a11c  fmul  qword [0x4655f4]      ; 證交稅 × 0.05
+ *   0044a122  call  0x457dbc
+ *   0044a13b  imul  eax, [0x4990e8]      ; ★ 同上
+ *   ```
+ *   所得稅（0x00449cee..0x00449d12）与儲金紅利（0x0044af44..0x0044af5c）
+ *   **通篇没有** `[0x4990e8]`，故它们不随物价指数变——本模块照搬。
  */
 
 import type { Player } from '../state/types.ts';
@@ -49,7 +62,8 @@ export const BANK_DIVIDEND_RATE = 0.1;
  * ⚠️ 税额出现恰好 .5 的情形需要 `cash` 是 `20k+10`（如 10 → 0.5、30 → 1.5、
  *   150 → 7.5），实战中并不罕见，故必须照 exe 截断。
  *
- * @param base 已含（或未含，视调用点而定）物价指数的**整数**基数
+ * @param base **不含**物价指数的整数基数（原版 `fild`/`fld` 读到的就是它；
+ *   物价指数一律在**本函数截断之后**才由调用方乘上去，见 D-QNUM-2）
  */
 export function percentageOf(base: number, rate: number): number {
   return truncTowardZero(base * rate);
@@ -66,7 +80,7 @@ export function bankDividend(p: Player): number {
 }
 
 /**
- * 地产估值 —— 地價稅的基数，**含**物价指数。
+ * 地产**原值** —— 地價稅的基数，★ **不含**物价指数。
  *
  * @source VA 0x00449e9b..0x00449eb1（住宅地）与 0x00449ef7..0x00449f0b（設施）：
  * ```asm
@@ -79,20 +93,23 @@ export function bankDividend(p: Player): number {
  * …（設施那支同构：房价 +0x24、地价 +0x22、等级 +0x1a）
  * ```
  *
- * ⚠️ **原版把「× 物价指数」放在 `× 0.05` 并截断之后**（0x00449f41
- *   `imul eax, [0x4990e8]`），本函数却先乘了物价指数（`propertyValue` 的
- *   末行）。两条路在物价指数 ≠ 1 时会给不同的税（例：原值 30、指数 3
- *   ⇒ 原版 `trunc(1.5)×3 = 3`，本式 `trunc(4.5) = 4`）。这一条**不在**
- *   本轮取整订正范围内（要动公开签名），已如实登记
- *   `docs/deviations/Q-NUM-1.md` 的 D-QNUM-2。
+ * ★ **本函数不含物价指数**：原版把这个累加和**直接**喂给 `fild`（0x00449f1b
+ *   `fild dword [esp + ebx + 0x94]`），「× 物价指数」是**税算完之后**的
+ *   `imul eax, [0x4990e8]`（0x00449f41）。故 `propertyTax = trunc(本值 × 0.05)
+ *   × 物价指数`，指数乘在**截断之后**。
  *
- * 与 `rules/wealth.ts` 的总资产估值同式，但**只取地产部分**。
+ * ⚠️ 这里**曾经**把物价指数乘进末行（`sum * priceIndex`），导致
+ *   `trunc(原值 × 指数 × 0.05)`——指数 ≠ 1 时与原版不同
+ *   （例：原值 30、指数 3 ⇒ 原版 `trunc(1.5)×3 = 3`，旧式 `trunc(4.5) = 4`）。
+ *   已按 exe 订正；判决过程见 `docs/deviations/Q-NUM-1.md` 的 D-QNUM-2。
+ *
+ * 与 `rules/wealth.ts` 的总资产估值同式，但**只取地产部分**、且原版那里
+ * 同样不含物价指数（`calculatePlayerWealth` 无指数项）。
  */
 export function propertyValue(
   playerIndex: number,
   lands: readonly LandInfo[],
   facilities: readonly FacilityInfo[],
-  priceIndex: number,
 ): number {
   const ownerId = playerIndex + 1;
   let sum = 0;
@@ -104,17 +121,18 @@ export function propertyValue(
     if (f.owner !== ownerId) continue;
     sum += f.landPrice + f.housePrice * f.level;
   }
-  return sum * priceIndex;
+  return sum;
 }
 
 /**
- * 地價稅：地产原值的 5%，向零截断。
+ * 地價稅：地产原值的 5%，**向零截断之后再**乘物价指数。
  *
  * @source 0x00449f1b `fild 原值` / 0x00449f22 `fmul 0.05` / 0x00449f28
- *   `call 0x457dbc` / 0x00449f41 `imul eax, [0x4990e8]`（×物价指数）。
+ *   `call 0x457dbc` / 0x00449f2d `fistp` / 0x00449f3b `mov ebp, [0x4990e8]`
+ *   / 0x00449f41 `imul eax, ebp`（×物价指数）。
  *
- * ⚠️ 与 `propertyValue` 的差别（指数乘在截断前还是后）见该函数的注释与
- *   `Q-NUM-1.md` 的 D-QNUM-2。
+ * ★ 顺序：`trunc(原值 × 0.05) × 物价指数`。`fistp` 先把截断后的整数写回内存，
+ *   之后才是整数 `imul`；指数 **不** 参与 `trunc` 里那一次浮点乘。
  */
 export function propertyTax(
   playerIndex: number,
@@ -122,7 +140,7 @@ export function propertyTax(
   facilities: readonly FacilityInfo[],
   priceIndex: number,
 ): number {
-  return percentageOf(propertyValue(playerIndex, lands, facilities, priceIndex), NEWS_TAX_RATE);
+  return percentageOf(propertyValue(playerIndex, lands, facilities), NEWS_TAX_RATE) * priceIndex;
 }
 
 /**
@@ -145,17 +163,20 @@ export function stockValue(
 }
 
 /**
- * 證交稅：持股市值的 5%，向零截断。
+ * 證交稅：持股市值的 5%，**向零截断之后再**乘物价指数。
  *
  * @source 0x0044a115 `fld 市值` / 0x0044a11c `fmul 0.05` / 0x0044a122
- *   `call 0x457dbc` / 0x0044a13b `imul eax, [0x4990e8]`（×物价指数）。
+ *   `call 0x457dbc` / 0x0044a127 `fistp` / 0x0044a135 `mov edx, [0x4990e8]`
+ *   / 0x0044a13b `imul eax, edx`（×物价指数）。
  *
- * ⚠️ 与 `propertyTax` 一样，原版的物价指数乘在**截断之后**；本函数当前
- *   没有物价指数入参，等于按指数 1 算。属于同一族问题，见 D-QNUM-2。
+ * ★ 与 `propertyTax` 同形：`trunc(市值 × 0.05) × 物价指数`。指数乘在截断之后，
+ *   参数由调用方显式给出（旧签名没有它，等于按指数 1 算）。
+ *   见 `Q-NUM-1.md` 的 D-QNUM-2。
  */
 export function stockTax(
   holdings: readonly number[],
   prices: readonly number[],
+  priceIndex: number,
 ): number {
-  return percentageOf(stockValue(holdings, prices), NEWS_TAX_RATE);
+  return percentageOf(stockValue(holdings, prices), NEWS_TAX_RATE) * priceIndex;
 }
