@@ -1,5 +1,5 @@
 /*
- * 個人資產表屏（工具列 #7）—— T-022（T-023 只做到表头）
+ * 個人資產表屏（工具列 #7）—— T-022 / T-023
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * ★ C-ARC-2：本模块只摆位置与画字，**数值全部来自 core**
@@ -26,6 +26,10 @@
  * | 三颗下钻钮（图 12 = 97×40 按下底） | 命中 VA 0x424163；按下底 VA 0x42419f |
  * | 视图 0 的八条数值 + 中列四条计数 | `loc_004232f3`（VA 0x4232f3）|
  * | 视图 0 右下 15 格道具欄 / 卡片欄 | VA 0x4236da / 0x4237b3 |
+ * | 视图 1 的 5 个种类格（图 11 = 75×33 选中底） | 命中 VA 0x423ebb；绘制 VA 0x423883 |
+ * | 视图 1 的数据行（5 列） | `fcn_004225a3`（VA 0x4225a3），取数 `fcn_00423b3b`（VA 0x423b3b）|
+ * | 视图 1 的两颗翻页箭头（图 7 / 图 8） | 命中 VA 0x423f36；按下 VA 0x42424e / 0x4242cd |
+ * | 视图 2 的 12 行股票 | `loc_004238b1`（VA 0x4238b1）|
  * | 关屏 | 右键 `WM_RBUTTONUP` VA 0x424409；EXIT 钮 VA 0x4241f2 |
  *
  * ⚠️ **原版没有「鼠标悬停高亮」**：三颗钮的高亮（图 12）与 EXIT 的按下图只在
@@ -49,12 +53,15 @@
 
 import {
   assetCounts,
+  allEffectiveFacilities,
+  allEffectiveLands,
+  calculateLandToll,
   isAlive,
   panelValues,
   type GameState,
   type MapTopology,
 } from '@rich4/core';
-import { CARDS, CHARACTERS } from '@rich4/data';
+import { CARDS, CHARACTERS, stocksOfMap } from '@rich4/data';
 import { portraitResource, type ArchiveName, type Sprite } from './assets.ts';
 import { currency } from './panel.ts';
 import { inRect } from './gameui.ts';
@@ -223,7 +230,7 @@ export function sheetCounts(
 }
 
 // ============================================================
-//  视图 1 / 2 的表头（数据行属 T-023）
+//  视图 1 / 2 的表头与数据行（T-023）
 // ============================================================
 
 /**
@@ -241,6 +248,229 @@ export const SHEET_LIST0_HEADER = ['地  點', '開發狀況', '價  格', '收 
 export const SHEET_LIST1_X = [204, 332, 476] as const;
 export const SHEET_LIST1_Y = 0x44;
 export const SHEET_LIST1_HEADER = ['股票名稱', '持有張數', '總 市 價'] as const;
+
+/**
+ * 视图 1 顶上那 **5 个种类格**（每格 75×33）—— 点它换「列哪一类」。
+ *
+ * @source 命中 VA 0x423ebb（`x∈[120+75i, 195+75i]`、`y∈[64,97]`）；
+ *   文字与高亮底 VA 0x423883（文字 `(120+75i+37, 80)`、flag 2；
+ *   选中那颗在 `(120+75i, 64)` 盖 **图 11**（75×33））。
+ *
+ * 那 5 个字串在 `0x4753d4`，顺序与两个跳表（`0x42258f` 的绘制、
+ * `0x423b27` 的取数）一致。
+ */
+export const SHEET_KINDS = ['全  部', '住宅區', '商業區', '房  屋', '連鎖店'] as const;
+export const SHEET_KIND_CELL = { x0: 120, y: 64, w: 75, h: 33, textDx: 0x25, textY: 0x50, plate: 11 } as const;
+
+/** 点在第几个种类格上；没点中返回 null */
+export function hitSheetKind(x: number, y: number): number | null {
+  if (y < SHEET_KIND_CELL.y || y >= SHEET_KIND_CELL.y + SHEET_KIND_CELL.h) return null;
+  for (let i = 0; i < SHEET_KINDS.length; i++) {
+    const x0 = SHEET_KIND_CELL.x0 + i * SHEET_KIND_CELL.w;
+    if (x >= x0 && x < x0 + SHEET_KIND_CELL.w) return i;
+  }
+  return null;
+}
+
+/**
+ * 视图 1 右边那两颗翻页箭头（30×30）。
+ *
+ * @source 命中 VA 0x423f36；按下时盖 **图 7**（上）/ **图 8**（下）
+ *   @source VA 0x42424e / 0x4242cd；抬手走 `fcn_004225a3(kind, 2 | 1)`
+ *   —— **上箭头 = 上一页（参数 2）、下箭头 = 下一页（参数 1）**。
+ */
+export const SHEET_ARROW = {
+  x: 0x251,
+  w: 30,
+  h: 30,
+  upY: 0x171,
+  downY: 0x1a1,
+  upImg: 7,
+  downImg: 8,
+} as const;
+
+export function hitSheetArrow(x: number, y: number): 'up' | 'down' | null {
+  if (x < SHEET_ARROW.x || x >= SHEET_ARROW.x + SHEET_ARROW.w) return null;
+  if (y >= SHEET_ARROW.upY && y < SHEET_ARROW.upY + SHEET_ARROW.h) return 'up';
+  if (y >= SHEET_ARROW.downY && y < SHEET_ARROW.downY + SHEET_ARROW.h) return 'down';
+  return null;
+}
+
+/**
+ * 数据行的几何 @source VA 0x4225a3：
+ * 首行 **y=144**、步进 **32**；每页最多 **10** 行（`[0x475408]`）。
+ */
+export const SHEET_ROW_Y0 = 0x90;
+export const SHEET_ROW_DY = 0x20;
+export const SHEET_PAGE_SIZE = 10;
+
+/**
+ * 五列的 x 与对齐 —— 前两列居中（flag 2）、后三列里 價格/收費 右对齐（flag 6）、
+ * 租期又居中（flag 2）@source 地块 VA 0x4226df / 設施 VA 0x422883。
+ *
+ * 注意 價格/收費 的 x 是**表头 x 再加一个偏移**（`+0x26` / `+0x2a`），
+ * 不是表头那一列本身 —— 别照抄 `SHEET_LIST0_X`。
+ */
+export const SHEET_ROW_COL = [
+  { x: 168, align: 'center' }, // 地點
+  { x: 264, align: 'center' }, // 開發狀況
+  { x: 356 + 0x26, align: 'right' }, // 價格
+  { x: 448 + 0x2a, align: 'right' }, // 收費
+  { x: 540, align: 'center' }, // 租期
+] as const;
+
+/** 住宅地块的「開發狀況」等级名 —— 串表 `0x475138`（7 项）*/
+export const SHEET_LEVEL_NAMES = [
+  '空  地', '平  房', '店  舖', '商  場', '商業大樓', '摩天大樓', '公  園',
+] as const;
+/** 設施的种类名 —— 串表 `0x475150` 的前 5 项（后面 6 项是等级/「過路費」，本屏不用）*/
+export const SHEET_FACILITY_NAMES = ['公  園', '旅  館', '購物中心', '加油站', '研究所'] as const;
+/** 地块 `type != 0` 时「開發狀況」固定写这个 @source 串 `0x463d6c` */
+export const SHEET_CHAIN_STORE = '連鎖店';
+
+/** 一行 */
+export interface AssetRow {
+  place: string;
+  status: string;
+  price: string;
+  toll: string;
+  tenure: string;
+}
+
+/**
+ * 租期文字 —— `state.landTenure` / `facilityTenure` 是**打包日期**（年<<16|月<<8|日），
+ * 0 表示無限期。
+ *
+ * @source VA 0x422843：`sprintf("%02d/%d/%d", (v>>16)%100, (v>>8)&0xf, v&0xff)`，
+ *   `v == 0` 时改画固定串 `"無限期"`（`0x463e1f`）。
+ */
+export function tenureText(packed: number): string {
+  if (packed === 0) return '無限期';
+  const yy = String((packed >>> 16) % 100).padStart(2, '0');
+  return `${yy}/${(packed >>> 8) & 0xf}/${packed & 0xff}`;
+}
+
+/**
+ * 视图 1 的行 —— 五种「种类」各取哪些条目。
+ *
+ * @source 取数跳表 `0x423b27`（VA 0x423b3b），条目编码：地块 = `下标 + 0x7d0`、
+ *   設施 = `下标 + 0xfa0`（绘制端 VA 0x4226df / 0x422883 按同一编码解码）：
+ *
+ * | 种类 | 内容 |
+ * |---|---|
+ * | 0 全部 | 我名下的**地块**，然后我名下的**設施** |
+ * | 1 住宅區 | 我名下的地块（全部，不分等级）|
+ * | 2 商業區 | 我名下的設施 |
+ * | 3 房屋 | 我名下 `type == 0 && level != 0` 的地块 |
+ * | 4 連鎖店 | 我名下 `type != 0 && level != 0` 的地块 |
+ */
+export function assetRows(
+  state: GameState,
+  topo: MapTopology,
+  playerIndex: number,
+  kind: number,
+): AssetRow[] {
+  const me = playerIndex + 1;
+  const lands = allEffectiveLands(state, topo);
+  const facilities = allEffectiveFacilities(state, topo);
+  const mine = lands.filter((l) => l.owner === me);
+  const myFac = facilities.filter((f) => f.owner === me);
+  const priceIndex = state.priceIndex;
+
+  // ★ 連鎖店那一列显示的**不是**该地块主人的过路费，而是**入口处**按当前
+  //   显示玩家算的那一个（VA 0x4225e6：`calculate_land_toll(玩家+1, NULL)`，
+  //   結果整个函数共用一份）。原版如此，照抄。
+  const viewerChainToll = calculateLandToll(lands, me, priceIndex, null);
+
+  const landRows = (list: typeof lands): AssetRow[] =>
+    list.map((land) => ({
+      place: land.name,
+      status:
+        land.type === 0
+          ? (SHEET_LEVEL_NAMES[land.level] ?? SHEET_LEVEL_NAMES[0])
+          : SHEET_CHAIN_STORE,
+      // @source 0x42279b 起：(房价 × 等级 + 地价) × 物价指数
+      price: currency((land.housePrice * land.level + land.landPrice) * priceIndex),
+      toll: currency(
+        land.type === 0
+          ? calculateLandToll(lands, land.owner, priceIndex, land.name)
+          : viewerChainToll,
+      ),
+      tenure: tenureText(state.landTenure[land.id] ?? land.flast),
+    }));
+
+  const facilityRows = (list: typeof facilities): AssetRow[] =>
+    list.map((fac) => ({
+      place: fac.name,
+      status:
+        fac.level === 0 ? (SHEET_LEVEL_NAMES[0] ?? '') : (SHEET_FACILITY_NAMES[fac.type] ?? ''),
+      // @source 0x422923 起：(费率[0] × 等级 + 地价) × 物价指数
+      price: currency(((fac.rateByLevel[0] ?? 0) * fac.level + fac.landPrice) * priceIndex),
+      // @source 0x422939：种类与等级都非 0 才算过路费（费率表按等级索引）
+      toll: currency(
+        fac.type !== 0 && fac.level !== 0 ? (fac.rateByLevel[fac.level] ?? 0) * priceIndex : 0,
+      ),
+      tenure: tenureText(state.facilityTenure[fac.id] ?? 0),
+    }));
+
+  switch (kind) {
+    case 1:
+      return landRows(mine);
+    case 2:
+      return facilityRows(myFac);
+    case 3:
+      return landRows(mine.filter((l) => l.type === 0 && l.level !== 0));
+    case 4:
+      return landRows(mine.filter((l) => l.type !== 0 && l.level !== 0));
+    default:
+      return [...landRows(mine), ...facilityRows(myFac)];
+  }
+}
+
+/**
+ * 视图 2（股票清單）的行 —— **12 支股票全列**，不管有没有持仓。
+ *
+ * @source VA 0x4238b1：名字取 `stocks_on_map[i]`、持仓取 `player_stocks[玩家][i]`、
+ *   市价 = `trunc(持仓 × 股价)`；三列的 x = `204` / `332+52` / `476+60`，
+ *   首行 **y=100**、步进 **32**。
+ * ★ 持仓那一列走的也是 `num_to_currency_string` —— 所以带 `$`，原版如此。
+ */
+export function stockRows(state: GameState, playerIndex: number): AssetRow[] {
+  return stocksOfMap(state.globalMapId).map((s, i) => {
+    const h = state.holdings[playerIndex]?.[i];
+    const amount = h?.amount ?? 0;
+    const price = state.market.stocks[i]?.price ?? 0;
+    return {
+      place: s.name,
+      status: currency(amount),
+      price: currency(Math.trunc(amount * price)),
+      toll: '',
+      tenure: '',
+    };
+  });
+}
+
+/** 股票行的三列 x @source VA 0x4238cc 起 */
+export const SHEET_STOCK_COL = [
+  { x: 204, align: 'center' },
+  { x: 332 + 0x34, align: 'right' },
+  { x: 476 + 0x3c, align: 'right' },
+] as const;
+export const SHEET_STOCK_Y0 = 0x64;
+
+/**
+ * 翻一页之后的**行起点**（原版 `[0x475404]`）。
+ *
+ * @source VA 0x422613（下一页）：`if (起点 + 0xb > 总数) 什么都不做；
+ *   否则 起点 += 0xa`；VA 0x422630（上一页）：`if (起点 == 0) 什么都不做；
+ *   否则 起点 -= 0xa`。
+ * ★ 「+0xb > 总数」这条让步进是 10 却要 11 个才允许翻 —— 即**最后一页
+ *   哪怕只剩 1 条也要能翻过去**。照抄，别"修正"成 10。
+ */
+export function estatePageAfter(total: number, pageStart: number, dir: number): number {
+  if (dir > 0) return pageStart + 0xb > total ? pageStart : pageStart + SHEET_PAGE_SIZE;
+  return pageStart === 0 ? 0 : Math.max(0, pageStart - SHEET_PAGE_SIZE);
+}
 
 // ============================================================
 //  三颗下钻钮
@@ -303,12 +533,18 @@ export function sheetCell(k: number, y0: number): { x: number; y: number } {
 //  绘制
 // ============================================================
 
-/** 这一帧的按下态（`null` = 没按下） */
-export interface SheetPress {
+/** 这一帧的界面态：**当前选中的东西** + **按下态** */
+export interface SheetUi {
   /** 按下的下钻钮下标；`null` 表示没按 */
   btn: number | null;
   /** EXIT 是否按下 */
   exit: boolean;
+  /** 视图 1 的种类 0..4 @source 原版 `[0x475400]` */
+  kind: number;
+  /** 视图 1 的行起点（每页 10 行）@source 原版 `[0x475404]` */
+  pageStart: number;
+  /** 按下的翻页箭头；`null` 表示没按 */
+  arrow: 'up' | 'down' | null;
 }
 
 /** 锚点落点绘制 —— `(x, y)` 是图的 `anchorX/anchorY` 所在处 @source `fcn_00456418` */
@@ -374,7 +610,7 @@ export function drawAssetSheet(
   topo: MapTopology,
   selectedPlayer: number,
   view: number,
-  press: SheetPress = { btn: null, exit: false },
+  press: SheetUi = { btn: null, exit: false, kind: 0, pageStart: 0, arrow: null },
 ): void {
   // ── 底图（图号 = 视图号）@source VA 0x423088 ──
   const bg = sprite('Panel.mkf', SHEET_RESOURCE, view, false);
@@ -464,7 +700,8 @@ export function drawAssetSheet(
 
   // ── 视图专属的数值 @source VA 0x4232d4 的跳表 ──
   if (view === 0) drawSummary(ctx, sprite, state, topo, selectedPlayer);
-  // 视图 1/2 的**数据行**属 T-023，此处只画了上面的列名。
+  else if (view === 1) drawEstateList(ctx, sprite, state, topo, selectedPlayer, press);
+  else drawStockList(ctx, state, selectedPlayer);
 }
 
 function drawHeader(
@@ -476,6 +713,81 @@ function drawHeader(
   for (let i = 0; i < labels.length; i++) {
     const x = xs[i];
     if (x !== undefined) blackText(ctx, labels[i]!, x, y, SHEET_LABEL_SIZE, 'center');
+  }
+}
+
+/**
+ * 视图 1：5 个种类格 + 数据行 + 两颗翻页箭头。
+ *
+ * @source 种类格 VA 0x423883；行 VA 0x4225a3；箭头 VA 0x42424e / 0x4242cd。
+ */
+function drawEstateList(
+  ctx: CanvasRenderingContext2D,
+  sprite: SheetSprite,
+  state: GameState,
+  topo: MapTopology,
+  playerIndex: number,
+  press: SheetUi,
+): void {
+  // 5 个种类格：选中的那颗先盖 75×33 的图 11
+  for (let i = 0; i < SHEET_KINDS.length; i++) {
+    const x = SHEET_KIND_CELL.x0 + i * SHEET_KIND_CELL.w;
+    if (i === press.kind) {
+      const plate = sprite('Panel.mkf', SHEET_RESOURCE, SHEET_KIND_CELL.plate, false);
+      if (plate !== null) ctx.drawImage(plate.bitmap, x, SHEET_KIND_CELL.y);
+    }
+    blackText(
+      ctx,
+      SHEET_KINDS[i]!,
+      x + SHEET_KIND_CELL.textDx,
+      SHEET_KIND_CELL.textY,
+      SHEET_LABEL_SIZE,
+      'center',
+    );
+  }
+
+  // 数据行：每页 10 行、首行 y=144、步进 32
+  const rows = assetRows(state, topo, playerIndex, press.kind);
+  const shown = rows.slice(press.pageStart, press.pageStart + SHEET_PAGE_SIZE);
+  for (let k = 0; k < shown.length; k++) {
+    const row = shown[k]!;
+    const y = SHEET_ROW_Y0 + k * SHEET_ROW_DY;
+    const cells = [row.place, row.status, row.price, row.toll, row.tenure];
+    for (let c = 0; c < SHEET_ROW_COL.length; c++) {
+      const col = SHEET_ROW_COL[c]!;
+      blackText(ctx, cells[c] ?? '', col.x, y, SHEET_LABEL_SIZE, col.align);
+    }
+  }
+
+  // 两颗箭头：按下时盖图 7 / 图 8（常态那两颗烘在图 1 的底图里）
+  for (const [which, y0, img] of [
+    ['up', SHEET_ARROW.upY, SHEET_ARROW.upImg],
+    ['down', SHEET_ARROW.downY, SHEET_ARROW.downImg],
+  ] as const) {
+    if (press.arrow !== which) continue;
+    const arrow = sprite('Panel.mkf', SHEET_RESOURCE, img, false);
+    if (arrow !== null) ctx.drawImage(arrow.bitmap, SHEET_ARROW.x, y0);
+  }
+}
+
+/**
+ * 视图 2：12 支股票各一行（**全列，不管有没有持仓**）。
+ * @source VA 0x4238b1
+ */
+function drawStockList(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  playerIndex: number,
+): void {
+  const rows = stockRows(state, playerIndex);
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    const y = SHEET_STOCK_Y0 + i * SHEET_ROW_DY;
+    const cells = [row.place, row.status, row.price];
+    for (let c = 0; c < SHEET_STOCK_COL.length; c++) {
+      const col = SHEET_STOCK_COL[c]!;
+      blackText(ctx, cells[c] ?? '', col.x, y, SHEET_GOD_DAYS.size, col.align);
+    }
   }
 }
 

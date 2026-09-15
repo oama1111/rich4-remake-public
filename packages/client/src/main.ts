@@ -140,11 +140,15 @@ import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import { drawIntro, introDone } from './intro.ts';
 import {
   activePlayers,
+  assetRows,
   drawAssetSheet,
+  estatePageAfter,
+  hitSheetArrow,
   hitSheetBtn,
   hitSheetExit,
+  hitSheetKind,
   hitSheetTab,
-  type SheetPress,
+  type SheetUi,
 } from './asset-sheet.ts';
 import {
   applySetupHit,
@@ -485,6 +489,13 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
       return true;
     case HOTKEY.pageUp:
     case HOTKEY.pageDown:
+      // 資產表屏开着时，PgUp/PgDn 归它翻**地產清單**（原版 VA 0x424374：
+      // 那两个键就是 RICH4.CFG 的 `cfg+66`/`cfg+68`，正好是 PgUp/PgDn；
+      // 且只在视图 1 生效）。
+      if (screen === 'assets') {
+        pageEstateList(fn === HOTKEY.pageUp ? -1 : 1);
+        return true;
+      }
       cyclePanelPage(fn === HOTKEY.pageUp ? -1 : 1);
       return true;
 
@@ -1111,17 +1122,40 @@ let assetView = 0;
  */
 let assetWho = 0;
 /**
- * 本屏的**按下态** —— 原版只在 `WM_LBUTTONDOWN` 那一下画高亮、`WM_LBUTTONUP` 才动作
- * （VA 0x424163 钮 / 0x423dd1 EXIT），抬手 0x202 走 `[0x48c284]` 的跳表。
- * ★ 抬手时**不再看光标位置** —— 原版就认按下那一刻记下的状态。
+ * 本屏的**按下态 + 当前选择** —— 原版只在 `WM_LBUTTONDOWN` 那一下画高亮、
+ * `WM_LBUTTONUP` 才动作（VA 0x424163 钮 / 0x423dd1 EXIT），抬手 0x202 走
+ * `[0x48c284]` 的跳表。★ 抬手时**不再看光标位置** —— 原版就认按下那一刻记下的状态。
+ *
+ * `kind` / `pageStart` 是视图 1 的「列哪一类」「从第几条开始」，
+ * 对应原版的 `[0x475400]` / `[0x475404]`。
  */
-let sheetPress: SheetPress = { btn: null, exit: false };
+let sheetUi: SheetUi = { btn: null, exit: false, kind: 0, pageStart: 0, arrow: null };
+
+/** 换视图/换玩家/换种类都会把分页归零（原版 `fcn_004225a3(kind, 0)`）*/
+function resetSheetPage(): void {
+  sheetUi = { ...sheetUi, pageStart: 0 };
+}
+
+/**
+ * 视图 1 翻页 —— 上箭头/上一页传 −1、下箭头/下一页传 +1。
+ *
+ * @source VA 0x422613（下一页）：`if ([0x475404] + 0xb > 总数) 什么都不做；
+ *   否则 [0x475404] += 0xa`；VA 0x422630（上一页）：`if ([0x475404] == 0)
+ *   什么都不做；否则 -= 0xa`。**每页 10 行**，页起点按 10 走。
+ */
+function pageEstateList(dir: number): void {
+  const total = assetRows(state, topo, assetWho, sheetUi.kind).length;
+  const next = estatePageAfter(total, sheetUi.pageStart, dir);
+  if (next === sheetUi.pageStart) return;
+  sheetUi = { ...sheetUi, pageStart: next };
+  requestRender();
+}
 
 function openAssets(): void {
   if (screen === 'game') {
     assetView = 0;
     assetWho = state.currentPlayer;
-    sheetPress = { btn: null, exit: false };
+    sheetUi = { btn: null, exit: false, kind: 0, pageStart: 0, arrow: null };
     screen = 'assets';
     requestRender();
   }
@@ -1219,7 +1253,7 @@ function requestRender(): void {
       // ★ **不要在这里 `return`** —— `blitStage()` 在这条链的末尾，
       //   提前返回等于画了不上屏（上一轮就是这样：`screen` 都切过去了，
       //   画面却一直停在棋盘上）。
-      drawAssetSheet(stageCtx, spriteNow, state, topo, assetWho, assetView, sheetPress);
+      drawAssetSheet(stageCtx, spriteNow, state, topo, assetWho, assetView, sheetUi);
     } else if (screen === 'setup') {
       drawSetup(stageCtx, setup, setupHot, spriteNow);
     } else if (screen === 'saveload') {
@@ -2227,16 +2261,30 @@ function bindInput(): void {
         const who = activePlayers(state)[tab];
         if (who !== undefined && who !== assetWho) {
           assetWho = who;
+          resetSheetPage();
           requestRender();
         }
         return;
       }
-      if (hitSheetExit(q.x, q.y)) sheetPress = { btn: null, exit: true };
+      // 视图 1 那 5 个种类格：原版也是**按下就换**（VA 0x423ebb 里立刻
+      // `[0x475400] = 种类`，并把分页归零），不分按下/抬起两段。
+      const kind = hitSheetKind(q.x, q.y);
+      if (kind !== null) {
+        // ★ 原版这条分支**不放音效**（VA 0x423eda 里没有 play_sound_effect）。
+        if (kind !== sheetUi.kind) {
+          sheetUi = { ...sheetUi, kind, pageStart: 0 };
+          requestRender();
+        }
+        return;
+      }
+      if (hitSheetExit(q.x, q.y)) sheetUi = { ...sheetUi, btn: null, exit: true, arrow: null };
       else {
         const btn = hitSheetBtn(q.x, q.y);
-        if (btn !== null) sheetPress = { btn, exit: false };
+        const arrow = hitSheetArrow(q.x, q.y);
+        if (btn !== null) sheetUi = { ...sheetUi, btn, exit: false, arrow: null };
+        else if (arrow !== null) sheetUi = { ...sheetUi, btn: null, exit: false, arrow };
       }
-      if (sheetPress.btn !== null || sheetPress.exit) requestRender();
+      if (sheetUi.btn !== null || sheetUi.exit || sheetUi.arrow !== null) requestRender();
       return;
     }
 
@@ -2291,13 +2339,17 @@ function bindInput(): void {
   });
   window.addEventListener('mouseup', () => {
     // ── 個人資產表屏：抬手才动作（照原版 0x202 那条跳表 `[0x48c284]−2`）──
-    if (screen === 'assets' && (sheetPress.btn !== null || sheetPress.exit)) {
-      const { btn, exit } = sheetPress;
-      sheetPress = { btn: null, exit: false };
+    if (screen === 'assets' && (sheetUi.btn !== null || sheetUi.exit || sheetUi.arrow !== null)) {
+      const { btn, exit, arrow } = sheetUi;
+      sheetUi = { ...sheetUi, btn: null, exit: false, arrow: null };
       if (exit) closeAssets();
       else if (btn !== null) {
         assetView = btn;
+        resetSheetPage();
         requestRender();
+      } else if (arrow !== null) {
+        // 上箭头 = 上一页、下箭头 = 下一页 @source VA 0x42424e / 0x4242cd
+        pageEstateList(arrow === 'up' ? -1 : 1);
       }
       return;
     }

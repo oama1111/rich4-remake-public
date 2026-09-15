@@ -12,10 +12,13 @@
 import { describe, expect, it } from 'vitest';
 import type { GameState, MapTopology, Player } from '@rich4/core';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '@rich4/core';
+import { stocksOfMap } from '@rich4/data';
 import {
   SHEET_BTN_LABELS,
   SHEET_COUNT_Y,
   SHEET_EXIT_HIT,
+  SHEET_KINDS,
+  SHEET_KIND_CELL,
   SHEET_LABEL_AT,
   SHEET_LABELS,
   SHEET_LIST0_HEADER,
@@ -29,13 +32,19 @@ import {
   SHEET_VALUE_Y,
   SHEET_VIEW_COUNT,
   activePlayers,
+  assetRows,
+  estatePageAfter,
+  hitSheetArrow,
   hitSheetBtn,
   hitSheetExit,
+  hitSheetKind,
   hitSheetTab,
   sheetBtnRect,
   sheetCell,
   sheetCounts,
   sheetValues,
+  stockRows,
+  tenureText,
 } from './asset-sheet.ts';
 
 describe('個人資產表屏的版式 @source VA 0x423cf3', () => {
@@ -168,5 +177,144 @@ describe('在场玩家（页签只列这些）@source VA 0x42256f', () => {
       ({ index, character: index, whoPlays }) as unknown as Player;
     const state = { players: [mk(0, WHO_PLAYS_HUMAN), mk(1, 0), mk(2, WHO_PLAYS_COMPUTER)] } as unknown as GameState;
     expect(activePlayers(state)).toEqual([0, 2]);
+  });
+});
+
+describe('视图 1 的种类格与翻页箭头（T-023）@source VA 0x423ebb / 0x423f36', () => {
+  it('★ 5 个种类格各 75×33、落在 y=64；标签次序照串表 0x4753d4', () => {
+    expect([...SHEET_KINDS]).toEqual(['全  部', '住宅區', '商業區', '房  屋', '連鎖店']);
+    expect(SHEET_KIND_CELL.w).toBe(75);
+    expect(SHEET_KIND_CELL.h).toBe(33);
+    for (let i = 0; i < SHEET_KINDS.length; i++) {
+      const x = SHEET_KIND_CELL.x0 + i * SHEET_KIND_CELL.w;
+      expect(hitSheetKind(x, 80)).toBe(i); // 左边界
+      expect(hitSheetKind(x + 74, 80)).toBe(i); // 右边界
+    }
+    expect(hitSheetKind(119, 80)).toBeNull();
+    expect(hitSheetKind(495, 80)).toBeNull(); // 5×75 = 375，120+375 = 495 之外
+    expect(hitSheetKind(200, 63)).toBeNull(); // 上边界之外
+    expect(hitSheetKind(200, 97)).toBeNull(); // 下边界之外
+  });
+
+  it('★ 两颗箭头各 30×30：上在 y=369、下在 y=417，x∈[593,623]', () => {
+    expect(hitSheetArrow(600, 380)).toBe('up');
+    expect(hitSheetArrow(600, 430)).toBe('down');
+    expect(hitSheetArrow(600, 400)).toBeNull(); // 两颗之间
+    expect(hitSheetArrow(592, 380)).toBeNull();
+    expect(hitSheetArrow(623, 380)).toBeNull();
+  });
+
+  it('★ 翻页：每页 10 行；「起点+11 > 总数」才是到底（不是 +10）', () => {
+    // 恰好 10 条：翻不动
+    expect(estatePageAfter(10, 0, 1)).toBe(0);
+    // 11 条：可以翻到第 2 页
+    expect(estatePageAfter(11, 0, 1)).toBe(10);
+    // 20 条：翻到第 2 页；第 2 页再翻 -> 起点+11 = 21 > 20，停
+    expect(estatePageAfter(20, 0, 1)).toBe(10);
+    expect(estatePageAfter(20, 10, 1)).toBe(10);
+    // 21 条：第 2 页还能翻到第 3 页
+    expect(estatePageAfter(21, 10, 1)).toBe(20);
+    // 上一页：0 就不动
+    expect(estatePageAfter(50, 0, -1)).toBe(0);
+    expect(estatePageAfter(50, 20, -1)).toBe(10);
+  });
+
+  it('★ 租期：0 = 無限期；否则 `%02d/%d/%d` = (v>>16)%100 / (v>>8)&0xf / v&0xff', () => {
+    expect(tenureText(0)).toBe('無限期');
+    // 1998 年 1 月 5 日 = 1998<<16 | 1<<8 | 5
+    expect(tenureText((1998 << 16) | (1 << 8) | 5)).toBe('98/1/5');
+    // 2005 年 12 月 31 日 → 年取后两位并补零
+    expect(tenureText((2005 << 16) | (12 << 8) | 31)).toBe('05/12/31');
+  });
+});
+
+describe('视图 1 的行内容（T-023）—— 五种种类 @source VA 0x423b3b', () => {
+  const land = (over: Record<string, unknown>) => ({
+    id: 1, x: 0, y: 0, name: 'A區', priceStatus: 0, type: 0, owner: 1, level: 0,
+    facing: 0, landPrice: 1000, housePrice: 100, rentByLevel: [0, 500, 0, 0, 0, 0],
+    flast: 0, ...over,
+  });
+  const fac = (over: Record<string, unknown>) => ({
+    id: 1, x: 0, y: 0, name: '公園', type: 1, owner: 1, level: 2, facing: 0,
+    priceStatus: 0, landPrice: 500, housePrice: 100, rateByLevel: [10, 20, 30, 40, 50, 60],
+    ...over,
+  });
+  const topo = {
+    nodes: [],
+    lands: [
+      land({ id: 1, name: 'A區', owner: 1, type: 0, level: 0 }), // 空地
+      land({ id: 2, name: 'A區', owner: 1, type: 0, level: 1 }), // 房屋
+      land({ id: 3, name: 'B區', owner: 1, type: 5, level: 1 }), // 連鎖店
+      land({ id: 4, name: 'C區', owner: 2, type: 0, level: 1 }), // 别人的
+    ],
+    facilities: [fac({ id: 1, owner: 1, type: 1, level: 2 })],
+    commercials: [],
+  } as unknown as MapTopology;
+  const state = {
+    players: [{ index: 0 }],
+    holdings: [[]],
+    market: { stocks: [] },
+    commercialOwners: [],
+    priceIndex: 1,
+    landOwner: [], landLevel: [], landType: [], landPriceStatus: [],
+    facilityOwner: [], facilityLevel: [], facilityType: [], facilityPriceStatus: [],
+    landTenure: [0, 0, (1998 << 16) | (6 << 8) | 1, 0, 0],
+    facilityTenure: [0, 0],
+  } as unknown as GameState;
+
+  it('★ 种类 0「全部」= 我的地块（4−1=3 块）再我的設施（1 个）', () => {
+    const rows = assetRows(state, topo, 0, 0);
+    expect(rows.map((r) => r.place)).toEqual(['A區', 'A區', 'B區', '公園']);
+  });
+
+  it('★ 种类 1/2/3/4 各自筛对', () => {
+    const names = (k: number) => assetRows(state, topo, 0, k).map((r) => `${r.place}:${r.status}`);
+    expect(names(1)).toEqual(['A區:空  地', 'A區:平  房', 'B區:連鎖店']); // 住宅區
+    expect(names(2)).toEqual(['公園:旅  館']); // 商業區
+    expect(names(3)).toEqual(['A區:平  房']); // 房屋 = type 0 且 level≠0
+    expect(names(4)).toEqual(['B區:連鎖店']); // 連鎖店 = type≠0 且 level≠0
+  });
+
+  it('★ 五列：價格 = (房价×等级 + 地价)×物價指數；住宅的收費按**同名区**累加', () => {
+    const rows = assetRows(state, topo, 0, 1);
+    const [vacant, house, chain] = rows;
+    // A區 等级 0：(100×0 + 1000) = 1000；A區 等级 1：100×1+1000 = 1100
+    expect(vacant!.price).toBe('$1,000');
+    expect(house!.price).toBe('$1,100');
+    // 住宅过路费 = 同名『A區』两块地的 rentByLevel[等级] 之和 = 0 + 500
+    expect(vacant!.toll).toBe('$500');
+    expect(house!.toll).toBe('$500');
+    // 连锁店那行显示的是**入口算的那一个**（当前玩家名下连鎖店 × 2000）
+    expect(chain!.toll).toBe('$2,000');
+  });
+
+  it('★ 租期列读 landTenure（打包日期），設施那行读 facilityTenure', () => {
+    const rows = assetRows(state, topo, 0, 0);
+    expect(rows[1]!.tenure).toBe('98/6/1'); // 地块 2
+    expect(rows[3]!.tenure).toBe('無限期'); // 設施 1
+  });
+
+  it('★ 設施行：價格 = (費率[0]×等级 + 地价)；收費 = 費率[等级]', () => {
+    const row = assetRows(state, topo, 0, 2)[0]!;
+    expect(row.price).toBe('$520'); // 10×2 + 500
+    expect(row.toll).toBe('$30'); // 費率[2]
+  });
+});
+
+describe('视图 2 的 12 行股票（T-023）@source VA 0x4238b1', () => {
+  it('★ 12 支全列；持仓那列**也带 $**（原版走的是货币串）', () => {
+    const mine = stocksOfMap(0);
+    const holdings = mine.map((_, i) => ({ amount: i === 3 ? 10 : 0, avgCost: 4 }));
+    const state = {
+      globalMapId: 0,
+      holdings: [holdings],
+      market: { stocks: mine.map((_, i) => ({ price: i === 3 ? 7 : 0 })) },
+    } as unknown as GameState;
+    const rows = stockRows(state, 0);
+    expect(rows).toHaveLength(12);
+    expect(rows[3]!.place).toBe(mine[3]!.name);
+    expect(rows[3]!.status).toBe('$10'); // 持有張數（带 $，原版如此）
+    expect(rows[3]!.price).toBe('$70'); // 10 × 7
+    expect(rows[0]!.status).toBe('$0');
   });
 });
