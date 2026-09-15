@@ -658,12 +658,10 @@ export class Hud {
     //   ⚠️ 先前这几个字号写的是 15 / 34，是从画面上目测的；年份还一度被改成居中
     //   （也是我的推断）。都以这段汇编为准。
     const small = '16px "PingFang TC", "Microsoft JhengHei", sans-serif';
-    const body = '24px "PingFang TC", "Microsoft JhengHei", sans-serif';
-    const monthFont = '28px "PingFang TC", "Microsoft JhengHei", sans-serif';
     const dayFont = '60px "PingFang TC", "Microsoft JhengHei", sans-serif';
 
-    text(String(year), CAL.year, 'left', body, PLAIN_COLOR);
-    text(`${month}月`, CAL.monthText, 'center', monthFont, PLAIN_COLOR);
+    // 年与月 —— 与月曆共用同一段（见 `#drawYearMonth`）
+    this.#drawYearMonth(input);
     // ★ 星期名是**竖排**（一个字一行）。
     //
     //   这一条是**需求方的实机截图**定的（2026-09-15）：截图上「星期五」三个字上下叠着，
@@ -724,6 +722,43 @@ export class Hud {
     }
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
+
+    // ★ **月曆也要画年与月** —— 两个版式在 exe 里是**共用一条尾巴**的：
+    //   日曆那支画完星期名与日号、月曆那支画完格子，**都跳/落到 0x00416d3b**，
+    //   那一支才是画「年 + 月」的地方（`create_font(0x18)` → itoa(年) →
+    //   `draw_text(x=0x244, y=0x120, flag 0)`；再 `create_font(0x1c)` →
+    //   `sprintf("%d月")` → `draw_text(x=0x1f4, y=0x148, flag 2)`）。
+    //   ⚠️ 先前只在日曆那面画了年月，月曆那面只有格子 —— 与需求方的原版截图对不上。
+    this.#drawYearMonth(input);
+  }
+
+  /**
+   * 年与月 —— **日曆与月曆两个版式共用** @source VA 0x00416d3b（年）/ 0x00416d86（月）。
+   *
+   * 年：24 号、（局部）左上 (140,8)、flag 0；月：28 号、水平居中 (60,48)、flag 2。
+   */
+  #drawYearMonth(input: HudInput): void {
+    const ctx = this.#ctx;
+    const { month, year } = input.state;
+    const { x: ox, y: oy } = SIDEBAR;
+    const line = (
+      s: string,
+      at: { x: number; y: number },
+      align: CanvasTextAlign,
+      size: number,
+    ): void => {
+      ctx.font = `${size}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+      ctx.textAlign = align;
+      // flag 0 / 2 都**只调 x**（跳表 `0x44faa0` 按 `flag−1` 索引），y 是顶边
+      ctx.textBaseline = 'top';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.strokeText(s, ox + at.x, oy + at.y);
+      ctx.fillStyle = PLAIN_COLOR;
+      ctx.fillText(s, ox + at.x, oy + at.y);
+    };
+    line(String(year), CAL.year, 'left', 24);
+    line(`${month}月`, CAL.monthText, 'center', 28);
   }
 
   #drawPanel(input: HudInput): void {
