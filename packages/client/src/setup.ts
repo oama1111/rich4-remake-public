@@ -46,6 +46,7 @@ import {
   setupWalkFrames,
   setupWalkResource,
 } from './assets.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** 画面尺寸 —— 与原版一致 */
 const SCREEN_W = 640;
@@ -484,7 +485,7 @@ function multiply(
   ctx.restore();
 }
 
-const FONT = '"PingFang TC", "Microsoft JhengHei", sans-serif';
+const FONT = FONT_FAMILY;
 
 /**
  * 写一行字。

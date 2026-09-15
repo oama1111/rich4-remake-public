@@ -15,6 +15,8 @@
  *     的视频块，却在 `avih` 里声明 **15 帧**。
  *   故这里只复刻**时序与可跳过**这两条能确证的行为，画面留给 Q-INTRO-1。
  */
+import { FONT_FAMILY } from './font.ts';
+
 
 /** 过场画面尺寸 @source `Airplane.avi` 的 `strf`：312 × 160 */
 export const INTRO_SIZE = { w: 0x138, h: 0xa0 } as const;
@@ -71,7 +73,7 @@ export function drawIntro(
   ctx.fillRect(at.x, at.y + INTRO_SIZE.h - 3, (INTRO_SIZE.w * frame) / Math.max(1, frames), 3);
 
   ctx.fillStyle = '#c8ccd4';
-  ctx.font = '14px "PingFang TC", "Microsoft JhengHei", sans-serif';
+  ctx.font = `14px ${FONT_FAMILY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.fillText('開場動畫（原版為 AIRPLANE.AVI，見 Q-INTRO-1）—— 按任意鍵跳過', width / 2, at.y + INTRO_SIZE.h + 16);

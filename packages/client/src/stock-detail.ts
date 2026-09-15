@@ -68,6 +68,7 @@
 import type { GameState } from '@rich4/core';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { comma, magnitudeClass, priceText } from './stock-screen.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type DetailSprite = (
@@ -369,7 +370,7 @@ export function stockDetailFrom(
 //  画
 // ============================================================
 
-const FONT = '"PingFang TC", "Microsoft JhengHei", sans-serif';
+const FONT = FONT_FAMILY;
 
 function text(
   ctx: CanvasRenderingContext2D,

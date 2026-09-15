@@ -27,6 +27,7 @@ import {
 import { CHARACTERS } from '@rich4/data';
 import { portraitResource, type Sprite, type SpriteCache } from './assets.ts';
 import type { Camera } from './render.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** 侧栏整图尺寸 @source Panel.mkf 资源 0 的图 0 */
 export const PANEL_WIDTH = 200;
@@ -657,8 +658,8 @@ export class Hud {
     //
     //   ⚠️ 先前这几个字号写的是 15 / 34，是从画面上目测的；年份还一度被改成居中
     //   （也是我的推断）。都以这段汇编为准。
-    const small = '16px "PingFang TC", "Microsoft JhengHei", sans-serif';
-    const dayFont = '60px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    const small = `16px ${FONT_FAMILY}`;
+    const dayFont = `60px ${FONT_FAMILY}`;
 
     // 年与月 —— 与月曆共用同一段（见 `#drawYearMonth`）
     this.#drawYearMonth(input);
@@ -706,7 +707,7 @@ export class Hud {
       ctx.fillRect(ox, oy, w, h);
     }
 
-    ctx.font = '12px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    ctx.font = `12px ${FONT_FAMILY}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (const cell of monthCells(year, month)) {
@@ -747,7 +748,7 @@ export class Hud {
       align: CanvasTextAlign,
       size: number,
     ): void => {
-      ctx.font = `${size}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+      ctx.font = `${size}px ${FONT_FAMILY}`;
       ctx.textAlign = align;
       // flag 0 / 2 都**只调 x**（跳表 `0x44faa0` 按 `flag−1` 索引），y 是顶边
       ctx.textBaseline = 'top';
@@ -778,7 +779,7 @@ export class Hud {
 
     // 四个 tag（右缘竖条）—— **竖排、小一号**（排法仍按需求方的实机截图，
     // 颜色 2026-09-15 按 exe 改回深色：当前页 `0x101010`、其余 `0x404040`）
-    ctx.font = `${PANEL_TAG_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+    ctx.font = `${PANEL_TAG_SIZE}px ${FONT_FAMILY}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     PANEL_TAGS.forEach((tag, i) => {
@@ -809,21 +810,21 @@ export class Hud {
 
     // 姓名 ── @source VA 0x00416288 `draw_text(0, 名字, 0x234(564), 0x28(40), 2)`（flag 2 = 正中）
     ctx.fillStyle = '#101010';
-    ctx.font = `${PANEL_VALUE_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+    ctx.font = `${PANEL_VALUE_SIZE}px ${FONT_FAMILY}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const name = CHARACTERS[me.character]?.name ?? `角色${me.character}`;
     ctx.fillText(name, 0x234 - 440, 0x28);
     if (me.whoPlays === 0) {
       ctx.fillStyle = '#a02a20';
-      ctx.font = '12px "PingFang TC", sans-serif';
+      ctx.font = `12px ${FONT_FAMILY}`;
       ctx.fillText('（出局）', 0x234 - 440, 0x28 + 18);
     }
 
     // 三行标签（**原版是开局画进页面图的**，这里每帧照同样的坐标画）@source VA 0x00417eba
     const labels = PANEL_ROWS[page] ?? PANEL_ROWS[0]!;
     ctx.fillStyle = '#101010';
-    ctx.font = `${PANEL_LABEL_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+    ctx.font = `${PANEL_LABEL_SIZE}px ${FONT_FAMILY}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     for (let i = 0; i < PANEL_ROW_LABEL_Y.length; i++) {
@@ -833,7 +834,7 @@ export class Hud {
     // 三行数值 —— 每页算的量不同，见 core 的 `panelValues`；文字由调用方
     // （client/panel.ts 的 `panelRows`）按各页的格式排好再传进来
     // @source VA 0x004162d4 / 0x00416355 / 0x0041646c / 0x004165e1
-    ctx.font = `${PANEL_VALUE_SIZE}px "PingFang TC", monospace`;
+    ctx.font = `${PANEL_VALUE_SIZE}px ${FONT_FAMILY}`;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'top';
     ctx.fillStyle = '#101010';
@@ -846,7 +847,7 @@ export class Hud {
     //   （5 个汉字 + 两个空格 + %d），故不必自己拼
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.font = `${PANEL_LABEL_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+    ctx.font = `${PANEL_LABEL_SIZE}px ${FONT_FAMILY}`;
     ctx.fillStyle = '#101010';
     ctx.fillText(`物價指數  ${input.state.priceIndex}`, 0x1c2 - 440, 0x104);
   }

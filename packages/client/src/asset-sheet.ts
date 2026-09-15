@@ -65,6 +65,7 @@ import { CARDS, CHARACTERS, stocksOfMap } from '@rich4/data';
 import { portraitResource, type ArchiveName, type Sprite } from './assets.ts';
 import { currency } from './panel.ts';
 import { inRect } from './gameui.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** 同步取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type SheetSprite = (
@@ -80,7 +81,7 @@ export const SHEET_RESOURCE = 9;
 export const SHEET_VIEW_COUNT = 3;
 
 /** 字体族 —— 与原版中文点阵字最近似的系统字 */
-const FONT = '"PingFang TC", "Microsoft JhengHei", sans-serif';
+const FONT = FONT_FAMILY;
 
 // ============================================================
 //  玩家页签（顶栏那一排名字）

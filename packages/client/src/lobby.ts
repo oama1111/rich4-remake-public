@@ -19,6 +19,7 @@
 
 import type { RoomInfo, SeatInfo } from '@rich4/core';
 import { portraitResource, type ArchiveName, type Sprite } from './assets.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** 最多几个座位 —— 与开局设置一致（原版四人） */
 export const MAX_SEATS = 4;
@@ -123,7 +124,7 @@ export function hitLobby(x: number, y: number, opts: LobbyHitOptions): LobbyHit 
 /** 取精灵的回调，与其它屏一致 */
 export type SpriteFn = (archive: ArchiveName, resource: number, index: number) => Sprite | null;
 
-const FONT = '"PingFang TC","Microsoft JhengHei",sans-serif';
+const FONT = FONT_FAMILY;
 
 /**
  * 画一帧大厅。

@@ -37,6 +37,7 @@ import type { GameState, Player } from '@rich4/core';
 import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from '@rich4/core';
 import { CHARACTERS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
+import { FONT_FAMILY } from './font.ts';
 
 // ============================================================
 //  资源
@@ -369,7 +370,7 @@ export function applyAiSettingsHit(rows: readonly AiSettingRow[], hit: AiSetting
 
 export type SpriteFn = (archive: ArchiveName, resource: number, index: number) => Sprite | null;
 
-const FONT = '"PingFang TC","Microsoft JhengHei",sans-serif';
+const FONT = FONT_FAMILY;
 
 /**
  * 画一帧。

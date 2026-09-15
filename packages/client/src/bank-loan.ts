@@ -55,6 +55,7 @@
  */
 
 import type { ArchiveName, Sprite } from './assets.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type LoanSprite = (
@@ -156,7 +157,7 @@ export interface LoanView {
   finance: readonly [number, number, number];
 }
 
-const FONT = '"PingFang TC", "Microsoft JhengHei", sans-serif';
+const FONT = FONT_FAMILY;
 
 /** 一行字（黑/白由调用方定 —— 原版各处的 create_font 颜色不同）*/
 function text(

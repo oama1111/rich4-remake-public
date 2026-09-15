@@ -36,6 +36,7 @@ import { saveStore } from './host.ts';
 import { deserializeGame, serializeGame } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import { inRect, type Rect } from './gameui.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** Data.mkf 里这一屏的资源号 @source 0x00403d83 `push 0x208` */
 export const SAVELOAD_RESOURCE = 0x208;
@@ -252,7 +253,7 @@ export function drawSaveLoad(
     ctx.lineWidth = 1;
     ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
     ctx.fillStyle = '#e8eef8';
-    ctx.font = '13px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    ctx.font = `13px ${FONT_FAMILY}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('匯入原版存檔', b.x + b.w / 2, b.y + b.h / 2);
@@ -289,9 +290,9 @@ export function drawSaveLoad(
       ctx.fillText('AUTO', r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.auto);
     }
     if (st !== null) {
-      ctx.font = 'bold 15px "PingFang TC", "Microsoft JhengHei", sans-serif';
+      ctx.font = `bold 15px ${FONT_FAMILY}`;
       ctx.fillText(String(st.year), r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.year);
-      ctx.font = '14px "PingFang TC", "Microsoft JhengHei", sans-serif';
+      ctx.font = `14px ${FONT_FAMILY}`;
       ctx.fillText(`${st.month}/${st.day}`, r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.date);
 
       const thumb = sprite(
@@ -308,7 +309,7 @@ export function drawSaveLoad(
       }
     } else if (info !== undefined && info.error !== null) {
       ctx.textAlign = 'left';
-      ctx.font = '14px "PingFang TC", "Microsoft JhengHei", sans-serif';
+      ctx.font = `14px ${FONT_FAMILY}`;
       ctx.fillStyle = '#a02a20';
       ctx.fillText(`存檔損毀：${info.error}`, ROW_THUMB_X, r.y + ROW.size / 2);
     }

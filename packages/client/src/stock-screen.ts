@@ -100,6 +100,7 @@
 import type { GameState } from '@rich4/core';
 import { STOCK_STATUS, marketOpenOn, stockStatus } from '@rich4/core';
 import type { ArchiveName, Sprite } from './assets.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type StockSprite = (
@@ -444,7 +445,7 @@ export function stockCounterClosed(state: GameState): boolean {
 //  画
 // ============================================================
 
-const FONT = '"PingFang TC", "Microsoft JhengHei", sans-serif';
+const FONT = FONT_FAMILY;
 
 /** 一行字 */
 function text(

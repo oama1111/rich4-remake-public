@@ -49,6 +49,7 @@ import {
   type SpriteFn,
 } from './gameui.ts';
 import { LAYOUT } from './stage.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** 框心（棋盘区坐标）—— 由屏幕坐标换算，见 gameui.ts */
 export const DIALOG_ANCHOR = toBoard(DIALOG_ANCHOR_SCREEN);
@@ -75,8 +76,8 @@ const BTN_H = 24;
 const BTN_GAP = 5;
 const BTN_MIN_W = 56;
 
-const FONT_TITLE = 'bold 16px "PingFang TC", "Microsoft JhengHei", sans-serif';
-const FONT_BODY = '14px "PingFang TC", "Microsoft JhengHei", sans-serif';
+const FONT_TITLE = `bold 16px ${FONT_FAMILY}`;
+const FONT_BODY = `14px ${FONT_FAMILY}`;
 
 
 // ============================================================

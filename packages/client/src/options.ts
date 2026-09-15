@@ -64,6 +64,7 @@
  */
 
 import type { Sprite } from './assets.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** Data.mkf 里这一屏的资源号 */
 export const OPTIONS_RESOURCE = 3;
@@ -437,7 +438,7 @@ export function applyOptionsHit(o: GameOptions, hit: OptionsHit): GameOptions {
 /** 取一张 `Data.mkf` 资源 3 的图；未解码好时返回 null（调用方会被重绘补上） */
 export type OptionsSpriteFn = (index: number, colorKeyBlack?: boolean) => Sprite | null;
 
-const FONT = '"PingFang TC", "Microsoft JhengHei", sans-serif';
+const FONT = FONT_FAMILY;
 const TEXT_COLOR = '#101010';
 /** 列表里的字：白字黑边 @source `create_font(0xc, 0xf0f0f0, 0x101010, …)` */
 const LIST_FILL = '#f0f0f0';

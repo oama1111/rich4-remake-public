@@ -39,6 +39,7 @@ import type { PendingInteraction } from '@rich4/core';
 import { CARDS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { InvEntry } from './inventory.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type ShopSprite = (
@@ -568,7 +569,7 @@ export const SHOP_CELL_PRESS = {
   edgeAlpha: 0.5,
 } as const;
 
-const SHOP_FONT = '"PingFang TC", "Microsoft JhengHei", sans-serif';
+const SHOP_FONT = FONT_FAMILY;
 
 /** 20 号白字 + 3px 深色描边 —— 与 T-024 道具欄同一套 @source 0x42ea2b */
 function shopText(

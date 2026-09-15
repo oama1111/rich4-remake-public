@@ -38,6 +38,7 @@ import {
 import { CARD_IMPLS, CARDS, TOOLS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { classNeedsItsOwnList } from './picking.ts';
+import { FONT_FAMILY } from './font.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type InvSprite = (
@@ -103,7 +104,7 @@ export const INV_VEHICLE_IMAGE: ReadonlyMap<number, number> = new Map([
 
 /** 文字：20 号白字 + 深色描边 @source VA 0x447c7c `create_font(…, 0x14)` 与 0x4653e0 */
 export const INV_FONT_SIZE = 0x14;
-const INV_FONT = '"PingFang TC", "Microsoft JhengHei", sans-serif';
+const INV_FONT = FONT_FAMILY;
 
 /** 第 `slot` 格的矩形（屏幕坐标）*/
 export function invCellRect(slot: number): { x: number; y: number; w: number; h: number } {
