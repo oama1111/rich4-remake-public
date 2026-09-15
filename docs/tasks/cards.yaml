@@ -618,7 +618,7 @@ cards:
   title: 小地圖旋转钮（地圖向左/右旋轉）
   module: MOD-12
   req: REQ-12.5
-  status: todo
+  status: done
   estimate: 0.2
   depends_on: []
   uses:
