@@ -1210,7 +1210,11 @@ function setViewMode(mode: 'character' | 'map'): void {
     camera = characterCamera(node?.x ?? 0, node?.y ?? 0, camera.view);
     followPlayer = true;
   } else {
-    camera = { ...fitCamera(map, canvas.clientWidth, canvas.clientHeight), view: camera.view };
+    // ★ 按**棋盘区**（439×440）取景，不是整个窗口 —— 地图是画进棋盘区的，
+    //   用窗口尺寸算会把整图缩过头、塞进棋盘后只剩左上角一块。
+    //   @source 原版大地圖：「一块近乎正方的大窗（左侧 439×440 那块），里面画整张地图」
+    //   （见 docs/original-screens.md 的 S6）。
+    camera = { ...fitCamera(map, LAYOUT.board.w, LAYOUT.board.h), view: camera.view };
   }
   log(mode === 'character' ? '▶ 人物视角' : '▶ 地图视角');
   requestRender();
