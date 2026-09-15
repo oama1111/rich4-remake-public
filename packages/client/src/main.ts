@@ -1799,6 +1799,9 @@ function bindInput(): void {
       const next = hit === null ? null : hit.index;
       if (next !== titleHot) {
         titleHot = next;
+        // 標題的悬停音 —— 只在**从一个按钮移到另一个**时响（原版同：hover 变了才播）
+        // @source rich4_ui_main.asm 的 WM_MOUSEMOVE：`play_sound_effect(0x48231a, 0)`
+        if (next !== null) sound.play('Effect.mkf', SOUND_IDS.TITLE_HOVER);
         requestRender();
       }
       return;
@@ -1898,7 +1901,12 @@ function bindInput(): void {
 
     if (screen === 'title') {
       const hit = hitTitle(p.x, p.y, (i) => spriteNow('Data.mkf', TITLE_RESOURCE, i, true));
-      if (hit !== null) onTitleButton(hit.id);
+      if (hit !== null) {
+        // 標題的确认音 @source rich4_ui_main.asm 的 WM_LBUTTONDOWN：
+        //   `play_sound_effect(0x482322, 0)`
+        sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+        onTitleButton(hit.id);
+      }
       return;
     }
     if (screen === 'aiSettings') {

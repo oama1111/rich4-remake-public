@@ -1087,7 +1087,7 @@ cards:
   title: 地塊归属彩边 + GO 钮三态 + 標題音效
   module: MOD-12
   req: REQ-12.19
-  status: todo
+  status: done
   estimate: 0.4
   depends_on: []
   uses: [client/render.ts, client/gameui.ts (GO_IMAGE), client/title.ts, client/audio.ts]
@@ -1097,7 +1097,16 @@ cards:
   algorithm: "颜色取 CHARACTERS[character].color（C-ENG-2 先实测字节序）。"
   tests: "颜色映射测试"
   files: [packages/client/src/render.ts, packages/client/src/title.ts]
-  notes: ""
+  notes: |
+    2026-09-15 完成（三部分）：
+    - **地塊归属彩边**：调色板索引 255 那套（VA 0x0040987d），先前的轮次已做
+      （`assets.ts` 的 RING_PALETTE_INDEX + render.ts 按角色色传入）。
+    - **GO 钮三组图**：见 Q-UI-4 —— 图号 = 组(0 普通/2 禁止通行/4 烏龜) + 帧(0/1，
+      每 500 ms 翻转)。组从 `player.blocking.stopping` / `.tortoiseWalking` 读。
+    - **標題音效**：悬停 = 音效 **0**（`[0x48231a]`）、确认 = **1**（`[0x482322]`）
+      @source rich4_ui_main.asm 的 WM_MOUSEMOVE / WM_LBUTTONDOWN；
+      `SOUND_IDS.TITLE_HOVER / TITLE_CLICK` + 一条断言。
+    ⚠️ §11 的 P2-19 是**合并条目**（还含 T-048 跳伞、T-049 船），故等那两张做完再打勾。""
 
 - id: T-051
   group: C

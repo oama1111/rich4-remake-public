@@ -99,6 +99,19 @@ export const SOUND_IDS = {
   LOTTERY_DRAW: 8,
   /** 拍卖 @source VA 0x0043c6ca `push 5`，在 run_auction 0x0043bde5 内 */
   AUCTION: 5,
+  /**
+   * 標題／選單的**悬停**音 —— 音效 **0**。
+   * @source `rich4_ui_main.asm` 的 WM_MOUSEMOVE 分支：
+   *   `push 0 / push ref_0048231a / call rich4_play_sound_effect`
+   *   而 `play_sound_effect(ptr, k)` 取 `[ptr]` 当音效号，`[0x48231a] = 0`。
+   */
+  TITLE_HOVER: 0,
+  /**
+   * 標題／選單的**确认（点击）**音 —— 音效 **1**。
+   * @source `rich4_ui_main.asm` 的 WM_LBUTTONDOWN 分支：
+   *   `push 0 / push ref_00482322 / call rich4_play_sound_effect`，`[0x482322] = 1`。
+   */
+  TITLE_CLICK: 1,
 } as const;
 
 /**

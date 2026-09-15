@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { MkfArchive } from './mkf.ts';
-import { MIDI_PLAYLIST, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND } from './audio.ts';
+import { MIDI_PLAYLIST, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, SOUND_IDS } from './audio.ts';
 
 const RICH4 = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4';
 const have = (f: string) => (existsSync(`${RICH4}/${f}`) ? it : it.skip);
@@ -116,5 +116,12 @@ describe('★ 移动/掷骰音效与骰子落点 —— 照 exe 的表', () => {
     // 逐向各不同，不是常数表
     const keys = new Set(DICE_AT.map(([x, y]) => `${x},${y}`));
     expect(keys.size).toBe(8);
+  });
+});
+
+describe('★ 標題／選單音效 —— 照 exe 的编号', () => {
+  it('悬停 = 0、确认 = 1（`[0x48231a]` / `[0x482322]`）', () => {
+    expect(SOUND_IDS.TITLE_HOVER).toBe(0);
+    expect(SOUND_IDS.TITLE_CLICK).toBe(1);
   });
 });
