@@ -18,11 +18,13 @@ import {
   newGame,
   reduce,
   parseMap,
+  stateFingerprint,
   type Action,
   type GameState,
   type MapTopology,
   type Rich4Map,
 } from '@rich4/core';
+import { NetClient, netParamsFrom } from './net-client.ts';
 import {
   loadArchives,
   loadGround,
@@ -213,6 +215,10 @@ function onSaveLoadRow(row: number): void {
  *   节点号上 —— 那种错不会立刻报，会在几步之后以「走到了奇怪的地方」出现。
  */
 function loadState(next: GameState): void {
+  if (net !== null) {
+    log('⚠ 聯機中不能讀檔：局面由伺服器的 action 流決定');
+    return;
+  }
   map = parseMap(readMapData(archives, next.globalMapId));
   topo = {
     nodes: map.nodes,
@@ -280,6 +286,8 @@ function autosaveIfEnabled(): void {
   if (screen !== 'game') return;
   if (state.phase !== 'awaitingRoll') return;
   if (isAiTurn(state)) return;
+  // 联机的局面由服务器的 action 流决定，读档会把本机拉离同步；先不存
+  if (net !== null) return;
   const err = writeSlot(AUTOSAVE_SLOT, state);
   if (err !== null) log(`⚠ 自動存檔失敗：${err}`);
 }
@@ -290,6 +298,8 @@ function scheduleHumanTurn(): void {
     humanTimer = null;
   }
   if (screen !== 'game') return;
+  // 联机：别人的回合由他的客户端（或服务器代打）推进，本机只看
+  if (!localSeatActive()) return;
   // 轮到电脑就交给 scheduleAi，别两个驱动同时动手
   if (isAiTurn(state) || autoAction(state) !== null) return;
   const next = mechanicalAction();
@@ -452,7 +462,7 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
 
 /** 轮到人、还没掷骰 */
 function awaitingHumanRoll(): boolean {
-  return screen === 'game' && state.phase === 'awaitingRoll' && !isAiTurn(state);
+  return screen === 'game' && state.phase === 'awaitingRoll' && !isAiTurn(state) && localSeatActive();
 }
 
 /**
@@ -464,6 +474,8 @@ function awaitingHumanRoll(): boolean {
  */
 function currentDialog(): InteractionUi | null {
   if (screen !== 'game') return null;
+  // 联机：待决交互只由当前座位的客户端回答；旁人不弹窗，免得替别人答
+  if (!localSeatActive()) return null;
   return state.pending === null ? null : interactionUi(state.pending, state);
 }
 
@@ -663,7 +675,31 @@ let pressedTool: number | null = null;
 /** 走过的 action —— 回放、联机对账、以及排错都靠它 */
 const history: Action[] = [];
 
+/**
+ * 联机句柄；单机为 null。
+ *
+ * ★ 联机时（T-074 / PRD REQ-14.2）本地**从不**自己 reduce 自己的输入：
+ *   `dispatch` 只把 action 作为意图发给服务器，服务器定序广播回来的
+ *   才由 `applyAction` 施加。于是本地输入、远端输入、电脑代打三者走的
+ *   是同一条路，与单机的 reduce 完全一样——这就是确定性联机不需要回滚的原因。
+ */
+let net: NetClient | null = null;
+
+/** 只有自己座位的回合才轮到本机做决定（联机）；单机永远是 */
+function localSeatActive(): boolean {
+  return net === null || net.seat === state.currentPlayer;
+}
+
 function dispatch(action: Action): void {
+  if (net !== null) {
+    net.submit(action);
+    return;
+  }
+  applyAction(action);
+}
+
+/** 真正施加一条 action：单机由 dispatch 直达，联机由服务器广播到达 */
+function applyAction(action: Action): void {
   const before = state;
   state = reduce(state, action, topo);
   if (state !== before) {
@@ -725,6 +761,10 @@ function scheduleAi(): void {
   // ★ 出局者的回合由引擎推进，与「是否开着托管」无关——
   //   否则人类玩家一破产，整局就停在他身上不动了。
   if (autoAction(state) === null && (!aiAutoPlay || !isAiTurn(state))) return;
+  // 联机：电脑座位由服务器代打，别的真人座位由他们自己的客户端驱动；
+  //   本机只替**自己的座位**拿主意（出局后的空转、本机开的託管），并且
+  //   照样作为意图发出去，不在本地施加。
+  if (!localSeatActive()) return;
   aiTimer = window.setTimeout(() => {
     aiTimer = null;
     const action = decideAction({ state, map });
@@ -732,6 +772,10 @@ function scheduleAi(): void {
       // 轮到电脑却拿不出 action —— 这是**卡住**，不是「没事可做」，
       // 必须说出来。先前这里是静默 return，一个漏掉的 scheduleAi 就此藏了很久。
       if (isAiTurn(state)) log(`⚠ 电脑在 ${state.phase} 无事可做，已停手`);
+      return;
+    }
+    if (net !== null) {
+      net.submit(action);
       return;
     }
     if (action.type === 'step') renderer.advanceWalk();
@@ -1284,6 +1328,11 @@ function onTitleButton(id: 'start' | 'load' | 'option' | 'exit' | 'newStage'): v
 
 /** 按当前設定开一局 */
 function startGame(): void {
+  // 联机：开局参数（种子、座位）由服务器下发，这里只是「请房主开局」
+  if (net !== null) {
+    net.start();
+    return;
+  }
   const players = Array.from({ length: setup.playerCount }, (_, i) => ({
     character: setup.characters[i] ?? i,
     kind: (setup.human[i] ?? false ? 'human' : 'computer') as 'human' | 'computer',
@@ -1717,6 +1766,101 @@ async function ensureGameDir(): Promise<void> {
   actionsEl.replaceChildren();
 }
 
+// ============================================================
+//  联机（T-074）
+// ============================================================
+
+/** 断线后隔多久重连 */
+const RECONNECT_MS = 1500;
+
+/**
+ * 接上服务器。地址栏 `?ws=ws://host:port&room=r1&name=小明`。
+ *
+ * ★ 开局参数由服务器 `start` 下发：种子、地图、座位。本机据此建初始状态，
+ *   之后**只**施加服务器广播的 action。断线就带着 `since`（本地已施加到几号）
+ *   重连，同名认回原座位，服务器补发漏掉的那段。
+ */
+function connectOnline(url: string, room: string, name: string): void {
+  let closedByUs = false;
+  const open = (since: number | undefined): void => {
+    const ws = new WebSocket(url);
+    const client = new NetClient(
+      { send: (text) => ws.send(text) },
+      {
+        room,
+        name,
+        ...(since === undefined ? {} : { since }),
+        onJoined: (seat, info) => {
+          log(`✔ 進房 ${info.id}：我是 ${seat + 1} 號座${seat === 0 ? '（房主，按 START 開局）' : ''}`);
+          renderPanel();
+        },
+        onRoom: (info) => {
+          log(
+            '房間：' +
+              info.seats
+                .map((s) => `${s.seat + 1}${s.kind === 'human' ? (s.connected === false ? '斷' : '人') : '電'}${s.name}`)
+                .join(' '),
+          );
+        },
+        onStart: (start) => {
+          // 重连时 start 会再来一次；局面已在，别重建（那会把 since 之前的进度清掉）
+          if (since !== undefined && screen === 'game') return;
+          map = parseMap(readMapData(archives, start.globalMapId));
+          topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+          // ★ 与服务器镜像（server/room.ts）逐字段一致，否则指纹对不上
+          state = newGame({
+            map,
+            globalMapId: start.globalMapId,
+            players: start.seats.map((s) => ({ character: s.character, kind: s.kind })),
+            seed: start.seed,
+            mode: 'multiplayer',
+          });
+          history.length = 0;
+          hoverNode = null;
+          const first = map.nodes[state.players[0]?.nodeId ?? 1];
+          camera = characterCamera(first?.x ?? 0, first?.y ?? 0, camera?.view ?? 0);
+          screen = 'game';
+          log(`開局（聯機）：地圖 ${start.globalMapId}　種子 ${start.seed}`);
+          ground = null;
+          void loadGround(archives, start.globalMapId).then((g) => {
+            ground = g;
+            requestRender();
+          });
+          requestRender();
+          renderPanel();
+          scheduleAi();
+          scheduleHumanTurn();
+        },
+        onAction: (action) => {
+          if (action.type === 'step') renderer.advanceWalk();
+          applyAction(action);
+        },
+        onError: (message) => log(`⚠ 伺服器：${message}`),
+        onDesync: (d) => log(`⚠ 失步！第 ${d.seq} 號後 ${d.seat + 1} 號座的校驗和 ${d.got} ≠ ${d.expected}`),
+        fingerprint: () => stateFingerprint(state),
+      },
+    );
+    ws.onopen = () => {
+      net = client;
+      client.join();
+    };
+    ws.onmessage = (ev) => client.receive(String(ev.data));
+    ws.onclose = () => {
+      if (closedByUs) return;
+      log(`⚠ 與伺服器斷線，${RECONNECT_MS / 1000} 秒後重連…`);
+      window.setTimeout(() => open(client.expectedSeq > 0 ? client.expectedSeq - 1 : undefined), RECONNECT_MS);
+    };
+    ws.onerror = () => {
+      /* onclose 会跟着来 */
+    };
+  };
+  window.addEventListener('beforeunload', () => {
+    closedByUs = true;
+  });
+  log(`聯機：連 ${url} 房間 ${room}…`);
+  open(undefined);
+}
+
 async function boot(): Promise<void> {
   try {
     await ensureGameDir();
@@ -1830,7 +1974,9 @@ async function boot(): Promise<void> {
 
     document.body.classList.add('no-debug');
     bindInput();
-    if (straightToGame) startGame();
+    const online = netParamsFrom(window.location.search);
+    if (online !== null) connectOnline(online.url, online.room, online.name);
+    else if (straightToGame) startGame();
     requestRender();
     renderPanel();
     log(`地图载入：${map.nodes.length} 个节点、${map.lands.length} 块地`);
