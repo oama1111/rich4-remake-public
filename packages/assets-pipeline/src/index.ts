@@ -19,6 +19,7 @@ export * from './mkf-decompress.ts';
 export * from './sprite.ts';
 export * from './ground.ts';
 export * from './audio.ts';
+export * from './flic.ts';
 export * from './midi.ts';
 export * from './classify.ts';
 export * from './slice.ts';
