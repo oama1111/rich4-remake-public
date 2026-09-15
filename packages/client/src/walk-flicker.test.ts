@@ -64,7 +64,7 @@ function lineMap(n: number): Rich4Map {
 }
 
 /** 地图视角、单位缩放 —— 世界坐标 == 屏幕坐标 */
-const CAM: Camera = { x: 0, y: 0, scale: 1, mode: 'map', view: 0, tileX: 0, tileY: 0 };
+const CAM: Camera = { x: 0, y: 0, scale: 1, view: 0, tileX: 0, tileY: 0 };
 
 /** 假位图：资源号/图号挂在位图上，才认得出这一帧画的是哪一张 */
 interface FakeBitmap {

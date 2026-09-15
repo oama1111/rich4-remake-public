@@ -127,21 +127,24 @@ const PLAYER_COLORS = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
 /**
  * 视角模式。
  *
- * ★ 原版有两种看法，小地图上方那两个按钮就是切它们：
- * - `character` **人物视角**：等距投影、跟着棋子走，是主要的游戏画面。
- *   摄像机恒在 29×29 窗口的正中一格，投影查 `@rich4/data` 的投影表。
- * - `map` **地图视角**：把整张底图平铺出来俯瞰。底图本身就是这个朝向
- *   （2304 见方的正射图），故这一模式不查表，直接缩放平铺。
+ * ★ 只有**一种**看法：等距投影、跟着棋子走（摄像机恒在 29×29 窗口的正中一格，
+ *   投影查 `@rich4/data` 的投影表）。想左右看就旋转视角（`view` 0..7，每步 45°）。
+ *
+ * ⚠️ 原先这里还有第二种 `map` **地图视角**（把 2304 见方的正射底图平铺俯瞰）——
+ *   那是**本引擎自己发明的**：原版没有缩放/平移视角，`HOTKEY.map` 打开的是
+ *   一扇 400×400 的模态弹窗（窗口过程 `fcn_0040a801`，见 T-086）。
+ *   随 `setViewMode` 一并删除（D-086-5）。
  */
-export type ViewMode = 'character' | 'map';
 
 export interface Camera {
-  /** 地图视角用：视口左上角对应的地图坐标 */
+  /**
+   * 平移量（**恒为 0**）—— 原先「地图视角」用它做整图取景的平移，
+   * 那个视角是本引擎自己发明的，已随 `setViewMode` 删掉（D-086-5）。
+   * 字段保留只是因为投影与若干绘制函数都按这个形状取值。
+   */
   x: number;
   y: number;
   scale: number;
-  /** 当前模式 */
-  mode: ViewMode;
   /**
    * 视角编号 0..7，每步 45°。
    * @source 原版全局 `[0x499088]`，开局清零
@@ -229,11 +232,8 @@ export interface RenderInput {
 /**
  * 世界坐标 → 屏幕坐标。
  *
- * 人物视角走原版的投影表（见 @rich4/data 的 projection.ts），
- * 返回的是相对**屏幕中心**的偏移，故要加上视口中心；
- * 越出 29×29 窗口时返回 null，与原版一样直接不画。
- *
- * 地图视角则是简单的平移缩放——底图本身就是正射的。
+ * 走原版的投影表（见 @rich4/data 的 projection.ts），返回的是相对**屏幕中心**
+ * 的偏移，故要加上视口中心；越出 29×29 窗口时返回 null，与原版一样直接不画。
  */
 export function worldToScreen(
   x: number,
@@ -241,9 +241,10 @@ export function worldToScreen(
   cam: Camera,
   viewport: { w: number; h: number },
 ): { x: number; y: number } | null {
-  if (cam.mode === 'map') {
-    return { x: (x - cam.x) * cam.scale, y: (y - cam.y) * cam.scale };
-  }
+  // ★ 2026-09-16：原来这里还有一支「地图视角」（`cam.mode === 'map'` 的平移缩放）。
+  //   那是**本引擎自己发明的** —— 原版没有缩放/平移视角（`HOTKEY.map` 开的是
+  //   一扇 400×400 的模态弹窗，见 T-086）。`setViewMode` 删掉后它已不可达，
+  //   连同 `fitCamera` 一并删掉（D-086-5 结案）。
   const p = projectWorld(cam.view, x, y, cam.tileX, cam.tileY);
   if (p === null) return null;
   return { x: viewport.w / 2 + p.x, y: viewport.h / 2 + p.y };
@@ -307,27 +308,10 @@ export function mapBounds(map: Rich4Map): { minX: number; minY: number; maxX: nu
   return { minX, minY, maxX, maxY };
 }
 
-/** 地图视角：让整张地图恰好装进视口 */
-export function fitCamera(map: Rich4Map, viewW: number, viewH: number): Camera {
-  const b = mapBounds(map);
-  const w = Math.max(1, b.maxX - b.minX);
-  const h = Math.max(1, b.maxY - b.minY);
-  const margin = 40;
-  const scale = Math.min((viewW - margin) / w, (viewH - margin) / h);
-  return {
-    x: b.minX - margin / 2 / scale,
-    y: b.minY - margin / 2 / scale,
-    scale,
-    mode: 'map',
-    view: 0,
-    tileX: 0,
-    tileY: 0,
-  };
-}
 
 /** 人物视角：摄像机落在某个世界坐标所在的块上 */
 export function characterCamera(x: number, y: number, view = 0): Camera {
-  return { x: 0, y: 0, scale: 1, mode: 'character', view: view % VIEW_COUNT, tileX: x >> 5, tileY: y >> 5 };
+  return { x: 0, y: 0, scale: 1, view: view % VIEW_COUNT, tileX: x >> 5, tileY: y >> 5 };
 }
 
 /**
@@ -1607,21 +1591,9 @@ export class BoardRenderer {
 
     const ground = input.ground ?? null;
     if (ground !== null) {
-      if (camera.mode === 'character') {
-        this.#drawGroundProjected(ground, camera, { w: width, h: height }, dpr);
-      } else {
-        const off = input.groundOffset ?? { x: 0, y: 0 };
-        ctx.drawImage(
-          ground,
-          (off.x - camera.x) * camera.scale,
-          (off.y - camera.y) * camera.scale,
-          ground.width * camera.scale,
-          ground.height * camera.scale,
-        );
-        // 地图视角把底图压暗，让棋盘的连线与格子读得出来
-        ctx.fillStyle = 'rgba(10,12,20,0.35)';
-        ctx.fillRect(0, 0, width, height);
-      }
+      // ★ 只有人物视角这一支 —— 「地图视角」那支（平移缩放的整图取景）是
+      //   本引擎自己发明的，随 `setViewMode` 一起删掉（D-086-5）。
+      this.#drawGroundProjected(ground, camera, { w: width, h: height }, dpr);
     }
 
     const vp = { w: width, h: height };
@@ -1722,7 +1694,7 @@ export class BoardRenderer {
   #drawEdges(map: Rich4Map, cam: Camera, vp: { w: number; h: number }): void {
     const ctx = this.#ctx;
     ctx.strokeStyle = 'rgba(150,200,255,0.28)';
-    ctx.lineWidth = cam.mode === 'map' ? Math.max(1.5, cam.scale * 2.5) : 2;
+    ctx.lineWidth = 2;
     ctx.beginPath();
     for (const n of map.nodes) {
       const a = worldToScreen(n.x, n.y, cam, vp);
@@ -1804,7 +1776,7 @@ export class BoardRenderer {
    */
   #drawDecor(map: Rich4Map, cam: Camera, vp: { w: number; h: number }): void {
     const ctx = this.#ctx;
-    const k = cam.mode === 'map' ? cam.scale : 1;
+    const k = 1;
     for (const n of map.nodes) {
       const idx = decorImageIndex(n.decorIndex);
       if (idx === null) continue;
@@ -1868,7 +1840,7 @@ export class BoardRenderer {
     flight: ObjectFlight | null,
   ): DrawSlot[] {
     const ctx = this.#ctx;
-    const k = cam.mode === 'map' ? cam.scale : 1;
+    const k = 1;
     const slots: DrawSlot[] = [];
     const tokens = objectTokens(state, map.nodes, cam.view, flight?.objectIndex ?? null);
     for (const t of tokens) {
@@ -1916,7 +1888,7 @@ export class BoardRenderer {
     flight: ObjectFlight | null,
   ): DrawSlot[] {
     const ctx = this.#ctx;
-    const k = cam.mode === 'map' ? cam.scale : 1;
+    const k = 1;
     const nowMs = performance.now();
     const slots: DrawSlot[] = [];
     for (const t of attachedObjectTokens(state, cam.view, flight?.objectIndex ?? null)) {
@@ -1970,7 +1942,7 @@ export class BoardRenderer {
     const img = flight.image ?? objectImageIndex(flight.facing, cam.view);
     const sp = this.#sprite('Data.mkf', res, img);
     if (sp === null) return;
-    const k = cam.mode === 'map' ? cam.scale : 1;
+    const k = 1;
     // 原版每帧先向零截断再贴（`__round_toward_zero`，VA 0x0040e808 那一段）
     const x = Math.trunc(at.x);
     const y = Math.trunc(at.y);
@@ -1999,7 +1971,7 @@ export class BoardRenderer {
     vp: { w: number; h: number },
   ): DrawSlot[] {
     const ctx = this.#ctx;
-    const k = cam.mode === 'map' ? cam.scale : 1;
+    const k = 1;
     const slots: DrawSlot[] = [];
     for (const it of buildingArtItems(map, state, cam.view)) {
       const p = worldToScreen(it.x, it.y, cam, vp);
@@ -2047,7 +2019,7 @@ export class BoardRenderer {
   ): void {
     const ctx = this.#ctx;
     // 等距菱形：半宽 2 × 半高
-    const hw = cam.mode === 'map' ? Math.max(7, cam.scale * 13) : 15;
+    const hw = 15;
     const hh = hw / 2;
 
     const diamond = (x: number, y: number): void => {
@@ -2104,7 +2076,7 @@ export class BoardRenderer {
       const p =
         this.#walkScreen(pl.index, cam, vp, nowMs) ?? worldToScreen(node.x, node.y, cam, vp);
       if (p === null) continue;
-      const k = cam.mode === 'map' ? cam.scale : 1;
+      const k = 1;
       const off = seen * Math.max(4, k * 5);
 
       // ★ 原版棋子：锚点在底边中心，故按锚点对齐到格心（C-AST-6）
@@ -2224,7 +2196,7 @@ export class BoardRenderer {
       },
     });
 
-    const k = cam.mode === 'map' ? cam.scale : 1;
+    const k = 1;
     for (const t of tokens) {
       const p = live.get(t.slot) ?? worldToScreen(t.x, t.y, cam, vp);
       if (p === null) continue;

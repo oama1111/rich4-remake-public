@@ -146,7 +146,6 @@ import {
   characterCamera,
   hitToolbar,
   pickNodeAt,
-  screenToMap,
   worldToScreen,
   type Camera,
 } from './render.ts';
@@ -1458,7 +1457,7 @@ function cancelDialogChoice(ui: InteractionUi): void {
  *   末尾那句「⚠ 尚未實作」的日志 —— 四个熱鍵（股市/卡片/道具/查詢）接上之后
  *   日志没了，它也就成了未用变量（eslint 报错）。表本身仍由熱鍵頁用。
  */
-function handleHotkey(fn: number, e: KeyboardEvent): boolean {
+function handleHotkey(fn: number): boolean {
   // ★ 登记的整屏先认领熱鍵（契约见 ui-screen.ts）
   {
     const env = uiEnv();
@@ -1564,19 +1563,18 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
       else if (screen === 'game') openAiSettings('game');
       return true;
 
-    // ── 镜头（原版叫「游標」，本引擎拿来平移地图视角）──
+    // ── 方向鍵（原版叫「游標」）──
+    // ★ 原版这四个鍵是**移动鼠標指针**（`rich4_keyboard_hook.asm` 开头就是
+    //   `GetCursorPos` + `SetCursorPos(x±10, y±10)`，@source VA 0x00401059..0x004010a9），
+    //   也就是給纯键盘用户指方向用的。浏览器里**移不了系统光标**，
+    //   所以我们既不能照抄、也不该拿它去做原版没有的事（先前的「平移地图视角」
+    //   就是本引擎自己发明的，已随 `setViewMode` 删除，见 D-086-5 / T-086）。
+    //   ⇒ 如实：这四个鍵在本引擎里**什么都不做**。登记在 `docs/deviations/T-086.md`。
     case HOTKEY.cursorUp:
     case HOTKEY.cursorDown:
     case HOTKEY.cursorLeft:
-    case HOTKEY.cursorRight: {
-      if (camera.mode !== 'map') return false;
-      const step = e.shiftKey ? 120 : 40;
-      const dx = fn === HOTKEY.cursorLeft ? -step : fn === HOTKEY.cursorRight ? step : 0;
-      const dy = fn === HOTKEY.cursorUp ? -step : fn === HOTKEY.cursorDown ? step : 0;
-      followPlayer = false;
-      camera = { ...camera, x: camera.x + dx, y: camera.y + dy };
-      return true;
-    }
+    case HOTKEY.cursorRight:
+      return false;
 
     // ── 四个熱鍵接到**與工具列同一顆鈕**的入口 ──
     //   @source 熱鍵表（`rich4_cfg` +16 起，見 `hotkeys.ts`）與工具列跳表
@@ -4639,22 +4637,9 @@ function centerOnCurrentPlayer(): void {
     }
   }
 
-  if (camera.mode === 'character') {
-    // 人物视角：摄像机就是**当前玩家所在的那一块**，原版恒在 29×29 窗口正中
-    camera = { ...camera, tileX: node.x >> 5, tileY: node.y >> 5 };
-    return;
-  }
-
-  const wantX = node.x - canvas.clientWidth / 2 / camera.scale;
-  const wantY = node.y - canvas.clientHeight / 2 / camera.scale;
-  const k = 0.18;
-  camera = {
-    ...camera,
-    x: camera.x + (wantX - camera.x) * k,
-    y: camera.y + (wantY - camera.y) * k,
-  };
-  // 还没到位就继续要下一帧，避免停在半路
-  if (Math.abs(wantX - camera.x) > 0.5 || Math.abs(wantY - camera.y) > 0.5) requestRender();
+  // 人物视角：摄像机就是**当前玩家所在的那一块**，原版恒在 29×29 窗口正中
+  //   （原先还有一支「地图视角」的平滑逼近，随 `setViewMode` 一起删掉，D-086-5）
+  camera = { ...camera, tileX: node.x >> 5, tileY: node.y >> 5 };
 }
 
 /**
@@ -5619,25 +5604,10 @@ function bindInput(): void {
     // 岔路选择：只有引擎正处于等待方向时才有意义
   });
 
-  canvas.addEventListener('wheel', (e) => {
-    if (screen !== 'game') return;
-    e.preventDefault();
-    if (camera.mode !== 'map') return; // 人物视角的缩放由投影表定死，不可调
-    const p = eventToStage(e);
-    if (p === null) return;
-    const bx = p.x - LAYOUT.board.x;
-    const by = p.y - LAYOUT.board.y;
-    const before = screenToMap(bx, by, camera);
-    const k = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-    followPlayer = false;
-    camera = { ...camera, scale: Math.min(8, Math.max(0.2, camera.scale * k)) };
-    const after = screenToMap(bx, by, camera);
-    // 以光标为锚点缩放：保持光标下的地图点不动
-    camera = { ...camera, x: camera.x + (before.x - after.x), y: camera.y + (before.y - after.y) };
-    requestRender();
-  }, { passive: false });
+  // ★ 原先这里挂了一个**滚轮缩放**。原版**没有缩放** —— 人物视角的取景由投影表
+  //   定死（只能左右旋转视角），那是本引擎自己发明的，随 `setViewMode` 一起删掉
+  //   （D-086-5 / T-086）。滚轮在棋盘上现在什么都不做（也不拦浏览器默认行为）。
 
-  let drag: { x: number; y: number } | null = null;
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
 
@@ -6027,7 +5997,6 @@ function bindInput(): void {
       }
     }
 
-    drag = { x: e.clientX, y: e.clientY };
   });
   window.addEventListener('mouseup', (e) => {
     // 名牌浮标：抬手就擦（原版 `loc_00418878` → `fcn_00417c67` 把底图贴回去）
@@ -6202,7 +6171,6 @@ function bindInput(): void {
       return;
     }
 
-    drag = null;
     draggingMinimap = false;
     // GO 鈕的拖动在**抬手**结束（原版 `WM_LBUTTONUP` VA 0x0041885c 只把 `[0x48be2a]` 清 0）
     goButton.release();
@@ -6246,19 +6214,9 @@ function bindInput(): void {
       requestRender();
       return;
     }
-    if (drag === null) return;
-    if (camera.mode !== 'map') return; // 人物视角恒以当前玩家为中心，不能拖
-    followPlayer = false;
-    // 窗口像素 → 舞台像素 → 地图单位：舞台是整数倍放大的，少除这一下
-    // 拖动就会比手快 scale 倍
-    const px = (canvas.width / canvas.clientWidth) / currentMetrics().scale;
-    camera = {
-      ...camera,
-      x: camera.x - ((e.clientX - drag.x) * px) / camera.scale,
-      y: camera.y - ((e.clientY - drag.y) * px) / camera.scale,
-    };
-    drag = { x: e.clientX, y: e.clientY };
-    requestRender();
+    // ★ 原先这里还能**拖棋盘**平移镜头。原版不能拖 —— 镜头恒以当前玩家为中心
+    //   （`centerOnCurrentPlayer`，原版 `fcn_00415e70`）。那套是本引擎自己发明的，
+    //   随 `setViewMode` 一起删掉（D-086-5 / T-086）。
   });
 
   // 右键 = 原版的 `WM_RBUTTONUP (0x205)`：**关掉最上面那一扇窗**
@@ -6356,7 +6314,7 @@ function bindInput(): void {
       return;
     }
     const fn = hotkeyOf(e);
-    if (fn !== null && handleHotkey(fn, e)) {
+    if (fn !== null && handleHotkey(fn)) {
       e.preventDefault();
       requestRender();
       return;

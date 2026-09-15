@@ -2,6 +2,7 @@
  * 工具栏摆位
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   actorTokens,
@@ -16,7 +17,6 @@ import {
   DOLL_WALK_RESOURCE,
   DRAW_CLASS,
   drawKey,
-  fitCamera,
   hitToolbar,
   landArt,
   objectTokens,
@@ -105,49 +105,14 @@ describe('★ 工具栏：等距 40、从 x=0 起、11 格正好 440', () => {
   });
 });
 
-describe('fitCamera —— 地图视角要「整张铺满」（S6）', () => {
-  /** 造一个 w×h 的节点包围盒 */
-  const fakeMap = (w: number, h: number): Rich4Map =>
-    ({
-      nodes: [
-        { id: 1, x: 0, y: 0, name: '', adjacent: [], adjacentSlots: [0, 0, 0, 0], type: 0, ref: { kind: 'unknown', raw: 0 }, decorIndex: 0, flags: 0, specialKind: 0, noObjects: 0, walkable: true },
-        { id: 2, x: w, y: h, name: '', adjacent: [], adjacentSlots: [0, 0, 0, 0], type: 0, ref: { kind: 'unknown', raw: 0 }, decorIndex: 0, flags: 0, specialKind: 0, noObjects: 0, walkable: true },
-      ],
-      lands: [],
-      facilities: [],
-      commercials: [],
-      landscapes: [],
-      dataSize: 0,
-    }) as unknown as Rich4Map;
-
-  it('★ 整张地图落在给定的视口内（含留边）', () => {
-    const m = fakeMap(2304, 2304);
-    const cam = fitCamera(m, LAYOUT.board.w, LAYOUT.board.h);
-    expect(cam.mode).toBe('map');
-    // 地图右下角在视口里的位置
-    const brX = (2304 - cam.x) * cam.scale;
-    const brY = (2304 - cam.y) * cam.scale;
-    expect(brX).toBeLessThanOrEqual(LAYOUT.board.w);
-    expect(brY).toBeLessThanOrEqual(LAYOUT.board.h);
-    expect(brX).toBeGreaterThan(0);
-    expect(brY).toBeGreaterThan(0);
-  });
-
-  it('★ 至少占满一个方向 —— 不是缩成一小块', () => {
-    const m = fakeMap(2304, 2304);
-    const cam = fitCamera(m, LAYOUT.board.w, LAYOUT.board.h);
-    const w = 2304 * cam.scale;
-    const h = 2304 * cam.scale;
-    // 正方形地图放进近似正方形的棋盘区：应当两边都接近占满
-    expect(Math.max(w / LAYOUT.board.w, h / LAYOUT.board.h)).toBeGreaterThan(0.85);
-  });
-
-  it('★ 按棋盘区取景 ≠ 按整个窗口取景（这正是先前那个 bug）', () => {
-    const m = fakeMap(2304, 2304);
-    const board = fitCamera(m, LAYOUT.board.w, LAYOUT.board.h);
-    const window_ = fitCamera(m, 1280, 960);
-    // 窗口大得多，缩放就一定更大；拿窗口尺寸去算，地图会被放大后裁掉大半
-    expect(window_.scale).toBeGreaterThan(board.scale);
+describe('★ 「地图视角」已删（D-086-5）', () => {
+  it('★ 原版没有缩放/平移视角 —— `fitCamera` 与 `ViewMode` 都不该再存在', () => {
+    const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
+    expect(src).not.toContain('export function fitCamera');
+    // ⚠️ 不能用裸 'ViewMode' —— 注释里的 `setViewMode` 会命中这个子串
+    expect(src).not.toContain('type ViewMode');
+    expect(src).not.toContain('mode: ViewMode');
+    expect(src).not.toContain("mode: 'character'");
   });
 });
 

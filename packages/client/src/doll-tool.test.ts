@@ -59,7 +59,7 @@ function lineMap(n: number): Rich4Map {
 }
 
 /** 地图视角、单位缩放 —— 世界坐标 == 屏幕坐标，好算 */
-const CAM: Camera = { x: 0, y: 0, scale: 1, mode: 'map', view: 0, tileX: 0, tileY: 0 };
+const CAM: Camera = { x: 0, y: 0, scale: 1, view: 0, tileX: 0, tileY: 0 };
 
 /** 一個「未出場」的替身记录 —— `runDoll` 走完就是它 */
 function idle(place: SpecialActor['place'] = ACTOR_PLACE.offBoard): SpecialActor {

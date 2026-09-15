@@ -219,7 +219,6 @@ describe('★ 为什么「挂在节点上」一定点不动（Q-TOOL-4 的量化
       for (let view = 0; view < 8; view++) {
         // 镜头停在那一格（`projectWorld` 用 camTileX/Y 定位 29×29 窗口）
         const cam: Camera = {
-          mode: 'character',
           view,
           tileX: n.x >> 5,
           tileY: n.y >> 5,
