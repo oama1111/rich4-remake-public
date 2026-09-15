@@ -30,7 +30,7 @@
  * | 6..17 | 各约 70×70 | **12 个角色的头像**（与開局设置的 12 张同序）|
  *
  * 文字坐标全部来自反汇编（VA 0x0041e37d 起），且与底图上的图形**逐项吻合**：
- * 圆点在 x=193，文字从 x=244 起，两者的 y 最多差 1 像素。
+ * 圆点在 x=193、文字中心在 x=244（居中对齐），两者的 y 最多差 2 像素。
  */
 
 import type { GameState, Player } from '@rich4/core';
@@ -65,38 +65,72 @@ export const AI_ORIGIN = { x: 320 - (AI_W >> 1), y: 240 - (AI_H >> 1) } as const
 /**
  * @source VA 0x0041e37d 起的一串 `text(...)`：
  * ```asm
- * 0041e37d  text("託管AI",       x=0x0ad, y=0x01a)   ; 大字
- * 0041e39c  text("個 性",        x=0x0ad, y=0x072)
- * 0041e3bb  text("資金運用比例", x=0x0f9, y=0x0f6)
- * 0041e3f5  text("使用卡片",     x=0x0f4, y=0x035)   ; 小字
- * 0041e414  text("使用道具",     x=0x0f4, y=0x054)
- * 0041e433  text("乖寶寶",       x=0x0f4, y=0x08d)
- * 0041e455  text("普通人",       x=0x0f4, y=0x0ad)
- * 0041e477  text("大老奸",       x=0x0f4, y=0x0ce)
- * 0041e499  text("現金",         x=0x0bf, y=0x115)   ; 右对齐
- * 0041e4bb  text("存款",         x=0x131, y=0x115)   ; 左对齐
- * 0041e4dd  text("股票",         x=0x0bf, y=0x136)
- * 0041e4ff  text("資金",         x=0x131, y=0x136)
- * 0041e536  text("確定",         x=0x18d, y=0x07d)   ; 竖排
- * 0041e555  text("取消",         x=0x18d, y=0x0d5)   ; 竖排
+ * 0041e37d  text("託管AI",       x=0x0ad, y=0x01a, 2)   ; 大字
+ * 0041e39c  text("個 性",        x=0x0ad, y=0x072, 2)
+ * 0041e3bb  text("資金運用比例", x=0x0f9, y=0x0f6, 2)
+ * 0041e3f5  text("使用卡片",     x=0x0f4, y=0x035, 2)   ; 小字
+ * 0041e414  text("使用道具",     x=0x0f4, y=0x054, 2)
+ * 0041e433  text("乖寶寶",       x=0x0f4, y=0x08d, 2)
+ * 0041e455  text("普通人",       x=0x0f4, y=0x0ad, 2)
+ * 0041e477  text("大老奸",       x=0x0f4, y=0x0ce, 2)
+ * 0041e499  text("現金",         x=0x0bf, y=0x115, 6)
+ * 0041e4bb  text("存款",         x=0x131, y=0x115, 5)
+ * 0041e4dd  text("股票",         x=0x0bf, y=0x136, 6)
+ * 0041e4ff  text("資金",         x=0x131, y=0x136, 5)
+ * 0041e536  text("確定",         x=0x18d, y=0x07d, 3)
+ * 0041e555  text("取消",         x=0x18d, y=0x0d5, 3)
  * ```
+ *
+ * ★ 末位那个数字是**对齐方式**，不是可忽略的标志位 —— 先前当成注释丢掉了，
+ *   于是整屏文字都按「左对齐 + 顶边」画，位置全偏，看着还像字号过大。
+ *
+ *   语义**不靠推断**，在画字函数 `0x44fabc` 里：末尾 `lea eax,[flag-1]` +
+ *   `jmp [eax*4 + 0x44faa0]` 是一张 7 路跳表：
+ *
+ *   | flag | 水平 | 垂直 |
+ *   |---|---|---|
+ *   | 0 或 >7 | 左 | 上（**不调整**）|
+ *   | 1 | 右 | 上 |
+ *   | **2 / 3 / 4** | **中** | **中** |
+ *   | 5 | 左 | 中 |
+ *   | **6** | 右 | 中 |
+ *   | 7 | 中 | 下 |
+ *
+ *   即 `x`/`y` 是**文字块的中心**（flag 0 除外，那是左上角）。
+ *   本屏用到的：`託管AI`/`個 性`/`資金運用比例`/五个选项 = 2（正中），
+ *   `存款`/`資金` = 5（左+中），`現金`/`股票` = 6（右+中）。
+ *
+ * ⚠️ **一处未解**：`確定`/`取消` 在 exe 里是 flag **3**，按跳表也是「正中」（水平），
+ *   而实机截图（S3）上它们是**竖排**的两个字。`set_font` 的第 4 参是个位域
+ *   （存在 `0x4762d8`，普通文字传 6、这两颗传 2），但读下来 bit2 只影响测量盒
+ *   的 ±1 像素，不足以造成竖排；换行规则尚未跟到。按项目文档「截图是画面的
+ *   最终裁判」，这里**按截图做竖排**，并把差异记在 known-deviations。
+ *
+ * 字号本身取自 exe：大字 `0x14=20`、小字 `0x10=16`。
  */
+export interface AiTextAt {
+  x: number;
+  y: number;
+  /** 对齐方式，即反汇编里的末位参数 */
+  align: 2 | 3 | 5 | 6;
+}
+
 export const AI_TEXT = {
-  title: { x: 0x0ad, y: 0x01a },
-  personality: { x: 0x0ad, y: 0x072 },
-  ratios: { x: 0x0f9, y: 0x0f6 },
-  useCards: { x: 0x0f4, y: 0x035 },
-  useTools: { x: 0x0f4, y: 0x054 },
-  goodBoy: { x: 0x0f4, y: 0x08d },
-  normal: { x: 0x0f4, y: 0x0ad },
-  villain: { x: 0x0f4, y: 0x0ce },
-  cash: { x: 0x0bf, y: 0x115 },
-  deposit: { x: 0x131, y: 0x115 },
-  stock: { x: 0x0bf, y: 0x136 },
-  fund: { x: 0x131, y: 0x136 },
-  ok: { x: 0x18d, y: 0x07d },
-  cancel: { x: 0x18d, y: 0x0d5 },
-} as const;
+  title: { x: 0x0ad, y: 0x01a, align: 2 },
+  personality: { x: 0x0ad, y: 0x072, align: 2 },
+  ratios: { x: 0x0f9, y: 0x0f6, align: 2 },
+  useCards: { x: 0x0f4, y: 0x035, align: 2 },
+  useTools: { x: 0x0f4, y: 0x054, align: 2 },
+  goodBoy: { x: 0x0f4, y: 0x08d, align: 2 },
+  normal: { x: 0x0f4, y: 0x0ad, align: 2 },
+  villain: { x: 0x0f4, y: 0x0ce, align: 2 },
+  cash: { x: 0x0bf, y: 0x115, align: 6 },
+  deposit: { x: 0x131, y: 0x115, align: 5 },
+  stock: { x: 0x0bf, y: 0x136, align: 6 },
+  fund: { x: 0x131, y: 0x136, align: 5 },
+  ok: { x: 0x18d, y: 0x07d, align: 3 },
+  cancel: { x: 0x18d, y: 0x0d5, align: 3 },
+} as const satisfies Record<string, AiTextAt>;
 
 /** 原版四个字的写法（照抄截图：是「個 性」不是「個性」，中间有空格） */
 export const AI_LABELS = {
@@ -366,7 +400,7 @@ export function drawAiSettings(
   //   对齐靠**行图内嵌的圆点**：图里圆点在 (18,43)，所以
   //   drawAt = (圆点x − 18, 圆点y − 43)，再按一行的高度裁掉多余部分。
   //   ⚠️ 裁高度这一下是**本项目自己的做法**：原版图是 116×86（够盖一组），
-  //   而没有跟到它到底盖一行还是一组。见 known-deviations 的 Q-UI-1。
+  //   而没有跟到它到底盖一行还是一组。见 known-deviations 的 Q-LAYOUT-1。
   const off = sprite(AI_ARCHIVE, AI_RESOURCE, AI_ROW_OFF);
   if (off !== null) {
     rows.forEach((row) => {
@@ -399,34 +433,28 @@ export function drawAiSettings(
     });
   }
 
-  // 文字
+  // 文字：字号取自反汇编（大字 0x14=20、小字 0x10=16），对齐全按 AI_TEXT 的标志走
   ctx.fillStyle = '#f0f0f0';
   ctx.font = `20px ${FONT}`;
-  text(ctx, AI_LABELS.title, AI_TEXT.title);
-  if (rows[0] !== undefined) text(ctx, AI_LABELS.personality, AI_TEXT.personality);
-  // ⚠️ 「資金運用比例」在反汇编里也是**大字**（0x14=20），但原版用的是点阵字，
-  //   同样的行高下字形比系统字窄；20px 会压到右侧粉条上。故这一个降到 17px
-  //   —— 位置仍取原坐标（x=249），只调字号让宽度贴合底图留的空。
-  ctx.font = `17px ${FONT}`;
-  text(ctx, AI_LABELS.ratios, AI_TEXT.ratios);
-  ctx.font = `20px ${FONT}`;
+  label(ctx, AI_LABELS.title, AI_TEXT.title);
+  if (rows[0] !== undefined) label(ctx, AI_LABELS.personality, AI_TEXT.personality);
+  label(ctx, AI_LABELS.ratios, AI_TEXT.ratios);
 
   ctx.font = `16px ${FONT}`;
-  text(ctx, AI_LABELS.useCards, AI_TEXT.useCards);
-  text(ctx, AI_LABELS.useTools, AI_TEXT.useTools);
-  text(ctx, AI_LABELS.goodBoy, AI_TEXT.goodBoy);
-  text(ctx, AI_LABELS.normal, AI_TEXT.normal);
-  text(ctx, AI_LABELS.villain, AI_TEXT.villain);
+  label(ctx, AI_LABELS.useCards, AI_TEXT.useCards);
+  label(ctx, AI_LABELS.useTools, AI_TEXT.useTools);
+  label(ctx, AI_LABELS.goodBoy, AI_TEXT.goodBoy);
+  label(ctx, AI_LABELS.normal, AI_TEXT.normal);
+  label(ctx, AI_LABELS.villain, AI_TEXT.villain);
 
   // 比例：两侧标签 + 滑槽里的**填充**
   const row0 = rows[0];
   const cash = row0?.cashRatio ?? 0;
   const stock = row0?.stockRatio ?? 0;
-  ctx.font = `16px ${FONT}`;
-  textRight(ctx, AI_LABELS.cash, AI_TEXT.cash);
-  text(ctx, AI_LABELS.deposit, AI_TEXT.deposit);
-  textRight(ctx, AI_LABELS.stock, AI_TEXT.stock);
-  text(ctx, AI_LABELS.fund, AI_TEXT.fund);
+  label(ctx, AI_LABELS.cash, AI_TEXT.cash);
+  label(ctx, AI_LABELS.deposit, AI_TEXT.deposit);
+  label(ctx, AI_LABELS.stock, AI_TEXT.stock);
+  label(ctx, AI_LABELS.fund, AI_TEXT.fund);
 
   // ★ 只填、不写数字 —— 原版这一屏**没有百分比文字**，它靠条子的填充长度表达。
   //   加个「50%」上去看着方便，但那是「改良」，C-FID-1/4 明令禁止。
@@ -435,8 +463,8 @@ export function drawAiSettings(
 
   // 竖排的確定/取消
   ctx.font = `20px ${FONT}`;
-  verticalText(ctx, AI_LABELS.ok, AI_TEXT.ok);
-  verticalText(ctx, AI_LABELS.cancel, AI_TEXT.cancel);
+  label(ctx, AI_LABELS.ok, AI_TEXT.ok);
+  label(ctx, AI_LABELS.cancel, AI_TEXT.cancel);
 
   // 每位真人一行：LED + 头像 + 名字
   ctx.font = `15px ${FONT}`;
@@ -496,17 +524,6 @@ function hotRect(hit: AiSettingsHit): { x: number; y: number; w: number; h: numb
   }
 }
 
-function text(ctx: CanvasRenderingContext2D, s: string, at: { x: number; y: number }): void {
-  ctx.textAlign = 'left';
-  ctx.fillText(s, at.x, at.y);
-}
-
-function textRight(ctx: CanvasRenderingContext2D, s: string, at: { x: number; y: number }): void {
-  ctx.textAlign = 'right';
-  ctx.fillText(s, at.x + 40, at.y); // 反汇编里 x 是文本**起点**，右对齐时让出字宽
-  ctx.textAlign = 'left';
-}
-
 /** 滑槽里按百分比填一格亮色条（原版没有数字，只有填充长度）*/
 function fillRatio(ctx: CanvasRenderingContext2D, r: { x: number; y: number; w: number; h: number }, percent: number): void {
   const inner = { x: r.x + FILL_INSET, y: r.y + FILL_INSET, w: r.w - FILL_INSET * 2, h: r.h - FILL_INSET * 2 };
@@ -521,9 +538,36 @@ const FILL_INSET = 4;
 /** 填充色：比底图的深绿亮一档，在截图尺寸下能一眼看出长度 */
 const FILL_COLOR = '#8fd45a';
 
-/** 竖排：x 是列中心，y 是首字顶端 */
-function verticalText(ctx: CanvasRenderingContext2D, s: string, at: { x: number; y: number }): void {
+/**
+ * 按 `align` 画一条文字。
+ *
+ * ★ `at.x` / `at.y` 是**文字块的中心**（反汇编的坐标语义如此，见 `AI_TEXT` 的注释），
+ *   所以基线一律取 `middle`，水平按标志取 left/center/right。
+ */
+function label(ctx: CanvasRenderingContext2D, s: string, at: AiTextAt): void {
+  if (at.align === 3) {
+    verticalText(ctx, s, at);
+    return;
+  }
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = at.align === 5 ? 'left' : at.align === 6 ? 'right' : 'center';
+  ctx.fillText(s, at.x, at.y);
+  ctx.textAlign = 'left';
+}
+
+/**
+ * 竖排：`at.x` 是**列的水平中心**，`at.y` 是**整列的垂直中心**。
+ *
+ * 字距 25 是照实机截能量出来的：`確定` 两字在图上跨 320..420 像素，除以该截图的
+ * 1.975 倍缩放得 50.6 逻辑像素，即每字 25。
+ */
+const VERTICAL_ADVANCE = 25;
+
+function verticalText(ctx: CanvasRenderingContext2D, s: string, at: AiTextAt): void {
+  const n = s.length;
+  const top = at.y - ((n - 1) * VERTICAL_ADVANCE) / 2;
   ctx.textAlign = 'center';
-  for (let i = 0; i < s.length; i++) ctx.fillText(s[i]!, at.x, at.y + i * 24);
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < n; i++) ctx.fillText(s[i]!, at.x, top + i * VERTICAL_ADVANCE);
   ctx.textAlign = 'left';
 }

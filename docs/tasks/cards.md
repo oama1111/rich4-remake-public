@@ -834,7 +834,7 @@
 - packages/client/src/main.ts
 - packages/core/src/state/set-ai.test.ts
 
-> ⚠️ 两个亮/暗行图的用法没跟到（Q-UI-1）；cashRatio 目前没有规则读它（Q-BANK-3）。**目视验证被 Q-BUILD-1 挡住**（浏览器构建从 b99b459 起就坏了），本屏只过了单测。
+> ⚠️ 两个亮/暗行图的用法没跟到（Q-LAYOUT-1）；cashRatio 目前没有规则读它（Q-BANK-3）。目视验证已完成（Q-BUILD-1 已修），并按实机截图与反汇编订正了字号与对齐（flag 跳表 0x44faa0）。
 
 ### T-022
 

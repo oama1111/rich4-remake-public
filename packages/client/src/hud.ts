@@ -79,8 +79,23 @@ export const SIDEBAR = { x: 0, y: PANEL_HEIGHT, w: 200, h: 200 } as const;
  * ★ 七个格心 x = 470..608（步进 23）减去侧栏原点 440 得 30..168，
  *   与底图上那条 `S M T W T F S` 的七个圆点**逐像素对得上**——
  *   两头独立地印证了同一套坐标。
+ *
+ * ★ 那几个 `draw(串, x, y, flag)` 的**末位 flag 是对齐方式**，语义在
+ *   `0x44fabc` 里：`lea eax,[flag-1]` / `jmp [eax*4 + 0x44faa0]`，7 路跳表：
+ *
+ *   | flag | 水平 | 垂直 |
+ *   |---|---|---|
+ *   | 0 或 >7 | 左 | 上（**不调整**）|
+ *   | 1 | 右 | 上 |
+ *   | **2 / 3 / 4** | **中** | **中** |
+ *   | 5 | 左 | 中 |
+ *   | 6 | 右 | 中 |
+ *   | 7 | 中 | 下 |
+ *
+ *   即 `x`/`y` 是**文字块的中心**（flag 0 除外，那是左上角）——不是左边缘。
+ *   这条先前靠截图反推过，读跳表后得到确证。
  */
-const CAL = {
+export const CAL = {
   /** 日曆：太阳、月亮（侧栏内坐标） */
   sun: { x: 0x1ce - 440, y: 0x12c - 280 },
   moon: { x: 0x1ec - 440, y: 0x12d - 280 },
@@ -109,6 +124,43 @@ export const WEEKDAY_NAMES: readonly string[] = [
   '星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六',
 ];
 
+/** 月曆里一格的位置（側欄内坐标） */
+export interface MonthCell {
+  day: number;
+  x: number;
+  y: number;
+}
+
+/**
+ * 一个月在月曆上占哪些格、各在哪 —— **纯函数**，绘制与测试共用。
+ *
+ * @source 0x00416aa1（第一格 x = `x0 + pitch × 1 号的星期`）
+ *         0x00416b33（折行判据 `0x260 = 608` → 側欄坐标 `x0 + pitch×6`）
+ *
+ * ★ 抽成纯函数是因为它**错过一次**：折行判据写成 `x0 + pitch×cols`（第 8 列）
+ *   而不是 `× (cols−1)`（第 7 列），于是每行画 8 天、整月逐行右移一格。
+ *   这种错在画面上只是「日期对不上星期」，不细看根本发现不了 ——
+ *   但一条「每行恰好 7 格」的断言当场就能抓住。
+ */
+export function monthCells(year: number, month: number): MonthCell[] {
+  const total = daysInMonth(year, month);
+  const first = weekdayOf(year, month, 1);
+  const { x0, y0, pitch, rowH, cols } = CAL.grid;
+
+  const cells: MonthCell[] = [];
+  let col = first;
+  let row = 0;
+  for (let day = 1; day <= total; day++) {
+    cells.push({ day, x: x0 + pitch * col, y: y0 + rowH * row });
+    col++;
+    if (col >= cols) {
+      col = 0;
+      row++;
+    }
+  }
+  return cells;
+}
+
 /**
  * 右下角显示哪一面。
  * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流。
@@ -117,20 +169,30 @@ export const WEEKDAY_NAMES: readonly string[] = [
 export type SidebarView = 'calendar' | 'month' | 'map';
 
 /**
- * 三条数值栏在 200×280 图内的纵向位置。
+ * 三条数值栏在 200×280 图内的纵向位置 = 底图上那三条浅蓝横栏的**中心**。
  *
- * ⚠️ 这几个 y 是**照着解出来的位图量的**，不是从 exe 里读到的常量。
- * 原版把文字画在哪由绘制代码决定，那段还没定位，故此处按图上横栏的
- * 位置对齐——视觉上对得上，但不保证与原版逐像素相同。
+ * ★ 这三个数是**从底图量出来的**（沿 x=120 逐行扫冷暖色，冷色段即横栏）：
+ *
+ * | 栏 | y 范围 | 高 | 中心 |
+ * |---|---|---|---|
+ * | 現金 | 96..128 | 33 | **112** |
+ * | 存款 | 160..192 | 33 | **176** |
+ * | 總資產 | 224..256 | 33 | **240** |
+ *
+ * 间距 **64**。先前写的是 `[112, 172, 232]`（间距 60，目测得来）——
+ * 第一栏碰巧对，往下逐栏偏高，到第三栏已差 8 像素（需求方 2026-09-14 指出
+ * 「有些偏高」）。底图里连**图标都烘好了**（钱堆／猪扑满／钱堆），
+ * 所以文字必须落在栏中心才对得上。
  */
-const ROW_Y = [112, 172, 232] as const;
+const ROW_Y = [112, 176, 240] as const;
 /**
  * 数值右对齐到的 x。
- * 侧栏最右约 27 像素是那四个彩色竖标签，数值不能压上去。
+ * 横栏的 x 跨度约 8..168，最右 176..199 是那四个彩色竖标签（也烘在底图里），
+ * 数值不能压上去，故右对齐在 166 —— 距栏右缘 2 像素。
  */
 const VALUE_RIGHT = 166;
-/** 头像画在顶栏 */
-const PORTRAIT = { x: 8, y: 6, size: 64 } as const;
+/** 头像画在顶栏；尺寸取自 `docs/original-screens.md` S6「72×72 头像」 */
+const PORTRAIT = { x: 8, y: 6, size: 72 } as const;
 
 export interface HudInput {
   state: GameState;
@@ -259,21 +321,42 @@ export class Hud {
       ctx.fillStyle = fill;
       ctx.fillText(s, ox + at.x, oy + at.y);
     };
-    const body = '15px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    // ★ 字号与对齐**全部**取自 exe（VA 0x00416cee..0x00416dd3）：
+    //   `set_font` 紧挨在 `sprintf` 之前，作用于**紧接着的那一次** draw。
+    //
+    //   | 文字 | 字号 | flag | 对齐（查 0x44faa0 的跳表） |
+    //   |---|---|---|---|
+    //   | 日号 | `0x3c` = **60** | 2 | 正中 |
+    //   | 年   | `0x18` = **24** | 0 | **左上**（flag 0 不调整，就是左上角）|
+    //   | 月   | `0x1c` = **28** | 2 | 正中 |
+    //   | 星期 | `0x10` = **16** | 3 | 正中 |
+    //
+    //   ⚠️ 先前这几个字号写的是 15 / 34，是从画面上目测的；年份还一度被改成居中
+    //   （也是我的推断）。都以这段汇编为准。
+    const small = '16px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    const body = '24px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    const monthFont = '28px "PingFang TC", "Microsoft JhengHei", sans-serif';
+    const dayFont = '60px "PingFang TC", "Microsoft JhengHei", sans-serif';
+
     text(String(year), CAL.year, 'left', body, PLAIN_COLOR);
-    text(`${month}月`, CAL.monthText, 'center', body, PLAIN_COLOR);
+    text(`${month}月`, CAL.monthText, 'center', monthFont, PLAIN_COLOR);
+    // ⚠️ **证据冲突，暂按截图惯例画左对齐**：exe 给的是 flag 3，而 `0x44faa0` 的跳表
+    //   里 3 = 正中。可 3 个汉字（「星期日」等，实测串表每项 7 字节 = 6+1）居中于
+    //   側欄局部 x=14 会伸到 -10，**溢出到棋盘上**。是原版点阵字的字宽比系统字窄
+    //   （居中后正好收回来），还是我对 x 的读法有偏差，**没有原版日历页截图可仲裁**。
+    //   见 known-deviations 的 Q-LAYOUT-2 —— 拿一张截图来就能定。
     text(
       WEEKDAY_NAMES[weekdayOf(year, month, day)] ?? '',
       CAL.weekday,
       'left',
-      body,
+      small,
       holiday ? HOLIDAY_COLOR : PLAIN_COLOR,
     );
     text(
       String(day),
       CAL.dayText,
       'center',
-      'bold 34px "PingFang TC", "Microsoft JhengHei", sans-serif',
+      dayFont,
       holiday ? HOLIDAY_COLOR : PLAIN_COLOR,
     );
     ctx.textAlign = 'left';
@@ -297,31 +380,19 @@ export class Hud {
       ctx.fillRect(ox, oy, w, h);
     }
 
-    const first = weekdayOf(year, month, 1);
-    const total = daysInMonth(year, month);
-    // @source 0x00416aa1：第一格中心 x = 第一格列 + 23 × 该月1号的星期
-    let x = CAL.grid.x0 + CAL.grid.pitch * first;
-    let y = CAL.grid.y0;
-
     ctx.font = '12px "PingFang TC", "Microsoft JhengHei", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (let d = 1; d <= total; d++) {
-      if (d === day) {
+    for (const cell of monthCells(year, month)) {
+      const { x, y } = cell;
+      if (cell.day === day) {
         // @source 0x00416ad3：今天填一块红底
         ctx.fillStyle = HOLIDAY_COLOR;
         ctx.fillRect(ox + x + CAL.today.dx, oy + y + CAL.today.dy, CAL.today.w, CAL.today.h);
       }
-      ctx.fillStyle = isHoliday(globalMapId, year, month, d) ? HOLIDAY_COLOR : PLAIN_COLOR;
-      if (d === day) ctx.fillStyle = '#ffffff'; // 红底上要看得见
-      ctx.fillText(String(d), ox + x, oy + y);
-
-      // @source 0x00416b33：走到最后一列就折行
-      if (x === CAL.grid.x0 + CAL.grid.pitch * CAL.grid.cols) {
-        x = CAL.grid.x0 - CAL.grid.pitch;
-        y += CAL.grid.rowH;
-      }
-      x += CAL.grid.pitch;
+      ctx.fillStyle = isHoliday(globalMapId, year, month, cell.day) ? HOLIDAY_COLOR : PLAIN_COLOR;
+      if (cell.day === day) ctx.fillStyle = '#ffffff'; // 红底上要看得见
+      ctx.fillText(String(cell.day), ox + x, oy + y);
     }
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';

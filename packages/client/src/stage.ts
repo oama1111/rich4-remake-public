@@ -46,22 +46,37 @@ export const LAYOUT = {
 } as const;
 
 export interface StageMetrics {
-  /** 放大倍数（整数） */
+  /** 放大倍数（多数情况是整数，见 `stageMetrics`） */
   scale: number;
   /** 舞台在画布里的左上角（居中留边） */
   offsetX: number;
   offsetY: number;
 }
 
+/** 整数倍比实际可用倍数「浪费」到这个程度以上时，改用小数倍填满 */
+const INTEGER_SLACK = 0.25;
+
 /**
  * 算出这块画布该用几倍放大、居中放在哪。
  *
- * ★ **整数倍**：原版素材是点阵图，非整数倍缩放会让像素边缘糊掉。
- *   窗口比 640×480 还小时退回 1 倍并裁切 —— 宁可看不全，也不糊。
+ * ★ 原版素材是点阵图，**整数倍**最锐利（每个源像素正好铺成 N×N 个）。
+ *   但设备分辨率五花八门 —— 1600×900 上能整除的只有 1 倍，画面会缩成一小块，
+ *   四周全是黑边。所以规则是**两档**：
+ *
+ * | 情况 | 取 | 结果 |
+ * |---|---|---|
+ * | 整数倍够贴近（差值 < 0.25）| `floor(raw)` | 像素逐个对齐，最锐利 |
+ * | 整数倍差得远 | `raw`（小数）| 铺满窗口；仍是最近邻（调用方关掉了插值），只是像素宽窄略有参差 |
+ *
+ * ★ 窗口比 640×480 还小时**按小数倍缩小**（`raw < 1`），让整屏看得全 ——
+ *   先前是「退回 1 倍并裁切」，在小窗口上会把右边和下面的内容切掉，
+ *   而那块正好是側欄（资产、日历）。看不见的代价比轻微不锐利大得多。
  */
 export function stageMetrics(viewW: number, viewH: number): StageMetrics {
   const raw = Math.min(viewW / SCREEN_W, viewH / SCREEN_H);
-  const scale = Math.max(1, Math.floor(raw));
+  const whole = Math.floor(raw);
+  // `whole >= 1` 才谈「用整数倍」；小于 1 时没有整数倍可言，直接按比例缩
+  const scale = whole >= 1 && raw - whole < INTEGER_SLACK ? whole : raw;
   return {
     scale,
     offsetX: Math.floor((viewW - SCREEN_W * scale) / 2),
