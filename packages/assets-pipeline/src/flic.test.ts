@@ -26,6 +26,26 @@ function opaqueCount(rgba: Uint8ClampedArray): number {
   return n;
 }
 
+/** 一帧里不透明像素占的行范围（没有不透明像素时 minY > maxY） */
+function opaqueRows(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+): { minY: number; maxY: number } {
+  let minY = height;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (rgba[(y * width + x) * 4 + 3]! > 0) {
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        break;
+      }
+    }
+  }
+  return { minY, maxY };
+}
+
 /** 某一行的不透明像素（连续 x 区间） */
 function rowSpans(rgba: Uint8ClampedArray, width: number, y: number): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
@@ -58,12 +78,21 @@ describe('FLIC —— 滚骰影片（Panel.mkf 4/5/6）', () => {
   });
 
   /**
-   * ★ 第 0 帧全透明 —— 原版对 FLI_COPY（类型 18）整块跳过，
-   *   剩下的「BLACK」在 exe 里是段 RLE。见 `flic.ts` 文件头的取舍说明。
+   * ★ 第 0 帧 = 原版那段 RLE 画出来的东西（**不是全透明**）。
+   *
+   * 类型 18（FLI_COPY）原版整块跳过；剩下的「BLACK」在 exe 里是段 RLE
+   * （VA 0x00450b3a）。照 exe 解，帧 0 会画出一小片**只落在第 115..149 行**的
+   * 稀疏网纹 —— 那是 FLC→ANM 转换留下的原版痕迹：之后的 DELTA 帧不再碰那几行，
+   * 所以**原版自己就会把它显示到最后**。按铁律「以反汇编为准」照做，登记不抹
+   * （见 `flic.ts` 文件头与 known-deviations）。
    */
-  it.each([4, 5, 6])('资源 %i 第 0 帧全透明', (res) => {
+  it.each([4, 5, 6])('资源 %i 第 0 帧只画出那一片网纹（第 115..149 行）', (res) => {
     const flic = decodeFlic(panel.read(res))!;
-    expect(opaqueCount(flic.frames[0]!)).toBe(0);
+    const f0 = flic.frames[0]!;
+    expect(opaqueCount(f0)).toBeGreaterThan(100);
+    const { minY, maxY } = opaqueRows(f0, 189, 285);
+    expect(minY).toBeGreaterThanOrEqual(100);
+    expect(maxY).toBeLessThanOrEqual(160);
   });
 
   /**

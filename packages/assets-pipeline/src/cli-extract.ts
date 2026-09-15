@@ -18,6 +18,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { MkfArchive, parseSpriteSheet } from './mkf.ts';
+import { decodeFlic } from './flic.ts';
 import { decodeImage } from './sprite.ts';
 import { encodePng } from './png.ts';
 
@@ -34,7 +35,12 @@ export interface AssetEntry {
   /** 绘制锚点 —— 超分后必须同步 ×倍率（C-AST-6） */
   anchorX: number;
   anchorY: number;
-  format: 'SPR' | 'SMP';
+  /**
+   * 素材格式。`FLIC` = `.FLI/.FLC` 影片的一帧（见 `flic.ts`）——
+   * 全游戏 105 个动画（Panel 8 / Data 72 / jump 25）都是它，
+   * 拖到现在才接进来，先前是当 `.bin` 原样落盘的。
+   */
+  format: 'SPR' | 'SMP' | 'FLIC';
 }
 
 export interface RawEntry {
@@ -76,6 +82,7 @@ export function extractAll(rich4Dir: string, outDir: string): {
     const mkf = new MkfArchive(new Uint8Array(readFileSync(path)));
     let imgCount = 0;
     let rawCount = 0;
+    let flicCount = 0;
 
     for (let i = 0; i < mkf.count; i++) {
       // 关键：用 'none' 保留原始 RGB555，不做 RGB565 转换
@@ -83,6 +90,38 @@ export function extractAll(rich4Dir: string, outDir: string): {
       const sheet = parseSpriteSheet(data);
 
       if (sheet === null) {
+        // FLIC 影片：逐帧落 PNG（`Panel#4/5/6` 骰子、樂透那三块、jump 的过场…）
+        const flic = decodeFlic(data);
+        if (flic !== null) {
+          for (let k = 0; k < flic.frames.length; k++) {
+            const file = `${String(i).padStart(4, '0')}_${String(k).padStart(3, '0')}.png`;
+            writeFileSync(
+              join(dir, file),
+              encodePng({
+                width: flic.info.width,
+                height: flic.info.height,
+                // FLIC 没有自带锚点：原版是调用方给 (x,y)（见 flic.ts），故记 0
+                anchorX: 0,
+                anchorY: 0,
+                rgba: flic.frames[k]!,
+              }),
+            );
+            images.push({
+              archive: name,
+              resource: i,
+              image: k,
+              file: `${name}/${file}`,
+              width: flic.info.width,
+              height: flic.info.height,
+              anchorX: 0,
+              anchorY: 0,
+              format: 'FLIC',
+            });
+            imgCount++;
+          }
+          flicCount++;
+          continue;
+        }
         const ext = guessExtension(data);
         const file = `${String(i).padStart(4, '0')}.${ext}`;
         writeFileSync(join(dir, file), data);
@@ -115,7 +154,10 @@ export function extractAll(rich4Dir: string, outDir: string): {
         imgCount++;
       }
     }
-    console.log(`  ${archive.padEnd(12)} → 图像 ${String(imgCount).padStart(6)} 张, 其他资源 ${rawCount} 个`);
+    console.log(
+      `  ${archive.padEnd(12)} → 图像 ${String(imgCount).padStart(6)} 张` +
+        `（其中影片 ${flicCount} 段）, 其他资源 ${rawCount} 个`,
+    );
   }
 
   mkdirSync(outDir, { recursive: true });

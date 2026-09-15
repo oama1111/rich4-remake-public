@@ -7,6 +7,21 @@
  *   头部 `magic 0xAF12`、36 帧、189×285、`speed = 14` ms/帧。
  *   原版播它的函数是 `fcn_0045144f`（VA 0x0045144f），
  *   解码分发在 `fcn_00450f04`（VA 0x00450f04）。
+ *   ⚠️ `fcn_0045144f` 只是个**外壳**（加节拍 + 消息泵 + 点击跳过），
+ *   真正解码的还是 `fcn_00450ced` / `fcn_00450f04` —— 骰子与樂透那三段
+ *   走的是同一套。
+ *
+ * ★ **全游戏 105 段影片**：`Panel.mkf` 8、`Data.mkf` 72、`jump.mkf` 25。
+ *   头后面那段「源文件信息」里写着当初的 `.FLC` 路径，等于白送一份语义表：
+ * ```
+ *   Panel#4/5/6  36 帧 189×285  C:\MAKE\DICE\DICE{1,2,3}-1.FLC    骰子（1/2/3 颗）
+ *   Panel#14      5 帧 213×68   D:\RICH4\LOTO\BONUS1.FLC          投注屏的獎金燈框
+ *   Panel#16     42 帧 275×270  D:\RICH4\LOTOOPEN\LOTOBALL.FLC    玻璃球里的球翻滚
+ *   Panel#17     37 帧 280×480  C:\256_S\A01.FLC                 得主的彩带礼花
+ *   Data#416..439               D:\R4-ALL\B01WIN/LOSE…B12…        12 个角色胜负动画
+ *   Data#523..570               FIRE / BOMB / NUCLEAR / UFO / DOG / TORNADO…  卡片特效
+ *   jump#47..70                 J01..J12 / F01..F12               角色跳跃过场
+ * ```
  *
  * ★ 本解码器照 **exe 自己的算法**写，不是照 FLI/FLC 公开规范 —— 两者不一样：
  *
@@ -44,12 +59,21 @@
  *   落成 alpha = 0 —— 骰子移开后擦掉旧位置靠的就是这一步。
  *
  * ⚠️ 帧 0 的三块（COPY / COLOR256 / BLACK）里 COPY 被原版跳过，剩下的
- *   「BLACK」在 exe 里其实是 RLE（见上表）。实测它只在**前 9 行**画一道
- *   网纹（palette 62/2/127），且第 1 帧之后的 DELTA 从不碰那 9 行 ——
- *   也就是说**如果照 exe 画，那道网纹会一直留到最后**。而用 ffmpeg 按
- *   规范解出的 36 帧里没有它，骰子落点又与 Panel.mkf 资源 3 的点数图
- *   **逐像素吻合**。故本解码器把类型 15 当**清屏**处理（= 规范里 FLI_BLACK
- *   的语义），第 0 帧因此为全透明；差一帧 14 ms。已记进 known-deviations。
+ *   「BLACK」在 exe 里其实是 RLE（见上表）—— **照 exe 解**。
+ *
+ *   曾经把类型 15 当「清屏」（= 规范里 FLI_BLACK 的语义）处理：因为实测
+ *   骰子（`Panel#4/5/6`）的帧 0 那道 RLE 只在**前 9 行**画一道网纹
+ *   （palette 62/2/127），且第 1 帧之后的 DELTA 从不碰那 9 行 —— 照 exe 画
+ *   它会一直留到最后；而按规范（ffmpeg）解出的 36 帧里没有它，骰子落点又与
+ *   `Panel.mkf` 资源 3 的点数图逐像素吻合。
+ *
+ *   **现在改回照 exe 解**，理由两条：
+ *   1. 铁律是「原版行为以反汇编为准」，那道网纹是**原版自己就会显示的**
+ *      （FLC→ANM 转换留下的痕迹），属「原版的毛病」，与樂透越界写那类同性质
+ *      —— 登记，不擅自抹掉；
+ *   2. 把它当清屏会**丢掉别的动画的帧 0**：樂透那三块（`Panel#14` 燈框 /
+ *      `#16` 摇球 / `#17` 礼花）的帧 0 就是真内容（主图 + 调色板），
+ *      一清屏就只剩后面几帧的差分，画面直接错。
  */
 
 /** 一帧的头部大小 */
@@ -128,8 +152,8 @@ export function decodeFlic(data: Uint8Array): Flic | null {
       const end = Math.min(q + chunkSize, data.length);
       if (type === 4) readPalette(data, body, end, palette);
       else if (type === 7) buf = readDelta(data, body, end, buf, width, height);
-      // 类型 15 = 清屏（见文件头注释）；类型 18 原版整块跳过
-      else if (type === 15) buf = new Uint8Array(width * height);
+      else if (type === 15) buf = readFullFrame(data, body, end, buf, width, height);
+      // 类型 18（COPY）原版整块跳过
       if (chunkSize < CHUNK_HEADER) break;
       q += chunkSize;
     }
@@ -160,6 +184,52 @@ function readPalette(data: Uint8Array, from: number, end: number, palette: Uint8
       palette[at + 2] = data[i + 2]!;
     }
   }
+}
+
+/**
+ * 块类型 15 —— 整帧索引位图，按行 RLE。
+ *
+ * 每行开头 1 字节（跳过），然后到行满为止：`u8 c` ——
+ *   `c <= 0x80` 游程（后面 1 个索引，重复 c 次）；`c > 0x80` 字面量
+ *   （后面 `256 − c` 个索引）。索引 0 照旧写进去（= 擦回下层）。
+ * ★ 只按声明个数走，**不夹到行宽**：原版用的是计数 `add ebp, eax`，
+ *   写超了会顺延进下一行的像素（线性缓冲，照做）。
+ *
+ * @source `fcn_00450b3a`（VA 0x00450b3a）
+ */
+function readFullFrame(
+  data: Uint8Array,
+  from: number,
+  end: number,
+  prev: Uint8Array<ArrayBuffer>,
+  width: number,
+  height: number,
+): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(prev);
+  let i = from;
+  for (let y = 0; y < height; y++) {
+    i += 1; // 行首那一个字节
+    const base = y * width;
+    let x = 0;
+    while (x < width) {
+      if (i + 1 > end) break;
+      const c = data[i++]!;
+      if (c <= 0x80) {
+        const v = data[i++]!;
+        for (let k = 0; k < c; k++, x++) {
+          const at = base + x;
+          if (at < out.length) out[at] = v;
+        }
+      } else {
+        const n = 256 - c;
+        for (let k = 0; k < n && i < end; k++, x++) {
+          const at = base + x;
+          if (at < out.length) out[at] = data[i++]!;
+        }
+      }
+    }
+  }
+  return out;
 }
 
 /**

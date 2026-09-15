@@ -28,7 +28,7 @@ export interface UpscaleTask {
   srcHeight: number;
   srcAnchorX: number;
   srcAnchorY: number;
-  format: 'SPR' | 'SMP';
+  format: 'SPR' | 'SMP' | 'FLIC';
   /**
    * 素材类别（ui/tile/sprite/background/font）—— 决定超分策略
    * （DEVELOPMENT_PLAN §6 分类处理策略），见 classify.ts。
@@ -108,7 +108,7 @@ export interface AssetEntryLike {
   height: number;
   anchorX: number;
   anchorY: number;
-  format: 'SPR' | 'SMP';
+  format: 'SPR' | 'SMP' | 'FLIC';
   /** 同一张 sprite sheet 的帧数（缺省按 1 计，分类用） */
   frames?: number;
   /** 调色板/来源种类（'spr'/'smp'/'gnd'/'font'，缺省按 format 小写计） */
