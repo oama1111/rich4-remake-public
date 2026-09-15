@@ -27,6 +27,7 @@ import { researchScreen } from './research-screen.ts';
 import { monthlyScreen } from './monthly-screen.ts';
 import { minigameScreen } from './minigame-screen.ts';
 import { helpScreen } from './help-screen.ts';
+import { sharesScreen } from './shares-screen.ts';
 
 export const SCREENS: readonly UiScreen[] = [
   // 演出类（事件起播）放前面：它们一旦在播就压住底下的一切
@@ -40,6 +41,7 @@ export const SCREENS: readonly UiScreen[] = [
   lotteryScreen,
   researchScreen,
   minigameScreen,
+  sharesScreen,
   // 工具列/熱鍵打开的
   helpScreen,
 ];
