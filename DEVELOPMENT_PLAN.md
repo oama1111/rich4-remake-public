@@ -864,7 +864,7 @@ upscale-queue/
 
 | # | 屏 | 素材 | 规则已在 | 备注 |
 |---|---|---|---|---|
-| **P2-1** | **託管AI**（工具列 #3） | `Data.mkf #77`；14 条字串坐标见 original-screens S3 | `ai/personality.ts` | **版式已全解**，最容易先做；只列 `who_plays` bit0 的座位 |
+| ~~**P2-1**~~ ✅ | **託管AI**（工具列 #3） | ⚠️ **`Panel.mkf #77`**（不是 Data.mkf，见 T-021）；坐标见 original-screens S3 | `ai/personality.ts`；`setAi` 已扩为五个旋钮 | T-021 完成：只列真人座位、编辑走草稿、確定才发 action。**目视验证待 Q-BUILD-1** |
 | **P2-2** | **個人資產表**（#7）+ 資產/地產/股票 三张清單 | `Panel.mkf #9`；字段见 S7 | `rules/wealth.ts` 等 | 原版写「點卷」 |
 | **P2-3** | **道具欄 / 卡片欄**（#8/#9） | 5×3 = 15 格浮窗，紧排 | — | S8/S9 |
 | **P2-4** | **側欄四页** | `Panel.mkf #0` 图 0..3；字段见 S6/S10–S12 | `holdingsValue`/`holdingsCost` 已有 | 底部固定「物價指數 N」 |

@@ -534,7 +534,7 @@ landOnLand(state, land):
 
 | REQ | 屏 | 资源 | 读 | 派发 | 布局证据 | 备注 |
 |---|---|---|---|---|---|---|
-| REQ-12.1 (P2-1) | 託管AI | `Data.mkf #77` | `players[i].whoPlays/aiFlags/personality` | 设置 `whoPlays=2`、`aiFlags`、`personality`（新 Action `setAi{player, ...}`） | S3：14 条字串坐标 | 三种個性名：乖寶寶/普通人/大老奸 |
+| REQ-12.1 (P2-1) | 託管AI | ⚠️ **`Panel.mkf #77`**（先前误记为 Data.mkf） | `players[i].whoPlays/aiFlags/personality/cashRatio/stockRatio` | `setAi{player, …}`（五个字段都可选，確定时一次性发） | S3：14 条字串坐标 + 底图 435×355 | 三种個性名：乖寶寶/普通人/大老奸 |
 | REQ-12.2 (P2-2) | 個人資產表 + 三清單 | `Panel.mkf #9` | `wealthOf`、地产/股票清单 | 无 | S7 | 只读 |
 | REQ-12.3 (P2-3) | 道具欄 / 卡片欄 | 浮窗 5×3 | `tools[]/cards[]` | `useTool/useCard`（目标选择进入拾取模式） | S8/S9 | 紧排 15 格 |
 | REQ-12.4 (P2-4) | 側欄四页 | `Panel.mkf #0` 图 0..3 | 日历/月历/小地图/持股 | 切页 | S6/S10–S12 | 底部固定钮 |
