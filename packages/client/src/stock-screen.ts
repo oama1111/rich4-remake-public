@@ -255,6 +255,30 @@ export const STOCK_CLOSED_SIZE = 72;
 export const STOCK_NO_BUY = '漲停無法買進！';
 export const STOCK_NO_SELL = '跌停無法賣出！';
 
+/**
+ * 股市柜台按「買進」时，那个**通用填数窗**（`fcn_00453544`）的上限。
+ *
+ * @source `loc_0042af30`（入口 `loc_0042aee4`）：
+ * ```asm
+ * eax = [stock + 0x10]      ; 流通量
+ * edx:eax = 玩家存款（player + 0x20）
+ * idiv [stock + 0x14]       ; ÷ 股價 → 買得起的股數
+ * 上限 = min(流通量, 存款 ÷ 股價)
+ * ```
+ *
+ * ★ 与上市企業落点那条（`core` 的 `shareWindowLimit`，VA 0x0041d1a9）是
+ *   **两个不同的上限**：那条从**現金**付、夹 1000；这条从**存款**付、夹流通量。
+ *   两条都把上限交给同一个 `AmountPage`（`main.ts` → `dialog.ts`），
+ *   界面不许自己再算（C-ARC-2）。
+ *
+ * ⚠️ 股价为 0（未开盘/脏数据）时原版 `idiv` 会崩；这里给 0 = 不开窗。
+ */
+export function stockCounterBuyMax(deposit: number, price: number, floating: number): number {
+  if (price <= 0) return 0;
+  const byDeposit = Math.trunc(deposit / price);
+  return Math.max(0, Math.min(Math.trunc(floating), byDeposit));
+}
+
 /** 一行行情的显示数据（已格式化好）*/
 export interface StockRowView {
   name: string;

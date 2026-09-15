@@ -15,8 +15,11 @@ const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extract
 const have = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
 
-/** 把当前玩家放到第一个上市企业的格子上，并结算落点 */
-function landOnCommercial(): { state: GameState; topo: ReturnType<typeof topoOf> } {
+/** 把当前玩家放到第一个上市企业的格子上，并结算落点。`cash` 可换掉 0 号的現金 */
+function landOnCommercial(opts: { cash?: number } = {}): {
+  state: GameState;
+  topo: ReturnType<typeof topoOf>;
+} {
   const map = loadMap();
   const topo = topoOf(map);
   // ★ 必须挑 specialKind 为 0 的那种：中國信託那格同时是「銀行」、
@@ -35,7 +38,9 @@ function landOnCommercial(): { state: GameState; topo: ReturnType<typeof topoOf>
     phase: 'settling',
     // ★ newGame 默认从 1998-01-01（元旦，休市）开始；柜台那两条要开市日
     day: 5,
-    players: state.players.map((p, i) => (i === 0 ? { ...p, nodeId: node.id } : p)),
+    players: state.players.map((p, i) =>
+      i === 0 ? { ...p, nodeId: node.id, ...(opts.cash === undefined ? {} : { cash: opts.cash }) } : p,
+    ),
   };
   return { state: reduce(state, { type: 'settle' }, topo), topo };
 }
@@ -52,6 +57,39 @@ describe('★ 上市企业落点', () => {
     expect(state.pending.name.length).toBeGreaterThan(0);
     expect(state.pending.unitPrice).toBeGreaterThan(0);
     expect(state.pending.available).toBeGreaterThan(0);
+  });
+
+  have('★ 通用填数窗的上限 = min(1000, 現金 ÷ 每股售價, 企業餘量) @source VA 0x0041d1a9', () => {
+    const { state } = landOnCommercial();
+    if (state.pending === null || state.pending.kind !== 'buyShares') {
+      throw new Error('没拿到待决交互');
+    }
+    const p = state.pending;
+    // 臺灣人壽：資產 400000 → 單價 40；開局現金 150000 → 3750 股；餘量 5000 股
+    // ⇒ 原版那三道夹回里**最紧的是 1000**（`cmp eax, 0x3e8 / mov esi, 0x3e8`）
+    expect(p.unitPrice).toBe(40);
+    expect(p.cash).toBe(150_000);
+    expect(p.max).toBe(1000);
+    // 上限绝不超过企業余量
+    expect(p.max).toBeLessThanOrEqual(p.available);
+  });
+
+  have('★ 上限随現金收紧 —— 买得起多少由 core 算，界面不再自己算', () => {
+    // 現金 1000 → 1000 ÷ 40 = 25 股，比 1000 那道上限更紧
+    const { state } = landOnCommercial({ cash: 1000 });
+    if (state.pending === null || state.pending.kind !== 'buyShares') {
+      throw new Error('没拿到待决交互');
+    }
+    expect(state.pending.max).toBe(25);
+  });
+
+  have('★ 一股都买不起（現金 0）：原版連問都不問 @source VA 0x0041d21f', () => {
+    // `test esi, esi / je near loc_0041d2bb` —— 上限算出来是 0 就直接收尾，
+    // 連訊息框都不开（真人/电脑共用这一道）。先前引擎照样挂 pending，
+    // 玩家只能点「取消」才走得掉。
+    const { state } = landOnCommercial({ cash: 0 });
+    expect(state.pending).toBeNull();
+    expect(state.phase).toBe('turnEnd');
   });
 
   have('★ 单价 = 企业资产额 ÷ 10000，与股价无关', () => {
@@ -113,6 +151,77 @@ describe('★ 上市企业落点', () => {
     expect(reduce(state, { type: 'buyShares', shares: 0 }, topo)).toBe(state);
     const noPending = { ...state, pending: null };
     expect(reduce(noPending, { type: 'buyShares', shares: 5 }, topo)).toBe(noPending);
+  });
+});
+
+/**
+ * 一格一格地走 —— 与客户端的机械驱动同一条路（`phase === 'moving'` 时
+ * 每拍派一个 `{type:'step'}`），只是把定时器拆掉了。
+ *
+ * `steps` = 骰子点数；`from`/`prev` 决定走哪条路（原版岔路不问玩家，
+ * 按 `pickNextNode` 筛完随机挑，只有一候选时是**强制**的）。
+ */
+function walk(from: number, prev: number, steps: number) {
+  const map = loadMap();
+  const topo = topoOf(map);
+  const base = newGame({
+    map,
+    players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+    seed: 1,
+  });
+  let state: GameState = {
+    ...base,
+    phase: 'moving',
+    stepsRemaining: steps,
+    // ★ 地图上摆着的物件/神明会在这条路上插手；这条用例只问**落点**交互
+    objects: [],
+    players: base.players.map((p, i) =>
+      i === 0 ? { ...p, nodeId: from, lastNodeId: prev } : p,
+    ),
+  };
+  const trace: { node: number; left: number; pending: string | null }[] = [];
+  for (let i = 0; i < steps; i++) {
+    state = reduce(state, { type: 'step' }, topo);
+    trace.push({
+      node: state.players[0]!.nodeId,
+      left: state.stepsRemaining,
+      pending: state.pending === null ? null : state.pending.kind,
+    });
+  }
+  return { state, topo, trace, map };
+}
+
+describe('★ 路过上市企業格 ≠ 停在上面', () => {
+  // 地图 0 上唯一一家「纯粹的」上市企業（臺灣人壽）占**两格**：51、52。
+  // 21 公園 → 51 → 52 → 20 樂透 → 53 台中市 是**强制**路径：
+  // 21 的邻居只有 50（来路）与 51，之后每一格的来路都只剩一个前进方向。
+  const CORRIDOR: readonly number[] = [21, 51, 52, 20, 53];
+
+  have('★ 路过（不停在上面）不会弹「買幾股」', () => {
+    const { state, topo, trace, map } = walk(CORRIDOR[0]!, 50, 4);
+    // 这条路径真的踩过那两格企業
+    expect(trace.map((t) => t.node)).toEqual([51, 52, 20, 53]);
+    for (const n of [51, 52]) {
+      expect(map.nodes[n - 1]!.ref.kind).toBe('commercial');
+    }
+    // 「路过」= 踩上去的时候骰子步数还没走完
+    expect(trace[0]!.left).toBeGreaterThan(0);
+    expect(trace[1]!.left).toBeGreaterThan(0);
+    // ★ 走过去的每一格都不该留下任何待决交互 —— 尤其是 buyShares
+    expect(trace.map((t) => t.pending)).toEqual([null, null, null, null]);
+    // 走完再结算：落点（53 台中市）给的是地，不是「買幾股」
+    const done = reduce(state, { type: 'settle' }, topo);
+    expect(done.pending?.kind).not.toBe('buyShares');
+  });
+
+  have('★ 停在那两格上才产生「買幾股」', () => {
+    // 同一条走廊，只走一格 → 停在 51；走两格 → 停在 52
+    for (const steps of [1, 2]) {
+      const { state, topo, trace } = walk(CORRIDOR[0]!, 50, steps);
+      expect(trace[steps - 1]!.left).toBe(0);
+      const done = reduce(state, { type: 'settle' }, topo);
+      expect(done.pending?.kind).toBe('buyShares');
+    }
   });
 });
 

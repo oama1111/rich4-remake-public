@@ -87,8 +87,19 @@ export function readWaveInfo(data: Uint8Array): WaveInfo {
  *
  * ⚠️ 只列**能确定所在函数**的那几个。其余调用点的参数是寄存器
  *   （运行时决定）或所在函数尚未定名，故不猜。
- *   编号与 `Effect.mkf` 的资源号是否直接相等**尚未验证**——
- *   有可能还隔着一张表。用之前要先听一下对不对。
+ *
+ * ★ **编号 = `Effect.mkf` 的资源号**已取证（2026-09-16）：
+ *   `rich4_init_sound_effect_info`（VA 0x00454176）把一个 8 字节一项的表
+ *   从头部逐项读下去 —— `mov ecx, [ebx]` / `read_mkf(Effect.mkf, ecx)` /
+ *   `mov [ebx + 4], eax`，读到 `-1` 停：
+ * ```asm
+ * 00454186  mov ecx, [ebx]              ; ★ 表项 +0 = Effect.mkf 的资源号，不是别的编号
+ * 00454188  cmp ecx, -1 / je 结束
+ * 00454192  mov edi, [0x48a058]         ; Effect.mkf 的档案句柄
+ * 00454199  call _read_mkf
+ * 004541ac  mov [ebx + 4], eax          ; +4 = 解出来的声音对象
+ * ```
+ *   所以 `sound.play('Effect.mkf', [表项])` 就是原版那一下。
  */
 export const SOUND_IDS = {
   /** 破产 @source VA 0x0040d1cb `push 5`，在 player_bankrupt 内 */
@@ -112,7 +123,79 @@ export const SOUND_IDS = {
    *   `push 0 / push ref_00482322 / call rich4_play_sound_effect`，`[0x482322] = 1`。
    */
   TITLE_CLICK: 1,
+  /**
+   * **使用道具 1（機器娃娃）**那一下的音 —— 音效 **38**。
+   *
+   * ★ 它**不在** `Effect.mkf` 单独的一张表里，而是移动音效表 `0x48234a` 的
+   *   **第 9 项**（`0x48234a + 9×8 = 0x482392`，表里的值就是 38）。
+   *   原版给娃娃单开了一路：`fcn_0040dd1f` 里 `cmp edx, 8 / jge 0x40deb9`
+   *   （actor 8 = 機器娃娃），那一支**写死**用第 9 项而不是交通方式那几项：
+   *
+   * ```asm
+   * 0040deb9  mov  esi, 9
+   * 0040debe  mov  dword [0x48baf8], esi        ; 固定走 9 步
+   * 0040dec4  mov  byte [actor×0x34 + 0x498ea2], 1
+   * 0040decb  mov  dword [0x4749d4], esi        ; ★ 记下索引 9 —— 走完那一下要用它 Stop
+   * 0040ded1  push 1
+   * 0040ded3  mov  eax, 0x48234a
+   * 0040ded8  add  eax, 0x48                   ; ★ +9×8 = 表项 9
+   * 0040dedb  push eax
+   * 0040dedc  call rich4_play_sound_effect      ; @ VA 0x004542ce
+   * ```
+   *
+   * 「走完把它 Stop」在 `fcn_0040d7c4` 的 state 1（`[0x48baf8] == 0`）：
+   * `eax = [0x4749d4]×8 + 0x48234a; call fcn_004542e9`（VA 0x0040d8dc..0x40d8ea，
+   * `fcn_004542e9` = IDirectSoundBuffer::Stop）—— 正是 0x40decb 存下的那个 9，
+   * 也就是**同一个 38 号**。这条闭环是「索引 9 = 38」最硬的旁证。
+   *
+   * ⚠️ **娃娃走子途中没有逐格音效**：那条逐格的路（`fcn_0040d7c4` state 2 的
+   *   交通方式取表）只由**玩家**的掷骰那一步进入（写 state 2 的唯一一处在
+   *   `fcn_0040dd1f` 的 actor < 4 分支，VA 0x0040dd7e），娃娃那一支起步就是
+   *   state 1，且逐格推进的 `fcn_0040c05c` 里没有任何放音调用。所以娃娃
+   *   **一趟只有这一声**（登记在 `docs/deviations/Q-DOLL-1.md`）。
+   */
+  DOLL: 38,
+  /**
+   * **放置類道具落地**那一声 —— 三件各一个号，连号排在 33/34，
+   * 定時炸彈借用 10（与掷骰同一号）。
+   *
+   * @source 三个 `use_tool_*` 函数在 `place_object` + `animate_object` **之后**
+   *   （动画播完才响）各 `push ref_004823xx / call rich4_play_sound_effect`：
+   * ```asm
+   * rich4_tool_luzhang.asm         push 0x48236a / call 0x4542ce   ; VA 0x00446c58
+   * rich4_tool_dilei.asm           push 0x482372 / call 0x4542ce   ; VA 0x00446d39
+   * rich4_tool_dingshizhadan.asm   push 0x48235a / call 0x4542ce   ; VA 0x00446e1a
+   * ```
+   *   `play_sound_effect(ptr, k)` 取 `[ptr]`（VA 0x004542d8），而音效表基址
+   *   `0x48231a` 是**8 字节一项**（+0 资源号、+4 运行时填入的声音对象，
+   *   @source `rich4_init_sound_effect_info` VA 0x00454176）：
+   *
+   * | 表项 | 表项地址 | `[表项]` | 用处 |
+   * |---|---|---|---|
+   * | 8 | 0x48235a | **10** | 定時炸彈落地（也是掷骰那一下，VA 0x0041962a）|
+   * | 10 | 0x48236a | **33** | 路障落地 |
+   * | 11 | 0x482372 | **34** | 地雷落地 |
+   *
+   * ⚠️ 先前引擎在这条路上**一声都没放**（只放了拾取目标那一下的音效 2），
+   *   故需求方听到的「提示音错误」= 少了这三个号。见 `docs/deviations/Q-TOOL-1.md`。
+   */
+  PLACE_BARRIER: 33,
+  PLACE_MINE: 34,
+  PLACE_TIMEBOMB: 10,
 } as const;
+
+/**
+ * 放置類道具（路障 2 / 地雷 3 / 定時炸彈 4）→ 它落地时的音效号。
+ *
+ * @source 见 `SOUND_IDS.PLACE_*`：三个 `use_tool_*` 的 `push ref_004823xx`
+ *   （VA 0x00446c58 / 0x00446d39 / 0x00446e1a）。
+ *   道具号与物件种类的对应见 `@rich4/core` 的 `PLACEMENT_TOOLS`（2→16、3→17、4→18）。
+ */
+export const PLACE_TOOL_SOUND: ReadonlyMap<number, number> = new Map([
+  [2, SOUND_IDS.PLACE_BARRIER],
+  [3, SOUND_IDS.PLACE_MINE],
+  [4, SOUND_IDS.PLACE_TIMEBOMB],
+]);
 
 /**
  * 走一格时的**移动音效**，下标 = 玩家的 `traffic_method`（`player+0x11`）。

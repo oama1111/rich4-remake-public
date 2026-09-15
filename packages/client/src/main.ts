@@ -11,6 +11,9 @@
 import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import {
   autoAction,
+  ACTOR_DOLL,
+  directionOf,
+  PLACEMENT_TOOLS,
   VEHICLE_DICE,
   teleportPlayer,
   decideAction,
@@ -28,6 +31,7 @@ import {
   parseSave,
   importOriginalSave,
   roomMapId,
+  specialSlotOf,
   STOCK_STATUS,
   stockStatus,
   stateFingerprint,
@@ -134,17 +138,22 @@ import {
   pickSoundFont,
   type PickResult,
 } from './host.ts';
-import { MIDI_PLAYLIST, MOVE_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
+import { MIDI_PLAYLIST, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
 import {
   BoardRenderer,
   characterCamera,
-  fitCamera,
   hitToolbar,
   pickNodeAt,
   screenToMap,
   worldToScreen,
   type Camera,
 } from './render.ts';
+import {
+  flightDone,
+  makeObjectFlight,
+  objectFacing,
+  type ObjectFlight,
+} from './throw-fx.ts';
 import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 import {
@@ -212,6 +221,7 @@ import {
   drawStockScreen,
   hitStockPlate,
   hitStockRow,
+  stockCounterBuyMax,
   stockCounterClosed,
   stockPickCardAction,
   stockRowsFrom,
@@ -300,6 +310,7 @@ import {
   type BailSlotView,
 } from './bail-screen.ts';
 import { SCREENS } from './screens.ts';
+import { openBigMap } from './big-map-screen.ts';
 import { closeHelpScreen, helpScreen, openHelpAt } from './help-screen.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import {
@@ -953,8 +964,9 @@ function stockTrade(kind: 'buy' | 'sell'): void {
       return;
     }
     // 上限 = min(流通量, 存款 ÷ 股价) @source `loc_0042af30`
-    const afford = Math.trunc(me.moneyInBank / st.price);
-    const max = Math.min(st.f10, Number.isFinite(afford) ? afford : 0);
+    // ★ 算式收在 `stock-screen.ts` 的 `stockCounterBuyMax`（与上市企業那条
+    //   并列：两条上限都由模块给出，这里只把结果交给通用填数窗）
+    const max = stockCounterBuyMax(me.moneyInBank, st.price, st.f10);
     if (max <= 0) return;
     stockAmount = { kind: 'buy', stock: row, max };
   } else {
@@ -1124,6 +1136,13 @@ let npcWalksDrawn: GameState['lastNpcWalks'] | null = null;
 function holdForActorWalk(reschedule: () => void): boolean {
   if (screen !== 'game') return false;
   if (!renderer.walkDone()) {
+    reschedule();
+    return true;
+  }
+  // ★ 投掷动效（放置類道具）也在播 → 等它播完再派下一步：原版那一段
+  //   `place_object → animate_object → 音效` 是**阻塞**的（VA 0x00446bf4 起），
+  //   不等就会出现「物件还在飞，下一次 dispatch 已经把画面翻页了」。
+  if (objectFlight !== null) {
     reschedule();
     return true;
   }
@@ -1305,9 +1324,13 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
       return true;
     }
 
-    // ── 视角 ──
+    // ── 視角 ──
+    // ★ 大地圖**不是视角切换** —— 它是一扇独立的**模态弹窗**
+    //   （原版窗口过程 `fcn_0040a801` @VA 0x0040a801，入口 `_rich4_ui_small_map_entry`
+    //   @VA 0x0040a9bd）。画法与判据见 `big-map-screen.ts`。
     case HOTKEY.map:
-      setViewMode(camera.mode === 'character' ? 'map' : 'character');
+      if (screen !== 'game') return false;
+      openBigMap(uiEnv());
       return true;
     case HOTKEY.rotateLeft:
       rotateView(-1);
@@ -2546,6 +2569,9 @@ function applyAction(action: Action): void {
     } else if (state.phase !== 'moving' && !diceFx.active) {
       diceFx.cancel();
     }
+    // ★ 放置類道具（路障/地雷/定時炸彈）真正落地了 → 起播投掷动效 + 落地音。
+    //   纯表现，放在这里是因为**联机广播与 AI 也走同一条路**（`dispatch` 的口）。
+    if (action.type === 'useTool') startObjectFlight(before, action);
   }
   if (state !== before) {
     history.push(action);
@@ -2628,6 +2654,25 @@ function playSoundFor(before: GameState, after: GameState): void {
   } else if (after.pending?.kind === 'bank' && before.pending?.kind !== 'bank') {
     // 落在银行
     sound.play('Effect.mkf', SOUND_IDS.BANK);
+  }
+
+  // ★ **使用道具 1（機器娃娃）**那一下 —— 音效 38（见 `SOUND_IDS.DOLL`）。
+  //
+  // @source VA 0x0040deb9..0x0040dedc（`fcn_0040dd1f` 的 actor 8 分支）：
+  //   娃娃上路那一支**不查交通方式**，直接播移动音效表 0x48234a 的**第 9 项**
+  //   （走完再按同一个索引 `[0x4749d4] = 9` 把它 Stop，VA 0x0040d8dc）。
+  //
+  // ⚠️ 判据不能看替身记录：`runDoll` 走完就把它收回 `idleActor()`
+  //   （`specialActors[4]` 在动作前后都是「未出场」），看记录等于永远认不出来。
+  //   能认的只有 core **刚交出来的那趟路径** —— `lastNpcWalks` 是整体覆写，
+  //   数组换了身份就说明刚发生了一趟；槽 4 只可能是娃娃（`npcRound` 走 0..3、
+  //   `bail` 走被保釋那个惡人的槽）。看动作类型也行，但这条对
+  //   「AI 用 / 服务器广播用」同样成立 —— 原版也是谁在场都听得见。
+  if (
+    after.lastNpcWalks !== before.lastNpcWalks &&
+    after.lastNpcWalks.some((w) => w.slot === specialSlotOf(ACTOR_DOLL))
+  ) {
+    sound.play('Effect.mkf', SOUND_IDS.DOLL);
   }
 
   // 角色語音（T-052）。`speechResourceFor` 已经把越界挡在外面 ——
@@ -3423,6 +3468,116 @@ function activeUiScreen(): UiScreen | null {
   return null;
 }
 
+/**
+ * 正在播的**投掷动效** —— 纯表现，不进 `GameState`（C-DET-4）。
+ *
+ * ★ 原版这一整套在 `use_tool_luzhang/dilei/dingshizhadan`（VA 0x00446b9x 起）
+ *   里是**阻塞**的：`place_object` → `animate_object`（物件从角色身上飞到目标格，
+ *   每帧 24 ms）→ 收尾停 100 ms → `play_sound_effect(落地音)` → `refresh_screen`。
+ *   期间棋盘一次都不重绘，所以那件物件**只以飞行的样子出现**，落地后才在格子上；
+ *   这里照同一条规矩：飞行期间 `renderer` 把它从静态绘制槽里藏掉
+ *   （见 `RenderInput.objectFlight`），播完才放落地音。
+ *
+ * 规格与逐条 VA 见 `throw-fx.ts`。
+ */
+let objectFlight: ObjectFlight | null = null;
+
+/** 这一件飞完该放哪个音效号（0 = 不放音） */
+let objectFlightSound = 0;
+
+/**
+ * 播完一条投掷：放落地音 + 让静态那件露出来。
+ *
+ * @source 音效在 `animate_object` **返回之后**才响 —— VA 0x00446c58（路障 33）、
+ *   0x00446d39（地雷 34）、0x00446e1a（定時炸彈 10）。
+ */
+function finishObjectFlight(): void {
+  if (objectFlight === null) return;
+  const id = objectFlightSound;
+  objectFlight = null;
+  objectFlightSound = 0;
+  if (id > 0) sound.play('Effect.mkf', id);
+  requestRender();
+}
+
+/**
+ * 每帧推进投掷动效：没播完就再排一帧，播完就收（放音、复原）。
+ *
+ * 挂在 `requestRender` 的 rAF 回调里，与走子补间同一个套路 —— 不无条件续帧，
+ * 免得变成死循环。
+ */
+function tickObjectFlight(now: number): void {
+  const f = objectFlight;
+  if (f === null) return;
+  if (flightDone(f, now)) {
+    finishObjectFlight();
+    return;
+  }
+  requestRender();
+}
+
+/**
+ * 一条 `useTool` 恰好**放下**了一件东西 → 起播投掷动效。
+ *
+ * ★ 判据只认「新落地的那一件」：拿前后两份物件表逐格比 `nodeId`，找出
+ *   `before` 里不在这一格、`after` 里在这一格、且种类对得上的那一件。
+ *   这样联机（服务器广播回来）与 AI 走同一条路，也不会把先前放的当成这一次的。
+ *
+ * 起点取**当前玩家所在格**（原版读的是玩家记录里的实时像素坐标
+ * `player + 0x8/+0xa`）—— 使用道具时角色就站在那一格上。
+ */
+function startObjectFlight(
+  before: GameState,
+  action: { type: 'useTool'; toolId: number; nodeId?: number },
+): void {
+  const nodeId = action.nodeId ?? 0;
+  const objectType = PLACEMENT_TOOLS.get(action.toolId);
+  if (objectType === undefined || nodeId <= 0) return;
+  const me = state.players[state.currentPlayer];
+  const to = map.nodes[nodeId - 1];
+  const from = me === undefined ? undefined : map.nodes[me.nodeId - 1];
+  if (to === undefined || from === undefined) return;
+
+  // 新落地的那一件（下标）—— 只认「这一格上**新**多出来的那一件」
+  let slot = -1;
+  for (let i = 0; i < state.objects.length; i++) {
+    const after = state.objects[i];
+    if (after === undefined || after.type !== objectType) continue;
+    if (after.nodeId !== nodeId || after.attached !== 0) continue;
+    if (before.objects[i]?.nodeId === nodeId) continue; // 原先就在这一格的，不是这次放的
+    slot = i;
+    break;
+  }
+  if (slot < 0) return;
+
+  // ★ 两端点**开播前**换算成屏幕坐标（原版 `fcn_00409a23` 只做这一次，
+  //   之后每帧都在屏幕空间累加）；任一端在 29×29 窗口外就不播，直接放音。
+  const vp = { w: LAYOUT.board.w, h: LAYOUT.board.h };
+  const a = worldToScreen(from.x, from.y, camera, vp);
+  const b = worldToScreen(to.x, to.y, camera, vp);
+  const id = PLACE_TOOL_SOUND.get(action.toolId) ?? 0;
+  if (a === null || b === null || (a.x === b.x && a.y === b.y)) {
+    // @source VA 0x0040e6f2：`fcn_00409a23` 换算后两轴都为 0（起点就是落点，
+    //   例如把路障放在自己脚下）→ `test edx,edx / jne` + `test ecx,ecx / je`
+    //   直接 `loc_0040ea5a` 返回 —— **一帧都不画**，连那 100 ms 也不停，
+    //   于是调用方紧接着就放了落地音。
+    if (id > 0) sound.play('Effect.mkf', id);
+    return;
+  }
+  // 上一条还没播完就被顶掉（连着的两次使用）：先把它的音放掉，别吞掉
+  if (objectFlight !== null) finishObjectFlight();
+  objectFlight = makeObjectFlight({
+    objectIndex: slot,
+    type: objectType,
+    facing: objectFacing(to, map.nodes, directionOf),
+    from: a,
+    to: b,
+    start: performance.now(),
+  });
+  objectFlightSound = id;
+  requestRender();
+}
+
 function requestRender(): void {
   if (renderQueued) return;
   renderQueued = true;
@@ -3442,6 +3597,9 @@ function requestRender(): void {
     // ★ 走子补间要**逐帧**重绘（T-046）：补间没播完就再排一帧，
     //   否则棋子会停在这一步的第一帧上，直到下一次 dispatch 才动。
     if (screen === 'game' && !renderer.walkDone()) requestRender();
+    // ★ 投掷动效（放置類道具）同理：没播完就再排一帧；播完那一下才放落地音
+    //   （原版顺序：动画 → 收尾停 100 ms → 音效，见 `startObjectFlight`）
+    if (screen === 'game') tickObjectFlight(performance.now());
     if (screen === 'game') shopTick(performance.now());
     // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
     if (screen === 'game') bankTick(performance.now());
@@ -3452,6 +3610,9 @@ function requestRender(): void {
 
     if (overlay !== null) {
       // ★ 登记的整屏接管：棋盘、侧栏、工具栏一概不画（原版这些屏也是整屏窗口）
+      // ★ 例外是**浮窗**（`windowed: true`，如大地圖彈窗）：原版只把被盖住的
+      //   那一块盖上去，周围的棋盘/工具栏/侧栏照旧露着 —— 故先照常画一整帧。
+      if (overlay.windowed === true && screen === 'game') drawGameStage();
       overlay.draw(uiEnv());
     } else if (screen === 'title') {
       drawTitle(stageCtx, titleHot, spriteNow);
@@ -3731,6 +3892,9 @@ function drawGameStage(): void {
     // ⚠️ core 目前**不暴露**「此刻是谁在行动」—— 它是一次动作里跑完整趟的，
     //   没有可以读的中间态，故这里按「没有替身在行动」处理（留空）。
     currentActor: null,
+    // 放置類道具的投掷动效（纯表现，不进 state）—— 飞着的那一件由渲染器画在
+    // 清单之上，同时把它从静态槽里藏掉（原版动画期间棋盘不重绘）
+    objectFlight,
   });
   const dlg = currentDialog();
   const me = state.players[state.currentPlayer];
@@ -4027,8 +4191,8 @@ function onToolbar(i: number): void {
     case 4: // 儲存進度
       openSaveLoad('save', 'game');
       return;
-    case 5: // 大地圖 —— 切换人物/地图视角
-      setViewMode(camera.mode === 'character' ? 'map' : 'character');
+    case 5: // 大地圖 —— 开那扇 400×400 的模态弹窗（跳表 0x417d39 第 5 项）
+      openBigMap(uiEnv());
       return;
     case 10: // 股市（T-030）
       openStock();
@@ -4038,31 +4202,12 @@ function onToolbar(i: number): void {
   }
 }
 
-/**
- * 在人物视角与地图视角之间切换。
- *
- * ★ **不是小地图那两颗按钮**（先前这里记错了）。那两颗是**转视角**
- *   （8 个 45° 方位，见 `rotateView`）。切换这个的是「大地圖」那个动作，
- *   走 `HOTKEY.map`。
- */
-function setViewMode(mode: 'character' | 'map'): void {
-  if (camera.mode === mode) return;
-  if (mode === 'character') {
-    const me = state.players[state.currentPlayer];
-    const node = me === undefined ? undefined : map.nodes[me.nodeId - 1];
-    camera = characterCamera(node?.x ?? 0, node?.y ?? 0, camera.view);
-    followPlayer = true;
-  } else {
-    // ★ 按**棋盘区**（439×440）取景，不是整个窗口 —— 地图是画进棋盘区的，
-    //   用窗口尺寸算会把整图缩过头、塞进棋盘后只剩左上角一块。
-    //   @source 原版大地圖：「一块近乎正方的大窗（左侧 439×440 那块），里面画整张地图」
-    //   （见 docs/original-screens.md 的 S6）。
-    camera = { ...fitCamera(map, LAYOUT.board.w, LAYOUT.board.h), view: camera.view };
-  }
-  log(mode === 'character' ? '▶ 人物视角' : '▶ 地图视角');
-  requestRender();
-  renderPanel();
-}
+// ★ 这里原来有一个 `setViewMode()`（把镜头切成「整图取景」）—— 那是**本引擎
+//   自己发明的**：原版根本没有这种视角，`HOTKEY.map` / 工具列第 6 颗打开的是
+//   一扇 400×400 的**模态弹窗**（窗口过程 `fcn_0040a801` @VA 0x0040a801）。
+//   改接 `big-map-screen.ts` 之后它就没人调了，按需求方「不许改良」一并删掉（T-086）。
+//   ⚠️ 相关的 `camera.mode === 'map'` 判断（游標平移 / 滚轮缩放 / 拖棋盘）随之
+//   成为走不到的分支 —— 见 `docs/deviations/T-086.md`。
 
 /**
  * 转视角。
@@ -4887,11 +5032,16 @@ function bindInput(): void {
     // ── 登记的整屏（契约见 ui-screen.ts）：按下这一拍派 `down` ──
     // ★ 原版对应的就是 `WM_LBUTTONDOWN`；`mouseup`（= `WM_LBUTTONUP`）派 `up`。
     //   两者**必须**分派在真的按下/抬手事件上 —— 见 `click` 那一路的注释。
-    if (e.button === 0) {
+    // ★ 屏在的时候**右键这一拍也要吞掉**：原版模态窗的 `WM_RBUTTONDOWN` 走
+    //   `DefWindowProc`，漏给棋盘就会点到 GO 钮（掷骰！）、换侧栏页、在工具列
+    //   记下按下号 —— 大地圖彈窗开着时原版一件都不做。
+    {
       const overlay = activeUiScreen();
       if (overlay !== null) {
-        const q = eventToStage(e);
-        if (q !== null) overlay.down?.(q.x, q.y, uiEnv());
+        if (e.button === 0) {
+          const q = eventToStage(e);
+          if (q !== null) overlay.down?.(q.x, q.y, uiEnv());
+        }
         return;
       }
     }
@@ -5472,6 +5622,20 @@ function bindInput(): void {
   // 右键：**在有标记时**点小地图外任意处 → 清掉标记、镜头回到当前玩家
   // @source VA 0x00418893（WM_RBUTTONUP）：算出的位置与标记相同就 `[0x48be18] = 0`
   canvas.addEventListener('contextmenu', (e) => {
+    // ── 登记的整屏（契约见 ui-screen.ts）：**声明了** `contextmenu` 的屏先收 ──
+    // ★ 原版 `WM_RBUTTONUP`（0x205）就是各屏「关掉最上面那扇窗」的那一拍；
+    //   大地圖彈窗（`fcn_0040a801`）只有这一条出口。
+    // ⚠️ 只拦**声明了**的屏 —— 没声明的照旧走下面这些分支（設定屏里
+    //   「遊戲說明」那一层就是靠下面 options 那支收的）。
+    {
+      const overlay = activeUiScreen();
+      if (overlay?.contextmenu !== undefined) {
+        e.preventDefault();
+        const q = eventToStage(e);
+        if (q !== null) overlay.contextmenu(q.x, q.y, uiEnv());
+        return;
+      }
+    }
     // 資產表屏：右键关掉（原版 WM_RBUTTONUP，VA 0x424409）
     if (screen === 'assets') {
       e.preventDefault();

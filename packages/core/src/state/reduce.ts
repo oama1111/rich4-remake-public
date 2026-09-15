@@ -115,6 +115,7 @@ import {
   companyDividends,
   companyFeeOnLanding,
   industryUsesWheel,
+  shareWindowLimit,
 } from '../places/company.ts';
 import { tickBlockingCounter } from '../rules/blocking.ts';
 import {
@@ -2468,7 +2469,14 @@ function buySharesFromCommercial(state: GameState, shares: number): GameState {
  *   `buy_stock(玩家, commercial[+0x19], 股数, 0)`，末位 0 即「从企业买」。
  *
  * 按 C-ARC-2，「买几股」是模态 UI 的事，core 只负责把做这个决定所需的
- * 信息算齐（单价、余量、现金）。
+ * 信息算齐（单价、余量、现金、**通用填数窗的上限**）。
+ *
+ * ★ **上限在这里算**（`shareWindowLimit`，照 VA 0x0041d1a9），客户端只管
+ *   把它交给 `AmountPage` —— 先前 UI 拿 `available` 当上限，等于把原版
+ *   那三道夹回（1000 / 現金 ÷ 單價 / 企業餘量）抄了半份在界面上。
+ *
+ * ★ **上限为 0 就返回 `null`**：原版 `test esi, esi / je loc_0041d2bb`
+ *   —— 一股都买不起、或企業已售罄时，訊息框根本不开（真人电脑共用这道闸）。
  */
 function pendingForCommercial(
   state: GameState,
@@ -2481,13 +2489,18 @@ function pendingForCommercial(
   if (c === undefined) return null;
   const me = state.players[state.currentPlayer];
   if (me === undefined) return null;
+  const unitPrice = commercialUnitPrice(c.assetValue);
+  const available = state.commercialShares[commercialId] ?? 0;
+  const max = shareWindowLimit(unitPrice, me.cash, available);
+  if (max <= 0) return null;
   return {
     kind: 'buyShares',
     commercialId: c.id,
     name: c.name,
     stock: c.stockIndex,
-    unitPrice: commercialUnitPrice(c.assetValue),
-    available: state.commercialShares[commercialId] ?? 0,
+    unitPrice,
+    available,
+    max,
     cash: me.cash,
   };
 }

@@ -16,6 +16,7 @@ import {
   drawKey,
   fitCamera,
   hitToolbar,
+  objectTokens,
   SPECIAL_ACTOR_SPRITE_BASE,
   specialActorImageSet,
   TOOLBAR,
@@ -576,5 +577,85 @@ describe('★ DeferredSpriteClose —— 摘引用与 close 分成两步', () =>
     expect(spy).toHaveBeenCalledTimes(1);
     expect(typeof spy.mock.calls[0]![0]).toBe('function');
     spy.mockRestore();
+  });
+});
+
+/*
+ * ★ 棋盘上的**地图物件**（需求方 2026-09-16：「放置后目标点应该也要看到这 3 个
+ *   道具的样子」）—— 先前 `render.ts` 里 `state.objects` 一处都没读，整个漏画。
+ * 图集与图号全照 exe：`Data.mkf` 资源 `0x18c + 种类 − 1`（VA 0x004080b2）、
+ * 图号 `8 − 视角 + 朝向`（VA 0x00408ee2）。
+ */
+describe('★ 物件清单（`objectTokens`）—— 放置的三件道具必须画出来', () => {
+  const node = (id: number, x: number, y: number): MapNode =>
+    makeNode({ id, x, y, adjacentSlots: [0, 0, 0, 0] });
+
+  /** 一张 3 格的小地图；物件表只放我们要验的那几件 */
+  const withObjects = (
+    objs: { type: number; nodeId: number; attached?: number }[],
+  ): GameState =>
+    makeGameState({
+      objects: objs.map((o) => ({
+        type: o.type,
+        nodeId: o.nodeId,
+        state: 0,
+        attached: o.attached ?? 0,
+      })),
+    });
+
+  const nodes = [node(1, 10, 20), node(2, 30, 40), node(3, 50, 60)];
+
+  it('★ 路障(16)/地雷(17)/定時炸彈(18) 各自的图集 = 411/412/413', () => {
+    const tokens = objectTokens(withObjects([
+      { type: 16, nodeId: 1 },
+      { type: 17, nodeId: 2 },
+      { type: 18, nodeId: 3 },
+    ]), nodes, 0);
+    expect(tokens.map((t) => t.resource)).toEqual([411, 412, 413]);
+    expect(tokens.map((t) => t.type)).toEqual([16, 17, 18]);
+  });
+
+  it('用**节点坐标**当落点（物件记录存的是节点号）', () => {
+    const [t] = objectTokens(withObjects([{ type: 16, nodeId: 2 }]), nodes, 0);
+    expect(t).toMatchObject({ x: 30, y: 40, nodeId: 2, index: 0 });
+  });
+
+  it('nodeId = 0（已被请走/拾取）不画 —— 与初始状态一致', () => {
+    expect(objectTokens(withObjects([{ type: 16, nodeId: 0 }]), nodes, 0)).toEqual([]);
+    expect(objectTokens(makeGameState(), nodes, 0)).toEqual([]);
+  });
+
+  it('附身于人的（attached != 0）这一轮不画 —— 画在主人身上那一路未做', () => {
+    expect(objectTokens(withObjects([{ type: 5, nodeId: 1, attached: 2 }]), nodes, 0)).toEqual([]);
+  });
+
+  it('★ 正在飞的那一件要藏起来（原版动画期间棋盘不重绘，别画两遍）', () => {
+    const state = withObjects([
+      { type: 16, nodeId: 1 },
+      { type: 17, nodeId: 2 },
+    ]);
+    const all = objectTokens(state, nodes, 0);
+    expect(all.map((t) => t.index)).toEqual([0, 1]);
+    expect(objectTokens(state, nodes, 0, 1).map((t) => t.index)).toEqual([0]);
+    expect(objectTokens(state, nodes, 0, 0).map((t) => t.index)).toEqual([1]);
+  });
+
+  it('★ 图号 = 8 − 视角 + 朝向：视角一转就换一张（8 向各 1 帧）', () => {
+    const state = withObjects([{ type: 16, nodeId: 1 }]);
+    // 孤立格 → 朝向 0（见 throw-fx 的 `objectFacing`）
+    expect(objectTokens(state, nodes, 0)[0]!.image).toBe(0);
+    expect(objectTokens(state, nodes, 2)[0]!.image).toBe(6);
+    expect(objectTokens(state, nodes, 7)[0]!.image).toBe(1);
+  });
+
+  it('节点号越界 / 不在表里的种类 → 跳过，不抛', () => {
+    expect(objectTokens(withObjects([{ type: 16, nodeId: 99 }]), nodes, 0)).toEqual([]);
+    expect(objectTokens(withObjects([{ type: 21, nodeId: 1 }]), nodes, 0)).toEqual([]);
+  });
+
+  it('神明（种类 1..14）也在同一份清单里：资源 396..409', () => {
+    // 开局 `INITIAL_PLACED_OBJECTS` 把这些摆在地图上，原版一样会画
+    expect(objectTokens(withObjects([{ type: 1, nodeId: 1 }]), nodes, 0)[0]!.resource).toBe(396);
+    expect(objectTokens(withObjects([{ type: 15, nodeId: 1 }]), nodes, 0)[0]!.resource).toBe(410);
   });
 });

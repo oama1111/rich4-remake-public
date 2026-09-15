@@ -12,11 +12,19 @@ import {
   ACTOR_PLACE,
   SPECIAL_ACTOR_BASE,
   SPECIAL_ACTOR_COUNT,
+  directionOf,
   type GameState,
   type SpecialActor,
 } from '@rich4/core';
 import { CHARACTERS, characterColorRgb } from '@rich4/data';
 import { framesFor, tweenTickCount } from './tween.ts';
+import {
+  flightPosAt,
+  objectFacing,
+  objectImageIndex,
+  objectSpriteResource,
+  type ObjectFlight,
+} from './throw-fx.ts';
 import type { MapNode, Rich4Map } from '@rich4/core';
 import { VIEW_CENTER, VIEW_COUNT, VIEW_SPAN, projectCell, projectWorld } from '@rich4/data';
 import type { Sprite, SpriteCache } from './assets.ts';
@@ -187,6 +195,16 @@ export interface RenderInput {
    * 只影响绘制槽的类别（同屏幕 Y 时压在上面），不给就当没有替身在行动。
    */
   currentActor?: number | null;
+  /**
+   * 正在播的**投掷动效**（放置類道具：路障/地雷/定時炸彈）—— 纯表现，不进 state。
+   *
+   * ★ 原版 `_rich4_animate_object`（VA 0x0040e669）把物件从角色身上丢到目标格，
+   *   是一段**阻塞**动画：期间棋盘不重绘，故那件物件**只**以飞行的样子出现
+   *   （此刻还不在目标格上）；播完才落地、才放音。这里用同一条规矩：
+   *   `objectIndex` 指的那一件在本条动效播完前**不进静态绘制槽**，
+   *   改由动效层画（见 `draw()` 末尾）。规格与出处见 `throw-fx.ts`。
+   */
+  objectFlight?: ObjectFlight | null;
 }
 
 /**
@@ -424,6 +442,14 @@ export interface ActorWalk {
 export interface ActorWalkStep {
   from: { x: number; y: number };
   to: { x: number; y: number };
+  /**
+   * 这一格的起点／落点节点号。
+   *
+   * ★ 给「不在盘上也要画出来」那一路用（见 `ActorTokenOptions.walkingOffBoard`）：
+   *   機器娃娃走完就 `idleActor()`，state 里已经没有节点了，只能从补间这一格现取。
+   */
+  fromNode: number;
+  toNode: number;
   /** 这一格要播几个 tick @source VA 0x0040c5e6 */
   ticks: number;
   /** 整趟里、这一格开始前已经过去的 tick 数（帧号要跨格连算） */
@@ -471,11 +497,54 @@ export function actorWalkSteps(
     const ticks =
       sa === null || sb === null ? 1 : tweenTickCount(sb.x - sa.x, sb.y - sa.y, 0, true);
     const ms = ticks * tickMs;
-    steps.push({ from: { x: a.x, y: a.y }, to: { x: b.x, y: b.y }, ticks, tickAt, at, ms });
+    steps.push({
+      from: { x: a.x, y: a.y },
+      to: { x: b.x, y: b.y },
+      fromNode: a.id,
+      toNode: b.id,
+      ticks,
+      tickAt,
+      at,
+      ms,
+    });
     at += ms;
     tickAt += ticks;
   }
   return steps;
+}
+
+/**
+ * 补间里这一格的世界朝向 —— **面朝去路**（`from → to`），与 exe 同一套。
+ *
+ * @source `fcn_0040c05c` 的 actor ≥ 4 分支（入口 `0040c06f cmp ecx,4 / jge 0x40c489`），
+ *   每 tick 都会重算一次朝向、写进替身记录的 `+9`（VA 0x0040c6f6..0x0040c719）：
+ *
+ * ```asm
+ * ; 这一格刚把它走完时，+4 已经指向**落点**、+6 指向**来路**（0x40c549/0x40c557 换过）
+ * 0040c6ff  mov ax, word [ebx + 0x498e2c]   ; ★ 先压：+4 = 落点
+ * 0040c706  push eax
+ * 0040c709  mov ax, word [ebx + 0x498e2e]   ; ★ 后压：+6 = 来路
+ * 0040c710  push eax
+ * 0040c711  call 0x407a8c                   ; = dir(后压 → 先压) = dir(来路 → 落点)
+ * 0040c719  mov byte [ebx + 0x498e31], al   ; +9 = direction
+ * ```
+ *
+ * ⚠️ 两个参数的**先后不能只看 `push` 的字面顺序**：本工程的调用约定是
+ *   **cdecl（从右往左压栈）**，所以**最后压的那个才是第一个参数**。
+ *   拿 `_memcpy` 验过：`push n / push src / push dst / call memcpy`
+ *   （例：`rich4_sound_effect.asm:146`）—— 与 `memcpy(dst, src, n)` 逐位对上。
+ *   于是 `fcn_00407a8c(来路, 落点)` = `dir(来路 → 落点)` = **面朝去路**，
+ *   与玩家那一支（`directionOf(目标 − 当前)`）同向，不是倒着走。
+ *   （`fcn_00407a8c` 本体：`dx = node[第二参数].x − node[第一参数].x`，
+ *   再 `push dy / push dx / call 0x454fb4`。）
+ *
+ *   本函数直接复用 core 的 `directionOf`（1:1 的定点 atan2 + 八分圆重映射）。
+ */
+export function actorWalkDirection(step: {
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+}): number {
+  return directionOf(step.to.x - step.from.x, step.to.y - step.from.y);
 }
 
 /** 一整趟补间要播多久（毫秒）—— 空串返回 0 */
@@ -520,6 +589,22 @@ export interface ActorTokenOptions {
   frame?: (slot: number) => number;
   /** 当前行动者（原版 `[0x49910c]`，替身时是 4..8）；没有替身在行动就传 null */
   currentActor?: number | null;
+  /**
+   * ★ **不在盘上但正在播补间**的槽 —— 走这一帧该把它画在哪个节点、朝哪。
+   *
+   * 原版里这五个替身在**走的过程中** `place` 一直是 0（在盘上），只有走完
+   * 那一下才被收场（`fcn_00418ebd`：`[0x49910c] == 8` → 切回主人）。本引擎的
+   * core 是「一次动作把整趟走完」，于是 `runDoll` 回来的记录**起步时就已经是**
+   * `idleActor()`（nodeId 0 / place offBoard），`actorTokens` 按 `place != 0`
+   * 一跳过，那一趟就**只剩补间在动、棋盘上什么都没有** —— 需求方看到的
+   * 「用了機器娃娃没有动画」正是这里。
+   *
+   * 所以宿主（`#actorSlots`）把补间**当前那一格**的落点与朝向喂进来，
+   * 这一帧照常画走姿。走完补间没了，回调返回 null，娃娃就消失（= 原版收场）。
+   *
+   * @returns `{ nodeId, direction }`；不在播就返回 null
+   */
+  walkingOffBoard?: (slot: number) => { nodeId: number; direction: number } | null;
 }
 
 /** 「不在棋盘上」的落点哨兵 —— 节点号从 1 起，故 0 不会与任何节点相撞 */
@@ -592,6 +677,10 @@ export function actorWalkTriggers(
  *         mul byte [esp + 0x54]             ; × 屏幕朝向
  *         add al, byte [ebp + 0x498ea3]     ; + 走路帧号
  * ```
+ *
+ * ⚠️ `place != 0` 跳过那一条**只对「站在原地」的成立**：原版替身走着的时候
+ *   `place` 一直是 0，而本引擎 core 把整趟一次走完、回来就已经 `idleActor()`，
+ *   所以走完还没播完的那一趟要由 `walkingOffBoard` 补上（默认没有 = 旧行为）。
  */
 export function actorTokens(
   state: GameState,
@@ -605,24 +694,90 @@ export function actorTokens(
   for (let slot = 0; slot < SPECIAL_ACTOR_COUNT; slot++) {
     const a = state.specialActors[slot];
     // @source VA 0x00408b82：`cmp byte [rec + 10], 0 / jne 跳过`
-    if (a === undefined || a.place !== ACTOR_PLACE.board) continue;
-    const node = nodes[a.nodeId - 1];
+    const onBoard = a !== undefined && a.place === ACTOR_PLACE.board && a.nodeId > 0;
+    // ★ 不在盘上也可能刚走完一整趟却还没播完（機器娃娃 / 半路回老家的惡人）——
+    //   那一路由宿主从补间现算（见 `walkingOffBoard`），没有就照旧跳过。
+    const ghost = onBoard ? null : (opts.walkingOffBoard?.(slot) ?? null);
+    if (ghost === null && !onBoard) continue;
+    const nodeId = onBoard ? a.nodeId : ghost!.nodeId;
+    const direction = onBoard ? a.direction : ghost!.direction;
+    const node = nodes[nodeId - 1];
     if (node === undefined) continue;
     const actor = SPECIAL_ACTOR_BASE + slot;
-    const walking = walkingOf(slot);
+    // 娃娃走完就收场，但补间在播的那几帧**是走姿**（原版 `[0x498ea2] == 1`）
+    const walking = onBoard ? walkingOf(slot) : true;
     const resource = specialActorImageSet(actor, walking);
     if (resource === null) continue;
     out.push({
       slot,
       actor,
-      nodeId: a.nodeId,
+      nodeId,
       x: node.x,
       y: node.y,
       resource,
-      screenDir: screenDirection(a.direction, opts.view),
+      screenDir: screenDirection(direction, opts.view),
       frame: walking ? frameOf(slot) : 0,
       walking,
       klass: current === actor ? DRAW_CLASS.currentPlayer : DRAW_CLASS.npc,
+    });
+  }
+  return out;
+}
+
+/** 棋盘上要画的一件**地图物件**（神明 / 路障 / 地雷 / 定時炸彈…）*/
+export interface ObjectToken {
+  /** 在 `state.objects` 里的下标（飞行中要按它把这一件藏掉） */
+  index: number;
+  /** 物件种类（16 路障 / 17 地雷 / 18 定時炸彈…） */
+  type: number;
+  /** 所在节点 */
+  nodeId: number;
+  /** 节点世界坐标（物件记录里存的是节点号，原版也拿它查 `map_node_ptr`） */
+  x: number;
+  y: number;
+  /** `Data.mkf` 图集资源号（= 0x18c + 种类 − 1） */
+  resource: number;
+  /** 图号 = `8 − 视角 + 朝向`（每资源 8 张 = 8 向各 1 帧） */
+  image: number;
+}
+
+/**
+ * `state.objects` → 这一帧要画的物件清单（**纯函数**，画布无关，可单测）。
+ *
+ * 筛子与图号全在 `#objectSlots` 的注释里引了 asm（VA 0x00408f78 起那一段）；
+ * 这里只把「哪些该画、画哪张图」从渲染里剥出来，好让 `render.test.ts` 钉住它 ——
+ * 需求方这一轮的问题正是「放置后看不到」，而漏画就发生在这一层。
+ *
+ * @param hidden 正在播投掷动效的那一件（下标）—— 原版动画期间棋盘不重绘，
+ *   所以飞着的那件**不能**同时出现在格子上（见 `RenderInput.objectFlight`）
+ */
+export function objectTokens(
+  state: GameState,
+  nodes: readonly MapNode[],
+  view: number,
+  hidden: number | null = null,
+): ObjectToken[] {
+  const out: ObjectToken[] = [];
+  for (let i = 0; i < state.objects.length; i++) {
+    if (hidden === i) continue;
+    const o = state.objects[i];
+    if (o === undefined) continue;
+    // @source `cmp word [objects_info + i*24 + 2], 0`（VA 0x00408f82）—— 0 = 不在图上
+    if (o.nodeId <= 0) continue;
+    // @source `test dh, dh / je`（VA 0x00408f9f）—— 附身的那一支画在主人身上（本轮未做）
+    if (o.attached !== 0) continue;
+    const node = nodes[o.nodeId - 1];
+    if (node === undefined) continue;
+    const resource = objectSpriteResource(o.type);
+    if (resource === null) continue;
+    out.push({
+      index: i,
+      type: o.type,
+      nodeId: o.nodeId,
+      x: node.x,
+      y: node.y,
+      resource,
+      image: objectImageIndex(objectFacing(node, nodes, directionOf), view),
     });
   }
   return out;
@@ -962,7 +1117,7 @@ export class BoardRenderer {
     cam: Camera,
     vp: { w: number; h: number },
     now: number,
-  ): { x: number; y: number } | null {
+  ): { x: number; y: number; nodeId: number; direction: number } | null {
     const w = this.#actorWalks.get(slot);
     if (w === undefined) return null;
     const elapsed = now - w.start;
@@ -987,7 +1142,10 @@ export class BoardRenderer {
       this.#actorFrame.set(slot, (this.#actorFrame.get(slot) ?? 0) + (absolute - w.ticked));
       w.ticked = absolute;
     }
-    return framesFor(a, b, step.ticks)[k - 1] ?? null;
+    const p = framesFor(a, b, step.ticks)[k - 1];
+    if (p === undefined) return null;
+    // @source 逐格前进时写 `+9 direction`（`_rich4_calculate_direction`，VA 0x00454fb4）
+    return { x: p.x, y: p.y, nodeId: step.toNode, direction: actorWalkDirection(step) };
   }
 
   /**
@@ -1120,12 +1278,21 @@ export class BoardRenderer {
 
     const slots: DrawSlot[] = [
       ...this.#buildingSlots(map, state, camera, vp),
+      // ★ 棋盘上的**物件**（神明、路障、地雷、定時炸彈…）—— 原版与建筑同属
+      //   类别 0 那一段（`fcn_0040829d` 的对象分支不 or 类别位，VA 0x00408efd），
+      //   故一起排序、一起贴。先前**整个漏了**（需求方：「放置后看不到」）。
+      ...this.#objectSlots(map, state, camera, vp, input.objectFlight ?? null),
       ...this.#playerSlots(map, state, camera, vp, input.characterPose ?? null),
       ...this.#actorSlots(map, state, camera, vp, input.currentActor ?? null, nowMs),
     ];
     // 原版用 qsort 比低 16 位 int16；这里用稳定排序，键相同时保持压入顺序（不影响观感）
     slots.sort((a, b) => a.key - b.key);
     for (const s of slots) s.paint();
+
+    // ★ 投掷动效画在清单**之上**：原版 `animate_object` 是直接贴屏幕的阻塞动画，
+    //   根本不进绘制槽（所以飞着的物件能盖过比它高的建筑）。@source VA 0x0040e669
+    const flight = input.objectFlight ?? null;
+    if (flight !== null) this.#drawObjectFlight(flight, camera, nowMs);
 
     // 调试层画在清单之上（它只是排错用的参考图形，不该被建筑挡住）
     if (this.debugNodes) this.#drawNodes(map, state, camera, hoverNode, vp);
@@ -1260,6 +1427,108 @@ export class BoardRenderer {
         sp.height * k,
       );
     }
+  }
+
+  /**
+   * 棋盘上的**地图物件** —— 神明、路障、地雷、定時炸彈…（`state.objects`）。
+   *
+   * ## 出处
+   *
+   * @source `fcn_0040829d` 的物件那一段（VA 0x00408f78 起，逐个扫 46 个物件）：
+   * ```asm
+   * 00408f82  cmp word [objects_info[i] + 2], 0   ; nodeId == 0 → 不在地图上
+   * 00408f8c  cmp byte [objects_info[i] + 6], 0   ; 也不在飞行中 → 跳过
+   * 00408f95  mov dh, byte [objects_info[i] + 5]  ; attached（附身于谁）
+   * 00408f9f  test dh, dh / je 不附身那一支
+   *           … 附身的画在**主人身上**（下面 ⚠️）
+   * loc_00408e0e（不附身）:
+   *           esi/edi = 所在节点的**屏幕格**（越出 0x1c 窗口就整条跳过）
+   * 00408ee2  mov al, 8 / sub al, [0x499088] / add al, [objects_info[i] + 1] / and al, 7
+   *           ; ★ 图号 = 8 − 视角 + 朝向
+   * 00408f4b  mov al, byte [objects_info[i]]         ; 种类
+   * 00408f52  mov eax, [type*4 + 0x49692c]           ; ★ 图集（= Data.mkf 的 0x18c + 种类 − 1）
+   * 00408efd  edx = 屏幕Y << 4 / and 0xfff0 / + 槽号<<16
+   *           ; ★ **不 or 类别** ⇒ 与建筑同一档（`DRAW_CLASS.building`）
+   * 00408f60  mov byte [槽 + 0x48a852], 0xff          ; 不换归属色
+   * ```
+   * 即：与建筑混在**同一条按屏幕 Y 排的清单**里，锚点是图自带的 `(x, y)`
+   * （`graph_st` 的锚点 —— 物件是「站在格心上」的，实测 40×33 那几张锚点是
+   * `(20, 22)`，不是正中，故别自己按 width/2 算）。
+   *
+   * ## ⚠️ 已知缺口（登记 `docs/deviations/Q-TOOL-1.md`）
+   *
+   * **附身于人**的物件（`attached != 0`，即被请到身上的神明）原版画在主人身上，
+   * 这里**不画** —— 本引擎的棋盘此前一件物件都没画，先补上「放在地上」这一大类
+   * （需求方这轮要的三件道具全在其中），跟着主人跑那一路留待下一轮。
+   *
+   * ## 为什么用节点坐标而不是地块坐标
+   *
+   * 物件记录里存的是**节点号**（`+0x02`），原版也是拿它查 `map_node_ptr` 的
+   * `(x, y)`；地块记录那套（`land.x/y`）是建筑专用的，物件不适用。
+   */
+  #objectSlots(
+    map: Rich4Map,
+    state: GameState,
+    cam: Camera,
+    vp: { w: number; h: number },
+    flight: ObjectFlight | null,
+  ): DrawSlot[] {
+    const ctx = this.#ctx;
+    const k = cam.mode === 'map' ? cam.scale : 1;
+    const slots: DrawSlot[] = [];
+    const tokens = objectTokens(state, map.nodes, cam.view, flight?.objectIndex ?? null);
+    for (const t of tokens) {
+      const p = worldToScreen(t.x, t.y, cam, vp);
+      if (p === null) continue; // 越出 29×29 窗口，原版同样跳过
+      slots.push({
+        key: drawKey(p.y, DRAW_CLASS.building),
+        paint: () => {
+          // 物件图是 SPR（索引 0 透明），不需要抠黑
+          const sp = this.#sprite('Data.mkf', t.resource, t.image);
+          if (sp === null) return;
+          ctx.drawImage(
+            sp.bitmap,
+            p.x - sp.anchorX * k,
+            p.y - sp.anchorY * k,
+            sp.width * k,
+            sp.height * k,
+          );
+        },
+      });
+    }
+    return slots;
+  }
+
+  /**
+   * 投掷动效这一帧 —— 把飞着的那件物件贴在插值位置上。
+   *
+   * @source `_rich4_animate_object`（VA 0x0040e669）：两端点**开播前**换算成
+   *   屏幕坐标，之后每帧在屏幕空间线性累加、贴在同一处（规格见 `throw-fx.ts`）。
+   *   它**不进绘制槽**，直接贴屏幕 ⇒ 恒压在所有立体物之上，这里照样画在清单之后。
+   *
+   * ⚠️ 原版这一支还有个「擦掉上一帧那块矩形再贴新的」的脏矩形处理
+   *   （`fcn_00456469` / `_rich4_rect_union`）—— 那是因为它直接往主表面画。
+   *   本引擎每帧整幅重绘，用不上。
+   */
+  #drawObjectFlight(flight: ObjectFlight, cam: Camera, now: number): void {
+    const at = flightPosAt(flight, now);
+    if (at === null) return;
+    const res = objectSpriteResource(flight.type);
+    if (res === null) return;
+    const img = objectImageIndex(flight.facing, cam.view);
+    const sp = this.#sprite('Data.mkf', res, img);
+    if (sp === null) return;
+    const k = cam.mode === 'map' ? cam.scale : 1;
+    // 原版每帧先向零截断再贴（`__round_toward_zero`，VA 0x0040e808 那一段）
+    const x = Math.trunc(at.x);
+    const y = Math.trunc(at.y);
+    this.#ctx.drawImage(
+      sp.bitmap,
+      x - sp.anchorX * k,
+      y - sp.anchorY * k,
+      sp.width * k,
+      sp.height * k,
+    );
   }
 
   /**
@@ -1546,6 +1815,11 @@ export class BoardRenderer {
    * ⚠️ exe 在槽里存的是**替身记录自己的 x/y**（走动时是插值值），本引擎的
    *   `SpecialActor` 没有这两个字段（C-ARC-2：插值坐标不进 state），
    *   故按「格心 + 补间插值」现算。
+   *
+   * ★ **走完就收场的**（機器娃娃 / 半路回老家的惡人）由 `walkingOffBoard` 补：
+   *   原版走的过程中 `place` 一直是 0，本引擎 core 一次把整趟走完、回来就已经
+   *   `idleActor()`，只按 `state` 判就整趟都画不出人来（需求方报的
+   *   「用了機器娃娃没有动画」）。位置/朝向都从补间**当前那一格**现算。
    */
   #actorSlots(
     map: Rich4Map,
@@ -1559,7 +1833,7 @@ export class BoardRenderer {
     const slots: DrawSlot[] = [];
     // ★ 先把补间解出来（它会推进走路帧、顺手清掉播完的），再按它决定站/走姿 ——
     //   顺序颠倒的话，刚好播完那一刻会多画一帧走姿。
-    const live = new Map<number, { x: number; y: number }>();
+    const live = new Map<number, { x: number; y: number; nodeId: number; direction: number }>();
     for (let slot = 0; slot < SPECIAL_ACTOR_COUNT; slot++) {
       const p = this.#actorWalkScreen(slot, cam, vp, now);
       if (p !== null) live.set(slot, p);
@@ -1569,6 +1843,11 @@ export class BoardRenderer {
       walking: (slot) => live.has(slot),
       frame: (slot) => this.#actorFrame.get(slot) ?? 0,
       currentActor,
+      // ★ 不在盘上但这一帧还在走的那一趟：拿补间当前格的落点与朝向画走姿。
+      walkingOffBoard: (slot) => {
+        const p = live.get(slot);
+        return p === undefined ? null : { nodeId: p.nodeId, direction: p.direction };
+      },
     });
 
     const k = cam.mode === 'map' ? cam.scale : 1;

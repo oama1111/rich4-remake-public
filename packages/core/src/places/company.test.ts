@@ -175,6 +175,9 @@ function landing(chairman: number | null, over: Partial<GameState> = {}): GameSt
     priceIndex: 1,
     stepsTotal: 6,
     totalDays: 40,
+    // ★ 企業要**还有股可卖**才会问「是否認購」——原版 `cmp dword [ebx+0x30], 0 / je 结束`
+    //   （VA 0x0041d1a9 进门第 3 条），main 的 makeGameState 默认这张表是空的。
+    commercialShares: [0, 1000],
     ...over,
   });
   const commercialOwners = [...s.commercialOwners];

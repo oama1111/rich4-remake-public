@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { MkfArchive } from './mkf.ts';
-import { MIDI_PLAYLIST, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, SOUND_IDS } from './audio.ts';
+import { MIDI_PLAYLIST, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from './audio.ts';
 
 const RICH4 = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4';
 const have = (f: string) => (existsSync(`${RICH4}/${f}`) ? it : it.skip);
@@ -123,5 +123,59 @@ describe('★ 標題／選單音效 —— 照 exe 的编号', () => {
   it('悬停 = 0、确认 = 1（`[0x48231a]` / `[0x482322]`）', () => {
     expect(SOUND_IDS.TITLE_HOVER).toBe(0);
     expect(SOUND_IDS.TITLE_CLICK).toBe(1);
+  });
+});
+
+describe('★ 機器娃娃（道具 1）的音效 —— 38，而且是 exe 里那张表查出来的', () => {
+  it('使用那一下 = 音效 38 @source VA 0x0040ded3（`fcn_0040dd1f` 的 actor 8 分支）', () => {
+    expect(SOUND_IDS.DOLL).toBe(38);
+  });
+
+  it('★ 它不是移动音效那四个 —— 娃娃那一支**不查**交通方式，索引写死 9', () => {
+    expect(MOVE_SOUND).not.toContain(SOUND_IDS.DOLL);
+    // 走路 44 / 機車 45 / 汽車 46 / 船 53 是 0x48234a 的 11..14 项，不是第 9 项
+    expect(MOVE_SOUND.indexOf(SOUND_IDS.DOLL)).toBe(-1);
+  });
+
+  /**
+   * ★ 溯源：直接回 `rich4.exe` 的数据段读那张表，而不是只在测试里抄一遍注释。
+   *
+   * `fcn_0040dd1f` 的 actor 8 分支是 `eax = 0x48234a + 0x48`（= 第 9 项，每项 8 字节）
+   * 然后把 `[eax]` 当音效号传给 `rich4_play_sound_effect`（VA 0x0040ded3..0x0040dedc）。
+   * 本 PE 的节表 VirtualSize 全为 0，故 VA → 文件偏移要用 SizeOfRawData 那套换算
+   * （与 `tools/disasm.py` 的 SECTIONS 一致）：
+   *   DGROUP VA `0x463000` ↔ 文件偏移 `398848`。
+   */
+  have('rich4.exe')('★ 表 0x48234a 的第 9 项读出来就是 SOUND_IDS.DOLL', () => {
+    const DGROUP_VA = 0x463000;
+    const DGROUP_OFF = 398848;
+    const exe = readFileSync(`${RICH4}/rich4.exe`);
+    const at = DGROUP_OFF + (0x48234a + 9 * 8 - DGROUP_VA);
+    expect(exe.readUInt32LE(at)).toBe(SOUND_IDS.DOLL);
+  });
+});
+
+describe('★ 放置類道具落地的音效 —— 照 exe 的表（`0x48231a`，8 字节一项）', () => {
+  it('路障 33 / 地雷 34 / 定時炸彈 10', () => {
+    // @source VA 0x00446c58 push 0x48236a（表项 10）、0x00446d39 push 0x482372（表项 11）、
+    //         0x00446e1a push 0x48235a（表项 8）
+    expect(SOUND_IDS.PLACE_BARRIER).toBe(33);
+    expect(SOUND_IDS.PLACE_MINE).toBe(34);
+    expect(SOUND_IDS.PLACE_TIMEBOMB).toBe(10);
+  });
+
+  it('★ 三件是**连号**的 33/34，定時炸彈借用 10（与掷骰同一号）', () => {
+    expect(SOUND_IDS.PLACE_MINE).toBe(SOUND_IDS.PLACE_BARRIER + 1);
+    expect(SOUND_IDS.PLACE_TIMEBOMB).toBe(DICE_SOUND);
+  });
+
+  it('道具号 → 音效号：2→33、3→34、4→10，且**不碰**别的道具', () => {
+    expect(PLACE_TOOL_SOUND.get(2)).toBe(33);
+    expect(PLACE_TOOL_SOUND.get(3)).toBe(34);
+    expect(PLACE_TOOL_SOUND.get(4)).toBe(10);
+    expect(PLACE_TOOL_SOUND.size).toBe(3);
+    // 1 機器娃娃 / 5 機車 那些不是放置類，不该有落地音
+    expect(PLACE_TOOL_SOUND.has(1)).toBe(false);
+    expect(PLACE_TOOL_SOUND.has(5)).toBe(false);
   });
 });

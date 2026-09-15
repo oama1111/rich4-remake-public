@@ -19,7 +19,9 @@
  * 每帧：  tick(env)       ← 所有登记的屏都收，用来**察觉**状态变化 / 推进动画
  * 状态变：event(before, after, env)
  * 画：    active(env) 为真的**第一屏** draw(env)，其余不画，棋盘也不画
+ *        （`windowed: true` 的屏例外：先照常画一整帧棋盘，再叠这扇浮窗）
  * 鼠标：  同一屏的 move / down / up，坐标是**舞台坐标**（0..639 × 0..479）
+ * 右键：  声明了 `contextmenu` 的屏收 `WM_RBUTTONUP` 那一拍（浏览器里是 contextmenu）
  * 工具列：toolbar(i, env) 返回 true 表示这颗钮归本屏
  * 熱鍵：  hotkey(fn, env) 返回 true 表示已处理（fn 见 hotkeys.ts 的 HOTKEY）
  * ```
@@ -70,6 +72,17 @@ export interface UiScreen {
   readonly id: string;
 
   /**
+   * **浮窗**（原版只是把被盖住的那块盖上去的那种）：`draw` 之前先照常画一整帧
+   * 棋盘 —— 周围的棋盘 / 工具栏 / 侧栏照旧露着，不是整屏黑底。
+   *
+   * ★ 大地圖彈窗就是这样（`fcn_0040a801` 只 Blt `RECT(20,60,420,460)`，
+   *   实机截图 S6 里右侧栏照样显示「資金」页）；道具欄 / 設定 / 存讀檔那几扇
+   * 浮窗走的是 `main.ts` 的历史那条路，不在此表。
+   *   不给（或 false）= 整屏接管：除了本屏什么都不画。
+   */
+  readonly windowed?: boolean;
+
+  /**
    * 本屏此刻要不要**接管整屏**。
    *
    * ⚠️ 必须是**纯查询**：会被高频调用（每次鼠标事件、每帧）。
@@ -77,15 +90,24 @@ export interface UiScreen {
    */
   active(env: UiScreenEnv): boolean;
 
-  /** 画整屏。只在 `active` 为真时调用，画布已清成黑色 */
+  /** 画整屏（`windowed` 的屏则是画那一扇浮窗）。只在 `active` 为真时调用 */
   draw(env: UiScreenEnv): void;
 
   /** 鼠标移动（舞台坐标）—— 要重画就自己 `env.requestRender()` */
   move?(x: number, y: number, env: UiScreenEnv): void;
-  /** 鼠标按下 */
+  /** 鼠标按下（原版 `WM_LBUTTONDOWN`）*/
   down?(x: number, y: number, env: UiScreenEnv): void;
-  /** 鼠标抬起 */
+  /** 鼠标抬起（原版 `WM_LBUTTONUP`）*/
   up?(x: number, y: number, env: UiScreenEnv): void;
+
+  /**
+   * 右键（原版 `WM_RBUTTONUP`，浏览器里就是 `contextmenu` 那一拍）。
+   *
+   * ★ **声明了它**的屏会在 `main.ts` 那条 `contextmenu` 处理**最前面**收到这一拍，
+   *   之后的棋盘/工具栏分支一概不走 —— 这就是各屏「右键关掉最上面那扇窗」的落点。
+   *   没声明的屏不受影响（照旧落到下面那些分支）。
+   */
+  contextmenu?(x: number, y: number, env: UiScreenEnv): void;
 
   /**
    * 每帧一次（**所有**登记的屏都收，不只是 active 的）。

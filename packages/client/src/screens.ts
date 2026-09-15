@@ -27,6 +27,7 @@ import { researchScreen } from './research-screen.ts';
 import { monthlyScreen } from './monthly-screen.ts';
 import { minigameScreen } from './minigame-screen.ts';
 import { helpScreen } from './help-screen.ts';
+import { bigMapScreen } from './big-map-screen.ts';
 import { sharesScreen } from './shares-screen.ts';
 
 export const SCREENS: readonly UiScreen[] = [
@@ -48,4 +49,8 @@ export const SCREENS: readonly UiScreen[] = [
   minigameScreen,
   // 工具列/熱鍵打开的
   helpScreen,
+  // 大地圖彈窗（T-086）：一扇 **400×400 贴 (20,60) 的浮窗**，不是缩放镜头。
+  // ★ 放最后无妨 —— 它与别的屏不会同时开（模态期间键盘全被它吞掉，
+  //   见 big-map-screen.ts 的 `hotkey`）。
+  bigMapScreen,
 ];

@@ -159,6 +159,10 @@ export type PendingInteraction =
    *
    * `unitPrice` = `企业资产额 ÷ 10000`（整数除），**从现金付**，
    * 与股市柜台那条（从存款付、按股价）是两回事。
+   *
+   * ★ `max` 是**通用填数窗的上限**，由 core 按原版 `fcn_0041d1a9` 算好
+   *   （见 `places/company.ts` 的 `shareWindowLimit`）。UI 只许把它交给
+   *   `AmountPage`，**不许自己再算一遍**（C-ARC-2）。
    */
   | {
       kind: 'buyShares';
@@ -172,7 +176,15 @@ export type PendingInteraction =
       unitPrice: number;
       /** 企业还剩多少股可卖 */
       available: number;
-      /** 买家现金 —— 买得起多少股由 UI/AI 自己算 */
+      /**
+       * 通用填数窗的**上限** = `min(1000, 現金 ÷ 每股售價, available)`
+       * —— 原版 `fcn_00453544(上限)` 吃到的就是这个数。
+       *
+       * ⚠️ 电脑那条（`_rich4_calculate_max_purchase_count`，VA 0x0041d839）
+       *   **没有 1000 这层闸**，AI 策略层要买多少照旧用 `available` 自己算。
+       */
+      max: number;
+      /** 买家现金 —— 只在题面上显示；能买多少股已经由 `max` 定死 */
       cash: number;
     }
   /**

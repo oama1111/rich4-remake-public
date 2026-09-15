@@ -128,6 +128,59 @@ export function industryUsesWheel(industry: number): boolean {
 }
 
 // ============================================================
+//  認購股份：通用填数窗的上限
+// ============================================================
+
+/**
+ * 一次認購的股數上限 —— 原版写死的 `0x3e8`。
+ *
+ * @source VA 0x0041d857：`cmp eax, 0x3e8 / jle short loc_0041d216 / mov esi, 0x3e8`
+ */
+export const MAX_SHARES_PER_PURCHASE = 0x3e8; // 1000
+
+/**
+ * 踩到上市企業时，那个**通用填数窗**（`fcn_00453544`）吃到的「上限」。
+ *
+ * ★ 这是**规则**，不是界面的事：原版在 `fcn_0041d1a9` 里算好再交给填数窗
+ *   （`push esi / call fcn_00453544`），窗子里只做一次越界夹回。所以本引擎
+ *   也把上限放进 `pending`，客户端**不许自己再算一遍**（C-ARC-2）。
+ *
+ * @source VA 0x0041d1a9，进「訊息框／填数窗」之前那一段：
+ * ```asm
+ * 0041d845  mov  ecx, 0x2710                  ; 10000
+ * 0041d857  mov  eax, [ebx + 0x24]            ; 企業資產額
+ * 0041d860  idiv ecx                          ; ecx = 每股售價 = 資產額 ÷ 10000（向零取整）
+ * 0041d86a  mov  edx, [esi + 0x496b84]        ; ★ 買家**現金**（player + 0x1c，不是存款）
+ * 0041d88e  idiv ecx                          ; eax = 現金 ÷ 每股售價
+ * 0041d857  mov  esi, eax
+ * 0041d85d  cmp  eax, 0x3e8
+ * 0041d863  jle  loc_0041d216
+ * 0041d865  mov  esi, 0x3e8                   ; ★ 一律夹到 1000 股
+ * 0041d216  mov  eax, [ebx + 0x30]            ; 企業還剩多少股
+ * 0041d21a  cmp  esi, eax
+ * 0041d21c  jle  loc_0041d21f
+ * 0041d21e  mov  esi, eax                     ; ★ 再夹到企業餘量
+ * 0041d21f  test esi, esi
+ * 0041d221  je   near loc_0041d2bb            ; ★ 算出来是 0 → 連問都不問
+ * ```
+ *
+ * ⇒ `min(1000, 現金 ÷ 每股售價, 企業餘量)`；`0` 表示「问都别问」。
+ *
+ * ⚠️ **只有这条（真人問句 + 填数窗）用这个上限**。电脑那一条走的是
+ *   `_rich4_calculate_max_purchase_count`（VA 0x0041d839：資產 × 物價為安全垫，
+ *   拿現金減掉它再除單價），**没有 1000 这层闸** —— 所以 AI 策略层照旧
+ *   用 `available` 自己算，不要拿这个函数的结果去卡电脑。
+ */
+export function shareWindowLimit(unitPrice: number, cash: number, available: number): number {
+  // 原版这里 `idiv` 一个可能为 0 的单价（資產額 < 10000 时）会当场除零；
+  // 本引擎给 0 = 不开窗，与「买不起一股」同一出口。
+  if (unitPrice <= 0) return 0;
+  const byCash = Math.trunc(cash / unitPrice);
+  const byStock = Math.trunc(available);
+  return Math.max(0, Math.min(MAX_SHARES_PER_PURCHASE, byCash, byStock));
+}
+
+// ============================================================
 //  自家的公司：董事長的好处
 // ============================================================
 

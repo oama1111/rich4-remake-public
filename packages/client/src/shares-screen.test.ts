@@ -431,6 +431,8 @@ describe('整屏的开关 —— 每月 15 日的分紅演出 @source VA 0x0041d
       stock: 0,
       unitPrice: 50,
       available: 10_000,
+      // 通用填数窗的上限由 core 算（`shareWindowLimit`，@source VA 0x0041d1a9）
+      max: 1000,
       cash: 140_000,
     };
     expect(sharesScreen.active(envWith({ ...s, pending }))).toBe(false);

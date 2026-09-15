@@ -265,6 +265,17 @@ export function interactionUi(
       };
     }
 
+    // ★ 原版这条路是 **訊息框 → 通用填数窗 → dispatch**：
+    //   `fcn_00440ba8`（訊息框，VA 0x0041d24d）→ `fcn_00453544(上限)`
+    //   （填数窗，VA 0x0041d25b）→ `_rich4_buy_stock(…, 0)`（VA 0x0041d281）。
+    //
+    //   本引擎的对应物就是这里：两个选项 → `dialog.ts` 的原版 YES/NO 訊息框；
+    //   选了「買」→ `main.ts` 的 `onDialogHit` 开*同一个*通用填数页
+    //   `AmountPage`（与銀行、公佈欄、股市柜台那条**同一套** `drawDialog` /
+    //   `hitDialog`），確定后把 `fill(n)` 出来的 action 交回去。
+    //
+    //   ⚠️ 上限 `max` 是 core 按 `fcn_0041d1a9` 算好的
+    //   （`min(1000, 現金 ÷ 每股售價, 企業餘量)`），**这里不许再算一遍**。
     case 'buyShares':
       return {
         title: '',
@@ -277,7 +288,7 @@ export function interactionUi(
             action: { type: 'buyShares', shares: 1 },
             amount: {
               label: '買幾股',
-              max: pending.available,
+              max: pending.max,
               step: 1,
               fill: (n) => ({ type: 'buyShares', shares: n }),
             },
