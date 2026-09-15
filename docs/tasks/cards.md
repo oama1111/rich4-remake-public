@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **75** 张卡，估算 **41.5** 单元，已完成 30.1。
+共 **75** 张卡，估算 **41.5** 单元，已完成 40.7。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -43,28 +43,28 @@
 | [T-029](#t-029) | 銀行屏（存/取/貸/還 + 特別融資） | MOD-12 | REQ-12.6 | `doing` | 0.8 | — |
 | [T-030](#t-030) | 股市屏（Panel.mkf 75 的主表 + 買進/賣出） | MOD-12 | REQ-12.7 | `done` | 0.8 | — |
 | [T-030b](#t-030b) | 股市的「上市公司資訊」详情卡 + 持股页 | MOD-12 | REQ-12.7 | `done` | 0.5 | T-030 |
-| [T-031](#t-031) | 持股彙總屏（買股份 / 企業董事長） | MOD-12 | REQ-12.7 | `todo` | 0.5 | T-030 |
+| [T-031](#t-031) | 持股彙總屏（買股份 / 企業董事長） | MOD-12 | REQ-12.7 | `done` | 0.5 | T-030 |
 | [T-032](#t-032) | 商店屏（卡片/道具切换、买、卖自己的） | MOD-12 | REQ-12.8 | `done` | 0.8 | — |
-| [T-033](#t-033) | 公佈欄屏（挂 / 撤 / 买 / 出价输入） | MOD-12 | REQ-12.9 | `todo` | 0.8 | — |
-| [T-034](#t-034) | 拍賣屏（PASS / +1000 / +5000、挥锤动画） | MOD-12 | REQ-12.10 | `todo` | 0.8 | — |
-| [T-035](#t-035) | 樂透投注屏 | MOD-12 | REQ-12.11 | `todo` | 0.5 | — |
-| [T-036](#t-036) | 樂透開獎动画屏 | MOD-12 | REQ-12.11 | `todo` | 0.5 | T-035 |
-| [T-037](#t-037) | 魔法屋屏（外圈 12 功能悬停高亮 + 中央文字 + 音） | MOD-12 | REQ-12.12 | `todo` | 0.8 | — |
+| [T-033](#t-033) | 公佈欄屏（挂 / 撤 / 买 / 出价输入） | MOD-12 | REQ-12.9 | `done` | 0.8 | — |
+| [T-034](#t-034) | 拍賣屏（PASS / +1000 / +5000、挥锤动画） | MOD-12 | REQ-12.10 | `done` | 0.8 | — |
+| [T-035](#t-035) | 樂透投注屏 | MOD-12 | REQ-12.11 | `done` | 0.5 | — |
+| [T-036](#t-036) | 樂透開獎动画屏 | MOD-12 | REQ-12.11 | `done` | 0.5 | T-035 |
+| [T-037](#t-037) | 魔法屋屏（外圈 12 功能悬停高亮 + 中央文字 + 音） | MOD-12 | REQ-12.12 | `done` | 0.8 | — |
 | [T-038](#t-038) | 監獄 / 醫院保釋屏（八个位子，含四大惡人） | MOD-12 | REQ-12.13 | `done` | 0.6 | — |
-| [T-039](#t-039) | 旅館 / 購物中心轉盤动画 | MOD-12 | REQ-12.14 | `todo` | 0.5 | — |
-| [T-040](#t-040) | 研究所选項目屏 | MOD-12 | REQ-12.14 | `todo` | 0.4 | — |
-| [T-041](#t-041) | 每月結算 + 頒獎屏 | MOD-12 | REQ-12.15 | `todo` | 0.5 | — |
-| [T-042](#t-042) | 小游戏一：企鵝挖寶（specialKind 6） | MOD-12 | REQ-12.16 | `todo` | 1.0 | — |
-| [T-043](#t-043) | 小游戏二：七彩氣球（specialKind 7） | MOD-12 | REQ-12.16 | `todo` | 1.0 | — |
-| [T-044](#t-044) | 小游戏三：財神接金幣（mkf 22） | MOD-12 | REQ-12.16 | `todo` | 1.0 | — |
-| [T-045](#t-045) | 輔助說明屏（工具列 #1） | MOD-12 | REQ-12.17 | `todo` | 0.4 | — |
+| [T-039](#t-039) | 旅館 / 購物中心轉盤动画 | MOD-12 | REQ-12.14 | `done` | 0.5 | — |
+| [T-040](#t-040) | 研究所选項目屏 | MOD-12 | REQ-12.14 | `done` | 0.4 | — |
+| [T-041](#t-041) | 每月結算 + 頒獎屏 | MOD-12 | REQ-12.15 | `done` | 0.5 | — |
+| [T-042](#t-042) | 小游戏一：企鵝挖寶（specialKind 6） | MOD-12 | REQ-12.16 | `done` | 1.0 | — |
+| [T-043](#t-043) | 小游戏二：七彩氣球（specialKind 7） | MOD-12 | REQ-12.16 | `done` | 1.0 | — |
+| [T-044](#t-044) | 小游戏三：財神接金幣（specialKind 8） | MOD-12 | REQ-12.16 | `done` | 1.0 | — |
+| [T-045](#t-045) | 輔助說明屏（工具列 #1） | MOD-12 | REQ-12.17 | `done` | 0.4 | — |
 | [T-046](#t-046) | 走子补间动画与时序（玩家棋子） | MOD-12 | REQ-12.18 | `done` | 1.0 | — |
-| [T-047](#t-047) | 四大惡人与機器娃娃的棋子渲染与走子动画 | MOD-12 | REQ-12.18 | `todo` | 0.6 | T-046 |
+| [T-047](#t-047) | 四大惡人与機器娃娃的棋子渲染与走子动画 | MOD-12 | REQ-12.18 | `done` | 0.6 | T-046 |
 | [T-048](#t-048) | 開局跳伞过场（可跳过） | MOD-12 | REQ-12.19 | `done` | 0.5 | — |
 | [T-049](#t-049) | 载具棋子形态（走路 / 機車 / 汽車 / 船） | MOD-12 | REQ-12.19 | `done` | 0.4 | T-046 |
 | [T-050](#t-050) | 地塊归属彩边 + GO 钮三态 + 標題音效 | MOD-12 | REQ-12.19 | `done` | 0.4 | — |
-| [T-051](#t-051) | 解析 Speaking.mkf 語音索引（1375 段 → 事件/角色映射表） | MOD-11 | REQ-12.20 | `todo` | 0.8 | — |
-| [T-052](#t-052) | 語音触发点接线（playSoundFor 扩展） | MOD-12 | REQ-12.20 | `todo` | 0.5 | T-051 |
+| [T-051](#t-051) | 解析 Speaking.mkf 語音索引（1374 段 → 事件/角色映射表） | MOD-11 | REQ-12.20 | `done` | 0.8 | — |
+| [T-052](#t-052) | 語音触发点接线（playSoundFor 扩展） | MOD-12 | REQ-12.20 | `done` | 0.5 | T-051 |
 | [T-053](#t-053) | 存档落到文件（Tauri fs，6 槽 + 自动） | MOD-13 | REQ-12.21 | `done` | 0.5 | — |
 | [T-054](#t-054) | 读原版 SAVE*.DAT 进游戏（导入入口 + 缺口提示） | MOD-12 | REQ-12.21 | `done` | 0.4 | T-053 |
 | [T-055](#t-055) | Windows 构建（Tauri） | MOD-13 | REQ-12.22 | `done` | 0.5 | — |
@@ -1779,7 +1779,7 @@ call _rich4_ui_bank_entry       ; ② 貸款屏（VA 0x436668）—— 申請/�
 
 **持股彙總屏（買股份 / 企業董事長）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.7` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-12` · 需求 `REQ-12.7` · 状态 `done` · 估算 0.5 单元
 - 依赖：T-030
 - 证据：Panel.mkf #76；pending{buyShares}
 
@@ -1806,7 +1806,10 @@ call _rich4_ui_bank_entry       ; ② 貸款屏（VA 0x436668）—— 申請/�
 
 **涉及文件**
 
-- packages/client/src/stock-screen.ts
+- packages/client/src/shares-screen.ts
+- packages/client/src/shares-screen.test.ts
+
+> ★ 2026-09-15 收尾订正：卡片与 exe 不符 —— #76 这套图**是每月 15 日的『上市公司分紅』屏**（入口 VA 0x0041d08f：`advanceGameDay` 尾部 `cmp eax,0xf` 之后、樂透開獎 VA 0x0041d094 之前；日期一跨到 15 日就**无条件**演，没有任何『是否真的发了红利』的闸）。原版 `buyShares` 那条路**没有整屏** —— 只有訊息框 + 填数窗（VA 0x0041d24d `fcn_00440ba8` / VA 0x0041d25b `fcn_00453544` / VA 0x0041d281 `_rich4_buy_stock`），题面与填数页走 `interactions.ts` 的 `case 'buyShares'`（通用对话框）。本屏**不再接管** `pending{buyShares}` —— 接管了就是每次踩到上市企業都弹一张分红表（可见回归）。版面按 exe 重做：标题 + `人名`/`公司`/`本月盈餘` 三个表头、**一家公司一行**（行距 0x18）、**一位玩家一列**（列距 0x62）、各玩家合计画在表的最下面那一行（y=0x194）、`0` 也画出来。收屏：抬手（0x202/0x205）或 `SetTimer` 3 拍到点自动退。抠黑表 SHARES_KEYED = 空（图 0 无黑底）。细节见 docs/deviations/T-031.md 与 shares-screen.ts 顶部。⚠️ 本卡 `title` / `source` / `input` / `output` / `algorithm` / `tests` 几栏仍写着旧读法（『買股份 / pending{buyShares} / 走 AmountPage』）—— 按本轮任务书只改了 `notes`，那几栏待需求方一并订正。
 
 ### T-032
 
@@ -1868,7 +1871,7 @@ call _rich4_ui_bank_entry       ; ② 貸款屏（VA 0x436668）—— 申請/�
 
 **公佈欄屏（挂 / 撤 / 买 / 出价输入）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.9` · 状态 `todo` · 估算 0.8 单元
+- 模块 `MOD-12` · 需求 `REQ-12.9` · 状态 `done` · 估算 0.8 单元
 - 依赖：无（可立即开工）
 - 证据：Panel.mkf #73；S13 版式（路障 3,000 元示例）
 
@@ -1903,7 +1906,7 @@ call _rich4_ui_bank_entry       ; ② 貸款屏（VA 0x436668）—— 申請/�
 
 **拍賣屏（PASS / +1000 / +5000、挥锤动画）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.10` · 状态 `todo` · 估算 0.8 单元
+- 模块 `MOD-12` · 需求 `REQ-12.10` · 状态 `done` · 估算 0.8 单元
 - 依赖：无（可立即开工）
 - 证据：Panel.mkf #26；U-7：左挥锤、右 Q 版小人与加价钮
 
@@ -1942,7 +1945,7 @@ call _rich4_ui_bank_entry       ; ② 貸款屏（VA 0x436668）—— 申請/�
 
 **樂透投注屏**
 
-- 模块 `MOD-12` · 需求 `REQ-12.11` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-12` · 需求 `REQ-12.11` · 状态 `done` · 估算 0.5 单元
 - 依赖：无（可立即开工）
 - 被依赖：T-036
 - 证据：Panel.mkf #12（10 张子图，已逐张导出目视核过）＋ #13 小数字牌 ＋ #14 号码格动画
@@ -1998,7 +2001,7 @@ call _rich4_ui_bank_entry       ; ② 貸款屏（VA 0x436668）—— 申請/�
 
 **樂透開獎动画屏**
 
-- 模块 `MOD-12` · 需求 `REQ-12.11` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-12` · 需求 `REQ-12.11` · 状态 `done` · 估算 0.5 单元
 - 依赖：T-035
 - 证据：Panel.mkf #15（47 张子图，已逐张导出目视核过）＋ #16 摇球机动画 ＋ #17 得主面板 ＋ #13 小数字牌
 
@@ -2065,7 +2068,7 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 
 **魔法屋屏（外圈 12 功能悬停高亮 + 中央文字 + 音）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.12` · 状态 `todo` · 估算 0.8 单元
+- 模块 `MOD-12` · 需求 `REQ-12.12` · 状态 `done` · 估算 0.8 单元
 - 依赖：无（可立即开工）
 - 证据：Panel.mkf #18；U-9
 
@@ -2076,26 +2079,35 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 
 **期望输入**
 
-    pending{magic}
+    无 —— 魔法屋是**即时结算**，core 里没有 `pending{magic}`（见 notes）
 
 **期望输出**
 
-    dispatch 选中的功能（响应形状见 interaction.ts）
+    不 dispatch；`event(before, after)` 反推落点后**回放**（见 notes）
 
 **核心逻辑 / 算法指导**
 
     1. 12 个扇区的命中用角度：atan2(y-cy, x-cx) → 扇区号；半径范围从汇编抄。
-    2. 悬停：高亮扇区 + 中央显示该功能文案；点击 → dispatch。
-    3. 音效编号：SOUND_IDS 里没有的先不放（不乱响）。
+       ★ 圆心 (320,238)、十二个楔形中线 0°/30°/…/330° 各 ±15°、外半径 241、
+         中间那块 r<118 —— 全部量自 `Panel.mkf` #19 那张**逐像素命中掩膜**
+         （原版就是查这张表，不是算角度；见 deviations D-MAGIC-6）。
+    2. 悬停：高亮扇区 + 中央显示该功能文案。
+    3. 音效编号：SOUND_IDS 里没有 16 这一条 —— **一个音都不放**（D-MAGIC-5）。
 
 **验收测试**
 
-    magicScreen.test.ts：角度→扇区映射 12 条。
+    magic-screen.test.ts：角度→扇区映射 12 条（含 ±14/±16 边界与半径边界）+ 转盘帧序 + 端到端反推。
 
 **涉及文件**
 
 - packages/client/src/magic-screen.ts
 - packages/client/src/magic-screen.test.ts
+
+> ★ 卡面原先写的 `input: pending{magic}` / `output: dispatch` 与实现**不符**：
+原版两个转盘都是 `rand()` 自己转的（VA 0x0043390b），玩家一次也插不上手，
+core 按即时结算处理（`state/reduce.ts` 的 `runMagicHouse`）。本屏因此是
+**回放**：`active` / `draw` / `move` / `event` / `tick` / `playEffect`。
+落点靠 `before → after` 的 diff 反推（近似，见 `docs/deviations/T-037.md`）。
 
 ### T-038
 
@@ -2134,9 +2146,9 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 
 **旅館 / 購物中心轉盤动画**
 
-- 模块 `MOD-12` · 需求 `REQ-12.14` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-12` · 需求 `REQ-12.14` · 状态 `done` · 估算 0.5 单元
 - 依赖：无（可立即开工）
-- 证据：表 0x475d0c；D-003（真人点击时机不复刻，结果由 core 定）
+- 证据：表 0x475d0c；窗口过程 0x0043f7c6 / 入口 0x0044090e；D-003（真人点击时机不复刻，结果由 core 定）
 
 **依赖的其他类 / 文件**
 
@@ -2144,34 +2156,35 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 
 **期望输入**
 
-    本次轉盤的起点与落点槽号（reduce 记进 lastEvent 或新字段 lastWheel）
+    本次轉盤的起点与落点槽号 —— core 里没有：client 从 before.rngState 的第一次 rand() 反推起点（@source 0x0043f7da），落点 = WHEEL_TABLE 里起点之后第一个非空格（与 core 的 spinWheel 同一条，单测对帐）
 
 **期望输出**
 
-    纯播放：指针从起点走到落点；「動畫過程」关闭直接显示
+    纯播放：圆盘从起点槽一格格走到落点槽（4 圈 + 距离，先快后慢），停 1.44s 自己关屏；「動畫過程」关掉时只有落点那一帧
 
 **核心逻辑 / 算法指导**
 
-    若 state 没记轉盤过程，先在 core 加 lastWheel{wheel, start, stop}（小改，带测试）。
+    不动 core（reduce.ts 是禁改文件）：起点 = WatcomRng(before.rngState).next() % 12，落点 = firstFilledSlot()。演出由 ui-screen.ts 的 event(before, after, env) 起播，tick 推进；真人点一下进减速段（@source 0x0043fa66）。
 
 **验收测试**
 
-    帧序列纯函数测试
+    packages/client/src/wheel-screen.test.ts（帧序纯函数：起点→落点、跨 0、动画关时一帧；反推与真地图 reduce 对帐；屏幕生命周期与点击；绘制落点）
 
 **涉及文件**
 
-- packages/client/src/wheel.ts
-- packages/core/src/state/reduce.ts
+- packages/client/src/wheel-screen.ts
+- packages/client/src/wheel-screen.test.ts
+- docs/deviations/T-039.md
 
-> 素材待认：先用 12 格圆盘的占位绘制，资源号找到后替换。
+> 素材已认：Panel.mkf 资源 (转盘 & 3) + 0x44 = 68..71，图 2..13 是 12 张预转好的圆盘帧；气泡 = Data.mkf 517 图 6。见 docs/deviations/T-039.md（整屏黑底、恒开动画、不放音效）
 
 ### T-040
 
 **研究所选項目屏**
 
-- 模块 `MOD-12` · 需求 `REQ-12.14` · 状态 `todo` · 估算 0.4 单元
+- 模块 `MOD-12` · 需求 `REQ-12.14` · 状态 `done` · 估算 0.4 单元
 - 依赖：无（可立即开工）
-- 证据：研究所屏字串 → xref；素材待认
+- 证据：窗口过程 VA 0x0044101d（全 exe 只有 0x0041b109 一处调用）
 
 **依赖的其他类 / 文件**
 
@@ -2197,11 +2210,13 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 
 - packages/client/src/research-screen.ts
 
+> 素材已认：底图 Panel.mkf 11 图 0 @ (60,310)、項目图标 11 图 1..5 @ (33,44+76k)、标题立绘 Panel.mkf 43 图 0 @ 锚 (220,140)；命中/高亮/去色块的全部 VA 见 research-screen.ts 顶部。三处待中央复核（命中判据的 x/y 歧义、立绘锚点语义、項目与面板在屏幕上的错位）见 docs/deviations/T-040.md。
+
 ### T-041
 
 **每月結算 + 頒獎屏**
 
-- 模块 `MOD-12` · 需求 `REQ-12.15` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-12` · 需求 `REQ-12.15` · 状态 `done` · 估算 0.5 单元
 - 依赖：无（可立即开工）
 - 证据：Panel.mkf #25；U-15
 
@@ -2228,15 +2243,17 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 **涉及文件**
 
 - packages/client/src/monthly-screen.ts
-- packages/core/src/state/reduce.ts
+- packages/client/src/monthly-screen.test.ts
+
+> 摘要全部由 before→after 的 diff 取（利息 = 存款增量 = trunc(存款×0.1)），未改 core。原版是 fcn_00439bfa（结算屏 + Wait_0402_Message）+ fcn_00437e61（50ms 定时的頒獎状态机）。出处与 7 条偏离见 docs/deviations/T-041.md。
 
 ### T-042
 
 **小游戏一：企鵝挖寶（specialKind 6）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.16` · 状态 `todo` · 估算 1.0 单元
+- 模块 `MOD-12` · 需求 `REQ-12.16` · 状态 `done` · 估算 1.0 单元
 - 依赖：无（可立即开工）
-- 证据：Panel.mkf #80；mkf 11；玩法先看原版录屏/口述（Q-MINI-1）
+- 证据：rich4_small_games.asm 0x00415215；Panel.mkf #78/#79/#80..#8a
 
 **依赖的其他类 / 文件**
 
@@ -2249,31 +2266,47 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 
 **期望输出**
 
-    dispatch(minigame{score|null})；玩法状态机全部在 client
+    dispatch({type:'minigame', score})；玩法状态机全部在 client
 
 **核心逻辑 / 算法指导**
 
-    1. 先写 docs/original-ui.md 的玩法描述（需求方提供），再实现。
-    2. 状态机：开始 → 玩家操作 N 回合 → 结算分数 → dispatch。
-    3. 随机用 client 自己的 PRNG（分数进 core 才是确定性的边界）。
+    玩法从 `rich4_small_games.asm` 逐条读出（不再是「未知前 blocked」）：
+    1. 棋盘 = 9×9 索引表 `0x474d7c`，其中 17 格 `x = 0` = 不在棋盘上（原版判据
+       `word[+0] == 0` @0x0041211c），加正中那格（索引 40，画冰屋处）共 **64 个可走格**，
+       菱形铺开、半宽 48 / 半高 24。
+    2. 埋寶 @0x00412014：`0x411fc8 = [3,12,3,9,1]` 共 28 个，在剩余空格里抽
+       （`rand()*ebp>>15`，ebp 从 64 每埋一个减 1），类型 1..5。
+    3. 点一格 → 企鵝沿 (列,行) 直线走（4 tick 一格 @0x00412651）→ 挖 4 tick
+       （资源 83）→ 出结果：类型 2..5 计数、类型 1 只播个音。
+    4. 计分 @0x00413d6a（HUD 每次重算 `[0x48bcec]`）：
+       **类型5×20 + 类型3×12 + 类型4×8 + 类型2×5**，类型 1 不计分，满分 188。
+    5. 15 秒（150 tick × 100ms）+ 1 秒入场（入场里土堆是画出来的）；
+       结算姿势按分数 @0x00414986（<40 → 资源 85、>55 → 资源 84、中间 → 只重画光标），
+       大号分数停 2000ms 后 dispatch。
+    6. 随机用本屏自己的 `WatcomRng`（与原版 `_libc_rand` 位级一致），种子由
+       「对局状态 + 开局序号」推出来；只有分数进 core。
 
 **验收测试**
 
-    状态机纯函数测试
+    minigame-screen.test.ts（35 项，含与命中表 #81 的逐点比对）
 
 **涉及文件**
 
-- packages/client/src/minigame-penguin.ts
+- packages/client/src/minigame-screen.ts
+- packages/client/src/minigame-screen.test.ts
 
-> 玩法未知前 blocked。
+> **2026-09-15 做完**：玩法全部从汇编读出，`status: done`。偏离/缺口见
+`docs/deviations/T-042-044.md`：命中表 `Panel.mkf` **#81** 与入场 FLIC **#78**
+在 `assets-clean` 里只有 `.bin`（管线没解），命中改用「格坐标表 + 菱形几何」重建
+（与 #81 的 64 个格心像素逐点一致），FLIC 不播。卡面「mkf 11」查无此事。
 
 ### T-043
 
 **小游戏二：七彩氣球（specialKind 7）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.16` · 状态 `todo` · 估算 1.0 单元
+- 模块 `MOD-12` · 需求 `REQ-12.16` · 状态 `done` · 估算 1.0 单元
 - 依赖：无（可立即开工）
-- 证据：Panel.mkf #91；mkf 19
+- 证据：rich4_small_games.asm 0x004154dc；Panel.mkf #78/#79/#91
 
 **依赖的其他类 / 文件**
 
@@ -2286,29 +2319,38 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 
 **期望输出**
 
-    dispatch(minigame{score|null})
+    dispatch({type:'minigame', score})
 
 **核心逻辑 / 算法指导**
 
-    同 T-042。
+    1. 16 个槽、7 条道（`x = 0x28 + 0x50k`），气球从 `y = 0x1a4` 往上升。
+    2. 每 tick 每个空槽 3% 概率生成 @0x00413189：`r = rand()%1000`，
+       `r<20` → 类型 `r>>2`；`r<28` → `((27-r)>>1)+5`；`r<30` → `{9,9,10,10,10,10,10,11,11,11}[rand()%10]`。
+    3. 点爆 @0x00414dd2：普通 → `分数 += 类型+1`；**类型 9 = ×2、10 = ÷2、11 = `rand()%6` 抽效果**
+       （0 时间剩 1、1 定住 20 tick、2 速度×2、3 速度÷2、4 清零、5 ×2）。
+       命中框：类型 >= 6 → ±18×±26、< 6 → ±22×±30（@0x00414f26）。
+    4. 15 秒；时间到后**等屏上气球清空**才进结算（@0x00413229），大号分数停 2000ms 后 dispatch。
 
 **验收测试**
 
-    状态机测试
+    minigame-screen.test.ts（35 项）
 
 **涉及文件**
 
-- packages/client/src/minigame-balloon.ts
+- packages/client/src/minigame-screen.ts
+- packages/client/src/minigame-screen.test.ts
 
-> 玩法未知前 blocked。
+> **2026-09-15 做完**：玩法全部从汇编读出，`status: done`。
+卡片 `files` 写的 `minigame-balloon.ts` 没建 —— 三张卡共用 `minigame-screen.ts`
+（`screens.ts` 早就登记好的那一个）。卡面「mkf 19」查无此事。
 
 ### T-044
 
-**小游戏三：財神接金幣（mkf 22）**
+**小游戏三：財神接金幣（specialKind 8）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.16` · 状态 `todo` · 估算 1.0 单元
+- 模块 `MOD-12` · 需求 `REQ-12.16` · 状态 `done` · 估算 1.0 单元
 - 依赖：无（可立即开工）
-- 证据：mkf 22；Q-MINI-1
+- 证据：rich4_small_games.asm 0x004155fc；Panel.mkf #78/#79/#92/#93/#94/#95..#99/#100+角色
 
 **依赖的其他类 / 文件**
 
@@ -2320,35 +2362,63 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 
 **期望输出**
 
-    dispatch(minigame{score|null})
+    dispatch({type:'minigame', score})
 
 **核心逻辑 / 算法指导**
 
-    先解资源与玩法，再照 T-042。
+    1. **specialKind 已核过（不是排除法）**：落点跳表 `jmp dword [ebx*4 + 0x4197e9]`
+       （调度点 0x004198b2）第 8 项 = 0x41b16c → `call 0x4155fc`，函数名
+       `_rich4_ui_game_xicongtianjiang`（喜從天降）—— **8 = `GIFT_FROM_SKY`**。
+    2. **底图不是 #22，是 #92**（`push 0x5c` @0x0041566b，640×480 **无头 RGB555**）；
+       #22 是另一屏（0x00453568 那段）的东西。
+    3. 玩法：財神（资源 93）在 `y = 0x7e` 沿楼梯左右自动走（`x ∈ [110,530]`，每 tick ±12px，
+       状态机 @0x0041386a），走到某一帧（`rand()%5`）撒一个金幣；玩家自己
+       （资源 `100 + 角色号`）在 `y = 0x17c` **追鼠标**（差 > 8 才动、每 tick 10px @0x0041364d）。
+    4. 掉落物（资源 95..99，按类型）从 `y = 100` 起、速度 −16 每 tick +2（到 y >= 130 换类型表），
+       按 `0.5 + 0.5×(y−130)/250` 放大；`y > 380` 判 miss。
+    5. **类型 4 = 炸彈**：预警图（资源 94）在財神另一侧闪 12 帧、第 8 帧落下来（@0x0041378d）；
+       接到立刻结束（@0x004133fe）。
+    6. 计分 @0x0041449e：**类型0×10 + 类型1×5 + 类型2×3 + 类型3×1**
+       （生成比 10% / 15% / 30% / 45% @0x004123e7）。
+    7. 18 秒（360 tick × 50ms）+ 0.5 秒入场；时间到 / 被炸中后財神**不再撒幣**、
+       等屏上掉落物清空 → 按分数定姿势（<40→1、<50→2、<60→0、否则 3）+ 大号分数 2000ms → dispatch。
 
 **验收测试**
 
-    状态机测试
+    minigame-screen.test.ts（36 项）
 
 **涉及文件**
 
-- packages/client/src/minigame-3.ts
+- packages/client/src/minigame-screen.ts
+- packages/client/src/minigame-screen.test.ts
+- packages/client/src/minigame-bg.ts
+- packages/client/src/assets.ts
 
-> **2026-09-15 需求方确认玩法：「財神接金幣」** —— 据此解除 blocked。
+> **2026-09-15 做完**：玩法全部从汇编读出，`status: done`。
+卡面那两条待钉死的都钉死了：specialKind = **8**（上面第 1 条，直接读到的）；
+屏幕资源 = **#92**（不是 #22）。
 
-⚠️ 还有两件要在开工时钉死：
-1. **它对应哪个 `specialKind`**？三个小游戏是 6（企鵝挖寶）/ 7（七彩氣球）/ 8，
-   按排除法应当是 **8 = `GIFT_FROM_SKY`（喜從天降）** —— 名字也贴（天上掉东西、
-   接着算分）。但这是**推断**，要在 `rich4_small_games.asm` 里核过再写死；
-   `scenes.ts` 里那句「喜從天降那一屏没认出来」也要跟着更新。
-2. 屏幕资源是 `Panel.mkf` **#22**（卡里原写的 mkf 22）——
-   先照 T-042/T-043 的做法把 #22 逐张导出来认用途，再动手。
+**2026-09-15 晚 —— 底图接上了（原「这一屏没有底图」的缺口已补）**：
+`assets.ts` 新增通用的无头 555 出口 `readRaw555Resource(archives, archive, resource, w, h)`
+/ `loadRaw555Resource`（内部就是现成的 `decodeRaw555` + `toImageData`，字节数 ≠ `w*h*2` 返回 `null`），
+再包成 `loadMinigameBackground(archives)`（`Panel.mkf` #92，640×480，614400 字节）。
+位图经新建的 `minigame-bg.ts`（模块级 `setMinigameBackground` / `getMinigameBackground`）
+交给 `minigame-screen.ts` 的 `draw()`：有底图就画在 (0,0)，没有才退回 `sprite()`，
+两个都没有也只画其余部件（不因底图缺席整屏不画）。
+`main.ts` 在 boot 里加了**一行** `void loadMinigameBackground(archives).then(setMinigameBackground)`。
+**没动 `ui-screen.ts` 的契约**（照 T-044 实现者留的建议走独立小模块），也**没进 extract 管线**。
+
+`scenes.ts` 的 `minigameScene` 现在对 `GIFT_FROM_SKY` 返回 **92**（`SCENE.giftFromSky`），
+`scenes.test.ts:51` 那条钉 `null` 的断言一并订正。
+
+**仍未接**（详见 `docs/deviations/T-042-044.md`）：入场 FLIC `Panel.mkf` **#78**（D-MINI-3）、
+三屏的音效、企鵝的命中表 `Panel.mkf` **#81**（D-MINI-2，已用几何绕开）。
 
 ### T-045
 
 **輔助說明屏（工具列 #1）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.17` · 状态 `todo` · 估算 0.4 单元
+- 模块 `MOD-12` · 需求 `REQ-12.17` · 状态 `done` · 估算 0.4 单元
 - 依赖：无（可立即开工）
 - 证据：help.mkf；工具列 #1「遊戲百科」
 
@@ -2427,7 +2497,7 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 
 **四大惡人与機器娃娃的棋子渲染与走子动画**
 
-- 模块 `MOD-12` · 需求 `REQ-12.18` · 状态 `todo` · 估算 0.6 单元
+- 模块 `MOD-12` · 需求 `REQ-12.18` · 状态 `done` · 估算 0.6 单元
 - 依赖：T-046
 - 证据：NPC 精灵资源号（Data.mkf，待认）；docs/original-screens.md
 
@@ -2450,11 +2520,13 @@ ANM 解码器 **已写**（`assets-pipeline/src/anm.ts`）—— 剩下的是 cl
 
 **验收测试**
 
-    渲染输入映射测试
+    渲染输入映射测试（render.test.ts 新增 22 条：图组资源号、绘制槽类别、 state → 棋子映射、走子 tick 公式与串播排程、何时起补间）
 
 **涉及文件**
 
 - packages/client/src/render.ts
+
+> 2026-09-15 完成。★ 资源号全部照 exe：四个 NPC = Data.mkf `0x16c + actor×4` （站姿；走姿 = +1）= 380/384/388/392，与 NPC_NAMES 同序（目视核过解出的图： 紫衣小偷／大漢／綠髮流氓／光頭間諜）；機器娃娃 = 站 0x209 / 走 0x20a（写死、不连号）。 出处 `_rich4_update_player_sprite` VA 0x0040bd43 起（actor≥4 分支）与 0x0040bf02。 姿态由 `fcn_0040dd1f` 置 1（走）、停留那一支置 0（站）；朝向/图号与玩家同一套 （VA 0x0040882d / 0x0040883f）。绘制槽类别是 **0x8（非当前）/ 0xd（当前）**， 不是玩家的 0xc（@source loc_00408928）。 ★ tick 数：替身**没有交通方式那一支**，无条件 `dist × 0.125`（VA 0x0040c5e6）， 即 `tweenTickCount(..., special=true)`；一 tick 一帧、帧号跨格连算（VA 0x0040c751）。 ⚠️ core 把 `NpcWalk.path` 丢了（渲染器推不出中间格，岔路是 rand 选的）—— render.ts 新增**可选**入参 `actorWalks / animation / tickMs / currentActor`：主路是 宿主喂整趟路径、按 T-046 的参数 1:1 串播；不喂时只补 `lastNodeId → nodeId` 最后一格 （宁可瞬移也不编路径）。三条未做/读不清的登记在 docs/deviations/T-047.md （`+2/+3` 变体图组、`node.flags bit31` 那一支、夢遊变灰），并附给中央的接线单 （core 落 `path` + main.ts 传三个入参 + 派下一步前 `walkDone()` 闸）。 ⚠️ 未做浏览器目视核验（本卡明令不许起 dev server）。
 
 ### T-048
 
@@ -2589,9 +2661,9 @@ read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
 
 ### T-051
 
-**解析 Speaking.mkf 語音索引（1375 段 → 事件/角色映射表）**
+**解析 Speaking.mkf 語音索引（1374 段 → 事件/角色映射表）**
 
-- 模块 `MOD-11` · 需求 `REQ-12.20` · 状态 `todo` · 估算 0.8 单元
+- 模块 `MOD-11` · 需求 `REQ-12.20` · 状态 `done` · 估算 0.8 单元
 - 依赖：无（可立即开工）
 - 被依赖：T-052
 - 证据：rich4_player_say_on_events.asm；Speaking.mkf
@@ -2627,7 +2699,7 @@ read_mkf(data_mkf, edi / edi+1 / edi+2) ; 站 / 走 / 手持骰子
 
 **語音触发点接线（playSoundFor 扩展）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.20` · 状态 `todo` · 估算 0.5 单元
+- 模块 `MOD-12` · 需求 `REQ-12.20` · 状态 `done` · 估算 0.5 单元
 - 依赖：T-051
 - 证据：rich4_player_say_on_events.asm 的触发点列表
 

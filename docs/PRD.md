@@ -560,23 +560,23 @@ landOnLand(state, land):
 | REQ-12.3b (T-026 ✅) | **目标拾取模式**（选玩家/地块/設施/物件/格子）| **`Data.mkf` 资源 0** = 指针图集（0/1/2 = 路障/地雷/定時炸彈、5 = 红叉、12 = 卡片、34..40 = 方向箭头）| `core/state/preview.ts` 的 `canUseCard` / `canUseTool`（**预演，不改状态**）| `useCard{cardId,target}` / `useTool{toolId,nodeId}` | — | ★ 反馈是**指针变形**（可选 → 那件道具自己的图标、不可选 → 红叉）；选择参数低 16 位 = 类别位（bit3 = 目标必选、右键不许取消）、高 16 位 = 指针图号 |
 | REQ-12.4 (P2-4) | 側欄四页（**資金 / 地產 / 股票 / 其他**）| `Panel.mkf #0` 图 0..3 | `panelValues`（四页各三值）| 熱鍵 PgUp/PgDn 切页；**点右上角四条彩色竖条**也切（页号 = `y / 70`，VA 0x004182fa）；页号每玩家一份 | S6/S10–S12 | 底部固定一行「物價指數 N」；四页另有头像+名字+角色色长条。★ 地產页的「連鎖店」判据是**地块的 `type`（+0x18）≠0**，不是 `level` |
 | REQ-12.5 (P2-5) | 小地圖旋转钮 | — | `view` | 熱鍵「地圖向左/右旋轉」 | S6 | `render.ts` 已有 8 方位 |
-| REQ-12.6 (P2-6) | 銀行屏 | `#23` | `cash/moneyInBank/loan/specialFinance/loanDueDate` | `bank*{amount}` | U-3 | 白卡左申請/右償還；董事長多一条額度 |
-| REQ-12.7 (P2-7) | 股市屏 + 持股彙總 | `#75/#76` | `market`, `holdings`, `valuationsOf` | `buyStock/sellStock` | U-5 | 漲停/跌停/停牌提示 |
-| REQ-12.8 (P2-8) | 卡片/道具商店 | `#10` | `pending{shop}` 的货架 | `shop{op,id,count}` | U-2 | 右上三角切换；右下卖自己的 |
-| REQ-12.9 (P2-9) | 公佈欄屏 | `#73` | `noticeBoard` | `noticeBoard{op}` | S13 | 賣價由卖家输入 |
-| REQ-12.10 (P2-10) | 拍賣屏 | `#26` | `pending{auction}` | `auction{winner,price}` | U-7 | PASS/+1000/+5000 钮；挥锤动画 |
-| REQ-12.11 (P2-11) | 樂透投注 + 開獎 | `#12/#15` | `pending{lottery}`, `pool` | `lottery{number}` | U-8 | 摇球动画 |
-| REQ-12.12 (P2-12) | 魔法屋 | `#18` | `pending{magic}` | 选项 | U-9 | 外圈悬停高亮 + 中央文字 + 音 |
-| REQ-12.13 (P2-13) | 監獄/醫院保釋屏 | `#63/#65` | `prisonOccupancy/hospitalOccupancy`, `specialActors` | `bail{slot}` | — | 八个位子；四大惡人在列（300 點） |
-| REQ-12.14 (P2-14) | 轉盤 / 研究所选項目 | 待认素材 | `pending{buildFacility…}`, `facilityResearch*` | `research{facilityId,project}` | — | 轉盤只做表现，结果已在 state |
-| REQ-12.15 (P2-15) | 每月結算 + 頒獎 | `#25` | 月結结果 | 无 | U-15 | — |
-| REQ-12.16 (P2-16) | 三个小游戏 | mkf 11/19/22；`#80/#91` | `pending{minigame}` | `minigame{score}` | — | 玩法状态机在 client，分数进 core |
-| REQ-12.17 (P2-17) | 輔助說明 | `help.mkf` | — | — | 工具列 #1 | 只读 |
-| REQ-12.18 (P2-18) | 走子补间与时序 | `jump.mkf` 72 组；`rich4_animate_object.asm` | `stepsRemaining`, `specialActors` | `step` 节拍 | 录屏逐帧 | 含四大惡人/機器娃娃棋子 |
-| REQ-12.19 (P2-19) | 開局跳伞、船、標題音效、地塊彩边、GO 钮态 | 各资源 | — | — | U-10/11/1/14 | 过场可跳过 |
-| REQ-12.20 (P2-20) | 語音 | `Speaking.mkf` 1375 段 | 事件 | — | `rich4_player_say_on_events.asm` | 先解索引再接触发点 |
-| REQ-12.21 (P2-21) | 存档落文件 + 读原版 SAVE | Tauri fs | `serializeGame` | — | — | 6 槽 + 自动存档 |
-| REQ-12.22 (P2-22) | Windows / Linux 构建 | Tauri | — | — | — | CI 三平台 |
+| REQ-12.6 (P2-6) | 銀行屏 | `#23` | `cash/moneyInBank/loan/specialFinance/loanDueDate` | `bank*{amount}` | U-3 | 白卡左申請/右償還；董事長多一条額度 ｜ ✅ 2026-09-15 完成（T-029）：★ 复习出原版是 **ATM（`#24`）+ 貸款（`#23`）两屏**，不是一屏；貸款屏只有 **4 个命中框**（表 `0x4757f8`） |
+| REQ-12.7 (P2-7) | 股市屏 + 持股彙總 | `#75/#76` | `market`, `holdings`, `valuationsOf` | `buyStock/sellStock` | U-5 | 漲停/跌停/停牌提示 ｜ ✅ 2026-09-15 完成（T-030/T-030b/T-031）：`#76` 复习为**每月 15 日的「上市公司分紅」屏**（入口 VA 0x0041d08f），`buyShares` 走通用訊息框＋填数窗；见 `docs/deviations/T-031.md` |
+| REQ-12.8 (P2-8) | 卡片/道具商店 | `#10` | `pending{shop}` 的货架 | `shop{op,id,count}` | U-2 | 右上三角切换；右下卖自己的 ｜ ✅ 2026-09-15 完成（T-032） |
+| REQ-12.9 (P2-9) | 公佈欄屏 | `#73` | `noticeBoard` | `noticeBoard{op}` | S13 | 賣價由卖家输入 ｜ ✅ 2026-09-15 完成（T-033）：入口 = 熱鍵「交易」；挂牌格 `(104,114)` 起 72×72；SALE 选单**按住拖**才开选物窗 |
+| REQ-12.10 (P2-10) | 拍賣屏 | `#26` | `pending{auction}` | `auction{winner,price}` | U-7 | PASS/+1000/+5000 钮；挥锤动画 ｜ ✅ 2026-09-15 完成（T-034）：七颗钮 `x=406`、`y=133+48i`、图 `2i+4`/`2i+3`；加价档表 `0x475ba2`；AI 出价补在 `rules/auction.ts` |
+| REQ-12.11 (P2-11) | 樂透投注 + 開獎 | `#12/#15` | `pending{lottery}`, `pool` | `lottery{number}` | U-8 | 摇球动画 ｜ ✅ 2026-09-15 完成（T-035 投注 / T-036 開獎）：36 格号盘、红粉笔、跑馬燈；開獎十态演出（摇球 ANM 实为 **880 ms/帧**，不是 FLIC 头的 71 ms） |
+| REQ-12.12 (P2-12) | 魔法屋 | `#18` | `pending{magic}` | 选项 | U-9 | 外圈悬停高亮 + 中央文字 + 音 ｜ ✅ 2026-09-15 完成（T-037）：命中不是算角度，是查 **`Panel#19` 的逐像素掩膜**（圆心 (320,238)、十二楔形 ±15°、外半径 241） |
+| REQ-12.13 (P2-13) | 監獄/醫院保釋屏 | `#63/#65` | `prisonOccupancy/hospitalOccupancy`, `specialActors` | `bail{slot}` | — | 八个位子；四大惡人在列（300 點） ｜ ✅ 2026-09-15 完成（T-038）：槽位表 `0x475c04`/`0x475c64`、命中 `0x79×0x89` |
+| REQ-12.14 (P2-14) | 轉盤 / 研究所选項目 | 待认素材 | `pending{buildFacility…}`, `facilityResearch*` | `research{facilityId,project}` | — | 轉盤只做表现，结果已在 state ｜ ✅ 2026-09-15 完成（T-039 轉盤 / T-040 研究所）：转盘 = 资源 `(转盘&3)+0x44` 图 `槽+2`、圆盘 (220,320)；研究所图标 = `Panel#11 图 10..14`、板/条 = `Data#517 图 5/7`、命中**横排** |
+| REQ-12.15 (P2-15) | 每月結算 + 頒獎 | `#25` | 月結结果 | 无 | U-15 | — ｜ ✅ 2026-09-15 完成（T-041）：结算屏 `fcn_00439bfa` + 頒獎屏 `fcn_00437e61`；摘要全部由 `before→after` diff 得出（零 core 改动） |
+| REQ-12.16 (P2-16) | 三个小游戏 | 企鵝 `#78/#79/#80..#8a`、氣球 `#78/#79/#91`、財神 `#78/#79/#92/#93/#94/#95..#99/#100+角色`（卡面旧写的 mkf 11/19/22 与 `#80`/`#91` 都不对） | `pending{minigame}` | `minigame{score}` | — | 玩法状态机在 client，分数进 core ｜ ✅ 2026-09-15 完成（T-042/043/044）：三屏合一份 `client/minigame-screen.ts`；玩法/计分/时限全部从 `rich4_small_games.asm` 读出；★ 素材号订正见备注 |
+| REQ-12.17 (P2-17) | 輔助說明 | `help.mkf` | — | — | 工具列 #1 | 只读 ｜ ✅ 2026-09-15 完成（T-045）：窗口过程 VA 0x0044e40b、面板 (20,60) 400×400、条目表 `0x4761b4`、命中表 `0x476254` |
+| REQ-12.18 (P2-18) | 走子补间与时序 | `jump.mkf` 72 组；`rich4_animate_object.asm` | `stepsRemaining`, `specialActors` | `step` 节拍 | 录屏逐帧 | 含四大惡人/機器娃娃棋子 ｜ ✅ 2026-09-15 完成（T-046/T-047）：替身图组 `Data 380/384/388/392`（站基号、走 +1）、機器娃娃 `0x209/0x20a`；`GameState.lastNpcWalks` 为纯表现提示（不进指纹） |
+| REQ-12.19 (P2-19) | 開局跳伞、船、標題音效、地塊彩边、GO 钮态 | 各资源 | — | — | U-10/11/1/14 | 过场可跳过 ｜ ✅ 已做（T-048/049/050） |
+| REQ-12.20 (P2-20) | 語音 | `Speaking.mkf` 1374 段 | 事件 | — | `rich4_player_say_on_events.asm` | 先解索引再接触发点 ｜ ✅ 2026-09-15 完成（T-051/T-052）：語音號 = `1050 + 27×角色 + 事件`（@VA 0x0048084a，全表 324 项无例外）；触发点接线 22 个槽位 |
+| REQ-12.21 (P2-21) | 存档落文件 + 读原版 SAVE | Tauri fs | `serializeGame` | — | — | 6 槽 + 自动存档 ｜ ✅ 已完成（T-053/T-054） |
+| REQ-12.22 (P2-22) | Windows / Linux 构建 | Tauri | — | — | — | CI 三平台 ｜ ✅ 已完成（T-055/T-056）；⚠️ 本机 macOS 打不出 Windows/Linux 包，真机验收要 CI 跑一次 |
 | REQ-12.23 (T-085 ✅) | **開局設定屏（選角色／選地圖）** | **`jump.mkf` 资源 8（22 张拼件）+ 资源 `globalMapId`（整屏场景）+ `Data.mkf` 资源 2（12 张 72×72 头像）**；侧视走动画 = `jump.mkf` 资源 `9 + 角色×3 + 行進方式` | 开局参数：人数／资金／载具／土地權限 | `newGame({initialFund, startingVehicle, landTenure})` | S1 | 角色格 440×155@(4,10)、竖栏 192×461@(445,10)；**地图名/OK/EXIT/六个值框全烧在竖栏整图里**（舞台 0 图 1、舞台 1 图 21）；13 条控件表 @0x46cc18、六个浮窗表 @0x46cc88；场景横滚 + 半亮（换算表 −16 @0x485d68）；点角色=占座位，点 OK 后空座位由電腦随机补齐 |
 
 - **每屏的统一实现步骤（初级程序员照做）**
