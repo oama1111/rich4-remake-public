@@ -10,23 +10,46 @@
  * （VA 0x004090fc 起）的做法是：
  *
  * ```asm
- * esi = (land.x >> 5) - 摄像机块X + 14      ; 列，必须落在 0..28
- * edi = (land.y >> 5) - 摄像机块Y + 14      ; 行，同上
+ * esi = (land.x >> 5) - 摄像机块X + 14      ; ← 世界 X 方向的索引
+ * edi = (land.y >> 5) - 摄像机块Y + 14      ; ← 世界 Y 方向的索引
  * call 0x407a2c(land.x, land.y, &o1, &o2)   ; 块内偏移
  * eax = [0x499088] * 0xd24                  ; ★ 视角 × 每视角 3364 字节
- * edi = edi * 0x74                          ; 行 × 116
- * esi = esi * 4                             ; 列 × 4
- * 屏幕Y = (short)[0x46ccf2 + eax+edi+esi] - o1 + 基准Y
- * 屏幕X = (short)[0x46ccf0 + eax+edi+esi] - o2 + 基准X
+ * edi = edi * 0x74                          ; 世界 Y 索引 × 116 字节
+ * esi = esi * 4                             ; 世界 X 索引 × 4 字节
+ * 屏幕X = (short)[0x46ccf2 + eax+edi+esi] - o1 + 基准X   ; ★ 表项的第 2 个 int16
+ * 屏幕Y = (short)[0x46ccf0 + eax+edi+esi] - o2 + 基准Y   ; ★ 表项的第 1 个 int16
  * ```
  *
- * 即：**一张 8 视角 × 29 行 × 29 列的查找表**，每项是一对 int16 屏幕偏移，
- * 摄像机恒在正中那一格（14, 14），该格的表项正好是 (0, 0)。
+ * 即：**一张 8 视角 × 29 行 × 29 列的查找表**，每项是一对 int16，
+ * **存储顺序是 `(Y, X)`**；摄像机恒在正中那一格（14, 14），该格表项为 (0, 0)。
+ *
+ * ### ★★ 表项是 `(Y偏移, X偏移)`，不是 `(X, Y)` —— 2026-09-15 订正
+ *
+ * 先前这里写反了（把 `0x46ccf0` 当 X），落地后整张棋盘被**沿主对角线镜射**：
+ * 一格本该是 **49 宽 × 36 高**（视角 0，四角包围盒；横长），却画成 36×49（竖长），
+ * 于是「比例失调」；而建筑精灵的锚点是**屏幕轴**上的量、图素本身没有跟着镜像，
+ * 故 `锚点X ≠ 锚点Y` 的建筑会**沿对角线整体错位**（错位量 = |锚点X − 锚点Y|，
+ * 大房子才看得出来）——正是需求方说的「大地块上的建筑物不在格子里的正确位置和方向」。
+ *
+ * 钉死这一条的**三段独立机器码**（都在绘制路径上，与表的字节值无关）：
+ *
+ * 1. `fcn_004557a1`（地块四边形光栅化器）把地块四角的第 1 个 int16 拿去与
+ *    `draw_area.top/bottom` 比较（见 `fcn_0045596a` 的 `mov bp, di` /
+ *    `cmp di, [0x4861bc]` / `cmp si, [0x4861c4]`）→ 第 1 个 int16 是 **Y**。
+ * 2. `fcn_004564c1`（特殊格装饰）转调 `draw_non_zero_image_in_rect(640,480,sf,src,x,y,1)`，
+ *    其中 `x` 取的是 `0x46ccf2` 那一路（`movsx eax,[esi+0x46ccf2]`）→ 第 2 个 int16 是 **X**。
+ * 3. `fcn_00456770`（棋盘精灵 blitter）把形参 4 当**列**用
+ *    （`imul edi, edi, 0x280; add edi, [ebp+0x14]`），而调用点传的正是 `0x46ccf2` 那一路。
+ *
+ * ⚠️ **`binary-truth.test.ts` 的逐字节比对区分不了这两种标注**（表的值本身两种读法
+ * 都自洽），所以那条测试通过**不能**证明轴向对；轴向只由上面三段绘制代码钉死。
  *
  * 块内的亚像素偏移另由一个 **2×2 整数矩阵**给出（`0x474910`，每视角 4 个
- * int8，结果右移 5 位即除以 32）——它与表的行列步长严丝合缝：
- * 视角 0 的行步是 (25, 14)、列步是 (-11, 34)，而矩阵给出的正是
- * `(-11·dx + 25·dy)/32` 与 `(34·dx + 14·dy)/32`。
+ * int8，结果右移 5 位即除以 32）。它与表的步长严丝合缝，且**配对方式唯一**：
+ * `o1` 只喂 X、`o2` 只喂 Y（换过来就对不上表的梯度）。视角 0 的行步（ΔX, ΔY）
+ * 是 (14, 25)、列步是 (34, -11)：
+ * `-o1 = (34·dx + 14·dy)/32` = 列步/行步的 X 分量，
+ * `-o2 = (-11·dx + 25·dy)/32` = 列步/行步的 Y 分量。
  *
  * ## ⚠️ 表是**透视**的，不能用两个基向量算出来
  *
@@ -55,8 +78,13 @@ export const VIEW_CENTER = 14;
  * ```
  * o1 = (m[0]*dx + m[2]*dy) >> 5
  * o2 = (m[1]*dx + m[3]*dy) >> 5
- * 屏幕X -= o2 ; 屏幕Y -= o1
+ * 屏幕X -= o1 ; 屏幕Y -= o2
  * ```
+ *
+ * ★ 配对是**单向**的：`o1` 喂 X、`o2` 喂 Y。`fcn_00407a2c` 把 `o1` 写进它的
+ *   第 3 个出参、`o2` 写进第 4 个；而 `fcn_0040829d` 里那条
+ *   `movsx eax,[esi+0x46ccf2]; sub eax,[esp+0x24]` 减的正是第 3 个出参 ——
+ *   即第 2 个 int16（X）配 `o1`。反过来配就对不上表的梯度。
  */
 export const SUBTILE_MATRIX: readonly (readonly [number, number, number, number])[] = [
   [-34, 11, -14, -25],
@@ -454,16 +482,18 @@ export function projectionTable(): Int16Array {
 /**
  * 查一格的屏幕偏移。
  *
+ * ★ 表项在内存里的顺序是 `(Y, X)`，故这里要**倒过来**取 —— 见文件头的订正说明。
+ *
  * @param view 视角 0..7
- * @param row  行 0..28（= 目标块Y − 摄像机块Y + 14）
- * @param col  列 0..28
+ * @param row  行 0..28（= 目标块Y − 摄像机块Y + 14，即世界 Y 方向）
+ * @param col  列 0..28（= 目标块X − 摄像机块X + 14，即世界 X 方向）
  * @returns 该格相对屏幕中心的偏移；越界返回 null（原版此时直接跳过不画）
  */
 export function projectCell(view: number, row: number, col: number): { x: number; y: number } | null {
   if (row < 0 || row >= VIEW_SPAN || col < 0 || col >= VIEW_SPAN) return null;
   const t = projectionTable();
   const at = ((view % VIEW_COUNT) * VIEW_SPAN * VIEW_SPAN + row * VIEW_SPAN + col) * 2;
-  return { x: t[at]!, y: t[at + 1]! };
+  return { x: t[at + 1]!, y: t[at]! };
 }
 
 /**
@@ -489,8 +519,8 @@ export function projectWorld(
   const m = SUBTILE_MATRIX[view % VIEW_COUNT]!;
   const dx = x & 0x1f;
   const dy = y & 0x1f;
-  // @source fcn_00407a2c
+  // @source fcn_00407a2c：o1 喂 X、o2 喂 Y（配对单向，见 SUBTILE_MATRIX 的说明）
   const o1 = ((m[0] * dx) >> 5) + ((m[2] * dy) >> 5);
   const o2 = ((m[1] * dx) >> 5) + ((m[3] * dy) >> 5);
-  return { x: base.x - o2, y: base.y - o1 };
+  return { x: base.x - o1, y: base.y - o2 };
 }

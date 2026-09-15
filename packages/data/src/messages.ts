@@ -141,6 +141,55 @@ export const BAIL = {
   pointsN: t('%d點', 0x465149),
 } as const;
 
+/**
+ * 樂透 —— 投注屏（`Panel.mkf` #12）与開獎屏（#15）的台词。
+ *
+ * ★ 这些串在 exe 里都以 `'#' + 4 位数字` 开头。那不是字符串 id，
+ *   而是**插播语音的编号**：`rich4_draw_text` 见到首字符 `'#'` 就把这 5 个字符
+ *   解析成一个编号交给 `fcn_0045441a`（VA 0x0045441a —— 从 `Speaking.mkf`
+ *   取该段语音播放，且只在音效开关 `cfg+3` 打开时才播），随后 `add ebx, 5`
+ *   跳过它、再画剩下的字。
+ *   所以**屏上显示的文字不含这 5 个字符**，下面每个 VA 都是跳过之后的地址
+ *   （= 原版指针表里的地址 + 5）。每条的语音号写在行尾。
+ *
+ * @source 指针表 `0x004755f8`（投注屏，6 项）与 `0x00475610` 起（開獎屏，逐条一个）
+ */
+export const LOTTERY = {
+  // ── 投注屏（0x0042f7fc 的各状态）──
+  /** 开屏第一句 —— 语音 11 */
+  counterHello: t('哈囉！\n一券在手，\n希望無窮！', 0x464399),
+  /** 状态 1→2 —— 语音 12 */
+  counterPrice: t('只要一千元，\n就有獲得大獎\n的機會！', 0x4643bb),
+  /** 状态 2→3：可以点号了 —— 语音 13 */
+  counterPick: t('請圈選您的\n幸運號碼～', 0x4643e3),
+  /** 买中之后（0x0042f974 的 0x406 处理）—— 语音 14 */
+  counterBye: t('拜拜！祝您中獎！', 0x4643fe),
+  /** 现金 < 1000，屏一闪即关 —— 语音 15 */
+  counterNoCash: t('太可惜了！\n您的現金不足～', 0x464414),
+  /** 紧接上一条 —— 语音 16 */
+  counterComeAgain: t('下次再來吧！', 0x464433),
+
+  // ── 開獎屏（0x0043010c 的各状态）──
+  /** 状态 1 —— 语音 17 */
+  drawIntro: t('嗨！\n又到了每月\n十五號樂透\n開獎時間～', 0x464445),
+  /** 状态 1→2 —— 语音 18 */
+  drawRolling: t('現在馬上為您\n開出這一期的\n號碼．．。', 0x464470),
+  /** 状态 4：开出的号有人买 —— 语音 19 */
+  drawWinnerIs: t('本月份的得主\n是．．．。', 0x46449a),
+  /** 状态 5→6 —— 语音 32 */
+  drawWinAll: t('恭喜您獨得\n所有獎金！', 0x4644b7),
+  /** 状态 7：开出的号没人买 —— 语音 33 */
+  drawNoWinner: t('SORRY！\n本月份沒有人\n得獎～', 0x4644d2),
+  /** 状态 7→8 —— 语音 34 */
+  drawCarryOver: t('獎金將累積\n到下個月．\n．．．。', 0x4644f3),
+  /** 状态 8→9 —— 语音 35 */
+  drawHopeNext: t('希望下次\n得獎者就\n是您！', 0x464517),
+  /** 状态 9→10 —— 语音 36 */
+  drawHurryUp: t('行動要快喔！', 0x464535),
+  /** 開獎屏上的标签，后面紧跟公库金额 —— 这一条**没有**语音前缀 */
+  poolLabel: t('累積獎金', 0x4645d9),
+} as const;
+
 /** 格子/神明/人物的名字表 —— 一段连续排列的串 */
 export const PLACE = {
   park: t('公園', 0x465e5f),
@@ -204,6 +253,7 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(FIELD),
   ...Object.values(BANK),
   ...Object.values(BAIL),
+  ...Object.values(LOTTERY),
   ...Object.values(PLACE),
   ...Object.values(TOOLBAR_TIPS),
 ];

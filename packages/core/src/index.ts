@@ -48,7 +48,9 @@ export * from './events/fortune-effects.ts';
 export * from './events/news-effects.ts';
 export * from './places/bank.ts';
 export * from './places/lottery.ts';
+export * from './places/lottery-ceremony.ts';
 export * from './places/stock.ts';
+export * from './places/stock-market.ts';
 export * from './places/magic-house.ts';
 export * from './places/minigame.ts';
 export * from './places/calendar.ts';
@@ -81,3 +83,6 @@ export * from './cards/summon.ts';
 export * from './cards/monster.ts';
 export * from './cards/rob.ts';
 export * from './cards/registry.ts';
+
+/** 测试工厂 —— 仅测试用（`main` 里不 import）*/
+export * from './testing/factories.ts';

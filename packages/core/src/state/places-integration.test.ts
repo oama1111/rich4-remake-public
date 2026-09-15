@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
+import { LOTTERY_TICKET_PRICE } from '../places/lottery.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 
@@ -58,18 +59,67 @@ describe('★ 银行', () => {
 });
 
 describe('★ 樂透', () => {
-  run('给出可买号码与票价', () => {
+  const humans = () => [0, 1, 2, 3].map((i) => ({ character: i, kind: 'human' as const }));
+  const withCash = (s: GameState, cash: number): GameState => ({
+    ...s,
+    players: s.players.map((p, i) => (i === s.currentPlayer ? { ...p, cash } : p)),
+  });
+
+  run('★ 真人开投注屏：给出可买号码与票价', () => {
+    const { map, topo: t } = topo();
+    const s = standOn(newGame({ map, players: humans() }), map, SPECIAL_KIND.LOTTERY);
+    if (s === null) return;
+    const r = reduce(s, { type: 'settle' }, t);
+    if (r.pending === null || r.pending.kind !== 'lottery') return;
+    expect(r.pending.available).toHaveLength(36);
+    expect(r.pending.price).toBe(1000);
+    expect(r.pending.owned).toBe(0);
+  });
+
+  run('★ 真人现金 < 1000 连屏都不开', () => {
+    // @source VA 0x0042f8ba `cmp .., 0x3e8 / jge`：不满足则那个窗口一闪即关
+    const { map, topo: t } = topo();
+    const s = standOn(newGame({ map, players: humans() }), map, SPECIAL_KIND.LOTTERY);
+    if (s === null) return;
+    expect(reduce(withCash(s, 999), { type: 'settle' }, t).pending).toBeNull();
+  });
+
+  run('★ 买完就收摊 —— 一次落点只买一注', () => {
+    // @source VA 0x0042ffd1：买中后立刻 `PostMessage(hwnd, 0x406, 3, 0)`，
+    //   0x406 把窗口置成 state 5，而 state 5 就是 KillTimer + Post_0402_Message
+    const { map, topo: t } = topo();
+    const s = standOn(newGame({ map, players: humans() }), map, SPECIAL_KIND.LOTTERY);
+    if (s === null) return;
+    const open = reduce(s, { type: 'settle' }, t);
+    if (open.pending === null || open.pending.kind !== 'lottery') return;
+    const [first, second] = open.pending.available;
+    const bought = reduce(open, { type: 'lottery', number: first! }, t);
+    expect(bought.pending).toBeNull();
+    expect(bought.lottery.filter((v) => v !== 0)).toHaveLength(1);
+    // 柜台已经关了，紧接着再买一注买不动
+    expect(reduce(bought, { type: 'lottery', number: second! }, t)).toBe(bought);
+  });
+
+  run('★ 电脑落点当场买一注：扣现金、票钱进公库、不留交互', () => {
+    // @source VA 0x0043169e —— 电脑那支一口气买完就 ret，原版根本没有屏
     const { map, topo: t } = topo();
     const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.LOTTERY);
     if (s === null) return;
+    const me = s.players[s.currentPlayer]!;
     const r = reduce(s, { type: 'settle' }, t);
-    if (r.pending === null) return;
-    expect(r.pending.kind).toBe('lottery');
-    if (r.pending.kind === 'lottery') {
-      expect(r.pending.available).toHaveLength(36);
-      expect(r.pending.price).toBe(1000);
-      expect(r.pending.owned).toBe(0);
-    }
+    expect(r.pending).toBeNull();
+    expect(r.players[s.currentPlayer]!.cash).toBe(me.cash - LOTTERY_TICKET_PRICE);
+    expect(r.lottery.filter((v) => v !== 0)).toHaveLength(1);
+    expect(r.pool).toBe(s.pool + LOTTERY_TICKET_PRICE);
+  });
+
+  run('★ 电脑现金正好 1000 时一注不买（jle 不是 jl）', () => {
+    const { map, topo: t } = topo();
+    const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.LOTTERY);
+    if (s === null) return;
+    const r = reduce(withCash(s, 1000), { type: 'settle' }, t);
+    expect(r.lottery.every((v) => v === 0)).toBe(true);
+    expect(r.pool).toBe(s.pool);
   });
 });
 

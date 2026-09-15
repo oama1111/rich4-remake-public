@@ -6,10 +6,12 @@
 import { describe, expect, it } from 'vitest';
 import { makePlayer } from '../testing/factories.ts';
 import {
+  LOTTERY_AI_MIN_CASH,
   LOTTERY_DRAW_DAY,
   LOTTERY_NUMBERS,
   LOTTERY_RIG_THRESHOLD,
   LOTTERY_TICKET_PRICE,
+  aiBuyTicket,
   availableNumbers,
   buyTicket,
   drawLottery,
@@ -94,6 +96,49 @@ describe('买号', () => {
 
   it('买不成时不进公库', () => {
     expect(buyTicket(makePlayer({ cash: 10 }), emptyLottery(), 7).toPool).toBe(0);
+  });
+});
+
+describe('电脑买号（原版没有投注屏，落点当场买一注）', () => {
+  const rng = (state: number) => new WatcomRng(state);
+
+  it('★ 现金必须**严格大于** 1000 —— 正好 1000 一注不买', () => {
+    // @source VA 0x0043169e `cmp dword [eax+0x496b84], 0x3e8 / jle`
+    expect(LOTTERY_AI_MIN_CASH).toBe(1001);
+    expect(aiBuyTicket(makePlayer({ cash: 1000 }), emptyLottery(), rng(1))).toBeNull();
+    expect(aiBuyTicket(makePlayer({ cash: 1001 }), emptyLottery(), rng(1))?.ok).toBe(true);
+  });
+
+  it('★ 号码在**未售出的**号码里随机挑，不碰已售出的', () => {
+    const t = emptyLottery();
+    t[0] = 1;
+    t[1] = 1; // 前两个已售出
+    for (let seed = 1; seed <= 50; seed++) {
+      const r = aiBuyTicket(makePlayer({ index: 2, cash: 9000 }), t, rng(seed));
+      expect(r?.ok).toBe(true);
+      if (r === null) continue;
+      const bought = r.lottery.findIndex((v) => v === 3);
+      // 玩家 2 的号（编码 3）只能落在 2..35 —— 除数就是 34，不是 36
+      expect(bought).toBeGreaterThanOrEqual(2);
+      expect(r.lottery.filter((v) => v === 3)).toHaveLength(1);
+    }
+  });
+
+  it('★ 现金不够时一注不买，且**不消耗随机数**', () => {
+    // 原版先 `cmp …/jle` 再 `call rand`，买不成的那一抽根本不存在
+    const r = rng(4242);
+    const before = r.getState();
+    expect(aiBuyTicket(makePlayer({ cash: 1000 }), emptyLottery(), r)).toBeNull();
+    expect(r.getState()).toEqual(before);
+  });
+
+  it('★ 号码售罄时一注不买，且**不消耗随机数**', () => {
+    // @source `test ebx, ebx / je 0x43170a` 在 `call rand` 之前
+    const r = rng(777);
+    const before = r.getState();
+    const full = new Array<number>(LOTTERY_NUMBERS).fill(1);
+    expect(aiBuyTicket(makePlayer({ cash: 9000 }), full, r)).toBeNull();
+    expect(r.getState()).toEqual(before);
   });
 });
 

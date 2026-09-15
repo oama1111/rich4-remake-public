@@ -83,6 +83,11 @@ export type PendingInteraction =
   /**
    * 樂透：挑一个没被买走的号码。
    * @source 落点 VA 0x004315cc
+   *
+   * ★ 只有**真人**收得到这个交互，而且**一次落点只买一注**：原版买中的那一下
+   *   投注屏就自己关了（VA 0x0042ffd1 → `PostMessage(0x406,3,0)` → state 5）。
+   *   电脑在原版里根本没有屏，落点当场买完 —— 见 `state/reduce.ts` 的
+   *   `landOnLottery`。
    */
   | { kind: 'lottery'; available: number[]; price: number; owned: number }
   /**

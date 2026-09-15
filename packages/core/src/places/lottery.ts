@@ -29,6 +29,22 @@ export const LOTTERY_NUMBERS = 0x24;
 export const LOTTERY_TICKET_PRICE = 0x3e8;
 
 /**
+ * 电脑玩家出手的门槛：**现金严格大于**票价。
+ *
+ * @source AI 分支 VA 0x0043169e：
+ * ```asm
+ * cmp dword [eax + 0x496b84], 0x3e8   ; eax = 当前玩家 * 0x68
+ * jle 0x43170a                         ; ★ 现金 <= 1000 就一注不买
+ * ```
+ * 是 `jle` 不是 `jl` —— 电脑要**多于** 1000 才肯出手，买完至少还剩 1。
+ *
+ * ★ 与真人那条**不同**：真人只要 `>= 1000` 就开得了投注屏
+ *   （VA 0x0042f8ba `cmp dword [eax + 0x496b84], 0x3e8 / jge`），
+ *   所以真人可以买到现金正好归零，电脑不行。
+ */
+export const LOTTERY_AI_MIN_CASH = LOTTERY_TICKET_PRICE + 1;
+
+/**
  * 「有人买太多了」的门槛。
  *
  * @source 开奖前 VA 0x00430b2a 起对四名玩家的持号数逐个
@@ -136,6 +152,48 @@ export function buyTicket(player: Player, lottery: readonly number[], n: number)
     // @source add dword [0x499080], 0x3e8
     toPool: LOTTERY_TICKET_PRICE,
   };
+}
+
+/**
+ * 电脑玩家买一注——号码由**引擎**随机抽，电脑自己没得挑。
+ *
+ * @source AI 分支 VA 0x0043169e 起（`rich4_ui_letou_bar_entry` 的电脑那支）：
+ * ```asm
+ * cmp dword [eax + 0x496b84], 0x3e8
+ * jle 0x43170a                         ; 现金 <= 1000 → 一注不买
+ * ; 收集未售出的号码到 buf，共 ebx 个
+ * test ebx, ebx / je 0x43170a          ; 全卖光了 → 也不买
+ * al = current_player + 1
+ * call rand / idiv ebx                 ; ★ 在**未售出的号码**里等概率挑一个
+ * mov byte [buf[edx] + 0x4990b8], al
+ * sub dword [eax + 0x496b84], 0x3e8    ; 扣现金
+ * add dword [0x499080], 0x3e8          ; 票钱进公库
+ * ```
+ * ★ **原版电脑是在未售出的号码里随机挑的**——`rand()` 的除数就是
+ *   当时未售出的个数，不是 36。故这里必须由 reducer 侧的随机源出这一抽：
+ *   消耗随机数的时机是「确认要买之后」，抽不了签（钱不够／卖光了）
+ *   就**一次也不消耗**。
+ *
+ * ★ 一次落点只买一注，买完就结束（与真人一致，见 `reduce.ts` 的
+ *   `landOnLottery`）。
+ *
+ * @returns 没出手时返回 null（钱不够或号码售罄）
+ */
+export function aiBuyTicket(
+  player: Player,
+  lottery: readonly number[],
+  rng: { next: () => number },
+): BuyResult | null {
+  // @source cmp dword [eax + 0x496b84], 0x3e8 / jle
+  if (player.cash < LOTTERY_AI_MIN_CASH) return null;
+  // @source 0x004316b0 起的循环：把未售出的号码收进 buf
+  const avail = availableNumbers(lottery);
+  // @source test ebx, ebx / je 0x43170a
+  if (avail.length === 0) return null;
+  // @source call rand / idiv ebx / mov bl, [esp + edx + 0x40]
+  const n = avail[rng.next() % avail.length];
+  if (n === undefined) return null;
+  return buyTicket(player, lottery, n);
 }
 
 /**

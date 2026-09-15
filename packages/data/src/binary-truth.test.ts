@@ -259,8 +259,12 @@ d('★ 数值表以 rich4.exe 为基准校验', () => {
         for (let c = 0; c < VIEW_SPAN; c++) {
           const o = base + v * 0xd24 + r * 0x74 + c * 4;
           const cell = projectCell(v, r, c)!;
-          expect(cell.x, `视角${v} 行${r} 列${c} 的 x`).toBe(exe.readInt16LE(o));
-          expect(cell.y, `视角${v} 行${r} 列${c} 的 y`).toBe(exe.readInt16LE(o + 2));
+          // ★ 表项在内存里的顺序是 (Y, X)：偏移 +0 是 Y、+2 是 X。
+          //   轴向由 fcn_004557a1 / fcn_004564c1 / fcn_00456770 三段绘制代码钉死，
+          //   单比字节是分不出来的（两种标注读同一份数据都自洽）——
+          //   这四条断言的作用是**锁住当前标注**，防止再被无意识地翻回去。
+          expect(cell.y, `视角${v} 行${r} 列${c} 的 y = 表项第 1 个 int16`).toBe(exe.readInt16LE(o));
+          expect(cell.x, `视角${v} 行${r} 列${c} 的 x = 表项第 2 个 int16`).toBe(exe.readInt16LE(o + 2));
         }
       }
     }
@@ -280,16 +284,69 @@ d('★ 数值表以 rich4.exe 为基准校验', () => {
       for (let i = 0; i < 4; i++) {
         expect(m[i], `视角${v} 矩阵第 ${i} 项`).toBe(exe.readInt8(base + v * 4 + i));
       }
-      // 自洽性：矩阵给出的整块位移应当等于表的行列步长
+      // 自洽性：矩阵给出的整块位移应当等于表的行列步长。
+      // ★ 配对是单向的 —— o1（m[0]/m[2]）喂 X、o2（m[1]/m[3]）喂 Y。
+      //   写成「m[1] 对 x」也能通过，那正是 2026-09-15 订正掉的那个错：
+      //   表和矩阵两头同时翻，等式两边一起变号，测试就哑了。
+      //   真正的裁判是 `fcn_00407a2c` 把 o1/o2 写进哪个出参（见 projection.ts 文件头）。
       const center = projectCell(v, 14, 14)!;
-      const rowStep = projectCell(v, 15, 14)!;
-      const colStep = projectCell(v, 14, 15)!;
-      // dx = 32 即整整一列；按 fcn_00407a2c 算出的位移应当等于列步长
-      expect(-((m[1] * 32) >> 5)).toBe(colStep.x - center.x);
-      expect(-((m[0] * 32) >> 5)).toBe(colStep.y - center.y);
-      expect(-((m[3] * 32) >> 5)).toBe(rowStep.x - center.x);
-      expect(-((m[2] * 32) >> 5)).toBe(rowStep.y - center.y);
+      const rowStep = projectCell(v, 15, 14)!; // +1 行 = +1 世界 Y → dy = 32
+      const colStep = projectCell(v, 14, 15)!; // +1 列 = +1 世界 X → dx = 32
+      expect(-((m[0] * 32) >> 5)).toBe(colStep.x - center.x);
+      expect(-((m[1] * 32) >> 5)).toBe(colStep.y - center.y);
+      expect(-((m[2] * 32) >> 5)).toBe(rowStep.x - center.x);
+      expect(-((m[3] * 32) >> 5)).toBe(rowStep.y - center.y);
     }
+  });
+
+  it('★ 一格是「横长」的，整块棋盘是「横长」的 —— 这一条能区分两种轴向标注', () => {
+    // 上面那条逐字节比对**区分不了** (Y,X) 与 (X,Y)：两种标注读同一份数据都自洽。
+    // 这一条才行 —— 把轴翻回去，一格的包围盒会从 49×36 变成 36×49，本断言即失败。
+    //
+    // 证据链（详见 projection.ts 文件头）：
+    //   a) fcn_004557a1/fcn_0045596a：地块四角的第 1 个 int16 参与 `draw_area.top/bottom` 比较 → 是 Y
+    //   b) fcn_004564c1 → draw_non_zero_image_in_rect(640,480,…,x,y,1)，x 取 0x46ccf2 那一路 → 第 2 个是 X
+    //   c) fcn_00456770 的形参 4 参与 `imul …,0x280` 的行寻址 → 是列（X）
+    //   d) 版面：原版把摄像机格钉在屏幕 (0xdc, 0x104) = (220, 260)，
+    //      而棋盘区是 `{x:0,y:40,w:439,h:440}`，其正中恰为 (219.5, 260) —— 两个常数
+    //      一横一纵各对一半；调换就偏出 40 像素。
+    for (let v = 0; v < VIEW_COUNT; v++) {
+      const corners = [
+        projectCell(v, 14, 14)!,
+        projectCell(v, 15, 14)!,
+        projectCell(v, 14, 15)!,
+        projectCell(v, 15, 15)!,
+      ];
+      const xs = corners.map((p) => p.x);
+      const ys = corners.map((p) => p.y);
+      expect(Math.max(...xs) - Math.min(...xs), `视角${v} 一格的宽`).toBeGreaterThan(
+        Math.max(...ys) - Math.min(...ys),
+      );
+    }
+
+    // 视角 0 钉死具体数值（49 = 14+34+… 的包围盒，见上）
+    const c0 = projectCell(0, 14, 14)!;
+    expect(projectCell(0, 15, 14)!.x - c0.x).toBe(14); // 行步 (ΔX, ΔY)
+    expect(projectCell(0, 15, 14)!.y - c0.y).toBe(25);
+    expect(projectCell(0, 14, 15)!.x - c0.x).toBe(34); // 列步 (ΔX, ΔY)
+    expect(projectCell(0, 14, 15)!.y - c0.y).toBe(-11);
+
+    // 整块 29×29 窗口的包围盒 ≈ 1425×1010（横长），不是竖长
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let r = 0; r < VIEW_SPAN; r++) {
+      for (let c = 0; c < VIEW_SPAN; c++) {
+        const p = projectCell(0, r, c)!;
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+    }
+    expect(maxX - minX).toBe(1425);
+    expect(maxY - minY).toBe(1009);
   });
 
   it('★ 五张表全部来自同一可执行文件，无一字段依赖逆向项目的转录', () => {

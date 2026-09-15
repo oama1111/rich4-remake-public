@@ -445,19 +445,11 @@ export function decidePending(state: GameState): Action | null {
     const want = Math.min(autoLoanAmount(p.wealth, me.loanRatio), p.loanCapacity);
     return want > 0 ? { type: 'bank', op: 'borrow', amount: want } : null;
   }
-  // 樂透：有余钱就随便买一个号码。
-  // ⚠️ 号码得**确定性**地挑：AI 不能碰随机源（那是 reducer 的事），
-  //   故取可选号码里的第一个，而不是随机一个。原版 AI 是随机挑的，
-  //   这是一处明确的策略差异，不影响规则。
-  if (p.kind === 'lottery') {
-    const me = state.players[state.currentPlayer];
-    if (me === undefined) return null;
-    const n = p.available[0];
-    if (n === undefined) return null;
-    // 留够安全垫再买，别为了一张彩票把自己买穿
-    if (me.cash < p.price * 4) return null;
-    return { type: 'lottery', number: n };
-  }
+  // 樂透**没有**分支：电脑在原版里根本没得挑（`rich4_ui_letou_bar_entry`
+  // 的电脑那支一口气买完、不弹屏），所以它在落点当场就结掉了 —— 见
+  // `state/reduce.ts` 的 `landOnLottery`，号码与是否出手都由 reducer 定
+  // （@source VA 0x0043169e：现金 > 1000 才买，号码 `rand() % 未售出数`）。
+  // ★ 故电脑永远收不到 `kind: 'lottery'` 的待决交互。
   // ★ 買設施与買地**同一条判定**（原版两家都 `push 价; call fcn_0041d7d4`）：
   //   0x0041a8d1 是設施那支，0x0041a0c0 是地块那支。
   //   加蓋（`upgradeFacility`）原版**没有**这条判定 —— 落点那条分支里

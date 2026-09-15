@@ -207,6 +207,7 @@ import {
 import { borrow, deposit, loanCapacity, repay, withdraw } from '../places/bank.ts';
 import {
   LOTTERY_TICKET_PRICE,
+  aiBuyTicket,
   availableNumbers,
   buyTicket,
   numbersOf,
@@ -734,6 +735,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         // 百貨公司要先抽货架、董事長还有礼 —— 都要随机数，单独走
         if (node.specialKind === SPECIAL_KIND.DEPARTMENT_STORE) return enterShop(next, topo);
 
+        // 樂透投注站：电脑自己匿名买一注就走，真人才开投注屏
+        if (node.specialKind === SPECIAL_KIND.LOTTERY) return landOnLottery(next);
+
         // 其余特殊格：交给「待决交互」机制。
         // ★ 这样每一格都**可达**：已实现的给出具体交互，
         //   未实现的给出一个明确的 unimplemented，而不是静默无事发生。
@@ -1097,13 +1101,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         lottery: r.lottery,
         // ★ 票钱进公库 —— 买票既是投注也是在给奖池添柴
         pool: state.pool + r.toPool,
-        // 柜台还开着，可以接着买；刷新可选号码
-        pending: {
-          kind: 'lottery',
-          available: availableNumbers(r.lottery),
-          price: LOTTERY_TICKET_PRICE,
-          owned: numbersOf(r.lottery, state.currentPlayer).length,
-        },
+        // ★ 买完就收摊 —— 原版买中的那一下紧接着 `PostMessage(hwnd, 0x406, 3, 0)`
+        //   （VA 0x0042ffd1 那段），投注屏随即自行关闭；想再买得下次踩到这一格。
+        pending: null,
       };
     }
 
@@ -2653,6 +2653,64 @@ function newsTargets(
 // ============================================================
 
 /**
+ * 落在樂透投注站（節點 kind 9）。
+ *
+ * @source 落点 VA 0x004315cc `rich4_ui_letou_bar_entry`：
+ * ```asm
+ * cmp byte [eax + 0x496b7d], 1
+ * jne 0x43169e                  ; ★ 只有**正好等于 1** 才开投注屏 0x42f7fc；
+ *                               ;   托管（who_plays = 5）落到电脑那支
+ * 0x43169e:                     ; 电脑分支——一口气买完，没有屏
+ * ```
+ *
+ * ★ **一次落点只买一注**，两边都一样：
+ *   - 电脑：0x4315cc 那个函数线性走到尾，只写一个号码就 ret。
+ *   - 真人：点中格子买下后立刻 `PostMessage(hwnd, 0x406, 3, 0)`
+ *     （VA 0x0043000e 那一段），0x406 处理程序把窗口置成 state 5，
+ *     而 state 5 就是 `KillTimer` + `Post_0402_Message` —— **投注屏自行关闭**，
+ *     想再买得下次踩到这一格。→ `case 'lottery'` 里把 pending 收掉。
+ *
+ * ★ 真人侧钱不够时原版**连屏都不开**（0x0042f8ba `cmp .., 0x3e8 / jge`：
+ *   不满足就走 `PostMessage(0x405, 4, 4)`，那个 state 一路自减到关屏），
+ *   所以这里直接不给交互，而不是给一个只能「離開」的空屏。
+ */
+function landOnLottery(state: GameState): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return state;
+
+  // @source cmp byte [eax + 0x496b7d], 1 / jne 0x43169e
+  //   注意是**精确等于 1**：托管位（0x04）落在这里会走电脑分支。
+  if (me.whoPlays !== WHO_PLAYS_HUMAN) {
+    const rng = new WatcomRng();
+    rng.setState(state.rngState);
+    const r = aiBuyTicket(me, state.lottery, rng);
+    // 抽不了签（现金 <= 1000 或号码售罄）→ 随机数一次也不消耗，状态原样
+    if (r === null) return state;
+    return {
+      ...withPlayer({ ...state, rngState: rng.getState() }, state.currentPlayer, (p) => {
+        p.cash = r.player.cash;
+      }),
+      lottery: r.lottery,
+      // @source add dword [0x499080], 0x3e8
+      pool: state.pool + r.toPool,
+    };
+  }
+
+  // @source 0x0042f8ba `cmp dword [eax + 0x496b84], 0x3e8 / jge`
+  if (me.cash < LOTTERY_TICKET_PRICE) return state;
+
+  return {
+    ...state,
+    pending: {
+      kind: 'lottery',
+      available: availableNumbers(state.lottery),
+      price: LOTTERY_TICKET_PRICE,
+      owned: numbersOf(state.lottery, state.currentPlayer).length,
+    },
+  };
+}
+
+/**
  * 这一格要求玩家做什么。
  *
  * ★ 由 core 判定而非 UI —— 见 rules/interaction.ts 顶部说明。
@@ -2695,14 +2753,8 @@ function pendingForSpecial(
     };
   }
 
-  if (specialKind === SPECIAL_KIND.LOTTERY) {
-    return {
-      kind: 'lottery',
-      available: availableNumbers(state.lottery),
-      price: LOTTERY_TICKET_PRICE,
-      owned: numbersOf(state.lottery, state.currentPlayer).length,
-    };
-  }
+  // 樂透不在这里 —— 它由 `landOnLottery` 接管：电脑当场买完（不经 pending），
+  // 真人的投注屏是「一次只买一注」的，与其余 pending 的流程不同。
 
   if (specialKind === SPECIAL_KIND.DEPARTMENT_STORE) {
     // ★ 百貨公司花的是**點數**，不是钱
@@ -3162,6 +3214,16 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
       return r.ok ? commit(r.player) : state;
     }
     case 'buyTool': {
+      // ⚠️ 这里**故意不**像 buyCard 那样把买掉的那件从 `pending.tools` 里删掉。
+      //
+      // 原版确实会清（`rich4_shop.asm` 0x42e466 尾 `mov byte [ebx + 0x48c2f8], 0`），
+      // 但那张货架表 `[0x48c2f8]` 住在**商店窗口自己的 BSS 里**，每次开门重建 ——
+      // 它是**界面状态，不是局面状态**。本引擎把它放进了 `pending`，于是「删掉」
+      // 就变成了改局面：AI 的 `decidePending` 会照着 `buyTool(...).ok` 反复提同一件
+      // （它不查货架），删掉之后 reducer 必拒，`soak` 立刻卡死在 `turnEnd / shop`。
+      //
+      // 「买过的那一行不能重复买」由界面按原版的做法自己管：
+      // 开店时快照一份货架，买过的行记进 `shopUi.bought`（见 `client/shop-screen.ts`）。
       const r = buyTool(me, state.tools, state.toolStock, action.id);
       return r.ok ? commit(r.player, r.tools, r.stock) : state;
     }
