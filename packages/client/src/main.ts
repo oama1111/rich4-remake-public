@@ -25,6 +25,7 @@ import {
   type Rich4Map,
 } from '@rich4/core';
 import { NetClient, netParamsFrom } from './net-client.ts';
+import { DiceRollAnimation } from './dice-anim.ts';
 import {
   loadArchives,
   loadGround,
@@ -687,6 +688,12 @@ const history: Action[] = [];
  */
 let net: NetClient | null = null;
 
+/**
+ * 掷骰的本地预测动画（T-075）。纯表现：不读 `state.dice`、不写 state，
+ * 故与确定性重放（C-DET-4）无关——`history` 里绝不会出现它。
+ */
+const diceAnim = new DiceRollAnimation();
+
 /** 只有自己座位的回合才轮到本机做决定（联机）；单机永远是 */
 function localSeatActive(): boolean {
   return net === null || net.seat === state.currentPlayer;
@@ -694,6 +701,12 @@ function localSeatActive(): boolean {
 
 function dispatch(action: Action): void {
   if (net !== null) {
+    // ★ 本地预测（T-075）：掷骰这一趟要等服务器往返，先滚起来再说。
+    //   动画**不读 state.dice**，此刻它还是旧的；真点数到了由 applyAction 定格。
+    if (action.type === 'rollDice') {
+      const me = state.players[state.currentPlayer];
+      diceAnim.start(me?.ndices ?? 1, performance.now());
+    }
     net.submit(action);
     return;
   }
@@ -704,6 +717,13 @@ function dispatch(action: Action): void {
 function applyAction(action: Action): void {
   const before = state;
   state = reduce(state, action, topo);
+  if (state !== before) {
+    // ★ 骰子预测（T-075）**只服务于联机**：服务器答复到了就定格；走出走子
+    //   阶段就收摊（否则定格的骰子会一直挂在画面上，GO 鈕再也不出现）。
+    //   单机从不 start，故这里两件事都是空操作，画面完全照旧。
+    if (action.type === 'rollDice' && net !== null) diceAnim.settle(state.dice);
+    else if (state.phase !== 'moving') diceAnim.cancel();
+  }
   if (state !== before) {
     history.push(action);
     playSoundFor(before, state);
@@ -883,8 +903,9 @@ function requestRender(): void {
 
     blitStage();
 
-    // 有精灵在本帧解码完成 → 再画一次，把它们补上
-    if (renderer.dirty || hud.dirty || spriteArrived) {
+    // 有精灵在本帧解码完成 → 再画一次，把它们补上；
+    // 骰子在滚也要继续要帧，否则动画只有一格。
+    if (renderer.dirty || hud.dirty || spriteArrived || diceAnim.rolling) {
       renderer.clearDirty();
       hud.clearDirty();
       spriteArrived = false;
@@ -917,6 +938,10 @@ function drawGameStage(): void {
   const me = state.players[state.currentPlayer];
   if (dlg !== null) {
     drawDialog(boardCtx, uiSprite, dlg, amountPage, dialogHot);
+  } else if (diceAnim.pipsAt(performance.now()) !== null) {
+    // ★ 本地预测的骰子（T-075）：点 GO 之后、服务器答复之前先滚起来。
+    //   返回 null 就表示「我不参与」，落到下面画权威值。
+    drawDice(boardCtx, uiSprite, diceAnim.pipsAt(performance.now())!);
   } else if (awaitingHumanRoll() && me !== undefined) {
     // ★ 原版的 GO 鈕 + 骰子数切换（Panel.mkf 资源 7）
     drawAdvance(boardCtx, uiSprite, advanceHot, maxDiceOf(me), me.ndices);

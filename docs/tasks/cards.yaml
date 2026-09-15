@@ -1401,16 +1401,25 @@ cards:
   title: 掷骰本地预测动画（结果以服务器为准）
   module: MOD-12
   req: REQ-14.2
-  status: todo
+  status: done
   estimate: 0.3
   depends_on: [T-074]
-  uses: [client/dialog.ts (drawDice), net-client.ts]
+  uses: [client/dialog.ts (drawDice), net-client.ts, client/main.ts (dispatch/applyAction/渲染分支)]
   source: "—"
   input: "本地点 GO"
   output: "立刻播骰子滚动动画；收到 action{rollDice} 后停在真实点数"
-  algorithm: "动画不读 state.dice；收到 action 后再 dispatch 并定格。"
-  tests: "帧序列测试"
-  files: [packages/client/src/dice-anim.ts]
+  algorithm: |
+    1. 不读 state.dice（此刻还是旧的）、不用 Math.random、不写 state ——
+       滚动脸用 (帧号, 颗号) 的确定性散列，测试能钉死、录像能复现、
+       也不会进 history 破坏 C-DET-4。
+    2. dispatch（联机分支）见 rollDice 就 start(me.ndices)；applyAction 里
+       reduce 后见 rollDice 且 net !== null 就 settle(state.dice) 定格。
+    3. 走出走子阶段（phase !== 'moving'）就 cancel —— 否则定格的骰子会一直
+       挂在画面上、GO 鈕再也不出现。
+    4. 滚超时（3s，服务器没回/断线）交还给权威显示：**假装比诚实更糟**。
+    5. 单机从不 start，故整条路径对单机是空操作。
+  tests: "帧序列 15 条：1..6 范围、确定性、相邻帧换脸、不定格不参与、超时交还、cancel、重 start"
+  files: [packages/client/src/dice-anim.ts, packages/client/src/dice-anim.test.ts, packages/client/src/main.ts]
   notes: ""
 
 - id: T-076

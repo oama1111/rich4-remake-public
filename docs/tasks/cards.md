@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 16.8。
+共 **73** 张卡，估算 **39.8** 单元，已完成 17.1。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -80,7 +80,7 @@
 | [T-072](#t-072) | checksum / desync 检测与处理 | MOD-14 | REQ-14.1 | `done` | 0.4 | T-070 |
 | [T-073](#t-073) | AI 补位（掉线 30s 后服务器代打，重连归还） | MOD-14 | REQ-14.3 | `done` | 0.5 | T-071 |
 | [T-074](#t-074) | 客户端联机模块 net-client（连接、发意图、按 seq 应用） | MOD-12 | REQ-14.2 | `done` | 0.8 | T-070 |
-| [T-075](#t-075) | 掷骰本地预测动画（结果以服务器为准） | MOD-12 | REQ-14.2 | `todo` | 0.3 | T-074 |
+| [T-075](#t-075) | 掷骰本地预测动画（结果以服务器为准） | MOD-12 | REQ-14.2 | `done` | 0.3 | T-074 |
 | [T-076](#t-076) | 联机大厅 UI（建房/加房/座位/角色/地图/开始） | MOD-12 | REQ-14.4 | `todo` | 0.8 | T-074 |
 | [T-077](#t-077) | 联机端到端测试：4 客户端同进程跑完整局，与单机同种子逐字节一致 | MOD-14 | REQ-14 | `done` | 0.5 | T-071, T-072, T-073, T-074 |
 | [T-080](#t-080) | 停牌中柜台不能买卖（Q-STOCK-3） | MOD-07 | Q-STOCK-3 | `done` | 0.1 | — |
@@ -2515,7 +2515,7 @@
 
 **掷骰本地预测动画（结果以服务器为准）**
 
-- 模块 `MOD-12` · 需求 `REQ-14.2` · 状态 `todo` · 估算 0.3 单元
+- 模块 `MOD-12` · 需求 `REQ-14.2` · 状态 `done` · 估算 0.3 单元
 - 依赖：T-074
 - 证据：—
 
@@ -2523,6 +2523,7 @@
 
 - client/dialog.ts (drawDice)
 - net-client.ts
+- client/main.ts (dispatch/applyAction/渲染分支)
 
 **期望输入**
 
@@ -2534,15 +2535,25 @@
 
 **核心逻辑 / 算法指导**
 
-    动画不读 state.dice；收到 action 后再 dispatch 并定格。
+    1. 不读 state.dice（此刻还是旧的）、不用 Math.random、不写 state ——
+       滚动脸用 (帧号, 颗号) 的确定性散列，测试能钉死、录像能复现、
+       也不会进 history 破坏 C-DET-4。
+    2. dispatch（联机分支）见 rollDice 就 start(me.ndices)；applyAction 里
+       reduce 后见 rollDice 且 net !== null 就 settle(state.dice) 定格。
+    3. 走出走子阶段（phase !== 'moving'）就 cancel —— 否则定格的骰子会一直
+       挂在画面上、GO 鈕再也不出现。
+    4. 滚超时（3s，服务器没回/断线）交还给权威显示：**假装比诚实更糟**。
+    5. 单机从不 start，故整条路径对单机是空操作。
 
 **验收测试**
 
-    帧序列测试
+    帧序列 15 条：1..6 范围、确定性、相邻帧换脸、不定格不参与、超时交还、cancel、重 start
 
 **涉及文件**
 
 - packages/client/src/dice-anim.ts
+- packages/client/src/dice-anim.test.ts
+- packages/client/src/main.ts
 
 ### T-076
 
