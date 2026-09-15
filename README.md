@@ -4,6 +4,9 @@
 
 开发计划与全部硬性约束见 [`../DEVELOPMENT_PLAN.md`](../DEVELOPMENT_PLAN.md)。
 
+> **接手的人先读 [`docs/handoff.md`](docs/handoff.md)** —— 未干完的活、方法论铁律、
+> 反汇编速查、环境坑，都在那一份里。
+
 ## 素材来源
 
 原版素材（`assets/game/`）已随仓库入库，桌面版也**随包附带**——
