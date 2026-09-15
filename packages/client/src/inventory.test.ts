@@ -7,7 +7,7 @@
  * 道具**紧排**且只列数量 > 0 的；卡片槽号就是数组下标。
  */
 import { describe, expect, it } from 'vitest';
-import type { GameState } from '@rich4/core';
+import { makeGameState, type GameState, type MapTopology } from '@rich4/core';
 import {
   INV_BASE,
   INV_CELL,
@@ -16,6 +16,7 @@ import {
   INV_SLOTS,
   INV_VEHICLE_IMAGE,
   cardEntries,
+  routeCardPick,
   hitInventory,
   invCellRect,
   toolEntries,
@@ -93,6 +94,49 @@ describe('格子内容（T-024）', () => {
       { slot: 2, id: 7, count: 1 },
     ]);
     expect(cardEntries(stateOf([], []), 0)).toEqual([]);
+  });
+});
+
+describe('卡片欄：选一张卡之后走哪条路（T-025）@source VA 0x441c22', () => {
+  const topo = { nodes: [], lands: [], facilities: [], commercials: [] } as unknown as MapTopology;
+  const stateOf = (cards: number[], over: Partial<GameState> = {}): GameState =>
+    ({
+      players: [{ index: 0, cards, cash: 0, moneyInBank: 0, loan: 0 }],
+      tools: new Array<number>(30).fill(0),
+      toolStock: new Array<number>(14).fill(0),
+      objects: [],
+      specialActors: [],
+      holdings: [[]],
+      market: { stocks: [] },
+      commercialOwners: [],
+      currentPlayer: 0,
+      priceIndex: 1,
+      ...over,
+    }) as unknown as GameState;
+
+  it('★ 手上没有的卡 → 走「用不成」（失败音 + 把弹窗开回来）', () => {
+    // 均富卡（1，不需要目标）不在手上
+    expect(routeCardPick(stateOf([]), topo, 1)).toEqual({ kind: 'cannot', needsOwnList: false });
+  });
+
+  it('★ 需要目标的卡 → 进拾取模式，类别与选择参数取自卡片表', () => {
+    // 換屋卡（5）：selectionParam 0xe0c0202 → 类别 land
+    const r = routeCardPick(stateOf([5]), topo, 5);
+    expect(r).toEqual({ kind: 'pick', cls: 'land', param: 0xe0c0202 });
+  });
+
+  it('★ 紅卡（24，选股票）那类要自己的列表 UI，不进拾取模式', () => {
+    expect(routeCardPick(stateOf([24]), topo, 24)).toEqual({ kind: 'cannot', needsOwnList: true });
+  });
+
+  it('★ 不需要目标、且现在出得了的卡 → 直接发', () => {
+    const base = makeGameState();
+    const players = base.players.map((p, i) => ({
+      ...p,
+      cash: i === 1 ? 100000 : 0,
+      cards: i === 0 ? [1] : [],
+    }));
+    expect(routeCardPick(makeGameState({ players }), topo, 1)).toEqual({ kind: 'use' });
   });
 });
 

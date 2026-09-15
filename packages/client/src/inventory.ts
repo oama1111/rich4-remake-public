@@ -28,9 +28,16 @@
  *   所以**选目标那一段是 T-026**（目标拾取模式），本模块不管。
  */
 
-import type { GameState } from '@rich4/core';
-import { CARDS, TOOLS } from '@rich4/data';
+import {
+  canUseCard,
+  targetClassOfCard,
+  type GameState,
+  type MapTopology,
+  type TargetClass,
+} from '@rich4/core';
+import { CARD_IMPLS, CARDS, TOOLS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
+import { classNeedsItsOwnList } from './picking.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type InvSprite = (
@@ -172,9 +179,45 @@ export const TOOLS_NEEDING_TARGET: readonly number[] = [2, 3, 4, 7, 9, 11, 12, 1
 /** 遙控骰子：要一个 1..18 的点数 */
 export const REMOTE_DICE_TOOL = 8;
 
+/**
+ * 卡片欄选了一张卡之后该走哪条路。
+ *
+ * @source `_rich4_ui_use_card_entry` VA 0x441c22 起：弹窗拿到卡号 → 报台词
+ *   （`sprintf("使用%s", 卡名)`）→ `call card_functions[卡号]`；**返回 0
+ *   （没用成）就播失败音并把弹窗再开回来**（`jmp loc_00441c22`）。
+ *
+ * 本引擎按同一件事分三路：先问 core 预演「现在出不出得了」——
+ *   - `use`     不需要目标、现在就能出 → 直接发 `useCard{target: none}`
+ *   - `pick`    要选目标 → 进 T-026 拾取模式（`cls`/`param` 取自卡片表）
+ *   - `cannot`  现在出不了（被动卡、时机不对…）→ 失败音 + 弹窗开回来
+ *
+ * ★ 原版**不灰显**被动卡 —— `fcn_00441b0a` 只画卡名、一个字体一个颜色。
+ */
+export type CardPickRoute =
+  | { kind: 'use' }
+  | { kind: 'pick'; cls: TargetClass; param: number }
+  | { kind: 'cannot'; needsOwnList: boolean };
+
 /** 这件道具是不是**不用再问**就能直接发 `useTool` */
 export function toolIsDirect(id: number): boolean {
   return !TOOLS_NEEDING_TARGET.includes(id) && id !== REMOTE_DICE_TOOL;
+}
+
+/**
+ * 卡片欄选了一张卡之后走哪条路 —— **纯函数**，把决策表钉在这里以便单测
+ * （`main.ts` 只负责照着发 action / 开拾取会话）。
+ */
+export function routeCardPick(
+  state: GameState,
+  topo: MapTopology,
+  cardId: number,
+): CardPickRoute {
+  if (canUseCard(state, topo, cardId, { kind: 'none' })) return { kind: 'use' };
+  const impl = CARD_IMPLS[cardId - 1];
+  const cls = impl === undefined ? 'none' : targetClassOfCard(impl);
+  if (cls === 'none') return { kind: 'cannot', needsOwnList: false };
+  if (classNeedsItsOwnList(cls)) return { kind: 'cannot', needsOwnList: true };
+  return { kind: 'pick', cls, param: impl?.selectionParam ?? 0 };
 }
 
 /** 20 号白字 + 深色描边 @source `create_font(0x14, 0xffffff, 0x101010, 3, 0)` */

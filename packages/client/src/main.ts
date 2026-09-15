@@ -8,7 +8,7 @@
  *   是同一种 action，引擎分不出也不需要分出来源。
  */
 
-import { CHARACTERS, TOOLS } from '@rich4/data';
+import { CARD_IMPLS, CHARACTERS, TOOLS } from '@rich4/data';
 import {
   autoAction,
   VEHICLE_DICE,
@@ -28,6 +28,7 @@ import {
   type MapTopology,
   type Rich4Map,
   type RoomInfo,
+  type TargetClass,
 } from '@rich4/core';
 import { NetClient, netParamsFrom } from './net-client.ts';
 import { DiceRollAnimation } from './dice-anim.ts';
@@ -152,8 +153,10 @@ import {
 } from './asset-sheet.ts';
 import {
   INV_VEHICLE_IMAGE,
+  cardEntries,
   drawInventory,
   hitInventory,
+  routeCardPick,
   toolEntries,
   toolIsDirect,
 } from './inventory.ts';
@@ -633,11 +636,21 @@ function awaitingHumanRoll(): boolean {
  * ★ 这是「人能不能真的把这局玩下去」的关键：`pending` 给得出，就必须
  *   答得掉。原先答复控件只在 HTML 调试抽屉里，而抽屉默认是收起的——
  *   也就是正常开局时**根本没法回答买地**。
+ *
+ * ★ 但「答得掉」指的是**该答的那个人**答得掉。待决交互属于**当前玩家**
+ *   那个回合：他落在自己格子上，引擎才问「買不買／蓋不蓋」。电脑（含被
+ *   托管的人类座位）那一手由 `scheduleAi` → `decideAction` 自己答；
+ *   若也给人弹窗，人就能替电脑买地、替电脑加蓋 —— 买的是**别人脚下**那块地，
+ *   钱从别人账上扣，人自己什么都没得到，只是把电脑的一步搅了。
+ *   联机的 `localSeatActive()` 管的是另一头（别的**真人**座位别替他答），
+ *   两者都要有。
  */
 function currentDialog(): InteractionUi | null {
   if (screen !== 'game') return null;
   // 联机：待决交互只由当前座位的客户端回答；旁人不弹窗，免得替别人答
   if (!localSeatActive()) return null;
+  // 电脑/托管的回合由 AI 自己答，人不要替他答
+  if (isAiTurn(state)) return null;
   return state.pending === null ? null : interactionUi(state.pending, state);
 }
 
@@ -1195,6 +1208,8 @@ function closeAssets(): void {
  * 0 = 没选）。★ 原版**按下就记状态**、**抬手才动作**（VA 0x445c8f / 0x445d84）。
  */
 let invPicked: number | null = null;
+/** 开着的是哪一栏：道具（工具列 #8）还是卡片（#9）@source VA 0x447d97 / 0x441baa */
+let invKind: 'tools' | 'cards' = 'tools';
 
 // ── 目标拾取模式（T-026）──
 // ★ 它是**盖在棋盘上**的一个模式，不是另一屏：原版只是把窗口过程交给模态
@@ -1249,9 +1264,10 @@ function endPick(): void {
   requestRender();
 }
 
-function openInventory(): void {
+function openInventory(kind: 'tools' | 'cards'): void {
   if (screen !== 'game') return;
   invPicked = null;
+  invKind = kind;
   screen = 'inventory';
   requestRender();
 }
@@ -1275,8 +1291,13 @@ function closeInventory(): void {
  */
 function applyInventoryPick(): void {
   const id = invPicked;
+  const kind = invKind;
   closeInventory();
   if (id === null) return;
+  if (kind === 'cards') {
+    applyCardPick(id);
+    return;
+  }
   if (toolIsDirect(id)) {
     dispatch({ type: 'useTool', toolId: id });
     return;
@@ -1288,6 +1309,63 @@ function applyInventoryPick(): void {
     return;
   }
   startToolPick(id, param);
+}
+
+/**
+ * 卡片欄选了一张卡之后。
+ *
+ * @source `_rich4_ui_use_card_entry` VA 0x441c22 起：弹窗拿到卡号后
+ *   `sprintf("使用%s", 卡名)` → 报台词 → `call card_functions[卡号]`；
+ *   **返回 0（没用成）就播失败音并重新弹一次卡片欄**（`jmp loc_00441c22`）。
+ *
+ * 这里照同一条路走：先用 core 预演「这张牌现在出不出得了」——
+ *   - 出得了且**不需要目标** → 直接发 `useCard{target: none}`；
+ *   - 需要目标 → 进 T-026 拾取模式（选择参数取自卡片表）；
+ *   - 出不了（被动卡、或时机不对）→ 播失败音（音效 4）并**把弹窗再开回来**。
+ *
+ * ★ 原版**不灰显**被动卡（`fcn_00441b0a` 只画卡名，一个颜色一张字体），
+ *   所以这里也不灰显 —— 上一轮卡里写的「被动卡灰显不可点」是自己想的。
+ */
+function applyCardPick(cardId: number): void {
+  log(`使用${CARD_IMPLS[cardId - 1]?.name ?? `卡${cardId}`}`);
+  const route = routeCardPick(state, topo, cardId);
+  if (route.kind === 'use') {
+    dispatch({ type: 'useCard', cardId, target: { kind: 'none' } });
+    return;
+  }
+  if (route.kind === 'pick') {
+    startCardPick(cardId, route.cls, route.param);
+    return;
+  }
+  // 用不成：失败音 + 把弹窗开回来（原版的循环）
+  sound.play('Effect.mkf', SOUND_CARD_FAILED);
+  if (route.needsOwnList) log('（这张卡要选股票 —— 那类选择界面还没做）');
+  else openInventory('cards');
+}
+
+/**
+ * 「这张牌没用成」的音效 —— 音效 **4**
+ * @source `_rich4_ui_use_card_entry` VA 0x441cd2 的 `play_sound_effect(0x48233a)`；
+ *   音效号表自 `0x48231a` 起，`[0x48233a] = 4`。
+ */
+const SOUND_CARD_FAILED = 4;
+
+/**
+ * 「选中了一个目标」的音效 —— 音效 **2**
+ * @source `_rich4_select_instance_callback` VA 0x44666a 的
+ *   `play_sound_effect(0x48232a)`；`[0x48232a] = 2`。
+ */
+const SOUND_TARGET_PICKED = 2;
+
+/** 进「选目标」的拾取模式（卡片那一类）*/
+function startCardPick(cardId: number, cls: TargetClass, param: number): void {
+  pick = startPick(state, topo, { kind: 'card', cardId }, cls, param);
+  pickHover = null;
+  if (pick.candidates.length === 0) {
+    log(`「使用${CARD_IMPLS[cardId - 1]?.name ?? ''}」现在没有能选的目标`);
+  }
+  refreshPickCursor();
+  requestRender();
 }
 
 /** 进「选一格」的拾取模式（道具那一类目标都是格子）*/
@@ -1395,10 +1473,14 @@ function requestRender(): void {
       drawInventory(
         stageCtx,
         spriteNow,
-        'tools',
-        toolEntries(state, state.currentPlayer),
-        // 载具徽章：`traffic_method` 1 = 機車、2 = 汽車 @source VA 0x447e08
-        INV_VEHICLE_IMAGE.get(state.players[state.currentPlayer]?.trafficMethod ?? 0) ?? null,
+        invKind,
+        invKind === 'tools'
+          ? toolEntries(state, state.currentPlayer)
+          : cardEntries(state, state.currentPlayer),
+        // 载具徽章只有道具欄有：`traffic_method` 1 = 機車、2 = 汽車 @source VA 0x447e08
+        invKind === 'tools'
+          ? (INV_VEHICLE_IMAGE.get(state.players[state.currentPlayer]?.trafficMethod ?? 0) ?? null)
+          : null,
       );
     } else if (screen === 'setup') {
       drawSetup(stageCtx, setup, setupHot, spriteNow);
@@ -1718,7 +1800,10 @@ function onToolbar(i: number): void {
       openAssets();
       return;
     case 7: // 道具欄（T-024）
-      openInventory();
+      openInventory('tools');
+      return;
+    case 8: // 卡片欄（T-025）
+      openInventory('cards');
       return;
     case 2: // 託管AI
       openAiSettings('game');
@@ -1884,8 +1969,10 @@ function renderActions(): void {
     { label: '掷骰', action: { type: 'rollDice' }, enabled: state.phase === 'awaitingRoll' },
     { label: '走一步', action: { type: 'step' }, enabled: state.phase === 'moving' },
     { label: '结算', action: { type: 'settle' }, enabled: state.phase === 'settling' },
-    { label: '买地', action: { type: 'buyLand' }, enabled: state.phase === 'awaitingDecision' },
-    { label: '盖房', action: { type: 'upgradeLand' }, enabled: state.phase === 'awaitingDecision' },
+    // ★ 買地/盖房只有**落点**留下的那个交互才能做（引擎也照这个把关），
+    //   所以按钮按 pending 的种类亮，不按 phase —— phase 是所有交互共用的
+    { label: '买地', action: { type: 'buyLand' }, enabled: state.pending?.kind === 'buyLand' },
+    { label: '盖房', action: { type: 'upgradeLand' }, enabled: state.pending?.kind === 'upgradeLand' },
     { label: '放弃', action: { type: 'declineDecision' }, enabled: state.phase === 'awaitingDecision' },
     { label: '结束回合', action: { type: 'endTurn' }, enabled: state.phase === 'turnEnd' },
   ];
@@ -2548,10 +2635,17 @@ function bindInput(): void {
     }
     // ── 目标拾取：抬手才选（原版在 LBUTTONUP 上抛回选中项，VA 0x446656）──
     if (screen === 'game' && pick !== null) {
-      const hit = pickHover === null ? null : pick.candidates[pickHover];
+      const hit = pickHover === null ? undefined : pick.candidates[pickHover];
+      if (hit === undefined) {
+        // 光标底下没有候选：**只播失败音，不退出**（原版 VA 0x4466a5 就是
+        // 放一声就 return，模态循环继续跑）。
+        sound.play('Effect.mkf', SOUND_CARD_FAILED);
+        return;
+      }
+      // 选中音 @source VA 0x44666a 的 `play_sound_effect(0x48232a)`（音效 2）
+      sound.play('Effect.mkf', SOUND_TARGET_PICKED);
       const source = pick.source;
       endPick();
-      if (hit === undefined || hit === null) return; // 没点中候选 → 什么都不做
       if (source.kind === 'card') {
         dispatch({ type: 'useCard', cardId: source.cardId, target: hit.target });
       } else {
