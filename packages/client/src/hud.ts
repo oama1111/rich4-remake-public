@@ -665,6 +665,15 @@ export class Hud {
       ctx.drawImage(face.bitmap, 0x1e2 - 440 - face.anchorX, 0x28 - face.anchorY);
     }
 
+    // 名字下面那条**角色色长条**（截图上那条红带）——
+    // @source VA 0x004161f8 起两次 `fcn_004561be`（= 填充矩形）：
+    //   黑 86×12 @(523,57)，再角色色 86×12 @(522,56) ⇒ 角色色块 + 1px 黑边
+    const cc = CHARACTERS[me.character]?.color ?? 0xffffff;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0x20b - 440, 0x39 - 1, 0x56, 0xc + 2);
+    ctx.fillStyle = `rgb(${(cc >> 16) & 0xff},${(cc >> 8) & 0xff},${cc & 0xff})`;
+    ctx.fillRect(0x20a - 440, 0x38, 0x56, 0xc);
+
     // 姓名 ── @source VA 0x00416288 `draw_text(0, 名字, 0x234(564), 0x28(40), 2)`（flag 2 = 正中）
     ctx.fillStyle = '#101010';
     ctx.font = `${PANEL_VALUE_SIZE}px "PingFang TC", "Microsoft JhengHei", sans-serif`;

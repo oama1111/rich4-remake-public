@@ -594,24 +594,33 @@ cards:
 
 - id: T-027
   group: C
-  title: 側欄四页（日历 / 月历 / 小地图 / 持股）
+  title: 側欄四页（資金 / 地產 / 股票 / 其他）
   module: MOD-12
   req: REQ-12.4
-  status: todo
+  status: done
   estimate: 0.6
   depends_on: []
   uses:
-    - client/hud.ts (Hud, SidebarView, hitSidebar)
-    - core/places/calendar.ts
-  source: "Panel.mkf #0 图 0..3；S6/S10–S12 字段与底部固定钮位置"
-  input: "state（year/month/day、holdings、market）"
-  output: "四页切换；底部钮固定"
+    - client/hud.ts (Hud, PANEL_TAGS, PANEL_ROWS, PANEL_VALUE_*)
+    - client/panel.ts (panelRows), core/state/panel.ts (panelValues)
+  source: "Panel.mkf #0 图 0..3；S6/S10–S12；VA 0x00416123 / 0x004014b1 / 0x00415f59 / VA 0x00417eba"
+  input: "state（players、holdings、market、commercialOwners）+ topo"
+  output: "四页底图与切页；每页三行标签+数值；底部固定「物價指數 N」"
   algorithm: |
-    1. SidebarView 增加 'holdings'；每页一个 drawXxx(ctx, state)。
-    2. 底部钮矩形从汇编抄；hitSidebarButton(x,y) → 页号。
-  tests: "hud.test.ts：hit 与页切换。"
-  files: [packages/client/src/hud.ts]
-  notes: ""
+    1. 底图 = Panel.mkf 资源 0 的**图[页]**，画在 (440,0)（VA 0x00416123）。
+    2. 页号**每个玩家一份**（0x48be24+玩家号），由熱鍵 PgUp/PgDn 切 (页∓1)&3
+       （VA 0x004014b1/0x004014ee）——**点标签不切页**（全 exe 无命中判定，别自己加）。
+    3. 每页三值走 4 路跳表 0x415f59（0x4162d4/0x416355/0x41646c/0x4165e1），
+       各行格式不同（见 core/state/panel.ts 的表）。
+    4. 行标签是原版**开局画进页面图**的（VA 0x00417eba，x=10/y=80·145·208），
+       资源里只有图标 —— 我们每帧照同样坐标画。
+    5. 底部固定一行「物價指數  %d」（VA 0x004161b8，格式串 0x4638f5）。
+  tests: "core/state/panel.test.ts 9 条；client/panel.test.ts 6 条；hud.test.ts 的 tag 几何。"
+  files: [packages/client/src/hud.ts, packages/client/src/panel.ts, packages/core/src/state/panel.ts]
+  notes: |
+    2026-09-15 完成。★ 卡片原文写「日历/月历/小地图/持股」与「底部钮」——与 S6/S10–S12
+    不符，已按截图与 exe 改正：四页是 **資金/地產/股票/其他**；底部是**固定一行字**、
+    不是钮；切页**只认熱鍵**。★ 四页共有的「角色色长条」见 T-027b（未做，见 known-deviations）。
 
 - id: T-028
   group: C

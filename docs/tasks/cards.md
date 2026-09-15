@@ -1,6 +1,6 @@
 # 任务卡片（自动生成，勿手改；改 cards.yaml 后重跑 `python3 tools/task-cards.py render`）
 
-共 **73** 张卡，估算 **39.8** 单元，已完成 18.7。
+共 **73** 张卡，估算 **39.8** 单元，已完成 19.3。
 
 | 组 | 名称 | 卡数 | 单元 |
 |---|---|---|---|
@@ -38,7 +38,7 @@
 | [T-024](#t-024) | 道具欄浮窗（工具列 #8，5×3 = 15 格） | MOD-12 | REQ-12.3 | `todo` | 0.5 | — |
 | [T-025](#t-025) | 卡片欄浮窗（工具列 #9） | MOD-12 | REQ-12.3 | `todo` | 0.4 | T-024 |
 | [T-026](#t-026) | 目标拾取模式（选玩家 / 地块 / 設施 / 物件 / 格子） | MOD-12 | REQ-12.3 | `todo` | 0.8 | T-001 |
-| [T-027](#t-027) | 側欄四页（日历 / 月历 / 小地图 / 持股） | MOD-12 | REQ-12.4 | `todo` | 0.6 | — |
+| [T-027](#t-027) | 側欄四页（資金 / 地產 / 股票 / 其他） | MOD-12 | REQ-12.4 | `done` | 0.6 | — |
 | [T-028](#t-028) | 小地圖旋转钮（地圖向左/右旋轉） | MOD-12 | REQ-12.5 | `done` | 0.2 | — |
 | [T-029](#t-029) | 銀行屏（存/取/貸/還 + 特別融資） | MOD-12 | REQ-12.6 | `todo` | 0.8 | — |
 | [T-030](#t-030) | 股市屏（行情列表 + 买/卖） | MOD-12 | REQ-12.7 | `todo` | 0.8 | — |
@@ -1022,37 +1022,49 @@
 
 ### T-027
 
-**側欄四页（日历 / 月历 / 小地图 / 持股）**
+**側欄四页（資金 / 地產 / 股票 / 其他）**
 
-- 模块 `MOD-12` · 需求 `REQ-12.4` · 状态 `todo` · 估算 0.6 单元
+- 模块 `MOD-12` · 需求 `REQ-12.4` · 状态 `done` · 估算 0.6 单元
 - 依赖：无（可立即开工）
-- 证据：Panel.mkf #0 图 0..3；S6/S10–S12 字段与底部固定钮位置
+- 证据：Panel.mkf #0 图 0..3；S6/S10–S12；VA 0x00416123 / 0x004014b1 / 0x00415f59 / VA 0x00417eba
 
 **依赖的其他类 / 文件**
 
-- client/hud.ts (Hud, SidebarView, hitSidebar)
-- core/places/calendar.ts
+- client/hud.ts (Hud, PANEL_TAGS, PANEL_ROWS, PANEL_VALUE_*)
+- client/panel.ts (panelRows), core/state/panel.ts (panelValues)
 
 **期望输入**
 
-    state（year/month/day、holdings、market）
+    state（players、holdings、market、commercialOwners）+ topo
 
 **期望输出**
 
-    四页切换；底部钮固定
+    四页底图与切页；每页三行标签+数值；底部固定「物價指數 N」
 
 **核心逻辑 / 算法指导**
 
-    1. SidebarView 增加 'holdings'；每页一个 drawXxx(ctx, state)。
-    2. 底部钮矩形从汇编抄；hitSidebarButton(x,y) → 页号。
+    1. 底图 = Panel.mkf 资源 0 的**图[页]**，画在 (440,0)（VA 0x00416123）。
+    2. 页号**每个玩家一份**（0x48be24+玩家号），由熱鍵 PgUp/PgDn 切 (页∓1)&3
+       （VA 0x004014b1/0x004014ee）——**点标签不切页**（全 exe 无命中判定，别自己加）。
+    3. 每页三值走 4 路跳表 0x415f59（0x4162d4/0x416355/0x41646c/0x4165e1），
+       各行格式不同（见 core/state/panel.ts 的表）。
+    4. 行标签是原版**开局画进页面图**的（VA 0x00417eba，x=10/y=80·145·208），
+       资源里只有图标 —— 我们每帧照同样坐标画。
+    5. 底部固定一行「物價指數  %d」（VA 0x004161b8，格式串 0x4638f5）。
 
 **验收测试**
 
-    hud.test.ts：hit 与页切换。
+    core/state/panel.test.ts 9 条；client/panel.test.ts 6 条；hud.test.ts 的 tag 几何。
 
 **涉及文件**
 
 - packages/client/src/hud.ts
+- packages/client/src/panel.ts
+- packages/core/src/state/panel.ts
+
+> 2026-09-15 完成。★ 卡片原文写「日历/月历/小地图/持股」与「底部钮」——与 S6/S10–S12
+不符，已按截图与 exe 改正：四页是 **資金/地產/股票/其他**；底部是**固定一行字**、
+不是钮；切页**只认熱鍵**。★ 四页共有的「角色色长条」见 T-027b（未做，见 known-deviations）。
 
 ### T-028
 
