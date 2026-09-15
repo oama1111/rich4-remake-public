@@ -8,7 +8,7 @@
  *   是同一种 action，引擎分不出也不需要分出来源。
  */
 
-import { CHARACTERS } from '@rich4/data';
+import { CHARACTERS, TOOLS } from '@rich4/data';
 import {
   autoAction,
   VEHICLE_DICE,
@@ -150,6 +150,13 @@ import {
   hitSheetTab,
   type SheetUi,
 } from './asset-sheet.ts';
+import {
+  INV_VEHICLE_IMAGE,
+  drawInventory,
+  hitInventory,
+  toolEntries,
+  toolIsDirect,
+} from './inventory.ts';
 import {
   applySetupHit,
   defaultSetup,
@@ -1108,7 +1115,8 @@ const hudOffCtx = (() => {
 
 /** 当前屏幕 */
 type Screen =
-  | 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'aiSettings' | 'intro' | 'assets' | 'game';
+  | 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'aiSettings' | 'intro' | 'assets'
+  | 'inventory' | 'game';
 let screen: Screen = 'title';
 
 /**
@@ -1165,6 +1173,47 @@ function closeAssets(): void {
   if (screen !== 'assets') return;
   screen = 'game';
   requestRender();
+}
+
+/**
+ * 道具欄浮窗（T-024）当前选中的道具号（原版 `[0x48c560]` 存的是**道具号 + 1**，
+ * 0 = 没选）。★ 原版**按下就记状态**、**抬手才动作**（VA 0x445c8f / 0x445d84）。
+ */
+let invPicked: number | null = null;
+
+function openInventory(): void {
+  if (screen !== 'game') return;
+  invPicked = null;
+  screen = 'inventory';
+  requestRender();
+}
+
+function closeInventory(): void {
+  if (screen !== 'inventory') return;
+  invPicked = null;
+  screen = 'game';
+  requestRender();
+}
+
+/**
+ * 抬手：把选中的道具用出去。
+ *
+ * @source VA 0x447f4b —— `_rich4_ui_use_tool_entry` 拿到返回值后直接
+ *   `call tool_functions[道具号]`。**弹窗自己只负责「选」**。
+ *
+ * ⚠️ 需要目标/数字的那几件（路障/地雷/定時炸彈/飛彈/機器工人/傳送機/工程車/
+ *   核子飛彈/遙控骰子）要**先选目标**，那一步是 **T-026**（尚未做）——
+ *   这里如实说一声，**不假装能发**（免得发出去一个 nodeId=0 的无效指令）。
+ */
+function applyInventoryPick(): void {
+  const id = invPicked;
+  closeInventory();
+  if (id === null) return;
+  if (toolIsDirect(id)) {
+    dispatch({ type: 'useTool', toolId: id });
+    return;
+  }
+  log(`「${TOOLS[id - 1]?.name ?? `道具${id}`}」要先选目标 —— 目标拾取模式（T-026）尚未实现`);
 }
 
 /**
@@ -1254,6 +1303,18 @@ function requestRender(): void {
       //   提前返回等于画了不上屏（上一轮就是这样：`screen` 都切过去了，
       //   画面却一直停在棋盘上）。
       drawAssetSheet(stageCtx, spriteNow, state, topo, assetWho, assetView, sheetUi);
+    } else if (screen === 'inventory') {
+      // 浮窗**盖在棋盘上**（原版只是把被盖住的那块存下来、退出时贴回去），
+      // 所以先照常画一整帧棋盘，再把浮窗叠上去。
+      drawGameStage();
+      drawInventory(
+        stageCtx,
+        spriteNow,
+        'tools',
+        toolEntries(state, state.currentPlayer),
+        // 载具徽章：`traffic_method` 1 = 機車、2 = 汽車 @source VA 0x447e08
+        INV_VEHICLE_IMAGE.get(state.players[state.currentPlayer]?.trafficMethod ?? 0) ?? null,
+      );
     } else if (screen === 'setup') {
       drawSetup(stageCtx, setup, setupHot, spriteNow);
     } else if (screen === 'saveload') {
@@ -1565,6 +1626,9 @@ function onToolbar(i: number): void {
       return;
     case 6: // 個人資產表（T-022）
       openAssets();
+      return;
+    case 7: // 道具欄（T-024）
+      openInventory();
       return;
     case 2: // 託管AI
       openAiSettings('game');
@@ -2250,6 +2314,20 @@ function bindInput(): void {
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
 
+    // ── 道具欄浮窗（T-024）──
+    // 按下只**记下选中项 + 放确认音**，抬手才用出去（VA 0x445c8f / 0x445d84）。
+    if (screen === 'inventory') {
+      const q = eventToStage(e);
+      if (q === null) return;
+      const slot = hitInventory(q.x, q.y);
+      if (slot === null) return;
+      const hit = toolEntries(state, state.currentPlayer).find((it) => it.slot === slot);
+      if (hit === undefined) return;
+      invPicked = hit.id;
+      sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+      return;
+    }
+
     // ── 個人資產表屏（T-022）──
     // 按下只**记状态 + 画高亮**，动作全留给抬手（原版 VA 0x424049/0x424163/0x423dd1）。
     if (screen === 'assets') {
@@ -2338,6 +2416,12 @@ function bindInput(): void {
     drag = { x: e.clientX, y: e.clientY };
   });
   window.addEventListener('mouseup', () => {
+    // ── 道具欄浮窗：抬手把选中项用出去（VA 0x445d84）──
+    if (screen === 'inventory') {
+      applyInventoryPick();
+      return;
+    }
+
     // ── 個人資產表屏：抬手才动作（照原版 0x202 那条跳表 `[0x48c284]−2`）──
     if (screen === 'assets' && (sheetUi.btn !== null || sheetUi.exit || sheetUi.arrow !== null)) {
       const { btn, exit, arrow } = sheetUi;
@@ -2406,6 +2490,12 @@ function bindInput(): void {
     if (screen === 'assets') {
       e.preventDefault();
       closeAssets();
+      return;
+    }
+    // 道具欄浮窗：右键关掉、**什么都不用**（原版 VA 0x445dad 抛回 0）
+    if (screen === 'inventory') {
+      e.preventDefault();
+      closeInventory();
       return;
     }
     if (screen !== 'game' || minimapMarker === null) return;
