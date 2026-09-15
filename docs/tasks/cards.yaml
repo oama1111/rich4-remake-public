@@ -1424,20 +1424,27 @@ cards:
 
 - id: T-076
   group: E
-  title: 联机大厅 UI（建房/加房/座位/角色/地图/开始）
+  title: 联机大厅 UI（进房/座位/开始）
   module: MOD-12
   req: REQ-14.4
-  status: todo
+  status: done
   estimate: 0.8
   depends_on: [T-074]
-  uses: [client/setup.ts (复用開局设置的角色/地图控件), net-client.ts]
+  uses: [client/setup.ts (复用座位摆位/按钮常量), net-client.ts, client/main.ts (Screen 'lobby')]
   source: "复用 setup.ts 版式；无原版对照"
-  input: "RoomInfo"
-  output: "房主 start → 服务器广播 start"
-  algorithm: "大厅 = setup 屏 + 座位联机态；非房主控件只读。"
-  tests: "hit 测试；座位同步渲染"
-  files: [packages/client/src/lobby.ts]
-  notes: "这是本项目唯一无原版对照的屏，风格向 setup.ts 靠。"
+  input: "RoomInfo（服务器给的房间快照）"
+  output: "座位板（名字/角色/在線/電腦）+ 房主「開始」+「離開」；房主 start → 服务器广播 start"
+  algorithm: |
+    1. 座位内容**全部来自 RoomInfo**，大厅一个字节都不自己决定 —— 否则
+       「我以为我选的是忍者、服务器记的是錢夫人」要到开局才炸。
+    2. lobbySlots 摊成定长 4 格（空座也画，玩家看得出还剩几个位子）；
+       connected 缺省当**离线**显示 —— 服务器没说的话不谎报「人在」。
+    3. hitLobby：非房主点「開始」返回 **null**（只读控件不该是可点的东西，
+       免得调用方写成「先接住再判断」，也免得 hover 骗玩家）。
+    4. 座位是服务器分配的，故座位区只读；改角色/换地图要协议，见 Q-NET-2。
+  tests: "hit 20 条：控件互不重叠（四角+中心）、非房主点不到開始、座位对号、空座/离线/截断名渲染"
+  files: [packages/client/src/lobby.ts, packages/client/src/lobby.test.ts, packages/client/src/main.ts]
+  notes: "这是本项目唯一无原版对照的屏，风格向 setup.ts 靠。角色/地图选择待协议（Q-NET-2）。"
 
 - id: T-077
   group: E

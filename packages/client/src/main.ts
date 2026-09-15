@@ -23,15 +23,18 @@ import {
   type GameState,
   type MapTopology,
   type Rich4Map,
+  type RoomInfo,
 } from '@rich4/core';
 import { NetClient, netParamsFrom } from './net-client.ts';
 import { DiceRollAnimation } from './dice-anim.ts';
+import { drawLobby, hitLobby, isHostSeat, lobbySlots, type LobbyHit } from './lobby.ts';
 import {
   loadArchives,
   loadGround,
   loadHdSource,
   readMapData,
   SpriteCache,
+  type ArchiveName,
   type LoadedArchives,
   type Sprite,
 } from './assets.ts';
@@ -581,7 +584,7 @@ const spriteReady = new Map<string, Sprite | null>();
 const spritePending = new Set<string>();
 let spriteArrived = false;
 function spriteNow(
-  archive: 'Data.mkf' | 'Panel.mkf',
+  archive: ArchiveName,
   resource: number,
   index: number,
   colorKeyBlack = false,
@@ -861,8 +864,43 @@ const hudOffCtx = (() => {
 })();
 
 /** 当前屏幕 */
-type Screen = 'title' | 'setup' | 'options' | 'saveload' | 'game';
+type Screen = 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'game';
 let screen: Screen = 'title';
+
+/** 联机大厅的房间快照（服务器给的；本机不改它）——不在大厅时为 null */
+let lobbyRoom: RoomInfo | null = null;
+let lobbyHot: LobbyHit | null = null;
+
+/** 断开当前联机连接（「離開」用）；单机时为 null */
+let netClose: (() => void) | null = null;
+
+/**
+ * 进大厅：只要房间还没开局就停在这一屏。
+ *
+ * 已经在游戏里（重连时 `start` 会再来一次）就不退回去——那会把正在下的
+ * 一局推回大厅。
+ */
+function enterLobby(info: RoomInfo): void {
+  lobbyRoom = info;
+  if (info.started || screen === 'game') return;
+  if (screen !== 'lobby') {
+    screen = 'lobby';
+    lobbyHot = null;
+  }
+  requestRender();
+}
+
+/** 离开大厅：断开连接、回標題 */
+function leaveLobby(): void {
+  netClose?.();
+  netClose = null;
+  net = null;
+  lobbyRoom = null;
+  lobbyHot = null;
+  screen = 'title';
+  log('已離開聯機大廳');
+  requestRender();
+}
 /** 標題畫面上鼠标悬着的按钮 */
 let titleHot: number | null = null;
 
@@ -889,6 +927,17 @@ function requestRender(): void {
       stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
       stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
       drawSaveLoad(stageCtx, saveLoadMode, saveLoadSlots, saveLoadHot, uiSprite);
+    } else if (screen === 'lobby') {
+      drawLobby(
+        stageCtx,
+        lobbySlots(lobbyRoom, net?.seat ?? null),
+        net?.seat ?? null,
+        isHostSeat(net?.seat ?? null),
+        lobbyRoom?.started ?? false,
+        lobbyHot,
+        (archive, resource, index) => spriteNow(archive, resource, index),
+        (t) => stageCtx.measureText(t).width,
+      );
     } else if (screen === 'options') {
       // 設定是**盖在**原来那一屏上的对话框（原版就是这样）
       if (optionsReturn === 'game') drawGameStage();
@@ -1420,6 +1469,14 @@ function bindInput(): void {
       }
       return;
     }
+    if (screen === 'lobby') {
+      const hit = hitLobby(p.x, p.y, { isHost: isHostSeat(net?.seat ?? null) });
+      if (JSON.stringify(hit) !== JSON.stringify(lobbyHot)) {
+        lobbyHot = hit;
+        requestRender();
+      }
+      return;
+    }
     if (screen === 'saveload') {
       const hit = hitSaveLoad(saveLoadMode, p.x, p.y);
       if (hit !== saveLoadHot) {
@@ -1488,6 +1545,19 @@ function bindInput(): void {
     if (screen === 'title') {
       const hit = hitTitle(p.x, p.y, (i) => spriteNow('Data.mkf', TITLE_RESOURCE, i, true));
       if (hit !== null) onTitleButton(hit.id);
+      return;
+    }
+    if (screen === 'lobby') {
+      const hit = hitLobby(p.x, p.y, { isHost: isHostSeat(net?.seat ?? null) });
+      if (hit === null) return;
+      // 座位只读（座位是服务器分的，见 Q-NET-2），点它不做事
+      if (hit.kind === 'seat') return;
+      if (hit.kind === 'start') {
+        net?.start();
+        return;
+      }
+      // 离开：断开并回標題
+      leaveLobby();
       return;
     }
     if (screen === 'saveload') {
@@ -1811,6 +1881,11 @@ function connectOnline(url: string, room: string, name: string): void {
   let closedByUs = false;
   const open = (since: number | undefined): void => {
     const ws = new WebSocket(url);
+    // 「離開」要能把这条连接断开；重连时会换成新的
+    netClose = () => {
+      closedByUs = true;
+      ws.close();
+    };
     const client = new NetClient(
       { send: (text) => ws.send(text) },
       {
@@ -1819,7 +1894,7 @@ function connectOnline(url: string, room: string, name: string): void {
         ...(since === undefined ? {} : { since }),
         onJoined: (seat, info) => {
           log(`✔ 進房 ${info.id}：我是 ${seat + 1} 號座${seat === 0 ? '（房主，按 START 開局）' : ''}`);
-          renderPanel();
+          enterLobby(info);
         },
         onRoom: (info) => {
           log(
@@ -1828,10 +1903,14 @@ function connectOnline(url: string, room: string, name: string): void {
                 .map((s) => `${s.seat + 1}${s.kind === 'human' ? (s.connected === false ? '斷' : '人') : '電'}${s.name}`)
                 .join(' '),
           );
+          // 有人进出、有人掉线都要立刻反映在大厅上
+          enterLobby(info);
         },
         onStart: (start) => {
           // 重连时 start 会再来一次；局面已在，别重建（那会把 since 之前的进度清掉）
           if (since !== undefined && screen === 'game') return;
+          lobbyRoom = null;
+          lobbyHot = null;
           map = parseMap(readMapData(archives, start.globalMapId));
           topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
           // ★ 与服务器镜像（server/room.ts）逐字段一致，否则指纹对不上
