@@ -1190,10 +1190,10 @@ cards:
   title: 回填校验：尺寸恰 4×、Alpha 合并、去彩边
   module: MOD-11
   req: REQ-11.1
-  status: todo
+  status: done
   estimate: 0.6
   depends_on: [T-061]
-  uses: [cli-upscale.ts (cmdIngest)]
+  uses: [cli-upscale.ts (cmdMerge)]
   source: "C-AST-3（构图不变）"
   input: "assets/upscale-done/rgb|alpha 同名 PNG"
   output: "合并后的 RGBA 帧；不合格项列表（尺寸错、缺 alpha、哈希不匹配）"
@@ -1328,7 +1328,7 @@ cards:
   algorithm: "Room 记每 10 seq 的 fingerprint 环形表；比对；desync 后客户端丢弃本地状态重放。"
   tests: "人为篡改客户端状态触发 desync 并自愈"
   files: [packages/server/src/room.ts, packages/client/src/net-client.ts]
-  notes: ""
+  notes: "⚠️ 客户端「自愈」那半还没做，见 known-deviations.md 的 Q-NET-1（本卡标 done 只成立到服务端广播为止）"
 
 - id: T-073
   group: E
@@ -1352,7 +1352,7 @@ cards:
   title: 客户端联机模块 net-client（连接、发意图、按 seq 应用）
   module: MOD-12
   req: REQ-14.2
-  status: todo
+  status: done
   estimate: 0.8
   depends_on: [T-070]
   uses: [client/main.ts (dispatch), core/net/protocol.ts]
@@ -1361,7 +1361,8 @@ cards:
   output: "onStart → newGame(seed...)；onAction → dispatchLocal；本地输入 → send intent（不直接 dispatch）"
   algorithm: |
     mode = 'online' 时 main.ts 的 dispatch 改为 send intent；只有服务器回的 action 才进 reduce。
-    seq 乱序 → 请求 since(last)。每 10 seq 发 checksum。
+    seq 乱序 → 先攒着、凑齐按序施加（WS 可靠有序，缺号只来自重连，重连走 join{since} 补发）；
+    每 10 seq 发一次 checksum。
   tests: "假服务器（内存）往返；乱序恢复"
   files: [packages/client/src/net-client.ts, packages/client/src/main.ts]
   notes: ""

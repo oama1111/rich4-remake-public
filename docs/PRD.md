@@ -473,7 +473,7 @@ landOnLand(state, land):
   - `API-11.1 mkfEntries(bytes) / mkfRead(bytes, index) → Uint8Array`；`mkfDecompress(src, outSize)`（自适应霍夫曼 + LZ77，与 C 逐字节一致）。
   - `API-11.2 decodeSprite(bytes) → { frames: { w, h, x, y, rgba }[] }`（SPR 8bpp 调色板 / SMP 16bpp RGB555，均无压缩）；`decodeGround(bytes) → GroundImage`（32×32 tile 布局）。
   - `API-11.3 readWaveInfo`, `parseMidi(bytes) → MidiSong`。
-  - `API-11.4 CLI`：`pnpm unpack`（`assets/game/` → `extracted/`，不入库）；`pnpm upscale plan|ingest|status`（`assets/hd-manifest.json` 记模型/参数/哈希）。
+  - `API-11.4 CLI`：`pnpm unpack`（`assets/game/` → `extracted/`，不入库）；`pnpm upscale plan|slice|merge|status|ingest`（`assets/hd-manifest.json` 记模型/参数/哈希；`slice` 把待超分帧切进 `assets/upscale-queue/`，外部超分后由 `merge` 回填校验并合并回 RGBA）。
 - **REQ-11.1（步骤 2）批量超分与回填**：
   - 输入：`extracted/` 的 PNG + `meta.json`（w/h/x/y 锚点）。
   - 流程（每步一个可单测的纯函数）：分类 → 按帧切片 → 分离 Alpha → **[用户外部超分 4×]** → 合并 Alpha、去彩边（边缘 1px 内按 alpha 加权重采样）→ 重拼 → 锚点 ×4（C-AST-6）→ 接缝检查（相邻 tile 边缘色差 > 阈值即报）→ 写 `assets/hd/<档案>/<同名>`。
@@ -595,8 +595,9 @@ landOnLand(state, land):
   connect(url, room, name)
   onServer 'start'{seed, globalMapId, seats}: state = newGame({seed, map, players: seats})
   onServer 'action'{seq, action}:
-    assert seq == nextExpected           // 乱序 → 请求 since(seq)
-    dispatchLocal(action)                // 与单机同一条 reduce
+    乱序 → 先攒着，凑齐再按序施加（WS 是可靠有序流，缺号只会来自重连，
+                           而重连走 join{since} 补发，不必单独请求）
+    seq == nextExpected 时 dispatchLocal(action)   // 与单机同一条 reduce
     every 10 seq: send checksum{seq, stateFingerprint(state)}
   本地输入: 不直接 dispatch；send intent{action}，等服务器回 action 再 dispatch（服务器权威）
   本地预测（可选）: 掷骰动画先播，结果以 action 为准
@@ -744,4 +745,4 @@ C→S checksum{seq,hash}（每 10 步）  S: 不一致 → S→all desync{seq,ex
 ## 附录 C · 版本记录
 
 - v1.0（2026-09-14）：首版。对应 `DEVELOPMENT_PLAN.md` v1.3。
-- v1.1（2026-09-14）：附录 A 挂接 67 张原子任务卡片。
+- v1.1（2026-09-14）：附录 A 挂接原子任务卡片（`cards.yaml` 现 73 张）。

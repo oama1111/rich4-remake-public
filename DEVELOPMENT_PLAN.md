@@ -309,7 +309,7 @@ rich4-remake/
 
 > ### 进度快照（2026-09-14，PRD 定稿时）
 > **M0 ✅** **M1 ✅** **M2 ~99%** **M3 ~95%** **M4 ~65%**
-> 代码在 `rich4-remake/`：源码约 33k 行 + 测试 20k 行，**1928 项测试 / 125 个文件**全绿，
+> 代码在 `rich4-remake/`：源码约 33k 行 + 测试 20k 行，**2198 项测试 / 137 个文件**全绿，
 > typecheck 与 lint 全绿。
 >
 > **P0（M2 收尾）本轮收掉 13 条**：設施进状态（買/首建选建筑/加蓋/三种收費/旅館住店）、
@@ -328,6 +328,14 @@ rich4-remake/
 > **M3 本轮再收掉**：P1-4 选股打分、P1-5 调度顺序（`aiStep` 状态机 + 特別融資收回）、P1-6 研發触发点、
 > 以及卡片 T-016 賣股（0x0042c79f，含還款壓力下连賣）。**M3 的 §11 条目已全部打勾**；
 > 剩余 AI 差异只在 D-004/D-006/D-007 登记的随机替身与排序稳定性。**M4 剩余**：见 §11 P2（22 屏）。
+>
+> **2026-09-14 深夜（本轮）**：落地上一轮中断会话遗留的两张卡——**T-062** 画质回填
+> （`merge.ts`：尺寸恰 4×、Alpha 二值化阈值 128、去彩边 3×3 中值、产物哈希未变即拒）与
+> **T-074** 客户端联机（`net-client.ts` 接进 `main.ts`，`?ws=` 进联机；T-072 的 checksum 上报与
+> desync 广播已通）。顺带加固服务器：拒绝畸形 `intent`、镜像 topo 补齐設施/企业表（此前少这两表，
+> 重放会与客户端静默走岔）、`reduce` 返回 `undefined` 视为非法而非顶掉镜像。
+> **遗留**：T-072 卡的「客户端 desync **自愈**」尚未实现——`hub.ts` 拒绝同一连接二次 `join`，
+> 自愈需协议补一条重放路径；已登记 Q-NET-1。
 >
 > 未决问题一律登记在 `docs/known-deviations.md`，**不静默跳过**。
 
@@ -871,9 +879,11 @@ upscale-queue/
 ### 已备好、暂不动的两块
 
 - **步骤 2 画质**：管线已在 `packages/assets-pipeline`（`cli-upscale.ts`，`assets/hd-manifest.json`），
-  `pnpm upscale plan/ingest/status` 可用；等 P2 定稿哪些图真正上屏再批量跑，避免返工。
-- **步骤 3 联机**：`packages/server` 已有房间骨架（`room.ts`，243 行）；core 的确定性约束（C-DET）
-  一直在 CI 里守着，联机不需要改 core。
+  `pnpm upscale plan/slice/merge/status/ingest` 可用（切片 → 外部超分 → 回填校验合并，`merge` 已做到
+  尺寸恰 4×、Alpha 二值化、去彩边，T-062 ✅）；等 P2 定稿哪些图真正上屏再批量跑，避免返工。
+- **步骤 3 联机**：`packages/server` 已有 `Room`/`Sequencer`/`hub.ts`/`ws-server.ts` + `cli.ts` 可跑的
+  WebSocket 服务（T-070..T-073 ✅），客户端 `net-client.ts` 已接进 `main.ts`（T-074 ✅，`?ws=` 进联机）；
+  core 的确定性约束（C-DET）一直在 CI 里守着，联机不需要改 core。
 
 ## 12. ★ 开发需求说明书（PRD）
 
@@ -904,7 +914,7 @@ PRD 把项目拆成 **15 个模块**（`MOD-01 data` … `MOD-15 tools/docs`）�
 
 ### 12.3 原子任务卡片
 
-PRD 的模块已拆成 **67 张原子卡片**（`docs/tasks/cards.yaml`，机器可读；`docs/tasks/cards.md` 为生成的可读版）。
+PRD 的模块已拆成 **73 张原子卡片**（`docs/tasks/cards.yaml`，机器可读；`docs/tasks/cards.md` 为生成的可读版）。
 每张卡只做一个功能，含：核心逻辑/算法指导、依赖的其他类与文件、期望输入输出、验收测试、涉及文件。
 
 | 组 | 内容 | 卡数 |
