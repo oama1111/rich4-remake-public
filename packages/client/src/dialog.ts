@@ -23,6 +23,7 @@
  */
 
 import type { InteractionUi } from './interactions.ts';
+import { DICE_AT, DICE_AT_BASE } from '@rich4/assets-pipeline';
 import {
   DIALOG_ANCHOR_SCREEN,
   DIALOG_SKIN_IMAGE,
@@ -156,16 +157,21 @@ export function drawAdvance(
  * 画已掷出的骰子 —— 原版是 `Panel.mkf` 资源 3，三颗各六面，
  * 图号 = `颗号 × 6 + 点数 − 1`（@source VA 0x0041965e）。
  *
- * ⚠️ **摆在哪是我们定的**：原版那段（VA 0x00419653）把三颗都画在
- *   `(edi + 0x55, ebp + 0x91)`，而 `edi/ebp` 来自一块没跟到的临时面板。
- *   这里摆在 GO 鈕右边，竖着排。
+ * **摆在哪照原版**：基准点 `DICE_AT_BASE`（棋盘局部 (221,193)，即棋盘中央附近）
+ * 再按**屏幕朝向**加 `DICE_AT` 的偏移（@source VA 0x004195d6）——
+ * 于是骰子落在玩家面朝的那一侧，就是「人物把骰子扔出去」。
+ * 原版三颗画在同一点；这里为了看得清，从基准点往下逐颗错开。
+ *
+ * @param screenDir 玩家朝向换算到屏幕后的方位（`(dir + 8 − view) & 7`）
  */
 export function drawDice(
   ctx: CanvasRenderingContext2D,
   sprite: SpriteFn,
   dice: readonly number[],
+  screenDir: number,
 ): void {
-  const at = toBoard({ x: GO_DEFAULT.x + GO_SIZE.w + 8, y: GO_DEFAULT.y });
+  const off = DICE_AT[((screenDir % 8) + 8) % 8] ?? [0, 0];
+  const at = toBoard({ x: DICE_AT_BASE.x + off[0], y: DICE_AT_BASE.y + off[1] });
   let y = at.y;
   for (let i = 0; i < dice.length; i++) {
     const img = sprite('Panel.mkf', DICE_RESOURCE, diceImage(i, dice[i] ?? 1), true);

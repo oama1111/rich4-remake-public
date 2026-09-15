@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { MkfArchive } from './mkf.ts';
-import { MIDI_PLAYLIST, isWave, readWaveInfo, WaveFormatError } from './audio.ts';
+import { MIDI_PLAYLIST, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND } from './audio.ts';
 
 const RICH4 = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4';
 const have = (f: string) => (existsSync(`${RICH4}/${f}`) ? it : it.skip);
@@ -86,5 +86,35 @@ describe('★ 背景音乐', () => {
       const d = readFileSync(`${RICH4}/${f}`);
       expect(d.subarray(0, 4).toString('latin1'), `${f} 不是 MIDI`).toBe('MThd');
     }
+  });
+});
+
+describe('★ 移动/掷骰音效与骰子落点 —— 照 exe 的表', () => {
+  it('移动音效按交通方式：走路/機車/汽車/船', () => {
+    expect([...MOVE_SOUND]).toEqual([44, 45, 46, 53]);
+    expect(MOVE_SOUND).toHaveLength(4);
+  });
+
+  it('★ 不是表里 0..3 项 —— 那四个是别的音效（先前差点取错行）', () => {
+    // 索引来自 `[0x4749d4] = 0xb + 交通方式`，不是 0..3
+    expect(MOVE_SOUND).not.toContain(7);
+    expect(MOVE_SOUND).not.toContain(32);
+  });
+
+  it('掷骰音效是 10（表 0x48235a = 索引 2）', () => {
+    expect(DICE_SOUND).toBe(10);
+  });
+
+  it('★ 骰子落点 = 基准 (221,193) + 朝向偏移，八向各一项', () => {
+    expect(DICE_AT_BASE).toEqual({ x: 221, y: 193 });
+    expect(DICE_AT).toHaveLength(8);
+    for (const [dx, dy] of DICE_AT) {
+      // 都在基准点附近一小圈内（骰子落在棋盘中央偏玩家面朝那侧）
+      expect(Math.abs(dx)).toBeLessThanOrEqual(32);
+      expect(Math.abs(dy)).toBeLessThanOrEqual(32);
+    }
+    // 逐向各不同，不是常数表
+    const keys = new Set(DICE_AT.map(([x, y]) => `${x},${y}`));
+    expect(keys.size).toBe(8);
   });
 });

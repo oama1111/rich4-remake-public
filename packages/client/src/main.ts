@@ -50,6 +50,7 @@ import {
   SpriteCache,
   loadHolidayArt,
   loadMinimapBackground,
+  screenDirection,
   type ArchiveName,
   type LoadedArchives,
   type Sprite,
@@ -88,7 +89,7 @@ import {
   pickGameDir,
   type PickResult,
 } from './host.ts';
-import { MIDI_PLAYLIST, MOVE_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
+import { DICE_SOUND, MIDI_PLAYLIST, MOVE_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
 import {
   BoardRenderer,
   characterCamera,
@@ -510,6 +511,21 @@ function handleHotkey(fn: number, e: KeyboardEvent): boolean {
     default:
       return false;
   }
+}
+
+/** 当前玩家的朝向换算到屏幕方位 @source VA 0x0040882d */
+function currentScreenDir(): number {
+  const me = state.players[state.currentPlayer];
+  return me === undefined ? 0 : screenDirection(me.direction, camera.view);
+}
+
+/**
+ * 掷骰子的音效 —— 原版在滚骰子那支函数里**连播两次**
+ * （@source VA 0x004195ed / 0x00419628，中间夹一次绘制），音效 **10**（0.14 s）。
+ */
+function playDiceSound(): void {
+  sound.play('Effect.mkf', DICE_SOUND);
+  sound.play('Effect.mkf', DICE_SOUND);
 }
 
 /**
@@ -972,6 +988,7 @@ function scheduleAi(): void {
       return;
     }
     if (action.type === 'step') stepTick();
+    if (action.type === 'rollDice') playDiceSound();
     const before = state;
     state = reduce(state, action, topo);
     if (state === before) {
@@ -1173,12 +1190,12 @@ function drawGameStage(): void {
   } else if (diceAnim.pipsAt(performance.now()) !== null) {
     // ★ 本地预测的骰子（T-075）：点 GO 之后、服务器答复之前先滚起来。
     //   返回 null 就表示「我不参与」，落到下面画权威值。
-    drawDice(boardCtx, uiSprite, diceAnim.pipsAt(performance.now())!);
+    drawDice(boardCtx, uiSprite, diceAnim.pipsAt(performance.now())!, currentScreenDir());
   } else if (awaitingHumanRoll() && me !== undefined) {
     // ★ 原版的 GO 鈕 + 骰子数切换（Panel.mkf 资源 7）
     drawAdvance(boardCtx, uiSprite, goImageOf(me), maxDiceOf(me), me.ndices);
   } else if (state.phase === 'moving' && state.dice.length > 0) {
-    drawDice(boardCtx, uiSprite, state.dice);
+    drawDice(boardCtx, uiSprite, state.dice, currentScreenDir());
   }
   stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
 
