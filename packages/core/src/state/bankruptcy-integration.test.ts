@@ -138,3 +138,55 @@ describe('★ 付不起过路费会真的破产', () => {
     expect(isAlive(r.players[0]!)).toBe(false);
   });
 });
+
+// ============================================================
+//  ★ 变卖手牌与道具（2026-09-16 补）
+//    @source `rich4_player_bankrupt.asm:412-417`：
+//    `call _rich4_player_sell_all_tools` / `call _rich4_player_sell_all_the_card`
+// ============================================================
+
+describe('★ 破产清算会把出局者的手牌与道具**卖回商店**', () => {
+  run('道具清空、编号 ≤ 8 的进商店库存、所得不进點券', () => {
+    const base = fresh();
+    const tools = [...base.tools];
+    // 玩家 1 拿着 2 个地雷（id 3）与 1 个核子飛彈（id 13）
+    tools[1 * 15 + 3] = 2;
+    tools[1 * 15 + 13] = 1;
+    const stock = [...base.toolStock];
+    const points = base.players[1]!.points;
+    const s = applyBankruptcy({ ...base, tools, toolStock: stock }, 1);
+    expect(s.tools[1 * 15 + 3]).toBe(0);
+    expect(s.tools[1 * 15 + 13]).toBe(0);
+    // 地雷 ≤ 8 ⇒ 库存 +2；核子飛彈 ≥ 9 ⇒ 不回库存（本来也不限量）
+    expect(s.toolStock[3]).toBe((stock[3] ?? 0) + 2);
+    expect(s.toolStock[13]).toBe(stock[13] ?? 0);
+    // ★ 人都出局了，變賣所得**不进他口袋**
+    expect(s.players[1]!.points).toBe(points);
+  });
+
+  run('手牌全部回商店库存', () => {
+    const base = fresh();
+    const players2 = base.players.map((p, i) => (i === 1 ? { ...p, cards: [1, 1, 7] } : p));
+    const before = [...base.cardAmount];
+    const s = applyBankruptcy({ ...base, players: players2 }, 1);
+    expect(s.players[1]!.cards).toEqual([]);
+    expect(s.cardAmount[0]).toBe((before[0] ?? 0) + 2);
+    expect(s.cardAmount[6]).toBe((before[6] ?? 0) + 1);
+  });
+
+  run('★ 终局路径**不卖** —— 最后出局者的手牌留着（存档实证）', () => {
+    const base = fresh();
+    // 只剩两人，弄掉一个就进终局
+    const two = {
+      ...base,
+      players: base.players.map((p, i) => (i >= 2 ? { ...p, whoPlays: WHO_PLAYS_DEAD } : p)),
+    };
+    const withCards = {
+      ...two,
+      players: two.players.map((p, i) => (i === 1 ? { ...p, cards: [1, 2] } : p)),
+    };
+    const s = applyBankruptcy(withCards, 1);
+    expect(s.phase).toBe('gameOver');
+    expect(s.players[1]!.cards).toEqual([1, 2]);
+  });
+});

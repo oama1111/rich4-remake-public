@@ -153,10 +153,47 @@ case 8: case 9: return ctx.stockAmount.some((a) => a !== 0) ? yes() : no;
 表现层要按这个顺序把「每人缴多少」逐行画出来（我们目前只在结算后才有一句文案）。
 属表现层，登记在此。
 
+## ⑤ 事件 32「變賣所有卡片道具」—— 折价公式读出来了，并顺手补上破产那一支
+
+**折价公式就是原价**（不打折、不乘物价指数）：
+
+```asm
+; fcn_0044d677 施加阶段
+call 0x44b896(1,1) / cmp [0x48c5b0],1 / je 取消
+call _rich4_player_sell_all_tools(player)      ; 返回 Σ 持有量 × 道具表 price
+add word [player+0x30], ax                     ; ★ 进**點券**（+0x30）
+call _rich4_player_sell_all_the_card(player)   ; 返回 Σ 1 × 卡片表 price
+add word [player+0x30], ax                     ; ★ 两笔都进點券
+```
+
+`_rich4_player_sell_all_tools`（**VA 0x445b3f**，asm 树里没有这个函数的 dump，
+本节是用 `tools/disasm.py va` 直读 exe 补的）：
+
+| 步 | 做什么 | @source |
+|---|---|---|
+| ① | 座驾折回道具：`traffic & 3` = 1/2/3 → **道具 5 機車 / 6 汽車 / 12 工程車** +1；`traffic = 0`、`ndices = 1` | `0x445b49`..`0x445ba7` |
+| ② | 逐件卖：`for (id = 1; id <= 13; id++)`，`得 += 持有量 × 道具表 price`，持有量清零 | `0x445bb0`..`0x445c0c` |
+| ③ | **只有 id ≤ 8 的还回商店库存**（`cmp eax, 8 / jge 跳过`）| `0x445bd0` |
+
+`_rich4_player_sell_all_the_card`（**VA 0x441f21**）：15 个手牌槽逐个卖，
+每张 `卡片库存 += 1`、`得 += 卡片表 price`，手牌清零。
+
+两者的「price」都读**表项 +5 那个字节**（`byte [eax*8 + 0x47fee7]` /
+`byte [dl*8 + 0x47fdef]`），与 `@rich4/data` 的 `TOOLS[].price` /
+`CARDS[].price` 一致（实测全部 ≤ 250，塞得进一个字节）。
+
+**落码**：`rules/inventory.ts` 的 `sellAllTools` / `sellAllCards`（纯函数，
+原样返回新表）。两个调用点：
+
+1. 事件 32 —— 所得进**點券**；
+2. ★ **破产清算**（`rich4_player_bankrupt.asm:412-417`，紧接变卖持股那一段）——
+   `call` 两次但**把返回值丢掉**（人都出局了）。这一步先前**整个漏了**：
+   `markPlayerBankrupt` 只 memset 玩家结构，碰不到手牌/道具那两张全局数组，
+   于是出局者的卡与道具会永远留在表里（既不能被抢、也不回商店）。
+   与持股清算一样，只在**非终局**路径上做（终局时最后出局者的手牌留着 ——
+   这正是 `rules/bankruptcy.ts` 记的 `Save0.dat` 实证）。
+
 ## 仍未做
 
-- **事件 32「變賣所有卡片道具」**（`fcn_0044d677`）：把所有卡片与道具折价卖掉。
-  它与事件 9 的股票版同构，但卡片/道具的**折价公式**还没读（`fcn_00426af8`
-  那一套市价是公佈欄的口径，未必同一支）—— 登记为 Q-FORTUNE-1 的尾巴。
 - 事件 0/1/5/6/7/13/18/20/21/23/24/26/30/31/34/35/36 等仍按事件表的
   `effects` 走既有实现或 `unimplemented`（多数是金额类，已实现）。

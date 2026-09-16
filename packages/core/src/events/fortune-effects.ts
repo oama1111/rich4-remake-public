@@ -20,6 +20,7 @@ import { FORTUNE_EVENTS, eventAmount, fortuneEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { confine } from '../rules/confinement.ts';
 import { BLESSING_DOUBLE, BLESSING_VOID, blessingMultiplier } from '../rules/blessing.ts';
+import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
 import {
   EMPTY_HOLDING,
   sellStock,
@@ -55,6 +56,8 @@ export const FORTUNE_STOCK_LIQUIDATE = 9;
 export const FORTUNE_MOTORCYCLE_STOLEN = 10;
 /** 事件 11「汽車撞電線桿全毀」 */
 export const FORTUNE_CAR_WRECKED = 11;
+/** 事件 32「變賣所有卡片道具」 */
+export const FORTUNE_SELL_ALL_ITEMS = 32;
 /** 事件 8 的百分比字面量 @source 事件表 `literal: 10` */
 export const FORTUNE_STOCK_DEFAULT_PCT = 10;
 /** 事件 8 的除数 @source `fdiv dword [0x465a24]` = 100.0 */
@@ -83,6 +86,15 @@ export interface FortuneEffectResult {
   market: StockMarketState | null;
   /** 车辆被毁要还回商店库存的道具表（下标 = 道具号）；没动就是入参原样 */
   toolStock: number[] | null;
+  /** 变卖道具/手牌后的道具表（`tools[player*15+id]`）；没动就是 null */
+  tools: number[] | null;
+  /** 变卖手牌后的卡片库存（下标 = 卡片 id − 1）；没动就是 null */
+  cardAmount: number[] | null;
+  /**
+   * 变卖手牌与道具得到的**點券** —— 只有事件 32 用得到
+   * （破产清算那一支把返回值丢掉了）。
+   */
+  points: number;
   /**
    * 卖掉过股票的股票号 —— 调用方要对这几个跑一次
    * `_rich4_update_commercial_owner`（`rich4_sell_stock` 的尾巴）。
@@ -120,6 +132,10 @@ export interface FortuneEffectContext {
   market?: StockMarketState;
   /** 全局道具库存（事件 10/11 把车还回去）*/
   toolStock?: number[];
+  /** 当前玩家的道具表（事件 32 要全卖）`tools[player*15+id]` */
+  tools?: number[];
+  /** 卡片库存（事件 32 卖手牌要还回去），下标 = 卡片 id − 1 */
+  cardAmount?: number[];
   /**
    * 事件 8/9 卖股票的去向。
    * @source 事件 8 的 `push 0`（进公库）、事件 9 的 `push 1`（进存款）。
@@ -173,6 +189,9 @@ export function applyFortuneEffect(
     holdings: null,
     market: null,
     toolStock: null,
+    tools: null,
+    cardAmount: null,
+    points: 0,
     reown: [],
     recallFinance: false,
     cancelled: false,
@@ -297,6 +316,34 @@ export function applyFortuneEffect(
       i === ctx.currentPlayer ? { ...q, trafficMethod: 0, ndices: 1 } : q,
     );
     return { ...base, players: nextPlayers, toolStock: stock };
+  }
+
+  // ── 事件 32「變賣所有卡片道具」──────────────────────────────
+  // @source `fcn_0044d677` 的施加阶段：
+  // ```
+  // call 0x44b896(1,1) / cmp [0x48c5b0],1 / je 取消       ; 神明挡掉
+  // call _rich4_player_sell_all_tools(player)
+  // add word [player+0x30], ax                            ; ★ 所得进**點券**
+  // call _rich4_player_sell_all_the_card(player)
+  // add word [player+0x30], ax                            ; ★ 第二笔也进點券
+  // update_player_info_window / player_say
+  // ```
+  if (eventId === FORTUNE_SELL_ALL_ITEMS) {
+    if (cancelledByBlessing(ctx)) return { ...base, cancelled: true };
+    const player = players[ctx.currentPlayer];
+    if (player === undefined) return { ...base, unimplemented: true };
+    const a = sellAllTools(player, ctx.tools ?? [], ctx.toolStock ?? []);
+    const b = sellAllCards(a.player, ctx.cardAmount ?? []);
+    const nextPlayers = players.map((q, i) => (i === ctx.currentPlayer ? b.player : q));
+    return {
+      ...base,
+      players: nextPlayers,
+      tools: a.tools,
+      toolStock: a.toolStock,
+      cardAmount: b.cardAmount,
+      // 原版是 `add word`（16 位）；本引擎的點券一直是普通数值，不额外截断
+      points: a.points + b.points,
+    };
   }
 
   // ★ 支票跳票：银行拒绝往来 30 天

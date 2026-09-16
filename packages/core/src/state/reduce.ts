@@ -200,6 +200,7 @@ import {
   applyFortuneEffect,
 } from '../events/fortune-effects.ts';
 import { blessingFieldOf, blessingLevelFor } from '../rules/blessing.ts';
+import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
 import { applyNewsEffect } from '../events/news-effects.ts';
 import { anyoneConfined, confine, type ConfinementKind } from '../rules/confinement.ts';
 import { applyBail, bailCandidates, decideBail } from '../rules/visit.ts';
@@ -3031,6 +3032,9 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     sellDestination: effectiveId === FORTUNE_STOCK_LIQUIDATE ? 'bank' : 'pool',
     // 事件 10/11 把车还回商店
     toolStock: withDeck.toolStock,
+    // 事件 32 变卖手牌与道具
+    tools: withDeck.tools,
+    cardAmount: withDeck.cardAmount,
   });
 
   let applied: GameState = {
@@ -3054,6 +3058,22 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     for (const stock of out.reown) applied = reownCommercial(applied, stock, applied.currentPlayer);
   }
   if (out.toolStock !== null) applied = { ...applied, toolStock: out.toolStock };
+  // ★ 事件 32：道具表 / 卡片库存写回 + 变卖所得进**點券**
+  if (out.tools !== null || out.cardAmount !== null) {
+    applied = {
+      ...applied,
+      tools: out.tools ?? applied.tools,
+      cardAmount: out.cardAmount ?? applied.cardAmount,
+    };
+    if (out.points !== 0) {
+      applied = {
+        ...applied,
+        players: applied.players.map((p, i) =>
+          i === applied.currentPlayer ? { ...p, points: p.points + out.points } : p,
+        ),
+      };
+    }
+  }
   // ★ 事件 8/9 尾巴的特別融資收回：`push 0 / call 0x436b0a`
   if (out.recallFinance) applied = sweepSpecialFinance(applied, topo);
   // ★ 保險理賠的三处命運调用点：坐牢/住院走 send_to_*（0x0043d749 / 0x0043edf8）；
@@ -4465,7 +4485,25 @@ export function applyBankruptcy(
     if ((soldOut[stockIndex]?.amount ?? 0) === 0) continue;
     reowned = reownCommercial(reowned, stockIndex, playerIndex);
   }
-  return reowned;
+  // ★ 变卖手牌与道具 @source `rich4_player_bankrupt.asm:412-417`：
+  //   `call _rich4_player_sell_all_tools` / `call _rich4_player_sell_all_the_card`
+  //   —— **紧接着**变卖持股那一段，而且**返回值直接丢掉**（人都破产了，
+  //   點券不进他口袋）。这一步先前漏了：`markPlayerBankrupt` 只 memset 玩家结构，
+  //   碰不到手牌/道具那两张全局数组，于是出局者的卡与道具会**永远留在表里**
+  //   （既不能被别人抢，也不再回商店）。实证见 rules/bankruptcy.ts 的注释。
+  const soldTools = sellAllTools(
+    reowned.players[playerIndex]!,
+    reowned.tools,
+    reowned.toolStock,
+  );
+  const soldCards = sellAllCards(soldTools.player, reowned.cardAmount);
+  return {
+    ...reowned,
+    players: reowned.players.map((p, i) => (i === playerIndex ? soldCards.player : p)),
+    tools: soldTools.tools,
+    toolStock: soldTools.toolStock,
+    cardAmount: soldCards.cardAmount,
+  };
 }
 
 /**

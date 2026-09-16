@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { FORTUNE_EVENTS, fortuneEvent } from '@rich4/data';
+import { cardPrice } from '../rules/inventory.ts';
 import { makePlayer } from '../testing/factories.ts';
 import { BANK_BAN_DAYS, DOUBLE_AMOUNT, applyFortuneEffect } from './fortune-effects.ts';
 
@@ -359,5 +360,58 @@ describe('★ 事件 10/11：座驾被偷 / 撞毁', () => {
     expect(r.cancelled).toBe(true);
     expect(r.players[0]!.trafficMethod).toBe(1);
     expect(r.toolStock).toBeNull();
+  });
+});
+
+describe('★ 事件 32「變賣所有卡片道具」@source fcn_0044d677', () => {
+  /** 造一份「玩家 0 的道具表」：下标 = player*15 + toolId */
+  const toolsFor = (counts: Record<number, number>): number[] => {
+    const out = new Array<number>(60).fill(0);
+    for (const [id, n] of Object.entries(counts)) out[Number(id)] = n;
+    return out;
+  };
+
+  it('★★ 道具与手牌全卖光，所得进**點券**（不是现金）', () => {
+    const r = applyFortuneEffect(
+      32,
+      ctx({
+        players: [
+          makePlayer({ index: 0, cash: 1000, points: 0, cards: [1], trafficMethod: 1 }),
+        ],
+        tools: toolsFor({ 3: 2 }), // 地雷 25×2
+        toolStock: new Array<number>(14).fill(0),
+        cardAmount: new Array<number>(30).fill(0),
+      }),
+    );
+    expect(r.cancelled).toBe(false);
+    // 機車 80 + 地雷 25×2 + 卡片 1 的原价
+    const card = cardPrice(1);
+    expect(r.points).toBe(80 + 50 + card);
+    // 卖光
+    expect(r.tools!.every((v) => v === 0)).toBe(true);
+    expect(r.players[0]!.cards).toEqual([]);
+    expect(r.players[0]!.trafficMethod).toBe(0);
+    expect(r.players[0]!.ndices).toBe(1);
+    // ★ 现金一分没动（原版加的是 +0x30 點券）
+    expect(r.players[0]!.cash).toBe(1000);
+    // 回商店库存
+    expect(r.toolStock![3]).toBe(2);
+    expect(r.cardAmount![0]).toBe(1);
+  });
+
+  it('★ 檔位 1（逃過此劫）⇒ 什么都不卖', () => {
+    const r = applyFortuneEffect(
+      32,
+      ctx({
+        multiplier: 1,
+        players: [makePlayer({ index: 0, points: 0, cards: [1] })],
+        tools: toolsFor({ 3: 2 }),
+        cardAmount: new Array<number>(30).fill(0),
+      }),
+    );
+    expect(r.cancelled).toBe(true);
+    expect(r.tools).toBeNull();
+    expect(r.cardAmount).toBeNull();
+    expect(r.points).toBe(0);
   });
 });

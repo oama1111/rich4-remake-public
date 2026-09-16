@@ -102,7 +102,9 @@ export const BANKRUPT_CLEAR_FROM = 0x1c;
  * （`rich4_player_cards[60]` / `rich4_player_tool_amount[60]`，
  * 存档偏移 0x654 / 0x690），memset 碰不到。原版是靠
  * `_rich4_player_sell_all_the_card` / `sell_all_tools` **变卖**掉的，
- * 而那两步只在「非终局」路径上执行（见 `resolveBankruptcyOutcome`）。
+ * 而那两步只在「非终局」路径上执行（见 `resolveBankruptcyOutcome`）——
+ * **已实现**：`state/reduce.ts` 的 `applyBankruptcy` 走
+ * `rules/inventory.ts` 的 `sellAllTools` / `sellAllCards`（2026-09-16 补）。
  *
  * 实证：`Save0.dat` 中最后破产的玩家 0 仍持有 2 张手牌。
  */
