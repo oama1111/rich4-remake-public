@@ -249,13 +249,33 @@
    - 用例：`facility-picker.test.ts` 16 条（版面/名字表/命中带/黄框/绘制/整屏出口/
      `pickerNeededFor`）。
 
-   **仍未接的两条**（都在别的路径上，登记在此）：
-   ① **落点**那一支（VA 0x0041a1f0..0x0041a232）：等级 0 的設施、现金够
-   `地價×物價` 时真人也会被问一次「选类別」并**收钱**。本引擎的
-   `upgradeFacility` action 明确要求 `fac.level !== 0`（`reduce.ts:1217`），
-   所以「落点在等级 0 設施上 → 自己蓋」这条路**在 core 缺**（要先有 pending + 收費）。
-   ② **加蓋卡**（VA 0x004431c8，`push 1`）那条路：−1 = 取消这张卡；本引擎的
-   `case 7` 只做「站在**土地**上改建」，設施那一支同样缺。
+   **续订（2026-09-16 同日第二轮）**：
+
+   - ✅ **落点那一支也接上了** —— 先前这条登记写「core 缺」，**写错了**：
+     core **早就有**这条待决交互 `pending{kind:'buildFacility', choices:[0,1,2,3,4], price}`
+     （`reduce.ts:4277`，就是原版 VA 0x0041a1f0..0x0041a232 那一支：等级 0 的設施、
+     现金够 `地價×物價` 时问「建哪一种」）+ `action{type:'buildFacility', facilityType}`
+     （`reduce.ts:1155`）+ AI 那条（`ai/policy.ts:538`）。
+     当时缺的只是**客户端那扇窗的形状**：`interactions.ts` 里放的是「五颗通用按钮」的临时画面
+     （注释写着「画面属 P2-14」）。现在 **`facilityPickerScreen.active()` 也认这个 pending**，
+     选一格派 `{type:'buildFacility', facilityType}`、右键派 `declineDecision`，
+     `interactions.ts` 的那个 case 删掉（返回 null，连通用对话框都不画）⇒
+     落点建 0 级設施走的就是原版那扇窗了。
+   - ② **加蓋卡**（VA 0x004431c8，`push 1`）那条路**仍缺**：−1 = 取消这张卡；
+     本引擎的 `case 7` 只做「站在**土地**上改建」，設施那一支还没有。
+
+   **★ 实机核对（2026-09-16，真浏览器 dev server 5174）**：手搓一个
+   `pending{kind:'buildFacility', facilityId:1, name:'旅館', price:1000, choices:[0..4]}`
+   （= 落点在等级 0 的設施上那一步）后：
+
+   | 看什么 | 结果 |
+   |---|---|
+   | 画面 | 棋盘**照旧露着**（浮窗）、下方面板图 4 那五格 + 上方面板图 5 里写着**标题**「請選擇設施類別」与悬停那格的**名字**；悬停第 2 格时第 2 格套着**黄框** ✓ |
+   | 命中 | 点第 4 格（舞台 x=322）→ `pending` 收掉、`facilityLevel[1] = 1`、**`facilityType[1] = 4`（研究所）** ✓ |
+
+   （截图 `.qa-tmp/facility-picker.png`，目录 gitignore；
+   ⚠️ 用 DEV 钩子的 `warp()` 走「真落点」那条路本轮没走通 —— 它走的是傳送機规则、
+   这次没把人放到目标格上，所以上面用的是手搓 pending 的办法。）
 2. **消耗时机**：exe 是「选到就扣」（0x004472fb 在 0x00447345 之前），
    连盖不动的地也扣。本引擎的既定口径是「只在真正生效时才收走道具」，
    且 UI 不会把盖不动的地列成候选，**观察不到差别**，未改。

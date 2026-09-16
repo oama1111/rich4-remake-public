@@ -242,11 +242,22 @@ export function drawFacilityPicker(
 //  UiScreen（浮窗）
 // ============================================================
 
-/** 一次开窗请求的答复：选中的**类型**（0..4）或 `null` = 取消（右键）*/
+/**
+ * 这一屏要服务**两种**来路：
+ *   ① 道具（機器工人）路径 —— 由宿主 `openFacilityPicker()` 起，选完回调；
+ *   ② **待决交互** `pending.kind === 'buildFacility'` —— 落点在等级 0 的設施上
+ *      （原版 `0x0041a1f0` 那一支：现金够 地價×物價 → 真人 → 同一扇窗 → 选完收费），
+ *      选完派 `{type:'buildFacility', facilityType}`、右键派 `declineDecision`。
+ */
 export type PickerAnswer = (type: number | null) => void;
 
 let pending: PickerAnswer | null = null;
 let hover: number | null = null;
+
+/** 这一次开窗是不是「待决交互」那一支（决定选完派什么 action）*/
+function isPendingPick(env: UiScreenEnv): boolean {
+  return env.state.pending?.kind === 'buildFacility';
+}
 
 /** 调试 / 单测用：关掉这一屏 */
 export function resetFacilityPicker(): void {
@@ -275,7 +286,8 @@ export const facilityPickerScreen: UiScreen = {
    */
   windowed: true,
 
-  active: () => pending !== null,
+  /** 开窗请求还在，**或**正等着选「建哪一种」（`buildFacility` 待决交互）*/
+  active: (env: UiScreenEnv) => pending !== null || isPendingPick(env),
 
   draw(env: UiScreenEnv): void {
     drawFacilityPicker(env.stage, env.sprite as unknown as PickerSprite, { hover });
@@ -292,14 +304,31 @@ export const facilityPickerScreen: UiScreen = {
   up(x: number, y: number, env: UiScreenEnv): void {
     const slot = pickerSlotAt(x, y);
     if (slot === null) return;
-    finish(pickerTypeOf(slot), env);
+    const type = pickerTypeOf(slot);
+    if (type === null) return;
+    // ① 道具那一路：回调交给宿主（它带 `value` 派 `useTool`）
+    // ② 待决交互那一路：自己派（与其它屏同一口径）
+    if (pending !== null) {
+      finish(type, env);
+      return;
+    }
+    hover = null;
+    env.dispatch({ type: 'buildFacility', facilityType: type });
+    env.requestRender();
   },
 
   /** 右键 = −1（原版 `0x205` 那一支 @source VA 0x0043febb）*/
-  contextmenu(): void {
-    pending?.(null);
-    pending = null;
+  contextmenu(_x: number, _y: number, env: UiScreenEnv): void {
+    if (pending !== null) {
+      pending(null);
+      pending = null;
+      hover = null;
+      env.requestRender();
+      return;
+    }
     hover = null;
+    env.dispatch({ type: 'declineDecision' });
+    env.requestRender();
   },
 
   key(): boolean {

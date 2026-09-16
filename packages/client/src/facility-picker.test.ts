@@ -181,21 +181,26 @@ describe('★ 绘制（假 ctx）', () => {
   });
 });
 
+function mkEnv(
+  pendingKind: string | null = null,
+): { env: UiScreenEnv; effects: number[]; actions: unknown[]; renders: () => number } {
+  const effects: number[] = [];
+  const actions: unknown[] = [];
+  let renders = 0;
+  const env = {
+    screen: 'game',
+    state: { pending: pendingKind === null ? null : { kind: pendingKind } },
+    stage: fakeCtx().ctx,
+    sprite: fakeSprite().sprite,
+    playEffect: (id: number) => effects.push(id),
+    dispatch: (a: unknown) => actions.push(a),
+    requestRender: () => {
+      renders++;
+    },
+  } as unknown as UiScreenEnv;
+  return { env, effects, actions, renders: () => renders };
+}
 describe('★ 整屏出口（浮窗）', () => {
-  function mkEnv(): { env: UiScreenEnv; effects: number[]; renders: () => number } {
-    const effects: number[] = [];
-    let renders = 0;
-    const env = {
-      screen: 'game',
-      stage: fakeCtx().ctx,
-      sprite: fakeSprite().sprite,
-      playEffect: (id: number) => effects.push(id),
-      requestRender: () => {
-        renders++;
-      },
-    } as unknown as UiScreenEnv;
-    return { env, effects, renders: () => renders };
-  }
 
   it('★ 是**浮窗**（原版先存下 (0,0x28)-(0x1b8,0x1e0) 那块再盖上去）', () => {
     expect(facilityPickerScreen.windowed).toBe(true);
@@ -301,5 +306,39 @@ describe('★ 接线（源码钉子）', () => {
   it('screens.ts：登记了 `facility-picker`（且是浮窗）', () => {
     const src = readFileSync(new URL('./screens.ts', import.meta.url), 'utf8');
     expect(src).toContain('facilityPickerScreen');
+  });
+});
+
+describe('★ 待决交互那一支：落点在等级 0 的設施上（`pending.buildFacility`）', () => {
+  it('★ 认这个 pending：`active()` 为真（由 `screens.ts` 排在通用对话框之前接管）', () => {
+    resetFacilityPicker();
+    const { env } = mkEnv('buildFacility');
+    expect(facilityPickerScreen.active(env)).toBe(true);
+    // 别的 pending 不认
+    expect(facilityPickerScreen.active(mkEnv('research').env)).toBe(false);
+    expect(facilityPickerScreen.active(mkEnv(null).env)).toBe(false);
+  });
+
+  it('★ 选一格 → 派 `buildFacility`（带上类型）；右键 → `declineDecision`', () => {
+    resetFacilityPicker();
+    const { env, actions } = mkEnv('buildFacility');
+    facilityPickerScreen.move?.(pickerSlotX(1) + 5, 300, env);
+    facilityPickerScreen.up?.(pickerSlotX(1) + 5, 300, env);
+    expect(actions).toEqual([{ type: 'buildFacility', facilityType: 1 }]);
+
+    const second = mkEnv('buildFacility');
+    facilityPickerScreen.contextmenu?.(100, 300, second.env);
+    expect(second.actions).toEqual([{ type: 'declineDecision' }]);
+  });
+
+  it('★ 两级来路互不串台：开了窗（道具那一路）时待决交互那一支不抢', () => {
+    resetFacilityPicker();
+    const { env, actions } = mkEnv('buildFacility');
+    const answers: (number | null)[] = [];
+    openFacilityPicker((t) => answers.push(t));
+    facilityPickerScreen.up?.(pickerSlotX(3) + 5, 300, env);
+    // 走的是回调那条路，不会自己派 action
+    expect(answers).toEqual([3]);
+    expect(actions).toEqual([]);
   });
 });

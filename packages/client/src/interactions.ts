@@ -14,7 +14,7 @@
  *   UI 自己再算一遍就等于把规则抄了第二份，迟早两边对不上。
  */
 
-import { FACILITY_NAMES, researchTool, type Action, type GameState, type PendingInteraction } from '@rich4/core';
+import { researchTool, type Action, type GameState, type PendingInteraction } from '@rich4/core';
 import { BAIL, BANK, BUTTON, CHARACTERS, FIELD, PLACE, PROMPT, TOOLS, formatOriginal } from '@rich4/data';
 
 const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
@@ -94,19 +94,11 @@ export function interactionUi(
         ],
       };
 
-    // ★ 原版是一屏五种建筑让你点（0x440aac）；这里先用五颗按钮，画面属 P2-14
-    case 'buildFacility':
-      return {
-        title: pending.name,
-        detail: `建築費用 ${money(pending.price)}　${FIELD.cash.text} ${money(cash)}`,
-        choices: [
-          ...pending.choices.map((t) => ({
-            label: FACILITY_NAMES[t] ?? `建築${t}`,
-            action: { type: 'buildFacility' as const, facilityType: t },
-          })),
-          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
-        ],
-      };
+    // ★ `buildFacility`（落点在等级 0 的設施上，要选建哪一种）**不在这里** ——
+    //   原版那是一扇整屏的浮窗（`fcn_00440aac`，五种建筑让你点），本引擎由
+    //   `facility-picker.ts` 的 `facilityPickerScreen` 接管（`active()` 认这个
+    //   pending），所以这里返回 null、连通用对话框都不画。先前这里放的是
+    //   「五颗按钮」的临时画面（Q-TOOL-4）。
 
     case 'upgradeFacility':
       return {
