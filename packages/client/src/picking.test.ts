@@ -149,6 +149,28 @@ describe('★ Q-PICK-1 贴边判定 @source `loc_0044609b`', () => {
     expect(pickEdgeOf(200, 438, true)).toBe(PICK_EDGE.none);
   });
 
+  it('★ 坐标先量化回舞台像素 —— 否则非整数倍缩放下「下边」永远取不到', () => {
+    // 舞台被缩放到窗口（`stageMetrics`），`toStage` 除回去的是**小数**。
+    // 1280×720（scale 1.5、offsetY 0）下棋盘最底下两行的实际取值：
+    //   clientY 717 → 舞台 478.0 → 棋盘 438.0（第 438 行）
+    //   clientY 718 → 舞台 478.667 → 棋盘 438.667（盖住第 439 行）
+    //   clientY 719 → 舞台 479.333 → 棋盘 439.333（-1 行，仍是第 439 行）
+    // 而「下边」判的是 `y == 439`（相等）：不量化 ⇒ 整条死掉。
+    expect(pickEdgeOf(220, 438.0, true)).toBe(PICK_EDGE.none);
+    expect(pickEdgeOf(220, 438.667, true)).toBe(PICK_EDGE.down);
+    expect(pickEdgeOf(220, 439.333, true)).toBe(PICK_EDGE.down);
+    // 800×600（scale 1.25）同理：598.75/1.25−40 = 438.4、599.75/1.25−40 = 439.2
+    expect(pickEdgeOf(220, 438.4, true)).toBe(PICK_EDGE.none);
+    expect(pickEdgeOf(220, 439.2, true)).toBe(PICK_EDGE.down);
+    // 其余三条边的小数量化同样照做（左/右/上本来就落在整数上）
+    expect(pickEdgeOf(0.2, 200, true)).toBe(PICK_EDGE.left);
+    expect(pickEdgeOf(439.6, 200, true)).toBe(PICK_EDGE.right);
+    expect(pickEdgeOf(200, 0.4, true)).toBe(PICK_EDGE.up);
+    // 量化**不会**把中间的点误判成贴边
+    expect(pickEdgeOf(220.4, 220.4, true)).toBe(PICK_EDGE.none);
+    expect(pickEdgeOf(1.4, 437.4, true)).toBe(PICK_EDGE.none);
+  });
+
   it('★ 判定顺序是 左→右→上→下（横向优先，角上只取一条边）', () => {
     // 左上角：x==0 先命中 ⇒ 左
     expect(pickEdgeOf(0, 0, true)).toBe(PICK_EDGE.left);

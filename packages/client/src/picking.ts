@@ -35,9 +35,9 @@
  * （Q-LAYOUT-4）。先前这里一律把候选挂在节点上，于是「機器工人点自己的白格」
  * 永远吃红叉 —— 见 `instanceAnchor`。
  *
- * ⚠️ **没做**：贴边推镜头那一路（方向箭头 + 每 50ms 推一格/一屏）。
- *   它的方向表是 `0x4751b0`（8 个视角各一项），与棋盘旋转共用。已登记
- *   `known-deviations.md` 的 Q-PICK-1。
+ * ★ **贴边推镜头**（Q-PICK-1）已实现：方向箭头 + `SetTimer(…, 0x32, 0)`
+ *   每 50 ms 推一拍（步长 8 起、每次 +4、上限 68），方向表 `0x4751b0`
+ *   （8 个视角各一项，与棋盘旋转共用）—— 见下面的 `PICK_SCROLL_*`。
  */
 
 import {
@@ -502,13 +502,34 @@ export const PICK_BOARD_SIZE = 0x1b8;
  * @param enabled 选择参数的 bit7（`PICK_CLASS.edgeScroll`）开没开
  *
  * ★ 四条判据的**先后**照原版：横向先判（左 → 右），再纵向（上 → 下）。
+ *
+ * ★ **先量化回舞台像素**（`Math.round`）—— 这是移植版特有的，原版不需要：
+ *   原版拿到的是 `LOWORD/HIWORD(lParam)`，本来就是**整数**客户区像素；本移植版
+ *   把 640×480 的舞台**缩放**到窗口（`stageMetrics`），`toStage` 除回去之后
+ *   一般**不是整数**。而「下边」那一条判的是**最后一行** `y == 0x1b7`（相等，
+ *   不是区间）—— 非整数倍缩放下这一行根本取不到，于是下边缘推镜头整条死掉：
+ *
+ *   | 窗口 | scale | 棋盘最后一行（舞台 y=479）对应的客户区 y |
+ *   |---|---|---|
+ *   | 640×480 | 1.00 | 479 ✔ |
+ *   | 1280×720 | 1.50 | 718.5 ✘ |
+ *   | 1920×1080 | 2.25 | 1077.75 ✘ |
+ *   | 800×600 | 1.25 | 598.75 ✘ |
+ *
+ *   （实测 1280×720：贴下边怎么都不推镜头，但光标**会**变成下箭头 —— 说明方向
+ *     判对了、只有这最后一行取不到；左/右/上三条不受影响，它们要么是区间判据、
+ *     要么恰好落在整数上。）
+ *   ⇒ 量化之后「指针盖住的是哪一格」与原版一致，四条边都可及。
+ *   已登记 `known-deviations.md` 的 Q-PICK-1。
  */
 export function pickEdgeOf(x: number, y: number, enabled: boolean): PickEdge {
   if (!enabled) return PICK_EDGE.none;
-  if (x === 0) return PICK_EDGE.left;
-  if (x >= PICK_BOARD_SIZE) return PICK_EDGE.right;
-  if (y <= 0) return PICK_EDGE.up;
-  if (y === PICK_BOARD_SIZE - 1) return PICK_EDGE.down;
+  const px = Math.round(x);
+  const py = Math.round(y);
+  if (px === 0) return PICK_EDGE.left;
+  if (px >= PICK_BOARD_SIZE) return PICK_EDGE.right;
+  if (py <= 0) return PICK_EDGE.up;
+  if (py === PICK_BOARD_SIZE - 1) return PICK_EDGE.down;
   return PICK_EDGE.none;
 }
 
