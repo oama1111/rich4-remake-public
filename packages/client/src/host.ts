@@ -421,8 +421,14 @@ function browserConfigStore(): ConfigStore {
 /**
  * 桌面版：走 Rust 侧那两条命令（真文件）。
  *
- * ⚠️ 这两条命令**本仓库的 Rust 侧还没有**（见 `src-tauri/src/lib.rs` 的 TODO）——
- *   装不上时 `invoke` 会 reject，这里退回浏览器实现并记一条日志，**不让游戏崩**。
+ * ✅ **Rust 侧已经有了**（`src-tauri/src/lib.rs` 的 `read_config` / `write_config`，
+ *   在 `invoke_handler` 里登记；长度闸门 `check_config_len` 要求正好 72 字节，
+ *   与 `sizeof(rich4_cfg)` 对齐）。先前这里写着「Rust 侧还没有、见 lib.rs 的 TODO」——
+ *   那是 `Q-OPT-1` 接线之前的记录，早已过时。
+ *
+ * 读的那一份在 `initConfigStore()` 里用 `invoke('read_config')` 拉一次、
+ * 塞进本机这份（`s.write(...)`）；写的时候先落本机再 `invoke('write_config')`，
+ * **`invoke` 失败只记一条日志、不让游戏崩**（例如浏览器里跑或命令没装）。
  */
 function desktopConfigStore(t: NonNullable<ReturnType<typeof tauri>>): ConfigStore {
   let fallback: ConfigStore | null = null;
