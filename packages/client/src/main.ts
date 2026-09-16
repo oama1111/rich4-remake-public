@@ -24,6 +24,7 @@ import {
   weekdayOf,
   dayNumberSince1998,
   DEFAULT_INITIAL_FUND,
+  defaultStartDate,
   MAX_HAND_CARDS,
   MAX_TOOL_COUNT,
   newGame,
@@ -224,7 +225,14 @@ export const inputTrace: {
 } = { stage: null, diceToggle: null, goPressed: false, rollRequested: false, earlyReturn: null };
 import { moveSoundId } from './move-sound.ts';
 import { CHARACTER_POSE, characterSetBase, type LoadedFlic } from './assets.ts';
-import { HOTKEY, hotkeyOf, vkOf } from './hotkeys.ts';
+import {
+  DEFAULT_BINDINGS,
+  HOTKEY,
+  MOD_CTRL,
+  hotkeyOf,
+  vkOf,
+  type KeyBinding,
+} from './hotkeys.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
 import { onMinigameBackgroundReady, setMinigameBackground } from './minigame-bg.ts';
 import {
@@ -529,6 +537,27 @@ let optionsDate: DateDraft = { year: 1998, month: 1, day: 1 };
 
 /** 熱鍵頁那份键位表（原版 `0x497168` 的 56 字节）。出厂默认 = 表 `0x47edc2` */
 let optionsKeys: number[] = [...HOTKEY_DEFAULT_KEYS];
+
+/**
+ * 把「热键页那份 28 项键码」翻成 `hotkeyOf` 要的 `KeyBinding[]`。
+ *
+ * ★ 原版 `RICH4.CFG` 的 `hotkeys[]` 每条是 `{key, mod}` 两字节
+ *   （`rich4_config_file.h` 的 `rich4_key_t`），熱鍵頁写回的 `[0x497168]`
+ *   就是这 56 字节。本引擎的 `optionsKeys` 只存 `key`（不带修饰位），
+ *   故这里补 `mod: 0` —— 表里唯一带修饰的是出厂第 28 条（`Q` + Ctrl）。
+ *
+ * @param keys 28 项虚拟键码（`HOTKEY_DEFAULT_KEYS` 的形态）
+ */
+function bindingsOf(keys: readonly number[]): KeyBinding[] {
+  const out: KeyBinding[] = [];
+  for (let i = 0; i < HOTKEY_DEFAULT_KEYS.length; i++) {
+    const vk = keys[i] ?? HOTKEY_DEFAULT_KEYS[i]!;
+    // 出厂默认里的 Ctrl+Q 只有一项（`hotkeys.ts` 的 `DEFAULT_BINDINGS` 最后一条）
+    const mod = DEFAULT_BINDINGS[i]?.mod === MOD_CTRL ? MOD_CTRL : 0;
+    out.push({ vk, mod });
+  }
+  return out;
+}
 
 /** 熱鍵頁等待按键时那条 250ms 的闪白定时器（原版 `SetTimer(hwnd, id, 0xfa, 0)`）*/
 let hotkeyBlinkTimer: number | null = null;
@@ -2163,13 +2192,21 @@ function optionsPageSprite(resource: number, index: number, colorKeyBlack?: bool
 
 /**
  * 開「日期頁」—— 原版 `0x4119e3`：先把三个钮的字烘进图 2、再取一次系统今天，
- * 然后开模态窗口（`0x410ac3`）；「確定」抛回来的日期存进 `[0x48bb50]`/`[0x497160]`。
+ * 然后开模态窗口（`0x410ac3`）；「確定」抛回来的日期写进 `[0x48bb50]` /
+ * `RICH4.CFG+8`（= **当前游戏日期**，见 `setDate` 的注释）。
+ *
+ * ★ 草稿的初值：原版每一行都用 `_libc_getdate()` 取**系统今天**
+ *   （`fcn_004119e3` 的 `push eax / call _libc_getdate`），不是上一次改的值 ——
+ *   所以这里跟 `today` 走（`systemToday()`），`optionsDate` 只用来记「改过之后
+ *   这一局是哪天」，进游戏时同步给 `state`。
  */
 function openDatePage(): void {
+  const today = systemToday();
   optionsSub = {
     kind: 'date',
-    draft: { ...optionsDate },
-    today: systemToday(),
+    // 原版每开一次都从**系统今天**起算（± 钮在那个基础上加减）
+    draft: screen === 'game' ? { year: state.year, month: state.month, day: state.day } : { ...today },
+    today,
     pressed: null,
   };
   requestRender();
@@ -2314,9 +2351,23 @@ function onOptionsSubUp(): void {
       return;
     }
     if (ctrl === DATE_CTRL.OK) {
-      // 抛回日期（`0x411081`）→ 存进 `[0x48bb50]` / `[0x497160]`
+      // 抛回日期（`0x411081`）→ 存进 `[0x48bb50]` / `RICH4.CFG+8`（`[0x497160]`）
       optionsDate = { ...sub.draft };
-      log(`▶ 日期更改：${optionsDate.year} 年 ${optionsDate.month} 月 ${optionsDate.day} 日`);
+      // ★ 2026-09-16 接线：`RICH4.CFG+8` 就是**当前游戏日期**的存放处
+      //   （日推进 `fcn_00452117(&CFG+8)` 是读-改-写，VA 0x0045217c 写回同一格），
+      //   所以「確定」要**当场把这一局的日期改掉** —— 先前只记在客户端一个
+      //   变量里、core 一无所知（登记为 Q-OPT-1，已结案）。
+      //   进游戏之后才有效：标题屏上还没有 `state` 可改（原版那一刻 `CFG+8`
+      //   是配置文件里的初始值，本引擎的开局日期由 `newGame` 给）。
+      if (screen === 'game') {
+        dispatch({ type: 'setDate', year: optionsDate.year, month: optionsDate.month, day: optionsDate.day });
+        log(`▶ 日期更改：${optionsDate.year} 年 ${optionsDate.month} 月 ${optionsDate.day} 日`);
+      } else {
+        log(
+          `▶ 日期更改：${optionsDate.year} 年 ${optionsDate.month} 月 ${optionsDate.day} 日` +
+            '（標題屏没有进行中的对局，只记下这一份）',
+        );
+      }
       closeOptionsSub();
       requestRender();
     }
@@ -5422,6 +5473,11 @@ function startGame(): void {
     // @source `VA 0x00407032`（资金）、`0x00407219`（载具）、`0x00406f6b`（权限）、
     //   `0x0040737d..0x004073a3`（勝負條件）
     initialFund: MONEY_VALUES[setup.money] ?? DEFAULT_INITIAL_FUND,
+    // ★ 开局日期 = **系统当天**钳到 1998-01-01..2010-01-01
+    //   @source `_rich4_read_config`（VA 0x00411e8f）用 `libc_getdate()` 覆盖
+    //   `CFG+8` 的 day/month/year；钳位常量见 VA 0x00411f30 / 0x00411f49。
+    //   core 不许读真实时间（C-DET-2），所以真实时间在这一层注入。
+    startDate: defaultStartDate(new Date()),
     startingVehicle: setup.vehicle,
     landTenure: setup.land,
     winConditions: winConditionsOf(setup.money, setup.time, setup.victory),
@@ -6529,7 +6585,14 @@ function bindInput(): void {
       requestRender();
       return;
     }
-    const fn = hotkeyOf(e);
+    // ★ 2026-09-16：走**玩家自定义的那份键位表**，不再是出厂默认 ——
+    //   先前 `hotkeyOf(e)` 没传第二个参、永远用 `DEFAULT_BINDINGS`，
+    //   于是熱鍵設定屏改完只在内存里躺着、实际输入判定一无所知（Q-OPT-1）。
+    //   原版把 28 条键位存在 `RICH4.CFG` 的 0x10..0x47（`global_rich4_cfg.hotkeys`），
+    //   熱鍵頁「確定」写回 `[0x497168]`（VA 0x004117bc），输入判定读的就是它。
+    //   ⚠️ 本引擎仍**没有** CFG 的读写（那是另一件事，见 Q-OPT-1 的登记），
+    //   所以这份自定义只在本局进程内有效。
+    const fn = hotkeyOf(e, bindingsOf(optionsKeys));
     if (fn !== null && handleHotkey(fn)) {
       e.preventDefault();
       requestRender();

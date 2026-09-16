@@ -265,6 +265,29 @@ export type Action =
    * 没有任何选择余地，热座 UI / AI / 联机三条驱动都该先问 `autoAction`。
    * 非法时不改变状态（相位不是 `turnEnd`、或队列为空 → 原样返回）。
    */
-  | { type: 'npcStep' };
+  | { type: 'npcStep' }
+  /**
+   * 設定屏「日期更改」—— **把当前游戏日期改成指定的那一天**。
+   *
+   * ★ 取证：`RICH4.CFG+8`（`[0x497160]`）就是**当前游戏日期**的存放处 ——
+   *   日推进 `fcn_00452117(&CFG+8)`（VA 0x00452117）是**读-改-写**：
+   *   ```asm
+   *   0045216a  mov esi, [esp+0x18]       ; esi = &cfg+8
+   *             mov ebx, [esi] / shr ebx,0x10      ; 年
+   *             … inc edi（日）… 跨月跨年 …
+   *   0045217c  shl ebx,0x10 … mov [esi], ecx    ; ★ 写回**同一格**
+   *   ```
+   *   而日期頁 `fcn_004119e3`（VA 0x004119e3）的收尾把新日期写进
+   *   `[0x48bb50]` **与** `RICH4.CFG+8`（`mov dword [0x497160], eax` @0x00411a7a）。
+   *   ⇒ 「日期更改」改的是**当前这一局的日期**（原版把它当调试/作弊口子），
+   *     不是「下一局的起始日期」（本引擎先前那句注释是**猜的**，已订正）。
+   *
+   * ⚠️ 只动 `year/month/day` 三个字段：原版**不碰**已过天数 `[0x4990e4]`
+   *   （= `totalDays`）与 `totalMonths` —— 那两个是独立的计数器。
+   *
+   * 非法日期（非整数、月越界、日越界）**整条拒绝**，不做夹取
+   *   （与 `setAi` 同一条规矩；原版 UI 层面就给不出非法值）。
+   */
+  | { type: 'setDate'; year: number; month: number; day: number };
 
 export type ActionType = Action['type'];

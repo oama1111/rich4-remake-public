@@ -96,3 +96,41 @@ describe('★ 四个熱鍵必须接到与工具列同一入口（2026-09-16）',
     expect(hk, '熱鍵里不该再有「尚未實作」').not.toContain('尚未實作');
   });
 });
+
+describe('★ Q-OPT-1：自定义键位真的要参与输入判定', () => {
+  /*
+   * 原版把 28 条键位存在 `RICH4.CFG` 的 0x10..0x47（`global_rich4_cfg.hotkeys`，
+   * 每条 `{key, mod}` 两字节）；熱鍵頁「確定」写回 `[0x497168]`（VA 0x004117bc），
+   * 全局键盘钩子读的就是它。
+   *
+   * 先前 `main.ts` 调的是 `hotkeyOf(e)` —— 没传第二参、永远走 `DEFAULT_BINDINGS`，
+   * 于是熱鍵頁改完只在内存里躺着。这条钉住「调用点带着自定义表」。
+   */
+  it('★ 传自定义表时按它判定（把「確認」从 Enter 改到 J）', () => {
+    const custom = DEFAULT_BINDINGS.map((b, i) => (i === 4 ? { vk: 0x4a, mod: 0 } : b));
+    const enter = key('Enter');
+    const j = key('KeyJ');
+    // 出厂表：Enter 命中第 4 条；J 谁都不命中
+    expect(hotkeyOf(enter)).toBe(4);
+    expect(hotkeyOf(j)).toBeNull();
+    // 自定义表：反过来
+    expect(hotkeyOf(enter, custom)).toBeNull();
+    expect(hotkeyOf(j, custom)).toBe(4);
+  });
+
+  it('★ `main.ts` 的调用点必须传那份自定义表', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain('hotkeyOf(e, bindingsOf(optionsKeys))');
+    // 反例：裸调用（= 忽略自定义）
+    expect(src).not.toContain('const fn = hotkeyOf(e);');
+  });
+
+  it('★ `bindingsOf` 保留出厂表里唯一那条 Ctrl 修饰', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    const at = src.indexOf('function bindingsOf(');
+    expect(at).toBeGreaterThan(0);
+    const body = src.slice(at, at + 700);
+    expect(body).toContain('MOD_CTRL');
+    expect(body).toContain('DEFAULT_BINDINGS');
+  });
+});

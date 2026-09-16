@@ -2378,14 +2378,29 @@ x == 0xffff 时 **x 与 y 都**改成居中 `(0x140−w/2, 0x0f0−h/2)` = **(12
 
 **⑦ 本轮的已知缺口**（不静默吞）：
 
-1. **日期頁「確定」改的日期没有落地** —— 原版存进 `[0x48bb50]` / `[0x497160]`
-   （下一局的起始日期，写进 RICH4.CFG）。本引擎的 `newGame` 把开局日期写死
-   1998/1/1，core 没有这个入参（改 core 不在本轮边界内），所以现在只存在
-   `main.ts` 的 `optionsDate` 里。
-2. **熱鍵頁改好的键位也没有落地** —— 原版「確定」写回 `0x497168` 并调
-   `0x411f80` 存 RICH4.CFG（16 字节设定 + 56 字节键位）。本引擎还没有配置文件的
-   读写，`optionsKeys` 只活在内存里；**而且它还没有接到 `hotkeys.ts` 的实际输入
-   判定上**（那要改 `hotkeys.ts` + `handleHotkey`，不在本轮边界内）。
+1. ✅ **日期頁「確定」已落地**（2026-09-16）—— 并且**订正了两处猜错**：
+   - `RICH4.CFG+8`（`[0x497160]`）**不是**「下一局的起始日期」，而是
+     **当前游戏日期**：日推进 `fcn_00452117(&CFG+8)`（VA 0x00452117）是读-改-写，
+     `0x0045217c` 把加过一天的日期**写回同一格**；`fcn_004119e3` 的收尾
+     （`0x00411a7a`）也写它。⇒「日期更改」改的是**这一局当天的日期**。
+   - 开局日期原版是**系统当天**：`_rich4_read_config`（VA 0x00411e8f）读完配置后
+     **无条件**用 `libc_getdate()`（`GetLocalTime`）覆盖 cfg 的 day/month/year，
+     并钳到 **1998-01-01 .. 2010-01-01**（常量 `0x7ce`/`0x7da` 在
+     VA 0x00411f30 / 0x00411f49）⇒ 任何 2010 年之后的机器一律从 **2010-01-01** 开始。
+   - **本引擎的处置**：core 新增 `{ type: 'setDate' }`（只改 year/month/day，
+     不碰 `totalDays`/`totalMonths`）+ `rules/setup.ts` 的
+     `defaultStartDate(now)`/`START_DATE_MIN`/`START_DATE_MAX`；`newGame` 新增
+     `startDate` 入参（缺省 = `START_DATE_MAX`，因为 core 不许读真实时间 C-DET-2；
+     客户端在 `startGame` 里注入 `defaultStartDate(new Date())`）；
+     日期頁「確定」改成 `dispatch({ type: 'setDate', … })`。
+2. ⏳ **熱鍵頁：输入判定已接、配置文件读写仍未做**。
+   - ✅ 已接（2026-09-16）：`main.ts` 的调用点改成
+     `hotkeyOf(e, bindingsOf(optionsKeys))` —— 先前是裸 `hotkeyOf(e)`、
+     永远走出厂表，于是改完只在内存里躺着。新增 `bindingsOf()` 把 28 项键码
+     翻成 `KeyBinding[]`（保留出厂表里唯一那条 `Ctrl+Q`）。
+   - ⏳ 仍未做：**RICH4.CFG 的读写**（原版「確定」调 `0x411f80` 写回 16 字节设定
+     + 56 字节键位）。这是独立的一件（要定桌面版/浏览器各自往哪写），
+     故 `optionsKeys` 依然只在本进程内有效。
 3. **三张图（资源 3 的 7/8/15）没人用** —— 原版一次都没画，本模块也不画
    （见 ⑤），图号仍留在 `IMG` 里当资料。
 4. `0x4536f6` 在开 YES/NO 框时还会 `SetCursorPos(左上+0x16)` 把鼠标挪进框里；

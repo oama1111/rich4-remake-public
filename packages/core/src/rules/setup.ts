@@ -32,6 +32,50 @@ export const GAME_INITIAL_FUNDS: readonly number[] = [
   300_000, 200_000, 100_000, 50_000, 30_000, 10_000,
 ];
 
+/**
+ * 开局日期的**下限 / 上限** @source `_rich4_read_config`（VA 0x00411e8f）里的钳位：
+ * ```asm
+ * 00411f30  cmp eax, 0x7ce / jge 下一支        ; 0x7ce = 1998
+ *           年 = 1998、月 = 1、日 = 1
+ * 00411f49  cmp eax, 0x7da / jle 结束          ; 0x7da = 2010
+ *           年 = 2010、月 = 1、日 = 1
+ * ```
+ * （重建源码 `rich4-re/asm/rich4_config_file.c:40-49` 的
+ * `USE_RICH4_DATE_DEFAULT` 分支；exe 里这两个常量确实在 —— 见上两条 VA。）
+ */
+export const START_DATE_MIN = { year: 1998, month: 1, day: 1 } as const;
+export const START_DATE_MAX = { year: 2010, month: 1, day: 1 } as const;
+
+/**
+ * 本来这一局该从哪天开始 —— **系统当天**，越界就钳到上下限。
+ *
+ * ★ 这是原版的真实行为，不是我们自定的：`_rich4_read_config` 读配置文件之后
+ *   **无条件**用 `libc_getdate()`（= Win32 `GetLocalTime`）覆盖掉
+ *   `global_rich4_cfg` 的 `day/month/year` 三个字节
+ *   （重建源码 `rich4_config_file.c:37-49`），所以「当前游戏日期」的起点
+ *   就是**玩家机器上的今天**。之后每回合 `fcn_00452117(&CFG+8)` 逐日推进。
+ *
+ * ⇒ 对任何 2010 年之后的机器，原版的起始日期恒为 **2010-01-01**；
+ *   1998 年之前的机器恒为 1998-01-01；中间那些年就是当天。
+ *   （**只钳年**：`if (年<1998)` / `else if (年>2010)` 两支各把月日重置为 1/1。）
+ *
+ * ⚠️ `now` **必须由调用方注入**（C-DET-2：core 内不许读真实时间）。
+ *   客户端传 `new Date()`；core 里算不出来的场合用 `START_DATE_MAX`
+ *   —— 「2010 年之后的机器一定是它」，与真值等价。
+ *
+ * @param now 系统时间（注入）
+ */
+export function defaultStartDate(now: Date): {
+  year: number;
+  month: number;
+  day: number;
+} {
+  const year = now.getFullYear();
+  if (year < START_DATE_MIN.year) return { ...START_DATE_MIN };
+  if (year > START_DATE_MAX.year) return { ...START_DATE_MAX };
+  return { year, month: now.getMonth() + 1, day: now.getDate() };
+}
+
 export interface StartingMoney {
   cash: number;
   moneyInBank: number;

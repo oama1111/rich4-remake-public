@@ -20,7 +20,14 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { newGame } from './new-game.ts';
-import { GAME_INITIAL_FUNDS, DEFAULT_INITIAL_FUND, startingMoney } from './setup.ts';
+import {
+  GAME_INITIAL_FUNDS,
+  DEFAULT_INITIAL_FUND,
+  START_DATE_MAX,
+  START_DATE_MIN,
+  defaultStartDate,
+  startingMoney,
+} from './setup.ts';
 import { updatePriceIndex, calculatePlayerWealth } from './wealth.ts';
 import { aiShouldPurchase, AI_PURCHASE_RESERVE_RATIO, AI_PURCHASE_RESERVE_CAP } from './purchase.ts';
 import { makePlayer } from '../testing/factories.ts';
@@ -167,5 +174,67 @@ describe('★ ③ AI 买地保留额的基数也是这一档', () => {
     // 指数 1：4000 > 1500 ⇒ 买；指数 3：4000 > 4500 ⇒ 不买
     expect(aiShouldPurchase(p, 1_000, 30_000, 1)).toBe(true);
     expect(aiShouldPurchase(p, 1_000, 30_000, 3)).toBe(false);
+  });
+});
+
+// ============================================================
+//  ★ 起始日期 = 系统当天（钳到 1998-01-01 .. 2010-01-01）
+//    @source `_rich4_read_config`（VA 0x00411e8f）：读配置文件之后**无条件**用
+//    `libc_getdate()`（Win32 `GetLocalTime`）覆盖 cfg 的 day/month/year；
+//    钳位常量 0x7ce / 0x7da 在 VA 0x00411f30 / 0x00411f49。
+//    ⇒ 2010 年之后的机器一律从 **2010-01-01** 开始，不是写死的 1998-01-01。
+// ============================================================
+
+describe('★ 起始日期', () => {
+  it('上下限常量 = 1998-01-01 / 2010-01-01 @source 0x7ce / 0x7da', () => {
+    expect(START_DATE_MIN).toEqual({ year: 1998, month: 1, day: 1 });
+    expect(START_DATE_MAX).toEqual({ year: 2010, month: 1, day: 1 });
+  });
+
+  it('★ `newGame` 缺省 = `START_DATE_MAX`（core 不许读真实时间，C-DET-2）', () => {
+    expect(START_DATE_MAX).toEqual({ year: 2010, month: 1, day: 1 });
+  });
+
+  it('★ 年 > 2010 ⇒ 钳到 2010-01-01（今天的机器走这一支）', () => {
+    expect(defaultStartDate(new Date(2026, 8, 16))).toEqual({ year: 2010, month: 1, day: 1 });
+    expect(defaultStartDate(new Date(2011, 0, 2))).toEqual({ year: 2010, month: 1, day: 1 });
+  });
+
+  it('★ 年 < 1998 ⇒ 钳到 1998-01-01', () => {
+    expect(defaultStartDate(new Date(1997, 11, 31))).toEqual({ year: 1998, month: 1, day: 1 });
+    expect(defaultStartDate(new Date(1980, 5, 5))).toEqual({ year: 1998, month: 1, day: 1 });
+  });
+
+  it('★ 区间内就是**当天**（不重置月日）', () => {
+    expect(defaultStartDate(new Date(2005, 5, 15))).toEqual({ year: 2005, month: 6, day: 15 });
+    expect(defaultStartDate(new Date(1998, 0, 1))).toEqual({ year: 1998, month: 1, day: 1 });
+    expect(defaultStartDate(new Date(2010, 11, 31))).toEqual({ year: 2010, month: 12, day: 31 });
+  });
+
+  it('边界年本身**不**被钳（钳的是「小于 / 大于」）', () => {
+    expect(defaultStartDate(new Date(1998, 6, 4)).year).toBe(1998);
+    expect(defaultStartDate(new Date(1998, 6, 4)).month).toBe(7);
+    expect(defaultStartDate(new Date(2010, 0, 2)).year).toBe(2010);
+    expect(defaultStartDate(new Date(2010, 0, 2)).day).toBe(2);
+  });
+
+  haveMap('★ `newGame` 缺省就用它；显式传 `startDate` 时以传的为准', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP)));
+    const players = [0, 1].map((i) => ({ character: i, kind: 'computer' as const }));
+    const dflt = newGame({ map, players, seed: 5 });
+    // ★ core 不许读真实时间（C-DET-2）⇒ 缺省取 `START_DATE_MAX`。
+    //   对任何 2010 年之后的机器这就是真值；客户端传 `defaultStartDate(new Date())` 更精确。
+    expect([dflt.year, dflt.month, dflt.day]).toEqual([2010, 1, 1]);
+    const fixed = newGame({ map, players, seed: 5, startDate: { year: 1998, month: 1, day: 1 } });
+    expect([fixed.year, fixed.month, fixed.day]).toEqual([1998, 1, 1]);
+  });
+
+  haveMap('★ 起始日期不影响随机数（同种子同玩家 ⇒ 同一 rngState）', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP)));
+    const players = [0, 1].map((i) => ({ character: i, kind: 'computer' as const }));
+    const a = newGame({ map, players, seed: 5, startDate: { year: 1998, month: 1, day: 1 } });
+    const b = newGame({ map, players, seed: 5, startDate: { year: 2010, month: 1, day: 1 } });
+    expect(a.rngState).toBe(b.rngState);
+    expect(a.totalDays).toBe(b.totalDays);
   });
 });

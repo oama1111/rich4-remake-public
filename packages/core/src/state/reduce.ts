@@ -162,7 +162,7 @@ import {
   tickStockCountdowns,
   tickStockMarket,
 } from '../places/stock-market.ts';
-import { advanceDate, packDate } from '../rules/calendar.ts';
+import { advanceDate, daysInMonth, packDate } from '../rules/calendar.ts';
 import { settleMonthlyBank } from '../rules/monthly.ts';
 import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from './types.ts';
 import {
@@ -1555,6 +1555,21 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
      * @source `rich4.asm:11766-11832`：游标 4..7 逐个停一次，走完最后一个
      *   （游标到 8、`ebx = 1`）才 `call 0x41cf67` 推日期。
      */
+    /**
+     * 設定屏「日期更改」—— 改**当前游戏日期**（原版 `RICH4.CFG+8`）。
+     * 见 `actions.ts` 的注释（逐条 VA）。
+     */
+    case 'setDate': {
+      const { year, month, day } = action;
+      if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return state;
+      if (month < 1 || month > 12) return state;
+      // 日的上限按**那个月**算（闰年 2 月 29）
+      if (day < 1 || day > daysInMonth(year, month)) return state;
+      if (year === state.year && month === state.month && day === state.day) return state;
+      // ⚠️ 只改这三个字段 —— 原版不碰 `totalDays` / `totalMonths`
+      return { ...state, year, month, day };
+    }
+
     case 'npcStep': {
       if (state.phase !== 'turnEnd') return state;
       if ((state.pendingNpcSlots ?? []).length === 0) return state;

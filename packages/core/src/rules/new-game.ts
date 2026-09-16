@@ -13,7 +13,7 @@ import type { Rich4Map } from '../loaders/map.ts';
 import type { GameState, Player } from '../state/types.ts';
 import type { GameMode } from '../rng/policy.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
-import { DEFAULT_INITIAL_FUND, NO_WIN_CONDITIONS, startingMoney } from './setup.ts';
+import { DEFAULT_INITIAL_FUND, NO_WIN_CONDITIONS, START_DATE_MAX, startingMoney } from './setup.ts';
 import type { WinConditions } from './setup.ts';
 import { CARDS, CHARACTERS } from '@rich4/data';
 import { traitsOf } from '../ai/personality.ts';
@@ -60,6 +60,19 @@ export interface NewGameOptions {
   globalMapId?: number;
   /** 开局资金档位，见 setup.ts 的 GAME_INITIAL_FUNDS */
   initialFund?: number;
+  /**
+   * 开局日期。
+   *
+   * ★ 原版是**系统当天**（钳到 1998-01-01 .. 2010-01-01）——
+   *   `_rich4_read_config`（VA 0x00411e8f）用 `libc_getdate()` 覆盖 cfg 的
+   *   day/month/year，钳位常量 0x7ce/0x7da 在 VA 0x00411f30 / 0x00411f49。
+   *   见 `rules/setup.ts` 的 `defaultStartDate` / `START_DATE_MAX`。
+   *
+   * ⚠️ core 不许读真实时间（C-DET-2），所以这里**缺省用 `START_DATE_MAX`**
+   *   （= 2010-01-01）—— 对任何 2010 年之后的机器，它与真值**完全相等**；
+   *   客户端要更精确就在 `new Date()` 上算 `defaultStartDate()` 传进来。
+   */
+  startDate?: { year: number; month: number; day: number };
   mode?: GameMode;
   /** PRNG 种子。★ 单机可随意；联机必须由服务器统一下发 */
   seed?: number;
@@ -300,6 +313,7 @@ export function newGame(opts: NewGameOptions): GameState {
     players,
     globalMapId = 0,
     initialFund = DEFAULT_INITIAL_FUND,
+    startDate,
     mode = 'single',
     seed = 1,
     startNodeId = UNVERIFIED_START_NODE,
@@ -364,9 +378,11 @@ export function newGame(opts: NewGameOptions): GameState {
     mode,
     rngState: rng.getState(),
     globalMapId,
-    day: 1,
-    month: 1,
-    year: 1998,
+    // ★ 起始日期 = **系统当天**（钳到 1998-01-01 .. 2010-01-01）
+    //   @source `_rich4_read_config`（VA 0x00411e8f）用 `libc_getdate()` 覆盖
+    //   `global_rich4_cfg` 的 day/month/year；钳位常量 0x7ce/0x7da 在
+    //   VA 0x00411f30 / 0x00411f49。见 `rules/setup.ts` 的 `defaultStartDate`。
+    ...(startDate ?? START_DATE_MAX),
     players: players.map((s, i) =>
       makeInitialPlayer(i, s, initialFund, startNodeId > 0 ? startNodeId : (startNodes[i] ?? 1), vehicle),
     ),
