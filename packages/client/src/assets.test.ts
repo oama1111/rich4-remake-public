@@ -13,6 +13,7 @@ import { decodePng, encodePng } from '@rich4/assets-pipeline/node';
 import {
   archiveKey,
   hdSourceFromManifest,
+  loadGround,
   loadHdSource,
   SpriteCache,
   type HdSource,
@@ -596,5 +597,84 @@ describe('★ 载具图组（T-049）—— 按交通方式取，与地形无关
 
   it('12 个角色 × 21 不越出 Data.mkf 的角色段（0x80..0xEC）', () => {
     expect(characterSetBase(11, 3) + 2).toBe(0x80 + 11 * 21 + 11);
+  });
+});
+
+// ============================================================
+//  ★ 底图的 HD 优先（Q-PERF-GND §三 第 1 条）
+//    资源号与 .gnd 同一套：`地图号 × 2`、图号 0
+// ============================================================
+
+describe('★ loadGround：有 HD 就用 HD，缺了就按图回退原图', () => {
+  /**
+   * 造一张**最小的合法 `.gnd`**：1 块（32×32）、调色板全黑、像素全 0。
+   *
+   * 布局照 `ground.ts` 的常量：魔数 4 + 块数 4 + 调色板 0x10 起 512 字节 +
+   * 布局表 → 像素从 `0x2a90` 起，每块 1024 字节。
+   * ⇒ 解出来 32×32 —— 与 HD 那张 9216² 一眼能分开。
+   */
+  const tinyGround = (): Uint8Array => {
+    const out = new Uint8Array(0x2a90 + 1024);
+    out.set([0x47, 0x4e, 0x44, 0x00], 0); // 'GND\0'
+    const view = new DataView(out.buffer);
+    view.setUint16(4, 1, true); // tilesX
+    view.setUint16(6, 1, true); // tilesY
+    view.setUint32(8, 1, true); // tileCount
+    return out;
+  };
+
+  /** 底图用的假解码器：记下收到的是 Blob（HD）还是 ImageData（原图） */
+  const spyDecode = () => {
+    const calls: string[] = [];
+    const decode = async (src: ImageData | Blob): Promise<ImageBitmap> => {
+      calls.push(src instanceof Blob ? 'blob' : 'imagedata');
+      if (src instanceof Blob) return { width: 9216, height: 9216 } as unknown as ImageBitmap;
+      return { width: src.width, height: src.height } as unknown as ImageBitmap;
+    };
+    return { decode, calls };
+  };
+
+  it('★★ 清单里有 `map/6_0` ⇒ 走 HD（解码器收到的是 PNG 字节的 Blob）', async () => {
+    const hd = fakeHd({ 'map/6_0': { anchorX: 0, anchorY: 0 } }, { 'map/6_0': new Uint8Array([1, 2, 3]) });
+    const { decode, calls } = spyDecode();
+    const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, hd, decode);
+    expect(calls).toEqual(['blob']);
+    expect(bmp!.width).toBe(9216);
+  });
+
+  it('★ 清单里没有 ⇒ 现解 `.gnd`（解码器收到 ImageData，尺寸是原图的）', async () => {
+    const hd = fakeHd({}, {});
+    const { decode, calls } = spyDecode();
+    const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, hd, decode);
+    expect(calls).toEqual(['imagedata']);
+    expect(bmp!.width).toBe(32);
+  });
+
+  it('★ 有记录但**拉不到字节**（产物没生成）⇒ 也回退原图', async () => {
+    const hd = fakeHd({ 'map/6_0': { anchorX: 0, anchorY: 0 } }, { 'map/6_0': null });
+    const { decode, calls } = spyDecode();
+    const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, hd, decode);
+    expect(calls).toEqual(['imagedata']);
+    expect(bmp!.width).toBe(32);
+  });
+
+  it('★ HD 解不开（坏图）也不致命：落到原图', async () => {
+    const hd = fakeHd({ 'map/6_0': { anchorX: 0, anchorY: 0 } }, { 'map/6_0': new Uint8Array([9]) });
+    const calls: string[] = [];
+    const decode = async (src: ImageData | Blob): Promise<ImageBitmap> => {
+      calls.push(src instanceof Blob ? 'blob' : 'imagedata');
+      if (src instanceof Blob) throw new Error('bad png');
+      return { width: src.width, height: src.height } as unknown as ImageBitmap;
+    };
+    const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, hd, decode);
+    expect(calls).toEqual(['blob', 'imagedata']);
+    expect(bmp!.width).toBe(32);
+  });
+
+  it('★ 没给 HD 来源（整包原图）⇒ 直接走 `.gnd`', async () => {
+    const { decode, calls } = spyDecode();
+    const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, null, decode);
+    expect(calls).toEqual(['imagedata']);
+    expect(bmp!.width).toBe(32);
   });
 });

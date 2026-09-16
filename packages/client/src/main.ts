@@ -67,6 +67,7 @@ import {
   loadArchives,
   loadGround,
   loadHdSource,
+  type HdSource,
   readMapData,
   SpriteCache,
   loadHolidayArt,
@@ -1277,9 +1278,9 @@ function loadState(next: GameState): void {
   screen = 'game';
   log(`▶ 讀檔：地圖 ${next.globalMapId}　${next.year}/${next.month}/${next.day}`);
 
-  ground = null;
-  void loadGround(archives, next.globalMapId).then((g) => {
-    ground = g;
+  setGround(null);
+  void loadGround(archives, next.globalMapId, hdSource).then((g) => {
+    setGround(g);
     requestRender();
   });
   loadMinimapAssets(next.globalMapId);
@@ -2944,6 +2945,25 @@ function unlockAudio(): void {
  * 方括号/分号/引号键微调偏移——留作核对手段。
  */
 let ground: ImageBitmap | null = null;
+
+/**
+ * HD 素材来源（拿不到清单就是 null）—— `boot()` 里定，之后只读。
+ *
+ * 底图也要走它：`loadGround` 的第三参数。见 Q-PERF-GND §三 第 1 条。
+ */
+let hdSource: HdSource | null = null;
+
+/**
+ * 换一张底图。
+ *
+ * ★ **换图即丢**是这一层的释放策略：HD 底图是 9216²（324MB），
+ *   不 `close()` 也要等 GC，而它一直有引用直到下一张来 —— 显式关掉旧的
+ *   才不会出现「两张 324MB 同时活着」。与 `loadGround` 的调用点一一对应。
+ */
+function setGround(next: ImageBitmap | null): void {
+  if (ground !== null && ground !== next) ground.close();
+  ground = next;
+}
 let showGround = true;
 const groundOffset = { x: 0, y: 0 };
 
@@ -5677,8 +5697,8 @@ function startGame(): void {
   );
 
   // 换地图要重新解底图
-  ground = null;
-  void loadGround(archives, setup.mapId).then((g) => {
+  setGround(null);
+  void loadGround(archives, setup.mapId, hdSource).then((g) => {
     ground = g;
     if (g !== null) log(`底圖載入：${g.width}×${g.height}（G 鍵開關）`);
     requestRender();
@@ -7142,7 +7162,7 @@ async function boot(): Promise<void> {
 
     // HD 素材可选：拿不到清单（没跑过超分管线、或整个 assets/hd/ 不存在）
     // 就整包走原图。**按图**回退在 SpriteCache 里（PRD §4.5）。
-    const hdSource = await loadHdSource(hdBase());
+    hdSource = await loadHdSource(hdBase());
     sprites = new SpriteCache(archives, hdSource === null ? {} : { hd: hdSource });
     if (hdSource !== null) log('HD 素材：已接上（缺图的按图回退原图）');
 

@@ -513,7 +513,28 @@ export function readMapData(archives: LoadedArchives, globalMapId: number): Uint
 export async function loadGround(
   archives: LoadedArchives,
   globalMapId: number,
+  hd: HdSource | null = null,
+  decode: BitmapFactory = defaultBitmapFactory,
 ): Promise<ImageBitmap | null> {
+  // ★ HD 优先（Q-PERF-GND §三 第 1 条）：整张放大那一版是 `hd/map/<资源>_000.png`，
+  //   资源号与 `.gnd` **同一套**（`地图号 × 2`、图号 0），所以查表口径不用另立。
+  //   拿不到（没跑过超分管线 / 这张没回填）就落到下面的现解路径 —— 与
+  //   `SpriteCache` 的「按图回退」同一条规矩，不是整包降级。
+  if (hd !== null) {
+    const resource = globalMapId * 2;
+    if (hd.entry('map.mkf', resource, 0) !== null) {
+      const bytes = await hd.fetchBytes('map.mkf', resource, 0);
+      if (bytes !== null) {
+        try {
+          // 交给浏览器原生解码（与 `SpriteCache` 的 HD 分支同一条）
+          return await decode(new Blob([bytes as BlobPart], { type: 'image/png' }));
+        } catch {
+          // HD 坏图不致命：往下走原图
+        }
+      }
+    }
+  }
+
   let data: Uint8Array;
   try {
     data = archives.get('map.mkf').read(globalMapId * 2);
@@ -525,7 +546,7 @@ export async function loadGround(
   const g = decodeGround(data);
   const rgba = new ImageData(g.width, g.height);
   rgba.data.set(g.rgba);
-  return createImageBitmap(rgba);
+  return decode(rgba);
 }
 
 // ============================================================

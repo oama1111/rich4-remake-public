@@ -221,7 +221,7 @@ C-PERF-2（内存 < 1.5GB）管的是**运行时客户端**。两个层面分开
 
 | # | 是什么 | 为什么没做 | 怎么收尾 |
 |---|---|---|---|
-| 1 | **客户端还没真正加载 HD 底图** | `loadGround()` 仍从 `.gnd` 现解 2304²。要让客户端用 `hd/map/0-0.png`，得在 `main.ts` 的 boot/开局那条路上加一条「有 HD 就 fetch 9216² 位图」的分支，而 `main.ts` 不在本卡范围 —— 且要先定「换地图/换关卡时那 324MB 怎么释放」 | 在 `main.ts` 里按 `hdSource.entry('map.mkf', 地图×2, 0)` 判断后拉 HD；释放策略与 `loadGround` 同一条（换图即丢） |
+| 1 | ~~**客户端还没真正加载 HD 底图**~~ ✅ **2026-09-16 已接** | — | `loadGround(archives, 地图号, hd, decode)` 第三/四参数：按 `hd.entry('map.mkf', 地图×2, 0)` 判断，命中就 `fetchBytes` → Blob → 原生解码；**缺记录/拉不到/坏图**都按图回退 `.gnd`（不是整包降级）。释放策略：`main.ts` 新增 `setGround()`，换图时先 `close()` 旧位图（HD 9216² 是 324MB，不能等 GC）。单测 `assets.test.ts`「loadGround：有 HD 就用 HD」五条 |
 | 2 | `encodePng` 三次拷贝（≈680MB）| 动的是全项目共用的编码器（extract 也走它），属单独一张卡 | 改成单缓冲 in-place 写（zlib 的 stored 块可原地填），或按块流式写文件 |
 | 3 | ~~HUD 那份 `#ready` 没接淘汰监听~~ ✅ **2026-09-16 已接** | — | `hud.ts` 构造里 `addEvictListener` + 新增 `drainEvicted()`（`Hud.draw()` 开头调）—— 与 `render.ts` 同一条帧边界推理；单测 `hud.test.ts`「侧栏的淘汰监听」三条 |
 | 4 | 桌面端**打包**没接 HD | `tauri.conf.json` 的 `resources` 里没有 `assets/hd` —— 该目录被 `.gitignore` 排除、干净 clone 里根本不存在，写进去会让没跑过超分的人连构建都过不去 | 先解决「产物不入库但构建需要它」（构建脚本先跑管线、或允许缺失），再把 `assets/hd` 加进 resources |

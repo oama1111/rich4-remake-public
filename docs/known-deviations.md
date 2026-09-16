@@ -1404,8 +1404,12 @@ T-076 的卡片标题写「建房/加房/座位/角色/地图/开始」，但**�
 放进去等于永久驻留还挤额度，故底图仍走 `loadGround` 的专用路径，换图时丢引用）。；
 离线管线峰值 2030MB ArrayBuffers / 1561MB RSS（已做全不透明快路径，未做 `encodePng` 单缓冲化）。
 
-**仍未做的**：客户端还没有真正加载 HD 底图（`loadGround` 仍现解 `.gnd`，
-而要加载 9216² 得动 `main.ts` 并先定释放策略）。逐条见 `docs/deviations/Q-PERF-GND.md`。
+**HD 底图 2026-09-16 也接了**：`loadGround(archives, 地图号, hdSource, decode)`
+先查 `hd.entry('map.mkf', 地图×2, 0)`，命中就拉 PNG → Blob → 原生解码
+（9216²）；缺记录 / 拉不到字节 / 坏图三种情况都**按图回退** `.gnd`。
+释放策略：`main.ts` 新增 `setGround()`，换图先 `close()` 旧位图 ——
+HD 那张是 324MB，不能等 GC。单测见 `assets.test.ts`。
+逐条见 `docs/deviations/Q-PERF-GND.md`。
 
 ### ~~Q-NET-1~~：客户端 desync **自愈**（**已结案 2026-09-15**；协议走的是候选 2）
 
