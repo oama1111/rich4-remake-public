@@ -942,13 +942,21 @@ export interface MonthlyPlayback {
   seats: number;
   /** 頒獎屏已经叠到第几条详情 */
   details: number;
+  /**
+   * 「本月悲情人物」那一拍（原版状态 5..9 那条幻灯片链）—— 说 `別灰心，再加油喔！`。
+   *
+   * ★ 只在**有悲情人物**时才走：原版状态 2 的判据是
+   *   `[0x48c430] != [0x48c42f] && [0x48c42f] != 0xff`（首富 ≠ 悲情 且悲情存在），
+   *   否则直接跳收尾（见 `monthlyPlaybackTick` 的 `console` 参数）。
+   */
+  encourage: boolean;
   /** 颁完奖、等最后一次确认（原版 `[0x48c42a] = 0x11/0x16` 那几步）*/
   closing: boolean;
 }
 
 /** 从第 0 行开始（原版 `[0x48c42a] = 0` 那一状态）*/
 export function monthlyPlaybackStart(): MonthlyPlayback {
-  return { phase: 'settle', revealed: 0, bars: 0, seats: 0, details: 0, closing: false };
+  return { phase: 'settle', revealed: 0, bars: 0, seats: 0, details: 0, encourage: false, closing: false };
 }
 
 /**
@@ -962,7 +970,12 @@ export function monthlyPlaybackStart(): MonthlyPlayback {
  * @param rows 在场玩家数（决定结算屏点亮几行）
  * @returns 关屏返回 `null`
  */
-export function monthlyPlaybackTick(p: MonthlyPlayback, rows: number): MonthlyPlayback | null {
+export function monthlyPlaybackTick(
+  p: MonthlyPlayback,
+  rows: number,
+  /** 这一次有没有「悲情人物」要安慰（`monthlyConsolationWho(award) !== null`）*/
+  console: boolean = true,
+): MonthlyPlayback | null {
   if (p.phase === 'settle') {
     if (p.revealed < Math.max(0, rows - 1)) return { ...p, revealed: p.revealed + 1 };
     return p;
@@ -971,9 +984,40 @@ export function monthlyPlaybackTick(p: MonthlyPlayback, rows: number): MonthlyPl
     if (p.bars < MONTHLY_SLOTS) return { ...p, bars: p.bars + 1 };
     if (p.seats < MONTHLY_SLOTS) return { ...p, seats: p.seats + 1 };
     if (p.details < 5) return { ...p, details: p.details + 1 };
+    // ★ 详情叠完先走**悲情那一拍**（原版状态 9：`別灰心，再加油喔！`），然后才收尾
+    //   （状态 0xf→0x10 的「本月冠軍是…」）。
+    if (console && !p.encourage) return { ...p, encourage: true };
     return { ...p, closing: true };
   }
   return null;
+}
+
+/**
+ * 收尾那一拍说的是**谁** —— 原版状态 0x11 读的是 `[0x48c430]`
+ * （= `fcn_00437dfe` 的 `calculate_player_wealth` 最大者），也就是**本月冠軍**。
+ *
+ * @source 0x00438d04：`al = [0x48c430]` → `[al + 0x48c418]`（座位→玩家）→
+ *   `player[+0x13]`（角色）→ 查角色名表 `0x4759b8 + 角色*4` → `fcn_0044ecb6`。
+ */
+export function monthlyChampionOf(award: MonthlyAward): number {
+  return award.richest;
+}
+
+/**
+ * 要不要安慰谁 —— 原版状态 5..9 那条链说的是 `[0x48c42f]`
+ * （= `fcn_00437d1a` 的「支出−收入+冬眠+衰運」最高者，也就是**本月悲情人物**）。
+ *
+ * @source 状态 5 尾（VA 0x004383a6 一带）`push 0x464dca` =
+ *   `#0095本月悲情人物是．．。`；状态 9（VA 0x00438a31）再补一句
+ *   `#0108別灰心，再加油喔！`。
+ *
+ * ⚠️ **不是**收尾那一位 —— 先前把 `award.winner`（悲情分最高者）当成「本月冠軍」
+ *   写在收尾那一行，是把两个函数弄反了：`fcn_00437d1a` 是悲情分、`fcn_00437dfe`
+ *   才是首富/冠軍（`calculate_player_wealth`），见 `docs/deviations/T-041.md` 的
+ *   D-MONTHLY-13。
+ */
+export function monthlyConsolationWho(award: MonthlyAward): number | null {
+  return award.winner >= 0 ? award.winner : null;
 }
 
 // ============================================================
@@ -1236,14 +1280,28 @@ export function drawMonthlyScreen(
     monthlyText(ctx, line.value, MONTHLY_DETAIL_AT.valueX, y, MONTHLY_TEXT.fill, 'right');
   }
 
-  // 收尾那一句「本月冠軍是」/「本月悲情人物是」
+  // ── 「本月悲情人物」那一拍（原版状态 5..9 那条链的收束）──
+  //    @source 状态 5 尾 VA 0x004383a6 `push 0x464dca` = `#0095本月悲情人物是．．。`；
+  //      状态 9 VA 0x00438a31 = `#0108別灰心，再加油喔！`（那只盒子见 D-MONTHLY-7）。
+  //    ⚠️ 本模块把这条链压成**一拍两行字**（原版是 4 张幻灯片 + 两只气泡），登记在
+  //      T-041 的 D-MONTHLY-13。
+  if (p.encourage) {
+    const sad = monthlyConsolationWho(award);
+    const who = sad === null ? '' : (CHARACTERS[state.players[sad]?.character ?? 0]?.name ?? '');
+    const y0 = MONTHLY_DETAIL_AT.y0 + 6 * MONTHLY_DETAIL_AT.step;
+    monthlyText(ctx, `${MONTHLY_TRAGIC}${who}`, MONTHLY_DETAIL_AT.x, y0, MONTHLY_TEXT.fill);
+    monthlyText(ctx, MONTHLY_NO_AWARD, MONTHLY_DETAIL_AT.x, y0 + MONTHLY_DETAIL_AT.step, MONTHLY_TEXT.fill);
+  }
+
+  // ── 收尾那一句「本月冠軍是」── **冠军 = 首富**（`[0x48c430]`），不是悲情那一位。
+  //    @source 状态 0xf→0x10 VA 0x00438b9c `push 0x464e39` = `#0109本月冠軍是．．。`；
+  //      状态 0x11 VA 0x00438d24 再把**冠军的角色名**（表 `0x4759b8 + 角色*4`）画进同一只气泡。
   if (p.closing) {
-    const win = award.winner >= 0 ? state.players[award.winner] : undefined;
-    const label = win === undefined ? MONTHLY_TRAGIC : MONTHLY_CHAMPION;
-    const who = win === undefined ? '' : (CHARACTERS[win.character]?.name ?? '');
+    const champ = state.players[monthlyChampionOf(award)];
+    const who = champ === undefined ? '' : (CHARACTERS[champ.character]?.name ?? '');
     monthlyText(
       ctx,
-      `${label}${who}`,
+      `${MONTHLY_CHAMPION}${who}`,
       MONTHLY_DETAIL_AT.x,
       MONTHLY_DETAIL_AT.y0 + 6 * MONTHLY_DETAIL_AT.step,
       MONTHLY_TEXT.fill,
@@ -1321,7 +1379,12 @@ export const monthlyScreen: UiScreen = {
     const p = playback;
     if (p === null) return;
     const rows = view?.rows.length ?? 0;
-    const next = monthlyPlaybackTick(p, rows);
+    // ★ 有没有「悲情人物」要安慰 —— 原版状态 2 的判据（见 `monthlyConsolationWho`）。
+    //   ⚠️ 「動畫過程」关掉时原版直接跳状态 `0x16`（VA 0x00438254 那两支），
+    //   也就是**整条 5..9 幻灯片链（悲情人物那一段）都不走** ⇒ 这里同样传 false。
+    const console =
+      env.animation !== false && award !== null && monthlyConsolationWho(award) !== null;
+    const next = monthlyPlaybackTick(p, rows, console);
     // ★ 音效（D-MONTHLY-5）：頒獎屏每铺一块窄板/一列/一条详情各响一声，
     //   收尾那一下再响一声。号与出处见 `MONTHLY_SOUND_*`。
     if (next !== null) {

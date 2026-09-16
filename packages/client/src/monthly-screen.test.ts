@@ -72,6 +72,8 @@ import {
   MONTHLY_SOUND_STEP,
   drawMonthlyAwardFlic,
   monthlyAwardFlicResource,
+  monthlyChampionOf,
+  monthlyConsolationWho,
 } from './monthly-screen.ts';
 import type { Sprite } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
@@ -909,6 +911,7 @@ describe('★ 演出状态机', () => {
       bars: 0,
       seats: 0,
       details: 0,
+      encourage: false,
       closing: false,
     });
     // 4 行 → 3 拍点亮完
@@ -928,7 +931,7 @@ describe('★ 演出状态机', () => {
     expect(monthlyPlaybackTick(p, 1)!.revealed).toBe(0);
   });
 
-  it('★ 頒獎屏：铺 4 板 → 画 4 列 → 叠 5 条 → 再一拍才关', () => {
+  it('★ 頒獎屏：铺 4 板 → 画 4 列 → 叠 5 条 → 悲情那一拍 → 再一拍才关', () => {
     let p: MonthlyPlayback = { ...monthlyPlaybackStart(), phase: 'award' };
     const seen: string[] = [];
     let guard = 0;
@@ -939,7 +942,9 @@ describe('★ 演出状态机', () => {
         break;
       }
       p = next;
-      seen.push(`${p.bars}/${p.seats}/${p.details}${p.closing ? '/closing' : ''}`);
+      seen.push(
+        `${p.bars}/${p.seats}/${p.details}${p.encourage ? '/sad' : ''}${p.closing ? '/closing' : ''}`,
+      );
     }
     expect(seen).toEqual([
       '1/0/0',
@@ -955,7 +960,9 @@ describe('★ 演出状态机', () => {
       '4/4/3',
       '4/4/4',
       '4/4/5',
-      '4/4/5/closing',
+      // ★ 详情叠完先走「本月悲情人物」那一拍（原版状态 9 的 `別灰心，再加油喔！`）
+      '4/4/5/sad',
+      '4/4/5/sad/closing',
       'null',
     ]);
   });
@@ -1088,7 +1095,8 @@ describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () 
       winner: 0, score: 0, second: 0, richest: 0, bars: MONTHLY_BARS,
     };
     const seatsFull: MonthlyPlayback = {
-      phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0, closing: false,
+      phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0,
+      encourage: false, closing: false,
     };
     const calls: string[] = [];
     const fakeFlic = (archive: string, resource: number) => {
@@ -1161,5 +1169,80 @@ describe('★ WM_KEYDOWN（0x101）也能推进結算/頒獎屏', () => {
     const amountAt = src.indexOf("if (amountPage !== null && screen === 'game') {");
     expect(keyAt).toBeGreaterThan(0);
     expect(amountAt).toBeGreaterThan(keyAt);
+  });
+});
+
+// ============================================================
+//  「本月冠軍」是首富、「本月悲情人物」才是悲情分最高者（D-MONTHLY-13）
+// ============================================================
+
+describe('★ 收尾那一句说的是**谁** @source 0x00438d04 / 0x004383a6 / 0x00438a31', () => {
+  const award: MonthlyAward = {
+    winner: 1, score: 900, second: 100, richest: 3, bars: MONTHLY_BARS,
+  };
+
+  it('★ 冠军 = 首富（`[0x48c430]` = `calculate_player_wealth` 最大者），不是悲情分得主', () => {
+    // 先前把 `award.winner`（悲情分最高者）当成冠军写进收尾那一行 —— 两个函数弄反了
+    expect(monthlyChampionOf(award)).toBe(3);
+    expect(monthlyChampionOf(award)).not.toBe(award.winner);
+  });
+
+  it('★ 要安慰的是悲情分最高者（`[0x48c42f]`）；没人得悲情分则没有这一拍', () => {
+    expect(monthlyConsolationWho(award)).toBe(1);
+    expect(monthlyConsolationWho({ ...award, winner: -1 })).toBeNull();
+  });
+
+  it('★ 没有悲情人物时，頒獎屏不走那一拍（原版状态 2 直接跳收尾）', () => {
+    let p: MonthlyPlayback = { ...monthlyPlaybackStart(), phase: 'award' };
+    const seen: string[] = [];
+    let guard = 0;
+    while (guard++ < 40) {
+      // `console = false` = 没有悲情人物
+      const next = monthlyPlaybackTick(p, 4, false);
+      if (next === null) break;
+      p = next;
+      if (p.encourage || p.closing) seen.push(`${p.encourage ? 'sad' : ''}${p.closing ? 'closing' : ''}`);
+    }
+    expect(seen).toEqual(['closing']);
+  });
+
+  it('★ 画面上：悲情那一拍写「本月悲情人物是…」+「別灰心，再加油喔！」，收尾写「本月冠軍是…」', () => {
+    const texts: string[] = [];
+    const ctx = {
+      drawImage: () => undefined,
+      save: () => undefined,
+      restore: () => undefined,
+      fillRect: () => undefined,
+      strokeRect: () => undefined,
+      fillText: (t: string) => texts.push(t),
+      strokeText: () => undefined,
+      beginPath: () => undefined,
+      closePath: () => undefined,
+      clip: () => undefined,
+      rect: () => undefined,
+      translate: () => undefined,
+      setTransform: () => undefined,
+      scale: () => undefined,
+      set font(_v: string) {}, set textAlign(_v: string) {}, set textBaseline(_v: string) {},
+      set lineWidth(_v: number) {}, set strokeStyle(_v: string) {}, set fillStyle(_v: string) {},
+      set filter(_v: string) {},
+    } as unknown as CanvasRenderingContext2D;
+    const st = { players: [{ character: 0 }, { character: 5 }] } as never;
+    const view: MonthlyView = { rows: [] } as never;
+    const p: MonthlyPlayback = {
+      phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 5,
+      encourage: true, closing: false,
+    };
+    drawMonthlyScreen(ctx, () => null, st, {} as never, view, award, p);
+    const sadText = texts.find((t) => t.startsWith(MONTHLY_TRAGIC));
+    expect(sadText, '悲情那一拍要写「本月悲情人物是…」').toBeDefined();
+    expect(texts).toContain(MONTHLY_NO_AWARD);
+
+    texts.length = 0;
+    drawMonthlyScreen(ctx, () => null, st, {} as never, view, award, { ...p, encourage: false, closing: true });
+    const champText = texts.find((t) => t.startsWith(MONTHLY_CHAMPION));
+    expect(champText, '收尾要写「本月冠軍是…」').toBeDefined();
+    // 冠军是首富（下标 3）—— 本夹具只放两位玩家，故姓名取不到，这里只钉**不是**悲情那句
+    expect(texts.some((t) => t.startsWith(MONTHLY_TRAGIC))).toBe(false);
   });
 });
