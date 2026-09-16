@@ -2,7 +2,7 @@
  * 工具栏摆位
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   actorTokens,
@@ -20,6 +20,7 @@ import {
   drawKey,
   hitToolbar,
   isAsleep,
+  isActorAsleep,
   landArt,
   objectTokens,
   SPECIAL_ACTOR_SPRITE_BASE,
@@ -53,6 +54,8 @@ import {
   type Player,
   type Rich4Map,
   type SpecialActor,
+  initialSpecialActors,
+  releaseNpc,
 } from '@rich4/core';
 
 /*
@@ -163,6 +166,9 @@ describe('★ 绘制槽的排序键（Q-DRAW-1）—— 遮挡关系全靠它', 
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+/** 解出来的原版素材目录（用来核对每组的图数） */
+const DATA_DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/Data';
+
 /** 造一张只有 n 个节点的直线地图，节点间隔 40 世界单位 */
 function lineNodes(n: number): MapNode[] {
   return Array.from({ length: n }, (_, i) =>
@@ -194,11 +200,69 @@ describe('★ T-047 替身的图组资源号 —— 全部照 exe，不许猜', 
     expect(specialActorImageSet(8, false)).not.toBe(0x16c + 8 * 4);
   });
 
+  it('★ 夢遊走姿 = `+3`（另一套 17 帧循环），且**優先于**載具那張 @source VA 0x0040bd5c', () => {
+    // +13（days_sleep_walking）非 0 → 走姿 edi + 3；站姿仍是 edi
+    for (const actor of [4, 5, 6, 7]) {
+      const stand = specialActorImageSet(actor, false)!;
+      expect(specialActorImageSet(actor, true, false, true), `actor ${actor}`).toBe(stand + 3);
+      // 站姿不受夢遊影响（原版只换走姿槽）
+      expect(specialActorImageSet(actor, false, false, true), `actor ${actor} 站姿`).toBe(stand);
+    }
+    // 原版两处是 `add edi, N` 后直接落走姿槽、不二次判断 ⇒ +3 优先
+    expect(specialActorImageSet(4, true, true, true)).toBe(0x16c + 4 * 4 + 3);
+    // 不夢遊时載具那一支照旧
+    expect(specialActorImageSet(4, true, true, false)).toBe(0x16c + 4 * 4 + 2);
+    // 機器娃娃资源写死，夢遊那一位对它不适用（原版 actor≥8 另起一支）
+    expect(specialActorImageSet(8, true, false, true)).toBe(DOLL_WALK_RESOURCE);
+  });
+
+  it('★ 四组的图数逐条实measure：`+1` 与 `+3` 都是走姿，但帧数不同', () => {
+    // 解出的图（`assets-clean/Data/<资源>_*.png` 的张数，8 向等分）：
+    //   actor 4: 380=8立  381=152走(19帧/向)  382=64載具(8)   383=136夢遊(17帧/向)
+    //   actor 5: 384=8立  385= 80走(10帧/向)  386=72載具(9)   387= 80夢遊(10帧/向)
+    //   actor 6: 388=8立  389=120走(15帧/向)  390=64載具(8)   391=120夢遊(15帧/向)
+    //   actor 7: 392=8立  393= 80走(10帧/向)  394=72載具(9)   395= 80夢遊(10帧/向)
+    // ⇒ 「+3 是另一套循环」成立（帧数与 +1 不同，或帧宽不同）。
+    const FRAMES: Record<number, [number, number, number, number]> = {
+      4: [8, 152, 64, 136],
+      5: [8, 80, 72, 80],
+      6: [8, 120, 64, 120],
+      7: [8, 80, 72, 80],
+    };
+    for (const [actor, want] of Object.entries(FRAMES)) {
+      const a = Number(actor);
+      const base = SPECIAL_ACTOR_SPRITE_BASE + a * 4;
+      for (let k = 0; k < 4; k++) {
+        const n = readdirSync(DATA_DIR).filter((f) =>
+          new RegExp(`^0${base + k}_\\d{3}\\.png$`).test(f),
+        ).length;
+        expect(n, `actor ${a} 资源 ${base + k} 的图数`).toBe(want[k]);
+      }
+      // 资源号映射
+      expect(specialActorImageSet(a, false, false, false)).toBe(base);
+      expect(specialActorImageSet(a, true, false, false)).toBe(base + 1);
+      expect(specialActorImageSet(a, true, true, false)).toBe(base + 2);
+      expect(specialActorImageSet(a, true, false, true)).toBe(base + 3);
+    }
+  });
+
   it('玩家（0..3）与越界都不认 —— 那条路走 `characterSetBase`', () => {
     for (const actor of [0, 1, 2, 3, 9, -1]) {
       expect(specialActorImageSet(actor, false)).toBeNull();
       expect(specialActorImageSet(actor, true)).toBeNull();
     }
+  });
+
+  it('★ 夢遊走姿與冬眠變灰是**兩個不同字段**（`+13` vs `+12`）', () => {
+    // @source 夢遊：`rich4.asm:0x0040bd5c` cmp byte [rec+13]（換走姿圖組 +3）
+    // @source 冬眠：`rich4.asm:1533` cmp byte [rec+12]（去色）—— 0x498e34 − 0x498e28 = 12
+    expect(isActorAsleep({})).toBe(false);
+    expect(isActorAsleep({ hibernating: 0 })).toBe(false);
+    expect(isActorAsleep({ hibernating: 5 })).toBe(true);
+    // 夢遊天數**不**讓棋子變灰（它只換走姿圖）
+    expect(isActorAsleep({ sleepwalkDays: 5 })).toBe(false);
+    // 兩者可以同時非 0（卡先後命中）；此時既變灰也換走姿
+    expect(isActorAsleep({ hibernating: 5, sleepwalkDays: 5 })).toBe(true);
   });
 
   it('★★ 夢遊/冬眠中的棋子画成灰的（`_rich4_convert_sprite` 的近似）', () => {
@@ -936,3 +1000,38 @@ describe('★ Q-LAND-1 ②：旋转视角 —— 三类景物都换图，装饰�
   });
 });
 
+
+describe('★ T-047：替身冬眠变灰（`record + 12`）@source `rich4.asm:1533`', () => {
+  it('`actorTokens` 把 `hibernating != 0` 的槽标成 `frozen`', () => {
+    const nodes = lineNodes(4);
+    const base = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 1 })],
+      specialActors: initialSpecialActors().map((a, i) =>
+        i < 4 ? { ...releaseNpc(i + 1, i, 0) } : a,
+      ),
+    });
+    const opts = { view: 0, walking: () => false };
+    const before = actorTokens(base, nodes, opts);
+    expect(before.map((t) => t.frozen)).toEqual([false, false, false, false]);
+
+    const specialActors = base.specialActors.map((a, i) => (i === 2 ? { ...a, hibernating: 5 } : a));
+    const after = actorTokens({ ...base, specialActors }, nodes, opts);
+    expect(after.map((t) => t.frozen)).toEqual([false, false, true, false]);
+  });
+
+  it('★ 绘制那一条必须在 `drawImage` 两侧设/清 filter（否则会漏到建筑）', () => {
+    const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
+    for (const marker of [
+      'if (t.frozen) ctx.filter = ASLEEP_FILTER;',
+      "if (t.frozen) ctx.filter = 'none';",
+    ]) {
+      expect(src, `缺标记：${marker}`).toContain(marker);
+    }
+    // 两个标记必须夹着那一次 `ctx.drawImage(`
+    const a = src.indexOf('if (t.frozen) ctx.filter = ASLEEP_FILTER;');
+    const b = src.indexOf("if (t.frozen) ctx.filter = 'none';");
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(a);
+    expect(src.slice(a, b)).toContain('ctx.drawImage(');
+  });
+});

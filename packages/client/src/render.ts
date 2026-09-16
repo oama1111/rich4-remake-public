@@ -125,16 +125,47 @@ function characterColor(state: GameState, owner: number): readonly [number, numb
 const PLAYER_COLORS = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
 
 /**
- * 夢遊/冬眠中的棋子该不该**画成灰的**。
+ * **冬眠**中的棋子该不该**画成灰的**（玩家）。
  *
- * @source `_rich4_convert_sprite`（VA 0x004555c5）的调用点：
- *   玩家 `+0x36`（`days_sleeping`）非 0 → VA 0x004087d7；
- *   替身 `record + 0x12` 非 0 → VA 0x004089f6。
- *   本引擎的对应字段：玩家 = `blocking.sleeping`；替身那一位**没有可信来源**
- *   （见 deviations D-T047-2），故这里只收玩家那一条。
+ * @source `_rich4_convert_sprite`（VA 0x004555c5）的**玩家**调用点
+ *   `rich4.asm:1393`：
+ * ```asm
+ * 004087d7  imul eax, ebx, 0x68            ; ebx = 玩家下标
+ *           cmp byte [eax + 0x496b9e], 0   ; ★ +0x36 = days_sleeping
+ *           je  short loc_004087e6
+ *           test byte [esi + 0x498ea0], 0x40 / jne …   ; 这一槽已经转过了
+ *           call _rich4_convert_sprite
+ *           or  byte [esi + 0x498ea0], 0x40            ; 记下「已转」
+ * ```
+ * ⇒ 判据是 `blocking.sleeping`（= `+0x36`）= **冬眠**，
+ *   **不是** `sleepWalking`（`+0x37`）—— 夢遊走的是另一条视觉（换 `+3` 走姿图组，
+ *   见 `specialActorImageSet`）。
  */
 export function isAsleep(blocking: { sleeping: number }): boolean {
   return blocking.sleeping !== 0;
+}
+
+/**
+ * **冬眠**中的**替身**（四大惡人）该不该画成灰的。
+ *
+ * @source `rich4.asm:1533`（`loc_004089c6`）：
+ * ```asm
+ * 004089c6  mov eax, ebx
+ *           shl eax, 4                      ; 记录步长 16（ebx = 槽 0..3）
+ *           cmp byte [eax + 0x498e34], 0    ; ★ 记录基址 0x498e28 + 12 = 冬眠计数
+ *           je  short loc_00408a05
+ *           test byte [edi + 0x498ea0], 0x40 / jne …   ; 已转过就跳过
+ *           call _rich4_convert_sprite
+ *           or  byte [edi + 0x498ea0], 0x40
+ * ```
+ * `0x498e34 − 0x498e28 = 12` ⇒ 字段就是**替身记录 `+12`**
+ * （= 本引擎的 `SpecialActor.hibernating`，由冬眠卡的 actor 分支写入 ——
+ * 见 `cards/hibernate.ts` 的 `hibernateActors`）。
+ *
+ * ⚠️ 本引擎的 `hibernating` **可省略**（=未定义即 0），故这里用 `?? 0`。
+ */
+export function isActorAsleep(actor: { hibernating?: number; sleepwalkDays?: number }): boolean {
+  return (actor.hibernating ?? 0) !== 0;
 }
 
 /**
@@ -411,9 +442,11 @@ export function drawKey(screenY: number, klass: number): number {
  * 每组的站姿图都是 **8 张（8 向各 1 帧）**、走姿图是 8 向 × N 帧，正好对上
  * 绘制那边 `图数 >> 3 = 每向帧数` 的算法（见 `directionalImage`）。
  *
- * ⚠️ 每组还有 `+2`（載具）与 `+3`（夢遊用的走姿）两张变体，本引擎的
- *   `SpecialActor` 里没有对应的状态字段（原版是 `+12/+13` 两个天数计数器），
- *   故不接 —— 见 `docs/deviations/T-047.md`。
+ * ★ 每组还有 `+2`（載具）与 `+3`（夢遊用的走姿）两张变体。两张都**已接**：
+ *   `+2` 读脚下节点的 bit31（见 `specialActorImageSet` 的 `vehicle`），
+ *   `+3` 读替身记录 `+13`（= `SpecialActor.sleepwalkDays`，2026-09-16
+ *   梦游卡的替身写入来源接上之后才可能为真）。
+ *   两张**只换走姿**，站姿不变 @source 0x0040bd5c（`+3`）/ 0x0040bdd6（`+2`）。
  */
 export const SPECIAL_ACTOR_SPRITE_BASE = 0x16c;
 
@@ -440,24 +473,41 @@ export const DOLL_WALK_RESOURCE = 0x20a;
  *   —— 即 `node.flags & 0x80000000`，本引擎解析成 `MapNode.noObjects`
  *   （见 `loaders/map.ts:504`）。置位时**走姿**换成「资源 + 2」（同一个 NPC
  *   骑在载具上的样子）；站姿不变。
- *   @source `_rich4_update_player_sprite` VA 0x0040bdd6-0x0040be45
+ * @param sleepwalking 原版替身记录 `+13`（`days_sleep_walking`）非 0 ——
+ *   **夢遊走姿换成「资源 + 3」**（另一套 17 帧走路循环）。
+ *   @source `_rich4_update_player_sprite` VA 0x0040bd5c 与 0x0040bdcb：
+ *   ```asm
+ *   0040bd58  cmp byte [eax + 0x498df5], 0   ; +13 = days_sleep_walking
+ *   0040bd5f  je  short 常规那一支
+ *   0040bd61  add edi, 3                     ; ★ 走姿 = edi + 3（另一套循环）
+ *   ```
+ *   注意判据是**走姿那一支**：站姿（`[0x498eb4]`）仍走 `edi`。
+ * @source `_rich4_update_player_sprite` VA 0x0040bdd6-0x0040be45（載具）
  * @returns 资源号；**不是替身**（玩家 0..3、越界）返回 null
  *
  * ★ 2026-09-16 接线（外部审查 D-T047-2/-3）：载具那一支原先是**有意不做**
  *   （读不清）。现按 `+2` 的写入口对齐：那一支把 `edi + 2` 读进走姿槽
  *   （`[0x498ec0]`，`add edi, 2` @source 0x0040be3f），而站姿槽
  *   （`[0x498eb4]`，`push edi` @0x0040bdd6 之后那一支）仍走常规。
- *   `+3`（夢遊走姿）要看替身记录 `+13`，本引擎的 `SpecialActor` 有
- *   `sleepwalkDays` 字段但没有可信的写入来源（两张卡的目标索引空间还没核清），
- *   故仍不接 —— 见 deviations。
+ *   `+3`（夢遊走姿）同一天也接上了：写入来源在 `cards/sleepwalk.ts` 的
+ *   `applySleepwalkCardToActor()`（`registry.ts` 卡 16 的 actor 分支），
+ *   字段是 `SpecialActor.sleepwalkDays`。
+ *
+ * ⚠️ `+2` 与 `+3` 同时成立时原版的**先后**：`+13` 那一支（0x0040bd5c）
+ *   在节点 bit31 那一支（0x0040bdd6）**之前**，两处都是 `add edi, N` 后
+ *   直接落走姿槽、**不做二次判断**，故 **`+3` 优先**（夢遊中不会骑载具 ——
+ *   替身本来就没有载具字段，`+2` 只是画张骑车图）。这里照此序实现。
  */
 export function specialActorImageSet(
   actor: number,
   walking: boolean,
   vehicle = false,
+  sleepwalking = false,
 ): number | null {
   // @source VA 0x0040bd51：edi = actor×4 + 0x16c
   if (actor >= SPECIAL_ACTOR_BASE && actor < ACTOR_DOLL) {
+    // ★ 顺序照原版：+13（夢遊）先于 bit31（載具），两者都只换走姿
+    if (walking && sleepwalking) return SPECIAL_ACTOR_SPRITE_BASE + actor * 4 + 3;
     if (walking && vehicle) return SPECIAL_ACTOR_SPRITE_BASE + actor * 4 + 2;
     return SPECIAL_ACTOR_SPRITE_BASE + actor * 4 + (walking ? 1 : 0);
   }
@@ -619,6 +669,13 @@ export interface ActorToken {
   frame: number;
   /** 这一帧用走姿图组吗 */
   walking: boolean;
+  /**
+   * ★ **冬眠中**（替身记录 `+12`）—— 绘制时要套 `ASLEEP_FILTER` 去色。
+   *
+   * @source `rich4.asm:1533` `cmp byte [eax + 0x498e34], 0` → `_rich4_convert_sprite`。
+   * 与「夢遊走姿」（`+13`）是**两个不同的字段**：冬眠画成灰、夢遊换走姿图组。
+   */
+  frozen: boolean;
   /** 绘制槽类别：当前行动者 0xd，其余 0x8 */
   klass: number;
 }
@@ -751,7 +808,11 @@ export function actorTokens(
     const walking = onBoard ? walkingOf(slot) : true;
     // ★ 载具那一支读的是**脚下节点**的 bit31（= `noObjects`）
     //   @source VA 0x0040bdd6 `test byte [node + 0x27], 0x80`
-    const resource = specialActorImageSet(actor, walking, node.noObjects === true);
+    // ★ 夢遊走姿（+3）读替身记录 `+13` —— 只有**在盘上**的才有记录可读
+    const asleep = onBoard && (a?.sleepwalkDays ?? 0) !== 0;
+    const resource = specialActorImageSet(actor, walking, node.noObjects === true, asleep);
+    // ★ 冬眠变灰（`record + 12`）—— 与「夢遊走姿」是两个不同的字段，别合并
+    const frozen = onBoard && isActorAsleep(a ?? {});
     if (resource === null) continue;
     out.push({
       slot,
@@ -763,6 +824,8 @@ export function actorTokens(
       screenDir: screenDirection(direction, opts.view),
       frame: walking ? frameOf(slot) : 0,
       walking,
+      /** ★ 冬眠中 —— 绘制时套 `ASLEEP_FILTER`（原版 `_rich4_convert_sprite`）*/
+      frozen,
       klass: current === actor ? DRAW_CLASS.currentPlayer : DRAW_CLASS.npc,
     });
   }
@@ -2283,6 +2346,10 @@ export class BoardRenderer {
       slots.push({
         key: drawKey(p.y, t.klass),
         paint: () => {
+          // ★ 冬眠中画成灰 —— 与玩家那一条同一套 filter，且必须在 drawImage
+          //   **两侧**设/清，免得漏到后面所有绘制（建筑、别的棋子）
+          //   @source VA 0x004089c6 的 `_rich4_convert_sprite`
+          if (t.frozen) ctx.filter = ASLEEP_FILTER;
           ctx.drawImage(
             sp.bitmap,
             p.x - sp.anchorX * k,
@@ -2290,6 +2357,7 @@ export class BoardRenderer {
             sp.width * k,
             sp.height * k,
           );
+          if (t.frozen) ctx.filter = 'none';
         },
       });
     }

@@ -244,6 +244,27 @@ export type Action =
       cashRatio?: number;
       stockRatio?: number;
     }
-  | { type: 'endTurn' };
+  | { type: 'endTurn' }
+  /**
+   * ★ 回合边界的**一个**惡人走一趟（T-047 串行化，2026-09-16）。
+   *
+   * 原版的回合推进是**一条游标**（`[0x49910c]`）：0..3 是四名玩家，
+   * 越过最后一名玩家后游标继续走到 **4..7**（棋盘上的四大惡人），
+   * 每一个都**单独**获得一次「掷骰走子」机会，走完才轮到下一个；
+   * 游标到 8 时回到 0，**那一刻**才推进日期（`fcn_0041cf67`）。
+   * 见 `rich4.asm:11766-11782`（`loc_00418f93`）与 `:11826`（`test ebx,ebx`）。
+   *
+   * ⚠️ 先前本引擎把这一整段塞在 `endTurn` 的**一次** reduce 里
+   *   （`npcRound` 顺序跑完所有在盘惡人），于是表现层拿到同一批
+   *   `lastNpcWalks`，四个惡人**并排滑**。现在拆成逐条 action：
+   *   `endTurn` 只把「还有哪些槽要走」记进 `GameState.pendingNpcSlots`
+   *   并立刻走第一个；之后每派一条 `npcStep` 走**一个**，走完最后一个才
+   *   推日期、轮到下一位玩家。
+   *
+   * 与 `endTurn` 同样是**引擎自行推进**的 action（见 `autoAction`）：
+   * 没有任何选择余地，热座 UI / AI / 联机三条驱动都该先问 `autoAction`。
+   * 非法时不改变状态（相位不是 `turnEnd`、或队列为空 → 原样返回）。
+   */
+  | { type: 'npcStep' };
 
 export type ActionType = Action['type'];

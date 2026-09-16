@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
-import { pickNextNode, reduce, type MapTopology } from './reduce.ts';
+import { autoAction, pickNextNode, reduce, type MapTopology } from './reduce.ts';
 import {
   ACTOR_PLACE,
   DOLL_STEPS,
@@ -113,6 +113,131 @@ describe('★ 一輪结束时惡人走一趟', () => {
     const b = reduce(withThief({ rngState: 77 }), { type: 'endTurn' }, ring);
     expect(a.specialActors).toEqual(b.specialActors);
     expect(a.rngState).toBe(b.rngState);
+  });
+});
+
+describe('★ D-T047-5 串行化：一輪的惡人**逐个**走，不是并排滑', () => {
+  /** 四个惡人全在盘上（各站一格），玩家 3 是最后一名 —— endTurn 就该开始惡人段 */
+  function fourVillains(over: Partial<GameState> = {}): GameState {
+    const s = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
+      phase: 'turnEnd',
+      currentPlayer: 3,
+      ...over,
+    });
+    const specialActors = [...s.specialActors];
+    for (let slot = 0; slot < 4; slot++) {
+      // `releaseNpc(gateNodeId, owner, steps)` —— 让每个惡人站在**自己的**格上
+      specialActors[slot] = {
+        ...releaseNpc(slot + 1, slot + 4, 0),
+        stepsRemaining: 0,
+      };
+    }
+    return { ...s, specialActors };
+  }
+
+  it('★ `endTurn` 只走**第一个**惡人，并把剩下的记进 `pendingNpcSlots`', () => {
+    const s = fourVillains({ rngState: 7 });
+    const after = reduce(s, { type: 'endTurn' }, ring);
+    // ⚠️ 先前这里是一次把 4 个全走完（`lastNpcWalks` 有 4 条、四个并排滑）
+    expect(after.lastNpcWalks).toHaveLength(1);
+    expect(after.lastNpcWalks[0]!.slot).toBe(0);
+    expect(after.pendingNpcSlots).toEqual([1, 2, 3]);
+    // 相位停在 turnEnd —— 还没轮到下一位玩家
+    expect(after.phase).toBe('turnEnd');
+    // ★ 日期**没**推（原版是游标到 8 才 `call 0x41cf67`）
+    expect(after.day).toBe(s.day);
+    expect(after.totalDays).toBe(s.totalDays);
+    // 还没走的那三个一步没动
+    for (let slot = 1; slot < 4; slot++) {
+        expect(after.specialActors[slot]!.nodeId).toBe(slot + 1);
+    }
+  });
+
+  it('★ 每一条 `npcStep` 只走一个，且 `lastNpcWalks` 每次只有**那一条**', () => {
+    let s = reduce(fourVillains({ rngState: 7 }), { type: 'endTurn' }, ring);
+    const walked: number[] = [s.lastNpcWalks[0]!.slot];
+    for (let i = 0; i < 3; i++) {
+      s = reduce(s, { type: 'npcStep' }, ring);
+      expect(s.lastNpcWalks, `第 ${i + 2} 个`).toHaveLength(1);
+      walked.push(s.lastNpcWalks[0]!.slot);
+    }
+    // 顺序 = 槽位升序（原版游标 4→5→6→7）
+    expect(walked).toEqual([0, 1, 2, 3]);
+    expect(s.pendingNpcSlots).toEqual([]);
+  });
+
+  it('★ 最后一个走完才推日期并轮到下一位玩家', () => {
+    const start = fourVillains({ rngState: 7 });
+    let s = reduce(start, { type: 'endTurn' }, ring);
+    for (let i = 0; i < 2; i++) {
+      s = reduce(s, { type: 'npcStep' }, ring);
+      expect(s.day, `第 ${i + 2} 步不该推日期`).toBe(start.day);
+      expect(s.phase).toBe('turnEnd');
+    }
+    s = reduce(s, { type: 'npcStep' }, ring); // 第 4 个
+    expect(s.day).toBe(start.day + 1); // ★ 现在才推
+    expect(s.totalDays).toBe(start.totalDays + 1);
+    expect(s.phase).toBe('turnStart');
+    expect(s.currentPlayer).toBe(0); // 绕回 0 号玩家
+    expect(s.pendingNpcSlots).toEqual([]);
+  });
+
+  it('★ `autoAction` 在惡人段优先派 `npcStep`（不然下家会插到惡人前面）', () => {
+    const s = reduce(fourVillains({ rngState: 7 }), { type: 'endTurn' }, ring);
+    expect(autoAction(s)).toEqual({ type: 'npcStep' });
+    // 走完最后一个之后才轮到 endTurn
+    let t = s;
+    for (let i = 0; i < 3; i++) t = reduce(t, { type: 'npcStep' }, ring);
+    expect(t.phase).toBe('turnStart');
+  });
+
+  it('★ 队列为空时 `npcStep` 是幂等的（重复派不会多走）', () => {
+    const s = reduce(fourVillains({ rngState: 7 }), { type: 'endTurn' }, ring);
+    expect(reduce(s, { type: 'npcStep' }, ring).pendingNpcSlots).toEqual([2, 3]);
+    const atTurnStart = { ...s, phase: 'turnStart' as const, pendingNpcSlots: [] };
+    expect(reduce(atTurnStart, { type: 'npcStep' }, ring)).toBe(atTurnStart);
+  });
+
+  it('★ 只有**一**个惡人在盘上时，两次 action 就走完并推日期（等价旧行为）', () => {
+    const s = withThief({ rngState: 7 });
+    // withThief 的 currentPlayer 是 1（两人局里的最后一名）
+    const afterFirst = reduce(s, { type: 'endTurn' }, ring);
+    expect(afterFirst.pendingNpcSlots).toEqual([]); // 只有一个，endTurn 里就走完
+    expect(afterFirst.day).not.toBe(s.day); // 日期已推
+    expect(afterFirst.phase).toBe('turnStart');
+  });
+
+  it('★ 队列里过期的槽会被跳过（这一轮中间被抓回老家）', () => {
+    const s = reduce(fourVillains({ rngState: 7 }), { type: 'endTurn' }, ring);
+    // 人为把 1 号槽从盘上撤掉（模拟中途回家）—— 走它时应当跳过、不炸
+    const specialActors = [...s.specialActors];
+    specialActors[1] = { ...specialActors[1]!, place: ACTOR_PLACE.prison };
+    const t = reduce({ ...s, specialActors }, { type: 'npcStep' }, ring);
+    // ★ 一条 action 只走**一个**惡人：跳过 1 号（不在盘上），走到 2 号为止
+    expect(t.pendingNpcSlots).toEqual([3]);
+    expect(t.lastNpcWalks).toHaveLength(1);
+    expect(t.lastNpcWalks[0]!.slot).toBe(2); // 跳过了 1
+    // 2 号真的动了，3 号一步没动
+    expect(t.specialActors[2]!.nodeId).toBeGreaterThan(3);
+    expect(t.specialActors[3]!.nodeId).toBe(4);
+  });
+
+  it('★ 惡人段没走完时 `endTurn` **不动状态**（否则同一轮惡人会走两遍）', () => {
+    const s = reduce(fourVillains({ rngState: 7 }), { type: 'endTurn' }, ring);
+    expect(s.pendingNpcSlots).toEqual([1, 2, 3]);
+    const again = reduce(s, { type: 'endTurn' }, ring);
+    expect(again).toBe(s);
+    // 计数也没被 tick 第二次
+    expect(again.specialActors.map((a) => a.stepsRemaining)).toEqual(
+      s.specialActors.map((a) => a.stepsRemaining),
+    );
+  });
+
+  it('★ 相位不是 turnEnd 时 `npcStep` 不动状态', () => {
+    const s = reduce(fourVillains({ rngState: 7 }), { type: 'endTurn' }, ring);
+    const moving = { ...s, phase: 'moving' as const };
+    expect(reduce(moving, { type: 'npcStep' }, ring)).toBe(moving);
   });
 });
 

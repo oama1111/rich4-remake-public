@@ -373,6 +373,9 @@ export function newGame(opts: NewGameOptions): GameState {
     currentPlayer: 0,
     phase: 'turnStart',
     priceIndex: INITIAL_PRICE_INDEX,
+    // ★ 本局选中的开局资金档位 —— 两处规则直接读它
+    //   （`update_price_index` 的除数、AI 买地保留额的基数），见 types.ts 的注释
+    initialFund,
     dice: [],
     stepsRemaining: 0,
     stepsTotal: 0,
@@ -418,8 +421,10 @@ export function newGame(opts: NewGameOptions): GameState {
     prisonOccupancy: initialConfinement('prison', CONFINEMENT_SLOTS),
     hospitalOccupancy: initialConfinement('hospital', CONFINEMENT_SLOTS),
     lastEvent: null,
-    // 纯表现提示：开局没人走过（见 state/types.ts 的 GameState.lastNpcWalks）
+    // 純表現提示：開局沒人走過（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
+    // 回合边界的惡人队列：开局是空的（还没绕过一圈）
+    pendingNpcSlots: [],
     lottery: emptyLottery(),
     pending: null,
     tools,

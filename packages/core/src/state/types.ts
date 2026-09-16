@@ -339,6 +339,23 @@ export interface GameState {
   priceIndex: number;
 
   /**
+   * 本局**选中的开局资金档位** @source 全局 `_rich4_game_initial_fund` `[0x49908c]`。
+   *
+   * ★ 为什么必须进状态：它不只是「发多少钱」—— 有两处**规则**直接读它：
+   *   1. `update_price_index`（VA 0x00423acf）拿它当除数：
+   *      `fild 全体身家 / fild [0x49908c]` ⇒ **档位越小、通胀越快**，
+   *      它是难度旋钮（见 `rules/wealth.ts`）；
+   *   2. AI 买地的保留额 `aiShouldPurchase(player, price, [0x49908c], priceIndex)`
+   *      （= 开局资金 × 5%，见 `rules/purchase.ts`）。
+   *
+   * ⚠️ 先前这两处都硬编码 `DEFAULT_INITIAL_FUND`（30 万）—— 玩家在开局設定
+   *   选 3 万档时，通胀与 AI 门槛仍按 30 万算。2026-09-16 起改读本字段。
+   *
+   * 取值是 `rules/setup.ts` 的 `GAME_INITIAL_FUNDS` 之一。
+   */
+  initialFund: number;
+
+  /**
    * 開局的「土地權限」档位 0..5（無限期 / 2年 / 1年 / 6個月 / 3個月 / 1個月）。
    * @source `[0x499110]`（開局 `mov [0x499110], [0x46cb48]`，VA 0x00407373）；
    *   買地/買設施时按它查年限表 `0x004751f0` 写到期日。见 rules/facility.ts。
@@ -557,6 +574,26 @@ export interface GameState {
    *     的规则可见部分，读了它反而是把表现混进确定性重放（C-DET-4）。
    */
   lastNpcWalks: NpcWalkHint[];
+
+  /**
+   * 回合边界上**还没轮到走的四大惡人**槽位（= actor − 4，只有 0..3）。
+   *
+   * ★ 为什么要有它：原版回合推进是**一条游标**（`[0x49910c]`），越过最后一名
+   *   玩家后继续 4→7、每个惡人**单独**走一趟，游标到 8 才回到 0 并推日期
+   *   （@source `rich4.asm:11766-11782` 与 `:11826 test ebx,ebx`）。
+   *   本引擎的 `currentPlayer` 只装 0..3，故把「这一輪还没走的惡人」放在这里，
+   *   由 `endTurn` 填、`npcStep` 逐个消费（见 `docs/deviations/T-047.md` 的 D-T047-5）。
+   *
+   * ⚠️ **这一份是规则的一部分**（不像 `lastNpcWalks`）：它决定「还没走完」，
+   *   进了它就必须等 `npcStep` 走完才轮到下一位玩家。故：
+   *   - 进存档 / 联机同步（它是可见的相位信息，不是表现提示）；
+   *   - 但**不进 `stateFingerprint`**？—— 不，**要进**：两台机器如果在
+   *     「游标停在第几个惡人」上不一致，那是**规则分歧**，必须被指纹抓到。
+   *     （`lastNpcWalks` 那种纯表现才排除；见那条字段的注释。）
+   *
+   * 空数组 = 这一輪的惡人已经走完（或本来就没人在盘上）。
+   */
+  pendingNpcSlots: number[];
 
   /**
    * 樂透号码表，36 项；值 = 持有者下标 + 1，0 表示未售出。

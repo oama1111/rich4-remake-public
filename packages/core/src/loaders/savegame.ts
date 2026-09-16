@@ -33,7 +33,7 @@ import { OBJECT_COUNT } from '../rules/objects.ts';
 import { STOCKS_PER_MAP } from '@rich4/data';
 import { emptyTools, initialToolStock, TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
 import { CONFINEMENT_SLOTS } from '../rules/confinement.ts';
-import { NO_WIN_CONDITIONS } from '../rules/setup.ts';
+import { DEFAULT_INITIAL_FUND, NO_WIN_CONDITIONS } from '../rules/setup.ts';
 
 /** 存档格式版本。字段有增删就 +1，并在 `migrate` 里补上迁移。 */
 export const SAVE_FORMAT_VERSION = 1;
@@ -292,6 +292,8 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     currentPlayer: Math.min(Math.max(save.currentPlayer, 0), n - 1),
     phase: 'turnStart',
     priceIndex: save.priceIndex,
+    // 本局开局资金档位（存档 0x268a）；老档 / 自制档里是 0 时退回默认档
+    initialFund: save.initialFund > 0 ? save.initialFund : DEFAULT_INITIAL_FUND,
     dice: [],
     stepsRemaining: 0,
     stepsTotal: 0,
@@ -340,6 +342,8 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     lastEvent: null,
     // 纯表现提示：读档后不播「上一局那趟」（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
+    // 回合边界的惡人队列：读档回到回合边界也是空的（重新起算）
+    pendingNpcSlots: [],
     lottery: emptyLottery(),
     pending: null,
     tools,

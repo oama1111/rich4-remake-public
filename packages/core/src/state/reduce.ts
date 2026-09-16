@@ -10,7 +10,7 @@
  */
 
 import type { Action } from './actions.ts';
-import type { GameState, NpcWalkHint, Player } from './types.ts';
+import type { GameState, Player } from './types.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 import { isAiControlled, isAlive } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
@@ -665,57 +665,129 @@ export function directionOf(dx: number, dy: number): number {
 }
 
 /**
- * 一輪结束时四大惡人各走一趟 @source 0x00418f93（下一名行动者依次轮到棋盘上的 4..7）
- * + 0x0040dd1f（步数：停留 0 / 龜行 1 / 其余 rand()%9+2）+ tick_blocking 的 actor 分支。
- * 每个人：先走一天计数，再定步数，再逐格结算（与保釋当场那趟同一条 `runNpc`）。
+ * 这一輪还有哪些惡人要走 —— 在盘上的槽位（0..3），按**槽位升序**。
+ *
+ * @source `rich4.asm:11766-11782`（`loc_00418f93`）那条游标：越过最后一名玩家后
+ * `[0x49910c]` 依次取 4..7，每个都查 `cmp byte [eax + 0x498df2], 0`（`+10` = 在盘上）
+ * —— 不在盘上的**跳过**（游标继续往下走，不给它这一趟）。
+ *
+ * ⚠️ 原版的游标在 4..7 之间**逐个停下来走一趟**，不是一次走完；本引擎把
+ *   「还有哪些」记进 `GameState.pendingNpcSlots`，由 `npcStep` 逐个消费。
  */
-function npcRound(state: GameState, topo: MapTopology): GameState {
-  let s = state;
-  // ★ 本轮替身走出来的整趟路径 —— 纯表现提示，覆写 `GameState.lastNpcWalks`
-  //   （见那里的注释）。`runNpc` 的中间格只有这里能拿到，渲染器事后推不出来。
-  const walks: NpcWalkHint[] = [];
+function activeNpcSlots(state: GameState): number[] {
+  const out: number[] = [];
   for (let slot = 0; slot < NPC_ACTORS.length; slot++) {
-    const actor = s.specialActors[slot];
-    if (!actorActive(actor)) continue;
-    const actorId = SPECIAL_ACTOR_BASE + slot;
-    const rng = new WatcomRng();
-    rng.setState(s.rngState);
-    const ticked = tickNpcCounters(actor!);
-    const steps = npcTurnSteps(ticked, rng);
-    const put = (st: GameState, a: SpecialActor): GameState => {
-      const specialActors = [...st.specialActors];
-      specialActors[slot] = a;
-      return { ...st, specialActors };
-    };
-    if (steps === 0) {
-      s = put({ ...s, rngState: rng.getState() }, ticked);
-      continue;
-    }
-    const walk = runNpc(
-      actorId,
-      { ...ticked, stepsRemaining: steps },
-      s,
-      topo,
-      (from, prev) => pickNextNode(topo, from, prev, rng) ?? 0,
-      rng,
-    );
-    const settled = applyNpcEvents(s, ticked.owner, walk.events);
-    // ★ 把这一趟原样记给表现层（覆写，不累积）—— 只在这一轮里有效
-    walks.push({ slot, path: walk.path });
-    let next = put({ ...settled.state, rngState: rng.getState() }, walk.actor);
-    const home = walk.events.find((e) => e.kind === 'home');
-    if (home !== undefined) {
-      const back = [...(home.place === 'prison' ? next.prisonOccupancy : next.hospitalOccupancy)];
-      back[actorId] = 1;
-      next = home.place === 'prison' ? { ...next, prisonOccupancy: back } : { ...next, hospitalOccupancy: back };
-    }
-    for (const who of settled.bankrupted) next = applyBankruptcy(next, who, topo);
-    s = next;
-    if (s.phase === 'gameOver') break;
+    if (actorActive(state.specialActors[slot])) out.push(slot);
   }
-  // ★ 覆写整份：`[]` 也是覆写 —— 这一轮没人走，就把上一轮的路径收掉，
-  //   免得渲染器/宿主拿着过期的提示。纯表现字段，改它不影响任何规则（C-DET）。
-  return { ...s, lastNpcWalks: walks };
+  return out;
+}
+
+/**
+ * 讓**一个**惡人走一趟 @source 0x0040dd1f（步数：停留 0 / 龜行 1 / 其余 rand()%9+2）
+ * + `tick_blocking` 的 actor 分支（他**轮到时**先走一天计数）。
+ *
+ * 与保釋当场那一趟同一条 `runNpc`；不同点是这一条**只看一个槽**，
+ * 好让表现层拿到「一趟一条」的 `lastNpcWalks`（串行播放，T-047 的 D-T047-5）。
+ *
+ * 返回 `null` 表示这个槽不在了（不在盘上 / 已出局），调用方跳过它。
+ */
+function npcStepOnce(
+  state: GameState,
+  topo: MapTopology,
+  slot: number,
+): GameState | null {
+  const actor = state.specialActors[slot];
+  if (!actorActive(actor)) return null;
+  const actorId = SPECIAL_ACTOR_BASE + slot;
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const ticked = tickNpcCounters(actor!);
+  const steps = npcTurnSteps(ticked, rng);
+  const put = (st: GameState, a: SpecialActor): GameState => {
+    const specialActors = [...st.specialActors];
+    specialActors[slot] = a;
+    return { ...st, specialActors };
+  };
+  if (steps === 0) {
+    // 停留（`+14 halted != 0`）：这一趟不走，但计数照样走了一天
+    return put({ ...state, rngState: rng.getState(), lastNpcWalks: [] }, ticked);
+  }
+  const walk = runNpc(
+    actorId,
+    { ...ticked, stepsRemaining: steps },
+    state,
+    topo,
+    (from, prev) => pickNextNode(topo, from, prev, rng) ?? 0,
+    rng,
+  );
+  const settled = applyNpcEvents(state, ticked.owner, walk.events);
+  let next = put(
+    // ★ 覆写（不累积）：这一条 action 只走了一个惡人，表现层就只该看到一个
+    { ...settled.state, rngState: rng.getState(), lastNpcWalks: [{ slot, path: walk.path }] },
+    walk.actor,
+  );
+  const home = walk.events.find((e) => e.kind === 'home');
+  if (home !== undefined) {
+    const back = [...(home.place === 'prison' ? next.prisonOccupancy : next.hospitalOccupancy)];
+    back[actorId] = 1;
+    next = home.place === 'prison' ? { ...next, prisonOccupancy: back } : { ...next, hospitalOccupancy: back };
+  }
+  for (const who of settled.bankrupted) next = applyBankruptcy(next, who, topo);
+  return next;
+}
+
+/**
+ * 回合边界的惡人段 —— 走**下一位**，走完最后一个才推日期并轮到下一位玩家。
+ *
+ * @source `rich4.asm:11766-11832`：
+ * ```asm
+ * 00418f93  xor ebx, ebx                    ; ebx = 0：还没绕回 0 号玩家
+ * 00418f95  current_player++                ; 0→1→2→3→4→…→7→8
+ * 00418fa2  if (current_player == num_players) current_player = 4   ; ★ 跳到第一个惡人
+ * 00418fb6  if (current_player == 8) { current_player = 0; ebx = 1 } ; ★ 绕回来了
+ * 00418fca… at 4..7: 查 +10 在不在盘上，不在就 ++ 继续
+ * 0041902a  if (ebx) call 0x41cf67          ; ★ 只有绕回来那一次才推日期
+ * ```
+ * 本引擎的 `currentPlayer` 只装 0..3（玩家），惡人那一段由 `pendingNpcSlots`
+ * 表示 —— 顺序与上面那条游标**同序**（槽位升序），推日期也压在最后一个之后。
+ */
+function npcRoundStep(state: GameState, topo: MapTopology, next: number): GameState {
+  let rest = state.pendingNpcSlots ?? [];
+  let done: GameState = state;
+  // ★ 一条 action **只走一个**惡人 —— 表现层要靠这个粒度一趟一趟播。
+  //   队列里可能有**过期**的槽（这一輪中间被保釋回家/被抓回去），
+  //   那些**跳过**、不占这一条 action（原版游标 `+10 == 0` 的才停）。
+  while (rest.length > 0) {
+    const slot = rest[0]!;
+    rest = rest.slice(1);
+    const stepped = npcStepOnce(state, topo, slot);
+    if (stepped !== null) {
+      done = stepped;
+      break;
+    }
+    // 这个槽不在盘上了：把这一格空转掉，继续看下一个
+    done = { ...state, pendingNpcSlots: rest, lastNpcWalks: [] };
+  }
+  if (done.phase === 'gameOver') return { ...done, pendingNpcSlots: [] };
+  // 还有惡人没走 —— 停在 turnEnd 等下一条 `npcStep`（**不**换玩家、**不**推日期）
+  if (rest.length > 0) return { ...done, pendingNpcSlots: rest };
+  // ★ 最后一个走完了 —— 这一輪到此结束：推日期（含物价指数 / 行情 / 開獎 / 月結），
+  //   然后轮到下一位玩家。原版那两件事在**同一次**游标推进里
+  //   （`rich4.asm:11826 call 0x41cf67` 之后才 `ret`，下一轮从 `currentPlayer` 起算）。
+  const rolled = advanceGameDay({ ...done, pendingNpcSlots: [] }, topo);
+  if (rolled.phase === 'gameOver') return rolled;
+  // ★ 下一位玩家由**调用方**算好传进来（`endTurn` 里已经算过 `nextAlivePlayer`）——
+  //   在这一段里再算一遍会看到惡人段开始之后才变化的状态，与原版那条游标不同。
+  return {
+    ...rolled,
+    currentPlayer: next,
+    phase: 'turnStart',
+    pending: null,
+    dice: [],
+    stepsRemaining: 0,
+    stepsTotal: 0,
+    turnCount: state.turnCount + 1,
+  };
 }
 
 /**
@@ -1473,8 +1545,29 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       });
     }
 
+    /**
+     * 回合边界的**一个**惡人走一趟（T-047 串行化）。
+     *
+     * 与 `endTurn` 一样是引擎自行推进的那一类（见 `autoAction`）：没有任何
+     * 选择余地。合法条件 = 相位 `turnEnd` 且 `pendingNpcSlots` 非空；
+     * 其余情况原样返回（幂等，重复派不会多走）。
+     *
+     * @source `rich4.asm:11766-11832`：游标 4..7 逐个停一次，走完最后一个
+     *   （游标到 8、`ebx = 1`）才 `call 0x41cf67` 推日期。
+     */
+    case 'npcStep': {
+      if (state.phase !== 'turnEnd') return state;
+      if ((state.pendingNpcSlots ?? []).length === 0) return state;
+      // 下一位玩家 = 当前玩家之后的第一个在场者（`endTurn` 里那一条同源）
+      return npcRoundStep(state, topo, nextAlivePlayer(state, state.currentPlayer));
+    }
+
     case 'endTurn': {
       if (state.phase !== 'turnEnd') return state;
+      // ★ 惡人段没走完之前不许 `endTurn`：那会把同一輪的惡人再走一遍
+      //   （计数被 tick 两次、`lastNpcWalks` 被覆写成第二批）。这段时间属于
+      //   `npcStep` —— 见 `npcRoundStep` 与 `autoAction` 的注释（D-T047-5）。
+      if ((state.pendingNpcSlots ?? []).length > 0) return state;
 
       // 递减当前玩家的阻碍计数。
       // ★ 时机已查清（原 TODO）：`00419039 call 0x41c84f`，参数是
@@ -1507,21 +1600,46 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       //     且在勝負判定**之后**）—— 达标那天不再更新物价指数。
       const next = nextAlivePlayer(ticked, state.currentPlayer);
       // ★ **一輪才是一天** @source 0x00418f93..0x0041902e：cur++ 越过最后一名玩家后先依次轮到
-      //   棋盘上的四大惡人（4..7，+10 == 0 的才算）各走一趟，回到 0 号时 ebx = 1，
+      //   棋盘上的四大惡人（4..7，+10 == 0 的才算）**各走一趟**，回到 0 号时 ebx = 1，
       //   这时才 `call 0x41cf67`（推进日期、物价指数、行情、開獎、月結）。
       //   先前每个玩家回合都推一天、都更新物价，是错的（见 known-deviations「一輪一天」）。
       const wraps = next <= state.currentPlayer;
-      let roundEnd: GameState = ticked;
       if (wraps) {
-        roundEnd = npcRound(roundEnd, topo);
-        if (roundEnd.phase === 'gameOver') return roundEnd;
-        roundEnd = advanceGameDay(roundEnd, topo);
+        // ★ 惡人段**逐个**走（T-047 的 D-T047-5，2026-09-16）：
+        //   先把「这一輪还有哪些惡人」记进相位，然后当场走**第一个**；
+        //   队列还非空就停在 `turnEnd` 等 `npcStep`（表现层据此一趟一趟播），
+        //   走完最后一个才由 `npcRoundStep` 推日期并轮到下一位玩家。
+        //   原版 `[0x49910c]` 那条游标就是逐个停的（`rich4.asm:11766-11832`）。
+        const queue = activeNpcSlots(ticked);
+        if (queue.length > 0) {
+          const first = npcRoundStep({ ...ticked, pendingNpcSlots: queue }, topo, next);
+          if (first.phase === 'gameOver') return first;
+          // 还有惡人没走 —— 停在 turnEnd，等 `npcStep`；**不**换玩家、**不**推日期
+          if ((first.pendingNpcSlots ?? []).length > 0) {
+            return { ...first, phase: 'turnEnd', pending: null };
+          }
+          // 一轮的惡人已经走完（`npcRoundStep` 已推日期并轮到下一位玩家）
+          return first;
+        }
+        // 没有惡人在盘上 —— 照旧直接推日期
+        const roundEnd = advanceGameDay({ ...ticked, pendingNpcSlots: [] }, topo);
         // ★ 勝利條件（遊戲時間／勝利條件）达标 → 当天就结束，不再进下一回合。
         //   @source 0x0041cfb1 `call 0x41d89e` / 0x0041cfb9 `je 0x41d1a5`
         if (roundEnd.phase === 'gameOver') return roundEnd;
+        return {
+          ...roundEnd,
+          currentPlayer: next,
+          phase: 'turnStart',
+          pending: null,
+          dice: [],
+          stepsRemaining: 0,
+          stepsTotal: 0,
+          turnCount: state.turnCount + 1,
+        };
       }
       return {
-        ...roundEnd,
+        ...ticked,
+        pendingNpcSlots: [],
         currentPlayer: next,
         phase: 'turnStart',
         // ★ 待决交互属于**那个玩家的那个回合**，不能带进下一回合。
@@ -2154,7 +2272,21 @@ function tradeStock(
   }
 
   if (action.shares > held.amount) return state;
-  return commit(sellStock(me, held, stock, action.shares, 'bank'));
+  // ★ 卖出**也要**重排企业名次 @source `_rich4_sell_stock` 尾部
+  //   （VA 0x00428e23 起，`call _rich4_update_commercial_owner` @0x00428eb7）：
+  //   `rich4_stocks.asm:214-219` 的
+  //   ```asm
+  //   00428ead  mov ebx, [esp+0x18] / push ebx
+  //             mov esi, [esp+0x18] / push esi
+  //   00428eb7  call _rich4_update_commercial_owner     ; ★ 与买入那一条同源
+  //   ```
+  //   ⚠️ 先前这里写着「卖出不触发」，那是**读反了** —— 卖光股票（或卖到不再是
+  //   第一大股东）**当场**就让出企业归属，不必等下一次有别人买入。
+  return reownCommercial(
+    commit(sellStock(me, held, stock, action.shares, 'bank')),
+    action.stock,
+    state.currentPlayer,
+  );
 }
 
 /**
@@ -2445,8 +2577,17 @@ function playCard(
  * @source `_rich4_buy_stock` 末尾无条件调 `_rich4_update_commercial_owner`
  *   —— **柜台买入与企业买入都会触发**，不只是后者。
  *
- * ⚠️ 卖出**不触发**（`_rich4_sell_stock` 里没有这一步），故卖光股票
- *   并不会立刻让出企业归属，要等下一次有人买入才重排。照搬原版。
+ * ★ **卖出也触发** —— @source `_rich4_sell_stock` 尾部
+ *   `call _rich4_update_commercial_owner`（VA 0x00428e23 → 0x00428eb7，
+ *   见 `rich4_stocks.asm:214-219`）。买入与卖出两条都重排，破产清算那条
+ *   （原版走 `_rich4_sell_stock`）同理。
+ *
+ * ⚠️ 本文件与 `places/commercial.ts` 先前都写着「卖出不触发」——**读反了**，
+ *   2026-09-16 已订正。
+ *
+ * 参数名仍叫 `buyer`（它其实只是「**发生变动的那名玩家**」）：卖出时
+ * 传的就是卖方 —— `updateCommercialOwner` 只按当前持股重算名次，
+ * 不关心这次是买是卖。
  */
 function reownCommercial(state: GameState, stockIndex: number, buyer: number): GameState {
   const commercialId = state.market.stocks[stockIndex]?.commercialIndex ?? 0;
@@ -2628,10 +2769,12 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   }
 
   // @source 0041cfbf call 0x423acf —— 物价指数（勝負判定之后才走这一步）
+  // ★ 除数是**本局选中的开局资金档位**（`[0x49908c]`），不是默认的 30 万 ——
+  //   选 3 万档时通胀快得多，先前这里硬编码 `DEFAULT_INITIAL_FUND` 是错的。
   const priceIndex = updatePriceIndex(
     state.players,
     wealthOf,
-    DEFAULT_INITIAL_FUND,
+    state.initialFund || DEFAULT_INITIAL_FUND,
     state.priceIndex,
   );
 
@@ -2756,6 +2899,12 @@ function commercialValueOf(topo: MapTopology, commercialIndex: number): number |
  */
 export function autoAction(state: GameState): Action | null {
   if (state.phase === 'gameOver') return null;
+  // ★ 惡人段**优先于**「当前玩家是否出局」那一条判断（T-047 的 D-T047-5）：
+  //   那一輪的惡人才走了一半，回合边界就还没结束 —— 与「当前玩家是谁、死没死」
+  //   无关。放到后面判，就会在下家还活着时返回 null，把整局**停在惡人段**。
+  if (state.phase === 'turnEnd' && (state.pendingNpcSlots ?? []).length > 0) {
+    return { type: 'npcStep' };
+  }
   const p = state.players[state.currentPlayer];
   if (p === undefined || isAlive(p)) return null;
   if (state.phase === 'turnStart') return { type: 'startTurn' };
@@ -4207,7 +4356,12 @@ export function applyBankruptcy(
   const landTenure = next.landTenure.map((t, i) => (mine(next.landOwner[i] ?? 0) ? 0 : t));
   const facilityTenure = next.facilityTenure.map((t, i) => (mine(next.facilityOwner[i] ?? 0) ? 0 : t));
   const facilityOwner = next.facilityOwner.map((v) => (mine(v) ? 0 : v));
-  return {
+  // ★ 变卖持股**也要重排企业名次** —— @source 破产那一段的
+  //   `call _rich4_sell_stock`（`rich4_player_bankrupt.asm:407`）里就带着
+  //   `_rich4_sell_stock` 尾部那条 `call _rich4_update_commercial_owner`
+  //   （VA 0x00428eb7）。漏了它，破产者名下的企业会**永远挂在他名下**。
+  const soldOut = next.holdings[playerIndex] ?? [];
+  let reowned: GameState = {
     ...next,
     landOwner,
     landTenure,
@@ -4217,6 +4371,11 @@ export function applyBankruptcy(
     market: { ...next.market, stocks: liquidated.stocks },
     pool: next.pool + liquidated.proceeds,
   };
+  for (let stockIndex = 0; stockIndex < soldOut.length; stockIndex++) {
+    if ((soldOut[stockIndex]?.amount ?? 0) === 0) continue;
+    reowned = reownCommercial(reowned, stockIndex, playerIndex);
+  }
+  return reowned;
 }
 
 /**

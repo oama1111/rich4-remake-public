@@ -3,7 +3,14 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
-import { applyHibernateCard, HIBERNATE_DAYS, HIBERNATE_HOSTILITY_FACTOR } from './hibernate.ts';
+import {
+  applyHibernateCard,
+  hibernateActors,
+  HIBERNATE_ACTOR_SLOTS,
+  HIBERNATE_DAYS,
+  HIBERNATE_HOSTILITY_FACTOR,
+} from './hibernate.ts';
+import { ACTOR_PLACE, initialSpecialActors, releaseNpc } from '../rules/special-actors.ts';
 import { makePlayer } from '../testing/factories.ts';
 import { WHO_PLAYS_DEAD, WHO_PLAYS_COMPUTER } from '../state/types.ts';
 
@@ -108,5 +115,74 @@ describe('不原地修改入参', () => {
     const snapshot = JSON.stringify(ps);
     applyHibernateCard(ps, 0, 1);
     expect(JSON.stringify(ps)).toBe(snapshot);
+  });
+});
+
+// ============================================================
+//  ★ 替身那一支（D-T047-2 的第二半）@source `rich4_card_dongmianka.asm:36-92`
+// ============================================================
+
+describe('★ 冬眠卡对**替身**（四大惡人）：+12 置 5、+13 清 0', () => {
+  /** 四个惡人全在盘上 */
+  const onBoard = () =>
+    initialSpecialActors().map((a, i) => (i < 4 ? { ...releaseNpc(i + 1, i, 0) } : a));
+
+  it('★ 循环上界是 8 ⇒ 只覆盖四大惡人 0..3，**不含機器娃娃**', () => {
+    // @source `00444138 inc ebx / cmp ebx, 8 / jge 结束`
+    expect(HIBERNATE_ACTOR_SLOTS).toEqual([0, 1, 2, 3]);
+    // 就算娃娃在盘上也不会被冬眠
+    const actors = onBoard();
+    actors[4] = { ...releaseNpc(1, 0, 0) };
+    const r = hibernateActors(actors);
+    expect(r.affected).toEqual([0, 1, 2, 3]);
+    expect(r.actors[4]!.hibernating).toBeUndefined();
+    expect(r.actors[4]!.place).toBe(ACTOR_PLACE.board);
+  });
+
+  it('★ 在盘上的四个：hibernating = 5，且**先清夢遊**（+13 = 0）', () => {
+    // @source 004441a9 那一段：`mov [eax+0x498df5], ch(=0)` 在前、
+    //   `mov [eax+0x498df4], dh(=5)` 在后 —— 与夢遊卡互为反面
+    const actors = onBoard().map((a, i) => (i === 1 ? { ...a, sleepwalkDays: 5 } : a));
+    const r = hibernateActors(actors);
+    expect(r.affected).toEqual([0, 1, 2, 3]);
+    for (const slot of [0, 1, 2, 3]) {
+      expect(r.actors[slot]!.hibernating, `槽 ${slot}`).toBe(HIBERNATE_DAYS);
+      expect(r.actors[slot]!.sleepwalkDays, `槽 ${slot}`).toBe(0);
+    }
+  });
+
+  it('★ 不在盘上的跳过（監獄/醫院/未出场）@source `cmp [eax+0x498df2],0 / jne`', () => {
+    // 初始状态：小偷/強盜在監獄、流氓/間諜在醫院、娃娃未出场
+    const r = hibernateActors(initialSpecialActors());
+    expect(r.affected).toEqual([]);
+    for (const a of r.actors) expect(a.hibernating).toBeUndefined();
+  });
+
+  it('部分在盘：只动在盘的那几个', () => {
+    const actors = initialSpecialActors();
+    actors[1] = { ...releaseNpc(3, 1, 0) }; // 強盜上路
+    actors[3] = { ...releaseNpc(4, 3, 0) }; // 間諜上路
+    const r = hibernateActors(actors);
+    expect(r.affected).toEqual([1, 3]);
+    expect(r.actors[0]!.hibernating).toBeUndefined();
+    expect(r.actors[1]!.hibernating).toBe(HIBERNATE_DAYS);
+    expect(r.actors[2]!.hibernating).toBeUndefined();
+    expect(r.actors[3]!.hibernating).toBe(HIBERNATE_DAYS);
+  });
+
+  it('place 是 board 但 nodeId 为 0 的（异常记录）不当在盘上', () => {
+    const actors = initialSpecialActors();
+    actors[0] = { ...releaseNpc(1, 0, 0), nodeId: 0 };
+    expect(hibernateActors(actors).affected).toEqual([]);
+  });
+
+  it('不改其它字段（朝向/步数/主任都原样）', () => {
+    const actors = onBoard();
+    const r = hibernateActors(actors);
+    for (const slot of [0, 1, 2, 3]) {
+      expect(r.actors[slot]!.direction).toBe(actors[slot]!.direction);
+      expect(r.actors[slot]!.owner).toBe(actors[slot]!.owner);
+      expect(r.actors[slot]!.nodeId).toBe(actors[slot]!.nodeId);
+    }
   });
 });

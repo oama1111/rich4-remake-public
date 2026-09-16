@@ -298,7 +298,13 @@ describe('★ 买入后企业归属重排', () => {
     expect(after.commercialOwners[commercialId]?.owner).toBe(1);
   });
 
-  have('★ 卖出不重排 —— 原版 sell_stock 里没有这一步', () => {
+  have('★★ 卖出**也要**重排企业名次 @source `_rich4_sell_stock` 尾部 call 0x4294d5', () => {
+    // VA 0x00428e23 起的 `_rich4_sell_stock`，尾部：
+    //   00428ead  mov ebx,[esp+0x18] / push ebx
+    //             mov esi,[esp+0x18] / push esi
+    //   00428eb7  call _rich4_update_commercial_owner     ; ★ 与买入同源
+    //   （`rich4_stocks.asm:214-219`）
+    // ⚠️ 本文件先前那一条写的是「卖出不重排，照搬原版」—— **读反了**，2026-09-16 订正。
     const { state, topo } = landOnCommercial();
     if (state.pending === null || state.pending.kind !== 'buyShares') {
       throw new Error('没拿到待决交互');
@@ -309,7 +315,45 @@ describe('★ 买入后企业归属重排', () => {
 
     const sold = reduce(bought, { type: 'sellStock', stock, shares: 10 }, topo);
     expect(sold.holdings[0]![stock]!.amount).toBe(0);
-    // 持股已清零，但归属仍挂在他名下 —— 照搬原版
+    // ★ 持股归零 ⇒ 归属**当场**让出（老板位清空）
+    expect(sold.commercialOwners[commercialId]?.owner).toBe(0);
+    expect(sold.commercialOwners[commercialId]?.ranking[0]).toBe(0);
+  });
+
+  have('★ 卖出**一部分**、仍是第一大股东 ⇒ 归属不变', () => {
+    const { state, topo } = landOnCommercial();
+    if (state.pending === null || state.pending.kind !== 'buyShares') {
+      throw new Error('没拿到待决交互');
+    }
+    const { stock, commercialId } = state.pending;
+    const bought = reduce(state, { type: 'buyShares', shares: 20 }, topo);
+    const sold = reduce(bought, { type: 'sellStock', stock, shares: 5 }, topo);
+    expect(sold.holdings[0]![stock]!.amount).toBe(15);
     expect(sold.commercialOwners[commercialId]?.owner).toBe(1);
+  });
+
+  have('★ 卖到不再是第一 ⇒ 老板换人', () => {
+    const { state, topo } = landOnCommercial();
+    if (state.pending === null || state.pending.kind !== 'buyShares') {
+      throw new Error('没拿到待决交互');
+    }
+    const { stock, commercialId } = state.pending;
+    // 0 号买 20（从企业认购，走现金）
+    const a = reduce(state, { type: 'buyShares', shares: 20 }, topo);
+    expect(a.commercialOwners[commercialId]?.owner).toBe(1);
+    // 1 号在柜台上买 30 股（要走存款）
+    const richB: GameState = {
+      ...a,
+      pending: null,
+      currentPlayer: 1,
+      players: a.players.map((p, i) => (i === 1 ? { ...p, moneyInBank: 9_999_999 } : p)),
+    };
+    const b = reduce(richB, { type: 'buyStock', stock, shares: 30 }, topo);
+    expect(b.commercialOwners[commercialId]?.owner).toBe(2);
+    // 1 号卖掉 25 股 ⇒ 只剩 5 < 0 号的 20 ⇒ 老板换回 0 号
+    const c = reduce({ ...b, currentPlayer: 1 }, { type: 'sellStock', stock, shares: 25 }, topo);
+    expect(c.commercialOwners[commercialId]?.owner).toBe(1);
+    expect(c.holdings[1]![stock]!.amount).toBe(5);
+    expect(c.holdings[0]![stock]!.amount).toBe(20);
   });
 });

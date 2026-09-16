@@ -8,6 +8,7 @@
 
 import type { Player } from '../state/types.ts';
 import { isAlive } from '../state/types.ts';
+import type { SpecialActor } from '../rules/special-actors.ts';
 
 /** 冬眠天数 @source `mov dh, 5` / `mov byte [esi+0x36], dh` */
 export const HIBERNATE_DAYS = 5;
@@ -32,6 +33,58 @@ export interface HibernateResult {
   hostilityDeltas: { from: number; to: number; delta: number }[];
   /** 实际被冬眠的玩家下标 */
   affected: number[];
+}
+
+/**
+ * 原版冬眠卡对替身那一条支路覆盖哪些槽 —— **只有四大惡人 0..3**。
+ *
+ * @source `rich4_card_dongmianka.asm:36-40 与 :86-92`：
+ * ```asm
+ * 00444136  mov dh, 5
+ * 00444138  inc ebx
+ *           cmp ebx, 8
+ *           jge near loc_004441c9        ; ★ 到 8 就收工 ⇒ ebx 只到 7
+ *           cmp ebx, 4
+ *           jge loc_004441a9             ; ★ ebx >= 4 → 替身那一支
+ * loc_004441a9:
+ *           mov eax, ebx
+ *           shl eax, 4                   ; 记录步长 16
+ *           mov ch, [eax + 0x498df2]     ; +10 = 在不在盘上
+ *           test ch, ch
+ *           jne loc_00444138             ; 不在盘上 → 跳过
+ *           mov [eax + 0x498df5], ch     ; ★ +13（夢遊）清 0
+ *           mov [eax + 0x498df4], dh     ; ★ +12（冬眠）= 5
+ * ```
+ * ⇒ 与玩家的那一支**同构**：先清梦游、再置冬眠。故冬眠卡也是「夢遊卡的反面」。
+ */
+export const HIBERNATE_ACTOR_SLOTS: readonly number[] = [0, 1, 2, 3];
+
+/**
+ * 把**在盘上的四大惡人**置入冬眠。
+ *
+ * `+12`（`hibernating`）= 5、`+13`（`sleepwalkDays`）清 0；
+ * 不在盘上（監獄/醫院/未出场）的跳过 —— 原版那条 `jne` 就是这个意思。
+ *
+ * ★ 渲染那边正是用 `+12` 把替身画成灰的
+ *   （@source `rich4.asm:1533` `cmp byte [eax + 0x498e34], 0`，
+ *   `0x498e34` = 记录基址 `0x498e28` + 12）——
+ *   见 `client/render.ts` 的 `isActorAsleep`。
+ */
+export function hibernateActors(actors: readonly SpecialActor[]): {
+  actors: SpecialActor[];
+  affected: number[];
+} {
+  const out = [...actors];
+  const affected: number[] = [];
+  for (const slot of HIBERNATE_ACTOR_SLOTS) {
+    const a = out[slot];
+    if (a === undefined) continue;
+    // @source cmp byte [eax + 0x498df2], 0 / jne 跳过（+10 == 0 才在盘上）
+    if (a.place !== 0 || a.nodeId <= 0) continue;
+    affected.push(slot);
+    out[slot] = { ...a, hibernating: HIBERNATE_DAYS, sleepwalkDays: 0 };
+  }
+  return { actors: out, affected };
 }
 
 /**

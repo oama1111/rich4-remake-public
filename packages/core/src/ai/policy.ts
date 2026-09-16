@@ -40,6 +40,17 @@ import { canUpgradeFacility } from '../rules/facility.ts';
 import { aiShouldPurchase } from '../rules/purchase.ts';
 import { auctionAiChoice } from '../rules/auction.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
+
+/**
+ * 本局的**开局资金档位** —— AI 买地保留额的基数。
+ *
+ * @source `aiShouldPurchase` 的基数就是全局 `[0x49908c]`（= `_rich4_game_initial_fund`），
+ *   不是固定的 30 万。见 `state/types.ts` 的 `GameState.initialFund`。
+ *   兜底用 `DEFAULT_INITIAL_FUND` 只为兼容「老存档/测试替身没这个字段」。
+ */
+function initialFundOf(state: { initialFund?: number }): number {
+  return state.initialFund ?? DEFAULT_INITIAL_FUND;
+}
 import { CARDS, TOOLS } from '@rich4/data';
 import { aiCanUseCards, aiCanUseTools, autoLoanAmount, personalityAllows } from './personality.ts';
 import { aiCardChoice, aiRoll, cardsToConsider, type AiCardChoice, type CardAiView } from './card-policy.ts';
@@ -510,7 +521,7 @@ export function decidePending(state: GameState): Action | null {
   if (p.kind === 'buyFacility') {
     const me = state.players[state.currentPlayer];
     if (me === undefined) return null;
-    return aiShouldPurchase(me, p.price, DEFAULT_INITIAL_FUND, state.priceIndex)
+    return aiShouldPurchase(me, p.price, initialFundOf(state), state.priceIndex)
       ? { type: 'buyFacility' }
       : { type: 'declineDecision' };
   }
@@ -582,7 +593,7 @@ export function decideAtLanding(state: GameState, map: Rich4Map): Action {
   if (purchaseBlockedBy(me) !== null) return { type: 'declineDecision' };
 
   const buy = canPurchase(land, me, state.priceIndex);
-  if (buy.ok && aiShouldPurchase(me, buy.price, DEFAULT_INITIAL_FUND, state.priceIndex)) {
+  if (buy.ok && aiShouldPurchase(me, buy.price, initialFundOf(state), state.priceIndex)) {
     return { type: 'buyLand' };
   }
 

@@ -228,7 +228,16 @@
         case 'awaitingRoll': if (s.currentPlayer === 0) dispatchSelf({ type: 'rollDice' }); break;
         case 'moving': dispatchSelf({ type: 'step' }); break;
         case 'settling': dispatchSelf({ type: 'settle' }); break;
-        case 'turnEnd': S.turns++; S.days.push(s.day); dispatchSelf({ type: 'endTurn' }); break;
+        case 'turnEnd':
+          // ★ 回合边界的惡人段（T-047 的 D-T047-5）也要走 —— 那一段由 `npcStep`
+          //   逐条推进（`endTurn` 在队列非空时是**有意的空操作**）。
+          //   这里用 core 的 `autoAction` 问，免得把「还有哪些惡人」的知识
+          //   在脚本里再抄一遍。
+          if (s.pendingNpcSlots && s.pendingNpcSlots.length > 0) {
+            dispatchSelf({ type: 'npcStep' });
+            break;
+          }
+          S.turns++; S.days.push(s.day); dispatchSelf({ type: 'endTurn' }); break;
         default: break;
       }
     } catch (e) { S.errors.push(String(e).slice(0, 200)); if (S.errors.length > 8) clearInterval(globalThis.__soakTimer); }

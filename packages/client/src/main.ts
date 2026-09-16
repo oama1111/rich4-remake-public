@@ -1303,6 +1303,11 @@ function mechanicalAction(): Action | null {
     case 'settling':
       return { type: 'settle' };
     case 'turnEnd':
+      // ★ 回合边界的惡人段（T-047 的 D-T047-5）：这一輪还有惡人没走就得先走一个。
+      //   判据与 core 的 `autoAction` **同源**（那边也把它们放在最前面），
+      //   这里照抄一遍是为了让「真人回合」这条路也能把惡人段走完 ——
+      //   `scheduleAi` 只在电脑回合动手，真人等到自己回合时游标已经过了惡人。
+      if ((state.pendingNpcSlots ?? []).length > 0) return { type: 'npcStep' };
       return { type: 'endTurn' };
     default:
       return null; // awaitingRoll / awaitingDecision：等人

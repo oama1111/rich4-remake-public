@@ -10,6 +10,7 @@ import { WHO_PLAYS_HUMAN } from '../state/types.ts';
 import { slotsFrom } from '../loaders/map.ts';
 import type { LandInfo, FacilityInfo, MapNode, Rich4Map } from '../loaders/map.ts';
 import { emptyBoard } from '../places/notice-board.ts';
+import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 import { initialSpecialActors } from '../rules/special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { makeObjects } from '../cards/summon.ts';
@@ -78,6 +79,8 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     currentPlayer: 0,
     phase: 'turnStart',
     priceIndex: 1,
+    // 本局开局资金档位
+    initialFund: DEFAULT_INITIAL_FUND,
     dice: [],
     stepsRemaining: 0,
     stepsTotal: 0,
@@ -120,6 +123,8 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     lastEvent: null,
     // 纯表现提示：还没人走过（见 types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
+    // 回合边界的惡人队列
+    pendingNpcSlots: [],
     lottery: new Array<number>(36).fill(0),
     pending: null,
     tools: new Array<number>(4 * 15).fill(0),

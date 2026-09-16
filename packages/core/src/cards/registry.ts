@@ -34,7 +34,7 @@ import type { SpecialActor } from '../rules/special-actors.ts';
 
 import { applyAverageCashCard } from './average-cash.ts';
 import { applyAveragePoorCard } from './average-poor.ts';
-import { applyHibernateCard } from './hibernate.ts';
+import { applyHibernateCard, hibernateActors } from './hibernate.ts';
 import { applySleepwalkCard, applySleepwalkCardToActor } from './sleepwalk.ts';
 import { applyStayCard, applyStayCardToActor } from './stay.ts';
 import { applyTortoiseCard, applyTortoiseCardToActor } from './tortoise.ts';
@@ -386,10 +386,14 @@ export function useCard(
       const r = applyHibernateCard(players, cur, ctx.priceIndex);
       players = r.players;
       hostilityDeltas = r.hostilityDeltas;
-      // ⚠️ 冬眠卡**不碰替身记录**：`rich4_card_dongmianka.asm:86-92` 那一支
-      //   算出的下标是**玩家**（`ebx` = 被冬眠的玩家），`+12/+13` 写进的是
-      //   **玩家结构**（`0x496b9a` 那一族），不是替身记录 `0x498df4/f5`。
-      //   先前我按「替身」读过一次，已订正 —— 见 deviations D-T047-2。
+      // ★ 替身那一支**确实存在** —— 先前这里写着「冬眠卡不碰替身记录」，
+      //   那是**读错了**（把 `_rich4_all_special_players_state` 当成了玩家结构）。
+      //   @source `rich4_card_dongmianka.asm:36-92`：同一个 `ebx` 循环 `0..7`，
+      //   `ebx >= 4` 走替身那一支（`+12` 置 5、`+13` 清 0），且**只在盘上**的才写；
+      //   循环上界 8 意味着**機器娃娃（actor 8）不在其中**。
+      //   渲染据此把替身画成灰的（见 D-T047-4 / `render.ts` 的 `isActorAsleep`）。
+      const hib = hibernateActors(actors);
+      actors = hib.actors;
       break;
     }
     case 16: {

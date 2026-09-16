@@ -60,6 +60,18 @@ export const OFFSET = {
    */
   winTargetDays: 0x2682,
   winTargetWealth: 0x2686,
+  /**
+   * 本局**选中的开局资金档位** `_rich4_game_initial_fund` `[0x49908c]`。
+   *
+   * @source 紧接 `winTargetWealth`（0x2686）之后、`priceIndex`（0x268e）之前；
+   *   开局设置写入见 `rich4_new_game.asm:4032`，`savegame.q17.test.ts` 里有
+   *   `Save0.dat` 该偏移 = 300000 的实测锚点。
+   *
+   * ★ 它有**规则**作用（`update_price_index` 的除数 + AI 买地保留额的基数），
+   *   不只是「发多少钱」—— 先前解析器没收、引擎硬编码 30 万，见
+   *   `state/types.ts` 的 `GameState.initialFund`。
+   */
+  initialFund: 0x268a,
   priceIndex: 0x268e,
   /** 已过天数 `[0x4990e4]`（日推进每回合 +1）@source 同上 §5.2 */
   totalDays: 0x2692,
@@ -188,6 +200,8 @@ export interface SaveGame {
   players: PlayerState[];
   currentPlayer: number;
   /** 物价指数 */
+  /** 本局选中的开局资金档位（`GAME_INITIAL_FUNDS` 之一）@source 0x268a */
+  initialFund: number;
   priceIndex: number;
   /**
    *  game_time 档查 `0x46cbe8` 的结果 = 目标天数（0 = 無限）
@@ -334,6 +348,8 @@ export function parseSave(data: Uint8Array): SaveGame {
     numPlayers,
     players,
     currentPlayer: view.getUint32(OFFSET.currentPlayer, true),
+    // ⚠️ 用 `getInt32`（原版是 dword；正常档位都是正整数，但别把它当无符号量读）
+    initialFund: view.getInt32(OFFSET.initialFund, true),
     priceIndex: view.getUint32(OFFSET.priceIndex, true),
     winTargetDays: view.getInt32(OFFSET.winTargetDays, true),
     winTargetWealth: view.getInt32(OFFSET.winTargetWealth, true),
