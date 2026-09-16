@@ -9,14 +9,25 @@
  * 若干事件会依当前玩家的 `traffic_method` 被改写成另一个编号。
  */
 
-import type { LandInfo } from '../loaders/map.ts';
 import type { Player } from '../state/types.ts';
+
+/**
+ * 可行性判定只看这两个字段（归属与等级），而它们**是运行时会变的**
+ * （`state.landOwner` / `state.landLevel`），所以这里收最小结构而不是
+ * 地图里的整条 `LandInfo` —— 否则调用方得为了一个 `owner` 去凑十条无关字段。
+ */
+export interface FortuneLand {
+  /** 拥有者 index + 1；0 = 无主 */
+  owner: number;
+  /** 建筑等级 0..5 */
+  level: number;
+}
 
 export interface FortuneContext {
   currentPlayer: Player;
   /** 其他玩家（用于统计手牌总数） */
   otherPlayers: readonly Player[];
-  lands: readonly LandInfo[];
+  lands: readonly FortuneLand[];
   /** 当前玩家的 12 支持股 */
   stockAmount: readonly number[];
   /** 关卡编号 `game_stage`（0 或 1） */

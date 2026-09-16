@@ -207,3 +207,157 @@ describe('★ 倍率归零档（先前漏掉的那一档）', () => {
     expect(r.bankrupted).toBe(false);
   });
 });
+
+// ============================================================
+//  ★ 神明加持的接线（2026-09-16）：命运事件施加前先问 `fcn_0044b896`
+// ============================================================
+
+describe('★ 神明加持：三条问法与档位语义 @source VA 0x0044b896', () => {
+  it('★ 事件表里的 `blessing` 与 asm 的压栈组合逐条对上', () => {
+    // 奖励 (0,0) / 罚金 (0,1) / 劫难 (1,1)
+    const table: Record<number, string> = {};
+    for (const e of FORTUNE_EVENTS) if (e.blessing !== undefined) table[e.id] = e.blessing;
+    expect(table).toEqual({
+      2: 'penalty',
+      3: 'penalty',
+      6: 'misfortune',
+      7: 'misfortune',
+      8: 'penalty',
+      9: 'penalty',
+      10: 'misfortune',
+      11: 'misfortune',
+      12: 'misfortune',
+      14: 'penalty',
+      15: 'penalty',
+      17: 'penalty',
+      19: 'reward',
+      22: 'misfortune',
+      32: 'misfortune',
+      33: 'misfortune',
+    });
+  });
+
+  it('★ 档位 1 对罚款是「免付」——一分不付、公库也收不到', () => {
+    const r = applyFortuneEffect(16, ctx({ multiplier: 1 }));
+    expect(r.amount).toBe(0);
+    expect(r.players[0]!.cash).toBe(100_000);
+    expect(r.pool).toBe(0);
+  });
+
+  it('★ 档位 2 对罚款是「加倍」（`(0,0)` 那一支的原版语义）', () => {
+    const r = applyFortuneEffect(16, ctx({ multiplier: 2 }));
+    expect(r.amount).toBe(6000);
+  });
+
+  it('★ 坐牢/住院：档位 1 = 逃過此劫（不关人）、档位 2 = 天数翻倍', () => {
+    const escaped = applyFortuneEffect(12, ctx({ multiplier: 1 }));
+    expect(escaped.cancelled).toBe(true);
+    expect(escaped.occupancy.every((v) => v === 0)).toBe(true);
+    const doubled = applyFortuneEffect(12, ctx({ multiplier: 2 }));
+    expect(doubled.amount).toBe(6); // literal 3 → ×2
+  });
+});
+
+describe('★ 事件 8/9：卖股票（含尾巴的特別融资收回）', () => {
+  const market = {
+    stocks: Array.from({ length: 12 }, (_, i) => ({
+      price: 100 + i,
+      shares: 1000,
+      f10: 1000,
+      commercialIndex: 0,
+      f6: 0,
+    })),
+  } as never;
+
+  it('★ 事件 8：每支按 literal%（10%）卖掉，钱进**公库**', () => {
+    const holdings = Array.from({ length: 12 }, (_, i) => ({ amount: 100 + i, avgCost: 50 }));
+    const r = applyFortuneEffect(
+      8,
+      ctx({
+        market,
+        holdings,
+        sellDestination: 'pool',
+        players: [makePlayer({ index: 0, cash: 0, moneyInBank: 0 })],
+      }),
+    );
+    // 第 0 支：100 的 10% = 10 股 × 100 元 = 1000 —— 进公库，不进玩家口袋
+    expect(r.holdings![0]!.amount).toBe(90);
+    expect(r.players[0]!.moneyInBank).toBe(0);
+    expect(r.pool).toBeGreaterThan(0);
+    expect(r.recallFinance).toBe(true);
+    expect(r.reown.length).toBeGreaterThan(0);
+  });
+
+  it('★ 事件 9：全部卖掉，钱进**存款**', () => {
+    const holdings = Array.from({ length: 12 }, () => ({ amount: 20, avgCost: 50 }));
+    const r = applyFortuneEffect(
+      9,
+      ctx({ market, holdings, sellDestination: 'bank' }),
+    );
+    expect(r.holdings!.every((h) => h.amount === 0)).toBe(true);
+    expect(r.players[0]!.moneyInBank).toBeGreaterThan(0);
+    expect(r.recallFinance).toBe(true);
+  });
+
+  it('★ 档位 1（免付）⇒ 股票一股不卖、也不收回特別融资', () => {
+    const holdings = Array.from({ length: 12 }, () => ({ amount: 20, avgCost: 50 }));
+    const r = applyFortuneEffect(9, ctx({ market, holdings, multiplier: 1 }));
+    expect(r.cancelled).toBe(true);
+    expect(r.holdings).toBeNull();
+    expect(r.recallFinance).toBe(false);
+  });
+});
+
+describe('★ 事件 10/11：座驾被偷 / 撞毁', () => {
+  it('★ 機車被偷：traffic_method 清零、ndices 归 1、**機車**（道具 5）回库存', () => {
+    const r = applyFortuneEffect(
+      10,
+      ctx({
+        players: [makePlayer({ index: 0, trafficMethod: 3, ndices: 3 })],
+        toolStock: [0, 5, 5, 5, 5, 5, 5],
+      }),
+    );
+    expect(r.players[0]!.trafficMethod).toBe(0);
+    expect(r.players[0]!.ndices).toBe(1);
+    expect(r.toolStock![5]).toBe(6);
+    expect(r.toolStock![6]).toBe(5);
+  });
+
+  it('★ 汽車撞毀：還的是**汽車**（道具 6）', () => {
+    const r = applyFortuneEffect(
+      11,
+      ctx({
+        players: [makePlayer({ index: 0, trafficMethod: 2, ndices: 2 })],
+        toolStock: [0, 5, 5, 5, 5, 5, 5],
+      }),
+    );
+    expect(r.toolStock![5]).toBe(5);
+    expect(r.toolStock![6]).toBe(6);
+  });
+
+  it('★ 原版不看当前座驾：开著汽車抽到「機車被偷」照样清零、并把機車库存 +1', () => {
+    const r = applyFortuneEffect(
+      10,
+      ctx({
+        players: [makePlayer({ index: 0, trafficMethod: 2, ndices: 3 })],
+        toolStock: [0, 5, 5, 5, 5, 5, 5],
+      }),
+    );
+    expect(r.players[0]!.trafficMethod).toBe(0);
+    expect(r.toolStock![5]).toBe(6);
+  });
+
+  it('★ 档位 1 ⇒ 逃過此劫：车还在、库存不动', () => {
+    const r = applyFortuneEffect(
+      10,
+      ctx({
+        players: [makePlayer({ index: 0, trafficMethod: 1, ndices: 3 })],
+        toolStock: [0, 5, 5, 5, 5, 5, 5],
+        multiplier: 1,
+      }),
+    );
+    expect(r.cancelled).toBe(true);
+    expect(r.players[0]!.trafficMethod).toBe(1);
+    expect(r.toolStock).toBeNull();
+  });
+});

@@ -60,6 +60,23 @@ export interface EventEntry {
    * 而非字面常量。
    */
   literal: number | null;
+  /**
+   * 施加阶段先问一次神明加持（`fcn_0044b896`），这是**问法**：
+   *
+   * | 值 | 压栈 | 读哪个字段 | 高值 → | 低值 → |
+   * |---|---|---|---|---|
+   * | `'reward'` | `(0,0)` | `+0x46` 財運 | 2 加倍 | 1 作废 |
+   * | `'penalty'` | `(0,1)` | `+0x46` 財運 | 1 免付 | 2 加倍 |
+   * | `'misfortune'` | `(1,1)` | `+0x48` 福運 | 1 逃過 | 2 加倍 |
+   *
+   * `null` / 缺省 = 该事件**不问**（原版整个 .text 里只有命运事件问，
+   * 新闻事件一个都没问）。
+   *
+   * @source 每个命运函数施加阶段（`cmp dword [esp+0x94], 0 / jne`）开头的
+   *   `push ? / push ? / call 0x44b896`，逐处读过；映射见
+   *   `rules/blessing.ts` 的 `BlessingKind` 与 `fortune-effects.ts`。
+   */
+  blessing?: 'reward' | 'penalty' | 'misfortune';
 }
 
 /**
@@ -116,27 +133,27 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
 export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 0, va: 0x0044be16, factor: null, effects: ['give'], textVa: 0x465915, text: "#0185強制拆除房屋一棟", literal: null },
   { id: 1, va: 0x0044bfb1, factor: null, effects: ['give'], textVa: 0x46592b, text: "#0186強制徵收土地一處", literal: null },
-  { id: 2, va: 0x0044c0e8, factor: 10000, effects: ['loan'], textVa: 0x465941, text: "#0187人頭被盜用冒貸%d元", literal: null },
-  { id: 3, va: 0x0044c229, factor: null, effects: ['bankBan'], textVa: 0x465959, text: "#0188支票跳票\n銀行拒絕往來一個月", literal: null },
+  { id: 2, va: 0x0044c0e8, factor: 10000, effects: ['loan'], textVa: 0x465941, text: "#0187人頭被盜用冒貸%d元", literal: null, blessing: 'penalty' },
+  { id: 3, va: 0x0044c229, factor: null, effects: ['bankBan'], textVa: 0x465959, text: "#0188支票跳票\n銀行拒絕往來一個月", literal: null, blessing: 'penalty' },
   { id: 4, va: 0x0044c2c2, factor: null, effects: ['pay'], textVa: 0x46597a, text: "#0189侵入銀行電腦\n挪用其他人存款%d％", literal: null },
   { id: 5, va: 0x0044c3b7, factor: null, effects: [], textVa: 0x4659a4, text: "#0190今天是你生日\n向每人收取一張卡片", literal: null },
-  { id: 6, va: 0x0044c5d8, factor: null, effects: [], textVa: 0x4659d8, text: "#0191強迫出國觀光%d天", literal: 3 },
-  { id: 7, va: 0x0044c6ed, factor: null, effects: [], textVa: 0x4659ee, text: "#0192被外星人綁架%d天", literal: 3 },
-  { id: 8, va: 0x0044c7ef, factor: null, effects: [], textVa: 0x465a04, text: "#0193股票違約交割損失股票%d％", literal: 10 },
-  { id: 9, va: 0x0044c91f, factor: null, effects: [], textVa: 0x465a28, text: "#0194變賣所有股票求現", literal: null },
-  { id: 10, va: 0x0044ca46, factor: null, effects: [], textVa: 0x465a3e, text: "#0195機車被偷遺失", literal: null },
-  { id: 11, va: 0x0044cb53, factor: null, effects: [], textVa: 0x465a50, text: "#0196汽車撞電線桿全毀", literal: null },
-  { id: 12, va: 0x0044cc53, factor: null, effects: ['hospital'], textVa: 0x465a66, text: "#0197掉進水溝就醫%d天", literal: 3 },
+  { id: 6, va: 0x0044c5d8, factor: null, effects: [], textVa: 0x4659d8, text: "#0191強迫出國觀光%d天", literal: 3, blessing: 'misfortune' },
+  { id: 7, va: 0x0044c6ed, factor: null, effects: [], textVa: 0x4659ee, text: "#0192被外星人綁架%d天", literal: 3, blessing: 'misfortune' },
+  { id: 8, va: 0x0044c7ef, factor: null, effects: [], textVa: 0x465a04, text: "#0193股票違約交割損失股票%d％", literal: 10, blessing: 'penalty' },
+  { id: 9, va: 0x0044c91f, factor: null, effects: [], textVa: 0x465a28, text: "#0194變賣所有股票求現", literal: null, blessing: 'penalty' },
+  { id: 10, va: 0x0044ca46, factor: null, effects: [], textVa: 0x465a3e, text: "#0195機車被偷遺失", literal: null, blessing: 'misfortune' },
+  { id: 11, va: 0x0044cb53, factor: null, effects: [], textVa: 0x465a50, text: "#0196汽車撞電線桿全毀", literal: null, blessing: 'misfortune' },
+  { id: 12, va: 0x0044cc53, factor: null, effects: ['hospital'], textVa: 0x465a66, text: "#0197掉進水溝就醫%d天", literal: 3, blessing: 'misfortune' },
   { id: 13, va: 0x0044cd6c, factor: null, effects: ['hospital'], textVa: 0x465a7c, text: "#0198騎機車摔傷住院%d天", literal: 3 },
-  { id: 14, va: 0x0044cd99, factor: 3000, effects: ['pay'], textVa: 0x465a94, text: "#0199行人闖越馬路罰款%d元", literal: null },
-  { id: 15, va: 0x0044cf1e, factor: 3000, effects: ['pay'], textVa: 0x465aae, text: "#0200騎機車未戴安全帽\n罰款%d元", literal: null },
+  { id: 14, va: 0x0044cd99, factor: 3000, effects: ['pay'], textVa: 0x465a94, text: "#0199行人闖越馬路罰款%d元", literal: null, blessing: 'penalty' },
+  { id: 15, va: 0x0044cf1e, factor: 3000, effects: ['pay'], textVa: 0x465aae, text: "#0200騎機車未戴安全帽\n罰款%d元", literal: null, blessing: 'penalty' },
   { id: 16, va: 0x0044d06d, factor: 3000, effects: ['pay'], textVa: 0x465acd, text: "#0201汽車超速罰款%d元", literal: null },
-  { id: 17, va: 0x0044d0d6, factor: 6000, effects: ['pay'], textVa: 0x465ae3, text: "#0202請所有人吃大餐\n花費%d元", literal: null },
+  { id: 17, va: 0x0044d0d6, factor: 6000, effects: ['pay'], textVa: 0x465ae3, text: "#0202請所有人吃大餐\n花費%d元", literal: null, blessing: 'penalty' },
   { id: 18, va: 0x0044d1a5, factor: 600, effects: ['pay'], textVa: 0x465b00, text: "#0203亂丟垃圾罰款%d元", literal: null },
-  { id: 19, va: 0x0044d1e0, factor: 1500, effects: ['pay'], textVa: 0x465b16, text: "#0204你家小狗亂大小便\n罰款%d元", literal: null },
+  { id: 19, va: 0x0044d1e0, factor: 1500, effects: ['pay'], textVa: 0x465b16, text: "#0204你家小狗亂大小便\n罰款%d元", literal: null, blessing: 'reward' },
   { id: 20, va: 0x0044d224, factor: 1000, effects: ['give'], textVa: 0x465b35, text: "#0205在路邊撿到%d元", literal: null },
   { id: 21, va: 0x0044d33b, factor: 2000, effects: ['give'], textVa: 0x465b49, text: "#0206在路邊撿到%d元", literal: null },
-  { id: 22, va: 0x0044d3db, factor: 3000, effects: ['give'], textVa: 0x465b5d, text: "#0207在路邊撿到%d元", literal: null },
+  { id: 22, va: 0x0044d3db, factor: 3000, effects: ['give'], textVa: 0x465b5d, text: "#0207在路邊撿到%d元", literal: null, blessing: 'misfortune' },
   { id: 23, va: 0x0044d41e, factor: 1000, effects: ['pay'], textVa: 0x465b71, text: "#0208遺失錢包損失%d元", literal: null },
   { id: 24, va: 0x0044d462, factor: 2000, effects: ['pay'], textVa: 0x465b87, text: "#0209遺失錢包損失%d元", literal: null },
   { id: 25, va: 0x0044d4a6, factor: 10000, effects: ['give'], textVa: 0x465b9d, text: "#0210意外獲得遺產%d元", literal: null },
@@ -146,8 +163,8 @@ export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 29, va: 0x0044d5b1, factor: 8000, effects: ['give'], textVa: 0x465beb, text: "#0214發票中獎%d元", literal: null },
   { id: 30, va: 0x0044d5f4, factor: 5000, effects: ['pay'], textVa: 0x465bfd, text: "#0215付保險金%d元", literal: null },
   { id: 31, va: 0x0044d636, factor: 5000, effects: ['give'], textVa: 0x465c0f, text: "#0216領取保險金%d元", literal: null },
-  { id: 32, va: 0x0044d677, factor: null, effects: [], textVa: 0x465c23, text: "#0217變賣所有卡片道具", literal: null },
-  { id: 33, va: 0x0044d783, factor: null, effects: ['prison'], textVa: 0x465c39, text: "#0218酒醉大鬧警局坐牢%d天", literal: 3 },
+  { id: 32, va: 0x0044d677, factor: null, effects: [], textVa: 0x465c23, text: "#0217變賣所有卡片道具", literal: null, blessing: 'misfortune' },
+  { id: 33, va: 0x0044d783, factor: null, effects: ['prison'], textVa: 0x465c39, text: "#0218酒醉大鬧警局坐牢%d天", literal: 3, blessing: 'misfortune' },
   { id: 34, va: 0x0044d8cf, factor: null, effects: ['prison'], textVa: 0x465c53, text: "#0219防礙風化坐牢%d天", literal: 5 },
   { id: 35, va: 0x0044d8fd, factor: null, effects: ['prison'], textVa: 0x465c69, text: "#0220走私毒品坐牢%d天", literal: 7 },
   { id: 36, va: 0x0044d92b, factor: null, effects: ['prison'], textVa: 0x465c7f, text: "#0221販賣大補帖坐牢%d天", literal: 9 },

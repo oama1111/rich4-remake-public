@@ -19,7 +19,14 @@ import type { Player } from '../state/types.ts';
 import { FORTUNE_EVENTS, eventAmount, fortuneEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { confine } from '../rules/confinement.ts';
-import { BLESSING_DOUBLE, blessingMultiplier } from '../rules/blessing.ts';
+import { BLESSING_DOUBLE, BLESSING_VOID, blessingMultiplier } from '../rules/blessing.ts';
+import {
+  EMPTY_HOLDING,
+  sellStock,
+  type SellDestination,
+  type StockHolding,
+} from '../places/stock.ts';
+import type { StockMarketState } from '../places/stock-market.ts';
 
 /**
  * 金额倍率档位 —— 转发 `rules/blessing.ts` 的定义。
@@ -40,8 +47,59 @@ export const DOUBLE_AMOUNT = BLESSING_DOUBLE;
  */
 export const BANK_BAN_DAYS = 30;
 
+/** 事件 8「股票違約交割損失股票%d％」 */
+export const FORTUNE_STOCK_DEFAULT = 8;
+/** 事件 9「變賣所有股票求現」 */
+export const FORTUNE_STOCK_LIQUIDATE = 9;
+/** 事件 10「機車被偷遺失」 */
+export const FORTUNE_MOTORCYCLE_STOLEN = 10;
+/** 事件 11「汽車撞電線桿全毀」 */
+export const FORTUNE_CAR_WRECKED = 11;
+/** 事件 8 的百分比字面量 @source 事件表 `literal: 10` */
+export const FORTUNE_STOCK_DEFAULT_PCT = 10;
+/** 事件 8 的除数 @source `fdiv dword [0x465a24]` = 100.0 */
+export const FORTUNE_STOCK_PCT_SCALE = 100;
+
+/**
+ * 这两条事件的神明闸门：`fcn_0044b896` 返回 **1** 就整个挡掉
+ * （「逃過此劫／免付罰金」那句由表现层放）。
+ *
+ * @source `fcn_0044c7ef` / `fcn_0044c91f` 的 `cmp eax, 1 / jne 继续`；
+ *   10/11 同构。**注意不是 `blessingMultiplier`**：这几条只用「是不是 1」，
+ *   档位 2 与 0 走同一条路（照常执行）。
+ */
+function cancelledByBlessing(ctx: FortuneEffectContext): boolean {
+  return (ctx.multiplier ?? 0) === BLESSING_VOID;
+}
+
 export interface FortuneEffectResult {
   players: Player[];
+  /**
+   * 卖股票之后当前玩家那一条持仓（与入参同下标）；没卖就是入参原样。
+   * @source 事件 8/9 的 `rich4_sell_stock`（VA 0x00428e23）
+   */
+  holdings: StockHolding[] | null;
+  /** 卖股票要动的行情（可流通股回补）——没卖就是入参原样 */
+  market: StockMarketState | null;
+  /** 车辆被毁要还回商店库存的道具表（下标 = 道具号）；没动就是入参原样 */
+  toolStock: number[] | null;
+  /**
+   * 卖掉过股票的股票号 —— 调用方要对这几个跑一次
+   * `_rich4_update_commercial_owner`（`rich4_sell_stock` 的尾巴）。
+   */
+  reown: number[];
+  /**
+   * ★ 事件尾巴的**特別融資收回** `fcn_00436b0a(0)`。
+   *
+   * 只有事件 **8**（股票違約交割）与 **9**（變賣所有股票求現）有这一句
+   * （@source `rich4_fortune.asm` 的两处 `push 0 / call 0x436b0a`）。
+   */
+  recallFinance: boolean;
+  /**
+   * 神明加持把这一条整个挡掉了（`fcn_0044b896(...) == 1` 那一支）
+   * —— 表现层要放「逃過此劫／免付罰金」那句（`fcn_00440cac`）。
+   */
+  cancelled: boolean;
   /** 公库余额 */
   pool: number;
   /** 监狱／医院占用表 */
@@ -56,6 +114,17 @@ export interface FortuneEffectResult {
 
 export interface FortuneEffectContext {
   players: readonly Player[];
+  /** 当前玩家的持仓（事件 8/9 要卖）—— 缺省表示没有股票 */
+  holdings?: readonly StockHolding[];
+  /** 股市行情（卖出价与可流通股）*/
+  market?: StockMarketState;
+  /** 全局道具库存（事件 10/11 把车还回去）*/
+  toolStock?: number[];
+  /**
+   * 事件 8/9 卖股票的去向。
+   * @source 事件 8 的 `push 0`（进公库）、事件 9 的 `push 1`（进存款）。
+   */
+  sellDestination?: SellDestination;
   currentPlayer: number;
   priceIndex: number;
   pool?: number;
@@ -101,6 +170,12 @@ export function applyFortuneEffect(
   const occupancy = [...(ctx.occupancy ?? new Array<number>(8).fill(0))];
   const base: FortuneEffectResult = {
     players,
+    holdings: null,
+    market: null,
+    toolStock: null,
+    reown: [],
+    recallFinance: false,
+    cancelled: false,
     pool,
     occupancy,
     amount: 0,
@@ -115,8 +190,14 @@ export function applyFortuneEffect(
 
   if (entry.effects.includes('prison') || entry.effects.includes('hospital')) {
     // 天数取自事件表的 literal（公告阶段写进 [0x48c5b4] 的字面常量）
-    const days = ctx.days ?? entry.literal;
-    if (days === null || days === undefined) return { ...base, unimplemented: true };
+    const raw = ctx.days ?? entry.literal;
+    if (raw === null || raw === undefined) return { ...base, unimplemented: true };
+    // ★ 神明加持：劫难那一支（`fcn_0044b896(1,1)`）
+    //   @source `fcn_0044c5d8` 的 `cmp ecx, 1 / je 放「逃過此劫」并返回`、
+    //     `cmp ecx, 2 / jne … / add [0x48c5b4], [0x48c5b4]`（天数翻倍）
+    const mult = blessingMultiplier(ctx.multiplier ?? 0);
+    if (mult === 0) return { ...base, cancelled: true };
+    const days = raw * mult;
     const kind = entry.effects.includes('prison') ? 'prison' : 'hospital';
     const out = confine(players, occupancy, kind, ctx.currentPlayer, days);
     return { ...base, players: out.players, occupancy: out.occupancy, amount: days };
@@ -131,6 +212,91 @@ export function applyFortuneEffect(
       i === ctx.currentPlayer ? { ...q, loan: q.loan + amount } : q,
     );
     return { ...base, players: next, amount };
+  }
+
+  // ── 事件 8/9：卖股票（以及 8/9 尾巴上的特別融資收回）────────────────
+  // @source `fcn_0044c7ef`（8）/ `fcn_0044c91f`（9）的施加阶段：
+  // ```
+  // call 0x44b896(...)                      ; 神明加持
+  // cmp [0x48c5b0], 1 / je 取消并放「逃過此劫」那句
+  // 事件 8：for (i = 0; i < 12; i++) {       ; 每支按 literal% 卖掉
+  //            shares = trunc(持仓 × literal / 100.0)
+  //            rich4_sell_stock(player, i, shares, 0)     ; ★ 0 = 进公库
+  //          }
+  // 事件 9：for (i = 0; i < 12; i++) {       ; 全部卖掉
+  //            if (持仓 == 0) continue
+  //            rich4_sell_stock(player, i, 持仓, 1)       ; ★ 1 = 进存款
+  //          }
+  // push 0 / call 0x436b0a                  ; ★ 收回特別融資
+  // ```
+  if (eventId === FORTUNE_STOCK_DEFAULT || eventId === FORTUNE_STOCK_LIQUIDATE) {
+    if (cancelledByBlessing(ctx)) return { ...base, cancelled: true };
+    const market = ctx.market;
+    const held = ctx.holdings;
+    if (market === undefined || held === undefined) return { ...base, unimplemented: true };
+    const pct = FORTUNE_STOCK_DEFAULT_PCT;
+    const destination: SellDestination = ctx.sellDestination ?? 'pool';
+    let player = players[ctx.currentPlayer] ?? undefined;
+    if (player === undefined) return { ...base, unimplemented: true };
+    const row = [...held];
+    const stocks = [...market.stocks];
+    const reown: number[] = [];
+    // 事件 8 的卖出所得进**公库**（`sellStock` 只负责改持仓与行情，
+    // 公库那一笔由调用方加 —— 与破产清算 `liquidateStocks` 同一约定）
+    let toPool = 0;
+    for (let i = 0; i < stocks.length; i++) {
+      const h = row[i] ?? EMPTY_HOLDING;
+      if (h.amount <= 0) continue;
+      // 事件 8 按百分比（`literal` = 10 ⇒ 10%），事件 9 全部
+      const shares =
+        eventId === FORTUNE_STOCK_DEFAULT
+          ? Math.trunc((h.amount * pct) / FORTUNE_STOCK_PCT_SCALE)
+          : h.amount;
+      if (shares <= 0) continue;
+      const r = sellStock(player, h, stocks[i]!, shares, destination);
+      player = r.player;
+      if (destination === 'pool') toPool += r.amount;
+      row[i] = r.holding;
+      stocks[i] = r.stock;
+      reown.push(i);
+    }
+    const nextPlayers = players.map((q, i) => (i === ctx.currentPlayer ? player! : q));
+    return {
+      ...base,
+      players: nextPlayers,
+      pool: pool + toPool,
+      holdings: row,
+      market: { ...market, stocks },
+      reown,
+      // ★ 事件 8/9 的尾巴：`push 0 / call 0x436b0a`
+      recallFinance: true,
+    };
+  }
+
+  // ── 事件 10/11：座驾被偷 / 撞毁 ────────────────────────────────
+  // @source `fcn_0044ca46`（10，機車）/ `fcn_0044cb53`（11，汽車）：
+  // ```
+  // call 0x44b896(1, 1) / cmp [0x48c5b0], 1 / je 取消
+  // player+0x11 = 0        ; traffic_method 归零（徒步）
+  // player+0x12 = 1        ; ndices = 1（一颗骰子）
+  // update_player_sprite
+  // inc byte [0x497324]    ; ★ 事件 10：機車 回商店库存（道具 5）
+  // inc byte [0x497325]    ; ★ 事件 11：汽車 回商店库存（道具 6）
+  // ```
+  // ⚠️ **原版不看当前座驾是什么**：开著汽車抽到「機車被偷」照样把
+  //    `traffic_method` 清零、并把**機車**库存 +1。这是原版的既定行为，
+  //    本引擎照抄（登记在 known-deviations 的 Q-FORTUNE-1）。
+  if (eventId === FORTUNE_MOTORCYCLE_STOLEN || eventId === FORTUNE_CAR_WRECKED) {
+    if (cancelledByBlessing(ctx)) return { ...base, cancelled: true };
+    const player = players[ctx.currentPlayer];
+    if (player === undefined) return { ...base, unimplemented: true };
+    const tool = eventId === FORTUNE_MOTORCYCLE_STOLEN ? 5 : 6; // 機車 / 汽車
+    const stock = [...(ctx.toolStock ?? [])];
+    stock[tool] = (stock[tool] ?? 0) + 1;
+    const nextPlayers = players.map((q, i) =>
+      i === ctx.currentPlayer ? { ...q, trafficMethod: 0, ndices: 1 } : q,
+    );
+    return { ...base, players: nextPlayers, toolStock: stock };
   }
 
   // ★ 支票跳票：银行拒绝往来 30 天
@@ -149,12 +315,11 @@ export function applyFortuneEffect(
   if (entry.effects.includes('pay')) {
     const r = transferMoney(players, [], pool, ctx.currentPlayer, PARTY_POOL, amount, 0);
     return {
+      ...base,
       players: r.players,
       pool: r.pool,
-      occupancy,
       amount: r.paid,
       bankrupted: r.bankrupted,
-      unimplemented: false,
     };
   }
 

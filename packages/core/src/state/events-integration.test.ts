@@ -112,3 +112,119 @@ describe('★ 公园格仍然什么都不发生（原版行为）', () => {
     expect(s2.lastEvent).toBeNull();
   });
 });
+
+// ============================================================
+//  ★ 神明加持接进命运事件（2026-09-16）
+//    施加阶段先问 `fcn_0044b896`，档位随事件不同（奖励/罚金/劫难）
+// ============================================================
+
+describe('★ 神明加持真的接上了 @source VA 0x0044b896', () => {
+  /** 把下一张牌钉成指定事件（拿掉重号后插到队首）*/
+  const forceDraw = (s: GameState, id: number): GameState => ({
+    ...s,
+    fortuneDeck: {
+      ...s.fortuneDeck,
+      order: [id, ...s.fortuneDeck.order.filter((x) => x !== id)],
+      cursor: 0,
+    },
+  });
+  /** 当前玩家站着（traffic 0）⇒ 14/15/16 那一组固定落到 14（行人罰款 3000）*/
+  const withFortune = (s: GameState, fortune: number): GameState => ({
+    ...s,
+    players: s.players.map((p, i) => (i === s.currentPlayer ? { ...p, fortune } : p)),
+  });
+
+  run('★★ 財運 > 100 ⇒ 罰金「免付」：一分不扣、公库也收不到', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const cash = on.players[on.currentPlayer]!.cash;
+    const s1 = withFortune(forceDraw(on, 14), 101);
+    const s2 = reduce(s1, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id).toBe(14);
+    expect(s2.players[s2.currentPlayer]!.cash).toBe(cash);
+    expect(s2.pool).toBe(s1.pool);
+  });
+
+  run('★★ 財運 < 0 ⇒ 罰金「加倍」（`(0,1)` 那一支的低值 = 2）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const cash = on.players[on.currentPlayer]!.cash;
+    const s1 = withFortune(forceDraw(on, 14), -1);
+    const s2 = reduce(s1, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id).toBe(14);
+    // 3000 × 物价指数 1 × 2
+    expect(s2.players[s2.currentPlayer]!.cash).toBe(cash - 6000);
+  });
+
+  run('★★ 財運 = 0 ⇒ 照常付一次（不受影响）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const cash = on.players[on.currentPlayer]!.cash;
+    const s2 = reduce(forceDraw(on, 14), { type: 'settle' }, topo);
+    expect(s2.players[s2.currentPlayer]!.cash).toBe(cash - 3000);
+  });
+
+  run('★★ 事件 8：卖掉 10% 持仓（钱进公库）+ 收回特別融資', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const me = on.currentPlayer;
+    // 给一点持仓（事件 8 的可行性要求「持有任何股票」）与一笔特別融資。
+    // ⚠️ 只给**第 5 支**：第 0 支是銀行那家企业的股票，卖了会经过
+    //   `reownCommercial` 把卖方推成銀行董事長，而董事長**不在收回范围内**
+    //   （`sweepSpecialFinance` 跳过 chairman）—— 那是另一条规则，另行覆盖。
+    const STOCK = 5;
+    const s1: GameState = {
+      ...on,
+      holdings: on.holdings.map((row, i) =>
+        i === me ? row.map((h, j) => (j === STOCK ? { amount: 100, avgCost: 50 } : h)) : row,
+      ),
+      players: on.players.map((p, i) =>
+        i === me ? { ...p, specialFinance: 4000, fortune: 0 } : p,
+      ),
+    };
+    const pool0 = s1.pool;
+    const s2 = reduce(forceDraw(s1, 8), { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id).toBe(8);
+    // 100 股卖 10% = 10 股 → 剩 90
+    expect(s2.holdings[me]![STOCK]!.amount).toBe(90);
+    // 收入进公库，不进玩家人口袋
+    expect(s2.pool).toBeGreaterThan(pool0);
+    // ★ 尾巴的 `fcn_00436b0a(0)`：特別融資被收回
+    expect(s2.players[me]!.specialFinance).toBe(0);
+  });
+
+  run('★ 財運 > 100 ⇒ 事件 8 整个被挡掉：股票一股不卖', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const me = on.currentPlayer;
+    const STOCK = 5;
+    const s1: GameState = {
+      ...on,
+      holdings: on.holdings.map((row, i) =>
+        i === me ? row.map((h, j) => (j === STOCK ? { amount: 100, avgCost: 50 } : h)) : row,
+      ),
+      players: on.players.map((p, i) =>
+        i === me ? { ...p, specialFinance: 4000, fortune: 101 } : p,
+      ),
+    };
+    const s2 = reduce(forceDraw(s1, 8), { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id).toBe(8);
+    expect(s2.holdings[me]![STOCK]!.amount).toBe(100);
+    expect(s2.players[me]!.specialFinance).toBe(4000);
+  });
+});

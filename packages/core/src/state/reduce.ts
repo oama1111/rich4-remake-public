@@ -195,7 +195,11 @@ import { MAX_LAND_LEVEL, SPECIAL_KIND } from '../loaders/map.ts';
 import { drawEvent } from '../events/deck.ts';
 import { isNewsFeasible } from '../events/news.ts';
 import { checkFortune } from '../events/fortune.ts';
-import { applyFortuneEffect } from '../events/fortune-effects.ts';
+import {
+  FORTUNE_STOCK_LIQUIDATE,
+  applyFortuneEffect,
+} from '../events/fortune-effects.ts';
+import { blessingFieldOf, blessingLevelFor } from '../rules/blessing.ts';
 import { applyNewsEffect } from '../events/news-effects.ts';
 import { anyoneConfined, confine, type ConfinementKind } from '../rules/confinement.ts';
 import { applyBail, bailCandidates, decideBail } from '../rules/visit.ts';
@@ -2975,11 +2979,20 @@ export function reduceAll(
 function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return state;
+  // ★ `checkFortune` 的可行性判据要真数据：
+  //   · 事件 0/1（拆屋 / 徵收）看 `lands` 的归属与等级
+  //   · 事件 8/9（卖股票）看 `stockAmount`
+  //   先前这两样**写死成空/全 0**，于是那四条事件永远判为不可行、牌堆直接跳过
+  //   —— 表现就是「命运牌堆里 0/1/8/9 从没出现过」。归属与等级取运行时状态
+  //   （`landOwner`/`landLevel`），不是地图静态表。
   const ctx = {
     currentPlayer: me,
     otherPlayers: state.players.filter((_, i) => i !== state.currentPlayer),
-    lands: [] as never[],
-    stockAmount: new Array<number>(12).fill(0),
+    lands: (topo.lands ?? []).map((l) => ({
+      owner: state.landOwner[l.id] ?? 0,
+      level: state.landLevel[l.id] ?? 0,
+    })),
+    stockAmount: (state.holdings[state.currentPlayer] ?? []).map((h) => h.amount),
     gameStage: 0,
   };
 
@@ -2991,6 +3004,18 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
   //   施加效果时必须用重映射后的号，否则会施加错事件。
   const effectiveId = checkFortune(draw.eventId, ctx).eventId;
 
+  // ★ 神明加持（`fcn_0044b896`）：施加阶段**先问一次**，档位随事件不同
+  //   （獎金 `(0,0)` / 罰金 `(0,1)` / 劫难 `(1,1)`，见 EventEntry.blessing）。
+  //   50..100 那一档要掷一次 `rand() & 1` —— 走引擎随机数（C-DET-1）。
+  const blessKind = fortuneEvent(effectiveId)?.blessing;
+  const rng = new WatcomRng();
+  rng.setState(withDeck.rngState);
+  const coinFlip = rng.next() & 1;
+  const blessLevel =
+    blessKind === undefined
+      ? 0
+      : blessingLevelFor(blessingFieldOf(me, blessKind), coinFlip, blessKind);
+
   const out = applyFortuneEffect(effectiveId, {
     players: withDeck.players,
     currentPlayer: withDeck.currentPlayer,
@@ -2999,15 +3024,38 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     occupancy:
       // 坐牢与住院共用一个入口，故按事件实际走向取对应的占用表
       withDeck.prisonOccupancy,
+    multiplier: blessLevel,
+    // 事件 8/9 卖股票要的三样
+    holdings: withDeck.holdings[withDeck.currentPlayer] ?? [],
+    market: withDeck.market,
+    sellDestination: effectiveId === FORTUNE_STOCK_LIQUIDATE ? 'bank' : 'pool',
+    // 事件 10/11 把车还回商店
+    toolStock: withDeck.toolStock,
   });
 
   let applied: GameState = {
     ...withDeck,
+    rngState: rng.getState(),
     players: out.players,
     pool: out.pool,
     prisonOccupancy: out.occupancy,
     lastEvent: { kind: 'fortune', id: effectiveId },
   };
+  // ★ 卖股票（事件 8/9）：持仓 + 行情写回，并按 `rich4_sell_stock` 的尾巴
+  //   对每支卖过的股票重排企业名次（`_rich4_update_commercial_owner`）。
+  if (out.holdings !== null && out.market !== null) {
+    applied = {
+      ...applied,
+      holdings: applied.holdings.map((row, i) =>
+        i === applied.currentPlayer ? out.holdings! : row,
+      ),
+      market: out.market,
+    };
+    for (const stock of out.reown) applied = reownCommercial(applied, stock, applied.currentPlayer);
+  }
+  if (out.toolStock !== null) applied = { ...applied, toolStock: out.toolStock };
+  // ★ 事件 8/9 尾巴的特別融資收回：`push 0 / call 0x436b0a`
+  if (out.recallFinance) applied = sweepSpecialFinance(applied, topo);
   // ★ 保險理賠的三处命運调用点：坐牢/住院走 send_to_*（0x0043d749 / 0x0043edf8）；
   //   「冒貸」（id 2，0x0044c218）与「行人闖越馬路罰款」（id 14，0x0044cf11）直接赔金额
   const entry = fortuneEvent(effectiveId);
