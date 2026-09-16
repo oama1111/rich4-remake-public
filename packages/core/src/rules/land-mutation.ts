@@ -135,6 +135,20 @@ export function isSealed(priceStatus: number): boolean {
   return priceStatus === PRICE_STATUS.SEALED;
 }
 
+/**
+ * 「查封中」的**宽松**判据 —— 只看低半字节非 0。
+ *
+ * ★ 与 `isSealed` 不是同一条，别互相顶替：
+ *   · `isSealed` 是**精确等值**（`== 0x51`），用于「贴的是哪张图」那类判断；
+ *   · 这一条照抄原版几处闸门的写法 `test byte [...], 0xf / jne 跳过`
+ *     （研究所的落点闸门 VA 0x0041b102、`tollExemption` 的查封那一支
+ *     还要**两个半字节都非 0** 才免收）。
+ *   涨价位是 `0x50`（低半字节 0）⇒ 本判据为假：涨价中的地/設施照样能办事。
+ */
+export function isSealedStrict(priceStatus: number): boolean {
+  return (priceStatus & 0x0f) !== 0;
+}
+
 /** 地块当前是否处于涨价状态 */
 export function isRaised(priceStatus: number): boolean {
   return priceStatus === PRICE_STATUS.RAISED;

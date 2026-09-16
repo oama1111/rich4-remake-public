@@ -11,6 +11,8 @@ import {
 import { makeLand, makeFacility } from '../testing/factories.ts';
 import { LAND_TYPE_HOUSE } from './toll.ts';
 
+import { isSealedStrict } from './land-mutation.ts';
+
 describe('拆除', () => {
   it('★ 住宅只掉一级', () => {
     const r = demolishLand(makeLand({ type: LAND_TYPE_HOUSE, level: 4, owner: 2 }), 1);
@@ -110,5 +112,22 @@ describe('★ 每日递减 sweepPriceStatus @source 0x0041d114 / 0x0041d160', ()
     }
     expect(raisedSeq).toEqual([0x50, 0x40, 0x30, 0x20, 0x10, 0]);
     expect(sealedSeq).toEqual([0x51, 0x41, 0x31, 0x21, 0x11, 0]);
+  });
+});
+
+describe('★ 查封判据的两条口径 @source `test byte […], 0xf`', () => {
+  it('★ `isSealed` 是**精确等值**（0x51），涨价 0x50 不算', () => {
+    expect(isSealed(PRICE_STATUS.SEALED)).toBe(true);
+    expect(isSealed(PRICE_STATUS.RAISED)).toBe(false);
+    expect(isSealed(PRICE_STATUS.NORMAL)).toBe(false);
+  });
+
+  it('★ `isSealedStrict` 只看**低半字节**（原版那几处闸门的写法）', () => {
+    expect(isSealedStrict(PRICE_STATUS.SEALED)).toBe(true); // 0x51
+    expect(isSealedStrict(PRICE_STATUS.RAISED)).toBe(false); // 0x50 ⇒ 低半字节 0
+    expect(isSealedStrict(PRICE_STATUS.NORMAL)).toBe(false);
+    // 低半字节非 0 的其它取值也算「查封中」（原版只测 0xf 那一位）
+    expect(isSealedStrict(0x01)).toBe(true);
+    expect(isSealedStrict(0x60)).toBe(false);
   });
 });

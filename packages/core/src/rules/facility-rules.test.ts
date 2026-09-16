@@ -252,6 +252,44 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     expect(up.facilityLevel[FAC_ID]).toBe(3);
   });
 
+  it('★★ 研究所落点：加蓋问答之后才问項目；**被查封就不问** @source 0x0041b102', () => {
+    /** 站在自己的已建研究所上，可指定查封/涨价位 */
+    const labStanding = (priceStatus: number): GameState => {
+      const base = standing();
+      const owner = [...base.facilityOwner];
+      const level = [...base.facilityLevel];
+      const type = [...base.facilityType];
+      const status = [...base.facilityPriceStatus];
+      owner[FAC_ID] = 1;
+      level[FAC_ID] = 2;
+      type[FAC_ID] = FACILITY_TYPE.lab;
+      status[FAC_ID] = priceStatus;
+      return {
+        ...base,
+        facilityOwner: owner,
+        facilityLevel: level,
+        facilityType: type,
+        facilityPriceStatus: status,
+      };
+    };
+
+    // ① 正常：加蓋问答 → 谢绝 → 才轮到「选項目」
+    const asked = reduce(labStanding(0), { type: 'settle' }, topo);
+    expect(asked.pending).toMatchObject({ kind: 'upgradeFacility' });
+    const declined = reduce(asked, { type: 'declineDecision' }, topo);
+    expect(declined.pending).toMatchObject({ kind: 'research', facilityId: FAC_ID });
+
+    // ② 查封中（0x51 ⇒ 低半字节 1）⇒ 连項目都不问
+    const sealed = reduce(labStanding(0x51), { type: 'settle' }, topo);
+    const afterSealed = reduce(sealed, { type: 'declineDecision' }, topo);
+    expect(afterSealed.pending).toBeNull();
+
+    // ③ 涨价中（0x50 ⇒ 低半字节 0）⇒ 照样问 —— 闸门只看低半字节
+    const raised = reduce(labStanding(0x50), { type: 'settle' }, topo);
+    const afterRaised = reduce(raised, { type: 'declineDecision' }, topo);
+    expect(afterRaised.pending).toMatchObject({ kind: 'research' });
+  });
+
   it('★ 加油站只有一级 —— 蓋满了不再弹', () => {
     const base = standing();
     const owner = [...base.facilityOwner];

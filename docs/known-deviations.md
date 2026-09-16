@@ -665,7 +665,12 @@ reducer 已按此结算，`multiplier: 1` 的临时值撤掉。
 不在夢遊、没被查封 → 开研究所面板 `0x44101d`（真人 `0x4402d7` 点选；电脑 `0x4411e7`
 直接选「等级」那一档，**不看是否正在研發，原样覆盖成 5 天**）。这一步在加蓋问答之后。
 本引擎照此：`afterOwnLab`；真人得到 `pending research`。原先「回合开始自动开一项」的近似已撤。
-⚠️ 設施的查封位（`+0x1c & 0xf`）尚未进状态（T-008），暂不拦。下面是原先的记录：
+✅ **設施的查封位（`+0x1c & 0xf`）2026-09-16 已进闸门**：`afterOwnLab` 加了
+`isSealedStrict(fac.priceStatus)`（@source 0x0041b102 `test byte [設施+0x1c], 0xf / jne 跳过`），
+查封中的研究所**不问項目**；涨价位 0x50 的低半字节是 0，不受影响。
+（`state.facilityPriceStatus` 本来就在，只是这一处没读它。）单测：
+`facility-rules.test.ts`「研究所落点……被查封就不问」+ `land-mutation.test.ts`
+的「查封判据的两条口径」。下面是原先的记录：
 
 
 研發規則已全解（`rules/facility.ts`）：選項目写 `+0x1d`、**天数固定 5**（0x004411fb，

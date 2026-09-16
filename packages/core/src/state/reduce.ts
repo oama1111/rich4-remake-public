@@ -141,7 +141,7 @@ import {
   tickGod,
   drawGiftTool,
 } from '../rules/object-landing.ts';
-import { demolishLand, sweepPriceStatus } from '../rules/land-mutation.ts';
+import { demolishLand, isSealedStrict, sweepPriceStatus } from '../rules/land-mutation.ts';
 import { almsAmount, beggarAt } from '../rules/beggar.ts';
 import {
   MINIGAME_MAX_SCORE,
@@ -4184,6 +4184,9 @@ function afterOwnLab(state: GameState, topo: MapTopology, facilityId: number): G
   if (player === undefined || fac === null) return state;
   if (fac.owner !== me + 1 || fac.type !== FACILITY_TYPE.lab || fac.level === 0) return state;
   if (player.blocking.sleepWalking !== 0) return state;
+  // @source 0x0041b102 `test byte [設施+0x1c], 0xf / jne 跳过` ——
+  //   **被查封**的研究所不开面板（涨价位 0x50 的低半字节是 0，不受影响）。
+  if (isSealedStrict(fac.priceStatus)) return state;
   if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
     const started = startResearch(aiPickResearchProject(fac.level), fac.level);
     if (started === null) return state;
