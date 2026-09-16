@@ -804,7 +804,14 @@ export const lotteryScreen: UiScreen = {
       // 买中之后：`pending` 已经收了，把「拜拜」这一拍走完（一拍 = 100 ms）再关屏
       if (ui.phase === 'bye' && env.now - ui.at >= LOT_TICK_MS) {
         ui.dismissed = true;
-        ui.byeView = null;
+        // ⚠️ **不要**在这里把 `byeView` 清掉。
+        //   `main.ts` 的帧序是「先 `tick` 再画」，而画的那张 `overlay` 是
+        //   `tick` **之前**取的 —— 这一拍清掉 `byeView`，`currentView()` 就返回
+        //   null、`draw()` 什么都不画，于是**整整一帧全黑**（只剩背景填充）。
+        //   留着它，这一帧照旧画出「拜拜」那一拍；下一次开屏的 `resetUi()`
+        //   会自己清掉（`dismissed === true` 时 `active()` 已经为假，不会多演）。
+        //   @source 原版收到 `0x406` 后要等**下一拍 100 ms 定时器**才
+        //     `_Post_0402_Message(0)` 关屏 —— 那一拍画的就是这一份定格画面。
       }
       return;
     }

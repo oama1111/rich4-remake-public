@@ -142,6 +142,24 @@ export class SoundPlayer {
     this.#stopKey(`${archive}:${resource}`);
   }
 
+  /**
+   * 某一路**已经解码好**的时长（毫秒）；没解码好 / 空槽 / 越界都给 `null`。
+   *
+   * ★ 用途只有一个：原版 `_rich4_player_say` 是**先播完语音再等 1000 ms**
+   *   （VA 0x004544f6 那段「还有没有声音在响」的循环），而本引擎的台词显示
+   *   与语音是**并行**的 —— 长句会出现「字先没了、声音还在」。
+   *   调用方拿到时长后调 `SpeechQueue.extend()` 把这一段撑到语音播完。
+   *   见 `docs/deviations/T-052.md` 的 Q-SPEECH-9 / Q-SPEECH-6。
+   *
+   * ⚠️ **不触发加载**（纯查询）：没解码好就返回 `null`，调用方按「不知道」处理。
+   *   要它尽量有值，先调一次 `play()`。
+   */
+  durationOf(archive: SoundArchive, resource: number): number | null {
+    const buf = this.#buffers.get(`${archive}:${resource}`);
+    if (buf === undefined || buf === null) return null;
+    return Math.round(buf.duration * 1000);
+  }
+
   /** 停掉**所有**在响的（关机/切屏/静音那类总收） */
   stopAll(): void {
     for (const key of [...this.#voices.keys()]) this.#stopKey(key);

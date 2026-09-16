@@ -189,6 +189,8 @@ export function speechBubbleOf(
 export class SpeechQueue {
   private readonly items: SpeechBubble[] = [];
   private shownAt = 0;
+  /** 当前这一段额外撑长的毫秒数（等语音播完），换段时归零 */
+  private extraHoldMs = 0;
 
   /** 排入若干段（保持顺序）；返回新排入的段数 */
   push(bubbles: readonly SpeechBubble[], now: number): number {
@@ -207,10 +209,41 @@ export class SpeechQueue {
   tick(now: number): boolean {
     const head = this.items[0];
     if (head === undefined) return false;
-    if (now - this.shownAt < head.holdMs) return false;
+    if (now - this.shownAt < this.hold()) return false;
     this.items.shift();
     this.shownAt = now;
+    this.extraHoldMs = 0;
     return true;
+  }
+
+  /**
+   * 当前这一段还要显示多久（毫秒）。
+   *
+   * ★ 原版 `_rich4_player_say` 是**先播语音、播完再等 1000 ms**
+   *   （`fcn_00454559` 那段「还有没有声音在响」的循环 + 之后 `0x3e8` 的等待）。
+   *   本引擎两件事并行，所以长句会出现「字先没了、声音还在」——
+   *   调用方拿到语音时长后调 `extend()` 把这一段撑长即可。
+   */
+  hold(): number {
+    const head = this.items[0];
+    if (head === undefined) return 0;
+    return head.holdMs + this.extraHoldMs;
+  }
+
+  /**
+   * 把当前这一段的显示时间**再撑长** `ms`（用来等它那句语音播完）。
+   *
+   * ⚠️ 只加不减；队列空时是空操作。
+   */
+  extend(ms: number): void {
+    if (this.items.length === 0) return;
+    if (!Number.isFinite(ms) || ms <= 0) return;
+    this.extraHoldMs = Math.max(this.extraHoldMs, Math.trunc(ms));
+  }
+
+  /** 当前这一段已经显示了多久（毫秒）；队列空时为 0 */
+  elapsed(now: number): number {
+    return this.items.length === 0 ? 0 : Math.max(0, now - this.shownAt);
   }
 
   /** 此刻该显示的那一段；队列空时为 null */

@@ -327,3 +327,62 @@ describe('speechBubblesFor：状态跃迁 → 段落', () => {
     expect(characterName(99)).toBe('角色99');
   });
 });
+
+describe('★ 语音排队后的「撑长」—— 原版是「播完再等 1000 ms」（Q-SPEECH-6/9）', () => {
+  it('`hold()` 默认就是 `holdMs`（=1000）', () => {
+    const q = new SpeechQueue();
+    q.push([dummy(0)], 0);
+    expect(q.hold()).toBe(SPEECH_HOLD_MS);
+  });
+
+  it('★ `extend(voiceMs)` = **再等**它播完，总时长 = 1000 + voiceMs', () => {
+    // 原版的收尾是「等声音停 → 再 `fcn_004544f6(0x3e8)` 等 1000 ms」，
+    // 所以总时长是 语音时长 + 1000，不是 max(1000, 语音时长)。
+    const q = new SpeechQueue();
+    q.push([dummy(0)], 0);
+    q.extend(2_400);
+    expect(q.hold()).toBe(SPEECH_HOLD_MS + 2_400);
+    expect(q.tick(SPEECH_HOLD_MS + 2_399)).toBe(false);
+    expect(q.current()).not.toBeNull();
+    expect(q.tick(SPEECH_HOLD_MS + 2_400)).toBe(true);
+    expect(q.current()).toBeNull();
+  });
+
+  it('`extend` 只加不减，且小的值不会把大的盖掉', () => {
+    const q = new SpeechQueue();
+    q.push([dummy(0)], 0);
+    q.extend(3_000);
+    q.extend(1_000);
+    expect(q.hold()).toBe(SPEECH_HOLD_MS + 3_000);
+  });
+
+  it('非法值（0 / 负 / NaN / Infinity）是空操作', () => {
+    const q = new SpeechQueue();
+    q.push([dummy(0)], 0);
+    for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) q.extend(bad);
+    expect(q.hold()).toBe(SPEECH_HOLD_MS);
+  });
+
+  it('队列空时 `extend` 是空操作', () => {
+    const q = new SpeechQueue();
+    q.extend(9_999);
+    expect(q.hold()).toBe(0);
+  });
+
+  it('★ 换段时额外时长归零（下一段重新按它自己的语音算）', () => {
+    const q = new SpeechQueue();
+    q.push([dummy(0), dummy(1)], 0);
+    q.extend(5_000);
+    expect(q.hold()).toBe(SPEECH_HOLD_MS + 5_000);
+    q.tick(SPEECH_HOLD_MS + 5_000); // 收掉第一段
+    expect(q.hold()).toBe(SPEECH_HOLD_MS); // 第二段回到默认
+  });
+
+  it('`elapsed(now)` 给「这一段已经演了多久」；空队列为 0', () => {
+    const q = new SpeechQueue();
+    expect(q.elapsed(123)).toBe(0);
+    q.push([dummy(0)], 100);
+    expect(q.elapsed(450)).toBe(350);
+    expect(q.elapsed(50)).toBe(0); // 时钟回拨也不给负数
+  });
+});

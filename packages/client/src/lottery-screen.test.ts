@@ -14,6 +14,7 @@
  *   ★ 两张貓女郎都得**抠黑**（原版走带透明的 `fcn_00456418`），底图**绝不能抠**。
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { Action, GameState } from '@rich4/core';
 import type { LoadedFlic, Sprite } from './assets.ts';
 import {
@@ -886,5 +887,40 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
       drawLotteryScreen(f.ctx, none, noFlic, view({ picked: 0, eye: 3, message: 'x' })),
     ).not.toThrow();
     expect(f.images).toEqual([]);
+  });
+});
+
+describe('★ T-036 残留：買中定格的「拜拜」那一拍**不能画成全黑**', () => {
+  /*
+   * 机制（目视才抓到的）：`main.ts` 的帧序是
+   *   1. `const overlay = activeUiScreen();`   ← 这一拍**取好**了
+   *   2. `overlay.tick?.(uiEnv())`             ← tick 里可能把屏关掉
+   *   3. `overlay.draw(uiEnv())`               ← 画的还是第 1 步那一张
+   * 于是 `tick()` 在收尾那一拍若把 `byeView` 清掉，第 3 步的 `currentView()`
+   * 就返回 null、`draw()` 什么都不画 —— **整整一帧全黑**（只剩背景填充）。
+   * 原版是「先画完拜拜那一拍，下一拍 100 ms 定时器才 `Post_0402_Message(0)` 关屏」。
+   */
+  it('★ 在收尾那一拍，`byeView` 仍留着（draw 有东西可画）', () => {
+    const src = readFileSync(new URL('./lottery-screen.ts', import.meta.url), 'utf8');
+    const at = src.indexOf('ui.dismissed = true;');
+    expect(at).toBeGreaterThan(0);
+    // 同一段里（到下一个 `}` 结束）不许再出现 `byeView = null`
+    const tail = src.slice(at, at + 700);
+    expect(tail, '收尾那一拍不得清掉 byeView（会画成全黑）').not.toContain('byeView = null');
+    // 而 reset 那一条必须还在（下一局开屏时清）
+    const resetAt = src.indexOf('export function resetLotteryScreenState');
+    expect(src.slice(resetAt, resetAt + 300)).toContain('ui.byeView = null;');
+  });
+
+  it('★ 结构：`active()` 在 `dismissed` 之后立刻返回 false（关了就是关了）', () => {
+    const src = readFileSync(new URL('./lottery-screen.ts', import.meta.url), 'utf8');
+    const at = src.indexOf('active(env: UiScreenEnv): boolean {');
+    expect(src.slice(at, at + 220)).toContain('if (ui.dismissed) return false;');
+  });
+
+  it('`resetLotteryScreenState` 把 byeView 与 dismissed 一起复位', () => {
+    resetLotteryScreenState();
+    expect(lotteryPhase()).toBe('hello');
+    expect(lotteryPicked()).toBeNull();
   });
 });

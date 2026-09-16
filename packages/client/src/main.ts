@@ -125,8 +125,8 @@ import {
   type OptionsOutcome,
 } from './options-pages.ts';
 import { SoundPlayer } from './audio.ts';
-import { speechBubblesFor, speechEventsFor, speechResourcesFor } from './speech.ts';
-import { SpeechQueue, drawSpeechBubble } from './speech-bubble.ts';
+import { speechBubblesFor, speechEventsFor } from './speech.ts';
+import { SpeechQueue, drawSpeechBubble, type SpeechBubble } from './speech-bubble.ts';
 // 台词字幕用的是 canvas 文字（原版 `_rich4_create_font(0x10, 0x101010, …)` 那一路）
 import { font } from './font.ts';
 import { MusicPlayer } from './music.ts';
@@ -3075,9 +3075,10 @@ function playSoundFor(before: GameState, after: GameState): void {
   const spoken = speechEventsFor(before, after);
   if (spoken.length === 0) return;
   ensureSpeakingArchive();
-  for (const resource of speechResourcesFor(after, spoken)) {
-    sound.play('Speaking.mkf', resource);
-  }
+  // ★ 语音**不在这里放** —— 见 `speechTick()`。
+  //   原版 `_rich4_player_say` 是**一句播完再返回**（同步），一次 `applyAction`
+  //   里派生出的两三句是**一前一后**；先前这里循环 `sound.play` 是**同时**响
+  //   （登记为 Q-SPEECH-6）。现在语音跟着**显示队列**走：一段开始显示才放它那句。
   // ★ 2026-09-16：不光出声，还把**说话人自己那一句**显示出来。
   //   原版 `_rich4_player_say` 的两步（白字字幕 + 金貝貝那种 `@DD` 表情图）
   //   由 `speech-bubble.ts` 负责；`speechBubblesFor` 把 `SayEvent` 翻成排好版的段落。
@@ -4564,13 +4565,31 @@ function requestRender(): void {
 }
 
 /**
- * 台词队列的节拍 —— 每帧走一次：到点收掉当前那段。
+ * 台词队列的节拍 —— 每帧走一次：收掉到点的那段、给刚上台的那段放语音。
  *
- * ★ 与商店/银行的滑入一样，**不按屏幕刷新率算时长**：判据是
- *   `now − 展示起点 >= SPEECH_HOLD_MS`（原版 `fcn_004544f6(0x3e8)` 的那 1000 ms）。
+ * ★ **先放语音、再按语音时长把这一段撑长**：原版 `_rich4_player_say` 的收尾是
+ *   `fcn_004544f6(0x3e8)` —— 那是个「**还有没有声音在响**，没有就再等 1000 ms」
+ *   的循环（VA 0x00454520 起 `PeekMessage` + `timeGetTime` 比对）。所以原版
+ *   **一定**是语音播完才开始数那 1000 ms。本引擎并行，于是长句会出现
+ *   「字先没了、声音还在」；这里在起播后问一次时长、把它加进显示时间。
+ *
+ * ★ **顺序**也是照原版来的：语音跟着**队列**一段一段放，不再同时响
+ *   （先前那次 `for (…) sound.play(…)` 登记为 Q-SPEECH-6，已订正）。
  */
+let spokenBubble: SpeechBubble | null = null;
+
 function speechTick(now: number): void {
   if (speechQueue.tick(now)) requestRender();
+  const cur = speechQueue.current();
+  if (cur === spokenBubble) return;
+  // 换段了（含「从无到有」与「清空」）
+  spokenBubble = cur;
+  if (cur === null || cur.voice === null) return;
+  sound.play('Speaking.mkf', cur.voice);
+  // ★ 语音比字幕长就把字幕撑到语音播完 —— 原版是「播完再数 1000 ms」
+  const voiceMs = sound.durationOf('Speaking.mkf', cur.voice);
+  if (voiceMs !== null) speechQueue.extend(voiceMs);
+  requestRender();
 }
 
 /**
