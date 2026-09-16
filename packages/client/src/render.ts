@@ -31,7 +31,7 @@ import {
 } from './throw-fx.ts';
 // ★ 機器工人建屋影片的落点/尺寸是 exe 里的**常数**（Q-TOOL-6）——
 //   屏幕 (0, 0x28) = 棋盘局部 (0, 0)，整块 440×440。见 `build-fx.ts`。
-import { BUILD_FX_H, BUILD_FX_W, BUILD_FX_X, BUILD_FX_Y } from './build-fx.ts';
+import { BUILD_FX_BOARD_Y, BUILD_FX_H, BUILD_FX_W, BUILD_FX_X } from './build-fx.ts';
 import type { MapNode, Rich4Map } from '@rich4/core';
 import {
   SUBTILE_MATRIX,
@@ -299,6 +299,16 @@ export interface RenderInput {
    *   `fcn_0040b0cd` VA 0x0040b0cd，规格见 `build-fx.ts`。
    */
   buildFx?: CanvasImageSource | null;
+  /**
+   * 「送進監獄／醫院」那一段 FLIC 的**当前帧**（`confine-fx.ts`）。
+   *
+   * ★ 与 `buildFx` 同一类：原版 `fcn_0045144f` 把整幅帧直接贴到屏幕/后台面上，
+   *   不进绘制槽；只是这两段的落点与尺寸**不是常数**（医院 440×74 @(0,210)、
+   *   入獄 440×440 @(0,40)），所以连落点一起交。
+   *   @source `_rich4_add_player_days_in_hospital` VA 0x0043ed4a 起 /
+   *     `_rich4_add_player_days_in_prison` VA 0x0043d69e 起。
+   */
+  confineFx?: { bitmap: CanvasImageSource; x: number; y: number; w: number; h: number } | null;
 }
 
 /**
@@ -1753,7 +1763,22 @@ export class BoardRenderer {
     //   @source VA 0x00447350..0x0044735c / 0x0040b0f4..0x0040b0fd
     const buildFrame = input.buildFx ?? null;
     if (buildFrame !== null) {
-      this.#ctx.drawImage(buildFrame, BUILD_FX_X, BUILD_FX_Y, BUILD_FX_W, BUILD_FX_H);
+      // ★ 棋盘**局部**坐标：原版的 (0, 0x28) 是屏幕坐标，减掉棋盘原点 40 才是这里
+      //   （见 `BUILD_FX_BOARD_Y` 的说明 —— 先前直接用 0x28 会整体下移 40 px）。
+      this.#ctx.drawImage(buildFrame, BUILD_FX_X, BUILD_FX_BOARD_Y, BUILD_FX_W, BUILD_FX_H);
+    }
+
+    // ★ 送進監獄／醫院那段影片（Q-ANIM-1）同样画在最后：原版也是直接贴屏幕。
+    //   落点/尺寸取自 `confineClip`（医院 440×74 @(0,210)、入獄 440×440 @(0,40)）。
+    const confineFrame = input.confineFx ?? null;
+    if (confineFrame !== null) {
+      this.#ctx.drawImage(
+        confineFrame.bitmap,
+        confineFrame.x,
+        confineFrame.y,
+        confineFrame.w,
+        confineFrame.h,
+      );
     }
 
     // 调试层画在清单之上（它只是排错用的参考图形，不该被建筑挡住）——

@@ -137,6 +137,17 @@ export const BUILD_MAX_RESOURCE = 0x20b;
 export const BUILD_FX_X = 0;
 export const BUILD_FX_Y = 0x28;
 
+/**
+ * 影片在**棋盘局部**里的落点 —— 屏幕 (0, 0x28) 减棋盘原点 (0, 40) ⇒ **(0, 0)**。
+ *
+ * ★ 为什么单列一个常量：`BoardRenderer` 的 ctx 是那块 **439×440 的棋盘离屏画布**
+ *   （`main.ts` 的 `boardCanvas`，最后一整块 `stageCtx.drawImage(boardCanvas, 0, 40)`），
+ *   而原版给的 `(0, 0x28)` 是**屏幕**坐标。先前渲染器直接把 `BUILD_FX_Y`（= 40）
+ *   当棋盘局部 y 用 ⇒ 影片整体下移 40 px、底部 40 px 被裁掉。
+ *   2026-09-16 订正：渲染器改用本常量。
+ */
+export const BUILD_FX_BOARD_Y = 0;
+
 /** 影片尺寸 = 整块棋盘 440×440 @source 资源头 `+8/+0xa`（VA 0x00450d1c / 0x00450d28）*/
 export const BUILD_FX_W = 440;
 export const BUILD_FX_H = 440;

@@ -27,8 +27,8 @@
 | 文件 | 处 | 代表性 VA | 管什么 | 本引擎现状 |
 |---|---|---|---|---|
 | `rich4_gods.asm` | 12 | `fcn_0040ec14` / `fcn_0040ecf1` / `fcn_0040ed8f` / `fcn_0040ee50` / `fcn_0040ef1b` / `fcn_0040efe4` / `fcn_0040f083` / `fcn_0040f155` / `fcn_0040f205` / `fcn_0040f258` / `fcn_0040f2a0` / `fcn_0040f2eb`（各函数**开头**）| 神明降臨／發威的 FLIC `Data.mkf` **0x21c..0x227**（12 尊各一段）只在开时读+播；关掉直接跳去落结果 —— 参数见 §1.1 | ❌ 神明 FLIC 整支未做（**配方已备齐**，见 §1.1）|
-| `rich4_hospital_utils.asm` | 1 | `_rich4_add_player_days_in_hospital` 内（**VA 0x0043ed27**）| 住院演出 FLIC `Data.mkf` **0x20c** —— 参数见 §1.2 | ❌ 未做（落地直接改状态，没有演出；**配方已备齐**）|
-| `rich4_prison_utils.asm` | 1 | `_rich4_add_player_days_in_prison` 内（**VA 0x0043d67b**）| 入獄演出 FLIC `Data.mkf` **0x21a** —— 参数见 §1.2 | ❌ 未做（**配方已备齐**）|
+| `rich4_hospital_utils.asm` | 1 | `_rich4_add_player_days_in_hospital` 内（**VA 0x0043ed27**）| 住院演出 FLIC `Data.mkf` **0x20c**（62 帧 440×74 @(0,210)、音效 92、阻塞、点不掉）| ✅ **2026-09-16 已接**（`confine-fx.ts` + `main.ts` 的 `startConfineFx` / `tickConfineFx`，见 §1.2）|
+| `rich4_prison_utils.asm` | 1 | `_rich4_add_player_days_in_prison` 内（**VA 0x0043d67b**）| 入獄演出 FLIC `Data.mkf` **0x21a**（35 帧 440×440 @(0,40)、音效 94、阻塞、点不掉）| ✅ **2026-09-16 已接**（同上一行）|
 | `rich4_magic_house.asm` | 1（`[0x497159]`）+4（读标志 `[0x48c3a5]`）| `loc_00432647` 存 `[0x48c3a5] = !anim`；`loc_004326b9` / `loc_00432719` / `loc_00432951` / `loc_004329ef` 读 | 魔法屋：消息框 `fcn_0044ecb6`（`[0x475694]` 等串）**关掉就不弹** | ✅ **2026-09-16 已接**（`magic-screen.ts` 的 `magicPlaybackStart(target, now, greet)`：关掉时为 `false`，三句入口台詞整段不走；字框 = 图 8 落 (320,384)、每句 2000 ms = `fcn_0044ee18` 的 `0x7d0`）|
 | `rich4_shop.asm` | 1（存）+2（读）| `loc_0042d423` 存 `[0x48c349] = [0x48c34a] = !anim`；`loc_0042d56d` / `loc_0042d821` 读 | 商店：关掉时**跳过滑入 + 开场白**，直接到位（`PostMessage(0x40e)`，而 `0x40e` 只画點數）| ✅ **2026-09-16 已接**（`shop-screen.ts` 的 `shopEntryOf()` + `main.ts` 的 `shown: [!options.animation, …]`）|
 | `rich4_small_games.asm` | 3 | `_rich4_ui_game_penguin_treasure` 等三个小游戏入口 | 进场 FLIC：关掉**整个进场段都不走** | ✅ **已接**（`minigame-screen.ts` 的 `animation === false → null`，2026-09-16）|
@@ -93,11 +93,37 @@
 循环），播完才 `libc_free` 继续。住院那一支的 440×74 贴在棋盘正中间
 （y = 210..284），入獄那一支 440×440 贴满棋盘区（y = 40..480）。
 
-**本引擎要接的话缺什么**：一颗「盖在棋盘上的阻塞影片」零件 ——
-`build-fx.ts` 已经有「按 FLIC 帧序推进 + 在 (x,y) 贴一张可抠黑位图」的形状，
-但它不阻塞回合驱动；而 `fcn_0045144f` 是**阻塞**的（播完才继续结算）。
-所以要么给回合驱动加一道「影片播完才走下一步」的闸，要么按
-`Q-PICK-2 ①` 那种「承认是异步近似」的口径接 —— 两条都要先定案，故本轮不接。
+**★ 2026-09-16 已接**（`confine-fx.ts` + `main.ts`）：
+
+- 触发：`startConfineFx(before)` 挂在 `applyAction → startActionFx` 里，判据是
+  **占用表 0→1 或计数变大**（`confineFxTrigger()`）—— 不按 action 种类接，
+  因为「送去坐牢/住院」的来源有十来个（卡、狗咬、踩雷、命運、新聞、罰款、飛彈…）。
+- 闸：`[0x497159]`（「動畫過程」）关掉直接不播（`if (!options.animation) return;`）。
+- 阻塞：回合驱动那道闸加了 `confineFx !== null || pendingConfineFx !== null`
+  （与建屋影片同一个位置），播完 `resumeTurnDriver()` 放行 —— 原版
+  `fcn_0045144f` 就是播完才回到结算。
+- 画：`render.ts` 在 `buildFx` 之后贴这一帧，坐标是**棋盘局部**
+  （屏幕 y − `LAYOUT.board.y`：医院 170、入獄 0）。
+- 顺带订正一处**既有 bug**：建屋影片（`build-fx.ts`）先前把屏幕坐标 `0x28`（= 40）
+  直接当棋盘局部 y 用 ⇒ 整段影片下移 40 px、底部 40 px 被裁；现在渲染器用
+  `BUILD_FX_BOARD_Y`（= 0），`confine-fx.test.ts` 里钉了这一条。
+- 用例：`confine-fx.test.ts` 16 条（规格逐字节比对资源头 / 帧序 / 触发判据 /
+  main.ts 与 render.ts 的源码钉子）。
+
+## 1.3 实机核对（2026-09-16，真浏览器 dev server 5174）
+
+用 DEV 钩子触发两条路（截图存 `.qa-tmp/`，目录 gitignore）：
+
+| 屏 | 怎么触发 | 看到什么 |
+|---|---|---|
+| **住院** | `state.tools[0*14+13] = 1`（核子飛彈）→ `dispatch(startTurn)` + `dispatch(useTool 13, nodeId 1)` —— 全员 `inHospital = 3` | 棋盘正中 (0,210)-(440,284) 出现**救护车**那一帧（`Data.mkf 0x20c` 第 15 帧左右），播完自动收 |
+| **入獄** | `players[0].cards.push(17)`（陷害卡）→ `dispatch(useCard 17, target P2)` —— `inPrison = 5` | 棋盘区被 440×440 的影片盖住（`0x21a`），播放期间回合驱动被闸住 |
+
+★ 因为 `browse` 每条命令自身要几秒，普通 `screenshot` 抓不到 6.2 s / 2.5 s 的窗口 ——
+核对用的是**页内 `requestAnimationFrame` 采样 + `canvas.toDataURL()`**：
+① 画布同一块 40×20 像素的校验和在影片期间出现 8 个不同值（证明在逐帧画）；
+② `toDataURL()` 抓到的整帧里能直接看到救护车。
+这也顺带钉住了一条：这条影片**确实画在棋盘上、位置就是原版的 (0,210)/(0,40)**。
 
 ## 2. 月結／頒獎屏的那两处（`fcn_00437e61`，VA 0x00437e61）
 
@@ -137,8 +163,8 @@
 ## 3. 结论 / 未接清单
 
 - **已接**：小遊戲進場、銀行招呼、樂透开屏、商店开场、樂透開獎屏的状态 1、
-  **魔法屋入口台詞**（六处，2026-09-16）。
-- **未接**：神明 FLIC 一族、住院／入獄 FLIC、
+  魔法屋入口台詞、**住院／入獄 FLIC**（七处，2026-09-16）。
+- **未接**：神明 FLIC 一族（12 尊，配方见 §1.1）、
   月結／頒獎屏的两处（收到状态 `0xf`/`0x16` 之前那两拍）。
   ⚠️ 魔法屋那台状态机里还有两处**没接**（`loc_00432719` 之后的条件名滚动 +
   `#0040`/`#0041` 那两句），本模块的回放只覆盖入口三句 —— 见 `T-037.md` 的 D-MAGIC-12。

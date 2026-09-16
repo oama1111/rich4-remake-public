@@ -263,3 +263,16 @@ npx eslint <改过的 .ts> --max-warnings=0
 | 8 | 浮标现在读 **state** 的 `facilityOwner/Level/Type`（原版读实时记录）| 见 ③ 的说明 | 顺带修正；地图模板只在 state 缺项时兜底 |
 | 9 | `+0x1d`/`+0x1e` 的**模板值**在真地图里恒 0 | 八张地图逐张核过（`map.mkf` 资源 `id*2+1`，`fac=off+i*0x38`）| 解析照样填（字段一定在），浮标以 `GameState.facilityResearchProject/Days` 为准 |
 | 10 | 原版名牌浮标的**节点/景觀/企业/地块**几支没重核 | 与本轮两处缺口无关 | 沿用 `Q-HOVER-1.md` |
+
+---
+
+## ★ 2026-09-16 订正：影片贴的是**棋盘局部** (0,0)，不是屏幕 (0,0x28)
+
+`BUILD_FX_Y = 0x28`（= 40）是**屏幕**坐标（原版 `push 0x28 / push 0`），
+而 `BoardRenderer` 的 ctx 是那块 **439×440 的棋盘离屏画布**
+（`main.ts` 的 `boardCanvas`，最后 `stageCtx.drawImage(boardCanvas, 0, 40)`）。
+先前渲染器直接把它当棋盘局部 y 用 ⇒ 整段 440×440 影片**下移 40 px、底部 40 px 被裁**。
+
+现在渲染器用新常量 **`BUILD_FX_BOARD_Y = 0`**（= 0x28 − 40），
+`confine-fx.test.ts` 的「渲染器按棋盘局部画建屋影片」与
+`build-fx.test.ts` 的落点那条一起钉住两个坐标系的差。

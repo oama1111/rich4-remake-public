@@ -184,6 +184,18 @@ import {
   type BuildClipName,
   type BuildFx,
 } from './build-fx.ts';
+// ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1 的「受管辖但仍未接」之一）——
+//   与建屋影片同一套：整幅 FLIC 直接盖在棋盘上、**阻塞**、播完才放行回合驱动。
+import {
+  beginConfineFx,
+  confineClip,
+  confineFxBitmap,
+  confineFxDone,
+  confineFxTrigger,
+  CONFINE_FX_ARCHIVE,
+  type ConfineFx,
+  type ConfineKind,
+} from './confine-fx.ts';
 import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 // ★ 「取消」那一拍的梯子 —— ESC 与右键**共用同一份**（原版就是这么干的：
@@ -1366,6 +1378,13 @@ function holdForActorWalk(reschedule: () => void): boolean {
   //   （大锤 3876 ms + 满级 2772 ms，`fcn_0045144f` 是**同步**播放的）——
   //   不等就会出现「影片还在放，AI 已经把下一条 action 派完了」。
   if (buildFx !== null || pendingBuildFx !== null) {
+    reschedule();
+    return true;
+  }
+  // ★ 送進監獄／醫院那段影片同理，而且原版是**阻塞**的（`fcn_0045144f` 自己的
+  //   `PeekMessage` 循环）：医院 62×100 ms = 6.2 秒、入獄 35×71 ms ≈ 2.5 秒。
+  //   不等它播完就派下一步，动画就会被下一次棋盘重绘吃掉。
+  if (confineFx !== null || pendingConfineFx !== null) {
     reschedule();
     return true;
   }
@@ -3158,6 +3177,11 @@ function startActionFx(action: Action, before: GameState): void {
   if (action.type === 'useTool') startBuildFx(before, action);
   // 卡片 / 請神符的飞行动效（Q-TOOL-5）—— 是否真的播由 exe 的闸门定
   if (action.type === 'useCard') startCardFlight(before, action);
+  // ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1 未接清单之一）—— 与 action 种类无关：
+  //   判据是**占用表/计数变没变**（`confine-fx.ts` 的 `confineFxTrigger`），
+  //   因为送去坐牢/住院的来源有十来个（卡、狗咬、踩雷、命運、新聞、罰款…），
+  //   逐个 action 种类去接必漏。
+  startConfineFx(before);
 }
 
 /**
@@ -4468,6 +4492,129 @@ function playBuildFxSound(clip: BuildClipName): void {
   if (id > 0) sound.play('Effect.mkf', id);
 }
 
+// ============================================================
+//  送進監獄／醫院那一段影片（`confine-fx.ts`）
+// ============================================================
+
+/**
+ * 正在播的那一段（`null` = 没在播）。
+ *
+ * @source `_rich4_add_player_days_in_hospital` VA 0x0043ed27 起 /
+ *   `_rich4_add_player_days_in_prison` VA 0x0043d67b 起：
+ *   `read_mkf(Data.mkf, 0x20c | 0x21a)` → `fcn_0045144f(…)`（阻塞播完）→ `libc_free`。
+ */
+let confineFx: ConfineFx | null = null;
+
+/**
+ * 「该播、但影片还没解好」的待播请求 —— 原版 `read_mkf` 是同步的，
+ * 真解码在后台，解完才起时间轴（音效也在那时才响）。
+ */
+let pendingConfineFx: ConfineKind | null = null;
+
+/** 两段影片的缓存（按资源号）—— 440×440 × 35 帧也不小，播完就 `close()` */
+const confineFlics = new Map<number, LoadedFlic | null>();
+const confineFlicPending = new Set<number>();
+
+function confineFlicNow(kind: ConfineKind): LoadedFlic | null {
+  const resource = confineClip(kind).resource;
+  const hit = confineFlics.get(resource);
+  if (hit !== undefined) return hit;
+  if (sprites !== null && !confineFlicPending.has(resource)) {
+    confineFlicPending.add(resource);
+    void sprites.getFlic(CONFINE_FX_ARCHIVE, resource).then((f) => {
+      confineFlics.set(resource, f);
+      confineFlicPending.delete(resource);
+      requestRender();
+    });
+  }
+  return null;
+}
+
+function releaseConfineFlics(): void {
+  for (const f of confineFlics.values()) f?.close();
+  confineFlics.clear();
+}
+
+/**
+ * 这一拍有没有人**刚被送进**医院／监狱 —— 有就起播那一段影片。
+ *
+ * ★ 只在「動畫過程」开着时播：@source `cmp byte [0x497159], 0 / je 跳过`
+ *   （医院 VA 0x0043ed27、监狱 VA 0x0043d67b），与其它屏同一个开关。
+ *   判据（占用表 0→1 / 计数变大）见 `confine-fx.ts` 的 `confineFxTrigger`。
+ */
+function startConfineFx(before: GameState): void {
+  if (!options.animation) return;
+  const kind = confineFxTrigger(before, state);
+  if (kind === null) return;
+  // 上一段还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
+  if (confineFx !== null) {
+    confineFx = null;
+    releaseConfineFlics();
+  }
+  pendingConfineFx = kind;
+  confineFlicNow(kind);
+  requestRender();
+}
+
+/**
+ * 每帧推进这一段：
+ *   ① 影片还在解 → 解完才起时间轴（原版 `read_mkf` 在前、`fcn_0045144f` 在后）；
+ *   ② 播完 → 收摊（放掉位图）+ **补一次回合驱动**（这一段是阻塞的，见 `holdForWalk`）。
+ *
+ * 挂在 `requestRender` 的 rAF 回调里，与建屋影片同一个套路。
+ */
+function tickConfineFx(now: number): void {
+  const pending = pendingConfineFx;
+  if (pending !== null) {
+    const res = confineClip(pending).resource;
+    if (!confineFlics.has(res)) {
+      // 还在解（`.then` 会再 `requestRender`）；真取不到就整段放弃，免得卡住回合驱动
+      if (confineFlicPending.has(res)) return;
+      pendingConfineFx = null;
+      return;
+    }
+    pendingConfineFx = null;
+    const clip = confineClip(pending);
+    confineFx = beginConfineFx(pending, now);
+    log(`監禁影片：開始 ${pending}（${clip.frames} 帧 × ${clip.frameMs} ms）`);
+    sound.play('Effect.mkf', clip.sound);
+    requestRender();
+    return;
+  }
+  const fx = confineFx;
+  if (fx === null) return;
+  if (!confineFxDone(fx, now)) {
+    requestRender();
+    return;
+  }
+  confineFx = null;
+  releaseConfineFlics();
+  // ★ 阻塞那一段播完了：把回合驱动接回去（`scheduleHumanTurn` / `scheduleAi`
+  //   都以 `confineFx` 为闸，不补这一下人就永远停在原地）。
+  resumeTurnDriver();
+  requestRender();
+}
+
+/** 这一刻该贴哪一帧（屏幕落点由 `confineClip` 给）—— 没在播或影片没到货就是 null */
+function currentConfineFxFrame(now: number): {
+  bitmap: CanvasImageSource;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} | null {
+  const fx = confineFx;
+  if (fx === null) return null;
+  const clip = confineClip(fx.kind);
+  const bitmap = confineFxBitmap(fx, now, confineFlics.get(clip.resource) ?? null);
+  if (bitmap === null) return null;
+  // ★ 交给渲染器的必须是**棋盘局部**坐标：`confineClip` 里的 (x,y) 是原版的
+  //   **屏幕**坐标（医院 (0,210)、入獄 (0,40)），而棋盘的离屏画布 439×440
+  //   最后被贴到屏幕 (0, 40)（`LAYOUT.board`）——
+  //   所以局部 y = 屏幕 y − `LAYOUT.board.y`（医院 170、入獄 0）。
+  return { bitmap, x: clip.x, y: clip.y - LAYOUT.board.y, w: clip.width, h: clip.height };
+}
+
 /**
  * 一条 `useTool` 用的是機器工人（9）→ 起播建屋动效。
  *
@@ -4596,6 +4743,8 @@ function requestRender(): void {
     if (screen === 'game') tickObjectFlight(performance.now());
     // ★ 建屋动效（機器工人）同理：两段时间轴没走完就再排一帧，走完就放掉位图
     if (screen === 'game') tickBuildFx(performance.now());
+    // ★ 送進監獄／醫院那段影片同理（Q-ANIM-1）：按帧时序推进，播完补一次回合驱动
+    if (screen === 'game') tickConfineFx(performance.now());
     if (screen === 'game') shopTick(performance.now());
     // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
     if (screen === 'game') bankTick(performance.now());
@@ -4964,6 +5113,9 @@ function drawGameStage(): void {
     // 機器工人（9）的原地建屋影片（Q-TOOL-6）—— 两段 FLIC 合起来 440×440
     // 盖在棋盘左上角，**不进绘制槽**、也没有自己的落点（落点是常数）。
     buildFx: currentBuildFxBitmap(performance.now()),
+    // ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1）—— 落点/尺寸随哪一段变
+    //   （医院 440×74 @(0,210)、入獄 440×440 @(0,40)），所以整份交出去。
+    confineFx: currentConfineFxFrame(performance.now()),
   });
   const dlg = currentDialog();
   const me = state.players[state.currentPlayer];
