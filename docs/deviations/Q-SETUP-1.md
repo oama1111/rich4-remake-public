@@ -148,7 +148,8 @@
   `gameOver` 直接收工，不再把 phase 覆盖回 `'turnStart'`。
   `gameOverCode()` 有 `victory` 时直接返回 `victory.code`。
 * `loaders/savegame.ts`：新格式存档天然带上两个新字段（`migrate` 给旧档补默认值）；
-  原版存档导入按 §5.2 的偏移**尚未回填**，已进 `gaps['winConditions']`。
+  原版存档导入按 §5.2 的偏移**已回填**（2026-09-16）：`save.ts` 读
+  `0x2682` / `0x2686`，`totalDays` 读 `0x2692`，`gaps['winConditions']` 已摘掉。
 * `client`：开局屏点 `OK` 时 `winConditionsOf(setup.money, setup.time, setup.victory)`
   传给 `newGame`（另一条未动的缺口：`updatePriceIndex` 仍硬编码 30 万，见 known-deviations ④）。
 * 回归测试：`packages/core/src/state/win-conditions.test.ts`（15 条：到点那天 /

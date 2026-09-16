@@ -825,8 +825,15 @@ call  0x4563f5                  ; 同样画在 (440, 280)
 **節日插画 = `Data.mkf` 资源 `(0x475208[地图号] + 節日序号)`**，画在 `(440, 280)`
 盖住整块 200×200。这解释了需求方「不同地图不同節日不同底图」的观察。
 
-**这条就是 Q-CAL-1**，现在已经有了完整算法（上面两行），可以做了；先前卡在
-「没跟到那两张表的来源」，现已跟到。还没做，仍登记着。
+**这条就是 Q-CAL-1** —— ✅ **已接（复核：早在本轮之前就落地了，先前这句「还没做」是过期记录）**：
+
+- core：`places/calendar.ts` 的 `HOLIDAY_ART_BASE = [4, 28, 47, 67, 87, 108, 95, 118]`
+  （与这里 dump 的八个值逐项相同）+ `holidayArtResource(地图号, 節日序号)`；
+- client：`assets.ts` 的 `loadHolidayArt(archives, 地图号, 節日)` 按它取 200×200
+  裸 RGB555 资源；
+- **两个使用点都接了**：侧栏日曆（`main.ts:3001`）与银行贷款屏的**日期面板**
+  （`LoanPanelsView.holidayArt` → `fcn_00433f24` 那个「整张盖掉季节底图」的分支，
+  见 Q-BANK-1e）。
 
 #### ⑨ **对齐标志的语义**（`flag 2/3/4` 是「正中」）—— 2026-09-15 逐条核对，**并修掉一处真错**
 
@@ -4001,9 +4008,11 @@ trunc((rand×2⁻¹⁶ + 3) × 地價 × 物價指數) )`
 **回归测试**：`state/win-conditions.test.ts` 15 条（到点那天 / 倍率达标 / 两条都 0 行为不变 /
 破产结束仍有效 / 终局码 / `who_plays` 收尾）+ `rules/setup.test.ts` 的档位换算 4 条。
 
-**仍缺的一处（读档）**：`loaders/savegame.ts` 的 `importOriginalSave` 还没按
-`0x2682`/`0x2686` 两个偏移回填 `winConditions`（该函数也把 `totalDays` 硬置 0），
-已在 `gaps['winConditions']` 里如实报出。**UI 一侧没有任何变化**（頒獎屏 REQ-12.15 仍未做，
+~~**仍缺的一处（读档）**：`importOriginalSave` 还没按 `0x2682`/`0x2686` 回填
+`winConditions`（`totalDays` 也被硬置 0）。~~ ✅ **2026-09-16 已补**：
+`loaders/save.ts` 读 `OFFSET.winTargetDays = 0x2682` / `winTargetWealth = 0x2686`
+/ `totalDays = 0x2692`（`save.ts:354-356`），`importOriginalSave` 直接写进状态，
+`gaps['winConditions']` 也不再挂这一条。**UI 一侧没有任何变化**（頒獎屏 REQ-12.15 仍未做，
 所以终局只是停在棋盘上）。★ 2026-09-16 把那一支读完了：`fcn_004075c1` 兼两用
 （名次没满 4 → 播一下继续下一关；满 4 → 整局结束），依赖原版的**多关流程**
 （`[0x4991b6]`/`[0x4991b8]` 两个全局量）与 `[0x4990f0]` 名次标记表，
