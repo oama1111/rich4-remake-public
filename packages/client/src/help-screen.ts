@@ -21,7 +21,7 @@
  * | 中部上／下三角 = 图 **4** / 图 **5** | @0x44e11f / @0x44e14e |
  * | 正文 = `read_mkf(help, entry.res + scroll, 0, 0)` | @0x44e179 |
  * | 正文行距 30、落点 `+0xe8`、首行 `+0x5a`、一屏 8 行 | @0x44e1c6 起 |
- * | 条目表 = `0x4761b4`，**20 字节/项 × 8 项**（章名 / 正文资源 / maxScroll / h） | 入口 @0x44eb9b |
+ * | 条目表 = `0x4761b4`，**20 字节/项 × 8 项**（章名串 / 另一指针 / **起始资源** / **资源数** / **滚动位置**） | 入口 @0x44eb9b |
  * | 分项表 = `0x476028`，**9 字节/串 × 8 项**（游戏操作 / 日、月曆 / …） | @0x44e080 |
  * | 命中表 = `0x476254`，**16 字节/项 × 6 项** | 回调 @0x44e5cc |
  *
@@ -91,11 +91,33 @@
  *   本来就烘在底图上（图 0 左列有 8 条暗绿横线），只画名字就对了。
  *   记在 `docs/deviations/T-045.md`。
  *
- * ## 正文的行与 `maxScroll`
+ * ## 正文的取用：章 ↔ `help.mkf` 资源
  *
- * 正文资源是「NUL 分隔的行」，**空串也是行**（原版每行推进 `strlen()+1`，
- * 空串占一个行号但不画）。`HELP_CHAPTERS[i].maxScroll = 行数 − 8`，八章由
- * 单测逐条钉住（前六章与 exe 表里那个字段逐条相同，第 6/7 章见偏离记录）。
+ * `entry` 的 **+0x08 = 起始资源**、**+0x0C = 该章占几个资源**：第 i 章 = 资源
+ * `res .. res + resCount − 1`（`HELP_CHAPTERS`）。原版取正文的那条
+ * `read_mkf(help, entry.res + scroll, 0, &size)` @0x44e179 每次只读**一个**资源，
+ * 再把该资源缓冲按 NUL 切行（**空串也是行**：每行推进 `strlen()+1`，空串占行号
+ * 不画），一屏画到下一个 `@` 或画满 14 行 @0x44e1be。
+ *
+ * ★ **八章的区间首尾相接、且与 `help.mkf` 的资源区间严丝合缝**（8/8）：
+ *
+ * | i | 章 | 资源区间 | 资源数 | 行数 | maxScroll（本模块） |
+ * |---|---|---|---|---|---|
+ * | 0 | 操作說明 | 1..1 | 1 | 4 | 0 |
+ * | 1 | 遊戲畫面 | 2..7 | 6 | 104 | 96 |
+ * | 2 | 遊戲指令 | 8..19 | 12 | 102 | 94 |
+ * | 3 | 房 地 產 | 20..22 | 3 | 190 | 182 |
+ * | 4 | 特殊地點 | 23..38 | 16 | 79 | 71 |
+ * | 5 | 特殊人物 | 39..56 | 18 | 112 | 104 |
+ * | 6 | 卡  片 | 57..86 | 30 | 338 | 330 |
+ * | 7 | 道  具 | 87..99 | 13 | 148 | 140 |
+ *
+ * ⚠️ **`maxScroll` 是「行数 − 8」，不是 exe 里那个 `entry.count − 8`**。exe 的下滚
+ *   夹取 @0x44e944 是 `edx = [entry+0x0C] − 8`（`<= 8` 就不滚），而 `[entry+0x0C]`
+ *   是**资源数**；本模块的 `scroll` 按**行**走（步长 = 一屏 8 行）。两者的等价
+ *   前提是「滚动单位 = 资源」—— 这一条**尚未定案**，登记在
+ *   `docs/deviations/T-045.md` D-045-2；本模块**不改口径**，只把当章行数代入
+ *   同一个「减一屏」形状。恒等式由单测逐章钉住。
  *
  * ⚠️ 只有 `@` **一个字符**的行是原版的「章内分页」标记（`cmp byte [ptr], 0x40`）：
  *   原版遇到它把「还能往下」标志置 1 但**不画这个字**。本模块照做。
@@ -221,56 +243,88 @@ export function lineAt(row: number): { x: number; y: number } {
 //  条目表 @source 0x4761b4（8 项 × 20 字节）
 // ============================================================
 
-/** 一个章节条目（= 原版表里的一项）*/
+/** 一个章节条目（= 原版表 0x4761b4 的一项，5 个 dword 里本模块用得到的 3 个）*/
 export interface HelpChapter {
-  /** 章名 @source 0x4761b4 第 1 个 dword（串表 0x466052 起，每串 9 字节） */
+  /** 章名 @source `0x4761b4` **+0x00**（串表 `0x466052` 起，每串 9 字节）*/
   readonly name: string;
-  /** 该章正文的资源起点（第 3 个 dword）@source 0x44e1a0 */
+  /** 该章的**起始资源号** @source `0x4761b4` **+0x08**（入口取正文 @0x44e179 用的就是它）*/
   readonly res: number;
-  /** 章节内最大行偏移（第 4 个 dword）@source 0x44e9a2 的下滚夹取 */
+  /** 该章**占几个资源** @source `0x4761b4` **+0x0C**（区间 = `res .. res + resCount − 1`）*/
+  readonly resCount: number;
+  /** 章节内最大行偏移（本模块口径：当章行数 − 8；exe 那个字段是资源数 − 8，见下）*/
   readonly maxScroll: number;
-  /** 左列格高（第 5 个 dword）@source 0x44e2f0 / 0x44e33c */
-  readonly h: number;
 }
 
 /**
- * 八章。`name` / `res` / `h` 逐条 dump 自 `0x4761b4`
- * （`python3 tools/disasm.py dump 0x4761b4 40 4`）；`maxScroll` **按行数算**，见下。
+ * 八章。`name` / `res` / `resCount` 逐条 dump 自 `0x4761b4`（**20 字节/项 × 8 项**），
+ * `maxScroll` 按「当章正文行数 − 8」算。**整张表由 `tools/gen-help-lines.py` 生成**，
+ * 别手改；改完跑 `python3 tools/gen-help-lines.py` 校对（不一致会退 1）。
  *
- * | i | name | res（表里） | h | 表里的第 4 字段 | 本表的 maxScroll | 正文行数 |
+ * | i | name | res | resCount | 资源区间 | 行数 | maxScroll |
  * |---|---|---|---|---|---|---|
- * | 0 | 操作說明 | 1 | 4 | 0 | 0 | 4 |
- * | 1 | 遊戲畫面 | 2 | 6 | 22 | 22 | 30 |
- * | 2 | 遊戲指令 | 3 | 12 | 0 | 0 | 8 |
- * | 3 | 房 地 產 | 4 | 3 | 12 | 13 | 21 |
- * | 4 | 特殊地點 | 5 | 16 | 1 | 1 | 9 |
- * | 5 | 特殊人物 | 6 | 18 | 0 | 0 | 8 |
- * | 6 | 卡  片 | 7 | 30 | 739 | 851 | 859 |
- * | 7 | 道  具 | 88 | 13 | 95 | 130 | 138 |
+ * | 0 | 操作說明 | 1 | 1 | 1..1 | 4 | 0 |
+ * | 1 | 遊戲畫面 | 2 | 6 | 2..7 | 104 | 96 |
+ * | 2 | 遊戲指令 | 8 | 12 | 8..19 | 102 | 94 |
+ * | 3 | 房 地 產 | 20 | 3 | 20..22 | 190 | 182 |
+ * | 4 | 特殊地點 | 23 | 16 | 23..38 | 79 | 71 |
+ * | 5 | 特殊人物 | 39 | 18 | 39..56 | 112 | 104 |
+ * | 6 | 卡  片 | 57 | 30 | 57..86 | 338 | 330 |
+ * | 7 | 道  具 | 87 | 13 | 87..99 | 148 | 140 |
  *
- * ★ `maxScroll = max(0, 该章正文行数 − HELP_TEXT.rows)`。**前六章与表里第 4 个
- *   字段逐条相同**（0 / 22 / 0 / 0 / 1 / 0，其中第 3 章差 1 —— 见下）；
- *   第 6、7 章表里给的是 739 / 95，比行数算出来的 851 / 130 小。
- *   ⚠️ 这两个数**不是笔误**（`0x4761c4` / `0x476200` 两处 dump 都是它），但
- *   无论按哪种口径，同一套资源解出来的行数都大于它 —— 若照抄表里的数，
- *   第 6 章最后 112 行、第 7 章最后 35 行会**永远滚不到**，与「滚到底就该停」
- *   的观感不符。故本模块取**行数 − 8**（可自洽、可测），并记在
- *   `docs/deviations/T-045.md` 等复核。
+ * ★ **字段真义**（每项 5 个 dword，@source VA `0x4761b4`）：
  *
- * ★ 第 7 章的正文从资源 **88** 起 —— 第 6 章的最后一段是资源 87（表里 res=7），
- *   两章的段不是「前一章末 +1」的关系，抄的时候别顺手改成 87 + 1。
+ * | 偏移 | 含义 | 0..7 的值 |
+ * |---|---|---|
+ * | +0x00 | 章名串指针（`0x466052` 起每串 9 字节） | 操作說明 / 遊戲畫面 / … |
+ * | +0x04 | 另一个指针（未解，本模块不用） | — |
+ * | +0x08 | **起始资源号** | 1, 2, 8, 20, 23, 39, 57, 87 |
+ * | +0x0C | **该章占几个资源** | 1, 6, 12, 3, 16, 18, 30, 13 |
+ * | +0x10 | **当前滚动位置**（运行时会写它） | 全 0 |
  *
- * ★ 恒等式由单测逐章钉住（漏一行就会滚不到底）。
+ * ★ 这组数与 `help.mkf` 的资源区间严丝合缝（8/8）：第 i 章 = 资源
+ *   `start .. start+count−1`，且 `start[i+1] == start[i]+count[i]`。滚动夹取在
+ *   **0x0044e944**：`max = [entry+0x0C] − 8`，`if ([entry+0x0C] <= 8) 不滚`。
+ *
+ * 权威 dump（可以自己复跑核对）：
+ * ```bash
+ * python3 - <<'EOF'
+ * import importlib.util, struct
+ * spec=importlib.util.spec_from_file_location('d','tools/disasm.py'); m=importlib.util.module_from_spec(spec)
+ * try: spec.loader.exec_module(m)
+ * except SystemExit: pass
+ * exe=open('../Rich4/rich4.exe','rb').read(); off=m.va_to_off(0x4761b4)
+ * for i in range(8):
+ *     t,f1,start,cnt,scroll = struct.unpack_from('<5I', exe, off+i*20)
+ *     o=m.va_to_off(t); e=exe.index(b'\x00',o)
+ *     print(i, exe[o:e].decode('cp950'), 'start',start,'count',cnt,'scroll',scroll)
+ * EOF
+ * ```
+ *
+ * ⚠️ **旧版那张表有两处误读，已删**：
+ *   · 把 **+0x0C**（资源数）当成 `maxScroll`，读出
+ *     `0 / 22 / 0 / 12 / 1 / 0 / 739 / 95`。但 +0x0C 就是**资源数**：上面那组
+ *     区间接续关系 8/8 成立（1→2→8→20→23→39→57→87→100），而且取正文那一步
+ *     `read_mkf(help, entry.res + scroll)` @0x44e179 是按资源走的 —— 若把
+ *     739 之类的数当行偏移，语意完全对不上。
+ *   · 把 **+0x10** 当成「左列格高 `h`」。+0x10 是**滚动位置**：下滚 @0x44e944、
+ *     上滚 @0x44e881 都直接 `add/sub` 这个 dword，exe 初值全 0；它跟左列格高
+ *     没关系。旧版那个 `h` 字段绘制时也没用到，故一并**删除**（不是改良绘制）。
+ *
+ * ⚠️ `maxScroll = max(0, 行数 − 8)`：exe 夹的是 `[entry+0x0C] − 8`（**资源数 − 8**），
+ *   本模块按**行**滚（步长 = 一屏 8 行）。两者等价的前提是「滚动单位 = 资源」，
+ *   尚未定案，登记在 `docs/deviations/T-045.md` D-045-2。恒等式由单测逐章钉住。
  */
 export const HELP_CHAPTERS: readonly HelpChapter[] = [
-  { name: '操作說明', res: 1, maxScroll: 0, h: 4 },
-  { name: '遊戲畫面', res: 2, maxScroll: 22, h: 6 },
-  { name: '遊戲指令', res: 3, maxScroll: 0, h: 12 },
-  { name: '房 地 產', res: 4, maxScroll: 13, h: 3 },
-  { name: '特殊地點', res: 5, maxScroll: 1, h: 16 },
-  { name: '特殊人物', res: 6, maxScroll: 0, h: 18 },
-  { name: '卡  片', res: 7, maxScroll: 851, h: 30 },
-  { name: '道  具', res: 88, maxScroll: 130, h: 13 },
+  // >>> GENERATED HELP_CHAPTERS (tools/gen-help-lines.py) >>>
+  { name: '操作說明', res: 1, resCount: 1, maxScroll: 0 },
+  { name: '遊戲畫面', res: 2, resCount: 6, maxScroll: 96 },
+  { name: '遊戲指令', res: 8, resCount: 12, maxScroll: 94 },
+  { name: '房 地 產', res: 20, resCount: 3, maxScroll: 182 },
+  { name: '特殊地點', res: 23, resCount: 16, maxScroll: 71 },
+  { name: '特殊人物', res: 39, resCount: 18, maxScroll: 104 },
+  { name: '卡  片', res: 57, resCount: 30, maxScroll: 330 },
+  { name: '道  具', res: 87, resCount: 13, maxScroll: 140 },
+  // <<< GENERATED HELP_CHAPTERS <<<
 ];
 
 /** 章数 */
@@ -281,20 +335,30 @@ export const HELP_CHAPTER_COUNT = HELP_CHAPTERS.length;
 // ============================================================
 
 /**
- * 八章的正文 —— 逐字抄自 `help.mkf` 资源 1..99（CP950 解码；原版就是 Big5）。
+ * 八章的正文 —— 从 `../extracted/help/NNNN.bin` 生成（**别手抄**，手抄必错）。
+ *
+ * ★ 每一章 = exe 条目表给出的**连续资源区间** `res .. res + resCount − 1`，
+ *   逐资源按 NUL 切行后顺次接起来（第 7 章从资源 **87** 起，不是 88）。
  *
  * ★ 资源里是「NUL 分隔的行」，**空串也是行**：原版显示循环每行推进
- *   `strlen()+1`，空串占一个行号但不画东西，而条目表里的 `maxScroll`
- *   （= 行数 − 8）正是按**含空行**的行数算出来的 —— 见文件头那段推导。
+ *   `strlen()+1`，空串占一个行号但不画东西。生成脚本与单测都按**含空行**数。
  *
  * ⚠️ 只有 `@` 一个字符的行是章内分页标记，**不画**（见 `drawHelpScreen`）。
  */
+// >>> GENERATED HELP_LINES 0..7 (tools/gen-help-lines.py) >>>
+// 由 tools/gen-help-lines.py 生成，勿手改（手抄必错）。
+// 每章 = exe 条目表 0x4761b4 给出的资源区间 start .. start+resCount-1，
+// 逐资源按 NUL 切行后顺次接起来；文本 = ../extracted/help/NNNN.bin（CP950）。
+//
+// 第 0 章 操作說明：资源 1..1（1 个），共 4 行，maxScroll 0。
 const HELP_LINES_0: readonly string[] = [
   '本遊戲的操作方法非常',
   '簡單，只要操作滑鼠游',
   '標移動，以及確定、取',
   '消鍵即可進行。',
 ];
+//
+// 第 1 章 遊戲畫面：资源 2..7（6 个），共 104 行，maxScroll 96。
 const HELP_LINES_1: readonly string[] = [
   '遊戲中，每一個人物都',
   '前進過一回合，便算一',
@@ -326,8 +390,6 @@ const HELP_LINES_1: readonly string[] = [
   '也可以在【 OPTION 】',
   '功能選項中，更改遊戲',
   '開始的日期。',
-];
-const HELP_LINES_2: readonly string[] = [
   '土地：個人擁有土地的',
   '總筆數。',
   '',
@@ -336,8 +398,6 @@ const HELP_LINES_2: readonly string[] = [
   '',
   '設施：個人擁有之商業',
   '區的設施總數。',
-];
-const HELP_LINES_3: readonly string[] = [
   '點券：卡片及道具都需',
   '以點券來兌換，不能以',
   '現金購買。遊樂場也是',
@@ -359,8 +419,6 @@ const HELP_LINES_3: readonly string[] = [
   '公司，就會被強迫購買',
   '保單，在這裡會顯示保',
   '險有效剩餘天數。',
-];
-const HELP_LINES_4: readonly string[] = [
   '物價指數：物價指數是',
   '以所有人的總財產平均',
   '值為依據計算。遊戲開',
@@ -370,8 +428,6 @@ const HELP_LINES_4: readonly string[] = [
   '、事件金額、地價）也',
   '跟著呈倍數上漲，並在',
   '月底結算時公佈調整。',
-];
-const HELP_LINES_5: readonly string[] = [
   '總市值：個人目前持有',
   '股票的現值。',
   '',
@@ -380,8 +436,6 @@ const HELP_LINES_5: readonly string[] = [
   '',
   '經營權：握有經營權的',
   '公司企業總家數。',
-];
-const HELP_LINES_6: readonly string[] = [
   '現金：購買土地、支付',
   '租金或其他額外花費及',
   '損失時，都是以現金支',
@@ -410,6 +464,10 @@ const HELP_LINES_6: readonly string[] = [
   '加上股票、不動產的現',
   '值，扣除目前的貸款，',
   '即為您的總資產。',
+];
+//
+// 第 2 章 遊戲指令：资源 8..19（12 个），共 102 行，maxScroll 94。
+const HELP_LINES_2: readonly string[] = [
   '讀取目前的遊戲進度。',
   '儲存目前的遊戲進度。',
   '選定這個指令就可以運',
@@ -512,6 +570,10 @@ const HELP_LINES_6: readonly string[] = [
   '地方，請使用【說明】',
   '指令。就是您現在使用',
   '的功能啦！',
+];
+//
+// 第 3 章 房 地 產：资源 20..22（3 个），共 190 行，maxScroll 182。
+const HELP_LINES_3: readonly string[] = [
   '公司企業在地圖上指定',
   '地點，並已擁有建築物',
   '，遊戲一開始各家公司',
@@ -702,6 +764,10 @@ const HELP_LINES_6: readonly string[] = [
   '旅館：走到旅館，必須',
   '在這裡休息一天，並轉',
   '輪盤決定消費金額。',
+];
+//
+// 第 4 章 特殊地點：资源 23..38（16 个），共 79 行，maxScroll 71。
+const HELP_LINES_4: readonly string[] = [
   '走到七彩氣球代表格時',
   '，即進行射氣球小遊戲',
   '。',
@@ -781,6 +847,10 @@ const HELP_LINES_6: readonly string[] = [
   '的水晶球會出現的條件',
   '施法，再由您決定那些',
   '人的懲罰。',
+];
+//
+// 第 5 章 特殊人物：资源 39..56（18 个），共 112 行，maxScroll 104。
+const HELP_LINES_5: readonly string[] = [
   '在遊戲中途倒閉的角色',
   '，會在原地停留乞討，',
   '若您遇上他，就施捨他',
@@ -893,6 +963,10 @@ const HELP_LINES_6: readonly string[] = [
   '取該地上一次收取的租',
   '金，走到公司企業就會',
   '盜領所有的累積紅利。',
+];
+//
+// 第 6 章 卡  片：资源 57..86（30 个），共 338 行，maxScroll 330。
+const HELP_LINES_6: readonly string[] = [
   '功能：只要指定一棟建',
   '築物，就會起連鎖反應',
   '，整個路段的房屋都加',
@@ -1231,6 +1305,10 @@ const HELP_LINES_6: readonly string[] = [
   '注意：無',
   '',
   '原價：20點',
+];
+//
+// 第 7 章 道  具：资源 87..99（13 个），共 148 行，maxScroll 140。
+const HELP_LINES_7: readonly string[] = [
   '功能：拆除房屋一個等',
   '級，走到哪裡拆到哪裡',
   '，開十八步就報廢。',
@@ -1241,8 +1319,6 @@ const HELP_LINES_6: readonly string[] = [
   '用效果更佳。',
   '',
   '原價：非賣品',
-];
-const HELP_LINES_7: readonly string[] = [
   '功能：放地雷害人，也',
   '有可能害到自己，被炸',
   '到要住院三天。',
@@ -1382,16 +1458,18 @@ const HELP_LINES_7: readonly string[] = [
   '注意：依目前選擇使用',
   '之骰子數，擲點前進。',
 ];
+// <<< GENERATED HELP_LINES 0..7 <<<
 
 /**
  * 八章的正文（本表的顺序 = 条目表的顺序）。
  *
  * ★ 每一章的正文是一段**连续资源**：章 i = 资源
- *   `HELP_CHAPTERS[i].res .. HELP_CHAPTERS[i+1].res − 1`。
- *   第 7 章从资源 **88** 起（第 6 章最后一段是资源 87）。
+ *   `HELP_CHAPTERS[i].res .. HELP_CHAPTERS[i].res + resCount − 1`。
+ *   区间直接来自 exe（`start[i+1] == start[i] + count[i]` 8/8 成立），
+ *   **不是**「下一章起点 − 1」推的；第 7 章从资源 **87** 起。
  *
  * ⚠️ 空串是**行号的一部分**（原版每行推进 `strlen()+1`），别过滤掉；
- *   条目表的 `maxScroll` 就是按含空行的行数算的。
+ *   `maxScroll` 就是按含空行的行数算的。
  */
 export const HELP_LINES: readonly (readonly string[])[] = [
   HELP_LINES_0,
@@ -1500,7 +1578,8 @@ export function clampChapter(i: number): number {
 /**
  * 夹取章节内行偏移到 `[0, maxScroll]`。
  *
- * @source 0x44e944 的下滚分支：`edx = maxScroll`（表里第 4 个字段）；
+ * @source 0x44e944 的下滚分支：`edx = [entry+0x0C] − 8`（exe 口径 = **资源数 − 8**，
+ *   本模块把它换成当章的 `maxScroll = 行数 − 8`，见 `HELP_CHAPTERS` 那段）；
  *   够走一步就走 8，走不过去就**直接落到 maxScroll**（不做取整）。
  * @source 0x44e881 的上滚分支：`maxScroll <= 0` 就什么都不做，否则退 8 或归 0。
  */

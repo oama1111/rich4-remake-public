@@ -7,10 +7,14 @@
  *   · 工具列下标 **0**（跳表 0x417d39 第 0 项 push 0x3c / 0x14）；
  *   · 命中表 0x476254 是**六条矩形**、两张跳表各三格 —— 不是「三颗钮」；
  *   · 左列八格不在命中表里，是图上那 8 条绿格（每格 18、间隙 3）；
- *   · 正文的 `maxScroll` 逐章 = 行数 − 8（表里第 4 个字段）；
+ *   · **章 ↔ help.mkf 资源**：exe 条目表 0x4761b4 的 +0x08 / +0x0C 给出
+ *     区间 `res .. res+resCount−1`（1,2,8,20,23,39,57,87 / 1,6,12,3,16,18,30,13），
+ *     八章首尾相接；每章正文逐字对得上区间内的资源（见「章 ↔ help.mkf 资源」）；
+ *   · 正文的 `maxScroll` 逐章 = 行数 − 8（本模块口径，exe 那个字段是资源数 − 8）；
  *   · 上/下滚步长 8、夹在 `[0, maxScroll]`。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
 import type { UiScreenEnv } from './ui-screen.ts';
 import { HOTKEY } from './hotkeys.ts';
 import {
@@ -93,6 +97,111 @@ function mkEnv(): {
 
 beforeEach(() => {
   resetHelp();
+});
+
+// ============================================================
+//  章 ↔ help.mkf 资源（T-045 的内容错位修复）
+// ============================================================
+
+/**
+ * exe 条目表 **0x4761b4** 每项的 (起始资源 +0x08, 资源数 +0x0C)，以及该区间拼
+ * 出来的正文首行 / 末行（从 `extracted/help/NNNN.bin` dump，CP950）。
+ *
+ * 八组区间首尾相接：`1 | 2..7 | 8..19 | 20..22 | 23..38 | 39..56 | 57..86 | 87..99`。
+ * **不是**旧版的「一章一资源」—— 那样资源 3..7 会被错分到后面几章，第 2..7 章
+ * 显示的都是别的章的文字（本次修复的就是它）。
+ */
+interface HelpChapterFact {
+  readonly res: number;
+  readonly resCount: number;
+  readonly first: string;
+  readonly last: string;
+}
+
+const CHAPTER_FACTS: readonly HelpChapterFact[] = [
+  { res: 1, resCount: 1, first: '本遊戲的操作方法非常', last: '消鍵即可進行。' },
+  { res: 2, resCount: 6, first: '遊戲中，每一個人物都', last: '即為您的總資產。' },
+  { res: 8, resCount: 12, first: '讀取目前的遊戲進度。', last: '的功能啦！' },
+  { res: 20, resCount: 3, first: '公司企業在地圖上指定', last: '輪盤決定消費金額。' },
+  { res: 23, resCount: 16, first: '走到七彩氣球代表格時', last: '人的懲罰。' },
+  { res: 39, resCount: 18, first: '在遊戲中途倒閉的角色', last: '盜領所有的累積紅利。' },
+  { res: 57, resCount: 30, first: '功能：只要指定一棟建', last: '原價：20點' },
+  { res: 87, resCount: 13, first: '功能：拆除房屋一個等', last: '之骰子數，擲點前進。' },
+];
+
+/** `help.mkf` 的正文资源（资源 0 是底图那一支，正文从 0001 起）*/
+const HELP_DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/help';
+const runOnHelpAssets = existsSync(`${HELP_DIR}/0001.bin`) ? it : it.skip;
+
+/**
+ * 一个资源文件里的行（NUL 分隔）。
+ *
+ * ★ 文件以 NUL 收尾，所以按 `\u0000` 切完要**丢掉末尾那个空元素**；中间的
+ *   空串照留 —— **空串也是行**（占行号不画），这是 `maxScroll` 的口径。
+ */
+function resourceLines(res: number): string[] {
+  const raw = readFileSync(`${HELP_DIR}/${String(res).padStart(4, '0')}.bin`);
+  return new TextDecoder('big5').decode(raw).split('\u0000').slice(0, -1);
+}
+
+describe('章 ↔ help.mkf 资源 @source 0x4761b4（+0x08 起始资源 / +0x0C 资源数）', () => {
+  it('★ 八章的区间首尾相接，且正好铺满资源 1..99', () => {
+    let next = 1;
+    for (let i = 0; i < CHAPTER_FACTS.length; i++) {
+      const f = CHAPTER_FACTS[i]!;
+      expect(HELP_CHAPTERS[i]!.res, `第 ${i} 章起始资源`).toBe(f.res);
+      expect(HELP_CHAPTERS[i]!.resCount, `第 ${i} 章资源数`).toBe(f.resCount);
+      // start[i] == start[i-1] + count[i-1]
+      expect(HELP_CHAPTERS[i]!.res).toBe(next);
+      next += HELP_CHAPTERS[i]!.resCount;
+    }
+    expect(next - 1).toBe(99); // 第 7 章 = 87..99，正好收在最后一号资源
+  });
+
+  for (let i = 0; i < CHAPTER_FACTS.length; i++) {
+    const f = CHAPTER_FACTS[i]!;
+    it(`★ 第 ${i} 章：资源 ${f.res}..${f.res + f.resCount - 1}，首行/末行对得上`, () => {
+      const lines = chapterLines(i);
+      expect(lines[0], `第 ${i} 章首行`).toBe(f.first);
+      expect(lines[lines.length - 1], `第 ${i} 章末行`).toBe(f.last);
+    });
+  }
+
+  runOnHelpAssets('★ 每章行数 = 区间内所有 NUL 行的总数（现算，不写死）', () => {
+    for (let i = 0; i < CHAPTER_FACTS.length; i++) {
+      const f = CHAPTER_FACTS[i]!;
+      const expected: string[] = [];
+      for (let res = f.res; res < f.res + f.resCount; res++) expected.push(...resourceLines(res));
+      expect(chapterLines(i).length, `第 ${i} 章行数`).toBe(expected.length);
+      // 行数对了还不够：逐字比一遍，正文内容也要就是这些资源拼出来的
+      expect(chapterLines(i), `第 ${i} 章正文`).toEqual(expected);
+    }
+  });
+
+  runOnHelpAssets('★ 反向：第 2 章不再是资源 3 的文本，资源 3 已归第 1 章', () => {
+    const res3 = resourceLines(3);
+    expect(res3[0]).toBe('土地：個人擁有土地的'); // 旧错片（= 资源 3）的证据
+    expect(chapterLines(2)[0]).not.toBe(res3[0]);
+    expect(chapterLines(2)).not.toEqual(res3);
+    // 资源 2 占第 1 章前 30 行，资源 3 紧随其后
+    expect(chapterLines(1).slice(30, 30 + res3.length)).toEqual(res3);
+  });
+
+  it('★ 反向（不依赖素材）：第 2 章的首行不是旧错片「土地：…」', () => {
+    // 探针核过：把 HELP_CHAPTERS[2].res 改回 3，这一条与上面几条一起红
+    expect(chapterLines(2)[0]).toBe(CHAPTER_FACTS[2]!.first);
+    expect(chapterLines(2)[0]).not.toBe('土地：個人擁有土地的');
+    expect(chapterLines(2)).not.toEqual([
+      '土地：個人擁有土地的',
+      '總筆數。',
+      '',
+      '連鎖店：個人擁有之連',
+      '鎖店的總店數。',
+      '',
+      '設施：個人擁有之商業',
+      '區的設施總數。',
+    ]);
+  });
 });
 
 describe('用到的图 @source rich4_ui_help.asm', () => {
@@ -275,21 +384,19 @@ describe('三组钮的作用 @source 跳表 ref_0044e3e3', () => {
   it('★ 上滚 / 下滚：步长 8、夹在 [0, maxScroll]（不是取整跳到顶/底）', () => {
     const { env } = mkEnv();
     helpScreen.toolbar?.(0, env);
-    // 第 1 章 maxScroll = 22 → 0 / 8 / 16 / 22（最后一步落到 22 而不是 24）
-    applyHelpHit({ label: 0, cell: 1 }, env); // 直接跳第 1 章
-    expect(helpPosition()).toEqual({ chapter: 1, scroll: 0 });
+    // 第 2 章 maxScroll = 94 → 0 / 8 / … / 88 / 94（最后一步落到 94 而不是 96）
+    applyHelpHit({ label: 0, cell: 2 }, env); // 直接跳第 2 章
+    expect(helpPosition()).toEqual({ chapter: 2, scroll: 0 });
+    for (let k = 8; k <= 88; k += 8) {
+      applyHelpHit({ label: 2, cell: 1 }, env);
+      expect(helpPosition().scroll).toBe(k);
+    }
     applyHelpHit({ label: 2, cell: 1 }, env);
-    expect(helpPosition().scroll).toBe(8);
+    expect(helpPosition().scroll).toBe(94); // 夹到 maxScroll
     applyHelpHit({ label: 2, cell: 1 }, env);
-    expect(helpPosition().scroll).toBe(16);
-    applyHelpHit({ label: 2, cell: 1 }, env);
-    expect(helpPosition().scroll).toBe(22); // 夹到 maxScroll
-    applyHelpHit({ label: 2, cell: 1 }, env);
-    expect(helpPosition().scroll).toBe(22); // 到底了不动
+    expect(helpPosition().scroll).toBe(94); // 到底了不动
     applyHelpHit({ label: 2, cell: 0 }, env);
-    expect(helpPosition().scroll).toBe(14);
-    applyHelpHit({ label: 2, cell: 0 }, env);
-    expect(helpPosition().scroll).toBe(6);
+    expect(helpPosition().scroll).toBe(86);
   });
 
   it('★ scroll 为 0 时上滚不做事（原版 `edx <= 0` 那条支路）', () => {
@@ -318,7 +425,7 @@ describe('三组钮的作用 @source 跳表 ref_0044e3e3', () => {
 });
 
 describe('翻页夹取与屏数', () => {
-  it('★ 八章的 maxScroll 与行数逐条对上（行数 − 8 = 表里第 4 个字段）', () => {
+  it('★ 八章的 maxScroll 与行数逐条对上（行数 − 8，本模块口径）', () => {
     for (let i = 0; i < HELP_CHAPTER_COUNT; i++) {
       const c = HELP_CHAPTERS[i]!;
       const lines = chapterLines(i).length;
@@ -330,21 +437,25 @@ describe('翻页夹取与屏数', () => {
     }
   });
 
-  it('★ 屏数 = floor(maxScroll / 8) + 1，八章依次 1/3/1/2/1/1/93/12', () => {
+  it('★ 屏数 = floor(maxScroll / 8) + 1，八章依次 1/13/12/23/9/14/42/18', () => {
     expect(HELP_CHAPTER_COUNT).toBe(8);
     expect(Array.from({ length: 8 }, (_, i) => pageCount(i))).toEqual([
-      1, 3, 1, 2, 1, 1, 107, 17,
+      1, 13, 12, 23, 9, 14, 42, 18,
     ]);
+    for (let i = 0; i < HELP_CHAPTER_COUNT; i++) {
+      const max = HELP_CHAPTERS[i]!.maxScroll;
+      expect(pageCount(i)).toBe(Math.trunc(max / HELP_SCROLL_STEP) + 1);
+    }
   });
 
   it('★ 屏号夹取到 [0, pageCount−1] 对应的行偏移', () => {
-    // 第 6 章（卡片）851 = 106*8 + 3 → 最后一屏的行偏移就是 851
-    expect(HELP_CHAPTERS[6]!.maxScroll).toBe(851);
-    expect(scrollOfPage(6, 106)).toBe(848);
-    expect(scrollOfPage(6, 999)).toBe(851);
+    // 第 6 章（卡片）330 = 41*8 + 2 → 最后一屏的行偏移 328，再往后夹到 330
+    expect(HELP_CHAPTERS[6]!.maxScroll).toBe(330);
+    expect(scrollOfPage(6, 41)).toBe(328);
+    expect(scrollOfPage(6, 999)).toBe(330);
     expect(scrollOfPage(6, -3)).toBe(0);
-    expect(pageOf(6, 851)).toBe(106);
-    expect(pageOf(6, 900)).toBe(106); // 夹到 851
+    expect(pageOf(6, 330)).toBe(41);
+    expect(pageOf(6, 900)).toBe(41); // 夹到 330
   });
 
   it('★ 每一屏刚好取 8 行；`@` 分页行留在里面（由绘制那一步跳过）', () => {
@@ -359,8 +470,8 @@ describe('翻页夹取与屏数', () => {
 
   it('★ 「还能往下」：没到底就有；到底且当屏没有 @ 就没有', () => {
     expect(hasMoreBelow(6, 0)).toBe(true);
-    expect(hasMoreBelow(6, 851)).toBe(false);
-    // 第 1 章 maxScroll 22、共 30 行 → 从 22 起还剩 8 行（到 30），没有更下面的了
+    expect(hasMoreBelow(6, 330)).toBe(false);
+    // 第 1 章 maxScroll 96、共 104 行 → 从 14 起还剩很多，当然还有
     expect(hasMoreBelow(1, 14)).toBe(true);
     expect(hasMoreBelow(0, 0)).toBe(false); // 操作說明只有 4 行，一屏就完
     // 到底之后（第 6 章最后那屏）不再有
