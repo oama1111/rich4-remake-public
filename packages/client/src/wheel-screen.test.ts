@@ -42,10 +42,12 @@ import {
   WHEEL_FRAME_MS,
   WHEEL_HOLD_FRAMES,
   WHEEL_HOLD_MS,
+  WHEEL_LAND_SOUND,
   WHEEL_MAX_DELAY,
   WHEEL_REVOLUTIONS,
   WHEEL_RESOURCE_BASE,
   WHEEL_SLOW_EVERY,
+  WHEEL_SPIN_SOUND,
   WHEEL_TEXT,
   WHEEL_TEXT_AT,
   drawWheelScreen,
@@ -458,6 +460,8 @@ interface FakeEnv extends UiScreenEnv {
   now: number;
   logs: string[];
   renders: number;
+  /** 收到过的音效出口调用的**顺序**（`play:52:loop` / `stop:52` / `play:1`）*/
+  effects: string[];
 }
 
 function makeEnv(state: GameState, topo: MapTopology): FakeEnv {
@@ -475,9 +479,15 @@ function makeEnv(state: GameState, topo: MapTopology): FakeEnv {
       env.renders += 1;
     },
     log: (m: string) => env.logs.push(m),
-    playEffect: () => undefined,
+    playEffect: (id: number, loop = false) => {
+      env.effects.push(loop ? `play:${id}:loop` : `play:${id}`);
+    },
+    stopEffect: (id: number) => {
+      env.effects.push(`stop:${id}`);
+    },
     logs: [] as string[],
     renders: 0,
+    effects: [] as string[],
   };
   return env as unknown as FakeEnv;
 }
@@ -586,6 +596,55 @@ describe('★ 繪製：三張圖的落點與那一格圓盤', () => {
     expect(angel).toMatchObject({ index: 0, x: 271, y: 230 });
     expect(ctx.texts).toContain('阿土伯的旅館');
     expect(ctx.texts).toContain('請進來休息...');
+    resetWheelScreen();
+  });
+});
+
+// ============================================================
+//  浮窗 + 音效 @source 0x00440988 / 0x0043f80d / 0x0043fa0a
+// ============================================================
+
+describe('★ 浮窗與音效', () => {
+  it('★ 本屏是**浮窗**（`windowed: true`）—— 棋盤與右側欄全程露著，不是整屏黑底', () => {
+    // 原版只把 (0,40)-(440,480) 存進離屏（`fcn_00451e7e`，VA 0x00440988），
+    // 在那塊**棋盤之上**畫轉盤；宣告 windowed 之後 main.ts 會先畫一整幀棋盤。
+    expect(wheelScreen.windowed).toBe(true);
+  });
+
+  it('★ 音效編號：轉動中的循環音 52、落地的一次性音 1', () => {
+    // 0x475d4c 第一格 dword = 52（dump: `34 00 00 00`）、0x482322 第一格 = 1
+    expect(WHEEL_SPIN_SOUND).toBe(52);
+    expect(WHEEL_LAND_SOUND).toBe(1);
+  });
+
+  runMap('★ 起播放循環的 52；落地**先停 52、再放一次性 1** @source 0x0043f80d / 0x0043fa0a / 0x0043f8a0', () => {
+    resetWheelScreen();
+    const s = scene();
+    if (s === null) return;
+    const after = reduce(s.before, { type: 'settle' }, s.topo);
+    const env = makeEnv(after, s.topo);
+
+    wheelScreen.event!(s.before, after, env);
+    // 起播那一拍只有循环音，没有落地音
+    expect(env.effects).toEqual([`play:${WHEEL_SPIN_SOUND}:loop`]);
+
+    // 一路推到落點 —— 落地那一幀才停 52、放 1（中間每一格都不碰音效）
+    let guard = 0;
+    while (!wheelScreenState().landed && guard++ < 500) {
+      env.now += 1000;
+      wheelScreen.tick!(env);
+    }
+    expect(wheelScreenState().landed).toBe(true);
+    expect(env.effects).toEqual([
+      `play:${WHEEL_SPIN_SOUND}:loop`,
+      `stop:${WHEEL_SPIN_SOUND}`,
+      `play:${WHEEL_LAND_SOUND}`,
+    ]);
+
+    // 停穩之後的續幀不再重放落地音（落地只認一次）
+    env.now += WHEEL_HOLD_MS;
+    wheelScreen.tick!(env);
+    expect(env.effects).toHaveLength(3);
     resetWheelScreen();
   });
 });

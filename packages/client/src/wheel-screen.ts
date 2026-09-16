@@ -36,19 +36,27 @@
  * | 真人（`whoPlays == 1` 且不夢遊）**點一下**就把狀態機往前推（`1→2` / `5→6`）| 0x0043fa66 起 |
  * | 音效 = `Effect.mkf` **52**（0x34）**循環**播，落地那一下停 | 0x475d4c；起 0x0043f80d、落地 0x0043fa0a、釋放 0x00440a85 |
  *
- * ⚠️ **本屏畫在純黑上，原版是畫在棋盤上的**：原版只有那塊 (0,40)-(440,480)
- *   的離屏快取（`fcn_00451e7e`，0x00440988），底下的棋盤照樣看得見；
- *   而 `ui-screen.ts` 的契約是「接管的屏自己畫整屏、棋盤不畫」，
- *   本模組拿不到棋盤那張畫布，故只剩黑底。見 `docs/deviations/T-039.md`。
+ * ★ **本屏是浮窗**（`windowed: true`）：原版只把那塊 (0,40)-(440,480) 存進離屏
+ *   （`fcn_00451e7e`，0x00440988），在**棋盤之上**畫圓盤/天使/氣泡，退出時
+ *   把那一塊貼回去 —— 所以轉盤全程**棋盤與右側欄都看得見**。那塊矩形就是
+ *   `LAYOUT.board = (0,40)-(440,480)`，本屏所有部件都落在它裡面；宣告
+ *   `windowed` 之後 `main.ts` 會先照常畫一整幀棋盤再疊本屏（與
+ *   `big-map-screen.ts` 同一條路）。見 `docs/deviations/T-039.md` D-WHEEL-2。
  *
  * ⚠️ **「動畫過程」設定夠不到**：它在 `main.ts` 的 `options.animation`（RICH4.CFG
  *   offset 1），`UiScreenEnv` 裡沒有；契約不許改，故本屏**恆開動畫**，
  *   但幀序純函式 `wheelFrameSequence(start, stop, animate = false)` 這一支
  *   照樣有單測。見 deviations。
  *
- * ⚠️ **不播音效**：那個 52 是**循環**音（播在 0x0043f80d、落地停 0x0043fa0a），
- *   而 `UiScreenEnv.playEffect()` 只有一次性出口、`ARCHIVES` 裡也**沒有**
- *   `Effect.mkf`（见 assets.ts）。寧可不響也不亂響。
+ * ★ **音效照原版**：`Effect.mkf` **52（0x34）循環**播 —— 起播
+ *   `_rich4_play_sound_effect(flags=1, &info)`（VA 0x0043f80d，`ebx` 就是 1，
+ *   `info` = `0x475d4c`，第一格 dword = 52；flags bit0 = `DSBPLAY_LOOPING`），
+ *   落地 `fcn_004542e9(&0x475d4c)` 停（VA 0x0043fa0a）、退屏前釋放
+ *   （VA 0x00440a85）。減速段尾巴另外放一聲**一次性**的 **1**（VA 0x0043f8a0，
+ *   `ref_00482322` 第一格 dword = 1）。52 號只有 2086 B ≈ 0.089 s，不循環就只是
+ *   一聲「嗒」，故走 `playEffect(52, true)` + `stopEffect(52)`。
+ *   `Effect.mkf` 已在 `ARCHIVES`（`main.ts` 的 `SoundPlayer.addArchive`），
+ *   `SoundPlayer.play/stop` 都齊。
  */
 
 import { CHARACTERS } from '@rich4/data';
@@ -147,6 +155,22 @@ export function wheelBubbleText(wheel: number, name: string): string {
   const fmt = WHEEL_BUBBLE_FMT[wheel];
   return fmt === undefined ? '' : fmt.replace('%s', name);
 }
+
+// ============================================================
+//  音效
+// ============================================================
+
+/**
+ * 轉動中的循環音 = `Effect.mkf` **52（0x34）**。
+ *
+ * @source VA 0x0043f80d：`push ebx / push 0x475d4c / call _rich4_play_sound_effect`，
+ *   進函式時 `mov edx,1 / mov ebx,edx`，故 flags = **1 = `DSBPLAY_LOOPING`**；
+ *   `0x475d4c` 第一格 dword = 52（dump：`34 00 00 00`）。
+ */
+export const WHEEL_SPIN_SOUND = 52;
+
+/** 落地那一下的一次性音 = `Effect.mkf` **1** @source VA 0x0043f8a0（`0x482322` 第一格 dword = 1）*/
+export const WHEEL_LAND_SOUND = 1;
 
 // ============================================================
 //  版面（屏幕坐標 640×480）
@@ -579,6 +603,14 @@ function ownerName(env: UiScreenEnv, owner: number): string {
 export const wheelScreen: UiScreen = {
   id: 'wheel',
 
+  /**
+   * ★ 浮窗：原版把 (0,40)-(440,480) 那塊畫在**棋盤之上**（只有那塊進離屏快取），
+   *   所以轉盤全程看得到棋盤與右側欄。本屏所有部件都在那塊矩形裡，
+   *   宣告 `windowed` 讓 `main.ts` 先照常畫一整幀棋盤（@source 0x00440988 /
+   *   0x0044090e 的 `fcn_00451e7e`）。
+   */
+  windowed: true,
+
   /** 演出期間接管整屏；停完 `WHEEL_HOLD_MS` 自己關 */
   active: () => playback !== null,
 
@@ -629,6 +661,10 @@ export const wheelScreen: UiScreen = {
       const landed = wheelSpinLanded(next);
       playback = { ...play, spin: next, landedAt: landed ? env.now : null };
       if (landed) {
+        // ★ 落地：先停循環的 52、再放一次性那聲 1
+        //   @source 0x0043fa0a `fcn_004542e9(&0x475d4c)`（停）+ 0x0043f8a0（放 1）
+        env.stopEffect(WHEEL_SPIN_SOUND);
+        env.playEffect(WHEEL_LAND_SOUND);
         env.log(`轉盤：停在 ${next.stop} 格（${wheelValueOf(play.cue.wheel, next.stop)}）`);
       }
     }
@@ -650,6 +686,8 @@ export const wheelScreen: UiScreen = {
     const cue = wheelCue(before, after, env.topo);
     if (cue === null) return;
     playback = { cue, spin: wheelSpinStart(cue.start, cue.stop, env.now), landedAt: null };
+    // ★ 起播那一下：循環音 52 @source 0x0043f80d（flags = `ebx` = 1 = DSBPLAY_LOOPING）
+    env.playEffect(WHEEL_SPIN_SOUND, true);
     env.log(`轉盤：起點 ${cue.start} → 落點 ${cue.stop}（${cue.value}）`);
     env.requestRender();
   },

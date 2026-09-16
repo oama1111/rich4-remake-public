@@ -50,6 +50,19 @@ export interface UiScreenEnv {
   readonly now: number;
   /** 整块 640×480 的舞台画布（`stageCtx`）—— 整屏的东西直接画在这上面 */
   readonly stage: CanvasRenderingContext2D;
+  /**
+   * 遊戲設定的「動畫過程」开着没有（`RICH4.CFG+1` bit0，见 `options.ts` 的 `animation`）。
+   *
+   * ★ 2026-09-16 加：原版有几屏**只在动画开着时**才播那一段定时器演出 ——
+   *   拍賣（`SetTimer(hwnd, …, 0x64, 0)` @source 0x0043a365）、轉盤
+   *   （`rich4.asm:19975` 那处闸）、小游戏入场 FLIC（`rich4_small_games.asm:4230-4233`）。
+   *   关掉时应当**直接落结果**、不走那个状态机。先前 `UiScreenEnv` 没有这个出口，
+   *   那几屏只好恒按「开」处理（见 T-034 的 D-T034-2）。
+   *
+   * ⚠️ 可省略：不填按 **`true`**（= 恒开）算 —— 与加这个出口之前的行为一致，
+   *   于是既有的测试替身不必逐个补字段。
+   */
+  readonly animation?: boolean;
   /** 按需取图（就是 main.ts 的 `spriteNow`，带 LRU 与 hd 回退） */
   sprite(archive: string, resource: number, index: number, colorKeyBlack?: boolean): Sprite | null;
   /**
@@ -63,8 +76,21 @@ export interface UiScreenEnv {
   dispatch(action: Action): void;
   requestRender(): void;
   log(message: string): void;
-  /** 放一个音效（`Effect.mkf` 的资源号）*/
-  playEffect(id: number): void;
+  /**
+   * 放一个音效（`Effect.mkf` 的资源号）。
+   *
+   * @param loop 循环播（原版 `_rich4_play_sound_effect(flags=1, …)` 的
+   *   `DSBPLAY_LOOPING`）。默认一次性。循环的那一路要自己用 `stopEffect` 收，
+   *   否则会一直响到关屏（旅館/購物中心转盘 52 号就属于这一种）。
+   */
+  playEffect(id: number, loop?: boolean): void;
+  /**
+   * 停掉某一路循环音（原版 `fcn_004542e9` = `IDirectSoundBuffer::Stop`）。
+   *
+   * ★ 与 `playEffect` 一样是**必须实现**的出口：`main.ts` 的 `uiEnv()` 里
+   *   `(id) => sound.stop('Effect.mkf', id)`。
+   */
+  stopEffect(id: number): void;
 }
 
 export interface UiScreen {

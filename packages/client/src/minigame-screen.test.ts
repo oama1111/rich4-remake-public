@@ -20,15 +20,21 @@ import {
   BALLOON_IMAGE_FIRST,
   BALLOON_INTRO_TICKS,
   BALLOON_LANES,
+  BALLOON_MISS_SOUND,
   BALLOON_PLAY_TICKS,
   BALLOON_POP_IMAGE,
+  BALLOON_POP_SOUND,
   BALLOON_POP_TICKS,
   BALLOON_RES,
   BALLOON_SLOTS,
+  BALLOON_SPAWN_SOUND,
   BALLOON_SPAWN_Y,
   BALLOON_SPEED,
   BALLOON_TICK_MS,
   GIFT_ACCEL_UNTIL_Y,
+  GIFT_BOMB_LOOP_SOUND,
+  GIFT_BOMB_SOUND,
+  GIFT_BOOM_SOUND,
   GIFT_CATCHER_FRAMES,
   GIFT_CATCHER_RES_FIRST,
   GIFT_CATCH_DEADZONE,
@@ -50,14 +56,20 @@ import {
   GIFT_WARN_RES,
   GIFT_WARN_SPAN,
   GIFT_WARN_FRAMES,
+  MINI_DIGIT_PITCH,
   MINI_END_MS,
   MINI_FONT_RES,
   MINI_SCORE_CAP,
+  PENGUIN_ARRIVE_SOUND,
   PENGUIN_CELLS,
+  PENGUIN_DIG_SOUND,
   PENGUIN_END_HI_SCORE,
+  PENGUIN_END_HI_SOUND,
   PENGUIN_END_LO_SCORE,
+  PENGUIN_END_LO_SOUND,
   PENGUIN_INTRO_TICKS,
   PENGUIN_LOOT_RES,
+  PENGUIN_LOOT_SOUND,
   PENGUIN_PLAY_TICKS,
   PENGUIN_RES,
   PENGUIN_TICK_MS,
@@ -69,12 +81,17 @@ import {
   balloonStart,
   balloonStep,
   catchBoxOf,
+  drawNumber,
   giftCatcherImage,
   giftGodImage,
   giftScale,
   giftScore,
   giftStart,
   giftStep,
+  introPlayback,
+  MINI_ARCHIVE,
+  MINI_INTRO_FLIC_RES,
+  MINI_INTRO_GIVE_UP_MS,
   minigameSeed,
   minigameTickMs,
   nextCellToward,
@@ -88,6 +105,7 @@ import {
   penguinScore,
   penguinStart,
   penguinStep,
+  playMiniSounds,
 } from './minigame-screen.ts';
 
 describe('三个小游戏的出处与资源 @source rich4_small_games.asm', () => {
@@ -590,5 +608,253 @@ describe('屏幕自己的 PRNG 种子', () => {
       expect(s).toBeGreaterThanOrEqual(0);
       expect(s).toBeLessThanOrEqual(0xffffffff);
     }
+  });
+});
+
+// ============================================================
+//  ★ 固定宽度数字 + 分数上限（D-MINI-12）
+// ============================================================
+
+/** 只数 `drawImage` 落点的最小假 canvas */
+function digitCtx(): { ctx: CanvasRenderingContext2D; xs: number[] } {
+  const xs: number[] = [];
+  const ctx = {
+    drawImage: (_b: unknown, x: number) => {
+      xs.push(x);
+    },
+  };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, xs };
+}
+
+/** 记录画到第几张图（= 数字字符）的假精灵 */
+function digitSprite(): { sprite: Parameters<typeof drawNumber>[1]; seen: number[] } {
+  const seen: number[] = [];
+  const sprite = ((_archive: string, _resource: number, index: number) => {
+    seen.push(index);
+    return { bitmap: {} as ImageBitmap, width: 15, height: 28, anchorX: 0, anchorY: 0 };
+  }) as unknown as Parameters<typeof drawNumber>[1];
+  return { sprite, seen };
+}
+
+describe('★ 固定宽度数字 —— 原版画固定位数（D-MINI-12）', () => {
+  it('★ 企鵝時限就是 150 tick（「4 位數塞進 3 格」那条审计说法不成立）', () => {
+    // PENGUIN_PLAY_TICKS = 0x96 = 150，`pad(st.ticks, 3)` 进 3 格，永远 ≤ 3 位数
+    expect(PENGUIN_PLAY_TICKS).toBe(150);
+    expect(PENGUIN_PLAY_TICKS).toBe(0x96);
+  });
+
+  it('★ `drawNumber` 只画前 `width` 个字符 —— 5 位数也画不过框', () => {
+    const cases: readonly (readonly [string, number, number])[] = [
+      ['150', 3, 3], // 企鵝时间
+      ['000', 3, 3], // 0 分
+      ['14730', 4, 4], // 5 位数 → 只画 4 位（原版 `fcn_00413f07` 的 `%04d`）
+      ['14730', 3, 3],
+      ['14730', 2, 2],
+      ['7', 4, 1], // 短的不补
+    ];
+    for (const [text, width, want] of cases) {
+      const { ctx, xs } = digitCtx();
+      const { sprite, seen } = digitSprite();
+      drawNumber(ctx, sprite, text, 0, 0, MINI_DIGIT_PITCH, 0, width);
+      expect(xs, `text=${text} width=${width}`).toHaveLength(want);
+      // 字距照旧，且**没有**第 `width` 个字之后的那一格
+      for (let i = 0; i < xs.length; i++) expect(xs[i]).toBe(i * MINI_DIGIT_PITCH);
+      expect(Math.max(...xs)).toBe((want - 1) * MINI_DIGIT_PITCH);
+      // 图号 = 字符 − '0'
+      expect(seen).toEqual([...text.slice(0, width)].map((c) => c.charCodeAt(0) - 0x30));
+    }
+  });
+});
+
+describe('★ 七彩氣球分數夾到 999（×2 那一支也要夾）@source 0x00414ece', () => {
+  const make = (type: number, score: number): ReturnType<typeof balloonStart> => {
+    const st = balloonStart(1);
+    const balloons = st.balloons.map((b, i) =>
+      i === 0 ? { x: 0x78, y: 200, type, popped: 0 } : { ...b },
+    );
+    return { ...st, balloons, phase: 'play', intro: 0, score };
+  };
+
+  it('★ 普通支照旧夹（996 + 4 → 999）', () => {
+    expect(balloonClick(make(3, 996), 0x78, 200).score).toBe(MINI_SCORE_CAP);
+  });
+
+  it('★ ×2 那一支（类型 9）也夹到 999 —— 原版 `loc_00414ebe` 不夹（D-MINI-12）', () => {
+    expect(balloonClick(make(9, 600), 0x78, 200).score).toBe(MINI_SCORE_CAP);
+    expect(balloonClick(make(9, 500), 0x78, 200).score).toBe(MINI_SCORE_CAP);
+    expect(balloonClick(make(9, 499), 0x78, 200).score).toBe(998); // 不到 1000 不夹
+  });
+});
+
+// ============================================================
+//  ★ 音效（编号 dump 自 exe 的 sound-info 结构）
+// ============================================================
+
+describe('★ 小游戏音效 @source rich4_small_games.asm 的 sound-info 表', () => {
+  it('★ `playMiniSounds` 按顺序倒给出口并清空', () => {
+    const calls: string[] = [];
+    const env = {
+      playEffect: (id: number, loop = false) => calls.push(loop ? `play:${id}:loop` : `play:${id}`),
+      stopEffect: (id: number) => calls.push(`stop:${id}`),
+    };
+    const sfx = [
+      { id: PENGUIN_DIG_SOUND, loop: true },
+      { id: PENGUIN_ARRIVE_SOUND },
+      { id: PENGUIN_DIG_SOUND, stop: true },
+    ];
+    playMiniSounds(env, sfx);
+    expect(calls).toEqual([
+      `play:${PENGUIN_DIG_SOUND}:loop`,
+      `play:${PENGUIN_ARRIVE_SOUND}`,
+      `stop:${PENGUIN_DIG_SOUND}`,
+    ]);
+    expect(sfx).toHaveLength(0);
+  });
+
+  it('★ 企鵝：走到定点起挖 → 12（到达）+ 11（挖掘循环）@source 0x004127ed / 0x00414b51', () => {
+    const base = penguinStart(5);
+    const start = { ...base, phase: 'play' as const, intro: 0 };
+    const from = start.cell;
+    const near = nextCellToward(from, from + 9) ?? nextCellToward(from, from + 1);
+    expect(near).not.toBeNull();
+    const target = near ?? from;
+    let st = penguinClick(start, penguinCellX(target), penguinCellY(target));
+    for (let i = 0; i < 4; i++) st = penguinStep(st, 0);
+    expect(st.dig).toBeGreaterThan(0);
+    expect(st.sfx).toContainEqual({ id: PENGUIN_ARRIVE_SOUND });
+    expect(st.sfx).toContainEqual({ id: PENGUIN_DIG_SOUND, loop: true });
+    expect(PENGUIN_ARRIVE_SOUND).toBe(12);
+    expect(PENGUIN_DIG_SOUND).toBe(11);
+  });
+
+  it('★ 企鵝：挖到 → 停 11 + 按类型的音（类型 5 → 18）@source 0x004129ab / 0x475051', () => {
+    const base = penguinStart(5);
+    const cell = base.cell;
+    const board = base.board.slice();
+    board[cell] = 5;
+    const st = { ...base, phase: 'play' as const, intro: 0, board, dig: 1 };
+    const after = penguinStep(st, 0);
+    expect(after.dig).toBe(0);
+    expect(after.sfx).toContainEqual({ id: PENGUIN_DIG_SOUND, stop: true });
+    expect(after.sfx).toContainEqual({ id: PENGUIN_LOOT_SOUND[5] });
+    // 类型 1 → 15、2 → 16、3/4 → 17、5 → 18（类型 0 不放）
+    expect(PENGUIN_LOOT_SOUND).toEqual([11, 15, 16, 17, 17, 18]);
+  });
+
+  it('★ 企鵝：结算姿势音 13（>55）/ 14（<40）是循环，动画放完停 @source 0x004149de / 0x004149e8', () => {
+    const one = penguinStart(7);
+    const hi = { ...one, phase: 'play' as const, intro: 0, ticks: 1, counts: [0, 0, 0, 0, 0, 4] };
+    const hiAfter = penguinStep(hi, 0);
+    expect(hiAfter.endPose).toBe('hi');
+    expect(hiAfter.sfx).toContainEqual({ id: PENGUIN_END_HI_SOUND, loop: true });
+    const lo = { ...one, phase: 'play' as const, intro: 0, ticks: 1, counts: [0, 0, 0, 0, 0, 0] };
+    expect(penguinStep(lo, 0).sfx).toContainEqual({ id: PENGUIN_END_LO_SOUND, loop: true });
+    // 姿势动画跑完 → 停
+    const done = penguinStep({ ...hiAfter, phase: 'end' as const, endFrame: 999 }, 0);
+    expect(done.phase).toBe('score');
+    expect(done.sfx).toContainEqual({ id: PENGUIN_END_HI_SOUND, stop: true });
+    expect(PENGUIN_END_HI_SOUND).toBe(13);
+    expect(PENGUIN_END_LO_SOUND).toBe(14);
+  });
+
+  it('★ 氣球：点爆 21 / 点空 20 / 生成 19 @source 0x00414dd2 / 0x00414f0d / 0x00413077', () => {
+    const mk = (type: number): ReturnType<typeof balloonStart> => {
+      const st = balloonStart(1);
+      const balloons = st.balloons.map((b, i) =>
+        i === 0 ? { x: 0x78, y: 200, type, popped: 0 } : { ...b },
+      );
+      return { ...st, balloons, phase: 'play', intro: 0 };
+    };
+    expect(balloonClick(mk(3), 0x78, 200).sfx).toContainEqual({ id: BALLOON_POP_SOUND });
+    expect(balloonClick(mk(3), 5, 5).sfx).toContainEqual({ id: BALLOON_MISS_SOUND });
+    // 生成
+    let st: ReturnType<typeof balloonStart> = { ...balloonStart(4242), phase: 'play', intro: 0 };
+    let spawned = false;
+    for (let i = 0; i < 400 && !spawned; i++) {
+      st = balloonStep(st, i * BALLOON_TICK_MS);
+      if (st.sfx.some((e) => e.id === BALLOON_SPAWN_SOUND)) spawned = true;
+    }
+    expect(spawned).toBe(true);
+    expect(BALLOON_SPAWN_SOUND).toBe(19);
+    expect(BALLOON_MISS_SOUND).toBe(20);
+    expect(BALLOON_POP_SOUND).toBe(21);
+  });
+
+  it('★ 財神：落炸彈 22 + 24 循环；接到 → 停 24 + 爆炸 15 @source 0x00413809 / 0x00413436', () => {
+    // 预警第 8 帧真的落炸彈
+    const warn = { ...giftStart(1), phase: 'play' as const, intro: 0, warnFrame: 7, warnX: 200 };
+    const after = giftStep(warn, 0, catchBoxOf(null, 320, GIFT_CATCHER_Y), 0);
+    expect(after.sfx).toContainEqual({ id: GIFT_BOMB_SOUND });
+    expect(after.sfx).toContainEqual({ id: GIFT_BOMB_LOOP_SOUND, loop: true });
+
+    // 接到炸彈 → 停哨音 + 爆炸
+    const bomb = {
+      ...giftStart(1),
+      phase: 'play' as const,
+      intro: 0,
+      catcherDir: 1,
+      items: giftStart(1).items.map((it, i) =>
+        i === 0 ? { x: 320, y: 300, type: 4, frame: 0, speed: 0 } : { ...it },
+      ),
+    };
+    const box = { x0: 300, y0: 250, x1: 340, y1: 400 };
+    // 鼠标放最左 → 玩家保持朝右（`catcherDir !== 0` 才判接住）
+    const boom = giftStep(bomb, -1000, box, 0);
+    expect(boom.endPose).toBe(4);
+    // 屏上没别的掉落物 → 同一拍就直接进大号分数（`phase` 会是 'score'）
+    expect(boom.sfx).toContainEqual({ id: GIFT_BOMB_LOOP_SOUND, stop: true });
+    expect(boom.sfx).toContainEqual({ id: GIFT_BOOM_SOUND });
+    expect(GIFT_BOMB_SOUND).toBe(22);
+    expect(GIFT_BOMB_LOOP_SOUND).toBe(24);
+    expect(GIFT_BOOM_SOUND).toBe(15);
+  });
+});
+
+describe('★ 入场 FLIC 的闸门 @source rich4_small_games.asm:4230-4233（D-MINI-3）', () => {
+  it('★★ 只有**真人**且「動畫過程」开着才播', () => {
+    const now = 1000;
+    // 真人 + 动画开 → 播，时长 = 帧数 × 每帧毫秒
+    const on = introPlayback(1, true, 20, 14, now, SPECIAL_KIND.PENGUIN_DIG);
+    expect(on).not.toBeNull();
+    expect(on!.at).toBe(now);
+    expect(on!.until).toBe(now + 20 * 14);
+    // 动画**省略**也按「开」（与加这个出口之前的行为一致）
+    expect(introPlayback(1, undefined, 20, 14, now, SPECIAL_KIND.PENGUIN_DIG)).not.toBeNull();
+    // 電腦（whoPlays = 2）不播
+    expect(introPlayback(2, true, 20, 14, now, SPECIAL_KIND.PENGUIN_DIG)).toBeNull();
+    // 出局（0）不播
+    expect(introPlayback(0, true, 20, 14, now, SPECIAL_KIND.PENGUIN_DIG)).toBeNull();
+    // 「動畫過程」关掉不播
+    expect(introPlayback(1, false, 20, 14, now, SPECIAL_KIND.PENGUIN_DIG)).toBeNull();
+    // 影片还没解好（帧数 0）不播 —— 不能拿「空的」挡住整个小游戏
+    expect(introPlayback(1, true, 0, 14, now, SPECIAL_KIND.PENGUIN_DIG)).toBeNull();
+  });
+
+  it('★ 每帧毫秒缺失时退回该小游戏自己的 tick（企鵝/氣球 100ms、財神 50ms）', () => {
+    const a = introPlayback(1, true, 4, 0, 0, SPECIAL_KIND.PENGUIN_DIG)!;
+    expect(a.until).toBe(4 * minigameTickMs(SPECIAL_KIND.PENGUIN_DIG));
+    const b = introPlayback(1, true, 4, 0, 0, SPECIAL_KIND.GIFT_FROM_SKY)!;
+    expect(b.until).toBe(4 * minigameTickMs(SPECIAL_KIND.GIFT_FROM_SKY));
+    expect(minigameTickMs(SPECIAL_KIND.GIFT_FROM_SKY)).not.toBe(
+      minigameTickMs(SPECIAL_KIND.PENGUIN_DIG),
+    );
+  });
+
+  it('★ 入场那一支挂的是 `Panel.mkf` #0x4e', () => {
+    expect(MINI_ARCHIVE).toBe('Panel.mkf');
+    expect(MINI_INTRO_FLIC_RES).toBe(0x4e);
+  });
+});
+
+describe('★ 入场影片**异步到手**也要能播（第一版被第一帧的 null 吞掉）', () => {
+  it('★★ 闸门过了、影片还没解好 → 先不播但要**继续等**；等够久才认命', () => {
+    // `env.flic` 的契约：第一次一定 null，解完会自己重画。
+    // 所以 `ensureRun` 不能只在第一帧判一次 —— 那样整段演出永远不播。
+    // 这里钉两条常量语义：放弃的阈值存在、且是个合理的等待窗口。
+    expect(MINI_INTRO_GIVE_UP_MS).toBeGreaterThan(0);
+    expect(MINI_INTRO_GIVE_UP_MS).toBeLessThanOrEqual(5000);
+    // 闸门本身仍然照原版（真人 + 動畫過程）—— 与「影片没到手」是两件事
+    expect(introPlayback(1, true, 20, 114, 0, SPECIAL_KIND.PENGUIN_DIG)).not.toBeNull();
+    expect(introPlayback(2, true, 20, 114, 0, SPECIAL_KIND.PENGUIN_DIG)).toBeNull();
   });
 });

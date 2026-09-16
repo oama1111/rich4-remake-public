@@ -235,8 +235,10 @@ describe('★ 登记的整屏：声明了右键的那几屏', () => {
       .map((s) => s.id)
       .sort();
     // 大地圖彈窗（fcn_0040a801 → 0x40a854）、遊戲百科（loc_0044e546）、
-    // 公佈欄（loc_00427b7d / loc_00428378）、樂透投注（loc_0043003d）
-    expect(withCtx).toEqual(['big-map', 'help', 'lottery', 'notice-board']);
+    // 公佈欄（loc_00427b7d / loc_00428378）、樂透投注（loc_0043003d）、
+    // 新聞/命運訊息框（`fcn_004544f6` 的 `PeekMessage` 收 0x202 / 0x205 / 0x101
+    //   —— 见 `event-box-screen.ts` 的 `contextmenu`）
+    expect(withCtx).toEqual(['big-map', 'eventBox', 'help', 'lottery', 'notice-board']);
   });
 
   it('★ 拍賣 / 小游戏 / 樂透開獎**没有**右键 —— 原版它们就没有 0x205 分支（不许自己加）', () => {

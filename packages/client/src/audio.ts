@@ -76,8 +76,13 @@ export class SoundPlayer {
    *
    * 尚未解锁、档案没装、资源号越界、或那一格是空槽时**安静地什么都不做**——
    * 音效缺失不该把游戏拖垮。
+   *
+   * @param loop 循环播（原版 `_rich4_play_sound_effect(flags=1, …)` 的
+   *   `DSBPLAY_LOOPING`）；默认 `false` = 一次性，现有调用者照旧。
+   *   ⚠️ 循环的那一路**照样登记在 `#voices` 里**，所以 `stop()` 停得掉它
+   *   （转盘 52 号只有 0.089 s，不循环就只是一声「嗒」——见 `wheel-screen.ts`）。
    */
-  play(archive: SoundArchive, resource: number): void {
+  play(archive: SoundArchive, resource: number, loop = false): void {
     if (this.#muted || this.#ctx === null) return;
     const key = `${archive}:${resource}`;
     // ★ 一路一个实例：**新的一声起播之前，先把同一路还在响的那一个停掉**。
@@ -87,7 +92,7 @@ export class SoundPlayer {
 
     const hit = this.#buffers.get(key);
     if (hit !== undefined) {
-      if (hit !== null) this.#emit(key, hit);
+      if (hit !== null) this.#emit(key, hit, loop);
       return;
     }
     if (this.#loading.has(key)) return;
@@ -116,7 +121,7 @@ export class SoundPlayer {
       .then((buf) => {
         this.#buffers.set(key, buf);
         this.#loading.delete(key);
-        this.#emit(key, buf);
+        this.#emit(key, buf, loop);
       })
       .catch(() => {
         this.#buffers.set(key, null);
@@ -155,16 +160,21 @@ export class SoundPlayer {
     }
   }
 
-  #emit(key: string, buf: AudioBuffer): void {
+  #emit(key: string, buf: AudioBuffer, loop: boolean): void {
     const ctx = this.#ctx;
     if (ctx === null) return;
     const src = ctx.createBufferSource();
     src.buffer = buf;
+    // ★ 循环音就靠这一个标志 —— 原版 `_rich4_play_sound_effect` 的 flags bit0
+    //   （`DSBPLAY_LOOPING`，见 `docs/deviations/Q-SOUND-1.md`）。
+    src.loop = loop;
     const gain = ctx.createGain();
     gain.gain.value = this.volume;
     src.connect(gain).connect(ctx.destination);
     // 播完就摘牌（免得表里越积越多）；**只摘自己**，
     // 别把后来接棒的那一个从表里误删。
+    // ★ 循环的那一路永远不触发 `ended`，只能靠 `stop()` / `stopAll()` 收——
+    //   所以它**必须**留在 `#voices` 里。
     src.addEventListener('ended', () => {
       if (this.#voices.get(key) === src) this.#voices.delete(key);
     });

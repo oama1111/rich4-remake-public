@@ -99,7 +99,12 @@
  *   `draw()` 只做 IO —— 单测不碰 canvas（契约见 `ui-screen.ts`）。
  * - 随机数用**本屏自己的** `WatcomRng`（算法与原版 `_libc_rand` 位级一致，见 `core/rng/watcom.ts`），
  *   种子由「对局状态 + 本次开局序号」推出来（见 `minigameSeed`）：**只有分数进 core 才是确定性边界**。
- * - 有意偏离与解不出的地方见 `docs/deviations/T-042-044.md`。
+ * - **音效也是「纯函数登记、屏幕放」**：事件点（挖到 / 点爆 / 点空 / 生成 / 落炸彈 …）只往状态的
+ *   `sfx: MiniSound[]` 里 `push`，屏幕的 `tick` / `down` 用 `playMiniSounds()` 倒给
+ *   `env.playEffect` / `env.stopEffect`。编号 dump 自 exe 的 sound-info 结构（见各常量）。
+ * - HUD 数字按**原版的固定位数**画（`drawNumber(..., width)`），分数在所有加/倍分支后统一夹 999。
+ * - 有意偏离与解不出的地方见 `docs/deviations/T-042-044.md`（本轮新增的 D-MINI-11/12
+ *   另见 `docs/known-deviations.md` 的 2026-09-16 一节）。
  */
 
 import { SPECIAL_KIND, WatcomRng } from '@rich4/core';
@@ -119,8 +124,19 @@ export type MiniSprite = (
 export const MINI_ARCHIVE: ArchiveName = 'Panel.mkf';
 /** 数字表 @source 三个入口的 `read_mkf(panel_mkf, 0x4f, 0, 0)` */
 export const MINI_FONT_RES = 0x4f;
-/** 入场 FLIC @source `read_mkf(panel_mkf, 0x4e, 0, 0)`（D-MINI-3：未接） */
+/**
+ * 入场 FLIC @source `read_mkf(panel_mkf, 0x4e, 0, 0)`（D-MINI-3：已接 2026-09-16）。
+ *
+ * 该资源是**标准 FLIC**（`0078.bin`：`+4` 小端 u16 = `0xaf12`、20 帧、640×480、
+ * 每帧 114µs），`env.flic` 直接解得开 —— 不需要任何「剥壳」。
+ */
 export const MINI_INTRO_FLIC_RES = 0x4e;
+
+/**
+ * 等入场影片最多等多久 —— 超过就认命不播（`env.flic` 一直 null 说明资源确实没有）。
+ * 异步解码通常几十毫秒就够，2 秒是给慢机器留的余量。
+ */
+export const MINI_INTRO_GIVE_UP_MS = 2000;
 /** 数字的落点 y @source `push 0x1a5`（三个 HUD 函数都一样） */
 export const MINI_HUD_Y = 0x1a5;
 /** 小号数字的字距 @source `push 0x31 / 0x45 / 0x5e …`，步长 0x14 */
@@ -168,6 +184,75 @@ function randMod(holder: { rngState: number }, n: number): number {
 /** 数字补零成固定宽度（原版 `sprintf("%02d" / "%03d" / "%04d")`） */
 function pad(value: number, width: number): string {
   return String(Math.max(0, Math.trunc(value))).padStart(width, '0');
+}
+
+// ============================================================
+//  音效（纯函数只登记，屏幕的 tick/down 才真的放）
+// ============================================================
+
+/**
+ * 一条**待播**的音效。
+ *
+ * ★ 玩法状态机是**纯函数**（不碰 IO），所以事件点只把音效**登记**进状态的
+ *   `sfx` 列表；屏幕的 `tick` / `down` 收集完再倒给 `env.playEffect` /
+ *   `env.stopEffect`（`playMiniSounds`）。原版是在事件点直接
+ *   `_rich4_play_sound_effect(flags, &info)`，编号取 sound-info 结构的
+ *   第一个 dword（dump 自 exe）。
+ */
+export interface MiniSound {
+  /** `Effect.mkf` 资源号 */
+  id: number;
+  /** true = 循环（原版 `flags = 1` = `DSBPLAY_LOOPING`）*/
+  loop?: boolean;
+  /** true = 停掉这一路（原版 `fcn_004542e9`）*/
+  stop?: boolean;
+}
+
+/** 企鵝：挖掘中的**循环**音 @source sound-info `0x475057` = **11**（起 0x00414b51 flags=1）*/
+export const PENGUIN_DIG_SOUND = 11;
+/** 企鵝：走到定点那一下 @source `0x47505f` = **12**，0x004127ed（先 `fcn_004542e9(11)`）*/
+export const PENGUIN_ARRIVE_SOUND = 12;
+/** 企鵝：结算姿势（分数 > 0x37）@source `0x475067` = **13**，0x004149e8 flags=1 */
+export const PENGUIN_END_HI_SOUND = 13;
+/** 企鵝：结算姿势（分数 < 0x28）@source `0x47506f` = **14**，0x004149de flags=1 */
+export const PENGUIN_END_LO_SOUND = 14;
+/**
+ * 企鵝：挖到寶物的音（按**类型**）。
+ *
+ * @source 类型 1 走 `loc_004129ab` → `0x47508f` = **15**；
+ *   类型 2..5 走 `loc_004129c4` 的查表 `0x475051[类型]`：
+ *   `[00,00,04,05,05,06]` × 8 + `0x475057` → `0x475057/77/7f/7f/87`
+ *   = **16 / 17 / 17 / 18**。类型 0（空地）不放音。
+ */
+export const PENGUIN_LOOT_SOUND: readonly number[] = [11, 15, 16, 17, 17, 18];
+/** 七彩氣球：生成 @source `0x47509f` = **19**，0x00413077 */
+export const BALLOON_SPAWN_SOUND = 19;
+/** 七彩氣球：点空 @source `0x4750a7` = **20**，0x00414f0d */
+export const BALLOON_MISS_SOUND = 20;
+/** 七彩氣球：点爆 @source `0x4750af` = **21**，0x00414dd2 那一段前面 */
+export const BALLOON_POP_SOUND = 21;
+/** 財神：炸彈落下的那一声 @source `0x4750bf` = **22**，0x00413809 flags=0 */
+export const GIFT_BOMB_SOUND = 22;
+/** 財神：炸彈下落的**循环**哨音 @source `0x4750cf` = **24**，0x00413809 flags=1；接到/落地停 */
+export const GIFT_BOMB_LOOP_SOUND = 24;
+/** 財神：炸彈爆炸 @source `0x4750d7` = **15**，0x00413436（接到的分支，紧接在停 24 之后）*/
+export const GIFT_BOOM_SOUND = 15;
+
+/**
+ * 把攒下的待播音效倒给屏幕出口，倒完清空（同一批不会重播）。
+ *
+ * ★ 屏幕的 `tick` 一帧可能推好几个 tick，事件点也就在纯函数里 —— 所以
+ *   纯函数只 `push`，这里统一 `playEffect` / `stopEffect`。
+ */
+export function playMiniSounds(
+  env: Pick<UiScreenEnv, 'playEffect' | 'stopEffect'>,
+  sfx: MiniSound[],
+): void {
+  for (const ev of sfx) {
+    if (ev.stop === true) env.stopEffect(ev.id);
+    else env.playEffect(ev.id, ev.loop === true);
+  }
+  sfx.length = 0;
 }
 
 /** 通用命中框 */
@@ -362,6 +447,8 @@ export interface PenguinGame {
   intro: number;
   /** 大号分数显示的截止时刻（`env.now` 基准）*/
   scoreUntil: number;
+  /** 待播音效（纯函数登记、屏幕的 `playMiniSounds` 倒出去）*/
+  sfx: MiniSound[];
 }
 
 /** 结算动画每轮几帧（84 = 8、85 = 6、`mid` 只重画 1 张）*/
@@ -394,6 +481,7 @@ export function penguinStart(seed: number): PenguinGame {
     ticks: PENGUIN_PLAY_TICKS,
     intro: PENGUIN_INTRO_TICKS,
     scoreUntil: 0,
+    sfx: [],
   };
 }
 
@@ -439,10 +527,25 @@ function penguinReveal(st: PenguinGame, cell: number): PenguinGame {
   const type = st.board[cell] ?? 0;
   const dug = st.dug.slice();
   dug[cell] = 1;
+  // ★ 挖完了：停掉「挖掘中」的循环音 11（@source 0x004127ed `fcn_004542e9(0x475057)`）
+  st.sfx.push({ id: PENGUIN_DIG_SOUND, stop: true });
   if (type === 0) return { ...st, dug, dig: 0 };
+  // ★ 挖到寶物：按类型放音 @source 0x004129ab（类型 1 → 15）/ 0x004129c4 的查表
+  st.sfx.push({ id: PENGUIN_LOOT_SOUND[type] ?? PENGUIN_LOOT_SOUND[1] ?? 15 });
   const counts = st.counts.slice();
   counts[type] = (counts[type] ?? 0) + 1;
   return { ...st, dug, counts, dig: 0, loot: { cell, type, frame: 0 } };
+}
+
+/** 结算姿势的循环音：`hi` → 13、`lo` → 14、`mid` → 没有 @source 0x004149de / 0x004149e8 */
+function penguinPoseSound(pose: PenguinGame['endPose']): number | null {
+  return pose === 'hi' ? PENGUIN_END_HI_SOUND : pose === 'lo' ? PENGUIN_END_LO_SOUND : null;
+}
+
+/** 停掉还没放完的姿势循环音 @source 0x00412a87 / 0x00412b2c */
+function stopPoseSound(st: PenguinGame): void {
+  const id = penguinPoseSound(st.endPose);
+  if (id !== null) st.sfx.push({ id, stop: true });
 }
 
 /**
@@ -457,6 +560,8 @@ export function penguinStep(st: PenguinGame, now: number): PenguinGame {
   if (st.phase === 'end') {
     const frame = st.endFrame + 1;
     if (frame >= PENGUIN_END_FRAMES[st.endPose] * PENGUIN_END_LOOPS) {
+      // ★ 姿势动画放完 → 停掉循环的姿势音 @source 0x00412a87 / 0x00412b2c
+      stopPoseSound(st);
       return { ...st, phase: 'score', scoreUntil: now + MINI_END_MS };
     }
     return { ...st, endFrame: frame };
@@ -469,6 +574,12 @@ export function penguinStep(st: PenguinGame, now: number): PenguinGame {
     const score = penguinScore(st.counts);
     const endPose: PenguinGame['endPose'] =
       score < PENGUIN_END_LO_SCORE ? 'lo' : score > PENGUIN_END_HI_SCORE ? 'hi' : 'mid';
+    // ★ 收尾音：先停挖掘循环（@0x004149c4 `fcn_004542e9(0x475057)`），
+    //   再按姿势放循环的 14（< 40，@0x004149de）/ 13（> 55，@0x004149e8），
+    //   中间那一档（40..55）不放音（@0x00414a00 只写状态 6）。
+    st.sfx.push({ id: PENGUIN_DIG_SOUND, stop: true });
+    if (endPose === 'hi') st.sfx.push({ id: PENGUIN_END_HI_SOUND, loop: true });
+    else if (endPose === 'lo') st.sfx.push({ id: PENGUIN_END_LO_SOUND, loop: true });
     return { ...st, ticks: 0, phase: 'end', endPose, endFrame: 0, to: null, target: null, dig: 0 };
   }
 
@@ -496,6 +607,11 @@ export function penguinStep(st: PenguinGame, now: number): PenguinGame {
     const target = next.target;
     const step = target === null || target === arrived ? null : nextCellToward(arrived, target);
     if (step === null) {
+      // ★ 到定点了：放「走到定点」的 12（@source 0x004127ed），再起挖掘循环音 11
+      //   （@source 0x00414b51 `play_sound_effect(flags=1, 0x475057)`）。
+      //   两条都在同一拍 —— 本引擎把「走到」与「开挖」合成了一步（见 D-MINI-6）。
+      next.sfx.push({ id: PENGUIN_ARRIVE_SOUND });
+      next.sfx.push({ id: PENGUIN_DIG_SOUND, loop: true });
       return { ...next, cell: arrived, to: null, target: null, sub: 0, mound, dig: PENGUIN_SUB_FRAMES };
     }
     const sc = step % 9;
@@ -595,6 +711,8 @@ export interface BalloonGame {
   speed: number;
   phase: BalloonPhase;
   scoreUntil: number;
+  /** 待播音效（纯函数登记、屏幕的 `playMiniSounds` 倒出去）*/
+  sfx: MiniSound[];
 }
 
 export function balloonStart(seed: number): BalloonGame {
@@ -610,6 +728,7 @@ export function balloonStart(seed: number): BalloonGame {
     speed: 0,
     phase: 'intro',
     scoreUntil: 0,
+    sfx: [],
   };
 }
 
@@ -642,7 +761,14 @@ export function balloonClick(st: BalloonGame, mx: number, my: number): BalloonGa
   let speed = st.speed;
   let ticks = st.ticks;
   for (const b of balloons) {
-    if (!balloonHit(b, mx, my)) continue;
+    if (b.x === 0) continue; // 空槽不参与（原版 `cmp word […], 0 / je` @0x00414f26）
+    if (!balloonHit(b, mx, my)) {
+      // 点空 → 20 @source `loc_00414f0d`（原版对**每一个没被打中的气球**都放一次）
+      st.sfx.push({ id: BALLOON_MISS_SOUND });
+      continue;
+    }
+    // 打中 → 21 @source `loc_00414dd2` 那一段前面（命中框通过就放）
+    st.sfx.push({ id: BALLOON_POP_SOUND });
     // @0x00414dd2：类型 → 分数
     if (b.type === 9) {
       score *= 2;
@@ -665,10 +791,15 @@ export function balloonClick(st: BalloonGame, mx: number, my: number): BalloonGa
       }
     } else {
       score += b.type + 1;
-      if (score >= 1000) score = MINI_SCORE_CAP;
     }
     b.popped = BALLOON_POP_TICKS; // 类型字 0x3c @0x00414ef7
   }
+  // ★ 上限 999 在**所有**加/倍分支之后统一夹一次 —— 原版只在普通那支
+  //   （`loc_00414ece`：`cmp edx,0x3e8 / jl` → `0x3e7`）夹，×2 那一支
+  //   （`loc_00414ebe`）不夹；但原版 HUD `fcn_00413f07` 只画 4 个字符，多出来的位
+  //   根本画不到框外。本引擎按固定宽度画，所以把同一道夹子搬到这里 ——
+  //   见 `docs/known-deviations.md` 的 D-MINI-12。
+  if (score >= 1000) score = MINI_SCORE_CAP;
   return { ...st, balloons, score, freeze, speed, ticks, rngState: holder.rngState };
 }
 
@@ -712,6 +843,8 @@ export function balloonStep(st: BalloonGame, now: number): BalloonGame {
       b.y = BALLOON_SPAWN_Y;
       b.type = type;
       b.popped = 0;
+      // ★ 生成一个气球 → 19 @source 0x00413077（`push 0 / push 0x47509f`）
+      st.sfx.push({ id: BALLOON_SPAWN_SOUND });
       anyActive = true;
       continue;
     }
@@ -750,6 +883,7 @@ export function balloonStep(st: BalloonGame, now: number): BalloonGame {
     speed: st.speed,
     phase,
     scoreUntil: justScored ? now + MINI_END_MS : st.scoreUntil,
+    sfx: st.sfx,
   };
 }
 
@@ -877,6 +1011,8 @@ export interface GiftGame {
   /** 剩余入场 tick @0x48bd8c */
   intro: number;
   scoreUntil: number;
+  /** 待播音效（纯函数登记、屏幕的 `playMiniSounds` 倒出去）*/
+  sfx: MiniSound[];
 }
 
 /** 掉落物槽数 @source `cmp esi, 0x10` @0x00413541 */
@@ -907,6 +1043,7 @@ export function giftStart(seed: number): GiftGame {
     ticks: GIFT_PLAY_TICKS,
     intro: GIFT_INTRO_TICKS,
     scoreUntil: 0,
+    sfx: [],
   };
 }
 
@@ -1023,7 +1160,12 @@ function giftWarn(st: GiftGame): void {
   const holder = { rngState: st.rngState };
   if (st.warnFrame >= 0) {
     st.warnFrame += 1;
-    if (st.warnFrame === GIFT_WARN_SPAWN_FRAME) giftSpawn(st, st.warnX, true);
+    if (st.warnFrame === GIFT_WARN_SPAWN_FRAME) {
+      giftSpawn(st, st.warnX, true);
+      // ★ 第 8 帧真正落炸彈：22（一次性）+ 24（循环哨音）@source 0x00413809
+      st.sfx.push({ id: GIFT_BOMB_SOUND });
+      st.sfx.push({ id: GIFT_BOMB_LOOP_SOUND, loop: true });
+    }
     if (st.warnFrame >= GIFT_WARN_FRAMES) st.warnFrame = -1;
   } else if (st.phase === 'play') {
     // 起手条件 @0x00413770 / @0x0041378d：状态 0/1（往右走）要 `godX > 320`；
@@ -1113,6 +1255,10 @@ export function giftStep(st: GiftGame, mx: number, box: Box, now: number): GiftG
     if (caught) {
       if (it.type === 4) {
         // 炸彈：立刻结束 @0x004133fe
+        // ★ 音：先停哨音 24、再放爆炸 15 @source 0x00413436（`fcn_004542e9(0x4750cf)`
+        //   紧接 `play_sound_effect(0, 0x4750d7)`）
+        next.sfx.push({ id: GIFT_BOMB_LOOP_SOUND, stop: true });
+        next.sfx.push({ id: GIFT_BOOM_SOUND });
         next.endPose = 4;
         next.phase = 'ending';
         next.warnFrame = -1;
@@ -1124,7 +1270,11 @@ export function giftStep(st: GiftGame, mx: number, box: Box, now: number): GiftG
       continue;
     }
     if (it.y > GIFT_ITEM_END_Y) {
-      if (it.type === 4) next.bombs = Math.max(0, next.bombs - 1);
+      if (it.type === 4) {
+        next.bombs = Math.max(0, next.bombs - 1);
+        // ★ 最后一颗炸彈落地 → 停哨音 @source 0x0041351d（`dec [0x48bd54]` 归零才停）
+        if (next.bombs === 0) next.sfx.push({ id: GIFT_BOMB_LOOP_SOUND, stop: true });
+      }
       it.x = 0;
       continue;
     }
@@ -1217,8 +1367,13 @@ function drawPlain(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y
 /**
  * 数字串。原版一个字符贴一次 `fcn_004563f5`（不透明），
  * 图号 = `字符 − 0x30 + first`（小号 `first = 0` @0x00413fe3…，大号 `first = 10` @0x004147e5 的 `sub edx, 0x26`）。
+ *
+ * ★ **只画前 `width` 个字符**：原版画的是**固定位数** —— 氣球 HUD 是 `%04d`
+ *   （`fcn_00413f07`，4 个字符、落点 `0x211 + i*0x14`，第 5 位会画到
+ *   `0x211 + 4*0x14 = 0x261` 的框外），企鵝 / 財神是 `%03d`、计数是 `%02d`。
+ *   分数万一超了（見 D-MINI-12），原版只是把多出来的位**不画**，本引擎照抄。
  */
-function drawNumber(
+export function drawNumber(
   ctx: CanvasRenderingContext2D,
   sprite: MiniSprite,
   text: string,
@@ -1226,30 +1381,34 @@ function drawNumber(
   y: number,
   pitch: number,
   first: number,
+  width: number,
 ): void {
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
+  const chars = text.slice(0, Math.max(0, width));
+  for (let i = 0; i < chars.length; i++) {
+    const code = chars.charCodeAt(i);
     if (code < 0x30 || code > 0x39) continue;
     drawPlain(ctx, sprite(MINI_ARCHIVE, MINI_FONT_RES, code - 0x30 + first, false), x0 + i * pitch, y);
   }
 }
 
-/** 小号数字行（`y = 0x1a5`、字距 0x14）*/
+/** 小号数字行（`y = 0x1a5`、字距 0x14）；`width` = 原版的 `%0Nd` 位数 */
 function drawDigitRow(
   ctx: CanvasRenderingContext2D,
   sprite: MiniSprite,
   text: string,
   x0: number,
+  width: number,
   y = MINI_HUD_Y,
 ): void {
-  drawNumber(ctx, sprite, text, x0, y, MINI_DIGIT_PITCH, 0);
+  drawNumber(ctx, sprite, text, x0, y, MINI_DIGIT_PITCH, 0, width);
 }
 
 /** 结算时的大号分数 @source `fcn_00414789` VA 0x00414789（居中在 x = 0x161、y = 0x96）*/
 function drawBigScore(ctx: CanvasRenderingContext2D, sprite: MiniSprite, score: number): void {
   const text = String(Math.min(MINI_SCORE_CAP, Math.max(0, score)));
   const x0 = MINI_BIG_CENTER_X - Math.trunc((text.length * MINI_BIG_PITCH) / 2);
-  drawNumber(ctx, sprite, text, x0, MINI_BIG_Y, MINI_BIG_PITCH, MINI_BIG_DIGIT_FIRST);
+  // 原版 `fcn_00414789` 先 `sprintf` 再按 `strlen` 一个字符一个字符画 —— 位数是变长的
+  drawNumber(ctx, sprite, text, x0, MINI_BIG_Y, MINI_BIG_PITCH, MINI_BIG_DIGIT_FIRST, text.length);
 }
 
 // ── 一、企鵝挖寶 ──
@@ -1310,14 +1469,14 @@ function drawPenguin(ctx: CanvasRenderingContext2D, sprite: MiniSprite, st: Peng
   }
   const score = penguinScore(st.counts);
   if (st.phase === 'score') drawBigScore(ctx, sprite, score);
-  // HUD
-  drawDigitRow(ctx, sprite, pad(st.ticks, 3), PENGUIN_HUD.timeX);
+  // HUD（位数照原版的 `%03d` / `%02d` 固定宽 —— 见 `drawNumber`）
+  drawDigitRow(ctx, sprite, pad(st.ticks, 3), PENGUIN_HUD.timeX, 3);
   drawPlain(ctx, sprite(MINI_ARCHIVE, MINI_FONT_RES, 0, false), PENGUIN_HUD.sepX, MINI_HUD_Y);
   for (let i = 0; i < PENGUIN_HUD.counterX.length; i++) {
     const type = PENGUIN_HUD.counterType[i] ?? 0;
-    drawDigitRow(ctx, sprite, pad(st.counts[type] ?? 0, 2), PENGUIN_HUD.counterX[i] ?? 0);
+    drawDigitRow(ctx, sprite, pad(st.counts[type] ?? 0, 2), PENGUIN_HUD.counterX[i] ?? 0, 2);
   }
-  drawDigitRow(ctx, sprite, pad(score, 3), PENGUIN_HUD.scoreX);
+  drawDigitRow(ctx, sprite, pad(score, 3), PENGUIN_HUD.scoreX, 3);
 }
 
 // ── 二、七彩氣球 ──
@@ -1337,9 +1496,10 @@ function drawBalloon(ctx: CanvasRenderingContext2D, sprite: MiniSprite, st: Ball
     drawAnchored(ctx, sprite(MINI_ARCHIVE, BALLOON_RES, img, true), b.x, b.y);
   }
   if (st.phase === 'score') drawBigScore(ctx, sprite, st.score);
-  drawDigitRow(ctx, sprite, pad(st.ticks, 3), BALLOON_HUD.timeX);
+  drawDigitRow(ctx, sprite, pad(st.ticks, 3), BALLOON_HUD.timeX, 3);
   drawPlain(ctx, sprite(MINI_ARCHIVE, MINI_FONT_RES, 0, false), BALLOON_HUD.sepX, MINI_HUD_Y);
-  drawDigitRow(ctx, sprite, pad(st.score, 4), BALLOON_HUD.scoreX);
+  // ★ 分数固定 **4** 位（`%04d`）—— 多出来的位一个也不画（否则画到 0x261 框外）
+  drawDigitRow(ctx, sprite, pad(st.score, 4), BALLOON_HUD.scoreX, 4);
 }
 
 // ── 三、財神接金幣 ──
@@ -1398,13 +1558,13 @@ function drawGift(
   const score = giftScore(st.counts);
   if (st.phase === 'score') drawBigScore(ctx, sprite, score);
   // HUD：时间是 `[0x48bd2c] >> 1` @0x0041419b
-  drawDigitRow(ctx, sprite, pad(st.ticks >> 1, 3), GIFT_HUD.timeX);
+  drawDigitRow(ctx, sprite, pad(st.ticks >> 1, 3), GIFT_HUD.timeX, 3);
   drawPlain(ctx, sprite(MINI_ARCHIVE, MINI_FONT_RES, 0, false), GIFT_HUD.sepX, MINI_HUD_Y);
   for (let i = 0; i < GIFT_HUD.counterX.length; i++) {
     const type = GIFT_HUD.counterType[i] ?? 0;
-    drawDigitRow(ctx, sprite, pad(st.counts[type] ?? 0, 2), GIFT_HUD.counterX[i] ?? 0);
+    drawDigitRow(ctx, sprite, pad(st.counts[type] ?? 0, 2), GIFT_HUD.counterX[i] ?? 0, 2);
   }
-  drawDigitRow(ctx, sprite, pad(score, 3), GIFT_HUD.scoreX);
+  drawDigitRow(ctx, sprite, pad(score, 3), GIFT_HUD.scoreX, 3);
 }
 
 // ============================================================
@@ -1428,6 +1588,28 @@ interface MiniRun {
   gift: GiftGame | null;
   /** 最后一次看到的鼠标舞台 x（財神那屏每帧读鼠标 @0x00413606）*/
   mx: number;
+  /**
+   * 入场 FLIC（`Panel.mkf` #0x4e）播到第几帧；`null` = 不播/已播完。
+   *
+   * ★ 2026-09-16 接线（外部审查 D-MINI-3）：原版三个小游戏入口都是
+   *   `read_mkf(panel_mkf, 0x4e)` 之后**阻塞**调 `fcn_0045144f` 播它
+   *   （@source `rich4_small_games.asm:4239/4445/4531`，播放在
+   *   VA 0x00414a60 / 0x00414d60 / 0x00415199）。
+   *   闸门是 `whoPlays == 1 && RICH4.CFG+1`（`rich4_small_games.asm:4230-4233`）
+   *   —— 即**只对真人、且「動畫過程」开着**才播。
+   */
+  intro: { at: number; until: number } | null;
+  /**
+   * 入场 FLIC 已经**决定过**了（播了、或确实不该播/拿不到）。
+   *
+   * ★ 为什么需要它：`env.flic()` 是**异步**的，第一帧一定返回 null
+   *   （在后台解，解完 main.ts 会重画一帧）。若只在 `ensureRun` 那一次判，
+   *   第一帧的 null 会把整段入场演出永久丢掉 —— 实测就是这样。
+   *   于是每帧重试，直到「影片到手」或「确实不归它播」为止。
+   */
+  introTried: boolean;
+  /** 从什么时候起在等这段影片（用来判「确实没有这个资源」，见 `MINI_INTRO_GIVE_UP_MS`）*/
+  introWaitSince: number;
 }
 
 let run: MiniRun | null = null;
@@ -1466,7 +1648,24 @@ function ensureRun(env: UiScreenEnv): MiniRun | null {
     run = null;
     return null;
   }
-  if (run !== null && run.game === pending.game) return run;
+  if (run !== null && run.game === pending.game) {
+    // ★ 入场 FLIC 是**异步**的：`env.flic` 第一次一定返回 null（后台在解）。
+    //   所以「还没决定过」时每帧再判一次，别把整段演出丢掉（实测第一版就是
+    //   被第一帧的 null 吞了）。判到「影片到手」或「等够久还是拿不到」为止。
+    if (!run.introTried) {
+      const started = startIntro(env, run.game);
+      if (started !== null) {
+        run.intro = started;
+        run.introTried = true;
+        run.at = env.now;
+      } else if (env.now - run.introWaitSince > MINI_INTRO_GIVE_UP_MS) {
+        run.introTried = true;
+      } else {
+        env.requestRender();
+      }
+    }
+    return run;
+  }
   playNonce += 1;
   const seed = minigameSeed(env.state, pending.game, playNonce);
   run = {
@@ -1479,9 +1678,62 @@ function ensureRun(env: UiScreenEnv): MiniRun | null {
     balloon: pending.game === SPECIAL_KIND.BALLOON ? balloonStart(seed) : null,
     gift: pending.game === SPECIAL_KIND.GIFT_FROM_SKY ? giftStart(seed) : null,
     mx: GIFT_MID_X,
+    intro: null,
+    introTried: false,
+    introWaitSince: env.now,
   };
   env.requestRender();
   return run;
+}
+
+/**
+ * 入场 FLIC 该不该播、播多久 —— 纯函数。
+ *
+ * @source `rich4_small_games.asm:4230-4233` 的闸门：
+ * ```asm
+ * cmp byte [player + 0x15], 1     ; ★ whoPlays == 1（只有真人）
+ * jne 跳过
+ * cmp byte [0x46caf9(CFG+1)], 0   ; ★ 「動畫過程」关着也跳过
+ * je 跳过
+ * read_mkf(panel_mkf, 0x4e) … fcn_0045144f   ; 才播
+ * ```
+ *
+ * @param whoPlays  当前玩家的 `whoPlays`（1 = 真人）
+ * @param animation 遊戲設定的「動畫過程」（`UiScreenEnv.animation`；省略 = 开）
+ * @param frameMs   FLIC 每帧毫秒（`env.flic` 给不出时就按 `minigameTickMs(game)`）
+ * @returns 要播就返回 `{frame: 0, until: now + 总时长}`，否则 `null`
+ */
+export function introPlayback(
+  whoPlays: number,
+  animation: boolean | undefined,
+  frameCount: number,
+  frameMs: number,
+  now: number,
+  game: number,
+): { at: number; until: number } | null {
+  if (whoPlays !== 1) return null;
+  if (animation === false) return null;
+  if (frameCount <= 0) return null;
+  const ms = frameMs > 0 ? frameMs : minigameTickMs(game);
+  return { at: now, until: now + frameCount * ms };
+}
+
+/** 这一局要不要起入场 FLIC（真人了没有 / 动画开着没有 / 影片解好了没有）*/
+function startIntro(
+  env: UiScreenEnv,
+  pendingGame: number,
+): { at: number; until: number } | null {
+  const me = env.state.players[env.state.currentPlayer];
+  if (me === undefined) return null;
+  const flic = env.flic(MINI_ARCHIVE, MINI_INTRO_FLIC_RES);
+  return introPlayback(
+    me.whoPlays,
+    env.animation,
+    flic?.frames.length ?? 0,
+    flic?.frameMs ?? minigameTickMs(pendingGame),
+    env.now,
+    pendingGame,
+  );
 }
 
 /** 一帧多少毫秒（企鵝/氣球 100ms、財神 50ms）*/
@@ -1525,6 +1777,13 @@ function giftBox(env: UiScreenEnv, st: GiftGame): Box {
   return catchBoxOf(env.sprite(MINI_ARCHIVE, catcherResource(env), giftCatcherImage(st), true), st.catcherX, GIFT_CATCHER_Y);
 }
 
+/** 把本局三条状态机攒下的待播音效倒给屏幕出口 */
+function flushSounds(env: UiScreenEnv, st: MiniRun): void {
+  if (st.penguin !== null) playMiniSounds(env, st.penguin.sfx);
+  if (st.balloon !== null) playMiniSounds(env, st.balloon.sfx);
+  if (st.gift !== null) playMiniSounds(env, st.gift.sfx);
+}
+
 export const minigameScreen: UiScreen = {
   id: 'minigame',
 
@@ -1537,6 +1796,18 @@ export const minigameScreen: UiScreen = {
     if (st === null) return;
     // 已经送过分，等 core 把 pending 清掉（这中间别再开一局）
     if (st.sent) return;
+
+    // ★ 入场 FLIC 还在播：这一段是**阻塞**的（原版 `fcn_0045144f`），
+    //   期间游戏逻辑一步都不走 @source `rich4_small_games.asm:4239/4445/4531`
+    if (st.intro !== null) {
+      if (env.now < st.intro.until) {
+        env.requestRender();
+        return;
+      }
+      st.intro = null;
+      st.at = env.now;
+      env.requestRender();
+    }
 
     const dt = Math.max(0, env.now - st.at);
     st.at = env.now;
@@ -1551,6 +1822,8 @@ export const minigameScreen: UiScreen = {
         st.gift = giftStep(st.gift, st.mx, giftBox(env, st.gift), env.now);
       }
     }
+    // ★ 本帧推过的 tick 里登记的（挖到 / 点爆 / 点空 / 生成 / 炸彈）一次倒出去
+    flushSounds(env, st);
     if (runDone(st, env.now)) {
       finish(env, runScore(st));
       return;
@@ -1563,6 +1836,20 @@ export const minigameScreen: UiScreen = {
     if (st === null) return;
     const sprite: MiniSprite = (archive, resource, index, keyed) =>
       env.sprite(archive, resource, index, keyed);
+    // ★ 入场 FLIC 压在整个小游戏画面之上（原版就是先播完它才铺 HUD）
+    if (st.intro !== null) {
+      const flic = env.flic(MINI_ARCHIVE, MINI_INTRO_FLIC_RES);
+      if (flic !== null && flic.frames.length > 0) {
+        const ms = flic.frameMs > 0 ? flic.frameMs : minigameTickMs(st.game);
+        const i = Math.min(
+          flic.frames.length - 1,
+          Math.max(0, Math.floor((env.now - st.intro.at) / ms)),
+        );
+        const bmp = flic.frames[i];
+        if (bmp !== undefined) env.stage.drawImage(bmp, 0, 0);
+      }
+      return;
+    }
     if (st.penguin !== null) drawPenguin(env.stage, sprite, st.penguin);
     else if (st.balloon !== null) drawBalloon(env.stage, sprite, st.balloon);
     else if (st.gift !== null) drawGift(env.stage, sprite, st.gift, catcherResource(env));
@@ -1581,6 +1868,8 @@ export const minigameScreen: UiScreen = {
     st.mx = x;
     if (st.penguin !== null) st.penguin = penguinClick(st.penguin, x, y);
     else if (st.balloon !== null) st.balloon = balloonClick(st.balloon, x, y);
+    // ★ 点这一下登记的（点爆 21 / 点空 20）当场倒出去
+    flushSounds(env, st);
     env.requestRender();
   },
 };
