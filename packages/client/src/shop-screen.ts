@@ -281,6 +281,39 @@ export function slideDone(s: ShopSlide): boolean {
   return s.panelX === SHOP_SLIDE.panelTo && s.gridX === SHOP_SLIDE.gridTo;
 }
 
+/** 「已经到位」那份滑入状态（`dx/dy` 归零，免得再走）—— 见 `shopEntryOf` */
+export function slideEnd(): ShopSlide {
+  return { panelX: SHOP_SLIDE.panelTo, gridX: SHOP_SLIDE.gridTo, dx: 0, dy: 0 };
+}
+
+/** 进店 / 换页那一刻要摆成什么样 */
+export interface ShopEntry {
+  /** 这一页从哪儿开始摆 */
+  slide: ShopSlide;
+  /** 要说的开场白；`null` = **不播开场**（直接到位、也不弹那句）*/
+  entry: string | null;
+}
+
+/**
+ * 换页那一刻的分支 —— 原版 `loc_0042d577` 那一句
+ * `cmp byte [eax + 0x48c349], 0 / jne loc_0042d5ba`：
+ *
+ * - **标志 == 0**（这一页的开场还没播过）：`[0x48c333] = -222`、`[0x48c337] = 640`
+ *   （= 我们的 `slideStart()`），再 `fcn_0044ecb6([0x4755c0 + 页×24])` 弹开场白；
+ * - **标志 != 0**：`PostMessage(0x40e)` —— 直接到位，而 `0x40e` 的处理器
+ *   `loc_0042d499` 只是画**點數**那一块（`[0x48c308] + 0x1c8` 底板 + `%d`），
+ *   **不弹任何气泡**。
+ *
+ * ★ 两个标志 `[0x48c349]` / `[0x48c34a]` 在铺场时是 `!animation`
+ *   （@source `loc_0042d423`，见 `Q-ANIM-1.md`）—— 所以「動畫過程」关掉时
+ *   进店**不播滑入、也不弹开场白**，这就是本函数 `playOpening === false` 那一支。
+ */
+export function shopEntryOf(page: ShopPage, playOpening: boolean): ShopEntry {
+  return playOpening
+    ? { slide: slideStart(), entry: shopMessage(page, 'entry') }
+    : { slide: slideEnd(), entry: null };
+}
+
 /**
  * 格子底图**局部**坐标下第 0 格的左上角。
  * 底图 412×180 = 5×80 + 2×6 = 3×56 + 2×6，所以边缘就是 6。

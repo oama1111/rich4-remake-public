@@ -361,7 +361,6 @@ import {
 import {
   SHOP_BUBBLE_MS,
   SHOP_PAGE,
-  SHOP_SLIDE,
   SHOP_SLIDE_MS,
   blinkStart,
   blinkStep,
@@ -371,6 +370,7 @@ import {
   hitShopExit,
   hitShopShelf,
   hitShopSwitch,
+  shopEntryOf,
   shopMessage,
   shopRows,
   slideDone,
@@ -3692,19 +3692,22 @@ function shopSay(ui: ShopUi, text: string, now: number): void {
   ui.bubble = { text, until: now + SHOP_BUBBLE_MS };
 }
 
-/** 换页：只在本次进店第一次看这一页时才播开场（原版 `[0x48c349 + 页]`）*/
+/**
+ * 换页：只在本次进店**这一页第一次**看时才播开场 —— 判据就是原版那两个标志
+ * `[0x48c349]` / `[0x48c34a]`（`shown[页]`），分支落在 `shopEntryOf`（纯函数、带单测）。
+ */
 function shopGotoPage(ui: ShopUi, page: ShopPage, now: number): void {
   ui.page = page;
   ui.pressed = null;
-  if (ui.shown[page]) {
-    // 已经开过场：直接摆到位，让它照样走一遍 0x40c（到位后出提示）
-    ui.slide = { panelX: SHOP_SLIDE.panelTo, gridX: SHOP_SLIDE.gridTo, dx: 0, dy: 0 };
-    ui.bubble = null;
-  } else {
+  const entry = shopEntryOf(page, !ui.shown[page]);
+  if (entry.entry !== null) {
     ui.shown[page] = true;
-    ui.slide = slideStart();
-    shopSay(ui, shopMessage(page, 'entry'), now);
+    shopSay(ui, entry.entry, now);
+  } else {
+    // 标志 != 0：直接到位（原版这时只 `PostMessage(0x40e)` 画點數，不弹气泡）
+    ui.bubble = null;
   }
+  ui.slide = entry.slide;
   ui.blink = blinkStart();
 }
 
@@ -3720,7 +3723,20 @@ function syncShopUi(): void {
   if (shopUi === null) {
     const ui: ShopUi = {
       page: SHOP_PAGE.cards,
-      shown: [false, false],
+      // ★ `shown[页]` = 原版那两个字节 `[0x48c349]` / `[0x48c34a]`
+      //   （= 「这一页的开场已经播过」），而它们在 `loc_0042d423`（`0x401` 铺场）
+      //   里是这么初始化的：
+      //   ```asm
+      //   0042d423  mov al, byte [0x497159]   ; ★ RICH4.CFG+1 = 「動畫過程」
+      //   0042d427  xor al, 1
+      //   0042d429  mov byte [0x48c349], al   ; 页 0（卡片）
+      //   0042d42c  mov byte [0x48c34a], al   ; 页 1（道具）
+      //   ```
+      //   ⇒ **设定关掉时两个标志一开始就是 1**：进店直接摆到位、不播滑入、
+      //   也不弹那句开场白（`0x405` 那一拍走 `loc_0042d5ba` → `PostMessage(0x40e)`，
+      //   而 `0x40e` 的处理器 `loc_0042d499` 只是画**點數**那一块）。
+      //   先前这里写死 `[false, false]` —— 设定关掉也照样播开场（已订正，见 Q-ANIM-1）。
+      shown: [!options.animation, !options.animation],
       slide: slideStart(),
       slideAt: 0,
       pressed: null,

@@ -7,6 +7,7 @@
  *   右下是 5×3 的 80×56，首格 (233,299)，命中基准是 (232,298) 的开区间；
  *   图自带的裁切原点必须减掉（老板娘那两张就是靠这个才落到 (372,32) / (341,11)）。
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { PendingInteraction } from '@rich4/core';
 import {
@@ -42,9 +43,11 @@ import {
   hitShopSwitch,
   shelfRowTextAt,
   shopCellRect,
+  shopEntryOf,
   shopMessage,
   shopRows,
   slideDone,
+  slideEnd,
   slideStart,
   slideStep,
 } from './shop-screen.ts';
@@ -372,5 +375,37 @@ describe('格子 → 该卖哪一件 @source VA 0x42dfe6', () => {
   it('★ 越界的槽一律不认', () => {
     expect(cellItemAt(SHOP_PAGE.cards, cells, -1)).toBeNull();
     expect(cellItemAt(SHOP_PAGE.cards, cells, SHOP_SLOTS)).toBeNull();
+  });
+});
+
+// ============================================================
+//  「動畫過程」管着开场那一步（Q-ANIM-1）
+// ============================================================
+
+describe('★ 进店/换页那一支 @source loc_0042d577', () => {
+  it('playOpening = true：从滑入起点开始 + 那一页的开场白', () => {
+    const e = shopEntryOf(SHOP_PAGE.cards, true);
+    expect(e.slide).toEqual(slideStart());
+    expect(e.entry).toBe(shopMessage(SHOP_PAGE.cards, 'entry'));
+    expect(shopEntryOf(SHOP_PAGE.tools, true).entry).toBe(shopMessage(SHOP_PAGE.tools, 'entry'));
+  });
+
+  it('★ playOpening = false（「動畫過程」关掉 / 这一页已开过场）：直接到位、不弹气泡', () => {
+    // 原版这时走 `loc_0042d5ba` → `PostMessage(0x40e)`，而 0x40e 的处理器
+    //   `loc_0042d499` 只画點數那一块，**没有任何气泡**。
+    const e = shopEntryOf(SHOP_PAGE.cards, false);
+    expect(e.entry).toBeNull();
+    expect(slideDone(e.slide)).toBe(true);
+    expect(e.slide).toEqual(slideEnd());
+    // 已经到位 → 再走也不动（`slideStep` 到位后停机）
+    expect(slideStep(e.slide)).toEqual(e.slide);
+  });
+
+  it('main.ts 用 options.animation 初始化那两页的标志（原版 = `[0x48c349] = !cfg[1]`）', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain('shown: [!options.animation, !options.animation]');
+    expect(src).not.toContain('shown: [false, false]');
+    // 分支也收进了纯函数
+    expect(src).toContain('shopEntryOf(page, !ui.shown[page])');
   });
 });

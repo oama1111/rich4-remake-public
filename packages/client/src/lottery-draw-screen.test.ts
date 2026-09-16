@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 import type { CeremonyStep, GameState } from '@rich4/core';
 import { ENTRY, POSE_RIGHT, TALLY_PLATES, lotteryCeremony } from '@rich4/core';
 import {
+  ceremonyStepsFor,
   ANM_FRAME_MS,
   CEREMONY_BALLS,
   CEREMONY_BLIT,
@@ -555,13 +556,19 @@ interface FakeEnv extends UiScreenEnv {
   state: GameState;
 }
 
-function makeEnv(state: GameState, flics: Record<number, LoadedFlic | null> = {}): FakeEnv {
+function makeEnv(
+  state: GameState,
+  flics: Record<number, LoadedFlic | null> = {},
+  animation?: boolean,
+): FakeEnv {
   const env = {
     screen: 'game',
     state,
     topo: {} as UiScreenEnv['topo'],
     map: {} as UiScreenEnv['map'],
     now: 0,
+    // `animation` 省略 = 按 true 算（契约里就是 optional）
+    ...(animation === undefined ? {} : { animation }),
     stage: fakeCtx().ctx,
     sprite: fakeSprite(),
     flic: (archive: string, resource: number) => flics[resource] ?? null,
@@ -736,6 +743,29 @@ describe('整屏的播放 @source 0x0043010c 的状态机', () => {
   function dedupe(xs: number[]): number[] {
     return xs.filter((v, i) => i === 0 || v !== xs[i - 1]);
   }
+
+  it('★ 「動畫過程」关掉：**跳过状态 1**（主持人开场那句），从 2 开始', () => {
+    // @source `loc_004301b0`（VA 0x004301b0）：`cmp [0x497159],0 / je → [0x48c37b] = 2`
+    resetLotteryDrawScreenState();
+    const [before, after] = winPair();
+    const env = makeEnv(after, { 16: fakeFlic(42), 17: fakeFlic(37) }, false);
+    lotteryDrawScreen.event!(before, after, env);
+    const { phases } = playToEnd(env);
+    expect(phases).toEqual([2, 3, 4, 5, 6, 8, 9, 10, -1]);
+    // 开场那一句（`#0017`）也不再念
+    expect(env.logs.join('')).not.toContain('開獎時間');
+  });
+
+  it('★ `ceremonyStepsFor` 只丢状态 1，其余一步不动（纯函数）', () => {
+    const all = lotteryCeremony({ number: 123, winner: 0, prize: 100, lottery: [], pool: 0, rigged: false });
+    expect(ceremonyStepsFor(all, true)).toBe(all);
+    const trimmed = ceremonyStepsFor(all, false);
+    expect(trimmed.length).toBe(all.length - 1);
+    expect(all.some((x) => x.state === 1)).toBe(true);
+    expect(trimmed.some((x) => x.state === 1)).toBe(false);
+    // 其余状态序原样
+    expect(trimmed.map((x) => x.state)).toEqual(all.filter((x) => x.state !== 1).map((x) => x.state));
+  });
 
   it('★ 察觉開獎就起播，`active()` 在播期间为真', () => {
     resetLotteryDrawScreenState();

@@ -781,9 +781,31 @@ function localizeStep(s: CeremonyStep): CeremonyStep {
   return { ...s, blits: s.blits.filter((b) => !BLIT_BALL_ENTRIES.has(b.entry)) };
 }
 
+/**
+ * 「動畫過程」关掉时要丢掉哪几步。
+ *
+ * @source `loc_004301b0`（VA 0x004301b0，開獎屏 `0x401` 铺场那一支的尾）：
+ * ```asm
+ * 004301b0  cmp byte [0x497159], 0      ; ★ RICH4.CFG+1 = 「動畫過程」
+ * 004301b7  je  short loc_004301d4
+ * 004301b9  mov byte [0x48c37b], 1      ; 开：状态 1（主持人开场那句）
+ * 004301c0  mov edx, [0x475610]         ;     `#0017嗨！又到了每月十五號樂透開獎時間～`
+ * 004301c7  call 0x44ecb6
+ * 004301d4  mov byte [0x48c37b], 2      ; 关：**直接落在状态 2**（报幕）
+ * ```
+ * 所以关掉时**只少状态 1 那一步**，后面 2..10 一模一样
+ * （它没有任何 blit/patch，只有一句台詞 —— 见 `lottery-ceremony.ts` 的 `steps[0]`）。
+ */
+export function ceremonyStepsFor(
+  steps: readonly CeremonyStep[],
+  animate: boolean,
+): readonly CeremonyStep[] {
+  return animate ? steps : steps.filter((s) => s.state !== 1);
+}
+
 /** 起播 */
 function begin(cue: DrawCue, env: UiScreenEnv): void {
-  const steps = lotteryCeremony({
+  const all = lotteryCeremony({
     number: cue.number,
     winner: cue.winner,
     prize: cue.prize,
@@ -791,6 +813,7 @@ function begin(cue: DrawCue, env: UiScreenEnv): void {
     pool: cue.winner === null ? cue.prize : 0,
     rigged: false,
   }).map(localizeStep);
+  const steps = ceremonyStepsFor(all, env.animation !== false);
   if (steps.length === 0) return;
   active = {
     cue,
