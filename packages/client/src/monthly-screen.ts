@@ -393,10 +393,14 @@ export const MONTHLY_SEAT_BASE_Y = 0x14a;
  * 头像的 `{height, 锚点 y}` —— **近似表**，只用于那一步 `y = 330 − h + y`。
  *
  * 原版是**从被画的那张头像自己身上读**的（`+0x0e` = height / `+0x12` = 锚点 y，
- * VA 0x004384b7），也就是图 `3×角色 + 47` 那一张的字段。本模块拿不到图素表，
- * 只按字符 0..2 三帧都成立的 `(72, 36)` 兜着 —— 于是 y 恒为 294；
- * 对 h/锚点不同的角色（如莎拉公主 42×58、锚点 y=28 → 300）会差几个像素。
- * 见 T-041 的 D-MONTHLY-10。
+ * VA 0x004384de/e2），也就是图 `3×角色 + 47` 那一张的字段。
+ *
+ * ★ **2026-09-16：改成吃真图素** —— `monthlyRowLayout` 多收一个
+ *   `portrait`（`{height, anchorY}`），调用方把那张精灵传进来，
+ *   y 就是原版那一步。下面这张表只剩「没给图素时」的兜底
+ *   （历史上按字符 0..2 都成立的 `(72,36)` 拟的，y 恒 294）。
+ *   `Panel.mkf` 资源 25 的 47..82 逐张一查就知道差别有多大：
+ *   角色 3（圖 56..58）是 36×58、锚点 y=29 ⇒ **301**，不是 294。见 D-MONTHLY-10。
  *
  * 键是**旧读法**留下的「帧号」（`[0x475960]` 查出的竖栏图号 15/16/17），
  * 与头像图号无关；保留只是为了那一步高度查表。
@@ -787,6 +791,13 @@ export function monthlyRowLayout(
   state: GameState,
   playerIndex: number,
   screen: MonthlyRowScreen = 'settle',
+  /**
+   * 这一列的**立绘精灵的尺寸**（`{height, anchorY}`）—— 原版那一步就是从
+   * 被画的那张图身上读的（`0x004384de` 的 `sub di, word [eax+0xe]` /
+   * `0x004384e2` 的 `add di, word [eax+0x12]`）。只对頒獎屏有意义；
+   * 不给就退回下面那张近似表。
+   */
+  portrait: { height: number; anchorY: number } | null = null,
 ): MonthlyRowLayout {
   const p = state.players[playerIndex];
   const character = p?.character ?? 0;
@@ -806,7 +817,7 @@ export function monthlyRowLayout(
   const avatarY =
     screen === 'settle'
       ? (MONTHLY_SEAT_Y[slot] ?? 0)
-      : MONTHLY_SEAT_BASE_Y - size.h + size.y;
+      : MONTHLY_SEAT_BASE_Y - (portrait?.height ?? size.h) + (portrait?.anchorY ?? size.y);
   const block = { x: MONTHLY_ROW_BLOCK_X, y: avatarY };
   const at = (o: { dx: number; dy: number }): { x: number; y: number } => ({
     x: block.x + o.dx,
@@ -1113,6 +1124,7 @@ export function drawMonthlyAwardFlic(
   // 列心：与头像同一列（`monthlyRowLayout(..., 'award').avatar.x`）
   const at = monthlyRowLayout(state, award.winner, 'award');
   const x = Math.round(at.avatar.x + MONTHLY_AWARD_FLIC_AT.x - film.width / 2);
+  // （FLIC 只用 x —— 列位由「在榜人数 + 名次」定，与立绘尺寸无关）
   const y = Math.round(MONTHLY_AWARD_FLIC_AT.y - film.height / 2);
   ctx.drawImage(bmp, x, y);
   return true;
@@ -1204,8 +1216,14 @@ export function drawMonthlyScreen(
   for (let s = 0; s < p.seats; s++) {
     const row = view.rows[s];
     if (row === undefined) continue;
-    const at = monthlyRowLayout(state, row.index, 'award');
-    drawAnchored(ctx, monthlySprite(sprite, at.avatar.chunk), at.avatar.x, at.avatar.y);
+    // ★ 先把那张立绘拿出来：原版的 y 就是从**它自己**的 height/锚点算的
+    const character = state.players[row.index]?.character ?? 0;
+    const face = monthlySprite(
+      sprite,
+      MONTHLY_AVATAR_STRIDE * character + MONTHLY_CHUNK.avatarFirst,
+    );
+    const at = monthlyRowLayout(state, row.index, 'award', face);
+    drawAnchored(ctx, face, at.avatar.x, at.avatar.y);
   }
 
   // ── ③ 详情（`loc_00438570`）──

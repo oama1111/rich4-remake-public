@@ -276,6 +276,27 @@ describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', 
     expect(b.avatar.bar).toBe(17);
   });
 
+  it('★★ 頒獎屏的 y 吃**真立绘**的 height/锚点（D-MONTHLY-10 结案）@source 0x004384de/e2', () => {
+    const state = fakeState([playerOf(0, 3), playerOf(1, 0), playerOf(2, 4), playerOf(3, 1)]);
+    // 角色 3 的立绘在 Panel#25 里是 36×58、锚点 y=29（manifest 实测）
+    const byCharacter: Record<number, { height: number; anchorY: number }> = {
+      0: { height: 72, anchorY: 36 },
+      1: { height: 68, anchorY: 34 },
+      3: { height: 58, anchorY: 29 },
+      4: { height: 66, anchorY: 33 },
+    };
+    for (let i = 0; i < 4; i++) {
+      const ch = state.players[i]!.character;
+      const face = byCharacter[ch]!;
+      const at = monthlyRowLayout(state, i, 'award', face);
+      expect(at.avatar.y, `角色 ${ch}`).toBe(330 - face.height + face.anchorY);
+    }
+    // 不给图素时退回近似表（三个兜底帧都是 (72,36) ⇒ 294）
+    expect(monthlyRowLayout(state, 0, 'award').avatar.y).toBe(294);
+    // 角色 3 那一列因此是 301 而不是 294
+    expect(monthlyRowLayout(state, 0, 'award', byCharacter[3]!).avatar.y).toBe(301);
+  });
+
   it('★ 旧常数 `MONTHLY_SEAT_X` 只服务结算屏的 y 表（同值），不再是頒獎屏的 x', () => {
     expect(MONTHLY_SEAT_X).toEqual([60, 180, 300, 420]);
     expect(MONTHLY_SEAT_FRAME).toEqual([16, 17, 15, 16]);
