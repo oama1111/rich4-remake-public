@@ -125,7 +125,10 @@ import {
   type OptionsOutcome,
 } from './options-pages.ts';
 import { SoundPlayer } from './audio.ts';
-import { speechEventsFor, speechResourcesFor } from './speech.ts';
+import { speechBubblesFor, speechEventsFor, speechResourcesFor } from './speech.ts';
+import { SpeechQueue, drawSpeechBubble } from './speech-bubble.ts';
+// 台词字幕用的是 canvas 文字（原版 `_rich4_create_font(0x10, 0x101010, …)` 那一路）
+import { font } from './font.ts';
 import { MusicPlayer } from './music.ts';
 // Q8：音色库（.sf2）—— 用户自备，有就用采样还原音色，没有就退回振荡器
 import { parseSoundFont } from './soundfont.ts';
@@ -3070,6 +3073,14 @@ function playSoundFor(before: GameState, after: GameState): void {
   for (const resource of speechResourcesFor(after, spoken)) {
     sound.play('Speaking.mkf', resource);
   }
+  // ★ 2026-09-16：不光出声，还把**说话人自己那一句**显示出来。
+  //   原版 `_rich4_player_say` 的两步（白字字幕 + 金貝貝那种 `@DD` 表情图）
+  //   由 `speech-bubble.ts` 负责；`speechBubblesFor` 把 `SayEvent` 翻成排好版的段落。
+  //   金貝貝那一列**整列没有文本也没有语音**，只有一张 `Data.mkf #0x207` 的表情图
+  //   （见 `@rich4/data` 的 `SPEECH_LINES` 与 `speechEmojiImage`）。
+  if (speechQueue.push(speechBubblesFor(after, spoken), performance.now()) > 0) {
+    requestRender();
+  }
 }
 
 // ============================================================
@@ -3889,6 +3900,16 @@ function activeUiScreen(): UiScreen | null {
  */
 let objectFlight: ObjectFlight | null = null;
 
+/**
+ * 正在排队的角色台词（T-052 的屏幕那一半）。
+ *
+ * ★ 原版 `_rich4_player_say`（VA 0x0044ef41）是**阻塞**的一句一句演
+ *   （画字 → 贴表情 → `fcn_004544f6(1000)` 等 1 秒），本引擎不能在 `dispatch`
+ *   里阻塞，故改成队列：`playSoundFor` 排入，渲染循环按 `SPEECH_HOLD_MS` 逐段收。
+ *   纯表现，不读也不写 `GameState`（C-DET-4）。
+ */
+const speechQueue = new SpeechQueue();
+
 /** 这一件飞完该放哪个音效号（0 = 不放音） */
 let objectFlightSound = 0;
 
@@ -4305,6 +4326,9 @@ function requestRender(): void {
     if (screen === 'game') shopTick(performance.now());
     // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
     if (screen === 'game') bankTick(performance.now());
+    // ★ 角色台词（T-052）：**不限定 `game` 屏** —— 语音在任何一屏都可能派出来
+    //   （开局宣言、破產、勝利宣言…），队列的收尾不能因为屏幕上盖着别的东西就停住。
+    speechTick(performance.now());
 
     stageCtx.imageSmoothingEnabled = false;
     stageCtx.fillStyle = '#000';
@@ -4489,6 +4513,21 @@ function requestRender(): void {
     //   所以这里也画在链尾、盖住底下那一屏。
     if (dicePick !== null) drawDiceChoose(stageCtx, spriteNow, dicePick.hover);
 
+    // ── 角色台词（T-052 的屏幕那一半）──
+    // ★ 画在链尾、盖住底下那一屏，与原版一致：`_rich4_player_say` 的第 ① 步
+    //   （白字字幕）与第 ② 步（金貝貝的 `Data.mkf #0x207` 表情图）都是直接
+    //   画在**整块舞台**上的（坐标就是屏幕坐标，见 `speech-bubble.ts`）。
+    //   ⚠️ 不能画在 `drawGameStage()` 里 —— 那一趟只在 `screen === 'game'` 时走，
+    //   而语音是**任何一屏**都可能派出来的。
+    {
+      const bubble = speechQueue.current();
+      if (bubble !== null) {
+        stageCtx.save();
+        drawSpeechBubble(bubble, { ctx: stageCtx, sprite: uiSprite, font });
+        stageCtx.restore();
+      }
+    }
+
     // 拾取模式的指针图要**解码完才能用**。首帧拿不到就返回 null，
     // 而光标只在 hover 变化时才刷新 —— 于是「一次都没悬停到」时指针会空着。
     // 图到货（spriteArrived）时补一次，这一条不能省。
@@ -4500,6 +4539,7 @@ function requestRender(): void {
     // 骰子在滚也要继续要帧，否则动画只有一格；
     // 商店开着也要一直要帧 —— 原版那儿挂着一个 50ms 的定时器（`SetTimer(hwnd, 0x32, …)`）。
     // 銀行貸款屏同理（Q-BANK-1：滑入与气泡都要逐帧看）；ATM 只在键盘那一下补一帧。
+    // ★ 台词也一样：一段显示 `SPEECH_HOLD_MS` 毫秒，到点由 `speechTick` 收掉并要下一帧。
     if (
       renderer.dirty ||
       hud.dirty ||
@@ -4507,7 +4547,8 @@ function requestRender(): void {
       diceFx.active ||
       shopUi !== null ||
       loanUi !== null ||
-      atmCode !== null
+      atmCode !== null ||
+      speechQueue.length > 0
     ) {
       renderer.clearDirty();
       hud.clearDirty();
@@ -4515,6 +4556,16 @@ function requestRender(): void {
       requestRender();
     }
   });
+}
+
+/**
+ * 台词队列的节拍 —— 每帧走一次：到点收掉当前那段。
+ *
+ * ★ 与商店/银行的滑入一样，**不按屏幕刷新率算时长**：判据是
+ *   `now − 展示起点 >= SPEECH_HOLD_MS`（原版 `fcn_004544f6(0x3e8)` 的那 1000 ms）。
+ */
+function speechTick(now: number): void {
+  if (speechQueue.tick(now)) requestRender();
 }
 
 /**

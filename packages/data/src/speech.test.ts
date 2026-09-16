@@ -12,18 +12,24 @@
  *   都是 **1374**（见下面「条目数」那条）。公式最大值 1373 = 1374 − 1，恰好吃满。
  */
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import {
   SPEAKING_CHUNK_COUNT,
   SPEECH_BASE_INDEX,
   SPEECH_CHARACTER_COUNT,
+  SPEECH_EMOJI_AT,
+  SPEECH_EMOJI_IMAGE_COUNT,
+  SPEECH_EMOJI_RESOURCE,
   SPEECH_EVENTS,
   SPEECH_EVENTS_PER_CHARACTER,
+  SPEECH_LINES,
   SPEECH_MAX_INDEX,
   SPEECH_STRIDE_BYTES,
   SPEECH_TABLE_VA,
+  speechEmojiImage,
   speechEvent,
   speechIndex,
+  speechLine,
 } from './speech.ts';
 import { CHARACTERS } from './characters.ts';
 import { FORTUNE_EVENTS, NEWS_EVENTS } from './event-table.ts';
@@ -33,6 +39,9 @@ const MKF = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/S
 const hasExe = existsSync(EXE);
 const hasMkf = existsSync(MKF);
 const run = hasExe ? it : it.skip;
+
+/** 金貝貝的角色号 —— 唯一一个**不说话**、台词整列是表情图的角色（`characters.ts` id 11）*/
+const JINBEIBEI = 11;
 
 /** DGROUP：VA 0x463000 → 文件偏移 398848 */
 const dataOff = (va: number) => 398848 + (va - 0x463000);
@@ -344,6 +353,173 @@ describe('★ Speaking.mkf 条目数（硬约束）', () => {
         expect(off, `资源号 ${idx} 的偏移`).toBeLessThan(tableOffset);
       }
     }
+  });
+});
+
+// ============================================================
+//  ★ 324 条**逐条**与 rich4.exe 比对（每个角色自己那一列）
+// ============================================================
+
+/**
+ * 指针表读出来的**原始**一列 —— 保留 `#NNNN` 前缀与 `@DD` 原样，不做任何裁剪。
+ *
+ * ⚠️ 与表里的 `line` 比时必须先剥掉 `#NNNN` / `@DD` 前缀（那是**语音号／表情码**，
+ *   不是台词本身）。`SPEECH_LINES` 存的正是剥掉之后的样子。
+ */
+function rawLineAt(exe: Buffer, character: number, event: number): string {
+  return lineAt(exe, pointer(exe, character, event));
+}
+
+/**
+ * 从**原始**串里剥出 `[表情码, 要显示的文本]` —— 与 `tools/gen-speech.py` 同一套判据：
+ *   ① 去掉开头的 `#NNNN`（**语音号**，不是台词）；
+ *   ② 剩下的若形如 `@DD`，DD 就是**表情码**，文本字段仍保留 `@DD` 原文
+ *      （渲染时由 `speechEmojiImage()` 换算成图号，不再当文字画）。
+ */
+function splitRaw(raw: string): { text: string; emoji: number | null } {
+  const body = /^#\d{4}/.test(raw) ? raw.slice(5) : raw;
+  const m = /^@(\d{2})$/.exec(body);
+  return { text: body, emoji: m === null ? null : Number(m[1]) };
+}
+
+describe('★ SPEECH_LINES 全量比对（12 × 27 = 324 条）', () => {
+  it('形状：12 行、每行 27 条、每条是 [表情码, 文本]', () => {
+    expect(SPEECH_LINES).toHaveLength(SPEECH_CHARACTER_COUNT);
+    for (const [c, row] of SPEECH_LINES.entries()) {
+      expect(row, `角色 ${c}`).toHaveLength(SPEECH_EVENTS_PER_CHARACTER);
+      for (const [e, item] of row.entries()) {
+        expect(item.length, `角色 ${c} 事件 ${e}`).toBe(2);
+        expect(typeof item[1], `角色 ${c} 事件 ${e}`).toBe('string');
+      }
+    }
+  });
+
+  run('★ 324 条文本逐字节等于 exe 指针表里的那一列（BIG5）', () => {
+    const exe = readFileSync(EXE);
+    for (let c = 0; c < SPEECH_CHARACTER_COUNT; c++) {
+      for (let e = 0; e < SPEECH_EVENTS_PER_CHARACTER; e++) {
+        const raw = rawLineAt(exe, c, e);
+        const want = splitRaw(raw);
+        const got = speechLine(c, e);
+        expect(got[1], `角色 ${c}（${CHARACTERS[c]!.name}）事件 ${e}`).toBe(want.text);
+        expect(got[0], `角色 ${c} 事件 ${e} 的表情码`).toBe(want.emoji);
+      }
+    }
+  });
+
+  run('★ 除金貝貝外，每一列都是普通台词（`#NNNN` + 纯文本，表情码 null）', () => {
+    const exe = readFileSync(EXE);
+    for (let c = 0; c < SPEECH_CHARACTER_COUNT; c++) {
+      const emojiCount = SPEECH_LINES[c]!.filter((x) => x[0] !== null).length;
+      if (c === JINBEIBEI) {
+        // 它**整整一列**都是表情
+        expect(emojiCount, '金貝貝应当整列都是表情码').toBe(SPEECH_EVENTS_PER_CHARACTER);
+        continue;
+      }
+      expect(emojiCount, `角色 ${c}（${CHARACTERS[c]!.name}）不该有表情码`).toBe(0);
+      // 而且每条都带 `#NNNN` 语音号
+      for (let e = 0; e < SPEECH_EVENTS_PER_CHARACTER; e++) {
+        expect(rawLineAt(exe, c, e), `角色 ${c} 事件 ${e}`).toMatch(/^#\d{4}/);
+      }
+    }
+  });
+
+  run('★ 金貝貝那一列：27 条都是 `#NNNN@DD`，且表情码与文本字段一致', () => {
+    const exe = readFileSync(EXE);
+    for (let e = 0; e < SPEECH_EVENTS_PER_CHARACTER; e++) {
+      const raw = rawLineAt(exe, JINBEIBEI, e);
+      const m = /^#(\d{4})@(\d{2})$/.exec(raw);
+      expect(m, `金貝貝事件 ${e} 的原始串：${raw}`).not.toBeNull();
+      expect(Number(m![1]), `金貝貝事件 ${e} 的语音号`).toBe(speechIndex(JINBEIBEI, e));
+      expect(speechLine(JINBEIBEI, e)[0], `金貝貝事件 ${e} 的表情码`).toBe(Number(m![2]));
+    }
+  });
+
+  it('★ 文本里没有残留的 `#NNNN` 语音号（那是号码，不是台词）', () => {
+    for (const [c, row] of SPEECH_LINES.entries()) {
+      for (const [e, [emoji, text]] of row.entries()) {
+        expect(text, `角色 ${c} 事件 ${e}`).not.toMatch(/^#\d{4}/);
+        if (emoji === null) expect(text, `角色 ${c} 事件 ${e}`).not.toMatch(/^@\d{2}$/);
+        else expect(text, `角色 ${c} 事件 ${e}`).toBe(`@${String(emoji).padStart(2, '0')}`);
+      }
+    }
+  });
+
+  it('★ 槽位语义同号同义：角色 0 那一列必须与 SPEECH_EVENTS 的 `line` 逐条相等', () => {
+    // SPEECH_EVENTS 的 `line` 存的就是角色 0 的原始串（含 #NNNN），故按同样的剥法比。
+    for (const ev of SPEECH_EVENTS) {
+      const want = splitRaw(ev.line);
+      expect(speechLine(0, ev.id), `槽位 ${ev.id}（${ev.gloss}）`).toEqual([want.emoji, want.text]);
+    }
+  });
+
+  it('★ 每个角色都**真的**有自己的台词：324 条里互不相同的文本 ≥ 300', () => {
+    // 抄同一份表会立刻在这里露馅（原版 12 个角色的用词几乎不重样）。
+    const texts = new Set<string>();
+    for (const row of SPEECH_LINES) for (const [, t] of row) texts.add(t);
+    expect(texts.size).toBeGreaterThanOrEqual(300);
+    // 角色 9（孫小美）与角色 10（忍太郎）同为「洋涇浜」风格，但用词不同：
+    expect(speechLine(9, 0)[1]).not.toBe(speechLine(10, 0)[1]);
+  });
+
+  it('越界抛 RangeError（与 speechIndex 同一套约定）', () => {
+    expect(() => speechLine(-1, 0)).toThrow(RangeError);
+    expect(() => speechLine(12, 0)).toThrow(RangeError);
+    expect(() => speechLine(0, -1)).toThrow(RangeError);
+    expect(() => speechLine(0, 27)).toThrow(RangeError);
+  });
+});
+
+describe('★ 金貝貝的表情图（`@DD` 那一支）', () => {
+  it('资源号 = Data.mkf #0x207 @source rich4_load_map.asm:578', () => {
+    expect(SPEECH_EMOJI_RESOURCE).toBe(0x207);
+  });
+
+  it('落点 (0xf0, 0x82) @source rich4.asm 的两条 push', () => {
+    expect(SPEECH_EMOJI_AT).toEqual({ x: 0xf0, y: 0x82 });
+  });
+
+  it('图号算式 = 3×十位 + 个位 − 1', () => {
+    // @source rich4.asm:23646-23660 的整数算式（逐条照机器码抄）：
+    //   `ecx = 十位−1` → `eax = ecx×5` → `eax += eax` ⇒ `eax = 10×十位 − 10`
+    //   `eax += 个位` ⇒ `eax = 10×十位 + 个位 − 10`
+    //   `edx = eax−1` → `eax = edx×3` ⇒ **图号 = 3×(图内码 − 10)**
+    //   代回：`3×(10×十位 + 个位 − 10) = 3×十位 + 个位 − 1`（= 上式的另一写法）。
+    //   —— 别被那个 `×3` 骗了：`图内码` 是**按十位分组的 10 步**，不是 code 本身。
+    expect(speechEmojiImage(1)).toBe(0);
+    expect(speechEmojiImage(2)).toBe(1);
+    expect(speechEmojiImage(9)).toBe(8);
+    expect(speechEmojiImage(10)).toBe(2);
+    expect(speechEmojiImage(11)).toBe(3);
+    expect(speechEmojiImage(19)).toBe(11);
+    expect(speechEmojiImage(20)).toBe(5);
+    expect(speechEmojiImage(21)).toBe(6);
+    // 全表：code 01..21 → 0..11，**12 个互不相同**（都在 21 张图的范围内）
+    const all = [...Array(21).keys()].map((i) => speechEmojiImage(i + 1));
+    expect(all).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 5, 6]);
+    expect(new Set(all).size).toBe(12);
+    expect(Math.min(...all)).toBe(0);
+    expect(Math.max(...all)).toBe(11);
+  });
+
+  it('★ 用到的 code 全部落在图号空间内（图片数硬约束）', () => {
+    // 0x207 共 21 张 → 图号必须落在 0..20，且金貝貝那一列用到的 15 个 code 全部合法
+    const used = new Set<number>();
+    for (const [emoji] of SPEECH_LINES[JINBEIBEI]!) used.add(emoji!);
+    expect(used.size).toBe(15);
+    for (const code of used) {
+      const img = speechEmojiImage(code);
+      expect(Number.isInteger(img), `code ${code}`).toBe(true);
+      expect(img, `code ${code}`).toBeGreaterThanOrEqual(0);
+      expect(img, `code ${code}`).toBeLessThan(SPEECH_EMOJI_IMAGE_COUNT);
+    }
+  });
+
+  run('★ 图号空间 = assets-clean/Data/0519_*.png 的张数（21）', () => {
+    const dir = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/Data';
+    const pngs = readdirSync(dir).filter((f) => /^0519_\d{3}\.png$/.test(f));
+    expect(pngs.length).toBe(SPEECH_EMOJI_IMAGE_COUNT);
+    expect(SPEECH_EMOJI_IMAGE_COUNT).toBe(21);
   });
 });
 

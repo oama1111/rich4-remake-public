@@ -35,7 +35,7 @@ import type { SpecialActor } from '../rules/special-actors.ts';
 import { applyAverageCashCard } from './average-cash.ts';
 import { applyAveragePoorCard } from './average-poor.ts';
 import { applyHibernateCard } from './hibernate.ts';
-import { applySleepwalkCard } from './sleepwalk.ts';
+import { applySleepwalkCard, applySleepwalkCardToActor } from './sleepwalk.ts';
 import { applyStayCard, applyStayCardToActor } from './stay.ts';
 import { applyTortoiseCard, applyTortoiseCardToActor } from './tortoise.ts';
 import { applyAllianceCard } from './alliance.ts';
@@ -275,8 +275,11 @@ export function useCard(
     objectCount: ctx.objects.length,
     stockCount: ctx.market.stocks.length,
     facilityCount: ctx.facilities.reduce((m, f) => Math.max(m, f.id), 0),
-    // REQ-05.1：停留(14)/轉向(6)/烏龜(30) 三卡可指向四大惡人与機器娃娃
-    allowActor: cardId === 6 || cardId === 14 || cardId === 30,
+    // REQ-05.1：停留(14)/轉向(6)/烏龜(30) 三卡可指向四大惡人与機器娃娃；
+    // ★ 夢遊卡(16) 也有替身那一支 —— @source `rich4_card_mengyouka.asm:252-257`
+    //   （`cmp ebx,4 / jl 跳过` 之后写替身记录 `+13`），
+    //   2026-09-16 订正后再接上（先前误判「索引空间没核清」，见 D-T047-5）。
+    allowActor: cardId === 6 || cardId === 14 || cardId === 16 || cardId === 30,
   });
   if (targetError !== null) return fail(targetError);
 
@@ -390,19 +393,42 @@ export function useCard(
       break;
     }
     case 16: {
+      // ★ 夢遊卡对**替身**（四大惡人 4..7 / 機器娃娃 8）也有效 ——
+      //   原版那一支写记录 `+13`（梦游天数）。
+      //
+      // @source `rich4_card_mengyouka.asm:252-257`：
+      // ```asm
+      // 0044449b  cmp    ebx, 4                     ; ebx = 实例下标（已过 CTZ）
+      //           jl     loc_004444b3               ; < 4 → 玩家那一支（上面已处理）
+      //           shl    ebx, 4                     ; ×16 = 替身记录步长
+      //           cmp    byte [ebx + 0x498df4], 0   ; +12 冬眠中 → 不动
+      //           jne    loc_004444b3
+      //           mov    byte [ebx + 0x498df5], 5   ; ★ +13 = 5
+      // ```
+      // ⚠️ 先前这里写的是「`ebx` 是位掩码、硬套会把天数写到错的替身上，故不接」
+      //   —— **那个判据是错的**：`esi`（选择器的返回值）在更早一处就已经
+      //   `push esi / call _count_trailing_zero_u8 / mov ebp, eax / mov ebx, eax`
+      //   取过位号了（@0x444295 一带，之后 `ebp` 就是那个下标、`ebx` 是它的副本），
+      //   所以到 0x44449b 时 `ebx` 已经是**下标**。订正记录见
+      //   `docs/deviations/T-047.md` 的 D-T047-5。
+      if (target.kind === 'actor') {
+        const slot = specialSlotOf(target.actor);
+        const a = slot >= 0 ? actors[slot] : undefined;
+        // 不在棋盘上（監獄/醫院/未出场）不生效，不扣卡 —— 与停留/轉向/烏龜同一条规矩。
+        // ⚠️ 原版那一支没有 `actorActive` 这个判断（它按鼠标点得到谁就是谁），
+        //   但 picker 画的就是在场的那几个，故行为一致。
+        if (!actorActive(a)) return fail('noEffect');
+        // 已经冬眠的替身：原版那条 `jne` 不写，本引擎按「没生效就不扣卡」处理
+        const applied = applySleepwalkCardToActor(a!);
+        if (!applied.applied) return fail('noEffect');
+        actors = actors.map((x, i) => (i === slot ? applied.actor : x));
+        break;
+      }
       // 夢遊卡：交通工具退还成道具，故全局道具表也要跟着结果走
       const r = applySleepwalkCard(players, cur, target, tools);
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       tools = r.tools;
-      // ⚠️ 夢遊卡对替身记录 `+13`（`0x498df5`）**确实**有一支写入口
-      //   （@source `rich4_card_mengyouka.asm:252-257`：`cmp ebx, 4 / jl 跳过`
-      //   → `cmp byte [ebx*16 + 0x498df4], 0 / jne 跳过` → `mov byte […+13], 5`），
-      //   但那一支的 `ebx` 是 `_rich4_select_instance_with_mouse(0xe0c0710)` 的
-      //   返回值、**先经 `_count_trailing_zero_u8` 取位号**（同一套掩码的陷害卡
-      //   `rich4_card_xianhaika.asm:62-66` 就是这么读的）。本引擎没有等价的
-      //   「实例选择器 + 位号」语义，硬套会把天数写到错的替身上 ——
-      //   故**不接**，登记在 deviations D-T047-2。
       // @source 復仇卡(18) 把效果反弹给出牌者（applySleepwalkCard 内部处理），
       //   反弹不算「被防御性被动卡挡下」，defended 保持 false
       break;

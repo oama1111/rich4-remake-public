@@ -185,6 +185,124 @@ export const SPEECH_EVENTS: readonly SpeechEvent[] = [
 ];
 
 /**
+ * **每个角色自己的台词**（12 × 27 = 324 条，逐条来自 `rich4.exe`）。
+ *
+ * ★ 2026-09-16 补齐：`SPEECH_EVENTS` 的 `line` 只存了**角色 0（約翰喬）那一列**
+ *   （当时只是为了给 `#NNNN` 做二进制校验），另外 11 个角色自己的台词一直没进仓库。
+ *   本表把 324 条全部落下来，槽位语义与 `SPEECH_EVENTS` 同号同义。
+ *
+ * ★ **金貝貝（角色 11）不会说话**：它那一列 27 条串全是 `@DD` 形状
+ *   （`DD` 两位十进制，本次实测用到 01/02/03/04/05/07/08/10/13/15/16/17/18/20/21），
+ *   即**一组表情图**。图的出处与图号算式见 `SPEECH_EMOJI_RESOURCE` /
+ *   `speechEmojiImage()`。
+ *
+ * 生成：`python3 tools/gen-speech.py --json`（脚本从 exe 的指针表
+ * `0x48084a` 逐项读，BIG5 解码；核对见 `speech.test.ts` 的全量比对）。
+ */
+
+/** 一个角色的 27 条台词：`[表情码, 文本]`；表情码为 `null` 时是普通台词 */
+export type SpeechLine = readonly [number | null, string];
+
+/** 角色下标 0..11 → 27 条台词（下标 = `SPEECH_EVENTS` 的 `id`）*/
+export const SPEECH_LINES: readonly (readonly SpeechLine[])[] = [
+  [
+    [null, '別忌妒我！'], [null, '鴻運當頭！'], [null, '運氣不差！'], [null, '我慘了'], [null, '唉呦喂呀'], [null, '死不了人的'], [null, '這是我應得的！'], [null, '我是全球首富'], [null, '蠅頭小利～'], [null, '老本都快沒了～'], [null, '真沒良心！'], [null, '拿去啦，\n不用找了～'], [null, '上帝保佑～'], [null, '耶穌保佑'], [null, 'letitbe'], [null, '我真佩服自己'], [null, '我是個大地主'], [null, '我要稱霸一方了'], [null, '兄弟，\n我記住你了'], [null, '放我出去！'], [null, '我不要打針！！'], [null, '不要吵～～'], [null, '別鬧了！'], [null, '一場惡夢～'], [null, '哈哈！\n勝利總是在\n正義的一方！'], [null, '不過是\n運氣差了點～'], [null, '我要再接再勵，\n永往直前！'],
+  ],
+  [
+    [null, '阿拉真主！\n我讚美你！'], [null, '感謝阿拉！'], [null, '運氣好而已啦～'], [null, 'OH～NO！'], [null, '比減肥\n更讓我痛苦！！'], [null, '人生不如意\n十有八九～'], [null, '呵～\n別忌妒我啊！'], [null, '我可是正正當當\n的賺錢喔！'], [null, '嗯～\n聚沙成塔！'], [null, '我的心臟病\n要發作了～'], [null, '我會把它\n賺回來的！！'], [null, '真捨不得！'], [null, '該你的\n還是會給你的！'], [null, '賺到了！'], [null, '能省則省。'], [null, '大家別打\n這棟房子\n的主意喔！'], [null, '可別眼紅哪～'], [null, '羨慕吧！！'], [null, '我怎麼會\n栽在你手上？'], [null, '還剩幾天？'], [null, '我要特別看護！'], [null, '呼嚕呼嚕～'], [null, '我背不動你！！'], [null, '累贅終於走了～'], [null, '我的付出\n終於得到回報！'], [null, '這怎麼可能？！'], [null, '我要東山再起！'],
+  ],
+  [
+    [null, '大吉大利！'], [null, '也該輪到我了！'], [null, '太感激了！'], [null, '天亡我也～'], [null, '面對現實吧～'], [null, '為什麼\n要這樣對我？'], [null, '錢我多的是！'], [null, '謝謝～'], [null, '聊勝於無！'], [null, '哇！囊空如洗～'], [null, '我已經\n忍無可忍了！'], [null, '別跟\n鐵公雞要錢！'], [null, '拔一毛以利\n天下不為也！'], [null, '真是對不起！'], [null, '省起來\n當老婆本！'], [null, '值得慶祝！'], [null, '土地\n是多多益善！'], [null, '房子\n沒人會嫌多～'], [null, '君子報仇\n三年不晚！'], [null, '放我自由～'], [null, '男兒有淚\n不輕彈～'], [null, 'zzZZZ\nΖΖΖΖ'], [null, '去找別人！！'], [null, '厄運終於\n離我遠去！'], [null, '努力是有\n代價的！'], [null, '富貴如浮雲～'], [null, '百折不撓，\n堅毅必勝！'],
+  ],
+  [
+    [null, '今夜做夢\n也會笑～'], [null, '我是幸運女神！'], [null, '不賴嘛～'], [null, '天啊～'], [null, '讓我死了吧！'], [null, '我的媽媽呀！'], [null, '帥呆了！'], [null, '噱海了！'], [null, '賺翻了！'], [null, '豈有此理！'], [null, '不能打折嗎！！'], [null, '為什麼？'], [null, '撿回一條命！'], [null, '真走運！'], [null, '好險～'], [null, '算你便宜一點，\n快來吧！'], [null, '哈哈哈！\n勝利在望！'], [null, '不怕死的\n就過來！'], [null, '老娘跟你沒完！'], [null, '放我出去！！！'], [null, '唉！真倒霉'], [null, 'zzZZZZ\nＺＺＺ'], [null, '難道是\n我太有魅力？'], [null, '離我遠一點！'], [null, '來賓請掌聲鼓勵！'], [null, '哇～我要過\n少奶奶的生活！'], [null, '我錢夫人不會\n就這麼放棄的！'],
+  ],
+  [
+    [null, '福氣啦！'], [null, '歹勢啦！'], [null, '真好運！'], [null, '捺會按呢？？'], [null, '有影嘸？！'], [null, '嘸蝦米！'], [null, '貪財！貪財！'], [null, '嘸魚蝦也好！'], [null, '加減賺！'], [null, '我苦！'], [null, '真衰～'], [null, '哇～真歹命！'], [null, '天公伯保佑！'], [null, '憨人有憨福！'], [null, '好哩家在！'], [null, '大家有閒\n來坐喔！'], [null, '來泡茶啦！'], [null, '樓仔厝起歸排！'], [null, '你家開黑店啊？'], [null, '冤枉啊！'], [null, '唉喲喂呀～'], [null, '鼾鼾～'], [null, '啊！悽慘落魄～'], [null, '早就好走啊～'], [null, '天公疼憨人！'], [null, '火燒罟寮\n嘸魚網～'], [null, '愛拼才會贏！'],
+  ],
+  [
+    [null, '福星高照！'], [null, '天降鴻福！！'], [null, '得意的一天！'], [null, '飛來橫禍！'], [null, '無妄之災！'], [null, '真是不幸～'], [null, '人無橫財不富！'], [null, '多多益善！'], [null, '塞牙縫都不夠！'], [null, '搶錢啊？！'], [null, '哼！這點錢\n也要跟我拿～'], [null, '算本公主賞你的'], [null, '本公主\n就是不想付，\n怎樣？'], [null, '不付\n也是應該的。'], [null, '諒你也不敢\n跟本公主收錢！'], [null, '哈！不要命的\n就來啊！'], [null, '快來這裡玩玩！'], [null, '你們有得瞧囉！'], [null, '本公主跟你有\n深仇大恨嗎？'], [null, '還不放我出去！'], [null, '我要住\n頭等病房！！！'], [null, '我不睏～'], [null, '別弄髒\n我的衣服！！'], [null, '終於肯走了！'], [null, '你們都不是\n對手！！'], [null, '一定有誰\n作弊啦！'], [null, '本公主\n決不放棄！'],
+  ],
+  [
+    [null, '萬歲！\n中大獎了！'], [null, 'Lucky！\n運氣不錯！'], [null, '最近\n運氣不錯嘛！'], [null, '可恨，混帳烏龜\n王八蛋！'], [null, '為…為什麼？'], [null, '嘖，有夠倒楣…'], [null, '哈哈哈，\n真是幸運！'], [null, '喔，進帳了！'], [null, '不錯不錯，\n總比沒有好…'], [null, '啊啊啊…\n世事無常…'], [null, '嘖，這麼貴呀！'], [null, '小意思，\n小意思！'], [null, '哈哈哈，\n很羨慕吧！'], [null, '哈哈，幸運！'], [null, '哼，\n這剛剛好而已！'], [null, '喔喔，\n我真了不起！'], [null, '呵呵呵，\n我還滿行的嘛！'], [null, '呼呼呼，\n誰會來呢，\n真令人期待！'], [null, '你．給．我．\n記·著！'], [null, '放我出去！\n我是無辜的！'], [null, '嗨，漂亮的護士\n妹妹在哪兒？'], [null, 'ZZZ…'], [null, '為什麼是我？'], [null, '呼…\n終於走掉了！'], [null, '呵呵呵，\n功成名就啦！'], [null, '可恨…\n最近有夠背！'], [null, '畜生，\n我偏不信邪！'],
+  ],
+  [
+    [null, '可喜可賀！'], [null, '好幸福喔！'], [null, '嗯～我很滿意！'], [null, '真淒慘～'], [null, '不跟你好了！！'], [null, '好倒楣喔～'], [null, '我是小富婆～'], [null, '哇！賺到了'], [null, '怎麼\n不多給一點？'], [null, '太誇張了！'], [null, '賺的都不夠賠！'], [null, '唉！\n錢乃身外之物～'], [null, '別想我會付錢！'], [null, '下次再給你～'], [null, '省起來！'], [null, '萬丈高樓\n平地起！！'], [null, '總算買到了！'], [null, '好棒喔！'], [null, '為什麼\n要欺負我？'], [null, '放我出去！'], [null, '我要回家～'], [null, 'ΖΖΖΖΖ'], [null, '魔鬼！！'], [null, '最好\n離我遠遠的～'], [null, '回家啦～'], [null, '嗚～\n一毛都不剩～'], [null, '讓我\n再玩一次吧！'],
+  ],
+  [
+    [null, '漂亮！'], [null, '酷斃了！'], [null, '哈哈！\n今天真高興！'], [null, '不可能！！'], [null, '走霉運！'], [null, '太失敗了！'], [null, '大豐收！！'], [null, '哈！意外之財'], [null, '才這點錢啊？'], [null, '為什麼會是我？'], [null, '有沒有搞錯啊？'], [null, '不要緊～'], [null, '捏了一把冷汗～'], [null, '太痛快了！'], [null, '不是我\n不給你喔！'], [null, '真有成就感！！'], [null, '你也來試試看嘛'], [null, '歡迎大家來玩！'], [null, '為什麼\n要跟烏咪作對？'], [null, '烏咪沒有犯罪！'], [null, '醫生在哪裡？'], [null, 'zzzzzz\nZZZZZZ'], [null, '提心弔膽～～'], [null, '終於可以\n鬆一口氣了～'], [null, '你們都不是\n烏咪的對手啦！'], [null, '你們爭氣點\n行不行？'], [null, '再接再勵！'],
+  ],
+  [
+    [null, '我是不是\n在作夢啊？'], [null, '太高興了！'], [null, '好的開始\n是成功的一半！'], [null, '完蛋了！'], [null, '慘了～'], [null, '人家不管啦！'], [null, '哈！財源滾滾。'], [null, '好樣的！'], [null, '嘻～積少成多！'], [null, '人家付不起啦！'], [null, '唉～花錢消災！'], [null, '小意思～'], [null, '嚇人家一跳！！'], [null, '真是萬幸！'], [null, '還好沒事～'], [null, '人家真能幹！'], [null, '有空來坐坐吧！'], [null, '太棒了！'], [null, '錢都被你\n拿光了！'], [null, '人家是無辜的～'], [null, '嗚嗚嗚～～～'], [null, '嗯～'], [null, '不要找我～'], [null, '呼～總算走了！'], [null, '呵呵呵～\n承讓了！'], [null, '嗚～人家一毛\n也不剩了。'], [null, '我不甘心！\n我要捲土重來！'],
+  ],
+  [
+    [null, '帥呆了！'], [null, '太妙了！'], [null, '喔！耶！'], [null, '媽媽咪呀！'], [null, '喔！我的天啊！'], [null, '我不相信！'], [null, '我是有錢人！'], [null, '我賺大錢了！'], [null, '不錯嘛！'], [null, '太貴了！'], [null, '我破產了！'], [null, '沒什麼大不了！'], [null, '幸運！'], [null, '感謝上帝！'], [null, '太美了！'], [null, '好極了！'], [null, '太棒了！'], [null, '萬歲！'], [null, '你不能\n這樣對我！'], [null, '讓我出去！'], [null, '我沒有生病！'], [null, '我不累～'], [null, '喔！不！'], [null, '感謝老天！'], [null, '我是贏家！'], [null, '不公平！'], [null, '讓我再玩一次！'],
+  ],
+  [
+    [4, '@04'], [16, '@16'], [1, '@01'], [3, '@03'], [10, '@10'], [13, '@13'], [17, '@17'], [21, '@21'], [15, '@15'], [3, '@03'], [10, '@10'], [13, '@13'], [5, '@05'], [2, '@02'], [7, '@07'], [4, '@04'], [16, '@16'], [1, '@01'], [8, '@08'], [10, '@10'], [17, '@17'], [18, '@18'], [3, '@03'], [4, '@04'], [16, '@16'], [3, '@03'], [20, '@20'],
+  ],
+];
+/**
+ * 金貝貝那组**表情图**的资源号 —— `Data.mkf` **#0x207（519）**。
+ *
+ * @source `rich4_load_map.asm:578-584`：`read_mkf(_rich4_data_mkf, 0x207)`
+ *   → `[0x48bad4]`；而 `rich4.asm:23646-23660` 那一段就是解析 `@DD` 的地方：
+ *
+ * ```asm
+ * 0044f088  xor esi, esi
+ * 0044f08a  lea edx, [ebx + esi]      ; ebx = 串首；有 '#' 前缀时 esi = 5
+ *           cmp byte [edx], 0x40       ; '@' ?
+ *           jne 普通文字
+ *           mov al, [edx+1] / sub eax, 0x30   ; 十位
+ *           lea ecx, [eax-1] / shl eax,2 / add eax,ecx / add eax,eax
+ *           mov dl, [edx+2] / sub edx, 0x30   ; 个位
+ *           add eax, edx                       ; eax = 10×十位 + 个位 − 10
+ *           push 0x82 / push 0xf0              ; ★ 落点 (0xf0, 0x82)
+ *           lea edx, [eax-1]
+ *           mov eax, edx / shl eax,2 / sub eax,edx   ; ★ ×3
+ * ```
+ *
+ * ⇒ **图号 = `3×十位 + 个位 − 1`**（机器码那两步是 `3 × (eax − 1)`，
+ *   其中 `eax` 已是「按十位分组的 10 步」值）：
+ *   code 01→图 0、02→图 1、…、09→图 8、10→图 2、…、19→图 10、20→图 5、21→图 6。
+ *   实测该资源共 **21 张**（`assets-clean/Data/0519_000..020.png`），
+ *   code 01..21 映射到 0..20 —— **恰好一一对应、不重不漏**。
+ */
+export const SPEECH_EMOJI_RESOURCE = 0x207;
+
+/** `Data.mkf` #0x207 的**图数** —— 实测 `assets-clean/Data/0519_000..020.png` 共 21 张 */
+export const SPEECH_EMOJI_IMAGE_COUNT = 21;
+
+/** 表情落的屏幕坐标 @source 上面那两条 `push 0x82 / push 0xf0`（x 在前、y 在后）*/
+export const SPEECH_EMOJI_AT = { x: 0xf0, y: 0x82 } as const;
+
+/**
+ * 表情码 → `Data.mkf` #0x207 的图号。
+ *
+ * @source 上面那段机器码：`3×十位 + 个位 − 1`。**不要**按 `code` 直接乘 3 ——
+ *   `+DD` 的两位数字是「十位 / 个位」，而图号算式把十位当作 10 步一组的组号。
+ */
+export function speechEmojiImage(code: number): number {
+  const tens = Math.trunc(code / 10);
+  const ones = code % 10;
+  return 3 * tens + ones - 1;
+}
+
+/** 某个角色某个槽位的台词；越界抛（与 `speechIndex` 同一套约定）*/
+export function speechLine(character: number, event: number): SpeechLine {
+  if (character < 0 || character >= SPEECH_CHARACTER_COUNT) {
+    throw new RangeError(`角色号越界：${character}`);
+  }
+  if (event < 0 || event >= SPEECH_EVENTS_PER_CHARACTER) {
+    throw new RangeError(`事件号越界：${event}`);
+  }
+  const row = SPEECH_LINES[character];
+  const line = row?.[event];
+  if (line === undefined) throw new RangeError(`台词表缺项：${character}/${event}`);
+  return line;
+}
+
+/**
  * `(角色, 事件) → Speaking.mkf 资源号`。
  *
  * 公式 `1050 + 27×角色 + 事件` @source 表项串里的 `#NNNN`：

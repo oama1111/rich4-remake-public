@@ -163,6 +163,19 @@ export interface SpecialActor {
   /** 龜行天数 @source +15。轮到他时 `!= 0` → 只走一步（0x0040de34）；递减同上（0x0041cf3d..） */
   singleStep: number;
   /**
+   * 冬眠天数 @source 替身记录 `+12`（绝对 `0x498df4`）。
+   *
+   * ★ 2026-09-16 补：这个字段先前**漏了**，于是 `rich4_card_dongmianka.asm:86-92`
+   *   那一支（`cmp byte [eax + 0x498df2], 0 / jne 跳过` /
+   *   `mov byte [eax + 0x498df5], ch(0)` / `mov byte [eax + 0x498df4], dh(5)`）
+   *   无处可落，而夢遊卡那一支拿它当闸门
+   *   （`rich4_card_mengyouka.asm:254` `cmp byte [ebx + 0x498df4], 0 / jne 跳过`
+   *   —— **已经冬眠的替身不再被夢遊卡改**）也就没法实现。
+   *
+   * ⚠️ 可省略 = 0（既有存档与测试替身不必补字段）。
+   */
+  hibernating?: number;
+  /**
    * 夢遊天数 @source 替身记录 `+13`（绝对 `0x498df5`）。
    *
    * 夢遊卡命中「四大惡人」时写 5（`rich4_card_mengyouka.asm:257`

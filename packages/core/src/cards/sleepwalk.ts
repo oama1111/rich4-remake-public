@@ -14,6 +14,7 @@ import { isAlive } from '../state/types.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { PASSIVE_CARDS, playerHasCard } from './passive.ts';
 import { TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
+import type { SpecialActor } from '../rules/special-actors.ts';
 
 /**
  * 梦游天数：对自己 4 天，对别人 5 天。
@@ -33,6 +34,31 @@ export const SLEEPWALK_DAYS_OTHER = 5;
 
 /** 冬眠天数累计的增量 @source `add byte [target + 0x42], 5` */
 export const SLEEPWALK_WINTER_DAYS = 5;
+
+/**
+ * 夢遊卡命中**替身**（四大惡人 / 機器娃娃）时写进记录 `+13` 的天数。
+ *
+ * @source `rich4_card_mengyouka.asm:252-257`：
+ * ```asm
+ * 0044449b  cmp    ebx, 4                    ; ebx = CTZ(选择位集) = 实例下标
+ *           jl     loc_004444b3              ; < 4 → 是玩家，走上面那一支
+ *           shl    ebx, 4                    ; ×16 = 替身记录步长
+ *           cmp    byte [ebx + 0x498df4], 0  ; +12 非 0（已冬眠）→ 不动
+ *           jne    loc_004444b3
+ *           mov    byte [ebx + 0x498df5], 5  ; ★ +13 = 5
+ * ```
+ *
+ * ★ **0x44449b 之前 `esi` 已经过一次 `_count_trailing_zero_u8`**
+ *   （`mov ebx, eax` @0x444295 附近的 `push esi / call 0x40d293 / mov ebp, eax /
+ *   mov ebx, eax`），所以 `ebx` 是**下标**而不是位掩码 —— 与陷害卡
+ *   （`rich4_card_xianhaika.asm:62-66` 才做 CTZ）不同，那张卡是拿到下标之后
+ *   又算了一次。故这一支**可以直接照抄**：下标 4..11 里 ≥ 4 的都写自己的记录。
+ *
+ * ⚠️ 另外：`ebx` 只用**低字节**参与 `shl ebx, 4` 的地址算术（0..11 区间内不会溢出），
+ *   且 `+10` 那个「已在監獄/醫院」的闸门只对**玩家**那一支有
+ *   （见 `rich4_card_dongmianka.asm`），这一支没有。
+ */
+export const SLEEPWALK_ACTOR_DAYS = 5;
 
 /**
  * 交通方式与对应道具编号的映射。
@@ -193,4 +219,32 @@ export function wakeFromSleepwalk(p: Player): Player {
     savedNdices: 0,
     blocking: { ...p.blocking, sleepWalking: 0 },
   };
+}
+
+/**
+ * 夢遊卡命中**替身**（四大惡人 / 機器娃娃）—— 写 `+13` 的梦游天数。
+ *
+ * @source 见 `SLEEPWALK_ACTOR_DAYS` 那段机器码（`rich4_card_mengyouka.asm:252-257`）。
+ *
+ * ★ 与玩家那一支的两处不同：
+ *   1. 天数**恒为 5**（玩家是 4/5 按「是否对自己」分）；
+ *   2. 替身的交通工具不在记录里（`traffic_method` 是**玩家**字段），
+ *      故没有「退还成道具 / 存 `+0x66`」那一套。
+ *
+ * ★ `+12`（冬眠）非 0 时**不动** —— 原版那条 `jne` 走的就是这个意思，
+ *   本引擎对应 `SpecialActor.hibernating`。冬眠卡与夢遊卡都写同一族计数，
+ *   原版让先到的那个说了算。
+ *
+ * ⚠️ 原版在这一支上**照样扣卡**（`_rich4_consume_card` 在 `cmp ebx,4` 之前，
+ *   @0x444213）—— 但本引擎的统一入口有一条「只在效果真正生效时才消耗」的
+ *   硬规矩（见 `registry.ts` 头注释第 5 条），故返回 `applied: false`，
+ *   由调用方按 `noEffect` 处理。**这是有意偏离**，登记在
+ *   `docs/deviations/T-047.md` 的 D-T047-5。
+ */
+export function applySleepwalkCardToActor(actor: SpecialActor): {
+  actor: SpecialActor;
+  applied: boolean;
+} {
+  if ((actor.hibernating ?? 0) !== 0) return { actor, applied: false };
+  return { actor: { ...actor, sleepwalkDays: SLEEPWALK_ACTOR_DAYS }, applied: true };
 }

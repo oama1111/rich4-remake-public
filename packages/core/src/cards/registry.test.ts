@@ -879,4 +879,55 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     expect(r.ok).toBe(true);
     expect(r.actors[4]!.direction).toBe(7);
   });
+
+  // ── ★ 2026-09-16 补：夢遊卡(16) 的替身那一支 ──────────────────
+  // @source `rich4_card_mengyouka.asm:252-257`：
+  //   `cmp ebx,4 / jl 跳过` → `cmp byte [ebx*16 + 0x498df4],0 / jne 跳过`
+  //   → `mov byte [ebx*16 + 0x498df5], 5`
+  // ⚠️ 先前 registry 里写的是「索引空间没核清、故不接」—— 那条判据是错的
+  //   （`ebx` 到那一步已经是 CTZ 之后的下标），订正记录见 D-T047-5。
+  for (const actor of [4, 5, 6, 7, 8]) {
+    it(`夢遊卡(16)：actor ${actor} 的 sleepwalkDays 写成 5`, () => {
+      const ctx = actorCtx(16, actor - 4);
+      const r = useCard(ctx, 16, { kind: 'actor', actor });
+      expect(r.ok).toBe(true);
+      expect(r.actors[actor - 4]!.sleepwalkDays).toBe(5);
+      // 替身没有交通工具那一套：玩家结构一个字段都不动
+      expect(r.players.map((p) => p.blocking.sleepWalking)).toEqual([0, 0]);
+      expect(r.players.map((p) => p.ndices)).toEqual([1, 1]);
+      expect(r.players[0]!.cards).toEqual([]); // 生效扣卡
+    });
+  }
+
+  it('夢遊卡(16) 对替身：**已经冬眠**的替身不动，也不扣卡（原版那条 jne）', () => {
+    const actors = initialSpecialActors().map((a, i) =>
+      i === 0 ? { ...a, place: 0 as const, nodeId: 12, hibernating: 3 } : a,
+    );
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [16] }), makePlayer({ index: 1 })],
+      actors,
+    });
+    const r = useCard(ctx, 16, { kind: 'actor', actor: 4 });
+    // ⚠️ 原版照样扣卡（`_rich4_consume_card` 在那一支之前），本引擎按
+    //   「没生效就不扣卡」的统一规矩处理 —— 有意偏离，见 D-T047-5。
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('noEffect');
+    expect(r.actors[0]!.sleepwalkDays).toBeUndefined();
+    expect(r.players[0]!.cards).toEqual([16]);
+  });
+
+  it('夢遊卡(16) 对不在棋盘上的替身 → noEffect，不扣卡', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [16] }), makePlayer({ index: 1 })],
+    });
+    // 初始：小偷(4)在監獄、機器娃娃(8)未出场
+    expect(useCard(ctx, 16, { kind: 'actor', actor: 4 }).error).toBe('noEffect');
+    expect(useCard(ctx, 16, { kind: 'actor', actor: 8 }).error).toBe('noEffect');
+    expect(ctx.players[0]!.cards).toEqual([16]);
+  });
+
+  it('夢遊卡(16) 仍然不接受「自己」这个玩家目标（0xe0c0710 不含自己）', () => {
+    const ctx = makeCtx({ players: [makePlayer({ index: 0, cards: [16] }), makePlayer({ index: 1 })] });
+    expect(useCard(ctx, 16, { kind: 'player', index: 0 }).error).toBe('cannotTargetSelf');
+  });
 });

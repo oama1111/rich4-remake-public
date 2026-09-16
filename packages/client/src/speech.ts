@@ -49,7 +49,13 @@
  */
 
 import { isAlive, WHO_PLAYS_HUMAN, WHO_PLAYS_MASK, type GameState, type Player } from '@rich4/core';
-import { SPEECH_CHARACTER_COUNT, SPEECH_EVENTS_PER_CHARACTER, speechIndex } from '@rich4/data';
+import {
+  CHARACTERS,
+  SPEECH_CHARACTER_COUNT,
+  SPEECH_EVENTS_PER_CHARACTER,
+  speechIndex,
+} from '@rich4/data';
+import { speechBubbleOf, type SpeechBubble } from './speech-bubble.ts';
 
 // ============================================================
 //  对外形状
@@ -592,4 +598,34 @@ export function speechResourcesFor(state: GameState, events: readonly SayEvent[]
     if (res !== null) out.push(res);
   }
   return out;
+}
+
+/**
+ * 一次跃迁要说**哪些话**（排好版的段落，供屏幕显示）。
+ *
+ * ★ 2026-09-16 加：此前这里只出**语音号**，玩家听得到声音但屏幕上一个字都没有 ——
+ *   而原版 `_rich4_player_say`（VA 0x0044ef41）是**先画白字字幕**
+ *   （`_rich4_draw_text(串, 0xc8, 0x28, 5)` = 落点 (200, 130)）**再**放语音的。
+ *   台词文本现在由 `@rich4/data` 的 `SPEECH_LINES`（12×27 全量）提供，
+ *   金貝貝（角色 11）那一列没有文本、只有 `Data.mkf #0x207` 的表情图。
+ *
+ * 纯函数：不读 DOM、不碰音频、不动 PRNG（C-DET-1/2/4）。
+ */
+export function speechBubblesFor(
+  state: GameState,
+  events: readonly SayEvent[],
+): SpeechBubble[] {
+  const out: SpeechBubble[] = [];
+  for (const ev of events) {
+    const p = state.players[ev.player];
+    if (p === undefined) continue;
+    const bubble = speechBubbleOf(ev, p.character, characterName(p.character));
+    if (bubble !== null) out.push(bubble);
+  }
+  return out;
+}
+
+/** 角色号的显示名；越界给一个看得出来的占位（与 `main.ts` 里那几处同一套约定）*/
+export function characterName(character: number): string {
+  return CHARACTERS[character]?.name ?? `角色${character}`;
 }
