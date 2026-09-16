@@ -4473,3 +4473,14 @@ stopEffect(id: number): void;
 
 ★ `maxWalksPerAction === 1` 就是 **D-T047-5 串行化**在活画面里的证据 ——
 改之前一轮里最多会一次交出 4 条 `lastNpcWalks`（四个惡人并排滑）。
+
+★ **再跑一次**（同一天又改了 `UiScreen.key` 出口、`RICH4.CFG` 开机读、
+贴边推镜头之后）：
+
+```json
+{"humanPath":true,"soakDispatches":0,"goClicks":22,"goMisses":0,
+ "humanStalls":0,"turns":13,"ticks":717,"errors":0}
+```
+
+（`ui-screen.ts` 加可选出参、`host.ts` 加 `ConfigStore`、`config-file.ts` 是新文件
+—— 都对既有调用点零影响，长跑结果与上一轮同型。）
