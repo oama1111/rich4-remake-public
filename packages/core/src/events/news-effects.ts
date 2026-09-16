@@ -18,6 +18,8 @@ import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { confine } from '../rules/confinement.ts';
 import { isAlive } from '../state/types.ts';
 import { blessingMultiplier } from '../rules/blessing.ts';
+import { bankDividend, incomeTax, propertyTax, stockTax } from '../rules/percentage.ts';
+import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
 
 export interface NewsEffectResult {
   players: Player[];
@@ -39,6 +41,15 @@ export interface NewsEffectContext {
    */
   affected: readonly number[];
   priceIndex: number;
+  /**
+   * 地价税（新闻 12）要的两张表 —— 归属与等级取**运行时**（`landOwner`/`landLevel`
+   * 已经并进这两张表的 `owner`/`level`，见 `allEffectiveLands`）。
+   */
+  lands?: readonly LandInfo[];
+  facilities?: readonly FacilityInfo[];
+  /** 證交稅（新闻 13）要的持股与现价 */
+  holdings?: readonly (readonly number[])[];
+  prices?: readonly number[];
   pool?: number;
   occupancy?: readonly number[];
   /** 覆盖天数；通常取自事件表的 literal */
@@ -48,25 +59,60 @@ export interface NewsEffectContext {
 }
 
 /**
+ * 四条百分比事件的「每人多少钱」。
+ *
+ * | 事件 | 基数 | 税率 | 方向 | @source |
+ * |---|---|---|---|---|
+ * | 11 所得稅 | 现金 `+0x1c` | 5% | 缴公库 | `0x00449cce` |
+ * | 12 地價稅 | 名下地产原值 | 5%×物價 | 缴公库 | `0x00449ede` |
+ * | 13 證交稅 | 持股市值 | 5%×物價 | 缴公库 | `0x0044a0e5` |
+ * | 23 儲金紅利 | 存款 `+0x20` | 10% | **发钱**（银行出）| `0x0044af3c` |
+ *
+ * ★ 11 与 23 不乘物价指数（`0x4990e8` 在这两支里一次都没出现），
+ *   12/13 是「先 trunc 再乘指数」——规矩都在 `rules/percentage.ts` 里。
+ */
+export const PERCENT_NEWS: ReadonlyMap<
+  number,
+  (p: Player, who: number, ctx: NewsEffectContext) => number
+> = new Map([
+  [11, (p: Player) => incomeTax(p)],
+  [
+    12,
+    (p: Player, who: number, ctx: NewsEffectContext) =>
+      propertyTax(who, ctx.lands ?? [], ctx.facilities ?? [], ctx.priceIndex),
+  ],
+  [
+    13,
+    (p: Player, who: number, ctx: NewsEffectContext) =>
+      stockTax(ctx.holdings?.[who] ?? [], ctx.prices ?? [], ctx.priceIndex),
+  ],
+  [23, (p: Player) => bankDividend(p)],
+]);
+
+/**
  * 本模块**已能施加效果**的新聞事件编号。
  *
- * ⚠️ 比「有方向的事件」要少。新聞里的付款类**全是百分比**：
- * 11/12/13「所有人繳交所得稅／地價稅／證交稅５％」、
- * 23「銀行加發１０％儲金紅利」——它们的 `factor` 为 null，
- * 金额要由玩家的收入／地产／持股现算，属于另一套机制，尚未实现。
- *
- * 实际能算的是：4（送医院）、8/9/10（带固定 factor 的奖励）、29（送监狱）。
+ * 三类：
+ * 1. 固定金额（`factor != null`）的 `pay`/`give`；
+ * 2. 坐牢 / 住院；
+ * 3. ★ **百分比类**（2026-09-16 接上）：11 所得稅 5%、12 地價稅 5%、
+ *    13 證交稅 5%、23 儲金紅利 10% —— 金额逐人现算，见 `PERCENT_NEWS`
+ *    与 `rules/percentage.ts`。这四条先前是「规则译好了但没人调用」，
+ *    抽到只画文案、一分钱不动。
  *
  * ⚠️ 其中 4 与 29 的文案里**没有 `%d`**（「外星人攻打地球」「坐牢５天」——
  * 后者的 5 是写死的全角字），故 `literal` 为 null，天数必须由调用方给出；
  * 不给就报 `unimplemented`，不会默默关 0 天。
  */
-export const IMPLEMENTED_NEWS_IDS: readonly number[] = NEWS_EVENTS.filter(
-  (e) =>
-    e.effects.includes('prison') ||
-    e.effects.includes('hospital') ||
-    (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
-).map((e) => e.id);
+export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
+  ...NEWS_EVENTS.filter(
+    (e) =>
+      e.effects.includes('prison') ||
+      e.effects.includes('hospital') ||
+      (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
+  ).map((e) => e.id),
+  ...PERCENT_NEWS.keys(),
+];
 
 /** 銀行擠兌的停放天数 @source 0x0044aeb6 `mov byte/word [player+0x3c], 15`（写死立即数） */
 export const LOAN_FREEZE_DAYS = 15;
@@ -114,6 +160,41 @@ export function applyNewsEffect(
     const days = LOAN_FREEZE_DAYS;
     const next = players.map((p) => (isAlive(p) ? { ...p, bankFreezeDays: days } : p));
     return { ...base, players: next, amount: days };
+  }
+
+  // ── 百分比类（11/12/13/23）────────────────────────────────────
+  // ★ 四条事件的 `factor` 都是 null，金额要**逐人现算**（见 rules/percentage.ts）：
+  // ```asm
+  // 00449cce  for (i = 0; i < num_players; i++) {
+  //             if (player[i].who_plays == 0) continue      ; 出局跳过
+  //             [0x48c59c + i*4] = trunc(基数 × 税率)        ; ★ 先算好存起来
+  //             … 画那一行「%s 繳交 %d 元」…
+  //           }
+  // 00449da1  for (i = 0; i < num_players; i++) {          ; ★ 第二趟才真收钱
+  //             if ([0x46caf8] != 0) break                  ; 终局码
+  //             pay_money(player[i], -1, [0x48c59c + i*4], 0)
+  //           }
+  // ```
+  // 地價稅 / 證交稅 / 儲金紅利三支同构，只有基数与税率不同。
+  const perPlayer = PERCENT_NEWS.get(eventId);
+  if (perPlayer !== undefined) {
+    for (const who of ctx.affected) {
+      const p = players[who];
+      if (p === undefined || !isAlive(p)) continue;
+      const each = perPlayer(p, who, ctx);
+      if (each <= 0) continue;
+      if (entry.effects.includes('pay')) {
+        const r = transferMoney(players, [], pool, who, PARTY_POOL, each, 0);
+        players = r.players;
+        pool = r.pool;
+        total += r.paid;
+        bankrupted = bankrupted || r.bankrupted;
+      } else {
+        players = receiveMoney(players, who, each);
+        total += each;
+      }
+    }
+    return { players, pool, occupancy, amount: total, bankrupted, unimplemented: false };
   }
 
   for (const who of ctx.affected) {

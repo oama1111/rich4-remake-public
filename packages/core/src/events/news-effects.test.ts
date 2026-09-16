@@ -52,17 +52,81 @@ describe('方向与命運一致', () => {
     expect(r.pool).toBe(500);
   });
 
-  it('★ 付款类新聞全是百分比，暂不能算 —— 标记未实现而非算错', () => {
-    for (const id of [11, 12, 13]) {
-      const r = applyNewsEffect(id, ctx());
-      expect(r.unimplemented, `news[${id}]`).toBe(true);
-      expect(r.players[0]!.cash).toBe(100_000); // 状态不动
-    }
+  it('★★ 所得稅（11）= 现金 5%，逐人算、缴公库', () => {
+    const r = applyNewsEffect(11, ctx({ affected: [0, 1] }));
+    // 每人 100000 × 5% = 5000
+    expect(r.players[0]!.cash).toBe(95_000);
+    expect(r.players[1]!.cash).toBe(95_000);
+    expect(r.pool).toBe(10_000);
+    expect(r.amount).toBe(10_000);
+    expect(r.unimplemented).toBe(false);
   });
 
-  it('★ news[23] 儲金紅利也是百分比', () => {
+  it('★★ 地價稅（12）= 地产原值 5% × 物價指數（trunc 在前）', () => {
+    const r = applyNewsEffect(
+      12,
+      ctx({
+        affected: [0],
+        priceIndex: 3,
+        lands: [
+          { id: 0, owner: 1, landPrice: 20, housePrice: 10, level: 0 } as never,
+          { id: 1, owner: 2, landPrice: 999, housePrice: 0, level: 0 } as never,
+        ],
+        facilities: [],
+      }),
+    );
+    // 原值 20 → trunc(20×0.05) = 1 → ×3 = 3（不是 trunc(20×3×0.05) = 3 ——两者同值，
+    // 故再取一组能区分的：原值 30、指数 3 ⇒ 原版 1×3 = 3，旧式 trunc(4.5) = 4）
+    expect(r.amount).toBe(3);
+    const r2 = applyNewsEffect(
+      12,
+      ctx({
+        affected: [0],
+        priceIndex: 3,
+        lands: [{ id: 0, owner: 1, landPrice: 30, housePrice: 0, level: 0 } as never],
+        facilities: [],
+      }),
+    );
+    expect(r2.amount).toBe(3);
+  });
+
+  it('★★ 證交稅（13）= 持股市值 5% × 物價指數', () => {
+    const r = applyNewsEffect(
+      13,
+      ctx({
+        affected: [0],
+        priceIndex: 1,
+        holdings: [[100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+        prices: [40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      }),
+    );
+    // 100 股 × 40 元 = 4000 → 5% = 200
+    expect(r.amount).toBe(200);
+  });
+
+  it('★★ 儲金紅利（23）= 存款 10%，是**发钱**（公库不动）', () => {
     expect(newsEvent(23)!.factor).toBeNull();
-    expect(applyNewsEffect(23, ctx()).unimplemented).toBe(true);
+    const r = applyNewsEffect(
+      23,
+      ctx({
+        pool: 777,
+        players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: 100_000, moneyInBank: 100_000 })),
+      }),
+    );
+    // 存款 100000 → 红 10000（直接进现金），公库一分不动
+    expect(r.players[0]!.cash).toBe(110_000);
+    expect(r.pool).toBe(777);
+    expect(r.unimplemented).toBe(false);
+  });
+
+  it('★ 出局的玩家不收不缴（原版 `who_plays == 0` 跳过）', () => {
+    const dead = { ...ctx().players[1]!, whoPlays: 0 };
+    const r = applyNewsEffect(
+      11,
+      ctx({ affected: [0, 1], players: [ctx().players[0]!, dead, ctx().players[2]!, ctx().players[3]!] }),
+    );
+    expect(r.players[1]!.cash).toBe(dead.cash);
+    expect(r.amount).toBe(5000);
   });
 
   it('news[29] 走监狱', () => {
@@ -83,8 +147,8 @@ describe('未实现', () => {
     expect(applyNewsEffect(99, ctx()).unimplemented).toBe(true);
   });
 
-  it('★ 已实现的是 4(医院) / 8,9,10(固定金额) / 29(监狱)', () => {
-    expect(IMPLEMENTED_NEWS_IDS).toEqual([4, 8, 9, 10, 29]);
+  it('★ 已实现的是 4(医院) / 8,9,10(固定金额) / 29(监狱) / 11,12,13,23(百分比)', () => {
+    expect(IMPLEMENTED_NEWS_IDS).toEqual([4, 8, 9, 10, 29, 11, 12, 13, 23]);
   });
 
   it('★ news[4] 与 29 的文案里没有 %d，天数须由调用方给出', () => {

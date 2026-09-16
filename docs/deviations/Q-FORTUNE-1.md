@@ -1,4 +1,4 @@
-# Q-FORTUNE-1：命运事件的**神明加持**与四条「只写不生效」的事件
+# Q-FORTUNE-1：命运/新闻事件的**神明加持**与几条「规则译好了却没接线」的事件
 
 SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -115,6 +115,43 @@ case 8: case 9: return ctx.stockAmount.some((a) => a !== 0) ? yes() : no;
 ⇒ **这四条事件永远判为不可行**，牌堆直接跳过它们 —— 表现就是
 「命运牌堆里 0/1/8/9 从没出现过」。现在喂真数据：归属与等级取运行时状态
 （`state.landOwner` / `state.landLevel`，不是地图静态表），持股取 `state.holdings`。
+
+## ④ 同一天顺手发现的另一条：新聞的四条**百分比**事件也没接线
+
+`rules/percentage.ts` 把四条按比例算的事件逐条译好了（含 `trunc` 与物价指数的
+**先后顺序**、D-QNUM-2 的订正），但**全仓库只有它自己的单测在调它**：
+
+| 事件 | 基数 | 税率 | 方向 | @source |
+|---|---|---|---|---|
+| 11 所有人繳交所得稅５％ | 现金 `+0x1c` | 5%（不乘指数）| 缴公库 | `0x00449cce` |
+| 12 所有人繳交地價稅５％ | 名下地产原值 | `trunc(原值×5%) × 物價` | 缴公库 | `0x00449ede` |
+| 13 所有人繳交證交稅５％ | 持股市值 | 同上 | 缴公库 | `0x0044a0e5` |
+| 23 銀行加發１０％儲金紅利 | 存款 `+0x20` | 10%（不乘指数）| **发钱** | `0x0044af3c` |
+
+而 `applyNewsEffect` 对四条都走 `entry.factor === null → unimplemented` ——
+**抽到只画文案、一分钱不动**（`IMPLEMENTED_NEWS_IDS` 里也没有它们）。
+
+原版是**两趟循环**：
+
+```asm
+00449cce  for (i = 0; i < num_players; i++) {
+            if (player[i].who_plays == 0) continue    ; 出局跳过
+            [0x48c59c + i*4] = trunc(基数 × 税率)      ; 先算好、画那一行
+          }
+00449da1  for (i = 0; i < num_players; i++) {        ; ★ 第二趟才真收钱
+            if ([0x46caf8] != 0) break                ; 终局码
+            pay_money(player[i], -1, [0x48c59c + i*4], 0)
+          }
+```
+
+本引擎按同一口径接上：`news-effects.ts` 新增 `PERCENT_NEWS`（事件 → 每人金额的
+算法），`affected` 取**全部在场玩家**（`newsTargets` 新增 11/12/13/23 四条），
+`lands`/`facilities`/`holdings`/`prices` 由 reducer 喂真数据；
+出局者跳过、付不起走既有的 `transferMoney`（级联 + 破产）。
+
+**仍未做**：这四条原版是「先算好存进 `[0x48c59c + i*4]`、**第二趟**才收」——
+表现层要按这个顺序把「每人缴多少」逐行画出来（我们目前只在结算后才有一句文案）。
+属表现层，登记在此。
 
 ## 仍未做
 

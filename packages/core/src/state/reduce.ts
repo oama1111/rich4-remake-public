@@ -3096,12 +3096,18 @@ function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
   const withDeck: GameState = { ...state, newsDeck: draw.deck };
   if (draw.eventId < 0) return withDeck;
 
+  const facilities = allEffectiveFacilities(state, topo);
   const out = applyNewsEffect(draw.eventId, {
     players: withDeck.players,
-    affected: newsTargets(draw.eventId, withDeck, lands, allEffectiveFacilities(state, topo)),
+    affected: newsTargets(draw.eventId, withDeck, lands, facilities),
     priceIndex: withDeck.priceIndex,
     pool: withDeck.pool,
     occupancy: withDeck.prisonOccupancy,
+    // 百分比类（11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利）要的三样
+    lands,
+    facilities,
+    holdings: withDeck.holdings.map((row) => row.map((h) => h.amount)),
+    prices: withDeck.market.stocks.map((st) => st.price),
   });
 
   let applied: GameState = {
@@ -3165,6 +3171,14 @@ function newsTargets(
       for (const i of alive) if (countOwned(i) < countOwned(worst)) worst = i;
       return [worst];
     }
+    // ★ 「所有人」那一类：11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利。
+    //   原版这三支（与红利那一支）都是**两层循环扫全部玩家**，且跳过出局者
+    //   （`cmp byte [player+0x15], 0 / je`）—— 与 `alive` 同一个口径。
+    case 11:
+    case 12:
+    case 13:
+    case 23:
+      return alive;
     default:
       return [state.currentPlayer];
   }
