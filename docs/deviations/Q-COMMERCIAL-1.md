@@ -194,7 +194,7 @@ stopOnIBM:   [moving,2,32,null] [moving,1,33,null] [settling,0,34,null] [turnEnd
 |---|---|
 | `pending.max` 只有 1000 这一层是**窗口上限**，`reduce` 不硬拦 | 原版 `buy_stock`（0x428d2a）对「从企业买」这条路**一个检查都没有**（直接 `sub [ecx+0x30]` / `sub [ebx+0x496b84]`），兜住它的就是填数窗。本引擎保留三道物理闸（`>0`、`≤ available`、`× 單價 ≤ 現金`）当护栏，但**没有**把 1000 写进 reducer —— 否则电脑那条（0x41d839，无 1000 闸）会被误伤 |
 | 柜台那条的上限仍在**客户端** | 原版就是在 UI 窗口过程里算的（`loc_0042af30`），本引擎没有对应的 `pending`，故收进 `stock-screen.ts` 一个带 `@source` 的纯函数；若日后把股市屏也做成 `pending`，可再往 core 搬 |
-| `fcn_0041d1a9` 进门还有两道闸**没接** | `cmp byte [esi+0x37], 0 / jne 结束`（**梦游中**不问）与 `who_plays == 0`（出局）—— 前者本引擎理论上可达（梦游时路过自家/别家企業），本轮没做，登记在此 |
+| ~~`fcn_0041d1a9` 进门还有两道闸**没接**~~ | ✅ **2026-09-16 已接** —— 见本文末尾「★ 补：`fcn_0041d1a9` 进门那两道闸（本条残留项结案）」：`pendingForCommercial()` 里先判 `blocking.sleepWalking` 与 `whoPlays`，两条用例在 `commercial-landing.test.ts` |
 | 建設公司董事長那条仍会先挂 `chooseBuildTarget` | 与原版同序（加蓋完才回到 `0x41b067` 问認購），不在本卡范围 |
 | 「路过也弹框」若需求方仍能复现 | 按 §1 的配方录一份 `[phase, stepsRemaining, nodeId, pending.kind]` 轨迹（或一张截图）再回来，本文件就能定位到具体是哪一拍的 |
 

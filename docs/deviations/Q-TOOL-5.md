@@ -253,9 +253,9 @@ npx vitest run packages/client/src/throw-fx.test.ts packages/client/src/render.t
 
 | # | 项 | 现状 | 依据 / 下一步 |
 |---|---|---|---|
-| 1 | **換地卡打設施**（VA 0x00442a01，`0xe0c0204`，与地块那一支互斥） | **没接**：core 的 `targetClassOfCard(4)` = `'land'`（`selectionParam 0xe0c0202`），`validateTarget` 直接拒 `{kind:'facility'}` | 原版换的是「脚下的那块 / 对方那块」，地块与設施分别走 `0xe0c0202` / `0xe0c0204`。表里那一行 `supported:false`；这是 **core 的规则缺口**，不在本轮（表现层）范围 |
-| 2 | **換屋卡打設施**（VA 0x00442e9c，同上） | **没接**，原因与 #1 逐字相同 | 同上 |
-| 3 | **拆除卡打地圖物件**（VA 0x00443d8f，`test byte [esp+1], 0x80` ⇒ `esi = (handle & 0x7f00) >> 8` = 物件下标，随后 `call 0x40e14d` = `remove_object`） | **没接**：core 的 `targetClassOfCard(12)` = `'landOrFacility'`，不收 `{kind:'object'}`（送神符(22) 才是物件那条路） | 需要 core 先支持「拆除卡拆地图上的物件」。表里那一行 `supported:false` |
+| 1 | **換地卡打設施**（VA 0x00442a01，`0xe0c0204`，与地块那一支互斥） | ✅ **已接**（2026-09-16，Q-CARD-1 那一轮）：`targetClassOf(0xe0c0202, standing='facility')` → `'facility'`；registry 的 `case 4:` 有設施分支，调 `applySwapFacilityCard`（只换 owner，@source VA 0x00442a09）| 用例：`swap-and-stock.test.ts` 的「换地卡 · 設施分支」（`:62`）。先前那句「core 的规则缺口」已过期 |
+| 2 | **換屋卡打設施**（VA 0x00442e9c，同上） | ✅ **已接**（2026-09-16）：同一条分支的 `else` 调 `applySwapHouseFacilityCard`（换 type + level，@source 助手 `0x40b4f8` 設施分支 VA 0x0040b880）| 同上 |
+| 3 | **拆除卡打地圖物件**（VA 0x00443d8f，`test byte [esp+1], 0x80` ⇒ `esi = (handle & 0x7f00) >> 8` = 物件下标，随后 `call 0x40e14d` = `remove_object`） | ✅ **已接**（2026-09-16）：`0xe0c0626` 归为 `'landFacilityOrObject'`，registry 的 `case 12:` 有 `target.kind === 'object'` 分支，调 `applyDemolishObjectCard`（只收 `DEMOLISHABLE_OBJECT_TYPES` = 路障/地雷/定時炸彈，@source VA 0x00446528）| 用例见 Q-CARD-1 §3 的 `land-cards.test.ts` / `registry.test.ts` |
 | 4 | **控制类卡对特殊棋子**（轉向 6 / 停留 14 / 烏龜 30，目标 `{kind:'actor'}`） | **不起动效**（有意） | 原版这一段把 `0x40d293` 解出的位下标**当玩家下标**用（`imul edx,edx,0x68` + `player + 0x8`，VA 0x00442fe8 起）。actor = 4..8 时那是 `0x496b68 + 4*0x68 = 0x496d08` = **物件表**，读到的是「物件自己在飞」的那几个浮点字段 ⇒ 坐标无意义。原版是**越界读**，不复制 |
 | 5 | **人类出牌不播这段动效** | **有意照抄 exe**（20/22 个卡片点如此） | 判据是 `cmp byte [curplayer + 0x496b7d], 1 / je`，而同一个字段在同一条函数开头被用来分「人类弹模态选目标 / AI 取参数」，1 = 人类两端互证。若要改成「人类也播」，那是**有意偏离**，改 `CARD_FLIGHT_SITES` 的 `humanSkips` 即可 —— 但本轮按铁律照 exe |
 | 6 | 卡片图集的**朝向** | 不适用（有意） | `handle == 0` 那一支 `xor ebp, ebp`，恒第 0 帧；资源 415 也确实只有 1 张图。所以卡片没有「朝向」这一说 |

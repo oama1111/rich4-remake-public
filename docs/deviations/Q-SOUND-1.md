@@ -238,8 +238,14 @@ N = 5 → 响 5 次，这是**原版的期望行为**。
 3. **听感没有实机比对** —— 授权里不许起 dev server（见任务边界）。上面全部结论是
    「照 exe 判据与资源号」得来的；§4 那张时长表是把 `Effect.mkf` 取出来解 RIFF 头
    **当场算的**（22050 Hz / 1ch / 8bit）。
-4. **`main.ts` 的接线本轮没做**（另一位 agent 正在改同一个文件的 `amountPage` /
-   `onAmountKey` 一带，任务边界要求「只做加法、小步改」）。合流后照下面接即可：
+4. ✅ **`main.ts` 的接线后来接上了（2026-09-16 复核）** —— 走的是更简单的一条：
+   `stepTick()`（`main.ts:1848`）每走一格 `sound.play('Effect.mkf', moveSoundId(me.trafficMethod & 3))`
+   并记进 `moveSoundPlaying`，整趟走完由 `syncMoveSound()`（`main.ts:1869`）
+   `sound.stop('Effect.mkf', moveSoundPlaying)` 收掉 —— 与下面那份「照 `moveSoundStep()`
+   接」的清单**语义相同**（每格 Play、整趟完 Stop），只是没走那个纯函数；
+   `moveSoundStep()` 本身仍有单测（`move-sound.test.ts`）。
+   ⚠️ 于是本条的「本轮没做」已过期，但**纯函数与宿主各写一份节拍**这件事仍在
+   —— 若日后要合并，按下面这段接即可（留档）：
    - `moveSoundStep()` 的 `cellId` 用**玩家的 `nodeId`**、`moving` 用
      「这一帧玩家还在走」（= 补间在播 / `phase === 'moving'`）。
      `moveSoundCell` 的初值 0 让**起步那一拍**就 `play`（与 exe 的 state 2 尾一致）。
