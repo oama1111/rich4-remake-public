@@ -137,6 +137,39 @@ describe('卡片欄：选一张卡之后走哪条路（T-025）@source VA 0x441c
     expect(routeCardPick(stateOf([23]), topo, 23)).toEqual({ kind: 'objectAuto' });
   });
 
+  it('★ 改建卡（7）站在等级 ≥ 1 的設施上 → 先过「請選擇設施類別」窗', () => {
+    // @source 加蓋卡 VA 0x004431c8 `push 1 / call 0x440aac`；返回 −1 = 取消、卡不消耗
+    const facTopo = {
+      nodes: [{ id: 1, type: 0xfa0 + 1, ref: { kind: 'facility', id: 1 } }],
+      lands: [],
+      facilities: [{ id: 1, level: 2, type: 1 }],
+      commercials: [],
+    } as unknown as MapTopology;
+    const st = stateOf([7], {
+      players: [
+        { index: 0, cards: [7], cash: 0, moneyInBank: 0, loan: 0, nodeId: 1 },
+      ],
+      facilityLevel: [0, 2],
+      facilityType: [0, 1],
+      facilityOwner: [0, 1],
+      facilityPriceStatus: [0, 0],
+    } as unknown as Partial<GameState>);
+    expect(routeCardPick(st, facTopo, 7)).toEqual({ kind: 'facilityPick' });
+    // 等级 0 的設施：原版不生效，走「用不成」
+    const lv0 = stateOf([7], {
+      players: [
+        { index: 0, cards: [7], cash: 0, moneyInBank: 0, loan: 0, nodeId: 1 },
+      ],
+      facilityLevel: [0, 0],
+      facilityType: [0, 1],
+      facilityOwner: [0, 1],
+      facilityPriceStatus: [0, 0],
+    } as unknown as Partial<GameState>);
+    expect(routeCardPick(lv0, facTopo, 7)).toEqual({ kind: 'cannot', needsOwnList: false });
+    // 空地（地块等级 0）也走「用不成」—— 那条不需要选种类
+    expect(routeCardPick(stateOf([7]), topo, 7)).toEqual({ kind: 'cannot', needsOwnList: false });
+  });
+
   it('★ 不需要目标、且现在出得了的卡 → 直接发', () => {
     const base = makeGameState();
     const players = base.players.map((p, i) => ({

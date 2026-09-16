@@ -313,6 +313,25 @@ describe('★ T-009：toCardTarget 覆盖全部目标类型，AI 选中 → useC
     expect(toCardTarget({ target: { kind: 'land', landId: 3 } }, 0)).toEqual({ kind: 'entity', entityId: 3 });
   });
 
+  it('★ 改建卡：`none` 目标上的 facilityType 折进 CardTarget，useCard 打得中脚下設施', () => {
+    const t = toCardTarget({ target: { kind: 'none' }, facilityType: 3 }, 0);
+    expect(t).toEqual({ kind: 'none', facilityType: 3 });
+    const c = ctx({
+      players: [
+        makePlayer({ index: 0, cash: 10000, cards: [7], nodeId: 1 }),
+        makePlayer({ index: 1 }),
+      ],
+      nodes: [makeNode({ id: 1, type: 4001 })],
+      lands: [],
+      facilities: [makeFacility({ id: 1, type: 0, level: 1, owner: 1 })],
+    });
+    const r = useCard(c, 7, t);
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]!.type).toBe(3);
+    expect(r.facilities[0]!.level).toBe(1);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
   it('★ 不再有任何类别返回 null（Q-CARD-2 的顺延过滤撤掉）', () => {
     const choices: AiCardChoice[] = [
       { target: { kind: 'facility', facilityId: 1 } },

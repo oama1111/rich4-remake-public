@@ -3991,6 +3991,21 @@ function applyCardPick(cardId: number): void {
     dispatch(act);
     return;
   }
+  // ★ 改建卡站在**等级 ≥ 1 的設施**上：原版是卡片函数自己开「請選擇設施類別」窗
+  //   （VA 0x004431c8 `push 1 / call 0x440aac`），选完把种类写进設施记录；
+  //   右键取消返回 **−1** → 卡片函数返回 0 → 这张卡**不消耗**
+  //   （VA 0x004431d7 / `loc_004412de`），并照原版那条循环播失败音、把卡片欄开回来。
+  if (route.kind === 'facilityPick') {
+    openFacilityPicker((type) => {
+      if (type === null) {
+        sound.play('Effect.mkf', SOUND_CARD_FAILED);
+        openInventory('cards');
+        return;
+      }
+      dispatch({ type: 'useCard', cardId, target: { kind: 'none', facilityType: type } });
+    });
+    return;
+  }
   // 用不成：失败音 + 把弹窗开回来（原版的循环）
   sound.play('Effect.mkf', SOUND_CARD_FAILED);
   if (route.needsOwnList) log('（这张卡要选目标 —— 那类选择界面还没做）');

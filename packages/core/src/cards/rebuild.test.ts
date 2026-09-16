@@ -3,9 +3,15 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
-import { applyRebuildCard, CHAIN_STORE_MAX_LEVEL } from './rebuild.ts';
-import { makeLand } from '../testing/factories.ts';
+import {
+  applyRebuildCard,
+  applyRebuildFacilityCard,
+  CHAIN_STORE_MAX_LEVEL,
+  FACILITY_TYPE_SINGLE_LEVEL,
+} from './rebuild.ts';
+import { makeFacility, makeLand } from '../testing/factories.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
+import { FACILITY_TYPE } from '../rules/facility.ts';
 
 /** 落在住宅地块 i 上时的节点 type */
 const houseNode = (i: number) => 2000 + i;
@@ -63,7 +69,7 @@ describe('前置条件', () => {
   it('非住宅落点不可改建', () => {
     // type 0 = 特殊格
     expect(applyRebuildCard(0, makeLand({ level: 3 })).reason).toBe('notHousingLand');
-    // 4000+ = 设施（另有分支，尚未实现）
+    // 4000+ = 設施 —— 那一支走 `applyRebuildFacilityCard`（下面那一组）
     expect(applyRebuildCard(4001, makeLand({ level: 3 })).reason).toBe('notHousingLand');
   });
 
@@ -85,5 +91,100 @@ describe('不原地修改入参', () => {
     const snapshot = JSON.stringify(land);
     applyRebuildCard(houseNode(1), land);
     expect(JSON.stringify(land)).toBe(snapshot);
+  });
+});
+
+// ============================================================
+//  設施那一支 —— VA 0x0044315d 起
+// ============================================================
+
+describe('改建卡 —— 設施改种类（VA 0x0044315d）', () => {
+  it('★ 公园 1 级 → 研究所：种类换掉、等级保留', () => {
+    const r = applyRebuildFacilityCard(
+      makeFacility({ type: FACILITY_TYPE.park, level: 1, owner: 1 }),
+      FACILITY_TYPE.lab,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.reason).toBeNull();
+    expect(r.facility!.type).toBe(FACILITY_TYPE.lab);
+    expect(r.facility!.level).toBe(1);
+    // 原版只写 `+0x18` 一个字节：别的字段原样带过去
+    expect(r.facility!.owner).toBe(1);
+  });
+
+  it('★ 改成公園 / 加油站时等级 > 1 被压到 1（原版那两跳）', () => {
+    // @source test dh,dh / je clamp；cmp dh,3 / jne done
+    expect(FACILITY_TYPE_SINGLE_LEVEL).toEqual([FACILITY_TYPE.park, FACILITY_TYPE.gasStation]);
+    const asPark = applyRebuildFacilityCard(
+      makeFacility({ type: FACILITY_TYPE.hotel, level: 5 }),
+      FACILITY_TYPE.park,
+    );
+    expect(asPark.facility!.type).toBe(FACILITY_TYPE.park);
+    expect(asPark.facility!.level).toBe(1);
+
+    const asGas = applyRebuildFacilityCard(
+      makeFacility({ type: FACILITY_TYPE.mall, level: 4 }),
+      FACILITY_TYPE.gasStation,
+    );
+    expect(asGas.facility!.level).toBe(1);
+  });
+
+  it('★ 改成旅館 / 購物中心 / 研究所时**不**压等级', () => {
+    for (const type of [FACILITY_TYPE.hotel, FACILITY_TYPE.mall, FACILITY_TYPE.lab]) {
+      const r = applyRebuildFacilityCard(makeFacility({ type: FACILITY_TYPE.park, level: 5 }), type);
+      expect(r.facility!.type).toBe(type);
+      expect(r.facility!.level).toBe(5);
+    }
+  });
+
+  it('等级恰为 1 时压级是空操作（jbe）', () => {
+    const r = applyRebuildFacilityCard(makeFacility({ type: FACILITY_TYPE.hotel, level: 1 }), FACILITY_TYPE.park);
+    expect(r.facility!.level).toBe(1);
+  });
+
+  it('★ 改成同一种类照样生效（原版不复核）', () => {
+    const r = applyRebuildFacilityCard(makeFacility({ type: FACILITY_TYPE.hotel, level: 3 }), FACILITY_TYPE.hotel);
+    expect(r.ok).toBe(true);
+    expect(r.facility!.type).toBe(FACILITY_TYPE.hotel);
+    expect(r.facility!.level).toBe(3);
+  });
+
+  it('★ 等级 0 的設施不生效（`cmp [ebx+0x1a],0 / je`）', () => {
+    const r = applyRebuildFacilityCard(makeFacility({ type: FACILITY_TYPE.park, level: 0 }), FACILITY_TYPE.hotel);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('emptyFacility');
+    expect(r.facility).toBeNull();
+  });
+
+  it('★ 没给种类 → 拒收（真人必须先过选類別窗）', () => {
+    const r = applyRebuildFacilityCard(makeFacility({ level: 2 }), undefined);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('facilityTypeRequired');
+  });
+
+  it('种类超出 0..4 → 拒收（外部参数复核）', () => {
+    const fac = makeFacility({ level: 2 });
+    expect(applyRebuildFacilityCard(fac, -1).reason).toBe('badFacilityType');
+    expect(applyRebuildFacilityCard(fac, 5).reason).toBe('badFacilityType');
+    expect(applyRebuildFacilityCard(fac, 1.5).reason).toBe('badFacilityType');
+    expect(applyRebuildFacilityCard(fac, FACILITY_TYPE.lab).ok).toBe(true);
+  });
+
+  it('不是設施格（null）→ notFacility', () => {
+    expect(applyRebuildFacilityCard(null, FACILITY_TYPE.hotel).reason).toBe('notFacility');
+  });
+
+  it('原版**不看业主**：别人的設施照样改', () => {
+    const r = applyRebuildFacilityCard(makeFacility({ owner: 3, level: 2 }), FACILITY_TYPE.park);
+    expect(r.ok).toBe(true);
+    expect(r.facility!.owner).toBe(3);
+    expect(r.facility!.type).toBe(FACILITY_TYPE.park);
+  });
+
+  it('不原地修改入参', () => {
+    const fac = makeFacility({ type: FACILITY_TYPE.hotel, level: 5 });
+    const snapshot = JSON.stringify(fac);
+    applyRebuildFacilityCard(fac, FACILITY_TYPE.park);
+    expect(JSON.stringify(fac)).toBe(snapshot);
   });
 });

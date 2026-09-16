@@ -244,14 +244,18 @@ export function decideCard(ctx: AiContext): Action | null {
  *
  * 两个挂在 choice 上的附加参数在这里折进 CardTarget：
  * - 搶奪卡的 `stealCard` → player 目标的 `steal`（@source `[0x48be5c]`）；
- * - 改建卡对公園的 `facilityType` → facility 目标的 `buildType`
- *   （T-008 在 CardTarget 上开的口；天使卡首建也走它）。
+ * - 改建卡的 `facilityType` → `none` 目标（打脚下設施）的 `facilityType`，
+ *   或 facility 目标的 `buildType`（天使卡首建走后者）。
  */
 export function toCardTarget(choice: AiCardChoice, meIndex: number): CardTarget {
   const t = choice.target;
   switch (t.kind) {
     case 'none':
-      return { kind: 'none' };
+      // ★ 改建卡（7）打在**脚下那栋設施**上时目标就是 `none`，种类单独挂在
+      //   `facilityType` 上（原版 `[0x48be58]`，见 card-policy.ts 的 gaijian）。
+      return choice.facilityType !== undefined
+        ? { kind: 'none', facilityType: choice.facilityType }
+        : { kind: 'none' };
     case 'self':
       return { kind: 'player', index: meIndex };
     case 'player':

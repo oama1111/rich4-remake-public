@@ -344,7 +344,8 @@ const huandi: Handler = (view, hated) => {
  * 改建卡 @source 0x0041ed3e
  * 地块（须是我的）：连锁店 → 同區另有我的地就改；住宅 → 须 1 级，乖寶寶直接改，
  * 否则同區其余都得是对手的（有我的或无主的就不改）。
- * 設施：我的公園 1 级 → 改成随机 1..4；对手的非公園 ≥ 3 级（最恨的人 ≥ 2 级）→ 改。
+ * 設施（种类写进 `[0x48be58]`，由 `applyRebuildFacilityCard` 落地）：
+ * 我的公園 1 级 → 改成随机 1..4；对手的非公園 ≥ 3 级（最恨的人 ≥ 2 级）→ **改成公園 0**。
  */
 const gaijian: Handler = (view, hated) => {
   const here = hereOf(view);
@@ -364,10 +365,15 @@ const gaijian: Handler = (view, hated) => {
     if (f === undefined) return null;
     if (f.owner === me1) {
       if (f.type !== FACILITY_TYPE.park || f.level !== 1) return null;
+      // @source 0x0041eeab：`rand() % 4 + 1` 写 [0x48be58] —— 改成旅馆/购物中心/加油站/研究所
       return { target: { kind: 'none' }, facilityType: aiRoll(view.state, 7, 4) + 1 };
     }
     if (f.owner === 0 || f.type === FACILITY_TYPE.park) return null;
-    if (f.level >= 3 || (f.owner === hated + 1 && f.level >= 2)) return NONE;
+    // @source 0x0041ef0c：对手那一支把 [0x48be58] 写成 **0 = 公園**
+    //   （顺手把等级压到 1，因为公園上限 1）—— 改建卡此时是「夷平对手的店」
+    if (f.level >= 3 || (f.owner === hated + 1 && f.level >= 2)) {
+      return { target: { kind: 'none' }, facilityType: FACILITY_TYPE.park };
+    }
   }
   return null;
 };

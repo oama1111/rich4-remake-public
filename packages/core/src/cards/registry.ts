@@ -44,7 +44,7 @@ import { applyTaxCard } from './tax.ts';
 import { applyDispelCard } from './dispel.ts';
 import { applyFrameCard } from './frame.ts';
 import { applyBuyLandCard } from './buy-land.ts';
-import { applyRebuildCard } from './rebuild.ts';
+import { applyRebuildCard, applyRebuildFacilityCard } from './rebuild.ts';
 import { applyRobCard, applyRobCardCard } from './rob.ts';
 import { applyMonsterCard, applyMonsterFacilityCard, MONSTER_HOSTILITY_PER_LEVEL } from './monster.ts';
 import { applyRedCard, applyBlackCard, applySwapLandCard, applySwapFacilityCard } from './swap-and-stock.ts';
@@ -311,6 +311,11 @@ export function useCard(
     lands = lands.map((x) => (x.id === l.id ? l : x));
   };
 
+  /** 就地替换一栋設施 */
+  const putFacility = (f: FacilityInfo): void => {
+    facilities = facilities.map((x) => (x.id === f.id ? f : x));
+  };
+
   switch (cardId) {
     // ── 玩家目标 / 无目标 ──────────────────────────────
     case 1: {
@@ -563,11 +568,25 @@ export function useCard(
       break;
     }
     case 7: {
+      // ★ 两支按**脚下那一格**的实例区间分（VA 0x004430c7 / 0x00443147）：
+      //   0x7d0 < code < 0xfa0 → 地块（住宅 ↔ 连锁店互换，不需要外部参数）
+      //   0xfa0 < code < 0x1770 → 設施（种类由外部给：真人过选類別窗、电脑取 AI 参数）
       const here = standingLand(ctx, cur);
-      if (here === null) return fail('notStandingOnLand');
-      const r = applyRebuildCard(here.node.type, here.land);
-      if (!r.ok || r.land === null) return fail('noEffect');
-      putLand(r.land);
+      if (here !== null && here.land !== null) {
+        const r = applyRebuildCard(here.node.type, here.land);
+        if (!r.ok || r.land === null) return fail('noEffect');
+        putLand(r.land);
+        break;
+      }
+      const fac = standingFacility(ctx, cur);
+      if (fac === null) return fail('notStandingOnLand');
+      // 种类挂在 `none` 目标的 `facilityType` 上（这张卡的 `selection` 是 `'none'`，
+      // 所以 `validateTarget` 只收 `none` 目标 —— 见 target.ts 的 `facilityType` 注释）。
+      // 真人：选類別窗的返回值（VA 0x004431c8）；电脑：AI 参数 `[0x48be58]`。
+      const chosenType = target.kind === 'none' ? target.facilityType : undefined;
+      const rf = applyRebuildFacilityCard(fac, chosenType);
+      if (!rf.ok || rf.facility === null) return fail('noEffect');
+      putFacility(rf.facility);
       break;
     }
 

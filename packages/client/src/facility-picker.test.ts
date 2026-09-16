@@ -38,6 +38,7 @@ import {
   pickerKeyedBlack,
   pickerNameOf,
   pickerNeededFor,
+  rebuildPickerNeeded,
   pickerSlotAt,
   pickerSlotX,
   pickerTypeOf,
@@ -293,6 +294,45 @@ describe('★ `pickerNeededFor`：只有「機器工人打等级 0 的設施」�
   });
 });
 
+describe('★ `rebuildPickerNeeded`：改建卡站在等级 ≥ 1 的設施上才过窗', () => {
+  const topo = {
+    nodes: [
+      { id: 1, type: 0x7d0 + 1 }, // 土地
+      { id: 2, type: 0xfa0 + 1 }, // 設施（下标 1）
+      { id: 3, type: 0 },         // 路面
+    ],
+    lands: [],
+    facilities: [{ id: 1, level: 2, type: 1 }],
+  } as never;
+
+  const stateAt = (nodeId: number, level = 2) => ({
+    currentPlayer: 0,
+    players: [{ nodeId }],
+    facilityLevel: [0, level],
+    facilityType: [0, 1],
+    facilityOwner: [0, 1],
+    facilityPriceStatus: [0, 0],
+  } as never);
+
+  it('★ 站在等级 ≥ 1 的設施上 → 过窗（VA 0x004431c8）', () => {
+    expect(rebuildPickerNeeded(stateAt(2), topo)).toBe(true);
+  });
+
+  it('★ 等级 0 的設施 → 不过窗（原版 `cmp [ebx+0x1a],0 / je` 直接不生效）', () => {
+    expect(rebuildPickerNeeded(stateAt(2, 0), topo)).toBe(false);
+  });
+
+  it('土地 / 路面 → 不过窗（那两支不需要种类）', () => {
+    expect(rebuildPickerNeeded(stateAt(1), topo)).toBe(false);
+    expect(rebuildPickerNeeded(stateAt(3), topo)).toBe(false);
+  });
+
+  it('节点号越界 / 没这个玩家 → 不过窗', () => {
+    expect(rebuildPickerNeeded(stateAt(99), topo)).toBe(false);
+    expect(rebuildPickerNeeded({ currentPlayer: 0, players: [] } as never, topo)).toBe(false);
+  });
+});
+
 describe('★ 接线（源码钉子）', () => {
   it('main.ts：機器工人打等级 0 的設施 → 先开窗，选完带 `value` 派 action', () => {
     const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
@@ -306,6 +346,18 @@ describe('★ 接线（源码钉子）', () => {
   it('screens.ts：登记了 `facility-picker`（且是浮窗）', () => {
     const src = readFileSync(new URL('./screens.ts', import.meta.url), 'utf8');
     expect(src).toContain('facilityPickerScreen');
+  });
+
+  it('main.ts / inventory.ts：改建卡（7）站在設施上 → 同一扇窗，选完带 `facilityType`', () => {
+    // 卡片欄那条路（`selection: 'none'` 的卡本来不会进拾取，要先分出来）
+    const inv = readFileSync(new URL('./inventory.ts', import.meta.url), 'utf8');
+    expect(inv).toContain("if (cardId === REBUILD_CARD_ID && rebuildPickerNeeded(state, topo)) {");
+    expect(inv).toContain("return { kind: 'facilityPick' };");
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain("if (route.kind === 'facilityPick') {");
+    expect(src).toContain("dispatch({ type: 'useCard', cardId, target: { kind: 'none', facilityType: type } });");
+    // 右键取消（−1）= 这张卡不消耗：失败音 + 卡片欄开回来（不派 action）
+    expect(src).toContain('if (type === null) {');
   });
 });
 

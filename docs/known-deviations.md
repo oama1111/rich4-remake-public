@@ -3438,6 +3438,21 @@ call fcn_00415f69             ; 重画面板
 `effectiveLand` / `allEffectiveLands` 都改读它。钉在
 `packages/core/src/state/land-type.test.ts`。
 
+### ~~改建卡打在**設施**上没接~~（**已修 2026-09-16**）
+
+`_rich4_use_card_gaijianka`（VA 0x0044309b）有**两支**：站在地块上
+（`0x7d0 < code < 0xfa0`）走 `type ^= 1`；站在設施上（`0xfa0 < code < 0x1770`，
+VA 0x00443147）是**改成选中的种类**（種類 0/3 时等级压 1），真人要先过
+「請選擇設施類別」窗（VA 0x004431c8 `push 1`，**−1 = 取消 → 卡片不消耗**）。
+先前 `cards/registry.ts` 的 `case 7` 只做地块那一支 ⇒ 真人在設施上按这张卡
+被直接判「用不成」，电脑那条（AI 参数 `[0x48be58]`）也被 `toCardTarget` 丢掉。
+
+修法：`applyRebuildFacilityCard`（`core/src/cards/rebuild.ts`）+
+`CardTarget.none` 上的 `facilityType`（`cards/target.ts`）+
+`registry.ts` 两支分派 + 客户端第三条路由 `facilityPick`
+（`facility-picker.ts` 的 `rebuildPickerNeeded` / `inventory.ts` / `main.ts`）。
+取证、逐条 VA 与用例清单见 `docs/deviations/Q-TOOL-4.md` 的 ②。
+
 ### ~~Q-TOOL-2~~：傳送機的「搬設施」那一路（**已结案 2026-09-14**）
 
 設施的五项进状态后接上了（`rules/teleport.ts` 的 `teleportFacility`，
@@ -3630,7 +3645,7 @@ a0b1 对 −1 另有局部语义，但按 damage_area 的代码（0x40ac7b 开�
 
 registry 补齐設施（T-006/T-008）、股票（T-005）、物件（T-004）目标后，
 `toCardTarget` 已覆盖全部类别（不再返回 null），搶奪卡的 `stealCard` 折进
-`steal`、改建卡对公園的 `facilityType` 折成 `buildType`（T-008 的接口）。
+`steal`、改建卡的 `facilityType` 折进 `none` 目标（打脚下設施，2026-09-16 补）/ `facility` 目标的 `buildType`（天使卡首建，T-008 的接口）。
 顺延过滤已撤，判定函数说打就打（只剩 `willWork` 空跑防活锁，不是目标过滤）。
 
 ### ★ 一輪才是一天 —— 先前每个玩家回合推一天，错（2026-09-14 改正）

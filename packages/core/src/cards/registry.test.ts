@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { makeFacility, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { useCard, type UseCardContext } from './registry.ts';
 import { HOUSING_TYPE_MIN, FACILITY_TYPE_MIN } from '../rules/land.ts';
+import { FACILITY_TYPE } from '../rules/facility.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import { applyPriceTick } from '../places/stock-market.ts';
 import type { StockState } from '../places/stock.ts';
@@ -214,6 +215,95 @@ describe('地块类卡片', () => {
     const r = useCard(ctx, 3);
     expect(r.error).toBe('noEffect');
     expect(r.players[0]!.cards).toEqual([3]);
+  });
+});
+
+// ============================================================
+//  改建卡（7）—— VA 0x0044309b，两支按脚下那一格的实例区间分
+// ============================================================
+
+describe('★ 改建卡经统一入口（VA 0x0044309b）', () => {
+  /** 站在**地块**上：`0x7d0 < code < 0xfa0` 那一支 */
+  const ctxOnLand = (landOver: Parameters<typeof makeLand>[0]) =>
+    makeCtx({
+      players: [makePlayer({ index: 0, cards: [7], nodeId: 1 }), makePlayer({ index: 1 })],
+      nodes: [makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1 })],
+      lands: [makeLand({ id: 1, owner: 1, level: 1, ...landOver })],
+      facilities: [],
+    });
+
+  /** 站在**設施**上：`0xfa0 < code < 0x1770` 那一支 */
+  const ctxOnFacility = (facOver: Parameters<typeof makeFacility>[0]) =>
+    makeCtx({
+      players: [makePlayer({ index: 0, cards: [7], nodeId: 1 }), makePlayer({ index: 1 })],
+      nodes: [makeNode({ id: 1, type: FACILITY_TYPE_MIN + 1 })],
+      lands: [],
+      facilities: [makeFacility({ id: 1, owner: 1, type: FACILITY_TYPE.park, level: 1, ...facOver })],
+    });
+
+  it('★ 地块那一支：住宅 ↔ 连锁店，不需要外部参数', () => {
+    const r = useCard(ctxOnLand({ type: 0, level: 3 }), 7);
+    expect(r.ok).toBe(true);
+    expect(r.lands[0]!.type).toBe(1);
+    expect(r.lands[0]!.level).toBe(1);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('★ 設施那一支：种类取自 `target.facilityType`，等级不动（非 0/3）', () => {
+    const ctx = ctxOnFacility({ type: FACILITY_TYPE.park, level: 1 });
+    const r = useCard(ctx, 7, { kind: 'none', facilityType: FACILITY_TYPE.lab });
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]!.type).toBe(FACILITY_TYPE.lab);
+    expect(r.facilities[0]!.level).toBe(1);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('★ 設施那一支：改成公園 / 加油站 → 等级压到 1', () => {
+    const ctx = ctxOnFacility({ type: FACILITY_TYPE.hotel, level: 5 });
+    const r = useCard(ctx, 7, { kind: 'none', facilityType: FACILITY_TYPE.gasStation });
+    expect(r.facilities[0]!.type).toBe(FACILITY_TYPE.gasStation);
+    expect(r.facilities[0]!.level).toBe(1);
+  });
+
+  it('★ 設施那一支：没给种类 → 不生效、不扣卡（真人必须先过选類別窗）', () => {
+    const ctx = ctxOnFacility({ type: FACILITY_TYPE.park, level: 1 });
+    const r = useCard(ctx, 7);
+    expect(r.error).toBe('noEffect');
+    expect(r.players[0]!.cards).toEqual([7]);
+    expect(r.facilities[0]!.type).toBe(FACILITY_TYPE.park);
+  });
+
+  it('★ 等級 0 的設施 → 不生效、不扣卡（`cmp [ebx+0x1a],0 / je`）', () => {
+    const ctx = ctxOnFacility({ level: 0 });
+    const r = useCard(ctx, 7, { kind: 'none', facilityType: FACILITY_TYPE.hotel });
+    expect(r.error).toBe('noEffect');
+    expect(r.players[0]!.cards).toEqual([7]);
+  });
+
+  it('★ 等級 0 的地块 → 不生效、不扣卡', () => {
+    const r = useCard(ctxOnLand({ level: 0 }), 7);
+    expect(r.error).toBe('noEffect');
+    expect(r.players[0]!.cards).toEqual([7]);
+  });
+
+  it('★ 站在路面上 → 不生效、不扣卡', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [7], nodeId: 1 }), makePlayer({ index: 1 })],
+      nodes: [makeNode({ id: 1, type: 0 })],
+      lands: [],
+      facilities: [],
+    });
+    const r = useCard(ctx, 7);
+    expect(r.error).toBe('notStandingOnLand');
+    expect(r.players[0]!.cards).toEqual([7]);
+  });
+
+  it('★ 原版不看业主：站在别人的設施上照样改', () => {
+    const ctx = ctxOnFacility({ owner: 3, type: FACILITY_TYPE.park, level: 1 });
+    const r = useCard(ctx, 7, { kind: 'none', facilityType: FACILITY_TYPE.hotel });
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]!.type).toBe(FACILITY_TYPE.hotel);
+    expect(r.facilities[0]!.owner).toBe(3);
   });
 });
 

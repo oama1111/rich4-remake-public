@@ -172,6 +172,31 @@ export function pickerNeededFor(state: GameState, topo: MapTopology, nodeId: num
 /** 上面那两个助手 —— 从 `@rich4/core` 转出来，免得宿主再导一次 */
 import { effectiveFacility, facilityIndexOf } from '@rich4/core';
 
+/**
+ * 改建卡（7）打**脚下的設施**时，要不要先过这扇「請選擇設施類別」窗。
+ *
+ * 判据（纯查状态）：① 站在設施格上；② 那栋設施**等级 ≥ 1**
+ * （等级 0 = 还没盖起来，原版 `cmp byte [ebx+0x1a], 0 / je` 直接不生效，窗都不开）。
+ *
+ * ⚠️ 与 `pickerNeededFor` 的等级条件正好**相反**：機器工人是「空地 → 盖起来、选种类」，
+ *   改建卡是「已经有房 → 改种类」。
+ *
+ * @source 加蓋卡 VA 0x004431c8：`push 1 / call 0x440aac`（参数 1 那一支），
+ *   返回值 **−1 = 右键取消 → 这张卡不消耗**（VA 0x004431d7 的 `cmp eax, 0xffffffff`）。
+ */
+export function rebuildPickerNeeded(state: GameState, topo: MapTopology): boolean {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return false;
+  const node = topo.nodes[me.nodeId - 1];
+  if (node === undefined) return false;
+  // 判据与 `pickerNeededFor` 同一口径：按**节点 type 的实例区间**认設施
+  // （原版读的是脚下那一格的实例编码，不是 `ref`）
+  const idx = facilityIndexOf(node.type);
+  if (idx === null) return false;
+  const fac = effectiveFacility(state, topo, idx);
+  return fac !== null && fac.level >= 1;
+}
+
 // ============================================================
 //  绘制（纯 IO）
 // ============================================================

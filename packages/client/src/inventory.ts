@@ -40,6 +40,7 @@ import { CARD_IMPLS, CARDS, TOOLS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { classNeedsItsOwnList } from './picking.ts';
 import { stockPickModeOfCard, type StockPickMode } from './stock-screen.ts';
+import { rebuildPickerNeeded } from './facility-picker.ts';
 import { FONT_FAMILY } from './font.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
@@ -198,6 +199,10 @@ export const REMOTE_DICE_TOOL = 8;
  *   - `stockPick` 紅卡(24)/黑卡(25) → 复用**股市屏**的选股模式（参数 1/2）
  *   - `objectAuto` 請神符(23) → 原版是 `0x444d1a` 的**自动请最近的神**，没有 UI
  *
+ * ★ `facilityPick`（第三路，2026-09-16 补）：改建卡(7) 站在**等级 ≥ 1 的設施**上时，
+ *   原版是卡片函数自己开「請選擇設施類別」窗（VA 0x004431c8，参数 1），
+ *   **不走棋盘拾取**；右键取消 = 这张卡不消耗（返回 0）。
+ *
  * ★ 原版**不灰显**被动卡 —— `fcn_00441b0a` 只画卡名、一个字体一个颜色。
  */
 export type CardPickRoute =
@@ -205,7 +210,11 @@ export type CardPickRoute =
   | { kind: 'pick'; cls: TargetClass; param: number }
   | { kind: 'stockPick'; mode: StockPickMode }
   | { kind: 'objectAuto' }
+  | { kind: 'facilityPick' }
   | { kind: 'cannot'; needsOwnList: boolean };
+
+/** 改建卡 @source `_rich4_card_functions[6]` = `_rich4_use_card_gaijianka` */
+export const REBUILD_CARD_ID = 7;
 
 /** 这件道具是不是**不用再问**就能直接发 `useTool` */
 export function toolIsDirect(id: number): boolean {
@@ -238,6 +247,11 @@ export function routeCardPick(
   cardId: number,
 ): CardPickRoute {
   if (canUseCard(state, topo, cardId, { kind: 'none' })) return { kind: 'use' };
+  // ★ 改建卡站在等级 ≥ 1 的設施上：先过选類別窗（原版在卡片函数里开，参数 1）。
+  //   放在 `cls` 之前 —— 这张卡的 `selection` 是 `'none'`，否则会被判成「用不成」。
+  if (cardId === REBUILD_CARD_ID && rebuildPickerNeeded(state, topo)) {
+    return { kind: 'facilityPick' };
+  }
   const impl = CARD_IMPLS[cardId - 1];
   const cls = impl === undefined ? 'none' : targetClassOfCard(impl, standingKindOf(state, topo));
   if (cls === 'none') return { kind: 'cannot', needsOwnList: false };

@@ -261,8 +261,8 @@
      选一格派 `{type:'buildFacility', facilityType}`、右键派 `declineDecision`，
      `interactions.ts` 的那个 case 删掉（返回 null，连通用对话框都不画）⇒
      落点建 0 级設施走的就是原版那扇窗了。
-   - ② **加蓋卡**（VA 0x004431c8，`push 1`）那条路**仍缺**：−1 = 取消这张卡；
-     本引擎的 `case 7` 只做「站在**土地**上改建」，設施那一支还没有。
+   - ✅ **加蓋卡那一支也接上了**（同日晚第三轮）：見下面 ② 的取证与落码。
+     先前写「仍缺：`case 7` 只做站土地上改建」——**当时是对的**，本轮补齐。
 
    **★ 实机核对（2026-09-16，真浏览器 dev server 5174）**：手搓一个
    `pending{kind:'buildFacility', facilityId:1, name:'旅館', price:1000, choices:[0..4]}`
@@ -276,6 +276,64 @@
    （截图 `.qa-tmp/facility-picker.png`，目录 gitignore；
    ⚠️ 用 DEV 钩子的 `warp()` 走「真落点」那条路本轮没走通 —— 它走的是傳送機规则、
    这次没把人放到目标格上，所以上面用的是手搓 pending 的办法。）
+
+   **② 加蓋卡（VA 0x004431c8，`push 1`）—— 2026-09-16 已接**
+
+   `_rich4_use_card_gaijianka`（VA 0x0044309b）按**脚下那一格的实例区间**分两支，
+   两支的「返回 0 = 卡片不消耗」语义相同：
+
+   | | 地块那支 | 設施那支 |
+   |---|---|---|
+   | 进入条件 | `0x7d0 < code < 0xfa0` | `0xfa0 < code < 0x1770`（VA 0x00443147）|
+   | 等级 0 | `je 0x443202` → 返回 0 | 同左（VA 0x00443183）|
+   | 效果 | `type ^= 1`；变連鎖店时等级压 1 | `type = 选中的值`；**0/3 → 等级压 1**（VA 0x004431e4）|
+   | 种类来源 | 无（就一个 xor）| 真人 `push 1 / call 0x440aac`（**−1 = 取消**）；电脑 `_rich4_get_ai_card_param_value(0)` = `[0x48be58]` |
+   | 业主 | **不看**（站谁的改谁）| **不看** |
+
+   电脑那一支的种类由 AI 判定函数 `fcn_0041ed3e` 预先写好：
+   - 自己的 **1 级公園** → `rand() % 4 + 1`（1..4，VA 0x0041eeab）；
+   - 对手的**非公園**（`level ≥ 3`，或最恨的人 `level ≥ 2`）→ **0 = 公園**
+     （VA 0x0041ef0c `xor esi,esi / mov [0x48be58],esi`）—— 即「把对手那栋店打回 1 级」。
+
+   **★ 已落码**：
+
+   - `core/src/cards/rebuild.ts` 新增 `applyRebuildFacilityCard(facility, chosenType)`
+     （没给种类 / 种类 0..4 之外 / 等级 0 → 都返回失败；种类 0 与 3 压等级，其余保留原等级）；
+   - `core/src/cards/target.ts` 的 `CardTarget` 在 `none` 上开 `facilityType?`
+     （这张卡 `selection: 'none'`，目标就是「脚下」这个隐含位置，所以种类挂 `none`）；
+   - `core/src/ai/policy.ts` 的 `toCardTarget` 把 `facilityType` 折进 `none` 目标
+     （**先前被丢掉** ⇒ 电脑的改建卡打在設施上其实是失败的 —— 顺带修掉）；
+   - `core/src/cards/registry.ts` 的 `case 7` 改成两支；
+   - `client/src/facility-picker.ts` 新增 `rebuildPickerNeeded(state, topo)`
+     （**等级 ≥ 1** 的設施才过窗，与 `pickerNeededFor` 的等级 0 条件正好相反）；
+   - `client/src/inventory.ts` 新增第三条路由 `facilityPick`（这张卡 `selection: 'none'`，
+     不先分出来会被判成「用不成」）；
+   - `client/src/main.ts` 的 `applyCardPick` 开同一扇窗 → 选完
+     `dispatch({type:'useCard', cardId, target:{kind:'none', facilityType}})`；
+     **右键取消 = 不派 action + 失败音 + 卡片欄开回来**（原版返回 0 那条循环）。
+   - 用例：`rebuild.test.ts` +11 条、`registry.test.ts` +9 条、`card-policy.test.ts`
+     改了 1 条 + 新增 1 条、`policy.test.ts` +1 条（`none` + `facilityType` 一路走通
+     `useCard`）、`facility-picker.test.ts` +5 条、`inventory.test.ts` +1 条。
+
+   **★ 实机核对（2026-09-16 第三轮，真浏览器 dev server 5174，真人路径）**
+
+   状态摆法（DEV 钩子，只改状态、不改代码路径）：把设施 3 摆成
+   `type=旅館 level=3 owner=2`，给玩家 0（真人）一张改建卡并把人挪到那一格；
+   然后**用真的画布鼠标事件**走完：`toolbar(8)` 开卡片欄 → 点第 0 格（`改建卡`）。
+
+   | 看什么 | 结果 |
+   |---|---|
+   | 点卡片之后 | 冒出「請選擇設施類別」浮窗（棋盘照旧露着、五格 + 黄框）；**卡片还在手上** ✓ |
+   | 选第 4 格（研究所）| `facilityType[3]` 1 → **4**、**等级保持 3**、卡片扣掉、`owner` 仍是 2（**站在别人的設施上照样改**）✓ |
+   | 右键取消 | `-1` 那一条：**卡片不消耗**，卡片欄自动开回来（`screen === 'inventory'`）✓ |
+   | 选第 3 格（加油站）| 種類 → **3**、等级 3 → **1**（`cmp dh,3` 那一支的压级）✓ |
+
+   截图 `/tmp/r4-picker2.png`（浮窗那一张）。
+
+   ⚠️ 排错记录：头两次点击没反应，原因是**画布换算写错**
+   （以为 1280×720 一定是 2 倍，实际 `stageMetrics` 取 `min(1280/640, 720/480) = 1.5`
+   且居中留边 `offsetX = 160`）—— 换算错时 `toStage` 返回 null，`mousedown` 被
+   直接丢掉。与游戏本身无关，记在这里免得下次再踩。
 2. **消耗时机**：exe 是「选到就扣」（0x004472fb 在 0x00447345 之前），
    连盖不动的地也扣。本引擎的既定口径是「只在真正生效时才收走道具」，
    且 UI 不会把盖不动的地列成候选，**观察不到差别**，未改。

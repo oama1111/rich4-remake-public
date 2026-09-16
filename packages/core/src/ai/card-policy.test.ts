@@ -181,12 +181,23 @@ describe('7 改建卡（0x0041ed3e）', () => {
     expect(choice!.facilityType).toBe(3);
   });
 
-  it('脚下最恨的人的 ≥ 2 级非公園設施 → 改', () => {
+  it('脚下最恨的人的 ≥ 2 级非公園設施 → 改成**公園 0**（原版写 [0x48be58] = 0）', () => {
     const hotel = makeFacility({ id: 1, owner: 2, type: FACILITY_TYPE.hotel, level: 2 });
     const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
     players[0]!.hostility = [0, 5, 0, 0];
+    // @source 0x0041ef0c `xor esi,esi / mov [0x48be58],esi` —— 种类 0 = 公園
+    //   （公园上限 1 级，所以这一手等于把对手那栋店打回 1 级）
     expect(aiCardChoice(7, viewOf({ players, nodes: [facilityNode(1, 1)], facilities: [hotel] }))).toEqual({
       target: { kind: 'none' },
+      facilityType: FACILITY_TYPE.park,
+    });
+  });
+
+  it('★ 对手的 ≥ 3 级設施（不挑最恨）→ 同样改成公園', () => {
+    const mall = makeFacility({ id: 1, owner: 3, type: FACILITY_TYPE.mall, level: 3 });
+    expect(aiCardChoice(7, viewOf({ nodes: [facilityNode(1, 1)], facilities: [mall] }))).toEqual({
+      target: { kind: 'none' },
+      facilityType: FACILITY_TYPE.park,
     });
   });
 

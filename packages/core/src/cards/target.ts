@@ -52,8 +52,16 @@ export type CardTarget =
   | { kind: 'actor'; actor: number }
   /** 指向某个棋盘格（放置类道具：路障/地雷/定時炸彈），nodeId 1 基 */
   | { kind: 'node'; nodeId: number }
-  /** 该卡不需要目标 */
-  | { kind: 'none' };
+  /**
+   * 该卡不需要目标。
+   *
+   * `facilityType` 仅改建卡（7）使用：原版 `_rich4_use_card_gaijianka` 打在
+   * **脚下那栋設施**上（VA 0x0044315d 起），种类由真人的选類別窗
+   * （`fcn_00440aac(1)`，VA 0x004431c8）或 AI 参数（`[0x48be58]`）给出，
+   * 目标本身仍是「脚下」这个隐含位置，所以挂在 `none` 上。
+   * 缺省 = 没给种类 → registry 拒收（`facilityTypeRequired`）。
+   */
+  | { kind: 'none'; facilityType?: number };
 
 /** 特殊棋子的合法编号区间（REQ-05.1） @source PRD §4.2 */
 export const ACTOR_MIN = 4;
