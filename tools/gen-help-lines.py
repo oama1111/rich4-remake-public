@@ -64,6 +64,10 @@ LAST_RES = 99                # help.mkf 资源上界（含）
 #   `--write` 还会把 maxScroll 写回旧值。改成读真值后，脚本与代码不会脱节。
 
 # 生成区标记（脚本只改这两对标记之间的内容）
+MARK_IT_BEGIN = '// >>> GENERATED HELP_CHAPTER_ITEMS (tools/gen-help-lines.py) >>>'
+MARK_IT_END = '// <<< GENERATED HELP_CHAPTER_ITEMS <<<'
+MARK_IL_BEGIN = '// >>> GENERATED HELP_ITEM_LINES (tools/gen-help-lines.py) >>>'
+MARK_IL_END = '// <<< GENERATED HELP_ITEM_LINES <<<'
 MARK_CH_BEGIN = '  // >>> GENERATED HELP_CHAPTERS (tools/gen-help-lines.py) >>>'
 MARK_CH_END = '  // <<< GENERATED HELP_CHAPTERS <<<'
 MARK_LN_BEGIN = '// >>> GENERATED HELP_LINES 0..7 (tools/gen-help-lines.py) >>>'
@@ -95,18 +99,33 @@ def read_lines(res: int) -> list:
     return [p.decode('cp950') for p in raw.split(b'\x00')[:-1]]
 
 
+def read_cstr(exe, mod, ptr: int) -> str:
+    o = mod.va_to_off(ptr)
+    return exe[o:exe.index(b'\x00', o)].decode('cp950')
+
+
 def read_table(mod):
-    """dump exe 条目表 → [(name, start, count), ...]（前 3 个字段里我们要的两个）。"""
+    """dump exe 条目表 → [(章名, 起始资源, 资源数, [分项名…]), ...]。
+
+    ★ 第 4 个字段 `entry+0x04` 是**该章分项名指针数组的起点**，数组长度 = 资源数
+      （= `entry+0x0C`）：八章依次 1/6/12/3/16/18/30/13 个名字，且后一章的起点
+      恰好等于前一章起点 + 4×前一章个数（一个连续的指针池）。
+      先前 `help-screen.ts` 里手抄成「每章 8 个」，从第 8 个之后就是空的。
+    """
     exe = open(exe_path(mod), 'rb').read()
     off = mod.va_to_off(CHAPTER_TABLE_VA)
     out = []
     for i in range(NCHAPTER):
-        name_ptr, _other, start, count, _scroll = struct.unpack_from('<5I', exe, off + i * ENTRY_SIZE)
-        o = mod.va_to_off(name_ptr)
-        e = exe.index(b'\x00', o)
-        out.append((exe[o:e].decode('cp950'), start, count))
+        name_ptr, items_ptr, start, count, _scroll = struct.unpack_from(
+            '<5I', exe, off + i * ENTRY_SIZE
+        )
+        items = [
+            read_cstr(exe, mod, struct.unpack_from('<I', exe, mod.va_to_off(items_ptr) + k * 4)[0])
+            for k in range(count)
+        ]
+        out.append((read_cstr(exe, mod, name_ptr), start, count, items))
     # 自检：8 个区间必须首尾相接且落在 [FIRST_RES, LAST_RES]
-    for i, (_n, start, count) in enumerate(out):
+    for i, (_n, start, count, _items) in enumerate(out):
         if count <= 0:
             raise SystemExit(f'第 {i} 章 count={count} —— 表读错了')
         if start < FIRST_RES or start + count - 1 > LAST_RES:
@@ -124,11 +143,24 @@ def build():
     mod = load_disasm()
     table = read_table(mod)
     chapters = []
-    for name, start, count in table:
+    for name, start, count, items in table:
         lines = []
+        per_item: list[int] = []
         for res in range(start, start + count):
-            lines.extend(read_lines(res))
-        chapters.append({'name': name, 'start': start, 'count': count, 'lines': lines})
+            one = read_lines(res)
+            per_item.append(len(one))
+            lines.extend(one)
+        chapters.append(
+            {
+                'name': name,
+                'start': start,
+                'count': count,
+                'lines': lines,
+                'items': items,
+                # ★ 每条目（= 每个资源）几行 —— 用来把「行偏移」映射回「条目号」
+                'perItem': per_item,
+            }
+        )
     return chapters
 
 
@@ -192,6 +224,45 @@ def render_lines(chapters) -> str:
     return '\n'.join(out)
 
 
+def render_items(chapters) -> str:
+    """每章的分项名（长度 = 该章资源数）。"""
+    out = [MARK_IT_BEGIN]
+    out.append('/**')
+    out.append(' * 各章**分项名** —— 逐条 dump 自 exe 条目表的 `entry+0x04`（分项名指针数组）。')
+    out.append(' *')
+    out.append(' * @source VA 0x4761b4 起、20 字节/项：`+0x04` = 该章分项名指针数组的起点，')
+    out.append(' *   数组长度 **= 该章资源数**（`+0x0C`）—— 八章依次 1/6/12/3/16/18/30/13 个，')
+    out.append(' *   且后一章的起点恰好是前一章起点 + 4×前一章个数（一个连续指针池）。')
+    out.append(' *   由 `tools/gen-help-lines.py` 生成，勿手改。')
+    out.append(' */')
+    out.append('export const HELP_CHAPTER_ITEMS: readonly (readonly string[])[] = [')
+    for c in chapters:
+        body = ', '.join(ts_str(n) for n in c['items'])
+        out.append(f'  // {c["name"]}（{len(c["items"])} 条）')
+        out.append(f'  [{body}],')
+    out.append('];')
+    out.append(MARK_IT_END)
+    return '\n'.join(out)
+
+
+def render_item_lines(chapters) -> str:
+    """每章每条目几行（与分项名一一对应）。"""
+    out = [MARK_IL_BEGIN]
+    out.append('/**')
+    out.append(' * 每章**每条目**（= 每个资源）有几行 —— 与 `HELP_CHAPTER_ITEMS` 一一对应。')
+    out.append(' *')
+    out.append(' * 用途：本模块的滚动量是**行**偏移，而右列那 8 行分项名是按**条目**开窗的')
+    out.append(' *（原版 `[0x47601c]` 两者共用）：有了这张表就能把行偏移换算成条目号，')
+    out.append(' * 右列与正文才不会错位。')
+    out.append(' */')
+    out.append('export const HELP_ITEM_LINES: readonly (readonly number[])[] = [')
+    for c in chapters:
+        out.append(f'  [{", ".join(str(n) for n in c["perItem"])}],')
+    out.append('];')
+    out.append(MARK_IL_END)
+    return '\n'.join(out)
+
+
 def splice(src: str, begin: str, end: str, body: str) -> str:
     b = src.find(begin)
     if b < 0:
@@ -226,6 +297,8 @@ def main() -> int:
 
     new = splice(src, MARK_CH_BEGIN, MARK_CH_END, render_chapters(chapters))
     new = splice(new, MARK_LN_BEGIN, MARK_LN_END, render_lines(chapters))
+    new = splice(new, MARK_IT_BEGIN, MARK_IT_END, render_items(chapters))
+    new = splice(new, MARK_IL_BEGIN, MARK_IL_END, render_item_lines(chapters))
 
     if args.write:
         with open(TARGET, 'w', encoding='utf-8') as f:

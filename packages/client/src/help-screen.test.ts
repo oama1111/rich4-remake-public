@@ -28,6 +28,8 @@ import {
   HELP_CHAPTERS,
   HELP_CHAPTER_COUNT,
   HELP_CHAPTER_ITEMS,
+  HELP_ITEM_LINES,
+  itemTopOfLine,
   HELP_CHIP_AT,
   HELP_CHIP_H,
   HELP_CHIP_NAME_AT,
@@ -430,8 +432,11 @@ describe('右列那 8 行条目 @source loc_0044e301 / 0x44e2b2', () => {
     expect(chapterItem(7, 0)).toBe('工程車');
     // `itemAt` 是绘制那一层用的同一个函数（名字不同是为了强调「已加过 scroll」）
     expect(itemAt(2, 2)).toBe(chapterItem(2, 2));
-    expect(itemAt(2, 8)).toBe('');
-    expect(chapterItem(7, 8)).toBe(''); // 第 8 项越界（表里只有 8 项）
+    expect(itemAt(2, 8)).toBe('查詢'); // ★ 第 2 章有 **12** 条（先前手抄成 8 条）
+    expect(chapterItem(7, 7)).toBe('傳送機'); // 第 7 章 13 条
+    expect(chapterItem(7, 12)).toBe('機器娃娃');
+    expect(chapterItem(6, 29)).toBe('轉向卡'); // 第 6 章 30 条
+    expect(chapterItem(6, 30)).toBe(''); // 越界
     expect(HELP_INDEX_NAMES).toEqual(HELP_CHAPTER_ITEMS[0]);
     // 序号越界给空串，不炸
     expect(chapterItem(0, 99)).toBe('');
@@ -637,7 +642,8 @@ describe('版面落点 @source 0x44e024 / 0x44e11f / 0x44e14e', () => {
     // 兜底字面是第 0 章那张分项表的表头
     expect(HELP_INDEX_LABEL).toBe('遊戲操作');
     expect(HELP_INDEX_NAMES[0]).toBe('遊戲操作');
-    expect(HELP_INDEX_NAMES).toHaveLength(8);
+    // ★ 第 0 章（操作說明）只有 **1** 条分项 —— 数组长度 = 该章资源数，不是写死的 8
+    expect(HELP_INDEX_NAMES).toHaveLength(1);
   });
 
   it('★ 8 行格图：常态 2、选中 3（高度 33）@0x44e362 / @0x44e34a', () => {
@@ -789,5 +795,56 @@ describe('关屏', () => {
     const { env, renders } = mkEnv();
     helpScreen.down?.(46, 98, env);
     expect(renders()).toBe(0);
+  });
+});
+
+// ============================================================
+//  ★ 2026-09-16：分项名从 exe 生成（每章 = 该章**资源数**条，不是写死的 8 条）
+//    以及「行偏移 → 条目号」的换算 —— 右列靠它才跟得上正文
+// ============================================================
+
+describe('★ 分项名与条目行数 @source `entry+0x04` / `+0x0C`', () => {
+  it('★★ 每章的分项名条数 **= 该章资源数**（1/6/12/3/16/18/30/13）', () => {
+    const want = [1, 6, 12, 3, 16, 18, 30, 13];
+    for (let ch = 0; ch < 8; ch++) {
+      expect(HELP_CHAPTER_ITEMS[ch as 0]!.length, `第 ${ch} 章`).toBe(want[ch]);
+      // 与条目表那一路同口径（先前手抄成「每章 8 条」，第 8 条之后就是空的）
+      expect(chapterItemCount(ch)).toBe(want[ch]);
+    }
+    // 第 6 章（卡片）有一条 **30** 项 —— 先前那一版只到第 8 项
+    expect(chapterItem(6, 29)).toBe('轉向卡');
+    expect(chapterItem(6, 8)).toBe('怪獸卡');
+  });
+
+  it('★★ 每章每条目几行（`HELP_ITEM_LINES`）之和 = 该章正文总行数', () => {
+    for (let ch = 0; ch < 8; ch++) {
+      const sum = (HELP_ITEM_LINES[ch as 0] ?? []).reduce((a, b) => a + b, 0);
+      expect(sum, `第 ${ch} 章`).toBe(chapterLines(ch).length);
+      // 条数也必须一致
+      expect(HELP_ITEM_LINES[ch as 0]!.length).toBe(HELP_CHAPTER_ITEMS[ch as 0]!.length);
+    }
+  });
+
+  it('★★ `itemTopOfLine`：行偏移落在第几条（右列窗口的基准）', () => {
+    // 第 6 章（卡片）每条 9..14 行
+    expect(itemTopOfLine(6, 0)).toBe(0);
+    expect(itemTopOfLine(6, 11)).toBe(0); // 第 0 条 12 行 → 第 11 行还在第 0 条
+    expect(itemTopOfLine(6, 12)).toBe(1); // 第 12 行 = 第 1 条的第一行
+    expect(itemTopOfLine(6, 23)).toBe(2);
+    // 越界先被 `clampScroll` 夹到 `maxScroll = 行数 − 14`，再换算成条目号
+    //（第 6 章 338 行 → maxScroll 324，落在倒数第 2 条上，因为最后 14 行一起显示）
+    expect(itemTopOfLine(6, 9999)).toBe(28);
+    // 没分项的那几章（资源数 ≤ 8）也不炸：第 0 章只有 1 条
+    expect(itemTopOfLine(0, 0)).toBe(0);
+    expect(itemTopOfLine(0, 3)).toBe(0);
+  });
+
+  it('★ 右列那 8 行分项名跟着正文走（不再固定从第 scroll 条查）', () => {
+    // `scroll` 是**行**偏移：第 6 章第 80 行落在第 k 条上，窗口就从第 k 条起
+    const k = itemTopOfLine(6, 80);
+    const namesAt80 = Array.from({ length: 8 }, (_, i) => itemAt(6, k + i));
+    // 与「直接从 0 条起」明显不同（先前那一版就是后者，于是越滚越空）
+    expect(namesAt80[0]).not.toBe(itemAt(6, 0));
+    expect(namesAt80.every((n) => n !== '')).toBe(true);
   });
 });

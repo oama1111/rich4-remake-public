@@ -1943,19 +1943,81 @@ export function chipImage(i: number, hot: boolean): number {
  *   python3 tools/disasm.py dump 0x476028 8 4   # 第 0 章那张数组的 8 个指针
  *   ```
  */
+// >>> GENERATED HELP_CHAPTER_ITEMS (tools/gen-help-lines.py) >>>
+/**
+ * 各章**分项名** —— 逐条 dump 自 exe 条目表的 `entry+0x04`（分项名指针数组）。
+ *
+ * @source VA 0x4761b4 起、20 字节/项：`+0x04` = 该章分项名指针数组的起点，
+ *   数组长度 **= 该章资源数**（`+0x0C`）—— 八章依次 1/6/12/3/16/18/30/13 个，
+ *   且后一章的起点恰好是前一章起点 + 4×前一章个数（一个连续指针池）。
+ *   由 `tools/gen-help-lines.py` 生成，勿手改。
+ */
 export const HELP_CHAPTER_ITEMS: readonly (readonly string[])[] = [
-  ['遊戲操作', '日、月曆', '地產資料', '其他資料', '物價指數', '股票資料', '資金資料', 'LOAD'],
-  ['日、月曆', '地產資料', '其他資料', '物價指數', '股票資料', '資金資料', 'LOAD', 'SAVE'],
-  ['LOAD', 'SAVE', '卡片', '交易', '地圖', '系統', '股市', '前進'],
-  ['公司企業', '住宅用地', '商業用地', '七彩氣球', '公園', '卡片', '企鵝挖寶', '百貨公司'],
-  ['七彩氣球', '公園', '卡片', '企鵝挖寶', '百貨公司', '命運', '得十點', '得三十點'],
-  ['乞丐', '土地公', '大衰神', '大財神', '大福神', '大窮神', '小衰神', '小財神'],
-  ['天使卡', '冬眠卡', '同盟卡', '免費卡', '免罪卡', '均貧卡', '均富卡', '改建卡'],
-  ['工程車', '地雷', '汽車', '定時炸彈', '飛彈', '時光機', '核子飛彈', '傳送機'],
+  // 操作說明（1 条）
+  ['遊戲操作'],
+  // 遊戲畫面（6 条）
+  ['日、月曆', '地產資料', '其他資料', '物價指數', '股票資料', '資金資料'],
+  // 遊戲指令（12 条）
+  ['LOAD', 'SAVE', '卡片', '交易', '地圖', '系統', '股市', '前進', '查詢', '託管', '道具', '說明'],
+  // 房 地 產（3 条）
+  ['公司企業', '住宅用地', '商業用地'],
+  // 特殊地點（16 条）
+  ['七彩氣球', '公園', '卡片', '企鵝挖寶', '百貨公司', '命運', '得十點', '得三十點', '得五十點', '喜從天降', '新聞', '監獄', '銀行', '樂透', '醫院', '魔法屋'],
+  // 特殊人物（18 条）
+  ['乞丐', '土地公', '大衰神', '大財神', '大福神', '大窮神', '小衰神', '小財神', '小偷', '小福神', '小窮神', '天使', '死神', '流氓', '強盜', '惡犬', '惡魔', '間諜'],
+  // 卡  片（30 条）
+  ['天使卡', '冬眠卡', '同盟卡', '免費卡', '免罪卡', '均貧卡', '均富卡', '改建卡', '怪獸卡', '拍賣卡', '拆除卡', '查封卡', '查稅卡', '紅卡', '烏龜卡', '送神符', '停留卡', '陷害卡', '復仇卡', '惡魔卡', '換地卡', '換屋卡', '黑卡', '嫁禍卡', '搶奪卡', '夢遊卡', '漲價卡', '請神符', '購地卡', '轉向卡'],
+  // 道  具（13 条）
+  ['工程車', '地雷', '汽車', '定時炸彈', '飛彈', '時光機', '核子飛彈', '傳送機', '路障', '遙控骰子', '機車', '機器工人', '機器娃娃'],
 ];
+// <<< GENERATED HELP_CHAPTER_ITEMS <<<
+
+// >>> GENERATED HELP_ITEM_LINES (tools/gen-help-lines.py) >>>
+/**
+ * 每章**每条目**（= 每个资源）有几行 —— 与 `HELP_CHAPTER_ITEMS` 一一对应。
+ *
+ * 用途：本模块的滚动量是**行**偏移，而右列那 8 行分项名是按**条目**开窗的
+ *（原版 `[0x47601c]` 两者共用）：有了这张表就能把行偏移换算成条目号，
+ * 右列与正文才不会错位。
+ */
+export const HELP_ITEM_LINES: readonly (readonly number[])[] = [
+  [4],
+  [30, 8, 21, 9, 8, 28],
+  [1, 1, 10, 4, 5, 36, 5, 16, 10, 5, 5, 4],
+  [98, 41, 51],
+  [3, 6, 2, 2, 12, 5, 2, 2, 2, 2, 5, 7, 11, 7, 7, 4],
+  [4, 5, 8, 7, 8, 8, 7, 7, 4, 7, 8, 4, 11, 5, 5, 5, 4, 5],
+  [12, 11, 13, 12, 13, 11, 10, 13, 11, 12, 13, 11, 10, 11, 9, 12, 10, 11, 11, 12, 14, 13, 11, 9, 9, 12, 11, 11, 11, 9],
+  [10, 12, 10, 16, 11, 10, 12, 15, 12, 10, 10, 10, 10],
+];
+// <<< GENERATED HELP_ITEM_LINES <<<
 
 /** 上一版那张「固定表」的名字（= 第 0 章那张数组）—— 保留给旧调用点与单测比对 */
 export const HELP_INDEX_NAMES: readonly string[] = HELP_CHAPTER_ITEMS[0]!;
+
+/**
+ * 行偏移 → **条目号**（右列那个窗口的基准）。
+ *
+ * ★ 为什么需要换算：原版 `[0x47601c]` **一个变量两用** —— 既是右列窗口的第一行
+ *   （`分项名[窗口 + i]`），又是正文的资源号（`read_mkf(help, 起始资源 + 它)`）。
+ *   本模块的滚动量是**行**偏移（见 D-045-2：原版那一段的正文分屏还没定案），
+ *   所以要把行偏移换算回条目号，右列才与正文对得上。
+ *
+ * 换算 = 「累加每条的 行数，看行偏移落在第几条」（`HELP_ITEM_LINES` 由生成脚本给出）。
+ * 章 4..7 每条目 ≤ 16 行、一屏装得下，因此窗口基本一格一格走；章 6 的条目是
+ * 9..14 行，若不换算就会出现「正文在第 12 条、右列名字还停在第 3 条」的错位。
+ */
+export function itemTopOfLine(chapter: number, scroll: number): number {
+  const ch = clampChapter(chapter);
+  const counts = HELP_ITEM_LINES[ch] ?? [];
+  const at = clampScroll(ch, scroll);
+  let acc = 0;
+  for (let i = 0; i < counts.length; i++) {
+    if (at < acc + (counts[i] ?? 0)) return i;
+    acc += counts[i] ?? 0;
+  }
+  return Math.max(0, counts.length - 1);
+}
 
 /** 这一章第 `i` 条分项名；越界返回 `''` */
 export function chapterItem(chapter: number, i: number): string {
@@ -2124,10 +2186,14 @@ export function helpImagePlan(chapter: number, scroll: number): readonly HelpIma
   const bar = barAt(c);
   push(HELP_BAR_IMAGE, bar.x, bar.y, 'bar');
   // ③ 8 行格图（`scroll + i` 越界就停；原版两轮都这么停）
-  if (chapterHasItems(c)) {
+  if (chapterHasItems(chapter)) {
+    // ★ 窗口基准 = 当前行偏移落在的**条目**（原版这里是同一个 `[0x47601c]`）
+    const top = itemTopOfLine(chapter, sc);
     for (let i = 0; i < HELP_LIST_ROWS; i++) {
       const at = chipImageAt(i);
-      push(sc + i === sc ? HELP_ROW_HOT_IMAGE : HELP_ROW_IMAGE, at.x, at.y, sc + i === sc ? 'chipHot' : 'chip');
+      // 原版：`scroll + i == scroll` 的那条（= 窗口第一行）用选中图
+      const hot = i === 0 && top + i < chapterItemCount(chapter);
+      push(hot ? HELP_ROW_HOT_IMAGE : HELP_ROW_IMAGE, at.x, at.y, hot ? 'chipHot' : 'chip');
     }
   }
   // ④ 中部「上一章 / 下一章」三角（条件与 `drawHelpScreen` 同）
@@ -2176,8 +2242,9 @@ export function drawHelpScreen(
   // ── ② 8 行条目的分项名（格图已在上面铺好）@0x44e2b2 ──
   //    两轮都硬编码 8 行；页面上的闸是 `chapterItemCount()`（= 资源数）`<= 8`
   if (chapterHasItems(chapter)) {
+    const top = itemTopOfLine(chapter, scroll);
     for (let i = 0; i < HELP_LIST_ROWS; i++) {
-      const name = itemAt(chapter, scroll + i);
+      const name = itemAt(chapter, top + i);
       if (name === '') continue;
       const at = chipNameAt(i);
       helpText(ctx, name, ox + at.x, oy + at.y, HELP_CHIP_FONT_SIZE, HELP_CORAL_STROKE);
