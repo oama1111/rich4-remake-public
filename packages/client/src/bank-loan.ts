@@ -321,7 +321,12 @@ export function hitLoanButton(x: number, y: number): number | null {
 /**
  * 点这颗钮在**这一刻**是什么意思（`null` = 按下去没反应）。
  *
- * @param chairman 是不是董事長（`pending.specialFinance !== null`）
+ * ★ **董事長那两颗也是「一般貸款 / 償還貸款」** —— `loc_00435d48` / `loc_00435da4`
+ *   全文都不看 `[0x48c3e0]`（董事長标志），只有「窗」那一颗 `loc_00435ddb` 看。
+ *   特別融資那两笔（週轉現金 / 歸還款項）是**子对话框里的另外三颗小钮**，
+ *   由 `FINANCE_BUTTONS` 与 `bank-dynamic.ts` 的 `{kind:'finance'}` 负责。
+ *
+ * @param chairman 是不是董事長（`pending.specialFinance !== null`）—— 只影响「窗」
  * @param frozen `bank_freeze_days != 0` —— 申請貸款被擋（原版盖禁止章且不理这一下）
  * @param hasLoan `loan != 0` —— 償還貸款才有反应
  */
@@ -336,12 +341,14 @@ export function loanActionOf(
       return 'exit';
     case LOAN_PRIMARY:
       if (frozen) return null; // @source loc_00435d48 的 `player+0x3c != 0 → 不理`
-      return chairman ? 'financeBorrow' : 'borrow';
+      return 'borrow';
     case LOAN_SECONDARY:
       if (!hasLoan) return null; // @source loc_00435da4 的 `loan == 0 → 不理`
-      return chairman ? 'financeRepay' : 'repay';
+      return 'repay';
     case LOAN_FINANCE:
-      return chairman ? 'financeBorrow' : null; // 窗那颗只有董事長认
+      // 「窗」不开填数页：董事長点它开的是**子对话框**（`financeOpen`），
+      // 一般人点它没反应 —— 故这里一律 `null`。
+      return null;
     default:
       return null;
   }
@@ -355,10 +362,29 @@ export interface LoanView {
   frozen: boolean;
   /**
    * 董事長那三条数额的**数字**：額度 / 已用 / 还可融（只有董事長看得到）。
-   * `null` = 子对话框还没开 —— 原版那时只画底图上那三个**标签**，数字是
-   * 子对话框 `0x405` 那一拍调 `fcn_00433c20` 才写上去的。
+   * `null` = 子对话框还没开 —— 那时**整块办公室都不画**，见 `subDialog`。
    */
   finance: readonly [number, number, number] | null;
+  /**
+   * 特別融資**子对话框**开着没有 —— 决定这一帧画哪张底图。
+   *
+   * ★ 这是 Q-BANK-1c 的定案：原版 `fcn_00434186` 的董事長支把标题/面板/小钮/
+   *   三行标签**画进图 2**（办公室），可它最后贴到屏上的却是
+   *   `add eax, 0xc` = **图 0**（店員室）：
+   *   ```asm
+   *   00434212  cmp dword [esp + 8], 0    ; chairman ?
+   *             jne loc_0043423d          ; 是 ⇒ 把装饰画进图 2
+   *   …
+   *   0043441d  mov eax, [0x48c3c0]; add eax, 0xc   ; ★ 贴的仍是图 0
+   *   0043442d  call fcn_004563f5(屏, 图 0, 0, 0)
+   *   ```
+   *   ⇒ **董事長站在柜台前时，主屏看到的是店員室**（只见他贴进图 2 的那些装饰
+   *     在子对话框里才露出来 —— 子对话框贴的是图 2）。
+   *   唯一的差别：常态会在窗口上盖**百叶窗（图 1）**把董事長挡住，
+   *   而董事長自己那一支**不盖**（`cmp [esp+8],0 / jne` 正好跳过那次
+   *   `fcn_004562a5(图0, 图1, 320,240)`）—— 于是他从窗口里露面。
+   */
+  subDialog: boolean;
   /**
    * 这一拍盖在董事长脸上的眼睛贴片图号（12 睁 / 11 闭）；
    * `null` = 不盖（没在眨、或这一拍是「结束」⇒ 露出底图那张睁眼的）。
@@ -409,10 +435,15 @@ export function drawBankLoan(
   sprite: LoanSprite,
   view: LoanView,
 ): void {
-  const room = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, view.chairman ? LOAN_ROOM.chairman : LOAN_ROOM.normal);
+  // ★ 底图三态（Q-BANK-1c）：
+  //   常态 = 图 0 + 百叶窗；董事長（子对话框没开）= 图 0、**不盖百叶窗**；
+  //   子对话框开着 = 图 2（办公室，装饰都在它上面）。
+  const office = view.chairman && view.subDialog;
+  const roomImage = office ? LOAN_ROOM.chairman : LOAN_ROOM.normal;
+  const room = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, roomImage);
   if (room !== null) ctx.drawImage(room.bitmap, 0, 0);
 
-  if (view.chairman) {
+  if (office) {
     // ★ 三条数额底下那张红条面板（图 20）—— 原版是**贴进办公室底图**里的，
     //   竖着叠在数额下面，所以先画它再画字（`fcn_00456280` 不透明贴）。
     const panel = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, LOAN_FINANCE_PANEL.image);
@@ -436,29 +467,35 @@ export function drawBankLoan(
       if (s !== null) ctx.drawImage(s.bitmap, x, y);
     }
   } else {
-    // 常态：两张白单子上的字 + 窗里那位
+    // 柜台那一屏：两张白单子上的字（董事長自己也走这两颗 —— 原版 `loc_00435d48`
+    // / `loc_00435da4` **不看董事長标志**，他按下去就是一般貸款/还款）
     text(ctx, '申請貸款', 345, 345, 26, '#101010', 'center');
     text(ctx, '償還貸款', 530, 345, 26, '#101010', 'center');
-    const blind = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, LOAN_BLIND_WINDOW.image);
-    if (blind !== null) {
-      ctx.drawImage(
-        blind.bitmap,
-        LOAN_BLIND_WINDOW.x - blind.anchorX,
-        LOAN_BLIND_WINDOW.y - blind.anchorY,
-      );
+    // ★ 百叶窗只有**常态**才盖（把董事長挡在窗后）；董事長自己不盖，他从窗口露面
+    if (!view.chairman) {
+      const blind = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, LOAN_BLIND_WINDOW.image);
+      if (blind !== null) {
+        ctx.drawImage(
+          blind.bitmap,
+          LOAN_BLIND_WINDOW.x - blind.anchorX,
+          LOAN_BLIND_WINDOW.y - blind.anchorY,
+        );
+      }
     }
   }
 
   // 董事長眨眼：把眼睛贴片盖到脸上（图 12 睁 / 11 闭，70×35 落 (496,162)）
   // —— 原版是子对话框 `fcn_00434492` 的 100 ms 定时器在画（`loc_00434958`）。
-  if (view.chairman && view.blink !== null) {
+  if (office && view.blink !== null) {
     const eyes = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, view.blink);
     if (eyes !== null) ctx.drawImage(eyes.bitmap, LOAN_BLINK_AT.x, LOAN_BLINK_AT.y);
   }
 
   // 冻结中：禁止章 —— **贴进当屏那张底图**，所以两个落点（见 LOAN_FROZEN_MARK）
   if (view.frozen) {
-    const at = view.chairman ? LOAN_FROZEN_MARK_CHAIRMAN : LOAN_FROZEN_MARK;
+    // 禁止章是**贴进当屏底图**的：常态/董事長主屏都进图 0（落点 345,345），
+    // 只有子对话框那一屏进图 2（落点 67,324，盖在「週轉現金」那颗钮上）
+    const at = office ? LOAN_FROZEN_MARK_CHAIRMAN : LOAN_FROZEN_MARK;
     const mark = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, at.image);
     if (mark !== null) {
       ctx.drawImage(mark.bitmap, at.x - mark.anchorX, at.y - mark.anchorY);

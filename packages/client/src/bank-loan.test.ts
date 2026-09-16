@@ -75,11 +75,13 @@ describe('貸款屏几何 @source VA 0x436668 / 表 0x4757f8', () => {
 });
 
 describe('四颗钮这一刻是什么意思 @source loc_00435c12 起的跳表', () => {
-  it('★ 常态：申請貸款 / 償還貸款；董事長：週轉現金 / 歸還款項', () => {
+  it('★★ 那两颗**不看董事長标志**：`loc_00435d48` / `loc_00435da4` 全文没有它', () => {
+    // 董事長自己也走一般貸款/还款 —— 特別融資的週轉/歸還是**子对话框**里
+    // 另外三颗小钮（`FINANCE_BUTTONS`），不在主屏这张表上。
     expect(loanActionOf(LOAN_PRIMARY, false, false, false)).toBe('borrow');
     expect(loanActionOf(LOAN_SECONDARY, false, false, true)).toBe('repay');
-    expect(loanActionOf(LOAN_PRIMARY, true, false, false)).toBe('financeBorrow');
-    expect(loanActionOf(LOAN_SECONDARY, true, false, true)).toBe('financeRepay');
+    expect(loanActionOf(LOAN_PRIMARY, true, false, false)).toBe('borrow');
+    expect(loanActionOf(LOAN_SECONDARY, true, false, true)).toBe('repay');
   });
 
   it('★ 凍結时申請貸款不理（原版同时盖禁止章）', () => {
@@ -94,8 +96,10 @@ describe('四颗钮这一刻是什么意思 @source loc_00435c12 起的跳表', 
     expect(loanActionOf(LOAN_SECONDARY, true, false, false)).toBeNull();
   });
 
-  it('★ 窗口那颗只有董事長认', () => {
-    expect(loanActionOf(LOAN_FINANCE, true, false, false)).toBe('financeBorrow');
+  it('★★ 「窗」那颗不算填数页：董事長点它开子对话框，一般人点了没反应', () => {
+    // 原版 `loc_00435ddb`：`[0x48c3e0] != 0` → 状态 0xa + `Wait_0402_Message`；
+    // 填数页是子对话框里点週轉/歸還才开的，所以这里两条都是 null。
+    expect(loanActionOf(LOAN_FINANCE, true, false, false)).toBeNull();
     expect(loanActionOf(LOAN_FINANCE, false, false, false)).toBeNull();
   });
 

@@ -767,12 +767,15 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
       switch (ev.btn) {
         case 0: // EXIT：只记按下（抬手才算）@source loc_00435cca
           return { ui: { ...ui, pressed: 1 }, effect: null };
-        case 1: // 申請貸款（董事長时它是「週轉現金」）@source loc_00435d48
+        case 1: // 申請貸款 @source loc_00435d48
           if (ev.frozen) return same(); // `player+0x3c != 0` → 不理（同时盖着禁止章）
+          // ★ 董事長按这一颗也是**一般貸款** —— `loc_00435d48` 全文不看董事長标志
+          //   （只有「窗」那一颗 `loc_00435ddb` 看）。特別融資的週轉現金在
+          //   子对话框里，是**另外三颗**钮。
           return {
             ui: {
               ...ui,
-              formOp: ev.chairman ? 'financeBorrow' : 'borrow',
+              formOp: 'borrow',
               st: LOAN_ST.borrowIn,
               slide: loanSlideIn(),
               pressed: 0,
@@ -785,7 +788,7 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
           return {
             ui: {
               ...ui,
-              formOp: ev.chairman ? 'financeRepay' : 'repay',
+              formOp: 'repay',
               st: LOAN_ST.repayIn,
               slide: loanSlideIn(),
               pressed: 0,

@@ -4708,6 +4708,7 @@ function requestRender(): void {
       drawBankLoan(stageCtx, spriteNow, {
         chairman: bank.chairman,
         frozen: bankFrozen(),
+        subDialog: financeOpen,
         finance: financeOpen ? [room + owed, owed, room] : null,
         // 董事长眨眼（子对话框那支 100 ms 定时器）；它不在时（或填数页开着时）不眨
         // @source `0x4347a2` 的 `cmp [0x48c3cc], 4 / je`
@@ -6228,6 +6229,10 @@ function bindInput(): void {
           return;
         }
       }
+      // ★ 子对话框开着时，主屏那四颗**一概不响应** —— 原版那是一扇模态窗
+      //   （`Wait_0402_Message`），主窗口收不到鼠标；而且此刻屏上画的是办公室，
+      //   四颗钮的矩形落在看不见的地方。
+      if (loanUi?.financeOpen === true) return;
       const btn = hitLoanButton(q.x, q.y);
       if (btn === null) return;
       // ★ Q-BANK-1：**不再直接开填数页** —— 原版先走 `fcn_00435062` 的状态机
