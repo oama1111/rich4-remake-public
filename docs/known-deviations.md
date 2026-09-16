@@ -4637,7 +4637,7 @@ stopEffect(id: number): void;
 | T-034 的 **D-T034-2**（拍賣屏）| ❌ 前提错：`rich4_ui_auction.asm` 全文件只读 `cfg+8`（日期），**从不读** `[0x497159]`；`0x401` 铺场那一支（VA 0x0043a365）无条件 `SetTimer(…, 0x64, …)` ⇒ 恒开就是原版 |
 | T-039 的 **D-WHEEL-3**（轉盤）| ❌ 前提错：`fcn_0044090e` / `fcn_0043f7c6` 一处都没读 `[0x497159]`；状态 `ebx` 只看「真人」`whoPlays==1` 与「夢遊」`+0x37==0` ⇒ 恒开就是原版；`wheelFrameSequence(..., animate=false)` **原版没有调用点**，不许拿 `env.animation` 去接 |
 
-**真正受管辖的屏（已接 7 处）**：
+**真正受管辖的屏（已接 8 处）**：
 
 | 屏 | @source | 关掉时的行为 | 现状 |
 |---|---|---|---|
@@ -4648,11 +4648,11 @@ stopEffect(id: number): void;
 | 樂透開獎屏 | `loc_004301b0`（開獎屏 `0x401` 铺场尾）| 关掉时 `[0x48c37b]` 直接置 **2**（跳过主持人那句 `#0017`）| ✅ **2026-09-16 已接**（`lottery-draw-screen.ts` 的 `ceremonyStepsFor()`）|
 | 魔法屋入口台詞 | `loc_004326b9`（`[0x48c3a5] = !anim`）| 关掉时不弹 `#0037`/`#0038`/`#0039` 三句（字框 = 图 8 落 (320,384)）| ✅ **2026-09-16 已接**（`magic-screen.ts` 的 `magicPlaybackStart(..., greet)`）|
 | 住院／入獄影片 | `_rich4_add_player_days_in_hospital` VA 0x0043ed27 / `…_in_prison` VA 0x0043d67b | 关掉时**整段不播**（原版 `cmp [0x497159], 0 / je`）| ✅ **2026-09-16 已接**（`confine-fx.ts` + `main.ts` 的 `startConfineFx`/`tickConfineFx`；阻塞、播完 `resumeTurnDriver()`）|
+| 神明降臨／發威（12 尊）| `_rich4_attach_god` VA 0x0040ea62 的跳表 `ref_0040ea9b` | 关掉时每尊那一支都**整段不播** | ✅ **2026-09-16 已接**（`god-fx.ts` + `main.ts` 的 `startGodFx`；与住院/入獄共用 `board-film.ts` 的播放与那一份宿主状态）|
 
-**受管辖但仍未接**：神明降臨／發威 FLIC 一族（12 尊 = `Data.mkf`
-**0x21c..0x227**，全在 (0,40)、flags 1、音效 102..113 —— 配方见 `Q-ANIM-1.md` §1.1）、
-月結／頒獎屏的两处
-（`0x00437f32` 不弹 `#0092`、`0x00438254` 直接跳状态 `0x16` 並停 `0x1e` 拍）。
+**受管辖但仍未接**：只剩月結／頒獎屏的两处
+（`0x00437f32` 不弹 `#0092`、`0x00438254` 直接跳状态 `0x16` 並停 `0x1e` 拍；
+前提是先把 T-041 那条幻灯片链补出来）。
 
 ### T-054：LOAD 屏左下的「匯入原版存檔」钮（**原版没有这个钮**，有意保留）
 

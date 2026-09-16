@@ -300,15 +300,14 @@ export interface RenderInput {
    */
   buildFx?: CanvasImageSource | null;
   /**
-   * 「送進監獄／醫院」那一段 FLIC 的**当前帧**（`confine-fx.ts`）。
+   * 「盖在棋盘上的阻塞影片」的**当前帧**（`board-film.ts` 那一族）。
    *
-   * ★ 与 `buildFx` 同一类：原版 `fcn_0045144f` 把整幅帧直接贴到屏幕/后台面上，
-   *   不进绘制槽；只是这两段的落点与尺寸**不是常数**（医院 440×74 @(0,210)、
-   *   入獄 440×440 @(0,40)），所以连落点一起交。
-   *   @source `_rich4_add_player_days_in_hospital` VA 0x0043ed4a 起 /
-   *     `_rich4_add_player_days_in_prison` VA 0x0043d69e 起。
+   * ★ 与 `buildFx` 同一类：原版 `fcn_0045144f`（VA 0x0045144f）把整幅帧直接贴到
+   *   屏幕/后台面上，不进绘制槽；只是这一族的落点与尺寸**不是常数**
+   *   （住院 440×74 @(0,210)；入獄/神明 440×440 @(0,40)），所以连落点一起交。
+   *   坐标已经由宿主换算成**棋盘局部**（屏幕 y − 棋盘原点 40）。
    */
-  confineFx?: { bitmap: CanvasImageSource; x: number; y: number; w: number; h: number } | null;
+  boardFilm?: { bitmap: CanvasImageSource; x: number; y: number; w: number; h: number } | null;
 }
 
 /**
@@ -1768,16 +1767,16 @@ export class BoardRenderer {
       this.#ctx.drawImage(buildFrame, BUILD_FX_X, BUILD_FX_BOARD_Y, BUILD_FX_W, BUILD_FX_H);
     }
 
-    // ★ 送進監獄／醫院那段影片（Q-ANIM-1）同样画在最后：原版也是直接贴屏幕。
-    //   落点/尺寸取自 `confineClip`（医院 440×74 @(0,210)、入獄 440×440 @(0,40)）。
-    const confineFrame = input.confineFx ?? null;
-    if (confineFrame !== null) {
+    // ★ 「盖在棋盘上的阻塞影片」那一族（住院/入獄/神明）同样画在最后：
+    //   原版也是直接贴屏幕。落点/尺寸由宿主按规格给（已是棋盘局部坐标）。
+    const boardFrame = input.boardFilm ?? null;
+    if (boardFrame !== null) {
       this.#ctx.drawImage(
-        confineFrame.bitmap,
-        confineFrame.x,
-        confineFrame.y,
-        confineFrame.w,
-        confineFrame.h,
+        boardFrame.bitmap,
+        boardFrame.x,
+        boardFrame.y,
+        boardFrame.w,
+        boardFrame.h,
       );
     }
 

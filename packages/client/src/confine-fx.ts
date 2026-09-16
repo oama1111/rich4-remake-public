@@ -57,6 +57,14 @@
  *   播完才放行 —— 与建屋影片（`build-fx.ts`）同一套。
  */
 
+import {
+  boardFilmBitmap,
+  boardFilmDone,
+  boardFilmFrame,
+  boardFilmSkippable,
+  boardFilmTotalMs,
+  type BoardFilmSpec,
+} from './board-film.ts';
 import type { LoadedFlic } from './assets.ts';
 
 /** 两段影片都在 Data.mkf @source VA 0x0043ed39 / 0x0043d68d 的 `[0x48a0e4]` */
@@ -65,29 +73,19 @@ export const CONFINE_FX_ARCHIVE = 'Data.mkf';
 /** 关押种类 —— 与 core 的 `ConfinementKind` 同形 */
 export type ConfineKind = 'prison' | 'hospital';
 
-/** 一段影片的规格 —— 每个字面量都逐字节核过资源头 */
-export interface ConfineClip {
+/**
+ * 一段关押影片的规格 —— 就是通用的 `BoardFilmSpec` 外加一个 `kind` 字段
+ * （播放规则全在 `board-film.ts`，本模块只管**什么时候播哪一段**）。
+ */
+export interface ConfineClip extends BoardFilmSpec {
   kind: ConfineKind;
-  /** `Data.mkf` 资源号 */
-  resource: number;
-  /** 帧数 @source 资源头 +0x06 */
-  frames: number;
-  width: number;
-  height: number;
-  /** 每帧停留多少毫秒 @source 资源头 +0x10 */
-  frameMs: number;
-  /** 屏幕落点 @source `fcn_0045144f` 的 arg2 / arg3 */
-  x: number;
-  y: number;
-  /** 随影片一起响的音效号（`Effect.mkf`）@source arg5 */
-  sound: number;
-  /** `fcn_0045144f` 的 arg4 @source 两处调用点 */
-  flags: number;
 }
 
 /** 住院 @source `Data.mkf` 0x20c 头：62 帧 / 440×74 / 100 ms / 音效 92 */
 export const CONFINE_HOSPITAL: ConfineClip = {
   kind: 'hospital',
+  id: 'hospital',
+  archive: CONFINE_FX_ARCHIVE,
   resource: 0x20c,
   frames: 62,
   width: 440,
@@ -102,6 +100,8 @@ export const CONFINE_HOSPITAL: ConfineClip = {
 /** 入獄 @source `Data.mkf` 0x21a 头：35 帧 / 440×440 / 71 ms / 音效 94 */
 export const CONFINE_PRISON: ConfineClip = {
   kind: 'prison',
+  id: 'prison',
+  archive: CONFINE_FX_ARCHIVE,
   resource: 0x21a,
   frames: 35,
   width: 440,
@@ -120,8 +120,7 @@ export function confineClip(kind: ConfineKind): ConfineClip {
 
 /** 一段影片总共播多久（毫秒）= 帧数 × 每帧毫秒（不循环、不重复）*/
 export function confineTotalMs(kind: ConfineKind): number {
-  const c = confineClip(kind);
-  return c.frames * c.frameMs;
+  return boardFilmTotalMs(confineClip(kind));
 }
 
 /**
@@ -132,7 +131,7 @@ export function confineTotalMs(kind: ConfineKind): number {
  *   两段的 `flags` 都是 `0x?e0001` / `0x120001`，**bit1 = 0** ⇒ 原版也点不掉。
  */
 export function confineSkippable(kind: ConfineKind): boolean {
-  return (confineClip(kind).flags & 2) !== 0;
+  return boardFilmSkippable(confineClip(kind));
 }
 
 /**
@@ -200,15 +199,12 @@ export function beginConfineFx(kind: ConfineKind, now: number): ConfineFx {
  *   到 `帧数 − 1` 为止；一帧都不循环。
  */
 export function confineFxFrame(fx: ConfineFx, now: number): number {
-  const c = confineClip(fx.kind);
-  const k = Math.floor((now - fx.startedAt) / c.frameMs);
-  if (!Number.isFinite(k) || k < 0) return 0;
-  return Math.min(c.frames - 1, k);
+  return boardFilmFrame({ spec: confineClip(fx.kind), startedAt: fx.startedAt }, now);
 }
 
 /** 这一段播完了吗（时间到）*/
 export function confineFxDone(fx: ConfineFx, now: number): boolean {
-  return now - fx.startedAt >= confineTotalMs(fx.kind);
+  return boardFilmDone({ spec: confineClip(fx.kind), startedAt: fx.startedAt }, now);
 }
 
 /**
@@ -222,7 +218,5 @@ export function confineFxBitmap(
   now: number,
   flic: LoadedFlic | null | undefined,
 ): ImageBitmap | null {
-  if (flic === null || flic === undefined) return null;
-  const frame = confineFxFrame(fx, now);
-  return flic.frames[frame] ?? flic.frames[flic.frames.length - 1] ?? null;
+  return boardFilmBitmap({ spec: confineClip(fx.kind), startedAt: fx.startedAt }, now, flic);
 }

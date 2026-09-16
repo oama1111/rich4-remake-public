@@ -181,12 +181,13 @@ describe('★ main.ts 的接线（源码钉子）', () => {
     // @source 医院 VA 0x0043ed27 / 入獄 VA 0x0043d67b：`cmp [0x497159], 0 / je 跳过`
     expect(src).toContain('if (!options.animation) return;');
     // 起播与驱动闸
-    expect(src).toContain('startConfineFx(before);');
-    expect(src).toContain('if (confineFx !== null || pendingConfineFx !== null) {');
+    expect(src).toContain('startConfineFx(before, state);');
+    // 影片宿主那一道闸（住院/入獄/神明共用一份状态）
+    expect(src).toContain('if (boardFilm !== null || pendingBoardFilm !== null) {');
     // 播完补一次回合驱动
     expect(src).toContain('resumeTurnDriver();');
     // 棋盘局部坐标（屏幕 y − 棋盘原点）
-    expect(src).toContain('y: clip.y - LAYOUT.board.y');
+    expect(src).toContain('y: spec.y - LAYOUT.board.y');
   });
 
   it('渲染器按**棋盘局部**画建屋影片（先前直接用屏幕坐标 0x28，整体下移 40 px）', () => {
