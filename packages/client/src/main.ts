@@ -79,6 +79,9 @@ import {
   type Sprite,
 } from './assets.ts';
 import { onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
+// ★ 「請選擇設施類別」那扇窗（Q-TOOL-4）—— 真人盖**等级 0 的設施**时要先选种类
+//   （原版 `fcn_00440aac` / 窗口过程 `fcn_0043fae4`）。
+import { PICKER_TOOL_ID, openFacilityPicker, pickerNeededFor } from './facility-picker.ts';
 import {
   Hud,
   SIDEBAR,
@@ -6888,6 +6891,16 @@ function bindInput(): void {
       endPick();
       if (source.kind === 'card') {
         dispatch({ type: 'useCard', cardId: source.cardId, target: hit.target });
+      } else if (source.toolId === PICKER_TOOL_ID && pickerNeededFor(state, topo, hit.nodeId)) {
+        // ★ 機器工人盖**等级 0 的設施**：原版先开「請選擇設施類別」
+        //   （`fcn_00440aac`，VA 0x0040b1e2），选完把类型交给 core 的
+        //   `freeBuildFacility(…, chosenType)`；右键取消 = 什么都不做。
+        const nodeId = hit.nodeId;
+        const toolId = source.toolId;
+        openFacilityPicker((type) => {
+          if (type === null) return;
+          dispatch({ type: 'useTool', toolId, nodeId, value: type });
+        });
       } else {
         dispatch({ type: 'useTool', toolId: source.toolId, nodeId: hit.nodeId });
       }

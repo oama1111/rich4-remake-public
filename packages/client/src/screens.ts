@@ -30,6 +30,7 @@ import { minigameScreen } from './minigame-screen.ts';
 import { helpScreen } from './help-screen.ts';
 import { bigMapScreen } from './big-map-screen.ts';
 import { sharesScreen } from './shares-screen.ts';
+import { facilityPickerScreen } from './facility-picker.ts';
 
 export const SCREENS: readonly UiScreen[] = [
   // 演出类（事件起播）放前面：它们一旦在播就压住底下的一切
@@ -46,6 +47,10 @@ export const SCREENS: readonly UiScreen[] = [
   //   魔法屋那一次该由魔法屋屏演（见 `event-box-screen.ts` 头注释）。
   eventBoxScreen,
   wheelScreen,
+  // ★ 「請選擇設施類別」（Q-TOOL-4）：真人盖**等级 0 的設施**时要先选种类
+  //   （原版 `fcn_00440aac`，一扇盖在棋盘上的浮窗）。它由主机的拾取/加蓋流程
+  //   主动 `openFacilityPicker()` 打开，`active()` 只在开窗期间为真。
+  facilityPickerScreen,
   // 待决交互类
   boardScreen,
   auctionScreen,

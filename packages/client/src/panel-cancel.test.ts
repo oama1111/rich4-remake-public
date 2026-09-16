@@ -239,8 +239,12 @@ describe('★ 登记的整屏：声明了右键的那几屏', () => {
     // 新聞/命運訊息框（`fcn_004544f6` 的 `PeekMessage` 收 0x202 / 0x205 / 0x101
     //   —— 见 `event-box-screen.ts` 的 `contextmenu`）、
     // 研究所選項目（`loc_00440669` 的 `WM_RBUTTONDOWN` → `PostMessage(0x402, -1)`
-    //   = 不研發、直接收尾，见 `research-screen.ts` 的 `contextmenu`）
-    expect(withCtx).toEqual(['big-map', 'eventBox', 'help', 'lottery', 'notice-board', 'research']);
+    //   = 不研發、直接收尾，见 `research-screen.ts` 的 `contextmenu`）、
+    // 「請選擇設施類別」（`fcn_0043fae4` 的 `0x205` 那一支 = 取消，返回 −1，
+    //   见 `facility-picker.ts` 的 `contextmenu`）
+    expect(withCtx).toEqual([
+      'big-map', 'eventBox', 'facility-picker', 'help', 'lottery', 'notice-board', 'research',
+    ]);
   });
 
   it('★ 拍賣 / 小游戏 / 樂透開獎**没有**右键 —— 原版它们就没有 0x205 分支（不许自己加）', () => {
