@@ -122,3 +122,73 @@ describe('★ 两条买股的路共用同一个「计算器」', () => {
     expect(stockCounterBuyMax(100_000, 0, 1500)).toBe(0);
   });
 });
+
+// ============================================================
+//  ★ Q-BANK-1a：銀行那扇窗把**四种 op** 都铺出来了
+//    （`main.ts` 的 `openLoanAmount(op)` 就是按 `action.op` 找回那一项的
+//     —— 少了任何一项，贷款屏／特別融資子对话框点了就什么都不发生）
+// ============================================================
+
+describe('★ 銀行對話：四種 op 都在 choices 裡', () => {
+  /** 董事長（`specialFinance != null`）那一刻的待決交互 */
+  const chairPending: PendingInteraction = {
+    kind: 'bank',
+    wealth: 500_000,
+    loanCapacity: 400_000,
+    specialFinance: { owed: 30_000, available: 90_000 },
+  };
+
+  const chairState = (): GameState =>
+    makeGameState({
+      currentPlayer: 0,
+      players: [makePlayer({ index: 0, character: 0, cash: 50_000, moneyInBank: 200_000 })],
+      pending: chairPending,
+    });
+
+  const ui = (): InteractionUi => interactionUi(chairPending, chairState())!;
+
+  it('★ `specialFinance != null` 時四種 op 都在（borrow / repay / financeBorrow / financeRepay）', () => {
+    const ops = ui()
+      .choices.filter((c) => c.action.type === 'bank')
+      .map((c) => (c.action.type === 'bank' ? c.action.op : null));
+    expect(ops).toContain('borrow');
+    expect(ops).toContain('repay');
+    expect(ops).toContain('financeBorrow');
+    expect(ops).toContain('financeRepay');
+  });
+
+  it('★ 每一种都带 `amount`（`openLoanAmount` 找不到就静默不开窗）', () => {
+    for (const op of ['borrow', 'repay', 'financeBorrow', 'financeRepay'] as const) {
+      const c = ui().choices.find((x) => x.action.type === 'bank' && x.action.op === op);
+      expect(c, op).toBeDefined();
+      expect(c!.amount, op).toBeDefined();
+      // `fill` 要给出**同一个 op** 的 action（否则填完数会走错账）
+      const filled = c!.amount!.fill(1000);
+      expect(filled.type).toBe('bank');
+      if (filled.type === 'bank') expect(filled.op).toBe(op);
+    }
+  });
+
+  it('★ 兩筆特別融資的上限來自 core：週轉 = 可用額度、還款 = 已融資金額', () => {
+    const borrow = ui().choices.find((x) => x.action.type === 'bank' && x.action.op === 'financeBorrow');
+    const repay = ui().choices.find((x) => x.action.type === 'bank' && x.action.op === 'financeRepay');
+    expect(borrow!.amount!.max).toBe(90_000); // available = limit − owed
+    expect(repay!.amount!.max).toBe(30_000); // owed
+  });
+
+  it('★ 不是董事長（`specialFinance == null`）時那兩項**不出現**', () => {
+    const s = makeGameState({
+      currentPlayer: 0,
+      players: [makePlayer({ index: 0, character: 0 })],
+      pending: { kind: 'bank', wealth: 500_000, loanCapacity: 400_000, specialFinance: null },
+    });
+    const ops = interactionUi(
+      { kind: 'bank', wealth: 500_000, loanCapacity: 400_000, specialFinance: null },
+      s,
+    )!
+      .choices.filter((c) => c.action.type === 'bank')
+      .map((c) => (c.action.type === 'bank' ? c.action.op : null));
+    expect(ops).not.toContain('financeBorrow');
+    expect(ops).not.toContain('financeRepay');
+  });
+});
