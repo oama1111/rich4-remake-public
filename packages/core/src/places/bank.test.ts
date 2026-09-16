@@ -6,10 +6,14 @@ import { describe, expect, it } from 'vitest';
 import {
   deposit, withdraw, borrow, repay, loanCapacity, isRejectedByBank,
   addSpecialFinance, removeSpecialFinance,
+  cashRatioTarget, rebalanceCashByRatio,
 } from './bank.ts';
 import { payMoney } from '../rules/bankruptcy.ts';
 import { applyMonthlyInterest } from '../rules/monthly.ts';
-import { makePlayer } from '../testing/factories.ts';
+import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
+import { reduce, type MapTopology } from '../state/reduce.ts';
+import { SPECIAL_KIND } from '../loaders/map.ts';
+import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
 
 
 describe('存取款', () => {
@@ -156,5 +160,160 @@ describe('特别融资', () => {
   it('取出额被 specialFinance 截断', () => {
     const p = removeSpecialFinance(makePlayer({ specialFinance: 10_000 }), 999);
     expect(p.specialFinance).toBe(10_000 - 999);
+  });
+});
+
+// ============================================================
+//  到行重分 —— cashRatio(+0x19) 的唯一读者
+//  @source `_rich4_ui_bank_atm_entry` @ VA 0x004379c9 的 `loc_00437acd` 一支
+// ============================================================
+
+describe('★ 現金／存款比例重分 @source 0x00437acd', () => {
+  it('月中（日 8..25）：目标就是百分比 ÷ 100，落账 = trunc(total × target)', () => {
+    // 50% → 0.5；现金 0、存款 1000 → 500 / 500
+    const p = rebalanceCashByRatio(makePlayer({ cash: 0, moneyInBank: 1000, cashRatio: 50 }), 15);
+    expect(p.cash).toBe(500);
+    expect(p.moneyInBank).toBe(500);
+    // 总资产守恒
+    expect(p.cash + p.moneyInBank).toBe(1000);
+  });
+
+  it('★ 夹取只在两端：t ≥ 1 → 0.9f、t ≤ 0 → 0.1f（0x3f666666 / 0x3dcccccd）', () => {
+    // cashRatio 100 → t = 1.0 → 0.9f = 0.8999999761581421
+    //   ⇒ trunc(10000 × 0.9f) = 8999（不是 9000）
+    const hi = rebalanceCashByRatio(
+      makePlayer({ cash: 0, moneyInBank: 10_000, cashRatio: 100 }),
+      15,
+    );
+    expect(cashRatioTarget(100, 15)).toBe(Math.fround(0.9));
+    expect(hi.cash).toBe(8999);
+    expect(hi.moneyInBank).toBe(1001);
+    // cashRatio 0 → t = 0 → 0.1f = 0.10000000149011612
+    //   ⇒ trunc(1000 × 0.1f) = 100
+    const lo = rebalanceCashByRatio(makePlayer({ cash: 0, moneyInBank: 1000, cashRatio: 0 }), 15);
+    expect(cashRatioTarget(0, 15)).toBe(Math.fround(0.1));
+    expect(lo.cash).toBe(100);
+  });
+
+  it('★ 0 < t < 0.1 不向上夹（原版只在 t ≤ 0 才换 0.1）', () => {
+    expect(cashRatioTarget(5, 15)).toBe(Math.fround(0.05));
+    expect(cashRatioTarget(9, 15)).toBe(Math.fround(0.09));
+    const p = rebalanceCashByRatio(makePlayer({ cash: 0, moneyInBank: 1000, cashRatio: 5 }), 15);
+    expect(p.cash).toBe(50);
+  });
+
+  it('★ 日倍率：日 ≤ 7 ×1.5、日 ≥ 26 ×0.5（0x464c10 / 0x464c18）', () => {
+    expect(cashRatioTarget(50, 1)).toBe(0.75);
+    expect(cashRatioTarget(50, 7)).toBe(0.75);
+    expect(cashRatioTarget(50, 8)).toBe(0.5);
+    expect(cashRatioTarget(50, 15)).toBe(0.5);
+    expect(cashRatioTarget(50, 25)).toBe(0.5);
+    expect(cashRatioTarget(50, 26)).toBe(0.25);
+    expect(cashRatioTarget(50, 31)).toBe(0.25);
+    // 倍率之后的夹取：100% 在月初 ×1.5 = 1.5 → 夹成 0.9
+    expect(cashRatioTarget(100, 1)).toBe(Math.fround(0.9));
+    // 50 → 0.75：trunc(1000 × 0.75) = 750
+    expect(
+      rebalanceCashByRatio(makePlayer({ cash: 0, moneyInBank: 1000, cashRatio: 50 }), 7).cash,
+    ).toBe(750);
+    // 50 → 0.25：trunc(1000 × 0.25) = 250
+    expect(
+      rebalanceCashByRatio(makePlayer({ cash: 0, moneyInBank: 1000, cashRatio: 50 }), 26).cash,
+    ).toBe(250);
+  });
+
+  it('★ 什么都不做的带：|现状 − 目标| < 0.25 且现金 ≠ 0（0x464c20 / 0x464c28 = ±0.25）', () => {
+    const p = makePlayer({ cash: 600, moneyInBank: 400, cashRatio: 50 }); // 0.6 − 0.5 = 0.1
+    expect(rebalanceCashByRatio(p, 15)).toBe(p);
+    // 边界：diff 恰好 +0.25 → 重分
+    const plus = makePlayer({ cash: 750, moneyInBank: 250, cashRatio: 50 }); // 0.75 − 0.5
+    expect(rebalanceCashByRatio(plus, 15).cash).toBe(500);
+    // 边界：diff 恰好 −0.25 → 重分
+    const minus = makePlayer({ cash: 250, moneyInBank: 750, cashRatio: 50 }); // 0.25 − 0.5
+    expect(rebalanceCashByRatio(minus, 15).cash).toBe(500);
+  });
+
+  it('★ 现金为 0 时即使落在带里也重分（loc_00437bc1 `cmp [player+0x1c], 0`）', () => {
+    // 20% 目标、现金 0 ⇒ diff = −0.2（带内），但现金为 0 → 仍重分
+    const forced = rebalanceCashByRatio(
+      makePlayer({ cash: 0, moneyInBank: 1000, cashRatio: 20 }),
+      15,
+    );
+    expect(forced.cash).toBe(200);
+    expect(forced.moneyInBank).toBe(800);
+    // 只差「现金不为 0」这一条：现金 1 时同一条 diff 落回带内 → 不动
+    const kept = makePlayer({ cash: 1, moneyInBank: 999, cashRatio: 20 });
+    expect(rebalanceCashByRatio(kept, 15)).toBe(kept);
+  });
+
+  it('★ 向零截断，不是四舍五入', () => {
+    // 50 / 日 26 → 0.25；total 1003 → 250.75 ⇒ 250（四舍五入会得 251）
+    const a = rebalanceCashByRatio(makePlayer({ cash: 0, moneyInBank: 1003, cashRatio: 50 }), 26);
+    expect(a.cash).toBe(250);
+    expect(a.moneyInBank).toBe(753);
+    // 10 → 0.1f；total 1005 → 100.5000015 ⇒ 100（四舍五入会得 101）
+    const b = rebalanceCashByRatio(makePlayer({ cash: 0, moneyInBank: 1005, cashRatio: 10 }), 15);
+    expect(b.cash).toBe(100);
+    expect(b.moneyInBank).toBe(905);
+  });
+
+  it('总资产 ≤ 0 原样返回（原版 0/0 = NaN 会把两个字段写成 0x80000000；见 Q-BANK-3）', () => {
+    const p = makePlayer({ cash: 0, moneyInBank: 0, cashRatio: 50 });
+    expect(rebalanceCashByRatio(p, 15)).toBe(p);
+  });
+});
+
+describe('★ 接线：非真人落銀行格时重分，真人不重分', () => {
+  const topo: MapTopology = {
+    nodes: [
+      makeNode({ id: 1, adjacent: [2] }),
+      makeNode({ id: 2, adjacent: [1, 3], specialKind: SPECIAL_KIND.BANK }),
+      makeNode({ id: 3, adjacent: [2] }),
+    ],
+    lands: [],
+  };
+
+  function onBank(whoPlays: number) {
+    return makeGameState({
+      players: [
+        makePlayer({
+          index: 0,
+          nodeId: 2,
+          whoPlays,
+          cash: 0,
+          moneyInBank: 1000,
+          cashRatio: 50,
+        }),
+        makePlayer({ index: 1, nodeId: 1 }),
+      ],
+      currentPlayer: 0,
+      phase: 'settling',
+      day: 15,
+    });
+  }
+
+  it('电脑（who_plays = 2）：settle 时先重分，再开柜台', () => {
+    const r = reduce(onBank(WHO_PLAYS_COMPUTER), { type: 'settle' }, topo);
+    expect(r.players[0]?.cash).toBe(500);
+    expect(r.players[0]?.moneyInBank).toBe(500);
+    expect(r.pending?.kind).toBe('bank');
+  });
+
+  it('真人（who_plays = 1）：原版走的是 ATM 对话框那一支，不重分', () => {
+    const r = reduce(onBank(WHO_PLAYS_HUMAN), { type: 'settle' }, topo);
+    expect(r.players[0]?.cash).toBe(0);
+    expect(r.players[0]?.moneyInBank).toBe(1000);
+    expect(r.pending?.kind).toBe('bank');
+  });
+
+  it('被銀行拒绝往来期内（+0x3b ≠ 0）：连柜台都不开，也不重分', () => {
+    const s = onBank(WHO_PLAYS_COMPUTER);
+    const rejected = {
+      ...s,
+      players: s.players.map((p, i) => (i === 0 ? { ...p, daysRejectedByBank: 3 } : p)),
+    };
+    const r = reduce(rejected, { type: 'settle' }, topo);
+    expect(r.players[0]?.cash).toBe(0);
+    expect(r.pending).toBeNull();
   });
 });

@@ -124,7 +124,7 @@ describe('对话框版式', () => {
     expect(hitDialog(ctx, u, null, l.box.x - 5, l.box.y - 5)).toBeNull();
   });
 
-  it('填数页给出 −/+/最大/確定/取消 五个按钮，且各不相同', () => {
+  it('★★ 填数页走**原版数字键盘窗**：15 号钮 + 取消（B-5(i)/B-6(i)）', () => {
     const ctx = fakeCtx();
     const u = ui({
       choices: [
@@ -141,13 +141,19 @@ describe('对话框版式', () => {
       ],
     });
     const l = layoutDialog(ctx, u, { choice: 0, value: 3000 });
-    expect(l.buttons.map((b) => b.hit)).toEqual([
-      { kind: 'amountStep', delta: -1000 },
-      { kind: 'amountStep', delta: 1000 },
-      { kind: 'amountMax' },
-      { kind: 'amountOk' },
-      { kind: 'amountCancel' },
-    ]);
+    // ★ 先前这里是自造的五钮条（`− step / + step / 最大 / 確定 / 取消`），
+    //   本文件自己也注着「我们的做法，不是原版」。现在换成原版那扇窗的命中区：
+    //   16 号钮（`AMOUNT_KEY_RECTS`）+ 一颗自加的「取消」（原版靠 ESC / 右键）。
+    expect(l.amountWindow).toBe(true);
+    expect(l.buttons).toHaveLength(15);
+    expect(l.buttons[l.buttons.length - 1]!.hit).toEqual({ kind: 'amountCancel' });
+    // 数字那几号走 `amountSlot`（与键盘那一路同一个出口）
+    const slotHits = l.buttons.filter((b) => b.hit.kind === 'amountSlot');
+    // 2..15 共 14 颗键盘钮（数字 / 退格 / C / M / Enter）都走 `amountSlot`
+    expect(slotHits).toHaveLength(14);
+    // ⚠️ 金额栏那两颗光标（序号 0/1）**故意不接**：矩形互相重叠、原版靠逐像素
+    //   id 图分左右，本引擎给不出可靠命中区。
+    expect(l.buttons.filter((b) => b.hit.kind === 'amountStep')).toHaveLength(0);
     // 当前值要显示出来，否则玩家不知道自己在填什么
     expect(l.lines.join('')).toContain('3,000');
   });

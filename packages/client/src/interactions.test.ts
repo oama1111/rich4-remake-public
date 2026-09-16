@@ -81,13 +81,17 @@ describe('★ 買股份：訊息框 → 通用填数窗', () => {
     expect(ui.choices[1]?.action).toEqual({ type: 'declineDecision' });
   });
 
-  it('★ 开了填数页后：版式与命中都走 dialog.ts 那一套（−/＋/最大/確定/取消）', () => {
+  it('★★ 开了填数页后：走**原版数字键盘窗**（B-5(i)/B-6(i)）', () => {
     const ui = uiOf();
     const page = { choice: 0, value: 1000 };
     const l = layoutDialog(fakeCtx(), ui, page);
-    // 填数页不是 YES/NO，而是通用那五颗
+    // 填数页不是 YES/NO，而是原版那扇窗的命中区
     expect(l.yesNo).toBe(false);
-    expect(l.buttons.map((b) => b.label)).toEqual(['− 1', '+ 1', '最大', '確定', '取消']);
+    expect(l.amountWindow).toBe(true);
+    // 键盘 14 颗（2..0xf）+ 一颗自加的「取消」；金额栏两颗光标故意不接
+    expect(l.buttons).toHaveLength(15);
+    expect(l.buttons.filter((b) => b.hit.kind === 'amountSlot')).toHaveLength(14);
+    expect(l.buttons[l.buttons.length - 1]!.hit).toEqual({ kind: 'amountCancel' });
     // 每颗按钮的正中一定命中它自己（绘制与命中同源）
     for (const b of l.buttons) {
       expect(hitDialog(fakeCtx(), ui, page, b.rect.x + b.rect.w / 2, b.rect.y + b.rect.h / 2)).toEqual(

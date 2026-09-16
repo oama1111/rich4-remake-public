@@ -46,6 +46,8 @@ import {
   type Rect,
   type SpriteFn,
 } from './gameui.ts';
+import { AMOUNT_KEY_RECTS, AMOUNT_WINDOW, amountSlotOfId } from './amount-keys.ts';
+import { drawAmountWindow } from './amount-window.ts';
 import { boardToScreen, pointInGo, type GoPos } from './go-button.ts';
 import { LAYOUT } from './stage.ts';
 import { FONT_FAMILY } from './font.ts';
@@ -228,7 +230,14 @@ export type DialogHit =
   | { kind: 'amountStep'; delta: number }
   | { kind: 'amountMax' }
   | { kind: 'amountOk' }
-  | { kind: 'amountCancel' };
+  | { kind: 'amountCancel' }
+  /**
+   * 原版数字键盘窗上**按了第几号钮**（`0..15`）。
+   *
+   * ★ 2026-09-16 加（B-5(i)/B-6(i)）：把命中交给 `AMOUNT_SLOT_BY_ID`
+   *   那套语义（数字/退格/C/M/Enter/金额栏光标），而不是自己排五颗钮。
+   */
+  | { kind: 'amountSlot'; id: number };
 
 /** 正在填数的那一页；`null` 表示还在选项页 */
 export interface AmountPage {
@@ -247,7 +256,42 @@ interface Layout {
   lines: string[];
   /** 按钮是不是原版的 YES/NO 控件 */
   yesNo: boolean;
+  /**
+   * 这一次的按钮是不是**原版那扇数字键盘窗**的命中区（`Panel#21`）。
+   *
+   * ★ 2026-09-16 加（B-5(i)/B-6(i)）：`layoutDialog` 把 `AMOUNT_KEY_RECTS`
+   *   翻成一批没有标签的按钮；调用方据此**改为绘制原版窗**（`amount-window.ts`）
+   *   而不是画自造的五钮条。
+   */
+  amountWindow?: boolean;
   buttons: { label: string; rect: Rect; hit: DialogHit }[];
+}
+
+/**
+ * 原版键盘窗上那一号钮 → 本引擎的 `DialogHit`。
+ *
+ * ★ 语义与键盘那一路**同一套**（`amount-keys.ts` 的 `AMOUNT_SLOT_BY_ID`）：
+ *   原版也是让键盘合成一条 `WM_LBUTTONUP` 再进同一段分派，所以这里让
+ *   「鼠标点某一号钮」也走 `amountSlot`，由调用方按同一张表处理。
+ *   只有「金额栏那两颗光标」是鼠标独有的（原版是拖动），单独给 `amountStep`。
+ */
+function amountHitForSlot(slot: ReturnType<typeof amountSlotOfId>, step: number, id: number): DialogHit {
+  switch (slot?.kind) {
+    // 数字 / 退格 / C / M / Enter —— 全部交给同一张语义表
+    case 'digit':
+    case 'backspace':
+    case 'clear':
+    case 'max':
+    case 'ok':
+      return { kind: 'amountSlot', id };
+    // 金额栏的光标：鼠标独有的那两颗（原版是拖动），退化成按档微调
+    case 'cursorLeft':
+      return { kind: 'amountStep', delta: -step };
+    case 'cursorRight':
+      return { kind: 'amountStep', delta: step };
+    default:
+      return { kind: 'amountCancel' };
+  }
 }
 
 /** 按框宽折行；原版自己那几段 `\n\n` 先照分 */
@@ -332,6 +376,49 @@ export function layoutDialog(
     };
   }
 
+  // ——— 填数页：走**原版那扇数字键盘窗**（`fcn_00453544` / `Panel#21`）———
+  //
+  // ★ 2026-09-16 补（外部审查 B-5(i)/B-6(i)）：先前这里排的是自造的五钮条
+  //   （`− step / + step / 最大 / 確定 / 取消`），并且本文件自己都注着
+  //   「我们的做法，不是原版」。原版那扇窗的几何与编号语义已经全部解出
+  //   （见 `amount-keys.ts` 的 `AMOUNT_WINDOW` / `AMOUNT_KEY_RECTS` /
+  //   `AMOUNT_SLOT_BY_ID`），这里只负责**把命中交给它**。
+  //
+  //   取消仍然只走 ESC / 右键 —— 原版那扇窗自己**不认**取消键
+  //   （见 `amount-keys.ts` 头部：ESC 是全局钩子补成 `0x205` 关的窗）。
+  //   所以 `labels` 里保留一颗「取消」以便鼠标也能退，其余交给键盘窗。
+  if (page !== null && amount !== undefined) {
+    const slots: { label: string; rect: Rect; hit: DialogHit }[] = [];
+    for (let id = 0; id < AMOUNT_KEY_RECTS.length; id++) {
+      const r = AMOUNT_KEY_RECTS[id];
+      if (r === undefined) continue;
+      const slot = amountSlotOfId(id);
+      if (slot === null) continue;
+      // ⚠️ 0/1 是金额栏的左右光标：原版那两颗的矩形**互相重叠**、靠逐像素
+      //   id 图分左右，本引擎没有那张图，给不出可靠的命中区
+      //   ⇒ **不接**（宁可少两颗钮，也不要按错方向）。键盘那一路照旧可用
+      //   （`H` 键 = 金额栏），见 `amount-keys.ts` 的注。
+      if (slot.kind === 'cursorLeft' || slot.kind === 'cursorRight') continue;
+      slots.push({
+        label: '',
+        rect: boardRect({ x: AMOUNT_WINDOW.x + r.x, y: AMOUNT_WINDOW.y + r.y, w: r.w, h: r.h }),
+        hit: amountHitForSlot(slot, amount.step, id),
+      });
+    }
+    // 取消那颗由我们自己加（原版没有：它靠 ESC / 右键）
+    slots.push({
+      label: '取消',
+      rect: boardRect({
+        x: AMOUNT_WINDOW.x,
+        y: AMOUNT_WINDOW.y + AMOUNT_WINDOW.h + 4,
+        w: AMOUNT_WINDOW.w,
+        h: 20,
+      }),
+      hit: { kind: 'amountCancel' },
+    });
+    return { box, inner, title: ui.title, lines, yesNo: false, buttons: slots, amountWindow: true };
+  }
+
   // ——— 其余：框下面排一列按钮（⚠️ 我们的做法，不是原版）———
   ctx.font = FONT_BODY;
   const widths = labels.map((l) => Math.max(BTN_MIN_W, Math.ceil(ctx.measureText(l.label).width) + 18));
@@ -398,6 +485,17 @@ export function drawDialog(
 ): void {
   const l = layoutDialog(ctx, ui, page);
   ctx.save();
+
+  // ★ 填数页：直接画**原版那扇数字键盘窗**（`Panel#21` 图 0 整块 + 金额数字），
+  //   不再画自造的金框五钮条（B-5(i)/B-6(i)）。
+  //   命中已经由 `layoutDialog` 按 `AMOUNT_KEY_RECTS` 铺好了。
+  if (l.amountWindow === true && page !== null) {
+    if (drawAmountWindow(ctx, sprite, page.value)) {
+      ctx.restore();
+      return;
+    }
+    // 面板图还没解好 → 落到下面那条兜底（画金框 + 取消），别画半扇窗
+  }
 
   // ——— 框：原版的 Data.mkf 资源 517 图 5 ———
   const skin = sprite('Data.mkf', DIALOG_SKIN_RESOURCE, DIALOG_SKIN_IMAGE, true);

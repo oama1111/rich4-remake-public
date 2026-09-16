@@ -95,6 +95,7 @@ import {
   cardListPrice,
   decodeEstate,
   estateListPrice,
+  calculateLandToll,
   isColumnFull,
   stockListPrice,
   toolCount,
@@ -103,9 +104,19 @@ import {
 import { CARDS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import type { AmountPage, DialogHit } from './dialog.ts';
 import { drawDialog, hitDialog } from './dialog.ts';
+import { AMOUNT_KEY_BY_ID, amountKeyStep, amountSlotOfId } from './amount-keys.ts';
+import { amountKeyOfSlotId } from './amount-window.ts';
 import type { InteractionUi } from './interactions.ts';
 import { FONT_FAMILY } from './font.ts';
 import { LAYOUT } from './stage.ts';
+import {
+  inRect,
+  YESNO_CENTER_SCREEN,
+  YESNO_IMAGE,
+  YESNO_RESOURCE,
+  YESNO_SIZE,
+  yesNoHalves,
+} from './gameui.ts';
 import { portraitResource, type Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
@@ -448,6 +459,53 @@ export const PICK_ESTATE_COL = [
   { x: 0x1d7, align: 'center' }, // 租期 471（本模块不画，见 D-BOARD-3）
 ] as const;
 
+/**
+ * 地產清单「收費」那一列的金额。
+ *
+ * ★ 2026-09-16 补（外部审查 B-6(ii)）。**用的是引擎自己的规则函数**
+ *   `calculateLandToll` —— 原版那一列也是调**同一个** `_rich4_calculate_land_toll`
+ *   （`rich4_ui_sale.asm:737` 等四处 `call 0x419744` 之后把结果写进
+ *   `[0x4754ba]` 那一路的显示槽）。参数与原版第一处调用点一致：
+ *   `push 0 / push current_player+1` ⇒ 第二条参数 = **null**（连锁店分支）。
+ *
+ * ⚠️ 近似：原版按 `ebx`（1/2/3）还会分「全图 / 单块房屋 / 同名区」几支，
+ *   具体的取整与分支条件没有逐条核出来。这里统一按 `null`（连锁店那支）算，
+ *   与「该玩家每一个连锁店 2000 × 物價指數」的规则一致。
+ *   登记在 D-BOARD-3。
+ */
+export function estateFeeLabel(
+  state: GameState,
+  topo: MapTopology,
+  itemId: number,
+): string {
+  const me = state.currentPlayer + 1;
+  const lands = topo.lands ?? [];
+  // `ESTATE_LAND_BASE` / `ESTATE_FACILITY_BASE` 两段都走同一条
+  const fee = calculateLandToll(lands, me, state.priceIndex, null);
+  if (itemId < 0) return '';
+  return `$${fee.toLocaleString('en-US')}`;
+}
+
+/**
+ * 地產清单「租期」那一列 —— 到期日倒计时。
+ *
+ * @source `[0x4754b8]` 那一格；数据来自 `state.landTenure` / `state.facilityTenure`
+ *   （= 地块 / 設施的 `+0x30` 到期日，`0` = 无期限）。
+ *   ⚠️ 原版这一列显示的是**剩余天数**还是**绝对日期**没有逐一核出来，
+ *   这里按「`> 0` 就写剩余天数、`0` 写「無限期」」—— 与 `known-deviations`
+ *   里 `landTenure` 的既有用法（`tenureExpiresToday`）同一个口径。
+ */
+export function estateTenureLabel(
+  state: GameState,
+  itemId: number,
+): string {
+  const isFacility = itemId >= ESTATE_FACILITY_BASE;
+  const id = isFacility ? itemId - ESTATE_FACILITY_BASE : itemId - ESTATE_LAND_BASE;
+  const tenure = isFacility ? (state.facilityTenure[id] ?? 0) : (state.landTenure[id] ?? 0);
+  if (tenure <= 0) return '無限期';
+  return `${tenure}天`;
+}
+
 /** 五个分类页签的名字 @source 表 `0x4753d4` */
 export const PICK_TABS = ['全  部', '住宅區', '商業區', '房  屋', '連鎖店'] as const;
 
@@ -614,6 +672,25 @@ export function hitPickEstateBar(x: number, y: number): 'close' | 'up' | 'down' 
   if (y > 0x40 && y < 0x60) return 'up';
   if (y > 0x60 && y < 0x80) return 'down';
   return null;
+}
+
+/**
+ * 点在 YES/NO 那块 96×48 的哪一半（`x < w/2` → YES，否则 NO）。
+ *
+ * @source `_rich4_ui_yesno`（VA 0x00453a32）的 `loc_00453745 :101-126`：
+ *   命中**按图尺寸分半**，没有按钮矩形 —— 那张图本身就是控件。
+ * @returns 'yes' / 'no'；点在图外返回 null
+ */
+export function hitYesNo(x: number, y: number): 'yes' | 'no' | null {
+  const h = yesNoHalves();
+  if (inRect(x, y, h.yes)) return 'yes';
+  if (inRect(x, y, h.no)) return 'no';
+  return null;
+}
+
+/** 确认框那一拍的判定：YES 才成交（原版返回 1 才调 `fcn_004255da`）*/
+export function confirmChose(hit: 'yes' | 'no' | null): boolean {
+  return hit === 'yes';
 }
 
 /** 点在地產选物窗的分类页签上；返回页号 0..4 @source VA 0x00426387 */
@@ -933,6 +1010,8 @@ export function boardPickItems(
 function pickEstateView(env: UiScreenEnv): {
   items: readonly BoardPickItem[];
   full: readonly number[];
+  /** 这份清单总共多少件（未滚动前）—— 滚动条的夹取要用 */
+  total: number;
 } {
   const all = boardPickItems(env.state, env.topo, LISTING.estate);
   const items: BoardPickItem[] = [];
@@ -942,7 +1021,32 @@ function pickEstateView(env: UiScreenEnv): {
     items.push(it);
     full.push(i);
   });
-  return { items, full };
+  // ★ 滚动：原版那扇窗一次只显示一屏（`PICK_ESTATE_VISIBLE_ROWS` 行），
+  //   滚动条按件数滚（`fcn_00424aea(list, 2/1)` 的 2/1 = 上/下一页）。
+  const top = clampPickTop(ui.pickTop, items.length);
+  return { items: items.slice(top, top + PICK_ESTATE_VISIBLE_ROWS), full, total: items.length };
+}
+
+/**
+ * 地產选物窗一屏显示几行 —— 窗高 416、行距 0x20、从 `rowY0` 起。
+ * 原版那一屏的可见行数没有单独解出来，这里按几何算（并可测）。
+ */
+export const PICK_ESTATE_VISIBLE_ROWS = Math.floor((PICK_ESTATE.h - PICK_ESTATE.rowY0) / PICK_ESTATE.rowDy);
+
+/** 把滚动位置夹进 `[0, max(0, 件数 − 一屏行数)]` */
+export function clampPickTop(top: number, total: number): number {
+  const max = Math.max(0, total - PICK_ESTATE_VISIBLE_ROWS);
+  if (!Number.isFinite(top)) return 0;
+  return Math.min(max, Math.max(0, Math.trunc(top)));
+}
+
+/**
+ * 滚动条点一下：上/下滚一屏（原版 `fcn_00424aea(…, 2/1)`）。
+ * @returns 新的滚动位置
+ */
+export function pickTopAfterBar(top: number, total: number, dir: 'up' | 'down'): number {
+  const step = PICK_ESTATE_VISIBLE_ROWS;
+  return clampPickTop(dir === 'up' ? top - step : top + step, total);
 }
 
 // ============================================================
@@ -1013,6 +1117,17 @@ interface BoardUiState {
   /** `pick`：地產页签 */
   pickTab: number;
   /**
+   * `pick`：地產清单**滚到第几件**（滚动条）。
+   *
+   * ★ 2026-09-16 补（外部审查 B-6(ii)）：`hitPickEstateBar` 早就返回
+   *   `'up' | 'down'` 了，但调用点只判 `'close'` —— 返回被丢掉，滚动条**画了不响**。
+   *   原版确实滚：`rich4_ui_sale.asm:2785-2826`（`loc_0042643e` →
+   *   `[0x48c2ba] = 1/2/3`）与 `:2841-2875`（`loc_00426515` 抬手 →
+   *   `fcn_00424aea([0x48c2bb], 2/1)`），窗本体复用 `fcn_00424aea`
+   *   （= 個人資產表那张 5 列清单，`loc_0042643e` 那一支）。
+   */
+  pickTop: number;
+  /**
    * `pick`：**悬停**高亮的是第几件（候选清单里的下标）。
    *
    * ★ 四扇选物窗里**只有股票与地產**有悬停高亮（原版 `0x200`，VA 0x00425b19 /
@@ -1029,6 +1144,16 @@ interface BoardUiState {
   press: BoardPress | null;
   /** `detail`：看的是谁的第几格 */
   detail: { seller: number; slot: number } | null;
+  /**
+   * `detail`：买卖别人的挂牌前那一次 **YES/NO 确认**。
+   *
+   * ★ 2026-09-16 补（外部审查 B-6(iii)）：原版 `loc_00427b19` 先
+   *   `call _rich4_ui_yesno`（VA 0x453a32）**居中 (320,240)**，只有返回 1（YES）
+   *   才 `fcn_004255da(seller, slot)` 成交。本模块先前**直接成交** ——
+   *   等于把一次确认吞了。
+   *   `hover` 记鼠标压在 YES 还是 NO 上（原版 0x200 换图，VA 0x00453745 那条）。
+   */
+  confirm: { seller: number; slot: number; hover: 'yes' | 'no' | null } | null;
   /** `price`：哪一件、可挂多少、市價 */
   amount: { kind: number; id: number; amount: number; market: number } | null;
   amountPage: AmountPage | null;
@@ -1045,9 +1170,11 @@ function freshState(): BoardUiState {
     typeHot: null,
     pickKind: 0,
     pickTab: 0,
+    pickTop: 0,
     pickHot: null,
     press: null,
     detail: null,
+    confirm: null,
     amount: null,
     amountPage: null,
     message: null,
@@ -1329,6 +1456,34 @@ function drawDetail(
   }
 }
 
+/**
+ * 買别人挂牌前的 **YES/NO** 控件。
+ *
+ * @source `_rich4_ui_yesno`（VA 0x00453a32）—— 買地那一路 `fcn_00440ba8`
+ *   （`rich4.asm:21587-21589`）与公佈欄那一路 `loc_00427b19` 用的是**同一个**控件，
+ *   都居中在 **(0xdc, 0x140) = (220, 320)**。图 `Data.mkf` #0x1b8 的
+ *   图 0 = 两边都暗、图 1 = YES 那半亮、图 2 = NO 那半亮。
+ *   命中按图尺寸分半（`x < w/2` → YES），没有按钮矩形 —— 那张图就是控件
+ *   （`loc_00453745 :101-126`）。
+ */
+function drawYesNo(
+  ctx: CanvasRenderingContext2D,
+  env: UiScreenEnv,
+  hover: 'yes' | 'no' | null,
+): void {
+  const img = hover === 'yes' ? YESNO_IMAGE.yes : hover === 'no' ? YESNO_IMAGE.no : YESNO_IMAGE.none;
+  const s = env.sprite('Data.mkf', YESNO_RESOURCE, img, false);
+  const x0 = YESNO_CENTER_SCREEN.x - YESNO_SIZE.w / 2;
+  const y0 = YESNO_CENTER_SCREEN.y - YESNO_SIZE.h / 2;
+  if (s !== null) ctx.drawImage(s.bitmap, x0, y0);
+  // 图还没解好时至少给出可点的一半，别让玩家对着空屏
+  else {
+    const h = yesNoHalves();
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(h.yes.x, h.yes.y, YESNO_SIZE.w, YESNO_SIZE.h);
+  }
+}
+
 /** 选物窗（四类各一套）@source 四个 `fcn_0042xxxx` 的 WM_CREATE */
 function drawPick(
   ctx: CanvasRenderingContext2D,
@@ -1383,6 +1538,15 @@ function drawPick(
       if (priceCol !== undefined) {
         const price = marketPriceOf(env.state, env.topo, LISTING.estate, it.id, 0);
         origText(ctx, `$${price.toLocaleString('en-US')}`, priceCol.x, y, 6);
+      }
+      // ★ 2026-09-16 补上「收費」与「租期」两列（原先是留空，见 D-BOARD-3）
+      const feeCol = PICK_ESTATE_COL[3];
+      if (feeCol !== undefined) {
+        origText(ctx, estateFeeLabel(env.state, env.topo, it.id), feeCol.x, y, 6);
+      }
+      const tenureCol = PICK_ESTATE_COL[4];
+      if (tenureCol !== undefined) {
+        origText(ctx, estateTenureLabel(env.state, it.id), tenureCol.x, y, 2);
       }
     });
   } else {
@@ -1526,6 +1690,22 @@ function onPriceHit(env: UiScreenEnv, hit: DialogHit): void {
   const amount = dialog.choices[page.choice]?.amount;
   if (amount === undefined) return;
   switch (hit.kind) {
+    // ★ 原版键盘窗上按了第几号钮（B-6(i)）—— 与键盘那一路**同一个出口**
+    case 'amountSlot': {
+      const key = amountKeyOfSlotId(hit.id, amountSlotOfId, (n) => AMOUNT_KEY_BY_ID.get(n) ?? null);
+      if (key === null) break;
+      const step = amountKeyStep(page.value, amount.max, key);
+      if (step.submit) {
+        const n = page.value;
+        env.dispatch(amount.fill(n));
+        env.log(`▶ 公佈欄：${amount.label} ${n}`);
+        closePrice();
+        return;
+      }
+      ui.amountPage = { choice: page.choice, value: step.value };
+      env.requestRender();
+      return;
+    }
     case 'amountStep':
       ui.amountPage = {
         ...page,
@@ -1619,11 +1799,11 @@ function onDetailAction(env: UiScreenEnv): void {
     closeDetail(env);
     return;
   }
-  // 别人挂的 → 原版先弹 YES/NO（`rich4_ui_yesno` VA 0x00427b19），这里直接成交；
-  // 判据仍由 core 把关（`canBuyListing`）。见 D-BOARD-4。
-  env.dispatch(buyAction(sel.seller, sel.slot));
-  env.log('▶ 公佈欄：購買');
-  closeDetail(env);
+  // ★ 别人挂的 → 原版先弹 YES/NO（`loc_00427b19` → `call _rich4_ui_yesno`），
+  //   只有 YES 才成交。2026-09-16 补（外部审查 B-6(iii)）：先前直接 dispatch，
+  //   等于把这一次确认吞了。判据仍由 core 把关（`buyAction` → `canBuyListing`）。
+  ui.confirm = { seller: sel.seller, slot: sel.slot, hover: null };
+  env.requestRender();
 }
 
 function closeDetail(env: UiScreenEnv): void {
@@ -1649,6 +1829,15 @@ function onDown(env: UiScreenEnv, x: number, y: number): void {
     return;
   }
 
+  if (ui.confirm !== null) {
+    // ★ YES/NO 确认是**模态**的：它开着的时候不认详情框那两颗钮
+    //   @source `_rich4_ui_yesno`（VA 0x00453a32）命中按图尺寸分半
+    //   （`loc_00453745 :101-126`：`x < w/2` → YES，否则 NO）。
+    ui.confirm.hover = hitYesNo(x, y);
+    env.requestRender();
+    return;
+  }
+
   if (ui.mode === 'detail') {
     // @source VA 0x00427a18：只看坐标，记下是第 1 颗还是第 2 颗，然后压暗那一颗
     const btn = hitBoardDetailButton(detailKindOf(env), x, y);
@@ -1671,8 +1860,19 @@ function onDown(env: UiScreenEnv, x: number, y: number): void {
     }
     if (ui.pickKind === LISTING.estate) {
       // @source VA 0x00426387（页签）/ 0x0042643e（✕ 与滚动条）
-      if (hitPickEstateBar(x, y) === 'close') {
+      // ★ 2026-09-16 补（B-6(ii)）：这一个返回值以前只判 `'close'`，
+      //   `'up' / 'down'` 被丢掉 —— 滚动条画了不响。现在真的滚。
+      const bar = hitPickEstateBar(x, y);
+      if (bar === 'close') {
         ui.press = { area: 'pickExit' };
+        env.requestRender();
+        return;
+      }
+      if (bar === 'up' || bar === 'down') {
+        // 先问一次当前清单长度（`pickEstateView` 会顺便夹一次 `ui.pickTop`）
+        const total = pickEstateView(env).total;
+        ui.pickTop = pickTopAfterBar(ui.pickTop, total, bar);
+        ui.pickHot = null;
         env.requestRender();
         return;
       }
@@ -1757,11 +1957,29 @@ function onDown(env: UiScreenEnv, x: number, y: number): void {
 }
 
 /** 抬手这一拍 —— 只认按下时记下的那一个 @source `WM_LBUTTONUP` VA 0x004281af */
-function onUp(env: UiScreenEnv): void {
+function onUp(env: UiScreenEnv, at: { x: number; y: number } | null = null): void {
   const p = ui.press;
   ui.press = null;
 
   if (ui.mode === 'price') return; // 填数页在按下那一把就处理完了
+
+  // ★ YES/NO 确认：抬手那一拍才判定（原版 `_rich4_ui_yesno` 的 `:205-257`
+  //   就是「抬手返回 1/0」），YES 才真的下单
+  if (ui.confirm !== null) {
+    const c = ui.confirm;
+    // 原版 `_rich4_ui_yesno` 用**抬手**的坐标分半（`:205-257`）；事件没给就按 NO 处理
+    const hit = at === null ? null : hitYesNo(at.x, at.y);
+    ui.confirm = null;
+    if (confirmChose(hit)) {
+      env.dispatch(buyAction(c.seller, c.slot));
+      env.log('▶ 公佈欄：購買（已確認）');
+      closeDetail(env);
+    } else {
+      env.log('▶ 公佈欄：取消購買');
+      env.requestRender();
+    }
+    return;
+  }
 
   if (ui.mode === 'detail') {
     // @source loc_00427ad9：`[0x48c2c1] == 1` → 撤件／購買、`== 2` → 退卡
@@ -1912,6 +2130,16 @@ export const boardScreen: UiScreen = {
    * 挂牌格、SALE／EXIT、详情框那两颗钮原版**都没有悬停**，这里也不加。
    */
   move(x: number, y: number, env: UiScreenEnv): void {
+    // ★ YES/NO 确认是模态的：它开着时鼠标只用来高亮哪一半
+    //   @source `_rich4_ui_yesno` 的 `0x200`（`:145-155` 换图）
+    if (ui.confirm !== null) {
+      const hover = hitYesNo(x, y);
+      if (hover !== ui.confirm.hover) {
+        ui.confirm = { ...ui.confirm, hover };
+        env.requestRender();
+      }
+      return;
+    }
     if (ui.mode === 'type') {
       const hot = hitSalePopup(x, y);
       if (hot !== ui.typeHot) {
@@ -1953,8 +2181,9 @@ export const boardScreen: UiScreen = {
   },
 
   /** 抬手：才成立（原版 `0x202`）；坐标不参与判定，只认按下记下的那一个 */
-  up(_x: number, _y: number, env: UiScreenEnv): void {
-    onUp(env);
+  up(x: number, y: number, env: UiScreenEnv): void {
+    // 抬手坐标以**事件给的**为准（`move` 记的那一份只在没收到坐标时兜底）
+    onUp(env, { x, y });
   },
 
   draw(env: UiScreenEnv): void {
@@ -1966,6 +2195,8 @@ export const boardScreen: UiScreen = {
     if (ui.mode === 'pick') drawPick(ctx, env, env.state, env.topo);
     if (ui.mode === 'detail') drawDetail(ctx, env, view, env.state, env.topo);
     if (ui.mode === 'price') drawPrice(ctx, env, null);
+    // ★ 買别人挂牌前的 YES/NO 确认（模态，压在最上面）@source `_rich4_ui_yesno`
+    if (ui.confirm !== null) drawYesNo(ctx, env, ui.confirm.hover);
     drawMessage(ctx, env);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';

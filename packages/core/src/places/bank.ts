@@ -1,15 +1,16 @@
 /*
- * 银行：存取款、贷款、还款
+ * 银行：存取款、贷款、还款、到行时的現金／存款重分
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * @source rich4-re/asm/rich4_ui_bank.asm
  *   `_rich4_ui_bank_entry` @ VA 0x00436790（柜台）
- *   `_rich4_ui_bank_atm_entry`（ATM）
+ *   `_rich4_ui_bank_atm_entry` @ VA 0x004379c9（ATM／到行）
  *
  * 月息与「有贷款不发利息」在 rules/monthly.ts。
  */
 
 import type { Player } from '../state/types.ts';
+import { truncTowardZero } from '../rules/rounding.ts';
 
 // ============================================================
 //  存取款
@@ -193,4 +194,102 @@ export function removeSpecialFinance(player: Player, amount: number): Player {
     moneyInBank: bank,
     specialFinance: player.specialFinance - taken,
   };
+}
+
+// ============================================================
+//  到行时的現金／存款比例重分（`cashRatio` +0x19 的唯一读者）
+// ============================================================
+
+/**
+ * 目标**现金**占比 —— 「現金 ↔ 存款」滑块的百分比 × **日期倍率**，再夹两端。
+ *
+ * @source `_rich4_ui_bank_atm_entry` @ VA 0x004379c9 的 `loc_00437acd` 那一支
+ *   （**非真人**到銀行时走这里；`who_plays == 1` 的真人走 `loc_00437a18`
+ *   那条 ATM 对话框的路，不重分）：
+ * ```asm
+ * 00437ad3  mov  al, byte [edx + 0x496b81]        ; player + 0x19 = init_cash_ratio（百分比）
+ * 00437ae2  fild word [esp + 0x94]                ; 整数（值只有 0..255，低 16 位就是它）
+ * 00437ae9  fdiv dword [ref_00464c08]             ; ÷ 100.0f
+ * 00437aef  fstp dword [esp + 0x88]               ; ★ 存成单精度
+ * 00437af1  cmp  ecx, 7 / jg short 0x437b3c       ; 日 ≤ 7 →
+ * 00437af7  fld/fmul qword [ref_00464c10] / fstp  ;   × 1.5（double）
+ * 00437b3c  cmp  ecx, 0x1a / jl short 0x437b55    ; 日 ≥ 26 →
+ * 00437b42  fld/fmul qword [ref_00464c18] / fstp  ;   × 0.5（double）
+ * 00437b55  cmp  dword [esp + 0x88], 0x3f800000
+ * 00437b5e  jl   short 0x437b6f                    ; t < 1.0 才往下查另一端
+ * 00437b60  mov  dword [esp + 0x88], 0x3f666666    ; t = 0.9f
+ * 00437b6f  fldz / fcomp dword [esp + 0x88] / sahf
+ * 00437b81  jb   short 0x437b88                    ; 0 < t → 保留
+ * 00437b83  mov  dword [esp + 0x88], 0x3dcccccd    ; t = 0.1f
+ * ```
+ *
+ * 常量（都在 `rich4_ui_bank.asm` 的 `.data` 段）：
+ * - `[0x464c08]` = `0x42c80000` = **100.0f**
+ * - `[0x464c10]` = `0x3ff8000000000000` = **1.5**（double）
+ * - `[0x464c18]` = `0x3fe0000000000000` = **0.5**（double）
+ * - `0x3dcccccd` = **0.1f**、`0x3f666666` = **0.9f**
+ *
+ * ★ 夹取**只在两端**：`t ≥ 1` 换成 0.9，`t ≤ 0` 换成 0.1；`0 < t < 0.1`
+ *   **原样保留**（例如 `cashRatio = 5` → 0.05）。滑块是按 10 一档、角色表
+ *   的 `initCashRatio` 又都 ≥ 40，所以正常对局碰不到这条缝，但照 exe 写。
+ *
+ * ⚠️ 原版每一步都 `fstp dword` 回单精度，所以这里也用 `Math.fround` 把
+ *   中间值钉成 f32（与 `companyDividends` 的 ratio 同一处理）。
+ */
+export function cashRatioTarget(cashRatio: number, day: number): number {
+  // @source loc_00437ad3 / 00437ae9 / 00437aef
+  let t = Math.fround(Math.fround(cashRatio) / 100);
+  // @source loc_00437af1 `cmp ecx, 7 / jg` —— 月初（日 ≤ 7）目标现金 ×1.5
+  if (day <= 7) t = Math.fround(t * 1.5);
+  // @source loc_00437b3c `cmp ecx, 0x1a / jl` —— 月末（日 ≥ 26）目标现金 ×0.5
+  if (day >= 0x1a) t = Math.fround(t * 0.5);
+  // @source loc_00437b55 起的两道夹取（第一次是单精度位模式比 0x3f800000）
+  if (t >= 1) t = Math.fround(0.9);
+  else if (t <= 0) t = Math.fround(0.1);
+  return t;
+}
+
+/**
+ * 到銀行时按 `cashRatio`(+0x19) 把現金／存款重分一次。
+ *
+ * 规则（`loc_00437acd`..`loc_00437c14`）：
+ * ```
+ * total   = 現金 + 存款
+ * current = 現金 / total                       （单精度）
+ * target  = cashRatioTarget(cashRatio, 日)
+ * diff    = current − target
+ * if (diff ≥ +0.25) 重分                       ; [0x464c20] = double +0.25
+ * if (diff ≤ −0.25) 重分                       ; [0x464c28] = double −0.25
+ * if (|diff| < 0.25 且 現金 ≠ 0) 什么也不做     ; loc_00437bc1 `cmp [player+0x1c], 0`
+ * 新現金 = trunc(total × target)               ; loc_00437bca `call 0x457dbc`
+ * 新存款 = total − 新現金
+ * ```
+ * ⇒ 变动幅度小于总资产 25% 就不折腾（现金正好为 0 时除外，那时必须给钱）。
+ *
+ * ⚠️ **总资产 = 0 的偏差**：原版这时 `現金 / 0` 是 `0/0 = NaN`，NaN 的比较
+ *   全为「无序」⇒ 落进重分那一支，`fistp` 把 NaN 写成整数不确定值
+ *   `0x80000000`，現金与存款**双双变成 −2147483648**。那是数值事故不是规则，
+ *   本引擎原样返回，已在 `docs/known-deviations.md` 的 Q-BANK-3 登记。
+ *
+ * ⚠️ 最后那次乘法原版是 x87 扩展精度（`fild` 整数 → `fmul dword` 单精度 →
+ *   `frndint` 向零）。这里按仓库既有做法用 `truncTowardZero(total * target)`
+ *   建模（f64 乘积），与扩展精度最多差 1 个整数 —— 见 Q-BANK-3 的注记。
+ *
+ * @source VA 0x00437acd（入口）/ 0x00437b88（带）/ 0x00437bca（落账）
+ */
+export function rebalanceCashByRatio(player: Player, day: number): Player {
+  const total = player.cash + player.moneyInBank;
+  if (total <= 0) return player;
+
+  // @source loc_00437ad3 起：current = 現金 / 总资产（`fstp dword` ⇒ 单精度）
+  const current = Math.fround(player.cash / total);
+  const target = cashRatioTarget(player.cashRatio, day);
+
+  // @source loc_00437b88..0x00437bc6 —— 「什么都不做」的带
+  const diff = current - target;
+  if (diff > -0.25 && diff < 0.25 && player.cash !== 0) return player;
+
+  // @source loc_00437bca：新現金 = trunc(总资产 × target)，余额进存款
+  const cash = truncTowardZero(total * target);
+  return { ...player, cash, moneyInBank: total - cash };
 }

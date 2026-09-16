@@ -88,6 +88,181 @@ export const AMOUNT_BAR_PRESS_STEP = 17;
  *
  * 这张表由 `amount-keys.test.ts` **直接把 exe 那段分派解释一遍**来对账（不靠手抄）。
  */
+/**
+ * 那扇窗**面板的几何** —— 三张表和两个落点，全部逐字节核过。
+ *
+ * 外部审查 B-5/B-6 说「借款/出价走的是自造按钮条，原版是数字键盘窗」——
+ * 键盘那一半（`AMOUNT_KEY_*` 两张表 + 一次按键的四条规则）本模块早就有了；
+ * 缺的是**面板与命中**，即下面这些常数。2026-09-16 补齐并钉住。
+ *
+ * | 项 | 值 | 出处 |
+ * |---|---|---|
+ * | 面板图 | `Panel.mkf` **#0x15（21）** 图 0 = **128×192**（窗底） | `rich4.asm:27494` `read_mkf(panel, 0x15)` → `[0x48caa8]` |
+ * | 逐像素 id 图 | `Panel.mkf` **#0x16（22）** = **128×192 字节**（每像素一个钮 id） | `rich4.asm:27502` → `[0x48ca9c]` |
+ * | 窗落点 | **`(0x100, 0x90)` = (256, 144)**，尺寸 128×192 | `rich4.asm:27510-27513`：`[0x48cab8]=0x100`、`[0x48cab6]=0x90`，`InvalidateRect (0x100,0x90)-(0x180,0x150)` |
+ * | 金额显示 | 面板内 `(0x6b, 0x0b)` 起、**9 位**、字距 **0xc**、右起往左贴 | `fcn_0045297e`（`add esi,0x6b` / `add ebp,0xb` / `sub esi,0xc` / `cmp edi,9`）|
+ * | 「%」那一格 | 面板内 `(0xa, 0x2a)` | 同上（`add eax,0x2a` / `add eax,0xa`）|
+ */
+export const AMOUNT_WINDOW = {
+  /** 面板图在 `Panel.mkf` 里的资源号 @source `push 0x15` */
+  panelResource: 0x15,
+  /** 逐像素 id 图 @source `push 0x16` */
+  hitResource: 0x16,
+  /** 面板尺寸（图 0 的实测尺寸）*/
+  w: 128,
+  h: 192,
+  /** 窗落点（屏幕坐标）@source `[0x48cab8]/[0x48cab6]` */
+  x: 0x100,
+  y: 0x90,
+  /** 金额显示**框**的位置 @source `fcn_0045297e` 的 `add esi,0x6b` / `add ebp,0xb` */
+  valueAt: { dx: 0x6b, dy: 0x0b },
+  /**
+   * 数字**字**的落点（面板内）—— 与 `valueAt` 不同。
+   *
+   * ★ `loc_00452a05` 那几行的压栈序是 `push ebp`(=`+0x21`) 在前、
+   *   `push esi`(=`+0x40`) 在后，而参数序是 `(屏, 图, x, y)`（`fcn_00456512`
+   *   取 `[ebp+0x14]` 当 x、`[ebp+0x18]` 当 y）⇒ 真正落点是
+   *   **`x = +0x40`、`y = +0x21`**。字库锚点全是 (0,0)（manifest 核过）。
+   *
+   * ⚠️ 近似：「第一个字从框内 `+0x40` 起、往右 +0xc」是照这条算式实现的；
+   *   原版那一支看着是**右对齐**（往左排），但装配出来的算式是往右走。
+   *   9 位 × 0xc = 108，而显示框宽约 111 ⇒ 两种读法都放得下，故不冒险改
+   *   `valueAt`，只把字的落点单列出来（登记在 T-029 的 `Q-BANK-1-0`）。
+   */
+  valueAtChar: { dx: 0x40, dy: 0x21 },
+  /** 位数之间的字距 @source `loc_00452a05` 的 `sub esi, 0xc` */
+  valueDigitPitch: 0xc,
+  /** 位数上限 @source `loc_00453189` 的 `cmp eax, 9` */
+  valueMaxChars: 9,
+  /** 「%」那一格的面板内偏移 */
+  percentAt: { dx: 0xa, dy: 0x2a },
+} as const;
+
+/**
+ * 16 颗钮在**面板内**的矩形 `{x, y, w, h}` @source 表 `0x47e6d8`（每钮 4 字节）。
+ *
+ * 逐字节 dump 出来是（`rich4.asm:49788` 起；本表连**表外第 16 项**一起列全）：
+ * ```text
+ * [0] (16, 11, 228, 7)   金额栏的「‹」光标（不是键盘键）
+ * [1] (17, 11, 228, 7)   金额栏的「›」光标
+ * [2] ( 8, 63,  58, 25)  M   = 最大
+ * [3] (64, 63,  57, 25)  Enter = 確定
+ * [4] ( 8, 95,  33, 17)  C
+ * [5] (48, 95,  33, 17)  '0'
+ * [6] (88, 95,  33, 17)  ← 退格
+ * [7] ( 8,119,  33, 17)  '7'   [8] (48,119,33,17) '8'   [9] (88,119,33,17) '9'
+ * [10]( 8,143,  33, 17)  '4'   [11](48,143,33,17) '5'   [12](88,143,33,17) '6'
+ * [13]( 8,167,  33, 17)  '1'   [14](48,167,33,17) '2'   [15](88,167,33,17) '3'
+ * ```
+ *
+ * ★★ **编号语义 2026-09-16 已解出**（旧注释说「没解出」，可以撤了）：
+ *
+ * ```asm
+ * ; fcn_00452c02 的 0x202（左键抬手）落 loc_00452fce，末尾按序号分派：
+ * 004530d6  mov al, [0x48cac2]    ; 钮序号
+ * 004530da  sub al, 2
+ * 004530dc  cmp al, 0xd           ; ★ 越界闸：序号必须落在 2..0xf
+ * 004530de  ja  loc_0045310a      ;   否则只清序号、什么都不做
+ * 004530e1  jmp dword [eax*4 + 0x452bca]
+ * ```
+ * 跳表 `0x452bca`（dump 出来）：
+ * `0x4530e9 0x453116 0x453145 0x453189 0x453156 0x453189 ×10`
+ * ⇒ 序号 **2**=M(`loc_004530e9`) / **3**=Enter(`0x453116`) / **4**=C(`0x453145`)
+ * / **5**=接数字 / **6**=退格(`0x453156`) / **7..0xf**=接数字(`0x453189`)。
+ *
+ * 「接数字」那一支读的是**字符表 `0x47e714`**（`mov dl, byte [eax + 0x47e714]`，
+ * eax = 序号）—— dump 出来 `X.!.` 之后正好是 `'0' '0' '0' '7' '8' '9' '4' '5' '6' '1' '2' '3'`
+ * ⇒ 序号 **5/7/8 = '0','7','8'**、**9/10/11 = '9','4','5'**、
+ * **12/13/14 = '6','1','2'**、**15 = '3'**。
+ * 与 `AMOUNT_KEY_BY_ID` 的十条数字映射**逐条吻合**（那张手抄表得到了独立验证）。
+ *
+ * 另两条也定了：**0/1** 是**金额栏的左右光标**（不是键盘键）—— 鼠标按下后
+ * 序号 1 走 `loc_0045320b` 的拖动支（`cmp dh,1`），键盘则是 `H` → 序号 0x10。
+ */
+export const AMOUNT_KEY_RECTS: readonly { x: number; y: number; w: number; h: number }[] = [
+  { x: 16, y: 11, w: 228, h: 7 }, // 0 金额栏光标 ‹
+  { x: 17, y: 11, w: 228, h: 7 }, // 1 金额栏光标 ›
+  { x: 8, y: 63, w: 58, h: 25 }, // 2 M
+  { x: 64, y: 63, w: 57, h: 25 }, // 3 Enter
+  { x: 8, y: 95, w: 33, h: 17 }, // 4 C
+  { x: 48, y: 95, w: 33, h: 17 }, // 5 '0'
+  { x: 88, y: 95, w: 33, h: 17 }, // 6 退格
+  { x: 8, y: 119, w: 33, h: 17 }, // 7 '7'
+  { x: 48, y: 119, w: 33, h: 17 }, // 8 '8'
+  { x: 88, y: 119, w: 33, h: 17 }, // 9 '9'
+  { x: 8, y: 143, w: 33, h: 17 }, // 10 '4'
+  { x: 48, y: 143, w: 33, h: 17 }, // 11 '5'
+  { x: 88, y: 143, w: 33, h: 17 }, // 12 '6'
+  { x: 8, y: 167, w: 33, h: 17 }, // 13 '1'
+  { x: 48, y: 167, w: 33, h: 17 }, // 14 '2'
+  { x: 88, y: 167, w: 33, h: 17 }, // 15 '3'（表外第 16 项）
+];
+
+/**
+ * 「钮序号 → 那扇窗的**语义**」—— 由跳表 `0x452bca` 定（见 `AMOUNT_KEY_RECTS` 的注释）。
+ *
+ * 与键盘那一路的 `AMOUNT_KEY_BY_ID` 是**同一套语义**（那张表收的是分派写出的序号），
+ * 这里补上它没列的三项：`0`/`1` = 金额栏左右光标（鼠标）、`0xf` = `'3'`。
+ */
+export type AmountSlot =
+  | { readonly kind: 'digit'; readonly digit: number }
+  | { readonly kind: 'backspace' }
+  | { readonly kind: 'clear' }
+  | { readonly kind: 'max' }
+  | { readonly kind: 'ok' }
+  /** 金额栏左光标（鼠标那颗，序号 0）*/
+  | { readonly kind: 'cursorLeft' }
+  /** 金额栏右光标 / 拖动条（序号 1）*/
+  | { readonly kind: 'cursorRight' };
+
+/** 序号 → 语义；`null` = 那扇窗不认（原版 `cmp al,0xd / ja` 那一闸之外）*/
+export const AMOUNT_SLOT_BY_ID: ReadonlyMap<number, AmountSlot> = new Map<number, AmountSlot>([
+  [0, { kind: 'cursorLeft' }],
+  [1, { kind: 'cursorRight' }],
+  [2, { kind: 'max' }],
+  [3, { kind: 'ok' }],
+  [4, { kind: 'clear' }],
+  [5, { kind: 'digit', digit: 0 }],
+  [6, { kind: 'backspace' }],
+  [7, { kind: 'digit', digit: 7 }],
+  [8, { kind: 'digit', digit: 8 }],
+  [9, { kind: 'digit', digit: 9 }],
+  [0xa, { kind: 'digit', digit: 4 }],
+  [0xb, { kind: 'digit', digit: 5 }],
+  [0xc, { kind: 'digit', digit: 6 }],
+  [0xd, { kind: 'digit', digit: 1 }],
+  [0xe, { kind: 'digit', digit: 2 }],
+  [0xf, { kind: 'digit', digit: 3 }],
+]);
+
+/** 原版那一道越界闸：序号必须落在 `2..0xf` 才查跳表 @source `cmp al,0xd / ja` */
+export function amountSlotOfId(id: number): AmountSlot | null {
+  if (id === 0 || id === 1) return AMOUNT_SLOT_BY_ID.get(id) ?? null;
+  if (id < 2 || id > 0xf) return null;
+  return AMOUNT_SLOT_BY_ID.get(id) ?? null;
+}
+
+/**
+ * 一个**舞台坐标**落在面板内哪一颗钮上（面板外返回 `null`）。
+ *
+ * 原版是查 `Panel.mkf` #0x16 那张**逐像素 id 图**（鼠标 → 窗内坐标 → 取字节），
+ * 本引擎没有那张图，故按 `AMOUNT_KEY_RECTS` 做矩形命中 —— 矩形表**就是**
+ * 那张 id 图的等价物（都是 15 个可点区域）。
+ *
+ * ⚠️ 下标 0/1（金额栏的 ‹ / › 光标）**矩形互相重叠**，此时按**表序**取第一个
+ *   命中的 —— 原版靠逐像素图上左右两半不同的 id 来分，本表没有那一层信息。
+ */
+export function amountWindowHit(sx: number, sy: number): number | null {
+  const lx = sx - AMOUNT_WINDOW.x;
+  const ly = sy - AMOUNT_WINDOW.y;
+  for (let i = 0; i < AMOUNT_KEY_RECTS.length; i++) {
+    const r = AMOUNT_KEY_RECTS[i];
+    if (r === undefined) continue;
+    if (lx >= r.x && lx < r.x + r.w && ly >= r.y && ly < r.y + r.h) return i;
+  }
+  return null;
+}
+
 export const AMOUNT_KEY_ID_VK: ReadonlyMap<number, number> = new Map<number, number>([
   [0x30, 5],
   [0x31, 0xd],

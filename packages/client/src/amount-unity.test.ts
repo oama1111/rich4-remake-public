@@ -85,8 +85,6 @@ function gameState(): GameState {
 
 const state = gameState();
 
-/** 那五颗钮的**命中种类**（与 `dialog.ts` 的 `DialogHit` 一一对应）*/
-const GENERIC_HIT_KINDS = ['amountStep', 'amountStep', 'amountMax', 'amountOk', 'amountCancel'];
 
 /** 上市企業落点那份待决交互（照 core 现行实现给，界面只读不算）*/
 const buyShares: PendingInteraction = {
@@ -193,24 +191,18 @@ describe('★ 同一个 `AmountPage` 喂给五处，排出来的都是那五颗�
     it(`${f.what}：五颗钮与命中完全一致 @source loc_00452c02`, () => {
       const l = layoutDialog(fakeCtx(), f.ui, page);
       expect(l.yesNo).toBe(false);
-      // ★ 五颗钮的**种类**一模一样（− / ＋ / 最大 / 確定 / 取消）；
-      //   只有步长那一对写着各自的 `step`（金額那几处是 1000，股數/張數是 1）。
-      expect(l.buttons.map((b) => b.label)).toEqual([
-        `− ${f.step}`,
-        `+ ${f.step}`,
-        '最大',
-        '確定',
-        '取消',
-      ]);
-      // 命中那一份也只差步长
-      expect(l.buttons.map((b) => b.hit.kind)).toEqual(GENERIC_HIT_KINDS);
-      expect(l.buttons.map((b) => b.hit)).toEqual([
-        { kind: 'amountStep', delta: -f.step },
-        { kind: 'amountStep', delta: f.step },
-        { kind: 'amountMax' },
-        { kind: 'amountOk' },
-        { kind: 'amountCancel' },
-      ]);
+      // ★★ 2026-09-16 改（B-5(i)/B-6(i)）：这五处**共用同一扇原版数字键盘窗**
+      //   （`AMOUNT_KEY_RECTS` + `AMOUNT_SLOT_BY_ID`），不再是自造的五钮条。
+      //   仍然「五处完全一致」—— 一致性由**同一张表**保证，比原先的字符断言更强。
+      expect(l.amountWindow).toBe(true);
+      // 键盘那 14 颗（2..0xf）+ 一颗自加的「取消」= 15。
+      // ⚠️ 金额栏那两颗光标**故意不接**：它们的矩形互相重叠、原版靠逐像素 id 图
+      //   分左右，本引擎给不出可靠命中区（见 `dialog.ts` 里的注）。
+      expect(l.buttons).toHaveLength(15);
+      const slots = l.buttons.filter((b) => b.hit.kind === 'amountSlot').map((b) => b.hit);
+      expect(slots).toHaveLength(14);
+      expect(l.buttons.filter((b) => b.hit.kind === 'amountStep')).toHaveLength(0);
+      expect(l.buttons[l.buttons.length - 1]!.hit).toEqual({ kind: 'amountCancel' });
       // 绘制与命中同源：每颗钮正中一定命中它自己
       for (const b of l.buttons) {
         expect(

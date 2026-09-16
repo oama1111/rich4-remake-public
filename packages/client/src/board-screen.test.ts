@@ -71,7 +71,14 @@ import {
   hitBoardExit,
   hitBoardSale,
   hitBoardSlot,
+  clampPickTop,
+  estateFeeLabel,
+  estateTenureLabel,
+  confirmChose,
+  hitYesNo,
   hitPickEstateBar,
+  PICK_ESTATE_VISIBLE_ROWS,
+  pickTopAfterBar,
   hitPickEstateRow,
   hitPickEstateTab,
   hitPickGrid,
@@ -133,6 +140,7 @@ function harness(state: GameState, topo: MapTopology = { nodes: [] }): Harness {
       log: (m) => logs.push(m),
       flic: () => null,
       playEffect: () => undefined,
+      stopEffect: () => undefined,
     },
   };
   return h;
@@ -443,6 +451,49 @@ describe('选物窗的命中', () => {
     expect(hitPickEstateBar(515, 80)).toBe('up'); // ▲ y∈(64,96)
     expect(hitPickEstateBar(515, 100)).toBe('down'); // ▼ y∈(96,128)
     expect(hitPickEstateBar(510, 40)).toBeNull();
+    // ★★ 2026-09-16（外部审查 B-6(ii)）：这两个返回值以前被调用点丢掉，
+    //   滚动条画了不响。现在有真正的滚动语义 —— 见下面那两条用例。
+  });
+
+  it('★★ 地產清单「收費 / 租期」两列有值（B-6(ii) 补完）', () => {
+    const state = stateWithBoard([]);
+    // 收費：走引擎自己的 `calculateLandToll`（连锁店那支）—— 与规则同一份。
+    // 空手（一块地都没有）→ 0；有 n 个连锁店 → `2000 × n × 物價指數`。
+    const emptyLands = [] as never;
+    expect(estateFeeLabel(state, { lands: emptyLands } as never, ESTATE_LAND_BASE + 1)).toBe('$0');
+    const chain = (id: number) => ({
+      id, name: `L${id}`, type: 1, level: 0, owner: state.currentPlayer + 1,
+      landPrice: 0, housePrice: 0, rentByLevel: [], priceStatus: 0,
+    });
+    const fee = estateFeeLabel(state, { lands: [chain(1), chain(2)] } as never, ESTATE_LAND_BASE + 1);
+    expect(fee).toBe(`$${(2000 * 2 * state.priceIndex).toLocaleString('en-US')}`);
+    // 租期：`0` = 无期限；有到期日就写天数（landTenure / facilityTenure 两张表）
+    expect(estateTenureLabel({ ...state, landTenure: [0, 7] } as never, ESTATE_LAND_BASE + 1)).toBe('7天');
+    expect(estateTenureLabel({ ...state, landTenure: [0, 0] } as never, ESTATE_LAND_BASE + 1)).toBe('無限期');
+    expect(
+      estateTenureLabel({ ...state, facilityTenure: [3] } as never, ESTATE_FACILITY_BASE + 0),
+    ).toBe('3天');
+  });
+
+  it('★★ 地產清单的滚动：按一屏夹取、上下各滚一屏', () => {
+    // 一屏几行是几何算出来的（窗高 416、行距 0x20、从 rowY0 起）
+    expect(PICK_ESTATE_VISIBLE_ROWS).toBeGreaterThan(1);
+    const rows = PICK_ESTATE_VISIBLE_ROWS;
+    // 件数比一屏少 → 怎么滚都停在 0
+    expect(clampPickTop(0, rows - 1)).toBe(0);
+    expect(clampPickTop(5, 1)).toBe(0);
+    expect(pickTopAfterBar(0, 3, 'down')).toBe(0);
+    // 刚好一屏 → 也不能滚
+    expect(clampPickTop(3, rows)).toBe(0);
+    // 两屏的件数 → 最多滚到 rows
+    expect(clampPickTop(999, rows * 2)).toBe(rows * 2 - rows);
+    // 下滚一屏、上滚一屏，并在两端夹住
+    expect(pickTopAfterBar(0, rows * 3, 'down')).toBe(rows);
+    expect(pickTopAfterBar(rows, rows * 3, 'up')).toBe(0);
+    expect(pickTopAfterBar(0, rows * 3, 'up')).toBe(0);
+    // 非法输入不许算出 NaN
+    expect(clampPickTop(Number.NaN, 99)).toBe(0);
+    expect(clampPickTop(-7, 99)).toBe(0);
   });
 
   it('★ 地產的列 x：表头 147/231/319/395/471，價格/收費 再各加 0x21/0x1d', () => {
@@ -809,7 +860,9 @@ describe('挂东西：选物 → 填数 → dispatch(list) @source VA 0x00453544
     boardScreenState().amountPage!.value = 8200;
     const dialog = boardPriceUi(a.kind, a.id, a.amount, a.market);
     const layout = layoutDialog(h.env.stage, dialog, boardScreenState().amountPage);
-    const ok = layout.buttons.find((b) => b.hit.kind === 'amountOk');
+    // ★ 2026-09-16：填数页换成原版数字键盘窗后，「確定」是**序号 3** 那颗
+    //   （Enter，跳表 `0x452bca` 第 2 项 @source loc_00453116）
+    const ok = layout.buttons.find((b) => b.hit.kind === 'amountSlot' && b.hit.id === 3);
     expect(ok).toBeTruthy();
     click(
       h.env,
@@ -886,15 +939,53 @@ describe('撤件 / 購買 @source VA 0x00427ad9 / 0x00427b19 / 0x00427b3b', () =
     expect(boardScreenState().mode).toBe('board');
   });
 
-  it('★ 别人的挂牌：详情框那颗钮写「購買」→ noticeBoard op:buy', () => {
+  it('★★ 别人的挂牌：那颗钮先弹 YES/NO，**YES 才下单**（B-6(iii)）', () => {
     const state = stateWithBoard([{ seller: 2, slot: 1, kind: 3, id: 2, price: 3000, amount: 0 }]);
     const h = harness(state);
     openBoard(h.env);
     click(h.env, 104 + 72 + 36, 114 + 72 * 2 + 36);
     expect(boardScreenState().mode).toBe('detail');
     expect(boardScreenState().detail).toEqual({ seller: 2, slot: 1 });
+    // ① 点「購買」→ **只弹确认框，还不下单**
+    //    @source `loc_00427b19` → `call _rich4_ui_yesno`（居中 (220,320)）
     click(h.env, 224 + 0x30, 128 + 0xcb);
+    expect(h.actions).toEqual([]);
+    expect(boardScreenState().confirm).toEqual({ seller: 2, slot: 1, hover: null });
+    // ② 压在 YES 那半块上（左半：x < 220）→ 高亮
+    boardScreen.move?.(200, 320, h.env);
+    expect(boardScreenState().confirm?.hover).toBe('yes');
+    // ③ 抬手在 YES 上 → 这才真的下单
+    boardScreen.up?.(200, 320, h.env);
     expect(h.actions).toEqual([{ type: 'noticeBoard', op: 'buy', seller: 2, slot: 1 }]);
+    expect(boardScreenState().confirm).toBeNull();
+  });
+
+  it('★★ 确认框点 NO / 点在框外 → **不下单**，退回详情框', () => {
+    const state = stateWithBoard([{ seller: 2, slot: 1, kind: 3, id: 2, price: 3000, amount: 0 }]);
+    const h = harness(state);
+    openBoard(h.env);
+    click(h.env, 104 + 72 + 36, 114 + 72 * 2 + 36);
+    click(h.env, 224 + 0x30, 128 + 0xcb);
+    expect(boardScreenState().confirm).not.toBeNull();
+    // 右半 = NO（x > 220）
+    boardScreen.move?.(240, 320, h.env);
+    expect(boardScreenState().confirm?.hover).toBe('no');
+    boardScreen.up?.(240, 320, h.env);
+    expect(h.actions).toEqual([]);
+    expect(boardScreenState().confirm).toBeNull();
+    // 框外抬手也算取消
+    click(h.env, 224 + 0x30, 128 + 0xcb);
+    boardScreen.up?.(10, 10, h.env);
+    expect(h.actions).toEqual([]);
+    expect(boardScreenState().confirm).toBeNull();
+    // ★ 几何：YES/NO 各占一半，居中在 (220,320)
+    expect(hitYesNo(200, 320)).toBe('yes');
+    expect(hitYesNo(240, 320)).toBe('no');
+    expect(hitYesNo(220, 320)).toBe('no'); // x 不小于 w/2 → NO（原版 `x < w/2 → YES`）
+    expect(hitYesNo(10, 10)).toBeNull();
+    expect(confirmChose('yes')).toBe(true);
+    expect(confirmChose('no')).toBe(false);
+    expect(confirmChose(null)).toBe(false);
   });
 
   it('★ 详情框那两颗钮也是**抬手**才成立（按下只压暗）', () => {

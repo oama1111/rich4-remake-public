@@ -22,6 +22,11 @@ import {
   AMOUNT_DIGIT_MAX,
   AMOUNT_KEY_BY_ID,
   AMOUNT_KEY_ID_VK,
+  AMOUNT_KEY_RECTS,
+  AMOUNT_SLOT_BY_ID,
+  AMOUNT_WINDOW,
+  amountSlotOfId,
+  amountWindowHit,
   amountKeyOfVk,
   amountKeyStep,
   appendDigitKey,
@@ -377,5 +382,123 @@ describe('★ 与銀行 ATM 共用同一份纯函数（两扇窗的键盘）', (
     expect(amountKeyStep(123, 999, { kind: 'clear' })).toEqual({ value: 0, submit: false });
     expect(atmApplyCode('12', 17, 999)).toBe('999');
     expect(amountKeyStep(12, 999, { kind: 'max' })).toEqual({ value: 999, submit: false });
+  });
+});
+
+describe('★ 填数窗面板的几何 @source 表 0x47e6d8 / 0x475810 段（B-5/B-6 取证）', () => {
+  const RECTS_VA = 0x47e6d8;
+
+  it('★★ 15 颗钮的矩形**逐字节**与 exe 对账', () => {
+    if (!EXE_OK) return;
+    for (let i = 0; i < AMOUNT_KEY_RECTS.length; i++) {
+      const r = AMOUNT_KEY_RECTS[i]!;
+      const o = doff(RECTS_VA) + i * 4;
+      expect(
+        { x: byteAt(o), y: byteAt(o + 1), w: byteAt(o + 2), h: byteAt(o + 3) },
+        `第 ${i} 颗钮`,
+      ).toEqual({ x: r.x, y: r.y, w: r.w, h: r.h });
+    }
+  });
+
+  it('★ 面板落点与尺寸 @source `[0x48cab8]=0x100` / `[0x48cab6]=0x90`', () => {
+    // `rich4.asm:27510-27513` 那四条 `mov dword` 就是 (0x100,0x90)-(0x180,0x150)
+    expect(AMOUNT_WINDOW.x).toBe(0x100);
+    expect(AMOUNT_WINDOW.y).toBe(0x90);
+    expect(AMOUNT_WINDOW.w).toBe(0x180 - AMOUNT_WINDOW.x);
+    expect(AMOUNT_WINDOW.h).toBe(0x150 - AMOUNT_WINDOW.y);
+    // 资源号：面板 #0x15、逐像素 id 图 #0x16
+    expect(AMOUNT_WINDOW.panelResource).toBe(0x15);
+    expect(AMOUNT_WINDOW.hitResource).toBe(0x16);
+  });
+
+  it('★ 金额栏：9 位、字距 0xc、起点 (0x6b,0x0b) @source fcn_0045297e', () => {
+    expect(AMOUNT_WINDOW.valueMaxChars).toBe(9);
+    expect(AMOUNT_WINDOW.valueDigitPitch).toBe(0xc);
+    expect(AMOUNT_WINDOW.valueAt).toEqual({ dx: 0x6b, dy: 0x0b });
+    expect(AMOUNT_WINDOW.percentAt).toEqual({ dx: 0xa, dy: 0x2a });
+  });
+
+  it('★★ 命中按**矩形表**判（没有逐像素 id 图时它就是等价物）', () => {
+    const { x, y } = AMOUNT_WINDOW;
+    // ★ 前两颗（金额栏的 ‹ / › 光标）**矩形互相重叠**：中心点必然被排在前面的
+    //   那一颗先认走 —— 原版靠逐像素 id 图分左右，本引擎靠表序。故只对
+    //   **键盘那 14 颗**（下标 2 起）钉「中心命中自己」。
+    expect(AMOUNT_KEY_RECTS[0]!.y).toBe(AMOUNT_KEY_RECTS[1]!.y);
+    for (let i = 2; i < AMOUNT_KEY_RECTS.length; i++) {
+      const r = AMOUNT_KEY_RECTS[i]!;
+      expect(amountWindowHit(x + r.x + (r.w >> 1), y + r.y + (r.h >> 1)), `第 ${i} 颗`).toBe(i);
+    }
+    // 重叠那两颗：表序在前的先认（0 先于 1）
+    expect(amountWindowHit(x + 16, y + 13)).toBe(0);
+    // 窗外的点返回 null
+    expect(amountWindowHit(x - 1, y + 100)).toBeNull();
+    expect(amountWindowHit(x + 100, y - 1)).toBeNull();
+    // 边界：左上角闭 → 命中；右下角开 → 落到**下一颗**（两颗是贴着的）
+    expect(amountWindowHit(x + 8, y + 63)).toBe(2);
+    expect(amountWindowHit(x + 8 + 58, y + 63)).toBe(3); // 2 的右边界正好是 3 的左边界
+    // 第 3 颗的右边界之外（且不在任何矩形里）才算落空
+    expect(amountWindowHit(x + 125, y + 63)).toBeNull();
+  });
+});
+
+describe('★★ 钮序号的语义：跳表 0x452bca + 字符表 0x47e714（B-5/B-6 取证闭环）', () => {
+  const JUMP_VA = 0x452bca;
+  const CHARS_VA = 0x47e714;
+
+  it('★★ 跳表**逐项**与 exe 对账：2=M / 3=Enter / 4=C / 5=接数字 / 6=退格 / 7..15=接数字', () => {
+    if (!EXE_OK) return;
+    const fn = (i: number): number => {
+      const o = coff(JUMP_VA) + i * 4;
+      return (
+        (byteAt(o) | (byteAt(o + 1) << 8) | (byteAt(o + 2) << 16) | (byteAt(o + 3) << 24)) >>> 0
+      );
+    };
+    // 14 项，正好盖住序号 2..0xf（原版 `cmp al,0xd / ja` 的闸门）
+    expect(fn(0)).toBe(0x004530e9); // M（最大）
+    expect(fn(1)).toBe(0x00453116); // Enter（確定）
+    expect(fn(2)).toBe(0x00453145); // C（清零）
+    expect(fn(4)).toBe(0x00453156); // 退格
+    // 其余（含第 3 项与 6..13）全是「接数字」那一支
+    for (const i of [3, 5, 6, 7, 8, 9, 10, 11, 12, 13]) expect(fn(i), `第 ${i} 项`).toBe(0x00453189);
+  });
+
+  it('★★ 字符表 0x47e714 逐项对账：序号 5 / 7..15 就是 0 与 7..3 的排布', () => {
+    if (!EXE_OK) return;
+    const ch = (id: number): string => String.fromCharCode(byteAt(doff(CHARS_VA) + id));
+    expect(ch(5)).toBe('0');
+    expect(ch(7)).toBe('7');
+    expect(ch(8)).toBe('8');
+    expect(ch(9)).toBe('9');
+    expect(ch(0xa)).toBe('4');
+    expect(ch(0xb)).toBe('5');
+    expect(ch(0xc)).toBe('6');
+    expect(ch(0xd)).toBe('1');
+    expect(ch(0xe)).toBe('2');
+    expect(ch(0xf)).toBe('3'); // 旧注释说 3 没核出来 —— 就在这里
+  });
+
+  it('★★ AMOUNT_SLOT_BY_ID 与两张表逐项吻合（手抄表的独立验证）', () => {
+    const digits = [5, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf];
+    for (const id of digits) {
+      const slot = AMOUNT_SLOT_BY_ID.get(id);
+      expect(slot?.kind, `序号 ${id} 应当是数字`).toBe('digit');
+      if (slot?.kind === 'digit' && EXE_OK) {
+        expect(String(slot.digit), `序号 ${id} 的数字`).toBe(
+          String.fromCharCode(byteAt(doff(CHARS_VA) + id)),
+        );
+      }
+    }
+    expect(AMOUNT_SLOT_BY_ID.get(2)).toEqual({ kind: 'max' });
+    expect(AMOUNT_SLOT_BY_ID.get(3)).toEqual({ kind: 'ok' });
+    expect(AMOUNT_SLOT_BY_ID.get(4)).toEqual({ kind: 'clear' });
+    expect(AMOUNT_SLOT_BY_ID.get(6)).toEqual({ kind: 'backspace' });
+    expect(AMOUNT_SLOT_BY_ID.get(0)?.kind).toBe('cursorLeft');
+    expect(AMOUNT_SLOT_BY_ID.get(1)?.kind).toBe('cursorRight');
+    // 越界闸：0/1 是鼠标那两颗光标（原版走 0x200 拖动支），2..0xf 才查跳表
+    expect(amountSlotOfId(1)?.kind).toBe('cursorRight');
+    expect(amountSlotOfId(2)?.kind).toBe('max');
+    expect(amountSlotOfId(0xf)?.kind).toBe('digit');
+    expect(amountSlotOfId(0x10)).toBeNull(); // H（金额栏）不是面板上的钮
+    expect(amountSlotOfId(-1)).toBeNull();
   });
 });

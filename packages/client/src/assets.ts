@@ -625,6 +625,32 @@ export function readRaw555Resource(
 }
 
 /** 同上，直接给出 ImageBitmap */
+/**
+ * 取一个**原始字节**资源（不做任何解码）—— 给「每个像素就是一个 id」那类图用。
+ *
+ * ★ 2026-09-16 加（B-5/B-6）：通用金额窗那张**逐像素 id 图**是
+ *   `Panel.mkf` #0x16 = 128×192 = 24576 字节，每像素一个钮号。
+ *   它既不是 SPR 也不是 SMP（manifest 记 `signature: 'bin'`），
+ *   `sprite()` 取不到；这张图就是命中判定的**真值**（重叠处靠它分）。
+ *
+ * @returns 资源原始字节；取不到（越界 / 空槽 / 长度不足）返回 `null`
+ */
+export function readRawBytes(
+  archives: LoadedArchives,
+  archive: ArchiveName,
+  resource: number,
+  minBytes = 0,
+): Uint8Array | null {
+  let data: Uint8Array | null = null;
+  try {
+    data = archives.get(archive).read(resource);
+  } catch {
+    return null;
+  }
+  if (data === null || data.length < minBytes) return null;
+  return data;
+}
+
 export async function loadRaw555Resource(
   archives: LoadedArchives,
   archive: ArchiveName,
