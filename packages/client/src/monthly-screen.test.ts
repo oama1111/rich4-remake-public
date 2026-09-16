@@ -1083,3 +1083,34 @@ describe('★ 月結／頒獎屏的音效（D-MONTHLY-5，2026-09-16 接线）',
     }
   });
 });
+
+describe('★ WM_KEYDOWN（0x101）也能推进結算/頒獎屏', () => {
+  /*
+   * @source 頒獎屏窗口过程 `fcn_00437e61`（VA 0x00437e61）的分支表：
+   *   `0x202`（`WM_LBUTTONUP`）与 `0x205`（`WM_RBUTTONUP`）落到 `loc_00439b62`，
+   *   `0x101`（`WM_KEYDOWN`）也**同族**（`Wait_0402_Message` 那几处一律只看消息号）。
+   * ⚠️ 文档先前写「`0x101` 落到 `loc_00439b85`」—— 复核发现 `loc_00439b85`
+   *   其实是 **`WM_PAINT` 那段**（`BeginPaint`/`EndPaint`），已订正。
+   */
+  it('★ `key` 与 `up` 走同一个出口（抬手能推进，按键也能）', () => {
+    const src = readFileSync(new URL('./monthly-screen.ts', import.meta.url), 'utf8');
+    const upAt = src.indexOf('  up(_x: number, _y: number, env: UiScreenEnv): void {');
+    const keyAt = src.indexOf('  key(_key: UiKeyEvent, env: UiScreenEnv): boolean {');
+    expect(upAt).toBeGreaterThan(0);
+    expect(keyAt).toBeGreaterThan(upAt);
+    const upBody = src.slice(upAt, upAt + 200);
+    const keyBody = src.slice(keyAt, keyAt + 200);
+    expect(upBody).toContain('advance(env);');
+    expect(keyBody).toContain('advance(env);');
+    // 按键必须**消费**这一拍，否则会漏到别的熱鍵上
+    expect(keyBody).toContain('return true;');
+  });
+
+  it('★ 声明了 `key` 的屏会在 main.ts 的 keydown 里**排在填数窗之前**收到', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    const keyAt = src.indexOf('overlay?.key !== undefined');
+    const amountAt = src.indexOf("if (amountPage !== null && screen === 'game') {");
+    expect(keyAt).toBeGreaterThan(0);
+    expect(amountAt).toBeGreaterThan(keyAt);
+  });
+});

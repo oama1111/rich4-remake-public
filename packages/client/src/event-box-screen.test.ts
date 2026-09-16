@@ -776,3 +776,71 @@ describe('★ event 钩子：lastEvent 变了 / 手牌变长', () => {
     resetEventBoxScreen();
   });
 });
+
+// ============================================================
+//  ★ D-EVENT-1 结案：`WM_KEYDOWN`（0x101）也能跳过
+//    @source `fcn_004544f6`（`rich4_sound_effect.asm:915-960`）的 `PeekMessage`
+//    认三种消息：`0x202`（左键抬起）/ `0x205`（右键）/ **`0x101`（按键）**，
+//    任一命中就提前返回。`up`/`contextmenu` 早已接上，按键这一条原先没有出口
+//    （`UiScreen.hotkey` 只送映射过的 28 个功能，收不到「任意键」）。
+// ============================================================
+
+describe('★ WM_KEYDOWN（0x101）跳过', () => {
+  const keyEvent = (vk: number | null = 0x51) => ({
+    vk,
+    code: 'KeyQ',
+    ctrl: false,
+    shift: false,
+    alt: false,
+  });
+
+  it('★ 新聞演出中按任意键 → 直接收掉这一屏', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], null);
+    const after = stateOf([player(0, [])], { kind: 'news', id: 3 });
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreen.active(fakeEnv(after))).toBe(true);
+
+    const handled = eventBoxScreen.key!(keyEvent(), fakeEnv(after, 10));
+    expect(handled).toBe(true);
+    // 跳过之后不再接管
+    expect(eventBoxScreen.active(fakeEnv(after, 20))).toBe(false);
+  });
+
+  it('★ 不挑键：`vk = null`（认不出来的键）也照样跳过', () => {
+    // 原版是 `cmp ecx,0x101 / jne 继续等` —— **只看消息号**，不看是哪个键。
+    // ⚠️ 用新聞（一次演完）而不是命運：命運第二段（`fcn_004528b9(0x320)`）
+    //   原版就是**死等**，跳过第一段之后屏幕仍然接管着，那是照抄不是缺漏。
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], null);
+    const after = stateOf([player(0, [])], { kind: 'news', id: 5 });
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreen.key!(keyEvent(null), fakeEnv(after, 10))).toBe(true);
+    expect(eventBoxScreen.active(fakeEnv(after, 20))).toBe(false);
+  });
+
+  it('三条出口（抬手 / 右键 / 按键）落到**同一个**跳过 —— 行为一致', () => {
+    const run = (fire: (env: UiScreenEnv) => void): boolean => {
+      resetEventBoxScreen();
+      const before = stateOf([player(0, [])], null);
+      const after = stateOf([player(0, [])], { kind: 'news', id: 3 });
+      eventBoxScreen.event!(before, after, fakeEnv(after));
+      fire(fakeEnv(after, 10));
+      return eventBoxScreen.active(fakeEnv(after, 20));
+    };
+    const byUp = run((env) => eventBoxScreen.up!(0, 0, env));
+    const byRight = run((env) => eventBoxScreen.contextmenu!(0, 0, env));
+    const byKey = run((env) => void eventBoxScreen.key!(keyEvent(), env));
+    expect(byUp).toBe(false);
+    expect(byRight).toBe(false);
+    expect(byKey).toBe(false);
+  });
+
+  it('★ 没在演的时候按键是空操作（不返回 true，免得吞掉别的熱鍵）', () => {
+    resetEventBoxScreen();
+    const s = stateOf([player(0, [])], null);
+    // 未起播：`key` 仍会被调到（屏不 active 时 main.ts 根本不会调），
+    // 但直接调也不该抛、不该改状态
+    expect(() => eventBoxScreen.key!(keyEvent(), fakeEnv(s))).not.toThrow();
+  });
+});

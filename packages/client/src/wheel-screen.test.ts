@@ -648,3 +648,30 @@ describe('★ 浮窗與音效', () => {
     resetWheelScreen();
   });
 });
+
+describe('★ WM_KEYDOWN（0x101）也是「點一下」@source `0x0043fa66`', () => {
+  /*
+   * 原版那一段把 `0x202`（左鍵抬起）/ `0x205`（右鍵）/ `0x101`（按鍵）三种消息
+   * **落到同一支处理**（`esi = 2`），所以本引擎的 `down` 与 `key` 都调 `clickWheel`。
+   * 「点了算不算」的判据仍是 `wheelClickable`（真人 + 不夢遊）。
+   */
+  it('★ `down` 与 `key` 共用同一个 `clickWheel`（不是各写一份）', () => {
+    const src = readFileSync(new URL('./wheel-screen.ts', import.meta.url), 'utf8');
+    expect(src).toContain('function clickWheel(env: UiScreenEnv): void {');
+    const downAt = src.indexOf('  down(_x: number, _y: number, env: UiScreenEnv): void {');
+    const keyAt = src.indexOf('  key(_key: UiKeyEvent, env: UiScreenEnv): boolean {');
+    expect(downAt).toBeGreaterThan(0);
+    expect(keyAt).toBeGreaterThan(downAt);
+    expect(src.slice(downAt, downAt + 120)).toContain('clickWheel(env);');
+    expect(src.slice(keyAt, keyAt + 120)).toContain('clickWheel(env);');
+    expect(src.slice(keyAt, keyAt + 160)).toContain('return true;');
+    // 判据只在 `clickWheel` 里写一次
+    expect(src.split('wheelClickable(play.cue)').length - 1).toBe(1);
+  });
+
+  it('`UiScreen` 契约里声明了 `key`（可选出口）', () => {
+    const src = readFileSync(new URL('./ui-screen.ts', import.meta.url), 'utf8');
+    expect(src).toContain('key?(key: UiKeyEvent, env: UiScreenEnv): boolean;');
+    expect(src).toContain('export interface UiKeyEvent {');
+  });
+});

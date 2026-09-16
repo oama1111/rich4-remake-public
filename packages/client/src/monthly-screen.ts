@@ -129,7 +129,7 @@ import { CHARACTERS } from '@rich4/data';
 import type { ArchiveName, LoadedFlic, Sprite } from './assets.ts';
 import { currency } from './panel.ts';
 import { FONT_FAMILY } from './font.ts';
-import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import type { UiKeyEvent, UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type MonthlySprite = (
@@ -1239,9 +1239,20 @@ export const monthlyScreen: UiScreen = {
    *   —— **没有 `0x201`（`WM_LBUTTONDOWN`）那一条**；
    *   `Wait_0402_Message` 等的就是 0x402 那条「抬手」消息。
    *   故本屏按下时**什么都不做**。
+   *
+   * ✅ 2026-09-16：`0x101` 也接上了（新加的 `UiScreen.key` 出口）。
+   *   ⚠️ 订正：`loc_00439b85` 其实是 **`WM_PAINT` 那段**（`BeginPaint`/`EndPaint`），
+   *   不是「按键专用分支」—— 文档先前把它当成按键分支记了。真正的按键处理
+   *   与同族的 `fcn_004544f6` 一样是**只看消息号**（`0x101` 就跳过）。
    */
   up(_x: number, _y: number, env: UiScreenEnv): void {
     advance(env);
+  },
+
+  /** `WM_KEYDOWN`（0x101）—— 与抬手同一个出口 */
+  key(_key: UiKeyEvent, env: UiScreenEnv): boolean {
+    advance(env);
+    return true;
   },
 
   tick(env: UiScreenEnv): void {

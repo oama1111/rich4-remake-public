@@ -93,6 +93,23 @@ export interface UiScreenEnv {
   stopEffect(id: number): void;
 }
 
+/**
+ * 交给 `UiScreen.key` 的一次按键 —— **与 DOM 无关**，便于单测。
+ *
+ * ⚠️ 原版那几处等待**只看消息号**（`0x101` 就跳过），不看是哪个键；
+ *   所以多数屏只要「有键按下」这一件事。`vk` / 修饰键留着给将来
+ *   真正按键分派的屏（例如填数窗那种按 `0x30..0x39` 的）。
+ */
+export interface UiKeyEvent {
+  /** Windows 虚拟键码（`hotkeys.ts` 的 `vkOf` 会给）；认不出来时为 `null` */
+  readonly vk: number | null;
+  /** DOM 的 `KeyboardEvent.code`（`'Enter'` / `'KeyQ'` …）；只用于日志与测试 */
+  readonly code: string;
+  readonly ctrl: boolean;
+  readonly shift: boolean;
+  readonly alt: boolean;
+}
+
 export interface UiScreen {
   /** 稳定标识，只用于日志与调试（如 `notice-board`）*/
   readonly id: string;
@@ -134,6 +151,24 @@ export interface UiScreen {
    *   没声明的屏不受影响（照旧落到下面那些分支）。
    */
   contextmenu?(x: number, y: number, env: UiScreenEnv): void;
+
+  /**
+   * 键盘按下（原版 `WM_KEYDOWN` = **0x101**）。
+   *
+   * ★ 为什么要有这个出口：原版那一族**可跳过的等待**（`fcn_004544f6` /
+   *   `fcn_004528b9` / `fcn_0045144f` / 转盘的 `fcn_0043f5xx` / 頒獎屏的
+   *   `fcn_00437e61`）在自己的 `PeekMessage` 循环里认**三种**消息：
+   *   `0x202`（左键抬起）、`0x205`（右键抬起）、**`0x101`（按键）** ——
+   *   三者一律置「跳过」标志。本引擎的 `up` / `contextmenu` 已覆盖前两种，
+   *   但 `hotkey` 出口只送**映射过的那 28 个功能**，收不到「任意键」。
+   *
+   * @param key 这次按下的键（DOM 自由的形状，便于单测）
+   * @returns `true` = 本屏已消费（`main.ts` 会 `preventDefault` 并停下）
+   *
+   * ⚠️ 声明了它的屏会在 keydown 处理里**排在填数窗/ATM/熱鍵之前**收到这一拍 ——
+   *   与「这些都是模态窗口、`WM_KEYDOWN` 先到它手里」一致。
+   */
+  key?(key: UiKeyEvent, env: UiScreenEnv): boolean;
 
   /**
    * 每帧一次（**所有**登记的屏都收，不只是 active 的）。

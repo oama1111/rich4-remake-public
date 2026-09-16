@@ -6650,6 +6650,33 @@ function bindInput(): void {
       e.preventDefault();
       return;
     }
+    // ── ★ 此刻接管整屏的那一屏先收 `WM_KEYDOWN`（0x101）@source 各处 `PeekMessage` ──
+    //   原版那一族「可跳过的等待」（`fcn_004544f6` / `fcn_004528b9` / `fcn_0045144f` /
+    //   转盘 / 頒獎屏）在自己的消息循环里认 `0x202` / `0x205` / **`0x101`** 三种，
+    //   任一命中就置「跳过」标志。本引擎的 `up`/`contextmenu` 已覆盖前两种，
+    //   按键这一条原先没有出口（`hotkey` 只送映射过的 28 个功能）。
+    //   ★ 放在**最前**：这些都是模态窗口，`WM_KEYDOWN` 先到它手里，
+    //     不能被下面填数窗 / ATM / 熱鍵的按键抢走。
+    {
+      const overlay = activeUiScreen();
+      if (overlay?.key !== undefined) {
+        const handled = overlay.key(
+          {
+            vk: vkOf(e),
+            code: e.code,
+            ctrl: e.ctrlKey || e.metaKey,
+            shift: e.shiftKey,
+            alt: e.altKey,
+          },
+          uiEnv(),
+        );
+        if (handled) {
+          e.preventDefault();
+          requestRender();
+          return;
+        }
+      }
+    }
     // ── 通用填数窗收键盘 @source `fcn_00452c02` 的 0x100（`loc_00452e4b`）──
     //   ★ 那扇窗**自己**认 0-9 / 退格 / C / M / H / Enter（Q-UI-8 残留项 ③），
     //   而且它是模态的：`WM_KEYDOWN` 先到它手里 —— 所以这一段也排在熱鍵之前

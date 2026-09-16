@@ -76,7 +76,7 @@ import {
 } from '@rich4/core';
 import { FONT_FAMILY } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
-import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import type { UiScreen, UiScreenEnv, UiKeyEvent} from './ui-screen.ts';
 
 /** 取圖（與 `main.ts` 的 `spriteNow` 同一個簽名） */
 export type WheelSprite = (
@@ -600,6 +600,29 @@ function ownerName(env: UiScreenEnv, owner: number): string {
   return CHARACTERS[p?.character ?? 0]?.name ?? '';
 }
 
+/**
+ * 原版的「點一下」—— `0x202`（左鍵抬起）/ `0x205`（右鍵）/ `0x101`（按鍵）
+ * 三種訊息**共用同一支**（@source `0x0043fa66` 起，三者都落到 `esi = 2` 那支）。
+ * 還在快轉就進減速段；已經停好就立刻關屏。
+ *
+ * 「點了算不算」的判据在 `wheelClickable`：`whoPlays == 1`（真人）且
+ * `+0x37`（夢遊）为 0 —— AI 一路自己走，點了不算。
+ */
+function clickWheel(env: UiScreenEnv): void {
+  const play = playback;
+  if (play === null || !wheelClickable(play.cue)) return;
+  if (play.landedAt !== null) {
+    playback = null;
+    env.log('轉盤：按一下提早關屏');
+    env.requestRender();
+    return;
+  }
+  const next = wheelSpinSkipToSlow(play.spin, env.now);
+  if (next === play.spin) return;
+  playback = { ...play, spin: next };
+  env.requestRender();
+}
+
 export const wheelScreen: UiScreen = {
   id: 'wheel',
 
@@ -631,20 +654,21 @@ export const wheelScreen: UiScreen = {
    * AI 與夢遊中的玩家點了不算 @source 0x0043fa66。
    */
   down(_x: number, _y: number, env: UiScreenEnv): void {
-    const play = playback;
-    if (play === null || !wheelClickable(play.cue)) return;
-    if (play.landedAt !== null) {
-      playback = null;
-      env.log('轉盤：按一下提早關屏');
-      env.requestRender();
-      return;
-    }
-    const next = wheelSpinSkipToSlow(play.spin, env.now);
-    if (next === play.spin) return;
-    playback = { ...play, spin: next };
-    env.requestRender();
+    clickWheel(env);
   },
 
+  /**
+   * `WM_KEYDOWN`（0x101）—— 第三种「点一下」@source `0x0043fa66`：
+   * `0x202`（左键抬起）/ `0x205`（右键）/ `0x101`（按键）三者在原版**共用
+   * 同一支处理**（同一个 `esi = 2` 分支），所以这里与鼠标走同一个 `clickWheel`。
+   *
+   * ⚠️ 同一处也说明「点了算不算」的判据是 `whoPlays == 1`（真人）且
+   *   `+0x37`（夢遊）为 0 —— 那是 `wheelClickable`。
+   */
+  key(_key: UiKeyEvent, env: UiScreenEnv): boolean {
+    clickWheel(env);
+    return true;
+  },
   tick(env: UiScreenEnv): void {
     const play = playback;
     if (play === null) return;

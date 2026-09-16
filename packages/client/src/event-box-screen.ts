@@ -137,7 +137,9 @@ import {
 } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
 import { DIALOG_SKIN_IMAGE, DIALOG_SKIN_RESOURCE } from './gameui.ts';
-import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import type { UiScreen, UiScreenEnv,
+  UiKeyEvent,
+} from './ui-screen.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type EventBoxSprite = (
@@ -856,8 +858,8 @@ export const eventBoxScreen: UiScreen = {
    *   `contextmenu`（浏览器里的 `WM_RBUTTONUP`，见 `ui-screen.ts:117`），
    *   两条都落到同一个 `skipPlayback`。原版 `fcn_004544f6`
    *   （`rich4_sound_effect.asm:915-960`）的 `PeekMessage` 收的正是这两个。
-   *   ⚠️ 只剩 `WM_KEYDOWN`（0x101）没接：`UiScreen` 契约里没有「把一个按键
-   *   交给当前屏」的出口（只有映射过的 `HOTKEY.*`），见 deviations D-EVENT-1。
+   *   ✅ 2026-09-16：`WM_KEYDOWN`（0x101）也接上了 —— 走新加的 `UiScreen.key`
+   *   出口（契约原本只有映射过的 `HOTKEY.*`，收不到「任意键」）。
    *   **按下**（0x201）原版不认，本屏也不实现 `down`。
    */
   up(_x: number, _y: number, env: UiScreenEnv): void {
@@ -867,6 +869,18 @@ export const eventBoxScreen: UiScreen = {
   /** `WM_RBUTTONUP`（0x205）—— 与抬手同一条出口 @source `fcn_004544f6` 的 `PeekMessage` */
   contextmenu(_x: number, _y: number, env: UiScreenEnv): void {
     skipPlayback(env);
+  },
+
+  /**
+   * `WM_KEYDOWN`（0x101）—— 第三种跳过消息 @source `fcn_004544f6` 的 `PeekMessage`。
+   *
+   * 原版那一段是 `cmp ecx,0x202 / je 跳过` `cmp ecx,0x205 / je 跳过`
+   * `cmp ecx,0x101 / jne 继续等` —— **只看消息号、不看是哪个键**，
+   * 所以这里也一律消费。
+   */
+  key(_key: UiKeyEvent, env: UiScreenEnv): boolean {
+    skipPlayback(env);
+    return true;
   },
 
   /**
