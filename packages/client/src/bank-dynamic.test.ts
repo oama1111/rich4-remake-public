@@ -5,6 +5,7 @@
  * 这里只钉**纯函数**：滑入的 y 序列、状态机每一步、ATM 的键盘/进度条/拖动。
  * 绘制本身不碰 canvas（与仓库里其它屏同一套口径）。
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { FINANCE_BORROW, FINANCE_BYE, FINANCE_REPAY } from './bank-loan.ts';
 import type { Sprite } from './assets.ts';
@@ -760,5 +761,26 @@ describe('★ 特別融資子对话框的三颗小钮 @source `loc_00434da1`', (
       .toBe(LOAN_ST.ready);
     // 子对话框那颗直接进 `borrowAsk`（原版按下的下一拍就开填数页）
     expect(fin(base, FINANCE_BORROW).ui.st).toBe(LOAN_ST.borrowAsk);
+  });
+});
+
+// ============================================================
+//  main.ts 的接线 —— 「動畫過程」管着招呼那一句（Q-ANIM-1）
+// ============================================================
+
+describe('★ 銀行招呼归「動畫過程」管（@source loc_00435200）', () => {
+  it('main.ts 传 options.animation，不再写死 true', () => {
+    // @source VA 0x00435200：`cmp byte [0x497159],0 / je → [0x48c3dd] = 3`
+    //   （`[0x497159]` = `RICH4.CFG+1` = 动画开关）。关掉时**不说** #0075。
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain('loanStart(options.animation)');
+    expect(src).not.toContain('loanStart(true)');
+  });
+
+  it('loanStart(false) 直达 menu、没有气泡（与 exe 的 st = 3 一致）', () => {
+    const quiet = loanStart(false);
+    expect(quiet.st).toBe(LOAN_ST.menu);
+    expect(quiet.bubble).toBeNull();
+    expect(loanStart(true).st).toBe(LOAN_ST.greet);
   });
 });
