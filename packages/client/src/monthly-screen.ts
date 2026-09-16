@@ -304,11 +304,46 @@ export const MONTHLY_SOUND_CLOSE = 28;
  *   （`fcn_00437c25` 的 `movsx eax, word [esi + eax*2 + 0x475930]`，
  *   4 人局 = `{60,180,300,420}`）。
  *
- * ⚠️ 这是**頒獎屏**那张表，与结算屏的 `MONTHLY_SEAT_Y`（`0x475918`）是**两张
- *   相邻的表**、数值恰好相同：頒獎屏拿它当头像的 **x**，结算屏拿它当头像的 **y**
- *   （x 恒 600）。本模块两处各按各的来。
+ * ⚠️ 这是**旧读法**：頒獎屏的 x **不是常数**，而是按 `(在榜人数, 名次)` 查表
+ *   `0x475930`（见 `MONTHLY_AWARD_SEAT_X`）。这张常数表留下只因为**结算屏**
+ *   的 y 表（`0x475918`）的四人行恰好也是这四个值 —— 别再用它当頒獎屏的 x。
  */
 export const MONTHLY_SEAT_X = [60, 180, 300, 420] as const;
+
+/**
+ * 頒獎屏 4 列的 **x** —— 按 `(在榜人数, 名次)` 查 @source `0x475930`。
+ *
+ * ```asm
+ * ebp = byte [0x48c420]              ; ★ 在榜人数（= who_plays != 0 的人数，
+ * shl ebp, 3                         ;   在 0x00439caa 那个循环里数出来）
+ * x = word [ebp + 名次*2 + 0x475930] ; ★★ 行 = 人数、列 = 名次
+ * ```
+ *
+ * | 在榜人数 | 四列 x | @source 同形的竖栏表 `0x475960` |
+ * |---|---|---|
+ * | 2 | `{407, 490}` | `{16, 17}` |
+ * | 3 | `{324, 407, 490}` | `{15, 16, 17}` |
+ * | 4 | `{324, 407, 490, 573}`（间距 83）| `{15, 16, 17, 18}` |
+ *
+ * ★ 第 1 行（`{60,180,300,420}` / `{259,334,414,494}`）是**死数据** ——
+ *   本游戏至少 2 人（与 D-MONTHLY-1 里「1 人槽是别的数据」是同一条）。
+ */
+export const MONTHLY_AWARD_SEAT_X: readonly (readonly number[])[] = [
+  [],
+  [60, 180, 300, 420],
+  [407, 490],
+  [324, 407, 490],
+  [324, 407, 490, 573],
+];
+
+/** 頒獎屏 4 列**竖栏图号** —— 同形状查 `0x475960`（值就是图号，15..18）*/
+export const MONTHLY_AWARD_SEAT_FRAME: readonly (readonly number[])[] = [
+  [],
+  [259, 334, 414, 494],
+  [16, 17],
+  [15, 16, 17],
+  [15, 16, 17, 18],
+];
 
 /**
  * 结算屏行头像的 **y** @source `loc_00439cd7` 的
@@ -372,6 +407,9 @@ export const MONTHLY_AVATAR_FRAME: Readonly<
   15: { h: 72, y: 36 },
   16: { h: 72, y: 36 },
   17: { h: 72, y: 36 },
+  // ★ 四人在榜时第 4 列是 18（`0x475960` 的四人行 `{15,16,17,18}`）；
+  //   原版那一步读的是**角色立绘**那条记录的 `+0x0e`/`+0x12`，三者同值 (72,36)。
+  18: { h: 72, y: 36 },
 };
 
 /**
@@ -715,7 +753,7 @@ export interface MonthlyRowLayout {
   /** 按哪台屏算的 */
   screen: MonthlyRowScreen;
   /** 头像左上角 + 图号（两台屏的落点不同，见 `monthlyRowLayout`）*/
-  avatar: { x: number; y: number; chunk: number };
+  avatar: { x: number; y: number; chunk: number; bar: number };
   /** 结算屏那一行四段文字的**块原点**（頒獎屏不画块，字段仍给同一套）*/
   block: { x: number; y: number };
   /** `存款：`（flag 0 = 左上）*/
@@ -753,9 +791,18 @@ export function monthlyRowLayout(
   const p = state.players[playerIndex];
   const character = p?.character ?? 0;
   const slot = Math.min(Math.max(playerIndex, 0), MONTHLY_SLOTS - 1);
-  const frame = MONTHLY_SEAT_FRAME[slot] ?? 0;
+  // ★ 頒獎屏那两列查的是 **`(在榜人数, 名次)`**，不是玩家下标：
+  //   原版 `[0x48c420]` 是「who_plays != 0 的人数」（0x00439caa 那个循环数出来的），
+  //   名次则是**在榜玩家按玩家号升序**里的位置（`[0x48c418 + k] = 玩家号`）——
+  //   4 人局恰好等于玩家号，出局一个就会整体前移。
+  const present = state.players.filter((q) => isAlive(q)).map((q) => q.index);
+  const count = Math.max(1, Math.min(MONTHLY_SLOTS, present.length));
+  const rank = Math.max(0, present.indexOf(playerIndex));
+  const awardFrame = MONTHLY_AWARD_SEAT_FRAME[count]?.[rank];
+  const frame = screen === 'settle' ? (MONTHLY_SEAT_FRAME[slot] ?? 0) : (awardFrame ?? 0);
   const size = MONTHLY_AVATAR_FRAME[frame] ?? { h: 0, y: 0 };
-  const avatarX = screen === 'settle' ? MONTHLY_SEAT_AVATAR_X : (MONTHLY_SEAT_X[slot] ?? 0);
+  const avatarX =
+    screen === 'settle' ? MONTHLY_SEAT_AVATAR_X : (MONTHLY_AWARD_SEAT_X[count]?.[rank] ?? 0);
   const avatarY =
     screen === 'settle'
       ? (MONTHLY_SEAT_Y[slot] ?? 0)
@@ -772,6 +819,8 @@ export function monthlyRowLayout(
       x: avatarX,
       y: avatarY,
       chunk: MONTHLY_AVATAR_STRIDE * character + MONTHLY_CHUNK.avatarFirst,
+      /** 这一列的**竖栏图号**（頒獎屏查 `0x475960`；结算屏不用）*/
+      bar: screen === 'settle' ? MONTHLY_CHUNK.columnFirst + slot : (awardFrame ?? MONTHLY_CHUNK.columnFirst + slot),
     },
     block,
     bankLabel: at(MONTHLY_ROW_AT.bankLabel),
@@ -1133,17 +1182,12 @@ export function drawMonthlyScreen(
     );
   }
 
-  // 4 列竖栏（图 15..18，不透明）
+  // 4 列竖栏（图 15..18，不透明）—— ★ 图号也查表（`0x475960`，两人局是 16/17）
   for (let s = 0; s < p.seats; s++) {
     const row = view.rows[s];
     if (row === undefined) continue;
     const at = monthlyRowLayout(state, row.index, 'award');
-    drawAnchored(
-      ctx,
-      monthlySprite(sprite, MONTHLY_CHUNK.columnFirst + s, false),
-      at.avatar.x,
-      MONTHLY_BAR_Y,
-    );
+    drawAnchored(ctx, monthlySprite(sprite, at.avatar.bar, false), at.avatar.x, MONTHLY_BAR_Y);
   }
 
   // 4 块窄板（图 11..14；落点 x 就是表里那个 15/16/17）

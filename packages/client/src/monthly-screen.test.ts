@@ -42,6 +42,8 @@ import {
   MONTHLY_ROW_BLOCK_X,
   MONTHLY_SEAT_AVATAR_X,
   MONTHLY_SEAT_BASE_Y,
+  MONTHLY_AWARD_SEAT_FRAME,
+  MONTHLY_AWARD_SEAT_X,
   MONTHLY_SEAT_FRAME,
   MONTHLY_SEAT_X,
   MONTHLY_SEAT_Y,
@@ -234,10 +236,14 @@ describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', 
     expect(monthlyRowLayout(state, 0).avatar.y).toBe(60);
   });
 
-  it('★ 頒獎屏那 4 列才用 {60,180,300,420} 当 **x**、y = 330 − h + 锚点 @source 0x475930 / 0x004384b7', () => {
-    expect(MONTHLY_SEAT_X).toEqual([60, 180, 300, 420]);
-    for (let i = 0; i < MONTHLY_SLOTS; i++) {
-      expect(MONTHLY_SEAT_X[i]).toBe(60 + i * 120);
+  it('★★ 頒獎屏那 4 列的 x 是**按 (在榜人数, 名次) 查表** @source 0x475930', () => {
+    // 行 = `[0x48c420]`（who_plays != 0 的人数，0x00439caa 数出来的）
+    expect(MONTHLY_AWARD_SEAT_X[2]).toEqual([407, 490]);
+    expect(MONTHLY_AWARD_SEAT_X[3]).toEqual([324, 407, 490]);
+    expect(MONTHLY_AWARD_SEAT_X[4]).toEqual([324, 407, 490, 573]);
+    // 四人局四列间距 83（旧读法那个 {60,180,300,420} 其实是**死数据**那一行）
+    for (let i = 1; i < 4; i++) {
+      expect(MONTHLY_AWARD_SEAT_X[4]![i]! - MONTHLY_AWARD_SEAT_X[4]![i - 1]!).toBe(83);
     }
     expect(MONTHLY_SEAT_BASE_Y).toBe(0x14a);
     expect(MONTHLY_SEAT_BASE_Y).toBe(330);
@@ -245,15 +251,33 @@ describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', 
     for (let i = 0; i < MONTHLY_SLOTS; i++) {
       const at = monthlyRowLayout(state, i, 'award');
       expect(at.screen).toBe('award');
-      expect(at.avatar.x).toBe(MONTHLY_SEAT_X[i]);
-      const size = MONTHLY_AVATAR_FRAME[MONTHLY_SEAT_FRAME[i]!]!;
+      expect(at.avatar.x).toBe(MONTHLY_AWARD_SEAT_X[4]![i]);
+      const size = MONTHLY_AVATAR_FRAME[at.avatar.bar]!;
       expect(at.avatar.y).toBe(330 - size.h + size.y);
-      // 三帧的 height/y 都是 (72,36) → 四列同高，y = 294
+      // 四帧的 height/y 都是 (72,36) → 四列同高，y = 294
       expect(at.avatar.y).toBe(294);
+      // 竖栏图号也查同一形状的表（四人是 15/16/17/18）
+      expect(at.avatar.bar).toBe(MONTHLY_AWARD_SEAT_FRAME[4]![i]);
     }
   });
 
-  it('★ 四列的帧是 16/17/15/16 @source 0x475960', () => {
+  it('★★ 在榜人数决定用哪一行：两人局 x = {407,490}、竖栏 = {16,17}', () => {
+    // 只留两个人（原版 `[0x48c420]` 就是数 who_plays != 0）
+    const base = four();
+    const two = {
+      ...base,
+      players: base.players.map((p, i) => (i >= 2 ? { ...p, whoPlays: 0 } : p)),
+    };
+    const a = monthlyRowLayout(two, 0, 'award');
+    const b = monthlyRowLayout(two, 1, 'award');
+    expect(a.avatar.x).toBe(407);
+    expect(b.avatar.x).toBe(490);
+    expect(a.avatar.bar).toBe(16);
+    expect(b.avatar.bar).toBe(17);
+  });
+
+  it('★ 旧常数 `MONTHLY_SEAT_X` 只服务结算屏的 y 表（同值），不再是頒獎屏的 x', () => {
+    expect(MONTHLY_SEAT_X).toEqual([60, 180, 300, 420]);
     expect(MONTHLY_SEAT_FRAME).toEqual([16, 17, 15, 16]);
   });
 
@@ -330,6 +354,7 @@ describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', 
       [
         {
           "avatar": {
+            "bar": 15,
             "chunk": 47,
             "x": 600,
             "y": 60,
@@ -359,6 +384,7 @@ describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', 
         },
         {
           "avatar": {
+            "bar": 16,
             "chunk": 50,
             "x": 600,
             "y": 180,
@@ -388,6 +414,7 @@ describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', 
         },
         {
           "avatar": {
+            "bar": 17,
             "chunk": 53,
             "x": 600,
             "y": 300,
@@ -417,6 +444,7 @@ describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', 
         },
         {
           "avatar": {
+            "bar": 18,
             "chunk": 56,
             "x": 600,
             "y": 420,
