@@ -597,10 +597,13 @@ export const LOAN_BUBBLE_MS = 2000;
  * call fcn_0044ec30                          ; 落点 (0xd6, 0x32) = (214, 50)，字心再 (0, -10)
  * ```
  * ⚠️ 与主屏那张（图 21 @(240,80)，见 `LOAN_BUBBLE`）**不是同一张**。
- *   本引擎把董事長室与子对话框合成了同一屏（见 `bank-loan.ts` 的 `chairman` 分支），
- *   故两套气泡共用一处落点 —— 已在 T-029 登记为已知近似。
+ *   本引擎把董事長室与子对话框合成了同一屏（见 `bank-loan.ts` 的 `chairman` 分支，
+ *   闸门是 `LoanUi.financeOpen`），故两套气泡共用一处落点 —— 已在 T-029 登记为已知近似。
  */
 export const LOAN_FINANCE_BUBBLE = { image: 22, x: 0xd6, y: 0x32, dy: -0x0a } as const;
+
+/** 填数页要开的是哪一支（`openForm` 的 op）*/
+export type LoanFormOp = 'borrow' | 'repay' | 'financeBorrow' | 'financeRepay';
 
 /** 貸款屏这一刻的界面状态（对应原版那一串全局）*/
 export interface LoanUi {
@@ -612,8 +615,27 @@ export interface LoanUi {
   slide: LoanSlide;
   /** `[0x48c3e1]`：正被按住的钮（1 基；0 = 没按）*/
   pressed: number;
-  /** `[0x48c3e2]`：特別融資子对话框确认过没有 */
+  /** `[0x48c3e2]`：特別融資子对话框确认过没有（= 那一下的返回标志 `[0x48c3d0]`）*/
   financeOk: boolean;
+  /**
+   * 这一刻填数页要开哪一支（`borrowIn`/`repayIn` 那两格共用一段代码，
+   * 光看 `st` 分不出「一般貸款」还是「特別融資」）。
+   *
+   * ★ 这个字段是**必须的**：先前 `bubbleEnd` 那条路上把 op 写死成 `'borrow'`，
+   *   于是董事長点「週轉現金」→ 气泡说完那一刻**又开了一次一般貸款的填数页**
+   *   （`openLoanAmount('borrow')` 会按 op 重新找选项、把已开的那页换掉），
+   *   结果钱记进 `loan` 而不是 `specialFinance` —— 真机上抓到的。
+   */
+  formOp: LoanFormOp | null;
+  /**
+   * 特別融資子对话框开着没有（主屏状态 `[0x48c3dd] = 0xa`）。
+   *
+   * ★ 原版那扇子是**另一个模态窗口**（`Wait_0402_Message(fcn_00434492)`），
+   *   点「窗」之前它不在：那时三条数额的**数字**不画、三颗小钮**点了没反应**。
+   *   本引擎两屏合一，于是拿这一位当那道闸。
+   * @source `loc_00435ddb`（`[0x48c3e0] != 0` → 状态 0xa → 开子对话框）
+   */
+  financeOpen: boolean;
 }
 
 /**
@@ -637,6 +659,8 @@ export function loanStart(showGreeting: boolean): LoanUi {
     slide: { y: LOAN_SLIDE.hidden, dy: 0 },
     pressed: 0,
     financeOk: false,
+    financeOpen: false,
+    formOp: null,
   };
 }
 
@@ -644,8 +668,12 @@ export function loanStart(showGreeting: boolean): LoanUi {
 export type LoanEffect =
   /** 开通用填数页（原版 `PostMessage(0x409/0x40a)` → `fcn_00453544`）*/
   | { kind: 'openForm'; op: 'borrow' | 'repay' | 'financeBorrow' | 'financeRepay' }
-  /** 开特別融資子对话框 @source `Wait_0402_Message(fcn_00434492)` */
-  | { kind: 'openFinance' }
+  /**
+   * 子对话框收摊并把返回标志交给主屏 @source `loc_0043490f` 的
+   * `Post_0402_Message([0x48c3d0])` —— 原版是**自己给自己发消息**，
+   * 这里同样绕一圈（`main.ts` 收到就再喂一次 `financeClosed`）。
+   */
+  | { kind: 'financeClosed'; ok: boolean }
   /** 关屏 @source `Post_0402_Message` */
   | { kind: 'close' };
 
@@ -709,13 +737,21 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
         case LOAN_ST.menu:
           return { ui: { ...ui, st: LOAN_ST.ready, bubble: null }, effect: null };
         case LOAN_ST.borrowIn:
-          return { ui: { ...ui, st: LOAN_ST.borrowAsk, bubble: null }, effect: { kind: 'openForm', op: 'borrow' } };
+          // ★ op 取自 `formOp`（一般貸款 / 特別融資週轉）—— 写死 `'borrow'` 会把
+          //   董事長那一笔记进 `loan`，见 `LoanUi.formOp` 的说明。
+          return {
+            ui: { ...ui, st: LOAN_ST.borrowAsk, bubble: null },
+            effect: { kind: 'openForm', op: ui.formOp === 'financeBorrow' ? 'financeBorrow' : 'borrow' },
+          };
         case LOAN_ST.borrowDone:
           return { ui: { ...ui, st: LOAN_ST.settle, bubble: LOAN_MSG.borrowSettle }, effect: null };
         case LOAN_ST.settle:
           return { ui: { ...ui, st: LOAN_ST.ready, slide: loanSlideOut(), bubble: null }, effect: null };
         case LOAN_ST.repayIn:
-          return { ui: { ...ui, st: LOAN_ST.repayAsk, bubble: null }, effect: { kind: 'openForm', op: 'repay' } };
+          return {
+            ui: { ...ui, st: LOAN_ST.repayAsk, bubble: null },
+            effect: { kind: 'openForm', op: ui.formOp === 'financeRepay' ? 'financeRepay' : 'repay' },
+          };
         case LOAN_ST.bye:
           return { ui, effect: { kind: 'close' } };
         default:
@@ -731,11 +767,12 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
       switch (ev.btn) {
         case 0: // EXIT：只记按下（抬手才算）@source loc_00435cca
           return { ui: { ...ui, pressed: 1 }, effect: null };
-        case 1: // 申請貸款 @source loc_00435d48
+        case 1: // 申請貸款（董事長时它是「週轉現金」）@source loc_00435d48
           if (ev.frozen) return same(); // `player+0x3c != 0` → 不理（同时盖着禁止章）
           return {
             ui: {
               ...ui,
+              formOp: ev.chairman ? 'financeBorrow' : 'borrow',
               st: LOAN_ST.borrowIn,
               slide: loanSlideIn(),
               pressed: 0,
@@ -746,40 +783,66 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
         case 2: // 償還貸款 @source loc_00435da4
           if (!ev.hasLoan) return same();
           return {
-            ui: { ...ui, st: LOAN_ST.repayIn, slide: loanSlideIn(), pressed: 0, bubble: LOAN_MSG.askRepay },
+            ui: {
+              ...ui,
+              formOp: ev.chairman ? 'financeRepay' : 'repay',
+              st: LOAN_ST.repayIn,
+              slide: loanSlideIn(),
+              pressed: 0,
+              bubble: LOAN_MSG.askRepay,
+            },
             effect: null,
           };
         case 3: // 窗（特別融資）@source loc_00435ddb
           if (!ev.chairman) return same();
-          return { ui: { ...ui, st: LOAN_ST.repayAsk, pressed: 0, bubble: null }, effect: { kind: 'openFinance' } };
+          // ★ 开的是**子对话框**（董事長室），不是填数页：状态 0xa + 气泡 #0086，
+          //   后面三颗小钮才受理（`[0x48c3cc]` 那台状态机在子对话框自己身上）。
+          if (ui.financeOpen) return same();
+          return {
+            ui: { ...ui, financeOpen: true, pressed: 0, bubble: LOAN_MSG.financeGreet },
+            effect: null,
+          };
         default:
           return same();
       }
     }
     case 'finance': {
       // ── 董事長室左侧三颗小钮 @source `fcn_00434492` 的 `0x202`（`loc_00434da1`）──
-      //    ⚠️ 原版只在这一屏的**状态 2**（招呼说完）受理点钮；
-      //       本引擎那一格由 `ready` 承担（两屏合一，见 `bank-loan.ts` 的 `chairman` 分支）。
-      if (ui.st !== LOAN_ST.ready) return same();
+      //    ⚠️ 原版只在这一屏的**状态 2**（招呼说完）受理点钮；本引擎那一格由
+      //       `ready` 承担，另外还要**子对话框开着**（`financeOpen`）——
+      //       点「窗」之前那三颗小钮在原版里根本不在。
+      if (ui.st !== LOAN_ST.ready || !ui.financeOpen) return same();
       if (ev.btn === FINANCE_BORROW) {
         // @source `loc_00434dfb`：`jge` 那条 —— 没额度就什么都不做
         if (!ev.canBorrow) return same();
+        // ★ 直接进 `borrowAsk`（不是 `borrowIn`）：原版子对话框是
+        //   「按下的下一拍」（状态 3 → 状态 4）就 `fcn_00453544` 开填数页 ——
+        //   **不是**等气泡说完那 1 秒。留在 `borrowIn` 的话气泡到点会再开一次，
+        //   把用户已经填了一半的那一页冲掉。
         return {
-          ui: { ...ui, st: LOAN_ST.borrowIn, bubble: LOAN_MSG.financeAskBorrow },
+          ui: { ...ui, formOp: 'financeBorrow', st: LOAN_ST.borrowAsk, bubble: LOAN_MSG.financeAskBorrow },
           effect: { kind: 'openForm', op: 'financeBorrow' },
         };
       }
       if (ev.btn === FINANCE_REPAY) {
         // @source `loc_00434e98`：`cmp dword [eax+0x496b90], 0 / je` —— 没欠款不动
         if (!ev.canRepay) return same();
+        // 同上：直接进 `repayAsk`
         return {
-          ui: { ...ui, st: LOAN_ST.repayIn, bubble: LOAN_MSG.financeAskRepay },
+          ui: { ...ui, formOp: 'financeRepay', st: LOAN_ST.repayAsk, bubble: LOAN_MSG.financeAskRepay },
           effect: { kind: 'openForm', op: 'financeRepay' },
         };
       }
       if (ev.btn === FINANCE_BYE) {
-        // @source `loc_00434f25`：状态 7 + 串 `[0x475870]`
-        return { ui: { ...ui, pressed: 0, st: LOAN_ST.bye, bubble: LOAN_MSG.financeBye }, effect: null };
+        // @source `loc_00434f25`：子对话框置状态 7 + 串 `[0x475870]`（#0091 董事長慢走！），
+        // 下一拍 `loc_0043490f` 收掉定时器并 `Post_0402_Message([0x48c3d0])`。
+        // ★ `[0x48c3d0]` 这一支**没置 1** ⇒ 返回标志 0 ⇒ 主屏 `loc_00435e1d` 走
+        //   `[0x48c3dd] = 4`：**回到银行贷款屏**（不是把整屏关掉）。先前这里写成
+        //   `st: bye`，于是点「離開」会把银行屏一起关掉。
+        return {
+          ui: { ...ui, financeOpen: false, st: LOAN_ST.ready, bubble: LOAN_MSG.financeBye },
+          effect: { kind: 'financeClosed', ok: false },
+        };
       }
       return same();
     }
@@ -792,9 +855,40 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
     }
     case 'cancel': {
       if (ui.st === LOAN_ST.bye) return same();
+      // @source `loc_00434fae`（子对话框的 `0x205`）：状态 != 7 时放取消音、
+      // 状态 7 + 串 `[0x475870]`，返回标志仍是 0 ⇒ 主屏回状态 4。
+      // ★ 所以「子对话框开着」时右键**只收子对话框**，银行贷款屏留着。
+      if (ui.financeOpen) {
+        return {
+          ui: { ...ui, financeOpen: false, st: LOAN_ST.ready, bubble: LOAN_MSG.financeBye },
+          effect: { kind: 'financeClosed', ok: false },
+        };
+      }
       return { ui: { ...ui, pressed: 0, st: LOAN_ST.bye, bubble: LOAN_MSG.bye }, effect: null };
     }
     case 'formClosed': {
+      // ── 特別融資那两笔（`formOp`）走的是**子对话框**的路，与一般貸款不同 ──
+      // @source `loc_0043469a`（週轉）/ `loc_0043471c` 起（歸還）：
+      //   额 > 0 → 子对话框置状态 7 + `[0x48c3d0] = 1` ⇒ 返回标志 1
+      //           ⇒ 主屏 `loc_00435e1d` 走 `[0x48c3dd] = 0xb`（**收场**）；
+      //   额 = 0 → `loc_004346b2` 置状态 2 ⇒ 子对话框**留着**（返回标志 0）。
+      if (ui.formOp === 'financeBorrow' || ui.formOp === 'financeRepay') {
+        if (ev.amount <= 0) {
+          return { ui: { ...ui, st: LOAN_ST.ready, pressed: 0, formOp: null, bubble: null }, effect: null };
+        }
+        // 歸還超额：`loc_00434700` 那一段是「现金+存款不够」→ 状态 5 + 串 #0090，
+        // 下一拍又开一次还款页（原版就是这么反复问）—— 这里用 financeNoDebt 重问。
+        if (ui.formOp === 'financeRepay' && ev.amount > ev.cash + ev.deposit) {
+          return {
+            ui: { ...ui, st: LOAN_ST.repayIn, pressed: 0, bubble: LOAN_MSG.financeNoDebt },
+            effect: null,
+          };
+        }
+        return {
+          ui: { ...ui, financeOk: true, financeOpen: false, formOp: null, st: LOAN_ST.bye },
+          effect: null,
+        };
+      }
       // ── @source `0x409`（借款）──
       // `eax = [0x48c3b0]（總資產）− player+0x24（已借）; edx = fcn_00453544(eax)`
       // 额 > 0 → `st=7` + 气泡 #0079（`loc_00435340`）；额 == 0 → `st=8`
@@ -803,8 +897,8 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
       //   `st=8` 挂不挂气泡由这里决定，`bubbleEnd` 分支对两者一视同仁。
       if (ui.st === LOAN_ST.borrowAsk) {
         return ev.amount > 0
-          ? { ui: { ...ui, st: LOAN_ST.borrowDone, pressed: 0, bubble: LOAN_MSG.borrowDone }, effect: null }
-          : { ui: { ...ui, st: LOAN_ST.settle, pressed: 0, bubble: null }, effect: null };
+          ? { ui: { ...ui, formOp: null, st: LOAN_ST.borrowDone, pressed: 0, bubble: LOAN_MSG.borrowDone }, effect: null }
+          : { ui: { ...ui, formOp: null, st: LOAN_ST.settle, pressed: 0, bubble: null }, effect: null };
       }
       // ── @source `0x40a`（还款）──
       // `edx = fcn_00453544(player+0x24)`；`ecx = player+0x1c + player+0x20`（手头现金）
@@ -813,18 +907,19 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
       //   edx == 0   → `st=8`（不挂气泡）
       if (ui.st === LOAN_ST.repayAsk) {
         if (ev.amount <= 0) {
-          return { ui: { ...ui, st: LOAN_ST.settle, pressed: 0, bubble: null }, effect: null };
+          return { ui: { ...ui, formOp: null, st: LOAN_ST.settle, pressed: 0, bubble: null }, effect: null };
         }
         if (ev.amount > ev.cash + ev.deposit) {
           return { ui: { ...ui, st: LOAN_ST.repayIn, pressed: 0, bubble: LOAN_MSG.noCash }, effect: null };
         }
-        return { ui: { ...ui, st: LOAN_ST.settle, pressed: 0, bubble: LOAN_MSG.repayDone }, effect: null };
+        return { ui: { ...ui, formOp: null, st: LOAN_ST.settle, pressed: 0, bubble: LOAN_MSG.repayDone }, effect: null };
       }
       return same();
     }
     case 'financeClosed': {
-      if (ev.ok) return { ui: { ...ui, financeOk: true, st: LOAN_ST.bye }, effect: null };
-      return { ui: { ...ui, st: LOAN_ST.ready }, effect: null };
+      // `[0x48c3e2] = 返回标志`：1 ⇒ 主屏状态 0xb（收场）；0 ⇒ 回状态 4
+      if (ev.ok) return { ui: { ...ui, financeOk: true, financeOpen: false, st: LOAN_ST.bye }, effect: null };
+      return { ui: { ...ui, financeOpen: false, st: LOAN_ST.ready }, effect: null };
     }
     default:
       return same();

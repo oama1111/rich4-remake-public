@@ -78,8 +78,36 @@ export const LOAN_ROOM = { normal: 0, chairman: 2 } as const;
  * @source `fcn_00434186` 的 `push 0xf0 / push 0x140` + `fcn_004562a5`
  */
 export const LOAN_BLIND_WINDOW = { image: 1, x: 0x140, y: 0xf0 } as const;
-/** 冻结时给「申請貸款」盖的禁止章 @source `fcn_00434186` 的 `lea edx,[eax+0x120]`（= 图 23）*/
+
+/**
+ * 董事長室里那三行数额**底下的红条面板**（图 20，137×165，锚点 (0,0)）。
+ *
+ * ★ 先前漏了它 —— 三条数额直接画在办公室底图上。@source `fcn_00434186` 的
+ *   董事長支（`cmp dword [esp+8], 0` 之后第一件事）：
+ * ```asm
+ * push 0x7d                  ; y = 0x7d = 125
+ * push 0xa                   ; x = 10
+ * lea edx, [eax + 0xfc]      ; 图 20（+0xfc = 0xc + 12×20）
+ * add eax, 0x24              ; 目标是图 2（办公室）
+ * call fcn_00456280          ; ★ 不透明贴（`fcn_004562a5` 才是抠透明那种）
+ * ```
+ * 落点 (10,125) 与尺寸 137×165 ⇒ (10,125)-(147,290)，正好把三条数额
+ * （字 x=78、值 x=128，y 147/163 … 243/259）全包住。
+ */
+export const LOAN_FINANCE_PANEL = { image: 20, x: 10, y: 0x7d } as const;
+
+/**
+ * 冻结时盖的禁止章（图 23，29×29，锚点 (14,14)）—— **两个落点**，
+ * 因为它是贴进**当屏那张底图**里的：
+ * `fcn_00434186` 的 `lea edx,[eax+0x120]`（= 图 23）。
+ *
+ * | 屏 | 底图 | 锚点 @source |
+ * |---|---|---|
+ * | 常态（店員室）| 图 0 | (0x159,0x159) = (345,345)，盖在「申請貸款」那张白单子上 |
+ * | 董事長（办公室）| 图 2 | (0x43,0x144) = (67,324)，盖在「週轉現金」那颗钮上 |
+ */
 export const LOAN_FROZEN_MARK = { image: 23, x: 0x159, y: 0x159 } as const;
+export const LOAN_FROZEN_MARK_CHAIRMAN = { image: 23, x: 0x43, y: 0x144 } as const;
 
 /** 一颗钮的屏幕矩形 */
 export interface LoanButton {
@@ -153,6 +181,130 @@ export function hitFinanceButton(x: number, y: number): number | null {
 /** 这张牌／这一屏要做的事（`fcn_00435062` 的状态机之外的**动作**部分）*/
 export type LoanOp = 'borrow' | 'repay' | 'financeBorrow' | 'financeRepay' | 'exit';
 
+// ============================================================
+//  董事長眨眼 —— 子对话框 `fcn_00434492` 那一支（Q-BANK-1a）
+// ============================================================
+//
+// 子对话框挂着**自己的**定时器 `SetTimer(hwnd, id, 0x64, 0)` = **100 ms**
+// （`rich4_ui_bank.asm:976`，与贷款屏主屏那 50 ms 不是一支），每一拍做两件事：
+// ① 掷一次「要不要开始眨」；② 正在眨就把下一张眼睛贴片盖到董事长脸上。
+//
+// ```asm
+// 004347a2  cmp byte [0x48c3cc], 4 / je 跳过      ; ★ 状态 4 = 填数页开着 ⇒ 不眨
+// 004347bb  mov al, byte [0x48c3ce]               ; 计数器
+//           and al, 0xf                            ; 低 4 位 = 「正在眨」标志
+//           test al, al / jbe loc_0043493a         ; 0 → 掷骰
+//           cmp al, 1 / je loc_00434958            ; 1 → 眨一拍（只有这两个值）
+//
+// loc_0043493a:                                     ; ★ 开始眨的闸
+//           call _libc_rand / sar esi, 0xa / test esi, esi
+//           jne 跳过                               ; rand() >> 10 == 0 才中 ⇒ 1/1024
+//           or byte [0x48c3ce], 1                  ; 置「正在眨」
+//
+// loc_00434958:                                     ; ★ 眨一拍
+//           al = [0x48c3ce] & 0x30 / tier = al >> 4 ; 档 = bit4..5
+//           [0x48c3ce] = ([0x48c3ce] + 0x10) & 0x3f ; 档 +1（bit0 保留）
+//           … 先把 (0x1f0,0xa2)-(0x236,0xc5) 从底图 surface 贴回来 …
+//           al = [0x48c3ce] & 0x30
+//           cmp al, 0x30 / je 结束支                ; ★ 判的是**加完之后**的值
+//           图号 = byte[0x475884 + tier] / 贴到 (0x1f0,0xa2)
+// 结束支:    [0x48c3ce] = 0                          ; 清干净，等下一次掷中
+// ```
+//
+// ⇒ 档的序列（`0x475884` = `0c 0b 0c 00` = 图 12/11/12）：
+//
+// | 拍 | 计时器里的值 | 档 | 加完之后 | 画什么 |
+// |---|---|---|---|---|
+// | 掷中那一拍 | 0x01 | — | — | 不画（这一拍只置标志）|
+// | 第 2 拍 | 0x01 | 0 | 0x11 | 图 **12**（睁眼）|
+// | 第 3 拍 | 0x11 | 1 | 0x21 | 图 **11**（闭眼）|
+// | 第 4 拍 | 0x21 | 2 | 0x31 ⇒ `&0x30 == 0x30` | **不画**，恢复底图 + 计数器清零 |
+//
+// ★ 所以 `0x475884` 的第 **4** 个字节（`00`）**永远不会被用到** —— 判「结束」
+//   用的是**加完之后**的值，档 2 那一拍直接跳去结束支了。这与主屏那张
+//   `0x475880`（`07 06 07 05`）的第 4 项 `05` 不被用到是同一个道理
+//   （见 T-029.md 的订正）。⇒ 眨一次 = **闭眼 100 ms**（前后两拍都是睁眼）。
+
+/** 档在计数器里的掩码 @source `and al, 0x30` */
+export const LOAN_BLINK_TIER_MASK = 0x30;
+/** 每拍给档加的量 @source `add ch, 0x10` */
+export const LOAN_BLINK_TIER_INC = 0x10;
+/** 计数器的掩码（低 4 位是「正在眨」，bit4..5 是档）@source `and al, 0x3f` */
+export const LOAN_BLINK_MASK = 0x3f;
+/** 开始眨一拍的随机闸：`rand() >> 10 == 0` ⇒ 1/1024 @source `loc_0043493a` */
+export const LOAN_BLINK_P = 1 / 1024;
+/** 子对话框那一支定时器 = **100 ms** @source `SetTimer(hwnd, id, 0x64, 0)`, `:976` */
+export const LOAN_BLINK_TICK_MS = 0x64;
+/** 眼贴片的落点与尺寸 = `(0x1f0,0xa2)-(0x236,0xc5)` @source `loc_00434958` */
+export const LOAN_BLINK_AT = { x: 0x1f0, y: 0xa2, w: 0x46, h: 0x23 } as const;
+/** 档 0/1/2 → 图号 @source `0x475884` 的字节 `0c 0b 0c 00`（第 4 项用不到）*/
+export const LOAN_BLINK_IMAGES: readonly number[] = [12, 11, 12];
+
+/**
+ * 眨眼计数器的状态。
+ *
+ * `counter` 就是原版的 `[0x48c3ce]`（低 4 位 = 「正在眨」，bit4..5 = 档）。
+ * `image` 是**这一拍走完之后**该盖在脸上的图号（`null` = 露出底图）——
+ * ★ 必须存下来，因为原版用的是**走这一拍之前**的档去查图号：同一拍里
+ *   「档」是加之前的、而「结束」判据是加之后的，光靠 `counter` 反推不出来
+ *   （结束那一拍 `counter` 归 0，与「从没眨过」撞在同一个值上）。
+ *
+ * 这是**纯表现**，不进 `GameState`（C-DET-4）。原版的随机源是共享的
+ * `_libc_rand`，而「眨几次」取决于这一屏开多久 —— 逐位复刻本来就不可达；
+ * 这里照本项目其它装饰性随机的做法用 `Math.random`（与商店橱窗那一支同口径，
+ * 见 `main.ts` 的 `blinkStep` 注释）。
+ */
+export interface LoanBlink {
+  counter: number;
+  /** 这一拍盖哪张眼贴片；`null` = 盖底图 */
+  image: number | null;
+  at: number;
+}
+
+export const LOAN_BLINK_IDLE: LoanBlink = { counter: 0, image: null, at: 0 };
+
+/** 刚开屏：计数器清零、下一拍从 `now` 起算（原版 `loc_0043453a` 的 `[0x48c3ce] = 0`）*/
+export function loanBlinkStart(now: number): LoanBlink {
+  return { counter: 0, image: null, at: now };
+}
+
+/**
+ * 走一拍定时器（每 `LOAN_BLINK_TICK_MS` 毫秒一次）。
+ *
+ * @param now 当前时刻（毫秒）—— 用 `performance.now()`，不读挂钟
+ * @param random 0..1 的随机源（原版是 `_libc_rand`）
+ * @returns 新的状态；没到点就原样返回（**同一个对象**，调用方据此判断要不要重绘）
+ */
+export function loanBlinkStep(
+  blink: LoanBlink,
+  now: number,
+  random: () => number,
+): LoanBlink {
+  if (now - blink.at < LOAN_BLINK_TICK_MS) return blink;
+  const counter = blink.counter;
+  // 低 4 位 = 「正在眨」标志（原版只会是 0 或 1）
+  if ((counter & 0xf) === 0) {
+    // ★ 掷闸那一拍**不画**（原版 `loc_0043493a` 置完标志就跳去公共尾巴）——
+    //   所以 `image` 还是 `null`。
+    return random() < LOAN_BLINK_P
+      ? { counter: counter | 1, image: null, at: now }
+      : { counter, image: null, at: now };
+  }
+  // ★ 查图号用的是**加之前**的档（原版 `mov al,[0x48c3ce] / and al,0x30 / sar 4`
+  //   在 `add ch,0x10` 之前），而「结束」判据用的是**加之后**的档。
+  const tier = (counter & LOAN_BLINK_TIER_MASK) >> 4;
+  const next = (counter + LOAN_BLINK_TIER_INC) & LOAN_BLINK_MASK;
+  if ((next & LOAN_BLINK_TIER_MASK) === LOAN_BLINK_TIER_MASK) {
+    return { counter: 0, image: null, at: now };
+  }
+  return { counter: next, image: LOAN_BLINK_IMAGES[tier] ?? null, at: now };
+}
+
+/** 这一拍该盖哪张眼睛贴片；`null` = 盖底图（不眨 / 刚掷中 / 那一拍是「结束」）*/
+export function loanBlinkImage(blink: LoanBlink): number | null {
+  return blink.image;
+}
+
 /**
  * 点在第几颗钮上；没点中返回 `null`（坐标是**屏幕/舞台**坐标）。
  *
@@ -201,8 +353,17 @@ export interface LoanView {
   chairman: boolean;
   /** 冻结中（盖禁止章）*/
   frozen: boolean;
-  /** 董事長那三条数额：額度 / 已用 / 还可融（只有董事長看得到）*/
-  finance: readonly [number, number, number];
+  /**
+   * 董事長那三条数额的**数字**：額度 / 已用 / 还可融（只有董事長看得到）。
+   * `null` = 子对话框还没开 —— 原版那时只画底图上那三个**标签**，数字是
+   * 子对话框 `0x405` 那一拍调 `fcn_00433c20` 才写上去的。
+   */
+  finance: readonly [number, number, number] | null;
+  /**
+   * 这一拍盖在董事长脸上的眼睛贴片图号（12 睁 / 11 闭）；
+   * `null` = 不盖（没在眨、或这一拍是「结束」⇒ 露出底图那张睁眼的）。
+   */
+  blink: number | null;
 }
 
 const FONT = FONT_FAMILY;
@@ -252,11 +413,18 @@ export function drawBankLoan(
   if (room !== null) ctx.drawImage(room.bitmap, 0, 0);
 
   if (view.chairman) {
+    // ★ 三条数额底下那张红条面板（图 20）—— 原版是**贴进办公室底图**里的，
+    //   竖着叠在数额下面，所以先画它再画字（`fcn_00456280` 不透明贴）。
+    const panel = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, LOAN_FINANCE_PANEL.image);
+    if (panel !== null) ctx.drawImage(panel.bitmap, LOAN_FINANCE_PANEL.x, LOAN_FINANCE_PANEL.y);
     // 董事長室那一支：三行 16 号 + 特别融資 + 两颗小钮的字
+    // ★ 标签是**底图自己带的**（`fcn_00434186` 画进图 2 里的），数字才是子对话框画的
     for (let i = 0; i < LOAN_FINANCE_ROWS.length; i++) {
       const row = LOAN_FINANCE_ROWS[i]!;
       text(ctx, row.label, LOAN_FINANCE_X.label, row.labelY, 16, '#202020', 'center');
-      text(ctx, money(view.finance[i] ?? 0), LOAN_FINANCE_X.value, row.valueY, 16, '#f0f0f0', 'right');
+      if (view.finance !== null) {
+        text(ctx, money(view.finance[i] ?? 0), LOAN_FINANCE_X.value, row.valueY, 16, '#f0f0f0', 'right');
+      }
     }
     text(ctx, '特別融資', 443, 427, 26, '#101010', 'center');
     text(ctx, '週轉現金', 67, 324, 20, '#f0f0f0', 'center');
@@ -281,15 +449,19 @@ export function drawBankLoan(
     }
   }
 
-  // 冻结中：给「申請貸款」盖禁止章（图 23）
+  // 董事長眨眼：把眼睛贴片盖到脸上（图 12 睁 / 11 闭，70×35 落 (496,162)）
+  // —— 原版是子对话框 `fcn_00434492` 的 100 ms 定时器在画（`loc_00434958`）。
+  if (view.chairman && view.blink !== null) {
+    const eyes = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, view.blink);
+    if (eyes !== null) ctx.drawImage(eyes.bitmap, LOAN_BLINK_AT.x, LOAN_BLINK_AT.y);
+  }
+
+  // 冻结中：禁止章 —— **贴进当屏那张底图**，所以两个落点（见 LOAN_FROZEN_MARK）
   if (view.frozen) {
-    const mark = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, LOAN_FROZEN_MARK.image);
+    const at = view.chairman ? LOAN_FROZEN_MARK_CHAIRMAN : LOAN_FROZEN_MARK;
+    const mark = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, at.image);
     if (mark !== null) {
-      ctx.drawImage(
-        mark.bitmap,
-        LOAN_FROZEN_MARK.x - mark.anchorX,
-        LOAN_FROZEN_MARK.y - mark.anchorY,
-      );
+      ctx.drawImage(mark.bitmap, at.x - mark.anchorX, at.y - mark.anchorY);
     }
   }
 }

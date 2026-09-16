@@ -307,11 +307,17 @@ import {
   type TipModel,
 } from './node-tip.ts';
 import {
+  FINANCE_BORROW,
+  LOAN_BLINK_IDLE,
   LOAN_BUTTONS,
   LOAN_EXIT,
   drawBankLoan,
   hitFinanceButton,
   hitLoanButton,
+  loanBlinkImage,
+  loanBlinkStart,
+  loanBlinkStep,
+  type LoanBlink,
   type LoanOp,
 } from './bank-loan.ts';
 import {
@@ -813,6 +819,15 @@ const BANK_TICK_MS = LOAN_TICK_MS;
 /** 气泡是哪一刻挂上的（到点自收，与商店同一支 `fcn_0044ee18`）*/
 let loanBubbleAt = 0;
 
+/**
+ * 董事長眨眼（Q-BANK-1a）—— 子对话框 `fcn_00434492` 那一支的 100 ms 定时器。
+ *
+ * ★ 与贷款屏主屏那 50 ms **不是同一支**：`SetTimer(hwnd, id, 0x64, 0)` `:976`。
+ *   状态机的细节（掷闸 1/1024、档 0→1→2、最后一拍恢复底图）见 `bank-loan.ts`
+ *   的 `LOAN_BLINK_*`。这里只负责「什么时候走一拍」与「这一拍该盖哪张图」。
+ */
+let loanBlink: LoanBlink = LOAN_BLINK_IDLE;
+
 /** 这一屏开着吗；开着就保证有一份界面状态（对应原版 `0x401` 铺场）*/
 function syncLoanUi(): void {
   const p = state.pending;
@@ -824,6 +839,8 @@ function syncLoanUi(): void {
     loanUi = loanStart(true);
     loanAt = performance.now();
     loanBubbleAt = loanAt;
+    // 计数器清零、下一拍从开屏那一刻起算（原版 `loc_0043453a` 的 `[0x48c3ce] = 0`）
+    loanBlink = loanBlinkStart(loanAt);
   }
 }
 
@@ -838,16 +855,15 @@ function loanEffect(ui: LoanUi, effect: ReturnType<typeof loanStep>['effect']): 
     dispatch({ type: 'declineDecision' });
     return;
   }
-  if (effect.kind === 'openForm') {
-    // ★ op 直接透传（`LoanOp` 四值都在 `currentDialog()` 的 choices 里）——
-    //   先前写成 `op === 'borrow' ? 'borrow' : 'repay'`，于是 **`financeBorrow`
-    //   会被当成 `repay`**（Q-BANK-1a 接三颗小钮时撞出来的）。
-    openLoanAmount(effect.op);
+  if (effect.kind === 'financeClosed') {
+    // 子对话框自己给自己发的那条消息（`Post_0402_Message`）—— 绕回来走状态机
+    loanSend({ kind: 'financeClosed', ok: effect.ok });
     return;
   }
-  // 特別融資子对话框（`fcn_00434492`）整屏还没复刻 —— 见 T-029 的未决；
-  // 这里退回「开通用填数页」，至少把金额流程走通
-  openLoanAmount('financeBorrow');
+  // 只剩 openForm：★ op 直接透传（`LoanOp` 四值都在 `currentDialog()` 的 choices 里）——
+  // 先前写成 `op === 'borrow' ? 'borrow' : 'repay'`，于是 **`financeBorrow`
+  // 会被当成 `repay`**（Q-BANK-1a 接三颗小钮时撞出来的）。
+  openLoanAmount(effect.op);
 }
 
 /** 走一步状态机并把 effect 接上 */
@@ -887,6 +903,15 @@ function loanFormClosed(amount: number): void {
 function bankTick(now: number): void {
   if (atmCode !== null && now - atmCodeAt >= BANK_TICK_MS) atmCode = null;
   if (loanUi === null) return;
+  // ★ 董事长眨眼：**子对话框那一支自己的 100 ms 定时器**，与下面那 50 ms 分开数；
+  //   而且它只在「填数页没开着」时才走 @source `0x4347a2` 的 `cmp [0x48c3cc], 4 / je`。
+  if (loanUi.financeOpen && amountPage === null) {
+    const next = loanBlinkStep(loanBlink, now, Math.random);
+    if (next !== loanBlink) {
+      loanBlink = next;
+      requestRender();
+    }
+  }
   if (now - loanAt < LOAN_TICK_MS) return;
   loanAt = now;
   if (!loanSlideDone(loanUi.slide)) {
@@ -4677,10 +4702,16 @@ function requestRender(): void {
       const fin = state.pending?.kind === 'bank' ? state.pending.specialFinance : null;
       const owed = fin?.owed ?? 0;
       const room = fin?.available ?? 0;
+      // ★ 三条数额的**数字**只有子对话框开着才画（原版是子对话框 0x405 那一拍
+      //   调 `fcn_00433c20` 画的）；点「窗」之前只有底图上那几个**标签**。
+      const financeOpen = loanUi?.financeOpen === true;
       drawBankLoan(stageCtx, spriteNow, {
         chairman: bank.chairman,
         frozen: bankFrozen(),
-        finance: [room + owed, owed, room],
+        finance: financeOpen ? [room + owed, owed, room] : null,
+        // 董事长眨眼（子对话框那支 100 ms 定时器）；它不在时（或填数页开着时）不眨
+        // @source `0x4347a2` 的 `cmp [0x48c3cc], 4 / je`
+        blink: financeOpen && amountPage === null ? loanBlinkImage(loanBlink) : null,
       });
       // Q-BANK-1：两块**滑入面板**压在底图上 —— 玩家面板 200×280 @(0,y)、
       // 日期面板 200×200 @(280,y)，y = `[0x48c3d5]` @source fcn_00435062。
@@ -6183,6 +6214,10 @@ function bindInput(): void {
       if (loanNow.chairman) {
         const fb = hitFinanceButton(q.x, q.y);
         if (fb !== null) {
+          // ★ 週轉現金被冻结挡住 @source `loc_00434c51`：
+          //   `cmp byte [player+0x3c], 0 / jne 清 [0x48c3cf] 并返回` ——
+          //   这一下**什么都不做**（不挂气泡、不改状态，只是那颗钮上盖着禁止章）。
+          if (fb === FINANCE_BORROW && bankFrozen()) return;
           const pend0 = state.pending;
           // 前置判据照原版：`owed < 額度` 才可週轉（`loc_00434dfb` 的 `jge`）、
           // `owed != 0` 才可歸還（`loc_00434e98` 的 `je`）。

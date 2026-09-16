@@ -189,7 +189,7 @@ describe('貸款屏状态机 @source fcn_00435062', () => {
     expect(ui.bubble).toBe(LOAN_MSG.askRepay);
   });
 
-  it('★ 窗那颗只有董事長认，且它开的是特別融資子对话框', () => {
+  it('★★ 窗那颗只有董事長认，且它开的是特別融資**子对话框**（不是填数页）', () => {
     const base = { ...loanStart(false), st: LOAN_ST.ready };
     expect(press(base, 3, { chairman: false })).toEqual(base);
     const r = step(base, {
@@ -200,8 +200,14 @@ describe('貸款屏状态机 @source fcn_00435062', () => {
       chairman: true,
       overLimit: false,
     });
-    expect(r.effect).toEqual({ kind: 'openFinance' });
-    expect(r.ui.st).toBe(LOAN_ST.repayAsk);
+    // @source `loc_00435ddb`：状态 0xa + `Wait_0402_Message(fcn_00434492)`，
+    // 子对话框自己那句招呼是 #0086；**没有** effect（填数页要等点小钮才开）
+    expect(r.effect).toBeNull();
+    expect(r.ui.financeOpen).toBe(true);
+    expect(r.ui.bubble).toBe(LOAN_MSG.financeGreet);
+    // 已经开着就不再开一次
+    expect(step(r.ui, { kind: 'press', btn: 3, frozen: false, hasLoan: false, chairman: true, overLimit: false }).ui)
+      .toBe(r.ui);
   });
 
   it('★ 借款全流程：5 →(气泡完) 6 + 开填数页 → 7 + #0079 → 8 + #0080 → 滑回去 4', () => {
@@ -611,8 +617,15 @@ describe('两块滑入面板的绘制（假 ctx，只查落点）', () => {
 // ============================================================
 
 describe('★ 特別融資子对话框的三颗小钮 @source `loc_00434da1`', () => {
-  /** 招呼说完那一刻（= 子对话框的「状态 2」，原版只有这一格受理点钮）*/
-  const ready = (): ReturnType<typeof loanStart> => ({ ...loanStart(false), st: LOAN_ST.ready });
+  /**
+   * 招呼说完 **且子对话框已开**那一刻（= 原版「按了窗、子对话框的状态 2」）。
+   * 原版只有这一格受理那三颗小钮 —— 点「窗」之前它们根本不在。
+   */
+  const ready = (): ReturnType<typeof loanStart> => ({
+    ...loanStart(false),
+    st: LOAN_ST.ready,
+    financeOpen: true,
+  });
   const fin = (
     ui: ReturnType<typeof loanStart>,
     btn: number,
@@ -643,13 +656,86 @@ describe('★ 特別融資子对话框的三颗小钮 @source `loc_00434da1`', (
     expect(fin(base, FINANCE_REPAY, true, false)).toEqual({ ui: base, effect: null });
   });
 
-  it('★ 第三颗 = 離開：状态进 bye + 气泡 #0091（与右键同一支）', () => {
+  it('★★ 第三颗 = 離開：**只收子对话框**、回银行贷款屏（返回标志 0）', () => {
+    // @source `loc_00434f25`（子对话框状态 7 + 串 #0091）→ `loc_0043490f`
+    //   `Post_0402_Message([0x48c3d0])`，而 `[0x48c3d0]` **没置 1** ⇒ 主屏
+    //   `loc_00435e1d` 走 `[0x48c3dd] = 4`：回到银行屏、**不关屏**。
     const r = fin(ready(), FINANCE_BYE);
-    expect(r.ui.st).toBe(LOAN_ST.bye);
+    expect(r.ui.st).toBe(LOAN_ST.ready);
+    expect(r.ui.financeOpen).toBe(false);
     expect(r.ui.bubble).toBe(LOAN_MSG.financeBye);
-    expect(r.effect).toBeNull();
-    // bye 之后气泡到点才真关屏
-    expect(loanStep(r.ui, { kind: 'bubbleEnd' }).effect).toEqual({ kind: 'close' });
+    // 自己给自己发一条返回消息（原版 `Post_0402_Message`）
+    expect(r.effect).toEqual({ kind: 'financeClosed', ok: false });
+    // 主屏收到它之后仍在 `ready`（银行屏不关）
+    const back = loanStep(r.ui, { kind: 'financeClosed', ok: false }).ui;
+    expect(back.st).toBe(LOAN_ST.ready);
+    expect(back.financeOpen).toBe(false);
+    // 收完之后银行屏还在（不是 close）
+    expect(loanStep(back, { kind: 'bubbleEnd' }).effect).toBeNull();
+  });
+
+  it('★★ 週轉成功 ⇒ 返回标志 1 + 收场（`loc_0043469a` 的 `[0x48c3d0] = 1`）', () => {
+    // 走到「填数页开着」那一刻：週轉現金 → 开页 → 付款
+    const ask = fin(ready(), FINANCE_BORROW).ui;
+    const r = loanStep(
+      { ...ask, st: LOAN_ST.borrowAsk },
+      { kind: 'formClosed', amount: 5000, cash: 0, deposit: 0 },
+    ).ui;
+    expect(r.financeOk).toBe(true);
+    expect(r.financeOpen).toBe(false);
+    expect(r.st).toBe(LOAN_ST.bye); // 主屏状态 0xb = 收场
+  });
+
+  it('★★ 週轉额 = 0 ⇒ 子对话框留着（状态 2 / ready，不挂气泡）', () => {
+    const ask = fin(ready(), FINANCE_BORROW).ui;
+    const r = loanStep(
+      { ...ask, st: LOAN_ST.borrowAsk },
+      { kind: 'formClosed', amount: 0, cash: 0, deposit: 0 },
+    ).ui;
+    expect(r.st).toBe(LOAN_ST.ready);
+    expect(r.financeOpen).toBe(true);
+    expect(r.financeOk).toBe(false);
+    expect(r.bubble).toBeNull();
+  });
+
+  it('★★ 子对话框那两颗**按下的下一拍**就开填数页（不再等气泡说完）', () => {
+    const inBorrow = fin(ready(), FINANCE_BORROW);
+    expect(inBorrow.ui.formOp).toBe('financeBorrow');
+    expect(inBorrow.ui.st).toBe(LOAN_ST.borrowAsk);
+    expect(inBorrow.effect).toEqual({ kind: 'openForm', op: 'financeBorrow' });
+    // 气泡到点时**不要**再开一次（先前那版留在 borrowIn，于是气泡到点用
+    // 写死的 'borrow' 把已经填了一半的那页冲掉 —— 真机上抓到的）
+    expect(loanStep(inBorrow.ui, { kind: 'bubbleEnd' }).effect).toBeNull();
+    const inRepay = fin(ready(), FINANCE_REPAY);
+    expect(inRepay.ui.formOp).toBe('financeRepay');
+    expect(inRepay.ui.st).toBe(LOAN_ST.repayAsk);
+    expect(inRepay.effect).toEqual({ kind: 'openForm', op: 'financeRepay' });
+    expect(loanStep(inRepay.ui, { kind: 'bubbleEnd' }).effect).toBeNull();
+  });
+
+  it('★ 一般貸款那两颗仍走 `borrowIn` → 气泡说完才开页（op 取自 `formOp`）', () => {
+    const base = { ...loanStart(false), st: LOAN_ST.ready };
+    const normalBorrow = loanStep(base, {
+      kind: 'press',
+      btn: 1,
+      frozen: false,
+      hasLoan: false,
+      chairman: false,
+      overLimit: false,
+    });
+    expect(normalBorrow.ui.st).toBe(LOAN_ST.borrowIn);
+    expect(normalBorrow.ui.formOp).toBe('borrow');
+    expect(loanStep(normalBorrow.ui, { kind: 'bubbleEnd' }).effect).toEqual({
+      kind: 'openForm',
+      op: 'borrow',
+    });
+  });
+
+  it('★★ 点「窗」之前那三颗小钮**点了没反应**（原版那时子对话框还没开）', () => {
+    const closed = { ...loanStart(false), st: LOAN_ST.ready };
+    for (const btn of [FINANCE_BORROW, FINANCE_REPAY, FINANCE_BYE]) {
+      expect(fin(closed, btn), `btn=${btn}`).toEqual({ ui: closed, effect: null });
+    }
   });
 
   it('★ **只有 `ready` 那一格受理**小钮（别的状态一律不动）', () => {
@@ -672,6 +758,7 @@ describe('★ 特別融資子对话框的三颗小钮 @source `loc_00434da1`', (
     // `press btn 0` = EXIT 记按下（不改状态），而 `finance btn 0` = 週轉現金
     expect(loanStep(base, { kind: 'press', btn: 0, frozen: false, hasLoan: true, chairman: true, overLimit: false }).ui.st)
       .toBe(LOAN_ST.ready);
-    expect(fin(base, FINANCE_BORROW).ui.st).toBe(LOAN_ST.borrowIn);
+    // 子对话框那颗直接进 `borrowAsk`（原版按下的下一拍就开填数页）
+    expect(fin(base, FINANCE_BORROW).ui.st).toBe(LOAN_ST.borrowAsk);
   });
 });

@@ -5,7 +5,10 @@
  * 坐标照 exe（表 `0x4757f8`），门槛照那四支处理函数（`loc_00435c12` 起的跳表）。
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+
+/** 逆向目录（CI 上可能没有）*/
+const RE_ASM = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/rich4-re/asm';
 import { LOAN_BUBBLE, LOAN_FINANCE_BUBBLE, LOAN_MSG } from './bank-dynamic.ts';
 import {
   FINANCE_BORROW,
@@ -16,7 +19,17 @@ import {
   LOAN_BUTTONS,
   LOAN_EXIT,
   LOAN_FINANCE,
+  LOAN_BLINK_AT,
+  LOAN_BLINK_IMAGES,
+  LOAN_BLINK_MASK,
+  LOAN_BLINK_P,
+  LOAN_BLINK_TICK_MS,
+  LOAN_BLINK_TIER_INC,
+  LOAN_BLINK_TIER_MASK,
+  LOAN_FINANCE_PANEL,
+  LOAN_FINANCE_ROWS,
   LOAN_FROZEN_MARK,
+  LOAN_FROZEN_MARK_CHAIRMAN,
   LOAN_PRIMARY,
   LOAN_RESOURCE,
   LOAN_ROOM,
@@ -24,6 +37,9 @@ import {
   hitFinanceButton,
   hitLoanButton,
   loanActionOf,
+  loanBlinkImage,
+  loanBlinkStart,
+  loanBlinkStep,
 } from './bank-loan.ts';
 
 describe('貸款屏几何 @source VA 0x436668 / 表 0x4757f8', () => {
@@ -173,6 +189,19 @@ describe('★ 特別融資子对话框：六句话 @source 串表 0x47585c..0x47
     expect(LOAN_MSG.financeBye.id).toBe(0x91);
   });
 
+  it('★★ `#0088`（`[0x475864]`）是**死数据**：exe 里没有任何一处读它', () => {
+    // 子对话框实际用到的气泡指针只有五处：0x47585c / 0x475860 / 0x475868 /
+    // 0x47586c / 0x475870（见 rich4_ui_bank.asm:1070/1729/1774/1812/1832）；
+    // `0x475864` 在**整个 asm 目录**里 0 命中 ⇒ 「行裡現在沒有這麼多現金。」
+    // 这句话原版根本不会显示（`canBorrow == false` 时 `loc_00434dfb` 直接返回、
+    // 连气泡都不挂）。常量保留只为串表完整，**不许**在界面上用它。
+    expect(LOAN_MSG.financeNoCash.id).toBe(0x88);
+    if (!existsSync(RE_ASM)) return; // CI 上没有逆向目录就跳过
+    const asm = readFileSync(`${RE_ASM}/rich4_ui_bank.asm`, 'utf8');
+    expect(asm).toContain('ref_00475860');
+    expect(asm).not.toContain('ref_00475864');
+  });
+
   it('★ `#00xx` 是**颜色控制码**，显示文本要去掉它', () => {
     for (const m of [
       LOAN_MSG.financeGreet,
@@ -223,5 +252,113 @@ describe('★ 接线：`main.ts` 在董事長室里先接那三颗小钮', () =>
     const s = src();
     expect(s).toContain('openLoanAmount(effect.op);');
     expect(s).not.toContain("effect.op === 'borrow' ? 'borrow' : 'repay'");
+  });
+});
+
+// ============================================================
+//  ★ Q-BANK-1a：董事長眨眼（子对话框 `fcn_00434492` 的 100 ms 定时器）
+//    @source `loc_0043493a`（掷闸）/ `loc_00434958`（眨一拍）+ 表 `0x475884`
+// ============================================================
+
+describe('★ 董事長眨眼：几何与表 @source 0x475884 / loc_00434958', () => {
+  it('★ 眼贴片落点是 (0x1f0,0xa2) = (496,162)，尺寸 70×35（= 图 11/12 的实测尺寸）', () => {
+    expect(LOAN_BLINK_AT).toEqual({ x: 496, y: 162, w: 0x46, h: 0x23 });
+    expect(LOAN_BLINK_AT.w).toBe(70);
+    expect(LOAN_BLINK_AT.h).toBe(35);
+    // 恢复矩形 (0x1f0,0xa2)-(0x236,0xc5) 的另一半
+    expect(LOAN_BLINK_AT.x + LOAN_BLINK_AT.w).toBe(566); // = 0x236
+    expect(LOAN_BLINK_AT.y + LOAN_BLINK_AT.h).toBe(197); // = 0xc5
+  });
+
+  it('★★ 表 `0x475884` 的字节 = `0c 0b 0c 00`；图 12 = 睁眼、图 11 = 闭眼', () => {
+    expect(LOAN_BLINK_IMAGES).toEqual([12, 11, 12]);
+    expect(LOAN_BLINK_IMAGES[0]).toBe(12);
+    expect(LOAN_BLINK_IMAGES[1]).toBe(11);
+  });
+
+  it('★ 常量：周期 100 ms、闸 1/1024、计数器掩码 0x3f / 档步进 0x10', () => {
+    expect(LOAN_BLINK_TICK_MS).toBe(0x64);
+    expect(LOAN_BLINK_P).toBe(1 / 1024);
+    expect(LOAN_BLINK_MASK).toBe(0x3f);
+    expect(LOAN_BLINK_TIER_MASK).toBe(0x30);
+    expect(LOAN_BLINK_TIER_INC).toBe(0x10);
+  });
+
+  it('★ 董事長室里那三条数额底下的红条面板（图 20）落 (10,125)', () => {
+    expect(LOAN_FINANCE_PANEL).toEqual({ image: 20, x: 10, y: 0x7d });
+    expect(LOAN_FINANCE_PANEL.y).toBe(125);
+    // 三条数额（字 147/195/243、值 163/211/259）都落在面板 (10,125)-(147,290) 里
+    for (const row of LOAN_FINANCE_ROWS) {
+      expect(row.labelY).toBeGreaterThanOrEqual(125);
+      expect(row.valueY).toBeLessThanOrEqual(290);
+    }
+  });
+
+  it('★ 禁止章两个落点：常态 (345,345)、董事長 (67,324)', () => {
+    expect(LOAN_FROZEN_MARK).toEqual({ image: 23, x: 345, y: 345 });
+    expect(LOAN_FROZEN_MARK_CHAIRMAN).toEqual({ image: 23, x: 0x43, y: 0x144 });
+    expect(LOAN_FROZEN_MARK_CHAIRMAN.x).toBe(67);
+    expect(LOAN_FROZEN_MARK_CHAIRMAN.y).toBe(324);
+  });
+});
+
+describe('★ 董事長眨眼的状态机 @source loc_0043493a / loc_00434958', () => {
+  /** 掷中闸的假随机源 */
+  const hit = (): number => 0;
+  /** 没掷中 */
+  const miss = (): number => 0.5;
+
+  it('★ 没到 100 ms 就什么都不做（返回同一个对象 ⇒ 调用方不重绘）', () => {
+    const b = loanBlinkStart(1000);
+    expect(loanBlinkStep(b, 1099, hit)).toBe(b);
+    expect(loanBlinkStep(b, 1100, hit)).not.toBe(b);
+  });
+
+  it('★ 闸没中就只推时刻（计数器不动、不画）', () => {
+    const b = loanBlinkStep(loanBlinkStart(0), 100, miss);
+    expect(b.counter).toBe(0);
+    expect(b.at).toBe(100);
+    expect(loanBlinkImage(b)).toBeNull();
+  });
+
+  it('★★ 掷中那一拍只置标志、**不画**（原版 `loc_0043493a` 直接跳公共尾巴）', () => {
+    const b = loanBlinkStep(loanBlinkStart(0), 100, hit);
+    expect(b.counter).toBe(0x01);
+    expect(loanBlinkImage(b)).toBeNull();
+  });
+
+  it('★★ 一次眨眼的完整序列：图 12（睁）→ 图 11（闭）→ 收工（盖底图）', () => {
+    let b = loanBlinkStep(loanBlinkStart(0), 100, hit);
+    expect([b.counter, loanBlinkImage(b)]).toEqual([0x01, null]);
+    b = loanBlinkStep(b, 200, hit);
+    expect([b.counter, loanBlinkImage(b)]).toEqual([0x11, 12]);
+    b = loanBlinkStep(b, 300, hit);
+    expect([b.counter, loanBlinkImage(b)]).toEqual([0x21, 11]);
+    // 第 4 拍：加完是 0x31 ⇒ `&0x30 == 0x30` ⇒ 收工 + 恢复底图（**不是**画第 3 项）
+    b = loanBlinkStep(b, 400, hit);
+    expect([b.counter, loanBlinkImage(b)]).toEqual([0, null]);
+    // 收工之后要重新掷中才会再眨
+    b = loanBlinkStep(b, 500, miss);
+    expect(b.counter).toBe(0);
+    expect(loanBlinkImage(b)).toBeNull();
+  });
+
+  it('★ 眨一次 = 闭眼只占 1 拍（100 ms）—— 前后两拍都是睁眼', () => {
+    const seq: (number | null)[] = [];
+    let b = loanBlinkStart(0);
+    for (let i = 1; i <= 8; i++) {
+      b = loanBlinkStep(b, i * 100, i === 1 ? hit : miss);
+      seq.push(loanBlinkImage(b));
+    }
+    expect(seq).toEqual([null, 12, 11, null, null, null, null, null]);
+  });
+
+  it('★ 计数器只在 0x3f 内绕（bit0 是标志、bit4..5 是档）', () => {
+    let b = loanBlinkStep(loanBlinkStart(0), 100, hit);
+    b = loanBlinkStep(b, 200, hit);
+    expect(b.counter).toBe(0x11);
+    b = loanBlinkStep(b, 300, hit);
+    expect(b.counter & LOAN_BLINK_MASK).toBe(b.counter);
+    expect((b.counter & LOAN_BLINK_TIER_MASK) >> 4).toBe(2);
   });
 });
