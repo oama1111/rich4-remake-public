@@ -13,21 +13,25 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import {
   FACILITY_TYPE,
+  INDUSTRY,
   WHEEL,
   WHEEL_BLANK,
   WHEEL_SLOTS,
   WHEEL_TABLE,
   WatcomRng,
+  addInsuranceDays,
   facilityIndexOf,
   makeFacility,
   newGame,
   parseMap,
   reduce,
   spinWheel,
+  type CommercialInfo,
   type FacilityInfo,
   type GameState,
   type MapTopology,
 } from '@rich4/core';
+import { CHARACTERS } from '@rich4/data';
 import type { Sprite } from './assets.ts';
 import type { LoadedFlic } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
@@ -50,6 +54,7 @@ import {
   WHEEL_SPIN_SOUND,
   WHEEL_TEXT,
   WHEEL_TEXT_AT,
+  cueName,
   drawWheelScreen,
   firstFilledSlot,
   resetWheelScreen,
@@ -57,6 +62,7 @@ import {
   wheelBubbleText,
   wheelClickable,
   wheelCue,
+  type WheelCue,
   wheelDiscChunk,
   wheelFrameSequence,
   wheelResource,
@@ -403,6 +409,182 @@ describe('★ 反推這次轉盤 @source settleFacility + 0x0043f7da', () => {
     expect(wheelCue({ ...s.before, phase: 'awaitingRoll' }, after, s.topo)).toBeNull();
     // 同一份 state 沒變 → 不起播
     expect(wheelCue(s.before, s.before, s.topo)).toBeNull();
+  });
+});
+
+// ============================================================
+//  企業那一支：航空公司（轉盤 0）/ 保險公司（轉盤 3）—— D-WHEEL-9
+// ============================================================
+
+/** 造一個「玩家 0 站在一間**別人的**公司上」的局面（董事長 = 玩家 1，`owner = 2`）*/
+function companyScene(
+  industry: number,
+  extra: Partial<GameState> = {},
+): { before: GameState; topo: MapTopology; com: CommercialInfo } | null {
+  const map = parseMap(new Uint8Array(readFileSync(MAP_PATH)));
+  const node = map.nodes.find((n) => n.specialKind === 0 && n.ref.kind === 'commercial');
+  if (node === undefined) return null;
+  const ref = node.ref;
+  if (ref.kind !== 'commercial') return null;
+  const com = map.commercials?.find((c) => c.id === ref.index);
+  if (com === undefined) return null;
+  const patched = { ...com, type: industry };
+  const base = newGame({ map, players: PLAYERS(), seed: 7 });
+  const before: GameState = {
+    ...base,
+    players: base.players.map((p, i) => ({
+      ...p,
+      nodeId: node.id,
+      cash: 100_000,
+      moneyInBank: 0,
+      insuranceDays: i === 0 ? 10 : 0,
+    })),
+    // 董事長 = 玩家 1（`+0x18` = 玩家下标 + 1 = 2）
+    commercialOwners: base.commercialOwners.map((o, i) => (i === patched.id ? { ...o, owner: 2 } : o)),
+    phase: 'settling',
+    ...extra,
+  };
+  const topo: MapTopology = {
+    nodes: map.nodes,
+    lands: map.lands,
+    facilities: map.facilities,
+    commercials: (map.commercials ?? []).map((c) => (c.id === patched.id ? patched : c)),
+  };
+  return { before, topo, com: patched };
+}
+
+/** 找一個「第一次 rand() % 12 恰好落在 slot」的 rngState（測試用）*/
+function rngStateForSlot(slot: number): number {
+  for (let s = 2; s < 200_000; s++) if (new WatcomRng(s).next() % WHEEL_SLOTS === slot) return s;
+  return 1;
+}
+
+describe('★ 企業那一支：航空 / 保險也走同一扇窗（D-WHEEL-9）', () => {
+  runMap('★ 航空公司：轉盤 0，反推的旅遊天數 × 地價 × 物價 = 真的收的那筆費', () => {
+    // @source loc_0041abb0：`xor ebp,ebp` → `push ebp`（0x0041abc4）= 轉盤 0
+    const s = companyScene(INDUSTRY.airline);
+    if (s === null) return;
+    let nonZero = 0;
+    for (const rngState of [1, 7, 12345, 999_983, 42_424_242]) {
+      const before: GameState = { ...s.before, rngState };
+      const after = reduce(before, { type: 'settle' }, s.topo);
+      const cue = wheelCue(before, after, s.topo);
+      expect(cue).not.toBeNull();
+      expect(cue!.kind).toBe('company');
+      expect(cue!.wheel).toBe(WHEEL.travel);
+      expect(cue!.commercialId).toBe(s.com.id);
+      expect(cue!.facilityId).toBe(-1);
+      expect(cue!.owner).toBe(2); // 董事長 1 基
+      expect(cue!.payer).toBe(0);
+      expect(cue!.start).toBe(startOf(rngState));
+      expect(cue!.stop).toBe(firstFilledSlot(WHEEL.travel, cue!.start));
+      expect(cue!.value).toBe(spinWheel(WHEEL.travel, startOf(rngState)));
+      // 真的收的那筆費進**公司**（+0x28），不是董事長口袋
+      const paid = after.companyFunds[s.com.id]! - before.companyFunds[s.com.id]!;
+      expect(paid).toBe(cue!.value * s.com.landPrice * before.priceIndex);
+      if (cue!.value > 0) nonZero++;
+    }
+    // 至少有一趟真的收費、也至少有一趟落在 0（「不用出國！」）
+    expect(nonZero).toBeGreaterThan(0);
+  });
+
+  runMap('★ 航空公司轉到 0 → 一句「不用出國！」，轉盤照樣播、錢不收', () => {
+    // 轉盤 0 的槽 2 就是那個 0（@source 表 0x475d0c 第一列）
+    const zero = rngStateForSlot(2);
+    const s = companyScene(INDUSTRY.airline);
+    if (s === null) return;
+    const before: GameState = { ...s.before, rngState: zero };
+    const after = reduce(before, { type: 'settle' }, s.topo);
+    const cue = wheelCue(before, after, s.topo);
+    expect(cue).not.toBeNull();
+    expect(cue!.value).toBe(0);
+    // 隨機數動了（轉盤真的轉了）→ 起播；但一毛錢都沒收
+    expect(after.rngState).not.toBe(before.rngState);
+    expect(after.companyFunds[s.com.id]).toBe(before.companyFunds[s.com.id]);
+  });
+
+  runMap('★ 保險公司：轉盤 3，反推的天數 = after 的保險期增量（& 0x7f）', () => {
+    // @source loc_0041ac3c：`push 3`；`+0x3e = (+0x3e + 盤上那個數) & 0x7f`（0x0041aa0e）
+    const s = companyScene(INDUSTRY.insurance);
+    if (s === null) return;
+    const before: GameState = { ...s.before, rngState: 7 };
+    const after = reduce(before, { type: 'settle' }, s.topo);
+    const cue = wheelCue(before, after, s.topo);
+    expect(cue).not.toBeNull();
+    expect(cue!.kind).toBe('company');
+    expect(cue!.wheel).toBe(WHEEL.insurance);
+    expect(cue!.value).toBe(spinWheel(WHEEL.insurance, startOf(7)));
+    expect(after.players[0]!.insuranceDays).toBe(addInsuranceDays(10, cue!.value));
+    // 保費 = 天數 × 地價 × 物價，進公司
+    const paid = after.companyFunds[s.com.id]! - before.companyFunds[s.com.id]!;
+    expect(paid).toBe(cue!.value * s.com.landPrice * before.priceIndex);
+  });
+
+  runMap('★ 保險那支拿 after 的保險期反查：對不上就不播（起點推錯的保險絲）', () => {
+    const s = companyScene(INDUSTRY.insurance);
+    if (s === null) return;
+    const before: GameState = { ...s.before, rngState: 7 };
+    const after = reduce(before, { type: 'settle' }, s.topo);
+    expect(wheelCue(before, after, s.topo)).not.toBeNull();
+    // 把 after 的保險期改掉（= 起點推錯一格會看到的樣子）→ 不播
+    const wrong: GameState = {
+      ...after,
+      players: after.players.map((p, i) => (i === 0 ? { ...p, insuranceDays: (p.insuranceDays + 3) & 0x7f } : p)),
+    };
+    expect(wheelCue(before, wrong, s.topo)).toBeNull();
+  });
+
+  runMap('★ 企業那支不該轉的一律不轉', () => {
+    // ① 自家公司（董事長就是我）@source 0x0041ab77
+    const own = companyScene(INDUSTRY.insurance);
+    if (own === null) return;
+    const mine: GameState = {
+      ...own.before,
+      commercialOwners: own.before.commercialOwners.map((o, i) => (i === own.com.id ? { ...o, owner: 1 } : o)),
+    };
+    const afterMine = reduce(mine, { type: 'settle' }, own.topo);
+    expect(wheelCue(mine, afterMine, own.topo)).toBeNull();
+
+    // ② 无主公司（董事長 = 0）→ 只问認購，不轉盤
+    const none: GameState = {
+      ...own.before,
+      commercialOwners: own.before.commercialOwners.map((o, i) => (i === own.com.id ? { ...o, owner: 0 } : o)),
+    };
+    const afterNone = reduce(none, { type: 'settle' }, own.topo);
+    expect(wheelCue(none, afterNone, own.topo)).toBeNull();
+
+    // ③ 電子（行業 3）：按總天數收費，**不轉盤**（一個 rand() 都不取）
+    const elec = companyScene(INDUSTRY.electronics);
+    if (elec === null) return;
+    const afterElec = reduce(elec.before, { type: 'settle' }, elec.topo);
+    expect(wheelCue(elec.before, afterElec, elec.topo)).toBeNull();
+
+    // ④ 銀行（行業 7）：不收費
+    const bank = companyScene(INDUSTRY.bank);
+    if (bank === null) return;
+    const afterBank = reduce(bank.before, { type: 'settle' }, bank.topo);
+    expect(wheelCue(bank.before, afterBank, bank.topo)).toBeNull();
+  });
+
+  it('★ 氣泡裡的 `%s`：設施 = 業主的角色名；企業 = **企業名**', () => {
+    // @source 0x0041a3f3（玩家名緩衝）vs 0x0041a9c0 `lea edi,[ebx+4]`（企業名指針）
+    const env = {
+      state: { players: [{ character: 0 }, {}, {}, {}] } as unknown as GameState,
+      topo: { commercials: [{ id: 1, name: '臺灣人壽' }] } as unknown as MapTopology,
+    } as unknown as UiScreenEnv;
+    const facilityCue: WheelCue = {
+      kind: 'facility', wheel: WHEEL.hotel, start: 0, stop: 2, value: 1,
+      facilityId: 1, commercialId: -1, owner: 1, payer: 0, human: true,
+    };
+    expect(cueName(env, facilityCue)).toBe(CHARACTERS[0]!.name);
+    const companyCue: WheelCue = {
+      kind: 'company', wheel: WHEEL.insurance, start: 0, stop: 0, value: 5,
+      facilityId: -1, commercialId: 1, owner: 2, payer: 0, human: true,
+    };
+    expect(cueName(env, companyCue)).toBe('臺灣人壽');
+    expect(wheelBubbleText(companyCue.wheel, cueName(env, companyCue)))
+      .toBe('臺灣人壽\n\n您的投保天數為...');
+    expect(wheelBubbleText(WHEEL.travel, '亞細亞航空')).toBe('亞細亞航空\n\n送您出國旅遊...');
   });
 });
 

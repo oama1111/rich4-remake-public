@@ -1,15 +1,18 @@
 /*
- * 旅館 / 購物中心 的轉盤動畫 —— T-039 / MOD-12 / REQ-12.14
+ * 轉盤動畫（四個盤：航空 / 旅館 / 購物中心 / 保險）—— T-039 / MOD-12 / REQ-12.14
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * ★ 這一屏**沒有待決交互**：`rules/facility.ts` 的 `spinWheel()`（VA 0x0043facb）
- *   早把倍數算進 state 了（旅館那個數同時是「住幾天」），本模組只把這一趟
- *   **起點 → 落點** 轉出來、停一下、自己關屏。D-003：「真人點擊時機不復刻，
- *   結果由 core 定」。
+ *   早把倍數算進 state 了（旅館那個數同時是「住幾天」、保險那個數是投保天數），
+ *   本模組只把這一趟 **起點 → 落點** 轉出來、停一下、自己關屏。
+ *   D-003：「真人點擊時機不復刻，結果由 core 定」。
+ *   四個盤的來路見下面 `wheelCue()` 的兩支（設施 / 企業）——企業那兩條是
+ *   D-WHEEL-9，2026-09-16 補。
  *
  * ★ 本屏**不改 core**：起點槽就藏在 `before.rngState` 裡 —— 原版
- *   `[0x48c50c] = rand() % 12`（VA 0x0043f7da），而 `settleFacility()` 走這條路時
- *   `before.rngState` 的**第一次 `rand()`** 就是它（那之前一個隨機數都沒取）。
+ *   `[0x48c50c] = rand() % 12`（VA 0x0043f7da），而 `settleFacility()` /
+ *   企業落點走這條路時 `before.rngState` 的**第一次 `rand()`** 就是它
+ *   （那之前一個隨機數都沒取）。
  *   於是「起點」不必進 state；落點則由 core 的同一個走法（第一個非空格）定。
  *   這一手與 `magic-screen.ts` 的「用 diff 反推落點」是同一套路，只是這裡連
  *   隨機數都能重放，反推得更準。
@@ -65,6 +68,7 @@
 import { CHARACTERS } from '@rich4/data';
 import {
   FACILITY_TYPE,
+  INDUSTRY,
   WHEEL,
   WHEEL_BLANK,
   WHEEL_SLOTS,
@@ -72,8 +76,11 @@ import {
   WHO_PLAYS_HUMAN,
   WHO_PLAYS_MASK,
   WatcomRng,
+  addInsuranceDays,
   effectiveFacility,
+  emptyOwnership,
   facilityIndexOf,
+  ownerOf,
   type GameState,
   type MapTopology,
 } from '@rich4/core';
@@ -376,17 +383,25 @@ export function wheelClickable(cue: WheelCue): boolean {
 
 /** 這次要回放什麼 */
 export interface WheelCue {
-  /** `WHEEL.hotel` / `WHEEL.mall` */
+  /**
+   * 這一趟是哪一支開的盤：
+   * - `facility` —— 旅館 / 購物中心（業主收費，@source 0x0041a44e / 0x0041a4aa）；
+   * - `company`  —— 航空公司 / 保險公司（企業收費，@source 0x0041abc4 / 0x0041a9fe、0x0041ac3c）。
+   */
+  kind: 'facility' | 'company';
+  /** `WHEEL.hotel` / `WHEEL.mall` / `WHEEL.travel` / `WHEEL.insurance` */
   wheel: number;
   /** 起點槽 0..11（= `rand() % 12`）*/
   start: number;
   /** 落點槽 0..11（起點之後第一個非空格）*/
   stop: number;
-  /** 停在的那個數字（旅館 = 天數、購物中心 = 倍數）*/
+  /** 停在的那個數字（旅館 = 天數、購物中心 = 消費倍數、航空 = 旅遊天數、保險 = 投保天數）*/
   value: number;
-  /** 設施下標（`state.facilityLastToll` 用的那個）*/
+  /** 設施下標（`state.facilityLastToll` 用的那個）；`company` 那一支恒 −1 */
   facilityId: number;
-  /** 業主（1 基，與 `facilityOwner` 同一套編碼）*/
+  /** 企業下标（`company` 那一支；`facility` 那一支恒 −1）*/
+  commercialId: number;
+  /** 業主（1 基，與 `facilityOwner` 同一套編碼）；`company` 那一支是**董事長** 1 基 */
   owner: number;
   /** 付費的那一位（玩家下標）*/
   payer: number;
@@ -419,10 +434,11 @@ export function wheelValueOf(wheel: number, stop: number): number {
 }
 
 /**
- * 剛剛是不是轉了一次旅館 / 購物中心的轉盤？是的話把三件事解出來。
+ * 剛剛是不是轉了一次轉盤？是的話把三件事解出來。
  *
- * 判據全部**純查 `before` + `topo`**，與 `settleFacility()`（VA 0x0041a370）的
- * 前置條件一一對應：
+ * 判據全部**純查 `before` + `topo`**。兩支：
+ *
+ * ### ① `facility`：旅館 / 購物中心（與 `settleFacility()` VA 0x0041a370 對應）
  *
  * 1. 當前玩家正**站在設施格上**（`facilityIndexOf(node.type)`，節點沒有 `specialKind`）；
  * 2. 那是一處**別人的** `level > 0` 的 **旅館 / 購物中心**
@@ -431,6 +447,21 @@ export function wheelValueOf(wheel: number, stop: number): number {
  *    （0x0041a3cc 的 `0x41d559`），那種情況一個 `rand()` 都不取；
  *    反過來，這一條路上唯一的隨機數消耗就是轉盤的 `rand() % 12`。
  *
+ * ### ② `company`：航空公司 / 保險公司（T-039 D-WHEEL-9，2026-09-16 補）
+ *
+ * 同一個 `fcn_0044090e` / `fcn_0043f7c6` 也服務這兩種上市企業，入口在
+ * `rich4_player_core_actions.asm` 的 **0x0041ab6d**（踩到**別人的**公司）：
+ *
+ * | 行業 | 轉盤 | @source |
+ * |---|---|---|
+ * | 1 航空 | **0**（`Panel.mkf` 68）| `loc_0041abb0`：`xor ebp,ebp` → `push ebp`（0x0041abc4）|
+ * | 4 保險 | **3**（`Panel.mkf` 71）| `loc_0041ac3c`：`push 3` |
+ *
+ * 前置條件與設施那支同構：**別人的**公司（董事長不是 0 也不是我）、
+ * `before.rngState` 動了（`industryUsesWheel()` 為真的行業才取那個 `rand()`）。
+ * 氣泡裡的 `%s` 這支是**企業名**（`lea edi,[ebx+4]`，0x0041a9c0 —— 直接把名字
+ * 指針傳進去，不經玩家名緩衝），設施那支才是業主的角色名。
+ *
  * ★ 起點槽 = `new WatcomRng(before.rngState).next() % 12` @source 0x0043f7da。
  *
  * ⚠️ 解不出來的三種（都登記在 `docs/deviations/T-039.md`）：① 玩家被傳送／夢遊
@@ -438,7 +469,9 @@ export function wheelValueOf(wheel: number, stop: number): number {
  *   ② 原版**真人**那一路按一下就停、格數取決於點擊時機，本引擎無從得知
  *   （D-003：結果由 core 定），故起點一律按「第一次 `rand()`」推；
  *   ③ 同一次 `settle` 裡若在轉盤**之前**還有別的隨機數消耗，起點就會偏一格 ——
- *   這條路上只有轉盤自己在取隨機數（見上），故不會發生。
+ *   這兩條路上只有轉盤自己在取隨機數（見上），故不會發生。
+ *   ★ 保險那一支另外拿 `after` 的保險期**反查**一道（`+0x3e` 加的就是盤上那個數，
+ *   @source 0x0041aa0e）：對不上就不播 —— 這是起點推錯時的保險絲。
  */
 export function wheelCue(
   before: GameState,
@@ -452,34 +485,71 @@ export function wheelCue(
   if (before.phase !== 'settling') return null;
   const node = topo.nodes[p.nodeId - 1];
   if (node === undefined || node.specialKind !== 0) return null;
+  // ★ 一個 rand() 都沒取 = 這一趟沒有轉盤（免收那三條 / 不取隨機數的行業）
+  if (before.rngState === after.rngState) return null;
+  const human =
+    (p.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN && p.blocking.sleepWalking === 0;
+  const slots = (wheel: number): Pick<WheelCue, 'start' | 'stop' | 'value'> => {
+    const start = new WatcomRng(before.rngState).next() % WHEEL_SLOTS;
+    const stop = firstFilledSlot(wheel, start);
+    return { start, stop, value: wheelValueOf(wheel, stop) };
+  };
+
+  // ── ① 設施：旅館 / 購物中心 ──
   const facilityId = facilityIndexOf(node.type);
-  if (facilityId === null) return null;
-  const fac = effectiveFacility(before, topo, facilityId);
-  if (fac === null) return null;
+  if (facilityId !== null) {
+    const fac = effectiveFacility(before, topo, facilityId);
+    if (fac !== null) {
+      const wheel =
+        fac.type === FACILITY_TYPE.hotel
+          ? WHEEL.hotel
+          : fac.type === FACILITY_TYPE.mall
+            ? WHEEL.mall
+            : -1;
+      if (wheel >= 0 && fac.level > 0 && fac.owner !== 0 && fac.owner !== payer + 1) {
+        return {
+          kind: 'facility',
+          wheel,
+          ...slots(wheel),
+          facilityId,
+          commercialId: -1,
+          owner: fac.owner,
+          payer,
+          human,
+        };
+      }
+    }
+  }
+
+  // ── ② 企業：航空公司（轉盤 0）/ 保險公司（轉盤 3）──
+  const ref = node.ref;
+  if (ref.kind !== 'commercial') return null;
+  const c = topo.commercials?.find((x) => x.id === ref.index);
+  if (c === undefined) return null;
   const wheel =
-    fac.type === FACILITY_TYPE.hotel
-      ? WHEEL.hotel
-      : fac.type === FACILITY_TYPE.mall
-        ? WHEEL.mall
+    c.type === INDUSTRY.airline
+      ? WHEEL.travel
+      : c.type === INDUSTRY.insurance
+        ? WHEEL.insurance
         : -1;
   if (wheel < 0) return null;
-  if (fac.level === 0 || fac.owner === 0 || fac.owner === payer + 1) return null;
-  // ★ 一個 rand() 都沒取 = 免收那三條之一，原版連轉盤都不開
-  if (before.rngState === after.rngState) return null;
-
-  const rng = new WatcomRng(before.rngState);
-  const start = rng.next() % WHEEL_SLOTS;
-  const stop = firstFilledSlot(wheel, start);
+  const chairman = ownerOf(before.commercialOwners[c.id] ?? emptyOwnership());
+  if (chairman < 0 || chairman === payer) return null;
+  const derived = slots(wheel);
+  if (wheel === WHEEL.insurance) {
+    // @source 0x0041aa0e：`player.+0x3e = (player.+0x3e + 盤上那個數) & 0x7f`
+    const want = addInsuranceDays(p.insuranceDays, derived.value);
+    if (after.players[payer]?.insuranceDays !== want) return null;
+  }
   return {
+    kind: 'company',
     wheel,
-    start,
-    stop,
-    value: wheelValueOf(wheel, stop),
-    facilityId,
-    owner: fac.owner,
+    ...derived,
+    facilityId: -1,
+    commercialId: c.id,
+    owner: chairman + 1,
     payer,
-    human:
-      (p.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN && p.blocking.sleepWalking === 0,
+    human,
   };
 }
 
@@ -605,6 +675,21 @@ function ownerName(env: UiScreenEnv, owner: number): string {
 }
 
 /**
+ * 氣泡裡 `%s` 那一段。
+ *
+ * - `facility`（旅館 / 購物中心）：**業主的角色名** —— 原版 0x0041a3f3 先把
+ *   `player[owner].name` 抄進緩衝再傳給 `fcn_0044090e`；
+ * - `company`（航空 / 保險）：**企業名** —— 原版 `lea edi,[ebx+4]`（0x0041a9c0）
+ *   直接把企業記錄的 `+4`（名字）當指針傳進去。
+ */
+export function cueName(env: UiScreenEnv, cue: WheelCue): string {
+  if (cue.kind === 'company') {
+    return env.topo.commercials?.find((c) => c.id === cue.commercialId)?.name ?? '';
+  }
+  return ownerName(env, cue.owner);
+}
+
+/**
  * 原版的「點一下」—— `0x202`（左鍵抬起）/ `0x205`（右鍵）/ `0x101`（按鍵）
  * 三種訊息**共用同一支**（@source `0x0043fa66` 起，三者都落到 `esi = 2` 那支）。
  * 還在快轉就進減速段；已經停好就立刻關屏。
@@ -649,7 +734,7 @@ export const wheelScreen: UiScreen = {
       cue: play.cue,
       slot: wheelSpinSlot(play.spin),
       angel: wheelAngelChunk(play.spin.step, total),
-      text: wheelBubbleText(play.cue.wheel, ownerName(env, play.cue.owner)),
+      text: wheelBubbleText(play.cue.wheel, cueName(env, play.cue)),
     });
   },
 
