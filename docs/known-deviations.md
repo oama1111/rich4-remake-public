@@ -365,8 +365,12 @@ shr  eax, 9        / and eax, 0x7c00  ; 红 ← 原值 bit 19..23 → 目标 bit
 [`docs/deviations/Q-SETUP-1.md`](deviations/Q-SETUP-1.md)** —— 那份是给 Q-SETUP-1 卡接线用的；
 本引擎的落码在 `rules/setup.ts`（档位换算）＋`rules/victory.ts`（判定纯函数）＋日推进。
 
-⚠️ 尚未接线的一处（读档）：`loaders/savegame.ts` 的 `importOriginalSave` 仍把
-`totalDays` 硬置 0，也没有回填 `winConditions`；要无损导入原版存档需按上表三个偏移补上。
+✅ **读档那一处已接（2026-09-16 复核）**：`loaders/save.ts` 的 `OFFSET` 里有
+`winTargetDays: 0x2682` / `winTargetWealth: 0x2686` / `totalDays: 0x2692`
+（另有本次新增的 `initialFund: 0x268a`），`parseSave` 逐个读出来，
+`loaders/savegame.ts:318/323` 把它们写进 `winConditions` 与 `totalDays`
+（不再硬置 0）。锚点实测在 `savegame.q17.test.ts`（Save0.dat：0x268a=300000、
+0x2692=295）。
 
 ---
 
@@ -483,7 +487,16 @@ add   esp, 0x10                ; 清理 16 字节
 **记录为现状**。若日后该断言失败，说明找到了 type 的真正来源，
 届时应回来更新本条，而不是放宽断言。
 
-### 监狱／医院：已定位的结构（尚未实现）
+### ✅ 监狱／医院：**已实现**（2026-09-16 复核，本节标题先前是「尚未实现」）
+
+> 下面的结构表仍然有效（是当年的取证），但**功能已经做完了**：
+> core `rules/confinement.ts`（送入/释放、占用表、`(existing+days)&0x7f`）、
+> core `rules/visit.ts`（`bailCandidates` / `decideBail` 的 f23 三路 / `applyBail`、
+> `BAIL_COST_PLAYER=30` / `BAIL_INMATE_POINTS_REQUIRED=0x2bc`）、
+> `state/reduce.ts` 的 `enterVisit` 与 `{kind:'bail'}` 待决、
+> 客户端 `bail-screen.ts`（8 槽坐标 + 命中框 + Panel.mkf 63/65+64）。
+> 落点分派 `node.flags & 0xff` = 4/5 → `_rich4_ui_prison_entry`(0x43d304) /
+> `_rich4_ui_hospital_entry`(0x43e9a4)；测试见 `visit.test.ts` / `special-actors.test.ts`。
 
 两者结构**完全对称**，偏移相差约 0xF30，可以对照着做。
 
@@ -1516,9 +1529,24 @@ call _Wait_0402_Message(window, fcn_0042b2ec)   ; ★ 訊息框的那个窗口�
 数值表里的 `hasCommercial`（0/1）在开局时会被**改写成 1 基企业序号**，
 之后 `commercialIndex` 才是可用的下标。
 
-⚠️ 仍缺的是**运行时**联动：原版买下企业后资产额会变，股价随之被拉动；
-本引擎目前只在开局读一次静态资产额（企业的运行时归属尚未建模，
-见 Q-NEWS-1 同一条根因）。
+✅ **2026-09-16 订正（本条先前有两处说反了）**：
+
+1. **「买下企业后资产额会变、股价随之被拉动」在 exe 里不成立**。
+   `commercial + 0x24`（资产额）全 exe **只有两处读**、**零写入**：
+   - 认购单价 `_rich4_buy_stock` `00428d9b mov eax,[ecx+0x24] / idiv 0x2710`；
+   - 均值回归锚 `fcn_004291d6` `00429279 fild dword [edx+eax+0x24] / fdiv [0x463fd8]`。
+   它是**地图文件里的字段**（`rich4_load_map.asm:204-207`；`loaders/map.ts:575` 读它），
+   运行时不写。⇒ 股价只被新闻/随机游走推，锚点是静态地图值 —— 本引擎**已经对齐**，
+   **不应**再新增 `commercialAssets` 之类的动态字段（那是自创）。
+2. **企业归属早已建模**（`places/commercial.ts` 逐行译 `0x4294d5` +
+   `state.commercialOwners`），缺的其实是**卖出没重排**。
+   @source `_rich4_sell_stock` 尾部**确实**有 `call _rich4_update_commercial_owner`
+   （VA 0x00428eb7，`rich4_stocks.asm:214-219`）；破产清算走 `_rich4_sell_stock`
+   （`rich4_player_bankrupt.asm:407`）同样触发。
+   **已修（2026-09-16）**：`reduce.ts` 的 `tradeStock` 卖出分支与破产
+   `liquidateStocks` 之后都补上 `reownCommercial`；两处写反的注释也已订正
+   （`places/commercial.ts` 与 `reduce.ts` 的 `reownCommercial`）。
+   测试：`commercial-landing.test.ts` 的「卖出**也要**重排」一组 3 条。
 
 ### ~~Q-NEWS-1~~：新闻 8/9 的地产统计（**已结案**）
 
@@ -2969,7 +2997,7 @@ COPY 块，而原版跳过它，故**本解码器比 ffmpeg 更贴原版**）。
 | # | 问题（需求方原话） | 现状 | 已查到的线索 |
 |---|---|---|---|
 | 1 | 「顶部的工具栏图标也没和背景对齐，左边的偏右、右边的偏左」 | ✅ **已修（2026-09-15）** | 猜「有一张固定 x 表」**是错的**。真的表在 `fcn_00415d31` 与 `loc_00418b0a`：**等距 40、从 x=0 起**（命中是 `idiv 0x28`，画点是 `i*40+20`）。先前照 439 宽的底条图反推出「间距 39、两侧各留 5」—— 拿底条宽去凑按钮格，于是 i=0 偏右 4.5px、i=10 偏左 5.5px。已改 `TOOLBAR`，并顺手把**悬停高亮**按原版改成 hover 驱动（`[0x48bde4]`，先前误当成按下态） |
-| 2 | 「第一个按钮的百科功能还没做」 | ⏳ **未做**（本轮只做了取证） | 就是 **T-045 輔助說明屏**（工具列 #0）。**档案已定位：不是 Panel.mkf，是 `help.mkf`**（`_rich4_ui_help_entry` 头一句 `load_mkf(0x466096)`）。100 个资源：**资源 0 = SMP 12 张的整屏版面**，**资源 1..99 = BIG5 的条目正文**。绘制走 12 号 `0x101010` 字体、按 `9 字节/条` 的条目表索引。**它是货真价实的一屏（正文 2199 行）**，需要单独一轮做 + 与原版逐条比对 |
+| 2 | 「第一个按钮的百科功能还没做」 | ✅ **已做（2026-09-16 复核）**：`client/help-screen.ts`（2328 行，正文 8 章约 1077 行）+ `screens.ts` 登记 + `main.ts` 的 `openHelpAt`；滚动/命中都有实现与单测 | 就是 **T-045 輔助說明屏**（工具列 #0）。**档案已定位：不是 Panel.mkf，是 `help.mkf`**（`_rich4_ui_help_entry` 头一句 `load_mkf(0x466096)`）。100 个资源：**资源 0 = SMP 12 张的整屏版面**，**资源 1..99 = BIG5 的条目正文**。绘制走 12 号 `0x101010` 字体、按 `9 字节/条` 的条目表索引。**它是货真价实的一屏（正文 2199 行）**，需要单独一轮做 + 与原版逐条比对 |
 | 3 | 「AI托管功能弹出的窗口里，人物角色的头像和名字错位」 | ✅ **已修（2026-09-15）** | 两个原因，都不是「锚点没减」那么简单：**① 头像确实漏减锚点**（`fcn_004562a5` 会减，见下段）；**② 原版这一屏根本不画角色名** —— 入口里 14 次 `draw_text` 的串全是常量（十二个标签 + 確定 + 取消），没有一处从玩家记录取名。我们自作主张补的名字按「头像左上角 + 74」落点，正好压在（未减锚点的）头像上。**已删掉那个名字**并登记在案 |
 | 4 | 「资金运用比例的色条也不是原版的设计」 | ✅ **已修（2026-09-15）** | 原版不是连续色条、也不是绿色：`fcn_0041da61` 每格 `fill_rect(x=311+8k, y=328, 7, 22, 0xff0000)` —— **7×22 的纯红方块、间距 8**，格数 = `[比例/10]`。同时把滑槽矩形按 exe 的 `0x4752ae` 表改成 `(208,265,80,24)`，并补上**两端那两颗箭头**（索引 7..10，±10 档位钮）—— 拖动区两端都不含，所以 **100% 只能按右箭头**，少了箭头就调不出满档 |
 | 5 | 「确认/取消的按钮字体颜色不对」 | ✅ **已修（2026-09-15）** | `set_font(0x14, 0x101010, 0, 2, 1)` —— 確定/取消是**黑字、无描边**；同屏其它文字是 `set_font(0x14, 0xf0f0f0, 0x101010, 3, 1)`（白字**带黑描边**）。两套都在入口里逐字写着。已按此实现（顺带补上普通文字的黑描边）|
@@ -3974,11 +4002,22 @@ add [0x48a3fc], 2        ; 横向速度 6, 8, 10, …（每跳 +2）
 | `0xe` / `0xf` | 梦游标记（`Data.mkf` 资源 0x18c+18 = 414，仅 `player+0x37`≠0 时；= `days_sleep_walking`） | `0x0040889d` 段 |
 | `0x7ff0` | 特殊「永远压顶」条目（道具飞行动画那一路，直接 `add edx,0x7ff0`） | `loc_00408cf6` 附近 |
 
-**现在重制版的做法**（`render.ts` 的 `draw()`）：地砖 → 装饰 → 建筑（**按世界 y 排**）
-→ （调试层）→ 人物（**永远最后**）。三处与原版不符：
-1. 建筑只按**世界 y** 排，不是**屏幕 Y**（带旋转/透视时两者不等价）；
-2. 人物恒在最后，不与建筑同一条清单 —— **这就是「高大建筑挡不住后面走过的人」的原因**；
-3. 类别 nibble 那套（同 Y 时建筑在下、当前玩家在上、梦游再上）没有对应物。
+**现在重制版的做法**：✅ **已按上面的规格落地（2026-09-16 复核）** ——
+`render.ts:1735-1751` 只有**一条** `slots: DrawSlot[]`，把
+`#buildingSlots / #objectSlots / #attachedObjectSlots / #playerSlots / #actorSlots`
+合并后 `slots.sort((a, b) => a.key - b.key)`、再逐个 `paint()`；
+`DRAW_CLASS`（`:377-401`）与 `drawKey`（`:417-420`，
+`key = (屏幕Y << 4) | 类别`）就是原版那套排序键。
+⇒ 先前那三条不符**都已消除**（建筑与人物同一条清单、按屏幕 Y 排、类别 nibble 到位）。
+
+<details><summary>（历史记录）改之前的做法与三处不符</summary>
+
+地砖 → 装饰 → 建筑（**按世界 y 排**）→ （调试层）→ 人物（**永远最后**）：
+1. 建筑只按**世界 y** 排，不是**屏幕 Y**；
+2. 人物恒在最后，不与建筑同一条清单 —— 「高大建筑挡不住后面走过的人」；
+3. 类别 nibble 那套没有对应物。
+
+</details>
 
 **改法（未落地，见下）**：把建筑与人物（以及将来的地面物件）收进同一条
 `{ key, draw }` 清单，`key = ((screenY & 0xfff) << 4) | 类别` 当 int16 比较，
@@ -4339,14 +4378,11 @@ stopEffect(id: number): void;
   「開場動畫（原版為 AIRPLANE.AVI，見 Q-INTRO-1）—— 按任意鍵跳過」，
   现在只画 `INTRO_HINT = '按任意鍵跳過'`。几何/时长（居中 312×160、15 帧、
   66667 µs/帧）一字未动。
-- ⏳ **画面仍未复刻**（Q-INTRO-1 现状不变）。原版 `fcn_00415872`（VA 0x00415872）
-  在 MCI 打开失败时有一条**完整的 fallback**：`jump.mkf` #0x2d 图 1 全屏
-  → `Effect.mkf` **25** → FLIC `jump.mkf` #0x2e（15 帧，220×240）画在 **(180,60)**
-  → 逐角色 FLIC `#0x2f + 角色号`。素材全在（`assets-clean/jump/0045_001.png`、
-  `0046.bin`），`env.flic()` 也有出口 —— **但 `main.ts` 现在是
-  `drawIntro(stageCtx, elapsed)`，没有 sprite/flic 句柄**，接进去要改 `main.ts`。
-  需要的钩子：`drawIntro(ctx, elapsedMs, frames, { sprite, flic, playEffect })`
-  （`sprite = spriteNow`、`flic = uiFlicNow`、`playEffect` 只在**进场那一拍**放 25）。
+- ✅ **fallback 画面已接（2026-09-16 复核）**：`main.ts:4359-4368` 现在传
+  `drawIntro(…, { sprite: spriteNow, flic: uiFlicNow, playEffect })`，
+  `intro.ts` 的 `IntroDeps{sprite?,flic?,playEffect?}`（`:114-117`）按原版那条
+  fallback 依次取 `jump.mkf` #0x2d（底图）→ `Effect.mkf` 25 → #0x2e（FLIC，
+  (180,60)）→ `#0x2f + 角色号`。先前那句「`main.ts` 没有 sprite/flic 句柄」已不成立。
 
 ### 樂透投注屏（`lottery-screen.ts`，本轮**不在**本卡文件清单里 ⇒ 未改）
 
@@ -4399,3 +4435,21 @@ stopEffect(id: number): void;
 
 ⇒ 27 个回合**全部由界面自己的驱动走完**（脚本零 dispatch）、78 次点击全中、
 0 次卡死。这条护栏现在真的能抓到 A-1 那一类回归了。
+
+★ **2026-09-16 回归复跑**（同一天改了惡人逐个行动、语音队列、樂透收尾、
+日期/熱鍵、贴边推镜头之后）：
+
+```json
+// 真人路径（humans=1&ai=3&humanPath=1）
+{"humanPath":true,"soakDispatches":0,"goClicks":45,"goMisses":0,
+ "humanStalls":0,"turns":13,"ticks":908,"errors":0}
+// 全电脑（humans=0&ai=4），同时挂一个惡人走子观察器
+{"ticks":1815,"turns":80,"stalls":0,"errors":0,
+ "villainWalks":2,"maxWalksPerAction":1,"villainSlots":[4,4]}
+```
+
+两条都对上脚本自己那条断言
+（`humanPath && soakDispatches === 0 && goClicks > 0 && humanStalls.length === 0`）。
+
+★ `maxWalksPerAction === 1` 就是 **D-T047-5 串行化**在活画面里的证据 ——
+改之前一轮里最多会一次交出 4 条 `lastNpcWalks`（四个惡人并排滑）。
