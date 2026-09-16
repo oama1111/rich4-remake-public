@@ -314,6 +314,64 @@ fn list_saves(app: tauri::AppHandle) -> Vec<u32> {
     out
 }
 
+// ============================================================
+//  配置文件 `RICH4.CFG`（72 字节，Q-OPT-1）
+// ============================================================
+
+/// 配置文件路径：**游戏目录**里的 `RICH4.CFG`（原版就在那儿）。
+///
+/// ★ 原版把全部设定 + 28 条键位存在这一个 72 字节文件里
+///   （`rich4_config_file.h` 的 `rich4_cfg`）：開機 `rich4_read_config()`
+///   （VA 0x00411e8f）读、設定屏/熱鍵頁「確定」调 `rich4_write_config()`
+///   （VA 0x00411f80）整份写回。
+///
+/// ⚠️ 没设过游戏目录时退回 `<应用数据目录>/RICH4.CFG`，免得写到不知道哪儿。
+fn rich4_cfg_path(app: &tauri::AppHandle, game_dir: Option<PathBuf>) -> Result<PathBuf, String> {
+    match game_dir {
+        Some(dir) => Ok(dir.join("RICH4.CFG")),
+        None => Ok(app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("取应用数据目录失败：{e}"))?
+            .join("RICH4.CFG")),
+    }
+}
+
+/// 长度闸门：**必须是 72**（`sizeof(rich4_cfg)`）。抽出来是为了能单测。
+fn check_config_len(len: usize) -> Result<(), String> {
+    if len != 72 {
+        return Err(format!("設定檔長度必須是 72，收到 {len}"));
+    }
+    Ok(())
+}
+
+/// 读 `RICH4.CFG` 的 72 个字节；没有这个文件返回 `None`（不是错误）。
+#[tauri::command]
+fn read_config(app: tauri::AppHandle, state: State<'_, AppState>) -> Option<Vec<u8>> {
+    let dir = state.game_dir.lock().ok().and_then(|g| g.clone());
+    let path = rich4_cfg_path(&app, dir).ok()?;
+    fs::read(path).ok()
+}
+
+/// 写 `RICH4.CFG`（整份覆盖）。
+///
+/// ⚠️ **长度必须正好 72** —— 与 `sizeof(rich4_cfg)` 对齐；写错长度会让原版
+///   `fread` 读不满，设定位全乱。宁可报错也不写坏。
+#[tauri::command]
+fn write_config(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    check_config_len(bytes.len())?;
+    let dir = state.game_dir.lock().ok().and_then(|g| g.clone());
+    let path = rich4_cfg_path(&app, dir)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("建設定目錄失敗：{e}"))?;
+    }
+    fs::write(&path, &bytes).map_err(|e| format!("寫入 {} 失敗：{e}", path.display()))
+}
+
 /// 当前记着的目录；没设过返回 null
 #[tauri::command]
 fn get_game_dir(state: State<'_, AppState>) -> Option<String> {
@@ -541,7 +599,9 @@ pub fn run() {
             log_line,
             read_save,
             write_save,
-            list_saves
+            list_saves,
+            read_config,
+            write_config
         ])
         .run(tauri::generate_context!())
         .expect("启动失败");
@@ -549,6 +609,27 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// ★ `RICH4.CFG` 的长度闸门：**不是 72 就拒绝写**。
+    ///
+    /// 原版 `fread(&global_rich4_cfg, sizeof(global_rich4_cfg), 1, fp)` —— 写坏了长度
+    /// 会让它读不满，设定全乱。这里把闸门单独抽出来测（真正的 `write_config`
+    /// 要 `AppHandle`，单测里构造不出来）。
+    fn check_len(len: usize) -> Result<(), String> {
+        if len != 72 {
+            return Err(format!("設定檔長度必須是 72，收到 {len}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn 設定檔長度閘門() {
+        assert!(check_len(72).is_ok());
+        assert!(check_len(0).is_err());
+        assert!(check_len(71).is_err());
+        assert!(check_len(73).is_err());
+        assert!(check_len(1024).is_err());
+    }
+
     use super::*;
 
     #[test]

@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { DEFAULT_BINDINGS, HOTKEY, MOD_CTRL, hotkeyOf, vkOf } from './hotkeys.ts';
+import { HOTKEY_DEFAULT_KEYS } from './options-pages.ts';
 import { HOTKEY_NAMES } from './options.ts';
 
 const CFG = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/RICH4.CFG';
@@ -125,12 +126,27 @@ describe('★ Q-OPT-1：自定义键位真的要参与输入判定', () => {
     expect(src).not.toContain('const fn = hotkeyOf(e);');
   });
 
-  it('★ `bindingsOf` 保留出厂表里唯一那条 Ctrl 修饰', () => {
+  it('★★ `bindingsOf` 把 word 拆成 `(低字节=键, 高字节=修饰)` —— 与 `rich4_key_t` 同布局', () => {
+    // 原版键位表 0x47edc2 的 dump：`… 81 17` ⇒ 末条 (key=0x51'Q', mod=0x11 CTRL)。
+    // 熱鍵頁的 hotkeyAssign() 也是按这个布局 or 进低字节、0x11 写 0x1100。
+    // ⚠️ 先前这里把整条 word 当 vk（0x1151 = 4433）⇒ **Ctrl+Q 永远匹配不上**。
     const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
     const at = src.indexOf('function bindingsOf(');
     expect(at).toBeGreaterThan(0);
-    const body = src.slice(at, at + 700);
-    expect(body).toContain('MOD_CTRL');
-    expect(body).toContain('DEFAULT_BINDINGS');
+    const body = src.slice(at, at + 900);
+    expect(body).toContain('word & 0xff');
+    expect(body).toContain('(word >> 8) & 0xff');
+    expect(body).not.toContain('DEFAULT_BINDINGS');
+  });
+
+  it('★ `Ctrl+Q` 真的能匹配上（用出厂表那一条 word = 0x1151）', () => {
+    // 直接把 word 按同一条公式拆出来，验 `hotkeyOf` 认得
+    const word = HOTKEY_DEFAULT_KEYS[27]!;
+    expect(word).toBe(0x1151);
+    const bindings = HOTKEY_DEFAULT_KEYS.map((w) => ({ vk: w & 0xff, mod: (w >> 8) & 0xff }));
+    // 末条对应 `HOTKEY.quit` = 27（`hotkeys.ts` 的 HOTKEY 表）
+    expect(hotkeyOf(key('KeyQ', { ctrl: true }), bindings)).toBe(27);
+    // 单独的 Q 不是熱鍵（出厂表里 Q 只以 CTRL-Q 出现）
+    expect(hotkeyOf(key('KeyQ'), bindings)).toBeNull();
   });
 });

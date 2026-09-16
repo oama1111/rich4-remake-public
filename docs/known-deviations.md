@@ -2421,14 +2421,25 @@ x == 0xffff 时 **x 与 y 都**改成居中 `(0x140−w/2, 0x0f0−h/2)` = **(12
      `startDate` 入参（缺省 = `START_DATE_MAX`，因为 core 不许读真实时间 C-DET-2；
      客户端在 `startGame` 里注入 `defaultStartDate(new Date())`）；
      日期頁「確定」改成 `dispatch({ type: 'setDate', … })`。
-2. ⏳ **熱鍵頁：输入判定已接、配置文件读写仍未做**。
-   - ✅ 已接（2026-09-16）：`main.ts` 的调用点改成
-     `hotkeyOf(e, bindingsOf(optionsKeys))` —— 先前是裸 `hotkeyOf(e)`、
-     永远走出厂表，于是改完只在内存里躺着。新增 `bindingsOf()` 把 28 项键码
-     翻成 `KeyBinding[]`（保留出厂表里唯一那条 `Ctrl+Q`）。
-   - ⏳ 仍未做：**RICH4.CFG 的读写**（原版「確定」调 `0x411f80` 写回 16 字节设定
-     + 56 字节键位）。这是独立的一件（要定桌面版/浏览器各自往哪写），
-     故 `optionsKeys` 依然只在本进程内有效。
+2. ✅ **熱鍵頁：输入判定与配置文件读写都接了**（2026-09-16）。
+   - 输入判定：`main.ts` 的调用点改成 `hotkeyOf(e, bindingsOf(optionsKeys))` ——
+     先前是裸 `hotkeyOf(e)`、永远走出厂表，于是改完只在内存里躺着。
+     ⚠️ 顺带订正一个**真 bug**：`bindingsOf()` 原来把整条 word 当 `vk`、
+     还另外从 `DEFAULT_BINDINGS` 猜修饰位 —— 出厂末条 `0x1151` 于是变成
+     `vk = 4433`，**`Ctrl+Q`（原版「結束程式」）按不动**。现按
+     `rich4_key_t` 的布局拆：**低字节 = 键、高字节 = 修饰**。
+   - 配置文件：新增 `client/config-file.ts`（`RICH4.CFG` 的**逐字节**编解码）+
+     `host.ts` 的 `ConfigStore`（桌面 = Rust `read_config`/`write_config` 写
+     游戏目录里的真文件；浏览器 = `localStorage` 的 Base64）+ `main.ts` 开机
+     `initConfigStore()`/`loadConfigFromStore()`、三处「確定」`saveConfigToStore()`。
+     Rust 侧两条命令已加，`cargo check`/`cargo test` 通过（含 72 字节长度闸门用例）。
+   - **实测锚点**：仓库里那份原版 `Rich4/RICH4.CFG` 正好 72 字节，
+     `[8..11] = 0e 04 d2 07` ⇒ 2002-04-14，`[16..71]` 的 28 条键位与
+     `HOTKEY_DEFAULT_KEYS` / `DEFAULT_BINDINGS` **逐字节相同**（末条 `51 11` = Ctrl+Q）。
+     `config-file.test.ts` 拿它当二进制真值：解码 → 编码 ⇒ **逐字节等于原文件**。
+   - ⚠️ **开局日期仍不从 cfg 取**：原版 `_rich4_read_config` 读完文件后
+     紧接着就用 `libc_getdate()`（系统当天）**覆盖** day/month/year，
+     所以文件里那一份根本不作数（见 `rules/setup.ts` 的 `defaultStartDate`）。
 3. **三张图（资源 3 的 7/8/15）没人用** —— 原版一次都没画，本模块也不画
    （见 ⑤），图号仍留在 `IMG` 里当资料。
 4. `0x4536f6` 在开 YES/NO 框时还会 `SetCursorPos(左上+0x16)` 把鼠标挪进框里；

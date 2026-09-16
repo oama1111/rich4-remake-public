@@ -136,6 +136,8 @@ import { parseSoundFont } from './soundfont.ts';
 import {
   assetBase,
   currentGameDir,
+  initConfigStore,
+  configStore,
   initSaveStore,
   hdBase,
   isDesktop,
@@ -227,14 +229,12 @@ export const inputTrace: {
 } = { stage: null, diceToggle: null, goPressed: false, rollRequested: false, earlyReturn: null };
 import { moveSoundId } from './move-sound.ts';
 import { CHARACTER_POSE, characterSetBase, type LoadedFlic } from './assets.ts';
+import { HOTKEY, hotkeyOf, vkOf, type KeyBinding } from './hotkeys.ts';
 import {
-  DEFAULT_BINDINGS,
-  HOTKEY,
-  MOD_CTRL,
-  hotkeyOf,
-  vkOf,
-  type KeyBinding,
-} from './hotkeys.ts';
+  configHotkeyKeys,
+  decodeConfig,
+  encodeConfig,
+} from './config-file.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
 import { onMinigameBackgroundReady, setMinigameBackground } from './minigame-bg.ts';
 import {
@@ -552,22 +552,80 @@ let optionsDate: DateDraft = { year: 1998, month: 1, day: 1 };
 let optionsKeys: number[] = [...HOTKEY_DEFAULT_KEYS];
 
 /**
- * 把「热键页那份 28 项键码」翻成 `hotkeyOf` 要的 `KeyBinding[]`。
+ * 把 `RICH4.CFG` 里那一份读回来 —— 开机一次（原版 `rich4_read_config()` 也是开机一次）。
  *
- * ★ 原版 `RICH4.CFG` 的 `hotkeys[]` 每条是 `{key, mod}` 两字节
- *   （`rich4_config_file.h` 的 `rich4_key_t`），熱鍵頁写回的 `[0x497168]`
- *   就是这 56 字节。本引擎的 `optionsKeys` 只存 `key`（不带修饰位），
- *   故这里补 `mod: 0` —— 表里唯一带修饰的是出厂第 28 条（`Q` + Ctrl）。
+ * @source `rich4_read_config()` VA 0x00411e8f（`rich4_initialize.asm:169`）：
+ *   `fread(&global_rich4_cfg, sizeof(global_rich4_cfg), 1, fp)`，
+ *   文件不在就用出厂默认。本引擎多一步「读不出来就保持当前默认」。
  *
- * @param keys 28 项虚拟键码（`HOTKEY_DEFAULT_KEYS` 的形态）
+ * ⚠️ **日期故意不在这里应用**：原版 `rich4_read_config` 紧接着就用
+ *   `libc_getdate()`（系统当天）**覆盖** day/month/year（见 `rules/setup.ts`
+ *   的 `defaultStartDate`），所以文件里那一份日期根本不作数 ——
+ *   我们照同一条走（`startGame` 里注入系统当天）。
+ */
+function loadConfigFromStore(): void {
+  const cfg = decodeConfig(configStore().read());
+  if (cfg === null) return;
+  options = {
+    ...options,
+    speed: cfg.speed,
+    animation: cfg.animation,
+    music: cfg.music,
+    sound: cfg.sound,
+    autoSave: cfg.autoSave,
+    windowView: cfg.view,
+  };
+  optionsKeys = configHotkeyKeys(cfg);
+}
+
+/**
+ * 把当前设定 + 键位整份写回 `RICH4.CFG` —— 設定屏与熱鍵頁的「確定」各调一次。
+ *
+ * @source `rich4_write_config()` VA 0x00411f80：
+ *   `fwrite(&global_rich4_cfg, sizeof(global_rich4_cfg), 1, fp)`（整份覆盖）。
+ *
+ * ★ 日期那三个字节写的是**当前这一局的日期**（`CFG+8` 就是它，
+ *   日推进 `fcn_00452117(&CFG+8)` 逐日改的就是这一格）——
+ *   不在对局里时退回 `optionsDate`。
+ */
+function saveConfigToStore(): void {
+  const d = screen === 'game' ? { year: state.year, month: state.month, day: state.day } : optionsDate;
+  const bytes = encodeConfig({
+    speed: options.speed,
+    animation: options.animation,
+    music: options.music,
+    sound: options.sound,
+    autoSave: options.autoSave,
+    view: options.windowView,
+    year: d.year,
+    month: d.month,
+    day: d.day,
+    // ⚠️ 写回去的是**word**（低字节键、高字节修饰），与 `rich4_key_t` 同布局
+    hotkeys: optionsKeys.map((w) => ({ vk: w & 0xff, mod: (w >> 8) & 0xff })),
+  });
+  const err = configStore().write(bytes);
+  if (err !== null) log(`⚠ 設定檔寫入失敗：${err}`);
+}
+
+/**
+ * 把熱鍵頁那份 **28 个 word** 翻成 `hotkeyOf` 要的 `KeyBinding[]`。
+ *
+ * ★ 每一条是 `rich4_key_t`（`rich4_config_file.h`）：**低字节 = 键、高字节 = 修饰键**
+ *   —— 原版键位表 `0x47edc2` 的 dump 就是 `38 39 40 37 … 81 17`，
+ *   末条 `(81,17)` = 低字节 `0x51`('Q') + 高字节 `0x11`(CTRL) = `CTRL-Q`。
+ *   熱鍵頁的 `hotkeyAssign()` 也是按这个布局 `or` 进低字节、`0x11` 写 `0x1100`。
+ *
+ * ⚠️ 先前这里把整条 word 当成 `vk`、还另外从 `DEFAULT_BINDINGS` 猜修饰位 ——
+ *   **错**：出厂第 28 条于是变成 `vk = 0x1151`（4433）而永远匹配不上，
+ *   而 `Ctrl+Q`（原版「結束程式」）也就按不动了。2026-09-16 订正。
+ *
+ * @param keys 28 个 word（`HOTKEY_DEFAULT_KEYS` 的形态）
  */
 function bindingsOf(keys: readonly number[]): KeyBinding[] {
   const out: KeyBinding[] = [];
   for (let i = 0; i < HOTKEY_DEFAULT_KEYS.length; i++) {
-    const vk = keys[i] ?? HOTKEY_DEFAULT_KEYS[i]!;
-    // 出厂默认里的 Ctrl+Q 只有一项（`hotkeys.ts` 的 `DEFAULT_BINDINGS` 最后一条）
-    const mod = DEFAULT_BINDINGS[i]?.mod === MOD_CTRL ? MOD_CTRL : 0;
-    out.push({ vk, mod });
+    const word = keys[i] ?? HOTKEY_DEFAULT_KEYS[i]!;
+    out.push({ vk: word & 0xff, mod: (word >> 8) & 0xff });
   }
   return out;
 }
@@ -2372,6 +2430,8 @@ function onOptionsSubUp(): void {
       //   变量里、core 一无所知（登记为 Q-OPT-1，已结案）。
       //   进游戏之后才有效：标题屏上还没有 `state` 可改（原版那一刻 `CFG+8`
       //   是配置文件里的初始值，本引擎的开局日期由 `newGame` 给）。
+      // ★ 也写回 `RICH4.CFG`（`CFG+8` 就是当前游戏日期那一格）
+      saveConfigToStore();
       if (screen === 'game') {
         dispatch({ type: 'setDate', year: optionsDate.year, month: optionsDate.month, day: optionsDate.day });
         log(`▶ 日期更改：${optionsDate.year} 年 ${optionsDate.month} 月 ${optionsDate.day} 日`);
@@ -2406,7 +2466,10 @@ function onOptionsSubUp(): void {
     if (ctrl === HOTKEY_CTRL.OK) {
       // 確 定：写回 `0x497168` + 存 CFG（`0x411f80`）@source 0x4117bc
       optionsKeys = [...sub.keys];
-      log('▶ 熱鍵設定：已更新（本引擎还没有 RICH4.CFG 的读写，键位只活在内存里）');
+      // ★ 写回 `RICH4.CFG` @source `rich4_write_config()` VA 0x00411f80
+      //   （原版 `0x411f80` 那一调就是它）—— 先前只改内存，重开就没了（Q-OPT-1）。
+      saveConfigToStore();
+      log('▶ 熱鍵設定：已更新並寫入 RICH4.CFG');
       closeOptionsSub();
       requestRender();
       return;
@@ -2718,6 +2781,10 @@ function applyOptions(next: GameOptions): void {
   //   这里只在「音乐本来是关的、现在打开了」时补一次起播。
   if (next.music > 0 && !music.playing) void playTrack(next.track);
   if (next.music === 0) music.stop();
+  // ★ 把 16 字节设定 + 28 条键位整份写回 `RICH4.CFG`
+  //   @source `rich4_write_config()` VA 0x00411f80 —— 原版「確定」正是这一调
+  //   （`loc_004109e2` 一带：写 cfg → 按新音量档调播放器）。先前只改内存（Q-OPT-1）。
+  saveConfigToStore();
   requestRender();
 }
 let hud: Hud;
@@ -7037,6 +7104,10 @@ async function boot(): Promise<void> {
     const straightToGame = new URLSearchParams(window.location.search).get('screen') === 'game';
     // ★ 存档口（T-053）：桌面版把槽位预载进内存，之后读档屏同步取用
     await initSaveStore();
+    // ★ `RICH4.CFG`（72 字节 = 16 字节设定 + 28 条键位）—— 原版開機就整份读回来
+    //   @source `rich4_read_config()` VA 0x00411e8f（`rich4_initialize.asm:169`）
+    await initConfigStore();
+    loadConfigFromStore();
     // Q8：上次选的音色库（桌面版存在 <AppData>/soundfont/）接回来再开声
     void restoreSoundFont();
 

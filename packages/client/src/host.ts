@@ -357,3 +357,117 @@ async function readSoundFont(name: string): Promise<Uint8Array | null> {
     return null;
   }
 }
+
+// ============================================================
+//  配置文件 `RICH4.CFG`（72 字节）
+// ============================================================
+
+/**
+ * 配置文件的读写口。
+ *
+ * ★ 原版把**全部设定 + 28 条键位**存在游戏目录里那一个 72 字节的文件里：
+ *   開機 `rich4_read_config()`（VA 0x00411e8f）读、設定屏/熱鍵頁「確定」调
+ *   `rich4_write_config()`（VA 0x00411f80）整份写回。
+ *   本引擎先前没有这个读写，所以熱鍵改完重开就没了（登记为 `Q-OPT-1`）。
+ *
+ * ⚠️ 两份实现的**落点不同**，这是有意的（浏览器没有文件系统）：
+ *   - 桌面版：游戏目录 / 应用数据目录里的真文件（Rust 侧 `read_config`/`write_config`）；
+ *   - 浏览器：`localStorage`（Base64），键名照原版文件名起，一眼能对上。
+ */
+export interface ConfigStore {
+  /** 读整份；没有/读不出来返回 `null`（调用方退回默认） */
+  read(): Uint8Array | null;
+  /** 写整份；失败返回错误说明，成功返回 `null` */
+  write(bytes: Uint8Array): string | null;
+}
+
+/** 浏览器兜底：localStorage 里存 Base64（原版那是二进制文件，浏览器只能这样） */
+function browserConfigStore(): ConfigStore {
+  const KEY = 'RICH4-REMAKE:RICH4.CFG';
+  const toB64 = (b: Uint8Array): string => {
+    let s = '';
+    for (const x of b) s += String.fromCharCode(x);
+    return window.btoa(s);
+  };
+  return {
+    read: () => {
+      let raw: string | null = null;
+      try {
+        raw = window.localStorage.getItem(KEY);
+      } catch {
+        return null; // 隐私模式之类会直接抛
+      }
+      if (raw === null) return null;
+      try {
+        const bin = window.atob(raw);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+      } catch {
+        return null; // 坏数据当没有
+      }
+    },
+    write: (bytes) => {
+      try {
+        window.localStorage.setItem(KEY, toB64(bytes));
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : '無法寫入設定檔';
+      }
+    },
+  };
+}
+
+/**
+ * 桌面版：走 Rust 侧那两条命令（真文件）。
+ *
+ * ⚠️ 这两条命令**本仓库的 Rust 侧还没有**（见 `src-tauri/src/lib.rs` 的 TODO）——
+ *   装不上时 `invoke` 会 reject，这里退回浏览器实现并记一条日志，**不让游戏崩**。
+ */
+function desktopConfigStore(t: NonNullable<ReturnType<typeof tauri>>): ConfigStore {
+  let fallback: ConfigStore | null = null;
+  const fb = (): ConfigStore => (fallback ??= browserConfigStore());
+  return {
+    read: () => fb().read(),
+    write: (bytes) => {
+      // 先在本地留一份（桌面版也保底），再试着写真文件
+      const local = fb().write(bytes);
+      void t.core
+        .invoke('write_config', { bytes: [...bytes] })
+        .catch((e: unknown) => hostLog(`設定檔寫入失敗（暫存於本機）：${String(e)}`));
+      return local;
+    },
+  };
+}
+
+let cfgStore: ConfigStore | null = null;
+
+/** 当前配置文件口（未初始化时退回浏览器实现） */
+export function configStore(): ConfigStore {
+  cfgStore ??= browserConfigStore();
+  return cfgStore;
+}
+
+/** 启动时调一次（与 `initSaveStore` 同一个位置） */
+export async function initConfigStore(override?: ConfigStore): Promise<void> {
+  if (override !== undefined) {
+    cfgStore = override;
+    return;
+  }
+  const t = tauri();
+  if (t === null) {
+    cfgStore = browserConfigStore();
+    return;
+  }
+  const s = desktopConfigStore(t);
+  cfgStore = s;
+  try {
+    // 桌面版：先把真文件读出来塞进本机那份（读不到就保持空）
+    const bytes = await t.core.invoke<number[] | null>('read_config');
+    if (Array.isArray(bytes) && bytes.length > 0) {
+      s.write(Uint8Array.from(bytes));
+    }
+  } catch (e) {
+    hostLog(`設定檔預載失敗（用預設值）：${String(e)}`);
+  }
+}
