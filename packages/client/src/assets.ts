@@ -1282,3 +1282,62 @@ export const TOOLBAR_LABELS: readonly string[] = [
   '公佈欄',     // SALE? 房子   ← 熱鍵「交易」
   '股市',       // 走勢圖       ← 熱鍵「股市」
 ];
+
+/**
+ * 缓存淘汰下来的精灵的**延迟释放**队列（Q-PERF-1）。
+ *
+ * ## 为什么不能就地 `close()`
+ *
+ * `SpriteCache` 的 LRU 只把条目移出它自己那张表 —— 真正握着 `ImageBitmap`
+ * 的是渲染器的 `#ready`（绘制时直接用 `sprite.bitmap`）。所以淘汰时必须有人
+ * 把渲染器那份引用也丢掉，否则内存一点不降（这正是 Q-PERF-1 的症状）。
+ *
+ * 但**也不能在收到淘汰回调的那一刻就 close**：那个位图可能正被本帧画着，
+ * `drawImage` 拿到已关闭的位图会画成空白。淘汰回调发生在**解码完成后的微任务**里
+ * （`#sprites.get(...).then(...)`），也就是两帧之间 —— 于是安全的分界点很清楚：
+ *
+ *   · **淘汰发生时**：只从 `#ready` 摘掉引用并排进本队列 —— 下一帧起不再画它；
+ *   · **下一帧的绘制开始时**（`BoardRenderer.draw` 的**第一件事**）：才真正 `close()`。
+ *     此刻上一帧的 rAF 回调早已整个跑完（画布上的 `drawImage` 是同步落地的），
+ *     队列里每一张都确定「不会再被任何一帧用到」。
+ *
+ * 反过来说：**只要 close 发生在 draw 之内或之前**（而不是之后），就一定安全；
+ * 放在 draw 末尾同样安全，选开头只是因为那时语义最直白 ——「上一帧画完了」。
+ */
+export class DeferredSpriteClose {
+  readonly #queue: Sprite[] = [];
+
+  /**
+   * 淘汰回调的落点：把这个精灵从持有者的表里摘掉并排队等帧边界。
+   *
+   * ★ 返回 0（**不排队**）也是一种正常结果：本渲染器「从没画过它」，
+   *   说明它是**别的持有者**（`hud.ts` 也有一张 `#ready`）在用。那种精灵
+   *   一律不动 —— 见 Q-PERF-1 的「还剩什么没解」。
+   *
+   * @returns 摘掉了几条缓存键（= 这个渲染器持有它的证据）
+   */
+  retire(ready: Map<string, Sprite | null>, sprite: Sprite): number {
+    let removed = 0;
+    for (const [key, held] of ready) {
+      if (held === sprite) {
+        ready.delete(key);
+        removed++;
+      }
+    }
+    if (removed > 0) this.#queue.push(sprite);
+    return removed;
+  }
+
+  /** 帧边界：真正关掉位图。返回释放了几张 */
+  drain(): number {
+    const n = this.#queue.length;
+    for (const sprite of this.#queue) sprite.bitmap.close();
+    this.#queue.length = 0;
+    return n;
+  }
+
+  /** 已摘掉引用、等着帧边界释放的张数（诊断用） */
+  get pending(): number {
+    return this.#queue.length;
+  }
+}

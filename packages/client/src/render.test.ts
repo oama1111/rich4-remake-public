@@ -11,7 +11,6 @@ import {
   actorWalkSteps,
   BoardRenderer,
   buildingArtItems,
-  DeferredSpriteClose,
   actorWalkTotalMs,
   actorWalkTriggers,
   DOLL_STAND_RESOURCE,
@@ -41,7 +40,7 @@ import {
   SpriteCache,
   TOOLBAR_ICON_COUNT,
   TOOLBAR_STRIP_IMAGE,
-  type Sprite,
+  type Sprite,  DeferredSpriteClose,
 } from './assets.ts';
 import { tweenTickCount } from './tween.ts';
 import { LAYOUT } from './stage.ts';

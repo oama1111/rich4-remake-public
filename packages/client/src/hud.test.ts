@@ -31,6 +31,8 @@ import {
   WEEKDAY_NAMES,
 } from './hud.ts';
 import { daysInMonth, weekdayOf } from '@rich4/core';
+import { Hud } from './hud.ts';
+import type { Sprite, SpriteCache } from './assets.ts';
 
 describe('月曆格子 —— 每行恰好 7 格', () => {
   it('★ 任意月份都不出现「一行 8 天」', () => {
@@ -328,5 +330,63 @@ describe('日历那两颗按钮：太阳 / 月亮 @source VA 0x0041838c', () => 
     expect(CAL.weekday.x).toBe(14);
     expect(CAL.weekday.x - 8).toBe(6);
     expect(CAL.weekday.x + 8).toBe(22);
+  });
+});
+
+// ============================================================
+//  ★ Q-PERF-1 的另一半：侧栏那份 `#ready` 也要接淘汰监听
+//    （先前只接了 `render.ts`，于是侧栏那 ≤ 30 张位图永远放不掉）
+// ============================================================
+
+describe('★ 侧栏的淘汰监听 @source Q-PERF-1', () => {
+  /** 一个只记「被 close 过没有」的假精灵 */
+  const fakeSprite = (): { sprite: Sprite; closed: () => boolean } => {
+    let closed = false;
+    const sprite = {
+      bitmap: {
+        close: () => {
+          closed = true;
+        },
+      },
+      width: 2,
+      height: 2,
+      anchorX: 1,
+      anchorY: 1,
+    } as unknown as Sprite;
+    return { sprite, closed: () => closed };
+  };
+
+  /** 一份只服务本测试的假缓存：把挂上来的监听抓在手里 */
+  const fakeCache = (): { cache: SpriteCache; listeners: ((s: Sprite) => void)[] } => {
+    const listeners: ((s: Sprite) => void)[] = [];
+    const cache = {
+      addEvictListener: (fn: (s: Sprite) => void) => listeners.push(fn),
+    } as unknown as SpriteCache;
+    return { cache, listeners };
+  };
+
+  it('★ HUD 构造时也挂上缓存的淘汰监听（不靠 main.ts 接线）', () => {
+    const { cache, listeners } = fakeCache();
+    new Hud({} as CanvasRenderingContext2D, cache);
+    expect(listeners).toHaveLength(1);
+    expect(typeof listeners[0]).toBe('function');
+  });
+
+  it('★ 监听回调只摘引用、**不**当场 close —— 还在画的那一帧不能被关掉', () => {
+    const { cache, listeners } = fakeCache();
+    const hud = new Hud({} as CanvasRenderingContext2D, cache);
+    const { sprite, closed } = fakeSprite();
+    // 侧栏没持有过它（`retire` 返回 0）：既不排队也不 close
+    listeners[0]!(sprite);
+    expect(closed()).toBe(false);
+    expect(hud.drainEvicted()).toBe(0);
+    expect(closed()).toBe(false);
+  });
+
+  it('★ drainEvicted 是帧边界那一下：没有排队时是空操作', () => {
+    const { cache } = fakeCache();
+    const hud = new Hud({} as CanvasRenderingContext2D, cache);
+    expect(hud.drainEvicted()).toBe(0);
+    expect(hud.drainEvicted()).toBe(0);
   });
 });

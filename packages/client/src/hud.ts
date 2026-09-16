@@ -25,7 +25,7 @@ import {
   type Rich4Map,
 } from '@rich4/core';
 import { CHARACTERS } from '@rich4/data';
-import { portraitResource, type Sprite, type SpriteCache } from './assets.ts';
+import { DeferredSpriteClose, portraitResource, type Sprite, type SpriteCache } from './assets.ts';
 import type { Camera } from './render.ts';
 import { FONT_FAMILY } from './font.ts';
 
@@ -592,6 +592,16 @@ export class Hud {
   readonly #sprites: SpriteCache;
   readonly #ready = new Map<string, Sprite | null>();
   readonly #pending = new Set<string>();
+  /**
+   * 淘汰下来、等着帧边界释放的精灵（Q-PERF-1 的另一半）。
+   *
+   * ⚠️ 缓存的淘汰**只把它自己那张表里的条目移走**，真正占内存的 `ImageBitmap`
+   *   仍被本类这份 `#ready` 握着 —— 不接这条监听，侧栏那 ≤ 30 张图就永远放不掉。
+   *   与 `BoardRenderer` 同一条推理：淘汰回调跑在**两帧之间**的解码微任务里，
+   *   这时 `draw()` 不可能正在跑；真正 `close()` 推迟到下一帧 `draw()` 的**开头**，
+   *   于是绝不会把正在画的那一帧弄成空白。
+   */
+  readonly #evicted = new DeferredSpriteClose();
   #dirty = false;
   /** 解码落地时叫一声 —— 理由同 `BoardRenderer.#onReady` */
   #onReady: (() => void) | null = null;
@@ -599,6 +609,21 @@ export class Hud {
   constructor(ctx: CanvasRenderingContext2D, sprites: SpriteCache) {
     this.#ctx = ctx;
     this.#sprites = sprites;
+    // ★ 与 `render.ts` 一样**在构造里自己挂**（缓存是 `main.ts` 造的，本类拿得到同一份）。
+    //   两个持有者各挂一条：`addEvictListener` 是**列表**，后挂的不会挤掉先挂的
+    //   （同一张精灵被两边都持有时会各排一次队，`ImageBitmap.close()` 幂等，无副作用）。
+    sprites.addEvictListener((sprite) => {
+      this.#evicted.retire(this.#ready, sprite);
+    });
+  }
+
+  /**
+   * 帧边界：把淘汰下来排着队的精灵真正关掉。
+   *
+   * `draw()` 开头自动调一次；单独暴露出来是为了让测试能只验这一步（不必造画布）。
+   */
+  drainEvicted(): number {
+    return this.#evicted.drain();
   }
 
   /** 由宿主注入「再画一帧」 */
@@ -637,6 +662,9 @@ export class Hud {
   }
 
   draw(input: HudInput): void {
+    // ★ 帧边界（Q-PERF-1）：上一帧已经整个画完，现在才轮到 close。
+    //   必须在**用**任何精灵之前 —— 本帧就不会去用一张刚关掉的位图。
+    this.drainEvicted();
     const ctx = this.#ctx;
     const { width, height } = ctx.canvas;
     ctx.clearRect(0, 0, width, height);

@@ -183,7 +183,7 @@ C-PERF-2（内存 < 1.5GB）管的是**运行时客户端**。两个层面分开
   为什么不是「设一个属性」：缓存有**两个持有者**（`render.ts` 与 `hud.ts` 各一张 `#ready`），
   属性式赋值会让后挂的悄悄把先挂的挤掉，症状是「有一边的内存再也放不掉」。
   构造参数 `onEvict` 仍然可用（push 进列表）。
-- `render.ts`：新增 `DeferredSpriteClose`（`retire` / `drain` / `pending`），
+- `assets.ts`：`DeferredSpriteClose`（`retire` / `drain` / `pending`），
   `BoardRenderer` 在构造时 `sprites.addEvictListener((s) => this.#evicted.retire(this.#ready, s))`，
   并在 `draw()` 的**第一行** `this.#evicted.drain()`。
   ★ 挂监听的时机选在**渲染器构造**里，是因为 `SpriteCache` 是在 `main.ts` 里造的，
@@ -223,7 +223,7 @@ C-PERF-2（内存 < 1.5GB）管的是**运行时客户端**。两个层面分开
 |---|---|---|---|
 | 1 | **客户端还没真正加载 HD 底图** | `loadGround()` 仍从 `.gnd` 现解 2304²。要让客户端用 `hd/map/0-0.png`，得在 `main.ts` 的 boot/开局那条路上加一条「有 HD 就 fetch 9216² 位图」的分支，而 `main.ts` 不在本卡范围 —— 且要先定「换地图/换关卡时那 324MB 怎么释放」 | 在 `main.ts` 里按 `hdSource.entry('map.mkf', 地图×2, 0)` 判断后拉 HD；释放策略与 `loadGround` 同一条（换图即丢） |
 | 2 | `encodePng` 三次拷贝（≈680MB）| 动的是全项目共用的编码器（extract 也走它），属单独一张卡 | 改成单缓冲 in-place 写（zlib 的 stored 块可原地填），或按块流式写文件 |
-| 3 | HUD 那份 `#ready` 没接淘汰监听 | `hud.ts` 不在本卡允许改的文件里 | 让 `hud.ts` 也 `addEvictListener`，把命中的键从它自己的 `#ready` 摘掉再排队。**现在不会画错**（`retire` 返回 0 就不排队，不会误关别人在用的位图），只是 HUD 那 ≤ 30 张的位图放不掉 |
+| 3 | ~~HUD 那份 `#ready` 没接淘汰监听~~ ✅ **2026-09-16 已接** | — | `hud.ts` 构造里 `addEvictListener` + 新增 `drainEvicted()`（`Hud.draw()` 开头调）—— 与 `render.ts` 同一条帧边界推理；单测 `hud.test.ts`「侧栏的淘汰监听」三条 |
 | 4 | 桌面端**打包**没接 HD | `tauri.conf.json` 的 `resources` 里没有 `assets/hd` —— 该目录被 `.gitignore` 排除、干净 clone 里根本不存在，写进去会让没跑过超分的人连构建都过不去 | 先解决「产物不入库但构建需要它」（构建脚本先跑管线、或允许缺失），再把 `assets/hd` 加进 resources |
 | 5 | 接缝判据对**局部**伪影不敏感 | 整幅取带的必然代价（见 §1.4）| 需要时把取带改成滑窗（前缀和已经支持 O(1) 任意窗口，代价是常数变大） |
 | 6 | 接缝**自动修补**没接线 | `featherSeams` 是**有损**的（会把真地形硬边抹柔），旧设计就写了「默认不自动跑，由人看过报告再决定」 | 保持人工 |

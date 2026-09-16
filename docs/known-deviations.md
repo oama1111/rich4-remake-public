@@ -1355,20 +1355,26 @@ T-076 的卡片标题写「建房/加房/座位/角色/地图/开始」，但**�
 1. `assets.ts` 的淘汰回调由「单个属性」改成**监听列表**（`addEvictListener`）——
    缓存有两个持有者（`render.ts` 与 `hud.ts` 各一张 `#ready`），属性式赋值会让
    后挂的把先挂的挤掉，症状是「有一边的内存再也放不掉」。
-2. `render.ts` 新增 `DeferredSpriteClose`：淘汰时**只摘引用 + 排队**，
-   下一帧 `draw()` 的**第一件事**才 `close()`。帧边界的推理（为什么这一刀切在这里安全）
-   写在 `render.ts` 的类注释里：淘汰回调跑在解码后的微任务里、即**两帧之间**，
-   同步的 `draw()` 里不可能发生；而下一帧开始时，上一帧的 rAF 回调早已整个跑完。
+2. `DeferredSpriteClose`（**2026-09-16 起住在 `assets.ts`**，与 `SpriteCache` 同处）：
+   淘汰时**只摘引用 + 排队**，下一帧 `draw()` 的**第一件事**才 `close()`。帧边界的
+   推理（为什么这一刀切在这里安全）写在类注释里：淘汰回调跑在解码后的微任务里、
+   即**两帧之间**，同步的 `draw()` 里不可能发生；而下一帧开始时，上一帧的 rAF 回调
+   早已整个跑完。★ **两个持有者都接了**：`render.ts` 与 `hud.ts`（见下）。
 3. 桌面端 HD 路由：`src-tauri/src/lib.rs` 新增 `hd_dir()` / `is_hd_path()`，
    把 `/hd/**` 与 `/hd-manifest.json`（**正是 `host.ts` 拼出来的那两个 URL**）
    分流到仓库/包内的 `assets/`，其余照旧落原版安装目录；找不到 HD 目录就 404，
    前端 `loadHdSource` 拿到 null → 整包走原图（`assets/hd/` 为空时的行为一字不变）。
 
-**仍未做的**（详见 `docs/deviations/Q-PERF-GND.md` §三）：HUD 那份 `#ready` 没接监听
-（`hud.ts` 不在本次范围；**不会画错** —— `retire` 返回 0 就不排队、不误关别人在用的位图 ——
-只是它那 ≤ 30 张位图放不掉）；桌面端**打包**还没把 `assets/hd` 放进 `resources`
-（干净 clone 里该目录不存在，写进去会让没跑过超分的人构建失败），故 `.app` 拿不到 HD，
-`cargo run` / dev 可以。
+**HUD 那一半 2026-09-16 也接了**：`hud.ts` 在构造里同样 `addEvictListener`
+（`addEvictListener` 是**列表**，后挂的不挤掉先挂的），并新增
+`drainEvicted()`，在 `Hud.draw()` 开头调一次 —— 与 `render.ts` 同一条帧边界推理。
+侧栏那 ≤ 30 张位图现在也放得掉了（单测：`hud.test.ts` 的「侧栏的淘汰监听」三条）。
+
+**仍未做（这一条是**有意**的，不是缺口）**：桌面端**打包**不把 `assets/hd` 放进
+`resources` —— 干净 clone 里该目录不存在（超分产物不进仓库），写进
+`bundle.resources` 会让没跑过超分的人**构建失败**；`hd_dir()` 仍会在
+`cargo run` / dev 与「用户自己把 `assets/hd` 放到包旁」两种情形下命中。
+要改就得先有「HD 素材随包分发」的合法来源（C-LEG 要求不分发素材）。
 
 ### ★ Q-GND-4：底图**不在超分清单里** —— **已进管线 2026-09-15**，接缝随之换口径
 
