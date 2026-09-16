@@ -4,8 +4,10 @@
  *
  * 坐标与判据全部照汇编抄（VA 见 `monthly-screen.ts` 的注释），把最容易
  * 写错的几条钉住：
- *   ① **结算屏那一行**：头像/数字球在小气泡那一列，名字/现金/存款/利息
- *      四行都落在气泡局部 `(24,70)` 起、行距 70；
+ *   ① **结算屏那一行**（`loc_00439cd7`）：头像在 `x = 600`、`y = MONTHLY_SEAT_Y[行]`
+ *      = `{60,180,300,420}`；四段文字（`存款：`/存款额/`利息：`/利息额）照原版
+ *      图 `11+行` 的局部 `(4,6)`/`(0x9a,6)`/`(4,0x2e)`/`(0x9a,0x2e)` 排布；
+ *      **没有**行底板（图 2）/ 3D 数字（图 6..10）/ 金币 blit；
  *   ② **摘要来自 before → after 的 diff**：利息 = 存款增量（= `trunc(存款×0.1)`）；
  *   ③ **頒獎判据**：`(最高 − 次高) / 最高 > 0.4`，且最高分或次高分为 0 时无人获奖；
  *   ④ **状态机**：结算屏先逐行点亮，确认后才进頒獎屏，頒獎屏叠完还要再一拍才关。
@@ -28,24 +30,28 @@ import {
   MONTHLY_BAR_FRAME,
   MONTHLY_BAR_X,
   MONTHLY_BAR_Y,
-  MONTHLY_BUBBLE_AT,
   MONTHLY_CHUNK,
   MONTHLY_CHAMPION,
   MONTHLY_DETAIL_AT,
   MONTHLY_DETAIL_LABELS,
   MONTHLY_LABELS,
   MONTHLY_NO_AWARD,
+  MONTHLY_PANEL_AT,
   MONTHLY_RESOURCE,
   MONTHLY_ROW_AT,
-  MONTHLY_ROW_STEP,
+  MONTHLY_ROW_BLOCK_X,
+  MONTHLY_SEAT_AVATAR_X,
   MONTHLY_SEAT_BASE_Y,
   MONTHLY_SEAT_FRAME,
   MONTHLY_SEAT_X,
+  MONTHLY_SEAT_Y,
   MONTHLY_SLOTS,
   MONTHLY_TRAGIC,
   awardScore,
+  drawMonthlyScreen,
   monthlyAward,
   monthlyDetailLines,
+  monthlyKeyedBlack,
   monthlyPlaybackStart,
   monthlyPlaybackTick,
   monthlyRowLayout,
@@ -55,8 +61,17 @@ import {
   monthlySummary,
   pickAward,
   resetMonthlyScreen,
+  type MonthlyAward,
   type MonthlyPlayback,
+  type MonthlyView,
+  MONTHLY_BARS,
+  MONTHLY_SOUND_CLOSE,
+  MONTHLY_SOUND_DETAIL,
+  MONTHLY_SOUND_STEP,
+  drawMonthlyAwardFlic,
+  monthlyAwardFlicResource,
 } from './monthly-screen.ts';
+import type { Sprite } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
 
 // ============================================================
@@ -71,11 +86,12 @@ describe('用到的图 @source 0x00439c04 / 0x0043849e', () => {
     expect(MONTHLY_CHUNK.plate).toBe(2);
   });
 
-  it('★ 数字球 = 图 `6+帧`、金币 = 图 10 @source 0x00439d02 / 0x00439d1d', () => {
+  it('★ 图 6..10（3D 数字 / 金币）**结算屏原版一个都没 blit** @source loc_00439cd7', () => {
+    // 资源的图号仍然照实记下来（6..9 = 3D 的 1/2/3/4、10 = 金币），
+    // 但 `loc_00439cd7` 里没有任何一处贴它们 —— 本轮已从绘制里删掉。
     expect(MONTHLY_CHUNK.digitFirst).toBe(6);
-    expect(MONTHLY_CHUNK.coin).toBe(10);
-    // 资源 25 里 6..9 正好是 3D 的 1/2/3/4，10 是金币
     expect(MONTHLY_CHUNK.digitFirst + 3).toBe(9);
+    expect(MONTHLY_CHUNK.coin).toBe(10);
   });
 
   it('★ 4 块窄板 = 图 11..14、4 列竖栏 = 图 15..18 @source 0x0043849e / 0x004387f9', () => {
@@ -85,14 +101,39 @@ describe('用到的图 @source 0x00439c04 / 0x0043849e', () => {
     expect(MONTHLY_CHUNK.barFirst + MONTHLY_SLOTS).toBe(MONTHLY_CHUNK.columnFirst);
   });
 
-  it('★ 头像 = 图 `3×角色 + 47 + 帧`（12 角色 × 3 帧 = 47..82）@source 0x00437c9f', () => {
+  it('★ 头像 = 图 `3×角色 + 47`（12 角色 × 3 帧 = 47..82；本屏只取第 0 帧）@source 0x00437c9f', () => {
     expect(MONTHLY_CHUNK.avatarFirst).toBe(47);
     expect(MONTHLY_AVATAR_STRIDE).toBe(3);
     // 12 个角色、每角色 3 帧，正好用完 47..82 —— 包里共 83 张（0..82）
     expect(MONTHLY_CHUNK.avatarFirst + 12 * MONTHLY_AVATAR_STRIDE - 1).toBe(82);
   });
 
-  it('★ 頒獎屏 4 块窄板的帧与落点 x @source 0x475948 / 0x475918', () => {
+  it('★ 结算屏左侧面板 = 图 19（`0xf0 = 0xc + 12×19`）、落在 (24,70) 且**要抠黑**', () => {
+    // @source 0x00439c3a `mov eax,[0x48c41c] / add eax,0xf0`：
+    // 图素表第 0 项在 `[0x48c41c] + 0xc`，每项 12 字节 ⇒ 图号 = (0xf0−0xc)/12
+    expect(MONTHLY_CHUNK.panel).toBe(19);
+    expect(0x0c + 12 * MONTHLY_CHUNK.panel).toBe(0xf0);
+    // @source 0x00439c5d `push 0x46`（y）/ 0x00439c5f `push 0x18`（x）
+    expect(MONTHLY_PANEL_AT).toEqual({ x: 0x18, y: 0x46 });
+    expect(MONTHLY_PANEL_AT.x).toBe(24);
+    expect(MONTHLY_PANEL_AT.y).toBe(70);
+    // @source 0x00439c73 `call 0x456418` = fcn_00456418 = 抠掉纯黑那份
+    expect(monthlyKeyedBlack(MONTHLY_CHUNK.panel)).toBe(true);
+    // 而整屏底图（图 0）走的是不透明那份 0x00439c55
+    expect(monthlyKeyedBlack(MONTHLY_CHUNK.bg)).toBe(false);
+  });
+
+  it('★ 头像（图 47..82）一律抠黑 @source 0x00439d35 / 0x0043850d', () => {
+    for (let c = 0; c < 12; c++) {
+      expect(monthlyKeyedBlack(MONTHLY_CHUNK.avatarFirst + c * MONTHLY_AVATAR_STRIDE)).toBe(true);
+    }
+    expect(monthlyKeyedBlack(82)).toBe(true);
+    // 越界/别的图不在这一族里
+    expect(monthlyKeyedBlack(83)).toBe(false);
+    expect(monthlyKeyedBlack(MONTHLY_CHUNK.bg)).toBe(false);
+  });
+
+  it('★ 頒獎屏 4 块窄板的帧与落点 x @source 0x475948 / 0x475960', () => {
     expect(MONTHLY_BAR_FRAME).toEqual([16, 17, 15, 16]);
     // 落点 x 是拿同一个「帧」再查那张 4 列网格表 —— 值就是 16/17/15/16
     expect(MONTHLY_BAR_X).toEqual([16, 17, 15, 16]);
@@ -172,10 +213,43 @@ function fakeState(players: readonly Player[]): GameState {
 }
 
 describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', () => {
-  it('★ 四列的 x 是 60/180/300/420（一步 120）@source 0x475978', () => {
+  const four = (): GameState =>
+    fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
+
+  it('★ 结算屏行头像：**x = 600（常数）**、y = `MONTHLY_SEAT_Y[行]` = {60,180,300,420}', () => {
+    // @source 0x00439cfe `push 0x258`（x = 600）/ 0x00439cf5 查表当 y
+    expect(MONTHLY_SEAT_AVATAR_X).toBe(0x258);
+    expect(MONTHLY_SEAT_AVATAR_X).toBe(600);
+    expect(MONTHLY_SEAT_Y).toEqual([60, 180, 300, 420]);
+    const state = four();
+    for (let i = 0; i < MONTHLY_SLOTS; i++) {
+      const at = monthlyRowLayout(state, i, 'settle');
+      expect(at.screen).toBe('settle');
+      expect(at.avatar.x).toBe(600);
+      expect(MONTHLY_SEAT_Y).toContain(at.avatar.y);
+      expect(at.avatar.y).toBe(MONTHLY_SEAT_Y[i]);
+    }
+    // 默认（不传第二个参数）就是结算屏
+    expect(monthlyRowLayout(state, 0).avatar.x).toBe(600);
+    expect(monthlyRowLayout(state, 0).avatar.y).toBe(60);
+  });
+
+  it('★ 頒獎屏那 4 列才用 {60,180,300,420} 当 **x**、y = 330 − h + 锚点 @source 0x475930 / 0x004384b7', () => {
     expect(MONTHLY_SEAT_X).toEqual([60, 180, 300, 420]);
     for (let i = 0; i < MONTHLY_SLOTS; i++) {
       expect(MONTHLY_SEAT_X[i]).toBe(60 + i * 120);
+    }
+    expect(MONTHLY_SEAT_BASE_Y).toBe(0x14a);
+    expect(MONTHLY_SEAT_BASE_Y).toBe(330);
+    const state = four();
+    for (let i = 0; i < MONTHLY_SLOTS; i++) {
+      const at = monthlyRowLayout(state, i, 'award');
+      expect(at.screen).toBe('award');
+      expect(at.avatar.x).toBe(MONTHLY_SEAT_X[i]);
+      const size = MONTHLY_AVATAR_FRAME[MONTHLY_SEAT_FRAME[i]!]!;
+      expect(at.avatar.y).toBe(330 - size.h + size.y);
+      // 三帧的 height/y 都是 (72,36) → 四列同高，y = 294
+      expect(at.avatar.y).toBe(294);
     }
   });
 
@@ -183,59 +257,63 @@ describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', 
     expect(MONTHLY_SEAT_FRAME).toEqual([16, 17, 15, 16]);
   });
 
-  it('★ 头像的 y = 330 − h[帧] + y[帧] @source 0x00439cbf 的 `0x14a`', () => {
-    expect(MONTHLY_SEAT_BASE_Y).toBe(0x14a);
-    expect(MONTHLY_SEAT_BASE_Y).toBe(330);
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-    for (let i = 0; i < MONTHLY_SLOTS; i++) {
-      const at = monthlyRowLayout(state, i);
-      const f = MONTHLY_SEAT_FRAME[i]!;
-      const size = MONTHLY_AVATAR_FRAME[f]!;
-      expect(at.avatar.y).toBe(330 - size.h + size.y);
-      // 三帧的 height/y 都是 (72,36) → 四列同高，y = 294
-      expect(at.avatar.y).toBe(294);
+  it('★ 头像图号 = 3×角色 + 47（**不加帧**）@source `lea edi, [eax + 0x2f]` 0x00439d23', () => {
+    const state = fakeState([playerOf(0, 0), playerOf(1, 5), playerOf(2, 11)]);
+    expect(monthlyRowLayout(state, 0).avatar.chunk).toBe(3 * 0 + 47);
+    expect(monthlyRowLayout(state, 1).avatar.chunk).toBe(3 * 5 + 47);
+    expect(monthlyRowLayout(state, 2).avatar.chunk).toBe(3 * 11 + 47);
+    // ★ 回归：先前多加了頒獎屏那张竖栏表的「帧」（15/16/17）⇒ 图号 62..98，
+    //   越过资源 0..82 ⇒ sprite() 返回 null ⇒ 有些角色整块不画。
+    const all = Array.from({ length: 12 }, (_, c) => fakeState([playerOf(0, c)]));
+    for (let c = 0; c < 12; c++) {
+      const chunk = monthlyRowLayout(all[c]!, 0).avatar.chunk;
+      expect(chunk).toBeGreaterThanOrEqual(MONTHLY_CHUNK.avatarFirst);
+      expect(chunk).toBeLessThanOrEqual(82);
+      expect(monthlyKeyedBlack(chunk)).toBe(true);
     }
   });
 
-  it('★ 头像图号 = 3×角色 + 47 + 帧', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 5), playerOf(2, 11)]);
-    expect(monthlyRowLayout(state, 0).avatar.chunk).toBe(3 * 0 + 47 + 16);
-    expect(monthlyRowLayout(state, 1).avatar.chunk).toBe(3 * 5 + 47 + 17);
-    expect(monthlyRowLayout(state, 2).avatar.chunk).toBe(3 * 11 + 47 + 15);
-  });
-
-  it('★ 数字球固定在 y = 10，图号 = 6 + 帧 @source 0x00439d02 `push 0xa`', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1)]);
-    expect(monthlyRowLayout(state, 0).digit).toEqual({ x: 60, y: 10, chunk: 6 + 16 });
-    expect(monthlyRowLayout(state, 1).digit).toEqual({ x: 180, y: 10, chunk: 6 + 17 });
-  });
-
-  it('★ 四列文字都在气泡局部、行距 70 @source 0x00439d0d', () => {
-    expect(MONTHLY_ROW_STEP).toBe(70);
-    expect(MONTHLY_BUBBLE_AT).toEqual({ x: 0x18, y: 0x46 });
-    const state = fakeState([
-      playerOf(0, 0),
-      playerOf(1, 1),
-      playerOf(2, 2),
-      playerOf(3, 3),
-    ]);
+  it('★ 那一行四段文字 = 原版图 `11+行` 的那四个局部偏移 @source 0x00439d3d 起', () => {
+    expect(MONTHLY_ROW_AT).toEqual({
+      bankLabel: { dx: 4, dy: 6 },
+      bank: { dx: 0x9a, dy: 6 },
+      interestLabel: { dx: 4, dy: 0x2e },
+      interestValue: { dx: 0x9a, dy: 0x2e },
+    });
+    expect(MONTHLY_ROW_BLOCK_X).toBe(0xe0);
+    const state = four();
     for (let i = 0; i < MONTHLY_SLOTS; i++) {
       const at = monthlyRowLayout(state, i);
-      const dy = i * MONTHLY_ROW_STEP;
-      expect(at.name).toEqual({
-        x: MONTHLY_BUBBLE_AT.x + MONTHLY_ROW_AT.name.dx,
-        y: MONTHLY_BUBBLE_AT.y + MONTHLY_ROW_AT.name.dy + dy,
-      });
-      expect(at.cash).toEqual({
-        x: MONTHLY_BUBBLE_AT.x + MONTHLY_ROW_AT.cash.dx,
-        y: MONTHLY_BUBBLE_AT.y + MONTHLY_ROW_AT.cash.dy + dy,
-      });
-      // 金币与现金是同一个落点（原版先 blit 金币、再 flag 1 画数字）
-      expect(at.coin).toEqual(at.cash);
-      expect(at.bank.y - at.cash.y).toBe(MONTHLY_ROW_AT.bank.dy - MONTHLY_ROW_AT.cash.dy);
-      expect(at.interestValue.y - at.bank.y).toBe(
-        MONTHLY_ROW_AT.interestValue.dy - MONTHLY_ROW_AT.bank.dy,
-      );
+      const b = at.block;
+      expect(b).toEqual({ x: MONTHLY_ROW_BLOCK_X, y: at.avatar.y });
+      expect(at.bankLabel).toEqual({ x: b.x + 4, y: b.y + 6 });
+      expect(at.bank).toEqual({ x: b.x + 0x9a, y: b.y + 6 });
+      expect(at.interestLabel).toEqual({ x: b.x + 4, y: b.y + 0x2e });
+      expect(at.interestValue).toEqual({ x: b.x + 0x9a, y: b.y + 0x2e });
+      // ① **不裁字**：四段文字的 x 都在屏内（≥ 0）
+      for (const p of [at.bankLabel, at.bank, at.interestLabel, at.interestValue]) {
+        expect(p.x).toBeGreaterThanOrEqual(0);
+        expect(p.x).toBeLessThan(640);
+      }
+      // ② **不压立绘**：(24,70) 那块 186×410
+      expect(b.x).toBeGreaterThanOrEqual(MONTHLY_PANEL_AT.x + 186);
+      // ③ **不碰右侧那列头像**（x = 600）
+      expect(b.x + MONTHLY_ROW_AT.bank.dx).toBeLessThan(MONTHLY_SEAT_AVATAR_X);
+      // ④ 相邻两行不叠（块高 71 < 行距 120）
+      if (i > 0) {
+        const prev = monthlyRowLayout(state, i - 1);
+        expect(b.y - prev.block.y).toBeGreaterThan(71);
+      }
+    }
+  });
+
+  it('★ layout 里**没有**行底板 / 数字球 / 金币 / 现金 / 玩家名（原版这一屏一个都没画）', () => {
+    const at = monthlyRowLayout(fakeState([playerOf(0, 0)]), 0) as unknown as Record<
+      string,
+      unknown
+    >;
+    for (const gone of ['plate', 'digit', 'coin', 'cash', 'name']) {
+      expect(gone in at).toBe(false);
     }
   });
 
@@ -252,167 +330,119 @@ describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', 
       [
         {
           "avatar": {
-            "chunk": 63,
-            "x": 60,
-            "y": 294,
+            "chunk": 47,
+            "x": 600,
+            "y": 60,
           },
           "bank": {
-            "x": 100,
-            "y": 202,
+            "x": 378,
+            "y": 66,
           },
-          "cash": {
-            "x": 44,
-            "y": 116,
+          "bankLabel": {
+            "x": 228,
+            "y": 66,
           },
-          "coin": {
-            "x": 44,
-            "y": 116,
-          },
-          "digit": {
-            "chunk": 22,
-            "x": 60,
-            "y": 10,
+          "block": {
+            "x": 224,
+            "y": 60,
           },
           "index": 0,
           "interestLabel": {
-            "x": 70,
-            "y": 300,
+            "x": 228,
+            "y": 106,
           },
           "interestValue": {
-            "x": 100,
-            "y": 300,
+            "x": 378,
+            "y": 106,
           },
-          "name": {
-            "x": 69,
-            "y": 116,
-          },
-          "plate": {
-            "x": 69,
-            "y": 116,
-          },
+          "screen": "settle",
         },
         {
           "avatar": {
-            "chunk": 67,
-            "x": 180,
-            "y": 294,
+            "chunk": 50,
+            "x": 600,
+            "y": 180,
           },
           "bank": {
-            "x": 100,
-            "y": 272,
-          },
-          "cash": {
-            "x": 44,
+            "x": 378,
             "y": 186,
           },
-          "coin": {
-            "x": 44,
+          "bankLabel": {
+            "x": 228,
             "y": 186,
           },
-          "digit": {
-            "chunk": 23,
-            "x": 180,
-            "y": 10,
+          "block": {
+            "x": 224,
+            "y": 180,
           },
           "index": 1,
           "interestLabel": {
-            "x": 70,
-            "y": 370,
+            "x": 228,
+            "y": 226,
           },
           "interestValue": {
-            "x": 100,
-            "y": 370,
+            "x": 378,
+            "y": 226,
           },
-          "name": {
-            "x": 69,
-            "y": 186,
-          },
-          "plate": {
-            "x": 69,
-            "y": 186,
-          },
+          "screen": "settle",
         },
         {
           "avatar": {
-            "chunk": 68,
-            "x": 300,
-            "y": 294,
+            "chunk": 53,
+            "x": 600,
+            "y": 300,
           },
           "bank": {
-            "x": 100,
-            "y": 342,
+            "x": 378,
+            "y": 306,
           },
-          "cash": {
-            "x": 44,
-            "y": 256,
+          "bankLabel": {
+            "x": 228,
+            "y": 306,
           },
-          "coin": {
-            "x": 44,
-            "y": 256,
-          },
-          "digit": {
-            "chunk": 21,
-            "x": 300,
-            "y": 10,
+          "block": {
+            "x": 224,
+            "y": 300,
           },
           "index": 2,
           "interestLabel": {
-            "x": 70,
-            "y": 440,
+            "x": 228,
+            "y": 346,
           },
           "interestValue": {
-            "x": 100,
-            "y": 440,
+            "x": 378,
+            "y": 346,
           },
-          "name": {
-            "x": 69,
-            "y": 256,
-          },
-          "plate": {
-            "x": 69,
-            "y": 256,
-          },
+          "screen": "settle",
         },
         {
           "avatar": {
-            "chunk": 72,
-            "x": 420,
-            "y": 294,
+            "chunk": 56,
+            "x": 600,
+            "y": 420,
           },
           "bank": {
-            "x": 100,
-            "y": 412,
+            "x": 378,
+            "y": 426,
           },
-          "cash": {
-            "x": 44,
-            "y": 326,
+          "bankLabel": {
+            "x": 228,
+            "y": 426,
           },
-          "coin": {
-            "x": 44,
-            "y": 326,
-          },
-          "digit": {
-            "chunk": 22,
-            "x": 420,
-            "y": 10,
+          "block": {
+            "x": 224,
+            "y": 420,
           },
           "index": 3,
           "interestLabel": {
-            "x": 70,
-            "y": 510,
+            "x": 228,
+            "y": 466,
           },
           "interestValue": {
-            "x": 100,
-            "y": 510,
+            "x": 378,
+            "y": 466,
           },
-          "name": {
-            "x": 69,
-            "y": 326,
-          },
-          "plate": {
-            "x": 69,
-            "y": 326,
-          },
+          "screen": "settle",
         },
       ]
     `);
@@ -431,9 +461,178 @@ describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', 
     // 拷贝尺寸 70×24 落在源图 290×201 之内
     expect(MONTHLY_AWARD_PATCH.srcX + MONTHLY_AWARD_PATCH.w).toBeLessThanOrEqual(290);
     expect(MONTHLY_AWARD_PATCH.srcY + MONTHLY_AWARD_PATCH.h).toBeLessThanOrEqual(201);
-    // 目的地就是「存款」气泡那一点
-    expect(MONTHLY_AWARD_PATCH.dstX).toBe(MONTHLY_BUBBLE_AT.x);
-    expect(MONTHLY_AWARD_PATCH.dstY).toBe(MONTHLY_BUBBLE_AT.y);
+    // ⚠️ 目的地那两点（旧读法）已作废 —— 见 D-MONTHLY-8 的订正
+  });
+});
+
+// ============================================================
+//  真的画一遍：结算屏这一帧贴了哪些图、字画在哪
+// ============================================================
+
+/** 记一笔 `drawImage` */
+interface RecordedBlit {
+  resource: number;
+  index: number;
+  keyed: boolean;
+  x: number;
+  y: number;
+}
+
+/** 记一笔 `strokeText` / `fillText` */
+interface RecordedText {
+  text: string;
+  x: number;
+  y: number;
+  align: string;
+}
+
+/**
+ * 最小假 ctx —— **只**实现本屏用到的那两个出口，把落点记下来。
+ *
+ * `anchorX/anchorY` 一律 0：本测试钉的是「布局给的落点」，
+ * 锚点换算由真实 `Sprite` 带（`monthly-screen.ts` 的 `drawAnchored`）。
+ */
+function fakeCanvas(): {
+  ctx: CanvasRenderingContext2D;
+  blits: RecordedBlit[];
+  texts: RecordedText[];
+} {
+  const blits: RecordedBlit[] = [];
+  const texts: RecordedText[] = [];
+  const ctx = {
+    font: '',
+    textAlign: 'left',
+    textBaseline: 'top',
+    lineWidth: 0,
+    strokeStyle: '',
+    fillStyle: '',
+    drawImage(bitmap: unknown, x: number, y: number): void {
+      const b = bitmap as { resource?: number; index?: number; keyed?: boolean };
+      blits.push({
+        resource: b.resource ?? -1,
+        index: b.index ?? -1,
+        keyed: b.keyed === true,
+        x,
+        y,
+      });
+    },
+    strokeText(text: string, x: number, y: number): void {
+      texts.push({ text, x, y, align: String(this.textAlign) });
+    },
+    fillText(text: string, x: number, y: number): void {
+      texts.push({ text, x, y, align: String(this.textAlign) });
+    },
+  };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, blits, texts };
+}
+
+/** 假 `sprite()`：按 (档案, 资源, 图号) 造一张可辨认的位图并记下请求 */
+function fakeSpriteFn(): {
+  sprite: (archive: string, resource: number, index: number, keyed?: boolean) => Sprite | null;
+  asked: { archive: string; resource: number; index: number; keyed: boolean }[];
+} {
+  const asked: { archive: string; resource: number; index: number; keyed: boolean }[] = [];
+  const sprite = (archive: string, resource: number, index: number, keyed = false): Sprite => {
+    asked.push({ archive, resource, index, keyed });
+    return {
+      bitmap: { resource, index, keyed } as unknown as ImageBitmap,
+      width: 66,
+      height: 72,
+      anchorX: 0,
+      anchorY: 0,
+    };
+  };
+  return { sprite, asked };
+}
+
+describe('★ 画一遍结算屏：贴的图与落点（缺陷 1/2/3/4 的回归）', () => {
+  it('★ 只有 图0 / 图19 / 行头像 三类 blit，没有图 2、6..10、11..14', () => {
+    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
+    const view = monthlySummary(state, state);
+    const { ctx, blits } = fakeCanvas();
+    const { sprite, asked } = fakeSpriteFn();
+    drawMonthlyScreen(
+      ctx,
+      sprite,
+      state,
+      { nodes: [], lands: [], facilities: [] },
+      view,
+      null,
+      monthlyPlaybackStart(),
+    );
+
+    // `monthlySprite()` 一律问 `Panel.mkf` 资源 25，**图号**才区分是哪张
+    const chunks = blits.filter((b) => b.resource === MONTHLY_RESOURCE).map((b) => b.index);
+    // 底图 0（不透明）与立绘 19（抠黑）都在
+    expect(chunks).toContain(0);
+    expect(chunks).toContain(19);
+    // ★ 缺陷 2/4 的回归：图 2（行底板）、6..10（3D 数字/金币）、11..14（窄板）一个都不许贴
+    for (const gone of [2, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
+      expect(chunks).not.toContain(gone);
+    }
+    // 立绘抠黑、底图不抠
+    const bg = blits.find((b) => b.index === 0)!;
+    const portrait = blits.find((b) => b.index === 19)!;
+    expect(bg.keyed).toBe(false);
+    expect(portrait.keyed).toBe(true);
+    expect(portrait.x).toBe(MONTHLY_PANEL_AT.x);
+    expect(portrait.y).toBe(MONTHLY_PANEL_AT.y);
+    // 立绘那一次请求一定带抠黑
+    const askedPortrait = asked.find((a) => a.index === 19)!;
+    expect(askedPortrait.keyed).toBe(true);
+    expect(askedPortrait.archive).toBe('Panel.mkf');
+  });
+
+  it('★ 4 个头像落在 x=600、y ∈ {60,180,300,420}，且**没有**第 5 个', () => {
+    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
+    const view = monthlySummary(state, state);
+    const { ctx, blits } = fakeCanvas();
+    const { sprite } = fakeSpriteFn();
+    drawMonthlyScreen(
+      ctx,
+      sprite,
+      state,
+      { nodes: [], lands: [], facilities: [] },
+      view,
+      null,
+      { ...monthlyPlaybackStart(), revealed: 3 },
+    );
+    const avatars = blits.filter(
+      (b) => b.index >= MONTHLY_CHUNK.avatarFirst && b.index <= 82,
+    );
+    expect(avatars.map((b) => b.x)).toEqual([600, 600, 600, 600]);
+    expect(avatars.map((b) => b.y)).toEqual([...MONTHLY_SEAT_Y]);
+    // 4 人局就 4 个（不是 5 个）
+    expect(avatars).toHaveLength(MONTHLY_SLOTS);
+  });
+
+  it('★ 每一段字的 x 都 ≥ 0（缺陷 1/3 的回归），标签与数值不互相压', () => {
+    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
+    const view = monthlySummary(state, state);
+    const { ctx, texts } = fakeCanvas();
+    const { sprite } = fakeSpriteFn();
+    drawMonthlyScreen(
+      ctx,
+      sprite,
+      state,
+      { nodes: [], lands: [], facilities: [] },
+      view,
+      null,
+      { ...monthlyPlaybackStart(), revealed: 3 },
+    );
+    for (const t of texts) {
+      expect(t.x, `${t.text} @ ${t.x}`).toBeGreaterThanOrEqual(0);
+      expect(t.x).toBeLessThan(640);
+      expect(t.y).toBeGreaterThanOrEqual(0);
+      expect(t.y).toBeLessThan(480);
+    }
+    // 标签左对齐在块内 +4、数值右对齐在块内 +0x9a ⇒ 天然错开
+    const labels = texts.filter((t) => t.align === 'left').map((t) => t.x);
+    const values = texts.filter((t) => t.align === 'right').map((t) => t.x);
+    expect(Math.min(...labels)).toBe(MONTHLY_ROW_BLOCK_X + MONTHLY_ROW_AT.bankLabel.dx);
+    expect(Math.max(...values)).toBe(MONTHLY_ROW_BLOCK_X + MONTHLY_ROW_AT.bank.dx);
+    // 标签左边缘离数值的右边缘至少 0x40（值最宽 ≈70px，标签最长 54px）
+    expect(Math.min(...labels)).toBeLessThan(Math.max(...values) - 0x40);
   });
 });
 
@@ -735,6 +934,7 @@ function fakeEnv(state: GameState, topo: MapTopology, logs: string[]): UiScreenE
     requestRender: () => undefined,
     log: (m: string) => logs.push(m),
     playEffect: () => undefined,
+    stopEffect: () => undefined,
   };
 }
 
@@ -808,5 +1008,78 @@ describe('★ event 判据：`totalMonths` 增了才起播', () => {
     monthlyScreen.event!(dead, { ...dead, totalMonths: 1 }, env);
     expect(monthlyScreenState().playing).toBe(false);
     resetMonthlyScreen();
+  });
+});
+
+describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () => {
+  it('★★ 资源号 = `Data.mkf` `0x1a1 + 2×角色` @source rich4.asm:17360-17364', () => {
+    // 原版：玩家 +0x13（角色号）→ `add eax, eax`（×2）→ `add eax, 0x1a1`
+    expect(monthlyAwardFlicResource(0)).toBe(0x1a1);
+    expect(monthlyAwardFlicResource(1)).toBe(0x1a3);
+    expect(monthlyAwardFlicResource(4)).toBe(0x1a9);
+    // 12 个角色都得落在 Data.mkf 的这段资源里（0x1a1..0x1b8）
+    for (let c = 0; c < 12; c++) {
+      const r = monthlyAwardFlicResource(c);
+      expect(r).toBeGreaterThanOrEqual(0x1a1);
+      expect(r).toBeLessThanOrEqual(0x1b8);
+      expect(r % 2).toBe(1); // 角色那一支全是奇数号
+    }
+    // 负角色号不许算出越界资源（防御性）
+    expect(monthlyAwardFlicResource(-3)).toBe(0x1a1);
+  });
+
+  it('★ 只有「有人获奖 + 台上铺满」才播；没人获奖或还没铺满都不画', () => {
+    // 四个玩家、0 号角色 0（角色号 = `player.character`）
+    const baseState = fakeState([0, 1, 2, 3].map((i) => playerOf(i, i)));
+    const baseView: MonthlyView = { rows: [0, 1, 2, 3].map((i) => ({
+      index: i, character: i, name: `P${i}`, cash: 0, bank: 0, interest: 0, loan: 0,
+      monthlyPaid: 0, monthlyReceived: 0,
+    })) };
+    const baseAward: MonthlyAward = {
+      winner: 0, score: 0, second: 0, richest: 0, bars: MONTHLY_BARS,
+    };
+    const seatsFull: MonthlyPlayback = {
+      phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0, closing: false,
+    };
+    const calls: string[] = [];
+    const fakeFlic = (archive: string, resource: number) => {
+      calls.push(`${archive}:${resource}`);
+      return { frames: [{} as unknown as ImageBitmap], width: 156, height: 156, frameMs: 71, close: () => {} };
+    };
+    const fakeCtx = { drawImage: () => undefined } as unknown as CanvasRenderingContext2D;
+    // 没人获奖 → 不画、也不问影片
+    expect(drawMonthlyAwardFlic(fakeCtx, fakeFlic, baseState, baseView, { ...baseAward, winner: -1 }, seatsFull, 0)).toBe(false);
+    expect(calls).toHaveLength(0);
+    // 还没铺满 → 不画
+    expect(drawMonthlyAwardFlic(fakeCtx, fakeFlic, baseState, baseView, baseAward, { ...seatsFull, seats: 1 }, 0)).toBe(false);
+    expect(calls).toHaveLength(0);
+    // 铺满 + 有获奖 → 问影片并画
+    expect(drawMonthlyAwardFlic(fakeCtx, fakeFlic, baseState, baseView, baseAward, seatsFull, 142)).toBe(true);
+    expect(calls).toEqual(['Data.mkf:417']); // 0x1a1 = 417，角色 0
+    // 影片取不到（异步还没解好）→ 不画、不炸
+    expect(drawMonthlyAwardFlic(fakeCtx, () => null, baseState, baseView, baseAward, seatsFull, 0)).toBe(false);
+  });
+});
+
+describe('★ 月結／頒獎屏的音效（D-MONTHLY-5，2026-09-16 接线）', () => {
+  it('★★ 三个号是 27 / 60 / 28，不是旧条目写的「0」', () => {
+    // @source `rich4.asm:41210-41230` 的三个 sound_info 结构首字节：
+    //   `0x475b17 = 0x1b`(27)、`0x475b27 = 0x3c`(60)、`0x475b1f = 0x1c`(28)
+    expect(MONTHLY_SOUND_STEP).toBe(27);
+    expect(MONTHLY_SOUND_DETAIL).toBe(60);
+    expect(MONTHLY_SOUND_CLOSE).toBe(28);
+    expect(new Set([MONTHLY_SOUND_STEP, MONTHLY_SOUND_DETAIL, MONTHLY_SOUND_CLOSE]).size).toBe(3);
+  });
+
+  it('★ 结构断言：tick 里在**铺板/铺列/铺详情/收尾**四个转折点各响一声', () => {
+    const src = readFileSync(new URL('./monthly-screen.ts', import.meta.url), 'utf8');
+    // 不能每帧都响 —— 只在「比上一拍多」时响
+    expect(src).toContain('next.bars > p.bars || next.seats > p.seats');
+    expect(src).toContain('next.details > p.details');
+    expect(src).toContain('next.closing && !p.closing');
+    // 三个号都真的被用上
+    for (const n of ['MONTHLY_SOUND_STEP', 'MONTHLY_SOUND_DETAIL', 'MONTHLY_SOUND_CLOSE']) {
+      expect(src).toContain(`env.playEffect(${n})`);
+    }
   });
 });
