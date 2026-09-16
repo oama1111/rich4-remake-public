@@ -76,6 +76,7 @@ import {
   type LoadedArchives,
   type Sprite,
 } from './assets.ts';
+import { onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
 import {
   Hud,
   SIDEBAR,
@@ -183,7 +184,13 @@ import { CANCEL_SOUND, cancelLayerOf, type CancelLayer } from './panel-cancel.ts
 // ★ 股市柜台的填数页壳 —— 与銀行/公佈欄/上市企業**同一个**通用填数页。
 import { stockAmountForm } from './amount-form.ts';
 // ★ 通用填数窗**自己那张键盘表**（@source `loc_00452e4b`）：0-9 / 退格 / C / M / H / Enter。
-import { amountKeyOfVk, amountKeyStep, amountVkOf, type AmountKey } from './amount-keys.ts';
+import {
+  amountKeyOfVk,
+  amountKeyStep,
+  amountSlotOfId,
+  amountVkOf,
+  type AmountKey,
+} from './amount-keys.ts';
 import {
   drawAdvance,
   drawDialog,
@@ -197,7 +204,21 @@ import {
   type DialogHit,
 } from './dialog.ts';
 import { DICE_FLIC_BASE, GO_IMAGE, type SpriteFn } from './gameui.ts';
-import { goButton } from './go-button.ts';
+import { GO_SIZE, goButton } from './go-button.ts';
+
+/**
+ * 最近一次棋盘 `mousedown` 走到了哪一步 —— **只读诊断**，给浏览器长跑排错用。
+ *
+ * canvas 里的命中看不见，长跑只能靠这几个字段区分「没点到 GO」/「点到了但
+ * `requestRoll` 被拒」/「掷了但回合驱动没接上」。不参与任何判定。
+ */
+export const inputTrace: {
+  stage: readonly [number, number] | null;
+  diceToggle: number | null;
+  goPressed: boolean;
+  rollRequested: boolean;
+  earlyReturn: string | null;
+} = { stage: null, diceToggle: null, goPressed: false, rollRequested: false, earlyReturn: null };
 import { moveSoundId } from './move-sound.ts';
 import { CHARACTER_POSE, characterSetBase, type LoadedFlic } from './assets.ts';
 import { HOTKEY, hotkeyOf, vkOf } from './hotkeys.ts';
@@ -220,7 +241,7 @@ import {
 } from './saveload.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
-import { drawIntro, introDone } from './intro.ts';
+import { drawIntro, introDone, INTRO_FRAMES } from './intro.ts';
 import {
   activePlayers,
   assetRows,
@@ -1755,24 +1776,47 @@ let rollRequestedAt = 0;
 /** 催过之后最多等这么久 —— 联机时服务器不答复不能一直空转 */
 const ROLL_WAIT_TIMEOUT_MS = 3000;
 
-/** 掷骰那一段的轮询：数满预动作就掷，掷完继续要帧直到 500 ms 定格走完 */
+/**
+ * 掷骰那一段的轮询：数满预动作就掷，掷完继续要帧直到 500 ms 定格走完。
+ *
+ * ★★ 2026-09-16 第二次修「掷完骰子人不走」—— 第一版**修错了地方**。
+ *
+ *   为什么必须在这里收尾：`diceFx.tick(now)` 会在**同一次调用里**把
+ *   `hold → idle`（`dice-roll.ts` 的 `#advance`），也就是「动画播完」这件事
+ *   发生在函数**中部**，而不是下一次调用的入口。于是：
+ *   · 入口那道 `if (!diceFx.active) { 补驱动 }` 永远轮不到（进来时还 active）；
+ *   · 尾部 `if (diceFx.active) setTimeout(dicePoll, 16)` 因为已经 idle 而**不再重排**
+ *     ⇒ 补驱动那一支彻底成了死代码，而 `scheduleHumanTurn` / `scheduleAi`
+ *     都以 `diceFx.active` 为闸，`rollDice` 落地那次调用又因动画刚开当场返回，
+ *     真人就永久停在 `phase === 'moving'`、棋子一步不走。
+ *
+ *   ⇒ 所以「动画是否刚好在这一拍结束」必须在 `tick()` **之后**再判一次，
+ *     结束就当场补驱动并收摊。入口那道保留：别的岔路（自己起动画、
+ *     联机超时 cancel）也会从 idle 状态进来。
+ */
 function dicePoll(): void {
   if (!diceFx.active) {
     // ★★ 骰子那一段播完必须**补一次回合驱动**（2026-09-16 修「掷完骰子人不走」）。
-    //   ⚠️ 必须放在这个**入口**上：骰子播完那一拍正是从这里 return 的，
-    //   写在函数尾部永远跑不到（我第一版就写错了，实测照旧卡住）。
     //   为什么需要：`scheduleHumanTurn`/`scheduleAi` 都以 `diceFx.active` 为闸，
     //   而 `rollDice` 那次 `applyAction` 末尾叫它们时动画刚开、当场返回；
     //   播完若不再叫一次，真人就永远停在 `phase === 'moving'`、棋子一步不走。
-    scheduleAi();
-    scheduleHumanTurn();
+    resumeTurnDriver();
     return;
   }
   const now = performance.now();
   // ★★ 相位推进必须在**这里**做，不能只靠绘制（2026-09-16 长跑抓到的硬卡死：
   //   有整屏接管盖住棋盘时 `drawDiceFx()` 不再被调用，相位就永远停在 tumble，
   //   `active` 恒真 ⇒ 回合驱动全被这道闸挡死、整局冻住）。
-  diceFx.tick(now);
+  //   `tick()` 的返回值 = 「定格刚好在这一拍播完」—— 必须用它，不能事后看 `active`：
+  //   结束那一拍 `active` 已经是 false，靠它去重排就把最后一次补驱动吞了。
+  const ended = diceFx.tick(now);
+
+  // ★ 定格走完的那一拍：当场补驱动（这里是唯一能抓住「播完」这条边的地方）
+  if (ended) {
+    requestRender();
+    resumeTurnDriver();
+    return;
+  }
 
   // 预动作：角色「手持骰子的走路」按 tick 推进 —— 与滚骰/走子的走路帧同一个计数器
   if (diceFx.phase === 'anticipate') {
@@ -1795,12 +1839,26 @@ function dicePoll(): void {
   // 联机兜底：催过之后服务器迟迟不回就收摊，别一直空转
   if (diceFx.phase === 'anticipate' && rollRequestedAt > 0 && now - rollRequestedAt > ROLL_WAIT_TIMEOUT_MS) {
     diceFx.cancel();
+    // ★ 收摊同样要让回合驱动接着跑（`cancel()` 把相位摆回 idle，而这道闸
+    //   一旦没人重排就再也没人叫 `scheduleHumanTurn`）。
+    resumeTurnDriver();
     return;
   }
 
   if (diceFx.phase === 'tumble') diceFlicNow(diceFx.diceCount);
   requestRender();
   if (diceFx.active) window.setTimeout(dicePoll, 16);
+}
+
+/**
+ * 骰子那一段收摊之后**补一次回合驱动**。
+ *
+ * ★ 抽成独立函数是为了能单独钉住：`scheduleAi()` 与 `scheduleHumanTurn()`
+ *   都必须被叫到，少一个就会有一类座位永久卡在 `awaitingRoll`/`moving`。
+ */
+function resumeTurnDriver(): void {
+  scheduleAi();
+  scheduleHumanTurn();
 }
 
 /** 轮到人、还没掷骰 */
@@ -1882,6 +1940,31 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
   if (page === null || amount === undefined) return;
 
   switch (hit.kind) {
+    // ★ 原版键盘窗上按了第几号钮（B-5(i)/B-6(i)）—— 与键盘那一路**同一个出口**：
+    //   查同一张 `AMOUNT_SLOT_BY_ID`，再走 `onAmountKey` 那套（数字/退格/C/M/Enter）。
+    case 'amountSlot': {
+      const slot = amountSlotOfId(hit.id);
+      if (slot === null) return;
+      switch (slot.kind) {
+        case 'digit':
+          onAmountKey(ui, { kind: 'digit', digit: slot.digit });
+          return;
+        case 'backspace':
+          onAmountKey(ui, { kind: 'backspace' });
+          return;
+        case 'clear':
+          onAmountKey(ui, { kind: 'clear' });
+          return;
+        case 'max':
+          onAmountKey(ui, { kind: 'max' });
+          return;
+        case 'ok':
+          onAmountKey(ui, { kind: 'ok' });
+          return;
+        default:
+          return; // 金额栏光标不在这张表里（原版是拖动）
+      }
+    }
     case 'amountStep':
       amountPage = { ...page, value: Math.max(0, Math.min(amount.max, page.value + hit.delta)) };
       requestRender();
@@ -3658,6 +3741,12 @@ function startToolPick(toolId: number, param: number): void {
  */
 let introStartedAt = 0;
 let introSkipped = false;
+/**
+ * 过场那一下音效放过了没有（`Effect.mkf` #25，原版只放一次）。
+ * ★ 由这里持有而不是让 `intro.ts` 自己记 —— 那个模块是纯绘制，
+ *   不许有跨帧状态（C-DET-4）。
+ */
+let introSoundPlayed = false;
 
 /** 过场结束 → 进棋盘 */
 function endIntro(): void {
@@ -3760,12 +3849,20 @@ function uiEnv(): UiScreenEnv {
     map,
     now: performance.now(),
     stage: stageCtx,
+    // ★ 遊戲設定的「動畫過程」（`RICH4.CFG+1` bit0）—— 拍賣/轉盤/小游戏入场
+    //   在关掉时应当直接落结果，不走那套定时器演出（见 `UiScreenEnv.animation`）。
+    animation: options.animation,
     sprite: spriteNow,
     flic: uiFlicNow,
     dispatch,
     requestRender,
     log,
-    playEffect: (id: number) => sound.play('Effect.mkf', id),
+    // ★ 音效两条出口：`playEffect(id, loop?)` 与 `stopEffect(id)`。
+    //   循环的那一路原版是 `_rich4_play_sound_effect(flags=1, …)`（= `DSBPLAY_LOOPING`），
+    //   第一处用途是轉盤的 52 号（0.089 s，不循环就只是一声「嗒」）——
+    //   见 `wheel-screen.ts` 与 `audio.ts` 的 `play(archive, resource, loop)`。
+    playEffect: (id: number, loop = false) => sound.play('Effect.mkf', id, loop),
+    stopEffect: (id: number) => sound.stop('Effect.mkf', id),
   };
 }
 
@@ -4182,8 +4279,19 @@ function requestRender(): void {
     //   `tick` 只负责推进**自己正在播的那一段** —— 所以给没上屏的屏也 tick
     //   会让它们的动画在别人背后偷跑（分红屏占屏那 3 秒里開獎屏照样在走）。
     //   **屏幕自己要续帧就调 `env.requestRender()`**，别指望这里无条件重排（会死循环）。
-    const overlay = activeUiScreen();
-    if (overlay !== null) overlay.tick?.(uiEnv());
+    let overlay = activeUiScreen();
+    if (overlay !== null) {
+      overlay.tick?.(uiEnv());
+      // ★★ 2026-09-16 修「收屏那一帧整屏全黑」（外部审查 B-10）：`tick()` 可能
+      //   **自己把屏收掉**（樂透投注屏的 `bye` 到点就 `active()` 变假并清掉
+      //   `byeView`；月結屏、魔法屋也是同一写法）。而下面那句
+      //   `if (overlay !== null) { … overlay.draw() }` 用的是**tick 之前**的
+      //   快照 —— 于是这一帧既不画棋盘（overlay 还在）又什么都没画出来
+      //   （draw 已无内容可画），在刚被 `fillRect('#000')` 清黑的舞台上就是
+      //   一整帧纯黑。原版收屏是销毁窗口、当场露出棋盘，所以这里必须在
+      //   tick 之后**重新问一次**「现在谁接管」，让这一帧就画回棋盘。
+      overlay = activeUiScreen();
+    }
     // ★ 走子补间要**逐帧**重绘（T-046）：补间没播完就再排一帧，
     //   否则棋子会停在这一步的第一帧上，直到下一次 dispatch 才动。
     if (screen === 'game' && !renderer.walkDone()) requestRender();
@@ -4216,7 +4324,22 @@ function requestRender(): void {
       // ★ 也**不能在这里 `return`** —— 见下面 assets 那条的同一条注释：
       //   `blitStage()` 在这条链末尾，提前返回就是白画（过场此前就是这样，
       //   一直没显示出来）。
-      drawIntro(stageCtx, performance.now() - introStartedAt);
+      // ★ 2026-09-16：接上原版的**回退分支**素材（jump.mkf 的底图 + 跳伞 FLIC +
+      //   角色 FLIC + Effect #25）。原先只画一块占位框。素材都在 `assets/`，
+      //   取不到就那一步静默跳过（只剩一行「按任意鍵跳過」）。
+      drawIntro(stageCtx, performance.now() - introStartedAt, INTRO_FRAMES, {
+        sprite: spriteNow,
+        flic: uiFlicNow,
+        // ★ 音效只放一次：`drawIntro` 只在 `soundPlayed !== true` 那一帧回调，
+        //   这里回调到就把标志立起来（原版也在铺完底图之后放一下）。
+        playEffect: (id: number) => {
+          if (introSoundPlayed) return;
+          introSoundPlayed = true;
+          sound.play('Effect.mkf', id);
+        },
+        character: state.players[0]?.character ?? 0,
+        soundPlayed: introSoundPlayed,
+      });
       if (introDone(introStartedAt, performance.now(), introSkipped)) endIntro();
       else requestRender();
     } else if (screen === 'assets') {
@@ -5238,6 +5361,7 @@ function startGame(): void {
   // ★ 開局先播跳伞过场（T-048）：纯表现、可跳过，之后才进棋盘
   introStartedAt = performance.now();
   introSkipped = false;
+  introSoundPlayed = false;
   screen = 'intro';
   log(
     `開局：地圖 ${setup.mapId}　種子 ${seed}　` +
@@ -5955,18 +6079,35 @@ function bindInput(): void {
       if (me0 !== undefined) {
         const gx = p.x - LAYOUT.board.x;
         const gy = p.y - LAYOUT.board.y;
+        inputTrace.stage = [gx, gy];
+        inputTrace.diceToggle = null;
+        inputTrace.goPressed = false;
+        inputTrace.rollRequested = false;
+        inputTrace.earlyReturn = 'go-branch';
         // 切换钮盖在 GO 的下缘上，必须先问它（原版也是先判那几颗）
         const n = hitDiceToggle(gx, gy, maxDiceOf(me0), goButton.position());
+        inputTrace.diceToggle = n;
         if (n !== null) {
+          inputTrace.earlyReturn = 'dice-toggle';
           dispatch({ type: 'setDiceCount', count: n });
           return;
         }
-        if (goButton.press(gx, gy, { x: p.x, y: p.y })) {
+        inputTrace.goPressed = goButton.press(gx, gy, { x: p.x, y: p.y });
+        if (inputTrace.goPressed) {
           // 动画正开着 → 这一按没接走，重排驱动（与 `scheduleAi` 那条同一个道理）
+          // ★ 重排这一句**不能省**：`requestRoll` 被拒却不重排，这一按就白按、
+          //   再没人驱动（`dice-roll.test.ts` 有一条结构断言专门钉它）。
+          //   ⚠️ 这一行**必须保持原样**（结构断言按字面钉它）；诊断字段另起一句。
           if (!requestRoll()) scheduleHumanTurn();
+          inputTrace.rollRequested = diceFx.active;
+          inputTrace.earlyReturn = diceFx.active ? 'rolled' : 'roll-rejected';
           return; // 按在钮上就不再去拖镜头
         }
+        inputTrace.earlyReturn = 'go-miss';
       }
+    } else {
+      inputTrace.stage = [p.x - LAYOUT.board.x, p.y - LAYOUT.board.y];
+      inputTrace.earlyReturn = 'not-awaiting-human-roll';
     }
 
     // 只有棋盘区能拖
@@ -6599,6 +6740,10 @@ async function boot(): Promise<void> {
     await ensureGameDir();
     metaEl.textContent = '正在载入原版素材…';
     archives = await loadArchives(assetBase());
+    // 新聞/命運 插画与 抽卡 卡面是**无头 RGB555 块**（Data.mkf #441+/#477+/#571+），
+    // 走不了 `sprite()`（它要求 SPR/SMP 签名）。把档案句柄交给那一屏，照
+    // `minigame-bg.ts` 的同一条路子取原图（见 `event-box-screen.ts` 头注释）。
+    setEventBoxArchives(archives);
 
     // HD 素材可选：拿不到清单（没跑过超分管线、或整个 assets/hd/ 不存在）
     // 就整包走原图。**按图**回退在 SpriteCache 里（PRD §4.5）。
@@ -6641,6 +6786,9 @@ async function boot(): Promise<void> {
     // 走 raw 出口后交给 `minigame-bg.ts`；图异步到，到了催一帧（见 D-MINI-1）
     onMinigameBackgroundReady(requestRender);
     void loadMinigameBackground(archives).then(setMinigameBackground);
+    // 新聞/命運 插画 + 抽卡 卡面也是无头 RGB555 块 —— 同一条 raw 出口，
+    // 解好一张催一帧（图异步到，画的时候可能还没有）
+    onEventBoxArtReady(requestRender);
     resizeCanvas();
     // ★ 原版开局就是人物视角（等距投影、跟着棋子），全局看右下角小地图
     const first = map.nodes[state.players[0]?.nodeId ?? 1];
@@ -6728,6 +6876,31 @@ async function boot(): Promise<void> {
         /** 屏幕坐标落在哪个节点上 —— 与鼠标走的是同一条路径 */
         pick: (sx: number, sy: number, radius?: number) =>
           pickNodeAt(map, sx, sy, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h }, radius),
+        /**
+         * GO 鈕相关 —— 给**浏览器长跑**（`tools/soak-browser.js` 的真人路径模式）用：
+         * 它要能问出「GO 现在在哪、点下去算不算命中」，而不是自己猜坐标。
+         * 与鼠标走同一个 `goButton` / `hitDiceToggle`，不是第二套判定。
+         */
+        goButton: () => ({
+          x: goButton.position().x,
+          y: goButton.position().y,
+          w: GO_SIZE.w,
+          h: GO_SIZE.h,
+          stageX: goButton.position().x + LAYOUT.board.x,
+          stageY: goButton.position().y + LAYOUT.board.y,
+          dragging: goButton.dragging(),
+          awaitingRoll: awaitingHumanRoll(),
+        }),
+        /** 点这个舞台坐标算不算命中 GO 鈕（长跑用它选点击点） */
+        hitGo: (gx: number, gy: number) =>
+          hitAdvance(gx - LAYOUT.board.x, gy - LAYOUT.board.y, goButton.position()),
+        /** 最近一次棋盘 mousedown 走到哪一步 —— 长跑排错用（纯读） */
+        inputTrace: () => inputTrace,
+        /**
+         * 骰子那一段现在到哪一相了 —— 长跑排错用（纯读）。
+         * `active` 恒真而 `phase` 不前进 = 「掷完骰子人不走」那一类卡死。
+         */
+        diceState: () => ({ phase: diceFx.phase, active: diceFx.active }),
       };
     }
 

@@ -22,6 +22,7 @@ import { auctionScreen } from './auction-screen.ts';
 import { lotteryScreen } from './lottery-screen.ts';
 import { lotteryDrawScreen } from './lottery-draw-screen.ts';
 import { magicScreen } from './magic-screen.ts';
+import { eventBoxScreen } from './event-box-screen.ts';
 import { wheelScreen } from './wheel-screen.ts';
 import { researchScreen } from './research-screen.ts';
 import { monthlyScreen } from './monthly-screen.ts';
@@ -40,6 +41,10 @@ export const SCREENS: readonly UiScreen[] = [
   lotteryDrawScreen,
   monthlyScreen,
   magicScreen,
+  // ★ 事件提示框（新聞 / 命運 / 抽卡）排在 `magicScreen` **之后** —— 魔法屋的
+  //   「得一張卡片」与卡片格都会让手牌变长，两屏会从同一次 action 各起一段；
+  //   魔法屋那一次该由魔法屋屏演（见 `event-box-screen.ts` 头注释）。
+  eventBoxScreen,
   wheelScreen,
   // 待决交互类
   boardScreen,
