@@ -407,6 +407,7 @@ function mkEnv(
     log: () => undefined,
     flic: () => null,
     playEffect: () => undefined,
+    stopEffect: () => undefined,
   };
   return { env, actions, renders: () => renders };
 }

@@ -631,8 +631,15 @@ reducer 已按此结算，`multiplier: 1` 的临时值撤掉。
 
 `0x44ba63(玩家, 損失, 旗标)` = 在保險期内由保險公司赔付損失（`pay_money(公司, 玩家, 損失, 1)`
 進現金）。调用它的地方不止旅館（0x0041a82d）：被狗咬/踩雷/炸彈住院、監獄等
-「意外損失」处各有一次，尚未逐个定位；本引擎眼下没有一处真正赔付
-（`insurancePayout` 只是规则，还没接线）。
+「意外損失」处各有一次，尚未逐个定位。
+
+★ **已接线**（2026-09-16 订正）：本引擎的赔付走 `insurancePayoutTo`
+（`packages/core/src/state/reduce.ts`，调用点 `:2806` 与 `insureConfinement`），
+口径由 `places/insurance.test.ts` 钉住。上面那句「眼下没有一处真正赔付
+（`insurancePayout` 只是规则，还没接线）」是**过期残句** —— 它是同一段旧文的
+重复粘贴，紧随其后的 §Q-INS-1（本文件 `:616-622` 附近）才是结案版。
+另：`places/company.ts` 里那个同名的 `insurancePayout(天数, 损失)` 是**死代码**，
+全 core 只有测试引用它，已随本轮一并删除。
 
 ### Q-CO-1：真人在建設公司对等级 0 的設施加蓋要选种类
 
@@ -1219,12 +1226,31 @@ lint 也看不出。只有真在浏览器/webview 里跑才会炸。**桌面壳�
 我们自己的选择。日后若从汇编里跟到它真正的用法，改 `ai-settings.ts` 的
 `ROW_IMAGE_DOT` / 裁剪那一段即可。
 
-### Q-BANK-3：`cashRatio`(+0x19) 没有任何规则读它
+### ~~Q-BANK-3~~：`cashRatio`(+0x19) 到银行时按比例重分現金/存款（**已结案 2026-09-16**）
 
 「託管AI」屏的第一个滑块（現金 ↔ 存款）改的是玩家结构的 `+0x19`，字段已落成
 `Player.cashRatio`、开局从角色表 `f25` 拷入、原版存档也能读回（`SavePlayer.initCashRatio`
-就是 `u8(0x19)`），但**引擎里没有任何规则读它** —— 原版拿它决定「到银行时多少放存款」，
-本引擎未实现该行为。所以它现在是个纯设置值：屏上调得动、存档存得住，不影响 AI 决策。
+就是 `u8(0x19)`）。
+
+**原版的唯一读者**是 `rich4_ui_bank.asm:5146 mov al,[player+0x19]`（绝对 `0x496b81`）：
+到银行时按比例重分現金/存款 ——
+
+| 项 | 值 | 出处 |
+|---|---|---|
+| 目标现金占比 | `cashRatio / 100` | `[0x464c08] = 100.0f` |
+| 日 ≤ 7 的加权 | ×`[0x464c10] = 1.5f` | |
+| 日 ≥ 0x1a 的加权 | ×`[0x464c18] = 0.5f` | |
+| 上下夹取 | `[0.1f, 0.9f]` | `0x3dcccccd` / `0x3f666666` |
+| 「不动」带 | 当前占比 − 目标占比 落 ±0.25 内就不动 | `[0x464c20] = +0.25f` / `[0x464c28] = −0.25f` |
+| 取整 | `call 0x457dbc`（**向零**） | |
+
+**本引擎已实现**：`rules/bank.ts` 的 `cashRatioTarget()` / `rebalanceCashByRatio()`，
+在**到银行那一刻**由 `state/reduce.ts` 的 `rebalanceBankOnArrival()` 调用
+（@source `0x0041b396 call 0x4379c9`），并且**只对 `who_plays != 1`**（电脑/托管）
+生效 —— 与 exe 一致：纯真人到银行**不**被重分。测试见 `places/bank.test.ts`。
+
+> ⚠️ 与任务书的一处出入（按 exe 记）：本条**不是**在「离开银行」时跑，
+> 也没有用到物價指数（总额 = 現金 + 存款两项）。
 
 
 
@@ -1987,7 +2013,7 @@ struct special_player {   // 16 字节
 | 拆／捡 | 小偷 踩物件 13/14/16/17/18 | 归主人；小偷**不受伤** | ✅ |
 | 回老家 | 再踩到監獄(4)/醫院(5) | 見下 | ✅ |
 | 取過路費 | 間諜 踩别人地產/設施 | 地块 `+0x2c` / 設施 `+0x30` = **上一笔**（mov 不是 add）| ✅ `landLastToll`/`facilityLastToll` |
-| 取盈餘 | 間諜 踩别人上市企業 | 企業 `+0x28`，**可为负** | ⬜ **缺字段** |
+| 取盈餘 | 間諜 踩别人上市企業 | 企業 `+0x28`，**可为负** | ✅ 已实现（`rules/npc-walk.ts`，测试见 `company.test.ts`）|
 
 **★ 与需求方口述不一致的两处，本引擎按 exe 走**
 
@@ -3031,8 +3057,19 @@ call fcn_00415f69             ; 重画面板
 > ★ **2026-09-15 下午（T-029c）已收掉主体**：两块滑入面板、貸款屏状态机
 > （`0x401/0x405/0x409/0x40a` + `0x113`）、ATM 的进度条/键盘/拖动/`0x408`
 > 都照 exe 补上了，落在 `packages/client/src/bank-dynamic.ts`。
-> **完整取证、三处对下文的订正、以及仍未做的四条（`Q-BANK-1a..e`）见
+> **完整取证、三处对下文的订正、以及仍未做的几条（`Q-BANK-1a..e`）见
 > `docs/deviations/T-029.md`**。下面这张原始清单保留原样：
+>
+> ★ **2026-09-16 进展**（见 `T-029.md` 的 `Q-BANK-1-0`）：
+> · 通用金额窗的**面板几何 + 编号语义 + 逐像素 id 图**全部解出并逐字节对账
+>   （面板 `Panel#21` 128×192 落 (256,144)、`Panel#22` 的 128×192 id 图、
+>   16 颗钮矩形表 `0x47e6d8`、`0x47e714` 字符表、跳表 `0x452bca`）；
+> · **逐屏替换已完成**（`amount-window.ts`，12 处填数页全部换回原版键盘窗）；
+> · 三颗小钮的命中矩形已 dump（`0x475818`）；`0x475880` 那张表的**用法**已钉
+>   （「状态 → `Panel#23` 图号」），但**索引来路与大数语义未定案**，故未实现；
+> · `Q-BANK-1b` 第 2 条已作为**规则**实现（`Q-BANK-3`）；`1b` 第 1 条与 `1e`
+>   复核后确认**与现状一致、不是缺口**。
+> 仍未做：三颗小钮的**按下图**与那张表的索引语义。
 >
 > - 订正①：面板是 **200×280**（不是 280×200），到位 y = **440**（不是 0）；
 > - 订正②：`loc_00437904` **不是悬停反馈**，是「按住金额栏拖动」；
@@ -4021,9 +4058,9 @@ alpha 0.55）。那张「按格子类型给中性色」的表是**重制版自�
 ### `docs/deviations/T-033.md`
 
 - D-BOARD-1（已消除）市價／掛牌常數改成 core 的真出口
-- D-BOARD-2（有意偏离）出价输入用 `dialog.ts` 的 `AmountPage`，不是原版的数字键盘窗
-- D-BOARD-3（有意偏离 / 未解全）地產选物窗只做了「地點 + 開發狀況」，且不能滚动
-- D-BOARD-4（有意偏离）買别人的东西不弹 YES/NO，直接成交
+- ✅ D-BOARD-2　出价输入 —— **2026-09-16 已换成原版数字键盘窗**（`Panel#21`；金额栏两颗光标未接）
+- D-BOARD-3（有意偏离 / 未解全）地產选物窗只做了「地點 + 開發狀況」；**滚动 2026-09-16 已接**（收費/租期两列仍留空）
+- ✅ D-BOARD-4　買别人的东西**先弹 YES/NO** —— **2026-09-16 已接**（原版控件，仍然不走 core 待决交互）
 - D-BOARD-5（有意偏离，仅剩「近似色」）按下高亮按原版做回了，但颜色是近似
 - D-BOARD-6（引擎必需，非美术偏离）换人自动收屏
 - D-BOARD-7（有意偏离）弹出选单优先吃掉点击；点选单以外先收单再按底下一层
@@ -4104,21 +4141,34 @@ alpha 0.55）。那张「按格子类型给中性色」的表是**重制版自�
 
 ### `docs/deviations/T-041.md`
 
-- D-MONTHLY-1（**结构性近似**）结算屏那一列的 x —— 表读不出，改用頒獎屏那张同构表
+- D-MONTHLY-1（**已订正**）结算屏行头像：x = 600（常数）、y = `{60,180,300,420}`；頒獎屏那 4 列才用同值当 x
 - D-MONTHLY-2（**未解出**）頒獎屏 4 列头像是「叠在竖栏上」还是「各占一栏」
 - D-MONTHLY-3（**有意补写**）`存款：` / `利息：` 两个标签
 - D-MONTHLY-4（**订正**）頒獎屏状态 1 贴的那一小块 —— 是**裁切拷贝**，不是缩放
-- D-MONTHLY-5（**未接**）音效
-- D-MONTHLY-6（**未接**）頒獎屏状态 8/9 的 FLIC 动画
+- ✅ D-MONTHLY-5　月結／頒獎屏音效 —— **2026-09-16 已接**（27/60/28；进屏 BGM 仍未接）
+- ✅ D-MONTHLY-6　頒獎屏状态 8/9 的角色 FLIC（`Data.mkf` `0x1a1+2×角色`）—— **2026-09-16 已接**（落点仍近似）
 - D-MONTHLY-7（**有意不做**）「无人获奖」时的 `別灰心，再加油喔！`
+- D-MONTHLY-9（**已改**）结算屏那四段文字照原版图内偏移排布、行底板删除；块原点是近似
+- D-MONTHLY-11（**已删**）结算屏上多画的 3D 数字 / 金币 / 行底板 —— 原版没有这些 blit
 - 与卡片 `files` 一栏的差异
+- 附：**事件提示框屏**的 D-EVENT-1..6（见下）
+
+### 事件提示框屏（新聞 / 命運 / 抽卡）`client/event-box-screen.ts`
+
+- D-EVENT-1（**未接**）跳过只接了鼠标抬手 —— 按键（0x101）与右键（0x205）那两条没接
+- D-EVENT-1b（本模块加的）抽卡 FLIC 的兜底时长 1200ms —— 原版是阻塞播片
+- D-EVENT-2（**近似**）说明文字 `%d`/`%s` 的代入（`lastEvent` 只有 `{kind,id}`）
+- D-EVENT-3（**近似**）多行文字行距 = 字号 + 6（原版走 GDI `DrawTextA`）
+- D-EVENT-4（**有意保留**）抽卡与魔法屋「得一張卡片」各起一段，本屏排在魔法屋之后
+- D-EVENT-5（**近似**）卡名 flag 4 居中在 (220,129)
+- D-EVENT-6（**近似**）命運插画表 `0x475fb4` 不是等差（id 20..36 可能差 1..6 号）
 
 ### `docs/deviations/T-042-044.md`
 
 - 读出来的玩法（结论表，细节见模块头注释与卡）
 - D-MINI-1（**卡面错误，已接入**）財神屏的底图是 `Panel.mkf` **#92**，走无头 RGB555 出口
 - D-MINI-2（**素材缺口，已用几何绕开**）企鵝的命中表 `Panel.mkf` **#81** 也取不到
-- D-MINI-3（未接）入场 FLIC `Panel.mkf` **#78** 没播
+- ✅ D-MINI-3　入场 FLIC `Panel.mkf` **#78** —— **2026-09-16 已接**（闸门 = 真人 + 動畫過程）
 - D-MINI-4（**接口订正**）action 是 `{ type: 'minigame', score }`，不是 `minigameScore`
 - D-MINI-5（**有意偏离**）没有「不玩」这条路 —— 卡面那句「不玩送 null」在原版不存在
 - D-MINI-6（**有意简化**）走行用整数格推，土堆按「走过即抹」实现
@@ -4126,7 +4176,7 @@ alpha 0.55）。那张「按格子类型给中性色」的表是**重制版自�
 - D-MINI-8（原版分支走不到）冰屋那张图不画
 - D-MINI-9（有意保留）入场那 1 秒画土堆，之后不画
 - D-MINI-10（**需要中央决定**）`scenes.ts` 的 `minigameScene` 仍返回 `null`
-- D-MINI-11（未接）音效没接
+- ✅ D-MINI-11　小游戏音效 —— **2026-09-16 已接**（11..24；正常接住金幣原版本来就不放音）
 
 ### `docs/deviations/T-045.md`
 
@@ -4141,9 +4191,11 @@ alpha 0.55）。那张「按格子类型给中性色」的表是**重制版自�
 ### `docs/deviations/T-047.md`
 
 - ✅ D-T047-1　`reduce` 把 `NpcWalk.path` 丢了 ⇒ 渲染器拿不到中间格 —— **已解决**
-- D-T047-2　替身的 `+2`（載具）/ `+3`（夢遊走姿）两组图**没接**
-- D-T047-3　`node.flags & 0x80000000` 那一支（`edi + 2` 載具）读不清，**有意不做**
-- D-T047-4　夢遊/冬眠的**变灰**（`_rich4_convert_sprite`）没做 —— 与玩家同一条缺口
+- D-T047-2　替身的 `+2`（載具）**已接 2026-09-16**；`+3`（夢遊走姿）**仍未接**
+  （卡在卡片目标的索引空间没核清，不是渲染器的问题）
+- ✅ D-T047-3　`node.flags & 0x80000000` 那一支（`edi + 2` 載具，走姿）
+  —— **2026-09-16 已接**（复核 `rich4.asm` 5634-5710 后读通：走姿槽换 `+2`）
+- D-T047-4　夢遊/冬眠的**变灰** —— **玩家那条已接 2026-09-16**（`ASLEEP_FILTER`）；替身那条仍缺写入来源
 - D-T047-5　一輪里多个惡人**同时**走（原版是逐个走的）
 - ✅ D-T047-6　機器娃娃（以及**走回老家**的惡人）那一趟**起不了补间** —— 卡在渲染器的判据上（**已修**）
 - ★ 给中央的接线单 —— **本轮已全部落地**（留作记录）
@@ -4163,3 +4215,148 @@ alpha 0.55）。那张「按格子类型给中性色」的表是**重制版自�
 - Q-SPEECH-7　勘误：事件 15 的判据是**地块的 `+0x1a`（等级）**，不是玩家结构
 - Q-SPEECH-8　`Speaking.mkf` 改成**按需装载**（本项目的选择）
 
+---
+
+## 2026-09-16：转盘浮窗 / 循环音出口 / 小游戏音效与分数上限 / 开场提示
+
+> 本轮只动这几个文件：`wheel-screen.ts`、`audio.ts`、`ui-screen.ts`、
+> `minigame-screen.ts`、`intro.ts` 及各自的单测。**新增契约出口，需要 `main.ts` 接线**，
+> 见下面第一条的接线单。
+
+### 契约新增：`playEffect(id, loop?)` + `stopEffect(id)`
+
+`ui-screen.ts` 的 `UiScreenEnv` 多了两个出口（`playEffect` 由一次性变可选循环）：
+
+```ts
+playEffect(id: number, loop?: boolean): void;
+stopEffect(id: number): void;
+```
+
+- 原版语义：`loop = true` ↔ `_rich4_play_sound_effect(flags = 1)` = `DSBPLAY_LOOPING`；
+  `stopEffect` ↔ `fcn_004542e9` = `IDirectSoundBuffer::Stop`。
+- `audio.ts` 的 `SoundPlayer.play(archive, resource, loop = false)` 把 `loop` 落到
+  `AudioBufferSourceNode.loop`；循环的那一路**照样登记在 `#voices`**，所以停得掉。
+- ⚠️ **接线单（`main.ts` 的 `uiEnv()`）**：
+
+  ```ts
+  playEffect: (id: number, loop = false) => sound.play('Effect.mkf', id, loop),
+  stopEffect: (id: number) => sound.stop('Effect.mkf', id),
+  ```
+
+- ⚠️ `stopEffect` 是**必填**出口：仓库里三个**严格类型**的假 env
+  （`auction-screen.test.ts:395`、`monthly-screen.test.ts:760`、
+  `shares-screen.test.ts:390`）各差这一行 —— 本卡的文件清单里没有它们，
+  需要各自补 `stopEffect: () => undefined,`（其余假 env 走 `as unknown as`，不受影响）。
+
+### 轮盘（`docs/deviations/T-039.md`）
+
+- ✅ D-WHEEL-2　**已銷案**：`wheelScreen` 加 `windowed: true`，`main.ts` 先画一整帧棋盘
+  再叠本屏 —— 棋盘与右侧栏全程可见，不再是整屏黑底。
+- ✅ D-WHEEL-5　**已接**：`event()` 里 `playEffect(52, true)`、落地时
+  `stopEffect(52)` + `playEffect(1)`（VA 0x0043f80d / 0x0043fa0a / 0x0043f8a0）。
+  `Effect.mkf` 的 52 号只有 2086 B ≈ 0.089 s，不循环等于没放。
+- D-WHEEL-4　**复核：不变**。原版总格数取决于点击时机（不可复现，D-003），
+  本引擎是「最早合法落点 + 固定 4 圈」，**注册在案的近似**，不要按原版格数去改数学。
+
+### `docs/deviations/T-037.md`
+
+- D-MAGIC-5　**订正**：魔法屋悬停/按下的音效号是 **39**，不是 16
+  （`0x4757e7` 第一格 dword = `0x27`；先前读错了表项）。
+  本轮另一路 agent 已把这一条**结案**（`magic-screen.ts` 接上 39 / 0 / 1），
+  详见 `docs/deviations/T-037.md` D-MAGIC-5。
+
+### `docs/deviations/T-042-044.md`（该文件本轮不可改，登记在这里）
+
+- ✅ **D-MINI-11 音效已接**（原条目「音效没接」过时）。纯函数只在状态里登记
+  `sfx: MiniSound[]`，`tick` / `down` 用 `playMiniSounds()` 倒给出口：
+
+  | 事件 | `Effect.mkf` | @source |
+  |---|---|---|
+  | 企鵝走到定点 | 12 | 0x004127ed |
+  | 企鵝开挖（循环） | 11 | 0x00414b51（flags=1）|
+  | 企鵝挖到寶物（按类型 1..5） | 15 / 16 / 17 / 17 / 18 | 0x004129ab（类型 1 → 15）/ 表 `0x475051` |
+  | 企鵝结算姿势 | 13（>55）/ 14（<40），动画完停 | 0x004149de / 0x004149e8 / 0x00412a87 |
+  | 氣球生成 | 19 | 0x00413077 |
+  | 氣球点空 | 20 | 0x00414f0d |
+  | 氣球点爆 | 21 | 0x00414dd2 前 |
+  | 財神落炸彈 | 22（一次性）+ 24（循环） | 0x00413809 |
+  | 財神接到炸彈 | 停 24 + 15（爆炸） | 0x00413436 |
+  | 財神炸彈落地（最后一颗） | 停 24 | 0x0041351d |
+
+  ★ 普通金幣接住**原版就没有音**（核过 `fcn_004133..` 的接住分支），本卡也不加。
+
+- **D-MINI-12（有意偏离）七彩氣球 ×2 分支也夹到 999。**
+  原版 `0x00414ece`（普通支）有 `cmp edx, 0x3e8 / jl` → `0x3e7` 的夹子，但 ×2 支
+  `0x00414ebe`（类型 9、类型 11 抽到 `double`）**不夹**；原版 HUD `fcn_00413f07`
+  按 `%04d` 只画 4 个字符，多出来的位根本不画。本引擎的 `drawNumber` 现在也按
+  **固定宽度**画（`slice(0, width)`，位宽 3/2/4 分别对应企鵝/財神/氣球 HUD），
+  同时把**同一道 999 夹子**搬到所有加/倍分支之后 —— 于是 `score` 本身也不越界。
+  理由：分数是进 core 的（`{ type: 'minigame', score }`），让 `state` 里出现
+  原版 HUD 显示不出的 5 位数会让「分数」与「屏幕」对不上；两条路等价，取夹。
+
+### 开场过场（`Q-INTRO-1`，`intro.ts`）
+
+- ✅ **玩家可见文案里的内部编号已去掉**：原来画的是
+  「開場動畫（原版為 AIRPLANE.AVI，見 Q-INTRO-1）—— 按任意鍵跳過」，
+  现在只画 `INTRO_HINT = '按任意鍵跳過'`。几何/时长（居中 312×160、15 帧、
+  66667 µs/帧）一字未动。
+- ⏳ **画面仍未复刻**（Q-INTRO-1 现状不变）。原版 `fcn_00415872`（VA 0x00415872）
+  在 MCI 打开失败时有一条**完整的 fallback**：`jump.mkf` #0x2d 图 1 全屏
+  → `Effect.mkf` **25** → FLIC `jump.mkf` #0x2e（15 帧，220×240）画在 **(180,60)**
+  → 逐角色 FLIC `#0x2f + 角色号`。素材全在（`assets-clean/jump/0045_001.png`、
+  `0046.bin`），`env.flic()` 也有出口 —— **但 `main.ts` 现在是
+  `drawIntro(stageCtx, elapsed)`，没有 sprite/flic 句柄**，接进去要改 `main.ts`。
+  需要的钩子：`drawIntro(ctx, elapsedMs, frames, { sprite, flic, playEffect })`
+  （`sprite = spriteNow`、`flic = uiFlicNow`、`playEffect` 只在**进场那一拍**放 25）。
+
+### 樂透投注屏（`lottery-screen.ts`，本轮**不在**本卡文件清单里 ⇒ 未改）
+
+- ⏳ 已核实、待接：`main.ts` **先 `tick` 再画**（`const overlay = activeUiScreen();
+  if (overlay !== null) overlay.tick?.(uiEnv());` 后再画那张**过时**的 overlay），
+  而 `lottery-screen.ts` 的 `tick()` 在 `pending === null && now - ui.at >= 100` 时
+  同一拍把 `ui.dismissed = true; ui.byeView = null;`，于是 `currentView()` 返回
+  `null`、`draw()` 不画 —— **整整一帧全黑**。
+  最小修法（一行）：**在 `dismissed` 那一拍不要 `byeView = null`**，让再见气泡
+  多画一帧；下一轮的 `pending` 重置会自己清掉它（`monthly-screen.ts` /
+  `magic-screen.ts` 有同一模式，中央若在 `main.ts` 统一「先画后 tick」也能一次覆盖）。
+  该文件属别的 agent，本卡只登记机制与修法。
+
+
+
+### T-054：LOAD 屏左下的「匯入原版存檔」钮（**原版没有这个钮**，有意保留）
+
+**位置**：`packages/client/src/saveload.ts` 的 `importRect(mode)`（`:108-118`）与
+`hitImport(mode, x, y)`（`:120-123`），只在 `mode === 'load'` 时出现；标签在 `:259` 画。
+**为什么留着**：这是**需求方明确要的**功能（读原版 `SAVE*.DAT` 进游戏，见 T-054 卡），
+原版当然没有 —— 属于「**刻意的非原版元素**」，不是复刻偏差。
+
+| 项 | 说明 |
+|---|---|
+| 原版 | 没有这个钮；LOAD 屏只有 6 个存档槽 |
+| 本引擎 | 左下角多一颗「匯入原版存檔」，走 `pickFile` → `parseSave` → `importOriginalSave` → `loadState` |
+| 口径 | **有意保留**（需求方要求）；按本仓库的规矩在此登记，免得外部审查再把它当成漏改 |
+| 测试 | `packages/client/src/saveload.test.ts:145-167` |
+
+> 若日后要「不许改良」到连它也不显示，把 `saveload.ts` 的 `hitImport` 与绘制那两处
+> 用一个常量（如 `SHOW_IMPORT_ORIGINAL = false`）关掉即可，同时改上面那条测试。
+
+### E-1：`tools/soak-browser.js` 的**真人路径模式** —— 2026-09-16 实测通过
+
+外部审查 E-1 指出：旧长跑脚本**自己派 `step`**，把「掷完骰子人不走」
+（A-1）那条路整个掩盖掉了 —— 它永远不会红。
+
+**已修**：脚本加了 `?humanPath=1`（或 `globalThis.__soakHumanPath = true`）模式：
+`awaitingRoll` 时**点真正的 GO 钮**（坐标由 `__rich4.goButton()` 给），
+`moving`/`settling`/`turnEnd` **一律不派**，并统计
+`soakDispatches`（脚本自己派的 action 数）、`goClicks` / `goMisses`、
+`humanStalls`（`moving` 且 `(player, node, steps)` 6 秒不变）。
+
+**实测**（`browse eval tools/soak-browser.js`，约 3 分钟）：
+
+```json
+{"humanPath":true,"soakDispatches":0,"goClicks":78,"goMisses":0,
+ "humanStalls":0,"turns":27,"ticks":1705,"errors":0}
+```
+
+⇒ 27 个回合**全部由界面自己的驱动走完**（脚本零 dispatch）、78 次点击全中、
+0 次卡死。这条护栏现在真的能抓到 A-1 那一类回归了。

@@ -230,7 +230,7 @@ flag **3**，而 `0x44faa0` 的跳表里 3 = **正中**；但居中于側欄局�
 | ~~`Q-NET-1`~~ ✅ | 客户端 desync **自愈**已做（2026-09-16）：新增 `resync`/`replay` 两条协议，座位只从**连接**上认；客户端收到 `desync` 自动全量重放重建 | `known-deviations.md` |
 | ~~`Q-NET-2`~~ ✅ | 大厅改角色/换地图已做（2026-09-16）：`setCharacter`/`setMap` 两条协议 + 服务器三道闸（未开局/权限/取值）。★ 原版**没有联机大厅**（exe/asm 里 ipx/modem/winsock 0 命中），这两块是**本项目新增界面** | 同上 |
 | ~~`Q-GND-4`~~ ✅ | 底图**已进超分清单**（2026-09-16）：`.gnd` 解成 PNG（`format:'GND'`、2304²）走**整张放大**；接缝换 `compareAllSeams` 口径（带 `onGrid` 区分模型分块线）| 同上 |
-| ~~`Q-ANM-1`~~ | ~~**FLIC 影片没进 extract 管线**~~ —— **已接（2026-09-15 晚）**：`cli-extract` 现在认 FLIC，逐帧落 PNG 并进 manifest（`format: 'FLIC'`），实测 105 段影片 → 3099 帧。**剩下的是运行时播放**（骰子已接 `SpriteCache.getFlic()`；樂透開獎屏的 `#16` 摇球 / `#17` 礼花 / `#14` 燈框还没接） | `flic.ts` 顶部注释 |
+| ~~`Q-ANM-1`~~ | ~~**FLIC 影片没进 extract 管线**~~ —— **已接（2026-09-15 晚）**：`cli-extract` 现在认 FLIC，逐帧落 PNG 并进 manifest（`format: 'FLIC'`），实测 105 段影片 → 3099 帧。**剩下的是运行时播放**（骰子已接 `SpriteCache.getFlic()`；樂透開獎屏的 `#16` 摇球 / `#17` 礼花与投注屏的 `#14` 跑馬燈**都已接**，见 `lottery-draw-screen.ts` / `lottery-screen.ts`） | `flic.ts` 顶部注释 |
 | ~~`Q-PERF-1`~~ ✅ | LRU 的 `onEvict` 已接（2026-09-16，`DeferredSpriteClose`：淘汰只摘引用、**下一帧 draw 开头**才 `close()`）+ 桌面端 hd 路由（`lib.rs` 只放行 `/hd/**`，找不到就 404 回退原图）| 同上 |
 | `Q-BANK-3` | `cashRatio`(+0x19) 没有任何规则读它（原版拿它决定「到银行时多少放存款」） | 同上 |
 | ~~`Q-SCENE-1`~~ ✅ | 場所控件**已收口**（C 组 39 张全 done）| 同上 |
