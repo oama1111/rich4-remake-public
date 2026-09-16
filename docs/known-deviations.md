@@ -1856,7 +1856,7 @@ else              { 起点 = (220 - r) * 441 ; 边长 = 2r }
 - **變賣类效果按標價全额入點券**，不是百貨公司那个九折——
   两处走的是不同的代码（0x441f21 / 0x445b3f vs 0x42d145 / 0x42d1b2）。
 
-### Q-GOD-2：神明附身那一刻的**發威效果**（跳表 `ref_0040ea9b`）整批未接
+### ~~Q-GOD-2：神明附身那一刻的**發威效果**（跳表 `ref_0040ea9b`）整批未接~~ ✅ **已接（2026-09-16）**
 
 **现象**：原版神明**附身的那一刻**会执行该神的「發威」—— 送錢、罰錢、給卡、丟卡、賣光家當；
 本引擎的 `attachGod`（`rules/object-landing.ts`）只写 `godInfo` + 三項修正
@@ -1914,13 +1914,33 @@ d_i = (rand()%10*2+1) / 2  ←─ 算术右移，正好 = rand()%10
 30 tick 定时推进），按本仓库的 **D-003**（真人点击时机不復刻、結果由 core 定）
 的既定口径，接的时候用**一次**四個 `rand()%10` 当替身即可（分布相同、可复现）。
 
-**处置（2026-09-16 登记，未接，按卡排期）**：这是**规则**缺口（不是表现），
-要动 core：`attachGod` 需要收下 `WatcomRng` 与卡牌剩余量表，
-把上面 8 条效果落进 `rules/`，再由 reduce 在落点/請神符两条附身路径上调用。
-现成零件：`drawRandomCard`（`rng/watcom.ts`）、`sellAllTools` / `sellAllCards`
-（`rules/inventory.ts`）、`transferMoney`（`rules/payment.ts`）；
-缺 `dropRandomCard` / `dropHalfCards` 两个（0x441e77 / 0x441ece，要按 exe 补）。
-表现那一半（气泡窗）单列 **Q-GOD-1**。
+**★ 已落码（2026-09-16）**：
+
+- `core/src/rules/god-power.ts`（新）：`rollGodAmounts(rng)`（四个 `rand()%10` 按原版拼数）
+  + `godPowerOf(type, rng)` → 一个描述符（8 种效果 + `none`）；
+- `core/src/state/reduce.ts`：新助手 `applyGodPowerOnAttach(before, after, topo)`
+  —— 判据是 **`godInfo` 换成了新的非 0 值**（换神也算，原版每次都跑），
+  在**两条附身路径**上调用：落点（`applyArrival` 尾部）与請神符
+  （`playCard` 尾部，`registry.ts` case 23 走的就是 `attachGod`）；
+  付款走 `transferMoney` + `applyBankruptcy`（对手付→`PAY_FLAG_CREDIT_TO_CASH`、
+  付对手→進對方存款、付銀行→`PARTY_POOL`），进帐走 `receiveMoney`，
+  给卡走 `drawRandomCard` + `giveCard` + 扣 `cardAmount`，
+  丢卡走「回牌堆 + 从手牌移除」，死神走 `sellAllTools` + `sellAllCards` 折**點券**；
+- 用例 **+28**：`rules/god-power.test.ts` 12 条（金额公式/每个种类的發威/随机数消耗）
+  + `state/god-power.test.ts` 16 条（真地图走一步踩上去、請神符那条、破产与回合收口）。
+
+**仍与 exe 不同（如实登记）**：
+
+| 项 | 本引擎 | 原版 |
+|---|---|---|
+| 重掷几次 | **一次**四个 `rand()%10`（D-003：真人点击时机不復刻）| 那扇窗每 10 tick 重掷一次，退出时的最后一次才算 |
+| 表现 | 只播 12 段神明 FLIC | 额外来一扇**气泡窗**（`fcn_00440706` + `fcn_0043f23e` 的 9 状态，`%s附身\n\n…` 四模板 + 神明图 + 金额 `%d元`）—— 单列 **Q-GOD-1**，仍未接（`packages/data/src/messages.ts` 还没有那四条模板串）|
+| 阻塞 | reduce 里一次算完（不阻塞）| 模态窗 `Wait_0402_Message` 阻塞到点 |
+
+★ 顺带钉死两件事：請神符**先扣卡再發威**（@source 0x00444e47 的
+`push 0x17 / call consume_card` 就在 `_rich4_attach_god` 之前）——
+所以死神附身时**不会**把刚用掉的那张請神符也卖掉；以及**抽卡/选牌那两条路
+的 `rand()` 与原版同形**（福神抽卡 1 次/张、小衰神丢卡 1 次、大衰神丢一半 0 次）。
 
 ### Q-GOD-1：神明附身／發威那扇**氣泡窗**（VA 0x00440706 + 0x0043f23e）未接
 

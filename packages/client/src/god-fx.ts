@@ -6,8 +6,13 @@
  *   ★ C-DET-4：动效**绝不进 state/history**。
  *
  * 原版 `_rich4_attach_god`（VA 0x0040ea62 那一支）在**附身那一刻**按神明编号
- * 查跳表 `ref_0040ea9b`（VA 0x0040ea9b，**15** 项）调 12 个函数，
- * 每个函数干的事完全同形（以第 1 尊 `fcn_0040ec14` 为例）：
+ * 查跳表 `ref_0040ea9b`（VA 0x0040ea9b，**15** 项）调 12 个函数。
+ *
+ * ⚠️ 这 12 个函数**不只是放影片**：它们同时就是那位神的**發威**
+ *   （小財神向對手收錢、福神送卡、死神賣光家當…），那部分**规则**在
+ *   `@rich4/core` 的 `rules/god-power.ts` + `state/reduce.ts` 的
+ *   `applyGodPowerOnAttach` 里（Q-GOD-2 已接）。本模块只管**影片那一段**
+ *   （每个函数开头的 `read_mkf + fcn_0045144f`，以第 1 尊 `fcn_0040ec14` 为例）：
  *
  * ```asm
  * 0040ec14  cmp byte [0x497159], 0        ; ★ RICH4.CFG+1 = 「動畫過程」

@@ -54,7 +54,7 @@ import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
 import type { MapNode, LandInfo, FacilityInfo, CommercialInfo } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent } from '../rules/rent.ts';
-import { PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
+import { PARTY_POOL, PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
 import { reaperPayer, tollExemption, tollPassiveTail } from '../rules/toll-flow.ts';
 import { PASSIVE_CARDS, consumeCard } from '../cards/passive.ts';
 import {
@@ -67,6 +67,8 @@ import { buyStock, commercialUnitPrice, liquidateStocks, sellStock,
 } from '../places/stock.ts';
 import { emptyOwnership, ownerOf, updateCommercialOwner } from '../places/commercial.ts';
 import { useCard } from '../cards/registry.ts';
+import { giveCard } from '../cards/rob.ts';
+import { godPowerOf, type GodPower } from '../rules/god-power.ts';
 import {
   MISSILE_HOSPITAL_DAYS,
   MISSILE_HOSTILITY_FACTOR,
@@ -1815,7 +1817,179 @@ function applyArrival(state: GameState, topo: MapTopology): GameState {
   }
 
   // 神明离场后，搭档换上来
-  return respawnPartner(next, topo, r.respawn);
+  const withPartner = respawnPartner(next, topo, r.respawn);
+  // ★ 神明**附身那一刻**的發威（跳表 `ref_0040ea9b`，见 rules/god-power.ts）
+  return applyGodPowerOnAttach(state, withPartner, topo);
+}
+
+/**
+ * 神明**刚附身**时执行那位神的「發威」。
+ *
+ * @source `_rich4_attach_god` VA 0x0040ebfa：`jmp dword [種類−1 *4 + 0x40ea9b]`
+ *   —— 三項修正写完**紧接着**就是它，落点/請神符两条附身路径**共用**。
+ *   逐神的语义与 VA 见 `rules/god-power.ts` 的文件头。
+ *
+ * 判据：**新附身**（`godInfo` 从别的值变成非 0 的新值）。换神（旧神被挤走、
+ * 新神附身）也算 —— 原版每次 `_rich4_attach_god` 都跑一遍發威。
+ *
+ * ⚠️ 金额型（小財神/大財神/小窮神/大窮神）会消耗随机数：原版是那扇窗里
+ *   `rand()%10` 掷四次拼一个数（真人点击时机决定重掷几次）——
+ *   按 D-003 用**一次**四次当替身，故这里要把 `rngState` 写回去（C-DET-1）。
+ *   福神/衰神/死神**不**掷（原版那扇窗根本没开），`rng.getState()` 原样写回。
+ */
+function applyGodPowerOnAttach(
+  before: GameState,
+  after: GameState,
+  topo: MapTopology,
+): GameState {
+  const host = after.currentPlayer;
+  const was = before.players[host];
+  const now = after.players[host];
+  if (was === undefined || now === undefined) return after;
+  // 没换神（含 0 → 0）：不跑發威
+  if (now.godInfo === 0 || now.godInfo === was.godInfo) return after;
+  const god = after.objects[now.godInfo - 1];
+  if (god === undefined) return after;
+
+  const rng = new WatcomRng();
+  rng.setState(after.rngState);
+  const power = godPowerOf(god.type, rng);
+  if (power.kind === 'none') return after;
+  const out = applyGodPower(after, topo, host, power, rng);
+  return { ...out, rngState: rng.getState() };
+}
+
+/** 把一位神明的發威落到状态上（纯计算；付款/收卡全走既有助手）*/
+function applyGodPower(
+  state: GameState,
+  topo: MapTopology,
+  host: number,
+  power: GodPower,
+  rng: WatcomRng,
+): GameState {
+  switch (power.kind) {
+    // ── 小財神：每個對手付給附身者（**現金**）@source 0x0040ec99 ──
+    case 'collectFromOpponents': {
+      let players = state.players;
+      let pool = state.pool;
+      let out = state;
+      for (let i = 0; i < players.length; i++) {
+        if (i === host) continue;
+        const p = players[i];
+        // @source `cmp byte [player+0x15], 0 / je 跳过` —— 出局/托管为 0 的不收
+        if (p === undefined || !isAlive(p) || p.whoPlays === 0) continue;
+        const r = transferMoney(players, [], pool, i, host, power.amount, PAY_FLAG_CREDIT_TO_CASH);
+        players = r.players;
+        pool = r.pool;
+        out = { ...out, players, pool };
+        // @source 每次 `pay_money` 内部就地破产；随后 `cmp [0x46caf8],0 / jne 跳出`
+        if (r.bankrupted) {
+          out = applyBankruptcy(out, i, topo);
+          break;
+        }
+      }
+      return out;
+    }
+
+    // ── 大財神：附身者進帳（**現金**）@source 0x0040ed4c ──
+    case 'gain':
+      return { ...state, players: receiveMoney(state.players, host, power.amount, true) };
+
+    // ── 小窮神：附身者付給每個對手（進對方**存款**）@source 0x0040efd9 ──
+    case 'payOpponents': {
+      let players = state.players;
+      let pool = state.pool;
+      let out = state;
+      for (let i = 0; i < players.length; i++) {
+        if (i === host) continue;
+        const p = players[i];
+        if (p === undefined || !isAlive(p) || p.whoPlays === 0) continue;
+        // flags = 0 ⇒ 進**存款**（`fcn_0041d2c6` 的 arg4 = 0）
+        const r = transferMoney(players, [], pool, host, i, power.amount, 0);
+        players = r.players;
+        pool = r.pool;
+        out = { ...out, players, pool };
+        if (r.bankrupted) {
+          out = applyBankruptcy(out, host, topo);
+          break;
+        }
+      }
+      return out;
+    }
+
+    // ── 大窮神：附身者付給**銀行** @source 0x0040f076 ──
+    case 'payBank': {
+      const r = transferMoney(state.players, [], state.pool, host, PARTY_POOL, power.amount, 0);
+      const paid: GameState = { ...state, players: r.players, pool: r.pool };
+      return r.bankrupted ? applyBankruptcy(paid, host, topo) : paid;
+    }
+
+    // ── 福神：得 1 / 2 张随机卡 @source 0x0040ede7 / 0x0040eea8 ──
+    case 'receiveCards': {
+      let players = state.players;
+      const cardAmount = [...state.cardAmount];
+      for (let k = 0; k < power.count; k++) {
+        // @source `_rich4_player_receive_random_card` 0x441e12：袋空返回 0
+        const id = drawRandomCard(rng, cardAmount);
+        if (id === 0) break;
+        cardAmount[id - 1] = Math.max(0, (cardAmount[id - 1] ?? 0) - 1);
+        players = players.map((p, i) => (i === host ? giveCard(p, id) : p));
+      }
+      return { ...state, players, cardAmount };
+    }
+
+    // ── 衰神：丢卡 @source 0x0040f10c（随机一张）/ 0x0040f1de（一半）──
+    case 'dropCards': {
+      const me = state.players[host];
+      if (me === undefined) return state;
+      // 丢掉的卡**回牌堆**（`_rich4_consume_card` 里 `inc byte [dl + 0x499197]`）
+      const cardAmount = [...state.cardAmount];
+      const cards = [...me.cards];
+      if (power.mode === 'one') {
+        if (cards.length === 0) return state;
+        const at = rng.below(cards.length);
+        const id = cards[at] ?? 0;
+        cards.splice(at, 1);
+        if (id > 0) cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) + 1;
+      } else {
+        const n = cards.length;
+        // @source `cmp eax, 1 / jle 直接返回` —— 只有 0/1 张时什么都不丢
+        if (n <= 1) return state;
+        // @source 那个 `for (i = 0; i < n/2; i++) consume(player_cards[i])` 配
+        //   `consume_card` 的**整体左移** ⇒ 实际丢的是第 0、2、4… 张
+        for (let i = 0; i < Math.trunc(n / 2); i++) {
+          const id = cards[i] ?? 0;
+          if (id > 0) cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) + 1;
+          cards.splice(i, 1);
+        }
+      }
+      return {
+        ...state,
+        players: state.players.map((p, i) => (i === host ? { ...p, cards } : p)),
+        cardAmount,
+      };
+    }
+
+    // 只演出那几种（天使／惡魔／土地公）：状态一个字节都不动
+    case 'none':
+      return state;
+
+    // ── 死神：賣光道具 + 卡片（折**點券**）@source 0x0040f2eb ──
+    case 'sellEverything': {
+      const me = state.players[host];
+      if (me === undefined) return state;
+      const t = sellAllTools(me, state.tools, state.toolStock);
+      const c = sellAllCards(t.player, state.cardAmount);
+      const gained = addPoints(c.player.points, t.points + c.points);
+      return {
+        ...state,
+        players: state.players.map((p, i) => (i === host ? { ...c.player, points: gained } : p)),
+        tools: t.tools,
+        toolStock: t.toolStock,
+        cardAmount: c.cardAmount,
+      };
+    }
+  }
 }
 
 /**
@@ -2601,7 +2775,9 @@ function playCard(
       next = { ...next, pending: r.followUp, phase: 'awaitingDecision' };
     }
   }
-  return next;
+  // ★ 請神符把神明**附身**上去那一刻的發威 —— 与落点那条走同一个助手
+  //   （原版两条都汇到 `_rich4_attach_god` 的跳表，见 rules/god-power.ts）
+  return applyGodPowerOnAttach(state, next, topo);
 }
 
 /**
