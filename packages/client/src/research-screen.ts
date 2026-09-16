@@ -32,7 +32,9 @@
  * | 悬停黄框两道 | — | 外 (32+76r, 294) 71×59、内 (33+76r, 295) 69×57 | 0x004404a2 |
  * | 項目名（只在悬停时画，flag 2 正中）| — | **(220,154)** —— 在立绘板里、标题下面 | 0x0044045c |
  * | 命中框 | — | x∈[35,406]、y∈[297,351]，**格号 = (x−35)/76** | loc_00440377 |
- * | 选中在 **WM_LBUTTONUP**（`0x202`），右键（`0x205`）回 **−1** = 取消 | — | — | loc_0044062b / loc_00440669 |
+ * | **左键按下**（`0x200`）响确认音（音效 **1**），**不答复** | — | — | loc_004405d0（0x004405ed）|
+ * | **左键抬手**（`0x202`）`PostMessage(格号)` → 写 `+0x1d`/`+0x1e` | — | — | loc_0044062b / 0x004411f6 |
+ * | **右键按下**（`0x204`）响取消音（音效 **4**）并回 **−1** = 不選、直接收尾 | — | — | loc_00440669（0x0044066b）/ 0x004411ed |
  *
  * ★★ **五个項目是横着一排的**（条内 y 固定 0x2c，x = 0x30 + 0x4c·k），
  *   所以命中判据里 `ebx` 是 **x**、`row = (x−0x23)/0x4c`，
@@ -203,15 +205,24 @@ export const RESEARCH_FILL = '#f0f0f0';
 export const RESEARCH_OUTLINE = '#101010';
 
 /**
- * 音效：换格悬停 / 确认。
+ * 音效：换格悬停 / 按下确认 / 右键取消。
  *
- * @source `loc_004403f5` 与 `loc_00440669` 都是
- *   `push 0 / push ref_0048231a|ref_00482322 / call rich4_play_sound_effect`，
- *   而 `play_sound_effect(ptr,k)` 取 `[ptr]` 当音效号 —— 两张表的头一个 word 分别是
- *   **0** 与 **1**（与 `audio.ts` 的 `SOUND_IDS.TITLE_HOVER` / `TITLE_CLICK` 同源）。
+ * @source 三处都是 `push 0 / push ref_0048xxxx / call 0x4542ce`（= `play_sound_effect`，
+ *   它取 `[ptr]` 当音效号），三张表的头一个 word 在 `rich4.asm:50864 / 50871 / 50885`：
+ *
+ * | 时机 | 表 | 音效号 | 出处 |
+ * |---|---|---|---|
+ * | 换格悬停 | `ref_0048231a` | **0** | 0x004403f5 |
+ * | **左键按下**（记下格号那一拍）| `ref_00482322` | **1** | 0x004405ed |
+ * | **右键按下**（取消）| `ref_00482332` | **4** | 0x0044066b |
+ *
+ * ★ 2026-09-16 订正：先前把确认音挂在 `loc_00440669` 上（那是**右键**那一支），
+ *   而且把播放时机放在**抬手**。逐条对读 exe 后是上表这样 —— 确认音响在
+ *   `WM_LBUTTONDOWN`（`0x200`）那一拍，抬手（`0x202`）只 `PostMessage(格号)`。
  */
 export const RESEARCH_SOUND_HOVER = 0;
 export const RESEARCH_SOUND_PICK = 1;
+export const RESEARCH_SOUND_CANCEL = 4;
 
 /** 图标图本身的最大尺寸（Panel11 图 10..14 里最宽 36、最高 40）—— 只用于 `researchOptionRect` */
 export const RESEARCH_ICON_W = 36;
@@ -492,15 +503,18 @@ export function drawResearchScreen(
 //  UiScreen
 // ============================================================
 
-/** 光标底下的格（`null` = 没有）*/
+/**
+ * 光标底下的格 `[0x48c530]`（`null` = 没有 = `0xffffffff`）。
+ *
+ * ★ 只有**一处**：`WM_MOUSEMOVE` 会写它（进屏 / 移出命中带置 `-1`）。
+ *   原先这里还有一个 `pressed` 快照 —— 那是读错 exe 的产物（按下那一支
+ *   并不记账），已删。
+ */
 let hot: number | null = null;
-/** 按下记下的格（原版 `[0x48c530]`，初值 `0xffffffff`）*/
-let pressed: number | null = null;
 
-/** 只在这两处改；`active()` 是纯查询 @source `[0x48c530]` / `[0x48c534]` */
+/** 进屏与屏走时重置；`active()` 是纯查询 @source `[0x48c530]` / `[0x48c534]` */
 function reset(): void {
   hot = null;
-  pressed = null;
 }
 
 function researchLevel(env: UiScreenEnv): number {
@@ -535,33 +549,48 @@ export const researchScreen: UiScreen = {
   },
 
   down(x: number, y: number, env: UiScreenEnv): void {
-    // 原版在 `0x200` 只记账（`[0x48c530] = 格号`），真正的答复在抬手 @source loc_0044062b
-    pressed = hitResearch(x, y, researchLevel(env));
+    // @source `0x004405d0`（`WM_LBUTTONDOWN` = `0x200`）：读**当前**格号
+    //   `[0x48c530]`，为 `-1` 或 `>= 項目数`（`[0x48c534]`）就什么都不做；
+    //   合法则 `play_sound_effect(0x482322)` 再 invalidate 那一格的矩形。
+    //   ★ 这一拍**不答复**（不 PostMessage）—— 答复在抬手那一支。
+    if (hitResearch(x, y, researchLevel(env)) === null) return;
+    env.playEffect(RESEARCH_SOUND_PICK);
     env.requestRender();
   },
 
   up(x: number, y: number, env: UiScreenEnv): void {
-    const row = pressed;
-    pressed = null;
+    // @source `0x0044062b`（`WM_LBUTTONUP` = `0x202`）：同样读 `[0x48c530]`。
+    // ★ 订正（2026-09-16）：这个格号**只由 `WM_MOUSEMOVE` 写**
+    //   （0x0044050f；移出命中带置 -1 @0x004405c1、进屏置 -1 @0x00440341），
+    //   按下那一支**不记账** ⇒ 原版答复的是**抬手这一刻**光标底下的格号，
+    //   不是「按下时记下的那一格」。先前按快照实现（还当成 exe 行为），已改。
+    const row = hitResearch(x, y, researchLevel(env));
     if (row === null) return;
-    // ★ 原版 `loc_0044062b` 查的是 `[0x48c530]` 这个**按下时记下的**格号，
-    //   另要求抬手时仍在同一格上（`cmp ecx, [0x48c534]`）。
-    if (hitResearch(x, y, researchLevel(env)) !== row) {
-      env.requestRender();
-      return;
-    }
     const p = env.state.pending;
     if (!isResearchPending(p)) return;
     const opt = researchOptions(env.state)[row];
     if (opt === undefined) return;
-    // @source `loc_00440669`：确认音 + PostMessage(格号) → 收尾写 `+0x1d` / `+0x1e`
-    env.playEffect(RESEARCH_SOUND_PICK);
+    // 抬手只 PostMessage(格号)；收尾由窗口过程写 `+0x1d` / `+0x1e`（@0x004411f6）
     hot = null;
     env.dispatch({ type: 'research', facilityId: p.facilityId, project: opt.project });
   },
 
+  contextmenu(_x: number, _y: number, env: UiScreenEnv): void {
+    // @source `0x00440669`（`WM_RBUTTONDOWN` = `0x204`）：
+    //   `push 0 / push 0x482332 / call 0x4542ce`（取消音 = **4**）
+    //   → `push 0 / call 0x402460`（清按下态）
+    //   → `push -1 / call 0x401966`（`PostMessage(0x402, -1)`）。
+    //   窗口过程在 `0x004411ed` 上 `cmp ebx, -1 / je 0x43f212` —— **不選項目、
+    //   直接收尾**，等价于 core 的 `declineDecision`（`pending.kind === 'research'`
+    //   时 phase → turnEnd；0x0041b0b3 那条「自己的研究所才问研發」也不走）。
+    env.playEffect(RESEARCH_SOUND_CANCEL);
+    reset();
+    env.dispatch({ type: 'declineDecision' });
+    env.requestRender();
+  },
+
   tick(env: UiScreenEnv): void {
-    // 屏走了就把悬停/按下清掉（原版每次进屏都重置 `[0x48c530] = 0xffffffff`）
+    // 屏走了就把悬停清掉（原版每次进屏都重置 `[0x48c530] = 0xffffffff`）
     if (!isResearchPending(env.state.pending)) reset();
   },
 };

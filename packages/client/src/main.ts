@@ -837,7 +837,12 @@ function syncLoanUi(): void {
     return;
   }
   if (loanUi === null) {
-    loanUi = loanStart(true);
+    // ★ 那一句招呼归「動畫過程」管：@source `loc_00435200`（VA 0x00435200，銀行 `0x405` 那一拍）
+    //   `cmp byte [0x497159], 0 / je → st = 3`（`[0x48c3d5]` 直接跳到「需要我為您服務嗎」
+    //   那一档，**不**说 `#0075`）。`[0x497159]` 就是 `RICH4.CFG+1`（`rich4_read_config()`
+    //   VA 0x00411e8f 把 72 字节读进 `0x497158`），本引擎对应 `options.animation`。
+    //   先前这里写死 `true` —— 设定关掉也照样打招呼（已订正，见 Q-ANIM-1）。
+    loanUi = loanStart(options.animation);
     loanAt = performance.now();
     loanBubbleAt = loanAt;
     // 计数器清零、下一拍从开屏那一刻起算（原版 `loc_0043453a` 的 `[0x48c3ce] = 0`）

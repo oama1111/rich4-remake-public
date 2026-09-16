@@ -434,7 +434,11 @@ describe('视图 lotView', () => {
 // ============================================================
 
 /** 收集 dispatch / requestRender 的最小环境 */
-function mkEnv(state: GameState, now: number): {
+function mkEnv(
+  state: GameState,
+  now: number,
+  animation?: boolean,
+): {
   env: UiScreenEnv;
   actions: Action[];
   renders: () => number;
@@ -445,6 +449,8 @@ function mkEnv(state: GameState, now: number): {
     screen: 'game',
     state,
     now,
+    // `animation` 省略 = 按 true 算（契约里就是 optional）
+    ...(animation === undefined ? {} : { animation }),
     dispatch: (a: Action) => actions.push(a),
     requestRender: () => {
       renders++;
@@ -485,6 +491,27 @@ describe('整屏出口 @source 窗口过程 0x0042f7fc', () => {
     expect(lotteryPhase()).toBe('pick');
     lotteryScreen.tick!(mkEnv(s, 6000).env);
     expect(lotteryPhase()).toBe('pick');
+  });
+
+  it('★ 「動畫過程」关掉 → 开屏直接是**可点号**那一段（跳过 hello/price）', () => {
+    // @source `loc_0042f8f6`（VA 0x0042f8f6）：`cmp byte [0x497159],0 / je 0x42f905`
+    //   → `mov byte [0x48c370], 3`（3 = pick，见 `LOT_PHASE_CODE`）。
+    resetLotteryScreenState();
+    const s = mkState({ pending: mkPending([7, 8, 9]) });
+    lotteryScreen.tick!(mkEnv(s, 0, false).env);
+    expect(lotteryPhase()).toBe('pick');
+    // 也可以当场买
+    const { env, actions } = mkEnv(s, 10, false);
+    const cell = numberRect(7)!;
+    lotteryScreen.down!(cell.x + 1, cell.y + 1, env);
+    expect(actions).toEqual([{ type: 'lottery', number: 7 }]);
+  });
+
+  it('★ 「動畫過程」默认（省略）仍然是 hello 起（旧测试替身不受影响）', () => {
+    resetLotteryScreenState();
+    const s = mkState({ pending: mkPending() });
+    lotteryScreen.tick!(mkEnv(s, 0).env);
+    expect(lotteryPhase()).toBe('hello');
   });
 
   it('★ 可点之前先点一下（点在格外面）只是把这段跳过：清气泡 + 置 3', () => {

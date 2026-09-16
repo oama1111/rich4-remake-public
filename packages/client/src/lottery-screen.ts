@@ -740,8 +740,25 @@ const ui: LotUi = {
   lastPending: null,
 };
 
-function resetUi(now: number): void {
-  ui.phase = 'hello';
+/**
+ * 开一屏。
+ *
+ * ★ `animate`（= `UiScreenEnv.animation`，即 `RICH4.CFG+1` bit0）关掉时**直接从
+ *   「可点号」那一段开始** —— 跳过 `hello` / `price` 两句招呼。
+ *   @source `loc_0042f8f6`（VA 0x0042f8f6，`0x401` 铺场那一支的尾巴）：
+ *   ```asm
+ *   0042f8e0  cmp dword [eax + 0x496b84], 0x3e8   ; 现金 < 1000
+ *   0042f8f1  jge short loc_0042f8f6
+ *   0042f8e5  push 4 / push 4 / push 0x405 / PostMessage   ; → 一闪即关（本屏的 noCash）
+ *   0042f8f6  cmp byte [0x497159], 0              ; ← 「動畫過程」
+ *   0042f8fd  je short loc_0042f905
+ *   0042f8ff  push 0 / push 1 / jmp 0x42f8e7      ; 开：PostMessage(0x405, 1) → 走 hello
+ *   0042f905  mov byte [0x48c370], 3              ; 关：状态直接置 3 = pick
+ *   ```
+ *   状态 3 就是 `pick`（见 `LOT_PHASE_CODE`，与 `[0x48c370]` 一一对应）。
+ */
+function resetUi(now: number, animate: boolean): void {
+  ui.phase = animate ? 'hello' : 'pick';
   ui.at = now;
   ui.picked = null;
   ui.anim = animStart(now);
@@ -758,14 +775,14 @@ function resetUi(now: number): void {
  *   收了，而原版还要把「拜拜」那一拍画完（见 `byeView`）。reset 会把相位打回
  *   `hello`、那一拍就再也画不出来 —— 这条是**目视**才抓到的，单测原先没盖住。
  */
-function syncPending(pending: GameState['pending'], now: number): void {
+function syncPending(pending: GameState['pending'], now: number, animate: boolean): void {
   if (pending === ui.lastPending) return;
   if (pending === null) {
     ui.lastPending = null;
     return;
   }
   ui.lastPending = pending;
-  resetUi(now);
+  resetUi(now, animate);
 }
 
 /**
@@ -795,7 +812,7 @@ export const lotteryScreen: UiScreen = {
   },
 
   event(_before: GameState, after: GameState, env: UiScreenEnv): void {
-    syncPending(after.pending, env.now);
+    syncPending(after.pending, env.now, env.animation !== false);
   },
 
   tick(env: UiScreenEnv): void {
@@ -815,7 +832,7 @@ export const lotteryScreen: UiScreen = {
       }
       return;
     }
-    syncPending(env.state.pending, env.now);
+    syncPending(env.state.pending, env.now, env.animation !== false);
 
     const me = env.state.players[env.state.currentPlayer];
     // 现金不足 → 一闪即关（原版 `WM_CREATE` 里就 PostMessage(0x405, 4, 4)）

@@ -43,10 +43,13 @@
  *   `windowed` 之後 `main.ts` 會先照常畫一整幀棋盤再疊本屏（與
  *   `big-map-screen.ts` 同一條路）。見 `docs/deviations/T-039.md` D-WHEEL-2。
  *
- * ⚠️ **「動畫過程」設定夠不到**：它在 `main.ts` 的 `options.animation`（RICH4.CFG
- *   offset 1），`UiScreenEnv` 裡沒有；契約不許改，故本屏**恆開動畫**，
- *   但幀序純函式 `wheelFrameSequence(start, stop, animate = false)` 這一支
- *   照樣有單測。見 deviations。
+ * ★ **「動畫過程」與本屏無關**（2026-09-16 核 exe 訂正）：入口 `fcn_0044090e`
+ *   與窗口過程 `fcn_0043f7c6` **一處都沒讀** `[0x497159]`（= `RICH4.CFG+1`），
+ *   狀態機 `ebx` 的推進只看「真人」與「夢遊」兩個判據 ⇒ **原版恆開動畫**，
+ *   本屏照做即是 1:1。故**不要**拿 `env.animation` 去接
+ *   `wheelFrameSequence(start, stop, animate = false)` 那一支 ——
+ *   它在原版裡沒有調用點，只是本引擎現成的出口（見 `Q-ANIM-1.md` 與
+ *   `T-039.md` 的 D-WHEEL-3）。
  *
  * ★ **音效照原版**：`Effect.mkf` **52（0x34）循環**播 —— 起播
  *   `_rich4_play_sound_effect(flags=1, &info)`（VA 0x0043f80d，`ebx` 就是 1，
@@ -284,8 +287,9 @@ export function wheelStepWait(step: number, total: number): number {
 /**
  * 這一趟的**完整幀序**（起點 → 落點，含起點那一幀）。
  *
- * ★ `animate === false`（原版「動畫過程」關掉）時**只有落點那一幀** ——
- *   不播動畫、直接顯示結果。本屏目前恆傳 `true`（設定夠不到，見檔頭）。
+ * ★ `animate === false` 時**只有落點那一幀** —— 不播動畫、直接顯示結果。
+ *   ⚠️ **原版沒有這一支的調用點**：轉盤不受「動畫過程」管轄（見檔頭與
+ *   D-WHEEL-3），這個參數只是本引擎現成的出口，正式路徑一律 `true`。
  */
 export function wheelFrameSequence(start: number, stop: number, animate = true): number[] {
   if (!animate) return [stop];

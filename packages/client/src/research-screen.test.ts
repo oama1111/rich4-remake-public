@@ -31,6 +31,7 @@ import {
   RESEARCH_NAME_AT,
   RESEARCH_OUTLINE,
   RESEARCH_RESOURCE,
+  RESEARCH_SOUND_CANCEL,
   RESEARCH_SOUND_HOVER,
   RESEARCH_SOUND_PICK,
   RESEARCH_STRIP_AT,
@@ -501,14 +502,23 @@ describe('整屏出口 @source 窗口过程 0x0044101d', () => {
     expect(researchScreen.active(mkEnv(mkState({ pending: mkPending(3) }), 'stock').env)).toBe(false);
   });
 
-  it('★ 抬手才答复：down 只记账，up 才 dispatch(research{project})', () => {
+  it('★ 按下响确认音但**不答复**，抬手才 dispatch(research{project})', () => {
     const { env, actions, effects } = mkEnv(mkState({ pending: mkPending(3) }));
     const x = researchIconAt(1).x;
     researchScreen.down?.(x, 320, env);
     expect(actions).toEqual([]);
+    // @source 0x004405ed：确认音响在**按下**那一拍（`WM_LBUTTONDOWN`）
+    expect(effects).toEqual([RESEARCH_SOUND_PICK]);
     researchScreen.up?.(x, 320, env);
     expect(actions).toEqual([{ type: 'research', facilityId: 3, project: 2 }]);
+    // 抬手只 PostMessage，不再响
     expect(effects).toEqual([RESEARCH_SOUND_PICK]);
+  });
+
+  it('★ 按下时不在格子上（移出命中带）就不响确认音', () => {
+    const { env, effects } = mkEnv(mkState({ pending: mkPending(3) }));
+    researchScreen.down?.(researchIconAt(0).x, 200, env);
+    expect(effects).toEqual([]);
   });
 
   it('★ 每一格都答复自己那个項目（五格逐一点一遍）', () => {
@@ -521,38 +531,60 @@ describe('整屏出口 @source 窗口过程 0x0044101d', () => {
     }
   });
 
-  it('★ 按下后移到**同一格**里别的点再抬手，仍然答复（原版看按下时记下的格号）', () => {
+  it('★ 按下后移到**同一格**里别的点再抬手，仍然答复', () => {
     const { env, actions } = mkEnv(mkState({ pending: mkPending(3) }));
     researchScreen.down?.(150, 300, env);
     researchScreen.up?.(170, 345, env);
     expect(actions).toEqual([{ type: 'research', facilityId: 3, project: 2 }]);
   });
 
-  it('★ 按下后**换一格**再抬手 → 什么都不答复', () => {
+  it('★ 按下后**换一格**再抬手 → 答复的是**抬手那一刻**那一格（原版按下不记账）', () => {
+    // @source `[0x48c530]` 只由 `WM_MOUSEMOVE` 写（0x0044050f），
+    //   按下那一支（0x004405d0）只读它、不写；抬手那一支（0x0044062b）也读它
+    //   ⇒ 原版答复的就是抬手时格号。先前按「按下快照」实现，是读错。
     const { env, actions } = mkEnv(mkState({ pending: mkPending(3) }));
     researchScreen.down?.(researchIconAt(0).x, 320, env);
+    researchScreen.move?.(researchIconAt(1).x, 320, env);
     researchScreen.up?.(researchIconAt(1).x, 320, env);
-    expect(actions).toEqual([]);
+    expect(actions).toEqual([{ type: 'research', facilityId: 3, project: 2 }]);
   });
 
   it('★ 按下后移出命中带再抬手 → 什么都不答复', () => {
     const { env, actions } = mkEnv(mkState({ pending: mkPending(3) }));
     researchScreen.down?.(researchIconAt(0).x, 320, env);
+    researchScreen.move?.(researchIconAt(0).x, 200, env);
     researchScreen.up?.(researchIconAt(0).x, 200, env);
     expect(actions).toEqual([]);
   });
 
   it('★ 等级之外的格子按不下也答复不了', () => {
-    const { env, actions } = mkEnv(mkState({ pending: mkPending(1) }));
+    const { env, actions, effects } = mkEnv(mkState({ pending: mkPending(1) }));
     researchScreen.down?.(researchIconAt(1).x, 320, env);
+    expect(effects).toEqual([]);
     researchScreen.up?.(researchIconAt(1).x, 320, env);
     expect(actions).toEqual([]);
   });
 
-  it('★ 没按过的抬手不答复', () => {
-    const { env, actions } = mkEnv(mkState({ pending: mkPending(3) }));
-    researchScreen.up?.(researchIconAt(0).x, 320, env);
-    expect(actions).toEqual([]);
+  it('★ 右键 = 不選項目、直接收尾（取消音 4 + declineDecision）', () => {
+    // @source 0x00440669：`push 0 / push 0x482332 / call 0x4542ce`（音效 4）
+    //   → `push -1 / call 0x401966`（`PostMessage(0x402, -1)`）
+    //   → 0x004411ed `cmp ebx,-1 / je 0x43f212`：不寫 `+0x1d`/`+0x1e`。
+    const { env, actions, effects, renders } = mkEnv(mkState({ pending: mkPending(3) }));
+    researchScreen.move?.(researchIconAt(0).x, 320, env); // 先悬停到某一格
+    researchScreen.contextmenu?.(researchIconAt(0).x, 320, env);
+    expect(actions).toEqual([{ type: 'declineDecision' }]);
+    expect(effects).toEqual([RESEARCH_SOUND_HOVER, RESEARCH_SOUND_CANCEL]);
+    expect(renders()).toBeGreaterThan(0);
+  });
+
+  it('★ 右键清掉悬停格（`[0x48c530] = -1`）—— 同一格再 move 回来会重新响悬停音', () => {
+    const { env, effects } = mkEnv(mkState({ pending: mkPending(3) }));
+    researchScreen.move?.(researchIconAt(2).x, 320, env); // hot = 2，响一声
+    researchScreen.move?.(researchIconAt(2).x, 320, env); // 同格，不响
+    expect(effects).toEqual([RESEARCH_SOUND_HOVER]);
+    researchScreen.contextmenu?.(researchIconAt(2).x, 320, env);
+    researchScreen.move?.(researchIconAt(2).x, 320, env); // hot 被清 ⇒ 重新响
+    expect(effects).toEqual([RESEARCH_SOUND_HOVER, RESEARCH_SOUND_CANCEL, RESEARCH_SOUND_HOVER]);
   });
 
   it('★ 悬停换格响一声，同格内移动不重复响', () => {
@@ -575,13 +607,15 @@ describe('整屏出口 @source 窗口过程 0x0044101d', () => {
     expect(effects).toEqual([RESEARCH_SOUND_HOVER, RESEARCH_SOUND_HOVER]);
   });
 
-  it('★ 屏不在了 tick 会把悬停/按下清掉', () => {
+  it('★ 屏不在了 tick 会把悬停清掉；此时抬手也不再答复', () => {
     const withScreen = mkEnv(mkState({ pending: mkPending(3) }));
     researchScreen.move?.(researchIconAt(0).x, 320, withScreen.env);
-    researchScreen.down?.(researchIconAt(0).x, 320, withScreen.env);
     researchScreen.tick?.(mkEnv(mkState()).env);
-    const back = mkEnv(mkState({ pending: mkPending(3) }));
-    researchScreen.up?.(researchIconAt(0).x, 320, back.env);
-    expect(back.actions).toEqual([]);
+    // 原版屏走了就是销毁窗口，之后的抬手不会到这一屏手里 —— 用一个
+    //   `pending` 已收的 env 模拟（`active()` 已为假）
+    const gone = mkEnv(mkState());
+    expect(researchScreen.active(gone.env)).toBe(false);
+    researchScreen.up?.(researchIconAt(0).x, 320, gone.env);
+    expect(gone.actions).toEqual([]);
   });
 });
