@@ -3,6 +3,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+
+/** 逆向目录（CI 上可能没有）*/
+const RE_ASM = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/rich4-re/asm';
 import { reduce, type MapTopology } from '../state/reduce.ts';
 import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { emptyTools, giveTool, initialToolStock, toolCount } from '../rules/tools.ts';
@@ -50,6 +54,32 @@ function scene() {
 }
 
 describe('槽位', () => {
+  it('★ 槽 +1 那个字节 = 挂牌「天龄」，而且是**只写不读**的死数据', () => {
+    // ★ 整个 asm 目录里 `ref_004967e1`（= 0x4967e1，槽 +1）只出现两处：挂牌时写 0、以及每天 +1 的
+    //   `fcn_00428475`（唯一调用点 0x0041cfb5，在日期推进那一支里）。
+    //   没有任何一处**读**它 ⇒ 本引擎不建这个字段。
+    if (!existsSync(RE_ASM)) return; // CI 上没有逆向目录就跳过
+    const hits: string[] = [];
+    for (const f of readdirSync(RE_ASM)) {
+      if (!f.endsWith('.asm')) continue;
+      const text = readFileSync(`${RE_ASM}/${f}`, 'utf8');
+      for (const line of text.split('\n')) {
+        // 只看**指令**那一半（分号后面是反编译器的注释，重复了同一句）；
+        // `global`/`extern`/标签那几行是符号声明，不算使用
+        const code = (line.split(';')[0] ?? '').trim();
+        if (code.startsWith('global ') || code.startsWith('extern ') || code.endsWith(':')) continue;
+        if (code.includes('ref_004967e1')) hits.push(`${f}: ${code}`);
+      }
+    }
+    expect(hits).toEqual([
+      'rich4_ui_sale.asm: mov byte [eax + ref_004967e1], bh',
+      'rich4_ui_sale.asm: inc byte [eax + ref_004967e1]',
+    ]);
+    // 挂牌那一路确实把类型写成 +0（阳性对照：同一段代码里 +0 是被读的）
+    const sale = readFileSync(`${RE_ASM}/rich4_ui_sale.asm`, 'utf8');
+    expect(sale).toContain('cmp byte [eax + ref_004967e0], 0');
+  });
+
   it('★ 每个玩家 7 个槽 —— 0x54 字节 ÷ 每槽 12 字节', () => {
     expect(BOARD_SLOTS).toBe(7);
     expect(0x54 / 12).toBe(BOARD_SLOTS);
