@@ -372,6 +372,63 @@ export const MAGIC_SPIN_SLOW = 45;
 /** 转到结果后停多久再关屏 —— 原版点中之后 1.5 秒就走（`push 0x5dc`，VA 0x004339b3） */
 export const MAGIC_HOLD_MS = 1500;
 
+/**
+ * 入口台詞那三句 —— **文字框**先由 `fcn_0044ec30` 设好，再由 `fcn_0044ecb6` 逐句画。
+ *
+ * @source 字框（VA **0x00432596** 那一句 `call 0x44ec30`，整段 0x00432575–0x0043259e）：
+ * ```asm
+ * push 0x202020 / 0xe0e0e0 / 0 / 0 / 0x180 / 0x140
+ * mov eax, [0x48c398] / add eax, 0x6c    ; (0x6c−0xc)/12 = 图 **8**
+ * call 0x44ec30
+ * ```
+ * ⇒ 框 = **图 8（280×173，就是 `MAGIC_CHUNK.resultBar`）落 (320,384)**、文字在盒心 +(0,0)、
+ *   字色 `0xe0e0e0`、描边 `0x202020`（第 7 参非 0 ⇒ 描边 **3** px）。
+ *
+ * @source 串（`fcn_0044ecb6` 的参数，串表指针逐个 dump）：
+ *   `0x475694` / `0x475698` / `0x47569c`；`0x4756a0`（`#0040嘿～輪到你了！`）与
+ *   `0x4756a4`（`#0041天靈靈地靈靈～`）是后面几拍用的，本模块只做入口这三句。
+ */
+export const MAGIC_GREET_LINES: readonly string[] = [
+  '#0037進來魔法屋，就得\n完全照我的指示！',
+  '#0038我選出符合條件的人。',
+  '#0039你來決定他們的命運～',
+];
+
+/**
+ * 一句台詞停多久。
+ *
+ * @source `fcn_0044ee18`（VA 0x0044ee18）：`call timeGetTime` 减去
+ *   `[0x4762c4]`（`fcn_0044ecb6` 记下的「挂上那一刻」）之后
+ *   `cmp eax, 0x7d0 / jb` —— 到 **2000 ms** 就算到期。同一个数也在
+ *   `lottery-ceremony.ts` 的 `CEREMONY_VOICE_MS` 上（那边是同一支
+ *   `fcn_0044ee18` 的另一处调用）。
+ *
+ * ⚠️ 原版还有一条「音效开着就等语音播完」（`cmp byte [0x49715b], 0` 之后
+ *   `call 0x4544b9`）—— 语音时长要到 `Speaking.mkf` 里查，本屏拿不到那个出口，
+ *   故按**底数 2000 ms**走（登记在 `T-037.md` 的 D-MAGIC-12）。
+ */
+export const MAGIC_GREET_MS = 0x7d0;
+
+/**
+ * 字框里的字号 —— `fcn_0044ec30` 的第 4 参 `push 0x14` = **20**（`fcn_0044ecb6`
+ * 里 `create_font(0x14, …)` 用的也是它）。
+ */
+export const MAGIC_MSG_FONT_SIZE = 0x14;
+/** 字框里的行距 —— 与 `drawLoanBubble` 同口径（字号 + 6）*/
+export const MAGIC_MSG_LINE_H = MAGIC_MSG_FONT_SIZE + 6;
+
+/** 入口台詞的字框参数（见 `MAGIC_GREET_LINES` 的注释）*/
+export const MAGIC_MSG_BOX = {
+  chunk: 8,
+  x: 0x140,
+  y: 0x180,
+  dx: 0,
+  dy: 0,
+  fill: '#e0e0e0',
+  outline: '#202020',
+  outlineWidth: 3,
+} as const;
+
 /** 转盘数（十二个功能）*/
 export const MAGIC_SECTOR_COUNT = 12;
 
@@ -428,7 +485,7 @@ export function magicSpinDone(s: MagicSpin): boolean {
 }
 
 /** 一次回放的三个阶段 */
-export type MagicPhase = 'spin' | 'hold';
+export type MagicPhase = 'greet' | 'spin' | 'hold';
 
 export interface MagicPlayback {
   phase: MagicPhase;
@@ -437,14 +494,42 @@ export interface MagicPlayback {
   target: number;
   /** 停在结果上的时刻 */
   holdAt: number;
+  /** `phase === 'greet'` 时正说第几句（`MAGIC_GREET_LINES` 的下标）*/
+  greet: number;
+  /** 这一句挂上的时刻 */
+  greetAt: number;
 }
 
-export function magicPlaybackStart(target: number, now: number): MagicPlayback {
-  return { phase: 'spin', spin: magicSpinStart(target, now), target, holdAt: 0 };
+/**
+ * 起播。
+ *
+ * @param greet 要不要先走**入口台詞**那三句 —— `env.animation !== false`。
+ *   @source `loc_004326b9`（VA 0x004326b9）：`cmp byte [0x48c3a5], 0 / jne loc_00432e82`
+ *   —— 设定关掉时（`[0x48c3a5] = !anim`）**直接跳过消息框**，也就是不播这三句
+ *   （见 `Q-ANIM-1.md` 的魔法屋那一行与 `T-037.md` 的 D-MAGIC-12）。
+ */
+export function magicPlaybackStart(target: number, now: number, greet = true): MagicPlayback {
+  return {
+    phase: greet ? 'greet' : 'spin',
+    // 台詞期间这个 `spin` 只是个占位；三句说完会按**那一刻**重起一个
+    //   （`magicPlaybackTick` 的 greet 分支），免得台詞那 6 秒算进转盘节拍。
+    spin: magicSpinStart(target, now),
+    target,
+    holdAt: 0,
+    greet: 0,
+    greetAt: now,
+  };
 }
 
-/** 推进一步；转盘走完就进 `hold`，`hold` 满 `MAGIC_HOLD_MS` 就返回 `null`（该关屏了）*/
+/** 推进一步；台詞走完进 `spin`，转盘走完进 `hold`，`hold` 满 `MAGIC_HOLD_MS` 返回 `null` */
 export function magicPlaybackTick(p: MagicPlayback, now: number): MagicPlayback | null {
+  if (p.phase === 'greet') {
+    if (now - p.greetAt < MAGIC_GREET_MS) return p;
+    const next = p.greet + 1;
+    if (next < MAGIC_GREET_LINES.length) return { ...p, greet: next, greetAt: now };
+    // 三句说完才起转盘（原版 `loc_00432719` 之后才铺五芒星）
+    return { ...p, phase: 'spin', spin: magicSpinStart(p.target, now) };
+  }
   if (p.phase === 'spin') {
     const spin = magicSpinTick(p.spin, p.target, now);
     if (spin.step >= magicSpinSteps()) return { ...p, phase: 'hold', spin, holdAt: now };
@@ -816,6 +901,13 @@ export interface MagicDraw {
   hover: number;
   /** 图标动画的帧计数器（`magicAnimationFrame(now)`）*/
   frame: number;
+  /**
+   * 入口台詞那一拍：`null` = 不在这一拍；数字 = 正说第几句（`MAGIC_GREET_LINES`）。
+   *
+   * ★ 台詞期间**只画底图 + 女巫 + 那只字框**（原版这时五芒星还没铺）——
+   *   所以 `drawMagicScreen` 见到它就先画「铺场那一拍」再画字框、然后 return。
+   */
+  greet: number | null;
 }
 
 /** 悬停那个高亮圈的颜色（原版画的是另一张图，本引擎没有，见 deviations）*/
@@ -934,6 +1026,42 @@ function magicIconSprite(sprite: MagicSprite, option: number, frame: number): Sp
   return magicSprite(sprite, chunk) ?? magicSprite(sprite, magicIconChunk(option));
 }
 
+/** 台詞串去掉 `#NNNN` 语音前缀后的**可见文字**（`\n` 保留，画的时候拆行）*/
+export function magicGreetText(line: string): string {
+  return line.startsWith('#') ? line.slice(5) : line;
+}
+
+/**
+ * 入口台詞那只字框（`fcn_0044ecb6`）—— 字画在**盒心 +(dx,dy)**、每行正中、
+ * 行距 `MAGIC_MSG_LINE_H`，字色/描边由调用方给（本屏是 `#e0e0e0` / `#202020`）。
+ */
+export function magicBoxText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  cx: number,
+  cy: number,
+  fill: string,
+  outline: string,
+  outlineWidth: number,
+  lineH = MAGIC_MSG_LINE_H,
+): void {
+  const lines = magicGreetText(text).split('\n').filter((l) => l !== '');
+  if (lines.length === 0) return;
+  ctx.save();
+  ctx.font = `${MAGIC_MSG_FONT_SIZE}px ${MAGIC_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = outlineWidth;
+  ctx.strokeStyle = outline;
+  ctx.fillStyle = fill;
+  lines.forEach((line, i) => {
+    const y = cy + (i - (lines.length - 1) / 2) * lineH;
+    if (outlineWidth > 0) ctx.strokeText(line, cx, y);
+    ctx.fillText(line, cx, y);
+  });
+  ctx.restore();
+}
+
 function magicText(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -976,6 +1104,25 @@ export function drawMagicScreen(
   d: MagicDraw,
 ): void {
   drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.bg), MAGIC_BG_AT.x, MAGIC_BG_AT.y);
+
+  // ── 入口台詞那一拍：铺场那张女巫 + 常态女巫 + 字框（五芒星还没铺）──
+  //    @source `loc_00432647`（铺场）→ `loc_004326b9`（第一句）→ …（见 D-MAGIC-12）
+  if (d.greet !== null) {
+    const line = MAGIC_GREET_LINES[d.greet] ?? '';
+    drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.witchIntro), MAGIC_WITCH_INTRO_AT.x, MAGIC_WITCH_INTRO_AT.y);
+    drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.witchIdle), MAGIC_WITCH_AT.x, MAGIC_WITCH_AT.y);
+    drawAnchored(
+      ctx,
+      magicSprite(sprite, MAGIC_MSG_BOX.chunk),
+      MAGIC_MSG_BOX.x,
+      MAGIC_MSG_BOX.y,
+    );
+    const box = magicSprite(sprite, MAGIC_MSG_BOX.chunk);
+    const cx = MAGIC_MSG_BOX.x - (box?.anchorX ?? 0) + (box?.width ?? 280) / 2 + MAGIC_MSG_BOX.dx;
+    const cy = MAGIC_MSG_BOX.y - (box?.anchorY ?? 0) + (box?.height ?? 173) / 2 + MAGIC_MSG_BOX.dy;
+    magicBoxText(ctx, magicGreetText(line), cx, cy, MAGIC_MSG_BOX.fill, MAGIC_MSG_BOX.outline, MAGIC_MSG_BOX.outlineWidth);
+    return;
+  }
 
   const pointerOption = d.pointer >= 0 && d.pointer < MAGIC_SECTOR_COUNT ? d.pointer : -1;
   // 这一拍落在哪个功能上 —— 字、框、结果图标都跟着它走
@@ -1097,7 +1244,8 @@ export const magicScreen: UiScreen = {
     const frame = magicAnimationFrame(env.now);
     // ★ 转盘还在转 = 第一拍；进了 hold = 第二拍（女巫移位 + 结果条）
     const beat: 1 | 2 = playback !== null && playback.phase === 'hold' ? 2 : 1;
-    drawMagicScreen(env.stage, env.sprite, { view: v, pointer, witchBlink, beat, hover, frame });
+    const greet = playback !== null && playback.phase === 'greet' ? playback.greet : null;
+    drawMagicScreen(env.stage, env.sprite, { view: v, pointer, witchBlink, beat, hover, frame, greet });
   },
 
   move(x: number, y: number, env: UiScreenEnv): void {
@@ -1143,7 +1291,15 @@ export const magicScreen: UiScreen = {
     }
     const prevOption = playback.spin.option;
     const prevPhase = playback.phase;
+    const prevGreet = playback.greet;
     playback = next;
+    // ★ 台詞那一拍：**每帧都要续帧**（它是按 `MAGIC_GREET_MS` 计时的，
+    //   不续帧就没人再叫 `tick`，三句永远说不完）。
+    if (next.phase === 'greet') {
+      if (next.greet !== prevGreet) env.log(`魔法屋：台詞 ${next.greet + 1}/${MAGIC_GREET_LINES.length}`);
+      env.requestRender();
+      return;
+    }
     // ★ 换了一位、或刚进 `hold`：画面变了要重画。
     //   转盘「还在等下一位」的那几帧没有变化，不续帧；`hold` 期间要续帧，
     //   否则 `tick` 不再被调用，屏就永远关不掉了。
@@ -1169,7 +1325,10 @@ export const magicScreen: UiScreen = {
     if (v === null) return;
     view = v;
     const target = v.option >= 0 ? v.option : 0;
-    playback = magicPlaybackStart(target, env.now);
+    // ★ 入口台詞归「動畫過程」管：@source `loc_004326b9`（VA 0x004326b9）
+    //   `cmp byte [0x48c3a5], 0 / jne loc_00432e82` —— 关掉时**直接跳过消息框**
+    //   （`[0x48c3a5] = !anim`，见 `Q-ANIM-1.md` 与 `T-037.md` 的 D-MAGIC-12）。
+    playback = magicPlaybackStart(target, env.now, env.animation !== false);
     env.log(`魔法屋：${v.name === '' ? '（落点未解出）' : v.name}`);
     env.requestRender();
   },

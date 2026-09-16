@@ -10,10 +10,16 @@
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
+import type { Sprite } from './assets.ts';
 import { SPECIAL_KIND, newGame, parseMap, reduce, type GameState, type MapTopology } from '@rich4/core';
 import {
   MAGIC_AIR_MS,
   MAGIC_CENTER,
+  MAGIC_GREET_LINES,
+  MAGIC_GREET_MS,
+  MAGIC_MSG_BOX,
+  MAGIC_MSG_FONT_SIZE,
+  magicGreetText,
   MAGIC_CHUNK,
   MAGIC_HIT_CENTER,
   MAGIC_HOLD_MS,
@@ -44,6 +50,8 @@ import {
   magicTextAt,
   magicView,
   optionOfSector,
+  drawMagicScreen,
+  type MagicSprite,
   sectorAt,
   MAGIC_MOUTH_AT,
   MAGIC_RESULT_ICON_AT,
@@ -328,10 +336,128 @@ describe('转盘帧序 @source VA 0x004325c2 的 100ms 定时器', () => {
   });
 });
 
+// ============================================================
+//  入口台詞那一拍：画出来的东西（假 ctx，只记 drawImage / fillText）
+// ============================================================
+
+interface FakeCtx {
+  ctx: CanvasRenderingContext2D;
+  sprite: MagicSprite;
+  images: { chunk: number; x: number; y: number }[];
+  texts: string[];
+}
+
+/** 只认**图号**的假 sprite：每张图都 280×173、锚点 (0,0)，尺寸/锚点按需覆盖 */
+function fakeGreetCtx(over: Record<number, Partial<{ w: number; h: number; ax: number; ay: number }>> = {}): FakeCtx {
+  const images: { chunk: number; x: number; y: number }[] = [];
+  const texts: string[] = [];
+  const ctx = {
+    save() {}, restore() {},
+    drawImage(bitmap: { chunk: number }, x: number, y: number) {
+      images.push({ chunk: bitmap.chunk, x, y });
+    },
+    strokeText(t: string) { void t; },
+    fillText(t: string) { texts.push(t); },
+    set font(_v: string) {}, set textAlign(_v: string) {}, set textBaseline(_v: string) {},
+    set lineWidth(_v: number) {}, set strokeStyle(_v: string) {}, set fillStyle(_v: string) {},
+  } as unknown as CanvasRenderingContext2D;
+  const sprite: MagicSprite = (_a, _r, chunk) => {
+    const o = over[chunk] ?? {};
+    const sp = {
+      bitmap: { chunk } as unknown as ImageBitmap,
+      width: o.w ?? 280,
+      height: o.h ?? 173,
+      anchorX: o.ax ?? 0,
+      anchorY: o.ay ?? 0,
+    } as Sprite;
+    return sp;
+  };
+  return { ctx, sprite, images, texts };
+}
+
+describe('★ 入口台詞那一拍：绘制（Q-ANIM-1 / D-MAGIC-12）', () => {
+  const view = { caster: 0, option: 4, name: '均富', targets: [], criterionName: '', criterion: -1 } as never;
+
+  it('★ 台詞那一拍画**图 8 字框**在 (320,384)，并把那两句写进框里', () => {
+    const f = fakeGreetCtx();
+    drawMagicScreen(f.ctx, f.sprite, {
+      view, pointer: 4, witchBlink: false, beat: 1, hover: 0, frame: 0, greet: 0,
+    });
+    const box = f.images.find((i) => i.chunk === MAGIC_MSG_BOX.chunk);
+    expect(box).toMatchObject({ x: MAGIC_MSG_BOX.x, y: MAGIC_MSG_BOX.y });
+    // 第 0 句是两行（`\n` 拆开、`#0037` 前缀去掉）
+    expect(f.texts).toEqual(['進來魔法屋，就得', '完全照我的指示！']);
+  });
+
+  it('★ 不是台詞那一拍（greet = null / beat 1）不画那只框 —— 不会与结果条撞车', () => {
+    const f = fakeGreetCtx();
+    drawMagicScreen(f.ctx, f.sprite, {
+      view, pointer: 4, witchBlink: false, beat: 1, hover: 0, frame: 0, greet: null,
+    });
+    // 图 8 是**结果长条框**，只在第二拍压上去；第一拍不该出现
+    expect(f.images.some((i) => i.chunk === MAGIC_MSG_BOX.chunk)).toBe(false);
+  });
+});
+
+describe('★ 入口台詞那一拍：时序（Q-ANIM-1 / D-MAGIC-12）', () => {
+  it('★ 三句台詞、每句停 2000 ms —— 与 `fcn_0044ee18` 的 `cmp eax, 0x7d0` 同数', () => {
+    expect(MAGIC_GREET_MS).toBe(0x7d0);
+    expect(MAGIC_GREET_MS).toBe(2000);
+    expect(MAGIC_GREET_LINES).toHaveLength(3);
+    // 串表指针 0x475694 / 0x475698 / 0x47569c，逐个 dump
+    expect(MAGIC_GREET_LINES[0]).toBe('#0037進來魔法屋，就得\n完全照我的指示！');
+    expect(MAGIC_GREET_LINES[1]).toBe('#0038我選出符合條件的人。');
+    expect(MAGIC_GREET_LINES[2]).toBe('#0039你來決定他們的命運～');
+  });
+
+  it('★ 字框 = 图 8 落 (320,384)、20 号、`#e0e0e0`/`#202020` 描边 3', () => {
+    // @source 0x00432596 那一段 `push 0x202020 / 0xe0e0e0 / 0 / 0 / 0x180 / 0x140 / [0x48c398]+0x6c`
+    expect(MAGIC_MSG_BOX.chunk).toBe(8);
+    expect(MAGIC_MSG_BOX.chunk).toBe(MAGIC_CHUNK.resultBar);
+    expect(MAGIC_MSG_BOX.x).toBe(0x140);
+    expect(MAGIC_MSG_BOX.y).toBe(0x180);
+    expect(MAGIC_MSG_BOX.dx).toBe(0);
+    expect(MAGIC_MSG_BOX.dy).toBe(0);
+    expect(MAGIC_MSG_BOX.fill).toBe('#e0e0e0');
+    expect(MAGIC_MSG_BOX.outline).toBe('#202020');
+    expect(MAGIC_MSG_BOX.outlineWidth).toBe(3);
+    expect(MAGIC_MSG_FONT_SIZE).toBe(0x14);
+  });
+
+  it('★ 可见文字去掉 `#NNNN` 前缀（`\n` 留着，画的时候拆行）', () => {
+    expect(magicGreetText('#0037進來魔法屋，就得\n完全照我的指示！')).toBe('進來魔法屋，就得\n完全照我的指示！');
+    expect(magicGreetText('沒有前綴')).toBe('沒有前綴');
+  });
+
+  it('★ 时间轴：台詞 0 → 1 → 2 → spin（每句 2000 ms）', () => {
+    let p = magicPlaybackStart(4, 0, true);
+    expect(p.phase).toBe('greet');
+    expect(p.greet).toBe(0);
+    // 差 1 ms 不换句
+    p = magicPlaybackTick(p, MAGIC_GREET_MS - 1)!;
+    expect(p).toMatchObject({ phase: 'greet', greet: 0 });
+    p = magicPlaybackTick(p, MAGIC_GREET_MS)!;
+    expect(p).toMatchObject({ phase: 'greet', greet: 1 });
+    p = magicPlaybackTick(p, MAGIC_GREET_MS * 2)!;
+    expect(p).toMatchObject({ phase: 'greet', greet: 2 });
+    p = magicPlaybackTick(p, MAGIC_GREET_MS * 3)!;
+    expect(p.phase).toBe('spin');
+    // 起转盘的节拍从**台詞说完那一刻**算，不是从开屏算
+    expect(p.spin.at).toBe(MAGIC_GREET_MS * 3);
+  });
+
+  it('★ `greet = false`（「動畫過程」关掉）：直接从 spin 起，一句都不说', () => {
+    const p = magicPlaybackStart(4, 0, false);
+    expect(p.phase).toBe('spin');
+    expect(p.spin.at).toBe(0);
+  });
+});
+
 describe('回放生命周期', () => {
   it('★ 转完进 hold、再停 1.5 秒才该关屏', () => {
     expect(MAGIC_HOLD_MS).toBe(1500);
-    let p = magicPlaybackStart(4, 0);
+    // 这一段只看**转盘 → hold → 关屏**，故跳过入口台詞（那一拍另有专门用例）
+    let p = magicPlaybackStart(4, 0, false);
     let now = 0;
     for (let i = 0; i < 80 && p.phase === 'spin'; i++) {
       now += 1000;
