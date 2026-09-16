@@ -159,7 +159,7 @@ export const SPEECH_EVENTS: readonly SpeechEvent[] = [
   { id: 14, line: '#1064letitbe', lineVa: 0x00466cc3, voice: 1064, sites: [0x0044f60f],
     gloss: '罰款／醫藥費（> 0，且 < 5000 × 物價指數）' },
   { id: 15, line: '#1065我真佩服自己', lineVa: 0x00466cd0, voice: 1065, sites: [0x0040fa13, 0x00419a0e, 0x0041ab4a],
-    gloss: '得意（多個觸發點；其中一處是 `player+0x1a == 5`）' },
+    gloss: '得意（多個觸發點；其中一處是**本塊地的等級** `land+0x1a` 由 4 升到 5 —— @0x00419a0e `inc byte [esi+0x1a]` / `cmp byte [esi+0x1a], 5`；`esi` 是**地块记录**、不是玩家结构，2026-09-16 订正）' },
   { id: 16, line: '#1066我是個大地主', lineVa: 0x00466ce2, voice: 1066, sites: [0x0044f6d5],
     gloss: '同一街區獨佔 ≥ 3 塊（`fcn_0044f627` 傳入參數為 0 時）' },
   { id: 17, line: '#1067我要稱霸一方了', lineVa: 0x00466cf4, voice: 1067, sites: [0x0044f6ab],
