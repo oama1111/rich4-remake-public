@@ -30,6 +30,7 @@
  */
 
 import { sceneOfMonth } from '@rich4/core';
+import { FINANCE_BORROW, FINANCE_BYE, FINANCE_REPAY } from './bank-loan.ts';
 import { appendDigitKey, backspaceKey } from './amount-keys.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
@@ -558,6 +559,16 @@ export const LOAN_MSG = {
   noCash: { id: 0x83, raw: '#0083很抱歉！\n您的現金不足。', text: '很抱歉！\n您的現金不足。' },
   repayDone: { id: 0x84, raw: '#0084您的還款手續\n已完成。', text: '您的還款手續\n已完成。' },
   bye: { id: 0x85, raw: '#0085謝謝您的惠顧！', text: '謝謝您的惠顧！' },
+  // ── 特別融資子对话框（`fcn_00434492`，董事長室）自己的六句 ──
+  //    @source 串表指针：0x47585c / 0x475860 / 0x475864 / 0x475868 / 0x47586c / 0x475870
+  //    ⚠️ 图 21 @(240,80) 是**主屏**的气泡；子对话框那张是图 **22** @(214,50)
+  //       —— 见 `LOAN_FINANCE_BUBBLE`，本引擎把两屏合成一屏，故气泡混用一处（已登记）。
+  financeGreet: { id: 0x86, raw: '#0086董事長親自蒞臨\n不知有何指教？', text: '董事長親自蒞臨\n不知有何指教？' },
+  financeAskBorrow: { id: 0x87, raw: '#0087請輸入您要\n週轉的金額∼', text: '請輸入您要\n週轉的金額∼' },
+  financeNoCash: { id: 0x88, raw: '#0088行裡現在沒有\n這麼多現金。', text: '行裡現在沒有\n這麼多現金。' },
+  financeAskRepay: { id: 0x89, raw: '#0089請輸入您要\n還款的金額∼', text: '請輸入您要\n還款的金額∼' },
+  financeNoDebt: { id: 0x90, raw: '#0090董事長您別開玩笑了∼', text: '董事長您別開玩笑了∼' },
+  financeBye: { id: 0x91, raw: '#0091董事長慢走！', text: '董事長慢走！' },
 } as const;
 export type LoanMsg = (typeof LOAN_MSG)[keyof typeof LOAN_MSG];
 
@@ -575,6 +586,21 @@ export const LOAN_BUBBLE = {
 
 /** 气泡寿命 —— 与商店同一支 `fcn_0044ee18` @source `cmp eax, 0x7d0` */
 export const LOAN_BUBBLE_MS = 2000;
+
+/**
+ * **特別融資子对话框**自己那张气泡底图与落点。
+ *
+ * @source `fcn_00434492` 的建屏那一支（`loc_004345ac`）：
+ * ```asm
+ * mov eax, [0x48c3c0] / add eax, 0x114      ; ★ 图 22（0x114 = 0xc + 22×12）
+ * push 0 / push 0x101010 / push -0xa / push 0 / push 0x32 / push 0xd6
+ * call fcn_0044ec30                          ; 落点 (0xd6, 0x32) = (214, 50)，字心再 (0, -10)
+ * ```
+ * ⚠️ 与主屏那张（图 21 @(240,80)，见 `LOAN_BUBBLE`）**不是同一张**。
+ *   本引擎把董事長室与子对话框合成了同一屏（见 `bank-loan.ts` 的 `chairman` 分支），
+ *   故两套气泡共用一处落点 —— 已在 T-029 登记为已知近似。
+ */
+export const LOAN_FINANCE_BUBBLE = { image: 22, x: 0xd6, y: 0x32, dy: -0x0a } as const;
 
 /** 貸款屏这一刻的界面状态（对应原版那一串全局）*/
 export interface LoanUi {
@@ -617,7 +643,7 @@ export function loanStart(showGreeting: boolean): LoanUi {
 /** 状态机发出的**副作用**（纯函数只描述，不执行）*/
 export type LoanEffect =
   /** 开通用填数页（原版 `PostMessage(0x409/0x40a)` → `fcn_00453544`）*/
-  | { kind: 'openForm'; op: 'borrow' | 'repay' }
+  | { kind: 'openForm'; op: 'borrow' | 'repay' | 'financeBorrow' | 'financeRepay' }
   /** 开特別融資子对话框 @source `Wait_0402_Message(fcn_00434492)` */
   | { kind: 'openFinance' }
   /** 关屏 @source `Post_0402_Message` */
@@ -631,6 +657,18 @@ export type LoanEvent =
   | { kind: 'press'; btn: number; frozen: boolean; hasLoan: boolean; chairman: boolean; overLimit: boolean }
   /** 左键抬起 @source `loc_00435ea2`（`0x202`）*/
   | { kind: 'release' }
+  /**
+   * 董事長室**左侧三颗小钮**被点了 @source `fcn_00434492` 的 `0x202`（`loc_00434da1`）。
+   *
+   * `btn` = `FINANCE_BORROW` / `FINANCE_REPAY` / `FINANCE_BYE`；
+   * `canBorrow` = 「還有可週轉額度」（原版 `player+0x28 < [0x48c3c8]`，
+   * `loc_00434dfb` 末尾那条 `jge 跳过`）；`canRepay` = 「還有欠款」
+   * （`loc_00434e98` 末尾的 `cmp dword [eax+0x496b90], 0 / je 跳过`）。
+   *
+   * ⚠️ 两条前置不满足时原版**什么都不做、连气泡都不换**（那条 `jge`/`je`
+   *   直接跳到收尾），这里照抄。
+   */
+  | { kind: 'finance'; btn: number; canBorrow: boolean; canRepay: boolean }
   /** 右键抬起 —— 直接说再见 @source `loc_00435f6d`（`0x205`）*/
   | { kind: 'cancel' }
   /** 填数页收摊（`amount` = 填出来的数，0 = 没填）*/
@@ -717,6 +755,33 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
         default:
           return same();
       }
+    }
+    case 'finance': {
+      // ── 董事長室左侧三颗小钮 @source `fcn_00434492` 的 `0x202`（`loc_00434da1`）──
+      //    ⚠️ 原版只在这一屏的**状态 2**（招呼说完）受理点钮；
+      //       本引擎那一格由 `ready` 承担（两屏合一，见 `bank-loan.ts` 的 `chairman` 分支）。
+      if (ui.st !== LOAN_ST.ready) return same();
+      if (ev.btn === FINANCE_BORROW) {
+        // @source `loc_00434dfb`：`jge` 那条 —— 没额度就什么都不做
+        if (!ev.canBorrow) return same();
+        return {
+          ui: { ...ui, st: LOAN_ST.borrowIn, bubble: LOAN_MSG.financeAskBorrow },
+          effect: { kind: 'openForm', op: 'financeBorrow' },
+        };
+      }
+      if (ev.btn === FINANCE_REPAY) {
+        // @source `loc_00434e98`：`cmp dword [eax+0x496b90], 0 / je` —— 没欠款不动
+        if (!ev.canRepay) return same();
+        return {
+          ui: { ...ui, st: LOAN_ST.repayIn, bubble: LOAN_MSG.financeAskRepay },
+          effect: { kind: 'openForm', op: 'financeRepay' },
+        };
+      }
+      if (ev.btn === FINANCE_BYE) {
+        // @source `loc_00434f25`：状态 7 + 串 `[0x475870]`
+        return { ui: { ...ui, pressed: 0, st: LOAN_ST.bye, bubble: LOAN_MSG.financeBye }, effect: null };
+      }
+      return same();
     }
     case 'release': {
       // @source loc_00435ea2：只有「按的是 EXIT」且还没在道别时才收场

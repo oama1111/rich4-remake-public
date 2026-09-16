@@ -6,6 +6,7 @@
  * 绘制本身不碰 canvas（与仓库里其它屏同一套口径）。
  */
 import { describe, expect, it } from 'vitest';
+import { FINANCE_BORROW, FINANCE_BYE, FINANCE_REPAY } from './bank-loan.ts';
 import type { Sprite } from './assets.ts';
 import {
   ATM_BAR,
@@ -602,5 +603,75 @@ describe('两块滑入面板的绘制（假 ctx，只查落点）', () => {
       ['歡迎光臨', 360, 180 - 13],
       ['大富翁銀行！', 360, 180 + 13],
     ]);
+  });
+});
+
+// ============================================================
+//  ★ Q-BANK-1a：董事長室三颗小钮 @source `fcn_00434492` 的 `0x202`
+// ============================================================
+
+describe('★ 特別融資子对话框的三颗小钮 @source `loc_00434da1`', () => {
+  /** 招呼说完那一刻（= 子对话框的「状态 2」，原版只有这一格受理点钮）*/
+  const ready = (): ReturnType<typeof loanStart> => ({ ...loanStart(false), st: LOAN_ST.ready });
+  const fin = (
+    ui: ReturnType<typeof loanStart>,
+    btn: number,
+    canBorrow = true,
+    canRepay = true,
+  ): ReturnType<typeof loanStep> =>
+    loanStep(ui, { kind: 'finance', btn, canBorrow, canRepay });
+
+  it('★ 週轉現金 → 气泡 #0087 + 开**週轉**填数页（不是还款！）', () => {
+    const r = fin(ready(), FINANCE_BORROW);
+    expect(r.ui.bubble).toBe(LOAN_MSG.financeAskBorrow);
+    expect(r.effect).toEqual({ kind: 'openForm', op: 'financeBorrow' });
+  });
+
+  it('★ 沒額度時週轉現金**什么都不做**（连气泡都不换）@source `jge` 那条', () => {
+    const base = ready();
+    expect(fin(base, FINANCE_BORROW, false, true)).toEqual({ ui: base, effect: null });
+  });
+
+  it('★ 歸還款項 → 气泡 #0089 + 开**還款**填数页', () => {
+    const r = fin(ready(), FINANCE_REPAY);
+    expect(r.ui.bubble).toBe(LOAN_MSG.financeAskRepay);
+    expect(r.effect).toEqual({ kind: 'openForm', op: 'financeRepay' });
+  });
+
+  it('★ 沒欠款時歸還款項什么都不做 @source `cmp dword [eax+0x496b90], 0 / je`', () => {
+    const base = ready();
+    expect(fin(base, FINANCE_REPAY, true, false)).toEqual({ ui: base, effect: null });
+  });
+
+  it('★ 第三颗 = 離開：状态进 bye + 气泡 #0091（与右键同一支）', () => {
+    const r = fin(ready(), FINANCE_BYE);
+    expect(r.ui.st).toBe(LOAN_ST.bye);
+    expect(r.ui.bubble).toBe(LOAN_MSG.financeBye);
+    expect(r.effect).toBeNull();
+    // bye 之后气泡到点才真关屏
+    expect(loanStep(r.ui, { kind: 'bubbleEnd' }).effect).toEqual({ kind: 'close' });
+  });
+
+  it('★ **只有 `ready` 那一格受理**小钮（别的状态一律不动）', () => {
+    for (const st of [LOAN_ST.menu, LOAN_ST.borrowIn, LOAN_ST.settle, LOAN_ST.bye]) {
+      const base = { ...loanStart(false), st };
+      for (const btn of [FINANCE_BORROW, FINANCE_REPAY, FINANCE_BYE]) {
+        expect(fin(base, btn), `st=${st} btn=${btn}`).toEqual({ ui: base, effect: null });
+      }
+    }
+  });
+
+  it('未知钮号不动状态', () => {
+    const base = ready();
+    expect(fin(base, 99)).toEqual({ ui: base, effect: null });
+  });
+
+  it('★ 三颗小钮与主屏那四颗**互不干扰**：btn 号空间是分开的', () => {
+    // 主屏 `press` 的 btn 0..3 与子对话框的 0..2 用**不同的事件种类**区分
+    const base = ready();
+    // `press btn 0` = EXIT 记按下（不改状态），而 `finance btn 0` = 週轉現金
+    expect(loanStep(base, { kind: 'press', btn: 0, frozen: false, hasLoan: true, chairman: true, overLimit: false }).ui.st)
+      .toBe(LOAN_ST.ready);
+    expect(fin(base, FINANCE_BORROW).ui.st).toBe(LOAN_ST.borrowIn);
   });
 });

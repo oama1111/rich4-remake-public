@@ -310,6 +310,7 @@ import {
   LOAN_BUTTONS,
   LOAN_EXIT,
   drawBankLoan,
+  hitFinanceButton,
   hitLoanButton,
   type LoanOp,
 } from './bank-loan.ts';
@@ -838,7 +839,10 @@ function loanEffect(ui: LoanUi, effect: ReturnType<typeof loanStep>['effect']): 
     return;
   }
   if (effect.kind === 'openForm') {
-    openLoanAmount(effect.op === 'borrow' ? 'borrow' : 'repay');
+    // ★ op 直接透传（`LoanOp` 四值都在 `currentDialog()` 的 choices 里）——
+    //   先前写成 `op === 'borrow' ? 'borrow' : 'repay'`，于是 **`financeBorrow`
+    //   会被当成 `repay`**（Q-BANK-1a 接三颗小钮时撞出来的）。
+    openLoanAmount(effect.op);
     return;
   }
   // 特別融資子对话框（`fcn_00434492`）整屏还没复刻 —— 见 T-029 的未决；
@@ -6172,6 +6176,23 @@ function bindInput(): void {
     if (e.button === 0 && loanNow !== null && atm === null && amountPage === null) {
       const q = eventToStage(e);
       if (q === null) return;
+      // ★ 董事長室左侧那**三颗小钮**先接（Q-BANK-1a）—— 它们是原版**另一个窗口**
+      //   `fcn_00434492` 的控件（表 `0x475818`），与主屏那四颗（`0x4757f8`）不在一张表上。
+      //   先前只画了图、没有命中框 ⇒ 「週轉現金／歸還款項」点了没反应、
+      //   **歸還款項这条路整个走不到**（`repaySpecial` 早就实现了）。
+      if (loanNow.chairman) {
+        const fb = hitFinanceButton(q.x, q.y);
+        if (fb !== null) {
+          const pend0 = state.pending;
+          // 前置判据照原版：`owed < 額度` 才可週轉（`loc_00434dfb` 的 `jge`）、
+          // `owed != 0` 才可歸還（`loc_00434e98` 的 `je`）。
+          const owed = pend0?.kind === 'bank' ? pend0.specialFinance?.owed ?? 0 : 0;
+          const room = pend0?.kind === 'bank' ? pend0.specialFinance?.available ?? 0 : 0;
+          loanSend({ kind: 'finance', btn: fb, canBorrow: room > 0, canRepay: owed !== 0 });
+          requestRender();
+          return;
+        }
+      }
       const btn = hitLoanButton(q.x, q.y);
       if (btn === null) return;
       // ★ Q-BANK-1：**不再直接开填数页** —— 原版先走 `fcn_00435062` 的状态机

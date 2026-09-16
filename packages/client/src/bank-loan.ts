@@ -103,6 +103,53 @@ export const LOAN_PRIMARY = 1;
 export const LOAN_SECONDARY = 2;
 export const LOAN_FINANCE = 3;
 
+/**
+ * 董事長室左侧那**三颗小钮**的命中矩形 —— 逐字节 dump 自 `0x475818`
+ * （8 字节/项的有符号 16 位 `x0, y0, x1, y1`，**两端都闭**）。
+ *
+ * @source 命中判定 `rich4_ui_bank.asm:1506-1520`（`fcn_00434492` 的 `0x201` 分支）：
+ * ```asm
+ * loc_00434b8e:  ebx = 1 / 循环 ebp < 3
+ *   movsx edx, word [ebx + 0x475818]  ; x0
+ *   cmp esi, edx / jl 下一个          ; ★ `jl` —— 下界闭
+ *   movsx edx, word [ebx + 0x47581c]  ; x1
+ *   cmp esi, edx / jg 下一个          ; ★ `jg` —— 上界也闭
+ *   … y0（+0x47581a）/ y1（+0x47581e）同理
+ *   play_sound_effect(0x482322) / [0x48c3cf] = ebp + 1
+ * ```
+ * ★ 相邻还有一张 `0x475810`（`0x201` 那一支用来「把按下的样子贴回底图」），
+ *   它的 `[1..3]` 与这张表的 `[0..2]` **完全相同** —— 因为两张表只差 8 字节：
+ *   `0x475810[0]` 是整扇窗 `(268,51)-(591,273)`，后面三项才是这三颗钮。
+ *
+ * ⚠️ 与 `LOAN_BUTTONS`（`0x4757f8`，主屏那四颗）**不是同一张表**。
+ */
+export const FINANCE_BUTTONS: readonly LoanButton[] = [
+  { x0: 11, y0: 305, x1: 125, y1: 345 }, // 週轉現金（图 16，字 @(67,324)）
+  { x0: 11, y0: 362, x1: 125, y1: 402 }, // 歸還款項（图 16，字 @(67,382)）
+  { x0: 11, y0: 419, x1: 91, y1: 459 }, // 離開（图 18/19，80×40）
+] as const;
+
+/** 三颗小钮的编号 @source `[0x48c3cf]` 的 1/2/3（这里 0 基）*/
+export const FINANCE_BORROW = 0;
+export const FINANCE_REPAY = 1;
+export const FINANCE_BYE = 2;
+
+/**
+ * 点在**三颗小钮**的哪一颗上；没点中返回 `null`。
+ *
+ * @source 同 `FINANCE_BUTTONS` 的 `0x201` 判定循环（**两端都闭**）。
+ * @param x 相对棋盘/舞台左上角的 x（这一屏是整屏，故就是舞台坐标）
+ */
+export function hitFinanceButton(x: number, y: number): number | null {
+  for (let i = 0; i < FINANCE_BUTTONS.length; i++) {
+    const b = FINANCE_BUTTONS[i]!;
+    if (x < b.x0 || x > b.x1) continue;
+    if (y < b.y0 || y > b.y1) continue;
+    return i;
+  }
+  return null;
+}
+
 /** 这张牌／这一屏要做的事（`fcn_00435062` 的状态机之外的**动作**部分）*/
 export type LoanOp = 'borrow' | 'repay' | 'financeBorrow' | 'financeRepay' | 'exit';
 
