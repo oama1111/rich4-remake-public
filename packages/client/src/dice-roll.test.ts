@@ -120,6 +120,30 @@ describe('DiceRollFx —— 预动作 → 滚骰 → 定格', () => {
 });
 
 describe('★ 相位推进不依赖绘制（2026-09-16 长跑抓到的硬卡死）', () => {
+  it('★★ tick() 必须**在结束那一拍**就报「播完了」（掷完骰子人不走的真根因）', () => {
+    // 病根：`dicePoll` 在函数中部调 `tick()`，那一拍 `hold → idle`；
+    // 而重排写在函数尾 `if (active) setTimeout(dicePoll, 16)` —— 结束时 active
+    // 已是 false，于是**最后一次补驱动被吞掉**，`scheduleHumanTurn`/`scheduleAi`
+    // 又以 `active` 为闸 ⇒ 真人永久停在 `moving`、棋子一步不走。
+    // 修法：`tick()` 显式回传「这一拍刚播完」，调用方据此补驱动。
+    const fx = new DiceRollFx();
+    const t0 = 3_000_000;
+    fx.begin(t0, 4, 24, 1);
+    fx.markRollRequested();
+    // ★ 必须给 FLIC：`tumbleMs()` = 帧数 × 每帧毫秒（36 × 14 = 504）
+    const tRoll = t0 + 4 * 24 + 1;
+    fx.roll(tRoll, [3], fakeFlic(36, 14));
+    expect(fx.tick(tRoll), '进滚骰那一拍不算结束').toBe(false);
+    expect(fx.tick(tRoll + 1), '滚骰中不算结束').toBe(false);
+    // 滚骰 504 ms 那一拍进定格（那时还不算结束），定格再走满 500 ms 才算
+    expect(fx.tick(tRoll + 504), '刚进定格不算结束').toBe(false);
+    expect(fx.tick(tRoll + 504 + DICE_HOLD_MS - 1), '定格差 1 ms 不算结束').toBe(false);
+    // ★ 跨过定格边界的那一拍：必须报 true，且**只报这一次**
+    expect(fx.tick(tRoll + 504 + DICE_HOLD_MS), '跨过定格边界必须报结束').toBe(true);
+    expect(fx.active).toBe(false);
+    expect(fx.tick(tRoll + 504 + DICE_HOLD_MS + 16), '结束只报一次，不重复').toBe(false);
+  });
+
   it('★ 只调 tick()、一次都不画，也必须从 tumble 走到 idle', () => {
     const fx = new DiceRollFx();
     const t0 = 1_000_000;
@@ -150,7 +174,25 @@ describe('★ 相位推进不依赖绘制（2026-09-16 长跑抓到的硬卡死�
 
   it('★ main.ts 的 dicePoll 必须真的调它（结构断言，防止又被挪回绘制里）', () => {
     const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
-    expect(src).toContain('diceFx.tick(now);');
+    // ★ 必须是 `const ended = diceFx.tick(now);` —— 结束那一拍的补驱动全靠这个返回值
+    expect(src).toContain('const ended = diceFx.tick(now);');
+    expect(src).toContain('if (ended) {');
+  });
+
+  it('★★ diceFx 收摊后必须补一次回合驱动，且**两条收尾路都要补**（结构断言）', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    // 补驱动抽成一个函数：`scheduleAi` 与 `scheduleHumanTurn` **两个都要**，
+    // 少一个就会有一类座位永久停在 awaitingRoll/moving（真人卡死、电脑卡死各一处）。
+    const at = src.indexOf('function resumeTurnDriver(): void {');
+    expect(at, 'dicePoll 的补驱动必须抽成 resumeTurnDriver').toBeGreaterThan(0);
+    const body = src.slice(at, src.indexOf('\n}', at));
+    expect(body, '补驱动必须叫 scheduleAi').toContain('scheduleAi();');
+    expect(body, '补驱动必须叫 scheduleHumanTurn').toContain('scheduleHumanTurn();');
+    // 三条收尾路：① 入口进来时已 idle ② 这一拍刚播完 ③ 联机超时 cancel
+    expect(src.split('resumeTurnDriver();').length - 1).toBeGreaterThanOrEqual(3);
+    const dicePollAt = src.indexOf('function dicePoll(): void {');
+    const dicePollBody = src.slice(dicePollAt, src.indexOf('\nfunction resumeTurnDriver', dicePollAt));
+    expect(dicePollBody.split('resumeTurnDriver();').length - 1, 'dicePoll 内三条分支都要补').toBe(3);
   });
 
   it('★ 被拒的掷骰必须重排驱动，不许静默丢弃（结构断言）', () => {

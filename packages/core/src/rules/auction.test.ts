@@ -426,10 +426,36 @@ describe('★ 座位表（loc_0043c110 / loc_00439f72 的建表段）', () => {
     expect(auctionAdvanceSeat([0, 1], ['passed', 'passed'], 0)).toBe(0);
   });
 
-  it('第一个座位从 currentPlayer 起找', () => {
+  it('★★ 开场席位从 slot 0 起找第一个 active 的（loc_0043a365 的清零 + 绕圈）', () => {
     const status: AuctionSeatStatus[] = ['passed', 'active', 'active', 'active'];
-    expect(auctionFirstSeat([0, 1, 2, 3], status, 0)).toBe(1);
-    expect(auctionFirstSeat([0, 1, 2, 3], status, 2)).toBe(2);
+    expect(auctionFirstSeat([0, 1, 2, 3], status)).toBe(1);
+    // 从 slot 0 起 —— 不是「从 currentPlayer 起」（旧行为，见 A-3 订正）
+    expect(auctionFirstSeat([0, 1, 2, 3], ['active', 'active', 'active', 'active'])).toBe(0);
+  });
+
+  it('★★ 一个可出价的都没有时返回 -1，**绝不能返回 0**（A-3 的卡死根因）', () => {
+    // 病根：卖家在座位编码里是「非 0 状态」，一个 active 都没有时旧实现返回 0,
+    //   那正好可能是卖家那一格 ⇒ 客户端把出价权交给卖家、屏上等真人点，整局卡死。
+    expect(auctionFirstSeat([0, 1, 2, 3], ['givenUp', 'givenUp', 'givenUp', 'givenUp'])).toBe(-1);
+    expect(auctionFirstSeat([], [])).toBe(-1);
+    // 卖家被跳过：slot 0 是卖家（givenUp），第一个可出价的是 slot 1
+    const sellerFirst: AuctionSeatStatus[] = ['givenUp', 'active', 'active', 'active'];
+    expect(auctionFirstSeat([0, 1, 2, 3], sellerFirst)).toBe(1);
+  });
+
+  it('★ 无主地自拍（bidders 含卖家自己）时，出价权必须给**别人**', () => {
+    // 审查 A-3 场景⑤：真人站在无主地上打拍賣卡 ⇒ bidders=[0,1,2,3]（无主地不排除任何人），
+    //   status[0] = 'active'（卖家手里确实有钱、也不是「出不起底价」）。
+    //   原版此时 slot 0 就是出卡人自己（原版建表不看「谁是卖家」以外的资格）。
+    //   ★ 这里钉住的是**引擎不再把出价权丢给卖家**这条不变量：
+    //     一旦卖家被标成非 active（自己的地 / 出不起），首个席位必须跳过它。
+    expect(auctionFirstSeat([0, 1, 2, 3], ['givenUp', 'active', 'active', 'active'])).toBe(1);
+    // 卖家在中间（bidders 不含它时下标会错位）—— 用 bidders 与玩家号**不同**的数组钉住
+    //   「用 bidders[i] 取 status，而不是用 i 取 status」：
+    //   bidders=[2,0,3]，status 按**玩家下标**索引 ⇒ slot0=玩家2(active) → 返回 0
+    expect(auctionFirstSeat([2, 0, 3], ['givenUp', 'active', 'active', 'active'])).toBe(0);
+    // 玩家2 出不起、玩家0 与玩家3 可出价 ⇒ slot0 被跳过，返回 slot1
+    expect(auctionFirstSeat([2, 0, 3], ['active', 'active', 'givenUp', 'active'])).toBe(1);
   });
 });
 
@@ -552,12 +578,116 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
     expect(s.pending.top).toBe(-1);
     expect(s.pending.bidders).toEqual([0, 2, 3]); // 排除地主 1 号
     expect(s.pending.status[1]).toBe('givenUp'); // 地主不参与
+    // ★★ A-3（外部审查）：开场席位必须是**第一个可出价的人**，不能是卖家/地主。
+    //   判断的敌人是「第一格不可出价却返回 0」：把 0 号弄成出不起底价
+    //   （bidders[0] 仍是 0，但 status[0] = 'givenUp'），开场席位必须落到别人头上。
+    //   旧实现「绕一圈找不到就返回 0」在这里给出 0 号 ⇒ 客户端把出价权交给一个
+    //   不能出价的人、屏上等真人点，整局卡死（外部审查 A-3 的真根因）。
+    {
+      const poor = auctionGame((i) => (i === 0 ? 1 : 60_000));
+      const after = reduce(poor, { type: 'useCard', cardId: 8 }, topo);
+      if (after.pending?.kind !== 'auction' || !('seat' in after.pending)) {
+        throw new Error('no auction');
+      }
+      expect(after.pending.status[0]).toBe('givenUp'); // 0 号出不起底价
+      const first = after.pending.bidders[after.pending.seat];
+      expect(first, '第一格出不起底价时开场席位不能是他').not.toBe(0);
+      expect(after.pending.status[first!]).toBe('active');
+    }
+    expect(s.pending.bidders[s.pending.seat]).toBe(0); // 正常局面下 0 号可出价
+    expect(s.pending.status[s.pending.bidders[s.pending.seat]!]).toBe('active');
 
     const { state, actions } = runAuction(s);
     expect(state.pending).toBeNull();
     expect(state.phase).toBe('turnEnd');
     // 至少有人举过牌（原缺口下这里一口都没有）
     expect(actions.some((a) => a.includes('"status":"raise"'))).toBe(true);
+  });
+
+  it('★★ A-3 回归：地主自己打出拍賣卡时，开场席位必须跳过地主', () => {
+    // 场景：0 号**是地主**（landOwner 指向自己），手上还有拍賣卡 —— 他卖自己的地。
+    //   `eligibleBidders` 会排除地主 ⇒ bidders 里没有 0；此时开场席位必须落在
+    //   某个**别人**头上。先前的实现会返回 0（= bidders 的第一格），而那一格
+    //   可能是被标成非 active 的座位 ⇒ 客户端把出价权交给一个不能出价的人、
+    //   屏上摆着「請意者出價」等真人点，整局卡死（外部审查 A-3）。
+    const players = [0, 1, 2, 3].map((i) =>
+      makePlayer({
+        index: i,
+        character: i,
+        nodeId: 1,
+        cash: 60_000,
+        moneyInBank: 0,
+        whoPlays: WHO_PLAYS_COMPUTER,
+        cards: i === 0 ? [8] : [],
+      }),
+    );
+    const owned: MapTopology = {
+      ...topo,
+      lands: [makeLand({ id: LAND, name: '測試地', landPrice: 3000, housePrice: 500, owner: 1 })],
+    };
+    const s0 = makeGameState({
+      players,
+      currentPlayer: 0,
+      phase: 'turnStart',
+      landOwner: [0, 1], // ★ 1 号编码 = 0 号玩家 ⇒ 0 号卖自己的地
+      landLevel: [0, 0],
+    });
+    const s = reduce(s0, { type: 'useCard', cardId: 8 }, owned);
+    expect(s.pending?.kind).toBe('auction');
+    if (s.pending?.kind !== 'auction' || !('seat' in s.pending)) throw new Error('no auction');
+    expect(s.pending.bidders).toEqual([1, 2, 3]); // 地主 0 号被排除
+    const seatPlayer = s.pending.bidders[s.pending.seat];
+    expect(seatPlayer, '开场席位不能落空').toBeDefined();
+    expect(seatPlayer, '开场席位必须是可出价的人').not.toBe(0);
+    expect(s.pending.status[seatPlayer!]).toBe('active');
+    // 竞价能自己跑完，不需要「卖家先点一次 PASS」
+    const { state } = runAuction(s);
+    expect(state.pending).toBeNull();
+  });
+
+  it('★★ A-3 回归：**无主地**自拍时出价权不能落回卖家（原版卖家状态 7 会被绕开）', () => {
+    // 外部审查实测的那一幕：真人站在**无主地**上打拍賣卡。
+    //   `eligibleBidders` 只排除「现任地主」，无主地（owner === 0）谁都匹配不上
+    //   ⇒ bidders = [0,1,2,3]，卖家 0 号自己也在名单里且状态是 'active'。
+    //   旧实现于是把开场席位给了 0 号 ⇒ 屏上等真人自己点、三台电脑一口不出。
+    //   原版给卖家那一格写状态 7，绕圈永远跳过他。
+    const players = [0, 1, 2, 3].map((i) =>
+      makePlayer({
+        index: i,
+        character: i,
+        nodeId: 1,
+        cash: 60_000,
+        moneyInBank: 0,
+        whoPlays: WHO_PLAYS_COMPUTER,
+        cards: i === 0 ? [8] : [],
+      }),
+    );
+    const unowned: MapTopology = {
+      ...topo,
+      lands: [makeLand({ id: LAND, name: '無主地', landPrice: 3000, housePrice: 500, owner: 0 })],
+    };
+    const s = reduce(
+      makeGameState({
+        players,
+        currentPlayer: 0,
+        phase: 'turnStart',
+        landOwner: [0, 0],
+        landLevel: [0, 0],
+      }),
+      { type: 'useCard', cardId: 8 },
+      unowned,
+    );
+    expect(s.pending?.kind).toBe('auction');
+    if (s.pending?.kind !== 'auction' || !('seat' in s.pending)) throw new Error('no auction');
+    expect(s.pending.bidders).toEqual([0, 1, 2, 3]); // 无主地不排除任何人
+    expect(s.pending.seller).toBe(0); // 卖家 = 出卡人
+    const first = s.pending.bidders[s.pending.seat];
+    expect(first, '无主地自拍时开场席位不能是卖家自己').not.toBe(0);
+    expect(s.pending.status[first!]).toBe('active');
+    // 而且整条竞价能自己跑完（没有「卖家先点一次 PASS」这一步）
+    const { state, actions } = runAuction(s);
+    expect(state.pending).toBeNull();
+    expect(actions.length).toBeGreaterThan(0);
   });
 
   it('★ 成交：得标者按成交价付钱、地块易主、款项进公库', () => {

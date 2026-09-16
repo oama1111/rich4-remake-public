@@ -205,12 +205,22 @@ export class DiceRollFx {
    *   ⇒ 现在由 `main.ts` 的 `dicePoll`（16 ms 定时器，动画期间一直在跑）调它，
    *   与画不画无关。
    */
-  tick(now: number): void {
-    this.#advance(now);
+  tick(now: number): boolean {
+    return this.#advance(now);
   }
 
-  /** 子阶段到点就自己往下走：tumble → hold → idle */
-  #advance(now: number): void {
+  /**
+   * 子阶段到点就自己往下走：tumble → hold → idle
+   *
+   * @returns 这一拍**刚好把定格播完**（`hold → idle`）时 `true`。
+   *
+   * ★ 返回值是给 `main.ts` 的 `dicePoll` 用的：它是在函数**中部**调 `tick()`，
+   *   所以「动画有没有在这一拍结束」只有 `tick()` 自己知道。尾部那句
+   *   `if (active) setTimeout(...)` 在结束那一拍必然为假 —— 靠它去重排，
+   *   最后一次「补驱动」就被吞掉了（2026-09-16「掷完骰子人不走」的真根因）。
+   *   给一个显式的 `ended` 信号，比让调用方去猜「进来时 active、出去时 idle」可靠。
+   */
+  #advance(now: number): boolean {
     if (this.#phase === 'tumble' && now - this.#at >= this.tumbleMs()) {
       this.#phase = 'hold';
       this.#at += this.tumbleMs();
@@ -218,6 +228,8 @@ export class DiceRollFx {
     if (this.#phase === 'hold' && now - this.#at >= DICE_HOLD_MS) {
       this.#phase = 'idle';
       this.#flic = null;
+      return true;
     }
+    return false;
   }
 }

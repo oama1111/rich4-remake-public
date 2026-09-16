@@ -207,7 +207,14 @@ import {
   type AuctionRequest,
   type PendingInteraction,
 } from '../rules/interaction.ts';
-import { borrow, deposit, loanCapacity, repay, withdraw } from '../places/bank.ts';
+import {
+  borrow,
+  deposit,
+  loanCapacity,
+  rebalanceCashByRatio,
+  repay,
+  withdraw,
+} from '../places/bank.ts';
 import {
   LOTTERY_TICKET_PRICE,
   aiBuyTicket,
@@ -347,12 +354,32 @@ function openAuction(
       })();
 
   const seed = (state.rngState ^ Math.imul(pending.entityId + 1, 0x9e3779b1)) >>> 0;
+
+  // ★★ 卖家 = 待拍实体的**现主**（1 基编码 → −1 得玩家下标；0 = 无主）。
+  //   原版建表时给卖家那一格写状态 **7**，绕圈因此永远跳过它
+  //   （`loc_0043c110` 的 `cmp ebx, [esp+0xac]` 那一支）—— 起拍那一口
+  //   不可能落在卖家头上。本引擎的 `status` 里没有「7」这一档，
+  //   所以把卖家**显式**传给 `auctionFirstSeat` 让它跳过。
+  //   ⚠️ 不这么做时，**无主地**自拍会出问题：`eligibleBidders` 不排除任何人
+  //   （`entity.owner === 0` 谁都匹配不上）⇒ 名单里含卖家自己、状态是 `'active'`
+  //   ⇒ 开场席位落回卖家（外部审查 A-3 实测到的卡死）。
+  //   无主时卖家就是当前行动者（拍賣卡/魔法屋都只拍「自己脚下」那块）。
+  const owner = facility
+    ? (effectiveFacility(state, topo, pending.entityId)?.owner ?? 0)
+    : (effectiveLand(state, topo, pending.entityId)?.owner ?? 0);
+  const seller = owner === 0 ? state.currentPlayer : owner - 1;
+
   return {
     ...pending,
     price: pending.basePrice,
     top: -1,
     topCash: 0,
-    seat: auctionFirstSeat(pending.bidders, status, state.currentPlayer),
+    // ★ 卖家单列（见 `AuctionPending.seller` 的注释）：出价循环两处都要跳过他
+    seller,
+    // ★ 开场席位从 slot 0 起（原版 `loc_0043a365` 把 `[0x48c4a4]` 清 0），
+    //   并跳过卖家与非 active 的座位。找不到返回 -1
+    //   （此时已判流标/成交，客户端据此不再等任何人点钮）。见 `auctionFirstSeat`。
+    seat: auctionFirstSeat(pending.bidders, status, seller),
     status,
     limits: auctionAiLimits(entity, state.players, pending.bidders, seed),
   };
@@ -894,6 +921,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         // 樂透投注站：电脑自己匿名买一注就走，真人才开投注屏
         if (node.specialKind === SPECIAL_KIND.LOTTERY) return landOnLottery(next);
 
+        // ★ 銀行：非真人在进柜台之前先按 `cashRatio`(+0x19) 重分現金／存款
+        //   （原版 `_rich4_ui_bank_atm_entry` 的 `loc_00437acd` 那一支）。
+        //   见 `rebalanceBankOnArrival`。
+        if (node.specialKind === SPECIAL_KIND.BANK) next = rebalanceBankOnArrival(next);
+
         // 其余特殊格：交给「待决交互」机制。
         // ★ 这样每一格都**可达**：已实现的给出具体交互，
         //   未实现的给出一个明确的 unimplemented，而不是静默无事发生。
@@ -1316,7 +1348,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       if (!auctionFinished(after)) {
         return {
           ...state,
-          pending: { ...after, seat: auctionAdvanceSeat(after.bidders, status, pending.seat) },
+          pending: {
+            ...after,
+            // ★ 也要跳过卖家（原版卖家状态 7，绕圈一并跳）——见 `auctionAdvanceSeat`
+            seat: auctionAdvanceSeat(after.bidders, status, pending.seat, pending.seller ?? -1),
+          },
         };
       }
       return settleAuctionPending(state, topo, after as AuctionPending);
@@ -2969,6 +3005,39 @@ function landOnLottery(state: GameState): GameState {
       owned: numbersOf(state.lottery, state.currentPlayer).length,
     },
   };
+}
+
+/**
+ * ★ 落**銀行格**的收尾：非真人玩家在**进柜台之前**按 `cashRatio`(+0x19)
+ *   把現金／存款重分一次。
+ *
+ * @source `_rich4_ui_bank_atm_entry` @ VA 0x004379c9（银行落点 0x0041b396
+ *   `call 0x4379c9`，紧接着才是柜台 `_rich4_ui_bank_entry`）。它的分派是：
+ * ```asm
+ * 00437a04  cmp  byte [player + 0x3b], 0 / jne 提示          ; 拒绝往来期内不办
+ * 00437a1f  cmp  byte [player + 0x15], 1 / jne 0x437acd      ; who_plays == 1 → ATM 对话框
+ * 00437acd  ...按 +0x19 重分現金/存款...                       ; 其余（电脑 / 被托管）
+ * ```
+ *   `+0x15` = `who_plays`（1 = 真人）：**只有恰好 1 的真人**走对话框那一支；
+ *   电脑(2) 与「真人+托管」(1|4=5) 都落进重分那一支。
+ *
+ * ⚠️ 原版对电脑也照样往下开柜台（`_rich4_ui_bank_entry` 的电脑支去借款），
+ *   所以这里只做「重分」，`pending` 照旧由 `pendingForSpecial` 给出。
+ */
+function rebalanceBankOnArrival(state: GameState): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || !isAlive(me)) return state;
+  // @source 0x00437a04 `cmp byte [player + 0x3b], 0 / jne`（+0x3b = days_rejected_by_bank）
+  if (me.daysRejectedByBank !== 0) return state;
+  // @source 0x00437a1f `cmp byte [player + 0x15], 1 / jne 0x437acd`
+  if ((me.whoPlays & 0xff) === WHO_PLAYS_HUMAN) return state;
+
+  const next = rebalanceCashByRatio(me, state.day);
+  if (next === me) return state;
+  return withPlayer(state, state.currentPlayer, (p) => {
+    p.cash = next.cash;
+    p.moneyInBank = next.moneyInBank;
+  });
 }
 
 /**

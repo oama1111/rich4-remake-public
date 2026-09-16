@@ -113,6 +113,18 @@ export type PendingInteraction =
       basePrice: number;
       /** 可以出价的玩家下标。core 已排除出局者与现任地主 */
       bidders: number[];
+      /**
+       * **卖家**的玩家下标（= 待拍实体的现主；无主地自拍时就是出卡人）。
+       *
+       * ★ 原版在座位表里给卖家写状态 **7**，出价循环因此永远跳过它
+       *   （`loc_0043c110` 的 `cmp ebx, [esp+0xac]` 那一支 + `loc_0043b3c2` 的绕圈）。
+       *   本引擎的 `status` 没有「7」这一档，故把卖家单列一个字段，让
+       *   `auctionFirstSeat` / `auctionAdvanceSeat` 显式跳过他 ——
+       *   否则无主地自拍（`bidders` 含卖家且他是 `'active'`）会把出价权
+       *   交给卖家，屏上等他自己点（外部审查 A-3）。
+       *   `-1` = 没有卖家要排除。
+       */
+      seller?: number;
       /** 設施拍卖（拍賣卡踏在設施格上时挂出） */
       facility?: boolean;
       /** 现价 `[0x48c488]`：每一口加价都改写它；还没人出价时 = `basePrice` */

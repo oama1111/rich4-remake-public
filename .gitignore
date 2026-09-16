@@ -82,3 +82,6 @@ packages/desktop/src-tauri/gen/
 packages/client/dist-web/
 .gstack/
 __pycache__/
+
+# QA 临时目录（截图 / 一次性脚本等，勿入库）
+.qa-tmp/

@@ -496,6 +496,10 @@ export function auctionSeatStatus(
 /**
  * 「下一家轮到谁」@source `loc_0043b3c2`：座位号 +1 取模，跳过非「可出价」的。
  *
+ * ★ 也要跳过**卖家**（原版卖家的状态是 7，绕圈一并跳过）—— 见 `auctionFirstSeat`
+ *   的头注释。否则无主地自拍时（卖家也在 `bidders` 里且状态是 `'active'`）
+ *   绕一圈会绕回卖家、屏上又等他自己点。
+ *
  * 反复绕圈直到有人可出价为止；**一个可出价的都没有时原样返回**
  * （此时 `auctionFinished` 已经判成流标，这个值不再有人看）。
  */
@@ -503,31 +507,58 @@ export function auctionAdvanceSeat(
   bidders: readonly number[],
   status: readonly AuctionSeatStatus[],
   from: number,
+  seller = -1,
 ): number {
   const n = bidders.length;
   if (n === 0) return from;
   for (let k = 1; k <= n; k++) {
     const i = (from + k) % n;
     const player = bidders[i];
-    if (player !== undefined && (status[player] ?? 'active') === 'active') return i;
+    if (player === undefined || player === seller) continue;
+    if ((status[player] ?? 'active') === 'active') return i;
   }
   return from;
 }
 
-/** 从 `currentPlayer` 起找第一个可出价的座位；都没有返回 0 @source 入口的建表顺序 */
+/**
+ * 开场第一个出价席位。
+ *
+ * ★★ 2026-09-16 订正（外部审查 A-3）—— 两处都要照原版：
+ *
+ *   原版入口 `loc_0043c110` 把有资格的人压进 `[0x48c434]`（座位表，**slot** 下标），
+ *   状态放在 `[0x48c436]`（同一下标）。建完表 `loc_0043a365` 把 `[0x48c4a4] = 0`
+ *   —— 从 slot 0 起；再由 `loc_0043b3c2` 的绕圈（`inc` → `and 3` →
+ *   `cmp [slot*20+0x48c434],0`）跳过**一切非 0 状态**。
+ *   ★ **卖家在那种编码里就是状态 7**（建表时 `cmp ebx, [esp+0xac]` 那一支写 7），
+ *   所以绕圈**永远跳过卖家** —— 起拍那一口不可能落在卖家头上。
+ *
+ *   本引擎的 `bidders` 是「按玩家下标压缩过的数组」、`status` 按**玩家下标**索引，
+ *   两者混用先前踩了三个坑：
+ *     ① 拿 `state.currentPlayer`（**玩家下标**）当 `bidders` 下标用；
+ *     ② 一个都不可出价时返回 0 —— 那正好可能是卖家那一格；
+ *     ③ **没把卖家排除掉**：无主地自拍时 `eligibleBidders` 不排除任何人
+ *        （`entity.owner === 0` 谁都匹配不上），于是买家名单里含卖家自己、
+ *        `status[卖家] === 'active'`，开场席位就落回**卖家**身上 ——
+ *        真人卖家在屏上等自己点钮、三台电脑一口不出。
+ *
+ * ⇒ 现在：从 slot 0 起找第一个 **`'active'` 且不是卖家** 的座位；
+ *   都没有返回 **-1**（此时 `auctionFinished` 已判流标/成交，调用方不该再拿它当座位）。
+ *
+ * @param seller 卖家（= 待拍实体的现主，取不到就传当前行动者）的**玩家下标**；
+ *   传 `-1` 表示没有卖家要排除（例如调用方确实想按纯资格排座）。
+ */
 export function auctionFirstSeat(
   bidders: readonly number[],
   status: readonly AuctionSeatStatus[],
-  fromPlayer: number,
+  seller = -1,
 ): number {
   const n = bidders.length;
-  if (n === 0) return 0;
-  for (let k = 0; k < n; k++) {
-    const i = (fromPlayer + k) % n;
+  for (let i = 0; i < n; i++) {
     const player = bidders[i];
-    if (player !== undefined && (status[player] ?? 'active') === 'active') return i;
+    if (player === undefined || player === seller) continue;
+    if ((status[player] ?? 'active') === 'active') return i;
   }
-  return 0;
+  return -1;
 }
 
 /**
