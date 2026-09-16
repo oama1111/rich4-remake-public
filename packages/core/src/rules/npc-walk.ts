@@ -10,8 +10,10 @@
  *   这期间没有任何玩家输入，所以对 core 来说它就是**一个动作**，
  *   不需要拆成待决交互。动画分帧是表现层的事（C-ARC-2）。
  *
- * ⚠️ **落点行为里没做的两条**（間諜取過路費/取盈餘）缺的是**状态不是规则**，
- *   见 `npc-actions.ts` 的说明与 known-deviations 的 Q-NPC-1。
+ * ★ 落点行为**已全部实现**（2026-09-16 订正）：間諜的「取過路費」与「取盈餘」
+ *   都在本文件里 —— 见 `spyTollAt`（读上一笔过路费）与取盈餘那一段
+ *   （企業 `+0x28`，可为负、反向转账）；测试见 `facility-rules.test.ts` 与
+ *   `company.test.ts`。先前这里写着「没做的两条」，是过期注释。
  */
 
 import type { GameState, Player } from '../state/types.ts';

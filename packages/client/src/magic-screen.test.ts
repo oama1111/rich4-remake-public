@@ -29,6 +29,7 @@ import {
   MAGIC_SPIN_OPTIONS,
   MAGIC_SPIN_SLOW,
   magicAnimationFrame,
+  magicFrameAt,
   magicIconAngle,
   magicIconAt,
   magicIconChunk,
@@ -40,10 +41,57 @@ import {
   magicSpinStart,
   magicSpinSteps,
   magicSpinTick,
+  magicTextAt,
   magicView,
   optionOfSector,
   sectorAt,
+  MAGIC_MOUTH_AT,
+  MAGIC_RESULT_ICON_AT,
+  MAGIC_RESULT_ICON_BASE,
+  MAGIC_WITCH_BEAT2_AT,
+  MAGIC_WITCH_AT,
+  MAGIC_RESULT_AT,
 } from './magic-screen.ts';
+
+/**
+ * 外部审查 B-2 的三条症状：结果字画在框外 / 第二拍空白 / 女巫消失。
+ * 这里钉的是**几何不变量**，不是具体像素。
+ */
+describe('★ B-2 版面订正（2026-09-16）', () => {
+  it('★★ 结果字与弹窗框**同点**，且跟着落点的功能走（先前字在框外 107px）', () => {
+    for (let option = 0; option < MAGIC_SECTOR_COUNT; option++) {
+      const at = magicIconAt(option);
+      expect(magicFrameAt(option)).toEqual(at);
+      expect(magicTextAt(option)).toEqual(at);
+    }
+    // 解不出落点时退回五芒星中心（悬停兜底那一支）
+    expect(magicTextAt(-1)).toEqual(MAGIC_CENTER);
+    // 第 0 个功能的框心确实不在中心 —— 否则「同点」这条断言没有意义
+    expect(magicFrameAt(0)).not.toEqual(MAGIC_CENTER);
+  });
+
+  it('★★ 女巫的嘴是图 5 那张 60×21，画在 (0x11e,0xdc)；不是图 9/10', () => {
+    // 图 9/10 = 悬停弹窗框（142×120），画在女巫位置上会把她整个盖掉
+    expect(MAGIC_CHUNK.mouthTalk).toBe(5);
+    expect(MAGIC_CHUNK.hoverFrame).toBe(9);
+    expect(MAGIC_CHUNK.hoverFrameAlt).toBe(10);
+    expect(MAGIC_CHUNK.mouthTalk).not.toBe(MAGIC_CHUNK.hoverFrame);
+    expect(MAGIC_MOUTH_AT).toEqual({ x: 0x11e, y: 0xdc });
+  });
+
+  it('★★ 两拍各有各的女巫落点，第二拍另有长条结果框', () => {
+    expect(MAGIC_WITCH_AT).toEqual({ x: 0x11e, y: 0xd9 }); // 第一拍 @source loc_00432719
+    expect(MAGIC_WITCH_BEAT2_AT).toEqual({ x: 0xb6, y: 0x8e }); // 第二拍 @source loc_00432e8e
+    expect(MAGIC_WITCH_BEAT2_AT).not.toEqual(MAGIC_WITCH_AT);
+    expect(MAGIC_RESULT_AT).toEqual({ x: 0x11e, y: 0xdc });
+    expect(MAGIC_CHUNK.resultBar).toBe(8);
+  });
+
+  it('★ 结果图标的落点与图号 @source loc_00432719 尾 `0x146 / 0x128` + `option + 0xb`', () => {
+    expect(MAGIC_RESULT_ICON_AT).toEqual({ x: 0x146, y: 0x128 });
+    expect(MAGIC_RESULT_ICON_BASE).toBe(0x0b);
+  });
+});
 
 /** 从圆心按角度（度，逆时针，屏幕 y 向下）取一点 */
 function at(deg: number, r: number): { x: number; y: number } {
@@ -82,8 +130,14 @@ describe('抠黑表 @source 逐调用点对照（0x004563f5 不透明 / 0x004564
     // 原版走 `fcn_00456418`（VA 0x0043259c），浏览器里漏抠已复现过。
     expect(MAGIC_KEYED.has(MAGIC_CHUNK.witchIdle)).toBe(true);
     expect(MAGIC_KEYED.has(MAGIC_CHUNK.witchIntro)).toBe(true);
-    expect(MAGIC_KEYED.has(MAGIC_CHUNK.face)).toBe(true);
-    expect(MAGIC_KEYED.has(MAGIC_CHUNK.faceAlt)).toBe(true);
+    // ★ 2026-09-16 订正（B-2 症状③）：图 9/10 是**悬停弹窗框**，不是女巫的头；
+    //   它们仍要抠黑（画在功能名同点），但**绝不能**再画到女巫的位置上。
+    expect(MAGIC_KEYED.has(MAGIC_CHUNK.hoverFrame)).toBe(true);
+    expect(MAGIC_KEYED.has(MAGIC_CHUNK.hoverFrameAlt)).toBe(true);
+    // 女巫的嘴 = 图 5，与「文本」长条框**同一张**（见 MAGIC_CHUNK 的注释），
+    // 所以抠黑表这一格由那条文字框决定，不能按嘴单独取舍。
+    expect(MAGIC_CHUNK.mouthTalk).toBe(MAGIC_CHUNK.barText);
+    expect(MAGIC_KEYED.has(MAGIC_CHUNK.barText)).toBe(true);
   });
 
   it('★ 十二个功能图标（图 22..34）全部抠黑 @source 0x00432d0e', () => {

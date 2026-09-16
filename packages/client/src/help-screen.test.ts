@@ -27,47 +27,71 @@ import {
   HELP_BG_IMAGE,
   HELP_CHAPTERS,
   HELP_CHAPTER_COUNT,
-  HELP_CHIP_DY,
-  HELP_CHIP_GAP,
+  HELP_CHAPTER_ITEMS,
+  HELP_CHIP_AT,
   HELP_CHIP_H,
+  HELP_CHIP_NAME_AT,
+  HELP_CHIP_STEP,
   HELP_ROW_IMAGE,
   HELP_ROW_HOT_IMAGE,
   HELP_HIT_BOXES,
   HELP_INDEX_AT,
   HELP_INDEX_LABEL,
   HELP_INDEX_NAMES,
+  HELP_LIST_ROWS,
   HELP_NAME_STEP,
   HELP_PANEL,
   HELP_ROW_NAME,
+  HELP_SCROLL_DOWN_AT,
+  HELP_SCROLL_DOWN_IMAGE,
+  HELP_SCROLL_UP_AT,
+  HELP_SCROLL_UP_IMAGE,
   HELP_SEL_NAME,
+  HELP_SUB_INDEX_AT,
   HELP_RESOURCE,
   HELP_SCROLL_STEP,
   HELP_TEXT,
   HELP_TOOLBAR_INDEX,
   applyHelpHit,
   barAt,
+  chapterHasItems,
+  chapterItem,
+  chapterItemCount,
+  itemAt,
   chapterLines,
+  chapterNameAt,
   chipAt,
   chipImage,
+  chipImageAt,
+  chipNameAt,
   chipY,
   clampChapter,
   clampScroll,
+  drawHelpScreen,
   hasMoreBelow,
   helpArrowDownAt,
   helpArrowUpAt,
   helpChipAt,
+  helpChipImageAt,
+  helpChipNameAt,
+  helpImagePlan,
   helpOrigin,
   helpPanelOriginFor,
   helpPosition,
   helpScreen,
+  helpScrollDownAt,
+  helpScrollUpAt,
   hitHelp,
   hitHelpBox,
   hitHelpChip,
+  lineAt,
   openHelpAt,
   pageCount,
   pageOf,
   resetHelp,
+  scrollDownAt,
   scrollOfPage,
+  scrollUpAt,
   visibleLines,
 } from './help-screen.ts';
 
@@ -205,22 +229,27 @@ describe('章 ↔ help.mkf 资源 @source 0x4761b4（+0x08 起始资源 / +0x0C 
 });
 
 describe('用到的图 @source rich4_ui_help.asm', () => {
-  it('★ 素材在 help.mkf 资源 0：底图图 0、章名条图 2、绿格 6/7、三角 4/5', () => {
+  it('★ 素材在 help.mkf 资源 0：底图 0、章名条 1、8 行格图 2/3、翻章三角 4/5、滚动三角 8/9', () => {
     expect(HELP_RESOURCE).toBe(0);
     expect(HELP_BG_IMAGE).toBe(0);
-    expect(HELP_BAR_IMAGE).toBe(2);
-    expect(HELP_ROW_IMAGE).toBe(6);
-    expect(HELP_ROW_HOT_IMAGE).toBe(7);
+    expect(HELP_BAR_IMAGE).toBe(1);
+    expect(HELP_ROW_IMAGE).toBe(2);
+    expect(HELP_ROW_HOT_IMAGE).toBe(3);
     expect(HELP_ARROW_UP_IMAGE).toBe(4);
     expect(HELP_ARROW_DOWN_IMAGE).toBe(5);
+    expect(HELP_SCROLL_UP_IMAGE).toBe(8);
+    expect(HELP_SCROLL_DOWN_IMAGE).toBe(9);
   });
 
-  it('★ 图号 = 条目表偏移 / 2 的换算（0x18→2、0x24→6、0x30→7、0x3c→4、0x48→5）', () => {
+  it('★ 图号换算 = (条目表偏移 − 0xc) / 12，**不是** imm / 2', () => {
     // 原版这些 `add eax, imm` 后面紧跟 `fcn_004563f5(资源指针, 图指针, x, y)`，
-    // 图指针 = 0x48c5f8 + imm，而每张图 12 字节 —— imm/2 就是图号的一半偏移。
-    // 这一条只是把换算钉死，免得以后有人把 imm 直接当图号。
-    expect([0x18, 0x24, 0x30, 0x3c, 0x48].map((v) => v / 2)).toEqual([12, 18, 24, 30, 36]);
-    // 真正用到的图号是上面那组（表 0x476254 与 0x4761b4 之外的硬编码）
+    // 图指针 = 0x48c5f8 + imm，图像记录从 +0xc 起、每项 0xc 字节 ——
+    // 所以 **index = (imm − 0xc) / 12**（`assets-pipeline/src/mkf.ts:176`、
+    // `monthly-screen.ts:149` 是同一个结论）。
+    // ★ 上一版写的是 `imm / 2`（得出 [12,18,24,30,36]），那一组**没有一个**是真图号 ——
+    //   症状就是「章名条画成图 2、8 行格图用了不存在的图 6/7」。
+    const conv = (imm: number): number => (imm - 0xc) / 12;
+    expect([0x18, 0x24, 0x30, 0x3c, 0x48, 0x6c, 0x78].map(conv)).toEqual([1, 2, 3, 4, 5, 8, 9]);
     expect([
       HELP_BG_IMAGE,
       HELP_BAR_IMAGE,
@@ -228,7 +257,9 @@ describe('用到的图 @source rich4_ui_help.asm', () => {
       HELP_ROW_HOT_IMAGE,
       HELP_ARROW_UP_IMAGE,
       HELP_ARROW_DOWN_IMAGE,
-    ]).toEqual([0, 2, 6, 7, 4, 5]);
+      HELP_SCROLL_UP_IMAGE,
+      HELP_SCROLL_DOWN_IMAGE,
+    ]).toEqual([conv(0xc), conv(0x18), conv(0x24), conv(0x30), conv(0x3c), conv(0x48), conv(0x6c), conv(0x78)]);
   });
 });
 
@@ -286,28 +317,33 @@ describe('工具列与落点 @source 0x417d39 / 0x44e4e4', () => {
 });
 
 describe('命中表六条矩形 @source 0x476254', () => {
-  it('★ 六条矩形逐字节对上 dump（22,38,91,104 / 77,38,104,78 / 170,43,192,58 / …）', () => {
+  it('★ 六条矩形逐字节对上 dump（22,38,91,361 / 104,78,196,361 / 170,43,192,58 / …）', () => {
+    // ★ 0 / 1 是**整列**（y1 = 361 罩到面板下沿）—— 上一版把它们读成
+    //   `(77,38,104,78)`，那一组数在 exe 里不存在。
     expect(HELP_HIT_BOXES).toEqual([
-      { x0: 22, y0: 38, x1: 91, y1: 104 },
-      { x0: 77, y0: 38, x1: 104, y1: 78 },
+      { x0: 22, y0: 38, x1: 91, y1: 361 },
+      { x0: 104, y0: 78, x1: 196, y1: 361 },
       { x0: 170, y0: 43, x1: 192, y1: 58 },
       { x0: 170, y0: 59, x1: 192, y1: 74 },
       { x0: 322, y0: 48, x1: 345, y1: 80 },
       { x0: 343, y0: 48, x1: 366, y1: 80 },
     ]);
+    // 三组：0 = 左列（整列）、1 = 右列 8 行格图（整段）、2/3 = 上下章、4/5 = 上下滚
+    expect(HELP_HIT_BOXES[0]!.y1).toBe(361);
+    expect(HELP_HIT_BOXES[1]!.x0).toBe(104);
+    expect(HELP_HIT_BOXES[1]!.y0).toBe(HELP_CHIP_AT.y);
   });
 
-  it('★ 六条矩形两两一组：0/1 = 左列、2/3 = 上下章、4/5 = 上下滚', () => {
+  it('★ 六条矩形两两一组：2/3 = 上下章、4/5 = 上下滚（y 上错开、判定顺序不能颠倒）', () => {
     expect(HELP_HIT_BOXES).toHaveLength(6);
-    // 同一组的两个框在 y 上错开，x 上重叠 —— 所以判定顺序不能颠倒
     expect(HELP_HIT_BOXES[2]!.y0).toBeLessThan(HELP_HIT_BOXES[3]!.y0);
     expect(HELP_HIT_BOXES[4]!.x0).toBeLessThan(HELP_HIT_BOXES[5]!.x0);
   });
 
   it('★ 每条的左上角与右下角都算命中（闭区间），框外不算', () => {
     for (const b of HELP_HIT_BOXES) {
-      expect(hitHelpBox(b.x0, b.y0)).not.toBeNull();
-      expect(hitHelpBox(b.x1, b.y1)).not.toBeNull();
+      expect(hitHelpBox(b.x0, b.y0), `(${b.x0},${b.y0})`).not.toBeNull();
+      expect(hitHelpBox(b.x1, b.y1), `(${b.x1},${b.y1})`).not.toBeNull();
     }
     expect(hitHelpBox(0, 0)).toBeNull();
     expect(hitHelpBox(21, 38)).toBeNull();
@@ -315,9 +351,12 @@ describe('命中表六条矩形 @source 0x476254', () => {
     expect(hitHelpBox(367, 60)).toBeNull();
   });
 
-  it('★ 顺序：先撞上哪条就是哪条（0 压 1、2 压 3、4 压 5 的重叠区）', () => {
-    // 0 与 1 在 (77..91, 38..78) 上重叠 → 表序在前的那条赢
-    expect(hitHelpBox(80, 40)).toBe(0);
+  it('★ 顺序：先撞上哪条就是哪条（2 压 3、4 压 5）', () => {
+    // 第 0 / 1 项是**整列** —— 用下沿验证它们罩到面板底
+    expect(hitHelpBox(40, 100)).toBe(0);
+    expect(hitHelpBox(40, 360)).toBe(0);
+    expect(hitHelpBox(150, 100)).toBe(1);
+    expect(hitHelpBox(150, 360)).toBe(1);
     // 2 与 3 不重叠；4 与 5 也不重叠
     expect(hitHelpBox(180, 50)).toBe(2);
     expect(hitHelpBox(180, 60)).toBe(3);
@@ -326,38 +365,103 @@ describe('命中表六条矩形 @source 0x476254', () => {
   });
 });
 
-describe('左列八格命中 @source 0x44e2f0', () => {
-  it('★ 八格：第一格顶 (38)、每格高 18、间隙 3', () => {
-    expect(HELP_CHIP_DY).toBe(38);
-    expect(HELP_CHIP_H).toBe(18);
-    expect(HELP_CHIP_GAP).toBe(3);
-    expect(chipY(0)).toBe(38);
-    expect(chipY(1)).toBe(59);
-    expect(chipY(7)).toBe(185);
+describe('左列八行命中 @source loc_0044e621（逐行判据）', () => {
+  it('★ 每行 = x [26,92) × 36 步：第一条 (26,58)、最后一条 (26,310)', () => {
+    // @source 0x0044e621：`cmp esi, 0x1a` / `lea ecx, [36i + 0x3a]` / `cmp esi, 0x5c`
+    expect(HELP_SEL_NAME).toEqual({ x: 0x1a, y: 0x3a });
+    expect(HELP_NAME_STEP).toBe(36);
+    expect(chipY(0)).toBe(58);
+    expect(chipY(1)).toBe(94);
+    expect(chipY(7)).toBe(310);
+    // 章名条与章名同一行（条挂在选中那一行上）
+    expect(barAt(0)).toEqual({ x: 26, y: 58 });
+    expect(barAt(7)).toEqual({ x: 26, y: 310 });
   });
 
-  it('★ 每格的中心与底边都命中自己；间隙与列外不算', () => {
+  it('★ 每行的中心都命中自己；x 出界、y 负数不算', () => {
     for (let i = 0; i < HELP_CHAPTER_COUNT; i++) {
-      expect(hitHelpChip(56, chipY(i))).toBe(i);
-      expect(hitHelpChip(56, chipY(i) + HELP_CHIP_H - 1)).toBe(i);
+      expect(hitHelpChip(56, chipY(i)), `第 ${i} 行`).toBe(i);
+      // 每条高 72、步长 36 —— 中间那段（+36..+71）**归下一条**（x 上是 35 像素重叠区）
+      expect(hitHelpChip(56, chipY(i) + 35), `第 ${i} 行中段`).toBe(i);
     }
-    // 间隙（18..20 之间那一行）不算
-    expect(hitHelpChip(56, chipY(0) + HELP_CHIP_H)).toBeNull();
-    expect(hitHelpChip(21, chipY(0))).toBeNull();
-    expect(hitHelpChip(92, chipY(0))).toBeNull();
-    expect(hitHelpChip(56, chipY(7) + HELP_CHIP_H - 1 + HELP_CHIP_GAP)).toBeNull();
+    expect(hitHelpChip(25, chipY(0))).toBeNull(); // x < 26
+    expect(hitHelpChip(92, chipY(0))).toBeNull(); // x >= 92
+    expect(hitHelpChip(56, 57)).toBeNull(); // 面板上沿之上
+    expect(hitHelpChip(56, 58 + 8 * 36)).toBeNull(); // 第 9 行不存在（只有 8 章）
   });
 
-  it('★ hitHelp 先认左列八格（label 0、cell = 格号），命中表排在其后', () => {
-    // 左列那一列与命中表第 0 条重叠，但格优先
+  it('★ hitHelp 先认左列八行（label 0、cell = 章号），命中表排在其后', () => {
     expect(hitHelp(56, chipY(3))).toEqual({ label: 0, cell: 3 });
-    // 第 0 条的 y 上限 104 与左列第 3 格（101..118）之间：那里仍然是第 0 条
-    expect(hitHelp(56, 104)).toEqual({ label: 0, cell: 3 });
-    // 左列只到 x=91：92..104 那一段落到命中表第 0 条（y<=104）
-    expect(hitHelp(95, 40)).toEqual({ label: 0, cell: 1 });
+    expect(hitHelp(56, 100)).toEqual({ label: 0, cell: 1 }); // y=100 在第二条带上
+    // x 落在 26..91 之外、落进命中表第 1 项（右列格图整段）的归那张表
+    expect(hitHelp(150, 100)).toEqual({ label: 0, cell: 1 });
     // 命中表第 2 条（170..192）离左列很远，直接归上一章
     expect(hitHelp(180, 50)).toEqual({ label: 1, cell: 0 });
     expect(hitHelp(180, 60)).toEqual({ label: 1, cell: 1 });
+    // 上滚 / 下滚（4/5）在右列 x 322..366
+    expect(hitHelp(330, 60)).toEqual({ label: 2, cell: 0 });
+    expect(hitHelp(350, 60)).toEqual({ label: 2, cell: 1 });
+  });
+});
+
+describe('右列那 8 行条目 @source loc_0044e301 / 0x44e2b2', () => {
+  it('★ 格图 34 步在 (108, 78+34i)、分项名在 (150, 94+34i)', () => {
+    // `shl eax, 4 / add eax, ebx / add eax, eax` = ×34
+    expect(HELP_CHIP_STEP).toBe(34);
+    expect(HELP_CHIP_AT).toEqual({ x: 0x6c, y: 0x4e });
+    expect(HELP_CHIP_NAME_AT).toEqual({ x: 0x96, y: 0x5e });
+    expect(chipImageAt(0)).toEqual({ x: 108, y: 78 });
+    expect(chipImageAt(1)).toEqual({ x: 108, y: 112 });
+    expect(chipImageAt(7)).toEqual({ x: 108, y: 316 });
+    expect(chipNameAt(0)).toEqual({ x: 150, y: 94 });
+    expect(chipNameAt(7)).toEqual({ x: 150, y: 332 });
+    // 舞台坐标 = 面板 (20,60) + 局部
+    expect(helpChipImageAt(0)).toEqual({ x: 128, y: 138 });
+    expect(helpChipNameAt(0)).toEqual({ x: 170, y: 154 });
+    // 行距是 34（**不是**左列那 36）—— 两套都在 exe 里
+    expect(HELP_CHIP_STEP).not.toBe(HELP_NAME_STEP);
+  });
+
+  it('★ 分项名是**每章一张指针数组**（+0x04），不是一张固定表', () => {
+    // 第 2 章（遊戲指令）那 8 项里没有一个「遊戲操作」
+    expect(HELP_CHAPTER_ITEMS).toHaveLength(HELP_CHAPTER_COUNT);
+    expect(chapterItem(0, 0)).toBe('遊戲操作');
+    expect(chapterItem(2, 2)).toBe('卡片');
+    expect(chapterItem(7, 0)).toBe('工程車');
+    // `itemAt` 是绘制那一层用的同一个函数（名字不同是为了强调「已加过 scroll」）
+    expect(itemAt(2, 2)).toBe(chapterItem(2, 2));
+    expect(itemAt(2, 8)).toBe('');
+    expect(chapterItem(7, 8)).toBe(''); // 第 8 项越界（表里只有 8 项）
+    expect(HELP_INDEX_NAMES).toEqual(HELP_CHAPTER_ITEMS[0]);
+    // 序号越界给空串，不炸
+    expect(chapterItem(0, 99)).toBe('');
+    expect(chapterItem(0, 8)).toBe('');
+    // 章号与别处同口径（`clampChapter` 夹到 0..7）
+    expect(chapterItem(99, 0)).toBe(chapterItem(7, 0));
+  });
+
+  it('★ 行数 = min(一屏 14, **该章资源数**)：第 0 章（资源数 1）一行都不画', () => {
+    // @source `loc_0044e301` 的 `cmp esi, [eax*4 + 0x4761c0] / jge 0x44e376`
+    //   —— 比的是 entry+0x0C（该章占几个资源），不是分项表的长度。
+    expect(chapterItemCount(0)).toBe(1);
+    expect(HELP_CHAPTERS[0]!.resCount).toBe(1);
+    expect(chapterHasItems(0)).toBe(false);
+    expect(chapterHasItems(1)).toBe(false);
+    expect(chapterHasItems(3)).toBe(false);
+    expect(chapterHasItems(6)).toBe(true);
+    // 资源数 1 / 6 / 3 —— 都 <= 8 → 那三章一行都不画
+    expect(chapterItemCount(0)).toBe(1);
+    expect(chapterItemCount(1)).toBe(6);
+    expect(chapterItemCount(3)).toBe(3);
+    expect(chapterItemCount(2)).toBe(12);
+    expect(chapterItemCount(6)).toBe(30);
+    // 两个循环都硬编码 8 行（与 `HELP_CHIP_STEP = 34` 配套）
+    expect(HELP_LIST_ROWS).toBe(8);
+    // 格图那一层：0/1/3 章 0 张，2 章 8 张（12 > 8），6/7 章也都是 8 张
+    for (const [ch, want] of [[0, 0], [1, 0], [3, 0], [2, 8], [6, 8], [7, 8]] as const) {
+      const n = helpImagePlan(ch, 0).filter((g) => g.why === 'chip' || g.why === 'chipHot').length;
+      expect(n, `第 ${ch} 章的格图数`).toBe(want);
+    }
   });
 });
 
@@ -381,22 +485,24 @@ describe('三组钮的作用 @source 跳表 ref_0044e3e3', () => {
     expect(clampChapter(99)).toBe(7);
   });
 
-  it('★ 上滚 / 下滚：步长 8、夹在 [0, maxScroll]（不是取整跳到顶/底）', () => {
+  it('★ 上滚 / 下滚：步长 = 一屏 14 行、夹在 [0, maxScroll]（不是取整跳到顶/底）', () => {
     const { env } = mkEnv();
     helpScreen.toolbar?.(0, env);
-    // 第 2 章 maxScroll = 94 → 0 / 8 / … / 88 / 94（最后一步落到 94 而不是 96）
+    // 第 2 章 maxScroll = 88 → 0 / 14 / … / 70 / 84 / 88（最后一步落到 88 而不是 98）
     applyHelpHit({ label: 0, cell: 2 }, env); // 直接跳第 2 章
     expect(helpPosition()).toEqual({ chapter: 2, scroll: 0 });
-    for (let k = 8; k <= 88; k += 8) {
+    for (let k = 14; k <= 70; k += 14) {
       applyHelpHit({ label: 2, cell: 1 }, env);
-      expect(helpPosition().scroll).toBe(k);
+      expect(helpPosition().scroll, `第 ${k / 14} 步`).toBe(k);
     }
     applyHelpHit({ label: 2, cell: 1 }, env);
-    expect(helpPosition().scroll).toBe(94); // 夹到 maxScroll
+    expect(helpPosition().scroll).toBe(84);
     applyHelpHit({ label: 2, cell: 1 }, env);
-    expect(helpPosition().scroll).toBe(94); // 到底了不动
+    expect(helpPosition().scroll).toBe(88); // 夹到 maxScroll
+    applyHelpHit({ label: 2, cell: 1 }, env);
+    expect(helpPosition().scroll).toBe(88); // 到底了不动
     applyHelpHit({ label: 2, cell: 0 }, env);
-    expect(helpPosition().scroll).toBe(86);
+    expect(helpPosition().scroll).toBe(74);
   });
 
   it('★ scroll 为 0 时上滚不做事（原版 `edx <= 0` 那条支路）', () => {
@@ -425,7 +531,7 @@ describe('三组钮的作用 @source 跳表 ref_0044e3e3', () => {
 });
 
 describe('翻页夹取与屏数', () => {
-  it('★ 八章的 maxScroll 与行数逐条对上（行数 − 8，本模块口径）', () => {
+  it('★ 八章的 maxScroll 与行数逐条对上（行数 − 一屏 14 行，本模块口径）', () => {
     for (let i = 0; i < HELP_CHAPTER_COUNT; i++) {
       const c = HELP_CHAPTERS[i]!;
       const lines = chapterLines(i).length;
@@ -437,10 +543,10 @@ describe('翻页夹取与屏数', () => {
     }
   });
 
-  it('★ 屏数 = floor(maxScroll / 8) + 1，八章依次 1/13/12/23/9/14/42/18', () => {
+  it('★ 屏数 = floor(maxScroll / 14) + 1，八章依次 1/7/7/13/5/8/24/10', () => {
     expect(HELP_CHAPTER_COUNT).toBe(8);
     expect(Array.from({ length: 8 }, (_, i) => pageCount(i))).toEqual([
-      1, 13, 12, 23, 9, 14, 42, 18,
+      1, 7, 7, 13, 5, 8, 24, 10,
     ]);
     for (let i = 0; i < HELP_CHAPTER_COUNT; i++) {
       const max = HELP_CHAPTERS[i]!.maxScroll;
@@ -449,39 +555,48 @@ describe('翻页夹取与屏数', () => {
   });
 
   it('★ 屏号夹取到 [0, pageCount−1] 对应的行偏移', () => {
-    // 第 6 章（卡片）330 = 41*8 + 2 → 最后一屏的行偏移 328，再往后夹到 330
-    expect(HELP_CHAPTERS[6]!.maxScroll).toBe(330);
-    expect(scrollOfPage(6, 41)).toBe(328);
-    expect(scrollOfPage(6, 999)).toBe(330);
-    expect(scrollOfPage(6, -3)).toBe(0);
-    expect(pageOf(6, 330)).toBe(41);
-    expect(pageOf(6, 900)).toBe(41); // 夹到 330
+    // 第 2 章（遊戲指令）88 = 6×14 + 4 → 第 7 屏从 84 起，再往后夹到 88
+    expect(HELP_CHAPTERS[2]!.maxScroll).toBe(88);
+    expect(scrollOfPage(2, 6)).toBe(84);
+    expect(scrollOfPage(2, 999)).toBe(88);
+    expect(scrollOfPage(2, -3)).toBe(0);
+    // 第 6 章（卡片）324 = 23*14 + 2 → 最后一屏从 322 起，再往后夹到 324
+    expect(scrollOfPage(6, 23)).toBe(322);
+    expect(pageOf(6, 324)).toBe(23);
+    expect(pageOf(6, 900)).toBe(23); // 夹到 324
   });
 
-  it('★ 每一屏刚好取 8 行；`@` 分页行留在里面（由绘制那一步跳过）', () => {
-    expect(HELP_TEXT.rows).toBe(8);
-    expect(HELP_SCROLL_STEP).toBe(8);
-    expect(visibleLines(6, 0)).toHaveLength(8);
-    expect(visibleLines(6, HELP_CHAPTERS[6]!.maxScroll)).toHaveLength(8);
-    // 第 1 章第 9 行（0 基 index 9）就是分页标记 @
+  it('★ 每一屏刚好取 14 行；`@` 分页行留在里面（由绘制那一步跳过）', () => {
+    expect(HELP_TEXT.rows).toBe(14);
+    expect(HELP_SCROLL_STEP).toBe(14);
+    expect(visibleLines(6, 0)).toHaveLength(14);
+    expect(visibleLines(6, HELP_CHAPTERS[6]!.maxScroll)).toHaveLength(14);
+    // 第 1 章第 10 行（0 基 index 9）就是分页标记 @，第 10 行起才看得见
     expect(chapterLines(1)[9]).toBe('@');
-    expect(visibleLines(1, 8)).toContain('@');
+    // 第 1 章的 `@` 在 index 9 → 第 1 屏（0..13）里**看得见**它
+    expect(chapterLines(1).slice(0, 14)).toContain('@');
+    expect(visibleLines(1, 0)).toContain('@');
+    // 第 3 章（房地產）的 `@` 在 26 / 202 → 第 1 屏里没有
+    expect(chapterLines(3).slice(0, 14)).not.toContain('@');
   });
 
   it('★ 「还能往下」：没到底就有；到底且当屏没有 @ 就没有', () => {
     expect(hasMoreBelow(6, 0)).toBe(true);
-    expect(hasMoreBelow(6, 330)).toBe(false);
+    expect(hasMoreBelow(6, 324)).toBe(false);
     // 第 1 章 maxScroll 96、共 104 行 → 从 14 起还剩很多，当然还有
     expect(hasMoreBelow(1, 14)).toBe(true);
     expect(hasMoreBelow(0, 0)).toBe(false); // 操作說明只有 4 行，一屏就完
-    // 到底之后（第 6 章最后那屏）不再有
-    expect(hasMoreBelow(6, HELP_CHAPTERS[6]!.maxScroll)).toBe(false);
+    // 第 2 章从 88 起只有 14 行、当屏没有 @（@ 在 index 9/23/…）→ 不再有
+    expect(hasMoreBelow(2, 88)).toBe(false);
   });
 });
 
 describe('版面落点 @source 0x44e024 / 0x44e11f / 0x44e14e', () => {
-  it('★ 正文：落点 (+232, +90)、行距 30、一屏 8 行', () => {
-    expect(HELP_TEXT).toEqual({ dx: 232, dy: 90, lineH: 30, rows: 8 });
+  it('★ 正文：落点 (+232, +90)、行距 18、一屏 14 行', () => {
+    // @source 0x44e1d1 / 0x44e1d7；`cmp ebx, 0xd` 那一步画完第 14 行就停
+    expect(HELP_TEXT).toEqual({ dx: 232, dy: 90, lineH: 18, rows: 14 });
+    expect(lineAt(0)).toEqual({ x: 232, y: 90 });
+    expect(lineAt(13)).toEqual({ x: 232, y: 90 + 13 * 18 });
   });
 
   it('★ 两颗三角在 (+170, +43) / (+170, +59)', () => {
@@ -491,38 +606,173 @@ describe('版面落点 @source 0x44e024 / 0x44e11f / 0x44e14e', () => {
     expect(helpArrowDownAt()).toEqual({ x: 190, y: 119 });
   });
 
-  it('★ 左列第 i 行的屏幕落点 = 面板 (20,60) + 局部 (26, 38 + 21i)', () => {
-    expect(chipAt(0)).toEqual({ x: 26, y: 38 });
-    expect(chipAt(7)).toEqual({ x: 26, y: 185 });
-    expect(helpChipAt(0)).toEqual({ x: 46, y: 98 });
-    expect(helpChipAt(7)).toEqual({ x: 46, y: 245 });
+  it('★ 左列第 i 行的屏幕落点 = 面板 (20,60) + 局部 (26, 58 + 36i)', () => {
+    expect(chipAt(0)).toEqual({ x: 26, y: 58 });
+    expect(chipAt(7)).toEqual({ x: 26, y: 310 });
+    expect(helpChipAt(0)).toEqual({ x: 46, y: 118 });
+    expect(helpChipAt(7)).toEqual({ x: 46, y: 370 });
   });
 
-  it('★ 章名条挂在右列 (26, 58 + 20i) @source 0x44e04d / 0x44e056', () => {
+  it('★ 章名条挂在选中那一章那一行 (26, 58 + 36c) @source 0x44e04d / 0x44e056', () => {
     expect(HELP_BAR_AT).toEqual({ x: 0x1a, y: 0x3a });
+    expect(HELP_NAME_STEP).toBe(36);
     expect(barAt(0)).toEqual({ x: 26, y: 58 });
-    expect(barAt(7)).toEqual({ x: 26, y: 198 });
-    expect(HELP_NAME_STEP).toBe(20);
+    expect(barAt(7)).toEqual({ x: 26, y: 310 });
+    expect(barAt(3)).toEqual({ x: 26, y: 58 + 36 * 3 });
   });
 
-  it('★ 左列八行章名：选中 (26, 58+20i)、其余 (59, 73+20i) @0x44e08c / 0x44e092', () => {
+  it('★ 八行章名：选中 (26, 58+36c)、其余 (59, 73+36i) @0x44e08c / @0x44e092', () => {
     expect(HELP_SEL_NAME).toEqual({ x: 0x1a, y: 0x3a });
     expect(HELP_ROW_NAME).toEqual({ x: 0x3b, y: 0x49 });
     expect(HELP_ROW_NAME.x - HELP_SEL_NAME.x).toBe(33);
+    expect(chapterNameAt(0, true)).toEqual({ x: 26, y: 58 });
+    expect(chapterNameAt(0, false)).toEqual({ x: 59, y: 73 });
+    expect(chapterNameAt(7, false)).toEqual({ x: 59, y: 73 + 36 * 7 });
   });
 
-  it('★ 右列分项标题 (140, 57)、字面是串表 0x476028 的表头', () => {
+  it('★ 右列两行标题：(140, 57) 那一行 + 章内小标题 (270, 63)', () => {
     expect(HELP_INDEX_AT).toEqual({ x: 0x8c, y: 0x39 });
+    expect(HELP_SUB_INDEX_AT).toEqual({ x: 0x10e, y: 0x3f });
+    expect(HELP_SUB_INDEX_AT).toEqual({ x: 270, y: 63 });
+    // 兜底字面是第 0 章那张分项表的表头
     expect(HELP_INDEX_LABEL).toBe('遊戲操作');
     expect(HELP_INDEX_NAMES[0]).toBe('遊戲操作');
     expect(HELP_INDEX_NAMES).toHaveLength(8);
   });
 
-  it('★ 左列八行的格图：常态 6、选中 7（本模块不画，见 D-045-1）', () => {
+  it('★ 8 行格图：常态 2、选中 3（高度 33）@0x44e362 / @0x44e34a', () => {
     expect(chipImage(0, true)).toBe(HELP_ROW_HOT_IMAGE);
     expect(chipImage(3, false)).toBe(HELP_ROW_IMAGE);
-    expect(chipImage(0, true)).toBe(7);
-    expect(chipImage(3, false)).toBe(6);
+    expect(chipImage(0, true)).toBe(3);
+    expect(chipImage(3, false)).toBe(2);
+    expect(HELP_CHIP_H).toBe(33); // 图 2 = 85×33 / 图 3 = 87×33
+  });
+
+  it('★ 右列上滚 / 下滚三角在 (322, 48) / (343, 48)，与命中框同点', () => {
+    // @source 0x476294 / 0x4762a4 那两组数 —— **画与命中现在对得上**（D-045-3 作废）
+    expect(HELP_SCROLL_UP_AT).toEqual({ x: 0x142, y: 0x30 });
+    expect(HELP_SCROLL_DOWN_AT).toEqual({ x: 0x157, y: 0x30 });
+    expect(scrollUpAt()).toEqual({ x: 322, y: 48 });
+    expect(scrollDownAt()).toEqual({ x: 343, y: 48 });
+    expect(helpScrollUpAt()).toEqual({ x: 342, y: 108 });
+    expect(helpScrollDownAt()).toEqual({ x: 363, y: 108 });
+    // 命中表第 4 / 5 项的左上角就是画点
+    expect({ x: HELP_HIT_BOXES[4]!.x0, y: HELP_HIT_BOXES[4]!.y0 }).toEqual(scrollUpAt());
+    expect({ x: HELP_HIT_BOXES[5]!.x0, y: HELP_HIT_BOXES[5]!.y0 }).toEqual(scrollDownAt());
+  });
+});
+
+describe('★ 整屏登记 @source 回调 loc_0044e488 / loc_0044e546', () => {
+  it('★ `windowed: true` —— 原版从不擦屏，靠存底/还原（fcn_00451e7e / fcn_00451edb）', () => {
+    // 少了它 `main.ts` 不会先画棋盘，面板四周就是纯黑（本卡报的第 1 条）。
+    expect(helpScreen.windowed).toBe(true);
+    // @source 回调 WM_CREATE loc_0044e488 里 `call fcn_00451e7e`（存底）
+    //         回调 WM_RBUTTONUP loc_0044e546 里 `call fcn_00451edb`（还原 + Post）
+  });
+});
+
+describe('★ 图素计划 `helpImagePlan`（纯函数，绘制的唯一真源）', () => {
+  it('★ 底图 (0,0) + 章名条 (26, 58+36c) —— 都在面板局部坐标', () => {
+    const plan = helpImagePlan(3, 0);
+    expect(plan[0]).toEqual({ image: HELP_BG_IMAGE, x: 0, y: 0, why: 'bg' });
+    expect(plan[1]).toEqual({ image: HELP_BAR_IMAGE, x: 26, y: 58 + 36 * 3, why: 'bar' });
+    // 第 0 章：条在第 0 行
+    expect(helpImagePlan(0, 0)[1]).toEqual({ image: HELP_BAR_IMAGE, x: 26, y: 58, why: 'bar' });
+  });
+
+  it('★ 格图落在 (108, 78 + 34i)：当前那一条用图 3，其余用图 2', () => {
+    // 第 6 章（卡片）资源数 30 > 8 → 铺 8 行（两轮都硬编码 8）
+    const plan = helpImagePlan(6, 0);
+    const chips = plan.filter((g) => g.why === 'chip' || g.why === 'chipHot');
+    expect(chips).toHaveLength(8);
+    expect(chips[0]).toEqual({ image: HELP_ROW_HOT_IMAGE, x: 108, y: 78, why: 'chipHot' });
+    expect(chips[1]).toEqual({ image: HELP_ROW_IMAGE, x: 108, y: 112, why: 'chip' });
+    expect(chips[7]).toEqual({ image: HELP_ROW_IMAGE, x: 108, y: 78 + 34 * 7, why: 'chip' });
+    // 图片号就是 exe 那两个（3 = 选中、2 = 常态）
+    expect(chips[0]!.image).toBe(3);
+    expect(chips.slice(1).every((g) => g.image === 2)).toBe(true);
+  });
+
+  it('★ 滚到第 2 屏时选中标记跟着 `scroll` 走，格图坐标不变', () => {
+    const plan = helpImagePlan(6, 14);
+    const chips = plan.filter((g) => g.why === 'chip' || g.why === 'chipHot');
+    expect(chips).toHaveLength(8);
+    expect(chips[0]!.why).toBe('chipHot'); // `scroll + i === scroll` 那一条
+    expect(chips[0]!.y).toBe(78); // 落点只与 i 有关
+  });
+
+  it('★ 第 0 章（操作說明，资源数 1）一行格图都不画', () => {
+    const plan = helpImagePlan(0, 0);
+    expect(plan.filter((g) => g.why === 'chip' || g.why === 'chipHot')).toEqual([]);
+    // 第 0 章的 `@` 分页行不在前 14 行里，所以两条「还能往下」的三角都不该出现
+    const arrows = plan.filter((g) => g.why === 'arrowUp' || g.why === 'arrowDown');
+    expect(arrows).toEqual([]);
+  });
+
+  it('★ 上滚 / 下滚三角（图 8 / 9）在 (322,48) / (343,48)，与命中框同点', () => {
+    // 第 6 章 scroll=0：上滚不画（scroll 为 0）、下滚画（还有内容）
+    const at0 = helpImagePlan(6, 0);
+    expect(at0.some((g) => g.why === 'scrollUp')).toBe(false);
+    expect(at0.find((g) => g.why === 'scrollDown')).toEqual({
+      image: HELP_SCROLL_DOWN_IMAGE, x: 322 + 21, y: 48, why: 'scrollDown',
+    });
+    // 滚到中间：两颗都画
+    const mid = helpImagePlan(6, 14);
+    expect(mid.find((g) => g.why === 'scrollUp')).toEqual({
+      image: HELP_SCROLL_UP_IMAGE, x: 322, y: 48, why: 'scrollUp',
+    });
+    expect(mid.find((g) => g.why === 'scrollDown')).toEqual({
+      image: HELP_SCROLL_DOWN_IMAGE, x: 343, y: 48, why: 'scrollDown',
+    });
+  });
+
+  it('★ 中部「上一章 / 下一章」三角（图 4 / 5）在 (170,43) / (170,59)', () => {
+    // scroll=0 → 上一章不画；第 6 章还有内容 → 下一章画
+    const at0 = helpImagePlan(6, 0);
+    expect(at0.some((g) => g.why === 'arrowUp')).toBe(false);
+    expect(at0.find((g) => g.why === 'arrowDown')).toEqual({
+      image: HELP_ARROW_DOWN_IMAGE, x: 170, y: 59, why: 'arrowDown',
+    });
+    const mid = helpImagePlan(6, 14);
+    expect(mid.find((g) => g.why === 'arrowUp')).toEqual({
+      image: HELP_ARROW_UP_IMAGE, x: 170, y: 43, why: 'arrowUp',
+    });
+  });
+
+  it('★ `drawHelpScreen` 就是把计划铺上去（含面板偏移），并跳过缺图', () => {
+    const ctx = {
+      drawImage: (b: { image: number }, x: number, y: number) => {
+        drawn.push({ image: b.image, x, y });
+      },
+      font: '',
+      textAlign: 'left',
+      textBaseline: 'top',
+      lineWidth: 0,
+      strokeStyle: '',
+      fillStyle: '',
+      strokeText: () => undefined,
+      fillText: () => undefined,
+    } as unknown as CanvasRenderingContext2D;
+    const drawn: { image: number; x: number; y: number }[] = [];
+    // 面板落点 (20,60) —— 图素要比计划多这一对偏移
+    drawHelpScreen(ctx, (i) => ({ bitmap: { image: i } as unknown as ImageBitmap, anchorX: 0, anchorY: 0 }), {
+      chapter: 6,
+      scroll: 0,
+      origin: { x: 20, y: 60 },
+    });
+    expect(drawn[0]).toEqual({ image: HELP_BG_IMAGE, x: 20, y: 60 });
+    expect(drawn.find((d) => d.image === HELP_BAR_IMAGE)).toEqual({
+      image: HELP_BAR_IMAGE, x: 20 + 26, y: 60 + 58 + 36 * 6,
+    });
+    expect(drawn.find((d) => d.image === HELP_ROW_HOT_IMAGE)).toEqual({
+      image: HELP_ROW_HOT_IMAGE, x: 20 + 108, y: 60 + 78,
+    });
+    // 第 6 章资源数 30 > 8 → 8 张格图
+    expect(drawn.filter((d) => d.image === HELP_ROW_IMAGE || d.image === HELP_ROW_HOT_IMAGE)).toHaveLength(8);
+    // 缺图（sprite() 给 null）时静默跳过，不炸
+    expect(() =>
+      drawHelpScreen(ctx, () => null, { chapter: 0, scroll: 0, origin: { x: 20, y: 60 } }),
+    ).not.toThrow();
   });
 });
 

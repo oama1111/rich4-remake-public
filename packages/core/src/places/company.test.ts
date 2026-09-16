@@ -16,7 +16,6 @@ import {
   companyDividends,
   companyFeeOnLanding,
   feeNameOf,
-  insurancePayout,
 } from './company.ts';
 import { WHEEL, WHEEL_TABLE, spinWheel } from '../rules/facility.ts';
 import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
@@ -95,10 +94,11 @@ describe('★ 董事長的好处 @source 0x0041a9e8', () => {
     expect(addInsuranceDays(10, 30)).toBe(40);
     expect(addInsuranceDays(120, 30)).toBe((150) & 0x7f);
   });
-  it('理賠：在保險期内才赔', () => {
-    expect(insurancePayout(0, 5000)).toBe(0);
-    expect(insurancePayout(3, 5000)).toBe(5000);
-  });
+  // ★ 2026-09-16：删掉这里对 `company.ts` 的 `insurancePayout(天数, 损失)` 的断言。
+  //   那个函数是**死代码**（全 core 只有本测试引用它），真正在跑的是
+  //   `insurancePayoutTo`（`state/reduce.ts`，赔付口径与调用点见
+  //   `places/insurance.test.ts` 与 `insurancePayoutTo` 的头注释）。
+  //   删掉之后这条口径仍被 `insurance.test.ts` 钉着，不是丢覆盖。
 });
 
 describe('★ 建設：电脑挑当前等级租金最高的住宅 @source 0x40b455', () => {

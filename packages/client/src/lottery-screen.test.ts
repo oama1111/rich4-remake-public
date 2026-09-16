@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Action, GameState } from '@rich4/core';
-import type { Sprite } from './assets.ts';
+import type { LoadedFlic, Sprite } from './assets.ts';
 import {
   LOT_AMOUNT,
   LOT_BG_AT,
@@ -46,6 +46,7 @@ import {
   animStep,
   bonusFrameAt,
   currency,
+  drawBonusMarquee,
   drawLotteryScreen,
   hitNumber,
   lotMessageOf,
@@ -637,7 +638,7 @@ describe('整屏出口 @source 窗口过程 0x0042f7fc', () => {
 
 describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
   function fakeCtx() {
-    const images: { index: number; resource: number; x: number; y: number }[] = [];
+    const images: { index: number; resource: number; x: number; y: number; flic: boolean }[] = [];
     const textAt: { t: string; x: number; y: number }[] = [];
     const ctx = {
       font: '',
@@ -650,8 +651,8 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
       restore: () => undefined,
       strokeText: () => undefined,
       strokeRect: () => undefined,
-      drawImage: (b: { index: number; resource: number }, dx: number, dy: number) => {
-        images.push({ index: b.index, resource: b.resource, x: dx, y: dy });
+      drawImage: (b: { index: number; resource: number; flic?: boolean }, dx: number, dy: number) => {
+        images.push({ index: b.index, resource: b.resource, x: dx, y: dy, flic: b.flic === true });
       },
       fillText: (t: string, x: number, y: number) => {
         textAt.push({ t, x, y });
@@ -659,6 +660,19 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
     };
     return { ctx: ctx as unknown as CanvasRenderingContext2D, images, textAt };
   }
+
+  /** 跑馬燈的假影片：5 帧，每帧带自己的帧号 */
+  function fakeBonusFlic(frames = LOT_BONUS_FRAMES): LoadedFlic {
+    return {
+      frames: Array.from({ length: frames }, (_, i) => ({ index: i, resource: LOT_BONUS_RESOURCE, flic: true }) as unknown as ImageBitmap),
+      width: 213,
+      height: 68,
+      frameMs: LOT_BONUS_MS,
+      close: () => undefined,
+    };
+  }
+
+  const noFlic = (): null => null;
 
   /**
    * 资源 13（奖池金额的字形）的真实记录 —— 尺寸与锚点都自 `Panel.mkf` 的 SMP 表 dump。
@@ -714,7 +728,7 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
   it('★ 默认一段（无气泡、无贴片）：底图 → 貓女郎图 1 → 蓝板 → 金额字形', () => {
     const f = fakeCtx();
     const sp = spySprite();
-    drawLotteryScreen(f.ctx, sp.fn, view());
+    drawLotteryScreen(f.ctx, sp.fn, noFlic, view());
     // 金额 `$1,000` = 6 个字形（从右往左）
     expect(f.images.map((i) => i.index)).toEqual([0, 1, 9, 0, 0, 0, 0x0a, 1, 0x0b]);
   });
@@ -722,7 +736,7 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
   it('★ **只画一只貓女郎**：默认图 1 @(210,−5)，买中之后才是图 2 @(154,−8)', () => {
     const f1 = fakeCtx();
     const s1 = spySprite();
-    drawLotteryScreen(f1.ctx, s1.fn, view());
+    drawLotteryScreen(f1.ctx, s1.fn, noFlic, view());
     const cat1 = f1.images.filter((i) => i.resource === LOT_RESOURCE && i.index === LOT_CHUNK.kitty);
     expect(cat1).toHaveLength(1);
     expect(cat1[0]).toMatchObject({ x: 210, y: -5 });
@@ -732,7 +746,7 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
 
     const f2 = fakeCtx();
     const s2 = spySprite();
-    drawLotteryScreen(f2.ctx, s2.fn, view({ phase: 'bye' }));
+    drawLotteryScreen(f2.ctx, s2.fn, noFlic, view({ phase: 'bye' }));
     expect(f2.images.some((i) => i.resource === LOT_RESOURCE && i.index === LOT_CHUNK.kitty)).toBe(
       false,
     );
@@ -744,7 +758,7 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
   it('★ 每个落点都对：底图 (0,0)、眼 (273,63)、嘴 (273,105)、蓝板 (28,27)', () => {
     const f = fakeCtx();
     const sp = spySprite();
-    drawLotteryScreen(f.ctx, sp.fn, view({ eye: LOT_CHUNK.eyeOpen, mouth: LOT_CHUNK.mouthPurse }));
+    drawLotteryScreen(f.ctx, sp.fn, noFlic, view({ eye: LOT_CHUNK.eyeOpen, mouth: LOT_CHUNK.mouthPurse }));
     const at = (index: number): { x: number; y: number } => {
       const i = f.images.find((v) => v.index === index)!;
       return { x: i.x, y: i.y };
@@ -758,7 +772,7 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
   it('★ 金额字形从右往左：最右那位**中心**在 (184,41)（贴出来是左上 (176,32)）', () => {
     const f = fakeCtx();
     const sp = spySprite();
-    drawLotteryScreen(f.ctx, sp.fn, view({ pool: 1000 }));
+    drawLotteryScreen(f.ctx, sp.fn, noFlic, view({ pool: 1000 }));
     const plateAt = f.images.findIndex((i) => i.index === LOT_CHUNK.plate);
     const glyphs = f.images.slice(plateAt + 1);
     // 数字 0 的锚点是 (8,9) → 左上 = (184−8, 41−9)
@@ -770,20 +784,21 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
   it('★ 粉笔弧减掉它自己的锚点 (28,25) —— 落在那一格正中 (62,295)', () => {
     const f = fakeCtx();
     const sp = spySprite();
-    drawLotteryScreen(f.ctx, sp.fn, view({ picked: 0 }));
+    drawLotteryScreen(f.ctx, sp.fn, noFlic, view({ picked: 0 }));
     const chalk = f.images.find((i) => i.index === LOT_CHUNK.chalk)!;
     expect(chalk).toEqual({
       index: LOT_CHUNK.chalk,
       resource: LOT_RESOURCE,
       x: 62 - 28,
       y: 295 - 25,
+      flic: false, // 不是 FLIC 帧
     });
   });
 
   it('★ 气泡落在 (360,20)；文字块中心 (360+237/2+20, 20+96)', () => {
     const f = fakeCtx();
     const sp = spySprite();
-    drawLotteryScreen(f.ctx, sp.fn, view({ message: lotMessageOf('pick') }));
+    drawLotteryScreen(f.ctx, sp.fn, noFlic, view({ message: lotMessageOf('pick') }));
     expect(f.images.find((i) => i.index === LOT_CHUNK.bubble)).toMatchObject({ x: 360, y: 20 });
     expect(f.textAt.map((l) => l.t)).toEqual(['請圈選您的', '幸運號碼～']);
     const cx = 360 + 237 / 2 + 20;
@@ -795,7 +810,7 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
   it('★ 语音号 `#NNNN` 不上屏', () => {
     const f = fakeCtx();
     const sp = spySprite();
-    drawLotteryScreen(f.ctx, sp.fn, view({ message: lotMessageOf('hello') }));
+    drawLotteryScreen(f.ctx, sp.fn, noFlic, view({ message: lotMessageOf('hello') }));
     const all = f.textAt.map((t) => t.t).join('');
     expect(all).not.toContain('#');
     expect(all).toContain('一券在手');
@@ -804,7 +819,7 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
   it('★ 抠黑逐图判定：图 2/7/8 抠、底图与图 9 不抠、字形一律抠', () => {
     const f = fakeCtx();
     const sp = spySprite();
-    drawLotteryScreen(f.ctx, sp.fn, view({ phase: 'bye', picked: 1, message: 'x' }));
+    drawLotteryScreen(f.ctx, sp.fn, noFlic, view({ phase: 'bye', picked: 1, message: 'x' }));
     expect(sp.keys.get(`${LOT_RESOURCE}:0`)).toBe(false); // 底图
     expect(sp.keys.get(`${LOT_RESOURCE}:2`)).toBe(true); // 那一帧画的是图 2（貓女郎）
     expect(sp.keys.get(`${LOT_RESOURCE}:7`)).toBe(true); // 粉笔
@@ -816,16 +831,59 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
   it('★ 没有圈中的号就不画粉笔、没有说话就不画气泡', () => {
     const f = fakeCtx();
     const sp = spySprite();
-    drawLotteryScreen(f.ctx, sp.fn, view());
+    drawLotteryScreen(f.ctx, sp.fn, noFlic, view());
     expect(f.images.some((i) => i.index === LOT_CHUNK.chalk)).toBe(false);
     expect(f.images.some((i) => i.index === LOT_CHUNK.bubble)).toBe(false);
+  });
+
+  it('★ 獎金跑馬燈（Panel#14）画在 (8,8)，帧号由 `bonusFrameAt(now)` 决定', () => {
+    // @source 0x42f3fe `push 5 / push 8 / push 8 / call fcn_00450ced`
+    const f = fakeCtx();
+    const sp = spySprite();
+    drawLotteryScreen(f.ctx, sp.fn, () => fakeBonusFlic(), view(), 0);
+    const marquee = f.images.find((i) => i.flic === true)!;
+    expect(marquee).toMatchObject({ resource: LOT_BONUS_RESOURCE, index: 0, x: 8, y: 8 });
+    expect(LOT_BONUS_AT).toEqual({ x: 8, y: 8 });
+
+    // 第 71 ms = 第 1 帧、第 5×71 ms 回到第 0 帧（5 帧循环）
+    for (const [now, frame] of [[0, 0], [LOT_BONUS_MS, 1], [LOT_BONUS_MS * 4, 4], [LOT_BONUS_MS * 5, 0]] as const) {
+      const g = fakeCtx();
+      drawLotteryScreen(g.ctx, sp.fn, () => fakeBonusFlic(), view(), now);
+      const m = g.images.find((i) => i.flic === true)!;
+      expect(m, `now=${now}`).toMatchObject({ index: frame, x: 8, y: 8 });
+    }
+  });
+
+  it('★ 跑馬燈画在最底层：底图与蓝板都压在它上面（原版建屏顺序）', () => {
+    const f = fakeCtx();
+    const sp = spySprite();
+    drawLotteryScreen(f.ctx, sp.fn, () => fakeBonusFlic(), view(), 0);
+    // 第一张画的就是跑馬燈的帧（它在建屏那一段的最后起播，
+    // 但每帧重绘时原版先 Blt 影片、再铺台面图；本模块同样先画它）
+    expect(f.images[0]).toMatchObject({ flic: true, x: 8, y: 8 });
+    expect(f.images.some((i) => i.resource === LOT_RESOURCE && i.index === LOT_CHUNK.bg)).toBe(true);
+  });
+
+  it('★ 影片还没解出来（`flic()` 返回 null）时不画、不炸 —— 解好后同一帧就能补上', () => {
+    const f = fakeCtx();
+    const sp = spySprite();
+    let film: LoadedFlic | null = null;
+    expect(drawBonusMarquee(f.ctx, () => film, 0)).toBe(false);
+    drawLotteryScreen(f.ctx, sp.fn, () => film, view(), 0);
+    expect(f.images.some((i) => i.flic === true)).toBe(false);
+    // 解码完成之后（main.ts 会自己重画一帧）
+    film = fakeBonusFlic();
+    const g = fakeCtx();
+    expect(drawBonusMarquee(g.ctx, () => film, 0)).toBe(true);
+    drawLotteryScreen(g.ctx, sp.fn, () => film, view(), 0);
+    expect(g.images.some((i) => i.flic === true)).toBe(true);
   });
 
   it('★ 缺图时静默跳过（不炸）', () => {
     const f = fakeCtx();
     const none: LotSprite = () => null;
     expect(() =>
-      drawLotteryScreen(f.ctx, none, view({ picked: 0, eye: 3, message: 'x' })),
+      drawLotteryScreen(f.ctx, none, noFlic, view({ picked: 0, eye: 3, message: 'x' })),
     ).not.toThrow();
     expect(f.images).toEqual([]);
   });

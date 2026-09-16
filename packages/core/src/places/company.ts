@@ -328,20 +328,12 @@ export const DIVIDEND_DAY = 15;
 // ============================================================
 //  保險理賠
 // ============================================================
-
-/**
- * 在保險期内的損失由保險公司赔付。
- *
- * @source `0x44ba63(玩家, 損失, 旗标)`：
- * ```asm
- * 0044ba74  if (玩家.+0x3e == 0) return          ; 没投保
- * 0044ba82  找到 行業別 == 4 的那家企業          ; 保險公司
- * 0044baa5  msg("保險期間\n\n得到理賠金\n\n%d元")
- * 0044bad8  pay_money(100 + 企業下标, 玩家, 損失, 1)   ; ★ 公司付，進現金
- * ```
- * 谁会调它：旅館住店的 2000×天×物價、被狗咬/踩雷/炸彈住院、監獄等「意外損失」——
- * 本引擎眼下只在旅館那一处接（`hotelStayLoss`），其余调用点见 Q-INS-1。
- */
-export function insurancePayout(insuranceDays: number, loss: number): number {
-  return insuranceDays !== 0 && loss > 0 ? loss : 0;
-}
+//
+// ⚠️ 这里原先有个死的 `insurancePayout(insuranceDays, loss)` —— 它只回一句
+//   「有保險期就把損失原样返回」，**从来没有接线**：`0x44ba63` 真正的规则还要
+//   找第一家行業別 4 的企業、由**公司**付钱、`pay_money(..., 1)` 進現金，并处理
+//   「地图上没有保險公司」那一支。已于 2026-09-16 删除（全仓库只有它自己的
+//   单测引用它）。
+//
+// ★ 活的那条是 `state/reduce.ts` 的 `insurancePayoutTo`（VA 0x0044ba63），
+//   六个调用点与实证见 `places/insurance.test.ts` 头注释与 known-deviations 的 Q-INS-1。

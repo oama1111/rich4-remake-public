@@ -16,28 +16,39 @@
  * |---|---|
  * | 底图 = `help.mkf` **资源 0**（SMP 12 张，图 0 是 400×400，锚点全 (0,0)） | 入口 `push 0` 的 `read_mkf` @0x44eb7d |
  * | 面板落点 = 入口收到的 `(x, y)`；`x = 0xffff` 表示**居中** | @0x44e4e4 起 |
- * | 章名条 = 图 **2**（珊瑚），挂在**右列** | @0x44e05a |
- * | 左列那 8 行的格图 = 图 **6**（常态）/ 图 **7**（选中）—— 见下「不画」 | @0x44e2f0 / @0x44e33c |
- * | 中部上／下三角 = 图 **4** / 图 **5** | @0x44e11f / @0x44e14e |
+ * | 选中那一章的章名条 = 图 **1**（66×33）| @0x44e05a |
+ * | 8 行条目的格图 = 图 **2**（85×33，常态）/ 图 **3**（87×33，选中）| @0x44e2f0 / @0x44e33c |
+ * | 中部**上一章 / 下一章**三角 = 图 **4** / 图 **5**（22×18 / 22×15）| @0x44e11f / @0x44e14e |
+ * | 正文**还能往下**时那颗三角 = 图 **5** | @0x44e14e |
+ * | 右列**上滚 / 下滚**三角 = 图 **8** / 图 **9**（23×32 / 23×35）| @0x44e8d3 / @0x44e9a2 |
  * | 正文 = `read_mkf(help, entry.res + scroll, 0, 0)` | @0x44e179 |
- * | 正文行距 30、落点 `+0xe8`、首行 `+0x5a`、一屏 8 行 | @0x44e1c6 起 |
- * | 条目表 = `0x4761b4`，**20 字节/项 × 8 项**（章名串 / 另一指针 / **起始资源** / **资源数** / **滚动位置**） | 入口 @0x44eb9b |
- * | 分项表 = `0x476028`，**9 字节/串 × 8 项**（游戏操作 / 日、月曆 / …） | @0x44e080 |
+ * | 正文行距 **18**、落点 `+0xe8`、首行 `+0x5a`、一屏 **14 行** | @0x44e1c6 起 |
+ * | 条目表 = `0x4761b4`，**20 字节/项 × 8 项**（章名串 / **分项指针数组** / **起始资源** / **资源数** / **滚动位置**） | 入口 @0x44eb9b |
+ * | 分项表 = 每章一张指针数组（+0x04），`scroll + i` 取第 i 项（`遊戲操作` / `日、月曆` / …） | @0x44e2df / @0x44e376 |
  * | 命中表 = `0x476254`，**16 字节/项 × 6 项** | 回调 @0x44e5cc |
+ *
+ * ★ **图号 = `(imm − 0xc) / 12`**（每项 12 字节的 `graph_st` 头）——不是 `imm / 2`：
+ *   `0x18→1`、`0x24→2`、`0x30→3`、`0x3c→4`、`0x48→5`、`0x6c→8`、`0x78→9`。
+ *   （同一结论见 `assets-pipeline/src/mkf.ts:176` 与 `monthly-screen.ts:149`。）
  *
  * ## 版面（面板 400×400，三列）
  *
  * 底图那条 400×400 的板子从左到右是**绿带 / 珊瑚带 / 黄带**三列
- * （实测：绿 x 24..90、珊瑚 106..196、黄 210..370），本模块按它摆：
+ * （实测：绿 x 25..88、珊瑚 107..193、黄 217..367），本模块按它摆：
  *
  * | 画什么 | 局部落点 | @source |
  * |---|---|---|
- * | 选中那一章的章名条（图 2，珊瑚条） | `(26, 58 + 20i)` | @0x44e04d / @0x44e056 |
+ * | 选中那一章的章名条（图 1） | `(26, 58 + 36c)` | @0x44e047 / @0x44e056 |
+ * | 左列八行章名（15 号白字） | 选中 `(26, 58 + 36c)`、其余 `(59, 73 + 36i)` | @0x44e08c / @0x44e092 |
  * | 中部**上一章 / 下一章**三角（图 4 / 5） | `(170, 43)` / `(170, 59)` | @0x44e11f / @0x44e14e |
- * | 左列八行章名（15 号白字带黑描边） | 选中 `(26, 58 + 20i)`、其余 `(59, 73 + 20i)` | @0x44e08c / @0x44e092 |
+ * | 8 行格图（图 2 / 3，**叠在珊瑚列**）+ 分项名 | `(108, 78 + 34i)` / 名 `(150, 94 + 34i)` | @0x44e2f0 / @0x44e33c / @0x44e2b2 |
  * | 右列分项标题（`遊戲操作`） | `(140, 57)` | @0x44e0bf / @0x44e0c8 |
- * | 正文八行（12 号） | `(232, 90 + 30k)` | @0x44e1d1 / @0x44e1d7 |
- * | 正文底下那颗「还有」三角（图 5） | `(170, 59)` 同一条 | @0x44e14e |
+ * | 正文 14 行（12 号，**左上对齐 flag 0**）| `(232, 90 + 18k)` | @0x44e1d1 / @0x44e1d7 |
+ * | 右列**上滚 / 下滚**三角（图 8 / 9） | `(322, 48)` / `(343, 48)` | @0x44e8d3 / @0x44e9a2 |
+ *
+ * ⚠️ 三列的**行距不是同一套**：左列章名 36（`shl 3 / add / shl 2` = ×36）、
+ *   右列 8 行格图与分项名 34（`shl 4 / add / add` = ×34）。两套都在 exe 里，
+ *   本模块**不统一**（原来那个 20/21 的写法是照截图量的，两套都对不上）。
  *
  * ## 落点 —— 工具列那一下传的就是 `(20, 60)`
  *
@@ -52,26 +63,29 @@
  * 于是「工具列 #1」= 下标 **0**（0 基）。入口里另有一处 `push -1 / push -1`
  * （0x411a96 那个小包装，`x = 0xffff`）走**居中**分支，本模块不用它。
  *
- * ## 命中的六條矩形（两组各三颗钮）
+ * ## 命中的六條矩形（三组各两颗钮）
  *
- * 回调 `@0x44e592` 把命中表按 **6 个矩形**逐个比，`esi` = 命中项序号 0..5；
- * 没撞上就 `xor eax, eax` 直接返回。
+ * 回调 `@0x44e592` 把命中表按 **6 个矩形**逐个比（`esi`/`ebx` 已经是**局部**坐标：
+ * `mov si, dx / sub esi, [0x48c5e4]`），序号 0..5；没撞上就 `xor eax, eax` 返回。
  *
- * | 序号 | 局部矩形 (x0,y0,x1,y1) | 归给 |
- * |---|---|---|
- * | 0 | (22, 38, 91, 104) | 左列八行（**整列**） |
- * | 1 | (77, 38, 104, 78) | 左列八行（同一组的第二个框） |
- * | 2 | (170, 43, 192, 58) | **上一章**三角 |
- * | 3 | (170, 59, 192, 74) | **下一章**三角 |
- * | 4 | (322, 48, 345, 80) | **上滚**三角 |
- * | 5 | (343, 48, 366, 80) | **下滚**三角 |
+ * | 序号 | 局部矩形 (x0,y0,x1,y1) | 归给 | 画在哪 |
+ * |---|---|---|---|
+ * | 0 | (22, 38, **91, 361**) | 左列八行（**整列**）| 章名 `(26, 58+36i)` |
+ * | 1 | (**104, 78, 196, 361**) | 右列 8 行格图（**整段**）| 格图 `(108, 78+34i)` |
+ * | 2 | (170, 43, 192, 58) | **上一章**三角 | `(170, 43)` |
+ * | 3 | (170, 59, 192, 74) | **下一章**三角 | `(170, 59)` |
+ * | 4 | (322, 48, 345, 80) | **上滚**三角 | `(322, 48)` |
+ * | 5 | (343, 48, 366, 80) | **下滚**三角 | `(343, 48)` |
  *
- * ⚠️ **顺序不能颠倒**：0/2/4 的框与 1/3/5 在 x 上有重叠，原版是表序先撞先算。
- * ⚠️ 组 4/5 的框在 x = 322..366（右列），而原版把上/下滚**画在** `(170, 43/59)`
- *   —— 画与命中错位，原版自己如此。本模块照抄，不去「修正」它。
+ * ★ 0 / 1 是**整列**（y 一直到 361），不是一行一格 —— 表里就两个数。
+ *   探针：`python3 tools/disasm.py dump 0x476254 24 4`
+ *   → `22 38 91 361 104 78 196 361 | 170 43 192 58 170 59 192 74 | 322 48 345 80 343 48 366 80`。
+ * ⚠️ **顺序不能颠倒**：2/3、4/5 在 y 上只差 16 且 x 有重叠，原版是表序先撞先算。
+ * ★ **画与命中现在对得上**（D-045-3 已作废）：4/5 的画点就是 (322,48) / (343,48)，
+ *   上一版把「上/下滚画在 (170,43/59)」记成了事实 —— 那是**上一章/下一章**那一对。
  *
- * 左列那 8 行**不在**命中表里：原版按「左列 (22, 38) 起、每行 18 高、间隙 3」
- * 那套图几何判（见 `chipY`），`hitHelp` 先认这 8 行、再认六条矩形。
+ * 左列那 8 行另有一条**逐行**的判据（`loc_0044e621`：x (26,92) + 每行 36 高），
+ * `hitHelp` 先认它（`{ label: 0, cell: 格号 }`），再认六条矩形 —— 见 `hitHelpChip`。
  *
  * ## 两组各管什么
  *
@@ -82,14 +96,23 @@
  *
  * ## 素材没有烘死任何按钮
  *
- * 资源 0 的 12 张：0 = 400×400 底版（三列空板），1 / 2 / 3 = 三根章名条
- * （1 = 黄、2 = 珊瑚、3 = 黄），4 / 5 = 右上／右下三角（22×18 / 22×15），
- * 6 / 7 = 右／下三角，8..11 = 左右三角 —— **8..11 本屏不画**（入口那圈只画 0..7）。
+ * 资源 0 的 12 张（尺寸逐个量过 `assets-clean/help/0000_0NN.png`）：
  *
- * ⚠️ **左列那 8 行的格图（6/7）本模块也不画**：解出来的图 6/7 是「珊瑚底 + 三角」
- *   的钮，贴到左列会盖掉那条绿带（浏览器里面视核对过）。左列那 8 行的分隔线
- *   本来就烘在底图上（图 0 左列有 8 条暗绿横线），只画名字就对了。
- *   记在 `docs/deviations/T-045.md`。
+ * | 图 | 尺寸 | 是什么 | @source |
+ * |---|---|---|---|
+ * | 0 | 400×400 | 底版（三列空板，列线的行距就是 36 / 34）| @0x44e024 |
+ * | 1 | 66×33 | 选中那一章的章名条 | @0x44e05a `add eax, 0x18` |
+ * | 2 | 85×33 | 8 行条目的格图 · 常态（珊瑚底）| @0x44e362 `add eax, 0x24` |
+ * | 3 | 87×33 | 8 行条目的格图 · 选中 | @0x44e34a `add eax, 0x30` |
+ * | 4 | 22×18 | 上一章三角 | @0x44e11f `add eax, 0x3c` |
+ * | 5 | 22×15 | 下一章三角 (+「还能往下」)| @0x44e14e `add eax, 0x48` |
+ * | 8 | 23×32 | 右列上滚三角 | @0x44e8d3 `add eax, 0x6c` |
+ * | 9 | 23×35 | 右列下滚三角 | @0x44e9a2 `add eax, 0x78` |
+ * | 6 / 7 / 10 / 11 | | **本屏不画**（没有绘制点引用 `0x54` / `0x60` / `0x84` / `0x90`）| — |
+ *
+ * ★ 上一版把图号按 `imm / 2` 读（1→? 得出图 2 是章名条、6/7 是格图），
+ *   于是**把 (108,78+34i) 那 8 张格图整个漏掉了**（见 D-045-1）。
+ *   正确换算是 `index = (imm − 0xc) / 12`。
  *
  * ## 正文的取用：章 ↔ `help.mkf` 资源
  *
@@ -104,20 +127,22 @@
  * | i | 章 | 资源区间 | 资源数 | 行数 | maxScroll（本模块） |
  * |---|---|---|---|---|---|
  * | 0 | 操作說明 | 1..1 | 1 | 4 | 0 |
- * | 1 | 遊戲畫面 | 2..7 | 6 | 104 | 96 |
- * | 2 | 遊戲指令 | 8..19 | 12 | 102 | 94 |
- * | 3 | 房 地 產 | 20..22 | 3 | 190 | 182 |
- * | 4 | 特殊地點 | 23..38 | 16 | 79 | 71 |
- * | 5 | 特殊人物 | 39..56 | 18 | 112 | 104 |
- * | 6 | 卡  片 | 57..86 | 30 | 338 | 330 |
- * | 7 | 道  具 | 87..99 | 13 | 148 | 140 |
+ * | 1 | 遊戲畫面 | 2..7 | 6 | 104 | 90 |
+ * | 2 | 遊戲指令 | 8..19 | 12 | 102 | 88 |
+ * | 3 | 房 地 產 | 20..22 | 3 | 190 | 176 |
+ * | 4 | 特殊地點 | 23..38 | 16 | 79 | 65 |
+ * | 5 | 特殊人物 | 39..56 | 18 | 112 | 98 |
+ * | 6 | 卡  片 | 57..86 | 30 | 338 | 324 |
+ * | 7 | 道  具 | 87..99 | 13 | 148 | 134 |
  *
- * ⚠️ **`maxScroll` 是「行数 − 8」，不是 exe 里那个 `entry.count − 8`**。exe 的下滚
+ * ⚠️ **`maxScroll` 是「行数 − 14」，不是 exe 里那个 `entry.count − 8`**。exe 的下滚
  *   夹取 @0x44e944 是 `edx = [entry+0x0C] − 8`（`<= 8` 就不滚），而 `[entry+0x0C]`
- *   是**资源数**；本模块的 `scroll` 按**行**走（步长 = 一屏 8 行）。两者的等价
+ *   是**资源数**；本模块的 `scroll` 按**行**走（步长 = 一屏 14 行）。两者的等价
  *   前提是「滚动单位 = 资源」—— 这一条**尚未定案**，登记在
  *   `docs/deviations/T-045.md` D-045-2；本模块**不改口径**，只把当章行数代入
  *   同一个「减一屏」形状。恒等式由单测逐章钉住。
+ *
+ * （一屏 14 行 = @0x44e2b2 的画满 14 行 + @0x44e1be 的 `cmp ebx, 0xd`。）
  *
  * ⚠️ 只有 `@` **一个字符**的行是原版的「章内分页」标记（`cmp byte [ptr], 0x40`）：
  *   原版遇到它把「还能往下」标志置 1 但**不画这个字**。本模块照做。
@@ -137,15 +162,17 @@ export const HELP_RESOURCE = 0;
 
 /** 底图（400×400，图 0）@source 0x44e024 的 `add eax, 0xc`（= 图 0 那一项）*/
 export const HELP_BG_IMAGE = 0;
-/** 章名条 @source 0x44e02b `add eax, 0x18` → 图 2 */
-export const HELP_BAR_IMAGE = 2;
-/** 左列绿格的图基号：常态 = 基号、选中 = 基号 + 0xc @source 0x44e2f0 / 0x44e33c */
-export const HELP_ROW_IMAGE = 6;
-export const HELP_ROW_HOT_IMAGE = 7;
-/** 中部上三角 @source 0x44e11f `add eax, 0x3c` → 图 4 */
+/** 选中那一章的章名条 @source 0x44e05a `add eax, 0x18` → 图 **1**（66×33）*/
+export const HELP_BAR_IMAGE = 1;
+/** 8 行条目的格图：常态 = 图 **2**、选中 = 图 **3** @source 0x44e362 `+0x24` / 0x44e34a `+0x30` */
+export const HELP_ROW_IMAGE = 2;
+export const HELP_ROW_HOT_IMAGE = 3;
+/** 中部**上一章 / 下一章**三角 @source 0x44e11f `add eax, 0x3c` → 图 4 / 0x44e14e `+0x48` → 图 5 */
 export const HELP_ARROW_UP_IMAGE = 4;
-/** 中部下三角 @source 0x44e14e `add eax, 0x48` → 图 5 */
 export const HELP_ARROW_DOWN_IMAGE = 5;
+/** 右列**上滚 / 下滚**三角 @source 0x44e8d3 `add eax, 0x6c` → 图 8 / 0x44e9a2 `+0x78` → 图 9 */
+export const HELP_SCROLL_UP_IMAGE = 8;
+export const HELP_SCROLL_DOWN_IMAGE = 9;
 
 /**
  * 面板：尺寸 400×400、工具列那一路的落点 `(20, 60)`。
@@ -153,60 +180,127 @@ export const HELP_ARROW_DOWN_IMAGE = 5;
  */
 export const HELP_PANEL = { x: 0x14, y: 0x3c, w: 400, h: 400 } as const;
 
-/** 左列那些行的局部 x @source 0x44e2f0 的 `add eax, 0x1a` */
-export const HELP_CHIP_DX = 0x1a;
-/** 左列第一行的局部 y @source 0x44e2f0 的 `add eax, 0x26` */
-export const HELP_CHIP_DY = 0x26;
-/** 一颗格图的高度（图 6 是 20×18）*/
-export const HELP_CHIP_H = 18;
-/** 格间隙 */
-export const HELP_CHIP_GAP = 3;
-/** 中部三角的局部落点 @source 0x44e11f / 0x44e14e */
+// ------------------------------------------------------------
+//  两套行距（**不一样**，各自照 exe 抄）
+// ------------------------------------------------------------
+
+/**
+ * **左列那 8 行章名**的行距 —— 36。
+ *
+ * @source 入口的循环（`shl eax, 3 / add eax, edx / shl eax, 2` = `i × 9 × 4 = 36i`）：
+ *   · 选中章：`y = 面板.y + 0x3a + 36c`、`x = 面板.x + 0x1a` @0x44e047 / 0x44e04d
+ *   · 其余章：`y = 面板.y + 0x49 + 36i`、`x = 面板.x + 0x3b` @0x44e08c / 0x44e092
+ *
+ * ★ 上一版写成 20（照截图量的），与 exe 无关；36 才是真值。
+ *   （底图左列那 8 条暗绿横线的周期也正是 36，`w` 参数实测。）
+ */
+export const HELP_NAME_STEP = 36;
+
+/**
+ * **右列那 8 行格图 / 分项名**的行距 —— 34。
+ *
+ * @source `loc_0044e301` 的 `shl eax, 4 / add eax, ebx / add eax, eax` = `i × 17 × 2 = 34i`：
+ *   · 格图：`x = 面板.x + 0x6c`、`y = 面板.y + 0x4e + 34i` @0x44e320 / 0x44e338
+ *   · 分项名：`x = 面板.x + 0x96`、`y = 面板.y + 0x5e + 34i` @0x44e2b2
+ *
+ * ⚠️ 与 `HELP_NAME_STEP`（36）**故意不统一**：原版就是两套数，
+ *   命中框也各按各的（@0x476254 第 0 项按 36、`loc_0044e69c` 按 34）。
+ */
+export const HELP_CHIP_STEP = 0x22;
+
+/** 8 行格图的局部落点（左上角）@source 0x44e320 / 0x44e338 的 `+0x6c` / `+0x4e` */
+export const HELP_CHIP_AT = { x: 0x6c, y: 0x4e } as const;
+/** 8 行分项名的局部落点（**中心**，flag 2）@source 0x44e2b2 的 `+0x96` / `+0x5e` */
+export const HELP_CHIP_NAME_AT = { x: 0x96, y: 0x5e } as const;
+/** 格图的高度（图 2 = 85×33）—— 只给单测与注释校对 */
+export const HELP_CHIP_H = 33;
+
+/** 中部三角的局部落点 @source 0x44e11f / 0x44e14e（就是 `0x476274` / `0x476284` 那两组）*/
 export const HELP_ARROW_UP_AT = { x: 0xaa, y: 0x2b } as const;
 export const HELP_ARROW_DOWN_AT = { x: 0xaa, y: 0x3b } as const;
-/** 选中章的章名条局部落点 @source 0x44e04d `+0x3a` / 0x44e056 `+0x1a` */
+/** 右列**上滚 / 下滚**三角的局部落点 @source 0x476294 `(322,48)` / 0x4762a4 `(343,48)` */
+export const HELP_SCROLL_UP_AT = { x: 0x142, y: 0x30 } as const;
+export const HELP_SCROLL_DOWN_AT = { x: 0x157, y: 0x30 } as const;
+
+/** 选中那一章的章名条局部落点 @source 0x44e04d `+0x3a` / 0x44e056 `+0x1a` */
 export const HELP_BAR_AT = { x: 0x1a, y: 0x3a } as const;
-/**
- * 左列那 8 行章名的局部落点。
- *
- * @source 入口循环里那个 `i*0x24`（= `i*9*4`，小条目表 0x476028 每项 9 字节）：
- *   · 选中行：`(0x1a, 0x3a + 0x24*i)` @0x44e04d / 0x44e08c
- *   · 其余行：`(0x3b, 0x49 + 0x24*i)` @0x44e08c / 0x44e092
- *   ⚠️ 0x24 = 36 对应 `i*9*4`；本模块把 8 行名字按 20px 步长排开
- *   （表里 8 项的名字两两相隔 9 字节，对应的正是**行**而不是格）。
- */
+/** 各章章名的局部落点 @source 选中 0x44e047/0x44e04d、其余 0x44e08c/0x44e092 */
 export const HELP_ROW_NAME = { x: 0x3b, y: 0x49 } as const;
 export const HELP_SEL_NAME = { x: 0x1a, y: 0x3a } as const;
-/** 两行名字之间的步长（表里第 `i` 项到第 `i+1` 项） */
-export const HELP_NAME_STEP = 20;
-/** 右列分项标题的局部落点 @source 0x44e0bf `+0x39` / 0x44e0c8 `+0x8c` */
+/** 左列逐行判据的宽度 `[0x1a, 0x5c)` = 66（= 章名条图 1 的宽度）@source 0x44e62f / 0x44e63f */
+export const HELP_ROW_HIT_W = 0x5c - 0x1a;
+/** 左列逐行判据的高度 `[0x3a, 0x82)` = 0x48 = 72 —— 相邻两条因此重叠 35 像素 @source 0x44e641 */
+export const HELP_ROW_HIT_H = 0x82 - 0x3a;
+
+/** 右列分项标题（8 行格图之上那一行）的局部落点 @source 0x44e0bf `+0x39` / 0x44e0c8 `+0x8c` */
 export const HELP_INDEX_AT = { x: 0x8c, y: 0x39 } as const;
-/** 这一屏唯一一个（被原版串表 0x476028 表头指着的）分项标题 */
+/**
+ * 章内**当前那一条**的小标题 @source 0x44e376 的 `+0x3f` / `+0x10e`（= (270,63)）。
+ * `flag 2` = 以该点为**中心**。
+ */
+export const HELP_SUB_INDEX_AT = { x: 0x10e, y: 0x3f } as const;
+
+/**
+ * 上一版写死的那个分项标题（`遊戲操作`）。
+ *
+ * ★ 它现在是**兜底**：章节的分项名一律走 `HELP_CHAPTER_ITEMS`（每章一张指针数组，
+ *   @source 0x4761b4 的 **+0x04**）。这一条只在「该章的分项表读不出来」时用。
+ */
 export const HELP_INDEX_LABEL = '遊戲操作';
 
-/** 正文：落点与行距 @source 0x44e1d1 / 0x44e1d7 / 0x44e2b6 / 0x44e222 */
-export const HELP_TEXT = { dx: 0xe8, dy: 0x5a, lineH: 0x1e, rows: 8 } as const;
+/**
+ * 正文：落点与行距 @source 0x44e1d1 / 0x44e1d7（**flag 0 = 左上对齐**）。
+ *
+ * ★ 行距 **0x12 = 18**、一屏 **14 行**（`cmp ebx, 0xd` 那一步画完第 14 行就停）。
+ *   上一版写的 30 / 8 行是照截图量的 —— 30 会让 14 行溢出面板，8 行会对不上下滚判据。
+ */
+export const HELP_TEXT = { dx: 0xe8, dy: 0x5a, lineH: 0x12, rows: 14 } as const;
+
+/**
+ * 右列那 8 行条目（格图 + 分项名）一次画几行 —— **8**（不是正文那 14）。
+ *
+ * @source `loc_0044e301` 的循环 `inc ebx / cmp ebx, 8 / jge 0x44e376`
+ *   （@0x44e2f7 / 0x44e2f8）与 `loc_0044e2b2` 那条名字的 `inc ebx / cmp ebx, 8`
+ *   （@0x44e2f7）—— **两个循环都硬编码 8**。
+ *   这也正是 `HELP_CHIP_STEP = 34` 的来源：8 × 34 = 272，正好落进面板。
+ */
+export const HELP_LIST_ROWS = 8;
 /** 正文字号 @source 0x44dfd4 的 `create_font(0xc)` */
 export const HELP_FONT_SIZE = 0xc;
-/** 左列格内字号 @source 0x44e296 的 `create_font(0xf)` */
+/** 左列/右列那些小字的字号 @source 0x44e296 的 `create_font(0xf)` */
 export const HELP_CHIP_FONT_SIZE = 0xf;
 /** 文字描边色 @source `create_font(0xc, 0x101010, 0x101010, 3, 0)` @0x44dfc9 */
 export const HELP_TEXT_STROKE = '#101010';
+/** 珊瑚列那几行的描边色（实测深红 0x842929）—— 绿列那几行用 `HELP_TEXT_STROKE` */
+export const HELP_CORAL_STROKE = '#842929';
+/** 字色（原版 `create_font(…, 0xffffff, …)`，绿列/珊瑚列都是白字）@source 0x44dfd4 */
+export const HELP_TEXT_FILL = '#ffffff';
 
 /**
  * 左列第 `i` 行的局部 y。
  *
- * ⚠️ 原版**没有**一个公式能同时对上「格图落点」与「名字落点」：格图那两支
- *   （@0x44e2f0 / @0x44e33c）各带一张数组，名字那两支（@0x44e04d / @0x44e092）
- *   又各带一张。本模块取**格图那一组**（每行 18 + 3 间隙），它是命中框
- *   （`HELP_HIT_BOXES` 里 38/59/80/…/185）逐条对得上的那一组。
+ * ★ **两套行距**（见 `HELP_NAME_STEP` / `HELP_CHIP_STEP`）：`chipY` 给
+ *   **逐行判据 + 章名**用（36），`chipImageY` 给**8 行格图**用（34）。
+ *   上一版只有一套 21（18 + 3 间隙），那是照截图量的 —— 两个真值都不对。
  */
 export function chipY(i: number): number {
-  return HELP_CHIP_DY + i * (HELP_CHIP_H + HELP_CHIP_GAP);
+  return HELP_SEL_NAME.y + HELP_NAME_STEP * i;
 }
-/** 面板局部坐标下第 `i` 格 / 两颗三角 / 章名条 的落点 */
+/** 左列（绿列）第 `i` 行章名的局部落点 */
 export function chipAt(i: number): { x: number; y: number } {
-  return { x: HELP_CHIP_DX, y: chipY(i) };
+  return { x: HELP_SEL_NAME.x, y: chipY(i) };
+}
+/** 8 行格图第 `i` 块的局部落点 @source 0x44e320 / 0x44e338 */
+export function chipImageY(i: number): number {
+  return HELP_CHIP_AT.y + HELP_CHIP_STEP * i;
+}
+/** 8 行分项名第 `i` 条的局部落点（**中心**）@source 0x44e2b2 */
+export function chipNameAt(i: number): { x: number; y: number } {
+  return { x: HELP_CHIP_NAME_AT.x, y: HELP_CHIP_NAME_AT.y + HELP_CHIP_STEP * i };
+}
+/** 8 行格图第 `i` 块的局部落点（左上角）*/
+export function chipImageAt(i: number): { x: number; y: number } {
+  return { x: HELP_CHIP_AT.x, y: chipImageY(i) };
 }
 export function arrowUpAt(): { x: number; y: number } {
   return { x: HELP_ARROW_UP_AT.x, y: HELP_ARROW_UP_AT.y };
@@ -214,16 +308,38 @@ export function arrowUpAt(): { x: number; y: number } {
 export function arrowDownAt(): { x: number; y: number } {
   return { x: HELP_ARROW_DOWN_AT.x, y: HELP_ARROW_DOWN_AT.y };
 }
-/** 右列第 `i` 行的章名条 @source 0x44e04d `+0x3a` / 0x44e056 `+0x1a` */
-export function barAt(i: number): { x: number; y: number } {
-  return { x: HELP_BAR_AT.x, y: HELP_BAR_AT.y + HELP_NAME_STEP * i };
+/** 右列上滚 / 下滚三角的局部落点 */
+export function scrollUpAt(): { x: number; y: number } {
+  return { x: HELP_SCROLL_UP_AT.x, y: HELP_SCROLL_UP_AT.y };
+}
+export function scrollDownAt(): { x: number; y: number } {
+  return { x: HELP_SCROLL_DOWN_AT.x, y: HELP_SCROLL_DOWN_AT.y };
+}
+/** 选中那一章的章名条 @source 0x44e047 `y + 0x3a + 36c` / 0x44e056 `x + 0x1a` */
+export function barAt(chapter: number): { x: number; y: number } {
+  return { x: HELP_BAR_AT.x, y: HELP_BAR_AT.y + HELP_NAME_STEP * chapter };
+}
+/** 第 `i` 章章名的局部落点（选中那一章用 `HELP_SEL_NAME`，其余用 `HELP_ROW_NAME`）*/
+export function chapterNameAt(i: number, selected: boolean): { x: number; y: number } {
+  const base = selected ? HELP_SEL_NAME : HELP_ROW_NAME;
+  return { x: base.x, y: base.y + HELP_NAME_STEP * i };
 }
 
 // 下面是「面板局部 → 舞台」的换算，`draw` 与单测都走它，免得两处各算一遍。
 
-/** 舞台坐标下左列第 `i` 格的落点 */
+/** 舞台坐标下左列第 `i` 行章名的落点 */
 export function helpChipAt(i: number): { x: number; y: number } {
   const at = chipAt(i);
+  return { x: HELP_PANEL.x + at.x, y: HELP_PANEL.y + at.y };
+}
+/** 舞台坐标下 8 行格图第 `i` 块的落点 */
+export function helpChipImageAt(i: number): { x: number; y: number } {
+  const at = chipImageAt(i);
+  return { x: HELP_PANEL.x + at.x, y: HELP_PANEL.y + at.y };
+}
+/** 舞台坐标下 8 行分项名第 `i` 条的中心 */
+export function helpChipNameAt(i: number): { x: number; y: number } {
+  const at = chipNameAt(i);
   return { x: HELP_PANEL.x + at.x, y: HELP_PANEL.y + at.y };
 }
 /** 舞台坐标下上三角的落点 */
@@ -233,6 +349,13 @@ export function helpArrowUpAt(): { x: number; y: number } {
 /** 舞台坐标下下三角的落点 */
 export function helpArrowDownAt(): { x: number; y: number } {
   return { x: HELP_PANEL.x + HELP_ARROW_DOWN_AT.x, y: HELP_PANEL.y + HELP_ARROW_DOWN_AT.y };
+}
+/** 舞台坐标下右列上滚 / 下滚三角的落点 */
+export function helpScrollUpAt(): { x: number; y: number } {
+  return { x: HELP_PANEL.x + HELP_SCROLL_UP_AT.x, y: HELP_PANEL.y + HELP_SCROLL_UP_AT.y };
+}
+export function helpScrollDownAt(): { x: number; y: number } {
+  return { x: HELP_PANEL.x + HELP_SCROLL_DOWN_AT.x, y: HELP_PANEL.y + HELP_SCROLL_DOWN_AT.y };
 }
 /** 面板局部坐标下正文第 `row` 行的落点 */
 export function lineAt(row: number): { x: number; y: number } {
@@ -263,13 +386,13 @@ export interface HelpChapter {
  * | i | name | res | resCount | 资源区间 | 行数 | maxScroll |
  * |---|---|---|---|---|---|---|
  * | 0 | 操作說明 | 1 | 1 | 1..1 | 4 | 0 |
- * | 1 | 遊戲畫面 | 2 | 6 | 2..7 | 104 | 96 |
- * | 2 | 遊戲指令 | 8 | 12 | 8..19 | 102 | 94 |
- * | 3 | 房 地 產 | 20 | 3 | 20..22 | 190 | 182 |
- * | 4 | 特殊地點 | 23 | 16 | 23..38 | 79 | 71 |
- * | 5 | 特殊人物 | 39 | 18 | 39..56 | 112 | 104 |
- * | 6 | 卡  片 | 57 | 30 | 57..86 | 338 | 330 |
- * | 7 | 道  具 | 87 | 13 | 87..99 | 148 | 140 |
+ * | 1 | 遊戲畫面 | 2 | 6 | 2..7 | 104 | 90 |
+ * | 2 | 遊戲指令 | 8 | 12 | 8..19 | 102 | 88 |
+ * | 3 | 房 地 產 | 20 | 3 | 20..22 | 190 | 176 |
+ * | 4 | 特殊地點 | 23 | 16 | 23..38 | 79 | 65 |
+ * | 5 | 特殊人物 | 39 | 18 | 39..56 | 112 | 98 |
+ * | 6 | 卡  片 | 57 | 30 | 57..86 | 338 | 324 |
+ * | 7 | 道  具 | 87 | 13 | 87..99 | 148 | 134 |
  *
  * ★ **字段真义**（每项 5 个 dword，@source VA `0x4761b4`）：
  *
@@ -310,20 +433,20 @@ export interface HelpChapter {
  *     上滚 @0x44e881 都直接 `add/sub` 这个 dword，exe 初值全 0；它跟左列格高
  *     没关系。旧版那个 `h` 字段绘制时也没用到，故一并**删除**（不是改良绘制）。
  *
- * ⚠️ `maxScroll = max(0, 行数 − 8)`：exe 夹的是 `[entry+0x0C] − 8`（**资源数 − 8**），
- *   本模块按**行**滚（步长 = 一屏 8 行）。两者等价的前提是「滚动单位 = 资源」，
+ * ⚠️ `maxScroll = max(0, 行数 − 14)`：exe 夹的是 `[entry+0x0C] − 8`（**资源数 − 8**），
+ *   本模块按**行**滚（步长 = 一屏 14 行）。两者等价的前提是「滚动单位 = 资源」，
  *   尚未定案，登记在 `docs/deviations/T-045.md` D-045-2。恒等式由单测逐章钉住。
  */
 export const HELP_CHAPTERS: readonly HelpChapter[] = [
   // >>> GENERATED HELP_CHAPTERS (tools/gen-help-lines.py) >>>
   { name: '操作說明', res: 1, resCount: 1, maxScroll: 0 },
-  { name: '遊戲畫面', res: 2, resCount: 6, maxScroll: 96 },
-  { name: '遊戲指令', res: 8, resCount: 12, maxScroll: 94 },
-  { name: '房 地 產', res: 20, resCount: 3, maxScroll: 182 },
-  { name: '特殊地點', res: 23, resCount: 16, maxScroll: 71 },
-  { name: '特殊人物', res: 39, resCount: 18, maxScroll: 104 },
-  { name: '卡  片', res: 57, resCount: 30, maxScroll: 330 },
-  { name: '道  具', res: 87, resCount: 13, maxScroll: 140 },
+  { name: '遊戲畫面', res: 2, resCount: 6, maxScroll: 90 },
+  { name: '遊戲指令', res: 8, resCount: 12, maxScroll: 88 },
+  { name: '房 地 產', res: 20, resCount: 3, maxScroll: 176 },
+  { name: '特殊地點', res: 23, resCount: 16, maxScroll: 65 },
+  { name: '特殊人物', res: 39, resCount: 18, maxScroll: 98 },
+  { name: '卡  片', res: 57, resCount: 30, maxScroll: 324 },
+  { name: '道  具', res: 87, resCount: 13, maxScroll: 134 },
   // <<< GENERATED HELP_CHAPTERS <<<
 ];
 
@@ -1498,12 +1621,23 @@ export interface HelpBox {
 export type HelpHit = 0 | 1 | 2 | 3 | 4 | 5;
 
 /**
- * 六条矩形 @source `0x476254` 起 24 个 dword，逐条 dump：
- * `22,38,91,104 | 77,38,104,78 | 170,43,192,58 | 170,59,192,74 | 322,48,345,80 | 343,48,366,80`
+ * 六条矩形 @source `0x476254` 起 24 个 dword，逐条 dump（**全部是面板局部坐标**）：
+ *
+ * ```text
+ * python3 tools/disasm.py dump 0x476254 24 4
+ *   22  38  91 361 | 104  78 196 361      ← ★ 整列，不是一行
+ *  170  43 192  58 | 170  59 192  74      ← 上一章 / 下一章
+ *  322  48 345  80 | 343  48 366  80      ← 上滚 / 下滚
+ * ```
+ *
+ * ★ 第 0 / 1 项是**整列**（`y1 = 361` 一直罩到面板下沿），上一版把它们读成
+ *   `(77,38,104,78)` —— 那一组数在 exe 里**不存在**，症状是「左列只有第 1 格
+ *   点得中、右列 8 行格图完全点不动」。探针：把第 1 项改回 `(77,38,104,78)`，
+ *   `hitHelpBox(150, 200)` 会变 `null`。
  */
 export const HELP_HIT_BOXES: readonly HelpBox[] = [
-  { x0: 22, y0: 38, x1: 91, y1: 104 },
-  { x0: 77, y0: 38, x1: 104, y1: 78 },
+  { x0: 22, y0: 38, x1: 91, y1: 361 },
+  { x0: 104, y0: 78, x1: 196, y1: 361 },
   { x0: 170, y0: 43, x1: 192, y1: 58 },
   { x0: 170, y0: 59, x1: 192, y1: 74 },
   { x0: 322, y0: 48, x1: 345, y1: 80 },
@@ -1520,21 +1654,36 @@ function inBox(x: number, y: number, b: HelpBox): boolean {
 }
 
 /**
- * 点在左列第几格上；没点中返回 null。
+ * 点在**左列第几章**那一条上；没点中返回 null。
  *
- * ★ 这 8 格不是命中表里的条目：原版左列在**图上**就画好了，命中按
- *   「左上 (22, 38)、每格高 18、间隙 3」那套图几何判（见 `chipY`）。
- *   上下两端各留 0 像素 —— 第 8 格的下沿是 38 + 8×21 − 3 = 203。
+ * @source 跳表 `0x44e3e3` 第 0 项 → `loc_0044e621`（VA 0x0044e621）：
+ * ```asm
+ * cmp esi, 0x1a        ; x < 26 → 下一行
+ * mov edx, eax         ; eax = 行号
+ * shl edx, 3 / add edx, eax / shl edx, 2      ; edx = 36 × 行号
+ * lea ecx, [edx + 0x3a]; cmp ebx, ecx / jl    ; y <  58 + 36i → 下一行
+ * cmp esi, 0x5c        ; x >= 92 → 下一行
+ * add edx, 0x5b        ; 58 + 0x5b = 129
+ * cmp ebx, edx / jge   ; y >= 129 + 36i → 下一行
+ * ```
+ * 于是每一条是 `x ∈ [26, 91]`、`y ∈ [58 + 36i, 128 + 36i)` —— **两条相邻的行
+ * 之间留 36 − 71 = 负值**，也就是「下一条的上沿 = 上一条的上沿 + 36」，
+ * 而每条有 71 像素高（相邻两条在 x 上不重叠，y 上有 35 像素重叠，表序取先撞）。
+ *
+ * ★ 命中表第 0 项（`(22, 38, 91, 361)`）其实已经把这 8 条整个罩住；原版仍然
+ *   先跑这条**逐行**判据，是为了拿到 `cell`（第几章）去改章号 `[0x476018]`。
+ *   所以 `hitHelp` 的返回里 `label: 0` 配的是 `loc_0044e621` 那一支。
  */
 export function hitHelpChip(x: number, y: number): number | null {
-  if (x < HELP_HIT_BOXES[0]!.x0 || x > HELP_HIT_BOXES[0]!.x1) return null;
-  const rel = y - HELP_CHIP_DY;
+  // 每条：x ∈ [0x1a, 0x5c) = [26, 92)、y ∈ [0x3a + 36i, 0x82 + 36i)
+  //     （0x82 = 0x3a + 0x48；两条相邻的行在 y 上**故意重叠 35 像素**，表序在前赢）
+  if (x < HELP_SEL_NAME.x || x >= HELP_SEL_NAME.x + HELP_ROW_HIT_W) return null;
+  const rel = y - HELP_SEL_NAME.y;
   if (rel < 0) return null;
-  const step = HELP_CHIP_H + HELP_CHIP_GAP;
-  const i = Math.floor(rel / step);
+  // 先按上沿定位，再验证确实落在这一条的高度里（最后那 35 像素归下一条）
+  const i = Math.floor(rel / HELP_NAME_STEP);
   if (i < 0 || i >= HELP_CHAPTER_COUNT) return null;
-  // 只认格内那 18 像素，间隙不算
-  return rel - i * step < HELP_CHIP_H ? i : null;
+  return rel - i * HELP_NAME_STEP < HELP_ROW_HIT_H ? i : null;
 }
 
 /**
@@ -1566,7 +1715,10 @@ export function hitHelp(x: number, y: number): { label: number; cell: number } |
 //  翻章 / 翻页
 // ============================================================
 
-/** 每按一次上/下滚走的行数 = 一屏 8 行 @source 0x44e6eb / 0x44e944 的 `8` */
+/**
+ * 每按一次上/下滚走的行数 = 一屏 14 行 @source 0x44e6eb / 0x44e944 的 `8`
+ * （exe 那个 `8` 是**资源**步长，本模块按行滚，见 `HELP_CHAPTERS` 那段与 D-045-2）。
+ */
 export const HELP_SCROLL_STEP = HELP_TEXT.rows;
 
 /** 夹取章号到 `[0, 章数−1]` */
@@ -1769,21 +1921,93 @@ export function chipImage(i: number, hot: boolean): number {
 }
 
 /**
- * 左列那 8 行的分项名 —— 原版串表 `0x476028` 的表头 8 项（每项 9 字节）。
+ * 每章的**分项名表** —— 指针在条目表 `0x4761b4` 的 **+0x04**（每章一张 8 项 dword 数组）。
  *
- * 单测只钉住**表头那一项**（`遊戲操作`）：把它画在右列 `HELP_INDEX_AT` 上；
- * 其余 7 项属于同一张分项表，本屏没有第二处用到它们的落点，故不铺开。
+ * ★ 上一版把它当成「一张固定的 9 字节串表 `0x476028`（表头是 `遊戲操作`）」——
+ *   那是把**第 0 章那张数组的第一个元素**当成了全表表头。真相是每章各有一张：
+ *
+ * | 章 | 数组地址 | 8 项 |
+ * |---|---|---|
+ * | 0 操作說明 | 0x476028 | 遊戲操作 / 日、月曆 / 地產資料 / 其他資料 / 物價指數 / 股票資料 / 資金資料 / LOAD |
+ * | 1 遊戲畫面 | 0x47602c | 日、月曆 / 地產資料 / 其他資料 / 物價指數 / 股票資料 / 資金資料 / LOAD / SAVE |
+ * | 2 遊戲指令 | 0x476044 | LOAD / SAVE / 卡片 / 交易 / 地圖 / 系統 / 股市 / 前進 |
+ * | 3 房 地 產 | 0x476074 | 公司企業 / 住宅用地 / 商業用地 / 七彩氣球 / 公園 / 卡片 / 企鵝挖寶 / 百貨公司 |
+ * | 4 特殊地點 | 0x476080 | 七彩氣球 / 公園 / 卡片 / 企鵝挖寶 / 百貨公司 / 命運 / 得十點 / 得三十點 |
+ * | 5 特殊人物 | 0x4760c0 | 乞丐 / 土地公 / 大衰神 / 大財神 / 大福神 / 大窮神 / 小衰神 / 小財神 |
+ * | 6 卡  片 | 0x476108 | 天使卡 / 冬眠卡 / 同盟卡 / 免費卡 / 免罪卡 / 均貧卡 / 均富卡 / 改建卡 |
+ * | 7 道  具 | 0x476180 | 工程車 / 地雷 / 汽車 / 定時炸彈 / 飛彈 / 時光機 / 核子飛彈 / 傳送機 |
+ *
+ * ★ 原版画的是 `[entry+0x04][scroll + i]`（`i = 0..7`，`scroll+i >= 8` 就停）——
+ *   所以窗口只在这张数组的**前 8 项**里滑。逐条 dump 命令：
+ *   ```bash
+ *   python3 tools/disasm.py dump 0x476028 8 4   # 第 0 章那张数组的 8 个指针
+ *   ```
  */
-export const HELP_INDEX_NAMES: readonly string[] = [
-  '遊戲操作',
-  '日、月曆',
-  '地產資料',
-  '其他資料',
-  '物價指數',
-  '股票資料',
-  '資金資料',
-  'LOAD',
+export const HELP_CHAPTER_ITEMS: readonly (readonly string[])[] = [
+  ['遊戲操作', '日、月曆', '地產資料', '其他資料', '物價指數', '股票資料', '資金資料', 'LOAD'],
+  ['日、月曆', '地產資料', '其他資料', '物價指數', '股票資料', '資金資料', 'LOAD', 'SAVE'],
+  ['LOAD', 'SAVE', '卡片', '交易', '地圖', '系統', '股市', '前進'],
+  ['公司企業', '住宅用地', '商業用地', '七彩氣球', '公園', '卡片', '企鵝挖寶', '百貨公司'],
+  ['七彩氣球', '公園', '卡片', '企鵝挖寶', '百貨公司', '命運', '得十點', '得三十點'],
+  ['乞丐', '土地公', '大衰神', '大財神', '大福神', '大窮神', '小衰神', '小財神'],
+  ['天使卡', '冬眠卡', '同盟卡', '免費卡', '免罪卡', '均貧卡', '均富卡', '改建卡'],
+  ['工程車', '地雷', '汽車', '定時炸彈', '飛彈', '時光機', '核子飛彈', '傳送機'],
 ];
+
+/** 上一版那张「固定表」的名字（= 第 0 章那张数组）—— 保留给旧调用点与单测比对 */
+export const HELP_INDEX_NAMES: readonly string[] = HELP_CHAPTER_ITEMS[0]!;
+
+/** 这一章第 `i` 条分项名；越界返回 `''` */
+export function chapterItem(chapter: number, i: number): string {
+  const list = HELP_CHAPTER_ITEMS[clampChapter(chapter)];
+  if (list === undefined || i < 0 || i >= list.length) return '';
+  return list[i] ?? '';
+}
+
+/**
+ * 这一章画不画那 8 行格图/分项名 —— 原版的闸是**该章的资源数**。
+ *
+ * @source `loc_0044e301`（VA 0x0044e301）：
+ * ```asm
+ * mov esi, [eax*4 + 0x4761c4]   ; esi = entry + 0x10 = 该章的**滚动位置**
+ * add esi, ebx                  ; + 当前行号 i
+ * cmp esi, [eax*4 + 0x4761c0]   ; 与 entry + 0x0C 比
+ * jge 0x44e376                  ; >= 就一跳到底：一行都不画
+ * ```
+ * `[entry+0x0C]` 就是条目表那个「**该章占几个资源**」（1/6/12/3/16/18/30/13，
+ * 与 `HELP_CHAPTERS[i].resCount` 同源）。所以第 0 章（资源数 1）**一行都不画**，
+ * 第 3 章（资源数 3）也只画 3 行 —— 名字的点名表与它同一口径。
+ *
+ * ⚠️ 上一版**没有这个闸**（只查数组长度），于是「第 0 章也会铺 8 行格图」。
+ */
+export function chapterItemCount(chapter: number): number {
+  const c = HELP_CHAPTERS[clampChapter(chapter)];
+  return c === undefined ? 0 : Math.max(0, c.resCount);
+}
+
+/**
+ * 这一章画不画那 8 行 —— 闸是**资源数 > 8**（= `entry+0x0C > 8`）。
+ *
+ * 八章的资源数是 1 / 6 / 12 / 3 / 16 / 18 / 30 / 13，所以**只有第 0 章
+ * （操作說明，资源数 1）与第 1/3 章**不画：它们 `scroll + 0 >= cnt` 立刻跳出。
+ */
+export function chapterHasItems(chapter: number): boolean {
+  return chapterItemCount(chapter) > HELP_LIST_ROWS;
+}
+
+/**
+ * 这一章第 `i` 行那一条分项名 / 格图 —— `i` 是**已加过 scroll 的绝对行号**。
+ *
+ * ★ 表是**指针数组**（`entry+0x04`），原版按 `scroll + i` 直接索引；项数不足时
+ *   `load_mkf` 出来的缓冲区后面跟的是别的数据，具体内容不可靠 ——
+ *   本模块按最多 8 项导出（`HELP_CHAPTER_ITEMS` 那张表就是照这个 dump 的），
+ *   越界给空串。行数那一层的闸用 `chapterItemCount()`（= 资源数）。
+ */
+export function itemAt(chapter: number, index: number): string {
+  const list = HELP_CHAPTER_ITEMS[clampChapter(chapter)];
+  if (list === undefined || index < 0 || index >= list.length) return '';
+  return list[index] ?? '';
+}
 
 // ============================================================
 //  绘制
@@ -1808,21 +2032,52 @@ function drawAt(
   ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
 }
 
-/** 居中白字 + 3px 深色描边（原版 flag 2 = 正中，x/y 是文字块中心）*/
+/**
+ * 居中白字 + 3px 深色描边（原版 `flag 2` = 正中，x/y 是**文字块中心**）。
+ *
+ * @source `_rich4_draw_text` 的跳表 `0x44faa0` 第 2 项：
+ *   `DrawTextA(rect{x−10, y−10, x+…}, DT_CENTER|DT_VCENTER|…)`。
+ */
 function helpText(
   ctx: CanvasRenderingContext2D,
   text: string,
   x: number,
   y: number,
   size: number,
+  stroke: string = HELP_TEXT_STROKE,
 ): void {
   ctx.font = `${size}px ${FONT_FAMILY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineWidth = 3;
-  ctx.strokeStyle = HELP_TEXT_STROKE;
+  ctx.strokeStyle = stroke;
   ctx.strokeText(text, x, y);
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = HELP_TEXT_FILL;
+  ctx.fillText(text, x, y);
+}
+
+/**
+ * **左上对齐**的文字（原版 `flag 0`）—— 正文那 14 行走的就是这一支。
+ *
+ * @source `0x44e1c6` 起：`push 0`（flag）→ `DrawTextA(rect{x−10, y−10, …}, DT_LEFT|DT_TOP)`。
+ *   ★ 上一版把正文也按「居中」画了 —— 46 个测试全绿也看不出来（假 ctx 只记坐标），
+ *   但真机上每行会从 `x + 0xe8` 往左偏半个字的宽度，且**行距是 30 而不是 18**。
+ */
+function helpTextLeft(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  size: number,
+  stroke: string = HELP_TEXT_STROKE,
+): void {
+  ctx.font = `${size}px ${FONT_FAMILY}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = stroke;
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = HELP_TEXT_FILL;
   ctx.fillText(text, x, y);
 }
 
@@ -1838,6 +2093,64 @@ function helpText(
  *   `edx <= 0` 那条支路），**下滚**只在还有内容时画（@0x44e6eb 里
  *   `[0x48c5ec] == 0` 就不画）。
  */
+/** 一块图素要落在哪 —— 纯数据，`drawHelpScreen` 只负责 `drawImage` */
+export interface HelpImageAt {
+  /** `help.mkf` 资源 0 的图号 */
+  image: number;
+  x: number;
+  y: number;
+  /** 干什么用的（单测与目视核对用）*/
+  why: 'bg' | 'bar' | 'chip' | 'chipHot' | 'arrowUp' | 'arrowDown' | 'scrollUp' | 'scrollDown';
+}
+
+/**
+ * 这一刻要画哪几张图、落在哪 —— **纯函数**（不碰 canvas、不看 `helpState`）。
+ *
+ * ★ 版面在 8 行条目与正文处与滚动位置、章号有关，所以单独抽出来给单测钉
+ *   「哪张图落在哪个坐标」；`drawHelpScreen` 拿它逐条 `drawImage`。
+ *   文字不在里面（它是另一层：`helpText` / `helpTextLeft`）。
+ */
+export function helpImagePlan(chapter: number, scroll: number): readonly HelpImageAt[] {
+  const c = clampChapter(chapter);
+  const sc = clampScroll(c, scroll);
+  const out: HelpImageAt[] = [];
+  const push = (image: number, x: number, y: number, why: HelpImageAt['why']): void => {
+    out.push({ image, x, y, why });
+  };
+
+  // ① 底图
+  push(HELP_BG_IMAGE, 0, 0, 'bg');
+  // ② 选中那一章的章名条
+  const bar = barAt(c);
+  push(HELP_BAR_IMAGE, bar.x, bar.y, 'bar');
+  // ③ 8 行格图（`scroll + i` 越界就停；原版两轮都这么停）
+  if (chapterHasItems(c)) {
+    for (let i = 0; i < HELP_LIST_ROWS; i++) {
+      const at = chipImageAt(i);
+      push(sc + i === sc ? HELP_ROW_HOT_IMAGE : HELP_ROW_IMAGE, at.x, at.y, sc + i === sc ? 'chipHot' : 'chip');
+    }
+  }
+  // ④ 中部「上一章 / 下一章」三角（条件与 `drawHelpScreen` 同）
+  if (sc > 0) {
+    const at = arrowUpAt();
+    push(HELP_ARROW_UP_IMAGE, at.x, at.y, 'arrowUp');
+  }
+  if (hasMoreBelow(c, sc)) {
+    const at = arrowDownAt();
+    push(HELP_ARROW_DOWN_IMAGE, at.x, at.y, 'arrowDown');
+  }
+  // ⑤ 右列上滚 / 下滚三角
+  if (sc > 0) {
+    const at = scrollUpAt();
+    push(HELP_SCROLL_UP_IMAGE, at.x, at.y, 'scrollUp');
+  }
+  if (hasMoreBelow(c, sc)) {
+    const at = scrollDownAt();
+    push(HELP_SCROLL_DOWN_IMAGE, at.x, at.y, 'scrollDown');
+  }
+  return out;
+}
+
 export function drawHelpScreen(
   ctx: CanvasRenderingContext2D,
   sprite: (i: number) => { bitmap: ImageBitmap; anchorX: number; anchorY: number } | null,
@@ -1845,61 +2158,57 @@ export function drawHelpScreen(
 ): void {
   const chapter = clampChapter(d.chapter);
   const scroll = clampScroll(chapter, d.scroll);
-  const c = HELP_CHAPTERS[chapter];
-  if (c === undefined) return;
+  if (HELP_CHAPTERS[chapter] === undefined) return;
+  // ⚠️ 这里**不要**再 `const c = HELP_CHAPTERS[chapter]` 顶着 ——
+  //   TS 的收窄只对第一处有效，第二次索引会报 `possibly undefined`。
   const ox = d.origin?.x ?? HELP_PANEL.x;
   const oy = d.origin?.y ?? HELP_PANEL.y;
 
-  // ── 底图（三列空板：左绿、中珊瑚、右黄）@0x44e02b ──
-  drawAt(ctx, sprite(HELP_BG_IMAGE), ox, oy);
-
-  // ── 选中那一章的章名条，挂在**右列**它自己那一行上 @0x44e04d / 0x44e05a ──
-  const bar = barAt(chapter);
-  drawAt(ctx, sprite(HELP_BAR_IMAGE), ox + bar.x, oy + bar.y);
-
-  // ── 左列那 8 行的格图（资源 0 图 6 / 选中 图 7）@0x44e2f0 / 0x44e33c ──
+  // ── ① 图素：整张计划由 `helpImagePlan` 出（纯函数）──
   //
-  // ⚠️ 本模块**不画这两张**：资源 0 的图 6/7 解出来是「珊瑚底 + 箭头」的三角钮，
-  //   贴到左列会盖掉那条绿带（实测见 T-045 偏离记录）。原版表里也没有左列的图号
-  //   可用 —— `0x4761b4` 每项的第 3 个字段是**正文资源号**（1/2/3/…/88），不是图号。
-  //   左列那 8 行的分隔线本来就烘在底图上（图 0 左列有 8 条暗绿横线），只画名字即可。
-
-  // ── 中部两颗三角 ──
-  if (scroll > 0) {
-    const at = arrowUpAt();
-    drawAt(ctx, sprite(HELP_ARROW_UP_IMAGE), ox + at.x, oy + at.y);
-  }
-  if (hasMoreBelow(chapter, scroll)) {
-    const at = arrowDownAt();
-    drawAt(ctx, sprite(HELP_ARROW_DOWN_IMAGE), ox + at.x, oy + at.y);
+  // 顺序照 exe：底图 → 章名条 → 8 张格图（一章一轮）→ 上一章/下一章三角
+  // → 八行章名 → 分项标题 → 上滚/下滚三角 → 正文。
+  // 图素这一层与文字这一层是分开的两轮，所以这里先一次性铺完图素。
+  for (const g of helpImagePlan(chapter, scroll)) {
+    drawAt(ctx, sprite(g.image), ox + g.x, oy + g.y);
   }
 
-  // ── 左列八行的章名：选中那一行居中在 (26, 58 + 20i)，其余在 (59, 73 + 20i)
-  //    @0x44e04d（选中）/ 0x44e08c（其余）──
-  for (let i = 0; i < HELP_CHAPTER_COUNT; i++) {
-    const name = HELP_CHAPTERS[i]?.name ?? '';
-    if (i === chapter) {
-      helpText(ctx, name, ox + HELP_SEL_NAME.x, oy + HELP_SEL_NAME.y + 20 * i, HELP_CHIP_FONT_SIZE);
-    } else {
-      helpText(ctx, name, ox + HELP_ROW_NAME.x, oy + HELP_ROW_NAME.y + 20 * i, HELP_CHIP_FONT_SIZE);
+  // ── ② 8 行条目的分项名（格图已在上面铺好）@0x44e2b2 ──
+  //    两轮都硬编码 8 行；页面上的闸是 `chapterItemCount()`（= 资源数）`<= 8`
+  if (chapterHasItems(chapter)) {
+    for (let i = 0; i < HELP_LIST_ROWS; i++) {
+      const name = itemAt(chapter, scroll + i);
+      if (name === '') continue;
+      const at = chipNameAt(i);
+      helpText(ctx, name, ox + at.x, oy + at.y, HELP_CHIP_FONT_SIZE, HELP_CORAL_STROKE);
     }
   }
 
-  // ── 右列该章的分项标题（小条目表 0x476028 的第 8 项）@0x44e0db ──
+  // ── ③ 八行章名：选中那一章在 (26, 58+36c)、其余在 (59, 73+36i) ──
+  //    @0x44e08c / 0x44e092（**36 步**，不是 20）
+  for (let i = 0; i < HELP_CHAPTER_COUNT; i++) {
+    const name = HELP_CHAPTERS[i]?.name ?? '';
+    const at = chapterNameAt(i, i === chapter);
+    helpText(ctx, name, ox + at.x, oy + at.y, HELP_CHIP_FONT_SIZE);
+  }
+
+  // ── ④ 右列 8 行顶上那个分项标题（当前那一条的名字）@0x44e0db ▸ loc_0044e376 ──
   helpText(
     ctx,
-    HELP_INDEX_LABEL,
+    chapterItem(chapter, scroll) || HELP_INDEX_LABEL,
     ox + HELP_INDEX_AT.x,
     oy + HELP_INDEX_AT.y,
     HELP_CHIP_FONT_SIZE,
+    HELP_CORAL_STROKE,
   );
 
-  // ── 正文 ──
+  // ── ⑤ 正文 14 行（**左上对齐** flag 0、行距 18）@0x44e1d1 / @0x44e1d7 ──
   const rows = visibleLines(chapter, scroll);
   for (let i = 0; i < rows.length; i++) {
     const line = rows[i]!;
     if (line === '' || line === '@') continue; // 空行只占位、分页标记不画
-    helpText(ctx, line, ox + HELP_TEXT.dx, oy + HELP_TEXT.dy + i * HELP_TEXT.lineH, HELP_FONT_SIZE);
+    const at = lineAt(i);
+    helpTextLeft(ctx, line, ox + at.x, oy + at.y, HELP_FONT_SIZE);
   }
 }
 
@@ -1942,6 +2251,23 @@ export function applyHelpHit(hit: { label: number; cell: number }, env: UiScreen
 
 export const helpScreen: UiScreen = {
   id: 'help',
+
+  /**
+   * ★ **浮窗**（原版从不擦屏，靠存底/还原）：
+   *
+   * @source 回调 `_rich4_ui_help_callback` 的 `WM_CREATE`（`loc_0044e488`）里
+   *   `call fcn_00451e7e`（**存底**，VA 0x00451e7e）、`WM_RBUTTONUP`（`loc_0044e546`）
+   *   里 `call fcn_00451edb`（**还原** + `Post`，VA 0x00451edb）—— 原版**一条
+   *   全屏清色都没有**，面板四周一直是原来的棋盘。少了这个 `windowed`，
+   *   `main.ts` 不会先把棋盘画一遍，四周就是纯黑。
+   *（`big-map-screen.ts:222` 是同一个用法。）
+   *
+   * ⚠️ **已知限制**：`main.ts` 只在 `screen === 'game'` 时预画棋盘
+   *   （`main.ts` 的 `if (overlay.windowed === true && screen === 'game')`），
+   *   所以从**設定屏**里点「遊戲說明」推开的这一屏四周仍是黑的。
+   *   那要动 `main.ts`（本卡不许），登记在 `docs/deviations/T-045.md` D-045-5。
+   */
+  windowed: true,
 
   active: () => helpState.open,
 

@@ -28,9 +28,11 @@ import {
   FACE_MOUTH_RECT,
   FACE_SLOT_FRAMES,
   FACE_SLOT_RECT,
+  BLIT_BALL_RANGE,
   TALLY_ART_AT,
   TALLY_BAND,
   TALLY_DIGIT_DX,
+  TALLY_FRAME,
   TALLY_LINE_DY,
   TALLY_PITCH,
   anmDone,
@@ -43,6 +45,7 @@ import {
   drawTally,
   faceCtlStart,
   faceStep,
+  isBallEntry,
   lotteryDrawActive,
   lotteryDrawCue,
   lotteryDrawPhase,
@@ -53,6 +56,7 @@ import {
   resolveErase,
   tallyArtAt,
   tallyDigits,
+  tallyFrameAt,
   tallyString,
   voiceOf,
 } from './lottery-draw-screen.ts';
@@ -100,8 +104,8 @@ describe('台面擦除 @source fcn_0045643d 的各个调用点', () => {
   /** 开区间端点 ⇒ 尺寸就是 `x1 − dx` */
   const size = (r: EraseRect): [number, number] => [r.x1 - r.dx, r.y1 - r.dy];
 
-  it('★ 状态 3：右主持人整片 (472,66)-(592,346) 与她的左半 (472,116)-(516,205)', () => {
-    const rows = CEREMONY_ERASE[3]!;
+  it('★ 摇球（步 2 / 状态 3 第一段）：右主持人整片 (472,66)-(592,346) 与她的左半 (472,116)-(516,205)', () => {
+    const rows = CEREMONY_ERASE[2]!;
     expect(rows).toHaveLength(3);
     expect(rows[0]).toMatchObject({ dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42, x1: 0x250, y1: 0x15b });
     expect(size(rows[0]!)).toEqual([120, 281]);
@@ -111,8 +115,8 @@ describe('台面擦除 @source fcn_0045643d 的各个调用点', () => {
     expect(size(rows[2]!)).toEqual([45, 90]);
   });
 
-  it('★ 状态 4 / 7 各自的擦除完全一样：右脸 (472,66)-(520,346)、左脸 (7,66)-(141,346)、右下半身', () => {
-    const rows = CEREMONY_ERASE[5]!;
+  it('★ 得主（步 4）/ 空号（步 7）的擦除完全一样：右脸 (472,66)-(520,346)、左脸 (7,66)-(141,346)、右下半身', () => {
+    const rows = CEREMONY_ERASE[4]!;
     expect(rows).toHaveLength(3);
     expect(rows[0]).toMatchObject({ dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x74, x1: 0x209, y1: 0x1fb });
     expect(size(rows[0]!)).toEqual([49, 441]);
@@ -120,33 +124,69 @@ describe('台面擦除 @source fcn_0045643d 的各个调用点', () => {
     expect(size(rows[1]!)).toEqual([135, 441]);
     expect(rows[2]).toMatchObject({ dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x259, y1: 0x1fb });
     expect(size(rows[2]!)).toEqual([129, 391]);
-    expect(CEREMONY_ERASE[8]).toEqual(CEREMONY_ERASE[5]);
+    // 空号（步 7 / 状态 7）与得主那一步的擦除完全一样
+    expect(CEREMONY_ERASE[7]).toEqual(CEREMONY_ERASE[4]);
+    // 收尾（步 8 / 状态 8）用的是**另一组**：只擦右臂 + 还原左脸
+    expect(CEREMONY_ERASE[8]).toHaveLength(2);
   });
 
-  it('★ 状态 5 那两块：(0,150)-(418,270) 与 (150,270)-(300,360)', () => {
-    const rows = CEREMONY_ERASE[6]!;
+  it('★ 数帧（步 5 / 状态 5）那两块：(0,150)-(418,270) 与 (150,270)-(300,360)', () => {
+    const rows = CEREMONY_ERASE[5]!;
     expect(size(rows[0]!)).toEqual([419, 121]);
     expect(size(rows[1]!)).toEqual([151, 91]);
   });
 
-  it('★ 状态 8：右臂 (472,116)-(516,205) + 左脸还原用的是**图 3**的 (45,23)-(45,23)', () => {
-    const rows = CEREMONY_ERASE[9]!;
+  it('★ 收尾（步 8 / 状态 8）：右臂 (472,116)-(516,205) + 左脸还原用的是**图 3**的 (45,23)-(45,23)', () => {
+    const rows = CEREMONY_ERASE[8]!;
     expect(rows[0]).toMatchObject({ from: ENTRY.stage, dx: 0x1d8, dy: 0x74, x1: 0x205, y1: 0xce });
     // 左脸那一条：源与目标都从子图自己的 (0x2d,0x17) 起，只有 1×1
     expect(rows[1]).toMatchObject({ from: ENTRY.board, dx: 0x34, dy: 0x59, sx: 0x2d, sy: 0x17, x1: 0x5b, y1: 0x3f });
   });
 
-  it('★ 状态 3 要重画两个主持人、状态 5 要重画举板、状态 8 要重画点手指的姿势', () => {
-    expect(CEREMONY_BLIT[3]).toEqual([
+  it('★ 摇球那一步要重画两个主持人、数帧那一步重画举板、收尾那一步重画点手指的姿势', () => {
+    // ★ 重画与擦除**同一格**：擦的是他们身上的板与腿（CEREMONY_ERASE[2]），
+    //   擦完紧接着把他们自己贴回去（@source 0x430379 / 0x430402）
+    expect(CEREMONY_BLIT[2]).toEqual([
       { entry: ENTRY.board, at: [7, 0x42] },
       { entry: ENTRY.presenting, at: [0x1d8, 0x42] },
     ]);
-    expect(CEREMONY_BLIT[6]).toEqual([{ entry: ENTRY.jumpBoard, at: [0, 0] }]);
-    expect(CEREMONY_BLIT[9]).toEqual([{ entry: ENTRY.pointing, at: POSE_RIGHT }]);
+    expect(CEREMONY_BLIT[5]).toEqual([{ entry: ENTRY.jumpBoard, at: [0, 0] }]);
+    expect(CEREMONY_BLIT[8]).toEqual([{ entry: ENTRY.pointing, at: POSE_RIGHT }]);
   });
 
-  it('★ 号码球：3 摇球那一步还没有号，开号与 5/6/7 各重贴一次', () => {
-    expect(CEREMONY_BALLS).toEqual([false, false, false, false, true, false, true, true, true, false, false, false]);
+  it('★ 号码球：开号（状态 3 第二段）与 4/5/6/7 各重贴一次', () => {
+    // 步 0=状态1 1=状态2 2=状态3摇球 3=状态3开号 4=状态4
+    // 5=状态5 6=状态6 7=状态7(空号)/状态8(收尾) 8=状态9 9=状态10
+    expect(CEREMONY_BALLS).toEqual([
+      false, false, false, true, true, true, true, true, false, false,
+    ]);
+  });
+
+  it('★ 开号那一步就是 `CEREMONY_BALLS` 为真的那一步（含 0/1/9 的号码也当场画球）', () => {
+    // core 脚本里状态 3 **连续出现两次**：`steps[2]` 是摇球、`steps[3]` 才是开号。
+    // ★ 步号就是数组下标 —— `begin()` 不往前面插「建屏」那一步
+    //   （建屏 = `CEREMONY_BASE`，是 WM_CREATE 直接画的），所以开号 = 步 **3**，
+    //   不是步 4。探针：把 `CEREMONY_BALLS[3]` 改回 false，下面这条会红。
+    const win = lotteryCeremony({ number: 6, winner: 0, prize: 5, lottery: [], pool: 0, rigged: false });
+    const threes = win.map((s, i) => (s.state === 3 ? i : -1)).filter((i) => i >= 0);
+    expect(threes).toEqual([2, 3]);
+    const openIdx = threes[1]!;
+    expect(openIdx).toBe(3);
+    expect(win[openIdx]!.state).toBe(3);
+    expect(CEREMONY_BALLS[openIdx]).toBe(true);
+    // 摇球那一步（前一段状态 3）不画球 —— 那时还没开号
+    expect(CEREMONY_BALLS[openIdx - 1]).toBe(false);
+    // 每一步（含末步）都要有定义，否则 `drawBalls` 会读到 undefined
+    for (let i = 0; i < win.length; i++) expect(CEREMONY_BALLS[i]).toBeDefined();
+    expect(CEREMONY_BALLS.length).toBe(win.length);
+  });
+
+  it('★ 号码球那 10 张子图（37..46）整段都在「从 core 脚本里摘掉」的范围里', () => {
+    expect(BLIT_BALL_RANGE).toEqual({ from: 37, to: 46 });
+    for (let e = 37; e <= 46; e++) expect(isBallEntry(e)).toBe(true);
+    // 边界：36（徽章末号）与 47 都不是球
+    expect(isBallEntry(36)).toBe(false);
+    expect(isBallEntry(47)).toBe(false);
   });
 });
 
@@ -448,13 +488,23 @@ interface Drawn {
   y: number;
 }
 
+interface Filled {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color: string;
+}
+
 function fakeCtx(): {
   ctx: CanvasRenderingContext2D;
   images: Drawn[];
   text: { t: string; x: number; y: number; color: string }[];
+  rects: Filled[];
 } {
   const images: Drawn[] = [];
   const text: { t: string; x: number; y: number; color: string }[] = [];
+  const rects: Filled[] = [];
   const ctx = {
     font: '',
     textAlign: 'left',
@@ -462,6 +512,9 @@ function fakeCtx(): {
     fillStyle: '#000',
     strokeStyle: '#000',
     lineWidth: 1,
+    fillRect: (x: number, y: number, w: number, h: number) => {
+      rects.push({ x, y, w, h, color: String(ctx.fillStyle) });
+    },
     drawImage: (b: { index: number; archive: string; resource: number }, x: number, y: number) => {
       images.push({ index: b.index, archive: b.archive, resource: b.resource, x, y });
     },
@@ -472,7 +525,7 @@ function fakeCtx(): {
     getImageData: (_x: number, _y: number, w: number, h: number) => ({ width: w, height: h }),
     putImageData: () => undefined,
   };
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, images, text };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, images, text, rects };
 }
 
 /** 每个图号都带 `index/archive/resource` 的假精灵 */
@@ -545,21 +598,74 @@ describe('drawBalls —— 中奖号那两颗球是直接贴的', () => {
 
   it('★ 十位在 (286,405)、个位在 (358,405)，减掉球自己的锚点 (35,35)', () => {
     const f = fakeCtx();
-    drawBalls(f.ctx, fakeSprite(), view(28, 4));
+    drawBalls(f.ctx, fakeSprite(), view(28, 3)); // 步 3 = 开号
     // 28 → 十位 2（图 39）、个位 8（图 45）
     expect(f.images.map((i) => i.index)).toEqual([39, 45]);
     expect(f.images[0]).toMatchObject({ x: 286 - 35, y: 405 - 35 });
     expect(f.images[1]).toMatchObject({ x: 358 - 35, y: 405 - 35 });
   });
 
-  it('★ 该贴的那几步才贴', () => {
+  it('★ 该贴的那几步才贴：摇球（步 2）一颗都不画', () => {
     const f = fakeCtx();
-    drawBalls(f.ctx, fakeSprite(), view(28, 3));
+    drawBalls(f.ctx, fakeSprite(), view(28, 2));
     expect(f.images).toEqual([]);
+    // 开号（步 3）与状态 4/5/6/7 都要贴
+    for (const step of [3, 4, 5, 6, 7]) {
+      const g = fakeCtx();
+      drawBalls(g.ctx, fakeSprite(), view(28, step));
+      expect(g.images.map((i) => i.index), `步 ${step}`).toEqual([39, 45]);
+    }
+    // 收场那几步不贴
+    for (const step of [8, 9]) {
+      const g = fakeCtx();
+      drawBalls(g.ctx, fakeSprite(), view(28, step));
+      expect(g.images, `步 ${step}`).toEqual([]);
+    }
   });
 });
 
-describe('drawTally —— 人像条 + 徽章 + 数字牌', () => {
+describe('drawTally —— 压暗底框 + 人像条 + 徽章 + 数字牌', () => {
+  it('★ 每个人先罩一块 296×60 的压暗底框（「四个蓝框」）@source 0x0042f482', () => {
+    const lottery = new Array<number>(36).fill(0);
+    lottery[6] = 1; // 玩家 0 持 07
+    const f = fakeCtx();
+    drawTally(f.ctx, fakeSprite(), lottery, 2);
+    // 两个人 → 两块框，落点就是铭牌（表 0x0042f30c 那两对坐标）
+    expect(f.rects).toHaveLength(2);
+    expect(f.rects[0]).toMatchObject({ x: 16, y: 340, w: 0x128, h: 0x3c });
+    expect(f.rects[1]).toMatchObject({ x: 16, y: 410, w: 0x128, h: 0x3c });
+    expect(TALLY_FRAME).toEqual({ w: 296, h: 60, alpha: 0.5 });
+    expect(tallyFrameAt(0)).toEqual({ x: 16, y: 340 });
+    expect(tallyFrameAt(3)).toEqual({ x: 328, y: 410 });
+    expect(tallyFrameAt(4)).toBeNull();
+  });
+
+  it('★ 底框压在 人像条/徽章/数字 之前（原版是先压暗再落图）', () => {
+    const lottery = new Array<number>(36).fill(0);
+    lottery[6] = 1;
+    const f = fakeCtx();
+    // 用调用序记一遍：drawImage 与 fillRect 共用一条时间线
+    const order: string[] = [];
+    const sp = fakeSprite();
+    const ctx = f.ctx as unknown as {
+      fillRect: (x: number, y: number, w: number, h: number) => void;
+      drawImage: (b: unknown, x: number, y: number) => void;
+    };
+    const realFill = ctx.fillRect;
+    const realDraw = ctx.drawImage;
+    ctx.fillRect = (x, y, w, h) => {
+      order.push('fill');
+      realFill.call(ctx, x, y, w, h);
+    };
+    ctx.drawImage = (b, x, y) => {
+      order.push('draw');
+      realDraw.call(ctx, b, x, y);
+    };
+    drawTally(f.ctx, sp, lottery, 1);
+    expect(order[0]).toBe('fill'); // 先压暗
+    expect(order.slice(1)).toEqual(['draw', 'draw', 'draw', 'draw']); // 人像条 + 徽章 + 07 两张
+  });
+
   it('★ 人像条与徽章都落在 铭牌 + (0x14, 0x1e)', () => {
     const lottery = new Array<number>(36).fill(0);
     lottery[6] = 1; // 玩家 0 持 07
@@ -680,6 +786,7 @@ describe('整屏的播放 @source 0x0043010c 的状态机', () => {
   });
 
   it('★ 开号那一步之后号码球是 37 + 数字（07 号 → 十位 0、个位 7）', () => {
+    // 步 4 = 状态 4（得主）—— 球这时也在（脚本原本给了球，被 localizeStep 摘掉后由 CEREMONY_BALLS 补回）
     resetLotteryDrawScreenState();
     const [before, after] = winPair();
     const env = makeEnv(after, { 16: fakeFlic(42), 17: fakeFlic(37) });
@@ -705,6 +812,79 @@ describe('整屏的播放 @source 0x0043010c 的状态机', () => {
     expect(lotteryDrawStep()).toBe(5);
     const v = lotteryDrawView(env)!;
     expect(v.winner).toBe('阿土伯');
+  });
+
+  it('★ 中奖那一路：铭牌上的号码还在（`state.lottery` 已被 core 清空，取的是 `cue.sold`）', () => {
+    resetLotteryDrawScreenState();
+    const [before, after] = winPair();
+    // 开奖后 core 给的那一份是**全 0**（`emptyLottery()`）——
+    // 这就是「中奖反而四块空铭牌」的现场
+    expect(after.lottery.every((v) => v === 0)).toBe(true);
+    const env = makeEnv(after, { 16: fakeFlic(42), 17: fakeFlic(37) });
+    lotteryDrawScreen.event!(before, after, env);
+
+    const seen: string[] = [];
+    for (let i = 0; i < 4000 && lotteryDrawStep() >= 0; i++) {
+      const v = lotteryDrawView(env)!;
+      seen.push(tallyString(v.lottery, 0));
+      env.now += 50;
+      lotteryDrawScreen.tick!(env);
+    }
+    // 玩家 0 持 07 号（`winPair` 里 lottery[6] = 1）—— 整场演出都看得见
+    expect(seen.length).toBeGreaterThan(0);
+    expect(new Set(seen)).toEqual(new Set(['07']));
+    // 绘制那一次也真的把两张数字牌贴上了（开号那一步）
+    resetLotteryDrawScreenState();
+    const env2 = makeEnv(after, { 16: fakeFlic(42), 17: fakeFlic(37) });
+    const spy = fakeCtx();
+    (env2 as { stage: CanvasRenderingContext2D }).stage = spy.ctx;
+    lotteryDrawScreen.event!(before, after, env2);
+    for (let i = 0; i < 4000 && lotteryDrawStep() < 4; i++) {
+      env2.now += 50;
+      lotteryDrawScreen.tick!(env2);
+    }
+    expect(lotteryDrawStep()).toBe(4);
+    lotteryDrawScreen.draw(env2);
+    expect(spy.images.filter((i) => i.resource === 13).map((i) => i.index)).toEqual([0, 7]);
+  });
+
+  it('★ 号码里有 0 / 1 / 9 时，开号那一步两颗球都画得出来', () => {
+    // 21 号 → 十位 2（图 39）、个位 1（图 38）；10 号 → 十位 1（38）、个位 0（37）；
+    // 09 号 → 十位 0（37）、个位 9（46）
+    for (const [number, want] of [[21, [39, 38]], [10, [38, 37]], [9, [37, 46]]] as const) {
+      resetLotteryDrawScreenState();
+      const lottery = new Array<number>(36).fill(0);
+      lottery[number] = 1;
+      const before = makeState({ day: 14, totalDays: 100, pool: 5000, lottery });
+      const players = [
+        { index: 0, cash: 15000, character: 4 },
+        { index: 1, cash: 10000, character: 1 },
+      ] as GameState['players'];
+      const after = makeState({
+        day: 15,
+        totalDays: 101,
+        pool: 0,
+        lottery: new Array<number>(36).fill(0),
+        players,
+      });
+      const env = makeEnv(after, { 16: fakeFlic(42), 17: fakeFlic(37) });
+      lotteryDrawScreen.event!(before, after, env);
+      // 开号 = 步 3（摇球那一步走完 20 帧 + 摇球 ANM 放完之后）
+      for (let i = 0; i < 4000 && lotteryDrawStep() < 3; i++) {
+        env.now += 50;
+        lotteryDrawScreen.tick!(env);
+      }
+      expect(lotteryDrawStep()).toBe(3);
+      const spy = fakeCtx();
+      (env as { stage: CanvasRenderingContext2D }).stage = spy.ctx;
+      lotteryDrawScreen.draw(env);
+      const balls = spy.images.filter((i) => i.resource === 15 && i.index >= 37 && i.index <= 46);
+      expect(balls.map((b) => b.index), `号码 ${number}`).toEqual([...want]);
+      expect(balls.map((b) => ({ x: b.x, y: b.y }))).toEqual([
+        { x: 286 - 35, y: 405 - 35 },
+        { x: 358 - 35, y: 405 - 35 },
+      ]);
+    }
   });
 
   it('★ 空号那一路不公布得主', () => {
@@ -739,12 +919,13 @@ describe('core 脚本的步号与本屏的订正表对齐', () => {
     const win = lotteryCeremony({ number: 6, winner: 0, prize: 5, lottery: [], pool: 0, rigged: false });
     const lose = lotteryCeremony({ number: 6, winner: null, prize: 5, lottery: [], pool: 5, rigged: false });
     for (const steps of [win, lose]) {
-      // 建屏 + 每一步都要有一条（可以是空数组）
-      for (let i = 0; i <= steps.length; i++) {
-        expect(CEREMONY_ERASE[i]).toBeDefined();
-        expect(CEREMONY_BLIT[i]).toBeDefined();
-        expect(CEREMONY_BALLS[i]).toBeDefined();
+      // 建屏（步 0 前面那一下）到末步都要有一条（可以是空数组）
+      for (let i = 0; i < steps.length; i++) {
+        expect(CEREMONY_ERASE[i], `CEREMONY_ERASE[${i}]`).toBeDefined();
+        expect(CEREMONY_BLIT[i], `CEREMONY_BLIT[${i}]`).toBeDefined();
+        expect(CEREMONY_BALLS[i], `CEREMONY_BALLS[${i}]`).toBeDefined();
       }
+      expect(CEREMONY_BALLS.length).toBeGreaterThanOrEqual(steps.length);
     }
   });
 

@@ -107,22 +107,44 @@ export const MAGIC_RESOURCE = 18;
 export const MAGIC_CHUNK = {
   /** 底图（整屏） */
   bg: 0,
-  /** 铺场时那张女巫（抱水晶球） */
+  /** 铺场时那张女巫（抱水晶球，165×213）—— **落点 (0x8c, 0xf1)** @source loc_00432719 */
   witchIntro: 1,
-  /** 常态 / 眨眼的另一张女巫 */
+  /**
+   * 常态女巫（284×210，锚点 (0,0)）—— 落点 (0x11e, 0xd9) @source 0x00432a85。
+   * ★ 也是**第二拍**那一张（`loc_00432e8e` 把图 2 落在 (0xb6, 0x8e)）。
+   */
   witchIdle: 2,
-  /** 三张长条文字框（开场白 / 提示 / 文本） */
+  /**
+   * 长条文字框 / 女巫的嘴 —— **同一批图号（3/4/5）**，原版按用途两处都在用。
+   *
+   * | 图 | 尺寸 | 用途 | 出处 |
+   * |---|---|---|---|
+   * | 3 | 60×35 | 「说话」长条文字框 | `fcn_0044ec30(图 3…)` @source 0x0043259b 起 |
+   * | 4 | 60×18 | 提示条 | @source loc_00432894 支的裁剪矩形 0x2d/0x4d/0x3c/0x15 |
+   * | 5 | 60×21 | 「文本」条 **与女巫的嘴** | @source 0x00432894 支从 `[0x48c398]+0x3c`（= 图 5）**不透明**贴到 (0x11e, 0xdc)；`loc_00432a85` 支 `rand()&1` → `fcn_0045643d(图 2, 裁剪)` 或 `fcn_004563f5(图 5, (0x11e, 0xd9))` |
+   *
+   * ★ 先前把图 9/10（142×120 的**悬停弹窗框**）当成「女巫头部特写」是错的 ——
+   *   那两张画在 (0x11e, 0xd9) 上会变成第三只锦缎框，女巫于是「消失」（B-2 症状③）。
+   */
   barIntro: 3,
   barHint: 4,
   barText: 5,
-  /** 两个锦缎框：中央字框（红）/ 悬停提示框（绿） */
+  /** 女巫「说话」那张嘴（= 图 5，与 `barText` 同一张）@source 0x00432894 / 0x00432a85 */
+  mouthTalk: 5,
+  /**
+   * 悬停弹窗那四个锦缎框（142×120）。
+   *
+   * @source 入口表 `0x475718` 的 +0/+4（每项 16 字节：`{img@0, x@4, y@8, name@12}`），
+   *   十二个选项的 img 依次是 `{9,10,7,7,7,7,7,6,6,6,6,9}`（0x00432dac-0x00432e29），
+   *   **框与功能名同点**（`magicIconAt(option)`）。
+   */
   frame: 6,
   frameAlt: 7,
-  /** 长条结果框 */
+  /** 结果长条框（280×173，锚点 (140,86)）—— 第二拍压在 (0x11e, 0xdc) @source 0x00432894 */
   resultBar: 8,
-  /** 女巫头部特写（两张脸） */
-  face: 9,
-  faceAlt: 10,
+  /** 悬停弹窗框（另两张，同 142×120） */
+  hoverFrame: 9,
+  hoverFrameAlt: 10,
   /** 十二个功能图标的第一张 = 图 22（第 0 个功能的图标） */
   ringFirst: 22,
 } as const;
@@ -143,27 +165,61 @@ export const MAGIC_ICON_STRIDE = 2;
 /** 底图落点 @source 0x00432511 的两处 `push 0` */
 export const MAGIC_BG_AT = { x: 0, y: 0 } as const;
 /**
- * 铺场时那张女巫的落点。
- * @source 0x00432511：`push 0x8c / push 0xf1` 配 `[0x48c398]+0x18`（图 2）
- *   ★ 那两个数在栈上、且 `push` 顺序与 `fcn_00456418(表面, 图, x, y)` 相反，
- *   故取 (0x8c, 0xf1) = (140, 241)。图 2 的裁切原点 (0,0)，直接落在这里。
+ * 铺场时那张女巫的落点 @source `loc_00432719`：裁剪矩形 `[esp+0x40]=0xf1`、
+ *   `[esp+0x44]=0x8c`，而 RECT 字段序是 `left, top, right, bottom`
+ *   ⇒ left = 0x8c(140)、top = 0xf1(241)，配 `[0x48c398]+0x18`（= **图 1**，锚点 (0,0)）。
+ *   `drawAnchored` 走 `x − anchorX`，图 1 锚点为 (0,0)，故直接落在这里。
  */
 export const MAGIC_WITCH_INTRO_AT = { x: 0x8c, y: 0xf1 } as const;
-/** 中央字框（红锦缎）落点 @source 0x00432511 尾：`push 0x8c / push 0xf1`（同上那两个数）*/
-export const MAGIC_FRAME_AT = { x: 0x8c, y: 0xf1 } as const;
-/** 悬停时那个绿锦缎框的落点 @source 0x00432951 `push 0xdf` / `push 0xbc` */
+/**
+ * 悬停弹窗的锦缎框落点 —— **与功能名同点**。
+ *
+ * @source 0x00432dac-0x00432e29：框的 x/y 取 `[0x47570c + 16*option]` /
+ *   `[0x475710 + 16*option]`，功能名也写在同一处；十二个功能的落点就是
+ *   `MAGIC_HOUSE_OPTIONS[option].x/y`（= `magicIconAt`）。
+ *
+ * ★★ 2026-09-16 订正（外部审查 B-2 症状①）：先前 `MAGIC_FRAME_AT` 是个常数
+ *   (0x8c,0xf1) —— 那是**女巫**的位置（图 1），不是字框的位置。于是结果字固定
+ *   画在五芒星中心 (320,238) 而框在 (140,241) 附近，**字整个落在框外约 107 px**。
+ *   原版框与字**同点**，由 `magicIconAt(option)` 决定。
+ */
+export function magicFrameAt(option: number): { x: number; y: number } {
+  return magicIconAt(option);
+}
+/** 悬停时那个（另一张）锦缎框的落点 @source 0x00432951 `push 0xdf` / `push 0xbc` */
 export const MAGIC_FRAME_ALT_AT = { x: 0xbc, y: 0xdf } as const;
 /**
  * 常态女巫（图 2，锚点 (0,0)）落点 @source 0x00432a85 起：
  *   `mov [esp+0x40], 0x11e` / `mov [esp+0x44], 0xd9` → (0x11e, 0xd9)。
  */
 export const MAGIC_WITCH_AT = { x: 0x11e, y: 0xd9 } as const;
-/** 女巫头部特写（图 9/10，锚点约 (70,56)）落点 —— 与常态同一处 @source 0x00432ae7 */
-export const MAGIC_FACE_AT = { x: 0x11e, y: 0xd9 } as const;
-/** 女巫眨眼的随机概率：`call rand / test al,1 / je` @source 0x00432ad3 */
+/**
+ * **第二拍**的女巫落点 —— 图 2 换到 (0xb6, 0x8e) @source `loc_00432e8e`
+ *   （`[esp+0x40] = 0xb6`、`[esp+0x44] = 0x8e`）。
+ *
+ * ★ 原版这里是**第二个 beat**：第一拍女巫在 (0x11e,0xd9) 抬手，第二拍她挪到
+ *   (0xb6,0x8e) 并换一张嘴。先前本模块**没有 beat 模型**，第二拍什么都不画 ——
+ *   屏上就是「两只空框」（B-2 症状②）。
+ */
+export const MAGIC_WITCH_BEAT2_AT = { x: 0xb6, y: 0x8e } as const;
+/**
+ * 女巫「说话」那张嘴的落点 @source 0x00432894 尾 `0x11e / 0xdc`。
+ *
+ * ★ 那两张小图是**嘴**（60×21 / 60×18），不是「头部特写」：
+ *   `[0x48c398] + 0x3c` = 图 5；另一支是 `fcn_0045643d(图 2, 裁剪 0x2d/0x4d/0x3c/0x15)`。
+ *   先前当成头部特写画图 9/10（142×120 的悬停弹窗框）⇒ 女巫被红框盖掉（症状③）。
+ */
+export const MAGIC_MOUTH_AT = { x: 0x11e, y: 0xdc } as const;
+/** 女巫「说话/张嘴」的随机概率：`call rand / test al,1 / je` @source 0x00432ad3 */
 export const MAGIC_WITCH_BLINK_P = 1 / 2;
-/** 长条结果框落点 @source 0x00432894 尾：`0x11e / 0xdc` */
+/** 长条结果框落点 @source 0x00432894 尾：`0x11e / 0xdc`（裁剪 0x15a/0xee，图 8 = 280×173）*/
 export const MAGIC_RESULT_AT = { x: 0x11e, y: 0xdc } as const;
+/**
+ * **结果图标**的落点 @source `loc_00432719` 尾：`push 0x128 / push 0x146`
+ *   ⇒ RECT left = 0x146(326)、top = 0x128(296)，图号 = `option + 0xb`（11..22）。
+ *   第一拍那张「转盘结果的图」就落在这里。
+ */
+export const MAGIC_RESULT_ICON_AT = { x: 0x146, y: 0x128 } as const;
 
 // ============================================================
 //  命中几何（从 Panel.mkf #19 的掩膜量出来，见文件头）
@@ -738,8 +794,24 @@ export interface MagicDraw {
   view: MagicView;
   /** 这一刻正指着哪个功能（转盘过程中会变）*/
   pointer: number;
-  /** 女巫这一帧用常态那张还是抬手那张（原版 `rand()&1`）*/
+  /**
+   * 女巫这一帧要不要叠一张「说话」的嘴（原版 `rand()&1`，@source 0x00432ad3）。
+   *
+   * ★ 2026-09-16 订正：原版这一支叠的是**嘴**（图 5，60×21，落 (0x11e,0xdc)），
+   *   不是「把整只女巫换成头部特写」。先前换成图 9/10（142×120 的悬停弹窗框）
+   *   ⇒ 女巫被红框盖掉，屏上剩两只空框（B-2 症状③）。
+   */
   witchBlink: boolean;
+  /**
+   * 现在演到第几拍（1 / 2）。
+   *
+   * ★ 2026-09-16 加（B-2 症状②）：原版是**两拍** ——
+   *   第一拍：图 1 在 (0x8c,0xf1)、图 2 在 (0x11e,0xd9)、**结果图标**在 (0x146,0x128)
+   *   （@source loc_00432719）；
+   *   第二拍：图 2 挪到 (0xb6,0x8e) 并压上长条结果框(8)（@source loc_00432e8e / 0x00432894）。
+   *   先前没有 beat 模型，第二拍什么都不画。
+   */
+  beat: 1 | 2;
   /** 鼠标正指着的扇区（原版 `[0x48c3a1]`），0 = 不在任何扇区上 */
   hover: number;
   /** 图标动画的帧计数器（`magicAnimationFrame(now)`）*/
@@ -759,15 +831,45 @@ const MAGIC_FONT = FONT_FAMILY;
 /**
  * 结果那两行字画在哪。
  *
- * 原版的提示字也是画在这个点上：`draw_text(字, 图标x, 图标y, flag 2)`，
- * flag 2 = **正中**（VA 0x00432e06 起）。悬停时那个点是**鼠标指着的图标位置**；
- * 本引擎这一步是**回放**（没有鼠标），所以固定用五芒星的中心 `MAGIC_CENTER`
- * —— 与女巫（图 2 落点 (0x11e,0xd9) 也在屏幕中心附近）重叠，但字压在女巫上面。
+ * @source 原版把功能名写在**弹窗框那一点**：`draw_text(字, x, y, flag 2)`
+ *   （VA 0x00432e06 起），而 x/y 取 `[0x47570c/0x475710 + 16*option]`，
+ *   与弹窗框（图 6/7/9/10 里的某一张）**同点** ⇒ 就是 `magicIconAt(option)`。
+ *
+ * ★★ 2026-09-16 订正（外部审查 B-2 症状①）：先前固定用五芒星中心 (320,238)，
+ *   而框在 (140,241) 附近 —— 字整个落在框外。**字必须跟着落点的功能走。**
+ *   回放时没有鼠标，落点就是 `view.option`（解不出时退回中心）。
  */
-export const MAGIC_TEXT_AT = { x: MAGIC_CENTER.x, y: MAGIC_CENTER.y } as const;
+export function magicTextAt(option: number): { x: number; y: number } {
+  return option >= 0 && option < MAGIC_SECTOR_COUNT ? magicIconAt(option) : MAGIC_CENTER;
+}
 
 /** 两行字之间的行距 */
 export const MAGIC_TEXT_LINE_H = 22;
+
+/**
+ * **结果图标**的图号基数 @source `loc_00432719` 尾：`lea edx, [option + 0xb]`
+ *   ⇒ 第 `option` 个功能的结果图 = 图 `option + 11`（11..22）。
+ */
+export const MAGIC_RESULT_ICON_BASE = 0x0b;
+
+/**
+ * 魔法屋放的三条音效。
+ *
+ * | 常量 | 号 | 出处 |
+ * |---|---|---|
+ * | `MAGIC_SOUND_RESULT` | **39 (0x27)** | `_rich4_play_sound_effect(0x27, &0x4757e7)` @source 0x00432e42；`rich4.asm:40970` 的 `ref_004757e7: db 0x27` 是结构首字节 = 音效号 |
+ * | `MAGIC_SOUND_HOVER` | 0 | `_rich4_play_sound_effect(0, &0x48231a)` @source 0x00433531（`rich4.asm:50864` `db 0x00`）|
+ * | `MAGIC_SOUND_PRESS` | 1 | `_rich4_play_sound_effect(1, &0x482322)` @source 0x0043365c（`rich4.asm:50871` `db 0x01`）|
+ *
+ * ★ 同一模块还有第 4 号（`&0x482332` @source 0x0043376b，取消那一路）；
+ *   本引擎这一屏是**回放**、没有取消动作，故不放。
+ *   ⚠️ `T-037.md` 的 D-MAGIC-5 先前写「16」并说「`SOUND_IDS` 里没有这一条」——
+ *   两条都不成立：号是 **39**，而 `SOUND_IDS` 只是约十条**已具名**的映射，
+ *   不是 `Effect.mkf` 的全集（`assets-clean/manifest.json` 的 Effect 资源是 0..114）。
+ */
+export const MAGIC_SOUND_RESULT = 0x27;
+export const MAGIC_SOUND_HOVER = 0;
+export const MAGIC_SOUND_PRESS = 1;
 
 /** 锚点落点绘制 @source `fcn_00456418`（`to_left = x − src->x`）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
@@ -810,8 +912,9 @@ export const MAGIC_KEYED = new Set<number>([
   MAGIC_CHUNK.witchIdle,
   MAGIC_CHUNK.frame,
   MAGIC_CHUNK.frameAlt,
-  MAGIC_CHUNK.face,
-  MAGIC_CHUNK.faceAlt,
+  // ★ 图 9/10 是**悬停弹窗框**（142×120），不是女巫的头 —— 名字见 `MAGIC_CHUNK`
+  MAGIC_CHUNK.hoverFrame,
+  MAGIC_CHUNK.hoverFrameAlt,
   MAGIC_CHUNK.barIntro,
   MAGIC_CHUNK.barHint,
   MAGIC_CHUNK.barText,
@@ -851,16 +954,21 @@ function magicText(
 /**
  * 画整屏。
  *
- * 顺序照原版 `fcn_00432511`：底图(0) → 红色中央字框(6) → 女巫(1 水晶球 + 2 抬手)，
- * 随后悬停那一段再画十二个功能图标（在女巫**之后**，压在她身上）+ 提示框(7)。
+ * 顺序照原版：底图(0) → 第二拍的长条结果框(8) → 弹窗框 → 字 → **两拍的女巫**
+ * → 结果图标 → 十二个功能图标（压在女巫身上）→ 悬停圈。
  *
- * ★ 女巫只画**一处**：`fcn_00432511` 画的是图 2（284×210 抬手姿势）在 (0x11e,0xd9)，
- *   之后悬停那一段**不再动她**；`0x00432a85` 那支的「眨眼」是把图 2 换成
- *   图 9/10（头部特写，锚点约 (70,56)、落点同为 (0x11e,0xd9)）。
- *   ⚠️ 图 1（165×213 抱水晶球）在**渲染路径里没有被画到** —— 别把她当底层叠上去，
- *   否则屏上会出现**三个女巫**（浏览器里已复现，见 deviations D-MAGIC-10）。
+ * ★★ 2026-09-16 按外部审查 B-2 订正三处：
+ *   ① **字跟着落点走**：功能名与弹窗框**同点**（`magicIconAt(option)`，@source 0x00432e06），
+ *      不再固定画在五芒星中心 —— 先前字落在框外约 107 px。
+ *   ② **补了第二拍**：第一拍图 1 落 (0x8c,0xf1)、图 2 落 (0x11e,0xd9)、结果图标落
+ *      (0x146,0x128)（@source loc_00432719）；第二拍图 2 挪到 (0xb6,0x8e) 并压上
+ *      长条结果框(8)（@source loc_00432e8e / 0x00432894）。先前没有 beat 模型，
+ *      第二拍整屏空白。
+ *   ③ **女巫不再被换成悬停框**：图 9/10 是 142×120 的**悬停弹窗框**；画在 (0x11e,0xd9)
+ *      会盖掉女巫。要「说话」就叠**嘴**（图 5，60×21）在 (0x11e,0xdc)（@source 0x00432a85）。
  *
- * @source 0x00432511（铺场）+ 0x00432ca3 起（悬停那段）
+ * @source `fcn_00432511`（铺场）· `loc_00432719`（第一拍结果）· `loc_00432894`（结果条与嘴）·
+ *   `loc_00432a85`（张嘴）· `loc_00432e8e`（第二拍）
  */
 export function drawMagicScreen(
   ctx: CanvasRenderingContext2D,
@@ -869,40 +977,74 @@ export function drawMagicScreen(
 ): void {
   drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.bg), MAGIC_BG_AT.x, MAGIC_BG_AT.y);
 
-  // ── 中央字框 → 字 → 女巫（女巫压在字框上，与她压住五芒星同一个道理）──
-  drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.frame), MAGIC_FRAME_AT.x, MAGIC_FRAME_AT.y);
-
   const pointerOption = d.pointer >= 0 && d.pointer < MAGIC_SECTOR_COUNT ? d.pointer : -1;
+  // 这一拍落在哪个功能上 —— 字、框、结果图标都跟着它走
+  const option = d.view.option >= 0 ? d.view.option : pointerOption;
+  const textAt = magicTextAt(option);
+  const frameAt = magicFrameAt(option);
+
+  // ── 第二拍：长条结果框先铺，女巫再压上去（与压住五芒星同一个道理）──
+  if (d.beat === 2) {
+    drawAnchored(
+      ctx,
+      magicSprite(sprite, MAGIC_CHUNK.resultBar),
+      MAGIC_RESULT_AT.x,
+      MAGIC_RESULT_AT.y,
+    );
+  }
+
+  // ── 弹窗框（与功能名同点）→ 字 → 女巫 ──
+  drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.frame), frameAt.x, frameAt.y);
 
   if (d.view.option >= 0) {
     // 回放：结果那行和「对谁做」
     const who = d.view.targets.map((i) => `P${i + 1}`).join(' ');
     const line = `${d.view.name}${who === '' ? '' : ` → ${who}`}`;
-    magicText(ctx, line, MAGIC_TEXT_AT.x, MAGIC_TEXT_AT.y, MAGIC_FONT_SIZE + 3);
-    magicText(
-      ctx,
-      d.view.criterionName,
-      MAGIC_TEXT_AT.x,
-      MAGIC_TEXT_AT.y + MAGIC_TEXT_LINE_H,
-      MAGIC_FONT_SIZE,
-    );
+    magicText(ctx, line, textAt.x, textAt.y, MAGIC_FONT_SIZE + 3);
+    magicText(ctx, d.view.criterionName, textAt.x, textAt.y + MAGIC_TEXT_LINE_H, MAGIC_FONT_SIZE);
   } else {
     // 悬停（回放解不出落点时的兜底也走这条）
     const label = pointerOption >= 0 ? (MAGIC_HOUSE_OPTIONS[pointerOption]?.name ?? '') : '';
-    if (label !== '') magicText(ctx, label, MAGIC_TEXT_AT.x, MAGIC_TEXT_AT.y, MAGIC_FONT_SIZE + 4);
+    if (label !== '') magicText(ctx, label, textAt.x, textAt.y, MAGIC_FONT_SIZE + 4);
   }
 
-  drawAnchored(
-    ctx,
-    magicSprite(sprite, d.witchBlink ? MAGIC_CHUNK.face : MAGIC_CHUNK.witchIdle),
-    MAGIC_WITCH_AT.x,
-    MAGIC_WITCH_AT.y,
-  );
+  // ── 女巫：第一拍在原位，第二拍挪到 (0xb6,0x8e) ──
+  if (d.beat === 1) {
+    // 铺场那张（图 1，抱水晶球）先落 (0x8c,0xf1)，再由常态女巫压上去
+    drawAnchored(
+      ctx,
+      magicSprite(sprite, MAGIC_CHUNK.witchIntro),
+      MAGIC_WITCH_INTRO_AT.x,
+      MAGIC_WITCH_INTRO_AT.y,
+    );
+  }
+  const witchAt = d.beat === 2 ? MAGIC_WITCH_BEAT2_AT : MAGIC_WITCH_AT;
+  drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.witchIdle), witchAt.x, witchAt.y);
+
+  // 「说话」那一拍叠一张嘴（图 5，60×21）—— 不是换整只女巫
+  if (d.witchBlink) {
+    drawAnchored(
+      ctx,
+      magicSprite(sprite, MAGIC_CHUNK.mouthTalk),
+      MAGIC_MOUTH_AT.x,
+      MAGIC_MOUTH_AT.y,
+    );
+  }
+
+  // ── 结果图标：图 `option + 11` 落 (0x146,0x128)（第一拍那张「转到的功能」）──
+  if (d.beat === 1 && option >= 0) {
+    drawAnchored(
+      ctx,
+      magicSprite(sprite, MAGIC_RESULT_ICON_BASE + option),
+      MAGIC_RESULT_ICON_AT.x,
+      MAGIC_RESULT_ICON_AT.y,
+    );
+  }
 
   // ── 十二个功能图标（在女巫身上，压着她画）──
-  for (let option = 0; option < MAGIC_SECTOR_COUNT; option++) {
-    const at = magicIconAt(option);
-    drawAnchored(ctx, magicIconSprite(sprite, option, magicIconFrame(option, d.frame)), at.x, at.y);
+  for (let opt = 0; opt < MAGIC_SECTOR_COUNT; opt++) {
+    const at = magicIconAt(opt);
+    drawAnchored(ctx, magicIconSprite(sprite, opt, magicIconFrame(opt, d.frame)), at.x, at.y);
   }
 
   // ── 指到谁就给谁描一圈 ──
@@ -953,11 +1095,16 @@ export const magicScreen: UiScreen = {
     const pointer = playback?.spin.option ?? v.option;
     const witchBlink = Math.random() < MAGIC_WITCH_BLINK_P;
     const frame = magicAnimationFrame(env.now);
-    drawMagicScreen(env.stage, env.sprite, { view: v, pointer, witchBlink, hover, frame });
+    // ★ 转盘还在转 = 第一拍；进了 hold = 第二拍（女巫移位 + 结果条）
+    const beat: 1 | 2 = playback !== null && playback.phase === 'hold' ? 2 : 1;
+    drawMagicScreen(env.stage, env.sprite, { view: v, pointer, witchBlink, beat, hover, frame });
   },
 
-  move(x: number, y: number): void {
-    hover = sectorAt(x, y);
+  move(x: number, y: number, env: UiScreenEnv): void {
+    const next = sectorAt(x, y);
+    // 指到功能上响一声 @source `_rich4_play_sound_effect(0, &0x48231a)` 0x00433531
+    if (next !== hover && optionOfSector(next) !== null) env.playEffect(MAGIC_SOUND_HOVER);
+    hover = next;
   },
 
   down(x: number, y: number, env: UiScreenEnv): void {
@@ -965,6 +1112,8 @@ export const magicScreen: UiScreen = {
     if (playback !== null) return;
     const sector = sectorAt(x, y);
     const option = optionOfSector(sector);
+    // 按下这一拍也响一声 @source `_rich4_play_sound_effect(1, &0x482322)` 0x0043365c
+    if (option !== null) env.playEffect(MAGIC_SOUND_PRESS);
     env.log(
       `魔法屋：扇区 ${sector}${option === null ? '' : `（${MAGIC_HOUSE_OPTIONS[option]?.name ?? ''}）`}`,
     );
@@ -972,6 +1121,7 @@ export const magicScreen: UiScreen = {
 
   tick(env: UiScreenEnv): void {
     if (playback === null) return;
+    const wasSpinning = playback.phase === 'spin';
     const next = magicPlaybackTick(playback, env.now);
     if (next === null) {
       playback = null;
@@ -979,6 +1129,16 @@ export const magicScreen: UiScreen = {
       hover = 0;
       env.log('魔法屋：回放结束');
       env.requestRender();
+      return;
+    }
+    // ★ 转盘停下来的那一下：放**结果音**。
+    //   @source `_rich4_play_sound_effect(0x27, &0x4757e7)`（VA 0x00432e42）——
+    //   `[0x4757e7]` 的首字节 = 0x27 = **39**（`rich4.asm:40970`）。
+    //   ⚠️ 先前 T-037 的 D-MAGIC-5 写「16」是错的，见该文件的订正。
+    if (wasSpinning && next.phase === 'hold') {
+      env.playEffect(MAGIC_SOUND_RESULT);
+      env.requestRender();
+      playback = next;
       return;
     }
     const prevOption = playback.spin.option;

@@ -69,6 +69,10 @@ export interface SleepwalkResult {
   /** 更新后的全局道具表 */
   tools: number[];
   outcome: SleepwalkOutcome | null;
+  /** 实际被置入梦游的玩家下标（反弹时是出牌者）；`ok === false` 时为空 */
+  affected: number[];
+  /** 写进替身记录 `+13` 的天数（= `days`；`ok === false` 时为 0） */
+  days: number;
 }
 
 /** 把一名玩家置入梦游状态 */
@@ -137,6 +141,8 @@ export function applySleepwalkCard(
     players: [...players],
     tools: [...tools],
     outcome: null,
+    affected: [],
+    days: 0,
   });
 
   if (target.kind !== 'player') return fail('wrongTargetKind');
@@ -166,6 +172,8 @@ export function applySleepwalkCard(
       victim: victimIndex,
       days,
     },
+    affected: [victimIndex],
+    days,
   };
 }
 

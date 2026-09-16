@@ -162,6 +162,20 @@ export interface SpecialActor {
   halted: number;
   /** 龜行天数 @source +15。轮到他时 `!= 0` → 只走一步（0x0040de34）；递减同上（0x0041cf3d..） */
   singleStep: number;
+  /**
+   * 夢遊天数 @source 替身记录 `+13`（绝对 `0x498df5`）。
+   *
+   * 夢遊卡命中「四大惡人」时写 5（`rich4_card_mengyouka.asm:257`
+   * `mov byte [ebx + 0x498df5], 5`，且**只在原值 0 时才写**）；
+   * 冬眠卡把 `+12` 清零、`+13` 置 5（`rich4_card_dongmianka.asm:91-92`）。
+   *
+   * 渲染器据此把走姿换成「资源 + 3」（另一套 17 帧走路循环）
+   * @source `_rich4_update_player_sprite` 0x0040bd5c / 0x0040bdcb：
+   *   `cmp byte [eax + 0x498df5], 0 / jne … edi + 3`。
+   *
+   * ⚠️ 可省略 = 0（既有存档与测试替身不必补字段）。
+   */
+  sleepwalkDays?: number;
   /** 在哪儿：棋盘 / 監獄 / 醫院 / 未出场 */
   place: ActorPlace;
 }

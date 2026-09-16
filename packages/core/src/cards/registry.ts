@@ -383,6 +383,10 @@ export function useCard(
       const r = applyHibernateCard(players, cur, ctx.priceIndex);
       players = r.players;
       hostilityDeltas = r.hostilityDeltas;
+      // ⚠️ 冬眠卡**不碰替身记录**：`rich4_card_dongmianka.asm:86-92` 那一支
+      //   算出的下标是**玩家**（`ebx` = 被冬眠的玩家），`+12/+13` 写进的是
+      //   **玩家结构**（`0x496b9a` 那一族），不是替身记录 `0x498df4/f5`。
+      //   先前我按「替身」读过一次，已订正 —— 见 deviations D-T047-2。
       break;
     }
     case 16: {
@@ -391,6 +395,14 @@ export function useCard(
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       tools = r.tools;
+      // ⚠️ 夢遊卡对替身记录 `+13`（`0x498df5`）**确实**有一支写入口
+      //   （@source `rich4_card_mengyouka.asm:252-257`：`cmp ebx, 4 / jl 跳过`
+      //   → `cmp byte [ebx*16 + 0x498df4], 0 / jne 跳过` → `mov byte […+13], 5`），
+      //   但那一支的 `ebx` 是 `_rich4_select_instance_with_mouse(0xe0c0710)` 的
+      //   返回值、**先经 `_count_trailing_zero_u8` 取位号**（同一套掩码的陷害卡
+      //   `rich4_card_xianhaika.asm:62-66` 就是这么读的）。本引擎没有等价的
+      //   「实例选择器 + 位号」语义，硬套会把天数写到错的替身上 ——
+      //   故**不接**，登记在 deviations D-T047-2。
       // @source 復仇卡(18) 把效果反弹给出牌者（applySleepwalkCard 内部处理），
       //   反弹不算「被防御性被动卡挡下」，defended 保持 false
       break;

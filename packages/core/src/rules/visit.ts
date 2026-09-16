@@ -44,8 +44,9 @@ import { OBJECT_SLOT_BASE, type ConfinementKind } from './confinement.ts';
  *   走 `rand()%9+2` 步，主人记成保釋他的人（见 `releaseNpc`）。
  *   在路上踩到惡犬会被咬进醫院，且**不会自己出院**——只能再花 300 點券捞。
  *
- * ⚠️ 还没做的是他们**走到别的格子上做什么**（十八条落点分支里的十七条），
- *   见 known-deviations 的 Q-NPC-1。
+ * ★ 落点行为**已全部实现**（2026-09-16 订正）：四大惡人走到各类格子上做什么
+ *   都在 `rules/npc-walk.ts` 里，不再是「十八条里的十七条」。见 known-deviations
+ *   的 Q-NPC-1 与 `npc-walk.ts` 的头注释。
  */
 export const INMATE_NAMES: readonly string[] = ['小偷', '強盜', '流氓', '間諜'];
 

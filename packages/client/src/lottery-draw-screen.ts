@@ -55,6 +55,15 @@
  * ⚠️ **表里的坐标是「舞台坐标 − 0x14/−0x1e」**（原版把两个偏置加回去才落图），
  *   所以 `TALLY_PLATES` 那四个数直接拿去用就是**人像条**的落点。
  *
+ * ★ 每块铭牌在铺图之前先被 `fcn_004552e7(…, 0x128, 0x3c, −16)` **压暗**
+ *   （@0x0042f482，296×60、分量减半）—— 那才是屏上看见的「四个蓝框」，
+ *   不是任何一张子图。见 `TALLY_FRAME`。
+ *
+ * ★ 铭牌上的号码用**开奖前**那一份号码表（`DrawCue.sold`）：原版到**最后一步
+ *   状态 10** 才 `memset(0x4990b8, 0, 0x24)`（@0x00430ab5 一带，紧接派彩），
+ *   演出全程都看得见号码。core 在开奖那一次 action 里就把表清掉了
+ *   （`places/lottery.ts` → `emptyLottery()`），所以本模块自己留一份。
+ *
  * ## 与 core 脚本的**订正表**（都以 exe 为准，逐条写了 VA）
  *
  * | # | 脚本原来 | exe 实际 | @source |
@@ -75,6 +84,12 @@
  *    摇球才播得完」的由来。表格按这个数走。
  * 3. 语音（`#NNNN` → `Speaking.mkf`）**没接**：`UiScreenEnv` 只有 `Effect.mkf`
  *    的出口。台词本身照常上屏。
+ * 4. **铭牌底框的压暗**（`fcn_004552e7` 那张换色表）改写成 **canvas 半透明黑**
+ *    （`TALLY_FRAME.alpha = 16/32`，与原版「5 位分量减半」同值）——
+ *    本引擎每帧整屏重画，做不到就地改像素。见 `TALLY_FRAME` 与 T-036。
+ * 5. **号码表的清理时机不动 core**：原版在状态 10 清，本模块在**客户端**留一份
+ *    开奖前的表（`DrawCue.sold`）来显示。core 仍然在开奖那一下清空 —— 这是
+ *    「表现层不改规则」（C-ARC-2）的代价，屏上效果与原版一致。
  */
 
 import {
@@ -118,6 +133,27 @@ export const DRAW_PORTRAIT_RESOURCE = 0x205;
 
 /** 人像条与徽章相对铭牌的落点 @source 0x0042f4b0 的 `+0x14` / `+0x1e` */
 export const TALLY_ART_AT = { dx: 0x14, dy: 0x1e } as const;
+
+/**
+ * 铭牌那块**压暗的底框**（296×60）—— 「四个蓝框」就是它，不是资源里的图。
+ *
+ * @source `fcn_0042f417` 每画一个人之前先调
+ *   `fcn_004552e7(surface, 铭牌.x, 铭牌.y, 0x128, 0x3c, -16)`（@0x0042f482–0x0042f49e）：
+ *   `fcn_004552e7` 是**换色表**操作（@0x004552e7 起），最后一个参数是
+ *   `[0x485d68] + (−16 << 5)` —— 一张 256 色 × 2 字节 = 512 字节的表，
+ *   `−16` ⟹ 5 位分量**减半**（同一族操作见 `board-screen.ts` 的 `PRESS_ALPHA`、
+ *   `options-pages.ts` 的 `HOTKEY_PRESS.edgeAlpha`）。
+ *
+ * ⚠️ 本引擎每帧整屏重画，所以这里是**按同样的观感重画一遍**（canvas 半透明黑），
+ *   不是原版那种就地改像素。登记在 `docs/deviations/T-036.md`。
+ */
+export const TALLY_FRAME = { w: 0x128, h: 0x3c, alpha: 16 / 32 } as const;
+
+/** 铭牌底框的落点 —— 就是铭牌本身（`fcn_004552e7` 收的是表里那对 x,y）*/
+export function tallyFrameAt(player: number): { x: number; y: number } | null {
+  const at = TALLY_PLATES[player];
+  return at === undefined ? null : { x: at[0], y: at[1] };
+}
 
 /**
  * 每个动画状态都把「持号表」那一整条带擦掉再重画（core 脚本的
@@ -198,60 +234,79 @@ const S8_LEFT_FACE: EraseRect = { from: ENTRY.board, dx: 0x34, dy: 0x59, sx: 0x2
  * 而本卡只许动自己的 client 文件（见卡片的 files 一栏）。
  */
 export const CEREMONY_ERASE: readonly (readonly EraseRect[])[] = [
-  [], // 0 建屏
-  [], // 1 开场白
-  [], // 2 报幕
-  [S3_RIGHT, S3_BOARD, S3_RIGHT_ARM], // 3 摇球（持号表那一条带 core 脚本已经给了）
-  [], // 3b 开号
-  [S4_FACE_RIGHT, S4_FACE_LEFT, S4_BODY_RIGHT], // 4 得主
-  [S5_TOP, S5_MID], // 5 数帧
-  [], // 6 恭喜
-  [S4_FACE_RIGHT, S4_FACE_LEFT, S4_BODY_RIGHT], // 7 空号
-  [S8_RIGHT_ARM, S8_LEFT_FACE], // 8 收尾
-  [], // 9 希望下次
-  [], // 10 行动要快
+  [], // 步 0 = 状态 1 开场白
+  [], // 步 1 = 状态 2 报幕
+  [S3_RIGHT, S3_BOARD, S3_RIGHT_ARM], // 步 2 = 状态 3 摇球（持号表那一条带 core 脚本已经给了）
+  [], // 步 3 = 状态 3 第二段：开号（台面已经干净，只要贴球）
+  [S4_FACE_RIGHT, S4_FACE_LEFT, S4_BODY_RIGHT], // 步 4 = 状态 4 得主
+  [S5_TOP, S5_MID], // 步 5 = 状态 5 数帧
+  [], // 步 6 = 状态 6 恭喜
+  [S4_FACE_RIGHT, S4_FACE_LEFT, S4_BODY_RIGHT], // 步 7 = 状态 7 空号
+  [S8_RIGHT_ARM, S8_LEFT_FACE], // 步 8 = 状态 8 收尾（与状态 7 是两条支路，各占一格）
+  [], // 步 9 = 状态 9 希望下次
 ];
 
 /** 每个演出步骤在 core 脚本之外**还要补的**贴图 */
 export const CEREMONY_BLIT: readonly (readonly CeremonyBlit[])[] = [
-  [], // 0
-  [], // 1
-  [], // 2
-  // 3：擦完台面要**把两个主持人重画回去**（原版擦的是他们身上的板与腿，不是他们本人）
+  [], // 步 0 = 状态 1
+  [], // 步 1 = 状态 2
+  // 步 2 = 状态 3 摇球：擦完台面要**把两个主持人重画回去**
+  //    （原版擦的是他们身上的板与腿，不是他们本人）
   //    @source 0x430379 图 3 @ (7,0x42)、0x430402 图 2 @ (0x1d8,0x42)
+  //   ★ 与 `CEREMONY_ERASE[2]` 同一格（擦与重画都在状态 3 的第一段）；
+  //     步 3（开号）只贴球。
   [{ entry: ENTRY.board, at: [7, 0x42] }, { entry: ENTRY.presenting, at: [0x1d8, 0x42] }],
-  [], // 3b
-  [], // 4（脚本已给全）
-  // 5：擦掉台面后，举板要重画 @source 0x431044（两个号码球见 `CEREMONY_BALLS`）
+  [], // 步 3 = 状态 3 开号（脚本已给球，其余为空）
+  [], // 步 4 = 状态 4（脚本已给全）
+  // 步 5 = 状态 5：擦掉台面后，举板要重画 @source 0x431044（两个号码球见 `CEREMONY_BALLS`）
   [{ entry: ENTRY.jumpBoard, at: [0, 0] }],
-  [], // 6
-  [], // 7
-  // 8：擦完右臂与左脸要把点手指的姿势重画回去 @source 0x4309cd
+  [], // 步 6 = 状态 6
+  [], // 步 7 = 状态 7 空号
+  // 步 8 = 状态 8 收尾：擦完右臂与左脸要把点手指的姿势重画回去 @source 0x4309cd
   [{ entry: ENTRY.pointing, at: POSE_RIGHT }],
-  [], // 9
-  [], // 10
+  [], // 步 9 = 状态 9
 ];
 
 /**
  * 哪几步在擦完台面之后要**再贴一次号码球**。
  *
- * @source 状态 3 的尾巴（0x430c3b 起）、状态 5（0x431049 / 0x43108d）、
- *   状态 6（0x4306ff 那一片）、状态 7（0x430d85 那一片）各贴一次；
- *   状态 4 那一次在 core 脚本的 `blits` 里已经有了。
+ * ★ **下标 = 步号 = core 脚本数组的下标**（`begin()` 拿到什么就播什么，
+ *   不插建屏那一步）。核对命令：`lotteryCeremony({number:6,…}).map(s => s.state)`
+ *   → `[1, 2, 3, 3, 4, 5, 6, 8, 9, 10]`，于是：
+ *
+ * | 步 | 状态 | 是什么 | 号码球 |
+ * |---|---|---|---|
+ * | 2 | 3 | 摇球（起摇球机，数 20 帧 + 等 ANM 放完）| ✗ 还没开号 |
+ * | **3** | **3** | **开号**（脚本第二段，0x430b7a 那一片）| **✓** |
+ * | 4 | 4 | 得主（脚本自己带球）| ✓ |
+ * | 5 | 5 | 数帧 | ✓ |
+ * | 6 | 6 | 恭喜 | ✓ |
+ * | 7 | 8 | 收尾（中奖那一路）| 脚本没给球 → ✗ |
+ * | 7 | 7 | 空号（没人中奖那一路）| ✓ |
+ *
+ * @source 开号那一下（0x430b7a 一片，同一个状态 3 的第二段，@0x430c17 的
+ *   `图号 = 数字 + 0x25`）、状态 4（0x4305aa / 0x4305e2 两颗，@0x48c37d 与
+ *   `+0x48c37e` 两个数字字节）、状态 5（0x431049 / 0x43108d）、状态 6
+ *   （0x4306ff 那一片）、状态 7（0x430d85 那一片）各贴一次。
+ *
+ * ⚠️ **步 3 是开号、不是步 4**：core 脚本里状态 3 **连着出现两次**
+ *   （`lottery-ceremony.ts` 的 `steps[2]` 是摇球、`steps[3]` 是开号，
+ *   见那张 `[1,2,3,3,4,…]`）。原来把开号写在步 4，等于「擦完台面到得主
+ *   那一步才补球」—— 于是**只摘 37/38/46 三张**时，含 0/1/9 的号码那颗球
+ *   会晚一步才出现。现在两处都钉在 exe 的真值上：`CEREMONY_BALLS[3]`
+ *   （开号）+ `[4]`（得主，脚本自己那份被 `localizeStep` 摘掉了，补回来）。
  */
 export const CEREMONY_BALLS: readonly boolean[] = [
-  false, // 0
-  false, // 1
-  false, // 2
-  false, // 3 摇球（此时还没开号）
-  true, // 3b 开号
-  false, // 4（脚本已给）
-  true, // 5
-  true, // 6
-  true, // 7
-  false, // 8
-  false, // 9
-  false, // 10
+  false, // 步 0 = 状态 1 开场白
+  false, // 步 1 = 状态 2 报幕
+  false, // 步 2 = 状态 3 摇球（此时还没开号）
+  true, // 步 3 = 状态 3 第二段 ★ 开号，号码球第一次上屏
+  true, // 步 4 = 状态 4 得主（脚本给了球，但被 localizeStep 摘掉，这里补回来）
+  true, // 步 5 = 状态 5 数帧
+  true, // 步 6 = 状态 6 恭喜
+  true, // 步 7 = 状态 7 空号 / 状态 8 收尾
+  false, // 步 8 = 状态 9 希望下次
+  false, // 步 9 = 状态 10 行动要快
 ];
 
 // ============================================================
@@ -693,14 +748,37 @@ export function resetLotteryDrawScreenState(): void {
 }
 
 /**
+ * 号码球那 10 张子图的图号区间 —— `ENTRY.ball` = 37 → **37..46**
+ * （球号 = `37 + 数字`，@source 0x00430c17 的 `图号 = 数字 + 0x25`）。
+ */
+export const BLIT_BALL_RANGE = { from: ENTRY.ball, to: ENTRY.ball + 9 } as const;
+
+/**
+ * 号码球那 10 张子图（37..46）—— 从 core 脚本的 `blits` 里**全部**摘掉。
+ *
+ * ★ 范围必须是 **37..46 整整十张**，不能只摘 `37/38/46`：
+ *   那三张正好是 **0 / 1 / 9 三颗球**。原来只摘它们，于是开出含 0/1/9 的号码时
+ *   那颗球在「开号」这一步**既被 core 脚本贴着、又被 `CEREMONY_BALLS` 挡着**，
+ *   结果晚一步才出现（号码里没有 0/1/9 时看不出问题 —— 探针核过）。
+ *   摘全十张之后，屏上的球只有 `drawBalls` 一个出口，与 `CEREMONY_BALLS` 逐位对齐。
+ */
+const BLIT_BALL_ENTRIES: ReadonlySet<number> = new Set(
+  Array.from({ length: BLIT_BALL_RANGE.to - BLIT_BALL_RANGE.from + 1 }, (_, d) => BLIT_BALL_RANGE.from + d),
+);
+
+/** 单测用：某个图号是不是号码球（37..46）*/
+export function isBallEntry(entry: number): boolean {
+  return BLIT_BALL_ENTRIES.has(entry);
+}
+
+/**
  * 把 core 脚本的一步整成「本屏要播的那一步」。
  *
  * ★ 号码球那几次贴图**从 core 的 `blits` 里摘掉**：`CEREMONY_BALLS` 才是
  *   按 exe 核过的「哪几步要重贴」，两边都留着就会重画（虽无害，但顺序读不清）。
  */
 function localizeStep(s: CeremonyStep): CeremonyStep {
-  const balls = new Set([ENTRY.ball, ENTRY.ball + 1, ENTRY.ball + 9]);
-  return { ...s, blits: s.blits.filter((b) => !balls.has(b.entry)) };
+  return { ...s, blits: s.blits.filter((b) => !BLIT_BALL_ENTRIES.has(b.entry)) };
 }
 
 /** 起播 */
@@ -860,8 +938,12 @@ function drawAnim(ctx: CanvasRenderingContext2D, env: UiScreenEnv, p: Playing | 
 /**
  * 各人持号表（`fcn_0042f417`）。
  *
- * @param lottery 要显示的那一份号码表 —— 注意原版画的是**开奖后**的那一份
- *   （开奖在状态机之前，中了就已被 `memset` 清空），所以中奖那一路铭牌是空的。
+ * 每个人的顺序照 exe：**① 压暗那块 296×60 的底框 → ② 人像条 → ③ 徽章 → ④ 号码牌**。
+ *
+ * @param lottery 要显示的那一份号码表 —— ★ 用 **`cue.sold`（开奖前那一份）**，
+ *   不是 `state.lottery`：原版是在**最后一步（状态 10）**才 `memset` 号码表的
+ *   （@source 0x00430ab5 一带 `memset(0x4990b8, 0, 0x24)`，就在派彩之后），
+ *   整场演出里铭牌上一直看得见各人的号码。见 `DrawCue.sold`。
  */
 export function drawTally(
   ctx: CanvasRenderingContext2D,
@@ -872,11 +954,17 @@ export function drawTally(
   for (let p = 0; p < players && p < TALLY_PLATES.length; p++) {
     const art = tallyArtAt(p);
     if (art === null) continue;
-    // 人像条（Data#517 图 = 玩家号）
+    // ① 压暗的底框（「四个蓝框」）@source 0x0042f482 的 `fcn_004552e7(…, 0x128, 0x3c, −16)`
+    const frame = tallyFrameAt(p);
+    if (frame !== null) {
+      ctx.fillStyle = `rgba(0,0,0,${TALLY_FRAME.alpha})`;
+      ctx.fillRect(frame.x, frame.y, TALLY_FRAME.w, TALLY_FRAME.h);
+    }
+    // ② 人像条（Data#517 图 = 玩家号）
     drawKeyed(ctx, sprite('Data.mkf', DRAW_PORTRAIT_RESOURCE, p, true), art[0] + TALLY_ART_AT.dx, art[1] + TALLY_ART_AT.dy);
-    // 角色徽章（Panel#15 图 = 25 + 角色号）
+    // ③ 角色徽章（Panel#15 图 = 25 + 角色号）
     drawKeyed(ctx, sprite('Panel.mkf', DRAW_RESOURCE, ENTRY.badge + p, true), art[0] + TALLY_ART_AT.dx, art[1] + TALLY_ART_AT.dy);
-    // 持号数字
+    // ④ 持号数字
     for (const d of tallyDigits(lottery, p)) {
       drawKeyed(ctx, sprite('Panel.mkf', DRAW_DIGIT_RESOURCE, d.digit, true), d.x, d.y);
     }
@@ -952,7 +1040,13 @@ function viewOf(a: Active, env: UiScreenEnv): DrawView {
     winner: announced && a.cue.winner !== null
       ? winnerName(env.state.players[a.cue.winner]?.character ?? 0)
       : null,
-    lottery: env.state.lottery,
+    // ★ 用**开奖前**那份号码表（`cue.sold`）：原版直到最后一步才清它
+    //   （@source 0x00430ab5 一带的 `memset(0x4990b8, 0, 0x24)`，就在派彩之后），
+    //   整场演出里铭牌上一直看得见各人的号码。
+    //   `state.lottery` 在「有人中奖」那一路**开奖那一刻就被 core 清空了**
+    //   （`places/lottery.ts` 返回 `emptyLottery()`，`reduce.ts` 同一次 action 里写回），
+    //   拿它去画就是四块空铭牌 —— 这正是「中奖反而看不到号码」的根因。
+    lottery: a.cue.sold,
     players: env.state.players.length,
   };
 }

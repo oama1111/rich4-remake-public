@@ -125,6 +125,28 @@ function characterColor(state: GameState, owner: number): readonly [number, numb
 const PLAYER_COLORS = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
 
 /**
+ * 夢遊/冬眠中的棋子该不该**画成灰的**。
+ *
+ * @source `_rich4_convert_sprite`（VA 0x004555c5）的调用点：
+ *   玩家 `+0x36`（`days_sleeping`）非 0 → VA 0x004087d7；
+ *   替身 `record + 0x12` 非 0 → VA 0x004089f6。
+ *   本引擎的对应字段：玩家 = `blocking.sleeping`；替身那一位**没有可信来源**
+ *   （见 deviations D-T047-2），故这里只收玩家那一条。
+ */
+export function isAsleep(blocking: { sleeping: number }): boolean {
+  return blocking.sleeping !== 0;
+}
+
+/**
+ * 去色用的 canvas `filter` —— `fcn_004555eb` 那套 `(R+G+B+40)>>2` 的等价近似。
+ *
+ * 原版把三个通道都写成同一个灰度值（保留最高位），并且因为 `+0x28` 那一下
+ * 会整体**提亮**一点点，所以除了 `saturate(0)` 还要补一点 `brightness`。
+ * ⚠️ 这是近似（canvas 的色彩空间与 RGB555 取整不完全一致），登记在 D-T047-4。
+ */
+export const ASLEEP_FILTER = 'saturate(0) brightness(1.24)';
+
+/**
  * 视角模式。
  *
  * ★ 只有**一种**看法：等距投影、跟着棋子走（摄像机恒在 29×29 窗口的正中一格，
@@ -414,11 +436,29 @@ export const DOLL_WALK_RESOURCE = 0x20a;
  *
  * @param walking 原版 `[0x498ea2]`：0 = 站、1 = 走（`fcn_0040dd1f` 起步时置 1，
  *   停留（`+14 != 0`）那一支置 0）
+ * @param vehicle 原版那一支判的是**脚下节点**：`test byte [node + 0x27], 0x80`
+ *   —— 即 `node.flags & 0x80000000`，本引擎解析成 `MapNode.noObjects`
+ *   （见 `loaders/map.ts:504`）。置位时**走姿**换成「资源 + 2」（同一个 NPC
+ *   骑在载具上的样子）；站姿不变。
+ *   @source `_rich4_update_player_sprite` VA 0x0040bdd6-0x0040be45
  * @returns 资源号；**不是替身**（玩家 0..3、越界）返回 null
+ *
+ * ★ 2026-09-16 接线（外部审查 D-T047-2/-3）：载具那一支原先是**有意不做**
+ *   （读不清）。现按 `+2` 的写入口对齐：那一支把 `edi + 2` 读进走姿槽
+ *   （`[0x498ec0]`，`add edi, 2` @source 0x0040be3f），而站姿槽
+ *   （`[0x498eb4]`，`push edi` @0x0040bdd6 之后那一支）仍走常规。
+ *   `+3`（夢遊走姿）要看替身记录 `+13`，本引擎的 `SpecialActor` 有
+ *   `sleepwalkDays` 字段但没有可信的写入来源（两张卡的目标索引空间还没核清），
+ *   故仍不接 —— 见 deviations。
  */
-export function specialActorImageSet(actor: number, walking: boolean): number | null {
+export function specialActorImageSet(
+  actor: number,
+  walking: boolean,
+  vehicle = false,
+): number | null {
   // @source VA 0x0040bd51：edi = actor×4 + 0x16c
   if (actor >= SPECIAL_ACTOR_BASE && actor < ACTOR_DOLL) {
+    if (walking && vehicle) return SPECIAL_ACTOR_SPRITE_BASE + actor * 4 + 2;
     return SPECIAL_ACTOR_SPRITE_BASE + actor * 4 + (walking ? 1 : 0);
   }
   // @source VA 0x0040bf02：actor ≥ 8 那一支资源写死
@@ -709,7 +749,9 @@ export function actorTokens(
     const actor = SPECIAL_ACTOR_BASE + slot;
     // 娃娃走完就收场，但补间在播的那几帧**是走姿**（原版 `[0x498ea2] == 1`）
     const walking = onBoard ? walkingOf(slot) : true;
-    const resource = specialActorImageSet(actor, walking);
+    // ★ 载具那一支读的是**脚下节点**的 bit31（= `noObjects`）
+    //   @source VA 0x0040bdd6 `test byte [node + 0x27], 0x80`
+    const resource = specialActorImageSet(actor, walking, node.noObjects === true);
     if (resource === null) continue;
     out.push({
       slot,
@@ -2094,6 +2136,26 @@ export class BoardRenderer {
       const res = characterSetBase(pl.character, pl.trafficMethod) + pose;
       const count = this.#imageCount('Data.mkf', res);
       const dir = screenDirection(pl.direction, cam.view);
+      /**
+       * ★ 夢遊/冬眠中的棋子**画成灰的**（外部审查 D-T047-4）。
+       *
+       * @source `_rich4_convert_sprite`（VA 0x004555c5 → `fcn_004555eb`）：
+       * ```asm
+       * lodsw                        ; RGB555
+       * and eax,0x1f / and ebx,0x1f / and edx,0x1f   ; R G B 各 5 位
+       * add eax,ebx / add eax,edx
+       * add eax,0x28 / shr eax,2                     ; ★ (R+G+B+40)>>2
+       * … 把这一个值写回 R/G/B 三个通道（保留最高位）
+       * ```
+       * 即**逐像素去色**。触发条件：**玩家** `+0x36`（`days_sleeping`）非 0
+       * （@source VA 0x004087d7）/ 替身 `record + 0x12` 非 0（@source 0x004089f6）。
+       *
+       * 本引擎用 canvas 的 `filter` 做等价去色（`saturate(0)` + 一次提亮对齐
+       * `+0x28 >> 2` 那一下），省掉逐像素重写位图。
+       * ⚠️ **近似**：原版在 RGB555 上取整平均，canvas 走自己的色彩空间 ——
+       * 登记在 deviations D-T047-4。
+       */
+      const asleep = isAsleep(pl.blocking);
       // ★ 图号一 tick 换一张（`#walkFrame`）——新图号没解好时**退回本槽上一张**，
       //   不许整帧不画（否则走子/掷骰预动作时人物一闪一灭，见 `#spriteHeld`）。
       const token =
@@ -2122,7 +2184,9 @@ export class BoardRenderer {
               ctx.fillStyle = 'rgba(255,236,120,0.55)';
               ctx.fill();
             }
+            if (asleep) ctx.filter = ASLEEP_FILTER;
             ctx.drawImage(token.bitmap, x, y, w, h);
+            if (asleep) ctx.filter = 'none';
           },
         });
         continue;

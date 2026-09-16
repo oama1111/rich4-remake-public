@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   actorTokens,
+  ASLEEP_FILTER,
   attachedObjectTokens,
   actorWalkSteps,
   BoardRenderer,
@@ -18,6 +19,7 @@ import {
   DRAW_CLASS,
   drawKey,
   hitToolbar,
+  isAsleep,
   landArt,
   objectTokens,
   SPECIAL_ACTOR_SPRITE_BASE,
@@ -197,6 +199,42 @@ describe('★ T-047 替身的图组资源号 —— 全部照 exe，不许猜', 
       expect(specialActorImageSet(actor, false)).toBeNull();
       expect(specialActorImageSet(actor, true)).toBeNull();
     }
+  });
+
+  it('★★ 夢遊/冬眠中的棋子画成灰的（`_rich4_convert_sprite` 的近似）', () => {
+    // @source VA 0x004087d7：玩家 `+0x36`（days_sleeping）非 0 时先转换再画。
+    // 本引擎的等价字段是 `blocking.sleeping`。
+    expect(isAsleep({ sleeping: 0 })).toBe(false);
+    expect(isAsleep({ sleeping: 5 })).toBe(true);
+    expect(isAsleep({ sleeping: 1 })).toBe(true);
+    // 去色 filter 必须真的去色（saturate(0)），不能只调亮度
+    expect(ASLEEP_FILTER).toContain('saturate(0)');
+    // ★ 结构断言：绘制那一支必须**在 drawImage 两侧**设/清 filter，
+    //   否则这个 filter 会漏到后面所有绘制（棋子、建筑全变灰）
+    const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
+    const at = src.indexOf('if (asleep) ctx.filter = ASLEEP_FILTER;');
+    expect(at).toBeGreaterThan(0);
+    const after = src.slice(at, at + 200);
+    expect(after).toContain('ctx.drawImage(token.bitmap');
+    expect(after, '画完必须清掉 filter').toContain("if (asleep) ctx.filter = 'none';");
+  });
+
+  it('★★ 载具那一支：脚下节点 bit31（`noObjects`）置位时**走姿**换成 +2', () => {
+    // @source `_rich4_update_player_sprite` VA 0x0040bdd6：
+    //   `test byte [node + 0x27], 0x80` → 置位则 `add edi, 2` 读进**走姿**槽
+    //   （`[0x498ec0]`，@0x0040be3f）。站姿仍是常规那一张。
+    for (const actor of [4, 5, 6, 7]) {
+      const stand = 0x16c + actor * 4;
+      expect(specialActorImageSet(actor, false, true), '载具不换站姿').toBe(stand);
+      expect(specialActorImageSet(actor, true, true), '载具换的是走姿').toBe(stand + 2);
+      // 不置位时不受影响（默认参数 = 常规那一支）
+      expect(specialActorImageSet(actor, true)).toBe(stand + 1);
+      expect(specialActorImageSet(actor, true, false)).toBe(stand + 1);
+    }
+    // 機器娃娃（actor 8）资源写死，没有 +2 变体
+    expect(specialActorImageSet(8, true, true)).toBe(DOLL_WALK_RESOURCE);
+    // 玩家不是替身，载具标志也救不了
+    expect(specialActorImageSet(2, true, true)).toBeNull();
   });
 
   it('★ 绘制槽类别：替身非当前是 0x8（排在玩家 0xc 下面），当前是 0xd', () => {

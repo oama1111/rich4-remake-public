@@ -44,6 +44,10 @@
  *   draw_text 全在 0x430xxx 的**開獎屏**那一支）。所以投注屏上没有「獎金」两个字，
  *   奖池金额也不是文字，而是 `Panel#13` 的字形。
  *
+ * ★ 跑馬燈**已经接上**：`UiScreenEnv.flic()` 是 2026-09-16 那轮补的出口
+ *   （`ui-screen.ts` 的 `flic(archive, resource)`），`drawLotteryScreen` 每帧
+ *   照问一次、按 `bonusFrameAt(now)` 选帧画在 (8,8)。
+ *
  * ## 号格（本屏的命中）
  *
  * @source VA 0x0042feae 起（`WM_LBUTTONDOWN` 那一支）：
@@ -94,7 +98,7 @@
 
 import type { GameState } from '@rich4/core';
 import { LOTTERY } from '@rich4/data';
-import type { Sprite } from './assets.ts';
+import type { ArchiveName, LoadedFlic, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { FONT_FAMILY } from './font.ts';
 // 取消音（`[0x482332] = 4`）—— 与右键/ESC 那条梯子共用同一个号
@@ -107,6 +111,9 @@ export type LotSprite = (
   index: number,
   colorKeyBlack?: boolean,
 ) => Sprite | null;
+
+/** 取一段 FLIC（与 `main.ts` 的 `uiFlicNow` 同一个签名）—— 跑馬燈用 */
+export type LotFlic = (archive: ArchiveName, resource: number) => LoadedFlic | null;
 
 const LOT_ARCHIVE = 'Panel.mkf';
 
@@ -603,17 +610,50 @@ function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number
 }
 
 /**
+ * 獎金跑馬燈（`Panel#14` = `LOTO\BONUS1.FLC`，5 帧 213×68，起于 **(8,8)**）。
+ *
+ * @source 建屏那一段的尾巴：0x42f3fe `push 5 / push 8 / push 8 / push [0x48c364]
+ *   / call fcn_00450ced`（帧数、x、y）。帧的推进在每帧重绘里（`fcn_00450f04`），
+ *   本模块按 `bonusFrameAt(now)` 选帧 —— 与摇球/礼花同一套（`anmFrameAt`）。
+ *
+ * ⚠️ `flic()` **异步**：第一次问一定 `null`，解好后 `main.ts` 会自己重画一帧 ——
+ *   所以这里每帧照问，**不缓存 `null`**。
+ */
+export function drawBonusMarquee(
+  ctx: CanvasRenderingContext2D,
+  flic: LotFlic,
+  now: number,
+): boolean {
+  const film = flic(LOT_ARCHIVE, LOT_BONUS_RESOURCE);
+  if (film === null || film.frames.length === 0) return false;
+  const frame = film.frames[bonusFrameAt(now) % film.frames.length];
+  if (frame === undefined) return false;
+  // 原版 `fcn_00450ced(sprite, x, y, flags)` 的 x/y 是**左上角**（帧缓冲从 (x,y) 起铺）
+  ctx.drawImage(frame, LOT_BONUS_AT.x, LOT_BONUS_AT.y);
+  return true;
+}
+
+/**
  * 画整屏。
  *
- * 顺序照原版：建屏 `fcn_0042f32c`（底图 → 貓女郎 → 气泡）+ 窗口过程那半
- * （蓝板 → 金额字形 → 眨眼/嘴贴片）+ 買中时（粉笔弧 → 換图 2）。
+ * 顺序照原版：起跑馬燈（`fcn_0042f32c` 那一下，@0x42f3fe）→ 建屏（底图 → 貓女郎
+ * → 气泡）+ 窗口过程那半（蓝板 → 金额字形 → 眨眼/嘴贴片）+ 買中时（粉笔弧 → 換图 2）。
  *
- * ⚠️ 跑馬燈（`Panel#14`）本引擎**画不出来**：`UiScreenEnv` 只给了 `sprite()`
- *   这一个取图出口，没有 FLIC 出口（`SpriteCache.getFlic` 只挂在 main.ts 里）。
- *   帧序与落点都已经算好（`bonusFrameAt` / `LOT_BONUS_AT`），等契约补出口再接。
- *   见 `docs/deviations/T-035.md`。
+ * ★ **跑馬燈（`Panel#14`）画在这里**：原版建屏 `fcn_00432f32c` 那一段最后就是
+ *   `fcn_00450ced(5 帧, 8, 8)`（@source 0x42f3fe `push 5 / push 8 / push 8`）。
+ *   `UiScreenEnv.flic()`（`ui-screen.ts`）就是给它用的出口；第一次问多半返回
+ *   `null`（异步解码），照常每帧再问一次即可，**别缓存 `null`**。
  */
-export function drawLotteryScreen(ctx: CanvasRenderingContext2D, sprite: LotSprite, v: LotView): void {
+export function drawLotteryScreen(
+  ctx: CanvasRenderingContext2D,
+  sprite: LotSprite,
+  flic: LotFlic,
+  v: LotView,
+  now = 0,
+): void {
+  // ── 獎金跑馬燈（`Panel#14`，起点 (8,8)）—— 最底层，蓝板/字形压在它中间那块上面 ──
+  drawBonusMarquee(ctx, flic, now);
+
   // ── 底图（36 个号格烤在里面）── 不抠黑
   drawAnchored(ctx, lotSprite(sprite, LOT_CHUNK.bg), LOT_BG_AT.x, LOT_BG_AT.y);
 
@@ -751,7 +791,7 @@ export const lotteryScreen: UiScreen = {
   draw(env: UiScreenEnv): void {
     const v = currentView(env);
     if (v === null) return;
-    drawLotteryScreen(env.stage, env.sprite, v);
+    drawLotteryScreen(env.stage, env.sprite, env.flic, v, env.now);
   },
 
   event(_before: GameState, after: GameState, env: UiScreenEnv): void {
