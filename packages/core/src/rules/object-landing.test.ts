@@ -18,8 +18,11 @@ import {
   TREASURE_POINTS,
   attachGod,
   drawGiftTool,
+  OBJECT_DISTANT_MAX_TRIES,
+  OBJECT_DISTANT_MIN,
   objectNodeCandidates,
   pickObjectNode,
+  pickObjectNodeDistant,
   placeObjectOfType,
   releaseObject,
   resolveArrival,
@@ -433,5 +436,104 @@ describe('开局投放', () => {
     for (const big of [2, 4, 6, 8, 10, 12]) {
       expect(INITIAL_OBJECT_TYPES).not.toContain(big);
     }
+  });
+});
+
+// ============================================================
+//  ★ Q-OBJ-2：远距重抽 @source `_rich4_find_random_unoccupied_distant_node`
+//    VA 0x0040aadf 起（`rich4_node_utils.asm:100-127`）
+// ============================================================
+
+describe('★ 远距重抽（Q-OBJ-2）', () => {
+  /** 4 个节点排成一条线，间距 400 —— 只有 1 号与 4 号相距 1200 */
+  const xy = new Map([
+    [1, { x: 0, y: 0 }],
+    [2, { x: 400, y: 0 }],
+    [3, { x: 800, y: 0 }],
+    [4, { x: 1200, y: 0 }],
+  ]);
+  const at = (id: number): { x: number; y: number } | null => xy.get(id) ?? null;
+
+  it('阈值 = 0x12c（300）@source `cmp eax, 0x12c`', () => {
+    expect(OBJECT_DISTANT_MIN).toBe(300);
+  });
+
+  it('★ 参照点 0 ⇒ **一次都不重抽**（`cmp dword [esp+0x118], 0 / je`）', () => {
+    const draws: number[] = [1, 2, 3, 4, 5];
+    let i = 0;
+    const node = pickObjectNodeDistant([1, 2, 3, 4], 0, at, () => draws[i++]!);
+    // 第一个 draw(1) % 4 = 1 → 候选[1] = 2；只抽了一次
+    expect(node).toBe(2);
+    expect(i).toBe(1);
+  });
+
+  it('★ 抽到的点**离参照点够远**（任一轴 ≥ 300）就收下', () => {
+    // 参照 = 1（x=0）。draw 2 % 4 = 2 → 候选[2] = 3（x=800）⇒ |dx| = 800 ≥ 300 → 收
+    let i = 0;
+    const draws = [2];
+    expect(pickObjectNodeDistant([1, 2, 3, 4], 1, at, () => draws[i++]!)).toBe(3);
+    expect(i).toBe(1);
+  });
+
+  it('★ **两轴都近**就重抽（不是「都远才收」—— 文档先前写反了）', () => {
+    // 参照 = 1。draw 1 % 4 = 1 → 候选[1] = 2（x=400，|dx|=400 ≥ 300）→ 收！所以
+    // 要造一个真近的：把参照换成 2，抽到 1（x=0 ⇒ |dx|=400）也够远…
+    // ⇒ 直接用间距 100 的一对，才看得出重抽。
+    const near = new Map([
+      [1, { x: 0, y: 0 }],
+      [2, { x: 100, y: 0 }], // 两轴都 < 300
+      [3, { x: 500, y: 0 }], // |dx| ≥ 300
+    ]);
+    const at2 = (id: number): { x: number; y: number } | null => near.get(id) ?? null;
+    // draw 1 % 3 = 1 → 候选[1] = 2（太近，重抽）；draw 0 % 3 = 0 → 候选[0] = 1（也近！重抽）
+    // draw 2 % 3 = 2 → 候选[2] = 3（够远，收）
+    const draws = [1, 0, 2];
+    let i = 0;
+    expect(pickObjectNodeDistant([1, 2, 3], 1, at2, () => draws[i++]!)).toBe(3);
+    expect(i).toBe(3); // ★ 真的重抽了两次
+  });
+
+  it('★ 换轴的判据是 OR：x 够远就收（不必两轴都远）', () => {
+    const cross = new Map([
+      [1, { x: 0, y: 0 }],
+      [2, { x: 0, y: 500 }], // |dx| = 0 但 |dy| = 500 ≥ 300
+    ]);
+    const at2 = (id: number): { x: number; y: number } | null => cross.get(id) ?? null;
+    const draws = [1];
+    let i = 0;
+    expect(pickObjectNodeDistant([1, 2], 1, at2, () => draws[i++]!)).toBe(2);
+    expect(i).toBe(1);
+  });
+
+  it('★ 一个够远的都没有时**不会挂死**（试满 `OBJECT_DISTANT_MAX_TRIES` 收最后一次）', () => {
+    const tiny = new Map([
+      [1, { x: 0, y: 0 }],
+      [2, { x: 10, y: 10 }],
+    ]);
+    const at2 = (id: number): { x: number; y: number } | null => tiny.get(id) ?? null;
+    let n = 0;
+    const node = pickObjectNodeDistant([1, 2], 1, at2, () => {
+      n++;
+      return 1; // 永远抽到候选[1] = 2（太近）
+    });
+    expect(node).toBe(2);
+    // ★ 原版这里会**死转**；本引擎按上界收手（已登记为偏离）
+    expect(n).toBe(OBJECT_DISTANT_MAX_TRIES);
+  });
+
+  it('候选空 ⇒ 0（与原版 `idiv` 之前没有候选的情形同义）', () => {
+    expect(pickObjectNodeDistant([], 3, at, () => 0)).toBe(0);
+  });
+
+  it('参照节点的坐标取不到时按「收下」处理（原版不会有这种节点）', () => {
+    const draws = [0];
+    let i = 0;
+    expect(pickObjectNodeDistant([1, 2], 99, at, () => draws[i++]!)).toBe(1);
+    expect(i).toBe(1);
+  });
+
+  it('★ 无参照那一半仍然照旧（`pickObjectNode` 直接取模）', () => {
+    expect(pickObjectNode([4, 5, 6], 7)).toBe(5);
+    expect(pickObjectNode([], 7)).toBe(0);
   });
 });

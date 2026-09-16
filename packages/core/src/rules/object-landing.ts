@@ -805,19 +805,79 @@ export function objectNodeCandidates(
 }
 
 /**
- * 从候选里挑一格。
+ * 从候选里挑一格（**不带参照点**）。
  *
- * @source VA 0x0040aadf：`node = buf[rand() % n]`。
- *
- * ⚠️ 原版还有一层**重抽**：若传了参照节点，要求新位置与它
- *   在 x、y 上都相距 ≥ 300（`cmp eax, 0x12c`），否则回去重抽
- *   （`jl 0x40aadf`）——神明送走后不该在原地复活。
- *   参照节点这条路径本引擎尚未接（见 known-deviations Q-OBJ-2），
- *   故此处只实现无参照的那一半。
+ * @source `_rich4_find_random_unoccupied_node` VA 0x0040aa53：
+ *   `call rand / idiv ebx / mov al, byte [esp + edx]` ⇒ `buf[rand() % n]`。
+ *   开局摆物件走的就是**参照点 = 0** 的那一支（`rich4_load_map.asm:281` 的
+ *   `push 0 / push 0 / push 0`），此时远距那一层重抽不会触发。
  */
 export function pickObjectNode(candidates: readonly number[], randValue: number): number {
   if (candidates.length === 0) return 0;
   return candidates[randValue % candidates.length] ?? 0;
+}
+
+/** 远距重抽的阈值 @source `cmp eax, 0x12c`（= 300）*/
+export const OBJECT_DISTANT_MIN = 0x12c;
+
+/**
+ * 远距重抽最多试几次。
+ *
+ * ⚠️ **本引擎自己定的上界**：原版那个循环（`jl 0x40aadf`）在「一个够远的
+ *   候选都没有」时会**死转**（小地图上真有可能）。我们不许挂死，试满就
+ *   收下最后一次抽到的那格 —— 那个局面下原版本来也走不下去，故不可观测。
+ *   登记在 `docs/deviations/Q-OBJ-2.md`。
+ */
+export const OBJECT_DISTANT_MAX_TRIES = 64;
+
+/**
+ * 从候选里挑一格，**要求离参照点够远**。
+ *
+ * @source `_rich4_find_random_unoccupied_distant_node` VA 0x0040aadf 起：
+ * ```asm
+ * loc_0040aadf:
+ *           call _libc_rand / idiv ebx              ; rand() % n
+ *           movzx esi, byte [esp + edx]             ; 抽中的节点号
+ *           …（取它的 x/y 到 edx/edi）…
+ *           cmp dword [esp + 0x118], 0 / je loc_0040ab3d   ; 参照点 0 → 直接收
+ *           sub edx, [esp + 0x100] / push edx / call _abs  ; |dx|
+ *           cmp eax, 0x12c / jge loc_0040ab3d       ; ★ |dx| >= 300 → 收
+ *           mov eax, edi / sub eax, ebp / push eax / call _abs   ; |dy|
+ *           cmp eax, 0x12c / jl  loc_0040aadf       ; ★ |dy| < 300 → **重抽**
+ * loc_0040ab3d:
+ *           mov eax, esi / ret
+ * ```
+ * ⇒ 判据是「**任一轴 ≥ 300 就收**」，只有**两轴都 < 300** 才重抽
+ *   （先前文档写成「都相距 ≥ 300」，方向反了 —— 2026-09-16 订正）。
+ *
+ * 谁用它：`rich4_objects.asm:244`（搭档在**旧落点**重新登场）、
+ *   `rich4_player_core_actions.asm:4853`（禮物/寶箱被挤走后换个地方）——
+ *   都是「刚被拿走的那个东西不该在原地复活」。
+ *
+ * @param reference 参照节点号；0 = 不重抽（与原版同一条早退）
+ * @param nodeXy 节点号 → 世界坐标；取不到的节点跳过
+ * @param draw 取一个 15 位随机数（调用方持 RNG，保持确定性）
+ */
+export function pickObjectNodeDistant(
+  candidates: readonly number[],
+  reference: number,
+  nodeXy: (nodeId: number) => { x: number; y: number } | null,
+  draw: () => number,
+): number {
+  if (candidates.length === 0) return 0;
+  const ref = reference === 0 ? null : nodeXy(reference);
+  let last = 0;
+  for (let i = 0; i < OBJECT_DISTANT_MAX_TRIES; i++) {
+    const node = candidates[draw() % candidates.length] ?? 0;
+    last = node;
+    // @source `cmp dword [esp + 0x118], 0 / je` —— 没参照点就一次都不重抽
+    if (ref === null) return node;
+    const at = nodeXy(node);
+    if (at === null) return node; // 取不到坐标：按「收下」处理（原版不会有这种节点）
+    if (Math.abs(at.x - ref.x) >= OBJECT_DISTANT_MIN) return node;
+    if (Math.abs(at.y - ref.y) >= OBJECT_DISTANT_MIN) return node;
+  }
+  return last;
 }
 
 /**

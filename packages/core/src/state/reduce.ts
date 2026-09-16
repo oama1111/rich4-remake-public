@@ -135,7 +135,7 @@ import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
   objectNodeCandidates,
-  pickObjectNode,
+  pickObjectNodeDistant,
   releaseObject,
   resolveArrival,
   tickGod,
@@ -1721,7 +1721,10 @@ function giveAlmsIfBeggar(state: GameState, topo: MapTopology, nodeId: number): 
   const rng = new WatcomRng();
   rng.setState(state.rngState);
   const spots = objectNodeCandidates(topo.nodes).filter((n) => n !== nodeId);
-  const moved = pickObjectNode(spots, rng.next());
+  // ★ 走**远距**那一支：原版 `fcn_0040cc56` 把玩家当前节点当参照点传给
+  //   `_rich4_find_random_unoccupied_distant_node`（`rich4.asm:6843` 的 `push eax`）
+  //   —— 刚被施捨过的那一格不该立刻又冒出乞丐。
+  const moved = pickObjectNodeDistant(spots, nodeId, nodeXyOf(topo), () => rng.next());
 
   const players = r.players.map((p, i) =>
     i === who && moved !== 0 ? { ...p, lastNodeId: p.nodeId, nodeId: moved } : p,
@@ -1822,6 +1825,16 @@ function applyArrival(state: GameState, topo: MapTopology): GameState {
  *   但「搭档必须登场」这件事本身不能省：不接它，地图上的神明
  *   被踩一个少一个，长局跑到后面一个物件都不剩。
  */
+/** 节点号 → 世界坐标；取不到给 null（`pickObjectNodeDistant` 的出口）*/
+function nodeXyOf(
+  topo: MapTopology,
+): (nodeId: number) => { x: number; y: number } | null {
+  return (id) => {
+    const n = topo.nodes[id - 1];
+    return n === undefined ? null : { x: n.x, y: n.y };
+  };
+}
+
 function respawnPartner(
   state: GameState,
   topo: MapTopology,
@@ -1839,7 +1852,7 @@ function respawnPartner(
   const spots = objectNodeCandidates(topo.nodes).filter((n) => !taken.has(n));
   const rng = new WatcomRng();
   rng.setState(state.rngState);
-  const node = pickObjectNode(spots, rng.next());
+  const node = pickObjectNodeDistant(spots, respawn.nearNode, nodeXyOf(topo), () => rng.next());
   if (node === 0) return state;
 
   partner.nodeId = node;
