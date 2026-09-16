@@ -155,6 +155,15 @@
     click(b.x, b.y);
   };
   const clickGo = () => {
+    // ★ 先问一句「引擎此刻真的在等真人掷骰吗」——`state.phase` 从**建局那一刻**
+    //   就是 `awaitingRoll`，但开机那几拍的 `screen` 还没落到 `game`
+    //   （过场/拉幕/标题），此时点 GO 一定被 `not-awaiting-human-roll` 打回。
+    //   不先滤掉这一段，`goMisses` 会把这十几秒全记成「点偏了」，
+    //   那个数就不再是「几何有没有对上」的指标了。
+    const g = (() => {
+      try { return typeof r.goButton === 'function' ? r.goButton() : null; } catch { return null; }
+    })();
+    if (g !== null && g.awaitingRoll !== true) return;
     const p = goPoint();
     if (!hitsGo(p.x, p.y)) { S.goMisses++; return; }
     S.goClicks++;

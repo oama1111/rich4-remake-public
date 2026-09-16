@@ -4485,9 +4485,17 @@ stopEffect(id: number): void;
 ★ **第三次复跑**（接上「三颗小钮 + 歸還款項」那一批之后）：
 
 ```json
-{"humanPath":true,"soakDispatches":0,"goClicks":30,"goMisses":0,
- "humanStalls":0,"turns":13,"ticks":861,"errors":0}
+{"humanPath":true,"soakDispatches":0,"goClicks":33,"goMisses":0,
+ "humanStalls":0,"turns":11,"ticks":787,"errors":0}
 ```
+
+★ 这一轮顺手修了长跑脚本**自己的一个度量 bug**：`clickGo()` 原先不先问
+「引擎此刻真的在等真人掷骰吗」，而 `state.phase` 从**建局那一刻**就是
+`awaitingRoll`（那时 `screen` 还没落到 `game`）—— 开机那十几秒每 70ms 记一次
+`goMisses`，于是那个数一度涨到 217，**不再是「几何有没有对上」的指标**。
+现在先看 `goButton().awaitingRoll`，不是真在等就直接跳过；同一局复跑
+`goMisses: 0`。★ 它**不影响**那条断言（`goMisses` 本来就不在断言里），
+但没有它会让人误判成「点偏了 217 次」。
 
 ★ **再跑一次**（同一天又改了 `UiScreen.key` 出口、`RICH4.CFG` 开机读、
 贴边推镜头之后）：
