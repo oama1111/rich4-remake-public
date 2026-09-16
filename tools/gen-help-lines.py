@@ -40,6 +40,7 @@
 import argparse
 import importlib.util
 import os
+import re
 import struct
 import sys
 
@@ -57,7 +58,10 @@ ENTRY_SIZE = 20              # 20 字节/项
 NCHAPTER = 8
 FIRST_RES = 1                # 正文资源从 1 起（0 是底图）
 LAST_RES = 99                # help.mkf 资源上界（含）
-ROWS = 8                     # HELP_TEXT.rows（一屏 8 行），maxScroll 的口径
+# ★ 一屏几行**不再写死**：直接读 `help-screen.ts` 的 `HELP_TEXT.rows`。
+#   先前这里硬编码 8，而代码里 2026-09-15 已改成 **14**（一屏 14 行，见
+#   T-045 的 D-045-2 三/四），于是这个校对脚本一跑就报假差异、
+#   `--write` 还会把 maxScroll 写回旧值。改成读真值后，脚本与代码不会脱节。
 
 # 生成区标记（脚本只改这两对标记之间的内容）
 MARK_CH_BEGIN = '  // >>> GENERATED HELP_CHAPTERS (tools/gen-help-lines.py) >>>'
@@ -128,8 +132,18 @@ def build():
     return chapters
 
 
+def rows() -> int:
+    """一屏几行 —— 读 `help-screen.ts` 的 `HELP_TEXT.rows`（**单一真值**）"""
+    with open(TARGET, encoding='utf-8') as f:
+        src = f.read()
+    m = re.search(r'HELP_TEXT\s*=\s*\{[^}]*?rows:\s*(\d+)', src)
+    if m is None:
+        raise SystemExit('❌ help-screen.ts 里读不到 HELP_TEXT.rows')
+    return int(m.group(1))
+
+
 def max_scroll(n_lines: int) -> int:
-    return max(0, n_lines - ROWS)
+    return max(0, n_lines - rows())
 
 
 def ts_str(s: str) -> str:

@@ -481,7 +481,7 @@ const HELP_LINES_0: readonly string[] = [
   '消鍵即可進行。',
 ];
 //
-// 第 1 章 遊戲畫面：资源 2..7（6 个），共 104 行，maxScroll 96。
+// 第 1 章 遊戲畫面：资源 2..7（6 个），共 104 行，maxScroll 90。
 const HELP_LINES_1: readonly string[] = [
   '遊戲中，每一個人物都',
   '前進過一回合，便算一',
@@ -589,7 +589,7 @@ const HELP_LINES_1: readonly string[] = [
   '即為您的總資產。',
 ];
 //
-// 第 2 章 遊戲指令：资源 8..19（12 个），共 102 行，maxScroll 94。
+// 第 2 章 遊戲指令：资源 8..19（12 个），共 102 行，maxScroll 88。
 const HELP_LINES_2: readonly string[] = [
   '讀取目前的遊戲進度。',
   '儲存目前的遊戲進度。',
@@ -695,7 +695,7 @@ const HELP_LINES_2: readonly string[] = [
   '的功能啦！',
 ];
 //
-// 第 3 章 房 地 產：资源 20..22（3 个），共 190 行，maxScroll 182。
+// 第 3 章 房 地 產：资源 20..22（3 个），共 190 行，maxScroll 176。
 const HELP_LINES_3: readonly string[] = [
   '公司企業在地圖上指定',
   '地點，並已擁有建築物',
@@ -889,7 +889,7 @@ const HELP_LINES_3: readonly string[] = [
   '輪盤決定消費金額。',
 ];
 //
-// 第 4 章 特殊地點：资源 23..38（16 个），共 79 行，maxScroll 71。
+// 第 4 章 特殊地點：资源 23..38（16 个），共 79 行，maxScroll 65。
 const HELP_LINES_4: readonly string[] = [
   '走到七彩氣球代表格時',
   '，即進行射氣球小遊戲',
@@ -972,7 +972,7 @@ const HELP_LINES_4: readonly string[] = [
   '人的懲罰。',
 ];
 //
-// 第 5 章 特殊人物：资源 39..56（18 个），共 112 行，maxScroll 104。
+// 第 5 章 特殊人物：资源 39..56（18 个），共 112 行，maxScroll 98。
 const HELP_LINES_5: readonly string[] = [
   '在遊戲中途倒閉的角色',
   '，會在原地停留乞討，',
@@ -1088,7 +1088,7 @@ const HELP_LINES_5: readonly string[] = [
   '盜領所有的累積紅利。',
 ];
 //
-// 第 6 章 卡  片：资源 57..86（30 个），共 338 行，maxScroll 330。
+// 第 6 章 卡  片：资源 57..86（30 个），共 338 行，maxScroll 324。
 const HELP_LINES_6: readonly string[] = [
   '功能：只要指定一棟建',
   '築物，就會起連鎖反應',
@@ -1430,7 +1430,7 @@ const HELP_LINES_6: readonly string[] = [
   '原價：20點',
 ];
 //
-// 第 7 章 道  具：资源 87..99（13 个），共 148 行，maxScroll 140。
+// 第 7 章 道  具：资源 87..99（13 个），共 148 行，maxScroll 134。
 const HELP_LINES_7: readonly string[] = [
   '功能：拆除房屋一個等',
   '級，走到哪裡拆到哪裡',
