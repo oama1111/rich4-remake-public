@@ -427,3 +427,17 @@ describe('动效出口两条来源共用 @source Q-TOOL-5 ⑤14', () => {
     expect(hooks.length, '三处动效钩子只该在 startActionFx 里各一次').toBe(3);
   });
 });
+
+describe('★ 真人走子也必须逐格滑（T-047 ④ 第 1 条，2026-09-16 修）', () => {
+  it('applyAction 里要调 tweenStepIfMoved，且与 AI 那条共用 startStepTween', () => {
+    // 先前只有 AI 那条（scheduleAi 的 reduce 直路）起补间 —— 真人走
+    // `dispatch → applyAction` 完全没起，于是自己走的一步是瞬移。
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src, 'tweenStepIfMoved 必须存在').toContain('function tweenStepIfMoved(');
+    // 定义 1 处 + applyAction 里调用 1 处
+    expect(src.split('tweenStepIfMoved(').length - 1).toBe(2);
+    expect(src).toContain('tweenStepIfMoved(action, before);');
+    // 两条来源共用同一个 startStepTween（定义 1 处 + 调用 2 处）
+    expect(src.split('startStepTween(').length - 1).toBe(3);
+  });
+});

@@ -69,8 +69,8 @@ x87 控制字 bit10-11 = RC：
 | VA | 算什么 | 本仓库 | 处置 |
 |---|---|---|---|
 | `0x00449cfa` | **所得稅** = `trunc(现金(+0x1c) × 0.05)` | `rules/percentage.ts` `incomeTax` | ✅ 改（原来就近取偶） |
-| `0x00449f28` | **地價稅** = `trunc(地产原值 × 0.05)` **再** `×物价指数` | `rules/percentage.ts` `propertyTax` | ✅ 取整改了；**顺序**另见 D-QNUM-2 |
-| `0x0044a122` | **證交稅** = `trunc(持股市值 × 0.05)` **再** `×物价指数` | `rules/percentage.ts` `stockTax` | ✅ 取整改了；顺序见 D-QNUM-2、精度见 D-QNUM-3 |
+| `0x00449f28` | **地價稅** = `trunc(地产原值 × 0.05)` **再** `×物价指数` | `rules/percentage.ts` `propertyTax` | ✅ 取整与**顺序**都改了（D-QNUM-2 已结案）|
+| `0x0044a122` | **證交稅** = `trunc(持股市值 × 0.05)` **再** `×物价指数` | `rules/percentage.ts` `stockTax` | ✅ 取整与顺序都改了（`stockTax` 收了 `priceIndex`，D-QNUM-2 已结案）；精度见 D-QNUM-3 |
 | `0x0044af50` | **儲金紅利** = `trunc(存款(+0x20) × 0.1)` | `rules/percentage.ts` `bankDividend` | ✅ 改 |
 | `0x00419f84` | **过路费同盟分账** = `trunc(实付总额 × (同盟份/总额)单精度)` | `rules/rent.ts` `allianceShareOf` | ✅ 改（原来 `Math.round`） |
 | `0x0041c383` | **強盜搶銀行** = `trunc(存款 × 0.2)` | `rules/npc-actions.ts` `bankRobbery` | ✅ 改（原来 `Math.round`） |
@@ -162,7 +162,7 @@ x87 控制字 bit10-11 = RC：
 ### D-QNUM-1 —— 已修：x87 取整误读为就近取偶
 见上。本轮的全部改动都在此名下。
 
-### D-QNUM-2 —— **未改**：`地價稅` / `證交稅` 的物价指数乘在截断**前**还是**后**
+### ✅ D-QNUM-2 —— **已改（2026-09-16）**：`地價稅` / `證交稅` 的物价指数乘在截断**前**还是**后**
 
 原版（`rich4_news.asm` 0x00449f1b 起、0x0044a115 起）：
 
@@ -184,12 +184,7 @@ x87 控制字 bit10-11 = RC：
 
 `0x0044a122`（證交稅）同形：`trunc(市值 × 0.05)` 之后才 `imul eax, [0x4990e8]`。
 
-**为什么没改**：这不是取整方式的问题，而是**公式顺序**问题；要改得动
-`propertyValue` 的公开语义、给 `stockTax` 加 `priceIndex` 入参（现在没有），
-超出本轮「统一取整」的范围，按「小步改」先登记。
-**建议**：下一轮单独做——加一个不含物价指数的 `propertyValueRaw()`，
-`propertyTax = trunc(raw × 0.05) × priceIndex`；`stockTax(holdings, prices, priceIndex)`
-同式。
+✅ **已结案 —— 完整取证、判决与落码见 §5.1**（本节保留当时的判决与建议原文）。
 
 ### D-QNUM-3 —— **未改**：持股市值是**单精度**累加
 
@@ -205,7 +200,7 @@ fstp dword [esp+…]` —— 逐支用**float32**累加；本仓库 `stockValue(
 「持仓成本」这个概念，也就没有对应的 `call 0x457dbc`。故保留 `Math.round`，
 不为了「统一」而乱改（C-FID-1：不许改良）。
 
-### D-QNUM-5 —— **未改**：賣出打分的 `gainFloor` 疑似读错常量（−2.0 应为 +2.0）
+### ✅ D-QNUM-5 —— **已改（2026-09-16）**：賣出打分的 `gainFloor` 读错常量（−2.0 应为 +2.0）
 
 `ai/stock-policy.ts` 的 `SELL_RATIO.gainFloor = -2.0`、判据
 `if (gain >= SELL_RATIO.gainFloor) score += …`；但 exe：
@@ -224,9 +219,9 @@ fstp dword [esp+…]` —— 逐支用**float32**累加；本仓库 `stockValue(
 **判据阈值是 +2.0**，`−2.0` 是紧接着 `fadd` 的偏移量。旧代码把这两个弄反了，
 于是 `gain ∈ [−2, 2)` 时本该「不加分」却加了 `trunc(2·gain − 3)`（负数）。
 
-这是**常量读错**、不是取整问题，且会明显改变 AI 的卖出行为
-（不是本轮该动的），按「不许改良 + 先登记」原样留着。
-**建议**：单独一轮把 `gainFloor` 改成 `2.0` 并补测试。
+这是**常量读错**、不是取整问题，且会明显改变 AI 的卖出行为。
+
+✅ **已结案 —— 完整取证、常量 dump 与落码见 §5.2**（本节保留当时的判决与建议原文）。
 
 ### D-QNUM-6 —— **未解**：1.3 表里那些调用点的逐条归属
 

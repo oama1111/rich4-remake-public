@@ -778,6 +778,38 @@ describe('★ T-008：五张地块卡对設施目标', () => {
     expect(r.hostilityDeltas).toEqual([]); // 无主不记
   });
 
+  // ★ 2026-09-16 补：拆除卡与怪獸卡共用**同一条**拾取规则
+  //   （`demolishLikeTargetAllowed`，@source 拾取跳表 VA 0x00446457 / 0x004464c3），
+  //   但先前只有怪獸卡那一组有用例 —— 这四条把拆除卡那一半逐条钉住。
+  it('★ 拆除卡：0 级設施（空地）→ targetNotAllowed 且不扣卡', () => {
+    const ctx = facCtx(12, makeFacility({ id: 1, type: 1, level: 0, owner: 2 }));
+    const r = useCard(ctx, 12, { kind: 'facility', facilityId: 1 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('targetNotAllowed');
+    expect(r.players[0]!.cards).toEqual([12]);
+  });
+
+  it('★ 拆除卡：自己的設施 → targetNotAllowed（原版红叉）', () => {
+    const ctx = facCtx(12, makeFacility({ id: 1, type: 1, level: 2, owner: 1 }));
+    expect(useCard(ctx, 12, { kind: 'facility', facilityId: 1 }).error).toBe('targetNotAllowed');
+  });
+
+  it('★ 拆除卡：0 级地块（空地）→ targetNotAllowed', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [12] }), makePlayer({ index: 1 })],
+      lands: [makeLand({ id: 1, name: '台北市', owner: 2, level: 0 })],
+    });
+    expect(useCard(ctx, 12, { kind: 'entity', entityId: 1 }).error).toBe('targetNotAllowed');
+  });
+
+  it('★ 拆除卡：自己的地 → targetNotAllowed（原版红叉）', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [12] }), makePlayer({ index: 1 })],
+      lands: [makeLand({ id: 1, name: '台北市', owner: 1, level: 3 })],
+    });
+    expect(useCard(ctx, 12, { kind: 'entity', entityId: 1 }).error).toBe('targetNotAllowed');
+  });
+
   it('漲價卡：設施单个标记 0x50', () => {
     const ctx = facCtx(27, makeFacility({ id: 1, type: 1, level: 2 }));
     const r = useCard(ctx, 27, { kind: 'facility', facilityId: 1 });

@@ -127,14 +127,30 @@
 
 ## 4. 没做 / 解不出的
 
-1. **拆除卡（以及怪獸卡）地块/設施两支的「不能选自己 / 不能选空地」还没进 core。**
-   拾取跳表组 6（VA 0x004464c3 起）要求 `[land+0x19] != 当前玩家+1` 且
-   `[land+0x1a] != 0`（設施同），组 5（怪獸卡，VA 0x00446457）同规。
-   这两条是**拾取规则**，理论上与 core 的 `preview.ts`「同一件事」，
-   但 core 现在的 11/12 号卡只靠效果函数的返回值兜（空地会被
-   `mutateFacility` / `demolishLand` 判成没变），**「自己的地/設施」没有被挡**。
-   本轮不动它：那会同时改到怪獸卡与所有调用方，超出本缺口范围；登记在此。
-   UI 侧因此仍可能让真人拆自己 1 级的地（原版是红叉）。
+1. ✅ **拆除卡（以及怪獸卡）「不能选自己 / 不能选空地」—— 2026-09-16 复核：已接。**
+   先前这段写「还没进 core、只靠效果函数的返回值兜」，**与代码对不上**：
+   两处都在 registry 的 `case 11`（怪獸卡）/ `case 12`（拆除卡）里显式判了 ——
+
+   ```ts
+   // core/src/cards/registry.ts（地块与設施两条支路各一处，共 4 处）
+   if (!demolishLikeTargetAllowed(fac.owner, fac.level, cur)) return fail('targetNotAllowed');
+   if (!demolishLikeTargetAllowed(targetLand.owner, targetLand.level, cur)) return fail('targetNotAllowed');
+   ```
+
+   判据函数在 `core/src/cards/land-cards.ts` 的 `demolishLikeTargetAllowed()`，
+   注释里带着那两处 VA（怪獸卡 VA 0x00446457 / 拆除卡 VA 0x004464c3）：
+
+   ```ts
+   if (owner === currentPlayer + 1) return false;   // 自己的 → 不收
+   if (level === 0) return false;                   // 空地（等级 0）→ 不收
+   ```
+
+   **UI 侧也是对的**：这一条走的是 `canUseCard` 预演（`state/preview.ts`），
+   拾取候选里根本不会出现自己的地/空地，光标因此落到「红叉」那一档
+   （`Data.mkf` 资源 0 图 5，见 `refreshPickCursor()`），与原版一致。
+   **用例**：`registry.test.ts` 的怪獸卡 4 条（0 级設施 / 自己的設施 / 空地 / 自己的地）
+   —— 拆除卡那一半原先**没有**用例，2026-09-16 按同形补齐 4 条
+   （`拆除卡：0 级設施（空地）/ 自己的設施 / 0 级地块（空地）/ 自己的地 → targetNotAllowed`）。
 2. **换屋卡把設施种类换掉之后的连带量**（`FACILITY_MAX_LEVEL`、租金表窗口、
    研究所研发状态）原版**不做任何处理**，core 同样照搬。若实战里出现
    「研究所 ↔ 加油站 互换后等级超上限」不是本项目的 bug，是原版行为。

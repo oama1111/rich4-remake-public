@@ -551,7 +551,11 @@ dl = byte[0x46cb44] + 1
 [player + 0x12] = dl                  ; ★ ndices = traffic + 1
 ```
 
-`newGame` 新增 `startingVehicle` 选项。⚠️ 选人屏上**怎么选**还没做（M4）。
+`newGame` 新增 `startingVehicle` 选项。✅ **选人屏上能选了（2026-09-16 复核）**：
+开局设定屏第 **2** 条下拉就是它 —— `setup.ts` 的 `VEHICLE_LABELS = ['步行','機車','汽車']`
+（@source 串表 `0x46cbac`）、`menuValue`/`setupDown` 的 `case 2: vehicle: item`、
+预览走路动画按 `setupWalkResource(character, s.vehicle)` 取图，`main.ts` 的
+`newGame({ startingVehicle: setup.vehicle })` 收口。原先那句「怎么选还没做」是 M4 阶段的旧记录。
 
 ### ~~Q-INIT-2~~：玩家起始节点（**已结案 2026-09-14**）
 
@@ -4466,15 +4470,28 @@ alpha 0.55）。那张「按格子类型给中性色」的表是**重制版自�
 ### `docs/deviations/T-047.md`
 
 - ✅ D-T047-1　`reduce` 把 `NpcWalk.path` 丢了 ⇒ 渲染器拿不到中间格 —— **已解决**
-- D-T047-2　替身的 `+2`（載具）**已接 2026-09-16**；`+3`（夢遊走姿）的
-  **數據來源已接**（`SpecialActor.sleepwalkDays`/`hibernating` + `registry.ts` 卡 16
-  的 actor 分支），**渲染那一步仍未接** —— 先前「索引空间没核清」的判据已订正为误读
+- ✅ D-T047-2　替身的 `+2`（載具）与 `+3`（夢遊走姿）**两张都接了（2026-09-16）**：
+  数据来源 = `SpecialActor.sleepwalkDays`（`+13`）/ `hibernating`（`+12`）+
+  `registry.ts` 卡 16 的 actor 分支；渲染 = `render.ts` 的
+  `specialActorImageSet(actor, walking, vehicle, sleepwalking)`（**`+3` 优先于 `+2`**，
+  顺序照原版 0x0040bd5c 在 0x0040bdd6 之前）。钉在 `render.test.ts` 的「走姿 +3」一组
 - ✅ D-T047-3　`node.flags & 0x80000000` 那一支（`edi + 2` 載具，走姿）
   —— **2026-09-16 已接**（复核 `rich4.asm` 5634-5710 后读通：走姿槽换 `+2`）
-- D-T047-4　夢遊/冬眠的**变灰** —— **玩家那条已接 2026-09-16**（`ASLEEP_FILTER`）；
-  替身那条已有写入来源（`SpecialActor.hibernating`，见 D-T047-2），但渲染仍未接
-- D-T047-5　一輪里多个惡人**同时**走（原版是逐个走的）
+- ✅ D-T047-4　夢遊/冬眠的**变灰** —— **玩家与替身两条都已接（2026-09-16）**：
+  判据是 `isActorAsleep()`（读 `SpecialActor.hibernating`，**不是** `sleepwalkDays`），
+  替身那条在 `specialActorSpritesOf` 里置 `frozen` 并在绘制时套 `ASLEEP_FILTER`
+  （`render.ts:2356`）；`render.test.ts:266-268` 钉着「只有 `sleepwalkDays` 不灰」
+- ✅ D-T047-5　一輪里多个惡人**同时**走 —— **2026-09-16 已改成逐个**：核心加了
+  `GameState.pendingNpcSlots` + `activeNpcSlots` / `npcStepOnce` / `npcRoundStep`
+  （一条 action 只走一个惡人，`lastNpcWalks` 覆写不累积，最后一个走完才推日期换个玩家）；
+  渲染器不用改。钉在 `packages/core/src/state/npc-round.test.ts`
 - ✅ D-T047-6　機器娃娃（以及**走回老家**的惡人）那一趟**起不了补间** —— 卡在渲染器的判据上（**已修**）
+- ✅ D-T047-8　`T-047.md` ④ 里「顺带看到、不在本卡范围、未修」的两条**都已修（2026-09-16）**：
+  ① **真人走子瞬移** → `applyAction` 里新增 `tweenStepIfMoved()`，与 AI 那条共用
+  `startStepTween`（结构断言在 `walk-flicker.test.ts`）；
+  ② **掷完骰子人不走** → 补驱动抽成 `resumeTurnDriver()`，在 `dicePoll` 的**三条收尾路**
+  （进来时已 idle / `diceFx.tick()` 报「这一拍播完」/ 联机超时 cancel）各调一次
+  （`dice-roll.test.ts:182-196`）。两次修复的经过（第一版修错地方）留在 T-047.md ④。
 - ★ 给中央的接线单 —— **本轮已全部落地**（留作记录）
 
 ### `docs/deviations/T-051.md`
