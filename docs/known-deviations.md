@@ -4004,7 +4004,10 @@ trunc((rand×2⁻¹⁶ + 3) × 地價 × 物價指數) )`
 **仍缺的一处（读档）**：`loaders/savegame.ts` 的 `importOriginalSave` 还没按
 `0x2682`/`0x2686` 两个偏移回填 `winConditions`（该函数也把 `totalDays` 硬置 0），
 已在 `gaps['winConditions']` 里如实报出。**UI 一侧没有任何变化**（頒獎屏 REQ-12.15 仍未做，
-所以终局只是停在棋盘上）。
+所以终局只是停在棋盘上）。★ 2026-09-16 把那一支读完了：`fcn_004075c1` 兼两用
+（名次没满 4 → 播一下继续下一关；满 4 → 整局结束），依赖原版的**多关流程**
+（`[0x4991b6]`/`[0x4991b8]` 两个全局量）与 `[0x4990f0]` 名次标记表，
+本引擎是单关、且没有那张表 —— 具体见 `docs/deviations/Q-SETUP-1.md` §5.3。
 
 已接线的三条：人数（`playerCount`）、總資金（→ `initialFund`）、行進方式
 （→ `startingVehicle`）、土地權限（→ `landTenure`）。
