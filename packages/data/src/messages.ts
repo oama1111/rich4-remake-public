@@ -238,6 +238,60 @@ export const TOOLBAR_TIPS = {
   companies: t('公司企業', 0x465e3b),
 } as const;
 
+/**
+ * 神明附身那一刻那扇**老虎机窗**的台詞 —— 四種模板，`%s` = 神明名。
+ *
+ * @source 跳表 `0x4406ee` 的四個分支（`fcn_00440706`）：
+ *   `0x4652a9` / `0x4652c1` / `0x4652d1` / `0x4652e7`；
+ *   名字取自 `_rich4_god_names`（0x47ed7a，16 项，见 `GOD_NAMES`）。
+ *
+ * ⚠️ 每条结尾那三个点**不是省略号**，是三个半角句点 —— 金額会被
+ *   `sprintf("%d元")` **再画一遍在同一个落点**（0x465284）盖上去。
+ */
+export const GOD_ATTACH = {
+  /** 0 小財神（`arg = 0`）*/
+  collect: t('%s附身\n\n向所有對手收...', 0x4652a9),
+  /** 1 大財神（`arg = 1`）*/
+  give: t('%s附身\n\n送您...', 0x4652c1),
+  /** 4 小窮神（`arg = 4`）*/
+  payAll: t('%s附身\n\n付給每個人...', 0x4652d1),
+  /** 5 大窮神（`arg = 5`）*/
+  loss: t('%s附身\n\n損失...', 0x4652e7),
+  /** 金額那一行 `sprintf(0x465284, 金額)` @source 0x0043f68c 那一支 */
+  amount: t('%d元', 0x465284),
+} as const;
+
+/**
+ * 神明的名字 —— 16 項，**下标 = 物件種類 − 1**。
+ *
+ * @source `_rich4_god_names` @ VA 0x47ed7a（指针表），每條串間隔 7 字節
+ *   （三個 Big5 字 + NUL）；第一項 `0x466640` = 小財神。
+ *   `objects_info[i].type = i + 1`，故 `種類` 1..16 → 下标 0..15。
+ */
+export const GOD_NAMES: readonly OriginalText[] = [
+  t('小財神', 0x466640),
+  t('大財神', 0x466647),
+  t('小福神', 0x46664e),
+  t('大福神', 0x466655),
+  t('小窮神', 0x46665c),
+  t('大窮神', 0x466663),
+  t('小衰神', 0x46666a),
+  t('大衰神', 0x466671),
+  t('天使', 0x466678),
+  t('惡魔', 0x46667d),
+  t('惡犬', 0x466682),
+  t('土地公', 0x466687),
+  t('禮物', 0x46668e),
+  t('寶箱', 0x466693),
+  t('死神', 0x466698),
+  t('路障', 0x46669d),
+];
+
+/** 種類（1 基，与 `objects_info[i].type` 同一套编码）→ 神明名；越界给空串 */
+export function godNameOf(type: number): string {
+  return GOD_NAMES[type - 1]?.text ?? '';
+}
+
 /** 把 `%s` / `%d` 依次替换掉 —— 原版用的是 C 的 sprintf，这里只做它用到的那两种 */
 export function formatOriginal(fmt: string, ...args: (string | number)[]): string {
   let i = 0;
@@ -256,4 +310,6 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(LOTTERY),
   ...Object.values(PLACE),
   ...Object.values(TOOLBAR_TIPS),
+  ...Object.values(GOD_ATTACH),
+  ...GOD_NAMES,
 ];

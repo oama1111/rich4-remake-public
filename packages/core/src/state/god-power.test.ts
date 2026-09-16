@@ -129,8 +129,8 @@ const sum = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0);
 describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
   run('★ 小財神：每個對手付給附身者（現金），四位數金額 @source 0x0040ec99', () => {
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
-    expect(amount).toBeLessThanOrEqual(9999);
+    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    expect(amount).toBeLessThanOrEqual(999);
     expect(after.players[0]!.godInfo).toBe(1);
     for (const i of [1, 2, 3]) expect(after.players[i]!.cash, `玩家 ${i}`).toBe(100_000 - amount);
     expect(after.players[0]!.cash).toBe(100_000 + amount * 3);
@@ -138,8 +138,8 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
 
   run('★ 大財神：附身者進帳（現金），三位數 @source 0x0040ed4c', () => {
     const { after, rngAtAttach } = stepOnto(GOD_BIG_WEALTH);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
-    expect(amount).toBeLessThanOrEqual(999);
+    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
+    expect(amount).toBeLessThanOrEqual(9999);
     expect(after.players[0]!.godInfo).toBe(2);
     expect(after.players[0]!.cash).toBe(100_000 + amount);
     for (const i of [1, 2, 3]) expect(after.players[i]!.cash).toBe(100_000);
@@ -158,7 +158,7 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
 
   run('★ 大窮神：附身者付給銀行（公庫）@source 0x0040f076', () => {
     const { before, after, rngAtAttach } = stepOnto(GOD_BIG_POVERTY);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
     expect(after.players[0]!.cash).toBe(100_000 - amount);
     expect(after.pool).toBe(before.pool + amount);
     for (const i of [1, 2, 3]) expect(after.players[i]!.cash).toBe(100_000);
@@ -237,7 +237,7 @@ describe('★ 請神符走同一条發威（两条附身路径共用 @source 0x0
   run('請大財神上身 → 一样進帳', () => {
     const { after, rngAtAttach, handle } = attachViaCard(GOD_BIG_WEALTH);
     expect(after.players[0]!.godInfo).toBe(handle);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
     expect(after.players[0]!.cash).toBe(100_000 + amount);
   });
 

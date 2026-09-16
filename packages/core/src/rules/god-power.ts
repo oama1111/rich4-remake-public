@@ -18,12 +18,12 @@
  *
  * | 種類 | 神 | 發威（@source）|
  * |---|---|---|
- * | 1 | 小財神 | 金額**四位數**；**每個對手付給附身者**（現金）：`fcn_0041d2c6(對手, 附身者, 金額, 1)`（0x0040ec99）|
- * | 2 | 大財神 | 金額三位數；**附身者進帳**：`fcn_0041d3f4(附身者, 金額, 1)` → 現金 + `+0x60`（0x0040ed4c）|
+ * | 1 | 小財神 | 金額**三位數**；**每個對手付給附身者**（現金）：`fcn_0041d2c6(對手, 附身者, 金額, 1)`（0x0040ec99）|
+ * | 2 | 大財神 | 金額**四位數**；**附身者進帳**：`fcn_0041d3f4(附身者, 金額, 1)` → 現金 + `+0x60`（0x0040ed4c）|
  * | 3 | 小福神 | `_rich4_player_receive_random_card(附身者)` **得一張卡**（0x441e12，0x0040ede7）|
  * | 4 | 大福神 | **得两张**（同一函数连调两次，0x0040eea8 / 0x0040eeb5）|
  * | 5 | 小窮神 | 金額三位數；**附身者付給每個對手**（進對方**存款**）：`fcn_0041d2c6(附身者, 對手, 金額, 0)`（0x0040efd9）|
- * | 6 | 大窮神 | 金額三位數；**附身者付給銀行**：`fcn_0041d2c6(附身者, −1, 金額, 0)`（0x0040f076）|
+ * | 6 | 大窮神 | 金額**四位數**；**附身者付給銀行**：`fcn_0041d2c6(附身者, −1, 金額, 0)`（0x0040f076）|
  * | 7 | 小衰神 | `_rich4_player_drop_random_card(附身者)` 丢一张（0x441e77，0x0040f10c）|
  * | 8 | 大衰神 | `_rich4_player_drop_half_the_card(附身者)` 丢一半（0x441ece，0x0040f1de）|
  * | 9 | 天使 | **只演出**（影片 0x224 + 台詞），无状态改动 —— 效果是被動的（0x0040f205）|
@@ -46,8 +46,23 @@
  * [esp+0xac] = edx
  * if (arg == 0) [esp+0xac] += (c4/2)*1000  ; ★ 只有小財神加千位
  * ```
- * 即**四位十进制数**：`c4/2` 当千位、`c5/2` 百位、`c6/2` 十位、`c7/2` 个位；
+ * 即**最多四位**的十进制数：`c4/2` 千位、`c5/2` 百位、`c6/2` 十位、`c7/2` 个位；
  * `c_i/2` 是**算术右移**，对 `rand()%10*2+1` 正好等于 `rand()%10`。
+ *
+ * ⚠️ **千位那一项由 `ebp` 决定，而 `ebp` 不是 `arg` 本身**：
+ *   `fcn_00440706(arg)` 先把参数折成 `ebx = (arg & 1) ^ 1` 再传进 `fcn_0043f23e`
+ *   （`ebx` 同时当**面板图号**：0 = 四位数的老虎机 193×183、1 = 三位数的 156×183，
+ *   以及**摇杆 x**：`0x475ce0[ebx]` = 317 / 298）。于是：
+ *
+ *   | 神 | `arg` | `ebx` | 面板 | 金額位數 |
+ *   |---|---|---|---|---|
+ *   | 1 小財神 | 0 | 1 | 三位數 | **三位** |
+ *   | 2 大財神 | 1 | 0 | 四位數 | **四位** |
+ *   | 5 小窮神 | 4 | 1 | 三位數 | **三位** |
+ *   | 6 大窮神 | 5 | 0 | 四位數 | **四位** |
+ *
+ *   （`(arg & 1) ^ 1` 这一步先前漏了，会把大小財神/大窮神的位數**搞反** ——
+ *   2026-09-16 接 Q-GOD-1 那扇窗时按 `ebx` 重新核了一遍。）
  *
  * 重掷几次取决于**真人点击时机**（AI 那一路是 30 tick 定时推进）——
  * 按本仓库的 **D-003**（真人点击时机不復刻、結果由 core 定），
@@ -150,14 +165,17 @@ export function rollGodAmounts(rng: WatcomRng): GodAmounts {
  */
 export function godPowerOf(type: number, rng: WatcomRng): GodPower {
   switch (type) {
+    // arg 0 → ebx 1 → 三位數（小財神那台是一台三位數老虎機）
     case GOD_SMALL_WEALTH:
-      return { kind: 'collectFromOpponents', amount: rollGodAmounts(rng).four };
+      return { kind: 'collectFromOpponents', amount: rollGodAmounts(rng).three };
+    // arg 1 → ebx 0 → 四位數
     case GOD_BIG_WEALTH:
-      return { kind: 'gain', amount: rollGodAmounts(rng).three };
+      return { kind: 'gain', amount: rollGodAmounts(rng).four };
     case GOD_SMALL_POVERTY:
       return { kind: 'payOpponents', amount: rollGodAmounts(rng).three };
+    // arg 5 → ebx 0 → 四位數（大窮神那台是四位數老虎機）
     case GOD_BIG_POVERTY:
-      return { kind: 'payBank', amount: rollGodAmounts(rng).three };
+      return { kind: 'payBank', amount: rollGodAmounts(rng).four };
     case GOD_SMALL_LUCK:
       return { kind: 'receiveCards', count: 1 };
     case GOD_BIG_LUCK:

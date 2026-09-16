@@ -24,6 +24,7 @@ import { lotteryDrawScreen } from './lottery-draw-screen.ts';
 import { magicScreen } from './magic-screen.ts';
 import { eventBoxScreen } from './event-box-screen.ts';
 import { wheelScreen } from './wheel-screen.ts';
+import { godSlotScreen } from './god-slot.ts';
 import { researchScreen } from './research-screen.ts';
 import { monthlyScreen } from './monthly-screen.ts';
 import { minigameScreen } from './minigame-screen.ts';
@@ -47,6 +48,9 @@ export const SCREENS: readonly UiScreen[] = [
   //   魔法屋那一次该由魔法屋屏演（见 `event-box-screen.ts` 头注释）。
   eventBoxScreen,
   wheelScreen,
+  // ★ 「神明附身」那一刻的老虎机窗（Q-GOD-1）：与转盘同一类**演出**屏，
+  //   由 `event(before, after)` diff 出「刚附身 + 四种金額型」时起播。
+  godSlotScreen,
   // ★ 「請選擇設施類別」（Q-TOOL-4）：真人盖**等级 0 的設施**时要先选种类
   //   （原版 `fcn_00440aac`，一扇盖在棋盘上的浮窗）。它由主机的拾取/加蓋流程
   //   主动 `openFacilityPicker()` 打开，`active()` 只在开窗期间为真。

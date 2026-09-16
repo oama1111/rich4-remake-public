@@ -64,26 +64,26 @@ describe('★ 金額：四個數字拼成四位/三位數 @source 0x0040f2d7 + 0
 describe('★ 每個神明的發威 @source 各函数', () => {
   const at = (type: number, seed = 7) => godPowerOf(type, new WatcomRng(seed));
 
-  it('1 小財神 → 每個對手付給附身者，金額取四位', () => {
+  it('★ 1 小財神 → 每個對手付給附身者，金額取**三位**（arg 0 → ebx 1 → 三位數面板）', () => {
     const p = at(GOD_SMALL_WEALTH);
     expect(p.kind).toBe('collectFromOpponents');
-    expect((p as { amount: number }).amount).toBe(rollGodAmounts(new WatcomRng(7)).four);
-  });
-
-  it('2 大財神 → 附身者進帳，金額取三位', () => {
-    const p = at(GOD_BIG_WEALTH);
-    expect(p.kind).toBe('gain');
     expect((p as { amount: number }).amount).toBe(rollGodAmounts(new WatcomRng(7)).three);
   });
 
-  it('5 小窮神 / 6 大窮神 → 付款，金額三位', () => {
+  it('★ 2 大財神 → 附身者進帳，金額取**四位**（arg 1 → ebx 0 → 四位數面板）', () => {
+    const p = at(GOD_BIG_WEALTH);
+    expect(p.kind).toBe('gain');
+    expect((p as { amount: number }).amount).toBe(rollGodAmounts(new WatcomRng(7)).four);
+  });
+
+  it('5 小窮神（三位）/ 6 大窮神（四位）→ 付款', () => {
     expect(at(GOD_SMALL_POVERTY)).toEqual({
       kind: 'payOpponents',
       amount: rollGodAmounts(new WatcomRng(7)).three,
     });
     expect(at(GOD_BIG_POVERTY)).toEqual({
       kind: 'payBank',
-      amount: rollGodAmounts(new WatcomRng(7)).three,
+      amount: rollGodAmounts(new WatcomRng(7)).four,
     });
   });
 
