@@ -148,7 +148,9 @@ import {
 import { MIDI_PLAYLIST, PLACE_TOOL_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
 import {
   BoardRenderer,
+  cameraCenter,
   characterCamera,
+  pixelCamera,
   hitToolbar,
   pickNodeAt,
   worldToScreen,
@@ -386,10 +388,21 @@ import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import {
   CURSOR_ARCHIVE,
   CURSOR_RESOURCE,
+  PICK_CLASS,
+  PICK_CURSOR_INVALID,
+  PICK_EDGE,
+  PICK_EDGE_ARROW,
+  PICK_SCROLL_STEP_MIN,
+  PICK_SCROLL_TICK_MS,
   TOOL_SELECT_PARAM,
   hitCandidate,
+  pickClasses,
   pickCursorFor,
+  pickEdgeOf,
+  pickScrollCamera,
+  pickScrollNextStep,
   startPick,
+  type PickEdge,
   type PickSession,
 } from './picking.ts';
 import {
@@ -3367,15 +3380,73 @@ function refreshPickCursor(): void {
     canvas.style.cursor = '';
     return;
   }
+  // ★ 贴边时**指针就是那支箭头**，优先于「悬停在候选上」那支
+  //   @source `loc_0044609b`：贴边分支里 `[0x48c564] != 0` 会让悬停判定直接返回
+  //   ⇒ 优先级 箭头 > 道具/卡片自己的指针 > 红叉。
+  if (pickEdge !== PICK_EDGE.none) {
+    const arrow = PICK_EDGE_ARROW.get(pickEdge) ?? PICK_CURSOR_INVALID.image;
+    const cssArrow = pickCursorSprite(arrow, 1, 0);
+    canvas.style.cursor = cssArrow ?? '';
+    return;
+  }
   const shape = pickCursorFor(pick, pickHover !== null);
   const css = pickCursorSprite(shape.image, shape.hotX, shape.hotY);
   // 图还没到 → 先别把系统指针藏掉，否则会出现「没有指针」
   canvas.style.cursor = css ?? '';
 }
 
+/**
+ * ★ 贴边推镜头的状态（Q-PICK-1）—— 纯表现，不进 `GameState`。
+ *
+ * @source `rich4_ui_use_tool.asm` 的 `_rich4_select_instance_callback`：
+ *   贴边时 `[0x48c568]` 记方向、`[0x48c56c]` 记步长（8 起、每次 +4、上限 68）、
+ *   `[0x48c570]/[0x48c574]` 是**像素**级的镜头中心；`SetTimer(…, 0x32, 0)`
+ *   每 50 ms 推一次。离开边缘时 `KillTimer` + 步长复位 8。
+ *   贴边期间指针换成八方向箭头（图 34/40/38/36），且**跳过悬停判定**
+ *   （`[0x48c564] != 0` → 直接返回）—— 即「箭头 > 道具指针 > 红叉」。
+ */
+let pickEdge: PickEdge = PICK_EDGE.none;
+let pickEdgeStep = PICK_SCROLL_STEP_MIN;
+let pickEdgeTimer: number | null = null;
+
+/** 停掉贴边推镜头（离开边缘 / 结束拾取 / 关屏）*/
+function stopPickEdgeScroll(): void {
+  if (pickEdgeTimer !== null) {
+    window.clearInterval(pickEdgeTimer);
+    pickEdgeTimer = null;
+  }
+  // @source `loc_0044609b` 的「否则」那一支：`[0x48c56c] = 8`
+  pickEdgeStep = PICK_SCROLL_STEP_MIN;
+  if (pickEdge !== PICK_EDGE.none) {
+    pickEdge = PICK_EDGE.none;
+    refreshPickCursor();
+  }
+}
+
+/**
+ * 贴边推镜头的一拍 @source `loc_00445f88`（`0x113` 定时器分支）：
+ * 用**本次**的步长按方向表推镜头中心、clamp 到 [220, 2084]，然后步长 +4。
+ */
+function tickPickEdgeScroll(): void {
+  if (pick === null || pickEdge === PICK_EDGE.none) {
+    stopPickEdgeScroll();
+    return;
+  }
+  const step = pickEdgeStep;
+  pickEdgeStep = pickScrollNextStep(step);
+  const next = pickScrollCamera(cameraCenter(camera), pickEdge, camera.view, step);
+  const cur = cameraCenter(camera);
+  if (next.x === cur.x && next.y === cur.y) return;
+  camera = pixelCamera(next.x, next.y, camera.view);
+  // 跟着镜头走的那几样要让它们重算（与拖动/传送同一条路）
+  followPlayer = false;
+  requestRender();
+}
+
 /** 结束拾取（`cancel` = 用户放弃）*/
 function endPick(): void {
   if (pick === null) return;
+  stopPickEdgeScroll();
   pick = null;
   pickHover = null;
   canvas.style.cursor = '';
@@ -3783,6 +3854,8 @@ const SOUND_TARGET_PICKED = 2;
 
 /** 进「选目标」的拾取模式（卡片那一类）*/
 function startCardPick(cardId: number, cls: TargetClass, param: number): void {
+  // ★ 进拾取前先把上一轮的贴边推镜头收掉（`[0x48c56c]` 复位 8）
+  stopPickEdgeScroll();
   pick = startPick(state, topo, { kind: 'card', cardId }, cls, param);
   pickHover = null;
   if (pick.candidates.length === 0) {
@@ -3794,6 +3867,7 @@ function startCardPick(cardId: number, cls: TargetClass, param: number): void {
 
 /** 进「选一格」的拾取模式（道具那一类目标都是格子）*/
 function startToolPick(toolId: number, param: number): void {
+  stopPickEdgeScroll();
   pick = startPick(state, topo, { kind: 'tool', toolId }, 'none', param);
   pickHover = null;
   if (pick.candidates.length === 0) {
@@ -5573,8 +5647,36 @@ function bindInput(): void {
       return;
     }
 
-    // ── 目标拾取（T-026）：光标底下是候选就换指针 @source VA 0x44609b ──
+    // ── 目标拾取（T-026 + Q-PICK-1）：先判贴边，再判悬停 @source VA 0x44609b ──
     if (screen === 'game' && pick !== null) {
+      // ★ 贴边推镜头：选择参数的 bit7 开着才有（飛彈 / 核子飛彈）
+      //   @source `loc_0044609b` 的 `test byte [0x48c594], 0x80`
+      const classes = pickClasses(pick.param);
+      // ★ 坐标口径：`p` 是**舞台**坐标（640×480）；棋盘窗口的 client 原点在
+      //   `LAYOUT.board`，所以 `p − LAYOUT.board` 正好是原版那对
+      //   `LOWORD(lParam)` / `HIWORD(lParam) − 0x28`（`0x28` = 舞台 y 偏移 40，
+      //   见 `PICK_BOARD_OFFSET_Y`）。⇒ 这里**不要再减一次** y 偏移。
+      const edge = pickEdgeOf(
+        p.x - LAYOUT.board.x,
+        p.y - LAYOUT.board.y,
+        (classes & PICK_CLASS.edgeScroll) !== 0,
+      );
+      if (edge !== pickEdge) {
+        pickEdge = edge;
+        if (edge === PICK_EDGE.none) {
+          stopPickEdgeScroll();
+        } else {
+          // @source `SetTimer(hwnd, id, 0x32, 0)` —— 第一次的步长是 8
+          pickEdgeStep = PICK_SCROLL_STEP_MIN;
+          if (pickEdgeTimer === null) {
+            pickEdgeTimer = window.setInterval(tickPickEdgeScroll, PICK_SCROLL_TICK_MS);
+          }
+        }
+        refreshPickCursor();
+      }
+      // ★ 贴边中**跳过悬停判定**（原版 `[0x48c564] != 0` 直接返回）
+      if (pickEdge !== PICK_EDGE.none) return;
+
       const next = hitCandidate(
         pick,
         p.x - LAYOUT.board.x,

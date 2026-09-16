@@ -33,7 +33,14 @@ import {
 //   屏幕 (0, 0x28) = 棋盘局部 (0, 0)，整块 440×440。见 `build-fx.ts`。
 import { BUILD_FX_H, BUILD_FX_W, BUILD_FX_X, BUILD_FX_Y } from './build-fx.ts';
 import type { MapNode, Rich4Map } from '@rich4/core';
-import { VIEW_CENTER, VIEW_COUNT, VIEW_SPAN, projectCell, projectWorld } from '@rich4/data';
+import {
+  SUBTILE_MATRIX,
+  VIEW_CENTER,
+  VIEW_COUNT,
+  VIEW_SPAN,
+  projectCell,
+  projectWorld,
+} from '@rich4/data';
 import type { Sprite, SpriteCache } from './assets.ts';
 import {
   DECOR_RESOURCE,
@@ -206,6 +213,17 @@ export interface Camera {
   /** 人物视角用：摄像机所在的**块**坐标（世界坐标 >> 5） */
   tileX: number;
   tileY: number;
+  /**
+   * 摄像机相对该块原点的**亚格**偏移（世界单位 0..31）。
+   *
+   * ★ 只为「拾取模式贴边推镜头」而加（`Q-PICK-1`）：原版那一段是把镜头中心
+   *   当作**像素**坐标逐 tick 推 8..68 px 再 clamp 到 [220, 2084]
+   *   （@source `rich4_ui_use_tool.asm:392` 的 `0x113` 定时器分支），
+   *   整格粒度的相机会把 8 px 的步长变成 0 或 32 px 的跳变，观感完全不同。
+   *   缺省 0 = 与加这个字段之前完全一致。
+   */
+  subX?: number;
+  subY?: number;
 }
 
 export interface RenderInput {
@@ -298,7 +316,7 @@ export function worldToScreen(
   //   那是**本引擎自己发明的** —— 原版没有缩放/平移视角（`HOTKEY.map` 开的是
   //   一扇 400×400 的模态弹窗，见 T-086）。`setViewMode` 删掉后它已不可达，
   //   连同 `fitCamera` 一并删掉（D-086-5 结案）。
-  const p = projectWorld(cam.view, x, y, cam.tileX, cam.tileY);
+  const p = projectWorld(cam.view, x, y, cam.tileX, cam.tileY, cam.subX ?? 0, cam.subY ?? 0);
   if (p === null) return null;
   return { x: viewport.w / 2 + p.x, y: viewport.h / 2 + p.y };
 }
@@ -365,6 +383,37 @@ export function mapBounds(map: Rich4Map): { minX: number; minY: number; maxX: nu
 /** 人物视角：摄像机落在某个世界坐标所在的块上 */
 export function characterCamera(x: number, y: number, view = 0): Camera {
   return { x: 0, y: 0, scale: 1, view: view % VIEW_COUNT, tileX: x >> 5, tileY: y >> 5 };
+}
+
+/**
+ * 按**像素中心**造一台相机 —— 贴边推镜头用（`Q-PICK-1`）。
+ *
+ * 原版的镜头中心就是一对像素坐标（`[0x48c570]` / `[0x48c574]`），
+ * 每次 `0x113` 定时器按方向表 `0x4751b0` 推 8..68 px，再 clamp 到 [220, 2084]。
+ * 本引擎的 `Camera` 是「块 + 亚格余量」，故这里把它拆成
+ * `tile = center >> 5`、`sub = center & 31`（负数按算术语义取到上一个块）。
+ *
+ * @param centerX 镜头中心的世界 X（px）
+ * @param centerY 同上 Y
+ */
+export function pixelCamera(centerX: number, centerY: number, view = 0): Camera {
+  const cx = Math.trunc(centerX);
+  const cy = Math.trunc(centerY);
+  return {
+    x: 0,
+    y: 0,
+    scale: 1,
+    view: view % VIEW_COUNT,
+    tileX: cx >> 5,
+    tileY: cy >> 5,
+    subX: cx & 0x1f,
+    subY: cy & 0x1f,
+  };
+}
+
+/** 把相机的「块 + 亚格」还原成**像素中心**（`pixelCamera` 的逆）*/
+export function cameraCenter(cam: Camera): { x: number; y: number } {
+  return { x: cam.tileX * 32 + (cam.subX ?? 0), y: cam.tileY * 32 + (cam.subY ?? 0) };
 }
 
 /**
@@ -1846,7 +1895,19 @@ export class BoardRenderer {
 
     ctx.save();
     ctx.imageSmoothingEnabled = false;
+    // ★ 亚格偏移（贴边推镜头）：整层地面按摄像机的余量**平移**同样的量。
+    //   余量是「世界单位」，转到屏幕要过同一张 SUBTILE_MATRIX
+    //   （与 `projectWorld` 里那两行完全一样）。
+    const subX = cam.subX ?? 0;
+    const subY = cam.subY ?? 0;
+    if (subX !== 0 || subY !== 0) {
+      const m = SUBTILE_MATRIX[cam.view % VIEW_COUNT]!;
+      const o1 = ((m[0] * subX) >> 5) + ((m[2] * subY) >> 5);
+      const o2 = ((m[1] * subX) >> 5) + ((m[3] * subY) >> 5);
+      ctx.translate(-o1 * dpr, -o2 * dpr);
+    }
     // 表是 29×29，取相邻角点故只能铺 28×28 格
+    // ⚠️ 余量存在时要多铺一圈：可见范围会跨界（`subX/subY != 0` 时最多偏一格）
     for (let row = 0; row < VIEW_SPAN - 1; row++) {
       for (let col = 0; col < VIEW_SPAN - 1; col++) {
         const tx = cam.tileX + col - VIEW_CENTER;

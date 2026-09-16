@@ -503,6 +503,12 @@ export function projectCell(view: number, row: number, col: number): { x: number
  * 再用块内余数走 `SUBTILE_MATRIX` 补上亚像素偏移。
  *
  * @param camTileX 摄像机所在的块坐标（世界坐标 >> 5）
+ * @param subX 摄像机相对该块原点的**亚格**偏移（世界单位 0..31）。
+ *   贴边推镜头（`Q-PICK-1`）时摄像机是**逐像素**走的（原版步长 8..68 px，
+ *   见 `client/picking.ts`），故这里要把那个余量减掉再投影。
+ *   `x - subX` 可能为负 —— JS 的 `>>` 是算术右移、`& 0x1f` 取低位，
+ *   两者配合正好给出「上一个块的第 31 个余量」，与查表一致。
+ * @param subY 同上（Y 方向）
  */
 export function projectWorld(
   view: number,
@@ -510,15 +516,19 @@ export function projectWorld(
   y: number,
   camTileX: number,
   camTileY: number,
+  subX = 0,
+  subY = 0,
 ): { x: number; y: number } | null {
-  const col = (x >> 5) - camTileX + VIEW_CENTER;
-  const row = (y >> 5) - camTileY + VIEW_CENTER;
+  const px = x - subX;
+  const py = y - subY;
+  const col = (px >> 5) - camTileX + VIEW_CENTER;
+  const row = (py >> 5) - camTileY + VIEW_CENTER;
   const base = projectCell(view, row, col);
   if (base === null) return null;
 
   const m = SUBTILE_MATRIX[view % VIEW_COUNT]!;
-  const dx = x & 0x1f;
-  const dy = y & 0x1f;
+  const dx = px & 0x1f;
+  const dy = py & 0x1f;
   // @source fcn_00407a2c：o1 喂 X、o2 喂 Y（配对单向，见 SUBTILE_MATRIX 的说明）
   const o1 = ((m[0] * dx) >> 5) + ((m[2] * dy) >> 5);
   const o2 = ((m[1] * dx) >> 5) + ((m[3] * dy) >> 5);

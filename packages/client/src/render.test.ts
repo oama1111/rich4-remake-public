@@ -21,6 +21,10 @@ import {
   hitToolbar,
   isAsleep,
   isActorAsleep,
+  cameraCenter,
+  characterCamera,
+  pixelCamera,
+  worldToScreen,
   landArt,
   objectTokens,
   SPECIAL_ACTOR_SPRITE_BASE,
@@ -1033,5 +1037,45 @@ describe('★ T-047：替身冬眠变灰（`record + 12`）@source `rich4.asm:15
     expect(a).toBeGreaterThan(0);
     expect(b).toBeGreaterThan(a);
     expect(src.slice(a, b)).toContain('ctx.drawImage(');
+  });
+});
+
+describe('★ Q-PICK-1：摄像机的**亚格**余量（贴边推镜头要逐像素走）', () => {
+  it('`pixelCamera` / `cameraCenter` 互为逆（含负数与边界）', () => {
+    for (const c of [
+      { x: 220, y: 220 },
+      { x: 2084, y: 2084 },
+      { x: 1023, y: 1024 },
+      { x: 0, y: 0 },
+    ]) {
+      const cam = pixelCamera(c.x, c.y, 0);
+      expect(cameraCenter(cam), `${c.x},${c.y}`).toEqual(c);
+    }
+  });
+
+  it('★ 余量拆成「块 + 0..31」@source 原版镜头中心是像素坐标', () => {
+    const cam = pixelCamera(220, 2084, 0);
+    expect(cam.tileX).toBe(220 >> 5); // 6
+    expect(cam.subX).toBe(220 & 31); // 28
+    expect(cam.tileY).toBe(2084 >> 5); // 65
+    expect(cam.subY).toBe(2084 & 31); // 4
+  });
+
+  it('`characterCamera` 的余量恒为 0（与加这个字段之前完全一致）', () => {
+    const cam = characterCamera(320, 640, 2);
+    expect(cam.subX ?? 0).toBe(0);
+    expect(cam.subY ?? 0).toBe(0);
+    expect(cameraCenter(cam)).toEqual({ x: 320, y: 640 });
+  });
+
+  it('★ 余量会真的改变投影结果（不是白加的字段）', () => {
+    const vp = { w: 440, h: 440 };
+    const a = worldToScreen(400, 400, characterCamera(400, 400, 0), vp);
+    const b = worldToScreen(400, 400, pixelCamera(400 + 8, 400, 0), vp);
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+    expect(a).not.toEqual(b);
+    // 镜头中心往右挪 8 px ⇒ 同一个世界点看起来往左移
+    expect(b!.x).toBeLessThan(a!.x);
   });
 });

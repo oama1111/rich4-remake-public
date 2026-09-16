@@ -456,3 +456,183 @@ export function hitCandidate(
   }
   return best;
 }
+
+// ============================================================
+//  ★ 贴边推镜头（Q-PICK-1）@source `rich4_ui_use_tool.asm`
+// ============================================================
+
+/**
+ * 「贴边」推镜头的四个方向 —— 与 `[0x48c568]` 的取值一一对应。
+ *
+ * @source `loc_0044609b`（`_rich4_select_instance_callback` 的 `0x200` 分支）：
+ * ```asm
+ * 0044609b  ebx = LOWORD(lParam)            ; 鼠标 x（棋盘 client）
+ *           ebp = HIWORD(lParam) - 0x28     ; ★ 棋盘窗口的 y 偏移 0x28 = 40
+ *           test byte [0x48c594], 0x80 / je loc_004461ff   ; 没开就跳过（bit7）
+ * 004460ac  test ebx, ebx      / jne → [0x48c568] = 2   ; x == 0        → 左
+ * 004460cd  cmp  ebx, 0x1b8    / jl  → [0x48c568] = 4   ; x >= 440      → 右
+ * 004460e1  test ebp, ebp      / jg  → [0x48c568] = 1   ; y − 40 <= 0   → 上
+ * 004460f4  cmp  ebp, 0x1b7    / je  → [0x48c568] = 3   ; y − 40 == 439 → 下
+ *           否则 → KillTimer、[0x48c568] = 0、步长复位 8
+ * 0044618d  SetTimer(hwnd, [_callbackSize], 0x32, 0)    ; ★ 周期 50 ms = 0x32
+ * ```
+ * ★ 判定顺序 **左 → 右 → 上 → 下**（横向优先）、互斥；**没有对角** ——
+ *   落在角上只取一条边。阈值是 440×440 的棋盘（`0x1b8`）。
+ */
+export const PICK_EDGE = {
+  none: 0,
+  up: 1,
+  left: 2,
+  down: 3,
+  right: 4,
+} as const;
+
+export type PickEdge = (typeof PICK_EDGE)[keyof typeof PICK_EDGE];
+
+/** 棋盘窗口在屏幕里的 y 偏移 @source 上面那条 `sub ebp, 0x28` */
+export const PICK_BOARD_OFFSET_Y = 0x28;
+/** 棋盘的宽/高（方形）@source `cmp ebx, 0x1b8` / `cmp ebp, 0x1b7` */
+export const PICK_BOARD_SIZE = 0x1b8;
+
+/**
+ * 鼠标落在棋盘的哪条边上；不在边上（或没开贴边）返回 `PICK_EDGE.none`。
+ *
+ * @param x 相对棋盘左上角的 x（px）
+ * @param y 相对棋盘左上角的 y（px）—— 调用方负责减掉 `PICK_BOARD_OFFSET_Y`
+ * @param enabled 选择参数的 bit7（`PICK_CLASS.edgeScroll`）开没开
+ *
+ * ★ 四条判据的**先后**照原版：横向先判（左 → 右），再纵向（上 → 下）。
+ */
+export function pickEdgeOf(x: number, y: number, enabled: boolean): PickEdge {
+  if (!enabled) return PICK_EDGE.none;
+  if (x === 0) return PICK_EDGE.left;
+  if (x >= PICK_BOARD_SIZE) return PICK_EDGE.right;
+  if (y <= 0) return PICK_EDGE.up;
+  if (y === PICK_BOARD_SIZE - 1) return PICK_EDGE.down;
+  return PICK_EDGE.none;
+}
+
+/**
+ * 光标换成的八方向箭头图号（`Data.mkf` **资源 0** 那张 43 张的指针图集）。
+ *
+ * @source `loc_0044614b`（`rich4_ui_use_tool.asm:522-533`）：
+ *   `idx = [0x475e0d + dir*4]` → **上 = 34、左 = 40、下 = 38、右 = 36**。
+ *   （34..41 是八个方向，其中 35/37/39/41 是四个对角 —— 因为判定互斥，
+ *    它们**永远不会出现**。）
+ *   `[0x475e0d]` 那张表按 `[0x48c568]` 索引，故键就是上面的 `PICK_EDGE`。
+ */
+export const PICK_EDGE_ARROW: ReadonlyMap<number, number> = new Map([
+  [PICK_EDGE.up, 34],
+  [PICK_EDGE.left, 40],
+  [PICK_EDGE.down, 38],
+  [PICK_EDGE.right, 36],
+]);
+
+/**
+ * 推镜头的**方向表** `0x4751b0`（8 项 × 2 个 16.16 定点数），**原始整数**。
+ *
+ * @source 逐项 dump 自 exe（DGROUP `0x463000` → 文件 398848）：
+ * ```
+ * [0] 0x00000000 0xFFFF0000   ; ( 0, −1)
+ * [1] 0xFFFF4AFB 0xFFFF4AFB   ; (−0.707107, −0.707107)   ← 0xB505 = 46341
+ * [2] 0xFFFF0000 0x00000000   ; (−1,  0)
+ * [3] 0xFFFF4AFB 0x00004AFB   ; (−0.707107, +0.707107)
+ * [4] 0x00000000 0x00010000   ; ( 0, +1)
+ * [5] 0x00004AFB 0x00004AFB   ; (+0.707107, +0.707107)
+ * [6] 0x00010000 0x00000000   ; (+1,  0)
+ * [7] 0x00004AFB 0xFFFF4AFB   ; (+0.707107, −0.707107)
+ * ```
+ * ⚠️ 存**原始整数**而不是浮点：原版是 `(raw × step) >> 16` 的**整数**运算，
+ *   负数是算术右移（= 向下取整，不是向零取整）。写成 `0.707 × step` 再取整
+ *   会在负方向上差 1 —— 而 `>` / `<` 有 4 项都是负的。
+ */
+export const PICK_SCROLL_DIRS: readonly (readonly [number, number])[] = [
+  [0, -0x10000],
+  [-0xb505, -0xb505],
+  [-0x10000, 0],
+  [-0xb505, 0xb505],
+  [0, 0x10000],
+  [0xb505, 0xb505],
+  [0x10000, 0],
+  [0xb505, -0xb505],
+] as const;
+
+/**
+ * 由「贴边方向 + 当前视角」查方向表的下标。
+ *
+ * @source `loc_00445f88`（`0x113` 定时器分支，`rich4_ui_use_tool.asm:392`）：
+ * ```asm
+ * eax = ([0x48c568] * 2 + [0x499088] − 2) & 7     ; [0x499088] = 视角
+ * ```
+ * ⇒ `idx = (dir * 2 + view − 2) & 7`：视角 0 时 上/左/下/右 = 1 / 2 / 3 / 4。
+ */
+export function pickScrollDirIndex(edge: PickEdge, view: number): number {
+  if (edge === PICK_EDGE.none) return 0;
+  return (edge * 2 + (view % 8) - 2) & 7;
+}
+
+/** 步长的起步值 @source `[0x48c56c]` 的初值 8 */
+export const PICK_SCROLL_STEP_MIN = 8;
+/** 步长的上限 @source `cmp edi, 0x40 / jg` —— 每次 +4，到 64 之后再加就是 68 */
+export const PICK_SCROLL_STEP_CAP = 0x44;
+/** 每次 tick 的增量 @source `lea ebp, [edi + 4]` */
+export const PICK_SCROLL_STEP_INC = 4;
+
+/**
+ * 推镜头的一步走多远（px）。
+ *
+ * @source `loc_00445f88`：
+ * ```asm
+ * mov edi, [0x48c56c]                 ; 步长
+ * cmp edi, 0x40
+ * jg  跳过
+ * lea ebp, [edi + 4]                  ; ★ 每次 +4
+ * mov [0x48c56c], ebp
+ * 跳过:
+ * … 用 edi（**本次**的值）乘方向表那一项 >> 16
+ * ```
+ * ⇒ 序列 8 → 12 → 16 → … → 64 → 68 → 68 …（第一次用 8，之后每次 +4，
+ *   到 0x40+4 = 68 封顶）；离开边缘时 `[0x48c56c]` 复位成 8。
+ *
+ * @param prev 上一 tick 用的步长（首次传 `PICK_SCROLL_STEP_MIN`）
+ */
+export function pickScrollNextStep(prev: number): number {
+  if (prev > PICK_SCROLL_STEP_CAP - PICK_SCROLL_STEP_INC) return prev;
+  return prev + PICK_SCROLL_STEP_INC;
+}
+
+/** 镜头中心的钳位范围 @source `cmp esi, 0xdc` / `cmp esi, 0x824` */
+export const PICK_SCROLL_MIN = 0xdc; // 220
+export const PICK_SCROLL_MAX = 0x824; // 2084
+
+/**
+ * 推一格之后的镜头中心。
+ *
+ * @source `loc_00445f88`：
+ * ```asm
+ * [0x48c570] += ([0x4751b0][eax].x * 步长) >> 16
+ * [0x48c574] += ([0x4751b0][eax].y * 步长) >> 16
+ * cmp esi, 0xdc  / jge 下一支 ; 小于就置 0xdc
+ * cmp esi, 0x824 / jle 下一支 ; 大于就置 0x824
+ * ```
+ * 两个方向**各自**钳（不是按距离钳）。
+ */
+export function pickScrollCamera(
+  center: { x: number; y: number },
+  edge: PickEdge,
+  view: number,
+  step: number,
+): { x: number; y: number } {
+  if (edge === PICK_EDGE.none) return { ...center };
+  const d = PICK_SCROLL_DIRS[pickScrollDirIndex(edge, view)] ?? [0, 0];
+  // ★ 逐位照抄：`(raw × step) >> 16`，JS 的 `>>` 就是算术右移（与 x86 `sar` 一致）
+  const x = center.x + ((d[0]! * step) >> 16);
+  const y = center.y + ((d[1]! * step) >> 16);
+  return {
+    x: Math.min(PICK_SCROLL_MAX, Math.max(PICK_SCROLL_MIN, x)),
+    y: Math.min(PICK_SCROLL_MAX, Math.max(PICK_SCROLL_MIN, y)),
+  };
+}
+
+/** 推镜头的定时器周期（毫秒）@source `SetTimer(hwnd, id, 0x32, 0)` = 50 */
+export const PICK_SCROLL_TICK_MS = 0x32;
