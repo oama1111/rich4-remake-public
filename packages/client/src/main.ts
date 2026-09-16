@@ -4112,8 +4112,13 @@ function uiEnv(): UiScreenEnv {
     map,
     now: performance.now(),
     stage: stageCtx,
-    // ★ 遊戲設定的「動畫過程」（`RICH4.CFG+1` bit0）—— 拍賣/轉盤/小游戏入场
-    //   在关掉时应当直接落结果，不走那套定时器演出（见 `UiScreenEnv.animation`）。
+    // ★ 遊戲設定的「動畫過程」（`RICH4.CFG+1` bit0 = `[0x497159]`，`ui-screen.ts`
+    //   的 `UiScreenEnv.animation`）。
+    //   ⚠️ 2026-09-16 核过 exe：**拍賣屏與旅館/購物中心轉盤不受它管辖**
+    //   （`rich4_ui_auction.asm` 只读 `cfg+8`；转盘那两支一处都没读 `[0x497159]`），
+    //   真正读它的屏见 `docs/deviations/Q-ANIM-1.md`。当前已接的三处：
+    //   小遊戲進場（`minigame-screen.ts`）、銀行招呼（下面 `syncLoanUi`）、
+    //   樂透投注开屏（`lottery-screen.ts` 的 `resetUi(now, animate)`）。
     animation: options.animation,
     sprite: spriteNow,
     flic: uiFlicNow,
