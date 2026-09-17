@@ -160,6 +160,32 @@ export interface EventEntry {
      *   ★ 与飛彈/核彈走的是**同一个** `damage_area`，只是参数不同。
      */
     | 'typhoonBlast'
+    /**
+     * 新聞 30/33/34：**随机挑一家企業，罚它 `companyAmount` 元**（`+0x28` 与 `+0x2c` 同时减），
+     *   再按该企业对应的股票写 `newsFlag = 3`（利空 3 天）并**立刻重算当日价**。
+     *   @source `fcn_0044b374`（30）/ `fcn_0044b53f`（33）/ `fcn_0044b57d`（34）：
+     *   `sub dword [ebx+0x28], imm` / `sub dword [ebx+0x2c], imm` 之后
+     *   `cmp byte [ebx+0x19], 0xc / jae 跳过` → `byte [stocks + (type)*36 + 7] = 3` → `call 0x429040(type+1)`
+     */
+    | 'companyPenalty'
+    /**
+     * 新聞 31：**海外投資獲利 20000** —— 两家同时 +20000，股票 `newsFlag = 0x30`（利多 3 天）。
+     *   @source `fcn_0044b419`：`add dword [ebx+0x28], 0x4e20` / `…+0x2c` / `= 0x30`
+     */
+    | 'companyGain'
+    /**
+     * 新聞 32：**海外投資虧損 20000** —— 两家同时 −20000，股票 `newsFlag = 4`（利空 4 天）。
+     *   @source `fcn_0044b4a8`：`sub dword [ebx+0x28], 0x4e20` / `…+0x2c` / `= 4`
+     */
+    | 'companyLoss'
+    /**
+     * 新聞 35：**獲利調高一倍** —— `+0x28 = x*2`、`+0x2c += x*2`，
+     *   股票 `newsFlag = (x/10000) << 4`（利多，天数按获利规模算）并重算当日价。
+     *   ★ 候选集**只收 `+0x28 > 10000` 的企業**；一家都没有时原版 `idiv` 除零崩，
+     *   本引擎那一支什么都不做。
+     *   @source `fcn_0044b5f5`（VA 0x0044b618 的过滤循环 / 0x0044b641 起的效果）
+     */
+    | 'companyProfitDouble'
   )[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
@@ -176,6 +202,14 @@ export interface EventEntry {
    * 而非字面常量。
    */
   literal: number | null;
+  /**
+   * **写死的金额** —— 原版那条事件处理函数里直接 `add/sub dword [企業+0x28], imm`。
+   *
+   * ⚠️ 与 `factor` 的区别：`factor` 是「金额 = 物價指數 × factor」，这个**不乘物價**；
+   *   与 `literal` 的区别：`literal` 是**文案里 `%d`** 的代入值，而这些文案里的数字
+   *   是全角字写死的、没有 `%d`。只有企業那几条（30..34）用得上。
+   */
+  companyAmount?: number;
   /**
    * 施加阶段先问一次神明加持（`fcn_0044b896`），这是**问法**：
    *
@@ -237,12 +271,12 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 27, va: 0x0044b0d1, factor: null, effects: ['suspendStock'], textVa: 0x465788, text: "#0176%s股票暫停交易１０天", literal: null },
   { id: 28, va: 0x0044b1a3, factor: null, effects: ['resumeStock'], textVa: 0x4657a2, text: "#0177%s股票恢復上市交易", literal: null },
   { id: 29, va: 0x0044b25b, factor: null, effects: ['prison'], textVa: 0x4657ba, text: "#0178%s違法超貸\n經營者%s坐牢５天", literal: null },
-  { id: 30, va: 0x0044b374, factor: null, effects: [], textVa: 0x4657db, text: "#0179%s工廠排放污水\n罰款10000元", literal: null },
-  { id: 31, va: 0x0044b419, factor: null, effects: [], textVa: 0x4657fb, text: "#0180%s海外投資\n獲利20000元", literal: null },
-  { id: 32, va: 0x0044b4a8, factor: null, effects: [], textVa: 0x465817, text: "#0181%s海外投資\n虧損20000元", literal: null },
-  { id: 33, va: 0x0044b53f, factor: null, effects: [], textVa: 0x465833, text: "#0182%s違規開發山坡地\n罰款10000元", literal: null },
-  { id: 34, va: 0x0044b57d, factor: null, effects: [], textVa: 0x465855, text: "#0183%s製造噪音公害\n罰款5000元", literal: null },
-  { id: 35, va: 0x0044b5f5, factor: null, effects: [], textVa: 0x465874, text: "#0184%s獲利調高一倍", literal: null },
+  { id: 30, va: 0x0044b374, factor: null, effects: ['companyPenalty'], companyAmount: 10000, textVa: 0x4657db, text: "#0179%s工廠排放污水\n罰款10000元", literal: null },
+  { id: 31, va: 0x0044b419, factor: null, effects: ['companyGain'], companyAmount: 20000, textVa: 0x4657fb, text: "#0180%s海外投資\n獲利20000元", literal: null },
+  { id: 32, va: 0x0044b4a8, factor: null, effects: ['companyLoss'], companyAmount: 20000, textVa: 0x465817, text: "#0181%s海外投資\n虧損20000元", literal: null },
+  { id: 33, va: 0x0044b53f, factor: null, effects: ['companyPenalty'], companyAmount: 10000, textVa: 0x465833, text: "#0182%s違規開發山坡地\n罰款10000元", literal: null },
+  { id: 34, va: 0x0044b57d, factor: null, effects: ['companyPenalty'], companyAmount: 5000, textVa: 0x465855, text: "#0183%s製造噪音公害\n罰款5000元", literal: null },
+  { id: 35, va: 0x0044b5f5, factor: null, effects: ['companyProfitDouble'], textVa: 0x465874, text: "#0184%s獲利調高一倍", literal: null },
 ];
 
 /** 命運事件，37 项 */

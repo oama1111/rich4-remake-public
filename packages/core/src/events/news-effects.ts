@@ -16,7 +16,12 @@ import type { Player } from '../state/types.ts';
 import { NEWS_EVENTS, eventAmount, newsEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { CONFINEMENT_SLOTS, confine } from '../rules/confinement.ts';
-import { HISTORY_DAYS, type StockMarketState } from '../places/stock-market.ts';
+import {
+  HISTORY_DAYS,
+  applyStockNews,
+  type StockMarketState,
+} from '../places/stock-market.ts';
+import type { CommercialInfo } from '../loaders/map.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { isAlive } from '../state/types.ts';
 import { blessingMultiplier } from '../rules/blessing.ts';
@@ -59,6 +64,8 @@ export interface NewsEffectResult {
   landMutations?: readonly LandMutation[];
   /** 同上，設施那一支 */
   facilityMutations?: readonly LandMutation[];
+  /** 被改过盈余的企業（新聞 30..35）—— 有序列表，只放改动过的那几家 */
+  companyMutations?: readonly CompanyMutation[];
   amount: number;
   bankrupted: boolean;
   unimplemented: boolean;
@@ -72,6 +79,13 @@ export interface NewsEffectResult {
 export interface PriceChange {
   id: number;
   price: number;
+}
+
+/** 一家企業的盈余改动：`id` = 企業 1 基序号，`funds` = `+0x28`、`profit` = `+0x2c` */
+export interface CompanyMutation {
+  id: number;
+  funds: number;
+  profit: number;
 }
 
 /** 一条地块/設施改造：只带**真正变了**的那几格 */
@@ -113,6 +127,10 @@ export interface NewsEffectContext {
   hospitalOccupancy?: readonly number[];
   /** 行情 —— 新聞 24/25（改各股 `newsFlag`）、26（改 `closedDays`）、27/28（停牌）要它 */
   market?: StockMarketState;
+  /** 上市企業表（取 `stockIndex`）与两张盈余表 —— 新聞 30..35 要它们 */
+  commercials?: readonly CommercialInfo[];
+  companyFunds?: readonly number[];
+  companyProfit?: readonly number[];
   /**
    * PRNG —— **效果阶段**要用随机的那些事件（新聞 27/28 抽股票；地块/企业那批将来也要）。
    *
@@ -201,6 +219,10 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
       e.effects.includes('demolishAny') ||
       e.effects.includes('demolishSameName') ||
       e.effects.includes('typhoonBlast') ||
+      e.effects.includes('companyPenalty') ||
+      e.effects.includes('companyGain') ||
+      e.effects.includes('companyLoss') ||
+      e.effects.includes('companyProfitDouble') ||
       (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
   ).map((e) => e.id),
   ...PERCENT_NEWS.keys(),
@@ -515,6 +537,80 @@ export function applyNewsEffect(
           owner: after.facility.owner,
         },
       ],
+    };
+  }
+
+  // ── 新聞 30..35「企業罰款／海外投資／獲利調高一倍」────────────────
+  //   六条都是**不动 `affected`**：随机挑一家企業，直接改它的两张盈余表
+  //   （`+0x28` 会分红清零、`+0x2c` 从不清，见 `GameState.companyFunds/companyProfit`），
+  //   再按该企業对应的股票写 `newsFlag` 并**立刻重算当日价**（`0x429040`）。
+  //   逐条数值与 flag 见 event-table 的注释表。
+  const companyKind: 'penalty' | 'gain' | 'loss' | 'double' | null =
+    entry.effects.includes('companyPenalty')
+      ? 'penalty'
+      : entry.effects.includes('companyGain')
+        ? 'gain'
+        : entry.effects.includes('companyLoss')
+          ? 'loss'
+          : entry.effects.includes('companyProfitDouble')
+            ? 'double'
+            : null;
+  if (companyKind !== null) {
+    const rng = ctx.rng;
+    const commercials = ctx.commercials ?? [];
+    const funds = ctx.companyFunds ?? [];
+    const profit = ctx.companyProfit ?? [];
+    if (rng === undefined || commercials.length === 0) {
+      return { ...base, unimplemented: true };
+    }
+    // 新聞 35 的候选集**只收 `+0x28 > 10000` 的**；其余五条收全部
+    const cand =
+      companyKind === 'double'
+        ? commercials.filter((c) => (funds[c.id] ?? 0) > 10000)
+        : commercials;
+    // ★ 候选为空时原版 `idiv` 除零崩 ⇒ 本引擎什么都不做
+    if (cand.length === 0) return { ...base, amount: 0 };
+    const co = cand[rng.below(cand.length)]!;
+    const beforeFunds = funds[co.id] ?? 0;
+    const beforeProfit = profit[co.id] ?? 0;
+    const amount = entry.companyAmount ?? 0;
+    let nextFunds = beforeFunds;
+    let nextProfit = beforeProfit;
+    /** 写进该股 `newsFlag` 的值（0 = 不写） */
+    let flag = 0;
+    if (companyKind === 'penalty') {
+      nextFunds = beforeFunds - amount;
+      nextProfit = beforeProfit - amount;
+      flag = 3;
+    } else if (companyKind === 'gain') {
+      nextFunds = beforeFunds + amount;
+      nextProfit = beforeProfit + amount;
+      flag = 0x30;
+    } else if (companyKind === 'loss') {
+      nextFunds = beforeFunds - amount;
+      nextProfit = beforeProfit - amount;
+      flag = 4;
+    } else {
+      // 獲利調高一倍：`+0x28 = x*2`、`+0x2c += x*2`，flag 高位按获利规模
+      nextFunds = beforeFunds * 2;
+      nextProfit = beforeProfit + nextFunds;
+      flag = (Math.trunc(beforeFunds / 10000) << 4) & 0xf0;
+    }
+    let market = ctx.market;
+    // @source `cmp byte [ebx+0x19], 0xc / jae 跳过` —— `+0x19` 就是**股票下标**（0 基）
+    if (market !== undefined && co.stockIndex < 12) {
+      const stocks = [...market.stocks];
+      const st = stocks[co.stockIndex];
+      if (st !== undefined) {
+        stocks[co.stockIndex] = { ...st, newsFlag: flag };
+        market = applyStockNews({ ...market, stocks }, co.stockIndex + 1);
+      }
+    }
+    return {
+      ...base,
+      amount,
+      companyMutations: [{ id: co.id, funds: nextFunds, profit: nextProfit }],
+      ...(market === undefined ? {} : { market }),
     };
   }
 

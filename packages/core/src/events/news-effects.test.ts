@@ -444,6 +444,90 @@ describe('★ 新聞 5/15/19/21：随机拆一处建筑 / 土地流失 @source f
   });
 });
 
+describe('★ 新聞 30..35：企業罰款／海外投資／獲利調高一倍 @source fcn_0044b374 等六支', () => {
+  const stocks = () =>
+    Array.from({ length: 12 }, () => ({ newsFlag: 0, f6: 0, openPrice: 10, price: 10 }) as never);
+  const mkt = (): StockMarketState => ({
+    stocks: stocks(),
+    day: 0,
+    history: Array.from({ length: 12 }, () => new Array<number>(HISTORY_DAYS).fill(0)),
+    index: 0,
+    closedDays: 0,
+  });
+  /** 1 号企業对应 0 号股票、2 号企業对应 11 号股票、3 号企業没股票（stockIndex >= 0xc） */
+  const commercial = (id: number, stockIndex: number) =>
+    ({ id, name: `C${id}`, stockIndex, x: 0, y: 0 }) as never;
+  const companies = (funds: number[]) => ({
+    commercials: [commercial(1, 0), commercial(2, 11), commercial(3, 12)],
+    companyFunds: [0, ...funds],
+    companyProfit: [0, ...funds.map((f) => f + 1000)],
+    market: mkt(),
+    // 总是挑第 0 个候选（= 1 号企業）
+    rng: { below: () => 0 },
+  });
+
+  it('★★ news[30] 工廠排放污水 罰款10000：两家 −10000，股票 `newsFlag = 3`', () => {
+    expect(newsEvent(30)!.companyAmount).toBe(10000);
+    const r = applyNewsEffect(30, ctx(companies([50000, 50000, 50000])));
+    // funds 50000→40000、profit 51000→41000（helper 把 profit 设成 funds+1000）
+    expect(r.companyMutations).toEqual([{ id: 1, funds: 40000, profit: 41000 }]);
+    expect(r.market?.stocks[0]!.newsFlag).toBe(3);
+    // 没对应的股票（stockIndex 12）不动任何股
+    expect(r.market?.stocks[11]!.newsFlag).toBe(0);
+  });
+
+  it('★★ news[31] 海外投資獲利20000：两家 +20000，股票 `newsFlag = 0x30`', () => {
+    expect(newsEvent(31)!.companyAmount).toBe(20000);
+    const base = companies([50000, 50000, 50000]);
+    const r = applyNewsEffect(31, ctx({ ...base, companyProfit: [0, 1000, 1000, 1000] }));
+    expect(r.companyMutations).toEqual([{ id: 1, funds: 70000, profit: 21000 }]);
+    expect(r.market?.stocks[0]!.newsFlag).toBe(0x30);
+  });
+
+  it('★★ news[32] 海外投資虧損20000：两家 −20000，股票 `newsFlag = 4`', () => {
+    const r = applyNewsEffect(32, ctx(companies([50000, 50000, 50000])));
+    expect(r.companyMutations).toEqual([{ id: 1, funds: 30000, profit: 31000 }]);
+    expect(r.market?.stocks[0]!.newsFlag).toBe(4);
+  });
+
+  it('★★ news[33]/[34]：同一条 `companyPenalty` 路径，金额分别 10000 / 5000、flag 同为 3', () => {
+    expect(newsEvent(33)!.companyAmount).toBe(10000);
+    expect(newsEvent(34)!.companyAmount).toBe(5000);
+    const r33 = applyNewsEffect(33, ctx(companies([50000, 50000, 50000])));
+    expect(r33.companyMutations).toEqual([{ id: 1, funds: 40000, profit: 41000 }]);
+    const r34 = applyNewsEffect(34, ctx(companies([50000, 50000, 50000])));
+    expect(r34.companyMutations).toEqual([{ id: 1, funds: 45000, profit: 46000 }]);
+    expect(r34.market?.stocks[0]!.newsFlag).toBe(3);
+  });
+
+  it('★★ news[35] 獲利調高一倍：`+0x28` 翻倍、`+0x2c` 加上新值、flag = `(x/10000)<<4`', () => {
+    const r = applyNewsEffect(
+      35,
+      ctx({ ...companies([30000, 30000, 30000]), companyProfit: [0, 1000, 1000, 1000] }),
+    );
+    // 30000 → 60000；累計 1000 + 60000 = 61000
+    expect(r.companyMutations).toEqual([{ id: 1, funds: 60000, profit: 61000 }]);
+    // (30000/10000)<<4 = 3<<4 = 0x30
+    expect(r.market?.stocks[0]!.newsFlag).toBe(0x30);
+  });
+
+  it('★ news[35] 的候选集**只收 `+0x28 > 10000`** 的企業（一家都没有就什么都不做，不除零崩）', () => {
+    const r = applyNewsEffect(
+      35,
+      ctx({ ...companies([10000, 10000, 10000]), companyProfit: [0, 0, 0, 0] }),
+    );
+    expect(r.unimplemented).toBe(false);
+    expect(r.companyMutations).toBeUndefined();
+    expect(r.amount).toBe(0);
+  });
+
+  it('★ 没给 commercials/rng 时报未实现', () => {
+    for (const id of [30, 31, 32, 33, 34, 35]) {
+      expect(applyNewsEffect(id, ctx()).unimplemented, `news[${id}]`).toBe(true);
+    }
+  });
+});
+
 describe('★ 新聞 27/28：随机一支股票停牌／恢复 @source VA 0x0044b0f8 / 0x0044b1c3', () => {
   /** 固定序列的假 RNG —— 只实现 `below`，方便钉住「挑中了哪一支」 */
   const fakeRng = (picks: number[]) => {
@@ -530,7 +614,7 @@ describe('未实现', () => {
     // 16/17 = 行人/車輛休息一回合、24/25/26 = 股市三连（2026-09-17 接）
     expect(IMPLEMENTED_NEWS_IDS).toEqual([
       0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27,
-      28, 29, 11, 12, 13, 23,
+      28, 29, 30, 31, 32, 33, 34, 35, 11, 12, 13, 23,
     ]);
   });
 

@@ -204,7 +204,7 @@ import {
 } from '../events/fortune-effects.ts';
 import { blessingFieldOf, blessingLevelFor } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
-import { applyNewsEffect, type LandMutation, type PriceChange } from '../events/news-effects.ts';
+import { applyNewsEffect, type CompanyMutation, type LandMutation, type PriceChange } from '../events/news-effects.ts';
 import { MUTATE_DEMOLISH_ONE, mutateFacility } from '../cards/monster.ts';
 import { anyoneConfined, confine, type ConfinementKind } from '../rules/confinement.ts';
 import { applyBail, bailCandidates, decideBail } from '../rules/visit.ts';
@@ -3391,6 +3391,10 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     prices: withDeck.market.stocks.map((st) => st.price),
     // 新聞 24/25/26/27/28 会改行情（`newsFlag` / `closedDays` / 停牌）
     market: withDeck.market,
+    // 新聞 30..35 要按企業取股票下标、并改两张盈余表
+    commercials: topo.commercials ?? [],
+    companyFunds: withDeck.companyFunds,
+    companyProfit: withDeck.companyProfit,
     ...(rng === undefined ? {} : { rng }),
   });
 
@@ -3404,6 +3408,7 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     // ★ 新聞 6/14 改过的地价（只带改动过的那几条，按 id 覆盖）
     landPrice: applyPriceOverrides(withDeck.landPrice ?? [], out.landPrice),
     facilityPrice: applyPriceOverrides(withDeck.facilityPrice ?? [], out.facilityPrice),
+    ...applyCompanyMutations(withDeck, out.companyMutations),
     ...applyMutations(withDeck, out),
     lastEvent: { kind: 'news', id: draw.eventId },
   };
@@ -3415,6 +3420,24 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     }
   }
   return applied;
+}
+
+/**
+ * 把新聞 30..35 的企業盈余改动落到两张表上。
+ *   没改动时返回空对象。
+ */
+function applyCompanyMutations(
+  base: GameState,
+  mutations: readonly CompanyMutation[] | undefined,
+): Partial<GameState> {
+  if (mutations === undefined || mutations.length === 0) return {};
+  const companyFunds = [...(base.companyFunds ?? [])];
+  const companyProfit = [...(base.companyProfit ?? [])];
+  for (const m of mutations) {
+    companyFunds[m.id] = m.funds;
+    companyProfit[m.id] = m.profit;
+  }
+  return { companyFunds, companyProfit };
 }
 
 /**
