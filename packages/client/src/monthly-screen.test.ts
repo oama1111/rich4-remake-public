@@ -32,8 +32,10 @@ import {
   MONTHLY_BAR_Y,
   MONTHLY_CHUNK,
   MONTHLY_CHAMPION,
+  MONTHLY_CHAMPION_LABELS,
   MONTHLY_DETAIL_AT,
   MONTHLY_DETAIL_LABELS,
+  MONTHLY_DETAIL_ROWS,
   MONTHLY_LABELS,
   MONTHLY_NO_AWARD,
   MONTHLY_PANEL_AT,
@@ -52,6 +54,7 @@ import {
   awardScore,
   drawMonthlyScreen,
   monthlyAward,
+  monthlyChampionLines,
   monthlyDetailLines,
   monthlyKeyedBlack,
   monthlyPlaybackStart,
@@ -215,6 +218,10 @@ function fakeState(players: readonly Player[]): GameState {
   return {
     players: [...players],
     holdings: [],
+    // ★ 必须有 `priceIndex`：`awardScore` 里 `totalWinterSleepDays * priceIndex * 2500`
+    //   一旦碰上 `undefined` 就是 NaN，`pickAward` 的 `max < v` 永远不成立 →
+    //   **每次都是「无人获奖」**，这类夹具就测不出获奖那一支了。
+    priceIndex: 0,
     market: { stocks: Array.from({ length: 12 }, () => ({ price: 0 })) },
   } as unknown as GameState;
 }
@@ -870,7 +877,7 @@ describe('★ 頒獎判据 @source 0x00437d1a / 0x00437dfe', () => {
     expect(MONTHLY_NO_AWARD).toBe('別灰心，再加油喔！');
   });
 
-  it('★ 详情五条的标签与取数 @source 串 0x464e5e / 0x464e50 / 0x464def / 0x464dfe / 0x464e0d', () => {
+  it('★ 悲情那张表是**四行**、且损失/之财不许取反 @source 串 0x464de4 / 0x464def / 0x464dfe / 0x464e0d', () => {
     const { before, after } = settlePair([
       { character: 0, cash: 1000, monthlyPaid: 11, monthlyReceived: 22, totalWinterSleepDays: 3 },
       { character: 1, cash: 999999, monthlyPaid: 0, monthlyReceived: 0 },
@@ -878,22 +885,67 @@ describe('★ 頒獎判据 @source 0x00437d1a / 0x00437dfe', () => {
     const topo = { nodes: [], lands: [], facilities: [] } satisfies MapTopology;
     const award = monthlyAward(before, after, topo);
     const lines = monthlyDetailLines(after, topo, award);
+    expect(MONTHLY_DETAIL_ROWS).toBe(4);
     expect(lines.map((l) => l.label)).toEqual([
-      MONTHLY_DETAIL_LABELS.assets,
-      MONTHLY_DETAIL_LABELS.cash,
+      MONTHLY_DETAIL_LABELS.reason,
       MONTHLY_DETAIL_LABELS.unexpectedLoss,
       MONTHLY_DETAIL_LABELS.unexpectedGain,
       MONTHLY_DETAIL_LABELS.unluckyDays,
     ]);
-    // 1 号现金最多 → 首富是他；0 号支出 11 > 收入 22 是负分，
-    // 但 1 号是 0 分 → 次高为 0 → 无人获奖，故后四条都按 0 画
+    // 第 1 行原版**只画标签**（`loc_00438570` 里 `0x172` 那行后面没有取值/画值的代码）
+    expect(lines[0]!.value).toBe('');
+    // 1 号现金最多 → 首富是他；0 号支出 11 < 收入 22 → 悲情分负 → 无人获奖
     expect(award.winner).toBe(-1);
-    expect(lines[0]!.value).toBe('$999,999');
+    // 无人获奖 ⇒ 后三行都按 0 画（但标签顺序不许乱）
     expect(lines[1]!.value).toBe('$0');
-    expect(lines[4]!.value).toBe('0天');
+    expect(lines[2]!.value).toBe('$0');
+    expect(lines[3]!.value).toBe('0天');
   });
 
-  it('★ 五条详情的行距与落点 @source 0x00438570 的 `push 0x172` 起', () => {
+  it('★ 损失/之财取的是悲情那位本人的月度收支 @source `player[+0x5c]` / `player[+0x60]`', () => {
+    // 0 号本月支出巨大 → 他就是悲情人物；monthlyPaid → 意外損失，monthlyReceived → 意外之財
+    // （1 号要给一个**正但较小**的分：`pickAward` 里「次高分为 0 → 无人获奖」会把 0/负分否掉）
+    const { before, after } = settlePair([
+      { character: 0, cash: 5000, monthlyPaid: 700, monthlyReceived: 30, totalWinterSleepDays: 9 },
+      { character: 1, cash: 8000, monthlyPaid: 200, monthlyReceived: 0 },
+    ]);
+    const topo = { nodes: [], lands: [], facilities: [] } satisfies MapTopology;
+    const award = monthlyAward(before, after, topo);
+    expect(award.winner).toBe(0);
+    const lines = monthlyDetailLines(after, topo, award);
+    expect(lines[1]!.label).toBe('本月意外損失：');
+    expect(lines[1]!.value).toBe('$700');
+    expect(lines[2]!.label).toBe('本月意外之財：');
+    expect(lines[2]!.value).toBe('$30');
+    expect(lines[3]!.value).toBe('9天');
+  });
+
+  it('★ 冠军那张表：獲獎原因/現金/存款/總資產，都是**首富**的数 @source `loc_00438d40`', () => {
+    // 存款 4000 → 月息 10% → 结息后 4400（`applyMonthlyInterest`），故断言用 after 的值
+    const { before, after } = settlePair([
+      { character: 0, cash: 5000, monthlyPaid: 900, monthlyReceived: 0 },
+      { character: 1, cash: 1234, moneyInBank: 4000 },
+    ]);
+    const topo = { nodes: [], lands: [], facilities: [] } satisfies MapTopology;
+    const award = monthlyAward(before, after, topo);
+    const lines = monthlyChampionLines(after, topo, award);
+    expect(MONTHLY_CHAMPION_LABELS.reason).toBe('獲獎原因：');
+    expect(lines.map((l) => l.label)).toEqual([
+      MONTHLY_CHAMPION_LABELS.reason,
+      MONTHLY_CHAMPION_LABELS.cash,
+      MONTHLY_CHAMPION_LABELS.bank,
+      MONTHLY_CHAMPION_LABELS.assets,
+    ]);
+    expect(lines[0]!.value).toBe('');
+    // 冠军 = 首富（`[0x48c430]`），不是悲情那位；他的现金/存款/总资产
+    expect(award.richest).toBe(1);
+    expect(after.players[1]!.moneyInBank).toBe(4400);
+    expect(lines[1]!.value).toBe('$1,234');
+    expect(lines[2]!.value).toBe('$4,400');
+    expect(lines[3]!.value).toBe('$5,634');
+  });
+
+  it('★ 四行的行距与落点 @source 0x00438570 的 `push 0x172` 起', () => {
     expect(MONTHLY_DETAIL_AT.y0).toBe(0x172);
     expect(MONTHLY_DETAIL_AT.step).toBe(0x12);
     expect(MONTHLY_DETAIL_AT.x).toBe(0x140);
@@ -934,7 +986,7 @@ describe('★ 演出状态机', () => {
     expect(monthlyPlaybackTick(p, 1)!.revealed).toBe(0);
   });
 
-  it('★ 頒獎屏：铺 4 板 → 画 4 列 → 叠 5 条 → 悲情那一拍 → 再一拍才关', () => {
+  it('★ 頒獎屏：铺 4 板 → 画 4 列 → 叠 4 条 → 悲情那一拍 → 再一拍才关', () => {
     let p: MonthlyPlayback = { ...monthlyPlaybackStart(), phase: 'award' };
     const seen: string[] = [];
     let guard = 0;
@@ -962,10 +1014,9 @@ describe('★ 演出状态机', () => {
       '4/4/2',
       '4/4/3',
       '4/4/4',
-      '4/4/5',
       // ★ 详情叠完先走「本月悲情人物」那一拍（原版状态 9 的 `別灰心，再加油喔！`）
-      '4/4/5/sad',
-      '4/4/5/sad/closing',
+      '4/4/4/sad',
+      '4/4/4/sad/closing',
       'null',
     ]);
   });
@@ -1049,7 +1100,7 @@ describe('★ event 判据：`totalMonths` 增了才起播', () => {
     expect(monthlyScreenState().playback?.phase).toBe('award');
 
     // 頒獎屏叠完之后还得再一拍才关屏（原版「等最后一次确认」那几步）
-    const total = MONTHLY_SLOTS * 2 + 5 + 2; // 4 板 + 4 列 + 5 条详情 + closing + 收尾
+    const total = MONTHLY_SLOTS * 2 + MONTHLY_DETAIL_ROWS + 2; // 4 板 + 4 列 + 4 条详情 + closing + 收尾
     for (let i = 0; i < total - 1; i++) monthlyScreen.tick!(env);
     expect(monthlyScreenState().playback?.closing).toBe(true);
     expect(monthlyScreenState().playing).toBe(true);
@@ -1289,13 +1340,16 @@ describe('★ 收尾那一句说的是**谁** @source 0x00438d04 / 0x004383a6 / 
     const st = { players: [{ character: 0 }, { character: 5 }] } as never;
     const view: MonthlyView = { rows: [] } as never;
     const p: MonthlyPlayback = {
-      phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 5,
-      encourage: true, closing: false,
+      phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS,
+      details: MONTHLY_DETAIL_ROWS, encourage: true, closing: false,
     };
     drawMonthlyScreen(ctx, () => null, st, {} as never, view, award, p);
     const sadText = texts.find((t) => t.startsWith(MONTHLY_TRAGIC));
     expect(sadText, '悲情那一拍要写「本月悲情人物是…」').toBeDefined();
     expect(texts).toContain(MONTHLY_NO_AWARD);
+    // 悲情那张表（状态 8）—— 第 1 行只有标签、没有值
+    expect(texts).toContain(MONTHLY_DETAIL_LABELS.reason);
+    expect(texts).toContain(MONTHLY_DETAIL_LABELS.unluckyDays);
 
     texts.length = 0;
     drawMonthlyScreen(ctx, () => null, st, {} as never, view, award, { ...p, encourage: false, closing: true });
@@ -1303,5 +1357,8 @@ describe('★ 收尾那一句说的是**谁** @source 0x00438d04 / 0x004383a6 / 
     expect(champText, '收尾要写「本月冠軍是…」').toBeDefined();
     // 冠军是首富（下标 3）—— 本夹具只放两位玩家，故姓名取不到，这里只钉**不是**悲情那句
     expect(texts.some((t) => t.startsWith(MONTHLY_TRAGIC))).toBe(false);
+    // ★ 收尾那一拍原版走状态 0x12：同一坐标**换成冠军那张表**（整表覆盖）
+    expect(texts).toContain(MONTHLY_CHAMPION_LABELS.assets);
+    expect(texts).not.toContain(MONTHLY_DETAIL_LABELS.unexpectedLoss);
   });
 });

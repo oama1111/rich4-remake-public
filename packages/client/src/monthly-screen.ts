@@ -575,14 +575,54 @@ export const MONTHLY_TEXT = { fill: '#ffffff', loan: '#ff0000', stroke: '#101010
 /** 结算屏两个标签（原版烤进图 2，本模块补写）@source 串 `0x464e56` / `0x464e90` */
 export const MONTHLY_LABELS = { bank: '存款：', interest: '利息：', loan: '貸款中' } as const;
 
-/** 頒獎屏状态 8 那五条详情标签 @source 串 `0x464e5e` / `0x464e50` / `0x464def` / `0x464dfe` / `0x464e0d` */
+/**
+ * 頒獎屏**状态 8「本月悲情人物」那张表**的标签 —— **4 行，不是 5 行**。
+ *
+ * @source `loc_00438570`（VA 0x00438570 起逐行 `rich4_draw_text`）：
+ *
+ * | # | y | 标签 VA | 串 | 值 |
+ * |---|---|---|---|---|
+ * | 1 | 0x172 | `0x464de4` | `獲獎原因：` | **没有值**（原版只画标签）|
+ * | 2 | 0x184 | `0x464def` | `本月意外損失：` | `player[+0x5c]`（`+92`）→ `num_to_currency_string` |
+ * | 3 | 0x196 | `0x464dfe` | `本月意外之財：` | `player[+0x60]`（`+96`）|
+ * | 4 | 0x1a8 | `0x464e0d` | `本月倒楣天數：` | `player[+0x42]`（`+66`）→ `sprintf("%d天")` |
+ *
+ * ⚠️ 先前把这张表写成了 5 行（多了 `資產：`/`現金：`），而且**把損失/之財的值取反了** ——
+ *    `資產：`/`現金：`/`存款：`/`總資產：` 那张是**状态 0x12 的冠军卡**（见
+ *    `MONTHLY_CHAMPION_LABELS`），两张表坐标**完全一样**（x 0x140 / 0x230，y 0x172…），
+ *    原版是**先后覆盖**画在同一处。见 `docs/deviations/T-041.md` 的 D-MONTHLY-6。
+ */
 export const MONTHLY_DETAIL_LABELS = {
-  assets: '資產：',
-  cash: '現金：',
+  reason: '獲獎原因：',
   unexpectedLoss: '本月意外損失：',
   unexpectedGain: '本月意外之財：',
   unluckyDays: '本月倒楣天數：',
 } as const;
+
+/** 「本月倒楣天數」那格的后缀 @source 格式串 `0x464e1c` = `%d天` */
+export const MONTHLY_DAYS_SUFFIX = '天';
+
+/**
+ * 頒獎屏**状态 0x12「本月冠軍」那张表**的标签 —— 与状态 8 同坐标、同 4 行的**另一张表**。
+ *
+ * @source `loc_00438d40`（VA 0x00438d40，含 0x00438eb0 起那 4 行）：
+ *
+ * | # | y | 标签 VA | 串 | 值（都是 `[0x48c430]` 那一位 = 首富/冠軍）|
+ * |---|---|---|---|---|
+ * | 1 | 0x172 | `0x464de4` | `獲獎原因：` | **没有值** |
+ * | 2 | 0x184 | `0x464e4f` | `現金：` | `player[+0x1c]`（`+28`）|
+ * | 3 | 0x196 | `0x464e56` | `存款：` | `player[+0x20]`（`+32`）|
+ * | 4 | 0x1a8 | `0x464e5d` | `總資產：` | `calculate_player_wealth(seat)` @0x004239b9 |
+ */
+export const MONTHLY_CHAMPION_LABELS = {
+  reason: '獲獎原因：',
+  cash: '現金：',
+  bank: '存款：',
+  assets: '總資產：',
+} as const;
+
+/** 状态 8 / 状态 0x12 两张表都是 **4 行** @source `loc_00438570` / `loc_00438eb0` */
+export const MONTHLY_DETAIL_ROWS = 4;
 
 /**
  * 訊息框三连 —— `fcn_0044ec30(image, x, y, textX, textY, color, ?)` 开框 +
@@ -985,27 +1025,49 @@ export interface MonthlyDetailLine {
  */
 export function monthlyDetailLines(
   state: GameState,
+  _topo: MapTopology,
+  award: MonthlyAward,
+): readonly MonthlyDetailLine[] {
+  const sad = award.winner >= 0 ? state.players[award.winner] : undefined;
+  const L = MONTHLY_DETAIL_LABELS;
+  // 逐行对齐 `loc_00438570`：先 `獲獎原因：`（无值），再损失 / 之财 / 倒楣天数。
+  return [
+    { label: L.reason, value: '' },
+    { label: L.unexpectedLoss, value: currency(sad?.monthlyPaid ?? 0) },
+    { label: L.unexpectedGain, value: currency(sad?.monthlyReceived ?? 0) },
+    { label: L.unluckyDays, value: `${sad?.totalWinterSleepDays ?? 0}${MONTHLY_DAYS_SUFFIX}` },
+  ];
+}
+
+/**
+ * 状态 0x12「本月冠軍」那张表 —— **和状态 8 同坐标的另一张 4 行表**。
+ *
+ * @source `loc_00438d40` 尾部那 4 行（VA 0x00438eb0 起）：标签 `0x464de4`（无值）/
+ *   `0x464e4f` + `player[+0x1c]` / `0x464e56` + `player[+0x20]` / `0x464e5d` +
+ *   `calculate_player_wealth`。主角是 `[0x48c430]`（= `award.richest`，首富/冠軍），
+ *   **不是**悲情那一位（`[0x48c42f]`）。
+ */
+export function monthlyChampionLines(
+  state: GameState,
   topo: MapTopology,
   award: MonthlyAward,
 ): readonly MonthlyDetailLine[] {
-  const win = award.winner >= 0 ? state.players[award.winner] : undefined;
-  const richP = state.players[award.richest];
+  const champ = state.players[award.richest];
+  const L = MONTHLY_CHAMPION_LABELS;
   const assets =
-    richP === undefined
+    champ === undefined
       ? 0
       : calculatePlayerWealth(
-          richP,
+          champ,
           allEffectiveLands(state, topo),
           allEffectiveFacilities(state, topo),
           valuationsOf(state, award.richest),
         );
-  const L = MONTHLY_DETAIL_LABELS;
   return [
+    { label: L.reason, value: '' },
+    { label: L.cash, value: currency(champ?.cash ?? 0) },
+    { label: L.bank, value: currency(champ?.moneyInBank ?? 0) },
     { label: L.assets, value: currency(assets) },
-    { label: L.cash, value: currency(win?.cash ?? 0) },
-    { label: L.unexpectedLoss, value: currency(win?.monthlyReceived ?? 0) },
-    { label: L.unexpectedGain, value: currency(win?.monthlyPaid ?? 0) },
-    { label: L.unluckyDays, value: `${win?.totalWinterSleepDays ?? 0}天` },
   ];
 }
 
@@ -1074,7 +1136,7 @@ export function monthlyPlaybackTick(
   if (!p.closing) {
     if (p.bars < MONTHLY_SLOTS) return { ...p, bars: p.bars + 1 };
     if (p.seats < MONTHLY_SLOTS) return { ...p, seats: p.seats + 1 };
-    if (p.details < 5) return { ...p, details: p.details + 1 };
+    if (p.details < MONTHLY_DETAIL_ROWS) return { ...p, details: p.details + 1 };
     // ★ 详情叠完先走**悲情那一拍**（原版状态 9：`別灰心，再加油喔！`），然后才收尾
     //   （状态 0xf→0x10 的「本月冠軍是…」）。
     if (console && !p.encourage) return { ...p, encourage: true };
@@ -1398,14 +1460,23 @@ export function drawMonthlyScreen(
     drawAnchored(ctx, face, at.avatar.x, at.avatar.y);
   }
 
-  // ── ③ 详情（`loc_00438570`）──
-  const lines = monthlyDetailLines(state, topo, award);
-  for (let i = 0; i < Math.min(p.details, lines.length); i++) {
+  // ── ③ 详情（`loc_00438570`）── **悲情那张 4 行表**（状态 8）
+  //    ★ 收尾那一拍（`closing`）时原版走状态 **0x12**：先把这一带底图恢复，再在
+  //      **完全相同的坐标**画**冠军那张 4 行表**（`loc_00438d40`）—— 是**整表换掉**，
+  //      不是叠加。本模块因此在 `closing` 时整表切成 `monthlyChampionLines`。
+  const lines = p.closing
+    ? monthlyChampionLines(state, topo, award)
+    : monthlyDetailLines(state, topo, award);
+  const shown = p.closing ? MONTHLY_DETAIL_ROWS : Math.min(p.details, lines.length);
+  for (let i = 0; i < shown; i++) {
     const line = lines[i];
     if (line === undefined) continue;
     const y = MONTHLY_DETAIL_AT.y0 + i * MONTHLY_DETAIL_AT.step;
     monthlyText(ctx, line.label, MONTHLY_DETAIL_AT.x, y, MONTHLY_TEXT.fill);
-    monthlyText(ctx, line.value, MONTHLY_DETAIL_AT.valueX, y, MONTHLY_TEXT.fill, 'right');
+    // 第 1 行 `獲獎原因：` 在原版里**只画标签**（两张表都是），没有值可写。
+    if (line.value !== '') {
+      monthlyText(ctx, line.value, MONTHLY_DETAIL_AT.valueX, y, MONTHLY_TEXT.fill, 'right');
+    }
   }
 
   // ── 「本月悲情人物」那一拍（原版状态 5..9 那条链的收束）──
