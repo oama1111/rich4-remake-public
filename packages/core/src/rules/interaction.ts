@@ -281,7 +281,7 @@ export type PendingInteraction =
  */
 export type AuctionRequest = Pick<
   Extract<PendingInteraction, { kind: 'auction' }>,
-  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility'
+  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller'
 >;
 
 /** `auction` 的**完整**形状（竞价循环进行中，字段一定齐） */

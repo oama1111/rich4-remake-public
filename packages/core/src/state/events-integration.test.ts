@@ -99,6 +99,37 @@ describe('★ 落在新聞格会抽牌', () => {
   });
 });
 
+describe('★ 新聞 7「公開拍賣公有土地一處」会当场开一场拍卖', () => {
+  run('★ 抽到 7 → pending 是一場 auction，且**卖家为 −1**（原版传 −1 = 没有卖家席位）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 5 });
+    const s1 = standOn(s0, map, SPECIAL_KIND.NEWS);
+    if (s1 === null) return;
+    // 把牌堆拨到「下一张就是 7」
+    const s2: GameState = { ...s1, newsDeck: { order: [7, ...s1.newsDeck.order.filter((x) => x !== 7)], cursor: 0 } };
+    // 至少得有一块无主地，否则原版就是除零崩（本引擎什么都不做）
+    const unowned = topo.lands?.find((l) => (s2.landOwner[l.id] ?? l.owner) === 0);
+    if (unowned === undefined) return;
+    const s3 = reduce(s2, { type: 'settle' }, topo);
+    expect(s3.lastEvent).toEqual({ kind: 'news', id: 7 });
+    expect(s3.pending?.kind).toBe('auction');
+    const pend = s3.pending;
+    if (pend?.kind === 'auction') {
+      expect(pend.seller).toBe(-1);
+      expect(pend.basePrice).toBeGreaterThan(0);
+      expect(pend.bidders.length).toBeGreaterThan(0);
+      // 待拍的必须是**无主**的那一处（地块或設施）
+      const facility = pend.facility === true;
+      const owner = facility
+        ? (topo.facilities?.find((f) => f.id === pend.entityId)?.owner ?? -1)
+        : (topo.lands?.find((l) => l.id === pend.entityId)?.owner ?? -1);
+      expect(owner).toBe(0);
+    }
+    expect(s3.phase).toBe('awaitingDecision');
+  });
+});
+
 describe('★ 公园格仍然什么都不发生（原版行为）', () => {
   run('状态除 phase 外不变', () => {
     const map = loadMap();

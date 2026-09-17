@@ -234,11 +234,13 @@ import {
 import {
   auctionAdvanceSeat,
   auctionAiLimits,
+  auctionBasePrice,
   auctionCanAfford,
   auctionFinished,
   auctionFirstSeat,
   auctionOutcome,
   auctionSeatStatus,
+  eligibleBidders,
   sameNameFacilityOwned,
   sameNameLandOwned,
   settleAuction,
@@ -381,7 +383,9 @@ function openAuction(
   const owner = facility
     ? (effectiveFacility(state, topo, pending.entityId)?.owner ?? 0)
     : (effectiveLand(state, topo, pending.entityId)?.owner ?? 0);
-  const seller = owner === 0 ? state.currentPlayer : owner - 1;
+  // ★ 拍賣卡/魔法屋拍的是「自己脚下」那块无主地 ⇒ 无主时把出卡人当卖家跳过；
+  //   新聞 7「公開拍賣」没有卖家（原版传 −1），调用方用 `seller: -1` 覆盖。
+  const seller = pending.seller ?? (owner === 0 ? state.currentPlayer : owner - 1);
 
   return {
     ...pending,
@@ -397,6 +401,22 @@ function openAuction(
     status,
     limits: auctionAiLimits(entity, state.players, pending.bidders, seed),
   };
+}
+
+/**
+ * 把一场拍卖**挂成待决交互** —— 拍賣卡、魔法屋、新聞 7 三条路共用。
+ *
+ * ★ 一开拍就没人出得起底价（全体 `givenUp`）时**当场流标**：原版窗口也是
+ *   这个下场（`loc_0043b295` 的 `esi == edi` 那一条），而引擎里若不在这里结掉，
+ *   `decidePending` 会拿不到座位（`seat` 落空），pending 就永远挂着。
+ */
+function startAuction(state: GameState, topo: MapTopology, request: AuctionRequest): GameState {
+  const opened = openAuction(state, topo, request);
+  if (auctionFinished(opened)) {
+    const out = auctionOutcome(opened);
+    return settleAuctionExplicit(state, topo, opened, out.winner, out.price);
+  }
+  return { ...state, pending: opened, phase: 'awaitingDecision' };
 }
 
 /**
@@ -2841,16 +2861,7 @@ function playCard(
   //   挂出来时就把座位表、心理价位、现价、轮到谁一并建好（见 openAuction）。
   if (r.followUp !== null) {
     if (r.followUp.kind === 'auction') {
-      const opened = openAuction(next, topo, r.followUp);
-      // ★ 一开拍就没人出得起底价（全体 `givenUp`）→ 当场流标。
-      //   原版窗口也是这个下场（`loc_0043b295` 的 `esi == edi` 那一条），
-      //   但引擎里若不在这里结掉，`decidePending` 会拿不到座位（`seat` 落空），
-      //   pending 就永远挂着。
-      if (auctionFinished(opened)) {
-        const out = auctionOutcome(opened);
-        return settleAuctionExplicit(next, topo, opened, out.winner, out.price);
-      }
-      next = { ...next, pending: opened, phase: 'awaitingDecision' };
+      return startAuction(next, topo, r.followUp);
     } else {
       next = { ...next, pending: r.followUp, phase: 'awaitingDecision' };
     }
@@ -3417,6 +3428,25 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
   if (entry !== undefined && !out.unimplemented && (entry.effects.includes('prison') || entry.effects.includes('hospital'))) {
     for (const who of newsTargets(draw.eventId, withDeck, lands, allEffectiveFacilities(state, topo))) {
       applied = insureConfinement(applied, topo, who, out.amount);
+    }
+  }
+  // 新聞 7「公開拍賣公有土地一處」：挑中的那处**当场开拍**
+  //   @source phase 2 `auction_entry(-1, target, 1)` —— 第一参 −1 = **没有卖家席位**，
+  //   故显式传 `seller: -1`（否则 `openAuction` 会把当前行动者当卖家跳过）。
+  if (out.publicAuction !== undefined) {
+    const { entityId, facility } = out.publicAuction;
+    const entity = facility
+      ? effectiveFacility(applied, topo, entityId)
+      : effectiveLand(applied, topo, entityId);
+    if (entity !== null) {
+      applied = startAuction(applied, topo, {
+        kind: 'auction',
+        entityId,
+        basePrice: auctionBasePrice(entity, applied.priceIndex),
+        bidders: eligibleBidders(applied.players, entity),
+        seller: -1,
+        ...(facility ? { facility: true } : {}),
+      });
     }
   }
   return applied;

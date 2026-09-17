@@ -444,6 +444,34 @@ describe('★ 新聞 5/15/19/21：随机拆一处建筑 / 土地流失 @source f
   });
 });
 
+describe('★ 新聞 7：公開拍賣公有土地一處 @source fcn_00449735', () => {
+  const land = (id: number, owner: number) => ({ id, name: `L${id}`, owner, level: 0, type: 0, landPrice: 100, x: 0, y: 0 }) as never;
+  const fac = (id: number, owner: number) => ({ id, name: `F${id}`, owner, level: 0, type: 1, landPrice: 100, x: 0, y: 0 }) as never;
+
+  it('★★ 候选**只有无主的**（地块与設施各收一遍），挑中的那处带出去开拍', () => {
+    const lands = [land(1, 1), land(2, 0), land(3, 0)];
+    const facilities = [fac(1, 2), fac(2, 0)];
+    // 候选 = [地2, 地3, 設2]；below(3) = 0 → 地 2
+    const r0 = applyNewsEffect(7, ctx({ lands, facilities, rng: { below: () => 0 } }));
+    expect(r0.unimplemented).toBe(false);
+    expect(r0.publicAuction).toEqual({ entityId: 2, facility: false });
+    // below(3) = 2 → 設 2
+    const r2 = applyNewsEffect(7, ctx({ lands, facilities, rng: { below: (n: number) => n - 1 } }));
+    expect(r2.publicAuction).toEqual({ entityId: 2, facility: true });
+  });
+
+  it('★ 一块无主地都没有时什么都不做（原版 `idiv 0` 除零崩）', () => {
+    const r = applyNewsEffect(7, ctx({ lands: [land(1, 1)], facilities: [fac(1, 1)], rng: { below: () => 0 } }));
+    expect(r.unimplemented).toBe(false);
+    expect(r.publicAuction).toBeUndefined();
+    expect(r.amount).toBe(0);
+  });
+
+  it('★ 没给 rng 时报未实现', () => {
+    expect(applyNewsEffect(7, ctx({ lands: [land(1, 0)] })).unimplemented).toBe(true);
+  });
+});
+
 describe('★ 新聞 30..35：企業罰款／海外投資／獲利調高一倍 @source fcn_0044b374 等六支', () => {
   const stocks = () =>
     Array.from({ length: 12 }, () => ({ newsFlag: 0, f6: 0, openPrice: 10, price: 10 }) as never);
@@ -613,8 +641,8 @@ describe('未实现', () => {
     // 只是一直没列进这张表（本表没有别的消费者，纯登记）。
     // 16/17 = 行人/車輛休息一回合、24/25/26 = 股市三连（2026-09-17 接）
     expect(IMPLEMENTED_NEWS_IDS).toEqual([
-      0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27,
-      28, 29, 30, 31, 32, 33, 34, 35, 11, 12, 13, 23,
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26,
+      27, 28, 29, 30, 31, 32, 33, 34, 35, 11, 12, 13, 23,
     ]);
   });
 

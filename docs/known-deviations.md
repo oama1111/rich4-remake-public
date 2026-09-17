@@ -3967,10 +3967,17 @@ registry 补齐設施（T-006/T-008）、股票（T-005）、物件（T-004）�
   一家都没有时原版 `idiv` 除零崩 ⇒ 本引擎那一支什么都不做。
   `cmp byte [comm+0x19], 0xc / jae 跳过` 里的 `+0x19` 就是**股票下标**（0 基）⇒ 我们读
   `CommercialInfo.stockIndex`。
-- ★ **仍属未接（已逐条读到语义，登记在此）**：
-  | id | 文案 | exe 动作（已读）| 为什么不接 |
-  |---|---|---|---|
-  | 7 | %s公開拍賣 公有土地一處 | 挑一块**无主**地块 → 走拍卖流程（挂 `pending`、开拍卖屏） | 要接的是「新聞直接开一场拍卖」，涉及交互态；归拍卖那一批 |
+- ★ **2026-09-17（第八轮）：7「公開拍賣公有土地一處」也接上了 —— 新聞 36 条至此全部接完**
+  @source `fcn_00449735`：phase 1 收 `owner == 0` 的地块与設施（两个循环）→ `rand() % 数量` 挑一个；
+  phase 2（VA 0x00449896）`push 1 / push target / push -1 / call _rich4_ui_auction_entry`
+  ⇒ **直接开一场拍卖**，第一参 `-1` = **没有卖家席位**。
+  落码：`applyNewsEffect` 只负责「挑」（`publicAuction: {entityId, facility}`，没有无主地时什么都不做，
+  原版那里 `idiv 0` 会崩）；挂 `pending` 在 `reduce.ts` 做 —— 顺手把拍賣卡/魔法屋/新聞三条路
+  共用的「开拍 + 一开拍就流标」抽成 `startAuction()`，并给 `AuctionRequest` 加了可选的 `seller`
+  （新聞 7 显式传 `-1`，否则 `openAuction` 会把当前行动者当卖家跳过）。
+  起拍价/竞价循环沿用既有的 `rules/auction.ts`（`auctionBasePrice`/`eligibleBidders`/`openAuction`）。
+  测试：`events-integration.test.ts` 一条真地图用例（抽到 7 → `pending.kind === 'auction'`、
+  `seller === -1`、待拍实体**无主**）。
   | 30/31/32/33/34/35 | 企業罰款／海外投資獲利虧損／獲利調高一倍 | 改**上市企业**的 `+0x28/+0x2c`（资金） | 本引擎的 `FacilityInfo` 没有企业资金字段 |
 - ★ `Q-FIN-2` 由此**结案**：真人回合确实没有特別融資收回入口，全部入口只有
   **电脑回合**（0x00418dfe）与**命运事件 8/9** 这两处。

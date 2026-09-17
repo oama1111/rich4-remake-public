@@ -66,6 +66,11 @@ export interface NewsEffectResult {
   facilityMutations?: readonly LandMutation[];
   /** 被改过盈余的企業（新聞 30..35）—— 有序列表，只放改动过的那几家 */
   companyMutations?: readonly CompanyMutation[];
+  /**
+   * 新聞 7：要**开一场拍卖**的那个实体。`applyNewsEffect` 只管挑，
+   *   挂 `pending` 由 reducer 做（那里才有 `openAuction` 与竞价循环）。
+   */
+  publicAuction?: { entityId: number; facility: boolean };
   amount: number;
   bankrupted: boolean;
   unimplemented: boolean;
@@ -223,6 +228,7 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
       e.effects.includes('companyGain') ||
       e.effects.includes('companyLoss') ||
       e.effects.includes('companyProfitDouble') ||
+      e.effects.includes('publicAuction') ||
       (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
   ).map((e) => e.id),
   ...PERCENT_NEWS.keys(),
@@ -612,6 +618,25 @@ export function applyNewsEffect(
       companyMutations: [{ id: co.id, funds: nextFunds, profit: nextProfit }],
       ...(market === undefined ? {} : { market }),
     };
+  }
+
+  // ── 新聞 7「公開拍賣公有土地一處」────────────────────────────────
+  //   @source `fcn_00449735`：收 `owner == 0` 的地块与設施（两个循环），
+  //   `rand() % 数量` 挑一个，phase 2 直接 `auction_entry(-1, target, 1)` 开拍。
+  //   ★ 没有无主地时原版 `idiv` 除零崩 ⇒ 本引擎那一支什么都不做。
+  if (entry.effects.includes('publicAuction')) {
+    const rng = ctx.rng;
+    const lands = (ctx.lands ?? []).filter((l) => l.owner === 0);
+    const facilities = (ctx.facilities ?? []).filter((f) => f.owner === 0);
+    if (rng === undefined) return { ...base, unimplemented: true };
+    const total = lands.length + facilities.length;
+    if (total === 0) return { ...base, amount: 0 };
+    const pick = rng.below(total);
+    const chosen =
+      pick < lands.length
+        ? { entityId: lands[pick]!.id, facility: false }
+        : { entityId: facilities[pick - lands.length]!.id, facility: true };
+    return { ...base, amount: 0, publicAuction: chosen };
   }
 
   // ★ 銀行擠兌：不看 affected，**所有在场玩家**的 +0x3c 都写成 15 @source 0x0044aeb6..0x0044aed8

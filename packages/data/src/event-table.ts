@@ -186,6 +186,21 @@ export interface EventEntry {
      *   @source `fcn_0044b5f5`（VA 0x0044b618 的过滤循环 / 0x0044b641 起的效果）
      */
     | 'companyProfitDouble'
+    /**
+     * 新聞 7：**公開拍賣公有土地一處** —— 挑一块（或一处設施）**无主**的，
+     *   然后直接开一场拍卖。
+     *
+     * @source `fcn_00449735`：
+     * ```asm
+     * ; phase 1：收 0x19(owner)==0 的地块与設施，rand() % 数量 挑一个，画名字
+     * ; phase 2（VA 0x00449896）：
+     * push 1 / push target / push -1 / call _rich4_ui_auction_entry
+     * ;      ↑第三参  ↑待拍实体  ↑第一参 = 卖家（-1 = 没有卖家席位）
+     * ```
+     *   起拍价与竞价循环就是既有的那套（`run_auction` VA 0x0043bde5 =
+     *   本引擎的 `rules/auction.ts` + `pending: {kind:'auction'}`）。
+     */
+    | 'publicAuction'
   )[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
@@ -247,7 +262,7 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 4, va: 0x0044913d, factor: null, effects: ['hospital'], textVa: 0x465488, text: "#0153外星人攻打地球", literal: null },
   { id: 5, va: 0x004492a0, factor: null, effects: ['clearOwnerBuilt'], textVa: 0x46549c, text: "#0154外星怪獸襲擊%s\n摧毀建築一棟", literal: null },
   { id: 6, va: 0x004494e0, factor: null, effects: ['raiseLandPrice'], textVa: 0x4654bd, text: "#0155%s公告地價調漲３０％", literal: null },
-  { id: 7, va: 0x00449735, factor: null, effects: [], textVa: 0x4654e4, text: "#0156公開拍賣%s\n公有土地一處", literal: null },
+  { id: 7, va: 0x00449735, factor: null, effects: ['publicAuction'], textVa: 0x4654e4, text: "#0156公開拍賣%s\n公有土地一處", literal: null },
   { id: 8, va: 0x004498b3, factor: 10000, effects: ['give'], textVa: 0x465501, text: "#0157公開表揚第一大地主\n%s獲得%d元獎勵", literal: null },
   { id: 9, va: 0x00449a8a, factor: 5000, effects: ['give'], textVa: 0x465528, text: "#0158公開補助土地最少者\n%s獲得%d元補助", literal: null },
   { id: 10, va: 0x00449b9c, factor: 10000, effects: ['give'], textVa: 0x46554f, text: "#0159公開表揚股市第一大戶\n%s獲得%d元獎勵", literal: null },
