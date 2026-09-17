@@ -209,6 +209,11 @@ describe('★ 事件说明文字：去编号 + 代入 %d/%s（近似）', () => 
     );
     // `%s` 取不到对象时也留 `？`
     expect(eventBoxDescription(news5, 1, '')).toBe('外星怪獸襲擊？\n摧毀建築一棟');
+    // ★ 2026-09-17：新聞 1/3 的 literal 补成 3（汇编 `mov ecx, 3`）⇒ 不再显示「？天」
+    const news1 = newsEvent(1);
+    expect(news1?.literal).toBe(3);
+    expect(eventBoxDescription(news1, 1, '')).toBe('獄中囚犯延長刑期3天');
+    expect(eventBoxDescription(newsEvent(3), 1, '')).toBe('住院中病患延長住院3天');
   });
 });
 

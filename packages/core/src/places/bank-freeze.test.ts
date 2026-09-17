@@ -13,7 +13,7 @@ import { RELEASE_PENDING } from '../rules/blocking.ts';
 describe('★ 新聞 #171 銀行擠兌停止放款１５天 @source 0x0044ae89', () => {
   it('所有在场玩家 +0x3c = 15（不看 affected）；出局者不写', () => {
     const players = [0, 1, 2].map((i) => makePlayer({ index: i, whoPlays: i === 2 ? 0 : 1 }));
-    const r = applyNewsEffect(22, { players, affected: [0], priceIndex: 1, pool: 0, occupancy: [] });
+    const r = applyNewsEffect(22, { players, affected: [0], priceIndex: 1, pool: 0 });
     expect(r.unimplemented).toBe(false);
     expect(r.players.map((p) => p.bankFreezeDays)).toEqual([15, 15, 0]);
   });

@@ -44,7 +44,29 @@ export interface EventEntry {
    * 空数组表示效果不落在以上任何一条上（多半作用于企业或地块，
    * 或尚未分析），并非"无效果"。
    */
-  effects: readonly ('pay' | 'give' | 'prison' | 'hospital' | 'loan' | 'bankBan' | 'loanFreeze')[];
+  effects: readonly (
+    | 'pay'
+    | 'give'
+    | 'prison'
+    | 'hospital'
+    | 'loan'
+    | 'bankBan'
+    | 'loanFreeze'
+    /**
+     * 新聞 0 / 2：**把在监/在院的人放出来** —— `days = 0x80`（待释放）+ 清占用槽。
+     *   @source `rich4_news.asm` 的 `fcn_00449006`（医院，VA 0x0044903d 起）与
+     *   `fcn_00448f45`（监狱，VA 0x00448f01 起）
+     */
+    | 'releasePrison'
+    | 'releaseHospital'
+    /**
+     * 新聞 1 / 3：**给在监/在院的人加 %d 天** —— `days = (days + n) & 0x7f`。
+     *   ★ `& 0x7f` 会把「待释放」的 0x80 抹掉 ⇒ 本来今天就能出来的又被关回去。
+     *   @source `fcn_00448ffd`（监狱，VA 0x00448fa8 起）/ `fcn_00449081`（医院，VA 0x004490e8 起）
+     */
+    | 'extendPrison'
+    | 'extendHospital'
+  )[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
   /** 原版提示语（BIG5 解码后） */
@@ -90,10 +112,10 @@ export function stripEventCode(text: string): string {
 
 /** 新聞事件，36 项 */
 export const NEWS_EVENTS: readonly EventEntry[] = [
-  { id: 0, va: 0x00448eca, factor: null, effects: [], textVa: 0x465424, text: "#0149獄中囚犯無罪開釋", literal: null },
-  { id: 1, va: 0x00448f45, factor: null, effects: [], textVa: 0x46543a, text: "#0150獄中囚犯延長刑期%d天", literal: null },
-  { id: 2, va: 0x00449006, factor: null, effects: [], textVa: 0x465454, text: "#0151住院中病患提前出院", literal: null },
-  { id: 3, va: 0x00449081, factor: null, effects: [], textVa: 0x46546c, text: "#0152住院中病患延長住院%d天", literal: null },
+  { id: 0, va: 0x00448eca, factor: null, effects: ['releasePrison'], textVa: 0x465424, text: "#0149獄中囚犯無罪開釋", literal: null },
+  { id: 1, va: 0x00448f45, factor: null, effects: ['extendPrison'], textVa: 0x46543a, text: "#0150獄中囚犯延長刑期%d天", literal: 3 },
+  { id: 2, va: 0x00449006, factor: null, effects: ['releaseHospital'], textVa: 0x465454, text: "#0151住院中病患提前出院", literal: null },
+  { id: 3, va: 0x00449081, factor: null, effects: ['extendHospital'], textVa: 0x46546c, text: "#0152住院中病患延長住院%d天", literal: 3 },
   { id: 4, va: 0x0044913d, factor: null, effects: ['hospital'], textVa: 0x465488, text: "#0153外星人攻打地球", literal: null },
   { id: 5, va: 0x004492a0, factor: null, effects: [], textVa: 0x46549c, text: "#0154外星怪獸襲擊%s\n摧毀建築一棟", literal: null },
   { id: 6, va: 0x004494e0, factor: null, effects: [], textVa: 0x4654bd, text: "#0155%s公告地價調漲３０％", literal: null },

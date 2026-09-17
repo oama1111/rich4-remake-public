@@ -294,7 +294,9 @@ export function newsTitle(newsId: number): string {
  *   所以本模块只能拿现成的东西补：
  *
  *   - `%d` → `entry.literal`，否则 `entry.factor × 物价指数`；两个都没有时留 `？`
- *     （表里 `literal` 不全 —— 新聞 id 1 的 3 天在表里是 `null`，只能认）；
+ *     （★ 2026-09-17：新聞 1/3 的 `literal` 已按汇编补成 **3** —— 那两条的
+ *     事件处理函数里是 `mov ecx, 3` + `sprintf`，先前表里是 `null`，
+ *     于是屏上显示「延長刑期？天」）；
  *   - `%s` → 这一次 diff 里现金/存款动过的那个玩家名（见 `eventSubject`）。
  *
  *   见 `docs/deviations/T-041.md` 的 D-EVENT-2。

@@ -3298,7 +3298,10 @@ function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
     affected: newsTargets(draw.eventId, withDeck, lands, facilities),
     priceIndex: withDeck.priceIndex,
     pool: withDeck.pool,
-    occupancy: withDeck.prisonOccupancy,
+    // ★ 两张占用表分开传：`prison` 效果写 `0x496b30`、`hospital` 写 `0x496b60`
+    //   （先前一律传监狱表 ⇒ 新聞 4「外星人攻打地球」把住院的人记进监狱表）
+    prisonOccupancy: withDeck.prisonOccupancy,
+    hospitalOccupancy: withDeck.hospitalOccupancy,
     // 百分比类（11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利）要的三样
     lands,
     facilities,
@@ -3310,7 +3313,8 @@ function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
     ...withDeck,
     players: out.players,
     pool: out.pool,
-    prisonOccupancy: out.occupancy,
+    prisonOccupancy: out.prisonOccupancy,
+    hospitalOccupancy: out.hospitalOccupancy,
     lastEvent: { kind: 'news', id: draw.eventId },
   };
   // 新聞的坐牢/住院也走 send_to_*，保險期内赔 2000×天×物價

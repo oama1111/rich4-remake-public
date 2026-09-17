@@ -15,7 +15,8 @@
 import type { Player } from '../state/types.ts';
 import { NEWS_EVENTS, eventAmount, newsEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
-import { confine } from '../rules/confinement.ts';
+import { CONFINEMENT_SLOTS, confine } from '../rules/confinement.ts';
+import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { isAlive } from '../state/types.ts';
 import { blessingMultiplier } from '../rules/blessing.ts';
 import { bankDividend, incomeTax, propertyTax, stockTax } from '../rules/percentage.ts';
@@ -24,7 +25,16 @@ import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
 export interface NewsEffectResult {
   players: Player[];
   pool: number;
-  occupancy: number[];
+  /**
+   * 监狱占用表（`0x496b30`，8 槽）／医院占用表（`0x496b60`，8 槽）。
+   *
+   * ★ 2026-09-17 起**两张分开给**：先前的单一 `occupancy` 让调用方一律传
+   *   `prisonOccupancy`，于是新聞 4「外星人攻打地球」（`hospital` 效果）把医院的人
+   *   记进了**监狱**表。占用表就是原版那两张字节表（槽 0..3 玩家、4..7 物件），
+   *   见 `rules/confinement.ts` 与 `docs/deviations/Q-CONFINE-1`。
+   */
+  prisonOccupancy: number[];
+  hospitalOccupancy: number[];
   amount: number;
   bankrupted: boolean;
   unimplemented: boolean;
@@ -51,7 +61,10 @@ export interface NewsEffectContext {
   holdings?: readonly (readonly number[])[];
   prices?: readonly number[];
   pool?: number;
-  occupancy?: readonly number[];
+  /** 监狱占用表（`0x496b30`）—— `prison` / `releasePrison` / `extendPrison` 效果用它 */
+  prisonOccupancy?: readonly number[];
+  /** 医院占用表（`0x496b60`）—— `hospital` / `releaseHospital` / `extendHospital` 效果用它 */
+  hospitalOccupancy?: readonly number[];
   /** 覆盖天数；通常取自事件表的 literal */
   days?: number;
   /** 神明加持倍率档位：2 加倍、1 归零、0 不变（见 rules/blessing.ts） */
@@ -109,6 +122,13 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
     (e) =>
       e.effects.includes('prison') ||
       e.effects.includes('hospital') ||
+      // ★ 2026-09-17：四条「释放／延长」也在此列 —— 它们的 effects 先前是空的，
+      //   于是抽到只画文案、一分钱一天都不动（见 docs/known-deviations.md）
+      e.effects.includes('releasePrison') ||
+      e.effects.includes('releaseHospital') ||
+      e.effects.includes('extendPrison') ||
+      e.effects.includes('extendHospital') ||
+      e.effects.includes('loanFreeze') ||
       (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
   ).map((e) => e.id),
   ...PERCENT_NEWS.keys(),
@@ -134,11 +154,15 @@ export function applyNewsEffect(
 ): NewsEffectResult {
   let players = [...ctx.players];
   let pool = ctx.pool ?? 0;
-  let occupancy = [...(ctx.occupancy ?? new Array<number>(8).fill(0))];
+  let prisonOccupancy = [...(ctx.prisonOccupancy ?? new Array<number>(CONFINEMENT_SLOTS).fill(0))];
+  let hospitalOccupancy = [
+    ...(ctx.hospitalOccupancy ?? new Array<number>(CONFINEMENT_SLOTS).fill(0)),
+  ];
   const base: NewsEffectResult = {
     players,
     pool,
-    occupancy,
+    prisonOccupancy,
+    hospitalOccupancy,
     amount: 0,
     bankrupted: false,
     unimplemented: false,
@@ -152,6 +176,66 @@ export function applyNewsEffect(
   const amount = eventAmount(entry, ctx.priceIndex) * blessingMultiplier(ctx.multiplier ?? 0);
   let total = 0;
   let bankrupted = false;
+
+  // ── 新聞 0/2「無罪開釋／提前出院」与 1/3「延長刑期／延長住院」──────────
+  //   ★ 这四条**不看 `affected`**：原版扫占用表，谁在里面就动谁。
+  //     @source `rich4_news.asm` 四个函数各有一段同构的循环：
+  //     ```asm
+  //     xor ebx, ebx                   ; i = 0
+  //     mov esi, 0x148                 ; 头像落点 y
+  //     loop:
+  //       cmp byte [ebx + 0x496b30], 0   ; ★ 监狱表（医院那两条是 0x496b60）
+  //       je  next                       ; 不在里面 → 跳过
+  //       … 在 (0x186, y) 画这个人 + 建筑图 …
+  //       ; 释放：mov byte [player+0x34], 0x80 / mov byte [ebx+0x496b30], 0
+  //       ; 延长：add dh, n / mov cl, dh / and cl, 0x7f   ⇒ (days + n) & 0x7f
+  //       add esi, 0x2a
+  //     next:
+  //       inc ebx / cmp ebx, 4 / jl loop
+  //     ```
+  //   ★ 循环上界是 **4** ⇒ 只动玩家槽 0..3，地图物件槽 4..7 够不到。
+  const kind: 'prison' | 'hospital' | null = entry.effects.includes('releasePrison') ||
+    entry.effects.includes('extendPrison')
+    ? 'prison'
+    : entry.effects.includes('releaseHospital') || entry.effects.includes('extendHospital')
+      ? 'hospital'
+      : null;
+  if (kind !== null) {
+    const releasing =
+      entry.effects.includes('releasePrison') || entry.effects.includes('releaseHospital');
+    const table = kind === 'prison' ? prisonOccupancy : hospitalOccupancy;
+    const field: 'inPrison' | 'inHospital' = kind === 'prison' ? 'inPrison' : 'inHospital';
+    // 「延长 %d 天」的 n = 文案里的字面常量（`mov ecx, 3` ⇒ literal 3）
+    const days = ctx.days ?? entry.literal ?? 0;
+    const next = [...players];
+    const nextTable = [...table];
+    for (let who = 0; who < 4; who++) {
+      const p = next[who];
+      if (p === undefined) continue;
+      // ★ 闸门是**占用表**（不是天数）
+      if ((nextTable[who] ?? 0) === 0) continue;
+      if (releasing) {
+        // 释放 = 挂「待释放」位（下一次推进才真正走释放流程）+ 清占用槽
+        next[who] = { ...p, blocking: { ...p.blocking, [field]: RELEASE_PENDING } };
+        nextTable[who] = 0;
+      } else {
+        // 延长 = (当前 + n) & 0x7f —— ★ 掩码会把 0x80 抹掉
+        const raw = ((p.blocking[field] as number) + days) & 0x7f;
+        next[who] = { ...p, blocking: { ...p.blocking, [field]: raw } };
+      }
+    }
+    if (kind === 'prison') prisonOccupancy = nextTable;
+    else hospitalOccupancy = nextTable;
+    return {
+      players: next,
+      pool,
+      prisonOccupancy,
+      hospitalOccupancy,
+      amount: days,
+      bankrupted,
+      unimplemented: false,
+    };
+  }
 
   // ★ 銀行擠兌：不看 affected，**所有在场玩家**的 +0x3c 都写成 15 @source 0x0044aeb6..0x0044aed8
   //   天数 15 是汇编里写死的立即数；文案的「１５」是全角字、没有 %d，
@@ -194,7 +278,15 @@ export function applyNewsEffect(
         total += each;
       }
     }
-    return { players, pool, occupancy, amount: total, bankrupted, unimplemented: false };
+    return {
+      players,
+      pool,
+      prisonOccupancy,
+      hospitalOccupancy,
+      amount: total,
+      bankrupted,
+      unimplemented: false,
+    };
   }
 
   for (const who of ctx.affected) {
@@ -204,9 +296,12 @@ export function applyNewsEffect(
       const days = ctx.days ?? entry.literal;
       if (days === null || days === undefined) return { ...base, unimplemented: true };
       const kind = entry.effects.includes('prison') ? 'prison' : 'hospital';
-      const out = confine(players, occupancy, kind, who, days);
+      // ★ 两张表各归各的（先前一律写监狱表，医院的人会记错地方）
+      const table = kind === 'prison' ? prisonOccupancy : hospitalOccupancy;
+      const out = confine(players, table, kind, who, days);
       players = out.players;
-      occupancy = out.occupancy;
+      if (kind === 'prison') prisonOccupancy = out.occupancy;
+      else hospitalOccupancy = out.occupancy;
       total = days;
       continue;
     }
@@ -225,5 +320,13 @@ export function applyNewsEffect(
     }
   }
 
-  return { players, pool, occupancy, amount: total, bankrupted, unimplemented: false };
+  return {
+    players,
+    pool,
+    prisonOccupancy,
+    hospitalOccupancy,
+    amount: total,
+    bankrupted,
+    unimplemented: false,
+  };
 }

@@ -132,7 +132,84 @@ describe('方向与命運一致', () => {
   it('news[29] 走监狱', () => {
     const r = applyNewsEffect(29, ctx({ days: 5 }));
     expect(r.players[0]!.blocking.inPrison).toBe(5);
-    expect(r.occupancy[0]).toBe(1);
+    expect(r.prisonOccupancy[0]).toBe(1);
+  });
+});
+
+describe('★ 新聞 0..3：释放／延长在监在院的人 @source rich4_news.asm 的四个循环', () => {
+  /** 只盖掉要用的那两位计数器，其余整块沿用工厂默认（`BlockingDays` 是定长结构）*/
+  const blocked = (over: Partial<ReturnType<typeof makePlayer>['blocking']> = {}) => ({
+    ...makePlayer().blocking,
+    ...over,
+  });
+  /** 造一个「0 号在监狱、2 号在医院」的局面 */
+  const sick = (over = {}) =>
+    ctx({
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({
+          index: i,
+          cash: 100_000,
+          blocking: i === 0 ? blocked({ inPrison: 4 }) : i === 2 ? blocked({ inHospital: 7 }) : blocked(),
+        }),
+      ),
+      prisonOccupancy: [1, 0, 0, 0, 0, 0, 0, 0],
+      hospitalOccupancy: [0, 0, 1, 0, 0, 0, 0, 0],
+      ...over,
+    });
+
+  it('★★ news[0] 獄中囚犯無罪開釋：在监的那位挂「待释放」+ 清占用槽', () => {
+    const r = applyNewsEffect(0, sick());
+    expect(r.unimplemented).toBe(false);
+    // 0x80 = 待释放（下一次回合推进才真正走释放流程）
+    expect(r.players[0]!.blocking.inPrison).toBe(0x80);
+    expect(r.prisonOccupancy[0]).toBe(0);
+    // 另一张表、其他人都不许动
+    expect(r.hospitalOccupancy).toEqual([0, 0, 1, 0, 0, 0, 0, 0]);
+    expect(r.players[1]!.blocking.inPrison).toBe(0);
+  });
+
+  it('★★ news[2] 住院中病患提前出院：动的是**医院**那张表', () => {
+    const r = applyNewsEffect(2, sick());
+    expect(r.players[2]!.blocking.inHospital).toBe(0x80);
+    expect(r.hospitalOccupancy[2]).toBe(0);
+    // ★ 监狱那位不受影响（两条新闻各管一张表）
+    expect(r.players[0]!.blocking.inPrison).toBe(4);
+    expect(r.prisonOccupancy[0]).toBe(1);
+  });
+
+  it('★★ news[1] 獄中囚犯延長刑期%d天：+literal(3)，且 `& 0x7f` 把 0x80 抹掉', () => {
+    expect(newsEvent(1)!.literal).toBe(3); // @source `mov ecx, 3`
+    const plain = applyNewsEffect(1, sick());
+    expect(plain.players[0]!.blocking.inPrison).toBe(7); // 4 + 3
+    expect(plain.amount).toBe(3);
+    // 本来今天就能出来的（0x80）又被关回去 3 天
+    const pending = applyNewsEffect(
+      1,
+      sick({
+        players: [0, 1, 2, 3].map((i) =>
+          makePlayer({ index: i, blocking: blocked(i === 0 ? { inPrison: 0x80 } : {}) }),
+        ),
+      }),
+    );
+    expect(pending.players[0]!.blocking.inPrison).toBe(3); // (0x80 + 3) & 0x7f
+  });
+
+  it('★★ news[3] 住院中病患延長住院%d天：医院表、+3', () => {
+    const r = applyNewsEffect(3, sick());
+    expect(newsEvent(3)!.literal).toBe(3);
+    expect(r.players[2]!.blocking.inHospital).toBe(10); // 7 + 3
+    expect(r.players[0]!.blocking.inPrison).toBe(4); // 不动监狱
+  });
+
+  it('★ 闸门是**占用表**：表里没有的人即使天数字段非 0 也不动', () => {
+    // 0 号有 4 天但占用槽是 0（异常局面）—— 原版按表扫，照样跳过
+    const r = applyNewsEffect(1, sick({ prisonOccupancy: [0, 0, 0, 0, 0, 0, 0, 0] }));
+    expect(r.players[0]!.blocking.inPrison).toBe(4);
+  });
+
+  it('★ 只看玩家槽 0..3：物件槽 4..7 不动（原版循环上界 `cmp ebx, 4`）', () => {
+    const r = applyNewsEffect(0, sick({ prisonOccupancy: [1, 0, 0, 0, 1, 0, 0, 0] }));
+    expect(r.prisonOccupancy[4]).toBe(1);
   });
 });
 
@@ -147,8 +224,10 @@ describe('未实现', () => {
     expect(applyNewsEffect(99, ctx()).unimplemented).toBe(true);
   });
 
-  it('★ 已实现的是 4(医院) / 8,9,10(固定金额) / 29(监狱) / 11,12,13,23(百分比)', () => {
-    expect(IMPLEMENTED_NEWS_IDS).toEqual([4, 8, 9, 10, 29, 11, 12, 13, 23]);
+  it('★ 已实现的是 0..3(释放/延长) / 4(医院) / 8,9,10(固定金额) / 29(监狱) / 11,12,13,23(百分比)', () => {
+    // 22 = 銀行擠兌（`loanFreeze`）——它本来就在 `applyNewsEffect` 里实现了，
+    // 只是一直没列进这张表（本表没有别的消费者，纯登记）。
+    expect(IMPLEMENTED_NEWS_IDS).toEqual([0, 1, 2, 3, 4, 8, 9, 10, 22, 29, 11, 12, 13, 23]);
   });
 
   it('★ news[4] 与 29 的文案里没有 %d，天数须由调用方给出', () => {
