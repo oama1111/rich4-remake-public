@@ -693,6 +693,23 @@ export const MONTHLY_CHAMPION_BOX = { chunk: 1, x: 190, y: 10, textX: 0, textY: 
 export const MONTHLY_FAREWELL_BOX = { chunk: 4, x: 213, y: 37, textX: 20, textY: 0 } as const;
 
 /**
+ * 冠军那块**奖座静帧**（图 **45**，210×420）—— 状态 0x12 的**尾巴**贴的那一张。
+ *
+ * @source `loc_00438ff5`（状态 0x12 的处理）在播完冠军奖座 FLIC 之后：
+ * ```asm
+ * 00439031  fcn_0045643d(屏, [0x48c41c]+0xc = 图 0, x=0x1b, y=0x40, sx=0x1b, sy=0x40, 0xc3, 0x1a0)
+ * 0043905f  fcn_00456418(屏, [0x48c41c]+0x228 = 图 45, 6, 0x3c)      ; ★ 抠黑那份
+ * ```
+ * ★ 前一句是**同坐标背景还原**（dst == src）—— 本引擎每帧整屏重画，**无需**这一步；
+ *   后一句是**真贴图**：图 45 = **210×420**，落在 (6, 0x3c) 正好填满
+ *   (6,60)-(216,480) 那块（= 奖座影片演完之后的定格）。
+ * ⚠️ `T-041.md` 那张表把这一句记在「状态 0x13」那一行、且把 dst/src 写反了 ——
+ *   状态号派发（`loc_00437f51`）里 `0x13` 是**开 `其他人還要更努力喔！` 那只框**，
+ *   本句属 **0x12 的尾巴**；本轮按 exe 订正。
+ */
+export const MONTHLY_TROPHY_PLATE = { chunk: 45, x: 0x06, y: 0x3c } as const;
+
+/**
  * 月結屏開屏那句（`#0092各位客戶辛苦了！⏎又到了每月銀行⏎結算的日子。`）。
  *
  * ★ **本引擎刻意不画它** —— 已按「原版落点不可复现」登记，理由在 exe 里：
@@ -1648,6 +1665,13 @@ export function drawMonthlyScreen(
   //      开这只框、再由 0x16 倒数 0xa 拍（点一下可提前关屏）。
   //      **动画关时原版不经过 0x13**，那只框根本不出现 —— 所以这里仍要 `skipTicks === 0`。
   if (p.farewell && p.skipTicks === 0) {
+    // 奖座定格（状态 0x12 尾巴）—— 在最后那只框**之前**贴（原版就是这个次序）
+    drawAnchored(
+      ctx,
+      monthlySprite(sprite, MONTHLY_TROPHY_PLATE.chunk),
+      MONTHLY_TROPHY_PLATE.x,
+      MONTHLY_TROPHY_PLATE.y,
+    );
     drawMonthlyBox(ctx, sprite, MONTHLY_FAREWELL_BOX, MONTHLY_FAREWELL);
   }
 }

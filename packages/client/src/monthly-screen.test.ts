@@ -38,6 +38,7 @@ import {
   MONTHLY_DETAIL_ROWS,
   MONTHLY_INTRO,
   MONTHLY_FAREWELL_BOX,
+  MONTHLY_TROPHY_PLATE,
   MONTHLY_FAREWELL_TICKS,
   MONTHLY_SKIP_TICKS,
   MONTHLY_TABLE_PLATE,
@@ -1379,6 +1380,34 @@ describe('★ 頒獎屏那两张 4 行表底下那块锦缎板（图 2 @ (440,40
     expect(
       boxOf({ ...base, closing: true, farewell: true, skipTicks: MONTHLY_SKIP_TICKS }),
     ).toBe(0);
+  });
+
+  it('★★ 冠军奖座**定格**（图 45，210×420）在最后那一拍贴 (6, 0x3c) —— 状态 0x12 的尾巴', () => {
+    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
+    const view = monthlySummary(state, state);
+    const award = monthlyAward(state, state, { nodes: [], lands: [], facilities: [] });
+    const { sprite } = fakeSpriteFn();
+    const plateOf = (p: MonthlyPlayback): { x: number; y: number } | undefined => {
+      const { ctx, blits } = fakeCanvas();
+      drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award, p);
+      return blits.find((b) => b.index === MONTHLY_TROPHY_PLATE.chunk);
+    };
+    const base: MonthlyPlayback = {
+      ...monthlyPlaybackStart(),
+      phase: 'award',
+      bars: MONTHLY_SLOTS,
+      seats: MONTHLY_SLOTS,
+      details: MONTHLY_DETAIL_ROWS,
+      closing: true,
+    };
+    // 收尾那一拍（FLIC 还在演）**不贴**定格
+    expect(plateOf(base)).toBeUndefined();
+    // 最后那一拍贴，位置照 exe (6, 0x3c)
+    const plate = plateOf({ ...base, farewell: true, farewellTicks: 0xa });
+    expect(plate).toMatchObject({ x: 6, y: 0x3c });
+    expect(MONTHLY_TROPHY_PLATE).toEqual({ chunk: 45, x: 0x06, y: 0x3c });
+    // 动画关那条捷径不贴
+    expect(plateOf({ ...base, farewell: true, skipTicks: MONTHLY_SKIP_TICKS })).toBeUndefined();
   });
 
   it('★ 「動畫過程」关掉那条捷径里**连这块板也不贴**（原版状态 2 → 0x16 只倒数）', () => {
