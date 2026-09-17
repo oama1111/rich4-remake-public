@@ -316,8 +316,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   gaps['lottery'] = '樂透号码表在存档中的偏移未验证，已置空';
   gaps['market'] =
     '股市行情与 144 日历史：槽内偏移**已核**（历史 +0x6ec 共 0x1b00、十二支股票表 +0x2376），解析待接，已按地图重置为初始行情 @source rich4_player_save_state.asm:594/:675';
-  gaps['holdings'] =
-    '各玩家持仓：槽内偏移**已核**（+0x21ec，0x180 = 4 人 × 12 支 × 8 字节），解析待接，已置为空仓 @source rich4_player_save_state.asm:613';
+  // ★ 持仓已接（见上面 `holdings` 的构造）——这条 gap 删掉。
   gaps['pool'] = '公库金额在存档中的偏移未验证，已置 0';
   gaps['toolStock'] =
     '道具全局库存：槽内偏移**已核**（+0x6de），解析待接，已置为初始库存 @source rich4_player_save_state.asm:573';
@@ -410,8 +409,14 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     tools,
     toolStock: initialToolStock(),
     market: newStockMarket(save.globalMapId),
-    holdings: players.map(() =>
-      Array.from({ length: STOCKS_PER_MAP }, () => ({ ...EMPTY_HOLDING })),
+    // ★ 2026-09-17：持仓**从存档读**（`OFFSET.playerStocks`，4 人 × 12 支 × 8 字节）
+    holdings: players.map((_, i) =>
+      Array.from({ length: STOCKS_PER_MAP }, (_, j) => {
+        const rec = save.playerStocks[i]?.[j];
+        return rec === undefined
+          ? { ...EMPTY_HOLDING }
+          : { amount: rec.amount, avgCost: rec.avgCost };
+      }),
     ),
     // 下标 = 企业 1 基序号，故长度要多一格
     commercialOwners: Array.from({ length: map.commercials.length + 1 }, () => emptyOwnership()),

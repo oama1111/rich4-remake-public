@@ -175,9 +175,29 @@ describe('原版存档导入', () => {
     const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
     const { gaps } = importOriginalSave(save, loadMap());
     // 这些是**已知**还原不了的，每一条都得有说法
-    for (const key of ['landOwner', 'lottery', 'market', 'holdings', 'pool', 'rngState']) {
+    for (const key of ['landOwner', 'lottery', 'market', 'pool', 'rngState']) {
       expect(gaps[key], `${key} 应当有 gap 说明`).toBeTruthy();
     }
+    // ★ 2026-09-17：`holdings` 与 `specialActors` **已经能还原** ⇒ 不再挂 gap
+    expect(gaps['holdings']).toBeUndefined();
+    expect(gaps['specialActors']).toBeUndefined();
+  });
+
+  withSave('★★ 持仓**从存档读**（Save0 的实际数据：玩家 1 持 2 号股 2647 股 @13.74）', () => {
+    const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
+    // 先钉解析层：4 人 × 12 支，第 1 位玩家手里那两笔
+    expect(save.playerStocks).toHaveLength(4);
+    expect(save.playerStocks[0]).toHaveLength(12);
+    // float 精度：13.7423496… 是存档里那个 4 字节浮点的真值
+    expect(save.playerStocks[1]![2]!.amount).toBe(2647);
+    expect(save.playerStocks[1]![2]!.avgCost).toBeCloseTo(13.7423, 4);
+    expect(save.playerStocks[1]![5]!.amount).toBe(100);
+    // 再钉导入层：同一笔进 `state.holdings`
+    const { state } = importOriginalSave(save, loadMap());
+    expect(state.holdings[1]![2]!.amount).toBe(2647);
+    expect(state.holdings[1]![2]!.avgCost).toBeCloseTo(13.7423, 4);
+    // 没持仓的那几支仍是空仓（不是 undefined）
+    expect(state.holdings[0]![0]).toEqual({ amount: 0, avgCost: 0 });
   });
 
   withSave('★ hostility 只取前 4 项，第 5/6 项是月度金额', () => {

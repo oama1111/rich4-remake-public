@@ -37,6 +37,16 @@ export const SPECIAL_PLAYER_SIZE = 0x10;
  * ★ `x/y` 只给动画做插值，本引擎由 `nodeId` 现算（C-ARC-2）；
  *   「还剩几步」(`stepsRemaining`) **不在这 16 字节里**（它是全局 `[0x48baf8]`）。
  */
+/**
+ * 一条持仓记录 —— 与 `places/stock.ts` 的 `StockHolding` 同构。
+ * @source `rich4_stocks.h` 的 `player_stock_info`：`int amount; int _;`
+ *   ★ 第二个 int 实测是 **float 成本均价**（见 `places/stock.ts` 的注释）
+ */
+export interface StockHoldingRecord {
+  amount: number;
+  avgCost: number;
+}
+
 export interface SaveSpecialPlayer {
   x: number;
   y: number;
@@ -57,6 +67,9 @@ export const OBJECT_INFO_SIZE = 0x18;
 export const OBJECT_INFO_COUNT = 0x2e;
 /** 每个玩家的逐回合快照 @source loadsave.c: fread(0x48cb80 + i*0x2718, 0x2718, 1, fp) */
 export const PLAYER_SNAPSHOT_SIZE = 0x2718;
+/** 每人持仓的股票支数（12 支）@source `player_stock_info[4][12]` */
+export const STOCKS_PER_PLAYER = 12;
+
 /** 卡片种类数 */
 export const CARD_TYPE_COUNT = 30;
 /** 每个玩家的卡片/道具槽位数（60 = 4 玩家 × 15 槽） */
@@ -248,6 +261,12 @@ export interface SaveGame {
   /** 已过天数 @source `[0x4990e4]`，存档 0x2692 */
   totalDays: number;
   /**
+   * 各玩家的持仓：`playerStocks[玩家][股票] = { amount, avgCost }`。
+   * @source `_rich4_player_stocks`，本文件的 `OFFSET.playerStocks = 0x21f6`，
+   *   4 人 × 12 支 × 8 字节（`player_stock_info` = `int amount; float avgCost`）
+   */
+  playerStocks: StockHoldingRecord[][];
+  /**
    * 五个替身（小偷/強盜/流氓/間諜/機器娃娃）的存档记录。
    * @source 槽内 `+0x1a8`（本文件的 `OFFSET.specialPlayers = 0x01b4`），5 × 16 字节
    */
@@ -389,6 +408,16 @@ export function parseSave(data: Uint8Array): SaveGame {
     });
   }
 
+  const playerStocks: StockHoldingRecord[][] = [];
+  for (let p = 0; p < MAX_PLAYERS; p++) {
+    const row: StockHoldingRecord[] = [];
+    for (let j = 0; j < STOCKS_PER_PLAYER; j++) {
+      const o = OFFSET.playerStocks + (p * STOCKS_PER_PLAYER + j) * 8;
+      row.push({ amount: view.getInt32(o, true), avgCost: view.getFloat32(o + 4, true) });
+    }
+    playerStocks.push(row);
+  }
+
   const mapDataSize = view.getUint32(OFFSET.mapDataSize, true);
   const mapData = data.subarray(OFFSET.mapData, OFFSET.mapData + mapDataSize);
 
@@ -410,6 +439,7 @@ export function parseSave(data: Uint8Array): SaveGame {
     winTargetDays: view.getInt32(OFFSET.winTargetDays, true),
     winTargetWealth: view.getInt32(OFFSET.winTargetWealth, true),
     totalDays: view.getUint32(OFFSET.totalDays, true),
+    playerStocks,
     specialPlayers,
     cardAmount,
     mapData,
