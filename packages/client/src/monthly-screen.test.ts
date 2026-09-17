@@ -37,6 +37,7 @@ import {
   MONTHLY_DETAIL_LABELS,
   MONTHLY_DETAIL_ROWS,
   MONTHLY_SKIP_TICKS,
+  MONTHLY_TABLE_PLATE,
   MONTHLY_LABELS,
   MONTHLY_NO_AWARD,
   MONTHLY_PANEL_AT,
@@ -1210,6 +1211,73 @@ describe('★ 頒獎屏入口：动画关那条捷径 @source 0x0043827e', () =>
     // 而且这一路上**一个字都没写**（bars/seats/details 全程 0）
     expect(p.bars).toBe(0);
     expect(p.details).toBe(0);
+  });
+});
+
+describe('★ 頒獎屏那两张 4 行表底下那块锦缎板（图 2 @ (440,405)，2026-09-17 定案）', () => {
+  it('★ 表一出来就贴图 2 在 (440,405)、**不抠黑**（原版走 `fcn_004563f5`）', () => {
+    // @source 状态 7 VA 0x0043866f / 状态 0x12 VA 0x00438deb：
+    //   push 0x195 / push 0x1b8 / add eax, 0x24（= 图 2）/ call fcn_004563f5
+    expect(MONTHLY_TABLE_PLATE).toEqual({ chunk: 2, x: 0x1b8, y: 0x195 });
+    expect(MONTHLY_TABLE_PLATE.x).toBe(440);
+    expect(MONTHLY_TABLE_PLATE.y).toBe(405);
+    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
+    const view = monthlySummary(state, state);
+    const award = monthlyAward(state, state, { nodes: [], lands: [], facilities: [] });
+    const { sprite } = fakeSpriteFn();
+    const sites: { beat: string; plate: RecordedBlit | undefined }[] = [];
+    for (const [beat, p] of [
+      ['还没有表', { ...monthlyPlaybackStart(), phase: 'award' as const, seats: MONTHLY_SLOTS }],
+      [
+        '第一行详情',
+        {
+          ...monthlyPlaybackStart(),
+          phase: 'award' as const,
+          bars: MONTHLY_SLOTS,
+          seats: MONTHLY_SLOTS,
+          details: 1,
+        },
+      ],
+      [
+        '收尾（冠军表）',
+        {
+          ...monthlyPlaybackStart(),
+          phase: 'award' as const,
+          bars: MONTHLY_SLOTS,
+          seats: MONTHLY_SLOTS,
+          details: MONTHLY_DETAIL_ROWS,
+          closing: true,
+        },
+      ],
+    ] as const) {
+      const { ctx, blits } = fakeCanvas();
+      drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award, p);
+      sites.push({ beat, plate: blits.find((b) => b.index === 2 && b.resource === MONTHLY_RESOURCE) });
+    }
+    // 表还没出来时**不该**有这块板……
+    expect(sites[0]!.plate).toBeUndefined();
+    // ……详情一出现就贴上，位置就是锚点 (440,405)，且不抠黑
+    expect(sites[1]!.plate?.x).toBe(440);
+    expect(sites[1]!.plate?.y).toBe(405);
+    expect(sites[1]!.plate?.keyed).toBe(false);
+    // 收尾切冠军那张表时，同一块板还在
+    expect(sites[2]!.plate?.x).toBe(440);
+    expect(sites[2]!.plate?.y).toBe(405);
+  });
+
+  it('★ 「動畫過程」关掉那条捷径里**连这块板也不贴**（原版状态 2 → 0x16 只倒数）', () => {
+    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
+    const view = monthlySummary(state, state);
+    const award = monthlyAward(state, state, { nodes: [], lands: [], facilities: [] });
+    const { ctx, blits } = fakeCanvas();
+    const { sprite } = fakeSpriteFn();
+    drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award, {
+      ...monthlyPlaybackStart(),
+      phase: 'award',
+      closing: true,
+      skipTicks: MONTHLY_SKIP_TICKS,
+    });
+    expect(blits.some((b) => b.index === 2)).toBe(false);
   });
 });
 

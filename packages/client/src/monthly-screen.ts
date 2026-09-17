@@ -175,12 +175,21 @@ export const MONTHLY_CHUNK = {
   /** 「存款」气泡 —— 原版只在收尾那一步（`fcn_0044ec30`）用它 @source 0x00439e8b */
   bubble: 1,
   /**
-   * 长条锦缎板。
+   * **那两张 4 行表底下的锦缎板**（278×98、锚点 (139,49)）—— 画在 **(440,405)**。
    *
-   * ⚠️ **结算屏原版没有 blit 它** —— `loc_00439cd7` 里除了图 0 / 图 19 /
-   *   行头像（图 `3×角色+47`）与四条 `draw_text` 之外没有任何 blit；
-   *   本模块先前拿它当行底板用，**本轮已删**（那正是盖掉立绘的那一块）。
-   *   见 `docs/deviations/T-041.md` 的 D-MONTHLY-9。
+   * ★ 2026-09-17 定案：它**确实**被 blit，而且就在頒獎屏那两张表底下：
+   *
+   * | 什么时候 | @source |
+   * |---|---|
+   * | 状态 7（悲情那张 4 行表之前）| VA **0x0043866f**（`push 0x195 / push 0x1b8 / add eax, 0x24`）|
+   * | 状态 0x12（冠军那张 4 行表之前）| VA **0x00438deb**（同一套三条指令）|
+   *
+   * `add eax, 0x24` = `0xc + 12×2` ⇒ **图 2**；`(0x1b8, 0x195)` = (440,405) 是**锚点位置**
+   * （`fcn_004563f5` 会减掉图头里的 offX/offY）⇒ 板子左上角 (301,356)、右下角 (579,454)，
+   * 正好把表（x 320…560、y 370…424）圈在里面。
+   *
+   * ⚠️ 先前那句「结算屏原版没有 blit 它」（当行底板用是错的）**只说对了一半**：
+   *   结算屏确实不用它，但它不是没用 —— 见 `MONTHLY_TABLE_PLATE`。
    */
   plate: 2,
   /**
@@ -648,6 +657,21 @@ export const MONTHLY_CHAMPION_LABELS = {
 
 /** 状态 8 / 状态 0x12 两张表都是 **4 行** @source `loc_00438570` / `loc_00438eb0` */
 export const MONTHLY_DETAIL_ROWS = 4;
+
+/**
+ * 两张 4 行表**底下那块锦缎板** —— Panel#25 **图 2**，画在 **(440,405)**。
+ *
+ * @source 两处同一套指令：状态 7 的 VA **0x0043866f**、状态 0x12 的 VA **0x00438deb**
+ *   ```asm
+ *   push 0x195                  ; y = 405
+ *   push 0x1b8                  ; x = 440
+ *   mov  eax, [0x48c41c]
+ *   add  eax, 0x24              ; = 0xc + 12×2 ⇒ 图 2
+ *   push eax / push [0x48a08c] / call fcn_004563f5
+ *   ```
+ *   `fcn_004563f5` 减图头锚点 ⇒ 板子落在 (301,356)-(579,454)，正好圈住表区。
+ */
+export const MONTHLY_TABLE_PLATE = { chunk: 2, x: 0x1b8, y: 0x195 } as const;
 
 /**
  * 訊息框三连 —— `fcn_0044ec30(image, x, y, textX, textY, color, ?)` 开框 +
@@ -1277,6 +1301,7 @@ function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number
  * | **47..82 头像** | `fcn_00456418` | **✓** | **0x00439d35 / 0x0043850d** |
  * | 6..9 数字、10 金币 | `fcn_00456418` | ✓ | 0x00439d02 / 0x00439d1d（本模块的用法）|
  * | 11..14 / 15..18 | `fcn_004563f5` | ✗ | 0x00438476 |
+ * | **2 表底锦缎板** | `fcn_004563f5`（不透明）| ✗ | **0x0043866f** / **0x00438deb** |
  *
  * ★ 先前的实现只把 6..10 放进来，**头像（47..82）漏了** —— 于是每个人的棋子
  *   都被原样盖上一层黑底（頒獎屏那 4 列同理）。
@@ -1547,6 +1572,15 @@ export function drawMonthlyScreen(
   //    ⚠️ 动画关那条捷径（`p.skipTicks > 0`）**连这张表都不画** —— 原版状态 2
   //      直接跳 0x16，而 0x16 只倒数（`loc_00439163`），一張表都不经过。
   if (p.skipTicks === 0) {
+    // 表底那块锦缎板（图 2，锚点 (440,405)）—— 状态 7 / 0x12 都在画表**之前**贴它
+    if (p.closing || p.details > 0) {
+      drawAnchored(
+        ctx,
+        monthlySprite(sprite, MONTHLY_TABLE_PLATE.chunk),
+        MONTHLY_TABLE_PLATE.x,
+        MONTHLY_TABLE_PLATE.y,
+      );
+    }
     drawMonthlyAwardTables(ctx, state, topo, award, p);
   }
 
