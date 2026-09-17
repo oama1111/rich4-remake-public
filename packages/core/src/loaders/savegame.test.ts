@@ -18,6 +18,7 @@ import { parseMap } from './map.ts';
 import { ACTOR_PLACE } from '../rules/special-actors.ts';
 import { OBJECT_TYPE_TABLE } from '../rules/objects.ts';
 import { newGame } from '../rules/new-game.ts';
+import { initialToolStock } from '../rules/tools.ts';
 import { decideAction } from '../ai/policy.ts';
 import { reduce } from '../state/reduce.ts';
 import type { GameState } from '../state/types.ts';
@@ -176,14 +177,20 @@ describe('原版存档导入', () => {
     const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
     const { gaps } = importOriginalSave(save, loadMap());
     // 这些是**已知**还原不了的，每一条都得有说法
-    for (const key of ['landOwner', 'lottery', 'pool', 'rngState', 'marketDay']) {
+    for (const key of ['landOwner', 'rngState']) {
       expect(gaps[key], `${key} 应当有 gap 说明`).toBeTruthy();
     }
-    // ★ 2026-09-17：`holdings` / `specialActors` / `market` / `objects` **已经能还原** ⇒ 不再挂 gap
+    // ★ 2026-09-17：`holdings` / `specialActors` / `market` / `objects` / `toolStock`
+    //   **已经能还原** ⇒ 不再挂 gap
     expect(gaps['holdings']).toBeUndefined();
     expect(gaps['specialActors']).toBeUndefined();
     expect(gaps['market']).toBeUndefined();
     expect(gaps['objects']).toBeUndefined();
+    // ★ 2026-09-17（第十轮）：行情历史游标、全局道具库存、两个牌堆的洗牌序、
+    //   樂透号码表、公库都**从存档读**了
+    for (const key of ['marketDay', 'toolStock', 'newsDeck', 'fortuneDeck', 'lottery', 'pool']) {
+      expect(gaps[key], `${key} 不该再有 gap`).toBeUndefined();
+    }
   });
 
   withSave('★★ 地图物件**从存档读**（46 项的 type 与静态表逐个相符，8 个在场）', () => {
@@ -237,6 +244,50 @@ describe('原版存档导入', () => {
     let total = 0;
     for (const st of state.market.stocks) total = Math.fround(total + st.price);
     expect(state.market.index).toBe(Math.trunc(Math.fround(total * 10)));
+    // ★ 2026-09-17（第十轮）：历史**写入游标**也读进来了（`[0x499100]`，平坦 0x6f2）
+    expect(state.market.day).toBe(107);
+  });
+
+  withSave('★★ 两个牌堆的**洗牌序与游标**从存档读（平坦 0x26fa/0x271e，游标 0x26f2/0x26f6）', () => {
+    const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
+    // 解析层：两档都是合法排列（36 / 37 张）
+    expect(save.newsDeck).toHaveLength(36);
+    expect(save.fortuneDeck).toHaveLength(37);
+    expect([...save.newsDeck].sort((a, b) => a - b)).toEqual(Array.from({ length: 36 }, (_, i) => i));
+    expect([...save.fortuneDeck].sort((a, b) => a - b)).toEqual(Array.from({ length: 37 }, (_, i) => i));
+    expect(save.newsCursor).toBe(19);
+    expect(save.fortuneCursor).toBe(7);
+    // 导入层：原样进 state 的两张牌堆（游标也一起），不再是「按顺序重建」
+    const { state } = importOriginalSave(save, loadMap());
+    expect(state.newsDeck.order).toEqual(save.newsDeck);
+    expect(state.newsDeck.cursor).toBe(19);
+    expect(state.fortuneDeck.order).toEqual(save.fortuneDeck);
+    expect(state.fortuneDeck.cursor).toBe(7);
+  });
+
+  withSave('★★ 公库与樂透号码表**从存档读**（0x26ba = `[0x499080]`；0x26be 号码表）', () => {
+    const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
+    // 公库：Save0 实测 3000（罚款/手续费accumulate进公库那一条路）
+    expect(save.pool).toBe(3000);
+    // 号码表：36 项，两个样本都是全 0（没人买过票）——但结构得读出来
+    expect(save.lottery).toHaveLength(36);
+    expect(save.lottery.every((v) => v === 0)).toBe(true);
+    const { state } = importOriginalSave(save, loadMap());
+    expect(state.pool).toBe(3000);
+    expect(state.lottery).toHaveLength(36);
+    expect(state.lottery.every((v) => v === 0)).toBe(true);
+  });
+
+  withSave('★★ 全局道具库存**从存档读**（平坦 0x6ea，`[道具号 - 1]`，> 8 号不限量）', () => {
+    const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
+    // 解析层：8 个限量道具的库存
+    expect(save.toolStock).toEqual([9, 1, 10, 10, 9, 9, 5, 1]);
+    // 导入层：写进 `state.toolStock[道具号]`（1 基），9..13 号保持初始值（不限量）
+    const { state } = importOriginalSave(save, loadMap());
+    expect(state.toolStock.slice(1, 9)).toEqual([9, 1, 10, 10, 9, 9, 5, 1]);
+    expect(state.toolStock[0]).toBe(0);
+    const initial = initialToolStock();
+    for (let id = 9; id <= 13; id++) expect(state.toolStock[id]).toBe(initial[id]);
   });
 
   withSave('★★ 持仓**从存档读**（Save0 的实际数据：玩家 1 持 2 号股 2647 股 @13.74）', () => {

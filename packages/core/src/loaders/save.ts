@@ -118,6 +118,26 @@ export const OBJECT_RECORD_SIZE = 24;
 
 /** 每人持仓的股票支数（12 支）@source `player_stock_info[4][12]` */
 export const STOCKS_PER_PLAYER = 12;
+
+/**
+ * 存档里那 8 个道具库存槽 = 道具号 1..8。
+ *
+ * ★ 与 `rules/tools.ts` 的 `STOCKED_TOOL_MAX_ID` **同值**；本文件按 C-ARC-1
+ *   零依赖，故不 import 那一份 —— 两边的依据是同一条 exe 代码
+ *   （`give_tool` 的 `cmp edx, 8 / jg 跳过`，> 8 不限量、存档里也不存）。
+ */
+const STOCKED_TOOL_BYTES = 8;
+
+/**
+ * 樂透号码个数（36）@source 号码表 `ref_004990b8` 的 `memset(0x24)`
+ *   （`rich4_new_game.asm:4279`）与破产释放循环的 `cmp ebx, 0x24`
+ *   （`rich4_player_bankrupt.asm:423`）。
+ */
+const LOTTERY_NUMBER_COUNT = 36;
+/** 新聞牌堆 36 张 @source 写存档处 `push 0x24 / push 0x499090` */
+const NEWS_DECK_SIZE = 36;
+/** 命運牌堆 37 张 @source 写存档处 `push 0x25 / push 0x496b38` */
+const FORTUNE_DECK_SIZE = 37;
 /** 一条行情记录的字节数 @source `rich4_stocks.h` 的 `stock_info` */
 export const STOCK_RECORD_SIZE = 36;
 /** 每股的日历史长度 @source `cmp ecx, 0x90` = 144 */
@@ -144,6 +164,31 @@ export const OFFSET = {
   playerCards: 0x0654,
   toolAmount: 0x0690,
   cardAmount: 0x06cc,
+  /**
+   * 全局道具库存（**只有 1..8 号**限量）@source `_rich4_remain_tool_amount`
+   *   = `0x497320`，8 字节，**下标 = 道具号 − 1**（`rich4_shop.asm:167`
+   *   `add byte [ecx + (0x497320 - 1)], dl`；`rich4_objects.asm:161/165/169`
+   *   分别 `+1/+2/+3` 对应路障/地雷/定時炸彈，`rich4_fortune.asm:1183/1272`
+   *   的 `+4/+5` 对应機車/汽車 —— 全对得上）。
+   *
+   * ★ 平坦偏移的来历（`rich4_save_files.asm` 的 `fwrite` 序列逐个累加）：
+   *   `toolAmount`(60B) @0x690 → `cardAmount`(30B) @0x6cc → **本项**(8B) @0x6ea
+   *   → 行情游标(4B) @0x6f2 → `history`(0x1b00) @0x6f6 → `playerStocks` @0x21f6。
+   *   四个锚点（0x690 / 0x6cc / 0x6f6 / 0x21f6）本来就已核过 ⇒ 两处新偏移自洽。
+   *   实测 Save0 该处 = [9,1,10,10,9,9,5,1]、SAVE1 = [6,6,6,6,10,10,10,6]（都像库存）。
+   */
+  toolStock: 0x06ea,
+  /**
+   * 行情历史的**写入游标** @source `[0x499100]`，dword。
+   *
+   * @source `rich4_stocks.asm:698-727`：写历史用 `[edx + eax*4 + 0x497328]`
+   *   （`edx = 股票 × 0x240`、`eax` = 本项）⇒ **股票主序** `history[股][日]`；
+   *   写完 `lea ecx,[eax+1] / cmp ecx,0x90 / 归零` ⇒ 本项是**下一个要写的槽**。
+   *   读历史那支 `fcn_00429040` 则先 `dec edi`（`< 0` → `0x8f`）= 「昨天」。
+   *   实测 Save0 = **107**、SAVE1 = **1**；SAVE1 的历史正好只有 12 个非零
+   *   （12 支股各 1 天，位置 0/144/288/…）⇒ 与「游标 = 已写天数」完全自洽。
+   */
+  marketDay: 0x06f2,
   playerStocks: 0x21f6,
   stocks: 0x2376,
   /**
@@ -155,6 +200,29 @@ export const OFFSET = {
    *   （asm 里的槽内偏移 `+0x6ec` 是**另一套基准**，见 `known-deviations` 的存档一节。）
    */
   history: 0x6f6,
+  /**
+   * 公库 @source `_rich4_pool` = **`[0x499080]`**，4 字节。
+   *
+   * @source 三处铁证：① `rich4_player_core_actions.asm:5128`
+   *   「收款方 = −1（公库）」那一支 `add dword [0x499080], ebx`；
+   *   ② `rich4_stocks.asm:212` 股票交易手续费也加进它；
+   *   ③ `rich4_ui_letou.asm:514` 樂透屏把它 `num_to_currency_string` 印成奖池。
+   *   实测 Save0 = **3000**、SAVE1 = **0**。
+   *   （先前登记的「0x269e 像公库但不合次序」是**误判**：0x269e 是 `[0x49907c]`，
+   *   公库在它后面 0x1c 字节处，见下。）
+   */
+  pool: 0x26ba,
+  /**
+   * 樂透号码表（36 字节：下标 = 号码，值 = **持有者下标 + 1**，0 = 未售出）
+   * @source `ref_004990b8`；新局 `memset(0x24)`（`rich4_new_game.asm:4279`）、
+   *   破产时逐项与 `玩家 + 1` 比对清零（`rich4_player_bankrupt.asm:429`）。
+   *   实测两个存档都是全 0（没人买过票）。
+   */
+  lottery: 0x26be,
+  /** 新聞牌堆游标 @source `[0x4990e0]`（实测 Save0 = 19、SAVE1 = 0）*/
+  newsCursor: 0x26f2,
+  /** 命運牌堆游标 @source `[0x4990b4]`（实测 Save0 = 7、SAVE1 = 0）*/
+  fortuneCursor: 0x26f6,
   currentPlayer: 0x2676,
   /**
    * 勝利條件两个全局 —— **与 `[0x49911c]` / `[0x499108]` 同源**
@@ -182,9 +250,22 @@ export const OFFSET = {
   priceIndex: 0x268e,
   /** 已过天数 `[0x4990e4]`（日推进每回合 +1）@source 同上 §5.2 */
   totalDays: 0x2692,
-  /** 卡片牌堆洗牌结果，36 项 @source fcn_00448b81 */
-  cardDeck: 0x26fa,
-  /** 命运牌堆洗牌结果，37 项 @source fcn_0044baea */
+  /**
+   * **新聞**牌堆洗牌序，36 项（`0..35` 的排列）。
+   *
+   * @source `fcn_00448b81`（VA 0x00448b81）：洗好的号逐个
+   *   `mov byte [ebx + 0x499090], al` —— ★ 写的是 **`0x499090`（新聞牌堆）**，
+   *   并把游标 `[0x4990e0]` 清零；抽取处 `rich4_news.asm:3475` 也是它。
+   *   ⚠️ 先前这一条标成「卡片牌堆」（`cardDeck`）是**误标**：卡片没有「牌堆」，
+   *   手牌/库存是 `player_cards` / `remain_card_amount` 那两块（都在 0x690 一带）。
+   *   实测 Save0/SAVE1 该处都正好是 `0..35` 的排列。
+   */
+  newsDeck: 0x26fa,
+  /**
+   * **命運**牌堆洗牌序，37 项（`0..36` 的排列）。
+   * @source `fcn_0044baea`（VA 0x0044baea）写 `0x496b38`、游标 `[0x4990b4]`；
+   *   抽取处 `rich4_fortune.asm:2554`。实测两档都是合法排列。
+   */
   fortuneDeck: 0x271e,
   /** 地图数据块大小（对应 ref_00498e94） */
   mapDataSize: 0x2747,
@@ -341,6 +422,25 @@ export interface SaveGame {
   specialPlayers: SaveSpecialPlayer[];
   /** 牌堆中各种卡片的剩余张数，下标为卡片 id - 1 */
   cardAmount: number[];
+  /**
+   * 全局道具库存（`[道具号 - 1]`，8 项 = 道具号 1..8；> 8 号不限量故不存）
+   * @source 平坦 `0x6ea`，见 `OFFSET.toolStock`
+   */
+  toolStock: number[];
+  /** 行情历史写入游标 `[0x499100]`（0..143）@source 平坦 `0x6f2` */
+  marketDay: number;
+  /** 公库 @source 平坦 `0x26ba`（`[0x499080]`）*/
+  pool: number;
+  /** 樂透号码表（36 项：`[号码]` = 持有者 + 1，0 = 未售出）@source 平坦 `0x26be` */
+  lottery: number[];
+  /** 新聞牌堆洗牌序（36 项）@source 平坦 `0x26fa` */
+  newsDeck: number[];
+  /** 新聞牌堆游标 @source 平坦 `0x26f2`（`[0x4990e0]`）*/
+  newsCursor: number;
+  /** 命運牌堆洗牌序（37 项）@source 平坦 `0x271e` */
+  fortuneDeck: number[];
+  /** 命運牌堆游标 @source 平坦 `0x26f6`（`[0x4990b4]`）*/
+  fortuneCursor: number;
   /** 地图数据块（结构同 map.mkf 的地图资源，但含实时归属状态） */
   mapData: Uint8Array;
 }
@@ -457,6 +557,22 @@ export function parseSave(data: Uint8Array): SaveGame {
     cardAmount.push(data[OFFSET.cardAmount + i] ?? 0);
   }
 
+  // 全局道具库存：存档里只存**限量**的那 8 个（道具号 1..8），下标 = 号 − 1
+  const toolStock: number[] = [];
+  for (let i = 0; i < STOCKED_TOOL_BYTES; i++) {
+    toolStock.push(data[OFFSET.toolStock + i] ?? 0);
+  }
+
+  // 樂透号码表 / 两个牌堆的洗牌序（都是逐字节的数组）
+  const bytesAt = (off: number, n: number): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) out.push(data[off + i] ?? 0);
+    return out;
+  };
+  const lottery = bytesAt(OFFSET.lottery, LOTTERY_NUMBER_COUNT);
+  const newsDeck = bytesAt(OFFSET.newsDeck, NEWS_DECK_SIZE);
+  const fortuneDeck = bytesAt(OFFSET.fortuneDeck, FORTUNE_DECK_SIZE);
+
   const specialPlayers: SaveSpecialPlayer[] = [];
   for (let i = 0; i < SPECIAL_PLAYER_COUNT; i++) {
     const o = OFFSET.specialPlayers + i * SPECIAL_PLAYER_SIZE;
@@ -551,6 +667,14 @@ export function parseSave(data: Uint8Array): SaveGame {
     playerStocks,
     specialPlayers,
     cardAmount,
+    toolStock,
+    marketDay: view.getUint32(OFFSET.marketDay, true),
+    pool: view.getInt32(OFFSET.pool, true),
+    lottery,
+    newsDeck,
+    newsCursor: view.getUint32(OFFSET.newsCursor, true),
+    fortuneDeck,
+    fortuneCursor: view.getUint32(OFFSET.fortuneCursor, true),
     mapData,
   };
 }

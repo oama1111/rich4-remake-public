@@ -191,6 +191,53 @@ describe('★ 勝利條件 / 已過天數 从存档回读（2026-09-16 补，Q-S
     if (existsSync(s1)) expect(load(s1).totalDays).toBe(0);
   });
 
+  it('★★ 平坦 0x6ea 是**全局道具库存**（8 字节，`[道具号 - 1]`）', () => {
+    const s0 = `${ROOT}/Rich4/Save0.dat`;
+    const s1 = `${ROOT}/Rich4/SAVE1.DAT`;
+    if (existsSync(s0)) expect(load(s0).toolStock).toEqual([9, 1, 10, 10, 9, 9, 5, 1]);
+    if (existsSync(s1)) expect(load(s1).toolStock).toEqual([6, 6, 6, 6, 10, 10, 10, 6]);
+  });
+
+  it('★★ 平坦 0x6f2 是**行情历史游标** `[0x499100]`：Save0 = 107、SAVE1 = 1', () => {
+    const s0 = `${ROOT}/Rich4/Save0.dat`;
+    const s1 = `${ROOT}/Rich4/SAVE1.DAT`;
+    if (existsSync(s0)) expect(load(s0).marketDay).toBe(107);
+    if (existsSync(s1)) expect(load(s1).marketDay).toBe(1);
+  });
+
+  it('★★ 两条自洽：SAVE1 只写过 1 天历史 ⇒ 非零值正好 12 个（12 支股各一天）', () => {
+    const p1 = `${ROOT}/Rich4/SAVE1.DAT`;
+    if (!existsSync(p1)) return;
+    const s = load(p1);
+    // 每支股一条 144 天的行；SAVE1 的游标 = 1 ⇒ 每支股第 0 天有值、其余为 0
+    expect(s.marketDay).toBe(1);
+    for (let i = 0; i < s.stockHistory.length; i++) {
+      const row = s.stockHistory[i]!;
+      expect(row[0], `第 ${i} 支股第 0 天`).not.toBe(0);
+      expect(row.slice(1).every((v) => v === 0), `第 ${i} 支股只有第 0 天`).toBe(true);
+    }
+  });
+
+  it('★★ 平坦 0x26ba 是公库 `[0x499080]`：Save0 = 3000、SAVE1 = 0', () => {
+    const s0 = `${ROOT}/Rich4/Save0.dat`;
+    const s1 = `${ROOT}/Rich4/SAVE1.DAT`;
+    if (existsSync(s0)) expect(load(s0).pool).toBe(3000);
+    if (existsSync(s1)) expect(load(s1).pool).toBe(0);
+  });
+
+  it('★★ 平坦 0x26fa / 0x271e 是两个牌堆的洗牌序（36 / 37 张的排列），游标在 0x26f2 / 0x26f6', () => {
+    const p0 = `${ROOT}/Rich4/Save0.dat`;
+    if (!existsSync(p0)) return;
+    const s = load(p0);
+    expect([...s.newsDeck].sort((a, b) => a - b)).toEqual(Array.from({ length: 36 }, (_, i) => i));
+    expect([...s.fortuneDeck].sort((a, b) => a - b)).toEqual(Array.from({ length: 37 }, (_, i) => i));
+    expect(s.newsCursor).toBe(19);
+    expect(s.fortuneCursor).toBe(7);
+    // 樂透号码表：36 字节、值 = 持有者 + 1（两个样本都无人买票）
+    expect(s.lottery).toHaveLength(36);
+    expect(s.lottery.every((v) => v === 0)).toBe(true);
+  });
+
   it('★ 导入原版存档时这两个值真的进 state（不再一律「無限 / 0」）', async () => {
     const { importOriginalSave } = await import('./savegame.ts');
     const path = `${ROOT}/Rich4/Save0.dat`;

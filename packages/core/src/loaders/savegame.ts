@@ -30,12 +30,13 @@ import {
   idleActor,
   type SpecialActor,
 } from '../rules/special-actors.ts';
-import { newStockMarket, type StockMarketState } from '../places/stock-market.ts';
+import { HISTORY_DAYS, newStockMarket, type StockMarketState } from '../places/stock-market.ts';
 import { emptyLottery } from '../places/lottery.ts';
+import type { EventDeck } from '../events/deck.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
 import { emptyOwnership } from '../places/commercial.ts';
 import { STOCKS_PER_MAP } from '@rich4/data';
-import { emptyTools, initialToolStock, TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
+import { STOCKED_TOOL_MAX_ID, emptyTools, initialToolStock, TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
 import { CONFINEMENT_SLOTS } from '../rules/confinement.ts';
 import { DEFAULT_INITIAL_FUND, NO_WIN_CONDITIONS } from '../rules/setup.ts';
 
@@ -232,12 +233,75 @@ function importedMarket(save: SaveGame): StockMarketState {
   // ★ 与 `tickStockMarket` **同一条式子**：累加时也逐项 fround（原版是 32 位浮点加）
   let total = 0;
   for (const st of stocks) total = Math.fround(total + st.price);
+  // ★ 历史游标 `[0x499100]` = **下一个要写的槽**（`rich4_stocks.asm:698-727`，
+  //   写完 `+1`，到 0x90 归零）—— 与 `tickStockMarket` 的 `market.day` 同一语义，
+  //   故直接读进来。存档里越界时夹回 0（原版不夹，但那等于写到界外，不照抄）。
+  const rawDay = save.marketDay;
+  const day = Number.isInteger(rawDay) && rawDay >= 0 && rawDay < HISTORY_DAYS ? rawDay : 0;
   return {
     ...base,
     stocks,
     history,
+    day,
     index: Math.trunc(Math.fround(total * 10)),
   };
+}
+
+/**
+ * 全局道具库存 —— 存档平坦 `0x6ea`（8 字节，`[道具号 - 1]`）。
+ *
+ * @source `_rich4_remain_tool_amount`（0x497320）：
+ *   `rich4_shop.asm:167` 是 `add byte [ecx + (0x497320 - 1)], dl`（下标 = 号 − 1）；
+ *   `rich4_objects.asm:161/165/169` 的 `+1/+2/+3`（路障/地雷/定時炸彈）与
+ *   `rich4_fortune.asm:1183/1272` 的 `+4/+5`（機車/汽車）逐条对得上。
+ *   > 8 号的道具不限量，存档里没有它们的格 ⇒ 保持初始值。
+ */
+/** 新聞牌堆 36 张 / 命運牌堆 37 张（@source 存档写处 `push 0x24` / `push 0x25`）*/
+const NEWS_DECK_SIZE = 36;
+const FORTUNE_DECK_SIZE = 37;
+
+/**
+ * 存档里的牌堆（洗牌序 + 游标）→ 引擎的 `EventDeck`。
+ *
+ * @source 两张牌堆都在存档里：新聞 `0x499090`（36）/ 命運 `0x496b38`（37），
+ *   游标 `[0x4990e0]` / `[0x4990b4]`；抽取处 `rich4_news.asm:3475` /
+ *   `rich4_fortune.asm:2554` 都是「`order[cursor]` 再前进」——与本引擎同构。
+ *   ⚠️ 存档里的序若不是 `0..size-1` 的合法排列（改坏的档），退回按顺序重建。
+ */
+function importedDeck(order: readonly number[], cursor: number, size: number): EventDeck {
+  const seen = new Set<number>();
+  const legal =
+    order.length === size &&
+    order.every((v) => Number.isInteger(v) && v >= 0 && v < size && !seen.has(v) && seen.add(v) !== undefined);
+  return {
+    order: legal ? [...order] : Array.from({ length: size }, (_, i) => i),
+    cursor: Number.isInteger(cursor) && cursor >= 0 && cursor < size ? cursor : 0,
+  };
+}
+
+/**
+ * 樂透号码表（平坦 `0x26be` = `[0x4990b8]`，36 字节）。
+ *
+ * @source 编码：值 = **持有者下标 + 1**，0 = 未售出
+ *   （破产释放 `rich4_player_bankrupt.asm:429` 逐项与 `玩家 + 1` 比对清零、
+ *   開獎 `rich4_ui_letou.asm` 同制）。值越界（> 玩家数）时按未售出处理。
+ */
+function importedLottery(save: SaveGame): number[] {
+  const table = emptyLottery();
+  for (let i = 0; i < table.length; i++) {
+    const v = save.lottery[i] ?? 0;
+    table[i] = v > 0 && v <= save.players.length ? v : 0;
+  }
+  return table;
+}
+
+function importedToolStock(save: SaveGame): number[] {
+  const stock = initialToolStock();
+  for (let id = 1; id <= STOCKED_TOOL_MAX_ID; id++) {
+    const v = save.toolStock[id - 1];
+    if (v !== undefined) stock[id] = v;
+  }
+  return stock;
 }
 
 /**
@@ -358,20 +422,15 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   // 尚未支持从存档的地图块里回读实时归属。
   gaps['landOwner'] =
     '地产归属与等级存在存档的地图数据块中，解析器尚未支持从该块回读，已置为全部无主';
-  gaps['lottery'] = '樂透号码表在存档中的偏移未验证，已置空';
-  // ★ 行情已接（见 `importedMarket`）——只留两样没读的：
-  gaps['marketDay'] =
-    '行情的历史游标 `[0x499100]` 在存档里的偏移未核，已归 0（指数已按 Σ收盘×10 重算）';
+  // ★ 樂透号码表已接（平坦 0x26be）——这条 gap 删掉。
+  // ★ 行情（含历史游标）已全部接上（见 `importedMarket`）——这条 gap 删掉。
   // ★ 持仓已接（见上面 `holdings` 的构造）——这条 gap 删掉。
-  // ★ 2026-09-17：尾部那组标量**位置已定位**（`priceIndex` 0x268e 起、步长 4），
-  //   但 `pool` 到底是哪一个**仍未定论** ⇒ 如实登记已核到的范围，不猜。
-  gaps['pool'] =
-    '公库金额：尾部标量组已定位（0x268e priceIndex / 0x2692 totalDays / 0x2696 totalMonths / '
-    + '0x269a closedDays / 0x269e ? / 0x26a2 ? / 0x26a6 ? / 0x26aa ?），'
-    + '其中 0x269e 在两个存档里是 50050 / 13080（量级像公库）但**未定论**，'
-    + '0x26a2 疑似大盘指数却与 Σ收盘×10 **差 1**（两个存档都是）⇒ 不敢认定。已置 0';
-  gaps['toolStock'] =
-    '道具全局库存：槽内偏移**已核**（+0x6de），解析待接，已置为初始库存 @source rich4_player_save_state.asm:573';
+  // ★ 2026-09-17（第十轮）：公库**已定案**（平坦 0x26ba = `[0x499080]`）——
+  //   先前「0x269e 像公库但次序不对」是误判（0x269e 是 `[0x49907c]`）。
+  //   铁证：`rich4_player_core_actions.asm:5128` 收款方 = −1 时 `add [0x499080], ebx`；
+  //   `rich4_stocks.asm:212` 手续费也加它；`rich4_ui_letou.asm:514` 把它印成奖池。
+  //   实测 Save0 = 3000、SAVE1 = 0。这条 gap 删掉。
+  // ★ 道具全局库存已接（见 `importedToolStock`）——这条 gap 删掉。
   gaps['commercialShares'] = '各企业的已售股数在存档中的偏移未验证，已按地图初值重置';
   gaps['commercialOwners'] = '各企业的归属与持股排名在存档中的偏移未验证，已置为无主';
   // ★ 物件表已接（见 `objects` 的构造）——这条 gap 删掉。
@@ -381,7 +440,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   //   （见 `rules/special-actors.ts` 的 `initialConfinement`）。
   //   仍缺的一格：`stepsRemaining`（「还剩几步」）**不在这 16 字节里**
   //   （它是全局 `[0x48baf8]`），故一律置 0 —— 替身走到一半时读档会少这一步数。
-  gaps['newsDeck'] = '牌堆洗牌序在存档中的偏移未验证，已按顺序重建（不影响已抽过的牌）';
+  // ★ 两个牌堆的洗牌序与游标已接（见 `importedDeck`）——这条 gap 删掉。
   gaps['rngState'] =
     '原版不存随机数状态（原版对局本就不可复现），读档后必须由宿主注入新种子';
 
@@ -419,9 +478,12 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     noticeBoard: emptyBoard(),
     turnCount: 0,
     snapshots: [null, null, null, null],
-    newsDeck: { order: Array.from({ length: 36 }, (_, i) => i), cursor: 0 },
-    fortuneDeck: { order: Array.from({ length: 37 }, (_, i) => i), cursor: 0 },
-    pool: 0,
+    // ★ 2026-09-17（第十轮）：两个牌堆的**洗牌序与游标**都从存档读了
+    //   （平坦 0x26fa / 0x271e，游标 0x26f2 / 0x26f6）—— 先前是按顺序重建的。
+    newsDeck: importedDeck(save.newsDeck, save.newsCursor, NEWS_DECK_SIZE),
+    fortuneDeck: importedDeck(save.fortuneDeck, save.fortuneCursor, FORTUNE_DECK_SIZE),
+    // ★ 公库（平坦 0x26ba = `[0x499080]`）也读了 —— 先前一律 0
+    pool: save.pool,
     specialActors,
     landTenureIndex: 0,
     // ★ 2026-09-16：两个全局现在**真的从存档读**了（0x2682 / 0x2686），
@@ -456,10 +518,13 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     lastNpcWalks: [],
     // 回合边界的惡人队列：读档回到回合边界也是空的（重新起算）
     pendingNpcSlots: [],
-    lottery: emptyLottery(),
+    // ★ 樂透号码表（平坦 0x26be = `[0x4990b8]`，36 字节，值 = 持有者 + 1）
+    lottery: importedLottery(save),
     pending: null,
     tools,
-    toolStock: initialToolStock(),
+    // ★ 2026-09-17：全局道具库存**从存档读**（平坦 `0x6ea`，8 字节，
+    //   `[道具号 - 1]`；> 8 号不限量、存档里也不存，按初始值放着）。
+    toolStock: importedToolStock(save),
     // ★ 2026-09-17：行情**从存档读**（12 支 × 36 字节 + 144 日历史 0x1b00）。
     //   名字/顺序仍用静态表（存档 `+0` 是 exe 的名字**指针**，跨版本无意义），
     //   其余每个字段都覆盖成存档里的值；`index` 不在存档里 ⇒ 按定义重算
