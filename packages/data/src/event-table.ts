@@ -335,6 +335,9 @@ export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 5, va: 0x0044c3b7, factor: null, effects: ['birthdayCard'], textVa: 0x4659a4, text: "#0190今天是你生日\n向每人收取一張卡片", literal: null },
   { id: 6, va: 0x0044c5d8, factor: null, effects: ['disappear'], textVa: 0x4659d8, text: "#0191強迫出國觀光%d天", literal: 3, blessing: 'misfortune' },
   { id: 7, va: 0x0044c6ed, factor: null, effects: ['disappear'], textVa: 0x4659ee, text: "#0192被外星人綁架%d天", literal: 3, blessing: 'misfortune' },
+  // ⚠️ 下面五条（8/9 卖股票、10/11 丢车、32 变卖卡片道具）的 `effects` 是**空的**：
+  //   命运这一支有一部分**按事件号分派**（见 `events/fortune-effects.ts` 的
+  //   `FORTUNE_SPECIAL_IDS`），不是靠这张表的效果位。**空 ≠ 没实现**。
   { id: 8, va: 0x0044c7ef, factor: null, effects: [], textVa: 0x465a04, text: "#0193股票違約交割損失股票%d％", literal: 10, blessing: 'penalty' },
   { id: 9, va: 0x0044c91f, factor: null, effects: [], textVa: 0x465a28, text: "#0194變賣所有股票求現", literal: null, blessing: 'penalty' },
   { id: 10, va: 0x0044ca46, factor: null, effects: [], textVa: 0x465a3e, text: "#0195機車被偷遺失", literal: null, blessing: 'misfortune' },
