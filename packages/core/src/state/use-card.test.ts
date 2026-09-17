@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
@@ -91,7 +92,10 @@ describe('★ 出牌入口', () => {
     expect(after.players[2]!.blocking.stopping).toBeGreaterThan(0);
   });
 
-  it('★ 19 张已实现的卡都能走到这个入口而不抛错', () => {
+  it('★ 表里每一张已实现的卡都能走到这个入口而不抛错', () => {
+    // ⚠️ 别拿「张数」当断言（先前写的是「19 张」，早就不对了）——
+    //   真正的口径是「表里每一张」：18..21 四张被动卡**本来就不该在这张表里**。
+    expect(IMPLEMENTED_CARD_IDS).toHaveLength(26);
     for (const id of IMPLEMENTED_CARD_IDS) {
       const { state, topo } = scene();
       const s = give(state, 0, id);
@@ -104,6 +108,17 @@ describe('★ 出牌入口', () => {
         expect(() => reduce(s, { type: 'useCard', cardId: id, target }, topo)).not.toThrow();
       }
     }
+  });
+
+  it('★★ 18..21 是**被动卡**、不该出现在 `IMPLEMENTED_CARD_IDS` 里（设计而非缺口）', () => {
+    // @source 原版这四张的 `card_functions` 都指向空桩 `xor eax,eax; ret`（VA 0x004420d5）
+    // ⇒ 它们走「有害卡命中时先查目标手里有没有防御卡」这条**反应**路径
+    for (const id of [18, 19, 20, 21]) {
+      expect(IMPLEMENTED_CARD_IDS, `卡 ${id} 不该可主动使用`).not.toContain(id);
+    }
+    // 四张的被动效果确实各有实现（不是没人管）
+    const src = readFileSync(new URL('../cards/passive.ts', import.meta.url), 'utf8');
+    expect(src).toContain('0x004420d5');
   });
 
   it('★ 未实现的卡安静地什么都不做，不抛错也不扣卡', () => {
