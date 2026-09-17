@@ -2661,8 +2661,7 @@ function applyOptionsOutcome(outcome: OptionsOutcome): void {
     return;
   }
   log('▶ 結束遊戲：回標題');
-  screen = 'title';
-  requestRender();
+  enterTitleScreen();
 }
 
 /**
@@ -2975,7 +2974,10 @@ function unlockAudio(): void {
   music.unlock();
   if (!musicStarted) {
     musicStarted = true;
-    void playTrack(0);
+    // ★ 第一次手势时人在標題畫面 → 点的是標題那一首（`fcn_004026e2` 的 `fcn_004549cf(0)`），
+    //   不是 `Midi.txt` 清单的第一首；清单只在棋盘/其它没点名曲子的场合当兜底。
+    if (screen === 'title') void playTrackFile('midi01.mid');
+    else void playTrack(0);
   }
 }
 
@@ -4133,6 +4135,21 @@ function enterLobby(info: RoomInfo): void {
   requestRender();
 }
 
+/**
+ * 回／進**標題畫面** —— 顺手点标题那一首。
+ *
+ * @source `ui_main.asm:187`（函数 `fcn_004026e2`）：`fcn_00402460(0)` 画标题 →
+ *   `fcn_00454acb()`（**先停**当前曲）→ `rich4_ui_options_entry(0)` →
+ *   `fcn_004549cf(0)`（★ id 0 ⇒ 文件名表 `0x47e793` 第 0 项 ⇒ **`MIDI01.MID`**）。
+ *   另一处同实参的调用点在 `ui_main.asm:483`（標題窗口那条消息回调同样形状）。
+ * ⇒ 每次**进**標題都从头放 MIDI01（不是「没在放才放」）。
+ */
+function enterTitleScreen(): void {
+  screen = 'title';
+  void playTrackFile('midi01.mid');
+  requestRender();
+}
+
 /** 离开大厅：断开连接、回標題 */
 function leaveLobby(): void {
   netClose?.();
@@ -4140,9 +4157,8 @@ function leaveLobby(): void {
   net = null;
   lobbyRoom = null;
   lobbyHot = null;
-  screen = 'title';
   log('已離開聯機大廳');
-  requestRender();
+  enterTitleScreen();
 }
 /** 標題畫面上鼠标悬着的按钮 */
 let titleHot: number | null = null;
@@ -6831,8 +6847,7 @@ function bindInput(): void {
         return;
       }
       if (pressed === 2) {
-        screen = 'title';
-        requestRender();
+        enterTitleScreen();
         return;
       }
       if (pressed >= 3) sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);

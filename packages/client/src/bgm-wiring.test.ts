@@ -49,6 +49,18 @@ describe('★ 按屏 BGM 的宿主接线点（原版 `fcn_004549cf(id)`）', () 
     expect(draw).toContain('ui_letou.asm:3063');
   });
 
+  it('★★ 標題畫面那一首（id 0 ⇒ `midi01.mid`）在 `enterTitleScreen` 里点，且**每次进都点**', () => {
+    // @source `ui_main.asm:187`（`fcn_004026e2`）：画标题 → `fcn_00454acb` 停 →
+    //   `fcn_004549cf(0)` ⇒ MIDI01。另一处同实参在 `ui_main.asm:483`。
+    expect(src).toContain('function enterTitleScreen(): void {');
+    expect(src).toContain("void playTrackFile('midi01.mid')");
+    expect(src).toContain('ui_main.asm:187');
+    // 三个「回標題」的出口（結束遊戲 / 離開大廳 / 開局設定取消）都走它
+    expect(src.match(/enterTitleScreen\(\);/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+    // 第一次手势时若人在標題 → 点 MIDI01，而不是清单第一首
+    expect(src).toContain("if (screen === 'title') void playTrackFile('midi01.mid')");
+  });
+
   it('★ 剩下的调用点仍有清单可查（不许悄悄漏掉）', () => {
     const audio = readFileSync(
       new URL('../../assets-pipeline/src/audio.ts', import.meta.url),
