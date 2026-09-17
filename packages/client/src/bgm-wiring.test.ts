@@ -59,4 +59,25 @@ describe('★ 按屏 BGM 的宿主接线点（原版 `fcn_004549cf(id)`）', () 
     expect(audio).toContain('prison: 0xf');
     expect(audio).toContain('hospital: 0x10');
   });
+
+  it('★★ 三个小游戏（0xc/0xb/0xa）接在 `ensureRun`，且与入场 FLIC 同一道闸门', () => {
+    const mini = readFileSync(new URL('./minigame-screen.ts', import.meta.url), 'utf8');
+    // 逐首点名，出处带 `small_games.asm` 的行号
+    expect(mini).toContain('rich4_small_games.asm:4335/4481/4638');
+    expect(mini).toContain("return 'midi13.mid'");
+    expect(mini).toContain("return 'midi12.mid'");
+    expect(mini).toContain("return 'midi11.mid'");
+    // 闸门复用（不许另写一份条件）
+    expect(mini).toContain('export function minigameBgmFile');
+    expect(mini).toContain('if (me !== undefined && introGateOpen(me.whoPlays, env.animation))');
+  });
+
+  it('★★ 設定屏那处（`ui_options.asm:1365`）走 `applyOptions`：音量从 0 调起就补一首', () => {
+    // @source `ui_options.asm:1354-1365` —— 確定写回 cfg 之后，
+    //   `[0x49715a] != 0 && ebx == 0` 就 `push [0x47e772]; call fcn_004549cf`
+    //   （`[0x47e772]` = 当前曲号，由 `fcn_004549cf` 自己写进去）。
+    expect(src).toContain('if (next.music > 0 && !music.playing) void playTrack(next.track)');
+    expect(src).toContain('if (next.music === 0) music.stop()');
+    expect(src).toContain('VA 0x004109e2');
+  });
 });

@@ -8,7 +8,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { SPECIAL_KIND, WatcomRng } from '@rich4/core';
-import { decodeRaw555 } from '@rich4/assets-pipeline';
+import { bgmAssetFileFor, bgmTrackIdOf, decodeRaw555, SCREEN_BGM } from '@rich4/assets-pipeline';
+import type { GameState } from '@rich4/core';
+import type { UiScreenEnv } from './ui-screen.ts';
 import {
   MINIGAME_BG_HEIGHT,
   MINIGAME_BG_RES,
@@ -88,10 +90,13 @@ import {
   giftScore,
   giftStart,
   giftStep,
+  introGateOpen,
   introPlayback,
   MINI_ARCHIVE,
   MINI_INTRO_FLIC_RES,
   MINI_INTRO_GIVE_UP_MS,
+  minigameBgmFile,
+  minigameScreen,
   minigameSeed,
   minigameTickMs,
   nextCellToward,
@@ -856,5 +861,93 @@ describe('★ 入场影片**异步到手**也要能播（第一版被第一帧�
     // 闸门本身仍然照原版（真人 + 動畫過程）—— 与「影片没到手」是两件事
     expect(introPlayback(1, true, 20, 114, 0, SPECIAL_KIND.PENGUIN_DIG)).not.toBeNull();
     expect(introPlayback(2, true, 20, 114, 0, SPECIAL_KIND.PENGUIN_DIG)).toBeNull();
+  });
+});
+
+// ============================================================
+//  定曲（外部审查：三处小游戏各一首，`fcn_004549cf` 的 0xc/0xb/0xa）
+// ============================================================
+
+describe('★ 三处定曲 @source rich4_small_games.asm:4335/4481/4638', () => {
+  it('★★ 曲号 → 文件名：企鵝 0xc→midi13 / 氣球 0xb→midi12 / 財神 0xa→midi11', () => {
+    expect(SCREEN_BGM.minigamePenguin).toBe(0xc);
+    expect(SCREEN_BGM.minigameBalloon).toBe(0xb);
+    expect(SCREEN_BGM.minigameGift).toBe(0xa);
+    expect(minigameBgmFile(SPECIAL_KIND.PENGUIN_DIG)).toBe('midi13.mid');
+    expect(minigameBgmFile(SPECIAL_KIND.BALLOON)).toBe('midi12.mid');
+    expect(minigameBgmFile(SPECIAL_KIND.GIFT_FROM_SKY)).toBe('midi11.mid');
+    // 不认识的一律不点（不许瞎猜一首）
+    expect(minigameBgmFile(0)).toBeNull();
+    expect(minigameBgmFile(0x7fff)).toBeNull();
+  });
+
+  it('★★ 与 `SCREEN_BGM` / `bgmAssetFileFor` 那张表**逐项对得上**（两边不许各写一半）', () => {
+    const pairs: readonly (readonly [number, number])[] = [
+      [SPECIAL_KIND.PENGUIN_DIG, SCREEN_BGM.minigamePenguin as number],
+      [SPECIAL_KIND.BALLOON, SCREEN_BGM.minigameBalloon as number],
+      [SPECIAL_KIND.GIFT_FROM_SKY, SCREEN_BGM.minigameGift as number],
+    ];
+    for (const [game, raw] of pairs) {
+      const id = bgmTrackIdOf(raw);
+      expect(minigameBgmFile(game)).toBe(bgmAssetFileFor(id));
+    }
+  });
+
+  it('★ 定曲与入场 FLIC 共用同一道闸门（AI 玩 / 動畫過程关掉 → 连曲都没有）', () => {
+    expect(introGateOpen(1, true)).toBe(true);
+    expect(introGateOpen(1, undefined)).toBe(true);
+    expect(introGateOpen(2, true)).toBe(false);
+    expect(introGateOpen(0, true)).toBe(false);
+    expect(introGateOpen(1, false)).toBe(false);
+  });
+
+  it('★★ 真过一遍 `tick`：真人在玩 → 点一首，且**只点一次**', () => {
+    // ★ 三个小游戏共用一条 `ensureRun`；同一局重复 tick 不许把曲子重头点。
+    //   为了不看「上一个用例留下的 run」，三段各换一个小游戏（game 变了才会重开）。
+    const played: string[] = [];
+    const mk = (game: number, whoPlays: number, animation: boolean | undefined): UiScreenEnv => {
+      const state = {
+        pending: { kind: 'minigame', game },
+        currentPlayer: 0,
+        players: [{ whoPlays }],
+        day: 3,
+        month: 5,
+        year: 1,
+      } as unknown as GameState;
+      return {
+        screen: 'game',
+        state,
+        topo: { nodes: [], lands: [], facilities: [] } as never,
+        map: null as never,
+        now: 0,
+        stage: null as never,
+        sprite: () => null,
+        flic: () => null,
+        dispatch: () => undefined,
+        requestRender: () => undefined,
+        log: () => undefined,
+        playEffect: () => undefined,
+        stopEffect: () => undefined,
+        // `exactOptionalPropertyTypes`：省略 = 「没给」，不能塞个显式 undefined
+        ...(animation === undefined ? {} : { animation }),
+        music: (f: string) => played.push(f),
+      };
+    };
+
+    // ① 真人在玩 → 点 0xc
+    minigameScreen.tick!(mk(SPECIAL_KIND.PENGUIN_DIG, 1, true));
+    expect(played).toEqual(['midi13.mid']);
+    // 同一局再来几帧 → 不再点（`introTried` 那一段每帧重试也点不着第二次）
+    minigameScreen.tick!(mk(SPECIAL_KIND.PENGUIN_DIG, 1, true));
+    minigameScreen.tick!(mk(SPECIAL_KIND.PENGUIN_DIG, 1, true));
+    expect(played).toEqual(['midi13.mid']);
+
+    // ② 电脑在玩 → 一声不响（原版整个分支被跳过）
+    minigameScreen.tick!(mk(SPECIAL_KIND.BALLOON, 2, true));
+    expect(played).toEqual(['midi13.mid']);
+
+    // ③ 「動畫過程」关掉 → 也不点
+    minigameScreen.tick!(mk(SPECIAL_KIND.GIFT_FROM_SKY, 1, false));
+    expect(played).toEqual(['midi13.mid']);
   });
 });

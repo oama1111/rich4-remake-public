@@ -1682,6 +1682,15 @@ function ensureRun(env: UiScreenEnv): MiniRun | null {
     introTried: false,
     introWaitSince: env.now,
   };
+  // ★ 定曲（`push 0xc/0xb/0xa; call fcn_004549cf` @source `rich4_small_games.asm:4335/4481/4638`）：
+  //   与入场 FLIC **同一道闸门**（真人 + 「動畫過程」开着），见 `introGateOpen`。
+  //   ⚠️ 点在这里而不是 startIntro：startIntro 在影片没解好之前会**每帧重试**，
+  //   放那儿会把曲子每帧重头点一遍。
+  const me = env.state.players[env.state.currentPlayer];
+  if (me !== undefined && introGateOpen(me.whoPlays, env.animation)) {
+    const bgm = minigameBgmFile(pending.game);
+    if (bgm !== null) env.music?.(bgm);
+  }
   env.requestRender();
   return run;
 }
@@ -1711,11 +1720,47 @@ export function introPlayback(
   now: number,
   game: number,
 ): { at: number; until: number } | null {
-  if (whoPlays !== 1) return null;
-  if (animation === false) return null;
+  if (!introGateOpen(whoPlays, animation)) return null;
   if (frameCount <= 0) return null;
   const ms = frameMs > 0 ? frameMs : minigameTickMs(game);
   return { at: now, until: now + frameCount * ms };
+}
+
+/**
+ * 小游戏入口那道闸门（真人在玩 且 「動畫過程」开着）—— 纯函数。
+ *
+ * ★ 这道闸门管的不只是入场 FLIC：**定曲也在同一个 `jne/je` 的里面**
+ *   （`push 0xc/0xb/0xa; call fcn_004549cf` @source `rich4_small_games.asm:4335/4481/4638`，
+ *   三处都在这两个比较之后）。所以「AI 玩」或「動畫過程关掉」时，
+ *   小游戏**连配乐都没有** —— 照抄，不补。
+ */
+export function introGateOpen(whoPlays: number, animation: boolean | undefined): boolean {
+  return whoPlays === 1 && animation !== false;
+}
+
+/**
+ * 这一局该点哪一首 —— `fcn_004549cf` 的实参 → **磁盘文件名**（不认识就 `null`）。
+ *
+ * @source 三个入口里各一处 `push id; call fcn_004549cf`
+ *   （`rich4_small_games.asm:4335` 企鵝 `push 0xc` / `4481` 氣球 `push 0xb` /
+ *    `4638` 財神 `push 0xa`）；曲号 → 文件名走表 `0x47e793`
+ *   （`MIDI{id+1}.MID`，见 `@rich4/assets-pipeline` 的 `SCREEN_BGM.minigame*`
+ *   与 `bgmAssetFileFor`；磁盘上是小写）。
+ */
+export function minigameBgmFile(game: number): string | null {
+  switch (game) {
+    case SPECIAL_KIND.PENGUIN_DIG:
+      // 0xc → MIDI13.MID
+      return 'midi13.mid';
+    case SPECIAL_KIND.BALLOON:
+      // 0xb → MIDI12.MID
+      return 'midi12.mid';
+    case SPECIAL_KIND.GIFT_FROM_SKY:
+      // 0xa → MIDI11.MID
+      return 'midi11.mid';
+    default:
+      return null;
+  }
 }
 
 /** 这一局要不要起入场 FLIC（真人了没有 / 动画开着没有 / 影片解好了没有）*/
