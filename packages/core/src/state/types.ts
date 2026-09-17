@@ -566,7 +566,11 @@ export interface GameState {
 
   /** 最近一次事件的记录，供表现层显示；不参与规则 */
   lastEvent: {
-    kind: 'news' | 'fortune';
+    /**
+     * `news` / `fortune` = 新聞/命運事件框；`magicHouse` = 魔法屋那一趟
+     *   （它没有事件框，但**表现层要显示「抽中了哪个条件」**，故借这条通道带出去）。
+     */
+    kind: 'news' | 'fortune' | 'magicHouse';
     id: number;
     /**
      * ★ 新闻百分比类那四条（11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利）
@@ -576,6 +580,19 @@ export interface GameState {
      * 其余事件不带这一项。
      */
     shares?: readonly { player: number; amount: number }[];
+    /**
+     * ★ 魔法屋那一支（`kind === 'magicHouse'`）：**目标转盘抽中的条件号 0..11**。
+     *
+     * @source `spinMagicHouse` 的 `criterion`（VA 0x0043390b 一带：
+     *   `rand() % 12` + `fcn_00431842` 复检直到该条件下有人）。
+     *   表现层要按它显示条件名与条件图（`ash4_magic_house.asm` 的
+     *   `loc_00432719` 尾：`fcn_0044ecb6([0x4756b8 + 条件下标*4])`）。
+     *   ★ 先前表现层是**从 before→after 反推**的（D-MAGIC-1），
+     *   反推错时字框会写错一个条件名 —— 现在以这里为准。
+     */
+    criterion?: number;
+    /** ★ 魔法屋那一支：筛出的名单（玩家下标，升序）@source `MagicSpin.targets` */
+    targets?: readonly number[];
   } | null;
 
   /**

@@ -983,7 +983,13 @@ export const eventBoxScreen: UiScreen = {
 
     const ev = after.lastEvent;
     const prev = before.lastEvent;
-    if (ev !== null && (prev === null || prev.kind !== ev.kind || prev.id !== ev.id)) {
+    // ⚠️ `magicHouse` 那一支借的是同一条通道**但不出框**（它是魔法屋屏的事，
+    //    见 `magic-screen.ts` 的 `magicViewOfSpin`）—— 别把它当命運演出。
+    if (
+      ev !== null &&
+      ev.kind !== 'magicHouse' &&
+      (prev === null || prev.kind !== ev.kind || prev.id !== ev.id)
+    ) {
       const who = after.players[after.currentPlayer];
       const subject = eventSubject(before, after, after.currentPlayer);
       // ★ 新聞百分比类那四条：把引擎「先算好」的逐人金额配上角色名交给计划

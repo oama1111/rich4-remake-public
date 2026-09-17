@@ -11,7 +11,16 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import type { Sprite } from './assets.ts';
-import { SPECIAL_KIND, newGame, parseMap, reduce, type GameState, type MapTopology } from '@rich4/core';
+import {
+  MAGIC_TARGET_NAMES,
+  SPECIAL_KIND,
+  newGame,
+  parseMap,
+  reduce,
+  type GameState,
+  type MapTopology,
+} from '@rich4/core';
+import { MAGIC_HOUSE_OPTIONS } from '@rich4/data';
 import {
   MAGIC_AIR_MS,
   MAGIC_CENTER,
@@ -49,6 +58,10 @@ import {
   MAGIC_TURN_LINE,
   magicBoxLineFor,
   magicPlaybackStart,
+  magicScreen,
+  magicScreenState,
+  magicViewOfSpin,
+  resetMagicScreen,
   magicPlaybackTick,
   magicSpinDone,
   magicSpinStart,
@@ -503,6 +516,26 @@ describe('★ 入口台詞那一拍：时序（Q-ANIM-1 / D-MAGIC-12）', () => 
   });
 });
 
+describe('★★ core 交出来的那一趟优先（D-MAGIC-1 的近似收口）', () => {
+  it('★★ `magicViewOfSpin`：条件号 → 条件名、`id` → 功能名，名单原样', () => {
+    const v = magicViewOfSpin({ id: 4, criterion: 7, targets: [1, 3] }, 2);
+    expect(v).not.toBeNull();
+    expect(v!.caster).toBe(2);
+    expect(v!.option).toBe(4);
+    expect(v!.name).toBe(MAGIC_HOUSE_OPTIONS[4]?.name ?? '');
+    expect(v!.criterion).toBe(7);
+    expect(v!.criterionName).toBe(MAGIC_TARGET_NAMES[7] ?? '');
+    expect(v!.targets).toEqual([1, 3]);
+  });
+
+  it('★ 缺条件号 / 越界 → `null`（调用方退回 diff 反推）', () => {
+    expect(magicViewOfSpin({ id: 4 }, 0)).toBeNull();
+    expect(magicViewOfSpin({ id: 4, criterion: -1, targets: [] }, 0)).toBeNull();
+    expect(magicViewOfSpin({ id: 4, criterion: 12, targets: [] }, 0)).toBeNull();
+  });
+
+});
+
 describe('回放生命周期', () => {
   it('★ 转完进 hold、再停 1.5 秒才该关屏', () => {
     expect(MAGIC_HOLD_MS).toBe(1500);
@@ -549,6 +582,45 @@ function standOnMagic(s: GameState, topo: MapTopology): GameState | null {
 }
 
 describe('★ trigger 判据：站在魔法屋上才算 @source VA 0x0043381b', () => {
+  runMap('★★ `event()` 认 core 那条通道：`lastEvent.kind === \'magicHouse\'` 就起播', () => {
+    const { map, topo } = load();
+    const base = standOnMagic(
+      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })) }),
+      topo,
+    );
+    if (base === null) return;
+    resetMagicScreen();
+    const before = base;
+    const after: GameState = {
+      ...base,
+      lastEvent: { kind: 'magicHouse', id: 3, criterion: 5, targets: [0] },
+    };
+    const env = {
+      screen: 'game',
+      state: after,
+      topo,
+      map,
+      now: 0,
+      stage: null,
+      sprite: () => null,
+      flic: () => null,
+      dispatch: () => undefined,
+      requestRender: () => undefined,
+      log: () => undefined,
+      playEffect: () => undefined,
+      stopEffect: () => undefined,
+      animation: true,
+    } as unknown as Parameters<NonNullable<typeof magicScreen.event>>[2];
+    magicScreen.event!(before, after, env);
+    const st = magicScreenState();
+    expect(st.playing).toBe(true);
+    // ★ 条件号来自 core（不是从 diff 反推）
+    expect(st.view?.criterion).toBe(5);
+    expect(st.view?.criterionName).toBe(MAGIC_TARGET_NAMES[5] ?? '');
+    expect(st.view?.name).toBe(MAGIC_HOUSE_OPTIONS[3]?.name ?? '');
+    resetMagicScreen();
+  });
+
   runMap('★ 站在魔法屋上且名单只有自己之外的一个人 → 认出来', () => {
     const { map, topo } = load();
     const base = standOnMagic(

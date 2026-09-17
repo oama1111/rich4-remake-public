@@ -2149,6 +2149,15 @@ function runMagicHouse(state: GameState, topo: MapTopology): GameState {
     tools: r.tools,
     toolStock: r.toolStock,
     phase: 'turnEnd',
+    // ★ 把「抽中哪个条件、点到谁」交给表现层 —— 先前表现层只能从 before→after 反推
+    //   （D-MAGIC-1 的近似），反推错时字框会写错一个条件名。
+    //   id = 效果转盘的落点（表现层原本也是拿它当 `target` 的）。
+    lastEvent: {
+      kind: 'magicHouse',
+      id: spin.option,
+      criterion: spin.criterion,
+      targets: [...spin.targets],
+    },
   };
 
   for (const req of r.requests) {

@@ -928,3 +928,30 @@ describe('★ 明细行头像的素材确实存在 @source map.mkf 资源 角色
     expect([png.readUInt32BE(0), png.readUInt32BE(4)]).toEqual([39, 35]);
   });
 });
+
+describe('★ `magicHouse` 借同一条通道但**不出框**', () => {
+  it('★★ `lastEvent.kind === \'magicHouse\'` 不该弹出新聞/命運框（它归魔法屋屏）', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], { kind: 'news', id: 3 });
+    const after = stateOf([player(0, [])], {
+      kind: 'magicHouse',
+      id: 5,
+      criterion: 7,
+      targets: [0],
+    });
+    const env = fakeEnv(after);
+    eventBoxScreen.event!(before, after, env);
+    expect(eventBoxScreenState().playing).toBe(false);
+    expect(eventBoxScreen.active(env)).toBe(false);
+  });
+
+  it('★ 对照：同样「kind 变了」时新聞那一条照旧起播', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], { kind: 'fortune', id: 1 });
+    const after = stateOf([player(0, [])], { kind: 'news', id: 3 });
+    const env = fakeEnv(after);
+    eventBoxScreen.event!(before, after, env);
+    expect(eventBoxScreenState().playing).toBe(true);
+    resetEventBoxScreen();
+  });
+});

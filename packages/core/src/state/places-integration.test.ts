@@ -152,6 +152,27 @@ describe('★ 未实现的场所会明确报出来', () => {
     expect(r.rngState).not.toBe(s.rngState);
   });
 
+  run('★★ 魔法屋把**抽中的条件号**交给表现层（`lastEvent.kind === \'magicHouse\'`）', () => {
+    const { map, topo: t } = topo();
+    const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.MAGIC_HOUSE);
+    if (s === null) return;
+    const r = reduce(s, { type: 'settle' }, t);
+    // ★ 先前表现层只能从 before→after 反推条件号（D-MAGIC-1），反推错就写错条件名
+    expect(r.lastEvent?.kind).toBe('magicHouse');
+    const criterion = r.lastEvent?.criterion;
+    expect(criterion).toBeGreaterThanOrEqual(0);
+    expect(criterion).toBeLessThan(12);
+    // 效果转盘落点也在（`id`）= 表现层原本当 `target` 用的那个数
+    expect(r.lastEvent?.id).toBeGreaterThanOrEqual(0);
+    expect(r.lastEvent?.id).toBeLessThan(12);
+    // 名单是数组（可能为空 —— 原版抽不到人也照样走完）
+    expect(Array.isArray(r.lastEvent?.targets)).toBe(true);
+    for (const who of r.lastEvent?.targets ?? []) {
+      expect(who).toBeGreaterThanOrEqual(0);
+      expect(who).toBeLessThan(r.players.length);
+    }
+  });
+
   run('★ 百貨公司已实现 —— 给出的是商店交互', () => {
     const { map, topo: t } = topo();
     const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.DEPARTMENT_STORE);

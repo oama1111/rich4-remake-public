@@ -656,6 +656,35 @@ export function magicPlaybackTick(p: MagicPlayback, now: number): MagicPlayback 
 //  从状态 diff 反推这次魔法屋
 // ============================================================
 
+/**
+ * **core 交出来的那一趟** → `MagicView` —— 条件号与名单是**抽出来的**，
+ * 不该由表现层从 diff 反推（那是 D-MAGIC-1 的近似）。
+ *
+ * @param ev `state.lastEvent`（`kind === 'magicHouse'`）：
+ *   `id` = 效果转盘落点、`criterion` = 目标转盘落点、`targets` = 筛出的名单
+ *   （@source `runMagicHouse` 里的 `spinMagicHouse`：`criterion` 来自
+ *   `rand()%12` + `fcn_00431842` 复检，VA 0x0043390b 一带）。
+ * @returns `criterion` 缺失（旧存档/回放）时返回 `null`，调用方退回反推那条路
+ */
+export function magicViewOfSpin(
+  ev: { id: number; criterion?: number; targets?: readonly number[] },
+  caster: number,
+): MagicView | null {
+  const option = ev.id;
+  const criterion = ev.criterion;
+  if (criterion === undefined || criterion < 0 || criterion >= MAGIC_TARGET_NAMES.length) {
+    return null;
+  }
+  return {
+    caster,
+    option,
+    name: MAGIC_HOUSE_OPTIONS[option]?.name ?? '',
+    targets: [...(ev.targets ?? [])],
+    criterion,
+    criterionName: MAGIC_TARGET_NAMES[criterion] ?? '',
+  };
+}
+
 /** 这次回放要显示什么 */
 export interface MagicView {
   /** 触发者（`state.currentPlayer`）*/
@@ -1367,7 +1396,10 @@ let view: MagicView | null = null;
 /** 鼠标现在指着的扇区（原版 `[0x48c3a1]`）*/
 let hover = 0;
 
-/** 调试 / 单测用：把整屏关掉 */
+/**
+ * 调试 / 单测用：把整屏关掉（`playback` 是模块级的，跨用例会残留）。
+ * 与 `resetStealPicker` / `resetEventBoxArt` 同一手法。
+ */
 export function resetMagicScreen(): void {
   playback = null;
   view = null;
@@ -1478,7 +1510,12 @@ export const magicScreen: UiScreen = {
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
     if (playback !== null) return; // 上一段还没播完
     if (before === after) return;
-    const v = magicView(before, after, env.topo);
+    // ★ 优先用 **core 交出来的那一趟**（`lastEvent.kind === 'magicHouse'`）：
+    //   条件号/名单是抽出来的，反推只是替补（旧存档 / 少字段的回放）。
+    const ev = after.lastEvent;
+    const direct =
+      ev !== null && ev.kind === 'magicHouse' ? magicViewOfSpin(ev, after.currentPlayer) : null;
+    const v = direct ?? magicView(before, after, env.topo);
     if (v === null) return;
     view = v;
     const target = v.option >= 0 ? v.option : 0;
