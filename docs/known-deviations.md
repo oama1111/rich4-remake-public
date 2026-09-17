@@ -4917,3 +4917,12 @@ stopEffect(id: number): void;
 
 （`ui-screen.ts` 加可选出参、`host.ts` 加 `ConfigStore`、`config-file.ts` 是新文件
 —— 都对既有调用点零影响，长跑结果与上一轮同型。）
+
+### ★ 2026-09-16：月結／頒獎屏 5..9 的三只訊息框 + 冠军奖座 FLIC **已落码**（`e446f32`）
+
+`packages/client/src/monthly-screen.ts` 接上了 `fcn_0044ec30`/`fcn_0044ecb6` 那三只訊息框
+（`別灰心，再加油喔！` 图 3 / `本月冠軍是…` 图 1 / `其他人還要⤶更努力喔！` 图 4）与
+**冠军奖座 FLIC**（`Data.mkf 0x1a0 + 2×角色`，状态 0x12）；
+逐条 VA、抠黑表订正与**仍未接**的四条（四张裁切滑动 / 状态机未换成
+`[0x48c42a]`+`[0x48c425]` / 状态 0x13 的图 45 / `#0122` 并在 `closing` 里画）
+见 `docs/deviations/T-041.md` 文末那一节。
