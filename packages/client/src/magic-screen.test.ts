@@ -41,6 +41,13 @@ import {
   magicIconChunk,
   magicIconFrameCount,
   magicIconFrame,
+  MAGIC_CRITERION_MS,
+  MAGIC_ROLL_TICKS,
+  MAGIC_ROLL_TICKS_FAST,
+  MAGIC_SPELL_LINE,
+  MAGIC_TIMER_MS,
+  MAGIC_TURN_LINE,
+  magicBoxLineFor,
   magicPlaybackStart,
   magicPlaybackTick,
   magicSpinDone,
@@ -382,6 +389,7 @@ describe('★ 入口台詞那一拍：绘制（Q-ANIM-1 / D-MAGIC-12）', () => 
     const f = fakeGreetCtx();
     drawMagicScreen(f.ctx, f.sprite, {
       view, pointer: 4, witchBlink: false, beat: 1, hover: 0, frame: 0, greet: 0,
+      boxLine: MAGIC_GREET_LINES[0] ?? null,
     });
     const box = f.images.find((i) => i.chunk === MAGIC_MSG_BOX.chunk);
     expect(box).toMatchObject({ x: MAGIC_MSG_BOX.x, y: MAGIC_MSG_BOX.y });
@@ -393,6 +401,7 @@ describe('★ 入口台詞那一拍：绘制（Q-ANIM-1 / D-MAGIC-12）', () => 
     const f = fakeGreetCtx();
     drawMagicScreen(f.ctx, f.sprite, {
       view, pointer: 4, witchBlink: false, beat: 1, hover: 0, frame: 0, greet: null,
+      boxLine: null,
     });
     // 图 8 是**结果长条框**，只在第二拍压上去；第一拍不该出现
     expect(f.images.some((i) => i.chunk === MAGIC_MSG_BOX.chunk)).toBe(false);
@@ -429,8 +438,8 @@ describe('★ 入口台詞那一拍：时序（Q-ANIM-1 / D-MAGIC-12）', () => 
     expect(magicGreetText('沒有前綴')).toBe('沒有前綴');
   });
 
-  it('★ 时间轴：台詞 0 → 1 → 2 → spin（每句 2000 ms）', () => {
-    let p = magicPlaybackStart(4, 0, true);
+  it('★ 时间轴：台詞 0 → 1 → 2 → **摇签** → **条件名** → spin（每句 2000 ms、摇 10×100 ms）', () => {
+    let p = magicPlaybackStart(4, 0, true, '財產最多的人');
     expect(p.phase).toBe('greet');
     expect(p.greet).toBe(0);
     // 差 1 ms 不换句
@@ -440,16 +449,57 @@ describe('★ 入口台詞那一拍：时序（Q-ANIM-1 / D-MAGIC-12）', () => 
     expect(p).toMatchObject({ phase: 'greet', greet: 1 });
     p = magicPlaybackTick(p, MAGIC_GREET_MS * 2)!;
     expect(p).toMatchObject({ phase: 'greet', greet: 2 });
+    // 三句说完 → **摇签那一拍**（原版状态 4），字框仍是最后那句
     p = magicPlaybackTick(p, MAGIC_GREET_MS * 3)!;
+    expect(p.phase).toBe('roll');
+    expect(magicBoxLineFor(p)).toBe(MAGIC_GREET_LINES[2]);
+    // 摇签 10 拍 × 100 ms：差 1 ms 还在摇
+    const rollMs = MAGIC_ROLL_TICKS * MAGIC_TIMER_MS;
+    expect(MAGIC_ROLL_TICKS).toBe(0xa);
+    expect(MAGIC_TIMER_MS).toBe(0x64);
+    expect(rollMs).toBe(1000);
+    const rollStart = MAGIC_GREET_MS * 3;
+    p = magicPlaybackTick(p, rollStart + rollMs - 1)!;
+    expect(p.phase).toBe('roll');
+    // 摇完 → 状态 5：字框写**抽中的条件名**（只停一拍）
+    p = magicPlaybackTick(p, rollStart + rollMs)!;
+    expect(p.phase).toBe('criterion');
+    expect(magicBoxLineFor(p)).toBe('財產最多的人');
+    p = magicPlaybackTick(p, rollStart + rollMs + MAGIC_CRITERION_MS - 1)!;
+    expect(p.phase).toBe('criterion');
+    // 再一拍 → 状态 6/7：字框换成 `#0040嘿～輪到你了！` 并起转盘
+    const spinStart = rollStart + rollMs + MAGIC_CRITERION_MS;
+    p = magicPlaybackTick(p, spinStart)!;
     expect(p.phase).toBe('spin');
-    // 起转盘的节拍从**台詞说完那一刻**算，不是从开屏算
-    expect(p.spin.at).toBe(MAGIC_GREET_MS * 3);
+    expect(magicBoxLineFor(p)).toBe(MAGIC_TURN_LINE);
+    // 起转盘的节拍从**这一刻**算，不是从开屏算
+    expect(p.spin.at).toBe(spinStart);
+    expect(MAGIC_TURN_LINE).toBe('#0040嘿～輪到你了！');
   });
 
-  it('★ `greet = false`（「動畫過程」关掉）：直接从 spin 起，一句都不说', () => {
-    const p = magicPlaybackStart(4, 0, false);
-    expect(p.phase).toBe('spin');
+  it('★★ `greet = false`（「動畫過程」关掉）：三句不说，但**摇签那一拍照走**（只摇 1 拍）', () => {
+    const p = magicPlaybackStart(4, 0, false, '土地最多的人');
+    // @source `loc_00432951`：关掉时 `[0x48c3a1] = 1` ⇒ 只摇 1 拍
+    expect(p.phase).toBe('roll');
+    expect(p.rollTicks).toBe(MAGIC_ROLL_TICKS_FAST);
+    expect(MAGIC_ROLL_TICKS_FAST).toBe(1);
     expect(p.spin.at).toBe(0);
+    // 1 拍之后就到了条件名那一拍
+    const q = magicPlaybackTick(p, MAGIC_TIMER_MS)!;
+    expect(q.phase).toBe('criterion');
+    expect(magicBoxLineFor(q)).toBe('土地最多的人');
+  });
+
+  it('★ 结果那一拍的台词 = `#0041天靈靈地靈靈～`', () => {
+    let p = magicPlaybackStart(4, 0, false, '現金最多的人');
+    let now = 0;
+    for (let i = 0; i < 80 && p.phase !== 'hold'; i++) {
+      now += 1000;
+      p = magicPlaybackTick(p, now)!;
+    }
+    expect(p.phase).toBe('hold');
+    expect(magicBoxLineFor(p)).toBe(MAGIC_SPELL_LINE);
+    expect(MAGIC_SPELL_LINE).toBe('#0041天靈靈地靈靈～');
   });
 });
 
@@ -459,6 +509,11 @@ describe('回放生命周期', () => {
     // 这一段只看**转盘 → hold → 关屏**，故跳过入口台詞（那一拍另有专门用例）
     let p = magicPlaybackStart(4, 0, false);
     let now = 0;
+    // 先走过「摇签 → 条件名」两拍（各一拍 100 ms）
+    while (p.phase !== 'spin') {
+      now += 1000;
+      p = magicPlaybackTick(p, now)!;
+    }
     for (let i = 0; i < 80 && p.phase === 'spin'; i++) {
       now += 1000;
       const next = magicPlaybackTick(p, now);
