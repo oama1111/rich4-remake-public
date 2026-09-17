@@ -262,6 +262,50 @@ export const MONTHLY_BAR_Y = 0x11;
 export const MONTHLY_AWARD_FLIC_DX = 0x14a;
 
 /**
+ * 頒獎／悲情 FLIC 的**每角色落点表** —— `0x4759f7` 起，**每个角色 24 字节**
+ * （两组 `(dx, dy, delay)` dword）。
+ *
+ * | 用哪组 | 谁 | @source |
+ * |---|---|---|
+ * | 第 1 组（+0/+4/+8）| **冠军的奖座**（状态 0x12）| `[eax*8 + 0x4759f7/0x4759fb/0x4759ff]`，VA 0x00438d40 起 |
+ * | 第 2 组（+12/+16/+20）| **悲情人物的立绘**（状态 7）| `[eax*8 + 0x475a03/0x475a07/0x475a0b]`，VA 0x00438570 起 |
+ *
+ * 落点公式（两处同构，逐条读过）：
+ * ```asm
+ * x = 0x475930[在榜人数][槽] + dx        ; 竖栏那一列 + 每角色的偏移（有符号）
+ * y = 0x14a + dy                         ; 0x14a = 330
+ * ; 之后 `fcn_0045144f(影片, x, y, …)` —— x/y 是**左上角**，不减锚点
+ * ```
+ * ★ 这张表先前的注释写着「绝对值没核出来，用「列心 − 影片一半」近似」——
+ *   本轮把 12×24 字节全 dump 出来了（见上表），**近似取消**。
+ */
+export const MONTHLY_FLIC_OFFSETS: readonly (readonly number[])[] = [
+  /* 角色 0 約翰喬 */ [-50, -94, 1539, -77, -148, 3],
+  /* 角色 1 沙隆巴斯 */ [-48, -97, 1027, -48, -90, 1539],
+  /* 角色 2 忍太郎 */ [-38, -97, 1539, -50, -87, 1539],
+  /* 角色 3 錢夫人 */ [-31, -61, 1539, -64, -109, 771],
+  /* 角色 4 阿土伯 */ [-41, -87, 1027, -42, -77, 1539],
+  /* 角色 5 孫小美 */ [-44, -76, 1027, -31, -60, 515],
+  /* 角色 6 烏咪 */ [-36, -100, 1539, -36, -103, 1539],
+  /* 角色 7 金貝貝 */ [-50, -89, 1027, -50, -87, 3],
+  /* 角色 8 小丹尼 */ [-51, -90, 1027, -51, -92, 3],
+  /* 角色 9 沙皮 */ [-31, -60, 1027, -51, -95, 771],
+  /* 角色 10 錢多多 */ [-103, -188, 1027, -39, -87, 1539],
+  /* 角色 11 大老千 */ [-40, -75, 1027, -40, -75, 1027],
+];
+
+/** 一位角色的 FLIC 偏移：`kind = 'trophy'` 取第 1 组，`'sad'` 取第 2 组 */
+export function monthlyAwardFlicOffset(
+  character: number,
+  kind: 'sad' | 'trophy',
+): { x: number; y: number; delay: number } {
+  const c = Math.min(MONTHLY_FLIC_OFFSETS.length - 1, Math.max(0, Math.trunc(character)));
+  const row = MONTHLY_FLIC_OFFSETS[c] ?? MONTHLY_FLIC_OFFSETS[0]!;
+  const at = kind === 'trophy' ? 0 : 3;
+  return { x: row[at] ?? 0, y: row[at + 1] ?? 0, delay: row[at + 2] ?? 0 };
+}
+
+/**
  * 頒獎 FLIC 的落点：**列的中心**，绘制时再按影片尺寸减一半。
  *
  * ★ 原版那张 `0x475a03` 表的绝对值没有逐个核出来（见上面的注释）；
@@ -1246,11 +1290,14 @@ export function drawMonthlyAwardFlic(
   const i = Math.min(film.frames.length - 1, Math.max(0, Math.floor(now / ms)));
   const bmp = film.frames[i];
   if (bmp === undefined) return false;
-  // 列心：与头像同一列（`monthlyRowLayout(..., 'award').avatar.x`）
-  const at = monthlyRowLayout(state, award.winner, 'award');
-  const x = Math.round(at.avatar.x + MONTHLY_AWARD_FLIC_AT.x - film.width / 2);
-  // （FLIC 只用 x —— 列位由「在榜人数 + 名次」定，与立绘尺寸无关）
-  const y = Math.round(MONTHLY_AWARD_FLIC_AT.y - film.height / 2);
+  // ★ 落点照表算（不再是「列心 − 影片一半」的近似）：
+  //   x = 0x475930[在榜人数][槽] + dx[角色]、y = 0x14a + dy[角色]，
+  //   而且 x/y 是**左上角**（`fcn_0045144f` 不减锚点）——
+  //   见 `MONTHLY_FLIC_OFFSETS` 的注释与 `docs/deviations/T-041.md` 的 D-MONTHLY-6。
+  const at = monthlyRowLayout(state, who, 'award');
+  const off = monthlyAwardFlicOffset(win.character, trophy ? 'trophy' : 'sad');
+  const x = Math.round(at.avatar.x + off.x);
+  const y = Math.round(MONTHLY_AWARD_FLIC_DX + off.y);
   ctx.drawImage(bmp, x, y);
   return true;
 }

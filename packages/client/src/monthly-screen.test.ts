@@ -72,6 +72,9 @@ import {
   MONTHLY_SOUND_STEP,
   drawMonthlyAwardFlic,
   monthlyAwardFlicResource,
+  MONTHLY_AWARD_FLIC_DX,
+  MONTHLY_FLIC_OFFSETS,
+  monthlyAwardFlicOffset,
   monthlyChampionOf,
   monthlyConsolationWho,
 } from './monthly-screen.ts';
@@ -1115,6 +1118,62 @@ describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () 
     expect(calls).toEqual(['Data.mkf:417']); // 0x1a1 = 417，角色 0
     // 影片取不到（异步还没解好）→ 不画、不炸
     expect(drawMonthlyAwardFlic(fakeCtx, () => null, baseState, baseView, baseAward, seatsFull, 0)).toBe(false);
+  });
+
+  it('★★ 每角色落点表 = 12×24 字节，值逐条照 exe dump @source 0x4759f7', () => {
+    expect(MONTHLY_FLIC_OFFSETS).toHaveLength(12);
+    // 第 1 行（角色 0 約翰喬）与最后一行（角色 11 大老千）逐字对
+    expect(MONTHLY_FLIC_OFFSETS[0]).toEqual([-50, -94, 1539, -77, -148, 3]);
+    expect(MONTHLY_FLIC_OFFSETS[1]).toEqual([-48, -97, 1027, -48, -90, 1539]);
+    expect(MONTHLY_FLIC_OFFSETS[11]).toEqual([-40, -75, 1027, -40, -75, 1027]);
+    // 每行 6 个 dword，前三个是冠军奖座、后三个是悲情立绘
+    for (const row of MONTHLY_FLIC_OFFSETS) expect(row).toHaveLength(6);
+  });
+
+  it('★ trophy 取第 1 组、sad 取第 2 组；角色越界夹到 0..11', () => {
+    // @source 状态 0x12 用 `0x4759f7/0x4759fb/0x4759ff`（第 1 组）
+    expect(monthlyAwardFlicOffset(0, 'trophy')).toEqual({ x: -50, y: -94, delay: 1539 });
+    // @source 状态 7 用 `0x475a03/0x475a07/0x475a0b`（第 2 组）
+    expect(monthlyAwardFlicOffset(0, 'sad')).toEqual({ x: -77, y: -148, delay: 3 });
+    expect(monthlyAwardFlicOffset(-5, 'trophy')).toEqual(monthlyAwardFlicOffset(0, 'trophy'));
+    expect(monthlyAwardFlicOffset(99, 'sad')).toEqual(monthlyAwardFlicOffset(11, 'sad'));
+  });
+
+  it('★★ 落点 = 竖栏 x + dx、0x14a + dy（**左上角**，不再是「列心 − 影片一半」）', () => {
+    // @source 0x00438d40（冠军奖座）/ 0x00438570（悲情立绘）：
+    //   `x = 0x475930[在榜人数][槽] + dx[角色]`、`y = 0x14a + dy[角色]`
+    const baseState = fakeState([0, 1, 2, 3].map((i) => playerOf(i, i)));
+    const baseView: MonthlyView = { rows: [0, 1, 2, 3].map((i) => ({
+      index: i, character: i, name: `P${i}`, cash: 0, bank: 0, interest: 0, loan: 0,
+      monthlyPaid: 0, monthlyReceived: 0,
+    })) };
+    const baseAward: MonthlyAward = { winner: 0, score: 0, second: 0, richest: 0, bars: MONTHLY_BARS };
+    const seatsFull: MonthlyPlayback = {
+      phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0,
+      encourage: false, closing: false,
+    };
+    const drawn: { x: number; y: number }[] = [];
+    const ctx = {
+      drawImage: (_b: unknown, x: number, y: number) => drawn.push({ x, y }),
+    } as unknown as CanvasRenderingContext2D;
+    const flic = () => ({
+      frames: [{} as unknown as ImageBitmap], width: 156, height: 156, frameMs: 71, close: () => {},
+    });
+
+    // 收尾那一拍 → 冠军的奖座（第 1 组）：冠军 = richest = 0 → 角色 0
+    drawMonthlyAwardFlic(ctx, flic, baseState, baseView, baseAward, { ...seatsFull, closing: true }, 0);
+    expect(drawn[0]).toEqual({
+      x: MONTHLY_AWARD_SEAT_X[4]![0]! + monthlyAwardFlicOffset(0, 'trophy').x,
+      y: MONTHLY_AWARD_FLIC_DX + monthlyAwardFlicOffset(0, 'trophy').y,
+    });
+
+    // 頒獎屏那一拍 → 悲情人物的立绘（第 2 组）：winner = 1 → 角色 1
+    drawn.length = 0;
+    drawMonthlyAwardFlic(ctx, flic, baseState, baseView, { ...baseAward, winner: 1 }, seatsFull, 0);
+    expect(drawn[0]).toEqual({
+      x: MONTHLY_AWARD_SEAT_X[4]![1]! + monthlyAwardFlicOffset(1, 'sad').x,
+      y: MONTHLY_AWARD_FLIC_DX + monthlyAwardFlicOffset(1, 'sad').y,
+    });
   });
 });
 
