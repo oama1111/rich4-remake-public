@@ -314,10 +314,13 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   gaps['landOwner'] =
     '地产归属与等级存在存档的地图数据块中，解析器尚未支持从该块回读，已置为全部无主';
   gaps['lottery'] = '樂透号码表在存档中的偏移未验证，已置空';
-  gaps['market'] = '股市行情与 144 日历史在存档中的偏移未验证，已按地图重置为初始行情';
-  gaps['holdings'] = '各玩家持仓在存档中的偏移未验证，已置为空仓';
+  gaps['market'] =
+    '股市行情与 144 日历史：槽内偏移**已核**（历史 +0x6ec 共 0x1b00、十二支股票表 +0x2376），解析待接，已按地图重置为初始行情 @source rich4_player_save_state.asm:594/:675';
+  gaps['holdings'] =
+    '各玩家持仓：槽内偏移**已核**（+0x21ec，0x180 = 4 人 × 12 支 × 8 字节），解析待接，已置为空仓 @source rich4_player_save_state.asm:613';
   gaps['pool'] = '公库金额在存档中的偏移未验证，已置 0';
-  gaps['toolStock'] = '道具全局库存在存档中的偏移未验证，已置为初始库存';
+  gaps['toolStock'] =
+    '道具全局库存：槽内偏移**已核**（+0x6de），解析待接，已置为初始库存 @source rich4_player_save_state.asm:573';
   gaps['commercialShares'] = '各企业的已售股数在存档中的偏移未验证，已按地图初值重置';
   gaps['commercialOwners'] = '各企业的归属与持股排名在存档中的偏移未验证，已置为无主';
   gaps['objects'] = '地图物件表（神明/路障/地雷）在存档 0x0204 起，解析器尚未回读，已置空';
