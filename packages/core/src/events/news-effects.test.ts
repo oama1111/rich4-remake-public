@@ -9,9 +9,10 @@ import { makePlayer } from '../testing/factories.ts';
 import {
   IMPLEMENTED_NEWS_IDS,
   MARKET_CLOSE_DAYS,
+  STOCK_SUSPEND_DAYS,
   applyNewsEffect,
 } from './news-effects.ts';
-import type { StockMarketState } from '../places/stock-market.ts';
+import { HISTORY_DAYS, type StockMarketState } from '../places/stock-market.ts';
 
 const ctx = (over = {}) => ({
   players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: 100_000, moneyInBank: 0 })),
@@ -281,6 +282,75 @@ describe('★ 新聞 24/25/26：股市三连 @source rich4_news.asm:2939 / VA 0x
   });
 });
 
+describe('★ 新聞 27/28：随机一支股票停牌／恢复 @source VA 0x0044b0f8 / 0x0044b1c3', () => {
+  /** 固定序列的假 RNG —— 只实现 `below`，方便钉住「挑中了哪一支」 */
+  const fakeRng = (picks: number[]) => {
+    let i = 0;
+    return { below: (n: number) => (picks[i++] ?? 0) % n };
+  };
+  const stocks = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      openPrice: 100 + i,
+      price: 100 + i,
+      f6: 0,
+      newsFlag: 0,
+    }) as never);
+  const mkt = (n: number, over: Partial<StockMarketState> = {}): StockMarketState => ({
+    stocks: stocks(n),
+    day: 5,
+    history: Array.from({ length: n }, () => new Array<number>(HISTORY_DAYS).fill(0)),
+    index: 0,
+    closedDays: 0,
+    ...over,
+  });
+
+  it('★★ news[27]：挑中的那支 `f6 = 0xf`、`price ← openPrice`、写回 `history[day-1]`', () => {
+    const m = mkt(12, { history: Array.from({ length: 12 }, () => new Array<number>(HISTORY_DAYS).fill(9)) });
+    const r = applyNewsEffect(27, ctx({ market: m, rng: fakeRng([3]) }));
+    expect(r.unimplemented).toBe(false);
+    expect(STOCK_SUSPEND_DAYS).toBe(0xf); // ★ 文案说 10 天，立即数是 15
+    expect(r.market?.stocks[3]!.f6).toBe(0xf);
+    expect(r.market?.stocks[3]!.price).toBe(103); // = 它自己的 openPrice
+    expect(r.market?.history[3]![4]).toBe(103); // day-1 = 4
+    // 别的股票一动不动
+    expect(r.market?.stocks[0]!.f6).toBe(0);
+    expect(r.market?.history[0]![4]).toBe(9);
+  });
+
+  it('★ news[27] 的 day 为 0 时回绕到 0x8f（环形历史）', () => {
+    const r = applyNewsEffect(27, ctx({ market: mkt(3, { day: 0 }), rng: fakeRng([1]) }));
+    expect(r.market?.history[1]![HISTORY_DAYS - 1]).toBe(101);
+  });
+
+  it('★★ news[28]：只在**已停牌**的股票里挑（`f6 = 0`）', () => {
+    const m = mkt(4);
+    const withSuspended: StockMarketState = {
+      ...m,
+      stocks: m.stocks.map((s, i) => (i === 2 ? { ...s, f6: 0xf } : s)) as never,
+    };
+    // 停牌集合 = [2]，故 below(1) 必中 2
+    const r = applyNewsEffect(28, ctx({ market: withSuspended, rng: fakeRng([0]) }));
+    expect(r.market?.stocks[2]!.f6).toBe(0);
+    expect(r.unimplemented).toBe(false);
+  });
+
+  it('★ news[28] 在**一支都没停牌**时什么都不做（不照抄原版的 `idiv 0` 除零崩）', () => {
+    const m = mkt(4);
+    const r = applyNewsEffect(28, ctx({ market: m, rng: fakeRng([0]) }));
+    expect(r.unimplemented).toBe(false);
+    expect(r.amount).toBe(0);
+    // 行情原样（`market` 字段不带 ⇒ 调用方沿用原值）
+    expect(r.market).toBeUndefined();
+    expect(m.stocks.every((s) => s.f6 === 0)).toBe(true);
+  });
+
+  it('★ 没给 rng 时报未实现（不会静默挑第 0 支）', () => {
+    for (const id of [27, 28]) {
+      expect(applyNewsEffect(id, ctx({ market: mkt(4) })).unimplemented, `news[${id}]`).toBe(true);
+    }
+  });
+});
+
 describe('未实现', () => {
   it('方向为空的事件标记未实现', () => {
     // news[6] 公告地價調漲３０％ —— 作用于地块，不在本模块
@@ -297,7 +367,7 @@ describe('未实现', () => {
     // 只是一直没列进这张表（本表没有别的消费者，纯登记）。
     // 16/17 = 行人/車輛休息一回合、24/25/26 = 股市三连（2026-09-17 接）
     expect(IMPLEMENTED_NEWS_IDS).toEqual([
-      0, 1, 2, 3, 4, 8, 9, 10, 16, 17, 22, 24, 25, 26, 29, 11, 12, 13, 23,
+      0, 1, 2, 3, 4, 8, 9, 10, 16, 17, 22, 24, 25, 26, 27, 28, 29, 11, 12, 13, 23,
     ]);
   });
 

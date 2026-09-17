@@ -87,6 +87,18 @@ export interface EventEntry {
      *   （VA 0x0044b0c6）。该全局量就是 `fcn_00428d01` 里那个「休市」判据。
      */
     | 'marketClose'
+    /**
+     * 新聞 27：**随机挑一支股票停牌** —— `f6(+6) = 0xf`，并把 `price` 冻结成
+     *   `openPrice`、写回 `history[股票][day-1]`。@source VA 0x0044b0f8..0x0044b193
+     *   ★ 文案说「１０天」而立即数是 `0xf`(15)：**照抄立即数**。
+     */
+    | 'suspendStock'
+    /**
+     * 新聞 28：**在停牌股里随机挑一支恢复**（`f6 = 0`）@source VA 0x0044b1c3..0x0044b24d
+     *   ★ 原版在「一支停牌股都没有」时 `idiv 0` 会**除零崩** —— 本引擎不做这件事
+     *   （那一支直接什么都不做）。
+     */
+    | 'resumeStock'
   )[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
@@ -161,8 +173,8 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 24, va: 0x0044b00a, factor: null, effects: ['marketBearish'], textVa: 0x46573c, text: "#0173股市低迷不振重挫崩盤", literal: null },
   { id: 25, va: 0x0044b055, factor: null, effects: ['marketBullish'], textVa: 0x465756, text: "#0174股市氣勢如虹全面上漲", literal: null },
   { id: 26, va: 0x0044b0a0, factor: null, effects: ['marketClose'], textVa: 0x465770, text: "#0175股市暫停交易１０天", literal: null },
-  { id: 27, va: 0x0044b0d1, factor: null, effects: [], textVa: 0x465788, text: "#0176%s股票暫停交易１０天", literal: null },
-  { id: 28, va: 0x0044b1a3, factor: null, effects: [], textVa: 0x4657a2, text: "#0177%s股票恢復上市交易", literal: null },
+  { id: 27, va: 0x0044b0d1, factor: null, effects: ['suspendStock'], textVa: 0x465788, text: "#0176%s股票暫停交易１０天", literal: null },
+  { id: 28, va: 0x0044b1a3, factor: null, effects: ['resumeStock'], textVa: 0x4657a2, text: "#0177%s股票恢復上市交易", literal: null },
   { id: 29, va: 0x0044b25b, factor: null, effects: ['prison'], textVa: 0x4657ba, text: "#0178%s違法超貸\n經營者%s坐牢５天", literal: null },
   { id: 30, va: 0x0044b374, factor: null, effects: [], textVa: 0x4657db, text: "#0179%s工廠排放污水\n罰款10000元", literal: null },
   { id: 31, va: 0x0044b419, factor: null, effects: [], textVa: 0x4657fb, text: "#0180%s海外投資\n獲利20000元", literal: null },

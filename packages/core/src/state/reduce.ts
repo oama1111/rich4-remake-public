@@ -980,7 +980,14 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           });
         }
         // 新聞／命運：抽一张可行的事件并施加其效果
-        if (node.specialKind === SPECIAL_KIND.NEWS) return drawAndApplyNews(next, topo);
+        // ★ 新聞有一部分效果**要用随机**（27/28 抽股票），走引擎那条 PRNG 流：
+        //   单机可完整复现、联机两端一致（C-DET-4）。
+        if (node.specialKind === SPECIAL_KIND.NEWS) {
+          const rng = new WatcomRng();
+          rng.setState(next.rngState);
+          const applied = drawAndApplyNews(next, topo, rng);
+          return { ...applied, rngState: rng.getState() };
+        }
         if (node.specialKind === SPECIAL_KIND.FORTUNE) return drawAndApplyFortune(next, topo);
         // 魔法屋：两个转盘一转就结算，中间没有玩家决策
         if (node.specialKind === SPECIAL_KIND.MAGIC_HOUSE) return runMagicHouse(next, topo);
@@ -3293,7 +3300,7 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
  * 此处按事件语义现场挑；尚不能判定的事件由 applyNewsEffect
  * 标记 unimplemented，状态不变。
  */
-function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
+function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng): GameState {
   const lands = allEffectiveLands(state, topo);
   const draw = drawEvent(state.newsDeck, (id) =>
     isNewsFeasible(id, {
@@ -3326,8 +3333,9 @@ function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
     facilities,
     holdings: withDeck.holdings.map((row) => row.map((h) => h.amount)),
     prices: withDeck.market.stocks.map((st) => st.price),
-    // 新聞 24/25/26 会改行情（`newsFlag` / `closedDays`）
+    // 新聞 24/25/26/27/28 会改行情（`newsFlag` / `closedDays` / 停牌）
     market: withDeck.market,
+    ...(rng === undefined ? {} : { rng }),
   });
 
   let applied: GameState = {

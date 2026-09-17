@@ -16,7 +16,7 @@ import type { Player } from '../state/types.ts';
 import { NEWS_EVENTS, eventAmount, newsEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { CONFINEMENT_SLOTS, confine } from '../rules/confinement.ts';
-import type { StockMarketState } from '../places/stock-market.ts';
+import { HISTORY_DAYS, type StockMarketState } from '../places/stock-market.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { isAlive } from '../state/types.ts';
 import { blessingMultiplier } from '../rules/blessing.ts';
@@ -46,6 +46,14 @@ export interface NewsEffectResult {
   unimplemented: boolean;
 }
 
+/**
+ * 效果阶段需要的随机出口 —— 只暴露 `below(n)`（= 原版惯例 `rand() % n`，**保留模偏差**）。
+ *   `WatcomRng` 天然满足这个形状，测试里也可以塞一个固定序列的假实现。
+ */
+export interface EffectRng {
+  below(n: number): number;
+}
+
 export interface NewsEffectContext {
   players: readonly Player[];
   /**
@@ -71,8 +79,16 @@ export interface NewsEffectContext {
   prisonOccupancy?: readonly number[];
   /** 医院占用表（`0x496b60`）—— `hospital` / `releaseHospital` / `extendHospital` 效果用它 */
   hospitalOccupancy?: readonly number[];
-  /** 行情 —— 新聞 24/25（改各股 `newsFlag`）与 26（改 `closedDays`）要它 */
+  /** 行情 —— 新聞 24/25（改各股 `newsFlag`）、26（改 `closedDays`）、27/28（停牌）要它 */
   market?: StockMarketState;
+  /**
+   * PRNG —— **效果阶段**要用随机的那些事件（新聞 27/28 抽股票；地块/企业那批将来也要）。
+   *
+   * ★ 传进来的必须是**引擎那条流**（`state.rngState` → `WatcomRng`），不是
+   *   `Math.random`：这样单机可完整复现、联机两端一致（C-DET-4），
+   *   且与「演出不许碰引擎随机」那条规矩不冲突（这里是 core）。
+   */
+  rng?: EffectRng;
   /** 覆盖天数；通常取自事件表的 literal */
   days?: number;
   /** 神明加持倍率档位：2 加倍、1 归零、0 不变（见 rules/blessing.ts） */
@@ -143,6 +159,8 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
       e.effects.includes('marketBearish') ||
       e.effects.includes('marketBullish') ||
       e.effects.includes('marketClose') ||
+      e.effects.includes('suspendStock') ||
+      e.effects.includes('resumeStock') ||
       (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
   ).map((e) => e.id),
   ...PERCENT_NEWS.keys(),
@@ -157,6 +175,12 @@ export const LOAN_FREEZE_DAYS = 15;
  *   （文案的「１０」是全角字、没有 `%d`，所以 event-table 的 literal 是 null）
  */
 export const MARKET_CLOSE_DAYS = 0xa;
+
+/**
+ * 新聞 27 停牌的天数 —— 汇编里是 `mov byte [股票+6], 0xf`。
+ *   ★ 文案写「暫停交易１０天」，立即数却是 **15**；本引擎**照抄立即数**（C-FID）。
+ */
+export const STOCK_SUSPEND_DAYS = 0xf;
 
 /**
  * 施加一个新聞事件的效果（第二阶段）。
@@ -321,6 +345,53 @@ export function applyNewsEffect(
     const market = ctx.market;
     if (market === undefined) return { ...base, unimplemented: true };
     return { ...base, amount: MARKET_CLOSE_DAYS, market: { ...market, closedDays: MARKET_CLOSE_DAYS } };
+  }
+
+  // ── 新聞 27 / 28「某支股票暫停交易／恢復上市交易」────────────────
+  //   @source `fcn_0044b0d1`（27）与 `fcn_0044b1a3`（28）：
+  //   ```asm
+  //   ; 27
+  //   call rand / idiv 0xc            ; ★ 12 支里随机挑
+  //   mov  byte [股票 + 6], 0xf       ; f6 = 15（文案说 10 天，立即数是 15）
+  //   mov  ecx, [股票 + 0x10]         ; openPrice
+  //   mov  [股票 + 0x14], ecx         ; price ← openPrice（当日冻结）
+  //   day = [0x499100] - 1（< 0 → 0x8f）
+  //   history[股票][day] = price
+  //   ; 28
+  //   收集所有 f6 != 0 的股票 → call rand / idiv 数量 → mov byte [股票 + 6], 0
+  //   ```
+  //   ★ 28 在「一支都没有」时原版 `idiv ebx`（ebx=0）会除零崩 —— 本引擎那一支直接不动。
+  if (entry.effects.includes('suspendStock') || entry.effects.includes('resumeStock')) {
+    const market = ctx.market;
+    const rng = ctx.rng;
+    if (market === undefined || rng === undefined || market.stocks.length === 0) {
+      return { ...base, unimplemented: true };
+    }
+    const stocks = [...market.stocks];
+    if (entry.effects.includes('suspendStock')) {
+      const pick = rng.below(market.stocks.length);
+      const target = stocks[pick]!;
+      // price ← openPrice（原版把当日价冻结在开盘价）
+      stocks[pick] = { ...target, f6: STOCK_SUSPEND_DAYS, price: target.openPrice };
+      const day = (market.day - 1 + HISTORY_DAYS) % HISTORY_DAYS;
+      const history = market.history.map((row, i) =>
+        i === pick ? row.map((v, d) => (d === day ? stocks[pick]!.price : v)) : row,
+      );
+      return {
+        ...base,
+        amount: STOCK_SUSPEND_DAYS,
+        market: { ...market, stocks, history },
+      };
+    }
+    // 28：只在**已停牌**的那几支里挑（挑不到就什么都不做，不照抄除零崩）
+    const suspended = market.stocks
+      .map((s, i) => ({ s, i }))
+      .filter((e) => e.s.f6 !== 0)
+      .map((e) => e.i);
+    if (suspended.length === 0) return { ...base, amount: 0 };
+    const pick = suspended[rng.below(suspended.length)]!;
+    stocks[pick] = { ...stocks[pick]!, f6: 0 };
+    return { ...base, amount: 0, market: { ...market, stocks } };
   }
 
   // ── 百分比类（11/12/13/23）────────────────────────────────────
