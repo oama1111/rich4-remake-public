@@ -82,6 +82,7 @@ import { onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
 // ★ 「請選擇設施類別」那扇窗（Q-TOOL-4）—— 真人盖**等级 0 的設施**时要先选种类
 //   （原版 `fcn_00440aac` / 窗口过程 `fcn_0043fae4`）。
 import { PICKER_TOOL_ID, openFacilityPicker, pickerNeededFor } from './facility-picker.ts';
+import { needsStealPick, openStealPicker } from './steal-picker.ts';
 import {
   Hud,
   SIDEBAR,
@@ -6946,6 +6947,21 @@ function bindInput(): void {
       const source = pick.source;
       endPick();
       if (source.kind === 'card') {
+        // ★ 搶奪卡（13）打**人**：原版在这里换成 `fcn_0044192a` 那扇模态选牌窗
+        //   （见 `steal-picker.ts`），挑完才 `consume_card` + `receive_card`；
+        //   右键取消 = 返回 0 = **卡不消耗**（`rich4_card_qiangduoka.asm:87..123`）。
+        const t = hit.target;
+        if (t.kind === 'player' && needsStealPick(state, source.cardId, t)) {
+          openStealPicker(t.index, 'steal', (pick) => {
+            if (pick === null) return; // 取消：什么都不派（照抄 exe）
+            dispatch({
+              type: 'useCard',
+              cardId: source.cardId,
+              target: { kind: 'player', index: t.index, steal: pick },
+            });
+          });
+          return;
+        }
         dispatch({ type: 'useCard', cardId: source.cardId, target: hit.target });
       } else if (source.toolId === PICKER_TOOL_ID && pickerNeededFor(state, topo, hit.nodeId)) {
         // ★ 機器工人盖**等级 0 的設施**：原版先开「請選擇設施類別」

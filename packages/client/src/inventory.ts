@@ -109,13 +109,29 @@ export const INV_VEHICLE_IMAGE: ReadonlyMap<number, number> = new Map([
 export const INV_FONT_SIZE = 0x14;
 const INV_FONT = FONT_FAMILY;
 
-/** 第 `slot` 格的矩形（屏幕坐标）*/
-export function invCellRect(slot: number): { x: number; y: number; w: number; h: number } {
+/**
+ * 浮窗**底图**的落点。
+ *
+ * ★ 同一张底图（`Panel.mkf` 11）在原版里画在三处，落点各不相同：
+ *   自己的道具/卡片欄在 (14,130)（本文件），搶奪卡的选牌窗在 (14,70)（卡片）与
+ *   (14,270)（道具）—— 见 `steal-picker.ts`。格子相对**底图**的偏移三处一致
+ *   （都是 +5,+5），所以几何函数都接受一个 `origin`。
+ */
+export interface InvOrigin {
+  x: number;
+  y: number;
+}
+
+/** 第 `slot` 格的矩形（屏幕坐标）；`origin` 省略 = 自己的浮窗 */
+export function invCellRect(
+  slot: number,
+  origin: InvOrigin = INV_ORIGIN,
+): { x: number; y: number; w: number; h: number } {
   const col = slot % INV_CELL.cols;
   const row = Math.floor(slot / INV_CELL.cols);
   return {
-    x: INV_CELL.x0 + col * INV_CELL.w,
-    y: INV_CELL.y0 + row * INV_CELL.h,
+    x: origin.x + (INV_CELL.x0 - INV_ORIGIN.x) + col * INV_CELL.w,
+    y: origin.y + (INV_CELL.y0 - INV_ORIGIN.y) + row * INV_CELL.h,
     w: INV_CELL.w,
     h: INV_CELL.h,
   };
@@ -297,11 +313,12 @@ export function drawInventory(
   kind: 'tools' | 'cards',
   entries: readonly InvEntry[],
   vehicleImage: number | null,
+  origin: InvOrigin = INV_ORIGIN,
 ): void {
-  const ox = INV_ORIGIN.x;
-  const oy = INV_ORIGIN.y;
+  const ox = origin.x;
+  const oy = origin.y;
 
-  // 底图（图 1 道具 / 图 0 卡片），锚点是 (0,0)，所以直接落在 (14,130)
+  // 底图（图 1 道具 / 图 0 卡片），锚点是 (0,0)，所以直接落在 origin 上
   const base = sprite(
     'Panel.mkf',
     INV_RESOURCE,
@@ -311,7 +328,7 @@ export function drawInventory(
   if (base !== null) ctx.drawImage(base.bitmap, ox, oy);
 
   for (const { slot, id, count } of entries) {
-    const { x, y } = invCellRect(slot);
+    const { x, y } = invCellRect(slot, origin);
 
     if (kind === 'tools') {
       const icon = sprite('Panel.mkf', INV_RESOURCE, INV_LOCAL.iconFirst + id, true);

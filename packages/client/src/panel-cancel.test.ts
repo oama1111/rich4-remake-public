@@ -241,9 +241,12 @@ describe('★ 登记的整屏：声明了右键的那几屏', () => {
     // 研究所選項目（`loc_00440669` 的 `WM_RBUTTONDOWN` → `PostMessage(0x402, -1)`
     //   = 不研發、直接收尾，见 `research-screen.ts` 的 `contextmenu`）、
     // 「請選擇設施類別」（`fcn_0043fae4` 的 `0x205` 那一支 = 取消，返回 −1，
-    //   见 `facility-picker.ts` 的 `contextmenu`）
+    //   见 `facility-picker.ts` 的 `contextmenu`）、
+    // 搶奪卡的选牌窗（`fcn_004413ec` 的 `0x205` 那一支 = `Post_0402_Message(0)`
+    //   = 取消 ⇒ 卡不消耗，见 `steal-picker.ts` 的 `contextmenu`）
     expect(withCtx).toEqual([
       'big-map', 'eventBox', 'facility-picker', 'help', 'lottery', 'notice-board', 'research',
+      'steal-picker',
     ]);
   });
 

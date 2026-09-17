@@ -32,6 +32,7 @@ import { helpScreen } from './help-screen.ts';
 import { bigMapScreen } from './big-map-screen.ts';
 import { sharesScreen } from './shares-screen.ts';
 import { facilityPickerScreen } from './facility-picker.ts';
+import { stealPickerScreen } from './steal-picker.ts';
 
 export const SCREENS: readonly UiScreen[] = [
   // 演出类（事件起播）放前面：它们一旦在播就压住底下的一切
@@ -55,6 +56,11 @@ export const SCREENS: readonly UiScreen[] = [
   //   （原版 `fcn_00440aac`，一扇盖在棋盘上的浮窗）。它由主机的拾取/加蓋流程
   //   主动 `openFacilityPicker()` 打开，`active()` 只在开窗期间为真。
   facilityPickerScreen,
+  // ★ 「从对方手里挑一件」（T-053）：搶奪卡（13）的真人路径。原版是
+  //   `fcn_0044192a` 里那扇**模态浮窗**（`Panel.mkf` 11 的卡片欄 + 道具欄），
+  //   由主机的「目标拾取」拾到人之后主动 `openStealPicker()` 打开。
+  //   ★ 与施設类别窗同一类：`windowed: true`、`active()` 只在开窗期间为真。
+  stealPickerScreen,
   // 待决交互类
   boardScreen,
   auctionScreen,

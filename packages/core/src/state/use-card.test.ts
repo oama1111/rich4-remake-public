@@ -64,6 +64,50 @@ describe('★ 出牌入口', () => {
     expect(reduce(s, { type: 'useCard', cardId: 21 }, topo)).toBe(s);
   });
 
+  it('★ 搶奪卡（13）抢到手牌 —— 挑哪一张由 `target.steal` 传入（T-053 的选牌窗喂它）', () => {
+    const { state, topo } = scene();
+    let s = give(state, 1, 5); // 目标手里有一张 5 号卡
+    s = give(s, 0, 13);
+    const after = reduce(s, {
+      type: 'useCard',
+      cardId: 13,
+      target: { kind: 'player', index: 1, steal: { kind: 'card', id: 5 } },
+    }, topo);
+    expect(after).not.toBe(s);
+    // 卡从目标手里转到我手里，出牌的 13 被消耗
+    expect(after.players[1]!.cards).not.toContain(5);
+    expect(after.players[0]!.cards).toContain(5);
+    expect(after.players[0]!.cards).not.toContain(13);
+  });
+
+  it('★ 搶奪卡（13）走道具路径 —— `steal.kind === \'tool\'`', () => {
+    const { state, topo } = scene();
+    let s = give(state, 0, 13);
+    // 目标（1 号）身上有 3 号道具：`tools[玩家 * 15 + 道具号]`
+    s = { ...s, tools: s.tools.map((_, i) => (i === 1 * 15 + 3 ? 1 : 0)) };
+    const after = reduce(s, {
+      type: 'useCard',
+      cardId: 13,
+      target: { kind: 'player', index: 1, steal: { kind: 'tool', id: 3 } },
+    }, topo);
+    expect(after.tools[1 * 15 + 3]).toBe(0);
+    expect(after.tools[0 * 15 + 3]).toBe(1);
+    expect(after.players[0]!.cards).not.toContain(13);
+  });
+
+  it('★ 搶奪卡缺 `steal` 时原样不动（真人还没挑的那一拍）—— 卡不消耗', () => {
+    const { state, topo } = scene();
+    let s = give(state, 1, 5);
+    s = give(s, 0, 13);
+    const after = reduce(s, {
+      type: 'useCard',
+      cardId: 13,
+      target: { kind: 'player', index: 1 },
+    }, topo);
+    expect(after).toBe(s);
+    expect(after.players[0]!.cards).toContain(13);
+  });
+
   it('★ 出局者不能出牌', () => {
     const { state, topo } = scene();
     const s = {
