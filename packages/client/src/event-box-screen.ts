@@ -136,6 +136,7 @@ import {
   type Sprite,
 } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
+import { portraitResource } from './assets.ts';
 import { DIALOG_SKIN_IMAGE, DIALOG_SKIN_RESOURCE } from './gameui.ts';
 import type { UiScreen, UiScreenEnv,
   UiKeyEvent,
@@ -214,6 +215,23 @@ export const NEWS_SHARE_PITCH = 0x20;
 export function newsShareLine(name: string, amount: number): string {
   return `${name}繳交${amount}元`;
 }
+
+/**
+ * 明细行左侧的**角色头像**：`(x, 行 y + dy)`。
+ *
+ * @source 四支函数里紧跟着 `draw_text` 的那一句：
+ *   `fcn_004562a5(框表面, [0x498eb0 + 玩家×0x34] + 0x30, x=0x186, y=edi+0xc)`。
+ *   `[0x498eb0 + p*0x34]` 是 **`map.mkf` 资源 `角色 + 0x1b`**（`rich4_load_map.asm:495-506`
+ *   开局按角色 `read_mkf` 一次，见 `assets.ts` 的 `portraitResource`）；
+ *   `+0x30` = `0xc + 12×3` ⇒ **图 3**（图 N 的记录在 `+0xc+12N`，与 T-041 那条换算同源）。
+ *   `fcn_004562a5` → `draw_non_zero_image_in_rect` ⇒ **抠黑**（与 `fcn_004563f5`
+ *   那个不透明版本相对，见 `rich4_drawing_utils2.asm:186` / `:338`）。
+ */
+export const NEWS_SHARE_PORTRAIT_X = 0x186;
+/** 头像相对本行文字顶端的 y 偏移 @source 同上 `lea eax,[edi+0xc]` */
+export const NEWS_SHARE_PORTRAIT_DY = 0xc;
+/** 头像取角色头像表的第几张 @source `+0x30` = `0xc + 12×3` ⇒ 图 3 */
+export const NEWS_SHARE_PORTRAIT_IMAGE = 3;
 /** 命運说明落点 (24,330) @source 例 `fcn_0044be16` 的 0x0044c132 `push 0x14a / push 0x18` */
 export const FORTUNE_TEXT_AT = { x: 0x18, y: 0x14a } as const;
 
@@ -422,7 +440,12 @@ export interface EventBoxView {
    * 故这一段在结算**之后**播，但演的是「先算好」那一趟的数字。
    * 金额 ≤ 0 的那几位原版不画（`test eax,eax / je`），这里同样跳过。
    */
-  shares?: readonly { readonly name: string; readonly amount: number }[];
+  shares?: readonly {
+    readonly name: string;
+    readonly amount: number;
+    /** 角色号 —— 明细行左侧头像用（`portraitResource(character)` 图 3）*/
+    readonly character: number;
+  }[];
 }
 
 /** 计划里的一条**贴图** */
@@ -557,12 +580,16 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
     let line = 0;
     for (const s of v.shares) {
       if (s.amount <= 0) continue; // 原版 `test eax,eax / je` 不画 0 那一行
+      const y = NEWS_SHARE_AT.y + line * NEWS_SHARE_PITCH;
+      items.push(textItem(newsShareLine(s.name, s.amount), { x: NEWS_SHARE_AT.x, y }, EVENT_FONT_SIZE, false));
+      // 头像紧随其后（原版就是 draw_text 之后立刻 fcn_004562a5），落点 (0x186, y+0xc)
       items.push(
-        textItem(
-          newsShareLine(s.name, s.amount),
-          { x: NEWS_SHARE_AT.x, y: NEWS_SHARE_AT.y + line * NEWS_SHARE_PITCH },
-          EVENT_FONT_SIZE,
-          false,
+        blitSprite(
+          'map.mkf',
+          portraitResource(s.character),
+          NEWS_SHARE_PORTRAIT_IMAGE,
+          true,
+          { x: NEWS_SHARE_PORTRAIT_X, y: y + NEWS_SHARE_PORTRAIT_DY },
         ),
       );
       line += 1;
@@ -588,7 +615,7 @@ export function newsView(
   newsId: number,
   priceIndex: number,
   subject: string,
-  shares?: readonly { name: string; amount: number }[],
+  shares?: readonly { name: string; amount: number; character: number }[],
 ): EventBoxView {
   return {
     kind: 'news',
@@ -960,10 +987,14 @@ export const eventBoxScreen: UiScreen = {
       const who = after.players[after.currentPlayer];
       const subject = eventSubject(before, after, after.currentPlayer);
       // ★ 新聞百分比类那四条：把引擎「先算好」的逐人金额配上角色名交给计划
-      const shares = ev.shares?.map((s) => ({
-        name: CHARACTERS[after.players[s.player]?.character ?? -1]?.name ?? '',
-        amount: s.amount,
-      }));
+      const shares = ev.shares?.map((s) => {
+        const character = after.players[s.player]?.character ?? -1;
+        return {
+          name: CHARACTERS[character]?.name ?? '',
+          amount: s.amount,
+          character,
+        };
+      });
       const view =
         ev.kind === 'news'
           ? newsView(ev.id, after.priceIndex, subject, shares)

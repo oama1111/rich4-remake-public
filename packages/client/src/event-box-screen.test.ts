@@ -11,12 +11,16 @@
  *      （220,129，正中）落 + 卡面 `Data[卡号+0x23a]`（176×240）落 (138,200)，停 1500ms；
  *   ④ **触发**：`lastEvent` 变了 → 新聞/命運；否则手牌变长 → 抽卡；正在播时不起新的。
  */
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { CARDS, fortuneEvent, newsEvent } from '@rich4/data';
 import type { GameState, Player } from '@rich4/core';
 import {
   NEWS_SHARE_AT,
   NEWS_SHARE_PITCH,
+  NEWS_SHARE_PORTRAIT_DY,
+  NEWS_SHARE_PORTRAIT_IMAGE,
+  NEWS_SHARE_PORTRAIT_X,
   newsShareLine,
   CARD_FACE_AT,
   CARD_FACE_BASE,
@@ -60,7 +64,7 @@ import {
   type EventBoxItem,
   type EventBoxPlan,
 } from './event-box-screen.ts';
-import type { LoadedFlic, Sprite } from './assets.ts';
+import { portraitResource, type LoadedFlic, type Sprite } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
 
 // ============================================================
@@ -857,9 +861,9 @@ describe('★ 新聞百分比类那四条：逐人明细行 @source rich4_news.a
   it('★★ 明细行 = `%s繳交%d元`，从 (0x18,0x15a) 起、行距 0x20，金额 0 的不画', () => {
     const plan = eventBoxPlan(
       newsView(11, 1, '', [
-        { name: '小丹尼', amount: 5000 },
-        { name: '錢夫人', amount: 0 }, // 原版 `test eax,eax / je` 跳过
-        { name: '忍太郎', amount: 1200 },
+        { name: '小丹尼', amount: 5000, character: 0 },
+        { name: '錢夫人', amount: 0, character: 3 }, // 原版 `test eax,eax / je` 跳过
+        { name: '忍太郎', amount: 1200, character: 2 },
       ]),
     );
     // ★ 只挑「明细行」那种形状（`…繳交<数字>元`）—— 事件标题里也含「繳交」两个字
@@ -875,6 +879,22 @@ describe('★ 新聞百分比类那四条：逐人明细行 @source rich4_news.a
     // 左上角对齐（flag 0），不是正中
     expect(lines[0]!.align).toBe('left');
     expect(lines[0]!.baseline).toBe('top');
+    // ★ 每画一行明细，紧跟一张**角色头像**：`map.mkf` 资源 `角色+0x1b` 图 3、抠黑，
+    //   落点 (0x186, 行 y + 0xc) —— 原版是 `fcn_004562a5`（= 抠黑那份）
+    const faces = plan.items.filter(
+      (i): i is Extract<typeof i, { kind: 'blit' }> => i.kind === 'blit' && i.archive === 'map.mkf',
+    );
+    expect(faces.map((f) => [f.resource, f.index, f.keyed])).toEqual([
+      [portraitResource(0), NEWS_SHARE_PORTRAIT_IMAGE, true],
+      [portraitResource(2), NEWS_SHARE_PORTRAIT_IMAGE, true],
+    ]);
+    expect(faces.map((f) => [f.at.x, f.at.y])).toEqual([
+      [NEWS_SHARE_PORTRAIT_X, NEWS_SHARE_AT.y + NEWS_SHARE_PORTRAIT_DY],
+      [NEWS_SHARE_PORTRAIT_X, NEWS_SHARE_AT.y + NEWS_SHARE_PITCH + NEWS_SHARE_PORTRAIT_DY],
+    ]);
+    expect(NEWS_SHARE_PORTRAIT_X).toBe(0x186);
+    expect(NEWS_SHARE_PORTRAIT_DY).toBe(0xc);
+    expect(NEWS_SHARE_PORTRAIT_IMAGE).toBe(3);
     // 常量本身也钉住（`%s繳交%d元` 的格式与 0x15a / 0x20）
     expect(NEWS_SHARE_AT).toEqual({ x: 0x18, y: 0x15a });
     expect(NEWS_SHARE_PITCH).toBe(0x20);
@@ -887,5 +907,24 @@ describe('★ 新聞百分比类那四条：逐人明细行 @source rich4_news.a
     expect(plain.items.some((i) => i.kind === 'text' && isShareLine(i.text))).toBe(false);
     const fortune = eventBoxPlan({ ...newsView(11, 1, ''), kind: 'fortune', id: 3 });
     expect(fortune.items.some((i) => i.kind === 'text' && isShareLine(i.text))).toBe(false);
+  });
+});
+
+describe('★ 明细行头像的素材确实存在 @source map.mkf 资源 角色+0x1b 图 3', () => {
+  const DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/map';
+  const has = existsSync(DIR);
+  it('★★ 四个角色的头像表各 7 张，图 3 存在且是 39×35 那一档', () => {
+    if (!has) return;
+    for (let character = 0; character < 4; character++) {
+      const res = portraitResource(character);
+      expect(res).toBe(27 + character);
+      const files = readdirSync(DIR).filter((f) => f.startsWith(`${String(res).padStart(4, '0')}_`));
+      // 7 张表情（图 0 = HUD 那张大的 85×71，1..6 是小的；明细行取图 3）
+      expect(files.length, `资源 ${res}`).toBe(7);
+      expect(NEWS_SHARE_PORTRAIT_IMAGE).toBeLessThan(files.length);
+    }
+    // 图 3 的尺寸（与「行距 0x20、画在 y+0xc」这条版面自洽：高 35 略高于一行）
+    const png = readFileSync(`${DIR}/0027_003.png`).subarray(16, 24);
+    expect([png.readUInt32BE(0), png.readUInt32BE(4)]).toEqual([39, 35]);
   });
 });

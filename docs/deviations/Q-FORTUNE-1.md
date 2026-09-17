@@ -164,8 +164,21 @@ case 8: case 9: return ctx.stockAmount.some((a) => a !== 0) ? yes() : no;
   真地图 reduce 1 条（抽到 11 → `lastEvent.shares` 四个座位的金额、公库 +10000）；
   表现侧 2 条（明细行的文本/落点/对齐、金额 0 不画、不传 `shares` 时一行不多）。
 
-⚠️ **仍未做**：原版在明细行左侧还有**角色头像**（`fcn_004562a5(框表面, x=0x186,
-头像图, y+0xc)`，头像图号来自 `[0x498eb0 + 玩家*0x34] + 0x30`），本引擎只画了文字。
+✅ **同日：明细行左侧的**角色头像**也接上了**（2026-09-17）。取证链：
+- `[0x498eb0 + 玩家×0x34]` 是开局按角色 `read_mkf` 一次的那张角色图集
+  （`rich4_load_map.asm:495-506`）⇒ **`map.mkf` 资源 `角色 + 0x1b` = 27..30**，
+  与 `assets.ts` 的 `portraitResource(character)` **同一个资源**。
+- `+0x30` = `0xc + 12×3` ⇒ **图 3**（图 N 的记录在 `+0xc+12N`；与 T-041 那条换算同源）。
+- 画它的 `fcn_004562a5` → `draw_non_zero_image_in_rect`
+  （`rich4_drawing_utils2.asm:186`）⇒ **抠黑**（`fcn_004563f5` 才是不透明那份）。
+- 落点 `(x=0x186, y = 本行 y + 0xc)`，紧跟该行 `draw_text` 之后。
+- 实测素材：四个角色各 **7 张**（图 0 = 85×71 的 HUD 脸，1..6 是小的），
+  **图 3 = 39×35** —— 与「行距 0x20、画在 y+0xc」这条版面自洽。
+
+落成 `event-box-screen.ts` 的 `NEWS_SHARE_PORTRAIT_X/DY/IMAGE`（`EventBoxView.shares`
+的元素带上 `character`），计划里每画一行文字就紧跟一张 `blitSprite('map.mkf',
+portraitResource(character), 3, keyed=true, (0x186, y+0xc))`。测试：
+计划条目（资源/图号/抠黑/落点，两行各一张）+ 素材实测（四张图集各 7 张、图 3 = 39×35）。
 
 ## ⑤ 事件 32「變賣所有卡片道具」—— 折价公式读出来了，并顺手补上破产那一支
 
