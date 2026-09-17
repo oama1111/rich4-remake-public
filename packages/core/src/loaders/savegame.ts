@@ -363,7 +363,13 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   gaps['marketDay'] =
     '行情的历史游标 `[0x499100]` 在存档里的偏移未核，已归 0（指数已按 Σ收盘×10 重算）';
   // ★ 持仓已接（见上面 `holdings` 的构造）——这条 gap 删掉。
-  gaps['pool'] = '公库金额在存档中的偏移未验证，已置 0';
+  // ★ 2026-09-17：尾部那组标量**位置已定位**（`priceIndex` 0x268e 起、步长 4），
+  //   但 `pool` 到底是哪一个**仍未定论** ⇒ 如实登记已核到的范围，不猜。
+  gaps['pool'] =
+    '公库金额：尾部标量组已定位（0x268e priceIndex / 0x2692 totalDays / 0x2696 totalMonths / '
+    + '0x269a closedDays / 0x269e ? / 0x26a2 ? / 0x26a6 ? / 0x26aa ?），'
+    + '其中 0x269e 在两个存档里是 50050 / 13080（量级像公库）但**未定论**，'
+    + '0x26a2 疑似大盘指数却与 Σ收盘×10 **差 1**（两个存档都是）⇒ 不敢认定。已置 0';
   gaps['toolStock'] =
     '道具全局库存：槽内偏移**已核**（+0x6de），解析待接，已置为初始库存 @source rich4_player_save_state.asm:573';
   gaps['commercialShares'] = '各企业的已售股数在存档中的偏移未验证，已按地图初值重置';
