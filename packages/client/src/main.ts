@@ -859,6 +859,9 @@ function syncLoanUi(): void {
     //   VA 0x00411e8f 把 72 字节读进 `0x497158`），本引擎对应 `options.animation`。
     //   先前这里写死 `true` —— 设定关掉也照样打招呼（已订正，见 Q-ANIM-1）。
     loanUi = loanStart(options.animation);
+    // ★ 進銀行的配乐 @source `ui_bank.asm:3557` `push 4 / call fcn_004549cf`
+    //   ⇒ id 4 → `MIDI05.MID` → 磁盘名 `midi05.mid`（表 `0x47e793`，见 `SCREEN_BGM.bank`）
+    void playTrackFile('midi05.mid');
     loanAt = performance.now();
     loanBubbleAt = loanAt;
     // 计数器清零、下一拍从开屏那一刻起算（原版 `loc_0043453a` 的 `[0x48c3ce] = 0`）
@@ -5891,6 +5894,10 @@ function startGame(): void {
     kind: (setup.human[i] ?? false ? 'human' : 'computer') as 'human' | 'computer',
   }));
   const seed = (Date.now() & 0x7fffffff) >>> 0;
+
+  // ★ 開新局的配乐 @source `new_game.asm:4009` `push 0x8001 / call fcn_004549cf`
+  //   ⇒ 掩掉 `0x8000` 旗标得 id 1 → `MIDI02.MID` → `midi02.mid`（见 `SCREEN_BGM.newGame`）
+  void playTrackFile('midi02.mid');
 
   map = parseMap(readMapData(archives, setup.mapId));
   topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
