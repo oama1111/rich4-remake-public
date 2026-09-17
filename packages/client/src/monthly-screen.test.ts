@@ -1670,3 +1670,58 @@ describe('★ 收尾那一句说的是**谁** @source 0x00438d04 / 0x004383a6 / 
     expect(texts).not.toContain(MONTHLY_DETAIL_LABELS.unexpectedLoss);
   });
 });
+
+describe('★★ 四处「裁切滑动」逐条核实：**都是同坐标还原**（`fcn_0045643d`）@source rich4.asm', () => {
+  const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+  const exeBuf = existsSync(EXE) ? readFileSync(EXE) : Buffer.alloc(0);
+
+  /**
+   * 四处 `fcn_0045643d` 的六个立即数，逐条 dump 自 `rich4.asm`：
+   * 参数序 `(dst, img, x, y, srcX, srcY, w, h)`，压栈序 ⇒ 立即数次序是
+   * **`h, w, srcY, srcX, y, x`**（每条都以 `图 0` = `[0x48c41c]+0xc` 为源）。
+   */
+  const RESTORES = [
+    { at: '状态 5 尾（`loc_0043829c`）', h: 0x19d, w: 0xad, srcY: 0x43, srcX: 0x23, y: 0x43, x: 0x23 },
+    { at: '状态 8（`0x00438a1a` 附近）', h: 0x19a, w: 0xba, srcY: 0x46, srcX: 0x18, y: 0x46, x: 0x18 },
+    { at: '状态 0xf→0x10（`loc_00438ab8` 尾）', h: 0x19a, w: 0xba, srcY: 0x46, srcX: 0x18, y: 0x46, x: 0x18 },
+    { at: '状态 0x12 尾（`loc_00438ff5` 尾）', h: 0x1a0, w: 0xc3, srcY: 0x40, srcX: 0x1b, y: 0x40, x: 0x1b },
+  ] as const;
+
+  /**
+   * 一串 `push imm` 的机器码 —— **Watcom 对小立即数用 `6a ib`、大的用 `68 id`**：
+   * `0..0x7f` → `6a xx`；否则 `68 xx xx xx xx`。先按这条规则拼，找不到再退回全 `68`。
+   */
+  const pushPattern = (vals: readonly number[]): Buffer =>
+    Buffer.concat(
+      vals.map((v) => {
+        if (v >= 0 && v <= 0x7f) return Buffer.from([0x6a, v]);
+        const b = Buffer.alloc(5);
+        b[0] = 0x68;
+        b.writeUInt32LE(v >>> 0, 1);
+        return b;
+      }),
+    );
+
+  it('★★ 四条的 `srcX/srcY` 与 `x/y` **完全相等** ⇒ 本引擎每帧整屏重画，这一步天然等价、无需实现', () => {
+    for (const r of RESTORES) {
+      expect([r.srcX, r.srcY], r.at).toEqual([r.x, r.y]);
+    }
+  });
+
+  it.skipIf(exeBuf.length === 0)('★★ 这四串立即数在 exe 里**逐字节找得到**（不是抄错一行）', () => {
+    for (const r of RESTORES) {
+      const pat = pushPattern([r.h, r.w, r.srcY, r.srcX, r.y, r.x]);
+      expect(exeBuf.includes(pat), r.at).toBe(true);
+    }
+    // 反例：把 src 与 dst 换开就找不到（证明上面那串不是「碰巧」）
+    expect(exeBuf.includes(pushPattern([0x19a, 0xba, 0x18, 0x46, 0x46, 0x18]))).toBe(false);
+  });
+
+  it('★ 另有**一处真位移**（`图 29`，不在上面四条里）：源 80×40@(0x34,0x32)、目标是那一支自己的头像局部量', () => {
+    // `loc_004391ee`（`[0x48c42d] == 4` 那支、且 `ebx == 3` 才走）：
+    //   push 0x28 / 0x50 / 0x32 / 0x34 / [esp+0xd4] / [esp+0xd4] + 图 29
+    expect(exeBuf.length === 0 || exeBuf.includes(pushPattern([0x28, 0x50, 0x32, 0x34]))).toBe(true);
+    // ⚠️ 但 `图 29` 只有 **60×25**，而这里要拷 80×40@(52,50) —— **尺寸对不上**（越界读），
+    //   原版的扁平图集越界会读到邻图 ⇒ **不猜、不接**，登记在 `T-041.md`。
+  });
+});
