@@ -29,6 +29,17 @@ describe('★ 按屏 BGM 的宿主接线点（原版 `fcn_004549cf(id)`）', () 
     expect(src).toContain('ui_bank.asm:3557');
   });
 
+  it('★★ 屏自己的两处（魔法屋 / 樂透投注）走 `env.music`，也带出处', () => {
+    const magic = readFileSync(new URL('./magic-screen.ts', import.meta.url), 'utf8');
+    expect(magic).toContain("env.music?.('midi08.mid')");
+    expect(magic).toContain('magic_house.asm:2269');
+    const lottery = readFileSync(new URL('./lottery-screen.ts', import.meta.url), 'utf8');
+    expect(lottery).toContain("env.music?.('midi07.mid')");
+    expect(lottery).toContain('ui_letou.asm:2938');
+    // ⚠️ 只在**投注屏**那一支点歌（開獎屏是另一处 id 8），别在离开时也点一遍
+    expect(lottery).toContain("after.pending?.kind === 'lottery'");
+  });
+
   it('★ 剩下的调用点仍有清单可查（不许悄悄漏掉）', () => {
     const audio = readFileSync(
       new URL('../../assets-pipeline/src/audio.ts', import.meta.url),

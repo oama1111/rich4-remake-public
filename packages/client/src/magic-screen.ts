@@ -1329,6 +1329,9 @@ export const magicScreen: UiScreen = {
     //   `cmp byte [0x48c3a5], 0 / jne loc_00432e82` —— 关掉时**直接跳过消息框**
     //   （`[0x48c3a5] = !anim`，见 `Q-ANIM-1.md` 与 `T-037.md` 的 D-MAGIC-12）。
     playback = magicPlaybackStart(target, env.now, env.animation !== false);
+    // ★ 進魔法屋的配乐 @source `magic_house.asm:2269` / `:2512` `push 7 / call fcn_004549cf`
+    //   ⇒ id 7 → `MIDI08.MID` → 磁盘名 `midi08.mid`（见 `SCREEN_BGM.magicHouse`）
+    env.music?.('midi08.mid');
     env.log(`魔法屋：${v.name === '' ? '（落点未解出）' : v.name}`);
     env.requestRender();
   },

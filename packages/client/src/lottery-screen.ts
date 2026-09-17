@@ -813,6 +813,10 @@ export const lotteryScreen: UiScreen = {
 
   event(_before: GameState, after: GameState, env: UiScreenEnv): void {
     syncPending(after.pending, env.now, env.animation !== false);
+    // ★ 樂透投注開屏的配乐 @source `ui_letou.asm:2938` `push 6 / call fcn_004549cf`
+    //   ⇒ id 6 → `MIDI07.MID` → `midi07.mid`（见 `SCREEN_BGM.lottery`；
+    //     開獎屏那一处是 `:3063` 的 `push 8` → MIDI09，归開獎屏）
+    if (after.pending?.kind === 'lottery') env.music?.('midi07.mid');
   },
 
   tick(env: UiScreenEnv): void {
