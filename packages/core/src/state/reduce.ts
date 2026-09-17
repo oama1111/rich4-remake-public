@@ -3304,6 +3304,8 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     // 事件 32 变卖手牌与道具
     tools: withDeck.tools,
     cardAmount: withDeck.cardAmount,
+    // 事件 5「生日收卡」在电脑那一支要随机抽一张（走同一条 rng，rngState 已在下面写回）
+    rng,
   });
 
   let applied: GameState = {

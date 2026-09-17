@@ -16,8 +16,11 @@
  */
 
 import type { Player } from '../state/types.ts';
+import { isAlive } from '../state/types.ts';
 import { FORTUNE_EVENTS, eventAmount, fortuneEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
+import { giveCard } from '../cards/rob.ts';
+import { pickCardToSteal } from '../rules/npc-actions.ts';
 import { confine } from '../rules/confinement.ts';
 import { BLESSING_DOUBLE, BLESSING_VOID, blessingMultiplier } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
@@ -151,6 +154,11 @@ export interface FortuneEffectContext {
    * @source 事件 8 的 `push 0`（进公库）、事件 9 的 `push 1`（进存款）。
    */
   sellDestination?: SellDestination;
+  /**
+   * 引擎随机出口（事件 5「生日收卡」在电脑那一支要 `rand() % 手牌数` 抽一张）。
+   *   传的必须是 `state.rngState` 装出来的那条流（C-DET-4）。
+   */
+  rng?: { next(): number };
   currentPlayer: number;
   priceIndex: number;
   pool?: number;
@@ -193,6 +201,7 @@ export const IMPLEMENTED_FORTUNE_IDS: readonly number[] = FORTUNE_EVENTS.filter(
     e.effects.includes('loan') ||
     e.effects.includes('bankBan') ||
     e.effects.includes('disappear') ||
+    e.effects.includes('birthdayCard') ||
     FORTUNE_SPECIAL_IDS.includes(e.id),
 ).map((e) => e.id);
 
@@ -255,6 +264,34 @@ export function applyFortuneEffect(
     const kind = entry.effects.includes('prison') ? 'prison' : 'hospital';
     const out = confine(players, occupancy, kind, ctx.currentPlayer, days);
     return { ...base, players: out.players, occupancy: out.occupancy, amount: days };
+  }
+
+  // ── 命運 5：今天是你生日 向每人收取一張卡片 ─────────────────────
+  //   @source `fcn_0044c3b7`：逐人筛（不是自己 / 没出局 / 手上有牌）；
+  //   电脑当寿星时 `player_drop_random_card(对方)`（0x441e77 —— 与本引擎
+  //   `pickCardToSteal` 是**同一个 exe 函数**）→ `receive_card(自己)`（0x4412e4，
+  //   满手先弃最便宜的一张 —— 复用 `giveCard`）。
+  //   ★ 真人那条原版弹选牌界面；本引擎**没有**这个界面（搶奪卡的真人路径同样未接），
+  //     故真人当寿星时也走随机那一支 —— **登记为近似**（D-003 口径）。
+  if (entry.effects.includes('birthdayCard')) {
+    const rng = ctx.rng;
+    if (rng === undefined) return { ...base, unimplemented: true };
+    const next = [...players];
+    let taken = 0;
+    for (let i = 0; i < next.length; i++) {
+      if (i === ctx.currentPlayer) continue;
+      const other = next[i];
+      if (other === undefined || !isAlive(other) || other.cards.length === 0) continue;
+      const card = pickCardToSteal(other.cards, rng);
+      if (card === null) continue;
+      const hand = [...other.cards];
+      hand.splice(hand.indexOf(card), 1);
+      next[i] = { ...other, cards: hand };
+      const me = next[ctx.currentPlayer];
+      if (me !== undefined) next[ctx.currentPlayer] = giveCard(me, card);
+      taken++;
+    }
+    return { ...base, players: next, amount: taken };
   }
 
   // ── 命運 6/7：強迫出國觀光 / 被外星人綁架 ───────────────────────

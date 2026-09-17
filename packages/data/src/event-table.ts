@@ -210,6 +210,28 @@ export interface EventEntry {
      *   ★ 神明加持同坐牢那一支：档位 1 → 逃過此劫（整条作废），档位 2 → **天數翻倍**。
      */
     | 'disappear'
+    /**
+     * 命運 5：**今天是你生日，向每人收取一張卡片**。
+     *
+     * @source `fcn_0044c3b7`：
+     * ```asm
+     * for (i = 0; i < num_players; i++) {
+     *   if (i == current) continue;
+     *   if (player[i].who_plays == 0) continue;        ; 出局跳过
+     *   if (player_card_num(i) == 0) continue;         ; 手上没牌跳过
+     *   if (player[current].who_plays > 1) {           ; ★ 收卡的是**电脑**
+     *     card = player_drop_random_card(i);           ; 0x441e77 随机一张
+     *     receive_card(current, card);                 ; 0x4412e4
+     *   } else {
+     *     … 真人：原版弹**选牌界面** …
+     *   }
+     * }
+     * ```
+     * ★ 本引擎**没有**「从对方手牌里挑一张」的界面（`搶奪卡` 的真人路径同样未接），
+     *   故真人当寿星时也走随机那一条 —— **登记为近似**，与 D-003「真人点击时机不复刻」
+     *   同一条口径。
+     */
+    | 'birthdayCard'
 )[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
@@ -310,7 +332,7 @@ export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 2, va: 0x0044c0e8, factor: 10000, effects: ['loan'], textVa: 0x465941, text: "#0187人頭被盜用冒貸%d元", literal: null, blessing: 'penalty' },
   { id: 3, va: 0x0044c229, factor: null, effects: ['bankBan'], textVa: 0x465959, text: "#0188支票跳票\n銀行拒絕往來一個月", literal: null, blessing: 'penalty' },
   { id: 4, va: 0x0044c2c2, factor: null, effects: ['pay'], textVa: 0x46597a, text: "#0189侵入銀行電腦\n挪用其他人存款%d％", literal: null },
-  { id: 5, va: 0x0044c3b7, factor: null, effects: [], textVa: 0x4659a4, text: "#0190今天是你生日\n向每人收取一張卡片", literal: null },
+  { id: 5, va: 0x0044c3b7, factor: null, effects: ['birthdayCard'], textVa: 0x4659a4, text: "#0190今天是你生日\n向每人收取一張卡片", literal: null },
   { id: 6, va: 0x0044c5d8, factor: null, effects: ['disappear'], textVa: 0x4659d8, text: "#0191強迫出國觀光%d天", literal: 3, blessing: 'misfortune' },
   { id: 7, va: 0x0044c6ed, factor: null, effects: ['disappear'], textVa: 0x4659ee, text: "#0192被外星人綁架%d天", literal: 3, blessing: 'misfortune' },
   { id: 8, va: 0x0044c7ef, factor: null, effects: [], textVa: 0x465a04, text: "#0193股票違約交割損失股票%d％", literal: 10, blessing: 'penalty' },

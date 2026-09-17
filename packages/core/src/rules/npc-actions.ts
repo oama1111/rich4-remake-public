@@ -29,7 +29,6 @@
 
 import type { Player } from '../state/types.ts';
 import type { LandInfo } from '../loaders/map.ts';
-import type { WatcomRng } from '../rng/watcom.ts';
 import { truncTowardZero } from './rounding.ts';
 
 // ============================================================
@@ -98,7 +97,11 @@ export function stealPoints(victimPoints: number): number {
  * ⚠️ 这一支的判据是 `actor != 4`（0x0041c201 `jne`），
  *   所以**強盜、流氓、間諜三个都会奪卡**，不止強盜。
  */
-export function pickCardToSteal(hand: readonly number[], rng: WatcomRng): number | null {
+export function pickCardToSteal(
+  hand: readonly number[],
+  /** 只要够 `next()` 就行 —— 命运事件那条路只拿得到结构化随机出口 */
+  rng: { next(): number },
+): number | null {
   if (hand.length === 0) return null;
   return hand[rng.next() % hand.length] ?? null;
 }

@@ -468,8 +468,55 @@ describe('★ `IMPLEMENTED_FORTUNE_IDS` 不再漏掉「按事件号分派」的�
     for (const id of [12, 13, 33, 34, 35, 36]) {
       expect(IMPLEMENTED_FORTUNE_IDS, `fortune[${id}]`).toContain(id);
     }
-    // 仍然**不该**包含还没接的那一条：5「今天是你生日 向每人收取一張卡片」
-    //   （真人那条要弹选牌界面 ⇒ 要挂 pending，见 known-deviations）
-    expect(IMPLEMENTED_FORTUNE_IDS).not.toContain(5);
+    // ★ 2026-09-17：5「今天是你生日」也接上了（真人那条按近似走随机抽，
+    //   见 `known-deviations`），所以现在**37 条全在名单里**
+    expect(IMPLEMENTED_FORTUNE_IDS).toContain(5);
+    expect(IMPLEMENTED_FORTUNE_IDS).toHaveLength(FORTUNE_EVENTS.length);
+  });
+});
+
+describe('★ 命運 5：今天是你生日 向每人收取一張卡片 @source fcn_0044c3b7', () => {
+  /** 固定序列的假 RNG（`next()` 只要够用） */
+  const rng = (picks: number[]) => {
+    let i = 0;
+    return { next: () => picks[i++] ?? 0 };
+  };
+
+  it('★★ 逐人收一张：跳过自己 / 出局 / 空手，收来的牌进自己手里', () => {
+    const r = applyFortuneEffect(
+      5,
+      ctx({
+        players: [
+          makePlayer({ index: 0, cards: [] }),
+          makePlayer({ index: 1, cards: [3, 7] }),
+          makePlayer({ index: 2, cards: [] }), // 空手 → 跳过
+          makePlayer({ index: 3, whoPlays: 0, cards: [9] }), // 出局 → 跳过
+        ],
+        rng: rng([1, 0]),
+      }),
+    );
+    expect(r.unimplemented).toBe(false);
+    // 只从 1 号收了 1 张（2/3 号跳过）；`rand() % 2 = 1` → 手牌 [3,7] 的第 2 张 = 7
+    expect(r.players[0]!.cards).toEqual([7]);
+    expect(r.players[1]!.cards).toEqual([3]);
+    expect(r.players[3]!.cards).toEqual([9]);
+    expect(r.amount).toBe(1);
+  });
+
+  it('★★ 满手时先弃**最便宜**的一张（复用 `giveCard` = `receive_card` 0x4412e4）', () => {
+    const full = Array.from({ length: 15 }, () => 30); // 30 = 均富卡（便宜的）
+    full[3] = 24; // 紅卡，比 30 便宜 ⇒ 应被弃掉
+    const r = applyFortuneEffect(
+      5,
+      ctx({ players: [makePlayer({ index: 0, cards: full }), makePlayer({ index: 1, cards: [1] })], rng: rng([0]) }),
+    );
+    expect(r.players[0]!.cards).toHaveLength(15);
+    expect(r.players[0]!.cards).not.toContain(24);
+    expect(r.players[0]!.cards).toContain(1);
+  });
+
+  it('★ 没给 rng 时报未实现（不会静默白拿）', () => {
+    const r = applyFortuneEffect(5, ctx({ players: [makePlayer({ index: 0 }), makePlayer({ index: 1, cards: [1] })] }));
+    expect(r.unimplemented).toBe(true);
   });
 });
