@@ -201,6 +201,12 @@ export const MONTHLY_CHUNK = {
   panel: 19,
   /** 12 个角色头像的基址（图 `3×角色 + 47`）@source 0x00437c9f */
   avatarFirst: 47,
+  /** ★ 字框「別灰心，再加油喔！」= 图 **3**（`0x30 = 0xc + 12×3`）@source 0x00438a31 */
+  courageBox: 3,
+  /** ★ 收尾「其他人還要更努力喔！」那只框 = 图 **4**（`0x3c`）@source 0x00439120 */
+  farewellBox: 4,
+  /** 冠军奖座那一屏的底图 = 图 **45**（`0x228`）@source 状态 0x13 那一段 */
+  trophyBoard: 45,
 } as const;
 
 /**
@@ -280,6 +286,16 @@ export const MONTHLY_AWARD_FLIC_AT = { x: 0, y: 0x96 } as const;
  */
 export function monthlyAwardFlicResource(character: number): number {
   return 0x1a1 + 2 * Math.max(0, character);
+}
+
+/**
+ * **冠军的奖座**那段 FLIC —— 同一族资源，基址差 1。
+ *
+ * @source 状态 0x12（`loc_00438d40`）：`read_mkf(Data.mkf, 0x1a0 + 2×角色)`；
+ *   悲情人物那一段是 `0x1a1 + 2×角色`（状态 7），两者正好是同族相邻两张。
+ */
+export function monthlyTrophyFlicResource(character: number): number {
+  return 0x1a0 + 2 * Math.max(0, character);
 }
 
 /**
@@ -523,6 +539,31 @@ export const MONTHLY_DETAIL_LABELS = {
   unexpectedGain: '本月意外之財：',
   unluckyDays: '本月倒楣天數：',
 } as const;
+
+/**
+ * 訊息框三连 —— `fcn_0044ec30(image, x, y, textX, textY, color, ?)` 开框 +
+ * `fcn_0044ecb6(文字)` 写字（VA 0x0044ec30 / 0x0044ecb6）。
+ *
+ * ★ `(x,y)` 是**框心**：原版用图头里的 `offX/offY` 反推左上角
+ *   （`sx = x − offX / sy = y − offY`），在本引擎里就是 sprite 的锚点 ⇒
+ *   `drawAnchored(sprite, x, y)` 与它逐像素等价。
+ * 文字画在**框心 + (textX,textY)**，正中。
+ *
+ * | 框 | 图 | 框心 | 文字偏移 | @source |
+ * |---|---|---|---|---|
+ * | `別灰心，再加油喔！` | 3 | (190,10) | (20,0) | 0x00438a31 |
+ * | `本月冠軍是…`（存款气泡）| 1 | (190,10) | (0,−30) | 0x00438ab8 |
+ * | `其他人還要更努力喔！` | 4 | (213,37) | (20,0) | 0x00439120 |
+ */
+export const MONTHLY_COURAGE_BOX = { chunk: 3, x: 190, y: 10, textX: 20, textY: 0 } as const;
+export const MONTHLY_CHAMPION_BOX = { chunk: 1, x: 190, y: 10, textX: 0, textY: -30 } as const;
+export const MONTHLY_FAREWELL_BOX = { chunk: 4, x: 213, y: 37, textX: 20, textY: 0 } as const;
+
+/**
+ * 收尾最后那句 —— **★ 中间有一个换行**（先前登记漏了它）。
+ * @source 串 `0x464e66`：`#0122其他人還要\n更努力喔！`
+ */
+export const MONTHLY_FAREWELL = '其他人還要\n更努力喔！';
 
 /** 无人获奖那句 @source 串 `0x464e26` */
 export const MONTHLY_NO_AWARD = '別灰心，再加油喔！';
@@ -952,6 +993,12 @@ export interface MonthlyPlayback {
   encourage: boolean;
   /** 颁完奖、等最后一次确认（原版 `[0x48c42a] = 0x11/0x16` 那几步）*/
   closing: boolean;
+  /**
+   * ⚠️ 原版收尾之后还有**单独的一拍**（状态 **0x16**，`loc_00439120`）才画最后那只框
+   *   `其他人還要更努力喔！`；本模块把那只框**并在 `closing` 这一拍里**画
+   *   （少一拍/少一次点击），登记在 `docs/deviations/T-041.md`。
+   */
+  // （没有单独字段：见上面那句）
 }
 
 /** 从第 0 行开始（原版 `[0x48c42a] = 0` 那一状态）*/
@@ -1065,6 +1112,11 @@ const MONTHLY_KEYED = new Set<number>([
   MONTHLY_CHUNK.digitFirst + 3,
   MONTHLY_CHUNK.coin,
   MONTHLY_CHUNK.panel,
+  // ★ 四只訊息框：原版全走 `fcn_00456418`（带透明）—— 见各常量的 @source
+  MONTHLY_CHUNK.bubble,
+  MONTHLY_CHUNK.courageBox,
+  MONTHLY_CHUNK.farewellBox,
+  MONTHLY_CHUNK.trophyBoard,
 ]);
 
 /** 一张图要不要抠黑由 `monthlyKeyedBlack` 说了算，别在各处手写 */
@@ -1088,6 +1140,25 @@ function monthlyText(
   ctx.strokeText(text, x, y);
   ctx.fillStyle = fill;
   ctx.fillText(text, x, y);
+}
+
+/**
+ * 訊息框：`fcn_0044ec30` 开框（`drawAnchored` 与它逐像素等价，见常量注释）
+ * + `fcn_0044ecb6` 把文字画在**框心 + (textX,textY)**、多行上下摊开。
+ */
+function drawMonthlyBox(
+  ctx: CanvasRenderingContext2D,
+  sprite: MonthlySprite,
+  box: { chunk: number; x: number; y: number; textX: number; textY: number },
+  text: string,
+): void {
+  drawAnchored(ctx, monthlySprite(sprite, box.chunk), box.x, box.y);
+  const lines = text.split('\n');
+  const lineH = MONTHLY_FONT_SIZE + 6;
+  const cy = box.y + box.textY - MONTHLY_FONT_SIZE / 2 - ((lines.length - 1) * lineH) / 2;
+  lines.forEach((line, i) => {
+    monthlyText(ctx, line, box.x + box.textX, cy + i * lineH, MONTHLY_TEXT.fill, 'center');
+  });
 }
 
 /**
@@ -1154,12 +1225,22 @@ export function drawMonthlyAwardFlic(
   p: MonthlyPlayback,
   now: number,
 ): boolean {
-  if (award === null || award.winner < 0) return false;
-  // 只在「台上四个人都铺好了」之后才演它（原版那是状态 8/9）
-  if (p.phase !== 'award' || p.seats < MONTHLY_SLOTS) return false;
-  const win = state.players[award.winner];
+  if (award === null) return false;
+  /**
+   * 两段 FLIC 用**同一条**绘制路径，差别只有「演谁 + 哪张资源」：
+   * - 頒獎屏（状态 7、`0x1a1+2×角色`）：**悲情人物**立绘 —— 台上四个人铺好之后；
+   * - 收尾（状态 0x12、`0x1a0+2×角色`）：**冠军的奖座** —— `closing` 那一拍起。
+   */
+  const trophy = p.closing;
+  const who = trophy ? award.richest : award.winner;
+  if (who < 0) return false;
+  if (!trophy && (p.phase !== 'award' || p.seats < MONTHLY_SLOTS)) return false;
+  if (trophy && !p.closing) return false;
+  const win = state.players[who];
   if (win === undefined) return false;
-  const film = flic('Data.mkf', monthlyAwardFlicResource(win.character));
+  const film = flic('Data.mkf', trophy
+    ? monthlyTrophyFlicResource(win.character)
+    : monthlyAwardFlicResource(win.character));
   if (film === null || film.frames.length === 0) return false;
   const ms = film.frameMs > 0 ? film.frameMs : 71;
   const i = Math.min(film.frames.length - 1, Math.max(0, Math.floor(now / ms)));
@@ -1289,8 +1370,10 @@ export function drawMonthlyScreen(
     const sad = monthlyConsolationWho(award);
     const who = sad === null ? '' : (CHARACTERS[state.players[sad]?.character ?? 0]?.name ?? '');
     const y0 = MONTHLY_DETAIL_AT.y0 + 6 * MONTHLY_DETAIL_AT.step;
+    // 状态 5/6：`#0095本月悲情人物是．．。` + 角色名（原版是两次 `fcn_0044ecb6`）
     monthlyText(ctx, `${MONTHLY_TRAGIC}${who}`, MONTHLY_DETAIL_AT.x, y0, MONTHLY_TEXT.fill);
-    monthlyText(ctx, MONTHLY_NO_AWARD, MONTHLY_DETAIL_AT.x, y0 + MONTHLY_DETAIL_AT.step, MONTHLY_TEXT.fill);
+    // 状态 9：**字框**（图 3）里那句 `別灰心，再加油喔！` @source 0x00438a31
+    drawMonthlyBox(ctx, sprite, MONTHLY_COURAGE_BOX, MONTHLY_NO_AWARD);
   }
 
   // ── 收尾那一句「本月冠軍是」── **冠军 = 首富**（`[0x48c430]`），不是悲情那一位。
@@ -1299,13 +1382,16 @@ export function drawMonthlyScreen(
   if (p.closing) {
     const champ = state.players[monthlyChampionOf(award)];
     const who = champ === undefined ? '' : (CHARACTERS[champ.character]?.name ?? '');
-    monthlyText(
-      ctx,
-      `${MONTHLY_CHAMPION}${who}`,
-      MONTHLY_DETAIL_AT.x,
-      MONTHLY_DETAIL_AT.y0 + 6 * MONTHLY_DETAIL_AT.step,
-      MONTHLY_TEXT.fill,
-    );
+    // 状态 0xf→0x10 开**存款气泡**（图 1，框心 (190,10)、文字偏移 (0,−30)）写 `#0109`，
+    // 状态 0x11 再把冠军的角色名（表 `0x4759b8`）画进同一只气泡 @source 0x00438ab8 / 0x00438d04
+    drawMonthlyBox(ctx, sprite, MONTHLY_CHAMPION_BOX, `${MONTHLY_CHAMPION}${who}`);
+  }
+
+  // ── 状态 **0x16**：最后那只框「其他人還要更努力喔！」（**恒出**）──
+  //    @source `loc_00439120`：`fcn_0044ec30(图 4, 213, 37, 20, 0, 0x101010)` + 串 `0x464e66`
+  //    ⚠️ 原版这是收尾之后的**另一拍**；本模块并在 `closing` 里画（见接口注释）
+  if (p.closing) {
+    drawMonthlyBox(ctx, sprite, MONTHLY_FAREWELL_BOX, MONTHLY_FAREWELL);
   }
 }
 
