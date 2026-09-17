@@ -104,6 +104,28 @@ describe('★ 飛彈（7）', () => {
     expect(toolCount(r.tools, 0, 7)).toBe(0);
   });
 
+  run('★★ 設施也在范围内（`flags = 0x26` 里那一位）—— 掉一级 + 地主同样记仇 30×物價', () => {
+    const { state, topo } = setup({ 7: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const target = topo.nodes[node.id - 1]!;
+    // 找一处落在范围里的設施
+    const fac = topo.facilities?.find(
+      (f) =>
+        Math.abs(f.x - target.x) <= MISSILE_RADIUS && Math.abs(f.y - target.y) <= MISSILE_RADIUS,
+    );
+    if (fac === undefined) return; // 这张图上没炸到設施就跳过
+    const facilityLevel = [...state.facilityLevel];
+    const facilityOwner = [...state.facilityOwner];
+    facilityLevel[fac.id] = 3;
+    facilityOwner[fac.id] = 2; // 玩家 1 的企業
+    const s: GameState = { ...state, facilityLevel, facilityOwner };
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    expect(r.facilityLevel[fac.id]).toBe(2);
+    expect(r.facilityOwner[fac.id]).toBe(2); // 轻击保留归属
+    expect(r.players[1]!.hostility[0]).toBeGreaterThanOrEqual(30 * s.priceIndex);
+  });
+
   run('★ 地主记仇 30 × 物价指数', () => {
     const { state, topo } = setup({ 7: 1 });
     const node = firstHousingNode(topo);

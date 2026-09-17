@@ -146,6 +146,20 @@ export interface EventEntry {
      *   同名循环 0x44a80c；設施分支 0x44a8xx）
      */
     | 'demolishSameName'
+    /**
+     * 新聞 20「%s超級颱風侵襲 多處房屋受損」：随机挑一处（地块+設施，**不过滤**），
+     *   然后以它为心打一发 **`damage_area(半径 0x64, flags 6, 轻重 0, 攻击者 -1)`**。
+     *
+     * @source `fcn_0044ab2c` 的 phase 2（VA 0x0044ac02 起）：
+     * ```asm
+     * push -1 / push 0 / push 6 / push 0x64 / call 0x40ac7b
+     * ;      ↑攻击者  ↑轻重 ↑flags  ↑半径
+     * ```
+     *   `flags = 6 = 0x4|0x2` ⇒ **打住宅和設施，不打范围里的人**（0x20 没置）；
+     *   攻击者 `-1` ⇒ **不记敌意**（`damage_area` 里 `cmp esi,0xffffffff / je` 跳过）。
+     *   ★ 与飛彈/核彈走的是**同一个** `damage_area`，只是参数不同。
+     */
+    | 'typhoonBlast'
   )[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
@@ -212,7 +226,7 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 17, va: 0x0044a657, factor: null, effects: ['stopVehicles'], textVa: 0x465662, text: "#0166交通阻塞\n汽車停止一回合", literal: null },
   { id: 18, va: 0x0044a6e0, factor: null, effects: ['demolishSameName'], textVa: 0x46567f, text: "#0167%s強烈地震房屋倒塌", literal: null },
   { id: 19, va: 0x0044a91e, factor: null, effects: ['clearOwnerAny'], textVa: 0x465697, text: "#0168%s山洪爆發土地流失", literal: null },
-  { id: 20, va: 0x0044ab2c, factor: null, effects: [], textVa: 0x4656af, text: "#0169超級颱風侵襲%s\n多處房屋受損", literal: null },
+  { id: 20, va: 0x0044ab2c, factor: null, effects: ['typhoonBlast'], textVa: 0x4656af, text: "#0169超級颱風侵襲%s\n多處房屋受損", literal: null },
   { id: 21, va: 0x0044ac99, factor: null, effects: ['demolishAny'], textVa: 0x4656d0, text: "#0170龍捲風侵襲%s\n摧毀房屋一棟", literal: null },
   // @source 0x0044aeb6 `mov bh, 0xf` → 所有在场玩家 +0x3c = 15（0x0044aed2）
   { id: 22, va: 0x0044ae89, factor: null, effects: ['loanFreeze'], textVa: 0x4656ef, text: "#0171銀行擠兌停止放款１５天", literal: null },

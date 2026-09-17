@@ -200,6 +200,7 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
       e.effects.includes('clearOwnerAny') ||
       e.effects.includes('demolishAny') ||
       e.effects.includes('demolishSameName') ||
+      e.effects.includes('typhoonBlast') ||
       (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
   ).map((e) => e.id),
   ...PERCENT_NEWS.keys(),
@@ -220,6 +221,14 @@ export const MARKET_CLOSE_DAYS = 0xa;
  *   ★ 文案写「暫停交易１０天」，立即数却是 **15**；本引擎**照抄立即数**（C-FID）。
  */
 export const STOCK_SUSPEND_DAYS = 0xf;
+
+/**
+ * 新聞 20「超級颱風」那发 `damage_area` 的半径
+ * @source phase 2 的第一个实参 `push 0x64`（VA 0x0044ac21 附近）
+ *   ★ 与飛彈同一个数（`MISSILE_RADIUS`），但**风向不是**：颱風 `flags = 6`
+ *   （只打住宅与設施，不打人）、攻击者 `-1`（不记敌意）。
+ */
+export const TYPHOON_RADIUS = 0x64;
 
 /** 新聞 6 的地价倍率 @source 常量 `[0x4654dc]` = 1.3 */
 export const LAND_PRICE_UP = 1.3;
@@ -356,6 +365,57 @@ export function applyNewsEffect(
       ...base,
       amount: Math.trunc(fac.landPrice * factor),
       facilityPrice: [{ id: fac.id, price: Math.trunc(fac.landPrice * factor) }],
+    };
+  }
+
+  // ── 新聞 20「超級颱風侵襲，多處房屋受損」────────────────────────
+  //   挑一处 → 以它为心打一发 `damage_area(半径 100, flags 6, 轻重 0, 攻击者 -1)`：
+  //   范围内的**住宅与設施**各拆一级，**不打人、不记敌意**。
+  //   ⚠️ 范围口径沿用本引擎对 Q-TOOL-1 的近似：原版是 440×440 视图空间的方窗
+  //     （要镜头与等距投影），这里改用**地图坐标**的方窗，半径同为 100。
+  if (entry.effects.includes('typhoonBlast')) {
+    const rng = ctx.rng;
+    const lands = ctx.lands ?? [];
+    const facilities = ctx.facilities ?? [];
+    if (rng === undefined || lands.length + facilities.length === 0) {
+      return { ...base, unimplemented: true };
+    }
+    const pick = rng.below(lands.length + facilities.length);
+    const origin =
+      pick < lands.length
+        ? { x: lands[pick]!.x, y: lands[pick]!.y }
+        : { x: facilities[pick - lands.length]!.x, y: facilities[pick - lands.length]!.y };
+    const inBlast = (e: { x: number; y: number }): boolean =>
+      Math.abs(e.x - origin.x) <= TYPHOON_RADIUS && Math.abs(e.y - origin.y) <= TYPHOON_RADIUS;
+    const landMutations: LandMutation[] = [];
+    for (const l of lands) {
+      if (!inBlast(l)) continue;
+      const after = mutateLand(l, MUTATE_DEMOLISH_ONE);
+      if (!after.changed) continue;
+      landMutations.push({
+        id: after.land.id,
+        level: after.land.level,
+        type: after.land.type,
+        owner: after.land.owner,
+      });
+    }
+    const facilityMutations: LandMutation[] = [];
+    for (const f of facilities) {
+      if (!inBlast(f)) continue;
+      const after = mutateFacility(f, MUTATE_DEMOLISH_ONE);
+      if (!after.changed) continue;
+      facilityMutations.push({
+        id: after.facility.id,
+        level: after.facility.level,
+        type: after.facility.type,
+        owner: after.facility.owner,
+      });
+    }
+    return {
+      ...base,
+      amount: landMutations.length + facilityMutations.length,
+      landMutations,
+      facilityMutations,
     };
   }
 

@@ -70,6 +70,7 @@ import { useCard } from '../cards/registry.ts';
 import { giveCard } from '../cards/rob.ts';
 import { godPowerOf, type GodPower } from '../rules/god-power.ts';
 import {
+  MISSILE_DEMOLISH_HOSTILITY,
   MISSILE_HOSPITAL_DAYS,
   MISSILE_HOSTILITY_FACTOR,
   MISSILE_RADIUS,
@@ -204,6 +205,7 @@ import {
 import { blessingFieldOf, blessingLevelFor } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
 import { applyNewsEffect, type LandMutation, type PriceChange } from '../events/news-effects.ts';
+import { MUTATE_DEMOLISH_ONE, mutateFacility } from '../cards/monster.ts';
 import { anyoneConfined, confine, type ConfinementKind } from '../rules/confinement.ts';
 import { applyBail, bailCandidates, decideBail } from '../rules/visit.ts';
 import {
@@ -2256,6 +2258,10 @@ function fireMissile(
 
   const landLevel = [...state.landLevel];
   const landOwner = [...state.landOwner];
+  const facilityLevel = [...state.facilityLevel];
+  const facilityOwner = [...state.facilityOwner];
+  const facilityType = [...state.facilityType];
+  const facilityTenure = [...state.facilityTenure];
   const deltas: { from: number; to: number; delta: number }[] = [];
   const hitNodes = new Set<number>();
 
@@ -2272,6 +2278,46 @@ function fireMissile(
     landOwner[land.id] = out.owner;
     if (out.hostility !== 0 && land.owner !== 0) {
       deltas.push({ from: land.owner - 1, to: state.currentPlayer, delta: out.hostility });
+    }
+  }
+
+  // @source flags & 4 —— 設施（`MISSILE_FLAGS = 0x26` 里那一位）
+  //   ★ 先前漏了这一支：飛彈/核彈打下企業時，原版会把設施也拆了。
+  //   設施那一支的写法与地块**不同**：轻击是「等级 −1，归零才清种类」
+  //   （地块是「种类非 0 就直接夷平」），重击是「归属/等级/种类/租期全清」，
+  //   见 `damage_area` VA 0x0040ad88..0x0040ae67 与 `cards/monster.ts` 的
+  //   `mutateFacility`（mode 0/1 正是这两支）。
+  for (const n of topo.nodes) {
+    if (!inBlast(n)) continue;
+    const fid = facilityIndexOf(n.type);
+    if (fid === null) continue;
+    const fac = effectiveFacility(state, topo, fid);
+    if (fac === null) continue;
+    if (heavy) {
+      // @source 重击：敌意 = level × 30 × 物價，随后 owner/level/type/+0x34 全清
+      if (fac.owner !== 0) {
+        deltas.push({
+          from: fac.owner - 1,
+          to: state.currentPlayer,
+          delta: fac.level * MISSILE_DEMOLISH_HOSTILITY * state.priceIndex,
+        });
+      }
+      facilityOwner[fac.id] = 0;
+      facilityLevel[fac.id] = 0;
+      facilityType[fac.id] = 0;
+      facilityTenure[fac.id] = 0;
+    } else {
+      // @source 轻击：敌意固定 30 × 物價
+      if (fac.owner !== 0) {
+        deltas.push({
+          from: fac.owner - 1,
+          to: state.currentPlayer,
+          delta: MISSILE_DEMOLISH_HOSTILITY * state.priceIndex,
+        });
+      }
+      const after = mutateFacility(fac, MUTATE_DEMOLISH_ONE);
+      facilityLevel[fac.id] = after.facility.level;
+      facilityType[fac.id] = after.facility.type;
     }
   }
 
@@ -2318,6 +2364,10 @@ function fireMissile(
     players: applyHostilityDeltas(players, deltas),
     landLevel,
     landOwner,
+    facilityLevel,
+    facilityOwner,
+    facilityType,
+    facilityTenure,
     hospitalOccupancy: hospital,
     toolStock,
   };

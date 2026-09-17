@@ -12,6 +12,7 @@ import {
   LAND_PRICE_UP,
   MARKET_CLOSE_DAYS,
   STOCK_SUSPEND_DAYS,
+  TYPHOON_RADIUS,
   applyNewsEffect,
 } from './news-effects.ts';
 import { HISTORY_DAYS, type StockMarketState } from '../places/stock-market.ts';
@@ -382,6 +383,31 @@ describe('★ 新聞 5/15/19/21：随机拆一处建筑 / 土地流失 @source f
     expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
   });
 
+  it('★★ news[20] 颱風：以挑中那一处为心、半径 100 内的住宅与設施各拆一级（不打人、无敌意）', () => {
+    // 坐标：0 号在 (0,0)，1 号在 (30,30)（范围内），2 号在 (500,500)（范围外）
+    const lands = [
+      { id: 1, name: 'A', level: 2, type: 0, owner: 1, x: 0, y: 0 },
+      { id: 2, name: 'B', level: 1, type: 0, owner: 1, x: 30, y: 30 },
+      { id: 3, name: 'C', level: 1, type: 0, owner: 1, x: 500, y: 500 },
+    ] as never;
+    const facilities = [
+      { id: 1, name: '銀行', level: 3, type: 1, owner: 1, x: 10, y: 10 },
+      { id: 2, name: '醫院', level: 2, type: 1, owner: 1, x: 4000, y: 4000 },
+    ] as never;
+    expect(TYPHOON_RADIUS).toBe(0x64);
+    // rand() % 5 = 0 → 挑中 0 号地块（原点）
+    const r = applyNewsEffect(20, ctx({ lands, facilities, rng: rng0 }));
+    expect(r.landMutations).toEqual([
+      { id: 1, level: 1, type: 0, owner: 1 },
+      { id: 2, level: 0, type: 0, owner: 1 },
+    ]);
+    // 范围内的設施也掉一级；范围外的两个都不动
+    expect(r.facilityMutations).toEqual([{ id: 1, level: 2, type: 1, owner: 1 }]);
+    expect(r.amount).toBe(3);
+    // ★ 不发敌意：结果里没有任何 hostility 字段（敌意由 `applyNewsEffect` 之外的路径处理）
+    expect(Object.keys(r)).not.toContain('hostility');
+  });
+
   it('★★ news[18] 地震：**同名地块全拆一级**（挑中設施时只拆那一处）', () => {
     const lands = [land(1, '忠孝東路', 3), land(2, '忠孝東路', 1), land(3, '仁愛路', 2)];
     // rand() % 3 = 0 → 挑中 1 号（忠孝東路）⇒ 1、2 两块同名各降一级
@@ -503,8 +529,8 @@ describe('未实现', () => {
     // 只是一直没列进这张表（本表没有别的消费者，纯登记）。
     // 16/17 = 行人/車輛休息一回合、24/25/26 = 股市三连（2026-09-17 接）
     expect(IMPLEMENTED_NEWS_IDS).toEqual([
-      0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 14, 15, 16, 17, 18, 19, 21, 22, 24, 25, 26, 27, 28,
-      29, 11, 12, 13, 23,
+      0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27,
+      28, 29, 11, 12, 13, 23,
     ]);
   });
 
