@@ -1176,11 +1176,18 @@ export interface MonthlyPlayback {
    */
   skipTicks: number;
   /**
-   * ⚠️ 原版收尾之后还有**单独的一拍**（状态 **0x16**，`loc_00439120`）才画最后那只框
-   *   `其他人還要更努力喔！`；本模块把那只框**并在 `closing` 这一拍里**画
-   *   （少一拍/少一次点击），登记在 `docs/deviations/T-041.md`。
+   * ★ **收尾之后那一拍**（原版状态 **0x13** + **0x16**）：画最后那只框
+   *   `其他人還要更努力喔！`，再倒数 `MONTHLY_FAREWELL_TICKS` 拍关屏。
+   *
+   * @source `loc_00439120`（0x13）：`fcn_0044ec30(图 4, x=0xd5, y=0x25, 0x14, 0, 0x101010)`
+   *   + `fcn_0044ecb6(#0122其他人還要⏎更努力喔！)` → `[0x48c42a] = 0x16`、`[0x48c425] = 0xa`；
+   *   然后 `loc_00439163`（0x16）每拍 `dec [0x48c425]`，**减到 0 或点一下**（`[0x48c42e]`）
+   *   就 `KillTimer` + `Post_0402_Message` 关屏。
+   * ★ 2026-09-17 起**单独成一拍**（先前并在 `closing` 里画，少一拍/少一次点击 —— 见 T-041）。
    */
-  // （没有单独字段：见上面那句）
+  farewell: boolean;
+  /** 0x16 那个倒数（`[0x48c425]`）；进 `farewell` 时置 `MONTHLY_FAREWELL_TICKS` */
+  farewellTicks: number;
 }
 
 /** 从第 0 行开始（原版 `[0x48c42a] = 0` 那一状态）*/
@@ -1194,6 +1201,8 @@ export function monthlyPlaybackStart(): MonthlyPlayback {
     encourage: false,
     closing: false,
     skipTicks: 0,
+    farewell: false,
+    farewellTicks: 0,
   };
 }
 
@@ -1262,7 +1271,12 @@ export function monthlyPlaybackTick(
     if (console && !p.encourage) return { ...p, encourage: true };
     return { ...p, closing: true };
   }
-  return null;
+  // ★ 收尾之后还有**单独的一拍**（状态 0x13 开框 + 0x16 倒数 0xa）才关屏
+  if (!p.farewell) {
+    return { ...p, farewell: true, farewellTicks: MONTHLY_FAREWELL_TICKS };
+  }
+  const left = p.farewellTicks - 1;
+  return left > 0 ? { ...p, farewellTicks: left } : null;
 }
 
 /**
@@ -1591,7 +1605,7 @@ export function drawMonthlyScreen(
   //      直接跳 0x16，而 0x16 只倒数（`loc_00439163`），一張表都不经过。
   if (p.skipTicks === 0) {
     // 表底那块锦缎板（图 2，锚点 (440,405)）—— 状态 7 / 0x12 都在画表**之前**贴它
-    if (p.closing || p.details > 0) {
+    if (p.closing || p.farewell || p.details > 0) {
       drawAnchored(
         ctx,
         monthlySprite(sprite, MONTHLY_TABLE_PLATE.chunk),
@@ -1630,10 +1644,10 @@ export function drawMonthlyScreen(
 
   // ── 状态 **0x13**（`loc_00439120`）：最后那只框「其他人還要更努力喔！」
   //    @source `fcn_0044ec30(图 4, 213, 37, 20, 0, 0x101010)` + 串 `0x464e66`
-  //    ⚠️ 原版这是收尾之后的**另一拍**（0x13，开框后计数 0xa，再由 0x16 倒数）；
-  //      本模块并在 `closing` 里画（见接口注释）。**动画关时原版不经过 0x13**，
-  //      那只框根本不出现 —— 所以这里也要 `skipTicks === 0`。
-  if (p.closing && p.skipTicks === 0) {
+  //    ★ 2026-09-17：它**单独成一拍**（`p.farewell`）—— 原版状态 0x12 走完才进 0x13
+  //      开这只框、再由 0x16 倒数 0xa 拍（点一下可提前关屏）。
+  //      **动画关时原版不经过 0x13**，那只框根本不出现 —— 所以这里仍要 `skipTicks === 0`。
+  if (p.farewell && p.skipTicks === 0) {
     drawMonthlyBox(ctx, sprite, MONTHLY_FAREWELL_BOX, MONTHLY_FAREWELL);
   }
 }
@@ -1649,10 +1663,12 @@ function drawMonthlyAwardTables(
   award: MonthlyAward,
   p: MonthlyPlayback,
 ): void {
-  const lines = p.closing
+  // ★ `farewell` 那一拍（状态 0x13/0x16）画面上仍是**冠军那张表**（原版不擦屏）
+  const championTable = p.closing || p.farewell;
+  const lines = championTable
     ? monthlyChampionLines(state, topo, award)
     : monthlyDetailLines(state, topo, award);
-  const shown = p.closing ? MONTHLY_DETAIL_ROWS : Math.min(p.details, lines.length);
+  const shown = championTable ? MONTHLY_DETAIL_ROWS : Math.min(p.details, lines.length);
   for (let i = 0; i < shown; i++) {
     const line = lines[i];
     if (line === undefined) continue;
@@ -1815,12 +1831,19 @@ function advance(env: UiScreenEnv): void {
     env.requestRender();
     return;
   }
-  if (p.closing) {
+  // ★ 状态 0x16 的「点一下就关」：倒数没走完也能点掉（`[0x48c42e]` 那一位）
+  if (p.farewell) {
     playback = null;
     view = null;
     award = null;
     snapshot = null;
     env.log('每月結算：关闭');
+    env.requestRender();
+    return;
+  }
+  // 收尾那一拍点一下 → 进**最后那一拍**（原版：状态 0x12 走完 → 0x13 开框），不直接关屏
+  if (p.closing) {
+    playback = { ...p, farewell: true, farewellTicks: MONTHLY_FAREWELL_TICKS };
     env.requestRender();
   }
 }

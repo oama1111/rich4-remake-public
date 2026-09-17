@@ -37,6 +37,8 @@ import {
   MONTHLY_DETAIL_LABELS,
   MONTHLY_DETAIL_ROWS,
   MONTHLY_INTRO,
+  MONTHLY_FAREWELL_BOX,
+  MONTHLY_FAREWELL_TICKS,
   MONTHLY_SKIP_TICKS,
   MONTHLY_TABLE_PLATE,
   MONTHLY_LABELS,
@@ -995,6 +997,8 @@ describe('★ 演出状态机', () => {
       encourage: false,
       closing: false,
       skipTicks: 0,
+      farewell: false,
+      farewellTicks: 0,
     });
     // 4 行 → 3 拍点亮完
     p = monthlyPlaybackTick(p, 4)!;
@@ -1025,7 +1029,8 @@ describe('★ 演出状态机', () => {
       }
       p = next;
       seen.push(
-        `${p.bars}/${p.seats}/${p.details}${p.encourage ? '/sad' : ''}${p.closing ? '/closing' : ''}`,
+        `${p.bars}/${p.seats}/${p.details}${p.encourage ? '/sad' : ''}${p.closing ? '/closing' : ''}` +
+          `${p.farewell ? `/farewell${p.farewellTicks}` : ''}`,
       );
     }
     expect(seen).toEqual([
@@ -1044,8 +1049,33 @@ describe('★ 演出状态机', () => {
       // ★ 详情叠完先走「本月悲情人物」那一拍（原版状态 9 的 `別灰心，再加油喔！`）
       '4/4/4/sad',
       '4/4/4/sad/closing',
+      // ★ 收尾之后还有**单独的一拍**（原版状态 0x13 开框 + 0x16 倒数 0xa）才关屏
+      '4/4/4/sad/closing/farewell10',
+      '4/4/4/sad/closing/farewell9',
+      '4/4/4/sad/closing/farewell8',
+      '4/4/4/sad/closing/farewell7',
+      '4/4/4/sad/closing/farewell6',
+      '4/4/4/sad/closing/farewell5',
+      '4/4/4/sad/closing/farewell4',
+      '4/4/4/sad/closing/farewell3',
+      '4/4/4/sad/closing/farewell2',
+      '4/4/4/sad/closing/farewell1',
       'null',
     ]);
+  });
+
+  it('★★ 最后那一拍点一下就提前关屏（原版 `[0x48c42e]`）', () => {
+    // 见 `advance()`：`farewell` 期间点一下 → 直接关屏；`closing` 期间点一下 → 进 farewell
+    const p: MonthlyPlayback = {
+      ...monthlyPlaybackStart(),
+      phase: 'award',
+      closing: true,
+      farewell: true,
+      farewellTicks: 7,
+    };
+    expect(p.farewell).toBe(true);
+    // 倒数还没走完也能被点掉：`monthlyPlaybackTick` 自己不会提前结束
+    expect(monthlyPlaybackTick(p, 4)).toMatchObject({ farewell: true, farewellTicks: 6 });
   });
 });
 
@@ -1159,7 +1189,13 @@ describe('★ event 判据：`totalMonths` 增了才起播', () => {
     for (let i = 0; i < total - 1; i++) monthlyScreen.tick!(env);
     expect(monthlyScreenState().playback?.closing).toBe(true);
     expect(monthlyScreenState().playing).toBe(true);
-    // 收尾也是抬手才关
+    // ★ 2026-09-17：收尾那一拍抬手**不是**直接关屏 —— 原版还有最后那一拍
+    //   （状态 0x13 开 `其他人還要更努力喔！` 那只框 + 0x16 倒数 0xa），抬手先放它出来
+    monthlyScreen.up!(0, 0, env);
+    expect(monthlyScreenState().playback?.farewell).toBe(true);
+    expect(monthlyScreenState().playback?.farewellTicks).toBe(MONTHLY_FAREWELL_TICKS);
+    expect(monthlyScreenState().playing).toBe(true);
+    // 这一拍里再抬手 = 原版状态 0x16 的「点一下就关」（`[0x48c42e]`）
     monthlyScreen.up!(0, 0, env);
     expect(monthlyScreenState().playing).toBe(false);
     expect(monthlyScreen.active(env)).toBe(false);
@@ -1316,6 +1352,35 @@ describe('★ 頒獎屏那两张 4 行表底下那块锦缎板（图 2 @ (440,40
     expect(sites[2]!.plate?.y).toBe(405);
   });
 
+  it('★★ 最后那只框（图 4）只在**最后那一拍**画：`closing` 时不画、`farewell` 时才画', () => {
+    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
+    const view = monthlySummary(state, state);
+    const award = monthlyAward(state, state, { nodes: [], lands: [], facilities: [] });
+    const { sprite } = fakeSpriteFn();
+    const boxOf = (p: MonthlyPlayback): number => {
+      const { ctx, blits } = fakeCanvas();
+      drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award, p);
+      return blits.filter((b) => b.index === MONTHLY_FAREWELL_BOX.chunk).length;
+    };
+    const base: MonthlyPlayback = {
+      ...monthlyPlaybackStart(),
+      phase: 'award',
+      bars: MONTHLY_SLOTS,
+      seats: MONTHLY_SLOTS,
+      details: MONTHLY_DETAIL_ROWS,
+      encourage: true,
+    };
+    // 收尾那一拍（状态 0x12）**不该**出现那只框 —— 它是下一拍（0x13）才开的
+    expect(boxOf({ ...base, closing: true })).toBe(0);
+    // 最后那一拍（0x13/0x16）才画
+    expect(boxOf({ ...base, closing: true, farewell: true, farewellTicks: 0xa })).toBe(1);
+    // 动画关那条捷径（`skipTicks > 0`）两拍都不画
+    expect(boxOf({ ...base, closing: true, skipTicks: MONTHLY_SKIP_TICKS })).toBe(0);
+    expect(
+      boxOf({ ...base, closing: true, farewell: true, skipTicks: MONTHLY_SKIP_TICKS }),
+    ).toBe(0);
+  });
+
   it('★ 「動畫過程」关掉那条捷径里**连这块板也不贴**（原版状态 2 → 0x16 只倒数）', () => {
     const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
     const view = monthlySummary(state, state);
@@ -1361,7 +1426,7 @@ describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () 
     };
     const seatsFull: MonthlyPlayback = {
       phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0,
-      encourage: false, closing: false, skipTicks: 0,
+      encourage: false, closing: false, skipTicks: 0, farewell: false, farewellTicks: 0,
     };
     const calls: string[] = [];
     const fakeFlic = (archive: string, resource: number) => {
@@ -1412,7 +1477,7 @@ describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () 
     const baseAward: MonthlyAward = { winner: 0, score: 0, second: 0, richest: 0, bars: MONTHLY_BARS };
     const seatsFull: MonthlyPlayback = {
       phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0,
-      encourage: false, closing: false, skipTicks: 0,
+      encourage: false, closing: false, skipTicks: 0, farewell: false, farewellTicks: 0,
     };
     const drawn: { x: number; y: number }[] = [];
     const ctx = {
@@ -1522,7 +1587,9 @@ describe('★ 收尾那一句说的是**谁** @source 0x00438d04 / 0x004383a6 / 
       const next = monthlyPlaybackTick(p, 4, false);
       if (next === null) break;
       p = next;
-      if (p.encourage || p.closing) seen.push(`${p.encourage ? 'sad' : ''}${p.closing ? 'closing' : ''}`);
+      // 只看「悲情」与「收尾」两拍（`farewell` 那一拍是收尾之后的事，另有专门用例）
+      if (p.encourage) seen.push('sad');
+      if (p.closing && !p.farewell) seen.push('closing');
     }
     expect(seen).toEqual(['closing']);
   });
@@ -1553,6 +1620,7 @@ describe('★ 收尾那一句说的是**谁** @source 0x00438d04 / 0x004383a6 / 
     const p: MonthlyPlayback = {
       phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS,
       details: MONTHLY_DETAIL_ROWS, encourage: true, closing: false, skipTicks: 0,
+      farewell: false, farewellTicks: 0,
     };
     drawMonthlyScreen(ctx, () => null, st, {} as never, view, award, p);
     const sadText = texts.find((t) => t.startsWith(MONTHLY_TRAGIC));
