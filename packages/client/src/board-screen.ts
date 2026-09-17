@@ -513,13 +513,21 @@ export function estateFeeLabel(
 }
 
 /**
- * 地產清单「租期」那一列 —— 到期日倒计时。
+ * 地產清单「租期」那一列 —— **到期日**（不是倒计时）。
  *
  * @source `[0x4754b8]` 那一格；数据来自 `state.landTenure` / `state.facilityTenure`
- *   （= 地块 / 設施的 `+0x30` 到期日，`0` = 无期限）。
- *   ⚠️ 原版这一列显示的是**剩余天数**还是**绝对日期**没有逐一核出来，
- *   这里按「`> 0` 就写剩余天数、`0` 写「無限期」」—— 与 `known-deviations`
- *   里 `landTenure` 的既有用法（`tenureExpiresToday`）同一个口径。
+ *   （= 地块 `+0x30` / 設施 `+0x34` 的到期日，打包成 `(年<<16)|(月<<8)|日`，`0` = 无期限）。
+ *
+ * ★ 2026-09-17 定案（先前写「N天」是没核就猜的，见 D-BOARD-3）：
+ * ```asm
+ * 00424d3a  mov ecx, [ebx + 0x30]        ; 地块（設施那一支读 +0x34，同构）
+ *           test ecx, ecx / je → 固定串 0x463e42 = 「無限期」
+ *           edx = (v >> 16) / 100        ; 年 —— 原版就是这么除的（0x64 = 100）
+ *           [esp+0x90] = (v >> 8) & 0xf  ; 月
+ *           eax = v & 0xff               ; 日
+ *           sprintf(buf, "%02d/%d/%d", edx, 月, 日)   ; ★ 格式串 0x463e37
+ * ```
+ *   ⇒ 显示 **`YY/M/D`**（只有年补零到两位）：年 2002 → `2002/100 = 20` → `20/10/23`。
  */
 export function estateTenureLabel(
   state: GameState,
@@ -529,7 +537,10 @@ export function estateTenureLabel(
   const id = isFacility ? itemId - ESTATE_FACILITY_BASE : itemId - ESTATE_LAND_BASE;
   const tenure = isFacility ? (state.facilityTenure[id] ?? 0) : (state.landTenure[id] ?? 0);
   if (tenure <= 0) return '無限期';
-  return `${tenure}天`;
+  const y = Math.trunc((tenure >>> 16) / 100);
+  const m = (tenure >>> 8) & 0xf;
+  const d = tenure & 0xff;
+  return `${String(y).padStart(2, '0')}/${m}/${d}`;
 }
 
 /** 五个分类页签的名字 @source 表 `0x4753d4` */

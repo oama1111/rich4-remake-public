@@ -468,12 +468,20 @@ describe('选物窗的命中', () => {
     });
     const fee = estateFeeLabel(state, { lands: [chain(1), chain(2)] } as never, ESTATE_LAND_BASE + 1);
     expect(fee).toBe(`$${(2000 * 2 * state.priceIndex).toLocaleString('en-US')}`);
-    // 租期：`0` = 无期限；有到期日就写天数（landTenure / facilityTenure 两张表）
-    expect(estateTenureLabel({ ...state, landTenure: [0, 7] } as never, ESTATE_LAND_BASE + 1)).toBe('7天');
+    // 租期：`0` = 「無限期」；否则是**绝对到期日** `YY/M/D`（格式串 `0x463e37`，年 = (v>>16)/100）
+    //   打包 = `(年<<16)|(月<<8)|日`（`rules/calendar.ts` 的 `packDate` 同一套）
+    const packed = (y: number, m: number, d: number): number => ((y << 16) | (m << 8) | d) >>> 0;
+    expect(
+      estateTenureLabel({ ...state, landTenure: [0, packed(2002, 10, 23)] } as never, ESTATE_LAND_BASE + 1),
+    ).toBe('20/10/23');
     expect(estateTenureLabel({ ...state, landTenure: [0, 0] } as never, ESTATE_LAND_BASE + 1)).toBe('無限期');
     expect(
-      estateTenureLabel({ ...state, facilityTenure: [3] } as never, ESTATE_FACILITY_BASE + 0),
-    ).toBe('3天');
+      estateTenureLabel({ ...state, facilityTenure: [packed(2003, 1, 5)] } as never, ESTATE_FACILITY_BASE + 0),
+    ).toBe('20/1/5');
+    // ★ 年月日三个字段各取自己的位：年只补零到两位、月/日**不补零**（`%02d/%d/%d`）
+    expect(
+      estateTenureLabel({ ...state, landTenure: [0, packed(1999, 12, 31)] } as never, ESTATE_LAND_BASE + 1),
+    ).toBe('19/12/31');
   });
 
   it('★★ 五个页签的筛选逐条照 `fcn_00423b3b`（这是**筛选**，不是「一件东西一个页签」）', () => {
