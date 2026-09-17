@@ -95,6 +95,7 @@ import {
   cardListPrice,
   decodeEstate,
   estateListPrice,
+  allEffectiveLands,
   calculateLandToll,
   isColumnFull,
   stockListPrice,
@@ -478,11 +479,36 @@ export function estateFeeLabel(
   topo: MapTopology,
   itemId: number,
 ): string {
-  const me = state.currentPlayer + 1;
-  const lands = topo.lands ?? [];
-  // `ESTATE_LAND_BASE` / `ESTATE_FACILITY_BASE` 两段都走同一条
-  const fee = calculateLandToll(lands, me, state.priceIndex, null);
   if (itemId < 0) return '';
+  // ★ 归属/等级/类型要**运行时**那一份（`topo.lands` 是静态表，owner 恒 0）
+  const lands = allEffectiveLands(state, topo);
+  const index = state.priceIndex;
+
+  // ── 設施那一支（`dx >= 0xfa0`）@source VA 0x00424e6d 起 ──
+  //   收費 = `word [设施 + 等级*2 + 0x24]`（= 该等级的收费表）× 物價指數；
+  //   `+0x18(类型) == 0` 或 `+0x1a(等级) == 0` 时写 **0**（原版那两句 `je` 直接 xor eax,eax）
+  if (itemId >= ESTATE_FACILITY_BASE) {
+    const id = itemId - ESTATE_FACILITY_BASE;
+    const level = state.facilityLevel[id] ?? 0;
+    const type = state.facilityType[id] ?? 0;
+    if (level === 0 || type === 0) return '$0';
+    const fac = (topo.facilities ?? []).find((f) => f.id === id);
+    const rate = fac?.rateByLevel?.[level] ?? 0;
+    return `$${(rate * index).toLocaleString('en-US')}`;
+  }
+
+  // ── 地塊那一支 ──
+  const id = itemId - ESTATE_LAND_BASE;
+  const land = lands.find((l) => l.id === id);
+  if (land === undefined) return '$0';
+  // @source 0x00424cb1：`cmp byte [ebx+0x18], 0 / jne 0x424d03` —— **住宅**（类型 0）走
+  //   `calculate_land_toll(该地 owner, 该地**名字**)` = **同名区**那一支（同主同名之地的收费和）；
+  //   **连锁店**（类型 != 0）走函数开头算好的 `ebp` = `calculate_land_toll(当前玩家+1, null)`
+  //   = 该玩家**全部连锁店**的合计（所以连锁店每一行都是同一个数 —— 原版如此）。
+  const fee =
+    land.type === 0
+      ? calculateLandToll(lands, land.owner, index, land.name)
+      : calculateLandToll(lands, state.currentPlayer + 1, index, null);
   return `$${fee.toLocaleString('en-US')}`;
 }
 
@@ -914,9 +940,49 @@ export interface BoardPickItem {
 }
 
 /** 一件道具的「開發狀況」那一列的字 @source VA 0x00426c 附近的名字表 */
-function estateTabOf(chain: boolean, level: number): number {
-  if (chain) return 4;
-  return level === 0 ? 1 : 3;
+/**
+ * 地產清单五个页签的**筛选** —— 逐条照 `fcn_00423b3b`（VA 0x00423b3b）译。
+ *
+ * @source `fcn_00423b3b(玩家, 分类)` 的跳表 `0x423b27`（5 支）：
+ *
+ * | 分类 | 页签名（表 `0x4753d4`）| 收什么 | 判据 |
+ * |---|---|---|---|
+ * | 0 | 全  部 | **地块 + 設施** | 只看 owner == 玩家 + 1 |
+ * | 1 | 住宅區 | **只地块** | 同上，**不再筛等级/类型**（0x423bd1）|
+ * | 2 | 商業區 | **只設施** | 同上（0x423c0a）|
+ * | 3 | 房  屋 | 只地块 | owner 且 `+0x1a`(等级) **!= 0** 且 `+0x18`(类型) **== 0**（0x423c48）|
+ * | 4 | 連鎖店 | 只地块 | owner 且 `+0x1a` **!= 0** 且 `+0x18` **!= 0**（0x423c90）|
+ *
+ * ★ 先前本模块给每件东西只记**一个** `tab`（连锁 → 4、等级 0 → 1、其余 → 3），
+ *   于是页签 1 少了「已建的住宅与连锁店」、页签 4 把**等级 0 的连锁店空地**也列了进来
+ *   —— 两头都与原版不符（原版的五个分类是**筛选**，同一件东西会出现在多个页签里）。
+ *   ⇒ 改成按 id + 状态逐件判。见 D-BOARD-3。
+ */
+export function estateTabMatches(
+  state: GameState,
+  itemId: number,
+  tab: number,
+): boolean {
+  const isFacility = itemId >= ESTATE_FACILITY_BASE;
+  switch (tab) {
+    case 0:
+      return true;
+    case 1:
+      return !isFacility;
+    case 2:
+      return isFacility;
+    case 3:
+    case 4: {
+      if (isFacility) return false;
+      const id = itemId - ESTATE_LAND_BASE;
+      const level = state.landLevel[id] ?? 0;
+      if (level === 0) return false;
+      const chain = (state.landType[id] ?? 0) !== 0;
+      return tab === 3 ? !chain : chain;
+    }
+    default:
+      return false;
+  }
 }
 
 /**
@@ -977,7 +1043,9 @@ export function boardPickItems(
         name: l.name,
         extra: chain ? CHAIN_STORE_LABEL : (LAND_LEVEL_NAMES[level] ?? ''),
         amount: 0,
-        tab: estateTabOf(chain, level),
+        // ⚠️ 这一栏对地產**不再参与筛选**（原版的五个分类是筛选，一件东西能出现在多个
+        //   页签里）—— 筛选走 `estateTabMatches`。留着只为与别的清单同形。
+        tab: 1,
       });
     }
     for (const f of topo.facilities ?? []) {
@@ -1017,7 +1085,7 @@ function pickEstateView(env: UiScreenEnv): {
   const items: BoardPickItem[] = [];
   const full: number[] = [];
   all.forEach((it, i) => {
-    if (ui.pickTab !== 0 && it.tab !== ui.pickTab) return;
+    if (!estateTabMatches(env.state, it.id, ui.pickTab)) return;
     items.push(it);
     full.push(i);
   });

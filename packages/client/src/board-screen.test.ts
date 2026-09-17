@@ -73,6 +73,7 @@ import {
   hitBoardSlot,
   clampPickTop,
   estateFeeLabel,
+  estateTabMatches,
   estateTenureLabel,
   confirmChose,
   hitYesNo,
@@ -473,6 +474,118 @@ describe('选物窗的命中', () => {
     expect(
       estateTenureLabel({ ...state, facilityTenure: [3] } as never, ESTATE_FACILITY_BASE + 0),
     ).toBe('3天');
+  });
+
+  it('★★ 五个页签的筛选逐条照 `fcn_00423b3b`（这是**筛选**，不是「一件东西一个页签」）', () => {
+    // 四块地：等级 0 的住宅空地 / 等级 2 的住宅 / 等级 3 的连锁店 / 等级 0 的连锁店空地
+    const state = {
+      ...stateWithBoard([]),
+      landLevel: [0, 0, 2, 3, 0],
+      landType: [0, 0, 0, 1, 1],
+      facilityLevel: [0, 4],
+    } as never;
+    const L = (id: number): number => ESTATE_LAND_BASE + id;
+    const F = (id: number): number => ESTATE_FACILITY_BASE + id;
+    // 页签 0「全部」：地块与設施都收
+    for (const id of [L(1), L(2), L(3), L(4), F(1)]) {
+      expect(estateTabMatches(state, id, 0), `全部 ${id}`).toBe(true);
+    }
+    // 页签 1「住宅區」：**只地块、不再筛等级/类型**（原版 0x423bd1 就只看 owner）
+    //   ⇒ 等级 0 的、已建的、连锁店的地块**全在**这一页
+    for (const id of [L(1), L(2), L(3), L(4)]) expect(estateTabMatches(state, id, 1)).toBe(true);
+    expect(estateTabMatches(state, F(1), 1)).toBe(false);
+    // 页签 2「商業區」：只設施
+    expect(estateTabMatches(state, F(1), 2)).toBe(true);
+    for (const id of [L(1), L(2), L(3), L(4)]) expect(estateTabMatches(state, id, 2)).toBe(false);
+    // 页签 3「房屋」：等级 != 0 且类型 == 0
+    expect(estateTabMatches(state, L(2), 3)).toBe(true);
+    expect(estateTabMatches(state, L(1), 3)).toBe(false); // 等级 0
+    expect(estateTabMatches(state, L(3), 3)).toBe(false); // 连锁店
+    expect(estateTabMatches(state, F(1), 3)).toBe(false); // 只收地块
+    // 页签 4「連鎖店」：等级 != 0 且类型 != 0 —— ★ **等级 0 的连锁店空地不算**
+    expect(estateTabMatches(state, L(3), 4)).toBe(true);
+    expect(estateTabMatches(state, L(4), 4)).toBe(false);
+    expect(estateTabMatches(state, L(2), 4)).toBe(false);
+    expect(estateTabMatches(state, F(1), 4)).toBe(false);
+    // 越界页签一律不认
+    expect(estateTabMatches(state, L(2), 5)).toBe(false);
+    expect(estateTabMatches(state, L(2), -1)).toBe(false);
+  });
+
+  it('★★ 收費那一列**逐行**算（住宅 = 同名区 / 连锁店 = 玩家合计 / 設施 = 自己那张表）', () => {
+    const me = 1; // currentPlayer 0 → owner = 1
+    const land = (
+      id: number,
+      over: Partial<{ name: string; type: number; level: number; owner: number; rent: number[] }> = {},
+    ) => ({
+      id,
+      name: over.name ?? `L${id}`,
+      type: over.type ?? 0,
+      level: over.level ?? 2,
+      owner: over.owner ?? 0,
+      landPrice: 1000,
+      housePrice: 200,
+      rentByLevel: over.rent ?? [0, 100, 250, 400, 600, 900],
+      priceStatus: 0,
+    });
+    // ① 住宅：同主同名两块的**收费之和**（不是全图、也不是单块）
+    const housing = {
+      ...stateWithBoard([]),
+      currentPlayer: 0,
+      priceIndex: 2,
+      landOwner: [0, me, me, 9] as number[], // 3 号是**别人的**同名地
+      landLevel: [0, 2, 2, 2] as number[],
+      landType: [0, 0, 0, 0] as number[],
+    } as never;
+    const topo1 = {
+      lands: [land(1, { name: '甲', rent: [0, 100, 250] }), land(2, { name: '甲', rent: [0, 100, 250] }), land(3, { name: '甲', owner: 9 })],
+      facilities: [],
+    } as never;
+    // (250 + 250) × 2 —— 3 号不是我的，不计
+    expect(estateFeeLabel(housing, topo1, ESTATE_LAND_BASE + 1)).toBe(
+      `$${((250 + 250) * 2).toLocaleString('en-US')}`,
+    );
+    // ② 连锁店：**该玩家全部连锁店**的合计（每一行同一个数，原版如此）
+    const chainState = {
+      ...stateWithBoard([]),
+      currentPlayer: 0,
+      priceIndex: 3,
+      landOwner: [0, me, me] as number[],
+      landLevel: [0, 1, 4] as number[],
+      landType: [0, 5, 5] as number[], // 非 0 = 连锁店（等级不必相同）
+    } as never;
+    const topo2 = {
+      lands: [land(1, { type: 5, level: 1 }), land(2, { type: 5, level: 4 })],
+      facilities: [],
+    } as never;
+    const chainFee = `$${(2000 * 2 * 3).toLocaleString('en-US')}`;
+    expect(estateFeeLabel(chainState, topo2, ESTATE_LAND_BASE + 1)).toBe(chainFee);
+    expect(estateFeeLabel(chainState, topo2, ESTATE_LAND_BASE + 2)).toBe(chainFee);
+    // ③ ★ 归属看**运行时**（静态表 owner 恒 0）：把静态 owner 清成 0，费用不该变
+    const topoStatic = {
+      lands: [land(1, { type: 5, owner: 0 }), land(2, { type: 5, owner: 0 })],
+      facilities: [],
+    } as never;
+    expect(estateFeeLabel(chainState, topoStatic, ESTATE_LAND_BASE + 1)).toBe(chainFee);
+    // ④ 設施：`rateByLevel[等级] × 物價指數`；类型 0 或等级 0 → `$0`
+    const facState = {
+      ...stateWithBoard([]),
+      currentPlayer: 0,
+      priceIndex: 5,
+      facilityLevel: [0, 3, 0, 2] as number[],
+      facilityType: [0, 4, 4, 0] as number[],
+    } as never;
+    const topo3 = {
+      lands: [],
+      facilities: [
+        { id: 1, rateByLevel: [0, 10, 20, 30] },
+        { id: 2, rateByLevel: [0, 10, 20, 30] },
+        { id: 3, rateByLevel: [0, 10, 20, 30] },
+      ],
+    } as never;
+    expect(estateFeeLabel(facState, topo3, ESTATE_FACILITY_BASE + 1)).toBe(`$${(30 * 5).toLocaleString('en-US')}`);
+    expect(estateFeeLabel(facState, topo3, ESTATE_FACILITY_BASE + 2)).toBe('$0'); // 等级 0
+    expect(estateFeeLabel(facState, topo3, ESTATE_FACILITY_BASE + 3)).toBe('$0'); // 类型 0
   });
 
   it('★★ 地產清单的滚动：按一屏夹取、上下各滚一屏', () => {
