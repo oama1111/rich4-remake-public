@@ -38,6 +38,18 @@ export const SPECIAL_PLAYER_SIZE = 0x10;
  *   「还剩几步」(`stepsRemaining`) **不在这 16 字节里**（它是全局 `[0x48baf8]`）。
  */
 /**
+ * 存档里的一个地图物件（神明/路障/地雷…）。
+ * @source `rules/objects.ts` 的 `OBJECTS_INFO_BASE`：+0 `type`(byte)、+2 `nodeId`(word)、
+ *   +4 `state`(byte，附身后写 13/7)、+5 `attached`(byte，玩家下标 + 1)
+ */
+export interface SaveObjectRecord {
+  type: number;
+  nodeId: number;
+  state: number;
+  attached: number;
+}
+
+/**
  * 存档里的一条股票行情（12 支 × 36 字节）。
  *
  * ⚠️ `+0` 是**名字指针**（实测是 exe 数据段的 VA，如 `0x4668c1`）——
@@ -99,6 +111,11 @@ export const OBJECT_INFO_SIZE = 0x18;
 export const OBJECT_INFO_COUNT = 0x2e;
 /** 每个玩家的逐回合快照 @source loadsave.c: fread(0x48cb80 + i*0x2718, 0x2718, 1, fp) */
 export const PLAYER_SNAPSHOT_SIZE = 0x2718;
+/** 地图物件条数（46）@source `memset(objects_info, 0, 0x450)` + `cmp ebx, 0x2e` */
+export const OBJECT_RECORD_COUNT = 0x2e;
+/** 一个物件的字节数（24）@source `0x450 / 0x2e`，代码里写作 `byte [eax*8 + …]`（eax = i*3） */
+export const OBJECT_RECORD_SIZE = 24;
+
 /** 每人持仓的股票支数（12 支）@source `player_stock_info[4][12]` */
 export const STOCKS_PER_PLAYER = 12;
 /** 一条行情记录的字节数 @source `rich4_stocks.h` 的 `stock_info` */
@@ -305,6 +322,8 @@ export interface SaveGame {
   winTargetWealth: number;
   /** 已过天数 @source `[0x4990e4]`，存档 0x2692 */
   totalDays: number;
+  /** 46 个地图物件 @source `_rich4_objects_info`，平坦 `0x0204`，每项 24 字节 */
+  objects: SaveObjectRecord[];
   /** 12 支股票的行情快照 @source `_stocks_on_map`，平坦 `0x2376` */
   stocksOnMap: SaveStockRecord[];
   /** `history[股票][日]`（12 × 144 的 float 价格）@source 平坦 `0x6f6`，0x1b00 字节 */
@@ -457,6 +476,17 @@ export function parseSave(data: Uint8Array): SaveGame {
     });
   }
 
+  const objects: SaveObjectRecord[] = [];
+  for (let i = 0; i < OBJECT_RECORD_COUNT; i++) {
+    const o = OFFSET.objectsInfo + i * OBJECT_RECORD_SIZE;
+    objects.push({
+      type: data[o] ?? 0,
+      nodeId: view.getUint16(o + 2, true),
+      state: data[o + 4] ?? 0,
+      attached: data[o + 5] ?? 0,
+    });
+  }
+
   const stocksOnMap: SaveStockRecord[] = [];
   for (let i = 0; i < STOCKS_PER_PLAYER; i++) {
     const o = OFFSET.stocks + i * STOCK_RECORD_SIZE;
@@ -515,6 +545,7 @@ export function parseSave(data: Uint8Array): SaveGame {
     winTargetDays: view.getInt32(OFFSET.winTargetDays, true),
     winTargetWealth: view.getInt32(OFFSET.winTargetWealth, true),
     totalDays: view.getUint32(OFFSET.totalDays, true),
+    objects,
     stocksOnMap,
     stockHistory,
     playerStocks,

@@ -34,8 +34,6 @@ import { newStockMarket, type StockMarketState } from '../places/stock-market.ts
 import { emptyLottery } from '../places/lottery.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
 import { emptyOwnership } from '../places/commercial.ts';
-import { makeObjects } from '../cards/summon.ts';
-import { OBJECT_COUNT } from '../rules/objects.ts';
 import { STOCKS_PER_MAP } from '@rich4/data';
 import { emptyTools, initialToolStock, TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
 import { CONFINEMENT_SLOTS } from '../rules/confinement.ts';
@@ -370,7 +368,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     '道具全局库存：槽内偏移**已核**（+0x6de），解析待接，已置为初始库存 @source rich4_player_save_state.asm:573';
   gaps['commercialShares'] = '各企业的已售股数在存档中的偏移未验证，已按地图初值重置';
   gaps['commercialOwners'] = '各企业的归属与持股排名在存档中的偏移未验证，已置为无主';
-  gaps['objects'] = '地图物件表（神明/路障/地雷）在存档 0x0204 起，解析器尚未回读，已置空';
+  // ★ 物件表已接（见 `objects` 的构造）——这条 gap 删掉。
   // ★ 2026-09-17：替身表**已能从存档读出**（槽内 +0x1a8，5 × 16 字节，见
   //   `loaders/save.ts` 的 `SaveSpecialPlayer`），占用表随之**由替身表推出来**
   //   —— 两者是同一件事的两面，不一致就会出现「探得到却放不出来」的鬼状态
@@ -472,7 +470,15 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     ),
     // 下标 = 企业 1 基序号，故长度要多一格
     commercialOwners: Array.from({ length: map.commercials.length + 1 }, () => emptyOwnership()),
-    objects: makeObjects(OBJECT_COUNT),
+    // ★ 2026-09-17：地图物件**从存档读**（平坦 `0x0204`，46 × 24 字节）。
+    //   真 Save0 实测：46 项的 `type` 与静态表 `OBJECT_TYPE_TABLE` **逐个相符**，
+    //   且有 8 个 `nodeId != 0`（神明 1/3/5/8/10、惡犬 11、路障 16×2）。
+    objects: save.objects.map((rec) => ({
+      type: rec.type,
+      nodeId: rec.nodeId,
+      state: rec.state,
+      attached: rec.attached,
+    })),
     commercialShares: Array.from(
       { length: map.commercials.length + 1 },
       (_, i) => map.commercials.find((c) => c.id === i)?.shares ?? 0,

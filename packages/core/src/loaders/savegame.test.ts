@@ -16,6 +16,7 @@ import {
 import { OFFSET, parseSave } from './save.ts';
 import { parseMap } from './map.ts';
 import { ACTOR_PLACE } from '../rules/special-actors.ts';
+import { OBJECT_TYPE_TABLE } from '../rules/objects.ts';
 import { newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
 import { reduce } from '../state/reduce.ts';
@@ -178,10 +179,38 @@ describe('原版存档导入', () => {
     for (const key of ['landOwner', 'lottery', 'pool', 'rngState', 'marketDay']) {
       expect(gaps[key], `${key} 应当有 gap 说明`).toBeTruthy();
     }
-    // ★ 2026-09-17：`holdings` / `specialActors` / `market` **已经能还原** ⇒ 不再挂 gap
+    // ★ 2026-09-17：`holdings` / `specialActors` / `market` / `objects` **已经能还原** ⇒ 不再挂 gap
     expect(gaps['holdings']).toBeUndefined();
     expect(gaps['specialActors']).toBeUndefined();
     expect(gaps['market']).toBeUndefined();
+    expect(gaps['objects']).toBeUndefined();
+  });
+
+  withSave('★★ 地图物件**从存档读**（46 项的 type 与静态表逐个相符，8 个在场）', () => {
+    const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
+    expect(save.objects).toHaveLength(46);
+    // ① 最强的一条：46 项的 type 与静态表**逐个相符**（偏移/步长错一格就崩）
+    expect(save.objects.map((o) => o.type)).toEqual([...OBJECT_TYPE_TABLE]);
+    // ② Save0 在场的那 8 个：下标/类型/节点
+    const alive = save.objects
+      .map((o, i) => ({ i, ...o }))
+      .filter((o) => o.nodeId !== 0);
+    expect(alive.map((o) => [o.i, o.type, o.nodeId])).toEqual([
+      [0, 1, 4],
+      [2, 3, 92],
+      [4, 5, 78],
+      [7, 8, 102],
+      [9, 10, 95],
+      [10, 11, 48],
+      [16, 16, 59],
+      [17, 16, 58],
+    ]);
+    // ③ 导入层：同一批值进 state.objects（没在场上的是 nodeId 0，不是被丢掉）
+    const { state } = importOriginalSave(save, loadMap());
+    expect(state.objects).toHaveLength(46);
+    expect(state.objects[0]).toEqual({ type: 1, nodeId: 4, state: 0, attached: 0 });
+    expect(state.objects[7]!.nodeId).toBe(102);
+    expect(state.objects[1]!.nodeId).toBe(0);
   });
 
   withSave('★★ 行情**从存档读**（Save0 实测：0 号股 收盘 109 / 参考 200 / 开盘 121 / 流通 10000）', () => {
