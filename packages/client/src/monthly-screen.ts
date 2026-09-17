@@ -1787,6 +1787,10 @@ export const monthlyScreen: UiScreen = {
     playback = monthlyPlaybackStart();
     // 頒獎那段 FLIC 的帧序按「演出开始到现在」算（见 `drawMonthlyAwardFlic`）
     playbackStartedAt = env.now;
+    // ★ 进屏配乐 @source `rich4.asm:19212` `push 9 / call fcn_004549cf`
+    //   ⇒ id 9 → `MIDI10.MID` → 磁盘名 `midi10.mid`（见 `SCREEN_BGM.monthly`
+    //   与 `bgmAssetFileFor`；表 `0x47e793`）。先前这条一直登记为「未接」。
+    env.music?.('midi10.mid');
     env.log(`每月結算：${v.rows.length} 人`);
     env.requestRender();
   },

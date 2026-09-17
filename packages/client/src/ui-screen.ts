@@ -91,6 +91,19 @@ export interface UiScreenEnv {
    *   `(id) => sound.stop('Effect.mkf', id)`。
    */
   stopEffect(id: number): void;
+  /**
+   * 放一段**背景音乐**（按屏取曲）。
+   *
+   * @param file 磁盘文件名（小写，如 `'midi10.mid'`）—— 由
+   *   `@rich4/assets-pipeline` 的 `bgmAssetFileFor(id)` 给出。
+   *
+   * ★ 对应原版 `fcn_004549cf(id)`（VA 0x004549cf）：`id` 查 13 项文件名表
+   *   `0x47e793` → `MIDI{id+1}.MID`，再 `MCI "open sequencer!%s alias mid"`。
+   *   曲号与场景的对应见 `SCREEN_BGM`（22 处调用点逐处读出）。
+   *   ⚠️ 原版那句有闸门：`cmp byte [0x49715a], 0 / je 直接返回`（配置里关了配乐）；
+   *   本引擎的开关在宿主侧（`main.ts` 的音乐开关），屏这边只管**请求**放哪一首。
+   */
+  music?(file: string): void;
 }
 
 /**

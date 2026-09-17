@@ -2938,6 +2938,17 @@ async function playTrack(index: number): Promise<void> {
   const name = MIDI_PLAYLIST[((index % MIDI_PLAYLIST.length) + MIDI_PLAYLIST.length) % MIDI_PLAYLIST.length];
   if (name === undefined) return;
   musicTrack = index;
+  await playTrackFile(name);
+}
+
+/**
+ * 按**文件名**放一首（按屏取曲走这条 —— 原版 `fcn_004549cf(id)`）。
+ *
+ * ★ 与 `playTrack(index)` 的区别：那个是「整张清单顺序播」（`Midi.txt` 的顺序），
+ *   这条是「某屏点名要哪一首」；曲号→文件名的映射在
+ *   `@rich4/assets-pipeline` 的 `SCREEN_BGM` / `bgmAssetFileFor`。
+ */
+async function playTrackFile(name: string): Promise<void> {
   try {
     // ⚠️ 磁盘上的文件名是小写（midi01.mid），`Midi.txt` 里是大写；
     //   大小写敏感的文件系统上按实际文件名取，取不到就试另一种写法。
@@ -4192,6 +4203,11 @@ function uiEnv(): UiScreenEnv {
     //   见 `wheel-screen.ts` 与 `audio.ts` 的 `play(archive, resource, loop)`。
     playEffect: (id: number, loop = false) => sound.play('Effect.mkf', id, loop),
     stopEffect: (id: number) => sound.stop('Effect.mkf', id),
+    // ★ 按屏取曲（原版 `fcn_004549cf(id)`）：屏只报**磁盘文件名**，
+    //   载入/替换由这里统一做（与 `playTrack` 同一条载入路径）。
+    music: (file: string) => {
+      void playTrackFile(file);
+    },
   };
 }
 

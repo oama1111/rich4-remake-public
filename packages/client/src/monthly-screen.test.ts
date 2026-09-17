@@ -1076,6 +1076,34 @@ function fakeEnv(state: GameState, topo: MapTopology, logs: string[]): UiScreenE
 }
 
 describe('★ event 判据：`totalMonths` 增了才起播', () => {
+  runMap('★★ 起播时**点一首 BGM**（`fcn_004549cf(9)` → midi10.mid）@source rich4.asm:19212', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP_PATH)));
+    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
+    const base = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+    });
+    resetMonthlyScreen();
+    const logs: string[] = [];
+    const played: string[] = [];
+    const env = { ...fakeEnv(base, topo, logs), music: (f: string) => played.push(f) };
+    const before: GameState = {
+      ...base,
+      players: base.players.map((p) => ({ ...p, moneyInBank: 100000 })),
+    };
+    const after: GameState = {
+      ...before,
+      totalMonths: before.totalMonths + 1,
+      players: before.players.map((p) => ({
+        ...p,
+        moneyInBank: applyMonthlyInterest(p.moneyInBank, p.loan),
+      })),
+    };
+    monthlyScreen.event!(before, after, env);
+    expect(played).toEqual(['midi10.mid']);
+    resetMonthlyScreen();
+  });
+
   runMap('★ 跨月 → 起播；没跨月 → 一次都不起播', () => {
     const map = parseMap(new Uint8Array(readFileSync(MAP_PATH)));
     const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
