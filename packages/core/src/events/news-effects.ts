@@ -22,6 +22,12 @@ import { isAlive } from '../state/types.ts';
 import { blessingMultiplier } from '../rules/blessing.ts';
 import { bankDividend, incomeTax, propertyTax, stockTax } from '../rules/percentage.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
+import {
+  MUTATE_CLEAR_OWNER,
+  MUTATE_DEMOLISH_ONE,
+  mutateFacility,
+  mutateLand,
+} from '../cards/monster.ts';
 
 export interface NewsEffectResult {
   players: Player[];
@@ -49,6 +55,10 @@ export interface NewsEffectResult {
    */
   landPrice?: readonly PriceChange[];
   facilityPrice?: readonly PriceChange[];
+  /** 被 `mutate_land` 改过的地块（新聞 5/15/19/21）—— 同样是有序列表 */
+  landMutations?: readonly LandMutation[];
+  /** 同上，設施那一支 */
+  facilityMutations?: readonly LandMutation[];
   amount: number;
   bankrupted: boolean;
   unimplemented: boolean;
@@ -62,6 +72,14 @@ export interface NewsEffectResult {
 export interface PriceChange {
   id: number;
   price: number;
+}
+
+/** 一条地块/設施改造：只带**真正变了**的那几格 */
+export interface LandMutation {
+  id: number;
+  level: number;
+  type: number;
+  owner: number;
 }
 
 export interface EffectRng {
@@ -177,6 +195,11 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
       e.effects.includes('resumeStock') ||
       e.effects.includes('raiseLandPrice') ||
       e.effects.includes('lowerLandPrice') ||
+      e.effects.includes('demolishBuiltLand') ||
+      e.effects.includes('clearOwnerBuilt') ||
+      e.effects.includes('clearOwnerAny') ||
+      e.effects.includes('demolishAny') ||
+      e.effects.includes('demolishSameName') ||
       (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
   ).map((e) => e.id),
   ...PERCENT_NEWS.keys(),
@@ -333,6 +356,105 @@ export function applyNewsEffect(
       ...base,
       amount: Math.trunc(fac.landPrice * factor),
       facilityPrice: [{ id: fac.id, price: Math.trunc(fac.landPrice * factor) }],
+    };
+  }
+
+  // ── 新聞 5/15/19/21「隨機拆一處建築／土地流失」────────────────────
+  //   候选集与模式逐条见 event-table 的注释表；都**不看 `affected`**。
+  //   ★ 候选集为空时原版 `idiv` 除零崩 ⇒ 本引擎什么都不做。
+  // ── 新聞 18「地震」：挑一处，**同名地块全拆一级**（与 6/14 同一套结构）──
+  if (entry.effects.includes('demolishSameName')) {
+    const rng = ctx.rng;
+    const lands = ctx.lands ?? [];
+    const facilities = ctx.facilities ?? [];
+    if (rng === undefined || lands.length + facilities.length === 0) {
+      return { ...base, unimplemented: true };
+    }
+    const pick = rng.below(lands.length + facilities.length);
+    if (pick < lands.length) {
+      const name = lands[pick]!.name;
+      const landMutations: LandMutation[] = [];
+      for (const l of lands) {
+        if (l.name !== name) continue;
+        const after = mutateLand(l, MUTATE_DEMOLISH_ONE);
+        if (!after.changed) continue;
+        landMutations.push({
+          id: after.land.id,
+          level: after.land.level,
+          type: after.land.type,
+          owner: after.land.owner,
+        });
+      }
+      return { ...base, amount: landMutations.length, landMutations };
+    }
+    const fac = facilities[pick - lands.length]!;
+    const after = mutateFacility(fac, MUTATE_DEMOLISH_ONE);
+    if (!after.changed) return { ...base, amount: 0 };
+    return {
+      ...base,
+      amount: 1,
+      facilityMutations: [
+        {
+          id: after.facility.id,
+          level: after.facility.level,
+          type: after.facility.type,
+          owner: after.facility.owner,
+        },
+      ],
+    };
+  }
+
+  const razeMode = entry.effects.includes('demolishBuiltLand') ||
+    entry.effects.includes('demolishAny')
+    ? MUTATE_DEMOLISH_ONE
+    : entry.effects.includes('clearOwnerBuilt') || entry.effects.includes('clearOwnerAny')
+      ? MUTATE_CLEAR_OWNER
+      : null;
+  if (razeMode !== null) {
+    const rng = ctx.rng;
+    const lands = ctx.lands ?? [];
+    const facilities = ctx.facilities ?? [];
+    if (rng === undefined) return { ...base, unimplemented: true };
+    // 候选集：`…Built…` 只挑 `level != 0`；`demolishBuiltLand` 再限定「只地块」
+    const builtOnly =
+      entry.effects.includes('demolishBuiltLand') ||
+      entry.effects.includes('clearOwnerBuilt');
+    const landsOnly = entry.effects.includes('demolishBuiltLand');
+    const landCand = builtOnly ? lands.filter((l) => l.level !== 0) : lands;
+    const facCand = landsOnly
+      ? []
+      : builtOnly
+        ? facilities.filter((f) => f.level !== 0)
+        : facilities;
+    const total = landCand.length + facCand.length;
+    if (total === 0) return { ...base, amount: 0 };
+    const pick = rng.below(total);
+    if (pick < landCand.length) {
+      const before = landCand[pick]!;
+      const after = mutateLand(before, razeMode);
+      if (!after.changed) return { ...base, amount: 0 };
+      return {
+        ...base,
+        amount: 1,
+        landMutations: [
+          { id: after.land.id, level: after.land.level, type: after.land.type, owner: after.land.owner },
+        ],
+      };
+    }
+    const before = facCand[pick - landCand.length]!;
+    const after = mutateFacility(before, razeMode);
+    if (!after.changed) return { ...base, amount: 0 };
+    return {
+      ...base,
+      amount: 1,
+      facilityMutations: [
+        {
+          id: after.facility.id,
+          level: after.facility.level,
+          type: after.facility.type,
+          owner: after.facility.owner,
+        },
+      ],
     };
   }
 

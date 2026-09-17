@@ -118,6 +118,34 @@ export interface EventEntry {
      */
     | 'raiseLandPrice'
     | 'lowerLandPrice'
+    /**
+     * 新聞 5/15/19/21：**随机挑一处「建筑」按 `mutate_land` 的某个模式改**。
+     *
+     * 三条信息：**候选集**（全部 / 只挑有等级的建筑 / 只挑地块）、**模式**（0 拆一级 / 1 清归属）。
+     *
+     * | 事件 | 候选集 | 模式 | @source |
+     * |---|---|---|---|
+     * | 5 外星怪獸襲擊%s 摧毀建築一棟 | 地块 + 設施，且 `level != 0` | **1** | `fcn_004492a0`（VA 0x4492d0 / 0x449308 两级过滤；0x449408 后 `push 1`）|
+     * | 15 %s一處民宅瓦斯爆炸 房屋失火 | **只地块**，且 `level != 0` | **0** | `fcn_0044a453`（0x44a47d 的过滤循环；0x44a536 `push 0`）|
+     * | 19 %s山洪爆發土地流失 | 地块 + 設施，**不过滤** | **1** | `fcn_0044a91e`（0x44a943 直接 `rand()%(地+設施)`；0x44a9xx `push 1`）|
+     * | 21 龍捲風侵襲%s 摧毀房屋一棟 | 地块 + 設施，**不过滤** | **0** | `fcn_0044ac99`（0x44acbd；0x44adf5 `push 0`）|
+     *
+     * ★ 四个函数都**不看 `affected`**；候选集为空时原版 `idiv` 会**除零崩**，
+     *   本引擎那一支什么都不做（与 28 同一处理）。
+     * ★ 改的是复用 helper `mutate_land`（VA 0x0040ab4a，地块与設施各一套分支），
+     *   见 `cards/monster.ts` 的 `mutateLand` / `mutateFacilityInfo`。
+     */
+    | 'demolishBuiltLand'
+    | 'clearOwnerBuilt'
+    | 'clearOwnerAny'
+    | 'demolishAny'
+    /**
+     * 新聞 18「%s強烈地震房屋倒塌」：随机挑一处（地块+設施，**不过滤**），
+     *   模式 0；**地块那一支把同名地块全拆一级**（和 6/14 同一套 `strcmp` 循环），
+     *   設施那一支只拆挑中那一处。@source `fcn_0044a6e0`（选择 VA 0x44a6f4；
+     *   同名循环 0x44a80c；設施分支 0x44a8xx）
+     */
+    | 'demolishSameName'
   )[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
@@ -169,7 +197,7 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 2, va: 0x00449006, factor: null, effects: ['releaseHospital'], textVa: 0x465454, text: "#0151住院中病患提前出院", literal: null },
   { id: 3, va: 0x00449081, factor: null, effects: ['extendHospital'], textVa: 0x46546c, text: "#0152住院中病患延長住院%d天", literal: 3 },
   { id: 4, va: 0x0044913d, factor: null, effects: ['hospital'], textVa: 0x465488, text: "#0153外星人攻打地球", literal: null },
-  { id: 5, va: 0x004492a0, factor: null, effects: [], textVa: 0x46549c, text: "#0154外星怪獸襲擊%s\n摧毀建築一棟", literal: null },
+  { id: 5, va: 0x004492a0, factor: null, effects: ['clearOwnerBuilt'], textVa: 0x46549c, text: "#0154外星怪獸襲擊%s\n摧毀建築一棟", literal: null },
   { id: 6, va: 0x004494e0, factor: null, effects: ['raiseLandPrice'], textVa: 0x4654bd, text: "#0155%s公告地價調漲３０％", literal: null },
   { id: 7, va: 0x00449735, factor: null, effects: [], textVa: 0x4654e4, text: "#0156公開拍賣%s\n公有土地一處", literal: null },
   { id: 8, va: 0x004498b3, factor: 10000, effects: ['give'], textVa: 0x465501, text: "#0157公開表揚第一大地主\n%s獲得%d元獎勵", literal: null },
@@ -179,13 +207,13 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 12, va: 0x00449de6, factor: null, effects: ['pay'], textVa: 0x4655ac, text: "#0161所有人繳交地價稅５％", literal: null },
   { id: 13, va: 0x0044a029, factor: null, effects: ['pay'], textVa: 0x4655d4, text: "#0162所有人繳交證交稅５％", literal: null },
   { id: 14, va: 0x0044a220, factor: null, effects: ['lowerLandPrice'], textVa: 0x4655fc, text: "#0163%s房屋鬧鬼\n地價下跌３０％", literal: null },
-  { id: 15, va: 0x0044a453, factor: null, effects: [], textVa: 0x465624, text: "#0164%s一處民宅瓦斯爆炸\n房屋失火", literal: null },
+  { id: 15, va: 0x0044a453, factor: null, effects: ['demolishBuiltLand'], textVa: 0x465624, text: "#0164%s一處民宅瓦斯爆炸\n房屋失火", literal: null },
   { id: 16, va: 0x0044a5d6, factor: null, effects: ['stopPedestrians'], textVa: 0x465645, text: "#0165豪雨特報\n行人休息一回合", literal: null },
   { id: 17, va: 0x0044a657, factor: null, effects: ['stopVehicles'], textVa: 0x465662, text: "#0166交通阻塞\n汽車停止一回合", literal: null },
-  { id: 18, va: 0x0044a6e0, factor: null, effects: [], textVa: 0x46567f, text: "#0167%s強烈地震房屋倒塌", literal: null },
-  { id: 19, va: 0x0044a91e, factor: null, effects: [], textVa: 0x465697, text: "#0168%s山洪爆發土地流失", literal: null },
+  { id: 18, va: 0x0044a6e0, factor: null, effects: ['demolishSameName'], textVa: 0x46567f, text: "#0167%s強烈地震房屋倒塌", literal: null },
+  { id: 19, va: 0x0044a91e, factor: null, effects: ['clearOwnerAny'], textVa: 0x465697, text: "#0168%s山洪爆發土地流失", literal: null },
   { id: 20, va: 0x0044ab2c, factor: null, effects: [], textVa: 0x4656af, text: "#0169超級颱風侵襲%s\n多處房屋受損", literal: null },
-  { id: 21, va: 0x0044ac99, factor: null, effects: [], textVa: 0x4656d0, text: "#0170龍捲風侵襲%s\n摧毀房屋一棟", literal: null },
+  { id: 21, va: 0x0044ac99, factor: null, effects: ['demolishAny'], textVa: 0x4656d0, text: "#0170龍捲風侵襲%s\n摧毀房屋一棟", literal: null },
   // @source 0x0044aeb6 `mov bh, 0xf` → 所有在场玩家 +0x3c = 15（0x0044aed2）
   { id: 22, va: 0x0044ae89, factor: null, effects: ['loanFreeze'], textVa: 0x4656ef, text: "#0171銀行擠兌停止放款１５天", literal: null },
   { id: 23, va: 0x0044aedb, factor: null, effects: ['give'], textVa: 0x46570b, text: "#0172銀行加發１０％儲金紅利", literal: null },

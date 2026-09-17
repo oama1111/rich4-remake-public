@@ -336,6 +336,88 @@ describe('★ 新聞 6/14：同名地块地价 ×1.3 / ×0.7 @source fcn_004494e
   });
 });
 
+describe('★ 新聞 5/15/19/21：随机拆一处建筑 / 土地流失 @source fcn_004492a0 / a453 / a91e / ac99', () => {
+  const land = (id: number, name: string, level: number, type = 0, owner = 1) =>
+    ({ id, name, level, type, owner, landPrice: 100 }) as never;
+  const fac = (id: number, name: string, level: number, type = 1, owner = 1) =>
+    ({ id, name, level, type, owner, landPrice: 100 }) as never;
+  const rng0 = { below: () => 0 };
+
+  it('★★ news[15] 民宅失火：候选**只地块**、只挑有等级的，模式 0（拆一级）', () => {
+    // 0 号地是空的（level 0）⇒ 不在候选里；候选 = [1 号] ⇒ below(1) 必中 1 号
+    const lands = [land(1, 'A', 0), land(2, 'B', 3), land(3, 'C', 1)];
+    const r = applyNewsEffect(15, ctx({ lands, facilities: [fac(1, '銀行', 4)], rng: rng0 }));
+    expect(r.unimplemented).toBe(false);
+    expect(r.landMutations).toEqual([{ id: 2, level: 2, type: 0, owner: 1 }]);
+    // ★ 設施**不在候选**（原版这个函数只有地块那一圈）
+    expect(r.facilityMutations).toBeUndefined();
+  });
+
+  it('★★ news[21] 龍捲風：候选=全部（地块+設施），模式 0；挑中空地块就什么都不发生', () => {
+    const lands = [land(1, 'A', 0)];
+    const facilities = [fac(1, '銀行', 2)];
+    // rand() % 2 = 0 → 地块（level 0）⇒ `mutate_land` mode 0 返回 changed=false
+    const r0 = applyNewsEffect(21, ctx({ lands, facilities, rng: rng0 }));
+    expect(r0.landMutations).toBeUndefined();
+    expect(r0.amount).toBe(0);
+    // rand() % 2 = 1 → 設施那一支 ⇒ 2 级 → 1 级
+    const r1 = applyNewsEffect(21, ctx({ lands, facilities, rng: { below: () => 1 } }));
+    expect(r1.facilityMutations).toEqual([{ id: 1, level: 1, type: 1, owner: 1 }]);
+  });
+
+  it('★★ news[5] 外星怪獸摧毀建築：候选=**有等级**的地块+設施，模式 1（清归属）', () => {
+    const lands = [land(1, 'A', 0), land(2, 'B', 2)];
+    const facilities = [fac(1, '銀行', 0), fac(2, '醫院', 3)];
+    const r = applyNewsEffect(5, ctx({ lands, facilities, rng: { below: () => 1 } }));
+    // 候选 = [地2, 設2] ⇒ below(2)=1 → 設施 2 号
+    expect(r.facilityMutations).toEqual([{ id: 2, level: 0, type: 0, owner: 0 }]);
+  });
+
+  it('★★ news[19] 土地流失：候选=全部、模式 1（清归属）', () => {
+    const r = applyNewsEffect(
+      19,
+      ctx({ lands: [land(1, 'A', 0)], facilities: [], rng: rng0 }),
+    );
+    // 空地块也能被「流失」（清归属不要求有等级）
+    expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+  });
+
+  it('★★ news[18] 地震：**同名地块全拆一级**（挑中設施时只拆那一处）', () => {
+    const lands = [land(1, '忠孝東路', 3), land(2, '忠孝東路', 1), land(3, '仁愛路', 2)];
+    // rand() % 3 = 0 → 挑中 1 号（忠孝東路）⇒ 1、2 两块同名各降一级
+    const r = applyNewsEffect(18, ctx({ lands, facilities: [], rng: rng0 }));
+    expect(r.landMutations).toEqual([
+      { id: 1, level: 2, type: 0, owner: 1 },
+      { id: 2, level: 0, type: 0, owner: 1 },
+    ]);
+    // 挑中設施那一支只拆它自己
+    const r2 = applyNewsEffect(
+      18,
+      ctx({ lands, facilities: [fac(1, '銀行', 2)], rng: { below: () => 3 } }),
+    );
+    expect(r2.facilityMutations).toEqual([{ id: 1, level: 1, type: 1, owner: 1 }]);
+    expect(r2.landMutations).toBeUndefined();
+  });
+
+  it('★ 候选集为空时什么都不做（原版这里 `idiv 0` 除零崩）', () => {
+    for (const id of [5, 15]) {
+      const r = applyNewsEffect(id, ctx({ lands: [land(1, 'A', 0)], facilities: [], rng: rng0 }));
+      expect(r.unimplemented, `news[${id}]`).toBe(false);
+      expect(r.amount).toBe(0);
+      expect(r.landMutations).toBeUndefined();
+    }
+  });
+
+  it('★ 没给 rng 时报未实现', () => {
+    for (const id of [5, 15, 19, 21]) {
+      expect(
+        applyNewsEffect(id, ctx({ lands: [land(1, 'A', 2)], facilities: [] })).unimplemented,
+        `news[${id}]`,
+      ).toBe(true);
+    }
+  });
+});
+
 describe('★ 新聞 27/28：随机一支股票停牌／恢复 @source VA 0x0044b0f8 / 0x0044b1c3', () => {
   /** 固定序列的假 RNG —— 只实现 `below`，方便钉住「挑中了哪一支」 */
   const fakeRng = (picks: number[]) => {
@@ -421,7 +503,8 @@ describe('未实现', () => {
     // 只是一直没列进这张表（本表没有别的消费者，纯登记）。
     // 16/17 = 行人/車輛休息一回合、24/25/26 = 股市三连（2026-09-17 接）
     expect(IMPLEMENTED_NEWS_IDS).toEqual([
-      0, 1, 2, 3, 4, 6, 8, 9, 10, 14, 16, 17, 22, 24, 25, 26, 27, 28, 29, 11, 12, 13, 23,
+      0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 14, 15, 16, 17, 18, 19, 21, 22, 24, 25, 26, 27, 28,
+      29, 11, 12, 13, 23,
     ]);
   });
 

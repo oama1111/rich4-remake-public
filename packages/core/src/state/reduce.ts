@@ -203,7 +203,7 @@ import {
 } from '../events/fortune-effects.ts';
 import { blessingFieldOf, blessingLevelFor } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
-import { applyNewsEffect, type PriceChange } from '../events/news-effects.ts';
+import { applyNewsEffect, type LandMutation, type PriceChange } from '../events/news-effects.ts';
 import { anyoneConfined, confine, type ConfinementKind } from '../rules/confinement.ts';
 import { applyBail, bailCandidates, decideBail } from '../rules/visit.ts';
 import {
@@ -3354,6 +3354,7 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     // ★ 新聞 6/14 改过的地价（只带改动过的那几条，按 id 覆盖）
     landPrice: applyPriceOverrides(withDeck.landPrice ?? [], out.landPrice),
     facilityPrice: applyPriceOverrides(withDeck.facilityPrice ?? [], out.facilityPrice),
+    ...applyMutations(withDeck, out),
     lastEvent: { kind: 'news', id: draw.eventId },
   };
   // 新聞的坐牢/住院也走 send_to_*，保險期内赔 2000×天×物價
@@ -3364,6 +3365,44 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     }
   }
   return applied;
+}
+
+/**
+ * 把新聞的 `mutate_land` 改动（新聞 5/15/19/21）落到状态的四张表上。
+ *   没改动时返回空对象（保持 `applied` 的其余字段不变）。
+ */
+function applyMutations(
+  base: GameState,
+  out: { landMutations?: readonly LandMutation[]; facilityMutations?: readonly LandMutation[] },
+): Partial<GameState> {
+  const patch: Partial<GameState> = {};
+  if (out.landMutations !== undefined && out.landMutations.length > 0) {
+    const level = [...(base.landLevel ?? [])];
+    const type = [...(base.landType ?? [])];
+    const owner = [...(base.landOwner ?? [])];
+    for (const m of out.landMutations) {
+      level[m.id] = m.level;
+      type[m.id] = m.type;
+      owner[m.id] = m.owner;
+    }
+    patch.landLevel = level;
+    patch.landType = type;
+    patch.landOwner = owner;
+  }
+  if (out.facilityMutations !== undefined && out.facilityMutations.length > 0) {
+    const level = [...(base.facilityLevel ?? [])];
+    const type = [...(base.facilityType ?? [])];
+    const owner = [...(base.facilityOwner ?? [])];
+    for (const m of out.facilityMutations) {
+      level[m.id] = m.level;
+      type[m.id] = m.type;
+      owner[m.id] = m.owner;
+    }
+    patch.facilityLevel = level;
+    patch.facilityType = type;
+    patch.facilityOwner = owner;
+  }
+  return patch;
 }
 
 /**
