@@ -104,6 +104,14 @@ const GEN = {
   SCALE_TUNING: 56,
   /** 27 力度 → 初始衰减的调制深度，centibels */
   VELOCITY_TO_ATTENUATION: 46,
+  /**
+   * 57 互斥组（`exclusiveClass`）—— **只在乐器层合法**（§8.1.3 表把它列在
+   *   instrument 层那一列；预设层出现就忽略，见文件头 §2）。
+   *
+   * 语义：同一组里**新音一响，旧音立刻让位**（"开镲切闭镲"）。
+   *   @source SF2 2.04 §8.1.3 gen 57 + §9.6.3「exclusive class」
+   */
+  EXCLUSIVE_CLASS: 57,
   /** 33..35 / 38 / 39 音量包络 */
   ATTACK_VOL_ENV: 34,
   HOLD_VOL_ENV: 35,
@@ -174,6 +182,13 @@ export interface SoundFontZone {
   initialAttenuation: number;
   /** 力度 → 衰减的调制深度，centibels（0 = 不随力度变） */
   velocityToAttenuation: number;
+  /**
+   * 互斥组号（gen 57）。**0 = 不参与抢占**（规范默认值；组号是任意正整数，
+   *   不是「第几个」的意思）。同一组的音一起响时，**后来的把先来的掐掉** ——
+   *   典型用途是开镲/闭镲、同一键上的多个力度层。
+   *   @source SF2 2.04 §8.1.3 gen 57 / §9.6.3
+   */
+  exclusiveClass: number;
   /** timecents → 秒 */
   attack: number;
   hold: number;
@@ -830,6 +845,8 @@ function instrumentZoneFrom(
     loopStart: offsetOf(pick(GEN.START_LOOP_OFFSET), pick(GEN.START_LOOP_COARSE)),
     loopEnd: offsetOf(pick(GEN.END_LOOP_OFFSET), pick(GEN.END_LOOP_COARSE)),
     loopMode: pickDefault(GEN.SAMPLE_MODES, 0),
+    // gen 57 的规范默认值是 0（= 不参与抢占）；负数在规范里无意义，夹到 0
+    exclusiveClass: Math.max(0, pick(GEN.EXCLUSIVE_CLASS) ?? 0),
     tuneSemitones: (pick(GEN.COARSE_TUNE) ?? 0) + (pick(GEN.FINE_TUNE) ?? 0) / 100,
     scaleTuning,
     ...env,
@@ -981,6 +998,8 @@ function mergeZone(iz: InstrumentZone, pz: PresetZone, sample: SoundFontSample):
     loopStart: sample.loopStart + iz.loopStart,
     loopEnd: sample.loopEnd + iz.loopEnd,
     loopMode: iz.loopMode,
+    // ★ 互斥组是**乐器层专属**（§8.1.3）：预设层不叠加，原样带过去
+    exclusiveClass: iz.exclusiveClass,
     tuneSemitones: iz.tuneSemitones,
     scaleTuning: iz.scaleTuning,
     initialAttenuation: iz.initialAttenuation * pz.attenuation,

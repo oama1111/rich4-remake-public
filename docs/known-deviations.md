@@ -1744,6 +1744,7 @@ running status、tempo 变化全覆盖，25 首全部解得开）。
 | 循环 | `sampleModes`(54) 的 1/3 开循环，循环点是 `shdr` 的 `loopStart`/`loopEnd` **加上** gen 2/3/45/50 的偏移 |
 | 音高 | 根音(`shdr.originalPitch`)差 × `scaleTuning`(56) + `coarseTune`(51) + `fineTune`(52) − `pitchCorrection`，换算成 `playbackRate` |
 | 打击乐 | 9 号通道走 **bank 128**、用**音符号**当预设号（GM/SF2 的鼓组约定） |
+| 互斥组 | `exclusiveClass`(57) —— **2026-09-17 已接**：乐器层声明（预设层无效，与 `sampleModes` 同一条规矩），同一组的音「新的一响，旧的立刻让位」，典型是开镲切闭镲。落码 `GEN.EXCLUSIVE_CLASS` / `SoundFontZone.exclusiveClass` / `soundfont-voice.ts` 里排程前掐同组 @source SF2 2.04 §8.1.3 gen 57 + §9.6.3 |
 | 偏移 | start/end/loop 的 `*Offset` 与 `*CoarseOffset`（×32768）都算进去了 |
 
 **依据**：SoundFont 2.04 规范（§7.2–§7.10 各表、§8.1.3 generator 表、
@@ -1767,7 +1768,12 @@ running status、tempo 变化全覆盖，25 首全部解得开）。
    流，所以 `sampleModes` 的 1（持续循环）与 3（循环到 note-off）当同一件事处理。
 6. **同时发声上限 32**（`MAX_POLYPHONY`），超了掐最早的那个；没有做
    优先级/同音区抢占。
-7. **loop 交叉淡化、`exclusiveClass`（开镲切闭镲）未做**。
+7. ~~**loop 交叉淡化、`exclusiveClass`（开镲切闭镲）未做**。~~
+   ✅ **2026-09-17：`exclusiveClass`（gen 57）已接**（见上表「互斥组」一行；
+   `soundfont.test.ts` 两条 + `music.test.ts` 两条钉住「同组让位」与「0 = 不参与」）。
+   **loop 交叉淡化仍未做** —— 它不在 SF2 规范里（是音色库制作层的技巧），
+   本实现的循环是采样级无缝循环（`AudioBufferSourceNode.loop`），抖动在
+   循环点不连续的音色库上才有；如要接得先有具体音色库的复现样本。
 
 **C-LEG / §5.6：仓库里不分发任何 `.sf2`**，一个字节都没有；测试用的
 「音色库」是 `client/sf2-fixture.ts` 按规范现拼出来的几十字节夹具。

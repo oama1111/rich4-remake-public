@@ -307,4 +307,46 @@ describe('SoundFont 后端', () => {
     sf.stop();
     expect(ctx.sources[0]!.stopped).toBe(true);
   });
+
+  it('★ 互斥组（gen 57）：同组新音一响，旧音在**新音起点**让位（开镲切闭镲）', () => {
+    const ctx = new FakeAudioContext();
+    const dest = ctx.createGain();
+    // 乐器层带 gen 57 = 3；两条音都用这一条 zone
+    const voice = new SoundFontVoice(
+      ctx as unknown as AudioContext,
+      dest as unknown as AudioNode,
+      parseSoundFont(buildTestSf2({ instrumentZones: [[[57, 3], [43, 0x7f00]]] })),
+    );
+    const note = { time: 0, duration: 1, note: 60, velocity: 100, channel: 0, program: 0 };
+    voice.schedule(note, 0); // 第一声（开镲）
+    voice.schedule(note, 0.25); // 0.25 s 后同组第二声（闭镲）→ 第一声必须停在 0.25
+    expect(ctx.sources).toHaveLength(2);
+    const [first, second] = ctx.sources;
+    // 第一声被掐：`stop(0.25)`（排程时排的是 1.02 那个收尾时刻，另记在 stops 里）
+    expect(first!.stops).toContain(0.25);
+    // 包络也在 0.25 归零（`#silence` 先 cancel 再 setValueAtTime(0)）。
+    // ⚠️ `ctx.gains[0]` 是 destination 那只，音自己的包络从 1 号起。
+    const zero = ctx.gains
+      .flatMap((g) => g.gain.events)
+      .find((e) => e.kind === 'set' && e.value === 0 && e.time === 0.25);
+    expect(zero, '旧音的包络要在 0.25 归零').toBeDefined();
+    // 第二声照常响、没有被打断
+    expect(second!.stops.some((t) => t > 1)).toBe(true);
+  });
+
+  it('★ 互斥组 0（规范默认）= 不参与抢占：两声照旧各响各的 @source §9.6.3', () => {
+    const ctx = new FakeAudioContext();
+    const dest = ctx.createGain();
+    const voice = new SoundFontVoice(
+      ctx as unknown as AudioContext,
+      dest as unknown as AudioNode,
+      parseSoundFont(buildTestSf2()), // 没声明 gen 57
+    );
+    const note = { time: 0, duration: 1, note: 60, velocity: 100, channel: 0, program: 0 };
+    voice.schedule(note, 0);
+    voice.schedule(note, 0.25);
+    const [first] = ctx.sources;
+    // 第一声仍然只被排了「音符尾巴」那一次 stop（1.02），没有被 0.25 掐
+    expect(first!.stops).not.toContain(0.25);
+  });
 });

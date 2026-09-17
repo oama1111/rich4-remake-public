@@ -54,6 +54,12 @@ const RELEASE_TAU_FACTOR = 4;
 interface LiveSource {
   src: AudioBufferSourceNode;
   gain: GainNode;
+  /**
+   * 这条音所属的**互斥组**（gen 57，0 = 不参与）。@source SF2 2.04 §9.6.3
+   *   「同一组里新音一响，旧音**立刻**让位」—— 「立刻」就是新音的起点时刻 `at`；
+   *   0 是规范默认值，表示不参与抢占，绝不能拿 0 当一组。
+   */
+  exclusiveClass: number;
 }
 
 /**
@@ -108,6 +114,15 @@ export class SoundFontVoice implements MidiVoice {
       if (oldest !== undefined) this.#silence(oldest, at);
     }
 
+    // ★ **互斥组**（gen 57）：本音一响，同组里还在响的旧音立刻让位 ——
+    //   典型就是开镲/闭镲、同一键上的多个力度层。@source SF2 2.04 §9.6.3
+    //   `exclusiveClass == 0` 是规范默认值 = 不参与抢占，不组成任何组。
+    if (zone.exclusiveClass > 0) {
+      for (const entry of [...this.#live]) {
+        if (entry.exclusiveClass === zone.exclusiveClass) this.#silence(entry, at);
+      }
+    }
+
     const gain = this.#ctx.createGain();
     const peak = this.#peakGain(zone, note.velocity);
     const end = at + note.duration;
@@ -128,7 +143,7 @@ export class SoundFontVoice implements MidiVoice {
     // 尾巴留一点：包络在 end+release 处才到 0（`stop()` 会被提前掐断）
     src.stop(end + release + 0.02);
 
-    const entry: LiveSource = { src, gain };
+    const entry: LiveSource = { src, gain, exclusiveClass: zone.exclusiveClass };
     this.#live.add(entry);
     src.onended = () => {
       this.#live.delete(entry);

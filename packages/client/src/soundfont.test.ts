@@ -206,6 +206,25 @@ describe('叠加规则 @source §8.1.3 / §9.4', () => {
     );
     expect(resolveSoundFontZone(f, 0, 60, 100)!.loopMode).toBe(0);
   });
+
+  it('互斥组（gen 57 `exclusiveClass`）：乐器层声明就读出来、没声明就是 0 @source §8.1.3', () => {
+    const withClass = parseSoundFont(
+      buildTestSf2({ instrumentZones: [[[57, 7], [43, 0x7f00]]] }),
+    );
+    expect(resolveSoundFontZone(withClass, 0, 60, 100)!.exclusiveClass).toBe(7);
+    const without = parseSoundFont(buildTestSf2({ instrumentZones: [[[43, 0x7f00]]] }));
+    expect(resolveSoundFontZone(without, 0, 60, 100)!.exclusiveClass).toBe(0);
+  });
+
+  it('互斥组是**仪器层专属**：写在预设层无效（与 sampleModes 同一条规矩）@source §9.4', () => {
+    const f = parseSoundFont(
+      buildTestSf2({
+        presetZone: [[57, 9]], // 预设层想设互斥组 —— 无效
+        instrumentZones: [[[43, 0x7f00]]],
+      }),
+    );
+    expect(resolveSoundFontZone(f, 0, 60, 100)!.exclusiveClass).toBe(0);
+  });
 });
 
 describe('音高、循环与打击乐', () => {
