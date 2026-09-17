@@ -75,7 +75,7 @@ const topo: MapTopology = {
   nodes: [makeNode({ id: 1, adjacent: [2] }), storeNode, makeNode({ id: 3, adjacent: [2] })],
   lands: [],
   commercials: [
-    { id: STORE_CID, x: 0, y: 0, name: '百貨', stockIndex: 0, landPrice: 0, type: STORE_INDUSTRY, spriteIndex: 0, assetValue: 0, shares: 0 },
+    { id: STORE_CID, x: 0, y: 0, name: '百貨', stockIndex: 0, landPrice: 0, type: STORE_INDUSTRY, spriteIndex: 0, assetValue: 0, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, shares: 0 },
   ],
 };
 

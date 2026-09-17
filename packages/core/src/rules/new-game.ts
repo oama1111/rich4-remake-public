@@ -26,7 +26,7 @@ import { emptyLottery } from '../places/lottery.ts';
 import { emptyBoard } from '../places/notice-board.ts';
 import { initialConfinement, initialSpecialActors } from './special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
-import { emptyOwnership } from '../places/commercial.ts';
+import { emptyOwnership, type CommercialOwnership } from '../places/commercial.ts';
 import { makeObjects } from '../cards/summon.ts';
 import { OBJECT_COUNT } from './objects.ts';
 import {
@@ -290,6 +290,26 @@ function makeInitialPlayer(
  * ★ 之后它会被改建卡（`type ^ 1`）与傳送機改掉，所以必须进状态；
  *   每次回地图静态数据取的话，那些改动等于没发生。
  */
+/**
+ * 归属表的初值：**从地图读**。
+ *
+ * ★ 静态地图文件里恒为 0；只有**存档自带的地图块**（`save.mapData`）才带着
+ *   真实归属（见 `loaders/savegame.ts` 的导入路径与 `loaders/map.ts` 的
+ *   `lands[].owner`）。开局那条路读出来自然全是 0，不影响。
+ */
+export function landOwnerFromMap(map: Rich4Map, landCount: number): number[] {
+  const out = new Array<number>(landCount).fill(0);
+  for (const l of map.lands) out[l.id] = l.owner;
+  return out;
+}
+
+/** 等级表的初值：同上（静态档为 0，存档地图块里是实时等级 0..5）*/
+export function landLevelFromMap(map: Rich4Map, landCount: number): number[] {
+  const out = new Array<number>(landCount).fill(0);
+  for (const l of map.lands) out[l.id] = l.level;
+  return out;
+}
+
 /** 地价表的初值：**从地图读**（它会被新聞 6/14 改，不能每次回地图取） */
 export function landPriceFromMap(map: Rich4Map, landCount: number): number[] {
   const out = new Array<number>(landCount).fill(0);
@@ -300,6 +320,30 @@ export function landPriceFromMap(map: Rich4Map, landCount: number): number[] {
 export function landTypeFromMap(map: Rich4Map, landCount: number): number[] {
   const out = new Array<number>(landCount).fill(0);
   for (const l of map.lands) out[l.id] = l.type;
+  return out;
+}
+
+/**
+ * 企业表的某个**运行时**字段读成数组，下标 = 企业 id（0 号空着）。
+ * 静态地图文件里这些字段恒为 0（`+0x28`/`+0x2c` 除外，见 `map.ts`），
+ * 只有存档地图块带真实值。
+ */
+export function commercialLiveFromMap(
+  map: Rich4Map,
+  pick: (c: Rich4Map['commercials'][number]) => number,
+): number[] {
+  const n = map.commercials.reduce((m, c) => Math.max(m, c.id), 0) + 1;
+  const out = new Array<number>(n).fill(0);
+  for (const c of map.commercials) out[c.id] = pick(c);
+  return out;
+}
+
+/** 企业归属与持股排名（`+0x18` / `+0x1c..0x1f`）→ `CommercialOwnership[]` */
+export function commercialOwnersFromMap(map: Rich4Map): CommercialOwnership[] {
+  const n = map.commercials.reduce((m, c) => Math.max(m, c.id), 0) + 1;
+  const out = new Array<CommercialOwnership>(n);
+  for (let i = 0; i < n; i++) out[i] = emptyOwnership();
+  for (const c of map.commercials) out[c.id] = { owner: c.owner, ranking: [...c.ranking] };
   return out;
 }
 

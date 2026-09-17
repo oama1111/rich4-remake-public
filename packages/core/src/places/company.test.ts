@@ -175,7 +175,7 @@ function topoWith(industry: number): MapTopology {
     // ★ rentByLevel[0] 是等级 0 的租金 —— 0x40b455 按「当前等级租金」比，且严格大于 0 才入选
     lands: [makeLand({ id: 1, type: LAND_TYPE_HOUSE, landPrice: 1000, rentByLevel: [50, 100, 200, 300, 400, 500] })],
     commercials: [
-      { id: CID, x: 0, y: 0, name: '測試公司', stockIndex: 0, landPrice: 500, type: industry, spriteIndex: 0, assetValue: 1_000_000, shares: 1000 },
+      { id: CID, x: 0, y: 0, name: '測試公司', stockIndex: 0, landPrice: 500, type: industry, spriteIndex: 0, assetValue: 1_000_000, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, shares: 1000 },
     ],
   };
 }

@@ -177,7 +177,10 @@ describe('原版存档导入', () => {
     const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
     const { gaps } = importOriginalSave(save, loadMap());
     // 这些是**已知**还原不了的，每一条都得有说法
-    for (const key of ['landOwner', 'rngState']) {
+    // ★ 2026-09-17（第十一轮）：`landOwner` / 企业归属那一批**也接上了** ——
+    //   它们在存档自带的地图块里（`save.mapData`），由导入器自己解析。
+    //   现在只剩 `rngState` 一条，而它是**原版根本不存**（没有任何 fwrite）。
+    for (const key of ['rngState']) {
       expect(gaps[key], `${key} 应当有 gap 说明`).toBeTruthy();
     }
     // ★ 2026-09-17：`holdings` / `specialActors` / `market` / `objects` / `toolStock`
@@ -188,7 +191,17 @@ describe('原版存档导入', () => {
     expect(gaps['objects']).toBeUndefined();
     // ★ 2026-09-17（第十轮）：行情历史游标、全局道具库存、两个牌堆的洗牌序、
     //   樂透号码表、公库都**从存档读**了
-    for (const key of ['marketDay', 'toolStock', 'newsDeck', 'fortuneDeck', 'lottery', 'pool']) {
+    for (const key of [
+      'marketDay',
+      'toolStock',
+      'newsDeck',
+      'fortuneDeck',
+      'lottery',
+      'pool',
+      'landOwner',
+      'commercialShares',
+      'commercialOwners',
+    ]) {
       expect(gaps[key], `${key} 不该再有 gap`).toBeUndefined();
     }
   });
@@ -246,6 +259,34 @@ describe('原版存档导入', () => {
     expect(state.market.index).toBe(Math.trunc(Math.fround(total * 10)));
     // ★ 2026-09-17（第十轮）：历史**写入游标**也读进来了（`[0x499100]`，平坦 0x6f2）
     expect(state.market.day).toBe(107);
+  });
+
+  withSave('★★ 地产归属/等级与企业的归属/排名/股数/盈餘**从存档自带的地图块读**', () => {
+    const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
+    // ① 解析层：存档的块本身就是当时的加载数组（55 块地 / 8 設施 / 6 企业）
+    const live = parseMap(save.mapData);
+    expect(live.lands.length).toBe(55);
+    expect(live.lands.filter((l) => l.owner !== 0).length).toBe(43);
+    expect(live.lands.filter((l) => l.level !== 0).length).toBe(40);
+    // 企业：4/5 号有主（2 = 玩家 1）、3 号 funds = 48000、4 号 profit = 197800
+    expect(live.commercials.filter((c) => c.owner !== 0).map((c) => [c.id, c.owner])).toEqual([
+      [4, 2],
+      [5, 2],
+    ]);
+    expect(live.commercials.find((c) => c.id === 3)!.funds).toBe(48000);
+    expect(live.commercials.find((c) => c.id === 4)!.profit).toBe(197800);
+    expect(live.commercials.find((c) => c.id === 2)!.shares).toBe(2176);
+
+    // ② 导入层：**调用方故意传一张不相干的地图**（测试里的 0001.bin 是另一张图），
+    //    归属仍必须来自存档自己的块 —— 这正是「调用方不可能传错图」那条保证。
+    const { state } = importOriginalSave(save, loadMap());
+    expect(state.landOwner[2]).toBe(2);
+    expect(state.landOwner.filter((o) => o !== 0).length).toBe(43);
+    expect(state.landLevel.filter((v) => v !== 0).length).toBe(40);
+    expect(state.commercialOwners[4]).toEqual({ owner: 2, ranking: [2, 0, 0, 0] });
+    expect(state.companyFunds[3]).toBe(48000);
+    expect(state.companyProfit[4]).toBe(197800);
+    expect(state.commercialShares[2]).toBe(2176);
   });
 
   withSave('★★ 两个牌堆的**洗牌序与游标**从存档读（平坦 0x26fa/0x271e，游标 0x26f2/0x26f6）', () => {

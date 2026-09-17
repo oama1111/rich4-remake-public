@@ -20,8 +20,16 @@
 
 import type { GameState } from '../state/types.ts';
 import type { SaveGame } from './save.ts';
-import type { Rich4Map } from './map.ts';
-import { facilityFieldFromMap, landPriceFromMap, landTypeFromMap } from '../rules/new-game.ts';
+import { parseMap, type Rich4Map } from './map.ts';
+import {
+  commercialLiveFromMap,
+  commercialOwnersFromMap,
+  facilityFieldFromMap,
+  landLevelFromMap,
+  landOwnerFromMap,
+  landPriceFromMap,
+  landTypeFromMap,
+} from '../rules/new-game.ts';
 import { emptyBoard } from '../places/notice-board.ts';
 import {
   ACTOR_PLACE,
@@ -34,7 +42,6 @@ import { HISTORY_DAYS, newStockMarket, type StockMarketState } from '../places/s
 import { emptyLottery } from '../places/lottery.ts';
 import type { EventDeck } from '../events/deck.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
-import { emptyOwnership } from '../places/commercial.ts';
 import { STOCKS_PER_MAP } from '@rich4/data';
 import { STOCKED_TOOL_MAX_ID, emptyTools, initialToolStock, TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
 import { CONFINEMENT_SLOTS } from '../rules/confinement.ts';
@@ -181,6 +188,12 @@ export interface ImportResult {
   state: GameState;
   /** 用默认值顶上的字段。**调用方应当把它显示给用户**。 */
   gaps: ImportGaps;
+  /**
+   * ★ 这次导入**实际用的地图** —— 正常情况下是**存档自带的那块**
+   *   （`parseMap(save.mapData)`），解析失败才退回调用方传进来的那张。
+   *   表现层必须拿它去换 `topo` / 底图，否则会「状态按 A 图、画面按 B 图」。
+   */
+  map: Rich4Map;
 }
 
 /**
@@ -346,9 +359,31 @@ function confinementFromActors(
   return occ;
 }
 
-export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult {
+/**
+ * 存档自带的地图块 → `Rich4Map`（解析失败返回 `null`）。
+ *
+ * 反复解析的代价可以忽略（一次导入一次），换来的是**调用方不可能传错图**。
+ */
+function liveMapOf(save: SaveGame): Rich4Map | null {
+  try {
+    return parseMap(save.mapData);
+  } catch {
+    return null;
+  }
+}
+
+export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): ImportResult {
   const gaps: Record<string, string> = {};
   const n = save.players.length;
+  // ★ 2026-09-17（第十一轮）：**地图以存档自带的那块为准**。
+  //
+  //   存档写进去的 `mapData` 就是当时的「加载数组」——地块归属/等级、企业的
+  //   归属/排名/可售股数/盈餘**都在里面**；而游戏目录里那张静态地图那些字段
+  //   恒为 0，而且**未必是同一张图**（实测 Save0 的块是 55 块地 / 8 設施 /
+  //   6 企业「底特律·福特汽車」，而安装目录里按文件名找的 `0003.bin` 是
+  //   73 块地 / 中国石油 —— 不是同一张）。
+  //   ⇒ 由本函数自己解析存档的地图块；解析失败（改坏的档）才退回调用方传的。
+  const map = liveMapOf(save) ?? fallbackMap;
   const landCount = map.lands.length + 1;
 
   const players = save.players.map((p) => ({
@@ -417,11 +452,10 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     }
   }
 
-  // 地产归属与等级在存档的**地图数据块**里（结构同 map.mkf 的地图资源）。
-  // 那一块已随存档读出，但本引擎的地图解析器目前只吃干净的地图资源，
-  // 尚未支持从存档的地图块里回读实时归属。
-  gaps['landOwner'] =
-    '地产归属与等级存在存档的地图数据块中，解析器尚未支持从该块回读，已置为全部无主';
+  // ★ 2026-09-17（第十一轮）：地产归属/等级**已接** —— 它们在存档自带的地图块
+  //   （`save.mapData`，就是当时的加载数组）里，`parseMap` 早就读出 `owner`/`level`，
+  //   只是导入路径先前把**静态**地图传了进来。实测 Save0 的存档地图块：
+  //   55 块地里 43 块有主、40 块等级非 0。⇒ 这两条 gap 删掉。
   // ★ 樂透号码表已接（平坦 0x26be）——这条 gap 删掉。
   // ★ 行情（含历史游标）已全部接上（见 `importedMarket`）——这条 gap 删掉。
   // ★ 持仓已接（见上面 `holdings` 的构造）——这条 gap 删掉。
@@ -431,8 +465,9 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   //   `rich4_stocks.asm:212` 手续费也加它；`rich4_ui_letou.asm:514` 把它印成奖池。
   //   实测 Save0 = 3000、SAVE1 = 0。这条 gap 删掉。
   // ★ 道具全局库存已接（见 `importedToolStock`）——这条 gap 删掉。
-  gaps['commercialShares'] = '各企业的已售股数在存档中的偏移未验证，已按地图初值重置';
-  gaps['commercialOwners'] = '各企业的归属与持股排名在存档中的偏移未验证，已置为无主';
+  // ★ 企业归属/排名/股数/盈餘也**已接**（同一个地图块，见上面的构造）——
+  //   `parseMap` 现在会读 `+0x18`/`+0x1c..0x1f`/`+0x28`/`+0x2c`。
+  //   ⇒ 这两条 gap 删掉。
   // ★ 物件表已接（见 `objects` 的构造）——这条 gap 删掉。
   // ★ 2026-09-17：替身表**已能从存档读出**（槽内 +0x1a8，5 × 16 字节，见
   //   `loaders/save.ts` 的 `SaveSpecialPlayer`），占用表随之**由替身表推出来**
@@ -469,11 +504,15 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     stepsTotal: 0,
     forcedDice: 0,
     cardAmount: [...save.cardAmount],
-    landOwner: new Array<number>(landCount).fill(0),
-    landLevel: new Array<number>(landCount).fill(0),
+    // ★ 2026-09-17（第十一轮）：归属与等级**从地图读**了。
+    //   静态地图文件里那两项恒为 0，而存档自带的地图块（`save.mapData`）
+    //   就是当时的加载数组 ⇒ 直接把实时归属读出来。
+    //   ⚠️ 前提是调用方把**存档自己的地图块**解析结果传进来
+    //   （`parseMap(save.mapData)`，见 `client/main.ts` 的匯入路径）。
+    landOwner: landOwnerFromMap(map, landCount),
+    landLevel: landLevelFromMap(map, landCount),
     // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取
     landType: landTypeFromMap(map, landCount),
-    // ★ 存档里那块地图数据尚未回读（见下面的 gaps）⇒ 地价只能取地图初值
     landPrice: landPriceFromMap(map, landCount),
     noticeBoard: emptyBoard(),
     turnCount: 0,
@@ -507,8 +546,13 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     facilityTenure: facilityFieldFromMap(map, () => 0),
     facilityResearchProject: facilityFieldFromMap(map, () => 0),
     facilityResearchDays: facilityFieldFromMap(map, () => 0),
-    companyFunds: new Array<number>(map.commercials.length + 1).fill(0),
-    companyProfit: new Array<number>(map.commercials.length + 1).fill(0),
+    // ★ 企业那四项也从地图读（+0x18 归属 / +0x1c..0x1f 排名 / +0x28 累積盈餘 /
+    //   +0x2c 累計盈餘 / +0x30 可售股数）—— 实测 Save0：4/5 号归属 = 2（玩家 1），
+    //   3 号 funds = 48000、4 号 profit = 197800、2 号 shares = 2176。
+    commercialShares: commercialLiveFromMap(map, (c) => c.shares),
+    commercialOwners: commercialOwnersFromMap(map),
+    companyFunds: commercialLiveFromMap(map, (c) => c.funds),
+    companyProfit: commercialLiveFromMap(map, (c) => c.profit),
     aiStep: 0,
     aiBranch: 0,
     prisonOccupancy,
@@ -539,8 +583,6 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
           : { amount: rec.amount, avgCost: rec.avgCost };
       }),
     ),
-    // 下标 = 企业 1 基序号，故长度要多一格
-    commercialOwners: Array.from({ length: map.commercials.length + 1 }, () => emptyOwnership()),
     // ★ 2026-09-17：地图物件**从存档读**（平坦 `0x0204`，46 × 24 字节）。
     //   真 Save0 实测：46 项的 `type` 与静态表 `OBJECT_TYPE_TABLE` **逐个相符**，
     //   且有 8 个 `nodeId != 0`（神明 1/3/5/8/10、惡犬 11、路障 16×2）。
@@ -550,11 +592,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
       state: rec.state,
       attached: rec.attached,
     })),
-    commercialShares: Array.from(
-      { length: map.commercials.length + 1 },
-      (_, i) => map.commercials.find((c) => c.id === i)?.shares ?? 0,
-    ),
   };
 
-  return { state, gaps };
+  return { state, gaps, map };
 }

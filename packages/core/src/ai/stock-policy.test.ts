@@ -244,7 +244,7 @@ describe('★ 选股打分 @source 0x0042c075..0x0042c557', () => {
     const s = scene();
     const topo: MapTopology = {
       nodes: [],
-      commercials: [{ id: 1, x: 0, y: 0, name: '企', stockIndex: 0, landPrice: 0, type: 1, spriteIndex: 0, assetValue: 500_000, shares: 0 }],
+      commercials: [{ id: 1, x: 0, y: 0, name: '企', stockIndex: 0, landPrice: 0, type: 1, spriteIndex: 0, assetValue: 500_000, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, shares: 0 }],
     };
     // 表里的 commercialIndex 开局只是「有无企業」的旗子，真正的绑定在 bindCommercials；这里手动指
     const stocks = s.market.stocks.map((x, j) => ({ ...x, commercialIndex: j === 0 ? 1 : 0 }));

@@ -367,6 +367,29 @@ export interface CommercialInfo {
    */
   shares: number;
   /**
+   * 现主：玩家下标 + 1，0 = 无主 @source commercial +0x18。
+   *
+   * ★ **这是运行时字段**：静态地图文件里恒为 0，只有**存档自带的地图块**
+   *   （`save.mapData`，见 `state/reduce.ts` 的 `commercialOwners`）才带着真实归属。
+   *   实测 Save0：4 号（ＩＢＭ）与 5 号的 `+0x18` = 2（玩家 1 是最大股东）。
+   */
+  owner: number;
+  /**
+   * 持股排名 4 位，值 = 玩家下标 + 1，0 = 空位 @source commercial +0x1c..+0x1f。
+   * 重排规则见 `places/commercial.ts` 的 `updateCommercialOwner`。
+   */
+  ranking: number[];
+  /**
+   * 累積盈餘（每月 15 日分红后**清零**）@source commercial +0x28，**有符号** dword。
+   * 实测 Save0：3 号 = 48000、5 号 = 1450（其余 0）。
+   */
+  funds: number;
+  /**
+   * 累計盈餘（从不清零）@source commercial +0x2c，有符号 dword。
+   * 实测 Save0：1 号 = −30000、4 号 = 197800。
+   */
+  profit: number;
+  /**
    * 建筑朝向 0..7 @source commercial +0x1b
    *
    * ★ 与地块（+0x1b）、设施（+0x1b）**同一制**。绘制企业在 VA 0x0040964d：
@@ -573,6 +596,15 @@ export function parseMap(data: Uint8Array): Rich4Map {
       spriteIndex: view.getUint16(o + 0x20, true),
       landPrice: view.getUint16(o + 0x22, true),
       assetValue: u32(o + 0x24),
+      owner: data[o + 0x18] ?? 0,
+      ranking: [
+        data[o + 0x1c] ?? 0,
+        data[o + 0x1d] ?? 0,
+        data[o + 0x1e] ?? 0,
+        data[o + 0x1f] ?? 0,
+      ],
+      funds: view.getInt32(o + 0x28, true),
+      profit: view.getInt32(o + 0x2c, true),
       shares: u32(o + 0x30),
     });
   }

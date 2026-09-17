@@ -1281,12 +1281,13 @@ function onSaveLoadRow(row: number): void {
  * ★ 地图要跟着换：存档里记着 `globalMapId`，不换的话棋子会落在另一张图的
  *   节点号上 —— 那种错不会立刻报，会在几步之后以「走到了奇怪的地方」出现。
  */
-function loadState(next: GameState): void {
+function loadState(next: GameState, mapOverride: Rich4Map | null = null): void {
   if (net !== null) {
     log('⚠ 聯機中不能讀檔：局面由伺服器的 action 流決定');
     return;
   }
-  map = parseMap(readMapData(archives, next.globalMapId));
+  // ★ 匯入原版存檔时传 `mapOverride`（= 存档自带那块地图）——状态与画面必须同一张图。
+  map = mapOverride ?? parseMap(readMapData(archives, next.globalMapId));
   topo = {
     nodes: map.nodes,
     lands: map.lands,
@@ -5874,10 +5875,13 @@ async function importOriginalSaveFile(): Promise<void> {
   if (bytes === null) return;
   try {
     const save = parseSave(bytes);
-    // 存档自带地图号：用它那份地图去还原（地块/设施的静态部分在地图数据里）
-    const savedMap = parseMap(readMapData(archives, save.gameMap));
-    const { state: imported, gaps } = importOriginalSave(save, savedMap);
-    loadState(imported);
+    // 传进去的只是**退路**：导入器自己会解析存档自带的地图块（那里才有实时归属，
+    // 而且未必等于安装目录里那一张 —— 实测 Save0 的块是 55 块地的「底特律」）。
+    const archiveMap = parseMap(readMapData(archives, save.gameMap));
+    const imported = importOriginalSave(save, archiveMap);
+    // ★ 用**导入器实际用的那张图**换画面：否则会「状态按存档那块、画面按安装目录」。
+    loadState(imported.state, imported.map);
+    const gaps = imported.gaps;
     const lines = formatGaps(gaps);
     log(
       lines.length === 0

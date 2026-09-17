@@ -90,7 +90,7 @@ function testMap(): Rich4Map {
         landPrice: 5000,
         type: 0,
         spriteIndex: 1,
-        assetValue: 100,
+        assetValue: 100, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, 
         shares: 0,
       },
     ],

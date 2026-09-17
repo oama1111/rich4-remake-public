@@ -13,9 +13,9 @@ const topo: MapTopology = {
   nodes: [makeNode({ id: 1, adjacent: [1] })],
   lands: [],
   commercials: [
-    { id: 1, x: 0, y: 0, name: '航空', stockIndex: 1, landPrice: 0, type: INDUSTRY.airline, spriteIndex: 0, assetValue: 0, shares: 0 },
-    { id: INS, x: 0, y: 0, name: '人壽', stockIndex: 0, landPrice: 0, type: INDUSTRY.insurance, spriteIndex: 0, assetValue: 0, shares: 0 },
-    { id: 3, x: 0, y: 0, name: '再保', stockIndex: 2, landPrice: 0, type: INDUSTRY.insurance, spriteIndex: 0, assetValue: 0, shares: 0 },
+    { id: 1, x: 0, y: 0, name: '航空', stockIndex: 1, landPrice: 0, type: INDUSTRY.airline, spriteIndex: 0, assetValue: 0, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, shares: 0 },
+    { id: INS, x: 0, y: 0, name: '人壽', stockIndex: 0, landPrice: 0, type: INDUSTRY.insurance, spriteIndex: 0, assetValue: 0, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, shares: 0 },
+    { id: 3, x: 0, y: 0, name: '再保', stockIndex: 2, landPrice: 0, type: INDUSTRY.insurance, spriteIndex: 0, assetValue: 0, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, shares: 0 },
   ],
 };
 
