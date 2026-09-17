@@ -36,6 +36,7 @@ import {
   MONTHLY_DETAIL_AT,
   MONTHLY_DETAIL_LABELS,
   MONTHLY_DETAIL_ROWS,
+  MONTHLY_INTRO,
   MONTHLY_SKIP_TICKS,
   MONTHLY_TABLE_PLATE,
   MONTHLY_LABELS,
@@ -946,6 +947,28 @@ describe('★ 頒獎判据 @source 0x00437d1a / 0x00437dfe', () => {
     expect(lines[1]!.value).toBe('$1,234');
     expect(lines[2]!.value).toBe('$4,400');
     expect(lines[3]!.value).toBe('$5,634');
+  });
+
+  it('★★ `#0092` 开屏串逐字节对照 exe @source 0x004d60 起（VA 0x00464d60）', () => {
+    // ★ 2026-09-17 订正：先前那份转写是「月底快到了！⏎又到了每個月結算的日子。」
+    //   —— 从 exe 里逐字节 dump 出来是**三行、两个换行**，而且开头不同：
+    const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+    if (existsSync(EXE)) {
+      const buf = readFileSync(EXE);
+      const off = 398848 + (0x464d60 - 0x463000); // VA → 文件偏移（exe 专用换算）
+      const end = buf.indexOf(0, off);
+      const raw = buf.subarray(off, end).toString('latin1');
+      // `#0092` 是消息号前缀，本模块的常量不带它
+      const text = new TextDecoder('big5').decode(Buffer.from(raw.slice(5), 'latin1'));
+      expect(MONTHLY_INTRO).toBe(text);
+      expect(MONTHLY_INTRO).toBe('各位客戶辛苦了！\n又到了每月銀行\n結算的日子。');
+      expect(MONTHLY_INTRO.split('\n')).toHaveLength(3);
+    }
+    // ★ 本模块**刻意不画它**：原版那句受「上一次开过的字框」这个脏全局管辖
+    //   （`fcn_0044ecb6` 开头 `cmp [0x4762bc], 0 / je 返回`，而它从不清零）——
+    //   见 `docs/known-deviations.md` 的「動畫過程」表末行。
+    const src = readFileSync(new URL('./monthly-screen.ts', import.meta.url), 'utf8');
+    expect(src).not.toContain('monthlyText(ctx, MONTHLY_INTRO');
   });
 
   it('★ 四行的行距与落点 @source 0x00438570 的 `push 0x172` 起', () => {
