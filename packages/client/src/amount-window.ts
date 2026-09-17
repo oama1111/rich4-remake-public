@@ -53,7 +53,13 @@
  */
 
 import type { Sprite } from './assets.ts';
-import { AMOUNT_WINDOW, AMOUNT_DIGIT_MAX, amountWindowHit, type AmountKey } from './amount-keys.ts';
+import {
+  AMOUNT_WINDOW,
+  AMOUNT_DIGIT_MAX,
+  amountFromBarX,
+  amountWindowHit,
+  type AmountKey,
+} from './amount-keys.ts';
 
 /** 取图 —— 与 `UiScreenEnv.sprite` / `bank-screen.ts` 的 `BankSprite` 同一个签名 */
 /**
@@ -181,6 +187,38 @@ export function amountKeyOfSlotId(
   if (slot.kind === 'cursorLeft' || slot.kind === 'cursorRight') return null;
   // 键盘那一路的分派表（`AMOUNT_KEY_BY_ID`）已经把 2..0xf 都收了
   return kindOf(id);
+}
+
+/**
+ * 金额栏（指针条）在**窗内**的矩形 —— 逐像素 id 图里 id `0x10` 那一片。
+ *
+ * @source `assets-clean/Panel/0022.bin`（`Panel.mkf` #0x16，128×192）实 dump：
+ *   id `0x10` 共 **1540** 像素、外接矩形 `x∈[9,118]`、`y∈[41,54]`
+ *   —— `110 × 14 = 1540` **正好等于**整个外接矩形 ⇒ 那一片就是个实心矩形，
+ *   所以这里用矩形判定与「逐像素查 id」**等价**（原版 `loc_00453394` 查的就是 id 0x10）。
+ */
+export const AMOUNT_BAR_RECT = { x: 9, y: 41, w: 110, h: 14 } as const;
+
+/** 拖动金额栏那一声 —— 每走一格都放 @source `[0x482352]`（表值 9）*/
+export const AMOUNT_BAR_DRAG_SOUND = 9;
+
+/**
+ * **鼠标在金额栏上滑动** → 新的值（桌上坐标：棋盘画布内）。
+ *
+ * @source `loc_00453394`（`0x200` 那一支，`cmp dh, 0x10`）全文：
+ *   先把窗内坐标夹进 `0 ≤ x ≤ 0x80`、`0 ≤ y ≤ 0xc0`，再查逐像素 id 图
+ *   **必须是 `0x10`**（= 本常量那片），然后才走
+ *   `amount-keys.ts` 的 `amountFromBarX`（`x−0xa` → 表 `0x47e725` → `trunc(上限×i/33)`）。
+ *
+ * @returns 新值；`null` = 原版**什么都不做**（没落在栏上、或 `x ≥ 118` 那一列）
+ */
+export function amountBarDragValue(sx: number, sy: number, max: number): number | null {
+  const lx = sx - AMOUNT_WINDOW.x;
+  const ly = sy - AMOUNT_WINDOW.y;
+  if (lx < 0 || lx > 0x80 || ly < 0 || ly > 0xc0) return null;
+  if (lx < AMOUNT_BAR_RECT.x || lx >= AMOUNT_BAR_RECT.x + AMOUNT_BAR_RECT.w) return null;
+  if (ly < AMOUNT_BAR_RECT.y || ly >= AMOUNT_BAR_RECT.y + AMOUNT_BAR_RECT.h) return null;
+  return amountFromBarX(lx, max);
 }
 
 /**

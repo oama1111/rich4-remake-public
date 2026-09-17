@@ -83,6 +83,7 @@ import { onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
 //   （原版 `fcn_00440aac` / 窗口过程 `fcn_0043fae4`）。
 import { PICKER_TOOL_ID, openFacilityPicker, pickerNeededFor } from './facility-picker.ts';
 import { needsStealPick, openStealPicker } from './steal-picker.ts';
+import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue } from './amount-window.ts';
 import {
   Hud,
   SIDEBAR,
@@ -6192,6 +6193,27 @@ function bindInput(): void {
         requestRender();
       }
       return;
+    }
+
+    // ── 填数页的**金额栏**：鼠标在栏上滑动就改值 ──
+    //   @source `loc_00453394`（通用填数窗的 `WM_MOUSEMOVE`，逐像素 id 必须是 0x10）：
+    //   不需要按下 —— 原版那条路只看「鼠标此刻在不在栏上」，滑到哪就换算到哪，
+    //   每换一次放一声音效 9（`[0x482352]`）。`H` 键是同一支的伪造按下。
+    if (amountPage !== null) {
+      const barUi = currentDialog();
+      const barAmount = barUi?.choices[amountPage.choice]?.amount;
+      if (barAmount !== undefined) {
+        const next = amountBarDragValue(
+          p.x - LAYOUT.board.x,
+          p.y - LAYOUT.board.y,
+          barAmount.max,
+        );
+        if (next !== null) {
+          amountPage = { ...amountPage, value: next };
+          sound.play('Effect.mkf', AMOUNT_BAR_DRAG_SOUND);
+          requestRender();
+        }
+      }
     }
 
     // 对话框盖在棋盘上：它在的时候，先问它

@@ -9,6 +9,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { AMOUNT_DIGIT_MAX, AMOUNT_KEY_RECTS, AMOUNT_WINDOW } from './amount-keys.ts';
 import {
+  AMOUNT_BAR_DRAG_SOUND,
+  AMOUNT_BAR_RECT,
+  amountBarDragValue,
   amountCharImage,
   amountDigits,
   AMOUNT_RESOURCE,
@@ -136,6 +139,46 @@ describe('★★ 逐像素 id 图（Panel#0x16）＝ 命中的真值（2026-09-1
       const y = AMOUNT_WINDOW.y + r.y + (r.h >> 1);
       expect(amountWindowHitMapped(map, x, y), `第 ${i} 号钮`).toBe(i);
     }
+  });
+
+  it('★★ 金额栏那一片（id 0x10）= 实心矩形 `x∈[9,118] y∈[41,54]`，常量与素材逐像素对得上', () => {
+    if (!hasMap || bytes === null) return;
+    const pts: number[] = [];
+    for (let i = 0; i < bytes.length; i++) if (bytes[i] === 0x10) pts.push(i);
+    const xs = pts.map((i) => i % AMOUNT_WINDOW.w);
+    const ys = pts.map((i) => Math.floor(i / AMOUNT_WINDOW.w));
+    const x0 = Math.min(...xs);
+    const x1 = Math.max(...xs);
+    const y0 = Math.min(...ys);
+    const y1 = Math.max(...ys);
+    expect([x0, x1, y0, y1]).toEqual([
+      AMOUNT_BAR_RECT.x,
+      AMOUNT_BAR_RECT.x + AMOUNT_BAR_RECT.w - 1,
+      AMOUNT_BAR_RECT.y,
+      AMOUNT_BAR_RECT.y + AMOUNT_BAR_RECT.h - 1,
+    ]);
+    // ★ 像素数 == 外接矩形面积 ⇒ 那一片没有洞，矩形判定与逐像素查 id 等价
+    expect(pts.length).toBe(AMOUNT_BAR_RECT.w * AMOUNT_BAR_RECT.h);
+  });
+
+  it('★★ 在金额栏上滑动 → 值按窗内 x 换算（`loc_00453394` 那条式子）', () => {
+    const X = AMOUNT_WINDOW.x;
+    const Y = AMOUNT_WINDOW.y;
+    // 栏的最左一列 x=9：`x−0xa ≤ 0` ⇒ 值 0
+    expect(amountBarDragValue(X + 9, Y + 45, 99_999)).toBe(0);
+    // x=0x40 = 64（`H` 的按下点）⇒ trunc(上限 × 17/33)
+    expect(amountBarDragValue(X + 0x40, Y + 45, 100)).toBe(51);
+    // 栏的最右一列 x=118：表里没有 ≥ 108 的项 ⇒ 原版什么都不做（值不变）
+    expect(amountBarDragValue(X + 118, Y + 45, 100)).toBeNull();
+    expect(amountBarDragValue(X + 117, Y + 45, 99)).toBe(99);
+    // 栏以外的窗内位置（金额显示框 / 钮区）不认
+    expect(amountBarDragValue(X + 64, Y + 20, 100)).toBeNull();
+    expect(amountBarDragValue(X + 2, Y + 45, 100)).toBeNull();
+    // 窗外不认
+    expect(amountBarDragValue(X - 1, Y + 45, 100)).toBeNull();
+    expect(amountBarDragValue(X + 64, Y + 0xc1, 100)).toBeNull();
+    // 音效号（`[0x482352]` 表值 9）
+    expect(AMOUNT_BAR_DRAG_SOUND).toBe(9);
   });
 
   it('★ 窗外的点一律不认；没有 id 图时退回矩形表', () => {
