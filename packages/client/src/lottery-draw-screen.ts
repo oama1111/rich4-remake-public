@@ -1226,6 +1226,9 @@ export const lotteryDrawScreen: UiScreen = {
       `樂透開獎：第 ${cue.number + 1} 號` + (cue.winner === null ? '（無人得獎）' : `，得主 ${cue.winner}`),
     );
     begin(cue, env);
+    // ★ 樂透開獎屏的配乐 @source `ui_letou.asm:3063` `push 8 / call fcn_004549cf`
+    //   ⇒ id 8 → `MIDI09.MID` → 磁盘名 `midi09.mid`（见 `SCREEN_BGM.lotteryDraw`）
+    env.music?.('midi09.mid');
     env.requestRender();
   },
 

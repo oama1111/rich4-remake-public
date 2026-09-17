@@ -999,6 +999,10 @@ export const auctionScreen: UiScreen = {
     }
     if (screen === null || screen.key !== runKey(pending)) {
       screen = startView(env, pending);
+      // ★ 開拍賣屏的配乐 @source `ui_auction.asm:3139` `push 5 / call fcn_004549cf`
+      //   ⇒ id 5 → `MIDI06.MID` → 磁盘名 `midi06.mid`（见 `SCREEN_BGM.auction`）。
+      //   只在**新的一场**开屏时点（这一支就是「key 变了 = 新的一场」）。
+      env.music?.('midi06.mid');
       env.requestRender();
       return;
     }

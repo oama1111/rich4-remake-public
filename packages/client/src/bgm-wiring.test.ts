@@ -40,6 +40,15 @@ describe('★ 按屏 BGM 的宿主接线点（原版 `fcn_004549cf(id)`）', () 
     expect(lottery).toContain("after.pending?.kind === 'lottery'");
   });
 
+  it('★★ 拍賣 / 樂透開獎两处（也是 `env.music`，各带出处）', () => {
+    const auction = readFileSync(new URL('./auction-screen.ts', import.meta.url), 'utf8');
+    expect(auction).toContain("env.music?.('midi06.mid')");
+    expect(auction).toContain('ui_auction.asm:3139');
+    const draw = readFileSync(new URL('./lottery-draw-screen.ts', import.meta.url), 'utf8');
+    expect(draw).toContain("env.music?.('midi09.mid')");
+    expect(draw).toContain('ui_letou.asm:3063');
+  });
+
   it('★ 剩下的调用点仍有清单可查（不许悄悄漏掉）', () => {
     const audio = readFileSync(
       new URL('../../assets-pipeline/src/audio.ts', import.meta.url),
