@@ -48,6 +48,16 @@ export const DOUBLE_AMOUNT = BLESSING_DOUBLE;
  */
 export const BANK_BAN_DAYS = 30;
 
+/** 事件 6「強迫出國觀光%d天」 */
+export const FORTUNE_TRIP_ABROAD = 6;
+/** 事件 7「被外星人綁架%d天」 */
+export const FORTUNE_ABDUCTED = 7;
+/**
+ * `days_disappearing`(`+0x33`) 里「原因」那 2 位 —— 低 6 位是天数。
+ * @source `fcn_0040d375`（`rich4_player_utils.asm:189`）：`al = 原因 << 6; ah = 天数; or ah, al`
+ */
+export const DISAPPEAR_REASON_ABROAD = 0;
+export const DISAPPEAR_REASON_ABDUCTED = 1;
 /** 事件 8「股票違約交割損失股票%d％」 */
 export const FORTUNE_STOCK_DEFAULT = 8;
 /** 事件 9「變賣所有股票求現」 */
@@ -157,10 +167,35 @@ export interface FortuneEffectContext {
   days?: number;
 }
 
-/** 本模块已实现效果的命運事件编号 */
+/** 靠**事件号**分派、而不是靠 `effects` 那几条（见 `applyFortuneEffect` 的注释） */
+export const FORTUNE_SPECIAL_IDS: readonly number[] = [
+  FORTUNE_STOCK_DEFAULT,
+  FORTUNE_STOCK_LIQUIDATE,
+  FORTUNE_MOTORCYCLE_STOLEN,
+  FORTUNE_CAR_WRECKED,
+  FORTUNE_SELL_ALL_ITEMS,
+];
+
+/**
+ * 本模块已实现效果的命運事件编号。
+ *
+ * ★ 2026-09-17 补齐：先前只列了「`factor != null` 且 pay/give」那一类，
+ *   于是**按事件号分派**的那些（8/9 卖股票、10/11 丢车、32 变卖卡片道具）与
+ *   坐牢/住院/冒貸/拒絕往來/出國觀光那几条**一个都没登记**（表里 `effects` 为空，
+ *   靠 id 分派是命运这一支的写法）—— 一个消费者都没有的登记表，容易误导复核。
+ */
 export const IMPLEMENTED_FORTUNE_IDS: readonly number[] = FORTUNE_EVENTS.filter(
-  (e) => e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give')),
+  (e) =>
+    e.effects.includes('pay') ||
+    e.effects.includes('give') ||
+    e.effects.includes('prison') ||
+    e.effects.includes('hospital') ||
+    e.effects.includes('loan') ||
+    e.effects.includes('bankBan') ||
+    e.effects.includes('disappear') ||
+    FORTUNE_SPECIAL_IDS.includes(e.id),
 ).map((e) => e.id);
+
 
 /**
  * 施加一个命運事件的效果（第二阶段）。
@@ -220,6 +255,30 @@ export function applyFortuneEffect(
     const kind = entry.effects.includes('prison') ? 'prison' : 'hospital';
     const out = confine(players, occupancy, kind, ctx.currentPlayer, days);
     return { ...base, players: out.players, occupancy: out.occupancy, amount: days };
+  }
+
+  // ── 命運 6/7：強迫出國觀光 / 被外星人綁架 ───────────────────────
+  //   @source `fcn_0044c5d8` / `fcn_0044c6ed` 的施加阶段尾部
+  //   `fcn_0040d375(玩家, 天数, 原因)` ⇒ `blocking.disappearing = 天数 | (原因 << 6)`。
+  //   ★ 已经在外的人原版直接跳过（`cmp byte [+0x33], 0 / jne 出去`）。
+  //   ★ 神明加持与坐牢同一支：档位 1 → 逃過此劫（整条作废）、档位 2 → 天数翻倍。
+  if (entry.effects.includes('disappear')) {
+    const raw = ctx.days ?? entry.literal;
+    if (raw === null || raw === undefined) return { ...base, unimplemented: true };
+    const mult = blessingMultiplier(ctx.multiplier ?? 0);
+    if (mult === 0) return { ...base, cancelled: true };
+    const me = players[ctx.currentPlayer];
+    if (me === undefined) return { ...base, unimplemented: true };
+    if (me.blocking.disappearing !== 0) return { ...base, amount: 0 };
+    const days = raw * mult;
+    const reason =
+      eventId === FORTUNE_ABDUCTED ? DISAPPEAR_REASON_ABDUCTED : DISAPPEAR_REASON_ABROAD;
+    const next = players.map((q, i) =>
+      i === ctx.currentPlayer
+        ? { ...q, blocking: { ...q.blocking, disappearing: (days & 0x3f) | (reason << 6) } }
+        : q,
+    );
+    return { ...base, players: next, amount: days };
   }
 
   // ★ 冒貸：直接给 loan 加钱，不经任何付款通道

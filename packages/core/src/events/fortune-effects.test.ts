@@ -7,7 +7,14 @@ import { describe, expect, it } from 'vitest';
 import { FORTUNE_EVENTS, fortuneEvent } from '@rich4/data';
 import { cardPrice } from '../rules/inventory.ts';
 import { makePlayer } from '../testing/factories.ts';
-import { BANK_BAN_DAYS, DOUBLE_AMOUNT, applyFortuneEffect } from './fortune-effects.ts';
+import {
+  BANK_BAN_DAYS,
+  DOUBLE_AMOUNT,
+  FORTUNE_ABDUCTED,
+  FORTUNE_TRIP_ABROAD,
+  IMPLEMENTED_FORTUNE_IDS,
+  applyFortuneEffect,
+} from './fortune-effects.ts';
 
 const ctx = (over = {}) => ({
   players: [0, 1, 2, 3].map((i) =>
@@ -413,5 +420,56 @@ describe('★ 事件 32「變賣所有卡片道具」@source fcn_0044d677', () =
     expect(r.tools).toBeNull();
     expect(r.cardAmount).toBeNull();
     expect(r.points).toBe(0);
+  });
+});
+
+describe('★ 命運 6/7：強迫出國觀光 / 被外星人綁架 @source fcn_0044c5d8 / fcn_0044c6ed', () => {
+  it('★★ 写 `days_disappearing` = 天數 | (原因 << 6)（低 6 位天數、高 2 位原因）', () => {
+    // @source `fcn_0040d375`：`al = 原因 << 6; ah = 天數; or ah, al`
+    const trip = applyFortuneEffect(FORTUNE_TRIP_ABROAD, ctx());
+    expect(trip.unimplemented).toBe(false);
+    expect(trip.players[0]!.blocking.disappearing).toBe(3); // 3 天 | 原因 0
+    expect(trip.amount).toBe(3);
+
+    const abducted = applyFortuneEffect(FORTUNE_ABDUCTED, ctx());
+    expect(abducted.players[0]!.blocking.disappearing).toBe(3 | (1 << 6)); // 0x43
+  });
+
+  it('★ 天數取事件表的 literal（6/7 都是 3）', () => {
+    expect(fortuneEvent(FORTUNE_TRIP_ABROAD)!.literal).toBe(3);
+    expect(fortuneEvent(FORTUNE_ABDUCTED)!.literal).toBe(3);
+  });
+
+  it('★ 神明加持同坐牢那一支：档位 1 逃過此劫（整条作废）、档位 2 天數翻倍', () => {
+    expect(applyFortuneEffect(FORTUNE_TRIP_ABROAD, ctx({ multiplier: 1 })).cancelled).toBe(true);
+    const doubled = applyFortuneEffect(FORTUNE_TRIP_ABROAD, ctx({ multiplier: 2 }));
+    expect(doubled.players[0]!.blocking.disappearing).toBe(6);
+  });
+
+  it('★ 已经在外的人不再重写（原版 `cmp [+0x33], 0 / jne 出去`）', () => {
+    const players = [makePlayer({ index: 0 }), makePlayer({ index: 1 })];
+    players[0] = { ...players[0]!, blocking: { ...players[0]!.blocking, disappearing: 5 } };
+    const r = applyFortuneEffect(FORTUNE_ABDUCTED, ctx({ players }));
+    expect(r.players[0]!.blocking.disappearing).toBe(5);
+    expect(r.amount).toBe(0);
+  });
+});
+
+describe('★ `IMPLEMENTED_FORTUNE_IDS` 不再漏掉「按事件号分派」的那几条', () => {
+  it('★★ 8/9/10/11/32 与坐牢/住院/冒貸/拒絕往來/出國觀光都在名单里', () => {
+    // 这五条在 `applyFortuneEffect` 里是按 id 分派的（事件表 `effects` 为空是命运这一支的写法）
+    for (const id of [8, 9, 10, 11, 32]) {
+      expect(IMPLEMENTED_FORTUNE_IDS, `fortune[${id}]`).toContain(id);
+    }
+    // 靠 `effects` 分派的那几类
+    expect(IMPLEMENTED_FORTUNE_IDS).toContain(FORTUNE_TRIP_ABROAD);
+    expect(IMPLEMENTED_FORTUNE_IDS).toContain(FORTUNE_ABDUCTED);
+    // 坐牢 33..36 与住院 12/13
+    for (const id of [12, 13, 33, 34, 35, 36]) {
+      expect(IMPLEMENTED_FORTUNE_IDS, `fortune[${id}]`).toContain(id);
+    }
+    // 仍然**不该**包含还没接的那一条：5「今天是你生日 向每人收取一張卡片」
+    //   （真人那条要弹选牌界面 ⇒ 要挂 pending，见 known-deviations）
+    expect(IMPLEMENTED_FORTUNE_IDS).not.toContain(5);
   });
 });

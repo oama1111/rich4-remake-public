@@ -201,7 +201,16 @@ export interface EventEntry {
      *   本引擎的 `rules/auction.ts` + `pending: {kind:'auction'}`）。
      */
     | 'publicAuction'
-  )[];
+      /**
+     * 命運 6/7：**強迫出國觀光 / 被外星人綁架 N 天** —— 写 `days_disappearing`(`+0x33`)
+     *   = `天數 | (原因 << 6)`（低 6 位是天數、高 2 位是原因：0 觀光 / 1 綁架）。
+     *   @source `fcn_0044c5d8`(6) / `fcn_0044c6ed`(7) 的施加阶段尾部
+     *   `fcn_0040d375(player, 天數, 原因)`（`rich4_player_utils.asm:189`：
+     *   `al = 原因 << 6; ah = 天數; or ah, al`）。
+     *   ★ 神明加持同坐牢那一支：档位 1 → 逃過此劫（整条作废），档位 2 → **天數翻倍**。
+     */
+    | 'disappear'
+)[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
   /** 原版提示语（BIG5 解码后） */
@@ -302,8 +311,8 @@ export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 3, va: 0x0044c229, factor: null, effects: ['bankBan'], textVa: 0x465959, text: "#0188支票跳票\n銀行拒絕往來一個月", literal: null, blessing: 'penalty' },
   { id: 4, va: 0x0044c2c2, factor: null, effects: ['pay'], textVa: 0x46597a, text: "#0189侵入銀行電腦\n挪用其他人存款%d％", literal: null },
   { id: 5, va: 0x0044c3b7, factor: null, effects: [], textVa: 0x4659a4, text: "#0190今天是你生日\n向每人收取一張卡片", literal: null },
-  { id: 6, va: 0x0044c5d8, factor: null, effects: [], textVa: 0x4659d8, text: "#0191強迫出國觀光%d天", literal: 3, blessing: 'misfortune' },
-  { id: 7, va: 0x0044c6ed, factor: null, effects: [], textVa: 0x4659ee, text: "#0192被外星人綁架%d天", literal: 3, blessing: 'misfortune' },
+  { id: 6, va: 0x0044c5d8, factor: null, effects: ['disappear'], textVa: 0x4659d8, text: "#0191強迫出國觀光%d天", literal: 3, blessing: 'misfortune' },
+  { id: 7, va: 0x0044c6ed, factor: null, effects: ['disappear'], textVa: 0x4659ee, text: "#0192被外星人綁架%d天", literal: 3, blessing: 'misfortune' },
   { id: 8, va: 0x0044c7ef, factor: null, effects: [], textVa: 0x465a04, text: "#0193股票違約交割損失股票%d％", literal: 10, blessing: 'penalty' },
   { id: 9, va: 0x0044c91f, factor: null, effects: [], textVa: 0x465a28, text: "#0194變賣所有股票求現", literal: null, blessing: 'penalty' },
   { id: 10, va: 0x0044ca46, factor: null, effects: [], textVa: 0x465a3e, text: "#0195機車被偷遺失", literal: null, blessing: 'misfortune' },
