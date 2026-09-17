@@ -8,6 +8,8 @@ import { NEWS_EVENTS, newsEvent } from '@rich4/data';
 import { makePlayer } from '../testing/factories.ts';
 import {
   IMPLEMENTED_NEWS_IDS,
+  LAND_PRICE_DOWN,
+  LAND_PRICE_UP,
   MARKET_CLOSE_DAYS,
   STOCK_SUSPEND_DAYS,
   applyNewsEffect,
@@ -282,6 +284,58 @@ describe('★ 新聞 24/25/26：股市三连 @source rich4_news.asm:2939 / VA 0x
   });
 });
 
+describe('★ 新聞 6/14：同名地块地价 ×1.3 / ×0.7 @source fcn_004494e0 / fcn_0044a220', () => {
+  const land = (id: number, name: string, landPrice: number) =>
+    ({ id, name, landPrice, owner: 0, level: 0, type: 0 }) as never;
+  const two = () => [land(1, '忠孝東路', 1000), land(2, '忠孝東路', 500), land(3, '仁愛路', 300)];
+  const fac = (id: number, name: string, landPrice: number) =>
+    ({ id, name, landPrice }) as never;
+
+  it('★★ news[6]：挑中一块地 → **所有同名**地块 ×1.3（截断），其它不动', () => {
+    // 挑中 0 号（忠孝東路）→ 1、2 两块同名都改
+    const r = applyNewsEffect(6, ctx({ lands: two(), facilities: [], rng: { below: () => 0 } }));
+    expect(r.unimplemented).toBe(false);
+    expect(LAND_PRICE_UP).toBe(1.3);
+    expect(r.landPrice).toEqual([{ id: 1, price: 1300 }, { id: 2, price: 650 }]);
+    expect(r.facilityPrice).toBeUndefined();
+  });
+
+  it('★★ news[14]：同名地块 ×0.7', () => {
+    const r = applyNewsEffect(14, ctx({ lands: two(), facilities: [], rng: { below: () => 1 } }));
+    expect(LAND_PRICE_DOWN).toBe(0.7);
+    // 挑中 1 号（忠孝東路）→ 两张同名各 ×0.7
+    expect(r.landPrice).toEqual([{ id: 1, price: 700 }, { id: 2, price: 350 }]);
+  });
+
+  it('★★ 挑中設施时**只改那一处**（原版設施那一支不扫同名）@source VA 0x004496f6', () => {
+    // 地 3 块 + 設施 2 处 ⇒ rand() % 5；给 4 → 第二处設施（下标 1）
+    const r = applyNewsEffect(
+      6,
+      ctx({
+        lands: two(),
+        facilities: [fac(1, '銀行', 2000), fac(2, '銀行', 4000)],
+        rng: { below: () => 4 },
+      }),
+    );
+    expect(r.facilityPrice).toEqual([{ id: 2, price: 5200 }]); // 只改 2 号那一处
+    expect(r.landPrice).toBeUndefined();
+  });
+
+  it('★ 越界的 rand 值会被取模（与原版 `idiv` 同语义）', () => {
+    // `below` 在真实 WatcomRng 里已经取过模；这里模拟一个「返回超大值」的假实现
+    const r = applyNewsEffect(
+      6,
+      ctx({ lands: two(), facilities: [], rng: { below: (n: number) => 7 % n } }),
+    );
+    expect(r.landPrice).toEqual([{ id: 1, price: 1300 }, { id: 2, price: 650 }]); // 7 % 3 = 1 → 忠孝東路
+  });
+
+  it('★ 没给 rng / 地图空时报未实现', () => {
+    expect(applyNewsEffect(6, ctx({ lands: two() })).unimplemented).toBe(true);
+    expect(applyNewsEffect(6, ctx({ lands: [], facilities: [], rng: { below: () => 0 } })).unimplemented).toBe(true);
+  });
+});
+
 describe('★ 新聞 27/28：随机一支股票停牌／恢复 @source VA 0x0044b0f8 / 0x0044b1c3', () => {
   /** 固定序列的假 RNG —— 只实现 `below`，方便钉住「挑中了哪一支」 */
   const fakeRng = (picks: number[]) => {
@@ -367,7 +421,7 @@ describe('未实现', () => {
     // 只是一直没列进这张表（本表没有别的消费者，纯登记）。
     // 16/17 = 行人/車輛休息一回合、24/25/26 = 股市三连（2026-09-17 接）
     expect(IMPLEMENTED_NEWS_IDS).toEqual([
-      0, 1, 2, 3, 4, 8, 9, 10, 16, 17, 22, 24, 25, 26, 27, 28, 29, 11, 12, 13, 23,
+      0, 1, 2, 3, 4, 6, 8, 9, 10, 14, 16, 17, 22, 24, 25, 26, 27, 28, 29, 11, 12, 13, 23,
     ]);
   });
 

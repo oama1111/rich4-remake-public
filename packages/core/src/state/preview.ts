@@ -42,7 +42,14 @@ export function cardUseContext(
     toolStock: state.toolStock,
     objects: state.objects,
     market: state.market,
-    marketOpen: marketOpenOn(state.globalMapId, state.year, state.month, state.day),
+    // ★ 同 `reduce`：休市含新聞 26 的全股市暂停
+    marketOpen: marketOpenOn(
+      state.globalMapId,
+      state.year,
+      state.month,
+      state.day,
+      state.market.closedDays,
+    ),
     facilities: allEffectiveFacilities(state, topo),
     actors: state.specialActors,
     scapegoatPicker,

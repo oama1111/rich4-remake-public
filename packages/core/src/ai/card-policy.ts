@@ -666,7 +666,9 @@ function holdingValue(view: CardAiView, who: number, j: number): number {
 }
 function marketOpenToday(view: CardAiView): boolean {
   const s = view.state;
-  return marketOpenOn(s.globalMapId, s.year, s.month, s.day);
+  // ★ 休市判据里含 `[0x4990dc]`（全股市暂停，新聞 26）—— 不传 `closedDays` 的话
+  //   紅卡/黑卡会照发，而 `registry.ts` 那边以 `marketClosed` 拒绝 ⇒ **动作流原地打转**
+  return marketOpenOn(s.globalMapId, s.year, s.month, s.day, s.market.closedDays);
 }
 
 /** 紅卡 @source 0x00420055：开市日，我持仓市值最大、没在停牌、没漲停的一支 */

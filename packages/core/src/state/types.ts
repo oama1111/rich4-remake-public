@@ -429,6 +429,17 @@ export interface GameState {
   landType: number[];
 
   /**
+   * 地块**当前地价**，下标 = 地块 id。
+   *
+   * ★ 它会变：新聞 6「公告地價調漲３０％」/ 14「房屋鬧鬼 地價下跌３０％」
+   *   直接把同名地块的 `+0x1c` 乘上 1.3 / 0.7（截断）。
+   *   @source `fcn_004494e0`（×1.3，常量 `[0x4654dc]`）/ `fcn_0044a220`（×0.7，`[0x46561c]`）
+   *   字段出处 `land.h` 0x1c；先前只把 owner/level/type 落回状态，
+   *   地价改动**无处落**，于是这两条新聞一直只画文案。
+   */
+  landPrice: number[];
+
+  /**
    * 地块**上一次**收到的過路費，下标 = 地块 id。
    *
    * @source 住宅过路费付完之后 `mov [land + 0x2c], ebp`（VA 0x0041a00b）——
@@ -478,6 +489,13 @@ export interface GameState {
    *   查封卡 0x004456cb `..., 0x51`。与地块不同，这两张卡对設施**只标记单个**。
    */
   facilityPriceStatus: number[];
+  /**
+   * 設施**当前地价**，下标 = 設施 id。
+   *
+   * ★ 同 `landPrice`：新聞 6/14 会乘 1.3 / 0.7（設施走 `+0x22`，与地块的 `+0x1c` 不同字段）。
+   * @source `business_land +0x22`（`csrc/land.h`）
+   */
+  facilityPrice: number[];
   facilityLastToll: number[];
   facilityTenure: number[];
   /**

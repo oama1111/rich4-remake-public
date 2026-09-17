@@ -290,6 +290,13 @@ function makeInitialPlayer(
  * ★ 之后它会被改建卡（`type ^ 1`）与傳送機改掉，所以必须进状态；
  *   每次回地图静态数据取的话，那些改动等于没发生。
  */
+/** 地价表的初值：**从地图读**（它会被新聞 6/14 改，不能每次回地图取） */
+export function landPriceFromMap(map: Rich4Map, landCount: number): number[] {
+  const out = new Array<number>(landCount).fill(0);
+  for (const l of map.lands) out[l.id] = l.landPrice;
+  return out;
+}
+
 export function landTypeFromMap(map: Rich4Map, landCount: number): number[] {
   const out = new Array<number>(landCount).fill(0);
   for (const l of map.lands) out[l.id] = l.type;
@@ -401,6 +408,8 @@ export function newGame(opts: NewGameOptions): GameState {
     landLevel: new Array<number>(landCount).fill(0),
     // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取
     landType: landTypeFromMap(map, landCount),
+    // ★ 地价也是会变的（新聞 6/14 乘 1.3 / 0.7）⇒ 与种类一样落回状态
+    landPrice: landPriceFromMap(map, landCount),
     landTenureIndex: landTenure,
     // ★ 勝利條件（遊戲時間 / 勝利條件）与土地權限一样，只受开局设置影响
     //   @source `[0x49911c]` / `[0x499108]`，开局写入 VA 0x0040737d..0x004073a3
@@ -417,6 +426,7 @@ export function newGame(opts: NewGameOptions): GameState {
     facilityLevel: facilityFieldFromMap(map, (f) => f.level),
     facilityType: facilityFieldFromMap(map, (f) => f.type),
     facilityPriceStatus: facilityFieldFromMap(map, (f) => f.priceStatus),
+    facilityPrice: facilityFieldFromMap(map, (f) => f.landPrice),
     facilityLastToll: facilityFieldFromMap(map, () => 0),
     facilityTenure: facilityFieldFromMap(map, () => 0),
     facilityResearchProject: facilityFieldFromMap(map, () => 0),

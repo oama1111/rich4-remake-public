@@ -99,6 +99,25 @@ export interface EventEntry {
      *   （那一支直接什么都不做）。
      */
     | 'resumeStock'
+    /**
+     * 新聞 6 / 14：**随机挑一块地（或一处設施），把同名地块的地价 ×1.3 / ×0.7**。
+     *
+     * @source `fcn_004494e0`（6，常量 `[0x4654dc]` = 1.3）/ `fcn_0044a220`（14，`[0x46561c]` = 0.7）：
+     * ```asm
+     * edx = rand() % (num_lands + num_facilities)      ; ★ 地先、設施后
+     * if (edx < num_lands) {                           ; —— 地块那一支
+     *   target = land(edx)                             ; 1 基下标 = edx+1
+     *   for (i = 1; i <= num_lands; i++)               ; ★ 扫**全部**地块
+     *     if (strcmp(land(i).name, target.name) == 0)  ;   同名的
+     *       land(i).+0x1c = trunc(land(i).+0x1c × C)   ;   land_price × C（frndint = 截断）
+     * } else {                                         ; —— 設施那一支
+     *   fac = facility(edx - num_lands)
+     *   fac.+0x22 = trunc(fac.+0x22 × C)               ; ★ 只改**挑中那一处**（不扫同名）
+     * }
+     * ```
+     */
+    | 'raiseLandPrice'
+    | 'lowerLandPrice'
   )[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
@@ -151,7 +170,7 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 3, va: 0x00449081, factor: null, effects: ['extendHospital'], textVa: 0x46546c, text: "#0152住院中病患延長住院%d天", literal: 3 },
   { id: 4, va: 0x0044913d, factor: null, effects: ['hospital'], textVa: 0x465488, text: "#0153外星人攻打地球", literal: null },
   { id: 5, va: 0x004492a0, factor: null, effects: [], textVa: 0x46549c, text: "#0154外星怪獸襲擊%s\n摧毀建築一棟", literal: null },
-  { id: 6, va: 0x004494e0, factor: null, effects: [], textVa: 0x4654bd, text: "#0155%s公告地價調漲３０％", literal: null },
+  { id: 6, va: 0x004494e0, factor: null, effects: ['raiseLandPrice'], textVa: 0x4654bd, text: "#0155%s公告地價調漲３０％", literal: null },
   { id: 7, va: 0x00449735, factor: null, effects: [], textVa: 0x4654e4, text: "#0156公開拍賣%s\n公有土地一處", literal: null },
   { id: 8, va: 0x004498b3, factor: 10000, effects: ['give'], textVa: 0x465501, text: "#0157公開表揚第一大地主\n%s獲得%d元獎勵", literal: null },
   { id: 9, va: 0x00449a8a, factor: 5000, effects: ['give'], textVa: 0x465528, text: "#0158公開補助土地最少者\n%s獲得%d元補助", literal: null },
@@ -159,7 +178,7 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 11, va: 0x00449c7c, factor: null, effects: ['pay'], textVa: 0x465578, text: "#0160所有人繳交所得稅５％", literal: null },
   { id: 12, va: 0x00449de6, factor: null, effects: ['pay'], textVa: 0x4655ac, text: "#0161所有人繳交地價稅５％", literal: null },
   { id: 13, va: 0x0044a029, factor: null, effects: ['pay'], textVa: 0x4655d4, text: "#0162所有人繳交證交稅５％", literal: null },
-  { id: 14, va: 0x0044a220, factor: null, effects: [], textVa: 0x4655fc, text: "#0163%s房屋鬧鬼\n地價下跌３０％", literal: null },
+  { id: 14, va: 0x0044a220, factor: null, effects: ['lowerLandPrice'], textVa: 0x4655fc, text: "#0163%s房屋鬧鬼\n地價下跌３０％", literal: null },
   { id: 15, va: 0x0044a453, factor: null, effects: [], textVa: 0x465624, text: "#0164%s一處民宅瓦斯爆炸\n房屋失火", literal: null },
   { id: 16, va: 0x0044a5d6, factor: null, effects: ['stopPedestrians'], textVa: 0x465645, text: "#0165豪雨特報\n行人休息一回合", literal: null },
   { id: 17, va: 0x0044a657, factor: null, effects: ['stopVehicles'], textVa: 0x465662, text: "#0166交通阻塞\n汽車停止一回合", literal: null },

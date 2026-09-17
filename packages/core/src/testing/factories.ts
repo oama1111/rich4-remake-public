@@ -89,6 +89,9 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     landOwner: [],
     landLevel: [],
     landType: [],
+    // 地价：夹具默认全 0（`effectiveLand` 会 `?? tpl.landPrice`）
+    landPrice: [],
+    facilityPrice: [],
     landTenureIndex: 0,
     // 勝利條件默认两条都無限（= 加字段之前的行为，见 rules/victory.ts）
     winConditions: { targetDays: 0, targetWealth: 0 },

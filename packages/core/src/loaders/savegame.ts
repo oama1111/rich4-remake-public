@@ -21,7 +21,7 @@
 import type { GameState } from '../state/types.ts';
 import type { SaveGame } from './save.ts';
 import type { Rich4Map } from './map.ts';
-import { facilityFieldFromMap, landTypeFromMap } from '../rules/new-game.ts';
+import { facilityFieldFromMap, landPriceFromMap, landTypeFromMap } from '../rules/new-game.ts';
 import { emptyBoard } from '../places/notice-board.ts';
 import { initialSpecialActors } from '../rules/special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
@@ -303,6 +303,8 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     landLevel: new Array<number>(landCount).fill(0),
     // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取
     landType: landTypeFromMap(map, landCount),
+    // ★ 存档里那块地图数据尚未回读（见下面的 gaps）⇒ 地价只能取地图初值
+    landPrice: landPriceFromMap(map, landCount),
     noticeBoard: emptyBoard(),
     turnCount: 0,
     snapshots: [null, null, null, null],
@@ -329,6 +331,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     facilityLevel: facilityFieldFromMap(map, (f) => f.level),
     facilityType: facilityFieldFromMap(map, (f) => f.type),
     facilityPriceStatus: facilityFieldFromMap(map, (f) => f.priceStatus),
+    facilityPrice: facilityFieldFromMap(map, (f) => f.landPrice),
     facilityLastToll: facilityFieldFromMap(map, () => 0),
     facilityTenure: facilityFieldFromMap(map, () => 0),
     facilityResearchProject: facilityFieldFromMap(map, () => 0),

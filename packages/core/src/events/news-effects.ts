@@ -41,6 +41,14 @@ export interface NewsEffectResult {
    *   （调用方用 `out.market ?? 原值` 回写）。
    */
   market?: StockMarketState;
+  /**
+   * 被改过的新地价（新聞 6/14）—— **有序对列表**，只放改动过的那几条。
+   *
+   * ⚠️ 刻意不用 `Record` + `Object.keys/entries` 回写：那两样按 C-DET-5 属禁用
+   *   （键序不保证）。这里用显式数组，顺序就是原版「逐块扫过去」的顺序。
+   */
+  landPrice?: readonly PriceChange[];
+  facilityPrice?: readonly PriceChange[];
   amount: number;
   bankrupted: boolean;
   unimplemented: boolean;
@@ -50,6 +58,12 @@ export interface NewsEffectResult {
  * 效果阶段需要的随机出口 —— 只暴露 `below(n)`（= 原版惯例 `rand() % n`，**保留模偏差**）。
  *   `WatcomRng` 天然满足这个形状，测试里也可以塞一个固定序列的假实现。
  */
+/** 一条地价改动：`id` = 地块/設施 id，`price` = 改后的值 */
+export interface PriceChange {
+  id: number;
+  price: number;
+}
+
 export interface EffectRng {
   below(n: number): number;
 }
@@ -161,6 +175,8 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
       e.effects.includes('marketClose') ||
       e.effects.includes('suspendStock') ||
       e.effects.includes('resumeStock') ||
+      e.effects.includes('raiseLandPrice') ||
+      e.effects.includes('lowerLandPrice') ||
       (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
   ).map((e) => e.id),
   ...PERCENT_NEWS.keys(),
@@ -181,6 +197,11 @@ export const MARKET_CLOSE_DAYS = 0xa;
  *   ★ 文案写「暫停交易１０天」，立即数却是 **15**；本引擎**照抄立即数**（C-FID）。
  */
 export const STOCK_SUSPEND_DAYS = 0xf;
+
+/** 新聞 6 的地价倍率 @source 常量 `[0x4654dc]` = 1.3 */
+export const LAND_PRICE_UP = 1.3;
+/** 新聞 14 的地价倍率 @source 常量 `[0x46561c]` = 0.7 */
+export const LAND_PRICE_DOWN = 0.7;
 
 /**
  * 施加一个新聞事件的效果（第二阶段）。
@@ -279,6 +300,39 @@ export function applyNewsEffect(
       amount: days,
       bankrupted,
       unimplemented: false,
+    };
+  }
+
+  // ── 新聞 6 / 14「公告地價調漲／房屋鬧鬼地價下跌」─────────────────
+  //   @source `fcn_004494e0`（×1.3）/ `fcn_0044a220`（×0.7），逐条见 event-table 的注释。
+  //   ★ 两支都**不看 `affected`**：随机挑一块地/一处設施，然后
+  //     地块那一支把**所有同名地块**的地价都乘上倍率（只改挑中那一处的是設施）。
+  if (entry.effects.includes('raiseLandPrice') || entry.effects.includes('lowerLandPrice')) {
+    const rng = ctx.rng;
+    const lands = ctx.lands ?? [];
+    const facilities = ctx.facilities ?? [];
+    if (rng === undefined || lands.length + facilities.length === 0) {
+      return { ...base, unimplemented: true };
+    }
+    const factor = entry.effects.includes('raiseLandPrice') ? LAND_PRICE_UP : LAND_PRICE_DOWN;
+    const pick = rng.below(lands.length + facilities.length);
+    if (pick < lands.length) {
+      // ★ `rand() % (地+設施)` 的前半段是**地块**（1 基下标 = pick+1）
+      const target = lands[pick]!;
+      const landPrice: PriceChange[] = [];
+      for (const l of lands) {
+        // 同名的都改（原版逐块 `strcmp(name)`）；顺序 = 表序
+        if (l.name !== target.name) continue;
+        landPrice.push({ id: l.id, price: Math.trunc(l.landPrice * factor) });
+      }
+      const changed = landPrice.find((c) => c.id === target.id);
+      return { ...base, amount: changed?.price ?? 0, landPrice };
+    }
+    const fac = facilities[pick - lands.length]!;
+    return {
+      ...base,
+      amount: Math.trunc(fac.landPrice * factor),
+      facilityPrice: [{ id: fac.id, price: Math.trunc(fac.landPrice * factor) }],
     };
   }
 

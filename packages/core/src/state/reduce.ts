@@ -203,7 +203,7 @@ import {
 } from '../events/fortune-effects.ts';
 import { blessingFieldOf, blessingLevelFor } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
-import { applyNewsEffect } from '../events/news-effects.ts';
+import { applyNewsEffect, type PriceChange } from '../events/news-effects.ts';
 import { anyoneConfined, confine, type ConfinementKind } from '../rules/confinement.ts';
 import { applyBail, bailCandidates, decideBail } from '../rules/visit.ts';
 import {
@@ -282,6 +282,7 @@ export function effectiveFacility(
     level: s.facilityLevel[facilityId] ?? tpl.level,
     type: s.facilityType[facilityId] ?? tpl.type,
     priceStatus: s.facilityPriceStatus[facilityId] ?? tpl.priceStatus,
+    landPrice: s.facilityPrice?.[facilityId] ?? tpl.landPrice,
   };
 }
 
@@ -303,6 +304,10 @@ export function effectiveLand(
     level: s.landLevel[landIndex] ?? tpl.level,
     type: s.landType[landIndex] ?? tpl.type,
     priceStatus: s.landPriceStatus[landIndex] ?? tpl.priceStatus,
+    // ★ 地价会被新聞 6/14 改（×1.3 / ×0.7），故也走状态
+    // ⚠️ `?.` 是**兼容老存档/半成品夹具**：这两格是后加的，缺了要回退到地图初值，
+    //   不能抛 TypeError
+    landPrice: s.landPrice?.[landIndex] ?? tpl.landPrice,
   };
 }
 
@@ -514,6 +519,7 @@ export function allEffectiveLands(s: GameState, topo: MapTopology): LandInfo[] {
     owner: s.landOwner[l.id] ?? l.owner,
     level: s.landLevel[l.id] ?? l.level,
     type: s.landType[l.id] ?? l.type,
+    landPrice: s.landPrice?.[l.id] ?? l.landPrice,
   }));
 }
 
@@ -3345,6 +3351,9 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     market: out.market ?? withDeck.market,
     prisonOccupancy: out.prisonOccupancy,
     hospitalOccupancy: out.hospitalOccupancy,
+    // ★ 新聞 6/14 改过的地价（只带改动过的那几条，按 id 覆盖）
+    landPrice: applyPriceOverrides(withDeck.landPrice ?? [], out.landPrice),
+    facilityPrice: applyPriceOverrides(withDeck.facilityPrice ?? [], out.facilityPrice),
     lastEvent: { kind: 'news', id: draw.eventId },
   };
   // 新聞的坐牢/住院也走 send_to_*，保險期内赔 2000×天×物價
@@ -3355,6 +3364,21 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     }
   }
   return applied;
+}
+
+/**
+ * 把「只带改动条目的地价表」覆盖回状态里的地价数组。
+ *   `overrides` 为空时**原样返回**（不新建数组，免得每次抽新闻都换引用）。
+ */
+function applyPriceOverrides(
+  base: readonly number[],
+  overrides: readonly PriceChange[] | undefined,
+): number[] {
+  if (overrides === undefined) return [...base];
+  const out = [...base];
+  // ★ 有序数组（不用 `Object.keys/entries`，见 C-DET-5）
+  for (const c of overrides) out[c.id] = c.price;
+  return out;
 }
 
 /**

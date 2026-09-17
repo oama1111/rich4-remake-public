@@ -8,7 +8,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import { reduce, effectiveLand, type MapTopology } from './reduce.ts';
+import { readFileSync, existsSync } from 'node:fs';
 import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
+import { parseMap } from '../loaders/map.ts';
+import { newGame } from '../rules/new-game.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
 
 /** 一块住宅地，节点 1 就是它 */
@@ -51,5 +54,34 @@ describe('landType 进状态', () => {
     // 住宅 ↔ 連鎖店 对调（@source `xor ah, 1`）
     expect(after.landType[1]).toBe(LAND_TYPE_HOUSE ^ 1);
     expect(effectiveLand(after, topo, 1)?.type).toBe(LAND_TYPE_HOUSE ^ 1);
+  });
+});
+
+describe('landPrice 进状态（新聞 6/14 的地价改动要落得住）', () => {
+  it('effectiveLand 读的是状态里的 landPrice，不是地图里的', () => {
+    const { state, topo } = scene();
+    expect(effectiveLand(state, topo, 1)?.landPrice).toBe(100); // 地图初值
+    const raised = { ...state, landPrice: [0, 130] };
+    expect(effectiveLand(raised, topo, 1)?.landPrice).toBe(130);
+    // ★ 少了这一格，新聞 6「公告地價調漲３０％」就会「看着生效、下一次又变回去」
+  });
+
+  it('newGame 把**地图地价**抄进状态（真地图）', () => {
+    const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+    if (!existsSync(MAP)) return; // 没解包素材就跳过（与其它真地图测试同规矩）
+    const map = parseMap(new Uint8Array(readFileSync(MAP)));
+    const g = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+      seed: 1,
+    });
+    expect(g.landPrice).toHaveLength(map.lands.reduce((m, l) => Math.max(m, l.id), 0) + 1);
+    for (const l of map.lands.slice(0, 8)) {
+      expect(g.landPrice[l.id], `land ${l.id}`).toBe(l.landPrice);
+    }
+    // 每处設施也一样
+    for (const f of map.facilities.slice(0, 4)) {
+      expect(g.facilityPrice[f.id], `facility ${f.id}`).toBe(f.landPrice);
+    }
   });
 });

@@ -638,7 +638,8 @@ export function stockRowsFrom(
 
 /** 今天柜台开不开 @source `fcn_00428d01`（VA 0x428d01）*/
 export function stockCounterClosed(state: GameState): boolean {
-  return !marketOpenOn(state.globalMapId, state.year, state.month, state.day);
+  // ★ 休市含 `[0x4990dc]`（新聞 26「股市暫停交易１０天」）
+  return !marketOpenOn(state.globalMapId, state.year, state.month, state.day, state.market.closedDays);
 }
 
 // ============================================================
