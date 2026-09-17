@@ -31,6 +31,14 @@ import {
 const DATA_MKF = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/Data.mkf';
 const runData = existsSync(DATA_MKF) ? it : it.skip;
 
+// ── 回 exe 取证那一块（素材不在就整块跳过）──
+const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const CODE_VA = 0x401000;
+const CODE_OFF = 1024;
+const exeBuf = existsSync(EXE) ? readFileSync(EXE) : Buffer.alloc(0);
+/** 代码段 VA → 文件偏移（与 `tools/disasm.py` 同式；这一块只读代码段）*/
+const coff = (va: number): number => va - CODE_VA + CODE_OFF;
+
 /** 只带 `godInfo` + 物件表的最小状态 */
 function st(godInfos: number[], objects: { type: number }[] = []): Parameters<typeof godFxTrigger>[0] {
   return {
@@ -110,6 +118,43 @@ describe('★ 派发表 @source `ref_0040ea9b`（VA 0x0040ea9b，15 项）', () 
       expect(info!.height).toBe(spec.height);
       expect(info!.frameMs, `id ${id} 每帧毫秒`).toBe(spec.frameMs);
     }
+  });
+});
+
+describe.skipIf(exeBuf.length === 0)('★★ 回 exe 取证：派发表与头两尊的立即数', () => {
+  it('★★ 跳表 15 项：指向 `fcn_0040ece6` 的正好是 11/13/14，其余 12 项就是那 12 段影片', () => {
+    const table = Array.from({ length: 15 }, (_, i) =>
+      exeBuf.readUInt32LE(coff(0x40ea9b) + i * 4),
+    );
+    // 空壳函数 VA（`fcn_0040ece6` 就是上面那个「什么都不做」的收尾标签）
+    const NO_FILM = 0x0040ece6;
+    const withFilm = table
+      .map((target, i) => ({ id: i + 1, target }))
+      .filter((e) => e.target !== NO_FILM)
+      .map((e) => e.id);
+    expect(withFilm).toEqual([...GOD_FX_IDS]);
+    // 其余三项**全部**是空壳
+    expect(table.filter((t) => t === NO_FILM)).toHaveLength(3);
+    // 第一项就是 `fcn_0040ec14`（第 1 尊）
+    expect(table[0]).toBe(0x0040ec14);
+  });
+
+  it('★★ 第 1 尊的函数体里那五个立即数：资源 0x21c / 音效 0x66 / y=0x28 / x=0 / flags=1', () => {
+    const body = exeBuf.subarray(coff(0x40ec14), coff(0x40ec14) + 0x60);
+    // `cmp byte [0x497159], 0`（動畫過程闸门）
+    expect(body.includes(Buffer.from([0x80, 0x3d, 0x59, 0x71, 0x49, 0x00, 0x00]))).toBe(true);
+    // `push 0x21c` / `push 0x66`（音效）/ `push 1`（flags）/ `push 0x28`（y）/ `push 0`（x）
+    expect(body.includes(Buffer.from([0x68, 0x1c, 0x02, 0x00, 0x00]))).toBe(true);
+    expect(body.includes(Buffer.from([0x6a, 0x66]))).toBe(true);
+    expect(body.includes(Buffer.from([0x6a, 0x01]))).toBe(true);
+    expect(body.includes(Buffer.from([0x6a, 0x28]))).toBe(true);
+    // `call fcn_0045144f`（阻塞播放）
+    expect(body.includes(Buffer.from([0xe8]))).toBe(true);
+    // 与代码里的常量对齐
+    expect(godFilmResource(1)).toBe(0x21c);
+    expect(godFilmSound(1)).toBe(0x66);
+    expect(godFilmSpec(1)!.y).toBe(0x28);
+    expect(godFilmSpec(1)!.flags).toBe(1);
   });
 });
 
