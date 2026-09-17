@@ -257,6 +257,41 @@ export const DICE_AT: readonly (readonly [number, number])[] = [
  * ⚠️ 文件名在磁盘上是小写（`midi01.mid`），`Midi.txt` 里是大写。
  *   在大小写敏感的文件系统上要按实际文件名取。
  */
+/**
+ * **按屏取曲**用的那张表 —— 原版 `fcn_004549cf(id)` 查的就是它。
+ *
+ * @source `rich4_media_music.asm:354`（VA 0x004549cf）：
+ * ```asm
+ * cmp  byte [0x49715a], 0 / je 直接返回     ; ★ 配置里关了配乐就整条不做
+ * ebx = id * 4
+ * ecx = dword [ebx + 0x47e793]              ; ★ 13 项**文件名表**
+ * sprintf(buf, "open sequencer!%s alias mid", ecx)   ; MCI 打开那个 MIDI
+ * ```
+ * 表 `0x47e793` 的 13 项依次指向 `MIDI01.MID` … `MIDI13.MID`（每项 11 字节，实测）。
+ * ⇒ **`id` 是 0 基，文件名是 `id + 1`**（例：月結屏的 `fcn_004549cf(9)` → `MIDI10.MID`）。
+ *
+ * ⚠️ 与 `MIDI_PLAYLIST` **不是一回事**：那个是游戏目录 `Midi.txt` 的播放清单顺序，
+ *   用于「整张清单顺序播」；这一张是**每屏一支**的曲目号。
+ *   全 exe 有 22 处 `call fcn_004549cf`（新游戏/魔法屋/商店/小游戏/拍賣/銀行/破产…），
+ *   本引擎**尚未**按屏取曲，见 `docs/deviations/T-041.md` 的 D-MONTHLY-5。
+ */
+export const BGM_FILES: readonly string[] = [
+  'MIDI01.MID', 'MIDI02.MID', 'MIDI03.MID', 'MIDI04.MID', 'MIDI05.MID',
+  'MIDI06.MID', 'MIDI07.MID', 'MIDI08.MID', 'MIDI09.MID', 'MIDI10.MID',
+  'MIDI11.MID', 'MIDI12.MID', 'MIDI13.MID',
+];
+
+/** `fcn_004549cf(id)` 要打开的那个文件名（越界返回 `null`） */
+export function bgmFileFor(id: number): string | null {
+  if (!Number.isInteger(id) || id < 0 || id >= BGM_FILES.length) return null;
+  return BGM_FILES[id] ?? null;
+}
+
+/** 配置里「配乐」那一栏关掉了吗（`[0x49715a]` 为 0 时 `fcn_004549cf` 整条不做）*/
+export function bgmEnabled(configByte: number): boolean {
+  return (configByte & 0xff) !== 0;
+}
+
 export const MIDI_PLAYLIST: readonly string[] = [
   'Rich08.mid',
   'Rich16.mid',

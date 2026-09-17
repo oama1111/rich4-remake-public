@@ -6,7 +6,9 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { MkfArchive } from './mkf.ts';
-import { MIDI_PLAYLIST, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from './audio.ts';
+import { MIDI_PLAYLIST, BGM_FILES, bgmFileFor, bgmEnabled, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from './audio.ts';
+
+const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
 
 const RICH4 = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4';
 const have = (f: string) => (existsSync(`${RICH4}/${f}`) ? it : it.skip);
@@ -71,6 +73,26 @@ describe('★ Speaking.mkf —— 角色语音', () => {
 describe('★ 背景音乐', () => {
   it('清单有 25 首，与 Midi.txt 同序', () => {
     expect(MIDI_PLAYLIST).toHaveLength(25);
+    // ★ 2026-09-17：**按屏取曲**那张表（`fcn_004549cf(id)` 用的），逐字节对照 exe
+    expect(BGM_FILES).toHaveLength(13);
+    expect(BGM_FILES[0]).toBe('MIDI01.MID');
+    expect(BGM_FILES[12]).toBe('MIDI13.MID');
+    // 月結屏那一处：`fcn_004549cf(9)` → MIDI10.MID
+    expect(bgmFileFor(9)).toBe('MIDI10.MID');
+    expect(bgmFileFor(13)).toBeNull();
+    // 配置闸门：`[0x49715a] == 0` ⇒ 整条不做
+    expect(bgmEnabled(0)).toBe(false);
+    expect(bgmEnabled(1)).toBe(true);
+    if (existsSync(EXE)) {
+      const buf = readFileSync(EXE);
+      const at = (va: number) => 398848 + (va - 0x463000); // 该 exe 的 VA→文件偏移换算
+      // 表 0x47e793 的 13 个指针，各自指向的串必须就是 BGM_FILES[i]
+      for (let i = 0; i < BGM_FILES.length; i++) {
+        const ptr = buf.readUInt32LE(at(0x47e793) + i * 4);
+        const end = buf.indexOf(0, at(ptr));
+        expect(buf.subarray(at(ptr), end).toString('latin1')).toBe(BGM_FILES[i]);
+      }
+    }
   });
 
   it('★ 清单里的文件在游戏目录里都存在', () => {
