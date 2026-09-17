@@ -565,7 +565,18 @@ export interface GameState {
   hospitalOccupancy: number[];
 
   /** 最近一次事件的记录，供表现层显示；不参与规则 */
-  lastEvent: { kind: 'news' | 'fortune'; id: number } | null;
+  lastEvent: {
+    kind: 'news' | 'fortune';
+    id: number;
+    /**
+     * ★ 新闻百分比类那四条（11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利）
+     *   的「先算好」结果：每位在场玩家该缴/该领多少（`shares` 见
+     *   `events/news-effects.ts` 的 `NewsEffectResult`）。表现层按它逐行画
+     *   —— 顺序是原版的「先算好并画出来、第二趟才真收」（`rich4_news.asm:1320`）。
+     * 其余事件不带这一项。
+     */
+    shares?: readonly { player: number; amount: number }[];
+  } | null;
 
   /**
    * **上一轮／上一次**替身走出来的整趟路径 —— 纯表现提示（T-047）。

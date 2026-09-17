@@ -149,9 +149,23 @@ case 8: case 9: return ctx.stockAmount.some((a) => a !== 0) ? yes() : no;
 `lands`/`facilities`/`holdings`/`prices` 由 reducer 喂真数据；
 出局者跳过、付不起走既有的 `transferMoney`（级联 + 破产）。
 
-**仍未做**：这四条原版是「先算好存进 `[0x48c59c + i*4]`、**第二趟**才收」——
-表现层要按这个顺序把「每人缴多少」逐行画出来（我们目前只在结算后才有一句文案）。
-属表现层，登记在此。
+✅ **2026-09-17 接上（两半都做了）**：
+
+- **引擎侧**：`applyNewsEffect` 在自己那趟循环里把每人金额**带出来**
+  （`NewsEffectResult.shares`，含 0 —— 原版也算 0，只是不画），
+  `reduce.ts` 把它放进 `lastEvent.shares`。**不是让 UI 自己再算一遍**
+  （那等于把规则抄成两份，C-ARC-2）。
+- **表现侧**：事件提示框按原版顺序逐行画 —— 格式串 **`0x465592` = `%s繳交%d元`**，
+  左上角 `(0x18, 0x15a)` 起、行距 **`0x20`**（四支函数都是 `mov edi,0x15a` +
+  `add edi,0x20`），金额 ≤ 0 的那几位跳过（`test eax,eax / je`）。
+  落成 `event-box-screen.ts` 的 `NEWS_SHARE_AT` / `NEWS_SHARE_PITCH` / `newsShareLine`
+  + `EventBoxView.shares`。
+- 测试：core 侧 2 条（`shares` 逐人金额、含 0、出局者不进表、其余事件不带）+
+  真地图 reduce 1 条（抽到 11 → `lastEvent.shares` 四个座位的金额、公库 +10000）；
+  表现侧 2 条（明细行的文本/落点/对齐、金额 0 不画、不传 `shares` 时一行不多）。
+
+⚠️ **仍未做**：原版在明细行左侧还有**角色头像**（`fcn_004562a5(框表面, x=0x186,
+头像图, y+0xc)`，头像图号来自 `[0x498eb0 + 玩家*0x34] + 0x30`），本引擎只画了文字。
 
 ## ⑤ 事件 32「變賣所有卡片道具」—— 折价公式读出来了，并顺手补上破产那一支
 

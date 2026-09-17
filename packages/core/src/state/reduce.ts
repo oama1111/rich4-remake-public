@@ -3466,7 +3466,12 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     facilityPrice: applyPriceOverrides(withDeck.facilityPrice ?? [], out.facilityPrice),
     ...applyCompanyMutations(withDeck, out.companyMutations),
     ...applyMutations(withDeck, out),
-    lastEvent: { kind: 'news', id: draw.eventId },
+    // ★ 百分比类那四条把「先算好」的逐人金额一起带上（表现层要按原版顺序逐行画）
+    lastEvent: {
+      kind: 'news',
+      id: draw.eventId,
+      ...(out.shares === undefined ? {} : { shares: out.shares }),
+    },
   };
   // 新聞的坐牢/住院也走 send_to_*，保險期内赔 2000×天×物價
   const entry = newsEvent(draw.eventId);

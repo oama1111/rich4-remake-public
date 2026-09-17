@@ -69,6 +69,39 @@ describe('方向与命運一致', () => {
     expect(r.pool).toBe(10_000);
     expect(r.amount).toBe(10_000);
     expect(r.unimplemented).toBe(false);
+    // ★ 「先算好」那一趟逐人带出来（表现层按它逐行画：`%s繳交%d元`）
+    expect(r.shares).toEqual([
+      { player: 0, amount: 5000 },
+      { player: 1, amount: 5000 },
+    ]);
+  });
+
+  it('★★ `shares` 是「先算好」那一趟：**含 0**（原版算出 0 只是不画那行）、出局者不进表', () => {
+    const r = applyNewsEffect(
+      11,
+      ctx({
+        affected: [0, 1, 2],
+        players: [
+          makePlayer({ index: 0, cash: 100_000 }),
+          makePlayer({ index: 1, cash: 0 }), // 5% = 0 → 进表但金额 0
+          makePlayer({ index: 2, cash: 100_000, whoPlays: 0 }), // 出局 → 不进表
+        ],
+      }),
+    );
+    expect(r.shares).toEqual([
+      { player: 0, amount: 5000 },
+      { player: 1, amount: 0 },
+    ]);
+    // 0 的那位一分钱不动、也不进公库
+    expect(r.players[1]!.cash).toBe(0);
+    expect(r.pool).toBe(5000);
+  });
+
+  it('★ 其余新闻**不带** `shares`（只有百分比那四条有）', () => {
+    // 16 汽車超速 = 固定金额那条
+    expect(applyNewsEffect(16, ctx()).shares).toBeUndefined();
+    // 23 儲金紅利也有
+    expect(applyNewsEffect(23, ctx()).shares).toBeDefined();
   });
 
   it('★★ 地價稅（12）= 地产原值 5% × 物價指數（trunc 在前）', () => {

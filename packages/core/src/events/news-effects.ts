@@ -71,6 +71,23 @@ export interface NewsEffectResult {
    *   挂 `pending` 由 reducer 做（那里才有 `openAuction` 与竞价循环）。
    */
   publicAuction?: { entityId: number; facility: boolean };
+  /**
+   * ★ 百分比类那四条（11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利）的
+   *   **「先算好」那一趟**的结果：每位在场玩家该缴/该领多少。
+   *
+   * @source `fcn_00449cce` 起那两支（`rich4_news.asm:1320` 与 `:1403`）的**两趟循环**：
+   *   ```asm
+   *   pass 1: for (i…) if (alive) { [0x48c59c+i*4] = trunc(基数 × 税率)
+   *                                if (金额 != 0) 画一行「%s繳交%d元」+ 头像 }   ; 0x465592 格式串
+   *   pass 2: for (i…) if (alive && 金额 != 0) pay_money(玩家, -1, 金额, 0)       ; :0x449da1
+   *   ```
+   *   ⇒ 顺序是「**先算好、画出来，第二趟才真收**」。表现层要按这个顺序逐行显示，
+   *     所以引擎把这一趟的结果**带出来**（不是让 UI 自己再算一遍 —— 那等于把规则
+   *     抄成两份，C-ARC-2）。
+   *
+   * 只在这四条上有值；其余事件不带这个字段。**含 0**（原版也会算出 0，只是不画那行）。
+   */
+  shares?: readonly { player: number; amount: number }[];
   amount: number;
   bankrupted: boolean;
   unimplemented: boolean;
@@ -767,10 +784,13 @@ export function applyNewsEffect(
   // 地價稅 / 證交稅 / 儲金紅利三支同构，只有基数与税率不同。
   const perPlayer = PERCENT_NEWS.get(eventId);
   if (perPlayer !== undefined) {
+    // ★ 「先算好」那一趟：金额逐人算出并**带出去**（`shares`），第二趟才真收/真发。
+    const shares: { player: number; amount: number }[] = [];
     for (const who of ctx.affected) {
       const p = players[who];
       if (p === undefined || !isAlive(p)) continue;
       const each = perPlayer(p, who, ctx);
+      shares.push({ player: who, amount: each });
       if (each <= 0) continue;
       if (entry.effects.includes('pay')) {
         const r = transferMoney(players, [], pool, who, PARTY_POOL, each, 0);
@@ -791,6 +811,7 @@ export function applyNewsEffect(
       amount: total,
       bankrupted,
       unimplemented: false,
+      shares,
     };
   }
 

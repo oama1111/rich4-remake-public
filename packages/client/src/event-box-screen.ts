@@ -196,6 +196,24 @@ export const FORTUNE_ART_BASE = 0x1dd;
 export const NEWS_TITLE_AT = { x: 0x18, y: 8 } as const;
 /** 新聞说明落点 (24,310) @source 例 `fcn_00448eca` 的 0x00448ed5 `push 0x136 / push 0x18` */
 export const NEWS_TEXT_AT = { x: 0x18, y: 0x136 } as const;
+
+/**
+ * 新聞百分比类那四条（11/12/13/23）的**逐人明细行**：左上角与行距。
+ *
+ * @source `rich4_news.asm` 那四支函数（`:1293` / `:1407` / `:2043` 等）都是
+ *   `mov edi, 0x15a` 起、每画一行 `add edi, 0x20`；行文字用
+ *   `_rich4_draw_text(框表面, 串, x=0x18, y=edi, flag=0)` ⇒ 左上角对齐。
+ *   格式串 `0x465592` = **`%s繳交%d元`**（`%s` = 角色名，`%d` = 金额，
+ *   `%d` 是十进制原样、**不带千分位**）。
+ */
+export const NEWS_SHARE_AT = { x: 0x18, y: 0x15a } as const;
+/** 逐人明细的行距 @source 同上 `add edi, 0x20` */
+export const NEWS_SHARE_PITCH = 0x20;
+
+/** 一行明细的文本 @source 格式串 `0x465592` = `%s繳交%d元` */
+export function newsShareLine(name: string, amount: number): string {
+  return `${name}繳交${amount}元`;
+}
 /** 命運说明落点 (24,330) @source 例 `fcn_0044be16` 的 0x0044c132 `push 0x14a / push 0x18` */
 export const FORTUNE_TEXT_AT = { x: 0x18, y: 0x14a } as const;
 
@@ -395,6 +413,16 @@ export interface EventBoxView {
   description: string;
   /** 卡名；新聞/命運为空 */
   cardName: string;
+  /**
+   * ★ 新聞百分比类那四条（11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利）的
+   *   **逐人明细**（不是让本屏自己算 —— 规则在 core，见
+   *   `events/news-effects.ts` 的 `NewsEffectResult.shares`）。
+   *
+   * 原版是「先算好、逐行画出来，**第二趟**才真收」（`rich4_news.asm:1320` 起），
+   * 故这一段在结算**之后**播，但演的是「先算好」那一趟的数字。
+   * 金额 ≤ 0 的那几位原版不画（`test eax,eax / je`），这里同样跳过。
+   */
+  shares?: readonly { readonly name: string; readonly amount: number }[];
 }
 
 /** 计划里的一条**贴图** */
@@ -524,6 +552,22 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
       textItem(v.description, fortune ? FORTUNE_TEXT_AT : NEWS_TEXT_AT, EVENT_FONT_SIZE, false),
     );
   }
+  // 新聞百分比类那四条：逐人明细行（`%s繳交%d元`，行距 0x20，从 y=0x15a 起）
+  if (!fortune && v.shares !== undefined) {
+    let line = 0;
+    for (const s of v.shares) {
+      if (s.amount <= 0) continue; // 原版 `test eax,eax / je` 不画 0 那一行
+      items.push(
+        textItem(
+          newsShareLine(s.name, s.amount),
+          { x: NEWS_SHARE_AT.x, y: NEWS_SHARE_AT.y + line * NEWS_SHARE_PITCH },
+          EVENT_FONT_SIZE,
+          false,
+        ),
+      );
+      line += 1;
+    }
+  }
   return {
     kind: v.kind,
     id: v.id,
@@ -534,14 +578,25 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
   };
 }
 
-/** 新聞那一段的 view */
-export function newsView(newsId: number, priceIndex: number, subject: string): EventBoxView {
+/**
+ * 新聞那一段的 view。
+ *
+ * @param shares 百分比类那四条的逐人明细（引擎给的，见 `EventBoxView.shares`）；
+ *   其余事件不传。
+ */
+export function newsView(
+  newsId: number,
+  priceIndex: number,
+  subject: string,
+  shares?: readonly { name: string; amount: number }[],
+): EventBoxView {
   return {
     kind: 'news',
     id: newsId,
     title: newsTitle(newsId),
     description: eventBoxDescription(newsEvent(newsId), priceIndex, subject),
     cardName: '',
+    ...(shares === undefined ? {} : { shares }),
   };
 }
 
@@ -904,9 +959,14 @@ export const eventBoxScreen: UiScreen = {
     if (ev !== null && (prev === null || prev.kind !== ev.kind || prev.id !== ev.id)) {
       const who = after.players[after.currentPlayer];
       const subject = eventSubject(before, after, after.currentPlayer);
+      // ★ 新聞百分比类那四条：把引擎「先算好」的逐人金额配上角色名交给计划
+      const shares = ev.shares?.map((s) => ({
+        name: CHARACTERS[after.players[s.player]?.character ?? -1]?.name ?? '',
+        amount: s.amount,
+      }));
       const view =
         ev.kind === 'news'
-          ? newsView(ev.id, after.priceIndex, subject)
+          ? newsView(ev.id, after.priceIndex, subject, shares)
           : fortuneView(ev.id, after.priceIndex, subject);
       playback = eventBoxPlaybackStart(eventBoxPlan(view), env.now);
       env.log(`事件提示框：${ev.kind === 'news' ? '新聞' : '命運'} #${ev.id}${who === undefined ? '' : `（P${who.index + 1}）`}`);

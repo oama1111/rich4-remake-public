@@ -85,6 +85,52 @@ describe('★ 落在命運格会真的抽牌并施加', () => {
   });
 });
 
+describe('★ 新聞 11/12/13/23 的「先算好」逐人金额带进 `lastEvent.shares`', () => {
+  run('★ 抽到 11（所得稅）→ `lastEvent.shares` 是逐人算好的金额，且钱已收进公库', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 5 });
+    const s1 = standOn(s0, map, SPECIAL_KIND.NEWS);
+    if (s1 === null) return;
+    // 牌堆拨到「下一张就是 11」，并让 0/1 号各有现金
+    const s2: GameState = {
+      ...s1,
+      newsDeck: { order: [11, ...s1.newsDeck.order.filter((x) => x !== 11)], cursor: 0 },
+      players: s1.players.map((p, i) =>
+        i < 2 ? { ...p, cash: 100_000 } : { ...p, cash: 0 },
+      ),
+    };
+    const s3 = reduce(s2, { type: 'settle' }, topo);
+    expect(s3.lastEvent?.kind).toBe('news');
+    expect(s3.lastEvent?.id).toBe(11);
+    // ★ 表现层要按这个顺序逐行画「%s繳交%d元」——金额来自引擎，不是 UI 自己算
+    expect(s3.lastEvent?.shares).toEqual([
+      { player: 0, amount: 5000 },
+      { player: 1, amount: 5000 },
+      { player: 2, amount: 0 },
+      { player: 3, amount: 0 },
+    ]);
+    // 第二趟（真收钱）也走完了：现金少了 5000、公库多了 10000
+    expect(s3.players[0]!.cash).toBe(95_000);
+    expect(s3.pool).toBe(s2.pool + 10_000);
+  });
+
+  run('★ 其余新闻（16 超速）不带 `shares`', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 5 });
+    const s1 = standOn(s0, map, SPECIAL_KIND.NEWS);
+    if (s1 === null) return;
+    const s2: GameState = {
+      ...s1,
+      newsDeck: { order: [16, ...s1.newsDeck.order.filter((x) => x !== 16)], cursor: 0 },
+    };
+    const s3 = reduce(s2, { type: 'settle' }, topo);
+    expect(s3.lastEvent?.id).toBe(16);
+    expect(s3.lastEvent?.shares).toBeUndefined();
+  });
+});
+
 describe('★ 命運 5 生日收卡：真人寿星**分帧**问每一位（T-055）', () => {
   /** 寿星（0 号）是真人、1/2 号电脑各有牌、3 号出局；牌堆拨到「下一张就是 5」 */
   function birthdayScene() {

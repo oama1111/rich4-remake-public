@@ -15,6 +15,9 @@ import { describe, expect, it } from 'vitest';
 import { CARDS, fortuneEvent, newsEvent } from '@rich4/data';
 import type { GameState, Player } from '@rich4/core';
 import {
+  NEWS_SHARE_AT,
+  NEWS_SHARE_PITCH,
+  newsShareLine,
   CARD_FACE_AT,
   CARD_FACE_BASE,
   CARD_FACE_SIZE,
@@ -847,5 +850,42 @@ describe('★ WM_KEYDOWN（0x101）跳过', () => {
     // 未起播：`key` 仍会被调到（屏不 active 时 main.ts 根本不会调），
     // 但直接调也不该抛、不该改状态
     expect(() => eventBoxScreen.key!(keyEvent(), fakeEnv(s))).not.toThrow();
+  });
+});
+
+describe('★ 新聞百分比类那四条：逐人明细行 @source rich4_news.asm:1320 起（格式串 0x465592）', () => {
+  it('★★ 明细行 = `%s繳交%d元`，从 (0x18,0x15a) 起、行距 0x20，金额 0 的不画', () => {
+    const plan = eventBoxPlan(
+      newsView(11, 1, '', [
+        { name: '小丹尼', amount: 5000 },
+        { name: '錢夫人', amount: 0 }, // 原版 `test eax,eax / je` 跳过
+        { name: '忍太郎', amount: 1200 },
+      ]),
+    );
+    // ★ 只挑「明细行」那种形状（`…繳交<数字>元`）—— 事件标题里也含「繳交」两个字
+    const isShareLine = (t: string): boolean => /繳交\d+元$/.test(t);
+    const lines = plan.items.filter(
+      (i): i is Extract<typeof i, { kind: 'text' }> => i.kind === 'text' && isShareLine(i.text),
+    );
+    expect(lines.map((l) => l.text)).toEqual(['小丹尼繳交5000元', '忍太郎繳交1200元']);
+    expect(lines.map((l) => [l.at.x, l.at.y])).toEqual([
+      [NEWS_SHARE_AT.x, NEWS_SHARE_AT.y],
+      [NEWS_SHARE_AT.x, NEWS_SHARE_AT.y + NEWS_SHARE_PITCH],
+    ]);
+    // 左上角对齐（flag 0），不是正中
+    expect(lines[0]!.align).toBe('left');
+    expect(lines[0]!.baseline).toBe('top');
+    // 常量本身也钉住（`%s繳交%d元` 的格式与 0x15a / 0x20）
+    expect(NEWS_SHARE_AT).toEqual({ x: 0x18, y: 0x15a });
+    expect(NEWS_SHARE_PITCH).toBe(0x20);
+    expect(newsShareLine('甲', 7)).toBe('甲繳交7元');
+  });
+
+  it('★ 不传 `shares` 时一行都不多（其余新闻与命運照旧）', () => {
+    const isShareLine = (t: string): boolean => /繳交\d+元$/.test(t);
+    const plain = eventBoxPlan(newsView(16, 1, '約翰喬'));
+    expect(plain.items.some((i) => i.kind === 'text' && isShareLine(i.text))).toBe(false);
+    const fortune = eventBoxPlan({ ...newsView(11, 1, ''), kind: 'fortune', id: 3 });
+    expect(fortune.items.some((i) => i.kind === 'text' && isShareLine(i.text))).toBe(false);
   });
 });
