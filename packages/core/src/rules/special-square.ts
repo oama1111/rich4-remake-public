@@ -15,29 +15,37 @@ import { WatcomRng, drawRandomCard } from '../rng/watcom.ts';
 import type { Player } from '../state/types.ts';
 
 /**
- * 每个特殊格对应的原版处理函数。
- * 已实现者标 ✅，待子系统者标 ⏳。
+ * 每个特殊格对应的原版处理函数（= 状态机的分派名）。
+ *
+ * ★ 2026-09-17：**16 种全部已接** —— 先前那些 ⏳（「待子系统」）是分阶段落地时
+ *   留下的记号；随新聞/命運事件表、保釋窗、小游戏、樂透、銀行、百貨、魔法屋
+ *   陆续接上，现在没有待办项。落点跳表的逐条 VA 见 `docs/known-deviations.md`
+ *   的 Q-SPECIAL 一节。
+ *
+ * ⚠️ 本文件底下的 `settleSpecialSquare` 只算**无状态的那几支**
+ *   （公園/得点/卡片）；新聞/命運/監獄/醫院/樂透/銀行/百貨/魔法屋/小游戏
+ *   要动状态与交互，一律走 `state/reduce.ts`（那里 `unimplemented` 才会出现）。
  */
 export const SPECIAL_HANDLERS = {
   /** 0：非特殊格，走地产分支 ✅ */
   [SPECIAL_KIND.NONE]: 'land',
   /** 1 公園：**落地无任何效果**（跳表直接指向结束标号）✅ */
   [SPECIAL_KIND.PARK]: 'noop',
-  /** 2 新聞 @source fcn_0044b6df（docs/special_place.txt 记为 news_events）⏳ */
+  /** 2 新聞 @source fcn_0044b6df（docs/special_place.txt 记为 news_events）✅ 36/36 效果 */
   [SPECIAL_KIND.NEWS]: 'news',
-  /** 3 命運 @source fcn_0044db81（docs 记为 fortune_events）⏳ */
+  /** 3 命運 @source fcn_0044db81（docs 记为 fortune_events）✅ 37/37 效果 */
   [SPECIAL_KIND.FORTUNE]: 'fortune',
-  /** 4 監獄 @source _rich4_ui_prison_entry ⏳ */
+  /** 4 監獄 @source _rich4_ui_prison_entry ✅ 保釋窗 `rules/visit.ts` */
   [SPECIAL_KIND.PRISON]: 'prison',
-  /** 5 醫院 @source _rich4_ui_hospital_entry ⏳ */
+  /** 5 醫院 @source _rich4_ui_hospital_entry ✅ 保釋窗 `rules/visit.ts` */
   [SPECIAL_KIND.HOSPITAL]: 'hospital',
-  /** 6 企鵝挖寶 @source _rich4_ui_game_penguin_treasure ⏳ */
+  /** 6 企鵝挖寶 @source _rich4_ui_game_penguin_treasure ✅ `places/minigame.ts` + `client/minigame-screen.ts` */
   [SPECIAL_KIND.PENGUIN_DIG]: 'minigamePenguin',
-  /** 7 七彩氣球 @source _rich4_ui_game_balloon ⏳ */
+  /** 7 七彩氣球 @source _rich4_ui_game_balloon ✅ 同上 */
   [SPECIAL_KIND.BALLOON]: 'minigameBalloon',
-  /** 8 喜從天降 @source _rich4_ui_game_xicongtianjiang ⏳ */
+  /** 8 喜從天降 @source _rich4_ui_game_xicongtianjiang ✅ 同上 */
   [SPECIAL_KIND.GIFT_FROM_SKY]: 'minigameGift',
-  /** 9 樂透 @source _rich4_ui_letou_bar_entry ⏳ */
+  /** 9 樂透 @source _rich4_ui_letou_bar_entry ✅ T-036 */
   [SPECIAL_KIND.LOTTERY]: 'lottery',
   /** 10 得５０點 ✅ */
   [SPECIAL_KIND.POINTS_50]: 'points',

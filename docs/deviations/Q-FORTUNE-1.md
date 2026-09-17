@@ -220,7 +220,15 @@ add word [player+0x30], ax                     ; ★ 两笔都进點券
    与持股清算一样，只在**非终局**路径上做（终局时最后出局者的手牌留着 ——
    这正是 `rules/bankruptcy.ts` 记的 `Save0.dat` 实证）。
 
-## 仍未做
+## ~~仍未做~~ ✅ 2026-09-17 复核：**这一节已过期，没有缺项**
 
-- 事件 0/1/5/6/7/13/18/20/21/23/24/26/30/31/34/35/36 等仍按事件表的
-  `effects` 走既有实现或 `unimplemented`（多数是金额类，已实现）。
+- ~~事件 0/1/5/6/7/13/18/20/21/23/24/26/30/31/34/35/36 等仍按事件表的
+  `effects` 走既有实现或 `unimplemented`（多数是金额类，已实现）。~~
+  **福運表 37/37 全部实现**：`IMPLEMENTED_FORTUNE_IDS` 现由
+  `events/fortune-effects.test.ts` 的
+  `expect(IMPLEMENTED_FORTUNE_IDS).toHaveLength(FORTUNE_EVENTS.length)` 钉死；
+  新聞表同样是 `IMPLEMENTED_NEWS_IDS` 含 **0..35 全部 36 条**。
+  `unimplemented` 现在只会因**故意**的两类情形出现：`news[6]`（作用于地块，
+  不在 events 模块）与「文案里没有 `%d`、调用方必须传天数」的守卫
+  （`news[4]` / `news[29]`）。上述那串事件号里的金额类走 `PERCENT_NEWS` /
+  固定金额两支，均已在 `applyFortuneEffect` / `applyNewsEffect` 里分派。

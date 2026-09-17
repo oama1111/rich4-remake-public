@@ -11,6 +11,7 @@
  *   ⑤ 详情框三张图 640×480 居中，两颗钮的框内 x 是 0x10–0x58 / 0x68–0xb0。
  */
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   BOARD_SLOTS,
   CARD_LIST_MULTIPLIER,
@@ -597,8 +598,8 @@ describe('选物窗的命中', () => {
   });
 
   it('★★ 地產清单的滚动：按一屏夹取、上下各滚一屏', () => {
-    // 一屏几行是几何算出来的（窗高 416、行距 0x20、从 rowY0 起）
-    expect(PICK_ESTATE_VISIBLE_ROWS).toBeGreaterThan(1);
+    // ★ 2026-09-17：一屏 = **11 行**，是 exe 写死的常量，不是几何推算
+    expect(PICK_ESTATE_VISIBLE_ROWS).toBe(0xb);
     const rows = PICK_ESTATE_VISIBLE_ROWS;
     // 件数比一屏少 → 怎么滚都停在 0
     expect(clampPickTop(0, rows - 1)).toBe(0);
@@ -615,6 +616,29 @@ describe('选物窗的命中', () => {
     // 非法输入不许算出 NaN
     expect(clampPickTop(Number.NaN, 99)).toBe(0);
     expect(clampPickTop(-7, 99)).toBe(0);
+  });
+
+  it('★★ 「一屏 11 行」是 exe 常量，不是几何推算 —— 逐字节对照 0xb 的四处', () => {
+    // @source VA 0x00424b56 / 0x00424b82 `add eax, 0xb`（上/下滚一页 = 11 行）
+    //          VA 0x00424b75 `lea eax, [ebx - 0xb]`（上滚）
+    //          VA 0x00424ba0 `mov dword [0x4754be], 0xb`（满一屏时画几行）
+    //          VA 0x00424c64 `cmp edi, [0x4754be]`（行循环就按这个数走）
+    //   ★ 2026-09-17 订正：本模块原先按几何算成 10（(h − rowY0)/rowDy），
+    //     把表头那段也当成一行了。11 行才对：首行中心 0x70、末行 0x1b0、窗底 0x1c0。
+    const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+    if (existsSync(EXE)) {
+      const buf = readFileSync(EXE);
+      const fo = (va: number) => 1024 + (va - 0x401000); // 代码段 VA → 文件偏移
+      const at = (va: number, n: number) => [...buf.subarray(fo(va), fo(va) + n)];
+      expect(at(0x424b56, 3)).toEqual([0x83, 0xc0, 0x0b]);
+      expect(at(0x424b75, 3)).toEqual([0x8d, 0x43, 0xf5]);
+      expect(at(0x424b82, 3)).toEqual([0x83, 0xc0, 0x0b]);
+      expect(at(0x424ba0, 10)).toEqual([
+        0xc7, 0x05, 0xbe, 0x54, 0x47, 0x00, 0x0b, 0x00, 0x00, 0x00,
+      ]);
+      expect(at(0x424c64, 6)).toEqual([0x3b, 0x3d, 0xbe, 0x54, 0x47, 0x00]);
+    }
+    expect(PICK_ESTATE_VISIBLE_ROWS).toBe(0x0b);
   });
 
   it('★ 地產的列 x：表头 147/231/319/395/471，價格/收費 再各加 0x21/0x1d', () => {

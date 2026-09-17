@@ -456,8 +456,8 @@ export const PICK_ESTATE_COL = [
   { x: 0x93, align: 'center' }, // 地點   147
   { x: 0xe7, align: 'center' }, // 開發狀況 231
   { x: 0x13f + 0x21, align: 'right' }, // 價格 352
-  { x: 0x18b + 0x1d, align: 'right' }, // 收費 424（本模块不画，见 D-BOARD-3）
-  { x: 0x1d7, align: 'center' }, // 租期 471（本模块不画，见 D-BOARD-3）
+  { x: 0x18b + 0x1d, align: 'right' }, // 收費 424（`estateFeeLabel`，2026-09-16 起已画）
+  { x: 0x1d7, align: 'center' }, // 租期 471（`estateTenureLabel`，2026-09-16 起已画）
 ] as const;
 
 /**
@@ -1107,10 +1107,20 @@ function pickEstateView(env: UiScreenEnv): {
 }
 
 /**
- * 地產选物窗一屏显示几行 —— 窗高 416、行距 0x20、从 `rowY0` 起。
- * 原版那一屏的可见行数没有单独解出来，这里按几何算（并可测）。
+ * 地產选物窗一屏显示几行 —— **原版是写死的 `0xb` = 11 行**。
+ *
+ * @source VA 0x00424ba0 `mov dword [0x4754be], 0xb`（`loc_00424ba0`）；
+ *   同一函数里 `loc_00424b51` 的 `add eax, 0xb` / `loc_00424b67` 的
+ *   `lea eax, [ebx - 0xb]` 就是**上/下滚一页 = 11 行**，
+ *   行循环 `loc_00424c64` 的 `cmp edi, [0x4754be] / jge` 也按这个数走
+ *   （行不满一屏时 `[0x4754be] = 总件数 − 顶部行号`）。
+ *
+ * ⚠️ 先前这里按几何算（`(h − rowY0) / rowDy` = 10）—— 那是把表头那段也
+ *   当成一行了。原版第一行中心 y = 0x70、最后一行 0x70 + 10×0x20 = 0x1b0，
+ *   窗底 0x1c0，**11 行正好压满**。
+ *   2026-09-17 按 exe 常量改回 11（滚动步长同源，一改两处都对齐）。
  */
-export const PICK_ESTATE_VISIBLE_ROWS = Math.floor((PICK_ESTATE.h - PICK_ESTATE.rowY0) / PICK_ESTATE.rowDy);
+export const PICK_ESTATE_VISIBLE_ROWS = 0xb;
 
 /** 把滚动位置夹进 `[0, max(0, 件数 − 一屏行数)]` */
 export function clampPickTop(top: number, total: number): number {
