@@ -36,6 +36,7 @@ import {
   MONTHLY_DETAIL_AT,
   MONTHLY_DETAIL_LABELS,
   MONTHLY_DETAIL_ROWS,
+  MONTHLY_SKIP_TICKS,
   MONTHLY_LABELS,
   MONTHLY_NO_AWARD,
   MONTHLY_PANEL_AT,
@@ -54,6 +55,7 @@ import {
   awardScore,
   drawMonthlyScreen,
   monthlyAward,
+  monthlyAwardStart,
   monthlyChampionLines,
   monthlyDetailLines,
   monthlyKeyedBlack,
@@ -968,6 +970,7 @@ describe('★ 演出状态机', () => {
       details: 0,
       encourage: false,
       closing: false,
+      skipTicks: 0,
     });
     // 4 行 → 3 拍点亮完
     p = monthlyPlaybackTick(p, 4)!;
@@ -1119,6 +1122,95 @@ describe('★ event 判据：`totalMonths` 增了才起播', () => {
     expect(monthlyScreenState().playing).toBe(false);
     resetMonthlyScreen();
   });
+
+  runMap('★★ 「動畫過程」关掉 → 頒獎屏整段不走，停 0x1e 拍就关屏 @source `loc_0043827e`', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP_PATH)));
+    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
+    const base = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+    });
+    resetMonthlyScreen();
+    const logs: string[] = [];
+    const env = { ...fakeEnv(base, topo, logs), animation: false };
+    const before: GameState = {
+      ...base,
+      players: base.players.map((p) => ({ ...p, moneyInBank: 100000 })),
+    };
+    const after: GameState = {
+      ...before,
+      totalMonths: before.totalMonths + 1,
+      players: before.players.map((p) => ({
+        ...p,
+        moneyInBank: applyMonthlyInterest(p.moneyInBank, p.loan),
+      })),
+    };
+    monthlyScreen.event!(before, after, env);
+    expect(monthlyScreenState().playing).toBe(true);
+    // 结算屏照常（原版状态 1/2 那台「月結摘要」是**不受**这个开关管辖的）
+    for (let i = 0; i < 10; i++) monthlyScreen.tick!(env);
+    expect(monthlyScreenState().playback?.phase).toBe('settle');
+
+    // 抬手 → 頒獎屏入口：原版状态 2 在动画关时 `[0x48c42a] = 0x16` + 计数 0x1e
+    monthlyScreen.up!(0, 0, env);
+    const p = monthlyScreenState().playback;
+    expect(p?.phase).toBe('award');
+    expect(p?.skipTicks).toBe(MONTHLY_SKIP_TICKS);
+    expect(MONTHLY_SKIP_TICKS).toBe(0x1e);
+    expect(p?.closing).toBe(true); // 0x16 也是「点一下」能提前关
+
+    // 中途不画任何頒獎屏的东西（板/列/详情/字框全都不动）
+    for (let i = 0; i < MONTHLY_SKIP_TICKS - 2; i++) {
+      monthlyScreen.tick!(env);
+      const q = monthlyScreenState().playback!;
+      expect(q.bars).toBe(0);
+      expect(q.seats).toBe(0);
+      expect(q.details).toBe(0);
+      expect(q.encourage).toBe(false);
+    }
+    expect(monthlyScreenState().playing).toBe(true);
+    // 数到 0 自己关屏（不用抬手）
+    monthlyScreen.tick!(env);
+    expect(monthlyScreenState().playing).toBe(true);
+    monthlyScreen.tick!(env);
+    expect(monthlyScreenState().playing).toBe(false);
+    expect(monthlyScreen.active(env)).toBe(false);
+    resetMonthlyScreen();
+  });
+});
+
+describe('★ 頒獎屏入口：动画关那条捷径 @source 0x0043827e', () => {
+  it('`monthlyAwardStart(animate)` 的两支', () => {
+    expect(monthlyAwardStart(true)).toEqual({ closing: false, skipTicks: 0 });
+    expect(monthlyAwardStart(false)).toEqual({
+      closing: true,
+      skipTicks: MONTHLY_SKIP_TICKS,
+    });
+  });
+
+  it('`skipTicks > 0` 时每拍只倒数、到 0 返回 `null`（关屏）', () => {
+    let p: MonthlyPlayback = {
+      ...monthlyPlaybackStart(),
+      phase: 'award',
+      closing: true,
+      skipTicks: MONTHLY_SKIP_TICKS,
+    };
+    const seen: number[] = [];
+    for (let i = 0; i < MONTHLY_SKIP_TICKS; i++) {
+      const next = monthlyPlaybackTick(p, 4);
+      if (next === null) break;
+      p = next;
+      seen.push(p.skipTicks);
+    }
+    expect(seen).toEqual(
+      Array.from({ length: MONTHLY_SKIP_TICKS - 1 }, (_, i) => MONTHLY_SKIP_TICKS - 1 - i),
+    );
+    // 最后一拍返回 `null` = 该关屏了
+    expect(monthlyPlaybackTick({ ...p, skipTicks: 1 }, 4)).toBeNull();
+    // 而且这一路上**一个字都没写**（bars/seats/details 全程 0）
+    expect(p.bars).toBe(0);
+    expect(p.details).toBe(0);
+  });
 });
 
 describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () => {
@@ -1150,7 +1242,7 @@ describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () 
     };
     const seatsFull: MonthlyPlayback = {
       phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0,
-      encourage: false, closing: false,
+      encourage: false, closing: false, skipTicks: 0,
     };
     const calls: string[] = [];
     const fakeFlic = (archive: string, resource: number) => {
@@ -1201,7 +1293,7 @@ describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () 
     const baseAward: MonthlyAward = { winner: 0, score: 0, second: 0, richest: 0, bars: MONTHLY_BARS };
     const seatsFull: MonthlyPlayback = {
       phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0,
-      encourage: false, closing: false,
+      encourage: false, closing: false, skipTicks: 0,
     };
     const drawn: { x: number; y: number }[] = [];
     const ctx = {
@@ -1341,7 +1433,7 @@ describe('★ 收尾那一句说的是**谁** @source 0x00438d04 / 0x004383a6 / 
     const view: MonthlyView = { rows: [] } as never;
     const p: MonthlyPlayback = {
       phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS,
-      details: MONTHLY_DETAIL_ROWS, encourage: true, closing: false,
+      details: MONTHLY_DETAIL_ROWS, encourage: true, closing: false, skipTicks: 0,
     };
     drawMonthlyScreen(ctx, () => null, st, {} as never, view, award, p);
     const sadText = texts.find((t) => t.startsWith(MONTHLY_TRAGIC));

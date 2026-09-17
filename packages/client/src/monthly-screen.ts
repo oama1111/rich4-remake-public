@@ -567,6 +567,31 @@ export const MONTHLY_REVEAL_TICKS = 0x14;
 /** 结算屏全亮后再等 `[0x48c425] == 0x1e`（30 拍）才评獎 @source 0x004382c8 */
 export const MONTHLY_SETTLE_TICKS = 0x1e;
 
+/**
+ * **「動畫過程」关掉时**状态 2 那一支给的倒数拍数。
+ *
+ * @source `loc_0043827e`（VA 0x0043827e）：
+ * ```asm
+ * cmp byte [0x497159], 0        ; 动画关？
+ * je  loc_0043827e
+ *   ...
+ * loc_0043827e:
+ * mov byte [0x48c42a], 0x16     ; 状态直接跳 0x16
+ * mov dword [0x48c425], 0x1e    ; 计数 = 0x1e
+ * ```
+ * ★ 状态 0x16（`loc_00439163`）是**倒数块**：`--[0x48c425]`，到 0 或点一下 →
+ *   `KillTimer` + 关窗。它**一笔都不画** —— 收尾那只框是状态 **0x13**
+ *   （`loc_00439120`）开的，而这条路**不经过 0x13**。
+ *   ⇒ 动画关时的正确行为是：頒獎屏**整段不画**（含收尾框），停 0x1e 拍就关屏。
+ */
+export const MONTHLY_SKIP_TICKS = 0x1e;
+
+/**
+ * 状态 **0x13** 开完收尾那只框之后给的倒数拍数 @source `loc_00439120` 尾
+ *   `mov dword [0x48c425], 0xa`（10 拍），之后由状态 0x16 倒数到 0 关屏。
+ */
+export const MONTHLY_FAREWELL_TICKS = 0xa;
+
 /** 字号 @source 0x00439c46 `create_font(0x12, 0x101010, 0, 2, 0)` */
 export const MONTHLY_FONT_SIZE = 0x12;
 /** 字色：白字 / 红字（`貸款中`）@source 0x00439dd4 `push 0xff0000` */
@@ -1100,6 +1125,15 @@ export interface MonthlyPlayback {
   /** 颁完奖、等最后一次确认（原版 `[0x48c42a] = 0x11/0x16` 那几步）*/
   closing: boolean;
   /**
+   * ★ **「動畫過程」关掉**那条捷径还剩几拍（0 = 不走这条路）。
+   *
+   * 原版状态 2 在动画关时直接 `[0x48c42a] = 0x16` + `[0x48c425] = 0x1e`
+   * （`loc_0043827e`），而状态 0x16 的块（`loc_00439163`）**只倒数、不画** ——
+   * 收尾那只 `其他人還要更努力喔！` 是状态 **0x13** 开的，这条路不经过它。
+   * 所以：頒獎屏整段不画、停 `MONTHLY_SKIP_TICKS` 拍、然后关屏。
+   */
+  skipTicks: number;
+  /**
    * ⚠️ 原版收尾之后还有**单独的一拍**（状态 **0x16**，`loc_00439120`）才画最后那只框
    *   `其他人還要更努力喔！`；本模块把那只框**并在 `closing` 这一拍里**画
    *   （少一拍/少一次点击），登记在 `docs/deviations/T-041.md`。
@@ -1109,7 +1143,46 @@ export interface MonthlyPlayback {
 
 /** 从第 0 行开始（原版 `[0x48c42a] = 0` 那一状态）*/
 export function monthlyPlaybackStart(): MonthlyPlayback {
-  return { phase: 'settle', revealed: 0, bars: 0, seats: 0, details: 0, encourage: false, closing: false };
+  return {
+    phase: 'settle',
+    revealed: 0,
+    bars: 0,
+    seats: 0,
+    details: 0,
+    encourage: false,
+    closing: false,
+    skipTicks: 0,
+  };
+}
+
+/**
+ * 頒獎屏的**入口** —— 原版状态 2 那两支的判据（`loc_00438254`..`0x0043828f`）：
+ *
+ * ```asm
+ * call fcn_00437d1a / mov [0x48c42f], al   ; 悲情分最高者
+ * call fcn_00437dfe / mov [0x48c430], al   ; 首富（= 冠军）
+ * cmp byte [0x497159], 0
+ * je  loc_0043827e                         ; ★ 动画关 → 状态 0x16 + 计数 0x1e
+ * mov ch, [0x48c42f]
+ * cmp al, ch / je loc_0043826c             ; 冠军 == 悲情 → 0xf
+ * cmp ch, 0xff / jne loc_00438275          ; 悲情不存在 → 0xf
+ * loc_00438275: 状态 5                      ; 否则走悲情那条幻灯片链
+ * ```
+ *
+ * 本模块只把**动画关**那一支落成 `skipTicks`（頒獎屏整段不画、停 0x1e 拍关屏）；
+ * 动画开那一支仍是既有的「4 板 → 4 列 → 4 行详情 → 悲情一拍 → 收尾」近似
+ * （原版是 5..9 + 0xf..0x16 逐状态链，登记在 T-041 的 D-MONTHLY-13）。
+ *
+ * @param animate `env.animation !== false`
+ */
+export function monthlyAwardStart(
+  animate: boolean,
+): Pick<MonthlyPlayback, 'closing' | 'skipTicks'> {
+  // 动画关时同时把 `closing` 置真：原版状态 0x16 也是「倒数到 0 **或点一下**」才关屏，
+  // 抬手/按键提前关掉是对的。
+  return animate
+    ? { closing: false, skipTicks: 0 }
+    : { closing: true, skipTicks: MONTHLY_SKIP_TICKS };
 }
 
 /**
@@ -1129,6 +1202,11 @@ export function monthlyPlaybackTick(
   /** 这一次有没有「悲情人物」要安慰（`monthlyConsolationWho(award) !== null`）*/
   console: boolean = true,
 ): MonthlyPlayback | null {
+  // ★ 动画关那条捷径（原版状态 2 → 0x16）：只倒数，**一笔都不画**。
+  if (p.skipTicks > 0) {
+    const left = p.skipTicks - 1;
+    return left > 0 ? { ...p, skipTicks: left } : null;
+  }
   if (p.phase === 'settle') {
     if (p.revealed < Math.max(0, rows - 1)) return { ...p, revealed: p.revealed + 1 };
     return p;
@@ -1332,6 +1410,8 @@ export function drawMonthlyAwardFlic(
   now: number,
 ): boolean {
   if (award === null) return false;
+  // ★ 动画关那条捷径（原版状态 2 → 0x16）整段頒獎屏都不走 ⇒ 两段 FLIC 都不演。
+  if (p.skipTicks > 0) return false;
   /**
    * 两段 FLIC 用**同一条**绘制路径，差别只有「演谁 + 哪张资源」：
    * - 頒獎屏（状态 7、`0x1a1+2×角色`）：**悲情人物**立绘 —— 台上四个人铺好之后；
@@ -1464,6 +1544,59 @@ export function drawMonthlyScreen(
   //    ★ 收尾那一拍（`closing`）时原版走状态 **0x12**：先把这一带底图恢复，再在
   //      **完全相同的坐标**画**冠军那张 4 行表**（`loc_00438d40`）—— 是**整表换掉**，
   //      不是叠加。本模块因此在 `closing` 时整表切成 `monthlyChampionLines`。
+  //    ⚠️ 动画关那条捷径（`p.skipTicks > 0`）**连这张表都不画** —— 原版状态 2
+  //      直接跳 0x16，而 0x16 只倒数（`loc_00439163`），一張表都不经过。
+  if (p.skipTicks === 0) {
+    drawMonthlyAwardTables(ctx, state, topo, award, p);
+  }
+
+  // ── 「本月悲情人物」那一拍（原版状态 5..9 那条链的收束）──
+  //    @source 状态 5 尾 VA 0x004383a6 `push 0x464dca` = `#0095本月悲情人物是．．。`；
+  //      状态 9 VA 0x00438a31 = `#0108別灰心，再加油喔！`（那只盒子见 D-MONTHLY-7）。
+  //    ⚠️ 本模块把这条链压成**一拍两行字**（原版是 4 张幻灯片 + 两只气泡），登记在
+  //      T-041 的 D-MONTHLY-13。
+  if (p.encourage && p.skipTicks === 0) {
+    const sad = monthlyConsolationWho(award);
+    const who = sad === null ? '' : (CHARACTERS[state.players[sad]?.character ?? 0]?.name ?? '');
+    const y0 = MONTHLY_DETAIL_AT.y0 + 6 * MONTHLY_DETAIL_AT.step;
+    // 状态 5/6：`#0095本月悲情人物是．．。` + 角色名（原版是两次 `fcn_0044ecb6`）
+    monthlyText(ctx, `${MONTHLY_TRAGIC}${who}`, MONTHLY_DETAIL_AT.x, y0, MONTHLY_TEXT.fill);
+    // 状态 9：**字框**（图 3）里那句 `別灰心，再加油喔！` @source 0x00438a31
+    drawMonthlyBox(ctx, sprite, MONTHLY_COURAGE_BOX, MONTHLY_NO_AWARD);
+  }
+
+  // ── 收尾那一句「本月冠軍是」── **冠军 = 首富**（`[0x48c430]`），不是悲情那一位。
+  //    @source 状态 0xf→0x10 VA 0x00438b9c `push 0x464e39` = `#0109本月冠軍是．．。`；
+  //      状态 0x11 VA 0x00438d24 再把**冠军的角色名**（表 `0x4759b8 + 角色*4`）画进同一只气泡。
+  if (p.closing && p.skipTicks === 0) {
+    const champ = state.players[monthlyChampionOf(award)];
+    const who = champ === undefined ? '' : (CHARACTERS[champ.character]?.name ?? '');
+    // 状态 0xf→0x10 开**存款气泡**（图 1，框心 (190,10)、文字偏移 (0,−30)）写 `#0109`，
+    // 状态 0x11 再把冠军的角色名（表 `0x4759b8`）画进同一只气泡 @source 0x00438ab8 / 0x00438d04
+    drawMonthlyBox(ctx, sprite, MONTHLY_CHAMPION_BOX, `${MONTHLY_CHAMPION}${who}`);
+  }
+
+  // ── 状态 **0x13**（`loc_00439120`）：最后那只框「其他人還要更努力喔！」
+  //    @source `fcn_0044ec30(图 4, 213, 37, 20, 0, 0x101010)` + 串 `0x464e66`
+  //    ⚠️ 原版这是收尾之后的**另一拍**（0x13，开框后计数 0xa，再由 0x16 倒数）；
+  //      本模块并在 `closing` 里画（见接口注释）。**动画关时原版不经过 0x13**，
+  //      那只框根本不出现 —— 所以这里也要 `skipTicks === 0`。
+  if (p.closing && p.skipTicks === 0) {
+    drawMonthlyBox(ctx, sprite, MONTHLY_FAREWELL_BOX, MONTHLY_FAREWELL);
+  }
+}
+
+/**
+ * 頒獎屏那两张**同坐标的 4 行表**（状态 8 悲情 / 状态 0x12 冠军）—— 单独一支，
+ * 方便 `drawMonthlyScreen` 在「动画关」那条捷径里整块跳过。
+ */
+function drawMonthlyAwardTables(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  topo: MapTopology,
+  award: MonthlyAward,
+  p: MonthlyPlayback,
+): void {
   const lines = p.closing
     ? monthlyChampionLines(state, topo, award)
     : monthlyDetailLines(state, topo, award);
@@ -1477,39 +1610,6 @@ export function drawMonthlyScreen(
     if (line.value !== '') {
       monthlyText(ctx, line.value, MONTHLY_DETAIL_AT.valueX, y, MONTHLY_TEXT.fill, 'right');
     }
-  }
-
-  // ── 「本月悲情人物」那一拍（原版状态 5..9 那条链的收束）──
-  //    @source 状态 5 尾 VA 0x004383a6 `push 0x464dca` = `#0095本月悲情人物是．．。`；
-  //      状态 9 VA 0x00438a31 = `#0108別灰心，再加油喔！`（那只盒子见 D-MONTHLY-7）。
-  //    ⚠️ 本模块把这条链压成**一拍两行字**（原版是 4 张幻灯片 + 两只气泡），登记在
-  //      T-041 的 D-MONTHLY-13。
-  if (p.encourage) {
-    const sad = monthlyConsolationWho(award);
-    const who = sad === null ? '' : (CHARACTERS[state.players[sad]?.character ?? 0]?.name ?? '');
-    const y0 = MONTHLY_DETAIL_AT.y0 + 6 * MONTHLY_DETAIL_AT.step;
-    // 状态 5/6：`#0095本月悲情人物是．．。` + 角色名（原版是两次 `fcn_0044ecb6`）
-    monthlyText(ctx, `${MONTHLY_TRAGIC}${who}`, MONTHLY_DETAIL_AT.x, y0, MONTHLY_TEXT.fill);
-    // 状态 9：**字框**（图 3）里那句 `別灰心，再加油喔！` @source 0x00438a31
-    drawMonthlyBox(ctx, sprite, MONTHLY_COURAGE_BOX, MONTHLY_NO_AWARD);
-  }
-
-  // ── 收尾那一句「本月冠軍是」── **冠军 = 首富**（`[0x48c430]`），不是悲情那一位。
-  //    @source 状态 0xf→0x10 VA 0x00438b9c `push 0x464e39` = `#0109本月冠軍是．．。`；
-  //      状态 0x11 VA 0x00438d24 再把**冠军的角色名**（表 `0x4759b8 + 角色*4`）画进同一只气泡。
-  if (p.closing) {
-    const champ = state.players[monthlyChampionOf(award)];
-    const who = champ === undefined ? '' : (CHARACTERS[champ.character]?.name ?? '');
-    // 状态 0xf→0x10 开**存款气泡**（图 1，框心 (190,10)、文字偏移 (0,−30)）写 `#0109`，
-    // 状态 0x11 再把冠军的角色名（表 `0x4759b8`）画进同一只气泡 @source 0x00438ab8 / 0x00438d04
-    drawMonthlyBox(ctx, sprite, MONTHLY_CHAMPION_BOX, `${MONTHLY_CHAMPION}${who}`);
-  }
-
-  // ── 状态 **0x16**：最后那只框「其他人還要更努力喔！」（**恒出**）──
-  //    @source `loc_00439120`：`fcn_0044ec30(图 4, 213, 37, 20, 0, 0x101010)` + 串 `0x464e66`
-  //    ⚠️ 原版这是收尾之后的**另一拍**；本模块并在 `closing` 里画（见接口注释）
-  if (p.closing) {
-    drawMonthlyBox(ctx, sprite, MONTHLY_FAREWELL_BOX, MONTHLY_FAREWELL);
   }
 }
 
@@ -1645,7 +1745,17 @@ function advance(env: UiScreenEnv): void {
   const p = playback;
   if (p === null) return;
   if (p.phase === 'settle') {
-    playback = { ...p, phase: 'award', revealed: 0, bars: 0, seats: 0, details: 0 };
+    // ★ 原版状态 2 就在这一步判「動畫過程」开不开：关 → 状态 0x16（只倒数、不画）
+    playback = {
+      ...p,
+      phase: 'award',
+      revealed: 0,
+      bars: 0,
+      seats: 0,
+      details: 0,
+      encourage: false,
+      ...monthlyAwardStart(env.animation !== false),
+    };
     env.requestRender();
     return;
   }
