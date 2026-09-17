@@ -37,7 +37,7 @@ function makeCtx(over: Partial<UseCardContext> = {}): UseCardContext {
     tools: new Array<number>(60).fill(0),
     toolStock: new Array<number>(14).fill(0),
     objects: [],
-    market: { stocks: [], day: 0, history: [], index: 1000 },
+    market: { stocks: [], day: 0, history: [], index: 1000, closedDays: 0 },
     marketOpen: true,
     facilities: [],
     actors: [],

@@ -322,7 +322,11 @@ export function decideStockTrade(state: GameState, topo?: MapTopology): Action |
   // @source 闸一
   if (me.stockRatio === 0) return null;
   // @source 闸二：`call 0x428d01 / cmp eax, 1 / je 结束` —— 休市不进场
-  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day)) return null;
+  //   ★ 这个判据里含 `[0x4990dc] != 0`（全股市暂停，新聞 26）⇒ 必须把 `closedDays` 传进去，
+  //     否则 AI 会在休市日一直发 `buyStock`，而 reducer 那边一律拒绝 ⇒ **死锁**
+  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day, state.market.closedDays)) {
+    return null;
+  }
   // @source 闸三
   if (me.loanDueDate !== 0 && daysUntil(state, me.loanDueDate) < STOCK_LOAN_DUE_GUARD_DAYS) {
     return null;
@@ -552,7 +556,10 @@ export function decideStockSell(state: GameState, topo: MapTopology): Action | n
   const mustSell = loanSellPressure(me, state);
   // @source 0x0042c802：没壓力时三分之二的回合根本不看
   if (!mustSell && aiRoll(state, 0x42c802, 3) !== 0) return null;
-  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day)) return null;
+  // 同 `decideStockTrade`：休市（含新聞 26 的全股市暂停）不卖
+  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day, state.market.closedDays)) {
+    return null;
+  }
   const scores = state.market.stocks.map((_, j) => {
     const input = sellScoreInput(state, topo, j, state.currentPlayer);
     return input === null

@@ -6,7 +6,12 @@
 import { describe, expect, it } from 'vitest';
 import { NEWS_EVENTS, newsEvent } from '@rich4/data';
 import { makePlayer } from '../testing/factories.ts';
-import { IMPLEMENTED_NEWS_IDS, applyNewsEffect } from './news-effects.ts';
+import {
+  IMPLEMENTED_NEWS_IDS,
+  MARKET_CLOSE_DAYS,
+  applyNewsEffect,
+} from './news-effects.ts';
+import type { StockMarketState } from '../places/stock-market.ts';
 
 const ctx = (over = {}) => ({
   players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: 100_000, moneyInBank: 0 })),
@@ -213,6 +218,69 @@ describe('★ 新聞 0..3：释放／延长在监在院的人 @source rich4_news
   });
 });
 
+describe('★ 新聞 16/17：行人／車輛休息一回合 @source rich4_news.asm 的两个循环', () => {
+  /** 0 号走路（行人）、1 号有座驾、2 号出局 */
+  const traffic = () =>
+    ctx({
+      players: [
+        makePlayer({ index: 0, trafficMethod: 0 }),
+        makePlayer({ index: 1, trafficMethod: 1 }),
+        makePlayer({ index: 2, whoPlays: 0 }),
+      ],
+    });
+
+  it('★★ news[16] 豪雨特報：只打**行人**（`traffic_method == 0`），`+0x38 = 1`', () => {
+    const r = applyNewsEffect(16, traffic());
+    expect(r.unimplemented).toBe(false);
+    expect(r.players[0]!.blocking.stopping).toBe(1);
+    expect(r.players[1]!.blocking.stopping).toBe(0); // 有座驾 → 不打
+    expect(r.players[2]!.blocking.stopping).toBe(0); // 出局 → 不打
+  });
+
+  it('★★ news[17] 交通阻塞：只打**非行人**（判据恰好相反）', () => {
+    const r = applyNewsEffect(17, traffic());
+    expect(r.players[0]!.blocking.stopping).toBe(0);
+    expect(r.players[1]!.blocking.stopping).toBe(1);
+  });
+});
+
+describe('★ 新聞 24/25/26：股市三连 @source rich4_news.asm:2939 / VA 0x0044b035 起', () => {
+  const mkt = (over: Partial<StockMarketState> = {}): StockMarketState => ({
+    stocks: Array.from({ length: 3 }, () => ({ newsFlag: 0x21, f6: 0 }) as never),
+    day: 0,
+    history: [],
+    index: 0,
+    closedDays: 0,
+    ...over,
+  });
+
+  it('★★ news[24] 崩盤：12 支全部**赋值** `newsFlag = 1`（低半字节 = 利空 1 天）', () => {
+    const r = applyNewsEffect(24, ctx({ market: mkt() }));
+    expect(r.unimplemented).toBe(false);
+    // 是赋值不是置位：原来的 0x21 被冲掉
+    expect(r.market?.stocks.map((s) => s.newsFlag)).toEqual([1, 1, 1]);
+  });
+
+  it('★★ news[25] 全面上漲：全部赋值 `newsFlag = 0x10`（高半字节 = 利多 1 天）', () => {
+    const r = applyNewsEffect(25, ctx({ market: mkt() }));
+    expect(r.market?.stocks.map((s) => s.newsFlag)).toEqual([0x10, 0x10, 0x10]);
+  });
+
+  it('★★ news[26] 股市暫停交易：`closedDays = 10` @source VA 0x0044b0c6', () => {
+    const r = applyNewsEffect(26, ctx({ market: mkt() }));
+    expect(MARKET_CLOSE_DAYS).toBe(0xa);
+    expect(r.market?.closedDays).toBe(10);
+    // 不动个股
+    expect(r.market?.stocks.map((s) => s.newsFlag)).toEqual([0x21, 0x21, 0x21]);
+  });
+
+  it('★ 没给 market 时报未实现，不会默默什么都不做', () => {
+    for (const id of [24, 25, 26]) {
+      expect(applyNewsEffect(id, ctx()).unimplemented, `news[${id}]`).toBe(true);
+    }
+  });
+});
+
 describe('未实现', () => {
   it('方向为空的事件标记未实现', () => {
     // news[6] 公告地價調漲３０％ —— 作用于地块，不在本模块
@@ -227,7 +295,10 @@ describe('未实现', () => {
   it('★ 已实现的是 0..3(释放/延长) / 4(医院) / 8,9,10(固定金额) / 29(监狱) / 11,12,13,23(百分比)', () => {
     // 22 = 銀行擠兌（`loanFreeze`）——它本来就在 `applyNewsEffect` 里实现了，
     // 只是一直没列进这张表（本表没有别的消费者，纯登记）。
-    expect(IMPLEMENTED_NEWS_IDS).toEqual([0, 1, 2, 3, 4, 8, 9, 10, 22, 29, 11, 12, 13, 23]);
+    // 16/17 = 行人/車輛休息一回合、24/25/26 = 股市三连（2026-09-17 接）
+    expect(IMPLEMENTED_NEWS_IDS).toEqual([
+      0, 1, 2, 3, 4, 8, 9, 10, 16, 17, 22, 24, 25, 26, 29, 11, 12, 13, 23,
+    ]);
   });
 
   it('★ news[4] 与 29 的文案里没有 %d，天数须由调用方给出', () => {

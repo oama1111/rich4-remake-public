@@ -66,6 +66,27 @@ export interface EventEntry {
      */
     | 'extendPrison'
     | 'extendHospital'
+    /**
+     * 新聞 16 / 17：**行人／車輛休息一回合** —— 把所有满足交通方式的在场玩家的
+     *   `+0x38`（`days_stopping`）写成 **1**。16 只打**行人**（`traffic_method == 0`），
+     *   17 只打**非行人**。@source `fcn_0044a5d6` 的循环（VA 0x0044a606 起）与
+     *   `fcn_0044a657` 的循环（VA 0x0044a68b 起）
+     */
+    | 'stopPedestrians'
+    | 'stopVehicles'
+    /**
+     * 新聞 24 / 25：**12 支股票的 `newsFlag`(`+7`) 直接赋值** —— 24 写 `1`
+     *   （低半字节 = 利空 1 天）、25 写 `0x10`（高半字节 = 利多 1 天）。
+     *   ★ 是**赋值**不是置位 ⇒ 会把原有剩余天数冲掉。
+     *   @source VA 0x0044b035..0x0044b047 / 0x0044b080..0x0044b092
+     */
+    | 'marketBearish'
+    | 'marketBullish'
+    /**
+     * 新聞 26：**全股市暂停交易 10 天** —— `mov dword [0x4990dc], 0xa`
+     *   （VA 0x0044b0c6）。该全局量就是 `fcn_00428d01` 里那个「休市」判据。
+     */
+    | 'marketClose'
   )[];
   /** 提示文案在 exe 数据段中的虚拟地址 */
   textVa: number;
@@ -128,8 +149,8 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 13, va: 0x0044a029, factor: null, effects: ['pay'], textVa: 0x4655d4, text: "#0162所有人繳交證交稅５％", literal: null },
   { id: 14, va: 0x0044a220, factor: null, effects: [], textVa: 0x4655fc, text: "#0163%s房屋鬧鬼\n地價下跌３０％", literal: null },
   { id: 15, va: 0x0044a453, factor: null, effects: [], textVa: 0x465624, text: "#0164%s一處民宅瓦斯爆炸\n房屋失火", literal: null },
-  { id: 16, va: 0x0044a5d6, factor: null, effects: [], textVa: 0x465645, text: "#0165豪雨特報\n行人休息一回合", literal: null },
-  { id: 17, va: 0x0044a657, factor: null, effects: [], textVa: 0x465662, text: "#0166交通阻塞\n汽車停止一回合", literal: null },
+  { id: 16, va: 0x0044a5d6, factor: null, effects: ['stopPedestrians'], textVa: 0x465645, text: "#0165豪雨特報\n行人休息一回合", literal: null },
+  { id: 17, va: 0x0044a657, factor: null, effects: ['stopVehicles'], textVa: 0x465662, text: "#0166交通阻塞\n汽車停止一回合", literal: null },
   { id: 18, va: 0x0044a6e0, factor: null, effects: [], textVa: 0x46567f, text: "#0167%s強烈地震房屋倒塌", literal: null },
   { id: 19, va: 0x0044a91e, factor: null, effects: [], textVa: 0x465697, text: "#0168%s山洪爆發土地流失", literal: null },
   { id: 20, va: 0x0044ab2c, factor: null, effects: [], textVa: 0x4656af, text: "#0169超級颱風侵襲%s\n多處房屋受損", literal: null },
@@ -137,9 +158,9 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   // @source 0x0044aeb6 `mov bh, 0xf` → 所有在场玩家 +0x3c = 15（0x0044aed2）
   { id: 22, va: 0x0044ae89, factor: null, effects: ['loanFreeze'], textVa: 0x4656ef, text: "#0171銀行擠兌停止放款１５天", literal: null },
   { id: 23, va: 0x0044aedb, factor: null, effects: ['give'], textVa: 0x46570b, text: "#0172銀行加發１０％儲金紅利", literal: null },
-  { id: 24, va: 0x0044b00a, factor: null, effects: [], textVa: 0x46573c, text: "#0173股市低迷不振重挫崩盤", literal: null },
-  { id: 25, va: 0x0044b055, factor: null, effects: [], textVa: 0x465756, text: "#0174股市氣勢如虹全面上漲", literal: null },
-  { id: 26, va: 0x0044b0a0, factor: null, effects: [], textVa: 0x465770, text: "#0175股市暫停交易１０天", literal: null },
+  { id: 24, va: 0x0044b00a, factor: null, effects: ['marketBearish'], textVa: 0x46573c, text: "#0173股市低迷不振重挫崩盤", literal: null },
+  { id: 25, va: 0x0044b055, factor: null, effects: ['marketBullish'], textVa: 0x465756, text: "#0174股市氣勢如虹全面上漲", literal: null },
+  { id: 26, va: 0x0044b0a0, factor: null, effects: ['marketClose'], textVa: 0x465770, text: "#0175股市暫停交易１０天", literal: null },
   { id: 27, va: 0x0044b0d1, factor: null, effects: [], textVa: 0x465788, text: "#0176%s股票暫停交易１０天", literal: null },
   { id: 28, va: 0x0044b1a3, factor: null, effects: [], textVa: 0x4657a2, text: "#0177%s股票恢復上市交易", literal: null },
   { id: 29, va: 0x0044b25b, factor: null, effects: ['prison'], textVa: 0x4657ba, text: "#0178%s違法超貸\n經營者%s坐牢５天", literal: null },

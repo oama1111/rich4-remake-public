@@ -25,6 +25,7 @@ const makeMarket = (over: Partial<StockMarketState> = {}): StockMarketState => (
   day: 0,
   history: [],
   index: 1000,
+  closedDays: 0,
   ...over,
 });
 

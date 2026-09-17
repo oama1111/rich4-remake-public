@@ -15,6 +15,7 @@ import {
   newsTrend,
   refreshTradableShares,
   tickSize,
+  tickMarketClosure,
   tickStockCountdowns,
   tickStockMarket,
 } from './stock-market.ts';
@@ -43,6 +44,7 @@ const market = (stocks: StockState[]): StockMarketState => ({
   day: 0,
   history: stocks.map(() => new Array<number>(HISTORY_DAYS).fill(0)),
   index: 0,
+  closedDays: 0,
 });
 
 describe('跳动单位', () => {
@@ -314,6 +316,22 @@ describe('每日倒数', () => {
     expect(m.stocks[0]!.newsFlag).toBe(0);
     m = tickStockCountdowns(m);
     expect(m.stocks[0]!.newsFlag).toBe(0);
+  });
+
+  it('★★ 全股市休市计数：`[0x4990dc]` 递减 + 「先置 0x80 再清」（新聞 26）', () => {
+    // @source rich4_player_core_actions.asm:4763-4778，就在那 12 支股票循环之前
+    expect(tickMarketClosure(0)).toBe(0); // 0 → 不动
+    expect(tickMarketClosure(3)).toBe(2); // 逐日递减
+    expect(tickMarketClosure(1)).toBe(0x80); // ★ 减到 0 → 置待清位
+    expect(tickMarketClosure(0x80)).toBe(0); // 下一次才清 0
+    expect(tickMarketClosure(0x81)).toBe(0); // 带高位的任何值都直接清
+  });
+
+  it('★ `tickStockCountdowns` 会把休市计数一起推进（同一条日期推进循环）', () => {
+    const m = tickStockCountdowns({ ...market([stock()]), closedDays: 10 });
+    expect(m.closedDays).toBe(9);
+    // 一支股票都没有时也照推进
+    expect(tickStockCountdowns({ ...market([]), closedDays: 1 }).closedDays).toBe(0x80);
   });
 
   it('★ 利多期内趋势为 +10，到期后回归随机', () => {

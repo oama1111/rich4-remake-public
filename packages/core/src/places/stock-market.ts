@@ -144,6 +144,22 @@ export interface StockMarketState {
   history: number[][];
   /** 大盘指数 @source [0x499078] */
   index: number;
+  /**
+   * **全股市还剩几天不开门** @source `[0x4990dc]`（dword）。
+   *
+   * ★ 2026-09-17 订正：先前这里写着「只在開局清零与每日递减处被写，**没有事件把它置非 0**，
+   *   故不建模」—— **两半都不对**：
+   *
+   * | 谁 | 干什么 | @source |
+   * |---|---|---|
+   * | 開局 | 清零 | `rich4_new_game.asm:4205` |
+   * | **新聞 26「股市暫停交易１０天」** | `= 0xa`（10） | `rich4_news.asm:2939`（VA 0x0044b0c6）|
+   * | 每日 | 递减；**减到 0 时置 `0x80`**，下一次再清 0 | `rich4_player_core_actions.asm:4763-4778` |
+   *
+   * 「置 0x80 再清」与阻碍计数是同一套「待释放」写法（见 `rules/blocking.ts`），
+   * 而 `fcn_00428d01` 只看 `!= 0` ⇒ `0x80` 那天**仍然休市**。
+   */
+  closedDays: number;
 }
 
 /**
@@ -213,6 +229,8 @@ export function newStockMarket(
     day: 0,
     history: stocks.map(() => new Array<number>(HISTORY_DAYS).fill(0)),
     index: 0,
+    // 開局清零 @source `rich4_new_game.asm:4205` `mov dword [0x4990dc], esi`
+    closedDays: 0,
   };
 }
 
@@ -340,7 +358,7 @@ export function tickStockMarket(
   // @source fmul [0x463fec] / __round_toward_zero / fistp [0x499078]
   const index = Math.trunc(Math.fround(total * INDEX_SCALE));
 
-  return { stocks, day, history, index };
+  return { stocks, day, history, index, closedDays: market.closedDays };
 }
 
 // ============================================================
@@ -427,7 +445,33 @@ export function tickStockCountdowns(market: StockMarketState): StockMarketState 
     }
     return { ...s, f6, newsFlag };
   });
-  return { ...market, stocks };
+  return { ...market, stocks, closedDays: tickMarketClosure(market.closedDays) };
+}
+
+/**
+ * 全股市休市计数的每日推进 —— **「减到 0 先置 0x80、下一次才清 0」**，与阻碍计数同一套写法。
+ *
+ * @source `rich4_player_core_actions.asm:4763-4778`（就在那 12 支股票的倒数循环**之前**）：
+ * ```asm
+ * 0041cf67  test byte [0x4990dc], 0x80     ; 高位置着？
+ *           je   loc_0041cfdb
+ * 0041cf6f  mov  dword [0x4990dc], 0       ; ★ 是 → 清零（今天恢复交易）
+ *           jmp  loc_0041cff9
+ * loc_0041cfdb:
+ *           mov  ecx, [0x4990dc]
+ *           test ecx, ecx / je loc_0041cff9 ; 0 → 不动
+ *           lea  ebx, [ecx-1] / mov [0x4990dc], ebx
+ *           test ebx, ebx / jne loc_0041cff9
+ *           or   byte [0x4990dc], 0x80      ; ★ 减到 0 → 置高位
+ * ```
+ * ★ `fcn_00428d01` 只看 `!= 0` ⇒ **带 0x80 的那一天仍然休市**，
+ *   所以新闻 26 的「10 天」实际关门 **11 天**（10 天数 + 1 天待清）。
+ */
+export function tickMarketClosure(closedDays: number): number {
+  if ((closedDays & 0x80) !== 0) return 0;
+  if (closedDays === 0) return 0;
+  const next = (closedDays - 1) & 0xff;
+  return next === 0 ? 0x80 : next;
 }
 
 // ============================================================
@@ -509,12 +553,22 @@ export function isLimitDown(openPrice: number, price: number): boolean {
  * @source `fcn_00428d01`：`[0x4990dc] != 0` 或 `fcn_004523d5(今天) == 1` → 休市。
  *   `fcn_004523d5` 逐行对过：先 `0x4520a6` 算星期（= `weekdayOf`，星期日→休），
  *   再 `0x4521f0` 查節日表 `0x0047ff4a` 的首字节 —— **就是 `isHoliday`**。
- *   `[0x4990dc]` 只在開局清零与每日递减处被写，没有事件把它置非 0，故不建模。
+ *   ★ 2026-09-17 订正：`[0x4990dc]` **有**事件把它置非 0 —— 新聞 26
+ *   「股市暫停交易１０天」`mov dword [0x4990dc], 0xa`（VA 0x0044b0c6），
+ *   现已建模为 `StockMarketState.closedDays`（见那里的注释与 `tickMarketClosure`）。
  *
  * 休市日：柜台不能买卖（0x0042afe6 那一路直接退），AI 不进场（闸二），
  * **且当日不走行情**（`0x4291d6` 开头 `call 0x428d01 / cmp eax, 1 / je 结束`）。
  */
-export function marketOpenOn(globalMapId: number, year: number, month: number, day: number): boolean {
+export function marketOpenOn(
+  globalMapId: number,
+  year: number,
+  month: number,
+  day: number,
+  /** `StockMarketState.closedDays` —— 非 0（含 0x80）一律休市 */
+  closedDays: number = 0,
+): boolean {
+  if (closedDays !== 0) return false;
   return !isHoliday(globalMapId, year, month, day);
 }
 

@@ -16,6 +16,7 @@ import type { Player } from '../state/types.ts';
 import { NEWS_EVENTS, eventAmount, newsEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { CONFINEMENT_SLOTS, confine } from '../rules/confinement.ts';
+import type { StockMarketState } from '../places/stock-market.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { isAlive } from '../state/types.ts';
 import { blessingMultiplier } from '../rules/blessing.ts';
@@ -35,6 +36,11 @@ export interface NewsEffectResult {
    */
   prisonOccupancy: number[];
   hospitalOccupancy: number[];
+  /**
+   * 股市那边被改动后的行情（新聞 24/25/26 会改）；没碰就**不带**这个字段
+   *   （调用方用 `out.market ?? 原值` 回写）。
+   */
+  market?: StockMarketState;
   amount: number;
   bankrupted: boolean;
   unimplemented: boolean;
@@ -65,6 +71,8 @@ export interface NewsEffectContext {
   prisonOccupancy?: readonly number[];
   /** 医院占用表（`0x496b60`）—— `hospital` / `releaseHospital` / `extendHospital` 效果用它 */
   hospitalOccupancy?: readonly number[];
+  /** 行情 —— 新聞 24/25（改各股 `newsFlag`）与 26（改 `closedDays`）要它 */
+  market?: StockMarketState;
   /** 覆盖天数；通常取自事件表的 literal */
   days?: number;
   /** 神明加持倍率档位：2 加倍、1 归零、0 不变（见 rules/blessing.ts） */
@@ -129,6 +137,12 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
       e.effects.includes('extendPrison') ||
       e.effects.includes('extendHospital') ||
       e.effects.includes('loanFreeze') ||
+      // ★ 2026-09-17：16/17（行人/車輛休息一回合）与 24/25/26（股市三连）
+      e.effects.includes('stopPedestrians') ||
+      e.effects.includes('stopVehicles') ||
+      e.effects.includes('marketBearish') ||
+      e.effects.includes('marketBullish') ||
+      e.effects.includes('marketClose') ||
       (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
   ).map((e) => e.id),
   ...PERCENT_NEWS.keys(),
@@ -136,6 +150,13 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
 
 /** 銀行擠兌的停放天数 @source 0x0044aeb6 `mov byte/word [player+0x3c], 15`（写死立即数） */
 export const LOAN_FREEZE_DAYS = 15;
+
+/**
+ * 新聞 26「股市暫停交易１０天」写入的全股市休市天数
+ * @source VA 0x0044b0c6 `mov dword [0x4990dc], 0xa`
+ *   （文案的「１０」是全角字、没有 `%d`，所以 event-table 的 literal 是 null）
+ */
+export const MARKET_CLOSE_DAYS = 0xa;
 
 /**
  * 施加一个新聞事件的效果（第二阶段）。
@@ -244,6 +265,62 @@ export function applyNewsEffect(
     const days = LOAN_FREEZE_DAYS;
     const next = players.map((p) => (isAlive(p) ? { ...p, bankFreezeDays: days } : p));
     return { ...base, players: next, amount: days };
+  }
+
+  // ── 新聞 16 / 17「行人／車輛休息一回合」────────────────────────
+  //   ★ 也是**不看 `affected`**：原版逐人筛「在场 + 交通方式对得上」，命中就写
+  //     `+0x38 (days_stopping) = 1`。
+  //     @source `fcn_0044a5d6`（VA 0x0044a606 起）与 `fcn_0044a657`（0x0044a68b 起）：
+  //     ```asm
+  //     for (i = 0; i < [0x499114]; i++) {          ; num_players
+  //       if (player[+0x15] == 0) continue;          ; 出局跳过
+  //       if (player[+0x11] != 0) continue;          ; ★ 16：traffic_method != 0 → 跳过（只打行人）
+  //       … 画头像 …
+  //       player[+0x38] = 1                          ; days_stopping
+  //     }
+  //     ```
+  //     17 的那一支把中间的判据反过来（`je skip`）⇒ 只打**非行人**。
+  if (
+    entry.effects.includes('stopPedestrians') ||
+    entry.effects.includes('stopVehicles')
+  ) {
+    const wantPedestrian = entry.effects.includes('stopPedestrians');
+    const next = players.map((p) => {
+      if (!isAlive(p)) return p;
+      // traffic_method 0 = 走路（行人）；非 0 = 有座驾
+      const isPedestrian = p.trafficMethod === 0;
+      if (isPedestrian !== wantPedestrian) return p;
+      return { ...p, blocking: { ...p.blocking, stopping: 1 } };
+    });
+    return { ...base, players: next, amount: 1 };
+  }
+
+  // ── 新聞 24 / 25「股市崩盤／全面上漲」──────────────────────────
+  //   @source VA 0x0044b035..0x0044b047（24）与 0x0044b080..0x0044b092（25）：
+  //   ```asm
+  //   for (edx = 0; edx < 0xc; edx++) {
+  //     eax = edx*9                       ; 一支股票 36 字节 = 9 个 dword
+  //     byte [eax*4 + 0x496987] = 1       ; 24：低半字节 1 = 利空 1 天
+  //     byte [eax*4 + 0x496987] = 0x10    ; 25：高半字节 1 = 利多 1 天
+  //   }
+  //   ```
+  //   ★ 是**赋值**不是置位 ⇒ 会把原有的剩余天数冲掉（两支都照抄）。
+  if (entry.effects.includes('marketBearish') || entry.effects.includes('marketBullish')) {
+    const flag = entry.effects.includes('marketBullish') ? 0x10 : 0x1;
+    const market = ctx.market;
+    if (market === undefined) return { ...base, unimplemented: true };
+    const stocks = market.stocks.map((s) => ({ ...s, newsFlag: flag }));
+    return { ...base, amount: 1, market: { ...market, stocks } };
+  }
+
+  // ── 新聞 26「股市暫停交易１０天」──────────────────────────────
+  //   @source VA 0x0044b0c6 `mov dword [0x4990dc], 0xa` ⇒ `closedDays = 10`
+  //   （文案说 10 天，但计数「减到 0 先置 0x80、隔天再清」⇒ 实际关门 11 天，见
+  //    `stock-market.ts` 的 `tickMarketClosure`）。这四条**不看 `affected`**。
+  if (entry.effects.includes('marketClose')) {
+    const market = ctx.market;
+    if (market === undefined) return { ...base, unimplemented: true };
+    return { ...base, amount: MARKET_CLOSE_DAYS, market: { ...market, closedDays: MARKET_CLOSE_DAYS } };
   }
 
   // ── 百分比类（11/12/13/23）────────────────────────────────────

@@ -2445,7 +2445,18 @@ function tradeStock(
   if (stock === undefined || held === undefined) return state;
   if (!Number.isInteger(action.shares) || action.shares <= 0) return state;
   // @source fcn_00428d01 —— 休市日柜台不开门
-  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day)) return state;
+  if (
+    !marketOpenOn(
+      state.globalMapId,
+      state.year,
+      state.month,
+      state.day,
+      // ★ 新聞 26「股市暫停交易１０天」写的就是这个计数（`0x4990dc`）
+      state.market.closedDays,
+    )
+  ) {
+    return state;
+  }
   // @source 0x0042af13 `cmp eax, 1` 漲停無法買進；0x0042b046 `cmp eax, 3` 跌停無法賣出
   // @source 0x0042aef4 / 0x0042b02f `cmp byte [股票 + 0x02], 0 / jne 跳过` —— 停牌倒数非 0 时柜台不理
   if (stock.f6 !== 0) return state;
@@ -2691,7 +2702,13 @@ function playCard(
       toolStock: state.toolStock,
       objects: state.objects,
       market: state.market,
-      marketOpen: marketOpenOn(state.globalMapId, state.year, state.month, state.day),
+      marketOpen: marketOpenOn(
+        state.globalMapId,
+        state.year,
+        state.month,
+        state.day,
+        state.market.closedDays,
+      ),
       facilities: allEffectiveFacilities(state, topo),
       actors: state.specialActors,
       // 嫁祸的新目标：交给上层决定；没给就放弃转嫁（返回 -1）
@@ -2992,8 +3009,10 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   // @source 0041cff9 起的 12 次循环
   market = tickStockCountdowns(market);
   // @source 0041d076 call 0x4291d6 —— 开头 `call 0x428d01 / cmp eax, 1 / je 结束`：
-  //   ★ 休市日（星期日、節日）当天**不走行情**
-  if (marketOpenOn(state.globalMapId, date.year, date.month, date.day)) {
+  //   ★ 休市日（星期日、節日、**新聞 26 的全股市暂停**）当天**不走行情**
+  //   ⚠️ 这里读的是**推进过倒数之后**的 `market.closedDays`（`0041cff9` 那一段就在
+  //     `tickStockCountdowns` 里）—— 与原版的先后次序一致。
+  if (marketOpenOn(state.globalMapId, date.year, date.month, date.day, market.closedDays)) {
     market = tickStockMarket(market, rng, (i) => commercialValueOf(topo, i));
   }
 
@@ -3307,12 +3326,15 @@ function drawAndApplyNews(state: GameState, topo: MapTopology): GameState {
     facilities,
     holdings: withDeck.holdings.map((row) => row.map((h) => h.amount)),
     prices: withDeck.market.stocks.map((st) => st.price),
+    // 新聞 24/25/26 会改行情（`newsFlag` / `closedDays`）
+    market: withDeck.market,
   });
 
   let applied: GameState = {
     ...withDeck,
     players: out.players,
     pool: out.pool,
+    market: out.market ?? withDeck.market,
     prisonOccupancy: out.prisonOccupancy,
     hospitalOccupancy: out.hospitalOccupancy,
     lastEvent: { kind: 'news', id: draw.eventId },
