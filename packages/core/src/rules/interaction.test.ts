@@ -90,6 +90,11 @@ describe('★ 答复必须与待决交互配套', () => {
   it('放弃总是合法', () => {
     expect(responseMatches(bank, { kind: 'decline' })).toBe(true);
     expect(responseMatches(lottery, { kind: 'decline' })).toBe(true);
+    // ★ 命運 5 分帧出来的那一族（T-055）：配套答复认，别的一律不认
+    const birthday = { kind: 'birthdayCard' as const, seats: [1] };
+    expect(responseMatches(birthday, { kind: 'birthdayCard', seat: 1, cardId: 7 })).toBe(true);
+    expect(responseMatches(birthday, { kind: 'bail', slot: 1 })).toBe(false);
+    expect(responseMatches(birthday, { kind: 'decline' })).toBe(true);
   });
 
   it('银行交互接受各种银行操作', () => {

@@ -85,6 +85,115 @@ describe('★ 落在命運格会真的抽牌并施加', () => {
   });
 });
 
+describe('★ 命運 5 生日收卡：真人寿星**分帧**问每一位（T-055）', () => {
+  /** 寿星（0 号）是真人、1/2 号电脑各有牌、3 号出局；牌堆拨到「下一张就是 5」 */
+  function birthdayScene() {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const base = newGame({
+      map,
+      players: [
+        { character: 0, kind: 'human' },
+        { character: 1, kind: 'computer' },
+        { character: 2, kind: 'computer' },
+        { character: 3, kind: 'computer' },
+      ],
+      seed: 11,
+    });
+    const withCards: GameState = {
+      ...base,
+      currentPlayer: 0,
+      players: base.players.map((p, i) =>
+        i === 1 ? { ...p, cards: [3, 7] } : i === 2 ? { ...p, cards: [9] } : i === 3 ? { ...p, whoPlays: 0, cards: [11] } : p,
+      ),
+      fortuneDeck: { order: [5, ...base.fortuneDeck.order.filter((x) => x !== 5)], cursor: 0 },
+    };
+    const on = standOn(withCards, map, SPECIAL_KIND.FORTUNE);
+    return { map, topo, s: on };
+  }
+
+  run('★ 抽到 5 → `pending.birthdayCard`，座位 = 合格的人（升序）；此时**一张牌都没动**', () => {
+    const { topo, s } = birthdayScene();
+    if (s === null) return;
+    const s2 = reduce(s, { type: 'settle' }, topo);
+    expect(s2.lastEvent).toEqual({ kind: 'fortune', id: 5 });
+    expect(s2.pending?.kind).toBe('birthdayCard');
+    expect(s2.phase).toBe('awaitingDecision');
+    const p = s2.pending;
+    if (p?.kind === 'birthdayCard') expect(p.seats).toEqual([1, 2]); // 3 号出局、自己跳过
+    // 真人还没挑，牌一张都不许动
+    expect(s2.players[1]!.cards).toEqual([3, 7]);
+    expect(s2.players[2]!.cards).toEqual([9]);
+    expect(s2.players[0]!.cards).toEqual([]);
+  });
+
+  run('★ 答一位走一位：挑中的牌进寿星手里，全答完 pending 清空', () => {
+    const { topo, s } = birthdayScene();
+    if (s === null) return;
+    let st = reduce(s, { type: 'settle' }, topo);
+    // 1 号：挑 7
+    st = reduce(st, { type: 'birthdayCard', seat: 1, cardId: 7 }, topo);
+    expect(st.players[1]!.cards).toEqual([3]);
+    expect(st.players[0]!.cards).toEqual([7]);
+    const p = st.pending;
+    if (p?.kind === 'birthdayCard') expect(p.seats).toEqual([2]);
+    // 2 号：挑 9
+    st = reduce(st, { type: 'birthdayCard', seat: 2, cardId: 9 }, topo);
+    expect(st.players[2]!.cards).toEqual([]);
+    expect(st.players[0]!.cards).toEqual([7, 9]);
+    expect(st.pending).toBeNull();
+    expect(st.phase).toBe('turnEnd');
+  });
+
+  run('★★ `cardId = 0` = 原版右键取消：这位不交牌，但座位照样前进（`edi+1`）', () => {
+    const { topo, s } = birthdayScene();
+    if (s === null) return;
+    let st = reduce(s, { type: 'settle' }, topo);
+    st = reduce(st, { type: 'birthdayCard', seat: 1, cardId: 0 }, topo);
+    expect(st.players[1]!.cards).toEqual([3, 7]); // 没动
+    expect(st.players[0]!.cards).toEqual([]);
+    const p = st.pending;
+    if (p?.kind === 'birthdayCard') expect(p.seats).toEqual([2]);
+  });
+
+  run('★ 乱序 / 陈旧答复一律不理（只认队首）', () => {
+    const { topo, s } = birthdayScene();
+    if (s === null) return;
+    const st = reduce(s, { type: 'settle' }, topo);
+    // 先答 2 号（队首是 1 号）→ 原样返回
+    expect(reduce(st, { type: 'birthdayCard', seat: 2, cardId: 9 }, topo)).toBe(st);
+    // 没有这个 pending 时也不动
+    expect(reduce({ ...st, pending: null }, { type: 'birthdayCard', seat: 1, cardId: 7 }, topo)).not.toBeNull();
+  });
+
+  run('★ 电脑当寿星不分帧：当场抽完，`pending` 仍是 null', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const base = newGame({ map, players: players(), seed: 11 }); // 四个电脑
+    const withCards: GameState = {
+      ...base,
+      currentPlayer: 0,
+      players: base.players.map((p, i) => (i === 1 ? { ...p, cards: [3] } : p)),
+      fortuneDeck: { order: [5, ...base.fortuneDeck.order.filter((x) => x !== 5)], cursor: 0 },
+    };
+    const on = standOn(withCards, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const st = reduce(on, { type: 'settle' }, topo);
+    expect(st.lastEvent).toEqual({ kind: 'fortune', id: 5 });
+    expect(st.pending).toBeNull();
+    expect(st.players[0]!.cards).toEqual([3]);
+  });
+
+  run('★ `declineDecision` 是最后一道保险：任何 birthday 待决都能放弃掉', () => {
+    const { topo, s } = birthdayScene();
+    if (s === null) return;
+    const st = reduce(s, { type: 'settle' }, topo);
+    const after = reduce(st, { type: 'declineDecision' }, topo);
+    expect(after.pending).toBeNull();
+    expect(after.phase).toBe('turnEnd');
+  });
+});
+
 describe('★ 落在新聞格会抽牌', () => {
   run('游标前进且记下事件', () => {
     const map = loadMap();

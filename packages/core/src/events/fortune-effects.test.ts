@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { FORTUNE_EVENTS, fortuneEvent } from '@rich4/data';
 import { cardPrice } from '../rules/inventory.ts';
 import { makePlayer } from '../testing/factories.ts';
+import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
 import {
   BANK_BAN_DAYS,
   DOUBLE_AMOUNT,
@@ -136,7 +137,11 @@ describe('★ 坐牢／住院', () => {
 
 describe('未实现与越界', () => {
   it('无金额无方向的事件标记为未实现', () => {
-    const r = applyFortuneEffect(5, ctx()); // 生日收卡片
+    // ★ 5（生日收卡片）现在**不是**未实现了（T-055）；换一条真正没有效果的：
+    //   事件 0「拆除房屋」的效果走 id 分派、`effects` 为空且不在特殊名单里。
+    const id = FORTUNE_EVENTS.findIndex((e) => e.effects.length === 0);
+    expect(id).toBeGreaterThanOrEqual(0);
+    const r = applyFortuneEffect(id, ctx());
     expect(r.unimplemented).toBe(true);
   });
 
@@ -482,12 +487,13 @@ describe('★ 命運 5：今天是你生日 向每人收取一張卡片 @source 
     return { next: () => picks[i++] ?? 0 };
   };
 
-  it('★★ 逐人收一张：跳过自己 / 出局 / 空手，收来的牌进自己手里', () => {
+  it('★★ 电脑当寿星：逐人收一张（跳过自己 / 出局 / 空手），收来的牌进自己手里', () => {
     const r = applyFortuneEffect(
       5,
       ctx({
         players: [
-          makePlayer({ index: 0, cards: [] }),
+          // ★ 电脑寿星才走「当场随机抽」这一支；真人那一支是**分帧**的（见下面 describe）
+          makePlayer({ index: 0, cards: [], whoPlays: WHO_PLAYS_COMPUTER }),
           makePlayer({ index: 1, cards: [3, 7] }),
           makePlayer({ index: 2, cards: [] }), // 空手 → 跳过
           makePlayer({ index: 3, whoPlays: 0, cards: [9] }), // 出局 → 跳过
@@ -495,6 +501,8 @@ describe('★ 命運 5：今天是你生日 向每人收取一張卡片 @source 
         rng: rng([1, 0]),
       }),
     );
+    // 电脑寿星不分帧
+    expect(r.birthdaySeats).toBeNull();
     expect(r.unimplemented).toBe(false);
     // 只从 1 号收了 1 张（2/3 号跳过）；`rand() % 2 = 1` → 手牌 [3,7] 的第 2 张 = 7
     expect(r.players[0]!.cards).toEqual([7]);
@@ -508,15 +516,75 @@ describe('★ 命運 5：今天是你生日 向每人收取一張卡片 @source 
     full[3] = 24; // 紅卡，比 30 便宜 ⇒ 应被弃掉
     const r = applyFortuneEffect(
       5,
-      ctx({ players: [makePlayer({ index: 0, cards: full }), makePlayer({ index: 1, cards: [1] })], rng: rng([0]) }),
+      ctx({
+        players: [
+          makePlayer({ index: 0, cards: full, whoPlays: WHO_PLAYS_COMPUTER }),
+          makePlayer({ index: 1, cards: [1] }),
+        ],
+        rng: rng([0]),
+      }),
     );
     expect(r.players[0]!.cards).toHaveLength(15);
     expect(r.players[0]!.cards).not.toContain(24);
     expect(r.players[0]!.cards).toContain(1);
   });
 
-  it('★ 没给 rng 时报未实现（不会静默白拿）', () => {
-    const r = applyFortuneEffect(5, ctx({ players: [makePlayer({ index: 0 }), makePlayer({ index: 1, cards: [1] })] }));
+  it('★ 电脑当寿星但没给 rng 时报未实现（不会静默白拿）', () => {
+    const r = applyFortuneEffect(
+      5,
+      ctx({
+        players: [
+          makePlayer({ index: 0, whoPlays: WHO_PLAYS_COMPUTER }),
+          makePlayer({ index: 1, cards: [1] }),
+        ],
+      }),
+    );
     expect(r.unimplemented).toBe(true);
+  });
+
+  it('★★ **真人**当寿星：一位都不收，把座位交出去（`birthdaySeats`）—— T-055', () => {
+    const r = applyFortuneEffect(
+      5,
+      ctx({
+        players: [
+          makePlayer({ index: 0, cards: [] }), // 真人寿星（默认 whoPlays = 1）
+          makePlayer({ index: 1, cards: [3, 7] }),
+          makePlayer({ index: 2, cards: [] }), // 空手 → 不进座位表
+          makePlayer({ index: 3, whoPlays: 0, cards: [9] }), // 出局 → 不进座位表
+        ],
+      }),
+    );
+    expect(r.unimplemented).toBe(false);
+    expect(r.birthdaySeats).toEqual([1]);
+    // 一个字都没改（卡片与原版一样要等真人挑完才动）
+    expect(r.players[1]!.cards).toEqual([3, 7]);
+    expect(r.players[0]!.cards).toEqual([]);
+    // 原版计数 `edi` = 合格人数（与挑没挑到无关），故 amount = 座位数
+    expect(r.amount).toBe(1);
+  });
+
+  it('★ 真人寿星但全场只有他没牌 → 座位表空，`amount = 0`（原版 edi = 0，不报台词）', () => {
+    const r = applyFortuneEffect(
+      5,
+      ctx({ players: [makePlayer({ index: 0, cards: [] }), makePlayer({ index: 1, cards: [] })], rng: rng([0]) }),
+    );
+    expect(r.birthdaySeats).toBeNull();
+    expect(r.amount).toBe(0);
+    expect(r.players[1]!.cards).toEqual([]);
+  });
+
+  it('★ 托管（AUTOPILOT）算电脑 —— 不分帧', () => {
+    const r = applyFortuneEffect(
+      5,
+      ctx({
+        players: [
+          makePlayer({ index: 0, cards: [], whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT }),
+          makePlayer({ index: 1, cards: [3] }),
+        ],
+        rng: rng([0]),
+      }),
+    );
+    expect(r.birthdaySeats).toBeNull();
+    expect(r.players[0]!.cards).toEqual([3]);
   });
 });

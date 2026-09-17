@@ -310,6 +310,26 @@ export const stealPickerScreen: UiScreen = {
 
   active: () => info !== null,
 
+  /**
+   * ★ **待决交互那一支**（T-055）：`pending.kind === 'birthdayCard'` 时
+   *   自己开窗问 `seats[0]` 那一位（模式 `gift` ⇒ 只有卡片欄，与 exe 的
+   *   `push 0` 一致），答完派 `{type:'birthdayCard', seat, cardId}`；
+   *   右键取消 = `cardId: 0`（原版选牌窗返回 0，**调用方照样推进**）。
+   *
+   * ⚠️ 每一帧都会被调（所有登记的屏都收 `tick`），所以只在**没开着**时才开。
+   */
+  tick(env: UiScreenEnv): void {
+    const p = env.state.pending;
+    if (p === null || p.kind !== 'birthdayCard') return;
+    if (answer !== null) return;
+    const seat = p.seats[0];
+    if (seat === undefined) return;
+    openStealPicker(seat, 'gift', (pick) => {
+      env.dispatch({ type: 'birthdayCard', seat, cardId: pick?.id ?? 0 });
+    });
+    env.requestRender();
+  },
+
   draw(env: UiScreenEnv): void {
     if (info === null) return;
     drawStealPicker(

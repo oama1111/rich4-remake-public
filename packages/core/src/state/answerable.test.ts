@@ -125,6 +125,23 @@ describe('★ 每一种待决交互都答得掉', () => {
     expect(answerable(s, [{ type: 'minigame', score: null }])).toBe(true);
   });
 
+  it('★ 生日收卡（T-055）：真答复答得掉，且答完 pending 清空、相位回 turnEnd', () => {
+    const s = withPending(
+      { kind: 'birthdayCard', seats: [1] },
+      {
+        phase: 'awaitingDecision',
+        players: [0, 1, 2, 3].map((i) =>
+          makePlayer({ index: i, nodeId: 1, cards: i === 1 ? [7] : [] }),
+        ),
+      },
+    );
+    const after = reduce(s, { type: 'birthdayCard', seat: 1, cardId: 7 }, topo);
+    expect(after).not.toBe(s);
+    expect(after.pending).toBeNull();
+    expect(after.phase).toBe('turnEnd');
+    expect(after.players[0]!.cards).toEqual([7]);
+  });
+
   it('★ 放弃对任何交互都管用 —— 这是最后一道保险', () => {
     const kinds: PendingInteraction[] = [
       { kind: 'bank', wealth: 1000, loanCapacity: 500, specialFinance: null },
@@ -132,6 +149,9 @@ describe('★ 每一种待决交互都答得掉', () => {
       auctionPending({ entityId: 1, basePrice: 100, bidders: [1] }),
       { kind: 'minigame', game: 7, name: '七彩氣球', maxScore: 999 },
       { kind: 'bail', place: 'hospital', candidates: [], points: 0 },
+      // ★ 命運 5 分帧出来的那一族（T-055）：`declineDecision` 也要收得掉 ——
+      //   托管 / 无头 / 真人一直不答时这是最后一道保险。
+      { kind: 'birthdayCard', seats: [1, 2] },
       { kind: 'unimplemented', place: '某处', specialKind: 99 },
     ];
     for (const p of kinds) {

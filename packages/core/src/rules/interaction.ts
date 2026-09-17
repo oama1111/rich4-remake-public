@@ -270,6 +270,26 @@ export type PendingInteraction =
    * 魔法屋曾经是这种情况，现在已实现（见 places/magic-house.ts），
    * 故眼下没有场所在用它——留着是因为三个小游戏迟早会用上。
    */
+  /**
+   * 命運 5「今天是你生日 向每人收取一張卡片」的**真人**那一支（T-055）。
+   *
+   * @source `fcn_0044c3b7`（`rich4_fortune.asm:541`）的施加阶段：逐个座位升序筛
+   *   「不是自己 / 没出局 / 手上有牌」；**寿星的 `whoPlays == 1`（真人）**时，
+   *   每一位合格的人都走一次 `fcn_0044192a(对方, 寿星, 0)` —— 那扇模态选牌窗
+   *   （模式 0 ⇒ 只有卡片欄，见 `client/src/steal-picker.ts`）。
+   *   电脑当寿星时同一位走 `player_drop_random_card`（当场在 core 里掷）。
+   *
+   * ⇒ 真人这一支必须**分帧**：本交互挂出时 `players` **一个字都没改**，
+   *   `seats` 是还没处理的座位（升序），`seats[0]` 就是此刻要挑的那一位；
+   *   答 `{type:'birthdayCard', seat, cardId}`（`cardId = 0` = 原版右键取消，跳过这位）。
+   *   ★ 原版那个计数器 `edi` 对**每个合格的人**都 +1（与挑没挑到无关），
+   *     故取消也算「处理过一位」—— 座位一律前进。
+   */
+  | {
+      kind: 'birthdayCard';
+      /** 还没处理的座位（升序）；空数组不会挂出来（那一位都不合格时当场收尾）*/
+      seats: readonly number[];
+    }
   | { kind: 'unimplemented'; place: string; specialKind: number; options?: readonly string[] };
 
 /**
@@ -369,7 +389,12 @@ export type InteractionResponse =
   /** 小游戏玩完了，报上得分；`null` 表示没玩（按 50..69 抽） */
   | { kind: 'minigameScore'; score: number | null }
   /** 保釋某个槽位的人 */
-  | { kind: 'bail'; slot: number };
+  | { kind: 'bail'; slot: number }
+  /**
+   * 命運 5 生日收卡：挑一位手里的一张（T-055）。
+   * `cardId = 0` = 跳过这位（原版选牌窗右键取消）。
+   */
+  | { kind: 'birthdayCard'; seat: number; cardId: number };
 
 /** 答复与待决交互是否配套——防止 UI 送回驴唇不对马嘴的 action */
 export function responseMatches(
@@ -406,6 +431,8 @@ export function responseMatches(
       return response.kind === 'minigameScore';
     case 'bail':
       return response.kind === 'bail';
+    case 'birthdayCard':
+      return response.kind === 'birthdayCard';
     default:
       return false;
   }

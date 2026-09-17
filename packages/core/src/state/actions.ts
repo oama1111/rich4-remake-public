@@ -288,6 +288,17 @@ export type Action =
    * 非法日期（非整数、月越界、日越界）**整条拒绝**，不做夹取
    *   （与 `setAi` 同一条规矩；原版 UI 层面就给不出非法值）。
    */
-  | { type: 'setDate'; year: number; month: number; day: number };
+  | { type: 'setDate'; year: number; month: number; day: number }
+  /**
+   * 命運 5 生日收卡：真人在 `players[seat].cards` 里挑一张（T-055）。
+   *
+   * ★ `cardId = 0` = **跳过这一位** —— 原版选牌窗右键取消返回 0，
+   *   而调用方 `fcn_0044c3b7` **不看返回值**，照旧 `inc ebx` 走下一位
+   *   （`rich4_fortune.asm` 的 `loc_0044c573: mov edi, ebp`）。
+   *
+   * ⚠️ 只认 `pending.kind === 'birthdayCard'` 且 `seat === seats[0]` 的那一拍；
+   *   其余一律原样返回（陈旧/乱序的答复不该动状态）。
+   */
+  | { type: 'birthdayCard'; seat: number; cardId: number };
 
 export type ActionType = Action['type'];

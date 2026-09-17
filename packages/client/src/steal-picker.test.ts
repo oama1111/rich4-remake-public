@@ -50,6 +50,7 @@ function fakeState(): GameState {
     ],
     tools,
     currentPlayer: 0,
+    pending: null,
   } as unknown as GameState;
 }
 
@@ -299,6 +300,45 @@ describe('★ 选牌窗那一屏', () => {
   it('★ 是**浮窗**（`windowed`）—— 底下照常画棋盘', () => {
     expect(stealPickerScreen.windowed).toBe(true);
     expect(stealPickerScreen.id).toBe('steal-picker');
+  });
+
+  it('★★ 待决交互那一支（命運 5，T-055）：`tick` 自己开窗、答完派 `birthdayCard`', () => {
+    resetStealPicker();
+    const st = fakeState();
+    // 命运 5 挂出的待决：座位 [1, 2]（3 号出局不进表）
+    const withPending = { ...st, pending: { kind: 'birthdayCard', seats: [1, 2] } } as unknown as GameState;
+    const actions: unknown[] = [];
+    const env: UiScreenEnv = {
+      ...fakeEnv(withPending),
+      dispatch: (a) => actions.push(a),
+    } as UiScreenEnv;
+
+    // ① 第一帧：自己开窗，问 seats[0] = 1 号，模式 gift
+    stealPickerScreen.tick!(env);
+    expect(stealPickerOpen()).toBe(true);
+    expect(stealPickerScreen.active(env)).toBe(true);
+    // 反复 tick 不会重开（否则每帧重置选择）
+    stealPickerScreen.tick!(env);
+    // ② 挑 1 号手里那张 9 → 派 birthdayCard
+    const centre = centreOf('cards', 1);
+    stealPickerScreen.down!(centre.x, centre.y, env);
+    stealPickerScreen.up!(centre.x, centre.y, env);
+    expect(actions).toEqual([{ type: 'birthdayCard', seat: 1, cardId: 9 }]);
+    expect(stealPickerOpen()).toBe(false);
+
+    // ③ 右键取消 = `cardId: 0`（原版返回 0，调用方照样推进）
+    stealPickerScreen.tick!(env);
+    stealPickerScreen.contextmenu!(10, 10, env);
+    expect(actions[1]).toEqual({ type: 'birthdayCard', seat: 1, cardId: 0 });
+    resetStealPicker();
+  });
+
+  it('★ 没有这条待决时 `tick` 什么都不开（不打扰棋盘）', () => {
+    resetStealPicker();
+    const env = fakeEnv(fakeState());
+    stealPickerScreen.tick!(env);
+    expect(stealPickerOpen()).toBe(false);
+    expect(stealPickerScreen.active(env)).toBe(false);
   });
 
   it('★★ 宿主那一段真的接上了（源码结构断言，免得改拾取流程时静默掉线）', () => {

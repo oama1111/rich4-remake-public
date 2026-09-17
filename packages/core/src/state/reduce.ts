@@ -67,7 +67,7 @@ import { buyStock, commercialUnitPrice, liquidateStocks, sellStock,
 } from '../places/stock.ts';
 import { emptyOwnership, ownerOf, updateCommercialOwner } from '../places/commercial.ts';
 import { useCard } from '../cards/registry.ts';
-import { giveCard } from '../cards/rob.ts';
+import { applyRobCardCard, giveCard } from '../cards/rob.ts';
 import { godPowerOf, type GodPower } from '../rules/god-power.ts';
 import {
   MISSILE_DEMOLISH_HOSTILITY,
@@ -1601,6 +1601,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
      * 設定屏「日期更改」—— 改**当前游戏日期**（原版 `RICH4.CFG+8`）。
      * 见 `actions.ts` 的注释（逐条 VA）。
      */
+    case 'birthdayCard':
+      return answerBirthdayCard(state, action.seat, action.cardId);
+
     case 'setDate': {
       const { year, month, day } = action;
       if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return state;
@@ -3358,7 +3361,47 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
       applied = insurancePayoutTo(applied, topo, me, out.amount);
     }
   }
+  // ★ 命運 5 生日收卡：寿星是真人 ⇒ 效果**一位都没收**，把座位挂成待决交互，
+  //   由客户端逐个开选牌窗（T-055）。电脑寿星那一支在上面已经当场收完了。
+  if (out.birthdaySeats !== null) {
+    applied = {
+      ...applied,
+      pending: { kind: 'birthdayCard', seats: out.birthdaySeats },
+      // ★ 与其它待决交互同一个阶段（`awaitingDecision`）—— 否则 `endTurn`
+      //   会在真人还没挑之前把这一回合推走（`endTurn` 只查相位与惡人段）。
+      phase: 'awaitingDecision',
+    };
+  }
   return applied;
+}
+
+/**
+ * 命運 5 生日收卡：真人挑完一位（T-055）。
+ *
+ * @source `fcn_0044c3b7` 的循环体（`rich4_fortune.asm:541` 起）——
+ *   `fcn_0044192a` 返回之后**调用方不看返回值**，一律 `mov edi, ebp`（计数 +1）
+ *   再 `inc ebx` 走下一位 ⇒ **取消（右键，返回 0）也要推进**，只是这位不交牌。
+ *
+ * 落码走 `applyRobCardCard`（= `consume_card(对方)` + `receive_card(自己)`，0x441343 / 0x4412e4）
+ * —— 与搶奪卡卡片路径**同一个** exe 组合；满手时先弃最便宜的一张由 `giveCard` 管。
+ *
+ * 只认队首：`seat !== pending.seats[0]` 一律原样返回（陈旧 / 乱序的答复不动状态）。
+ */
+function answerBirthdayCard(state: GameState, seat: number, cardId: number): GameState {
+  const pending = state.pending;
+  if (pending === null || pending.kind !== 'birthdayCard') return state;
+  if (pending.seats[0] !== seat) return state;
+  let players = state.players;
+  // `cardId = 0` = 取消（跳过这位，不交牌）；卡已经不在手上也当跳过
+  if (cardId > 0) {
+    const r = applyRobCardCard(players, state.currentPlayer, seat, cardId);
+    if (r.ok) players = r.players;
+  }
+  const rest = pending.seats.slice(1);
+  // ★ 最后一位答完要把相位放回 `turnEnd` —— 否则 `endTurn`（它只认这一相位）
+  //   永远轮不到，回合卡死在这里。
+  if (rest.length === 0) return { ...state, players, pending: null, phase: 'turnEnd' };
+  return { ...state, players, pending: { kind: 'birthdayCard', seats: rest } };
 }
 
 /**

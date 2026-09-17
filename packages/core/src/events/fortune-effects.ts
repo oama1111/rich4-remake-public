@@ -16,7 +16,7 @@
  */
 
 import type { Player } from '../state/types.ts';
-import { isAlive } from '../state/types.ts';
+import { isAiControlled, isAlive } from '../state/types.ts';
 import { FORTUNE_EVENTS, eventAmount, fortuneEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { giveCard } from '../cards/rob.ts';
@@ -135,6 +135,13 @@ export interface FortuneEffectResult {
   bankrupted: boolean;
   /** 未实现的事件在此标记，便于上层降级处理 */
   unimplemented: boolean;
+  /**
+   * ★ 命運 5「生日收卡」**寿星是真人**时要挂出去的分帧信息：还没处理的座位
+   *   （升序）。非 `null` 表示「这次一位都没收，等上层把这些人逐个问完」
+   *   —— 见 `docs/deviations/T-055.md` 与 `state/reduce.ts` 的 `answerBirthdayCard`。
+   *   `null` = 本次没有分帧（电脑当寿星那一支照旧当场收完）。
+   */
+  birthdaySeats: number[] | null;
 }
 
 export interface FortuneEffectContext {
@@ -244,6 +251,7 @@ export function applyFortuneEffect(
     amount: 0,
     bankrupted: false,
     unimplemented: false,
+    birthdaySeats: null,
   };
 
   const entry = fortuneEvent(eventId);
@@ -271,9 +279,31 @@ export function applyFortuneEffect(
   //   电脑当寿星时 `player_drop_random_card(对方)`（0x441e77 —— 与本引擎
   //   `pickCardToSteal` 是**同一个 exe 函数**）→ `receive_card(自己)`（0x4412e4，
   //   满手先弃最便宜的一张 —— 复用 `giveCard`）。
-  //   ★ 真人那条原版弹选牌界面；本引擎**没有**这个界面（搶奪卡的真人路径同样未接），
-  //     故真人当寿星时也走随机那一支 —— **登记为近似**（D-003 口径）。
+  //   ★ 真人那条原版弹**选牌窗**（`fcn_0044192a` 模式 0）—— 那一窗本引擎已经有了
+  //     （`client/src/steal-picker.ts`，T-053）；因为它是**模态、逐个问**的，
+  //     这里对真人寿星**分帧**（见下），电脑寿星照旧当场收完。
   if (entry.effects.includes('birthdayCard')) {
+    // ── 寿星是**真人**：原版对每一位合格的人各弹一次模态选牌窗 ────────────
+    //   @source `fcn_0044c3b7`（`rich4_fortune.asm:541`）的循环体：
+    //   `mov dl, byte [eax + 0x496b7d]`（**寿星的** whoPlays）`cmp dl, 1 / jbe`
+    //   → 真人这一支 `call fcn_0044192a(对方, 寿星, 0)`（模式 0 = 只有卡片欄）。
+    //   ⇒ 本引擎分帧：这里**一位都不收**，把筛出来的座位挂成待决交互，
+    //     由客户端逐个问（见 `state/reduce.ts` 的 `answerBirthdayCard`）。
+    //     ⚠️ 不能在这里当场随机抽 —— 那是**电脑寿星**那一支的行为。
+    const giver = players[ctx.currentPlayer];
+    if (giver === undefined) return { ...base, unimplemented: true };
+    if (!isAiControlled(giver)) {
+      const seats: number[] = [];
+      for (let i = 0; i < players.length; i++) {
+        if (i === ctx.currentPlayer) continue;
+        const other = players[i];
+        if (other === undefined || !isAlive(other) || other.cards.length === 0) continue;
+        seats.push(i);
+      }
+      // `edi`（原版那个计数）对**每个合格的人**都 +1，与挑没挑到无关
+      if (seats.length === 0) return { ...base, amount: 0 };
+      return { ...base, amount: seats.length, birthdaySeats: seats };
+    }
     const rng = ctx.rng;
     if (rng === undefined) return { ...base, unimplemented: true };
     const next = [...players];
