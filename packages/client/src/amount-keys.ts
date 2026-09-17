@@ -52,11 +52,67 @@ export const AMOUNT_BAR_PRESS = { x: 0x40, y: 0x2f } as const;
 export const AMOUNT_BAR_STEPS = 33;
 
 /**
+ * 金额栏每一格对应的**窗内 x 阈值**（34 项）@source 表 `0x47e725`，逐字节：
+ * `[3,6,9,12,15,19,22,25,28,31,34,38,41,44,47,50,53,57,60,63,66,69,73,76,79,82,
+ * 85,88,92,95,98,101,104,107]`
+ *   （`loc_00453451` 的 `mov al, byte [eax + 0x47e725]`，`eax` = 格号 0..0x21）。
+ */
+export const AMOUNT_BAR_THRESHOLDS: readonly number[] = [
+  3, 6, 9, 12, 15, 19, 22, 25, 28, 31, 34, 38, 41, 44, 47, 50, 53, 57, 60, 63, 66, 69, 73, 76,
+  79, 82, 85, 88, 92, 95, 98, 101, 104, 107,
+];
+
+/** 表 `0x47e725` 的项数（= 33 格 + 1）@source `cmp ebp, 0x22 / jge` */
+export const AMOUNT_BAR_THRESHOLD_COUNT = 34;
+
+/**
  * 按下点落在金额栏第几格 —— 表 `0x47e725` 里第一个 ≥ `0x40 − 0xa` 的项。
  * `0x40 − 0xa = 54`；`table[16] = 53 < 54 ≤ 57 = table[17]` ⇒ **17**
  * @source `loc_00453451` 的循环（`sub ebx, 0xa` 在 `loc_00453413`）。
  */
 export const AMOUNT_BAR_PRESS_STEP = 17;
+
+/**
+ * **窗内 x → 金额栏格号**（拖动金额栏那条路）@source `loc_00453394`..`loc_0045349d`。
+ *
+ * ```asm
+ * 00453394  cmp  dh, 0x10 / jne 什么都不做   ; ★ 只有逐像素 id = 0x10 的那片才走这条
+ *           ebx = mouseX - 窗x ; eax = mouseY - 窗y
+ *           test ebx,ebx / jl 什么都不做 ; cmp ebx,0x80 / jg 什么都不做
+ *           test eax,eax / jl 什么都不做 ; cmp eax,0xc0 / jg 什么都不做
+ *           al = mask[y*0x80 + x] ; cmp al,0x10 / jne 什么都不做   ; 再确认一次
+ * 00453413  sub ebx, 0xa
+ * 0045341b  jg → 否则值 = 0
+ * 00453451  找第一个 table[i] >= ebx（i 从 0 到 0x21；找不到就什么都不做）
+ * 00453470  value = trunc(上限 × i ÷ 33.0f)     ; `fdiv [0x46621c]` / `fmul [0x48ca98]`
+ * ```
+ *
+ * @returns 格号 `0..33`；`0` 表示「值就是 0」这一档；`null` = 原版**什么都不做**
+ *   （窗内 x 超出 `0..0x80`、或 `x − 0xa` 落在表的最大项之外）
+ */
+export function amountBarStepAt(x: number): number | null {
+  if (!Number.isFinite(x)) return null;
+  if (x < 0 || x > 0x80) return null;
+  const ebx = x - 0xa;
+  if (ebx <= 0) return 0;
+  const i = AMOUNT_BAR_THRESHOLDS.findIndex((v) => ebx <= v);
+  return i < 0 ? null : i;
+}
+
+/**
+ * 拖动金额栏 → 新的值；`null` = 原版什么都不做（**值保持不变**）。
+ *
+ * ★ 与 `H` 键**同一条式子**：`H` 就是拿一个写死的按下点 `(0x40,0x2f)` 走这里
+ *   （`loc_00452f73` 把 x 加 `0x40`、y 加 `0x2f` 之后伪造一发按下），
+ *   所以两边不会算出两个值。
+ */
+export function amountFromBarX(x: number, max: number): number | null {
+  const step = amountBarStepAt(x);
+  if (step === null) return null;
+  const cap = Math.max(0, Math.trunc(max));
+  // 原版：`fild i` → `fdiv 33.0f` → `fmul 上限` → `__round_toward_zero`（向零取整）
+  return Math.trunc((cap * step) / AMOUNT_BAR_STEPS);
+}
 
 /**
  * `WM_KEYDOWN` 的 `wParam`（VK 码）→ 窗里那颗钮的**序号**（原版写进 `[0x48cac2]`）。
@@ -384,11 +440,15 @@ export function backspaceKey(digits: string): string {
   return cur.length > 1 ? cur.slice(0, -1) : '0';
 }
 
-/** 金额栏按在第 `AMOUNT_BAR_PRESS_STEP` 格上时的值 @source `loc_00453470`/`loc_00453480` 的 `fdiv`/`fmul` */
+/**
+ * 金额栏按在第 `AMOUNT_BAR_PRESS_STEP` 格上时的值。
+ *
+ * ★ 直接调 `amountFromBarX(0x40, …)` —— `H` 与**拖动**在 exe 里本来就是同一支
+ *   （`loc_00452f73` 伪造的那一发按下最终也落到 `loc_00453470` 的 `fdiv`/`fmul`），
+ *   分开写两份迟早会算出两个值。
+ */
 function barValue(max: number): number {
-  const cap = Math.max(0, Math.trunc(max));
-  // 原版：`fild i` → `fdiv 33.0f` → `fmul max` → `__round_toward_zero`（= 向零取整）
-  return Math.trunc((cap * AMOUNT_BAR_PRESS_STEP) / AMOUNT_BAR_STEPS);
+  return amountFromBarX(AMOUNT_BAR_PRESS.x, max) ?? 0;
 }
 
 /** 一次按键的结果 */

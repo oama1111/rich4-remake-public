@@ -19,6 +19,10 @@ import {
   AMOUNT_BAR_PRESS,
   AMOUNT_BAR_PRESS_STEP,
   AMOUNT_BAR_STEPS,
+  AMOUNT_BAR_THRESHOLDS,
+  AMOUNT_BAR_THRESHOLD_COUNT,
+  amountBarStepAt,
+  amountFromBarX,
   AMOUNT_DIGIT_MAX,
   AMOUNT_KEY_BY_ID,
   AMOUNT_KEY_ID_VK,
@@ -202,6 +206,46 @@ describe.skipIf(!EXE_OK)('★ exe 取证：`loc_00452e4b` 那张键表', () => {
     const table = Array.from({ length: 34 }, (_, i) => byteAt(doff(0x47e725) + i));
     expect(table.findIndex((v) => AMOUNT_BAR_PRESS.x - 0xa <= v)).toBe(AMOUNT_BAR_PRESS_STEP);
     expect(AMOUNT_BAR_PRESS_STEP).toBe(17);
+  });
+
+  it('★★ 拖动金额栏：表 `0x47e725` 34 项逐字节 = 源码里那份常量', () => {
+    const table = Array.from({ length: AMOUNT_BAR_THRESHOLD_COUNT }, (_, i) =>
+      byteAt(doff(0x47e725) + i),
+    );
+    expect(AMOUNT_BAR_THRESHOLD_COUNT).toBe(34);
+    expect([...AMOUNT_BAR_THRESHOLDS]).toEqual(table);
+    // 单调不减（每一格的 x 阈值都比上一格大）—— 错了就会算出反的值
+    for (let i = 1; i < table.length; i++) expect(table[i]!).toBeGreaterThan(table[i - 1]!);
+  });
+
+  it('★★ 窗内 x → 格号 → 值（`loc_00453394`..`loc_0045349d` 那条式子）', () => {
+    // x ≤ 0xa → 值 0（`sub ebx,0xa` 之后 `jg` 不成立那一支）
+    expect(amountBarStepAt(0)).toBe(0);
+    expect(amountBarStepAt(0xa)).toBe(0);
+    expect(amountFromBarX(0xa, 99_999)).toBe(0);
+    // x = 0x40（`H` 的按下点）→ 第 17 格 ⇒ trunc(上限 × 17/33)
+    expect(amountBarStepAt(AMOUNT_BAR_PRESS.x)).toBe(AMOUNT_BAR_PRESS_STEP);
+    expect(amountFromBarX(0x40, 100)).toBe(51); // 1700 ÷ 33 = 51.5…
+    expect(amountFromBarX(0x40, 33)).toBe(17);
+    // 表的最大项 107 + 0xa = 117 ⇒ x = 117 是最后一格（33）
+    expect(amountBarStepAt(0x75)).toBe(33);
+    expect(amountFromBarX(0x75, 99)).toBe(99); // 99×33/33 = 99
+    // x = 118 起表里找不到 ≥ 的项 ⇒ 原版**什么都不做**（值保持不变，不是 0）
+    expect(amountBarStepAt(0x76)).toBeNull();
+    expect(amountFromBarX(0x80, 99_999)).toBeNull();
+    // 窗外（`cmp ebx,0x80 / jg` 与 `jl 0`）
+    expect(amountFromBarX(-1, 100)).toBeNull();
+    expect(amountFromBarX(0x81, 100)).toBeNull();
+    // 上限为 0 / 负数 → 0（`max(0, trunc)`）
+    expect(amountFromBarX(0x40, -5)).toBe(0);
+  });
+
+  it('★ `H` 与拖动**同一条式子**（exe 里 `loc_00452f73` 伪造的按下最终也落 `loc_00453470`）', () => {
+    for (const max of [0, 1, 33, 100, 12_345, 999_999_999]) {
+      expect(amountKeyStep(0, max, { kind: 'bar' }).value).toBe(
+        amountFromBarX(AMOUNT_BAR_PRESS.x, max),
+      );
+    }
   });
 
   it('★ 键盘与鼠标同一拍：键 → 序号 → 合成 `WM_LBUTTONUP (0x202)`，而 0x202 与鼠标同一支', () => {
