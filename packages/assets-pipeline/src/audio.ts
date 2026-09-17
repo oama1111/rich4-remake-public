@@ -287,6 +287,18 @@ export function bgmFileFor(id: number): string | null {
   return BGM_FILES[id] ?? null;
 }
 
+/**
+ * 同一个曲目的**磁盘文件名** —— 游戏目录里实际是小写（`midi01.mid`），
+ * 而 exe 那张表里是大写（`MIDI01.MID`，见 `Midi.txt` 也是大写）。
+ *
+ * ★ 在大小写敏感的文件系统上必须按实际文件名取（实测 `Rich4/midi01.mid` 存在、
+ *   `Rich4/MIDI01.MID` 不存在），故取资源时一律走这个函数。
+ */
+export function bgmAssetFileFor(id: number): string | null {
+  const name = bgmFileFor(id);
+  return name === null ? null : name.toLowerCase();
+}
+
 /** 配置里「配乐」那一栏关掉了吗（`[0x49715a]` 为 0 时 `fcn_004549cf` 整条不做）*/
 export function bgmEnabled(configByte: number): boolean {
   return (configByte & 0xff) !== 0;

@@ -4,9 +4,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { MkfArchive } from './mkf.ts';
-import { MIDI_PLAYLIST, BGM_FILES, bgmFileFor, bgmEnabled, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from './audio.ts';
+import { MIDI_PLAYLIST, BGM_FILES, bgmAssetFileFor, bgmFileFor, bgmEnabled, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from './audio.ts';
 
 const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
 
@@ -83,6 +83,20 @@ describe('★ 背景音乐', () => {
     // 配置闸门：`[0x49715a] == 0` ⇒ 整条不做
     expect(bgmEnabled(0)).toBe(false);
     expect(bgmEnabled(1)).toBe(true);
+    // ★ 磁盘上是小写（`Rich4/midi01.mid`）；exe 那张表里是大写
+    expect(bgmAssetFileFor(9)).toBe('midi10.mid');
+    expect(bgmAssetFileFor(99)).toBeNull();
+    const RICH4 = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4';
+    if (existsSync(RICH4)) {
+      // 抽两支：`bgmAssetFileFor` 给出的小写名**就是目录里那条真实条目名**
+      //   ⚠️ 别用 `existsSync(大写)` 当反证 —— macOS 默认文件系统不区分大小写，
+      //     那样断言会误报；要看**目录里列出来的名字**才算数。
+      const entries = new Set(readdirSync(RICH4));
+      for (const id of [0, 9]) {
+        const f = bgmAssetFileFor(id)!;
+        expect(entries.has(f), `目录里应当有 ${f}`).toBe(true);
+      }
+    }
     if (existsSync(EXE)) {
       const buf = readFileSync(EXE);
       const at = (va: number) => 398848 + (va - 0x463000); // 该 exe 的 VA→文件偏移换算
