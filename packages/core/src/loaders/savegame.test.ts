@@ -13,8 +13,9 @@ import {
   importOriginalSave,
   serializeGame,
 } from './savegame.ts';
-import { parseSave } from './save.ts';
+import { OFFSET, parseSave } from './save.ts';
 import { parseMap } from './map.ts';
+import { ACTOR_PLACE } from '../rules/special-actors.ts';
 import { newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
 import { reduce } from '../state/reduce.ts';
@@ -204,5 +205,59 @@ describe('原版存档导入', () => {
     const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
     const { state } = importOriginalSave(save, loadMap());
     expect(deserializeGame(serializeGame(state))).toEqual(state);
+  });
+});
+
+describe('★ 替身表（小偷/強盜/流氓/間諜/機器娃娃）从存档导入', () => {
+  withSave('★★ 真存档：布局读得通，且占用表由替身表推出来（两处一致）', () => {
+    const map = loadMap();
+    const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
+    // 5 条记录都读出来了
+    expect(save.specialPlayers).toHaveLength(5);
+    const { state } = importOriginalSave(save, map);
+    expect(state.specialActors).toHaveLength(5);
+    // 占用表与替身表**必须一致** —— 否则会出现「探得到却放不出来」。
+    // ⚠️ 占用表只有 8 格（0..7），而替身是 5 个（槽 4..8）⇒ 機器娃娃（槽 8）
+    //    本来就不在表里，只查前 4 个。
+    expect(state.prisonOccupancy).toHaveLength(8);
+    for (let i = 0; i < 4; i++) {
+      const a = state.specialActors[i]!;
+      const slot = 4 + i; // SPECIAL_ACTOR_BASE = 4
+      expect(state.prisonOccupancy[slot], `槽 ${slot} 监狱`).toBe(
+        a.place === ACTOR_PLACE.prison ? 1 : 0,
+      );
+      expect(state.hospitalOccupancy[slot], `槽 ${slot} 医院`).toBe(
+        a.place === ACTOR_PLACE.hospital ? 1 : 0,
+      );
+    }
+  });
+
+  withSave('★★ 把存档里某条替身记录改成「在棋盘上走」→ 导入后就是棋盘态，且带出天数', () => {
+    const map = loadMap();
+    const bytes = new Uint8Array(readFileSync(ORIGINAL_SAVE));
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    // 第 0 条（小偷）：nodeId = 42、owner = 1、direction = 3、冬眠 2 天、夢遊 5 天、停留 1
+    const o = OFFSET.specialPlayers;
+    view.setUint16(o + 4, 42, true); // node_id
+    view.setUint16(o + 6, 41, true); // last_node_id
+    bytes[o + 8] = 1; // owner
+    bytes[o + 9] = 3; // direction
+    bytes[o + 12] = 2; // days_winter_sleep
+    bytes[o + 13] = 5; // days_sleep_walking
+    bytes[o + 14] = 1; // days_stopping
+    const saved = parseSave(bytes);
+    expect(saved.specialPlayers[0]!.nodeId).toBe(42);
+    const { state } = importOriginalSave(saved, map);
+    const a = state.specialActors[0]!;
+    expect(a.nodeId).toBe(42);
+    expect(a.lastNodeId).toBe(41);
+    expect(a.owner).toBe(1);
+    expect(a.direction).toBe(3);
+    expect(a.hibernating).toBe(2);
+    expect(a.sleepwalkDays).toBe(5);
+    expect(a.halted).toBe(1);
+    // 在棋盘上走 ⇒ 不再算「关在医院/监狱」，占用表那一格也空出来
+    expect(state.prisonOccupancy[4]).toBe(0);
+    expect(state.hospitalOccupancy[4]).toBe(0);
   });
 });

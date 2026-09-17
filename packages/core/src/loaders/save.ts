@@ -19,6 +19,38 @@ export const PLAYER_INFO_SIZE = 0x68;
 export const MAX_PLAYERS = 4;
 /** 特殊玩家 @source rich4_player_info.h special_player_info */
 export const SPECIAL_PLAYER_SIZE = 0x10;
+
+/**
+ * 一个替身记录（`special_player_info`，16 字节）。
+ *
+ * @source `rich4-re/asm/rich4_player_info.h:81-97`：
+ * ```c
+ * uint16_t xpos, ypos, node_id, last_node_id;   // +0/+2/+4/+6
+ * uint8_t owner;                                 // +8（保釋他的人 / 機器娃娃的使用者）
+ * uint8_t direction;                             // +9
+ * uint8_t f10, f11;                              // +10/+11（语义未明）
+ * uint8_t days_winter_sleep;                     // +12 → 本引擎 `hibernating`
+ * uint8_t days_sleep_walking;                    // +13 → `sleepwalkDays`
+ * uint8_t days_stopping;                         // +14 → `halted`
+ * uint8_t days_tortoise_walking;                 // +15 → `singleStep`
+ * ```
+ * ★ `x/y` 只给动画做插值，本引擎由 `nodeId` 现算（C-ARC-2）；
+ *   「还剩几步」(`stepsRemaining`) **不在这 16 字节里**（它是全局 `[0x48baf8]`）。
+ */
+export interface SaveSpecialPlayer {
+  x: number;
+  y: number;
+  nodeId: number;
+  lastNodeId: number;
+  owner: number;
+  direction: number;
+  f10: number;
+  f11: number;
+  hibernating: number;
+  sleepwalkDays: number;
+  halted: number;
+  singleStep: number;
+}
 export const SPECIAL_PLAYER_COUNT = 5;
 /** 地图物件 @source rich4_load_map.asm（0x450 字节 / 0x2e 项） */
 export const OBJECT_INFO_SIZE = 0x18;
@@ -215,6 +247,11 @@ export interface SaveGame {
   winTargetWealth: number;
   /** 已过天数 @source `[0x4990e4]`，存档 0x2692 */
   totalDays: number;
+  /**
+   * 五个替身（小偷/強盜/流氓/間諜/機器娃娃）的存档记录。
+   * @source 槽内 `+0x1a8`（本文件的 `OFFSET.specialPlayers = 0x01b4`），5 × 16 字节
+   */
+  specialPlayers: SaveSpecialPlayer[];
   /** 牌堆中各种卡片的剩余张数，下标为卡片 id - 1 */
   cardAmount: number[];
   /** 地图数据块（结构同 map.mkf 的地图资源，但含实时归属状态） */
@@ -333,6 +370,25 @@ export function parseSave(data: Uint8Array): SaveGame {
     cardAmount.push(data[OFFSET.cardAmount + i] ?? 0);
   }
 
+  const specialPlayers: SaveSpecialPlayer[] = [];
+  for (let i = 0; i < SPECIAL_PLAYER_COUNT; i++) {
+    const o = OFFSET.specialPlayers + i * SPECIAL_PLAYER_SIZE;
+    specialPlayers.push({
+      x: view.getUint16(o, true),
+      y: view.getUint16(o + 2, true),
+      nodeId: view.getUint16(o + 4, true),
+      lastNodeId: view.getUint16(o + 6, true),
+      owner: data[o + 8] ?? 0,
+      direction: data[o + 9] ?? 0,
+      f10: data[o + 10] ?? 0,
+      f11: data[o + 11] ?? 0,
+      hibernating: data[o + 12] ?? 0,
+      sleepwalkDays: data[o + 13] ?? 0,
+      halted: data[o + 14] ?? 0,
+      singleStep: data[o + 15] ?? 0,
+    });
+  }
+
   const mapDataSize = view.getUint32(OFFSET.mapDataSize, true);
   const mapData = data.subarray(OFFSET.mapData, OFFSET.mapData + mapDataSize);
 
@@ -354,6 +410,7 @@ export function parseSave(data: Uint8Array): SaveGame {
     winTargetDays: view.getInt32(OFFSET.winTargetDays, true),
     winTargetWealth: view.getInt32(OFFSET.winTargetWealth, true),
     totalDays: view.getUint32(OFFSET.totalDays, true),
+    specialPlayers,
     cardAmount,
     mapData,
   };

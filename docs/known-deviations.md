@@ -5021,6 +5021,38 @@ stopEffect(id: number): void;
 **受管辖的项目至此全部有结论**（12 处已接 + 1 处按「原版落点不可复现」登记：
 月結／頒獎屏的 `#0092`，见上表末行）。
 
+### ★ 2026-09-17：读原版存档时**替身表（四大惡人＋機器娃娃）现在真的读了**
+
+先前 `importOriginalSave` 把 `specialActors` 一律置成开局值，并在 `gaps` 里写
+「偏移未验证」。这一轮把**载入侧**那段 `memcpy` 逐行读出来后落码：
+
+| 源全局 | 大小 | 槽内偏移 | @source |
+|---|---|---|---|
+| `_rich4_all_players_state` | 0x1a0 | +0x008 | `rich4_player_save_state.asm:443` 起 |
+| `_rich4_all_special_players_state` | **0x50（5 × 16）** | **+0x1a8** | 同上 `:478` |
+| `_rich4_objects_info` | 0x450 | +0x1f8 | `:497` |
+| `_rich4_player_cards` | 0x3c | +0x648 | `:516` |
+| `_rich4_player_tool_amount` | 0x3c | +0x684 | `:535` |
+| `_rich4_remain_card_amount` | 0x1e | +0x6c0 | `:554` |
+| `_rich4_remain_tool_amount` | — | +0x6de | `:573` |
+| `history`（144 日） | 0x1b00 | +0x6ec | `:594` |
+| `_rich4_player_stocks` | 0x180 | +0x21ec | `:613` |
+
+槽基址 = `save_state + currentPlayer * 0x2718`（每槽 `0x2718`，与
+`loaders/save.ts` 的 `PLAYER_SNAPSHOT_SIZE` 一致）；本文件的 `OFFSET` 用的是
+另一套已核过的基准（`specialPlayers: 0x01b4` 等）。
+
+落码：`SaveSpecialPlayer`（16 字节逐字段）+ `importedSpecialActors()`，
+并**由替身表推出占用表**（两者是同一件事的两面，见
+`rules/special-actors.ts` 的 `initialConfinement`）。测试：真 `Save0.dat`
+一条（布局读得通 + 两表一致）+ 一条**改过字节的**样本（把第 0 条改成
+「在棋盘上走」→ 导入后 `nodeId/owner/direction/三个天数` 全对、占用表那格空出来）。
+
+⚠️ **仍缺一格**：`stepsRemaining`（「还剩几步」）**不在这 16 字节里**
+（它是全局 `[0x48baf8]`），故读档后一律 0 —— 替身走到一半时读档会少这一步数。
+其余两张表（`objects` / `holdings` / 行情）的槽内偏移**上表已给出**，
+解析待接（`gaps` 里那几条可以换成「偏移已核、解析待接」）。
+
 ### T-054：LOAD 屏左下的「匯入原版存檔」钮（**原版没有这个钮**，有意保留）
 
 **位置**：`packages/client/src/saveload.ts` 的 `importRect(mode)`（`:108-118`）与

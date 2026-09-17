@@ -23,7 +23,13 @@ import type { SaveGame } from './save.ts';
 import type { Rich4Map } from './map.ts';
 import { facilityFieldFromMap, landPriceFromMap, landTypeFromMap } from '../rules/new-game.ts';
 import { emptyBoard } from '../places/notice-board.ts';
-import { initialSpecialActors } from '../rules/special-actors.ts';
+import {
+  ACTOR_PLACE,
+  INITIAL_ACTOR_PLACE,
+  SPECIAL_ACTOR_BASE,
+  idleActor,
+  type SpecialActor,
+} from '../rules/special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
@@ -189,6 +195,48 @@ export interface ImportResult {
  *   其余（樂透号码表、股市行情与持仓、公库、监狱/医院占用、牌堆洗牌序）
  *   在存档里的偏移尚未验证，故不猜——见各自的 gap 说明。
  */
+/**
+ * 把存档里的 5 条替身记录搬成引擎的 `SpecialActor[]`。
+ *
+ * @source 记录布局见 `loaders/save.ts` 的 `SaveSpecialPlayer`；
+ *   `place` 原版**不存**：`nodeId > 0` 就是在棋盘上走，
+ *   否则沿用开局的位置（小偷/強盜在監獄、流氓/間諜在醫院、機器娃娃未出场）——
+ *   与 `initialSpecialActors()` 同一套口径。
+ */
+function importedSpecialActors(save: SaveGame): SpecialActor[] {
+  return INITIAL_ACTOR_PLACE.map((initialPlace, i) => {
+    const rec = save.specialPlayers[i];
+    if (rec === undefined) return { ...idleActor(), place: initialPlace };
+    return {
+      nodeId: rec.nodeId,
+      lastNodeId: rec.lastNodeId,
+      direction: rec.direction,
+      owner: rec.owner,
+      // ⚠️ 「还剩几步」不在那 16 字节里（全局 `[0x48baf8]`）⇒ 读档时归零
+      stepsRemaining: 0,
+      halted: rec.halted,
+      singleStep: rec.singleStep,
+      hibernating: rec.hibernating,
+      sleepwalkDays: rec.sleepwalkDays,
+      place: rec.nodeId > 0 ? ACTOR_PLACE.board : initialPlace,
+    };
+  });
+}
+
+/** 由替身表推占用表 —— 两者必须一致（见 `rules/special-actors.ts` 的 `initialConfinement`） */
+function confinementFromActors(
+  actors: readonly SpecialActor[],
+  kind: 'prison' | 'hospital',
+): number[] {
+  const want = kind === 'prison' ? ACTOR_PLACE.prison : ACTOR_PLACE.hospital;
+  const occ = new Array<number>(CONFINEMENT_SLOTS).fill(0);
+  actors.forEach((a, i) => {
+    const slot = SPECIAL_ACTOR_BASE + i;
+    if (a.place === want && slot < CONFINEMENT_SLOTS) occ[slot] = 1;
+  });
+  return occ;
+}
+
 export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult {
   const gaps: Record<string, string> = {};
   const n = save.players.length;
@@ -273,11 +321,20 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   gaps['commercialShares'] = '各企业的已售股数在存档中的偏移未验证，已按地图初值重置';
   gaps['commercialOwners'] = '各企业的归属与持股排名在存档中的偏移未验证，已置为无主';
   gaps['objects'] = '地图物件表（神明/路障/地雷）在存档 0x0204 起，解析器尚未回读，已置空';
-  gaps['prisonOccupancy'] = '监狱/医院占用表在存档中的偏移未验证，已置空';
-  gaps['specialActors'] = '替身走子表（0x498e28，5 × 16 字节）在存档中的偏移未验证，已置为全不在场';
+  // ★ 2026-09-17：替身表**已能从存档读出**（槽内 +0x1a8，5 × 16 字节，见
+  //   `loaders/save.ts` 的 `SaveSpecialPlayer`），占用表随之**由替身表推出来**
+  //   —— 两者是同一件事的两面，不一致就会出现「探得到却放不出来」的鬼状态
+  //   （见 `rules/special-actors.ts` 的 `initialConfinement`）。
+  //   仍缺的一格：`stepsRemaining`（「还剩几步」）**不在这 16 字节里**
+  //   （它是全局 `[0x48baf8]`），故一律置 0 —— 替身走到一半时读档会少这一步数。
   gaps['newsDeck'] = '牌堆洗牌序在存档中的偏移未验证，已按顺序重建（不影响已抽过的牌）';
   gaps['rngState'] =
     '原版不存随机数状态（原版对局本就不可复现），读档后必须由宿主注入新种子';
+
+  // ★ 2026-09-17：替身表**从存档读**（槽内 +0x1a8），占用表由它推出来。
+  const specialActors = importedSpecialActors(save);
+  const prisonOccupancy = confinementFromActors(specialActors, 'prison');
+  const hospitalOccupancy = confinementFromActors(specialActors, 'hospital');
 
   const state: GameState = {
     mode: 'single',
@@ -311,9 +368,7 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     newsDeck: { order: Array.from({ length: 36 }, (_, i) => i), cursor: 0 },
     fortuneDeck: { order: Array.from({ length: 37 }, (_, i) => i), cursor: 0 },
     pool: 0,
-    // ★ 替身（小偷/強盜/流氓/間諜/機器娃娃）在原版存档里的偏移未验证。
-    //   它们只在「走到一半」时才非空，读档时一律当作不在场。
-    specialActors: initialSpecialActors(),
+    specialActors,
     landTenureIndex: 0,
     // ★ 2026-09-16：两个全局现在**真的从存档读**了（0x2682 / 0x2686），
     //   不再一律按「無限」导入。
@@ -340,8 +395,8 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     companyProfit: new Array<number>(map.commercials.length + 1).fill(0),
     aiStep: 0,
     aiBranch: 0,
-    prisonOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
-    hospitalOccupancy: new Array<number>(CONFINEMENT_SLOTS).fill(0),
+    prisonOccupancy,
+    hospitalOccupancy,
     lastEvent: null,
     // 纯表现提示：读档后不播「上一局那趟」（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
