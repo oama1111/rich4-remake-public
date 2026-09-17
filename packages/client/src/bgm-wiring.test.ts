@@ -19,6 +19,9 @@ describe('★ 按屏 BGM 的宿主接线点（原版 `fcn_004549cf(id)`）', () 
     expect(src).toContain("void playTrackFile('midi02.mid')");
     // ui_bank.asm:3557 `push 4` ⇒ MIDI05
     expect(src).toContain("void playTrackFile('midi05.mid')");
+    // shop.asm:2196 `push 6` ⇒ MIDI07
+    expect(src).toContain("void playTrackFile('midi07.mid')");
+    expect(src).toContain('shop.asm:2196');
     // 月結屏走 env.music（那一半在 monthly-screen.ts，已有真测试）
     expect(src).toContain('music: (file: string)');
     // 每处都带出处（便于下一处照抄）

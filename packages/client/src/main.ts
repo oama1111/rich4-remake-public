@@ -3795,6 +3795,9 @@ function syncShopUi(): void {
       blink: blinkStart(),
     };
     shopUi = ui;
+    // ★ 進商店的配乐 @source `shop.asm:2196` `push 6 / call fcn_004549cf`
+    //   ⇒ id 6 → `MIDI07.MID` → 磁盘名 `midi07.mid`（见 `SCREEN_BGM.shop`）
+    void playTrackFile('midi07.mid');
     shopGotoPage(ui, SHOP_PAGE.cards, performance.now());
   }
 }
