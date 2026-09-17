@@ -281,6 +281,59 @@ export const BGM_FILES: readonly string[] = [
   'MIDI11.MID', 'MIDI12.MID', 'MIDI13.MID',
 ];
 
+/**
+ * 全 exe 22 处 `call fcn_004549cf` 各自传的 **id**（逐处读出的**实参**）。
+ *
+ * @source 每一处调用点前那一句 `push <imm>`（`rich4-re/asm/*.asm`，行号见注）：
+ * ```asm
+ * push 9 / call fcn_004549cf        ; rich4.asm:19212  —— 月結／頒獎屏
+ * push 0x8001 / call fcn_004549cf   ; new_game.asm:4009
+ * ```
+ * ★ `0x8000` 那一位是**旗标**，不是曲号：`fcn_004549cf` 开头
+ *   `test byte [esp+0x3d], 0x80 / je … / and dword [esp+0x3c], 0x7fff`
+ *   ⇒ 真正的曲号要**去掉 0x8000**（`0x8001` → 1、`0x8006` → 6）。
+ *
+ * ⚠️ 有两处传的 id **超出** `BGM_FILES`（13 项）的范围：
+ *   監獄 `0xf`（prison.asm:917）、醫院 `0x10`（hospital.asm:1529）——
+ *   原版那里会顺着表往后读（`[id*4 + 0x47e793]`），读到什么**未定论**，
+ *   故本表照抄这两个数、由调用方自己判断（不替它猜一个文件名）。
+ */
+export const SCREEN_BGM: Readonly<Record<string, number>> = {
+  /** rich4.asm:19212 —— 月結／頒獎屏 */
+  monthly: 9,
+  /** magic_house.asm:2269 / 2512 */
+  magicHouse: 7,
+  /** new_game.asm:4009 / 4531（★ 带 0x8000 旗标 ⇒ 曲号 1 / 6）*/
+  newGame: 0x8001,
+  newGameAlt: 0x8006,
+  /** player_bankrupt.asm:216 / 442 */
+  bankrupt: 2,
+  bankruptAlt: 5,
+  /** shop.asm:2196 */
+  shop: 6,
+  /** small_games.asm:4335 / 4481 / 4638 */
+  minigamePenguin: 0xc,
+  minigameBalloon: 0xb,
+  minigameGift: 0xa,
+  /** ui_auction.asm:3139 */
+  auction: 5,
+  /** ui_bank.asm:3557 / 3743 */
+  bank: 4,
+  /** ui_letou.asm:2938 / 3063 */
+  lottery: 6,
+  lotteryDraw: 8,
+  /** ui_main.asm:187 / 483 */
+  mainMenu: 0,
+  /** ⚠️ 超出表范围的两处（照抄，不猜）*/
+  prison: 0xf,
+  hospital: 0x10,
+};
+
+/** `fcn_004549cf` 的实参里 `0x8000` 是旗标（先停当前曲），真曲号要掩掉它 */
+export function bgmTrackIdOf(rawArg: number): number {
+  return rawArg & 0x7fff;
+}
+
 /** `fcn_004549cf(id)` 要打开的那个文件名（越界返回 `null`） */
 export function bgmFileFor(id: number): string | null {
   if (!Number.isInteger(id) || id < 0 || id >= BGM_FILES.length) return null;

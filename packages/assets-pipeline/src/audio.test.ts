@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { MkfArchive } from './mkf.ts';
-import { MIDI_PLAYLIST, BGM_FILES, bgmAssetFileFor, bgmFileFor, bgmEnabled, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from './audio.ts';
+import { MIDI_PLAYLIST, BGM_FILES, SCREEN_BGM, bgmTrackIdOf, bgmAssetFileFor, bgmFileFor, bgmEnabled, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from './audio.ts';
 
 const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
 
@@ -83,6 +83,19 @@ describe('★ 背景音乐', () => {
     // 配置闸门：`[0x49715a] == 0` ⇒ 整条不做
     expect(bgmEnabled(0)).toBe(false);
     expect(bgmEnabled(1)).toBe(true);
+    // ★ 22 处调用点的实参表（逐处读出的 push 立即数）
+    expect(SCREEN_BGM.monthly).toBe(9);
+    expect(bgmFileFor(bgmTrackIdOf(SCREEN_BGM.monthly!))).toBe('MIDI10.MID');
+    // 0x8000 是旗标：0x8001 → 1（MIDI02）、0x8006 → 6（MIDI07）
+    expect(bgmTrackIdOf(0x8001)).toBe(1);
+    expect(bgmTrackIdOf(0x8006)).toBe(6);
+    expect(bgmFileFor(bgmTrackIdOf(SCREEN_BGM.newGame!))).toBe('MIDI02.MID');
+    expect(bgmFileFor(bgmTrackIdOf(SCREEN_BGM.newGameAlt!))).toBe('MIDI07.MID');
+    // ⚠️ 監獄/醫院那两处**超出 13 项表** ⇒ `bgmFileFor` 必须老实返 null（不替它猜）
+    expect(SCREEN_BGM.prison).toBe(0xf);
+    expect(SCREEN_BGM.hospital).toBe(0x10);
+    expect(bgmFileFor(SCREEN_BGM.prison!)).toBeNull();
+    expect(bgmFileFor(SCREEN_BGM.hospital!)).toBeNull();
     // ★ 磁盘上是小写（`Rich4/midi01.mid`）；exe 那张表里是大写
     expect(bgmAssetFileFor(9)).toBe('midi10.mid');
     expect(bgmAssetFileFor(99)).toBeNull();
