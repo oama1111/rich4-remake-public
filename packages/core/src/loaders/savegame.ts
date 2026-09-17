@@ -30,7 +30,7 @@ import {
   idleActor,
   type SpecialActor,
 } from '../rules/special-actors.ts';
-import { newStockMarket } from '../places/stock-market.ts';
+import { newStockMarket, type StockMarketState } from '../places/stock-market.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { EMPTY_HOLDING } from '../places/stock.ts';
 import { emptyOwnership } from '../places/commercial.ts';
@@ -196,6 +196,53 @@ export interface ImportResult {
  *   在存档里的偏移尚未验证，故不猜——见各自的 gap 说明。
  */
 /**
+ * 用存档里的行情覆盖静态初值。
+ *
+ * @source 12 支 × 36 字节在平坦 `0x2376`、144 日历史在平坦 `0x6f6`（0x1b00 字节）；
+ *   字段映射见 `loaders/save.ts` 的 `SaveStockRecord`。
+ * ⚠️ 两样原版**存了但本解析器还没读**的东西：`[0x499100]`（历史游标 `day`）与
+ *   `[0x499078]`（大盘指数）—— 前者先归 0、后者**按定义重算**
+ *   （`trunc(Σ收盘 × 10)`，与 `tickStockMarket` 同一条式子），已登记。
+ */
+function importedMarket(save: SaveGame): StockMarketState {
+  const base = newStockMarket(save.globalMapId);
+  const stocks = base.stocks.map((st, i) => {
+    const rec = save.stocksOnMap[i];
+    if (rec === undefined) return st;
+    return {
+      ...st,
+      commercialIndex: rec.commercialIndex,
+      f6: rec.f6,
+      newsFlag: rec.newsFlag,
+      shares: rec.shares,
+      f10: rec.f10,
+      basePrice: rec.basePrice,
+      openPrice: rec.openPrice,
+      price: rec.price,
+      volatility: rec.volatility,
+      trend: rec.trend,
+      shock: rec.shock,
+    };
+  });
+  const history = base.history.map((row, i) => {
+    const saved = save.stockHistory[i];
+    if (saved === undefined || saved.length === 0) return row;
+    const out = [...row];
+    for (let d = 0; d < saved.length && d < out.length; d++) out[d] = saved[d]!;
+    return out;
+  });
+  // ★ 与 `tickStockMarket` **同一条式子**：累加时也逐项 fround（原版是 32 位浮点加）
+  let total = 0;
+  for (const st of stocks) total = Math.fround(total + st.price);
+  return {
+    ...base,
+    stocks,
+    history,
+    index: Math.trunc(Math.fround(total * 10)),
+  };
+}
+
+/**
  * 把存档里的 5 条替身记录搬成引擎的 `SpecialActor[]`。
  *
  * @source 记录布局见 `loaders/save.ts` 的 `SaveSpecialPlayer`；
@@ -314,8 +361,9 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
   gaps['landOwner'] =
     '地产归属与等级存在存档的地图数据块中，解析器尚未支持从该块回读，已置为全部无主';
   gaps['lottery'] = '樂透号码表在存档中的偏移未验证，已置空';
-  gaps['market'] =
-    '股市行情与 144 日历史：槽内偏移**已核**（历史 +0x6ec 共 0x1b00、十二支股票表 +0x2376），解析待接，已按地图重置为初始行情 @source rich4_player_save_state.asm:594/:675';
+  // ★ 行情已接（见 `importedMarket`）——只留两样没读的：
+  gaps['marketDay'] =
+    '行情的历史游标 `[0x499100]` 在存档里的偏移未核，已归 0（指数已按 Σ收盘×10 重算）';
   // ★ 持仓已接（见上面 `holdings` 的构造）——这条 gap 删掉。
   gaps['pool'] = '公库金额在存档中的偏移未验证，已置 0';
   gaps['toolStock'] =
@@ -408,7 +456,11 @@ export function importOriginalSave(save: SaveGame, map: Rich4Map): ImportResult 
     pending: null,
     tools,
     toolStock: initialToolStock(),
-    market: newStockMarket(save.globalMapId),
+    // ★ 2026-09-17：行情**从存档读**（12 支 × 36 字节 + 144 日历史 0x1b00）。
+    //   名字/顺序仍用静态表（存档 `+0` 是 exe 的名字**指针**，跨版本无意义），
+    //   其余每个字段都覆盖成存档里的值；`index` 不在存档里 ⇒ 按定义重算
+    //   （`trunc(Σ收盘 × 10)`，与 `tickStockMarket` 同一条式子）。
+    market: importedMarket(save),
     // ★ 2026-09-17：持仓**从存档读**（`OFFSET.playerStocks`，4 人 × 12 支 × 8 字节）
     holdings: players.map((_, i) =>
       Array.from({ length: STOCKS_PER_MAP }, (_, j) => {

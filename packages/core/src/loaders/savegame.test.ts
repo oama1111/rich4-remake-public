@@ -175,12 +175,39 @@ describe('原版存档导入', () => {
     const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
     const { gaps } = importOriginalSave(save, loadMap());
     // 这些是**已知**还原不了的，每一条都得有说法
-    for (const key of ['landOwner', 'lottery', 'market', 'pool', 'rngState']) {
+    for (const key of ['landOwner', 'lottery', 'pool', 'rngState', 'marketDay']) {
       expect(gaps[key], `${key} 应当有 gap 说明`).toBeTruthy();
     }
-    // ★ 2026-09-17：`holdings` 与 `specialActors` **已经能还原** ⇒ 不再挂 gap
+    // ★ 2026-09-17：`holdings` / `specialActors` / `market` **已经能还原** ⇒ 不再挂 gap
     expect(gaps['holdings']).toBeUndefined();
     expect(gaps['specialActors']).toBeUndefined();
+    expect(gaps['market']).toBeUndefined();
+  });
+
+  withSave('★★ 行情**从存档读**（Save0 实测：0 号股 收盘 109 / 参考 200 / 开盘 121 / 流通 10000）', () => {
+    const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
+    // 解析层：12 支，逐字段对
+    expect(save.stocksOnMap).toHaveLength(12);
+    const s0 = save.stocksOnMap[0]!;
+    expect(s0.commercialIndex).toBe(6);
+    expect(s0.price).toBe(109);
+    expect(s0.basePrice).toBe(200);
+    expect(s0.openPrice).toBe(121);
+    expect(s0.shares).toBe(10000);
+    expect(s0.volatility).toBe(1);
+    expect(s0.trend).toBe(-10);
+    expect(s0.shock).toBeCloseTo(-10.6285, 3);
+    // 历史：0 号股的前 6 天就是存档里那条上升序列
+    expect(save.stockHistory).toHaveLength(12);
+    expect(save.stockHistory[0]!.slice(0, 6)).toEqual([256, 273, 288, 298, 327, 337]);
+    // 导入层：同一批值进 state.market，指数按 Σ收盘×10 重算
+    const { state } = importOriginalSave(save, loadMap());
+    expect(state.market.stocks[0]!.price).toBe(109);
+    expect(state.market.history[0]!.slice(0, 6)).toEqual([256, 273, 288, 298, 327, 337]);
+    // 指数 = trunc(Σ收盘 × 10)，累加与乘法都走 32 位浮点（与 tickStockMarket 同式）
+    let total = 0;
+    for (const st of state.market.stocks) total = Math.fround(total + st.price);
+    expect(state.market.index).toBe(Math.trunc(Math.fround(total * 10)));
   });
 
   withSave('★★ 持仓**从存档读**（Save0 的实际数据：玩家 1 持 2 号股 2647 股 @13.74）', () => {

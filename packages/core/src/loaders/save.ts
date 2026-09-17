@@ -38,6 +38,38 @@ export const SPECIAL_PLAYER_SIZE = 0x10;
  *   「还剩几步」(`stepsRemaining`) **不在这 16 字节里**（它是全局 `[0x48baf8]`）。
  */
 /**
+ * 存档里的一条股票行情（12 支 × 36 字节）。
+ *
+ * ⚠️ `+0` 是**名字指针**（实测是 exe 数据段的 VA，如 `0x4668c1`）——
+ *   跨版本无意义，本解析器**不读**它；名字/顺序仍由 `@rich4/data` 的静态表给。
+ * @source `rich4_stocks.h` 的 `stock_info`（36 字节，字段名沿用其 fNN）
+ */
+export interface SaveStockRecord {
+  /** `+4`：对应的地图企业下标（1 基；0 = 无）*/
+  commercialIndex: number;
+  /** `+6`：停牌/不波动标记 */
+  f6: number;
+  /** `+7`：新闻计数器（高半字节利多、低半字节利空）*/
+  newsFlag: number;
+  /** `+8`：可流通股数 */
+  shares: number;
+  /** `+10` */
+  f10: number;
+  /** `+12`：永不变的参考价 */
+  basePrice: number;
+  /** `+16`：今日开盘 */
+  openPrice: number;
+  /** `+20`：今日收盘（买卖与估值都用它）*/
+  price: number;
+  /** `+24`：波动系数 0.40~2.00 */
+  volatility: number;
+  /** `+28`：当日趋势（±10）*/
+  trend: number;
+  /** `+32`：当日随机冲击 */
+  shock: number;
+}
+
+/**
  * 一条持仓记录 —— 与 `places/stock.ts` 的 `StockHolding` 同构。
  * @source `rich4_stocks.h` 的 `player_stock_info`：`int amount; int _;`
  *   ★ 第二个 int 实测是 **float 成本均价**（见 `places/stock.ts` 的注释）
@@ -69,6 +101,10 @@ export const OBJECT_INFO_COUNT = 0x2e;
 export const PLAYER_SNAPSHOT_SIZE = 0x2718;
 /** 每人持仓的股票支数（12 支）@source `player_stock_info[4][12]` */
 export const STOCKS_PER_PLAYER = 12;
+/** 一条行情记录的字节数 @source `rich4_stocks.h` 的 `stock_info` */
+export const STOCK_RECORD_SIZE = 36;
+/** 每股的日历史长度 @source `cmp ecx, 0x90` = 144 */
+export const HISTORY_DAYS_PER_STOCK = 0x90;
 
 /** 卡片种类数 */
 export const CARD_TYPE_COUNT = 30;
@@ -93,6 +129,15 @@ export const OFFSET = {
   cardAmount: 0x06cc,
   playerStocks: 0x21f6,
   stocks: 0x2376,
+  /**
+   * 144 日历史（12 支 × 144 天 × 4 字节 = 0x1b00 的 float 数组）。
+   *
+   * @source 平坦布局上它**紧贴在 `playerStocks` 前面**：
+   *   `0x21f6 − 0x1b00 = 0x6f6`；实测 Save0 在该处读到 256/273/288/298/327/337
+   *   这样一条**合理的价格序列**（1..9999），且这段正好不越界。
+   *   （asm 里的槽内偏移 `+0x6ec` 是**另一套基准**，见 `known-deviations` 的存档一节。）
+   */
+  history: 0x6f6,
   currentPlayer: 0x2676,
   /**
    * 勝利條件两个全局 —— **与 `[0x49911c]` / `[0x499108]` 同源**
@@ -260,6 +305,10 @@ export interface SaveGame {
   winTargetWealth: number;
   /** 已过天数 @source `[0x4990e4]`，存档 0x2692 */
   totalDays: number;
+  /** 12 支股票的行情快照 @source `_stocks_on_map`，平坦 `0x2376` */
+  stocksOnMap: SaveStockRecord[];
+  /** `history[股票][日]`（12 × 144 的 float 价格）@source 平坦 `0x6f6`，0x1b00 字节 */
+  stockHistory: number[][];
   /**
    * 各玩家的持仓：`playerStocks[玩家][股票] = { amount, avgCost }`。
    * @source `_rich4_player_stocks`，本文件的 `OFFSET.playerStocks = 0x21f6`，
@@ -408,6 +457,33 @@ export function parseSave(data: Uint8Array): SaveGame {
     });
   }
 
+  const stocksOnMap: SaveStockRecord[] = [];
+  for (let i = 0; i < STOCKS_PER_PLAYER; i++) {
+    const o = OFFSET.stocks + i * STOCK_RECORD_SIZE;
+    stocksOnMap.push({
+      commercialIndex: view.getUint16(o + 4, true),
+      f6: data[o + 6] ?? 0,
+      newsFlag: data[o + 7] ?? 0,
+      shares: view.getUint16(o + 8, true),
+      f10: view.getUint16(o + 10, true),
+      basePrice: view.getFloat32(o + 12, true),
+      openPrice: view.getFloat32(o + 16, true),
+      price: view.getFloat32(o + 20, true),
+      volatility: view.getFloat32(o + 24, true),
+      trend: view.getFloat32(o + 28, true),
+      shock: view.getFloat32(o + 32, true),
+    });
+  }
+
+  const stockHistory: number[][] = [];
+  for (let i = 0; i < STOCKS_PER_PLAYER; i++) {
+    const row: number[] = [];
+    for (let day = 0; day < HISTORY_DAYS_PER_STOCK; day++) {
+      row.push(view.getFloat32(OFFSET.history + (i * HISTORY_DAYS_PER_STOCK + day) * 4, true));
+    }
+    stockHistory.push(row);
+  }
+
   const playerStocks: StockHoldingRecord[][] = [];
   for (let p = 0; p < MAX_PLAYERS; p++) {
     const row: StockHoldingRecord[] = [];
@@ -439,6 +515,8 @@ export function parseSave(data: Uint8Array): SaveGame {
     winTargetDays: view.getInt32(OFFSET.winTargetDays, true),
     winTargetWealth: view.getInt32(OFFSET.winTargetWealth, true),
     totalDays: view.getUint32(OFFSET.totalDays, true),
+    stocksOnMap,
+    stockHistory,
     playerStocks,
     specialPlayers,
     cardAmount,
