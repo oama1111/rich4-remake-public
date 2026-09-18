@@ -273,7 +273,6 @@ export const MAGIC_MOUTH_AT = { x: 0x11e, y: 0xd9 } as const;
  *   本模块的 `witchBlink` 就是这一支的等价物（概率见 `MAGIC_WITCH_BLINK_P`），
  *   **不需要**再补一笔。
  */
-export const MAGIC_MOUTH_AT = { x: 0x11e, y: 0xd9 } as const;
 /**
  * 女巫「张嘴」的每拍概率。
  *
