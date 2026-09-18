@@ -45,6 +45,8 @@ import {
   MONTHLY_LABELS,
   MONTHLY_NO_AWARD,
   MONTHLY_PANEL_AT,
+  MONTHLY_BLINK_PATCH,
+  MONTHLY_BLINK_TICKS,
   MONTHLY_RESOURCE,
   MONTHLY_ROW_AT,
   MONTHLY_ROW_BLOCK_X,
@@ -544,6 +546,9 @@ interface RecordedBlit {
   keyed: boolean;
   x: number;
   y: number;
+  /** 9 参数形态（裁切拷贝）的源矩形与尺寸；3 参数形态为 undefined */
+  src?: { x: number; y: number; w: number; h: number };
+  size?: { w: number; h: number };
 }
 
 /** 记一笔 `strokeText` / `fillText` */
@@ -574,15 +579,23 @@ function fakeCanvas(): {
     lineWidth: 0,
     strokeStyle: '',
     fillStyle: '',
-    drawImage(bitmap: unknown, x: number, y: number): void {
+    drawImage(bitmap: unknown, ...rest: number[]): void {
       const b = bitmap as { resource?: number; index?: number; keyed?: boolean };
-      blits.push({
+      const rec: RecordedBlit = {
         resource: b.resource ?? -1,
         index: b.index ?? -1,
         keyed: b.keyed === true,
-        x,
-        y,
-      });
+        x: rest[0] ?? 0,
+        y: rest[1] ?? 0,
+      };
+      // ★ 9 参数形态 = 裁切拷贝：(sx,sy,sw,sh,dx,dy,dw,dh)
+      if (rest.length === 8) {
+        rec.src = { x: rest[0]!, y: rest[1]!, w: rest[2]!, h: rest[3]! };
+        rec.x = rest[4]!;
+        rec.y = rest[5]!;
+        rec.size = { w: rest[6]!, h: rest[7]! };
+      }
+      blits.push(rec);
     },
     strokeText(text: string, x: number, y: number): void {
       texts.push({ text, x, y, align: String(this.textAlign) });
@@ -1000,6 +1013,7 @@ describe('★ 演出状态机', () => {
       skipTicks: 0,
       farewell: false,
       farewellTicks: 0,
+      blinkTicks: 0,
     });
     // 4 行 → 3 拍点亮完
     p = monthlyPlaybackTick(p, 4)!;
@@ -1008,9 +1022,12 @@ describe('★ 演出状态机', () => {
     expect(p.revealed).toBe(2);
     p = monthlyPlaybackTick(p, 4)!;
     expect(p.revealed).toBe(3);
-    // 全亮后再 tick 也不动（原版 `[0x48c42a]` 不变）
-    expect(monthlyPlaybackTick(p, 4)).toEqual(p);
-    expect(monthlyPlaybackTick(p, 4)!.phase).toBe('settle');
+    // 全亮后 tick 也**不推进状态**（原版 `[0x48c42a]` 不变），
+    // ★ 但会推进**待机眨眼**计数（`[0x48c42c] & 0x30`）—— 见下一个 describe。
+    const idle = monthlyPlaybackTick(p, 4)!;
+    expect({ ...idle, blinkTicks: 0 }).toEqual(p);
+    expect(idle.phase).toBe('settle');
+    expect(idle.blinkTicks).toBe(1);
   });
 
   it('★ 只有 1 个人在场时第 0 拍就已经全亮', () => {
@@ -1302,6 +1319,80 @@ describe('★ 頒獎屏入口：动画关那条捷径 @source 0x0043827e', () =>
   });
 });
 
+describe('★ 记者小姐的**待机眨眼**（`loc_004391ee` 第 3 帧，2026-09-19 落码）', () => {
+  const blinkPatches = (blits: RecordedBlit[]): RecordedBlit[] =>
+    blits.filter((b) => b.size?.w === MONTHLY_BLINK_PATCH.w && b.size?.h === MONTHLY_BLINK_PATCH.h
+      && b.src?.x === MONTHLY_BLINK_PATCH.srcX);
+
+  it('常量：源 = 图 19 的 (52,50) 起 80×40，落点 = (76,120)', () => {
+    // @source 0x0043924c push 0x28 / 0x50 / 0x32 / 0x34 ; 0x00439269 add eax,0xf0 (图 19)
+    expect(MONTHLY_BLINK_PATCH).toEqual({
+      srcX: 0x34, srcY: 0x32, w: 0x50, h: 0x28, dstX: 0x4c, dstY: 0x78,
+    });
+    expect(MONTHLY_BLINK_TICKS).toBe(4);
+    // 源矩形必须在那张 186×410 的立绘里
+    expect(MONTHLY_BLINK_PATCH.srcX + MONTHLY_BLINK_PATCH.w).toBeLessThanOrEqual(186);
+    expect(MONTHLY_BLINK_PATCH.srcY + MONTHLY_BLINK_PATCH.h).toBeLessThanOrEqual(410);
+    // 落点必须与立绘自己的落点 (24,70) 组成同一块区域（76-24=52 = srcX）
+    expect(MONTHLY_BLINK_PATCH.dstX - MONTHLY_PANEL_AT.x).toBe(MONTHLY_BLINK_PATCH.srcX);
+    expect(MONTHLY_BLINK_PATCH.dstY - MONTHLY_PANEL_AT.y).toBe(MONTHLY_BLINK_PATCH.srcY);
+  });
+
+  it('★ 待机拍数按 4 循环；**只有第 4 拍**画那一笔，且不改 phase', () => {
+    let p = { ...monthlyPlaybackStart(), revealed: 3 };
+    const seen: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      p = monthlyPlaybackTick(p, 4)!;
+      seen.push(p.blinkTicks);
+    }
+    expect(seen).toEqual([1, 2, 3, 0, 1, 2, 3, 0]);
+    expect(p.phase).toBe('settle');
+    expect(p.revealed).toBe(3);
+  });
+
+  it('★ 逐行点亮那几拍**不眨眼**（原版的闸门是 `[0x48c42c] & 0xf == 0`）', () => {
+    let p = monthlyPlaybackStart();
+    for (let i = 0; i < 3; i++) {
+      p = monthlyPlaybackTick(p, 4)!;
+      expect(p.blinkTicks, `第 ${i} 拍`).toBe(0);
+    }
+  });
+
+  it('★★ 第 4 拍那一下真的贴出那一块 80×40（画在立绘之上）', () => {
+    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
+    const view = monthlySummary(state, state);
+    const { sprite } = fakeSpriteFn();
+    const topo = { nodes: [], lands: [], facilities: [] };
+    const at = (blinkTicks: number) => {
+      const { ctx, blits } = fakeCanvas();
+      drawMonthlyScreen(ctx, sprite, state, topo, view, null, {
+        ...monthlyPlaybackStart(), revealed: 3, blinkTicks,
+      });
+      return blinkPatches(blits);
+    };
+    expect(at(0)).toHaveLength(0);
+    expect(at(2)).toHaveLength(0);
+    const patch = at(MONTHLY_BLINK_TICKS - 1);
+    expect(patch).toHaveLength(1);
+    expect(patch[0]!.index).toBe(MONTHLY_CHUNK.panel);
+    expect(patch[0]!.keyed).toBe(false);
+    expect(patch[0]!.x).toBe(76);
+    expect(patch[0]!.y).toBe(120);
+  });
+
+  it('★ 頒獎屏（phase = award）不再眨眼 —— 状态那时已经不是 0', () => {
+    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
+    const view = monthlySummary(state, state);
+    const award = monthlyAward(state, state, { nodes: [], lands: [], facilities: [] });
+    const { sprite } = fakeSpriteFn();
+    const { ctx, blits } = fakeCanvas();
+    drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award, {
+      ...monthlyPlaybackStart(), phase: 'award', blinkTicks: MONTHLY_BLINK_TICKS - 1,
+    });
+    expect(blinkPatches(blits)).toHaveLength(0);
+  });
+});
+
 describe('★ 頒獎屏那两张 4 行表底下那块锦缎板（图 2 @ (440,405)，2026-09-17 定案）', () => {
   it('★ 表一出来就贴图 2 在 (440,405)、**不抠黑**（原版走 `fcn_004563f5`）', () => {
     // @source 状态 7 VA 0x0043866f / 状态 0x12 VA 0x00438deb：
@@ -1456,6 +1547,7 @@ describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () 
     const seatsFull: MonthlyPlayback = {
       phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0,
       encourage: false, closing: false, skipTicks: 0, farewell: false, farewellTicks: 0,
+      blinkTicks: 0,
     };
     const calls: string[] = [];
     const fakeFlic = (archive: string, resource: number) => {
@@ -1507,6 +1599,7 @@ describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () 
     const seatsFull: MonthlyPlayback = {
       phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0,
       encourage: false, closing: false, skipTicks: 0, farewell: false, farewellTicks: 0,
+      blinkTicks: 0,
     };
     const drawn: { x: number; y: number }[] = [];
     const ctx = {
@@ -1649,7 +1742,7 @@ describe('★ 收尾那一句说的是**谁** @source 0x00438d04 / 0x004383a6 / 
     const p: MonthlyPlayback = {
       phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS,
       details: MONTHLY_DETAIL_ROWS, encourage: true, closing: false, skipTicks: 0,
-      farewell: false, farewellTicks: 0,
+      farewell: false, farewellTicks: 0, blinkTicks: 0,
     };
     drawMonthlyScreen(ctx, () => null, st, {} as never, view, award, p);
     const sadText = texts.find((t) => t.startsWith(MONTHLY_TRAGIC));
@@ -1729,7 +1822,9 @@ describe('★★ 四处「裁切滑动」逐条核实：**都是同坐标还原*
     //   实测 `assets-clean/Panel/0025_019.png` = **186×410** ⇒ 从 (52,50) 拷
     //   80×40 完全**在界内**（132 ≤ 186、90 ≤ 410）。
     //   先前以为它是图 29（那才是 60×25）并据此判「越界读 ⇒ 不接」，那条**作废**。
-    //   ⚠️ 本模块仍未接这一笔（要接得先定它画在哪、什么时机），登记在 gaps §7.3。
+    //   ★★ 2026-09-19 **已接**：`MONTHLY_BLINK_PATCH` —— 结算屏等点击时的待机眨眼，
+    //   每 4 拍画一次（原版 `[0x48c42c] & 0x30` 每拍 +0x10，到 0x30 那一拍贴完清 0）。
+    //   行为断言见上面那个 describe。
     expect(exeBuf.length === 0 || exeBuf.includes(pushPattern([0x28, 0x50, 0x32, 0x34]))).toBe(true);
   });
 });

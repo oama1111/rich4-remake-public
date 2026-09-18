@@ -1205,7 +1205,60 @@ export interface MonthlyPlayback {
   farewell: boolean;
   /** 0x16 那个倒数（`[0x48c425]`）；进 `farewell` 时置 `MONTHLY_FAREWELL_TICKS` */
   farewellTicks: number;
+  /**
+   * ★ 结算屏待机眨眼的拍数（0..`MONTHLY_BLINK_TICKS-1`）。
+   *
+   * = 原版 `[0x48c42c] & 0x30` 的高半字节（每拍 `+0x10`，到 `0x30` 那一拍
+   * 画 `MONTHLY_BLINK_PATCH` 并把状态清 0）。见上面那个常量的长注释。
+   */
+  blinkTicks: number;
 }
+
+/**
+ * ★ **记者小姐眨眼那一笔**（`loc_004391ee` 的第 3 帧）—— 原版 `fcn_0045643d` 的
+ * 一次**真位移**裁切拷贝：
+ *
+ * ```asm
+ * ; @source 0x004391ee 起（`ebx == 1` 那一支；`ebx = ([0x48c42c] & 0x30) >> 4`）
+ * 0043924c  push 0x28 / 0x50 / 0x32 / 0x34        ; 6 个立即数（cdecl 逆序）
+ * 00439264  mov eax, [0x48c41c] / add eax,0xf0    ; ⇒ 图 19（186×410 的记者小姐立绘）
+ * 00439276  call 0x45643d                          ; ⇒ (dst, 图素, x,y, srcX,srcY, w,h, 1, 0)
+ * 00439280  mov byte [0x48c42c], 0                  ; ★ 画完把状态清回 0
+ * ```
+ *
+ * `exblit` 的参数序实测为 `(dst, src, x, y, srcX, srcY, w, h, flags, 0)`
+ * （`0x455e24`：`[ebp+0xc]=src`、`[ebp+0x10]=图素`、`[ebp+0x14/0x18]=x/y`、
+ * `[ebp+0x1c/0x20]=srcX/srcY`、`[ebp+0x24/0x28]=w/h`），故这一笔是
+ * **把图 19 的 (52,50) 起 80×40 原样拷到 (76,120)** —— 落点 (76,120)+80×40
+ * 正好是**记者小姐的眼睛那一块**。
+ *
+ * ★ **什么时候画**：`[0x48c42c] & 0x30` 每画一拍 `+0x10`（`0x4392d4`），
+ *   所以是「同一状态下第 4 拍才画」，随后状态清 0。而进入这条支的条件
+ *   （`0x439196`）是「`[0x48c42c] & 0xf == 0` 且 `rand15() >> 10` 为 0 或 1」
+ *   —— 也就是**结算屏等玩家点击时的待机眨眼**（每 4 拍一次，且有 2/3 概率
+ *   每拍重新掷要不要眨眼）。本模块按「每 4 拍一次」的确定性等价实现
+ *   （视觉等价；原版那一掷不推进引擎 PRNG 之外的任何状态）。
+ *
+ * ⚠️ 先前这条被登记为「仍未接线」（`docs/gaps/README.md` §7.3 第 13 项、
+ *   `monthly-screen.test.ts` 的 1720 行注释）—— 本轮落码。
+ */
+export const MONTHLY_BLINK_PATCH = {
+  /** 源落点（图 19 局部坐标）*/
+  srcX: 0x34,
+  srcY: 0x32,
+  /** 拷贝尺寸 */
+  w: 0x50,
+  h: 0x28,
+  /** 目的地落点 */
+  dstX: 0x4c,
+  dstY: 0x78,
+} as const;
+
+/**
+ * 待机眨眼的拍数 = 4（`[0x48c42c] & 0x30 >> 4` 走 0→1→2→3）。
+ * @source 0x004392d4 `add byte [0x48c42c], 0x10`
+ */
+export const MONTHLY_BLINK_TICKS = 4;
 
 /** 从第 0 行开始（原版 `[0x48c42a] = 0` 那一状态）*/
 export function monthlyPlaybackStart(): MonthlyPlayback {
@@ -1220,6 +1273,7 @@ export function monthlyPlaybackStart(): MonthlyPlayback {
     skipTicks: 0,
     farewell: false,
     farewellTicks: 0,
+    blinkTicks: 0,
   };
 }
 
@@ -1276,8 +1330,12 @@ export function monthlyPlaybackTick(
     return left > 0 ? { ...p, skipTicks: left } : null;
   }
   if (p.phase === 'settle') {
-    if (p.revealed < Math.max(0, rows - 1)) return { ...p, revealed: p.revealed + 1 };
-    return p;
+    if (p.revealed < Math.max(0, rows - 1)) {
+      return { ...p, revealed: p.revealed + 1, blinkTicks: 0 };
+    }
+    // ★ 全亮之后是**待机拍**：原版正是在这里跑那条眨眼循环
+    //   （`0x439196` 的闸门 = `[0x48c42c] & 0xf == 0`），画完那一笔把状态清 0。
+    return { ...p, blinkTicks: (p.blinkTicks + 1) % MONTHLY_BLINK_TICKS };
   }
   if (!p.closing) {
     if (p.bars < MONTHLY_SLOTS) return { ...p, bars: p.bars + 1 };
@@ -1556,7 +1614,26 @@ export function drawMonthlyScreen(
     drawRowText(ctx, at, monthlyRowText(row));
   }
 
-  // ── ② 頒獎屏 ──
+  // ── ② 待机眨眼（`loc_004391ee` 的第 3 帧）──
+  // 只在**结算屏等点击**时画：那一支的闸门是 `[0x48c42c] & 0xf == 0`。
+  if (p.phase === 'settle' && p.blinkTicks === MONTHLY_BLINK_TICKS - 1) {
+    const blink = monthlySprite(sprite, MONTHLY_CHUNK.panel, false);
+    if (blink !== null) {
+      ctx.drawImage(
+        blink.bitmap,
+        MONTHLY_BLINK_PATCH.srcX - blink.anchorX,
+        MONTHLY_BLINK_PATCH.srcY - blink.anchorY,
+        MONTHLY_BLINK_PATCH.w,
+        MONTHLY_BLINK_PATCH.h,
+        MONTHLY_BLINK_PATCH.dstX,
+        MONTHLY_BLINK_PATCH.dstY,
+        MONTHLY_BLINK_PATCH.w,
+        MONTHLY_BLINK_PATCH.h,
+      );
+    }
+  }
+
+  // ── ③ 頒獎屏 ──
   if (p.phase !== 'award' || award === null) return;
 
   // 状态 1：先把图 1 在 (70,24) 那块 70×24 原样盖到 (24,70)（见 MONTHLY_AWARD_PATCH）
