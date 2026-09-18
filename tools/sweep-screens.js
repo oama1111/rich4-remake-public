@@ -8,7 +8,9 @@
  * 用法（与 soak 同一套）：
  *   1) pnpm dev
  *   2) 浏览器打开 http://localhost:5173/?screen=game&humans=1&ai=3&map=0&seed=7&chars=0,3,5,7
- *   3) `browse js "$(cat tools/sweep-screens.js)"`，然后读 `globalThis.__isweep`
+ *   3) `cp tools/sweep-screens.js /tmp/sweep.js && browse eval /tmp/sweep.js`，
+ *      然后读 `globalThis.__isweep`
+ *      ⚠️ 与 `soak-browser.js` 同：**不要**用 `browse js "$(cat …)"`（多行脚本会出问题，见该文件用法 3）
  *
  * 实测（2026-09-16，地圖 0）：14 种全部正常 ——
  *   PENGUIN_DIG / BALLOON / GIFT_FROM_SKY → `minigame`

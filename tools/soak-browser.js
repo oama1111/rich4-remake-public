@@ -31,7 +31,13 @@
  *   2) 用浏览器工具打开
  *      http://localhost:5173/?screen=game&humans=1&ai=3&map=0&seed=7&chars=0,3,5,7
  *      —— 要跑真人路径就再加 `&humanPath=1`
- *   3) 把本文件内容整段 `js` 执行（gstack：`browse js "$(cat tools/soak-browser.js)"`）
+ *   3) 整段执行（gstack）：**必须用 `browse eval <file>`**，先把脚本放到 `/tmp` 或 cwd：
+ *      `cp tools/soak-browser.js /tmp/soak.js && browse eval /tmp/soak.js`
+ *      ⚠️ **不要**用 `browse js "$(cat tools/soak-browser.js)"` —— 那条路解析多行脚本会出问题
+ *      （实测症状：脚本在 `document.querySelector('canvas')` 处拿到 `null`，
+ *       报 `Cannot read properties of null (reading 'getBoundingClientRect')`，
+ *       而同一条表达式单独用 `js` 跑却正常；根因未查清，`eval <file>` 稳过。
+ *       2026-09-19 又踩了一次，见 gaps §7.131）。
  *   4) 过几分钟读 `globalThis.__soak`：
  *      默认路径：`{ticks, turns, stalls: [], errors: [], dialogClicks}`
  *      真人路径：上面那些之外还有
