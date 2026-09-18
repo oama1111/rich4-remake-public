@@ -420,6 +420,7 @@ describe('★ 入口台詞那一拍：绘制（Q-ANIM-1 / D-MAGIC-12）', () => 
     const f = fakeGreetCtx();
     drawMagicScreen(f.ctx, f.sprite, {
       view, pointer: 4, witchBlink: false, beat: 1, hover: 0, frame: 0, greet: 0,
+      eyesShut: false,          // ★ 入口三句那几拍原版还没到状态 3，女巫不闭眼
       boxLine: MAGIC_GREET_LINES[0] ?? null,
     });
     const box = f.images.find((i) => i.chunk === MAGIC_MSG_BOX.chunk);
@@ -432,10 +433,51 @@ describe('★ 入口台詞那一拍：绘制（Q-ANIM-1 / D-MAGIC-12）', () => 
     const f = fakeGreetCtx();
     drawMagicScreen(f.ctx, f.sprite, {
       view, pointer: 4, witchBlink: false, beat: 1, hover: 0, frame: 0, greet: null,
+      eyesShut: true,           // 过了入口 = 状态 3 起，闭眼贴片在
       boxLine: null,
     });
     // 图 8 是**结果长条框**，只在第二拍压上去；第一拍不该出现
     expect(f.images.some((i) => i.chunk === MAGIC_MSG_BOX.chunk)).toBe(false);
+  });
+});
+
+describe('★ 闭眼贴片（图 3）的**拍位** —— 状态 3→4 才贴、之后一直在（2026-09-19 订正）', () => {
+  const view = { caster: 0, option: 4, name: '均富', targets: [], criterionName: '', criterion: -1 } as never;
+  const draw = (eyesShut: boolean, beat: 1 | 2 = 1) => {
+    const f = fakeGreetCtx();
+    drawMagicScreen(f.ctx, f.sprite, {
+      view, pointer: 4, witchBlink: false, beat, hover: 0, frame: 0, greet: null,
+      eyesShut, boxLine: null,
+    });
+    return f.images.filter((i) => i.chunk === MAGIC_CHUNK.eyesShut);
+  };
+
+  it('★ `eyesShut: false`（= 入口三句那几拍）⇒ **不画**闭眼', () => {
+    expect(draw(false)).toHaveLength(0);
+  });
+
+  it('★ `eyesShut: true` ⇒ 画在图 3、落点 (286,188)（= `MAGIC_EYES_AT`）', () => {
+    const hit = draw(true);
+    expect(hit).toHaveLength(1);
+    expect(hit[0]).toMatchObject({ x: 0x11e, y: 0xbc });
+    expect(MAGIC_EYES_AT).toEqual({ x: 0x11e, y: 0xbc });
+    // Lock 的那个矩形正好是图 3 自己的尺寸 60×35
+    expect(0x15a - 0x11e).toBe(60);
+    expect(0xdf - 0xbc).toBe(35);
+  });
+
+  it('★★ 第二拍（女巫挪到 (0xb6,0x8e)）**闭眼仍在** —— 原版状态 4 才在它上面叠眼睑/嘴', () => {
+    const hit = draw(true, 2);
+    expect(hit).toHaveLength(1);
+    expect(hit[0]).toMatchObject({ x: 0x11e, y: 0xbc });
+    // 并且那一拍女巫本体确实换了位置（否则这条断言没意义）
+    const f = fakeGreetCtx();
+    drawMagicScreen(f.ctx, f.sprite, {
+      view, pointer: 4, witchBlink: false, beat: 2, hover: 0, frame: 0, greet: null,
+      eyesShut: true, boxLine: null,
+    });
+    const witch = f.images.find((i) => i.chunk === MAGIC_CHUNK.witchIdle);
+    expect(witch).toMatchObject({ x: MAGIC_WITCH_BEAT2_AT.x, y: MAGIC_WITCH_BEAT2_AT.y });
   });
 });
 

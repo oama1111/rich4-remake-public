@@ -1104,6 +1104,14 @@ export interface MagicDraw {
    *   先前没有 beat 模型，第二拍什么都不画。
    */
   beat: 1 | 2;
+  /**
+   * 女巫**闭眼**（图 3）要不要画 —— 原版 `loc_00432951` 是**状态 3→4 那一下**
+   * 贴的，之后一直在（状态 4 再叠眼睑/嘴）。
+   *
+   * ⇒ `greet`（入口三句）时为 false；`roll` / `criterion` / `spin` / `hold` 为 true。
+   * @source 0x00432951（见 `MAGIC_EYES_AT` 的长注释）
+   */
+  eyesShut: boolean;
   /** 鼠标正指着的扇区（原版 `[0x48c3a1]`），0 = 不在任何扇区上 */
   hover: number;
   /** 图标动画的帧计数器（`magicAnimationFrame(now)`）*/
@@ -1390,7 +1398,7 @@ export function drawMagicScreen(
     if (label !== '') magicText(ctx, label, textAt.x, textAt.y, MAGIC_FONT_SIZE + 4);
   }
 
-  // ── 女巫：第一拍在原位，第二拍挪到 (0xb6,0x8e) ──
+  // ── 女巫：第一拍在原位（铺场图 1 在左、常态图 2 在右），第二拍挪到 (0xb6,0x8e) ──
   if (d.beat === 1) {
     // 铺场那张（图 1，抱水晶球）先落 (0x8c,0xf1)，再由常态女巫压上去
     drawAnchored(
@@ -1399,9 +1407,20 @@ export function drawMagicScreen(
       MAGIC_WITCH_INTRO_AT.x,
       MAGIC_WITCH_INTRO_AT.y,
     );
-    // ★ 摇签开始那一拍（原版状态 3，@source 0x00432951）：女巫**闭眼**贴片（图 3，60×35）
-    //   落在 (286,188)。原版先 Lock 一个正好 60×35 的矩形再贴，本引擎直接贴。
-    //   ⚠️ 这一笔先前**完全没有**（模块只画女巫本体）。
+  }
+  const witchAt = d.beat === 2 ? MAGIC_WITCH_BEAT2_AT : MAGIC_WITCH_AT;
+  drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.witchIdle), witchAt.x, witchAt.y);
+
+  // ★ **闭眼**贴片（图 3，60×35）—— 原版**状态 3→4 那一下**贴的
+  //   （`loc_00432951`，@source 0x00432958 的矩形 (0x11e,0xbc)-(0x15a,0xdf)），
+  //   之后**一直在**（状态 4 才在它上面叠眼睑 图 4/嘴 图 5），
+  //   所以要跨「摇签 → 条件 → 转盘 → 停留」四拍都在，而**入口三句那几拍不能有**。
+  //
+  //   ⚠️ 2026-09-19 订正：先前把它挂在 `d.beat === 1` 上（= 整个第一拍，
+  //   含 `greet` 入口三句）⇒ 女巫**从第一句起就一直闭着眼**；
+  //   而 `greet` 段原版走的是入口那段（`loc_00432647`/`loc_004326b9`），
+  //   闭眼要等状态 3 的摇签才开始。
+  if (d.eyesShut) {
     drawAnchored(
       ctx,
       magicSprite(sprite, MAGIC_CHUNK.eyesShut),
@@ -1409,8 +1428,6 @@ export function drawMagicScreen(
       MAGIC_EYES_AT.y,
     );
   }
-  const witchAt = d.beat === 2 ? MAGIC_WITCH_BEAT2_AT : MAGIC_WITCH_AT;
-  drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.witchIdle), witchAt.x, witchAt.y);
 
   // 「说话」那一拍叠一张嘴（图 5，60×21）—— 不是换整只女巫
   if (d.witchBlink) {
@@ -1505,6 +1522,8 @@ export const magicScreen: UiScreen = {
       pointer,
       witchBlink,
       beat,
+      // 闭眼：过了入口三句才有（`greet` 段原版还在入口，状态 3 才贴）
+      eyesShut: playback !== null && playback.phase !== 'greet',
       hover,
       frame,
       greet,
