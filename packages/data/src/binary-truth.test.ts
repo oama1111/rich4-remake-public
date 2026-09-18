@@ -56,7 +56,8 @@ const VA = {
   /** 31 项函数指针（第 0 项为 NULL 占位）@source csrc/cards.c 的注释 */
   cardFunctions: 0x475d5c,
   /** 魔法屋功能表 `_rich4_magic_house_function_info`，每项 16 字节 */
-  magicHouse: 0x475724,
+  /** ★ 第 101 条订正：表基址是 0x475718（先前误用 0x475724 = 记录内的 +12 名称字段）*/
+  magicHouse: 0x475718,
   /** 等距投影表，8 视角 × 0xd24 字节 */
   projection: 0x46ccf0,
   /** 块内亚像素偏移矩阵，8 视角 × 4 个 int8 */
@@ -203,7 +204,11 @@ d('★ 数值表以 rich4.exe 为基准校验', () => {
       expect(exe[o + 0x18], `${ch.name} f24`).toBe(ch.f24);
       expect(exe[o + 0x19], `${ch.name} initCashRatio`).toBe(ch.initCashRatio);
       expect(exe[o + 0x1a], `${ch.name} f26`).toBe(ch.f26);
+      // ★ +0x00 是指向名字串的指针 —— 既校验指针值本身（存档写出要用），
+      //   也用它解出名字串（一举两得的独立校验）
+      expect(exe.readUInt32LE(o), `${ch.name} namePointer`).toBe(ch.namePointer);
       expect(readStringAt(exe, exe.readUInt32LE(o)), `${ch.name} 名称`).toBe(ch.name);
+      expect(readStringAt(exe, ch.namePointer), `${ch.name} namePointer 指向的名字`).toBe(ch.name);
     }
   });
 
@@ -276,26 +281,32 @@ d('★ 数值表以 rich4.exe 为基准校验', () => {
     expect(NO_SELECTION_CARD_IDS).toEqual([1, 3, 7, 8, 15, 22]);
   });
 
-  it('★ 魔法屋 12 个功能名与二进制一致', () => {
+  it('★ 魔法屋 12 个功能（图号 / 摆位 / 名字）与二进制**逐字段**一致', () => {
     const exe = loadExe();
     const base = vaToOffset(VA.magicHouse);
     expect(MAGIC_HOUSE_OPTIONS).toHaveLength(12);
 
-    // 前 11 项完全按 16 字节结构校验
-    for (let i = 0; i < 11; i++) {
+    // @source 0x00431d05（0 基读 +12 名称）与 0x00432dc4（1 基读 +0 图号）
+    //   ⇒ 同一条 16 字节记录 {+0 img, +4 x, +8 y, +12 name}。
+    //   ★ 第 101 条订正：先前用 base=0x475724 + {name,frames,x,y}，
+    //     名字恰好对、其余三项整体错位一格（十二个图标旋转了一位）。
+    for (let i = 0; i < 12; i++) {
       const o = base + i * 16;
       const opt = MAGIC_HOUSE_OPTIONS[i]!;
-      expect(readStringAt(exe, exe.readUInt32LE(o))).toBe(opt.name);
-      expect(exe.readUInt32LE(o + 4)).toBe(opt.frames);
-      expect(exe.readUInt32LE(o + 8)).toBe(opt.x);
-      expect(exe.readUInt32LE(o + 12)).toBe(opt.y);
+      expect(exe.readUInt32LE(o), `option ${i} img`).toBe(opt.img);
+      expect(exe.readUInt32LE(o + 4), `option ${i} x`).toBe(opt.x);
+      expect(exe.readUInt32LE(o + 8), `option ${i} y`).toBe(opt.y);
+      expect(readStringAt(exe, exe.readUInt32LE(o + 12)), `option ${i} name`).toBe(opt.name);
     }
 
-    // 第 12 项只有名字可信 —— 表里那 16 字节不符合前 11 项的字段模式
-    const last = base + 11 * 16;
-    expect(readStringAt(exe, exe.readUInt32LE(last))).toBe(MAGIC_HOUSE_OPTIONS[11]!.name);
-    // 记录「为什么不采信」：帧数字段落在了不合理的范围
-    expect(exe.readUInt32LE(last + 4)).toBeGreaterThan(100);
+    // 「指针高亮」那一支用的是 **1 基**下标：0x475708 + 16k（k = 功能号 + 1）
+    // ⇒ 与上面 0 基读取落在同一条记录上，互相印证字段序。
+    for (let opt = 0; opt < 12; opt++) {
+      const k = opt + 1;
+      expect(exe.readUInt32LE(vaToOffset(VA.magicHouse) - 0x10 + k * 16)).toBe(
+        MAGIC_HOUSE_OPTIONS[opt]!.img,
+      );
+    }
   });
 
   it('★ 投影表 8×29×29 与二进制逐项一致', () => {

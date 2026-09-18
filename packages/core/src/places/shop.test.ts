@@ -108,6 +108,13 @@ describe('★ 卖', () => {
     expect(r.player.cards).toEqual([]);
   });
 
+  it('★★ 點券是 16 位字段：卖卡所得也回绕（65500 + 180 → 144）', () => {
+    // 原版 `add word [player + 0x30], ax`（机械普查见 rich4-spec/tests/test_points_field.py）
+    const r = sellCard(makePlayer({ points: 65500, cards: [1] }), 1);
+    expect(r.ok).toBe(true);
+    expect(r.player.points).toBe(65680 - 65536);
+  });
+
   it('没有这张卡卖不了', () => {
     expect(sellCard(makePlayer({ cards: [] }), 1).error).toBe('notOwned');
   });

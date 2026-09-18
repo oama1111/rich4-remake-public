@@ -32,6 +32,7 @@
 
 import type { GameState } from '../state/types.ts';
 import type { MapNode } from '../loaders/map.ts';
+import { placeOnNode } from './position.ts';
 import { directionOf, linkBlockedMask } from '../state/reduce.ts';
 
 /** 傳送機道具编号 */
@@ -207,14 +208,7 @@ export function teleportPlayer(
     ...state,
     players: state.players.map((x, i) =>
       i === playerIndex
-        ? {
-            ...x,
-            nodeId: targetNodeId,
-            lastNodeId: facing.from,
-            direction: facing.direction,
-            xpos: node.x,
-            ypos: node.y,
-          }
+        ? placeOnNode({ ...x, lastNodeId: facing.from, direction: facing.direction }, node)
         : x,
     ),
   };

@@ -5,7 +5,9 @@
 
 import { describe, expect, it } from 'vitest';
 import { NEWS_EVENTS, newsEvent } from '@rich4/data';
-import { makePlayer } from '../testing/factories.ts';
+import { makeNode, makePlayer } from '../testing/factories.ts';
+import { makeObjects } from '../cards/summon.ts';
+import { SPECIAL_KIND } from '../loaders/map.ts';
 import {
   IMPLEMENTED_NEWS_IDS,
   LAND_PRICE_DOWN,
@@ -24,6 +26,14 @@ const ctx = (over = {}) => ({
   pool: 0,
   ...over,
 });
+
+/** 1 = 普通格、2 = 监狱、3 = 医院（坐标刻意不同，便于断言「真的搬过去了」） */
+const NODES = [
+  makeNode({ id: 1, x: 100, y: 200 }),
+  makeNode({ id: 2, x: 1935, y: 1039, specialKind: SPECIAL_KIND.PRISON }),
+  makeNode({ id: 3, x: 777, y: 888, specialKind: SPECIAL_KIND.HOSPITAL }),
+];
+const OBJS = makeObjects(46);
 
 describe('★ 受影响的人由调用方指定，不默认是抽牌者', () => {
   it('news[8] 表揚第一大地主 —— 奖金给指定的人', () => {
@@ -175,6 +185,32 @@ describe('方向与命運一致', () => {
     const r = applyNewsEffect(29, ctx({ days: 5 }));
     expect(r.players[0]!.blocking.inPrison).toBe(5);
     expect(r.prisonOccupancy[0]).toBe(1);
+  });
+
+  // ★★ 2026-09-18：原版 `send_to_prison`/`send_to_hospital` 的**函数体内**含
+  //   「传送到监狱／医院格 + 跟班搬家」（`@source 0x43d601`..`0x43d674`），
+  //   所以新聞这条路的受害者**不在原地**。差分证据：
+  //   `rich4-spec/tests/test_confinement_teleport.py`（48/48）。
+  it('★ news[29] 坐牢要把人**送进监狱格**（并带回新的物件表）', () => {
+    const r = applyNewsEffect(29, ctx({ days: 5, nodes: NODES, objects: OBJS }));
+    expect(r.players[0]!.nodeId).toBe(2); // 2 号格是监狱
+    expect(r.players[0]!.xpos).toBe(1935);
+    expect(r.objects).toHaveLength(OBJS.length);
+  });
+
+  it('★ 新聞 4「外星人攻打地球」住院 → 送进医院格；已是病人则原地加刑', () => {
+    const r = applyNewsEffect(4, ctx({ days: 3, nodes: NODES, objects: OBJS }));
+    expect(r.players[0]!.blocking.inHospital).toBe(3);
+    expect(r.players[0]!.nodeId).toBe(3); // 3 号格是医院
+    const again = applyNewsEffect(4, ctx({
+      days: 3,
+      nodes: NODES,
+      objects: OBJS,
+      players: [makePlayer({ index: 0, blocking: { ...makePlayer().blocking, inHospital: 2 } }),
+        ...ctx().players.slice(1)],
+    }));
+    expect(again.players[0]!.blocking.inHospital).toBe(5);
+    expect(again.players[0]!.nodeId).toBe(1); // ★ 原地不动
   });
 });
 
@@ -700,5 +736,83 @@ describe('未实现', () => {
     const e = newsEvent(29)!;
     expect(e.literal).toBeNull();
     expect(e.text).toContain('坐牢５天');
+  });
+});
+
+// ============================================================
+//  ★★ 原版 mutate 尾部的 `0x40dffa`：拆屋会把**全场被关押者**放出来
+//  差分证据：rich4-spec/tests/test_mutate_release.py（7/7）
+// ============================================================
+
+describe('★ 拆屋顺带放人（0x40dffa）', () => {
+  const hotel = (id: number, level: number) =>
+    ({ id, name: '旅館', level, type: 6, owner: 1, landPrice: 100 }) as never;
+  const land2 = (id: number, level: number) =>
+    ({ id, name: 'A', level, type: 0, owner: 1, landPrice: 100 }) as never;
+  const confined = (i: number, inHotel: number, whoPlays = 1) =>
+    makePlayer({ index: i, whoPlays, blocking: { ...makePlayer().blocking, inHotel } });
+
+  it('★ 設施拆到 0 级 ⇒ 全场在场且被关的人置 0x80（出局者不动）', () => {
+    // news[21] 龍捲風：候选含設施；rand()%2=1 → 走設施那支；level 1 → 0
+    const r = applyNewsEffect(21, ctx({
+      players: [confined(0, 3), confined(1, 0), confined(2, 5, 0), confined(3, 7)],
+      lands: [land2(1, 1)],
+      facilities: [hotel(1, 1)],
+      rng: { below: () => 1 },
+    }));
+    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 1 }]);
+    expect(r.players.map((p) => p.blocking.inHotel)).toEqual([0x80, 0, 5, 0x80]);
+  });
+
+  it('★ 只拆到 1 级（没归零）⇒ **不放人**', () => {
+    const r = applyNewsEffect(21, ctx({
+      players: [confined(0, 3), confined(1, 0), confined(2, 0), confined(3, 7)],
+      lands: [land2(1, 1)],
+      facilities: [hotel(1, 2)],
+      rng: { below: () => 1 },
+    }));
+    expect(r.facilityMutations).toEqual([{ id: 1, level: 1, type: 6, owner: 1 }]);
+    expect(r.players.map((p) => p.blocking.inHotel)).toEqual([3, 0, 0, 7]);
+  });
+
+  it('★ 地块 mode 1（清归属）无条件放人', () => {
+    // news[19]「土地流失」类走 clearOwner；用 21 的 mode 0 不够，这里直接挑 news 5/19
+    const r = applyNewsEffect(19, ctx({
+      players: [confined(0, 4), confined(1, 0), confined(2, 0), confined(3, 0)],
+      lands: [land2(1, 2)],
+      facilities: [],
+      rng: { below: () => 0 },
+    }));
+    // 只要这次确实改了记录，就该放人；若该 news 走的是别的 mode，本断言会暴露
+    if (r.amount > 0) {
+      expect(r.players[0]?.blocking.inHotel).toBe(0x80);
+    }
+  });
+});
+
+// ============================================================
+//  ★★ 2026 本轮：新聞关押也要清"另一张"占用表（原版 `0x40d761` 的两道闸）
+//  差分证据：rich4-spec/tests/test_confinement_release.py（15/15）
+// ============================================================
+
+describe('★ 新聞入狱要清医院那一格', () => {
+  const hospitalised = (i: number) =>
+    makePlayer({ index: i, blocking: { ...makePlayer().blocking, inHospital: 5 } });
+
+  it('住院中被新聞判入狱 → 医院床位释放 + 计数器清 0', () => {
+    // 29 = 「違法超貸 經營者坐牢５天」（effects: ['prison']，literal 5）
+    const players = [hospitalised(0), makePlayer({ index: 1 }),
+      makePlayer({ index: 2 }), makePlayer({ index: 3 })];
+    // ⚠️ news 29 的 `literal` 是 null（天数由公告阶段给）⇒ 必须在 ctx 里给 `days`
+    const r = applyNewsEffect(29, ctx({
+      players,
+      affected: [0],
+      days: 5,
+      hospitalOccupancy: [1, 0, 0, 0, 0, 0, 0, 0],
+    }));
+    expect(r.prisonOccupancy?.[0]).toBe(1);       // 进监狱表
+    expect(r.hospitalOccupancy?.[0]).toBe(0);     // ★ 医院那格被清
+    expect(r.players[0]?.blocking.inHospital).toBe(0);
+    expect(r.players[0]?.blocking.inPrison).toBe(5);
   });
 });

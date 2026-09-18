@@ -21,6 +21,7 @@
  */
 
 import type { StockState } from './stock.ts';
+import { u16 } from './stock.ts';
 import type { WatcomRng } from '../rng/watcom.ts';
 import { STOCKS, STOCKS_PER_MAP } from '@rich4/data';
 import { dayNumberSince1998, isHoliday } from './calendar.ts';
@@ -117,6 +118,19 @@ export function tickSize(price: number): number {
  *
  * ★ 两个方向都是**朝开盘价方向取整**——涨的少算、跌的少算，
  *   而不是四舍五入。别改成 round，那会让长期走势整体偏高。
+ *
+ * ★★ **已知偏离 T-STOCK-1**（2026-09-19 第 95 条，通道 2：
+ *   `rich4-spec/tests/test_stock_price.py` 65/65）：
+ *   原版的 `fmod` 是 **x87 `fprem`**（`0x45841c`），**不是 C 库 fmod**。
+ *   当 `diff` 恰为 `tick` 的整数倍时两者答案不同：`fprem` 常给 ≈0、
+ *   C fmod（= 这里的 JS `%`）给 ±tick ⇒ 结果**差一跳**：
+ *   `(open=20, pct=+10)` 原版 **22.0**、本函数 **21.9**；`(5,+5)` 原版 5.25、本函数 5.2。
+ *   实测：通用输入 1200/1200 一致；「整数价 × 整数涨跌」族 **39/2800** 差一跳
+ *   （新闻 ±10% 命中的正是这一族）。
+ *   另：中间精度原版是 x87 扩展（80 位），本函数用 double + `Math.fround`
+ *   **二次舍入**，实测 60 例非整数输入里 2 例差 1 ulp（`open=33.3, pct=±9.5`）。
+ *   要位级一致得照抄 `fprem` 的「每轮 3 位商 + PC=53 舍入」算法 —— 见
+ *   `docs/known-deviations.md` 的 T-STOCK-1（分界不是 `k` 的简单函数，故**不做启发式修补**）。
  */
 export function applyPriceTick(price: number, pct: number): number {
   const raw = Math.fround(Math.fround(Math.fround(pct + PERCENT_BASE) / PERCENT_BASE) * price);
@@ -330,9 +344,18 @@ export function tickStockMarket(
     } else if (prev.newsFlag !== 0) {
       trend = newsTrend(prev.newsFlag);
     } else {
-      shock = Math.fround((rng.next() - RAND_MIDPOINT) / SHOCK_DIVISOR);
-      // @source fmul [+24] / fadd [+28] —— ★ 叠加在昨日趋势上
-      trend = Math.fround(Math.fround(shock * prev.volatility) + prev.trend);
+      // ★★ 原版这一段是 `fdiv` 之后 `fst dword [+0x20]` —— **`fst` 不弹栈**，
+      //   所以后面 `fmul [+24] / fadd [+28]` 用的是**未舍入的扩展精度 r**，
+      //   而存进 `+0x20` 的才是舍过的 f32。通道 2 实测（第 96 条，
+      //   `rich4-spec/tests/test_stock_daily.py` §E）：用舍过的 r 会差 **1 ulp**
+      //   （`r = −4096/1171`、vol=1、昨日=2 ⇒ 原版 `0xbfbfba0b`、舍过则 `0xbfbfba0a`）。
+      // ⚠️ C-DET-3 的定向豁免：原版这里 `fdiv` 的结果**不落内存**（`fst` 不弹栈），
+      //   乘加用的是扩展精度的商，所以这一处**故意不取整** —— 要的是位级复现，不是账目金额。
+      // eslint-disable-next-line no-restricted-syntax
+      const shockRaw = (rng.next() - RAND_MIDPOINT) / SHOCK_DIVISOR;
+      shock = Math.fround(shockRaw);
+      // @source fmul [+24] / fadd [+28] —— ★ 叠加在昨日趋势上（用未舍入的 shockRaw）
+      trend = Math.fround(shockRaw * prev.volatility + prev.trend);
       // @source fld [0x4990ec] / fadd [+28]
       trend = Math.fround(drift + trend);
 
@@ -497,7 +520,9 @@ export function refreshTradableShares(market: StockMarketState, rng: WatcomRng):
     // @source cmp dx, 0x3e8 / jbe → 不超过 1000 就原样照抄
     if (s.shares <= 1000) return { ...s, f10: s.shares };
     const r = (rng.next() % 2000) + 1000;
-    return { ...s, f10: Math.trunc(Math.fround(s.shares * Math.fround(r / 10000))) };
+    // 原版是 `mov word [ebx + 0x49698a], dx` ⇒ 存的是 **u16**（此处计算值必然 < 65536，
+    // 掩一下只是照抄存储宽度，防止上游给出 >u16 的 shares 时静默失真）
+    return { ...s, f10: u16(Math.trunc(Math.fround(s.shares * Math.fround(r / 10000)))) };
   });
   return { ...market, stocks };
 }

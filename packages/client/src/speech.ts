@@ -46,6 +46,11 @@
  * 2. 原版 `_rich4_player_say` 是**逐句播完再返回**，本引擎的 `SoundPlayer`
  *    是即发即忘，故同一动作里派生的多句会**叠着响**（见 main.ts 的 playSoundFor）。
  * 3. 事件 16/17/22/23/26 本卡未接，理由逐条写在偏离登记里。
+ * 4. ★ **卡牌台词不走状态差分**（2026-09-19 补）：那 26 张卡各自的
+ *    `player_say(出牌者, flag, 卡牌台词表[角色][卡号-1])` 是**调用点参数**，
+ *    不是状态跃迁，差分法看不见（此前整条缺失，见 gaps §7.89(2)）。
+ *    现在由 core 的 `GameState.lastCardPlay` 提示字段交出来，
+ *    本文件用 `cardPlaySpeech()` 翻成气泡。
  */
 
 import { isAlive, WHO_PLAYS_HUMAN, WHO_PLAYS_MASK, type GameState, type Player } from '@rich4/core';
@@ -55,7 +60,7 @@ import {
   SPEECH_EVENTS_PER_CHARACTER,
   speechIndex,
 } from '@rich4/data';
-import { speechBubbleOf, type SpeechBubble } from './speech-bubble.ts';
+import { cardLineBubbleOf, speechBubbleOf, type SpeechBubble } from './speech-bubble.ts';
 
 // ============================================================
 //  对外形状
@@ -527,6 +532,11 @@ export function detectHotelStay(before: GameState, after: GameState): SayEvent[]
  */
 export function detectPointsGained(before: GameState, after: GameState): SayEvent[] {
   const out: SayEvent[] = [];
+  // ★★ 2026-09-19（第 94 条）：**得點券格 / 小遊戲不玩**那两笔「點入帳」不走 `0x44f230`，
+  //   它们各自 `player_say(玩家, 0, 角色表事件)`（`0x41b1f8` / `0x41b28d` / `0x4154b6`），
+  //   由下面的 `pointsSquarePhrase` 开口。这里必须**让开**，否则同一笔会说两句
+  //   （而且 `0x44f230` 的档位表与角色台词表本来就是两套词）。
+  if (after.lastEvent?.kind === 'minigameDecline') return out;
   for (let i = 0; i < after.players.length; i++) {
     const amount = delta(before, after, i, 'points');
     if (amount <= 0) continue;
@@ -535,6 +545,21 @@ export function detectPointsGained(before: GameState, after: GameState): SayEven
     out.push({ player: i, event: tier });
   }
   return out;
+}
+
+/**
+ * 「得點券」格 / 小遊戲「不玩」那两笔的台词 —— 用**角色台词表**而不是 `0x44f230` 的档位表。
+ *
+ * @source `0x0041b211` / `0x0041b29e`（得點券格）、`0x004154b6`（小遊戲不玩）三处都是
+ *   `player_say(玩家, 0, [角色*0x6c + 事件*4 + 0x48084a])`。
+ *   core 把选中的**事件下标**交在 `lastEvent.phraseIndex` 里：
+ *     得 50 點 = `rand() & 1`（事件 0/1）、得 30 點 = **固定事件 2**、得 10 點 = 不说。
+ */
+export function detectPointsSquarePhrase(before: GameState, after: GameState): SayEvent[] {
+  const ev = after.lastEvent;
+  if (ev === null || ev === undefined || ev.kind !== 'minigameDecline') return [];
+  void before;
+  return [{ player: after.currentPlayer, event: ev.phraseIndex ?? 0 }];
 }
 
 /**
@@ -556,6 +581,8 @@ export const DETECTORS: readonly SpeechDetector[] = [
   { name: 'moneyGained', source: [0x0044f354], detect: detectMoneyGained },
   { name: 'hotelStay', source: [0x0041a7e0, 0x0044f2c2], detect: detectHotelStay },
   { name: 'pointsGained', source: [0x0044f230], detect: detectPointsGained },
+  // ★ 得點券格 / 小遊戲不玩：走角色台词表（`0x41b211`/`0x41b29e`/`0x4154b6`）
+  { name: 'pointsSquarePhrase', source: [0x0041b211, 0x0041b29e, 0x004154b6], detect: detectPointsSquarePhrase },
 ];
 
 /**
@@ -623,6 +650,43 @@ export function speechBubblesFor(
     if (bubble !== null) out.push(bubble);
   }
   return out;
+}
+
+/**
+ * **卡牌使用者台词** —— `GameState.lastCardPlay` 变化时，出牌者说的那一句。
+ *
+ * 原版这句在**卡片函数体内**（`@source 0x44210e` 等 26 处，见
+ * `@rich4/data` 的 `card-lines.ts`），由 `player_say`（VA `0x44ef41`）播放。
+ *
+ * ★★ 三道「不说话」的闸照抄原版 `player_say` 的开头
+ *   （`0x44ef63`–`0x44ef9a`，全部 `jne → ret`）：
+ *
+ * ```asm
+ * 0044ef79  cmp  byte ptr [eax + 0x496b9b], 0   ; +0x33 days_disappearing
+ * 0044ef80  jne  0x44f228                       ;   ⇒ 直接返回
+ * 0044ef86  cmp  byte ptr [eax + 0x496b9f], 0   ; +0x37 days_sleep_walking
+ * 0044ef8d  jne  0x44f228
+ * 0044ef93  cmp  byte ptr [eax + 0x496b9e], 0   ; +0x36 days_sleeping
+ * 0044ef9a  jne  0x44f228
+ * ```
+ *   （**不在**里面的：監獄 `+0x34` / 醫院 `+0x35` / 住宿 `+0x32`。）
+ *
+ * ⚠️ 原版 `player_say` 的第二个实参（`flag`，各卡传 0 或 3）**函数体里一次都没读**
+ *   —— 实测 `grep 'esp + 0x28'` 在该函数 235 条指令里 0 命中，故本引擎无需建模。
+ *
+ * 纯函数（C-DET-1/2/4）：不读 DOM、不碰音频、不动 PRNG。
+ */
+export function cardPlaySpeech(before: GameState, after: GameState): SpeechBubble[] {
+  const play = after.lastCardPlay;
+  if (play === null) return [];
+  // 同一次用卡只出一次（提示字段是「最近一次」的覆写语义）
+  if (before.lastCardPlay === play) return [];
+  const p = after.players[play.player];
+  if (p === undefined) return [];
+  const b = p.blocking;
+  if (b.disappearing !== 0 || b.sleepWalking !== 0 || b.sleeping !== 0) return [];
+  const bubble = cardLineBubbleOf(play.player, p.character, characterName(p.character), play.cardId);
+  return bubble === null ? [] : [bubble];
 }
 
 /** 角色号的显示名；越界给一个看得出来的占位（与 `main.ts` 里那几处同一套约定）*/

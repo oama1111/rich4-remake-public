@@ -79,6 +79,58 @@ export function checkDefensiveCards(target: Player): PassiveTrigger {
   return { kind: 'none' };
 }
 
+/** 命中防御卡后的结果：触发类型 + **已扣除该卡**的持有者 */
+export interface DefensiveApplied {
+  trigger: PassiveTrigger;
+  /** 命中时该持有者的牌已少一张；未命中则原样返回（同一引用） */
+  player: Player;
+}
+
+/**
+ * ★ 检查有害卡命中目标时是否被防御卡拦下，并**把命中的那张卡消耗掉**。
+ *
+ * @source 两个处理函数**内部各自 `remove_card`**，不是"只查不扣"：
+ * ```asm
+ * ; 免罪卡 0x00444bb2（target = esi）
+ * 00444c07  push 0x15                  ; 21
+ * 00444c10  push esi
+ * 00444c11  call 0x441343              ; remove_card(target, 21)
+ * ; 嫁祸卡 0x0044476a
+ * 004449ec  push 0x13                  ; 19
+ * 004449ee  push edi
+ * 004449ef  call 0x441343              ; remove_card(target, 19)
+ * ```
+ * 此前 remake 只读 `playerHasCard`、**从不消耗**，于是受害者的防御卡
+ * 永远留在手里 —— 同一张免罪卡可以反复挡下每一次攻击（**阻断级**）。
+ *
+ * ⚠️ 顺序仍是**免罪卡(21) 优先，命中即止**（不再查嫁祸卡）。
+ */
+export function applyDefensiveCards(target: Player): DefensiveApplied {
+  if (playerHasCard(target, PASSIVE_CARDS.ABSOLUTION)) {
+    return {
+      trigger: { kind: 'absolution' },
+      player: consumeCard(target, PASSIVE_CARDS.ABSOLUTION),
+    };
+  }
+  if (playerHasCard(target, PASSIVE_CARDS.SCAPEGOAT)) {
+    return {
+      trigger: { kind: 'scapegoat' },
+      player: consumeCard(target, PASSIVE_CARDS.SCAPEGOAT),
+    };
+  }
+  return { trigger: { kind: 'none' }, player: target };
+}
+
+/**
+ * 復仇卡(18) 生效时给**施害者**的天数 —— **硬编码 5**，不走
+ * 「对自己 4 天 / 对别人 5 天」那条式子（那条只用于卡的主效果）。
+ *
+ * @source `0x0044441d`（夢遊卡的復仇支）：`mov byte ptr [eax + 0x496b9f], 5`
+ *   （`eax` = `[0x49910c]` 的玩家结构 = 施卡者）；
+ * @source `0x0044466f`（陷害卡的復仇支）：`push 5` / `push [0x49910c]` / `call 0x43d593`。
+ */
+export const REVENGE_DAYS = 5;
+
 /** 从手牌中消耗一张卡（取第一张匹配的） */
 export function consumeCard(player: Player, cardId: number): Player {
   const at = player.cards.indexOf(cardId);

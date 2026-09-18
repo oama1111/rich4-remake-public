@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
+import { WatcomRng } from '../rng/watcom.ts';
+import { autoMinigameScore } from '../places/minigame.ts';
 import { LOTTERY_TICKET_PRICE } from '../places/lottery.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
@@ -299,5 +301,122 @@ describe('★ 小游戏：真人要玩，电脑不玩', () => {
     const waiting = reduce(s, { type: 'settle' }, t);
     const done = reduce(waiting, { type: 'minigame', score: 9_999_999 }, t);
     expect(done.players[s.currentPlayer]!.points - s.players[s.currentPlayer]!.points).toBe(999);
+  });
+});
+
+// ★ 满手牌口径（2026-09-17 修正）：原版抽卡走 `giveCard`（`0x004412e4`，
+//   卡片格 `0x00441e12` 在 `0x00441e64` 正是 `call 0x4412e4`）——
+//   **手牌满 15 张时先弃掉最便宜的一张再收新的**，不是"满了就不发"。
+describe('★ 卡片格：满手牌时先弃最便宜的再收', () => {
+  run('手牌 15 张时抽卡：总数仍 15，且最便宜的那张被换掉', () => {
+    const { map, topo: t } = topo();
+    const node = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.CARD);
+    if (node === undefined) return; // 这张图没有卡片格
+
+    // 牌堆里只留一种卡，保证抽出来的卡号可预期
+    const amounts = new Array<number>(30).fill(0);
+    amounts[6] = 5; // 改建卡 = 卡号 7（1 基）
+
+    const base = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.CARD);
+    if (base === null) return;
+    const me = base.currentPlayer;
+    // 塞满 15 张：13 号（均富卡，贵）+ 其余的用同一个便宜卡号占位
+    const full: GameState = {
+      ...base,
+      cardAmount: amounts,
+      players: base.players.map((p, i) =>
+        i === me ? { ...p, cards: [22, ...new Array<number>(14).fill(22)] } : p,
+      ),
+    };
+
+    const after = reduce(full, { type: 'settle' }, t);
+    const hand = after.players[me]!.cards;
+
+    expect(hand).toHaveLength(15); // ★ 仍然是 15 张（不是"满就不发"）
+    expect(hand).toContain(7); // ★ 新抽到的卡进来了
+    // 送神符(22) 被弃掉一张 ⇒ 22 的个数从 15 变成 14
+    expect(hand.filter((c) => c === 22)).toHaveLength(14);
+  });
+});
+
+// ★ 小游戏「不玩」出口固定消耗 **2** 次随机数（原版 `0x00415457` + `0x004154b6`）：
+//   ① 得分 `50 + rand()%20`；② `rand()&1` 从角色台词表 `0x48084a` 取事件 0／1 的台词。
+//   这一支**电脑玩家也走**，所以那两次 `rand()` 与谁在玩无关。
+//   此前 remake 只掷 ① ⇒ 这一支之后的随机事件整体错开一步。
+describe('★ 小游戏「不玩」：恰好消耗两次随机数', () => {
+  run('AI 不玩时 rngState 正好前进两步，并交出选中的台词下标', () => {
+    const { map, topo: t } = topo();
+    const kind = [SPECIAL_KIND.PENGUIN_DIG, SPECIAL_KIND.BALLOON, SPECIAL_KIND.GIFT_FROM_SKY].find(
+      (k) => map.nodes.some((n) => n.specialKind === k),
+    );
+    if (kind === undefined) return; // 这张图没有小游戏格
+    const node = map.nodes.find((n) => n.specialKind === kind)!;
+
+    // currentPlayer 默认是电脑 → enterMinigame 走「不玩」出口
+    const base: GameState = {
+      ...newGame({ map, players: players() }),
+      phase: 'settling' as const,
+      players: newGame({ map, players: players() }).players.map((p, i) =>
+        i === 0 ? { ...p, nodeId: node.id } : p,
+      ),
+    };
+    const seed = base.rngState;
+
+    const after = reduce(base, { type: 'settle' }, t);
+
+    // 手工推两步作为真值（这一支里没有别的随机消耗）
+    const probe = new WatcomRng();
+    probe.setState(seed);
+    const first = probe.next();
+    const second = probe.next();
+
+    expect(after.rngState).toBe(probe.getState()); // ★ 正好两步
+    expect(autoMinigameScore(first)).toBeGreaterThanOrEqual(50);
+    expect(after.lastEvent).toEqual({
+      kind: 'minigameDecline',
+      id: 0,
+      phraseIndex: second & 1,
+    });
+  });
+});
+
+// ★ 抽卡格尾部的**条件性**随机消耗（原版 `0x0041b37b` → `call 0x44f230`）：
+//   只有 `50 < 卡价 <= 100` 才 `call rand` 选台词（`0x0044f280`）。
+//   受影响卡：11 怪獸(60)、15 冬眠(100)、30 烏龜(70)。
+//   其余两档（>100 取事件 0、<=50 另支）**不掷**。
+describe('★ 卡片格：卡价落在 (50,100] 时多掷一次', () => {
+  const drawWith = (cardId: number) => {
+    const { map, topo: t } = topo();
+    const node = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.CARD);
+    if (node === undefined) return null;
+    const amounts = new Array<number>(30).fill(0);
+    amounts[cardId - 1] = 5; // 牌堆里只留这一种
+    const base = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.CARD);
+    if (base === null) return null;
+    return { t, before: { ...base, cardAmount: amounts } as GameState };
+  };
+
+  run('怪獸卡（价 60）多掷一次；均富卡（价 200）不掷', () => {
+    // 11 怪獸 price 60 ∈ (50,100] ⇒ 掷
+    const a = drawWith(11);
+    if (a === null) return;
+    const afterA = reduce(a.before, { type: 'settle' }, a.t);
+    const probeA = new WatcomRng();
+    probeA.setState(a.before.rngState);
+    const r1 = probeA.next(); // 抽卡
+    const r2 = probeA.next(); // ★ 台词
+    expect(afterA.rngState).toBe(probeA.getState());
+    expect(afterA.lastEvent).toEqual({ kind: 'minigameDecline', id: 0, phraseIndex: r2 & 1 });
+    expect(r1).toBeDefined();
+
+    // 1 均富卡 price 200 > 100 ⇒ 不掷
+    const b = drawWith(1);
+    if (b === null) return;
+    const afterB = reduce(b.before, { type: 'settle' }, b.t);
+    const probeB = new WatcomRng();
+    probeB.setState(b.before.rngState);
+    probeB.next(); // 只抽卡这一次
+    expect(afterB.rngState).toBe(probeB.getState());
+    expect(afterB.lastEvent).toBeNull();
   });
 });

@@ -20,19 +20,22 @@ import type { GameState, Player } from '../state/types.ts';
 import type { FacilityInfo, LandInfo, MapNode } from '../loaders/map.ts';
 import type { WatcomRng } from '../rng/watcom.ts';
 import { isAlive } from '../state/types.ts';
+import { addPoints } from './points.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import { PAY_FLAG_CREDIT_TO_CASH, transferMoney } from './payment.ts';
 import { emptyOwnership, ownerOf } from '../places/commercial.ts';
 import {
   OBJECT_TYPE_GIFT,
+  OBJECT_TYPE_MINE,
+  OBJECT_TYPE_ROADBLOCK,
   OBJECT_TYPE_TREASURE,
+  OBJECT_TO_TOOL,
   TREASURE_POINTS,
   drawGiftTool,
 } from './object-landing.ts';
 import { giveTool } from './tools.ts';
 import {
   ACTOR_PLACE,
-  SPECIAL_ACTOR_BASE,
   idleActor,
   type SpecialActor,
 } from './special-actors.ts';
@@ -91,6 +94,21 @@ export type NpcEvent =
    * 取完**不清**公司盈餘（那段没有写回），照抄。
    */
   | { kind: 'surplus'; landlord: number; amount: number; company: number }
+  /**
+   * ★ 非小偷的三个惡人（5..7）**踩到陷阱** —— 原版他们走的是「玩家那一支」。
+   *
+   * @source 路障 `0x41bceb` / 地雷 `0x41be5f` 的玩家分支：
+   *   两条开头都是 `cmp [0x49910c], 8 / jge 另一支` + `cmp …, 4 / je 另一支`，
+   *   所以 actor 5..7 落到玩家分支：
+   *   · **路障**：`cmp eax,4 / je` 只排掉小偷，5..7 照样 `remove_object(槽号)` +
+   *     `[0x48baf8] = 0`（★ 不看剩余步数 ⇒ **半途也拦**），这趟就此收场；
+   *   · **地雷**：先 `cmp [0x48baf8], 0 / jne` ⇒ **必须停在这一格才炸**，
+   *     然后 `remove_object` + `0x43ec3f(actor, 3)`（住院 3 天）、这趟收场；
+   *   · 两者都**不**毁座驾（`cmp ecx,4 / jge` 跳过）也**不**说台词（`cmp ebp,4 / jge`）。
+   *
+   *   陷阱都走 `remove_object` ⇒ 原样回**商店库存**（道具 2/3），**不进任何人**的道具栏。
+   */
+  | { kind: 'trap'; node: number; object: number; objectType: number; hospital: boolean }
   | { kind: 'home'; place: 'prison' | 'hospital'; node: number };
 
 /**
@@ -153,6 +171,37 @@ export function runNpc(
         path,
         events,
       };
+    }
+
+    // ── ①.5 ★ 陷阱：小偷拆、另外三个挨 ──
+    // @source 0x41bceb（路障）/ 0x41be5f（地雷）的玩家分支 —— 见 NpcEvent 里那条。
+    //   ⚠️ 原版**先**按格子上的物件分派（跳表），**再**在收尾 `0x41c164` 里查老家；
+    //      这里把老家放在前面只是为了不动既有语义（監獄/醫院格上放不了物件）。
+    if (actor !== NPC.thief) {
+      const at = state.objects.findIndex(
+        (o) =>
+          o.nodeId === cur &&
+          (o.type === OBJECT_TYPE_ROADBLOCK || o.type === OBJECT_TYPE_MINE),
+      );
+      if (at !== -1) {
+        const type = state.objects[at]!.type;
+        // @source `cmp dword [0x48baf8], 0 / jne` —— 只有地雷看剩余步数
+        const lastStep = step === start.stepsRemaining - 1;
+        if (type === OBJECT_TYPE_ROADBLOCK) {
+          events.push({ kind: 'trap', node: cur, object: at, objectType: type, hospital: false });
+          // @source xor ecx,ecx / mov [0x48baf8], ecx —— 半途拦下，人停在原地
+          return {
+            actor: { ...start, nodeId: cur, lastNodeId: prev, stepsRemaining: 0, place: ACTOR_PLACE.board },
+            path,
+            events,
+          };
+        }
+        if (lastStep) {
+          events.push({ kind: 'trap', node: cur, object: at, objectType: type, hospital: true });
+          // @source call 0x43ec3f(actor, 3) —— 替身进医院，这趟收场
+          return { actor: { ...idleActor(), owner, place: ACTOR_PLACE.hospital }, path, events };
+        }
+      }
     }
 
     // ── ② 小偷：捡东西／拆陷阱 ──
@@ -310,11 +359,6 @@ export function spyTollAt(
   return null;
 }
 
-/** 这个 actor 号是不是四大惡人之一（不含機器娃娃） */
-export function isNpcActor(actor: number): boolean {
-  return actor >= SPECIAL_ACTOR_BASE && actor <= NPC.spy;
-}
-
 /**
  * 把一趟走子的结果落进状态。
  *
@@ -352,8 +396,8 @@ export function applyNpcEvents(
           i === e.object ? { ...o, nodeId: 0, state: 0, attached: 0 } : o,
         );
         if (e.objectType === OBJECT_TYPE_TREASURE) {
-          // @source 0x0041bcb6 `add word [主人 + 0x30], 0x1f4`
-          give(owner, (p) => ({ ...p, points: p.points + TREASURE_POINTS }));
+          // @source 0x0041bcb6 `add word [主人 + 0x30], 0x1f4` —— ★ 16 位回绕
+          give(owner, (p) => ({ ...p, points: addPoints(p.points, TREASURE_POINTS) }));
           break;
         }
         // 禮物抽一件、陷阱原样回收 —— 两者都进**主人**的道具栏
@@ -365,9 +409,24 @@ export function applyNpcEvents(
         }
         break;
       }
+      case 'trap': {
+        // @source 0x40e14d —— 拆除走同一条 remove_object：陷阱**回商店库存**（道具 2/3），
+        //   不进任何人的道具栏（与小偷那一支的 `give_tool(主人, k)` 差别就在这里）
+        objects = objects.map((o, i) =>
+          i === e.object ? { ...o, nodeId: 0, state: 0, attached: 0 } : o,
+        );
+        const toolId = OBJECT_TO_TOOL.get(e.objectType);
+        if (toolId !== undefined) {
+          toolStock = [...toolStock];
+          toolStock[toolId] = (toolStock[toolId] ?? 0) + 1;
+        }
+        break;
+      }
       case 'points': {
-        give(e.victim, (p) => ({ ...p, points: p.points - e.amount }));
-        give(owner, (p) => ({ ...p, points: p.points + e.amount }));
+        // @source 0x0041c25d `sub word [受害者 + 0x30], di` / 0x0041c27a `add word [主人 + 0x30], di`
+        //   —— ★ 一减一加都是 16 位（偷點券那一对）
+        give(e.victim, (p) => ({ ...p, points: addPoints(p.points, -e.amount) }));
+        give(owner, (p) => ({ ...p, points: addPoints(p.points, e.amount) }));
         break;
       }
       case 'card': {

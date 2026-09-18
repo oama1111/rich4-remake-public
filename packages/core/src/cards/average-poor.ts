@@ -65,17 +65,19 @@ export function applyAveragePoorCard(
   const them = players[target.index];
   if (me === undefined || them === undefined) return fail('playerOutOfRange');
 
-  const sum = me.cash + them.cash;
+  // @source `add edx, esi` —— ★ 32 位寄存器**按补码回绕**（通道 2：两人各 0x7FFFFFFF ⇒ −2）
+  const sum = (me.cash + them.cash) | 0;
   // @source sar edx,0x1f / sub eax,edx / sar eax,1 —— 有符号除 2，向零取整
-  const average = Math.trunc(sum / 2);
+  const average = Math.trunc(sum / 2) || 0; // ★ 归一 −0（见 average-cash.ts 的注）
 
   const hostilityDeltas: { from: number; to: number; delta: number }[] = [];
-  // @source cmp esi, eax / jge 跳过 —— 仅当目标现金被拉低时记敌意
+  // @source cmp esi, eax / jge 跳过 —— 仅当目标现金被拉低时记敌意（**有符号**比较）
   if (average < them.cash) {
     hostilityDeltas.push({
       from: target.index,
       to: currentPlayer,
-      delta: Math.trunc((them.cash - average) / HOSTILITY_DIVISOR),
+      // @source `sub edx, esi` —— 差值按 32 位回绕（通道 2 里会得到 −21474836）
+      delta: Math.trunc(((them.cash - average) | 0) / HOSTILITY_DIVISOR) || 0,
     });
   }
 

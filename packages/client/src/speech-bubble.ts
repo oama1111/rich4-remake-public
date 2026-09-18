@@ -37,7 +37,14 @@
  * ⚠️ 本模块是**纯表现**：不读 DOM、不碰音频、不动 PRNG、不写 `GameState`（C-DET-1/2/4）。
  *   取图那一步交给调用方传进来的 `sprite` 出口（`main.ts` 的 `spriteNow`）。
  */
-import { speechEmojiImage, speechIndex, speechLine, type SpeechLine } from '@rich4/data';
+import {
+  cardLine,
+  cardLineVoice,
+  speechEmojiImage,
+  speechIndex,
+  speechLine,
+  type SpeechLine,
+} from '@rich4/data';
 import type { Sprite } from './assets.ts';
 import type { SayEvent } from './speech.ts';
 
@@ -116,8 +123,20 @@ export interface SpeechBubble {
   readonly player: number;
   /** 角色号（0..11） */
   readonly character: number;
-  /** 槽位号（0..26） */
+  /** 槽位号（0..26）；卡牌台词（`cardId` 非空）时它是**卡号 − 1**，见 `cardId` */
   readonly event: number;
+
+  /**
+   * 卡牌台词时给出卡号 1..30（普通台词为 `undefined`）。
+   *
+   * ★ 用**可选**字段而不是新类型：`SpeechBubble` 的消费方（渲染、队列、测试）
+   *   都按同一形状处理；`toEqual` 也天然忽略 `undefined` 字段。
+   *   两条来源的区别：
+   *   - 普通台词：`event` = 角色台词表（VA `0x48084a`，27 槽）的槽位；
+   *   - 卡牌台词：`event` = 卡号 − 1，文本/语音来自**另一张表**
+   *     （VA `0x48123a`，见 `@rich4/data` 的 `card-lines.ts`）。
+   */
+  readonly cardId?: number;
   /** 说话人的**完整名字**（如「金貝貝」）*/
   readonly speaker: string;
   /** 字幕的行（已按 `\n` 拆好、去掉了空行）*/
@@ -166,8 +185,68 @@ export function speechBubbleOf(
     event: ev.event,
     speaker,
     lines: isEmoji ? [] : bubbleLines(text),
-    // 语音号：普通台词 = `speechIndex()`（1050 + 27×角色 + 槽位）；表情串没有配音
-    voice: isEmoji ? null : speechIndex(character, ev.event),
+    // ★★ 语音号：`1050 + 27×角色 + 槽位`（`speechIndex()`）**对 324 条全部成立**，
+    //   **包括金貝貝（角色 11）那 27 条**。
+    //
+    //   此前写成 `isEmoji ? null : speechIndex(...)`，于是金貝貝的 27 条**永远不播**。
+    //   原版语义是「**播语音 + 画表情**」两件事，不是二选一 ——
+    //   `@source 0x0044f07c`–`0x0044f136` 的 `player_say`：
+    //   ```asm
+    //   0044f07c  cmp  byte ptr [ebx], 0x23   ; 首字符 '#'
+    //   0044f081  mov  esi, 5                 ; 前缀长 5
+    //   0044f08d  cmp  byte ptr [edx], 0x40   ; 跳过 5 字符后是 '@'（表情图号）
+    //   0044f0e8  cmp  esi, 5
+    //   0044f0ed  …                           ; 解析 4 位十进制
+    //   0044f136  call 0x45441a               ; ★ play_speech(值) —— 照样播
+    //   ```
+    //   实测：角色 11 第 0 项 = `#1347@04`，而 `1050 + 11×27 + 0 = 1347` ✓。
+    //
+    //   ⚠️ 但**这只是"角色台词表"那 324 条**。文本里其余 610 个低于 1050 的
+    //     `#NNNN`（如 `#0004歡迎下次再來！`）走的是**别的**文字入口，
+    //     它们目前**只被剥前缀、不播语音** —— 那是本簇剩下的工作（见差距报告 D）。
+    voice: speechIndex(character, ev.event),
+    emoji: isEmoji ? speechEmojiImage(emojiCode) : null,
+    textAt: SPEECH_TEXT_AT,
+    emojiAt: SPEECH_EMOJI_AT,
+    holdMs: SPEECH_HOLD_MS,
+  };
+}
+
+/**
+ * **用卡时角色说的那一句** —— 来自卡牌台词表（`@rich4/data` 的 `CARD_LINES`）。
+ *
+ * @source 每张可主动使用的卡都在函数体里读自己那一槽并调 `player_say`：
+ * ```asm
+ * ; 送神符 @0x444d0e（26 张卡各一处，槽号恒 = 卡号-1）
+ * 00444d0e  mov  ebp, dword ptr [eax + 0x48128e]   ; 0x48123a + 4*21
+ * 00444d14  push ebp / 00444d15 jmp 0x44305e       ; → player_say(cur, 0, 台词)
+ * ```
+ * 与 `speechBubbleOf` 的差别只有「表不同」：文本/语音/表情的处理完全同构
+ * （金貝貝那一列同样是 `@DD`：**照样播语音**，另画一张表情图）。
+ */
+export function cardLineBubbleOf(
+  player: number,
+  character: number,
+  speaker: string,
+  cardId: number,
+): SpeechBubble | null {
+  let line: SpeechLine;
+  try {
+    line = cardLine(character, cardId);
+  } catch {
+    return null;
+  }
+  const [emojiCode, text] = line;
+  const isEmoji = emojiCode !== null;
+  return {
+    player,
+    character,
+    event: cardId - 1,
+    cardId,
+    speaker,
+    lines: isEmoji ? [] : bubbleLines(text),
+    // @source 串头 `#NNNN`：`426 + 52×角色 + (卡号-1)`，360 条无例外
+    voice: cardLineVoice(character, cardId),
     emoji: isEmoji ? speechEmojiImage(emojiCode) : null,
     textAt: SPEECH_TEXT_AT,
     emojiAt: SPEECH_EMOJI_AT,

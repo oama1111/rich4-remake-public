@@ -60,7 +60,6 @@ export const SPECIAL_KIND = {
  * bits 8-23 为运行时占用状态，bit 31 为静态禁放标志。
  * @source rich4_node_utils.asm:26  test dword [eax+0x24], 0x80ffff00
  */
-export const OCCUPIED_MASK = 0x80ffff00;
 
 // ============================================================
 //  类型
@@ -241,6 +240,16 @@ export interface FacilityInfo {
   facing: number;
   /** @source land.h 0x1c */
   priceStatus: number;
+  /**
+   * 地契到期日（打包日期 `年<<16|月<<8|日`），0 = 無限期。
+   *
+   * ★ **商業用地的 `flast` 在 `+0x34`，与住宅的 `+0x30` 不同**
+   *   —— `@source 0x004425e9 mov dword ptr [ebx + 0x34], eax ; 商業：flast @ +0x34`
+   *   （对照住宅 `@source 0x0044246c mov dword ptr [ebx + 0x30], eax`）。
+   *   见 `rich4-spec/docs/systems/cards.md` 的「買地卡」一节。
+   * 运行时值住在 `GameState.facilityTenure`，这里只是模板初值（静态地图恒 0）。
+   */
+  flast: number;
   /** @source land.h 0x22 */
   landPrice: number;
   /**
@@ -571,6 +580,8 @@ export function parseMap(data: Uint8Array): Rich4Map {
       //   `GameState.facilityResearchProject/Days`。
       researchProject: data[o + 0x1d] ?? 0,
       researchDays: data[o + 0x1e] ?? 0,
+      // ★ 商業用地的地契到期日在 +0x34（住宅是 +0x30，两者不同，见字段注释）
+      flast: u32(o + 0x34),
       landPrice: view.getUint16(o + 0x22, true),
       housePrice: view.getUint16(o + 0x24, true),
       // ★ +0x24 其实是**按等级索引的费率表**，不是单个房价。
@@ -627,12 +638,4 @@ export function parseMap(data: Uint8Array): Rich4Map {
   const dataSize = landscapeOff + (numLandscapes + 1) * LANDSCAPE_SIZE;
 
   return { nodes, lands, facilities, commercials, landscapes, dataSize };
-}
-
-/**
- * 原版的「该节点可否放置道具」判定。
- * @source rich4_node_utils.asm:26-31
- */
-export function isNodeAvailableForObject(node: MapNode): boolean {
-  return (node.flags & OCCUPIED_MASK) === 0 && node.walkable;
 }

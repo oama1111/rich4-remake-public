@@ -219,6 +219,17 @@ export const OFFSET = {
    *   实测两个存档都是全 0（没人买过票）。
    */
   lottery: 0x26be,
+  /**
+   * ★ 地图视角旋转档位 0..7 @source `[0x499088]`，4 字节。
+   *
+   * 由热键 `<` / `>` 改变（`rich4-spec/docs/systems/animation.md` 已结案：
+   * **是地图视角档位，不是动画帧计数**），并且**会存进存档**
+   * —— 存档块序表 `+0x2743`，写侧 `@source 0x0040330d` 一带、
+   * 读侧 `@source 0x00402e6d`。
+   * 实测两个样本都是 **0**（默认视角），所以该字段**无法用样本区分**，
+   * 只能靠构造字节做可证伪的单测。
+   */
+  viewRotation: 0x2743,
   /** 新聞牌堆游标 @source `[0x4990e0]`（实测 Save0 = 19、SAVE1 = 0）*/
   newsCursor: 0x26f2,
   /** 命運牌堆游标 @source `[0x4990b4]`（实测 Save0 = 7、SAVE1 = 0）*/
@@ -247,9 +258,28 @@ export const OFFSET = {
    *   `state/types.ts` 的 `GameState.initialFund`。
    */
   initialFund: 0x268a,
+  /**
+   * **人类玩家数** `[0x499104]` —— 终局码的判据（`0x41d96e cmp [0x499104],1`）。
+   *
+   * ★ 原版只在开新局时按 `player[i].+0x64 & 1` 数一次（`0x407250 inc`），
+   *   之后**不再更新**（破产 `0x40cd87` 不写它）⇒ 必须从存档读回来，
+   *   不能拿 `whoPlays` 现数。实测 Save0 = **2**（该档 `whoPlays` 为 `1,1,2,2`）。
+   *   见 `state/types.ts` 的 `GameState.humanPlayers`。
+   */
+  humanPlayers: 0x01b0,
   priceIndex: 0x268e,
   /** 已过天数 `[0x4990e4]`（日推进每回合 +1）@source 同上 §5.2 */
   totalDays: 0x2692,
+  /**
+   * 已过**月数**计数器 @source `[0x499084]`（dword）。
+   *
+   * @source 跨月 +1：`rich4_player_core_actions.asm` 的 `add dword [0x499084], edi`；
+   *   另被 `0x429f60 idiv` 用作「土地现值 ÷ 月数」的除数。
+   *   ★ 与 `0x499080`（公库）**毫无关系** —— 早期文档把两者并成「金钱统计池」是错的，
+   *   见 `rich4-spec/docs/systems/save-scalars.md`。
+   *   实测 Save0 = **9**、SAVE1 = **0**。
+   */
+  totalMonths: 0x2696,
   /**
    * **新聞**牌堆洗牌序，36 项（`0..35` 的排列）。
    *
@@ -302,6 +332,15 @@ export const GOD = {
  */
 export interface PlayerState {
   index: number;
+  /**
+   * `+0x04` 代表色（`0x00RRGGBB`）。
+   *
+   * ★ 它**不是玩家状态，是角色常量**：新局时整条玩家记录由
+   *   `memcpy(player, &character_profiles[character], 0x68)` 拷来
+   *   （`@source 0x004072c3`–`0x004072e4`），全 exe 也没有任何一处写过 `+0x04`。
+   *   ⇒ 写档器按 `character` 查 `@rich4/data` 的表即可，`GameState` 不需要这个字段。
+   *   同一句 memcpy 也产生了 `+0x00`（名字串指针，读档时被 `@source 0x00402bae` 覆盖）。
+   */
   color: number;
   xpos: number;
   ypos: number;
@@ -356,6 +395,11 @@ export interface PlayerState {
   /** 同盟玩家：0 表示无，否则为玩家 id + 1 */
   alliedPlayer: number;
   totalWinterSleepDays: number;
+  /**
+   * `+0x43` —— ⚠️ **全 exe 无读无写的死字节**（`0x496bab` 的 `read_by`/`written_by` 都为空）。
+   * 解析器留着它是为了逐字节往返；**不要**把它接到任何引擎字段上
+   * （先前 `savedTrafficMethod: f67` 就是接错的，见 `savegame.ts` 的订正）。
+   */
   f67: number;
   f68: number;
   f70: number;
@@ -364,13 +408,46 @@ export interface PlayerState {
   /** 对其他玩家的敌意值，6 项 */
   hostility: number[];
   f100: number;
+  /** `+0x65` —— 只有 `0x41c84f` 读、**无写者** ⇒ 语义未决 */
   f101: number;
+  /** ★ `+0x66` = **夢遊卡的「睡前移动方式」备份** @source `0x4441dc` `mov [+0x66],[+0x11]` */
   f102: number;
+  /** ★ `+0x67` = **夢遊卡的「睡前骰子数」备份** @source `0x4441dc` `mov [+0x67],[+0x12]` */
   f103: number;
   /** 手上的卡片编号列表（1 基；已剔除空槽） */
   cards: number[];
   /** 各道具持有数量，下标为道具 id - 1，长度 13 */
   tools: number[];
+}
+
+/**
+ * 公佈欄挂牌槽（12 字节）—— **块 `0x2526`：4 玩家 × 7 槽 × 12 字节 = 336**。
+ *
+ * ```asm
+ * ; 挂牌 VA 0x004246c5 的几次写入（本文件只解出「读档要用的那几个字段」）
+ * 00424725  mov byte  [eax + 0x4967e0], bl   ; +0 類型（0 = 空）
+ * 0042472d  mov byte  [eax + 0x4967e1], bh   ; +1 挂牌天龄（**只写不读**的死数据）
+ * 00424733  mov word  [eax + 0x4967e2], si   ; +2 物品编号
+ * 0042473e  mov dword [eax + 0x4967e4], ecx  ; +4 標價
+ * 00424751  mov word  [eax + 0x4967e8], dx   ; +8 股數（只有類型 1 = 股票用）
+ * 00424785  mov byte  [eax + 0x4967ea], bl   ; +a 地產/設施的 +0x18（只有類型 2 用）
+ * 0042478f  mov byte  [eax + 0x4967eb], dl   ; +b 地產/設施的 +0x1a（只有類型 2 用）
+ * ```
+ * ⚠️ `+8` 是 **word**、`+a`/`+b` 是两个 **byte** —— 别把 12 字节当成 3 个 u32。
+ */
+export interface SaveListingSlot {
+  /** `+0`：0 = 空；1 = 股票、2 = 地產/設施、3 = 道具、4 = 卡片 */
+  kind: number;
+  /** `+2` */
+  id: number;
+  /** `+4` */
+  price: number;
+  /** `+8`，只有股票用 */
+  amount: number;
+  /** `+a`，只有類型 2（地產/設施）用：挂牌那一刻的 `+0x18` */
+  estateType: number;
+  /** `+b`，同上：`+0x1a`（等級） */
+  estateLevel: number;
 }
 
 export interface SaveGame {
@@ -390,6 +467,11 @@ export interface SaveGame {
   /** 物价指数 */
   /** 本局选中的开局资金档位（`GAME_INITIAL_FUNDS` 之一）@source 0x268a */
   initialFund: number;
+  /**
+   * 人类玩家数 `[0x499104]` @source 状态块 `0x01b0` —— **开局写一次、之后不变**，
+   * 是终局码的判据（不是「当前还活着几个真人」）。
+   */
+  humanPlayers: number;
   priceIndex: number;
   /**
    *  game_time 档查 `0x46cbe8` 的结果 = 目标天数（0 = 無限）
@@ -403,6 +485,8 @@ export interface SaveGame {
   winTargetWealth: number;
   /** 已过天数 @source `[0x4990e4]`，存档 0x2692 */
   totalDays: number;
+  /** 已过月数计数器 @source `[0x499084]`（平坦 0x2696） */
+  totalMonths: number;
   /** 46 个地图物件 @source `_rich4_objects_info`，平坦 `0x0204`，每项 24 字节 */
   objects: SaveObjectRecord[];
   /** 12 支股票的行情快照 @source `_stocks_on_map`，平坦 `0x2376` */
@@ -431,6 +515,8 @@ export interface SaveGame {
   marketDay: number;
   /** 公库 @source 平坦 `0x26ba`（`[0x499080]`）*/
   pool: number;
+  /** 地图视角旋转 0..7 @source `[0x499088]` */
+  viewRotation: number;
   /** 樂透号码表（36 项：`[号码]` = 持有者 + 1，0 = 未售出）@source 平坦 `0x26be` */
   lottery: number[];
   /** 新聞牌堆洗牌序（36 项）@source 平坦 `0x26fa` */
@@ -443,6 +529,11 @@ export interface SaveGame {
   fortuneCursor: number;
   /** 地图数据块（结构同 map.mkf 的地图资源，但含实时归属状态） */
   mapData: Uint8Array;
+  /**
+   * 公佈欄挂牌表，**按文件顺序** `[player*7 + slot]` 展开（28 项）。
+   * 空槽的 `kind` 为 0。
+   */
+  noticeBoard: SaveListingSlot[];
 }
 
 // ============================================================
@@ -520,9 +611,14 @@ function parsePlayer(
     alliedPlayer: u8(0x41),
     totalWinterSleepDays: u8(0x42),
     f67: u8(0x43),
-    f68: view.getUint16(o + 0x44, true),
-    f70: view.getUint16(o + 0x46, true),
-    f72: view.getUint16(o + 0x48, true),
+    // ★ 这三项是**神明附身的三项修正**，**可为负**（土地公 −500、大窮神 +200…）：
+    //   `rules/objects.ts` 的 `GOD_MODIFIERS` 表；写侧 `@source 0x40ead7`（附身）、
+    //   清侧 `0x40e14d`。原版自己也是按**有符号**读的 —— 月度评分那段明确写着
+    //   `(int16)player[0x44]`（`rules/monthly.ts` 的 @source `rich4.asm:16680`）⇒ 用 getInt16。
+    //   （两份样本这三格全 0，所以「无符号」也能过逐字节往返 —— 又一次"样本不可观测"。）
+    f68: view.getInt16(o + 0x44, true),
+    f70: view.getInt16(o + 0x46, true),
+    f72: view.getInt16(o + 0x48, true),
     f74: view.getUint16(o + 0x4a, true),
     hostility,
     f100: u8(0x64),
@@ -643,6 +739,20 @@ export function parseSave(data: Uint8Array): SaveGame {
   const mapDataSize = view.getUint32(OFFSET.mapDataSize, true);
   const mapData = data.subarray(OFFSET.mapData, OFFSET.mapData + mapDataSize);
 
+  // 公佈欄挂牌表（块 0x2526）：4 玩家 × 7 槽 × 12 字节
+  const noticeBoard: SaveListingSlot[] = [];
+  for (let slot = 0; slot < 28; slot++) {
+    const o = 0x2526 + slot * 12;
+    noticeBoard.push({
+      kind: data[o] ?? 0,
+      id: view.getUint16(o + 2, true),
+      price: view.getUint32(o + 4, true),
+      amount: view.getUint16(o + 8, true),
+      estateType: data[o + 0x0a] ?? 0,
+      estateLevel: data[o + 0x0b] ?? 0,
+    });
+  }
+
   return {
     identifier: view.getUint32(OFFSET.identifier, true),
     // 日期：day/month 各 1 字节，year 为小端 uint16 @source docs/rich4_cfg.txt
@@ -657,10 +767,12 @@ export function parseSave(data: Uint8Array): SaveGame {
     currentPlayer: view.getUint32(OFFSET.currentPlayer, true),
     // ⚠️ 用 `getInt32`（原版是 dword；正常档位都是正整数，但别把它当无符号量读）
     initialFund: view.getInt32(OFFSET.initialFund, true),
+    humanPlayers: view.getUint32(OFFSET.humanPlayers, true),
     priceIndex: view.getUint32(OFFSET.priceIndex, true),
     winTargetDays: view.getInt32(OFFSET.winTargetDays, true),
     winTargetWealth: view.getInt32(OFFSET.winTargetWealth, true),
     totalDays: view.getUint32(OFFSET.totalDays, true),
+    totalMonths: view.getUint32(OFFSET.totalMonths, true),
     objects,
     stocksOnMap,
     stockHistory,
@@ -670,12 +782,14 @@ export function parseSave(data: Uint8Array): SaveGame {
     toolStock,
     marketDay: view.getUint32(OFFSET.marketDay, true),
     pool: view.getInt32(OFFSET.pool, true),
+    viewRotation: view.getUint32(OFFSET.viewRotation, true) & 7,
     lottery,
     newsDeck,
     newsCursor: view.getUint32(OFFSET.newsCursor, true),
     fortuneDeck,
     fortuneCursor: view.getUint32(OFFSET.fortuneCursor, true),
     mapData,
+    noticeBoard,
   };
 }
 

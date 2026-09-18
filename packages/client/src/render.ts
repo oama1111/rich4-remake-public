@@ -17,7 +17,7 @@ import {
   type SpecialActor,
 } from '@rich4/core';
 import { CHARACTERS, characterColorRgb } from '@rich4/data';
-import { framesFor, tweenTickCount } from './tween.ts';
+import { tweenTickCount, tweenTickExact, walkFramesFor } from './tween.ts';
 import {
   attachedFrameIndex,
   attachedImageIndex,
@@ -604,6 +604,8 @@ export interface ActorWalkStep {
   toNode: number;
   /** 这一格要播几个 tick @source VA 0x0040c5e6 */
   ticks: number;
+  /** ★ 未截断的拍数 `N_f`（替身无条件走 `dist × 0.125`，见 `tweenTickExact`）*/
+  exactTicks: number;
   /** 整趟里、这一格开始前已经过去的 tick 数（帧号要跨格连算） */
   tickAt: number;
   /** 这一格从整趟开始算起多少毫秒 */
@@ -646,8 +648,10 @@ export function actorWalkSteps(
     if (a === undefined || b === undefined) break;
     const sa = toScreen(a.x, a.y);
     const sb = toScreen(b.x, b.y);
-    const ticks =
-      sa === null || sb === null ? 1 : tweenTickCount(sb.x - sa.x, sb.y - sa.y, 0, true);
+    // ⚠️ 先把可空的两个屏幕端点收成局部常量再算（否则 TS 的收窄过不了）
+    const ticks = sa === null || sb === null ? 1 : tweenTickCount(sb.x - sa.x, sb.y - sa.y, 0, true);
+    const exactTicks =
+      sa === null || sb === null ? 1 : tweenTickExact(sb.x - sa.x, sb.y - sa.y, 0, true);
     const ms = ticks * tickMs;
     steps.push({
       from: { x: a.x, y: a.y },
@@ -655,6 +659,7 @@ export function actorWalkSteps(
       fromNode: a.id,
       toNode: b.id,
       ticks,
+      exactTicks,
       tickAt,
       at,
       ms,
@@ -918,6 +923,28 @@ export interface ObjectToken {
  * @param hidden 正在播投掷动效的那一件（下标）—— 原版动画期间棋盘不重绘，
  *   所以飞着的那件**不能**同时出现在格子上（见 `RenderInput.objectFlight`）
  */
+/**
+ * 棋子的**世界坐标** —— 原版画棋子时直接读 `player+0x08/+0x0a`（= `xpos/ypos`）。
+ *
+ * ★★ **不能用 `nodeId` 现推**（2026-09-18 第 86 条）：那两个字节**只在关押期间**
+ *   才不等于所在格坐标 —— 入監/入院把屏幕坐标写成特殊景观记录
+ *   （監獄 → 记录 2「綠島」、醫院 → 记录 1「醫院大樓」，
+ *   `@source 0x43d643`/`0x43ecef`）。用节点坐标会让坐牢的人站在監獄格上，
+ *   而原版让他站在綠島上。
+ *
+ * 返回 `null` = 这一位不画（`nodeId == 0`；原版那条判据是 `xpos != 0`，
+ * 两者在"没有任何节点的世界坐标是 0"这条上等价 —— 见 `docs/deviations/T-086.md`）。
+ */
+export function playerAnchorWorld(p: {
+  nodeId: number;
+  xpos: number;
+  ypos: number;
+}): { x: number; y: number } | null {
+  if (p.nodeId <= 0) return null;
+  if (p.xpos === 0 && p.ypos === 0) return null;
+  return { x: p.xpos, y: p.ypos };
+}
+
 export function objectTokens(
   state: GameState,
   nodes: readonly MapNode[],
@@ -1294,6 +1321,8 @@ export class BoardRenderer {
     to: { x: number; y: number };
     /** 这一格要播几个 tick（@source `fcn_0040c05c` 的 `N`） */
     ticks: number;
+    /** ★ 未截断的拍数 `N_f`（原版每拍位移除的是它；见 `tweenTickExact`）*/
+    exactTicks: number;
     /** 一个 tick 多少毫秒（见 `tick.ts`） */
     tickMs: number;
     start: number;
@@ -1414,7 +1443,10 @@ export class BoardRenderer {
     const b = worldToScreen(to.x, to.y, camera, vp);
     const ticks =
       a === null || b === null ? 1 : tweenTickCount(b.x - a.x, b.y - a.y, traffic, special);
-    this.#walk = { player, from, to, ticks, tickMs, start: now, ticked: 0 };
+    // ★★ 每拍位移除的是**未截断**的 N_f（原版 `0x0040c2ae`），只有末拍吸附落点
+    const exactTicks =
+      a === null || b === null ? 1 : tweenTickExact(b.x - a.x, b.y - a.y, traffic, special);
+    this.#walk = { player, from, to, ticks, exactTicks, tickMs, start: now, ticked: 0 };
     this.#dirty = true;
   }
 
@@ -1562,7 +1594,7 @@ export class BoardRenderer {
       this.#actorFrame.set(slot, (this.#actorFrame.get(slot) ?? 0) + (absolute - w.ticked));
       w.ticked = absolute;
     }
-    const p = framesFor(a, b, step.ticks)[k - 1];
+    const p = walkFramesFor(a, b, step.ticks, step.exactTicks)[k - 1];
     if (p === undefined) return null;
     // @source 逐格前进时写 `+9 direction`（`_rich4_calculate_direction`，VA 0x00454fb4）
     return { x: p.x, y: p.y, nodeId: step.toNode, direction: actorWalkDirection(step) };
@@ -1594,7 +1626,7 @@ export class BoardRenderer {
       this.#walkFrame = (this.#walkFrame + (k - w.ticked)) & 0xff;
       w.ticked = k;
     }
-    const frames = framesFor(a, b, w.ticks);
+    const frames = walkFramesFor(a, b, w.ticks, w.exactTicks);
     return frames[k - 1] ?? null;
   }
 
@@ -2197,17 +2229,20 @@ export class BoardRenderer {
     /** 原版绘制槽的排序键（`0x48a44c`） */
     const nowMs = performance.now();
     // 同格多人时错开，否则棋子会完全重叠
-    const perNode = new Map<number, number>();
+    // ★ 同格多人时按**世界坐标**分组（不是 `nodeId`）：关押中的棋子世界坐标是
+    //   綠島/醫院大樓，与站在監獄格上的另一位**不是同一处**，错开量不能混用。
+    const perNode = new Map<string, number>();
     for (const pl of state.players) {
       if (pl.whoPlays === 0) continue;
-      const node = map.nodes[pl.nodeId - 1];
-      if (node === undefined) continue;
-      const seen = perNode.get(pl.nodeId) ?? 0;
-      perNode.set(pl.nodeId, seen + 1);
+      const world = playerAnchorWorld(pl);
+      if (world === null) continue;
+      const key = `${world.x},${world.y}`;
+      const seen = perNode.get(key) ?? 0;
+      perNode.set(key, seen + 1);
 
       // ★ 走子补间（T-046）：棋子按插值位置画，而不是直接落在格心
       const p =
-        this.#walkScreen(pl.index, cam, vp, nowMs) ?? worldToScreen(node.x, node.y, cam, vp);
+        this.#walkScreen(pl.index, cam, vp, nowMs) ?? worldToScreen(world.x, world.y, cam, vp);
       if (p === null) continue;
       const k = 1;
       const off = seen * Math.max(4, k * 5);

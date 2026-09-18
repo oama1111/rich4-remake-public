@@ -7,7 +7,6 @@
  */
 
 import type { Player } from '../state/types.ts';
-import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
 import { debitPlayer } from './payment.ts';
 
 // ============================================================
@@ -64,21 +63,6 @@ export function canAfford(player: Player, amount: number): boolean {
 // ============================================================
 //  破产处置
 // ============================================================
-
-/**
- * 节点占位标记：玩家 i 对应 flags 的 bit (8 + i)。
- *
- * @source rich4_player_bankrupt.asm:84-86
- * ```asm
- * mov ebx, 0x100
- * shl ebx, cl              ; cl = playerIdx
- * or dword [node + 0x24], ebx
- * ```
- * 这解释了 `OCCUPIED_MASK = 0x80ffff00` 中 bits 8-23 的用途。
- */
-export function playerOccupancyBit(playerIndex: number): number {
-  return 0x100 << playerIndex;
-}
 
 /**
  * 破产时被清零的玩家字段范围。
@@ -205,56 +189,4 @@ export function resolveBankruptcyOutcome(
     kind: 'gameOver',
     code: numHumanPlayers === 1 ? GAME_OVER_SINGLE_HUMAN : GAME_OVER_MULTI_HUMAN,
   };
-}
-
-/** 破产清算中被释放的一件资产 */
-export interface ReleasedAsset {
-  kind: 'land' | 'facility' | 'commercial';
-  /** 表内下标（1 基） */
-  index: number;
-  /** 实体 id：住宅 2000+i，设施 4000+i @source add edi, 0x7d0 / 0xfa0 */
-  entityId: number;
-}
-
-/** 实体 id 基数 @source rich4_player_bankrupt.asm:325 / 350 */
-export const ENTITY_BASE_LAND = 0x7d0; // 2000
-export const ENTITY_BASE_FACILITY = 0xfa0; // 4000
-
-/**
- * 释放破产玩家名下的全部地产。
- *
- * ⚠️ 三点易错细节：
- * 1. **只清 `owner`，不动 `level`** —— 房子原样保留，随后进入拍卖。
- * 2. **上市企业的 owner 字段在 `0x18`**，而住宅/设施在 `0x19`。
- * 3. 住宅与设施会被收集成实体 id 列表交给拍卖流程；上市企业不进拍卖。
- *
- * @source rich4_player_bankrupt.asm:308-372
- * @returns 被释放的资产列表（供拍卖流程使用），以及更新后的表
- */
-export function releaseAssets(
-  playerIndex: number,
-  lands: readonly LandInfo[],
-  facilities: readonly FacilityInfo[],
-): {
-  lands: LandInfo[];
-  facilities: FacilityInfo[];
-  released: ReleasedAsset[];
-} {
-  const ownerId = playerIndex + 1;
-  const released: ReleasedAsset[] = [];
-
-  const newLands = lands.map((l) => {
-    if (l.owner !== ownerId) return l;
-    released.push({ kind: 'land', index: l.id, entityId: l.id + ENTITY_BASE_LAND });
-    // 只清归属，等级保留 @source mov byte [eax+0x19], 0
-    return { ...l, owner: 0, flast: 0 };
-  });
-
-  const newFacilities = facilities.map((f) => {
-    if (f.owner !== ownerId) return f;
-    released.push({ kind: 'facility', index: f.id, entityId: f.id + ENTITY_BASE_FACILITY });
-    return { ...f, owner: 0 };
-  });
-
-  return { lands: newLands, facilities: newFacilities, released };
 }

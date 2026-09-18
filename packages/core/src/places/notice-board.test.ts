@@ -201,6 +201,35 @@ describe('走 action 这条路', () => {
     expect(s.noticeBoard[1]?.[0]).toBeNull();
   });
 
+  it('★★ 挂地產时把**那一刻**的類型/等級快照进槽（存檔 `+0xa`/`+0xb`）', () => {
+    let s = { ...scene(), currentPlayer: 1 };
+    // 先给 1 号地產一个非平凡的等級与类型
+    const landLevel = [...s.landLevel];
+    const landType = [...s.landType];
+    landLevel[1] = 3;
+    landType[1] = 0; // 住宅
+    s = { ...s, landLevel, landType };
+    const id = encodeEstate('land', 1);
+    s = reduce(s, { type: 'noticeBoard', op: 'list', kind: LISTING.estate, id, price: 8000 }, topo);
+    expect(s.noticeBoard[1]?.[0]).toMatchObject({ estateType: 0, estateLevel: 3 });
+
+    // ★ 挂完之后地主**加盖**：槽里的快照**不跟着变**（原版存的是那一刻）
+    const bumped = [...s.landLevel];
+    bumped[1] = 5;
+    const after = { ...s, landLevel: bumped };
+    expect(after.noticeBoard[1]?.[0]).toMatchObject({ estateLevel: 3 });
+    // 而现值确实变了（证明上面那条不是恒真）
+    expect(after.landLevel[1]).toBe(5);
+  });
+
+  it('★ 非地產挂牌不带那两格（保持 undefined，存檔写 0）', () => {
+    let s = { ...scene(), currentPlayer: 0 };
+    s = reduce(s, { type: 'noticeBoard', op: 'list', kind: LISTING.card, id: 5, price: 1000 }, topo);
+    const it = s.noticeBoard[0]?.[0];
+    expect(it?.estateType).toBeUndefined();
+    expect(it?.estateLevel).toBeUndefined();
+  });
+
   it('★ 挂地產 → 归属真的转移', () => {
     let s = { ...scene(), currentPlayer: 1 };
     const id = encodeEstate('land', 1);

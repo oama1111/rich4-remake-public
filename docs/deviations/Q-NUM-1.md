@@ -70,7 +70,7 @@ x87 控制字 bit10-11 = RC：
 |---|---|---|---|
 | `0x00449cfa` | **所得稅** = `trunc(现金(+0x1c) × 0.05)` | `rules/percentage.ts` `incomeTax` | ✅ 改（原来就近取偶） |
 | `0x00449f28` | **地價稅** = `trunc(地产原值 × 0.05)` **再** `×物价指数` | `rules/percentage.ts` `propertyTax` | ✅ 取整与**顺序**都改了（D-QNUM-2 已结案）|
-| `0x0044a122` | **證交稅** = `trunc(持股市值 × 0.05)` **再** `×物价指数` | `rules/percentage.ts` `stockTax` | ✅ 取整与顺序都改了（`stockTax` 收了 `priceIndex`，D-QNUM-2 已结案）；精度见 D-QNUM-3 |
+| `0x0044a122` | **證交稅** = `trunc(持股市值 × 0.05)` **再** `×物价指数` | `rules/percentage.ts` `stockTax` | ✅ 取整与顺序都改了（`stockTax` 收了 `priceIndex`，D-QNUM-2 已结案）；**精度也已结案**（D-QNUM-3 已改：`stockValue` 逐步 `Math.fround`） |
 | `0x0044af50` | **儲金紅利** = `trunc(存款(+0x20) × 0.1)` | `rules/percentage.ts` `bankDividend` | ✅ 改 |
 | `0x00419f84` | **过路费同盟分账** = `trunc(实付总额 × (同盟份/总额)单精度)` | `rules/rent.ts` `allianceShareOf` | ✅ 改（原来 `Math.round`） |
 | `0x0041c383` | **強盜搶銀行** = `trunc(存款 × 0.2)` | `rules/npc-actions.ts` `bankRobbery` | ✅ 改（原来 `Math.round`） |
@@ -186,12 +186,35 @@ x87 控制字 bit10-11 = RC：
 
 ✅ **已结案 —— 完整取证、判决与落码见 §5.1**（本节保留当时的判决与建议原文）。
 
-### D-QNUM-3 —— **未改**：持股市值是**单精度**累加
+### ✅ D-QNUM-3 —— **已改（第 57/58 条）**：持股市值确实要 **float32** 累加
 
 原版 0x0044a0e5 那一段是 `fild 持股 / fmul dword [股价] / fadd dword [esp+…] /
-fstp dword [esp+…]` —— 逐支用**float32**累加；本仓库 `stockValue()` 用 JS 双精度
-整数乘加。股价为常规整数时结果一致，行情带小数时可能差到最低位。
-属精度建模问题，不在取整范围，先登记。
+fstp dword [esp+…]` —— 逐支用**float32** 存回合计数。
+
+当时的判断「股价为常规整数时结果一致，行情带小数时可能差到最低位」**低估了**：
+2026 本轮用**原版真码**（Unicorn 驱 `0x44a0c6`..`0x44a110`）测出，差的不只是
+"最低位"，而是**会差到税上**：
+
+| 持股 | `[9572,3546,5541,8967,9430,683]`（另 6 支空仓） |
+|---|---|
+| 现价 | `[141.931076, 78.522301, 284.512482, 57.756199, 238.642319, 113.872337]` |
+| 原版合计（float32 累加） | **6059560** |
+| 双精度合计 | 6059559.70671463 |
+| 證交稅 `trunc(×0.05)` | **原版 302978** ／ 双精度 302977 —— **差 1** |
+
+改成 `sum = Math.fround(sum + h * p)` 逐步累加（`percentage.ts` `stockValue`）。
+真值回归：`packages/core/src/rules/stock-accum-f32.test.ts`（11 例）与
+`rich4-spec/tests/test_inline_formulas.py` §10。
+
+同类但**形状不同**的两处也在本轮一并订正（都属「原版把运行中的量压回 float32」）：
+
+| 位置 | 原版行为 | 落码 |
+|---|---|---|
+| `calculate_player_wealth` 股票段（`0x4239e0`..`0x423a1e`） | `total = trunc(市值 + **f32(total)**)`；且 **12 轮一轮不落**（空仓那轮的价值就是"再压一次 float32"） | `wealth.ts`：`Math.fround(total)` + 去掉 `undefined` 跳过 |
+| 同上，实测偏差 | `total=999999999`（1000 股×10.35）→ 原版 **1000010368** ／ 双精度 1000010349（**差 19**）；空仓 `16777217 → 16777216`（**往下**舍） | 回归见 `rules/wealth-f32.test.ts` |
+
+> 这两处的分界点都是 **2^24 = 16,777,216**：以下是 float32 能精确表示的整数范围，
+> 以上每步都会丢低位。开局资金 300000、而总资产可以到上亿，所以**真实对局中期就会踩到**。
 
 ### D-QNUM-4 —— **有意保留**：`ai/stock-policy.ts` 的 `holdingsCost` 用 `Math.round`
 
@@ -383,5 +406,6 @@ fstp dword [esp+…]` —— 逐支用**float32**累加；本仓库 `stockValue(
   本仓库以 `Math.fround` 建模 gain、用双精度做 `2·(gain−2)+1`。
   两者在所有可构造的 f32 gain 上逐点相等（f32 尾数 24 位，`2·gain−3`
   要么在 Sterbenz 意义下精确、要么本身就是整数），故**未登记为新偏差**。
-- D-QNUM-3（持股市值单精度累加）、D-QNUM-4（`holdingsCost` 的 `Math.round`）、
+- ~~D-QNUM-3（持股市值单精度累加）~~ **已结案**（见上方 D-QNUM-3 节）；
+  D-QNUM-4（`holdingsCost` 的 `Math.round`，**有意保留**，原版无此概念）、
   D-QNUM-6（1.3 表调用点归属）本轮**未动**，仍以上文第 3 节为准。

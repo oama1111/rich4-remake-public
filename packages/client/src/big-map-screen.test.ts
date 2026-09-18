@@ -78,13 +78,30 @@ function mkMap(nodes: { x: number; y: number }[]): Rich4Map {
   return { nodes: nodes.map((n, i) => ({ id: i + 1, x: n.x, y: n.y })) } as unknown as Rich4Map;
 }
 
+/** 4 节点假地图（世界坐标取 map 0 的真实值）—— `mkState` 缺省用它推 x/y */
+const DEFAULT_MAP = mkMap([
+  { x: 360, y: 239 },
+  { x: 1752, y: 1871 },
+  { x: 512, y: 512 },
+  { x: 1024, y: 1024 },
+]);
+
 function mkState(
   players: { character: number; whoPlays: number; nodeId: number }[],
   globalMapId = 0,
+  /**
+   * ★★ 第 86 条起标记位置读的是 `xpos/ypos`（原版 `player+0x08/+0x0a`），
+   *   不再由 `nodeId` 现推 —— 所以这里按真实不变量把它们填上
+   *   （在场玩家 = 所在格坐标；不在盘上 = 0/0）。缺省用 4 节点假地图。
+   */
+  map: Rich4Map = DEFAULT_MAP,
 ): GameState {
   return {
     globalMapId,
-    players: players.map((p, i) => ({ index: i, ...p })),
+    players: players.map((p, i) => {
+      const n = map.nodes[p.nodeId - 1];
+      return { index: i, xpos: n?.x ?? 0, ypos: n?.y ?? 0, ...p };
+    }),
   } as unknown as GameState;
 }
 
@@ -132,6 +149,7 @@ describe('图号与落点 @source rich4_ui_small_map.asm', () => {
 });
 
 describe('标记表 @source VA 0x0040a8a1 的循环', () => {
+  // 位置现在读 `xpos/ypos`（第 86 条），`mkState` 用这张图把 x/y 填成"站在格上"的值
   const map = mkMap([
     { x: 360, y: 239 },
     { x: 1752, y: 1871 },
@@ -140,14 +158,30 @@ describe('标记表 @source VA 0x0040a8a1 的循环', () => {
   ]);
 
   it('★ 在世玩家一枚：位置 = 节点世界坐标换算后 + (20, 60)', () => {
-    const state = mkState([
-      { character: 0, whoPlays: WHO_PLAYS_HUMAN, nodeId: 1 },
-      { character: 3, whoPlays: WHO_PLAYS_COMPUTER, nodeId: 2 },
-    ]);
-    expect(bigMapMarkers(state, map)).toEqual([
+    const state = mkState(
+      [
+        { character: 0, whoPlays: WHO_PLAYS_HUMAN, nodeId: 1 },
+        { character: 3, whoPlays: WHO_PLAYS_COMPUTER, nodeId: 2 },
+      ],
+      0,
+      map,
+    );
+    expect(bigMapMarkers(state)).toEqual([
       { player: 0, character: 0, x: 20 + 62, y: 60 + 41 },
       { player: 1, character: 3, x: 20 + bigMapAt(1752), y: 60 + bigMapAt(1871) },
     ]);
+  });
+
+  it('★★ 被关押者画在**景观坐标**上（綠島/醫院大樓），不是監獄/醫院格', () => {
+    // 原版 `0x40a8d4` 缩放的就是 `player+0x08/+0x0a`，而那两个字节在关押期间
+    // 是特殊景观记录（監獄 → 记录 2「綠島」、醫院 → 记录 1）——见 `rules/confinement.ts`
+    const p = { character: 0, whoPlays: WHO_PLAYS_HUMAN, nodeId: 1, xpos: 1817, ypos: 1960 };
+    const state = mkState([p]);
+    expect(bigMapMarkers(state)).toEqual([
+      { player: 0, character: 0, x: 20 + bigMapAt(1817), y: 60 + bigMapAt(1960) },
+    ]);
+    // 而所在格是 1 号格 (360,239) —— 两者刻意不同，正是这条测试的意义
+    expect(bigMapAt(1817)).not.toBe(bigMapAt(360));
   });
 
   it('★ 出局的座位（`whoPlays & 3 == 0`）不画 —— 原版那条判据的意义', () => {
@@ -156,7 +190,7 @@ describe('标记表 @source VA 0x0040a8a1 的循环', () => {
       { character: 1, whoPlays: WHO_PLAYS_HUMAN, nodeId: 3 },
       { character: 2, whoPlays: WHO_PLAYS_DEAD, nodeId: 4 },
     ]);
-    expect(bigMapMarkers(state, map).map((m) => m.player)).toEqual([1]);
+    expect(bigMapMarkers(state).map((m) => m.player)).toEqual([1]);
   });
 
   it('★ 节点号越界（0 或超过表长）不画，也不抛', () => {
@@ -164,7 +198,7 @@ describe('标记表 @source VA 0x0040a8a1 的循环', () => {
       { character: 0, whoPlays: WHO_PLAYS_HUMAN, nodeId: 0 },
       { character: 1, whoPlays: WHO_PLAYS_HUMAN, nodeId: 99 },
     ]);
-    expect(bigMapMarkers(state, map)).toEqual([]);
+    expect(bigMapMarkers(state)).toEqual([]);
   });
 });
 
@@ -220,8 +254,8 @@ describe('模态开关：左键不关、右键关、键盘吞掉', () => {
 describe('画法：底图在 (20,60)、标记减锚点', () => {
   it('★ 底图取 `map.mkf` 资源 `地图号+0x10` 图 1（不抠黑）；标记取角色头像资源图 5（抠黑）', () => {
     const { env, images, drawn } = mkEnv();
-    const state = mkState([{ character: 2, whoPlays: WHO_PLAYS_HUMAN, nodeId: 1 }], 5);
     const map = mkMap([{ x: 360, y: 239 }]);
+    const state = mkState([{ character: 2, whoPlays: WHO_PLAYS_HUMAN, nodeId: 1 }], 5, map);
     openBigMap(env);
     bigMapScreen.draw({ ...env, state, map } as UiScreenEnv);
 

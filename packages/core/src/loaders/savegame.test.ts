@@ -173,6 +173,112 @@ describe('原版存档导入', () => {
     expect(s.turnCount).toBeGreaterThan(0);
   });
 
+  // ★ 地图视角旋转（`[0x499088]`，存档 `+0x2743`）也是**持久状态**：
+  //   原版由 `<` / `>` 两个热键改变（见 `animation.md`：它是**地图视角档位 0..7**，
+  //   不是动画帧计数），并会写进存档。remake 此前**完全没有这个字段**。
+  //   ⚠️ 两个样本的 `+0x2743` 都是 0（默认视角）⇒ 同样无法用样本区分，
+  //   故测试**自己往存档里写非 0 值**，这样断言是可证伪的。
+  describe('★ 地图视角旋转：从存档导入（0x499088）', () => {
+    withSave('把 +0x2743 改成 5 后能原样导进来', () => {
+      const base = new Uint8Array(readFileSync(ORIGINAL_SAVE));
+      const save = parseSave(base);
+      expect(save.viewRotation).toBe(0); // 样本本来就是 0
+
+      const patched = new Uint8Array(base);
+      new DataView(patched.buffer, patched.byteOffset, patched.byteLength).setUint32(
+        0x2743,
+        5,
+        true,
+      );
+      const { state } = importOriginalSave(parseSave(patched), loadMap());
+      expect(state.viewRotation).toBe(5);
+
+      // 越界值要夹回 0..7（原版只用低 3 位，见 `& 7`）
+      const bad = new Uint8Array(base);
+      new DataView(bad.buffer, bad.byteOffset, bad.byteLength).setUint32(0x2743, 0xff, true);
+      expect(parseSave(bad).viewRotation).toBe(7);
+    });
+  });
+
+  // ★ 阶段 3（2026-09-17，第十二轮）：地契到期日与涨价/查封倒计时**从存档地图块导入**。
+  //
+  //   原版把它们存在地图块里（住宅 `flast @ +0x30`、`price_status @ +0x17`；
+  //   商業 `flast @ +0x34`（★ 与住宅不同！）、`price_status @ +0x1c`），
+  //   而导入路径用的正是**存档自带的地图块**（`save.mapData`）⇒ 真值本来就在手边。
+  //   此前 `landTenure` / `landPriceStatus` / `facilityTenure` 被硬填 0，
+  //   读档后 `sweepPriceStatus`（每日递减）与 `tenureExpiresToday`（到期归无主）**永不触发**。
+  //
+  //   ⚠️ **诚实说明**：两份可得的真实存档里这三项**恰好全为 0**
+  //   （Save0 的 55 块地、SAVE1 的 0 块地 / 20 处設施都测过），
+  //   所以本修复**无法用真实存档观测**。下面的测试**自己往地图块里写非 0 值**，
+  //   这样断言是可证伪的 —— 若导入路径又回退成硬填 0，它会立刻失败。
+  describe('★ 地契到期日 / 涨价查封倒计时：从存档地图块导入', () => {
+    withSave('改过字节的存档地图块能原样导进来', () => {
+      const base = new Uint8Array(readFileSync(ORIGINAL_SAVE));
+      const save0 = parseSave(base);
+      const dv0 = new DataView(save0.mapData.buffer, save0.mapData.byteOffset, save0.mapData.byteLength);
+      const numLands = dv0.getUint32(2 * 4, true);
+      const landOff = dv0.getUint32(3 * 4, true);
+      const numFac = dv0.getUint32(4 * 4, true);
+      const facOff = dv0.getUint32(5 * 4, true);
+      expect(numLands).toBeGreaterThan(0); // 这份档确实有地块
+      expect(numFac).toBeGreaterThan(0);
+
+      // 往存档地图块里写非 0 值：1 号地的 flast / priceStatus、1 号設施的 flast
+      const patched = new Uint8Array(save0.mapData);
+      const dv = new DataView(patched.buffer, patched.byteOffset, patched.byteLength);
+      const LAND_SIZE = 0x34;
+      const FAC_SIZE = 0x38;
+      const land1 = landOff + 1 * LAND_SIZE;
+      const fac1 = facOff + 1 * FAC_SIZE;
+      const TENURE = 0x30;
+      const FAC_TENURE = 0x34;
+      dv.setUint32(land1 + TENURE, 0x07e5_060f, true); // 2021-06-15
+      dv.setUint8(land1 + 0x17, 0x30); // 涨价倒计时高 nibble
+      dv.setUint32(fac1 + FAC_TENURE, 0x07e5_060f, true);
+      dv.setUint8(fac1 + 0x1c, 0x50);
+
+      const patchedSave = parseSave(base); // 重新解析，保持 save 结构与 mapData 分离
+      const map = parseMap(patched);
+      const { state } = importOriginalSave({ ...patchedSave, mapData: patched }, map);
+
+      const landId = map.lands[0]?.id ?? 1;
+      const facId = map.facilities[0]?.id ?? 1;
+      expect(state.landTenure[landId], '住宅地契到期日').toBe(0x07e5_060f);
+      expect(state.landPriceStatus[landId], '住宅涨价倒计时').toBe(0x30);
+      expect(state.facilityTenure[facId], '商業地契到期日（+0x34）').toBe(0x07e5_060f);
+      expect(state.facilityPriceStatus[facId], '設施涨价倒计时').toBe(0x50);
+    });
+  });
+
+  // ★ 阶段 3 的第 1 个修复（2026-09-17）：大盘指数必须**逐位等于**存档里的原值。
+  //
+  //   原版 `@source 0x004294b9`：`fld dword[esp]` → `fmul 10.0f` → `frndint`(RC=11)
+  //   → `fistp [0x499078]`，**乘积留在 x87 扩展精度、中途没有 fstp 回单精度**。
+  //   旧实现多了一次 `Math.fround(total * 10)`，把乘积先舍入成单精度再截断，
+  //   于是两个真实存档都差 1（74637→74638、13490→13491）。
+  //   本测试直接读存档里 `[0x499078]` 的原始字节（平坦 `+0x26a2`）作真值 ——
+  //   这样真值来自**原版自己的写入**，不是我们算出来的，因此不循环论证。
+  describe('★ 大盘指数 [0x499078] 逐位等于存档原值', () => {
+    const CASES = [
+      ['Rich4/Save0.dat', 74637],
+      ['Rich4/SAVE1.DAT', 13490],
+    ] as const;
+    for (const [rel, expected] of CASES) {
+      const path = `/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/${rel}`;
+      const t = existsSync(path) && existsSync(MAP) ? it : it.skip;
+      t(`${rel} → ${expected}`, () => {
+        const bytes = new Uint8Array(readFileSync(path));
+        const save = parseSave(bytes);
+        // 真值：直接从存档里那条 fwrite 写下的 4 字节读（不复用解析器的字段）
+        const raw = new DataView(bytes.buffer, bytes.byteOffset).getInt32(0x26a2, true);
+        expect(raw, `${rel} 的 [0x499078] 原始字节`).toBe(expected);
+        const { state } = importOriginalSave(save, loadMap());
+        expect(state.market.index, `${rel} 导入后的大盘指数`).toBe(raw);
+      });
+    }
+  });
+
   withSave('★ 没能还原的东西被明确列出来，而不是悄悄补零', () => {
     const save = parseSave(new Uint8Array(readFileSync(ORIGINAL_SAVE)));
     const { gaps } = importOriginalSave(save, loadMap());
@@ -253,10 +359,18 @@ describe('原版存档导入', () => {
     const { state } = importOriginalSave(save, loadMap());
     expect(state.market.stocks[0]!.price).toBe(109);
     expect(state.market.history[0]!.slice(0, 6)).toEqual([256, 273, 288, 298, 327, 337]);
-    // 指数 = trunc(Σ收盘 × 10)，累加与乘法都走 32 位浮点（与 tickStockMarket 同式）
+    // 指数 = trunc(Σ收盘 × 10)。
+    //   累加**走 32 位浮点**（原版每步 `fstp dword` 回单精度）；
+    //   但**乘法不走**：原版 `fmul 10.0f` 的乘积留在 x87 扩展精度里，
+    //   其中途没有 `fstp` ⇒ JS 里 `total * 10` 本身就精确，**不能再 fround**。
+    //   ★ 旧断言写成 `Math.trunc(Math.fround(total * 10))`，把 bug 钉死在测试里
+    //     （实测 74637 被算成 74638）。真值以存档 `[0x499078]` 的原始字节为准，
+    //     见本文件 `★ 大盘指数 [0x499078] 逐位等于存档原值` 一节。
     let total = 0;
     for (const st of state.market.stocks) total = Math.fround(total + st.price);
-    expect(state.market.index).toBe(Math.trunc(Math.fround(total * 10)));
+    expect(state.market.index).toBe(Math.trunc(total * 10));
+    // 且必须等于原版自己写进存档的那个值（Save0 = 74637）
+    expect(state.market.index).toBe(74637);
     // ★ 2026-09-17（第十轮）：历史**写入游标**也读进来了（`[0x499100]`，平坦 0x6f2）
     expect(state.market.day).toBe(107);
   });

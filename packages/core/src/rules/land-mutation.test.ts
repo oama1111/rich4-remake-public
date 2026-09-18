@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  demolishLand, markLand, markFacility, isSealed, isRaised,
+  demolishLand, markFacility,
   sweepPriceStatus,
   PRICE_STATUS, DEMOLISH_HOSTILITY_FACTOR,
 } from './land-mutation.ts';
@@ -57,28 +57,10 @@ describe('状态标记', () => {
     expect(PRICE_STATUS.SEALED).toBe(0x51);
   });
 
-  it('给住宅打标记', () => {
-    expect(markLand(makeLand(), PRICE_STATUS.RAISED).priceStatus).toBe(0x50);
-    expect(markLand(makeLand(), PRICE_STATUS.SEALED).priceStatus).toBe(0x51);
-  });
-
   it('★ 查封设施会额外清一个字段，涨价不会', () => {
     // @source 查封卡 mov byte [fac+0x1c],0x51 / mov byte [fac+0x1e],0
     expect(markFacility(makeFacility(), PRICE_STATUS.SEALED).extraCleared).toBe(true);
     expect(markFacility(makeFacility(), PRICE_STATUS.RAISED).extraCleared).toBe(false);
-  });
-
-  it('状态判定', () => {
-    expect(isRaised(PRICE_STATUS.RAISED)).toBe(true);
-    expect(isSealed(PRICE_STATUS.SEALED)).toBe(true);
-    expect(isSealed(PRICE_STATUS.RAISED)).toBe(false);
-    expect(isRaised(PRICE_STATUS.NORMAL)).toBe(false);
-  });
-
-  it('不原地修改入参', () => {
-    const l = makeLand();
-    markLand(l, PRICE_STATUS.SEALED);
-    expect(l.priceStatus).toBe(0);
   });
 });
 
@@ -115,14 +97,7 @@ describe('★ 每日递减 sweepPriceStatus @source 0x0041d114 / 0x0041d160', ()
   });
 });
 
-describe('★ 查封判据的两条口径 @source `test byte […], 0xf`', () => {
-  it('★ `isSealed` 是**精确等值**（0x51），涨价 0x50 不算', () => {
-    expect(isSealed(PRICE_STATUS.SEALED)).toBe(true);
-    expect(isSealed(PRICE_STATUS.RAISED)).toBe(false);
-    expect(isSealed(PRICE_STATUS.NORMAL)).toBe(false);
-  });
-
-  it('★ `isSealedStrict` 只看**低半字节**（原版那几处闸门的写法）', () => {
+describe('★ 查封判据的两条口径 @source `test byte […], 0xf`', () => {  it('★ `isSealedStrict` 只看**低半字节**（原版那几处闸门的写法）', () => {
     expect(isSealedStrict(PRICE_STATUS.SEALED)).toBe(true); // 0x51
     expect(isSealedStrict(PRICE_STATUS.RAISED)).toBe(false); // 0x50 ⇒ 低半字节 0
     expect(isSealedStrict(PRICE_STATUS.NORMAL)).toBe(false);

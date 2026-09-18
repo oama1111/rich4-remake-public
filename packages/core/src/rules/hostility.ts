@@ -56,6 +56,16 @@ export interface HostilityResult {
  * 那条「负增量且已为 0 就提前返回」的分支看似多余（下限逻辑本就会兜住），
  * 但它**跳过了同盟检查**——不过同盟检查只在正增量时才跑，所以两条路径
  * 结果一致。照搬是为了万一日后发现别的副作用。
+ *
+ * ★ 通道 2 差分已复核（`rich4-spec/tests/test_hostility_update.py`，22/22）：
+ *   上面每一条都在 Unicorn 里逐条验过，另外两条**只能靠实测才知道**的事：
+ *
+ * 1. **`b` 没有上界检查**：原版 `b = 4` 会写到 `+0x5c`（= `monthlyPaid`），
+ *    且是**在旧值上累加**（实测 `0x11111111 → 0x11111114`）。本函数加了
+ *    `b >= HOSTILITY_COUNT` 护栏 ⇒ **有意偏离**（实际调用点都只遍历 0..3，
+ *    构造上不可达；登记在 `docs/known-deviations.md`）。
+ * 2. 「a 的盟友是自己」**不可能触发拆盟**：判据是 `alliedPlayer === b + 1`，
+ *    要它等于 `a + 1` 就得 `b === a`，而 `a === b` 已先返回。
  */
 export function updateHostility(
   players: readonly Player[],
@@ -100,6 +110,19 @@ export function updateHostility(
  * byte [partner + 0x3d] = 0
  * byte [a + 0x41] = 0
  * ```
+ *
+ * ★ 逐条差分实证（`rich4-spec/tests/test_alliance.py` 15/15）：
+ *   1. 双向清四格；**不检查对方是否指回自己**（`a→b` 而 `b→c` 时 `b` 照样被清）；
+ *   2. **不追链** —— 只清一层，`b` 的盟友 `c` 不动；
+ *   3. 自指（`a.alliedPlayer == a+1`）无害：把自己清两遍。
+ *
+ * ⚠️⚠️ **有意偏离（护栏）**：`alliedPlayer == 0` 时原版**没有判断** ——
+ *   `edx = 0 - 1` ⇒ 写到 `0x496ba9 - 0x68 = 0x496B41` 与 `0x496ba5 - 0x68 = 0x496B3D`，
+ *   **越界清掉两格**（实测：这两格从 `0xAA`/`0xBB` 变 0）。
+ *   那两格的语义 PRD 里没有。本函数加了 `alliedPlayer === 0` 提前返回 ⇒ 不复制这个越界。
+ *   目前两个调用方都保证「有盟友才调」（`hostility.ts` 的 `alliedPlayer === b + 1` 判据、
+ *   `reduce.ts` 的 `allianceExpired` 只在 `alliedDays` 递减到 0 的下一拍为真），
+ *   所以这条偏离**不可达**；若将来有人放宽调用条件，要重新评估。
  */
 export function breakAlliance(players: readonly Player[], a: number): Player[] {
   const next = [...players];
@@ -116,6 +139,31 @@ export function breakAlliance(players: readonly Player[], a: number): Player[] {
 }
 
 /** 依次施加一组敌意变化（各卡产生的 hostilityDeltas） */
+/**
+ * ★★ 「**double 压栈、被调方按 int 读**」的取值 —— 取那个 double 位型的**低 32 位**。
+ *
+ * 原版有**三处**这样调 `update_hostility`（`0x40df69`）：購地卡（3）、拍賣卡（8）、
+ * 黑卡（25）。三处都是 `sub esp,8 / fstp qword [esp]`，而被调方的
+ * `mov ecx, [esp+0x14]`（prologue 两个 push 之后）= 调用方 `[esp+0xc]` = **低半**。
+ *
+ * ⚠️ 这不是"敌意值为 0"的等价物 —— 实测（`rich4-spec/tests/test_land_auction_cards.py`
+ * 与 `tests/test_stock_alliance_cards.py`，两处都真跑原版 `0x40df69`）：
+ *   - 購地卡 `(1001×1)×(2+2)/5 = 800.8` ⇒ 低 32 位 = **+1717986919**；
+ *   - 黑卡「持股 10 × 价差 0.3 ÷ 200」⇒ **+1717986918**；
+ *   - 而 `800.0` 这类"整齐"的 double 低 32 位恰为 **0**（地价是 100 的倍数时常见）。
+ * 故本函数是**必需**的：漏掉它，原版会写而本引擎不写（或反之）。
+ *
+ * @param value 原版以 x87 算出的那个 double（调用方自己保证运算次序）
+ */
+export function misalignedDoubleInt(value: number): number {
+  // 小端：Float64 位型的前 4 字节就是低半
+  low32Buf[0] = value;
+  return low32View[0]! | 0;
+}
+
+const low32Buf = new Float64Array(1);
+const low32View = new Int32Array(low32Buf.buffer);
+
 export function applyHostilityDeltas(
   players: readonly Player[],
   deltas: readonly { from: number; to: number; delta: number }[],

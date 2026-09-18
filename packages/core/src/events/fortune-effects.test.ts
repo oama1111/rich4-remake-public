@@ -6,7 +6,9 @@
 import { describe, expect, it } from 'vitest';
 import { FORTUNE_EVENTS, fortuneEvent } from '@rich4/data';
 import { cardPrice } from '../rules/inventory.ts';
-import { makePlayer } from '../testing/factories.ts';
+import { makeNode, makePlayer } from '../testing/factories.ts';
+import { makeObjects } from '../cards/summon.ts';
+import { SPECIAL_KIND } from '../loaders/map.ts';
 import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
 import {
   BANK_BAN_DAYS,
@@ -26,6 +28,14 @@ const ctx = (over = {}) => ({
   pool: 0,
   ...over,
 });
+
+/** 1 = 普通格、2 = 监狱、3 = 医院（坐标刻意不同，便于断言「真的搬过去了」） */
+const NODES = [
+  makeNode({ id: 1, x: 100, y: 200 }),
+  makeNode({ id: 2, x: 1935, y: 1039, specialKind: SPECIAL_KIND.PRISON }),
+  makeNode({ id: 3, x: 777, y: 888, specialKind: SPECIAL_KIND.HOSPITAL }),
+];
+const OBJS = makeObjects(46);
 
 describe('★ 罚款：走 pay_money，进公库', () => {
   it('fortune[16] 汽車超速 3000', () => {
@@ -113,7 +123,8 @@ describe('★ 坐牢／住院', () => {
     const r = applyFortuneEffect(33, ctx());
     expect(r.unimplemented).toBe(false);
     expect(r.players[0]!.blocking.inPrison).toBe(3);
-    expect(r.occupancy[0]).toBe(1);
+    expect(r.prisonOccupancy[0]).toBe(1);          // 事件 33 = 坐牢 ⇒ 监狱表
+    expect(r.hospitalOccupancy[0]).toBe(0);
   });
 
   it('★ 四个坐牢事件刑期各不相同：3 / 5 / 7 / 9 天', () => {
@@ -226,28 +237,24 @@ describe('★ 倍率归零档（先前漏掉的那一档）', () => {
 // ============================================================
 
 describe('★ 神明加持：三条问法与档位语义 @source VA 0x0044b896', () => {
-  it('★ 事件表里的 `blessing` 与 asm 的压栈组合逐条对上', () => {
-    // 奖励 (0,0) / 罚金 (0,1) / 劫难 (1,1)
+  /**
+   * ⚠️ **本条先前把一张错的表钉死了**（第 37 条订正）：当时只有 16 条，
+   *   而且 19 记成 `reward`（实走 penalty 尾）、22 记成 `misfortune`（实走 reward 尾），
+   *   20/21/23..31 等 12 条**漏记**。
+   *
+   * 完整 28 条的逐项校验**不在本文件**，而在 `@rich4/data` 的
+   * `event-table.test.ts` —— 它**直接读 exe**：从每个调用点取出
+   * `6a <arg1> 6a <arg0> e8 <rel32>` 自行判定用法，因此不会随表一起漂。
+   * 这里只留「数量 + 几处易错点」的粗筛，避免出现第二份会漂的硬编码表。
+   */
+  it('★ 事件表里的 `blessing`：28 条，且 19/20/22 的用法已订正', () => {
     const table: Record<number, string> = {};
     for (const e of FORTUNE_EVENTS) if (e.blessing !== undefined) table[e.id] = e.blessing;
-    expect(table).toEqual({
-      2: 'penalty',
-      3: 'penalty',
-      6: 'misfortune',
-      7: 'misfortune',
-      8: 'penalty',
-      9: 'penalty',
-      10: 'misfortune',
-      11: 'misfortune',
-      12: 'misfortune',
-      14: 'penalty',
-      15: 'penalty',
-      17: 'penalty',
-      19: 'reward',
-      22: 'misfortune',
-      32: 'misfortune',
-      33: 'misfortune',
-    });
+    expect(Object.keys(table)).toHaveLength(28);
+    expect(table[19]).toBe('penalty'); // 罰款 → penalty 尾
+    expect(table[20]).toBe('reward'); // 撿到錢 → reward 尾
+    expect(table[22]).toBe('reward');
+    expect(table[16]).toBeUndefined(); // ★ 原版**没接**加持的那一个
   });
 
   it('★ 档位 1 对罚款是「免付」——一分不付、公库也收不到', () => {
@@ -265,7 +272,7 @@ describe('★ 神明加持：三条问法与档位语义 @source VA 0x0044b896',
   it('★ 坐牢/住院：档位 1 = 逃過此劫（不关人）、档位 2 = 天数翻倍', () => {
     const escaped = applyFortuneEffect(12, ctx({ multiplier: 1 }));
     expect(escaped.cancelled).toBe(true);
-    expect(escaped.occupancy.every((v) => v === 0)).toBe(true);
+    expect(escaped.prisonOccupancy.every((v: number) => v === 0)).toBe(true);
     const doubled = applyFortuneEffect(12, ctx({ multiplier: 2 }));
     expect(doubled.amount).toBe(6); // literal 3 → ×2
   });
@@ -458,6 +465,27 @@ describe('★ 命運 6/7：強迫出國觀光 / 被外星人綁架 @source fcn_0
     expect(r.players[0]!.blocking.disappearing).toBe(5);
     expect(r.amount).toBe(0);
   });
+
+  // ★ 本次补（2026-09-18）：`fcn_0040d375` 除了写 `+0x33`，还在**首次**分支里
+  //   `add byte ptr [ebx + 0x496baa], al`（VA 0x0040d431，al = 天數）——
+  //   即累加「本月倒楣天數」+0x42。加刑分支（0x40d4c5）**不加**，而命运这一支
+  //   本来就把「已在外」的人整个跳过，所以这里恒等于「首次」。
+  it('★★ 首次消失同时累加「本月倒楣天數」+0x42（天数，非天数×2 之外的其它量）', () => {
+    // @source 0x0040d431 `add byte ptr [ebx + 0x496baa], al`
+    const players = [makePlayer({ index: 0, totalWinterSleepDays: 4 }), makePlayer({ index: 1 })];
+    const trip = applyFortuneEffect(FORTUNE_TRIP_ABROAD, ctx({ players }));
+    expect(trip.players[0]!.totalWinterSleepDays).toBe(7); // 4 + 3 天
+
+    const doubled = applyFortuneEffect(FORTUNE_TRIP_ABROAD, ctx({ players, multiplier: 2 }));
+    expect(doubled.players[0]!.totalWinterSleepDays).toBe(10); // 4 + 6 天（翻倍后的值）
+  });
+
+  it('★ 神明档位 1「逃過此劫」时一天都不算', () => {
+    const players = [makePlayer({ index: 0, totalWinterSleepDays: 4 }), makePlayer({ index: 1 })];
+    const r = applyFortuneEffect(FORTUNE_TRIP_ABROAD, ctx({ players, multiplier: 1 }));
+    expect(r.cancelled).toBe(true);
+    expect(r.players[0]!.totalWinterSleepDays).toBe(4);
+  });
 });
 
 describe('★ `IMPLEMENTED_FORTUNE_IDS` 不再漏掉「按事件号分派」的那几条', () => {
@@ -586,5 +614,108 @@ describe('★ 命運 5：今天是你生日 向每人收取一張卡片 @source 
     );
     expect(r.birthdaySeats).toBeNull();
     expect(r.players[0]!.cards).toEqual([3]);
+  });
+});
+
+// ============================================================
+//  ★★ 2026 本轮修的两处（原版真码：rich4-spec/tests/test_confinement_release.py 15/15）
+// ============================================================
+
+describe('★ 命運的「坐牢／住院」要落**对应的**占用表', () => {
+  const occupied = (i: number, over = {}) =>
+    makePlayer({ index: i, ...over });
+
+  it('事件 12「住院」→ 写**医院**表，监狱表不动（此前一律写监狱表）', () => {
+    const r = applyFortuneEffect(12, ctx());
+    expect(r.hospitalOccupancy[0]).toBe(1);
+    expect(r.prisonOccupancy[0]).toBe(0);
+  });
+
+  it('事件 33「坐牢」→ 写**监狱**表，医院表不动', () => {
+    const r = applyFortuneEffect(33, ctx());
+    expect(r.prisonOccupancy[0]).toBe(1);
+    expect(r.hospitalOccupancy[0]).toBe(0);
+  });
+
+  it('★ 首次关押要清**另一张**表（原版 `0x40d761` 的两道闸）', () => {
+    // 0 号正在住院（医院表占着 0 号格）→ 又被判坐牢
+    const players = [occupied(0, { blocking: { ...makePlayer().blocking, inHospital: 5 } }),
+      occupied(1), occupied(2), occupied(3)];
+    const r = applyFortuneEffect(33, ctx({
+      players,
+      hospitalOccupancy: [1, 0, 0, 0, 0, 0, 0, 0],
+    }));
+    expect(r.prisonOccupancy[0]).toBe(1);        // 进监狱表
+    expect(r.hospitalOccupancy[0]).toBe(0);      // ★ 医院那格被清
+    expect(r.players[0]?.blocking.inHospital).toBe(0);   // ★ 计数器也清
+    expect(r.players[0]?.blocking.inPrison).toBe(3);
+  });
+
+  // ★★ 2026-09-18：原版 `send_to_prison`/`send_to_hospital` 的**函数体内**含
+  //   「传送到监狱／医院格 + 跟班搬家」（`@source 0x43d601`..`0x43d674`），
+  //   所以命運这条路的受害者**不在原地**。差分证据：
+  //   `rich4-spec/tests/test_confinement_teleport.py`（48/48）。
+  it('★ 命運 33「坐牢」要把人**送进监狱格**（并带回新的物件表）', () => {
+    const r = applyFortuneEffect(33, ctx({ nodes: NODES, objects: OBJS }));
+    expect(r.players[0]?.nodeId).toBe(2);            // 2 号格是监狱
+    expect(r.players[0]?.xpos).toBe(1935);
+    expect(r.objects).toHaveLength(OBJS.length);
+  });
+
+  it('★ 命運 12「住院」把人送进医院格；加刑分支不传送', () => {
+    const r = applyFortuneEffect(12, ctx({ nodes: NODES, objects: OBJS }));
+    expect(r.players[0]?.nodeId).toBe(3);            // 3 号格是医院
+    const again = applyFortuneEffect(12, ctx({
+      nodes: NODES,
+      objects: OBJS,
+      players: [occupied(0, { blocking: { ...makePlayer().blocking, inHospital: 2 } }),
+        occupied(1), occupied(2), occupied(3)],
+    }));
+    expect(again.players[0]?.blocking.inHospital).toBe(5);
+    expect(again.players[0]?.nodeId).toBe(1);        // ★ 原地不动
+  });
+
+  it('★ 不传 nodes/objects（老单元测试的用法）⇒ 只写计数，不传送', () => {
+    const r = applyFortuneEffect(33, ctx());
+    expect(r.players[0]?.nodeId).toBe(1);
+  });
+});
+
+describe('★ 首次「消失」也要先清掉别的关押状态（原版 `0x40d3ad call 0x40d761`）', () => {
+  it('住院中被綁架 → inHospital 清 0 且**医院床位释放**', () => {
+    const players = [makePlayer({
+      index: 0,
+      blocking: { ...makePlayer().blocking, inHospital: 5 },
+    }), makePlayer({ index: 1 }), makePlayer({ index: 2 }), makePlayer({ index: 3 })];
+    const r = applyFortuneEffect(FORTUNE_ABDUCTED, ctx({
+      players,
+      hospitalOccupancy: [1, 0, 0, 0, 0, 0, 0, 0],
+    }));
+    expect(r.players[0]?.blocking.disappearing).not.toBe(0);
+    expect(r.players[0]?.blocking.inHospital).toBe(0);
+    expect(r.hospitalOccupancy[0]).toBe(0);
+  });
+
+  it('坐牢中被綁架 → 监狱床位也释放', () => {
+    const players = [makePlayer({
+      index: 0,
+      blocking: { ...makePlayer().blocking, inPrison: 4, inHotel: 2 },
+    }), makePlayer({ index: 1 }), makePlayer({ index: 2 }), makePlayer({ index: 3 })];
+    const r = applyFortuneEffect(FORTUNE_ABDUCTED, ctx({
+      players,
+      prisonOccupancy: [1, 0, 0, 0, 0, 0, 0, 0],
+    }));
+    expect(r.prisonOccupancy[0]).toBe(0);
+    expect(r.players[0]?.blocking.inPrison).toBe(0);
+    expect(r.players[0]?.blocking.inHotel).toBe(0);      // 四个计数器一起清
+  });
+
+  it('本来没被关 → 两张表都不动（不影响正常绑架）', () => {
+    const r = applyFortuneEffect(FORTUNE_ABDUCTED, ctx({
+      prisonOccupancy: [1, 0, 0, 0, 0, 0, 0, 0],
+      hospitalOccupancy: [0, 1, 0, 0, 0, 0, 0, 0],
+    }));
+    expect([r.prisonOccupancy[0], r.hospitalOccupancy[1]]).toEqual([1, 1]);
+    expect(r.players[0]?.blocking.disappearing).not.toBe(0);
   });
 });

@@ -19,18 +19,35 @@
  */
 
 import type { GameState } from '../state/types.ts';
+import { WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from '../state/types.ts';
 import type { SaveGame } from './save.ts';
+import { OFFSET, PLAYER_SNAPSHOT_SIZE, parseSave } from './save.ts';
 import { parseMap, type Rich4Map } from './map.ts';
+import {
+  ORIGINAL_SAVE_BLOCKS,
+  ORIGINAL_STATE_BLOCK_SIZE,
+} from './save-block-table.ts';
+import {
+  SNAPSHOT_FLAG_OFFSET,
+  SNAPSHOT_REGIONS,
+} from './save-writer.ts';
+import { takeSnapshot } from '../rules/time-machine.ts';
 import {
   commercialLiveFromMap,
   commercialOwnersFromMap,
   facilityFieldFromMap,
   landLevelFromMap,
   landOwnerFromMap,
+  landPriceStatusFromMap,
+  landTenureFromMap,
   landPriceFromMap,
   landTypeFromMap,
 } from '../rules/new-game.ts';
-import { emptyBoard } from '../places/notice-board.ts';
+import {
+  BOARD_SLOTS,
+  type BoardColumn,
+  type ListingKind,
+} from '../places/notice-board.ts';
 import {
   ACTOR_PLACE,
   INITIAL_ACTOR_PLACE,
@@ -146,6 +163,7 @@ const REQUIRED_KEYS: readonly (keyof GameState)[] = [
   'currentPlayer',
   'phase',
   'priceIndex',
+  'viewRotation',
   'cardAmount',
   'landOwner',
   'landLevel',
@@ -256,7 +274,19 @@ function importedMarket(save: SaveGame): StockMarketState {
     stocks,
     history,
     day,
-    index: Math.trunc(Math.fround(total * 10)),
+    // ★ 这里**不能**对乘积再取一次 `Math.fround`。原版（@source 0x004294b9）：
+    //     fld   dword ptr [esp]        ; 单精度 → x87 扩展精度（精确）
+    //     fmul  dword ptr [0x463fec]   ; ×10.0f（0x463fec = 0x41200000 = 10.0）
+    //     call  0x457dbc               ; RC=11 → frndint 向零取整
+    //     fistp dword ptr [0x499078]
+    //   关键是**乘积留在 x87 扩展精度里，中途没有 `fstp` 回单精度**。
+    //   而 float32 × 10 的精确积最多只需 24+3 = 27 位有效位，double 有 53 位
+    //   ⇒ 在 JS 里 `total * 10` **本身就是精确的**；
+    //   再 `Math.fround` 一次反而引入原版没有的舍入。
+    //   实证：两个真实存档的 `[0x499078]` 是 74637 / 13490，
+    //   多这一次 fround 会算成 74638 / 13491（差 1）。
+    //   回归测试见 `savegame.test.ts` 的「大盘指数逐位等于存档原值」。
+    index: Math.trunc(total * 10),
   };
 }
 
@@ -325,6 +355,36 @@ function importedToolStock(save: SaveGame): number[] {
  *   否则沿用开局的位置（小偷/強盜在監獄、流氓/間諜在醫院、機器娃娃未出场）——
  *   与 `initialSpecialActors()` 同一套口径。
  */
+/**
+ * 公佈欄挂牌表：文件里的 28 个 12 字节槽 → 4 玩家 × 7 槽。
+ *
+ * @source 块 `0x2526`（= 运行时 `0x4967e0`，步长 `0x54` = 7 × 12）；
+ *   槽内布局见 `save.ts` 的 `SaveListingSlot`。
+ */
+function importedNoticeBoard(save: SaveGame): BoardColumn[] {
+  const cols: BoardColumn[] = [];
+  for (let p = 0; p < 4; p++) {
+    const col: BoardColumn = [];
+    for (let s = 0; s < BOARD_SLOTS; s++) {
+      const it = save.noticeBoard[p * BOARD_SLOTS + s];
+      if (it === undefined || it.kind === 0) {
+        col.push(null);
+        continue;
+      }
+      col.push({
+        kind: it.kind as ListingKind,
+        id: it.id,
+        price: it.price,
+        amount: it.amount,
+        estateType: it.estateType,
+        estateLevel: it.estateLevel,
+      });
+    }
+    cols.push(col);
+  }
+  return cols;
+}
+
 function importedSpecialActors(save: SaveGame): SpecialActor[] {
   return INITIAL_ACTOR_PLACE.map((initialPlace, i) => {
     const rec = save.specialPlayers[i];
@@ -431,11 +491,20 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     alliedPlayer: p.alliedPlayer,
     alliedDays: p.alliedDays,
     insuranceDays: p.daysAssurance,
-    savedTrafficMethod: p.f67,
-    savedNdices: p.f68,
-    misfortune: 0,
-    fortune: 0,
-    luck: 0,
+    // ★★ 2026-09-17 订正（三个都是「写了但读错/没读」，由時光機快照的历史数据暴露）：
+    //   · `+0x44/0x46/0x48` 是**神明附身的三项修正**（写侧一直对，读侧先前硬编码 0）——
+    //     Save0 的 slot0 快照里玩家 0 是 `-100/60/60`，正是 `rules/objects.ts` 表里
+    //     **天使** 的三项（`@source 0x40ead7` 附身时写、`0x40e14d` 送走时清）；
+    //   · `savedTrafficMethod` 的真值在 **`+0x66`**、`savedNdices` 在 **`+0x67`**
+    //     （`@source 0x4441dc` 夢遊卡：`mov dl,[+0x11] / mov [+0x66],dl`、
+    //      `mov dl,[+0x12] / mov [+0x67],dl`）。
+    //   ⚠️ 先前读的是 `f67`（`+0x43`，**全 exe 无读无写**）与 `f68`（`+0x44`，其实是
+    //     misfortune）—— 两个样本这几格恰好全 0，所以逐字节往返测试**看不出来**。
+    savedTrafficMethod: p.f102,
+    savedNdices: p.f103,
+    misfortune: p.f68,
+    fortune: p.f70,
+    luck: p.f72,
     // ⚠️ 原版 hostility 实为 4 项；存档里的第 5/6 项是月度累计金额
     //   （见 rules/monthly.ts 的考证），故只取前 4 项。
     hostility: p.hostility.slice(0, 4),
@@ -497,6 +566,9 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     currentPlayer: Math.min(Math.max(save.currentPlayer, 0), n - 1),
     phase: 'turnStart',
     priceIndex: save.priceIndex,
+    // ★ 地图视角旋转（`[0x499088]`，存档 `+0x2743`）—— 原版存它，故读档要恢复。
+    //   两个样本都是 0，所以这条同样只能靠构造字节验证（见 savegame.test.ts）。
+    viewRotation: save.viewRotation,
     // 本局开局资金档位（存档 0x268a）；老档 / 自制档里是 0 时退回默认档
     initialFund: save.initialFund > 0 ? save.initialFund : DEFAULT_INITIAL_FUND,
     dice: [],
@@ -514,7 +586,9 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     // ★ 种类从地图读出来当初值 —— 它会被改建卡/傳送機改，不能每次回地图取
     landType: landTypeFromMap(map, landCount),
     landPrice: landPriceFromMap(map, landCount),
-    noticeBoard: emptyBoard(),
+    // ★ 公佈欄挂牌表**从存档读回来**（块 0x2526，4 玩家 × 7 槽 × 12 字节）。
+    //   先前这里硬写 `emptyBoard()` ⇒ 挂牌在存档往返里**整块丢失**。
+    noticeBoard: importedNoticeBoard(save),
     turnCount: 0,
     snapshots: [null, null, null, null],
     // ★ 2026-09-17（第十轮）：两个牌堆的**洗牌序与游标**都从存档读了
@@ -528,24 +602,43 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     // ★ 2026-09-16：两个全局现在**真的从存档读**了（0x2682 / 0x2686），
     //   不再一律按「無限」导入。
     winConditions: { targetDays: save.winTargetDays, targetWealth: save.winTargetWealth },
+    // ★ 人类玩家数读存档块 `0x01b0`（`[0x499104]`）；0/异常值才退回按 whoPlays 数
+    //   —— 原版这个全局只在开新局写一次，破产不改它（见 state/types.ts）
+    humanPlayers: save.humanPlayers > 0
+      ? save.humanPlayers
+      : save.players.filter((pl) => (pl.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN).length,
     // 导入的是「一局进行中」的状态，不是某条结束路径的结局
     victory: null,
     // ★ 已过天数也从存档读（0x2692）—— 它进「平均盈餘 = 盈餘 ÷ 总天数」，
     //   也进勝利條件的天数判定；先前一律 0，读档后那两处都是错的。
     totalDays: save.totalDays,
-    totalMonths: 0,
+    // ★ 月数计数器也从存档读（`[0x499084]`，平坦 0x2696）—— 先前硬填 0，
+    //   于是「土地现值 ÷ 月数」（`0x429f60 idiv`）与跨月计数读档后都是错的。
+    //   实测 Save0 = 9、SAVE1 = 0。这条是**写出侧往返测试**发现的（见 save-writer.test.ts）。
+    totalMonths: save.totalMonths,
     landLastToll: new Array<number>(landCount).fill(0),
-    landTenure: new Array<number>(landCount).fill(0),
-    landPriceStatus: new Array<number>(landCount).fill(0),
+    // ★ 2026-09-17（第十二轮）：地契到期日与涨价/查封倒计时**从存档地图块读**。
+    //   原版把两者都存在地图块里（住宅 `+0x30`/`+0x17`，商業 `+0x34`/`+0x1c`），
+    //   而导入路径用的正是**存档自带的地图块** ⇒ 真值就在手边。
+    //   此前硬填 0 的后果：读档后所有「涨价/跌价/查封」倒计时消失、
+    //   所有「土地權限」到期日失效（`reduce.ts` 的 `sweepPriceStatus` 与
+    //   `tenureExpiresToday` 永不触发）。
+    landTenure: landTenureFromMap(map, landCount),
+    landPriceStatus: landPriceStatusFromMap(map, landCount),
     facilityOwner: facilityFieldFromMap(map, (f) => f.owner),
     facilityLevel: facilityFieldFromMap(map, (f) => f.level),
     facilityType: facilityFieldFromMap(map, (f) => f.type),
     facilityPriceStatus: facilityFieldFromMap(map, (f) => f.priceStatus),
     facilityPrice: facilityFieldFromMap(map, (f) => f.landPrice),
     facilityLastToll: facilityFieldFromMap(map, () => 0),
-    facilityTenure: facilityFieldFromMap(map, () => 0),
-    facilityResearchProject: facilityFieldFromMap(map, () => 0),
-    facilityResearchDays: facilityFieldFromMap(map, () => 0),
+    // ★ 同上：商業用地的地契到期日在 `+0x34`（与住宅的 `+0x30` 不同）
+    facilityTenure: facilityFieldFromMap(map, (f) => f.flast),
+    // ★★ 研发进度要**从地图块读**（`+0x1d` 项目 / `+0x1e` 剩余天数）。
+    //   先前一律填 0 ⇒ 读原版存档时**正在研发的設施进度归零**。
+    //   这个坑是被 `withLiveMapState` 的「合并前后逐字节相同」用例揪出来的：
+    //   Save0 的 2 号設施在地图块里 `researchProject = 1`，而导入后是 0。
+    facilityResearchProject: facilityFieldFromMap(map, (f) => f.researchProject ?? 0),
+    facilityResearchDays: facilityFieldFromMap(map, (f) => f.researchDays ?? 0),
     // ★ 企业那四项也从地图读（+0x18 归属 / +0x1c..0x1f 排名 / +0x28 累積盈餘 /
     //   +0x2c 累計盈餘 / +0x30 可售股数）—— 实测 Save0：4/5 号归属 = 2（玩家 1），
     //   3 号 funds = 48000、4 号 profit = 197800、2 号 shares = 2176。
@@ -560,11 +653,13 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     lastEvent: null,
     // 纯表现提示：读档后不播「上一局那趟」（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
+    lastCardPlay: null,
     // 回合边界的惡人队列：读档回到回合边界也是空的（重新起算）
     pendingNpcSlots: [],
     // ★ 樂透号码表（平坦 0x26be = `[0x4990b8]`，36 字节，值 = 持有者 + 1）
     lottery: importedLottery(save),
     pending: null,
+    pendingQueue: [],
     tools,
     // ★ 2026-09-17：全局道具库存**从存档读**（平坦 `0x6ea`，8 字节，
     //   `[道具号 - 1]`；> 8 号不限量、存档里也不存，按初始值放着）。
@@ -595,4 +690,95 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
   };
 
   return { state, gaps, map };
+}
+
+// ============================================================
+//  逐回合快照（時光機）的**读入**
+// ============================================================
+
+function readU32(data: Uint8Array, off: number): number {
+  return (
+    ((data[off] ?? 0) |
+      ((data[off + 1] ?? 0) << 8) |
+      ((data[off + 2] ?? 0) << 16) |
+      ((data[off + 3] ?? 0) << 24)) >>>
+    0
+  );
+}
+
+/**
+ * 把原版存档里的**一份逐回合快照**还原成 `GameState`。
+ *
+ * ★ 快照不是「另一种格式」，而是**状态块的一个子集**：
+ *   `SNAPSHOT_REGIONS` 的 28 个区（9,999 字节）与状态块**同源同义**，
+ *   只是落在快照里的偏移不同。所以读入就是写出器的**逐字节逆运算**：
+ *
+ * ```text
+ * 合成状态块 = 当前状态块
+ *            ⊕ 快照的 28 个区（按 SNAPSHOT_REGIONS 搬回状态块偏移）
+ * 合成存档   = 合成状态块 + 该快照自己的地图副本
+ * ```
+ * 之后走**现成的** `parseSave` → `importOriginalSave` ——
+ * 不另写一套字段映射，故不可能与状态块读入出现分歧。
+ *
+ * ⚠️ 快照**自带地图副本**（回合开始时的归属/等级就在那份地图里），
+ *   必须用**它**去解析，否则会「状态是回合开始的、归属是现在的」。
+ *
+ * @param stateBlock 文件开头那份状态块（`raw[0 .. 0x274b]`）
+ * @param snapshot   该玩家的 `0x2718` 字节
+ * @param mapData    紧随其后的地图副本（`mapDataSize` 字节）
+ * @returns 该槽的导入结果；**空槽返回 `null`**（有效标记为 0）
+ */
+export function importPlayerSnapshot(
+  stateBlock: Uint8Array,
+  snapshot: Uint8Array,
+  mapData: Uint8Array,
+  fallbackMap: Rich4Map,
+): ImportResult | null {
+  if (snapshot.length < PLAYER_SNAPSHOT_SIZE) return null;
+  // @source `0x004480ce mov dword ptr [eax + 0x48cb80], 1` —— 只给真人存
+  if (readU32(snapshot, SNAPSHOT_FLAG_OFFSET) === 0) return null;
+
+  const block = stateBlock.slice(0, ORIGINAL_STATE_BLOCK_SIZE);
+  for (const r of SNAPSHOT_REGIONS) {
+    const b = ORIGINAL_SAVE_BLOCKS.find((x) => x.offset === r.stateBlockOffset);
+    if (b === undefined) continue;
+    block.set(snapshot.subarray(r.snapshotOffset, r.snapshotOffset + b.bytes), r.stateBlockOffset);
+  }
+
+  const synthetic = new Uint8Array(block.length + mapData.length);
+  synthetic.set(block, 0);
+  synthetic.set(mapData, block.length);
+  return importOriginalSave(parseSave(synthetic), fallbackMap);
+}
+
+/**
+ * 匯入原版存档，**并把 4 个時光機快照一起读进来**。
+ *
+ * 这是 `importOriginalSave` 的完整版：除了当前局面，还把每玩家槽里的
+ * 「回合开始时状态」还原成 `takeSnapshot` 那种 JSON，填进 `state.snapshots`
+ * —— 否则读档之后時光機是**空转**的（原版读档后照常能回溯）。
+ *
+ * ⚠️ 快照槽**只有真人玩家才有**（`@source 0x0044809f test byte [player+0x15],1`），
+ *   空槽保持 `null`，与 `restoreSnapshot` 的「没存过 → 不消耗道具」一致。
+ */
+export function importOriginalSaveWithSnapshots(
+  raw: Uint8Array,
+  fallbackMap: Rich4Map,
+): ImportResult {
+  const save = parseSave(raw);
+  const base = importOriginalSave(save, fallbackMap);
+  const mapDataSize = save.mapData.length;
+  const stateBlock = raw.subarray(0, ORIGINAL_STATE_BLOCK_SIZE);
+  const snapshots = [...base.state.snapshots];
+  for (let i = 0; i < save.numPlayers; i++) {
+    // 文件布局：状态块 + 主地图 + 每玩家（快照 0x2718 + 该玩家的地图副本）
+    const at = OFFSET.mapData + mapDataSize + i * (PLAYER_SNAPSHOT_SIZE + mapDataSize);
+    if (at + PLAYER_SNAPSHOT_SIZE + mapDataSize > raw.length) break;
+    const snap = raw.subarray(at, at + PLAYER_SNAPSHOT_SIZE);
+    const snapMap = raw.subarray(at + PLAYER_SNAPSHOT_SIZE, at + PLAYER_SNAPSHOT_SIZE + mapDataSize);
+    const imported = importPlayerSnapshot(stateBlock, snap, snapMap, fallbackMap);
+    if (imported !== null) snapshots[i] = takeSnapshot(imported.state);
+  }
+  return { ...base, state: { ...base.state, snapshots } };
 }

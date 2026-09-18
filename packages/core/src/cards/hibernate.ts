@@ -8,6 +8,7 @@
 
 import type { Player } from '../state/types.ts';
 import { isAlive } from '../state/types.ts';
+import { misfortuneDaysAfter } from '../rules/monthly.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 
 /** 冬眠天数 @source `mov dh, 5` / `mov byte [esi+0x36], dh` */
@@ -122,6 +123,9 @@ export function applyHibernateCard(
     if (i === currentPlayer) return p; // 不影响自己
     if (!isAlive(p)) return p;
     // @source cmp word [player+0x08], 0 / je skip
+    //   ★ `xpos` 是「在不在盘上」的哨兵：它由 `nodeId` 派生（`rules/position.ts`），
+    //     不在盘上时三项一起为 0，且实测**没有任何节点的世界坐标是 0**
+    //     （5 张可解析地图 610 个节点，min x = 179 / min y = 192）⇒ 该判据与原版同义。
     if (p.xpos === 0) return p;
     // @source cmp dword [player+0x32], 0 / jne skip —— 覆盖住宿/消失/坐牢/住院
     const b = p.blocking;
@@ -134,7 +138,8 @@ export function applyHibernateCard(
     return {
       ...p,
       blocking: { ...b, sleeping: HIBERNATE_DAYS, sleepWalking: 0 },
-      totalWinterSleepDays: p.totalWinterSleepDays + HIBERNATE_DAYS,
+      // @source 0x0044419b `mov dh, 5` / 0x004441a1 `add byte ptr [esi + 0x496baa], dh`
+      totalWinterSleepDays: misfortuneDaysAfter(p.totalWinterSleepDays, HIBERNATE_DAYS),
     };
   });
 

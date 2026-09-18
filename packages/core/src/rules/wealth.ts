@@ -45,6 +45,23 @@ export const STOCK_COUNT = 12;
  * ⚠️ 股票部分原版用 x87 浮点，且**每支股票算完就 `fistp` 截断回整数**
  * （不是最后统一取整）。这里如实复刻逐次截断，否则多支股票时会有累积偏差。
  *
+ * ⚠️⚠️ 还有一处**只在总资产 > 2^24 时才显形**的怪癖（2026 本轮用原版真码测出）：
+ * ```asm
+ * 004239ff  mov eax, [esp]            ; 当前整数总资产
+ * 00423a02  mov [esp+4], eax
+ * 00423a06  fild dword [esp+4]        ; 装入（精确）
+ * 00423a0a  fstp dword [esp+4]        ; ★ 又**存回 float32**（>2^24 就丢低位）
+ * 00423a0e  fadd dword [esp+4]        ; 加上这个被舍入过的总资产
+ * 00423a12  call 0x457dbc             ; trunc
+ * 00423a17  fistp dword [esp]         ; 写回整数总资产
+ * ```
+ * 即 `total = trunc(市值 + f32(total))` —— 总资产被**反复压进 24 位尾数**。
+ * 实测（原版真码 vs 纯双精度，持股 1000、价 10.35）：
+ * `total=16777217 → 16787566`（原版）但 `16787567`（双精度）；
+ * `total=999999999 → 1000010368` 但 `1000010349`（**差 19**）。
+ * 故此处必须 `Math.fround(total)`；否则大额玩家（>1677 万）的总资产会偏。
+ * 回归用例见 `rules/wealth-f32.test.ts`。
+ *
  * @source 现金/存款/贷款：`player[+28] + player[+32] − player[+36]`
  *   （0x1c cash / 0x20 money_in_bank / 0x24 loan）
  */
@@ -57,10 +74,20 @@ export function calculatePlayerWealth(
   let total = player.cash + player.moneyInBank - player.loan;
 
   // 股票：逐支累加并截断 @source loc_004239e0
+  //
+  // ⚠️★ 原版这个循环**不跳过空仓**：`for (edx = 0; edx < 12; edx++)`
+  //   （`0x423a1a inc edx` / `0x423a1b cmp edx,0xc` / `jl`），每轮都走
+  //   `fild 持股 → fmul 股价 → f32(total) → trunc → fistp`。
+  //   持股为 0 时那一轮的价值就是「把总资产**再压一次 float32**」——
+  //   所以**不能**因为 `stocks[s] === undefined` 就 `continue`，
+  //   否则大额玩家（>2^24）的总资产会与原版差 1~19。
   for (let s = 0; s < STOCK_COUNT; s++) {
     const h = stocks[s];
-    if (h === undefined) continue;
-    total = Math.trunc(h.amount * h.price + total);
+    const amount = h?.amount ?? 0;
+    const price = h?.price ?? 0;
+    // ★ `f32(total)`：原版 0x423a0a 的 `fstp dword [esp+4]` 把运行中的总资产
+    //   也舍入到 float32（>2^24 丢低位），见上方 @source 注释与 wealth-f32.test.ts
+    total = Math.trunc(amount * price + Math.fround(total));
   }
 
   const ownerId = player.index + 1;

@@ -12,8 +12,18 @@
 import type { Player } from '../state/types.ts';
 import { isAlive } from '../state/types.ts';
 import type { CardTarget, TargetError } from './target.ts';
-import { PASSIVE_CARDS, playerHasCard } from './passive.ts';
+import {
+  PASSIVE_CARDS,
+  REVENGE_DAYS,
+  applyDefensiveCards,
+  consumeCard,
+  playerHasCard,
+} from './passive.ts';
+
+// 復仇卡的天数常量归属被动卡（`passive.ts`），这里转出以保持既有引用可用
+export { REVENGE_DAYS };
 import { TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
+import { misfortuneDaysAfter } from '../rules/monthly.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 
 /**
@@ -31,6 +41,30 @@ import type { SpecialActor } from '../rules/special-actors.ts';
  */
 export const SLEEPWALK_DAYS_SELF = 4;
 export const SLEEPWALK_DAYS_OTHER = 5;
+
+/**
+ * 夢遊卡的敌意系数。
+ *
+ * @source `0x004442cb`–`0x004442ea`（**在免罪卡判定 `0x004442f5` 之前**）：
+ * ```asm
+ * 004442cb  mov  edx, dword ptr [0x4990e8]   ; price_index
+ * 004442d1  mov  eax, edx
+ * 004442d3  shl  eax, 2
+ * 004442d6  add  eax, edx                    ; 5×pi
+ * 004442d8  add  eax, eax                    ; 10×pi
+ * 004442da  mov  edx, eax
+ * 004442dc  shl  eax, 4                      ; 160×pi
+ * 004442df  sub  eax, edx                    ; ★ 150×pi
+ * 004442e1  push eax
+ * 004442e2  mov  edi, dword ptr [0x49910c]   ; 施卡者
+ * 004442e8  push edi
+ * 004442e9  push ebx                         ; 目标
+ * 004442ea  call 0x40df69                    ; update_hostility(目标, 施卡者, 150×pi)
+ * ```
+ * ★ 与陷害卡同系数（`cards/frame.ts` 的 `FRAME_HOSTILITY_FACTOR`），
+ *   但**位置不同**：陷害卡在免罪判定之前就记，夢遊卡也在之前 —— 两者一致。
+ */
+export const SLEEPWALK_HOSTILITY_FACTOR = 150;
 
 /** 冬眠天数累计的增量 @source `add byte [target + 0x42], 5` */
 export const SLEEPWALK_WINTER_DAYS = 5;
@@ -86,7 +120,15 @@ export const SAVED_NDICES_OFFSET = 0x67;
 export type SleepwalkOutcome =
   /** 目标用復仇卡把效果反弹给出牌者 */
   | { kind: 'reflected'; victim: number; days: number }
-  | { kind: 'applied'; victim: number; days: number };
+  | { kind: 'applied'; victim: number; days: number; /** ★ 被免罪卡(21) 抵消（此时 `days` 为 0） */ absolved?: true }
+  /**
+   * ★ 目标**已在冬眠**（`+0x36 != 0`）⇒ 整段效果不施加。
+   *
+   * @source `0x004442be cmp byte [eax+0x496b9e], 0` / `0x004442c5 jne 0x44449b`。
+   * ⚠️ 此时**卡仍然被消耗**（原版由调用方在进入处理函数前就 `remove_card`），
+   *   所以 `ok` 仍是 `true` —— 与"打不出去"（`ok: false`，不扣卡）是两回事。
+   */
+  | { kind: 'ineffective'; victim: number; reason: 'sleeping' };
 
 export interface SleepwalkResult {
   ok: boolean;
@@ -99,6 +141,11 @@ export interface SleepwalkResult {
   affected: number[];
   /** 写进替身记录 `+13` 的天数（= `days`；`ok === false` 时为 0） */
   days: number;
+  /**
+   * 敌意变化：**目标 → 施卡者**，`150 × priceIndex`。
+   * @source `0x004442ea`（在防御卡判定之前、无论免疫与否都记；但冬眠中不记）
+   */
+  hostilityDeltas: { from: number; to: number; delta: number }[];
 }
 
 /** 把一名玩家置入梦游状态 */
@@ -124,8 +171,8 @@ function enterSleepwalk(
     player: {
       ...p,
       blocking: { ...p.blocking, sleepWalking: days },
-      // @source add byte [+0x42], 5
-      totalWinterSleepDays: p.totalWinterSleepDays + SLEEPWALK_WINTER_DAYS,
+      // @source 0x00444372 `add byte ptr [eax + 0x496baa], 5`（8 位累加）
+      totalWinterSleepDays: misfortuneDaysAfter(p.totalWinterSleepDays, SLEEPWALK_WINTER_DAYS),
       savedTrafficMethod: savedTraffic,
       savedNdices,
       // @source [+0x11] = cl（清零）/ [+0x12] = 1
@@ -160,6 +207,13 @@ export function applySleepwalkCard(
   currentPlayer: number,
   target: CardTarget,
   tools: readonly number[],
+  /**
+   * 嫁祸卡(19) 改写后的新目标由外部（UI/AI）给出，`-1` 表示放弃转嫁（保持原目标）。
+   * 与原版 `0x00444330 cmp eax,-1 / je` 同义。默认不转嫁。
+   */
+  scapegoatPicker: (from: number) => number = () => -1,
+  /** 物价指数，用于敌意增量 `150 × priceIndex`（`@source 0x004442ea`） */
+  priceIndex = 1,
 ): SleepwalkResult {
   const fail = (error: TargetError): SleepwalkResult => ({
     ok: false,
@@ -169,6 +223,7 @@ export function applySleepwalkCard(
     outcome: null,
     affected: [],
     days: 0,
+    hostilityDeltas: [],
   });
 
   if (target.kind !== 'player') return fail('wrongTargetKind');
@@ -179,29 +234,117 @@ export function applySleepwalkCard(
   // 出局者不在原版目标选择列表里（0x446ae8 只画在场玩家）——等价于选不到
   if (!isAlive(victim0)) return fail('playerOutOfRange');
 
-  // ★ 復仇卡：把效果反弹给出牌者
-  const reflected = playerHasCard(victim0, PASSIVE_CARDS.REVENGE);
-  const victimIndex = reflected ? currentPlayer : target.index;
-  const victim = players[victimIndex];
-  if (victim === undefined) return fail('playerOutOfRange');
+  // ★★ 闸门：目标**已在冬眠**（`+0x36 != 0`）⇒ 整段效果跳过。
+  //   @source `0x004442be cmp byte ptr [eax + 0x496b9e], 0` / `0x004442c5 jne 0x44449b`
+  //   ⇒ 不记敌意、不查防御卡、不施加效果；**但卡已消耗**（调用方先 remove_card）。
+  //   故这里返回 `ok: true` + `ineffective`，而不是 `ok: false`。
+  if (victim0.blocking.sleeping !== 0) {
+    return {
+      ok: true,
+      error: null,
+      players: [...players],
+      tools: [...tools],
+      outcome: { kind: 'ineffective', victim: target.index, reason: 'sleeping' },
+      affected: [],
+      days: 0,
+      hostilityDeltas: [],
+    };
+  }
+
+  // ── 敌意：**在防御卡判定之前**就记（`@source 0x004442cb`–`0x004442ea`）──────
+  //   ⚠️ 但目标**已在冬眠**（`+0x36 != 0`）时整段跳过，**连敌意都不记**
+  //      （`@source 0x004442be cmp byte [eax+0x496b9e],0 / jne 0x44449b`）。
+  const hostilityDeltas =
+    victim0.blocking.sleeping === 0
+      ? [
+          {
+            from: target.index,
+            to: currentPlayer,
+            delta: priceIndex * SLEEPWALK_HOSTILITY_FACTOR,
+          },
+        ]
+      : [];
+
+  // ── 防御卡链（按原版顺序：免罪(21) → 嫁祸(19)）────────────────────────────
+  //   @source `0x004442f5 push 0x15` → `call 0x444bb2`（免罪）
+  //           `0x00444313 push 0x13` → `call 0x44476a`（嫁祸）
+  //   ★ 两个处理函数**内部各自 remove_card**（`0x444c11` / `0x4449ef`），
+  //     所以命中即消耗；此前 remake 完全不查这两张卡，且復仇卡也从不消耗。
+  let working: readonly Player[] = players;
+  const def = applyDefensiveCards(victim0);
+  if (def.trigger.kind === 'absolution') {
+    // 免罪卡：完全抵消，**不再**查嫁祸卡与复仇卡（顺序固定、命中即止）
+    return {
+      ok: true,
+      error: null,
+      players: players.map((p, i) => (i === target.index ? def.player : p)),
+      tools: [...tools],
+      outcome: { kind: 'applied', victim: target.index, days: 0, absolved: true },
+      affected: [],
+      days: 0,
+      hostilityDeltas,
+    };
+  }
+
+  const originalTarget = target.index;
+  let victimIndex = target.index;
+  let redirected = false;
+  if (def.trigger.kind === 'scapegoat') {
+    working = players.map((p, i) => (i === target.index ? def.player : p));
+    const picked = scapegoatPicker?.(target.index) ?? -1;
+    // @source `cmp eax,-1 / je 保持原目标`
+    if (picked !== -1 && picked >= 0 && picked < players.length) {
+      victimIndex = picked;
+      redirected = true;
+    }
+  }
 
   const days = victimIndex === currentPlayer ? SLEEPWALK_DAYS_SELF : SLEEPWALK_DAYS_OTHER;
-  const out = enterSleepwalk(victim, tools, days);
+  let out = enterSleepwalk(working[victimIndex]!, tools, days);
+  let playersAfter = working.map((p, i) => (i === victimIndex ? out.player : p));
+  let reflected = false;
+
+  // ── 復仇卡(18)：**在防御卡与效果施加之后**才查，且仅当
+  //    「最终目标 == 原始目标」（未被嫁祸改写）────────────────────────────
+  //   @source `0x004443ef cmp ebx, ebp / jne 结束`（ebx = 最终目标，ebp = 原始目标）
+  //           `0x004443fa has_card(原始目标, 18)` → `0x0044440c call 0x444691`
+  //           `0x00444414 mov ecx,[0x49910c]` → `0x0044441d mov byte [eax+0x496b9f], 5`
+  //   ★ 反弹天数是**硬编码 5**，不走"对自己 4 天"那条式子；
+  //   ★ `0x444691` 内部 `0x4446f0 call 0x441343`（remove_card(持有者, 18)）⇒ 必须消耗。
+  const originalHolder = playersAfter[originalTarget];
+  if (
+    !redirected &&
+    victimIndex === originalTarget &&
+    originalHolder !== undefined &&
+    playerHasCard(originalHolder, PASSIVE_CARDS.REVENGE)
+  ) {
+    const holderAfter = consumeCard(originalHolder, PASSIVE_CARDS.REVENGE);
+    playersAfter = playersAfter.map((p, i) => (i === originalTarget ? holderAfter : p));
+    const caster = playersAfter[currentPlayer];
+    if (caster !== undefined) {
+      out = enterSleepwalk(caster, out.tools, REVENGE_DAYS);
+      playersAfter = playersAfter.map((p, i) => (i === currentPlayer ? out.player : p));
+      reflected = true;
+    }
+  }
 
   return {
     ok: true,
     error: null,
-    players: players.map((p, i) => (i === victimIndex ? out.player : p)),
+    players: playersAfter,
     tools: out.tools,
     outcome: {
       kind: reflected ? 'reflected' : 'applied',
-      victim: victimIndex,
-      days,
+      victim: reflected ? currentPlayer : victimIndex,
+      days: reflected ? REVENGE_DAYS : days,
     },
-    affected: [victimIndex],
-    days,
+    affected: reflected ? [victimIndex, currentPlayer] : [victimIndex],
+    days: reflected ? REVENGE_DAYS : days,
+    hostilityDeltas,
   };
 }
+
+
 
 /**
  * 梦游结束后恢复交通方式与骰子数。

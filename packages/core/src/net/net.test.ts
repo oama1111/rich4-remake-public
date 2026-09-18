@@ -41,6 +41,55 @@ describe('校验和', () => {
     expect(stateFingerprint({ ...a, rngState: a.rngState + 1 })).not.toBe(stateFingerprint(a));
   });
 
+  run('★ 规则相位的三项也参与指纹（第 50 条补：此前漏了）', () => {
+    const map = loadMap();
+    const a = newGame({ map, players: allComputer(), seed: 5 });
+    // ① 惡人段游标
+    expect(stateFingerprint({ ...a, pendingNpcSlots: [4] })).not.toBe(stateFingerprint(a));
+    expect(stateFingerprint({ ...a, pendingNpcSlots: [4] })).toBe(
+      stateFingerprint({ ...a, pendingNpcSlots: [4] }),
+    );
+    // ② 待决交互（落在特殊格上要求玩家做什么 —— 是规则，不是渲染）
+    const buy = { kind: 'buyLand', landId: 3, name: 'X', price: 1000 };
+    expect(stateFingerprint({ ...a, pending: buy })).not.toBe(stateFingerprint(a));
+    expect(stateFingerprint({ ...a, pending: buy })).not.toBe(
+      stateFingerprint({ ...a, pending: { ...buy, price: 1001 } }),
+    );
+    // ③ 排队的拍卖
+    expect(stateFingerprint({ ...a, pendingQueue: [{ kind: 'auction', entityId: 1 }] })).not.toBe(
+      stateFingerprint({ ...a, pendingQueue: [] }),
+    );
+  });
+
+  run('★ 指纹对**键序**不敏感（C-DET-5：规范化 JSON）', () => {
+    const map = loadMap();
+    const a = newGame({ map, players: allComputer(), seed: 5 });
+    // 同一对象，两组插入顺序不同 —— 规范化后必须同指纹
+    const one = { kind: 'auction', entityId: 7, price: 100, bidders: [0, 2] };
+    const two: Record<string, unknown> = {};
+    for (const k of ['bidders', 'price', 'entityId', 'kind']) two[k] = (one as never)[k];
+    expect(stateFingerprint({ ...a, pending: one })).toBe(stateFingerprint({ ...a, pending: two }));
+    // 数组顺序**是**语义，不能规范化掉
+    const three = { ...one, bidders: [2, 0] };
+    expect(stateFingerprint({ ...a, pending: one })).not.toBe(
+      stateFingerprint({ ...a, pending: three }),
+    );
+  });
+
+  run('★★ `{ rng: false }`：与原版对轨迹时忽略 rngState，但其它分歧照抓', () => {
+    const map = loadMap();
+    const a = newGame({ map, players: allComputer(), seed: 5 });
+    // rngState 分歧：默认抓得到，关掉后不抓
+    const bent = { ...a, rngState: a.rngState + 999 };
+    expect(stateFingerprint(bent)).not.toBe(stateFingerprint(a));
+    expect(stateFingerprint(bent, { rng: false })).toBe(stateFingerprint(a, { rng: false }));
+    // 但**规则量**的分歧在 rng:false 下依然要抓到
+    const cash = { ...a, players: a.players.map((p, i) => (i === 0 ? { ...p, cash: p.cash + 1 } : p)) };
+    expect(stateFingerprint(cash, { rng: false })).not.toBe(stateFingerprint(a, { rng: false }));
+    const pending = { ...a, pending: { kind: 'buyLand', landId: 1 } };
+    expect(stateFingerprint(pending, { rng: false })).not.toBe(stateFingerprint(a, { rng: false }));
+  });
+
   run('★ 地产归属参与指纹', () => {
     const map = loadMap();
     const a = newGame({ map, players: allComputer(), seed: 5 });

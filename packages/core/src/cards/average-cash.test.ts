@@ -99,6 +99,23 @@ describe('★ 敌意结算 —— 两代逆向版曾在此矛盾', () => {
     expect(HOSTILITY_DIVISOR).toBe(100);
   });
 
+  it('★★ 求和按 32 位回绕（通道 2 证据：0x7FFFFFFF×2+1 ⇒ −1，avg = 0）', () => {
+    // @source `add esi, [player+0x1c]` 是 32 位寄存器加法 ⇒ 溢出回绕；
+    //   rich4-spec/tests/test_average_cards.py 钉住：三家 0x7FFFFFFF/0x7FFFFFFF/1
+    //   求和 = −1，`idiv 3` = 0 ⇒ 三家都变 0，且前两家 delta = 2147483647/100
+    const r = applyAverageCashCard(
+      [player(0, 0x7fffffff), player(1, 0x7fffffff), player(2, 1)],
+      0,
+    );
+    expect(r.average).toBe(0);
+    expect(r.players.map((p) => p.cash)).toEqual([0, 0, 0]);
+    expect(r.hostilityDeltas).toEqual([
+      { from: 0, to: 0, delta: 21_474_836 },
+      { from: 1, to: 0, delta: 21_474_836 },
+      { from: 2, to: 0, delta: 0 },
+    ]);
+  });
+
   it('不原地修改入参', () => {
     const ps = [player(0, 100), player(1, 900)];
     const snapshot = JSON.stringify(ps);

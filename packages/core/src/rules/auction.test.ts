@@ -3,13 +3,14 @@
  * 拍賣 —— 以 run_auction（VA 0x0043bde5）为准
  */
 
+import { WatcomRng } from '../rng/watcom.ts';
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce } from '../state/reduce.ts';
 import type { MapTopology } from '../state/reduce.ts';
 import { decideAction } from '../ai/policy.ts';
-import { WHO_PLAYS_COMPUTER } from '../state/types.ts';
+import { WHO_PLAYS_COMPUTER, WHO_PLAYS_AUTOPILOT, WHO_PLAYS_HUMAN,} from '../state/types.ts';
 import type { GameState } from '../state/types.ts';
 import { parseMap, type Rich4Map } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
@@ -166,10 +167,15 @@ describe('★ 拍賣卡敌意 = double 压栈的原版 bug（0x00443286 起）',
     expect(auctionCardHostility(10485765, 0, 1)).toBe(-2147483648);
   });
 
-  it('公式本身是 地价 × 物价 × (等级+2)/5（fadd 2.0 / fdiv 5.0）', () => {
-    // 选一个低 32 位恰有非零尾数的值验证公式：3×(0+2)/5 = 1.2 →
-    // 1.2 = 0x3FF3333333333333 → 低 32 位 = 0x33333333
-    expect(auctionCardHostility(3, 0, 1)).toBe(0x33333333);
+  it('★★ 公式按 x87 的**逐步 double 舍入**算（PC = 0x027F ⇒ 53 位）', () => {
+    // 原版实测（rich4-spec/tests/test_land_auction_cards.py，真跑 0x40df69）：
+    //   (地价 3、物价 1、等级 0) ⇒ 3 × (2/5)：
+    //     · 逐步 double（本实现）  = 1.2000000000000002 → 低 32 位 = **858993460**
+    //     · 「精确乘积 ÷ 5」      = 1.2                → 低 32 位 = 858993459
+    //   原版给的是 **858993460** ⇒ 必须逐步舍入（x87 默认精度控制字是 double）。
+    expect(auctionCardHostility(3, 0, 1)).toBe(858_993_460);
+    // 另一组原版实测值：(地价 1001、物价 1、等级 2) ⇒ +1717986919
+    expect(auctionCardHostility(1001, 2, 1)).toBe(1_717_986_919);
   });
 });
 
@@ -523,47 +529,147 @@ describe('★ AI 一口：心理价位 / 现金 / 压价三条一起看（auctio
   });
 });
 
-describe('★ 心理价位表（入口 0x43c5d9 只在开拍时算一次）', () => {
-  it('真人座位留 0；电脑座位按 fcn_00439f0d 算', () => {
+describe('★ 心理价位表（建表循环 0x43c5d0 只在开拍时算一次）', () => {
+  const ENTITY = {
+    basePrice: 3000,
+    priceIndex: 1,
+    landPrice: 3000,
+    level: 0,
+    total: 10,
+    unowned: 4,
+    sameNameOwned: () => 0,
+  };
+  /** 按开拍时的口径造状态：出得起底价且在名单里才 'active' */
+  const st = (...ps: ReturnType<typeof makePlayer>[]): AuctionSeatStatus[] =>
+    ps.map((p) => (p.whoPlays === 0 || p.cash <= ENTITY.basePrice ? 'givenUp' : 'active'));
+  /** 计数的随机源：返回固定序列并记录消费次数 */
+  const counter = (vals: number[] = [0.5]) => {
+    let n = 0;
+    const f = (): number => {
+      const v = vals[n % vals.length] ?? 0;
+      n += 1;
+      return v;
+    };
+    return { f, count: () => n };
+  };
+
+  it('★ 只给「电脑」算：真人/出局那两格留 0，且**一次随机数都不掷**', () => {
     const players = [
       makePlayer({ index: 0, cash: 100_000, whoPlays: 0 }), // 出局
       makePlayer({ index: 1, cash: 100_000, whoPlays: WHO_PLAYS_COMPUTER }),
-      makePlayer({ index: 2, cash: 100_000 }), // 真人
+      makePlayer({ index: 2, cash: 100_000 }), // 真人（makePlayer 默认）
       makePlayer({ index: 3, cash: 100_000, whoPlays: WHO_PLAYS_COMPUTER }),
     ];
-    const entity = {
-      basePrice: 3000,
-      priceIndex: 1,
-      landPrice: 3000,
-      level: 0,
-      total: 10,
-      unowned: 4,
-      sameNameOwned: () => 0,
-    };
-    const limits = auctionAiLimits(entity, players, [0, 1, 2, 3], 12345);
+    const r = counter();
+    const limits = auctionAiLimits(ENTITY, players, [0, 1, 2, 3], st(...players), -1, r.f);
     expect(limits[0]).toBe(0); // 出局（原版连座位都没有）
     expect(limits[1]).toBeGreaterThan(0);
-    // ⚠️ 真人这一格也算了值：原版**只给电脑**算（真人那一手是手点的），
-    //   本函数按「出价者」逐位算好，真人那一位的值由 `decidePending`
-    //   拒用（`isAiControlled` 那道闸），屏上也不会读它。
-    expect(limits[2]).toBeGreaterThan(0);
+    // ★★ 订正：原版 `test byte [player+0x15], 6 / je 跳过` —— 真人**不算也不掷**。
+    //    先前这里断言「真人那一格也算了值」，那是把实现当成了真值。
+    expect(limits[2], '真人座位留 0').toBe(0);
     expect(limits[3]).toBeGreaterThan(0);
+    // @source 0x439f0d 内部 `call rand` **两次**（入口 0x439f1c + 地块支
+    //   0x43a015 / 設施支 0x43a0fb 二选一）⇒ 两个电脑座位 = 4 次
+    expect(r.count(), '★ 两个电脑座位 × 每家 2 次 = 4 次').toBe(4);
   });
 
-  it('★ 同一种子算两遍完全一样（联机两端要对得上）', () => {
-    const players = [0, 1].map((i) => makePlayer({ index: i, cash: 100_000, whoPlays: WHO_PLAYS_COMPUTER }));
+  it('★ 托管的人类座位（whoPlays bit2）照样算 —— `test ...,6` 的 bit2', () => {
+    const players = [
+      makePlayer({ index: 0, cash: 100_000, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT }),
+      makePlayer({ index: 1, cash: 100_000, whoPlays: WHO_PLAYS_HUMAN }),
+    ];
+    const r = counter();
+    const limits = auctionAiLimits(ENTITY, players, [0, 1], st(...players), -1, r.f);
+    expect(limits[0]).toBeGreaterThan(0);
+    expect(limits[1]).toBe(0);
+    expect(r.count(), '一个电脑座位 × 2 次').toBe(2);
+  });
+
+  it('★ 出不起底价（状态 8）/ 卖家（状态 7）都不掷', () => {
+    const players = [
+      makePlayer({ index: 0, cash: 100_000, whoPlays: WHO_PLAYS_COMPUTER }),
+      makePlayer({ index: 1, cash: 100, whoPlays: WHO_PLAYS_COMPUTER }), // 出不起
+      makePlayer({ index: 2, cash: 100_000, whoPlays: WHO_PLAYS_COMPUTER }), // 卖家
+    ];
+    const r = counter();
+    const limits = auctionAiLimits(ENTITY, players, [0, 1, 2], st(...players), 2, r.f);
+    expect(limits[0]).toBeGreaterThan(0);
+    expect(limits[1], '出不起底价 → 价位停在 0').toBe(0);
+    expect(limits[2], '卖家状态 7 → 不算').toBe(0);
+    expect(r.count(), '★ 只有 1 家可出价 ⇒ 掷 2 次').toBe(2);
+  });
+
+  it('★ 消费次数与座位顺序无关地确定：两家电脑 → 恰好 2 次', () => {
+    const players = [0, 1].map((i) =>
+      makePlayer({ index: i, cash: 100_000, whoPlays: WHO_PLAYS_COMPUTER }),
+    );
+    const r = counter([0.25, 0.75]);
+    const limits = auctionAiLimits(ENTITY, players, [0, 1], st(...players), -1, r.f);
+    expect(r.count(), '两家 × 2 次').toBe(4);
+    // 同一条随机流算两遍必然一致（联机两端对得上）
+    const r2 = counter([0.25, 0.75]);
+    expect(auctionAiLimits(ENTITY, players, [0, 1], st(...players), -1, r2.f)).toEqual(limits);
+  });
+});
+
+/**
+ * ★★ 开拍要**消费全局随机流**（原版 `0x439f0d` 内部 `call rand` 两次）。
+ *
+ * 旧实现（已撤销的 D-T034-5）用 `rngState ^ 实体号` 派生一条**独立**序列，
+ * 于是 `rngState` 一动不动 —— 每开一场拍卖，之后所有随机事件就与原版错位一次。
+ */
+describe('★★ 开拍消费全局随机流（订正 D-T034-5）', () => {
+  it('★ 3 个电脑座位 × 每家 2 次 ⇒ rngState 恰好前进 6 步', () => {
+    let s = auctionGame();
+    const before = s.rngState;
+    s = reduce(s, { type: 'useCard', cardId: 8 }, topo);
+    if (s.pending?.kind !== 'auction') throw new Error('no auction');
+    expect(s.pending.bidders).toEqual([0, 2, 3]);
+
+    const expectRng = new WatcomRng();
+    expectRng.setState(before);
+    for (let i = 0; i < 6; i++) expectRng.next();
+    expect(s.rngState, '★ 开拍必须推进全局随机流').toBe(expectRng.getState());
+    expect(s.rngState).not.toBe(before);
+  });
+
+  it('★★ 心理价位与流位置都出自那条全局流（同序复算逐项相等）', () => {
+    let s = auctionGame();
+    const before = s.rngState;
+    s = reduce(s, { type: 'useCard', cardId: 8 }, topo);
+    if (s.pending?.kind !== 'auction') throw new Error('no auction');
+
+    // 独立复算：从**同一个** rngState 起，按 bidders 升序喂给同一个算法
+    const rng = new WatcomRng();
+    rng.setState(before);
+    const rand01 = (): number => rng.next() / 32768;
     const entity = {
-      basePrice: 3000,
-      priceIndex: 1,
-      landPrice: 3000,
+      basePrice: s.pending.basePrice,
+      priceIndex: s.priceIndex,
+      landPrice: 3000, // makeLand 的地价（见本文件 topo）
       level: 0,
-      total: 10,
-      unowned: 4,
+      total: 1, // topo.lands 只有一块
+      unowned: 0, // 那块地归卖家（玩家 1）
       sameNameOwned: () => 0,
     };
-    expect(auctionAiLimits(entity, players, [0, 1], 777)).toEqual(
-      auctionAiLimits(entity, players, [0, 1], 777),
-    );
+    const status = auctionSeatStatus(s.players, s.pending.bidders, s.pending.basePrice);
+    const manual = auctionAiLimits(entity, s.players, s.pending.bidders, status, 1, rand01);
+
+    expect(s.pending.limits).toEqual(manual);
+    expect(rng.getState(), '复算消耗的步数必须与引擎一致').toBe(s.rngState);
+  });
+
+  it('★ 真人座位不消费随机数：全真人时开拍不推进 rngState', () => {
+    let s = auctionGame();
+    // ★ 四个人全改成真人 —— 出价者是 0/2/3，**0 号（出卡人）也在名单里**，
+    //   只改 1/2/3 的话还会剩一个电脑座位在掷随机数。
+    const players = s.players.map((p) => ({ ...p, whoPlays: WHO_PLAYS_HUMAN }));
+    s = { ...s, players };
+    const before = s.rngState;
+    s = reduce(s, { type: 'useCard', cardId: 8 }, topo);
+    if (s.pending?.kind !== 'auction') throw new Error('no auction');
+    expect(s.pending.limits.every((v) => v === 0), '真人座位心理价位留 0').toBe(true);
+    expect(s.rngState, '★ 一个电脑座位都没有 ⇒ 一次都不掷').toBe(before);
   });
 });
 

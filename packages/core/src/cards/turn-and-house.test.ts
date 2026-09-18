@@ -4,11 +4,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  turnAround, applyTurnCard, applySwapHouseCard, applySwapHouseFacilityCard,
-  DIRECTION_COUNT, TURN_AROUND_OFFSET,
+  turnAround, applyTurnCard, applyTurnCardToActor, applySwapHouseCard, applySwapHouseFacilityCard,
+  pickTurnBackNode, DIRECTION_COUNT, TURN_AROUND_OFFSET,
 } from './turn-and-house.ts';
+import { releaseNpc } from '../rules/special-actors.ts';
 import { applySwapLandCard } from './swap-and-stock.ts';
-import { makePlayer, makeLand, makeFacility } from '../testing/factories.ts';
+import { linkBlockedMask } from '../state/reduce.ts';
+import { makeNode, makePlayer, makeLand, makeFacility } from '../testing/factories.ts';
 
 const four = () => [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i, direction: 1 }));
 
@@ -119,5 +121,59 @@ describe('换屋卡 · 設施分支（脚下是設施时原版换 0xe0c0204）',
     const fs = twoFac();
     applySwapHouseFacilityCard(fs, 1, 2);
     expect(fs[0]!.level).toBe(1);
+  });
+});
+
+/**
+ * ★★ 第 89 条：掉头之后要**重挑「来路」**（原版 `0x40c78c` 的 0x40c7ea..0x40c859）。
+ * 这一笔是**规则可见**的：`pickNextNode` 会避开 `lastNodeId` ⇒ 换一个方向走回去。
+ * 通道 2 证据：`rich4-spec/tests/test_turn_around.py`（23/23）。
+ */
+describe('★★ 掉头后重挑来路（lastNodeId）', () => {
+  const node = (over: Partial<ReturnType<typeof makeNode>>) => makeNode(over);
+  /** 1 号格：四槽各有一个邻居，槽 2 封路 */
+  const nodes = [
+    node({ id: 1, adjacent: [11, 12, 13, 14], flags: linkBlockedMask(2) }),
+    ...[11, 12, 13, 14].map((id) => node({ id })),
+  ];
+  const at = (lastNodeId: number) =>
+    [makePlayer({ index: 0, nodeId: 1, direction: 2, lastNodeId })];
+
+  it('候选 = 非 0、未封路、≠ 旧来路（槽 2 被封 ⇒ 只剩 3 个）', () => {
+    // 旧来路 = 11 ⇒ 候选 [12, 13, 14]（13 被封）
+    expect(pickTurnBackNode(nodes[0]!, 11, () => 0)).toBe(12);
+    expect(pickTurnBackNode(nodes[0]!, 11, () => 1)).toBe(14);
+    expect(pickTurnBackNode(nodes[0]!, 11, () => 2)).toBe(12); // 2 % 2 = 0
+  });
+
+  it('★ 候选为空 ⇒ 写 0（原版 `0x40c850`）', () => {
+    const alone = node({ id: 1, adjacent: [11, 0, 0, 0] });
+    expect(pickTurnBackNode(alone, 11, () => 0)).toBe(0);
+  });
+
+  it('★ `rand()` 只在**有候选**时被调用一次（决定全局随机流的位置）', () => {
+    let calls = 0;
+    const draw = () => (calls++, 0);
+    pickTurnBackNode(nodes[0]!, 11, draw);
+    expect(calls).toBe(1);
+    calls = 0;
+    pickTurnBackNode(node({ id: 1, adjacent: [0, 0, 0, 0] }), 0, draw);
+    expect(calls).toBe(0);
+  });
+
+  it('applyTurnCard：掉头 + 重挑来路（给 nodes 时才挑）', () => {
+    const r = applyTurnCard(at(11), 0, { kind: 'player', index: 0 }, nodes, () => 1);
+    expect(r.players[0]!.direction).toBe(6); // (2+4)&7
+    expect(r.players[0]!.lastNodeId).toBe(14);
+    // 不给 nodes ⇒ 只掉头（兼容旧调用点）
+    const bare = applyTurnCard(at(11), 0, { kind: 'player', index: 0 });
+    expect(bare.players[0]!.lastNodeId).toBe(11);
+  });
+
+  it('替身那一支同构', () => {
+    const a = { ...releaseNpc(1, 0, 0), nodeId: 1, lastNodeId: 11, direction: 3 };
+    const out = applyTurnCardToActor(a, nodes, () => 0);
+    expect(out.direction).toBe(7);
+    expect(out.lastNodeId).toBe(12);
   });
 });

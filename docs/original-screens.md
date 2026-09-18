@@ -377,7 +377,10 @@ loc_00418b0a  mov ebx, 0x28 / idiv ebx                 ; ★ 命中 = x / 40
 引擎里 `listItem()` 的 `price` 字段正对应它，UI 需要提供输入框。
 
 **待补**：`撤件` 按钮 = 已实现的 `withdrawItem()`；`SALE` 按钮 = `listItem()`。
-剩下的缺口仍见 `known-deviations.md` 的 Q-BOARD-1。
+★ 输入价格的**上限**＝市價 × 10（股票例外＝持有股數）：`0x453544` 把它存进 `0x48ca98`，
+越界输入在 `0x4531f6`（`cmp eax, edx / jle`）处被就地夹回上限——已实现，
+见 `board-screen.ts` 的 `LIST_PRICE_MAX_FACTOR`。
+（`known-deviations.md` 的 Q-BOARD-1 已于 2026-09-14 结案，四种市價全解。）
 
 ---
 

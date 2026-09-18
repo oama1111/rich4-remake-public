@@ -9,7 +9,7 @@
  *   （资金分配、起始位置、牌堆数量）。真正开局要走本模块。
  */
 
-import type { Rich4Map } from '../loaders/map.ts';
+import type { MapNode, Rich4Map } from '../loaders/map.ts';
 import type { GameState, Player } from '../state/types.ts';
 import type { GameMode } from '../rng/policy.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
@@ -17,6 +17,7 @@ import { DEFAULT_INITIAL_FUND, NO_WIN_CONDITIONS, START_DATE_MAX, startingMoney 
 import type { WinConditions } from './setup.ts';
 import { CARDS, CHARACTERS } from '@rich4/data';
 import { traitsOf } from '../ai/personality.ts';
+import { placeOnNodeId } from './position.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
 import { CARD_IMPLS } from '@rich4/data';
 import { FORTUNE_DECK_SIZE, NEWS_DECK_SIZE, createDeck } from '../events/deck.ts';
@@ -220,9 +221,10 @@ function makeInitialPlayer(
   fund: number,
   startNode: number,
   vehicle: number,
+  nodes: readonly MapNode[],
 ): Player {
   const money = startingMoney(setup.character, fund);
-  return {
+  const base: Player = {
     index,
     character: setup.character,
     whoPlays: setup.kind === 'human' ? WHO_PLAYS_HUMAN : WHO_PLAYS_COMPUTER,
@@ -274,6 +276,11 @@ function makeInitialPlayer(
     monthlyPaid: 0,
     monthlyReceived: 0,
   };
+  // ★★ 位置是**三元组**：`nodeId` / `xpos` / `ypos` 一起写（见 rules/position.ts）。
+  //   原版开局就把玩家放在起始格上、`xpos/ypos` = 该格坐标；而冬眠卡
+  //   （`@source 0x0044415d` `cmp word [player+0x08], 0`）等判据用 `xpos != 0`
+  //   当「在不在盘上」的哨兵 —— 先前这里写 0，于是**新局里冬眠卡一个人也冻不住**。
+  return placeOnNodeId(base, nodes, startNode);
 }
 
 /**
@@ -314,6 +321,34 @@ export function landLevelFromMap(map: Rich4Map, landCount: number): number[] {
 export function landPriceFromMap(map: Rich4Map, landCount: number): number[] {
   const out = new Array<number>(landCount).fill(0);
   for (const l of map.lands) out[l.id] = l.landPrice;
+  return out;
+}
+
+/**
+ * `price_status` 表的初值 —— **必须从存档地图块读**。
+ *
+ * `@source land +0x17`（住宅）/ `facility +0x1c`（設施）：
+ * 涨价/跌价/查封的**倒计时高 nibble**，每日由 `sweepPriceStatus` 递减
+ * （`0x0041d114` 地块 / `0x0041d160` 設施）。静态地图文件恒 0，
+ * 只有**存档自带的地图块**带真实值 —— 导入路径若填 0，
+ * 读档后所有倒计时凭空消失（涨价/查封永远不再到期）。
+ */
+export function landPriceStatusFromMap(map: Rich4Map, landCount: number): number[] {
+  const out = new Array<number>(landCount).fill(0);
+  for (const l of map.lands) out[l.id] = l.priceStatus;
+  return out;
+}
+
+/**
+ * 地契到期日表的初值（`flast`，`@source land +0x30`）。
+ *
+ * 買地时按開局「土地權限」写入，每日推进到期归无主
+ * （`0x0041d12d`，见 `reduce.ts` 的 `tenureExpiresToday`）。
+ * 静态地图恒 0；导入路径若填 0，读档后**所有地契到期日失效**。
+ */
+export function landTenureFromMap(map: Rich4Map, landCount: number): number[] {
+  const out = new Array<number>(landCount).fill(0);
+  for (const l of map.lands) out[l.id] = l.flast;
   return out;
 }
 
@@ -435,11 +470,20 @@ export function newGame(opts: NewGameOptions): GameState {
     //   VA 0x00411f30 / 0x00411f49。见 `rules/setup.ts` 的 `defaultStartDate`。
     ...(startDate ?? START_DATE_MAX),
     players: players.map((s, i) =>
-      makeInitialPlayer(i, s, initialFund, startNodeId > 0 ? startNodeId : (startNodes[i] ?? 1), vehicle),
+      makeInitialPlayer(
+        i,
+        s,
+        initialFund,
+        startNodeId > 0 ? startNodeId : (startNodes[i] ?? 1),
+        vehicle,
+        map.nodes,
+      ),
     ),
     currentPlayer: 0,
     phase: 'turnStart',
     priceIndex: INITIAL_PRICE_INDEX,
+    // ★ 地图视角默认朝北 —— 原版两个样本的 `+0x2743` 都是 0
+    viewRotation: 0,
     // ★ 本局选中的开局资金档位 —— 两处规则直接读它
     //   （`update_price_index` 的除数、AI 买地保留额的基数），见 types.ts 的注释
     initialFund,
@@ -458,6 +502,9 @@ export function newGame(opts: NewGameOptions): GameState {
     // ★ 勝利條件（遊戲時間 / 勝利條件）与土地權限一样，只受开局设置影响
     //   @source `[0x49911c]` / `[0x499108]`，开局写入 VA 0x0040737d..0x004073a3
     winConditions,
+    // ★ 人类玩家数：**开局算一次**，之后不随出局/破产改变
+    //   （原版 `0x407250` 计数、`0x40cd87` 不写它 ⇒ 见 types.ts 的注释）
+    humanPlayers: players.filter((pl) => pl.kind === 'human').length,
     victory: null,
     totalDays: 0,
     totalMonths: 0,
@@ -493,10 +540,12 @@ export function newGame(opts: NewGameOptions): GameState {
     lastEvent: null,
     // 純表現提示：開局沒人走過（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
+    lastCardPlay: null,
     // 回合边界的惡人队列：开局是空的（还没绕过一圈）
     pendingNpcSlots: [],
     lottery: emptyLottery(),
     pending: null,
+    pendingQueue: [],
     tools,
     toolStock,
     // ★ 12 支股票取自本地图那一段（`地图编号 × 12`）

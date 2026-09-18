@@ -147,14 +147,23 @@ export function blessingLevelFor(value: number, coinFlip: number, kind: Blessing
 }
 
 /**
- * 从玩家身上取值并算出倍率。
+ * 从玩家身上取值并算出**倍率档位** —— 随机数**按需**消费。
  *
- * @param kind 默认 `reward`，与本函数改名前的行为一致
+ * ★ 这是引擎**唯一该用**的入口（先前的 `playerBlessingMultiplier(p, coinFlip, kind)`
+ *   已删：它要求调用方**先算好 `coinFlip`**，而「先算」就意味着**无条件掷一次** ——
+ *   第 37 条踩过这个坑：每一次带神明加持的命運事件都让随机序列多走一步，
+ *   之后所有随机事件整体错位）。
+ *
+ * @source `0x0044b8c1` 的分档：`cmp si,0x64 / jle 查50`（> 100 直接定档、**不掷**）
+ *   → `cmp si,0x32 / jle 查负`（≤ 50 也**不掷**）⇒ 只有 `50 < 加持值 ≤ 100`
+ *   才 `call 0x456f2d` 掷一次。
+ *
+ * @param draw 掷一次 `rand()&1`；**只在中间档被调用一次**，其余档一次都不调
  */
-export function playerBlessingMultiplier(
-  p: Player,
-  coinFlip: number,
-  kind: BlessingKind = 'reward',
-): number {
-  return blessingMultiplier(blessingLevelFor(blessingFieldOf(p, kind), coinFlip, kind));
+export function blessingLevelWithDraw(p: Player, kind: BlessingKind, draw: () => number): number {
+  const value = blessingFieldOf(p, kind);
+  // 其余两档传 0 是安全的：`blessingLevel` 在这两档里根本不看 coinFlip
+  if (value > BLESSING_DOUBLE_THRESHOLD) return blessingLevelFor(value, 0, kind);
+  if (value > BLESSING_CHANCE_THRESHOLD) return blessingLevelFor(value, draw() & 1, kind);
+  return blessingLevelFor(value, 0, kind);
 }

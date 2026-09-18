@@ -61,6 +61,7 @@ import {
   effectiveFacility,
   effectiveLand,
   type MapTopology,
+  orphanedAuction,
 } from '../state/reduce.ts';
 import { MAX_TOOL_ID, MIN_TOOL_ID, toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
@@ -119,6 +120,24 @@ export function decideAction(ctx: AiContext): Action | null {
   //   放在 isAiTurn 之前：出局者恰恰**不满足** isAiControlled。
   const auto = autoAction(state);
   if (auto !== null) return auto;
+
+  // ★ **只有一种情形要在 `isAiTurn` 之前接手竞价**：当前玩家已经出局
+  //   （`orphanedAuction`）。竞价轮转判的是 `pending.seat`，与「轮到谁」无关，
+  //   可它终究属于当前回合 —— 真人坐在桌上时那块屏才是驱动者，core 要让位
+  //   （既有契约，见 `ai/policy.test.ts` 的「让位给屏」一条）。
+  //   出局者这一边则**两头都没人管**：`autoAction` 不认竞价，屏也不会为出局者
+  //   出现。破产清算的拍卖恰好开在这个缝里（破产者出局后仍是 currentPlayer），
+  //   先前整局就停在 `awaitingDecision`（实测种子 42 第 1236 回合）。
+  //   真人座位依旧不受影响：`auctionNextBid` 自己判 `isAiControlled`，
+  //   是真人就返回 null，照旧交给屏。
+  if (state.phase !== 'gameOver' && orphanedAuction(state)) {
+    const p = state.pending;
+    if (p !== null && p.kind === 'auction') {
+      const bid = auctionNextBid(state, p);
+      if (bid !== null) return bid;
+    }
+  }
+
   if (!isAiTurn(state)) return null;
 
   switch (state.phase) {

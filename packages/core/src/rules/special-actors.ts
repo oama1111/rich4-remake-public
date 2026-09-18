@@ -478,23 +478,70 @@ export function runDoll(
  * 0040de34  else if (+15 single != 0) { 步数 1 }                        ; 龜行：只走一步
  * 0040de50  else                      { 步数 = rand() % 9 + 2 }
  * ```
- * 誰有资格轮到：下一名行动者的选择（0x00418f93）在最后一名玩家之后依次看 4..7，
+ * 誰有资格轮到：下一名行动者的选择（`0x00418f93`）在最后一名玩家之后依次看 4..7，
  * `+10 place == 0`（在棋盘上）的才轮到；所以走完没回家的惡人**留在原地，下一輪接着走**。
+ *
+ * ★★ 另有一道**更早**的闸（2026-09-19 第 92 条补，通道 2：`rich4-spec/tests/test_turn_start.py`）：
+ * 轮到他时先问的是**回合开始判定** `0x40c912` 的 actor 分支（`0x40cbdd`）——
+ * ```asm
+ * 0040cbe3  if ([slot + 0x0a] != 0) 返回 0    ; place != 0（在監獄/醫院）⇒ 整回合不行动
+ * 0040cbf6  if (arg0(quiet) != 0)   返回 0
+ * 0040cbff  if ([slot + 0x0c] != 0) 返回 0    ; ★★ **冬眠** ⇒ 整回合不行动
+ * 0040cc06  if ([slot + 0x0e] != 0) 返回 0    ; 停留 ⇒ 整回合不行动
+ * 0040cc08  返回 2                            ; = AI 行动
+ * ```
+ * `+0x0c` 是**冬眠**、`+0x0e` 是**停留**（`+0x0d` 夢遊 / `+0x0f` 龜行**不**拦）。
+ * 两种闸的可观测差别：`0x40c912` 那一支**根本不进** `0x40dd1f` ⇒ **不掷随机数**；
+ * 本函数在两条闸上都不掷（`halted` 提前返回、`hibernating` 也提前返回），故等价。
+ * ⚠️ 修之前**只查了 `halted`**：冬眠中的惡人照走、还白掷一次 `rand()%9+2`。
  */
 export function npcTurnSteps(actor: SpecialActor, rng: WatcomRng): number {
+  // ★★ 冬眠（`+0x0c`）与停留（`+0x0e`）都在 `0x40c912` 里被挡掉，且**都不掷随机数**
+  //   —— 顺序按原版：冬眠的判断在停留**之前**（`0x40cbf6` 先于 `0x40cc06`）。
+  if ((actor.hibernating ?? 0) !== 0) return 0;
   if (actor.halted !== 0) return 0;
   if (actor.singleStep !== 0) return 1;
   return npcSteps(rng);
 }
 
 /**
- * 惡人的两个计数在他**轮到时**各走一天 @source 0x0041ce42 起（tick_blocking 的 actor >= 4 分支）：
- * 带 0x80 的清零（0x0041cea1 / 0x0041ceb7），否则递减、到 0 挂 0x80（0x0041cf19.. / 0x0041cf3d..）。
- * 与玩家的 `tickBlockingCounter` 同一套。
+ * 替身的**四个**计时字节在他**轮到时**各走一天。
+ *
+ * @source `tick_blocking` 的 actor 分支 `0x0041ce39` 起：`sub ebx,4` → `eax = ebx*16`
+ *   → 依次处理 `0x498e34` / `0x498e35` / `0x498e36` / `0x498e37` **四个字节**，
+ *   每个都是同一套「`test ...,0x80` → 清零；否则 `dec`，到 0 `or 0x80`」：
+ *
+ * ```asm
+ * 0041ce4a  test byte [eax + 0x498e34], 0x80 / je 0041ce86   ; ①
+ * 0041ce8b  test byte [eax + 0x498e35], 0x80 / je 0041ce9c   ; ②
+ * 0041cea1  test byte [eax + 0x498e36], 0x80 / je 0041ceb2   ; ③
+ * 0041ceb7  test byte [eax + 0x498e37], 0x80 / je 0041cec8   ; ④
+ * 0041cecd  ① 递减 … 0041cef3 ② 递减 … 0041cf19 ③ 递减 …     ; ④ 同形
+ * ```
+ *
+ *   那四个字节就是替身记录的 `+12..+15`（记录基址 `0x498e28`、步长 16）：
+ *   `+12` `hibernating` 冬眠 / `+13` `sleepwalkDays` 梦游 / `+14` `halted` 停留 /
+ *   `+15` `singleStep` 龜行 —— 与**玩家**那四个（`+0x36..+0x39`，见
+ *   `rules/blocking.ts` 的 `tickTurnCounters`）逐位对应。
+ *
+ * ⚠️ **先前只走 ③④**（`halted`/`singleStep`）⇒ 冬眠卡/夢遊卡打在替身上之后，
+ *   `hibernating`/`sleepwalkDays` **永不递减**：`client/render.ts` 的 `isActorAsleep`
+ *   会**永远**把那个替身画成灰的 —— 玩家可见。
+ *
+ * ⚠️ ①（`0x498e34`）的释放支还多两句表现层刷新
+ *   （`0x0041ce61` `and byte [turnrec+0x498ea0],0xbf`、
+ *   `0x0041ce75 call 0x40b8d8(actor, turnrec+1)`、`0x0041ce7e call 0x40b93b(actor)`），
+ *   **本轮未查清其语义**，如实留着（本函数只负责四个计数）。
+ *
+ * ★ **`npcTurnSteps` 不读这两项**：`0x40de09` 的步数判定只读该记录的 `+2`/`+3`
+ *   （= `+14`/`+15` 停留/龜行）。也就是说**原版里冬眠/梦游对替身是纯视觉的** ——
+ *   替身照样按 `rand()%9+2` 步走。复刻当前「不闸门」的行为因此是**忠实的**，不要"顺手补上"。
  */
 export function tickNpcCounters(actor: SpecialActor): SpecialActor {
   return {
     ...actor,
+    hibernating: tickBlockingCounter(actor.hibernating ?? 0).value,
+    sleepwalkDays: tickBlockingCounter(actor.sleepwalkDays ?? 0).value,
     halted: tickBlockingCounter(actor.halted).value,
     singleStep: tickBlockingCounter(actor.singleStep).value,
   };

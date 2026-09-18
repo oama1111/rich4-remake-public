@@ -58,7 +58,7 @@
  */
 
 import type { Action } from '../state/actions.ts';
-import type { GameState, Player } from '../state/types.ts';
+import type { GameState } from '../state/types.ts';
 import type { MapTopology } from '../state/reduce.ts';
 import { stockBudget } from './personality.ts';
 import { aiRoll } from './card-policy.ts';
@@ -356,13 +356,6 @@ export function decideStockTrade(state: GameState, topo?: MapTopology): Action |
   return { type: 'buyStock', stock: pick, shares };
 }
 
-/** 供测试/调试：当前玩家眼里每支股票的分 */
-export function stockScores(state: GameState, topo: MapTopology, me: Player = state.players[state.currentPlayer]!): number[] {
-  return state.market.stocks.map((_, j) => {
-    const input = stockScoreInput(state, topo, j, me.index);
-    return input === null ? 0 : scoreStock(input, me.moneyInBank, state.priceIndex, state.totalMonths, me.index);
-  });
-}
 
 // ============================================================
 //  賣股 @source 0x0042c79f..0x0042d0ee

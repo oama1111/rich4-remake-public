@@ -9,7 +9,7 @@
 
 import type { GameMode } from '../rng/policy.ts';
 import type { EventDeck } from '../events/deck.ts';
-import type { PendingInteraction } from '../rules/interaction.ts';
+import type { AuctionRequest, PendingInteraction } from '../rules/interaction.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import type { StockHolding } from '../places/stock.ts';
 import type { CommercialOwnership } from '../places/commercial.ts';
@@ -35,9 +35,30 @@ export const WHO_PLAYS_COMPUTER = 2;
 /** 托管：由 AI 代打，即使是人类玩家 */
 export const WHO_PLAYS_AUTOPILOT = 0x04;
 /**
- * 比特 4/5：原版在回合开始时用 `test byte[+0x15], 0x30` 检测，
- * 命中则跳过常规流程直接走子。**语义待确认**。
- * @source rich4.asm:6573 (fcn_0040c912)
+ * 比特 4：**「走回棋盘」标记**。
+ *
+ * 关押／住宿到期时释放函数调的 `0x40d6be` 会置上它
+ * （`0040d6d1 or byte [player + 0x15], 0x10`），代表此人这一回合要**从綠島／
+ * 醫院大樓走回棋盘**。回合推进函数 `0x418ebd` 见到它就整回合跳过
+ * （`00418f8e jmp 0x419058`，不掷骰、不走子），并在 `00418f87 and byte
+ * [player + 0x15], 0xf` 把它清掉。
+ *
+ * ⇒ **刑满／住满之后还要白丢一回合**，这也正是状态栏「還剩 N 天」显示
+ * `(+0x34 & 0x7f) + 1` 的原因：显示的天数（= 会丢掉的回合数）比计数多 1。
+ * 通道 2 证据：`rich4-spec/tests/test_day_tick.py`（28/28）。
+ */
+export const WHO_PLAYS_RETURN_TO_BOARD = 0x10;
+/**
+ * 比特 5：本回合位置被外力挪动过
+ * （`0040d60e or byte [player + 0x15], 0x20`，在「把玩家挪到目标节点」的
+ * `0x40d5a5` 里；与比特 4 同一处消费：`0x418ebd` 的 `and …, 0xf`）。
+ * 具体触发条件**未决**（只在"当前玩家 + 节点号命中参数"那一支置位）。
+ */
+export const WHO_PLAYS_RELOCATED = 0x20;
+/**
+ * 比特 4/5 的合体掩码 —— 原版在回合开始时用 `test byte[+0x15], 0x30` 检测，
+ * 命中则**整回合跳过**（不掷骰、不走子，也不走常规落点解析）。
+ * @source rich4.asm:6573 (fcn_0040c912) / 0x00418f07 / 0x00418f87
  */
 export const WHO_PLAYS_SPECIAL_MASK = 0x30;
 
@@ -318,6 +339,33 @@ export interface NpcWalkHint {
   path: number[];
 }
 
+/**
+ * **上一次「某玩家用出了某张卡」** —— 纯表现提示（卡牌使用者台词）。
+ *
+ * ★ 为什么要有它：原版每张卡的函数体里都有一句
+ *   `player_say(出牌者, flag, 卡牌台词表[角色][卡号-1])`
+ *   （14 处同形：`@source 0x44210e` 等，表 VA `0x48123a`、行距 360），
+ *   即**用卡时角色要说一句话**。那句话是**调用点参数**，不是状态跃迁，
+ *   所以表现层那套「状态差分」探测器（`client/speech.ts` 的 `DETECTORS`）
+ *   永远看不见它 —— 复刻侧因此**一个字都不说、语音也不响**（gaps §7.89(2)）。
+ *   要补就得由 core 把「刚刚谁用了哪张卡」原样交出来。
+ *
+ * ★ 与 `lastNpcWalks` 同一类：**只保留最近一次**（每次覆写，不累积），
+ *   纯表现、不参与任何规则判定 ——
+ *   - core 里没有任何规则读它；
+ *   - **不进 `stateFingerprint`**（`net/protocol.ts` 的形参是显式列字段的结构类型）；
+ *   - **不进 `history`、不进存档、不进时光机快照**。
+ *
+ * ⚠️ 「用出去了」才写（对应原版卡片函数返回非 0）：`ok: false` 的那条路
+ *   （= 卡还在手上、一点状态都没动）**不写**这个提示。
+ */
+export interface CardPlayHint {
+  /** 出牌者下标 0..3 */
+  player: number;
+  /** 卡号 1..30（`@rich4/data` 的 `cardLine(character, card)` 用它取台词） */
+  cardId: number;
+}
+
 export interface GameState {
   mode: GameMode;
   /** PRNG 内部状态。单机存档不持久化此字段（见 rng/policy.ts） */
@@ -337,6 +385,17 @@ export interface GameState {
 
   /** 物价指数 @source player_core_actions 的 _rich4_price_index */
   priceIndex: number;
+  /**
+   * 地图视角旋转档位 **0..7**（`<` / `>` 两个热键改变）。
+   *
+   * @source `[0x499088]`，见 `rich4-spec/docs/systems/animation.md`
+   *   （已结案：**是地图视角档位，不是动画帧计数**）与 `save-format.md` 的块序表 `+0x2743`。
+   * ★ **它是持久状态**：原版会把它存进存档（`0x0040330d` 一带写出、
+   *   `0x00402e6d` 读回），所以读档后视角要恢复。
+   * ⚠️ 渲染层怎么用它属于表现层（`map.ts` 的「朝向 + 固定基」画法），
+   *   本字段只负责**状态与存档**这一半。
+   */
+  viewRotation: number;
 
   /**
    * 本局**选中的开局资金档位** @source 全局 `_rich4_game_initial_fund` `[0x49908c]`。
@@ -371,6 +430,24 @@ export interface GameState {
    *   见 `rules/setup.ts` 的 `winConditionsOf` 与 `rules/victory.ts`。
    */
   winConditions: WinConditions;
+
+  /**
+   * 本局的**人类玩家数** `[0x499104]` —— 终局码要读它，**开局算一次、之后不变**。
+   *
+   * ★★ 为什么必须存、不能现数（2026 本轮差分实证）：
+   *   原版只在**新局**写它（`0x407166` 清零、`0x407250 inc` 按
+   *   `player[i].+0x64 & 1` 计数），此外只有存档装载会恢复
+   *   （`0x402b81`/`0x40307d push 0x499104`）。
+   *   **破产处理 `0x40cd87` 不写它** —— 实测：2 人局里把 0 号破产后
+   *   `[0x499104]` 仍是 2，而 `whoPlays==1` 的人数已掉到 1。
+   *   原版结算读的是那个**不变的全局**（`0x41d96e cmp [0x499104],1`），
+   *   所以「2 个人类里有 1 个先破产、之后靠时间/资产结束」这一局
+   *   终局码是 **3（多人）**，不是 2。
+   *   ⇒ 复刻若按 `whoPlays` 现数，会在这种局里走错结局分支。
+   *
+   * @source 计数点 `0x407250`、唯一读判 `0x41d96e`；存档块 `0x01b0`。
+   */
+  humanPlayers: number;
 
   /**
    * 因**勝利條件达标**而结束时的结局；null 表示本局不是那样结束的。
@@ -570,7 +647,7 @@ export interface GameState {
      * `news` / `fortune` = 新聞/命運事件框；`magicHouse` = 魔法屋那一趟
      *   （它没有事件框，但**表现层要显示「抽中了哪个条件」**，故借这条通道带出去）。
      */
-    kind: 'news' | 'fortune' | 'magicHouse';
+    kind: 'news' | 'fortune' | 'magicHouse' | 'minigameDecline';
     id: number;
     /**
      * ★ 新闻百分比类那四条（11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利）
@@ -593,6 +670,20 @@ export interface GameState {
     criterion?: number;
     /** ★ 魔法屋那一支：筛出的名单（玩家下标，升序）@source `MagicSpin.targets` */
     targets?: readonly number[];
+    /**
+     * ★ 小游戏「不玩」那一支（`kind === 'minigameDecline'`）：**选中的台词下标 0 或 1**。
+     *
+     * @source `0x004154b6`–`0x004154cf`：
+     * ```asm
+     * 004154b6  call 0x456f2d                        ; ★ 第二次 rand()
+     * 004154bb  and  eax, 1
+     * 004154be  mov  esi, dword ptr [ebx + eax*4 + 0x48084a]  ; 角色台词表[角色][0 或 1]
+     * 004154cf  call 0x44ef41                        ; player_say
+     * ```
+     * 即台词取自**角色台词表 `0x48084a` 的事件 0／1**（好消息那两条）。
+     * 这一支**电脑玩家也会走**，所以那两次 `rand()` 与谁在玩无关。
+     */
+    phraseIndex?: number;
   } | null;
 
   /**
@@ -620,6 +711,14 @@ export interface GameState {
    *     的规则可见部分，读了它反而是把表现混进确定性重放（C-DET-4）。
    */
   lastNpcWalks: NpcWalkHint[];
+
+  /**
+   * **上一次用出的卡**（出牌者 + 卡号）—— 纯表现提示，见 `CardPlayHint`。
+   *
+   * 消费者：`client/src/speech.ts` 的 `cardPlaySpeech()`（用卡时角色说那句话）
+   * ⇒ `speech-bubble.ts` 的 `cardLineBubbleOf()`（显示 + 语音）。
+   */
+  lastCardPlay: CardPlayHint | null;
 
   /**
    * 回合边界上**还没轮到走的四大惡人**槽位（= actor − 4，只有 0..3）。
@@ -654,6 +753,21 @@ export interface GameState {
    *   UI 与 AI 都只是作答者。否则两端各猜一套，联机必然对不上。
    */
   pending: PendingInteraction | null;
+
+  /**
+   * **排队中的后续拍卖** —— 一次流程里要连开好几场时用它。
+   *
+   * ★ 原版的拍卖 `0x43bde5` 是**阻塞式**的：调用它就跑完一整场
+   *   （含窗口、出价、落槌）才返回。所以原版可以在一个循环里连开多场：
+   *   · 破产清算 `0x40d1d5..0x40d20f` —— 释放地产 > 3 处时随机挑 3 处连拍；
+   *   · 魔法屋「拍賣」结果 `0x4324d5` —— 每位中签者一场。
+   *   本引擎的拍卖是**待决交互**（`pending`），同一时刻只能挂一场，
+   *   于是同一流程里的其余场次排在这里，前一场落槌时自动接上
+   *   （见 `state/reduce.ts` 的 `startAuction` / `settleAuctionExplicit`）。
+   *
+   * 空数组 = 没有排队的拍卖（绝大多数时候）。
+   */
+  pendingQueue: AuctionRequest[];
 
   /**
    * 全局道具表，`tools[player * 15 + toolId]`。

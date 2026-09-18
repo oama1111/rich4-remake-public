@@ -45,6 +45,8 @@ import {
   MAGIC_SPIN_SLOW,
   magicAnimationFrame,
   magicFrameAt,
+  magicFrameChunk,
+  MAGIC_EYES_AT,
   magicIconAngle,
   magicIconAt,
   magicIconChunk,
@@ -98,13 +100,18 @@ describe('★ B-2 版面订正（2026-09-16）', () => {
     expect(magicFrameAt(0)).not.toEqual(MAGIC_CENTER);
   });
 
-  it('★★ 女巫的嘴是图 5 那张 60×21，画在 (0x11e,0xdc)；不是图 9/10', () => {
-    // 图 9/10 = 悬停弹窗框（142×120），画在女巫位置上会把她整个盖掉
+  it('★★ 女巫的嘴是图 5 那张 60×21，画在 (0x11e,0xd9)；不是图 9/10', () => {
+    // 图 9/10 = 指针高亮框（142×120），画在女巫位置上会把她整个盖掉
     expect(MAGIC_CHUNK.mouthTalk).toBe(5);
     expect(MAGIC_CHUNK.hoverFrame).toBe(9);
     expect(MAGIC_CHUNK.hoverFrameAlt).toBe(10);
     expect(MAGIC_CHUNK.mouthTalk).not.toBe(MAGIC_CHUNK.hoverFrame);
-    expect(MAGIC_MOUTH_AT).toEqual({ x: 0x11e, y: 0xdc });
+    // @source 0x00432b0f：`[0x48c398]+0x48`（= 图 5）贴到 (0x11e, 0xd9)
+    //   ★ 第 101 条订正：先前写 (0x11e, 0xdc) —— 那是**图 4**（60×18）那一笔的落点。
+    expect(MAGIC_MOUTH_AT).toEqual({ x: 0x11e, y: 0xd9 });
+    expect(MAGIC_CHUNK.eyelid).toBe(4);
+    expect(MAGIC_EYES_AT).toEqual({ x: 0x11e, y: 0xbc });
+    expect(MAGIC_CHUNK.eyesShut).toBe(3);
   });
 
   it('★★ 两拍各有各的女巫落点，第二拍另有长条结果框', () => {
@@ -145,10 +152,19 @@ describe('用到的图 @source magic_house 0x00432511 / 0x00432cfd', () => {
     expect(magicIconChunk(11) + MAGIC_ICON_STRIDE - 1).toBe(34);
   });
 
-  it('★ 十二个功能图标摆在哪：照 `MAGIC_HOUSE_OPTIONS` 的 x/y', () => {
-    expect(magicIconAt(0)).toEqual({ x: 510, y: 150 });
-    expect(magicIconAt(7)).toEqual({ x: 92, y: 250 });
-    expect(magicIconAt(11)).toEqual({ x: 0, y: 0 }); // 第 11 项表里没采信
+  it('★ 十二个功能图标摆在哪：照 `MAGIC_HOUSE_OPTIONS` 的 x/y（第 101 条整表订正）', () => {
+    // @source 0x475718 + 16i 记录 {+0 img, +4 x, +8 y, +12 name}
+    //   ★ 先前整表错位一格（用了 0x475724 当基址），十二个图标被旋转了一位
+    expect(magicIconAt(0)).toEqual({ x: 208, y: 167 });
+    expect(magicIconAt(1)).toEqual({ x: 510, y: 150 });
+    expect(magicIconAt(7)).toEqual({ x: 134, y: 318 });
+    expect(magicIconAt(11)).toEqual({ x: 122, y: 154 });
+  });
+
+  it('★ 指针高亮框的图号**按功能而异**：9/10/7/6 @source 0x00432dc4', () => {
+    expect([0, 1, 2, 6, 7, 11].map((i) => magicFrameChunk(i))).toEqual([9, 10, 7, 7, 6, 9]);
+    expect(MAGIC_CHUNK.frame).toBe(6);
+    expect(MAGIC_CHUNK.frameAlt).toBe(7);
   });
 });
 
@@ -162,10 +178,12 @@ describe('抠黑表 @source 逐调用点对照（0x004563f5 不透明 / 0x004564
     //   它们仍要抠黑（画在功能名同点），但**绝不能**再画到女巫的位置上。
     expect(MAGIC_KEYED.has(MAGIC_CHUNK.hoverFrame)).toBe(true);
     expect(MAGIC_KEYED.has(MAGIC_CHUNK.hoverFrameAlt)).toBe(true);
-    // 女巫的嘴 = 图 5，与「文本」长条框**同一张**（见 MAGIC_CHUNK 的注释），
-    // 所以抠黑表这一格由那条文字框决定，不能按嘴单独取舍。
-    expect(MAGIC_CHUNK.mouthTalk).toBe(MAGIC_CHUNK.barText);
-    expect(MAGIC_KEYED.has(MAGIC_CHUNK.barText)).toBe(true);
+    // ★ 第 101 条订正：图 3/4/5 是**女巫脸上的贴片**（眼睛 60×35 / 眼睑 60×18 / 嘴 60×21），
+    //   原版三处都用**不透明** blit（0x4563f5）⇒ **不能**进抠黑表。
+    expect(MAGIC_CHUNK.mouthTalk).toBe(MAGIC_CHUNK.mouth);
+    expect(MAGIC_KEYED.has(MAGIC_CHUNK.eyesShut)).toBe(false);
+    expect(MAGIC_KEYED.has(MAGIC_CHUNK.eyelid)).toBe(false);
+    expect(MAGIC_KEYED.has(MAGIC_CHUNK.mouth)).toBe(false);
   });
 
   it('★ 十二个功能图标（图 22..34）全部抠黑 @source 0x00432d0e', () => {

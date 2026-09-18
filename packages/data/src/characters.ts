@@ -67,6 +67,31 @@ export interface CharacterDef {
    *   差 ≤5/255，是 16bpp 显示位深的产物，不另做量化。
    */
   color: number;
+  /**
+   * ★ **角色表项 `+0x00`：指向该角色名字串的 4 字节指针**（Big5、NUL 结尾）。
+   *
+   * 这个字段**不是玩家状态，是 exe 内部的常量**：原版把整个 0x68 字节的表项
+   * 当角色模板用，`+0x00` 就是名字串的地址。两条独立证据：
+   *
+   * ① **读档后重新推导** —— `@source 0x00402b96` 的循环（读档尾部）：
+   *    ```asm
+   *    00402b9a  imul eax, ebx, 0x68             ; eax = 玩家下标 × 0x68
+   *    00402b9f  mov  dl, byte [eax + 0x496b7b]  ; dl = player.character (+0x13)
+   *    00402ba5  imul edx, edx, 0x68
+   *    00402ba8  mov  edx, [edx + 0x47e80c]      ; ★ = 角色表[character].+0x00
+   *    00402bae  mov  [eax + 0x496b68], edx      ; ★ 覆盖文件里读进来的值
+   *    ```
+   *    ⇒ 存档里 `player+0x00` 存的是**存档那一刻的进程地址**，读档时被丢弃。
+   *    因此复刻里它**不该是 `GameState` 的字段** —— 写出时按 `character` 查表即可。
+   *
+   * ② **两份真实存档 8/8 精确吻合** —— Save0 与 SAVE1 各 4 名玩家的
+   *    `player+0x00` 都等于本表 `[character].namePointer`
+   *    （见 `packages/core/src/loaders/save-writer.test.ts` 的「carry 清零」用例）。
+   *
+   * ⚠️ 这是**本 exe 版本（v3.11）DGROUP 内的地址**，跨版本无意义；
+   *   它只影响「逐字节往返」这一条验证，不影响语义（原版自己也不读它）。
+   */
+  namePointer: number;
   /** 0 = 男, 1 = 女（原版 sex 字段：1 = 男，0 = 女，此处已按直觉反转为 isFemale） */
   isFemale: boolean;
   /** 移动方式 @source rich4_characters.c traffic_method —— 12 个角色全为 0 */
@@ -106,18 +131,18 @@ export type CharacterKey =
   | 'wumi' | 'sunxiaomei' | 'xiaodanni' | 'jinbeibei';
 
 export const CHARACTERS: readonly CharacterDef[] = [
-  { id: 0,  key: 'yuehanqiao',     name: '約翰喬',   color: 0x946126, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 2, f24: 60,  initCashRatio: 50, f26: 30 },
-  { id: 1,  key: 'shalongbasi',    name: '沙隆巴斯', color: 0xbdc3c6, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 1, f24: 100, initCashRatio: 40, f26: 45 },
-  { id: 2,  key: 'rentailang',     name: '忍太郎',   color: 0x41323b, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 2, f24: 0,   initCashRatio: 70, f26: 0  },
-  { id: 3,  key: 'qianfuren',      name: '錢夫人',   color: 0xc626c3, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 2, f24: 100, initCashRatio: 60, f26: 30 },
-  { id: 4,  key: 'atubo',          name: '阿土伯',   color: 0xc5b830, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 1, f24: 50,  initCashRatio: 40, f26: 25 },
-  { id: 5,  key: 'shalagongzhu',   name: '莎拉公主', color: 0xed9d9d, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 1, f24: 75,  initCashRatio: 70, f26: 30 },
-  { id: 6,  key: 'gongbenbaozang', name: '宮本寶藏', color: 0x00f038, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 1, f24: 100, initCashRatio: 50, f26: 20 },
-  { id: 7,  key: 'tangtang',       name: '糖糖',     color: 0xffffa0, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 0, f24: 0,   initCashRatio: 40, f26: 35 },
-  { id: 8,  key: 'wumi',           name: '烏咪',     color: 0xe77c08, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 0, f24: 0,   initCashRatio: 60, f26: 20 },
-  { id: 9,  key: 'sunxiaomei',     name: '孫小美',   color: 0xcc1a20, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 0, f24: 50,  initCashRatio: 50, f26: 0  },
-  { id: 10, key: 'xiaodanni',      name: '小丹尼',   color: 0x2017fe, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 1, f24: 30,  initCashRatio: 55, f26: 15 },
-  { id: 11, key: 'jinbeibei',      name: '金貝貝',   color: 0x0ebdbd, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 2, f24: 80,  initCashRatio: 80, f26: 0  },
+  { id: 0,  key: 'yuehanqiao',     name: '約翰喬',   color: 0x946126, namePointer: 0x4665c4, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 2, f24: 60,  initCashRatio: 50, f26: 30 },
+  { id: 1,  key: 'shalongbasi',    name: '沙隆巴斯', color: 0xbdc3c6, namePointer: 0x4665cd, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 1, f24: 100, initCashRatio: 40, f26: 45 },
+  { id: 2,  key: 'rentailang',     name: '忍太郎',   color: 0x41323b, namePointer: 0x4665d6, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 2, f24: 0,   initCashRatio: 70, f26: 0  },
+  { id: 3,  key: 'qianfuren',      name: '錢夫人',   color: 0xc626c3, namePointer: 0x4665df, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 2, f24: 100, initCashRatio: 60, f26: 30 },
+  { id: 4,  key: 'atubo',          name: '阿土伯',   color: 0xc5b830, namePointer: 0x4665e8, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 1, f24: 50,  initCashRatio: 40, f26: 25 },
+  { id: 5,  key: 'shalagongzhu',   name: '莎拉公主', color: 0xed9d9d, namePointer: 0x4665f1, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 1, f24: 75,  initCashRatio: 70, f26: 30 },
+  { id: 6,  key: 'gongbenbaozang', name: '宮本寶藏', color: 0x00f038, namePointer: 0x4665fa, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 1, f24: 100, initCashRatio: 50, f26: 20 },
+  { id: 7,  key: 'tangtang',       name: '糖糖',     color: 0xffffa0, namePointer: 0x466603, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 0, f24: 0,   initCashRatio: 40, f26: 35 },
+  { id: 8,  key: 'wumi',           name: '烏咪',     color: 0xe77c08, namePointer: 0x46660a, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 0, f24: 0,   initCashRatio: 60, f26: 20 },
+  { id: 9,  key: 'sunxiaomei',     name: '孫小美',   color: 0xcc1a20, namePointer: 0x466611, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 0, f24: 50,  initCashRatio: 50, f26: 0  },
+  { id: 10, key: 'xiaodanni',      name: '小丹尼',   color: 0x2017fe, namePointer: 0x46661a, isFemale: false, trafficMethod: 0, ndices: 1, f22: 3, f23: 1, f24: 30,  initCashRatio: 55, f26: 15 },
+  { id: 11, key: 'jinbeibei',      name: '金貝貝',   color: 0x0ebdbd, namePointer: 0x466623, isFemale: true,  trafficMethod: 0, ndices: 1, f22: 3, f23: 2, f24: 80,  initCashRatio: 80, f26: 0  },
 ] as const;
 
 const byKey = new Map(CHARACTERS.map((c) => [c.key, c]));

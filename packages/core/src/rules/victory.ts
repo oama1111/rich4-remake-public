@@ -100,6 +100,7 @@ export function checkVictory(
   wealthOf: (p: Player) => number,
   conditions: WinConditions,
   elapsedDays: number,
+  humanPlayers: number,
 ): VictoryOutcome | null {
   // @source 0x0041d8a3：两条都为 0 时连遍历都不做，行为与「没接」完全一致
   if (!hasWinConditions(conditions)) return null;
@@ -123,7 +124,7 @@ export function checkVictory(
       winner: bestAt,
       reason: 'timeLimit',
       wealth: best,
-      code: victoryEndCode(players, bestAt),
+      code: victoryEndCode(humanPlayers, players[bestAt]?.whoPlays ?? 0),
     };
   }
   // @source 0x0041d8ff..0x0041d915
@@ -132,7 +133,7 @@ export function checkVictory(
       winner: bestAt,
       reason: 'wealthTarget',
       wealth: best,
-      code: victoryEndCode(players, bestAt),
+      code: victoryEndCode(humanPlayers, players[bestAt]?.whoPlays ?? 0),
     };
   }
   return null;
@@ -143,10 +144,10 @@ export function checkVictory(
  *
  * @source `fcn_0041d89e` 的收尾 0x0041d96b..0x0041da55：
  * ```asm
- * ; _num_human_players == 1：
+ * ; [0x499104]（**开局存下的**人类玩家数）== 1：
  * ;   赢家是真人        → [0x46caf8] = 2
  * ;   赢家是电脑        → [0x46caf8] = fcn_00407842(1)   ← 1 或 4，见下
- * ; _num_human_players != 1：
+ * ; [0x499104] != 1：
  * ;   赢家是真人        → 3
  * ;   否则              → 1
  * ```
@@ -155,10 +156,9 @@ export function checkVictory(
  *   玩家选了「读档」时返回 **4**（跳到读档屏）。那是 UI 流程，本引擎未复刻，
  *   该情形一律按 **1**（回主菜单）处理 —— 见 `docs/deviations/Q-SETUP-1.md` §2。
  */
-export function victoryEndCode(players: readonly Player[], winner: number): 1 | 2 | 3 {
-  const humans = players.filter((p) => (p.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN).length;
+export function victoryEndCode(humanPlayers: number, winnerWhoPlays: number): 1 | 2 | 3 {
   // @source `test byte [player + 0x15], 1` —— 原版只看 bit0（1 = 真人）
-  const winnerHuman = (players[winner]?.whoPlays ?? 0) & WHO_PLAYS_MASK;
-  if (winnerHuman !== WHO_PLAYS_HUMAN) return 1;
-  return humans === 1 ? 2 : 3;
+  if ((winnerWhoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) return 1;
+  // ★ 判据是 `[0x499104] == 1`（**开局存下的**人类数），不是现数在场的人
+  return humanPlayers === 1 ? 2 : 3;
 }

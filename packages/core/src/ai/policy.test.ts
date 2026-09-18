@@ -7,7 +7,9 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, type Rich4Map } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
-import { reduce } from '../state/reduce.ts';
+import { reduce,
+  orphanedAuction,
+} from '../state/reduce.ts';
 import {
   WHO_PLAYS_AUTOPILOT,
   WHO_PLAYS_COMPUTER,
@@ -527,6 +529,17 @@ describe('★ 拍賣：电脑那一手不再走 declineDecision', () => {
     expect(a?.type).toBe('auctionBid');
     if (a?.type !== 'auctionBid') throw new Error('not a bid');
     expect(a.bidder).toBe(1);
+  });
+
+  it('★ orphanedAuction：只有「当前玩家已出局 + 挂着拍卖」才为真', () => {
+    const p = pendingAuction({ seat: 1, bidders: [0, 1], limits: [0, 20_000] });
+    // 当前玩家在场 ⇒ 那块屏是他的回合的，core/调度都要让位
+    expect(orphanedAuction(at(p, [{ whoPlays: WHO_PLAYS_HUMAN }, { whoPlays: WHO_PLAYS_COMPUTER }]))).toBe(false);
+    expect(orphanedAuction(at(p, [{ whoPlays: WHO_PLAYS_COMPUTER }, { whoPlays: WHO_PLAYS_COMPUTER }]))).toBe(false);
+    // 当前玩家已出局 ⇒ 没人会开屏，必须由这里接手
+    expect(orphanedAuction(at(p, [{ whoPlays: 0 }, { whoPlays: WHO_PLAYS_COMPUTER }]))).toBe(true);
+    // 没有拍卖 pending 就与它无关
+    expect(orphanedAuction(makeGameState({ players: [makePlayer({ whoPlays: 0 })], currentPlayer: 0 }))).toBe(false);
   });
 
   it('auctionNextBid：座位不是电脑（真人/出局）时返回 null', () => {

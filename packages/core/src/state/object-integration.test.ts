@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
+import { SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
 import { applyBankruptcy, reduce, isGameOver } from './reduce.ts';
@@ -35,6 +36,7 @@ const topoOf = (map: ReturnType<typeof loadMap>) => ({
   lands: map.lands,
   facilities: map.facilities,
   commercials: map.commercials,
+  landscapes: map.landscapes,
 });
 
 /** 场上（不在谁身上）的物件 */
@@ -71,7 +73,7 @@ describe('★ 开局地图上真的有神明', () => {
 
 describe('★ 踩上去：从 reduce 这一层看', () => {
   /** 把玩家 0 挪到某格、摆好物件，然后走一步过去 */
-  function stepOnto(type: number, steps = 1) {
+  function stepOnto(type: number, steps = 1, playerOver: Record<string, unknown> = {}) {
     const { state, topo } = fresh();
     // 找一段能走的路：node → 它的第一个邻居
     const from = state.players[0]!.nodeId;
@@ -81,6 +83,7 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
     const objects = placeObjectOfType(cleared, type, to).objects;
     const start: GameState = {
       ...state,
+      players: state.players.map((p, i) => (i === 0 ? { ...p, ...playerOver } : p)),
       objects,
       phase: 'moving',
       stepsRemaining: steps,
@@ -117,9 +120,75 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
     expect(after.stepsRemaining).toBe(0);
   });
 
+  // ★★ 2026-09-18：原版 `send_to_hospital` 的**函数体内**含「传送到医院格 +
+  //   跟班搬家」（`@source 0x43ecad`..`0x43ed14`），所以首次住院的人**不在**原地。
+  //   先前 remake 只写计数 ⇒ 伤者还站在雷上。差分证据见
+  //   `rich4-spec/tests/test_confinement_teleport.py`（48/48）。
+  run('★ 地雷 → 首次住院：nodeId ← 醫院格，而 x/y ← **醫院大樓（景观记录 1）**', () => {
+    const { before, after, topo } = stepOnto(17);
+    const map = loadMap();
+    const gate = topo.nodes.find((n) => n.specialKind === SPECIAL_KIND.HOSPITAL);
+    expect(gate).toBeDefined();
+    expect(before.players[0]!.nodeId).not.toBe(gate!.id);
+    expect(after.players[0]!.nodeId).toBe(gate!.id);
+    // ★★ 第 86 条：原版把**屏幕坐标**取自特殊景观记录（`@source 0x43ecef`
+    //   `mov si, word [eax + 0x1c]` = 记录 1），而 `nodeId` 是棋盘上的醫院格 ——
+    //   两者**不是同一个地方**（这是"住院的人躺在醫院大樓里"的由来）。
+    //   景观表 1 基（0 号槽哨兵）⇒ 记录 1 = 本引擎 `landscapes[0]`。
+    const hospitalLand = map.landscapes[0]!;
+    expect(hospitalLand.name).toBe('醫院');
+    expect([after.players[0]!.xpos, after.players[0]!.ypos]).toEqual([
+      hospitalLand.x,
+      hospitalLand.y,
+    ]);
+    expect([after.players[0]!.xpos, after.players[0]!.ypos]).not.toEqual([gate!.x, gate!.y]);
+    expect(after.players[0]!.lastNodeId).toBe(0);
+  });
+
+  run('★ 跟班神明跟着搬进医院格（`call 0x40fc00`）', () => {
+    const { after, topo } = stepOnto(17, 1, { godInfo: 1 });
+    const gate = topo.nodes.find((n) => n.specialKind === SPECIAL_KIND.HOSPITAL);
+    expect(after.objects[0]!.nodeId).toBe(gate!.id);
+  });
+
+  // ★★ 原版把 x/y 取自**特殊景观记录**（入監 → 记录 **2** = 綠島；入院 → 记录 **1** =
+  //   醫院大樓），而 `nodeId` 取的是**棋盘上的監獄/醫院格**。两者**不是同一个地方**：
+  //   監獄格 (1248,1583)、醫院格 (767,1631)；綠島 (1817,1960)、醫院景觀 (319,990)。
+  //   @source 0x0043d63e..0x0043d652（監獄 +0x38/+0x3a）、0x0043ecea..0x0043ecfe（醫院 +0x1c/+0x1e）
+  //   ★ 景观表是 **1 基**（`[0x498e78] + k*0x1c`，k 从 1 起；加载循环 `0x407f17`/`0x407f35`），
+  //     所以「记录 1」= 本引擎 `landscapes[0]`、「记录 2」= `landscapes[1]`。
+  //   ⚠️ 本引擎**有意偏离**：关押时 x/y 写的是**节点坐标**（见 known-deviations D-CONFINE-1）。
+  run('★ 景观记录的编号与身份（綠島 = 记录 2、醫院 = 记录 1）——关押坐标偏离的依据', () => {
+    const map = loadMap();
+    expect(map.landscapes[0]!.name).toBe('醫院'); // 1 基的记录 1
+    expect(map.landscapes[1]!.name).toBe('綠島'); // 1 基的记录 2
+    const hospital = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.HOSPITAL)!;
+    const prison = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.PRISON)!;
+    // 节点坐标与景观坐标确实不同 —— 这正是 D-CONFINE-1 记的那处偏离
+    expect([hospital.x, hospital.y]).not.toEqual([
+      map.landscapes[0]!.x,
+      map.landscapes[0]!.y,
+    ]);
+    expect([prison.x, prison.y]).not.toEqual([map.landscapes[1]!.x, map.landscapes[1]!.y]);
+  });
+
+  run('★ 已经住院的人再中一次 → 加刑，**不**传送（原版加刑分支没有那几行）', () => {
+    const { after, topo } = stepOnto(17, 1, { blocking: { inHospital: 2 } });
+    const gate = topo.nodes.find((n) => n.specialKind === SPECIAL_KIND.HOSPITAL);
+    expect(after.players[0]!.blocking.inHospital).toBe(5);
+    expect(after.players[0]!.nodeId).not.toBe(gate!.id);
+  });
+
   run('寶箱 → 點數 +500', () => {
     const { before, after } = stepOnto(14);
     expect(after.players[0]!.points).toBe(before.players[0]!.points + 500);
+  });
+
+  run('★★ 點券是 16 位字段：65500 + 500 **回绕**成 164（原版 `add word`）', () => {
+    // @source 0x0041bb62 `add word [player + 0x496b98], 0x1f4`
+    //   机械普查（全 exe 38 处访问全是 16 位）见 rich4-spec/tests/test_points_field.py
+    const { after } = stepOnto(14, 1, { points: 65500 });
+    expect(after.players[0]!.points).toBe(66000 - 65536); // = 464
   });
 
   run('★ 惡犬被踩掉之后，土地公会补到场上 —— 物件不会越打越少', () => {
@@ -149,13 +218,24 @@ describe('★ 任期与破产', () => {
       phase: 'turnEnd',
     };
 
+    // ★ 神的任期也在 `0x41c84f`（`0x41cc6c`）里逐日递减，而那一 tick 作用于
+    //   **新**当前玩家（原版 `0x418f95` 先 ++ 游标）⇒ 每次都从 3 号出发，
+    //   让 0 号成为"即将行动的这位"。
     for (let day = 0; day < 7; day++) {
-      s = reduce({ ...s, currentPlayer: 0, phase: 'turnEnd' }, { type: 'endTurn' }, topo);
+      s = reduce({ ...s, currentPlayer: 3, phase: 'turnEnd' }, { type: 'endTurn' }, topo);
     }
     expect(s.players[0]!.godInfo).toBe(0);
     expect(s.players[0]!.fortune).toBe(0);
     // 大財神（槽 1）补到场上
     expect(s.objects[1]!.nodeId).not.toBe(0);
+    // ★ 且**不能落在有人或有物件的格子上** —— 原版 `0x40aa6c` 的筛选是
+    //   `test dword [node+0x24], 0x80ffff00`（玩家 bits 8..11 + 物件 bits 12..23）。
+    //   先前只反查物件表，搭档会与人叠格。
+    const occupied = new Set<number>();
+    for (const p of s.players) if (p.nodeId !== 0) occupied.add(p.nodeId);
+    for (const o of s.objects) if (o.nodeId !== 0 && o.attached === 0) occupied.add(o.nodeId);
+    occupied.delete(s.objects[1]!.nodeId);
+    expect(occupied.has(s.objects[1]!.nodeId), '搭档压在别人/别物上').toBe(false);
   });
 
   run('★ 破产时身上的物件要还回去 —— 否则它永远挂在死人身上', () => {
@@ -173,6 +253,11 @@ describe('★ 任期与破产', () => {
     expect(after.objects[0]!.nodeId).toBe(0);
     // 搭档大財神补位
     expect(after.objects[1]!.nodeId).not.toBe(0);
+    const occupied2 = new Set<number>();
+    for (const p of after.players) if (p.nodeId !== 0) occupied2.add(p.nodeId);
+    for (const o of after.objects) if (o.nodeId !== 0 && o.attached === 0) occupied2.add(o.nodeId);
+    occupied2.delete(after.objects[1]!.nodeId);
+    expect(occupied2.has(after.objects[1]!.nodeId), '搭档压在别人/别物上').toBe(false);
   });
 });
 

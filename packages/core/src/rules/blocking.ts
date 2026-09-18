@@ -21,9 +21,31 @@
  * 也就是说 `0x80` 不是「标志位」，而是**「刑期已满、待释放」**这个状态本身。
  * 天数归零时并不直接清零，而是先挂上 0x80，**下一次推进**才真正执行
  * 出狱／出院流程（那里还有动画与位置移动）。
+ *
+ * ★★ **原版的释放是两段式**（2026-09-18 第 84 条查清 + 通道 2 差分）：
+ *
+ * | 段 | 位置 | 做什么 |
+ * |---|---|---|
+ * | ① | 本文件的递减流程看到 `0x80` → `call 释放函数` | 住宿／监狱／医院走 `0x40d6be`：**只立标记** `+0x15 \|= 0x10`（走回棋盘）、算朝向、置节点占用位，**一个字都不写 `+0x32..0x35`**；消失走 `0x40d4e5`：**自己把 `+0x33` 清 0**、**不置** `0x10` |
+ * | ② | **走路例程 `0x40c05c`** 的 `0x40c3cf` | `mov dword [player+0x32], 0` —— ★ **一次清四个**，条件是 `+0x15 & 0x30` 且 `trunc(距离/步长) >= 2` |
+ * | ③ | **回合推进 `0x418ebd`** 的 `0x418f04` | 带 `+0x15 & 0x10` 的人**整回合不掷骰**（`00418f8e jmp 0x419058`），随后 `00418f87 and …, 0xf` 清标记 |
+ *
+ * ⇒ ① 与 ③ 落在**同一个回合**上（原版在新玩家回合开头递减：`0x419033`），
+ * 所以「刑满」之后还要**白丢一回合**（从綠島／醫院大樓走回棋盘那一回合）——
+ * 这正是状态栏「還剩 `(raw & 0x7f) + 1` 天」的口径（显示的 = 还会丢几个回合）。
+ *
+ * 本引擎的递减时机与原版**同刻**：`reduce.ts` 的 `endTurn` 先推进游标、
+ * 再给**新**当前玩家递减（对应原版 `0x418f95` → `0x419039`），于是 ①③ 天然同回合；
+ * ② 的清账（四项计数一次清光）折叠到 `startTurn`（本引擎移动是原子的，没有"动画中途"）。
+ * 标记由 `endTurn` 的 `released` 分支置上（`WHO_PLAYS_RETURN_TO_BOARD`，消失除外）。
+ *
+ * ⚠️ 一处**已知的残留差异**（极小）：原版 ② 的清账**有条件**（本趟走法短于
+ * 2×步长就不清 ⇒ 多关一回合），本引擎无条件清。
+ *
  */
 
 import type { BlockingDays, Player } from '../state/types.ts';
+import { isAlive } from '../state/types.ts';
 
 /** 刑满待释放标记 @source `or ch, 0x80` */
 export const RELEASE_PENDING = 0x80;
@@ -50,7 +72,12 @@ export interface TickOutcome {
  * @param mask 归零判据的掩码；`days_disappearing` 用 0x3f，其余用 0xff
  */
 export function tickBlockingCounter(raw: number, mask = 0xff): TickOutcome {
-  // @source test d, 0x80 / jne → 释放
+  // @source 0x41c895 `test cl, 0x80 / je 递减`；0x41c89a `push ebx / call 释放函数`
+  //   ★★ 这一支**不写计数器**（`jmp 0x41c8bc` 跳过递减那几句），四个释放函数里
+  //   只有「消失」那一支自己清 `+0x33`（`0x40d52c`）—— 住宿／监狱／医院三支
+  //   一个字都不写，于是释放之后计数**仍停在 0x80**，那一个回合依然是"被阻碍"
+  //   （状态栏也照 `(0x80 & 0x7f) + 1` 显示「還剩 1 天」）。
+  //   通道 2 证据：`rich4-spec/tests/test_day_tick.py`（28/28）。
   if ((raw & RELEASE_PENDING) !== 0) {
     return { value: 0, release: true };
   }
@@ -59,7 +86,13 @@ export function tickBlockingCounter(raw: number, mask = 0xff): TickOutcome {
 
   // @source dec d —— ★ 整字节递减，不掩码
   const next = (raw - 1) & 0xff;
-  // @source jne 跳过 / or d, 0x80
+  // @source 0x41c8e3 `test dh, 0x3f / jne`（消失）/ `test dl, dl / jne`（其余）
+  //         0x41c8ea `or ch, 0x80` —— ★ 减到 0 时**挂 0x80（待释放）**，
+  //   真正的释放（`call 0x43d7bf` 等）发生在**下一次**推进里。
+  //   ⇒ 释放那一回合同时是「走回棋盘」那一回合（见 blocking.ts 顶部长注释），
+  //   状态栏显示的 `(raw & 0x7f) + 1` 就是"还会丢几个回合"。
+  //   本引擎的递减时机与原版**同刻**（在旧玩家回合的 `endTurn` 里给新玩家递减，
+  //   对应原版 `0x419033` 推进游标之后那一次），故两段式**照抄不再折叠**。
   if ((next & mask) === 0) {
     return { value: next | RELEASE_PENDING, release: false };
   }
@@ -88,13 +121,19 @@ export interface BlockingTickResult {
 /**
  * 推进某玩家的阻碍计数器一天。
  *
- * ★ **调用时机已查清**（此前是 reduce.ts 里的一个 TODO）：
+ * ★ **调用时机**（2026-09-18 第 84 条订正 —— 此前记成"当前玩家"是**读早了**）：
  * ```asm
- * 00419033  mov  eax, dword [0x49910c]     ; ★ 当前玩家
- * 00419039  call 0x41c84f                  ; 递减其阻碍计数
+ * 00418f93  xor  ebx, ebx
+ * 00418f95  inc  esi / mov [0x49910c], esi   ; ★★ 先把游标推进到下一位
+ * 00418fa2  …（越界则跳惡人段 / 绕回 0 号并把 ebx 置 1）
+ * 0041902e  call 0x41cf67                    ; ★ 绕回 0 号那一次：推进日期/物价/行情/開獎/月結
+ * 00419033  mov  eax, dword [0x49910c]
+ * 00419039  call 0x41c84f                    ; ★ 递减的是**新**当前玩家（= 即将行动的那位）
  * ```
- * 就在回合边界，且**只作用于当前玩家**（不是全体）。
- * 紧邻其前的 `call 0x41cf67` 是另一件事——推进日期与物价指数。
+ * 也就是说：递减发生在**新玩家回合的开头**，不是旧玩家回合的末尾。
+ * 本引擎的相位机在 `endTurn` 里只拿得到旧玩家，故**有意**把这一步放在旧玩家
+ * 回合末尾（见 `reduce.ts` 的 `endTurn` 注释）——对同一个玩家而言，两者只差
+ * 「占用表在同轮内的哪一刻被清」，**丢掉的回合数完全一致**（N 天 = N+1 个回合）。
  *
  * ⚠️ `tickBlocking` 只管 `+0x32..+0x35` 四项（住宿／消失／监狱／医院），
  * 每项都有自己的释放函数。冬眠、梦游、停留、乌龟等**也在同一个函数里**，只是排在
@@ -119,6 +158,38 @@ export function tickBlocking(blocking: BlockingDays): BlockingTickResult {
  * 与内部计数不同：界面显示 `(value & 0x7f) + 1`
  * （`days_disappearing` 用 `& 0x3f`）。
  */
+/**
+ * 拆除类改造的**全场释放** `0x0040dffa()` —— 无参数，遍历全体玩家：
+ * 把**在场**且 `blocking.inHotel != 0` 的人置成「释放挂起」（`0x80`），
+ * 于是他们下一天就出来。
+ *
+ * @source 差分实证 `rich4-spec/tests/test_mutate_release.py`（7/7）：
+ * ```asm
+ * 0040dffc  cmp edx, [0x499114] / jge 出
+ * 0040e007  cmp byte [eax + 0x496b7d], 0 / je 下一人   ; 出局者跳过
+ * 0040e010  cmp byte [eax + 0x496b9a], 0 / je 下一人   ; 本来就是 0 跳过
+ * 0040e019  mov byte [eax + 0x496b9a], 0x80            ; 置释放挂起
+ * ```
+ *
+ * ★★ **一刀切**：它不看地点、也不接受参数 —— 任何一次「把旅馆/医院拆掉」
+ *   都会把**全场所有**被关押的在场玩家一起放出来。原版如此，别"改良"成只放
+ *   该设施里的那几位。
+ *
+ * ★ 调用点（原版自扫，全在 `mutate_land`/`mutate_facility` 里，共 5 处）：
+ *   `0x40ac33`（設施 mode 0 拆到 0 级）、`0x40ac4d`（設施 mode 1）、
+ *   `0x40ac6c`（設施 mode 2）、`0x40ae0d`（住宅 mode 0 拆到 0 级）、
+ *   `0x40ae58`（住宅 mode 1/2）。⇒ 复刻的 `mutateLand`/`mutateFacility`
+ *   在同样三种情形下**必须**调本函数（见 `cards/monster.ts` 的返回值
+ *   `releasesConfined`）。
+ */
+export function releaseConfinedPlayers(players: readonly Player[]): Player[] {
+  return players.map((p) => {
+    if (!isAlive(p)) return p;
+    if (p.blocking.inHotel === 0) return p;
+    return { ...p, blocking: { ...p.blocking, inHotel: RELEASE_PENDING } };
+  });
+}
+
 export function displayRemainingDays(raw: number, mask = 0x7f): number {
   return (raw & mask) + 1;
 }

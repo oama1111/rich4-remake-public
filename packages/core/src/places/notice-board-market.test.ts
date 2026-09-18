@@ -211,3 +211,64 @@ describe('★ 电脑回合会用公佈欄（在 reducer 里掷，跨进调度第
     expect(a.rngState).toBe(b.rngState);
   });
 });
+
+// ============================================================
+//  ★★ 2026 本轮：公佈欄买**股票**之后要重排企业持股名次
+//  原版 `0x0042571e call 0x4294d5`（实参 = 股票号 + 买家）
+// ============================================================
+
+describe('★ 公佈欄买股票 → 重排企业老板', () => {
+  const STOCK = 0;
+  const COMM = 3;
+
+  /** 0 号持 100 股、1 号持 10 股；企业 3 的老板是 0 号（ranking 首位 = 玩家+1） */
+  const marketState = (): GameState => {
+    const s = makeGameState({
+      players: [0, 1].map((i) => makePlayer({ index: i, nodeId: 1, cash: 100_000 })),
+      phase: 'awaitingRoll',
+    });
+    return {
+      ...s,
+      holdings: s.holdings.map((row, i) =>
+        row.map((h, j) => (j === STOCK ? { amount: i === 0 ? 100 : 10, avgCost: 10 } : h)),
+      ),
+      market: {
+        ...s.market,
+        stocks: s.market.stocks.map((st, j) =>
+          j === STOCK ? { ...st, commercialIndex: COMM } : st,
+        ),
+      },
+      commercialOwners: s.commercialOwners.map((o, j) =>
+        j === COMM ? { ...o, ranking: [1, 2, 0, 0], owner: 1 } : o,
+      ),
+    };
+  };
+
+  it('卖出全部持股后，企业老板换成买家（此前不会重排）', () => {
+    const s = marketState();
+    const listed = reduce(
+      s,
+      { type: 'noticeBoard', op: 'list', kind: LISTING.stock, id: STOCK, price: 100, amount: 100 },
+      topo,
+    );
+    expect(listed.noticeBoard[0]?.[0]).toMatchObject({ kind: LISTING.stock, amount: 100 });
+    const bought = reduce({ ...listed, currentPlayer: 1 },
+      { type: 'noticeBoard', op: 'buy', seller: 0, slot: 0 }, topo);
+    // 持股确实转过去了
+    expect(bought.holdings[1]?.[STOCK]?.amount).toBe(110);
+    expect(bought.holdings[0]?.[STOCK]?.amount).toBe(0);
+    // ★ 老板跟着换（0 号一股不剩、1 号 110 股）
+    expect(bought.commercialOwners[COMM]?.owner).toBe(2);
+    expect(bought.commercialOwners[COMM]?.ranking[0]).toBe(2);
+  });
+
+  it('买**非股票**（地產）不碰企业名次', () => {
+    const s = twoPlayers();
+    const id = encodeEstate('facility', FAC_ID);
+    const listed = reduce(s, { type: 'noticeBoard', op: 'list', kind: LISTING.estate, id, price: 5000 }, topo);
+    const before = listed.commercialOwners.map((o) => o.owner);
+    const bought = reduce({ ...listed, currentPlayer: 1 },
+      { type: 'noticeBoard', op: 'buy', seller: 0, slot: 0 }, topo);
+    expect(bought.commercialOwners.map((o) => o.owner)).toEqual(before);
+  });
+});

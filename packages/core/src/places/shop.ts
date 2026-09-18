@@ -19,6 +19,7 @@ import { STOCKED_TOOL_MAX_ID } from '../rules/tools.ts';
 import { CARDS, TOOLS } from '@rich4/data';
 import { MAX_HAND_CARDS } from '../rules/special-square.ts';
 import { giveTool, takeTool, toolCount, MAX_TOOL_ID, MIN_TOOL_ID } from '../rules/tools.ts';
+import { addPoints } from '../rules/points.ts';
 
 /**
  * 回收价的比率 —— 卖出只退**九成**。
@@ -93,7 +94,8 @@ export function buyCard(player: Player, cardId: number): BuyCardResult {
   return {
     ok: true,
     error: null,
-    player: { ...player, points: player.points - price, cards: [...player.cards, cardId] },
+    // @source 0x0042eeab 起：`cmp word [..+0x30], price / jb` 之后 `sub word [..+0x30], ax`
+    player: { ...player, points: addPoints(player.points, -price), cards: [...player.cards, cardId] },
     spent: price,
   };
 }
@@ -170,7 +172,7 @@ export function sellCard(player: Player, cardId: number): BuyCardResult {
   return {
     ok: true,
     error: null,
-    player: { ...player, points: player.points + gain, cards },
+    player: { ...player, points: addPoints(player.points, gain), cards },
     spent: -gain,
   };
 }

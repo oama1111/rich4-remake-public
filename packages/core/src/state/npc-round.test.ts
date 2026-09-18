@@ -42,6 +42,20 @@ function withThief(over: Partial<GameState> = {}, actor: Partial<ReturnType<type
 }
 
 describe('★ 步数 @source 0x0040de09', () => {
+  it('★★ 冬眠（+0x0c）整回合不行动，且**不掷随机数** @source 0x0040cbf6', () => {
+    // 通道 2：`rich4-spec/tests/test_turn_start.py` §F —— 回合开始判定 `0x40c912` 的
+    // actor 分支在 `[slot+0x0c] != 0` 时直接返回 0（连 `0x40dd1f` 都不进）。
+    const rng = new WatcomRng();
+    rng.setState(7);
+    const before = rng.getState();
+    expect(npcTurnSteps({ ...releaseNpc(1, 0, 0), hibernating: 1 }, rng)).toBe(0);
+    expect(npcTurnSteps({ ...releaseNpc(1, 0, 0), hibernating: 0x80 }, rng)).toBe(0);
+    expect(rng.getState(), '冬眠那一支不许动随机流').toBe(before);
+    // 夢遊（+0x0d）与龜行（+0x0f）**不**拦 —— 原版的 actor 分支不查它们
+    expect(npcTurnSteps({ ...releaseNpc(1, 0, 0), sleepwalkDays: 5 }, rng)).toBeGreaterThanOrEqual(2);
+    expect(npcTurnSteps({ ...releaseNpc(1, 0, 0), singleStep: 1 }, rng)).toBe(1);
+  });
+
   it('停留 → 0；龜行 → 1；否则 rand()%9+2', () => {
     const rng = new WatcomRng();
     rng.setState(1);
@@ -181,6 +195,22 @@ describe('★ D-T047-5 串行化：一輪的惡人**逐个**走，不是并排�
     expect(s.phase).toBe('turnStart');
     expect(s.currentPlayer).toBe(0); // 绕回 0 号玩家
     expect(s.pendingNpcSlots).toEqual([]);
+  });
+
+  it('★★ 惡人段走完后，下一位玩家的「一天」照样要走（第 85 条）', () => {
+    // ★ 递减（`0x419039 call 0x41c84f`）是给**新**当前玩家走的，而惡人段把
+    //   "轮到下一位"这一步交给了 `npcStep` ⇒ 那一条路径也必须补上这一天。
+    const s = fourVillains({ rngState: 7 });
+    const withSleep: GameState = {
+      ...s,
+      players: s.players.map((p, i) =>
+        i === 0 ? { ...p, blocking: { ...p.blocking, sleeping: 5 } } : p,
+      ),
+    };
+    let t = reduce(withSleep, { type: 'endTurn' }, ring);
+    while ((t.pendingNpcSlots ?? []).length > 0) t = reduce(t, { type: 'npcStep' }, ring);
+    expect(t.currentPlayer).toBe(0);
+    expect(t.players[0]!.blocking.sleeping).toBe(4);
   });
 
   it('★ `autoAction` 在惡人段优先派 `npcStep`（不然下家会插到惡人前面）', () => {

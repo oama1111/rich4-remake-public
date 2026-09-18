@@ -58,6 +58,7 @@ function setup(over: Partial<GameState> = {}) {
     lands: map.lands,
     facilities: map.facilities,
     commercials: map.commercials,
+  landscapes: map.landscapes,
   };
   const base = newGame({
     map,

@@ -35,6 +35,19 @@ describe('updateHostility', () => {
     expect(r.players[0]!.hostility[1]).toBe(0);
     expect(r.allianceBroken).toBe(false);
   });
+
+  // ★ 通道 2 实测补（2026-09-18，`rich4-spec/tests/test_hostility_update.py`）：
+  //   原版对 b **没有上界检查** —— `b = 4` 会写到 `+0x5c`（= `monthlyPaid`），
+  //   而且是在旧值上**累加**（实测 `0x11111111 → 0x11111114`，不是覆盖）。
+  //   本实现加护栏 ⇒ **有意偏离**（实际调用点只遍历 0..3，构造上不可达）。
+  it('⚠️ 有意偏离：b ≥ 4 时加护栏（原版会越界累加进 monthlyPaid）', () => {
+    const ps = four();
+    const before = ps[0]!.monthlyPaid;
+    const r = updateHostility(ps, 0, 4, 5);
+    expect(r.players[0]!.hostility).toEqual([0, 0, 0, 0]);
+    expect(r.players[0]!.monthlyPaid).toBe(before);
+    expect(r.allianceBroken).toBe(false);
+  });
 });
 
 describe('★ 敌意上升会解除同盟', () => {
@@ -82,10 +95,38 @@ describe('★ 敌意上升会解除同盟', () => {
   });
 });
 
-describe('breakAlliance', () => {
-  it('没有同盟时是空操作', () => {
+describe('breakAlliance —— 原版真码回归（rich4-spec/tests/test_alliance.py 15/15）', () => {
+  it('双向清四格（自己与盟友的 alliedPlayer/alliedDays）', () => {
     const ps = four();
-    expect(breakAlliance(ps, 0)).toEqual(ps);
+    ps[0] = makePlayer({ index: 0, alliedPlayer: 3, alliedDays: 7 });
+    ps[2] = makePlayer({ index: 2, alliedPlayer: 1, alliedDays: 9 });
+    const out = breakAlliance(ps, 0);
+    expect([out[0]?.alliedPlayer, out[0]?.alliedDays]).toEqual([0, 0]);
+    expect([out[2]?.alliedPlayer, out[2]?.alliedDays]).toEqual([0, 0]);
+  });
+
+  it('★ 不检查对方是否「指回自己」：p0→p1 而 p1→p2，p1 照样被清', () => {
+    const ps = four();
+    ps[0] = makePlayer({ index: 0, alliedPlayer: 2, alliedDays: 7 });
+    ps[1] = makePlayer({ index: 1, alliedPlayer: 3, alliedDays: 5 });
+    ps[2] = makePlayer({ index: 2, alliedPlayer: 0, alliedDays: 4 });
+    const out = breakAlliance(ps, 0);
+    expect([out[1]?.alliedPlayer, out[1]?.alliedDays]).toEqual([0, 0]);
+    expect([out[2]?.alliedPlayer, out[2]?.alliedDays]).toEqual([0, 4]);   // 不追链
+  });
+
+  it('自指（alliedPlayer == 自己+1）无害', () => {
+    const ps = four();
+    ps[0] = makePlayer({ index: 0, alliedPlayer: 1, alliedDays: 7 });
+    const out = breakAlliance(ps, 0);
+    expect([out[0]?.alliedPlayer, out[0]?.alliedDays]).toEqual([0, 0]);
+    expect(out[1]).toEqual(ps[1]);
+  });
+
+  it('⚠️ 有意偏离：原版在 alliedPlayer==0 时会**越界清两格**（0x496B3D/0x496B41），本实现不复制', () => {
+    // 原版实测：这两格从 0xAA/0xBB 被清成 0（rich4-spec/tests/test_alliance.py §5）
+    const ps = four();
+    expect(breakAlliance(ps, 0)).toEqual(ps);      // 提前返回，别的字段一个不动
   });
 });
 

@@ -6,6 +6,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   actorTokens,
+  playerAnchorWorld,
   ASLEEP_FILTER,
   attachedObjectTokens,
   actorWalkSteps,
@@ -157,6 +158,31 @@ describe('★ 绘制槽的排序键（Q-DRAW-1）—— 遮挡关系全靠它', 
   it('负数屏幕 Y 按 12 位截断后仍排在正数之前（原版就是这么算的）', () => {
     expect(drawKey(-1, DRAW_CLASS.building)).toBeLessThan(drawKey(0, DRAW_CLASS.building));
     expect(drawKey(-1, DRAW_CLASS.building)).toBeLessThan(0);
+  });
+});
+
+describe('★★ 棋子世界坐标：读 `xpos/ypos`，不拿 `nodeId` 现推（第 86 条）', () => {
+  it('在盘上站定 ⇒ 与所在格坐标一致', () => {
+    expect(playerAnchorWorld({ nodeId: 12, xpos: 1248, ypos: 1583 })).toEqual({
+      x: 1248,
+      y: 1583,
+    });
+  });
+
+  it('★★ 关押期间 ⇒ 是**景观坐标**（綠島），不是監獄格坐标', () => {
+    // 監獄格 12 = (1248,1583)、綠島（景观记录 2）= (1817,1960)
+    expect(playerAnchorWorld({ nodeId: 12, xpos: 1817, ypos: 1960 })).toEqual({
+      x: 1817,
+      y: 1960,
+    });
+  });
+
+  it('不在盘上（`nodeId == 0`）⇒ 不画', () => {
+    expect(playerAnchorWorld({ nodeId: 0, xpos: 1817, ypos: 1960 })).toBeNull();
+  });
+
+  it('坐标被清空 ⇒ 不画（与 `xpos != 0` 那条原版判据同义）', () => {
+    expect(playerAnchorWorld({ nodeId: 12, xpos: 0, ypos: 0 })).toBeNull();
   });
 });
 

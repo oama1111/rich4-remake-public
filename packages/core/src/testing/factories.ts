@@ -6,7 +6,7 @@
  * 都要改十几个测试文件。
  */
 import type { Player, GameState } from '../state/types.ts';
-import { WHO_PLAYS_HUMAN } from '../state/types.ts';
+import { WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from '../state/types.ts';
 import { slotsFrom } from '../loaders/map.ts';
 import type { LandInfo, FacilityInfo, MapNode, Rich4Map } from '../loaders/map.ts';
 import { emptyBoard } from '../places/notice-board.ts';
@@ -79,6 +79,7 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     currentPlayer: 0,
     phase: 'turnStart',
     priceIndex: 1,
+    viewRotation: 0,
     // 本局开局资金档位
     initialFund: DEFAULT_INITIAL_FUND,
     dice: [],
@@ -93,6 +94,10 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     landPrice: [],
     facilityPrice: [],
     landTenureIndex: 0,
+    // 人类玩家数：工厂缺省按「players 里的 whoPlays==1」数（真实新局由 new-game 写）
+    humanPlayers: (over.players ?? []).filter(
+      (pl) => (pl.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN,
+    ).length,
     // 勝利條件默认两条都無限（= 加字段之前的行为，见 rules/victory.ts）
     winConditions: { targetDays: 0, targetWealth: 0 },
     victory: null,
@@ -126,10 +131,12 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     lastEvent: null,
     // 纯表现提示：还没人走过（见 types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
+    lastCardPlay: null,
     // 回合边界的惡人队列
     pendingNpcSlots: [],
     lottery: new Array<number>(36).fill(0),
     pending: null,
+    pendingQueue: [],
     tools: new Array<number>(4 * 15).fill(0),
     toolStock: new Array<number>(14).fill(99),
     market: newStockMarket(0),
@@ -177,7 +184,7 @@ export function makeLand(over: Partial<LandInfo> = {}): LandInfo {
 export function makeFacility(over: Partial<FacilityInfo> = {}): FacilityInfo {
   return {
     id: 1, x: 0, y: 0, name: '测试设施', type: 0, owner: 0, level: 0, facing: 0,
-    priceStatus: 0, landPrice: 5000, housePrice: 1000,
+    priceStatus: 0, flast: 0, landPrice: 5000, housePrice: 1000,
     rateByLevel: [1000, 2000, 4000, 8000, 16000, 32000],
     ...over,
   };
@@ -198,11 +205,14 @@ export function topoOf(map: Rich4Map): {
   lands: LandInfo[];
   facilities: FacilityInfo[];
   commercials: Rich4Map['commercials'];
+  landscapes: Rich4Map['landscapes'];
 } {
   return {
     nodes: map.nodes,
     lands: map.lands,
     facilities: map.facilities,
     commercials: map.commercials,
+    // ★ 首次关押的屏幕坐标取自景观表（`rules/confinement.ts`）
+    landscapes: map.landscapes,
   };
 }

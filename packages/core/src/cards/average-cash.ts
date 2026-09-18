@@ -69,20 +69,25 @@ export function applyAverageCashCard(
   let count = 0;
   for (const p of players) {
     if (!isAlive(p)) continue;
-    sum += p.cash;
+    // @source `add esi, dword [player + 0x496b84]` —— ★ 32 位寄存器**按补码回绕**
+    //   （通道 2 钉住：`rich4-spec/tests/test_average_cards.py` 里 0x7FFFFFFF×2+1 ⇒ −1）
+    sum = (sum + p.cash) | 0;
     count++;
   }
   if (count === 0) return { players: [...players], hostilityDeltas: [], average: 0 };
 
   // @source mov eax, esi / cdq / idiv ecx —— 有符号整数除法，向零取整
-  const average = Math.trunc(sum / count);
+  //   ⚠️ JS 的 `Math.trunc(-1/3)` 是 **−0**，而原版 `idiv` 给的是 0（无符号位）
+  //     ⇒ 统一归一到 0，免得 −0 渗进状态与存档
+  const average = Math.trunc(sum / count) || 0;
 
   const hostilityDeltas: { from: number; to: number; delta: number }[] = [];
   const next = players.map((p, i) => {
     if (!isAlive(p)) return p;
-    // @source cmp esi, edx / jge → 仅当 average < cash 才加敌意
+    // @source cmp esi, edx / jge → 仅当 average < cash 才加敌意（**有符号**比较）
     if (average < p.cash) {
-      const delta = Math.trunc((p.cash - average) / HOSTILITY_DIVISOR);
+      // @source `sub edx, esi` —— 差值同样按 32 位回绕（溢出时 delta 会变负）
+      const delta = Math.trunc(((p.cash - average) | 0) / HOSTILITY_DIVISOR) || 0;
       hostilityDeltas.push({ from: i, to: currentPlayer, delta });
     }
     return { ...p, cash: average };

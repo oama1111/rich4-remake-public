@@ -42,6 +42,7 @@ const topoOf = (map: ReturnType<typeof loadMap>) => ({
   lands: map.lands,
   facilities: map.facilities,
   commercials: map.commercials,
+  landscapes: map.landscapes,
 });
 
 function fresh(seed = 7): { state: GameState; topo: ReturnType<typeof topoOf> } {

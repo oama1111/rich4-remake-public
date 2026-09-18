@@ -10,6 +10,7 @@ import { newGame } from '../rules/new-game.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 import { topoOf } from '../testing/factories.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 
 const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -412,5 +413,56 @@ describe('★ 神明加持真的接上了 @source VA 0x0044b896', () => {
     expect(s2.lastEvent?.id).toBe(8);
     expect(s2.holdings[me]![STOCK]!.amount).toBe(100);
     expect(s2.players[me]!.specialFinance).toBe(4000);
+  });
+});
+
+/**
+ * ★★ 「神明加持」的随机数消耗**只在 50 < 值 ≤ 100 这一档**（第 37 条）。
+ *
+ * @source `0x44b8c1`：`cmp si,0x64 / jle 查50`（>100 直接定档、不掷）
+ *   → `cmp si,0x32 / jle 查负`（≤50 也不掷）→ 只有中间那一档 `call 0x456f2d`。
+ *
+ * 事件 2（冒貸，`blessing: 'penalty'`）本身不掷随机数，故它是干净的探针：
+ * 加持值落在不掷的档位时，整场结算的 `rngState` 必须**一个字节都不动**。
+ * 先前 `reduce.ts` 无条件 `rng.next()`，这两条会红。
+ */
+describe('★★ 命運「神明加持」的 rand 只在 50<值≤100 掷（第 37 条）', () => {
+  /** 把命運牌堆拨到「下一张就是 2（冒貸）」，并把当前玩家的 fortune 设成给定值 */
+  function setup(fortune: number): { state: GameState; topo: ReturnType<typeof topoOf> } | null {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const base = newGame({ map, players: players(), seed: 5 });
+    const on = standOn(base, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return null;
+    const state: GameState = {
+      ...on,
+      fortuneDeck: { order: [2, ...on.fortuneDeck.order.filter((x) => x !== 2)], cursor: 0 },
+      players: on.players.map((p, i) => (i === on.currentPlayer ? { ...p, fortune } : p)),
+    };
+    return { state, topo };
+  }
+
+  run('值 ∈ {>100, 101, 50, 0, 负} ⇒ 不掷：整场结算 rngState 原样', () => {
+    for (const v of [200, 101, 50, 0, -1]) {
+      const env = setup(v);
+      if (env === null) return; // 这张图没有命運格
+      const after = reduce(env.state, { type: 'settle' }, env.topo);
+      expect(after.lastEvent?.kind).toBe('fortune');
+      expect(after.lastEvent?.id).toBe(2); // 确实抽到了探针事件
+      expect(after.rngState, `fortune=${v} 时不应消耗随机数`).toBe(env.state.rngState);
+    }
+  });
+
+  run('值 = 75（与 100）⇒ 恰好前进一次（手工推一步作真值）', () => {
+    for (const v of [75, 100]) {
+      const env = setup(v);
+      if (env === null) return;
+      const rng = new WatcomRng();
+      rng.setState(env.state.rngState);
+      rng.next(); // 唯一的那一次
+      const after = reduce(env.state, { type: 'settle' }, env.topo);
+      expect(after.lastEvent?.id).toBe(2);
+      expect(after.rngState, `fortune=${v} 应恰好前进一步`).toBe(rng.getState());
+    }
   });
 });

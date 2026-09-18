@@ -17,6 +17,15 @@ import type { Player } from '../state/types.ts';
 /**
  * 每个特殊格对应的原版处理函数（= 状态机的分派名）。
  *
+ * ★ 落点分派器是 `0x41982d`，17 路跳表在 `0x4197e9`，索引 = `[node+0x24] & 0xff`。
+ *   逐项实测（通道 2 `rich4-spec/tests/test_event_square_dispatch.py` 66/66）：
+ *   `[9] 樂透 0x41b17a`、`[10] 得50點 0x41b184`、`[11] 得30點 0x41b21e`、
+ *   `[12] 得10點 0x41b2a3`、`[13] **抽卡** 0x41b302`、`[14] 銀行 0x41b396`、
+ *   `[15] 百貨 0x41b3b9`、`[16] 魔法屋 0x41b3cb`。
+ *   ⚠️ 得点三档是 **10/11/12**（`0x41b184`/`0x41b21e`/`0x41b2a3`），不是 9/10/11。
+ *   ⚠️ `0x41b211`（13 字节）**不是函数**，只是 `0x41b184` 尾部的
+ *   `call player_say / jmp 尾声` 退出块（`rich4dis.py` 按 call 目标切出来的碎片）。
+ *
  * ★ 2026-09-17：**16 种全部已接** —— 先前那些 ⏳（「待子系统」）是分阶段落地时
  *   留下的记号；随新聞/命運事件表、保釋窗、小游戏、樂透、銀行、百貨、魔法屋
  *   陆续接上，现在没有待办项。落点跳表的逐条 VA 见 `docs/known-deviations.md`
@@ -91,9 +100,9 @@ export const POINTS_AWARD: Readonly<Record<number, number>> = {
  * ⚠️ 原版用 `add word`，`points` 是 **uint16**，超过 65535 会**回绕**。
  * 按 C-FID-4，此行为原样保留，不做饱和处理。
  */
-export function addPoints(current: number, delta: number): number {
-  return (current + delta) & 0xffff;
-}
+// ★ 點券是 **16 位字段**，实现搬到 `rules/points.ts`（那里有全 exe 38 处访问的宽度普查）。
+//   这里保留 re-export：既有调用方与测试的 import 路径不变。
+export { addPoints } from './points.ts';
 
 /** 特殊格结算的产出 */
 export interface SpecialOutcome {
@@ -106,6 +115,16 @@ export interface SpecialOutcome {
   rngState: number;
   /** 该格尚未实现，需要留待对应子系统 */
   unimplemented: boolean;
+  /**
+   * ★ **得５０點**那一格选中的台词下标（0 或 1）。
+   *
+   * @source `0x0041b1f8`：`call 0x456f2d / and eax,1` →
+   *   `mov ecx, [角色*0x6C + eax*4 + 0x48084a]`（角色台词表的事件 0／1）→ `player_say`。
+   * ★ **只有 50 點这一档掷**（`0x0041b184`）；30 點（`0x0041b21e`）与
+   *   10 點（`0x0041b2a3`）两条路径里**没有** `call rand`。
+   * 表现层按它播/显示台词；core 的职责是**按原版把随机数用掉**。
+   */
+  phraseIndex?: number;
 }
 
 /**
@@ -138,8 +157,29 @@ export function settleSpecialSquare(
       // 公園落地无效果 —— 这是原版行为，不是缺漏
       return base;
 
-    case 'points':
-      return { ...base, pointsDelta: POINTS_AWARD[specialKind] ?? 0 };
+    case 'points': {
+      const delta = POINTS_AWARD[specialKind] ?? 0;
+      // ★ 只有 **50 點** 这一档消耗一次随机数（选台词）。
+      //   @source 0x0041b1f8 `call 0x456f2d` / `and eax,1`
+      //     30 點 `0x0041b21e` 与 10 點 `0x0041b2a3` 两条桩里都没有 `call rand`。
+      //
+      // ★★ 2026-09-19（第 94 条，通道 2：`rich4-spec/tests/test_points_squares.py` 18/18）：
+      //   三档**都说/不说台词**这件事也钉住了 ——
+      //     50 點：`player_say(玩家, 0, 角色表事件 0 或 1)`（表基址 `0x48084a`，用 `rand&1` 选）
+      //     30 點：`player_say(玩家, 0, 角色表事件 **2**)`（`0x480852 − 0x48084a = 8` ⇒ **固定 idx 2**、不掷）
+      //     10 點：**一句都不说**（`0x41b2fd` 直接 `jmp` 尾声）
+      //   ⇒ 30 點必须交出 `phraseIndex = 2`，否则表现层会漏掉那句（此前就是漏的）。
+      if (specialKind === SPECIAL_KIND.POINTS_30) {
+        return { ...base, pointsDelta: delta, phraseIndex: 2 };
+      }
+      if (specialKind !== SPECIAL_KIND.POINTS_50) {
+        return { ...base, pointsDelta: delta };
+      }
+      const rng = new WatcomRng();
+      rng.setState(rngState);
+      const phraseIndex = rng.next() & 1;
+      return { ...base, pointsDelta: delta, phraseIndex, rngState: rng.getState() };
+    }
 
     case 'card': {
       const rng = new WatcomRng();

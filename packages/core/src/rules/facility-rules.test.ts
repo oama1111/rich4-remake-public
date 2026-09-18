@@ -32,7 +32,8 @@ import { reduce, type MapTopology } from '../state/reduce.ts';
 import { FACILITY_TYPE_MIN } from './land.ts';
 import { RELEASE_PENDING } from './blocking.ts';
 import { toolCount } from './tools.ts';
-import { WHO_PLAYS_HUMAN, type GameState } from '../state/types.ts';
+import { WHO_PLAYS_HUMAN, WHO_PLAYS_RELOCATED, type GameState } from '../state/types.ts';
+import { evaluateTurnStart } from './turn-start.ts';
 import { NPC } from './npc-actions.ts';
 import { runNpc, spyTollAt } from './npc-walk.ts';
 import { releaseNpc } from './special-actors.ts';
@@ -168,6 +169,9 @@ const topo: MapTopology = {
   facilities: [
     makeFacility({
       id: FAC_ID,
+      // ★ 第 88 条起设施的坐标有了读者（住店的贴图位置），给个与节点不同的值
+      x: 700,
+      y: 400,
       landPrice: 3000,
       housePrice: 1500,
       rateByLevel: [1500, 1000, 2000, 4000, 8000, 16000],
@@ -345,6 +349,76 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     expect(r.players[0]!.totalWinterSleepDays).toBe(days);
     // 本月支出 = 住宿費（pay_money 已累计）+ 那笔 2000×天×物價 的損失记账
     expect(r.players[0]!.monthlyPaid).toBe(paid + hotelStayLoss(days, 1));
+  });
+
+  it('★★ 住店时**贴图位置**挪到旅館設施坐标上（第 88 条）', () => {
+    // @source `0x41a85e call 0x40d5a5(玩家, 原节点, 設施号)` 支 A：
+    //   `or [player+0x15], 0x20` + 按設施坐标重算朝向 + `call 0x40dd1f`
+    //   ⇒ 由走路例程把 `x/y` 挪到**設施坐标**，`nodeId` **不变**（人还在旅館格上）。
+    //   通道 2 证据：`rich4-spec/tests/test_relocate_to_facility.py`（22/22）。
+    const s = othersFacility(FACILITY_TYPE.hotel, 1);
+    const fac = topo.facilities!.find((f) => f.id === FAC_ID)!;
+    const r = reduce(s, { type: 'settle' }, topo);
+    const guest = r.players[0]!;
+    expect(guest.blocking.inHotel).not.toBe(0);
+    expect([guest.xpos, guest.ypos]).toEqual([fac.x, fac.y]);
+    // 所在格**没变**（原版支 A 一个字都不写 nodeId）
+    expect(guest.nodeId).toBe(s.players[0]!.nodeId);
+    // 而旅館格的坐标与設施坐标确实不同 —— 这正是这条测试的意义
+    const node = topo.nodes[guest.nodeId - 1]!;
+    expect([node.x, node.y]).not.toEqual([fac.x, fac.y]);
+  });
+
+  it('★★ 住店置「位置被外力挪过」（`+0x15 \|= 0x20`），并在**自己的回合边界**上被消费（第 92 条）', () => {
+    // @source `0x40d5a5` 支 A/B **两支都置 0x20**（通道 2：`test_relocate_to_facility.py` 22/22）。
+    // 它的规则后果在回合开始判定 `0x40c912`：
+    //   `dword[+0x32] != 0 && (who & 0x30)` ⇒ `call 0x40dd1f`（auto_move）
+    //   **而不显示「住宿中還剩 N 天」**（通道 2：`test_turn_start.py` §C/§D）。
+    // 消费点：原版 `0x418ebd` 的「被阻碍」支 `and byte [player+0x15], 0xf`，
+    // 判的是**当班者**（推进游标之前）⇒ 本引擎放在 `endTurn` 给离场者清。
+    const s = othersFacility(FACILITY_TYPE.hotel, 1);
+    const r = reduce(s, { type: 'settle' }, topo);
+    expect(r.players[0]!.whoPlays & WHO_PLAYS_RELOCATED).toBe(WHO_PLAYS_RELOCATED);
+    expect(r.players[1]!.whoPlays & WHO_PLAYS_RELOCATED, '别人不该被带上').toBe(0);
+    // 可观察后果：这一位在回合开始判定里被判成 `special`（原版走 auto_move、不印状态栏文字）
+    expect(evaluateTurnStart(r.players[0]!).blockedBy).toBe('special');
+    expect(evaluateTurnStart(r.players[0]!, true).raw).toBe(0);
+    // 他自己的回合边界上一把清掉
+    const after = reduce({ ...r, phase: 'turnEnd', currentPlayer: 0 }, { type: 'endTurn' }, topo);
+    expect(after.players[0]!.whoPlays & WHO_PLAYS_RELOCATED).toBe(0);
+    // 清掉之后，状态栏文字照旧（住宿中）
+    expect(evaluateTurnStart(after.players[0]!).blockedBy).toBe('inHotel');
+  });
+
+  it('★★ 住店结束那一回合的收尾：贴图位置回到旅館格（第 88 条）', () => {
+    // 与关押同源：释放时置 `+0x15 |= 0x10`（`0x40d6be`），下一回合整回合跳过，
+    // 本引擎在那一回合的**收尾**把 x/y 同步回所在格（原版由走路例程逐帧走回去）。
+    const s = othersFacility(FACILITY_TYPE.hotel, 1);
+    const r = reduce(s, { type: 'settle' }, topo);
+    const fac = topo.facilities!.find((f) => f.id === FAC_ID)!;
+    const ready: GameState = {
+      ...r,
+      phase: 'turnStart',
+      currentPlayer: 0,
+      players: r.players.map((p, i) =>
+        i === 0
+          ? { ...p, blocking: { ...p.blocking, inHotel: RELEASE_PENDING }, xpos: fac.x, ypos: fac.y }
+          : p,
+      ),
+    };
+    // 先走一天：把 0x80 变成"释放 + 置走回棋盘标记"。
+    // ★ 递减的是**新**当前玩家（原版 `0x418f95` 先 ++ 游标）⇒ 从 1 号出发，0 号才是"下一位"
+    const flagged = reduce({ ...ready, phase: 'turnEnd', currentPlayer: 1 }, { type: 'endTurn' }, topo);
+    const guest = flagged.players[0]!;
+    expect(guest.whoPlays & 0x10).toBe(0x10);
+    const walkedBack = reduce(
+      { ...flagged, phase: 'turnStart', currentPlayer: 0 },
+      { type: 'startTurn' },
+      topo,
+    );
+    const node = topo.nodes[guest.nodeId - 1]!;
+    expect([walkedBack.players[0]!.xpos, walkedBack.players[0]!.ypos]).toEqual([node.x, node.y]);
+    expect(walkedBack.players[0]!.blocking.inHotel).toBe(0);
   });
 
   it('轉盤消耗随机数，同一状态重放结果一致（C-DET-4）', () => {

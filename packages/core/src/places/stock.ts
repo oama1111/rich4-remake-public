@@ -38,6 +38,18 @@ export interface StockHolding {
  *   +12 是**永不变的参考价**（均值回归的锚），+16 是**今日开盘**，
  *   +20 是**今日收盘**，也是买卖与估值唯一取用的那个。
  */
+/**
+ * `stock_info +8/+10` 两格是 **u16**（原版一律 `add word` / `sub word`）⇒ **会回绕**。
+ *
+ * ★ 差分实证（`rich4-spec/tests/test_sell_stock.py`，原版真码）：
+ *   `f10 = 65530` 时卖 300 股，原版得到 **294**（65530+300 = 65830 回绕），
+ *   而不是 65830。按 C-FID-4「按原样保留、不做饱和」，这里照抄 `& 0xffff`
+ *   （负数也自然按补码回绕，与 `sub word` 一致）。
+ */
+export function u16(x: number): number {
+  return x & 0xffff;
+}
+
 export interface StockState {
   /** 当前股价（收盘）@source stock_info +20 (float) */
   price: number;
@@ -154,7 +166,12 @@ export function buyStock(
       player: { ...player, moneyInBank: player.moneyInBank - cost },
       holding: recalcAvgCost(holding, shares, cost),
       // ★ 只有柜台买入才减流通量 @source sub word [+8], si / sub word [+10], si
-      stock: { ...stock, shares: stock.shares - shares, f10: stock.f10 - shares },
+      // ★ u16：原版 `sub word [+8], si` / `sub word [+10], si` ⇒ 回绕
+      stock: {
+        ...stock,
+        shares: u16(stock.shares - shares),
+        f10: u16(stock.f10 - shares),
+      },
       amount: cost,
       commercialSharesTaken: 0,
     };
@@ -201,6 +218,11 @@ export function sellStock(
   shares: number,
   destination: SellDestination = 'bank',
 ): TradeResult {
+  // ⚠️ **有意偏离（护栏）**：原版 `_rich4_sell_stock` **不校验、不夹** ——
+  //   超卖会让持股变成负数、成本也**不清**（实测：持 1000 卖 1500 → 持股 −500、
+  //   成本仍 15、进账仍按 1500×价 算）。见 `rich4-spec/tests/test_sell_stock.py` §2。
+  //   当前所有调用方（柜台 UI / AI / 破产清算 `liquidateStocks`）都传 `<= 持股`，
+  //   走不到这里；保留护栏以免一个上游 bug 把负数持股写进存档。
   if (shares <= 0 || holding.amount <= 0) {
     return { player, holding, stock, amount: 0, commercialSharesTaken: 0 };
   }
@@ -216,7 +238,13 @@ export function sellStock(
         : player,
     // @source jne loc_00428e5b / mov dword [+4], edx（清仓时 avgCost = 0）
     holding: { amount: remaining, avgCost: remaining === 0 ? 0 : holding.avgCost },
-    stock: { ...stock, shares: stock.shares + sold, f10: stock.f10 + sold },
+    // ★ u16：原版 `add word [+8], cx` / `add word [+10], cx`（只加 cx = 低 16 位）
+    //   注意 amount 与计数器口径不同 ⇒ 见 test_sell_stock.py §4
+    stock: {
+      ...stock,
+      shares: u16(stock.shares + sold),
+      f10: u16(stock.f10 + sold),
+    },
     amount: proceeds,
     commercialSharesTaken: 0,
   };

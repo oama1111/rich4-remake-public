@@ -11,7 +11,14 @@
  *   见 `known-deviations.md` Q-TURN-1 §6。
  */
 import { describe, expect, it } from 'vitest';
-import { WALK_SPEED_PX_PER_TICK, framesFor, tweenTickCount } from './tween.ts';
+import {
+  WALK_SPEED_PX_PER_TICK,
+  framesFor,
+  tweenTickCount,
+  tweenTickExact,
+  walkFramesFor,
+  walkTweenFor,
+} from './tween.ts';
 
 describe('WALK_SPEED_PX_PER_TICK —— 照 exe 的速度表', () => {
   it('★ 表就是 [8, 12, 16, 8]（走路/機車/汽車/船）@source VA 0x004749d8', () => {
@@ -51,6 +58,47 @@ describe('tweenTickCount —— 照 exe 的 tick 数公式', () => {
   });
 });
 
+describe('★ 走子逐拍位置 —— 与原版同一套（T-WALK-1 已修）', () => {
+  it('★★ 除数用**未截断**的 N_f，末拍吸附落点 @source 0x0040c2ae / 0x0040c3ec', () => {
+    // 通道 2 实测（rich4-spec/tests/test_walk_step.py §F）：100 px、走路 8 px/拍
+    //   ⇒ N_f = 12.5、共 12 拍、每拍 8.0 px（108/116/…/188），第 12 拍吸附 200。
+    expect(tweenTickExact(100, 0, 0)).toBeCloseTo(12.5, 9);
+    expect(tweenTickCount(100, 0, 0)).toBe(12);
+    const frames = walkFramesFor({ x: 100, y: 100 }, { x: 200, y: 100 }, 12, 12.5);
+    expect(frames).toHaveLength(12);
+    expect(frames[0]!.x).toBeCloseTo(108, 9);      // 100 + 8.0（不是 108.33）
+    expect(frames[10]!.x).toBeCloseTo(188, 9);     // 第 11 拍
+    expect(frames[11]!.x).toBe(200);               // ★ 末拍吸附
+  });
+
+  it('★ 特殊态（被抬走/走回棋盘）同样按 dist × 0.125 的**未截断**值走', () => {
+    // test_walk_step.py §H：(300,100) → (200,160) 特殊支 ⇒ N_f = 14.577、14 拍
+    const dist = Math.hypot(-100, 60);
+    expect(tweenTickExact(-100, 60, 0, true)).toBeCloseTo(dist * 0.125, 9);
+    const ticks = tweenTickCount(-100, 60, 0, true);
+    const frames = walkFramesFor({ x: 300, y: 100 }, { x: 200, y: 160 }, ticks,
+                                 tweenTickExact(-100, 60, 0, true));
+    expect(ticks).toBe(14);
+    expect(frames[0]!.x).toBeCloseTo(300 - 100 / (dist * 0.125 * 8) * 8, 6);
+    expect(frames[0]!.x).toBeGreaterThan(292);
+    expect(frames[0]!.x).toBeLessThan(294);       // exe 截断后是 293
+    expect(frames[frames.length - 1]).toEqual({ x: 200, y: 160 });
+  });
+
+  it('极端短距离（N_f < 1 ⇒ 只 1 拍）也吸附到终点', () => {
+    const frames = walkFramesFor({ x: 0, y: 0 }, { x: 3, y: 0 }, 1, 0.375);
+    expect(frames).toEqual([{ x: 3, y: 0 }]);
+  });
+
+  it('exactTicks 非法（0 / NaN）时退回 ticks，不产生 NaN 坐标', () => {
+    for (const bad of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const frames = walkFramesFor({ x: 0, y: 0 }, { x: 10, y: 0 }, 2, bad);
+      expect(frames.every((f) => Number.isFinite(f.x))).toBe(true);
+      expect(frames[1]).toEqual({ x: 10, y: 0 });
+    }
+  });
+});
+
 describe('framesFor —— 线性等分', () => {
   it('★ 最后一帧**正好落在终点**（原版 curX = from + N 步 = to）', () => {
     const frames = framesFor({ x: 10, y: 20 }, { x: 90, y: 20 }, 6);
@@ -82,5 +130,39 @@ describe('framesFor —— 线性等分', () => {
 
   it('原地不动也要 1 帧', () => {
     expect(framesFor({ x: 5, y: 5 }, { x: 5, y: 5 }, 1)).toHaveLength(1);
+  });
+});
+
+describe('★★ walkTweenFor：走一格 / 「走回棋盘」两种位移补间（第 86/87 条）', () => {
+  const nodeAt = (id: number) =>
+    id === 12 ? { x: 1248, y: 1583 } : id === 7 ? { x: 768, y: 1008 } : undefined;
+  const P = (nodeId: number, xpos: number, ypos: number) => ({ nodeId, xpos, ypos });
+  const st = (p: ReturnType<typeof P>) => ({ currentPlayer: 0, players: [p] });
+
+  it('走一格：起终点 = `lastNodeId`/`nodeId` 两格', () => {
+    expect(
+      walkTweenFor('step', st(P(7, 768, 1008)), st(P(12, 1248, 1583)), nodeAt),
+    ).toEqual({ player: 0, from: { x: 768, y: 1008 }, to: { x: 1248, y: 1583 } });
+  });
+
+  it('没真的挪窝（被阻碍）⇒ 不起补间', () => {
+    expect(walkTweenFor('step', st(P(12, 1248, 1583)), st(P(12, 1248, 1583)), nodeAt)).toBeNull();
+  });
+
+  it('★★ 「走回棋盘」：x/y 从綠島回填到監獄格 ⇒ 起终点就是这两个坐标', () => {
+    // 綠島（景观记录 2）= (1817,1960)、監獄格 12 = (1248,1583)
+    const t = walkTweenFor('startTurn', st(P(12, 1817, 1960)), st(P(12, 1248, 1583)), nodeAt);
+    expect(t).toEqual({ player: 0, from: { x: 1817, y: 1960 }, to: { x: 1248, y: 1583 } });
+  });
+
+  it('startTurn 但 x/y 没变（普通开局）⇒ 不起补间', () => {
+    expect(
+      walkTweenFor('startTurn', st(P(12, 1248, 1583)), st(P(12, 1248, 1583)), nodeAt),
+    ).toBeNull();
+  });
+
+  it('别的 action 一律不起补间', () => {
+    expect(walkTweenFor('rollDice', st(P(12, 1817, 1960)), st(P(12, 1248, 1583)), nodeAt)).toBeNull();
+    expect(walkTweenFor('endTurn', st(P(12, 1817, 1960)), st(P(12, 1248, 1583)), nodeAt)).toBeNull();
   });
 });

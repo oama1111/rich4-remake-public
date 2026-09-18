@@ -28,6 +28,7 @@
 
 import type { Player } from '../state/types.ts';
 import { OBJECT_SLOT_BASE, type ConfinementKind } from './confinement.ts';
+import { addPoints } from './points.ts';
 
 /**
  * 关在 4..7 号槽里的四个 NPC。
@@ -229,10 +230,25 @@ export interface BailResult {
  *
  * @source VA 0x0043d558 起：
  * ```asm
- * sub word [访客 + 0x30], 赎金
+ * sub word [访客 + 0x30], 赎金          ; ★ 監獄这一条是 **16 位**减
  * if (目标 < 4) { byte [目标 + 0x34] = 0x80 ; 占用表[目标] = 0 }
- * else          release(目标)
+ * else          release(目标)            ; 占用表由 release 自己清
  * ```
+ *
+ * ★★ 通道 2 补两条（2026-09-19 第 93 条，`rich4-spec/tests/test_bail.py` 37/37）：
+ * ① **占用表的分工**：目标 < 4（玩家）时**本函数**清 `占用表[目标]`；
+ *    目标 ≥ 4（替身）时本函数**一个字都不写**，清表在 `0x43d7bf`/`0x43ee6e` 里面。
+ *    本引擎把「放人」折进 `bail` 这个 action，两支都由 `r.occupancy` 清掉 ⇒ 终态相同。
+ * ② **两段的扣款都是 16 位**：監獄 `0x43d55f` 与醫院 `0x43ec0b` 都是 `66 29 b2 …`
+ *    = `sub word [..+0x30], si`（逐字节同形）。
+ *    ⚠️ 第 93 条曾把醫院那条误报成 `sub dword`（**起点错一格**：`0x43ec04` 的
+ *    `imul edx, [0x49910c], 0x68` 正好 7 字节，`66` 在 `0x43ec0b`），并据此登记了
+ *    不存在的原版瑕疵 Q-BAIL-1 —— 第 94 条已撤回。
+ *
+ * ★ 附：點券是 **16 位字段**（全 exe 38 处访问全是 `word`，机械普查
+ *   `rich4-spec/tests/test_points_field.py`）⇒ 写點券一律走 `rules/points.ts` 的
+ *   `addPoints`（`& 0xffff`）。本函数里的 `points: p.points - cost` 已带「付得起」前置，
+ *   但下面 `applyBail` 仍走 `addPoints` 以保持同一条不变量。
  */
 export function applyBail(
   players: readonly Player[],
@@ -258,7 +274,9 @@ export function applyBail(
 
   const field = kind === 'prison' ? 'inPrison' : 'inHospital';
   const nextPlayers = players.map((p, i) => {
-    if (i === visitor) return { ...p, points: p.points - cost };
+    // ★ 點券是 16 位字段 ⇒ 一律走 `addPoints`（回绕）。这里有「付得起」前置，
+    //   故与直接相减在可达状态下等价，但保持同一条不变量。
+    if (i === visitor) return { ...p, points: addPoints(p.points, -cost) };
     // @source byte [目标 + 0x34/0x35] = 0x80
     if (i === slot && slot < OBJECT_SLOT_BASE) {
       return { ...p, blocking: { ...p.blocking, [field]: RELEASE_FLAG } };

@@ -84,4 +84,16 @@ describe('失败与纯净性', () => {
     applyAveragePoorCard(ps, 0, { kind: 'player', index: 1 });
     expect(JSON.stringify(ps)).toBe(snap);
   });
+
+  it('★★ 求和按 32 位回绕（通道 2 证据：两人各 0x7FFFFFFF ⇒ −2，avg = −1）', () => {
+    // @source `add edx, esi` 32 位加法 ⇒ 回绕；差值 `sub edx, esi` 也回绕
+    //   ⇒ 目标 0x7FFFFFFF 判为「被拉低」，delta = 0x80000000/100 = −21474836
+    const r = applyAveragePoorCard(withCash([0x7fffffff, 0x7fffffff, 0, 0]), 0, {
+      kind: 'player', index: 1,
+    });
+    expect(r.average).toBe(-1);
+    expect(r.players[0]!.cash).toBe(-1);
+    expect(r.players[1]!.cash).toBe(-1);
+    expect(r.hostilityDeltas).toEqual([{ from: 1, to: 0, delta: -21_474_836 }]);
+  });
 });

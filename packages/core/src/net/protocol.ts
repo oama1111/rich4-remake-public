@@ -231,7 +231,8 @@ export function roomMapId(room: RoomInfo | null | undefined): number {
  *
  * 只取「规则可见」的量：钱、位置、归属、回合。不含渲染用的临时量。
  */
-export function stateFingerprint(state: {
+export function stateFingerprint(
+  state: {
   turnCount: number;
   currentPlayer: number;
   day: number;
@@ -267,7 +268,26 @@ export function stateFingerprint(state: {
    *   而校验和照样相等。
    */
   objects: readonly { type: number; nodeId: number; state: number; attached: number }[];
-}): string {
+  /**
+   * 惡人段的游标 —— 「这一輪的惡人还没走完」是**规则相位**，不是渲染量。
+   *
+   * ★ `state/types.ts` 上那条注释早就写明「**要进**指纹」（两端在
+   *   「游标停在第几个惡人」上不一致就是规则分歧），但实现里一直没接。
+   */
+  pendingNpcSlots?: readonly number[];
+  /**
+   * 当前**待决交互** —— 落在特殊格上要求玩家做什么，是规则的一部分。
+   *
+   * ⚠️ 先前**不在**指纹里：两端若一个挂著「買地」、另一个已经答完，
+   *   校验和照样相等。用**规范化 JSON**（键排序）序列化，不依赖 `Object.keys` 顺序
+   *   （C-DET-5）。
+   */
+  pending?: unknown;
+  /** 排队中的后续拍卖（一次流程里连开多场时用）—— 同上，是规则状态 */
+  pendingQueue?: readonly unknown[];
+  },
+  opts: { rng?: boolean } = {},
+): string {
   const parts: (string | number)[] = [
     state.turnCount,
     state.currentPlayer,
@@ -275,8 +295,13 @@ export function stateFingerprint(state: {
     state.month,
     state.year,
     state.priceIndex,
-    state.rngState,
   ];
+  // ★★ `rng: false` 是给**与原版对轨迹**（通道 3）用的：
+  //   原版的 PRNG 被表现层共用（台词中间档 3 处 + 事件 18/17 + 拍卖窗口动画 4 处
+  //   按帧触发），无头引擎不可能逐位对齐 ⇒ 带着 `rngState` 比对只会一直报**假失步**。
+  //   复刻↔复刻（联机）必须保留它：那是 desync 的早期信号。
+  //   见 `rich4-spec/docs/verification.md` 通道 3、`docs/deviations/T-052.md`。
+  if (opts.rng !== false) parts.push(state.rngState);
   for (const p of state.players) {
     parts.push(p.index, p.cash, p.moneyInBank, p.loan, p.nodeId, p.whoPlays);
   }
@@ -293,7 +318,38 @@ export function stateFingerprint(state: {
   for (const row of state.holdings) for (const h of row) parts.push(h.amount);
   parts.push('|');
   for (const o of state.objects) parts.push(o.nodeId, o.state, o.attached);
+  // ★ 规则相位的三项（第 50 条补）：游标、待决交互、排队的拍卖
+  parts.push('|');
+  for (const slot of state.pendingNpcSlots ?? []) parts.push(slot);
+  parts.push('|', canonicalJson(state.pending ?? null));
+  parts.push('|', canonicalJson(state.pendingQueue ?? []));
   return fnv1a(parts.join(','));
+}
+
+/**
+ * **规范化 JSON** —— 键按字典序，递归。
+ *
+ * ⚠️ 不能直接 `JSON.stringify`：那依赖 `Object.keys` 的枚举顺序，而
+ * C-DET-5 明令禁止把协议正确性押在它上面。指纹里那两项（`pending` /
+ * `pendingQueue`）是**联合类型对象**，两端由同一串 action 生成，
+ * 但键序不保证一致 —— 规范化之后「同状态必同指纹」才成立。
+ *
+ * 数组保序（顺序本身是语义）；`undefined` 按 JSON 惯例丢掉。
+ */
+function canonicalJson(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  const obj = value as Record<string, unknown>;
+  // ★ C-DET-5 禁的是「**依赖** `Object.keys` 的枚举顺序」。这里恰好相反：
+  //   取出键名后**先排序再用**，正是不让枚举顺序影响结果 —— 所以是本规则
+  //   的定向豁免，不是绕过。
+  // eslint-disable-next-line no-restricted-properties -- 见上：排序后使用，与 C-DET-5 同向
+  const keys = Object.keys(obj).sort();
+  const body = keys
+    .filter((k) => obj[k] !== undefined)
+    .map((k) => JSON.stringify(k) + ':' + canonicalJson(obj[k]));
+  return '{' + body.join(',') + '}';
 }
 
 /**

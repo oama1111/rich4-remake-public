@@ -39,6 +39,34 @@ describe('洗牌', () => {
     expect(a.getState()).toBe(b.getState());
   });
 
+  it('★★ 与**原版机器码**逐项一致（通道 2 固定序列，tests/test_deck_shuffle.py）', () => {
+    // 原版 `fcn_0044baea` 用 `k = rand() % 剩余数`（`idiv` 的**余数**）做「选择采样」。
+    // 下面这条序列喂进 exe（Unicorn）后得到的排列 = 这里期望的值；
+    // 本用例让 `below(n)` 直接返回 `SEQ[i] % n` ⇒ 两个实现必须给出同一个排列。
+    const SEQ = [
+      12345, 30000, 7, 19999, 32767, 1, 25000, 0, 4096, 5555, 1234, 31000,
+      77, 8888, 22222, 3, 16384, 999, 27182, 31415, 6, 4242, 16180, 2718,
+      9001, 20000, 13, 3000, 12345, 32767, 100, 5000, 777, 26000,
+      33333, 2, 18000,
+    ];
+    let i = 0;
+    const fake = { below: (n: number): number => SEQ[i++]! % n } as unknown as WatcomRng;
+    expect(shuffleDeck(fake, FORTUNE_DECK_SIZE)).toEqual([
+      24, 12, 7, 8, 35, 1, 18, 0, 11, 17, 28, 14, 4, 16, 9, 6, 13, 36,
+      27, 19, 21, 5, 30, 10, 23, 31, 15, 2, 32, 34, 22, 25, 26, 3, 20, 29, 33,
+    ]);
+    expect(i).toBe(FORTUNE_DECK_SIZE); // ★ 恰好 37 次
+  });
+
+  it('★ 恒定返回值 ⇒ `k = 32767 % 剩余数`（余数随剩余数变）也与原版一致', () => {
+    // 同一条序列喂了 37 次恒定 32767，exe 给出的排列如下（见通道 2 用例）
+    const fake = { below: (n: number): number => 32767 % n } as unknown as WatcomRng;
+    expect(shuffleDeck(fake, FORTUNE_DECK_SIZE)).toEqual([
+      22, 7, 8, 28, 35, 36, 0, 10, 32, 11, 21, 12, 25, 13, 24, 16, 14, 15,
+      23, 17, 19, 34, 18, 20, 26, 27, 31, 29, 30, 33, 1, 3, 5, 9, 4, 6, 2,
+    ]);
+  });
+
   it('同种子产出相同排列', () => {
     expect(shuffleDeck(new WatcomRng(42), 36)).toEqual(shuffleDeck(new WatcomRng(42), 36));
   });

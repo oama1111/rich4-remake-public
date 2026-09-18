@@ -111,6 +111,7 @@ import type { GameState } from '@rich4/core';
 import { FONT_FAMILY, font } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { playVoiceCode } from './voice-sink.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type DrawSprite = (
@@ -544,10 +545,10 @@ export function anmDone(now: number, start: number, nFrames: number): boolean {
  * 两个主持人的脸是**贴片拼的**：`0x48c350` 一个 dword 当调色盘，
  * 低 4 位 = 当前在动的那一个槽，其余每个 4 位段 = 该槽的帧号。
  *
- * | 槽 | 贴片矩形（**宽度是开区间**）| 帧表（图号）| 抽中的概率 |
+ * | 槽 | 贴片矩形 (x0,y0)-(x1,y1) | 帧表（图号）| 抽中的概率 |
  * |---|---|---|---|
- * | 1 | 右眼 (512,510..562,535) | 8,7,8,10 | 1/64 @source 0x00431117 |
- * | 2 | 左眼 (52,524..102,548) | 16,17,16,15 | 1/64 @source 0x00431138 |
+ * | 1 | 右眼 (512,**102**)-(562,**118**) | 8,7,8,10 | 1/64 @source 0x00431117 |
+ * | 2 | 左眼 (52,**89**)-(102,**115**) | 16,17,16,15 | 1/64 @source 0x00431138 |
  * | 3 | 右眼变体 | 9,10 | 2/64 @source 0x00431141 |
  * | 4 | 左眼变体 | 14,15 | 2/64 @source 0x0043114a |
  *
@@ -557,8 +558,22 @@ export function anmDone(now: number, start: number, nFrames: number): boolean {
  * ★ 原来的表把**前两项对调**了：槽 1（低 4 位 = 1）读的是表 +3 = `8,7,8,10`，
  *   槽 2（低 4 位 = 2）读的是表 +7 = `16,17,16,15` —— 本模块按这个来。
  *
- * 矩形四角是**闭区间的端点**（`x1 − x0 + 1` 才是宽度），@source 0x00431157 的
- * `0x200/0x66/0x232/0x76`（右眼）、0x00431222 的 `0x34/0x59/0x66/0x73`（左眼）。
+ * ⚠️ 2026-09-18 订正：上表先前的 y 写成 `510..535` / `524..548`（那是把
+ *   `0x66`/`0x59` 当十进制 %d 之类读出来的错值）。exe 逐字：
+ * ```asm
+ * 00431166  mov  dword ptr [esp + 0x64], 0x200   ; x0 = 512
+ * 0043116e  mov  dword ptr [esp + 0x68], 0x66    ; y0 = 102
+ * 00431176  mov  dword ptr [esp + 0x6c], 0x232   ; x1 = 562
+ * 0043117e  mov  dword ptr [esp + 0x70], 0x76    ; y1 = 118
+ * 00431231  mov  dword ptr [esp + 0x64], 0x34    ; 左眼 x0 = 52
+ * 00431239  mov  dword ptr [esp + 0x68], 0x59    ; y0 = 89
+ * 00431241  mov  dword ptr [esp + 0x6c], 0x66    ; x1 = 102
+ * 00431249  mov  dword ptr [esp + 0x70], 0x73    ; y1 = 115
+ * ```
+ *   ★ 真正用到的只有**左上角**：`0043119c mov ecx,[esp+0x68] / push ecx`（=y0）
+ *   与 `004311a1 mov edi,[esp+0x68]`（push 之后 = 旧 `[esp+0x64]` = x0）`/ push edi`
+ *   → `call 0x4563f5(dst, src, x0, y0)`；**尺寸由 sprite 记录自带**。
+ *   所以「四角是闭区间端点、宽度 = x1−x0+1」这句**不适用于这两个调用点**。
  */
 export const FACE_SLOT_RECT = {
   right: [0x200, 0x66, 0x232, 0x76],
@@ -678,7 +693,8 @@ export const DRAW_BUBBLE_TEXT = { dx: -0x0a, dy: 0, size: 0x14 } as const;
 /** 气泡里的字（`#NNNN` 语音前缀被吃掉）@source `_rich4_draw_text` VA 0x0044fabc 开头 */
 export function bubbleLines(text: string | null): string[] {
   if (text === null) return [];
-  const body = text.startsWith('#') ? text.slice(5) : text;
+  // ★ 收敛到唯一入口：顺手播 `#NNNN`
+  const body = playVoiceCode(text);
   return body.split('\n').filter((l) => l !== '');
 }
 

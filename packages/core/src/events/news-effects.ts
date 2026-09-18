@@ -15,7 +15,9 @@
 import type { Player } from '../state/types.ts';
 import { NEWS_EVENTS, eventAmount, newsEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
-import { CONFINEMENT_SLOTS, confine } from '../rules/confinement.ts';
+import { CONFINEMENT_SLOTS, sendToConfinement } from '../rules/confinement.ts';
+import type { MapNode, LandscapeInfo } from '../loaders/map.ts';
+import type { MapObject } from '../cards/summon.ts';
 import {
   HISTORY_DAYS,
   applyStockNews,
@@ -27,6 +29,7 @@ import { isAlive } from '../state/types.ts';
 import { blessingMultiplier } from '../rules/blessing.ts';
 import { bankDividend, incomeTax, propertyTax, stockTax } from '../rules/percentage.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
+import { releaseConfinedPlayers } from '../rules/blocking.ts';
 import {
   MUTATE_CLEAR_OWNER,
   MUTATE_DEMOLISH_ONE,
@@ -34,8 +37,22 @@ import {
   mutateLand,
 } from '../cards/monster.ts';
 
+/**
+ * 新聞拆屋类效果尾部的**全场释放** `0x0040dffa()`（见 `rules/blocking.ts`）。
+ * 原版这一步在 `mutate_land`/`mutate_facility` 里，故凡是走这两个函数的新闻
+ * （颱風 / 地震 / 拆屋 / 夷平）都要按 mutate 返回值决定是否放人。
+ */
+function applyRelease(players: Player[], flags: readonly boolean[]): Player[] {
+  return flags.some(Boolean) ? releaseConfinedPlayers(players) : players;
+}
+
 export interface NewsEffectResult {
   players: Player[];
+  /**
+   * 物件表 —— **只有** `prison`/`hospital` 效果里首次关押会换掉它：
+   * 跟班物件要跟着玩家搬进监狱／医院格（`@source 0x43d668 call 0x40fc00`）。
+   */
+  objects: MapObject[];
   pool: number;
   /**
    * 监狱占用表（`0x496b30`，8 槽）／医院占用表（`0x496b60`，8 槽）。
@@ -124,6 +141,16 @@ export interface EffectRng {
 
 export interface NewsEffectContext {
   players: readonly Player[];
+  /**
+   * 物件表 + 节点表 —— **只在 `prison`/`hospital` 效果里用**：原版
+   * `send_to_prison`/`send_to_hospital` 的函数体内含「传送到监狱／医院格 +
+   * 跟班搬家」（`@source 0x43d601`..`0x43d674`），首次关押时玩家会被挪走。
+   * 缺省时**不传送**（只给不关心盘面位置的单元测试用）；`reduce.ts` 必须传。
+   */
+  objects?: readonly MapObject[];
+  nodes?: readonly MapNode[];
+  /** 特殊景观表（首次关押的屏幕坐标取它）—— 见 `rules/confinement.ts` */
+  landscapes?: readonly LandscapeInfo[] | undefined;
   /**
    * ★ **受影响的玩家**，由调用方指定。
    *
@@ -296,6 +323,7 @@ export function applyNewsEffect(
   ctx: NewsEffectContext,
 ): NewsEffectResult {
   let players = [...ctx.players];
+  let objects: MapObject[] = [...(ctx.objects ?? [])];
   let pool = ctx.pool ?? 0;
   let prisonOccupancy = [...(ctx.prisonOccupancy ?? new Array<number>(CONFINEMENT_SLOTS).fill(0))];
   let hospitalOccupancy = [
@@ -303,6 +331,7 @@ export function applyNewsEffect(
   ];
   const base: NewsEffectResult = {
     players,
+    objects,
     pool,
     prisonOccupancy,
     hospitalOccupancy,
@@ -371,6 +400,7 @@ export function applyNewsEffect(
     else hospitalOccupancy = nextTable;
     return {
       players: next,
+      objects,
       pool,
       prisonOccupancy,
       hospitalOccupancy,
@@ -433,10 +463,12 @@ export function applyNewsEffect(
     const inBlast = (e: { x: number; y: number }): boolean =>
       Math.abs(e.x - origin.x) <= TYPHOON_RADIUS && Math.abs(e.y - origin.y) <= TYPHOON_RADIUS;
     const landMutations: LandMutation[] = [];
+    const releaseFlags: boolean[] = [];
     for (const l of lands) {
       if (!inBlast(l)) continue;
       const after = mutateLand(l, MUTATE_DEMOLISH_ONE);
       if (!after.changed) continue;
+      releaseFlags.push(after.releasesConfined);
       landMutations.push({
         id: after.land.id,
         level: after.land.level,
@@ -449,6 +481,7 @@ export function applyNewsEffect(
       if (!inBlast(f)) continue;
       const after = mutateFacility(f, MUTATE_DEMOLISH_ONE);
       if (!after.changed) continue;
+      releaseFlags.push(after.releasesConfined);
       facilityMutations.push({
         id: after.facility.id,
         level: after.facility.level,
@@ -458,6 +491,7 @@ export function applyNewsEffect(
     }
     return {
       ...base,
+      players: applyRelease(base.players, releaseFlags),
       amount: landMutations.length + facilityMutations.length,
       landMutations,
       facilityMutations,
@@ -479,10 +513,12 @@ export function applyNewsEffect(
     if (pick < lands.length) {
       const name = lands[pick]!.name;
       const landMutations: LandMutation[] = [];
+      const releaseFlags: boolean[] = [];
       for (const l of lands) {
         if (l.name !== name) continue;
         const after = mutateLand(l, MUTATE_DEMOLISH_ONE);
         if (!after.changed) continue;
+        releaseFlags.push(after.releasesConfined);
         landMutations.push({
           id: after.land.id,
           level: after.land.level,
@@ -490,13 +526,19 @@ export function applyNewsEffect(
           owner: after.land.owner,
         });
       }
-      return { ...base, amount: landMutations.length, landMutations };
+      return {
+        ...base,
+        players: applyRelease(base.players, releaseFlags),
+        amount: landMutations.length,
+        landMutations,
+      };
     }
     const fac = facilities[pick - lands.length]!;
     const after = mutateFacility(fac, MUTATE_DEMOLISH_ONE);
     if (!after.changed) return { ...base, amount: 0 };
     return {
       ...base,
+      players: applyRelease(base.players, [after.releasesConfined]),
       amount: 1,
       facilityMutations: [
         {
@@ -540,6 +582,7 @@ export function applyNewsEffect(
       if (!after.changed) return { ...base, amount: 0 };
       return {
         ...base,
+        players: applyRelease(base.players, [after.releasesConfined]),
         amount: 1,
         landMutations: [
           { id: after.land.id, level: after.land.level, type: after.land.type, owner: after.land.owner },
@@ -551,6 +594,7 @@ export function applyNewsEffect(
     if (!after.changed) return { ...base, amount: 0 };
     return {
       ...base,
+      players: applyRelease(base.players, [after.releasesConfined]),
       amount: 1,
       facilityMutations: [
         {
@@ -805,6 +849,7 @@ export function applyNewsEffect(
     }
     return {
       players,
+      objects,
       pool,
       prisonOccupancy,
       hospitalOccupancy,
@@ -824,10 +869,33 @@ export function applyNewsEffect(
       const kind = entry.effects.includes('prison') ? 'prison' : 'hospital';
       // ★ 两张表各归各的（先前一律写监狱表，医院的人会记错地方）
       const table = kind === 'prison' ? prisonOccupancy : hospitalOccupancy;
-      const out = confine(players, table, kind, who, days);
+      // ★★ 2026 本轮：还要把**另一张**交给 `confine` —— 首次关押时原版
+      //   `0x40d761` 会把"当前非 0 的那一张"清掉（两道闸），
+      //   否则「住院中被新聞关进监狱」会同时占着医院床位。
+      //   差分证据：rich4-spec/tests/test_confinement_release.py（15/15）。
+      const other = kind === 'prison' ? hospitalOccupancy : prisonOccupancy;
+      // ★ 首次关押还要**传送到监狱／医院格 + 跟班搬家** —— 那是原版
+      //   `send_to_prison`/`send_to_hospital` **函数体内**的事，故走
+      //   `sendToConfinement`（见 rules/confinement.ts 的长注释）。
+      const out = sendToConfinement(
+        players,
+        objects,
+        ctx.nodes ?? [],
+        table,
+        kind,
+        who,
+        days,
+        other,
+        ctx.landscapes,
+      );
       players = out.players;
+      objects = out.objects;
       if (kind === 'prison') prisonOccupancy = out.occupancy;
       else hospitalOccupancy = out.occupancy;
+      if (out.otherOccupancy !== undefined) {
+        if (kind === 'prison') hospitalOccupancy = out.otherOccupancy;
+        else prisonOccupancy = out.otherOccupancy;
+      }
       total = days;
       continue;
     }
@@ -848,6 +916,7 @@ export function applyNewsEffect(
 
   return {
     players,
+    objects,
     pool,
     prisonOccupancy,
     hospitalOccupancy,

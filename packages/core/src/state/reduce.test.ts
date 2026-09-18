@@ -3,11 +3,12 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
+import { WatcomRng } from '../rng/watcom.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { reduce, reduceAll, nextCandidates, nextAlivePlayer } from './reduce.ts';
 import type { MapTopology } from './reduce.ts';
 import type { Action } from './actions.ts';
-import type { GameState, Player } from './types.ts';
+import { WHO_PLAYS_RETURN_TO_BOARD, type GameState, type Player } from './types.ts';
 import { makePlayer as basePlayer } from '../testing/factories.ts';
 import { makeGameState } from '../testing/factories.ts';
 
@@ -141,12 +142,27 @@ describe('回合流程', () => {
     expect(s.rngState).not.toBe(st.rngState);
   });
 
-  it('只有一条路时不消耗随机数', () => {
+  // ★ 簇 C 修复（2026-09-17）：**只有一条路时照样消耗一次随机数**。
+  //   原版 `0x0040c17c test esi,esi / jne 0x40c196` 只判「有没有候选」，
+  //   **不判「有几个」**；只要候选 ≥1 就 `call 0x456f2d`（rand）。
+  //   先前这条测试写的是「不消耗随机数」，把错行为当成了期望值。
+  it('★ 只有一条路时**仍然**消耗一次随机数（原版 0x0040c17e）', () => {
     const st = makeState({ phase: 'moving', stepsRemaining: 2, stepsTotal: 2 });
     st.players[0]!.lastNodeId = 4; // 从 4 来，只能往 2 去
     const s = reduce(st, { type: 'step' }, ring);
-    expect(s.players[0]!.nodeId).toBe(2);
-    expect(s.rngState).toBe(st.rngState);
+    expect(s.players[0]!.nodeId).toBe(2); // 单候选 ⇒ rand()%1 === 0，仍走那一条
+    expect(s.rngState).not.toBe(st.rngState); // ★ 但随机状态必须前进一步
+  });
+
+  it('★ 随机状态恰好前进一次（不是两次、也不是零次）', () => {
+    const st = makeState({ phase: 'moving', stepsRemaining: 2, stepsTotal: 2 });
+    st.players[0]!.lastNodeId = 4;
+    const s = reduce(st, { type: 'step' }, ring);
+    // 用同一颗种子手工推进一步，比对状态是否**正好**等于那一步之后的值
+    const probe = new WatcomRng();
+    probe.setState(st.rngState);
+    probe.next();
+    expect(s.rngState).toBe(probe.getState());
   });
 
   it('★ 死路原路返回，而不是卡住', () => {
@@ -174,56 +190,64 @@ describe('回合流程', () => {
     const st = makeState({ phase: 'moving', stepsRemaining: 2, stepsTotal: 2 });
     const s = reduce(st, { type: 'step' }, blocked);
     expect(s.players[0]!.nodeId).toBe(4);
-    expect(s.rngState).toBe(st.rngState); // 只剩一条，不掷随机
+    // ★ 只剩一条**也**要掷一次（原版只看「有没有候选」，见 pickNextNode 的注释）
+    expect(s.rngState).not.toBe(st.rngState);
   });
 
-  it('endTurn 轮转到下一位在场玩家并递减天数', () => {
+  it('endTurn 轮转到下一位在场玩家并给他递减天数', () => {
+    // ★★ 第 84 条订正：递减的是**新**当前玩家，不是刚走完的这位 ——
+    //   原版 `0x418f95 inc esi` 先把游标 ++，`0x419039 call 0x41c84f` 才用它。
     const st = makeState({ phase: 'turnEnd' });
-    st.players[0]!.blocking.inPrison = 3;
+    st.players[1]!.blocking.inPrison = 3;
     const s = reduce(st, { type: 'endTurn' }, ring);
     expect(s.currentPlayer).toBe(1);
-    expect(s.players[0]!.blocking.inPrison).toBe(2);
+    expect(s.players[1]!.blocking.inPrison).toBe(2);
     expect(s.turnCount).toBe(1);
     expect(s.phase).toBe('turnStart');
   });
 
   it('★ 天数正常递减', () => {
     const st = makeState({ phase: 'turnEnd' });
-    st.players[0]!.blocking.inHospital = 5;
+    st.players[1]!.blocking.inHospital = 5;
     const s = reduce(st, { type: 'endTurn' }, ring);
-    expect(s.players[0]!.blocking.inHospital).toBe(4);
+    expect(s.players[1]!.blocking.inHospital).toBe(4);
   });
 
   it('★ 减到 0 时挂 0x80 待释放，而不是清零', () => {
     const st = makeState({ phase: 'turnEnd' });
-    st.players[0]!.blocking.inPrison = 1;
+    st.players[1]!.blocking.inPrison = 1;
     const s = reduce(st, { type: 'endTurn' }, ring);
-    expect(s.players[0]!.blocking.inPrison).toBe(0x80);
+    expect(s.players[1]!.blocking.inPrison).toBe(0x80);
   });
 
-  it('★ 下一次推进看到 0x80 才真正清零（释放）', () => {
+  it('★ 释放（0x80 那次推进）要清占用表 + 置「走回棋盘」标记', () => {
     const st = makeState({ phase: 'turnEnd' });
-    st.players[0]!.blocking.inPrison = 0x80;
+    st.players[1]!.blocking.inPrison = 0x80;
+    st.prisonOccupancy[1] = 1;
     const s = reduce(st, { type: 'endTurn' }, ring);
-    expect(s.players[0]!.blocking.inPrison).toBe(0);
+    expect(s.players[1]!.blocking.inPrison).toBe(0);
+    expect(s.prisonOccupancy[1]).toBe(0);
+    expect(s.players[1]!.whoPlays & WHO_PLAYS_RETURN_TO_BOARD).toBe(
+      WHO_PLAYS_RETURN_TO_BOARD,
+    );
   });
 
-  it('★ 冬眠/停留也在回合边界递减（0x0041caf4 起，同一个函数的后半段）', () => {
+  it('★ 冬眠/停留也走同一次「新玩家的一天」', () => {
     const st = makeState({ phase: 'turnEnd' });
-    st.players[0]!.blocking.sleeping = 5;
-    st.players[0]!.blocking.stopping = 3;
+    st.players[1]!.blocking.sleeping = 5;
+    st.players[1]!.blocking.stopping = 3;
     const s = reduce(st, { type: 'endTurn' }, ring);
-    expect(s.players[0]!.blocking.sleeping).toBe(4);
-    expect(s.players[0]!.blocking.stopping).toBe(2);
+    expect(s.players[1]!.blocking.sleeping).toBe(4);
+    expect(s.players[1]!.blocking.stopping).toBe(2);
   });
 
-  it('★ 只递减当前玩家（原版传的是 [0x49910c]）', () => {
+  it('★ 只递减**新**当前玩家（原版 `0x419033` 时下标已经 ++ 过）', () => {
     const st = makeState({ phase: 'turnEnd', currentPlayer: 0 });
     st.players[0]!.blocking.inHospital = 5;
     st.players[1]!.blocking.inHospital = 5;
     const s = reduce(st, { type: 'endTurn' }, ring);
-    expect(s.players[0]!.blocking.inHospital).toBe(4);
-    expect(s.players[1]!.blocking.inHospital).toBe(5);
+    expect(s.players[0]!.blocking.inHospital).toBe(5); // 刚走完的这位不动
+    expect(s.players[1]!.blocking.inHospital).toBe(4); // 即将行动的这位走一天
   });
 
   it('出局玩家被跳过', () => {

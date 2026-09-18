@@ -34,6 +34,7 @@ export * from './rules/facility.ts';
 export * from './rules/blocking.ts';
 export * from './rules/confinement.ts';
 export * from './rules/blessing.ts';
+export * from './rules/view.ts';
 export * from './rules/percentage.ts';
 export * from './rules/tools.ts';
 export * from './rules/tool-effects.ts';

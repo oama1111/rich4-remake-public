@@ -45,9 +45,13 @@ describe('★ tickTurnCounters（纯函数）', () => {
 
 describe('★ 接到 endTurn', () => {
   function game(over: Parameters<typeof makePlayer>[0]) {
+    // ★★ 第 84 条订正：`endTurn` 里那一天是给**新**当前玩家走的
+    //   （原版 `0x418f95` 先 ++ 游标、`0x419039` 才递减）⇒ 让 0 号当"下一位"：
+    //   当前玩家设成 1 号，`nextAlivePlayer` 绕回 0 号。
     return makeGameState({
       players: [0, 1].map((i) => makePlayer({ index: i, ...(i === 0 ? over : {}) })),
       phase: 'turnEnd',
+      currentPlayer: 1,
     });
   }
 
@@ -85,7 +89,9 @@ describe('★ 接到 endTurn', () => {
     expect(day1.players[1]!.hostility[0]).toBe(60);
     expect(day1.players[0]!.alliedDays).toBe(RELEASE_PENDING);
     // 下一次轮到 0 号的回合边界：解除
-    const back = { ...day1, currentPlayer: 0, phase: 'turnEnd' as const };
+    // ★ 第 84 条订正：`endTurn` 递减的是**下一位**，所以这里把当前玩家设成 1 号，
+    //   绕回之后 0 号才是"即将行动的这位"（原版 `0x418f95` → `0x419039`）
+    const back = { ...day1, currentPlayer: 1, phase: 'turnEnd' as const };
     const day2 = reduce(back, { type: 'endTurn' }, topo);
     expect(day2.players[0]).toMatchObject({ alliedPlayer: 0, alliedDays: 0 });
     expect(day2.players[1]).toMatchObject({ alliedPlayer: 0, alliedDays: 0 });

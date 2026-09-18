@@ -78,9 +78,9 @@
  * | 类型 | 进填数窗的值 | 上限 | @source |
  * |---|---|---|---|
  * | 股票 | 持有股數 | 持有股數 | 0x00425ea2（`fcn_00453544` 传 `holdings`） |
- * | 地產 | 估值 × 物價 | 估值 × 物價 × 10 | 0x004265f5（`shl 2 / add / add` = ×10） |
- * | 道具 | 市價 | 市價 × 10 | 0x00426af2 |
- * | 卡片 | 市價 | 市價 × 10 | 0x00426f0f |
+ * | 地產 | 估值 × 物價 | 估值 × 物價 × 10 | 市價 `0x004265b9`／`0x004265e5`；×10 `0x00426627`（`shl 2 / add / add`） |
+ * | 道具 | 市價 | 市價 × 10 | 市價 `0x00426af8`（`byte[道具×8+0x47fedf] × 100 × 物價`）；×10 `0x00426b2b` |
+ * | 卡片 | 市價 | 市價 × 10 | 市價 `0x00426f13`（`byte[卡號×8+0x47fdef] × 100 × 物價`）；×10 `0x00426f4d` |
  *
  * 本引擎按卡片要求复用 `dialog.ts` 的 `AmountPage`（框的美术不同，记 `D-BOARD-2`），
  * 并按 `board-screen.ts` 原 stub 的说法把**初始值钉在「市價」**上（`*ListPrice`）。
@@ -909,10 +909,13 @@ export function detailText(
   }
   if (item.kind === LISTING.estate) {
     const e = decodeEstate(item.id);
+    // ★ 顯示的是**挂牌那一刻**的類型与等級（槽 `+0xa`/`+0xb` 的快照），
+    //   不是現值 —— 挂完之後地主加蓋或改建，公佈欄上不該跟著變。
+    //   @source `0x424785`/`0x42478f`；舊存檔 / 半成品夹具沒有這兩格時才退回現值。
     if (e.kind === 'land') {
       const l = topo.lands?.find((x) => x.id === e.index);
-      const level = state.landLevel[e.index] ?? l?.level ?? 0;
-      const chain = (state.landType[e.index] ?? l?.type ?? 0) !== 0;
+      const level = item.estateLevel ?? state.landLevel[e.index] ?? l?.level ?? 0;
+      const chain = (item.estateType ?? state.landType[e.index] ?? l?.type ?? 0) !== 0;
       const dev = chain ? CHAIN_STORE_LABEL : (LAND_LEVEL_NAMES[level] ?? '');
       return {
         title: l?.name ?? `土地${e.index}`,
@@ -920,8 +923,8 @@ export function detailText(
       };
     }
     const f = topo.facilities?.find((x) => x.id === e.index);
-    const level = state.facilityLevel[e.index] ?? f?.level ?? 0;
-    const type = state.facilityType[e.index] ?? f?.type ?? 0;
+    const level = item.estateLevel ?? state.facilityLevel[e.index] ?? f?.level ?? 0;
+    const type = item.estateType ?? state.facilityType[e.index] ?? f?.type ?? 0;
     const typeName = level === 0 ? FACILITY_PLAIN_LABEL : (FACILITY_TYPE_NAMES[type] ?? '');
     return {
       title: f?.name ?? `設施${e.index}`,

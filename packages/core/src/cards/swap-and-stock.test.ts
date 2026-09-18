@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applySwapLandCard, applySwapFacilityCard, applyRedCard, applyBlackCard,
+  blackCardHostilityDeltas,
   RED_CARD_NEWS_FLAG, BLACK_CARD_NEWS_FLAG,
   SWAP_LAND_SELECTION_PARAM, SWAP_LAND_FACILITY_SELECTION_PARAM,
 } from './swap-and-stock.ts';
@@ -130,5 +131,50 @@ describe('红卡 / 黑卡 —— 写 newsFlag（利多/利空天数）', () => {
     const v = stocks();
     applyRedCard(v, 1);
     expect(v[1]!.newsFlag).toBe(0);
+  });
+});
+
+describe('★★ 黑卡尾部的敌意循环（double 压栈 ⇒ 只读低 32 位）', () => {
+  /**
+   * 原版算式（`0x004451a6`–`0x004451c7`）：
+   *   priceDiff = float32(旧价 − 现价)
+   *   v = 持股 × priceDiff ÷ 200.0f     （x87 扩展精度，最后 `fstp qword`）
+   *   delta = v 的 **低 32 位**（double 位型的低半）
+   *
+   * ★ 数值取自通道 2 差分测试 `rich4-spec/tests/test_stock_alliance_cards.py`
+   *   （真跑原版 `0x40df69`，40/40）。
+   */
+  it('★★ 持股 10、价差 0.3 ⇒ delta = +1717986918（原版真的写垃圾值）', () => {
+    const d = blackCardHostilityDeltas([0, 10, 0, 0], 0, 100, 100 - 0.3);
+    expect(d).toEqual([{ from: 1, to: 0, delta: 1_717_986_918 }]);
+  });
+
+  it('★★ 持股 3 ⇒ delta = −687194767（负值；关系值为 0 时原版提前返回，看不到）', () => {
+    const d = blackCardHostilityDeltas([0, 3, 0, 0], 0, 100, 100 - 0.3);
+    expect(d).toEqual([{ from: 1, to: 0, delta: -687_194_767 }]);
+  });
+
+  it('★ 持股 100、价差 0.3 恰好落在低 32 位 = 0（这种组合看不出副作用）', () => {
+    const d = blackCardHostilityDeltas([0, 100, 0, 0], 0, 100, 100 - 0.3);
+    expect(d[0]!.delta).toBe(0);
+  });
+
+  it('★ 价差取整数档（10.0）时低 32 位为 0', () => {
+    const d = blackCardHostilityDeltas([0, 200, 0, 0], 0, 100, 90);
+    expect(d[0]!.delta).toBe(0);
+  });
+
+  it('★ 持股为 0 的玩家整支跳过（连敌意调用都没有）', () => {
+    const d = blackCardHostilityDeltas([0, 0, 5, 0], 0, 100, 100 - 0.3);
+    expect(d.map((x) => x.from)).toEqual([2]);
+  });
+
+  it('★ 价差按 float32 存（`fstp dword`）—— 用 double 价差会算出不同的低 32 位', () => {
+    // 100 - 99.7 的 float32 差 = 0.3000030517578125（不是 double 的 0.30000000000000004）
+    const viaF32 = blackCardHostilityDeltas([0, 1, 0, 0], 0, 100, 99.7)[0]!.delta;
+    const raw = (1 * (100 - 99.7)) / 200;
+    const naive = new Int32Array(new Float64Array([raw]).buffer)[0]!;
+    expect(viaF32).toBe(515_396_076);
+    expect(viaF32).not.toBe(naive);
   });
 });

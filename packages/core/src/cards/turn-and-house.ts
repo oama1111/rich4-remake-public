@@ -6,10 +6,11 @@
  */
 
 import type { Player } from '../state/types.ts';
-import type { FacilityInfo, LandInfo } from '../loaders/map.ts';
+import type { FacilityInfo, LandInfo, MapNode } from '../loaders/map.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { targetClassOf, validateTarget } from './target.ts';
+import { linkBlockedMask } from '../state/reduce.ts';
 
 // ============================================================
 //  转向卡（6）
@@ -44,16 +45,64 @@ export interface TurnResult {
   players: Player[];
 }
 
+/** 同格四槽的拜访顺序（与原版 `for (slot=0..3)` 同序）*/
+const SLOT_ORDER = [0, 1, 2, 3] as const;
+
 /**
- * 转向卡：让目标玩家掉头。
+ * 掉头后**重挑「来路」**：原版 `0x40c78c` 的 0x40c7ea..0x40c859（玩家）与
+ * 0x40c8a2..0x40c903（替身）两段同构。
+ *
+ * @source
+ * ```asm
+ * 0040c824  word [esp + ebx*2] = ax ; ebx++    ; 收候选（顺序 = 槽 0..3）
+ * 0040c830  test ebx,ebx / je 0x40c850
+ * 0040c834  call 0x456f2d                      ; ★ rand()
+ * 0040c83e  idiv ebx                           ;   余数
+ * 0040c840  ax = word [esp + edx*2]            ;   last_node = 候选[余数]
+ * 0040c850  （无候选）last_node = 0
+ * ```
+ * 三个筛子（顺序也照原版）：`adjacent[slot] != 0`、**该槽未封路**
+ * （`node.flags & (0x40000000 >> slot)`）、`!= 旧的 last_node`。
+ *
+ * ★ 这一笔是**规则可见**的：`pickNextNode` 会避开 `last_node`，
+ * 所以"掉头"= 换一个方向走回去。
+ * 通道 2 证据：`rich4-spec/tests/test_turn_around.py`（23/23）。
+ */
+export function pickTurnBackNode(
+  node: MapNode,
+  oldLastNode: number,
+  draw: () => number,
+): number {
+  const candidates: number[] = [];
+  for (const slot of SLOT_ORDER) {
+    const n = node.adjacentSlots[slot] ?? 0;
+    if (n === 0) continue;
+    if ((node.flags & linkBlockedMask(slot)) !== 0) continue;
+    if (n === oldLastNode) continue;
+    candidates.push(n);
+  }
+  // ★ `rand()` 只在**有候选**时才掷（原版 `test ebx,ebx / je 0x40c850` 先判后掷）——
+  //   这条直接决定全局随机流的位置，不能多掷也不能少掷。
+  if (candidates.length === 0) return 0;
+  return candidates[(draw() >>> 0) % candidates.length] ?? 0;
+}
+
+/**
+ * 转向卡：让目标玩家掉头（并重挑来路）。
  *
  * 选择参数属 anyPlayer 组，**可以对自己使用**（原版在目标为自己时
  * 会说另一句台词，效果照常生效）。
+ *
+ * @param nodes 地图节点表（`MapTopology.nodes`，下标 = 节点号 − 1）。
+ *              **缺省时只掉头、不重挑来路**（旧调用点与老用例的兼容行为）。
+ * @param draw  `rand()` 出口（**只在有候选时**会被调用一次）。缺省恒 0 ⇒ 取第 0 个候选。
  */
 export function applyTurnCard(
   players: readonly Player[],
   currentPlayer: number,
   target: CardTarget,
+  nodes?: readonly MapNode[],
+  draw: () => number = () => 0,
 ): TurnResult {
   const cls = targetClassOf(TURN_SELECTION_PARAM);
   const error = validateTarget(cls, target, currentPlayer, players.length);
@@ -61,32 +110,33 @@ export function applyTurnCard(
   if (target.kind !== 'player') {
     return { ok: false, error: 'wrongTargetKind', players: [...players] };
   }
-  const next = players.map((p, i) =>
-    i === target.index ? { ...p, direction: turnAround(p.direction) } : p,
-  );
+  const next = players.map((p, i) => {
+    if (i !== target.index) return p;
+    const flipped = { ...p, direction: turnAround(p.direction) };
+    if (nodes === undefined) return flipped;
+    const node = nodes[p.nodeId - 1];
+    if (node === undefined) return { ...flipped, lastNodeId: 0 };
+    return { ...flipped, lastNodeId: pickTurnBackNode(node, p.lastNodeId, draw) };
+  });
   return { ok: true, error: null, players: next };
 }
 
 /**
- * 转向卡对**特殊棋子**：掉头逻辑在共用函数 `0x40c78c` 里，
- * 目标 ≥ 4 时走替身表分支（VA 0x0040c85e）：
+ * 转向卡对**特殊棋子**：与玩家同构，只是换 `0x498e28 + (target−4)*0x10` 那张表
+ * （`@source` 见 `pickTurnBackNode`；朝向在 `+9`、`nodeId` 在 `+4`、`last_node` 在 `+6`）。
  *
- * @source
- * ```asm
- * lea ecx, [target - 4]
- * shl ecx, 4
- * mov dl, byte [ecx + 0x498e31]     ; special.direction (+9)
- * add dl, 4 / and dl, 7
- * mov byte [ecx + 0x498e31], dl     ; ★ (direction + 4) & 7，与玩家同式
- * ```
- *
- * ⚠️ 尾部还有一段「在相邻格中 `rand()` 摇一个 ≠ 旧 last_node 的写回
- *   last_node」（0x0040c8e8，玩家分支 0x0040c834 同款）——需要拓扑与
- *   掷骰，玩家路径目前也未实现（见 applyTurnCard），两条路保持一致，
- *   待 last_node 语义进引擎时一并补。
+ * @param nodes 缺省时只掉头（兼容旧调用点）
  */
-export function applyTurnCardToActor(actor: SpecialActor): SpecialActor {
-  return { ...actor, direction: turnAround(actor.direction) };
+export function applyTurnCardToActor(
+  actor: SpecialActor,
+  nodes?: readonly MapNode[],
+  draw: () => number = () => 0,
+): SpecialActor {
+  const flipped = { ...actor, direction: turnAround(actor.direction) };
+  if (nodes === undefined) return flipped;
+  const node = nodes[flipped.nodeId - 1];
+  if (node === undefined) return { ...flipped, lastNodeId: 0 };
+  return { ...flipped, lastNodeId: pickTurnBackNode(node, actor.lastNodeId, draw) };
 }
 
 // ============================================================

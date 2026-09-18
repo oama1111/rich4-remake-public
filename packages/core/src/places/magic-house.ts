@@ -21,8 +21,11 @@
 
 import type { Player } from '../state/types.ts';
 import { isAlive } from '../state/types.ts';
-import { CARDS, TOOLS } from '@rich4/data';
-import { TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
+import { addPoints } from '../rules/points.ts';
+// ★ 變賣类效果与破产清算、財神/死神共用**同一段**机器码（`0x445b3f` / `0x441f21`），
+//   故这里直接调那两个已验证的纯函数，不再各抄一份 —— 抄一份就会各自漂移。
+//   通道 2 证据：`rich4-spec/tests/test_sell_all.py`（35/35）。
+import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
 
 // ============================================================
 //  目标转盘
@@ -256,15 +259,6 @@ export interface MagicEffectResult {
   log: { player: number; note: string; value: number }[];
 }
 
-/** 卡片標價 @source `byte [cardId*8 + 0x47fdef]` */
-function cardPrice(cardId: number): number {
-  return CARDS.find((c) => c.id === cardId)?.price ?? 0;
-}
-/** 道具標價 @source `byte [(toolId-1)*8 + 0x47fee7]`，与 `toolId*8 + 0x47fedf` 同址 */
-function toolPrice(toolId: number): number {
-  return TOOLS.find((t) => t.id === toolId)?.price ?? 0;
-}
-
 /**
  * 该玩家此刻能不能被「就地」类效果作用。
  * @source `cmp dword [player + 0x32], 0 / jne 跳过` —— 住宿/消失/坐牢/住院中免疫
@@ -302,17 +296,14 @@ export function applyMagicEffect(
 
     switch (option) {
       // ── 0 變賣所有卡片 ──
-      // @source VA 0x00441f21：逐格回收手牌，牌堆张数加回去，
+      // @source VA 0x00441f21：逐格回收手牌（15 个槽全清零），牌堆张数加回去，
       //   點券按**標價全额**入账（★ 不是商店那个九折）。
       case 0: {
-        let gain = 0;
-        for (const id of p.cards) {
-          cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) + 1;
-          gain += cardPrice(id);
-        }
+        const sold = sellAllCards(p, cardAmount);
+        cardAmount.splice(0, cardAmount.length, ...sold.cardAmount);
         p.cards = [];
-        p.points += gain;
-        log.push({ player: who, note: '變賣所有卡片', value: gain });
+        p.points = addPoints(p.points, sold.points); // ★ 16 位回绕
+        log.push({ player: who, note: '變賣所有卡片', value: sold.points });
         break;
       }
 
@@ -388,34 +379,15 @@ export function applyMagicEffect(
       // ── 8 變賣所有道具 ──
       // @source VA 0x00445b3f：★ **先把座驾折回道具栏**再一起卖
       //   （機車 → 5、汽車 → 6、工程車 → 12），然后徒步、骰子回 1。
-      //   编号 ≤ 8 的还要把库存还回去。點券同样按**標價全额**入账。
+      //   编号 ≤ 8 的还要把库存还回去，13 个槽全清零。點券按**標價全额**入账。
       case 8: {
-        const base = who * TOOL_SLOTS_PER_PLAYER;
-        const refund =
-          (p.trafficMethod & 3) === 1
-            ? 5
-            : (p.trafficMethod & 3) === 2
-              ? 6
-              : (p.trafficMethod & 3) === 3
-                ? 12
-                : 0;
-        if (p.trafficMethod !== 0) {
-          if (refund !== 0) tools[base + refund] = (tools[base + refund] ?? 0) + 1;
-          p.trafficMethod = 0;
-          // @source mov byte [player + 0x12], 1
-          p.ndices = 1;
-        }
-        let gain = 0;
-        for (let toolId = 1; toolId <= TOOLS.length; toolId++) {
-          const n = tools[base + toolId] ?? 0;
-          if (n === 0) continue;
-          // @source cmp eax, 8 / jge 跳过库存回收
-          if (toolId <= 8) toolStock[toolId] = (toolStock[toolId] ?? 0) + n;
-          gain += toolPrice(toolId) * n;
-          tools[base + toolId] = 0;
-        }
-        p.points += gain;
-        log.push({ player: who, note: '變賣所有道具', value: gain });
+        const sold = sellAllTools(p, tools, toolStock);
+        tools.splice(0, tools.length, ...sold.tools);
+        toolStock.splice(0, toolStock.length, ...sold.toolStock);
+        p.trafficMethod = sold.player.trafficMethod;
+        p.ndices = sold.player.ndices;
+        p.points = addPoints(p.points, sold.points); // ★ 16 位回绕
+        log.push({ player: who, note: '變賣所有道具', value: sold.points });
         break;
       }
 

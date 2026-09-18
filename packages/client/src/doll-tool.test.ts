@@ -102,8 +102,12 @@ describe('★ 替身逐格的朝向（`actorWalkDirection`）—— 与 exe 的 
     expect(step(-10, 10)).toBe(7); // ↙
   });
 
-  it('原地不动（位移 0）= 0 —— 原版 `0x454fe5` 两个都是 0 那支不改朝向', () => {
-    expect(actorWalkDirection({ from: { x: 5, y: 5 }, to: { x: 5, y: 5 } })).toBe(0);
+  it('★ 原地不动（位移 0）**不是** 0 而是 2 —— 内层 atan2 提前返回后照样查重映射表', () => {
+    // @source 0x00454fe5（内层 `or esi,ecx / je 0x45502b` 提早 ret，`ax = 0`）
+    //   → 外层 0x00454fc8 `shr ax,0xc` / `inc ax` / `shr ax,1` / `and eax,7` = 0
+    //   → 0x00454fd4 `movzx eax, byte [eax + 0x482414]` ⇒ **2**。
+    // 通道 2 实测：`rich4-spec/tests/test_walk_step.py` §A 末条。
+    expect(actorWalkDirection({ from: { x: 5, y: 5 }, to: { x: 5, y: 5 } })).toBe(2);
   });
 
   it('★ **面朝去路**，不是倒着走 —— 向下走的那一格拿到「正面」那一组图', () => {

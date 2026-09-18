@@ -119,14 +119,11 @@
  * | 抽卡卡名 | 0x10(16) | `#f0f0f0` | `#101010` | 0x00441f94 |
  */
 
-import {
-  CARDS,
+import { CARDS,
   CHARACTERS,
   fortuneEvent,
   newsEvent,
-  stripEventCode,
-  type EventEntry,
-} from '@rich4/data';
+  type EventEntry } from '@rich4/data';
 import type { GameState } from '@rich4/core';
 import {
   loadRaw555Resource,
@@ -141,6 +138,7 @@ import { DIALOG_SKIN_IMAGE, DIALOG_SKIN_RESOURCE } from './gameui.ts';
 import type { UiScreen, UiScreenEnv,
   UiKeyEvent,
 } from './ui-screen.ts';
+import { playVoiceCode } from './voice-sink.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type EventBoxSprite = (
@@ -349,7 +347,9 @@ export function eventBoxDescription(
       : entry.factor === null
         ? null
         : entry.factor * priceIndex;
-  return stripEventCode(entry.text)
+  // ★ 收敛到唯一入口：顺手把 `#NNNN` 播出来（`stripEventCode` 只管剥、不播，
+  //   而它是 `@rich4/data` 的 —— data 不该依赖 client，故播放在这里做）
+  return playVoiceCode(entry.text)
     .replace(/%d/g, amount === null ? '？' : `${amount}`)
     .replace(/%s/g, subject === '' ? '？' : subject);
 }

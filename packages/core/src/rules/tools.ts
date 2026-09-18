@@ -5,7 +5,6 @@
  * ★ 以原版 exe 反汇编为准：`give_tool` @ VA 0x00445a4d
  */
 
-import type { Player } from '../state/types.ts';
 import { TOOLS } from '@rich4/data';
 
 /**
@@ -137,11 +136,6 @@ export function toolsOf(tools: readonly number[], player: number): Map<number, n
     if (n > 0) out.set(id, n);
   }
   return out;
-}
-
-/** 某玩家是否持有该道具 */
-export function hasTool(p: Player, tools: readonly number[], toolId: number): boolean {
-  return toolCount(tools, p.index, toolId) > 0;
 }
 
 /**

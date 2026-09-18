@@ -202,3 +202,61 @@ describe('★ 两种买入的差别（先前把它们混成了一段）', () => 
     expect(r.amount).toBe(10 * 40);
   });
 });
+
+// ============================================================
+//  原版真码回归（`rich4-spec/tests/test_sell_stock.py`，22/22）
+// ============================================================
+
+describe('_rich4_sell_stock @ 0x00428e23 —— 逐条对齐原版', () => {
+  const held = (amount: number, avgCost = 15): StockHolding => ({ amount, avgCost });
+
+  it("落点：destination='bank' 进存款；'pool' 玩家一分不动", () => {
+    const toBank = sellStock(makePlayer({ moneyInBank: 5000 }), held(1000),
+      stock({ price: 20 }), 300, 'bank');
+    expect(toBank.player.moneyInBank).toBe(11_000);        // +300×20
+    const toPool = sellStock(makePlayer({ moneyInBank: 5000 }), held(1000),
+      stock({ price: 20 }), 300, 'pool');
+    expect(toPool.player.moneyInBank).toBe(5000);          // 进消失池，玩家不动
+  });
+
+  it('★ 成本均价只在**恰好归零**时清（原版 `holdings != 0` 就跳过）', () => {
+    expect(sellStock(makePlayer(), held(1000, 15), stock({ price: 20 }), 1000).holding)
+      .toEqual({ amount: 0, avgCost: 0 });
+    expect(sellStock(makePlayer(), held(1000, 15), stock({ price: 20 }), 999).holding)
+      .toEqual({ amount: 1, avgCost: 15 });
+  });
+
+  it('★ 计数器是 **u16**：65530 + 300 回绕成 294（原版真值）', () => {
+    const r = sellStock(makePlayer(), held(100_000),
+      stock({ shares: 65530, f10: 65530, price: 20 }), 300);
+    expect([r.stock.shares, r.stock.f10]).toEqual([294, 294]);
+  });
+
+  it('★ 买回时同样按 u16 回绕（`sub word`）', () => {
+    const r = buyStock(makePlayer({ moneyInBank: 10 ** 9 }), EMPTY_HOLDING,
+      stock({ shares: 10, f10: 10, price: 1 }), 300, 'market');
+    // 原版真值（0x00428d2a 实测）：计数器 10、买 300 → 10 − 300 = −290 → **65246**
+    expect([r.stock.shares, r.stock.f10]).toEqual([65246, 65246]);
+  });
+
+  it('★ 进账按**完整** shares 算，计数器只吃低 16 位（原版 `add ..., cx`）', () => {
+    // 原版：amount=65541 → 进账 65541、计数器只 +5
+    const r = sellStock(makePlayer({ moneyInBank: 0 }), held(100_000),
+      stock({ shares: 0, f10: 0, price: 1 }), 65541);
+    expect(r.amount).toBe(65_541);
+    expect([r.stock.shares, r.stock.f10]).toEqual([5, 5]);
+  });
+
+  it('价格取 float32 后向零截断', () => {
+    expect(sellStock(makePlayer({ moneyInBank: 0 }), held(1000),
+      stock({ price: Math.fround(12.35) }), 3).amount).toBe(37);
+    expect(sellStock(makePlayer({ moneyInBank: 0 }), held(1000),
+      stock({ price: 2.5 }), 7).amount).toBe(17);
+  });
+
+  it('⚠️ 有意偏离：原版超卖不夹（持股会变负），复刻夹在持股上', () => {
+    const r = sellStock(makePlayer(), held(1000, 15), stock({ price: 20 }), 1500);
+    expect(r.holding.amount).toBe(0);       // 原版会给 -500、且 avgCost 仍 15
+    expect(r.amount).toBe(20_000);          // 原版会按 1500×20 = 30000 进账
+  });
+});

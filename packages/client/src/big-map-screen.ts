@@ -61,7 +61,7 @@
  * 内层循环 `lodsw / or ax,ax / je` 跳过 0 ⇒ **黑当透明**）。
  */
 
-import type { GameState, Rich4Map } from '@rich4/core';
+import type { GameState } from '@rich4/core';
 import { isAlive } from '@rich4/core';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
@@ -123,27 +123,30 @@ export interface BigMapMarker {
  * @source VA 0x0040a8a1 的循环：`p < [0x499114]`（玩家数），
  *   `word [player + 0x08] != 0` 才画。
  *
- * ⚠️ **与原版判据的差别**（已登记 `docs/deviations/T-086.md`）：
- *   原版判的是 `player + 0x08`（世界 x 坐标 —— 不在场上/破产清空后它是 0），
- *   而本引擎的 `xpos` 只在传送与开局写过，**恒为 0**，拿它当判据会一枚都画不出。
- *   故改用 `isAlive()`（`whoPlays & 3 != 0`）—— 结算上与原版等价：
- *   八张地图**没有任何节点的世界坐标是 0**（实测 min x = 179、min y = 192），
- *   所以原版那条 `!= 0` 对真正在场的玩家永不成立为「假」。
+ * ★★ **2026-09-18（第 86 条）：位置改用 `xpos/ypos`，与原文逐字同源。**
+ *   原版这一屏读的就是 `player + 0x08/+0x0a`（`0x40a8b0`/`0x40a8d4`），
+ *   而那两个字节**只在关押时**才不等于所在格坐标：入監/入院会把屏幕坐标写成
+ *   特殊景观记录（監獄 → 记录 2「綠島」、醫院 → 记录 1；`@source 0x43d643`）。
+ *   先前 core 的 `x/y` 恒等于节点坐标，本屏取节点坐标才是等价的；现在 core
+ *   已照原版写景观坐标（`rules/confinement.ts`），故这里也必须读 `xpos/ypos` ——
+ *   否则大地图上被关押者的标记会画在監獄格上，而原版画在綠島上。
  *
- * 位置取 `nodeId` 那个节点的世界坐标 —— 这也正是原版 `player + 0x08/+0x0a`
- * 的值（破产处理 VA 0x0040d288 就是照抄 `[node_ptr + n*40]` 的 +0/+2）。
+ * ⚠️ 判据仍是 `isAlive()`（`whoPlays & 3 != 0`）：原版判 `player + 0x08 != 0`，
+ *   二者在"八张地图没有任何节点的世界坐标是 0"（实测 min x = 179、min y = 192）
+ *   以及"破产清空坐标"两条上都等价 —— 见 `docs/deviations/T-086.md`。
  */
-export function bigMapMarkers(state: GameState, map: Rich4Map): BigMapMarker[] {
+export function bigMapMarkers(state: GameState): BigMapMarker[] {
+  // ⚠️ 第 86 条起**不再需要地图**：位置直接读 `xpos/ypos`（原文也只读玩家记录）。
   const out: BigMapMarker[] = [];
   for (const p of state.players) {
     if (!isAlive(p)) continue;
-    const node = map.nodes[p.nodeId - 1];
-    if (node === undefined) continue;
+    if (p.xpos === 0 && p.ypos === 0) continue;
     out.push({
       player: p.index,
       character: p.character,
-      x: BIG_MAP_AT.x + bigMapAt(node.x),
-      y: BIG_MAP_AT.y + bigMapAt(node.y),
+      // ★ `@source 0x0040a8d4 shl eax,7 / sar eax,0x10` —— 直接缩放 player+0x08/+0x0a
+      x: BIG_MAP_AT.x + bigMapAt(p.xpos),
+      y: BIG_MAP_AT.y + bigMapAt(p.ypos),
     });
   }
   return out;
@@ -234,7 +237,7 @@ export const bigMapScreen: UiScreen = {
       BIG_MAP_AT.y,
     );
     // ── 每个在世玩家一枚标记（抠黑）@0x0040a8a1..0x0040a91a ──
-    for (const m of bigMapMarkers(env.state, env.map)) {
+    for (const m of bigMapMarkers(env.state)) {
       drawAt(
         env.stage,
         env.sprite('map.mkf', bigMapMarkerResource(m.character), BIG_MAP_MARKER_IMAGE, true),

@@ -97,6 +97,7 @@
  */
 
 import type { GameState } from '@rich4/core';
+import { playVoiceCode } from './voice-sink.ts';
 import { LOTTERY } from '@rich4/data';
 import type { ArchiveName, LoadedFlic, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
@@ -584,7 +585,8 @@ export function bonusFrameAt(now: number): number {
  * 这里只取出**正文** —— 语音由 `playEffect` 管，本屏不碰。
  */
 export function stripVoice(text: string): string {
-  return text.startsWith('#') ? text.slice(5) : text;
+  // ★ 收敛到唯一入口：**顺手把 `#NNNN` 播出来**（以前只剥不播，见 `voice-sink.ts`）
+  return playVoiceCode(text);
 }
 
 // ============================================================

@@ -100,23 +100,28 @@ describe('speechBubbleOf：一段台词', () => {
     expect(b.lines).toEqual(['拿去啦，', '不用找了～']);
   });
 
-  it('★ 金貝貝（角色 11）：没有字幕、没有语音，只有一张表情图', () => {
+  // ★ 订正（2026-09-17）：金貝貝**有语音** —— 原版是「播语音 **+** 画表情」两件事，
+  //   不是二选一（`@source 0x0044f136 call 0x45441a` 在表情分支里照样执行）。
+  //   它的语音号同样满足 `1050 + 27×11 + 事件`：事件 0 的原始串是 `#1347@04`，
+  //   而 `1050 + 297 = 1347` ✓。此前这里断言 `voice` 为 null，把 bug 钉死了。
+  it('★ 金貝貝（角色 11）：没有字幕，但有表情图**和语音**', () => {
     const b = speechBubbleOf({ player: 2, event: 0 }, JINBEIBEI, '金貝貝')!;
     expect(b.emoji).not.toBeNull();
     expect(b.lines).toEqual([]);
-    expect(b.voice).toBeNull();
+    expect(b.voice).toBe(1050 + 27 * JINBEIBEI + 0); // ★ 不再为 null
     // 事件 0 的原始串是 `@04` ⇒ 图号 = 3×0 + 4 − 1 = 3
     expect(b.emoji).toBe(3);
     // 落点照原版
     expect(b.emojiAt).toEqual(SPEECH_EMOJI_AT);
   });
 
-  it('金貝貝整列 27 条**全部**是表情（一条文本都没有）', () => {
+  it('金貝貝整列 27 条**全部**是表情（无文本），但**每条都有语音**', () => {
     for (let e = 0; e < 27; e++) {
       const b = speechBubbleOf({ player: 0, event: e }, JINBEIBEI, '金貝貝')!;
       expect(b.emoji, `事件 ${e}`).not.toBeNull();
       expect(b.lines, `事件 ${e}`).toEqual([]);
-      expect(b.voice, `事件 ${e}`).toBeNull();
+      // ★ 27 条**都**有语音（`#1347..#1373`）
+      expect(b.voice, `事件 ${e}`).toBe(1050 + 27 * JINBEIBEI + e);
       expect(b.emoji!).toBeGreaterThanOrEqual(0);
       expect(b.emoji!).toBeLessThan(21);
     }

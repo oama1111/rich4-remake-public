@@ -12,15 +12,9 @@ import {
   payMoney,
   canAfford,
   markPlayerBankrupt,
-  releaseAssets,
-  playerOccupancyBit,
-  ENTITY_BASE_LAND,
-  ENTITY_BASE_FACILITY,
   BANKRUPT_CLEAR_FROM,
 } from './bankruptcy.ts';
-import { OCCUPIED_MASK } from '../loaders/map.ts';
-import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
-import { makePlayer, makeFacility } from '../testing/factories.ts';
+import { makePlayer } from '../testing/factories.ts';
 import { isAlive } from '../state/types.ts';
 import { parseSave } from '../loaders/save.ts';
 import { parseMap } from '../loaders/map.ts';
@@ -28,18 +22,6 @@ import { parseMap } from '../loaders/map.ts';
 const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
 const SAVE0 = `${ROOT}/Rich4/Save0.dat`;
 
-
-function land(over: Partial<LandInfo> = {}): LandInfo {
-  return {
-    id: 1, x: 0, y: 0, name: 'A', priceStatus: 0, type: 0, owner: 0, level: 0, facing: 0,
-    landPrice: 1000, housePrice: 200, rentByLevel: [200, 500, 1200, 2800, 6000, 10000],
-    flast: 0, ...over,
-  };
-}
-
-/** 委托共享工厂：新增字段时不必逐个测试文件补 */
-const facility = (over: Partial<FacilityInfo> = {}): FacilityInfo =>
-  makeFacility({ name: 'F', ...over });
 
 describe('付款级联', () => {
   it('现金足够时只扣现金', () => {
@@ -144,22 +126,6 @@ describe('破产状态转换', () => {
   });
 });
 
-describe('节点占位标记', () => {
-  it('玩家 i 对应 bit (8+i)', () => {
-    expect(playerOccupancyBit(0)).toBe(0x100);
-    expect(playerOccupancyBit(1)).toBe(0x200);
-    expect(playerOccupancyBit(2)).toBe(0x400);
-    expect(playerOccupancyBit(3)).toBe(0x800);
-  });
-
-  it('★ 占位标记落在 OCCUPIED_MASK 的 bits 8-23 内', () => {
-    // 这解释了 map.ts 里 OCCUPIED_MASK = 0x80ffff00 的中间那段
-    for (let i = 0; i < 4; i++) {
-      expect(playerOccupancyBit(i) & OCCUPIED_MASK).toBe(playerOccupancyBit(i));
-    }
-  });
-});
-
 describe('破产的两条路径', () => {
   it('剩余 > 1 人 → 正常清算', () => {
     expect(resolveBankruptcyOutcome(2, 1)).toEqual({ kind: 'liquidate' });
@@ -182,48 +148,6 @@ describe('破产的两条路径', () => {
     // @source cmp dword [_num_human_players], 1 / jne → 3
     expect((resolveBankruptcyOutcome(1, 1) as { code: number }).code).toBe(2);
     expect((resolveBankruptcyOutcome(1, 3) as { code: number }).code).toBe(3);
-  });
-});
-
-describe('地产释放', () => {
-  it('清空归属但★保留等级', () => {
-    const lands = [land({ id: 1, owner: 1, level: 4 })];
-    const r = releaseAssets(0, lands, []);
-    expect(r.lands[0]!.owner).toBe(0);
-    expect(r.lands[0]!.level).toBe(4); // 房子还在，随后进入拍卖
-  });
-
-  it('只释放该玩家的资产', () => {
-    const lands = [
-      land({ id: 1, owner: 1 }),
-      land({ id: 2, owner: 2 }),
-      land({ id: 3, owner: 0 }),
-    ];
-    const r = releaseAssets(0, lands, []);
-    expect(r.lands.map((l) => l.owner)).toEqual([0, 2, 0]);
-    expect(r.released.length).toBe(1);
-  });
-
-  it('实体 id 编码：住宅 2000+i，设施 4000+i', () => {
-    const r = releaseAssets(0, [land({ id: 7, owner: 1 })], [facility({ id: 3, owner: 1 })]);
-    expect(r.released).toEqual([
-      { kind: 'land', index: 7, entityId: ENTITY_BASE_LAND + 7 },
-      { kind: 'facility', index: 3, entityId: ENTITY_BASE_FACILITY + 3 },
-    ]);
-    expect(ENTITY_BASE_LAND).toBe(2000);
-    expect(ENTITY_BASE_FACILITY).toBe(4000);
-  });
-
-  it('flast 被清零', () => {
-    const r = releaseAssets(0, [land({ id: 1, owner: 1, flast: 12345 })], []);
-    expect(r.lands[0]!.flast).toBe(0);
-  });
-
-  it('不原地修改入参', () => {
-    const lands = [land({ id: 1, owner: 1, level: 3 })];
-    const snapshot = JSON.stringify(lands);
-    releaseAssets(0, lands, []);
-    expect(JSON.stringify(lands)).toBe(snapshot);
   });
 });
 

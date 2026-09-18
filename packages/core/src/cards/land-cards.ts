@@ -131,6 +131,11 @@ export function demolishLikeTargetAllowed(
  * cmp ecx, 0x12 / jne 拒绝  ; 定時炸彈
  * ```
  * 神明/禮物/寶箱等**不在**可打之列（它们没有这一段编码上的 handle 前缀语义）。
+ *
+ * ⚠️ 编号口径：本文件两处说「组」时用的基准**不同** —— 上面 `demolishLikeTargetAllowed`
+ *   的「组 4 / 组 5」是**跳表下标（0 基）**，这里的「组 6」是**卡片参数的高字节（1 基）**。
+ *   两者指的是同一张表 `0x00445e2d`：下标 4 = 高字节 5 = 怪獸卡，下标 5 = 高字节 6 = 拆除卡。
+ *   完整 8 项表见 PRD `rich4-spec/docs/systems/cards.md` §十三。
  */
 export const DEMOLISHABLE_OBJECT_TYPES: readonly number[] = [
   OBJECT_TYPE_ROADBLOCK,
@@ -285,6 +290,8 @@ export interface DevilFacilityResult {
   facility: FacilityInfo;
   /** 敌意变化：原主对出牌者（无主设施不记） */
   hostilityDeltas: { from: number; to: number; delta: number }[];
+  /** 原版 `mutate_facility` 尾部是否调了 `0x40dffa()`（全场释放被关押者） */
+  releasesConfined: boolean;
 }
 
 /**
@@ -293,7 +300,10 @@ export interface DevilFacilityResult {
  *
  * @source VA 0x004437a7（惡魔卡敌意段，与怪獸卡同式）
  *   + VA 0x0040ac5e（mutate mode 2 設施分支）；
- *   尾部的 `call 0x40dffa` 是表现层刷新，core 无可落副作用。
+ *   ★★ 尾部的 `call 0x40dffa` **不是表现层**（此前这里写错了）：它把全场所有
+ *   在场且被关押的玩家置成「下一天释放」（差分证据
+ *   `rich4-spec/tests/test_mutate_release.py` 7/7）⇒ 本函数返回
+ *   `releasesConfined`，由调用方（`cards/registry.ts`）落到 `players` 上。
  */
 export function applyDevilFacilityCard(
   facility: FacilityInfo,
@@ -311,7 +321,12 @@ export function applyDevilFacilityCard(
           },
         ];
   const out = mutateFacility(facility, MUTATE_FLATTEN);
-  return { ok: out.changed, facility: out.facility, hostilityDeltas };
+  return {
+    ok: out.changed,
+    facility: out.facility,
+    hostilityDeltas,
+    releasesConfined: out.releasesConfined,
+  };
 }
 
 export interface DemolishFacilityResult {
@@ -321,6 +336,8 @@ export interface DemolishFacilityResult {
   hostilityDelta: number;
   /** 被拆设施原主（玩家下标）；无主时为 -1 */
   victim: number;
+  /** 同 `DevilFacilityResult.releasesConfined` */
+  releasesConfined: boolean;
 }
 
 /**
@@ -341,6 +358,7 @@ export function applyDemolishFacilityCard(
   return {
     ok: out.changed,
     facility: out.facility,
+    releasesConfined: out.releasesConfined,
     hostilityDelta: owned ? priceIndex * 30 : 0,
     victim: owned ? facility.owner - 1 : -1,
   };

@@ -43,12 +43,13 @@
  * ; ① 挂牌那一刻清零（VA 0x004246c5 内）
  * 00424712  mov byte [eax + 0x4967e1], 0
  *
- * ; ② 每**天** +1 —— VA 0x00428475（唯一调用点 0x0041cfb5，在日期推进那一支里：
- * ;    紧跟 `inc [0x4990e4]`(totalDays) 与 `rich4_update_price_index`）
+ * ; ② 每**天** +1 —— VA 0x00428475（唯一调用点在 `0x0041cfc4`，日期推进那一支里：
+ * ;    同段紧跟 `0x41cfab inc [0x4990e4]`(totalDays) 与 `0x41cfbf call 0x423acf`）
  * fcn_00428475:
  *   esi = 0
- *   loop 玩家 (num_players):
- *     if (player+0x15 == 0) continue     ; ★ 只给**真人**（+0x15 == 1）挂牌记龄
+ *   loop 玩家 (0 .. [0x499114]):
+ *     if (player+0x15 == 0) continue     ; ★ 只跳过**出局者**（`whoPlays == 0`）
+ *                                        ;   —— 电脑（2）也照样记龄，只是没人读这一格
  *     edx = 0
  *     loop 7 槽:
  *       if (槽.type == 0) continue
@@ -98,7 +99,10 @@
  * 即 **標價 × 100 × 物價指數**。真人挂牌是自己输入价格
  * （「請輸入欲拍賣的價格\n\n（市價：%d元）」），那个「市價」多半就是这个数。
  *
- * ⚠️ 其余三种类型的「市價」怎么算**没解**，见 known-deviations 的 Q-BOARD-1。
+ * ✅ 其余三种类型的「市價」**已解**（Q-BOARD-1 结案 2026-09-14，四种全解）：
+ *    道具 `標價×100×物價`（`0x00426af8`）、股票 `trunc(股數×現價)`（`0x00425f1e`）、
+ *    地產/設施 `(地價 + 等級×房價)×物價`（`0x004265b9` / `0x004265e5`）。
+ *    「填数窗上限 = 市價 × 10」（股票例外＝持有股數）见 `board-screen.ts` 的上限表。
  */
 
 import type { GameState, Player } from '../state/types.ts';
@@ -132,6 +136,17 @@ export interface Listing {
   price: number;
   /** 只有股票用：股數 @source 槽 +8 */
   amount: number;
+  /**
+   * 只有類型 2（地產/設施）用：**挂牌那一刻**的 `+0x18`（0 = 住宅、非 0 = 商業用地）
+   * 的快照 —— 存档块里落在槽 `+0x0a`。
+   *
+   * ★ 原版存的是**那一刻**的值，不是现值：挂完之后地主加盖或改建，
+   *   公佈欄上显示的还是挂牌时的等级/类型。不建模就等于「显示现值」⇒ 分歧。
+   * @source `0x424785 mov byte [eax + 0x4967ea], bl`
+   */
+  estateType?: number;
+  /** 同上，`+0x1a`（等級）—— 槽 `+0x0b` @source `0x42478f` */
+  estateLevel?: number;
 }
 
 /** 一个玩家的挂牌栏：定长 7，`null` 表示空槽 */

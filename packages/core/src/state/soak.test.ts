@@ -38,6 +38,7 @@ function soak(seed: number, maxTurns: number, mapPath: string = MAP): SoakResult
     lands: map.lands,
     facilities: map.facilities,
     commercials: map.commercials,
+  landscapes: map.landscapes,
   };
   let state = newGame({ map, players: players(), seed });
   const events = { news: 0, fortune: 0 };

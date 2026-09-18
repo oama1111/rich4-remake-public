@@ -36,11 +36,26 @@ describe('mode 0 —— 拆一级（拆除卡走这条）', () => {
   });
 });
 
-describe('mode 1 —— 清归属', () => {
-  it('归属清零、类型变回住宅', () => {
-    const r = mutateLand(makeLand({ owner: 3, type: 1, level: 2 }), MUTATE_CLEAR_OWNER);
+describe('mode 1 —— 完全清除（不是只清归属）', () => {
+  // ★ 原版 `0x0040abae`–`0x0040abc3` 一次清**四项**：
+  //   `[+0x19]=0`(owner) `[+0x1a]=0`(**level**) `[+0x18]=0`(type) `[+0x30]=0`(flast)，
+  //   且**无前置判据**（一定会改，返回值恒 1）。
+  //   此前的测试只断言 owner/type，**从不查 level** —— 这正是
+  //   "mode 1 留下无主残楼"这个 bug 能长期存活的原因。
+  it('owner / level / type / flast **四项**全清', () => {
+    const r = mutateLand(
+      makeLand({ owner: 3, type: 1, level: 4, flast: 0x07e5_060f }),
+      MUTATE_CLEAR_OWNER,
+    );
     expect(r.land.owner).toBe(0);
+    expect(r.land.level).toBe(0); // ★ 以前漏掉的
     expect(r.land.type).toBe(LAND_TYPE_HOUSE);
+    expect(r.land.flast).toBe(0); // ★ 以前漏掉的（地契到期日）
+    expect(r.changed).toBe(true);
+  });
+
+  it('无前置判据：已经在初始状态也会返回 changed = true', () => {
+    const r = mutateLand(makeLand({ owner: 0, level: 0, type: 0 }), MUTATE_CLEAR_OWNER);
     expect(r.changed).toBe(true);
   });
 });
@@ -93,7 +108,9 @@ describe('怪獸卡敌意', () => {
 describe('未知模式', () => {
   it('不改动', () => {
     const land = makeLand({ level: 3 });
-    expect(mutateLand(land, 9)).toEqual({ land, changed: false });
+    expect(mutateLand(land, 9)).toEqual({
+      land, changed: false, releasesConfined: false,
+    });
   });
 });
 
@@ -121,14 +138,20 @@ describe('★ 設施分支 —— mutate_land 的 0xfa0..0x1770 路径（T-006�
     expect(zero.facility).toMatchObject({ level: 0, type: 0 });
   });
 
-  it('mode 1 清归属：owner/level/type 全归零', () => {
-    const r = mutateFacility(makeFacility({ level: 2, type: 4, owner: 1 }), MUTATE_CLEAR_OWNER);
-    expect(r.facility).toMatchObject({ owner: 0, level: 0, type: 0 });
+  it('mode 1 完全清除：owner/level/type/**flast** 全归零', () => {
+    const r = mutateFacility(
+      makeFacility({ level: 2, type: 4, owner: 1, flast: 0x07e5_060f }),
+      MUTATE_CLEAR_OWNER,
+    );
+    // ★ flast 在 `+0x34`（与住宅的 `+0x30` 不同），以前漏清
+    expect(r.facility).toMatchObject({ owner: 0, level: 0, type: 0, flast: 0 });
   });
 
   it('未知模式不改动', () => {
     const f = makeFacility({ level: 3 });
-    expect(mutateFacility(f, 9)).toEqual({ facility: f, changed: false });
+    expect(mutateFacility(f, 9)).toEqual({
+      facility: f, changed: false, releasesConfined: false,
+    });
   });
 });
 
@@ -148,5 +171,36 @@ describe('★ 怪獸卡踏設施（VA 0x004439e8 敌意段）', () => {
 
   it('0 级设施 → ok 为 false（没东西可拆）', () => {
     expect(applyMonsterFacilityCard(makeFacility({ level: 0, owner: 3 }), 1, 0).ok).toBe(false);
+  });
+});
+
+// ============================================================
+//  `releasesConfined` —— 原版 mutate 尾部 `call 0x40dffa` 的门控
+//  （差分证据：rich4-spec/tests/test_mutate_release.py）
+// ============================================================
+
+describe('★ releasesConfined：三种 mode 何时放人', () => {
+  it('mode 0（拆一级）：**只有拆到 0 级**才放人', () => {
+    expect(mutateFacility(makeFacility({ level: 3 }), 0).releasesConfined).toBe(false);
+    expect(mutateFacility(makeFacility({ level: 1 }), 0).releasesConfined).toBe(true);
+    expect(mutateFacility(makeFacility({ level: 0 }), 0).changed).toBe(false);
+    expect(mutateLand(makeLand({ level: 3 }), 0).releasesConfined).toBe(false);
+    expect(mutateLand(makeLand({ level: 1 }), 0).releasesConfined).toBe(true);
+  });
+
+  it('★ mode 1（清归属）：**无条件**放人', () => {
+    expect(mutateFacility(makeFacility({ level: 0 }), 1).releasesConfined).toBe(true);
+    expect(mutateLand(makeLand({ level: 0 }), 1).releasesConfined).toBe(true);
+  });
+
+  it('mode 2（夷平）：level != 0 才改，改了才放人', () => {
+    expect(mutateFacility(makeFacility({ level: 2 }), 2).releasesConfined).toBe(true);
+    expect(mutateFacility(makeFacility({ level: 0 }), 2).releasesConfined).toBe(false);
+    expect(mutateLand(makeLand({ level: 2 }), 2).releasesConfined).toBe(true);
+    expect(mutateLand(makeLand({ level: 0 }), 2).releasesConfined).toBe(false);
+  });
+
+  it('地塊的连锁店（type != 0）拆一级也是「直接归零」⇒ 放人', () => {
+    expect(mutateLand(makeLand({ level: 1, type: 1 }), 0).releasesConfined).toBe(true);
   });
 });

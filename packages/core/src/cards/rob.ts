@@ -85,8 +85,15 @@ export function robbableTools(tools: readonly number[], target: number): number[
 //  卡片路径（T-003）
 // ============================================================
 
-/** 卡片表里的价格（0x47fdea 每记录 +5），敌意增量与弃牌比较都用它 */
-function priceOf(cardId: number): number {
+/**
+ * 卡片表里的价格（`0x47fdea` 每记录 `+5`，即 `0x47fdef + i*8`）。
+ *
+ * 三处用途：① 弃牌时比较贵贱（`0x0044128f`）；
+ * ② 搶奪卡的敌意增量；③ **抽卡格尾部台词的条件**
+ * （`0x0041b37b mov al,[ebx*8+0x47fdef]` → `0x0041b38c call 0x44f230`，
+ * 后者只在 `50 < 价格 <= 100` 时 `call rand`）。
+ */
+export function priceOf(cardId: number): number {
   return CARDS.find((c) => c.id === cardId)?.price ?? 0;
 }
 

@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  applyBuyLandCard, BUY_LAND_HOSTILITY_IS_NOOP, intendedBuyLandHostility,
+  applyBuyLandCard, buyLandCardHostility, intendedBuyLandHostility,
 } from './buy-land.ts';
 import { makeLand, makePlayer } from '../testing/factories.ts';
 
@@ -52,31 +52,33 @@ describe('购地卡 —— 强制买下他人地产', () => {
   });
 });
 
-describe('★ 原版 bug：敌意更新是空操作', () => {
-  it('已登记为空操作', () => {
-    expect(BUY_LAND_HOSTILITY_IS_NOOP).toBe(true);
-  });
-
-  it('原版意图公式记录在案（但不生效）', () => {
-    // land_price × price_index × (level + 2) / 5
-    expect(intendedBuyLandHostility(2500, 1, 0)).toBe(1000);
-    expect(intendedBuyLandHostility(1000, 3, 2)).toBe(2400);
-  });
-
-  it('★ 意图值作为 double 传出时，低 32 位恒为 0', () => {
-    // 这正是原版 bug 的成因：调用方压 8 字节 double，
-    // 被调方按 4 字节 int 读 [esp+0x14]，取到的是低半部分。
-    const buf = new ArrayBuffer(8);
-    const dv = new DataView(buf);
-    let nonZero = 0;
+describe('★★ 原版 bug：敌意按 double 压栈、被调方只读低 32 位', () => {
+  it('★★ "整齐"地价也**不是**全为 0：840 组里有 15 组低 32 位 = −1', () => {
+    // `(地价×物价) × ((等级+2)/5)` 里 `(等级+2)/5` 本身就带舍入误差，
+    // 乘回去可能落在"整齐值"的下一格（低 32 位 = −1）。
+    // ⚠️ 这类值**增量 ≤ 0**，在原版里被 `0x40df83`「当前值 0 且增量为负 ⇒ 直接返回」
+    //   挡掉，所以**看不出副作用** —— 但"恒为 0"的说法仍然是错的。
+    const lows = new Set<number>();
     for (const lp of [1000, 1500, 2000, 2500, 3000, 5000, 8000]) {
       for (let pi = 1; pi <= 20; pi++) {
         for (let lv = 0; lv <= 5; lv++) {
-          dv.setFloat64(0, intendedBuyLandHostility(lp, pi, lv), true);
-          if (dv.getUint32(0, true) !== 0) nonZero++;
+          const v = buyLandCardHostility(lp, pi, lv);
+          if (v !== 0) lows.add(v);
         }
       }
     }
-    expect(nonZero).toBe(0);
+    expect([...lows]).toEqual([-1]);
+  });
+
+  it('★★ 地价不是"整齐"数时，低 32 位是**巨大的正数**（原版真写垃圾值）', () => {
+    // 原版实测（rich4-spec/tests/test_land_auction_cards.py，真跑 0x40df69）：
+    // (地价 1001、物价 1、等级 2) ⇒ (1001×1) × (4/5) = 800.8 ⇒ 低 32 位 = +1717986919
+    expect(buyLandCardHostility(1001, 1, 2)).toBe(1_717_986_919);
+    expect(buyLandCardHostility(1001, 1, 1)).toBeLessThan(0);
+  });
+
+  it('★ 原版计数中间量（保留对照）', () => {
+    expect(intendedBuyLandHostility(2500, 1, 0)).toBe(1000);
+    expect(intendedBuyLandHostility(1000, 3, 2)).toBe(2400);
   });
 });

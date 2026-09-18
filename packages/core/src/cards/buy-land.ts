@@ -9,6 +9,7 @@
 import type { LandInfo } from '../loaders/map.ts';
 import type { Player } from '../state/types.ts';
 import { housingIndexOf } from '../rules/land.ts';
+import { misalignedDoubleInt } from '../rules/hostility.ts';
 
 export type BuyLandFailure =
   | 'notHousingLand'
@@ -93,26 +94,36 @@ export function applyBuyLandCard(
  * （对比均富卡：`push eax` 传的就是 int）。于是被调方读到的是
  * **double 的低 32 位**。
  *
- * 实测：在 840 种真实参数组合（地价 1000~8000、物价指数 1~20、等级 0~5）下，
- * 该低 32 位**无一例外为 0**，因为这些结果都是低位为零的"整齐"浮点数。
- *
- * 按 C-FID-4（原版 bug 默认保留），本实现同样**不产生敌意**。
- * 若日后要还原"设计意图"，公式记录在此：
- *   `land_price × price_index × (level + 2) / 5`
+ * ⚠️ **本文件原先写着「低 32 位恒为 0 ⇒ 本实现不产生敌意」——那是错的**（2026-09-19）：
+ *   原先的扫描只用了 1000/1500/…/8000 这些"整齐"地价，它们都能被 5 整除，
+ *   于是低 32 位确实是 0；但**机制上**只要 `(地价×物价)×(等级+2)` 不是 5 的倍数，
+ *   低 32 位就是一个巨大的整数。原版差分测试用 `(1001, 等级 2, 物价 1)`
+ *   真跑 `0x40df69` 得到 **+1717986919**（`rich4-spec/tests/test_land_auction_cards.py`）。
+ *   ⇒ 复刻改为**照做**（`buyLandCardHostility()`）。
  */
-export const BUY_LAND_HOSTILITY_IS_NOOP = true;
-
-/**
- * 原版意图中的敌意公式（**实际不生效**，仅作记录与举证）。
- *
- * 此处**刻意保持浮点、不取整**：原版用 x87 的 `fdiv dword [0x465320]`（5.0），
- * 结果以 `fstp qword` 存为 double。上面那条 bug 的成立与否，正取决于该
- * double 的低 32 位是否为零——取整会毁掉这个论证。
- * 该函数不参与任何金额计算，故 C-DET-3 在此定向豁免。
- */
-export const intendedBuyLandHostility = (
+export function buyLandCardHostility(
   landPrice: number,
   priceIndex: number,
   level: number,
+): number {
+  // ★★ 写法照 asm 的次序、按 **double 精度**逐步舍入：x87 默认精度控制字
+  //   `0x027F`（PC = 10b = 53 位 = double），故每一步都舍成 double ⇒
+  //   JS 的 `(地价×物价) * ((等级+2)/5)` 与原版**逐位相同**。
+  //   反过来写成「精确乘积 ÷ 5」会得到另一个 double（差 1 ulp ⇒ 垃圾值差 1）。
+  //   两条支路（住宅 `+0x1c` / 商業 `+0x22`）用的是同一个公式与同一对常量。
+  // C-DET-3 定向豁免：这一处要位级复现（低 32 位是什么由浮点舍入决定），
+  //   产出是敌意而不是账目金额。
   // eslint-disable-next-line no-restricted-syntax
-): number => (landPrice * priceIndex * (level + 2)) / 5;
+  const value = (landPrice * priceIndex) * ((level + 2) / 5);
+  return misalignedDoubleInt(value);
+}
+
+/** 原版计数中间量（保留给单元测试对照，不再是"最终值"） */
+export function intendedBuyLandHostility(
+  landPrice: number,
+  priceIndex: number,
+  level: number,
+): number {
+  // eslint-disable-next-line no-restricted-syntax
+  return (landPrice * priceIndex) * ((level + 2) / 5);
+}

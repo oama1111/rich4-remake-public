@@ -10,7 +10,8 @@
  *   「停没停下来」原版看的是剩余步数 `[0x48baf8]`，本引擎是
  *   `GameState.stepsRemaining`。
  *
- *   种类分派是一张 18 项跳表 @ VA 0x0041b3e5，下标 = 种类 − 1：
+ *   种类分派是一张 18 项跳表 @ VA 0x0041b3e5，下标 = 种类 − 1
+ *   （分派器**函数体是 `0x41b42d`**，帧 `sub esp,0xa8`，真尾声 `0x41c844`）：
  * ```
  *   1..10, 12 → 0x41b807  附身（財神/福神/窮神/衰神/天使/惡魔/土地公）
  *   11        → 0x41b837  惡犬
@@ -22,29 +23,41 @@
  *   18        → 0x41bfd2  定時炸彈
  * ```
  *
+ * ★★ **槽号 → 种类是固定表 `0x47ed3c`**（装载时逐字节写进 `objects_info[i].+0`，
+ *   `@source 0x407d4e..0x407d68`）：槽 1..14 → 种类 1..14（每类恰 1 槽）、
+ *   槽 15..16 → 15、槽 17..26 → 16、槽 27..36 → 17、槽 37..46 → 18。
+ *   ⇒ **種類由槽位决定、此后永不改变**（`place_object` 从不写 `+0`），
+ *   所以「寶箱永远在槽 14」是硬不变量（原版那支 handler 直接 `push 0xe`）。
+ *   通道 2 证据：`rich4-spec/tests/test_object_landing_fragments.py`（44/44）、
+ *   规格 `tools.md` §6.1.2 / §6.3.0。
+ *
  * ⚠️ 本模块只处理**真人/AI 玩家**（原版的 actor 0..3）走到格子上的情形。
- *   原版还有 actor 4..7（小偷/強盜/流氓/間諜）与 actor 8（機器娃娃），
- *   见 `rules/special-actors.ts`。
+ *   原版还有 actor 4..7（小偷/強盜/流氓/間諜）与 actor 8（機器娃娃）：
  *
  *   - **actor 8 不进本模块**：落点处理 VA 0x0041b4e7 在种类跳表**之前**
  *     就把它截住，只做「清掉这一格的物件」一件事，然后收场。
- *     那条路实现在 `special-actors.ts` 的 `runDoll`。
- *   - **actor 4..7 落回同一张跳表**（VA 0x0041b7ef），但十八条分支
- *     **各自再查一次 `actor < 4`** 分头处理，逐条都得读。眼下一条没接，
- *     本引擎的 NPC 走完路什么也不做 —— 见 known-deviations 的 Q-NPC-1。
+ *     那条路实现在 `special-actors.ts` 的 `runDoll`
+ *     （各 handler 里的 `cmp …,8 / jge` 是**死代码**）。
+ *   - **actor 4..7 落回同一张跳表**，但各分支再查一次 actor 分头处理：
+ *     **小偷（4）** 单独一支（拆陷阱并把道具给主人、寶箱的 500 歸主人、
+ *     地雷/路障伤不到他）；**強盜/流氓/間諜（5..7）** 走的其实是**玩家那一支**
+ *     （地雷照样让他们住院、路障照样拦下他们）。
+ *     ⚠️ 这两类都不在本模块：`rules/npc-walk.ts` 的 `runNpc` / `applyNpcEvents`
+ *     （見 Q-NPC-1 与 §7.81）。
  */
 
 import type { Player } from '../state/types.ts';
 import type { MapObject } from '../cards/summon.ts';
 import { isAlive } from '../state/types.ts';
 import { godModifiersOf, partnerSlot, slotRangeForType } from './objects.ts';
+import { addPoints } from './points.ts';
 import {
   ATTACH_STATE_NORMAL,
   ATTACH_STATE_REAPER,
   OBJECT_TYPE_DOG,
   OBJECT_TYPE_REAPER,
 } from '../cards/summon.ts';
-import { TOOL_SLOTS_PER_PLAYER, giveTool } from './tools.ts';
+import { giveTool } from './tools.ts';
 
 // ============================================================
 //  常量
@@ -174,6 +187,39 @@ export interface ReleaseOutcome extends ObjectWorld {
   formerNode: number;
   /** 该换哪个搭档上场（槽位下标）；-1 表示没有搭档 */
   partner: number;
+}
+
+/**
+ * 把玩家身上两个跟班物件（`godInfo`(+0x3f) / `f64`(+0x40)）的**所在格**同步成玩家所在格。
+ *
+ * @source `0x0040fc00(player)`（全文 27 条）：
+ * ```asm
+ * 0040fc06  ah = byte [player + 0x3f]        ; god_info（物件下标 + 1）
+ * 0040fc0e  if (ah != 0):
+ *             ecx = ah − 1                    ; 物件下标
+ *             word [objects[ecx] + 0x02] = word [player + 0x0c]   ; ★ 所在格 ← 玩家所在格
+ * 0040fc30  bl = byte [player + 0x40]        ; f64（另一个跟班槽）
+ * 0040fc38  if (bl != 0): 同上
+ * ```
+ *
+ * ★ **两支互相独立**（`+0x3f == 0` 只跳过第一支）。调用点：入监 `0x43d668`、
+ *   入院（`0x43ec3f` 的对应处）——即**被关押时神明/跟班一起搬走**。
+ *   通道 2 差分：`rich4-spec/tests/test_god_follow.py`（16/16）。
+ *
+ * @param player 已经**搬完家**的那个玩家（`nodeId` 是新的）
+ */
+export function syncEscortNodes(
+  objects: readonly MapObject[],
+  player: Player,
+): MapObject[] {
+  if (player.godInfo === 0 && player.f64 === 0) return [...objects];
+  const next = objects.map((o) => ({ ...o }));
+  for (const ref of [player.godInfo, player.f64]) {
+    if (ref === 0) continue;
+    const o = next[ref - 1];
+    if (o !== undefined) o.nodeId = player.nodeId;
+  }
+  return next;
 }
 
 /**
@@ -629,11 +675,16 @@ function applyObjectAt(out: ArrivalOutcome, input: ArrivalInput, events: Arrival
     // ── 寶箱：五百點 ──
     case OBJECT_TYPE_TREASURE: {
       if (moving) return;
+      // ⚠️ 原版这里写死 `push 0xe`（`remove_object(14)`），**不是**用帧里的槽号。
+      //   那是安全的：槽号→種類是固定表 `0x47ed3c`（`@source 0x407d4e..0x407d68`），
+      //   種類 14 只可能出现在槽 14。本引擎按槽位存種類，`input.handle` 必等于 14，
+      //   故两者等价 —— 通道 2 证据见 `rich4-spec/tests/test_object_landing_fragments.py`
+      //   里「帧里给 9 也照样移除 14」那一例。
       collect(out, input.handle);
       const me = out.players[input.playerIndex];
       if (me === undefined) return;
-      // @source add word [player + 0x30], 0x1f4
-      me.points += TREASURE_POINTS;
+      // @source 0x0041bb62 `add word [player + 0x30], 0x1f4` —— ★ 16 位回绕
+      me.points = addPoints(me.points, TREASURE_POINTS);
       events.push({ kind: 'treasure', points: TREASURE_POINTS });
       return;
     }
@@ -787,9 +838,17 @@ export function tickGod(w: ObjectWorld, playerIndex: number): GodTickOutcome {
  *   也就是 `MapNode.walkable` —— 与 `rich4_node_utils.asm:28-31` 同源。
  *   不能放在走不到的格子上，否则永远没人踩得到。
  *
- * ⚠️ 掩码里 bits 8..23 是**运行时**占用（谁站在这、这格有什么物件），
- *   本引擎不在节点上镜像这份状态，故这里只能筛掉静态位 bit 31。
- *   调用方若在意「别叠在已有物件上」，要自己再过一遍。
+ * ⚠️ 掩码 `0x80ffff00` 的三段含义（原版 `test dword [node + 0x24], 0x80ffff00`）：
+ *   · bit 31      —— **静态**：这一格不许放东西（`MapNode.noObjects`，就是本函数的
+ *                    `n.noObjects`）。地图形数据里就带着，本引擎照抄；
+ *   · bits 8..11  —— **运行时**：玩家 i 站在这格（`0x100 << i`，原版在
+ *                    0x004083a0 落地时置位、0x0040c1e9/0x0040c202 换格时先清后置、
+ *                    破产清算 0x0040ce0e 也会置）；
+ *   · bits 12..23 —— **运行时**：这格上已有物件。
+ *   后两段本引擎**不在节点上镜像**（改用「反查物件表 / 玩家的 `nodeId`」现算），
+ *   所以本函数只筛掉了静态那一位 —— **调用方必须自己再过一遍**
+ *   「这格是不是已经有物件/有人站」，否则会叠格。
+ *   原版之所以处处都查这一条，就是因为它是唯一一道闸门。
  */
 export function objectNodeCandidates(
   nodes: readonly { id: number; walkable: boolean; noObjects: boolean }[],
@@ -801,6 +860,35 @@ export function objectNodeCandidates(
     if (!n.walkable) continue;
     out.push(n.id);
   }
+  return out;
+}
+
+/**
+ * 「运行时被占的格子」—— 把节点 `+0x24` 的运行位**现算**出来。
+ *
+ * @source `pick_object_node` VA 0x0040aa6c 的筛选循环：
+ * ```asm
+ * 0040aa37  test dword [eax + 0x24], 0x80ffff00
+ * 0040aa3e  jne  跳过
+ * ```
+ * 掩码三段：**bit 31 = 静态**（地图形数据里就带着，本引擎有 `MapNode.noObjects`）、
+ * **bits 8..11 = 玩家 i 站在这格**、**bits 12..23 = 这格上已经有物件**。
+ *
+ * ⚠️ 本引擎不在节点上镜像这份运行时状态，故按「谁的 `nodeId` 是它」现算 ——
+ * **玩家与物件两者都要算**：只看物件会漏掉「有人站着的格子」，
+ * 而原版的候选筛选把两者一起跳过。落到有人站的格子上，棋子就与玩家叠在一格
+ * （原版不可能出现）。
+ *
+ * ⚠️ `attached !== 0` 的物件（附在人身上的神明）`nodeId` 虽非 0，
+ * 但**不在**地图上，故不算占用。
+ */
+export function runtimeOccupiedNodes(
+  players: readonly { nodeId: number }[],
+  objects: readonly { nodeId: number; attached: number }[],
+): Set<number> {
+  const out = new Set<number>();
+  for (const p of players) if (p.nodeId !== 0) out.add(p.nodeId);
+  for (const o of objects) if (o.nodeId !== 0 && o.attached === 0) out.add(o.nodeId);
   return out;
 }
 
@@ -896,8 +984,3 @@ export function pickObjectNodeDistant(
  *   见不到大神。
  */
 export const INITIAL_OBJECT_TYPES: readonly number[] = [1, 3, 5, 7, 9, 11, 13, 14];
-
-/** 某玩家在某道具上的持有数 —— 测试与 AI 用得上 */
-export function heldTools(tools: readonly number[], playerIndex: number, toolId: number): number {
-  return tools[playerIndex * TOOL_SLOTS_PER_PLAYER + toolId] ?? 0;
-}

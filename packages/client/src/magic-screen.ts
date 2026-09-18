@@ -14,7 +14,7 @@
  * | 底图 = `Panel.mkf` **#18** 图 0（640×480），传 (0,0) | 0x00432511（`+0xc` = 图 0） |
  * | 女巫抬手的姿势 = 图 2，锚点落 **(317,238)** | 0x00432aec `add eax, 0x18`（18/12 = 图 2） |
  * | 女巫常态 / 眨眼 = 图 6，锚点落 **(324,238)** | 0x00432b0f `add eax, 0x48`（72/12 = 图 6） |
- * | 中央字框 = 图 1 ▶ 图 7（284×210），落 (241,140) | 0x00432511 `+0x18` / 0x00432aec |
+ * | 中央女巫 = 图 1（165×213）▶ 图 2（284×210），落 (140,241) / (286,217) | 0x00432511 `+0x18` / 0x00432aec |
  * | 十二个功能图标 = 图 11..34（**每个功能两张**） | 0x00432cfd `[0x48c398+0xc+(k+0x16)*12]` |
  * | 悬停的另一个框 = 图 4（60×18），落 (241,140) | 0x00432951 `+0x30` |
  *
@@ -57,6 +57,7 @@
  */
 
 import { MAGIC_HOUSE_OPTIONS } from '@rich4/data';
+import { playVoiceCode } from './voice-sink.ts';
 import {
   LAND_TYPE_HOUSE,
   MAGIC_TARGET_NAMES,
@@ -126,6 +127,13 @@ export const MAGIC_CHUNK = {
    * ★ 先前把图 9/10（142×120 的**悬停弹窗框**）当成「女巫头部特写」是错的 ——
    *   那两张画在 (0x11e, 0xd9) 上会变成第三只锦缎框，女巫于是「消失」（B-2 症状③）。
    */
+  /** 闭眼贴片（60×35）@source 状态 3：`[0x48c398]+0x30` 贴到 (0x11e,0xbc) */
+  eyesShut: 3,
+  /** 眼睑/眨眼贴片（60×18）@source 状态 4：`+0x3c` 贴到 (0x11e,0xdc)（Lock 60×18）*/
+  eyelid: 4,
+  /** 张嘴贴片（60×21）@source 0x00432b0f：`+0x48` 贴到 (0x11e,0xd9) */
+  mouth: 5,
+  // 旧名保留（同图号）：先前误当作「文字长条」
   barIntro: 3,
   barHint: 4,
   barText: 5,
@@ -186,8 +194,45 @@ export const MAGIC_WITCH_INTRO_AT = { x: 0x8c, y: 0xf1 } as const;
 export function magicFrameAt(option: number): { x: number; y: number } {
   return magicIconAt(option);
 }
-/** 悬停时那个（另一张）锦缎框的落点 @source 0x00432951 `push 0xdf` / `push 0xbc` */
-export const MAGIC_FRAME_ALT_AT = { x: 0xbc, y: 0xdf } as const;
+
+/**
+ * 指针/结果那一拍要贴的**锦缎框图号** —— **按功能而异**。
+ *
+ * @source 0x00432dc4：`edx = [16 * (功能号 + 1) + 0x475708]` 被直接当 MKF 记录下标用
+ *   ⇒ 十二个功能的图号 = `MAGIC_HOUSE_OPTIONS[].img`（9/10/7/6）。
+ *   ★ 第 101 条订正：先前一律画 `MAGIC_CHUNK.frame`（图 6），
+ *   于是功能 0..6 的框都贴错了（其中 0/1 该贴 9/10、2..6 该贴 7）。
+ */
+export function magicFrameChunk(option: number): number {
+  return MAGIC_HOUSE_OPTIONS[option]?.img ?? MAGIC_CHUNK.frame;
+}
+/**
+ * ★★ 状态 3 那一下贴的**闭眼**贴片（图 3，60×35）的落点 —— 第 101 条查清。
+ *
+ * @source `loc_00432951`（状态 3，把状态推进到 4，VA 0x00432951）：
+ * ```asm
+ * 00432951  mov  byte ptr [0x48c3a2], 4        ; 状态 3 → 4
+ * 00432958  mov  dword ptr [esp + 0x40], 0x11e ; 矩形 (0x11e,0xbc)-(0x15a,0xdf) = 60×35
+ * 00432960  mov  dword ptr [esp + 0x44], 0xbc
+ * 00432968  mov  dword ptr [esp + 0x48], 0x15a
+ * 00432970  mov  dword ptr [esp + 0x4c], 0xdf
+ * 00432978  edx = [[0x48a0e0]] ; push 0/push 1/push 0x48a068/push 0/push sur
+ * 0043298b  call [edx + 0x64]                  ; ★= IDirectDrawSurface::**Lock**（带矩形）
+ * 0043298e  edi = [esp + 0x44]  (= 0xbc)  → push   ; y
+ * 00432993  ebp = [esp + 0x44]  (= 0x11e) → push   ; x（push 之后偏移变 4）
+ * 0043299d  eax = [0x48c398] + 0x30 → push         ; 源 = **图 3**（60×35）
+ * 004329a7  call 0x4563f5                          ; 不透明 blit
+ * 004329af  … call [edx + 0x80]                    ; ★ Unlock
+ * 004329ce  if ([0x48c3a5] == 0) [0x48c3a1] = 0xa  ; 摇签 10 拍（关動畫 = 1 拍）
+ * ```
+ * ⇒ 落点 **(286,188)**；那个 60×35 的矩形是 **Lock 的裁剪矩形**（不是源矩形），
+ *   尺寸与图 3 本身一致。
+ *
+ * ⚠️ 2026-09-19（第 97 条）曾把它记作「源 = 图 7（frameAlt）」，那是按 dword 数
+ *   `+0x30 / 4 = 12 ⇒ 第 13 项` 算的 —— **漏了记录表的 12 字节表头**。
+ *   按「图 i = `+0xc + 12i`」`+0x30` 是 **图 3**，与 60×35 的尺寸、以及
+ *   `Panel/0018_003.png` = 60×35（**女巫闭着的眼睛**）三方吻合。见 `MAGIC_EYES_AT`。
+ */
 /**
  * 常态女巫（图 2，锚点 (0,0)）落点 @source 0x00432a85 起：
  *   `mov [esp+0x40], 0x11e` / `mov [esp+0x44], 0xd9` → (0x11e, 0xd9)。
@@ -209,9 +254,23 @@ export const MAGIC_WITCH_BEAT2_AT = { x: 0xb6, y: 0x8e } as const;
  *   `[0x48c398] + 0x3c` = 图 5；另一支是 `fcn_0045643d(图 2, 裁剪 0x2d/0x4d/0x3c/0x15)`。
  *   先前当成头部特写画图 9/10（142×120 的悬停弹窗框）⇒ 女巫被红框盖掉（症状③）。
  */
-export const MAGIC_MOUTH_AT = { x: 0x11e, y: 0xdc } as const;
-/** 女巫「说话/张嘴」的随机概率：`call rand / test al,1 / je` @source 0x00432ad3 */
-export const MAGIC_WITCH_BLINK_P = 1 / 2;
+export const MAGIC_MOUTH_AT = { x: 0x11e, y: 0xd9 } as const;
+/**
+ * 女巫「张嘴」的每拍概率。
+ *
+ * @source 0x00432a85：先 `rand() >> 11`（⇒ **1/4** 的门槛），过了再 `rand() & 1`
+ *   ⇒ 真正贴图 5 的概率是 **1/8**（先前只按 `rand()&1` 写成 1/2）。
+ */
+export const MAGIC_WITCH_BLINK_P = 1 / 8;
+/**
+ * 摇签开始那一拍贴的**闭眼**贴片（图 3，60×35）落点。
+ *
+ * @source 0x00432951（魔法屋状态 3→4）：Lock 一个 60×35 的矩形
+ *   `{0x11e, 0xbc, 0x15a, 0xdf}` 后把 `[0x48c398]+0x30`（= **图 3**）贴到 (286,188)。
+ *   ★ 第 101 条订正：先前这里记作「图 7（frameAlt）」并把落点当 x/y 反了 ——
+ *   `+0x30` 按 `+0xc + 12i` 是 **图 3**，与 60×35 的尺寸正好吻合。
+ */
+export const MAGIC_EYES_AT = { x: 0x11e, y: 0xbc } as const;
 /** 长条结果框落点 @source 0x00432894 尾：`0x11e / 0xdc`（裁剪 0x15a/0xee，图 8 = 280×173）*/
 export const MAGIC_RESULT_AT = { x: 0x11e, y: 0xdc } as const;
 /**
@@ -338,8 +397,14 @@ export const MAGIC_AIR_MS = tickMs(1);
  *   `frames == 10` 的第 0 个功能（寶箱）确实是两张，其余按一张读。
  *   见 `docs/deviations/T-037.md` 的 D-MAGIC-3。
  */
+/** 自造两帧序的那一个功能（只是为了把 13 张图用满，见 `magicIconFrameCount`）*/
+export const MAGIC_ICON_FRAME_OPTION = 0;
+
 export function magicIconFrameCount(option: number): number {
-  return MAGIC_HOUSE_OPTIONS[option]?.frames === 10 ? MAGIC_ICON_STRIDE : 1;
+  // ⚠️ 第 101 条订正：那个字段是**指针高亮框的图号**（`img`），不是「图标帧数」。
+  //   原版的第二张图是「悬停变体」（`+1` @source 0x00432d0e），本引擎改用描圈，
+  //   并自造了一个两帧序（D-MAGIC-3）。这里保留自造行为、不再假托那个字段。
+  return option === MAGIC_ICON_FRAME_OPTION ? MAGIC_ICON_STRIDE : 1;
 }
 
 /**
@@ -1158,9 +1223,9 @@ export const MAGIC_KEYED = new Set<number>([
   // ★ 图 9/10 是**悬停弹窗框**（142×120），不是女巫的头 —— 名字见 `MAGIC_CHUNK`
   MAGIC_CHUNK.hoverFrame,
   MAGIC_CHUNK.hoverFrameAlt,
-  MAGIC_CHUNK.barIntro,
-  MAGIC_CHUNK.barHint,
-  MAGIC_CHUNK.barText,
+  // ★ 图 3/4/5 **不进**抠黑表：原版三处贴片（眼睛/眼睑/嘴）都走
+  //   `fcn_004563f5`（**不透明**）：0x004329a7、0x004328f2 -> 0x4563f5、0x00432b1a。
+  //   先前把它们当「文字长条」抠黑，会把脸上的贴片抠出黑洞。
   // 十二个功能图标：图 22..34（`magicIconChunk` 就是这个区间）
   ...Array.from({ length: 13 }, (_, i) => MAGIC_CHUNK.ringFirst + i),
 ]);
@@ -1179,7 +1244,8 @@ function magicIconSprite(sprite: MagicSprite, option: number, frame: number): Sp
 
 /** 台詞串去掉 `#NNNN` 语音前缀后的**可见文字**（`\n` 保留，画的时候拆行）*/
 export function magicGreetText(line: string): string {
-  return line.startsWith('#') ? line.slice(5) : line;
+  // ★ 收敛到唯一入口：顺手播 `#NNNN`
+  return playVoiceCode(line);
 }
 
 /**
@@ -1310,7 +1376,7 @@ export function drawMagicScreen(
   }
 
   // ── 弹窗框（与功能名同点）→ 字 → 女巫 ──
-  drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.frame), frameAt.x, frameAt.y);
+  drawAnchored(ctx, magicSprite(sprite, magicFrameChunk(option)), frameAt.x, frameAt.y);
 
   if (d.view.option >= 0) {
     // 回放：结果那行和「对谁做」
@@ -1332,6 +1398,15 @@ export function drawMagicScreen(
       magicSprite(sprite, MAGIC_CHUNK.witchIntro),
       MAGIC_WITCH_INTRO_AT.x,
       MAGIC_WITCH_INTRO_AT.y,
+    );
+    // ★ 摇签开始那一拍（原版状态 3，@source 0x00432951）：女巫**闭眼**贴片（图 3，60×35）
+    //   落在 (286,188)。原版先 Lock 一个正好 60×35 的矩形再贴，本引擎直接贴。
+    //   ⚠️ 这一笔先前**完全没有**（模块只画女巫本体）。
+    drawAnchored(
+      ctx,
+      magicSprite(sprite, MAGIC_CHUNK.eyesShut),
+      MAGIC_EYES_AT.x,
+      MAGIC_EYES_AT.y,
     );
   }
   const witchAt = d.beat === 2 ? MAGIC_WITCH_BEAT2_AT : MAGIC_WITCH_AT;

@@ -136,6 +136,8 @@ export function attachObject(
     displaced: 0,
   });
 
+  // ⚠️ 见 `applySummonCard` 的说明：請神符的正式实现是 `attachGod`，
+  //   本函数的功能是它的**真子集**（缺旧神送走 / 三项修正 / 搭档登场）。
   // @source test edx, edx / je 结束
   if (objectIndex === 0) return fail('noObject');
   const i = objectIndex - 1;
@@ -168,7 +170,14 @@ export function attachObject(
 }
 
 /**
- * 使用請神符。
+ * 使用請神符 —— **已被 `rules/god-power.ts` 的 `attachGod` 取代**。
+ *
+ * ⚠️ **不要接这条**。請神符（卡 23）在 `cards/registry.ts` 里走的是
+ *   `attachGod`（@source 0x0040ead7 的完整版）：它除了这里的附身三件事，
+ *   还会**把旧神送走**（0x40eb3e）、重算三项修正（0x0040ebcc 起）、
+ *   处理「搭档登场」（`respawn`），并带上 `tools`/`toolStock`。
+ *   本函数只是最初那版薄壳，功能**比 `attachGod` 少**，留着仅作
+ *   `attachObject` 的单元测试入口。
  *
  * 卡片本体（VA 0x00444e1a）在附身之前还做了一件事：把物件的 `nodeId`
  * 暂存后清零、播完飞过来的动画、再写回——那是**纯表现**，

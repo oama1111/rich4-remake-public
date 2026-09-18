@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
+import { WatcomRng } from '../rng/watcom.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import {
   handlerFor,
@@ -19,6 +20,35 @@ const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
 const MAP0 = `${ROOT}/extracted/map/0001.bin`;
 const d = existsSync(MAP0) ? describe : describe.skip;
 
+
+describe('★ 得點券格的台词事件 —— 通道 2 钉住（test_points_squares.py 18/18）', () => {
+  const rng0 = () => ({ state: 1 });
+
+  it('★★ 30 點：固定交出**事件 2**、且**不掷**随机数', () => {
+    // @source 0x0041b28d `esi = [0x480852 + 角色*0x6c]`（0x480852−0x48084a = 8 ⇒ 事件 2）
+    //   同一条桩里**没有** `call rand`（对照 50 點 的 `0x0041b1f8`）
+    const out = settleSpecialSquare(SPECIAL_KIND.POINTS_30, makePlayer(), [], 0x1234);
+    expect(out.pointsDelta).toBe(0x1e);
+    expect(out.phraseIndex).toBe(2);
+    expect(out.rngState).toBe(0x1234); // 随机流一步没动
+  });
+
+  it('50 點：掷一次选事件 0/1（原有行为，护栏）', () => {
+    const a = settleSpecialSquare(SPECIAL_KIND.POINTS_50, makePlayer(), [], 0x1234);
+    expect(a.pointsDelta).toBe(0x32);
+    expect(a.phraseIndex === 0 || a.phraseIndex === 1).toBe(true);
+    expect(a.rngState).not.toBe(0x1234);
+  });
+
+  it('★ 10 點：**一句都不说**（`phraseIndex` 必须缺省）', () => {
+    // @source 0x0041b2fd 直接 `jmp 0x41b3d0`（尾声），连 `player_say` 都不调
+    const out = settleSpecialSquare(SPECIAL_KIND.POINTS_10, makePlayer(), [], 0x1234);
+    expect(out.pointsDelta).toBe(0x0a);
+    expect(out.phraseIndex).toBeUndefined();
+    expect(out.rngState).toBe(0x1234);
+  });
+  void rng0;
+});
 
 describe('17 路跳表', () => {
   it('恰好覆盖 kind 0..16', () => {
@@ -67,13 +97,18 @@ describe('得点格', () => {
   });
 
   it.each([
-    [SPECIAL_KIND.POINTS_50, 50],
-    [SPECIAL_KIND.POINTS_30, 30],
-    [SPECIAL_KIND.POINTS_10, 10],
-  ])('kind %i 给 %i 点', (kind, pts) => {
+    // ★ 第三列 = 该档是否消耗随机数。**只有 50 點**这一档掷
+    //   （@source 0x0041b1f8 `call 0x456f2d` 选台词）；
+    //   30 點 `0x0041b21e` 与 10 點 `0x0041b2a3` 两条桩里都没有 `call rand`。
+    //   先前这里三档一律断言"不消耗随机数"，把 50 點那条写错了。
+    [SPECIAL_KIND.POINTS_50, 50, true],
+    [SPECIAL_KIND.POINTS_30, 30, false],
+    [SPECIAL_KIND.POINTS_10, 10, false],
+  ])('kind %i 给 %i 点（消耗随机数=%s）', (kind, pts, consumes) => {
     const out = settleSpecialSquare(kind, makePlayer(), [], 1);
     expect(out.pointsDelta).toBe(pts);
-    expect(out.rngState).toBe(1); // 得点不消耗随机数
+    if (consumes) expect(out.rngState).not.toBe(1);
+    else expect(out.rngState).toBe(1);
   });
 
   it('★ points 是 uint16，溢出会回绕（原版行为，保留不修）', () => {
@@ -81,6 +116,46 @@ describe('得点格', () => {
     expect(addPoints(65535, 1)).toBe(0);
     expect(addPoints(65530, 50)).toBe(44);
     expect(addPoints(100, 50)).toBe(150);
+  });
+});
+
+// ★ 得５０點那一格**掷一次**随机数选台词（@source 0x0041b1f8 `call 0x456f2d`），
+//   而 30 點（0x0041b21e）与 10 點（0x0041b2a3）两条桩里**没有** `call rand`。
+describe('★ 得點格：只有 50 點消耗随机数', () => {
+  const seed = 12345;
+
+  it('POINTS_50 消耗一次，并交出 0/1 的台词下标', () => {
+    const out = settleSpecialSquare(SPECIAL_KIND.POINTS_50, makePlayer(), [], seed);
+    const probe = new WatcomRng();
+    probe.setState(seed);
+    const r = probe.next();
+    expect(out.pointsDelta).toBe(50);
+    expect(out.rngState).toBe(probe.getState()); // ★ 正好前进一次
+    expect(out.phraseIndex).toBe(r & 1);
+  });
+
+  it('★ POINTS_30 / POINTS_10 都不消耗随机数', () => {
+    for (const [kind, delta] of [
+      [SPECIAL_KIND.POINTS_30, 30],
+      [SPECIAL_KIND.POINTS_10, 10],
+    ] as const) {
+      const out = settleSpecialSquare(kind, makePlayer(), [], seed);
+      expect(out.pointsDelta).toBe(delta);
+      expect(out.rngState).toBe(seed); // ★ 原地不动
+    }
+  });
+
+  it('★★ POINTS_30 交出**固定事件 2**（此前漏了这句台词）', () => {
+    // ⚠️ 这条断言 2026-09-19 改过：旧版写「30 點 phraseIndex === undefined」——
+    //   那是**旧实现的复述**。通道 2（`rich4-spec/tests/test_points_squares.py` 18/18）实测
+    //   `0x0041b28d esi = [0x480852 + 角色*0x6c]`（= 事件 2）后照样 `player_say`。
+    const out = settleSpecialSquare(SPECIAL_KIND.POINTS_30, makePlayer(), [], seed);
+    expect(out.phraseIndex).toBe(2);
+  });
+
+  it('★ POINTS_10 不说台词（`0x0041b2fd` 直接跳尾声）', () => {
+    const out = settleSpecialSquare(SPECIAL_KIND.POINTS_10, makePlayer(), [], seed);
+    expect(out.phraseIndex).toBeUndefined();
   });
 });
 

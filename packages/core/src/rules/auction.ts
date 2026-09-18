@@ -27,10 +27,10 @@
  */
 
 import type { FacilityInfo, LandInfo } from '../loaders/map.ts';
-import type { Player } from '../state/types.ts';
+import { isAiControlled, type Player } from '../state/types.ts';
 import { transferMoney, PARTY_POOL, type Company } from './payment.ts';
-import { WatcomRng } from '../rng/watcom.ts';
 import { truncTowardZero } from './rounding.ts';
+import { misalignedDoubleInt } from './hostility.ts';
 
 // ★ 全项目只有 `rules/rounding.ts` 一份实现；这里转出去只为兼容既有引用。
 export { truncTowardZero } from './rounding.ts';
@@ -118,17 +118,19 @@ export function auctionCardHostility(
   priceIndex: number,
 ): number {
   // ★ 刻意保持浮点、不取整：这条 bug 的成立与否，正取决于该 double 的
-  //   低 32 位是否为零 —— 取整会毁掉复刻。产出是敌意（且是垃圾值）而
-  //   非金额，C-DET-3 在此定向豁免（同 buy-land.ts 的既有先例）。
+  //   低 32 位 —— 取整会毁掉复刻。产出是敌意（且是垃圾值）而非金额，
+  //   C-DET-3 在此定向豁免。取值统一走 `rules/hostility.ts` 的共享实现。
+  // ★★ 写法必须**照 asm 的次序**、并且按 **double 精度**逐步舍入：
+  //   x87 的默认精度控制字是 `0x027F`（PC = 10b = **53 位 = double**），
+  //   所以 `fild A` → `fild level`/`fadd 2.0f`/`fdiv 5.0f` → `fmulp` 的每一步
+  //   都舍成 double ⇒ 与 JS 的 `A * ((level + 2) / 5)` **逐位相同**。
+  //   反过来写成「精确乘积 ÷ 5」（一次除法）会得到**另一个** double：
+  //   实测 `A=1001, level=2` ⇒ 原版（与本式）低 32 位 = **+1717986919**，
+  //   一次除法版 = +1717986918（差 1 ulp ⇒ 垃圾值差 1）。
   // eslint-disable-next-line no-restricted-syntax
-  const value = (landPrice * priceIndex * (level + 2)) / 5;
-  // double 位型的低 32 位（x86 小端）
-  low32Buf[0] = value;
-  return low32View[0]! | 0;
+  const value = (landPrice * priceIndex) * ((level + 2) / 5);
+  return misalignedDoubleInt(value);
 }
-
-const low32Buf = new Float64Array(1);
-const low32View = new Uint32Array(low32Buf.buffer);
 
 /**
  * `__round_toward_zero` @source VA 0x00457dbc —— **已移至 `rules/rounding.ts`**。
@@ -592,35 +594,61 @@ export function sameNameFacilityOwned(): number {
 /**
  * 每个可以出价的玩家一份**心理价位**。
  *
- * @source 入口 `0x0043c5d9` 那段：对每个「在场、出得起底价、且是电脑」的
- *   座位调一次 `fcn_00439f0d`，结果存进座位 `+8`（`[0x48c438]`）。
- *   真人座位留 0（他不是 rand 出来的价，是手点的）。
+ * @source 建表循环 VA 0x0043c5d0..0x0043c680（在 `fcn_0043bde5` 内）：
+ * ```asm
+ * 0043c5d0  cmp  ebx, 4 / jge 0x43c680     ; ★ 循环 4 个**座位槽**（按下标升序）
+ * 0043c5e3  ax = word [ebx*20 + 0x48c434]  ; 该槽的玩家号 + 1（0 = 空槽）
+ * 0043c5ea  test ax, ax / je  下一槽        ; 空槽 → **不掷**
+ * 0043c5fa  test byte [player + 0x15], 6   ; ★ who_plays 的 bit1|bit2
+ * 0043c601  je   0x43c624                  ;   不是电脑/托管 → **不掷**
+ * 0043c603  cmp  word [ebx*20 + 0x48c436], 0
+ * 0043c60b  jne  0x43c624                  ; ★ 座位状态非 0 → **不掷**
+ * 0043c60d  push 实体号 / push 玩家号+1
+ * 0043c616  call 0x439f0d                  ; ★ 算一次（内部开头就 call rand 一次）
+ * 0043c61e  [ebx*20 + 0x48c438] = eax      ; 存心理价位
+ * ```
  *
- * 本函数把「算一遍」与「怎么处理各种座位类型」绑在一起，**只在开拍时算一次**。
+ * ★★ 四条闸门决定了**掷几次**，一条都不能少：
+ *   1. 空槽不掷；
+ *   2. **真人（`whoPlays & 6 == 0`）不掷** —— 他不是 rand 出来的价，是手点的；
+ *   3. **座位状态非 0 的不掷** —— 建表时写下的 7（卖家）与 8（出不起底价）
+ *      都在此列，而建表发生在 `0x439f0d` **之前**，所以「出不起底价」的座位
+ *      心理价位停在 0；
+ *   4. 顺序是**座位槽下标升序**（= 玩家下标升序）。
  *
- * ⚠️ **随机源**：原版那三处是 `_libc_rand`（全局 PRNG）。本引擎**不能**在这里
- *   动 `GameState.rngState`（那会让同一局在不同端上算出不同的心理价位），
- *   故用 `seed` 派生一条**独立的** WatcomRng —— 算法位级一致，只是序列
- *   由 `seed` 决定。见 `docs/deviations/T-034.md` 的 D-T034-5（同一条口径）。
+ * ⚠️ 因此本函数**必须**知道 `status` 与 `seller`：复刻把卖家的「7」编码成了
+ *   单独一个 `seller` 参数（`status` 里他是 `'active'`），不显式排除就会
+ *   给他多掷一次随机数、把整条全局序列推歪。
  *
- * @param seed 调用方给的确定性种子（通常由 `rngState` + 实体号派生）
+ * ⚠️ **随机源（2026-09-16 订正）**：原版这里是 `_libc_rand`（**全局** PRNG），
+ *   所以开一场拍卖会**推进全局随机流**。本条曾以「怕联机两端对不上」为由
+ *   改成派生种子（旧 D-T034-5），那个理由不成立：开拍在 **reducer** 里发生、
+ *   两端对同一串 action 跑同一个 reducer，消费同样的次数就不会漂；
+ *   而屏只读 `pending.limits`、从不重算（`client/auction-screen.ts`）。
+ *   现按原版消费全局流，`rngState` 的回写由调用方（`startAuction`）负责。
+ *
+ * @param status 座位状态（按**玩家**下标索引）—— 只有 `'active'` 才掷
+ * @param seller 卖家玩家下标（原版状态 7）；-1 = 无卖家
+ * @param rand01 `rand()/32767`；**每算一家正好消费一次**
  */
 export function auctionAiLimits(
   entity: AuctionEntity,
   players: readonly Player[],
   bidders: readonly number[],
-  seed: number,
+  status: readonly AuctionSeatStatus[],
+  seller: number,
+  rand01: () => number,
 ): number[] {
-  const rng = new WatcomRng(seed >>> 0);
-  // ★ 这里把 15 位整数归一成 [0,1) 交给 `auctionAiLimit`（它自己再乘回 32768），
-  //   是**随机数归一化**不是金额计算；原版那三处也全是浮点（`fild`/`fdiv`）。
-  // eslint-disable-next-line no-restricted-syntax -- C-DET-3 的定向豁免（同上）
-  const rand01 = (): number => rng.next() / 32768;
   const limits = new Array<number>(players.length).fill(0);
   for (const bidder of bidders) {
     const p = players[bidder];
-    // 原版只给「可出价的电脑」算；不在场/出局者连座位都没有
+    // @source 空槽 / 出局者连座位都没有
     if (p === undefined || p.whoPlays === 0) continue;
+    // @source cmp word [座+2], 0 / jne 跳过 —— 卖家(7)与出不起底价(8)都在此列
+    if ((status[bidder] ?? 'active') !== 'active') continue;
+    if (bidder === seller) continue;
+    // @source test byte [player + 0x15], 6 / je 跳过 —— 真人那一格留 0
+    if (!isAiControlled(p)) continue;
     limits[bidder] = aiLimitForPlayer(entity, bidder, p, rand01);
   }
   return limits;

@@ -16,7 +16,7 @@
  */
 
 import type { Player } from '../state/types.ts';
-import type { FacilityInfo, LandInfo, MapNode } from '../loaders/map.ts';
+import type { FacilityInfo, LandInfo, LandscapeInfo, MapNode } from '../loaders/map.ts';
 import type { CardTarget, StandingInstanceKind, TargetError } from './target.ts';
 import { targetClassOfCard, validateTarget } from './target.ts';
 import type { MapObject } from './summon.ts';
@@ -43,11 +43,18 @@ import { applyTurnCard, applyTurnCardToActor, applySwapHouseCard, applySwapHouse
 import { applyTaxCard } from './tax.ts';
 import { applyDispelCard } from './dispel.ts';
 import { applyFrameCard } from './frame.ts';
-import { applyBuyLandCard } from './buy-land.ts';
+import { applyBuyLandCard, buyLandCardHostility } from './buy-land.ts';
 import { applyRebuildCard, applyRebuildFacilityCard } from './rebuild.ts';
 import { applyRobCard, applyRobCardCard } from './rob.ts';
 import { applyMonsterCard, applyMonsterFacilityCard, MONSTER_HOSTILITY_PER_LEVEL } from './monster.ts';
-import { applyRedCard, applyBlackCard, applySwapLandCard, applySwapFacilityCard } from './swap-and-stock.ts';
+import { releaseConfinedPlayers } from '../rules/blocking.ts';
+import {
+  applyBlackCard,
+  applyRedCard,
+  applySwapFacilityCard,
+  applySwapLandCard,
+  blackCardHostilityDeltas,
+} from './swap-and-stock.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import { applyStockNews } from '../places/stock-market.ts';
 import {
@@ -80,6 +87,20 @@ export type UseCardError =
 
 /** 卡片使用的结果 */
 export interface UseCardResult {
+  /**
+   * ★ `ok` **就是原版卡片函数的返回值语义**：非 0 = 成功（卡已扣），
+   *   0 = 失败（卡未扣、状态一点不动）。
+   *
+   * 这条等价关系是**机械核验过的**，不是近似：
+   * `rich4-spec/tools/scratch/consume_invariant_check.py` 把 30 张卡片函数
+   * 从每个 `call 0x441343`（`remove_card`）的下一条指令起做前向 DFS，
+   * 结论 **30/30：扣卡之后的每一条出口都返回非 0**。
+   * 因此原版里不存在「返回 0 但卡已扣」的路径 ⇒
+   * `ok === false` ⟺ 卡还在手上（`state/reduce.ts` 的 `playCard` 据此直接
+   * `return state`，不需要额外的 `consumed` 标志）。
+   *
+   * ⚠️ 反过来说：**「已扣卡但什么都没发生」是 `ok: true`**，见 `noEffect()`。
+   */
   ok: boolean;
   error: UseCardError | null;
   players: Player[];
@@ -99,6 +120,10 @@ export interface UseCardResult {
    * 其余卡原样返回）。下标 = actor − 4，与 `state.specialActors` 同形。
    */
   actors: SpecialActor[];
+  /** 监狱占用表（嫁禍/復仇卡入狱会改；其余卡原样返回） */
+  prisonOccupancy: number[];
+  /** 医院占用表（首次关押清"另一张"时会改） */
+  hospitalOccupancy: number[];
   /**
    * 效果执行中需要**重新登场的搭档**（請神符挤走旧神时，
    * 旧神的搭档要回到地图上）。落点选择交给 reduce 的 respawnPartner。
@@ -153,6 +178,13 @@ export interface UseCardContext {
   /** 股票行情（紅/黑卡写 newsFlag） */
   market: StockMarketState;
   /**
+   * 各玩家持股（`holdings[玩家][股票]`）—— **黑卡尾部敌意循环**要读它。
+   *
+   * @source VA 0x0044519d：`holdings + p*96 + n*8`（n 为 1-based 股票号）。
+   * 可选：不传就当「谁都没持股」（预览路径不需要它）。
+   */
+  holdings?: readonly (readonly { amount: number }[])[];
+  /**
    * 今天股市开不开门（= `marketOpenOn(globalMapId, 年, 月, 日)`）。
    * 由调用方算好传入，registry 不做日期推算。
    */
@@ -161,6 +193,23 @@ export interface UseCardContext {
   facilities: readonly FacilityInfo[];
   /** 特殊棋子表（停留/轉向/烏龜卡的 actor 目标要读/写） */
   actors: readonly SpecialActor[];
+  /**
+   * 监狱占用表（`0x496b30`）。★ 嫁禍/復仇卡要写它 —— 客户端关押动效
+   *   （`client/src/confine-fx.ts`）靠"这一格 0→1"的跳变触发。
+   */
+  prisonOccupancy?: readonly number[];
+  /** 医院占用表（`0x496b60`）：首次关押要清掉它对应那一格 */
+  hospitalOccupancy?: readonly number[];
+  /**
+   * 特殊景观表 —— 首次关押的**屏幕坐标**取自它
+   * （監獄 = 记录 2「綠島」、醫院 = 记录 1；`@source 0x43d643`/`0x43ecef`）。
+   */
+  landscapes?: readonly LandscapeInfo[];
+  /**
+   * 引擎随机出口（轉向卡掉头后要 `rand()` 重挑「来路」：原版 `0x40c834`）。
+   * 传的必须是 `state.rngState` 装出来的那条流（C-DET-4）。
+   */
+  rng?: { next(): number } | undefined;
   /**
    * 嫁祸卡的新目标选择器（陷害卡等有害卡在被嫁祸时调用）。
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
@@ -255,6 +304,8 @@ export function useCard(
     market: ctx.market,
     facilities: [...ctx.facilities],
     actors: [...ctx.actors],
+    prisonOccupancy: [...(ctx.prisonOccupancy ?? new Array<number>(8).fill(0))],
+    hospitalOccupancy: [...(ctx.hospitalOccupancy ?? new Array<number>(8).fill(0))],
     respawns: [],
     hostilityDeltas: [],
     defended: false,
@@ -262,7 +313,69 @@ export function useCard(
     followUp: null,
     researchReset: [],
   };
+  /**
+   * 失败返回 —— **卡未扣、状态一点不动**（`ok: false`）。
+   *
+   * ★★ 扣卡的时机是**机械的**：卡在「目标选定之后、效果之前」被移除
+   *   （`@source 0x004441dc` 的开头，以夢遊卡为例）：
+   *   ```asm
+   *   004441fc  push 0 / call 0x41e6f2        ; 取默认目标（或先弹选择框）
+   *   00444206  mov  esi, eax                 ; esi = 目标
+   *   00444208  test esi, esi
+   *   0044420a  je   0x4444b8                 ; ★ 选不到目标 → 返回，**卡未扣**
+   *   00444210  push 0x10                     ; 16 = 夢遊卡
+   *   00444219  call 0x441343                 ; ★ remove_card —— 在**效果之前**
+   *   ```
+   *
+   * ★ 30 张卡的 `remove_card` 位置已**逐张回 exe 核过**
+   *   （`rich4-spec/tools/scratch/consume_probe.py` 一次列出每张卡函数里
+   *   `call 0x441343` 与全部分支的相对次序）：
+   *
+   * | 组 | 卡 | `remove_card` 相对目标选择 |
+   * |---|---|---|
+   * | 甲 | 2/6/9/10/11/12/14/16/17/23/26/27/28/29/30 | **紧跟**在选框/AI 取参之后 |
+   * | 乙 | 3/4/5/7/8/13 | 在「换/买/拆/抢**成功**」判定之后 |
+   * | 丙 | 1/15 | 函数**开头**（无目标选择，也没有失败路径） |
+   * | 丁 | 22 | 在「有没有东西可送」判定之后 |
+   * | 戊 | 24/25 | 在「股市屏/AI 有没有选到股」判定之后 |
+   *
+   *   逐卡汇编依据（每张都取「`call 0x441343` 之前/之后的分支」）：
+   *   `0x4421f1`(卡2) `0x442610`(卡3) `0x442aeb`(卡4) `0x442f36`(卡5)
+   *   `0x442f8a`(卡6) `0x443213`(卡7) `0x44349f`(卡8) `0x443505`(卡9)
+   *   `0x44371d`(卡10) `0x443954`(卡11) `0x443b53`(卡12) `0x443f40`(卡13)
+   *   `0x443fca`(卡14) `0x4440f6`(卡15) `0x444219`(卡16) `0x4444fc`(卡17)
+   *   `0x444ce4`(卡22) `0x444e52`(卡23) `0x44502a`(卡24) `0x4451db`(卡25)
+   *   `0x445233`(卡26) `0x44546a`(卡27) `0x4455cc`(卡28) `0x445750`(卡29)
+   *   `0x445929`(卡30)。
+   *
+   *   ⚠️ 甲组的收尾一律是 `mov eax, <选中的目标值>` ⇒ 返回值**非 0**
+   *   ⇒ 原版把这看成**成功**（卡照扣、界面不报错）。这类「已选定但状态不变」
+   *   的情形不是 `fail`，而是下面的 `noEffect()` —— 两者**没有交集**：
+   *   `consume_invariant_check.py` 从每个 `remove_card` 之后做前向 DFS，
+   *   证明「扣卡之后的每一条出口都返回非 0」（30/30 成立）。
+   *   所以 `ok === false` ⟺ 卡还在手上，`state/reduce.ts` 的 `playCard`
+   *   才能直接用 `if (!r.ok) return state`。
+   */
   const fail = (error: UseCardError): UseCardResult => ({ ...base, error });
+
+  /**
+   * 「目标已选定、但什么都没发生」—— 原版这类路径**返回非 0**（见上表甲组），
+   * 即 **`ok: true` + 卡已扣**，只是状态没有变化。
+   *
+   * 典型：天使卡打满级設施（`@source 0x4436d9 mov eax, ebp` —— `ebp` 是选中
+   * 的地产编号，恒非 0）、夢遊卡打已在冬眠的替身（`@source 0x4444b8 mov eax, esi`）、
+   * 停留/轉向/烏龜卡打不在棋盘上的替身、紅/黑卡遇上停牌股。
+   *
+   * ⚠️ 若这里改成 `fail(...)`，`state/preview.ts` 的 `canUse` 会把这张卡
+   * 判成「用不了」（原版是能用的，点下去照扣卡），故必须是 `ok: true`。
+   */
+  const noEffect = (): UseCardResult => ({
+    ...base,
+    ok: true,
+    players: base.players.map((p, i) =>
+      i === ctx.currentPlayer ? consumeCard(p, cardId) : p,
+    ),
+  });
 
   const impl = cardImpl(cardId);
   if (impl === undefined) return fail('unknownCard');
@@ -308,6 +421,8 @@ export function useCard(
   let market: StockMarketState = ctx.market;
   let facilities: FacilityInfo[] = [...ctx.facilities];
   let actors: SpecialActor[] = [...ctx.actors];
+  let prisonOccupancy: number[] = [...(ctx.prisonOccupancy ?? new Array<number>(8).fill(0))];
+  let hospitalOccupancy: number[] = [...(ctx.hospitalOccupancy ?? new Array<number>(8).fill(0))];
   const respawns: { partner: number; nearNode: number }[] = [];
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
@@ -369,16 +484,24 @@ export function useCard(
       break;
     }
     case 6: {
+      // ★ 掉头后要 `rand()` 重挑「来路」（原版 `0x40c78c` 的 0x40c834）——
+      //   出口是 ctx 给的 `rng`，**只在真有候选时才调用**（见 `pickTurnBackNode`）。
+      const draw = (): number => ctx.rng?.next() ?? 0;
       if (target.kind === 'actor') {
         // REQ-05.1：轉向卡对特殊棋子 —— 0x40c78c 的 actor ≥ 4 分支
         const slot = specialSlotOf(target.actor);
         const a = slot >= 0 ? actors[slot] : undefined;
-        // 不在棋盘上（監獄/醫院/未出场）不生效，不扣卡
-        if (!actorActive(a)) return fail('noEffect');
-        actors = actors.map((x, i) => (i === slot ? applyTurnCardToActor(x) : x));
+        // 不在棋盘上（監獄/醫院/未出场）不生效。★ **卡照扣、原版算成功**：
+        //   @source `0x00442f8a call 0x441343`（remove_card）在选完掩码之后、
+        //   `0x00443025 call 0x40c78c`（真正掉头）之前；收尾 `0x00443069 mov eax, ebx`
+        //   （`ebx` = 掩码，恒非 0）。故走 `noEffect()` 而不是 `fail`。
+        if (!actorActive(a)) return noEffect();
+        actors = actors.map((x, i) =>
+          i === slot ? applyTurnCardToActor(x, ctx.nodes, draw) : x,
+        );
         break;
       }
-      const r = applyTurnCard(players, cur, target);
+      const r = applyTurnCard(players, cur, target, ctx.nodes, draw);
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       break;
@@ -388,7 +511,10 @@ export function useCard(
         // REQ-05.1：停留卡对特殊棋子 —— VA 0x004440d9 写 +14 halted = 1
         const slot = specialSlotOf(target.actor);
         const a = slot >= 0 ? actors[slot] : undefined;
-        if (!actorActive(a)) return fail('noEffect');
+        // 不在棋盘上不生效。★ **卡照扣、原版算成功** ——
+        //   @source `0x00443fca call 0x441343`（remove_card）在 `0x00443fb5 call 0x40d293`
+        //   （掩码取位号）之后；之后只剩「目标≠自己就说一句」的台词分支。
+        if (!actorActive(a)) return noEffect();
         actors = actors.map((x, i) => (i === slot ? applyStayCardToActor(x) : x));
         break;
       }
@@ -433,21 +559,36 @@ export function useCard(
       if (target.kind === 'actor') {
         const slot = specialSlotOf(target.actor);
         const a = slot >= 0 ? actors[slot] : undefined;
-        // 不在棋盘上（監獄/醫院/未出场）不生效，不扣卡 —— 与停留/轉向/烏龜同一条规矩。
+        // 不在棋盘上（監獄/醫院/未出场）不生效 —— 与停留/轉向/烏龜同一条规矩。
         // ⚠️ 原版那一支没有 `actorActive` 这个判断（它按鼠标点得到谁就是谁），
         //   但 picker 画的就是在场的那几个，故行为一致。
-        if (!actorActive(a)) return fail('noEffect');
-        // 已经冬眠的替身：原版那条 `jne` 不写，本引擎按「没生效就不扣卡」处理
+        if (!actorActive(a)) return noEffect();
+        // ★★ 已经冬眠的替身：**不写天数**，但原版在 `0x004444b3` 只做
+        //   `call 0x41d546` 收尾 + `mov eax, esi`（`esi` = 选中的目标，恒非 0）
+        //   ⇒ 返回值非 0 = **成功**，而 `remove_card` 早在 `0x00444219` 执行过了。
+        //   @source `0x004444a3 cmp byte [ebx + 0x498df4], 0` / `0x004444aa jne 0x4444b3`
+        //   —— 那条 `jne` 只跳过 `mov byte [ebx+0x498df5], 5`。
+        //   ⇒ 故走 `noEffect()`（`ok: true` + 已扣卡），不是 `fail`。
         const applied = applySleepwalkCardToActor(a!);
-        if (!applied.applied) return fail('noEffect');
+        if (!applied.applied) return noEffect();
         actors = actors.map((x, i) => (i === slot ? applied.actor : x));
         break;
       }
       // 夢遊卡：交通工具退还成道具，故全局道具表也要跟着结果走
-      const r = applySleepwalkCard(players, cur, target, tools);
+      const r = applySleepwalkCard(
+        players,
+        cur,
+        target,
+        tools,
+        ctx.scapegoatPicker,
+        ctx.priceIndex,
+      );
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       tools = r.tools;
+      // ★ 夢遊卡的敌意（`150 × priceIndex`，`@source 0x004442ea`）——
+      //   位置在防御卡判定**之前**，故被免罪卡挡下时**照样**记。
+      hostilityDeltas = r.hostilityDeltas;
       // @source 復仇卡(18) 把效果反弹给出牌者（applySleepwalkCard 内部处理），
       //   反弹不算「被防御性被动卡挡下」，defended 保持 false
       break;
@@ -467,7 +608,12 @@ export function useCard(
       if (!summonableObjects(objects).includes(target.objectIndex)) return fail('noEffect');
       // attachGod = 0x40ead7 完整版：旧神先送走（0x40eb3e）、三项修正（0x0040ebcc 起）
       const r = attachGod({ players, objects, tools, toolStock }, cur, target.objectIndex);
-      if (!r.ok) return fail('noEffect');
+      // ★ 走到这里说明「可请的物件」那道闸门已过；`attachGod` 的内部失败
+      //   （noObject/outOfRange/notAttachable）是第二道防线。原版的扣卡在
+      //   `0x00444e52 call 0x441343`（紧跟 `0x00444e37 call 0x41e6f2` 取参），
+      //   之后一路到 `0x00444f20 jmp 0x444685` 无条件收尾并返回非 0
+      //   ⇒ 无变化也算成功。故 `noEffect()`。
+      if (!r.ok) return noEffect();
       players = r.players;
       objects = r.objects;
       tools = r.tools;
@@ -477,7 +623,7 @@ export function useCard(
       break;
     }
     case 26: {
-      const r = applyTaxCard(players, cur, target);
+      const r = applyTaxCard(players, cur, target, ctx.scapegoatPicker);
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       defended = r.defended;
@@ -486,10 +632,19 @@ export function useCard(
     }
     case 17: {
       // 陷害卡：嫁祸的新目标由外部给出；core 只用结果（C-ARC-2）
-      const r = applyFrameCard(players, cur, target, ctx.priceIndex, ctx.scapegoatPicker);
+      const r = applyFrameCard(
+        players, cur, target, ctx.priceIndex, ctx.scapegoatPicker,
+        prisonOccupancy, hospitalOccupancy,
+        // ★ 首次入狱要传送到监狱格 + 跟班搬家（`send_to_prison` 函数体内的事）
+        ctx.nodes, objects, ctx.landscapes,
+      );
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
+      objects = r.objects;
       hostilityDeltas = r.hostilityDeltas;
+      // ★ 入狱要占床位（客户端关押动效靠这一格 0→1 触发）+ 清医院那一格
+      prisonOccupancy = r.prisonOccupancy;
+      hospitalOccupancy = r.hospitalOccupancy;
       defended = r.outcome?.kind === 'absolved';
       break;
     }
@@ -504,7 +659,10 @@ export function useCard(
         // REQ-05.1：烏龜卡对特殊棋子 —— VA 0x00445a3e 写 +15 single_step = 3
         const slot = specialSlotOf(target.actor);
         const a = slot >= 0 ? actors[slot] : undefined;
-        if (!actorActive(a)) return fail('noEffect');
+        // 不在棋盘上不生效。★ **卡照扣、原版算成功** ——
+        //   @source `0x00445929 call 0x441343`（remove_card）在 `0x00445914 call 0x40d293`
+        //   之后；收尾 `0x004458d8 mov eax, esi`（`esi` = 选中目标，恒非 0）。
+        if (!actorActive(a)) return noEffect();
         actors = actors.map((x, i) => (i === slot ? applyTortoiseCardToActor(x) : x));
         break;
       }
@@ -574,7 +732,18 @@ export function useCard(
       players = pay.players;
       // @source mov al, [0x49910c] / inc al / mov [land+0x19], al
       putLand({ ...here.land, owner: cur + 1 });
-      // ⚠️ 购地卡的敌意更新是原版 bug（空操作），见 buy-land.ts
+      // ★★ 敌意：原版按 **8 字节 double** 压栈、`0x40df69` 只读**低 32 位**
+      //   （@source 0x004423ed `sub esp,8` / 0x004423f0 `fstp qword [esp]` /
+      //   0x004423fb `call 0x40df69`）。公式 `(地价×物价)×(等级+2)/5`，
+      //   地价住宅取 `+0x1c`、商業取 `+0x22`（两条支路同一个公式与常量）。
+      //   ⚠️ 先前这里写着「空操作、恒为 0」——**错**（见 buy-land.ts 的订正注释）。
+      hostilityDeltas = [
+        {
+          from: r.previousOwner,
+          to: cur,
+          delta: buyLandCardHostility(here.land.landPrice, ctx.priceIndex, here.land.level),
+        },
+      ];
       break;
     }
     case 7: {
@@ -609,10 +778,16 @@ export function useCard(
         if (fac === null) return fail('facilityOutOfRange');
         // ★ 不能打自己的 / 不能打空地 @source 拾取跳表组 4 `loc_00446457`
         if (!demolishLikeTargetAllowed(fac.owner, fac.level, cur)) return fail('targetNotAllowed');
+        // ★ 不设「无变化就早退」的闸门：原版对无主/已夷平的记录**照样**
+        //   先记敌意再调 `mutate_land`（`@source 0x004439e8` 起：`cmp [rec+0x19],0`
+        //   只决定跳不跳 `0x40df69`，与 `mutate_land` 的「level==0 不动」无关），
+        //   且收尾 `0x00443b08 mov eax, esi` 恒非 0 ⇒ 无变化也算成功、卡照扣。
+        //   `applyMonsterFacilityCard` 在无变化时原样返回设施与敌意，落地即可。
         const r = applyMonsterFacilityCard(fac, ctx.priceIndex, cur);
-        if (!r.ok) return fail('noEffect');
         facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
         hostilityDeltas = r.hostilityDeltas;
+        // ★ 原版 `mutate_facility` 尾部 `call 0x40dffa` —— 全场放人
+        if (r.releasesConfined) players = releaseConfinedPlayers(players);
         break;
       }
       if (targetLand === null) return fail('landNotFound');
@@ -620,10 +795,12 @@ export function useCard(
       if (!demolishLikeTargetAllowed(targetLand.owner, targetLand.level, cur)) {
         return fail('targetNotAllowed');
       }
+      // ★ 同上：无变化（level==0）也照样记敌意、照样算成功
       const r = applyMonsterCard(targetLand, ctx.priceIndex, cur);
-      if (!r.ok) return fail('noEffect');
       putLand(r.land);
       hostilityDeltas = r.hostilityDeltas;
+      // ★ 原版 `mutate_land` 尾部 `call 0x40dffa` —— 全场放人
+      if (r.releasesConfined) players = releaseConfinedPlayers(players);
       break;
     }
     case 4:
@@ -668,8 +845,13 @@ export function useCard(
         const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
         if (fac === null) return fail('facilityOutOfRange');
         const r = applyAngelFacilityCard(fac, target.buildType ?? 0);
-        // 满级不动 → 不生效不扣卡（原版返回 0）
-        if (!r.ok) return fail('noEffect');
+        // ★ 满级不动 → 状态不变，**但卡照扣、原版算成功**。
+        //   先前这里写着「原版返回 0」，那是**读反了**：
+        //   @source `0x004436b7 je 0x4436c0` → `0x004436ce cmp dword [esp],0` →
+        //   `0x004436d2 je 0x4436d9` → `0x004436d9 mov eax, ebp`，
+        //   而 `ebp` 是 `0x004434dc call 0x446ae8` 选中的**地产编号**，恒非 0。
+        //   ⇒ 返回非 0 = 成功（卡在 `0x00443505` 已扣）。故 `noEffect()`。
+        if (!r.ok) return noEffect();
         facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
         break;
       }
@@ -683,10 +865,11 @@ export function useCard(
       if (target.kind === 'facility') {
         const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
         if (fac === null) return fail('facilityOutOfRange');
+        // ★ 同怪獸卡：无变化也要落敌意、算成功（收尾 `0x0044558c mov eax, ebp`）
         const r = applyDevilFacilityCard(fac, ctx.priceIndex, cur);
-        if (!r.ok) return fail('noEffect');
         facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
         hostilityDeltas = r.hostilityDeltas;
+        if (r.releasesConfined) players = releaseConfinedPlayers(players);
         break;
       }
       if (targetLand === null) return fail('landNotFound');
@@ -730,12 +913,15 @@ export function useCard(
         if (fac === null) return fail('facilityOutOfRange');
         // ★ 不能打自己的 / 不能打空地 @source 拾取跳表组 5 `loc_004464c3`
         if (!demolishLikeTargetAllowed(fac.owner, fac.level, cur)) return fail('targetNotAllowed');
+        // ★ 无变化（level==0）也照样记平坦敌意、照样算成功
+        //   （收尾 `0x00443e35 mov eax, [esp]` = 选中编号，恒非 0；
+        //   `0x00443d47 je` 只跳过台词，不跳过敌意）
         const r = applyDemolishFacilityCard(fac, ctx.priceIndex);
-        if (!r.ok) return fail('noEffect');
         facilities = facilities.map((f) => (f.id === fac.id ? r.facility : f));
         if (r.victim >= 0) {
           hostilityDeltas = [{ from: r.victim, to: cur, delta: r.hostilityDelta }];
         }
+        if (r.releasesConfined) players = releaseConfinedPlayers(players);
         break;
       }
       if (targetLand === null) return fail('landNotFound');
@@ -771,7 +957,11 @@ export function useCard(
         cardId === 27
           ? applyRaisePriceCard(lands, targetLand.name)
           : applySealCard(lands, targetLand.name);
-      if (r.affected.length === 0) return fail('noEffect');
+      // ★ 原版对「选到的编号不落在任何地产区间」的情形**照扣卡**并返回该编号
+      //   （非 0 = 成功）：@source 漲價卡 `0x004454b0 jle 0x445516` /
+      //   `0x0044551c jle 0x44557e` 都汇到 `0x0044558c mov eax, ebp`。
+      //   查封卡同形（`0x00445612` / `0x004456a0` → `0x0044558c`）。
+      if (r.affected.length === 0) return noEffect();
       lands = r.lands;
       break;
     }
@@ -788,7 +978,13 @@ export function useCard(
       const stock = market.stocks[target.index];
       if (stock === undefined) return fail('stockOutOfRange');
       // f6 非 0 = 停牌中，当日不波动，置数无意义 @source loc_00429470
-      if (stock.f6 !== 0) return fail('noEffect');
+      // ★ 原版没有这道闸门：真人在股市屏里点下去就写了 `newsFlag`（`0x00444f88`
+      //   / `0x004450f6`，在「选到了没有」判定之**后**），AI 那条更是**无条件**写；
+      //   两边随后都在 `0x0044502a` / `0x004451db` 扣卡并返回选中编号（非 0）。
+      //   所以停牌股上也该扣卡 ⇒ `noEffect()`（本闸门只挡住无意义的写）。
+      if (stock.f6 !== 0) return noEffect();
+      // ★ 黑卡尾部要「旧价 − 现价」，故先把旧价留下（原版函数开头就快照了 12 支旧价）
+      const oldPrice = stock.price;
       const r =
         cardId === 24
           ? applyRedCard(market.stocks, target.index)
@@ -803,8 +999,22 @@ export function useCard(
       //   当日那一格历史。UI 不写行情（C-ARC-2），所以这一步必须落在 core ——
       //   少了它，卡的效果要拖到第二天才看得见（且黑卡尾部的价差会是 0）。
       market = applyStockNews(market, target.index + 1);
-      // 紅卡无敌意段；黑卡尾部的敌意循环是原版 bug（double 压栈被当 int 读，恒为 0），
-      // 均不落敌意
+      // ★★ 黑卡尾部的敌意循环（VA 0x00445164 起）—— **真的会落敌意**：
+      //   它把 `持股 × 价差 ÷ 200` 按 double 压栈，而被调方 `0x40df69` 只读
+      //   **低 32 位**；那个低 32 位大多数时候**不是 0**（实测 40/40 见
+      //   `rich4-spec/tests/test_stock_alliance_cards.py`），于是关系值会被
+      //   写进一个巨大的整数（如 +1717986918）。本节此前写「恒为 0、均不落敌意」
+      //   是**错的**，已订正。
+      //   紅卡没有敌意段。
+      if (cardId === 25 && ctx.holdings !== undefined) {
+        const holders = ctx.players.map((_p, i) => ctx.holdings?.[i]?.[target.index]?.amount ?? 0);
+        hostilityDeltas = blackCardHostilityDeltas(
+          holders,
+          cur,
+          oldPrice,
+          market.stocks[target.index]?.price ?? oldPrice,
+        );
+      }
       break;
     }
 
@@ -818,5 +1028,6 @@ export function useCard(
   // ★ 效果生效后才消耗卡片
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset };
+  // ★ 走到这里 = 原版返回非 0（成功）：效果已落地，卡已被扣
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset };
 }

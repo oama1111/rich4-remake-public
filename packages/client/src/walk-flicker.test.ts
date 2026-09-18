@@ -429,15 +429,22 @@ describe('动效出口两条来源共用 @source Q-TOOL-5 ⑤14', () => {
 });
 
 describe('★ 真人走子也必须逐格滑（T-047 ④ 第 1 条，2026-09-16 修）', () => {
-  it('applyAction 里要调 tweenStepIfMoved，且与 AI 那条共用 startStepTween', () => {
+  it('applyAction 里要调 tweenStepIfMoved，判据收在纯函数 walkTweenFor 里', () => {
     // 先前只有 AI 那条（scheduleAi 的 reduce 直路）起补间 —— 真人走
     // `dispatch → applyAction` 完全没起，于是自己走的一步是瞬移。
     const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
     expect(src, 'tweenStepIfMoved 必须存在').toContain('function tweenStepIfMoved(');
-    // 定义 1 处 + applyAction 里调用 1 处
-    expect(src.split('tweenStepIfMoved(').length - 1).toBe(2);
+    // 定义 1 处 + **两**处调用：
+    //   ① `applyAction`（本地点 / 联机两条来源）；
+    //   ② ★ 第 87 条起 AI 的 `reduce` 直路也调它 —— 因为「走回棋盘」那一回合
+    //      的位移补间也收在这个函数里，而 AI 那条绕开 `applyAction`。
+    expect(src.split('tweenStepIfMoved(').length - 1).toBe(3);
     expect(src).toContain('tweenStepIfMoved(action, before);');
-    // 两条来源共用同一个 startStepTween（定义 1 处 + 调用 2 处）
-    expect(src.split('startStepTween(').length - 1).toBe(3);
+    // ★ 第 87 条：**要不要起、起终点在哪**的判据搬进纯函数 `walkTweenFor`
+    //   （`tween.ts`，有 5 条单测），这里只剩"按它的结论去 startWalk"。
+    expect(src).toContain("import { walkTweenFor } from './tween.ts';");
+    expect(src).toContain('walkTweenFor(action.type, before, state,');
+    // AI 那条仍在它自己的 `reduce` 直路上起走子补间（定义 1 处 + 调用 1 处）
+    expect(src.split('startStepTween(').length - 1).toBe(2);
   });
 });

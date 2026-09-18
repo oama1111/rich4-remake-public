@@ -12,6 +12,9 @@ import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 import { IMPLEMENTED_CARD_IDS } from '../cards/registry.ts';
+import { stateFingerprint } from '../net/protocol.ts';
+import { applyBlackCard, blackCardHostilityDeltas } from '../cards/swap-and-stock.ts';
+import { applyStockNews } from '../places/stock-market.ts';
 import { HOUSING_TYPE_MIN } from '../rules/land.ts';
 
 /** 一块住宅地 + 站在上面的四个玩家 */
@@ -251,9 +254,102 @@ describe('★ T-010：actor 目标经 reduce 端到端落回 specialActors', () 
     expect(after.players[0]!.cards).toHaveLength(0);
   });
 
-  it('对在監獄的惡人出停留卡：状态原样不动', () => {
+  it('对在監獄的惡人出停留卡：actor 状态不动，但**手牌里的卡照样消失**', () => {
+    // ★ 订正（2026-09-17）：原版 `remove_card`（`0x00443fca`）在取位号之后、
+    //   写 halted 之前，收尾返回非 0 ⇒ 成功 + 已扣。先前这条断言的是
+    //   `reduce(...) === s`（整份状态原样），那是「消耗点在函数末尾」时的旧行为。
     const { state, topo } = scene();
     const s = give(state, 0, 14); // 初始 actor 4 在監獄
-    expect(reduce(s, { type: 'useCard', cardId: 14, target: { kind: 'actor', actor: 4 } }, topo)).toBe(s);
+    const after = reduce(s, { type: 'useCard', cardId: 14, target: { kind: 'actor', actor: 4 } }, topo);
+    expect(after.specialActors).toEqual(s.specialActors); // 替身确实没被动
+    expect(after.players[0]!.cards).toEqual([]); // ★ 但卡被扣掉了
+  });
+});
+
+describe('★★ 卡牌台词提示（`lastCardPlay`）', () => {
+  it('★ 用出卡后写入「出牌者 + 卡号」（出牌者 = 当前玩家）', () => {
+    const { state, topo } = scene({ currentPlayer: 2 });
+    const after = reduce(give(state, 2, 1), { type: 'useCard', cardId: 1 }, topo);
+    expect(after.lastCardPlay).toEqual({ player: 2, cardId: 1 });
+  });
+
+  it('★ 失败（手上没这张卡）时提示**原样不动**', () => {
+    const { state, topo } = scene();
+    const before = { ...state, lastCardPlay: { player: 1, cardId: 15 } };
+    const after = reduce(before, { type: 'useCard', cardId: 1 }, topo);
+    expect(after).toBe(before);
+    expect(after.lastCardPlay).toEqual({ player: 1, cardId: 15 });
+  });
+
+  it('★ 只保留最近一次（连续用两张卡，提示是后一张）', () => {
+    const { state, topo } = scene();
+    // ⚠️ `give()` 是**整手替换**（`cards: [cardId]`），连续调两次只会剩后一张
+    const two: GameState = {
+      ...state,
+      players: state.players.map((p, i) => (i === 0 ? { ...p, cards: [1, 15] } : p)),
+    };
+    const a = reduce(two, { type: 'useCard', cardId: 1 }, topo);
+    expect(a.lastCardPlay).toEqual({ player: 0, cardId: 1 });
+    // 15 冬眠卡也是**无目标**的（对除自己外全部在局玩家生效），不会因缺目标失败
+    const b = reduce(a, { type: 'useCard', cardId: 15 }, topo);
+    expect(b.lastCardPlay).toEqual({ player: 0, cardId: 15 });
+  });
+
+  it('★ C-DET：它不进 `stateFingerprint`（与 `lastNpcWalks` 同一类纯表现）', () => {
+    const { state, topo } = scene();
+    const after = reduce(give(state, 0, 1), { type: 'useCard', cardId: 1 }, topo);
+    const base = stateFingerprint(after);
+    const other = { ...after, lastCardPlay: { player: 3, cardId: 30 } };
+    const none = { ...after, lastCardPlay: null };
+    expect(stateFingerprint(other)).toBe(base);
+    expect(stateFingerprint(none)).toBe(base);
+  });
+});
+
+describe('★★ 黑卡（25）接入 reduce：持股循环真的落敌意', () => {
+  /** 一支股票（下标 1）+ 玩家 1 持股 */
+  function stockScene(): { state: GameState; topo: { nodes: ReturnType<typeof makeNode>[]; lands: ReturnType<typeof makeLand>[] } } {
+    const node = makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1, adjacent: [1] });
+    const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
+    const state = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i, nodeId: 1, cash: 100_000 })),
+      landOwner: [0, 0],
+      landLevel: [0, 0],
+      market: {
+        ...makeGameState().market,
+        stocks: makeGameState().market.stocks.map((st, i) =>
+          i === 1 ? { ...st, price: 100, newsFlag: 0, f6: 0 } : st,
+        ),
+      },
+      holdings: [0, 1, 2, 3].map((i) =>
+        makeGameState().holdings[i]!.map((h, j) => (i === 1 && j === 1 ? { ...h, amount: 10 } : h)),
+      ),
+    });
+    return { state, topo: { nodes: [node], lands: [land] } };
+  }
+
+  it('★★ 黑卡把「double 低 32 位」写进受害者对出牌者的关系值（**确实非 0**）', () => {
+    const { state, topo } = stockScene();
+    const oldPrice = state.market.stocks[1]!.price;
+    const after = reduce(give(state, 0, 25), {
+      type: 'useCard',
+      cardId: 25,
+      target: { kind: 'stock', index: 1 },
+    }, topo);
+    // 期望值由同一条 helper 给出（它的数值本身由 `swap-and-stock.test.ts` 的 6 条用例
+    // + 原版差分测试 `rich4-spec/tests/test_stock_alliance_cards.py` 40/40 钉住）
+    // ⚠️ 不能用 `after.market.stocks[1].price` —— 这一条 action 之后 AI 回合会继续推进，
+    //   当日行情又动了一次。要用**卡片那一刻**的价：写完 newsFlag 紧接着 applyStockNews。
+    const flagged = applyBlackCard(state.market.stocks, 1).stocks;
+    const newsApplied = applyStockNews({ ...state.market, stocks: flagged }, 2);
+    const want = blackCardHostilityDeltas(
+      [0, 10, 0, 0], 0, oldPrice, newsApplied.stocks[1]!.price,
+    );
+    expect(after.players[1]!.hostility[0]).toBe(want[0]!.delta);
+    // ★ 关键 1：这一笔在原版里**不是 0**（价差非整数档 ⇒ 低 32 位是巨大的整数）
+    expect(want[0]!.delta).toBe(858_993_459);
+    // ★★ 关键 2：**只落一次**。`useCard` 尾部已经落过一次，`playCard` 先前又落了一次
+    //   ⇒ 全引擎的卡片敌意被加了两倍（本条用例就是那次回归的钉子）。
+    expect(after.players[1]!.hostility[0]).toBe(858_993_459);
   });
 });

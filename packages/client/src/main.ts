@@ -9,8 +9,8 @@
  */
 
 import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
-import {
-  autoAction,
+import { setVoiceSink } from './voice-sink.ts';
+import {  autoAction,
   ACTOR_DOLL,
   directionOf,
   PLACEMENT_TOOLS,
@@ -31,7 +31,7 @@ import {
   reduce,
   parseMap,
   parseSave,
-  importOriginalSave,
+  importOriginalSaveWithSnapshots,
   roomMapId,
   specialSlotOf,
   STOCK_STATUS,
@@ -46,10 +46,12 @@ import {
   type Rich4Map,
   type RoomInfo,
   type TargetClass,
+  orphanedAuction,
 } from '@rich4/core';
 import { NetClient, netParamsFrom } from './net-client.ts';
 import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
 import { tickMs } from './tick.ts';
+import { walkTweenFor } from './tween.ts';
 import { drawLobby, hitLobby, isHostSeat, lobbySlots, type LobbyHit } from './lobby.ts';
 import { PANEL_ROWS } from './hud.ts';
 import { panelRows } from './panel.ts';
@@ -132,7 +134,7 @@ import {
   type OptionsOutcome,
 } from './options-pages.ts';
 import { SoundPlayer } from './audio.ts';
-import { speechBubblesFor, speechEventsFor } from './speech.ts';
+import { cardPlaySpeech, speechBubblesFor, speechEventsFor } from './speech.ts';
 import { SpeechQueue, drawSpeechBubble, type SpeechBubble } from './speech-bubble.ts';
 // 台词字幕用的是 canvas 文字（原版 `_rich4_create_font(0x10, 0x101010, …)` 那一路）
 import { font } from './font.ts';
@@ -271,6 +273,7 @@ import {
   type SaveLoadMode,
   type SlotInfo,
 } from './saveload.ts';
+import { reduceWithHostRng, reseedAfterLoad } from './rng-host.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import { drawIntro, introDone, INTRO_FRAMES } from './intro.ts';
@@ -443,7 +446,6 @@ import {
   setupUp,
   type SetupState,
 } from './setup.ts';
-import { VIEW_COUNT } from '@rich4/data';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -1294,14 +1296,18 @@ function loadState(next: GameState, mapOverride: Rich4Map | null = null): void {
     lands: map.lands,
     facilities: map.facilities,
     commercials: map.commercials,
+    landscapes: map.landscapes,
   };
-  state = next;
+  // ★★ 单机读档后重新播种（原版 `0x402FA1` 的 `srand(GetTickCount())`）——
+  //   这就是「读档重开刷结果」：同一份存档读两次，之后的骰子/股价/事件都不一样。
+  //   原先没有任何宿主接线，原版存档导入路径给的还是固定占位 `1` ⇒ 每次都一样。
+  state = reseedAfterLoad(next, topo);
   history.length = 0;
   hoverNode = null;
   nodeTip = null; // 换局面/读档时把名牌收掉（Q-HOVER-1）
   amountPage = null;
   const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? 1];
-  camera = characterCamera(first?.x ?? 0, first?.y ?? 0, camera?.view ?? 0);
+  camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   screen = 'game';
   log(`▶ 讀檔：地圖 ${next.globalMapId}　${next.year}/${next.month}/${next.day}`);
 
@@ -2927,6 +2933,11 @@ function spriteNow(
  *   在此之前的播放请求会被安静丢弃。
  */
 const sound = new SoundPlayer();
+// ★ 把「文本里的 #NNNN」接到同一个 SoundPlayer 上 —— 这是那 610 个低编号
+//   能出声的唯一途径（见 `voice-sink.ts` 的说明）。
+setVoiceSink((voice) => {
+  sound.play('Speaking.mkf', voice);
+});
 
 /**
  * 背景音乐。
@@ -3129,7 +3140,9 @@ function dispatch(action: Action): void {
 /** 真正施加一条 action：单机由 dispatch 直达，联机由服务器广播到达 */
 function applyAction(action: Action): void {
   const before = state;
-  state = reduce(state, action, topo);
+  // ★ 单机：日推进那一刻由宿主重新播种（原版 `0x41D06E` 的 `srand(GetTickCount())`）——
+  //   见 `rng-host.ts`；联机策略下它是空操作。
+  state = reduceWithHostRng(state, action, topo);
   if (state !== before) {
     // ★ 掷骰那一段：点数到手 → 开滚。影片没解好先挂着，解完再补。
     //   纯表现，`diceFx` 不读也不写 state（C-DET-4）。
@@ -3219,12 +3232,28 @@ function startActionFx(action: Action, before: GameState): void {
  *   AI 那条不走这里（它自己 `reduce` + 起补间），所以不会重复起。
  */
 function tweenStepIfMoved(action: Action, before: GameState): void {
-  if (action.type !== 'step') return;
   if (state === before) return;
-  if (state.players[state.currentPlayer]?.nodeId === before.players[before.currentPlayer]?.nodeId) {
-    return; // 没真的挪窝（例如被阻碍）—— 不起空补间
-  }
-  startStepTween(state.currentPlayer);
+  // ★★ 判据与起终点都收在 `walkTweenFor`（纯函数、有单测）：
+  //   ① 走一格：`lastNodeId → nodeId` 两格之间；
+  //   ② 「走回棋盘」那一回合（第 86/87 条）：core 把 `x/y` 从綠島/醫院大樓
+  //      回填成監獄/醫院格 —— 原版由走路例程逐帧走回去（约 676 像素 ⇒ 84 tick）。
+  const t =
+    action.type === 'step' || action.type === 'startTurn'
+      ? walkTweenFor(action.type, before, state, (id) => map.nodes[id - 1])
+      : null;
+  if (t === null) return;
+  const p = state.players[t.player];
+  renderer.startWalk(
+    t.player,
+    t.from,
+    t.to,
+    options.animation,
+    camera,
+    { w: LAYOUT.board.w, h: LAYOUT.board.h },
+    (p?.trafficMethod ?? 0) & 3,
+    false,
+    tickMs(options.speed),
+  );
 }
 
 /**
@@ -3306,6 +3335,12 @@ function playSoundFor(before: GameState, after: GameState): void {
   // 角色語音（T-052）。`speechResourceFor` 已经把越界挡在外面 ——
   // T-051 的 `speechIndex()` 对越界**抛 RangeError**（原版无边界检查），
   // 表现层不该因此把整局打断，故这里只播合法的那几个。
+  // ★★ 先出**卡牌台词**（原版那句在卡片函数体内，先于效果引发的台词），
+  //   再出状态跃迁派生的台词 —— 顺序与原版一致。
+  const cardBubbles = cardPlaySpeech(before, after);
+  if (cardBubbles.length > 0 && speechQueue.push(cardBubbles, performance.now()) > 0) {
+    requestRender();
+  }
   const spoken = speechEventsFor(before, after);
   if (spoken.length === 0) return;
   ensureSpeakingArchive();
@@ -3343,7 +3378,17 @@ function scheduleAi(): void {
   }
   // ★ 出局者的回合由引擎推进，与「是否开着托管」无关——
   //   否则人类玩家一破产，整局就停在他身上不动了。
-  if (autoAction(state) === null && (!aiAutoPlay || !isAiTurn(state))) return;
+  // ★ 但**出局者名下排着拍卖**时 `autoAction` 同样返回 null（它不认竞价），
+  //   这时必须照常去问 `decideAction` —— 它会替在场座位上还没出局的电脑举牌
+  //   （见 `state/reduce.ts` 的 `orphanedAuction`）。否则破产清算那几场拍卖
+  //   会把整局钉在 `awaitingDecision` 上。
+  if (
+    autoAction(state) === null &&
+    (!aiAutoPlay || !isAiTurn(state)) &&
+    !orphanedAuction(state)
+  ) {
+    return;
+  }
   // 联机：电脑座位由服务器代打，别的真人座位由他们自己的客户端驱动；
   //   本机只替**自己的座位**拿主意（出局后的空转、本机开的託管），并且
   //   照样作为意图发出去，不在本地施加。
@@ -3378,8 +3423,11 @@ function scheduleAi(): void {
     }
     const before = state;
     const walker = action.type === 'step' ? state.currentPlayer : null;
-    state = reduce(state, action, topo);
+    // ★ 与 `applyAction` 同一个宿主播种漏斗（日推进后重播种）
+    state = reduceWithHostRng(state, action, topo);
     if (walker !== null && state !== before) startStepTween(walker);
+    // ★ 「走回棋盘」那一回合也要演一段位移（与 `tweenStepIfMoved` 同源）
+    if (action.type === 'startTurn' && state !== before) tweenStepIfMoved(action, before);
     // ★ 动效出口**与 `applyAction` 共用同一个函数**（Q-TOOL-5 ⑤14）：
     //   电脑这一步是**绕开 `applyAction` 的直路**（它自己 `reduce`），
     //   先前只在这里补了 `useCard` —— 于是电脑用道具（路障/地雷/炸彈的投掷、
@@ -5510,7 +5558,11 @@ function onToolbar(i: number): void {
  *   建筑精灵各有 8 张图正是为此：图号 = `(8 − (朝向 + 视角)) & 7`。
  */
 function rotateView(delta: number): void {
-  camera = { ...camera, view: (camera.view + delta + VIEW_COUNT) % VIEW_COUNT };
+  // ★★ 档位**住在状态里**（原版全局 `[0x499088]`，进存档 `+0x2743`）。
+  //   先前只改 `camera.view`，于是旋转过的视角既不会被存档带上、读档也不还原（D-06）。
+  //   reducer 负责取模，这里把结果同步到镜头。
+  dispatch({ type: 'rotateView', delta });
+  camera = { ...camera, view: state.viewRotation };
   log(`▶ 视角 ${camera.view}`);
   requestRender();
   renderPanel();
@@ -5879,7 +5931,9 @@ async function importOriginalSaveFile(): Promise<void> {
     // 传进去的只是**退路**：导入器自己会解析存档自带的地图块（那里才有实时归属，
     // 而且未必等于安装目录里那一张 —— 实测 Save0 的块是 55 块地的「底特律」）。
     const archiveMap = parseMap(readMapData(archives, save.gameMap));
-    const imported = importOriginalSave(save, archiveMap);
+    // ★ 用**带快照**的那一支：原版读档后時光機照常能用，只导当前局面的话
+    //   四个快照槽会全是 null ⇒ 時光機空转（且不消耗道具）。
+    const imported = importOriginalSaveWithSnapshots(bytes, archiveMap);
     // ★ 用**导入器实际用的那张图**换画面：否则会「状态按存档那块、画面按安装目录」。
     loadState(imported.state, imported.map);
     const gaps = imported.gaps;
@@ -5925,7 +5979,7 @@ function startGame(): void {
   void playTrackFile('midi02.mid');
 
   map = parseMap(readMapData(archives, setup.mapId));
-  topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+  topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
   state = newGame({
     map,
     globalMapId: setup.mapId,
@@ -5951,7 +6005,7 @@ function startGame(): void {
   goButton.reset();
 
   const first = map.nodes[state.players[0]?.nodeId ?? 1];
-  camera = characterCamera(first?.x ?? 0, first?.y ?? 0, camera?.view ?? 0);
+  camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   hoverNode = null;
   // ★ 開局先播跳伞过场（T-048）：纯表现、可跳过，之后才进棋盘
   introStartedAt = performance.now();
@@ -7367,7 +7421,7 @@ function connectOnline(url: string, room: string, name: string): void {
           lobbyRoom = null;
           lobbyHot = null;
           map = parseMap(readMapData(archives, start.globalMapId));
-          topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+          topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
           // ★ 与服务器镜像（server/room.ts）逐字段一致，否则指纹对不上
           state = newGame({
             map,
@@ -7379,7 +7433,7 @@ function connectOnline(url: string, room: string, name: string): void {
           history.length = 0;
           hoverNode = null;
           const first = map.nodes[state.players[0]?.nodeId ?? 1];
-          camera = characterCamera(first?.x ?? 0, first?.y ?? 0, camera?.view ?? 0);
+          camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
           screen = 'game';
           log(`開局（聯機）：地圖 ${start.globalMapId}　種子 ${start.seed}`);
           ground = null;
@@ -7406,7 +7460,7 @@ function connectOnline(url: string, room: string, name: string): void {
         //   做完只催一帧并重排驱动。
         onResync: (r) => {
           map = parseMap(readMapData(archives, r.globalMapId));
-          topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+          topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
           state = newGame({
             map,
             globalMapId: r.globalMapId,
@@ -7482,7 +7536,7 @@ async function boot(): Promise<void> {
     // 但**开机停在標題畫面**——真正的开局在玩家点 START 之后。
     const boot0 = readSetup();
     map = parseMap(readMapData(archives, boot0.globalMapId));
-    topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+    topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
     state = newGame({ map, globalMapId: boot0.globalMapId, players: boot0.players, seed: boot0.seed });
     setup = {
       ...defaultSetup(),
@@ -7523,7 +7577,7 @@ async function boot(): Promise<void> {
     resizeCanvas();
     // ★ 原版开局就是人物视角（等距投影、跟着棋子），全局看右下角小地图
     const first = map.nodes[state.players[0]?.nodeId ?? 1];
-    camera = characterCamera(first?.x ?? 0, first?.y ?? 0, 0);
+    camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
     centerOnCurrentPlayer();
 
     // 开发期调试出口：在控制台里能直接看状态与相机，排错方便。

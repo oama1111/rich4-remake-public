@@ -14,7 +14,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
-import { isAlive } from './types.ts';
+import { WHO_PLAYS_RETURN_TO_BOARD, isAlive } from './types.ts';
 import { gameOverCode, isGameOver, reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 
@@ -29,6 +29,62 @@ interface Played {
   ended: boolean;
   /** 第 n 个出局者出现在第几回合 */
   deaths: number[];
+  /** 核过多少次「坐标不变量」（= 步数 × 4 名玩家） */
+  invariantChecks: number;
+}
+
+/**
+ * 坐标不变量：**在场**玩家的 `xpos/ypos` 必须等于其 `nodeId` 那个节点的坐标；
+ * **离场**（`nodeId === 0`）必须 `0/0`。
+ *
+ * @source 原版共有 **11 个函数**写这两格（成对写 `+0x496b70`/`+0x496b72`）：
+ *   `0x40c05c`、`0x40cc56`、`0x40cd87`（破产——其实是拿 `nodes[nodeId]`
+ *   重新同步一遍）、`0x40d375`（消失）、`0x40d5a5`、`0x418c55`、
+ *   `0x41d89e`（胜负收尾）、`0x43d593`（入狱传送）、`0x43ec3f`（入院传送）、
+ *   `0x44757c`。复刻把这层不变量收进 `rules/position.ts` 的
+ *   `placeOnNode`/`placeOnNodeId`，本函数就是它的**运行时哨兵**。
+ */
+function assertPositionInvariant(
+  state: GameState,
+  nodeIndex: ReadonlyMap<number, { x: number; y: number }>,
+  where: string,
+  /**
+   * 「贴图位置」的合法取值集合 —— `x/y` 是**贴图位置**，不是"所在格坐标"：
+   *   · 監獄/醫院：特殊景观记录（綠島／醫院大樓，`@source 0x43d643`/`0x43ecef`）
+   *   · 旅館住店：**旅館設施**的坐标（`@source 0x41a85e call 0x40d5a5` 支 A）
+   */
+  spritePositions: readonly { x: number; y: number }[] = [],
+): void {
+  for (const p of state.players) {
+    if (p.nodeId === 0) {
+      expect([p.xpos, p.ypos], `${where}: 玩家${p.index} 已离场却带着坐标`).toEqual([0, 0]);
+      continue;
+    }
+    const n = nodeIndex.get(p.nodeId);
+    expect(n, `${where}: 玩家${p.index} 的 nodeId=${p.nodeId} 不在节点表里`).toBeDefined();
+    // ★★ 第 86 条：**被关押时 x/y 不指向所在格** —— 原版把屏幕坐标写成
+    //   特殊景观记录（監獄 → 记录 2「綠島」、醫院 → 记录 1「醫院大樓」，
+    //   `@source 0x43d643`/`0x43ecef`），因为 `x/y` 是**贴图位置**、
+    //   `nodeId` 才是逻辑所在格。两种取值都合法（地图没有景观表时退回节点坐标）。
+    const b = p.blocking;
+    //   ★ 合法的窗口有两个：① 在押（计数非 0）；② **「走回棋盘」那一回合**
+    //   （`+0x15 & 0x10`，玩家还在綠島/醫院大樓上，本引擎在那一回合的**收尾**
+    //   把 x/y 重新同步成監獄/醫院格 —— 见 `startTurn`）。
+    //   ★ 合法窗口：在押/住店（计数非 0）或 **「走回棋盘」那一回合**
+    //   （`+0x15 & 0x10` —— 玩家还在綠島/醫院大樓/旅館上，本引擎在那一回合的
+    //   **收尾**才把 x/y 同步回所在格 —— 见 `startTurn`）。
+    const confined =
+      b.inHotel !== 0 ||
+      b.inPrison !== 0 ||
+      b.inHospital !== 0 ||
+      (p.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0;
+    const ok = confined
+      ? spritePositions.some((g) => g.x === p.xpos && g.y === p.ypos)
+      : false;
+    if (ok) continue;
+    expect([p.xpos, p.ypos], `${where}: 玩家${p.index} 坐标与其节点不符`)
+      .toEqual([n!.x, n!.y]);
+  }
 }
 
 /**
@@ -53,7 +109,19 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
     lands: map.lands,
     facilities: map.facilities,
     commercials: map.commercials,
+  landscapes: map.landscapes,
   };
+  const nodeIndex = new Map(map.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+  // 關押中的合法坐标：監獄 = 记录 2（綠島）、醫院 = 记录 1（醫院大樓）
+  // （景观表 1 基、0 号槽是哨兵 ⇒ 本引擎数组下标 = 记录号 − 1）
+  const gateLandscapes = [map.landscapes[0], map.landscapes[1]].filter(
+    (l): l is NonNullable<typeof l> => l !== undefined,
+  );
+  // 旅館住店时贴图落到**該旅館設施**的坐标上（原版 `0x41a85e call 0x40d5a5` 支 A）。
+  // ⚠️ 这里**不按类型筛**：設施的种类住店期间可能被改建卡改掉，而客人的贴图仍停在
+  //   原来那张设施的坐标上（soak 实测：设施 2 从旅館变成 4 号种类，客人还在里面）。
+  //   ⇒ 判据放宽成"**任何設施坐标**都算合法贴图位置"，仍然能抓住 0/坐标错位/写错格。
+  const spritePositionsFor = () => [...gateLandscapes, ...map.facilities];
   let state = newGame({
     map,
     players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
@@ -62,8 +130,14 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
 
   const deaths: number[] = [];
   let steps = 0;
+  let invariantChecks = 0;
   for (; steps < 2_000_000; steps++) {
     if (isGameOver(state)) break;
+    // ★★ 每一步都核「坐标不变量」（见文件末尾的 assertPositionInvariant）。
+    //   这条不变量在原版有 **11 处**写入点（`mov word [player+0x70/+0x72]`），
+    //   任何一条**移动了玩家却忘了同步坐标**的新路径都会在这里当场现形。
+    assertPositionInvariant(state, nodeIndex, `step ${steps}`, spritePositionsFor());
+    invariantChecks += 4;
     const a = decideAction({ state, map });
     if (a === null) throw new Error(`无人可动：phase=${state.phase} 当前玩家=${state.currentPlayer}`);
     const next = reduce(state, a, topo);
@@ -73,12 +147,15 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
     state = next;
     if (state.turnCount >= maxTurns) break;
   }
-  return { state, turns: state.turnCount, steps, ended: isGameOver(state), deaths };
+  return { state, turns: state.turnCount, steps, ended: isGameOver(state), deaths, invariantChecks };
 }
 
 describe('★ M2 验收：完整一局', () => {
   run('★ 能一路跑到有人破产出局', () => {
     const r = playFullGame(2024);
+    // ★ 防"空跑"：坐标不变量必须真的被核过很多次（步数 × 4 名玩家）
+    expect(r.invariantChecks, '坐标不变量核得太少，这条断言形同虚设')
+      .toBeGreaterThan(10_000);
     expect(r.deaths.length, `跑了 ${r.turns} 回合仍无人出局`).toBeGreaterThan(0);
   });
 

@@ -147,9 +147,20 @@ export function propertyTax(
  * 持股市值 —— 證交稅的基数。
  * @source 0x0044a0e5：`fild [持股数] / fmul dword [股价] / fadd 累计`
  *
- * ⚠️ 原版是**单精度**累加（`fadd dword [esp+…]` / `fstp dword`），本式用的是
- *   JS 双精度；股价为常规整数时结果一致，行情带小数时可能差到最低位。
- *   已登记 `Q-NUM-1.md` 的 D-QNUM-3。
+ * ⚠️ 原版是**单精度**累加：每步 `fadd dword [esp+ebx*4+0x94]` 后
+ *   `fstp dword [esp+ebx*4+0x94]` —— **运行中的合计数每一步都被压回 24 位尾数**。
+ *   （乘积本身在 x87 里按 PC=双精度 53 位算，只有"存回"这一步是 float32；
+ *   53 位与 JS 双精度位级一致，见 `rich4-spec/docs/verification.md` 的
+ *   「FPU 控制字」小节。）
+ *
+ *   ⇒ 必须 `Math.fround` 逐步累加。2026 本轮用**原版真码**
+ *   （区块 `0x44a0c6`..`0x44a110`）验出：持股
+ *   `[9572,3546,5541,8967,9430,683]`、现价
+ *   `[141.931076,78.522301,284.512482,57.756199,238.642319,113.872337]` 时
+ *   原版合计 `7205380`（float32 累加）而双精度给 `7205379.9572`，
+ *   `×0.05` 截断后 **證交稅 360269 vs 360268（差 1）**。
+ *   原版真值回归见 `rules/stock-accum-f32.test.ts`。
+ *   （D-QNUM-3 因此**结案**，不是"可能差最低位"，而是"会差到税上"。）
  */
 export function stockValue(
   holdings: readonly number[],
@@ -157,7 +168,8 @@ export function stockValue(
 ): number {
   let sum = 0;
   for (let i = 0; i < holdings.length; i++) {
-    sum += (holdings[i] ?? 0) * (prices[i] ?? 0);
+    // ★ 原版每步都 `fstp dword`：合计数在 float32 里"休息"
+    sum = Math.fround(sum + (holdings[i] ?? 0) * (prices[i] ?? 0));
   }
   return sum;
 }

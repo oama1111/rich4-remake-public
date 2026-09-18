@@ -44,6 +44,11 @@ export type Action =
    * @source 画的那段 VA 0x0041736a `dl = player.ndices − 1`，亮到第 ndices 颗
    */
   | { type: 'setDiceCount'; count: number }
+  /**
+   * 转地图视角（`<` / `>` 热键，原版全局 `[0x499088]`）。
+   * `delta` 可正可负，步数按 8 取模 —— 规则见 `rules/view.ts`。
+   */
+  | { type: 'rotateView'; delta: number }
 
   /** 结算落点 */
   | { type: 'settle' }

@@ -8,6 +8,9 @@ import {
   monthlyScore,
   pickAwardWinner,
   pickRichest,
+  clearMonthlyAccumulators,
+  addMisfortuneDays,
+  misfortuneDaysAfter,
   settleMonthlyBank,
   AWARD_MARGIN,
   UNLUCKY_DAY_WEIGHT,
@@ -69,6 +72,49 @@ describe('存款利息 —— 10%', () => {
     const after = settleMonthlyBank(p);
     expect(after.moneyInBank).toBe(1100);
     expect(p.moneyInBank).toBe(1000);
+  });
+
+  // ★ 月结收尾清零（原版 0x00439ec6–0x00439ef3）：
+  //   `p+0x42`(totalWinterSleepDays) / `p+0x5c`(monthlyPaid) / `p+0x60`(monthlyReceived) 全部清 0。
+  //   不清 ⇒ 月度奖项评分与月结屏的「本月意外之財/損失」自**第 2 个月**起用跨月累计值。
+  describe('★ 月结收尾：三项月度累加器清零', () => {
+    it('clearMonthlyAccumulators 清零三项', () => {
+      const p = makePlayer({ totalWinterSleepDays: 3, monthlyPaid: 12345, monthlyReceived: 6789 });
+      const after = clearMonthlyAccumulators(p);
+      expect(after.totalWinterSleepDays).toBe(0);
+      expect(after.monthlyPaid).toBe(0);
+      expect(after.monthlyReceived).toBe(0);
+      // 不动别的字段
+      expect(after.cash).toBe(p.cash);
+      expect(p.monthlyPaid).toBe(12345); // 原对象不变
+    });
+
+    it('已经是 0 时返回同一引用（避免无谓重建）', () => {
+      const p = makePlayer({ totalWinterSleepDays: 0, monthlyPaid: 0, monthlyReceived: 0 });
+      expect(clearMonthlyAccumulators(p)).toBe(p);
+    });
+
+    // ★ 本次补（2026-09-18）：累加侧的**唯一入口**。原版全 exe 共 6 处 8 位累加
+    //   （0x40d431 消失 / 0x41a83f 住宿 / 0x43d755 监狱 / 0x43ee04 医院 /
+    //    0x4441a1 冬眠卡 / 0x444372 夢遊卡），口径都是 `add byte ptr`。
+    it('★ addMisfortuneDays 是 8 位加法（原版 `add byte ptr` 会回绕）', () => {
+      expect(misfortuneDaysAfter(0, 3)).toBe(3);
+      expect(misfortuneDaysAfter(253, 5)).toBe(2);
+      expect(addMisfortuneDays(makePlayer({ totalWinterSleepDays: 253 }), 5).totalWinterSleepDays).toBe(2);
+    });
+
+    it('0 天不改引用（仍是同一对象）', () => {
+      const p = makePlayer({ totalWinterSleepDays: 7 });
+      expect(addMisfortuneDays(p, 0)).toBe(p);
+    });
+
+    it('★ settleMonthlyBank 同时做利息与清零（同属原版 0x00439bfa）', () => {
+      const p = makePlayer({ moneyInBank: 1000, monthlyPaid: 500, monthlyReceived: 900 });
+      const after = settleMonthlyBank(p);
+      expect(after.moneyInBank).toBe(1100);
+      expect(after.monthlyPaid).toBe(0); // ★ 关键：这里以前不清
+      expect(after.monthlyReceived).toBe(0);
+    });
   });
 });
 

@@ -97,17 +97,6 @@ export function demolishLand(land: LandInfo, priceIndex: number): DemolishResult
 // ============================================================
 
 /**
- * 给住宅地块打上状态标记。
- * @source 涨价卡 `mov byte [land+0x17], 0x50`；查封卡 `..., 0x51`
- */
-export function markLand(
-  land: LandInfo,
-  status: (typeof PRICE_STATUS)[keyof typeof PRICE_STATUS],
-): LandInfo {
-  return { ...land, priceStatus: status };
-}
-
-/**
  * 给设施打上状态标记。
  *
  * ⚠️ 查封卡除了写状态，还会把设施的 `+0x1e` 清零。
@@ -130,11 +119,6 @@ export function markFacility(
   };
 }
 
-/** 地块当前是否处于查封状态 */
-export function isSealed(priceStatus: number): boolean {
-  return priceStatus === PRICE_STATUS.SEALED;
-}
-
 /**
  * 「查封中」的**宽松**判据 —— 只看低半字节非 0。
  *
@@ -147,11 +131,6 @@ export function isSealed(priceStatus: number): boolean {
  */
 export function isSealedStrict(priceStatus: number): boolean {
   return (priceStatus & 0x0f) !== 0;
-}
-
-/** 地块当前是否处于涨价状态 */
-export function isRaised(priceStatus: number): boolean {
-  return priceStatus === PRICE_STATUS.RAISED;
 }
 
 // ============================================================

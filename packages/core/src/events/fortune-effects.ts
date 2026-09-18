@@ -16,12 +16,15 @@
  */
 
 import type { Player } from '../state/types.ts';
+import type { MapNode, LandscapeInfo } from '../loaders/map.ts';
+import type { MapObject } from '../cards/summon.ts';
 import { isAiControlled, isAlive } from '../state/types.ts';
 import { FORTUNE_EVENTS, eventAmount, fortuneEvent } from '@rich4/data';
 import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
 import { giveCard } from '../cards/rob.ts';
 import { pickCardToSteal } from '../rules/npc-actions.ts';
-import { confine } from '../rules/confinement.ts';
+import { sendToConfinement } from '../rules/confinement.ts';
+import { addMisfortuneDays } from '../rules/monthly.ts';
 import { BLESSING_DOUBLE, BLESSING_VOID, blessingMultiplier } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
 import {
@@ -91,6 +94,12 @@ function cancelledByBlessing(ctx: FortuneEffectContext): boolean {
 export interface FortuneEffectResult {
   players: Player[];
   /**
+   * 物件表 —— **只有**坐牢／住院事件（首次关押）会把它换掉：跟班神明之类的
+   * 物件要跟着玩家搬进监狱／医院格（`@source 0x43d668 call 0x40fc00`）。
+   * 其余事件是入参原样。
+   */
+  objects: MapObject[];
+  /**
    * 卖股票之后当前玩家那一条持仓（与入参同下标）；没卖就是入参原样。
    * @source 事件 8/9 的 `rich4_sell_stock`（VA 0x00428e23）
    */
@@ -127,8 +136,17 @@ export interface FortuneEffectResult {
   cancelled: boolean;
   /** 公库余额 */
   pool: number;
-  /** 监狱／医院占用表 */
-  occupancy: number[];
+  /**
+   * 监狱占用表（`0x496b30`，8 槽）。
+   *
+   * ★★ 2026 本轮起**两张分开给** —— 与 `news-effects.ts` 2026-09-17 的同一处修复同因：
+   *   先前 ctx 只有一个 `occupancy`，调用方一律传 `prisonOccupancy`，
+   *   于是「命運 住院」会把病人记进**监狱**表（`0x496b30`），
+   *   而医院表（`0x496b60`）永远空着 ⇒ 医院永远显示没人、床位统计全错。
+   */
+  prisonOccupancy: number[];
+  /** 医院占用表（`0x496b60`，8 槽） */
+  hospitalOccupancy: number[];
   /** 实际动用的金额（已含倍率） */
   amount: number;
   /** 是否有人因此破产 */
@@ -169,7 +187,21 @@ export interface FortuneEffectContext {
   currentPlayer: number;
   priceIndex: number;
   pool?: number;
-  occupancy?: readonly number[];
+  /** 监狱占用表（缺省全 0）；住院事件用的是下面那张 */
+  prisonOccupancy?: readonly number[];
+  /** 医院占用表（缺省全 0） */
+  hospitalOccupancy?: readonly number[];
+  /**
+   * 物件表 + 节点表 —— **只在劫难类事件（坐牢／住院）用**：
+   * 原版 `send_to_prison`/`send_to_hospital` 的函数体内含「传送到监狱／医院格 +
+   * 跟班搬家」（`@source 0x43d601`..`0x43d674`），故首次关押时玩家会被挪走。
+   * 缺省（不传）时**不传送**，只写计数 —— 那是给不关心盘面位置的单元测试用的；
+   * 引擎调用点（`reduce.ts`）**必须**传。
+   */
+  objects?: readonly MapObject[];
+  nodes?: readonly MapNode[];
+  /** 特殊景观表（首次关押的屏幕坐标取它）—— 见 `rules/confinement.ts` */
+  landscapes?: readonly LandscapeInfo[] | undefined;
   /**
    * `0x44b896` 返回的**倍率档位**：2 加倍、1 归零、0 不变。
    * 由玩家的神明加持值决定，见 rules/blessing.ts 的 blessingLevel()。
@@ -233,10 +265,13 @@ export function applyFortuneEffect(
   ctx: FortuneEffectContext,
 ): FortuneEffectResult {
   const players = [...ctx.players];
+  let objects: MapObject[] = [...(ctx.objects ?? [])];
   const pool = ctx.pool ?? 0;
-  const occupancy = [...(ctx.occupancy ?? new Array<number>(8).fill(0))];
+  const prisonOccupancy = [...(ctx.prisonOccupancy ?? new Array<number>(8).fill(0))];
+  const hospitalOccupancy = [...(ctx.hospitalOccupancy ?? new Array<number>(8).fill(0))];
   const base: FortuneEffectResult = {
     players,
+    objects,
     holdings: null,
     market: null,
     toolStock: null,
@@ -247,7 +282,8 @@ export function applyFortuneEffect(
     recallFinance: false,
     cancelled: false,
     pool,
-    occupancy,
+    prisonOccupancy,
+    hospitalOccupancy,
     amount: 0,
     bankrupted: false,
     unimplemented: false,
@@ -270,8 +306,32 @@ export function applyFortuneEffect(
     if (mult === 0) return { ...base, cancelled: true };
     const days = raw * mult;
     const kind = entry.effects.includes('prison') ? 'prison' : 'hospital';
-    const out = confine(players, occupancy, kind, ctx.currentPlayer, days);
-    return { ...base, players: out.players, occupancy: out.occupancy, amount: days };
+    // ★ 目标表按 kind 取；**另一张**交给 confine 的 `otherOccupancy` 去清
+    //   —— 原版首次关押时 `0x40d761` 会把"当前非 0 的那一张"清掉
+    //   （`cmp [+0x34] / cmp [+0x35]` 两道闸）。此前 fortune 这条路**既**传错表
+    //   **也**没传另一张。
+    const occ = kind === 'prison' ? prisonOccupancy : hospitalOccupancy;
+    const other = kind === 'prison' ? hospitalOccupancy : prisonOccupancy;
+    const out = sendToConfinement(
+      players,
+      objects,
+      ctx.nodes ?? [],
+      occ,
+      kind,
+      ctx.currentPlayer,
+      days,
+      other,
+      ctx.landscapes,
+    );
+    objects = out.objects;
+    return {
+      ...base,
+      players: out.players,
+      objects: out.objects,
+      prisonOccupancy: kind === 'prison' ? out.occupancy : (out.otherOccupancy ?? prisonOccupancy),
+      hospitalOccupancy: kind === 'hospital' ? out.occupancy : (out.otherOccupancy ?? hospitalOccupancy),
+      amount: days,
+    };
   }
 
   // ── 命運 5：今天是你生日 向每人收取一張卡片 ─────────────────────
@@ -340,12 +400,44 @@ export function applyFortuneEffect(
     const days = raw * mult;
     const reason =
       eventId === FORTUNE_ABDUCTED ? DISAPPEAR_REASON_ABDUCTED : DISAPPEAR_REASON_ABROAD;
+    // ★★ 首次「消失」时原版会先 `call 0x40d761(player)`（@source 0x0040d3ad，
+    //   在 `cmp byte [+0x33],0 / jne 出去` 之后）—— 也就是与坐牢/住院首次同一段收尾：
+    //     · `[+0x34] != 0` ⇒ 清**监狱**占用表那一格
+    //     · `[+0x35] != 0` ⇒ 清**医院**占用表那一格
+    //     · `dword [+0x32] = 0` ⇒ 四个计数器一起清
+    //   然后调用方再写 `disappearing`（本函数这里就是"调用方"）。
+    //   差分证据：`rich4-spec/tests/test_confinement_release.py`（15/15）。
+    //   此前 remake 只写 `disappearing` ⇒ 「住院中被綁架」会**同时**留在医院
+    //   （`inHospital` 不清、医院床位不清），那张床再也放不出来。
+    const meBlocking = me.blocking;
+    const nextPrison = [...prisonOccupancy];
+    const nextHospital = [...hospitalOccupancy];
+    if (meBlocking.inPrison !== 0) nextPrison[ctx.currentPlayer] = 0;
+    if (meBlocking.inHospital !== 0) nextHospital[ctx.currentPlayer] = 0;
     const next = players.map((q, i) =>
       i === ctx.currentPlayer
-        ? { ...q, blocking: { ...q.blocking, disappearing: (days & 0x3f) | (reason << 6) } }
+        ? addMisfortuneDays(
+            {
+              ...q,
+              blocking: {
+                ...q.blocking,
+                inHotel: 0,
+                inPrison: 0,
+                inHospital: 0,
+                disappearing: (days & 0x3f) | (reason << 6),
+              },
+            },
+            days,
+          )
         : q,
     );
-    return { ...base, players: next, amount: days };
+    return {
+      ...base,
+      players: next,
+      prisonOccupancy: nextPrison,
+      hospitalOccupancy: nextHospital,
+      amount: days,
+    };
   }
 
   // ★ 冒貸：直接给 loan 加钱，不经任何付款通道

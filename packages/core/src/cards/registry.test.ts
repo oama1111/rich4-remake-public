@@ -13,6 +13,8 @@ import { applyPriceTick } from '../places/stock-market.ts';
 import type { StockState } from '../places/stock.ts';
 import { STOCK_COUNT } from '../rules/wealth.ts';
 import { initialSpecialActors } from '../rules/special-actors.ts';
+import { makeObjects } from './summon.ts';
+import { SPECIAL_KIND } from '../loaders/map.ts';
 
 const makeStock = (over: Partial<StockState> = {}): StockState => ({
   price: 100, shares: 10_000, f10: 10_000, commercialIndex: 0, f6: 0,
@@ -375,6 +377,29 @@ describe('★ 陷害卡经统一入口', () => {
     expect(r.error).toBe('cannotTargetSelf');
   });
 
+  // ★★ 2026-09-18：统一入口必须把 `nodes`/`objects` 传下去，否则首次关押
+  //   只写计数、人还站在原格（原版那几行在 `send_to_prison` 函数体内）。
+  it('★ 目标被搬进监狱格（走的是统一入口，不是直接调 applyFrameCard）', () => {
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [17], nodeId: 1 }),
+        makePlayer({ index: 1, nodeId: 1 }),
+        makePlayer({ index: 2, nodeId: 1, godInfo: 3 }),
+        makePlayer({ index: 3, nodeId: 1 }),
+      ],
+      nodes: [
+        makeNode({ id: 1, x: 100, y: 200 }),
+        makeNode({ id: 2, x: 1935, y: 1039, specialKind: SPECIAL_KIND.PRISON }),
+      ],
+      objects: makeObjects(46),
+    });
+    const r = useCard(ctx, 17, { kind: 'player', index: 2 });
+    expect(r.ok).toBe(true);
+    expect(r.players[2]!.nodeId).toBe(2);
+    expect(r.players[2]!.xpos).toBe(1935);
+    expect(r.objects[2]!.nodeId).toBe(2); // 跟班一起搬
+  });
+
   it('目标持免罪卡时记为被防下', () => {
     const ctx = makeCtx({
       players: [
@@ -444,7 +469,13 @@ describe('★ 夢遊卡经统一入口（T-002）', () => {
     expect(r.players[1]!.blocking.sleepWalking).toBe(0);
   });
 
-  it('目标持復仇卡 → 效果反弹给出牌者（自己 4 天）', () => {
+  // ★ 两点订正（2026-09-17，回 exe 复核）：
+  //   ① 反弹天数是**硬编码 5**（`0x0044441d mov byte [eax+0x496b9f], 5`，
+  //      eax = 施卡者），不是「对自己 4 天」那条式子
+  //      （`0x0044435e` 那条用在**主效果**上，与反弹无关）；
+  //   ② 主效果先施加给最终目标（`0x004443e6 call 0x40b93b`），**再**反弹给施卡者
+  //      ⇒ **两人都梦游**，不是"效果被替换"。先前这条断言目标为 0，是错的。
+  it('目标持復仇卡 → 目标与出牌者**都**梦游，且反弹恒为 5 天', () => {
     const ctx = makeCtx({
       players: [
         makePlayer({ index: 0, cards: [16] }),
@@ -455,12 +486,75 @@ describe('★ 夢遊卡经统一入口（T-002）', () => {
     });
     const r = useCard(ctx, 16, { kind: 'player', index: 1 });
     expect(r.ok).toBe(true);
-    // @source VA 0x0044435e：对自己 4 天
-    expect(r.players[0]!.blocking.sleepWalking).toBe(4);
-    expect(r.players[1]!.blocking.sleepWalking).toBe(0);
+    expect(r.players[0]!.blocking.sleepWalking).toBe(5); // ★ 施卡者 5 天（硬编码）
+    expect(r.players[1]!.blocking.sleepWalking).toBe(5); // ★ 目标照样中（主效果先走）
+    expect(r.players[1]!.cards).not.toContain(18); // ★ 復仇卡被消耗
   });
 });
 
+
+// ★★ 第 31 条规则**已收口**：原版「卡在**目标选定之后、效果之前**移除」
+//   （`@source 0x004441dc`）⇒ 目标已选定后的**任何** early-exit 都扣卡。
+//   30 张卡的 `remove_card` 位置已逐张回 exe 核实
+//   （`rich4-spec/tools/scratch/consume_probe.py`），结论见 `registry.ts` 里
+//   `fail` / `noEffect` 的文档注释：分甲（扣）/乙（不扣）两组。
+//
+//   甲组那种「已选定但什么都没发生」的路径，原版收尾是 `mov eax, <选中值>`
+//   ⇒ 返回**非 0 = 成功**，所以 remake 用 `noEffect()`（`ok: true` + 已扣卡），
+//   而不是 `fail`。下面几条测的就是它。
+describe('★ 扣卡时机（第 31 条规则）：甲组「已选定但无变化」= ok + 已扣卡', () => {
+  it('替身已冬眠时夢遊卡：不动，但**卡照样被扣掉**、且判成功', () => {
+    const ctx = makeCtx({
+      players: [
+        makePlayer({ index: 0, cards: [16] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+      actors: initialSpecialActors().map((a, i) =>
+        // ★ 必须**在棋盘上**（`place`/`nodeId`）才会走到"冬眠"那条分支；
+        //   否则会在更早的 `actorActive` 处返回（那一条是"打不出去"，本来就不扣卡）。
+        i === 0 ? { ...a, place: 0 as const, nodeId: 12, hibernating: 3 } : a,
+      ),
+    });
+    const r = useCard(ctx, 16, { kind: 'actor', actor: 4 });
+    // ★ 原版 `0x004444b3 call 0x41d546` / `0x004444b8 mov eax, esi`：
+    //   `esi` = 选中的目标（非 0）⇒ 返回非 0 = **成功**，而卡在 0x00444219 已扣。
+    expect(r.ok).toBe(true);
+    expect(r.error).toBe(null);
+    expect(r.players[0]!.cards.includes(16)).toBe(false);
+  });
+
+  /**
+   * ★★ 全卡扫描：`ok === false` ⟺ 卡还在手上。
+   *
+   * 这条等价关系是 `rich4-spec/tools/scratch/consume_invariant_check.py`
+   * 从「30 张卡从 `remove_card` 之后的每一条出口都返回非 0」机械推出的，
+   * 也是 `state/reduce.ts` 敢用 `if (!r.ok) return state` 的前提。
+   *
+   * 它同时是**能给「消耗点在函数末尾」这类回归兜底**的哨兵：
+   * 任何一次把「已扣卡但无变化」写回 `fail(...)`（`ok:false`）的改动，
+   * 都会在这里红 —— 因为那时卡已不在手上。
+   */
+  it('全卡扫描：30 张卡 × 无目标调用，`ok === false` ⟺ 卡仍在手', () => {
+    for (let cardId = 1; cardId <= 30; cardId++) {
+      const ctx = makeCtx({
+        players: [
+          makePlayer({ index: 0, cash: 100_000, cards: [cardId], nodeId: 1 }),
+          makePlayer({ index: 1, cash: 5000, cards: [2] }),
+          makePlayer({ index: 2, cash: 5000 }),
+          makePlayer({ index: 3, cash: 5000 }),
+        ],
+      });
+      const r = useCard(ctx, cardId);
+      const stillInHand = r.players[0]!.cards.includes(cardId);
+      expect(
+        r.ok,
+        `卡 ${cardId}：ok=${r.ok} / 卡${stillInHand ? '仍在手' : '已扣'} / error=${r.error}`,
+      ).toBe(!stillInHand);
+    }
+  });
+});
 
 describe('★ 搶奪卡经统一入口（T-003）', () => {
   it('抢卡路径：对方手牌 −1、自己 +1，敌意 = 被抢卡的价格，卡片被消耗', () => {
@@ -651,14 +745,16 @@ describe('★ 紅卡/黑卡经统一入口（T-005）', () => {
     expect(r.players[0]!.cards).toEqual([24]);
   });
 
-  it('停牌中（f6 ≠ 0）fail(noEffect) 且不扣卡', () => {
+  it('停牌中（f6 ≠ 0）**卡照扣**、判成功（原版没有这道闸门）', () => {
+    // ★ 订正（2026-09-17）：先前写「不扣卡」，但原版写完 `newsFlag` 就扣卡，
+    //   @source 紅卡 `0x0044502a call 0x441343` / `0x00445032 mov eax, ebx`
+    //   （`ebx` = 选中编号，非 0）⇒ 成功 + 已扣。
     const market = makeMarket();
     market.stocks[3] = makeStock({ f6: 2 });
     const ctx = ctxWithCard(25, { market });
     const r = useCard(ctx, 25, { kind: 'stock', index: 3 });
-    expect(r.ok).toBe(false);
-    expect(r.error).toBe('noEffect');
-    expect(r.players[0]!.cards).toEqual([25]);
+    expect(r.ok).toBe(true);
+    expect(r.players[0]!.cards).toEqual([]);
   });
 
   it('股票下标越界 → stockOutOfRange', () => {
@@ -824,12 +920,15 @@ describe('★ T-008：五张地块卡对設施目标', () => {
     expect(r.players[0]!.cards).toEqual([]); // 生效扣卡
   });
 
-  it('天使卡：满级設施不动也不扣卡', () => {
+  it('天使卡：满级設施不动，但**卡照扣**、判成功', () => {
+    // ★ 订正（2026-09-17）：先前写「原版返回 0」——**读反了**。
+    //   @source `0x004436d2 je 0x4436d9` → `0x004436d9 mov eax, ebp`，
+    //   `ebp` 是 `0x004434dc call 0x446ae8` 选中的地产编号，恒非 0。
     const ctx = facCtx(9, makeFacility({ id: 1, type: 0, level: 1 })); // 公園 max=1
     const r = useCard(ctx, 9, { kind: 'facility', facilityId: 1 });
-    expect(r.ok).toBe(false);
-    expect(r.error).toBe('noEffect');
-    expect(r.players[0]!.cards).toEqual([9]);
+    expect(r.ok).toBe(true);
+    expect(r.facilities[0]).toMatchObject({ type: 0, level: 1 });
+    expect(r.players[0]!.cards).toEqual([]);
   });
 
   it('惡魔卡：夷平設施并按等级记敌意', () => {
@@ -967,22 +1066,27 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     });
   }
 
-  it('不在棋盘上的 NPC（place ≠ board）→ noEffect 且不扣卡', () => {
+  it('不在棋盘上的 NPC（place ≠ board）→ 状态不动，但**卡照扣**、判成功', () => {
+    // ★ 订正（2026-09-17）：`remove_card`（`0x00443fca`）在掩码取位号之后、
+    //   真正写 halted 之前，收尾返回非 0 ⇒ 原版算成功。
     // 初始状态：小偷(actor 4)在監獄
     const ctx = makeCtx({
       players: [makePlayer({ index: 0, cards: [14] }), makePlayer({ index: 1 })],
     });
     const r = useCard(ctx, 14, { kind: 'actor', actor: 4 });
-    expect(r.ok).toBe(false);
-    expect(r.error).toBe('noEffect');
-    expect(r.players[0]!.cards).toEqual([14]);
+    expect(r.ok).toBe(true);
+    expect(r.actors[0]!.halted).toBe(0);
+    expect(r.players[0]!.cards).toEqual([]);
   });
 
-  it('未出场的機器娃娃（actor 8 offBoard）→ noEffect', () => {
+  it('未出场的機器娃娃（actor 8 offBoard）→ 同样 ok + 已扣卡', () => {
     const ctx = makeCtx({
       players: [makePlayer({ index: 0, cards: [30] }), makePlayer({ index: 1 })],
     });
-    expect(useCard(ctx, 30, { kind: 'actor', actor: 8 }).error).toBe('noEffect');
+    const r = useCard(ctx, 30, { kind: 'actor', actor: 8 });
+    expect(r.ok).toBe(true);
+    expect(r.actors[4]!.singleStep).toBe(0);
+    expect(r.players[0]!.cards).toEqual([]);
   });
 
   it('actor 越界（9）→ actorOutOfRange', () => {
@@ -1022,7 +1126,11 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     });
   }
 
-  it('夢遊卡(16) 对替身：**已经冬眠**的替身不动，也不扣卡（原版那条 jne）', () => {
+  // ★ 订正（2026-09-17，第 31 条）：原版在这条 `jne` 上**照样扣卡** ——
+  //   `0x004444aa jne 0x4444b3` 只是跳过 `mov byte [ebx+0x498df5], 5`，
+  //   而 `0x00444219 call 0x441343`（`remove_card`）在那之前就执行了。
+  //   先前这条测试的**标题与断言都写成"也不扣卡"**，把偏离当成了正确行为（并引用了那条 jne）。
+  it('夢遊卡(16) 对替身：**已经冬眠**的替身不动，但**卡照样被扣掉**', () => {
     const actors = initialSpecialActors().map((a, i) =>
       i === 0 ? { ...a, place: 0 as const, nodeId: 12, hibernating: 3 } : a,
     );
@@ -1031,22 +1139,24 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
       actors,
     });
     const r = useCard(ctx, 16, { kind: 'actor', actor: 4 });
-    // ⚠️ 原版照样扣卡（`_rich4_consume_card` 在那一支之前），本引擎按
-    //   「没生效就不扣卡」的统一规矩处理 —— 有意偏离，见 D-T047-5。
-    expect(r.ok).toBe(false);
-    expect(r.error).toBe('noEffect');
-    expect(r.actors[0]!.sleepwalkDays).toBeUndefined();
-    expect(r.players[0]!.cards).toEqual([16]);
+    expect(r.ok).toBe(true); // 原版返回 esi ≠ 0 = 成功
+    expect(r.error).toBe(null);
+    expect(r.actors[0]!.sleepwalkDays).toBeUndefined(); // 效果确实没施加
+    expect(r.players[0]!.cards).toEqual([]); // ★ 但卡被扣掉了
   });
 
-  it('夢遊卡(16) 对不在棋盘上的替身 → noEffect，不扣卡', () => {
+  it('夢遊卡(16) 对不在棋盘上的替身 → 状态不动，但**卡照扣**、判成功', () => {
+    // ★ 订正（2026-09-17）：`remove_card`（`0x00444219`）在取位号之后，
+    //   替身分支的 `cmp ebx,4 / jl` 只是跳过写天数，收尾 `mov eax, esi` 非 0。
     const ctx = makeCtx({
       players: [makePlayer({ index: 0, cards: [16] }), makePlayer({ index: 1 })],
     });
     // 初始：小偷(4)在監獄、機器娃娃(8)未出场
-    expect(useCard(ctx, 16, { kind: 'actor', actor: 4 }).error).toBe('noEffect');
-    expect(useCard(ctx, 16, { kind: 'actor', actor: 8 }).error).toBe('noEffect');
-    expect(ctx.players[0]!.cards).toEqual([16]);
+    const a = useCard(ctx, 16, { kind: 'actor', actor: 4 });
+    expect(a.ok).toBe(true);
+    expect(a.players[0]!.cards).toEqual([]);
+    const b = useCard(ctx, 16, { kind: 'actor', actor: 8 });
+    expect(b.ok).toBe(true);
   });
 
   it('夢遊卡(16) 仍然不接受「自己」这个玩家目标（0xe0c0710 不含自己）', () => {

@@ -212,8 +212,90 @@ export function pickRichest(wealth: readonly number[]): number {
   return at;
 }
 
-/** 对一名玩家执行月度存款结算 */
+/**
+ * 累加「本月倒楣天數」(`player + 0x42`)。
+ *
+ * ★ **字段名是误名**：`Player.totalWinterSleepDays` 沿自早期线索源，原版从没这么叫过。
+ *   月结屏的读点给出真名——
+ * ```asm
+ * 004387a8  mov  al, byte ptr [0x48c42f]        ; 取本屏要显示的那一位
+ * 004387ba  imul eax, eax, 0x68
+ * 004387bd  mov  al, byte ptr [eax + 0x496baa]  ; ★ 读 +0x42
+ * 00438798  mov  eax, 0x464e0d   "本月倒楣天數："
+ * 004387c9  mov  eax, 0x464e1c   "%d天"
+ * ```
+ *   另一处是**月度奖项评分**（VA 0x00437d55，见 `monthlyScore`）：
+ *   `分数 += 天数 × 物價指數 × 2500`（`imul ebx, 0x9c4`）。
+ *
+ * ★ 全 exe 共 **6 处** 8 位累加（自扫 `add byte ptr [… + 0x496baa]`）：
+ *
+ * | VA | 场景 |
+ * |---|---|
+ * | `0x0040d431` | 「消失」施加函数 `0x0040d375` —— 命运 6/7（出國觀光／被外星人綁架）与航空转盘 |
+ * | `0x0041a83f` | 住宿（旅館過路费尾段 `0x0041a3be`） |
+ * | `0x0043d755` | 送入監獄 `0x0043d593` 的**公共尾部**（新判与加刑都走这里） |
+ * | `0x0043ee04` | 送入醫院 `0x0043ec3f` 的公共尾部 |
+ * | `0x004441a1` | 冬眠卡（card 15，`dh = 5`） |
+ * | `0x00444372` | 夢遊卡（card 16，字面量 5） |
+ *
+ * 外加 `0x00439ede`（月结清零，见 `clearMonthlyAccumulators`）。
+ * ★ 六处**全是 8 位加法**（`add byte ptr`），故这里按 256 取模 —— 与存档里的
+ *   单字节字段口径一致；不取模的话原版会回绕而本引擎不会。
+ */
+/**
+ * 8 位累加本身 —— 供**就地修改**（`withPlayer` 风格）的调用点使用，
+ * 避免把 `& 0xff` 这条口径抄成两份。
+ */
+export function misfortuneDaysAfter(current: number, days: number): number {
+  return (current + days) & 0xff;
+}
+
+/** 不可变版本：返回带新值的新玩家对象 */
+export function addMisfortuneDays(player: Player, days: number): Player {
+  if (days === 0) return player;
+  return { ...player, totalWinterSleepDays: misfortuneDaysAfter(player.totalWinterSleepDays, days) };
+}
+
+/**
+ * 月结**收尾**：把三项月度累加器清零。
+ *
+ * @source `0x00439ec6`–`0x00439ef3`（月度结算函数 `0x00439bfa` 的**最后**一段）：
+ * ```asm
+ * 00439ec6  xor  eax, eax
+ * 00439ec8  mov  al, byte ptr [0x48c420]        ; 参与人数（0x439bfa 里按 who_plays!=0 填充）
+ * 00439ecd  cmp  ebx, eax
+ * 00439ecf  jge  0x439ef5
+ * 00439ed3  mov  al, byte ptr [ebx + 0x48c418]  ; 玩家 id 列表
+ * 00439ed9  imul eax, eax, 0x68
+ * 00439ede  mov  byte ptr [eax + 0x496baa], ch  ; ★ p+0x42 = 0  本月倒楣天數
+ * 00439ee6  mov  dword ptr [eax + 0x496bc4], esi ; ★ p+0x5c = 0  monthlyPaid
+ * 00439eec  mov  dword ptr [eax + 0x496bc8], esi ; ★ p+0x60 = 0  monthlyReceived
+ * ```
+ *
+ * ★ 为什么必须做：月度奖项评分（`monthlyScore`）与月结屏的「本月意外之財／損失」
+ *   **直接读这三个累计值**。不清零 ⇒ 从**第 2 个月起**它们变成跨月累计，
+ *   奖项与显示全部失真。此前只有开局（`new-game`）与破产（`bankruptcy`）会清零，
+ *   **月结路径一处都没有**。
+ */
+export function clearMonthlyAccumulators(player: Player): Player {
+  if (
+    player.totalWinterSleepDays === 0 &&
+    player.monthlyPaid === 0 &&
+    player.monthlyReceived === 0
+  ) {
+    return player;
+  }
+  return { ...player, totalWinterSleepDays: 0, monthlyPaid: 0, monthlyReceived: 0 };
+}
+
+/**
+ * 对一名玩家执行月度结算。
+ *
+ * @source 月度结算函数 `0x00439bfa` —— 存款利息与「收尾清零」在**同一个函数**里，
+ *   故这里合并成一个入口，避免调用方只做一半（那正是先前的缺陷）。
+ */
 export function settleMonthlyBank(player: Player): Player {
-  const newBank = applyMonthlyInterest(player.moneyInBank, player.loan);
-  return newBank === player.moneyInBank ? player : { ...player, moneyInBank: newBank };
+  const cleared = clearMonthlyAccumulators(player);
+  const newBank = applyMonthlyInterest(cleared.moneyInBank, cleared.loan);
+  return newBank === cleared.moneyInBank ? cleared : { ...cleared, moneyInBank: newBank };
 }

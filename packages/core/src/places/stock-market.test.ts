@@ -130,6 +130,21 @@ describe('每日收盘', () => {
     expect(m.stocks.map((s) => s.openPrice)).toEqual(secondOpen);
   });
 
+  it('★★ 冲击用**未舍入**的扩展精度值（`fst` 不弹栈）—— 差 1 ulp 也要对上', () => {
+    // 通道 2：`rich4-spec/tests/test_stock_daily.py` §E
+    //   原版 `fdiv` 之后是 `fst dword [+0x20]`（**不弹栈**），所以后面的
+    //   `fmul [+24] / fadd [+28]` 用的是**未舍入**的 r，只有 `+0x20` 存的是 f32。
+    //   本用例：drift 抽 0x4000（= 0）、冲击抽 0x3000（r = −4096/1171）。
+    //   ★ 用舍过的 r 会得到 0xbfbfba0a（−1.4978649616241455），原版是 0xbfbfba0b。
+    const picks = [0x4000, 0x3000, ...new Array<number>(11).fill(0x4000)];
+    let i = 0;
+    const r = { next: () => picks[i++] ?? 0x4000 } as unknown as WatcomRng;
+    const m = tickStockMarket(market([stock({ volatility: 1, trend: 2 })]), r);
+    expect(m.stocks[0]!.trend).toBe(-1.497865080833435);
+    // 而 `+0x20`（shock）存的是舍过的那个
+    expect(m.stocks[0]!.shock).toBe(Math.fround(-4096 / 1171));
+  });
+
   it('★ 趋势是累加的 —— 走势有惯性，不是每日独立白噪声', () => {
     const rng = new WatcomRng(77);
     let m = market([stock({ volatility: 1 })]);

@@ -110,12 +110,66 @@ describe('★ 小偷：沿路捡东西、拆陷阱', () => {
     expect(w.events.filter((e) => e.kind === 'loot')).toEqual([]);
   });
 
-  it('★ 另外三个不捡东西 —— 那五个分支都以 `cmp 4` 开头', () => {
-    const s = base([obj(16, 2), obj(14, 3)]);
+  it('★ 另外三个不「捡」东西 —— 那五个分支都以 `cmp 4` 开头（但他们会**挨陷阱**）', () => {
+    const s = base([obj(14, 3), obj(18, 4)]); // 寶箱 / 定時炸彈：5..7 踩上去什么也不发生
     for (const actor of [NPC.robber, NPC.thug, NPC.spy]) {
       const w = runNpc(actor, releaseNpc(1, owner, 5), s, straight(), line, rng());
-      expect(w.events.filter((e) => e.kind === 'loot'), `actor ${actor}`).toEqual([]);
+      expect(w.events, `actor ${actor}`).toEqual([]);
     }
+  });
+});
+
+describe('★ 陷阱：小偷拆、另外三个挨（分派器玩家分支，@source 0x41bceb / 0x41be5f）', () => {
+  const owner = 0;
+  const base = (objects: MapObject[]): GameState =>
+    makeGameState({ players: [makePlayer({ index: 0, nodeId: 20 })], objects });
+
+  it('★ 路障**半途**就拦下另外三个（不看剩余步数）', () => {
+    const s = base([obj(16, 2)]);
+    for (const actor of [NPC.robber, NPC.thug, NPC.spy]) {
+      const w = runNpc(actor, releaseNpc(1, owner, 5), s, straight(), line, rng());
+      // 走到第 2 格被拦下 —— 只走了两步，人还留在那一格
+      expect(w.path, `actor ${actor}`).toEqual([1, 2]);
+      expect(w.actor.nodeId).toBe(2);
+      expect(w.actor.place).toBe(ACTOR_PLACE.board);
+      expect(w.events).toEqual([
+        { kind: 'trap', node: 2, object: 0, objectType: 16, hospital: false },
+      ]);
+      const out = applyNpcEvents(s, owner, w.events).state;
+      expect(out.objects[0]?.nodeId).toBe(0);
+      expect(out.toolStock[2]).toBe(100); // 预置 99 → 回商店库存 +1
+      expect(toolCount(out.tools, owner, 2)).toBe(0); // ★ 不进任何人的道具栏
+    }
+  });
+
+  it('★ 地雷**只有停在这一格**才炸 —— 路过没事', () => {
+    const s = base([obj(17, 2)]);
+    const w = runNpc(NPC.robber, releaseNpc(1, owner, 5), s, straight(), line, rng());
+    expect(w.path).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(w.events).toEqual([]);
+  });
+
+  it('★★ 地雷踩在最后一格 ⇒ 拆除 + 替身进医院（3 天由原版 `0x43ec3f(actor,3)` 给）', () => {
+    const s = base([obj(17, 6)]);
+    const w = runNpc(NPC.thug, releaseNpc(1, owner, 5), s, straight(), line, rng());
+    expect(w.path).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(w.events).toEqual([
+      { kind: 'trap', node: 6, object: 0, objectType: 17, hospital: true },
+    ]);
+    expect(w.actor.place).toBe(ACTOR_PLACE.hospital);
+    const out = applyNpcEvents(s, owner, w.events).state;
+    expect(out.objects[0]?.nodeId).toBe(0);
+    expect(out.toolStock[3]).toBe(100);
+    expect(toolCount(out.tools, owner, 3)).toBe(0);
+  });
+
+  it('★ 小偷不上当 —— 地雷照拆、进的是**主人**的道具栏，人没事', () => {
+    const s = base([obj(17, 5)]);
+    const w = runNpc(NPC.thief, releaseNpc(1, owner, 5), s, straight(), line, rng());
+    expect(w.actor.place).toBe(ACTOR_PLACE.board);
+    expect(w.events.map((e) => e.kind)).toEqual(['loot']);
+    const out = applyNpcEvents(s, owner, w.events).state;
+    expect(toolCount(out.tools, owner, 3)).toBe(1);
   });
 });
 

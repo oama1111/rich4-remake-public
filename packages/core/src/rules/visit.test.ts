@@ -98,6 +98,13 @@ describe('★ 电脑玩家怎么挑 —— f23 就是这个', () => {
       .toBe(1);
   });
 
+  it('★★ 個性 > 2（原版没有的取值）⇒ 候选池为空、一掷之后放弃 @source 0x43d404', () => {
+    // 原版的三路判断只有 0/1/2，其余值直接 `jmp 0x43d4a4`（esi 仍为 0 ⇒ 空池）。
+    // 通道 2：`rich4-spec/tests/test_bail.py` §D 末条。
+    expect(decideBail(3, occWith(1, 5), 9999, [care, 0]).slot).toBe(-1);
+    expect(decideBail(9, occWith(1, 5), 9999, [care, 0]).randomsUsed).toBe(1);
+  });
+
   it('★ 用掉几个随机数要报准 —— 多推一个整条序列就错位', () => {
     expect(decideBail(BAIL_STYLE.PLAYERS_ONLY, occWith(1), 9999, [0]).randomsUsed).toBe(1);
     expect(decideBail(BAIL_STYLE.PLAYERS_ONLY, occWith(1), 9999, [care, 0]).randomsUsed).toBe(2);
