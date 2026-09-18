@@ -256,6 +256,25 @@ export const MAGIC_WITCH_BEAT2_AT = { x: 0xb6, y: 0x8e } as const;
  */
 export const MAGIC_MOUTH_AT = { x: 0x11e, y: 0xd9 } as const;
 /**
+ * ★ **状态 4 那一拍**贴的是哪张图 —— 本轮把 AH 的初值读清了（2026-09-19）。
+ *
+ * ```asm
+ * ; @source 0x00432894（状态 4，由 `loc_00432951` 把 [0x48c3a2] 置 4 进入）
+ * 00432894  mov ah, byte [0x48c3a0]      ; ★ AH = 全局 [0x48c3a0]，不是状态号
+ * 0043289a  test ah,ah / je 0x432a85     ; 为 0 → 走**嘴**那一支（图 5）
+ * 004328a2  mov cl,ah / dec cl / mov [0x48c3a0],cl / jne 0x4326ad
+ * 004328b2  mov [esp+0x40],0x11e / [esp+0x44],0xdc / 0x15a / 0xee   ; Lock (286,220)+60×18
+ * 004328f2  eax = [0x48c398] + 0x3c → push                          ; ★ 源 = **图 5**
+ * 00432902  call 0x4563f5                                            ; 不透明 blit
+ * ```
+ *
+ * ⇒ `[0x48c3a0]` 的**初值**由别处（`0x4492d1` 一族的 `mov [0x48c3a0], 0xa`，10 拍）
+ *   设成 10，所以**递减到 0 的那一拍才贴**；贴的还是**图 5（嘴）**。
+ *   本模块的 `witchBlink` 就是这一支的等价物（概率见 `MAGIC_WITCH_BLINK_P`），
+ *   **不需要**再补一笔。
+ */
+export const MAGIC_MOUTH_AT = { x: 0x11e, y: 0xd9 } as const;
+/**
  * 女巫「张嘴」的每拍概率。
  *
  * @source 0x00432a85：先 `rand() >> 11`（⇒ **1/4** 的门槛），过了再 `rand() & 1`
