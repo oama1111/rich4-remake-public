@@ -97,8 +97,23 @@ describe('canPurchase', () => {
     expect(canPurchase(land(), p, 1).reason).toBe('sleepWalking');
   });
 
-  it('特定神明状态 → 不可买', () => {
+  it('特定神明状态（= 土地公 id 12）→ 不可买', () => {
     expect(canPurchase(land(), makePlayer({ godInfo: GOD_BLOCKS_PURCHASE }), 1).reason).toBe('godBlocked');
+    // ★ §7.100：那个 12 查出来是**土地公**（`gods.md`：id 12 = 土地公，
+    //   「無立即效果；落腳時強佔土地」）⇒ 这道闸 = 「地已经被土地公占走，不必再买」。
+    expect(GOD_BLOCKS_PURCHASE).toBe(12);
+    expect(GOD_BLOCKS_PURCHASE).toBe(0x0c);
+  });
+
+  it('★ 四道闸的**顺序**照原版：已有主 → 梦游 → 土地公 → 现金不足', () => {
+    // @source loc_0041a013 的判据序列（0x41a01a 梦游、0x41a027 神明、0x41a053 现金）
+    const both = makePlayer({ godInfo: GOD_BLOCKS_PURCHASE, cash: 0 });
+    both.blocking.sleepWalking = 2;
+    // 四种毛病全占时，先报「已有主」；去掉 owner 报「梦游」；再去掉梦游报「土地公」
+    expect(canPurchase(land({ owner: 3 }), both, 1).reason).toBe('alreadyOwned');
+    expect(canPurchase(land(), both, 1).reason).toBe('sleepWalking');
+    both.blocking.sleepWalking = 0;
+    expect(canPurchase(land(), both, 1).reason).toBe('godBlocked');
   });
 
   it('钱不够 → 不可买', () => {

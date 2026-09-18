@@ -81,12 +81,17 @@ export function upgradeCost(land: LandInfo, priceIndex: number): number {
 }
 
 /**
- * 阻止买地的神明状态。
+ * 阻止买地的神明 —— **土地公（god 12）**。
  *
- * @source loc_0041a013: `cmp byte [eax + 63], 0xc / je → end`
- *   （+63 = 0x3f = god_info）
- * ⚠️ 取值 12 **未见于** rich4-re/docs 的记载（文档只列了 1/2/5/6）。
- *    语义待确认（DEVELOPMENT_PLAN.md Q3 相关），此处保留原始数值。
+ * @source `loc_0041a013`：`cmp byte [eax + 0x3f], 0xc / je 0x41b077`（跳过买地）
+ *   （`player + 0x3f` = `0x496ba7` = `god_info` 主槽，见 `docs/systems/gods.md`）
+ *
+ * ★ 2026-09-19（§7.100）**这个 12 查出是谁了**：`gods.md` §表（`0x47ed6e` 起的名字表）
+ *   里 **id 12 = 土地公**，行为栏写着「**無立即效果；落腳時強佔土地**」，
+ *   台词 `0x46344e` 是「呵∼呵，有土斯有財…有我在，你想要多少土地就有多少」。
+ *   ⇒ 原版这道闸的语义是：**土地公已经把地占走了，你不需要（也不该）再掏钱买**
+ *   —— 与「落腳時強佔」是同一件机制的两面。
+ *   （旧注释写「取值 12 未见于记载」是**过时**的：`gods.md` 早有 id 12 的完整行。）
  */
 export const GOD_BLOCKS_PURCHASE = 0x0c;
 
