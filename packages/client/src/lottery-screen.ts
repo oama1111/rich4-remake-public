@@ -562,9 +562,24 @@ export function animStep(a: LotAnim, now: number, rnd: () => number): LotAnimFra
 /**
  * 跑馬燈帧数与时距。
  *
- * ⚠️ **这一段没在反汇编里解出来**：動畫對象是全局的，推进发生在每帧重绘里
- *   （`fcn_00450f04`），而 `flic.ts` 解出的 `frameMs` 是 **71**（`flic-lottery.test.ts`
- *   量的）。这里按「每 71 ms 一帧、循环」推 —— 属**假设**，记在 deviations。
+ * ★ 2026-09-19 **已解**（不再是假设）：跑馬燈的推进发生在 `fcn_00450f04(0x450f04)`，
+ *   而它**不是按时间**推进的 —— 它每次调用从 `[0x476378]` 往后走**恰好一帧**
+ *   （`0x450ff2 lea eax,[ebx+ebp]` 把指针加上当前块的长度、`0x451000` 认出
+ *   `0xF1FA` 帧头就停），调用点在**每帧重绘**里（下一条 `0x42fd5f call 0x450f04`）。
+ *
+ * ```asm
+ * ; @source 0x0042fd5f（投注屏每帧重绘那一段）
+ * 0042fd5f  call 0x450f04          ; ★ 一帧 FLIC = 一次调用
+ * ; @source 0x00450ff2（推进）
+ * 00450ff2  lea eax, [ebx + ebp]   ; ebp = 当前块长度
+ * 00450ff5  mov [0x476378], eax    ; 游标前移
+ * 00451000  cmp word [ebx+4], 0xf1fa / jne 0x450fea   ; 找下一个帧头
+ * ```
+ *
+ * ⇒ **一帧重绘 = 一帧跑馬燈**；`flic.ts` 解出的 `frameMs = 71` 就是当年那台机器
+ *   的实际帧时（50 Hz 的下采样），本模块按 `71 ms` 复现它的观感。
+ *   ⚠️ 与「游戏速度档」的关系：原版这一支**不看速度档**（速度只分频
+ *   `[0x46cafa]` 那个游戏 tick），故本模块也不分频。
  */
 export const LOT_BONUS_FRAMES = 5;
 export const LOT_BONUS_MS = 71;
