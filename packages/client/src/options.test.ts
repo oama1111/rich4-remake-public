@@ -392,3 +392,32 @@ describe('設定屏的取值', () => {
     expect(volumeOf(99)).toBe(1);
   });
 });
+
+describe('★ 试玩 4 回归：每条文字的各对齐码必须照原版用（不是一刀切）', () => {
+  it('★★ 对齐码：5 = 左缘贴 x 且竖直居中；2 = 以 (x,y) 为中心', () => {
+    // @source 坐标表 `0x474b38` 每项三个 word：x、y、对齐码
+    expect(OPTION_LABELS).toHaveLength(12);
+    // 前五条（控件名）都是码 5
+    for (const l of OPTION_LABELS.slice(0, 5)) expect(l.align).toBe(5);
+    // 后七条（樂曲 / 視窗 / 日月曆 / 縮小地圖 / 組合畫面 / 取消 / 確定）都是码 2
+    for (const l of OPTION_LABELS.slice(5)) expect(l.align).toBe(2);
+  });
+
+  it('★ 「樂  曲」「視  窗」那七条的字心落在各自控件的正中', () => {
+    const at = (text: string) => OPTION_LABELS.find((l) => l.text === text)!;
+    // 樂曲列表 (18,226)-(177,345) ⇒ 中心 (97.5, 285.5)；文字给的是 (49,202)+码 2
+    //   ⇒ 画出来是「左缘 34 起、竖直居中 202」—— 与列表的**标签位**一致（不是列表中心）
+    expect(at('樂  曲')).toMatchObject({ x: 49, y: 202, align: 2 });
+    // 視窗三选一的灯 x = 218，文字 (209,202) 居中 ⇒ 跨 158..260，把灯包在中间
+    expect(at('視  窗').x).toBeLessThan(218);
+    // 右上角三个钮是 (227..327, 14..49 / 68..103 / 119..154)，文字 x = 286 正是 277 的中点
+    for (const t of ['日、月曆', '縮小地圖', '組合畫面']) expect(at(t).x).toBe(286);
+    // 取消/確定 钮 (194..256)/(266..328) ⇒ 中心 225/297 ≈ 224/296
+    expect(at('取 消').x).toBe(224);
+    expect(at('確 定').x).toBe(296);
+  });
+
+  it('★ 原版就是这么对齐的：码 5 那五条左缘 = x = 14', () => {
+    for (const l of OPTION_LABELS.slice(0, 5)) expect(l.x).toBe(14);
+  });
+});

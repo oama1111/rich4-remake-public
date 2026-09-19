@@ -677,3 +677,39 @@ describe('整屏接线（UiScreen 契约）', () => {
     expect(AUCTION_DEAL_FORMAT).toBe('%d元成交');
   });
 });
+
+describe('★★ 试玩 4 回归：落槌那一刻屏**不能**立刻退场（否则结果一次都演不出来）', () => {
+  it('★★ core 清掉 pending 之后、结算还没起播时，本屏必须**继续接管**', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
+    const { env } = mkEnv(auctionPending({ bidders: [0, 1], limits: [0, 9000] }), players);
+    auctionScreen.tick!(env); // 建桌
+    // 真人点 +1000（屏内记下「0 号加过 1000」）
+    const y = auctionButtonY(3);
+    auctionScreen.down!(406, y, env);
+    auctionScreen.up!(406, y, env);
+    // core 落槌 ⇒ pending 变 null，此刻 settling/outcome **都还是假的**
+    const settled = { ...env, state: { ...env.state, pending: null } as GameState };
+    // ★★ 这一条就是那个 bug：先前 `active()` 是 `screen.settling`，
+    //   而 `settling` 要等 `tick` 里的 `beginSettle` 才置 —— 于是 `active()` 先变假、
+    //   `tick` 再也不被调、`beginSettle` 永远起不来（结果一次都演不出来）。
+    expect(auctionScreen.active(settled)).toBe(true);
+    auctionScreen.tick!(settled);
+    expect(auctionRunForTest()!.phase).toBe('sold');
+    // 演出收摊之后才让位
+    const done = { ...settled, now: settled.now + 5000 };
+    auctionScreen.tick!(done);
+    expect(auctionScreen.active(done)).toBe(false);
+  });
+
+  it('★ 流拍那一路同样演得出来（「流標」这句）', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
+    const { env } = mkEnv(auctionPending({ bidders: [0, 1], limits: [0, 9000] }), players);
+    auctionScreen.tick!(env);
+    const settled = { ...env, state: { ...env.state, pending: null } as GameState };
+    auctionScreen.tick!(settled);
+    // 一次都没人加价 ⇒ 流拍
+    expect(auctionRunForTest()!.phase).toBe('passedIn');
+  });
+});

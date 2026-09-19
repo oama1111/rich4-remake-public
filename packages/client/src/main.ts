@@ -428,6 +428,11 @@ import {
   type BailSlotView,
 } from './bail-screen.ts';
 import { SCREENS } from './screens.ts';
+// ★ 只给 dev 钩子用（`__rich4.auctionView()`）：竞价轮转发生在 canvas 屏里，
+//   自动化看不见就没法验收「电脑跟不跟价、落槌演没演」。
+import { auctionRunForTest } from './auction-screen.ts';
+// ★ 只给 dev 钩子用（`__rich4.lotteryDraw()`）：開獎屏要等到 15 号才出现
+import { lotteryDrawCue } from './lottery-draw-screen.ts';
 import { openBigMap } from './big-map-screen.ts';
 // ★ 遊戲百科（`helpScreen`）不在这里单独引 —— 它登记在 `screens.ts` 里，
 //   ESC 与右键都走那条登记契约（本屏的 `hotkey` / `contextmenu` 是同一支）。
@@ -2158,7 +2163,9 @@ function closeAmountPage(): void {
 }
 
 /** 对话框上点到了什么 */
+const __devHits: unknown[] = [];
 function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
+  if (import.meta.env.DEV) __devHits.push(hit);
   if (hit.kind === 'choice') {
     const c = ui.choices[hit.index];
     if (c === undefined) return;
@@ -2185,7 +2192,12 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
     }
     // 要填数的选项：先进填数页，别直接派 action
     if (c.amount !== undefined) {
-      amountPage = { choice: hit.index, value: AMOUNT_INITIAL };
+      // ★ 开窗初值：原版認購股份那一支把**上限**当第一个实参传进填数窗
+      //   （见 `interactions.ts` 的 `amount.initial`），其余各条照旧从 0 起
+      amountPage = {
+        choice: hit.index,
+        value: c.amount.initial ?? AMOUNT_INITIAL,
+      };
       dialogHot = null;
       requestRender();
       return;
@@ -3283,6 +3295,27 @@ let minimapBg: ImageBitmap | null = null;
  *   走到标记上、或右键点别处，标记就清掉。
  */
 let minimapMarker: { x: number; y: number } | null = null;
+/**
+ * ★★ 换人行动时把小地图标记收掉、镜头交还给当前玩家（试玩 4：
+ *   「手动调整小地图后，镜头无法自动跟随接下来的行动」）。
+ *
+ * 原版 `fcn_00415e70` 的居中判据是**有标记就用标记、否则用当前玩家**；
+ * 而本引擎点小地图会同时置 `followPlayer = false`（`centerOnMarker`）——
+ * 那个标志**只在右键 / 走到标记上**才恢复，于是「下一位开始行动」时镜头
+ * 仍然钉在旧标记上。
+ *
+ * 口径：**回合换人的那一条 action** 到来时把标记收掉（标记是「看一眼」
+ * 的工具，不是模式开关）：这样 NPC 走子与自己的新回合都会重新跟随。
+ */
+function retargetCameraOnTurnChange(before: GameState): void {
+  if (minimapMarker === null && followPlayer) return;
+  const changed =
+    before.currentPlayer !== state.currentPlayer || before.turnCount !== state.turnCount;
+  if (!changed) return;
+  minimapMarker = null;
+  followPlayer = true;
+}
+
 /** 正按着的小地图箭头（松开才转视角）@source `[0x48be28]` */
 let pressedMinimapArrow: MinimapArrowId | null = null;
 /** 鼠标悬停的小地图箭头 —— 悬停时换成高亮图 @source VA 0x00418415 */
@@ -3455,6 +3488,7 @@ function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
 /** 真正施加一条 action：单机由 dispatch 直达，联机由服务器广播到达 */
 function applyAction(action: Action): void {
   const before = state;
+  retargetCameraOnTurnChange(before);
   // ★ 单机：日推进那一刻由宿主重新播种（原版 `0x41D06E` 的 `srand(GetTickCount())`）——
   //   见 `rng-host.ts`；联机策略下它是空操作。
   state = reduceRecorded(action);
@@ -6993,6 +7027,28 @@ function bindInput(): void {
 
     // ── 股市屏（T-030）──────────────────────────────────────
     if (screen === 'stock') {
+      // ★★ 填数页（计算器）开着时，**任何点击先给它** —— 这一条必须在「休市就退屏」
+      //   之前。原版这扇窗是**独立模态窗**（`fcn_00453544`），自己收 0x201/0x202，
+      //   与柜台窗开不开市无关；先前把它排在休市那一支**之后**，于是
+      //   休市日（或任何 `closedDays` 非 0 的日子）点计算器上任何一颗数字钮
+      //   都等于「点了一下股市屏」⇒ 直接 `closeStock()` 退屏
+      //   （试玩 4 报的「鼠标点计算器的数字按钮没反应」）。
+      if (stockAmount !== null) {
+        const q0 = eventToStage(e);
+        if (import.meta.env.DEV) {
+          __devHits.push({ q0, cx: e.clientX, cy: e.clientY, box: boardCtx.canvas.getBoundingClientRect().width });
+        }
+        if (q0 === null) return;
+        const ui0 = stockAmountUi();
+        if (ui0 !== null) {
+          const h0 = hitDialog(boardCtx, ui0, amountPage, q0.x - LAYOUT.board.x, q0.y - LAYOUT.board.y);
+          if (import.meta.env.DEV) __devHits.push({ hit: h0 });
+          if (h0 !== null && h0 !== 'inside') onDialogHit(ui0, h0);
+          if (amountPage === null) stockAmount = null; // 確定/取消都会关掉它
+          requestRender();
+        }
+        return;
+      }
       // ★ 休市那一支原版走的是**訊息框**窗口过程：任何一下鼠标都退屏
       //   （@source `fcn_0042b2ec` 的 0x202/0x205 两路都 `Post_0402_Message(0)`）
       //   —— 所以休市日既看不到行情，也不可能交易。
@@ -7023,20 +7079,6 @@ function bindInput(): void {
       }
       const q = eventToStage(e);
       if (q === null) return;
-      if (stockAmount !== null) {
-        // 填数页开着：全部点击先给它（排版照棋盘坐标，命中也照那边算）
-        const ui = stockAmountUi();
-        if (ui !== null) {
-          const h = hitDialog(
-            boardCtx, ui, amountPage,
-            q.x - LAYOUT.board.x, q.y - LAYOUT.board.y,
-          );
-          if (h !== null && h !== 'inside') onDialogHit(ui, h);
-          if (amountPage === null) stockAmount = null; // 確定/取消都会关掉它
-          requestRender();
-        }
-        return;
-      }
       const plate = hitStockPlate(q.x, q.y);
       if (plate !== null) {
         log('▶ 股市：' + ['換頁', '買進', '賣出', '上市公司資訊', '離開'][plate]);
@@ -8189,6 +8231,169 @@ async function boot(): Promise<void> {
           state = { ...moved, phase: 'settling' };
           dispatch({ type: 'settle' });
           return true;
+        },
+        /**
+         * ★ **直达一场拍卖**：当回合玩家打出「拍賣卡」（卡 8），把竞价挂成待决交互。
+         *
+         * 走的是与人点手牌**同一条** `useCard` action（不是后门）。加它是因为
+         * 竞价屏**要玩到才会出现**（抽到卡 + 打出 + 有人出得起），而「轮到电脑时
+         * 他自己跟价 / 放弃、落槌演出」只能在这块屏上验收。
+         * @returns 真的开出一场返回 true（`state.pending.kind === 'auction'`）
+         */
+        /** 此刻接管整屏的那一屏的 id（`null` = 棋盘）—— 给自动化用 */
+        overlayId: () => activeUiScreen()?.id ?? null,
+        /**
+         * ★ 直接开股市的**填数页**（计算器）—— 给自动化用。
+         *
+         * 「鼠标点数字钮 / MAX」只能在这扇窗上验收，而它**要休市日之外**才开得出来；
+         * 这条路只把 `stockAmount + amountPage` 摆好，规则（上限算式）仍走
+         * `stock-screen.ts` 的同一批函数。
+         * @param row 股票行号（0 基）
+         */
+        stockAmount: (row = 0, kind: 'buy' | 'sell' = 'buy') => {
+          // 存款为 0 时上限恒 0（买股走存款）；休市日流通量也是 0
+          //   ⇒ 先勾一笔存款与一点流通量，让窗子真开得出来（只为自动化够得着这扇窗）
+          if (kind === 'buy') {
+            state = {
+              ...state,
+              players: state.players.map((p, i) =>
+                i === state.currentPlayer ? { ...p, moneyInBank: Math.max(p.moneyInBank, 50000) } : p,
+              ),
+              market: {
+                ...state.market,
+                stocks: state.market.stocks.map((x, i) => (i === row ? { ...x, f10: 1000 } : x)),
+              },
+            };
+          }
+          const st = state.market.stocks[row];
+          const me = state.players[state.currentPlayer];
+          if (st === undefined || me === undefined) return false;
+          screen = 'stock';
+          stockSel = row;
+          stockAmount =
+            kind === 'buy'
+              ? { kind: 'buy', stock: row, max: stockCounterBuyMax(me.moneyInBank, st.price, st.f10) }
+              : { kind: 'sell', stock: row, max: state.holdings[state.currentPlayer]?.[row]?.amount ?? 0 };
+          amountPage = { choice: 0, value: AMOUNT_INITIAL };
+          dialogHot = null;
+          requestRender();
+          return stockAmount.max > 0;
+        },
+        /**
+         * ★ 直接播一次樂透開獎演出 —— 给自动化用。
+         *
+         * 開獎是「日期跨到 15 日」的副作用，正常玩要等到那天；这条路只把
+         * 那一对 `before/after` 摆出来（`lotteryDrawCue` 的判据与日期推进
+         * 那一条完全一样），演出本身一格都不改。
+         */
+        lotteryDraw: () => {
+          const lot = new Array<number>(36).fill(0);
+          lot[6] = 1; // 1 号玩家持 07 号
+          const before: GameState = {
+            ...state,
+            day: 14,
+            totalDays: state.totalDays,
+            pool: 5000,
+            lottery: lot,
+            players: state.players.map((p, i) => (i === 0 ? { ...p, cash: p.cash + 5000 } : p)),
+          };
+          const after: GameState = {
+            ...before,
+            day: 15,
+            totalDays: before.totalDays + 1,
+            pool: 0,
+            lottery: new Array<number>(36).fill(0),
+          };
+          state = after;
+          const cue = lotteryDrawCue(before, after);
+          if (cue === null) return 'no-cue';
+          // 与状态变化时那条路同一支：各整屏的 `event(before, after)` 统一派
+          for (const sc of SCREENS) sc.event?.(before, state, uiEnv());
+          requestRender();
+          return JSON.stringify(cue);
+        },
+        /** dev：`onDialogHit` 收到的每一次命中（自动化排错用） */
+        hits: () => JSON.stringify(__devHits),
+        /** 股市填数页的**命中框**（舞台坐标）—— 给自动化点用 */
+        stockAmountRects: () => {
+          const ui = stockAmountUi();
+          if (ui === null) return '[]';
+          return JSON.stringify(
+            layoutDialog(boardCtx, ui, amountPage).buttons.map((b) => ({
+              hit: b.hit,
+              x: b.rect.x + LAYOUT.board.x,
+              y: b.rect.y + LAYOUT.board.y,
+              w: b.rect.w,
+              h: b.rect.h,
+            })),
+          );
+        },
+        /** 股市填数页此刻拿到的上限与当前值 —— 给自动化核对用 */
+        stockAmountState: () =>
+          JSON.stringify({
+            stockAmount,
+            amountPage,
+            rows: state.market.stocks.map((x) => ({ price: x.price, f10: x.f10 })),
+          }),
+        /** 手动走一帧渲染回调（与 `requestRender` 里那条同路）—— 给自动化用 */
+        pump: () => {
+          renderQueued = false;
+          requestRender();
+        },
+        /** 拍卖屏的当前运行态（屏内 + core 的 pending 快照）—— 给自动化用 */
+        auctionView: () => {
+          const run = auctionRunForTest();
+          const p = state.pending;
+          return JSON.stringify({
+            run:
+              run === null
+                ? null
+                : {
+                    current: run.current,
+                    phase: run.phase,
+                    price: run.price,
+                    top: run.top,
+                    seats: run.seats.map((s) => ({ player: s.player, state: s.state, away: s.away })),
+                  },
+            pending:
+              p !== null && p.kind === 'auction' && 'seat' in p
+                ? { seat: p.seat, price: p.price, top: p.top, status: p.status }
+                : null,
+          });
+        },
+        auction: (seat?: number) => {
+          // 手上没有就先塞一张（新开局手牌是空的；这一步只为让自动化够得着这块屏）
+          const who = seat ?? state.currentPlayer;
+          if (!(state.players[who]?.cards ?? []).includes(8)) {
+            state = {
+              ...state,
+              players: state.players.map((p, i) => (i === who ? { ...p, cards: [...p.cards, 8] } : p)),
+            };
+          }
+          // ★ 让**指定的那一家**当回合玩家（= 卖家）—— 竞价名单是「其余三家」，
+          //   只有把人放在买家那一侧，才看得到「点完钮电脑跟不跟」。
+          state = { ...state, currentPlayer: who, phase: 'awaitingRoll' };
+          // ★ 拍賣卡拍的是**他脚下的那块地**；手上没地时先塞一块（只为让自动化够得着）
+          {
+            const nodeId = state.players[who]?.nodeId ?? 0;
+            const land = map.lands.find((l) => l.id === nodeId) ?? null;
+            if (land !== null) {
+              const owner = [...state.landOwner];
+              owner[nodeId] = who + 1;
+              const level = [...state.landLevel];
+              if ((level[nodeId] ?? 0) < 1) level[nodeId] = 1;
+              state = { ...state, landOwner: owner, landLevel: level };
+            }
+          }
+          const beforeP = state.pending;
+          dispatch({ type: 'useCard', cardId: 8, target: { kind: 'none' } });
+          if (state.pending?.kind !== 'auction') {
+            log(
+              `[dev] 開拍賣失敗：phase=${state.phase} pending=${state.pending?.kind ?? '-'}` +
+                `（之前 ${beforeP?.kind ?? '-'}）`,
+            );
+          }
+          return state.pending?.kind === 'auction';
         },
         /**
          * ★ 魔法屋那一屏的状态（`magicScreenState()`）：`playing` / `phase` /
