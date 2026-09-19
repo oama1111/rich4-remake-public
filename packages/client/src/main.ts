@@ -3444,6 +3444,10 @@ function scheduleAi(): void {
   //   本机只替**自己的座位**拿主意（出局后的空转、本机开的託管），并且
   //   照样作为意图发出去，不在本地施加。
   if (!localSeatActive()) return;
+  // ★ 联机的竞价：AI 控制的那一口（电脑 / 掉线代打 / 本机开的託管）**全部**归服务器出
+  //   （`server/hub.ts` 的 `#driveComputers`）；提交权此刻属于举牌者而不是回合主人
+  //   （core `actingSeat`），本机再发只会被定序器拒掉（issue #9）。
+  if (net !== null && state.pending?.kind === 'auction') return;
   aiTimer = window.setTimeout(() => {
     aiTimer = null;
     // ★ 节拍闸（T-047）：替身还在滑就重排、绝不派下一步 —— 判据见 holdForActorWalk
@@ -4319,6 +4323,7 @@ function uiEnv(): UiScreenEnv {
     sprite: spriteNow,
     flic: uiFlicNow,
     dispatch,
+    localSeat: net === null ? null : net.seat,
     requestRender,
     log,
     // ★ 音效两条出口：`playEffect(id, loop?)` 与 `stopEffect(id)`。

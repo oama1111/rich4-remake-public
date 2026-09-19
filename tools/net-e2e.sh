@@ -12,7 +12,8 @@
 # 用法：
 #   pnpm dev                        # 另开一个终端（Vite 5173）
 #   bash tools/net-e2e.sh           # 默认 2 座（全真人）+ 6 秒托管阈值
-#   SEATS=4 bash tools/net-e2e.sh   # 4 座（2 真人 + 2 电脑）—— 这条会撞上 issue #9，见报告 §4
+#   SEATS=4 bash tools/net-e2e.sh   # 4 座（2 真人 + 2 电脑）
+#   SEATS=4 SEED=968029213 bash tools/net-e2e.sh   # 固定种子复现（这个种子是 issue #9 的现场：第 7 回合开拍）
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -58,7 +59,7 @@ for line in sys.stdin:
 " | while read -r id; do "$B" closetab "$id" >/dev/null 2>&1; done
 sleep 1
 ( cd "$ROOT" && node --experimental-transform-types packages/server/src/cli.ts \
-    --port "$PORT" --map 0 --seats "$SEATS" --takeover "$TAKEOVER" > "$OUT/server.log" 2>&1 & )
+    --port "$PORT" --map 0 --seats "$SEATS" --takeover "$TAKEOVER" ${SEED:+--seed "$SEED"} > "$OUT/server.log" 2>&1 & )
 sleep 3
 head -1 "$OUT/server.log"
 

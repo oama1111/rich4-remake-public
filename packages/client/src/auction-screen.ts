@@ -925,10 +925,19 @@ function seatPlayer(env: UiScreenEnv, run: AuctionRun): Player | null {
   return env.state.players[seat.player] ?? null;
 }
 
+/**
+ * 联机时这一口归不归**本机**点：单机（`localSeat` 为 null / 不给）每个座位都在这块屏上；
+ * 联机只有轮到举牌的那一端能点 —— 服务器的定序器此刻也只收他的（core `actingSeat`）。
+ */
+function seatIsLocal(env: UiScreenEnv, run: AuctionRun): boolean {
+  if (env.localSeat === undefined || env.localSeat === null) return true;
+  return run.seats[run.current]?.player === env.localSeat;
+}
+
 function humanTurn(env: UiScreenEnv, st: ScreenState): boolean {
   if (st.settling || st.outcome !== null || st.run.phase !== 'bidding') return false;
   const p = seatPlayer(env, st.run);
-  return p !== null && !isAiControlled(p);
+  return p !== null && !isAiControlled(p) && seatIsLocal(env, st.run);
 }
 
 /**
@@ -1032,6 +1041,10 @@ export const auctionScreen: UiScreen = {
       }
       return;
     }
+    // ★ 联机：电脑（含掉线代打、託管）那一口**由服务器出**（`server/hub.ts` 的
+    //   `#driveComputers` 问的是同一个 `auctionNextBid`）。每一端都开着这块屏，
+    //   若各自都发，只会换来一串被定序器拒掉的意图（issue #9）。
+    if (env.localSeat !== undefined && env.localSeat !== null) return;
     if (env.now < st.nextAt) return;
 
     // ★ 电脑那一口**问 core**（与 `decidePending` 同一个函数，不是第二套算法）

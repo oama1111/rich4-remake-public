@@ -550,6 +550,50 @@ describe('整屏接线（UiScreen 契约）', () => {
     expect(actions).toEqual([]);
   });
 
+  // ── 联机（issue #9）：每一端都开着这块屏，但只有轮到举牌的那一端能点；电脑那一口归服务器 ──
+
+  it('★ 联机：轮到**本机座位**举牌 → 照常 dispatch', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1), mkPlayer(1, 1)];
+    const { env, actions } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
+    const mine: UiScreenEnv = { ...env, localSeat: 0 };
+    auctionScreen.tick!(mine);
+    const y = auctionButtonY(0);
+    auctionScreen.down!(406, y, mine);
+    auctionScreen.up!(406, y, mine);
+    expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'pass', step: 0 }]);
+  });
+
+  it('★ 联机：轮到**别的真人**举牌 → 本机点钮没反应（不替别人出价）', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1), mkPlayer(1, 1)];
+    const { env, actions } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
+    const other: UiScreenEnv = { ...env, localSeat: 1 };
+    auctionScreen.tick!(other);
+    const y = auctionButtonY(0);
+    auctionScreen.down!(406, y, other);
+    auctionScreen.up!(406, y, other);
+    expect(actions).toEqual([]);
+  });
+
+  it('★ 联机：轮到电脑 → 屏**不发**（那一口由服务器出）；单机同一局面照发（对照）', () => {
+    const players = [mkPlayer(0, 2), mkPlayer(1, 1)];
+    const pending = auctionPending({ bidders: [0, 1], limits: [7000, 9000] });
+
+    resetAuctionScreenForTest();
+    const netSide = mkEnv(pending, players, 1000);
+    const netEnv: UiScreenEnv = { ...netSide.env, localSeat: 1 };
+    auctionScreen.tick!(netEnv);
+    auctionScreen.tick!(withNow(netEnv, 3500));
+    expect(netSide.actions).toEqual([]);
+
+    resetAuctionScreenForTest();
+    const solo = mkEnv(pending, players, 1000);
+    auctionScreen.tick!(solo.env);
+    auctionScreen.tick!(withNow(solo.env, 3500));
+    expect(solo.actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'raise', step: 1000 }]);
+  });
+
   it('★ 屏**不再**自己 dispatch 终局 auction —— 终局由 core 落槌（Q-AUC-1）', () => {
     resetAuctionScreenForTest();
     const players = [mkPlayer(0, 1), mkPlayer(1, 2)];

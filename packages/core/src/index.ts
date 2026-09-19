@@ -22,6 +22,7 @@ export * from './ai/policy.ts';
 export * from './ai/personality.ts';
 export * from './net/protocol.ts';
 export * from './net/sequencer.ts';
+export * from './net/acting-seat.ts';
 export * from './rules/bankruptcy.ts';
 export * from './rules/land-mutation.ts';
 export * from './rules/objects.ts';

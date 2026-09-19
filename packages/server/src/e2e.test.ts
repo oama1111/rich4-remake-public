@@ -85,7 +85,7 @@ describe('★ 联机端到端', () => {
     const handles = [hHost, ...hw];
     let guard = 0;
     while (!isGameOver(room.state) && room.state.turnCount < 120 && guard++ < 50_000) {
-      const seat = room.currentSeat;
+      const seat = room.actingSeat;
       const client = seat === 0 ? host : watchers[seat - 1]!;
       handles[seat]!.onMessage({ t: 'intent', action: scripted(client.state!, map, seat) });
     }

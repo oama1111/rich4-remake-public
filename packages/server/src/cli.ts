@@ -2,10 +2,11 @@
  * 联机服务器命令行入口
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- *   pnpm --filter @rich4/server start [--port 8787] [--map 0] [--seats 4] [--takeover 30000]
+ *   pnpm --filter @rich4/server start [--port 8787] [--map 0] [--seats 4] [--takeover 30000] [--seed N]
  *
  * ★ 地图结构从随包的 `assets/game/map.mkf` 读（资源号 = 全局地图号×2+1，与 client/assets.ts 同）。
  * ★ 种子由服务器取（C-DET-1 的唯一非确定性入口），客户端不得自取。
+ *   `--seed N` 只为**复现**（例：issue #9 的 968029213）；不给就照旧取时钟。
  * ★ C-LEG-5：私人小圈子用，不做公开大厅、不分发素材。
  */
 
@@ -26,6 +27,8 @@ const port = arg('port', 8787);
 const globalMapId = arg('map', 0);
 const seatCount = Math.max(2, Math.min(4, arg('seats', 4)));
 const takeoverAfterMs = arg('takeover', 30_000);
+/** 复现用的固定种子；−1 = 不固定（取时钟） */
+const fixedSeed = arg('seed', -1);
 
 const mapFile = fileURLToPath(new URL('../../../assets/game/map.mkf', import.meta.url));
 const archive = new MkfArchive(new Uint8Array(readFileSync(mapFile)));
@@ -59,7 +62,7 @@ const running = await startWsServer({
   mapFor,
   seatCount,
   takeoverAfterMs,
-  seedFor: () => (Date.now() & 0x7fffffff) >>> 0,
+  seedFor: () => (fixedSeed >= 0 ? fixedSeed >>> 0 : (Date.now() & 0x7fffffff) >>> 0),
 });
 console.log(`rich4 聯機伺服器：ws://localhost:${port}  地圖 ${globalMapId}（房主可在大廳換 0..7）  ${seatCount} 座  掉線 ${takeoverAfterMs / 1000}s 後電腦代打`);
 console.log(`客戶端：http://localhost:5180/?ws=ws://localhost:${port}&room=r1&name=小明`);

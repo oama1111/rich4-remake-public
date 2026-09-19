@@ -12,6 +12,8 @@
 
 import {
   Sequencer,
+  actingSeat,
+  auctionNextBid,
   decideAction,
   newGame,
   reduce,
@@ -91,7 +93,9 @@ export class Room {
 
     this.#sequencer = new Sequencer({
       seats: opts.seats.length,
-      currentSeat: () => this.#mirror.currentPlayer,
+      // ★ 提交权 = 「此刻该谁拿主意」，不是「谁的回合」—— 拍賣期间轮到谁举牌谁提交
+      //   （issue #9；判据只有 core 的 `actingSeat` 这一处）。
+      currentSeat: () => actingSeat(this.#mirror),
     });
   }
 
@@ -99,8 +103,14 @@ export class Room {
     return this.#started;
   }
 
+  /** 回合主人（`currentPlayer`）。⚠️ **不是**提交权的判据 —— 那个看 `actingSeat` */
   get currentSeat(): number {
     return this.#mirror.currentPlayer;
+  }
+
+  /** 此刻该谁拿主意：拍賣期间 = 轮到举牌的那位，其余 = 回合主人 */
+  get actingSeat(): number {
+    return actingSeat(this.#mirror);
   }
 
   /** 服务器侧的状态指纹——用来比对客户端上报 */
@@ -125,6 +135,21 @@ export class Room {
   /** 让 core 的 AI 替当前座位拿主意（电脑座位或掉线代打） */
   decideForCurrent(): Action | null {
     return decideAction({ state: this.#mirror, map: this.#map });
+  }
+
+  /**
+   * 竞价期间：轮到举牌的那位若由 AI 控制（电脑 / 掉线代打 / 自己开了託管），给出他这一口；
+   * 不在竞价、或轮到的是真人 ⇒ `null`。
+   *
+   * ★ 为什么不能复用 `decideForCurrent()`：`decideAction` 先过 `isAiTurn`（判的是
+   *   **回合主人**），回合主人是真人时它直接返回 null —— 而此刻举牌的可能是电脑。
+   *   单机由 `client/auction-screen.ts` 补这个缝；服务器无头，得自己问
+   *   `auctionNextBid`（与屏、与 `decidePending` 同一个函数，不是第二套算法）。
+   */
+  decideAuctionBid(): Action | null {
+    const p = this.#mirror.pending;
+    if (p === null || p.kind !== 'auction' || !('seat' in p)) return null;
+    return auctionNextBid(this.#mirror, p);
   }
 
   start(): void {

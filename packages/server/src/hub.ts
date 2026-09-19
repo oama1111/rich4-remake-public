@@ -450,17 +450,28 @@ export class RoomHub {
     this.#driveComputers(t);
   }
 
-  /** 只要轮到电脑座位（含掉线代打的），就用 core 的 AI 替它把 action 一条条提交，直到轮到真人 */
+  /**
+   * 只要轮到电脑座位（含掉线代打的），就用 core 的 AI 替它把 action 一条条提交，直到轮到真人。
+   *
+   * ★ 「轮到谁」看 `room.actingSeat`，不是回合主人（issue #9）：拍賣期间四家轮流举牌，
+   *   轮到 AI 控制的那位（电脑 / 掉线代打 / 自己开了託管）由这里替他出这一口 ——
+   *   **哪怕回合主人是真人**；轮到真人则停手，等他自己的客户端提交（定序器此刻只收他的）。
+   *   竞价里的 AI 出价**全部**归服务器，客户端联机时不发（`client/auction-screen.ts`）。
+   */
   #driveComputers(t: Table): void {
     const room = t.room;
     if (room === null) return;
     for (let guard = 0; guard < 10_000; guard++) {
-      const seat = room.currentSeat;
+      const seat = room.actingSeat;
       const slot = t.seats[seat];
       if (slot === undefined) return;
-      const computerControlled = slot.info.kind === 'computer' || slot.takenOver;
-      if (!computerControlled) return;
-      const action = room.decideForCurrent();
+      // 竞价那一口：是不是 AI 控制由镜像说了算（`auctionNextBid` 自己判，真人返回 null）
+      let action = room.decideAuctionBid();
+      if (action === null) {
+        const computerControlled = slot.info.kind === 'computer' || slot.takenOver;
+        if (!computerControlled) return;
+        action = room.decideForCurrent();
+      }
       if (action === null) return;
       const r = room.submit(seat, action);
       if (!r.ok) return;

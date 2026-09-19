@@ -122,15 +122,25 @@
         if (now - lastStartClick > 500) { lastStartClick = now; click(START.x, START.y); N.startClicks = (N.startClicks || 0) + 1; }
         return;
       }
-      if (r.screen !== 'game' || seat === null || s.currentPlayer !== seat) return;
+      // ★ 提交权 = 「此刻该谁拿主意」（core `actingSeat`，issue #9）：竞价期间轮到谁举牌谁提交，
+      //   与回合主人无关；其余时刻 = 回合主人。电脑那一口由服务器出，这里不管。
+      const p = s.pending;
+      const bidding = !!p && p.kind === 'auction' && 'seat' in p && p.bidders[p.seat] !== undefined;
+      const acting = bidding ? p.bidders[p.seat] : s.currentPlayer;
+      if (r.screen !== 'game' || seat === null || acting !== seat) return;
 
       // 等本机这一拍真的落地（settle 的 action 要先跳起来）
-      const key = `${s.phase}|${s.currentPlayer}|${s.pending ? s.pending.kind : '-'}|${s.turnCount}|${s.players[s.currentPlayer]?.nodeId}`;
+      const key = `${s.phase}|${s.currentPlayer}|${s.pending ? s.pending.kind : '-'}|${bidding ? `${p.seat}@${p.price}` : ''}|${s.turnCount}|${s.players[s.currentPlayer]?.nodeId}`;
       const now = Date.now();
       if (key === lastKey && now - lastDispatchAt < 400) return;
 
       let action = null;
-      if (s.pending && s.pending.kind !== 'none') action = { type: 'declineDecision' };
+      // 竞价：本驱动的真人一律 PASS（⚠️ 不能回 declineDecision —— 那会把整场拍卖清掉）
+      if (bidding) {
+        action = { type: 'auctionBid', bidder: seat, status: 'pass', step: 0 };
+        N.auctionBids = (N.auctionBids || 0) + 1;
+        if (s.currentPlayer !== seat) N.crossSeatBids = (N.crossSeatBids || 0) + 1;
+      } else if (s.pending && s.pending.kind !== 'none') action = { type: 'declineDecision' };
       else if (s.phase === 'turnStart') action = { type: 'startTurn' };
       else if (s.phase === 'awaitingRoll') action = { type: 'rollDice' };
       else if (s.phase === 'moving') action = { type: 'step' };

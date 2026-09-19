@@ -74,6 +74,14 @@ export interface UiScreenEnv {
    */
   flic(archive: string, resource: number): LoadedFlic | null;
   dispatch(action: Action): void;
+  /**
+   * 联机时本机坐的座位（玩家下标）；**单机为 `null` / 不给**（= 每个座位都在这块屏上，热座）。
+   *
+   * ★ 只有「非回合主人也要作答」的屏需要读它 —— 目前就是拍賣（issue #9）：
+   *   联机下每一端都开着同一块拍賣屏，但只有**轮到举牌的那一端**能点钮，
+   *   电脑那一口归服务器（判据见 core 的 `actingSeat`）。
+   */
+  readonly localSeat?: number | null;
   requestRender(): void;
   log(message: string): void;
   /**
