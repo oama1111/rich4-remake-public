@@ -16,6 +16,7 @@
     "check": "pnpm typecheck && pnpm lint && pnpm test",
     "unpack": "node --experimental-strip-types packages/assets-pipeline/src/cli-extract.ts",
     "upscale": "node --experimental-strip-types packages/assets-pipeline/src/cli-upscale.ts",
+    "soak": "node --experimental-strip-types tools/soak-cli.ts",
     "dev": "pnpm --filter @rich4/client dev",
     "app": "pnpm --filter @rich4/desktop build"
   },
