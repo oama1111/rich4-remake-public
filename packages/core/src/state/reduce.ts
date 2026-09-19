@@ -1471,7 +1471,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
             //   参数顺序 = 原版 `sprintf(fmt, 地主名, 費名)`：地主名由函数开头
             //   `0x41d57d call 0x452946`（跳过空格的拷名）填好，費名是第 3 个实参
             //   （住宅这条路 = `[0x47517c]` 第 0 项「過路費」，见 rules/rent.ts）。
-            //   ⚠️ **九种不是同一个参数表**：查封（0x41d59e）与死神（0x41d5fa）
+            //   ⚠️ **九种不是同一个参数表**：查封（0x41d59f）与死神（0x41d5fa）
             //   只推了 `esi`（費名）一个实参，所以那两句只有一个 `%s`；
             //   同盟（0x41d5ce）与住宿/消失/坐牢/住院/冬眠/夢遊 是「名字 + 費名」
             //   两个实参。见 `exemptionNotice` 的 @source。
@@ -2856,7 +2856,7 @@ function gateNodeOf(topo: MapTopology, kind: ConfinementKind): number {
  *   `call 0x457110`（sprintf）+ `0x41d6a4 push 0x5dc / call 0x440cac`（彈框）。
  *   九条的推串点与**实参个数**（cdecl：最后推的是第一个实参）：
  * ```asm
- * 0041d59e  push 0x463bb8   ; 房屋查封中\n\n免收%s！          ← 只推 esi（費名）
+ * 0041d59f  push 0x463bb8   ; 房屋查封中\n\n免收%s！          ← 只推 esi（費名）
  * 0041d5d7  push 0x463bcd   ; 與%s同盟中\n\n免收%s！          ← 推 名字, esi（費名）
  * 0041d5fa  push 0x463be2   ; 死神顯靈\n\n免收%s！            ← 只推 esi（費名）
  * 0041d613  push 0x463bf5   ; %s住宿中\n\n免收%s！
@@ -2882,7 +2882,7 @@ function exemptionNotice(
 ): NoticeHint {
   switch (exemption) {
     case 'sealed':
-      // @source 0x0041d59e（只有一个 `%s` = 費名）
+      // @source 0x0041d59f（只有一个 `%s` = 費名）
       return { key: 'rent.freeSealed', args: [feeName] };
     case 'ally':
       // @source 0x0041d5d7（地主名 + 費名）
@@ -5991,7 +5991,11 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
     });
   }
   // 神明调整之前就把框弹出来 ⇒ base 为 0 时框照样在（旅館/購物中心那两路）
-  if (base === 0) return { ...withRng, notices, phase: 'turnEnd' };
+  // ★ 一扇都没有（加油站没有交通工具：`0x41a4ed je 0x41a581`）时**不碰** `notices`
+  //   —— 免得平白换一个空数组的引用（客户端靠引用判「这一条 action 弹没弹」）。
+  if (base === 0) {
+    return notices.length > 0 ? { ...withRng, notices, phase: 'turnEnd' } : { ...withRng, phase: 'turnEnd' };
+  }
 
   // 神明在付款前调整金额（与住宅同一条规则）
   const god = adjustTollByGod(base, me.godInfo);

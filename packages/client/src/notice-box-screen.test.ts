@@ -113,7 +113,7 @@ describe('文案：键 → 原版那一句', () => {
   });
 
   it('★★ 單 `%s` 那两条（查封 / 死神）：只有費名，名字不出现', () => {
-    // @source 0x0041d59e `push 0x463bb8` / 0x0041d5fa `push 0x463be2` —— 都只推了費名
+    // @source 0x0041d59f `push 0x463bb8` / 0x0041d5fa `push 0x463be2` —— 都只推了費名
     expect(noticeText({ key: 'rent.freeSealed', args: ['過路費'] })).toBe('房屋查封中\n\n免收過路費！');
     expect(noticeText({ key: 'rent.freeReaper', args: ['過路費'] })).toBe('死神顯靈\n\n免收過路費！');
   });

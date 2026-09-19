@@ -12,6 +12,8 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
+  applyDispelCard,
+  attachGod,
   makeGameState,
   makeLand,
   makeNode,
@@ -1204,6 +1206,53 @@ describe('★ 神明 —— 22（附身）/ 23（離身）', () => {
       { player: 0, event: 23 },
       { player: 0, event: 22 },
     ]);
+  });
+
+  it('★ 走 core 的 `attachGod`（= `0x40ead7`）：附身小窮神 ⇒ 22；再換大衰神 ⇒ 23 然後 22', () => {
+    const before = makeGameState();
+    const world = {
+      players: before.players,
+      objects: before.objects,
+      tools: before.tools,
+      toolStock: before.toolStock,
+    };
+    // handle 5 = objects[4]，初始種類表（`0x47ed3c`）裡正是 5 = 小窮神
+    expect(before.objects[4]!.type).toBe(5);
+    const a1 = attachGod(world, 0, 5);
+    expect(a1.ok).toBe(true);
+    const after1: GameState = { ...before, players: a1.players, objects: a1.objects };
+    expect(speechEventsFor(before, after1)).toEqual([{ player: 0, event: 22 }]);
+
+    // handle 7 = objects[6]，種類 7 = 小衰神 —— 換神：舊的（5）先走
+    expect(before.objects[6]!.type).toBe(7);
+    const a2 = attachGod(
+      { players: a1.players, objects: a1.objects, tools: a1.tools, toolStock: a1.toolStock },
+      0,
+      7,
+    );
+    expect(a2.ok).toBe(true);
+    const after2: GameState = { ...after1, players: a2.players, objects: a2.objects };
+    expect(speechEventsFor(after1, after2)).toEqual([
+      { player: 0, event: 23 },
+      { player: 0, event: 22 },
+    ]);
+  });
+
+  it('★ 走 core 的**送神符**（`applyDispelCard` = 卡 22，`0x444cc4` → `0x40e32c`）⇒ 23', () => {
+    const base = makeGameState();
+    const before: GameState = {
+      ...base,
+      players: base.players.map((p, i) => (i === 0 ? { ...p, godInfo: 7 } : p)),
+    };
+    expect(before.objects[6]!.type).toBe(7);
+    const r = applyDispelCard(before.players[0]!);
+    expect(r.ok).toBe(true);
+    expect(r.player.godInfo).toBe(0);
+    const after: GameState = {
+      ...before,
+      players: before.players.map((p, i) => (i === 0 ? r.player : p)),
+    };
+    expect(speechEventsFor(before, after)).toEqual([{ player: 0, event: 23 }]);
   });
 });
 

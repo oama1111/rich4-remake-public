@@ -145,7 +145,7 @@ describe('★★ 住宅：`RENT.payOneOwner`（0x00419d3e）', () => {
  * 参数顺序 = 原版 `sprintf` 的推栈顺序：名字缓冲由 `0x41d57d call 0x452946`
  * 用**函数第 1 个实参（地主下标）**填好（`[esp+0xa4]`），費名是第 3 个实参
  * （住宅这条路 = `[0x47517c]` 第 0 项「過路費」）。两条单 `%s` 的支
- * （查封 `0x41d59e`、死神 `0x41d5fa`）**只推了費名**，所以只有一个实参。
+ * （查封 `0x41d59f`、死神 `0x41d5fa`）**只推了費名**，所以只有一个实参。
  */
 describe('★★ 免收訊息框：九种全弹', () => {
   const cases = [
@@ -164,7 +164,7 @@ describe('★★ 免收訊息框：九种全弹', () => {
   });
 
   it('★★★ 可证伪：查封（priceStatus 高低半字节都非 0）⇒ `rent.freeSealed`，**只有一个 `%s`**', () => {
-    // @source 0x0041d59e `push 0x463bb8` —— 这一支只推了 esi（費名）
+    // @source 0x0041d59f `push 0x463bb8` —— 这一支只推了 esi（費名）
     const after = settle(onRivalLand({ priceStatus: 0x11 }));
     expect(after.notices[0]).toEqual({ key: 'rent.freeSealed', args: ['過路費'] });
     // 多填一个名字就会红

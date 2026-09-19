@@ -47,8 +47,8 @@
  * 00452938  test ebx, ebx / je 0x4528da     ; 没跳过就接着等
  * ```
  * 与本引擎 `UiScreen` 的三个出口一一对应：`up` / `contextmenu` / `key`。
- * （注意：`event-box-screen.ts` 里把 `fcn_004528b9` 注释成「死等、不认消息」——
- *  那两条注释与本段汇编不符；本屏照汇编做，不去动那边。）
+ * ★ 2026-09-19：`event-box-screen.ts` 那两条「死等、不认消息」的错注释**已订正**
+ *   （见 E-5 的收口），本屏与那一屏现在照同一份汇编做。
  *
  * ## 触发（纯查状态，不读也不写 `GameState`）
  *
@@ -93,7 +93,7 @@ export const NOTICE_TEXT = {
   'rent.payBoss': RENT.payBoss.text,
   // ★ 免收那一路（`0x41d559` 的**全部九种**）：
   //   原版在豁免分支里先 sprintf 再弹**同一扇**框（`0x41d6a4 push 0x5dc /
-  //   call 0x440cac`）。⚠️ 参数个数不是一种：查封（0x41d59e）与死神（0x41d5fa）
+  //   call 0x440cac`）。⚠️ 参数个数不是一种：查封（0x41d59f）与死神（0x41d5fa）
   //   只推了費名一个实参；同盟（0x41d5ce）与其余六种是「名字 + 費名」两个。
   'rent.freeSealed': RENT.freeSealed.text,
   'rent.freeAllied': RENT.freeAllied.text,

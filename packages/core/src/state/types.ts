@@ -437,10 +437,10 @@ export interface NoticeHint {
  * | `rent.payTwoOwners` | `RENT.payTwoOwners` | 0x00419d1a `push 0x46399a` |
  * | `rent.payChairman` | `RENT.payChairman` | 0x0041ae98 `push 0x463a31` |
  * | `rent.payBoss` | `RENT.payBoss` | 0x0041ae86 `push 0x463a6a` |
- * | `rent.freeSealed` | `RENT.freeSealed` | 0x0041d59e `push 0x463bb8` |
+ * | `rent.freeSealed` | `RENT.freeSealed` | 0x0041d59f `push 0x463bb8` |
  * | `rent.freeAllied` | `RENT.freeAllied` | 0x0041d5d7 `push 0x463bcd` |
  * | `rent.freeReaper` | `RENT.freeReaper` | 0x0041d5fa `push 0x463be2` |
- * | `rent.freeHotel` | `RENT.freeHotel` | 0x0041d60b `push 0x463bf5` |
+ * | `rent.freeHotel` | `RENT.freeHotel` | 0x0041d613 `push 0x463bf5` |
  * | `rent.freeVanished` | `RENT.freeVanished` | 0x0041d62c `push 0x463c08` |
  * | `rent.freePrison` | `RENT.freePrison` | 0x0041d645 `push 0x463c1b` |
  * | `rent.freeHospital` | `RENT.freeHospital` | 0x0041d65e `push 0x463c2e` |
