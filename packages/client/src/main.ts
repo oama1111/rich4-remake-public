@@ -432,7 +432,7 @@ import { SCREENS } from './screens.ts';
 //   自动化看不见就没法验收「电脑跟不跟价、落槌演没演」。
 import { auctionRunForTest } from './auction-screen.ts';
 // ★ 只给 dev 钩子用（`__rich4.lotteryDraw()`）：開獎屏要等到 15 号才出现
-import { lotteryDrawCue } from './lottery-draw-screen.ts';
+import { lotteryDrawCue, lotteryDrawView } from './lottery-draw-screen.ts';
 import { openBigMap } from './big-map-screen.ts';
 // ★ 遊戲百科（`helpScreen`）不在这里单独引 —— 它登记在 `screens.ts` 里，
 //   ESC 与右键都走那条登记契约（本屏的 `hotkey` / `contextmenu` 是同一支）。
@@ -8311,6 +8311,12 @@ async function boot(): Promise<void> {
           for (const sc of SCREENS) sc.event?.(before, state, uiEnv());
           requestRender();
           return JSON.stringify(cue);
+        },
+        /** dev：樂透開獎屏这一帧的演出态 + 气泡行（排「台词不出」用） */
+        lotteryView: () => {
+          const v = lotteryDrawView(uiEnv());
+          if (v === null) return 'null';
+          return JSON.stringify({ step: v.step, state: v.state, lines: v.lines, now: uiEnv().now });
         },
         /** dev：`onDialogHit` 收到的每一次命中（自动化排错用） */
         hits: () => JSON.stringify(__devHits),
