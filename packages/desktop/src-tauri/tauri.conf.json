@@ -48,7 +48,8 @@
     "resources": [
       "../../../assets/game/*.mkf",
       "../../../assets/game/*.mid",
-      "../../../assets/game/Midi.txt"
+      "../../../assets/game/Midi.txt",
+      "../../../assets/game/RICH4.CFG"
     ]
   }
 }
