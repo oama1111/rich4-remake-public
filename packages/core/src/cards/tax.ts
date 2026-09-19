@@ -7,6 +7,7 @@
  */
 
 import type { Player } from '../state/types.ts';
+import { WHO_PLAYS_HUMAN } from '../state/types.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { targetClassOf, validateTarget } from './target.ts';
 import { consumeCard, playerHasCard, PASSIVE_CARDS } from './passive.ts';
@@ -17,7 +18,80 @@ import { consumeCard, playerHasCard, PASSIVE_CARDS } from './passive.ts';
  */
 export const SEAPGOAT_TAX_THRESHOLD = 0x7d0;
 import { transferMoney } from '../rules/payment.ts';
+import { aiUsesFreeCard } from '../rules/toll-flow.ts';
 import { HOSTILITY_DIVISOR } from './average-cash.ts';
+
+/**
+ * ★★ 免費卡(20) 的「**要不要真的用掉**」判据 —— 2026-09-20 补（§7.142(5) 的 E5）。
+ *
+ * 查稅卡 `0x44532d` 在目标持有免費卡时调 `0x444a60`，而**那里面还有一道判据**，
+ * 不是有卡就免单（`0x444a60` 的完整分支）：
+ * ```asm
+ * 00444a92  cmp  byte ptr [ebx + 0x496b7d], 1   ; 目标 who_plays == 1（纯人类）？
+ * 00444a99  je   0x444ad8                       ; → 弹确认框（见下）
+ * 00444a9b  call 0x456f2d                       ; ★ 电脑：先无条件吃掉一次 rand()
+ * 00444aa2  mov  esi, 0xbb8                     ; 3000
+ * 00444aaa  idiv esi                            ; edx = rand() % 3000
+ * 00444aac  add  edx, esi                       ; edx = 3000 + rand() % 3000
+ * 00444aae  mov  esi, dword ptr [0x4990e8]      ; 物價指數
+ * 00444ab4  imul esi, edx                       ; 門檻 = pi × (3000 + rand()%3000)
+ * 00444ab7  mov  eax, dword ptr [esp + 0x9c]    ; 税额（第三参数）
+ * 00444abe  cmp  eax, dword ptr [ebx + 0x496b84]; 税额 vs 目标**现金**
+ * 00444ac4  jg   0x444aca                       ; 税额 > 现金 ⇒ 用卡
+ * 00444ac6  cmp  esi, eax
+ * 00444ac8  jge  0x444ad1                       ; 門檻 >= 税额 ⇒ ★ 不用（卡留着，照付）
+ * 00444aca  mov  esi, 1                         ; 用卡 → 0x444b07 弹「使用%s」+ remove_card
+ * 00444ad8  ...(真人) sprintf「%s\n\n是否使用免費卡？」0x465388
+ * 00444af4  call 0x440ba8                       ; 确认框；返回 1 = 用
+ * 00444afe  cmp  eax, 1 / jne 0x444ba0          ; ≠1 ⇒ 返回 0，**卡不消耗**
+ * ```
+ * ⇒ 电脑受害者**只有** `税额 > 现金` 或 `税额 > pi×(3000+rand()%3000)` 才动卡：
+ *   ① `rand()` 在**比较之前**无条件消耗一次 —— 哪怕最后判「不用」，
+ *      全局 RNG 流也已经往前走了一格（这正是缺口里说的「流错位」）；
+ *   ② 判据是**严格大于**（`jge` 判「不用」，`税额 == 門檻` ⇒ 不用）；
+ *   ③ 模数 **3000**、再加 **3000**、乘数码**指数在前**（`imul esi, edx`）。
+ *
+ * 这条判据与付过路费那一支是**同一个 `0x444a60`**，故直接复用
+ * `rules/toll-flow.ts` 的 `aiUsesFreeCard`（通道 2 `test_passive_cards.py` 已判 MATCH），
+ * 免得两处各写一份而漂移。
+ *
+ * ⚠️ 查稅这条路上 `税额 = trunc(现金 × 0.2)`，故 `税额 > 现金` 对 `现金 >= 0`
+ *    永不成立（对过路费那一支才有意义）—— 但 `rand()` 与它的先后顺序照原版保留。
+ */
+
+/**
+ * `0x444a60` 里那一次 `rand()` 的出口 —— 与 `UseCardContext.rng` 同形（C-DET-4）。
+ * `next()` 就是原版 `0x456f2d` 那个 Watcom `rand()`（LCG，返回值 0..32767）。
+ */
+export interface TaxRandomSource {
+  next(): number;
+}
+
+/**
+ * `0x444a60` 里「用不用免費卡」的判定 —— 判据与逐条汇编见上面那段注释。
+ *
+ * @param rng `0x444a9b call 0x456f2d` 那一次 `rand()` 的出口；预览路径没有随机流时
+ *   传 `undefined`（与 `cards/registry.ts` 的轉向卡 `ctx.rng?.next() ?? 0` 同一约定，
+ *   退化成 `rand() == 0`，即門檻取最小 `pi × 3000`）。
+ */
+function usesFreeCard(
+  victim: Player,
+  amount: number,
+  priceIndex: number,
+  rng: TaxRandomSource | undefined,
+): boolean {
+  // @source 0x444a92 `cmp byte [ebx+0x496b7d], 1` / 0x444a99 `je 0x444ad8`
+  //   ★ 整字节**精确等于 1**（不是位测试）：带托管位(0x04)／走回棋盘位(0x10)的
+  //     人类在这里也落进**电脑**分支 —— 与 `state/reduce.ts` 樂透投注站同一条规矩。
+  //   真人支是确认框；core 里没有可停下来问的地方，沿用既有行为「默认为是」
+  //   （弹窗属 P2；D-008 记的是「真人先按电脑判据替他决定」，此处按原版结构分流，
+  //     并**不消耗**随机数 —— 见报告「不确定的点」）。
+  if (victim.whoPlays === WHO_PLAYS_HUMAN) return true;
+  // @source 0x444a9b `call 0x456f2d` —— ★ 无条件、恰好一次，且在任何比较之前
+  const roll = rng?.next() ?? 0;
+  // @source 0x444abe `cmp eax,[ebx+0x496b84] / jg` + 0x444ac6 `cmp esi,eax / 0x444ac8 jge`
+  return aiUsesFreeCard(amount, victim, priceIndex, roll);
+}
 
 /** 查税卡的选择参数 @source `push 0xe0c0410` —— player 组 */
 export const TAX_SELECTION_PARAM = 0xe0c0410;
@@ -54,21 +128,36 @@ export interface TaxResult {
  * push  0x14                     ; ★ 20 = 免费卡
  * push  ebx                      ; 目标
  * call  0x4413ad                 ; 查目标是否持有免费卡
+ * cmp   eax, 1 / jne 0x44533e
+ * push  税额 / push 使用者 / push ebx
+ * call  0x444a60                 ; ★★ 里面还有一道门槛（AI 随机门槛 / 真人确认框）
+ * cmp   eax, 1 / je 0x445426     ; == 1 才算免单（并已扣卡）
  * ```
  *
  * ★ 这里印证了**免费卡（20）的用途**：它是防御「缴费类」效果的被动卡。
  *   注意与梦游卡不同——梦游查的是免罪卡(21)与嫁祸卡(19)，
  *   **不同的有害卡查不同的防御卡**。
+ * ★★ `0x444a60` 的返回值才是裁决：见 `usesFreeCard` 上方那段汇编 ——
+ *   持卡 ≠ 免单（电脑要过随机门槛，且**无条件消耗一次 `rand()`**）。
  */
 export function applyTaxCard(
   players: readonly Player[],
   currentPlayer: number,
   target: CardTarget,
+  /** 物价指数 —— 嫁祸卡 mode 2 的门槛 `0.2×cash > 4000×pi` 要用（`@source 0x444934`） */
+  priceIndex: number,
   /**
    * 嫁祸卡(19) 改写后的新目标，由外部（UI/AI）给出，`-1` 表示放弃。
    * 与原版 `0x00445368 cmp eax,-1 / je` 同义。默认不转嫁。
    */
   scapegoatPicker: (from: number) => number = () => -1,
+  /**
+   * ★ 免費卡 AI 門檻要消耗的那一次 `rand()`（`@source 0x444a9b`）。
+   *   必须传 `state.rngState` 装出来的那条流（C-DET-4），否则 AI 受害者这条路上
+   *   全局 RNG 流会比原版少走一格。预览路径（`state/preview.ts`）没有随机流，
+   *   传 `undefined`（退化成 `rand() == 0`）。
+   */
+  freeCardRng: TaxRandomSource | undefined,
 ): TaxResult {
   const cls = targetClassOf(TAX_SELECTION_PARAM);
   const error = validateTarget(cls, target, currentPlayer, players.length);
@@ -87,7 +176,12 @@ export function applyTaxCard(
   const hostilityDelta = Math.trunc(tax / HOSTILITY_DIVISOR);
 
   // ★ 免费卡防御（@source push 0x14 / call has_card / call 0x444a60）
-  const defended = playerHasCard(victim, PASSIVE_CARDS.FREE);
+  //   ★★ 2026-09-20 订正：**不是有卡就免单** —— 还要过 `0x444a60` 内部那道门槛
+  //   （电脑 `pi×(3000+rand()%3000)` 严格小于税额，或真人确认框答「是」）。
+  //   此前 remake 只要有卡就免单并扣卡 ⇒ AI 受害者小额查稅被白烧一张免费卡，
+  //   而且**一次 `rand()` 都没消耗**（全局 RNG 流从此错位）。
+  const defended = playerHasCard(victim, PASSIVE_CARDS.FREE)
+    && usesFreeCard(victim, tax, priceIndex, freeCardRng);
 
   if (defended) {
     // ★★ 免费卡被**消耗**：原版 `0x444a60` 内部 `0x444b30 push 0x14 / call 0x441343`
@@ -113,12 +207,29 @@ export function applyTaxCard(
   let finalIndex = target.index;
   let playersAfterRedirect: readonly Player[] = players;
   if (tax > SEAPGOAT_TAX_THRESHOLD && playerHasCard(victim, PASSIVE_CARDS.SCAPEGOAT)) {
-    // 嫁祸卡命中即**消耗**（`0x44476a` 内部 `0x4449ef call 0x441343`）
-    playersAfterRedirect = players.map((p, i) =>
-      i === target.index ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p,
-    );
-    const picked = scapegoatPicker(target.index);
-    if (picked !== -1 && picked >= 0 && picked < players.length) finalIndex = picked;
+    // ★★ 2026-09-19 补（§7.140，通道 2 `test_passive_cards.py` 实证）：
+    //   原版 `0x44476a(target, mode 2)` **内部还有一道门槛**（`0x444934`–`0x44496f`）：
+    //   ```asm
+    //   00444934  fild  dword [victim + 0x1c]        ; 目标现金
+    //   0044493a  fmul  qword [0x465380]             ; ★ × 0.2（double）
+    //   …         eax = 4000 × 物價指數（移位链）
+    //   00444963  fild  dword [esp+0x98]
+    //   0044496a  fcompp                             ; 比较
+    //   0044496f  jae   0x444973                     ; 4000×pi >= 0.2×cash ⇒ 放弃
+    //   ```
+    //   ⇒ 只有 `0.2×cash > 4000×pi` 才转嫁；否则返回 −1、**卡不扣**、保持原目标。
+    //   （注意是双精度比较：`cash=20000, pi=1` 时 `0.2×cash` 四舍五入**恰好等于 4000**
+    //   ⇒ **不转嫁**。整数等价式 `cash > 20000×pi` 在该边界上一致。）
+    if (victim.cash > 20000 * priceIndex) {
+      // 嫁祸卡命中即**消耗**（`0x44476a` 内部 `0x4449ef call 0x441343`）——
+      //   但扣卡点在 mode 2 门槛之后（`0x4449e7 cmp ebx,-1` 也在它之前）：
+      //   门槛不过 / 放弃转嫁 ⇒ 都不扣。
+      playersAfterRedirect = players.map((p, i) =>
+        i === target.index ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p,
+      );
+      const picked = scapegoatPicker(target.index);
+      if (picked !== -1 && picked >= 0 && picked < players.length) finalIndex = picked;
+    }
   }
 
   // ★★ 税金必须**转给施卡者**，不是凭空消失。

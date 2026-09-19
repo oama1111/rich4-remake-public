@@ -34,6 +34,17 @@ import {
   type StockHolding,
 } from '../places/stock.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
+// ★★ 命运这 4 条路上的「免罪卡(21) → 嫁禍卡(19)」二级判定 —— `0x441210` 只有一份实现，
+//    与新聞 29 共用（见 `news-effects.ts` 的 `secondaryJudgement` 的 @source 块）。
+//    不 import `rules/toll-flow.ts` 的 `aiScapegoat`：那个镜像的是 mode 1。
+import { secondaryJudgement } from './news-effects.ts';
+
+/**
+ * 本模块要的随机出口：`below(n)`（挑人）+ `next()`（事件 5 抽牌）。
+ * `WatcomRng` 天然满足；`news-effects.ts` 的 `EffectRng` 只有 `below`，
+ * 故这里自己声明一个更宽的（避免为了一个 `next()` 去改共享类型）。
+ */
+type EventRng = { below(n: number): number; next(): number };
 
 /**
  * 金额倍率档位 —— 转发 `rules/blessing.ts` 的定义。
@@ -160,6 +171,21 @@ export interface FortuneEffectResult {
    *   `null` = 本次没有分帧（电脑当寿星那一支照旧当场收完）。
    */
   birthdaySeats: number[] | null;
+  /**
+   * ★★「免罪 21 / 嫁禍 19」二级判定之后**真正挨罚的人**（`0x441210` 的返回值）。
+   *
+   * 只有**坐牢／住院／出國·綁架**这三类事件带它 —— 也就是原版那 4 个
+   * `call 0x441210` 的命運调用点；被判定者 = `ctx.currentPlayer`。
+   *
+   * - `null` = 没走二级判定（其余事件），或**免罪卡命中整条作废**（`eax == -1`）；
+   * - `= currentPlayer` = 没卡 / 真人放弃转嫁 / 嫁祸无人可嫁（`0x441259 je`）；
+   * - `≠ currentPlayer` = 嫁禍成功，替死鬼是这位。
+   *
+   * ⚠️ 调用方**必须**拿它去跑 `insureConfinement` —— 原版的保險理赔
+   *   （`0x43d749` 在 `send_to_prison`／`0x43edf8` 在 `send_to_hospital`
+   *   **函数体内**）关谁赔谁，与新聞 29 的 `chairmanPrison.victim` 同一口径。
+   */
+  fortuneVictim: number | null;
 }
 
 export interface FortuneEffectContext {
@@ -180,10 +206,19 @@ export interface FortuneEffectContext {
    */
   sellDestination?: SellDestination;
   /**
-   * 引擎随机出口（事件 5「生日收卡」在电脑那一支要 `rand() % 手牌数` 抽一张）。
-   *   传的必须是 `state.rngState` 装出来的那条流（C-DET-4）。
+   * 引擎随机出口。
+   *
+   * 两处用得到：
+   *  · 事件 5「生日收卡」电脑那一支要 `rand() % 手牌数` 抽一张；
+   *  · `0x441210` 的**嫁祸挑人**（`0x40d31c`）—— 只在「受害者是电脑、
+   *    持 19、且没有最恨的人」时才真的掷一格。
+   *
+   * 缺省时：事件 5 报 `unimplemented`（照旧），而嫁祸挑人那一支按
+   * **「无人可嫁」**处理（`−1`，19 留在手里）—— 那是给不关心随机的单元测试用的；
+   * 引擎调用点（`reduce.ts`）必须传。
+   * 传的必须是 `state.rngState` 装出来的那条流（C-DET-4）。
    */
-  rng?: { next(): number };
+  rng?: EventRng;
   currentPlayer: number;
   priceIndex: number;
   pool?: number;
@@ -288,6 +323,9 @@ export function applyFortuneEffect(
     bankrupted: false,
     unimplemented: false,
     birthdaySeats: null,
+    // ★ 缺省 null = 本次没走「免罪 21 → 嫁禍 19」的二级判定
+    //   （或免罪卡命中、整条作废）—— 只有坐牢/住院/出國·綁架那三条会填。
+    fortuneVictim: null,
   };
 
   const entry = fortuneEvent(eventId);
@@ -304,6 +342,26 @@ export function applyFortuneEffect(
     //     `cmp ecx, 2 / jne … / add [0x48c5b4], [0x48c5b4]`（天数翻倍）
     const mult = blessingMultiplier(ctx.multiplier ?? 0);
     if (mult === 0) return { ...base, cancelled: true };
+    // ★★★ 2026-09-19：二级判定必须**在神明闸门之后**、**在 send_to_* 之前**。
+    //   原版的次序是 `44b896`（神明）→ `440cac`（放台词）→ `441210`（免罪/嫁禍）
+    //   —— 档位 1「逃過此劫」那一支在 `0x44ccfc/0x44cd0d`（命運 12）就直接跳尾声，
+    //   **碰都不碰** `0x441210`，故那时手里的 21/19 一张都不会被扣。
+    //   @source 4 个调用点：命運 7 `0x44c6c5`、命運 8 `0x44c7d7`、
+    //     命運 12 `0x44cd41`、命運 33 `0x44d8a9`（后两处后接 `0x43ec3f` / `0x43d593`）；
+    //     这 4 处的 `0x44476a` 第二参（mode）**都是 0**（`push 0 / push 0 / push esi`）。
+    //   免罪 21 命中 ⇒ 整条作废；嫁禍 19 命中 ⇒ 换人（换的是 `send_to_*` 的目标）。
+    //   没给随机出口（老单元测试）⇒ 原样直落本人。
+    const judged =
+      ctx.rng === undefined
+        ? null
+        : secondaryJudgement(players, ctx.currentPlayer, ctx.rng);
+    if (judged !== null && judged.kind === 'absolution') {
+      // `0x44122f mov eax,-1` ⇒ 各调用点 `cmp eax,-1 / je 尾声`：整条作废
+      //（连 `send_to_*` 都不调，也不放第二句台词）。免罪卡已在判定里扣掉。
+      return { ...base, players: [...judged.players], amount: 0 };
+    }
+    const players2 = judged === null ? players : [...judged.players];
+    const victim = judged === null ? ctx.currentPlayer : judged.victim;
     const days = raw * mult;
     const kind = entry.effects.includes('prison') ? 'prison' : 'hospital';
     // ★ 目标表按 kind 取；**另一张**交给 confine 的 `otherOccupancy` 去清
@@ -313,12 +371,12 @@ export function applyFortuneEffect(
     const occ = kind === 'prison' ? prisonOccupancy : hospitalOccupancy;
     const other = kind === 'prison' ? hospitalOccupancy : prisonOccupancy;
     const out = sendToConfinement(
-      players,
+      players2,
       objects,
       ctx.nodes ?? [],
       occ,
       kind,
-      ctx.currentPlayer,
+      victim,
       days,
       other,
       ctx.landscapes,
@@ -331,6 +389,7 @@ export function applyFortuneEffect(
       prisonOccupancy: kind === 'prison' ? out.occupancy : (out.otherOccupancy ?? prisonOccupancy),
       hospitalOccupancy: kind === 'hospital' ? out.occupancy : (out.otherOccupancy ?? hospitalOccupancy),
       amount: days,
+      fortuneVictim: victim,
     };
   }
 
@@ -385,8 +444,10 @@ export function applyFortuneEffect(
   }
 
   // ── 命運 6/7：強迫出國觀光 / 被外星人綁架 ───────────────────────
-  //   @source `fcn_0044c5d8` / `fcn_0044c6ed` 的施加阶段尾部
-  //   `fcn_0040d375(玩家, 天数, 原因)` ⇒ `blocking.disappearing = 天数 | (原因 << 6)`。
+  //   @source `fcn_0044c5d8`（6）/ `fcn_0044c6ed`（7）的施加阶段尾部：
+  //   `fcn_0040d375(玩家, 天数, 原因)` ⇒ `blocking.disappearing = 天数 | (原因 << 6)`；
+  //   调用前两处各有一次 `fcn_00441210(玩家)`（6 在 `0x44c6c5`、
+  //   7 在 `0x44c7d7`，两者共用 `0x44c6d8` 起的同一段尾巴）。
   //   ★ 已经在外的人原版直接跳过（`cmp byte [+0x33], 0 / jne 出去`）。
   //   ★ 神明加持与坐牢同一支：档位 1 → 逃過此劫（整条作废）、档位 2 → 天数翻倍。
   if (entry.effects.includes('disappear')) {
@@ -396,7 +457,28 @@ export function applyFortuneEffect(
     if (mult === 0) return { ...base, cancelled: true };
     const me = players[ctx.currentPlayer];
     if (me === undefined) return { ...base, unimplemented: true };
-    if (me.blocking.disappearing !== 0) return { ...base, amount: 0 };
+    // ★★ 二级判定（`0x441210`）在**「已经在外」那道闸之前**：
+    //   `0x44c6be mov edi,[0x49910c] / push edi / call 0x441210` 先跑，
+    //   「已经在外」的 `cmp [+0x33],0 / jne` 在它**后面**的 `0x40d375` 里。
+    //   ⇒ 持 21/19 的人在这一条上照样扣卡（与坐牢/住院同一段共享尾巴）。
+    // ★ 先跑二级判定（`0x441210`）：免罪 21 命中 ⇒ 整条作废；嫁禍 19 命中 ⇒ 换人。
+    //   没给随机出口 ⇒ 原样直落本人。
+    const judged =
+      ctx.rng === undefined
+        ? null
+        : secondaryJudgement(players, ctx.currentPlayer, ctx.rng);
+    if (judged !== null && judged.kind === 'absolution') {
+      // `0x44122f mov eax,-1` ⇒ `cmp eax,-1 / je 尾声`：连 `0x40d375` 都不调。
+      return { ...base, players: [...judged.players], amount: 0 };
+    }
+    const players2 = judged === null ? players : [...judged.players];
+    const victim = judged === null ? ctx.currentPlayer : judged.victim;
+    const target = players2[victim];
+    if (target === undefined) return { ...base, players: players2, unimplemented: true };
+    if (target.blocking.disappearing !== 0) {
+      // 原版 `cmp byte [player+0x33], 0 / jne 出去`：不动天数、不放第二句
+      return { ...base, players: players2, amount: 0, fortuneVictim: victim };
+    }
     const days = raw * mult;
     const reason =
       eventId === FORTUNE_ABDUCTED ? DISAPPEAR_REASON_ABDUCTED : DISAPPEAR_REASON_ABROAD;
@@ -409,13 +491,13 @@ export function applyFortuneEffect(
     //   差分证据：`rich4-spec/tests/test_confinement_release.py`（15/15）。
     //   此前 remake 只写 `disappearing` ⇒ 「住院中被綁架」会**同时**留在医院
     //   （`inHospital` 不清、医院床位不清），那张床再也放不出来。
-    const meBlocking = me.blocking;
+    const meBlocking = target.blocking;
     const nextPrison = [...prisonOccupancy];
     const nextHospital = [...hospitalOccupancy];
-    if (meBlocking.inPrison !== 0) nextPrison[ctx.currentPlayer] = 0;
-    if (meBlocking.inHospital !== 0) nextHospital[ctx.currentPlayer] = 0;
-    const next = players.map((q, i) =>
-      i === ctx.currentPlayer
+    if (meBlocking.inPrison !== 0) nextPrison[victim] = 0;
+    if (meBlocking.inHospital !== 0) nextHospital[victim] = 0;
+    const next = players2.map((q, i) =>
+      i === victim
         ? addMisfortuneDays(
             {
               ...q,
@@ -437,6 +519,7 @@ export function applyFortuneEffect(
       prisonOccupancy: nextPrison,
       hospitalOccupancy: nextHospital,
       amount: days,
+      fortuneVictim: victim,
     };
   }
 

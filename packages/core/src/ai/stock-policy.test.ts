@@ -78,6 +78,17 @@ describe('AI 炒股', () => {
     expect(decideStockTrade(scene({ loanDueDate: 0 }))).not.toBeNull();
   });
 
+  // ★★ 2026-09-19 补（§7.140，通道 2 `test_stock_daily_bf03.py`）：原版入口
+  //   `0x0042bf14` 是 `rand()%3 != 0 ⇒ 返回` —— **三分之二的回合根本不看股市**，
+  //   此前复刻漏了这道闸（卖股侧 `decideStockSell` 早有同型实现）。
+  it('★★ 入口闸：aiRoll(0x42bf14,3) != 0 就不看股市', () => {
+    // aiRoll(state, salt, 3) = ((rngState ^ imul(salt,0x9e3779b1)) >>> 0) % 3
+    //   rngState=1 ⇒ 0（通过）；rngState=0 ⇒ 2（跳过）
+    expect(decideStockTrade({ ...scene(), rngState: 0 })).toBeNull();
+    expect(decideStockTrade({ ...scene(), rngState: 2 })).toBeNull();
+    expect(decideStockTrade({ ...scene(), rngState: 1 })).not.toBeNull();
+  });
+
   it('★ 预算封顶在**存款**上 —— 股票从存款付（@source 0x0042c05e）', () => {
     // 可动用总额 = 0 持仓 + 20 万存款 + 10 万现金 = 30 万，50% → 目标 15 万
     expect(stockBudget(0, 100_000, 200_000, 50)).toBe(150_000);
@@ -154,7 +165,7 @@ describe('AI 炒股', () => {
 
 function input(over: Partial<StockScoreInput> = {}): StockScoreInput {
   return {
-    price: 10, basePrice: 10, volatility: 1, shares: 5000, f10: 1000, f6: 0, limitUp: false,
+    price: 10, basePrice: 10, volatility: 1, trend: 0, shares: 5000, f10: 1000, f6: 0, limitUp: false,
     avg24: 0, avg6: 0, company: null, myHolding: 0, ...over,
   };
 }
@@ -174,8 +185,16 @@ describe('★ 选股打分 @source 0x0042c075..0x0042c557', () => {
     expect(scoreStock(input({ avg24: 100, avg6: 10 }), 30_001, 1, 10, 0)).toBe(2);
     // 現價 < 参考价×0.6 且 avg6 > avg24 → +4
     expect(scoreStock(input({ price: 5, basePrice: 10, avg24: 10, avg6: 20 }), 100_000, 1, 10, 0)).toBe(4);
-    // 波动系数 > 2 的那条也同时命中 → +2 +4
-    expect(scoreStock(input({ price: 5, basePrice: 10, volatility: 2.5, avg24: 10, avg6: 20 }), 100_000, 1, 10, 0)).toBe(6);
+    // ★★ 2026-09-19 订正（§7.140，通道 2 `test_stock_daily_bf03.py`）：
+    //   「动能 > 2」判的是 **`trend`（+0x1c）**，不是 `volatility`（+0x18，
+    //   实测恒在 0.40..2.00 ⇒ 用它会永不可得）。旧断言用的是 volatility，已改正。
+    expect(scoreStock(input({ price: 5, basePrice: 10, trend: 2.5, avg24: 10, avg6: 20 }), 100_000, 1, 10, 0)).toBe(6);
+    // 同一条只把 trend 归 0 ⇒ 只剩 +4；反过来只给 volatility 也**不该**得 +2
+    expect(scoreStock(input({ price: 5, basePrice: 10, trend: 0, avg24: 10, avg6: 20 }), 100_000, 1, 10, 0)).toBe(4);
+    expect(scoreStock(input({ price: 5, basePrice: 10, volatility: 2.5, avg24: 10, avg6: 20 }), 100_000, 1, 10, 0)).toBe(4);
+    // 边界：trend == 2.0 **不** > 2.0 ⇒ 只得 +4；2.0000001 才得 +6
+    expect(scoreStock(input({ price: 5, basePrice: 10, trend: 2.0, avg24: 10, avg6: 20 }), 100_000, 1, 10, 0)).toBe(4);
+    expect(scoreStock(input({ price: 5, basePrice: 10, trend: 2.0000001, avg24: 10, avg6: 20 }), 100_000, 1, 10, 0)).toBe(6);
     expect(SCORE_RATIO).toEqual({ cheapEnough: 1.2, bargain: 0.85, steal: 0.7, baseHigh: 2.5, baseLow: 0.6, crash: 0.5 });
   });
 

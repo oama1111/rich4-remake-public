@@ -25,7 +25,13 @@ import {
 } from '../places/stock-market.ts';
 import type { CommercialInfo } from '../loaders/map.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
-import { isAlive } from '../state/types.ts';
+import { WHO_PLAYS_HUMAN, isAlive } from '../state/types.ts';
+/*
+ * ★ 新聞 29 的「免罪(21) → 嫁禍(19)」二级判定**复用** `0x441210` 那一段的既有镜像
+ *   —— `cards/passive.ts` 的 `applyDefensiveCards`（顺序、扣卡点都在那里钉过）。
+ *   别在新闻这一支另写一份：`0x441210` 与夢遊卡/陷害卡/查稅卡撞的是同一个函数。
+ */
+import { PASSIVE_CARDS, applyDefensiveCards, consumeCard } from '../cards/passive.ts';
 import { blessingMultiplier } from '../rules/blessing.ts';
 import { bankDividend, incomeTax, propertyTax, stockTax } from '../rules/percentage.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
@@ -36,6 +42,9 @@ import {
   mutateFacility,
   mutateLand,
 } from '../cards/monster.ts';
+// ★ 新聞 4 与飛彈/核彈/颱風走的是**同一个** `damage_area`（`0x40ac7b`），
+//   逐块地的重击效果直接复用 `rules/tool-effects.ts` 的 `blastLand`。
+import { blastLand } from '../rules/tool-effects.ts';
 
 /**
  * 新聞拆屋类效果尾部的**全场释放** `0x0040dffa()`（见 `rules/blocking.ts`）。
@@ -58,8 +67,8 @@ export interface NewsEffectResult {
    * 监狱占用表（`0x496b30`，8 槽）／医院占用表（`0x496b60`，8 槽）。
    *
    * ★ 2026-09-17 起**两张分开给**：先前的单一 `occupancy` 让调用方一律传
-   *   `prisonOccupancy`，于是新聞 4「外星人攻打地球」（`hospital` 效果）把医院的人
-   *   记进了**监狱**表。占用表就是原版那两张字节表（槽 0..3 玩家、4..7 物件），
+   *   `prisonOccupancy`，于是「住院中的人」会被记进**监狱**表。占用表就是原版
+   *   那两张字节表（槽 0..3 玩家、4..7 物件），
    *   见 `rules/confinement.ts` 与 `docs/deviations/Q-CONFINE-1`。
    */
   prisonOccupancy: number[];
@@ -105,9 +114,45 @@ export interface NewsEffectResult {
    * 只在这四条上有值；其余事件不带这个字段。**含 0**（原版也会算出 0，只是不画那行）。
    */
   shares?: readonly { player: number; amount: number }[];
+  /**
+   * ★ 新聞 4：**被这发爆炸送进医院的玩家**（原版尾巴那个 `push 3 / call 0x43ec3f`
+   *   的落点，VA 0x00449285）。排序 = 原版 `for (i = 0; i < num_players; i++)` 的下标序。
+   *
+   * ⚠️ 调用方要用它付**保險理賠**：原版 `0x43edf8 call 0x44ba63` 就在
+   *   `send_to_hospital` **函数体内**（与飛彈那条同源），天数 `ALIEN_HOSPITAL_DAYS`。
+   *   本模块拿不到 `topo`／`GameState`，故只能把名单交出来 —— 见
+   *   `docs/gaps` 与报告里的「待接线」补丁。
+   */
+  blastedHospital?: readonly number[];
+  /**
+   * ★ 新聞 4：被 `0x40cd07` 毁掉的座驾要回**全局库存**（道具 5 機車 / 6 汽車）。
+   *   与 `fortune-effects.ts` 的事件 10/11 同一个约定（`inc byte [0x497324]` /
+   *   `[0x497325]`）：**给了 `ctx.toolStock` 才带这个字段**。
+   */
+  toolStock?: number[];
   amount: number;
   bankrupted: boolean;
   unimplemented: boolean;
+  /**
+   * ★ 新聞 29「違法超貸」这一趟关的是谁（原版 phase 0 抽中的目標 + phase 1 的最终受害者）。
+   *
+   * - `companyId` = 抽中的企業号（1 基，与原版候选表里存的就是这个）；
+   * - `chairman` = `owner − 1`，phase 0 点名的**經營者**（玩家下标）；
+   * - `victim` = 过了 `0x441210` 之后真正被关的人：持嫁禍卡(19) 且真的改写了目标
+   *   ⇒ 被嫁祸的那位；否则就是 `chairman` 本人；
+   * - `days` = `NEWS_CHAIRMAN_PRISON_DAYS`（5）。
+   *
+   * ⚠️ **免罪卡(21) 命中时整条作废**（`0x44b35a cmp eax,-1 / je`）⇒ 那时
+   *   **不带这个字段**（`amount` 也是 0）。
+   * ⚠️ 调用方要拿 `victim` 去走 `insureConfinement` —— 原版的保險理赔
+   *   （`0x43edf8 call 0x44ba63`）在 `send_to_prison` **函数体内**，关谁赔谁。
+   */
+  chairmanPrison?: {
+    companyId: number;
+    chairman: number;
+    victim: number;
+    days: number;
+  };
 }
 
 /**
@@ -137,6 +182,169 @@ export interface LandMutation {
 
 export interface EffectRng {
   below(n: number): number;
+}
+
+/**
+ * 新聞 29 的 chairman 持嫁禍卡(19) 时，原版 `0x44476a(chairman, 0, 0)` 挑谁替他坐牢。
+ *
+ * ★ 这里**只抄 mode 0**（新聞 29 传的第二参就是 0）那一条：
+ * ```asm
+ * 004447a1  cmp  byte ptr [esi + 0x496b7d], 1   ; who_plays == 1（真人）？
+ * 004447a8  jne  0x4448b0                       ; ⇒ 电脑支
+ * ; —— 电脑支 ——
+ * 004448b1  call 0x40d2d3                       ; ① 最恨的人（hostility 最大且 > 0；跳过 who_plays==0）
+ * 004448bb  cmp  eax, ebx / jne 0x4448ca        ;    命中就直接用（ebx = −1）
+ * 004448c0  call 0x40d31c                       ; ② 没有 → 在场、非自己、`+0x32` 全 0 的人里随机
+ * 004448ca  mov  edx, dword ptr [esp + 0xb8]    ; = 第二参 mode
+ * 004448d4  jb   0x4448ef / 004448f1 jne 0x444973 / 004448f7 jmp 0x444971
+ * 00444971  mov  ebx, ebp                       ; ★ mode 0：**不设门槛**，直接采纳候选
+ * ```
+ * ⇒ 与 `rules/toll-flow.ts` 的 `aiScapegoat` **不是同一条**：那个镜像的是同一函数的
+ *   **mode 1** 分支 —— 多一道 `(rand()%4000 + 4000) × 物價` 的门槛，而且那道门槛
+ *   **无条件再掷一次随机**（`0x4448fc call 0x456f2d`）。新聞 29 走 mode 0，
+ *   多用它会让引擎的随机流多走一格，故这里不能直接复用 `aiScapegoat`。
+ *   （`0x40d2d3` / `0x40d31c` 两步与 `ai/card-policy.ts` 的 `mostHated`、
+ *    `aiScapegoat` 的对应两步同源；不 import 那两个是为了避开
+ *    `events → ai/card-policy → state/reduce → events` 的循环依赖。）
+ *
+ * 真人那一条（`who_plays == 1`，`0x4447ae`）原版先建候选表，**只有一个候选时也要**
+ * 弹一句「%s嫁禍給%s」确认框（`0x440ba8`），多个候选弹选人窗（`0x440e1a`）——
+ * 本引擎没有这两个框，调用方按 D-003/D-008 的口径**一律放弃转嫁**，不走本函数。
+ *
+ * @returns 替死鬼的玩家下标；−1 = 没有可嫁祸的对象
+ */
+export function aiScapegoatTarget(
+  players: readonly Player[],
+  meIndex: number,
+  rng: EffectRng,
+): number {
+  const me = players[meIndex];
+  if (me === undefined) return -1;
+  // ① 最恨的人 @source `0x0040d2d3`（`hostility[b]` 最大且 > 0；出局者跳过）
+  let target = -1;
+  let best = 0;
+  for (let b = 0; b < players.length; b++) {
+    const p = players[b];
+    if (b === meIndex || p === undefined || !isAlive(p)) continue;
+    const h = me.hostility[b] ?? 0;
+    if (h > best) {
+      best = h;
+      target = b;
+    }
+  }
+  if (target !== -1) return target;
+  // ② 没有最恨的人 → 随机挑一个 @source `0x0040d31c`
+  //    （在场、不是自己、`dword [+0x32] == 0` 即没住店/消失/坐牢/住院）
+  const cands: number[] = [];
+  for (let i = 0; i < players.length; i++) {
+    const p = players[i];
+    if (i === meIndex || p === undefined || !isAlive(p)) continue;
+    const bl = p.blocking;
+    if ((bl.inHotel | bl.disappearing | bl.inPrison | bl.inHospital) !== 0) continue;
+    cands.push(i);
+  }
+  if (cands.length === 0) return -1;
+  // ★ **这一步掷一次随机**（原版 `0x40d355 call 0x456f2d`）
+  return cands[rng.below(cands.length)]!;
+}
+
+/**
+ * 「免罪卡(21) → 嫁禍卡(19)」二级判定的结果 —— **原版 `fcn_00441210` 的返回值语义**。
+ *
+ * - `absolution`：整条作废（`0x44122f mov eax,-1` 经 `cmp eax,-1 / je` 出去）
+ *   ⇒ 调用方**什么都不做**；`players` 里免罪卡**已经**被扣掉；
+ * - `scapegoat`：换目标，`victim` = 替死鬼的玩家下标（**一定 ≠ 被判定者**），
+ *   `players` 里嫁祸卡**已经**被扣掉；
+ * - `none`：没卡 / 真人放弃转嫁 / 嫁祸无人可嫁（`0x441259 je` 让 `eax = ebx = 本人`）
+ *   ⇒ `victim` = 被判定者本人、**一张卡都不扣**。
+ */
+export interface SecondaryJudgement {
+  kind: 'absolution' | 'scapegoat' | 'none';
+  /** 真正挨罚的人（`absolution` 时无意义，调用方应直接整条作废） */
+  victim: number;
+  /**
+   * 扣过卡之后的玩家表 —— 没扣卡时是**同一个引用**。
+   * 免得调用方漏写回：`0x444bb2` / `0x441343` 都是直接改玩家结构的。
+   */
+  players: readonly Player[];
+}
+
+/**
+ * ★★ 共享的**二级判定**：`fcn_00441210(player)`（82 B，全 exe **5 个调用点**）。
+ *
+ * ```asm
+ * 00441210  push ebx / push esi
+ * 00441212  mov  esi, [esp + 0xc]        ; = player（第一个参数）
+ * 00441216  push 0x15 / push esi / call 0x4413ad   ; player_has_card(player, 21)
+ * 00441221  cmp  eax, 1 / jne  0x441237
+ * 00441226  push esi / call 0x444bb2     ; ★ 消耗免罪卡
+ * 0044122f  mov  eax, 0xffffffff         ; ⇒ 返回 −1 = 「整条作废」
+ * 00441237  mov  ebx, esi / push 0x13 / push esi / call 0x4413ad  ; has_card(player, 19)
+ * 00441244  cmp  eax, 1 / jne  0x44125d
+ * 00441249  push 0 / push 0 / push esi / call 0x44476a            ; ★ mode 恒为 0
+ * 00441256  cmp  eax, -1 / je  0x44125d  ; 嫁祸失败 ⇒ 仍返回本人
+ * 0044125b  mov  ebx, eax                ; 成功 ⇒ 返回替死鬼
+ * 0044125d  mov  eax, ebx / pop esi / pop ebx / ret
+ * ```
+ *
+ * 三条容易搞错的细节，全部按字节核对：
+ * 1. **`0x44476a` 的第二参恒为 0** —— `push 0 / push 0 / push esi` 里，
+ *    紧邻 `call` 的那个 `push 0` 是**第二参（mode）**、更早的那个才是第三参。
+ *    mode 0 走 `0x444971 mov ebx,ebp`「不设门槛，直接采纳候选」，
+ *    因此 `rules/toll-flow.ts` 的 `aiScapegoat`（镜像的是 **mode 1**，
+ *    多一道 `(rand()%4000+4000)×物價` 的门槛）**不能**用在这里。
+ * 2. **顺序**：先 21 后 19，命中 21 即止（不再查 19）。
+ * 3. **扣卡点**：21 在 `0x444bb2` 内部扣；19 在 `0x44476a` 内部的
+ *    `0x4449ef call 0x441343` 扣，且在 `0x4449e7 cmp ebx,-1 / je` **之后**
+ *    ⇒ 「放弃转嫁／无人可嫁」时 19 **留在手里**（`cards/passive.ts` 已钉住）。
+ *
+ * 随机数消耗：只有 `0x44476a` 的**电脑支且没有最恨的人**那一条才走
+ * `0x40d31c → 0x40d355 call 0x456f2d`（**恰好一格**）。真人那一支
+ * （`0x4447ae`）建候选表后弹确认框/选人窗，**一个随机数都不掷** ——
+ * 本引擎没有那两个框，按 D-003/D-008 的口径**一律放弃转嫁**（`−1`），
+ * 因此也**不调用** `aiScapegoatTarget`（否则会凭空多走一格随机）。
+ *
+ * @param players 玩家表（**以调用方传进来的为准**，取状态里的版本）
+ * @param meIndex 被判定者（= 事件原本的受害者目标）
+ * @param rng     引擎随机出口；**只有电脑支真的落到「随机挑人」时才取一格**
+ *                （「最恨的人」那一条 `0x40d2d3` 一个随机数都不掷；
+ *                 真人那一条在 `0x4447ae` 就返回，同样不掷）。
+ * @source 调用点：新聞 29（`0x44b352`）、命運 7/8（`0x44c6c5`/`0x44c7d7`）、
+ *   命運 12（`0x44cd41`）、命運 33（`0x44d8a9`）。
+ */
+export function secondaryJudgement(
+  players: readonly Player[],
+  meIndex: number,
+  rng: EffectRng,
+): SecondaryJudgement {
+  const me = players[meIndex];
+  if (me === undefined) return { kind: 'none', victim: meIndex, players };
+  // 21 优先、命中即止（`applyDefensiveCards` 已扣掉命中的那张）
+  const def = applyDefensiveCards(me);
+  if (def.trigger.kind === 'absolution') {
+    return {
+      kind: 'absolution',
+      victim: meIndex,
+      players:
+        def.player === me ? players : players.map((p, i) => (i === meIndex ? def.player : p)),
+    };
+  }
+  if (def.trigger.kind !== 'scapegoat') return { kind: 'none', victim: meIndex, players };
+  // ★ 真人那一支原版弹框；本引擎一律放弃转嫁（D-003/D-008）——**先返回、不挑人**，
+  //   这样连 `aiScapegoatTarget` 都不进，随机流一格不动（与 `0x4447ae` 支一致）。
+  if (me.whoPlays === WHO_PLAYS_HUMAN) return { kind: 'none', victim: meIndex, players };
+  // `0x4448b1 call 0x40d2d3`（最恨的人）→ 没有才 `0x4448c0 call 0x40d31c`（随机）
+  const picked = aiScapegoatTarget(players, meIndex, rng);
+  // `0x4449e7 cmp ebx,-1 / je 0x444a53`：没人可嫁 ⇒ 19 不扣、还是本人被罚
+  if (picked < 0 || picked >= players.length || picked === meIndex) {
+    return { kind: 'none', victim: meIndex, players };
+  }
+  // `0x4449ec push 0x13 / push edi / call 0x441343`：**真的换人才扣 19**
+  return {
+    kind: 'scapegoat',
+    victim: picked,
+    players: players.map((p, i) => (i === meIndex ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p)),
+  };
 }
 
 export interface NewsEffectContext {
@@ -192,6 +400,13 @@ export interface NewsEffectContext {
   days?: number;
   /** 神明加持倍率档位：2 加倍、1 归零、0 不变（见 rules/blessing.ts） */
   multiplier?: number;
+  /**
+   * ★ 全局道具库存（`0x4972xx` 那一排）—— 新聞 4 的爆炸会把被炸者的座驾
+   *   「撞毁回库存」（`0x40cd07`：`inc byte [0x497324]`/`[0x497325]`，
+   *   即道具 5 機車 / 6 汽車）。**不给这个字段就不写库存表**
+   *   （座驾照样清零 —— 与 `fortune-effects.ts` 的 10/11 同一约定）。
+   */
+  toolStock?: readonly number[];
 }
 
 /**
@@ -228,7 +443,7 @@ export const PERCENT_NEWS: ReadonlyMap<
 /**
  * 本模块**已能施加效果**的新聞事件编号。
  *
- * 三类：
+ * 四类：
  * 1. 固定金额（`factor != null`）的 `pay`/`give`；
  * 2. 坐牢 / 住院；
  * 3. ★ **百分比类**（2026-09-16 接上）：11 所得稅 5%、12 地價稅 5%、
@@ -236,9 +451,15 @@ export const PERCENT_NEWS: ReadonlyMap<
  *    与 `rules/percentage.ts`。这四条先前是「规则译好了但没人调用」，
  *    抽到只画文案、一分钱不动。
  *
- * ⚠️ 其中 4 与 29 的文案里**没有 `%d`**（「外星人攻打地球」「坐牢５天」——
- * 后者的 5 是写死的全角字），故 `literal` 为 null，天数必须由调用方给出；
- * 不给就报 `unimplemented`，不会默默关 0 天。
+ * ⚠️ 29 的文案里**没有 `%d`**（「坐牢５天」——5 是写死的全角字），故 `literal` 为 null。
+ *   ★ 订正（2026-09 本轮）：先前它记作 `prison`，于是走「天数由调用方给」那条路，
+ *   而 `drawAndApplyNews` 从来不传 `days` ⇒ **恒报 `unimplemented`、一次都不关人**。
+ *   它其实是 `companyChairmanPrison`（随机抽一家有主企業的經營者、5 天写在
+ *   `NEWS_CHAIRMAN_PRISON_DAYS` 里），**不要**再把它当成「缺 days 的 prison」。
+ * ★ 新聞 4 的文案同样没有 `%d`（`literal` 也是 null），但它**不走**这条
+ *   「天数由调用方给」的路 —— 它是 `alienBlast`（半径 100 的重击 + 送医 3 天，
+ *   天数住在 `ALIEN_HOSPITAL_DAYS`）。先前表里把它记成 `hospital` 才导致
+ *   它恒报 `unimplemented`。
  */
 export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
   ...NEWS_EVENTS.filter(
@@ -268,11 +489,17 @@ export const IMPLEMENTED_NEWS_IDS: readonly number[] = [
       e.effects.includes('demolishAny') ||
       e.effects.includes('demolishSameName') ||
       e.effects.includes('typhoonBlast') ||
+      // ★ 2026-09 本轮：新聞 4 改记 `alienBlast`（先前误记 `hospital` ⇒ 恒
+      //   `unimplemented`，一次爆炸都不打）。见 `ALIEN_BLAST_*`。
+      e.effects.includes('alienBlast') ||
       e.effects.includes('companyPenalty') ||
       e.effects.includes('companyGain') ||
       e.effects.includes('companyLoss') ||
       e.effects.includes('companyProfitDouble') ||
       e.effects.includes('publicAuction') ||
+      // ★ 2026-09 本轮：新聞 29 从 `prison` 改记 `companyChairmanPrison`（随机抽一家
+      //   有主企業的經營者 + 免罪/嫁禍二级判定 + 5 天），见 `NewsEffectResult.chairmanPrison`
+      e.effects.includes('companyChairmanPrison') ||
       (e.factor !== null && (e.effects.includes('pay') || e.effects.includes('give'))),
   ).map((e) => e.id),
   ...PERCENT_NEWS.keys(),
@@ -301,6 +528,49 @@ export const STOCK_SUSPEND_DAYS = 0xf;
  *   （只打住宅与設施，不打人）、攻击者 `-1`（不记敌意）。
  */
 export const TYPHOON_RADIUS = 0x64;
+
+/**
+ * 新聞 4「外星人攻打地球」那发 `damage_area` 的四个实参 + 送医天数。
+ *
+ * @source `fcn_0044913d` 的施加阶段（VA 0x00449225..0x0044922d）：
+ * ```asm
+ * 00449225  push -1        ; 攻击者 = 无 ⇒ damage_area 里两条 `cmp esi,-1 / je` 都跳过
+ * 00449227  push 1         ; ★ heavy = 1（重击），**不是半径**
+ * 00449229  push 0x26      ; flags = 0x20|0x4|0x2：住宅 + 設施 + 范围里的人
+ * 0044922b  push 0x64      ; ★ 半径 = 100 —— 与核彈的 -1 完全不同，是方窗不是全图
+ * 0044922d  call 0x40ac7b
+ * ```
+ * ★ 这五个常量**都是**从事件函数本体读出来的（不是从飛彈那支推的）：
+ *   虽然数值恰好与飛彈的半径/flags 相同，但**重击位**与攻击者不同，
+ *   且飛彈会记敌意、这一发全程不记。逐个钉住，别互相套用。
+ */
+export const ALIEN_BLAST_RADIUS = 0x64;
+export const ALIEN_BLAST_FLAGS = 0x26;
+/**
+ * ★ 注解成 `number` 而不是字面量 `1`：下面要写 `ALIEN_BLAST_HEAVY !== 0` 把它
+ *   映到 `blastLand` 的 boolean 形参上；若被收窄成字面量类型，那个比较会被
+ *   TS 判成「恒真的无意义比较」（TS2367）。
+ */
+export const ALIEN_BLAST_HEAVY: number = 1;
+export const ALIEN_BLAST_ATTACKER = -1;
+
+/**
+ * 新聞 4 把被炸到的人关几天 @source VA 0x00449282 `push 3 / call 0x43ec3f`
+ *   （`0x43ec3f` = `send_to_hospital(玩家, 天数)`，与飛彈那条 `MISSILE_HOSPITAL_DAYS`
+ *    是同一个立即数，但**各自**写在各自的调用点）。
+ */
+export const ALIEN_HOSPITAL_DAYS = 3;
+
+/**
+ * 新聞 29「違法超貸」phase 1 把实际受害者关几天 @source VA 0x0044b35f `push 5`
+ *   （紧接 `0x44b361 push eax` / `0x44b362 call 0x43d593` = `send_to_prison(受害者, 5)`）。
+ *
+ * ★ 文案里「經營者%s坐牢５天」的「５」是**全角字、没有 `%d`** ⇒ 事件表的 `literal`
+ *   保持 `null`（同 4/20/26 的先例），天数只能住在这个常量里。
+ *   与 `event-table.ts` 的 `companyChairmanPrison` 长注释、以及
+ *   `event-table.test.ts` 的「文案写５天」用例三处互证。
+ */
+export const NEWS_CHAIRMAN_PRISON_DAYS = 5;
 
 /** 新聞 6 的地价倍率 @source 常量 `[0x4654dc]` = 1.3 */
 export const LAND_PRICE_UP = 1.3;
@@ -410,6 +680,80 @@ export function applyNewsEffect(
     };
   }
 
+  // ── 新聞 29「%s違法超貸 經營者%s坐牢５天」──────────────────────────
+  //   ★★ **两阶段契约的处理方式：在一次调用里完成**（不往状态里挂中间槽）。
+  //
+  //   原版 `fcn_0044b25b` 是两阶段的：phase 0（`[esp+0xd4] == 0`）抽目标、
+  //   画公告、把 chairman 写进全局 `[0x48c59c]`；phase 1 才施加。两句之间隔着
+  //   玩家点「確定」—— **不掷随机数、也不改任何规则状态**。
+  //   本引擎的 `drawAndApplyNews` 本来就是「抽一张、当场施加」的一次调用，
+  //   故把两段合在这里做完：抽中的目標由 `chairmanPrison` 带出去给表现层。
+  //   为什么**不改变可观察行为**：
+  //     · 随机流前进的格数与时机相同 —— 抽中这张新闻的那一刻恰好走一格
+  //       （原版也是 phase 0 那一次 `0x44b29e call 0x456f2d`，中间没有第二次）；
+  //     · phase 1 唯一的新增随机来自「嫁禍挑人」（`0x40d31c`），那只在 chairman
+  //       持 19 且没有最恨的人时才发生，两支实现的是同一段；
+  //     · 中间没有任何别的状态改动会与「玩家点確定」这一段时间发生交互
+  //       （新闻公告是模态的，棋盘不推进）。
+  //   逐行 @source 见 `@rich4/data` 的 `companyChairmanPrison` 注释。
+  if (entry.effects.includes('companyChairmanPrison')) {
+    const rng = ctx.rng;
+    if (rng === undefined) return { ...base, unimplemented: true };
+    // ① 候选 = 企業表里 `+0x18 != 0`（有主）的那些。
+    //    ★ `ctx.commercials[].owner` 必须是**运行时**归属（`state.commercialOwners`），
+    //      地图模板里的 `+0x18` 恒为 0 —— 见 `reduce.ts` 的接线与报告的「待主代理处理」。
+    const cand = (ctx.commercials ?? []).filter((c) => c.owner !== 0);
+    // ★ 候选为 0 时原版 `idiv ebx`（ebx = 0）除零崩 ⇒ 本引擎那一支**什么都不做、
+    //   也不掷随机数**（与 5/18/19/21/28/35 同一处理）。
+    if (cand.length === 0) return { ...base, amount: 0 };
+    // ② `0x44b29e call 0x456f2d` + `0x44b2a8 idiv ebx`：**恰好一次** `rand()`
+    const co = cand[rng.below(cand.length)]!;
+    const chairman = co.owner - 1;
+    const named = players[chairman];
+    // 越界的 owner（存档被改过）⇒ 原版会去读别人的结构，本引擎不动
+    if (named === undefined) return { ...base, amount: 0 };
+
+    // ③ `0x44b351 call 0x441210(chairman)`：免罪(21) → 嫁禍(19)。
+    //    ★ 2026-09-19 起与**命運那 4 个调用点**共用 `secondaryJudgement`
+    //      （同一个 exe 函数、同一份 mode 0 挑人规则）—— 这一段的行为一个字没改，
+    //      只是从"新闻独占的实现"提成了共享件（见该函数的 @source 块）。
+    const judged = secondaryJudgement(players, chairman, rng);
+    players = [...judged.players];
+    if (judged.kind === 'absolution') {
+      // `0x441210`：`call 0x444bb2` 已扣掉免罪卡，随后 `mov eax,-1` ⇒
+      // `0x44b35a cmp eax,-1 / je 0x44b36a` **整条作废**（不动任何人的天数）。
+      return { ...base, players, amount: 0 };
+    }
+    // `picked == -1`（真人放弃 / 无人可嫁）⇒ `0x441210` 的 `0x441259 je 0x44125d`
+    //   让 `eax = ebx = 原目标` ⇒ **chairman 本人**被关（不是"什么都不发生"）。
+    const victim = judged.victim;
+
+    // ④ `0x44b35f push 5 / push eax / call 0x43d593`：`send_to_prison(受害者, 5)`
+    //    函数体内含「传送到监狱格 + 跟班搬家 + 保險理赔」，故走 `sendToConfinement`。
+    const days = NEWS_CHAIRMAN_PRISON_DAYS;
+    const out = sendToConfinement(
+      players,
+      objects,
+      ctx.nodes ?? [],
+      prisonOccupancy,
+      'prison',
+      victim,
+      days,
+      hospitalOccupancy,
+      ctx.landscapes,
+    );
+    return {
+      ...base,
+      players: out.players,
+      objects: out.objects,
+      // 首次关押时原版 `0x40d761` 会把"当前非 0 的那一张"清掉 ⇒ 医院那格也要回写
+      prisonOccupancy: out.occupancy,
+      hospitalOccupancy: out.otherOccupancy ?? hospitalOccupancy,
+      amount: days,
+      chairmanPrison: { companyId: co.id, chairman, victim, days },
+    };
+  }
+
   // ── 新聞 6 / 14「公告地價調漲／房屋鬧鬼地價下跌」─────────────────
   //   @source `fcn_004494e0`（×1.3）/ `fcn_0044a220`（×0.7），逐条见 event-table 的注释。
   //   ★ 两支都**不看 `affected`**：随机挑一块地/一处設施，然后
@@ -495,6 +839,152 @@ export function applyNewsEffect(
       amount: landMutations.length + facilityMutations.length,
       landMutations,
       facilityMutations,
+    };
+  }
+
+  // ── 新聞 4「外星人攻打地球」──────────────────────────────────────
+  //   @source `fcn_0044913d` 的施加阶段（VA 0x00449175..0x00449290）。三步：
+  //
+  //   ① 候选表 = 「`level != 0` 的地块」（id = i+0x7d0，先）+
+  //      「`level != 0` 的設施」（id = i+0xfa0，后），`rand() % 数量` 挑一处当爆心：
+  //      ```asm
+  //      0044918d  cmp  byte [edx + eax + 0x1a], 0 / je 跳过   ; land.level != 0 才收
+  //      004491c6  cmp  byte [edx + eax + 0x1a], 0 / je 跳过   ; facility.level != 0 才收
+  //      004491dd  call 0x456f2d / idiv esi                    ; rand() % 候选数
+  //      00449203  call 0x40af12                               ; 取挑中那一处的 (x, y)
+  //      0044921d  call 0x41d476                               ; 移镜头（表现层）
+  //      ```
+  //   ② 以它为心打 `damage_area(0x64, 0x26, 1, -1)`：
+  //      ```asm
+  //      00449225  push -1            ; 攻击者 = 无
+  //      00449227  push 1             ; ★ heavy = 1（重击）
+  //      00449229  push 0x26          ; 住宅 | 設施 | 范围里的人
+  //      0044922b  push 0x64          ; ★ 半径 = 100（**不是**核彈的 -1 全图）
+  //      0044922d  call 0x40ac7b
+  //      ```
+  //      ★ `heavy` 与 `radius` 是**两列**：这一发是「半径 100 的窗 + 重击」。
+  //        复刻里 `fireMissile` 把两者揉成了一个 `heavy`（heavy ⇒ 全图），
+  //        故这里**不能**直接调 `fireMissile`，要自己算窗口 + 调 `blastLand`。
+  //   ③ 扫玩家 0..num_players-1，凡被 `0x40cd07` 挂上「被炸」位（`+0x15 & 0x40`）的
+  //      `send_to_hospital(玩家, 3)`（`0x43ec3f`，VA 0x00449285）。
+  //   ★ 攻击者 `-1` ⇒ `damage_area` 里两条 `cmp esi,0xffffffff / je` 都跳过 ⇒
+  //     **全程不记任何敌意**（与颱風同理；与飛彈/核彈不同）。
+  //   ★ 候选集为空时原版 `idiv` 除零崩 ⇒ 本引擎什么都不做（与 5/18/19/21/28 同一处理）。
+  if (entry.effects.includes('alienBlast')) {
+    const rng = ctx.rng;
+    const lands = ctx.lands ?? [];
+    const facilities = ctx.facilities ?? [];
+    if (rng === undefined) return { ...base, unimplemented: true };
+    // ① 候选表：只收「盖了房子」的（`+0x1a` = level）
+    const landCand = lands.filter((l) => l.level !== 0);
+    const facCand = facilities.filter((f) => f.level !== 0);
+    const totalCand = landCand.length + facCand.length;
+    if (totalCand === 0) return { ...base, amount: 0 };
+    const pick = rng.below(totalCand);
+    const origin =
+      pick < landCand.length
+        ? { x: landCand[pick]!.x, y: landCand[pick]!.y }
+        : { x: facCand[pick - landCand.length]!.x, y: facCand[pick - landCand.length]!.y };
+    // ② 爆心方窗。⚠️ 范围口径沿用本引擎对 Q-TOOL-1 的近似：原版是 440×440
+    //    **视图空间**的 ±半径（要镜头与等距投影），这里改用**地图坐标**的方窗，
+    //    半径同为 0x64 —— 与 `typhoonBlast` 及飛彈那条完全同一口径。
+    const inBlast = (e: { x: number; y: number }): boolean =>
+      Math.abs(e.x - origin.x) <= ALIEN_BLAST_RADIUS &&
+      Math.abs(e.y - origin.y) <= ALIEN_BLAST_RADIUS;
+
+    // ②a 住宅：**重击**支 —— owner/level/type 全清（`blastLand` 的 heavy 支）。
+    //     @source `damage_area` 0x0040ad3a..0x0040ad85：`+0x19/+0x1a/+0x18` 全写 0
+    //     再写 `+0x30`(地契)。原版对窗内**每一块**都写这 4 项；全 0 的地块写了也一样，
+    //     故只把**真变了**的那几格带出去（`LandMutation` 的约定）。
+    //     ⚠️ `+0x30`（地契）本引擎的 `LandMutation` 带不了 —— 与已登记的 P4/#7 同一处。
+    const landMutations: LandMutation[] = [];
+    for (const l of lands) {
+      if (!inBlast(l)) continue;
+      const after = blastLand(l.owner, l.level, l.type, ctx.priceIndex, ALIEN_BLAST_HEAVY !== 0);
+      if (after.owner === l.owner && after.level === l.level && after.type === l.type) continue;
+      landMutations.push({ id: l.id, level: after.level, type: after.type, owner: after.owner });
+    }
+
+    // ②b 設施：重击支与 `mutate_land` 的 **mode 1** 逐字相同
+    //     （`+0x19/+0x1a/+0x18/+0x34` 全清 **且** `call 0x40dffa` 放人，无 level 门控）
+    //     @source `damage_area` 0x0040ae45..0x0040ae5d 对 `mutate_land` mode 1
+    //     （见 `cards/monster.ts` 的 `mutateFacility`）：故直接复用。
+    const facilityMutations: LandMutation[] = [];
+    const releaseFlags: boolean[] = [];
+    for (const f of facilities) {
+      if (!inBlast(f)) continue;
+      const after = mutateFacility(f, MUTATE_CLEAR_OWNER);
+      releaseFlags.push(after.releasesConfined);
+      facilityMutations.push({
+        id: after.facility.id,
+        level: after.facility.level,
+        type: after.facility.type,
+        owner: after.facility.owner,
+      });
+    }
+
+    // ③ 范围里的人：`0x40cd07`（毁车 + 挂「被炸」位）→ `send_to_hospital(玩家, 3)`
+    //    复刻对「谁在范围里」用的是既有的近似：玩家的**节点**落在爆心方窗内
+    //    （与 `fireMissile` 的 `hitNodes` 同一条口径）。
+    const nodes = ctx.nodes ?? [];
+    const hitNodes = new Set<number>();
+    for (const n of nodes) if (inBlast(n)) hitNodes.add(n.id);
+    let nextPlayers = applyRelease(base.players, releaseFlags);
+    let nextObjects = base.objects;
+    let hospital = [...base.hospitalOccupancy];
+    let prison = [...base.prisonOccupancy];
+    const toolStock = [...(ctx.toolStock ?? [])];
+    const blastedHospital: number[] = [];
+    for (let i = 0; i < nextPlayers.length; i++) {
+      const p = nextPlayers[i];
+      if (p === undefined || !isAlive(p) || !hitNodes.has(p.nodeId)) continue;
+      // @source `0x40cd07` 的第一道闸：`cmp dword [player+0x32], 0 / jne` ——
+      //   已住店/消失/坐牢/住院者**不挂**那个 0x40 位，于是 ③ 的循环也扫不到他。
+      //   ★ 只比 `+0x32` 那**四个**字节（`sleeping` 在 `+0x36`，不在这一比之内）。
+      const b = p.blocking;
+      if (b.inHotel !== 0 || b.disappearing !== 0 || b.inPrison !== 0 || b.inHospital !== 0) {
+        continue;
+      }
+      // 毁车 @source `0x40cd07` 的 0x0040cd21..0x0040cd61：座驾清零 + 一颗骰子，
+      //   车回全局库存（`+0x497324`/`0x497325` = 道具 5 機車 / 6 汽車）
+      if (p.trafficMethod !== 0) {
+        const kind = p.trafficMethod & 3;
+        if (kind === 1) toolStock[5] = (toolStock[5] ?? 0) + 1;
+        else if (kind === 2) toolStock[6] = (toolStock[6] ?? 0) + 1;
+        nextPlayers[i] = { ...p, trafficMethod: 0, ndices: 1 };
+      }
+      // @source `0x43ec3f(玩家, 3)`：与飛彈那条同一个 `send_to_hospital`
+      //   （函数体内含清另一张占用表、传送、跟班搬家、以及 `0x43edf8` 的保險理賠）
+      const c = sendToConfinement(
+        nextPlayers,
+        nextObjects,
+        nodes,
+        hospital,
+        'hospital',
+        i,
+        ALIEN_HOSPITAL_DAYS,
+        prison,
+        ctx.landscapes,
+      );
+      nextPlayers = c.players.map((q) => ({ ...q }));
+      nextObjects = c.objects;
+      hospital = c.occupancy;
+      if (c.otherOccupancy !== undefined) prison = c.otherOccupancy;
+      blastedHospital.push(i);
+    }
+
+    return {
+      ...base,
+      players: nextPlayers,
+      objects: nextObjects,
+      prisonOccupancy: prison,
+      hospitalOccupancy: hospital,
+      amount: landMutations.length + facilityMutations.length,
+      landMutations,
+      facilityMutations,
+      ...(blastedHospital.length === 0 ? {} : { blastedHospital }),
+      // 没给 `ctx.toolStock` 就不带这个字段（与 `fortune-effects.ts` 10/11 同一约定）
+      ...(ctx.toolStock === undefined ? {} : { toolStock }),
     };
   }
 

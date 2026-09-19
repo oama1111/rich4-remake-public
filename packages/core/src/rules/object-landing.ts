@@ -393,6 +393,22 @@ export function drawGiftTool(toolStock: readonly number[], randValue: number): n
   return bag[randValue % bag.length] ?? 0;
 }
 
+/**
+ * 禮物袋是不是空的（道具 1..8 的库存总数 == 0）。
+ *
+ * ★★ 2026-09-19 新增（§7.142，通道 2 `test_watson_shop.py` 180/180）：
+ *   原版 `0x00445ada` 是 **`test ebx,ebx / je 返回0` 之后才 `call rand`** ——
+ *   袋子空时**一次 rand 都不掷**。调用方若写成 `drawGiftTool(stock, rng.next())`，
+ *   `rng.next()` 作为**实参**会**先求值** ⇒ 空袋也推进随机流，之后所有随机事件错开一步。
+ *   故需要「在掷之前判空」的调用方用本函数。
+ */
+export function giftToolBagEmpty(toolStock: readonly number[]): boolean {
+  for (let toolId = 1; toolId <= 8; toolId++) {
+    if ((toolStock[toolId] ?? 0) > 0) return false;
+  }
+  return true;
+}
+
 // ============================================================
 //  落点结算
 // ============================================================

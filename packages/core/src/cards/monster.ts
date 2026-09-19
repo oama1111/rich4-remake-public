@@ -80,19 +80,24 @@ export function mutateLand(land: LandInfo, mode: number): MutateResult {
     case MUTATE_DEMOLISH_ONE: {
       if (land.level === 0) return { land, changed: false, releasesConfined: false };
       if (land.type !== LAND_TYPE_HOUSE) {
-        // @source 0x40ae0a `[+0x18] = 0` 紧跟 `0x40ae0d call 0x40dffa`（拆到 0 级）
+        // @source 0x40aba4 / 0x40aba9：`[+0x1a] = 0` / `[+0x18] = 0`
+        // ★★ 2026-09-19 订正（§7.141 E1，通道 2 `test_land_mutation_gates.py` 354/354）：
+        //   **地块支三种 mode 一次都不调 `0x40dffa`** —— `0x40ab4a` 的 120 条指令里
+        //   只有一次 `call 0x40a4e1`（mode 1）；`0x40dffa` 的三个调用点全在**設施**支
+        //   （`0x40ac33`/`0x40ac4d`/`0x40ac6c`）。先前这里写 `releasesConfined: true`
+        //   并引 `0x40ae0a` —— 那个地址属于**另一个函数** `0x40ac7b`（飛彈/颱風）。
+        //   ⇒ 拆住宅时复刻会**提前放出**旅館/醫院里的人，原版只在拆設施时放。
         return {
           land: { ...land, level: 0, type: LAND_TYPE_HOUSE },
           changed: true,
-          releasesConfined: true,
+          releasesConfined: false,
         };
       }
       const level = land.level - 1;
-      // @source 0x40ae03 `test al,al / jne 0x40ae67` —— **只有归零才**放人
       return {
         land: { ...land, level },
         changed: true,
-        releasesConfined: level === 0,
+        releasesConfined: false,
       };
     }
     // ★★ mode 1 是**完全清除**：owner + **level** + type + **flast** 四项全清
@@ -108,19 +113,19 @@ export function mutateLand(land: LandInfo, mode: number): MutateResult {
     //   会在地图上留下**无主的"残楼"**（等级还在、地契却没了），
     //   玩家能直接看到"房子还在但没人拥有"。
     case MUTATE_CLEAR_OWNER:
-      // @source 0x40ae58 `call 0x40dffa` —— mode 1 无条件放人
+      // ★ 地块支**不**放人（见上）：`0x40dffa` 只在設施支
       return {
         land: { ...land, owner: 0, level: 0, type: LAND_TYPE_HOUSE, flast: 0 },
         changed: true,
-        releasesConfined: true,
+        releasesConfined: false,
       };
     case MUTATE_FLATTEN: {
       if (land.level === 0) return { land, changed: false, releasesConfined: false };
-      // @source 0x40ae58 `call 0x40dffa`（mode 2：level != 0 时）
+      // ★ 地块支**不**放人（见上）
       return {
         land: { ...land, level: 0, type: LAND_TYPE_HOUSE },
         changed: true,
-        releasesConfined: true,
+        releasesConfined: false,
       };
     }
     default:

@@ -23,6 +23,9 @@ import {
   VEHICLE_DICE,
   blastLand,
   buildOneLevel,
+  buildUpgradeBit7,
+  reachedMaxBuildLevel,
+  BUILD_MAX_LEVEL,
   isToolImplemented,
   isValidRemoteDice,
   placeObject,
@@ -247,10 +250,68 @@ describe('★ 13 个道具逐个点名', () => {
 
   it('★ 9 機器工人 —— 免费加蓋一级，连锁店只在 0 级时能盖', () => {
     expect(isToolImplemented(9)).toBe(true);
-    expect(buildOneLevel(0, 2, 5)).toEqual({ ok: true, level: 3 });
-    expect(buildOneLevel(0, 5, 5)).toEqual({ ok: false, level: 5 });
-    expect(buildOneLevel(1, 0, 5)).toEqual({ ok: true, level: 1 });
-    expect(buildOneLevel(1, 1, 5)).toEqual({ ok: false, level: 1 });
+    expect(buildOneLevel(0, 2, 5)).toEqual({ ok: true, level: 3, reachedMaxLevel: false });
+    expect(buildOneLevel(0, 5, 5)).toEqual({ ok: false, level: 5, reachedMaxLevel: false });
+    expect(buildOneLevel(1, 0, 5)).toEqual({ ok: true, level: 1, reachedMaxLevel: false });
+    expect(buildOneLevel(1, 1, 5)).toEqual({ ok: false, level: 1, reachedMaxLevel: false });
+  });
+
+  // ============================================================
+  //  ★★ `0x40b110` 返回值的 bit7 —— README §7.142(5) E6
+  // ============================================================
+
+  it('★★ bit7 = 剛好升到 5 級：住宅 4→5 置位、設施 4→5 **也**置位', () => {
+    // @source 地块支 0x0040b169 `cmp cl, 5` / `jne 0x40b170` / `0x0040b16e or al, 0x80`
+    expect(buildOneLevel(0, 4, 5)).toEqual({ ok: true, level: 5, reachedMaxLevel: true });
+    // ★ 設施支（等级 ≥ 1）到 5 级是 `0x0040b21a mov eax, 0x81` —— **同样置位**。
+    //   `buildOneLevel` 只吃 (type, level, maxLevel)，住宅/連鎖店两支都从这里过；
+    //   設施那一支走 `freeBuildFacilityById`，用的是同一个 `buildUpgradeBit7`。
+    //   真值见 `rich4-spec/tests/test_land_mutation_gates.py` 的 [B] 段。
+    expect(buildUpgradeBit7(4, 5)).toBe(true);
+  });
+
+  it('★★ bit7 是「**相等** 5」，不是「≥ 5」', () => {
+    // @source 0x0040b169 / 0x0040b215 都是 `cmp …, 5` / `jne`。
+    // ⚠️ 实测把 `=== 5` 改成 `>= 5`，**这一条**是唯一会红的地方：
+    //   在 exe 里 `0x40b13e cmp byte [land+0x1a], 5 / jae` 已经把等级夹在 5 以下，
+    //   所以「== 5」与「≥ 5」对**可达**输入等价（§7.142(13) 那种「恒不跳」的坑）。
+    //   要证伪 `>= 5` 就必须给一个 > 5 的新等级 —— 直接测契约本身。
+    expect(reachedMaxBuildLevel(BUILD_MAX_LEVEL)).toBe(true);
+    expect(reachedMaxBuildLevel(BUILD_MAX_LEVEL + 1)).toBe(false);
+    expect(reachedMaxBuildLevel(BUILD_MAX_LEVEL - 1)).toBe(false);
+    expect(buildUpgradeBit7(5, 6)).toBe(false);
+  });
+
+  it('★★ 等级没变 ⇒ 不置 bit7（原版没加蓋的路径根本不走那个 cmp）', () => {
+    // @source 0x0040b15d `test eax,eax` / `0x0040b15f je 0x40b170` —— eax 停在 0
+    expect(buildUpgradeBit7(5, 5)).toBe(false);
+    expect(buildUpgradeBit7(0, 0)).toBe(false);
+  });
+
+  it('★ 連鎖店 0→1 永远不置 bit7（新等级是 1）；首建那一条也一样', () => {
+    expect(buildOneLevel(1, 0, 5).reachedMaxLevel).toBe(false);
+    // 設施首建：`0x0040b1f4 mov eax, 1 / inc byte [ebx+0x1a] / ret`，**没有** bit7
+    expect(buildUpgradeBit7(0, 1)).toBe(false);
+  });
+
+  it('★ 没蓋成（ok=false）时 bit7 一定是 false —— 两位不能互相矛盾', () => {
+    for (const [t, lv, mx] of [[0, 5, 5], [1, 1, 5], [1, 5, 5], [2, 0, 5], [9, 0, 5]] as const) {
+      const r = buildOneLevel(t, lv, mx);
+      expect(r.ok).toBe(false);
+      expect(r.reachedMaxLevel).toBe(false);
+      expect(r.level).toBe(lv);
+    }
+  });
+
+  it('★ 「== 5」这个判据与调用方给的 maxLevel 无关（exe 写死的 5）', () => {
+    // @source 0x40b138 `cmp byte [land+0x1a], 5 / jae`（住宅封顶硬写 5）
+    //   与 0x40b169 `cmp cl, 5`（bit7 判据硬写 5）是**同一个立即数**。
+    //   这里用 maxLevel = 6 把「新等级 == 5」与「新等级 ≥ 5」分开：
+    //   5→6 时 ok 仍然成立（本引擎的 maxLevel 形参语义），但 bit7 必须为 false。
+    const r = buildOneLevel(0, 5, 6);
+    expect(r.ok).toBe(true);
+    expect(r.level).toBe(6);
+    expect(r.reachedMaxLevel).toBe(false);
   });
 
   it('10 時光機 —— 已实现：还原回合开始的快照', () => {

@@ -290,12 +290,16 @@ export function applySleepwalkCard(
   let victimIndex = target.index;
   let redirected = false;
   if (def.trigger.kind === 'scapegoat') {
-    working = players.map((p, i) => (i === target.index ? def.player : p));
     const picked = scapegoatPicker?.(target.index) ?? -1;
     // @source `cmp eax,-1 / je 保持原目标`
     if (picked !== -1 && picked >= 0 && picked < players.length) {
       victimIndex = picked;
       redirected = true;
+      // ★★ 只有真的改写了目标才扣 19（原版 `0x4449e7` 的 `cmp` 在扣卡点 `0x4449ef` 之前）；
+      //   放弃转嫁时卡留在手里。通道 2 `test_passive_cards.py` 130/130。
+      working = players.map((p, i) =>
+        i === target.index ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p,
+      );
     }
   }
 

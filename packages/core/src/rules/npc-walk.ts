@@ -32,6 +32,7 @@ import {
   OBJECT_TO_TOOL,
   TREASURE_POINTS,
   drawGiftTool,
+  giftToolBagEmpty,
 } from './object-landing.ts';
 import { giveTool } from './tools.ts';
 import {
@@ -494,7 +495,12 @@ export function applyNpcEvents(
  */
 function lootTool(objectType: number, toolStock: readonly number[], rng: WatcomRng): number {
   // @source 0x00445ada —— 与玩家踩禮物走同一条抽签
-  if (objectType === OBJECT_TYPE_GIFT) return drawGiftTool(toolStock, rng.next());
+  // ★★ 2026-09-19 修（§7.142）：原版是 `test ebx,ebx / je 返回0` **之后**才 `call rand`
+  //   ⇒ 袋子空时**一次 rand 都不掷**。先前写成 `drawGiftTool(stock, rng.next())`
+  //   （实参先求值）⇒ 库存全空时多掷一次，之后所有随机事件错开一步。
+  if (objectType === OBJECT_TYPE_GIFT) {
+    return giftToolBagEmpty(toolStock) ? 0 : drawGiftTool(toolStock, rng.next());
+  }
   return TRAP_TO_TOOL[objectType] ?? 0;
 }
 

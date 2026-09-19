@@ -18,6 +18,7 @@ import {
   TREASURE_POINTS,
   attachGod,
   drawGiftTool,
+  giftToolBagEmpty,
   OBJECT_DISTANT_MAX_TRIES,
   OBJECT_DISTANT_MIN,
   objectNodeCandidates,
@@ -247,6 +248,22 @@ describe('踩上去：禮物与寶箱', () => {
     const only3 = initialToolStock().map((_, i) => (i === 3 ? 5 : 0));
     for (let r = 0; r < 20; r++) expect(drawGiftTool(only3, r)).toBe(3);
     expect(drawGiftTool(new Array<number>(14).fill(0), 7)).toBe(0);
+  });
+
+  // ★★ 2026-09-19 补（§7.142，通道 2 `test_watcom_shop.py` 180/180）：
+  //   原版 `0x445b0e test ebx,ebx / je 返回0` 在 `call rand` **之前** ⇒ 空袋不掷。
+  //   调用方若写 `drawGiftTool(stock, rng.next())`，实参先求值 ⇒ 空袋也推进随机流。
+  it('★★ 袋空的判据（供调用方在**掷 rand 之前**判）', () => {
+    expect(giftToolBagEmpty(new Array<number>(14).fill(0))).toBe(true);
+    const s = new Array<number>(14).fill(0);
+    s[3] = 1;
+    expect(giftToolBagEmpty(s)).toBe(false);
+    // 9..13 号**不进袋子**（不限量）⇒ 它们有货不算「袋不空」
+    const t = new Array<number>(14).fill(0);
+    t[9] = 5;
+    t[10] = 5;
+    t[13] = 5;
+    expect(giftToolBagEmpty(t)).toBe(true);
   });
 
   it('★ 抽不到东西时不消耗随机数、也不把禮物收走', () => {

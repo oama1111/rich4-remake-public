@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-import { parseMap } from '../loaders/map.ts';
+import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
 import { WHO_PLAYS_RETURN_TO_BOARD, isAlive } from './types.ts';
@@ -46,7 +46,7 @@ interface Played {
  */
 function assertPositionInvariant(
   state: GameState,
-  nodeIndex: ReadonlyMap<number, { x: number; y: number }>,
+  nodeIndex: ReadonlyMap<number, { x: number; y: number; gate: boolean }>,
   where: string,
   /**
    * 「贴图位置」的合法取值集合 —— `x/y` 是**贴图位置**，不是"所在格坐标"：
@@ -73,8 +73,17 @@ function assertPositionInvariant(
     //   ★ 合法窗口：在押/住店（计数非 0）或 **「走回棋盘」那一回合**
     //   （`+0x15 & 0x10` —— 玩家还在綠島/醫院大樓/旅館上，本引擎在那一回合的
     //   **收尾**才把 x/y 同步回所在格 —— 见 `startTurn`）。
+    //   ★★ 2026-09-19 补第五个窗口：**消失中**（`+0x33`）。原版「被綁架/出國」
+    //   的结算会先 `call 0x40d761` 一次清掉 `+0x32..+0x35` 四项、再写 `+0x33`
+    //   （`events/fortune-effects.ts:415-428` 逐句照抄），**全程不动 `x/y`**。
+    //   因此「先被送進醫院（x/y = 醫院大樓景观坐标 319,990）、随后同一回合被綁架」
+    //   会留下**没有阻碍计数、却带着医院景观坐标**的状态 —— 原版也是这个状态
+    //   （消失期间玩家不上屏，坐标无意义）。旧不变量漏了这一窗，
+    //   于是种子 1 走到这条轨迹时误报。**不变量没有放松**：消失者仍只能在
+    //   「景观/設施坐标」集合里取值，任何集合外的乱值照样红。
     const confined =
       b.inHotel !== 0 ||
+      b.disappearing !== 0 ||
       b.inPrison !== 0 ||
       b.inHospital !== 0 ||
       (p.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0;
@@ -82,6 +91,16 @@ function assertPositionInvariant(
       ? spritePositions.some((g) => g.x === p.xpos && g.y === p.ypos)
       : false;
     if (ok) continue;
+    // ★★ 第六个窗口（2026-09-19）：**消失结束之后**残留的贴图坐标。
+    //   原版从「被綁架」到「消失结束」**全程不写 `x/y`**：`0x40d375` 只是把
+    //   当时的 `x/y` 传给飞走动画 `0x41d476`（读了 `+0x08/+0x0a`，**没有写**），
+    //   释放函数 `0x40d4e5` 也不写（只 `or node[+0x24]` 登记到场 + 清 `+0x33`）。
+    //   ⇒「先被送進醫院（x/y = 醫院大樓景观坐标 319,990）→ 随后被綁架 →
+    //   消失结束」会留下**零标志 + 医院景观坐标 + `nodeId` = 醫院格**。
+    //   这一窗只在**脚下就是監獄/醫院格**时放行贴图坐标 —— 能造出这种坐标的
+    //   路径只有关押传送，而关押传送必把 `nodeId` 设成该格；别处仍按节点坐标
+    //   严格判，抓漏能力不受影响。
+    if (n!.gate && spritePositions.some((g) => g.x === p.xpos && g.y === p.ypos)) continue;
     expect([p.xpos, p.ypos], `${where}: 玩家${p.index} 坐标与其节点不符`)
       .toEqual([n!.x, n!.y]);
   }
@@ -111,7 +130,16 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
     commercials: map.commercials,
   landscapes: map.landscapes,
   };
-  const nodeIndex = new Map(map.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+  const nodeIndex = new Map(
+    map.nodes.map((n) => [
+      n.id,
+      {
+        x: n.x,
+        y: n.y,
+        gate: n.specialKind === SPECIAL_KIND.PRISON || n.specialKind === SPECIAL_KIND.HOSPITAL,
+      },
+    ]),
+  );
   // 關押中的合法坐标：監獄 = 记录 2（綠島）、醫院 = 记录 1（醫院大樓）
   // （景观表 1 基、0 号槽是哨兵 ⇒ 本引擎数组下标 = 记录号 − 1）
   const gateLandscapes = [map.landscapes[0], map.landscapes[1]].filter(

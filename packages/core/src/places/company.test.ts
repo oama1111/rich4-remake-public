@@ -276,14 +276,19 @@ describe('★ 踩到上市企業', () => {
 describe('★ 每日：保險期倒数；15 日分紅', () => {
   const topo = topoWith(INDUSTRY.bank);
 
-  it('保險期每回合 −1，归零挂 0x80，再下一次清零', () => {
+  // ★★ 2026-09-19 订正（§7.141，通道 2 `test_insurance_richest.py` 135/135）：
+  //   旧标题「再下一次清零」是**错的**。保险期那一支（`0x41cc4b..0x41cc66`）**没有**
+  //   阻碍计数器的 `test 0x80 → 清零+释放` 分支，是整字节递减 ⇒ `0x80 → 0x7f`，
+  //   于是 `1 → 0x80 → 0x7f → … → 1 → 0x80…` **永不归零**
+  //   （闸门 `+0x3e != 0` 实际等于「买过一次保險就永久理赔」）。
+  it('保險期每回合 −1；到 0 挂 0x80，之后 0x80→0x7f（**永不归零**）', () => {
     let s = makeGameState({ players: [makePlayer({ index: 0, nodeId: 1, insuranceDays: 2 })], phase: 'turnStart' });
     s = reduce(s, { type: 'startTurn' }, topo);
     expect(s.players[0]!.insuranceDays).toBe(1);
     s = reduce({ ...s, phase: 'turnStart' }, { type: 'startTurn' }, topo);
     expect(s.players[0]!.insuranceDays).toBe(RELEASE_PENDING);
     s = reduce({ ...s, phase: 'turnStart' }, { type: 'startTurn' }, topo);
-    expect(s.players[0]!.insuranceDays).toBe(0);
+    expect(s.players[0]!.insuranceDays).toBe(RELEASE_PENDING - 1); // 0x7f，**不是 0**
   });
 
   it('★ 推进到 15 日：盈餘按持股分进存款并清零', () => {

@@ -113,10 +113,14 @@ export function applyDefensiveCards(target: Player): DefensiveApplied {
     };
   }
   if (playerHasCard(target, PASSIVE_CARDS.SCAPEGOAT)) {
-    return {
-      trigger: { kind: 'scapegoat' },
-      player: consumeCard(target, PASSIVE_CARDS.SCAPEGOAT),
-    };
+    // ★★ 2026-09-19 订正（§7.140；通道 2 `test_passive_cards.py` 130/130 直证）：
+    //   嫁禍卡(19) **不在这里扣**。原版 `0x44476a` 里
+    //   `0x4449e7 cmp ebx,-1` / `0x4449ea je 0x444a53` 就在扣卡点
+    //   `0x4449ef call 0x441343` **之前** —— 「放弃转嫁」或「无人可嫁」时
+    //   **卡留在手里**；只有**真的改写了目标**才扣。
+    //   故本函数只报「触发了嫁祸」，扣卡交给调用方在 `picked != -1` 之后做。
+    //   ⚠️ README §四之二 第 11 条的括注（「放弃转嫁时嫁祸照样被消耗」）是**错的**。
+    return { trigger: { kind: 'scapegoat' }, player: target };
   }
   return { trigger: { kind: 'none' }, player: target };
 }

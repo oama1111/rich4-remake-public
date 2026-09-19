@@ -111,3 +111,22 @@ describe('★ 设施过路费 = 步数 × 500 × 交通倍率 × 物价指数', 
     expect(facilityToll(2, 1, 1)).not.toBe(facilityToll(5, 1, 1));
   });
 });
+
+// ★★ 2026-09-19 补（§7.142，通道 2 `test_god_toll_wheel.py` 352/352）：
+//   原版 god5 `add ebx,esi` / god6 `lea ebx,[esi+esi]` 都只留低 32 位；
+//   旧实现用 JS double ⇒ `toll >= 2^31/2` 时不回绕，付款方向都可能反转。
+describe('★ 神明的加半/加倍按 32 位回绕（照原版）', () => {
+  it('★★ god6（大窮神，加倍）：0x7fffffff ⇒ −2', () => {
+    expect(adjustTollByGod(0x7fffffff, GOD_BIG_POVERTY).toll).toBe(-2);
+    expect(adjustTollByGod(0x40000000, GOD_BIG_POVERTY).toll).toBe(-2147483648);
+  });
+
+  it('★★ god5（小窮神，×1.5）：0x7fffffff ⇒ −1073741826', () => {
+    expect(adjustTollByGod(0x7fffffff, GOD_SMALL_POVERTY).toll).toBe(-1073741826);
+  });
+
+  it('小数值不受影响（回归）', () => {
+    expect(adjustTollByGod(999, GOD_SMALL_POVERTY).toll).toBe(1498);
+    expect(adjustTollByGod(1000, GOD_BIG_POVERTY).toll).toBe(2000);
+  });
+});

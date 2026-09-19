@@ -479,9 +479,22 @@ describe('★ 拍賣：电脑那一手不再走 declineDecision', () => {
     });
   });
 
-  it('★ 现金 ≤ 现价 → PASS（@source 0x43b10c 的 `cmp / jle`）', () => {
+  it('★★ 现金 < 现价 → **放棄**（@source 0x43b11a `mov ebx,6`），不是 PASS', () => {
+    // ★★ 2026-09-19 按 exe 订正（A5）：旧断言写 `status: 'pass'` —— 与字节相反。
+    //   `0x43b112 cmp ecx, [edx+0x496b84] / jle 0x43b124` 只在
+    //   **现价 <= 现金** 时才去挑档；落空那一路是 `0x43b11a mov ebx, 6` = 放棄
+    //   （`0x43a41f cmp ebx,6 / je 0x43a43a` 会把座位 `+0` 清 0，整个摘掉）。
+    //   本用例 price=9000 > cash=3000 ⇒ 走的是落空那一路。
     const s = at(pendingAuction({ seat: 0, bidders: [0, 1], limits: [20_000, 20_000], price: 9000 }), [
       { whoPlays: WHO_PLAYS_COMPUTER, cash: 3000 },
+      { whoPlays: WHO_PLAYS_COMPUTER },
+    ]);
+    expect(decideAction({ state: s, map: topo })).toMatchObject({ status: 'giveUp', step: 0 });
+  });
+
+  it('★ 现金 == 现价 → 还能投（判据是 `现价 > 现金`）：挑档失败才是 PASS', () => {
+    const s = at(pendingAuction({ seat: 0, bidders: [0, 1], limits: [9000, 20_000], price: 9000 }), [
+      { whoPlays: WHO_PLAYS_COMPUTER, cash: 9000 },
       { whoPlays: WHO_PLAYS_COMPUTER },
     ]);
     expect(decideAction({ state: s, map: topo })).toMatchObject({ status: 'pass', step: 0 });

@@ -103,6 +103,23 @@ describe('1 均富卡（0x0041e6fe）', () => {
     const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: i === 0 ? 4000 : 50000 }));
     expect(aiCardChoice(1, viewOf({ players }))).toBeNull();
   });
+
+  // ★★ 通道 2 差分（`rich4-spec/tests/test_junfu_card_ai.py`）：两道闸都是**严格** >
+  it('★★ 平均恰为我的 10 倍 → 不出（严格 >）', () => {
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: i === 0 ? 100 : 1300 }));
+    // avg = (100+3900)/4 = 1000 == 100×10
+    expect(aiCardChoice(1, viewOf({ players }))).toBeNull();
+  });
+
+  it('★★ 我的现金恰为 3000×物價 → 不出（严格 >）', () => {
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: i === 0 ? 3000 : 100000 }));
+    expect(aiCardChoice(1, viewOf({ players }))).toBeNull();
+  });
+
+  it('★ 我的现金 2999（= 3000×物價 − 1）且平均够高 → 出', () => {
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: i === 0 ? 2999 : 100000 }));
+    expect(aiCardChoice(1, viewOf({ players }))).toEqual({ target: { kind: 'none' } });
+  });
 });
 
 describe('2 均貧卡（0x0041e779）', () => {
@@ -115,6 +132,21 @@ describe('2 均貧卡（0x0041e779）', () => {
   it('没人够富 → 不出', () => {
     const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: 10000 }));
     expect(aiCardChoice(2, viewOf({ players }))).toBeNull();
+  });
+
+  // ★★ 通道 2 差分（`rich4-spec/tests/test_junpin_card_ai.py` 的 [C] 组）：
+  //   兜底支命中后**不 break**（`0x41e8d1` 之后 `0x41e8d6 inc` / `jmp` 回循环头）
+  //   ⇒ **下标最大的合格者赢**。旧实现返回第一个 —— 与查稅卡同一个形状的坑。
+  it('★★ 多人同时 > 50000×物價 且 > 我 3 倍 ⇒ 取**下标最大**者（不是第一个）', () => {
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: i === 0 ? 10000 : 100000 }));
+    expect(aiCardChoice(2, viewOf({ players }))).toEqual({ target: { kind: 'player', index: 3 } });
+  });
+
+  it('★★ 门槛严格：現金恰为 50000×物價 → 不中；恰为我的 3 倍 → 不中', () => {
+    const exact = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: i === 1 ? 50000 : 10000 }));
+    expect(aiCardChoice(2, viewOf({ players: exact }))).toBeNull();
+    const tri = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: i === 0 ? 30000 : i === 1 ? 90000 : 10000 }));
+    expect(aiCardChoice(2, viewOf({ players: tri }))).toBeNull();
   });
 });
 
@@ -369,6 +401,31 @@ describe('14 停留卡（0x0041facc）', () => {
       target: { kind: 'player', index: 1 },
     });
   });
+
+  // ★★ 通道 2 差分（`rich4-spec/tests/test_stop_card_ai.py` DISCREPANCY #2）：
+  //   原版「对别人」只对**出現在可見表 `0x48b8c4` 里**的玩家写 `nodeRefs[p]`
+  //   （`0x41fcd7..0x41fd51`），未上屏的对手不参与。
+  it('★★ 镜头外的对手站在我的 ≥2 级設施上 → **不**对他（原版有视野闸）', () => {
+    const hotel = makeFacility({ id: 1, owner: 1, type: FACILITY_TYPE.hotel, level: 2 });
+    const nodes = [
+      makeNode({ id: 1, x: 0, y: 0 }),
+      makeNode({ id: 2, x: 1000, y: 0, ref: { kind: 'facility', index: 1 } }), // 视野 ±220 外
+    ];
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: i === 1 ? 2 : 1 }));
+    expect(aiCardChoice(14, viewOf({ players, nodes, facilities: [hotel] }))).toBeNull();
+  });
+
+  it('★ 同一局面但对手在视野内 → 仍然对他（对照，证明上面那条不是把整支关了）', () => {
+    const hotel = makeFacility({ id: 1, owner: 1, type: FACILITY_TYPE.hotel, level: 2 });
+    const nodes = [
+      makeNode({ id: 1, x: 0, y: 0 }),
+      makeNode({ id: 2, x: 100, y: 0, ref: { kind: 'facility', index: 1 } }),
+    ];
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: i === 1 ? 2 : 1 }));
+    expect(aiCardChoice(14, viewOf({ players, nodes, facilities: [hotel] }))).toEqual({
+      target: { kind: 'player', index: 1 },
+    });
+  });
 });
 
 describe('15 冬眠卡（0x0041fe4e）', () => {
@@ -486,6 +543,19 @@ describe('26 查稅卡（0x004202d2）', () => {
     const poor = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: 10000 }));
     expect(aiCardChoice(26, viewOf({ players: poor }))).toBeNull();
   });
+
+  // ★★ 通道 2 差分（`rich4-spec/tests/test_card_policy_helpers.py`）：
+  //   原版兜底支命中后**不 break**（`0x004203fe` 写完出口只 `mov esi,1`，
+  //   `0x00420408` 继续 `inc` / `jmp` 回循环头）⇒ **下标最大**的合格者赢。
+  it('★★ 多人同时 > 50000×物價 ⇒ 取**下标最大**者（不是第一个）', () => {
+    const rich = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: i >= 1 ? 60000 : 10000 }));
+    expect(aiCardChoice(26, viewOf({ players: rich }))).toEqual({ target: { kind: 'player', index: 3 } });
+  });
+
+  it('★ 门槛是**严格** > 50000×物價（等于不查）', () => {
+    const exact = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: i === 2 ? 50000 : 10000 }));
+    expect(aiCardChoice(26, viewOf({ players: exact }))).toBeNull();
+  });
 });
 
 describe('27 漲價卡（0x0042040e）', () => {
@@ -585,5 +655,40 @@ describe('30 烏龜卡（0x00420970）', () => {
       makeLand({ id: 2, owner: 0, landPrice: 500 }),
     ];
     expect(aiCardChoice(30, viewOf({ nodes: lineNodes(4, refs), lands }))).toBeNull();
+  });
+
+  // ★★ 通道 2 差分（`rich4-spec/tests/test_turtle_card_ai.py` DISCREPANCY #1）：
+  //   原版 `0x419744` 的返回值**已乘物價指數**（`0x4197d8/0x4197e0`），
+  //   而门槛也是 `1000×pi` ⇒ 两边约掉，实际判据是**常量 1000**。
+  //   旧实现 `streetTollOf` 漏乘 pi、门槛照乘 ⇒ pi > 1 时整体偏移。
+  it('★★ 物價指數 = 2 时：对手街价和 1500 > 1000（与 pi 无关）→ 作罢', () => {
+    const refs = new Map<number, MapNode['ref']>([
+      [2, { kind: 'land', index: 1 }], // 对手的街（价和 1500）
+      [3, { kind: 'land', index: 2 }], // 无主，可白拿
+      [4, { kind: 'land', index: 3 }], // 我的未满级住宅，可白拿
+    ]);
+    const lands = [
+      makeLand({ id: 1, owner: 2, level: 1, name: 'A', rentByLevel: [0, 1500, 0, 0, 0, 0] }),
+      makeLand({ id: 2, owner: 0, landPrice: 100 }),
+      makeLand({ id: 3, owner: 1, level: 0, housePrice: 100 }),
+    ];
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: 50000, moneyInBank: 0 }));
+    // 旧实现：1500 > 1000×2 = 2000 为假 ⇒ 误判「可发动」；修正后 1500 > 1000 ⇒ 作罢
+    expect(aiCardChoice(30, viewOf({ players, nodes: lineNodes(5, refs), lands, state: { priceIndex: 2 } }))).toBeNull();
+  });
+
+  it('★ 同一局面 pi = 1 ⇒ 同样作罢（两档一致，排除「只是把门槛改了」）', () => {
+    const refs = new Map<number, MapNode['ref']>([
+      [2, { kind: 'land', index: 1 }],
+      [3, { kind: 'land', index: 2 }],
+      [4, { kind: 'land', index: 3 }],
+    ]);
+    const lands = [
+      makeLand({ id: 1, owner: 2, level: 1, name: 'A', rentByLevel: [0, 1500, 0, 0, 0, 0] }),
+      makeLand({ id: 2, owner: 0, landPrice: 100 }),
+      makeLand({ id: 3, owner: 1, level: 0, housePrice: 100 }),
+    ];
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: 50000, moneyInBank: 0 }));
+    expect(aiCardChoice(30, viewOf({ players, nodes: lineNodes(5, refs), lands }))).toBeNull();
   });
 });

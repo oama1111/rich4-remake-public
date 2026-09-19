@@ -168,14 +168,32 @@ export function sameStreet(a: LandInfo, b: LandInfo): boolean {
   return a.name === b.name;
 }
 
-/** 某人某條街上住宅的过路费总和 @source 0x00419744 */
-export function streetTollOf(lands: readonly LandInfo[], owner1: number, name: string): number {
+/**
+ * 某人某條街上住宅的过路费总和 @source 0x00419744
+ *
+ * ★★ 返回值**含物价指数**：原版收尾就是
+ * ```asm
+ * 004197d8  mov  ecx, dword ptr [0x4990e8]   ; 物价指数
+ * 004197de  mov  eax, edi                    ; Σ 各级租金
+ * 004197e0  imul eax, ecx                    ; ★ × 物价指数
+ * ```
+ * 调用方的门槛（`3000×pi` / `6000×pi` / `1000×pi` / `10000×pi`）与它**同量纲**，
+ * 住宅那一路的 pi 于是两边约掉。先前这里漏乘 pi 而调用方照乘 ⇒
+ * **物價指數 > 1 之后，機器娃娃/路障/烏龜卡三处 AI 判定整体偏移**
+ * （通道 2 差分见 `rich4-spec/tests/test_turtle_card_ai.py` 的 DISCREPANCY #1）。
+ */
+export function streetTollOf(
+  lands: readonly LandInfo[],
+  owner1: number,
+  name: string,
+  priceIndex: number,
+): number {
   let total = 0;
   for (const l of lands) {
     if (l.type !== LAND_TYPE_HOUSE || l.owner !== owner1 || l.name !== name) continue;
     total += l.rentByLevel[l.level] ?? 0;
   }
-  return total;
+  return total * priceIndex;
 }
 
 /** 某人的连锁店数 @source 0x0041970f */
@@ -286,12 +304,17 @@ const junpin: Handler = (view, hated) => {
     const h = view.state.players[hated]!;
     if (h.cash > 30000 * pi && h.cash > my * 2) return player(hated);
   }
+  // ★ 通道 2 差分（`rich4-spec/tests/test_junpin_card_ai.py` 的 [C] 组）：
+  //   兜底支命中后**不 break**（`0x41e8d1 mov esi,1` → `0x41e8d6 inc [esp+8]` /
+  //   `jmp 0x41e881` 回循环头）⇒ **下标最大的合格者赢**。旧实现 `return player(i)`
+  //   返回第一个，与查稅卡（`0x4202d2`）是同一个形状的坑。
+  let picked = -1;
   for (let i = 0; i < view.state.players.length; i++) {
     if (!rivals.includes(i)) continue;
     const p = view.state.players[i]!;
-    if (p.cash > 50000 * pi && p.cash > my * 3) return player(i);
+    if (p.cash > 50000 * pi && p.cash > my * 3) picked = i;
   }
-  return null;
+  return picked === -1 ? null : player(picked);
 };
 
 /** 購地卡 @source 0x0041e9e2：脚下值得拿，且 (地價 + 房價×等级)×物價 < 現金 */
@@ -588,9 +611,16 @@ const tingliu: Handler = (view) => {
       ) return SELF;
     }
   }
+  // ★★ 通道 2 差分（`rich4-spec/tests/test_stop_card_ai.py` 的 DISCREPANCY #2）：
+  //   原版「对别人」的候选集是**畫面里的人** —— 第 3 段（`0x41fcd7..0x41fd51`）
+  //   只对出现在可見表 `0x48b8c4` 里的玩家写 `nodeRefs[p]`，第 4 段再读它。
+  //   未上屏的对手 `nodeRefs[p] == 0`，两个开区间都不命中。
+  //   ⚠️ 判据是**成员资格**，选中次序仍是**玩家下标 0..N−1 取第一个** ——
+  //   所以用 `Set` 做成员判断而不是直接遍历 `visibleRivals()`（那个按屏幕行序排）。
+  const visible = new Set(visibleRivals(view));
   for (let i = 0; i < view.state.players.length; i++) {
     const p = view.state.players[i]!;
-    if (i === view.meIndex || !isAlive(p)) continue;
+    if (i === view.meIndex || !isAlive(p) || !visible.has(i)) continue;
     const node = nodeOf(view.topo, p.nodeId);
     if (node === undefined) continue;
     if (node.ref.kind === 'facility') {
@@ -732,10 +762,16 @@ const chashui: Handler = (view, hated) => {
   const pi = view.state.priceIndex;
   const rivals = visibleRivals(view);
   if (hated !== -1 && rivals.includes(hated) && view.state.players[hated]!.cash > 30000 * pi) return player(hated);
+  // ★ 通道 2 差分（`rich4-spec/tests/test_card_policy_helpers.py`）：兜底支命中后
+  //   **不 break** —— `@source 0x004203fe` 写完 `[0x48be58]` 只是 `mov esi,1`，
+  //   紧接着 `0x00420408 inc [esp+8]` / `jmp 0x4203c9` 继续扫
+  //   ⇒ **下标最大的合格者赢**（不是第一个）。旧实现写成 `return player(i)`，
+  //   多人同时超阈值时会选错人（玩家可见）。
+  let picked = -1;
   for (let i = 0; i < view.state.players.length; i++) {
-    if (rivals.includes(i) && view.state.players[i]!.cash > 50000 * pi) return player(i);
+    if (rivals.includes(i) && view.state.players[i]!.cash > 50000 * pi) picked = i;
   }
-  return null;
+  return picked === -1 ? null : player(picked);
 };
 
 /**
@@ -865,7 +901,7 @@ const wugui: Handler = (view) => {
           total += l.owner === 0 ? l.landPrice : l.housePrice;
           count++;
         }
-        if (l.owner !== 0 && l.owner !== me1 && streetTollOf(view.lands, l.owner, l.name) > 1000 * pi) {
+        if (l.owner !== 0 && l.owner !== me1 && streetTollOf(view.lands, l.owner, l.name, pi) > 1000 * pi) {
           selfOk = false;
           break;
         }
@@ -905,7 +941,7 @@ const wugui: Handler = (view) => {
         const l = landById(view, node.ref.index);
         if (l === undefined) continue;
         if (l.owner === me1) {
-          total += streetTollOf(view.lands, me1, l.name);
+          total += streetTollOf(view.lands, me1, l.name, pi);
           count++;
         }
         if (l.owner === 0 || l.owner === i + 1) {

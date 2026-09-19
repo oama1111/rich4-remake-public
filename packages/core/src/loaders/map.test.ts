@@ -242,6 +242,23 @@ describe('resolveNodeType', () => {
     expect(resolveNodeType(6002)).toEqual({ kind: 'commercial', index: 2 });
     expect(resolveNodeType(8001)).toEqual({ kind: 'landscape', index: 1 });
   });
+
+  // ★★ 通道 2 差分（`rich4-spec/tests/test_tool_roadblock_ai.py` 的边界组）：
+  //   原版四段的区间**都是 2000 宽**（`0x7d0<v<0xfa0` / `0xfa0<v<0x1770` /
+  //   `0x1770<v<0x1f40` / `0x1f40<v<0x2710`），本函数先前只写了一半宽
+  //   （`<3000/<5000/<7000/<9000`）⇒ `type ∈ [3000,4000)` 原版判住宅、本函数判 unknown。
+  it('★★ 四段上界都是「下界 + 2000」（照原版；先前只有一半宽）', () => {
+    expect(resolveNodeType(3000)).toEqual({ kind: 'land', index: 1000 });
+    expect(resolveNodeType(3999)).toEqual({ kind: 'land', index: 1999 });
+    expect(resolveNodeType(4000)).toEqual({ kind: 'unknown', raw: 4000 }); // 下界是开的
+    expect(resolveNodeType(5000)).toEqual({ kind: 'facility', index: 1000 });
+    expect(resolveNodeType(5999)).toEqual({ kind: 'facility', index: 1999 });
+    expect(resolveNodeType(7000)).toEqual({ kind: 'commercial', index: 1000 });
+    expect(resolveNodeType(7999)).toEqual({ kind: 'commercial', index: 1999 });
+    expect(resolveNodeType(9000)).toEqual({ kind: 'landscape', index: 1000 });
+    expect(resolveNodeType(9999)).toEqual({ kind: 'landscape', index: 1999 });
+    expect(resolveNodeType(10000)).toEqual({ kind: 'unknown', raw: 10000 }); // 上界也是开的
+  });
 });
 
 describe('★ 上市企业与特殊景观', () => {

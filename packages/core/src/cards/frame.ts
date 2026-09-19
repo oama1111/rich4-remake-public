@@ -174,12 +174,17 @@ export function applyFrameCard(
   //    ★ 同上：命中时消耗（`0x4449ef call 0x441343`）
   let playersAfterDefense: readonly Player[] = players;
   if (def.trigger.kind === 'scapegoat') {
-    playersAfterDefense = players.map((p, i) => (i === target.index ? def.player : p));
     const picked = scapegoatPicker(target.index);
     // @source cmp eax, -1 / je 保持原目标 / mov ebx, eax
     if (picked !== -1 && picked >= 0 && picked < players.length) {
       victimIndex = picked;
       redirected = true;
+      // ★★ 只有**真的改写了目标**才扣嫁祸卡(19)：原版 `0x4449e7 cmp ebx,-1` /
+      //   `0x4449ea je 0x444a53` 在扣卡点 `0x4449ef` **之前** ⇒ 放弃转嫁不扣卡。
+      //   （通道 2 `test_passive_cards.py` 130/130；订正 README §四之二 第 11 条。）
+      playersAfterDefense = players.map((p, i) =>
+        i === target.index ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p,
+      );
     }
   }
 

@@ -88,6 +88,67 @@ describe('★ 直接对 exe 的函数指针表校验', () => {
   });
 });
 
+// ============================================================
+//  ★★★ 新聞 4「外星人攻打地球」@source `fcn_0044913d`（355 B）
+//  表里的 `effects` 是**可达性分析**的结论，所以它必须能由 exe 字节复现。
+//  这一组直接读 exe，把「爆心的四个实参 + 送医天数 + 候选集门控」逐字节钉住。
+//  ★ 最要紧的一条：`0x64` 是**半径**、`1` 才是**重击** —— 两列，不是一列。
+// ============================================================
+describe('★★★ 新聞 4 的爆心实参 —— 直接对 exe 字节校验', () => {
+  /** 读 `call rel32` 的落点 */
+  const callTarget = (d: Buffer, at: number): number =>
+    at + 5 + d.readInt32LE(codeOff(at) + 1);
+
+  run('VA 0x00449225：`damage_area(0x64, 0x26, 1, -1)` 的压栈序列逐字节一致', () => {
+    const d = readFileSync(EXE);
+    const o = codeOff(0x00449225);
+    expect([...d.subarray(o, o + 13)]).toEqual([
+      0x6a, 0xff, // push -1    ← 攻击者 = 无（⇒ 不记敌意）
+      0x6a, 0x01, // push 1     ← ★ 重击位（不是半径！）
+      0x6a, 0x26, // push 0x26  ← flags：住宅 | 設施 | 范围里的人
+      0x6a, 0x64, // push 0x64  ← ★ 半径 = 100（**不是**核彈的 -1 全图）
+      0xe8, 0x49, 0x1a, 0xfc, 0xff, // call rel32
+    ]);
+    expect(callTarget(d, 0x0044922d)).toBe(0x0040ac7b); // damage_area
+  });
+
+  run('VA 0x00449282：被炸到的人 `push 3 / call 0x43ec3f`（send_to_hospital）', () => {
+    const d = readFileSync(EXE);
+    const o = codeOff(0x00449282);
+    expect([...d.subarray(o, o + 8)]).toEqual([
+      0x6a, 0x03, // push 3   ← 住院天数（不是 %d，故 literal 为 null）
+      0x53, // push ebx      ← 玩家下标
+      0xe8, 0xb5, 0x59, 0xff, 0xff,
+    ]);
+    expect(callTarget(d, 0x00449285)).toBe(0x0043ec3f); // send_to_hospital
+    // 进这一支的门槛是 `test byte [player+0x15], 0x40`（VA 0x00449279）
+    expect([...d.subarray(codeOff(0x00449276), codeOff(0x00449279))]).toEqual([
+      0x6b, 0xc3, 0x68, // imul eax, ebx, 0x68  ← player 一步 0x68
+    ]);
+    expect([...d.subarray(codeOff(0x00449279), codeOff(0x00449280))]).toEqual([
+      0xf6, 0x80, 0x7d, 0x6b, 0x49, 0x00, 0x40, // test byte [eax+0x496b7d], 0x40
+    ]);
+  });
+
+  run('候选表只收 `level != 0`：地块与設施各一道 `cmp byte [.. +0x1a], 0`', () => {
+    const d = readFileSync(EXE);
+    for (const va of [0x0044918d, 0x004491c6]) {
+      expect([...d.subarray(codeOff(va), codeOff(va) + 6)], `VA ${va.toString(16)}`).toEqual([
+        0x80, 0x7c, 0x02, 0x1a, 0x00, // cmp byte [edx+eax+0x1a], 0  ← land/facility +0x1a = level
+        0x74, // je 跳过
+      ]);
+    }
+  });
+
+  run('★ 表里第 4 项记的是 `alienBlast`，不是 `hospital`（后者会恒报 unimplemented）', () => {
+    const e = newsEvent(4)!;
+    expect(e.va).toBe(0x0044913d);
+    expect(e.effects).toContain('alienBlast');
+    expect(e.effects).not.toContain('hospital');
+    expect(e.literal).toBeNull(); // 文案「外星人攻打地球」里没有 %d
+  });
+});
+
 describe('金额系数', () => {
   it('金额 = 物价指数 × factor', () => {
     const e = fortuneEvent(22)!;
@@ -190,10 +251,30 @@ describe('★ 可达性分析出的方向与文案语义吻合', () => {
     expect(n).toBeGreaterThanOrEqual(6);
   });
 
-  it('★ 文案含「坐牢」的事件都走 prison', () => {
+  it('★ 文案含「坐牢」的事件都走关押那一类（4 条命运走 prison，news 29 走 companyChairmanPrison）', () => {
     const jail = [...NEWS_EVENTS, ...FORTUNE_EVENTS].filter((e) => e.text.includes('坐牢'));
     expect(jail.length).toBe(5);
-    for (const e of jail) expect(e.effects, e.text).toContain('prison');
+    // ★★ 2026-09 本轮订正：先前 5 条一律断言 `prison`。news 29 不是泛用 `prison`
+    //   （那是「关 affected / 抽牌者」），而是「随机抽一家有主企業的經營者」
+    //   —— 见 event-table.ts 的 `companyChairmanPrison` 长注释。
+    //   把它留在 `prison` 上，判据 `commercials.some(owner !== 0 …)` 之外还会
+    //   让日志里的「坐牢 5 天」变成一句空话（`literal` 是 null ⇒ unimplemented）。
+    for (const e of jail) {
+      if (e.id === 29 && NEWS_EVENTS.includes(e)) {
+        expect(e.effects, e.text).toEqual(['companyChairmanPrison']);
+        continue;
+      }
+      expect(e.effects, e.text).toContain('prison');
+    }
+  });
+
+  it('★ news[29] 的 `companyChairmanPrison` 只在新闻表出现一次（命运 33..36 仍是 prison）', () => {
+    expect(NEWS_EVENTS.filter((e) => e.effects.includes('companyChairmanPrison')).map((e) => e.id))
+      .toEqual([29]);
+    expect(FORTUNE_EVENTS.filter((e) => e.effects.includes('companyChairmanPrison'))).toEqual([]);
+    // 命运那四条（酒醉/防礙風化/走私毒品/販賣大補帖）走的是泛用 `prison`：目标 = 抽牌者
+    expect(FORTUNE_EVENTS.filter((e) => e.effects.includes('prison')).map((e) => e.id))
+      .toEqual([33, 34, 35, 36]);
   });
 
   it('★ 文案含「住院/就醫」的事件都走 hospital', () => {
@@ -208,6 +289,19 @@ describe('★ 可达性分析出的方向与文案语义吻合', () => {
 describe('★ 文案里的字面数字与代码推导互证', () => {
   it('news[29] 文案写「坐牢５天」，与 send_to_prison 调用点的 5 一致', () => {
     expect(newsEvent(29)!.text).toContain('坐牢５天');
+    // ★ 天数 5 在 phase 1 的立即数里（`0044b35f push 5`），不在 `literal`
+    //   ——文案的「５」是全角字、没有 `%d`。常量住在 news-effects.ts。
+    expect(newsEvent(29)!.literal).toBeNull();
+    expect(newsEvent(29)!.effects).toEqual(['companyChairmanPrison']);
+  });
+
+  it('★ news[29] 的两个 %s 是「企業名 + 經營者名」，顺序不能反', () => {
+    // @source `0x44b2d9 lea eax,[esp+0xb0]`（= 0x452946 去空格后的**玩家名**）先压栈
+    //   ⇒ 它是**最后一个**实参（cdecl 右到左）⇒ 对应**第二个** %s；
+    //   `0x44b2e1 lea eax,[ebx+4]`（企業记录 +4 = 名字串）是第一个 %s。
+    const text = newsEvent(29)!.text;
+    expect(text.indexOf('%s')).toBeLessThan(text.lastIndexOf('%s'));
+    expect(text.indexOf('違法超貸')).toBeLessThan(text.indexOf('經營者'));
   });
 
   it('★ 带 %d 的金额事件都有 factor', () => {

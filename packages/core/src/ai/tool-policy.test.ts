@@ -107,8 +107,10 @@ describe('共用机制', () => {
     expect(toolsToConsider([], 0)).toEqual([]);
   });
 
-  it('時光機与核子飛彈 AI 永不用（10 双保险、13 见 Q-TOOL-3）', () => {
-    expect(AI_NEVER_USES).toEqual([10, 13]);
+  it('時光機 AI 永不用（10 双保险）；核子飛彈已按 Q-TOOL-3 接线', () => {
+    // ★ 曾写死 `[10, 13]`（13 = 核子飛彈），依据是把 `a0b1(x,y,-1)` 的半径 −1
+    //   读成「全图 ⇒ 中止判据恒真」。Q-TOOL-3 已用机器码推翻（见 13 号那一节）。
+    expect(AI_NEVER_USES).toEqual([10]);
     const view = viewOf();
     for (const id of AI_NEVER_USES) expect(aiToolChoice(id, view)).toBeNull();
     expect(aiToolChoice(99, view)).toBeNull();
@@ -287,6 +289,44 @@ describe('3 地雷（0x004213c5）', () => {
     const view = viewOf({ nodes, lands: [makeLand({ id: 1, owner: 1 })], players: meOnLine(8, 7) });
     expect(aiToolChoice(3, view)).toBeNull();
   });
+
+  // ★★ 通道 2 差分（`rich4-spec/tests/test_tool_policy_ai.py` 的 [E] 组）：
+  //   原版监狱/医院那两格是 `cmp dword [0x496b30], 0` —— **4 字节 = 只含槽 0..3 玩家**，
+  //   不是落点那种逐槽扫 8 个。仅**物件槽**（4..7）被占用时**不**直选。
+  it('★★ 监狱格**只有物件槽**被占 → 不直选（4 字节比较只覆盖槽 0..3）', () => {
+    const nodes = lineNodes(8, new Map([[3, { kind: 'land', index: 1 }]]));
+    nodes[5] = makeNode({ id: 6, x: 60, y: 0, adjacent: [5, 7], specialKind: SPECIAL_KIND.PRISON });
+    const view = viewOf({
+      nodes,
+      lands: [makeLand({ id: 1, owner: 2 })],
+      players: meOnLine(8, 7),
+      state: { prisonOccupancy: [0, 0, 0, 0, 1, 0, 0, 0] }, // ★ 只有槽 4（物件）
+    });
+    expect(aiToolChoice(3, view)).toEqual({ kind: 'place', nodeId: 3 });
+  });
+
+  it('★★ 医院格**只有物件槽**被占 → 不直选', () => {
+    const nodes = lineNodes(8, new Map([[3, { kind: 'land', index: 1 }]]));
+    nodes[5] = makeNode({ id: 6, x: 60, y: 0, adjacent: [5, 7], specialKind: SPECIAL_KIND.HOSPITAL });
+    const view = viewOf({
+      nodes,
+      lands: [makeLand({ id: 1, owner: 2 })],
+      players: meOnLine(8, 7),
+      state: { hospitalOccupancy: [0, 0, 0, 0, 0, 1, 0, 0] },
+    });
+    expect(aiToolChoice(3, view)).toEqual({ kind: 'place', nodeId: 3 });
+  });
+
+  it('★★ 只有物件槽被占 + 无其他候选 → 不用（8 槽口径会误直选监狱格）', () => {
+    const nodes = lineNodes(8);
+    nodes[5] = makeNode({ id: 6, x: 60, y: 0, adjacent: [5, 7], specialKind: SPECIAL_KIND.PRISON });
+    const view = viewOf({
+      nodes,
+      players: meOnLine(8, 7),
+      state: { prisonOccupancy: [0, 0, 0, 0, 0, 0, 0, 1] },
+    });
+    expect(aiToolChoice(3, view)).toBeNull();
+  });
 });
 
 describe('4 定時炸彈（0x00421574）', () => {
@@ -378,6 +418,59 @@ describe('7 飛彈（0x00421717）', () => {
     players[3] = makePlayer({ index: 3, character: 3, nodeId: 4 });
     const view = viewOf({ nodes: spread, players });
     expect(aiToolChoice(7, view)).toEqual({ kind: 'missile', nodeId: 4 });
+  });
+
+  // ★★ 通道 2 差分（`rich4-spec/tests/test_missile_target_ai.py` [B]）：
+  //   原版 `0x40d31c` 在收集「随机活跃对手」时有一道 `cmp dword [player+0x32], 0`
+  //   —— 住店/消失/坐牢/住院（+0x32..+0x35 四字节）任一非 0 的人**不参与**。
+  //   最恨的人那条路（`0x40d2d3`）**没有**这道闸，两者不对称。
+  const blocked = (p: GameState['players'][number], over: Partial<GameState['players'][number]['blocking']>) => {
+    p.blocking = { ...p.blocking, ...over };
+    return p;
+  };
+
+  it('★★ 随机对手里**关着的人不参与**（+0x32 dword == 0 的闸）', () => {
+    const spread = [
+      makeNode({ id: 1, x: 0, y: 0 }),
+      makeNode({ id: 2, x: 150, y: 0 }),
+      makeNode({ id: 3, x: 160, y: 0 }),
+      makeNode({ id: 4, x: 170, y: 0 }),
+    ];
+    const players = meOnLine(1, 0);
+    players[1] = makePlayer({ index: 1, character: 1, nodeId: 2 });
+    players[2] = makePlayer({ index: 2, character: 2, nodeId: 3 });
+    players[3] = blocked(makePlayer({ index: 3, character: 3, nodeId: 4 }), { inPrison: 2 });
+    const choice = aiToolChoice(7, viewOf({ nodes: spread, players }));
+    // 3 号被关 ⇒ 候选只剩 1/2 ⇒ 无论摇到谁都不会是节点 4
+    expect(choice).not.toEqual({ kind: 'missile', nodeId: 4 });
+  });
+
+  it('★★ 全部随机对手都被关 ⇒ 不用（旧实现会误选一个在押者）', () => {
+    const spread = [
+      makeNode({ id: 1, x: 0, y: 0 }),
+      makeNode({ id: 2, x: 150, y: 0 }),
+      makeNode({ id: 3, x: 160, y: 0 }),
+      makeNode({ id: 4, x: 170, y: 0 }),
+    ];
+    const players = meOnLine(1, 0);
+    players[1] = blocked(makePlayer({ index: 1, character: 1, nodeId: 2 }), { inHospital: 1 });
+    players[2] = blocked(makePlayer({ index: 2, character: 2, nodeId: 3 }), { inHotel: 1 });
+    players[3] = blocked(makePlayer({ index: 3, character: 3, nodeId: 4 }), { disappearing: 1 });
+    expect(aiToolChoice(7, viewOf({ nodes: spread, players }))).toBeNull();
+  });
+
+  it('★ 只有 +0x36（冬眠）非 0 **不**排除（原版那道闸只比 +0x32 那 4 字节）', () => {
+    const spread = [
+      makeNode({ id: 1, x: 0, y: 0 }),
+      makeNode({ id: 2, x: 150, y: 0 }),
+      makeNode({ id: 3, x: 160, y: 0 }),
+      makeNode({ id: 4, x: 170, y: 0 }),
+    ];
+    const players = meOnLine(1, 0);
+    players[1] = blocked(makePlayer({ index: 1, character: 1, nodeId: 2 }), { sleeping: 3 });
+    players[2] = blocked(makePlayer({ index: 2, character: 2, nodeId: 3 }), { sleeping: 3 });
+    players[3] = blocked(makePlayer({ index: 3, character: 3, nodeId: 4 }), { sleeping: 3 });
+    expect(aiToolChoice(7, viewOf({ nodes: spread, players }))).not.toBeNull();
   });
 });
 
@@ -571,10 +664,177 @@ describe('12 工程車（0x00421e20）', () => {
   });
 });
 
+describe('13 核子飛彈（0x00421e62）—— Q-TOOL-3 已结案：原版 AI 会放核彈', () => {
+  /** 32px/格 @source 0x0040a22d `sar ebx,5`（与 `test_nuke_card_ai.py` 的 TILE_SHIFT 同） */
+  const TILE = 32;
+  /** 140 格 —— 稳稳落在爆风窗外（窗外半宽 14 格） */
+  const FAR = 140 * TILE;
+
+  /**
+   * 造一局：我在 1 号节点 (0,0)；`lands`/`facilities` 自带坐标（原版读记录 +0/+2），
+   * 同时各配一个节点 —— 引擎落 action 要从「实体格值」回到节点号。
+   * 玩家 1..3 的 whoPlays=0 ⇒ 出局（`0x40d2b4` 只数 whoPlays != 0 的人）。
+   */
+  function nukeView(o: {
+    lands?: LandInfo[];
+    facilities?: FacilityInfo[];
+    alive?: number;
+    meBlocking?: Partial<GameState['players'][number]['blocking']>;
+    state?: Partial<GameState>;
+  } = {}): ToolAiView {
+    const lands = o.lands ?? [];
+    const facilities = o.facilities ?? [];
+    const alive = o.alive ?? 4;
+    const me = makePlayer({ index: 0, character: 0, nodeId: 1 });
+    me.blocking = { ...me.blocking, ...(o.meBlocking ?? {}) };
+    const players: GameState['players'] = [me];
+    for (let i = 1; i < 4; i++) {
+      players.push(makePlayer({ index: i, character: i, nodeId: 0, whoPlays: i < alive ? 1 : 0 }));
+    }
+    const nodes: MapNode[] = [makeNode({ id: 1, x: 0, y: 0 })];
+    lands.forEach((l, k) => nodes.push(landNode(2 + k, l.id, l.x, l.y)));
+    facilities.forEach((f, k) => nodes.push(facilityNode(2 + lands.length + k, f.id, f.x, f.y)));
+    return viewOf({
+      nodes,
+      lands,
+      facilities,
+      players,
+      ...(o.state !== undefined ? { state: o.state } : {}),
+    });
+  }
+
+  const foeLand = (over: Partial<LandInfo>): LandInfo =>
+    makeLand({ owner: 2, level: 1, x: FAR, y: FAR, ...over });
+
+  // ── ④ 接线本身：典型局面不再返回 null ──
+  it('④ 典型局面：唯一候选（别人的 1 级地）离我 140 格 → 出牌（不再返回 null）', () => {
+    const view = nukeView({ lands: [foeLand({ id: 1 })] });
+    expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
+  });
+
+  // ── ① / ② 中止判据 = 我的棋子落在候选 ±14 格（原版像素 448px）内 ──
+  it('① 候选恰在 14 格（448px）→ 我的棋子进窗 → 放弃本候选 ⇒ 不用', () => {
+    const view = nukeView({ lands: [foeLand({ id: 1, x: 14 * TILE, y: 0 })] });
+    expect(aiToolChoice(13, view)).toBeNull();
+  });
+
+  it('② 候选在 15 格（480px）外 → 不中止 ⇒ 出牌（★ 把 14 改成 13 即变红）', () => {
+    const view = nukeView({ lands: [foeLand({ id: 1, x: 15 * TILE, y: 0 })] });
+    expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
+  });
+
+  it('① 两轴都要在 ±14 内：x 差 14 格、y 差 15 格 ⇒ 不中止 ⇒ 出牌', () => {
+    const view = nukeView({ lands: [foeLand({ id: 1, x: 14 * TILE, y: 15 * TILE })] });
+    expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
+  });
+
+  // ── Q8：0x40a0b1 只在**没被关**时才画我的标记（0x40a117）──
+  it('★★ 被关押（+0x32 的 4 字节非 0）时不画我的标记 ⇒ 同样 2 格也不中止 ⇒ 出牌', () => {
+    const near = [foeLand({ id: 1, x: 2 * TILE, y: 0 })];
+    expect(aiToolChoice(13, nukeView({ lands: near }))).toBeNull(); // 对照：自由身 ⇒ 中止
+    expect(aiToolChoice(13, nukeView({ lands: near, meBlocking: { inPrison: 3 } }))).toEqual({
+      kind: 'missile',
+      nodeId: 2,
+    });
+  });
+
+  // ── 中止是**按候选**重置的：近的被弃后换远的（D-004：逐次替身 salt+try）──
+  it('★★ 近候选被中止 → 换远候选 ⇒ 出牌（★ 逐次 salt 改成固定 salt 即变红）', () => {
+    const lands = [
+      foeLand({ id: 1, x: 2 * TILE, y: 0 }), // 近：中止
+      foeLand({ id: 2 }), // 远：发
+    ];
+    // rngState=1 时 aiRoll(salt,2)=0（近）、aiRoll(salt+1,2)=1（远）
+    const view = nukeView({ lands, state: { rngState: 1 } });
+    expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 3 });
+  });
+
+  // ── 候选三道闸（@source 0x421e9e..0x421eb8 / 0x421f0a..0x421f24）──
+  it('候选闸门：无主 / 我的 / level == 0 都不入选；地块 0 号永不入选 ⇒ 0 候选不用', () => {
+    expect(
+      aiToolChoice(
+        13,
+        nukeView({
+          lands: [
+            foeLand({ id: 1, owner: 0, level: 2 }),
+            foeLand({ id: 2, owner: 1, level: 2 }),
+            foeLand({ id: 3, owner: 2, level: 0 }),
+            foeLand({ id: 0, owner: 2, level: 2 }),
+          ],
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('設施同样是候选（格值 0xfa0+i）：别人的 2 级設施 → 出牌', () => {
+    const view = nukeView({
+      facilities: [makeFacility({ id: 1, owner: 2, level: 2, x: FAR, y: FAR })],
+    });
+    expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
+  });
+
+  it('★ 候选次序：先地块后設施（rand 取到 0 → 地块 node2，取到 1 → 設施 node3）', () => {
+    const lands = [foeLand({ id: 1 })];
+    const facilities = [makeFacility({ id: 1, owner: 2, level: 1, x: FAR, y: FAR })];
+    expect(aiToolChoice(13, nukeView({ lands, facilities, state: { rngState: 1 } }))).toEqual({
+      kind: 'missile',
+      nodeId: 2,
+    });
+    expect(aiToolChoice(13, nukeView({ lands, facilities, state: { rngState: 0 } }))).toEqual({
+      kind: 'missile',
+      nodeId: 3,
+    });
+  });
+
+  // ── 发弹判据：两个比值都 < 1/(存活数+2) ──
+  it('★ 数量比：窗内我也有产业（mine/other = 1/1）⇒ 不过 ⇒ 不用', () => {
+    const lands = [foeLand({ id: 1 }), makeLand({ id: 2, owner: 1, level: 1, x: FAR, y: FAR })];
+    expect(aiToolChoice(13, nukeView({ lands }))).toBeNull();
+  });
+
+  it('★ 等级和比单独卡住：mine/other = 1/7 过关、mineLv/otherLv = 10/7 不过 ⇒ 不用', () => {
+    const lands = [
+      ...Array.from({ length: 7 }, (_, i) => foeLand({ id: i + 1 })),
+      makeLand({ id: 8, owner: 1, level: 10, x: FAR, y: FAR }),
+    ];
+    expect(aiToolChoice(13, nukeView({ lands }))).toBeNull();
+  });
+
+  it('★ 阈值 1/(存活数+2)：mine/other = 1/5 = 0.2 ⇒ 存活 2 发（阈 1/4）、存活 4 不发（阈 1/6）', () => {
+    const lands = [
+      ...Array.from({ length: 5 }, (_, i) => foeLand({ id: i + 1 })),
+      makeLand({ id: 6, owner: 1, level: 1, x: FAR, y: FAR }),
+    ];
+    expect(aiToolChoice(13, nukeView({ lands, alive: 2 }))?.kind).toBe('missile');
+    expect(aiToolChoice(13, nukeView({ lands, alive: 4 }))).toBeNull();
+  });
+
+  it('我出的起吗：本函数**没有**钱闸（0x421e62 全程不读現金/存款/財運）', () => {
+    const broke = [makePlayer({ index: 0, character: 0, nodeId: 1, cash: 0, moneyInBank: 0, fortune: -5 })];
+    for (let i = 1; i < 4; i++) broke.push(makePlayer({ index: i, character: i, nodeId: 0 }));
+    const view = viewOf({
+      nodes: [makeNode({ id: 1, x: 0, y: 0 }), landNode(2, 1, FAR, FAR)],
+      lands: [foeLand({ id: 1 })],
+      players: broke,
+    });
+    expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
+  });
+
+  // ── 决定链：持有 13 且肯用时，missile 支把节点号传给 useTool ──
+  it('接线：持有 13、個性 2（f7=2 不受闸门拦）⇒ decideTool 给出 useTool', () => {
+    const ctx = ctxOf({
+      nodes: [makeNode({ id: 1, x: 0, y: 0 }), landNode(2, 1, FAR, FAR)],
+      lands: [foeLand({ id: 1 })],
+      players: meOnLine(1, 0, { personality: 2 }),
+      tools: { 13: 1 },
+    });
+    expect(decideTool(ctx)).toEqual({ type: 'useTool', toolId: 13, nodeId: 2 });
+  });
+});
+
 // ============================================================
 //  decideTool 接线（闸门 → 环形 4 件 → 判定 → 预演 → action）
 // ============================================================
-
 describe('decideTool 接线', () => {
   it('aiFlags bit1 为 0 的 AI 不用道具（0x00447f87）', () => {
     const ctx = ctxOf({

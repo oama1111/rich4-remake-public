@@ -38,7 +38,7 @@ import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { pickFacingAt } from '../rules/teleport.ts';
 import { canUpgradeFacility } from '../rules/facility.ts';
 import { aiShouldPurchase } from '../rules/purchase.ts';
-import { auctionAiChoice } from '../rules/auction.ts';
+import { auctionActiveSeatCount, auctionAiChoice } from '../rules/auction.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 
 /**
@@ -459,6 +459,15 @@ export function auctionNextBid(
     price: pending.price,
     cash: who.cash,
     topCash: topWho === undefined ? null : pending.topCash,
+    // @source 0x43b219 `cmp byte [0x48c4b1],1 / mov ebx,1`：只剩一个可出价座位时
+    //   档位被压成最小档。`0x48c4b1` 全场只在开拍时写一次 ⇒ 必须用**开拍时**的底价与座位
+    //   （`0x43a36c` 抄的是 `0x113` 的实参）。
+    activeSeats: auctionActiveSeatCount(
+      state.players,
+      pending.bidders,
+      pending.basePrice,
+      pending.seller ?? -1,
+    ),
   });
   return { type: 'auctionBid', bidder, status: choice.kind, step: choice.step };
 }

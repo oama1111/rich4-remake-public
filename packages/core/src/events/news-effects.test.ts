@@ -9,15 +9,22 @@ import { makeNode, makePlayer } from '../testing/factories.ts';
 import { makeObjects } from '../cards/summon.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import {
+  ALIEN_BLAST_ATTACKER,
+  ALIEN_BLAST_FLAGS,
+  ALIEN_BLAST_HEAVY,
+  ALIEN_BLAST_RADIUS,
+  ALIEN_HOSPITAL_DAYS,
   IMPLEMENTED_NEWS_IDS,
   LAND_PRICE_DOWN,
   LAND_PRICE_UP,
   MARKET_CLOSE_DAYS,
+  NEWS_CHAIRMAN_PRISON_DAYS,
   STOCK_SUSPEND_DAYS,
   TYPHOON_RADIUS,
   applyNewsEffect,
 } from './news-effects.ts';
 import { HISTORY_DAYS, type StockMarketState } from '../places/stock-market.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 
 const ctx = (over = {}) => ({
   players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: 100_000, moneyInBank: 0 })),
@@ -181,36 +188,109 @@ describe('方向与命運一致', () => {
     expect(r.amount).toBe(5000);
   });
 
-  it('news[29] 走监狱', () => {
-    const r = applyNewsEffect(29, ctx({ days: 5 }));
-    expect(r.players[0]!.blocking.inPrison).toBe(5);
-    expect(r.prisonOccupancy[0]).toBe(1);
+  // ★★ 2026-09 本轮订正：下面两条旧用例**把错误行为钉死了**。
+  //   它们原先是 `applyNewsEffect(29, ctx({ days: 5 }))` ⇒ 无脑把 0 号玩家
+  //   （= 抽牌者）关 5 天。而原版 `fcn_0044b25b` 关的是**随机抽中的那家企業的
+  //   經營者** —— 关抽牌者是「关错人」，比什么都不做更糟。
+  //   29 现在走 `companyChairmanPrison`，目标由效果层抽（要消耗一次 `rand()`）。
+  it('news[29] 不再把「抽牌者」关起来 —— 没有企業/没有 rng 就什么都不做', () => {
+    // ① 没有 rng：不假装随机，报未实现（调用方 bug 要被看见）
+    expect(applyNewsEffect(29, ctx({ days: 5 })).unimplemented).toBe(true);
+    // ② 有 rng 但一家有主企業都没有 ⇒ 不动任何人、且**不掷随机数**
+    let calls = 0;
+    const r = applyNewsEffect(29, ctx({
+      affected: [0],
+      rng: { below: (n: number) => { calls++; return n - 1; } },
+      commercials: [],
+    }));
+    expect(r.players[0]!.blocking.inPrison).toBe(0);
+    expect(r.prisonOccupancy[0]).toBe(0);
+    expect(r.amount).toBe(0);
+    expect(calls).toBe(0);
   });
 
-  // ★★ 2026-09-18：原版 `send_to_prison`/`send_to_hospital` 的**函数体内**含
-  //   「传送到监狱／医院格 + 跟班搬家」（`@source 0x43d601`..`0x43d674`），
-  //   所以新聞这条路的受害者**不在原地**。差分证据：
-  //   `rich4-spec/tests/test_confinement_teleport.py`（48/48）。
-  it('★ news[29] 坐牢要把人**送进监狱格**（并带回新的物件表）', () => {
-    const r = applyNewsEffect(29, ctx({ days: 5, nodes: NODES, objects: OBJS }));
-    expect(r.players[0]!.nodeId).toBe(2); // 2 号格是监狱
-    expect(r.players[0]!.xpos).toBe(1935);
-    expect(r.objects).toHaveLength(OBJS.length);
-  });
-
-  it('★ 新聞 4「外星人攻打地球」住院 → 送进医院格；已是病人则原地加刑', () => {
-    const r = applyNewsEffect(4, ctx({ days: 3, nodes: NODES, objects: OBJS }));
-    expect(r.players[0]!.blocking.inHospital).toBe(3);
-    expect(r.players[0]!.nodeId).toBe(3); // 3 号格是医院
-    const again = applyNewsEffect(4, ctx({
-      days: 3,
+  it('★ news[29] 坐牢的是**抽中的經營者**，且要送进监狱格', () => {
+    const r = applyNewsEffect(29, ctx({
+      days: 5,
       nodes: NODES,
       objects: OBJS,
-      players: [makePlayer({ index: 0, blocking: { ...makePlayer().blocking, inHospital: 2 } }),
-        ...ctx().players.slice(1)],
+      affected: [0],
+      // 只有 1 号企業有主（owner = 3 ⇒ 玩家下标 2）
+      commercials: [
+        { id: 1, owner: 0 } as never,
+        { id: 2, owner: 3 } as never,
+      ],
+      rng: { below: () => 0 },
     }));
-    expect(again.players[0]!.blocking.inHospital).toBe(5);
-    expect(again.players[0]!.nodeId).toBe(1); // ★ 原地不动
+    expect(r.players[2]!.blocking.inPrison).toBe(NEWS_CHAIRMAN_PRISON_DAYS);
+    expect(r.players[0]!.blocking.inPrison).toBe(0); // ★ 抽牌者毫发无伤
+    expect(r.prisonOccupancy[2]).toBe(1);
+    // 关押会把人挪到监狱格（`send_to_prison` 函数体内的事）
+    expect(r.players[2]!.nodeId).toBe(2);
+    expect(r.players[2]!.xpos).toBe(1935);
+    expect(r.objects).toHaveLength(OBJS.length);
+    expect(r.chairmanPrison).toEqual({ companyId: 2, chairman: 2, victim: 2, days: 5 });
+  });
+
+  // ★★★ 订正（2026-09 本轮）：这条旧用例**把錯誤行为钉死了**。
+  //   它原先把新聞 4 当成 `hospital` 效果（`applyNewsEffect(4, ctx({days:3}))`
+  //   ⇒ 无脑把 0 号玩家关进医院 3 天），而 `event-table.ts` 里那条 `['hospital']`
+  //   本身就是错的：`@source fcn_0044913d` 是
+  //   `damage_area(0x64, 0x26, 1, -1)` 一发**重击**，住院只是爆心的**副作用**
+  //   （`0x40cd07` 挂 `+0x15 & 0x40` 位 → `send_to_hospital(玩家,3)`，
+  //    VA 0x00449279..0x00449285）。原版**没有**「无脑关全体」这条路。
+  //   故本用例改成按 exe 真值：范围里的人才住院（且天数恒为立即数 3，不看 `ctx.days`）。
+  it('★★ news[4]「外星人攻打地球」：只有**被半径 100 那发重击扫到**的人送医 3 天', () => {
+    // 爆心 = 1 号地块（坐标 (100,200)，正是 1 号格）⇒ 站在 1 号格的 0 号玩家被扫到；
+    // 4 号玩家站在 (1935,1039)（2 号格，监狱格）⇒ 远在窗外，一动不动。
+    const lands = [
+      { id: 1, name: 'A', level: 2, type: 0, owner: 1, x: 100, y: 200 },
+    ] as never;
+    const players = [
+      makePlayer({ index: 0, nodeId: 1 }),
+      makePlayer({ index: 1, nodeId: 2 }),
+      makePlayer({ index: 2, nodeId: 2 }),
+      makePlayer({ index: 3, nodeId: 2 }),
+    ];
+    const r = applyNewsEffect(
+      4,
+      ctx({ days: 99, nodes: NODES, objects: OBJS, lands, players, rng: { below: () => 0 } }),
+    );
+    expect(r.unimplemented).toBe(false);
+    // ★ 天数不看 `ctx.days`（那 99 是干扰项）—— 原版是 `push 3` 的立即数
+    expect(r.players[0]!.blocking.inHospital).toBe(3);
+    expect(r.players[0]!.nodeId).toBe(3); // 3 号格是医院
+    expect(r.hospitalOccupancy[0]).toBe(1);
+    // 窗外的人一个都不许动
+    for (const i of [1, 2, 3]) {
+      expect(r.players[i]!.blocking.inHospital, `player[${i}]`).toBe(0);
+      expect(r.players[i]!.nodeId).toBe(2);
+    }
+    expect(r.blastedHospital).toEqual([0]);
+  });
+
+  it('★ news[4]：**已在住院/坐牢/住宿/消失**的人不挂「被炸」位 ⇒ 不被追加天数', () => {
+    // @source `0x40cd07` 的第一道闸 `cmp dword [player+0x32], 0 / jne`：
+    //   已在 +0x32..+0x35 任一状态 → 直接返回，那个 0x40 位根本不会设。
+    const lands = [{ id: 1, name: 'A', level: 2, type: 0, owner: 1, x: 100, y: 200 }] as never;
+    const players = [
+      makePlayer({
+        index: 0,
+        nodeId: 1,
+        blocking: { ...makePlayer().blocking, inHospital: 2 },
+      }),
+      makePlayer({ index: 1, nodeId: 1 }),
+      makePlayer({ index: 2, nodeId: 2 }),
+      makePlayer({ index: 3, nodeId: 2 }),
+    ];
+    const r = applyNewsEffect(
+      4,
+      ctx({ nodes: NODES, objects: OBJS, lands, players, rng: { below: () => 0 } }),
+    );
+    expect(r.players[0]!.blocking.inHospital).toBe(2); // 原地不动、不加刑
+    expect(r.players[0]!.nodeId).toBe(1);
+    expect(r.players[1]!.blocking.inHospital).toBe(3); // 同格的健康玩家照打
+    expect(r.blastedHospital).toEqual([1]);
   });
 });
 
@@ -513,6 +593,187 @@ describe('★ 新聞 5/15/19/21：随机拆一处建筑 / 土地流失 @source f
   });
 });
 
+// ============================================================
+//  ★★★ 新聞 4「外星人攻打地球」@source `fcn_0044913d`（VA 0x0044913d，355 B）
+//  原版事件表 `events_calls_table[4]`。施加阶段：
+//    ① 候选表 = level != 0 的地块 + level != 0 的設施，`rand() % n` 挑一处当爆心
+//    ② `damage_area(0x64, 0x26, 1, -1)` —— **半径 100 的方窗 + 重击**、不记敌意
+//    ③ 被 `0x40cd07` 挂上「被炸」位的人 `send_to_hospital(玩家, 3)`
+//  ★ 这一组里最先要钉死的是「`0x64` 是半径、`1` 才是重击」——
+//    `state/reduce.ts` 的 `fireMissile` 把两者揉成了一个 `heavy`（heavy ⇒ 全图），
+//    照抄那个形状就会把「半径 100 的重击」错做成「全图重击」。
+// ============================================================
+describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA 0x0044913d）', () => {
+  const built = (
+    id: number,
+    level: number,
+    type: number,
+    owner: number,
+    x: number,
+    y: number,
+    name = 'A',
+  ) => ({ id, name, level, type, owner, x, y, landPrice: 100 }) as never;
+  const fac = (id: number, level: number, type: number, owner: number, x: number, y: number) =>
+    ({ id, name: `F${id}`, level, type, owner, x, y, flast: 0, landPrice: 100 }) as never;
+  /** 只记调用次数的假 RNG —— 用来钉「恰掷一次」 */
+  const countingRng = (pick = 0) => {
+    let calls = 0;
+    return {
+      rng: { below: (n: number) => (calls++, pick % n) },
+      calls: () => calls,
+    };
+  };
+
+  it('★ 事件表第 4 项 = 真值：va / effects / literal（不是 `hospital`）', () => {
+    const e = newsEvent(4)!;
+    expect(e.va).toBe(0x0044913d);
+    expect(e.effects).toEqual(['alienBlast']);
+    expect(e.effects).not.toContain('hospital');
+    expect(e.literal).toBeNull(); // 文案里没有 %d；原版也没写 [0x48c5b4]
+    expect(e.text).toContain('外星人攻打地球');
+    // 五个立即数逐个钉住（VA 0x00449225..0x0044922d 与 0x00449282）
+    expect(ALIEN_BLAST_RADIUS).toBe(0x64); // ★ 半径 100
+    expect(ALIEN_BLAST_FLAGS).toBe(0x26); // 住宅 | 設施 | 范围里的人
+    expect(ALIEN_BLAST_HEAVY).toBe(1); // ★ 重击（与半径是**两列**）
+    expect(ALIEN_BLAST_ATTACKER).toBe(-1); // 攻击者 = 无 ⇒ 不记敌意
+    expect(ALIEN_HOSPITAL_DAYS).toBe(3); // push 3 / call 0x43ec3f
+    expect(IMPLEMENTED_NEWS_IDS).toContain(4);
+  });
+
+  it('★★ 端到端：爆心半径 100 内的住宅/連鎖店/无主地**全清**，窗外的一格不动', () => {
+    // 小地图：地 1 在爆心 (1000,1000)、地 2 在 (+50,+50)（窗内）、
+    //          地 3 在 (+300,0)（窗外，超过 100）、地 4 在 (5000,5000)（窗外）
+    const lands = [
+      built(1, 3, 0, 2, 1000, 1000), // 住宅：有主、3 级
+      built(2, 1, 1, 3, 1050, 1050), // ★ 連鎖店：有主、1 级
+      built(3, 2, 0, 1, 1300, 1000), // ★ |dx| = 300 > 100 ⇒ 窗外
+      built(4, 1, 0, 0, 5000, 5000), // 无主地（也在窗外）
+    ];
+    const r = applyNewsEffect(4, ctx({ lands, facilities: [], rng: { below: () => 0 } }));
+    expect(r.unimplemented).toBe(false);
+    // 窗内两块**重击**：owner/level/type 全清（連鎖店身份也被抹掉）
+    expect(r.landMutations).toEqual([
+      { id: 1, level: 0, type: 0, owner: 0 },
+      { id: 2, level: 0, type: 0, owner: 0 },
+    ]);
+    // 窗外那两块一个字节都不许动
+    expect(r.landMutations?.some((m) => m.id === 3 || m.id === 4)).toBe(false);
+    expect(r.amount).toBe(2);
+  });
+
+  it('★★★ 半径 100 是**窗**不是全图：heavy=1 不代表打全地图（证伪 `fireMissile` 那个形状）', () => {
+    // 只有两块地，第二块离爆心 0x64 + 1 = 101（刚好出窗）
+    const lands = [built(1, 2, 0, 1, 0, 0), built(2, 2, 0, 1, 101, 0)];
+    const r = applyNewsEffect(4, ctx({ lands, facilities: [], rng: { below: () => 0 } }));
+    expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    // 距离恰好 100 的还在窗内（`<=`）
+    const lands2 = [built(1, 2, 0, 1, 0, 0), built(2, 2, 0, 1, 100, 100)];
+    const r2 = applyNewsEffect(4, ctx({ lands: lands2, facilities: [], rng: { below: () => 0 } }));
+    expect(r2.landMutations).toEqual([
+      { id: 1, level: 0, type: 0, owner: 0 },
+      { id: 2, level: 0, type: 0, owner: 0 },
+    ]);
+  });
+
+  it('★★ 爆心只从「盖了房子」的地块/設施里挑（`level != 0`），空地块不进候选', () => {
+    // 若候选误收 level==0 的地块，`below(3)=0` 会挑中地 1（坐标 0,0）⇒ 一块都炸不到
+    const lands = [
+      built(1, 0, 0, 1, 0, 0), // 空地（有主但没盖）—— 不是候选
+      built(2, 0, 0, 1, 0, 0), // 同上
+      built(3, 2, 0, 1, 9000, 9000), // ★ 唯一候选 = 爆心
+      built(4, 1, 0, 1, 9050, 9000), // 窗内
+    ];
+    const r = applyNewsEffect(4, ctx({ lands, facilities: [], rng: { below: () => 0 } }));
+    // 候选 = [地3]（1 个）；空地 1/2 虽然就在 (0,0) 也不受影响
+    expect(r.landMutations).toEqual([
+      { id: 3, level: 0, type: 0, owner: 0 },
+      { id: 4, level: 0, type: 0, owner: 0 },
+    ]);
+  });
+
+  it('★★ 爆心也可以是**設施**（候选表「地先、設施后」）；設施重击 = 四项全清 + `0x40dffa` 放人', () => {
+    const lands = [built(1, 2, 0, 1, 0, 0)];
+    const facilities = [fac(1, 3, 1, 2, 200, 200), fac(2, 1, 1, 2, 9000, 9000)];
+    // 候选 = [地1, 設1, 設2]；below(3) = 1 → 設 1（爆心在 (200,200)）
+    const r = applyNewsEffect(
+      4,
+      ctx({ lands, facilities, rng: { below: (n: number) => 1 % n } }),
+    );
+    // 窗内：地 1（|Δx| = |Δy| = 200 > 100 ⇒ **不在**窗内）
+    expect(r.landMutations).toEqual([]);
+    // 設施 1 被重击：owner/level/type 全清（`+0x34` 地契由 mutateFacility 清，见补丁说明）
+    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    // 9 号設施远在窗外
+    expect(r.facilityMutations?.some((m) => m.id === 2)).toBe(false);
+  });
+
+  it('★★ 設施重击无条件 `0x40dffa`：**全场被关押者**挂「下一天释放」', () => {
+    const confined = (i: number, inHotel: number) =>
+      makePlayer({ index: i, nodeId: 2, blocking: { ...makePlayer().blocking, inHotel } });
+    const r = applyNewsEffect(
+      4,
+      ctx({
+        players: [confined(0, 3), confined(1, 0), confined(2, 7), confined(3, 0)],
+        lands: [],
+        facilities: [fac(1, 2, 1, 1, 0, 0)],
+        rng: { below: () => 0 },
+      }),
+    );
+    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    // 0x80 = 待释放（与 news[21] 龍捲風那条同一支）
+    expect(r.players[0]!.blocking.inHotel).toBe(0x80);
+    expect(r.players[2]!.blocking.inHotel).toBe(0x80);
+    expect(r.players[1]!.blocking.inHotel).toBe(0);
+  });
+
+  it('★ 恰掷一次随机数（原版这条路上只有 0x004491dd 那一次 `call rand`）', () => {
+    const c = countingRng(0);
+    applyNewsEffect(
+      4,
+      ctx({ lands: [built(1, 2, 0, 1, 0, 0)], facilities: [], rng: c.rng }),
+    );
+    expect(c.calls()).toBe(1);
+  });
+
+  it('★ 不产生任何敌意（攻击者 = -1，`damage_area` 里两条 `cmp esi,-1 / je` 都跳过）', () => {
+    const r = applyNewsEffect(
+      4,
+      ctx({ lands: [built(1, 2, 0, 1, 0, 0)], facilities: [], rng: { below: () => 0 } }),
+    );
+    expect(Object.keys(r)).not.toContain('hostility');
+    expect(Object.keys(r)).not.toContain('hostilityDeltas');
+  });
+
+  it('★★ 被炸到的座驾撞毁回库存（`0x40cd07` 的 `inc byte [0x497324/5]`）', () => {
+    const lands = [built(1, 2, 0, 1, 0, 0)];
+    const players = [
+      makePlayer({ index: 0, nodeId: 1, trafficMethod: 2, ndices: 3 }), // 汽車 → 道具 6
+      makePlayer({ index: 1, nodeId: 9 }), // 窗外
+      makePlayer({ index: 2, nodeId: 1, trafficMethod: 1 }), // 機車 → 道具 5
+      makePlayer({ index: 3, nodeId: 9 }),
+    ];
+    const nodes = [makeNode({ id: 1, x: 0, y: 0 }), makeNode({ id: 9, x: 9000, y: 9000 })];
+    const r = applyNewsEffect(
+      4,
+      ctx({ lands, players, nodes, toolStock: [0, 0, 0, 0, 0, 0, 0, 0], rng: { below: () => 0 } }),
+    );
+    expect(r.players[0]!.trafficMethod).toBe(0);
+    expect(r.players[0]!.ndices).toBe(1);
+    expect(r.players[2]!.trafficMethod).toBe(0);
+    expect(r.toolStock?.[6]).toBe(1); // 汽車回库存
+    expect(r.toolStock?.[5]).toBe(1); // 機車回库存
+    // ★ 不给 `ctx.toolStock` 就不带这个字段（但座驾照样清零）
+    const r2 = applyNewsEffect(4, ctx({ lands, players, nodes, rng: { below: () => 0 } }));
+    expect(r2.toolStock).toBeUndefined();
+    expect(r2.players[0]!.trafficMethod).toBe(0);
+  });
+
+  it('★ 没给 rng 时报未实现（不会默默挑第 0 处）', () => {
+    const r = applyNewsEffect(4, ctx({ lands: [built(1, 2, 0, 1, 0, 0)] }));
+    expect(r.unimplemented).toBe(true);
+  });
+});
+
 describe('★ 新聞 7：公開拍賣公有土地一處 @source fcn_00449735', () => {
   const land = (id: number, owner: number) => ({ id, name: `L${id}`, owner, level: 0, type: 0, landPrice: 100, x: 0, y: 0 }) as never;
   const fac = (id: number, owner: number) => ({ id, name: `F${id}`, owner, level: 0, type: 1, landPrice: 100, x: 0, y: 0 }) as never;
@@ -715,13 +976,33 @@ describe('未实现', () => {
     ]);
   });
 
-  it('★ news[4] 与 29 的文案里没有 %d，天数须由调用方给出', () => {
-    for (const id of [4, 29]) {
-      expect(newsEvent(id)!.literal, `news[${id}]`).toBeNull();
-      expect(newsEvent(id)!.text).not.toContain('%d');
-      // 不给 days 就报未实现，而不是默默关 0 天
-      expect(applyNewsEffect(id, ctx()).unimplemented, `news[${id}]`).toBe(true);
-    }
+  it('★ news[29] 的文案里没有 %d，天数是 phase 1 的立即数 5（不在 literal）', () => {
+    // ⚠️ 订正（2026-09 本轮）：这条原先把 **4 与 29 并列**，并断言
+    //   `applyNewsEffect(4, ctx()).unimplemented === true`。新聞 4 的
+    //   `literal` 确实是 null、文案里确实没有 `%d`，但它**不走**「天数由调用方给」
+    //   那条路 —— 它是 `alienBlast`（见 `ALIEN_HOSPITAL_DAYS`）。旧断言当时
+    //   恰好也返回 true（因为 `ctx()` 里连 `rng` 都没有），属于**巧合通过**，
+    //   名字与注释都在说谎。
+    //   ★★ 本轮再收窄 29：它也不是「缺 days 的 prison」——天数 5 是
+    //   `0044b35f push 5` 的立即数，住在 `NEWS_CHAIRMAN_PRISON_DAYS`。
+    const e = newsEvent(29)!;
+    expect(e.literal).toBeNull();
+    expect(e.text).not.toContain('%d');
+    expect(NEWS_CHAIRMAN_PRISON_DAYS).toBe(5);
+    // 缺 rng 时报未实现（不会默默什么都不做），而**不是**取 literal 当 0 天
+    expect(applyNewsEffect(29, ctx()).unimplemented).toBe(true);
+  });
+
+  it('★ news[4] 不需要调用方给 days —— 缺的只是 rng（有 rng 就真打一发）', () => {
+    const e = newsEvent(4)!;
+    expect(e.literal).toBeNull();
+    expect(e.text).not.toContain('%d');
+    // 没有 rng → 未实现（不会默默什么都不做）
+    expect(applyNewsEffect(4, ctx()).unimplemented).toBe(true);
+    // ★ 给了 rng（哪怕没有候选）就**不再**是未实现 —— 与 29 的「缺 days」判然两路
+    const r = applyNewsEffect(4, ctx({ rng: { below: () => 0 } }));
+    expect(r.unimplemented).toBe(false);
+    expect(r.amount).toBe(0); // 一处盖了房子的都没有 ⇒ 原版这里 `idiv 0` 崩，本引擎不动
   });
 
   it('★ 有方向但未实现的，都是因为金额是百分比', () => {
@@ -744,7 +1025,7 @@ describe('未实现', () => {
 //  差分证据：rich4-spec/tests/test_mutate_release.py（7/7）
 // ============================================================
 
-describe('★ 拆屋顺带放人（0x40dffa）', () => {
+describe("★ 拆屋放人（0x40dffa）—— 只在設施支", () => {
   const hotel = (id: number, level: number) =>
     ({ id, name: '旅館', level, type: 6, owner: 1, landPrice: 100 }) as never;
   const land2 = (id: number, level: number) =>
@@ -783,9 +1064,12 @@ describe('★ 拆屋顺带放人（0x40dffa）', () => {
       facilities: [],
       rng: { below: () => 0 },
     }));
-    // 只要这次确实改了记录，就该放人；若该 news 走的是别的 mode，本断言会暴露
+    // ★★ 2026-09-19 订正（§7.141 E1，通道 2 `test_land_mutation_gates.py` 354/354）：
+    //   原版 `0x40dffa` 的三个调用点**全在設施支**（`0x40ac33`/`0x40ac4d`/`0x40ac6c`）；
+    //   地块支一次都不调 ⇒ **拆住宅/连锁店不放人**。
     if (r.amount > 0) {
-      expect(r.players[0]?.blocking.inHotel).toBe(0x80);
+      expect(r.players[0]?.blocking.inHotel).not.toBe(0x80);
+      expect(r.landMutations?.length ?? 0).toBeGreaterThan(0);
     }
   });
 });
@@ -800,19 +1084,225 @@ describe('★ 新聞入狱要清医院那一格', () => {
     makePlayer({ index: i, blocking: { ...makePlayer().blocking, inHospital: 5 } });
 
   it('住院中被新聞判入狱 → 医院床位释放 + 计数器清 0', () => {
-    // 29 = 「違法超貸 經營者坐牢５天」（effects: ['prison']，literal 5）
+    // 新聞 29 走 `companyChairmanPrison`（目标 = 抽中的企業經營者 = 0 号）
     const players = [hospitalised(0), makePlayer({ index: 1 }),
       makePlayer({ index: 2 }), makePlayer({ index: 3 })];
-    // ⚠️ news 29 的 `literal` 是 null（天数由公告阶段给）⇒ 必须在 ctx 里给 `days`
     const r = applyNewsEffect(29, ctx({
       players,
       affected: [0],
-      days: 5,
+      commercials: [{ id: 1, owner: 1 } as never],
+      rng: { below: () => 0 },
       hospitalOccupancy: [1, 0, 0, 0, 0, 0, 0, 0],
     }));
     expect(r.prisonOccupancy?.[0]).toBe(1);       // 进监狱表
     expect(r.hospitalOccupancy?.[0]).toBe(0);     // ★ 医院那格被清
     expect(r.players[0]?.blocking.inHospital).toBe(0);
-    expect(r.players[0]?.blocking.inPrison).toBe(5);
+    expect(r.players[0]?.blocking.inPrison).toBe(NEWS_CHAIRMAN_PRISON_DAYS);
+  });
+});
+
+// ============================================================
+//  ★★ 新聞 29「%s違法超貸 經營者%s坐牢５天」@source fcn_0044b25b
+//
+//  这一组是**逐行**对着 exe 写的（见 `@rich4/data` 的 `companyChairmanPrison`
+//  长注释里的汇编）。每一条都能「改坏 → 变红」：
+//    · 删掉 5 天 / 改成 ctx.days ⇒ 天数那两条红；
+//    · 改成关 currentPlayer ⇒ 「抽牌者毫发无伤」+「关的是抽中的經營者」两条红；
+//    · 不消耗 rand（或消耗两次）⇒ WatcomRng 那两条红；
+//    · 候选不过滤 owner != 0 ⇒ 「below 收到的 n」那条红；
+//    · 免罪/嫁禍 二级判定写反/漏扣卡 ⇒ 对应两条红。
+// ============================================================
+
+describe('★★ 新聞 29：隨機挑一家有主企業的經營者关 5 天', () => {
+  /** 只有 id/owner 有用（新聞 29 只读 `+0x18`）；其余字段与本事件无关 */
+  const co = (id: number, owner: number) => ({ id, owner, name: `C${id}` }) as never;
+
+  it('① 候选只收 `owner != 0` 的企業 —— `rand() % n` 的 n 就是有主企業数', () => {
+    const sizes: number[] = [];
+    const r = applyNewsEffect(29, ctx({
+      // 3 家有主、2 家无主 —— 无主那两家**不能**进候选
+      commercials: [co(1, 0), co(2, 2), co(3, 0), co(4, 4), co(5, 3)],
+      rng: { below: (n: number) => { sizes.push(n); return 1; } },
+    }));
+    expect(sizes).toEqual([3]);
+    // 候选表 = [2, 4, 5]，挑下标 1 ⇒ 4 号 ⇒ owner 4 ⇒ 玩家下标 3
+    expect(r.chairmanPrison).toEqual({ companyId: 4, chairman: 3, victim: 3, days: 5 });
+    expect(r.players[3]!.blocking.inPrison).toBe(5);
+  });
+
+  it('② `rand()%n` 挑中的那家的 chairman 真的被关 **5** 天（不是 0、不是 3）', () => {
+    const r = applyNewsEffect(29, ctx({
+      commercials: [co(1, 1), co(2, 3)],
+      rng: { below: () => 1 }, // → 2 号企業（owner 3 ⇒ 玩家下标 2）
+    }));
+    expect(NEWS_CHAIRMAN_PRISON_DAYS).toBe(5);
+    expect(r.players.map((p) => p.blocking.inPrison)).toEqual([0, 0, 5, 0]);
+    expect(r.prisonOccupancy.slice(0, 4)).toEqual([0, 0, 1, 0]);
+    expect(r.amount).toBe(5);
+    // ★ 天数**不是**从 ctx.days / entry.literal 来的：给一个别的值也不认
+    const r2 = applyNewsEffect(29, ctx({
+      days: 99,
+      commercials: [co(1, 1), co(2, 3)],
+      rng: { below: () => 1 },
+    }));
+    expect(r2.players[2]!.blocking.inPrison).toBe(5);
+  });
+
+  it('③ **恰好消耗一次** `rand()` —— 用真实 WatcomRng 断言 rngState 只前进一格', () => {
+    const rng = new WatcomRng(0x1234_5678);
+    // 先算出「只走一步」应该到哪个状态
+    const probe = new WatcomRng(rng.getState());
+    probe.next();
+    const afterOne = probe.getState();
+    // 再走一步的状态（用来证明「不是两次」）
+    const probe2 = new WatcomRng(afterOne);
+    probe2.next();
+    const afterTwo = probe2.getState();
+
+    const r = applyNewsEffect(29, ctx({
+      commercials: [co(1, 1), co(2, 3)],
+      rng,
+    }));
+    expect(r.chairmanPrison?.companyId).toBe(2);
+    expect(rng.getState()).toBe(afterOne);
+    expect(rng.getState()).not.toBe(afterTwo);
+  });
+
+  it('⑥ 无候选企業 ⇒ 不动任何人、**一次随机数都不掷**', () => {
+    let calls = 0;
+    const rng = new WatcomRng(777);
+    const before = rng.getState();
+    const r = applyNewsEffect(29, ctx({
+      commercials: [co(1, 0), co(2, 0)],
+      rng: { below: (n: number) => { calls++; return n - 1; } },
+    }));
+    expect(calls).toBe(0);
+    expect(r.amount).toBe(0);
+    expect(r.chairmanPrison).toBeUndefined();
+    expect(r.players.map((p) => p.blocking.inPrison)).toEqual([0, 0, 0, 0]);
+    expect(rng.getState()).toBe(before);
+  });
+
+  it('④ chairman 持免罪卡(21) ⇒ 不关任何人、**卡被消耗**、整条作废', () => {
+    const r = applyNewsEffect(29, ctx({
+      players: [
+        makePlayer({ index: 0, whoPlays: 2, cards: [21, 7] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+      commercials: [co(1, 1)],
+      rng: { below: () => 0 },
+    }));
+    expect(r.players[0]!.blocking.inPrison).toBe(0);
+    expect(r.players[0]!.cards).toEqual([7]); // ★ 21 被扣掉
+    expect(r.prisonOccupancy.slice(0, 4)).toEqual([0, 0, 0, 0]);
+    expect(r.amount).toBe(0);
+    // 免罪 ⇒ `0x44b35a cmp eax,-1 / je` 整条作废：**不带** chairmanPrison
+    expect(r.chairmanPrison).toBeUndefined();
+  });
+
+  it('④b 免罪卡(21) 排在嫁禍卡(19) 前面：两张都持有时只扣 21、19 留着', () => {
+    const r = applyNewsEffect(29, ctx({
+      players: [
+        makePlayer({ index: 0, whoPlays: 2, cards: [21, 19], hostility: [0, 3, 0, 0] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+      commercials: [co(1, 1)],
+      rng: { below: () => 0 },
+    }));
+    expect(r.players[0]!.cards).toEqual([19]);
+    expect(r.players[1]!.blocking.inPrison).toBe(0);
+    expect(r.chairmanPrison).toBeUndefined();
+  });
+
+  it('⑤ 持嫁禍卡(19) ⇒ 关到**嫁祸目标**（最恨的人）而不是 chairman，且扣掉 19', () => {
+    const rng = new WatcomRng(4242);
+    const probe = new WatcomRng(rng.getState());
+    probe.next();
+    const r = applyNewsEffect(29, ctx({
+      players: [
+        // ★ `hostility` 是**chairman 自己**对别人的恨意（`me.hostility[b]`，`0x40d2d3`）
+        makePlayer({ index: 0, whoPlays: 2, cards: [19], hostility: [0, 0, 5, 0] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+      commercials: [co(1, 1)],
+      rng,
+    }));
+    // 最恨的是 2 号（`hostility[2] = 5`）⇒ 替 chairman 坐牢
+    expect(r.players[2]!.blocking.inPrison).toBe(5);
+    expect(r.players[0]!.blocking.inPrison).toBe(0);
+    expect(r.players[0]!.cards).toEqual([]); // ★ 19 被扣
+    expect(r.chairmanPrison).toEqual({ companyId: 1, chairman: 0, victim: 2, days: 5 });
+    // 最恨的人那条路**不再掷随机**（mode 0 也没有门槛那一次）⇒ 仍只有抽企業那一步
+    expect(rng.getState()).toBe(probe.getState());
+  });
+
+  it('⑤b 持嫁禍卡(19) 但没有最恨的人 ⇒ 随机挑一个（**第二次** rand）', () => {
+    const rng = new WatcomRng(99);
+    const probe = new WatcomRng(rng.getState());
+    probe.next(); // 抽企業
+    const randForPick = probe.next() % 3; // 候选 = [1,2,3] 三个活人
+    const afterTwo = probe.getState();
+    const r = applyNewsEffect(29, ctx({
+      players: [
+        makePlayer({ index: 0, whoPlays: 2, cards: [19] }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+      commercials: [co(1, 1)],
+      rng,
+    }));
+    expect(r.players[1 + randForPick]!.blocking.inPrison).toBe(5);
+    expect(r.players[0]!.blocking.inPrison).toBe(0);
+    expect(r.players[0]!.cards).toEqual([]);
+    expect(rng.getState()).toBe(afterTwo);
+  });
+
+  it('⑤c 持嫁禍卡(19) 但**无人可嫁** ⇒ chairman 自己被关、**19 留着**（原版不掉卡）', () => {
+    const r = applyNewsEffect(29, ctx({
+      players: [
+        makePlayer({ index: 0, whoPlays: 2, cards: [19] }),
+        makePlayer({ index: 1, whoPlays: 0 }), // 出局
+        makePlayer({ index: 2, whoPlays: 0 }),
+        makePlayer({ index: 3, whoPlays: 0 }),
+      ],
+      commercials: [co(1, 1)],
+      rng: { below: () => 0 },
+    }));
+    expect(r.players[0]!.blocking.inPrison).toBe(5); // ★ 嫁祸落空 = 自己坐牢
+    expect(r.players[0]!.cards).toEqual([19]);       // ★ 卡不扣（`0x4449e7 je 0x444a53`）
+    expect(r.chairmanPrison).toEqual({ companyId: 1, chairman: 0, victim: 0, days: 5 });
+  });
+
+  it('⑤d 真人 chairman 持 19 ⇒ 没有确认框，按 D-003 放弃转嫁（自己坐牢、卡留着）', () => {
+    const r = applyNewsEffect(29, ctx({
+      players: [
+        makePlayer({ index: 0, whoPlays: 1, cards: [19], hostility: [0, 0, 9, 0] }), // 真人
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+      commercials: [co(1, 1)],
+      rng: { below: () => 0 },
+    }));
+    expect(r.players[2]!.blocking.inPrison).toBe(0); // 最恨的人没被嫁祸
+    expect(r.players[0]!.blocking.inPrison).toBe(5);
+    expect(r.players[0]!.cards).toEqual([19]);
+  });
+
+  it('★ 候选里出现的 owner 越界（>= 玩家数）⇒ 不动，也不崩', () => {
+    const r = applyNewsEffect(29, ctx({
+      commercials: [co(1, 9)],
+      rng: { below: () => 0 },
+    }));
+    expect(r.amount).toBe(0);
+    expect(r.chairmanPrison).toBeUndefined();
+    expect(r.unimplemented).toBe(false);
   });
 });

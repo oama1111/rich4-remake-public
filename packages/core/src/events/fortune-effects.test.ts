@@ -10,6 +10,8 @@ import { makeNode, makePlayer } from '../testing/factories.ts';
 import { makeObjects } from '../cards/summon.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
+import { WatcomRng } from '../rng/watcom.ts';
+import { PASSIVE_CARDS } from '../cards/passive.ts';
 import {
   BANK_BAN_DAYS,
   DOUBLE_AMOUNT,
@@ -26,6 +28,10 @@ const ctx = (over = {}) => ({
   currentPlayer: 0,
   priceIndex: 1,
   pool: 0,
+  // ★ 二级判定（免罪 21 / 嫁禍 19）的挑人要用随机出口。给一条**定死**的流：
+  //   本组绝大多数用例的玩家手里没牌 ⇒ 一个随机数都不会掷，
+  //   故它只是为了让类型成立、并给「随机挑人」那两条一个可复现的目标。
+  rng: new WatcomRng(1234),
   ...over,
 });
 
@@ -560,7 +566,10 @@ describe('★ 命運 5：今天是你生日 向每人收取一張卡片 @source 
   it('★ 电脑当寿星但没给 rng 时报未实现（不会静默白拿）', () => {
     const r = applyFortuneEffect(
       5,
+      // ★ `ctx()` 现在带一条默认随机流（供免罪/嫁禍的挑人用）⇒ 这里显式撤掉它，
+      //   才是"没给 rng"那条路。
       ctx({
+        rng: undefined,
         players: [
           makePlayer({ index: 0, whoPlays: WHO_PLAYS_COMPUTER }),
           makePlayer({ index: 1, cards: [1] }),
@@ -717,5 +726,264 @@ describe('★ 首次「消失」也要先清掉别的关押状态（原版 `0x40
     }));
     expect([r.prisonOccupancy[0], r.hospitalOccupancy[1]]).toEqual([1, 1]);
     expect(r.players[0]?.blocking.disappearing).not.toBe(0);
+  });
+});
+
+// ============================================================
+//  ★★ 命運这 4 条路上的「免罪卡(21) → 嫁禍卡(19)」二级判定
+//     `fcn_00441210`（82 B）的 5 个调用点里，新聞 29 那一个在
+//     `news-effects.test.ts` 覆盖；这里覆盖**命運的 4 个**：
+//       · 命運 7 `0x44c6c5`（出國·綁架，`0x40d375`）
+//       · 命運 8 `0x44c7d7`（同上，共用 `0x44c6d8` 起的尾巴）
+//       · 命運 12 `0x44cd41`（就醫，`0x43ec3f`）
+//       · 命運 33 `0x44d8a9`（酒醉坐牢，`0x43d593`）
+//
+//  ★ 三条最容易做错的地方（都在 `secondaryJudgement` 的 @source 块里钉过）：
+//    1. 二级判定在**神明闸门之后** —— 档位 1「逃過此劫」时 21/19 **一张不扣**；
+//    2. `0x44476a` 的第二参（mode）**恒为 0** ⇒ 挑人规则是「最恨的人 → 随机」，
+//       不是 `rules/toll-flow.ts` 的 `aiScapegoat`（那个是 mode 1、多掷一格）；
+//    3. **只有真的换人才扣 19**；真人那一条按 D-003/D-008 一律放弃转嫁，
+//       于是既不扣卡**也不掷随机**（原版 `0x4447ae` 支本来也不掷）。
+// ============================================================
+
+describe('★★ 命運的免罪(21) → 嫁禍(19) 二级判定 @source fcn_00441210', () => {
+  /** 造一组玩家：把 `over` 里的下标改成指定字段 */
+  function scene(
+    over: Record<number, Partial<ReturnType<typeof makePlayer>>> = {},
+  ): ReturnType<typeof makePlayer>[] {
+    return [0, 1, 2, 3].map((i) =>
+      makePlayer({ index: i, whoPlays: WHO_PLAYS_COMPUTER, ...(over[i] ?? {}) }),
+    );
+  }
+
+  /** 命运 4 条路：坐牢（33）/ 住院（12）/ 出國（6）/ 綁架（7） */
+  const PRISON_EVENTS = [33, 12, FORTUNE_TRIP_ABROAD, FORTUNE_ABDUCTED] as const;
+
+  /** 数一条随机流前进了几格 */
+  function stepsOf(state: number, rng: WatcomRng): number {
+    const probe = new WatcomRng(state);
+    let n = 0;
+    while (probe.getState() !== rng.getState() && n < 64) {
+      probe.next();
+      n++;
+    }
+    return n;
+  }
+
+  it('★ 事件表里的 4 条路确实都是「关押/消失」类（否则本组测不到点子上）', () => {
+    for (const id of PRISON_EVENTS) {
+      const e = fortuneEvent(id);
+      expect(
+        e?.effects.includes('prison') ||
+          e?.effects.includes('hospital') ||
+          e?.effects.includes('disappear'),
+      ).toBe(true);
+    }
+  });
+
+  // ── ① 持 21：整条作废 + 21 被消耗 ─────────────────────────────
+  for (const id of PRISON_EVENTS) {
+    it(`★ 命運 ${id}：持免罪卡(21) ⇒ 不关人/不消失、21 被消耗、` +
+       '`fortuneVictim === null`（整条作废）', () => {
+      const rng = new WatcomRng(12345);
+      const before = rng.getState();
+      const r = applyFortuneEffect(id, ctx({
+        players: scene({ 0: { cards: [PASSIVE_CARDS.ABSOLUTION] } }),
+        nodes: NODES,
+        objects: OBJS,
+        rng,
+      }));
+      // ★ 21 被扣（`0x441226 push esi / call 0x444bb2`）
+      expect(r.players[0]!.cards).toEqual([]);
+      // ★ 整条作废：坐牢/住院的天数为 0；出國/綁架不写 disappearing
+      expect(r.players[0]!.blocking.inPrison).toBe(0);
+      expect(r.players[0]!.blocking.inHospital).toBe(0);
+      expect(r.players[0]!.blocking.disappearing).toBe(0);
+      expect(r.prisonOccupancy[0]).toBe(0);
+      expect(r.hospitalOccupancy[0]).toBe(0);
+      // ★ 原地不动（`send_to_*` 都没被调）
+      expect(r.players[0]!.nodeId).toBe(1);
+      expect(r.amount).toBe(0);
+      // ★ `fortuneVictim === null` = 免罪命中 ⇒ 上层**不赔保險**
+      expect(r.fortuneVictim).toBeNull();
+      // ★ 免罪支一个随机数都不掷
+      expect(rng.getState()).toBe(before);
+    });
+  }
+
+  // ── ② 持 19：转嫁（AI 支）────────────────────────────────────
+  it('★ 電腦持嫁禍卡(19)：①最恨的人（hostility 最大且 > 0）替他挨罚、19 被消耗、'
+    + '受害者的那张占用表被写', () => {
+    const rng = new WatcomRng(999);
+    const r = applyFortuneEffect(33, ctx({
+      players: scene({
+        0: { cards: [PASSIVE_CARDS.SCAPEGOAT], hostility: [0, 0, 7, 0] },
+      }),
+      nodes: NODES,
+      objects: OBJS,
+      rng,
+    }));
+    // ★ 挨罚的是 2 号
+    expect(r.players[2]!.blocking.inPrison).toBe(3);
+    expect(r.prisonOccupancy[2]).toBe(1);
+    // ★ 本人毫发无伤、**牌已被扣**
+    expect(r.players[0]!.blocking.inPrison).toBe(0);
+    expect(r.prisonOccupancy[0]).toBe(0);
+    expect(r.players[0]!.cards).toEqual([]);
+    expect(r.fortuneVictim).toBe(2);
+  });
+
+  it('★ 電腦持 19 但**没有最恨的人** ⇒ 走 `0x4448c0 call 0x40d31c` 随机挑一个、'
+    + '**恰好掷一格**、19 被消耗', () => {
+    const rng = new WatcomRng(4242);
+    const before = rng.getState();
+    const r = applyFortuneEffect(12, ctx({
+      players: scene({ 0: { cards: [PASSIVE_CARDS.SCAPEGOAT] } }),
+      nodes: NODES,
+      objects: OBJS,
+      rng,
+    }));
+    // ★ 随机恰好前进一格（`0x40d355 call 0x456f2d`）
+    const after = rng.getState();
+    expect(stepsOf(before, rng)).toBe(1);
+    expect(after).not.toBe(before);
+    // 受害者是别人、本人没事、牌被扣
+    expect(r.fortuneVictim).not.toBeNull();
+    expect(r.fortuneVictim).not.toBe(0);
+    const v = r.fortuneVictim!;
+    expect(r.players[v]!.blocking.inHospital).toBe(3);
+    expect(r.hospitalOccupancy[v]).toBe(1);
+    expect(r.players[0]!.blocking.inHospital).toBe(0);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  it('★ 電腦持 19 但**无人可嫁**（只有自己还活着）⇒ 本人照常挨罚、'
+    + '19 **留在手里**、随机流一格不动（`0x4449e7 cmp ebx,-1 / je`）', () => {
+    const dead = { whoPlays: 0 as const };
+    const rng = new WatcomRng(31337);
+    const before = rng.getState();
+    const r = applyFortuneEffect(33, ctx({
+      players: scene({
+        0: { cards: [PASSIVE_CARDS.SCAPEGOAT] },
+        1: dead,
+        2: dead,
+        3: dead,
+      }),
+      rng,
+    }));
+    expect(r.players[0]!.blocking.inPrison).toBe(3);
+    expect(r.prisonOccupancy[0]).toBe(1);
+    expect(r.players[0]!.cards).toEqual([PASSIVE_CARDS.SCAPEGOAT]);
+    expect(r.fortuneVictim).toBe(0);
+    expect(rng.getState()).toBe(before);
+  });
+
+  // ── ③ 都不持：现状不变 ───────────────────────────────────────
+  for (const id of PRISON_EVENTS) {
+    it(`★ 命運 ${id}：一张卡都不持 ⇒ 本人照常、随机流一格不动`, () => {
+      const rng = new WatcomRng(555);
+      const before = rng.getState();
+      const r = applyFortuneEffect(id, ctx({
+        players: scene(),
+        nodes: NODES,
+        objects: OBJS,
+        rng,
+      }));
+      expect(r.players[0]!.cards).toEqual([]);
+      // 坐牢/住院走 inPrison/inHospital；出國/綁架走 disappearing
+      const confined =
+        r.players[0]!.blocking.inPrison + r.players[0]!.blocking.inHospital;
+      const gone = r.players[0]!.blocking.disappearing;
+      expect(confined + gone).not.toBe(0);
+      expect(r.fortuneVictim).toBe(0);
+      expect(rng.getState()).toBe(before);
+    });
+  }
+
+  // ── ④ 真人持 19：一律放弃转嫁（D-003/D-008）─────────────────
+  it('★★ 真人持 19：一律放弃转嫁 ⇒ **19 不消耗、本人坐牢、随机流一格不动**', () => {
+    const rng = new WatcomRng(777);
+    const before = rng.getState();
+    const r = applyFortuneEffect(33, ctx({
+      players: scene({
+        0: { whoPlays: WHO_PLAYS_HUMAN, cards: [PASSIVE_CARDS.SCAPEGOAT] },
+      }),
+      nodes: NODES,
+      objects: OBJS,
+      rng,
+    }));
+    expect(r.players[0]!.blocking.inPrison).toBe(3);
+    expect(r.prisonOccupancy[0]).toBe(1);
+    // ★ 卡留在手里 —— 原版这时弹的是确认框/选人窗（`0x440ba8`/`0x440e1a`），
+    //   扣卡点在 `0x4449ef`、在「真的换人」之后；本引擎没有那两个框。
+    expect(r.players[0]!.cards).toEqual([PASSIVE_CARDS.SCAPEGOAT]);
+    expect(r.fortuneVictim).toBe(0);
+    expect(rng.getState()).toBe(before);
+  });
+
+  it('★★ 托管（AUTOPILOT）算**电脑** —— 与新聞 29 同一口径，会真的转嫁', () => {
+    const rng = new WatcomRng(2024);
+    const r = applyFortuneEffect(33, ctx({
+      players: scene({
+        0: {
+          whoPlays: WHO_PLAYS_AUTOPILOT,
+          cards: [PASSIVE_CARDS.SCAPEGOAT],
+          hostility: [0, 5, 0, 0],
+        },
+      }),
+      nodes: NODES,
+      objects: OBJS,
+      rng,
+    }));
+    expect(r.fortuneVictim).toBe(1);
+    expect(r.players[1]!.blocking.inPrison).toBe(3);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
+  // ── ⑤ 21 与 19 同时在手：先 21 ──────────────────────────────
+  it('★ 21 与 19 同时在手 ⇒ 只用 21（命中即止）、**19 留在手里**', () => {
+    const r = applyFortuneEffect(33, ctx({
+      players: scene({
+        0: { cards: [PASSIVE_CARDS.ABSOLUTION, PASSIVE_CARDS.SCAPEGOAT] },
+      }),
+      nodes: NODES,
+      objects: OBJS,
+      rng: new WatcomRng(1),
+    }));
+    expect(r.players[0]!.cards).toEqual([PASSIVE_CARDS.SCAPEGOAT]);
+    expect(r.fortuneVictim).toBeNull();
+    expect(r.players[0]!.blocking.inPrison).toBe(0);
+  });
+
+  // ── ⑥ 二级判定在神明闸门**之后** ────────────────────────────
+  it('★ 神明档位 1「逃過此劫」⇒ 在 `0x441210` **之前**就返回，21/19 一张不扣',
+    () => {
+      const withAbs = applyFortuneEffect(33, ctx({
+        multiplier: 1,
+        players: scene({ 0: { cards: [PASSIVE_CARDS.ABSOLUTION] } }),
+      }));
+      expect(withAbs.cancelled).toBe(true);
+      expect(withAbs.players[0]!.cards).toEqual([PASSIVE_CARDS.ABSOLUTION]);
+      expect(withAbs.fortuneVictim).toBeNull();
+
+      const withScape = applyFortuneEffect(FORTUNE_ABDUCTED, ctx({
+        multiplier: 1,
+        players: scene({ 0: { cards: [PASSIVE_CARDS.SCAPEGOAT] } }),
+      }));
+      expect(withScape.cancelled).toBe(true);
+      expect(withScape.players[0]!.cards).toEqual([PASSIVE_CARDS.SCAPEGOAT]);
+    });
+
+  it('★ `multiplier: 2`（按阶数算 = 天数翻倍）⇒ 转嫁之后**天数照翻**', () => {
+    // ⚠️ 别把 `Player.luck` 也设成 > 100 —— 对「劫难」那一条用法（`blessingFieldOf`
+    //   读的是 `luck`）高值意味着档位 **1 = 逃過此劫**，整条会先作废、根本轮不到
+    //    二级判定。这里直接给 `multiplier`（施加阶段已经算好的档位）才测得到点子上。
+    const r = applyFortuneEffect(33, ctx({
+      multiplier: 2,
+      players: scene({ 0: { cards: [PASSIVE_CARDS.SCAPEGOAT], hostility: [0, 0, 9, 0] } }),
+    }));
+    expect(r.fortuneVictim).toBe(2);
+    expect(r.players[2]!.blocking.inPrison).toBe(6); // 3 × 2
+    expect(r.players[0]!.cards).toEqual([]);
   });
 });

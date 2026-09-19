@@ -63,7 +63,7 @@ export function adjustTollByGod(toll: number, godInfo: number): GodTollResult {
   let next = toll;
   switch (godInfo) {
     case GOD_SMALL_FORTUNE:
-      next = toll >> 1; // @source sar ebx, 1
+      next = toll >> 1; // @source sar ebx, 1（JS `>>` 本就是 32 位算术右移）
       break;
     case GOD_BIG_FORTUNE:
       next = 0; // @source xor ebx, esi（ebx 初值 = esi）
@@ -72,10 +72,14 @@ export function adjustTollByGod(toll: number, godInfo: number): GodTollResult {
     case GOD_BIG_LUCK:
       break; // ★ 福神不影响过路费
     case GOD_SMALL_POVERTY:
-      next = (toll >> 1) + toll; // @source sar ebx,1 / add ebx,esi
+      // ★★ 2026-09-19 补（§7.142，通道 2 `test_god_toll_wheel.py` 352/352）：
+      //   原版 `add ebx, esi` 只留低 32 位 ⇒ 显式 `| 0`。
+      //   （例：toll=0x7fffffff ⇒ 原版 −1073741826，不回绕会得 3221225470。）
+      next = ((toll >> 1) + toll) | 0; // @source sar ebx,1 / add ebx,esi
       break;
     case GOD_BIG_POVERTY:
-      next = toll + toll; // @source lea ebx, [esi + esi]
+      // @source lea ebx, [esi + esi] —— 同样是 32 位回绕
+      next = (toll + toll) | 0;
       break;
     default:
       break;

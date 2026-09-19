@@ -168,9 +168,21 @@ export const MAX_SHARES_PER_PURCHASE = 0x3e8; // 1000
  * ⇒ `min(1000, 現金 ÷ 每股售價, 企業餘量)`；`0` 表示「问都别问」。
  *
  * ⚠️ **只有这条（真人問句 + 填数窗）用这个上限**。电脑那一条走的是
- *   `_rich4_calculate_max_purchase_count`（VA 0x0041d839：資產 × 物價為安全垫，
- *   拿現金減掉它再除單價），**没有 1000 这层闸** —— 所以 AI 策略层照旧
- *   用 `available` 自己算，不要拿这个函数的结果去卡电脑。
+ *   `_rich4_calculate_max_purchase_count`（VA 0x0041d839），**没有 1000 这层闸**
+ *   —— 所以 AI 策略层照旧用 `available` 自己算，不要拿这个函数的结果去卡电脑。
+ *
+ * ★ **订正（第 159 条；通道 2 差分 `test_small_helpers2.py` 的 [B] 组 33/33）**：
+ *   这里原来写「VA 0x0041d839：資產 × 物價」是**口径错**（系数读成了 1.0）。
+ *   逐条驱动 `0x41d839` 得到的真值是 **30% 的安全垫**：
+ * ```asm
+ * 0041d839  fild  dword [0x49908c]     ; 開資
+ * 0041d83f  fmul  qword [0x463cd0]     ; ★ 常量 = 0.30（不是 0.05、也不是 1.0）
+ * 0041d845  fmul  dword [0x4990e8]     ; × 物價
+ * 0041d84b  fistp …                    ; r = trunc(0.30 × 開資 × 物價)
+ *           d = 買家現金 − r；d <= 0 ⇒ 0；否则 min(上限, d ÷ 單價)（idiv 向零）
+ * ```
+ *   ★ `0x41d1a9` 才是上面这个 `shareWindowLimit` 的对应支（真人），别把两者混起来。
+ *   行为本身没有 bug —— 该注释只影响"以后谁按它接线"。
  */
 export function shareWindowLimit(unitPrice: number, cash: number, available: number): number {
   // 原版这里 `idiv` 一个可能为 0 的单价（資產額 < 10000 时）会当场除零；

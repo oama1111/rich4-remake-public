@@ -123,8 +123,9 @@ describe('月度奖项评分', () => {
     windfall: 0, unexpectedLoss: 0, f42: 0, f68: 0, ...o,
   });
 
-  it('意外之财减意外损失', () => {
-    expect(monthlyScore(acc({ windfall: 50000, unexpectedLoss: 20000 }), 1)).toBe(30000);
+  it('意外損失減意外之財（「悲情人物」：損失越多分越高）', () => {
+    // ★ 字段名与 exe 的 UI 语义对齐（§7.140）：unexpectedLoss = +0x5c、windfall = +0x60
+    expect(monthlyScore(acc({ unexpectedLoss: 50000, windfall: 20000 }), 1)).toBe(30000);
   });
 
   it('f42 按 物价指数 × 2500 折算', () => {
@@ -139,13 +140,22 @@ describe('月度奖项评分', () => {
   });
 
   it('三项叠加', () => {
-    const s = monthlyScore(acc({ windfall: 1000, unexpectedLoss: 400, f42: 2, f68: 5 }), 3);
+    const s = monthlyScore(acc({ unexpectedLoss: 1000, windfall: 400, f42: 2, f68: 5 }), 3);
     expect(s).toBe(1000 - 400 + 2 * 3 * 2500 + 5 * 10);
   });
 
   it('Save0.dat 的实际数据代入', () => {
-    // 该玩家 +0x5C=26000, +0x60=394432
-    expect(monthlyScore(acc({ windfall: 26000, unexpectedLoss: 394432 }), 5)).toBe(-368432);
+    // 该玩家 +0x5C=26000（損失）, +0x60=394432（之財）
+    expect(monthlyScore(acc({ unexpectedLoss: 26000, windfall: 394432 }), 5)).toBe(-368432);
+  });
+
+  // ★★ 通道 2 差分（`rich4-spec/tests/test_monthly_score.py`）：原版全程 32 位，
+  //   JS 不回绕会分叉 —— 故 `monthlyScore` 显式 `| 0`。
+  it('★★ 32 位回绕照抄（原版 imul/add 只留低 32 位）', () => {
+    // +0x5c = 0x7fffffff, +0x60 = −1 ⇒ 原版 −2147483648
+    expect(monthlyScore(acc({ unexpectedLoss: 0x7fffffff, windfall: -1 }), 1)).toBe(-2147483648);
+    // 天=255、物價=3369 ⇒ 255×3369×2500 = 2147737500 > 2^31 ⇒ 回绕为负
+    expect(monthlyScore(acc({ f42: 255 }), 3369)).toBe(-2147229796);
   });
 });
 

@@ -623,7 +623,7 @@ export function useCard(
       break;
     }
     case 26: {
-      const r = applyTaxCard(players, cur, target, ctx.scapegoatPicker);
+      const r = applyTaxCard(players, cur, target, ctx.priceIndex, ctx.scapegoatPicker, ctx.rng);
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       defended = r.defended;
@@ -698,7 +698,11 @@ export function useCard(
           kind: 'auction',
           entityId: land.id,
           basePrice: auctionBasePrice(land, ctx.priceIndex),
-          bidders: eligibleBidders(players, land),
+          // @source 0x443348 `mov ebx,[0x49910c]` → `0x44334e push ebx`
+          //   ⇒ 拍賣卡的 arg0 = **用卡者**：原版只把他排除出座（`0x43c22a cmp ebx,ebp`），
+          //   且落槌款 `pay_money(得标者, arg0, …)`（`0x43c855`）归他。
+          bidders: eligibleBidders(players, land, cur),
+          seller: cur,
         };
         break;
       }
@@ -716,7 +720,9 @@ export function useCard(
         kind: 'auction',
         entityId: fac.id,
         basePrice: auctionBasePrice(fac, ctx.priceIndex),
-        bidders: eligibleBidders(players, fac),
+        // 同上（設施支）：arg0 = 用卡者
+        bidders: eligibleBidders(players, fac, cur),
+        seller: cur,
         facility: true,
       };
       break;

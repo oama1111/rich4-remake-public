@@ -163,6 +163,45 @@ export interface EventEntry {
      */
     | 'typhoonBlast'
     /**
+     * 新聞 4「外星人攻打地球」：**随机挑一处盖了房子的地块／設施，以它为心打一发
+     *   `damage_area(半径 0x64, flags 0x26, 轻重 1, 攻击者 -1)`（重击），再把被炸到的
+     *   人送医院 3 天**。
+     *
+     * @source `fcn_0044913d` 的施加阶段（VA 0x00449175 起）：
+     * ```asm
+     * ; ① 候选表：先 level != 0 的地块（id = i+0x7d0），再 level != 0 的設施（id = i+0xfa0）
+     * 0044918d  cmp  byte [edx + eax + 0x1a], 0 / je 跳过      ; land.level
+     * 004491c6  cmp  byte [edx + eax + 0x1a], 0 / je 跳过      ; facility.level
+     * 004491dd  call 0x456f2d                                  ; rand()
+     * 004491e7  idiv esi                                       ; rand() % 候选数
+     * 00449203  call 0x40af12                                  ; 取挑中那一处的 (x, y)
+     * 0044921d  call 0x41d476                                  ; 移镜头（表现层）
+     * ; ② 爆心：半径 0x64、flags 0x26（住宅|設施|范围里的人）、**轻重 = 1**、攻击者 -1
+     * 00449225  push -1 / 00449227 push 1 / 00449229 push 0x26 / 0044922b push 0x64
+     * 0044922d  call 0x40ac7b
+     * ; ③ 表现层：载 0x213 号资源 → 播动画 → free（0x450441 / 0x45144f / 0x456e11）
+     * ; ④ 扫玩家 0..num_players-1，凡被 0x40cd07 挂上「被炸」位（`+0x15 & 0x40`）的送医院 3 天
+     * 00449279  test byte [eax + 0x496b7d], 0x40 / je 跳过
+     * 00449285  call 0x43ec3f                                  ; send_to_hospital(player, 3)
+     * ; ⑤ 00449290 call 0x41d546                                 ; 地图重绘（表现层）
+     * ```
+     *
+     * ★ 三条容易读错的地方，逐条钉住：
+     *   1. **`0x64` 是半径，不是「攻击者」**；`heavy` 是**另一列**（`push 1`）。
+     *      半径 100 ⇒ 方窗 `|dx|<=100 && |dy|<=100`，**不是核彈那种全图**。
+     *   2. `flags = 0x26` ⇒ 与飛彈同掩码：**连范围里的人一起打**
+     *      （0x20 置了位），故会 `0x40cd07` 毁车 + 挂位，随后 ④ 送医。
+     *   3. 攻击者 `-1` ⇒ `damage_area` 里两条 `cmp esi,-1 / je` 都跳过，
+     *      **全程不记任何敌意**（与飛彈/核彈不同）。
+     *
+     * ⚠️ 它**不是** `hospital` 效果：`hospital` 走的是「关 N 天、天数由
+     *   `ctx.days ?? literal` 给」那一支，而本事件的文案里没有 `%d`
+     *   （`literal` 为 null）⇒ 先前记成 `['hospital']` 时每次抽到都直接报
+     *   `unimplemented`，一次爆炸都不打。天数 `3` 是 ④ 那个 `push 3` 的立即数，
+     *   住在 `news-effects.ts` 的 `ALIEN_HOSPITAL_DAYS`，不进 `literal`。
+     */
+    | 'alienBlast'
+    /**
      * 新聞 30/33/34：**随机挑一家企業，罚它 `companyAmount` 元**（`+0x28` 与 `+0x2c` 同时减），
      *   再按该企业对应的股票写 `newsFlag = 3`（利空 3 天）并**立刻重算当日价**。
      *   @source `fcn_0044b374`（30）/ `fcn_0044b53f`（33）/ `fcn_0044b57d`（34）：
@@ -203,6 +242,58 @@ export interface EventEntry {
      *   本引擎的 `rules/auction.ts` + `pending: {kind:'auction'}`）。
      */
     | 'publicAuction'
+    /**
+     * 新聞 29「%s違法超貸 經營者%s坐牢５天」：**随机挑一家有主企業的經營者**，关他 **5** 天。
+     *
+     * @source `fcn_0044b25b`（281 B，`events_calls_table[29]`，VA 0x0044b25b）——
+     *   **两阶段**，逐行如下：
+     * ```asm
+     * ; ── phase 0（`[esp+0xd4] == 0`，公告阶段）──
+     * 0044b272  mov  eax, 1
+     * 0044b279  mov  edx, dword ptr [0x498e7c]          ; 企業表基址
+     * 0044b27f  mov  esi, dword ptr [0x498e90]          ; 企業家数
+     * 0044b285  cmp  eax, esi / jg 0x44b29e             ; ★ for (eax = 1; eax <= esi; eax++)，1 基
+     * 0044b289  imul ecx, eax, 0x34
+     * 0044b28c  cmp  byte ptr [ecx + edx + 0x18], 0     ; ★ +0x18 = 企業 owner（1 基玩家号）
+     * 0044b291  je   0x44b29b                           ;    0 = 无主 ⇒ 不收
+     * 0044b293  mov  dword ptr [esp + ebx*4 + 0x80], eax ; 候选[ebx++] = 企業号
+     * 0044b29e  call 0x456f2d                           ; ★ rand()，**恰好一次**
+     * 0044b2a8  idiv ebx                                ; rand() % 候选数
+     * 0044b2aa  imul ebx, [esp + edx*4 + 0x80], 0x34
+     * 0044b2b2  add  ebx, [0x498e7c]                    ; 挑中的企業记录
+     * 0044b2bb  mov  al, byte ptr [ebx + 0x18] / dec eax
+     * 0044b2bf  imul eax, eax, 0x68
+     * 0044b2c2  mov  ebp, dword ptr [eax + 0x496b68]     ; chairman = owner − 1 的**名字串指针**
+     * 0044b2c8  push ebp / call 0x452946                 ; 名字先去空格（0x452946 = 去掉 0x20）
+     * 0044b2e5  push 0x4657ba / lea eax, [ebx + 4] / call 0x457110
+     *           ; sprintf(buf, "%s違法超貸\n經營者%s坐牢５天", 企業名(+4), 經營者名)
+     * 0044b30e  call 0x44fabc                            ; draw_text(0x48c5ac+0xc, buf, 0x18, 0x136, 0)
+     * 0044b31c  mov  dword ptr [0x48c59c], eax            ; ★ 把 chairman 留给 phase 1
+     * ; ── phase 1（施加）──
+     * 0044b343  call 0x41d476                            ; 移镜头（表现层）
+     * 0044b351  push ebx / call 0x441210                 ; ★ 免罪(21) → 嫁禍(19) 二级判定
+     * 0044b35a  cmp  eax, -1 / je 0x44b36a               ; 免罪卡 ⇒ 整条作废
+     * 0044b35f  push 5 / push eax / call 0x43d593         ; send_to_prison(实际受害者, **5**)
+     * ```
+     *
+     * ★ 三条容易读错的地方，逐条钉住：
+     *   1. **两个 `%s` 的次序**：第一个是**企業名字**（`0x34` 的记录里 `+0/+2` 是 x/y、
+     *      `+4` 才是名字串）、第二个才是**經營者（玩家）的名字**。⇒ 读出来是
+     *      「ＸＸ公司違法超貸 經營者ＹＹ坐牢５天」。
+     *   2. **候选只看 `+0x18 != 0`**（有主），**不看**經營者是否出局/被关着 ——
+     *      后者只出现在**抽牌前置条件** `check_news` case 29 的
+     *      `fcn_0040d73f(owner − 1)` 里（见 `events/news.ts` 的 `isNewsFeasible`）。
+     *   3. 天数 `5` 是 phase 1 的立即数（`0044b35f push 5`）；文案里「５」是全角字、
+     *      没有 `%d` ⇒ `literal` 保持 `null`（同 4/20/26 的既有先例）。
+     *      常量住在 `news-effects.ts` 的 `NEWS_CHAIRMAN_PRISON_DAYS`。
+     *
+     * ★ 候选为 0 时原版 `idiv ebx`（ebx = 0）**除零崩**；本引擎那一支
+     *   **什么都不做、也不掷随机数**（与 5/18/19/21/28/35 同一处理）。
+     * ★ 这条**不再是** `prison`：泛用的 `prison` 分支关的是 `affected`（= 抽牌者），
+     *   而它关的是**随机抽中的那家企業的經營者**，还带免罪/嫁禍二级判定。
+     *   记成 `prison` 会让随机流少走一格、并且「关错人」。
+     */
+    | 'companyChairmanPrison'
       /**
      * 命運 6/7：**強迫出國觀光 / 被外星人綁架 N 天** —— 写 `days_disappearing`(`+0x33`)
      *   = `天數 | (原因 << 6)`（低 6 位是天數、高 2 位是原因：0 觀光 / 1 綁架）。
@@ -296,7 +387,13 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 1, va: 0x00448f45, factor: null, effects: ['extendPrison'], textVa: 0x46543a, text: "#0150獄中囚犯延長刑期%d天", literal: 3 },
   { id: 2, va: 0x00449006, factor: null, effects: ['releaseHospital'], textVa: 0x465454, text: "#0151住院中病患提前出院", literal: null },
   { id: 3, va: 0x00449081, factor: null, effects: ['extendHospital'], textVa: 0x46546c, text: "#0152住院中病患延長住院%d天", literal: 3 },
-  { id: 4, va: 0x0044913d, factor: null, effects: ['hospital'], textVa: 0x465488, text: "#0153外星人攻打地球", literal: null },
+  // ★ 订正（2026-09 本轮）：先前记成 `['hospital']` —— 那是**错的**。
+  //   `@source fcn_0044913d`：它不打「关 N 天」那条路，而是
+  //   `damage_area(0x64, 0x26, 1, -1)` 打一发**重击**（半径仍是 100），
+  //   再把被炸到的人送医 3 天（`push 3 / call 0x43ec3f`，VA 0x00449282）。
+  //   `literal` 保持 null 是对的：文案「外星人攻打地球」里没有 `%d`，
+  //   原版也没有写 `[0x48c5b4]`。见 `effects` 联合里 `alienBlast` 的长注释。
+  { id: 4, va: 0x0044913d, factor: null, effects: ['alienBlast'], textVa: 0x465488, text: "#0153外星人攻打地球", literal: null },
   { id: 5, va: 0x004492a0, factor: null, effects: ['clearOwnerBuilt'], textVa: 0x46549c, text: "#0154外星怪獸襲擊%s\n摧毀建築一棟", literal: null },
   { id: 6, va: 0x004494e0, factor: null, effects: ['raiseLandPrice'], textVa: 0x4654bd, text: "#0155%s公告地價調漲３０％", literal: null },
   { id: 7, va: 0x00449735, factor: null, effects: ['publicAuction'], textVa: 0x4654e4, text: "#0156公開拍賣%s\n公有土地一處", literal: null },
@@ -322,7 +419,13 @@ export const NEWS_EVENTS: readonly EventEntry[] = [
   { id: 26, va: 0x0044b0a0, factor: null, effects: ['marketClose'], textVa: 0x465770, text: "#0175股市暫停交易１０天", literal: null },
   { id: 27, va: 0x0044b0d1, factor: null, effects: ['suspendStock'], textVa: 0x465788, text: "#0176%s股票暫停交易１０天", literal: null },
   { id: 28, va: 0x0044b1a3, factor: null, effects: ['resumeStock'], textVa: 0x4657a2, text: "#0177%s股票恢復上市交易", literal: null },
-  { id: 29, va: 0x0044b25b, factor: null, effects: ['prison'], textVa: 0x4657ba, text: "#0178%s違法超貸\n經營者%s坐牢５天", literal: null },
+  // ★★ 订正（2026-09 本轮）：先前记成 `['prison']` + `literal: null`，两条叠起来
+  //   正好是**死路** —— `reduce.ts` 的 `drawAndApplyNews` 不给 `days`，泛用 `prison`
+  //   分支 `days = ctx.days ?? entry.literal` 得 `null` ⇒ 每次都报 `unimplemented`，
+  //   **一次都不关人**（连随机数也不掷）。而它真正做的事是「随机挑一家有主企業的
+  //   經營者、关 5 天、中途还要过免罪(21)→嫁禍(19)」，走 `companyChairmanPrison`。
+  //   `literal` 保持 `null` 是**对的**（文案里的「５」是全角字、没有 `%d`）。
+  { id: 29, va: 0x0044b25b, factor: null, effects: ['companyChairmanPrison'], textVa: 0x4657ba, text: "#0178%s違法超貸\n經營者%s坐牢５天", literal: null },
   { id: 30, va: 0x0044b374, factor: null, effects: ['companyPenalty'], companyAmount: 10000, textVa: 0x4657db, text: "#0179%s工廠排放污水\n罰款10000元", literal: null },
   { id: 31, va: 0x0044b419, factor: null, effects: ['companyGain'], companyAmount: 20000, textVa: 0x4657fb, text: "#0180%s海外投資\n獲利20000元", literal: null },
   { id: 32, va: 0x0044b4a8, factor: null, effects: ['companyLoss'], companyAmount: 20000, textVa: 0x465817, text: "#0181%s海外投資\n虧損20000元", literal: null },

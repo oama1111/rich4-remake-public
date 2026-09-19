@@ -220,17 +220,73 @@ export function isValidRemoteDice(value: number): boolean {
  *
  * ★ **不花钱、不看归属**——连别人的地都能替他盖。
  *   听着奇怪，但 `0x40b110` 从头到尾没碰过 `+0x19`（owner）与任何金额。
+ *
+ * ★ 返回值的两位都要带出去：**bit0 = 成了**（`BuildResult.ok`）、
+ *   **bit7 = 剛好升到 5 級**（`BuildResult.reachedMaxLevel`）。
+ *   ⚠️ 「設施支不置 bit7」是**错的**：`0x0040b1f4` 那条是「設施等级 0 →
+ *   定种类首建」的路径，**只有它**不置位；等级 ≥ 1 的設施走 `0x0040b1f9`
+ *   那一支，到 5 级时 `mov eax, 0x81` —— **照样置 bit7**。
+ *   本复刻早先只在客户端按「地块等级 4→5」自己算，且注释写反了，已订正。
  */
 export interface BuildResult {
   ok: boolean;
   /** 加蓋后的等级 */
   level: number;
+  /**
+   * ★★ `0x40b110` 返回值的 **bit7** —— 这一次加蓋是不是**剛好升到 5 級**。
+   *
+   * 原版三条消费点都拿它决定「要不要再接播 Data.mkf 0x20b 那一段影片 +
+   * 音效 0x5a + 一句台词」：
+   *   · `0x00432085`（魔法屋「就地加蓋」）`test byte [esp+0xa8], 0x80`
+   *   · `0x004436b5`（天使卡 9）`test al, 0x80`
+   *   · `0x0044736d`（機器工人 9）`test byte [esp], 0x80`
+   * 本引擎把这条契约一路带到 `GameState.lastBuildUpgrades`（纯表现瞬态），
+   * 客户端**不再自己比较等级**（C-ARC-2）。
+   */
+  reachedMaxLevel: boolean;
+}
+
+/**
+ * `0x40b110` 里那个**写死**的「剛好升到 5 級」的立即数。
+ *
+ * @source VA 0x0040b169（地块支）`cmp cl, 5` / `jne 0x40b170` / `or al, 0x80`；
+ *   VA 0x0040b215（設施支）`cmp dl, 5` / `jne 0x40b21f` / `mov eax, 0x81`。
+ * ★ 注意它与调用方给的 `maxLevel` 无关：`0x40b138` 对住宅的封顶也是**硬写的 5**
+ *   （`cmp byte [land+0x1a], 5 / jae`），本引擎的 `maxLevel` 形参只是建模方便，
+ *   所有调用点都传 `MAX_LAND_LEVEL`（= 5）。
+ */
+export const BUILD_MAX_LEVEL = 5;
+
+/**
+ * 这一个**新等级**会不会置 `0x40b110` 返回值的 bit7。
+ *
+ * @source VA 0x0040b169 `cmp cl, 5` / `jne 0x40b170` / `or al, 0x80`
+ *   —— 判据是**相等**，不是「≥ 5」。两条支（住宅 `0x40b169` / 設施 `0x40b215`）
+ *   都写 `cmp …, 5 / jne`；因为 `0x40b13e` 已经把等级夹在 5 以下，
+ *   「== 5」与「≥ 5」在 exe 里恰好等价 —— 但契约本身是**相等**。
+ */
+export function reachedMaxBuildLevel(newLevel: number): boolean {
+  return newLevel === BUILD_MAX_LEVEL;
+}
+
+/**
+ * 一次的等级变化会不会置 bit7 = `0x40b110` 返回值的 bit7。
+ *
+ * ★ 两道闸**缺一不可**：
+ *   · 等级真的变了（`0x40b110` 只在 `inc` 之后走到 `cmp cl, 5`；
+ *     没加蓋的路径直接从 `0x40b15f je 0x40b170` 出去，`eax` 停在 0）；
+ *   · 新等级正好是 5。
+ */
+export function buildUpgradeBit7(beforeLevel: number, afterLevel: number): boolean {
+  return afterLevel !== beforeLevel && reachedMaxBuildLevel(afterLevel);
 }
 
 export function buildOneLevel(landType: number, level: number, maxLevel: number): BuildResult {
   // @source cmp byte [land+0x18], 0 / jne …；cmp byte [land+0x1a], 5 / jae 不可建
   const buildable = landType === 0 ? level < maxLevel : landType === 1 && level === 0;
-  return buildable ? { ok: true, level: level + 1 } : { ok: false, level };
+  return buildable
+    ? { ok: true, level: level + 1, reachedMaxLevel: reachedMaxBuildLevel(level + 1) }
+    : { ok: false, level, reachedMaxLevel: false };
 }
 
 // ============================================================

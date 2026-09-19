@@ -179,28 +179,37 @@ describe('★ 怪獸卡踏設施（VA 0x004439e8 敌意段）', () => {
 //  （差分证据：rich4-spec/tests/test_mutate_release.py）
 // ============================================================
 
-describe('★ releasesConfined：三种 mode 何时放人', () => {
-  it('mode 0（拆一级）：**只有拆到 0 级**才放人', () => {
+// ★★ 2026-09-19 订正（§7.141 E1，通道 2 `test_land_mutation_gates.py` 354/354）：
+//   原版 `0x40ab4a` 的 **地块支三种 mode 一次都不调 `0x40dffa`** —— 那 120 条指令里
+//   只有一次 `call 0x40a4e1`（mode 1）；`0x40dffa` 的三个调用点
+//   （`0x40ac33`/`0x40ac4d`/`0x40ac6c`）全在 **設施支**。
+//   旧断言把「地块也放人」钉死了（还引了属于另一个函数 `0x40ac7b` 的 `0x40ae0a`），已改。
+describe('★ releasesConfined：放人只在**設施**支发生（地块支一次都不放）', () => {
+  it('mode 0（拆一级）：設施拆到 0 级才放人', () => {
     expect(mutateFacility(makeFacility({ level: 3 }), 0).releasesConfined).toBe(false);
     expect(mutateFacility(makeFacility({ level: 1 }), 0).releasesConfined).toBe(true);
     expect(mutateFacility(makeFacility({ level: 0 }), 0).changed).toBe(false);
+  });
+
+  it('★★ mode 0：**地块**拆到 0 级也**不放人**', () => {
     expect(mutateLand(makeLand({ level: 3 }), 0).releasesConfined).toBe(false);
-    expect(mutateLand(makeLand({ level: 1 }), 0).releasesConfined).toBe(true);
+    expect(mutateLand(makeLand({ level: 1 }), 0).releasesConfined).toBe(false);
   });
 
-  it('★ mode 1（清归属）：**无条件**放人', () => {
+  it('★ mode 1（清归属）：設施无条件放人、**地块不放**', () => {
     expect(mutateFacility(makeFacility({ level: 0 }), 1).releasesConfined).toBe(true);
-    expect(mutateLand(makeLand({ level: 0 }), 1).releasesConfined).toBe(true);
+    expect(mutateLand(makeLand({ level: 0 }), 1).releasesConfined).toBe(false);
   });
 
-  it('mode 2（夷平）：level != 0 才改，改了才放人', () => {
+  it('mode 2（夷平）：設施改了才放人、**地块不放**', () => {
     expect(mutateFacility(makeFacility({ level: 2 }), 2).releasesConfined).toBe(true);
     expect(mutateFacility(makeFacility({ level: 0 }), 2).releasesConfined).toBe(false);
-    expect(mutateLand(makeLand({ level: 2 }), 2).releasesConfined).toBe(true);
+    expect(mutateLand(makeLand({ level: 2 }), 2).releasesConfined).toBe(false);
     expect(mutateLand(makeLand({ level: 0 }), 2).releasesConfined).toBe(false);
   });
 
-  it('地塊的连锁店（type != 0）拆一级也是「直接归零」⇒ 放人', () => {
-    expect(mutateLand(makeLand({ level: 1, type: 1 }), 0).releasesConfined).toBe(true);
+  it('★ 地塊的连锁店（type != 0）拆一级「直接归零」，同样**不放人**', () => {
+    expect(mutateLand(makeLand({ level: 1, type: 1 }), 0).releasesConfined).toBe(false);
+    expect(mutateLand(makeLand({ level: 1, type: 1 }), 0).land.level).toBe(0);
   });
 });

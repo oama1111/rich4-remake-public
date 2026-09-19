@@ -115,10 +115,14 @@ describe('★ 免罪卡(21)：免疫，无人入狱', () => {
     expect(r.players[2]!.cards).not.toContain(PASSIVE_CARDS.SCAPEGOAT);
   });
 
-  it('放弃转嫁（-1）时嫁祸卡**照样**被消耗（原版在 cmp eax,-1 **之前**就扣了）', () => {
+  // ★★ 2026-09-19 订正（§7.140）：旧断言写反了。原版 `0x4449e7 cmp ebx,-1` /
+  //   `0x4449ea je 0x444a53` 在扣卡点 `0x4449ef call 0x441343` **之前**
+  //   ⇒ 放弃转嫁时嫁祸卡**留在手里**。通道 2 差分直证：
+  //   `rich4-spec/tests/test_passive_cards.py`（130/130，UC_HOOK_CODE 确认 0x4449ec 未执行）。
+  it('★★ 放弃转嫁（-1）时嫁祸卡**不被消耗**（扣卡点在 cmp 之后）', () => {
     const ps = four([[], [], [PASSIVE_CARDS.SCAPEGOAT], []]);
     const r = applyFrameCard(ps, 0, tgt(2), 1, () => -1);
-    expect(r.players[2]!.cards).not.toContain(PASSIVE_CARDS.SCAPEGOAT);
+    expect(r.players[2]!.cards).toContain(PASSIVE_CARDS.SCAPEGOAT);
   });
 });
 

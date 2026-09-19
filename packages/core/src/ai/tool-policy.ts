@@ -44,7 +44,7 @@ import { isAlive } from '../state/types.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
 import { FACILITY_TYPE, FACILITY_MAX_LEVEL } from '../rules/facility.ts';
 import { MISSILE_RADIUS } from '../rules/tool-effects.ts';
-import { anyoneConfined } from '../rules/confinement.ts';
+import { anyPlayerConfined } from '../rules/confinement.ts';
 import {
   aiRoll,
   inView,
@@ -88,6 +88,8 @@ const SALT = {
   gongren: 0x421ba6,
   chuansong: 0x421cb6,
   gongcheng: 0x421e20,
+  /** 13 核子飛彈：每次重摇候选的 `call 0x456f2d` 调用点 @source 0x0042216f */
+  hedan: 0x42216f,
 } as const;
 
 /** 主线里那次 `rand() % 种类数` 的调用点 @source 0x00447ff5 */
@@ -195,7 +197,7 @@ const doll: Handler = (view) => {
       const l = landById(view, node.ref.index);
       owner = l?.owner ?? 0;
       // @source call 0x419744 —— 该地主在这条街上的住宅过路费总和
-      toll = l !== undefined && owner !== 0 ? streetTollOf(view.lands, owner, l.name) : 0;
+      toll = l !== undefined && owner !== 0 ? streetTollOf(view.lands, owner, l.name, pi) : 0;
     } else if (node.ref.kind === 'facility') {
       owner = facilityById(view, node.ref.index)?.owner ?? 0;
       toll = 0x989680; // @source mov edx, 0x989680（0x420f4d）
@@ -259,7 +261,7 @@ const luzhang: Handler = (view) => {
     if (node === undefined || node.ref.kind !== 'land') continue;
     const l = landById(view, node.ref.index);
     if (l === undefined || l.owner !== me1) continue;
-    const toll = streetTollOf(view.lands, me1, l.name);
+    const toll = streetTollOf(view.lands, me1, l.name, pi);
     // @source 0x42138f / 0x421393：两个「不大于就跳过」——阈值 6000×物價、严格大于才换位
     if (toll <= 6000 * pi || toll <= best) continue;
     best = toll;
@@ -283,11 +285,14 @@ function mineLike(view: ToolAiView, salt: number, enemyOnly: boolean): AiToolCho
     const node = nodeAt(view, nid);
     if (node === undefined) continue;
     // @source 0x421446 / 0x421469：与监狱/医院节点全局（0x48bae0/0x48bae2）比对，
-    //   占用全局（0x496b30/0x496b60）非 0 → 直选并立即返回
-    if (node.specialKind === SPECIAL_KIND.PRISON && anyoneConfined(view.state.prisonOccupancy)) {
+    //   占用全局非 0 → 直选并立即返回。
+    //   ★★ 是 `cmp dword [0x496b30], 0` —— **一次比 4 个字节 = 只含槽 0..3 玩家**，
+    //   不是落点那种逐槽扫 8 个。仅物件槽（4..7）被占用时**不**直选
+    //   （与 §四之二 第 3 条的「新闻用 4 字节」同一条宽度区分，第三处）。
+    if (node.specialKind === SPECIAL_KIND.PRISON && anyPlayerConfined(view.state.prisonOccupancy)) {
       return place(nid);
     }
-    if (node.specialKind === SPECIAL_KIND.HOSPITAL && anyoneConfined(view.state.hospitalOccupancy)) {
+    if (node.specialKind === SPECIAL_KIND.HOSPITAL && anyPlayerConfined(view.state.hospitalOccupancy)) {
       return place(nid);
     }
     if (!enemyOnly) {
@@ -332,7 +337,14 @@ const feidan: Handler = (view) => {
   if (target === -1) {
     const rivals: number[] = [];
     state.players.forEach((p, i) => {
-      if (i !== view.meIndex && isAlive(p)) rivals.push(i);
+      if (i !== view.meIndex && isAlive(p)) {
+        // @source 0x40d341：`cmp dword [player + 0x32], 0 / jne 跳过` ——
+        //   住店/消失/坐牢/住院这 4 个字节任一非 0 的人**不参与**随机对手
+        //   （注意：`0x40d2d3` 最恨的人**没有**这道闸，两者不对称，照抄）。
+        const b = p.blocking;
+        if ((b.inHotel | b.disappearing | b.inPrison | b.inHospital) !== 0) return;
+        rivals.push(i);
+      }
     });
     if (rivals.length === 0) return null;
     target = rivals[aiRoll(state, SALT.feidan + 1, rivals.length)]!;
@@ -497,7 +509,174 @@ const gongcheng: Handler = (view) => {
   return aiRoll(view.state, SALT.gongcheng, 15) <= view.me.personality ? PLAIN : null;
 };
 
-/** 跳表 31..43 项（= 道具 1..13）；缺席的两件见 AI_NEVER_USES */
+/** 核子飛彈爆风窗的半宽（格）@source 0x0040a236 `add ebx,0xe` / 0x0040a251 `cmp ebx,0x1c` */
+const NUKE_WINDOW_HALF = 0xe;
+/** 原版格距口径的 32px/格 @source 0x0040a22d `sar ebx,5`（与 `test_nuke_card_ai.py` 同） */
+const NUKE_TILE_SHIFT = 5;
+/** 原版最多重摇候选的次数 @source 0x00422160 `cmp ecx,0xa` */
+const NUKE_MAX_TRIES = 10;
+
+/**
+ * 13 核子飛彈 @source 0x00421e62（862 B，`0x421e62..0x4221bf`）
+ *
+ * ## Q-TOOL-3 已结案 —— 原版 AI **会**放核彈
+ *
+ * `0x40a0b1(x, y, -1)` 的半径 −1 **不是全图**：该函数每次都以 (x,y) 为中心
+ * 重建 440×440 实体图（`memset 0x5e880`，`@source 0x0040a108`），重建时只写进
+ * 「格距 ±0xe = ±14 格」的**有主**地块/設施（`@source 0x0040a22d..0x0040a265`），
+ * 以及**当前玩家一个**标记 `0x8000 | 1<<cur`（`@source 0x0040a1bb`；被关押/
+ * 住店/消失时不写，`@source 0x0040a117`）。半径 −1 只决定回收时扫这张图的
+ * 多大范围（`@source 0x0040a3e9 cmp edx,-1 / 0x0040a3f4 mov ebp,0x1b8` = 全图）
+ * ——即「把刚建好的那一窗全要了」，不是全地图的地产。
+ * ⇒ 中止判据 `test bh,0x80`（`@source 0x00421fe2`）的真语义是
+ * **「我的棋子落在候选 ±14 格（448px）内」**，对随机挑中的候选完全可能为假
+ * ⇒ 原版会发核彈。差分实证：`rich4-spec/tests/test_nuke_card_ai.py` 的 [Q] 组
+ * （113 例全绿），以及该文件头部的 Q-TOOL-3 裁决。
+ *
+ * ## 算法（逐条照机器码）
+ * ```
+ * for (i = 1; i <= [0x498e98]; i++)             ; 地块，0 号永不入选 @source 0x421e87
+ *     if (owner != 0 && owner != [0x49910c]+1 && level != 0) cand[count++] = 0x7d0 + i
+ * for (i = 1; i <= [0x498e8c]; i++)             ; 設施，0 号永不入选 @source 0x421ef3
+ *     同三道闸                                    cand[count++] = 0xfa0 + i
+ * if (count == 0) return 0                       ; 一次 rand 都不摇 @source 0x421f51
+ * for (try = 0; try < 10 && !found; try++) {     ; @source 0x422160 cmp ecx,0xa
+ *     id = cand[rand() % count]                  ; @source 0x42216f
+ *     (x, y) = 记录 +0/+2（int16）                ; @source 0x421f82/0x421f86
+ *     n = blast(0x40a0b1)(x, y, -1)              ; ★ 半径恒 −1 @source 0x421f92
+ *     abort = 0; my = ot = myLv = otLv = 0
+ *     for (k = 0; k < n; k++) {
+ *         w = word[0x48b8c4 + k*2]
+ *         if (w & 0x8000) { abort = 1; break }   ; 玩家标记 ⇒ 放弃**本候选** @source 0x421fe2
+ *         if (0x4216ab(cur, w) == 1) { myLv += level(w); my++ } else { otLv += level(w); ot++ }
+ *     }
+ *     if (!abort && my/ot < 1/(存活数+2) && myLv/otLv < 1/(存活数+2)) {
+ *         [0x48be64] = id; found = 1             ; @source 0x42213a
+ *     }
+ * }
+ * return found
+ * ```
+ *
+ * ## 照抄原版编译产物的两条怪癖
+ * 1. `fcomp` + `jae`（`@source 0x00422125` / `0x00422138`）把 **NaN 当「小于」**：
+ *    对方等级和恰为 0 时 `myLv/otLv = 0/0` 照样「过关」（同 Python 测试 [E8]/[E9]）。
+ *    ★ 真实路径上**不可达**：候选自己必在窗内且 level ≠ 0 ⇒ `ot ≥ 1`、`otLv ≥ 1`，
+ *    两个比值都有限。故这里按 C-DET-3 用整数交叉相乘（见下），结论与浮点比较逐点相同。
+ * 2. `0x4216ab` 的「不是我的」出口返回**调用方的 edx**（`@source 0x00421714`），
+ *    而 edx 在每次调用后被 `@source 0x0042201f mov edx,eax` 覆写成
+ *    `(前一 id − 0xfa0) × 8`，恒 ≠ 1 ⇒ 本上下文里 `cmp [esp+0x42c],1` 就是
+ *    「owner == cur+1」。
+ *
+ * ## 与效果侧的区分（Q-TOOL-3 的根因）
+ * 效果侧的 `damage_area`（`rules/tool-effects.ts` 的 `NUKE_RADIUS = -1`）**没错**：
+ * 它把半径直接交给**纯收集器** `0x40a45c(-1)`（`@source 0x0040ac95`），那里
+ * 先 `call 0x409de7` 按当前画面填图、−1 即整张屏 ⇒ 那一发确实是全图。
+ * 错的只是「拿效果侧半径去解释 AI 侧的扫描窗」。
+ *
+ * ⚠️ 本函数**没有钱闸**：`0x421e62` 全程不读現金/存款/財運（「我出不起」由
+ *   效果侧与回合流程管）。候选只看 归属/等级 三项。
+ *
+ * ⚠️ D-004：原版**每次 try 摇一次** `rand()`（最多 10 次）。本引擎 `aiRoll`
+ *   不推进序列，故逐次用 `SALT.hedan + try` 区分；否则 10 次会取到同一个候选、
+ *   重试循环成了死码（「中止后换下一个候选」这条可观测行为就没了）。
+ *
+ * ⚠️ 返回值：原版把**实体格值**（`0x7d0+地块` / `0xfa0+設施`）写进 `[0x48be64]`。
+ *   引擎的 `useTool` 只用节点号（核彈 heavy 支全图，节点号仅用于校验），
+ *   故这里折算成候选所在节点；找不到节点的候选跳过（原版不需要节点号）。
+ */
+const hedan: Handler = (view) => {
+  const { state, me } = view;
+  const me1 = view.meIndex + 1;
+
+  // ── 候选收集：地块在前、設施在后，各自按表下标升序 @source 0x421e87 / 0x421ef3 ──
+  const lands = [...view.lands].sort((a, b) => a.id - b.id);
+  const facilities = [...view.facilities].sort((a, b) => a.id - b.id);
+  const cands: { value: number; x: number; y: number }[] = [];
+  for (const l of lands) {
+    if (l.id === 0 || l.owner === 0 || l.owner === me1 || l.level === 0) continue;
+    cands.push({ value: 0x7d0 + l.id, x: l.x, y: l.y });
+  }
+  for (const f of facilities) {
+    if (f.id === 0 || f.owner === 0 || f.owner === me1 || f.level === 0) continue;
+    cands.push({ value: 0xfa0 + f.id, x: f.x, y: f.y });
+  }
+  if (cands.length === 0) return null; // @source 0x421f51
+
+  // 实体格值 → 节点号（引擎落 action 用；原版只写格值）
+  const nodeByValue = new Map<number, number>();
+  for (const n of view.topo.nodes) {
+    const v =
+      n.ref.kind === 'land'
+        ? 0x7d0 + n.ref.index
+        : n.ref.kind === 'facility'
+          ? 0xfa0 + n.ref.index
+          : 0;
+    if (v !== 0 && !nodeByValue.has(v)) nodeByValue.set(v, n.id);
+  }
+
+  // ── 爆风窗 = 以候选为中心、格距 ≤ 14 格（原版 0x40a0b1 的建图口径）──
+  //    原版比较的是 `(要素像素 >> 5) − (候选像素 >> 5) + 0xe ∈ [0,0x1c]`，
+  //    即两侧格号的差 ≤ 14；这里同口径（`>> 5` = `sar 5`）。
+  const tileOf = (v: number): number => v >> NUKE_TILE_SHIFT;
+  const myNode = nodeAt(view, me.nodeId);
+  // @source 0x40a117：住店/消失/坐牢/住院（+0x32 起的 4 字节）任一非 0 ⇒ 不画我的标记
+  const b = me.blocking;
+  const myMarkerDrawn = (b.inHotel | b.disappearing | b.inPrison | b.inHospital) === 0;
+  // 阈值 1/(存活数+2)：0x40d2b4 数 whoPlays != 0 的人，0x4220e9 起 +2 再 fld1/fdivrp。
+  // 判据 `mine/other < 1/(存活数+2)` 用**整数交叉相乘**（C-DET-3；同 yaokong 的
+  // `2×現金 > 5×價`、zhangjia 的 `2×間数 ≥ 总数` 约定）：两侧同乘 `other×(存活数+2) > 0`
+  // 等价。原版那两条 `fcomp/jae`（`0x00422125`/`0x00422138`）的 NaN 怪癖在此**不可达**：
+  // 候选自己必在窗内且 level ≠ 0 ⇒ other ≥ 1、otherLv ≥ 1，两个比值都是有限数。
+  const alivePlus2 = state.players.filter((p) => isAlive(p)).length + 2;
+
+  for (let attempt = 0; attempt < NUKE_MAX_TRIES; attempt++) {
+    const pick = cands[aiRoll(state, SALT.hedan + attempt, cands.length)]!; // @source 0x42216f
+    const cx = tileOf(pick.x);
+    const cy = tileOf(pick.y);
+    const inWindow = (x: number, y: number): boolean =>
+      Math.abs(tileOf(x) - cx) <= NUKE_WINDOW_HALF && Math.abs(tileOf(y) - cy) <= NUKE_WINDOW_HALF;
+
+    // 中止：我的棋子也进了这一窗 ⇒ 放弃**本候选**（换下一个，中止标志每候选重置）
+    // @source 0x421fd4 test bh,0x80 / 0x421fe7 mov [esp+0x414],1
+    if (myMarkerDrawn && myNode !== undefined && inWindow(myNode.x, myNode.y)) continue;
+
+    let mine = 0;
+    let other = 0;
+    let mineLv = 0;
+    let otherLv = 0;
+    for (const l of lands) {
+      if (l.owner === 0 || !inWindow(l.x, l.y)) continue;
+      if (l.owner === me1) {
+        mine++;
+        mineLv += l.level;
+      } else {
+        other++;
+        otherLv += l.level;
+      }
+    }
+    for (const f of facilities) {
+      if (f.owner === 0 || !inWindow(f.x, f.y)) continue;
+      if (f.owner === me1) {
+        mine++;
+        mineLv += f.level;
+      } else {
+        other++;
+        otherLv += f.level;
+      }
+    }
+
+    // 两个比值都 < 1/(存活数+2) 才发（整数交叉相乘，见上）
+    if (mine * alivePlus2 < other && mineLv * alivePlus2 < otherLv) {
+      const nodeId = nodeByValue.get(pick.value) ?? 0;
+      // 引擎需要节点号落地；原版只需要格值，故缺节点时顺延下一个候选
+      if (nodeId === 0) continue;
+      return { kind: 'missile', nodeId };
+    }
+  }
+  return null;
+};
+
+/** 跳表 31..43 项（= 道具 1..13）；缺席的那一件见 AI_NEVER_USES */
 const HANDLERS: Readonly<Record<number, Handler>> = {
   1: doll,
   2: luzhang,
@@ -510,18 +689,21 @@ const HANDLERS: Readonly<Record<number, Handler>> = {
   9: gongren,
   11: chuansong,
   12: gongcheng,
+  13: hedan,
 };
 
 /**
- * AI 从不用的两件：
- * - 10 時光機：跳表项 = `xor eax, eax; ret`（0x420edf），道具栏扫描还跳过槽 9——双保险。
- * - 13 核子飛彈：判定函数（0x421e62）照译了结构但**不接线**。它以候选地产为中心
- *   `a0b1(x, y, -1)` 扫爆风，「我在爆风内 → 放弃该候选」；而半径 -1 在效果侧
- *   （reduce.ts 的 fireMissile 注释）= 全图，即「我在爆风内」恒真——原版 AI 事实上
- *   从不放核彈。两种读法无法在不读完整 a0b1 的情况下裁决，保守起见不接线，
- *   登记 known-deviations 的 Q-TOOL-3。
+ * AI 从不用的道具：只剩 **10 時光機** —— 跳表项 = `xor eax, eax; ret`（0x420edf），
+ * 道具栏扫描还跳过槽 9，双保险。
+ *
+ * ★ 13 核子飛彈**曾经**在列，理由是「`a0b1(x, y, -1)` 的半径 −1 = 全图 ⇒
+ *   『我在爆风内』恒真 ⇒ 原版 AI 从不放核彈」。**Q-TOOL-3 已用机器码推翻**
+ *   （差分见 `rich4-spec/tests/test_nuke_card_ai.py`，113 例；裁决见文件头）：
+ *   半径 −1 只决定 `0x40a0b1` 回收时扫**它刚重建的那张图**的多大范围，而那张图
+ *   里只有候选周围 ±14 格的有主地块/設施 + 当前玩家一个标记 ⇒ 中止判据可假
+ *   ⇒ 原版会发核彈。13 已接线（见 `hedan`）。
  */
-export const AI_NEVER_USES: readonly number[] = [10, 13];
+export const AI_NEVER_USES: readonly number[] = [10];
 
 /**
  * 这件道具此刻用不用、对谁用。`null` = 不用。

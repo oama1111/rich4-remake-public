@@ -95,13 +95,21 @@ export function applyMonthlyInterest(moneyInBank: number, loan: number): number 
  * 字段名按推断命名，但**语义仍标为待确认**（C-FID-2）。
  */
 export interface MonthlyAccumulators {
-  /** @source player +0x5C（原 h 文件误标为 hostility[4]）—— 推断为「本月意外之財」 */
-  windfall: number;
-  /** @source player +0x60（原 h 文件误标为 hostility[5]）—— 推断为「本月意外損失」 */
+  /**
+   * @source player +0x5C（原 h 文件误标为 `hostility[4]`）—— **本月意外損失**。
+   *
+   * ★★ 2026-09-19 订正（§7.140）：原版**自己的 UI 串**把它画在损失那一行 ——
+   * `0x464def`「本月意外損失：」在 y=0x184（= `+0x5c` 行）、
+   * `0x464dfe`「本月意外之財：」在 y=0x196（= `+0x60` 行）。
+   * 先前这里两个字段的**名字与含义正好相反**（把 +0x5c 叫 windfall）。
+   * 算式不变（仍是 `+0x5c − +0x60`，即「損失 − 之財」），但名字按 exe 的语义摆正。
+   */
   unexpectedLoss: number;
-  /** @source player +0x42 —— player_info.h 名为 total_winter_sleep_days */
+  /** @source player +0x60（原 h 文件误标为 `hostility[5]`）—— **本月意外之財**（见上） */
+  windfall: number;
+  /** @source player +0x42 —— player_info.h 名为 total_winter_sleep_days（u8，零扩展） */
   f42: number;
-  /** @source player +0x44 (uint16) —— 语义未明 */
+  /** @source player +0x44 —— **有符号 16 位**（原版是 `movsx`，订正于 §7.140） */
   f68: number;
 }
 
@@ -118,21 +126,27 @@ export const UNLUCKY_DAY_WEIGHT = 0x9c4; // 2500
 export const F68_WEIGHT = 10;
 
 /**
- * 月度奖项评分。
+ * 月度奖项评分（「本月悲情人物」分：越惨分越高）。
  *
  * @source rich4.asm:16668-16690
  * ```
- * score = (player[0x5C] - player[0x60])
+ * score = (player[0x5C] - player[0x60])          ; 本月意外損失 − 本月意外之財
  *       + player[0x42] * price_index * 2500
  *       + (int16)player[0x44] * 10
  * ```
+ *
+ * ⚠️ **32 位回绕照抄**：原版全程用 32 位 `imul`/`add`/`lea`，**不留 64 位中间值**
+ *   （差分实证：天=255 时物價 3369 ⇒ 原版 −2147229796；`+0x5c=0x7fffffff`、
+ *   `+0x60=−1` ⇒ 原版 −2147483648）。故这里显式 `| 0` 截成 32 位有符号。
+ *   见 `rich4-spec/tests/test_monthly_score.py`（331/331）。
  */
 export function monthlyScore(acc: MonthlyAccumulators, priceIndex: number): number {
   return (
-    acc.windfall -
-    acc.unexpectedLoss +
-    acc.f42 * priceIndex * UNLUCKY_DAY_WEIGHT +
-    acc.f68 * F68_WEIGHT
+    (acc.unexpectedLoss -
+      acc.windfall +
+      acc.f42 * priceIndex * UNLUCKY_DAY_WEIGHT +
+      acc.f68 * F68_WEIGHT) |
+    0
   );
 }
 

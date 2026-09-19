@@ -10,7 +10,7 @@
  */
 
 import type { Action } from './actions.ts';
-import type { GameState, Player } from './types.ts';
+import type { BuildUpgradeHint, BuildUpgradeSource, GameState, Player } from './types.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 import { isAiControlled, isAlive } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
@@ -86,6 +86,7 @@ import {
   VEHICLE_TOOLS,
   blastLand,
   buildOneLevel,
+  buildUpgradeBit7,
   isToolImplemented,
   isValidRemoteDice,
   placeObject,
@@ -128,7 +129,7 @@ import {
   industryUsesWheel,
   shareWindowLimit,
 } from '../places/company.ts';
-import { tickBlockingCounter } from '../rules/blocking.ts';
+import { tickInsuranceDays } from '../rules/blocking.ts';
 import {
   buyCard,
   buyTool,
@@ -152,6 +153,7 @@ import {
   resolveArrival,
   tickGod,
   drawGiftTool,
+  giftToolBagEmpty,
 } from '../rules/object-landing.ts';
 import type { MapObject } from '../cards/summon.ts';
 import { demolishLand, isSealedStrict, sweepPriceStatus } from '../rules/land-mutation.ts';
@@ -224,8 +226,9 @@ import {
   blessingLevelWithDraw,
 } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
-import { applyNewsEffect, type CompanyMutation, type LandMutation, type PriceChange } from '../events/news-effects.ts';
-import { MUTATE_DEMOLISH_ONE, mutateFacility } from '../cards/monster.ts';
+import { ALIEN_HOSPITAL_DAYS, applyNewsEffect, type CompanyMutation, type LandMutation, type PriceChange } from '../events/news-effects.ts';
+// ★ 第 160 条：飛彈/核彈那一路**不再**用 `mutateFacility` —— `damage_area` 的
+//   設施轻击是另一份内联逻辑（`level == 0` 时照样清种类 + 放人，见 `fireMissile`）。
 import {
   anyoneConfined,
   anyPlayerConfined,
@@ -413,12 +416,15 @@ function openAuction(
   //   （`entity.owner === 0` 谁都匹配不上）⇒ 名单里含卖家自己、状态是 `'active'`
   //   ⇒ 开场席位落回卖家（外部审查 A-3 实测到的卡死）。
   //   无主时卖家就是当前行动者（拍賣卡/魔法屋都只拍「自己脚下」那块）。
-  const owner = facility
-    ? (effectiveFacility(state, topo, pending.entityId)?.owner ?? 0)
-    : (effectiveLand(state, topo, pending.entityId)?.owner ?? 0);
-  // ★ 拍賣卡/魔法屋拍的是「自己脚下」那块无主地 ⇒ 无主时把出卡人当卖家跳过；
-  //   新聞 7「公開拍賣」没有卖家（原版传 −1），调用方用 `seller: -1` 覆盖。
-  const seller = pending.seller ?? (owner === 0 ? state.currentPlayer : owner - 1);
+  // ★★ 第 160 条（A2）：`seller` **就是原版的 arg0**（= 发起者：拍賣卡是用卡者、
+  //   魔法屋是中签者、新聞 7 与破产清算是 −1），**不是**「待拍实体的现主」。
+  //   原版建表时给「玩家号 == arg0」那一格写状态 7（`0x43c23c mov word [座位+2],7`），
+  //   出价循环因此永远跳过他；地主反而**可以**举牌把自己的地买回来
+  //   （`0x43c11f` 只看 `+0x15`，从不看 owner）。
+  //   ⚠️ 旧实现在这里用「现主」兜底 ⇒ 把地主当成了 arg0：地主被排除、用卡者能举牌，
+  //   落槌款也付给了地主（见 `settleAuctionExplicit`）。
+  //   现在三条调用点都必须显式给 `seller`（缺省 −1 = 谁都不排除）。
+  const seller = pending.seller ?? -1;
 
   return {
     ...pending,
@@ -515,6 +521,13 @@ function settleAuctionPending(
  * - 竞价循环自己收尾（`settleAuctionPending` 按 `auctionOutcome` 判完再进来）；
  * - 兼容入口 `{ type: 'auction', winner, price }`（Q-AUC-1 之前由表现层发）。
  */
+/** 复制一份数组并把某一格换成新值（拍卖写到期日用）。 */
+function withTenure(src: readonly number[], index: number, value: number): number[] {
+  const out = [...src];
+  out[index] = value;
+  return out;
+}
+
 function settleAuctionExplicit(
   state: GameState,
   topo: MapTopology,
@@ -528,13 +541,20 @@ function settleAuctionExplicit(
   if (pending.facility === true) {
     const fac = effectiveFacility(state, topo, entityId);
     if (fac === null) return chainQueuedAuction({ ...state, pending: null, phase: 'turnEnd' }, topo);
-    const fr = settleFacilityAuction(state.players, fac, { winner: w, price: p }, state.pool);
+    // @source 0x43c844 `mov ecx,[esp+0xb4]`（= arg0）→ `0x43c855 call 0x41d2c6`
+    //   ⇒ 落槌款付给**发起拍卖者**（$payee$），不是公库；`0x43c7d3..0x43c804`
+    //   另写設施到期日 `+0x34`（三个闸门见 `settleFacilityAuction` 的 `tenure`）。
+    const fr = settleFacilityAuction(state.players, fac, { winner: w, price: p }, state.pool, [], {
+      payee: pending.seller ?? -1,
+      expiry: tenureExpiry(packDate(state), state.landTenureIndex),
+    });
     const facilityOwner = [...state.facilityOwner];
     facilityOwner[entityId] = fr.facility.owner;
     const settled: GameState = {
       ...state,
       players: fr.players,
       facilityOwner,
+      ...(fr.tenure === 0 ? {} : { facilityTenure: withTenure(state.facilityTenure, entityId, fr.tenure) }),
       pool: fr.pool,
       pending: null,
       phase: 'turnEnd',
@@ -545,13 +565,19 @@ function settleAuctionExplicit(
 
   const land = effectiveLand(state, topo, entityId);
   if (land === null) return chainQueuedAuction({ ...state, pending: null, phase: 'turnEnd' }, topo);
-  const r = settleAuction(state.players, land, { winner: w, price: p }, state.pool);
+  // @source 同上：`+0x30`（地產到期日）在「得标者≠原地主 ∧ 权限≠無限期 ∧ **原为无主**」
+  //   时才写（`0x43c77b` / `0x43c799` / `0x43c7a8` 三道闸），闸门收在 `settleAuction` 里。
+  const r = settleAuction(state.players, land, { winner: w, price: p }, state.pool, [], {
+    payee: pending.seller ?? -1,
+    expiry: tenureExpiry(packDate(state), state.landTenureIndex),
+  });
   const landOwner = [...state.landOwner];
   landOwner[entityId] = r.land.owner;
   const settled: GameState = {
     ...state,
     players: r.players,
     landOwner,
+    ...(r.tenure === 0 ? {} : { landTenure: withTenure(state.landTenure, entityId, r.tenure) }),
     pool: r.pool,
     pending: null,
     phase: 'turnEnd',
@@ -1105,7 +1131,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       let snapped: GameState = { ...snapshotOnTurnStart(state), aiStep: 0, aiBranch: 0 };
       // @source 0x0041cc4b：保險期每日 −1，归零挂 0x80，下一次推进清掉 —— 与阻碍计数同一套
       snapped = withPlayer(snapped, snapped.currentPlayer, (p) => {
-        p.insuranceDays = tickBlockingCounter(p.insuranceDays).value;
+        // ★★ 2026-09-19 修（§7.141，通道 2 `test_insurance_richest.py`）：
+        //   保险期用**自己那支**递减（无 `0x80 → 清零+释放` 分支）——
+        //   原版 `0x41cc4b..0x41cc66` 是整字节递减，`0x80 → 0x7f`，
+        //   于是保险期**永不归零**、闸门等于"买过就永久理赔"。
+        //   先前借用了阻碍计数器的 `tickBlockingCounter`（`0x80 → 0`），
+        //   复刻会在次日停赔。见 `rules/blocking.ts` 的 `tickInsuranceDays`。
+        p.insuranceDays = tickInsuranceDays(p.insuranceDays);
       });
       // ★ 研究所：只在業主自己的回合推进（@source 0x0041cdc6 `owner == 當前 + 1`），
       //   与其余「回合开始的倒数」在原版是同一个函数（0x0041cc20 一带）。
@@ -1500,7 +1532,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       if (!pend.choices.includes(action.entityId)) return state;
       const built = freeBuildEntity(state, topo, action.entityId, -1);
       if (built === null) return state;
-      let next: GameState = { ...built, pending: null };
+      // ⚠️ 建設公司这一支在原版里也播 0x229 大锤 + 消费 bit7
+      //   （@source 0x0041ad7e → 0x0041ad99 call 0x45144f（大锤）→ 0x0041adaa
+      //   test byte [esp+0xbc], 0x80 → 0x0041adb4 call 0x40b0cd）。
+      //   ⇒ 与機器工人同构（先大锤、再 bit7 时 0x20b），客户端按 `companyBuild` 播。
+      let next: GameState = { ...withSingleBuildUpgrade(built.state, buildHintOf(built, 'companyBuild')), pending: null };
       if (pend.charge) {
         // @source 0x0041adc0：工程費 = 那处地的地價 × 物價，付给公司
         const fee = entityLandPrice(next, topo, action.entityId) * next.priceIndex;
@@ -1717,9 +1753,24 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
         top = bidder;
         // @source loc_0043b183 的压价线要的是「最高者出价时的现金」
         topCash = me.cash;
+        // ★★ 第 160 条（N2）：**每一口成功加价都把四个座位状态清 0**
+        // ```asm
+        // 0043a6a4  mov eax,[0x48c4a4] / 0043a6a9 mov [0x48c4a8], eax  ; top ← 当前槽
+        // 0043a6ae  xor ebx,ebx
+        // 0043a6b0  mov esi,ebx / mov eax,ebx / shl eax,2 / add eax,ebx / xor esi,ebx
+        // 0043a6bb  mov word ptr [eax*4 + 0x48c436], si               ; ★ 四个状态全写 0
+        // 0043a6c3  inc ebx / cmp ebx,4 / jl 0x43a6b0
+        // 0043a6c9  or byte ptr [0x48c4a5], 1
+        // ```
+        //   ⇒ 刚 PASS 过的人**下一口又活了**（可以重新举牌）。
+        //   ⚠️ 但「出不起（按钮 6 = 放棄）」是**把座位整个摘掉**
+        //   （`0x43a462 mov word [eax*4+0x48c434], dx`，清的是座位**玩家号** +0），
+        //   所以那种座位**不会**被这一轮清零复活 —— 下面按状态区分。
+        for (const b of pending.bidders) {
+          if (status[b] === 'passed') status[b] = 'active';
+        }
       } else {
-        // @source PASS 0x43a426 写 1 / 放棄 0x43a43a 写 4 —— 两者都**永久**
-        //   把这一位踢出竞价（全文件没有一处写回 0）
+        // @source PASS 0x43a426 写 1（保留座位）/ 出不起 0x43a43a 清座位 +0（摘掉）
         status[bidder] = action.status === 'giveUp' ? 'givenUp' : 'passed';
       }
 
@@ -2460,6 +2511,12 @@ function runMagicHouse(state: GameState, topo: MapTopology): GameState {
       criterion: spin.criterion,
       targets: [...spin.targets],
     },
+    // ★ 本趟的「加蓋」事件从空开始累积（`applyMagicRequest` 的 `build` 那一支
+    //   往里 append）。与 `lastNpcWalks` 同一套约定：**每个 flow 自己立桩**，
+    //   于是 `lastBuildUpgrades` 的引用一变就代表「本 action 有加蓋」。
+    //   @source 0x00431f67..0x00432094 是**每位中签者各跑一遍**的
+    //   （`0x004320aa inc edi / cmp edi,4 / jge`），所以这里是一份**列表**。
+    lastBuildUpgrades: [],
   };
 
   for (const req of r.requests) {
@@ -2531,14 +2588,28 @@ export function applyMagicRequest(
         const facIdx = facilityIndexAtPlayer(state, topo, req.player);
         if (facIdx === null) return state;
         const built = freeBuildFacilityById(state, topo, facIdx, -1);
-        return built ?? state;
+        return built === null ? state : withBuildUpgrade(built.state, buildHintOf(built, 'magicHouse'));
       }
-      const isChain = land.type !== 0;
-      const buildable = isChain ? land.level === 0 : land.level < MAX_LAND_LEVEL;
+      // @source 0x40b138 `cmp byte [land+0x18], 0` / `jne`（非住宅跳过 level<5 那关）
+      //          0x40b14c `cmp cl, 1` / `jne`（★ 连锁店判据是 **type == 1**）
+      //          0x40b15d `test eax,eax / je 跳过`（type ≥ 2 两关都不满足 ⇒ **不可建**）
+      // ★★ 2026-09-19 订正（§7.141 E7，通道 2 `test_land_mutation_gates.py` 354/354）：
+      //   先前写成 `type !== 0` ⇒ `type ≥ 2 且 level == 0` 时复刻会蓋、原版不蓋。
+      const buildable =
+        land.type === 0 ? land.level < MAX_LAND_LEVEL
+        : land.type === 1 ? land.level === 0
+        : false;
       if (!buildable) return state;
       const landLevel = [...state.landLevel];
       landLevel[land.id] = land.level + 1;
-      return { ...state, landLevel };
+      // ★ `0x00432085 test byte [esp+0xa8], 0x80 / je / call 0x40b0cd` ——
+      //   魔法屋这一支同样消费 bit7（与機器工人同构：先 0x229 大锤、再 0x20b）。
+      //   等级比较在 core 用同一个契约（`buildUpgradeBit7`），客户端只读提示。
+      return withBuildUpgrade({ ...state, landLevel }, {
+        entity: 0x7d0 + land.id,
+        reachedMaxLevel: buildUpgradeBit7(land.level, land.level + 1),
+        source: 'magicHouse',
+      });
     }
     // @source 0x40ab4a(type, 0)：与拆除卡、炸彈同一套
     case 'demolish': {
@@ -2583,7 +2654,9 @@ export function applyMagicRequest(
         kind: 'auction',
         entityId: entity.id,
         basePrice: auctionBasePrice(entity, state.priceIndex),
-        bidders: eligibleBidders(state.players, entity),
+        // @source 0x4324d4 `push [0x49910c]`？—— 魔法屋这一支的 arg0 = **中签者**
+        //   （`0x4324d4` 附近的压栈），与原版建表 `0x43c22a cmp ebx,ebp` 同义。
+        bidders: eligibleBidders(state.players, entity, req.player),
         seller: req.player,
         ...(node.ref.kind === 'facility' ? { facility: true } : {}),
       });
@@ -2655,13 +2728,22 @@ function fireMissile(
 
   const landLevel = [...state.landLevel];
   const landOwner = [...state.landOwner];
+  // ★★ 第 160 条（README §7.142(5) 的 E9 #6/#7）：种类与地契也要落到状态。
+  //   先前只写 level/owner ⇒ `blastLand` 算出来的 `type` **被丢弃**：
+  //   飛彈打連鎖店时原版「夷平成普通 0 级住宅」，复刻仍是「0 级連鎖店」；
+  //   核彈重击后那格还带着連鎖店身份与地契到期日（`sweepTenure` 里会"到期"）。
+  //   @source 住宅轻击 `0x40ad2a cmp byte [ebx+0x18],0 / je` → `0x40ad30 [ebx+0x1a]=0 / [ebx+0x18]=0`
+  //          住宅重击 `0x40ad6b..0x40ad77`：`[+0x19]/[+0x1a]/[+0x18]` 与 **`+0x30`（地契）**全清
+  const landType = [...state.landType];
+  const landTenure = [...state.landTenure];
   const facilityLevel = [...state.facilityLevel];
   const facilityOwner = [...state.facilityOwner];
   const facilityType = [...state.facilityType];
   const facilityTenure = [...state.facilityTenure];
   const deltas: { from: number; to: number; delta: number }[] = [];
   const hitNodes = new Set<number>();
-  // ★ 拆到 0 级时原版 `mutate_facility` 尾部会 `call 0x40dffa`（全场放人）
+  // ★ 拆到 0 级时原版 `mutate_facility` 尾部会 `call 0x40dffa`（全场放人）；
+  //   重击設施那一支（`0x40ae58`）也是无条件 `call 0x40dffa`。
   let releaseFlag = false;
 
   for (const n of topo.nodes) {
@@ -2675,6 +2757,10 @@ function fireMissile(
     const out = blastLand(land.owner, land.level, land.type, state.priceIndex, heavy);
     landLevel[land.id] = out.level;
     landOwner[land.id] = out.owner;
+    // ★ 种类必须落回：轻击把連鎖店夷平成 0 级住宅（`out.type = 0`），
+    //   重击连地契一起烧（`+0x30`）。
+    landType[land.id] = out.type;
+    if (heavy) landTenure[land.id] = 0;
     if (out.hostility !== 0 && land.owner !== 0) {
       deltas.push({ from: land.owner - 1, to: state.currentPlayer, delta: out.hostility });
     }
@@ -2705,6 +2791,12 @@ function fireMissile(
       facilityLevel[fac.id] = 0;
       facilityType[fac.id] = 0;
       facilityTenure[fac.id] = 0;
+      // ★★ 第 160 条订正：重击設施也 **无条件** `call 0x40dffa`（放人）。
+      //   @source `0x40ae45..0x40ae58`：`[+0x19]=0 / [+0x1a]=0 / [+0x18]=0 /
+      //           [+0x34]=0` 之后紧接着 `call 0x40dffa`（然后是 `0x40a4e1(0)`）。
+      //   先前这一支**漏了放人**（`test_damage_area.py` 的 #12 裁决表写成
+      //   "四项 + releaseFlag"，与字节不符 —— 又一次「测试写了不等于对」）。
+      releaseFlag = true;
     } else {
       // @source 轻击：敌意固定 30 × 物價
       if (fac.owner !== 0) {
@@ -2714,11 +2806,26 @@ function fireMissile(
           delta: MISSILE_DEMOLISH_HOSTILITY * state.priceIndex,
         });
       }
-      const after = mutateFacility(fac, MUTATE_DEMOLISH_ONE);
-      facilityLevel[fac.id] = after.facility.level;
-      facilityType[fac.id] = after.facility.type;
-      // ★ 原版 `mutate_facility` 尾部 `call 0x40dffa` —— 拆到 0 级时全场放人
-      if (after.releasesConfined) releaseFlag = true;
+      // ★★ 第 160 条（E9 #11）：**不能**用 `mutateFacility(MUTATE_DEMOLISH_ONE)`。
+      //   那支复刻的是 `0x40ab4a` 的 mode 0 —— 它在 `level == 0` 时**直接返回"不变"**
+      //   （`0x40ac23 test bh,bh / je 0x40ac76`）。而 `damage_area` 是**另一份**
+      //   内联逻辑，收尾判据读的是**减完之后**的等级：
+      // ```asm
+      // 0040adf5  mov cl,[ebx+0x1a]      ; level
+      // 0040adf8  test cl,cl / je 0x40ae03
+      // 0040adfc  dec ch / mov [ebx+0x1a],ch
+      // 0040ae03  mov al,[ebx+0x1a]      ; ★ 再读一次
+      // 0040ae06  test al,al / jne 结束   ; 还不为 0 → 什么都不做
+      // 0040ae0a  mov [ebx+0x18],al      ; ★ 为 0（刚减到 / 本来就是）→ 种类清 0
+      // 0040ae0d  call 0x40dffa          ; ★ 并且放人
+      // ```
+      //   ⇒ `level == 0` 的設施（拆一级留下的那种记录）照样被清种类**并放人**。
+      const nextLevel = fac.level > 0 ? fac.level - 1 : 0;
+      facilityLevel[fac.id] = nextLevel;
+      if (nextLevel === 0) {
+        facilityType[fac.id] = 0;
+        releaseFlag = true;
+      }
     }
   }
 
@@ -2787,6 +2894,8 @@ function fireMissile(
     prisonOccupancy: prison,
     landLevel,
     landOwner,
+    landType,
+    landTenure,
     facilityLevel,
     facilityOwner,
     facilityType,
@@ -3085,7 +3194,11 @@ export function useToolAction(
     if (back === null) return state;
     // 还原之后要把道具扣掉，所以在**还原后的**状态上扣
     const taken = takeTool(back.tools, back.toolStock, me.index, toolId);
-    return { ...back, tools: taken.tools, toolStock: taken.stock };
+    // ★ 顺手清掉加蓋提示：快照是 `JSON.stringify` 存的（`rules/time-machine.ts`），
+    //   里面**带着**当时那份 `lastBuildUpgrades`，`JSON.parse` 回来是一个**新数组**
+    //   ⇒ 客户端的「引用变了 = 本 action 有加蓋」会误判，凭空播一段大锤/0x20b。
+    //   倒退一回合本来就不该播任何加蓋动效（C-DET-4：纯表现提示不参与重放）。
+    return { ...back, lastBuildUpgrades: [], tools: taken.tools, toolStock: taken.stock };
   }
 
   // ── 機器娃娃（1）：放一个替身出去，沿路九格把物件全扫掉 ──
@@ -3128,13 +3241,23 @@ export function useToolAction(
       if (!b.ok) return state;
       const landLevel = [...state.landLevel];
       landLevel[land.id] = b.level;
-      return consume({ ...state, landLevel });
+      // ★ bit7 = `0x40b110` 返回值的 bit7，原版在 0x0044736d 消费它。
+      //   `buildOneLevel` 已经把「剛好到 5 級」算好了（`b.reachedMaxLevel`），
+      //   表现层只读这一条，不再自己比等级（C-ARC-2）。
+      return consume(
+        withSingleBuildUpgrade({ ...state, landLevel }, {
+          entity: 0x7d0 + land.id,
+          reachedMaxLevel: b.reachedMaxLevel,
+          source: 'robotWorker',
+        }),
+      );
     }
     // 設施也吃这一件（`0x40b110` 对 0xfa0..0x1770 那一段）：
     //   等级 0 → 定种类再蓋第一级；等级 ≥ 1 → 不超过该种类上限就 +1
+    //   ★ 等级 ≥ 1 的設施到 5 级时**照样置 bit7**（`0x0040b21a mov eax, 0x81`）。
     const built = freeBuildFacility(state, topo, nodeId, value);
     if (built === null) return state;
-    return consume(built);
+    return consume(withSingleBuildUpgrade(built.state, buildHintOf(built, 'robotWorker')));
   }
 
   // ── 飛彈（7）／核子飛彈（13）──
@@ -3171,6 +3294,15 @@ export function useToolAction(
 }
 
 /**
+ * 天使卡（9）—— `@rich4/data` 的 `CARDS` 里 `{ id: 9, key: 'tianshi' }`。
+ *
+ * ★ 本文件要**单独认它**，因为只有这张卡会把地块/設施等级推上去，
+ *   也就是只有它会撞到 `0x40b110` 返回值的 bit7（E6）。
+ *   @source 卡表 `0x474f5c + 9*4 = 0x004434c0`（`0x4436e0` = 惡魔卡 10，可对表）
+ */
+const ANGEL_CARD_ID = 9;
+
+/**
  * 打出一张手牌。
  *
  * ★ 卡片效果本身全在 `cards/registry.ts`，这里只做**状态接驳**：
@@ -3194,6 +3326,7 @@ function playCard(
   if (me === undefined || !isAlive(me)) return state;
 
   const lands = allEffectiveLands(state, topo);
+  const facilities = allEffectiveFacilities(state, topo);
   // ★ 卡牌路径里也有随机消费（轉向卡掉头后重挑「来路」，原版 `0x40c834 call 0x456f2d`）
   //   ⇒ 与其它随机出口同一套：传 `rng` 进去、出口之后把 `rngState` 写回。
   const rng = new WatcomRng();
@@ -3218,7 +3351,7 @@ function playCard(
         state.day,
         state.market.closedDays,
       ),
-      facilities: allEffectiveFacilities(state, topo),
+      facilities,
       actors: state.specialActors,
       // ★★ 2026 本轮：嫁禍/復仇卡入狱要**占床位**（客户端关押动效靠 0→1 跳变触发），
       //   且首次入狱要清医院那一格 —— 这两张表以前根本没进卡牌路径。
@@ -3285,7 +3418,49 @@ function playCard(
   // ★ 纯表现提示：把「刚刚谁用出了哪张卡」交给表现层（原版卡片函数里那句
   //   `player_say(出牌者, flag, 卡牌台词表[角色][卡号-1])` 是**调用点参数**，
   //   状态差分推不出来）。只保留最近一次、不进指纹/存档/快照，见 `CardPlayHint`。
-  let next: GameState = { ...state, lastCardPlay: { player: state.currentPlayer, cardId }, players, rngState: rng.getState(), landOwner, landLevel, landType, landPriceStatus, facilityOwner, facilityLevel, facilityType, facilityPriceStatus, facilityResearchDays, specialActors: r.actors, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market, prisonOccupancy: r.prisonOccupancy, hospitalOccupancy: r.hospitalOccupancy };
+  let next: GameState = { ...state, lastBuildUpgrades: [], lastCardPlay: { player: state.currentPlayer, cardId }, players, rngState: rng.getState(), landOwner, landLevel, landType, landPriceStatus, facilityOwner, facilityLevel, facilityType, facilityPriceStatus, facilityResearchDays, specialActors: r.actors, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market, prisonOccupancy: r.prisonOccupancy, hospitalOccupancy: r.hospitalOccupancy };
+  // ★★ 天使卡（9）是**唯一**会把地块/設施等级推上去的卡，也就是唯一会撞到
+  //   `0x40b110` 返回值的 bit7 的那张 —— README §7.142(5) E6 的第 2 条消费点。
+  //
+  //   它的两条支路在原版里形状不同：
+  //   · **地块支是内联的**（不走 `0x40b110`）：
+  //     `0x004435cb inc byte [ebx+0x1a]` → `0x004435ce cmp byte [ebx+0x18], 0`
+  //     / `jne`（★ 只认住宅）→ `0x004435d4 cmp byte [ebx+0x1a], 5` / `jne`
+  //     → `0x004435da mov dword [esp], 1`（置局部标志）；
+  //   · **設施支**走 `0x004436ad call 0x40b110` + `0x004436b5 test al, 0x80`
+  //     → `0x004436b9 mov dword [esp], 1`。
+  //   两条最后都汇到 `0x004436ce cmp dword [esp], 0` / `0x004436d4 call 0x40b0cd`
+  //   （= 播 Data.mkf 0x20b + Effect.mkf 0x5a）。
+  //   判据**同形**：等级真的变了、且新等级正好是 5（`buildUpgradeBit7`）。
+  //   ⚠️ 天使卡整支里**没有** `push 0x229` / `call 0x450441` / `call 0x45144f`
+  //   —— 它**不播大锤**，只有 0x20b（见 `BuildUpgradeSource`）。
+  //
+  //   `cards/land-cards.ts` 的 `applyAngelFacilityCard` 其实已经算出 `0x81`
+  //   （`resultCode`），但 `cards/registry.ts` 只取 `r.facility`、把它丢了，
+  //   而那两个文件不在本次改动范围内 —— 故这里用同一个 core 契约从 before→after
+  //   把它取回来（客户端仍然一个等级都不比，C-ARC-2）。
+  if (cardId === ANGEL_CARD_ID) {
+    const facBefore = new Map(facilities.map((f) => [f.id, f] as const));
+    for (const after of r.facilities) {
+      const before = facBefore.get(after.id);
+      if (before === undefined || before.level === after.level) continue;
+      next = withBuildUpgrade(next, {
+        entity: 0xfa0 + after.id,
+        reachedMaxLevel: buildUpgradeBit7(before.level, after.level),
+        source: 'angelCard',
+      });
+    }
+    const landBefore = new Map(lands.map((l) => [l.id, l] as const));
+    for (const after of r.lands) {
+      const before = landBefore.get(after.id);
+      if (before === undefined || before.level === after.level) continue;
+      next = withBuildUpgrade(next, {
+        entity: 0x7d0 + after.id,
+        reachedMaxLevel: buildUpgradeBit7(before.level, after.level),
+        source: 'angelCard',
+      });
+    }
+  }
   for (const handle of r.releasedObjects) {
     const rel = releaseObject(next, handle);
     next = respawnPartner(
@@ -3745,7 +3920,12 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
       level: state.landLevel[l.id] ?? 0,
     })),
     stockAmount: (state.holdings[state.currentPlayer] ?? []).map((h) => h.amount),
-    gameStage: 0,
+    // ★★ 2026-09-19 修（§7.141，通道 2 `test_event_dispatch.py` 259/259 的 D1）：
+    //   原版 `@source 0x0044bb4b` 的 id 33..36 读的是 `word[0x4991b6]` = **关卡高半部**
+    //   （`global_map_id = [0x4991b6]*4 + [0x4991b8]`，见 `map-format.md`）。
+    //   先前**写死 0** ⇒ 在地图 4..7 上复刻会抽到原版**永不抽**的命運 33..36
+    //   （坐牢 3/5/7/9 天）—— 玩家可能因原版不会发生的事件坐牢。
+    gameStage: state.globalMapId >> 2,
   };
 
   const draw = drawEvent(state.fortuneDeck, (id) => checkFortune(id, ctx).feasible);
@@ -3816,6 +3996,21 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     hospitalOccupancy: out.hospitalOccupancy,
     lastEvent: { kind: 'fortune', id: effectiveId },
   };
+
+  // ★★ 第 160 条：**命運 `pay` 支的破产结算**（README §7.142(5) 的 E3）。
+  //   @source `0x44cec2 call 0x41d2c6`（`pay_money`：现金 → 存款 → **破产**），
+  //   紧接 `0x44ced1 mov al,[player+0x15] / test al,al / je 尾声`：
+  //   一旦两个口袋都掏空，`0x40cd87` 当场把 `who_plays` 清 0，回到事件后
+  //   **跳过第二句台词与整段理赔**（`0x44cf11 call 0x44ba63`）——
+  //   即「付不出 ⇒ 出局、一分不赔」，「截断实付额」与「意外理赔」在原版里
+  //   **永远不会同时发生**。
+  //   ⚠️ 复刻先前只把 `out.bankrupted` 算出来（`fortune-effects.ts:587`）
+  //   却**从无人读**，于是变成「付多少赔多少、还活着」。
+  //   也正因为有这条早退，下面理赔用的 `out.amount`（= 实付额）在「能理赔」
+  //   的那条路上**恒等于请求额 `[0x48c5b4]`** —— 与 `0x44cf11` 的口径一致。
+  if (out.bankrupted) {
+    return applyBankruptcy(applied, withDeck.currentPlayer, topo);
+  }
   // ★ 卖股票（事件 8/9）：持仓 + 行情写回，并按 `rich4_sell_stock` 的尾巴
   //   对每支卖过的股票重排企业名次（`_rich4_update_commercial_owner`）。
   if (out.holdings !== null && out.market !== null) {
@@ -3853,7 +4048,13 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
   if (entry !== undefined && !out.unimplemented) {
     const me = withDeck.currentPlayer;
     if (entry.effects.includes('prison') || entry.effects.includes('hospital')) {
-      applied = insureConfinement(applied, topo, me, out.amount);
+      // ★★ 2026-09-19：关的可能是**替死鬼**（`0x441210` 的嫁禍 19 支），
+      //   而保險理赔在 `send_to_prison`/`send_to_hospital` **函数体内**
+      //   （`0x43d749` / `0x43edf8` 的 `call 0x44ba63`）—— **关谁赔谁**。
+      //   免罪 21 命中时 `fortuneVictim` 是 null（整条作废、没关人、也没得赔）。
+      //   与新聞 29 的 `out.chairmanPrison.victim` 同一口径。
+      const victim = out.fortuneVictim ?? me;
+      applied = insureConfinement(applied, topo, victim, out.amount);
     } else if (entry.effects.includes('loan') || effectiveId === FORTUNE_JAYWALK_FINE) {
       applied = insurancePayoutTo(applied, topo, me, out.amount);
     }
@@ -3911,26 +4112,56 @@ function answerBirthdayCard(state: GameState, seat: number, cardId: number): Gam
  */
 function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng): GameState {
   const lands = allEffectiveLands(state, topo);
+  // ★★ 2026-09-19 修（§7.141，通道 2 `test_event_dispatch.py` 259/259 的 D2–D5）：
+  //   先前这里给「設施 / 持股 / 企業 / 停牌」全传了空数组、`checkCommercialOwner` 恒 false
+  //   ⇒ **新聞 4/5/15、7、8/9/12、10/13、28、29、35 这几条永远抽不到**
+  //   （判据函数本身是对的，错在传给它的 ctx）。下面按原版的判据逐项接上真数据。
+  const facilities = allEffectiveFacilities(state, topo);
   const draw = drawEvent(state.newsDeck, (id) =>
     isNewsFeasible(id, {
       players: state.players,
       lands,
-      facilities: [],
-      stockAmount: state.players.map(() => []),
-      commercials: [],
-      stockF6: new Array<number>(12).fill(0),
+      facilities,
+      // @source 新聞 10/13：`0x4971a0 + cur*0x60 + i*8` 的持股（只读 +0 = 股数）
+      stockAmount: state.holdings.map((row) => row.map((h) => h.amount)),
+      // @source 新聞 29/35：企業表 `[0x498e7c]`+i*0x34 的 owner(+0x18) / funds(+0x28)
+      // ★★ 2026-09 本轮订正：`owner` 是**运行时**字段 —— 地图模板里的 `+0x18`
+      //   恒为 0，真实归属住在 `state.commercialOwners[i].owner`（只有存档自带的
+      //   地图块才会把归属写回模板，见 `loaders/map-state.ts`）。
+      //   先前这里直接读 `c.owner`（模板值，恒 0）⇒ `isNewsFeasible(29)` **恒 false**
+      //   —— 新聞 29 的判据（`commercials.some(c => c.owner !== 0 && …)`）永远不成立，
+      //   那条新闻从来抽不到。按运行时表取归属后它才真的能出现。
+      commercials: (topo.commercials ?? []).map((c) => ({
+        owner: state.commercialOwners[c.id]?.owner ?? c.owner,
+        // ★★ 第 160 条续：`+0x28`（企業资金）也**是运行时字段**。
+        //   `new-game.ts` 把 `companyFunds` 全部初始化为 0（地图模板里的 `+0x28`
+        //   也是 0）⇒ 先前读模板值让 `isNewsFeasible(35)` 的
+        //   `dword[com+0x28] > 10000`（@source `0x44b5f5` 的判据）**恒 false**，
+        //   新闻 35「%s獲利調高一倍」从来抽不到。
+        //   ★ 效果侧本来就读运行时表（`news-effects.ts` 的 `funds[c.id]`），
+        //   只有这一处判据在读模板 —— 两边现在同源。
+        field0x28: state.companyFunds[c.id] ?? c.funds,
+      })),
+      // @source 新聞 28：`byte[i*36 + 0x496986]` = stock_info.f6（停牌天数）
+      stockF6: state.market.stocks.map((s) => s.f6),
       // ★ 新闻的前置条件只看**槽 0..3（玩家）** —— 原版是 `cmp dword [0x496b30], 0`
       //   一次比 4 字节（@source 0x00448c99），与落点的 8 槽扫描**不同**。
       //   见 rules/confinement.ts 的 anyPlayerConfined。
       prisonOccupied: anyPlayerConfined(state.prisonOccupancy) ? 1 : 0,
       hospitalOccupied: anyPlayerConfined(state.hospitalOccupancy) ? 1 : 0,
-      checkCommercialOwner: () => false,
+      // @source `fcn_0040d73f(owner-1)`：`whoPlays(+0x15) != 0`（**整字节**）
+      //   且 `dword[+0x32] == 0`（住店/消失/坐牢/住院四项全 0）才算「能当董事長」。
+      checkCommercialOwner: (i) => {
+        const p = state.players[i];
+        if (p === undefined || p.whoPlays === 0) return false;
+        const b = p.blocking;
+        return (b.inHotel | b.disappearing | b.inPrison | b.inHospital) === 0;
+      },
     }),
   );
   const withDeck: GameState = { ...state, newsDeck: draw.deck };
   if (draw.eventId < 0) return withDeck;
 
-  const facilities = allEffectiveFacilities(state, topo);
   const out = applyNewsEffect(draw.eventId, {
     players: withDeck.players,
     affected: newsTargets(draw.eventId, withDeck, lands, facilities),
@@ -3953,9 +4184,16 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     // 新聞 24/25/26/27/28 会改行情（`newsFlag` / `closedDays` / 停牌）
     market: withDeck.market,
     // 新聞 30..35 要按企業取股票下标、并改两张盈余表
-    commercials: topo.commercials ?? [],
+    // ★ 新聞 29 还要 `+0x18` 的**运行时**归属（挑有主企業）—— 同 `isNewsFeasible`
+    //   那一处：地图模板的 `owner` 恒 0，真值在 `state.commercialOwners`。
+    commercials: (topo.commercials ?? []).map((c) => ({
+      ...c,
+      owner: withDeck.commercialOwners[c.id]?.owner ?? c.owner,
+    })),
     companyFunds: withDeck.companyFunds,
     companyProfit: withDeck.companyProfit,
+    // ★ 新聞 4：被爆风掀掉的座驾要回**全局库存**（`0x40cd07` 那一道，与命運 10/11 同一约定）
+    toolStock: withDeck.toolStock,
     ...(rng === undefined ? {} : { rng }),
   });
 
@@ -3973,6 +4211,8 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     facilityPrice: applyPriceOverrides(withDeck.facilityPrice ?? [], out.facilityPrice),
     ...applyCompanyMutations(withDeck, out.companyMutations),
     ...applyMutations(withDeck, out),
+    // ★ 新聞 4 掀掉的机車/汽車回全局库存（照抄命運那条 `out.toolStock` 的写回）
+    ...(out.toolStock === undefined ? {} : { toolStock: out.toolStock }),
     // ★ 百分比类那四条把「先算好」的逐人金额一起带上（表现层要按原版顺序逐行画）
     lastEvent: {
       kind: 'news',
@@ -3985,6 +4225,22 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
   if (entry !== undefined && !out.unimplemented && (entry.effects.includes('prison') || entry.effects.includes('hospital'))) {
     for (const who of newsTargets(draw.eventId, withDeck, lands, allEffectiveFacilities(state, topo))) {
       applied = insureConfinement(applied, topo, who, out.amount);
+    }
+  }
+  // ★ 新聞 29「違法超貸」：真正被关的是**效果层随机抽出来、再过了免罪/嫁禍**的那位
+  //   （`NewsEffectResult.chairmanPrison`），保险理赔照走 `send_to_prison` 函数体内的
+  //   `0x43edf8 call 0x44ba63`（关谁赔谁）。
+  //   ⚠️ 上面那个循环的 `newsTargets(29, …)` 会给**抽牌者**理赔 —— 与 29 的实际受害者
+  //     毫无关系。29 现在记作 `companyChairmanPrison`（不再是 `prison`），自然不进那个
+  //     循环，理赔只走这一支。天数用效果层带出来的 `days`（= 5）。
+  if (!out.unimplemented && out.chairmanPrison !== undefined) {
+    applied = insureConfinement(applied, topo, out.chairmanPrison.victim, out.chairmanPrison.days);
+  }
+  // ★ 新聞 4「外星人攻打地球」：被爆心扫到而住院的人也要走 `0x43ec3f` 函数体内的
+  //   `0x43edf8 call 0x44ba63`（保險理赔）—— 名单由效果层带出，天数是常量 3。
+  if (entry !== undefined && !out.unimplemented && out.blastedHospital !== undefined) {
+    for (const who of out.blastedHospital) {
+      applied = insureConfinement(applied, topo, who, ALIEN_HOSPITAL_DAYS);
     }
   }
   // 新聞 7「公開拍賣公有土地一處」：挑中的那处**当场开拍**
@@ -4000,7 +4256,8 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
         kind: 'auction',
         entityId,
         basePrice: auctionBasePrice(entity, applied.priceIndex),
-        bidders: eligibleBidders(applied.players, entity),
+        // @source 0x44989f 新聞 7「公開拍賣」传 **−1**（没有发起者）⇒ 谁都不排除
+        bidders: eligibleBidders(applied.players, entity, -1),
         seller: -1,
         ...(facility ? { facility: true } : {}),
       });
@@ -4086,6 +4343,10 @@ function applyPriceOverrides(
  * @source 文案里的 `%s` 指明了对象：
  *   8「第一大地主」/ 9「土地最少者」/ 10「股市第一大戶」
  * 其余按抽牌人处理。
+ *
+ * ⚠️ **例外**：29「違法超貸」的目标是**随机抽中的那家企業的經營者**，这里返回空表
+ *   （见下方 `case 29`）。它的目标是 `applyNewsEffect` 内部抽的，`affected` 不参与
+ *   —— 因为抽那个人**要消耗一次 `rand()`**，只能由效果层（能拿到 PRNG 的那一层）做。
  */
 function newsTargets(
   eventId: number,
@@ -4132,6 +4393,14 @@ function newsTargets(
     case 13:
     case 23:
       return alive;
+    // ★ 2026-09 本轮：新聞 29「違法超貸」的目標**不由這裡挑** —— 它是在企業表裡
+    //   隨機抽一家有主企業（**要消耗一次 `rand()`**），再走免罪(21)→嫁禍(19) 二級判定，
+    //   整條住在 `events/news-effects.ts` 的 `companyChairmanPrison` 那一支。
+    //   這裡返回空表是**刻意的**：免得將來有人把 `affected` 接到那條路上，把
+    //   「隨機抽中的經營者」變成「抽牌者」—— 那是**比 no-op 更糟**的結果
+    //   （原版那張新聞從來不關抽牌者）。
+    case 29:
+      return [];
     default:
       return [state.currentPlayer];
   }
@@ -4671,7 +4940,9 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
   // ① 董事長進門有禮
   if (chairmanOfIndustry(next, topo.commercials, STORE_INDUSTRY) === me) {
     if ((rng.next() & 1) !== 0) {
-      const toolId = drawGiftTool(next.toolStock, rng.next());
+      // ★★ 2026-09-19 修（§7.142）：空袋**不掷** rand（原版 `0x445b0e je` 在 `call rand` 之前）。
+      //   先前 `drawGiftTool(stock, rng.next())` 的实参先求值 ⇒ 库存全空时也推进随机流。
+      const toolId = giftToolBagEmpty(next.toolStock) ? 0 : drawGiftTool(next.toolStock, rng.next());
       if (toolId !== 0) {
         const g = giveTool(next.tools, next.toolStock, me, toolId);
         next = { ...next, tools: g.tools, toolStock: g.stock };
@@ -4799,6 +5070,64 @@ function facilityAtPlayer(state: GameState, topo: MapTopology): FacilityInfo | n
 }
 
 /**
+ * 一次免费加蓋的结果 —— **状态 + `0x40b110` 返回值的那两位**。
+ *
+ * ★ 原版 `0x40b110` 的返回值被三条支路消费（bit7 → 再接播 0x20b），
+ *   所以「新状态」与「bit7」必须一起从加蓋函数里出来，不能再丢。
+ *   `source`（谁发起的）由**调用方**补 —— 同一个 `freeBuildFacilityById`
+ *   既服务機器工人也服务魔法屋/建設公司，只有调用方知道是哪一条。
+ *   见 `state/types.ts` 的 `BuildUpgradeHint` 与 README §7.142(5) E6。
+ */
+interface FreeBuildOutcome {
+  state: GameState;
+  /** 被加蓋的实体编码（`0x7d0 + 地块下标` / `0xfa0 + 設施下标`）*/
+  entity: number;
+  /** `0x40b110` 返回值的 bit7：剛好升到 5 級 */
+  reachedMaxLevel: boolean;
+}
+
+/** 把 `FreeBuildOutcome` 变成一条提示（补上 source —— 只有调用方知道是谁发起的）*/
+function buildHintOf(out: FreeBuildOutcome, source: BuildUpgradeSource): BuildUpgradeHint {
+  return { entity: out.entity, reachedMaxLevel: out.reachedMaxLevel, source };
+}
+
+/**
+ * 本 action 的加蓋事件表**从空开始**。
+ *
+ * ★★ 这一步**不能省**：`reduce` 里大量 `{ ...state, … }` 会把上一条 action 留下的
+ *   提示原样带过来。若直接往上面 append，就会出现
+ *   「上一次 4→5 置了 bit7、这一次 2→3 没置 ⇒ 表里两条，而表现层 `some(bit7)`
+ *   仍为真 ⇒ **多播一段 0x20b**」这种幽灵播放。
+ */
+function clearBuildUpgrades(state: GameState): GameState {
+  return { ...state, lastBuildUpgrades: [] };
+}
+
+/**
+ * 把一次加蓋事件**追加**进本 action 的提示表。
+ *
+ * ★ 追加而不是覆盖：魔法屋那一条 action 里可能有**多位**中签者各蓋一级
+ *   （@source `0x004320aa inc edi / cmp edi,4 / jge`），天使卡也可能同區批量。
+ *   「本 action」的边界由各 flow 自己立桩 —— 魔法屋在 `runMagicHouse` 入口
+ *   写 `lastBuildUpgrades: []`、`playCard` 在装配 `next` 时写 `[]`；
+ *   单次加蓋的流程用下面的 `withSingleBuildUpgrade`。
+ * ★ 纯表现 —— 不进指纹（`stateFingerprint` 的形参是显式字段表）、不进 history。
+ */
+function withBuildUpgrade(state: GameState, hint: BuildUpgradeHint): GameState {
+  return { ...state, lastBuildUpgrades: [...(state.lastBuildUpgrades ?? []), hint] };
+}
+
+/**
+ * **单次**加蓋的流程（機器工人 / 建設公司那两条）：先清空再记。
+ *
+ * ★ 等价于「本 action 恰好一次加蓋」—— 那些调用点各自只产生一轮加蓋事件，
+ *   所以不该继承上一条 action 留下的 bit7。
+ */
+function withSingleBuildUpgrade(state: GameState, hint: BuildUpgradeHint): GameState {
+  return withBuildUpgrade(clearBuildUpgrades(state), hint);
+}
+
+/**
  * 免费给一处設施加蓋一级（機器工人 / 魔法屋「就地加蓋」共用）。
  *
  * @source `0x40b110` 的設施段（0x0040b188 起）：
@@ -4812,9 +5141,14 @@ function facilityAtPlayer(state: GameState, topo: MapTopology): FacilityInfo | n
  *           } else {
  * 0040b201    if (level >= MAX[type]) 失败
  * 0040b212    level++
+ * 0040b215    cmp dl, 5 / jne 0x40b21f
+ * 0040b21a    mov eax, 0x81                              ; ★★ 等級 ≥ 1 的設施**照样置 bit7**
  *           }
  * ```
  * ★ 与住宅那段一样**不看归属**——给别人的地也盖；只是电脑替别人盖的时候一律盖公園。
+ * ★★ 「設施支不置 bit7」是**错的**：只有 `level == 0 → 定种类首建` 那一条
+ *   （`0x0040b1f4 mov eax, 1 / inc byte [ebx+0x1a] / ret`）没有 bit7；
+ *   等级 ≥ 1 走 `0x0040b1f9` 那一支，到 5 级时是 `mov eax, 0x81`。
  *
  * @param chosenType 真人对等级 0 的設施要给的种类（0..4）；不给就失败（UI 属 P2-14）
  */
@@ -4823,7 +5157,7 @@ function freeBuildFacility(
   topo: MapTopology,
   nodeId: number,
   chosenType: number,
-): GameState | null {
+): FreeBuildOutcome | null {
   const node = topo.nodes[nodeId - 1];
   if (node === undefined) return null;
   const idx = facilityIndexOf(node.type);
@@ -4836,19 +5170,26 @@ function freeBuildFacilityById(
   topo: MapTopology,
   idx: number,
   chosenType: number,
-): GameState | null {
+): FreeBuildOutcome | null {
   const fac = effectiveFacility(state, topo, idx);
   if (fac === null) return null;
   const me = state.currentPlayer;
   const player = state.players[me];
   if (player === undefined) return null;
 
+  const entity = 0xfa0 + idx;
   const facilityLevel = [...state.facilityLevel];
   const facilityType = [...state.facilityType];
   if (fac.level === 0) {
     let type: number;
     let rngState = state.rngState;
-    if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
+    // ★★ 2026-09-19 修（§7.141 E2，通道 2 `test_land_mutation_gates.py` 354/354）：
+    //   原版 `0x40b1ad test byte [player + 0x15], 6 / je 真人支` —— 掩码是 **6**
+    //   （bit1 电脑 | bit2 托管），**不是** `& 3`。两档因此不同：
+    //   `whoPlays = 5`（真人|托管，掉线代打，`actions.ts:237` 可达）原版按**电脑**
+    //   规则（随机种类），旧实现走真人支且 `chosenType = -1` ⇒ **蓋不成**；
+    //   `whoPlays = 0` 原版走真人支、旧实现走电脑支。
+    if ((player.whoPlays & 0x06) !== 0) {
       if (fac.owner === me + 1) {
         const rng = new WatcomRng();
         rng.setState(rngState);
@@ -4863,11 +5204,23 @@ function freeBuildFacilityById(
     }
     facilityType[idx] = type;
     facilityLevel[idx] = 1;
-    return { ...state, facilityType, facilityLevel, rngState };
+    // ★ 首建那一条（0x0040b1f4）**没有** `or al, 0x80` / `mov eax, 0x81`
+    //   —— 它 `mov eax, 1 / inc / ret`，所以 bit7 恒为 0。
+    return {
+      state: { ...state, facilityType, facilityLevel, rngState },
+      entity,
+      reachedMaxLevel: buildUpgradeBit7(fac.level, 1),
+    };
   }
   if (!canUpgradeFacility(fac.type, fac.level)) return null;
-  facilityLevel[idx] = fac.level + 1;
-  return { ...state, facilityLevel };
+  const next = fac.level + 1;
+  facilityLevel[idx] = next;
+  // @source 0x0040b215 `cmp dl, 5 / jne 0x40b21f` / 0x0040b21a `mov eax, 0x81`
+  return {
+    state: { ...state, facilityLevel },
+    entity,
+    reachedMaxLevel: buildUpgradeBit7(fac.level, next),
+  };
 }
 
 /**
@@ -4879,7 +5232,7 @@ function freeBuildEntity(
   topo: MapTopology,
   entityId: number,
   chosenType: number,
-): GameState | null {
+): FreeBuildOutcome | null {
   const e = decodeEstate(entityId);
   if (e.kind === 'land') {
     const land = effectiveLand(state, topo, e.index);
@@ -4888,7 +5241,11 @@ function freeBuildEntity(
     if (!b.ok) return null;
     const landLevel = [...state.landLevel];
     landLevel[land.id] = b.level;
-    return { ...state, landLevel };
+    return {
+      state: { ...state, landLevel },
+      entity: 0x7d0 + land.id,
+      reachedMaxLevel: b.reachedMaxLevel,
+    };
   }
   return freeBuildFacilityById(state, topo, e.index, chosenType);
 }
@@ -4929,13 +5286,24 @@ function buildableEntities(state: GameState, topo: MapTopology, player: number, 
  * 六个调用点（Q-INS-1 已找齐）：住旅館的 2000×天×物價（0x0041a82d 落点 / 0x0040d425 通用住店）、
  * 坐牢 2000×天×物價（0x0043d749）、住院 2000×天×物價（0x0043edf8）、命運「冒貸」的金额（0x0044c218）、
  * 命運「行人闖越馬路罰款」（0x0044cf11）。
- * ⚠️ 没有保險公司的地图上原版会写到企業表外（ebx = 家数 + 1），本引擎不赔，记 Q-INS-2。
+ * ⚠️ 没有保險公司的地图上原版**照样赔玩家**，只是把扣款写到「企业家数 + 1」那个**越界槽**
+ *   （`0x44bad8 pay_money(100 + ebx, …)`，`ebx = 家数 + 1`）—— Q-INS-2 的真值。
+ *   2026-09-19 订正（§7.141，通道 2 `test_insurance_richest.py` 135/135）：
+ *   复刻**保留「玩家照赔」这一半**（现金 `+0x1c` 与 `+0x60` 都加），
+ *   只**不复刻越界写**（读/写越界内存不该被复刻）。
  */
 export function insurancePayoutTo(state: GameState, topo: MapTopology, index: number, loss: number): GameState {
   const p = state.players[index];
   if (p === undefined || !isAlive(p) || p.insuranceDays === 0 || loss <= 0) return state;
   const co = (topo.commercials ?? []).find((c) => c.type === INDUSTRY.insurance);
-  if (co === undefined) return state;
+  if (co === undefined) {
+    // @source 0x0044bad8：玩家侧可见效果 = 现金 += loss、本月意外之財 += loss
+    //   （`flags = 1` ⇒ 一律进现金；`+0x60` 那一句在付款函数里）。
+    const paid = state.players.map((q, i) =>
+      i === index ? { ...q, cash: q.cash + loss, monthlyReceived: q.monthlyReceived + loss } : q,
+    );
+    return { ...state, players: paid };
+  }
   const companies: Company[] = state.companyFunds.map((f, i) => ({ funds: f, fundsMirror: state.companyProfit[i] ?? 0 }));
   const r = transferMoney(state.players, companies, state.pool, companyParty(co.id), index, loss, PAY_FLAG_CREDIT_TO_CASH);
   return {
@@ -5041,7 +5409,11 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
           me, topo.lands ?? [], next.landOwner, next.landLevel, next.landType,
           topo.facilities ?? [], next.facilityOwner, next.facilityLevel, next.facilityType,
         );
-        if (target !== 0) next = freeBuildEntity(next, topo, target, -1) ?? next;
+        if (target !== 0) {
+          // ★ 建設公司这一支的动效（0x229 大锤 + bit7→0x20b）已按提示播放。
+          const built = freeBuildEntity(next, topo, target, -1);
+          if (built !== null) next = withSingleBuildUpgrade(built.state, buildHintOf(built, 'companyBuild'));
+        }
       } else {
         const choices = buildableEntities(next, topo, me, true);
         if (choices.length > 0) {
@@ -5081,7 +5453,11 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
       if (target !== 0) {
         const built = freeBuildEntity(next, topo, target, -1);
         if (built !== null) {
-          next = payCompany(built, topo, me, c.id, entityLandPrice(built, topo, target) * built.priceIndex);
+          const paid = payCompany(
+            built.state, topo, me, c.id, entityLandPrice(built.state, topo, target) * built.state.priceIndex,
+          );
+          // ★ 建設公司这一支的动效（同上）已按提示播放。
+          next = withSingleBuildUpgrade(paid, buildHintOf(built, 'companyBuild'));
         }
       }
     } else {
@@ -5228,8 +5604,10 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
     if (fac.level === 0) {
       const price = facilityBuildPrice(fac.landPrice, state.priceIndex);
       if (price > player.cash || purchaseBlockedBy(player) !== null) return { ...state, phase: 'turnEnd' };
-      // @source 0x0041a21f `cmp who_plays, 1 / jne` —— 不是真人就 `rand() % 4 + 1` 当场定种类
-      if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
+      // @source 0x0041a21f `cmp byte [player+0x15], 1 / jne` —— ★ 是**整字节**
+      //   「等于 1 才算真人」（§7.141 E2 订正）：`whoPlays = 5`（真人|托管）原版
+      //   走电脑支、旧实现 `& 3 == 1` 走了真人支。
+      if (player.whoPlays !== 1) {
         const rng = new WatcomRng();
         rng.setState(state.rngState);
         const chosen = aiPickFacilityType(rng.next());
@@ -5634,8 +6012,9 @@ function queueBankruptcyAuctions(
       kind: 'auction',
       entityId: entity.id,
       basePrice: auctionBasePrice(entity, out.priceIndex),
-      bidders: eligibleBidders(out.players, entity),
-      // @source push -1 —— 没有卖方席位：破产者已出局，成交款进公库
+      // @source 0x40d1e1 破产清算传 **−1** ⇒ 谁都不排除（连破产者都不在 `out.players` 的在场集合里）
+      bidders: eligibleBidders(out.players, entity, -1),
+      // @source push -1 —— 没有发起者（破产者已出局），成交款进公库
       seller: -1,
       ...(p.kind === 'facility' ? { facility: true } : {}),
     });

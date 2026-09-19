@@ -171,6 +171,13 @@ export interface StockScoreInput {
   price: number;
   basePrice: number;
   volatility: number;
+  /**
+   * 当日涨跌趋势 @source stock_info `+0x1c`（float）—— ★ 2026-09-19 补（§7.140）：
+   * “无企业那个 +2” 的第二个判据用的是**它**，不是 `volatility`（`+0x18`）。
+   *   `0x42c4bb cmp dword [股票 + 0x1c], 0x40000000`（= 2.0f）。
+   *   实测 `volatility` 恒在 0.40..2.00 ⇒ 用它会让那个 +2 **永不可得**。
+   */
+  trend: number;
   /** 可流通股数 +8 */
   shares: number;
   /** 当日可成交量 +10 */
@@ -219,7 +226,7 @@ export function scoreStock(
   if (s.company === null) {
     // @source 0x0042c373：`cmp 30000×物價, 存款 / jge 跳过`
     if (30000 * priceIndex >= moneyInBank) return 0;
-    if (s.price < s.basePrice * SCORE_RATIO.baseHigh && s.volatility > 2.0 && s.avg6 > s.avg24) score += 2;
+    if (s.price < s.basePrice * SCORE_RATIO.baseHigh && s.trend > 2.0 && s.avg6 > s.avg24) score += 2;
     if (s.price < s.basePrice * SCORE_RATIO.baseLow && s.avg6 > s.avg24) score += 4;
     if (s.avg6 < s.avg24 * SCORE_RATIO.crash) score += 2;
     return score;
@@ -275,6 +282,7 @@ export function stockScoreInput(
     price: st.price,
     basePrice: st.basePrice,
     volatility: st.volatility,
+    trend: st.trend,
     shares: st.shares,
     f10: st.f10,
     f6: st.f6,
@@ -318,6 +326,14 @@ export function pickRanked(
 export function decideStockTrade(state: GameState, topo?: MapTopology): Action | null {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return null;
+
+  // ★★ @source 0x0042bf14：`call rand / idiv 3 / test edx,edx / jne 返回`
+  //   —— **三分之二的回合根本不看股市**。2026-09-19 补（§7.140，通道 2
+  //   `test_stock_daily_bf03.py`）：此前 `decideStockTrade` 从 `0x42bf30` 起，
+  //   **漏了这道闸** ⇒ 复刻 AI 看股市的频率约为原版的 **3 倍**。
+  //   （卖股侧 `decideStockSell` 早有对应实现 `aiRoll(state, 0x42c802, 3)`；这里同型。
+  //   `aiRoll` 是 D-004 的确定性替身，只保证"三分之一通过"这个分布。）
+  if (aiRoll(state, 0x42bf14, 3) !== 0) return null;
 
   // @source 闸一
   if (me.stockRatio === 0) return null;

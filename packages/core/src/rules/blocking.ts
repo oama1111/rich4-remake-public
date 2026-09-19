@@ -100,6 +100,30 @@ export function tickBlockingCounter(raw: number, mask = 0xff): TickOutcome {
 }
 
 /**
+ * 推進**保險期** `player +0x3e` 一天 —— ★ 与阻碍计数器**不是同一支**。
+ *
+ * @source `0x0041cc4b`..`0x0041cc66`（紧跟四个阻碍计数器之后的那一小段）：
+ *   整字节递减、**没有** `test 0x80 / 释放` 那一支；减到 0 时挂 `0x80`
+ *   （与阻碍计数一样），于是 `0x80` 只被当成普通的 `dec`：
+ *
+ * ```text
+ * 1 → dec 0 → 挂 0x80
+ * 0x80 → dec 0x7f → … → 1 → 挂 0x80 → …
+ * ```
+ *
+ * ⇒ **保险期永远不归零**，闸门 `+0x3e != 0` 实际等于「买过一次保險就永久理赔」。
+ * 阻碍计数器那条 `test 0x80 → 清零 + 释放` 的语义**不适用于这里**。
+ *
+ * 通道 2 证据：`rich4-spec/tests/test_insurance_richest.py`（135/135，
+ * 用 `eval_block` 真跑 `0x41cc48..0x41cc6c` 得到 `1→0x80`、`0x80→0x7f`、`0→0`）。
+ */
+export function tickInsuranceDays(raw: number): number {
+  if (raw === 0) return 0;
+  const next = (raw - 1) & 0xff;
+  return next === 0 ? RELEASE_PENDING : next;
+}
+
+/**
  * 参与递减的计数器、归零掩码，以及各自的释放函数地址。
  *
  * 恰好是 `+0x32..+0x35` 这四个字节——与 `isBlocked` 一次性比较
@@ -175,12 +199,14 @@ export function tickBlocking(blocking: BlockingDays): BlockingTickResult {
  *   都会把**全场所有**被关押的在场玩家一起放出来。原版如此，别"改良"成只放
  *   该设施里的那几位。
  *
- * ★ 调用点（原版自扫，全在 `mutate_land`/`mutate_facility` 里，共 5 处）：
+ * ★★ 调用点（2026-09-19 订正，§7.141 E1）：全 exe 只有 8 个 `call 0x40dffa`，
+ *   其中**只有 3 个**属于 `mutate_land 0x40ab4a`，且**全在設施支**：
  *   `0x40ac33`（設施 mode 0 拆到 0 级）、`0x40ac4d`（設施 mode 1）、
- *   `0x40ac6c`（設施 mode 2）、`0x40ae0d`（住宅 mode 0 拆到 0 级）、
- *   `0x40ae58`（住宅 mode 1/2）。⇒ 复刻的 `mutateLand`/`mutateFacility`
- *   在同样三种情形下**必须**调本函数（见 `cards/monster.ts` 的返回值
- *   `releasesConfined`）。
+ *   `0x40ac6c`（設施 mode 2）。
+ *   ⚠️ 先前这里写的 `0x40ae0d`/`0x40ae58`（住宅 mode 0 / mode 1·2）**属于另一个函数**
+ *   `0x40ac7b`（飛彈/颱風的范围伤害），**不是** `mutate_land` 的住宅支。
+ *   ⇒ **拆住宅／连锁店不放人**，只有拆設施才放。复刻的 `mutateLand` 一律返回
+ *   `releasesConfined: false`（见 `cards/monster.ts`）。
  */
 export function releaseConfinedPlayers(players: readonly Player[]): Player[] {
   return players.map((p) => {

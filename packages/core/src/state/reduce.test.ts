@@ -5,12 +5,16 @@
 import { describe, expect, it } from 'vitest';
 import { WatcomRng } from '../rng/watcom.ts';
 import { readFileSync, existsSync } from 'node:fs';
-import { reduce, reduceAll, nextCandidates, nextAlivePlayer } from './reduce.ts';
+import { reduce, reduceAll, nextCandidates, nextAlivePlayer, applyMagicRequest } from './reduce.ts';
 import type { MapTopology } from './reduce.ts';
 import type { Action } from './actions.ts';
 import { WHO_PLAYS_RETURN_TO_BOARD, type GameState, type Player } from './types.ts';
 import { makePlayer as basePlayer } from '../testing/factories.ts';
-import { makeGameState } from '../testing/factories.ts';
+import { makeGameState, makeNode, makeLand, makeFacility, makePlayer as factoryPlayer } from '../testing/factories.ts';
+import { emptyOwnership } from '../places/commercial.ts';
+import { INDUSTRY } from '../places/company.ts';
+import { stateFingerprint } from '../net/protocol.ts';
+import { takeSnapshot } from '../rules/time-machine.ts';
 
 /** 本文件的简写：第一参为下标 */
 const makePlayer = (index: number, over: Partial<Player> = {}): Player =>
@@ -352,5 +356,298 @@ describe('在真实地图上推演', () => {
       }
     }
     expect(s.turnCount).toBe(200);
+  });
+});
+
+// ============================================================================
+//  ★★ README §7.142(5) E6 —— `0x40b110` 返回值的 bit7（剛好升到 5 級）
+// ============================================================================
+
+/**
+ * 一张最小的两格地图：1 号是**住宅**（`0x7d0 + 1`）、2 号是**設施**（`0xfa0 + 1`）。
+ *
+ * @source 区间判据 `0x40b117 cmp edx, 0x7d0` / `0x40b11f cmp edx, 0xfa0`
+ *   （住宅 2000..4000）、`0x40b170 cmp edx, 0xfa0` / `0x40b17c cmp edx, 0x1770`
+ *   （設施 4000..6000）—— 都是**开区间**。
+ */
+function twoEntityMap(): MapTopology {
+  return {
+    nodes: [
+      makeNode({ id: 1, type: 0x7d0 + 1, adjacent: [2], adjacentSlots: [2, 0, 0, 0], walkable: true }),
+      makeNode({ id: 2, type: 0xfa0 + 1, adjacent: [1], adjacentSlots: [1, 0, 0, 0], walkable: true }),
+    ],
+    lands: [makeLand({ id: 1, name: '測試路', type: 0, owner: 0, level: 0 })],
+    // type 1 = 旅館，`0x474940[1] = 5` ⇒ 能升到 5 级
+    facilities: [makeFacility({ id: 1, name: '測試旅館', type: 1, owner: 0, level: 0 })],
+  };
+}
+
+describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契约', () => {
+  /** 玩家 0 手里一件機器工人（9）@source 全局道具表 60 项，下标 = 玩家*15 + 道具号 */
+  const withTool = (s: GameState): GameState => {
+    const tools = [...s.tools];
+    tools[9] = 1;
+    return { ...s, tools };
+  };
+
+  it('★★ 住宅 4→5 ⇒ hint.reachedMaxLevel = true（bit7 置位）', () => {
+    const topo = twoEntityMap();
+    const s = withTool(makeState({ landLevel: [0, 4], landType: [0, 0] }));
+    const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
+    expect(after.landLevel[1]).toBe(5);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: true, source: 'robotWorker' },
+    ]);
+  });
+
+  it('★★ 設施（旅館）4→5 ⇒ **也**置 bit7（0x0040b21a mov eax, 0x81）', () => {
+    // 先前 `client/build-fx.ts` 的注释写着「設施那一支不置位」——**读反了**：
+    //   只有「等級 0 → 定种类首建」那一条（0x0040b1f4）没有 bit7。
+    const topo = twoEntityMap();
+    const s = withTool(makeState({ facilityLevel: [0, 4], facilityType: [0, 1] }));
+    const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 2 }, topo);
+    expect(after.facilityLevel[1]).toBe(5);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0xfa0 + 1, reachedMaxLevel: true, source: 'robotWorker' },
+    ]);
+  });
+
+  it('★ 設施 3→4 ⇒ 不置 bit7（新等级不是 5）', () => {
+    const topo = twoEntityMap();
+    const s = withTool(makeState({ facilityLevel: [0, 3], facilityType: [0, 1] }));
+    const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 2 }, topo);
+    expect(after.facilityLevel[1]).toBe(4);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0xfa0 + 1, reachedMaxLevel: false, source: 'robotWorker' },
+    ]);
+  });
+
+  it('★ 設施等級 0 → 首建 ⇒ **不**置 bit7（0x0040b1f4 mov eax, 1 / inc / ret）', () => {
+    const topo = twoEntityMap();
+    // 电脑玩家：等级 0 的設施走「自己的 → rand()%4+1」那条，不需要 UI 选种类
+    const s = withTool(makeState({
+      facilityLevel: [0, 0],
+      facilityType: [0, 0],
+      players: [makePlayer(0, { whoPlays: WHO_PLAYS_COMPUTER }), makePlayer(1), makePlayer(2), makePlayer(3)],
+    }));
+    const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 2 }, topo);
+    expect(after.facilityLevel[1]).toBe(1);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0xfa0 + 1, reachedMaxLevel: false, source: 'robotWorker' },
+    ]);
+  });
+
+  it('★ 住宅 3→4 ⇒ 不置 bit7', () => {
+    const topo = twoEntityMap();
+    const s = withTool(makeState({ landLevel: [0, 3], landType: [0, 0] }));
+    const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
+    expect(after.landLevel[1]).toBe(4);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'robotWorker' },
+    ]);
+  });
+
+  it('★ 蓋不成（住宅已满 5）⇒ 状态一点不动、也没有加蓋事件', () => {
+    const topo = twoEntityMap();
+    const s = withTool(makeState({ landLevel: [0, 5], landType: [0, 0] }));
+    const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
+    expect(after).toBe(s);
+    expect(after.lastBuildUpgrades).toBeUndefined();
+  });
+
+  it('★ 魔法屋「就地加蓋房屋」也记 bit7（@source 0x00432085）', () => {
+    const topo = twoEntityMap();
+    const s = makeState({ landLevel: [0, 4], landType: [0, 0] });
+    const after = applyMagicRequest(s, topo, { player: 0, kind: 'build', amount: 1 });
+    expect(after.landLevel[1]).toBe(5);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: true, source: 'magicHouse' },
+    ]);
+  });
+
+  it('★ 魔法屋的多次加蓋是 **append**（一条 action 里多位中签者各盖一级）', () => {
+    const topo = twoEntityMap();
+    const s = makeState({ landLevel: [0, 4], landType: [0, 0] });
+    const once = applyMagicRequest(s, topo, { player: 0, kind: 'build', amount: 1 });
+    const twice = applyMagicRequest(once, topo, { player: 0, kind: 'build', amount: 1 });
+    // 第一次 4→5 置位；第二次已满级 ⇒ 状态原样返回、提示不再追加
+    expect(twice).toBe(once);
+    expect(twice.lastBuildUpgrades).toHaveLength(1);
+  });
+
+  it('★★ 天使卡（9）地块支也记 bit7（@source 0x004435d4 / 0x004436b5）', () => {
+    // 天使卡的地块支在原版里是**内联**的（不走 0x40b110）：
+    //   `0x004435cb inc byte [ebx+0x1a]` → `0x004435d4 cmp byte [ebx+0x1a], 5`
+    //   → `0x004435da mov dword [esp], 1`，最后 `0x004436d4 call 0x40b0cd`。
+    //   `cards/land-cards.ts` 的 `applyAngelCard` 只回 level，bit7 得由 core 补齐。
+    const topo = twoEntityMap();
+    const base = makeState({ landLevel: [0, 4], landType: [0, 0] });
+    const s: GameState = { ...base, players: [{ ...base.players[0]!, cards: [9] }, ...base.players.slice(1)] };
+    const after = reduce(s, { type: 'useCard', cardId: 9, target: { kind: 'entity', entityId: 1 } }, topo);
+    expect(after.landLevel[1]).toBe(5);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: true, source: 'angelCard' },
+    ]);
+  });
+
+  it('★★ 天使卡（9）設施支也记 bit7（旅館 4→5 ⇒ 0x81）', () => {
+    // @source `0x004436ad call 0x40b110` → `0x004436b5 test al, 0x80`
+    //   → `0x004436d4 call 0x40b0cd`（天使卡**不播大锤**，见 BuildUpgradeSource）
+    const topo = twoEntityMap();
+    const base = makeState({ facilityLevel: [0, 4], facilityType: [0, 1] });
+    const s: GameState = { ...base, players: [{ ...base.players[0]!, cards: [9] }, ...base.players.slice(1)] };
+    const after = reduce(
+      s,
+      { type: 'useCard', cardId: 9, target: { kind: 'facility', facilityId: 1 } },
+      topo,
+    );
+    expect(after.facilityLevel[1]).toBe(5);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0xfa0 + 1, reachedMaxLevel: true, source: 'angelCard' },
+    ]);
+  });
+
+  it('★ 天使卡没升到 5 级 ⇒ 记事件但 bit7 = false', () => {
+    const topo = twoEntityMap();
+    const base = makeState({ landLevel: [0, 3], landType: [0, 0] });
+    const s: GameState = { ...base, players: [{ ...base.players[0]!, cards: [9] }, ...base.players.slice(1)] };
+    const after = reduce(s, { type: 'useCard', cardId: 9, target: { kind: 'entity', entityId: 1 } }, topo);
+    expect(after.landLevel[1]).toBe(4);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'angelCard' },
+    ]);
+  });
+
+  it('★★ 上一条 action 的 bit7 **不能**污染本条（幽灵 0x20b）', () => {
+    // 提示表是「本 action」的：core 每次加蓋都整份覆写（单次加蓋用
+    // `withSingleBuildUpgrade` = 先清空再记）。若写成往旧表上 append，
+    // 就会出现「上一次 4→5 置了 bit7、这一次 3→4 没置 ⇒ `some(bit7)` 仍为真
+    // ⇒ 多播一段 0x20b」。
+    const topo = twoEntityMap();
+    const base = makeState({
+      landLevel: [0, 3],
+      landType: [0, 0],
+      facilityLevel: [0, 4],
+      facilityType: [0, 1],
+    });
+    const tools = [...base.tools];
+    tools[9] = 2; // 两件機器工人，够跑两条 action
+    // 第一条：設施 4→5 ⇒ bit7 置位
+    const s1 = reduce({ ...base, tools }, { type: 'useTool', toolId: 9, nodeId: 2 }, topo);
+    expect(s1.lastBuildUpgrades).toEqual([
+      { entity: 0xfa0 + 1, reachedMaxLevel: true, source: 'robotWorker' },
+    ]);
+    // 第二条：住宅 3→4 ⇒ **不**置位，表里只该有这一条
+    const s2 = reduce(s1, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
+    expect(s2.landLevel[1]).toBe(4);
+    expect(s2.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'robotWorker' },
+    ]);
+  });
+
+  it('★★ 瞬态提示**不进指纹**（C-DET-4）—— 与 `lastNpcWalks` 同一条约定', () => {
+    const topo = twoEntityMap();
+    const s = withTool(makeState({ landLevel: [0, 4], landType: [0, 0] }));
+    const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
+    expect(after.lastBuildUpgrades).toHaveLength(1);
+    const base = stateFingerprint(after);
+    // ⚠️ 得过一次变量：`stateFingerprint` 的形参是一张**显式字段表**，
+    //   对象字面量直接多写一个字段会被 excess property check 挡下 ——
+    //   这本身就是「它不参与指纹」最硬的证据。
+    const blanked = { ...after, lastBuildUpgrades: [] };
+    const other = { ...after, lastBuildUpgrades: [{ entity: 9999, reachedMaxLevel: false, source: 'angelCard' as const }] };
+    expect(stateFingerprint(blanked)).toBe(base);
+    expect(stateFingerprint(other)).toBe(base);
+  });
+
+  it('★★ 時光機（10）倒带后**不带**加蓋提示（快照是 JSON，回来的是新数组）', () => {
+    // `takeSnapshot` 是 `JSON.stringify(state)` ⇒ 快照里带着当时那份
+    // `lastBuildUpgrades`，`JSON.parse` 回来是**新数组** —— 若不显式清掉，
+    // 客户端的「引用变了 = 本 action 有加蓋」就会在倒退时凭空播一段动效。
+    const topo = twoEntityMap();
+    const base = withTool(makeState({ landLevel: [0, 4], landType: [0, 0] }));
+    const tools = [...base.tools];
+    tools[9] = 1;
+    tools[10] = 1; // 再给一件時光機
+    const built = reduce({ ...base, tools }, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
+    expect(built.lastBuildUpgrades).toHaveLength(1);
+    // 拍一张快照（真人回合开局那一张的等价物），再动一次状态，然后倒带
+    const snapped = { ...built, snapshots: [takeSnapshot(built), null, null, null] as (string | null)[] };
+    const back = reduce(snapped, { type: 'useTool', toolId: 10, nodeId: 0 }, topo);
+    expect(back).not.toBe(snapped);
+    expect(back.lastBuildUpgrades ?? []).toEqual([]);
+  });
+
+  // ── 建設公司那一族（原版 `0x0041ad7e` / `0x0041aae8`，同样是「大锤 + 0x20b」）──
+
+  /** 一个上市企業格（行業別可換）+ 一块自己的住宅地，@source 与 company.test.ts 同构 */
+  const CID = 1;
+  const companyTopo = (industry: number): MapTopology => ({
+    nodes: [
+      makeNode({ id: 1, adjacent: [2] }),
+      makeNode({ id: 2, adjacent: [1, 3], type: 6001, ref: { kind: 'commercial', index: CID } }),
+      makeNode({ id: 3, adjacent: [2] }),
+    ],
+    lands: [makeLand({ id: 1, type: 0, landPrice: 1000, rentByLevel: [50, 100, 200, 300, 400, 500] })],
+    commercials: [{
+      id: CID, x: 0, y: 0, name: '測試公司', stockIndex: 0, landPrice: 500, type: industry,
+      spriteIndex: 0, assetValue: 1_000_000, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, shares: 1000,
+    }],
+  });
+
+  /** 站在企業格上的玩家 0（电脑），企業老闆 = chairman（null = 无主）*/
+  const landingOnCompany = (chairman: number | null, level: number): GameState => {
+    const base = makeState({
+      players: [0, 1].map((i) => makePlayer(i, { nodeId: i === 0 ? 2 : 1, whoPlays: WHO_PLAYS_COMPUTER })),
+      phase: 'settling',
+      priceIndex: 1,
+      totalDays: 40,
+      stepsTotal: 6,
+      landLevel: [0, level],
+      landType: [0, 0],
+      landOwner: [0, 1],
+      commercialShares: [0, 1000],
+    });
+    const commercialOwners = [...base.commercialOwners];
+    while (commercialOwners.length <= CID) commercialOwners.push(emptyOwnership());
+    commercialOwners[CID] = { ...emptyOwnership(), owner: chairman === null ? 0 : chairman + 1 };
+    return { ...base, commercialOwners };
+  };
+
+  it('★★ 建設公司（自家、电脑）4→5 ⇒ source = companyBuild 且 bit7 置位', () => {
+    // @source 0x0041abde / 0x0041ad7e：`call 0x40b110` → `0x0041ad99 call 0x45144f`
+    //   （大锤）→ `0x0041adaa test byte [esp+0xbc], 0x80` → `0x0041adb4 call 0x40b0cd`
+    const topo = companyTopo(INDUSTRY.construction);
+    const after = reduce(landingOnCompany(0, 4), { type: 'settle' }, topo);
+    expect(after.landLevel[1]).toBe(5);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: true, source: 'companyBuild' },
+    ]);
+  });
+
+  it('★ 建設公司（自家、电脑）0→1 ⇒ 记 companyBuild 但 bit7 = false', () => {
+    const topo = companyTopo(INDUSTRY.construction);
+    const after = reduce(landingOnCompany(0, 0), { type: 'settle' }, topo);
+    expect(after.landLevel[1]).toBe(1);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'companyBuild' },
+    ]);
+  });
+
+  it('★ 建設公司（真人选目标那一支，`buildTarget`）也记 companyBuild', () => {
+    const topo = companyTopo(INDUSTRY.construction);
+    const human = landingOnCompany(1, 4);
+    const s: GameState = {
+      ...human,
+      players: human.players.map((p, i) => (i === 0 ? factoryPlayer({ index: 0, nodeId: 2 }) : p)),
+      landOwner: [0, 1],
+    };
+    const asked = reduce(s, { type: 'settle' }, topo);
+    expect(asked.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: true });
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(5);
+    expect(done.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: true, source: 'companyBuild' },
+    ]);
   });
 });

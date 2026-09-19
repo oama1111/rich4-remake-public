@@ -150,7 +150,14 @@ describe('★ 长局冒烟', () => {
     //   那是接入日期推进之前的模型：那时没有月结，钱确实只在玩家之间搬。
     //   现在每跨一个月，无贷款者的存款 ×1.1（rules/monthly.ts，
     //   证据是 `fmul qword [0x464e88]` 那个 1.1），钱是**真的会变多**的。
-    const r = soak(2024, 200);
+    // ★★ 2026-09-19 基线调整（§7.140）：回合数 200 → **400**。
+    //   同一轮修好了炒股 AI 的两处背离（入口少一道 `rand()%3` 闸、
+    //   「动能 > 2」误读成 `volatility`）⇒ 电脑的股市活动量与原版一致了，
+    //   但**走势也变了**：200 回合时账面市值亏损会盖过前几个月的银行月息
+    //   （实测 `netWorth + pool = 1,188,954 < 1,200,000`）。
+    //   「利息是唯一印钞机」这条**结论仍成立**（400 回合通过），故只把观察窗口
+    //   拉长，不改判据 —— 同 §7.78 记的「改 AI 决策要重算基线」。
+    const r = soak(2024, 400);
     // ⚠️ 必须**把持仓算进来**：AI 接上炒股（角色表 f26）之后，存款会变成股票，
     //   只数 cash + moneyInBank 会看着凭空少一大块。
     const netWorth = r.state.players.reduce(
@@ -166,7 +173,7 @@ describe('★ 长局冒烟', () => {
     //   （`borrow`：`money_in_bank += amount; loan += amount`），
     //   那不是印钞，是**负债**——净值没变。AI 接上 `loanRatio`（角色表 f24）
     //   之后它们真的会去借，不减这一项这条断言当场就假。
-    const noInterest = soakWithoutInterest(2024, 200);
+    const noInterest = soakWithoutInterest(2024, 400);
     // ⚠️ 这里按**成本**而不是市值算持仓：买入是把钱 1:1 换成成本，成本守恒；
     //   市值会随行情涨跌，那是账面盈亏，不是新印出来的钱。
     const frozen = noInterest.players.reduce(

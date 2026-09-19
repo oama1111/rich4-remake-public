@@ -520,9 +520,13 @@ export function refreshTradableShares(market: StockMarketState, rng: WatcomRng):
     // @source cmp dx, 0x3e8 / jbe → 不超过 1000 就原样照抄
     if (s.shares <= 1000) return { ...s, f10: s.shares };
     const r = (rng.next() % 2000) + 1000;
-    // 原版是 `mov word [ebx + 0x49698a], dx` ⇒ 存的是 **u16**（此处计算值必然 < 65536，
-    // 掩一下只是照抄存储宽度，防止上游给出 >u16 的 shares 时静默失真）
-    return { ...s, f10: u16(Math.trunc(Math.fround(s.shares * Math.fround(r / 10000)))) };
+    // ★★ 2026-09-19 修（§7.140，通道 2 `test_stock_daily_bf03.py`）：**不要** `Math.fround`。
+    //   原版是 `0x4291b4 fdiv`（商**不落内存**，留在 FPU 精度）→ `0x4291ba fmulp` 直接乘，
+    //   复刻先前写成 `fround(shares × fround(r/10000))` ⇒ **多两次 f32 舍入**，
+    //   实测 3000/1370 ⇒ 原版 **411** 而复刻 **410**（域内 195 格差 1）。
+    //   后果：`+0x0a` 是当日可成交量的**硬上限**（柜台「交易量」列 + AI 买入封顶）。
+    //   原版存的是 `mov word [ebx + 0x49698a], dx` ⇒ u16 存储宽度照旧掩一下。
+    return { ...s, f10: u16(Math.trunc((s.shares * r) / 10000)) };
   });
   return { ...market, stocks };
 }

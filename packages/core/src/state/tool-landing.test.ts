@@ -11,7 +11,7 @@ import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 import { TOOL_SLOTS_PER_PLAYER, toolCount } from '../rules/tools.ts';
 import { MISSILE_RADIUS } from '../rules/tool-effects.ts';
-import { housingIndexOf } from '../rules/land.ts';
+import { housingIndexOf, facilityIndexOf } from '../rules/land.ts';
 
 const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -193,6 +193,94 @@ describe('★ 核子飛彈（13）', () => {
 
     const byNuke = reduce(s, { type: 'useTool', toolId: 13, nodeId: node.id }, topo);
     expect(byNuke.players[0]!.blocking.inHospital).toBe(3);
+  });
+});
+
+// ============================================================
+//  ★★ 第 160 条：`damage_area` 的三处「算了不写 / 该做没做」
+//      （README §7.142(5) 的 E9 #6/#7/#11，通道 2 `test_damage_area.py`）
+// ============================================================
+describe('★★ 范围伤害必须把种类/地契落到状态（damage_area @source 0x0040ac7b）', () => {
+  const inMissileRange = (
+    n: { x: number; y: number },
+    target: { x: number; y: number },
+  ): boolean =>
+    Math.abs(n.x - target.x) <= MISSILE_RADIUS && Math.abs(n.y - target.y) <= MISSILE_RADIUS;
+
+  run('★★ 飛彈把連鎖店夷平成「0 级住宅」—— landType 必须落回', () => {
+    // @source 0x40ad2a `cmp byte [ebx+0x18],0 / je 结束` → `0x40ad30 [+0x1a]=0 / [+0x18]=0`
+    const { state, topo } = setup({ 7: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const idx = housingIndexOf(node.type)!;
+    const landLevel = state.landLevel.map(() => 0);
+    const landOwner = state.landOwner.map(() => 0);
+    const landType = state.landType.map(() => 0);
+    landLevel[idx] = 2;
+    landType[idx] = 1; // 連鎖店
+    landOwner[idx] = 2;
+    const s: GameState = { ...state, landLevel, landOwner, landType };
+
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    expect(r.landLevel[idx]).toBe(0);
+    // ★ 修复前这里仍是 1（`out.type` 被丢弃）⇒ 复刻留着一个「0 级連鎖店」
+    expect(r.landType[idx]).toBe(0);
+    expect(r.landOwner[idx]).toBe(2); // 轻击保留归属
+  });
+
+  run('★★ 核彈连地契一起烧 —— landType / landTenure 都要清', () => {
+    // @source 0x40ad6b..0x40ad77：`[+0x19]/[+0x1a]/[+0x18]` 与 **`+0x30`** 全清
+    const { state, topo } = setup({ 13: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const idx = housingIndexOf(node.type)!;
+    const landLevel = state.landLevel.map(() => 0);
+    const landOwner = state.landOwner.map(() => 0);
+    const landType = state.landType.map(() => 0);
+    const landTenure = state.landTenure.map(() => 0);
+    landLevel[idx] = 4;
+    landType[idx] = 1;
+    landOwner[idx] = 2;
+    landTenure[idx] = 0x7fff;
+    const s: GameState = { ...state, landLevel, landOwner, landType, landTenure };
+
+    const r = reduce(s, { type: 'useTool', toolId: 13, nodeId: node.id }, topo);
+    expect(r.landType[idx]).toBe(0);
+    expect(r.landTenure[idx]).toBe(0); // ★ 修复前不动 ⇒ 之后会被 sweepTenure「到期」
+  });
+
+  run('★★ 輕击打「等级已经是 0」的設施：照样清种类并放人', () => {
+    // ★ `damage_area` 与 `0x40ab4a` 的 mode 0 **不是**同一份逻辑：
+    //   `0x40ae03 mov al,[ebx+0x1a] / test al,al / jne 结束` 读的是**减完之后**的等级，
+    //   所以「本来就是 0」也走 `0x40ae0a type=0` + `0x40ae0d call 0x40dffa`。
+    const { state, topo } = setup({ 7: 1 });
+    // ★ 目标就选**設施所在的那一格** —— 飛彈的 `useTool` 不校验目标类型，
+    //   而爆风窗口是以目标格为中心的方窗，这样那一处設施必然在窗内（距离 0）。
+    const facNode = topo.nodes.find((n) => facilityIndexOf(n.type) !== null);
+    // ★ 这里**不能**写成「找不到就 return」—— 那会让本用例静默变成空跑
+    expect(facNode, '这张图上必须有設施，否则本用例什么都没验').toBeDefined();
+    if (facNode === undefined) return;
+    const facId = facilityIndexOf(facNode.type)!;
+    const target = facNode;
+    const facilityLevel = [...state.facilityLevel];
+    const facilityType = [...state.facilityType];
+    const facilityOwner = [...state.facilityOwner];
+    facilityLevel[facId] = 0; // 拆到 0 级后留下的那种记录
+    facilityType[facId] = 1;
+    facilityOwner[facId] = 2;
+    // 一个被关在旅館、且**在爆风外**的玩家：用来观察「一刀切放人」
+    const far = topo.nodes.find((n) => !inMissileRange(n, target));
+    expect(far, '地图上必须有爆风外的格').toBeDefined();
+    if (far === undefined) return;
+    const players = state.players.map((p, i) =>
+      i === 1 ? { ...p, nodeId: far.id, blocking: { ...p.blocking, inHotel: 3 } } : p,
+    );
+    const s: GameState = { ...state, facilityLevel, facilityType, facilityOwner, players };
+
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: facNode.id }, topo);
+    // ★ 修复前 `mutateFacility` 在 level===0 时提前返回 ⇒ 种类仍是 1、也没人放出来
+    expect(r.facilityType[facId]).toBe(0);
+    expect(r.players[1]!.blocking.inHotel).toBe(0x80);
   });
 });
 

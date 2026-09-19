@@ -471,16 +471,32 @@ function readName(bytes: Uint8Array, offset: number, maxLen: number): string {
   return big5.decode(bytes.subarray(offset, end));
 }
 
-/** 解析 type 字段，判定它指向哪张表 @source docs/map-format.md §3.2 */
+/**
+ * 解析 type 字段，判定它指向哪张表 @source docs/map-format.md §3.2
+ *
+ * ★★ 四段的**上界都是下界 + 2000**（原版一律按 2000 宽的区间判：
+ *   `0x7d0 < v < 0xfa0` → 住宅、`0xfa0 < v < 0x1770` → 設施、
+ *   `0x1770 < v < 0x1f40` → 企業、`0x1f40 < v < 0x2710` → 景观；
+ *   差分见 `rich4-spec/tests/test_tool_roadblock_ai.py` 的边界组）。
+ *   先前这里写成 `<3000 / <5000 / <7000 / <9000`（**只有一半宽**）⇒
+ *   `type ∈ [3000,4000)` 时原版判「住宅」而本函数判 `unknown`。
+ *   随附地图的项数都 < 1000（land ≤ 73 / fac ≤ 20 / comm ≤ 7 / landscape ≤ 79），
+ *   故这条**在实际数据上不可达**，但它是一处真实的区间错误，照原版改齐。
+ */
 export function resolveNodeType(type: number): NodeRef {
   if (type === TYPE_BASE.SPECIAL) return { kind: 'special' };
-  if (type > TYPE_BASE.LAND && type < 3000) return { kind: 'land', index: type - TYPE_BASE.LAND };
-  if (type > TYPE_BASE.FACILITY && type < 5000)
+  if (type > TYPE_BASE.LAND && type < TYPE_BASE.FACILITY) {
+    return { kind: 'land', index: type - TYPE_BASE.LAND };
+  }
+  if (type > TYPE_BASE.FACILITY && type < TYPE_BASE.COMMERCIAL) {
     return { kind: 'facility', index: type - TYPE_BASE.FACILITY };
-  if (type > TYPE_BASE.COMMERCIAL && type < 7000)
+  }
+  if (type > TYPE_BASE.COMMERCIAL && type < TYPE_BASE.LANDSCAPE) {
     return { kind: 'commercial', index: type - TYPE_BASE.COMMERCIAL };
-  if (type > TYPE_BASE.LANDSCAPE && type < 9000)
+  }
+  if (type > TYPE_BASE.LANDSCAPE && type < TYPE_BASE.LANDSCAPE + 2000) {
     return { kind: 'landscape', index: type - TYPE_BASE.LANDSCAPE };
+  }
   return { kind: 'unknown', raw: type };
 }
 

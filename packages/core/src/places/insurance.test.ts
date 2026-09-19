@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
 import { insurancePayoutTo, reduce, type MapTopology } from '../state/reduce.ts';
+import { tickInsuranceDays } from '../rules/blocking.ts';
 import { INDUSTRY } from './company.ts';
 import { hotelStayLoss } from '../rules/facility.ts';
 
@@ -40,14 +41,39 @@ describe('★ insurancePayoutTo', () => {
     expect(insurancePayoutTo(on, topo, 0, 0)).toBe(on);
   });
 
-  it('地图上没有保險公司 → 不赔（原版会写到企業表外，记 Q-INS-2）', () => {
-    const s = insured(3);
-    expect(insurancePayoutTo(s, { ...topo, commercials: [] }, 0, 6000)).toBe(s);
+  it('★★ 没有保險公司：原版**照样赔玩家**（只把扣款写到越界槽）⇒ 现金与 +0x60 都加', () => {
+    // §7.141 订正（通道 2 `test_insurance_richest.py` 135/135，Q-INS-2 真值）：
+    //   `0x44bad8 pay_money(100 + 家数 + 1, 玩家, 損失, 1)` —— 越界写不复刻，
+    //   但玩家侧可见效果（现金 +6000、本月意外之財 +6000）保留。
+    const s = insurancePayoutTo(insured(3), { ...topo, commercials: [] }, 0, 6000);
+    expect(s).not.toBe(insured(3));
+    expect(s.players[0]!.cash).toBe(7000);
+    expect(s.players[0]!.monthlyReceived).toBe(6000);
+    // 没有任何公司被扣
+    expect(s.companyFunds.every((f) => f === 0)).toBe(true);
   });
 
   it('保險期的高位 0x80（今日到期待清）也算在保', () => {
     const s = insurancePayoutTo(insured(0x80), topo, 0, 100);
     expect(s.players[0]!.cash).toBe(1100);
+  });
+
+  it('★★ 保險期递减**永不归零**（@source 0x41cc4b 无 0x80 特判）', () => {
+    // §7.141 订正：先前借用了阻碍计数器的 `tickBlockingCounter`（0x80 → 0），
+    //   复刻会在次日停赔；原版是整字节递减 ⇒ 1 → 0x80 → 0x7f → … → 1 → 0x80…
+    let v = 1;
+    const seq: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      v = tickInsuranceDays(v);
+      seq.push(v);
+    }
+    expect(seq).toEqual([0x80, 0x7f, 0x7e, 0x7d, 0x7c]);
+    expect(v).not.toBe(0);
+    expect(tickInsuranceDays(0)).toBe(0);
+    // 走满一圈仍不归零
+    let w = 1;
+    for (let i = 0; i < 200; i++) w = tickInsuranceDays(w);
+    expect(w).not.toBe(0);
   });
 });
 

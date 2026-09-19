@@ -855,7 +855,10 @@ describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
       entityId: 1,
       // round(2000 × (1 + 2×0.5)) × 1 = 4000
       basePrice: 4000,
-      bidders: [0, 1], // 排除地主(玩家2)
+      // ★★ 第 160 条（A2）：原版只排除 **arg0 = 用卡者**（`0x43c22a cmp ebx,ebp`），
+      //   地主反而可以举牌把自己的地买回来。
+      bidders: [1, 2],
+      seller: 0,
     });
     // 敌意是 double 压栈的原版 bug：常规地价恒为 0
     expect(r.hostilityDeltas).toEqual([{ from: 2, to: 0, delta: 0 }]);
@@ -865,7 +868,7 @@ describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
   it('★ 自己的地也照拍（原版不挑主，0x00443282 只拦无主记敌意）', () => {
     const r = useCard(ctxOnLand({ owner: 1, level: 0 }), 8);
     expect(r.ok).toBe(true);
-    expect(r.followUp).toMatchObject({ kind: 'auction', bidders: [1, 2] }); // 排除自己（地主）
+    expect(r.followUp).toMatchObject({ kind: 'auction', bidders: [1, 2] }); // ★ 排除的是用卡者自己
   });
 
   it('无主地：照拍、不记敌意', () => {
@@ -887,7 +890,9 @@ describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
       kind: 'auction',
       entityId: 1,
       basePrice: 6000, // round(4000 × 1.5) × 1
-      bidders: [0],
+      // ★★ 同上：排除用卡者（0 号），只剩 1 号 → 其实没人能出价（原版也会这么建表）
+      bidders: [1],
+      seller: 0,
       facility: true,
     });
   });

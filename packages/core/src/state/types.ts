@@ -366,6 +366,63 @@ export interface CardPlayHint {
   cardId: number;
 }
 
+/**
+ * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。
+ *
+ * @source 三个调用点各自的序列：
+ *   · `robotWorker`（道具 9，VA 0x00447295）：`0x0044731a push 0x229` +
+ *     `0x00447326 call 0x450441`（read_mkf）+ `0x0044735c call 0x45144f`
+ *     ⇒ **先大锤，再（bit7 时）0x20b**；
+ *   · `magicHouse`（魔法屋「就地加蓋房屋」，VA 0x00431f67 那一支）：
+ *     `0x00432028 push 0x229` + `0x00432034 call 0x450441` + `0x00432074
+ *     call 0x45144f` ⇒ 与機器工人**同构**（先大锤，再 0x20b）；
+ *   · `angelCard`（天使卡 9，VA 0x004434c0）：整个函数里**没有** `push 0x229`
+ *     / `call 0x450441` / `call 0x45144f` —— 它**只**在 bit7 时 `0x004436d4
+ *     call 0x40b0cd` ⇒ **只播 0x20b，不播大锤**；
+ *   · `companyBuild`（建設公司「免費加蓋一處」那一族落点，VA 0x0041ad7e 一带）：
+ *     `0x0041ad99 call 0x45144f`（大锤）+ `0x0041adaa test byte [esp+0xbc], 0x80`
+ *     → `0x0041adb4 call 0x40b0cd` ⇒ 与機器工人**同构**（先大锤，再 0x20b）。
+ *
+ * ★★ 补记（本次回 exe 复核发现，README 原记「bit7 全 exe 只有 3 个消费点」
+ *   **不完整**）：`0x40b0cd`（播 0x20b 那一支）全 exe 共 **8** 个调用点，
+ *   **8/8** 前面都是一条「剛好升到 5 級」的判据（bit7 的 `test …,0x80`，
+ *   或 `0x004199eb cmp byte [esi+0x1a], 5` 这种内联同形）：
+ *
+ *   | `0x20b` 调用点 | 所在函数 | 它前面的判据 |
+ *   |---|---|---|
+ *   | `0x0040f517` | `0x0040f381` | `0x0040f50e test bh, 0x80` |
+ *   | `0x0040fa26` | `0x0040f8be` | `0x0040f9fa test bl, 0x80` |
+ *   | `0x00419a21` | `0x004198b9`（落点跳表的一块） | `0x004199eb cmp byte [esi+0x1a], 5`（内联） |
+ *   | `0x0041ab63` | `0x0041a3be` 尾块 | `0x0041ab21 test byte [esp+0xbc], 0x80` |
+ *   | `0x0041adb4` | `0x0041abde` | `0x0041adaa test byte [esp+0xbc], 0x80` |
+ *   | `0x0043208f` | `0x00431f67` | `0x00432085 test byte [esp+0xa8], 0x80` |
+ *   | `0x004436d4` | `0x004434c0` | `0x004436b5 test al, 0x80` |
+ *   | `0x00447373` | `0x00447295` | `0x0044736d test byte [esp], 0x80` |
+ *
+ *   反向也成立：`0x40b110` 的 8 个调用点**逐一**对上前 7 条 + 0x4436ad，
+ *   即**原版每一次 `0x40b110` 都有影片**（天使卡那条只播 0x20b）。
+ *   故本引擎在**每一个**免费加蓋出口都记提示，客户端照段序播，不漏不重。
+ */
+export type BuildUpgradeSource = 'robotWorker' | 'magicHouse' | 'companyBuild' | 'angelCard';
+
+/** 一次「免费加蓋一级」的事件记录（纯表现；见 `GameState.lastBuildUpgrades`）*/
+export interface BuildUpgradeHint {
+  /**
+   * 被加蓋的**实体编码**（原版 `0x40b110` 的入参）：
+   * · `0x7d0 + 地块下标` = 住宅/連鎖店；
+   * · `0xfa0 + 設施下标` = 公園/旅館/購物中心/加油站/研究所。
+   * @source `0x40b117 cmp edx, 0x7d0` / `0x40b11f cmp edx, 0xfa0`
+   */
+  entity: number;
+  /**
+   * ★ `0x40b110` 返回值的 **bit7** = 剛好升到 5 級
+   *   （`BuildResult.reachedMaxLevel` / `buildUpgradeBit7`）。
+   */
+  reachedMaxLevel: boolean;
+  /** 谁发起的（决定要不要先播大锤 0x229） */
+  source: BuildUpgradeSource;
+}
+
 export interface GameState {
   mode: GameMode;
   /** PRNG 内部状态。单机存档不持久化此字段（见 rng/policy.ts） */
@@ -721,6 +778,41 @@ export interface GameState {
   lastCardPlay: CardPlayHint | null;
 
   /**
+   * **本 action 里发生过的「免费加蓋一级」** —— 纯表现提示（C-DET-4）。
+   *
+   * ★ 为什么要有它（README §7.142(5) E6）：`0x40b110` 的返回值带两条契约 ——
+   *   **bit0 = 成了 / bit7 = 剛好升到 5 級**。全 exe 里 bit7 被消费在
+   *   `0x00432085`（魔法屋就地加蓋）、`0x004436b5`（天使卡 9）、
+   *   `0x0044736d`（機器工人 9）等处，后果是**再接播 Data.mkf 0x20b
+   *   （66 帧 440×440 / 每帧 42 ms）+ 音效 `Effect.mkf` 0x5a + 一句台词**。
+   *   先前客户端是**自己比较地块等级**算出这条 bit 的（`build-fx.ts` 的
+   *   `reachedMaxLandLevel`，且注释把「設施支不置位」写反了）—— 那是把规则
+   *   抄进表现层（违反 C-ARC-2）。现在改由 core 写、客户端只读。
+   *
+   * ★ **纯表现，不参与任何规则判定**：
+   *   - core 里没有任何规则读它（只有写入点与装配点）；
+   *   - **不进 `stateFingerprint`**（`net/protocol.ts`）：那里的形参是一个
+   *     **显式列字段**的结构类型，本字段不在其中，故天然被排除 ——
+   *     `state/reduce.test.ts` 有一条用例钉住这件事（谁日后把指纹改成
+   *     `JSON.stringify(state)` 之类，那条用例会当场红）；
+   *   - **不进 `history`**（action 日志里没有它）。
+   *   ⚠️ 已知的既有口径（`lastNpcWalks` / `lastCardPlay` 同病，非本次引入）：
+   *     `rules/time-machine.ts` 的 `takeSnapshot` 是 `JSON.stringify(state)`，
+   *     所以这个瞬态字段**会**随快照一起回滚。它不影响任何规则判定。
+   *
+   * ★ **「本 action」的判据是引用相等**：`state.lastBuildUpgrades` 只有在
+   *   真的发生了加蓋时才是一个**新数组**，于是
+   *   `state.lastBuildUpgrades !== before.lastBuildUpgrades` 就等价于
+   *   「这一条 action 里有加蓋」。表现层据此起播，不需要看 action 种类。
+   *
+   * ★ **可选**（`?`）是**有意**的：`GameState` 还由 `rules/new-game.ts` 与
+   *   `loaders/savegame.ts` 逐字段装配，而那两个文件不在本次改动的范围内。
+   *   于是本引擎遵守一条更宽的约定：**只要有写入点就整份覆写，缺席 = 没有**。
+   *   读取方一律用 `state.lastBuildUpgrades ?? []`。
+   */
+  lastBuildUpgrades?: readonly BuildUpgradeHint[];
+
+  /**
    * 回合边界上**还没轮到走的四大惡人**槽位（= actor − 4，只有 0..3）。
    *
    * ★ 为什么要有它：原版回合推进是**一条游标**（`[0x49910c]`），越过最后一名
@@ -851,8 +943,21 @@ export function isAlive(p: Player): boolean {
 /** 该玩家此刻由 AI 操作吗（电脑玩家，或被托管的人类） */
 export function isAiControlled(p: Player): boolean {
   if (!isAlive(p)) return false;
-  if ((p.whoPlays & WHO_PLAYS_AUTOPILOT) !== 0) return true;
-  return (p.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_COMPUTER;
+  // ★★ 第 160 条订正（README §7.142(5) 的 A7）：原版判「电脑」用的是**位掩码 6**
+  //   —— 任何读 `+0x15` 判电脑的地方都是 `test byte [player+0x15], 6 / je 真人`：
+  //   ```asm
+  //   0043c5fa  test byte ptr [player + 0x15], 6   ; ★ 拍卖开拍给电脑定价位
+  //   0040b1ad  test byte ptr [player + 0x15], 6   ; ★ 設施首建随机种类
+  //   ```
+  //   ⇒ `whoPlays == 3`（bit0|bit1）也算**电脑**（3 & 6 = 2），
+  //   带托管位（0x04）或走回棋盘位（0x10/0x20）的人也算电脑。
+  //   ⚠️ 旧实现写 `(whoPlays & 3) === 2`（先看托管位、再比低 2 位）：
+  //   `1 | 0x10`（真人 + 走回棋盘）会被判成**真人**，而原版是电脑
+  //   ⇒ 少掷 2 个随机数、全局随机流错位。
+  //   ★ 可达性：复刻内部写不出 3（`setAi` 白名单、`newGame` 只给 1/2、
+  //   `confinement` 的 `& 0x0f` 都到不了），但**读档**会原样搬进 3
+  //   （`loaders/savegame.ts`）⇒ 不能假定不可达。
+  return (p.whoPlays & (WHO_PLAYS_COMPUTER | WHO_PLAYS_AUTOPILOT)) !== 0;
 }
 
 /**
