@@ -11,8 +11,10 @@
  * | `0x0040107b` | 键盘钩子：方向键把**虚拟光标**挪 ±10 | `(x+0xa, y)` | T-086 已记「不挪用户光标」，本次不动 |
  * | `0x0041361d` / `0x0041363d` | 镜头已顶到屏幕边：把指针夹回 `0` / `0x27f` | `(0, y)` / `(0x27f, y)` | 不是按钮，本次不做 |
  * | **`0x00418db0`** | ★ **回合开始、GO 鈕上场等真人掷骰** | `([0x475284]+0x2e, [0x475288]+0x22)` | **本模块实现** |
- * | `0x0043fb54` / `0x0043ffc2` / `0x00440355` | 另外三扇浮窗的 `WM_CREATE` | 立即数 `0xdc` + `0x140`，即 `(220,320)` | **没取证到是哪三扇窗 ⇒ 不做**（`docs/escalations.md` E-8）|
- * | `0x004467de` | 遥控骰子小盘的 `WM_CREATE`（`Q-PICK-2`） | 同上 `(220,320)` | 同上，E-8 |
+ * | **`0x0043fb54`** | ★ **「請選擇設施類別」浮窗**的 `WM_CREATE` —— 它自己 `push 0x465289` = `請選擇設施類別`（`pickFacilityKind` 那一串）| `(220,320)` | **本模块实现** |
+ * | **`0x0043ffc2`** | ★ 同一扇窗的**第二支**（前面 `push 0x465289` 也在，`0x43fb37 jmp 0x43ff3d` 是它的兄弟支）| `(220,320)` | **本模块实现**（与上面同一屏、同一个落点）|
+ * | **`0x00440355`** | ★ **研究所選項目**面板（窗口过程 `0x4402d7`）的 `WM_CREATE` | `(220,320)` | **本模块实现** |
+ * | **`0x004467de`** | ★ **遥控骰子小盘**的 `WM_CREATE`（`Q-PICK-2`）：窗口过程里 `0x446814 cmp eax,0x13a / 0x44681f cmp eax,0x157`、6 行 `add ebx,0x28` 与 `[0x48c598]` 那个「哪一颗」全局——与 `dice-choose.ts` 的命中区逐项对得上 | `(220,320)` | **本模块实现** |
  * | **`0x00453719`** | ★ **YES/NO 訊息框（買地那一扇 `fcn_00440ba8`）的 `WM_CREATE`** | `([0x48cac4]+0x16, [0x48cac8]+0x16)` | **本模块实现** |
  *
  * ## 两处已实现的取证
@@ -141,20 +143,44 @@ export function yesNoWarpTarget(): ScreenPoint {
   };
 }
 
-/** 「这一拍要不要挪」看的两件事 */
+/**
+ * 那**四处固定落点**共用的目标点 `(0xdc, 0x140)` = **(220, 320)**。
+ *
+ * @source 四处 `WM_CREATE` 里都是 `push 0x140 / push 0xdc / call SetCursorPos`
+ *   （`0x0043fb4a..54`、`0x0043ffb8..c2`、`0x0044034b..55`、`0x004467d4..de`）。
+ *   ★ 压栈顺序是「先 push y=0x140、后 push x=0xdc」（Win32 的 `SetCursorPos(x, y)`
+ *   是 stdcall，右到左），与 YES/NO 那一处同一个读法。
+ *   ⚠️ 这个点**不是**任何一颗控件的中心（`0xdc,0x140` = 屏幕正中偏下），
+ *   四处照抄，不「改良」成「控件中心」。
+ */
+export const FIXED_WARP_TARGET: ScreenPoint = { x: 0xdc, y: 0x140 };
+
+/** 「这一拍要不要挪」看的几件事 —— 每一件都对应 exe 里一处 `SetCursorPos` */
 export interface WarpMoments {
   /** 轮到真人、GO 鈕在场等他掷骰（`main.ts` 的 `awaitingHumanRoll()`）*/
   readonly awaitingRoll: boolean;
   /** 棋盘上盖着**两个选项**的 YES/NO 框（`dialog.ts` 的 `usesYesNo`）*/
   readonly yesNoBox: boolean;
+  /** 「請選擇設施類別」浮窗开着（`facility-picker.ts` 的 `active()`）*/
+  readonly facilityPicker: boolean;
+  /** 研究所選項目面板开着（`research-screen.ts`）*/
+  readonly research: boolean;
+  /** 遥控骰子小盘开着（`main.ts` 的 `dicePick`）*/
+  readonly dicePick: boolean;
 }
 
 /** 什么都没发生的那一拍 */
-export const NO_MOMENTS: WarpMoments = { awaitingRoll: false, yesNoBox: false };
+export const NO_MOMENTS: WarpMoments = {
+  awaitingRoll: false,
+  yesNoBox: false,
+  facilityPicker: false,
+  research: false,
+  dicePick: false,
+};
 
 export interface WarpTarget extends ScreenPoint {
   /** 是哪一条时机 —— 只给日志与测试用 */
-  readonly reason: 'go' | 'yesNo';
+  readonly reason: 'go' | 'yesNo' | 'facilityPicker' | 'research' | 'dicePick';
 }
 
 /**
@@ -177,6 +203,18 @@ export function cursorWarp(
   goScreen: ScreenPoint,
 ): WarpTarget | null {
   if (now.yesNoBox && !prev.yesNoBox) return { ...yesNoWarpTarget(), reason: 'yesNo' };
+  // ★ 那四处固定落点（設施類別窗 / 研究所 / 遥控骰子小盘）—— 每一处的窗口
+  //   `WM_CREATE` 都只执行一次，所以同样按「上一拍没有、这一拍有」的边沿触发。
+  //   四者互斥（都是浮窗），按登记表里「谁在前谁接管」的次序判，与别的屏一致。
+  if (now.facilityPicker && !prev.facilityPicker) {
+    return { ...FIXED_WARP_TARGET, reason: 'facilityPicker' };
+  }
+  if (now.research && !prev.research) {
+    return { ...FIXED_WARP_TARGET, reason: 'research' };
+  }
+  if (now.dicePick && !prev.dicePick) {
+    return { ...FIXED_WARP_TARGET, reason: 'dicePick' };
+  }
   if (now.awaitingRoll && !prev.awaitingRoll) {
     return { ...goWarpTarget(goScreen), reason: 'go' };
   }
@@ -251,6 +289,12 @@ export interface CursorWarpFrame {
   readonly awaitingRoll: boolean;
   /** 「棋盘上盖着两个选项的 YES/NO 框」 */
   readonly yesNoBox: boolean;
+  /** 「請選擇設施類別」浮窗开着 */
+  readonly facilityPicker: boolean;
+  /** 研究所選項目面板开着 */
+  readonly research: boolean;
+  /** 遥控骰子小盘开着 */
+  readonly dicePick: boolean;
   /** GO 鈕左上角（**屏幕**坐标） */
   readonly goScreen: ScreenPoint;
   /** 当前舞台放大/居中（`main.ts` 的 `currentMetrics()`） */
@@ -282,8 +326,15 @@ export function createCursorWarper(
   return {
     update: () => {
       const f = readFrame();
-      const target = cursorWarp({ awaitingRoll: f.awaitingRoll, yesNoBox: f.yesNoBox }, prev, f.goScreen);
-      prev = { awaitingRoll: f.awaitingRoll, yesNoBox: f.yesNoBox };
+      const now: WarpMoments = {
+        awaitingRoll: f.awaitingRoll,
+        yesNoBox: f.yesNoBox,
+        facilityPicker: f.facilityPicker,
+        research: f.research,
+        dicePick: f.dicePick,
+      };
+      const target = cursorWarp(now, prev, f.goScreen);
+      prev = now;
       if (target === null) return null;
       const at = stageToClient(target, f.metrics, f.canvas);
       warp(at.x, at.y);

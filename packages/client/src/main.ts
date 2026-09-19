@@ -432,6 +432,9 @@ import {
   type BailSlotView,
 } from './bail-screen.ts';
 import { SCREENS } from './screens.ts';
+// ★ 只给「挪指针」那条判据用（`cursor-warp.ts` 的另外三处固定落点）
+import { facilityPickerScreen } from './facility-picker.ts';
+import { researchScreen } from './research-screen.ts';
 // ★ 只给 dev 钩子用（`__rich4.auctionView()`）：竞价轮转发生在 canvas 屏里，
 //   自动化看不见就没法验收「电脑跟不跟价、落槌演没演」。
 import { auctionRunForTest } from './auction-screen.ts';
@@ -5945,6 +5948,12 @@ function cursorWarpFrame(): CursorWarpFrame {
   return {
     awaitingRoll: awaitingHumanRoll(),
     yesNoBox: dlg !== null && usesYesNo(dlg, amountPage),
+    // 另外三处固定落点（(220,320)）的时机 —— @source 见 `cursor-warp.ts` 的顶表：
+    //   「請選擇設施類別」浮窗（0x0043fb54 / 0x0043ffc2）、研究所面板（0x00440355）、
+    //   遥控骰子小盘（0x004467de），四处都是各自窗口的 WM_CREATE。
+    facilityPicker: facilityPickerScreen.active(uiEnv()),
+    research: researchScreen.active(uiEnv()),
+    dicePick: dicePick !== null,
     // `goButton.position()` 是**棋盘画布**坐标，原版那个全局是屏幕坐标
     goScreen: boardToScreen(goButton.position()),
     metrics: currentMetrics(),

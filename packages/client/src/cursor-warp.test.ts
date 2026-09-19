@@ -15,6 +15,7 @@ import {
   GO_WARP_OFFSET,
   goWarpTarget,
   measureCanvas,
+  FIXED_WARP_TARGET,
   NO_MOMENTS,
   stageToClient,
   YESNO_TOP_LEFT,
@@ -76,8 +77,8 @@ describe('落点算术 —— 照 exe 的立即数', () => {
 });
 
 describe('哪一拍挪 —— 边沿触发（原版：相位 1 一次 / WM_CREATE 一次）', () => {
-  const on: WarpMoments = { awaitingRoll: true, yesNoBox: false };
-  const box: WarpMoments = { awaitingRoll: false, yesNoBox: true };
+  const on: WarpMoments = { ...NO_MOMENTS, awaitingRoll: true };
+  const box: WarpMoments = { ...NO_MOMENTS, yesNoBox: true };
 
   it('★ 关 → 开：挪', () => {
     expect(cursorWarp(on, NO_MOMENTS, GO_SCREEN)).toEqual({ x: 226, y: 154, reason: 'go' });
@@ -99,7 +100,7 @@ describe('哪一拍挪 —— 边沿触发（原版：相位 1 一次 / WM_CREAT
   });
 
   it('同一拍两件都成立时按**框**算（框盖在棋盘上，指针该进框）', () => {
-    const both: WarpMoments = { awaitingRoll: true, yesNoBox: true };
+    const both: WarpMoments = { ...NO_MOMENTS, awaitingRoll: true, yesNoBox: true };
     expect(cursorWarp(both, NO_MOMENTS, GO_SCREEN)?.reason).toBe('yesNo');
   });
 });
@@ -143,6 +144,9 @@ describe('createCursorWarper —— 每帧一条，真的挪才调端口', () =>
   const frame = (over: Partial<CursorWarpFrame>): CursorWarpFrame => ({
     awaitingRoll: false,
     yesNoBox: false,
+    facilityPicker: false,
+    research: false,
+    dicePick: false,
     goScreen: GO_SCREEN,
     metrics: { scale: 2, offsetX: 0, offsetY: 0 },
     canvas: { left: 0, top: 0, dprX: 1, dprY: 1 },
@@ -204,5 +208,28 @@ describe('浏览器下是空操作', () => {
     } finally {
       delete tauriGlobal.__TAURI__;
     }
+  });
+});
+
+describe('★ 四处固定落点 (220,320) —— 各自 WM_CREATE 那一次（E-8 的收口）', () => {
+  // @source 0x0043fb54 / 0x0043ffc2（請選擇設施類別）、0x00440355（研究所選項目）、
+  //   0x004467de（遥控骰子小盘）：四处都是 `push 0x140 / push 0xdc / call SetCursorPos`。
+  for (const reason of ['facilityPicker', 'research', 'dicePick'] as const) {
+    it(`★ ${reason}：关 → 开挪到 (220,320)，开着不再挪`, () => {
+      const open: WarpMoments = { ...NO_MOMENTS, [reason]: true };
+      expect(cursorWarp(open, NO_MOMENTS, GO_SCREEN)).toEqual({
+        x: FIXED_WARP_TARGET.x,
+        y: FIXED_WARP_TARGET.y,
+        reason,
+      });
+      expect(FIXED_WARP_TARGET).toEqual({ x: 220, y: 320 });
+      expect(cursorWarp(open, open, GO_SCREEN)).toBeNull();
+      expect(cursorWarp(NO_MOMENTS, open, GO_SCREEN)).toBeNull();
+    });
+  }
+
+  it('★ 两处同时成立时按**登记表次序**取前一个（浮窗互斥，真冲突也不乱挪）', () => {
+    const both: WarpMoments = { ...NO_MOMENTS, facilityPicker: true, research: true };
+    expect(cursorWarp(both, NO_MOMENTS, GO_SCREEN)?.reason).toBe('facilityPicker');
   });
 });
