@@ -21,24 +21,25 @@ on:
 jobs:
   check:
     name: 三绿（typecheck + lint + test）
-    runs-on: ubuntu-latest
+    # ★ 钉死 24.04：ubuntu-latest 正在迁移，漂移会让「本地绿、CI 红」变得不可复现（W-06）
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # ★ assets/game/ 走 LFS；不拉的话 *.mkf / *.mid 只是指针文件，读它们的测试会炸
       #   （"mkf 索引表偏移非法: 1936876918" = 把 "version https://git-lfs…" 当成了表头）。
       #   素材几乎不变 ⇒ 按 LFS 对象清单做缓存，只有首次 / 缓存过期才消耗 LFS 流量。
       - name: LFS 对象清单（缓存键）
         # hashFiles 只认工作区内的文件 ⇒ 落在 .git/ 下（不会弄脏工作树）
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .git/lfs-ids
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .git/lfs
           key: lfs-v2-${{ hashFiles('.git/lfs-ids') }}
       - run: git lfs pull
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -73,11 +74,11 @@ jobs:
     env:
       RICH4_ASSETS: ${{ secrets.RICH4_ASSETS }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -122,7 +123,7 @@ jobs:
         run: pnpm --filter @rich4/desktop build --target ${{ matrix.target }} ${{ matrix.args }}
 
       - name: 归档产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rich4-remake-${{ matrix.platform }}
           # 三平台各自的产物目录都在这几个里
