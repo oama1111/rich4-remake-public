@@ -4,20 +4,23 @@
  *
  * 坐标全部照 `rich4_ui_letou.asm`（窗口过程 `fcn_0043010c`）抄，把最容易写错的
  * 几条钉住：
- *   · 状态 3/4/7/8 那几块**擦除矩形**是从干净底图原样拷回来的，`x1/y1` 是
- *     **闭区间端点**（宽度 = `x1 − dx + 1`），不是宽高；
+ *   · 状态 3/4/5/7 那几块**擦除矩形**是从干净底图原样拷回来的，
+ *     `x1/y1` 是**开区间**端点（宽度 = `x1 − dx`）—— exe 的实参逐个核过；
  *   · 各人持号表的起点是 `铭牌 + (0x36, 0x1e)`、号码间距 0x28、个位 +0x10，
  *     超过 12 个字符才折行；
  *   · 中奖号那两颗球**不滚**，直接用 37..46 贴出来；
  *   · ANM 的帧间隔是原版那个 880 ms（不是 FLIC 头里的 71）。
  */
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { MkfArchive, parseSpriteSheet, decodeImage } from '@rich4/assets-pipeline';
 import type { CeremonyStep, GameState } from '@rich4/core';
 import { ENTRY, POSE_RIGHT, TALLY_PLATES, lotteryCeremony } from '@rich4/core';
 import {
   ceremonyStepsFor,
   ANM_FRAME_MS,
   CEREMONY_BALLS,
+  CEREMONY_STEP_MAX_MS,
   CEREMONY_BLIT,
   CEREMONY_ERASE,
   DRAW_BUBBLE_AT,
@@ -101,58 +104,91 @@ describe('用到的图 @source rich4_ui_letou.asm 0x00431712 一带', () => {
 // ============================================================
 
 describe('台面擦除 @source fcn_0045643d 的各个调用点', () => {
-  /** `(dx, dy, x1, y1)` → 宽度/高度（**闭区间端点**）*/
-  /** 开区间端点 ⇒ 尺寸就是 `x1 − dx` */
+  /**
+   * `(dx, dy) → 尺寸`：`x1/y1` 是**开区间**端点 ⇒ 宽 = `x1 − dx`、高 = `y1 − dy`。
+   * 这一条是拿 exe 的实参核过的：右主持人那张 `Panel#2` 是 **206 宽**，
+   * 擦除宽度必须够把她整片盖掉（@source 0x00430418 的 `push 0x1a2`）。
+   */
   const size = (r: EraseRect): [number, number] => [r.x1 - r.dx, r.y1 - r.dy];
 
-  it('★ 摇球（步 2 / 状态 3 第一段）：右主持人整片 (472,66)-(592,346) 与她的左半 (472,116)-(516,205)', () => {
+  it('★ 摇球（步 2 / 状态 3 第一段）：右主持人**整片** 418×140，不是 120×281', () => {
+    // ★★ 旧值把宽度当成了闭区间端点、y1 又多算 100 点 ⇒ 只擦掉 120 宽的一条，
+    //    而那两张站姿/摊手图重叠区有 87 点 ⇒ 屏上出现**两个主持人**（长跑第 23 条）。
     const rows = CEREMONY_ERASE[2]!;
-    expect(rows).toHaveLength(3);
-    expect(rows[0]).toMatchObject({ dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42, x1: 0x250, y1: 0x15b });
-    expect(size(rows[0]!)).toEqual([120, 281]);
-    expect(rows[1]).toMatchObject({ dx: 7, dy: 0x74, sx: 7, sy: 0x74, x1: 0x8d, y1: 0xf7 });
-    expect(size(rows[1]!)).toEqual([134, 131]);
-    expect(rows[2]).toMatchObject({ dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x205, y1: 0xce });
-    expect(size(rows[2]!)).toEqual([45, 90]);
+    // 两条：右主持人整片（exe 的 472,66 + 418×168）与她那一段手臂（474,116 + 418×140）
+    expect(rows).toHaveLength(2);
+    // @source 0x00430418 `push 0x42 / 0x1a2 / [0x48c360]+0x24` → 图 8 @ (472,66)
+    expect(rows[0]).toMatchObject({ from: ENTRY.stage, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42 });
+    // `push 0x42 / 0x1a2` ⇒ (dx,dy)=(472,66)、(x1,y1)=(890,234) ⇒ 418×168（右缘越出 640，照原版不夹）
+    expect(size(rows[0]!)).toEqual([0x1a2, 0x8c]);
+    // @source 0x00430448 的 `fcn_00456495(dst, 图2, 0,340, 7,116, 134,130)` —— core 脚本已给
+    //   「左主持人的腿」那一条，本模块**不再重复**。
+    expect(rows).not.toContainEqual(expect.objectContaining({ dx: 7, dy: 0x74 }));
   });
 
-  it('★ 得主（步 4）/ 空号（步 7）的擦除完全一样：右脸 (472,66)-(520,346)、左脸 (7,66)-(141,346)、右下半身', () => {
+  it('★ 得主（步 4）/ 空号（步 7）的擦除完全一样：414×168 + 414×140', () => {
     const rows = CEREMONY_ERASE[4]!;
-    expect(rows).toHaveLength(3);
-    expect(rows[0]).toMatchObject({ dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x74, x1: 0x209, y1: 0x1fb });
-    expect(size(rows[0]!)).toEqual([49, 441]);
-    expect(rows[1]).toMatchObject({ dx: 7, dy: 0x42, sx: 7, sy: 0x74, x1: 0x8e, y1: 0x1fb });
-    expect(size(rows[1]!)).toEqual([135, 441]);
-    expect(rows[2]).toMatchObject({ dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x259, y1: 0x1fb });
-    expect(size(rows[2]!)).toEqual([129, 391]);
-    // 空号（步 7 / 状态 7）与得主那一步的擦除完全一样
+    expect(rows).toHaveLength(2);
+    // @source 0x00430519 `push 0xa8 / 0x19e / 0x42 / 0x1d8 / 0x42 / 0x1d8` —— 大笑那张（图 5）的地
+    expect(rows[0]).toMatchObject({ dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42 });
+    // `push 0xa8 / 0x19e` ⇒ (dx,dy)=(472,66)、(x1,y1)=(168,414) ⇒ 168×414
+    expect(size(rows[0]!)).toEqual([0xa8, 0x19e]);
+    // @source 0x00430543 `push 0x8c / 0x19e / 0x42 / 7 / 0x42 / 7` —— 左板 + 号码球那一片
+    expect(rows[1]).toMatchObject({ dx: 7, dy: 0x42, sx: 7, sy: 0x42 });
+    // `push 0x8c / 0x19e` ⇒ (dx,dy)=(7,66)、(x1,y1)=(140,414) ⇒ 133×348
+    expect(size(rows[1]!)).toEqual([0x8c, 0x19e]);
+    // ★ 两张图都**至少覆盖住前一个姿势**：图 5 是 124 宽、图 6 是 162 宽，
+    //   落点差 33 点（472→505）—— 擦除宽度小于 33 就会叠出第二个主持人。
+    expect(size(rows[0]!)[0]).toBeGreaterThan(505 - 472);
+    // 空号（步 7 / 状态 7）与得主那一步的擦除完全一样 @source 0x00430e2f / 0x00430e5f
     expect(CEREMONY_ERASE[7]).toEqual(CEREMONY_ERASE[4]);
-    // 收尾（步 8 / 状态 8）用的是**另一组**：只擦右臂 + 还原左脸
-    expect(CEREMONY_ERASE[8]).toHaveLength(2);
+    // 收尾（步 8 / 状态 8）那一条由 core 脚本给（右臂），本模块为空
+    expect(CEREMONY_ERASE[8]).toEqual([]);
   });
 
-  it('★ 数帧（步 5 / 状态 5）那两块：(0,150)-(418,270) 与 (150,270)-(300,360)', () => {
+  it('★ 数帧（步 5 / 状态 5）：一条 120×162（号码球台座那一带）', () => {
+    // @source 0x00430fe1 `push 0xa2 / 0x78 / 0x154 / 0 / 0x154 / 0`
     const rows = CEREMONY_ERASE[5]!;
-    expect(size(rows[0]!)).toEqual([419, 121]);
-    expect(size(rows[1]!)).toEqual([151, 91]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ dx: 0, dy: 0x154, sx: 0, sy: 0x154 });
+    expect(size(rows[0]!)).toEqual([0x78, 0xa2]);
   });
 
-  it('★ 收尾（步 8 / 状态 8）：右臂 (472,116)-(516,205) + 左脸还原用的是**图 3**的 (45,23)-(45,23)', () => {
-    const rows = CEREMONY_ERASE[8]!;
-    expect(rows[0]).toMatchObject({ from: ENTRY.stage, dx: 0x1d8, dy: 0x74, x1: 0x205, y1: 0xce });
-    // 左脸那一条：源与目标都从子图自己的 (0x2d,0x17) 起，只有 1×1
-    expect(rows[1]).toMatchObject({ from: ENTRY.board, dx: 0x34, dy: 0x59, sx: 0x2d, sy: 0x17, x1: 0x5b, y1: 0x3f });
+  it('★ 收尾（步 8 / 状态 8）的右臂擦除由 core 脚本给 @source 0x00430961', () => {
+    // 这一步 core 的 `patches` 已经带了两条：
+    //   ① 右主持人整条（从舞台 (489,116) 拷 151×364 回同点）@source 0x00430961 那一支
+    //   ② 左脸（从**图 3** 自己的 (45,23) 拷 50×40 回 (52,89)）@source 0x004309d4
+    const own = lotteryCeremony({ number: 6, winner: 0, prize: 5, lottery: [], pool: 0, rigged: false })
+      .find((s) => s.state === 8)!;
+    expect(own.patches).toHaveLength(2);
+    expect(own.patches[0]).toMatchObject({ from: ENTRY.stage, at: [489, 116], from4: [489, 116, 151, 364] });
+    expect(own.patches[1]).toMatchObject({ from: ENTRY.board, at: [52, 89], from4: [45, 23, 50, 40] });
   });
 
-  it('★ 摇球那一步要重画两个主持人、数帧那一步重画举板、收尾那一步重画点手指的姿势', () => {
+  it('★ 擦除矩形都不许越过 640×480 舞台（除原版自己越界的那两条）', () => {
+    for (const rows of CEREMONY_ERASE) {
+      for (const r of rows) {
+        expect(r.dx).toBeGreaterThanOrEqual(0);
+        expect(r.dy).toBeGreaterThanOrEqual(0);
+        expect(r.x1).toBeGreaterThan(r.dx);
+        expect(r.y1).toBeGreaterThan(r.dy);
+      }
+    }
+  });
+
+  it('★ 摇球那一步要重画两个主持人、数帧那一步重画举板；收尾那一步由 core 贴', () => {
     // ★ 重画与擦除**同一格**：擦的是他们身上的板与腿（CEREMONY_ERASE[2]），
-    //   擦完紧接着把他们自己贴回去（@source 0x430379 / 0x430402）
+    //   擦完紧接着把他们自己贴回去（@source 0x00430418 之后那两次 `fcn_00456418`）
     expect(CEREMONY_BLIT[2]).toEqual([
       { entry: ENTRY.board, at: [7, 0x42] },
       { entry: ENTRY.presenting, at: [0x1d8, 0x42] },
     ]);
     expect(CEREMONY_BLIT[5]).toEqual([{ entry: ENTRY.jumpBoard, at: [0, 0] }]);
-    expect(CEREMONY_BLIT[8]).toEqual([{ entry: ENTRY.pointing, at: POSE_RIGHT }]);
+    // ★ core 脚本的状态 8 自己带了 `{ entry: 图1, at: POSE_RIGHT }` —— 这里不再重复贴
+    const own = lotteryCeremony({ number: 6, winner: 0, prize: 5, lottery: [], pool: 0, rigged: false })
+      .find((s) => s.state === 8)!;
+    expect(own.blits).toEqual([{ entry: ENTRY.pointing, at: POSE_RIGHT }]);
+    expect(CEREMONY_BLIT[8]).toEqual([]);
   });
 
   it('★ 号码球：开号（状态 3 第二段）与 4/5/6/7 各重贴一次', () => {
@@ -213,6 +249,12 @@ describe('resolveErase —— 闭区间端点、夹边界', () => {
 // ============================================================
 
 /** 一份最小的 GameState —— 本屏只读这几项 */
+function withTicket(number: number, player: number): number[] {
+  const lot = new Array<number>(36).fill(0);
+  lot[number] = player + 1;
+  return lot;
+}
+
 function makeState(over: Partial<GameState> = {}): GameState {
   return {
     day: 14,
@@ -987,5 +1029,162 @@ describe('drawCeremony 只做 IO', () => {
     lotteryDrawScreen.event!(before, after, env);
     lotteryDrawScreen.draw(env);
     expect(spy.images[0]).toMatchObject({ resource: 15, index: 0, x: 0, y: 0 });
+  });
+});
+
+// ============================================================
+//  真值：擦除矩形必须**真的盖住**那个姿势（用素材自己的像素量）
+// ============================================================
+
+/**
+ * 2026-09-19 长跑第 23 条的回归。
+ *
+ * 症状：右侧主持人画了两个（原来那张 + 新姿势那张叠在一起）。
+ * 根因：`CEREMONY_ERASE` 的值抄错了 —— 宽度被当成闭区间端点、
+ *   `y1` 又多算 100 点。这里不看常量、**直接量素材**：
+ *   把那两张图各自的**不透明包围盒**算出来，检查「擦掉旧的」那句是不是兑现了。
+ *
+ * 掉进这个坑的门槛很低（三个调用点的实参形状各不相同），所以这一条按
+ * 「几何覆盖」写，而不是按「等于某个数」写 —— 换更好的抄法也不会误红。
+ */
+describe('真值：右侧主持人不会被画两次（长跑第 23 条）', () => {
+  const ROOT = process.env.RICH4_WORKSPACE ?? '';
+  const hasAssets = existsSync(`${ROOT}/Rich4/Panel.mkf`);
+  const d = hasAssets ? describe : describe.skip;
+
+  /**
+   * 屏上真正会被改到的范围 = `resolveErase` 出来的那块（源被夹到子图、再夹到舞台）。
+   * 这就是「擦掉」的可见效果 —— 按屏上像素算，不按传进去的端点算。
+   */
+  function eraseHits(step: number, spriteW: number, spriteH: number): { x0: number; y0: number; x1: number; y1: number }[] {
+    const out: { x0: number; y0: number; x1: number; y1: number }[] = [];
+    for (const r of CEREMONY_ERASE[step] ?? []) {
+      if (r.from !== ENTRY.stage) continue; // 只有从舞台拷回才是「变回背景」
+      const c = resolveErase(r, spriteW, spriteH);
+      if (c === null) continue;
+      out.push({ x0: c.dx, y0: c.dy, x1: c.dx + c.w - 1, y1: c.dy + c.h - 1 });
+    }
+    return out;
+  }
+
+  /** 屏上可见范围 —— 越出 640×480 的像素看不见，不必擦 */
+  function onScreen(rect: { x: number; y: number; w: number; h: number }): { x0: number; y0: number; x1: number; y1: number } {
+    return {
+      x0: Math.max(0, rect.x),
+      y0: Math.max(0, rect.y),
+      x1: Math.min(639, rect.x + rect.w - 1),
+      y1: Math.min(479, rect.y + rect.h - 1),
+    };
+  }
+
+  /** 这些擦除能不能盖住 `rect` 的屏上可见范围 */
+  function covered(
+    hits: readonly { x0: number; y0: number; x1: number; y1: number }[],
+    rect: { x: number; y: number; w: number; h: number },
+  ): boolean {
+    const v = onScreen(rect);
+    for (let y = v.y0; y <= v.y1; y++) {
+      for (let x = v.x0; x <= v.x1; x++) {
+        if (!hits.some((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1)) return false;
+      }
+    }
+    return true;
+  }
+
+  d('@source Panel#2 / #5 / #6 的可见范围', () => {
+    /** `Panel#15` 每张子图的真实尺寸（从素材表里问，别抄） */
+    function sizeOf(index: number): { w: number; h: number } {
+      const raw = new MkfArchive(new Uint8Array(readFileSync(`${ROOT}/Rich4/Panel.mkf`))).read(15, 'none');
+      const sheet = parseSpriteSheet(raw)!;
+      const im = decodeImage(sheet, raw, index);
+      return { w: im.width, h: im.height };
+    }
+
+    it('★ 素材：图 2 = 206×413、图 5 = 124×411、图 6 = 162×460（擦除尺寸要按这个来）', () => {
+      expect(sizeOf(2)).toEqual({ w: 206, h: 413 });
+      expect(sizeOf(5)).toEqual({ w: 124, h: 411 });
+      expect(sizeOf(6)).toEqual({ w: 162, h: 460 });
+    });
+
+    it('★★ 摇球（步 2）：图 2 的**上段（头 + 上身）**被擦掉，且摊手那张仍贴在原位', () => {
+      const s2 = sizeOf(2);
+      const hits = eraseHits(2, 640, 480);
+      // 右主持人换姿势时**只有头/上身那一段**被换掉（@source 0x00430418 擦 472,66 + 418×168）
+      // ⇒ 这一段必须全被擦到；旧值（x1=0x250）只盖到 592 ⇒ 这一条会红。
+      expect(covered(hits, { x: 472, y: 66, w: 168, h: 168 })).toBe(true);
+      // 旧的 120 宽版本盖不住 (592,66)-(639,233) 那一段
+      const oldHits = resolveErase(
+        { from: ENTRY.stage, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42, x1: 0x250, y1: 0x15b },
+        640,
+        480,
+      )!;
+      expect(covered([{ x0: oldHits.dx, y0: oldHits.dy, x1: oldHits.dx + oldHits.w - 1, y1: oldHits.dy + oldHits.h - 1 }], {
+        x: 472,
+        y: 66,
+        w: 168,
+        h: 168,
+      })).toBe(false);
+      // 擦完必须把摊手那张**贴回同一格**（不然头被擦掉就没了）
+      expect(CEREMONY_BLIT[2]).toContainEqual({ entry: ENTRY.presenting, at: [0x1d8, 0x42] });
+      expect(s2.w).toBe(206);
+    });
+
+    it('★★ 得主（步 4）/ 空号（步 7）：图 2 的屏上可见范围全被擦掉', () => {
+      const s2 = sizeOf(2);
+      for (const step of [4, 7]) {
+        expect(covered(eraseHits(step, 640, 480), { x: 472, y: 66, w: s2.w, h: s2.h })).toBe(true);
+      }
+      expect(CEREMONY_ERASE[7]).toEqual(CEREMONY_ERASE[4]);
+    });
+
+    it('★ 分辩力：旧值（`x1 = 0x1d8+49`）盖不住图 2 的右半 —— 那正是「两个主持人」', () => {
+      const s2 = sizeOf(2);
+      const oldStep4 = [
+        { from: ENTRY.stage, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42, x1: 0x1d8 + 49, y1: 0x42 + 441 },
+        { from: ENTRY.stage, dx: 7, dy: 0x42, sx: 7, sy: 0x42, x1: 7 + 135, y1: 0x42 + 441 },
+      ] as EraseRect[];
+      const hits = oldStep4
+        .map((r) => resolveErase(r, 640, 480))
+        .filter((c): c is NonNullable<typeof c> => c !== null)
+        .map((c) => ({ x0: c.dx, y0: c.dy, x1: c.dx + c.w - 1, y1: c.dy + c.h - 1 }));
+      expect(covered(hits, { x: 472, y: 66, w: s2.w, h: s2.h })).toBe(false);
+      // 露出来的宽度 = 206 里没擦到的那一段
+      expect(hits[0]!.x1).toBe(520);
+    });
+  });
+
+});
+
+describe('死锁保护：影片解不出来时屏也必须能关掉', () => {
+  it('★ 每步最多停 90 秒 —— 摇球那步的正常时长（37 秒 + 1 秒）离它还有一倍', () => {
+    // 42 帧 × 880 ms + 20 拍 × 50 ms
+    expect(CEREMONY_STEP_MAX_MS).toBeGreaterThan(42 * ANM_FRAME_MS + 20 * 50);
+    expect(CEREMONY_STEP_MAX_MS).toBeLessThanOrEqual(180_000); // 看门狗报停摆的阈值之下
+  });
+
+  it('★★ 反证：`flic()` 永远返回 null 时，演出也会自己走完（不再钉死整局）', () => {
+    resetLotteryDrawScreenState();
+    // ★ 关键：`flic` 恒 null —— 模拟 `uiFlicNow` 把「解不出来」缓存成 null 的那种局面
+    const env = makeEnv(makeState({ players: [] }), {});
+    const before = makeState({ day: 14, totalDays: 100, pool: 5000, lottery: withTicket(6, 0) });
+    const after = makeState({
+      day: 15,
+      totalDays: 101,
+      pool: 0,
+      lottery: new Array<number>(36).fill(0),
+      players: [
+        { index: 0, cash: 15000, character: 4 },
+        { index: 1, cash: 10000, character: 1 },
+      ] as GameState['players'],
+    });
+    lotteryDrawScreen.event!(before, after, env);
+    expect(lotteryDrawActive()).toBe(true);
+    let ticks = 0;
+    while (lotteryDrawActive() && ticks < 4000) {
+      env.now += 50;
+      lotteryDrawScreen.tick!(env);
+      ticks++;
+    }
+    expect(lotteryDrawActive()).toBe(false);
   });
 });

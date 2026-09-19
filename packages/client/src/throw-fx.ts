@@ -573,28 +573,43 @@ export function cardFlightPlan(q: CardFlightQuery): CardFlightPlan | null {
 export const OBJECT_TYPE_TIMEBOMB = 18;
 
 /**
- * 附身物相对主人的**屏幕**偏移表（8 项，按图号取）。
+ * 附身物相对主人的**屏幕**偏移表（普通那张，8 项，按图号取）。
  *
- * @source `fcn_0040829d` 的附身那一支 VA 0x00408c65（普通）：
+ * @source `fcn_0040829d` 的附身那一支 VA 0x00408c65：
  * ```asm
  * 00408c65  esi = [esp+0x54]                    ; ★ 图号（见 `attachedImageIndex`）
- * 00408c69  eax = dword [esi*8 + 0x474951]      ; dy
- * 00408c70  add [esp+0x30], eax                 ; 屏幕 Y += dy
- * 00408c74  eax = dword [esi*8 + 0x474955]      ; dx
- * 00408c7b  add [esp+0x3c], eax                 ; 屏幕 X += dx
+ * 00408c69  eax = dword [esi*8 + 0x474951]      ; ★ 表项 +0
+ * 00408c70  add [esp+0x30], eax                 ; ★ +0 加到**屏幕 X**
+ * 00408c74  eax = dword [esi*8 + 0x474955]      ; ★ 表项 +4
+ * 00408c7b  add [esp+0x3c], eax                 ; ★ +4 加到**屏幕 Y**
  * ```
- * 基址 0x474951，**每项 8 字节**（`+0` = dy、`+4` = dx），8 项正好围成一圈
- * （半径 22/10 像素 —— 神明站在主人**身侧**，不是正上方）。
+ * ★★ **表项的内存顺序是 `(X, Y)`，不是 `(Y, X)`** —— 2026-09-19 逐条核过
+ *   （试玩3 #10）。`[esp+0x30]` 是 X、`[esp+0x3c]` 是 Y，证据在紧邻的上游：
+ *   VA 0x00409042..0x00409053 用投影表的 `0x46ccf2`（**第 2 个 int16 = X**，
+ *   见 `@rich4/data` 的 `projection.ts` 那段订正）算出 X 存 `[esp+0x30]`；
+ *   VA 0x00409057..0x00409068 用 `0x46ccf0`（Y）算出 Y 存 `[esp+0x3c]`。
+ *   写入绘制槽那一侧也是同一个顺序：VA 0x00408f28 `[esp+0x30] → 槽 +4`（Y）、
+ *   VA 0x00408f34 `[esp+0x3c] → 槽 +6`（X），而 blitter `fcn_00456770`
+ *   （VA 0x0040988e/0x00409896）先 push 槽 +6 当**列**、再 push 槽 +4 当**行**。
+ *   下面这两个数组的 **`dx` 就是表项 +0（喂 X）、`dy` 是表项 +4（喂 Y）** ——
+ *   名字与喂法一一对应，`render.ts` 的 `p.x + t.offsetX` / `p.y + t.offsetY`
+ *   即照抄。
+ *
+ * 数值逐字节核过（`python3 tools/disasm.py dump 0x474951 16 4`，见
+ * `throw-fx.test.ts` 那条逐 dword 对照）——8 项围成一圈，半径 22/10。
+ * ⚠️ 这一圈与 8 个朝向**不是**简单旋转：它是**逐格手摆的**（X 只取 ±10/±22、
+ *   Y 也是），故「它在不在主人背后」这件事**不要按旋转推**，要看
+ *   `throw-fx.test.ts` 里那条用 `directionOf` 现算朝向、再与偏移求点积的用例。
  */
-export const ATTACHED_OFFSETS: readonly { dy: number; dx: number }[] = [
-  { dy: -10, dx: -22 },
-  { dy: -22, dx: -10 },
-  { dy: -22, dx: 10 },
-  { dy: -10, dx: 22 },
-  { dy: 10, dx: 22 },
-  { dy: 22, dx: 10 },
-  { dy: 22, dx: -10 },
-  { dy: 10, dx: -22 },
+export const ATTACHED_OFFSETS: readonly { x: number; y: number }[] = [
+  { x: -10, y: -22 },
+  { x: -22, y: -10 },
+  { x: -22, y: 10 },
+  { x: -10, y: 22 },
+  { x: 10, y: 22 },
+  { x: 22, y: 10 },
+  { x: 22, y: -10 },
+  { x: 10, y: -22 },
 ];
 
 /**
@@ -607,18 +622,22 @@ export const ATTACHED_OFFSETS: readonly { dy: number; dx: number }[] = [
  * 004090ba  cmp byte [ownerBase + 0x496ba7], 0   ; ★ 主人 +0x3f = god_info
  *           je  0x408c65                        ;   主人身上没神 → 还是上面那张表
  * 004090cb  eax = dword [esi*8 + 0x474991]      ; 换这一张（+0x40 = 8 项之后）
+ * 004090d2  add [esp+0x30], eax                 ; ★ +0 → 屏幕 X（同上面那张）
+ * 004090d6  eax = dword [esi*8 + 0x474995]
+ * 004090dd  jmp 0x408c7b                        ; → +4 加到屏幕 Y
  * ```
  * 即「主人身上已经有神 ⇒ 炸弹往外挪一圈，别把神挡了」。
+ * 表项的 `(X, Y)` 顺序与基址同源，见 `ATTACHED_OFFSETS` 的说明。
  */
-export const ATTACHED_OFFSETS_WITH_GOD: readonly { dy: number; dx: number }[] = [
-  { dy: -18, dx: -44 },
-  { dy: -44, dx: -18 },
-  { dy: -44, dx: 18 },
-  { dy: -18, dx: 44 },
-  { dy: 18, dx: 44 },
-  { dy: 44, dx: 18 },
-  { dy: 44, dx: -18 },
-  { dy: 18, dx: -44 },
+export const ATTACHED_OFFSETS_WITH_GOD: readonly { x: number; y: number }[] = [
+  { x: -18, y: -44 },
+  { x: -44, y: -18 },
+  { x: -44, y: 18 },
+  { x: -18, y: 44 },
+  { x: 18, y: 44 },
+  { x: 44, y: 18 },
+  { x: 44, y: -18 },
+  { x: 18, y: -44 },
 ];
 
 /**
@@ -665,11 +684,11 @@ export function attachedOffset(
   type: number,
   ownerGod: number,
   image: number,
-): { dy: number; dx: number } {
+): { x: number; y: number } {
   const table = type === OBJECT_TYPE_TIMEBOMB && ownerGod !== 0
     ? ATTACHED_OFFSETS_WITH_GOD
     : ATTACHED_OFFSETS;
-  return table[image & 7] ?? { dy: 0, dx: 0 };
+  return table[image & 7] ?? { x: 0, y: 0 };
 }
 
 /**

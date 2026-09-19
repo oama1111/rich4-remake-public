@@ -16,6 +16,19 @@ import { transferMoney, type Company } from './payment.ts';
 import { adjustTollByGod } from './god-toll.ts';
 import { truncTowardZero } from './rounding.ts';
 
+/**
+ * 住宅「請付…元」那一句最后那个 `%s`（费名）= **「過路費」**。
+ *
+ * @source 0x00419d2e / 0x00419d63 两处都是 `mov eax, dword [0x47517c]`
+ *   —— 取的是那张 13 项费名指针表的**第 0 项**；`dump 0x47517c 4 4` 读出来
+ *   是 `0x0046388a`，该地址上的串 =「過路費」（`dump 0x46388a 6 1`）。
+ *
+ * ⚠️ 与 `places/company.ts` 的 `FEE_NAMES[0]` 是**同一个串**（同一张表）。
+ *   这里另立一个常量只是为了让 `rules/` 不必反向 import `places/`
+ *   （`places/company.ts` 已经 import 了 `rules/facility.ts`，反过来会成环）。
+ */
+export const LAND_TOLL_FEE_NAME = '過路費';
+
 export interface RentShare {
   /** 收款方玩家下标 */
   payee: number;

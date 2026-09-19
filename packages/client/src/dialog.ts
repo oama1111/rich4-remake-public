@@ -318,6 +318,16 @@ function wrap(ctx: CanvasRenderingContext2D, text: string, maxW: number): string
 }
 
 /**
+ * 这一次的框是不是原版的 YES/NO 控件。
+ *
+ * ★ **两处共用**：`layoutDialog` 照它画/命中，「原版会替玩家把指针挪进框」
+ *   （试玩3 #2，`cursor-warp.ts`）也照它判时机 —— 两边各判一套迟早对不上。
+ */
+export function usesYesNo(ui: InteractionUi, page: AmountPage | null): boolean {
+  return page === null && ui.choices.length === 2;
+}
+
+/**
  * 算出这一帧对话框的版式。
  *
  * 绘制与命中判定**共用**它 —— 两边各算一遍迟早对不上，而且错法特别难看出来
@@ -361,7 +371,7 @@ export function layoutDialog(
       : ui.choices.map((c, i) => ({ label: c.label, hit: { kind: 'choice' as const, index: i } }));
 
   // ——— 两个选项 → 原版的 YES/NO ———
-  const useYesNo = page === null && ui.choices.length === 2;
+  const useYesNo = usesYesNo(ui, page);
   if (useYesNo) {
     const halves = yesNoHalves();
     return {

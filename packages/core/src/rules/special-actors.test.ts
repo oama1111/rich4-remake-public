@@ -207,7 +207,13 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
       before,
       line,
     );
-    expect(r.cleared).toEqual([0, 1]);
+    // ★ 试玩3 #11：`cleared` 从「下标」改成「下标 + 在哪一格被扫掉」——
+    //   客户端靠 `step` 把那一件留在原地直到补间走到那一格。
+    //   3 号在第 3 格（`path[2]`）、7 号在第 7 格（`path[6]`）。
+    expect(r.cleared).toEqual([
+      { index: 0, step: 2 },
+      { index: 1, step: 6 },
+    ]);
     expect(r.objects[0]?.nodeId).toBe(0);
     expect(r.objects[1]?.nodeId).toBe(0);
     // 40 号在九步之外，原封不动

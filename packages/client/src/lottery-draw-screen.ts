@@ -99,7 +99,6 @@ import {
   CEREMONY_TICK_MS,
   CEREMONY_VOICE_MS,
   ENTRY,
-  POSE_RIGHT,
   TALLY_PLATES,
   TALLY_TEXT,
   lotteryCeremony,
@@ -193,79 +192,113 @@ export interface EraseRect {
 const S = ENTRY.stage;
 
 /**
- * 状态 3 的台面清理。
+ * 状态 3（摇球）的台面清理 —— ★ **右主持人的站姿要整片擦掉**，再重画摊手那一张。
  *
- * @source 0x0043039d..0x0043041d（`fcn_0045643d(dst, 图0, dx, dy, sx, sy, x1, y1)`，
- *   **x1/y1 是闭区间端点**）：
+ * @source 0x004303d0 / 0x00430418 / 0x00430448；`x1/y1` 是**开区间**端点，
+ *   尺寸 = `x1 − dx`、`y1 − dy`（与 `resolveErase` 同一口径）：
  * ```asm
- * fcn_0045643d(dst, 图0, 0x10, 0x154, 0x10, 0x154, 0x260, 0x182) ; 持号表那一条带
- * fcn_0045643d(dst, 图0, 0x1d8, 0x42, 0x1d8, 0x42, 0x250, 0x15a) ; ★ 右主持人那一整片
- * fcn_0045643d(dst, 图0, 7, 0x74, 7, 0x74, 0x8d, 0xf6)          ; ★ 左主持人的板
- * fcn_0045643d(dst, 图0, 0x1d8, 0x74, 0x1d8, 0x74, 0x204, 0xcd)  ; ★ 右主持人左半
+ * 004303d0 push 0x182/0x260/0x154/0x10/0x154/0x10 / 图0 / dst
+ *          → fcn_0045643d(dst, 图0, 16,340, 16,340, 608,386)   ; 持号表那一条带（core 已给）
+ * 00430418 push 0x42/0x1a2 / 0x24 / dst
+ *          → fcn_00456418(dst, 图8, 472, 66)                   ; ★ 右主持人（图 2）整片擦回台面
+ * 00430448 ... fcn_00456495(dst, 图2, 0,340, 7,116, 134,130)    ; 左主持人的腿（core 已给）
  * ```
+ *
+ * ★★ **先前这三条全抄错了**：宽度被当成闭区间端点、`y1` 又多算了 100 点。
+ *   右主持人那张 `Panel#2` **206 宽**，只擦 48 点是擦不掉的 —— 于是摊手那张
+ *   （图 2，落点 472）叠在站姿那张上，屏上就是**两个主持人**（试玩长跑第 23 条）。
  */
-const S3_RIGHT: EraseRect = { from: S, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42, x1: 0x250, y1: 0x15b };
-const S3_BOARD: EraseRect = { from: S, dx: 7, dy: 0x74, sx: 7, sy: 0x74, x1: 0x8d, y1: 0xf7 };
-const S3_RIGHT_ARM: EraseRect = { from: S, dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x205, y1: 0xce };
+const S3_RIGHT: EraseRect = { from: S, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42, x1: 0x1d8 + 0x1a2, y1: 0x42 + 0x8c };
+const S3_RIGHT_ARM: EraseRect = { from: S, dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x1d8 + 0x1a2, y1: 0x74 + 0x8c };
 
 /**
- * 状态 4 与状态 7 各自的台面清理 @source 0x0043058f 起（状态 4）、0x00430eb0 起（状态 7）：
+ * 状态 4（得主）与状态 7（空号）的台面清理 —— 两条支路**完全一样**。
+ *
+ * @source 0x00430519 / 0x00430543（状态 4）、0x00430e2f / 0x00430e5f（状态 7）：
  * ```asm
- * fcn_0045643d(dst, 图0, 0x1d8, 0x42, 0x1d8, 0x74, 0x208, 0x15a) ; 右主持人的脸
- * fcn_0045643d(dst, 图0, 7,     0x42, 7,     0x74, 0x8d,  0x15a) ; 左主持人的脸
- * fcn_0045643d(dst, 图0, 0x1d8, 0x74, 0x1d8, 0x74, 0x258, 0xf6)  ; 右主持人的下半身
+ * 00430519 push 0xa8/0x19e/0x42/0x1d8/0x42/0x1d8 / 图0 / dst
+ *          → fcn_0045643d(dst, 图0, 472,66, 472,66, 414,168)   ; ★ 大笑那张（图 5）的地
+ * 00430543 push 0x8c/0x19e/0x42/7/0x42/7 / 图0 / dst
+ *          → fcn_0045643d(dst, 图0, 7,66, 7,66, 414,140)       ; 左主持人的板 + 号码球那一片
+ * 0043055f push 0/0 / +0x54 / dst  → 图6 @ (0,0)               ; 左：举板过顶跳（core 已给）
+ * 0043057e push 0x42/0x1f9 / +0x48 / dst → 图5 @ (505,66)      ; 右：大笑（core 已给）
+ * 004305a2 push 0xc8/0x140 / +0x12c / dst → 图24 @ (320,200)   ; 中央红爆炸框（core 已给）
+ * ```
+ * ⚠️ 图号按 `[0x48c360] + 0xNN`、每项 12 字节算：`+0x54` = 图 **6**、`+0x48` = 图 **5**、
+ *   `+0x12c` = 图 **24**。先前把擦除矩形写成 49/135 宽（还把 y1 顶到 0x1fb）——
+ *   图 5 是 **124 宽**、图 2 是 **206 宽**，擦不掉就叠出第二个主持人。
+ */
+const S4_FACE_RIGHT: EraseRect = { from: S, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42, x1: 0x1d8 + 0xa8, y1: 0x42 + 0x19e };
+const S4_FACE_LEFT: EraseRect = { from: S, dx: 7, dy: 0x42, sx: 7, sy: 0x42, x1: 7 + 0x8c, y1: 0x42 + 0x19e };
+
+/**
+ * 状态 5（数 30 帧）@source 0x00430fe1 / 0x0043100e / 0x0043103e：
+ * ```asm
+ * 00430fe1 push 0xa2/0x78/0x154/0/0x154/0 / 图0 / dst
+ *          → fcn_0045643d(dst, 图0, 0,340, 0,340, 594,460)     ; 号码球那条带连台座一起擦回去
+ * 0043100e push 0/0x154 / +0x54 / dst → 图6 @ (0,340)          ; 举板过顶跳（下半截）
+ * 0043103e push 0/0x154 / +0x48 / dst → 图5 @ (505,340)        ; 大笑（下半截）
  * ```
  */
-const S4_FACE_RIGHT: EraseRect = { from: S, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x74, x1: 0x209, y1: 0x1fb };
-const S4_FACE_LEFT: EraseRect = { from: S, dx: 7, dy: 0x42, sx: 7, sy: 0x74, x1: 0x8e, y1: 0x1fb };
-const S4_BODY_RIGHT: EraseRect = { from: S, dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x259, y1: 0x1fb };
-
-/** 状态 5 数满帧之后的两块 @source 0x00430fc8 / 0x00430fe6 */
-const S5_TOP: EraseRect = { from: S, dx: 0, dy: 0x96, sx: 0, sy: 0x96, x1: 0x1a3, y1: 0x10f };
-const S5_MID: EraseRect = { from: S, dx: 0x96, dy: 0x10e, sx: 0x96, sy: 0x10e, x1: 0x12d, y1: 0x169 };
-
-/** 状态 8 的右臂 @source 0x43098c；左脸还原用的是**图 3 自己**@source 0x4309ab */
-const S8_RIGHT_ARM: EraseRect = { from: S, dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x205, y1: 0xce };
-const S8_LEFT_FACE: EraseRect = { from: ENTRY.board, dx: 0x34, dy: 0x59, sx: 0x2d, sy: 0x17, x1: 0x5b, y1: 0x3f };
+const S5_TOP: EraseRect = { from: S, dx: 0, dy: 0x154, sx: 0, sy: 0x154, x1: 0x78, y1: 0x154 + 0xa2 };
 
 /**
  * 每个演出步骤在 core 脚本之外**还要补的**擦除 —— 下标 = `lotteryCeremony()` 的步号。
  *
- * 之所以补在这里而不是改 `lottery-ceremony.ts`：那是**共享**模块，
- * 而本卡只许动自己的 client 文件（见卡片的 files 一栏）。
+ * ⚠️ **只补 core 脚本没给的那些**。`lotteryCeremony()` 的 `patches` 已经带着
+ *   持号表那一条带（`CLEAR_PLATES_BAND`，每个状态都调）、状态 3 里左主持人的腿、
+ *   状态 4/6/8 各自那几块（含状态 8 的右臂 151×364 与左脸 50×40）——
+ *   这里再写一份就会重复（先前正是如此，而且值与 exe 对不上）。
+ *
+ * ⚠️ 这张表的下标是**步号**；`lotteryCeremony()` 的状态序列是
+ *   `[1, 2, 3, 3, 4, 5, 6, 8, 9, 10]`（中奖）或 `[1, 2, 3, 3, 7, 8, 9, 10]`（空号）。
  */
 export const CEREMONY_ERASE: readonly (readonly EraseRect[])[] = [
   [], // 步 0 = 状态 1 开场白
   [], // 步 1 = 状态 2 报幕
-  [S3_RIGHT, S3_BOARD, S3_RIGHT_ARM], // 步 2 = 状态 3 摇球（持号表那一条带 core 脚本已经给了）
-  [], // 步 3 = 状态 3 第二段：开号（台面已经干净，只要贴球）
-  [S4_FACE_RIGHT, S4_FACE_LEFT, S4_BODY_RIGHT], // 步 4 = 状态 4 得主
-  [S5_TOP, S5_MID], // 步 5 = 状态 5 数帧
-  [], // 步 6 = 状态 6 恭喜
-  [S4_FACE_RIGHT, S4_FACE_LEFT, S4_BODY_RIGHT], // 步 7 = 状态 7 空号
-  [S8_RIGHT_ARM, S8_LEFT_FACE], // 步 8 = 状态 8 收尾（与状态 7 是两条支路，各占一格）
-  [], // 步 9 = 状态 9 希望下次
+  // 步 2 = 状态 3 摇球 @source 0x00430418（右主持人整片）+ core 已给的持号表带与左腿
+  [S3_RIGHT, S3_RIGHT_ARM],
+  [], // 步 3 = 状态 3 尾段：开号（core 已给持号表带，台面已经干净）
+  // 步 4 = 状态 4 得主 @source 0x00430519 / 0x00430543
+  [S4_FACE_RIGHT, S4_FACE_LEFT],
+  // 步 5 = 状态 5 数帧 @source 0x00430fe1
+  [S5_TOP],
+  // 步 6 = 状态 6 恭喜（core 已给）
+  [],
+  // 步 7 = 状态 7 空号 @source 0x00430e2f / 0x00430e5f（与状态 4 同一组）
+  //        或 状态 8 收尾 @source 0x00430961（core 已给）
+  [S4_FACE_RIGHT, S4_FACE_LEFT],
+  [],
+  // 步 8 = 状态 9 希望下次
+  [],
+  // 步 9 = 状态 10 行动要快
+  [],
 ];
 
-/** 每个演出步骤在 core 脚本之外**还要补的**贴图 */
+/**
+ * 每个演出步骤在 core 脚本之外**还要补的**贴图。
+ *
+ * ⚠️ 状态 8 那一条（擦完右臂重画点手指的姿势）**core 脚本已经给了**
+ *   （`lotteryCeremony()` 的 `blits: [{ entry: 图1, at: POSE_RIGHT }]`），
+ *   所以这里为空 —— 先前重复贴了两遍。
+ */
 export const CEREMONY_BLIT: readonly (readonly CeremonyBlit[])[] = [
   [], // 步 0 = 状态 1
   [], // 步 1 = 状态 2
   // 步 2 = 状态 3 摇球：擦完台面要**把两个主持人重画回去**
-  //    （原版擦的是他们身上的板与腿，不是他们本人）
-  //    @source 0x430379 图 3 @ (7,0x42)、0x430402 图 2 @ (0x1d8,0x42)
-  //   ★ 与 `CEREMONY_ERASE[2]` 同一格（擦与重画都在状态 3 的第一段）；
-  //     步 3（开号）只贴球。
+  //   （原版擦的是他们身上的板与腿，不是他们本人）
+  //   @source 0x00430418 图 8 @ (472,66) 之后 —— 0x004301b0 那一支里
+  //     图 3 @ (7,0x42)（`push 0x42 / 7 / +0x24`）与 图 2 @ (0x1d8,0x42)
+  //     （`push 0x42 / 0x1d8 / +0x24`）紧接着擦除各贴一次。
   [{ entry: ENTRY.board, at: [7, 0x42] }, { entry: ENTRY.presenting, at: [0x1d8, 0x42] }],
-  [], // 步 3 = 状态 3 开号（脚本已给球，其余为空）
-  [], // 步 4 = 状态 4（脚本已给全）
-  // 步 5 = 状态 5：擦掉台面后，举板要重画 @source 0x431044（两个号码球见 `CEREMONY_BALLS`）
+  [], // 步 3 = 状态 3 开号（core 已给球，其余为空）
+  [], // 步 4 = 状态 4（core 已给全）
+  // 步 5 = 状态 5：擦掉台面后，举板要重画 @source 0x0043100e（两个号码球见 `CEREMONY_BALLS`）
   [{ entry: ENTRY.jumpBoard, at: [0, 0] }],
   [], // 步 6 = 状态 6
-  [], // 步 7 = 状态 7 空号
-  // 步 8 = 状态 8 收尾：擦完右臂与左脸要把点手指的姿势重画回去 @source 0x4309cd
-  [{ entry: ENTRY.pointing, at: POSE_RIGHT }],
-  [], // 步 9 = 状态 9
+  [], // 步 7 = 状态 7 空号 / 状态 8 收尾（core 已给）
+  [], // 步 8 = 状态 9
+  [], // 步 9 = 状态 10
 ];
 
 /**
@@ -870,12 +903,30 @@ function tickFace(a: Active, env: UiScreenEnv): void {
 }
 
 /**
+ * ★★ 单步**最多**停多久 —— 过了就无条件往前走（死锁保护）。
+ *
+ * 为什么必须有：`holdDone` 里「等 ANM 放完」那条判据依赖 `env.flic()` 解出帧数。
+ * `main.ts` 的 `uiFlicNow` 会把**解不出来**的结果缓存成 `null`，于是
+ * `p.frames` 永远是 0、`anmDone` 永远为假 —— 屏就永远关不掉，
+ * 而演出闸（`BLOCKING_PRESENTATIONS`）会把整局钉死在这里（试玩长跑第 23 条）。
+ *
+ * 原版不会遇到这种情况：`read_mkf` 是**同步**的，解不出来它自己就崩了。
+ *
+ * 取值 **90 000 ms**：最长的一步是状态 3 的摇球（42 帧 × 880 ms ≈ 37 秒，
+ * 再加 20 拍 = 1 秒）。90 秒是它的两倍多，正常演出永远碰不到这条闸；
+ * 它只在「影片根本解不出来」时兜底。
+ */
+export const CEREMONY_STEP_MAX_MS = 90_000;
+
+/**
  * 这一刻该不该往下一步走 @source 0x004301e8 的「气泡收掉才走下一步」，
  * 加上 `0x0043024c` / `0x00430f43` 那两处「数够帧」与「等 ANM 放完」。
  */
 function holdDone(a: Active, env: UiScreenEnv): boolean {
   const step = a.steps[a.step];
   if (step === undefined) return true;
+  // ★★ 死锁保护：影片解不出来时那条「等 ANM 放完」会永远为假（见 `CEREMONY_STEP_MAX_MS`）
+  if (env.now - a.at >= CEREMONY_STEP_MAX_MS) return true;
   const h = step.hold;
   if (h.pauseMs !== undefined && env.now - a.said < h.pauseMs) return false;
   if (h.ticks !== undefined && (env.now - a.at) / CEREMONY_TICK_MS < h.ticks) return false;

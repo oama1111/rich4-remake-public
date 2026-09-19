@@ -15,7 +15,7 @@ import type { StockHolding } from '../places/stock.ts';
 import type { CommercialOwnership } from '../places/commercial.ts';
 import type { Listing } from '../places/notice-board.ts';
 import type { MapObject } from '../cards/summon.ts';
-import type { SpecialActor } from '../rules/special-actors.ts';
+import type { SpecialActor, SweptObject } from '../rules/special-actors.ts';
 import type { WinConditions } from '../rules/setup.ts';
 import type { VictoryOutcome } from '../rules/victory.ts';
 
@@ -337,6 +337,20 @@ export interface NpcWalkHint {
   slot: number;
   /** 依次经过的节点号，含起点；`path[i] → path[i+1]` 是第 i 格 */
   path: number[];
+  /**
+   * 这一趟**沿途扫掉的物件**（只有 機器娃娃 会有；四大惡人恒空/缺省）。
+   *
+   * ★ 为什么要交出来（试玩3 #11）：core 一次就把九格走完，`objects` 里那几件
+   *   交出去时**已经没有 `nodeId`**了 —— 客户端要么整趟一起少、要么就得知道
+   *   「哪一件是在哪一格被扫的」才能让它逐格消失。这就是那个「哪一格」。
+   *   `SweptObject.index` 是**走之前**那份 `state.objects` 的下标，
+   *   故客户端可以拿它去 `before.objects` 里取回那一件的**位置与种类**
+   *   （见 `client/render.ts` 的 `#objectSlots`）。
+   *
+   * ★ 与 `path` 同一类：纯表现提示，不进指纹 / 不进 history / 不进存档。
+   *   缺省（读档、开局、四大惡人那两处覆写）不写这个字段。
+   */
+  cleared?: readonly SweptObject[];
 }
 
 /**
@@ -365,6 +379,62 @@ export interface CardPlayHint {
   /** 卡号 1..30（`@rich4/data` 的 `cardLine(character, card)` 用它取台词） */
   cardId: number;
 }
+
+/**
+ * 一条**付费类落点的棕色訊息框**要显示什么 —— 纯表现提示。
+ *
+ * ★ 为什么要有它（issue #18）：原版在「走到别人的地产 / 企業」收钱之前，会先
+ *   `sprintf` 一句文案、再 `push 0x5dc / call 0x440cac` 弹**通用訊息框**
+ *   （1500 ms、可跳过）。重制版先前一个都不弹。
+ *
+ * ★★ **框里的金额是神明加成之前的那一笔**。原版：
+ * ```asm
+ * 00419d50  push 0x5dc                        ; 1500
+ * 00419d5a  call 0x440cac                    ; ★ 先弹框（显示 ebp = 地主份 + 同盟份）
+ * 00419d70  call 0x41d709                    ; ★ 之后才按付款方的神明调整金额
+ * ```
+ *   ⇒ 客户端**不许**从 `before → after` 的差分反推金额（神明一调整就对不上），
+ *     必须原样用 core 交出来的数。`rules/rent.ts` 的 `RentResult.baseTotal`
+ *     就是那一个数（`total` 是调过之后的）。
+ *
+ * ★ **纯表现，不参与任何规则判定**：
+ *   - core 里没有任何规则读它（只有写入点与客户端消费者）；
+ *   - **不进 `stateFingerprint`**（`net/protocol.ts` 的形参是**显式列字段**的
+ *     结构类型，本字段不在其中）⇒ 两端不必在「弹没弹框」上一致；
+ *   - **不进 `history`、不进存档**：它描述的是「刚刚发生了什么」。
+ *   ⚠️ 已知的既有口径（`lastNpcWalks` / `lastCardPlay` 同病，非本次引入）：
+ *     `rules/time-machine.ts` 的 `takeSnapshot` 是 `JSON.stringify(state)`，
+ *     所以这个瞬态字段**会**随快照一起回滚。不影响任何规则判定。
+ */
+export interface NoticeHint {
+  /**
+   * 文案键 —— 由客户端查 `@rich4/data` 的 `messages.ts` 翻成原版格式串。
+   *
+   * ⚠️ 这里是**键**而不是文案，是为了让 core 不依赖表现层的排版，也为了让
+   *   「core 交了什么」在单测里可逐字比对（`args` 的顺序就是原版 `sprintf` 的
+   *   参数顺序，见 `client/src/notice-box-screen.ts` 的 `NOTICE_TEXT`）。
+   */
+  key: NoticeKey;
+  /** 原版那次 `sprintf` 的参数，**顺序原样**（`%s` 已经代入好名字，不再是下标） */
+  args: readonly (string | number)[];
+}
+
+/**
+ * 目前接出来的文案键 —— 只收「格式串已经在 `@rich4/data` 的 `messages.ts` 里、
+ * 且 core 在那一处**已经知道确切金额**」的那几条。
+ *
+ * | 键 | 格式串 | @source |
+ * |---|---|---|
+ * | `rent.payOneOwner` | `RENT.payOneOwner` | 0x00419d3e `push 0x4639b3` |
+ * | `rent.payTwoOwners` | `RENT.payTwoOwners` | 0x00419d1a `push 0x46399a` |
+ * | `rent.payChairman` | `RENT.payChairman` | 0x0041ae98 `push 0x463a31` |
+ * | `rent.payBoss` | `RENT.payBoss` | 0x0041ae86 `push 0x463a6a` |
+ */
+export type NoticeKey =
+  | 'rent.payOneOwner'
+  | 'rent.payTwoOwners'
+  | 'rent.payChairman'
+  | 'rent.payBoss';
 
 /**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。
@@ -776,6 +846,17 @@ export interface GameState {
    * ⇒ `speech-bubble.ts` 的 `cardLineBubbleOf()`（显示 + 语音）。
    */
   lastCardPlay: CardPlayHint | null;
+
+  /**
+   * **这一次落点要弹的棕色訊息框** —— 纯表现提示，见 `NoticeHint`（issue #18）。
+   *
+   * 消费者：`client/src/notice-box-screen.ts`（`screens.ts` 登记为 `'notice'`，
+   * 并进了 `main.ts` 的 `BLOCKING_PRESENTATIONS` ⇒ 1500 ms 内回合驱动会等它）。
+   *
+   * ★ 只在**真的弹**的那一刻写（与 `lastCardPlay` 同一条规矩）：
+   *   `null` = 这一条 action 没有付费框，客户端就不起播。
+   */
+  lastNotice: NoticeHint | null;
 
   /**
    * **本 action 里发生过的「免费加蓋一级」** —— 纯表现提示（C-DET-4）。

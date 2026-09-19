@@ -10,6 +10,7 @@
 
 import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import { setVoiceSink } from './voice-sink.ts';
+import { LogRing } from './log-ring.ts';
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
 import { magicScreenState } from './magic-screen.ts';
@@ -160,6 +161,7 @@ import {
   loadSavedSoundFont,
   pickGameDir,
   pickSoundFont,
+  warpCursor,
   type PickResult,
 } from './host.ts';
 import { BOARD_BGM_FILES, MIDI_PLAYLIST, PLACE_TOOL_SOUND, SOUND_IDS, nextBoardBgm } from '@rich4/assets-pipeline';
@@ -213,6 +215,10 @@ import {
   type BoardFilm,
   type BoardFilmSpec,
 } from './board-film.ts';
+// ★ 影片窗口内棋盘按 **before** 那一帧画（试玩3 #1/#9，issue #19）——
+//   原版 `fcn_0045144f` 是阻塞的，播完才重绘棋盘；core 却一条 action 就把
+//   等级/附身写完了。纯函数与逐项判据见 `deferred-board.ts`。
+import { boardStateForFilm } from './deferred-board.ts';
 import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 // ★ 「取消」那一拍的梯子 —— ESC 与右键**共用同一份**（原版就是这么干的：
@@ -238,11 +244,13 @@ import {
   hitDiceToggle,
   hitDialog,
   layoutDialog,
+  usesYesNo,
   type AmountPage,
   type DialogHit,
 } from './dialog.ts';
 import { DICE_FLIC_BASE, GO_IMAGE, type SpriteFn } from './gameui.ts';
-import { GO_SIZE, goButton } from './go-button.ts';
+import { GO_SIZE, goButton, boardToScreen } from './go-button.ts';
+import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './cursor-warp.ts';
 
 /**
  * 最近一次棋盘 `mousedown` 走到了哪一步 —— **只读诊断**，给浏览器长跑排错用。
@@ -479,8 +487,18 @@ const playersEl = $('players');
 const actionsEl = $('actions');
 const interactionEl = $('interaction');
 
+/**
+ * 最近若干行日志的**环**（F9 回报里带上）—— 实现在 `log-ring.ts`（可单测）。
+ *
+ * ★ 为什么要有：日志栏只在屏幕上留 120 行、而且**不进报告** ——
+ *   事后复盘时最想知道的往往正是「出事前那几行说了什么」
+ *   （「⚠ 电脑在 X 无事可做，已停手」「底圖載入失敗」…）。
+ */
+const logRing = new LogRing();
+
 function log(msg: string): void {
   hostLog(msg);
+  logRing.push(msg);
   const d = document.createElement('div');
   d.textContent = msg;
   logEl.prepend(d);
@@ -1419,6 +1437,7 @@ const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
   'monthly',
   'magic',
   'eventBox',
+  'notice',
   'wheel',
   'god-slot',
 ]);
@@ -3404,10 +3423,19 @@ function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
       desktop: isDesktop(),
       url: window.location.href,
       screen,
+      // ★ 此刻接管整屏的那一屏（`null` = 棋盘本身）—— 光看 `screen`
+      //   分不出「卡在魔法屋」还是「卡在開獎屏」，而这两类的复现路径完全不同。
+      overlay: activeUiScreen()?.id ?? null,
+      phase: state.phase,
+      currentPlayer: state.currentPlayer,
+      pending: state.pending?.kind ?? null,
+      turnCount: state.turnCount,
       mode: state.mode,
       net: net === null ? null : { seat: net.seat },
       options,
       canvas: { w: canvas.width, h: canvas.height, dpr: window.devicePixelRatio },
+      // ★ 出事前最后 120 行日志（见 `logRing`）
+      log: logRing.toArray(),
     },
     finalState: serializeGame(state),
     finalFingerprint: stateFingerprint(state),
@@ -4904,6 +4932,16 @@ function startCardFlight(
 let buildFx: BuildFx | null = null;
 
 /**
+ * 「影片起播那一拍**之前**」的 state 快照（`null` = 现在没有影片在播）——
+ * 影片窗口里棋盘按它画，播完才切回 after。见 `deferred-board.ts`。
+ *
+ * ★ 一份就够：建屋与棋盘影片都由 `startActionFx` 在**同一条 action** 里起，
+ *   而影片期间回合驱动被闸住（`holdForActorWalk`），state 不会再变 ——
+ *   所以两条影片的快照必然是同一次 `applyAction` 的 `before`。
+ */
+let deferredBoardBefore: GameState | null = null;
+
+/**
  * 「该播、但影片还没解好」的待播请求（`null` = 没有）——
  * 原版 `read_mkf` 是**同步**的、解完才 `fcn_0045144f`；浏览器里解 68 帧要几百毫秒，
  * 所以先挂在这里，`tickBuildFx` 一看到影片到货就起时间轴（音效也在那时才响）。
@@ -5018,6 +5056,8 @@ function startConfineFx(before: GameState, after: GameState): void {
   if (!options.animation) return;
   const kind = confineFxTrigger(before, after);
   if (kind === null) return;
+  // 影片窗口里棋盘按 before 画（见 `deferred-board.ts`）—— 起播前先记下快照
+  deferredBoardBefore = before;
   startBoardFilm(confineClip(kind));
 }
 
@@ -5032,7 +5072,12 @@ function startGodFx(before: GameState, after: GameState): void {
   const id = godFxTrigger(before, after);
   if (id === null) return;
   const spec = godFilmSpec(id);
-  if (spec !== null) startBoardFilm(spec);
+  if (spec !== null) {
+    // ★ 影片窗口里棋盘按 before 画：神明还站在地上、主人身上还没有标记
+    //   （见 `deferred-board.ts`）。起播前先记下这一拍之前的快照。
+    deferredBoardBefore = before;
+    startBoardFilm(spec);
+  }
 }
 
 /**
@@ -5040,11 +5085,20 @@ function startGodFx(before: GameState, after: GameState): void {
  *   ① 影片还在解 → 解完才起时间轴（原版 `read_mkf` 在前、`fcn_0045144f` 在后）；
  *   ② 播完 → 收摊（放掉位图）+ **补一次回合驱动**（这一段是阻塞的，见 `holdForWalk`）。
  *
+ * ★★ 起播还要等**这一步的走子补间播完**（试玩3 #1，issue #19）：
+ *   原版这一段影片是在走子例程**里面**、棋子已经滑到那一格之后才被调用的
+ *   （落点处理 VA 0x0041b440 每走一格跑一次 —— 出处见 `rules/object-landing.ts`
+ *   文件头；附身那一支要求剩余步数 `[0x48baf8] == 0`，见同文件的 `@source`）。
+ *   而 `startActionFx` 是在补间**起播的同一拍**调用的（真人那条还排在
+ *   `tweenStepIfMoved` 之前），不等它就会「人物还没走完，神明附身的影片先盖上去」。
+ *
  * 挂在 `requestRender` 的 rAF 回调里，与建屋影片同一个套路。
  */
 function tickBoardFilm(now: number): void {
   const pending = pendingBoardFilm;
   if (pending !== null) {
+    // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
+    if (!renderer.walkDone(now)) return;
     const key = `${pending.archive}:${pending.resource}`;
     if (!boardFilmFlics.has(key)) {
       // 还在解（`.then` 会再 `requestRender`）；真取不到就整段放弃，免得卡住回合驱动
@@ -5118,6 +5172,10 @@ function currentBoardFilmFrame(now: number): {
 function startBuildFx(before: GameState): void {
   const plan = buildFxPlan(buildUpgradesOf(state, before));
   if (!plan.hammer && !plan.maxLevel) return;
+  // ★ 加蓋那一级的可见性也要按到影片之后（issue #19 第 9 条）：原版
+  //   `fcn_0040b110` 先把 `+0x1a` 加 1、**再**播大锤，播片期间棋盘不重绘。
+  //   浏览器里解 68 帧要几百毫秒，不按住就会「房子先修好了」（见 `deferred-board.ts`）。
+  deferredBoardBefore = before;
   // 上一条还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
   if (buildFx !== null) {
     buildFx = null;
@@ -5137,11 +5195,17 @@ function startBuildFx(before: GameState): void {
  *
  * 挂在 `requestRender` 的 rAF 回调里，与走子补间 / 投掷动效同一个套路 ——
  * 靠**时间轴**推进（`stepBuildFx` 只在到点时才翻片），不无条件续帧。
+ *
+ * ★ 与棋盘影片同理，起播要等这一步的走子补间播完（试玩3 #1）：原版这些影片都在
+ *   走子例程**之后**才播。機器工人/魔法屋/天使卡这几条 action 本来不带补间，
+ *   所以这道等待通常一次都不触发 —— 加上它只是为了与 `tickBoardFilm` 同一条规矩。
  */
 function tickBuildFx(now: number): void {
   // ── ① 待播：等第一段影片解好 ──
   const pending = pendingBuildFx;
   if (pending !== null) {
+    // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
+    if (!renderer.walkDone(now)) return;
     const res = buildClip(pending.first).resource;
     if (!buildFlics.has(res)) {
       // 还在解（`buildFlicNow` 的 `.then` 会再 `requestRender`）；真取不到就整段放弃，
@@ -5189,6 +5253,24 @@ function currentBuildFxBitmap(now: number): CanvasImageSource | null {
   });
 }
 
+/**
+ * 这一帧**棋盘**该按哪一份 state 画 —— 影片窗口里按 before
+ * （加蓋那一格还是旧房子、神明还站在地上而不是附在主人身上）。
+ *
+ * ★ 只换棋盘那一处的入参：侧栏 / 工具栏 / 訊息框都不读这几个字段，
+ *   它们的数字本来就该当场更新（`hud.ts` 里没有 `landLevel`/`godInfo`）。
+ * ★ 窗口的判据是四条影片状态位（正在播 **或** 还没解码）—— 解码那几百毫秒
+ *   棋盘是露着的，正是需求方看到「效果先于动画」的那一段。见 `deferred-board.ts`。
+ */
+function boardDrawState(): GameState {
+  return boardStateForFilm(state, deferredBoardBefore, {
+    buildPlaying: buildFx !== null,
+    buildPending: pendingBuildFx !== null,
+    filmPlaying: boardFilm !== null,
+    filmPending: pendingBoardFilm !== null,
+  });
+}
+
 function requestRender(): void {
   if (renderQueued) return;
   renderQueued = true;
@@ -5231,6 +5313,8 @@ function requestRender(): void {
     if (screen === 'game') tickBuildFx(performance.now());
     // ★ 送進監獄／醫院那段影片同理（Q-ANIM-1）：按帧时序推进，播完补一次回合驱动
     if (screen === 'game') tickBoardFilm(performance.now());
+    // ★ 原版会替玩家把系统指针挪到按钮上（试玩3 #2）：时机刚从关变开就挪一次
+    cursorWarper.update();
     if (screen === 'game') shopTick(performance.now());
     // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
     if (screen === 'game') bankTick(performance.now());
@@ -5579,7 +5663,9 @@ function drawGameStage(): void {
 
   renderer.draw({
     map,
-    state,
+    // ★ 影片窗口里棋盘按 before 画（试玩3 #1/#9）——加蓋那一格/神明标记不许
+    //   在影片起播前先出现。侧栏那几处不读这几个字段，故只换棋盘这一处。
+    state: boardDrawState(),
     camera,
     hoverNode,
     ground: showGround ? ground : null,
@@ -5726,6 +5812,29 @@ function eventToStage(e: MouseEvent): { x: number; y: number } | null {
   const dpr = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
   return toStage((e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr, currentMetrics());
 }
+
+// ============================================================
+//  原版会替玩家把**系统鼠标指针**挪到按钮上（试玩3 #2）
+// ============================================================
+//
+//  时机与落点的取证见 `cursor-warp.ts`；这里只负责把它接上：
+//  「轮到真人等掷骰（GO 鈕上场）」与「棋盘上盖着两个选项的 YES/NO 框」各挪一次。
+//  浏览器下 `warpCursor` 是空操作（网页挪不动系统指针）。
+
+/** 这一拍要看的东西 —— 判定与算术全在 `cursor-warp.ts` */
+function cursorWarpFrame(): CursorWarpFrame {
+  const dlg = currentDialog();
+  return {
+    awaitingRoll: awaitingHumanRoll(),
+    yesNoBox: dlg !== null && usesYesNo(dlg, amountPage),
+    // `goButton.position()` 是**棋盘画布**坐标，原版那个全局是屏幕坐标
+    goScreen: boardToScreen(goButton.position()),
+    metrics: currentMetrics(),
+    canvas: measureCanvas(canvas),
+  };
+}
+
+const cursorWarper = createCursorWarper(warpCursor, cursorWarpFrame);
 
 /**
  * 把镜头平滑地移到当前玩家身上。
@@ -6366,6 +6475,18 @@ function startGame(): void {
   });
   history.length = 0;
   recorder.reset();
+  // ★ 换局：把上一局「这一刻在播」的影片全收掉。从游戏内菜单走「重新遊戲」时
+  //   （`startGame` 会被直接调到），旧局的影片时间轴还挂着 —— 不清的话新棋盘上
+  //   会盖着旧局的片子，棋盘还会拿旧局的 before 快照当底（`deferred-board.ts`）。
+  buildFx = null;
+  pendingBuildFx = null;
+  buildFlicPending.clear();
+  releaseBuildFlics();
+  boardFilm = null;
+  pendingBoardFilm = null;
+  boardFilmPending.clear();
+  releaseBoardFilmFlics();
+  deferredBoardBefore = null;
   // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
   goButton.reset();
 
@@ -6381,6 +6502,13 @@ function startGame(): void {
   //   （設定屏那首 MIDI02 在設定屏收掉时就停了：`sub_00401543 → sub_00454edc`）
   holidayBgmDays = 0; // @source 0x00401dc4 新开一局清零
   playBoardBgm(1);
+  // ★★ `Speaking.mkf` 在**进棋盘这一刻**就开始拉（57 MB）。
+  //   此前只有「真的要说话」那一条路会拉它（`playSoundFor` / `voice-sink`），
+  //   于是**第一句**——棋盘上的角色台词、樂透投注屏的招呼、開獎屏的主持人——
+  //   在档案到货前被 `SoundPlayer.play` 安静丢掉（试玩 3 第 7/8 条：
+  //   「进樂透页听不到猫女的语音」「整体感觉语音没怎么触发」）。
+  //   棋盘一局是分钟级的，这里提前拉完，后面每一句都在。
+  ensureSpeakingArchive();
   log(
     `開局：地圖 ${setup.mapId}　種子 ${seed}　` +
       players.map((p, i) => `P${i + 1}${p.kind === 'human' ? '人' : '電'}`).join(' '),
@@ -7919,6 +8047,8 @@ function connectOnline(url: string, room: string, name: string): void {
           pendingBuildFx = null;
           buildFlicPending.clear();
           releaseBuildFlics();
+          // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
+          deferredBoardBefore = null;
           npcWalksDrawn = null;
           log(`⟳ 失步自愈：重放 ${r.actions.length} 條 action，本地狀態已重建（第 ${r.actions.length} 號）`);
           requestRender();

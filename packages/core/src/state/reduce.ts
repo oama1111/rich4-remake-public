@@ -10,7 +10,7 @@
  */
 
 import type { Action } from './actions.ts';
-import type { BuildUpgradeHint, BuildUpgradeSource, GameState, Player } from './types.ts';
+import type { BuildUpgradeHint, BuildUpgradeSource, GameState, NoticeHint, Player } from './types.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 import { isAiControlled, isAlive } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
@@ -59,7 +59,7 @@ import type {
   LandscapeInfo,
 } from '../loaders/map.ts';
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
-import { collectRent } from '../rules/rent.ts';
+import { collectRent, LAND_TOLL_FEE_NAME } from '../rules/rent.ts';
 import { PARTY_POOL, PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
 import { reaperPayer, tollExemption, tollPassiveTail } from '../rules/toll-flow.ts';
 import { PASSIVE_CARDS, consumeCard } from '../cards/passive.ts';
@@ -126,6 +126,7 @@ import {
   chairmanEffect,
   companyDividends,
   companyFeeOnLanding,
+  feeNameOf,
   industryUsesWheel,
   shareWindowLimit,
 } from '../places/company.ts';
@@ -1399,6 +1400,29 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           const lands = allEffectiveLands(state, topo);
           // 先算出費额（collectRent 是纯函数，预演一遍只为拿 total）
           const preview = collectRent(state.players, lands, state.currentPlayer, land, state.priceIndex);
+          // ★★ 棕色訊息框（issue #18）—— @source 0x00419d50 `push 0x5dc / call 0x440cac`
+          //   一格都没跳：框在**免費卡/嫁禍卡/死神**那一段（0x00419e36 起）**之前**弹，
+          //   所以免费卡那一路也照样弹（金额仍是原价）。
+          //   `%d` 用的是 `baseTotal`（= 地主份 + 同盟份，已含涨价翻倍），
+          //   **神明调整之前**那一笔；`preview.total` 是调过之后的，别拿它来显示。
+          const notice: NoticeHint =
+            landlord.alliedPlayer === 0
+              // @source 0x00419d3e `push 0x4639b3`（地產名 / 地主名 / 金额 / 費名）
+              ? {
+                  key: 'rent.payOneOwner',
+                  args: [land.name, playerName(state, land.owner - 1), preview.baseTotal, LAND_TOLL_FEE_NAME],
+                }
+              // @source 0x00419d1a `push 0x46399a`（地產名 / 地主名 / 同盟名 / 金额 / 費名）
+              : {
+                  key: 'rent.payTwoOwners',
+                  args: [
+                    land.name,
+                    playerName(state, land.owner - 1),
+                    playerName(state, landlord.alliedPlayer - 1),
+                    preview.baseTotal,
+                    LAND_TOLL_FEE_NAME,
+                  ],
+                };
           const rng = new WatcomRng();
           rng.setState(state.rngState);
           // ★ 尾巴照 0x00419e36 起：免費卡 → 嫁禍卡 → 死神顯靈由他人賠償
@@ -1420,13 +1444,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
             // @source 免費卡抹成 0 后不付；0x0041a00b 仍记这一笔 = 0
             const landLastToll = [...withRng.landLastToll];
             landLastToll[land.id] = 0;
-            return { ...withRng, landLastToll, phase: 'turnEnd' };
+            return { ...withRng, landLastToll, lastNotice: notice, phase: 'turnEnd' };
           }
           const out = collectRent(players, lands, who, land, state.priceIndex);
           // @source 0x0041a00b `mov [land + 0x2c], ebp` —— 记下这一笔（間諜要用）
           const landLastToll = [...withRng.landLastToll];
           landLastToll[land.id] = out.total;
-          const paid: GameState = { ...withRng, players: out.players, landLastToll, phase: 'turnEnd' };
+          const paid: GameState = { ...withRng, players: out.players, landLastToll, lastNotice: notice, phase: 'turnEnd' };
           // ★ 付不起就破产——这是对局能真正结束的唯一途径
           return out.bankrupted ? applyBankruptcy(paid, who, topo) : paid;
         }
@@ -3222,7 +3246,10 @@ export function useToolAction(
       // ★ 機器娃娃那九格同样交给表现层（纯表现提示，覆写）。
       //   ⚠️ T-047 的偏离单原先把「path 被丢掉」只记在 `npcRound` / `bail` 两处，
       //   这里同样丢 —— 娃娃是九格，漏了它等于最显眼的那一趟还是瞬移。
-      lastNpcWalks: [{ slot: specialSlotOf(ACTOR_DOLL), path: swept.path }],
+      // ★ 试玩3 #11：连同 `cleared`（哪一件在哪一格被扫掉）一起交出去 ——
+      //   客户端靠它把被扫的物件**留在原地直到补间走到那一格**，
+      //   否则那几件在补间第一帧就整个消失（= 报的「没有扫走动画」）。
+      lastNpcWalks: [{ slot: specialSlotOf(ACTOR_DOLL), path: swept.path, cleared: swept.cleared }],
     });
   }
 
@@ -5436,15 +5463,37 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
     c.type, c.landPrice, state.priceIndex, state.totalDays, player.trafficMethod, state.stepsTotal,
     industryUsesWheel(c.type) ? rng.next() : 0,
   );
+  /**
+   * ★★ 棕色訊息框（issue #18）—— 「董事長」/「幫主」那一句。
+   *
+   * @source 两条 `push` 就在同一段里，由行業別分：
+   *   `0x0041ae75 cmp byte [ebx+0x1a], 0xc` ⇒ `0x0041ae86 push 0x463a6a`（`RENT.payBoss`）
+   *   否则 `0x0041ae98 push 0x463a31`（`RENT.payChairman`）；
+   *   框在 `0x0041aeaa push 0x5dc / call 0x440cac`，神明调整在它**之后**
+   *   （`0x0041aec5 call 0x41d709`）⇒ `%d` 是 `fee.amount`（本引擎这条路上没调神明）。
+   *
+   * 金额为 0 时原版**不弹**：@source `0x0041ae37 test ebp, ebp / je 0x41b067`。
+   * `%s` 依次是 企業名（`lea eax,[ebx+4]`）、董事長名（`0x0041ae41` 那一支取
+   * `[付款人 + 0x496b68]`，即企業主）、費名（`[行業 + 0x47528e]` 查 `0x47517c` 那张表）。
+   */
+  const companyNotice = (amount: number): NoticeHint => ({
+    key: c.type === INDUSTRY.sect ? 'rent.payBoss' : 'rent.payChairman',
+    args: [c.name, playerName(state, chairman), amount, feeNameOf(c.type)],
+  });
   let next: GameState = { ...state, rngState: rng.getState() };
   if (fee.kind === 'fee') {
     next = payCompany(next, topo, me, c.id, fee.amount);
+    if (fee.amount !== 0) next = { ...next, lastNotice: companyNotice(fee.amount) };
   } else if (fee.kind === 'insurance') {
     next = withPlayer(next, me, (p) => {
       p.insuranceDays = addInsuranceDays(p.insuranceDays, fee.days);
     });
     next = payCompany(next, topo, me, c.id, fee.amount);
+    if (fee.amount !== 0) next = { ...next, lastNotice: companyNotice(fee.amount) };
   } else if (fee.kind === 'construction') {
+    // ⚠️ 这一支**没有接**訊息框：金额要等「选哪一处地」定下来（真人走
+    //   `pending.chooseBuildTarget`），落点这一刻 core 还不知道。
+    //   原版的框在 `loc_0041ae37`（选完之后），见最终报告的「没做的」一节。
     if (!human) {
       const target = aiPickConstructionTarget(
         me, topo.lands ?? [], next.landOwner, next.landLevel, next.landType,
@@ -5758,6 +5807,21 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
 // ============================================================
 //  破产与终局
 // ============================================================
+
+/**
+ * 玩家下标 → 角色名 —— 付費訊息框那几个 `%s` 用的就是它。
+ *
+ * @source 原版那几处都是 `dec 下标 / imul 0x68 / push [eax + 0x496b68]`
+ *   （`0x00419c8d`、`0x00419ce4`、`0x0041ae41`），再把那个名字指针
+ *   `call 0x452946` 拷进缓冲区 —— `+0x496b68` 就是玩家记录里的角色名指针，
+ *   与本引擎的 `CHARACTERS[player.character].name` 同源。
+ *   取不到（下标越界）给空串，与 `formatOriginal` 的「多余占位符留空」一致。
+ */
+function playerName(state: GameState, index: number): string {
+  const p = state.players[index];
+  if (p === undefined) return '';
+  return CHARACTERS[p.character]?.name ?? '';
+}
 
 /** 在场人数 */
 function aliveCount(state: GameState): number {

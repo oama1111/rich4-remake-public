@@ -903,7 +903,7 @@ describe('★ Q-TOOL-5 ②：附身物件的清单（`attachedObjectTokens`）�
     const tokens = attachedObjectTokens(scene({}, [obj(1, 1, 2)]), 0);
     expect(tokens).toHaveLength(1);
     expect(tokens[0]).toMatchObject({
-      index: 0, type: 1, owner: 1, resource: 396, frame: 4, offsetX: -22, offsetY: -10,
+      index: 0, type: 1, owner: 1, resource: 396, frame: 4, offsetX: -10, offsetY: -22,
     });
   });
 
@@ -935,9 +935,10 @@ describe('★ Q-TOOL-5 ②：附身物件的清单（`attachedObjectTokens`）�
       const t = attachedObjectTokens(s, view)[0]!;
       return { dx: t.offsetX, dy: t.offsetY };
     };
-    expect(at(0)).toEqual({ dx: -22, dy: -10 }); // 图号 0
-    expect(at(2)).toEqual({ dx: -10, dy: 22 }); // 图号 6
-    expect(at(4)).toEqual({ dx: 22, dy: 10 }); // 图号 4
+    // ★ 表项的内存顺序是 **(X, Y)**，token 的 `offsetX/offsetY` 照抄（试玩3 #10 订正）
+    expect(at(0)).toEqual({ dx: -10, dy: -22 }); // 图号 0
+    expect(at(2)).toEqual({ dx: 22, dy: -10 }); // 图号 6
+    expect(at(4)).toEqual({ dx: 10, dy: 22 }); // 图号 4
   });
 
   it('★ 主人住店/消失/坐牢/住院 → 整个不画（@source VA 0x00408fbd 的那个 dword）', () => {
@@ -954,12 +955,12 @@ describe('★ Q-TOOL-5 ②：附身物件的清单（`attachedObjectTokens`）�
 
   it('★ 定時炸彈(18) + 主人身上**还有**一个神 → 换外圈那张表（0x474991）', () => {
     const inner = attachedObjectTokens(scene({ godInfo: 0 }, [obj(18, 1, 1)]), 0)[0]!;
-    expect({ dx: inner.offsetX, dy: inner.offsetY }).toEqual({ dx: -22, dy: -10 });
+    expect({ dx: inner.offsetX, dy: inner.offsetY }).toEqual({ dx: -10, dy: -22 });
     const outer = attachedObjectTokens(scene({ godInfo: 3 }, [obj(18, 1, 1)]), 0)[0]!;
-    expect({ dx: outer.offsetX, dy: outer.offsetY }).toEqual({ dx: -44, dy: -18 });
+    expect({ dx: outer.offsetX, dy: outer.offsetY }).toEqual({ dx: -18, dy: -44 });
     // 不是炸弹就一直是内圈
     const god = attachedObjectTokens(scene({ godInfo: 3 }, [obj(5, 1, 1)]), 0)[0]!;
-    expect({ dx: god.offsetX, dy: god.offsetY }).toEqual({ dx: -22, dy: -10 });
+    expect({ dx: god.offsetX, dy: god.offsetY }).toEqual({ dx: -10, dy: -22 });
   });
 
   it('正在飞的那一件要藏起来（請神符：原版先把它从地图上摘掉，VA 0x00444ea8）', () => {

@@ -274,7 +274,13 @@ export function lotteryCeremony(draw: LotteryDrawResult): readonly CeremonyStep[
       state: 3,
       line: null,
       blits: [
-        { entry: ENTRY.presenting, at: [418, 66] }, // 右：换成摊手
+        // ★ 右：换成摊手。落点就是 `POSE_RIGHT`（472, 66）—— 与建屏那一次同一格
+        //   @source 0x0042f6fa `push 0x42 / 0x1d8 / [0x48c360]+0x18`。
+        //   ⚠️ 这张图是 206 宽（`Panel#2`），472 + 206 = 678 会**越出 640 的右缘** ——
+        //   那正是原版的画法（它的 blit 自带屏幕裁剪；见 0x00430418 之后那两次
+        //   `fcn_00456418`，两次都压在 472）。先前写成 418 会在屏上留下**两个**
+        //   右主持人（418 与 472 各一张，206 宽里重叠 152 点）。
+        { entry: ENTRY.presenting, at: POSE_RIGHT },
       ],
       patches: [
         CLEAR_PLATES_BAND,

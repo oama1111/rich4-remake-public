@@ -127,6 +127,23 @@ export function hostLog(text: string): void {
   });
 }
 
+/**
+ * 把**系统鼠标指针**挪到窗口内的逻辑坐标 `(x, y)`（CSS px）。
+ *
+ * ★ 原版会替玩家挪指针（`SetCursorPos`）；浏览器**做不到**（网页不能挪系统指针），
+ *   所以这里是空操作，只有桌面壳那条路会真的挪。什么时候挪、挪到哪由
+ *   `cursor-warp.ts` 算好（那边有单测钉着），这里只管把坐标发出去。
+ * ★ 送不出去（浏览器 / 命令没装 / 系统拒绝）只记一条日志 —— 挪不动指针
+ *   不该让游戏崩，这正是原版那条 `SetCursorPos` 的返回值也被丢掉的原因。
+ */
+export function warpCursor(x: number, y: number): void {
+  const t = tauri();
+  if (t === null) return;
+  void t.core.invoke('warp_cursor', { x, y }).catch((e: unknown) => {
+    hostLog(`挪指針失敗：${String(e)}`);
+  });
+}
+
 // ============================================================
 //  问题回报（飞行记录仪，见 flight-recorder.ts）
 // ============================================================

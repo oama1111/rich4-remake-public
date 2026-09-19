@@ -174,7 +174,7 @@ describe('★ 每个矩形都落在它那张子图里面', () => {
     draw({ winner: null, number: 35 }),
   ];
 
-  it('整张铺的贴片：锚点(0,0)时不能超出屏幕', () => {
+  it('整张铺的贴片：锚点(0,0)时不能**整张**跑到屏幕外', () => {
     for (const d of cases) {
       for (const s of lotteryCeremony(d)) {
         for (const b of s.blits) {
@@ -182,8 +182,14 @@ describe('★ 每个矩形都落在它那张子图里面', () => {
           expect(size, `子图 ${b.entry} 不在 Panel#15 里`).toBeDefined();
           // 只对锚点在左上的那几张查（热点在中心的那些会往两边溢，是正常的）
           if (size![0] >= CEREMONY_W / 2) {
-            expect(b.at[0] + size![0]).toBeLessThanOrEqual(CEREMONY_W);
-            expect(b.at[1] + size![1]).toBeLessThanOrEqual(CEREMONY_H + 16);
+            // ★ 原版允许**部分**越出右/下缘（屏幕自己裁剪）——
+            //   例如状态 3 那张右主持人：图 2 是 206 宽、落点 472 ⇒ 678 > 640，
+            //   原版就是这么贴的（@source 0x00430418 之后那两次 `fcn_00456418`）。
+            //   这里只要求**至少有一半还在屏上**（整张跑出去才是抄错了落点）。
+            expect(b.at[0], `子图 ${b.entry} 起点在屏右缘之外`).toBeLessThan(CEREMONY_W);
+            expect(b.at[1], `子图 ${b.entry} 起点在屏下缘之外`).toBeLessThan(CEREMONY_H);
+            expect(b.at[0] + size![0] / 2).toBeLessThanOrEqual(CEREMONY_W);
+            expect(b.at[1] + size![1] / 2).toBeLessThanOrEqual(CEREMONY_H + 16);
           }
         }
       }

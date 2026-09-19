@@ -541,6 +541,8 @@ export function newGame(opts: NewGameOptions): GameState {
     // 純表現提示：開局沒人走過（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
     lastCardPlay: null,
+    // 纯表现提示：开局还没有过付费类落点（见 state/types.ts 的 GameState.lastNotice）
+    lastNotice: null,
     // 回合边界的惡人队列：开局是空的（还没绕过一圈）
     pendingNpcSlots: [],
     lottery: emptyLottery(),

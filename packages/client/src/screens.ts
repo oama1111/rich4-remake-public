@@ -23,6 +23,7 @@ import { lotteryScreen } from './lottery-screen.ts';
 import { lotteryDrawScreen } from './lottery-draw-screen.ts';
 import { magicScreen } from './magic-screen.ts';
 import { eventBoxScreen } from './event-box-screen.ts';
+import { noticeBoxScreen } from './notice-box-screen.ts';
 import { wheelScreen } from './wheel-screen.ts';
 import { godSlotScreen } from './god-slot.ts';
 import { researchScreen } from './research-screen.ts';
@@ -48,6 +49,9 @@ export const SCREENS: readonly UiScreen[] = [
   //   「得一張卡片」与卡片格都会让手牌变长，两屏会从同一次 action 各起一段；
   //   魔法屋那一次该由魔法屋屏演（见 `event-box-screen.ts` 头注释）。
   eventBoxScreen,
+  // ★ 付费类落点的棕色訊息框（issue #18）：由 `state.lastNotice` 起播，
+  //   1500 ms 可跳过。原版弹在**结算当场**（`0x440cac`），与上面几屏不会同时起。
+  noticeBoxScreen,
   wheelScreen,
   // ★ 「神明附身」那一刻的老虎机窗（Q-GOD-1）：与转盘同一类**演出**屏，
   //   由 `event(before, after)` diff 出「刚附身 + 四种金額型」时起播。

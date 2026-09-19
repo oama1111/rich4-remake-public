@@ -419,6 +419,25 @@ export function dollSweepNode(objects: readonly MapObject[], nodeId: number): Ma
 }
 
 /**
+ * 被娃娃扫掉的一件物件 —— **在哪一格被扫掉**要一起交出去。
+ *
+ * ★ 为什么要带上 `step`：核心一次把整趟走完、回来 `objects` 里那一件已经没了，
+ *   客户端只能靠这条把它「留在原地」直到补间走到那一格（见
+ *   `client/render.ts` 的 `#objectSlots`）。只给下标的话，
+ *   客户端推不出「哪一格」，那一件就会**一上来就整个消失**
+ *   （= 需求方报的「没有扫走动画」）。
+ */
+export interface SweptObject {
+  /** 在 `state.objects` 里的下标（`runDoll` 收到的那份数组的位置） */
+  index: number;
+  /**
+   * `path` 里的落点下标 —— 娃娃**走到 `path[step]` 这一格时**清掉它。
+   * `step === 0` = 出发格（起点上本来就有的那一件）。
+   */
+  step: number;
+}
+
+/**
  * 走完整条路 —— 逐格前进并清物件。
  *
  * `advance` 由调用方给（`reduce.ts` 的 `pickNextNode`），
@@ -427,8 +446,8 @@ export function dollSweepNode(objects: readonly MapObject[], nodeId: number): Ma
 export interface SweepResult {
   actor: SpecialActor;
   objects: MapObject[];
-  /** 被扫掉的物件下标，按清除顺序 */
-  cleared: number[];
+  /** 被扫掉的物件（下标 + 在哪一格），按清除顺序 */
+  cleared: SweptObject[];
   /** 走过的节点，含起点 */
   path: number[];
 }
@@ -441,7 +460,7 @@ export function runDoll(
   let cur = actor.nodeId;
   let prev = actor.lastNodeId;
   let objs = objects.map((o) => ({ ...o }));
-  const cleared: number[] = [];
+  const cleared: SweptObject[] = [];
   const path: number[] = [cur];
 
   for (let step = 0; step < actor.stepsRemaining; step++) {
@@ -453,7 +472,7 @@ export function runDoll(
     const at = objs.findIndex((o) => o.nodeId === cur);
     const swept = dollSweepNode(objs, cur);
     if (swept !== null) {
-      cleared.push(at);
+      cleared.push({ index: at, step: path.length - 1 });
       objs = swept;
     }
   }

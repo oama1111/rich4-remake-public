@@ -243,10 +243,14 @@ describe('★ 登记的整屏：声明了右键的那几屏', () => {
     // 「請選擇設施類別」（`fcn_0043fae4` 的 `0x205` 那一支 = 取消，返回 −1，
     //   见 `facility-picker.ts` 的 `contextmenu`）、
     // 搶奪卡的选牌窗（`fcn_004413ec` 的 `0x205` 那一支 = `Post_0402_Message(0)`
-    //   = 取消 ⇒ 卡不消耗，见 `steal-picker.ts` 的 `contextmenu`）
+    //   = 取消 ⇒ 卡不消耗，见 `steal-picker.ts` 的 `contextmenu`）、
+    // ★ 付费訊息框（issue #18）：`fcn_00440cac` 的 1500 ms 等待走
+    //   `0x00440de7 push 0x5dc / call 0x4528b9`，而 `0x00452901/00452909/00452911`
+    //   的 `PeekMessage` 收 `0x202` / `0x205` / `0x101` 三种 ⇒ 见
+    //   `notice-box-screen.ts` 的 `contextmenu`。
     expect(withCtx).toEqual([
-      'big-map', 'eventBox', 'facility-picker', 'help', 'lottery', 'notice-board', 'research',
-      'steal-picker',
+      'big-map', 'eventBox', 'facility-picker', 'help', 'lottery', 'notice', 'notice-board',
+      'research', 'steal-picker',
     ]);
   });
 
