@@ -17,6 +17,14 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    # ★ W-05：手动触发时可以只跑一个平台 —— 私有仓库 macOS runner 按 10 倍计费，
+    #   「三平台一起跑、挂一个重跑」太贵；先 linux（便宜）→ windows → macos。
+    inputs:
+      platform:
+        description: '只打包哪个平台（all = 三平台都跑）'
+        type: choice
+        options: [all, linux, windows, macos]
+        default: all
 
 jobs:
   check:
@@ -49,32 +57,70 @@ jobs:
           RICH4_SKIP_ASSETS: '1'
       - run: pnpm check
 
+  # ★ W-05：**选平台**要单独一个 job —— 不能只在 `matrix` 里收窄 `platform` 维度：
+  #   GitHub 的 `include` 规则是「合不进任何组合的条目会**新建**一个组合」，
+  #   于是 `platform: ["linux"]` + 三条 include 会跑出 linux **加** windows/macos
+  #   三个 job（实测：手选 linux 却把 macos 也跑起来了，白烧 10 倍额度）。
+  #   这里把整张矩阵 JSON 现算出来，`bundle` 直接 `fromJSON` —— 只有选中的那些。
+  plan:
+    name: 选平台
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          # ★ W-05：Windows 只打 **NSIS**，不打 MSI —— 实测 `light.exe`（WiX 3.14）
+          #   在「产品名是中文 + 输出文件名带中文」时必失败（candle 过了、light 挂），
+          #   而 NSIS 支持 Unicode。MSI 想回来，得先解决 WiX 的代码页/产品名问题。
+          ALL = [
+              {"platform": "linux",   "runner": "ubuntu-22.04",  "target": "x86_64-unknown-linux-gnu", "bundles": "appimage,deb"},
+              {"platform": "windows", "runner": "windows-latest", "target": "x86_64-pc-windows-msvc",  "bundles": "nsis"},
+              {"platform": "macos",   "runner": "macos-latest",   "target": "aarch64-apple-darwin",    "bundles": "app,dmg"},
+          ]
+          want = os.environ.get("PLATFORM") or "all"
+          if os.environ.get("EVENT") != "workflow_dispatch":
+              want = "all"          # tag 推送：三平台都打
+          sel = ALL if want == "all" else [x for x in ALL if x["platform"] == want]
+          print("matrix=" + json.dumps({"include": sel or ALL}))
+          PY
+
   bundle:
     name: 打包 ${{ matrix.platform }}
-    needs: check
+    needs: [check, plan]
     # ★ 三平台打包只在**打 tag** 或**手动触发**时跑：私有仓库里 macOS runner 按 10 倍、
     #   Windows 按 2 倍计分钟，每次 push 都打一遍会很快烧光免费额度。
     #   平时的 push / PR 只跑上面的「三绿」。
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            args: ''
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-            args: ''
-          - platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            args: ''
-    runs-on: ${{ matrix.platform }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
     # ★ secrets 不能直接出现在 if 里，先落到 env 再判空（GitHub Actions 的老规矩）
     env:
       RICH4_ASSETS: ${{ secrets.RICH4_ASSETS }}
     steps:
       - uses: actions/checkout@v7
+      # ★ W-05：素材走 **LFS**（`assets/game/**.mkf` 等）。不打这一条，checkout 拿到的
+      #   只是指针文件（"version https://git-lfs…"），打出来的包没有素材、读它的代码会炸。
+      #   缓存键做法与 check job 完全一致（同一把 key ⇒ 两个 job 共享缓存）。
+      - name: LFS 对象清单（缓存键）
+        shell: bash
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .git/lfs-ids
+      - uses: actions/cache@v6
+        with:
+          path: .git/lfs
+          key: lfs-v2-${{ hashFiles('.git/lfs-ids') }}
+      - name: 拉素材（LFS）
+        shell: bash
+        run: git lfs pull
       - uses: pnpm/action-setup@v6
         with:
           version: 9
@@ -87,14 +133,18 @@ jobs:
         with:
           workspaces: packages/desktop/src-tauri
 
-      # Linux 的 webkit2gtk 依赖（T-056）
+      # Linux 的 webkit2gtk 依赖（T-056 / W-05）
+      # ★ W-05 修：`libappindicator3-dev` 在 **ubuntu-22.04 的仓库里不存在**
+      #   （20.04 之后就换成 ayatana 那套了），apt 会整条失败 —— 实测第一次
+      #   linux 打包就死在这一步。改成 Tauri v2 文档给的那一串，
+      #   并补上 Tauri v2 需要的 `libxdo-dev`。
       - name: Linux 依赖
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libxdo-dev \
             librsvg2-dev \
             patchelf \
             build-essential \
@@ -102,10 +152,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # 素材：CI 上没有（不入库），用 secret 指一份打包缓存；
-      # 没有就跳过 —— 包仍可构建，只是不带素材。
-      - name: 取素材（可选）
+      # 素材：LFS 已经拿到；这一条只是**可选覆盖**（secret 指一份别的素材时用）。
+      # ★ Windows 的默认 shell 是 pwsh，下面这段是 bash 语法 ⇒ 必须钉 shell: bash。
+      - name: 取素材（可选覆盖）
         if: env.RICH4_ASSETS != ''
+        shell: bash
         run: |
           echo "素材来源：$RICH4_ASSETS"
           mkdir -p assets/game
@@ -120,7 +171,8 @@ jobs:
 
       - name: 打包
         # `build` 脚本就是 `tauri build`（见 packages/desktop/package.json）
-        run: pnpm --filter @rich4/desktop build --target ${{ matrix.target }} ${{ matrix.args }}
+        # ★ `--bundles` 按平台给（见 plan job 里的注释）：Windows 走 NSIS，MSI 会死在 WiX。
+        run: pnpm --filter @rich4/desktop build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
       - name: 归档产物
         uses: actions/upload-artifact@v7
