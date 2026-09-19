@@ -135,6 +135,43 @@
   生成一页 `index.html` 缩略图墙，供首席/需求方**一眼扫过**找明显画错的。
 - 同时收集每屏的 console error。验收：0 个未处理异常；截图数 = 屏数 × 图数。
 
+#### ★ 2026-09-19 补：稳定性排查的结论与新任务（首席）
+
+排查「需求方实测仍有很多小细节不完美」时确认的**结构性缺口**（比任何单个 bug 都要紧）：
+
+1. **测的不是需求方玩的那个环境。** 全部自动化（soak / sweep / perf / net-e2e）跑在 **Chromium**；
+   桌面包在 macOS 上是 **WKWebView（WebKit）**。两者在 WebAudio、定时器节流、canvas、字体回退上都有差别。
+   已验证本机能用 Playwright WebKit 直接跑（`~/Library/Caches/ms-playwright/webkit-2272`，
+   配 gstack 自带的 `playwright-core`，`executablePath` 指到 `pw_run.sh`）。
+2. **出事没有痕迹。** 此前前端**没有任何**未捕获异常处理，`.app` 的 stderr 双击启动时无处可看 ⇒
+   一抛错回合链就无声断掉。**已补**：飞行记录仪 + F9 问题回报 + 未捕获异常/停摆自动回报
+   （`client/flight-recorder.ts`、`tools/replay-report.ts`；实测 WebKit 里出的回报重放指纹逐字节相等）。
+3. **「真人路径」几乎没被自动化考到。** `soak-browser.js` 的真人路径在第一个需要**右键退出**的整屏
+   （醫院/監獄探病屏）就停住；legacy 路径则替客户端把每一步 dispatch 掉 —— 恰好绕开了需求方天天在用的那条驱动链。
+4. **出厂 `動畫過程 = 关`** ⇒ 自动化几乎从不播影片/演出那几条路。
+
+##### W-13（A）WebKit 冒烟 + 长跑
+- `tools/webkit-run.cjs`：用上面那套 WebKit 起 `?screen=game&humans=0&ai=4`，动画**开**
+  （`__rich4.options.saved.animation = true`），跑 10 分钟；收 `pageerror` / console error、每 30 秒截图、
+  结束时 `__rich4.report()` 存一份回报并用 `replay-report.ts` 验指纹。
+- 再把 `sweep-screens.js` 的 160 张在 WebKit 下重截一遍，与 Chromium 那套**逐张做像素差**（>0.5% 的列出来）。
+- 验收：报告 `docs/acceptance/webkit-<日期>.md`；差异图清单附上。**只报告，不修。**
+
+##### W-14（B）真人路径长跑要能过每一块整屏
+- `soak-browser.js` 真人路径：遇到整屏接管时按该屏的**真实退出方式**操作（EXIT 钮坐标 / 右键 / 任意键 ——
+  各屏怎么退，`original-screens.md` 与各 `*-screen.ts` 头注释里有，**照抄，不许猜**；查不到的上报）。
+- 验收：`humans=1` 真人路径连续 60 回合，`soakDispatches === 0 && humanStalls.length === 0`，Chromium 与 WebKit 各一次。
+
+##### W-15（B）试玩回报的处理流程（W-11 的入口改成「从回报开始」）
+- 需求方发来 `rich4-report-*.json` + 一句话 ⇒ ① `replay-report.ts` 验指纹并 `--shot` 导出截图；
+  ② 指纹一致才继续（不一致 = 有状态改写绕过了 `reduceRecorded`，先修这个并上报）；
+  ③ 之后照 W-11 的 2–5 步走。规则类问题用 `--until N` 截出的状态做回归 fixture。
+
+##### W-16（B）待核实：片头过场期间电脑回合在背后照走
+- 现象：`?screen=game&humans=0&ai=4` 时 `screen === 'intro'` 而 `turnCount` 已到 2（过场还没播完，棋盘已经走了两回合）。
+- 先核实**正常流程**（标题 → 設定 → 过场）里、电脑先手时是否同样如此；是 ⇒ `scheduleAi` 要等过场收完
+  （原版过场是模态的）。只在调试 URL 下才有 ⇒ 记一笔即可，不修。
+
 ### 阶段 3 —— 文档债（小模型最容易做对的一块）
 
 #### W-20（A）拆分 `docs/gaps/README.md`（8,992 行 → 索引 + 分条文件）

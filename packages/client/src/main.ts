@@ -39,6 +39,9 @@ import {  autoAction,
   SPECIAL_KIND,
   STOCK_STATUS,
   stockStatus,
+  serializeGame,
+  actingSeat,
+  isAiControlled,
   stateFingerprint,
   toolCount,
   winConditionsOf,
@@ -153,6 +156,7 @@ import {
   hdBase,
   isDesktop,
   hostLog,
+  writeReport,
   loadSavedSoundFont,
   pickGameDir,
   pickSoundFont,
@@ -278,7 +282,8 @@ import {
   type SaveLoadMode,
   type SlotInfo,
 } from './saveload.ts';
-import { reduceWithHostRng, reseedAfterLoad } from './rng-host.ts';
+import { clockSeed, reduceWithHostRng, reseedAfterLoad } from './rng-host.ts';
+import { FlightRecorder, reportFileName } from './flight-recorder.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import { drawIntro, introDone } from './intro.ts';
@@ -1308,6 +1313,7 @@ function loadState(next: GameState, mapOverride: Rich4Map | null = null): void {
   //   原先没有任何宿主接线，原版存档导入路径给的还是固定占位 `1` ⇒ 每次都一样。
   state = reseedAfterLoad(next, topo);
   history.length = 0;
+  recorder.reset();
   hoverNode = null;
   nodeTip = null; // 换局面/读档时把名牌收掉（Q-HOVER-1）
   amountPage = null;
@@ -3189,12 +3195,72 @@ function dispatch(action: Action): void {
   applyAction(action);
 }
 
+/**
+ * 飞行记录仪（`flight-recorder.ts`）—— 旁路抄一份「起点快照 + 每条 action + 宿主种子」，
+ * 出事时按 **F9** 落成一份可重放的问题回报。纯旁路：不读也不写 `state`（C-DET-4）。
+ */
+const recorder = new FlightRecorder();
+
+/**
+ * **两条施加路径共用**的漏斗（`applyAction` 与 `scheduleAi`）：种子在这里取一次，
+ * 既喂给 `reduceWithHostRng`、也记进轨迹 —— 少了它，日推进那次 `reseed` 就重放不出来。
+ */
+function reduceRecorded(action: Action): GameState {
+  const seed = clockSeed();
+  const before = state;
+  const next = reduceWithHostRng(before, action, topo, seed);
+  if (next !== before) {
+    recorder.record({ t: Date.now(), action, seed }, before.turnCount, () => serializeGame(before));
+  }
+  return next;
+}
+
+/** 出一份问题回报（F9 / 未捕获异常 / `__rich4.report()`）；落盘位置写进日志栏 */
+let reportBusy = false;
+function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
+  if (reportBusy) return;
+  reportBusy = true;
+  let screenshot: string | null = null;
+  try {
+    screenshot = canvas.toDataURL('image/png');
+  } catch {
+    screenshot = null; // 画布被污染 / 取不到就算了，别因为截图丢掉整份回报
+  }
+  const now = new Date();
+  const report = recorder.report({
+    reason,
+    note,
+    env: {
+      userAgent: navigator.userAgent,
+      desktop: isDesktop(),
+      url: window.location.href,
+      screen,
+      mode: state.mode,
+      net: net === null ? null : { seat: net.seat },
+      options,
+      canvas: { w: canvas.width, h: canvas.height, dpr: window.devicePixelRatio },
+    },
+    finalState: serializeGame(state),
+    finalFingerprint: stateFingerprint(state),
+    finalTurn: state.turnCount,
+    screenshot,
+    now,
+  });
+  void writeReport(reportFileName(now, reason), JSON.stringify(report))
+    .then((where) => {
+      log(where === null ? '⚠ 問題回報寫不出去' : `📝 問題回報已存：${where}`);
+    })
+    .finally(() => {
+      reportBusy = false;
+    });
+}
+
 /** 真正施加一条 action：单机由 dispatch 直达，联机由服务器广播到达 */
 function applyAction(action: Action): void {
   const before = state;
   // ★ 单机：日推进那一刻由宿主重新播种（原版 `0x41D06E` 的 `srand(GetTickCount())`）——
   //   见 `rng-host.ts`；联机策略下它是空操作。
-  state = reduceWithHostRng(state, action, topo);
+  state = reduceRecorded(action);
   if (state !== before) {
     // ★ 掷骰那一段：点数到手 → 开滚。影片没解好先挂着，解完再补。
     //   纯表现，`diceFx` 不读也不写 state（C-DET-4）。
@@ -3479,7 +3545,7 @@ function scheduleAi(): void {
     const before = state;
     const walker = action.type === 'step' ? state.currentPlayer : null;
     // ★ 与 `applyAction` 同一个宿主播种漏斗（日推进后重播种）
-    state = reduceWithHostRng(state, action, topo);
+    state = reduceRecorded(action);
     if (walker !== null && state !== before) startStepTween(walker);
     // ★ 「走回棋盘」那一回合也要演一段位移（与 `tweenStepIfMoved` 同源）
     if (action.type === 'startTurn' && state !== before) tweenStepIfMoved(action, before);
@@ -5872,6 +5938,8 @@ function autoButton(): HTMLButtonElement {
       state = reduce(state, next, topo);
       history.push(next);
     }
+    // 这条调试路径直接 `reduce`、不经记录漏斗 ⇒ 旧轨迹接不上了，作废重起（下一条 action 会重取起点）
+    recorder.reset();
     log('▶ 自动走完本回合');
     requestRender();
     renderPanel();
@@ -6069,6 +6137,7 @@ function startGame(): void {
     winConditions: winConditionsOf(setup.money, setup.time, setup.victory),
   });
   history.length = 0;
+  recorder.reset();
   // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
   goButton.reset();
 
@@ -7216,7 +7285,64 @@ function bindInput(): void {
   // ★ 键位表照原版的 RICH4.CFG（见 hotkeys.ts），功能名用 exe 里的原串。
   //   还没有对应屏幕的功能按了只记一条日志 —— 与工具栏上没实现的按钮
   //   一个待遇：说出来，不假装有反应。
+  // ★★ 未捕获异常的总闸。打包后的 `.app` 没有控制台：先前前端一抛错，回合链
+  //   （`scheduleAi` / `scheduleHumanTurn` 那几条 setTimeout）就**无声地断掉**，
+  //   玩的人只看到「不动了」，开发的人什么都拿不到。现在：记进飞行记录仪、
+  //   送桌面壳 stderr、日志栏给一行，并**自动落一份回报**（每种报错只落一次，一局至多 3 份）。
+  const reportedErrors = new Set<string>();
+  const onUncaught = (kind: 'error' | 'unhandledrejection', message: string, stack: string | null): void => {
+    recorder.error({ t: Date.now(), kind, message, stack });
+    hostLog(`[${kind}] ${message}${stack === null ? '' : `\n${stack}`}`);
+    log(`⚠ 程式錯誤：${message.slice(0, 120)}（按 F9 可另存問題回報）`);
+    if (reportedErrors.has(message) || reportedErrors.size >= 3) return;
+    reportedErrors.add(message);
+    fileReport('error', message);
+  };
+  window.addEventListener('error', (e) => {
+    const err: unknown = e.error;
+    onUncaught('error', e.message, err instanceof Error ? (err.stack ?? null) : null);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const r: unknown = e.reason;
+    onUncaught('unhandledrejection', r instanceof Error ? r.message : String(r), r instanceof Error ? (r.stack ?? null) : null);
+  });
+
+  // ★★ 停摆看门狗：**电脑的回合** 60 秒没有任何进展 = 回合链断了（电脑不需要等人）。
+  //   真人回合不算 —— 人可以想多久都行。只落一次回报；浏览器下不自动弹下载，只记一行。
+  let stallKey = '';
+  let stallSince = Date.now();
+  let stallReported = false;
+  window.setInterval(() => {
+    const key = `${screen}|${state.turnCount}|${state.phase}|${state.currentPlayer}|${state.pending?.kind ?? '-'}|${state.stepsRemaining}|${history.length}`;
+    const now = Date.now();
+    if (key !== stallKey) {
+      stallKey = key;
+      stallSince = now;
+      return;
+    }
+    if (stallReported || screen !== 'game' || state.phase === 'gameOver' || !isAiTurn(state)) return;
+    if (net !== null && !localSeatActive()) return; // 联机：别人的回合卡不卡不由本机判
+    // 电脑的回合里也可能在**等人**：竞价轮到真人举牌（core `actingSeat`）⇒ 不算停摆
+    const acting = state.players[actingSeat(state)];
+    if (acting === undefined || !isAiControlled(acting)) return;
+    // 整屏演出（月結、開獎…）可能在等人点一下才收 ⇒ 放宽到 3 分钟，免得误报
+    const limit = activeUiScreen() === null ? 60_000 : 180_000;
+    if (now - stallSince < limit) return;
+    stallReported = true;
+    const message = `電腦回合 ${limit / 1000} 秒無進展：${key}`;
+    recorder.error({ t: now, kind: 'stall', message, stack: null });
+    hostLog(`[stall] ${message}`);
+    log(`⚠ ${message}（按 F9 存問題回報）`);
+    if (isDesktop()) fileReport('stall', message);
+  }, 5_000);
+
   window.addEventListener('keydown', (e) => {
+    // ★ F9 = 问题回报（原版的键名表里没有 F1..F12，不占任何原版热键）
+    if (e.key === 'F9') {
+      e.preventDefault();
+      fileReport('manual');
+      return;
+    }
     unlockAudio();
     // 开局过场：任意键跳过（原版同样可跳过）
     if (screen === 'intro') {
@@ -7499,6 +7625,7 @@ function connectOnline(url: string, room: string, name: string): void {
             mode: 'multiplayer',
           });
           history.length = 0;
+          recorder.reset();
           hoverNode = null;
           const first = map.nodes[state.players[0]?.nodeId ?? 1];
           camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
@@ -7537,6 +7664,7 @@ function connectOnline(url: string, room: string, name: string): void {
             mode: 'multiplayer',
           });
           history.length = 0;
+          recorder.reset();
           for (const action of r.actions) {
             state = reduce(state, action, topo);
             history.push(action);
@@ -7659,6 +7787,8 @@ async function boot(): Promise<void> {
         get state() { return state; },
         get camera() { return camera; },
         get history() { return history; },
+        report: (note?: string) => { fileReport('manual', note ?? ''); },
+        get recorder() { return { trail: recorder.trailLength, errors: recorder.errorCount }; },
         get hoverNode() { return hoverNode; },
         get screen() { return screen; },
         /** 目标拾取会话（T-026）—— `null` = 没在拾取 */

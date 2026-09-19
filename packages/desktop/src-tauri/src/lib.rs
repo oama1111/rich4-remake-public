@@ -291,6 +291,35 @@ fn write_save(app: tauri::AppHandle, slot: u32, json: String) -> Result<(), Stri
     fs::write(&path, json).map_err(|e| format!("寫入 {} 失敗：{e}", path.display()))
 }
 
+// ============================================================
+//  问题回报（飞行记录仪）
+// ============================================================
+
+/// 写一份问题回报到 `<系统应用数据目录>/reports/`，返回落盘的完整路径。
+///
+/// ★ 打包后的 `.app` 没有控制台，前端出的事只能靠这份文件带出来
+///   （`client/src/flight-recorder.ts`；重放用 `tools/replay-report.ts`）。
+/// ★ 文件名只收 `[A-Za-z0-9._-]` —— 前端传什么都不许跳出这个目录。
+#[tauri::command]
+fn write_report(app: tauri::AppHandle, name: String, json: String) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("取应用数据目录失败：{e}"))?
+        .join("reports");
+    fs::create_dir_all(&dir).map_err(|e| format!("建回报目录失败：{e}"))?;
+    let safe: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .collect();
+    if safe.is_empty() || safe.starts_with('.') {
+        return Err(format!("文件名不合法：{name}"));
+    }
+    let path = dir.join(safe);
+    fs::write(&path, json).map_err(|e| format!("寫入 {} 失敗：{e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
 /// 列出**存在**的槽号。
 #[tauri::command]
 fn list_saves(app: tauri::AppHandle) -> Vec<u32> {
@@ -601,7 +630,8 @@ pub fn run() {
             write_save,
             list_saves,
             read_config,
-            write_config
+            write_config,
+            write_report
         ])
         .run(tauri::generate_context!())
         .expect("启动失败");

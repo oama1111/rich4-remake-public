@@ -19,21 +19,12 @@
  * —— 联机局面由服务器定序，本机不得自己重播种。
  */
 
-import { reduce, policyFor, needsReseed, type Action, type GameState } from '@rich4/core';
+import { reduce, reduceWithSeed, policyFor, needsReseed, type Action, type GameState } from '@rich4/core';
 import type { MapTopology } from '@rich4/core';
 
 /** 宿主时钟种子 —— 对应原版的 `GetTickCount()`（取正 31 位，与原版一致）。 */
 export function clockSeed(now: number = Date.now()): number {
   return (now & 0x7fffffff) >>> 0;
-}
-
-/** 这一条 action 之后，「日」是否推进了 —— 原版的重播种挂在日推进里（`0x41D06E`） */
-function dayAdvanced(before: GameState, after: GameState): boolean {
-  return (
-    after.day !== before.day ||
-    after.month !== before.month ||
-    after.year !== before.year
-  );
 }
 
 /**
@@ -47,10 +38,8 @@ export function reduceWithHostRng(
   topo: MapTopology,
   seed: number = clockSeed(),
 ): GameState {
-  const next = reduce(state, action, topo);
-  if (next === state || !dayAdvanced(state, next)) return next;
-  if (!needsReseed(policyFor(next.mode), 'turnAdvance')) return next;
-  return reduce(next, { type: 'reseed', seed }, topo);
+  // ★ 实现在 core（`rng/host-reseed.ts`）—— 与问题回报的重放路径**同一段代码**
+  return reduceWithSeed(state, action, topo, seed);
 }
 
 /**

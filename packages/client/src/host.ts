@@ -128,6 +128,40 @@ export function hostLog(text: string): void {
 }
 
 // ============================================================
+//  问题回报（飞行记录仪，见 flight-recorder.ts）
+// ============================================================
+
+/**
+ * 把一份问题回报落到玩家找得到的地方，返回「落在哪」的说明（失败返回 null）。
+ *
+ * - 桌面：`<应用数据目录>/reports/<name>`（macOS 是
+ *   `~/Library/Application Support/<bundle id>/reports/`）
+ * - 浏览器：触发一次下载（落在「下载」文件夹）
+ */
+export async function writeReport(name: string, json: string): Promise<string | null> {
+  const t = tauri();
+  if (t !== null) {
+    try {
+      return await t.core.invoke<string>('write_report', { name, json });
+    } catch (e) {
+      hostLog(`回报写不进去：${String(e)}`);
+      return null;
+    }
+  }
+  try {
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    window.setTimeout(() => { URL.revokeObjectURL(url); }, 10_000);
+    return `下載資料夾/${name}`;
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================
 //  存档槽（T-053）
 // ============================================================
 
