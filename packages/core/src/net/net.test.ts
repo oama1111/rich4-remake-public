@@ -13,7 +13,7 @@ import { fnv1a, stateFingerprint, PROTOCOL_VERSION, type ClientMessage, type Ser
 import { Sequencer } from './sequencer.ts';
 import { topoOf } from '../testing/factories.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
 const allComputer = () => [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const }));

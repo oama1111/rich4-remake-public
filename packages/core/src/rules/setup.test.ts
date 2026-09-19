@@ -17,7 +17,7 @@ import {
 import { CHARACTERS, characterByKey } from '@rich4/data';
 import { parseSave } from '../loaders/save.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const SAVE1 = `${ROOT}/Rich4/SAVE1.DAT`;
 
 describe('初始资金', () => {

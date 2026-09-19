@@ -19,7 +19,7 @@ import { withLiveMapState } from './map-state.ts';
 import { writeMapBlock } from './map-writer.ts';
 import { ORIGINAL_STATE_BLOCK_SIZE, writeOriginalSaveFile } from './save-writer.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const SAVES = [`${ROOT}/Rich4/Save0.dat`, `${ROOT}/Rich4/SAVE1.DAT`];
 
 const u32 = (b: Uint8Array, o: number): number =>

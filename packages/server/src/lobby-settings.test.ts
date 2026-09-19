@@ -18,7 +18,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { PROTOCOL_VERSION, parseMap, type Rich4Map, type ServerMessage } from '@rich4/core';
 import { RoomHub, type Conn } from './hub.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = (): Rich4Map => parseMap(new Uint8Array(readFileSync(MAP)));
 

@@ -21,7 +21,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { SPECIAL_KIND, parseMap } from '../loaders/map.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 
 /** 原版走回棋盘的拍数：`trunc(dist × 0.125)`（`@source 0x0040c5e6` 那条特殊支） */

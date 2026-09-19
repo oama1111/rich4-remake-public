@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { MkfArchive, parseSpriteSheet } from './mkf.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const hasAssets = existsSync(`${ROOT}/Rich4/map.mkf`) && existsSync(`${ROOT}/extracted/map`);
 const d = hasAssets ? describe : describe.skip;
 

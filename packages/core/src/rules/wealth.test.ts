@@ -23,7 +23,7 @@ const makePlayer = (over: Partial<Player> = {}): Player =>
   basePlayer({ cash: 0, moneyInBank: 0, ...over });
 import { WHO_PLAYS_DEAD, WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const MAP0 = `${ROOT}/extracted/map/0001.bin`;
 const SAVE0 = `${ROOT}/Rich4/Save0.dat`;
 

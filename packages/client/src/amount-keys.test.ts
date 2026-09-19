@@ -40,7 +40,7 @@ import {
 import { ATM_DIGIT_MAX, atmApplyCode } from './bank-dynamic.ts';
 
 // ── 去 exe 取证那一段（素材不在就整块跳过，与 `amount-unity.test.ts` 同一手法）──
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 /** 代码段与数据段：这个 PE 的节表 VirtualSize 全是 0，故用 SizeOfRawData（同 disasm.py）*/
 const CODE_VA = 0x401000;
 const CODE_OFF = 1024;

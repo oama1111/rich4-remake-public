@@ -20,7 +20,7 @@ import {
   type GroundImage,
 } from './ground.ts';
 
-const DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/map';
+const DIR = (process.env.RICH4_WORKSPACE ?? '') + '/assets-clean/map';
 const groundPath = (mapId: number): string => `${DIR}/${String(mapId * 2).padStart(4, '0')}.gnd`;
 const have = existsSync(groundPath(0)) ? it : it.skip;
 const load = (mapId: number): Uint8Array => new Uint8Array(readFileSync(groundPath(mapId)));

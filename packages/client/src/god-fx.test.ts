@@ -28,11 +28,11 @@ import {
   godFxTrigger,
 } from './god-fx.ts';
 
-const DATA_MKF = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/Data.mkf';
+const DATA_MKF = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Data.mkf';
 const runData = existsSync(DATA_MKF) ? it : it.skip;
 
 // ── 回 exe 取证那一块（素材不在就整块跳过）──
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 const CODE_VA = 0x401000;
 const CODE_OFF = 1024;
 const exeBuf = existsSync(EXE) ? readFileSync(EXE) : Buffer.alloc(0);

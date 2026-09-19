@@ -16,7 +16,7 @@ import {
 import { SPECIAL_KIND, parseMap } from '../loaders/map.ts';
 import { makePlayer } from '../testing/factories.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const MAP0 = `${ROOT}/extracted/map/0001.bin`;
 const d = existsSync(MAP0) ? describe : describe.skip;
 

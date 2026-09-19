@@ -11,7 +11,7 @@ import { parseSave, expectedSaveLength, OFFSET, GOD, WHO_PLAYS } from './save.ts
 import { parseMap } from './map.ts';
 import { CHARACTERS } from '@rich4/data';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const SAVES = [`${ROOT}/Rich4/Save0.dat`, `${ROOT}/Rich4/SAVE1.DAT`];
 const hasSaves = SAVES.every((p) => existsSync(p));
 const d = hasSaves ? describe : describe.skip;

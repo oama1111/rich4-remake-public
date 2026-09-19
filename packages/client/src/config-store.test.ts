@@ -75,7 +75,7 @@ describe('★ 浏览器那一份：localStorage + Base64', () => {
   it('★ 拿原版那份 `RICH4.CFG` 走一遍往返 ⇒ 解出来的设定一致', async () => {
     const store = await freshStore();
     const raw = new Uint8Array(
-      readFileSync('/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/RICH4.CFG'),
+      readFileSync(new URL('../../../assets/game/RICH4.CFG', import.meta.url)),
     );
     store.write(raw);
     const back = store.read()!;

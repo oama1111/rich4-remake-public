@@ -11,7 +11,7 @@ import { parseMap } from './map.ts';
 import { parseSave } from './save.ts';
 import { writeMapBlock } from './map-writer.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const SAVES = [`${ROOT}/Rich4/Save0.dat`, `${ROOT}/Rich4/SAVE1.DAT`];
 
 describe('★ 地图数据块：往返逐字节', () => {

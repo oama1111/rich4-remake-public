@@ -909,7 +909,7 @@ describe('回放生命周期', () => {
 //  从状态 diff 反推落点（end-to-end，用真地图）
 // ============================================================
 
-const MAP_PATH = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP_PATH = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const runMap = existsSync(MAP_PATH) ? it : it.skip;
 
 function load(): { map: ReturnType<typeof parseMap>; topo: MapTopology } {

@@ -8,7 +8,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { DEFAULT_TEMPO_US, MidiFormatError, parseMidi } from './midi.ts';
 import { MIDI_PLAYLIST } from './audio.ts';
 
-const GAME = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/rich4-remake/assets/game';
+const GAME = (process.env.RICH4_WORKSPACE ?? '') + '/rich4-remake/assets/game';
 const has = (f: string): boolean => existsSync(`${GAME}/${f}`);
 const load = (f: string): Uint8Array => new Uint8Array(readFileSync(`${GAME}/${f}`));
 const run = has('midi01.mid') ? it : it.skip;

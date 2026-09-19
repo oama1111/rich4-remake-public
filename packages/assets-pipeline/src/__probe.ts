@@ -3,7 +3,7 @@ import { MkfArchive, parseSpriteSheet } from './mkf.ts';
 import { decodeImage } from './sprite.ts';
 import { encodePng } from './png.ts';
 
-const data = new Uint8Array(readFileSync('/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/Data.mkf'));
+const data = new Uint8Array(readFileSync(new URL('../../../../Rich4/Data.mkf', import.meta.url)));
 const a = new MkfArchive(data);
 console.log('count', a.count);
 for (const [res, idxs] of [[3, [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]], [440, [0,1,2]]] as const) {

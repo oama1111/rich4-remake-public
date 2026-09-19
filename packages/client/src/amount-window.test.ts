@@ -113,7 +113,7 @@ describe('★ 金额窗的版面与绘制', () => {
 });
 
 describe('★★ 逐像素 id 图（Panel#0x16）＝ 命中的真值（2026-09-16 接入）', () => {
-  const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/Panel/0022.bin';
+  const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/assets-clean/Panel/0022.bin';
   const hasMap = existsSync(MAP);
   const bytes = hasMap ? new Uint8Array(readFileSync(MAP)) : null;
 

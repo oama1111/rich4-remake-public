@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { ALL_TEXTS, BUTTON, FIELD, PROMPT, RENT, formatOriginal } from './messages.ts';
 
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 const d = existsSync(EXE) ? describe : describe.skip;
 
 /** @source 与 binary-truth.test.ts 同一张节表 */
@@ -22,6 +22,11 @@ const DGROUP_OFF = 398848;
 const DGROUP_SIZE = 158720;
 
 d('原版文案', () => {
+  // describe.skip 仍会执行本回调（收集用例）⇒ 缺文件时不能走到下面的 readFileSync
+  if (!existsSync(EXE)) {
+    it.skip('需要原版 rich4.exe', () => undefined);
+    return;
+  }
   const exe = readFileSync(EXE);
   const decoder = new TextDecoder('big5');
 

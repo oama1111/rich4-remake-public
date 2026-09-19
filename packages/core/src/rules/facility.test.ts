@@ -8,7 +8,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { makeFacility } from '../testing/factories.ts';
 import { parseMap } from '../loaders/map.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 import { TOOLS } from '@rich4/data';
 import {
   FACILITY_MAX_LEVEL,

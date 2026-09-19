@@ -41,7 +41,7 @@ import { stockAmountForm } from './amount-form.ts';
 import { boardPriceUi } from './board-screen.ts';
 
 // ── 去 exe 取证的那一段（素材不在就整块跳过，与 `hotkeys.test.ts` 同一手法）──
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 /** 代码段：这个 PE 的节表 VirtualSize 全是 0，故用 SizeOfRawData（同 `tools/disasm.py`）*/
 const CODE_VA = 0x401000;
 const CODE_OFF = 1024;

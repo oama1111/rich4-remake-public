@@ -18,7 +18,7 @@ import { WHO_PLAYS_RETURN_TO_BOARD, isAlive } from './types.ts';
 import { gameOverCode, isGameOver, reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
 

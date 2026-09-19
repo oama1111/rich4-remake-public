@@ -29,7 +29,7 @@ import {
   type ConfineKind,
 } from './confine-fx.ts';
 
-const DATA_MKF = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/Data.mkf';
+const DATA_MKF = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Data.mkf';
 const hasData = existsSync(DATA_MKF);
 const runData = hasData ? it : it.skip;
 

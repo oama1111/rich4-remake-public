@@ -268,7 +268,7 @@ describe('★ 落點 = 起點之後第一個非空格（與 core 的 spinWheel �
 //  從 before/after 反推（真地圖 + 真 reducer）
 // ============================================================
 
-const MAP_PATH = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP_PATH = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const runMap = existsSync(MAP_PATH) ? it : it.skip;
 
 const PLAYERS = (): { character: number; kind: 'computer' }[] =>

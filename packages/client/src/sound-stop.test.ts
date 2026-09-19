@@ -20,7 +20,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { SoundPlayer } from './audio.ts';
 
-const EFFECT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/Effect.mkf';
+const EFFECT = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Effect.mkf';
 const haveEffect = existsSync(EFFECT) ? it : it.skip;
 
 /** 记账用的假 source —— 只要「有没有被立刻停掉」 */

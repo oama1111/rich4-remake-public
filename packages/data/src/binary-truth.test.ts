@@ -25,7 +25,7 @@ import {
   projectionTable,
 } from './projection.ts';
 
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 const d = existsSync(EXE) ? describe : describe.skip;
 
 /**

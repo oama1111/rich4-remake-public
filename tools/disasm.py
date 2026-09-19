@@ -26,6 +26,7 @@ rich4.exe 反汇编工具 —— 项目的最终真值裁决手段
 
 依赖: capstone
 """
+import os
 import re
 import struct
 import sys
@@ -35,7 +36,10 @@ try:
 except ImportError:
     sys.exit("需要 capstone: pip3 install capstone")
 
-EXE = "/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe"
+EXE = os.path.join(
+    os.environ.get("RICH4_WORKSPACE")
+    or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "Rich4", "rich4.exe")
 
 # ⚠️ 该 PE 的节表 VirtualSize 全为 0（老 Watcom 链接器），
 #    必须用 SizeOfRawData 做 VA→文件偏移换算。

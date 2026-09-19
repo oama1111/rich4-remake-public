@@ -38,7 +38,7 @@ import { canPurchase, canUpgrade, housingIndexOf } from '../rules/land.ts';
 import { evaluateTurnStart } from '../rules/turn-start.ts';
 import { tollExemption } from '../rules/toll-flow.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const have = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
 
@@ -92,7 +92,7 @@ describe('★ 系统接管：梦游期间回合开局就自动掷骰', () => {
     expect(r.raw).toBe(-1);
   });
 
-  it('没梦游的玩家照旧停在 `awaitingRoll`（对照组）', () => {
+  have('没梦游的玩家照旧停在 `awaitingRoll`（对照组）', () => {
     const { state, topo } = sleepwalkingGame();
     const noSleep: GameState = {
       ...state,
@@ -110,7 +110,7 @@ describe('★ 系统接管：梦游期间回合开局就自动掷骰', () => {
 // ============================================================
 
 describe('★ 不买地、不升级（住宅）', () => {
-  it('`canPurchase` 直接以 `sleepWalking` 为由拒绝', () => {
+  have('`canPurchase` 直接以 `sleepWalking` 为由拒绝', () => {
     const { state, topo } = sleepwalkingGame();
     const land = topo.lands.find((l) => l.owner === 0 && l.level === 0);
     if (land === undefined) throw new Error('地图 0 上没有无主空地');
@@ -119,7 +119,7 @@ describe('★ 不买地、不升级（住宅）', () => {
     expect(r.reason).toBe('sleepWalking');
   });
 
-  it('`canUpgrade` 同样以 `sleepWalking` 为由拒绝', () => {
+  have('`canUpgrade` 同样以 `sleepWalking` 为由拒绝', () => {
     const { state, topo } = sleepwalkingGame();
     const land = topo.lands[0]!;
     const owned = { ...land, owner: 1, level: 1 };
@@ -174,7 +174,7 @@ describe('★ 不买地、不升级（住宅）', () => {
     expect(after.landLevel[land.id]).toBe(1); // 没加蓋（进去之前就是 1）
   });
 
-  it('`housingIndexOf` 的前提还在（上面几条约束的是同一张表）', () => {
+  have('`housingIndexOf` 的前提还在（上面几条约束的是同一张表）', () => {
     const { topo } = sleepwalkingGame();
     const house = topo.lands.find((l) => housingIndexOf(l.type) !== null);
     if (house === undefined) return;
@@ -291,7 +291,7 @@ describe('★ 不炒股（上市企业落点连框都不开）', () => {
 // ============================================================
 
 describe('★ 梦游中收租豁免 @source 0x0041d559', () => {
-  it('`tollExemption` 判 `sleepWalking`', () => {
+  have('`tollExemption` 判 `sleepWalking`', () => {
     const { state } = sleepwalkingGame();
     const b = state.players[1]!.blocking;
     expect(tollExemption({ ...state.players[1]!, blocking: { ...b, sleepWalking: 1 } }, 0, 0)).toBe(

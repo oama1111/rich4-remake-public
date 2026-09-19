@@ -968,7 +968,7 @@ describe('★ 頒獎判据 @source 0x00437d1a / 0x00437dfe', () => {
   it('★★ `#0092` 开屏串逐字节对照 exe @source 0x004d60 起（VA 0x00464d60）', () => {
     // ★ 2026-09-17 订正：先前那份转写是「月底快到了！⏎又到了每個月結算的日子。」
     //   —— 从 exe 里逐字节 dump 出来是**三行、两个换行**，而且开头不同：
-    const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+    const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
     if (existsSync(EXE)) {
       const buf = readFileSync(EXE);
       const off = 398848 + (0x464d60 - 0x463000); // VA → 文件偏移（exe 专用换算）
@@ -1101,7 +1101,7 @@ describe('★ 演出状态机', () => {
 //  event / tick 生命周期（真地图）
 // ============================================================
 
-const MAP_PATH = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP_PATH = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const runMap = existsSync(MAP_PATH) ? it : it.skip;
 
 /** 最小 `UiScreenEnv` —— 只填本屏读得到的几项 */
@@ -1765,7 +1765,7 @@ describe('★ 收尾那一句说的是**谁** @source 0x00438d04 / 0x004383a6 / 
 });
 
 describe('★★ 四处「裁切滑动」逐条核实：**都是同坐标还原**（`fcn_0045643d`）@source rich4.asm', () => {
-  const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+  const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
   const exeBuf = existsSync(EXE) ? readFileSync(EXE) : Buffer.alloc(0);
 
   /**

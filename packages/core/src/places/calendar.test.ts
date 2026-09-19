@@ -21,7 +21,7 @@ import {
   weekdayOf,
 } from './calendar.ts';
 
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 const d = existsSync(EXE) ? describe : describe.skip;
 
 /** @source 与 binary-truth.test.ts 同一张节表 */
@@ -29,6 +29,11 @@ const DGROUP_VA = 0x463000;
 const DGROUP_OFF = 398848;
 
 d('日曆的数据全部来自 exe', () => {
+  // describe.skip 仍会执行本回调（收集用例）⇒ 缺文件时不能走到下面的 readFileSync
+  if (!existsSync(EXE)) {
+    it.skip('需要原版 rich4.exe', () => undefined);
+    return;
+  }
   const exe = readFileSync(EXE);
   const at = (va: number): number => DGROUP_OFF + (va - DGROUP_VA);
 

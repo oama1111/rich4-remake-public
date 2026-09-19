@@ -21,7 +21,7 @@ import {
 import { DEFAULT_BINDINGS } from './hotkeys.ts';
 import { HOTKEY_DEFAULT_KEYS } from './options-pages.ts';
 
-const CFG = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/RICH4.CFG';
+const CFG = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/RICH4.CFG';
 const have = existsSync(CFG) ? it : it.skip;
 
 describe('★ 结构常量 @source `rich4_config_file.h`', () => {

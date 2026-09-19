@@ -22,7 +22,7 @@ const makePlayer = (index: number, over: Partial<Player> = {}): Player =>
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_DEAD } from './types.ts';
 import { parseMap } from '../loaders/map.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const MAP0 = `${ROOT}/extracted/map/0001.bin`;
 
 

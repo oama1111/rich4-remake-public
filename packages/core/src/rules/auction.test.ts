@@ -1274,7 +1274,7 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
 });
 
 describe('★ Q-AUC-1 soak：4 个电脑跑满 300 回合，拍卖不得卡死', () => {
-  const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+  const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
   const runSoak = existsSync(MAP) ? it : it.skip;
 
   runSoak('★ 300 回合不卡死', () => {

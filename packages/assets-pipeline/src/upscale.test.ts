@@ -19,7 +19,7 @@ import {
   type AssetEntryLike,
 } from './upscale.ts';
 
-const MANIFEST = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/manifest.json';
+const MANIFEST = (process.env.RICH4_WORKSPACE ?? '') + '/assets-clean/manifest.json';
 const run = existsSync(MANIFEST) ? it : it.skip;
 
 const entry = (over: Partial<AssetEntryLike> = {}): AssetEntryLike => ({

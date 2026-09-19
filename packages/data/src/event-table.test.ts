@@ -13,7 +13,7 @@ import {
   stripEventCode,
 } from './event-table.ts';
 
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 const run = existsSync(EXE) ? it : it.skip;
 
 /** DGROUP：VA 0x463000 → 文件偏移 398848 */

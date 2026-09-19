@@ -156,7 +156,7 @@ const CHAPTER_FACTS: readonly HelpChapterFact[] = [
 ];
 
 /** `help.mkf` 的正文资源（资源 0 是底图那一支，正文从 0001 起）*/
-const HELP_DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/help';
+const HELP_DIR = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/help';
 const runOnHelpAssets = existsSync(`${HELP_DIR}/0001.bin`) ? it : it.skip;
 
 /**

@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 
 /** 逆向目录（CI 上可能没有）*/
-const RE_ASM = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/rich4-re/asm';
+const RE_ASM = (process.env.RICH4_WORKSPACE ?? '') + '/rich4-re/asm';
 import { LOAN_BUBBLE, LOAN_FINANCE_BUBBLE, LOAN_MSG } from './bank-dynamic.ts';
 import {
   FINANCE_BORROW,

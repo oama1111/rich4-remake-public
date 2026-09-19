@@ -2,7 +2,7 @@
  * 工具栏摆位
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   actorTokens,
@@ -197,7 +197,7 @@ describe('★★ 棋子世界坐标：读 `xpos/ypos`，不拿 `nodeId` 现推�
  */
 
 /** 解出来的原版素材目录（用来核对每组的图数） */
-const DATA_DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/Data';
+const DATA_DIR = (process.env.RICH4_WORKSPACE ?? '') + '/assets-clean/Data';
 
 /** 造一张只有 n 个节点的直线地图，节点间隔 40 世界单位 */
 function lineNodes(n: number): MapNode[] {
@@ -262,7 +262,7 @@ describe('★ T-047 替身的图组资源号 —— 全部照 exe，不许猜', 
     for (const [actor, want] of Object.entries(FRAMES)) {
       const a = Number(actor);
       const base = SPECIAL_ACTOR_SPRITE_BASE + a * 4;
-      for (let k = 0; k < 4; k++) {
+      for (let k = 0; k < 4 && existsSync(DATA_DIR); k++) {
         const n = readdirSync(DATA_DIR).filter((f) =>
           new RegExp(`^0${base + k}_\\d{3}\\.png$`).test(f),
         ).length;

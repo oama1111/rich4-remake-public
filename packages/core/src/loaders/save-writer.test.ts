@@ -24,7 +24,7 @@ import {
   writeStateBlock,
 } from './save-writer.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const MAP = `${ROOT}/extracted/map/0001.bin`;
 const SAVES = [`${ROOT}/Rich4/Save0.dat`, `${ROOT}/Rich4/SAVE1.DAT`];
 

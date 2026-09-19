@@ -13,7 +13,7 @@ import { TOOL_SLOTS_PER_PLAYER, toolCount } from '../rules/tools.ts';
 import { MISSILE_RADIUS } from '../rules/tool-effects.ts';
 import { housingIndexOf, facilityIndexOf } from '../rules/land.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
 

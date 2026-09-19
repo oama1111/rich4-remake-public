@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { decodeGround } from './ground.ts';
 
-const DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/map';
+const DIR = (process.env.RICH4_WORKSPACE ?? '') + '/assets-clean/map';
 const have = existsSync(`${DIR}/0000.gnd`) ? it : it.skip;
 const res = (n: number): Uint8Array =>
   new Uint8Array(readFileSync(`${DIR}/${String(n).padStart(4, '0')}.${n % 2 === 0 ? 'gnd' : 'bin'}`));

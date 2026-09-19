@@ -8,7 +8,7 @@ import { DEFAULT_BINDINGS, HOTKEY, MOD_CTRL, hotkeyOf, vkOf } from './hotkeys.ts
 import { HOTKEY_DEFAULT_KEYS } from './options-pages.ts';
 import { HOTKEY_NAMES } from './options.ts';
 
-const CFG = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/RICH4.CFG';
+const CFG = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/RICH4.CFG';
 const d = existsSync(CFG) ? describe : describe.skip;
 
 /** 造一个够用的假 KeyboardEvent */

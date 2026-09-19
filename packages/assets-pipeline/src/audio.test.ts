@@ -8,9 +8,9 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { MkfArchive } from './mkf.ts';
 import { MIDI_PLAYLIST, BGM_FILES, SCREEN_BGM, bgmTrackIdOf, bgmAssetFileFor, bgmFileFor, bgmEnabled, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from './audio.ts';
 
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 
-const RICH4 = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4';
+const RICH4 = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4';
 const have = (f: string) => (existsSync(`${RICH4}/${f}`) ? it : it.skip);
 const open = (f: string) => new MkfArchive(new Uint8Array(readFileSync(`${RICH4}/${f}`)));
 
@@ -99,7 +99,7 @@ describe('★ 背景音乐', () => {
     // ★ 磁盘上是小写（`Rich4/midi01.mid`）；exe 那张表里是大写
     expect(bgmAssetFileFor(9)).toBe('midi10.mid');
     expect(bgmAssetFileFor(99)).toBeNull();
-    const RICH4 = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4';
+    const RICH4 = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4';
     if (existsSync(RICH4)) {
       // 抽两支：`bgmAssetFileFor` 给出的小写名**就是目录里那条真实条目名**
       //   ⚠️ 别用 `existsSync(大写)` 当反证 —— macOS 默认文件系统不区分大小写，

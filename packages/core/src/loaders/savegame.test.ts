@@ -24,8 +24,8 @@ import { reduce } from '../state/reduce.ts';
 import type { GameState } from '../state/types.ts';
 import { makeGameState } from '../testing/factories.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
-const ORIGINAL_SAVE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/Save0.dat';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
+const ORIGINAL_SAVE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Save0.dat';
 const withMap = existsSync(MAP) ? it : it.skip;
 const withSave = existsSync(MAP) && existsSync(ORIGINAL_SAVE) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
@@ -265,7 +265,7 @@ describe('原版存档导入', () => {
       ['Rich4/SAVE1.DAT', 13490],
     ] as const;
     for (const [rel, expected] of CASES) {
-      const path = `/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/${rel}`;
+      const path = `${process.env.RICH4_WORKSPACE ?? ''}/${rel}`;
       const t = existsSync(path) && existsSync(MAP) ? it : it.skip;
       t(`${rel} → ${expected}`, () => {
         const bytes = new Uint8Array(readFileSync(path));

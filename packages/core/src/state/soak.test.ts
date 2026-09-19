@@ -16,7 +16,7 @@ import { holdingsCost, holdingsValue } from '../ai/stock-policy.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
 const players = () => [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const }));
@@ -204,7 +204,7 @@ describe('★ 八张地图都要能玩（2026-09-16 补）', () => {
   // 地图文件 = `globalMapId * 2 + 1` @source assets.ts 的 readMapData
   const MAP_IDS = [0, 1, 2, 3, 4, 5, 6, 7];
   const pathOf = (id: number) =>
-    `/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/${String(id * 2 + 1).padStart(4, '0')}.bin`;
+    `${process.env.RICH4_WORKSPACE ?? ''}/extracted/map/${String(id * 2 + 1).padStart(4, '0')}.bin`;
 
   for (const id of MAP_IDS) {
     run(`地圖 ${id}：60 回合不卡死、且确实推进了`, () => {

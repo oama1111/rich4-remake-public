@@ -9,7 +9,7 @@ import {
   DISPELLABLE_TYPES, objectTypeOf, canDispel,
 } from './objects.ts';
 
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 
 describe('物件类型表', () => {
   it('46 项，每项 24 字节（0x450 / 46）', () => {

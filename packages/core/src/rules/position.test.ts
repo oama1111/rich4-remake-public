@@ -22,7 +22,7 @@ import { topoOf } from '../testing/factories.ts';
 import { applyHibernateCard } from '../cards/hibernate.ts';
 import { isOnBoard, placeOnNodeId } from './position.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const MAP = `${ROOT}/extracted/map/0001.bin`;
 const SAVES = [`${ROOT}/Rich4/Save0.dat`, `${ROOT}/Rich4/SAVE1.DAT`];
 const haveMap = existsSync(MAP);
@@ -53,6 +53,11 @@ describe('★ 真实存档：xpos/ypos 就是所在节点的坐标（8/8）', ()
 });
 
 describe('★ placeOnNodeId 的三元组语义', () => {
+  // 缺地图时 describe 体本身不能去读文件（下面各条已由 run 守卫）
+  if (!haveMap) {
+    it.skip('需要 extracted/map/0001.bin', () => undefined);
+    return;
+  }
   const p = { ...newGame({ map: loadMap(), players: players(), seed: 1 }).players[0]! };
   const map = loadMap();
 

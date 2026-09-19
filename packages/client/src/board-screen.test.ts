@@ -625,7 +625,7 @@ describe('选物窗的命中', () => {
     //          VA 0x00424c64 `cmp edi, [0x4754be]`（行循环就按这个数走）
     //   ★ 2026-09-17 订正：本模块原先按几何算成 10（(h − rowY0)/rowDy），
     //     把表头那段也当成一行了。11 行才对：首行中心 0x70、末行 0x1b0、窗底 0x1c0。
-    const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+    const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
     if (existsSync(EXE)) {
       const buf = readFileSync(EXE);
       const fo = (va: number) => 1024 + (va - 0x401000); // 代码段 VA → 文件偏移

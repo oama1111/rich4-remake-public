@@ -13,7 +13,7 @@ import { DEFAULT_INITIAL_FUND, GAME_INITIAL_FUNDS, startingMoney } from './setup
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
 import { STARTING_TOOLS, toolCount, toolsOf } from './tools.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
 

@@ -10,7 +10,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, resolveNodeType, SPECIAL_KIND, NODE_SIZE } from './map.ts';
 import { stocksOfMap } from '@rich4/data';
 
-const MAP_DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map';
+const MAP_DIR = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map';
 const hasAssets = existsSync(MAP_DIR);
 const d = hasAssets ? describe : describe.skip;
 

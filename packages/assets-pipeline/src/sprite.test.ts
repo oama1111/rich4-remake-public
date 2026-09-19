@@ -8,7 +8,7 @@ import { MkfArchive, parseSpriteSheet } from './mkf.ts';
 import { decodeImage, decodeRaw555, parsePalette, TRANSPARENT_INDEX } from './sprite.ts';
 import { encodePng } from './png.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const hasAssets = existsSync(`${ROOT}/Rich4/map.mkf`);
 const d = hasAssets ? describe : describe.skip;
 
@@ -178,7 +178,7 @@ d('encodePng', () => {
 });
 
 describe('SMP 抠黑', () => {
-  const MAPMKF = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/map.mkf';
+  const MAPMKF = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/map.mkf';
   const has = existsSync(MAPMKF) ? it : it.skip;
 
   has('★ 特殊格装饰图的纯黑占两成多，且集中在四角 —— 那是抠图用的底色', () => {

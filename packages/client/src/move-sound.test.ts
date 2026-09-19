@@ -22,7 +22,7 @@ import { DICE_SOUND, MOVE_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
 import { MOVE_SOUND_ALT, MOVE_SOUND_IDLE, moveSoundId, moveSoundStep } from './move-sound.ts';
 import type { MoveSoundState } from './move-sound.ts';
 
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 const haveExe = existsSync(EXE) ? it : it.skip;
 
 /**

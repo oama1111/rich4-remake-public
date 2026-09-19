@@ -16,11 +16,12 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 import sys
 from pathlib import Path
 
-EXE = Path("/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe")
+EXE = Path(os.environ.get("RICH4_WORKSPACE") or Path(__file__).resolve().parents[2]) / "Rich4" / "rich4.exe"
 DATA_VA, DATA_OFF = 0x463000, 398848
 SPEECH_TABLE_VA = 0x48084A
 STRIDE = 108

@@ -19,7 +19,7 @@ import { isAlive } from '../state/types.ts';
 import { parseSave } from '../loaders/save.ts';
 import { parseMap } from '../loaders/map.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const SAVE0 = `${ROOT}/Rich4/Save0.dat`;
 
 

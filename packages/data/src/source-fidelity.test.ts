@@ -13,7 +13,7 @@ import { CARDS } from './cards.ts';
 import { TOOLS } from './tools.ts';
 import { CHARACTERS } from './characters.ts';
 
-const RE_ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/rich4-re';
+const RE_ROOT = (process.env.RICH4_WORKSPACE ?? '') + '/rich4-re';
 const hasSource = existsSync(RE_ROOT);
 const d = hasSource ? describe : describe.skip;
 

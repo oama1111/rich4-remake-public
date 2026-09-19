@@ -34,7 +34,7 @@ import type { Player } from '../state/types.ts';
 import { WHO_PLAYS_DEAD, WHO_PLAYS_HUMAN } from '../state/types.ts';
 import { makePlayer } from '../testing/factories.ts';
 
-const SAVE0 = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/Save0.dat';
+const SAVE0 = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Save0.dat';
 
 /** 已过天数 `[0x4990e4]` 在存档里的偏移 —— 紧接 game_initial_fund / price_index 之后 */
 const OFF_ELAPSED_DAYS = 0x2692;
@@ -53,6 +53,11 @@ const STOCK_PRICE_OFF = 20;
 const d = existsSync(SAVE0) ? describe : describe.skip;
 
 d('★ Q17：Save0.dat 的物价指数 5 = 最后一次采样时在世者有两人的结果', () => {
+  // describe.skip 仍会执行本回调（收集用例）⇒ 缺文件时不能走到下面的 readFileSync
+  if (!existsSync(SAVE0)) {
+    it.skip('需要原版 Save0.dat', () => undefined);
+    return;
+  }
   const data = new Uint8Array(readFileSync(SAVE0));
   const save = parseSave(data);
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);

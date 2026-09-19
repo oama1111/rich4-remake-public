@@ -8,7 +8,7 @@ import { calculateLandToll, countChainStores, CHAIN_STORE_TOLL, LAND_TYPE_HOUSE 
 import { parseMap, MAX_LAND_LEVEL } from '../loaders/map.ts';
 import type { LandInfo } from '../loaders/map.ts';
 
-const ROOT = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版';
+const ROOT = (process.env.RICH4_WORKSPACE ?? '');
 const MAP0 = `${ROOT}/extracted/map/0001.bin`;
 const hasMap = existsSync(MAP0);
 const d = hasMap ? describe : describe.skip;

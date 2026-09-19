@@ -67,7 +67,7 @@ describe('landPrice 进状态（新聞 6/14 的地价改动要落得住）', () 
   });
 
   it('newGame 把**地图地价**抄进状态（真地图）', () => {
-    const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+    const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
     if (!existsSync(MAP)) return; // 没解包素材就跳过（与其它真地图测试同规矩）
     const map = parseMap(new Uint8Array(readFileSync(MAP)));
     const g = newGame({

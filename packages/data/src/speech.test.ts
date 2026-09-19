@@ -34,8 +34,8 @@ import {
 import { CHARACTERS } from './characters.ts';
 import { FORTUNE_EVENTS, NEWS_EVENTS } from './event-table.ts';
 
-const EXE = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/rich4.exe';
-const MKF = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/Speaking.mkf';
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
+const MKF = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Speaking.mkf';
 const hasExe = existsSync(EXE);
 const hasMkf = existsSync(MKF);
 const run = hasExe ? it : it.skip;
@@ -516,7 +516,7 @@ describe('★ 金貝貝的表情图（`@DD` 那一支）', () => {
   });
 
   run('★ 图号空间 = assets-clean/Data/0519_*.png 的张数（21）', () => {
-    const dir = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/Data';
+    const dir = (process.env.RICH4_WORKSPACE ?? '') + '/assets-clean/Data';
     const pngs = readdirSync(dir).filter((f) => /^0519_\d{3}\.png$/.test(f));
     expect(pngs.length).toBe(SPEECH_EMOJI_IMAGE_COUNT);
     expect(SPEECH_EMOJI_IMAGE_COUNT).toBe(21);

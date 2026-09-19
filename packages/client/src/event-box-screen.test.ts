@@ -911,7 +911,7 @@ describe('★ 新聞百分比类那四条：逐人明细行 @source rich4_news.a
 });
 
 describe('★ 明细行头像的素材确实存在 @source map.mkf 资源 角色+0x1b 图 3', () => {
-  const DIR = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/assets-clean/map';
+  const DIR = (process.env.RICH4_WORKSPACE ?? '') + '/assets-clean/map';
   const has = existsSync(DIR);
   it('★★ 四个角色的头像表各 7 张，图 3 存在且是 39×35 那一档', () => {
     if (!has) return;

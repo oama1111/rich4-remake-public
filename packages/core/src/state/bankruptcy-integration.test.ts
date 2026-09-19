@@ -12,7 +12,7 @@ import { applyBankruptcy, applyMagicRequest, gameOverCode, isGameOver, reduce } 
 import { decideAction } from '../ai/policy.ts';
 import type { GameState } from './types.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
 const players = (n = 4) =>

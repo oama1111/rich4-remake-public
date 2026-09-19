@@ -49,7 +49,7 @@ function fakeFlic(n: number, ms: number): LoadedFlic {
 }
 
 /** 真 `Data.mkf`（打包进 `assets/game/` 的那一份）*/
-const DATA_MKF = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/rich4-remake/assets/game/Data.mkf';
+const DATA_MKF = (process.env.RICH4_WORKSPACE ?? '') + '/rich4-remake/assets/game/Data.mkf';
 const run = existsSync(DATA_MKF) ? it : it.skip;
 
 // ============================================================

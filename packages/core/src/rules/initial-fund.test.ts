@@ -34,8 +34,8 @@ import { makePlayer } from '../testing/factories.ts';
 import { parseSave, OFFSET } from '../loaders/save.ts';
 import { parseMap } from '../loaders/map.ts';
 
-const MAP = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/extracted/map/0001.bin';
-const SAVE0 = '/Users/chenke/Documents/kimi/Workspaces/大富翁4重制版/Rich4/Save0.dat';
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
+const SAVE0 = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Save0.dat';
 /** 素材在就跑、不在就跳过 —— 与仓库里其它对二进制取证的用例同一套写法 */
 const haveMap = existsSync(MAP) ? it : it.skip;
 const haveSave = existsSync(SAVE0) ? it : it.skip;
