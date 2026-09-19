@@ -41,3 +41,25 @@
 - 阻塞程度：**阻塞 W-04 的「冷启动 < 3 s」取证**（其余两条 —— 60 FPS / 内存 —— 已达标），
   不阻塞阶段 1 的其他任务。已按「未取证」记进 `docs/acceptance/perf-20260919.md`，**没有按达标算**。
 
+### E-2（2026-09-19）联机：4 座（2 真人 + 2 电脑）时，拍賣**永久卡死** —— 修法要拍板
+
+- 关联任务：W-40（已开 issue [#9](https://github.com/oama1111/rich4-remake/issues/9)）
+- 现象：`--seats 4`、两个真人客户端 + 两个电脑座，打到**第 7 回合**硬卡死，90 秒不动：
+  `phase='awaitingDecision'`、`currentPlayer=3`（电脑座）、
+  `pending={kind:'auction', seat:0, ...}`（下一个该举牌的是**真人**座 0）。种子 `968029213`、地图 0。
+  两端摘要仍然相等 —— **不是失步，是没人能出牌**。
+- 已试过：读码定位到两条互锁的判据（不是猜）：
+  1. `packages/core/src/net/sequencer.ts` 的 `submit()` 只收 `seat === currentSeat()` 的意图，
+     而 `currentSeat = mirror.currentPlayer`（`packages/server/src/room.ts:94,103`）
+     ⇒ **真人座 0 提交 `auctionBid` 会被判 `notYourTurn`**；
+  2. `packages/server/src/hub.ts` 的 `#driveComputers()` 只在**当前座位**是电脑/托管时替它拿主意，
+     而 `packages/core/src/ai/policy.ts` 的 `awaitingDecision` 分支在
+     `kind === 'auction'` 且轮到**真人**举牌时**有意 `return null`**（那条路留给表现层）⇒ 服务器也不动。
+  单机与 4 真人局都不受影响 —— 只有「回合主人是电脑/掉线托管座 + 下一个举牌者是真人」会死锁。
+- 我的怀疑（**没有写进代码**）：放宽定序器，让竞价期间**`pending.seat` 那一端的连接**也能提交
+  `auctionBid`；或者让服务器按 `pending.seat`（而不是 `currentPlayer`）判断该由谁驱动。
+  两条都要改联机契约语义，且要配一局可复现的回归（4 座、2 真人 2 电脑、造一场 pending 拍卖）。
+- 阻塞程度：**阻塞 W-40 的「4 座 50 回合指纹全等」**（2 座**全真人**局已通过，
+  见 `docs/acceptance/net-20260919.md`）；不阻塞其余任务。
+
+
