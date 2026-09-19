@@ -6,10 +6,15 @@
  *   ① **新聞**：`Panel#66` 图 0 落 (0,0) + 插画 `Data[0x1b9+id]`（388×251）落 (25,44)
  *      + 标题落 (24,8) + 说明落 (24,310)，停 2400ms（可跳过）；
  *   ② **命運**：同一套，外框换图 1、插画换 `Data[0x1dd+id]`、说明落 **(24,330)**
- *      （不是 310），停 1600ms + 800ms；
- *   ③ **抽卡**：先播 `Data#0x218` 的 FLIC（落 208,180），亮牌时对话框皮 + 卡名
- *      （220,129，正中）落 + 卡面 `Data[卡号+0x23a]`（176×240）落 (138,200)，停 1500ms；
+ *      （不是 310），停 1600ms + 800ms（**两段都可跳过**）；
+ *   ③ **抽卡**：先播 `Data#0x218` 的 FLIC（落 208,180；**这一段原版点不掉**，
+ *      `fcn_0045144f` 的 `flags=1` ⇒ `[0x48c880]=0`），亮牌时对话框皮 + 卡名
+ *      （220,129，正中）落 + 卡面 `Data[卡号+0x23a]`（176×240）落 (138,200)，停 1500ms（可跳过）；
  *   ④ **触发**：`lastEvent` 变了 → 新聞/命運；否则手牌变长 → 抽卡；正在播时不起新的。
+ *   ⑤ **可跳过性**：`fcn_004544f6`（新聞 / 命運第一段）与 `fcn_004528b9`（命運第二段 /
+ *      抽卡亮牌）都认 `0x202`/`0x205`/`0x101` ⇒ 这些段都能被抬手/右键/按键推进或关屏；
+ *      抽卡第一段 FLIC 是 `fcn_0045144f` 且那一处跳过闸关着 ⇒ 点不掉
+ *      （2026-09-19 按 `escalations.md` E-5 订正，见文件末「★ 可跳过性」那一组）。
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -26,6 +31,7 @@ import {
   CARD_FACE_BASE,
   CARD_FACE_SIZE,
   CARD_FLIC_AT,
+  CARD_FLIC_FALLBACK_MS,
   CARD_FLIC_RESOURCE,
   CARD_FONT_SIZE,
   CARD_HOLD_MS,
@@ -431,7 +437,7 @@ describe('★ 演出帧序', () => {
     expect(eventBoxPlaybackSkip(p, 200)).toBeNull();
   });
 
-  it('★ 命運：1600ms 进第二段、再过 800ms 才关；第二段点不动', () => {
+  it('★ 命運：1600ms 进第二段、再过 800ms 才关；第二段也能点掉', () => {
     let p = eventBoxPlaybackStart(eventBoxPlan(fortuneView(0, 1, '')), 0);
     expect(eventBoxPlaybackTick(p, 1599, null)).toBe(p);
     p = eventBoxPlaybackTick(p, 1600, null)!;
@@ -441,8 +447,12 @@ describe('★ 演出帧序', () => {
     // 第一段点一下 → 直接进第二段
     const q = eventBoxPlaybackSkip(eventBoxPlaybackStart(eventBoxPlan(fortuneView(0, 1, '')), 0), 500)!;
     expect(q.secondAt).toBe(500);
-    // 第二段点不动
-    expect(eventBoxPlaybackSkip(q, 600)).toBe(q);
+    // ★ 2026-09-19 订正：第二段走的是 `fcn_004528b9`（0x0044dd7b），它同样认
+    //   `0x202`/`0x205`/`0x101` ⇒ 点一下就该关屏（旧断言 `toBe(q)` 是照
+    //   「死等」那段错注释写的，见 `escalations.md` E-5）
+    expect(eventBoxPlaybackSkip(q, 600)).toBeNull();
+    // 不点的话仍然要等满第二段那 800ms
+    expect(eventBoxPlaybackTick(q, 1299, null)).not.toBeNull();
     expect(eventBoxPlaybackTick(q, 1300, null)).toBeNull();
   });
 
@@ -464,11 +474,18 @@ describe('★ 演出帧序', () => {
     expect(p.phase).toBe('show');
   });
 
-  it('★ 抽卡：flic 段可以点掉、亮牌那 1500ms 点不掉', () => {
+  it('★ 抽卡：flic 段**点不掉**（`fcn_0045144f` 的跳过闸关着）、亮牌 1500ms 点得掉', () => {
     const p = eventBoxPlaybackStart(eventBoxPlan(cardView(1)), 0);
-    const q = eventBoxPlaybackSkip(p, 100)!;
+    // ★ 2026-09-19 订正：这一段是 `fcn_0045144f(img, 0xd0, 0xb4, 1, 0x63)`（0x0041b31b），
+    //   flags=1 ⇒ `[0x48c880] = 1 & 2 = 0` ⇒ `0x004514d6` 的闸把它自己的
+    //   `0x202/0x205/0x101` 检查整段跳过 ⇒ 原版这一段就不吃点击/按键。
+    //   旧断言 `q.phase === 'show'` 是「替原版加了个它没有的跳过」，也一并订正。
+    expect(eventBoxPlaybackSkip(p, 100)).toBe(p);
+    // 影片走完（或兜底时长到）才进亮牌
+    const q = eventBoxPlaybackTick(p, CARD_FLIC_FALLBACK_MS, null)!;
     expect(q.phase).toBe('show');
-    expect(eventBoxPlaybackSkip(q, 200)).toBe(q);
+    // ★ 亮牌那段走 `fcn_004528b9(0x5dc)`（0x004420a6），它认这三种消息 ⇒ 点一下关屏
+    expect(eventBoxPlaybackSkip(q, 200)).toBeNull();
   });
 });
 
@@ -821,8 +838,8 @@ describe('★ WM_KEYDOWN（0x101）跳过', () => {
 
   it('★ 不挑键：`vk = null`（认不出来的键）也照样跳过', () => {
     // 原版是 `cmp ecx,0x101 / jne 继续等` —— **只看消息号**，不看是哪个键。
-    // ⚠️ 用新聞（一次演完）而不是命運：命運第二段（`fcn_004528b9(0x320)`）
-    //   原版就是**死等**，跳过第一段之后屏幕仍然接管着，那是照抄不是缺漏。
+    // ⚠️ 用新聞（一次演完）而不是命運：命運跳过第一段之后还有第二段
+    //   （`fcn_004528b9(0x320)`），要按两次才关屏 —— 那是照抄原版的两段时序。
     resetEventBoxScreen();
     const before = stateOf([player(0, [])], null);
     const after = stateOf([player(0, [])], { kind: 'news', id: 5 });
@@ -952,6 +969,145 @@ describe('★ `magicHouse` 借同一条通道但**不出框**', () => {
     const env = fakeEnv(after);
     eventBoxScreen.event!(before, after, env);
     expect(eventBoxScreenState().playing).toBe(true);
+    resetEventBoxScreen();
+  });
+});
+
+// ============================================================
+//  ★ 可跳过性（falsification）—— `escalations.md` E-5
+//
+//  @source `fcn_004528b9`（VA 0x004528b9）的 `PeekMessageA` 循环：
+//    0x004528fd  mov edx, [esp+4]              ; MSG.message
+//    0x00452901  cmp edx, 0x202 / je 0x452919  ; WM_LBUTTONUP
+//    0x00452909  cmp edx, 0x205 / je 0x452919  ; WM_RBUTTONUP
+//    0x00452911  cmp edx, 0x101 / jne 0x45291e ; WM_KEYDOWN
+//    0x00452919  mov ebx, 1                    ; 置「跳过」
+//    0x00452934  cmp esi, ebp / jae 0x45293c   ; 等满时长也退出
+//    0x00452938  test ebx, ebx / je 0x4528da   ; 没跳过就接着等
+//    0x0045293c  mov eax, ebx                  ; 返回「是否被跳过」
+//  本屏那两处调用点：命運第二段 `0x0044dd7b push 0x320`、抽卡亮牌
+//  `0x004420a6 push 0x5dc`；两处都是 `add esp,4` 丢掉返回值
+//  ⇒ 「跳过」= 不等满、直接往下走（收尾照跑）。
+//
+//  ★ 唯一**不吃**这三种消息的是抽卡第一段那段 FLIC（`fcn_0045144f`，0x0041b32b）：
+//    那一处 `flags = 1`（`0x0041b31e 6a 01`）⇒ `0x00450d95 and al,2` 写到
+//    `[0x48c880]` 的值 = 0 ⇒ `0x004514d6 cmp byte [0x48c880],0 / je 0x4514fd`
+//    把整段消息检查跳过 ⇒ 原版点不掉，本屏也**不许**替它加跳过。
+//
+//  ★ 这一组就是**证伪用例**：把 `eventBoxPlaybackSkip` 改回「第二段/亮牌点不动」
+//    （旧实现 `return p`），前四条都会变红；反过来给它加个原版没有的
+//    「FLIC 可跳过」，最后一条变红。
+// ============================================================
+
+describe('★ 可跳过性（falsification：这几条红了就说明又回到「死等」那套读法）', () => {
+  const anyKey = (vk: number | null = 0x51) => ({
+    vk,
+    code: 'KeyQ',
+    ctrl: false,
+    shift: false,
+    alt: false,
+  });
+
+  it('★★ 命運第二段（0x0044dd7b 的 `fcn_004528b9(0x320)`）必须点得掉', () => {
+    const q = eventBoxPlaybackSkip(
+      eventBoxPlaybackStart(eventBoxPlan(fortuneView(0, 1, '')), 0),
+      500,
+    )!;
+    expect(q.secondAt).toBe(500);
+    // 旧实现这里是 `toBe(q)`（把「不可跳过」写在断言里）—— 现在必须是 null
+    expect(eventBoxPlaybackSkip(q, 600)).toBeNull();
+  });
+
+  it('★★ 抽卡亮牌（0x004420a6 的 `fcn_004528b9(0x5dc)`）必须点得掉', () => {
+    let q = eventBoxPlaybackStart(eventBoxPlan(cardView(1)), 0);
+    q = eventBoxPlaybackTick(q, CARD_FLIC_FALLBACK_MS, null)!; // FLIC 走完 → 亮牌
+    expect(q.phase).toBe('show');
+    expect(eventBoxPlaybackSkip(q, 60)).toBeNull();
+  });
+
+  it('★★ 命運全段：抬手跳过第一段 → 按键关掉第二段（屏幕真的不再接管）', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], { kind: 'news', id: 1 });
+    const after = stateOf([player(0, [])], { kind: 'fortune', id: 12 });
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playback?.plan.kind).toBe('fortune');
+    eventBoxScreen.up!(0, 0, fakeEnv(after, 10)); // 第一段 → 进第二段
+    expect(eventBoxScreenState().playback?.secondAt).toBe(10);
+    expect(eventBoxScreen.active(fakeEnv(after, 20))).toBe(true); // 第二段还在等
+    eventBoxScreen.key!(anyKey(), fakeEnv(after, 30)); // 第二段 → 关屏
+    expect(eventBoxScreen.active(fakeEnv(after, 40))).toBe(false);
+    resetEventBoxScreen();
+  });
+
+  it('★★ 抽卡全段：FLIC 段点不动 → 影片走完进亮牌 → 亮牌右键关屏', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [1])], null);
+    const after = stateOf([player(0, [1, 12])], null);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playback?.phase).toBe('flic');
+    eventBoxScreen.up!(0, 0, fakeEnv(after, 10)); // ★ FLIC 段：原版点不动
+    expect(eventBoxScreenState().playback?.phase).toBe('flic');
+    expect(eventBoxScreen.active(fakeEnv(after, 20))).toBe(true);
+    // 影片走完（影片解不出来时按兜底时长）→ 亮牌
+    eventBoxScreen.tick!(fakeEnv(after, CARD_FLIC_FALLBACK_MS));
+    expect(eventBoxScreenState().playback?.phase).toBe('show');
+    eventBoxScreen.contextmenu!(0, 0, fakeEnv(after, CARD_FLIC_FALLBACK_MS + 10)); // 亮牌 → 关屏
+    expect(eventBoxScreen.active(fakeEnv(after, CARD_FLIC_FALLBACK_MS + 20))).toBe(false);
+    resetEventBoxScreen();
+  });
+
+  it('★ 三条出口（抬手 / 右键 / 按键）对命運第二段**都**有效', () => {
+    const fire = (kind: 'up' | 'ctx' | 'key'): boolean => {
+      resetEventBoxScreen();
+      const before = stateOf([player(0, [])], { kind: 'news', id: 1 });
+      const after = stateOf([player(0, [])], { kind: 'fortune', id: 12 });
+      eventBoxScreen.event!(before, after, fakeEnv(after));
+      eventBoxScreen.up!(0, 0, fakeEnv(after, 10)); // 先进第二段
+      const env = fakeEnv(after, 20);
+      if (kind === 'up') eventBoxScreen.up!(0, 0, env);
+      else if (kind === 'ctx') eventBoxScreen.contextmenu!(0, 0, env);
+      else eventBoxScreen.key!(anyKey(), env);
+      return eventBoxScreen.active(fakeEnv(after, 30));
+    };
+    expect(fire('up')).toBe(false);
+    expect(fire('ctx')).toBe(false);
+    expect(fire('key')).toBe(false);
+  });
+
+  it('★ 不点的话各段仍按原时长自己走完（别修成「一 tick 就关」）', () => {
+    // 命運：第二段要等满 800ms
+    const q = eventBoxPlaybackSkip(
+      eventBoxPlaybackStart(eventBoxPlan(fortuneView(0, 1, '')), 0),
+      500,
+    )!;
+    expect(eventBoxPlaybackTick(q, 500 + FORTUNE_SECOND_HOLD_MS - 1, null)).toBe(q);
+    expect(eventBoxPlaybackTick(q, 500 + FORTUNE_SECOND_HOLD_MS, null)).toBeNull();
+    // 抽卡亮牌：要等满 1500ms
+    let c = eventBoxPlaybackStart(eventBoxPlan(cardView(1)), 0);
+    c = eventBoxPlaybackTick(c, CARD_FLIC_FALLBACK_MS, null)!; // → show，showAt = 兜底时刻
+    expect(eventBoxPlaybackTick(c, CARD_FLIC_FALLBACK_MS + CARD_HOLD_MS - 1, null)).toBe(c);
+    expect(eventBoxPlaybackTick(c, CARD_FLIC_FALLBACK_MS + CARD_HOLD_MS, null)).toBeNull();
+  });
+
+  it('★★ 反面：抽卡 FLIC 段**不许**被改得可跳过（原版 `flags=1` ⇒ `[0x48c880]=0`）', () => {
+    // @source 0x0041b31c `push 0x63 / push 1 / push 0xb4 / push 0xd0`（0x0041b31e = `6a 01` ⇒ flags=1）
+    // @source 0x004514d6 `cmp byte [0x48c880], 0 / je 0x4514fd`（闸关则整段消息检查跳过）
+    // @source 0x00450d95 `and al, 2 / 0x00450d97 mov [0x48c880], al`
+    const fire = (kind: 'up' | 'ctx' | 'key'): string | undefined => {
+      resetEventBoxScreen();
+      const before = stateOf([player(0, [1])], null);
+      const after = stateOf([player(0, [1, 12])], null);
+      eventBoxScreen.event!(before, after, fakeEnv(after));
+      const env = fakeEnv(after, 10);
+      if (kind === 'up') eventBoxScreen.up!(0, 0, env);
+      else if (kind === 'ctx') eventBoxScreen.contextmenu!(0, 0, env);
+      else eventBoxScreen.key!(anyKey(), env);
+      return eventBoxScreenState().playback?.phase;
+    };
+    // 三条出口都推不动它，仍然停在 FLIC 段
+    expect(fire('up')).toBe('flic');
+    expect(fire('ctx')).toBe('flic');
+    expect(fire('key')).toBe('flic');
     resetEventBoxScreen();
   });
 });

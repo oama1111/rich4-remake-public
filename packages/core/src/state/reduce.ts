@@ -14,7 +14,7 @@ import type { BuildUpgradeHint, BuildUpgradeSource, GameState, NoticeHint, Notic
 import type { SpecialActor } from '../rules/special-actors.ts';
 import { isAiControlled, isAlive } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
-import { applyNpcEvents, runNpc } from '../rules/npc-walk.ts';
+import { applyNpcEvents, runNpc, type NpcEvent } from '../rules/npc-walk.ts';
 import {
   ACTOR_DOLL,
   NPC_ACTORS,
@@ -131,6 +131,7 @@ import {
   chairmanEffect,
   companyDividends,
   companyFeeOnLanding,
+  facilityFeeNameOf,
   feeNameOf,
   industryUsesWheel,
   shareWindowLimit,
@@ -148,7 +149,7 @@ import {
   toolShelf,
   STORE_INDUSTRY,
 } from '../places/shop.ts';
-import { CARDS, CHARACTERS, TOOLS, fortuneEvent, newsEvent } from '@rich4/data';
+import { CARDS, CHARACTERS, TOOLS, fortuneEvent, newsEvent, objectNameOf } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
@@ -201,6 +202,7 @@ import {
   RESEARCH_MIN_PROJECT,
   aiPickResearchProject,
   calculateFacilityToll,
+  FACILITY_NAMES,
   startResearch,
   tickResearch,
   canUpgradeFacility,
@@ -208,6 +210,7 @@ import {
   facilityBuyPrice,
   facilityUpgradePrice,
   hotelStayLoss,
+  shopUnitPrice,
   spinWheel,
   tenureExpiresToday,
   tenureExpiry,
@@ -885,9 +888,16 @@ function npcStepOnce(
     rng,
   );
   const settled = applyNpcEvents(state, ticked.owner, walk.events);
+  // ★ 小偷五种战利品那一句「小偷偷得%s\n\n給%s！」（见 `npcNotices`）
+  const notices = npcNotices(state, walk.events, ticked.owner);
   let next = put(
     // ★ 覆写（不累积）：这一条 action 只走了一个惡人，表现层就只该看到一个
-    { ...settled.state, rngState: rng.getState(), lastNpcWalks: [{ slot, path: walk.path }] },
+    {
+      ...settled.state,
+      rngState: rng.getState(),
+      lastNpcWalks: [{ slot, path: walk.path }],
+      ...(notices.length > 0 ? { notices } : {}),
+    },
     walk.actor,
   );
   const home = walk.events.find((e) => e.kind === 'home');
@@ -1121,6 +1131,32 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           if (gate !== undefined) {
             p.xpos = gate.x;
             p.ypos = gate.y;
+            // ★★ 朝向也要重算（`docs/escalations.md` E-13）：原版释放那一支
+            //   `0x0043d7cb call 0x40d6be` 除了 `or byte [player+0x15], 0x10`
+            //   （= 起步「走回棋盘」）之外，还算了一次朝向：
+            // ```asm
+            // 0040d6da  dx = word [player + 0x18]          ; ★ +0x18 = nodeId
+            // 0040d6e8  edx = [0x498e80]                   ; 景观表
+            // 0040d6ee  ecx = word [edx + nodeId*40]       ; 景观 +0x00 = x
+            // 0040d6f2  edi = word [edx + nodeId*40 + 2]   ; 景观 +0x02 = y
+            // 0040d6f9  dx  = word [player + 0x08]         ; player x
+            // 0040d700  sub ecx, edx                       ; dx = 景观x − playerx
+            // 0040d704  ax  = word [player + 0x0a]         ; player y
+            // 0040d70b  sub edi, eax                       ; dy = 景观y − playery
+            // 0040d70f  call 0x454fb4                      ; ★ 八分圆朝向
+            // 0040d717  mov byte [player + 0x10], al       ; ← 写 direction
+            // ```
+            //   ⇒ 朝向 = `directionOf(景观位 − 玩家位)`，指针从**景观**指向**關押格**。
+            //   不写这一条，棋子会拿关押前的旧朝向走回棋盘（E-13 报的那一条）。
+            //   `0x454fb4` 就是本文件的 `directionOf`（同一支；零位移也不特例，见那里的注）。
+            // ⚠️ 判据里的 `gate` 是外层那个 `MapNode`；这个回调的形参叫 `p`，
+            //   别把它 shadow 成 `gate`（先前那一版就是这么写出 TS2339 的）。
+            const ref = gate.ref;
+            const land =
+              ref.kind === 'landscape'
+                ? topo.landscapes?.find((l) => l.id === ref.index)
+                : undefined;
+            if (land !== undefined) p.direction = directionOf(land.x - gate.x, land.y - gate.y);
           }
         });
         return { ...cleared, phase: 'turnEnd' };
@@ -1271,6 +1307,17 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           next = withPlayer(next, state.currentPlayer, (p) => {
             p.points = addPoints(p.points, out.pointsDelta);
           });
+          // ★★ 得点格的棕色訊息框 —— 三档的串**把金额写死在文本里**（没有 `%d`）：
+          // ```asm
+          // 0041b1be  push 0x3e8             ; ★ 1000 ms，不是 1500
+          // 0041b1c3  push 0x463a81          ; 得點券５０點
+          // 0041b1c8  call 0x440cac
+          // ```
+          //   30 點（0x41b25d / 0x41b258）与 10 點（0x41b2e1 / 0x41b2dc）同形。
+          const key = POINT_SQUARE_NOTICE[node.specialKind];
+          if (key !== undefined) {
+            next = { ...next, notices: [{ key, args: [], holdMs: POINT_SQUARE_HOLD_MS }] };
+          }
         }
         if (out.cardDrawn !== 0) {
           const cardAmount = [...next.cardAmount];
@@ -1283,6 +1330,12 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           next = withPlayer({ ...next, cardAmount }, state.currentPlayer, (p) => {
             Object.assign(p, giveCard(p, out.cardDrawn));
           });
+          // ★★ 抽卡格的棕色訊息框「得到%s！」—— `%s` = 抽到的**卡片名**：
+          //   @source 0x0041b355 `mov edi, [eax*8 + 0x47fdea]`（卡片表第 0 项 =
+          //   name 指针，1 基编号 ⇒ `0x47fdea + id*8` 正是 `0x47fdf2 + id*8`）
+          //   + 0x0041b35d `push 0x463aa8` + 0x0041b36f..0x41b372（sprintf / 弹框前）
+          //   + 0x0041b968 `push 0x5dc`（1500 ms）
+          next = { ...next, notices: [{ key: 'points.card', args: [cardNameOf(out.cardDrawn)] }] };
           // ★ 抽卡格尾部的**条件性**随机消耗（原版 `0x0041b37b`–`0x0041b38c`）：
           //   `0x0041b37b mov al, [card*8 + 0x47fdef]`（卡价）→ `call 0x44f230(player, 价格)`，
           //   而 `0x44f230` 里只有 **`50 < 价格 <= 100`** 这一支会：
@@ -1418,16 +1471,17 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
             //   参数顺序 = 原版 `sprintf(fmt, 地主名, 費名)`：地主名由函数开头
             //   `0x41d57d call 0x452946`（跳过空格的拷名）填好，費名是第 3 个实参
             //   （住宅这条路 = `[0x47517c]` 第 0 项「過路費」，见 rules/rent.ts）。
-            const noticeKey = exemption === null ? null : confinementNoticeKey(exemption);
-            if (noticeKey === null) return { ...state, phase: 'turnEnd' };
-            return {
-              ...state,
-              lastNotice: {
-                key: noticeKey,
-                args: [playerName(state, land.owner - 1), LAND_TOLL_FEE_NAME],
-              },
-              phase: 'turnEnd',
-            };
+            //   ⚠️ **九种不是同一个参数表**：查封（0x41d59e）与死神（0x41d5fa）
+            //   只推了 `esi`（費名）一个实参，所以那两句只有一个 `%s`；
+            //   同盟（0x41d5ce）与住宿/消失/坐牢/住院/冬眠/夢遊 是「名字 + 費名」
+            //   两个实参。见 `exemptionNotice` 的 @source。
+            const notice = exemption === null ? null : exemptionNotice(
+              exemption,
+              playerName(state, land.owner - 1),
+              LAND_TOLL_FEE_NAME,
+            );
+            if (notice === null) return { ...state, phase: 'turnEnd' };
+            return { ...state, notices: [notice], phase: 'turnEnd' };
           }
           const lands = allEffectiveLands(state, topo);
           // 先算出費额（collectRent 是纯函数，预演一遍只为拿 total）
@@ -1455,6 +1509,10 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
                     LAND_TOLL_FEE_NAME,
                   ],
                 };
+          // ★★ **一 action 两扇框**：租金框之后原版还会弹**死神框**
+          //   （@source 0x00419f04 `push 0x4639cc` + 0x00419f16 `push 0x5dc /
+          //   call 0x440cac`）——所以这里是数组，不是单个字段（见 types.ts 的 `notices`）。
+          const notices: NoticeHint[] = [notice];
           const rng = new WatcomRng();
           rng.setState(state.rngState);
           // ★ 尾巴照 0x00419e36 起：免費卡 → 嫁禍卡 → 死神顯靈由他人賠償
@@ -1469,20 +1527,29 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           const total = tail.free ? 0 : preview.total;
           if (total !== 0) {
             const reaper = reaperPayer(players, who);
-            if (reaper !== -1) who = reaper;
+            if (reaper !== -1) {
+              // @source 0x00419ef5 `mov ecx, [0x47517c]` —— 費名**写死**第 0 项「過路費」，
+              //   不是查表（住宅这条路的第 3 个实参本来就是它）
+              //   参数顺序 = `sprintf(fmt, 死神名, 費名)`（先推 esi=費名、再推名字）
+              notices.push({
+                key: 'rent.reaperPays',
+                args: [playerName(state, reaper), LAND_TOLL_FEE_NAME],
+              });
+              who = reaper;
+            }
           }
           const withRng: GameState = { ...state, players, rngState: rng.getState() };
           if (total === 0) {
             // @source 免費卡抹成 0 后不付；0x0041a00b 仍记这一笔 = 0
             const landLastToll = [...withRng.landLastToll];
             landLastToll[land.id] = 0;
-            return { ...withRng, landLastToll, lastNotice: notice, phase: 'turnEnd' };
+            return { ...withRng, landLastToll, notices, phase: 'turnEnd' };
           }
           const out = collectRent(players, lands, who, land, state.priceIndex);
           // @source 0x0041a00b `mov [land + 0x2c], ebp` —— 记下这一笔（間諜要用）
           const landLastToll = [...withRng.landLastToll];
           landLastToll[land.id] = out.total;
-          const paid: GameState = { ...withRng, players: out.players, landLastToll, lastNotice: notice, phase: 'turnEnd' };
+          const paid: GameState = { ...withRng, players: out.players, landLastToll, notices, phase: 'turnEnd' };
           // ★ 付不起就破产——这是对局能真正结束的唯一途径
           return out.bankrupted ? applyBankruptcy(paid, who, topo) : paid;
         }
@@ -1900,11 +1967,13 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           const specialActors = [...paid.specialActors];
           specialActors[slotIdx] = walk.actor;
           // ★ 保釋当场那一趟也交给表现层（纯表现提示，覆写；见 GameState.lastNpcWalks）
+          const notices = npcNotices(state, walk.events, npc.owner);
           paid = {
             ...settled.state,
             specialActors,
             rngState: rng.getState(),
             lastNpcWalks: [{ slot: slotIdx, path: walk.path }],
+            ...(notices.length > 0 ? { notices } : {}),
           };
 
           // 半路又被收回去了 —— 占用表要跟着改（可能换了一张表）
@@ -2150,6 +2219,10 @@ export function giveAlmsIfBeggar(state: GameState, topo: MapTopology, nodeId: nu
   if (who < 0) return state;
 
   const amount = almsAmount(state.priceIndex);
+  // @source `0x41b655 push ebx`（金额）+ `0x41b656 push 0x463ab1`（`施捨給乞丐%d元`）
+  //   + `0x41b668 push 0x5dc / 0x41b672 call 0x440cac` —— 弹框在 pay_money**之前**
+  //   （`0x41b686 call 0x41d2c6`），金额就是 `almsAmount`，core 这里已经知道确切值
+  const notices: NoticeHint[] = [{ key: 'beggar.alms', args: [amount] }];
   // @source pay_money(我, -1, 金额, 0) —— 收款方 -1 即公库
   const r = transferMoney(state.players, [], state.pool, state.currentPlayer, -1, amount, 0);
 
@@ -2173,7 +2246,7 @@ export function giveAlmsIfBeggar(state: GameState, topo: MapTopology, nodeId: nu
     // ★ 位置三元组一起走（`@source 0x0040cc56` 把乞丐挪到另一格）
     return placeOnNode({ ...p, lastNodeId: p.nodeId }, topo.nodes[moved - 1]);
   });
-  const paid: GameState = { ...state, players, pool: r.pool, rngState: rng.getState() };
+  const paid: GameState = { ...state, players, pool: r.pool, rngState: rng.getState(), notices };
   // 施捨也可能把自己掏空 —— 与过路费同一条收口
   return r.bankrupted ? applyBankruptcy(paid, state.currentPlayer, topo) : paid;
 }
@@ -2232,6 +2305,28 @@ function applyArrival(state: GameState, topo: MapTopology): GameState {
     toolStock: r.toolStock,
     rngState: r.randConsumed ? rng.getState() : afterAlms.rngState,
   };
+
+  // ★★ 禮物 / 寶箱 那两句訊息框 —— 都在「停下来才生效」的那一支里
+  //   （`cmp [0x48baf8],0 / jne` 已由 `applyObjectAt` 判过，没生效就没有事件）：
+  // ```asm
+  // 0041b94e  ecx = [道具*8 + 0x47feda]  ; 道具名
+  // 0041b956  push 0x463aa8              ; 得到%s！
+  // 0041b968  push 0x5dc / call 0x440cac ; 1500 ms
+  // 0041bb49  push 0x5dc                 ; 寶箱那一句
+  // 0041bb4e  push 0x463ad3              ; 得到５００點券！（串里写死 500）
+  // 0041bb53  call 0x440cac
+  // ```
+  //   两者都排在 `add word [player+0x30], 0x1f4` / `give_tool` **之前**，
+  //   且每条路都只用一帧框，所以这里最多一条。
+  const arrivalNotices: NoticeHint[] = [];
+  for (const ev of r.events) {
+    if (ev.kind === 'gift') {
+      arrivalNotices.push({ key: 'object.gift', args: [toolNameOf(ev.toolId)] });
+    } else if (ev.kind === 'treasure') {
+      arrivalNotices.push({ key: 'object.treasure', args: [] });
+    }
+  }
+  if (arrivalNotices.length > 0) next = { ...next, notices: arrivalNotices };
 
   // 路障／惡犬／地雷／爆炸都会把人钉在原地
   if (r.stopMovement) {
@@ -2755,33 +2850,58 @@ function gateNodeOf(topo: MapTopology, kind: ConfinementKind): number {
 }
 
 /**
- * 九种免收 → 棕色訊息框键 —— **只接「被关着／不在棋盘」那四种**。
+ * 九种免收 → 棕色訊息框（键 + 实参）—— **九种全接**。
  *
- * @source `0x0041d559`：每条免收支各自 `push 格式串`，然后跳到同一段
- *   `call 0x457110`（sprintf）+ `0x41d6a4 push 0x5dc / call 0x440cac`（彈框）：
+ * @source `0x0041d559`：每条免收支各自 `push 格式串`，然后汇到同一段
+ *   `call 0x457110`（sprintf）+ `0x41d6a4 push 0x5dc / call 0x440cac`（彈框）。
+ *   九条的推串点与**实参个数**（cdecl：最后推的是第一个实参）：
  * ```asm
- * 0041d613  push 0x463bf5      ; %s住宿中\n\n免收%s！
- * 0041d62c  push 0x463c08      ; %s消失中\n\n免收%s！
- * 0041d645  push 0x463c1b      ; %s坐牢中\n\n免收%s！
- * 0041d65e  push 0x463c2e      ; %s住院中\n\n免收%s！
+ * 0041d59e  push 0x463bb8   ; 房屋查封中\n\n免收%s！          ← 只推 esi（費名）
+ * 0041d5d7  push 0x463bcd   ; 與%s同盟中\n\n免收%s！          ← 推 名字, esi（費名）
+ * 0041d5fa  push 0x463be2   ; 死神顯靈\n\n免收%s！            ← 只推 esi（費名）
+ * 0041d613  push 0x463bf5   ; %s住宿中\n\n免收%s！
+ * 0041d62c  push 0x463c08   ; %s消失中\n\n免收%s！
+ * 0041d645  push 0x463c1b   ; %s坐牢中\n\n免收%s！
+ * 0041d65e  push 0x463c2e   ; %s住院中\n\n免收%s！
+ * 0041d67a  push 0x463c41   ; %s冬眠中\n\n免收%s！
+ * 0041d696  push 0x463c54   ; %s夢遊中\n\n免收%s！
  * ```
- *   ⚠️ 另外五种（查封 `0x463bb8`、同盟 `0x463bcd`、死神 `0x463be2`、
- *   冬眠 `0x463c41`、夢遊 `0x463c54`）原版**也**弹框，但其中查封/死神只有
- *   一个 `%s`（只有費名）、同盟的两个 `%s` 也不是同一组 —— 本次**没有接**，
- *   见 `state/types.ts` 的 `NoticeKey` 注释。
+ *   「名字」= 函数开头 `0x41d57d lea eax,[esp+0x84] / call 0x452946` 用
+ *   **第 1 个实参（地主下标）**填出来的缓冲；两条单 `%s` 的支（查封、死神）
+ *   用的是同一个缓冲区地址，只是**没有把它推进栈** —— 所以只有費名一个实参。
+ *   ⚠️ 同盟那一条的第一个 `%s` 也是**地主名**（同一个缓冲区），不是同盟者名。
+ *
+ * @param landlordName 地主名（`playerName(state, 地主下标)`）
+ * @param feeName      費名 —— 住宅 = `[0x47517c]` 第 0 项「過路費」；
+ *                     設施 = `facilityFeeNameOf(type)`（`0x47528b` 表）
  */
-function confinementNoticeKey(exemption: TollExemption): NoticeKey | null {
+function exemptionNotice(
+  exemption: TollExemption,
+  landlordName: string,
+  feeName: string,
+): NoticeHint {
   switch (exemption) {
+    case 'sealed':
+      // @source 0x0041d59e（只有一个 `%s` = 費名）
+      return { key: 'rent.freeSealed', args: [feeName] };
+    case 'ally':
+      // @source 0x0041d5d7（地主名 + 費名）
+      return { key: 'rent.freeAllied', args: [landlordName, feeName] };
+    case 'reaper':
+      // @source 0x0041d5fa（只有一个 `%s` = 費名）
+      return { key: 'rent.freeReaper', args: [feeName] };
     case 'hotel':
-      return 'rent.freeHotel';
+      return { key: 'rent.freeHotel', args: [landlordName, feeName] };
     case 'disappearing':
-      return 'rent.freeVanished';
+      return { key: 'rent.freeVanished', args: [landlordName, feeName] };
     case 'prison':
-      return 'rent.freePrison';
+      return { key: 'rent.freePrison', args: [landlordName, feeName] };
     case 'hospital':
-      return 'rent.freeHospital';
-    default:
-      return null;
+      return { key: 'rent.freeHospital', args: [landlordName, feeName] };
+    case 'sleeping':
+      return { key: 'rent.freeWinterSleep', args: [landlordName, feeName] };
+    case 'sleepWalking':
+      return { key: 'rent.freeSleepwalk', args: [landlordName, feeName] };
   }
 }
 
@@ -5562,13 +5682,13 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
   let next: GameState = { ...state, rngState: rng.getState() };
   if (fee.kind === 'fee') {
     next = payCompany(next, topo, me, c.id, fee.amount);
-    if (fee.amount !== 0) next = { ...next, lastNotice: companyNotice(fee.amount) };
+    if (fee.amount !== 0) next = { ...next, notices: [companyNotice(fee.amount)] };
   } else if (fee.kind === 'insurance') {
     next = withPlayer(next, me, (p) => {
       p.insuranceDays = addInsuranceDays(p.insuranceDays, fee.days);
     });
     next = payCompany(next, topo, me, c.id, fee.amount);
-    if (fee.amount !== 0) next = { ...next, lastNotice: companyNotice(fee.amount) };
+    if (fee.amount !== 0) next = { ...next, notices: [companyNotice(fee.amount)] };
   } else if (fee.kind === 'construction') {
     // ⚠️ 这一支**没有接**訊息框：金额要等「选哪一处地」定下来（真人走
     //   `pending.chooseBuildTarget`），落点这一刻 core 还不知道。
@@ -5797,13 +5917,23 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   // @source 0x0041a377 空地不收；0x0041a386/0x0041a38f 公園、研究所不收
   if (fac.level === 0) return { ...state, phase: 'turnEnd' };
   if (fac.type === FACILITY_TYPE.park || fac.type === FACILITY_TYPE.lab) return { ...state, phase: 'turnEnd' };
-  // @source 0x0041a3cc call 0x41d559 —— 九种免收（設施的查封位未进状态，先用地图静态值）
-  // ⚠️ 原版这一条**也弹**「%s住院中／免收%s！」那一族的框（`0x41d6a4`），
-  //   但設施这条的費名另查表 `[0x47528b + type]` → `0x47517c`（住宿費/購物費/加油費…），
-  //   本引擎**还没有那张 type→費名 表**（见 docs/escalations.md E-4 第 3 条），
-  //   故这里只做免收、不弹框 —— 不要拿住宅的「過路費」硬套。
+  // @source 0x0041a3cc call 0x41d559 —— 九种免收
+  // ★★ 設施这条**也弹**同一族的框，但費名**不是**住宅那个「過路費」，
+  //   而是查 `[0x47528b + type]` → `0x47517c` 那张表：
+  // ```asm
+  // 0041a3b0  esi = movzx byte [type + 0x47528b]   ; ★ type → 費名下标
+  // 0041a3b7  esi = [esi*4 + 0x47517c]             ; 住宿費/購物費/加油費/…
+  // 0041a3cc  call 0x41d559(地主, 涨价位, esi)
+  // ```
+  //   见 `places/company.ts` 的 `facilityFeeNameOf`。
+  const feeName = facilityFeeNameOf(fac.type);
   const landlord = state.players[ownerIdx];
-  if (landlord === undefined || tollExemption(landlord, payer, fac.priceStatus) !== null) return { ...state, phase: 'turnEnd' };
+  const exemption = landlord === undefined ? null : tollExemption(landlord, payer, fac.priceStatus);
+  if (landlord === undefined || exemption !== null) {
+    const notice = exemption === null ? null : exemptionNotice(exemption, playerName(state, ownerIdx), feeName);
+    if (notice === null) return { ...state, phase: 'turnEnd' };
+    return { ...state, notices: [notice], phase: 'turnEnd' };
+  }
 
   const rng = new WatcomRng();
   rng.setState(state.rngState);
@@ -5825,11 +5955,47 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
     multiplier,
   });
   const withRng: GameState = { ...state, rngState: rng.getState() };
-  if (base === 0) return { ...withRng, phase: 'turnEnd' };
+
+  // ── ★★ 設施过路费的棕色訊息框 @source 0x0041a56f `push 0x5dc / call 0x440cac` ──
+  //   三段 `sprintf` 各自在 0x41a46e（旅館）/ 0x41a4c4（購物中心）/ 0x41a55d（加油站），
+  //   然后**汇到同一处弹框**；弹框在神明调整（`0x41a581 call 0x41d709`）**之前** ——
+  //   所以框里的金额是**神明调整之前**的 `base`。
+  const notices: NoticeHint[] = [];
+  if (fac.type === FACILITY_TYPE.hotel) {
+    // @source 0x0041a46e `push 0x4639ff`：%d#1 = 轉盤倍數（= 住几天）、%d#2 = 倍數 × 單價
+    //   （`0x41a467 ebp = eax(倍數); 0x41a469 imul ebp, ebx(單價)`）
+    notices.push({ key: 'facility.hotel', args: [multiplier, base] });
+  } else if (fac.type === FACILITY_TYPE.mall) {
+    // @source 0x0041a4c4 `push 0x463a14`：%d#1 = 單價（ebx）、%d#2 = 轉盤倍數（eax）、
+    //   %d#3 = 總額（ebp = 倍數 × 單價）—— 推栈顺序 `push ebp / push eax / push ebx /
+    //   push fmt`，故第一个 `%d` 是 ebx（單價）
+    notices.push({
+      key: 'facility.mall',
+      args: [shopUnitPrice(fac.rateByLevel, fac.level, state.priceIndex, fac.priceStatus), multiplier, base],
+    });
+  } else if (fac.type === FACILITY_TYPE.gasStation && base !== 0) {
+    // @source 0x0041a4ed `test dh,3 / je 0x41a581` —— 没有交通工具时**不弹**（连 sprintf 都不走）
+    // @source 0x0041a530 `push 0x46385e` + `0x41a53d call 0x457d96`（strcpy）
+    //   ⇒ 第一个 `%s` 是**常量「加油站」**，不是地名（与 `FACILITY_NAMES[3]` 同一地址）
+    // @source 0x0041a545 `mov ebx,[0x475184]`（= `0x47517c + 8` = 第 2 项「加油費」）
+    //   ⇒ 第四个 `%s` 就是 `facilityFeeNameOf(3)`（本表 `[3]` = 2 = 加油費，同一个串）
+    //   参数顺序 = `sprintf(fmt, "加油站", 地主名, 总额, 費名)`
+    notices.push({
+      key: 'facility.gasStation',
+      args: [
+        FACILITY_NAMES[FACILITY_TYPE.gasStation] ?? '',
+        playerName(state, ownerIdx),
+        base,
+        feeName,
+      ],
+    });
+  }
+  // 神明调整之前就把框弹出来 ⇒ base 为 0 时框照样在（旅館/購物中心那两路）
+  if (base === 0) return { ...withRng, notices, phase: 'turnEnd' };
 
   // 神明在付款前调整金额（与住宅同一条规则）
   const god = adjustTollByGod(base, me.godInfo);
-  if (god.toll === 0) return { ...withRng, phase: 'turnEnd' };
+  if (god.toll === 0) return { ...withRng, notices, phase: 'turnEnd' };
 
   // ★ 尾巴照 0x0041a648 起：嫁禍卡（設施这条没有免費卡）→ 死神顯靈由他人賠償（費 != 0 或是旅館）
   const tail = tollPassiveTail(withRng.players, payer, god.toll, state.priceIndex, false, () => rng.next());
@@ -5841,14 +6007,19 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   }
   if (god.toll !== 0 || fac.type === FACILITY_TYPE.hotel) {
     const reaper = reaperPayer(players, who);
-    if (reaper !== -1) who = reaper;
+    if (reaper !== -1) {
+      // @source 0x0041a6d6 `push 0x4639cc` + 0x0041a6f2 `push 0x5dc / call 0x440cac`
+      //   参数顺序 = `sprintf(fmt, 死神名, 費名)`（先推 esi=費名、再推名字缓冲）
+      notices.push({ key: 'rent.reaperPays', args: [playerName(state, reaper), feeName] });
+      who = reaper;
+    }
   }
   const withTail: GameState = { ...withRng, players, rngState: rng.getState() };
   const r = transferMoney(withTail.players, [], withTail.pool, who, ownerIdx, god.toll, 0);
   // @source 0x0041a75e `mov [設施 + 0x30], ebp` —— 记的是**这一笔**，不是累计
   const facilityLastToll = [...withTail.facilityLastToll];
   facilityLastToll[fac.id] = god.toll;
-  let paid: GameState = { ...withTail, players: r.players, pool: r.pool, facilityLastToll, phase: 'turnEnd' };
+  let paid: GameState = { ...withTail, players: r.players, pool: r.pool, facilityLastToll, notices, phase: 'turnEnd' };
 
   // @source 0x0041a7aa 旅館：住 N 天、記「本月意外損失」2000×N×物價、倒楣天数 +N
   if (hotelDays > 0 && !r.bankrupted) {
@@ -5904,6 +6075,76 @@ function playerName(state: GameState, index: number): string {
   const p = state.players[index];
   if (p === undefined) return '';
   return CHARACTERS[p.character]?.name ?? '';
+}
+
+/**
+ * 得点格（`specialKind` 10/11/12）的訊息框键。
+ *
+ * @source `0x0041b1c3 push 0x463a81`（50 點）/ `0x0041b25d push 0x463a8e`（30 點）/
+ *   `0x0041b2e1 push 0x463a9b`（10 點）—— 三句都**没有占位符**，金额写在串里。
+ */
+const POINT_SQUARE_NOTICE: Readonly<Record<number, NoticeKey>> = {
+  [SPECIAL_KIND.POINTS_50]: 'points.50',
+  [SPECIAL_KIND.POINTS_30]: 'points.30',
+  [SPECIAL_KIND.POINTS_10]: 'points.10',
+};
+
+/**
+ * 得点格那三扇框的时长 = 1000 ms。
+ * @source `0x0041b1be` / `0x0041b258` / `0x0041b2dc` 三处都是 `push 0x3e8`
+ *   （与租金那一族的 `0x5dc` 不同 —— 照抄，不统一）。
+ */
+const POINT_SQUARE_HOLD_MS = 0x3e8;
+
+/**
+ * 卡片编号（1 基） → 卡片名 —— 抽卡格「得到%s！」那个 `%s`。
+ *
+ * @source `0x41b355 mov edi, [eax*8 + 0x47fdea]`：`0x441e12` 返回**1 基**编号，
+ *   卡片表基址是 `0x47fdf2`（1 基 name 地址 = `0x47fdfa`…），而 `0x47fdea + 1*8 =
+ *   0x47fdf2` —— 即表里那一项的 name 指针。与 `priceOf` 同一张表。
+ */
+function cardNameOf(cardId: number): string {
+  return CARDS[cardId - 1]?.name ?? '';
+}
+
+/**
+ * 道具编号（1 基） → 道具名 —— 禮物「得到%s！」那个 `%s`。
+ *
+ * @source `0x41b94e mov ecx, [ebx*8 + 0x47feda]`：`0x445ada` 返回**1 基**道具编号，
+ *   `0x47feda + 1*8 = 0x47fee2` = 道具表第 1 项的 name 指针。
+ */
+function toolNameOf(toolId: number): string {
+  return TOOLS[toolId - 1]?.name ?? '';
+}
+
+/**
+ * 惡人这一趟里要弹的訊息框 —— 目前只接**小偷的五种战利品**那一句。
+ *
+ * @source `0x00463ac0 小偷偷得%s\n\n給%s！`，五处推串点
+ *   （`0x41ba0a`/`0x41bc21`/`0x41bde0`/`0x41bf91`/`0x41c0ec`，推完就
+ *   `push 0x5dc / call 0x440cac`）：
+ * ```asm
+ * 0041b99b  cmp [0x49910c], 4 / jne  ; ★ 只有小偷（actor 4）
+ * 0041b9b6  push 0xd / call 0x40e14d ; 禮物(13)
+ * 0041bc21  push 0x463ac0            ; 寶箱(14)
+ * 0041bde0  push 0x463ac0            ; 路障(16) + give_tool(主人, 2)
+ * 0041bf91  push 0x463ac0            ; 地雷(17) + give_tool(主人, 3)
+ * 0041c0ec  push 0x463ac0            ; 定時炸彈(18) + give_tool(主人, 4)
+ * ```
+ *   `%s`#1 = 物件名（`objectNameOf`，同一张 `0x47edaa` 表）、`%s`#2 = 主人名。
+ *
+ * ⚠️ **只接 loot**：同一支函数里另外那几句（`偷取%s\n\n%d點點券！`、
+ *   `奪取%s%s！`、`強盜搶奪銀行…`、`勒索%s…`、`取走過路費/盈餘…`）**不在
+ *   `messages.ts` 里**，本次没有加（不在任务范围内）—— 不要在这里现写中文。
+ */
+function npcNotices(state: GameState, events: readonly NpcEvent[], owner: number): NoticeHint[] {
+  const out: NoticeHint[] = [];
+  for (const e of events) {
+    if (e.kind === 'loot') {
+      out.push({ key: 'thief.loot', args: [objectNameOf(e.objectType), playerName(state, owner)] });
+    }
+  }
+  return out;
 }
 
 /** 在场人数 */

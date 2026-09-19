@@ -52,13 +52,21 @@
  *
  * ## 触发（纯查状态，不读也不写 `GameState`）
  *
- * `after.lastNotice` 非空、且与 `before.lastNotice` **不是同一个对象**
- * （`reduce.ts` 每弹一次都新建一个对象；没弹的 action 一路 `{...state}` 带过来，
- * 引用不变）⇒ 起播。金额、名字、費名全部是 core 交出来的，本屏**一个字都不算**
+ * `after.notices` 与 `before.notices` **不是同一个数组**（`reduce.ts` 每弹一次都新建
+ * 一个数组；没弹的 action 一路 `{...state}` 带过来，引用不变）⇒ 起播。
+ * 金额、名字、費名全部是 core 交出来的，本屏**一个字都不算**
  * —— 尤其**不许**从 `before → after` 的差分反推金额（神明加成会让它对不上）。
+ *
+ * ## ★★ 一次 action 可以弹**不止一扇**
+ *
+ * 原版在 `0x00419d50`（租金框）之后还会接着弹 `0x00419f16`（死神框），
+ * 設施那一路同理（`0x41a56f` → `0x41a6f2`）。所以 core 交出来的是**数组**，
+ * 本屏按顺序**一扇一扇放** —— 每扇各自计 1500 ms（`NoticeHint.holdMs` 可覆盖，
+ * 得点格那三扇是 1000 ms），每扇都能被同一个出口跳过（跳过只结束**当前**这一扇，
+ * 与原版「每扇各自一次可跳过的等待」一致）。
  */
 
-import { RENT, formatOriginal } from '@rich4/data';
+import { FACILITY_TOLL, MESSAGE_BOX, RENT, formatOriginal } from '@rich4/data';
 import type { GameState, NoticeHint, NoticeKey } from '@rich4/core';
 import { drawDialog } from './dialog.ts';
 import type { InteractionUi } from './interactions.ts';
@@ -67,7 +75,7 @@ import type { UiKeyEvent, UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /**
  * 框停留时长 —— 原版 `push 0x5dc`（1500 ms）。
- * @source 0x00419d50（住宅）/ 0x0041aeaa（企業），两处都是 `0x5dc`
+ * @source 0x00419d50（住宅）/ 0x0041aeaa（企業）/ 0x0041a56f（設施），三处都是 `0x5dc`
  */
 export const NOTICE_HOLD_MS = 0x5dc;
 
@@ -83,13 +91,36 @@ export const NOTICE_TEXT = {
   'rent.payTwoOwners': RENT.payTwoOwners.text,
   'rent.payChairman': RENT.payChairman.text,
   'rent.payBoss': RENT.payBoss.text,
-  // ★ 免收那一路（`0x41d559` 的九种里「被关着／不在棋盘」的四种）：
+  // ★ 免收那一路（`0x41d559` 的**全部九种**）：
   //   原版在豁免分支里先 sprintf 再弹**同一扇**框（`0x41d6a4 push 0x5dc /
-  //   call 0x440cac`），格式串的 `%s`#1 = 地主名、`%s`#2 = 費名。
+  //   call 0x440cac`）。⚠️ 参数个数不是一种：查封（0x41d59e）与死神（0x41d5fa）
+  //   只推了費名一个实参；同盟（0x41d5ce）与其余六种是「名字 + 費名」两个。
+  'rent.freeSealed': RENT.freeSealed.text,
+  'rent.freeAllied': RENT.freeAllied.text,
+  'rent.freeReaper': RENT.freeReaper.text,
   'rent.freeHotel': RENT.freeHotel.text,
   'rent.freeVanished': RENT.freeVanished.text,
   'rent.freePrison': RENT.freePrison.text,
   'rent.freeHospital': RENT.freeHospital.text,
+  'rent.freeWinterSleep': RENT.freeWinterSleep.text,
+  'rent.freeSleepwalk': RENT.freeSleepwalk.text,
+  // ★ 死神顯靈由他人賠償 —— 与租金框**在同一个 action 里前后脚弹**（0x00419f16）
+  'rent.reaperPays': RENT.reaperPays.text,
+  // ★ 設施那三路（`0x41a3cc` 那一支）
+  'facility.hotel': FACILITY_TOLL.hotel.text,
+  'facility.mall': FACILITY_TOLL.mall.text,
+  // 加油站借的是「董事長」那一句（@source 0x41a55d `push 0x463a31`），
+  // 只是第一个 `%s` 被 core 填成常量「加油站」
+  'facility.gasStation': RENT.payChairman.text,
+  // ★ 得点格 / 抽卡格 / 禮物 / 寶箱 / 乞丐 / 小偷
+  'points.50': MESSAGE_BOX.points50.text,
+  'points.30': MESSAGE_BOX.points30.text,
+  'points.10': MESSAGE_BOX.points10.text,
+  'points.card': MESSAGE_BOX.got.text,
+  'object.gift': MESSAGE_BOX.got.text,
+  'object.treasure': MESSAGE_BOX.got500Points.text,
+  'beggar.alms': MESSAGE_BOX.alms.text,
+  'thief.loot': MESSAGE_BOX.thiefLoot.text,
 } as const satisfies Record<NoticeKey, string>;
 
 /** 一条 `{ key, args }` 提示 → 屏上那一句（`%s` / `%d` 全在 `args` 里） */
@@ -111,39 +142,71 @@ export interface NoticePlayback {
   text: string;
   /** 起播时刻 */
   at: number;
+  /** 这一扇停留多久（ms）—— 原版每扇框各自 `push` 一个时长 */
+  holdMs: number;
 }
 
-export function noticePlaybackStart(text: string, now: number): NoticePlayback {
-  return { text, at: now };
+export function noticePlaybackStart(text: string, now: number, holdMs: number = NOTICE_HOLD_MS): NoticePlayback {
+  return { text, at: now, holdMs };
 }
 
 /** 走一帧；该关屏了返回 `null` */
 export function noticePlaybackTick(p: NoticePlayback, now: number): NoticePlayback | null {
-  return now - p.at >= NOTICE_HOLD_MS ? null : p;
+  return now - p.at >= p.holdMs ? null : p;
 }
 
 // ============================================================
 //  屏幕本体
 // ============================================================
 
+/** 排着队、还没轮到的那几扇 */
+interface QueuedNotice {
+  key: NoticeKey;
+  text: string;
+  holdMs: number;
+}
+
 /** 现在正在弹的那一个；`null` = 没在弹 */
 let playback: NoticePlayback | null = null;
 
-/** 调试 / 单测用：把整屏关掉 */
+/** 正在弹的那一扇之后还排着的（FIFO） */
+let pending: QueuedNotice[] = [];
+
+/** 调试 / 单测用：把整屏关掉（连队列一起清空） */
 export function resetNoticeBoxScreen(): void {
   playback = null;
+  pending = [];
+}
+
+/**
+ * 从队头起下一扇。
+ *
+ * ★ 起播时刻**在这里才记**（不记入队时刻）：原版是一扇放完再等下一扇，
+ *   两扇共用一个 1500 ms 计时就会让第二扇一出现就已经超时。
+ */
+function startNext(env: UiScreenEnv): void {
+  if (playback !== null) return;
+  const item = pending.shift();
+  if (item === undefined) {
+    pending = [];
+    return;
+  }
+  playback = noticePlaybackStart(item.text, env.now, item.holdMs);
+  env.log(`付费訊息框：${item.key}`);
 }
 
 /**
  * 跳过这一拍（左键抬起 / 右键抬起 / 任意键按下 —— 见头注释的三种消息）。
  *
  * 原版那个等待函数一见这三种消息就立刻返回（不做任何「先播完再说」的事），
- * 所以这里也只有一个动作：关屏。
+ * 而**每扇框各自有一次**这样的等待 —— 所以这里只结束**当前**这一扇，
+ * 后面排队的照旧接着弹。
  */
 function skip(env: UiScreenEnv): void {
   if (playback === null) return;
   playback = null;
   env.log('付费訊息框：跳过');
+  startNext(env);
   env.requestRender();
 }
 
@@ -177,12 +240,12 @@ export const noticeBoxScreen: UiScreen = {
     if (next === null) {
       playback = null;
       env.log('付费訊息框：結束');
-      env.requestRender();
-      return;
+      // ★ 后面还有排队的就接着弹（原版那几扇框是一扇接一扇）
+      startNext(env);
     }
     // ★ **必须自己续帧**：`main.ts` 只把 `tick` 发给**此刻接管整屏**的那一屏，
-    //   而关屏是「时间到」才有的事 —— 不续帧就永远到不了 1500 ms 那个 deadline
-    //   （与 `event-box-screen.ts` 同一条路子）。
+    //   而关屏是「时间到」才有的事 —— 不续帧就永远到不了那个 deadline
+    //   （与 `event-box-screen.ts` 同一条路子）。换扇也一样要续。
     env.requestRender();
   },
 
@@ -202,23 +265,30 @@ export const noticeBoxScreen: UiScreen = {
   },
 
   /**
-   * 察觉「刚刚落了一次付费类落点」。
+   * 察觉「刚刚落了要弹框的 action」。
    *
-   * 判据是**引用**：`reduce.ts` 每弹一次都新建一个 `{key,args}` 对象，没弹的
-   * action 只是把原来的引用带过来 ⇒ `after.lastNotice !== before.lastNotice`
+   * 判据是**引用**：`reduce.ts` 每弹一次都新建一个 `notices` 数组，没弹的
+   * action 只是把原来的引用带过来 ⇒ `after.notices !== before.notices`
    * 就等于「这一条 action 弹了框」。这与 `lastCardPlay` 的判据同一套。
    */
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
-    if (playback !== null) return; // 上一段还没播完
-    const n = after.lastNotice;
-    if (n === null || n === before.lastNotice) return;
-    playback = noticePlaybackStart(noticeText(n), env.now);
-    env.log(`付费訊息框：${n.key}`);
+    const list = after.notices;
+    if (list === before.notices || list.length === 0) return;
+    // ★ **不丢**：正在播就把新的排到队尾（原版是一次 action 里连弹几扇，见头注释）
+    for (const n of list) {
+      pending.push({ key: n.key, text: noticeText(n), holdMs: n.holdMs ?? NOTICE_HOLD_MS });
+    }
+    if (playback === null) startNext(env);
     env.requestRender();
   },
 };
 
 /** 给单测的只读视图 */
-export function noticeBoxScreenState(): { playing: boolean; playback: NoticePlayback | null } {
-  return { playing: playback !== null, playback };
+export function noticeBoxScreenState(): {
+  playing: boolean;
+  playback: NoticePlayback | null;
+  /** 排队等着弹的扇数（不含正在播的那一扇） */
+  queued: number;
+} {
+  return { playing: playback !== null, playback, queued: pending.length };
 }

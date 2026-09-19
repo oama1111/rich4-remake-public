@@ -35,6 +35,7 @@ export * from './rules/god-toll.ts';
 export * from './rules/facility.ts';
 export * from './rules/blocking.ts';
 export * from './rules/confinement.ts';
+export * from './rules/gate-walk.ts';
 export * from './rules/blessing.ts';
 export * from './rules/view.ts';
 export * from './rules/percentage.ts';

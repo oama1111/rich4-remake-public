@@ -141,7 +141,7 @@ import {
   type OptionsOutcome,
 } from './options-pages.ts';
 import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
-import { cardPlaySpeech, speechBubblesFor, speechEventsFor } from './speech.ts';
+import { cardPlaySpeech, openingSpeech, speechBubblesFor, speechEventsFor } from './speech.ts';
 import { SpeechQueue, drawSpeechBubble, type SpeechBubble } from './speech-bubble.ts';
 // 台词字幕用的是 canvas 文字（原版 `_rich4_create_font(0x10, 0x101010, …)` 那一路）
 import { font } from './font.ts';
@@ -3654,12 +3654,13 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
       : null;
   if (t === null) return;
   const p = state.players[t.player];
+  // ★ `t.special`（不写死 false）：走回棋盘走 `dist × 0.125` 那一支 —— 见 `tween.ts`
   renderer.startWalk(
     t.player,
     t.from,
     t.to,
     (p?.trafficMethod ?? 0) & 3,
-    false,
+    t.special,
     tickMs(options.speed),
   );
 }
@@ -3749,7 +3750,7 @@ function playSoundFor(before: GameState, after: GameState): void {
   if (cardBubbles.length > 0 && speechQueue.push(cardBubbles, performance.now()) > 0) {
     requestRender();
   }
-  const spoken = speechEventsFor(before, after);
+  const spoken = speechEventsFor(before, after, topo);
   if (spoken.length === 0) return;
   ensureSpeakingArchive();
   // ★ 语音**不在这里放** —— 见 `speechTick()`。
@@ -6636,6 +6637,12 @@ function startGame(): void {
   //   「进樂透页听不到猫女的语音」「整体感觉语音没怎么触发」）。
   //   棋盘一局是分钟级的，这里提前拉完，后面每一句都在。
   ensureSpeakingArchive();
+  // ★ 開局宣言（事件 26）—— **不走任何 action**，故 `playSoundFor` 永远看不到它：
+  //   原版那一句在 `fcn_00407842` 里（`@source 0x00407946`，全 exe 唯一一处），
+  //   `callers 0x407842` 只有 `0x40cff0` / `0x41da2d` 两处，都是**开/重开一局**，
+  //   且都在模态消息框之后、棋盘打开之前。这里在开局的同一个点显式播一次。
+  //   台词与語音号：`SPEECH_LINES[角色][26]` / `speechIndex(角色, 26)`。
+  if (speechQueue.push(openingSpeech(state), performance.now()) > 0) requestRender();
   log(
     `開局：地圖 ${setup.mapId}　種子 ${seed}　` +
       players.map((p, i) => `P${i + 1}${p.kind === 'human' ? '人' : '電'}`).join(' '),

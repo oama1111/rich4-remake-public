@@ -49,8 +49,9 @@ export const SCREENS: readonly UiScreen[] = [
   //   「得一張卡片」与卡片格都会让手牌变长，两屏会从同一次 action 各起一段；
   //   魔法屋那一次该由魔法屋屏演（见 `event-box-screen.ts` 头注释）。
   eventBoxScreen,
-  // ★ 付费类落点的棕色訊息框（issue #18）：由 `state.lastNotice` 起播，
-  //   1500 ms 可跳过。原版弹在**结算当场**（`0x440cac`），与上面几屏不会同时起。
+  // ★ 付费类落点的棕色訊息框（issue #18）：由 `state.notices` 起播，每扇 1500 ms
+  //   可跳过（得点格那三扇是 1000 ms）；同一 action 里连弹两扇时按顺序一扇一扇放。
+  //   原版弹在**结算当场**（`0x440cac`），与上面几屏不会同时起。
   noticeBoxScreen,
   wheelScreen,
   // ★ 「神明附身」那一刻的老虎机窗（Q-GOD-1）：与转盘同一类**演出**屏，

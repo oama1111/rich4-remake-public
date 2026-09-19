@@ -417,6 +417,14 @@ export interface NoticeHint {
   key: NoticeKey;
   /** 原版那次 `sprintf` 的参数，**顺序原样**（`%s` 已经代入好名字，不再是下标） */
   args: readonly (string | number)[];
+  /**
+   * 这扇框停留多久（ms）；缺席 = `NOTICE_HOLD_MS`（1500，`0x5dc`）。
+   *
+   * ★ 只有**得点格**那三句是 `0x3e8` = 1000 ms：
+   *   `0x0041b1be` / `0x0041b258` / `0x0041b2dc` 三处都是 `push 0x3e8`。
+   *   其余全部走 `0x5dc`。写在这里是为了客户端**不自己编时长**（C-ARC-2）。
+   */
+  holdMs?: number;
 }
 
 /**
@@ -429,28 +437,58 @@ export interface NoticeHint {
  * | `rent.payTwoOwners` | `RENT.payTwoOwners` | 0x00419d1a `push 0x46399a` |
  * | `rent.payChairman` | `RENT.payChairman` | 0x0041ae98 `push 0x463a31` |
  * | `rent.payBoss` | `RENT.payBoss` | 0x0041ae86 `push 0x463a6a` |
+ * | `rent.freeSealed` | `RENT.freeSealed` | 0x0041d59e `push 0x463bb8` |
+ * | `rent.freeAllied` | `RENT.freeAllied` | 0x0041d5d7 `push 0x463bcd` |
+ * | `rent.freeReaper` | `RENT.freeReaper` | 0x0041d5fa `push 0x463be2` |
  * | `rent.freeHotel` | `RENT.freeHotel` | 0x0041d60b `push 0x463bf5` |
  * | `rent.freeVanished` | `RENT.freeVanished` | 0x0041d62c `push 0x463c08` |
  * | `rent.freePrison` | `RENT.freePrison` | 0x0041d645 `push 0x463c1b` |
  * | `rent.freeHospital` | `RENT.freeHospital` | 0x0041d65e `push 0x463c2e` |
+ * | `rent.freeWinterSleep` | `RENT.freeWinterSleep` | 0x0041d67a `push 0x463c41` |
+ * | `rent.freeSleepwalk` | `RENT.freeSleepwalk` | 0x0041d696 `push 0x463c54` |
+ * | `rent.reaperPays` | `RENT.reaperPays` | 0x00419f04 `push 0x4639cc` |
+ * | `facility.hotel` | `FACILITY_TOLL.hotel` | 0x0041a46e `push 0x4639ff` |
+ * | `facility.mall` | `FACILITY_TOLL.mall` | 0x0041a4c4 `push 0x463a14` |
+ * | `facility.gasStation` | `RENT.payChairman` | 0x0041a55d `push 0x463a31` |
+ * | `points.50` / `points.30` / `points.10` | `MESSAGE_BOX.points*` | 0x0041b1c3 / 0x0041b25d / 0x0041b2e1 |
+ * | `points.card` | `MESSAGE_BOX.got` | 0x0041b35d `push 0x463aa8` |
+ * | `object.gift` | `MESSAGE_BOX.got` | 0x0041b956 `push 0x463aa8` |
+ * | `object.treasure` | `MESSAGE_BOX.got500Points` | 0x0041bb4e `push 0x463ad3` |
+ * | `beggar.alms` | `MESSAGE_BOX.alms` | 0x0041b656 `push 0x463ab1` |
+ * | `thief.loot` | `MESSAGE_BOX.thiefLoot` | 0x0041ba0a 等五处 `push 0x463ac0` |
  *
- * ★ 后四个是 `0x0041d559`「九种免收」里的**被关着／不在棋盘**那四种：豁免成立时
- *   原版**先 `sprintf` 一句、再弹同一个通用訊息框**（`0x41d6a4 push 0x5dc /
- *   call 0x440cac`），文案是 `%s住宿中／消失中／坐牢中／住院中` + `免收%s！`
- *   （`%s`#1 = 地主名、`%s`#2 = 費名）。见 `packages/data/src/messages.ts` 的 `RENT`。
- *   ⚠️ 同一分支里的另外五种（房屋查封中 `0x463bb8`、與%s同盟中 `0x463bcd`、
- *   死神顯靈 `0x463be2`、%s冬眠中 `0x463c41`、%s夢遊中 `0x463c54`）原版**也**弹框，
- *   但**没有接**（不在本次需求范围内）。
+ * ★ 免收那九种是 `0x0041d559`「九种免收」的全部：豁免成立时原版**先 `sprintf`
+ *   一句、再弹同一个通用訊息框**（`0x41d6a4 push 0x5dc / call 0x440cac`）。
+ *   ⚠️ 参数个数**三种**，照 `0x457110` 的推栈顺序来（详见 `reduce.ts` 的
+ *   `confinementNoticeKey`）：查封与死神只有一个 `%s`（只有費名），
+ *   同盟两个 `%s` 都是「先名字后費名」，其余四种是「地主名 + 費名」。
  */
 export type NoticeKey =
   | 'rent.payOneOwner'
   | 'rent.payTwoOwners'
   | 'rent.payChairman'
   | 'rent.payBoss'
+  | 'rent.freeSealed'
+  | 'rent.freeAllied'
+  | 'rent.freeReaper'
   | 'rent.freeHotel'
   | 'rent.freeVanished'
   | 'rent.freePrison'
-  | 'rent.freeHospital';
+  | 'rent.freeHospital'
+  | 'rent.freeWinterSleep'
+  | 'rent.freeSleepwalk'
+  | 'rent.reaperPays'
+  | 'facility.hotel'
+  | 'facility.mall'
+  | 'facility.gasStation'
+  | 'points.50'
+  | 'points.30'
+  | 'points.10'
+  | 'points.card'
+  | 'object.gift'
+  | 'object.treasure'
+  | 'beggar.alms'
+  | 'thief.loot';
 
 /**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。
@@ -886,15 +924,23 @@ export interface GameState {
   lastCardPlay: CardPlayHint | null;
 
   /**
-   * **这一次落点要弹的棕色訊息框** —— 纯表现提示，见 `NoticeHint`（issue #18）。
+   * **这一次落点要弹的棕色訊息框**（可能不止一条）—— 纯表现提示，见 `NoticeHint`（issue #18）。
    *
    * 消费者：`client/src/notice-box-screen.ts`（`screens.ts` 登记为 `'notice'`，
-   * 并进了 `main.ts` 的 `BLOCKING_PRESENTATIONS` ⇒ 1500 ms 内回合驱动会等它）。
+   * 并进了 `main.ts` 的 `BLOCKING_PRESENTATIONS` ⇒ 每扇 1500 ms 内回合驱动会等它）。
+   *
+   * ★★ **为什么是数组而不是单个字段**：原版在**一条 action** 里会连弹两扇框 ——
+   *   住宅收租那一路先弹租金框（`0x00419d50 push 0x5dc / call 0x440cac`）
+   *   **再**弹死神框（`0x00419f16` 同一个调用）；設施那一路同理
+   *   （`0x41a56f` 之后 `0x41a6f2`）。单个字段会把第一扇顶掉。
+   *   数组按**弹框顺序**排，客户端一条一条放。
    *
    * ★ 只在**真的弹**的那一刻写（与 `lastCardPlay` 同一条规矩）：
-   *   `null` = 这一条 action 没有付费框，客户端就不起播。
+   *   空数组 = 这一条 action 没有付费框，客户端就不起播。
+   *   数组的**引用**就是判据：`reduce` 每弹一次都新建一个数组，
+   *   没弹的 action 一路 `{...state}` 把原引用带过来。
    */
-  lastNotice: NoticeHint | null;
+  notices: NoticeHint[];
 
   /**
    * **本 action 里发生过的「加蓋一级」** —— 纯表现提示（C-DET-4）。

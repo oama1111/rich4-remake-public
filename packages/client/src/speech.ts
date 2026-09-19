@@ -45,7 +45,11 @@
  *    不许动 PRNG，故**一律取 `eax = 0` 那一支**（即两句话里靠前、语气更重的那句）。
  * 2. 原版 `_rich4_player_say` 是**逐句播完再返回**，本引擎的 `SoundPlayer`
  *    是即发即忘，故同一动作里派生的多句会**叠着响**（见 main.ts 的 playSoundFor）。
- * 3. 事件 16/17/22/23/26 本卡未接，理由逐条写在偏离登记里。
+ * 3. ✅ **2026-09-19：事件 16/17/22/23/26 已接线**（T-052 的 Q-SPEECH-5 原先登记为「没解」）：
+ *    - 16/17 需要**街區**（同一 `land.name`）—— 那是地图静态数据 `topo`，
+ *      故 `speechEventsFor` 多了一个**可选**的 `topo` 实参（缺席时这条探测器不出声）；
+ *    - 22/23 需要**神明种类**（`objects[godInfo−1].type`）—— 那在 `GameState` 里；
+ *    - 26（開局宣言）**不经过任何 action**，由 `main.ts` 的 `startGame()` 显式播一次。
  * 4. ★ **卡牌台词不走状态差分**（2026-09-19 补）：那 26 张卡各自的
  *    `player_say(出牌者, flag, 卡牌台词表[角色][卡号-1])` 是**调用点参数**，
  *    不是状态跃迁，差分法看不见（此前整条缺失，见 gaps §7.89(2)）。
@@ -53,7 +57,14 @@
  *    本文件用 `cardPlaySpeech()` 翻成气泡。
  */
 
-import { isAlive, WHO_PLAYS_HUMAN, WHO_PLAYS_MASK, type GameState, type Player } from '@rich4/core';
+import {
+  isAlive,
+  WHO_PLAYS_HUMAN,
+  WHO_PLAYS_MASK,
+  type GameState,
+  type MapTopology,
+  type Player,
+} from '@rich4/core';
 import {
   CHARACTERS,
   SPEECH_CHARACTER_COUNT,
@@ -83,7 +94,17 @@ export interface SpeechDetector {
   readonly name: string;
   /** 判据的取证点（exe VA） */
   readonly source: readonly number[];
-  readonly detect: (before: GameState, after: GameState) => SayEvent[];
+  /**
+   * `before/after` 状态 → 谁说了哪几句。
+   *
+   * `topo` **可选**：只有「街區獨佔」那一条要它（街區归属 = 地图静态数据里的
+   * `land.name`，见 `detectAreaMonopoly`）。其余探测器一律不用，缺席也不受影响。
+   */
+  readonly detect: (
+    before: GameState,
+    after: GameState,
+    topo?: MapTopology,
+  ) => SayEvent[];
 }
 
 // ============================================================
@@ -563,6 +584,258 @@ export function detectPointsSquarePhrase(before: GameState, after: GameState): S
 }
 
 /**
+ * 同一街區獨佔 ≥ 3 塊 —— 事件 16「我是個大地主」/ 17「我要稱霸一方了」。
+ *
+ * ── 原版判据（逐个照抄）─────────────────────────────────────────
+ *
+ * `fcn_0044f627`（VA 0x0044f627）的入参是 **(第 1 参) 那一块地的名字串**、
+ * **(第 2 参) 一个旗标**；函数体：
+ *
+ * ```asm
+ * 0044f636  ebx = [0x498e84] (+0x34 = 地块表项 1)   ; 住宅地表，步长 0x34
+ * loop:                                             ; esi = 1 .. [0x498e98](num_lands)
+ * 0044f64c  call 0x458370                           ; ★ strcmp(land_i + 4, 第 1 参)
+ * 0044f656  jne 下一个                              ;   名字不同 → 不算
+ * 0044f658  al = byte [ebx + 0x19]                  ; ★ land.owner（1 基，map-format.md §4.2）
+ * 0044f65b  edx = [0x49910c] + 1                    ;   当前玩家 + 1
+ * 0044f662  cmp eax, edx / jne 下一个
+ * 0044f666  edi++                                   ; 计数
+ * 0044f66a  cmp edi, 3 / jl 返回                     ; ★ ≥ 3 才开口
+ * 0044f677  test 第 2 参,第 2 参 / je 说事件 16
+ * 0044f67b  call rand / idiv 3                      ; ★ 1/3 機率
+ * 0044f68e  test edx,edx / jne 返回
+ * 0044f6ab  …说 [0x48088e] = 事件 17
+ * 0044f6d5  …说 [0x48088a] = 事件 16
+ * ```
+ *
+ * 两个调用点（`callers 0x44f627`，各只有一处，且即时数写死）：
+ *
+ * | 调用点 | 第 2 参 | 那一步写的是哪个字段 | 出声 |
+ * |---|---|---|---|
+ * | `0x00419a31` | `push 1`（`0x00419a2b`） | `inc byte [land+0x1a]`（**等級**，`0x004199d1`）| 17（1/3）|
+ * | `0x0041a13e` | `push 0`（`0x0041a138`） | `mov byte [land+0x19], 玩家+1`（**歸屬**，`0x0041a0de`）| 16 |
+ *
+ * 即：**買下一块无主地** → 16；**在自己的地上加蓋**（且没到 5 級）→ 17
+ * （到 5 級那一支在 `0x004199eb cmp byte [esi+0x1a],5 / jne 0x419a2b` 处
+ * 改说事件 15，故 17 只在 `等級 ≠ 5` 时说）。
+ * `0x44f627` 的 `rand()%3` 与其余中间档一样**确定性取「说」**（Q-SPEECH-3）。
+ *
+ * ── 街區号从哪来 ─────────────────────────────────────────────
+ *
+ * 原版数的就是**同名**（`strcmp(land+4, …)`），而 `land.name`
+ * （`+0x04`，Big5；map-format.md §4.2 / `LandInfo.name`）正是 `GameState`
+ * **没有**、`topo.lands` 才有的那一位。实测 8 张图的地块名确实是成区的
+ * （地图 0：`台北市` = 地块 1..4、`桃園市` = 5..8 …），故「街區号」=
+ * 地块名的等价类 —— 不需要另加一个 id。
+ *
+ * @source VA 0x0044f627（判据）、0x00419a2b / 0x00419a31（17）、
+ *   0x0041a138 / 0x0041a13e（16）、0x00458370（strcmp）
+ */
+export function detectAreaMonopoly(
+  before: GameState,
+  after: GameState,
+  topo?: MapTopology,
+): SayEvent[] {
+  // 只有「落点问出来的買地 / 加蓋」这两个交互会走到 `fcn_0044f627`
+  // （卡片、拍賣、新聞那几条改归属的路都不经过它 —— 故这里必须先卡住 pending）
+  const pend = before.pending;
+  if (pend === null || (pend.kind !== 'buyLand' && pend.kind !== 'upgradeLand')) return [];
+  const lands = topo?.lands;
+  if (lands === undefined || lands.length === 0) return [];
+
+  const player = after.currentPlayer;
+  const landId = pend.landId;
+  const tpl = lands.find((l) => l.id === landId);
+  if (tpl === undefined) return [];
+  const name = tpl.name;
+  if (name === '') return [];
+
+  if (pend.kind === 'buyLand') {
+    // 归属真的易主了才算出声（`mov byte [esi+0x19], al` @ 0x0041a0de）
+    if ((before.landOwner[landId] ?? 0) === player + 1) return [];
+    if ((after.landOwner[landId] ?? 0) !== player + 1) return [];
+  } else {
+    // 加蓋一级（`inc byte [esi+0x1a]` @ 0x004199d1）；恰好到 5 級 ⇒ 那一步说 15
+    if ((after.landLevel[landId] ?? 0) !== (before.landLevel[landId] ?? 0) + 1) return [];
+    if ((after.landLevel[landId] ?? 0) === 5) return [];
+  }
+
+  let owned = 0;
+  for (const l of lands) {
+    if (l.name !== name) continue;
+    if ((after.landOwner[l.id] ?? 0) === player + 1) owned += 1;
+  }
+  if (owned < 3) return [];
+  return [{ player, event: pend.kind === 'buyLand' ? 16 : 17 }];
+}
+
+// ============================================================
+//  神明 —— 22 / 23
+// ============================================================
+
+/**
+ * 会让玩家喊「別鬧了！」（22）与「一場惡夢～」（23）的神明**種類**。
+ *
+ * ★ 是 `objects_info[槽].type`（1..18），**不是** `godInfo` 那个槽位号。
+ *   五条 `player_say` 的取串点（byte 级 `find a2084800` 命中 5 处）分别落在
+ *   種類 5/6/7/8/15 的實作，而 22 的串表位移 `0x4808a2` = `0x48084a + 22×4`：
+ *
+ * | 種類 | 名稱 | `god_activate` 跳表（`0x40ea9b`，索引 = 種類−1）| 说 22 的取串 VA |
+ * |---|---|---|---|
+ * | 5 | 小窮神 | `[4] = 0x40ef1b` | 0x0040ef2f |
+ * | 6 | 大窮神 | `[5] = 0x40efe4` | 0x0040eff8 |
+ * | 7 | 小衰神 | `[6] = 0x40f083` | 0x0040f097 |
+ * | 8 | 大衰神 | `[7] = 0x40f155` | 0x0040f169 |
+ * | 15 | 死神 | `[14] = 0x40f2eb` | 0x0040f2ff |
+ *
+ * 23 的串表位移 `0x4808a6` = `0x48084a + 23×4`，取串点在 **`0x40e64a`**，
+ * 而那一支的门槛就是 `0040e618..0x40e62f` 的 `cmp ebp,5/6/7/8/0xf`
+ * （`ebp` = `objects_info[槽].type`）—— 与上表同一集合。
+ *
+ * @source `0x0040ea9b`（跳表，15×4 字节）、`0x0040e618`–`0x0040e64a`、
+ *   上面 5 个取串 VA（`tools/disasm.py find a2084800`）
+ */
+export const HOSTILE_GOD_TYPES: readonly number[] = [5, 6, 7, 8, 15];
+
+/** `objects[handle − 1].type`；handle 为 0 或越界时返回 `null` */
+function godTypeOf(state: GameState, handle: number): number | null {
+  if (!Number.isInteger(handle) || handle <= 0) return null;
+  const obj = state.objects[handle - 1];
+  return obj === undefined ? null : obj.type;
+}
+
+/**
+ * 神明**离身** —— 事件 23「一場惡夢～」。
+ *
+ * @source `0x40e32c`（带演出动画的送神；`callers 0x40e32c` 共 3 处）：
+ *
+ * ```asm
+ * 0040e34f  ebp = objects_info[god_info−1].type          ; ★ 种类，不是槽位
+ * 0040e356  cmp dword [player + 0x32], 0                 ; ★ +0x32..0x35 一次读四个
+ * 0040e35d  je 0x40e36e                                  ;   全 0 才走动画/台词
+ * 0040e361  call 0x40e14d                                ;   有一个非 0 → 只拆、不吭声
+ * …（动画）…
+ * 0040e604  call 0x40e14d                                ; 真正拆下来
+ * 0040e618  cmp ebp,5 / 6 / 7 / 8 / 0xf                  ; ★ 只有这五种
+ * 0040e64a  ecx = [表 + 108×角色 + 0x4808a6]             ; = 事件 23
+ * 0040e659  call 0x44ef41(player, 2, 串)
+ * ```
+ *
+ * 三个调用点：`0x40eb3f`（`god_activate` 里「已有神明 → 先送走旧的」，
+ * 即**换神**）、`0x41cc9b`（`0x41c84f` 的回合边界任期递减到 0 = **任期届满**）、
+ * `0x444cc4`（**送神符**，卡 22）。三条都说这同一句。
+ *
+ * ★ **破产不算**：`0x40cd87` 走的是 `0x40ce40`/`0x40ce62` 的裸 `0x40e14d`
+ *   （`0x40e32c` 的调用点里没有它）—— 所以破产者死后的 `godInfo → 0`
+ *   **不说话**。故这里要求 `after` 里那个人还活着（`isAlive`）。
+ *
+ * ★ `[player+0x32]` 是**一个 dword 比较**，覆盖
+ *   `inHotel(+0x32) / disappearing(+0x33) / inPrison(+0x34) / inHospital(+0x35)` ——
+ *   这四个里任何一个非 0 都不出声；再加 `player_say` 自己的两道闸
+ *   （`+0x37 sleepWalking` / `+0x36 sleeping`，VA 0x44ef86 / 0x44ef93）。
+ */
+export function detectGodLeft(before: GameState, after: GameState): SayEvent[] {
+  const out: SayEvent[] = [];
+  for (let i = 0; i < after.players.length; i++) {
+    const b = before.players[i];
+    const a = after.players[i];
+    if (b === undefined || a === undefined) continue;
+    if (b.godInfo === 0 || b.godInfo === a.godInfo) continue;
+    const type = godTypeOf(before, b.godInfo);
+    if (type === null || !HOSTILE_GOD_TYPES.includes(type)) continue;
+    if (!isAlive(a)) continue;
+    const bl = a.blocking;
+    if (
+      bl.inHotel !== 0 ||
+      bl.disappearing !== 0 ||
+      bl.inPrison !== 0 ||
+      bl.inHospital !== 0 ||
+      bl.sleepWalking !== 0 ||
+      bl.sleeping !== 0
+    ) {
+      continue;
+    }
+    out.push({ player: i, event: 23 });
+  }
+  return out;
+}
+
+/**
+ * 神明**附身** —— 事件 22「別鬧了！」。
+ *
+ * @source `god_activate`（VA 0x0040ead7）的共用尾声：
+ * ```asm
+ * 0040eb55  player.god_info = 槽位 + 1                   ; ★ 先写进玩家结构
+ * 0040ebcc  add word [player + 0x44/0x46/0x48], 表[type]
+ * 0040ec0d  jmp dword [（type−1）×4 + 0x40ea9b]          ; ★ 跳进該種類的實作
+ * ```
+ * 而 5/6/7/8/15 这五支的**开头第一件事**就是把事件 22 说出来
+ * （五处取串 VA 见 `HOSTILE_GOD_TYPES`；第一个实参是
+ * `mov eax,[esp+0x9c]` —— 两次 `push` 之后它正是 `player`，再 `or ah,0x80`
+ * 置「不重设视窗卷动」位，见 `player_say` 的 `0x44ef63 test byte [esp+0x25],0x80`）。
+ *
+ * 附身的三条路都经过 `god_activate`（`callers 0x40ead7` 共 3 处）：
+ * 踩到神明图（`0x41b82d`）、請神符（`0x444f18`）、魔法屋召喚死神
+ * （`spawn_object` 内 `0x40e0d4`）—— 三条都说。
+ *
+ * 判据：`godInfo` **换成了另一个非 0 的值**（换神也算，`0x40eb35` 那一支
+ * 先送旧神、再附新神）。`player_say` 的三道闸照抄（`disappearing` /
+ * `sleepWalking` / `sleeping`）。
+ */
+export function detectGodArrived(before: GameState, after: GameState): SayEvent[] {
+  const out: SayEvent[] = [];
+  for (let i = 0; i < after.players.length; i++) {
+    const b = before.players[i];
+    const a = after.players[i];
+    if (b === undefined || a === undefined) continue;
+    if (a.godInfo === 0 || a.godInfo === b.godInfo) continue;
+    const type = godTypeOf(after, a.godInfo);
+    if (type === null || !HOSTILE_GOD_TYPES.includes(type)) continue;
+    const bl = a.blocking;
+    if (bl.disappearing !== 0 || bl.sleepWalking !== 0 || bl.sleeping !== 0) continue;
+    out.push({ player: i, event: 22 });
+  }
+  return out;
+}
+
+// ============================================================
+//  開局宣言 —— 26（不走状态差分）
+// ============================================================
+
+/**
+ * 開局宣言的槽位号 —— 事件 26「我要再接再勵，永往直前！」。
+ *
+ * @source VA `0x00407946`（**全 exe 唯一一处**：`tools/disasm.py find b2084800`
+ *   只命中 1 处 = `0x00407949`，即该指令的 disp32）：
+ * ```asm
+ * 00407929  edi = [0x49910c]                      ; ★ 说的人是**当前玩家**
+ * 00407934  dl  = byte [玩家 + 0x13]              ;   角色号
+ * 00407946  ebp = [表 + 108×角色 + 0x4808b2]      ; = 事件 26
+ * 00407950  eax = edi ; or ah, 0x80               ;   玩家 | 0x8000
+ * 00407956  call 0x44ef41                         ;   player_say
+ * ```
+ * 它住在 `fcn_00407842`（`rich4_new_game.asm`）里，**紧跟一个模态消息框**
+ * （`0x00407919 call 0x4018e7` / `Wait_0402_Message`）之后；`callers 0x407842`
+ * 只有两处 —— `0x40cff0`（`0x40cd87` 破产流程里「唯一真人出局」那一支）
+ * 与 `0x41da2d`（`0x41d89e` 的续局分支，它先把 `[0x49910c]` 归零再调）。
+ * 两条都是**开局/重开**，都不经过任何 action ⇒ `playSoundFor` 永远看不到它。
+ *
+ * ⇒ 本引擎由 `main.ts` 的 `startGame()` 显式播一次（`openingSpeech`）。
+ */
+export const OPENING_SPEECH_EVENT = 26;
+
+/**
+ * 開局宣言那一段（当前玩家说事件 26）。
+ *
+ * 纯函数：只把 `(当前玩家, 事件 26)` 翻成 `SpeechBubble`，不碰队列/音频/DOM。
+ * 每个角色说什么由 `@rich4/data` 的 `SPEECH_LINES[角色][26]` 给出
+ * （語音号 = `1050 + 27×角色 + 26`）。
+ */
+export function openingSpeech(state: GameState): SpeechBubble[] {
+  return speechBubblesFor(state, [{ player: state.currentPlayer, event: OPENING_SPEECH_EVENT }]);
+}
+
+/**
  * 全部探测器，**有序列**（顺序 = 播出顺序）。
  *
  * 顺序照原版在同一笔交易里的调用次序：
@@ -577,6 +850,11 @@ export const DETECTORS: readonly SpeechDetector[] = [
   { name: 'bankrupt', source: [0x0040d237], detect: detectBankrupt },
   { name: 'victory', source: [0x0040d055], detect: detectVictory },
   { name: 'levelFive', source: [0x00419a0e, 0x0041ab4a], detect: detectLevelFive },
+  // ★ 同一街區獨佔 ≥ 3 塊（買地 16 / 加蓋 17）—— 要 `topo` 才数得出街區
+  { name: 'areaMonopoly', source: [0x0044f627, 0x0041a13e, 0x00419a31], detect: detectAreaMonopoly },
+  // ★ 神明：**先**旧神离身（23）**再**新神附身（22）—— 原版 `0x40eb3f` → `0x40ec0d`
+  { name: 'godLeft', source: [0x0040e32c, 0x0040e64a, 0x0041cc9b, 0x00444cc4], detect: detectGodLeft },
+  { name: 'godArrived', source: [0x0040ea9b, 0x0040e64a, 0x0040ef2f, 0x0040f2ff], detect: detectGodArrived },
   { name: 'moneyPaid', source: [0x0044f42d, 0x0044f4ed, 0x0044f567], detect: detectMoneyPaid },
   { name: 'moneyGained', source: [0x0044f354], detect: detectMoneyGained },
   { name: 'hotelStay', source: [0x0041a7e0, 0x0044f2c2], detect: detectHotelStay },
@@ -588,11 +866,19 @@ export const DETECTORS: readonly SpeechDetector[] = [
 /**
  * 一次状态跃迁要说的话（可能不止一句）。
  *
+ * `topo` 是可选的：只有「同一街區獨佔」（事件 16/17）需要它 —— 街區归属是
+ * 地图静态数据（`land.name`），不在 `GameState` 里。缺席时那条探测器不出声，
+ * 其余 24 个槽位照常。
+ *
  * 纯函数：不读 DOM、不碰音频、不动 PRNG（C-DET-1/2/4）。
  */
-export function speechEventsFor(before: GameState, after: GameState): SayEvent[] {
+export function speechEventsFor(
+  before: GameState,
+  after: GameState,
+  topo?: MapTopology,
+): SayEvent[] {
   const out: SayEvent[] = [];
-  for (const d of DETECTORS) out.push(...d.detect(before, after));
+  for (const d of DETECTORS) out.push(...d.detect(before, after, topo));
   return out;
 }
 

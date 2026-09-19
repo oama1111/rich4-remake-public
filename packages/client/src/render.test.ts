@@ -580,6 +580,19 @@ describe('★ 走子补间：一格的 tick 数按**世界**距离算，与镜�
     expect(r.lastWalkMs()).toBe(Math.trunc(100 * 0.125) * 80); // 12 × 80
   });
 
+  it('★ `isWalking(player)`：只有**那一位**、且在补间播完之前为真（「走回棋盘」靠它摆走姿）', () => {
+    const r = renderer();
+    expect(r.isWalking(0, 0)).toBe(false); // 没有补间
+    // 走回棋盘：`special = true`、8 世界单位/拍 ⇒ 100 px = 12 拍
+    r.startWalk(1, { x: 0, y: 0 }, { x: 100, y: 0 }, 2, true, 40, 1000);
+    expect(r.isWalking(1, 1000)).toBe(true);
+    expect(r.isWalking(1, 1479)).toBe(true); // 12 × 40 = 480 ms 内的最后一刻
+    expect(r.isWalking(1, 1480)).toBe(false); // 播完
+    // 别的玩家不算 —— 否则会给不相干的人摆走姿
+    expect(r.isWalking(0, 1100)).toBe(false);
+    expect(r.isWalking(2, 1100)).toBe(false);
+  });
+
   it('★ 同一段位移、任何相机/视角下时长都一样 —— 公开 API 里已经没有镜头入口', () => {
     // 反证「不是屏幕距离」：`startWalk` 的形参表里不许再出现 `Camera` / 视口。
     const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');

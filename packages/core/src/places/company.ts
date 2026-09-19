@@ -55,6 +55,28 @@ export function feeNameOf(industry: number): string {
   return FEE_NAMES[INDUSTRY_FEE_NAME_INDEX[industry] ?? 0] ?? '過路費';
 }
 
+/**
+ * **設施**种类 → 費名下标（同一张 `0x47517c` 的 13 项表）。
+ *
+ * @source 字节表 `0x0047528b`，dump 出来前 5 项 = `[0, 5, 12, 2, 6]`，下标 = 設施 type：
+ *   `0 公園→過路費 / 1 旅館→住宿費 / 2 購物中心→購物費 / 3 加油站→加油費 / 4 研究所→旅遊費`。
+ *   原版在設施收费那一路的**免收判定**处查它：
+ * ```asm
+ * 0041a3ad  al  = 設施.+0x18（type）
+ * 0041a3b0  esi = movzx byte [eax + 0x47528b]   ; ★ type → 下标
+ * 0041a3b7  esi = [esi*4 + 0x47517c]            ; → 費名指针
+ * 0041a3b7..0x41a3cc  push 費名 / push 涨价位 / push 地主 → call 0x41d559
+ * ```
+ *   ⚠️ 加油站收费那一段（`0x41a545`）**另写死**了 `mov ebx,[0x475184]` ——
+ *   `0x475184 = 0x47517c + 8`，即下标 **2 = 加油費**，与本表 `[3]` 的值相同。
+ */
+export const FACILITY_FEE_NAME_INDEX: readonly number[] = [0, 5, 12, 2, 6];
+
+/** 設施种类 → 費名 @source `[0x47528b + type]` → `[0x47517c + idx*4]` */
+export function facilityFeeNameOf(type: number): string {
+  return FEE_NAMES[FACILITY_FEE_NAME_INDEX[type] ?? 0] ?? '過路費';
+}
+
 // ============================================================
 //  别人的公司：按行業收費
 // ============================================================

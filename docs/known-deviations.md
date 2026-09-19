@@ -5576,8 +5576,17 @@ stopEffect(id: number): void;
 `client/src/main.ts` 的 `topo` 都已带上景观表，大地图（`big-map-screen.ts`）也改成
 照原版读 `player+0x08/+0x0a`。位置不变量的正式表述（含"在押/走回棋盘"两个例外窗口）
 见 `rules/position.ts`，运行时哨兵在 `state/full-game.test.ts`。
-**仍然只剩画面**：棋盘上被关押者的贴图位置与那段"走回棋盘"的位移（登记在
-`docs/gaps/README.md` §7.3 第 17 项）—— 因为 `client` 的棋盘 token 目前按节点/路径画。
+~~**仍然只剩画面**：棋盘上被关押者的贴图位置与那段"走回棋盘"的位移（登记在
+`docs/gaps/README.md` §7.3 第 17 项）—— 因为 `client` 的棋盘 token 目前按节点/路径画。~~
+★ **2026-09-19 订正：这一句已过期。** 两条都已经接上：
+① 棋盘 token 现在按 `player+0x08/+0x0a` 画（`render.ts` 的 `playerAnchorWorld`），
+   所以被关押者显示在**綠島／醫院大樓**；
+② "走回棋盘"那一段位移由 `tween.ts` 的 `walkTweenFor` 在 `startTurn` 上按 `x/y`
+   变化起补间（`main.ts` 两条回合驱动都调），速度取**走回棋盘专用档**
+   （8 世界单位/拍，与交通方式无关，`@source 0x40c26d fmul [0x4631dc]`），
+   且**朝向**在释放那一拍按 `景观位 − 關押格位` 重算（`@source 0x0040d6f9..0x0040d717`）。
+   见 `rules/gate-walk.ts`、`gate-walk.test.ts`、`client/src/gate-walk-tween.test.ts`
+   与 `docs/escalations.md` E-13。
 
 **为什么当初算「有意偏离」而不是当场改**：改它要同时动
 ① `rules/position.ts` 的三元组语义（`x/y` 不再是 `nodeId` 的派生量）、

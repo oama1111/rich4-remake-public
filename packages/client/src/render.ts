@@ -1630,6 +1630,28 @@ export class BoardRenderer {
     return w === null ? 0 : Math.max(0, w.ticks * w.tickMs - (now - w.start));
   }
 
+  /**
+   * 这一位此刻是不是**正被补间挪动** —— 「走回棋盘」那一趟要靠它摆「走」姿。
+   *
+   * ★★ 为什么不能只看 `state.phase === 'moving'`：「走回棋盘」那一回合 core 让它
+   *   整回合不掷骰（`phase` 是 `turnEnd`），可原版这一趟**照样摆走姿**：
+   * ```asm
+   * ; @source 0x40dd1f（起步函数）的 +0x15 & 0x30 支
+   * 0040dd37  test byte [edx + 0x496b7d], 0x30 / je 0x40dd53
+   * 0040dd40  mov  dword [0x48baf8], 1        ; 只走一格
+   * 0040dd4a  mov  byte [eax + 0x498ea2], 1   ; ★ 形态 = 1
+   * ; 画棋子时用它选图组：@source 0x00408787 取 [0x498ea2]、
+   * ;   0x004087af 读 [state*8 + 0x498eb4]；
+   * ;   _rich4_update_player_sprite（0x40bbd8）按 edi(站)/edi+1(走)/edi+2(骰)
+   * ;   装入 0x40bc4a / 0x40bc67 / 0x40bc84 ⇒ state 1 = **走**
+   * ```
+   *   ⇒ 只看 `phase` 的话，棋子会用**站姿**滑完 11/13 拍。
+   */
+  isWalking(player: number, now = performance.now()): boolean {
+    const w = this.#walk;
+    return w !== null && w.player === player && now - w.start < w.ticks * w.tickMs;
+  }
+
   // ── 替身（四大惡人 / 機器娃娃）的走子补间 ──────────────────────────
 
   /**
@@ -2450,7 +2472,12 @@ export class BoardRenderer {
       // ★ 朝向跟着走位走，不是永远面朝镜头：
       //   屏幕朝向 = (玩家朝向 + 8 − 视角) & 7（@source VA 0x0040882d），
       //   图号 = 屏幕朝向 × (图数 / 8) + 帧（@source VA 0x0040883f）。
-      const moving = state.phase === 'moving' && pl.index === state.currentPlayer;
+      // ★ 「走回棋盘」那一回合 `phase` 是 `turnEnd`（core 整回合不掷骰），
+      //   但原版这一趟同样摆「走」姿（`@source 0x40dd4a mov byte [0x498ea2], 1`
+      //   + 画棋子按 `[0x498ea2]` 选图组）⇒ 判据见 `isWalking`。
+      const moving =
+        (state.phase === 'moving' && pl.index === state.currentPlayer) ||
+        this.isWalking(pl.index, nowMs);
       // ★ 图组按**交通方式**取（走路/機車/汽車/船），组内三张 = 站/走/手持骰子
       //   @source VA 0x0040bbd8：edi = 0x80 + 角色×21 + 3×traffic_method
       //   ★ 掷骰段由调用方盖成「手持骰子」那一组（`characterPose`）——

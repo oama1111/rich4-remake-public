@@ -80,6 +80,56 @@ export const RENT = {
   reaperPays: t('死神顯靈\n\n由%s賠償%s', 0x4639cc),
 } as const;
 
+/**
+ * 設施过路费的棕色訊息框 —— `0x0041a3cc`（設施收费那一路）里那三段 `sprintf`。
+ *
+ * @source 推串点（`0x457110` = Watcom `sprintf`）：
+ * ```asm
+ * 0041a46e  push 0x4639ff   ; 旅館：%d#1 = 轉盤倍數（= 住几天）、%d#2 = 倍數 × 單價
+ * 0041a4c4  push 0x463a14   ; 購物中心：%d#1 = 單價、%d#2 = 轉盤倍數、%d#3 = 總額
+ * 0041a55d  push 0x463a31   ; 加油站：借用 RENT.payChairman，名字是常量「加油站」
+ * ```
+ * 三条都汇到 `0x41a56f push 0x5dc / call 0x440cac`（1500 ms 通用訊息框）。
+ */
+export const FACILITY_TOLL = {
+  /** type 1 旅館：%d 住几天、%d 費用 @source 0x0041a46e `push 0x4639ff` */
+  hotel: t('休息%d天\n\n費用%d元！', 0x4639ff),
+  /** type 2 購物中心：%d 單價、%d 倍數、%d 總額 @source 0x0041a4c4 `push 0x463a14` */
+  mall: t('您的消費金額為\n\n%dx%d倍=%d元', 0x463a14),
+} as const;
+
+/**
+ * 棕色訊息框那一族里剩下的几句 —— 得点格 / 抽卡格 / 禮物 / 寶箱 / 乞丐 / 小偷。
+ *
+ * @source 逐句的推串点与框时长：
+ * ```asm
+ * 0041b1c3  push 0x463a81   ; 得５０點（`0x41b1be push 0x3e8` = 1000 ms）
+ * 0041b25d  push 0x463a8e   ; 得３０點（1000 ms）
+ * 0041b2e1  push 0x463a9b   ; 得１０點（1000 ms）
+ * 0041b35d  push 0x463aa8   ; 抽卡格「得到%s！」（0x5dc = 1500 ms）
+ * 0041b956  push 0x463aa8   ; 禮物「得到%s！」（1500 ms）
+ * 0041bb4e  push 0x463ad3   ; 寶箱「得到５００點券！」（1500 ms）
+ * 0041b656  push 0x463ab1   ; 乞丐「施捨給乞丐%d元」（1500 ms）
+ * 0041ba0a  push 0x463ac0   ; 小偷五种战利品「小偷偷得%s\n\n給%s！」（1500 ms）
+ * ```
+ */
+export const MESSAGE_BOX = {
+  /** 特５０點格 —— 无占位符 @source 0x0041b1c3 `push 0x463a81` */
+  points50: t('得點券５０點', 0x463a81),
+  /** 特３０點格 @source 0x0041b25d `push 0x463a8e` */
+  points30: t('得點券３０點', 0x463a8e),
+  /** 特１０點格 @source 0x0041b2e1 `push 0x463a9b` */
+  points10: t('得點券１０點', 0x463a9b),
+  /** %s 卡片名 / 道具名 —— 抽卡格与禮物**共用同一个串地址** @source 0x0041b35d / 0x0041b956 */
+  got: t('得到%s！', 0x463aa8),
+  /** 寶箱：无占位符，500 是写死在串里的 @source 0x0041bb4e `push 0x463ad3` */
+  got500Points: t('得到５００點券！', 0x463ad3),
+  /** %d 施捨金额 @source 0x0041b656 `push 0x463ab1` */
+  alms: t('施捨給乞丐%d元', 0x463ab1),
+  /** %s 战利品名、%s 主人名 @source 0x0041ba0a 等五处 `push 0x463ac0` */
+  thiefLoot: t('小偷偷得%s\n\n給%s！', 0x463ac0),
+} as const;
+
 /** 通用按钮 */
 export const BUTTON = {
   ok: t('確定', 0x463d2e),
@@ -292,6 +342,31 @@ export function godNameOf(type: number): string {
   return GOD_NAMES[type - 1]?.text ?? '';
 }
 
+/**
+ * 物件名表 —— `0x0047edaa` 起 6 个指针，**第 0 项就是種類 13**。
+ *
+ * @source 指针表 @ VA 0x0047edaa（每项 4 字节），逐项读出的串地址：
+ *   `0x46668e 禮物 / 0x466693 寶箱 / 0x466698 死神 / 0x46669d 路障 /
+ *    0x4666a2 地雷 / 0x4666a7 定時炸彈`。
+ *   前三项与 `GOD_NAMES` 的尾段**是同一个地址**（原版共用串），后两项只有这张表有。
+ *   消费者：小偷五种战利品那一句 `小偷偷得%s\n\n給%s！`
+ *   （`0x0041ba03 mov edi,[0x47edaa]` / `0x0041bc1a [0x47edae]` /
+ *    `0x0041bdd9 [0x47edb6]` / `0x0041bf8a [0x47edba]` / `0x0041c0e6 [0x47edbe]`）。
+ */
+export const OBJECT_NAMES: readonly OriginalText[] = [
+  t('禮物', 0x46668e),
+  t('寶箱', 0x466693),
+  t('死神', 0x466698),
+  t('路障', 0x46669d),
+  t('地雷', 0x4666a2),
+  t('定時炸彈', 0x4666a7),
+];
+
+/** 物件種類（13..18）→ 名字；越界给空串（下表下标 = 種類 − 13） */
+export function objectNameOf(type: number): string {
+  return OBJECT_NAMES[type - 13]?.text ?? '';
+}
+
 /** 把 `%s` / `%d` 依次替换掉 —— 原版用的是 C 的 sprintf，这里只做它用到的那两种 */
 export function formatOriginal(fmt: string, ...args: (string | number)[]): string {
   let i = 0;
@@ -303,6 +378,8 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(PROMPT),
   ...Object.values(NOTICE),
   ...Object.values(RENT),
+  ...Object.values(FACILITY_TOLL),
+  ...Object.values(MESSAGE_BOX),
   ...Object.values(BUTTON),
   ...Object.values(FIELD),
   ...Object.values(BANK),
@@ -312,4 +389,5 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(TOOLBAR_TIPS),
   ...Object.values(GOD_ATTACH),
   ...GOD_NAMES,
+  ...OBJECT_NAMES,
 ];

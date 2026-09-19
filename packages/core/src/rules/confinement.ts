@@ -244,6 +244,15 @@ const GATE_LANDSCAPE: Record<ConfinementKind, number> = {
 };
 
 /**
+ * 入監／入院在**特殊景观表**里的**数组下标**（= 记录号 − 1）。
+ *
+ * `rules/gate-walk.ts` 要用它取「走回棋盘」的**起点**（在押期间的贴图位置）。
+ */
+export function gateLandscapeIndex(kind: ConfinementKind): number {
+  return GATE_LANDSCAPE[kind];
+}
+
+/**
  * 关押格的**节点 `type` 值** —— 監獄/醫院在节点 `+0x20` 里存的不是「特殊格种类」。
  *
  * ★★ 原版有**两个容易混为一谈的概念**（复刻先前混了，见 `known-deviations.md` D-CONFINE-1）：
