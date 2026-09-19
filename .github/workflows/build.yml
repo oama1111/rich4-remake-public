@@ -28,11 +28,12 @@ jobs:
       #   （"mkf 索引表偏移非法: 1936876918" = 把 "version https://git-lfs…" 当成了表头）。
       #   素材几乎不变 ⇒ 按 LFS 对象清单做缓存，只有首次 / 缓存过期才消耗 LFS 流量。
       - name: LFS 对象清单（缓存键）
-        run: git lfs ls-files -l | cut -d' ' -f1 | sort > "$RUNNER_TEMP/lfs-ids"
+        # hashFiles 只认工作区内的文件 ⇒ 落在 .git/ 下（不会弄脏工作树）
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .git/lfs-ids
       - uses: actions/cache@v4
         with:
           path: .git/lfs
-          key: lfs-${{ hashFiles(format('{0}/lfs-ids', runner.temp)) }}
+          key: lfs-v2-${{ hashFiles('.git/lfs-ids') }}
       - run: git lfs pull
       - uses: pnpm/action-setup@v4
         with:
