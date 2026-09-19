@@ -651,3 +651,65 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     ]);
   });
 });
+
+// ============================================================================
+//  ★★ 試玩回报第 4 份 #3 —— 落点「升級房子」那一支（`0x004198b9` 自有地分支）
+// ============================================================================
+
+/**
+ * 玩家 0 走到**自己的**地块上、落点已经问出「升級房子」那一步。
+ *
+ * @source 自有地分支 `0x00419911..0x00419a26`：
+ *   `0x004199d1 inc byte [esi + 0x1a]`（**不走 `0x40b110`**）→
+ *   `0x004199eb cmp byte [esi + 0x1a], 5` → `0x00419a21 call 0x40b0cd`（只播 0x20b）。
+ *   整段里没有 `push 0x229`（大锤全 exe 只有 4 处：`0x0041aab8` / `0x0041ad4d`
+ *   / `0x00432028` / `0x0044731a`）。
+ */
+describe('★★ 自己的地落点問「升級房子」⇒ source = ownUpgrade（客户端据此不播大锤）', () => {
+  /** 一格是自己的住宅（`0x7d0 + 1`）的小地图 */
+  const ownLandTopo: MapTopology = {
+    nodes: [
+      makeNode({ id: 1, type: 0x7d0 + 1, adjacent: [2], adjacentSlots: [2, 0, 0, 0], walkable: true }),
+      makeNode({ id: 2, adjacent: [1], adjacentSlots: [1, 0, 0, 0], walkable: true }),
+    ],
+    lands: [makeLand({ id: 1, name: '測試路', type: 0, owner: 1, level: 0, landPrice: 1000 })],
+  };
+
+  /** 站在自己的地上、pending = 那一步的 `upgradeLand` */
+  const asked = (level: number): GameState =>
+    makeState({
+      players: [makePlayer(0, { nodeId: 1, cash: 500_000 }), makePlayer(1), makePlayer(2), makePlayer(3)],
+      phase: 'awaitingDecision',
+      pending: { kind: 'upgradeLand', landId: 1, name: '測試路', cost: 200 },
+      landOwner: [0, 1],
+      landLevel: [0, level],
+      landType: [0, 0],
+    });
+
+  it('★★★ 4 → 5 ⇒ 记一条 ownUpgrade 且 bit7 置位', () => {
+    const after = reduce(asked(4), { type: 'upgradeLand' }, ownLandTopo);
+    expect(after.landLevel[1]).toBe(5);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: true, source: 'ownUpgrade' },
+    ]);
+  });
+
+  it('★ 2 → 3 ⇒ 记 ownUpgrade 但 bit7 = false（原版 `jne 0x419a2b` 跳过 0x20b）', () => {
+    const after = reduce(asked(2), { type: 'upgradeLand' }, ownLandTopo);
+    expect(after.landLevel[1]).toBe(3);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'ownUpgrade' },
+    ]);
+  });
+
+  it('★ 可证伪：source **必须**是 ownUpgrade —— 写成 robotWorker 会让客户端播大锤', () => {
+    const after = reduce(asked(4), { type: 'upgradeLand' }, ownLandTopo);
+    expect(after.lastBuildUpgrades?.[0]?.source).toBe('ownUpgrade');
+    expect(after.lastBuildUpgrades?.[0]?.source).not.toBe('robotWorker');
+  });
+
+  it('★ 不是那一个交互就什么都不记（phase/pending 不对 ⇒ 状态原样返回）', () => {
+    const s: GameState = { ...asked(4), phase: 'turnEnd' };
+    expect(reduce(s, { type: 'upgradeLand' }, ownLandTopo)).toBe(s);
+  });
+});

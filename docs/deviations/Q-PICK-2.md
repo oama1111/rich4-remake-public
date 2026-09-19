@@ -171,3 +171,28 @@ dispatch 的形状（与 core 已有的 action **逐字一致**，没有新增�
   行序 = 先 y 后 x），本引擎按 `(y, x, handle)` 排序近似它。
   **格表 → 世界坐标的换算没有取证**，所以只有「两尊神恰好等距」时可能不同；
   该差异未再深挖（无可观测的游戏后果：都是一尊神）。
+
+### Q-PICK-2-h　选完点数**当场走完这一掷**（照 exe），但**跳过滚骰动画**（需求方要求）
+
+- **现象（第四份试玩回报）**：「遥控骰子无法正常使用，我选择了1点应该是直接跳过
+  正常扔骰子阶段然后让角色走1点」。先前 `dicePickChoose` 只发 `useTool{8,value}`：
+  点数确实进了 `GameState.forcedDice`、core 也**确实认这个值**
+  （`rollDice` 分支 `state.forcedDice !== 0 ? …`），但 `phase` 仍停在 `awaitingRoll`
+  ⇒ 玩家不再按一次「前進」就什么都不发生，看起来就是「选了没反应」。
+  **根因在客户端，不在 core。**
+- **取证（照 exe 的那一半）**：`rich4_tool_yaokongtouzi.asm` VA 0x0044725c 起
+  `test ebx,ebx / je` → `call fcn_0040dd1f`（VA 0x00447260）→
+  `mov byte [0x475dd8], bl`（VA 0x00447275）。`fcn_0040dd1f` 对正常真人写
+  `[当前玩家 +0x498ea2] = 2`（VA 0x0040dd87），该状态在 `fcn_0040d7c4` 的跳表
+  `0x40d7b4[2]` 里指向 VA 0x0040d975 —— 数满预动作后 `call 0x447285`（读强制点数）
+  → `call 0x419572`，非 0 入参 `mov esi,1` 并把点数当**总步数**（VA 0x004195ae）。
+  ⇒ **「选完立刻走 N 步、不用再按前進」是原版行为**。
+- **偏离（需求方明确要求的那一半）**：原版那一段仍会播滚骰影片
+  （`fcn_00419572` 里 `call 0x45144f`），本引擎现在把**预动作 + 滚骰 + 定格**
+  整段跳过（`main.ts` 的 `forcedRollSkipFx`，只掐表现、不碰 `GameState`）。
+  这是照需求方原话「直接跳过正常扔骰子阶段」做的非保真取舍，**单独登记在此**。
+- **处置**：`dice-choose.ts` 新增 `remoteDiceActions(face)` →
+  `[useTool{8,value}, rollDice]`；`dicePickChoose` 在 `phase === 'awaitingRoll'` 时
+  依次发这两条。回归用例在 `dice-choose.test.ts`（把两条 action 真的喂给 core 的
+  `reduce`，断言 `dice === [face]`、`stepsRemaining === face`），
+  把「只发 useTool」改回去就变红（已验证）。

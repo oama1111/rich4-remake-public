@@ -6,7 +6,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
-import { SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
 import { applyBankruptcy, reduce, isGameOver } from './reduce.ts';
@@ -124,10 +123,12 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
   //   跟班搬家」（`@source 0x43ecad`..`0x43ed14`），所以首次住院的人**不在**原地。
   //   先前 remake 只写计数 ⇒ 伤者还站在雷上。差分证据见
   //   `rich4-spec/tests/test_confinement_teleport.py`（48/48）。
-  run('★ 地雷 → 首次住院：nodeId ← 醫院格，而 x/y ← **醫院大樓（景观记录 1）**', () => {
+  run('★ 地雷 → 首次住院：nodeId ← 醫院格（`type` 0x1f41 的那一格），而 x/y ← **醫院大樓（景观记录 1）**', () => {
     const { before, after, topo } = stepOnto(17);
     const map = loadMap();
-    const gate = topo.nodes.find((n) => n.specialKind === SPECIAL_KIND.HOSPITAL);
+    // ★★ 关押格 = 节点 `type` == 0x1f41（原版 `[0x48bae2]`，载入时扫出来），
+    //    不是 `specialKind` 5 的醫院**落点**格 —— 0001.bin 上分别是 23 与 16。
+    const gate = topo.nodes.find((n) => n.type === 0x1f41);
     expect(gate).toBeDefined();
     expect(before.players[0]!.nodeId).not.toBe(gate!.id);
     expect(after.players[0]!.nodeId).toBe(gate!.id);
@@ -147,23 +148,24 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
 
   run('★ 跟班神明跟着搬进医院格（`call 0x40fc00`）', () => {
     const { after, topo } = stepOnto(17, 1, { godInfo: 1 });
-    const gate = topo.nodes.find((n) => n.specialKind === SPECIAL_KIND.HOSPITAL);
+    const gate = topo.nodes.find((n) => n.type === 0x1f41);
     expect(after.objects[0]!.nodeId).toBe(gate!.id);
   });
 
   // ★★ 原版把 x/y 取自**特殊景观记录**（入監 → 记录 **2** = 綠島；入院 → 记录 **1** =
-  //   醫院大樓），而 `nodeId` 取的是**棋盘上的監獄/醫院格**。两者**不是同一个地方**：
-  //   監獄格 (1248,1583)、醫院格 (767,1631)；綠島 (1817,1960)、醫院景觀 (319,990)。
+  //   醫院大樓），而 `nodeId` 取的是**关押格** = `type` 为 0x1f42/0x1f41 的那一格
+  //   （監獄 1 @(1752,1871)、醫院 23 @(384,1056)）；另一组是带保釋菜单的
+  //   **落点**特殊格（監獄 12 @(1248,1583)、醫院 16 @(767,1631)）。
   //   @source 0x0043d63e..0x0043d652（監獄 +0x38/+0x3a）、0x0043ecea..0x0043ecfe（醫院 +0x1c/+0x1e）
+  //   @source 关押格 0x0040803f/0x0040805f（載入時挑 `type` == 0x1f41/0x1f42）
   //   ★ 景观表是 **1 基**（`[0x498e78] + k*0x1c`，k 从 1 起；加载循环 `0x407f17`/`0x407f35`），
   //     所以「记录 1」= 本引擎 `landscapes[0]`、「记录 2」= `landscapes[1]`。
-  //   ⚠️ 本引擎**有意偏离**：关押时 x/y 写的是**节点坐标**（见 known-deviations D-CONFINE-1）。
   run('★ 景观记录的编号与身份（綠島 = 记录 2、醫院 = 记录 1）——关押坐标偏离的依据', () => {
     const map = loadMap();
     expect(map.landscapes[0]!.name).toBe('醫院'); // 1 基的记录 1
     expect(map.landscapes[1]!.name).toBe('綠島'); // 1 基的记录 2
-    const hospital = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.HOSPITAL)!;
-    const prison = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.PRISON)!;
+    const hospital = map.nodes.find((n) => n.type === 0x1f41)!;
+    const prison = map.nodes.find((n) => n.type === 0x1f42)!;
     // 节点坐标与景观坐标确实不同 —— 这正是 D-CONFINE-1 记的那处偏离
     expect([hospital.x, hospital.y]).not.toEqual([
       map.landscapes[0]!.x,
@@ -174,7 +176,7 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
 
   run('★ 已经住院的人再中一次 → 加刑，**不**传送（原版加刑分支没有那几行）', () => {
     const { after, topo } = stepOnto(17, 1, { blocking: { inHospital: 2 } });
-    const gate = topo.nodes.find((n) => n.specialKind === SPECIAL_KIND.HOSPITAL);
+    const gate = topo.nodes.find((n) => n.type === 0x1f41);
     expect(after.players[0]!.blocking.inHospital).toBe(5);
     expect(after.players[0]!.nodeId).not.toBe(gate!.id);
   });

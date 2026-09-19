@@ -83,6 +83,13 @@ export const NOTICE_TEXT = {
   'rent.payTwoOwners': RENT.payTwoOwners.text,
   'rent.payChairman': RENT.payChairman.text,
   'rent.payBoss': RENT.payBoss.text,
+  // ★ 免收那一路（`0x41d559` 的九种里「被关着／不在棋盘」的四种）：
+  //   原版在豁免分支里先 sprintf 再弹**同一扇**框（`0x41d6a4 push 0x5dc /
+  //   call 0x440cac`），格式串的 `%s`#1 = 地主名、`%s`#2 = 費名。
+  'rent.freeHotel': RENT.freeHotel.text,
+  'rent.freeVanished': RENT.freeVanished.text,
+  'rent.freePrison': RENT.freePrison.text,
+  'rent.freeHospital': RENT.freeHospital.text,
 } as const satisfies Record<NoticeKey, string>;
 
 /** 一条 `{ key, args }` 提示 → 屏上那一句（`%s` / `%d` 全在 `args` 里） */

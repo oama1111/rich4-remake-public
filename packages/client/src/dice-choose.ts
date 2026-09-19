@@ -143,6 +143,9 @@ export function diceLitFrame(face: number): number {
 /** 这次要发的 `useTool` —— 值与 `core/state/actions.ts` 的 `useTool.value` 一致 */
 export type UseToolAction = { type: 'useTool'; toolId: number; value: number };
 
+/** `core` 的 `rollDice`，形状逐字一致（点数走 `GameState.forcedDice`，不带 `forced`）*/
+export type RollDiceAction = { type: 'rollDice' };
+
 /** 遙控骰子的道具号 @source 道具表第 8 项 */
 export const REMOTE_DICE_TOOL_ID = 8;
 
@@ -153,6 +156,36 @@ export const REMOTE_DICE_TOOL_ID = 8;
 export function remoteDiceAction(face: number): UseToolAction | null {
   if (!Number.isInteger(face) || face < DICE_FACE_MIN || face > DICE_FACE_MAX) return null;
   return { type: 'useTool', toolId: REMOTE_DICE_TOOL_ID, value: face };
+}
+
+/**
+ * 选中第 `face` 颗之后要发的**整串**：先记点数（`useTool`），再**当场兑现这一掷**
+ * （`rollDice`，消费 `forcedDice`）；`0` / 越界 → `null`。
+ *
+ * ★★ 2026-09-20 试玩回报「遥控骰子无法正常使用，我选择了1点应该是直接跳过正常
+ *   扔骰子阶段然后让角色走1点」：先前只发 `useTool`，于是点数进了 `forcedDice`
+ *   而**回合不前进一步**（`phase` 还停在 `awaitingRoll`）—— 玩家必须再按一次
+ *   「前進」才会走，看起来就是「选了没反应」。
+ *
+ * @source `rich4_tool_yaokongtouzi.asm` VA 0x0044725c（`loc_0044725c`）：
+ *   真人选完点数（`ebx != 0`）那一下原版**自己**把这一回合推起来，不需要再按前進：
+ *   ```asm
+ *   0044725c  test ebx, ebx / je loc_0044727b   ; 0 = 取消
+ *   00447260  call fcn_0040dd1f                  ; ★ 推进本回合的状态机
+ *   00447275  mov byte [0x475dd8], bl            ; ★ 写强制点数
+ *   ```
+ *   `fcn_0040dd1f` 对正常真人写 `[当前玩家 +0x498ea2] = 2`
+ *   （@source VA 0x0040dd87 `mov byte [eax + 0x498ea2], 2`），而该状态在
+ *   `fcn_0040d7c4` 的跳表 `0x40d7b4` 里指向 **VA 0x0040d975** ——
+ *   数满预动作后 `call 0x447285`（读出并清零 `[0x475dd8]`，@source VA 0x00447285）
+ *   再 `call 0x419572`；点数非 0 时那里 `mov esi, 1` 并把点数当**总步数**
+ *   （@source VA 0x004195ae）。所以「选完就走 N 步」是原版行为。
+ */
+export function remoteDiceActions(
+  face: number,
+): readonly (UseToolAction | RollDiceAction)[] | null {
+  const use = remoteDiceAction(face);
+  return use === null ? null : [use, { type: 'rollDice' }];
 }
 
 /**

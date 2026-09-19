@@ -43,6 +43,19 @@ export interface BoardFilmSpec {
   sound: number;
   /** `fcn_0045144f` 的 arg4 —— bit1 是「点击/按键能不能打断」@source VA 0x004514d6 */
   flags: number;
+  /**
+   * 起播前要不要**等整屏浮窗收掉**（`afterOverlay`）。
+   *
+   * 只有新聞 4 那一支（`alien-news-fx.ts`）用得上：原版那一段影片是在
+   * `fcn_0044b6df` 把訊息框贴上屏、等满 2400 ms（`0x0044b862 push 0x960`）
+   * **之后**、事件函数体里才播的（VA 0x00449245/0x0044925b）—— 框先、片后。
+   * 而本引擎的 `event-box-screen.ts` 是**浮窗**（`windowed: true`）盖在棋盘上
+   * 440×480 那一块，恰好把 (0,40)-(440,480) 的整块棋盘影片**整段遮住**；
+   * 不等它收屏，这 4.1 秒就会在框底下白播。
+   *
+   * 未置位 = 不等（住院/入獄/神明那几支的调用点都在訊息框之外）。
+   */
+  afterOverlay?: boolean;
 }
 
 /** 正在播的这一段（纯数据，宿主自己拿着）*/

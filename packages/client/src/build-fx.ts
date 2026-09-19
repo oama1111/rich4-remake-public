@@ -118,14 +118,25 @@
  *      → `magicHouse`：**大锤 + 0x20b**（与機器工人同构）；
  *    · 天使卡 9（`0x004434c0`，消费点在 `0x004436b5`）→ `angelCard`：
  *      **只有 0x20b**（该函数里既没有 `push 0x229`，也没有 `call 0x450441`
- *      / `call 0x45144f` —— 它不播大锤）。
+ *      / `call 0x45144f` —— 它不播大锤）；
+ *    · 建設公司（`0x0041abde` / `0x0041a3be` 尾块）→ `companyBuild`：**大锤 + 0x20b**；
+ *    · ★ **自己的地落点「升級房子」**（`0x004198b9` 自有地分支）→ `ownUpgrade`：
+ *      **只有 0x20b**。判据是 `0x004199eb cmp byte [esi + 0x1a], 5` →
+ *      `0x00419a21 call 0x40b0cd`；这一支**不走 `0x40b110`**
+ *      （`0x004199d1 inc byte [esi + 0x1a]` 直接加 1），也**没有** `push 0x229`。
+ *
+ * ★★ 「谁播大锤」是一张**正面表**（`HAMMER_SOURCES`），不是「除了天使卡都播」：
+ *    大锤 `0x229` 的 `push` 点全 exe 只有 **4** 处（`disasm.py find 6829020000`）——
+ *    `0x0041aab8` / `0x0041ad4d`（建設公司）、`0x00432028`（魔法屋）、
+ *    `0x0044731a`（機器工人）。负判据（`source !== 'angelCard'`）会让**日后任何
+ *    新出口**默认拿到大锤 —— 「自己的地升級」正是被它误伤的那一类。
  *
  * ⚠️ 一处 exe 差异（登记在 `docs/deviations/Q-TOOL-6.md`）：原版在
  *   **选到目标就扣道具**（0x004472fb 在 0x00447345 之前），盖不动也照样播；
  *   本引擎只在真正生效时才收走道具，于是「没生效」时**不播**。
  */
 
-import type { BuildUpgradeHint, GameState } from '@rich4/core';
+import type { BuildUpgradeHint, BuildUpgradeSource, GameState } from '@rich4/core';
 import type { LoadedFlic } from './assets.ts';
 
 /**
@@ -255,6 +266,24 @@ export interface BuildFx {
 }
 
 /**
+ * **会先播大锤 `0x229` 的** `source` —— 正面表，不是「除了某几个之外都播」。
+ *
+ * @source 大锤的 `push 0x229` 全 exe 只有 4 处（`disasm.py find 6829020000` 命中 4 处）：
+ *   · `0x0041aab8` / `0x0041ad4d` = 建設公司那一族 → `companyBuild`
+ *   · `0x00432028` = 魔法屋「就地加蓋房屋」→ `magicHouse`
+ *   · `0x0044731a` = 機器工人（道具 9）→ `robotWorker`
+ *
+ * 不在表里的两个（`angelCard` 0x004434c0 / `ownUpgrade` 0x004198b9）
+ * **只**在 `reachedMaxLevel` 时播 `0x20b`。
+ */
+export const HAMMER_SOURCES = ['robotWorker', 'magicHouse', 'companyBuild'] as const;
+
+/** 这个 `source` 要不要先播大锤 `0x229`（见 `HAMMER_SOURCES` 的取证）*/
+export function playsHammer(source: BuildUpgradeSource): boolean {
+  return (HAMMER_SOURCES as readonly string[]).includes(source);
+}
+
+/**
  * 本 action 该播的**段序**。
  *
  * ★ C-ARC-2：这是一张**纯查表**，一个等级都不比 —— bit7 与「谁发起的」
@@ -266,8 +295,12 @@ export interface BuildFx {
  *   · 魔法屋「就地加蓋」`0x00431f67`：`0x00432028 push 0x229` +
  *   `0x00432034 call 0x450441` + `0x00432074 call 0x45144f`，之后
  *   `0x00432085 test byte [esp+0xa8], 0x80` → `0x0043208f call 0x40b0cd`；
+ *   · 建設公司 `0x0041abde`：`0x0041ad4d push 0x229` + `0x0041ad99 call 0x45144f`，
+ *   之后 `0x0041adaa test byte [esp+0xbc], 0x80` → `0x0041adb4 call 0x40b0cd`；
  *   · 天使卡 `0x004434c0`：整个函数里**没有** `0x229` / `call 0x450441` /
- *   `call 0x45144f`，只有 `0x004436b5 test al, 0x80` → `0x004436d4 call 0x40b0cd`。
+ *   `call 0x45144f`，只有 `0x004436b5 test al, 0x80` → `0x004436d4 call 0x40b0cd`；
+ *   · ★ 自己的地落点升級 `0x004198b9`：函数体里同样**没有** `0x229`，
+ *   只有 `0x004199eb cmp byte [esi + 0x1a], 5` → `0x00419a21 call 0x40b0cd`。
  *
  * 返回 `{ hammer: false, maxLevel: false }` = 本 action 不该起播。
  */
@@ -276,7 +309,7 @@ export function buildFxPlan(hints: readonly BuildUpgradeHint[]): { hammer: boole
   // 一条 action 里可能有多条（魔法屋四位中签者 / 天使卡同區批量）。
   // 原版是阻塞式一段接一段播；本引擎同一时刻只播一条，故取**并集**：
   // 只要有一次是大锤族就播大锤，只要有一次剛滿 5 級就接 0x20b。
-  const hammer = hints.some((h) => h.source !== 'angelCard');
+  const hammer = hints.some((h) => playsHammer(h.source));
   const maxLevel = hints.some((h) => h.reachedMaxLevel);
   return { hammer, maxLevel };
 }
@@ -308,8 +341,9 @@ export function buildUpgradesOf(
  * @param reachedMaxLevel `0x40b110` 返回值的 bit7 —— **core 的
  *   `BuildUpgradeHint.reachedMaxLevel`**（先前是本模块用「地块等级 4→5」
  *   自己比的，那是把规则抄进表现层，已按 C-ARC-2 改掉）。
- * @param withHammer 要不要先播大锤 `0x229`。機器工人 / 魔法屋**要**；
- *   天使卡**不要**（它的函数体里没有 0x229）。
+ * @param withHammer 要不要先播大锤 `0x229`。機器工人 / 魔法屋 / 建設公司**要**
+ *   （= `playsHammer(source)`）；天使卡**不要**（它的函数体里没有 0x229），
+ *   自己的地落点升級**也不要**（`0x004198b9` 里同样没有 0x229）。
  *   ⚠️ 前置条件：调用方必须先按 `buildFxPlan` 判过「至少有一段要播」——
  *   `withHammer = false && reachedMaxLevel = false` 时本函数仍会返回
  *   `maxLevel` 那一段（那是调用方违约，不是本函数的兜底）。

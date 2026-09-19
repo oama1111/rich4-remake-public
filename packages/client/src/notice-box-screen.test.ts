@@ -37,11 +37,16 @@ describe('文案：键 → 原版那一句', () => {
     expect(NOTICE_HOLD_MS).toBe(1500);
   });
 
-  it('★★ 四个键都直接引用 `messages.ts` 的格式串（不另写中文）', () => {
+  it('★★ 每个键都直接引用 `messages.ts` 的格式串（不另写中文）', () => {
     expect(NOTICE_TEXT['rent.payOneOwner']).toBe(RENT.payOneOwner.text);
     expect(NOTICE_TEXT['rent.payTwoOwners']).toBe(RENT.payTwoOwners.text);
     expect(NOTICE_TEXT['rent.payChairman']).toBe(RENT.payChairman.text);
     expect(NOTICE_TEXT['rent.payBoss']).toBe(RENT.payBoss.text);
+    // ★ 免收那一路（0x41d559 的九种里「被关着／不在棋盘」的四种）
+    expect(NOTICE_TEXT['rent.freeHotel']).toBe(RENT.freeHotel.text);
+    expect(NOTICE_TEXT['rent.freeVanished']).toBe(RENT.freeVanished.text);
+    expect(NOTICE_TEXT['rent.freePrison']).toBe(RENT.freePrison.text);
+    expect(NOTICE_TEXT['rent.freeHospital']).toBe(RENT.freeHospital.text);
   });
 
   it('★★ 无同盟：地名 / 地主 / 金额 / 費名 按顺序填', () => {
@@ -62,6 +67,21 @@ describe('文案：键 → 原版那一句', () => {
     );
     expect(noticeText({ key: 'rent.payBoss', args: ['測試公司', '錢夫人', 3000, '過路費'] })).toBe(
       '測試公司\n\n幫主錢夫人\n\n請付3000元過路費',
+    );
+  });
+
+  it('★★ 免收：地主名 + 費名 两句 → 「○○坐牢中／免收過路費！」（@source 0x0041d645）', () => {
+    expect(noticeText({ key: 'rent.freePrison', args: ['沙隆巴斯', '過路費'] })).toBe(
+      '沙隆巴斯坐牢中\n\n免收過路費！',
+    );
+    expect(noticeText({ key: 'rent.freeHospital', args: ['錢夫人', '過路費'] })).toBe(
+      '錢夫人住院中\n\n免收過路費！',
+    );
+    expect(noticeText({ key: 'rent.freeHotel', args: ['忍太郎', '過路費'] })).toBe(
+      '忍太郎住宿中\n\n免收過路費！',
+    );
+    expect(noticeText({ key: 'rent.freeVanished', args: ['烏咪', '過路費'] })).toBe(
+      '烏咪消失中\n\n免收過路費！',
     );
   });
 

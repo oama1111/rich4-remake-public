@@ -212,6 +212,34 @@ describe('★ 释放后的「走回棋盘」回合（第 84 条）', () => {
     expect(walkedBack.players[1]!.nodeId).toBe(gate.id);
   });
 
+  run('★★ 释放落点 = **关押格**（`type` 0x1f42 = 綠島节点 1），不是落点特殊格 12', () => {
+    const { map, topo: t } = topo();
+    // 真实地图上这两个概念是**不同的节点**：关押格 1 @(1752,1871)、落点格 12 @(1248,1583)
+    const gate = map.nodes.find((n) => n.type === 0x1f42)!;
+    const landing = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.PRISON)!;
+    expect(gate.id).toBe(1);
+    expect(landing.id).toBe(12);
+    // 关押 → 人在監獄（`send_to_prison` 的字面行为，见 rules/confinement.ts）
+    const released = reduce(pendingRelease('inPrison', 'prisonOccupancy'), { type: 'endTurn' }, t);
+    const prisonLand = map.landscapes[1]!;
+    const confined: GameState = {
+      ...released,
+      phase: 'turnStart',
+      currentPlayer: 1,
+      players: released.players.map((p, i) =>
+        i === 1 ? { ...p, nodeId: gate.id, xpos: prisonLand.x, ypos: prisonLand.y } : p,
+      ),
+    };
+    const out = reduce(confined, { type: 'startTurn' }, t);
+    // ★★ 可证伪：旧实现把释放落点当落点特殊格 12 ⇒ 下面两条都会红
+    expect(out.players[1]!.nodeId).toBe(1);
+    expect(out.players[1]!.nodeId).not.toBe(12);
+    expect([out.players[1]!.xpos, out.players[1]!.ypos]).toEqual([gate.x, gate.y]);
+    expect([out.players[1]!.xpos, out.players[1]!.ypos]).not.toEqual([landing.x, landing.y]);
+    // 这一回合照旧是白丢的（不掷骰、清四个计数）
+    expect(out.phase).toBe('turnEnd');
+  });
+
   run('★ 「消失」（出國／綁架）**不**丢这一回合：释放函数 `0x40d4e5` 不置 0x10', () => {
     const { map } = topo();
     const s = newGame({

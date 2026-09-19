@@ -429,12 +429,28 @@ export interface NoticeHint {
  * | `rent.payTwoOwners` | `RENT.payTwoOwners` | 0x00419d1a `push 0x46399a` |
  * | `rent.payChairman` | `RENT.payChairman` | 0x0041ae98 `push 0x463a31` |
  * | `rent.payBoss` | `RENT.payBoss` | 0x0041ae86 `push 0x463a6a` |
+ * | `rent.freeHotel` | `RENT.freeHotel` | 0x0041d60b `push 0x463bf5` |
+ * | `rent.freeVanished` | `RENT.freeVanished` | 0x0041d62c `push 0x463c08` |
+ * | `rent.freePrison` | `RENT.freePrison` | 0x0041d645 `push 0x463c1b` |
+ * | `rent.freeHospital` | `RENT.freeHospital` | 0x0041d65e `push 0x463c2e` |
+ *
+ * ★ 后四个是 `0x0041d559`「九种免收」里的**被关着／不在棋盘**那四种：豁免成立时
+ *   原版**先 `sprintf` 一句、再弹同一个通用訊息框**（`0x41d6a4 push 0x5dc /
+ *   call 0x440cac`），文案是 `%s住宿中／消失中／坐牢中／住院中` + `免收%s！`
+ *   （`%s`#1 = 地主名、`%s`#2 = 費名）。见 `packages/data/src/messages.ts` 的 `RENT`。
+ *   ⚠️ 同一分支里的另外五种（房屋查封中 `0x463bb8`、與%s同盟中 `0x463bcd`、
+ *   死神顯靈 `0x463be2`、%s冬眠中 `0x463c41`、%s夢遊中 `0x463c54`）原版**也**弹框，
+ *   但**没有接**（不在本次需求范围内）。
  */
 export type NoticeKey =
   | 'rent.payOneOwner'
   | 'rent.payTwoOwners'
   | 'rent.payChairman'
-  | 'rent.payBoss';
+  | 'rent.payBoss'
+  | 'rent.freeHotel'
+  | 'rent.freeVanished'
+  | 'rent.freePrison'
+  | 'rent.freeHospital';
 
 /**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。
@@ -451,7 +467,14 @@ export type NoticeKey =
  *     call 0x40b0cd` ⇒ **只播 0x20b，不播大锤**；
  *   · `companyBuild`（建設公司「免費加蓋一處」那一族落点，VA 0x0041ad7e 一带）：
  *     `0x0041ad99 call 0x45144f`（大锤）+ `0x0041adaa test byte [esp+0xbc], 0x80`
- *     → `0x0041adb4 call 0x40b0cd` ⇒ 与機器工人**同构**（先大锤，再 0x20b）。
+ *     → `0x0041adb4 call 0x40b0cd` ⇒ 与機器工人**同构**（先大锤，再 0x20b）；
+ *   · `ownUpgrade`（**自己的地**落点问出来的「升級房子」，VA 0x004198b9 自有地分支）：
+ *     这一段**不走 `0x40b110`**（`0x004199d1 inc byte [esi + 0x1a]` 直接加 1），
+ *     函数体里也**没有** `push 0x229` —— 大锤全 exe 只有 **4** 处
+ *     （`0x0041aab8` / `0x0041ad4d` / `0x00432028` / `0x0044731a`，见下），
+ *     落点例程一处都不在其中。它只在等级刚好到 5 时
+ *     `0x004199eb cmp byte [esi + 0x1a], 5` → `0x00419a21 call 0x40b0cd`
+ *     ⇒ **只播 0x20b，绝不播大锤**。
  *
  * ★★ 补记（本次回 exe 复核发现，README 原记「bit7 全 exe 只有 3 个消费点」
  *   **不完整**）：`0x40b0cd`（播 0x20b 那一支）全 exe 共 **8** 个调用点，
@@ -472,16 +495,31 @@ export type NoticeKey =
  *   反向也成立：`0x40b110` 的 8 个调用点**逐一**对上前 7 条 + 0x4436ad，
  *   即**原版每一次 `0x40b110` 都有影片**（天使卡那条只播 0x20b）。
  *   故本引擎在**每一个**免费加蓋出口都记提示，客户端照段序播，不漏不重。
+ *
+ * ★ 大锤 `0x229` 的**全部** 4 个 `push` 点（`disasm.py find 6829020000`
+ *   命中 4 处，无第 5 处）：`0x0041aab8` / `0x0041ad4d`（建設公司那一族）、
+ *   `0x00432028`（魔法屋）、`0x0044731a`（機器工人）。⇒ 只有这三个 `source`
+ *   播大锤；`angelCard` 与 `ownUpgrade` 都只播 0x20b。
  */
-export type BuildUpgradeSource = 'robotWorker' | 'magicHouse' | 'companyBuild' | 'angelCard';
+export type BuildUpgradeSource =
+  | 'robotWorker'
+  | 'magicHouse'
+  | 'companyBuild'
+  | 'angelCard'
+  | 'ownUpgrade';
 
-/** 一次「免费加蓋一级」的事件记录（纯表现；见 `GameState.lastBuildUpgrades`）*/
+/** 一次「加蓋一级」的事件记录（纯表现；见 `GameState.lastBuildUpgrades`）*/
 export interface BuildUpgradeHint {
   /**
    * 被加蓋的**实体编码**（原版 `0x40b110` 的入参）：
    * · `0x7d0 + 地块下标` = 住宅/連鎖店；
    * · `0xfa0 + 設施下标` = 公園/旅館/購物中心/加油站/研究所。
    * @source `0x40b117 cmp edx, 0x7d0` / `0x40b11f cmp edx, 0xfa0`
+   *
+   * ⚠️ `ownUpgrade`（落点问出来的付费升級，`0x004198b9` 自有地分支）在原版里
+   *   **没有** `0x40b110` 这个入参（它直接 `inc byte [esi + 0x1a]`）。
+   *   这一格仍按同一个编码填 `0x7d0 + 地块下标`，只为让消费方有个统一的标识；
+   *   `buildFxPlan` 并不读它。
    */
   entity: number;
   /**
@@ -859,7 +897,12 @@ export interface GameState {
   lastNotice: NoticeHint | null;
 
   /**
-   * **本 action 里发生过的「免费加蓋一级」** —— 纯表现提示（C-DET-4）。
+   * **本 action 里发生过的「加蓋一级」** —— 纯表现提示（C-DET-4）。
+   *
+   * ★ 两个来源都记在这里：
+   *   · **免费加蓋**（`0x40b110` 那一族：機器工人 / 魔法屋 / 天使卡 / 建設公司），
+   *   · **自己的地块上付費升級**（落点例程 `0x004198b9` 自有地分支，
+   *     `source = 'ownUpgrade'`；它不走 `0x40b110`，只 `inc byte [地块+0x1a]`）。
    *
    * ★ 为什么要有它（README §7.142(5) E6）：`0x40b110` 的返回值带两条契约 ——
    *   **bit0 = 成了 / bit7 = 剛好升到 5 級**。全 exe 里 bit7 被消费在

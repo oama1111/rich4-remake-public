@@ -10,7 +10,8 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { MkfArchive, parseFlicInfo } from '@rich4/assets-pipeline';
-import type { BuildUpgradeHint } from '@rich4/core';
+import type { BuildUpgradeHint, BuildUpgradeSource, GameState, MapTopology } from '@rich4/core';
+import { makeGameState, makeLand, makeNode, makePlayer, reduce } from '@rich4/core';
 import {
   beginBuildFx,
   buildClip,
@@ -32,6 +33,8 @@ import {
   BUILD_TOOL_ID,
   clipDone,
   clipTotalMs,
+  HAMMER_SOURCES,
+  playsHammer,
   stepBuildFx,
   type BuildFx,
 } from './build-fx.ts';
@@ -211,7 +214,7 @@ describe('顺序与条件 @source VA 0x00447345 / 0x0044736d / 0x00447373', () =
 
 describe('★ 段序 @source 三条消费点各自 read_mkf/播片序列', () => {
   const hint = (
-    source: 'robotWorker' | 'magicHouse' | 'companyBuild' | 'angelCard',
+    source: BuildUpgradeSource,
     reachedMaxLevel: boolean,
   ): BuildUpgradeHint => ({ entity: 0x7d0 + 1, reachedMaxLevel, source });
 
@@ -237,6 +240,34 @@ describe('★ 段序 @source 三条消费点各自 read_mkf/播片序列', () =>
   it('★★ 天使卡（0x004434c0，消费点 0x004436b5）：**只有 0x20b**（函数体里没有 0x229）', () => {
     expect(buildFxPlan([hint('angelCard', false)])).toEqual({ hammer: false, maxLevel: false });
     expect(buildFxPlan([hint('angelCard', true)])).toEqual({ hammer: false, maxLevel: true });
+  });
+
+  // ★★ 试玩回报第 4 份第 3 条：「走到归属自己的地块上选择升级房子时**不需要**再触发
+  //    机器工人动画」。回 exe 取证（本次）：
+  //    · 落点例程 `0x004198b9` 的自有地分支直接 `0x004199d1 inc byte [esi + 0x1a]`
+  //      （不走 `0x40b110`），整段里**没有** `push 0x229`；
+  //    · 等级剛好到 5 时 `0x004199eb cmp byte [esi + 0x1a], 5` →
+  //      `0x00419a21 call 0x40b0cd` = **只播 0x20b**（放烟花，不是大锤施工）。
+  //    · 大锤 `0x229` 的 `push` 全 exe 只有 4 处：
+  //      `0x0041aab8` / `0x0041ad4d` / `0x00432028` / `0x0044731a`。
+  it('★★★ 自己的地「升級房子」（落点 0x004198b9 自有地分支）：**绝不播大锤**，滿級只放 0x20b', () => {
+    expect(buildFxPlan([hint('ownUpgrade', false)])).toEqual({ hammer: false, maxLevel: false });
+    expect(buildFxPlan([hint('ownUpgrade', true)])).toEqual({ hammer: false, maxLevel: true });
+    // 起播段序：ownUpgrade 恒从 0x20b 起，绝不从大锤起
+    expect(playsHammer('ownUpgrade')).toBe(false);
+    expect(beginBuildFx(0, true, playsHammer('ownUpgrade')).clip).toBe('maxLevel');
+  });
+
+  it('★★ 反例（可证伪）：判据必须是**正面表**，不是「除了天使卡都播大锤」', () => {
+    // 旧判据 `h.source !== 'angelCard'` 会让**任何一个**别的 source 默认拿到大锤 ——
+    // 上面那条 ownUpgrade 用例就是被这条旧判据害红的那一类。
+    // 这里用一个「不在取证过的 4 个 push 点里」的 source 钉住：
+    // 正面表 ⇒ 不播大锤；负判据 ⇒ 会播（本条当场红）。
+    const unknown = { entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'notAProvenSite' as BuildUpgradeSource };
+    expect(buildFxPlan([unknown])).toEqual({ hammer: false, maxLevel: false });
+    // 正面表恰好是取证过的三族（建設公司 / 魔法屋 / 機器工人）—— 多一个都算猜
+    expect([...HAMMER_SOURCES]).toEqual(['robotWorker', 'magicHouse', 'companyBuild']);
+    for (const s of HAMMER_SOURCES) expect(playsHammer(s)).toBe(true);
   });
 
   it('★★ 一條 action 里多次加蓋 ⇒ 取**并集**：后面的「没满级」不能吃掉前面的 bit7', () => {
@@ -297,5 +328,53 @@ describe('取当前帧的位图', () => {
   it('★ 空影片（0 帧）不炸', () => {
     const fx = beginBuildFx(0, false);
     expect(buildFxBitmap(fx, 0, { hammer: fakeFlic(0, 57) })).toBeNull();
+  });
+});
+
+// ============================================================
+//  ★★ 端到端：落点「升級房子」那一条**真 action** 不播大锤
+//     （试玩回报第 4 份 #3；可证伪 —— 谁把判据退回「除了天使卡都播大锤」，
+//      `4 → 5` 那条当场变红）
+// ============================================================
+
+describe('★★ 自己的地升級（走真 reduce）—— 绝不播机器工人大锤', () => {
+  const topo: MapTopology = {
+    nodes: [
+      makeNode({ id: 1, type: 0x7d0 + 1, adjacent: [2], adjacentSlots: [2, 0, 0, 0], walkable: true }),
+      makeNode({ id: 2, adjacent: [1], adjacentSlots: [1, 0, 0, 0], walkable: true }),
+    ],
+    // owner 是 1 基：1 = 玩家 0
+    lands: [makeLand({ id: 1, name: '測試路', type: 0, owner: 1, level: 0, landPrice: 1000 })],
+  };
+
+  /** 玩家 0 站在自己的地块上、落点已经问出「升級房子」那一步 */
+  const ownLandUpgrade = (level: number): GameState =>
+    makeGameState({
+      players: [
+        makePlayer({ index: 0, nodeId: 1, cash: 500_000 }),
+        makePlayer({ index: 1 }),
+        makePlayer({ index: 2 }),
+        makePlayer({ index: 3 }),
+      ],
+      currentPlayer: 0,
+      phase: 'awaitingDecision',
+      pending: { kind: 'upgradeLand', landId: 1, name: '測試路', cost: 200 },
+      landOwner: [0, 1],
+      landLevel: [0, level],
+      landType: [0, 0],
+    });
+
+  it('4 → 5：段序 = **只有 0x20b**（不是「大锤 + 0x20b」）', () => {
+    const before = ownLandUpgrade(4);
+    const after = reduce(before, { type: 'upgradeLand' }, topo);
+    expect(after.landLevel[1]).toBe(5);
+    expect(buildFxPlan(buildUpgradesOf(after, before))).toEqual({ hammer: false, maxLevel: true });
+  });
+
+  it('2 → 3：一段都不播（原版 `cmp ...,5 / jne 0x419a2b`，没有 0x20b）', () => {
+    const before = ownLandUpgrade(2);
+    const after = reduce(before, { type: 'upgradeLand' }, topo);
+    expect(after.landLevel[1]).toBe(3);
+    expect(buildFxPlan(buildUpgradesOf(after, before))).toEqual({ hammer: false, maxLevel: false });
   });
 });

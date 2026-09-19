@@ -19,7 +19,7 @@
 import type { BlockingDays, Player } from '../state/types.ts';
 import type { MapNode, LandscapeInfo } from '../loaders/map.ts';
 import type { MapObject } from '../cards/summon.ts';
-import { SPECIAL_KIND } from '../loaders/map.ts';
+import { TYPE_BASE } from '../loaders/map.ts';
 import { RELEASE_PENDING } from './blocking.ts';
 import { addMisfortuneDays } from './monthly.ts';
 import { syncEscortNodes } from './object-landing.ts';
@@ -196,21 +196,25 @@ export function confine(
  *
  * ⚠️ **一处有意的取值口径（D-CONFINE-1）**：原版把 `x/y` 取自**特殊景观记录**
  * （入監 = 记录 2「綠島」(1817,1960)、入院 = 记录 1「醫院」(319,990)；景观表 1 基，
- * 加载循环 `@source 0x407f17`/`0x407f35`），而棋盘上的監獄/醫院格在**别处**
- * （監獄格 12 @ (1248,1583)、醫院格 16 @ (767,1631)）—— 原版的 `x/y` 是**贴图位置**，
- * 不是"所在格的坐标"。本引擎把 `nodeId/x/y` 定义成必须一致的**位置三元组**
- * （两份真实存档 8/8 + `xpos == 0` 是冬眠卡哨兵，见 `rules/position.ts`），
- * 故这里写的是**节点坐标**。逐条证据与"为什么留到画面精修那一轮"见
+ * 加载循环 `@source 0x407f17`/`0x407f35`），而关押格（`[0x48bae0]`/`[0x48bae2]`）
+ * 在**别处**（0001.bin：監獄 1 @(1752,1871)、醫院 23 @(384,1056)）—— 原版的 `x/y`
+ * 是**贴图位置**，不是"所在格的坐标"。本引擎把 `nodeId/x/y` 定义成必须一致的
+ * **位置三元组**（两份真实存档 8/8 + `xpos == 0` 是冬眠卡哨兵，见 `rules/position.ts`），
+ * 故在「走回棋盘」那一回合的收尾把 `x/y` 同步回节点坐标（见 `reduce.ts` 的 `startTurn`）。
+ * 逐条证据与"为什么留到画面精修那一轮"见
  * `rich4-remake/docs/known-deviations.md` 的 D-CONFINE-1；
  * 回归护栏是 `state/object-integration.test.ts` 里那条「景观记录编号与身份」。
  *
  * @param nodes `MapTopology.nodes`（从 0 开始，下标 = 节点号 − 1）
+ * @param kind  关的是哪一种 —— 决定 x/y 取哪一条景观记录（**不要**从节点反推：
+ *              关押格的判据是 `type`，而保釋落点格的判据是 `specialKind`，两者不同节点）
  */
 export function teleportToGate(
   players: readonly Player[],
   nodes: readonly MapNode[],
   index: number,
   gateNodeId: number,
+  kind: ConfinementKind,
   landscapes?: readonly LandscapeInfo[],
 ): Player[] {
   return players.map((p, i) => {
@@ -220,7 +224,7 @@ export function teleportToGate(
     // @source 0x43d627 / 0x43d630 —— nodeId ← 監獄/醫院格、lastNodeId ← 0
     const placed = { ...placeOnNodeId(cleared, nodes, gateNodeId), lastNodeId: 0 };
     // @source 0x43d643..0x43d652 —— ★ x/y 另取**特殊景观记录**（不是节点坐标！）
-    const rec = gateLandscape(landscapes, kindOfGateNode(nodes, gateNodeId));
+    const rec = gateLandscape(landscapes, kind);
     return rec === undefined ? placed : { ...placed, xpos: rec.x, ypos: rec.y };
   });
 }
@@ -239,10 +243,48 @@ const GATE_LANDSCAPE: Record<ConfinementKind, number> = {
   prison: 1, //   记录 2 → 綠島（0001.bin 实测 (1817,1960)）
 };
 
-/** 由「監獄格／醫院格在哪」反推这次关的是哪一种（调用点只给了格号） */
-function kindOfGateNode(nodes: readonly MapNode[], gateNodeId: number): ConfinementKind {
-  const n = nodes[gateNodeId - 1];
-  return n?.specialKind === SPECIAL_KIND.HOSPITAL ? 'hospital' : 'prison';
+/**
+ * 关押格的**节点 `type` 值** —— 監獄/醫院在节点 `+0x20` 里存的不是「特殊格种类」。
+ *
+ * ★★ 原版有**两个容易混为一谈的概念**（复刻先前混了，见 `known-deviations.md` D-CONFINE-1）：
+ *
+ * | 概念 | 判据 | 0001.bin 上的节点 | 干什么 |
+ * |---|---|---|---|
+ * | **落点特殊格** | `node+0x24` 低字节 = 4/5（`specialKind`）| 監獄 12 / 醫院 16 | 走到上面 → 开保釋菜单（`0x43d304`/`0x43e9a4`）|
+ * | **关押格** | `node+0x20` == `0x1f41`/`0x1f42`（景观基数 8000 + 记录 1/2）| 監獄 **1** / 醫院 **23** | `send_to_prison`/`send_to_hospital` 把犯人搬到这里 |
+ *
+ * 关押格是**地图载入时**扫出来的，存进两个全局：
+ * ```asm
+ * ; @source 0x0040803f（載入迴圈 ebx = 1..节点数：[0x498e80] + ebx*0x28 + 0x20）
+ * 0040803f  cmp word [edx + eax*8 + 0x20], 0x1f41   ; 8001 = 景观记录 1
+ * 00408048  mov word [0x48bae2], bx                 ; → 醫院格号
+ * 0040805f  cmp word [edx + eax*8 + 0x20], 0x1f42   ; 8002 = 景观记录 2
+ * 00408068  mov word [0x48bae0], bx                 ; → 監獄格号
+ * ```
+ * 而入監／入院用的就是这两个全局（`@source 0x0043d621 mov ax, word [0x48bae0]` /
+ * `0x0043d627 mov word [ebx + 0x496b74], ax`，醫院 `0x0043ecce` 同构）——
+ * **所以释放回棋盘时人站在这一格上**（走路例程 `0x40c0ba` 的终点 = 当前格坐标）。
+ *
+ * 独立印证：`rich4-spec/docs/systems/map-format.md` §4.5「"类型基数 8000 + 2 == 0x1f42"
+ * 的独立印证」、`game-loop.md`「释放那一回合玩家站在監獄/醫院格（格值 0x1f42/0x1f41）」。
+ */
+export const CONFINEMENT_GATE_TYPE: Record<ConfinementKind, number> = {
+  hospital: TYPE_BASE.LANDSCAPE + 1, // 0x1f41 = 景观记录 1（醫院大樓）
+  prison: TYPE_BASE.LANDSCAPE + 2, //   0x1f42 = 景观记录 2（綠島）
+};
+
+/**
+ * 关押格的节点号 —— 原版 `[0x48bae0]`/`[0x48bae2]`（找不到 = 0，调用点按「没这一格」处理）。
+ *
+ * ⚠️ 每张出厂地图恰好一格（8 张图逐张实测：`type ∈ {0x1f41, 0x1f42}` 各一个）。
+ *   原版扫表时**后匹配者覆盖**（`mov word [0x48bae0], bx` 在循环里），
+ *   这里同样取最后一个匹配项，避免地图真有重复时与原版分叉。
+ */
+export function confinementGateNodeId(nodes: readonly MapNode[], kind: ConfinementKind): number {
+  const want = CONFINEMENT_GATE_TYPE[kind];
+  let found = 0;
+  for (const n of nodes) if (n.type === want) found = n.id;
+  return found;
 }
 
 /** 取这次关押该用的景观记录（表里没有就返回 undefined ⇒ 退回节点坐标） */
@@ -323,10 +365,11 @@ export function sendToConfinement(
   if (c.extended || target === undefined) {
     return { ...c, objects: [...objects], teleported: false };
   }
-  const want = kind === 'prison' ? SPECIAL_KIND.PRISON : SPECIAL_KIND.HOSPITAL;
-  const gate = nodes.find((n) => n.specialKind === want)?.id ?? 0;
+  // ★★ 关押格 = `type` 为 0x1f41/0x1f42 的那一格（`[0x48bae0]`/`[0x48bae2]`），
+  //    **不是**带保釋菜单的監獄/醫院落点特殊格 —— 见 `CONFINEMENT_GATE_TYPE` 的长注释。
+  const gate = confinementGateNodeId(nodes, kind);
   if (gate <= 0) return { ...c, objects: [...objects], teleported: false };
-  const moved = teleportToGate(c.players, nodes, index, gate, landscapes);
+  const moved = teleportToGate(c.players, nodes, index, gate, kind, landscapes);
   const p = moved[index];
   return {
     ...c,

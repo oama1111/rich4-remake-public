@@ -36,7 +36,7 @@ const run = existsSync(MAP) ? it : it.skip;
  * 本文件钉住的两个种子（一局里拍賣难得开一场，30 个种子里没有一个两种现场都走到，故各钉一个）。
  * 下面每条都断言「现场数 > 0」—— 种子走不到现场时宁可红。换种子用文末的搜索器。
  */
-const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 11;
+const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 12;
 const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 5;
 const TURNS = 200;
 const HUMANS = 2;

@@ -389,7 +389,12 @@ describe('★ 陷害卡经统一入口', () => {
       ],
       nodes: [
         makeNode({ id: 1, x: 100, y: 200 }),
-        makeNode({ id: 2, x: 1935, y: 1039, specialKind: SPECIAL_KIND.PRISON }),
+        // 关押格判据是 `type` = 0x1f42（景观基数 8000 + 记录 2），不是 `specialKind`
+        makeNode({
+          id: 2, x: 1935, y: 1039,
+          type: 0x1f42, ref: { kind: 'landscape', index: 2 },
+          specialKind: SPECIAL_KIND.PRISON,
+        }),
       ],
       objects: makeObjects(46),
     });

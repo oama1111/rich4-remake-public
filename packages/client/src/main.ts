@@ -208,6 +208,9 @@ import { confineClip, confineFxTrigger } from './confine-fx.ts';
 // ★ 神明降臨／發威那一段影片（Q-ANIM-1）—— 与住院/入獄同一支 `fcn_0045144f`，
 //   于是共用 `board-film.ts` 的播放与下面那一份「棋盘影片」宿主状态。
 import { godFilmSpec, godFxTrigger } from './god-fx.ts';
+// ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報）—— 同一支 `fcn_0045144f`，
+//   规格与判据见 `alien-news-fx.ts`。
+import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
 import {
   beginBoardFilm,
   boardFilmBitmap,
@@ -337,8 +340,9 @@ import {
   DICE_SOUND_PICK,
   drawDiceChoose,
   hitDiceFace,
-  remoteDiceAction,
+  remoteDiceActions,
 } from './dice-choose.ts';
+import { drawToast, reportToast, toastVisible, type Toast } from './toast.ts';
 import { nearestSummonableObject, summonCardAction } from './object-pick.ts';
 import {
   drawTip,
@@ -1062,6 +1066,15 @@ let stockPickAt: number | null = null;
  * @source `rich4_tool_yaokongtouzi.asm` **VA 0x004470f8** 起
  */
 let dicePick: { hover: number | null } | null = null;
+
+/**
+ * 下一条 `rollDice` 是**遥控骰子**定死的点数 → 不播预动作/滚骰（试玩回报：
+ * 「选择了1点应该是直接跳过正常扔骰子阶段然后让角色走1点」）。
+ *
+ * ★ 点数由 `dice-choose.ts` 的 `remoteDiceActions` 写进 `forcedDice`，这里只掐表现；
+ *   纯客户端状态，不进 `GameState`（点数的真值仍在 core）。
+ */
+let forcedRollSkipFx = false;
 
 /** 该股对应的地图企业（没上市就返回 null）@source 股票记录 +4 = 企業序号 */
 function stockCommercial(stockIndex: number): { type: number; stockIndex: number } | null {
@@ -3436,7 +3449,15 @@ function reduceRecorded(action: Action): GameState {
   return next;
 }
 
-/** 出一份问题回报（F9 / 未捕获异常 / `__rich4.report()`）；落盘位置写进日志栏 */
+/**
+ * 屏幕提示条（toast）—— 见 `toast.ts`。只留**最新一条**，到点自己收。
+ *
+ * ★ 原版没有这个东西，是需求方明确要求的（F9 存回报要有明显提示）。
+ *   画在渲染链的最上面（见 `requestRender` 的帧尾），所以任何一屏都盖得住。
+ */
+let toast: Toast | null = null;
+
+/** 出一份问题回报（F9 / 未捕获异常 / `__rich4.report()`）；落盘位置写进日志栏 + toast */
 let reportBusy = false;
 function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
   if (reportBusy) return;
@@ -3479,6 +3500,9 @@ function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
   void writeReport(reportFileName(now, reason), JSON.stringify(report))
     .then((where) => {
       log(where === null ? '⚠ 問題回報寫不出去' : `📝 問題回報已存：${where}`);
+      // ★ 试玩回报：日志栏那行没人看得见 ⇒ 再立一条明显的 toast（失败是另一类）
+      toast = reportToast(performance.now(), where);
+      requestRender();
     })
     .finally(() => {
       reportBusy = false;
@@ -3496,20 +3520,28 @@ function applyAction(action: Action): void {
     // ★ 掷骰那一段：点数到手 → 开滚。影片没解好先挂着，解完再补。
     //   纯表现，`diceFx` 不读也不写 state（C-DET-4）。
     if (action.type === 'rollDice') {
-      // 单机的预动作已经在 `requestRoll` 里起好了；联机时点数由服务器定序，
-      // 本机这一按只负责把动画领走（不动画就自己起一段）。
-      if (!diceFx.active) {
-        const me = state.players[state.currentPlayer];
-        if (me !== undefined) {
-          diceFlicNow(Math.max(1, Math.min(3, me.ndices || 1)));
-          diceFx.begin(performance.now(), diceAnticipateTicks(me), tickMs(options.speed), me.ndices || 1);
-          // ★ 自己起的动画也要挂上 `dicePoll` —— 这条岔路先前没挂，于是相位没人推进、
-          //   `active` 恒真，回合驱动全被挡死（同一天的第二个卡死来源）。
-          window.setTimeout(dicePoll, 16);
+      // ★ 遥控骰子（8）：点数已经由玩家选定 ⇒ **这一掷不播预动作/滚骰**（试玩回报）。
+      //   原版这一段仍会播滚骰影片（`fcn_00419572` 的 `call 0x45144f`），
+      //   跳过动画是需求方要求的偏离，见 `forcedRollSkipFx` 的注释。
+      if (forcedRollSkipFx) {
+        forcedRollSkipFx = false;
+        diceFx.cancel();
+      } else {
+        // 单机的预动作已经在 `requestRoll` 里起好了；联机时点数由服务器定序，
+        // 本机这一按只负责把动画领走（不动画就自己起一段）。
+        if (!diceFx.active) {
+          const me = state.players[state.currentPlayer];
+          if (me !== undefined) {
+            diceFlicNow(Math.max(1, Math.min(3, me.ndices || 1)));
+            diceFx.begin(performance.now(), diceAnticipateTicks(me), tickMs(options.speed), me.ndices || 1);
+            // ★ 自己起的动画也要挂上 `dicePoll` —— 这条岔路先前没挂，于是相位没人推进、
+            //   `active` 恒真，回合驱动全被挡死（同一天的第二个卡死来源）。
+            window.setTimeout(dicePoll, 16);
+          }
         }
+        diceFx.roll(performance.now(), state.dice, diceFlic.get(state.dice.length) ?? null);
+        playDiceSound();
       }
-      diceFx.roll(performance.now(), state.dice, diceFlic.get(state.dice.length) ?? null);
-      playDiceSound();
     } else if (state.phase !== 'moving' && !diceFx.active) {
       diceFx.cancel();
     }
@@ -3587,6 +3619,14 @@ function startActionFx(action: Action, before: GameState): void {
   startConfineFx(before, state);
   // ★ 神明降臨／發威（Q-ANIM-1）—— 判据是 `player.godInfo` 刚变（`god-fx.ts`）
   startGodFx(before, state);
+  // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報：那一段被整个跳过）——
+  //   判据是 `lastEvent` 刚变成 `{ news, 4 }`（`alien-news-fx.ts`）。
+  //   ⚠️ **排在这里**（住院影片之后）：原版 `fcn_0044913d` 是先让
+  //   `damage_area` 里那几次 `send_to_hospital`（各自播 0x20c）跑完、
+  //   最后才 `read_mkf(0x213)` + `fcn_0045144f`（VA 0x00449245/0x0044925b）。
+  //   ⚠️ 也**不**加 `options.animation` 闸：原版这一支里没有
+  //   `cmp [0x497159], 0`（与住院/入獄/神明那三支不同），照 exe 走。
+  startAlienNewsFx(before, state);
 }
 
 /**
@@ -4406,14 +4446,18 @@ function openDicePick(): void {
   requestRender();
 }
 
-/** 点了一颗骰面：发 `useTool{8, value}` 并收盘；`0` = 没点中，什么都不做 */
+/** 点了一颗骰面：发 `useTool{8, value}` + 当场这一掷（`rollDice`）并收盘；`0` = 什么都不做 */
 function dicePickChoose(face: number): void {
-  const act = remoteDiceAction(face);
-  if (act === null) return;
+  const acts = remoteDiceActions(face);
+  if (acts === null) return;
   // @source `loc_00446a39` 的 `play_sound_effect(0x482322)` —— 音效 1
   sound.play('Effect.mkf', DICE_SOUND_PICK);
   dicePick = null;
-  dispatch(act);
+  // ★ 原版道具函数自己把这一回合推起来（VA 0x00447260 `call fcn_0040dd1f`，见
+  //   `dice-choose.ts` 的 `remoteDiceActions`），所以这里紧跟一条 `rollDice`，
+  //   玩家不用再按「前進」。点数已定 ⇒ 这一掷不播预动作/滚骰（见 `forcedRollSkipFx`）。
+  if (state.phase === 'awaitingRoll') forcedRollSkipFx = true;
+  for (const act of acts) dispatch(act);
   requestRender();
 }
 
@@ -5115,6 +5159,27 @@ function startGodFx(before: GameState, after: GameState): void {
 }
 
 /**
+ * 这一拍是不是剛抽到新聞 4「外星人攻打地球」—— 是就播飛碟那一段影片。
+ *
+ * ★ **没有** `options.animation` 闸：住院／入獄／神明那三支的调用点各自写着
+ *   `cmp byte [0x497159], 0 / je 跳过`，而 `fcn_0044913d` 里**没有这一句**
+ *   （VA 0x00449235..0x00449269 一路直下）。原版播它不看「動畫過程」，
+ *   本引擎照 exe 走；playtest 报告里的「被直接跳过」正是这一段从来没接。
+ *
+ * ★ 起播就是同一条 `startBoardFilm` 路：整幅 440×440 贴在屏幕 (0,0x28) =
+ *   棋盘左上角，`pendingBoardFilm` 会等这一拍的走子补间播完才起时间轴
+ *   （`tickBoardFilm`），播完放行回合驱动 —— 与住院/入獄/神明完全一致。
+ */
+function startAlienNewsFx(before: GameState, after: GameState): void {
+  const spec = alienNewsFxTrigger(before, after);
+  if (spec === null) return;
+  // 影片窗口里棋盘按 before 画：房子还没被掀掉（`deferred-board.ts`）
+  deferredBoardBefore = before;
+  startBoardFilm(spec);
+  log(`影片：新聞 ${NEWS_ALIEN_ID} 外星人攻打地球`);
+}
+
+/**
  * 每帧推进这一段：
  *   ① 影片还在解 → 解完才起时间轴（原版 `read_mkf` 在前、`fcn_0045144f` 在后）；
  *   ② 播完 → 收摊（放掉位图）+ **补一次回合驱动**（这一段是阻塞的，见 `holdForWalk`）。
@@ -5126,6 +5191,13 @@ function startGodFx(before: GameState, after: GameState): void {
  *   而 `startActionFx` 是在补间**起播的同一拍**调用的（真人那条还排在
  *   `tweenStepIfMoved` 之前），不等它就会「人物还没走完，神明附身的影片先盖上去」。
  *
+ * ★★ 新聞 4 那一段还要多等一件事（`spec.afterOverlay`）：原版是訊息框先播满
+ *   2400 ms（`fcn_0044b6df` 的 `0x0044b862 push 0x960`）、框收掉之后事件函数体
+ *   才 `read_mkf(0x213)` + `fcn_0045144f`（VA 0x00449245 / 0x0044925b）。
+ *   本引擎的訊息框是**浮窗**（`event-box-screen.ts` 的 `windowed: true`）盖在
+ *   (0,0)-(440,480)，正好把 (0,40)-(440,480) 的整块影片遮死 ⇒ 不等它收屏，
+ *   飛碟那 4.1 秒就白播了。只对那一支生效（别的影片调用点都在訊息框之外）。
+ *
  * 挂在 `requestRender` 的 rAF 回调里，与建屋影片同一个套路。
  */
 function tickBoardFilm(now: number): void {
@@ -5133,6 +5205,11 @@ function tickBoardFilm(now: number): void {
   if (pending !== null) {
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
+    // 訊息框那一段盖着整块棋盘 ⇒ 原版次序是框先、片后，等它收屏
+    if (pending.afterOverlay === true && activeUiScreen() !== null) {
+      requestRender();
+      return;
+    }
     const key = `${pending.archive}:${pending.resource}`;
     if (!boardFilmFlics.has(key)) {
       // 还在解（`.then` 会再 `requestRender`）；真取不到就整段放弃，免得卡住回合驱动
@@ -5566,6 +5643,11 @@ function requestRender(): void {
       }
     }
 
+    // ── 屏幕提示条（`toast.ts`）──
+    // ★ 画在**最上面**：整屏接管、模态窗、台词之后。原版没有这东西，是需求方
+    //   明确要求的非叙事提示（F9 回报的落盘确认），所以不必与哪一屏对齐。
+    drawToast(stageCtx, toast, performance.now(), SCREEN_W, SCREEN_H);
+
     // 拾取模式的指针图要**解码完才能用**。首帧拿不到就返回 null，
     // 而光标只在 hover 变化时才刷新 —— 于是「一次都没悬停到」时指针会空着。
     // 图到货（spriteArrived）时补一次，这一条不能省。
@@ -5578,6 +5660,7 @@ function requestRender(): void {
     // 商店开着也要一直要帧 —— 原版那儿挂着一个 50ms 的定时器（`SetTimer(hwnd, 0x32, …)`）。
     // 銀行貸款屏同理（Q-BANK-1：滑入与气泡都要逐帧看）；ATM 只在键盘那一下补一帧。
     // ★ 台词也一样：一段显示 `SPEECH_HOLD_MS` 毫秒，到点由 `speechTick` 收掉并要下一帧。
+    // ★ toast 同理：还没到点就接着要帧（到点那一帧画空 = 自己擦掉）。
     if (
       renderer.dirty ||
       hud.dirty ||
@@ -5586,7 +5669,8 @@ function requestRender(): void {
       shopUi !== null ||
       loanUi !== null ||
       atmCode !== null ||
-      speechQueue.length > 0
+      speechQueue.length > 0 ||
+      toastVisible(toast, performance.now())
     ) {
       renderer.clearDirty();
       hud.clearDirty();

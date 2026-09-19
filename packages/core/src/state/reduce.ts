@@ -10,7 +10,7 @@
  */
 
 import type { Action } from './actions.ts';
-import type { BuildUpgradeHint, BuildUpgradeSource, GameState, NoticeHint, Player } from './types.ts';
+import type { BuildUpgradeHint, BuildUpgradeSource, GameState, NoticeHint, NoticeKey, Player } from './types.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 import { isAiControlled, isAlive } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
@@ -61,7 +61,12 @@ import type {
 import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent, LAND_TOLL_FEE_NAME } from '../rules/rent.ts';
 import { PARTY_POOL, PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
-import { reaperPayer, tollExemption, tollPassiveTail } from '../rules/toll-flow.ts';
+import {
+  reaperPayer,
+  tollExemption,
+  tollPassiveTail,
+  type TollExemption,
+} from '../rules/toll-flow.ts';
 import { PASSIVE_CARDS, consumeCard } from '../cards/passive.ts';
 import {
   markPlayerBankrupt,
@@ -233,6 +238,7 @@ import { ALIEN_HOSPITAL_DAYS, applyNewsEffect, type CompanyMutation, type LandMu
 import {
   anyoneConfined,
   anyPlayerConfined,
+  confinementGateNodeId,
   release,
   sendToConfinement,
   type ConfinementKind,
@@ -1394,8 +1400,34 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           //   早先这里是裸的 `cash -= toll` / `cash += toll`，四样全缺。
           // ★ 先过 0x41d559 的九种免收（0x00419a8a）：查封／同盟／死神／地主被关着或睡着 → 一分不收
           const landlord = state.players[land.owner - 1];
-          if (landlord === undefined || tollExemption(landlord, state.currentPlayer, land.priceStatus) !== null) {
-            return { ...state, phase: 'turnEnd' };
+          const exemption =
+            landlord === undefined
+              ? null
+              : tollExemption(landlord, state.currentPlayer, land.priceStatus);
+          if (landlord === undefined || exemption !== null) {
+            // ★★ 免收那一路**也弹棕色訊息框**（试玩第四份回报第 8 条）：
+            //   `0x41d559` 的每条免收支都先 `call 0x457110`（sprintf）一句，
+            //   再跳到同一处弹框：
+            // ```asm
+            // 0041d6a4  push 0x5dc              ; 1500 ms（与租金框同一个数）
+            // 0041d6a9  lea  eax, [esp + 4]    ; sprintf 出来的那一句
+            // 0041d6ad  push eax
+            // 0041d6ae  call 0x440cac          ; ★ 通用訊息框
+            // 0041d6e5  mov  eax, ebx          ; ebx = 0 ⇒ 返回「免收」
+            // ```
+            //   参数顺序 = 原版 `sprintf(fmt, 地主名, 費名)`：地主名由函数开头
+            //   `0x41d57d call 0x452946`（跳过空格的拷名）填好，費名是第 3 个实参
+            //   （住宅这条路 = `[0x47517c]` 第 0 项「過路費」，见 rules/rent.ts）。
+            const noticeKey = exemption === null ? null : confinementNoticeKey(exemption);
+            if (noticeKey === null) return { ...state, phase: 'turnEnd' };
+            return {
+              ...state,
+              lastNotice: {
+                key: noticeKey,
+                args: [playerName(state, land.owner - 1), LAND_TOLL_FEE_NAME],
+              },
+              phase: 'turnEnd',
+            };
           }
           const lands = allEffectiveLands(state, topo);
           // 先算出費额（collectRent 是纯函数，预演一遍只为拿 total）
@@ -1608,7 +1640,19 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       });
       const landLevel = [...paid.landLevel];
       landLevel[landIndex] = land.level + 1;
-      return { ...paid, landLevel, pending: null, phase: 'turnEnd' };
+      // ★ 落点「升級房子」那一支**也要记提示**（§7.143(1b) 的「E6 剩余」里点名的
+      //   `0x004198b9` 那个未接线消费点）：
+      //   `0x004199eb cmp byte [esi + 0x1a], 5` → `0x00419a21 call 0x40b0cd`
+      //   ⇒ 剛好升到 5 級时播 `Data.mkf` 0x20b（放烟花）。
+      //   这一支**不走 `0x40b110`**（`0x004199d1 inc byte [esi + 0x1a]` 直接加 1），
+      //   函数体里也**没有** `push 0x229` ⇒ **绝不播大锤**（大锤全 exe 只有 4 处：
+      //   `0x0041aab8` / `0x0041ad4d` / `0x00432028` / `0x0044731a`）。
+      //   客户端据此把 `source = 'ownUpgrade'` 映射成「只播 0x20b」。
+      return withSingleBuildUpgrade({ ...paid, landLevel, pending: null, phase: 'turnEnd' }, {
+        entity: 0x7d0 + landIndex,
+        reachedMaxLevel: buildUpgradeBit7(land.level, land.level + 1),
+        source: 'ownUpgrade',
+      });
     }
 
     case 'buyStock':
@@ -2697,13 +2741,48 @@ export function applyMagicRequest(
  *   由两个释放函数 0x0043d7f9 / 0x0043eeb0 用到）；本引擎不镜像全局，
  *   现查地图 —— 每张图各有且仅有一格。
  *
+ * ★★ 这一格是**关押格**（节点 `type` = 0x1f41/0x1f42，即監獄/醫院景观所在的那一格），
+ *   **不是**带保釋菜单的監獄/醫院**落点特殊格**（`specialKind` 4/5）—— 两者在
+ *   0001.bin 上是不同的节点（1 / 23 vs 12 / 16）。判据与理由见
+ *   `rules/confinement.ts` 的 `CONFINEMENT_GATE_TYPE`。
+ *
  * ★ 首次关押的「传送到这一格」由 `rules/confinement.ts` 的
  *   `sendToConfinement` 负责（原版那几行写在 `send_to_prison` 函数体内）。
  *   本函数只剩「释放回棋盘」等地方在用。
  */
 function gateNodeOf(topo: MapTopology, kind: ConfinementKind): number {
-  const want = kind === 'prison' ? SPECIAL_KIND.PRISON : SPECIAL_KIND.HOSPITAL;
-  return topo.nodes.find((n) => n.specialKind === want)?.id ?? 0;
+  return confinementGateNodeId(topo.nodes, kind);
+}
+
+/**
+ * 九种免收 → 棕色訊息框键 —— **只接「被关着／不在棋盘」那四种**。
+ *
+ * @source `0x0041d559`：每条免收支各自 `push 格式串`，然后跳到同一段
+ *   `call 0x457110`（sprintf）+ `0x41d6a4 push 0x5dc / call 0x440cac`（彈框）：
+ * ```asm
+ * 0041d613  push 0x463bf5      ; %s住宿中\n\n免收%s！
+ * 0041d62c  push 0x463c08      ; %s消失中\n\n免收%s！
+ * 0041d645  push 0x463c1b      ; %s坐牢中\n\n免收%s！
+ * 0041d65e  push 0x463c2e      ; %s住院中\n\n免收%s！
+ * ```
+ *   ⚠️ 另外五种（查封 `0x463bb8`、同盟 `0x463bcd`、死神 `0x463be2`、
+ *   冬眠 `0x463c41`、夢遊 `0x463c54`）原版**也**弹框，但其中查封/死神只有
+ *   一个 `%s`（只有費名）、同盟的两个 `%s` 也不是同一组 —— 本次**没有接**，
+ *   见 `state/types.ts` 的 `NoticeKey` 注释。
+ */
+function confinementNoticeKey(exemption: TollExemption): NoticeKey | null {
+  switch (exemption) {
+    case 'hotel':
+      return 'rent.freeHotel';
+    case 'disappearing':
+      return 'rent.freeVanished';
+    case 'prison':
+      return 'rent.freePrison';
+    case 'hospital':
+      return 'rent.freeHospital';
+    default:
+      return null;
+  }
 }
 
 /** 道具编号 */
@@ -5719,6 +5798,10 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   if (fac.level === 0) return { ...state, phase: 'turnEnd' };
   if (fac.type === FACILITY_TYPE.park || fac.type === FACILITY_TYPE.lab) return { ...state, phase: 'turnEnd' };
   // @source 0x0041a3cc call 0x41d559 —— 九种免收（設施的查封位未进状态，先用地图静态值）
+  // ⚠️ 原版这一条**也弹**「%s住院中／免收%s！」那一族的框（`0x41d6a4`），
+  //   但設施这条的費名另查表 `[0x47528b + type]` → `0x47517c`（住宿費/購物費/加油費…），
+  //   本引擎**还没有那张 type→費名 表**（见 docs/escalations.md E-4 第 3 条），
+  //   故这里只做免收、不弹框 —— 不要拿住宅的「過路費」硬套。
   const landlord = state.players[ownerIdx];
   if (landlord === undefined || tollExemption(landlord, payer, fac.priceStatus) !== null) return { ...state, phase: 'turnEnd' };
 

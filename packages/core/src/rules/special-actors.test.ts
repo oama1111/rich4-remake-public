@@ -343,20 +343,35 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
 // ============================================================
 
 describe('★ 保釋 NPC —— 他会当场上路', () => {
-  /** 一条环线 1→2→3→4→1，**监狱在 2 号**（所以他绕一圈会自投罗网） */
+  /**
+   * 一条环线 1→2→3→4→1，**监狱在 2 号**（所以他绕一圈会自投罗网）。
+   *
+   * ★★ 2 号同时是**两个概念**：`specialKind` 4 = 監獄**落点格**（走回来会自投罗网），
+   *   `type` 0x1f42 = **关押格**（`[0x48bae0]`，出獄那一步的起点）——
+   *   判据见 `rules/confinement.ts` 的 `CONFINEMENT_GATE_TYPE`。
+   *   真实地图上两者常常不是同一格（0001.bin：1 vs 12），故另有专门的可证伪用例。
+   */
   const loop: MapTopology = {
     nodes: [
       makeNode({ id: 1, adjacent: [4, 2] }),
-      makeNode({ id: 2, adjacent: [1, 3], specialKind: SPECIAL_KIND.PRISON }),
+      makeNode({
+        id: 2, adjacent: [1, 3],
+        type: 0x1f42, ref: { kind: 'landscape', index: 2 },
+        specialKind: SPECIAL_KIND.PRISON,
+      }),
       makeNode({ id: 3, adjacent: [2, 4] }),
       makeNode({ id: 4, adjacent: [3, 1] }),
     ],
   };
-  /** 一条**没有監獄**的直路：2 是起点（假装是监狱门口），往后一路走开 */
+  /** 一条**没有監獄落点格**的直路：2 是起点（= 关押格／监狱门口），往后一路走开 */
   const away: MapTopology = {
     nodes: [
       makeNode({ id: 1, adjacent: [2] }),
-      makeNode({ id: 2, adjacent: [1, 3], specialKind: SPECIAL_KIND.PRISON }),
+      makeNode({
+        id: 2, adjacent: [1, 3],
+        type: 0x1f42, ref: { kind: 'landscape', index: 2 },
+        specialKind: SPECIAL_KIND.PRISON,
+      }),
       ...Array.from({ length: 18 }, (_, i) =>
         makeNode({ id: i + 3, adjacent: [i + 2, i + 4] }),
       ),
@@ -405,6 +420,26 @@ describe('★ 保釋 NPC —— 他会当场上路', () => {
     // 这张四格环线怎么走都会踩回 2 号
     expect(after.prisonOccupancy[4]).toBe(1);
     expect(after.specialActors[0]?.place).toBe(ACTOR_PLACE.prison);
+  });
+
+  it('★★★ 可证伪：出獄起点是**关押格**（`type` 0x1f42），不是落点特殊格', () => {
+    // 1 号 = 关押格（`type` 0x1f42 = 原版 `[0x48bae0]`）；2 号 = 監獄**落点**特殊格
+    const split: MapTopology = {
+      nodes: [
+        makeNode({
+          id: 1, adjacent: [2],
+          type: 0x1f42, ref: { kind: 'landscape', index: 2 },
+        }),
+        makeNode({ id: 2, adjacent: [1, 3], specialKind: SPECIAL_KIND.PRISON }),
+        ...Array.from({ length: 17 }, (_, i) =>
+          makeNode({ id: i + 3, adjacent: [i + 2, i + 4] }),
+        ),
+      ],
+    };
+    const after = reduce(visiting(4), { type: 'bail', slot: 4 }, split);
+    // ★ 旧实现（`specialKind` 判据）会从 2 号起步 ⇒ 这两条当场红
+    expect(after.lastNpcWalks[0]!.path[0]).toBe(1);
+    expect(after.lastNpcWalks[0]!.path[0]).not.toBe(2);
   });
 
   it('保釋玩家（槽 0..3）不碰替身表', () => {

@@ -10,13 +10,18 @@
  * 因为那些方向错了单看代码是看不出来的。
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   makeGameState,
+  makeLand,
+  makeNode,
   makePlayer,
+  reduce,
   WHO_PLAYS_COMPUTER,
   WHO_PLAYS_DEAD,
   WHO_PLAYS_HUMAN,
   type GameState,
+  type MapTopology,
 } from '@rich4/core';
 import { cardLineVoice, SPEECH_EVENTS_PER_CHARACTER, speechEmojiImage, speechIndex } from '@rich4/data';
 import {
@@ -770,5 +775,88 @@ describe('★★ 卡牌使用者台词 —— 一条**非状态跃迁**的台词
   it('★ 卡号越界 ⇒ 不抛、返回空（表现层不因坏状态炸掉）', () => {
     const [before, after] = played(0, 0, 99);
     expect(cardPlaySpeech(before, after)).toEqual([]);
+  });
+});
+
+// ============================================================
+//  ★★ 过路费：**谁付**谁说话 —— 人机都要（试玩回报第 4 份 #6）
+// ============================================================
+//
+// 回 exe 取证（租子结算那一段，`0x00419f20..0x0041a008`）：
+//   · **付款方**：`0x00419f67`（有同盟那一支）/ `0x00419fe0`（无同盟）都是
+//     `push 金額 / push 付款人 / call 0x44f42d` —— **前面没有 `who_plays` 闸门**；
+//     設施那一支同形（`0x0041a71e`）；
+//   · **收款方**：`0x00419fa1` / `0x00419ff0` / `0x0041a735` 的
+//     `call 0x44f354(地主, 金額)`。
+//   ⇒ 原版**不分人机**，谁付谁就说 9/10/11。
+//
+// 本引擎的判据是 `monthlyPaid` 的增量（哪个玩家都算），而电脑那条 action
+// 通道**过去**是绕开 `notifyApplied` 自己 `reduce` 的直路 —— 那正是
+// 「NPC 交过路费时没有台词」这一类现象的根因。2026-09-19 起两条来源共用
+// `notifyApplied`（`main.ts`），下面三条钉住它。
+
+describe('★★ 过路费台词：付款方（真人 / 电脑）都要开口', () => {
+  /** 一格是玩家 1 的地（3 级）的小地图；玩家 0 站在那一格上 */
+  const topo: MapTopology = {
+    nodes: [
+      makeNode({ id: 1, adjacent: [2], adjacentSlots: [2, 0, 0, 0], walkable: true }),
+      makeNode({ id: 2, type: 0x7d0 + 1, adjacent: [1], adjacentSlots: [1, 0, 0, 0], walkable: true }),
+    ],
+    // owner 是 1 基：2 = 玩家 1
+    lands: [makeLand({ id: 1, name: '測試路', type: 0, owner: 2, level: 3, landPrice: 1000 })],
+  };
+
+  /** 玩家 0 落在玩家 1 的地上、结算过路费；`payer` 决定他是人是电脑 */
+  function landOnOtherLand(payer: number): [GameState, GameState] {
+    const before = makeGameState({
+      players: [
+        makePlayer({ index: 0, whoPlays: payer, nodeId: 2, cash: 500_000 }),
+        makePlayer({ index: 1, nodeId: 1, cash: 10_000 }),
+        makePlayer({ index: 2, nodeId: 1 }),
+        makePlayer({ index: 3, nodeId: 1 }),
+      ],
+      currentPlayer: 0,
+      phase: 'settling',
+      landOwner: [0, 2],
+      landLevel: [0, 3],
+      landType: [0, 0],
+    });
+    return [before, reduce(before, { type: 'settle' }, topo)];
+  }
+
+  it('★★ 电脑（AI）付我过路费 ⇒ **付款的那个电脑**说 9..11，我作为地主说 6..8', () => {
+    const [before, after] = landOnOtherLand(WHO_PLAYS_COMPUTER);
+    // 这一笔确实由 0 号（电脑）付、1 号（真人）收
+    expect(after.players[0]!.monthlyPaid).toBeGreaterThan(0);
+    expect(after.players[1]!.monthlyReceived).toBeGreaterThan(0);
+    const events = speechEventsFor(before, after);
+    expect(events).toContainEqual({ player: 0, event: 11 });
+    expect(events).toContainEqual({ player: 1, event: 8 });
+  });
+
+  it('★ 反过来（真人付给电脑）同样是**付款人**说 9..11 —— 原版不分人机', () => {
+    const [before, after] = landOnOtherLand(WHO_PLAYS_HUMAN);
+    expect(speechEventsFor(before, after)).toContainEqual({ player: 0, event: 11 });
+  });
+
+  it('★★ 反例（可证伪）：抹掉付款人的 `monthlyPaid` 增量 ⇒ 他那句就没了', () => {
+    const [before, after] = landOnOtherLand(WHO_PLAYS_COMPUTER);
+    const muted: GameState = {
+      ...after,
+      players: after.players.map((p, i) =>
+        i === 0 ? { ...p, monthlyPaid: before.players[0]!.monthlyPaid } : p,
+      ),
+    };
+    expect(speechEventsFor(before, muted)).not.toContainEqual({ player: 0, event: 11 });
+  });
+});
+
+describe('★★ `notifyApplied` 必须是两条来源共用的出口', () => {
+  it('定义 1 处 + 调用 2 处（真人 `applyAction` / 电脑 `scheduleAi` 的 reduce 直路）', () => {
+    // 只要电脑那条直路再一次绕开它，本用例就变红 —— 那正是
+    // 「NPC 付过路费没台词 / 电脑用道具没动效」这一族的根因（Q-TOOL-5 ⑤14 同一教训）。
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src.split('notifyApplied(').length - 1).toBe(3);
+    expect(src).toContain('notifyApplied(before);');
   });
 });

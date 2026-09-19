@@ -334,10 +334,20 @@ describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起',
 //  lastNpcWalks —— 交给表现层的整趟路径（T-047）
 // ============================================================
 
-/** 監獄格在**路头**的直路：出獄之后每一步只有一个候选，整趟是确定的 */
+/**
+ * 監獄格在**路头**的直路：出獄之后每一步只有一个候选，整趟是确定的。
+ *
+ * ★★ 1 号同时是**落点特殊格**（`specialKind` 4）与**关押格**（`type` 0x1f42，
+ *   = 原版 `[0x48bae0]`）；出獄上路的起点取的是后者 —— 见
+ *   `rules/confinement.ts` 的 `CONFINEMENT_GATE_TYPE`。
+ */
 const away: MapTopology = {
   nodes: [
-    makeNode({ id: 1, adjacent: [2], specialKind: SPECIAL_KIND.PRISON }),
+    makeNode({
+      id: 1, adjacent: [2],
+      type: 0x1f42, ref: { kind: 'landscape', index: 2 },
+      specialKind: SPECIAL_KIND.PRISON,
+    }),
     ...Array.from({ length: 19 }, (_, i) =>
       makeNode({ id: i + 2, adjacent: i === 18 ? [i + 1] : [i + 1, i + 3] }),
     ),

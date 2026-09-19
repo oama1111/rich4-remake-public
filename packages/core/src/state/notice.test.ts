@@ -71,6 +71,11 @@ function onRivalLand(over: {
 
 const settle = (s: ReturnType<typeof onRivalLand>) => reduce(s, { type: 'settle' }, topo);
 
+/** 一套完整的 `BlockingDays`（工厂缺省全 0），按需覆盖一两项 —— 免收判据只看这几项 */
+function confined(over: Partial<ReturnType<typeof makePlayer>['blocking']> = {}) {
+  return { ...makePlayer().blocking, ...over };
+}
+
 describe('★★ 住宅：`RENT.payOneOwner`（0x00419d3e）', () => {
   it('无同盟 → 键 / 地名 / 地主名 / 金额 / 費名 逐字对', () => {
     const after = settle(onRivalLand());
@@ -106,18 +111,61 @@ describe('★★ 住宅：`RENT.payOneOwner`（0x00419d3e）', () => {
     });
   });
 
-  it('九种免收那一路**不弹**（地主坐牢中一分不收，也就没有框）', () => {
-    const after = settle(
-      onRivalLand({
-        owner: {
-          blocking: {
-            inHotel: 0, disappearing: 0, inPrison: 3, inHospital: 0,
-            sleeping: 0, sleepWalking: 0, stopping: 0, tortoiseWalking: 0,
-          },
-        },
-      }),
-    );
-    expect(after.lastNotice).toBeNull();
+  it('★★ 九种免收那一路**也弹**（地主坐牢中一分不收，但先弹「%s坐牢中／免收%s！」）', () => {
+    // ★ 订正（2026-09-19）：原断言是 `toBeNull()` —— 那是**复述实现**，不是真值断言。
+    //   原版 `0x41d559` 每条免收支都先 `call 0x457110`（sprintf）一句，再跳到
+    //   `0x41d6a4 push 0x5dc / call 0x440cac` 弹**同一扇**棕色訊息框：
+    //   @source 0x0041d645 `push 0x463c1b`（`%s坐牢中\n\n免收%s！`）
+    //   @source 0x0041d6a4 `push 0x5dc` + `0x41d6ae call 0x440cac`
+    //   ⇒ 「免收」与「弹框」是同一支里的两件事，不是互斥的。
+    const after = settle(onRivalLand({ owner: { blocking: confined({ inPrison: 3 }) } }));
+    expect(after.lastNotice).toEqual({
+      key: 'rent.freePrison',
+      args: ['沙隆巴斯', '過路費'],
+    });
+    // 钱一分没动 —— 弹框不改规则
+    expect(after.players[0]!.cash).toBe(50_000);
+    expect(after.players[1]!.moneyInBank).toBe(0);
+  });
+});
+
+/**
+ * 九种免收里「被关着／不在棋盘」那四种的文案（试玩第四份回报第 8 条）。
+ *
+ * 参数顺序 = 原版 `sprintf(fmt, 地主名, 費名)`：地主名由 `0x41d57d call 0x452946`
+ * 填进缓冲（实参是 `[esp+0xa4]` = 函数第 1 个实参 = 地主下标），費名是第 3 个实参
+ * （住宅这条路 = `[0x47517c]` 第 0 项「過路費」）。
+ */
+describe('★★ 免收訊息框：`%s住宿中／消失中／坐牢中／住院中` + `免收%s！`', () => {
+  const cases = [
+    { reason: 'hotel', blocking: { inHotel: 2 }, key: 'rent.freeHotel' },
+    { reason: 'disappearing', blocking: { disappearing: 2 }, key: 'rent.freeVanished' },
+    { reason: 'prison', blocking: { inPrison: 2 }, key: 'rent.freePrison' },
+    { reason: 'hospital', blocking: { inHospital: 2 }, key: 'rent.freeHospital' },
+  ] as const;
+
+  it.each(cases)('★★★ 可证伪：地主 $reason ⇒ 键 $key（不弹就是红的）', ({ blocking, key }) => {
+    const after = settle(onRivalLand({ owner: { blocking: confined(blocking) } }));
+    // 旧实现（豁免直接 `return {...state, phase:'turnEnd'}`）这里是 `null` ⇒ 红
+    expect(after.lastNotice).toEqual({ key, args: ['沙隆巴斯', '過路費'] });
+  });
+
+  it('★ 参数顺序就是原版 `sprintf` 的顺序：地主名在前、費名在后', () => {
+    const after = settle(onRivalLand({ owner: { blocking: confined({ inHospital: 4 }) } }));
+    expect(after.lastNotice?.args).toEqual(['沙隆巴斯', '過路費']);
+    // 反序就会红：費名不在第 0 位
+    expect(after.lastNotice?.args[0]).not.toBe('過路費');
+  });
+
+  it('★ 框里的名字跟着地主走（换成别的角色名）', () => {
+    const after = settle(onRivalLand({ owner: { character: 3, blocking: confined({ inHotel: 1 }) } }));
+    expect(after.lastNotice?.args[0]).not.toBe('沙隆巴斯');
+    expect(after.lastNotice?.key).toBe('rent.freeHotel');
+  });
+
+  it('没有豁免（地主在场）时照旧弹**租金**框，不是免收框', () => {
+    const after = settle(onRivalLand());
+    expect(after.lastNotice?.key).toBe('rent.payOneOwner');
   });
 });
 
