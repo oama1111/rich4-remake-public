@@ -1674,7 +1674,7 @@ describe('★ WM_KEYDOWN（0x101）也能推进結算/頒獎屏', () => {
   it('★ 声明了 `key` 的屏会在 main.ts 的 keydown 里**排在填数窗之前**收到', () => {
     const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
     const keyAt = src.indexOf('overlay?.key !== undefined');
-    const amountAt = src.indexOf("if (amountPage !== null && screen === 'game') {");
+    const amountAt = src.indexOf("if (amountPage !== null && (screen === 'game' || screen === 'stock')) {");
     expect(keyAt).toBeGreaterThan(0);
     expect(amountAt).toBeGreaterThan(keyAt);
   });

@@ -967,6 +967,43 @@ describe('★ trigger 判据：站在魔法屋上才算 @source VA 0x0043381b', 
     resetMagicScreen();
   });
 
+  runMap('★★★ 进过一次之后**不许再自己起播**：`lastEvent` 没换、人还站在魔法屋上，后续 action 一律不触发（试玩回报 #12）', () => {
+    const { map, topo } = load();
+    const base = standOnMagic(
+      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })) }),
+      topo,
+    );
+    if (base === null) return;
+    const envOf = (state: GameState) =>
+      ({
+        screen: 'game', state, topo, map, now: 0, stage: null,
+        sprite: () => null, flic: () => null, dispatch: () => undefined,
+        requestRender: () => undefined, log: () => undefined,
+        playEffect: () => undefined, stopEffect: () => undefined, animation: true,
+      }) as unknown as Parameters<NonNullable<typeof magicScreen.event>>[2];
+
+    // 第一趟：settle 写出一条新的 lastEvent ⇒ 起播
+    const spun: GameState = {
+      ...base,
+      phase: 'turnEnd',
+      lastEvent: { kind: 'magicHouse', id: 3, criterion: 5, targets: [0] },
+    };
+    resetMagicScreen();
+    magicScreen.event!(base, spun, envOf(spun));
+    expect(magicScreenState().playing).toBe(true);
+    resetMagicScreen(); // = 这一段演完收屏了
+
+    // 之后的每一条 action：`lastEvent` 还是**同一个对象**、人还站在魔法屋那一格
+    //   —— endTurn / 别人 startTurn / 自己下一回合的 startTurn、rollDice……都不许再起播
+    for (const phase of ['turnStart', 'awaitingRoll', 'moving', 'turnEnd'] as const) {
+      const before: GameState = { ...spun, phase };
+      const after: GameState = { ...before, turnCount: before.turnCount + 1 };
+      magicScreen.event!(before, after, envOf(after));
+      expect(magicScreenState().playing, `phase=${phase} 不该再起播`).toBe(false);
+    }
+    resetMagicScreen();
+  });
+
   runMap('★ 站在魔法屋上且名单只有自己之外的一个人 → 认出来', () => {
     const { map, topo } = load();
     const base = standOnMagic(

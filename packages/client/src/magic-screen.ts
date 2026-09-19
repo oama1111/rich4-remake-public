@@ -1846,9 +1846,20 @@ export const magicScreen: UiScreen = {
     // ★ 优先用 **core 交出来的那一趟**（`lastEvent.kind === 'magicHouse'`）：
     //   条件号/名单是抽出来的，反推只是替补（旧存档 / 少字段的回放）。
     const ev = after.lastEvent;
+    // ★★ 只认**这一条 action 刚写出来的**那一趟（`lastEvent` 换了对象）。
+    //   `lastEvent` 会一直留在 state 里，直到下一个事件把它顶掉 —— 先前这里只判
+    //   「当前是 magicHouse」，于是进过一次魔法屋之后，**每一条** action（走一步、电脑出牌、
+    //   收尾…）都会在上一段播完后把魔法屋屏重新起播一遍：重复触发、每回合都被卡在里面
+    //   （2026-09-19 第三份试玩回报第 12 条）。
+    const fresh = ev !== null && ev !== before.lastEvent;
     const direct =
-      ev !== null && ev.kind === 'magicHouse' ? magicViewOfSpin(ev, after.currentPlayer) : null;
-    const v = direct ?? magicView(before, after, env.topo);
+      fresh && ev.kind === 'magicHouse' ? magicViewOfSpin(ev, after.currentPlayer) : null;
+    // ★ 反推那条替补路**只在落点结算那一条 action 上**试（`before.phase === 'settling'`）。
+    //   它的判据是「action 之前当前玩家站在魔法屋上」，而人是会**一直站在那儿**到下一回合的 ——
+    //   先前不限阶段，于是下一回合的 `startTurn` / `rollDice` 都会被它当成「又进了一次魔法屋」
+    //   （还带着那句「diff 解释不通也照样起播」的兜底）。
+    const v =
+      direct ?? (before.phase === 'settling' && !fresh ? magicView(before, after, env.topo) : null);
     if (v === null) return;
     view = v;
     const target = v.option >= 0 ? v.option : 0;

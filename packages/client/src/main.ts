@@ -1400,8 +1400,36 @@ function paceDelay(): number {
  */
 let npcWalksDrawn: GameState['lastNpcWalks'] | null = null;
 
+/**
+ * **演出类整屏** —— 事件起播、自己计时（或等一下点击）收屏，期间棋局不许往前走。
+ *
+ * ★★ 2026-09-19（第三份试玩回报 1/5/9/12 的共同根因）：原版的每一段演出都是**同步/模态**的
+ *   （魔法屋 `modal_msg_pump`、事件框 `fcn_004544f6` 的等待循环、月結 / 開獎 / 分紅屏各自的模态循环…），
+ *   演出期间主循环根本不跑。本引擎的 core 一条 action 就把后果写完，演出是事后补的 ——
+ *   而两个回合驱动（`scheduleAi` / `scheduleHumanTurn`）先前**只等走子与几段棋盘影片**，
+ *   不等整屏演出：魔法屋屏还在说开场白，后面三家电脑已经走完了（实测停在開場白时棋局已到第 3 回合）；
+ *   事件框因为「上一段没播完就丢掉新的一段」，电脑踩到命運 / 新聞时经常一声不响。
+ *
+ * ⚠️ 只列**纯演出**的屏。待决交互类（拍賣 / 樂透投注 / 研究所 / 小遊戲 / 買賣框）不在此列 ——
+ *   它们要靠回合驱动或屏自己把 `pending` 答掉，挡了会死锁。
+ */
+const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
+  'shares',
+  'lottery-draw',
+  'monthly',
+  'magic',
+  'eventBox',
+  'wheel',
+  'god-slot',
+]);
+
 function holdForActorWalk(reschedule: () => void): boolean {
   if (screen !== 'game') return false;
+  const overlay = activeUiScreen();
+  if (overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id)) {
+    reschedule();
+    return true;
+  }
   if (!renderer.walkDone()) {
     reschedule();
     return true;
@@ -1455,6 +1483,9 @@ function autosaveIfEnabled(): void {
   if (err !== null) log(`⚠ 自動存檔失敗：${err}`);
 }
 
+/** 真人那条驱动这一次排程是不是「演出还没播完，回头再看一眼」 */
+let humanRepoll = false;
+
 function scheduleHumanTurn(): void {
   if (humanTimer !== null) {
     clearTimeout(humanTimer);
@@ -1472,10 +1503,19 @@ function scheduleHumanTurn(): void {
   humanTimer = window.setTimeout(() => {
     humanTimer = null;
     // ★ 节拍闸（T-047）：替身还在滑就重排、绝不派下一步 —— 判据见 holdForActorWalk
-    if (holdForActorWalk(scheduleHumanTurn)) return;
+    // 被演出挡下时按一个渲染周期回头看（`humanDelay()` 在「動畫過程 = 关」时是 0，会变成空转）
+    if (
+      holdForActorWalk(() => {
+        humanRepoll = true;
+        scheduleHumanTurn();
+      })
+    ) {
+      return;
+    }
     if (next.type === 'step') stepTick();
     dispatch(next);
-  }, humanDelay());
+  }, humanRepoll ? RENDER_MS : humanDelay());
+  humanRepoll = false;
 }
 
 /** 当前这一步是不是「没得选」的 —— 是就返回它，否则 null */
@@ -3418,28 +3458,45 @@ function applyAction(action: Action): void {
   }
   if (state !== before) {
     history.push(action);
-    playSoundFor(before, state);
-    // ★ 状态一变，填数页指着的那个选项下标就可能已经不是同一回事了
-    //   （`pending` 换了一种，甚至换了人）。一律收掉。
-    amountPage = null;
-    dialogHot = null;
-    // ★ 商店的界面状态跟着 `pending` 走：进店时快照货架、铺开场；离店时清掉。
-    //   放在这里是因为不管谁答的（本地点、AI、服务器广播）都会经过这一条。
-    syncShopUi();
-    // ★ 銀行貸款屏的界面状态（T-029c）同理：`pending.kind === 'bank'` 时铺场，
-    //   离场时清掉。状态机自己会跨 action 活着，所以只在**首次**看见它时建。
-    syncLoanUi();
-    // ★ 登记的整屏：把「刚刚发生了什么」告诉它们（開獎 / 月結 / 魔法屋靠这个起播）
-    {
-      const env = uiEnv();
-      for (const s of SCREENS) s.event?.(before, state, env);
-    }
+    notifyApplied(before);
   }
   requestRender();
   renderPanel();
   scheduleAi();
   scheduleHumanTurn();
   autosaveIfEnabled();
+}
+
+/**
+ * 一条 action **已经落地**之后的通知：音效 / 語音 / 台词气泡、界面状态同步、各整屏的起播。
+ *
+ * ★★ 2026-09-19（第三份试玩回报 #5 / #6 / #11）：这一段先前**只挂在 `applyAction` 上**，
+ *   而电脑那条是绕开它自己 `reduce` 的直路（`scheduleAi`）—— 于是电脑的一切动作：
+ *   - 語音与角色台词气泡一句不出（`playSoundFor` 是唯一出口）；
+ *   - 踩到 命運 / 新聞 / 魔法屋 不出提示框（各整屏靠 `event(before, after)` 起播）；
+ *   - 機器娃娃上路的那一声（音效 38）不响。
+ *   原版这些都**不分人机**。与 `startActionFx` 同一个教训：两条来源必须共用出口。
+ */
+function notifyApplied(before: GameState): void {
+  playSoundFor(before, state);
+  // ★ 状态一变，填数页指着的那个选项下标就可能已经不是同一回事了
+  //   （`pending` 换了一种，甚至换了人）。一律收掉。
+  amountPage = null;
+  dialogHot = null;
+  // ★ 商店的界面状态跟着 `pending` 走：进店时快照货架、铺开场；离店时清掉。
+  //   放在这里是因为不管谁答的（本地点、AI、服务器广播）都会经过这一条。
+  // ⚠️ 电脑自己逛店 / 进銀行时**不铺场**（保持先前的行为：那两屏是给真人点的，
+  //   电脑那一手由 `decidePending` 直接答掉；原版此刻是否铺场未查证，不擅自改）。
+  const aiVenue = isAiTurn(state) && (state.pending?.kind === 'shop' || state.pending?.kind === 'bank');
+  if (!aiVenue) {
+    syncShopUi();
+    // ★ 銀行貸款屏的界面状态（T-029c）同理：`pending.kind === 'bank'` 时铺场，
+    //   离场时清掉。状态机自己会跨 action 活着，所以只在**首次**看见它时建。
+    syncLoanUi();
+  }
+  // ★ 登记的整屏：把「刚刚发生了什么」告诉它们（開獎 / 月結 / 魔法屋 / 事件框靠这个起播）
+  const env = uiEnv();
+  for (const s of SCREENS) s.event?.(before, state, env);
 }
 
 /**
@@ -3699,6 +3756,7 @@ function scheduleAi(): void {
     }
     history.push(action);
     aiLastAction = action.type;
+    notifyApplied(before);
     requestRender();
     renderPanel();
     scheduleAi();
@@ -7565,13 +7623,19 @@ function bindInput(): void {
     //   （不这么放，C / M / H / Enter 会被 RICH4.CFG 里同名的熱鍵抢走）。
     //   ⚠️ ESC 不在这张表里：取消键是全局钩子补成 0x205 才关窗的，
     //   那一条仍由下面的 `cancelTopPanel()`（cancelLayerOf 的 `amountPage` 层）收。
-    if (amountPage !== null && screen === 'game') {
+    // ★ 股市屏是 `screen === 'stock'`（不是 'game'）—— 那扇填数窗在两种屏上都可能开着
+    if (amountPage !== null && (screen === 'game' || screen === 'stock')) {
       const vk = amountVkOf(e);
       const key = vk === null ? null : amountKeyOfVk(vk);
-      const ui = currentDialog();
+      // ★ 股市买 / 卖的那扇填数窗**不是待决交互**（`stockAmount`，从工具列的股市屏里开），
+      //   `currentDialog()` 只认 `state.pending` ⇒ 先前这里拿到 null，键盘整条被丢掉
+      //   （2026-09-19 第三份试玩回报 #3：鼠标点得动、键盘敲不动）。鼠标那条路（`stockAmountUi()`）一直是对的。
+      const ui = stockAmount !== null ? stockAmountUi() : currentDialog();
       if (key !== null && ui !== null) {
         e.preventDefault();
         onAmountKey(ui, key);
+        if (stockAmount !== null && amountPage === null) stockAmount = null; // 確定会关掉它（同鼠标那条路）
+        requestRender();
         return;
       }
     }

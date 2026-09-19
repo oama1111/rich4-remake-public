@@ -374,7 +374,7 @@ describe('★ 接在 `main.ts` 的 keydown 上（只在填数页开着时生效�
   const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
 
   it('那一段排在熱鍵之前、只在 `amountPage` 开着时接，取消仍走梯子', () => {
-    const at = src.indexOf("amountPage !== null && screen === 'game'");
+    const at = src.indexOf("amountPage !== null && (screen === 'game' || screen === 'stock')");
     expect(at).toBeGreaterThan(0);
     const hotkeys = src.indexOf('const fn = hotkeyOf(e, bindingsOf(optionsKeys));');
     expect(hotkeys).toBeGreaterThan(at);

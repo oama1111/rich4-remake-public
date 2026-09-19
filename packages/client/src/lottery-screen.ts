@@ -828,12 +828,15 @@ export const lotteryScreen: UiScreen = {
     drawLotteryScreen(env.stage, env.sprite, env.flic, v, env.now);
   },
 
-  event(_before: GameState, after: GameState, env: UiScreenEnv): void {
+  event(before: GameState, after: GameState, env: UiScreenEnv): void {
     syncPending(after.pending, env.now, env.animation !== false);
     // ★ 樂透投注開屏的配乐 @source `ui_letou.asm:2938` `push 6 / call fcn_004549cf`
     //   ⇒ id 6 → `MIDI07.MID` → `midi07.mid`（见 `SCREEN_BGM.lottery`；
     //     開獎屏那一处是 `:3063` 的 `push 8` → MIDI09，归開獎屏）
-    if (after.pending?.kind === 'lottery') env.music?.('midi07.mid');
+    // ★ 只在**開屏那一下**点（原版那句 `push 6 / call` 在模态循环之前，只执行一次）。
+    //   先前每来一条 action（含别人的、含每一次选号）都从头重放一遍 ⇒ 听上去像「卡住」
+    //   （2026-09-19 第三份试玩回报 #7）。
+    if (after.pending?.kind === 'lottery' && before.pending?.kind !== 'lottery') env.music?.('midi07.mid');
   },
 
   tick(env: UiScreenEnv): void {
