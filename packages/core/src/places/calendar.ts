@@ -381,6 +381,57 @@ export function isHoliday(
  */
 export const HOLIDAY_ART_BASE: readonly number[] = [4, 28, 47, 67, 87, 108, 95, 118];
 
+// ============================================================
+//  節日配乐（W-17）
+// ============================================================
+
+/**
+ * 節日记录里与配乐有关的两格 —— **稀疏表**（其余 184 条两格都是 0）。
+ *
+ * @source 表 `0x0047ff4a`（每图 24 条 × 12 字节）：`+5` 旗标、`+0xa` 曲号（u16）。实 dump：
+ * | 地图 | 槽 | 節日 | 旗标 & 4 | 曲号 |
+ * |---|---|---|---|---|
+ * | 0 / 1 / 2 / 3 | 15 / 10 / 18 / 19 | 聖誕節 12/25 | ✓ | 13 |
+ * | 0 / 1 | 17 / 12 | 農曆正月初一 | ✓ | 14 |
+ * | 0 / 1 | 18,19 / 13,14 | 初二、初三 | ✗（只有曲号）| 14 |
+ *
+ * 初二、初三**没有旗标**却填了曲号 —— 它们不触发换曲，只被「下一条曲号非 0 ⇒ 连放 3 天」那条判据读到。
+ */
+const HOLIDAY_MUSIC_WORDS: readonly (Readonly<Record<number, { flag: boolean; id: number }>>)[] = [
+  { 15: { flag: true, id: 13 }, 17: { flag: true, id: 14 }, 18: { flag: false, id: 14 }, 19: { flag: false, id: 14 } },
+  { 10: { flag: true, id: 13 }, 12: { flag: true, id: 14 }, 13: { flag: false, id: 14 }, 14: { flag: false, id: 14 } },
+  { 18: { flag: true, id: 13 } },
+  { 19: { flag: true, id: 13 } },
+  {}, {}, {}, {},
+];
+
+/** 某条節日记录的 (旗标 & 4, 曲号)；表里没有 = (false, 0) */
+export function holidayMusicWord(globalMapId: number, holidayIndex: number): { flag: boolean; id: number } {
+  return HOLIDAY_MUSIC_WORDS[globalMapId]?.[holidayIndex] ?? { flag: false, id: 0 };
+}
+
+/**
+ * 今天这个節日要不要换背景曲；要的话放哪一首（`fcn_004549cf` 的曲号）、连放几天。
+ *
+ * @source `sub_00452444`（日推进里 `0x0041d07b` 调）：
+ * ```asm
+ * 0045257d  test byte [记录+5], 4 / je 跳过            ; 旗标 & 4 才换曲
+ * 00452586  cmp  byte [0x46cb06], 0 / jne 跳过          ; 已经在放節日曲就不重起（由调用方判）
+ * 00452591  mov  di, [记录+0xa] / or di,0x8000 / call fcn_004549cf
+ * 004525d3  cmp  word [**下一条**记录+0xa], 0
+ * 004525de  mov  byte [0x46cb06], 0x33   ; 非 0 ⇒ 低 4 位 = 3（連放 3 天：初一～初三）
+ * 004525e7  mov  byte [0x46cb06], 0x11   ; 是 0 ⇒ 1 天（聖誕節）
+ * ```
+ * 计数器每次日推进先减 1，低 4 位归零就停掉節日曲、接回背景曲的**下一首**
+ * （`sub_0041cf67` 开头 `0x0041cf6c..0x0041cf94`）。
+ */
+export function holidayMusicOf(globalMapId: number, holidayIndex: number): { id: number; days: number } | null {
+  if (holidayIndex < 0) return null;
+  const w = holidayMusicWord(globalMapId, holidayIndex);
+  if (!w.flag) return null;
+  return { id: w.id, days: holidayMusicWord(globalMapId, holidayIndex + 1).id !== 0 ? 3 : 1 };
+}
+
 /** 某地图某節日的插画在 `Data.mkf` 里的资源号；不在表内返回 null */
 export function holidayArtResource(globalMapId: number, holidayIndex: number): number | null {
   const base = HOLIDAY_ART_BASE[globalMapId];

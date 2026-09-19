@@ -284,6 +284,7 @@ import {
 } from './saveload.ts';
 import { clockSeed, reduceWithHostRng, reseedAfterLoad } from './rng-host.ts';
 import { FlightRecorder, reportFileName } from './flight-recorder.ts';
+import { holidayBgmOnDayAdvance } from './holiday-bgm.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import { drawIntro, introDone } from './intro.ts';
@@ -1321,6 +1322,7 @@ function loadState(next: GameState, mapOverride: Rich4Map | null = null): void {
   camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   screen = 'game';
   // ★ 读档进棋盘：背景曲换**下一首** @source `sub_00401981(1)` → `0x004019c6 push 0 / call sub_00454d91`
+  holidayBgmDays = 0; // @source 0x00404128 读档清零（節日曲不进存档）
   playBoardBgm(0);
   log(`▶ 讀檔：地圖 ${next.globalMapId}　${next.year}/${next.month}/${next.day}`);
 
@@ -3015,7 +3017,30 @@ async function playTrack(index: number): Promise<void> {
  *   这条是「某屏点名要哪一首」；曲号→文件名的映射在
  *   `@rich4/assets-pipeline` 的 `SCREEN_BGM` / `bgmAssetFileFor`。
  */
+/**
+ * 節日曲还要放几天 @source `[0x46cb06]` 的低 4 位。非 0 期间场所曲一律不放、场所收屏也不接背景曲
+ * —— 整套节拍见 `holiday-bgm.ts`。
+ */
+let holidayBgmDays = 0;
+
+/** 日推进那一刻的節日配乐 @source `sub_0041cf67` 开头 + `sub_00452444` */
+function onDayAdvancedBgm(next: GameState): void {
+  const step = holidayBgmOnDayAdvance(holidayBgmDays, next.globalMapId, next.year, next.month, next.day);
+  holidayBgmDays = step.days;
+  // 節日曲放完：接回背景曲的**下一首** @source 0x0041cf8e `call sub_00454acb` / 0x0041cf93 `push 0 / call sub_00454d91`
+  if (step.ended) playBoardBgm(0);
+  // 起節日曲：`fcn_004549cf(曲号 | 0x8000)` —— 0x8000 = 不记背景曲的断点（放完接的是下一首，不是断点）
+  if (step.play !== null) {
+    bgmBackground = false;
+    bgmSaved = null;
+    music.setLoop(true);
+    void loadAndPlay(step.play, 0);
+  }
+}
+
 async function playTrackFile(name: string): Promise<void> {
+  // ★ 節日曲期间场所曲不放 @source `fcn_004549cf` 开头 0x004549da `cmp byte [0x46cb06],0 / jne 返回`
+  if (holidayBgmDays > 0 && screen === 'game') return;
   // ★ 场所曲 / 標題曲打断背景曲：先把「放到哪儿了」记下来，回棋盘时接着放
   //   @source `fcn_004549cf` 开头：当前是背景曲（`[0x47e772] & 0x80`）⇒ `sub_00454b1a` 记位置
   if (bgmBackground) bgmSaved = { index: bgmIndex, at: music.positionS };
@@ -3086,6 +3111,8 @@ function syncBailBgm(): void {
  */
 function boardBgmDue(): boolean {
   if (screen !== 'game' || bgmBackground) return false;
+  // 節日曲还在放 ⇒ 不接背景曲 @source `sub_00454bcc` 的 0x00454bd5 同一道闸
+  if (holidayBgmDays > 0) return false;
   if (activeUiScreen() !== null) return false;
   const kind = state.pending?.kind;
   if (kind !== undefined && kind !== 'none') return false;
@@ -3310,6 +3337,9 @@ function reduceRecorded(action: Action): GameState {
   const next = reduceWithHostRng(before, action, topo, seed);
   if (next !== before) {
     recorder.record({ t: Date.now(), action, seed }, before.turnCount, () => serializeGame(before));
+    // 只认**日推进**（`sub_0041cf67`）；設定屏「日期頁」直接改日期那一条（`setDate`）不走那支函数
+    const dayMoved = next.day !== before.day || next.month !== before.month || next.year !== before.year;
+    if (dayMoved && action.type !== 'setDate') onDayAdvancedBgm(next);
   }
   return next;
 }
@@ -6291,6 +6321,7 @@ function startGame(): void {
   screen = 'intro';
   // ★ 背景曲从**片头过场里**就起了 @source `0x00415963 push 1 / call sub_00454d91` ⇒ 第一首 = RICH08
   //   （設定屏那首 MIDI02 在設定屏收掉时就停了：`sub_00401543 → sub_00454edc`）
+  holidayBgmDays = 0; // @source 0x00401dc4 新开一局清零
   playBoardBgm(1);
   log(
     `開局：地圖 ${setup.mapId}　種子 ${seed}　` +

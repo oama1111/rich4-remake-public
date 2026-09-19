@@ -14,6 +14,8 @@ import {
   dayNumberSince1998,
   holidayArtResource,
   holidayIndexOf,
+  holidayMusicOf,
+  holidayMusicWord,
   isHoliday,
   isLeapYear,
   nthWeekdayOfMonth,
@@ -63,6 +65,20 @@ d('日曆的数据全部来自 exe', () => {
     }
   });
 
+  it('★ 節日配乐那两格（`+5 & 4` 旗标、`+0xa` 曲号）—— 8 图 × 24 条**全部**逐字节对上', () => {
+    let flagged = 0;
+    for (let m = 0; m < 8; m++) {
+      for (let i = 0; i < 24; i++) {
+        const o = at(0x47ff4a) + 288 * m + 12 * i;
+        const w = holidayMusicWord(m, i);
+        expect(w.flag, `地图 ${m} 槽 ${i} 的旗标`).toBe((exe[o + 5]! & 4) !== 0);
+        expect(w.id, `地图 ${m} 槽 ${i} 的曲号`).toBe(exe.readUInt16LE(o + 0xa));
+        if (w.flag) flagged++;
+      }
+    }
+    expect(flagged).toBe(6); // 聖誕 ×4 图 + 農曆初一 ×2 图
+  });
+
   it('農曆表逐项对上 0x0047639c', () => {
     const o = at(0x47639c);
     expect(LUNAR_DAYS).toBe(8401);
@@ -98,6 +114,35 @@ describe('日期换算', () => {
     expect(daysInMonth(1998, 2)).toBe(28);
     expect(daysInMonth(2000, 2)).toBe(29);
     expect(daysInMonth(1998, 4)).toBe(30);
+  });
+});
+
+describe('★ 節日配乐（W-17）@source sub_00452444 / sub_0041cf67', () => {
+  it('聖誕節：曲号 13（MIDI14-1），下一条曲号是 0 ⇒ 只放 1 天', () => {
+    const idx = holidayIndexOf(0, 2010, 12, 25);
+    expect(idx).toBe(15);
+    expect(holidayMusicOf(0, idx)).toEqual({ id: 13, days: 1 });
+    // 四张有聖誕的图各自的槽号不同，曲号一样
+    expect(holidayMusicOf(1, 10)).toEqual({ id: 13, days: 1 });
+    expect(holidayMusicOf(2, 18)).toEqual({ id: 13, days: 1 });
+    expect(holidayMusicOf(3, 19)).toEqual({ id: 13, days: 1 });
+  });
+
+  it('農曆正月初一：曲号 14（MIDI14-2），下一条（初二）曲号非 0 ⇒ 連放 3 天', () => {
+    expect(holidayMusicOf(0, 17)).toEqual({ id: 14, days: 3 });
+    expect(holidayMusicOf(1, 12)).toEqual({ id: 14, days: 3 });
+  });
+
+  it('★ 初二、初三**有曲号没旗标** ⇒ 自己不触发换曲（只给初一当「連放」的判据）', () => {
+    expect(holidayMusicWord(0, 18)).toEqual({ flag: false, id: 14 });
+    expect(holidayMusicOf(0, 18)).toBeNull();
+    expect(holidayMusicOf(0, 19)).toBeNull();
+  });
+
+  it('别的節日（元旦…）、没有節日（−1）、后四张图 ⇒ 不换曲', () => {
+    expect(holidayMusicOf(0, holidayIndexOf(0, 2010, 1, 1))).toBeNull();
+    expect(holidayMusicOf(0, -1)).toBeNull();
+    for (let m = 4; m < 8; m++) for (let i = 0; i < 24; i++) expect(holidayMusicOf(m, i)).toBeNull();
   });
 });
 
