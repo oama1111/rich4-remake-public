@@ -21,7 +21,7 @@ on:
     #   「三平台一起跑、挂一个重跑」太贵；先 linux（便宜）→ windows → macos。
     inputs:
       platform:
-        description: '只打包哪个平台（all = 三平台都跑）'
+        description: '只打包哪个平台（all = 默认组，现在=只出 macOS；linux/windows 需单独选）'
         type: choice
         options: [all, linux, windows, macos]
         default: all
@@ -87,9 +87,13 @@ jobs:
           ]
           want = os.environ.get("PLATFORM") or "all"
           if os.environ.get("EVENT") != "workflow_dispatch":
-              want = "all"          # tag 推送：三平台都打
-          sel = ALL if want == "all" else [x for x in ALL if x["platform"] == want]
-          print("matrix=" + json.dumps({"include": sel or ALL}))
+              want = "all"          # tag 推送：默认那一组
+          # ★ 2026-09-19（需求方）：**默认只出 macOS** —— Windows 那条（WiX/NSIS）
+          #   需求方不需要，不再随 `all` 一起跑（也省掉 Windows 的额外额度）。
+          #   linux / windows 仍留在 `platform` 下拉里，想要时单独手选。
+          DEFAULT = [x for x in ALL if x["platform"] == "macos"]
+          sel = DEFAULT if want == "all" else [x for x in ALL if x["platform"] == want]
+          print("matrix=" + json.dumps({"include": sel or DEFAULT}))
           PY
 
   bundle:
