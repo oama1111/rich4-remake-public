@@ -10,11 +10,14 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { MkfArchive, parseFlicInfo } from '@rich4/assets-pipeline';
+import type { BuildUpgradeHint } from '@rich4/core';
 import {
   beginBuildFx,
   buildClip,
   buildFxBitmap,
   buildFxFrame,
+  buildFxPlan,
+  buildUpgradesOf,
   BUILD_FX_ARCHIVE,
   BUILD_FX_H,
   BUILD_FX_W,
@@ -29,7 +32,6 @@ import {
   BUILD_TOOL_ID,
   clipDone,
   clipTotalMs,
-  reachedMaxLandLevel,
   stepBuildFx,
   type BuildFx,
 } from './build-fx.ts';
@@ -185,19 +187,91 @@ describe('顺序与条件 @source VA 0x00447345 / 0x0044736d / 0x00447373', () =
     expect(stepBuildFx(fx, 999999)).toBeNull();
   });
 
-  it('★ bit7 = 「加之前 4、加之后 5」——且**只认地块**', () => {
-    // @source VA 0x0040b161..0x0040b16e：inc 之后 ==5 才 or al,0x80
-    expect(reachedMaxLandLevel([0, 4], [0, 5], 1)).toBe(true);
-    // 没到 5
-    expect(reachedMaxLandLevel([0, 3], [0, 4], 1)).toBe(false);
-    // 本来就是 5（盖不动，压根不会到这一步）
-    expect(reachedMaxLandLevel([0, 5], [0, 5], 1)).toBe(false);
-    // 加之前不是 4（不是 +1 上去的）
-    expect(reachedMaxLandLevel([0, 2], [0, 5], 1)).toBe(false);
-    // 别的格刚满 5，不是这一次的目标格 → 不算
-    expect(reachedMaxLandLevel([0, 4, 4], [0, 4, 5], 1)).toBe(false);
-    // 設施那一支（0x0040b1f4）不置 bit7 → 本函数只对地块用
-    expect(reachedMaxLandLevel([0, 4], [0, 5], 1)).toBe(true);
+  it('★ 天使卡那一支（0x004434c0）**只播 0x20b**，不播大锤', () => {
+    const fx = beginBuildFx(0, true, false);
+    expect(fx.clip).toBe('maxLevel');
+    expect(fx.thenMaxLevel).toBe(false);
+    expect(stepBuildFx(fx, clipTotalMs('maxLevel') - 1)).toBe(fx);
+    expect(stepBuildFx(fx, clipTotalMs('maxLevel'))).toBeNull();
+  });
+
+  it('★★ bit7 不再由客户端算 —— `reachedMaxLandLevel` 已删除（C-ARC-2）', async () => {
+    // 先前这里是 `reachedMaxLandLevel(before, after, landId)`（客户端自己按
+    // 「加之前 4、加之后 5」比等级），而且它附的注释把「設施支不置 bit7」写反了。
+    // 现在这条契约只在 core：`rules/tool-effects.ts` 的 `reachdsMaxBuildLevel`
+    // / `buildUpgradeBit7`（测试在 `tool-effects.test.ts`）+ `BuildUpgradeHint`。
+    const mod = await import('./build-fx.ts');
+    expect('reachedMaxLandLevel' in mod).toBe(false);
+  });
+});
+
+// ============================================================
+//  ★★ 段序：由 core 的 bit7 契约决定，客户端一个等级都不比（C-ARC-2）
+// ============================================================
+
+describe('★ 段序 @source 三条消费点各自 read_mkf/播片序列', () => {
+  const hint = (
+    source: 'robotWorker' | 'magicHouse' | 'companyBuild' | 'angelCard',
+    reachedMaxLevel: boolean,
+  ): BuildUpgradeHint => ({ entity: 0x7d0 + 1, reachedMaxLevel, source });
+
+  it('★★ 機器工人（0x00447295）：大锤 0x229 + （bit7 时）剛滿 5 級 0x20b', () => {
+    expect(buildFxPlan([hint('robotWorker', false)])).toEqual({ hammer: true, maxLevel: false });
+    expect(buildFxPlan([hint('robotWorker', true)])).toEqual({ hammer: true, maxLevel: true });
+  });
+
+  it('★★ 魔法屋「就地加蓋房屋」（0x00431f67，消费点 0x00432085）：与機器工人同构', () => {
+    // @source 0x00432028 push 0x229 / 0x00432034 call 0x450441 / 0x00432074 call 0x45144f
+    //   → 0x00432085 test byte [esp+0xa8], 0x80 → 0x0043208f call 0x40b0cd
+    expect(buildFxPlan([hint('magicHouse', false)])).toEqual({ hammer: true, maxLevel: false });
+    expect(buildFxPlan([hint('magicHouse', true)])).toEqual({ hammer: true, maxLevel: true });
+  });
+
+  it('★★ 建設公司（0x0041abde，消费点 0x0041adaa）：与機器工人同构（大锤 + 0x20b）', () => {
+    // @source 0x0041ad7e call 0x40b110 → 0x0041ad99 call 0x45144f（大锤）
+    //   → 0x0041adaa test byte [esp+0xbc], 0x80 → 0x0041adb4 call 0x40b0cd
+    expect(buildFxPlan([hint('companyBuild', false)])).toEqual({ hammer: true, maxLevel: false });
+    expect(buildFxPlan([hint('companyBuild', true)])).toEqual({ hammer: true, maxLevel: true });
+  });
+
+  it('★★ 天使卡（0x004434c0，消费点 0x004436b5）：**只有 0x20b**（函数体里没有 0x229）', () => {
+    expect(buildFxPlan([hint('angelCard', false)])).toEqual({ hammer: false, maxLevel: false });
+    expect(buildFxPlan([hint('angelCard', true)])).toEqual({ hammer: false, maxLevel: true });
+  });
+
+  it('★★ 一條 action 里多次加蓋 ⇒ 取**并集**：后面的「没满级」不能吃掉前面的 bit7', () => {
+    // 魔法屋那一条 action 里每位中签者各跑一遍（0x004320aa inc edi / cmp edi,4）
+    expect(buildFxPlan([hint('magicHouse', false), hint('magicHouse', true)]))
+      .toEqual({ hammer: true, maxLevel: true });
+    expect(buildFxPlan([hint('magicHouse', true), hint('magicHouse', false)]))
+      .toEqual({ hammer: true, maxLevel: true });
+  });
+
+  it('★ 没有加蓋事件 ⇒ 什么都不播', () => {
+    expect(buildFxPlan([])).toEqual({ hammer: false, maxLevel: false });
+  });
+});
+
+describe('★ buildUpgradesOf —— 只认**本 action**的加蓋（引用相等，不看 action 种类）', () => {
+  const first: BuildUpgradeHint = { entity: 0x7d1, reachedMaxLevel: true, source: 'robotWorker' };
+  const second: BuildUpgradeHint = { entity: 0xfa1, reachedMaxLevel: true, source: 'magicHouse' };
+
+  it('core 没换数组 ⇒ 那是上一条 action 留下的，不算', () => {
+    const prev = [first];
+    expect(buildUpgradesOf({ lastBuildUpgrades: prev }, { lastBuildUpgrades: prev })).toEqual([]);
+  });
+
+  it('两边都是 undefined（这个可选字段没被写过）⇒ 空', () => {
+    expect(buildUpgradesOf({}, {})).toEqual([]);
+  });
+
+  it('core 换了一个新数组 ⇒ 就是本 action 的', () => {
+    expect(buildUpgradesOf({ lastBuildUpgrades: [second] }, { lastBuildUpgrades: [first] }))
+      .toEqual([second]);
+  });
+
+  it('新数组但为空（本 action 没加蓋）⇒ 空', () => {
+    expect(buildUpgradesOf({ lastBuildUpgrades: [] }, { lastBuildUpgrades: [first] })).toEqual([]);
   });
 });
 

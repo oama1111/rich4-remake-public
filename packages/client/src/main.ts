@@ -10,6 +10,9 @@
 
 import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import { setVoiceSink } from './voice-sink.ts';
+// ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
+//   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
+import { magicScreenState } from './magic-screen.ts';
 import {  autoAction,
   ACTOR_DOLL,
   directionOf,
@@ -20,7 +23,6 @@ import {  autoAction,
   isAiTurn,
   PANEL_PAGE_COUNT,
   holidayIndexOf,
-  housingIndexOf,
   weekdayOf,
   dayNumberSince1998,
   DEFAULT_INITIAL_FUND,
@@ -34,6 +36,7 @@ import {  autoAction,
   importOriginalSaveWithSnapshots,
   roomMapId,
   specialSlotOf,
+  SPECIAL_KIND,
   STOCK_STATUS,
   stockStatus,
   stateFingerprint,
@@ -133,12 +136,12 @@ import {
   type DateDraft,
   type OptionsOutcome,
 } from './options-pages.ts';
-import { SoundPlayer } from './audio.ts';
+import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
 import { cardPlaySpeech, speechBubblesFor, speechEventsFor } from './speech.ts';
 import { SpeechQueue, drawSpeechBubble, type SpeechBubble } from './speech-bubble.ts';
 // 台词字幕用的是 canvas 文字（原版 `_rich4_create_font(0x10, 0x101010, …)` 那一路）
 import { font } from './font.ts';
-import { MusicPlayer } from './music.ts';
+import { MusicPlayer, shouldResumeAfterUnlock } from './music.ts';
 // Q8：音色库（.sf2）—— 用户自备，有就用采样还原音色，没有就退回振荡器
 import { parseSoundFont } from './soundfont.ts';
 import {
@@ -178,15 +181,17 @@ import {
   type CardFlightPlan,
   type ObjectFlight,
 } from './throw-fx.ts';
-// ★ 機器工人（9）的**原地**建屋动效（Q-TOOL-6）—— 与上面那套投掷动效**不是一回事**：
+// ★ 原地建屋动效（Q-TOOL-6 / E6）—— 与上面那套投掷动效**不是一回事**：
 //   大锤是整块 440×440 的 FLIC 直接盖在棋盘左上角，不动位置、不进绘制槽。
+//   ★ 三条消费点共用：機器工人（9）、魔法屋「就地加蓋」、天使卡（9）——
+//   bit7 一律由 core 算（`GameState.lastBuildUpgrades`），这里只排段序（C-ARC-2）。
 import {
   beginBuildFx,
   buildClip,
   buildFxBitmap,
+  buildFxPlan,
+  buildUpgradesOf,
   BUILD_FX_ARCHIVE,
-  BUILD_TOOL_ID,
-  reachedMaxLandLevel,
   stepBuildFx,
   type BuildClipName,
   type BuildFx,
@@ -276,7 +281,7 @@ import {
 import { reduceWithHostRng, reseedAfterLoad } from './rng-host.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
-import { drawIntro, introDone, INTRO_FRAMES } from './intro.ts';
+import { drawIntro, introDone } from './intro.ts';
 import {
   activePlayers,
   assetRows,
@@ -1805,9 +1810,13 @@ function handleHotkey(fn: number): boolean {
 /**
  * 一步棋走完后开始播补间。
  *
- * @source `fcn_0040c05c`（VA 0x0040c05c）：tick 数 = `trunc(屏幕距离 / 走子速度)`，
+ * @source `fcn_0040c05c`（VA 0x0040c05c）：tick 数 = `trunc(世界距离 / 走子速度)`，
  *   线性等分、**一个 tick 一帧** —— 细节与出处见 `client/tween.ts`。
  *   起点用 state 里的 `lastNodeId`（core 的 step 会把它设成走之前那一格）。
+ *
+ * ★ 传给 `startWalk` 的是**世界坐标**（节点 x/y）：原版这一支不碰投影
+ *   （起点 `0x40c1d4`、终点 `0x40c205` 都是节点记录的 `+0x00/+0x02`），
+ *   所以镜头/视角/缩放都不影响一格几 tick。
  */
 function startStepTween(playerIndex: number): void {
   const p = state.players[playerIndex];
@@ -1819,9 +1828,6 @@ function startStepTween(playerIndex: number): void {
     playerIndex,
     { x: from.x, y: from.y },
     { x: to.x, y: to.y },
-    options.animation,
-    camera,
-    { w: LAYOUT.board.w, h: LAYOUT.board.h },
     p.trafficMethod & 3,
     false,
     tickMs(options.speed),
@@ -2935,7 +2941,26 @@ function spriteNow(
 const sound = new SoundPlayer();
 // ★ 把「文本里的 #NNNN」接到同一个 SoundPlayer 上 —— 这是那 610 个低编号
 //   能出声的唯一途径（见 `voice-sink.ts` 的说明）。
+//
+// ★ 去抖：`#NNNN` 的触发挂在**绘制**里（原版 `drawText_colorcode` 也是），
+//   而复刻是整屏每帧重画 —— 实测魔法屋入口台词 2 秒被画 126 次，同一句于是被
+//   `Stop → Play` 上百次，永远只响头几十毫秒。见 `audio.ts` 的
+//   `VOICE_RETRIGGER_GAP_MS`。这里记住上一声真正起播的号与时刻。
+let lastVoiceCode: number | null = null;
+let lastVoiceAt = 0;
 setVoiceSink((voice) => {
+  // ★ 语音档案按需装载：`Speaking.mkf` 57MB，开机不装。此前只有**角色台词**
+  //   那条路（`playSoundFor` → `ensureSpeakingArchive`）会拉它，于是文本里的
+  //   `#NNNN`（魔法屋女巫那三句 `#0037/#0038/#0039` 就在这一类）在档案到货前
+  //   一律被 `SoundPlayer.play` 安静丢掉 —— 用户报的「魔法屋没有女巫语音」。
+  ensureSpeakingArchive();
+  const now = performance.now();
+  // ★ 两道闸门：同一句**还在响**就不重起（长语音不能被砍成结巴）；
+  //   同一句连着来按 `VOICE_RETRIGGER_GAP_MS` 去抖（挡解码期间与每帧重画）。
+  const stillPlaying = sound.isPlaying('Speaking.mkf', voice);
+  if (!shouldRetriggerVoice(lastVoiceCode, lastVoiceAt, voice, now, stillPlaying)) return;
+  lastVoiceCode = voice;
+  lastVoiceAt = now;
   sound.play('Speaking.mkf', voice);
 });
 
@@ -2982,17 +3007,44 @@ async function playTrackFile(name: string): Promise<void> {
   }
 }
 
-/** 第一次用户手势：把音效与音乐一起解锁 */
+/** 第一次用户手势：把音效与音乐一起解锁，并补播解锁前点过的那一首 */
 function unlockAudio(): void {
   sound.unlock();
   music.unlock();
-  if (!musicStarted) {
-    musicStarted = true;
-    // ★ 第一次手势时人在標題畫面 → 点的是標題那一首（`fcn_004026e2` 的 `fcn_004549cf(0)`），
-    //   不是 `Midi.txt` 清单的第一首；清单只在棋盘/其它没点名曲子的场合当兜底。
-    if (screen === 'title') void playTrackFile('midi01.mid');
-    else void playTrack(0);
-  }
+  if (musicStarted) return;
+  musicStarted = true;
+  // ★ 解锁**之前**点过的那一首（标题 MIDI01 就是开机就点的）由
+  //   `MusicPlayer.unlock()` 从 `#pending` 里自己补播；这里只处理「那次点播
+  //   没赶上上下文、现在也没有曲子」的兜底。
+  const resume = shouldResumeAfterUnlock(screen, music.current);
+  if (resume === null) return;
+  // ★ 第一次手势时人在標題畫面 → 点的是標題那一首（`fcn_004026e2` 的 `fcn_004549cf(0)`），
+  //   不是 `Midi.txt` 清单的第一首；清单只在棋盘/其它没点名曲子的场合当兜底。
+  if (screen === 'title') void playTrackFile('midi01.mid');
+  else void playTrackFile(resume);
+}
+
+/**
+ * ★ 任何一次用户交互都要能解锁音频 —— 不只是画布上的那一下。
+ *
+ * 浏览器（以及 Tauri 的 webview，同一套 autoplay 政策）要求 `AudioContext`
+ * 在**用户手势之后**才能出声。先前只有 `#board` 画布的 mousedown/click 与
+ * window 的 keydown 会解锁：用户点在右侧面板/日志、或者触摸屏上点一下，
+ * 都没解锁 —— 表现就是「打开游戏后背景音乐不自动播，要点（画布）一下才播」。
+ *
+ * 这里在 window 上补 pointerdown / keydown / click / touchstart 四条，
+ * `capture` + `once`：捕获相先于任何业务监听，命中一次就摘掉。解锁后立刻
+ * 补播当前该放的那首（见 `unlockAudio`）。桌面版与浏览器同源，**不写平台分支**。
+ */
+function bindAudioUnlock(): void {
+  const once: AddEventListenerOptions = { once: true, capture: true };
+  const types: readonly (keyof WindowEventMap)[] = [
+    'pointerdown',
+    'keydown',
+    'click',
+    'touchstart',
+  ];
+  for (const type of types) window.addEventListener(type, () => unlockAudio(), once);
 }
 
 /**
@@ -3209,8 +3261,9 @@ function applyAction(action: Action): void {
 function startActionFx(action: Action, before: GameState): void {
   // 放置類道具（路障/地雷/定時炸彈）真正落地 → 投掷动效 + 落地音
   if (action.type === 'useTool') startObjectFlight(before, action);
-  // 機器工人（9）原地建屋 → 大锤影片（盖到 5 级时接 `0x20b`）
-  if (action.type === 'useTool') startBuildFx(before, action);
+  // 機器工人（9）/ 魔法屋「就地加蓋」/ 天使卡（9）原地建屋 → 大锤影片
+  // （盖到 5 级时接 `0x20b`）。判据在 core 的 `lastBuildUpgrades` 里，不看 action 种类。
+  startBuildFx(before);
   // 卡片 / 請神符的飞行动效（Q-TOOL-5）—— 是否真的播由 exe 的闸门定
   if (action.type === 'useCard') startCardFlight(before, action);
   // ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1 未接清单之一）—— 与 action 种类无关：
@@ -3236,7 +3289,8 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
   // ★★ 判据与起终点都收在 `walkTweenFor`（纯函数、有单测）：
   //   ① 走一格：`lastNodeId → nodeId` 两格之间；
   //   ② 「走回棋盘」那一回合（第 86/87 条）：core 把 `x/y` 从綠島/醫院大樓
-  //      回填成監獄/醫院格 —— 原版由走路例程逐帧走回去（约 676 像素 ⇒ 84 tick）。
+  //      回填成監獄/醫院格 —— 原版由走路例程逐帧走回去
+  //      （`trunc(676 / 8) = 84` tick，**世界距离**，见 `startStepTween`）。
   const t =
     action.type === 'step' || action.type === 'startTurn'
       ? walkTweenFor(action.type, before, state, (id) => map.nodes[id - 1])
@@ -3247,9 +3301,6 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
     t.player,
     t.from,
     t.to,
-    options.animation,
-    camera,
-    { w: LAYOUT.board.w, h: LAYOUT.board.h },
     (p?.trafficMethod ?? 0) & 3,
     false,
     tickMs(options.speed),
@@ -4561,7 +4612,7 @@ let buildFx: BuildFx | null = null;
  * 原版 `read_mkf` 是**同步**的、解完才 `fcn_0045144f`；浏览器里解 68 帧要几百毫秒，
  * 所以先挂在这里，`tickBuildFx` 一看到影片到货就起时间轴（音效也在那时才响）。
  */
-let pendingBuildFx: { maxed: boolean } | null = null;
+let pendingBuildFx: { maxed: boolean; first: BuildClipName } | null = null;
 
 /** 建屋影片缓存（按资源号）—— 440×440 × 68 帧很占显存，播完就 `close()` */
 const buildFlics = new Map<number, LoadedFlic | null>();
@@ -4746,35 +4797,40 @@ function currentBoardFilmFrame(now: number): {
 }
 
 /**
- * 一条 `useTool` 用的是機器工人（9）→ 起播建屋动效。
+ * 本 action 里有没有「原地加蓋」→ 有就起播建屋动效。
+ *
+ * ★ 三条消费点共用这一个出口（见 `build-fx.ts` 文件头第 5 条）：
+ *   機器工人（9）/ 魔法屋「就地加蓋房屋」/ 天使卡（9）。
+ *
+ * ★★ C-ARC-2：判据**不是**这里比出来的 —— core 把 `0x40b110` 返回值的 bit7
+ *   放在 `GameState.lastBuildUpgrades`（`BuildUpgradeHint`，瞬态、不进指纹，
+ *   C-DET-4）。先前这里是 `reachedMaxLandLevel(before.landLevel, state.landLevel,
+ *   landId)` —— 客户端自己按「加之前 4、加之后 5」判，而且注释还把
+ *   「設施支不置位」写反了（`0x0040b21a mov eax, 0x81` 明明白白置位）。
+ *   现在只读 core 的契约，等级比较一行也不在客户端。
  *
  * ★ 只在**状态真的变了**之后调（`applyAction` 里 `state !== before` 那一支）：
  *   原版是「选到目标就扣道具」，盖不动也照样播（0x004472fb 在 0x00447345 之前）；
  *   本引擎的既定口径是「只在真正生效时才收走道具」，于是没生效就不播。
  *   这条差异登记在 `docs/deviations/Q-TOOL-6.md`。
  *
- * 「要不要接 0x20b」只认**目标地块**刚好 4 → 5（`fcn_0040b110` 的 bit7）；
- * 目標是設施时 bit7 不置位（0x0040b1f4），所以設施盖到满级只播大锤。
- *
  * ⚠️ 影片**一段一段解**（这里只解第一段；第二段等第一段播完再解）——
  *   照原版 `read_mkf` → 播 → `libc_free` 的节奏，别把两段 100 MB 一起压在显存里。
  *   首次用的时候解 68 帧要几百毫秒，所以**解完才起时间轴**（原版也是先
  *   `read_mkf` 再 `fcn_0045144f`）—— 那之前挂在 `pendingBuildFx` 上，见 `tickBuildFx`。
  */
-function startBuildFx(before: GameState, action: { type: 'useTool'; toolId: number; nodeId?: number }): void {
-  if (action.toolId !== BUILD_TOOL_ID) return;
-  const nodeId = action.nodeId ?? 0;
-  if (nodeId <= 0) return;
-  const node = map.nodes[nodeId - 1];
-  const landId = node === undefined ? null : housingIndexOf(node.type);
-  const maxed = landId !== null && reachedMaxLandLevel(before.landLevel, state.landLevel, landId);
+function startBuildFx(before: GameState): void {
+  const plan = buildFxPlan(buildUpgradesOf(state, before));
+  if (!plan.hammer && !plan.maxLevel) return;
   // 上一条还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
   if (buildFx !== null) {
     buildFx = null;
     releaseBuildFlics();
   }
-  buildFlicNow('hammer');
-  pendingBuildFx = { maxed };
+  // ★ 天使卡那一支（0x004434c0）**没有** 0x229：直接从 0x20b 起播。
+  const first: BuildClipName = plan.hammer ? 'hammer' : 'maxLevel';
+  buildFlicNow(first);
+  pendingBuildFx = { maxed: plan.maxLevel, first };
   requestRender();
 }
 
@@ -4790,7 +4846,7 @@ function tickBuildFx(now: number): void {
   // ── ① 待播：等第一段影片解好 ──
   const pending = pendingBuildFx;
   if (pending !== null) {
-    const res = buildClip('hammer').resource;
+    const res = buildClip(pending.first).resource;
     if (!buildFlics.has(res)) {
       // 还在解（`buildFlicNow` 的 `.then` 会再 `requestRender`）；真取不到就整段放弃，
       // 免得把 AI 的下一步永远卡在这里（没有素材时不播，只少一段动画）
@@ -4801,8 +4857,9 @@ function tickBuildFx(now: number): void {
     pendingBuildFx = null;
     const flic = buildFlics.get(res) ?? null;
     if (flic === null) return;
-    buildFx = beginBuildFx(performance.now(), pending.maxed);
-    playBuildFxSound('hammer');
+    // ★ 天使卡那一支直接从 0x20b 起播（`withHammer = false`）—— 见 `startBuildFx`。
+    buildFx = beginBuildFx(performance.now(), pending.maxed, pending.first === 'hammer');
+    playBuildFxSound(pending.first);
     requestRender();
     return;
   }
@@ -4903,7 +4960,12 @@ function requestRender(): void {
       // ★ 2026-09-16：接上原版的**回退分支**素材（jump.mkf 的底图 + 跳伞 FLIC +
       //   角色 FLIC + Effect #25）。原先只画一块占位框。素材都在 `assets/`，
       //   取不到就那一步静默跳过（只剩一行「按任意鍵跳過」）。
-      drawIntro(stageCtx, performance.now() - introStartedAt, INTRO_FRAMES, {
+      // ★ 2026-09-18：**每个玩家各两段**（Jxx 跳出去 + Fxx 背降落伞下降）——
+      //   资源号由**该玩家的 `character`** 索引（`0x2f+角色` / `0x3b+角色`），
+      //   所以这里必须把**全桌**的角色号交给它，不能只给 `players[0]`。
+      //   @source `fcn_00415872` VA 0x004158e0（预载）与 0x00415b58 / 0x00415c76（播放）。
+      const introCast = state.players.map((p) => p.character);
+      drawIntro(stageCtx, performance.now() - introStartedAt, {
         sprite: spriteNow,
         flic: uiFlicNow,
         // ★ 音效只放一次：`drawIntro` 只在 `soundPlayed !== true` 那一帧回调，
@@ -4913,10 +4975,10 @@ function requestRender(): void {
           introSoundPlayed = true;
           sound.play('Effect.mkf', id);
         },
-        character: state.players[0]?.character ?? 0,
+        characters: introCast,
         soundPlayed: introSoundPlayed,
       });
-      if (introDone(introStartedAt, performance.now(), introSkipped)) endIntro();
+      if (introDone(introStartedAt, performance.now(), introSkipped, introCast)) endIntro();
       else requestRender();
     } else if (screen === 'assets') {
       // ★ **不要在这里 `return`** —— `blitStage()` 在这条链的末尾，
@@ -5229,8 +5291,9 @@ function drawGameStage(): void {
     //   `runNpc` / `runDoll` 的中间格是岔路上 rand() 选的，渲染器事后推不出来，
     //   所以 core 把它落在 `GameState.lastNpcWalks`（纯表现提示，不进指纹）。
     actorWalks: state.lastNpcWalks,
-    // 「動畫過程」关掉就不播补间（与玩家那条同一个开关）
-    animation: options.animation,
+    // ★ 这里**没有**「動畫過程」开关：原版 `[0x497159]` 只管影片（FLIC），
+    //   走子补间（`0x40c05c` / `0x40d7c4`）一处都没读它 —— 关掉動畫過程时
+    //   棋子照样逐格滑。见 `render.ts` 的 `DrawInput` 与 `startWalk`。
     // 一个 tick 多少毫秒：与玩家那条、与 core 的 tick 同一个节拍
     tickMs: tickMs(options.speed),
     // 原版 [0x49910c] 为 4..8（替身在行动）时传它，只影响同屏幕 Y 时谁压在上面。
@@ -7624,6 +7687,33 @@ async function boot(): Promise<void> {
           dispatch({ type: 'settle' });
           return true;
         },
+        /**
+         * ★ 魔法屋那一屏的状态（`magicScreenState()`）：`playing` / `phase` /
+         *   `hover` / `ring` / `view`。
+         *
+         * 加它是因为这一屏**要玩到才会出现**（落点随机），而「一圈十二格每一项
+         * 都点得到」只能用鼠标真的去点、再读状态来验收；`#log` 里那句
+         * `魔法屋：選定 N（功能名）` 是另一半证据。
+         */
+        magic: () => magicScreenState(),
+        /**
+         * ★ **直达魔法屋**：把当前玩家挪到地图上任意一格魔法屋并结算。
+         *
+         * 走的是与 `warp` 同一条引擎规则（`teleportPlayer` + `settle`），
+         * **不是后门**；落点从 `map.nodes` 的 `specialKind` 找，判据与
+         * `magic-screen.ts` 的 `onMagicHouse` 同一个（`SPECIAL_KIND.MAGIC_HOUSE`）。
+         * @returns 找到了并成功结算返回 true
+         */
+        magicHouse: () => {
+          const node = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.MAGIC_HOUSE);
+          if (node === undefined) return false;
+          const moved = teleportPlayer(state, map.nodes, state.currentPlayer, node.id);
+          // ★ 已经站在那一格上时 `teleportPlayer` 返回 null（没有「移动」可言）——
+          //   直达钩子照样要能重放，所以这一支直接拿现状态结算。
+          state = { ...(moved ?? state), phase: 'settling' };
+          dispatch({ type: 'settle' });
+          return true;
+        },
         /** 地图上所有特殊格：`{ 节点号: specialKind }` */
         specials: () =>
           Object.fromEntries(
@@ -7691,9 +7781,16 @@ async function boot(): Promise<void> {
 
     document.body.classList.add('no-debug');
     bindInput();
+    // ★ 第一次交互就解锁音频 —— 画布之外的任意一点/任意一键也算（autoplay 政策）
+    bindAudioUnlock();
     const online = netParamsFrom(window.location.search);
     if (online !== null) connectOnline(online.url, online.room, online.name);
     else if (straightToGame) startGame();
+    // ★ 一进標題就点 MIDI01（原版 `ui_main.asm:187` → `fcn_004549cf(0)`）。
+    //   此刻通常还没有用户手势：`MusicPlayer.play()` 会把它记成 **pending**，
+    //   第一次交互时立刻补播，不用再等一次 fetch —— 这就是「打开游戏后
+    //   背景音乐要能自动响」（浏览器 autoplay 政策只允许手势之后出声）。
+    else enterTitleScreen();
     requestRender();
     renderPanel();
     log(`地图载入：${map.nodes.length} 个节点、${map.lands.length} 块地`);

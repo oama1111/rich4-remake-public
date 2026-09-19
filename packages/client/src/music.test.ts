@@ -10,9 +10,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { MidiFormatError, parseMidi } from '@rich4/assets-pipeline';
-import { FakeAudioContext } from './fake-webaudio.ts';
-import { MusicPlayer, OscillatorVoice } from './music.ts';
+import { MidiFormatError, MIDI_PLAYLIST, parseMidi } from '@rich4/assets-pipeline';
+import { FakeAudioContext, type FakeOscillator, type FakeSource } from './fake-webaudio.ts';
+import { MusicPlayer, OscillatorVoice, drumKindFor, drumSpec, shouldResumeAfterUnlock } from './music.ts';
 import { buildTestSf2 } from './sf2-fixture.ts';
 import { parseSoundFont } from './soundfont.ts';
 import { SoundFontVoice } from './soundfont-voice.ts';
@@ -84,7 +84,7 @@ const program = (channel: number, program: number): number[] => [0xc0 | channel,
  * | 时刻 | 事件 |
  * |---|---|
  * | 0.00 s | program 0 + note 69 起 |
- * | 0.25 s | note 71 起、**9 号通道 note 36 起**（振荡器后端要跳过） |
+ * | 0.25 s | note 71 起、**9 号通道 note 36 起**（kick；振荡器后端按 GM 鼓号合成） |
  * | 1.00 s | note 73 起 |
  * | 1.25 s | 69 / 71 / 鼓 收 |
  * | 1.75 s | 73 收 |
@@ -104,13 +104,15 @@ const SONG = wrapMidi(
 );
 
 /**
- * node 里没有 `window`，而 `MusicPlayer` 用的是 `window.setInterval`。
- * 只补这两个定时器；真浏览器里当然是本尊。
+ * node 里没有 `window`，而 `MusicPlayer` 用的是 `window.setInterval`；
+ * `unlock()` 还要 `window.AudioContext`（浏览器手势那一条，测试里用假的顶上）。
+ * 只补这三个；真浏览器里当然是本尊。
  */
 beforeAll(() => {
   vi.stubGlobal('window', {
     setInterval: (fn: () => void, ms: number) => setInterval(fn, ms),
     clearInterval: (id: number) => clearInterval(id),
+    AudioContext: FakeAudioContext,
   });
 });
 afterAll(() => {
@@ -133,8 +135,8 @@ describe('回退路径：没有音色库也要出声', () => {
     player.play('test.mid', SONG);
     expect(player.playing).toBe(true);
     expect(player.current).toBe('test.mid');
-    // 三个旋律音；9 号通道那个鼓**不排**
-    expect(ctx.sources).toHaveLength(3);
+    // 三个旋律音 + **9 号通道那一个鼓**（kick = 一个下滑正弦，见下一组测试）
+    expect(ctx.sources).toHaveLength(4);
     player.stop();
     expect(player.playing).toBe(false);
   });
@@ -142,7 +144,8 @@ describe('回退路径：没有音色库也要出声', () => {
   it('GM 音色号按大类选波形 —— 旋律/节奏/时值精确，音色只是近似', () => {
     const { player, ctx } = readyPlayer();
     player.play('test.mid', SONG);
-    for (const src of ctx.sources) {
+    // 只挑旋律音（0/1/3 号节点；2 号是 9 号通道的鼓，见下一组）
+    for (const src of [ctx.sources[0], ctx.sources[1], ctx.sources[3]]) {
       expect((src as unknown as { type?: string }).type).toBe('triangle');
     }
     expect(player.usingSoundFont).toBe(false);
@@ -152,7 +155,7 @@ describe('回退路径：没有音色库也要出声', () => {
   it('音符的起始时刻来自 SMF 的 tick（480 tpqn、120 BPM）', () => {
     const { player, ctx } = readyPlayer();
     player.play('test.mid', SONG);
-    const [first, second, third] = ctx.sources;
+    const [first, second, , third] = ctx.sources;
     expect(first!.starts[0]!.when).toBeCloseTo(0.1, 6); // startedAt = currentTime + 0.1
     expect(second!.starts[0]!.when).toBeCloseTo(0.35, 6); // + 240 tick = 0.25 s
     expect(third!.starts[0]!.when - first!.starts[0]!.when).toBeCloseTo(1.0, 6);
@@ -272,13 +275,14 @@ describe('SoundFont 后端', () => {
   it('播放中换音色库：从头重排，且换回振荡器也照排', () => {
     const { player, ctx } = readyPlayer();
     player.play('test.mid', SONG);
-    expect(ctx.sources).toHaveLength(3);
+    // 振荡器：3 个旋律 + 1 个鼓
+    expect(ctx.sources).toHaveLength(4);
 
     player.setSoundFont(parseSoundFont(buildTestSf2()));
     expect(player.usingSoundFont).toBe(true);
-    // 换了后端要重排这一首（不静音）
-    expect(ctx.sources).toHaveLength(6);
-    expect(ctx.sources.slice(0, 3).every((s) => s.stopped)).toBe(true);
+    // 换了后端要重排这一首（不静音）：音色库没有鼓组 ⇒ 只排 3 个旋律音
+    expect(ctx.sources).toHaveLength(7);
+    expect(ctx.sources.slice(0, 4).every((s) => s.stopped)).toBe(true);
 
     player.clearSoundFont();
     expect(player.usingSoundFont).toBe(false);
@@ -348,5 +352,169 @@ describe('SoundFont 后端', () => {
     const [first] = ctx.sources;
     // 第一声仍然只被排了「音符尾巴」那一次 stop（1.02），没有被 0.25 掐
     expect(first!.stops).not.toContain(0.25);
+  });
+});
+
+// ------------------------------------------------------------
+//  ★ 兜底后端的打击乐 —— 9 号通道不再被丢（用户报的「节拍拖沓」）
+// ------------------------------------------------------------
+
+function drumVoice(): { voice: OscillatorVoice; ctx: FakeAudioContext } {
+  const ctx = new FakeAudioContext();
+  const dest = ctx.createGain();
+  const voice = new OscillatorVoice(ctx as unknown as AudioContext, dest as unknown as AudioNode);
+  return { voice, ctx };
+}
+
+/** 一个 9 号通道（打击乐）音符 */
+const drumNote = (note: number, duration = 1) => ({
+  time: 0,
+  duration,
+  note,
+  velocity: 100,
+  channel: 9,
+  program: 0,
+});
+
+/** 一个节点从起播到收尾的排程长度（秒） */
+function lifetime(s: FakeSource): number {
+  return Math.max(...s.stops) - s.starts[0]!.when;
+}
+
+describe('★ 兜底后端的打击乐（9 号通道）', () => {
+  it('GM 鼓号归到合成音色类别；没列出的鼓号也**不丢**', () => {
+    expect(drumKindFor(36)).toBe('kick');
+    expect(drumKindFor(38)).toBe('snare');
+    expect(drumKindFor(42)).toBe('hat');
+    expect(drumKindFor(46)).toBe('openhat');
+    expect(drumKindFor(45)).toBe('tom');
+    expect(drumKindFor(49)).toBe('crash');
+    // ⚠️ 兜底类别（以前整条通道返回 ⇒ 0 个节点）
+    expect(drumKindFor(31)).toBe('shaker');
+  });
+
+  it('打击乐配方：attack 短、decay 有限（鼓是敲一下，不是按住）', () => {
+    const kinds = ['kick', 'snare', 'clap', 'stick', 'hat', 'openhat', 'tom', 'crash', 'ride', 'metal', 'shaker'] as const;
+    for (const kind of kinds) {
+      const spec = drumSpec(kind);
+      expect(spec.attack, kind).toBeLessThanOrEqual(0.01);
+      expect(spec.decay, kind).toBeLessThanOrEqual(1);
+      expect(spec.peak, kind).toBeGreaterThan(0);
+      // 每一类都得有**至少一个**发声面（噪声或音调），否则就是「排了但没声」
+      expect(spec.noise > 0 || spec.tone !== null, kind).toBe(true);
+    }
+  });
+
+  it('★ kick（36）排出一条低频下滑的正弦 —— 不再是 0 个节点', () => {
+    const { voice, ctx } = drumVoice();
+    voice.schedule(drumNote(36), 0);
+    expect(ctx.sources).toHaveLength(1);
+    const osc = ctx.sources[0] as FakeOscillator;
+    expect(osc.type).toBe('sine');
+    const freqs = osc.frequency.events.map((e) => e.value);
+    expect(freqs[0]!).toBeGreaterThan(freqs[freqs.length - 1]!);
+    voice.stop();
+  });
+
+  it('snare（38）是「噪声 + 音调」两面；hat（42）只有噪声', () => {
+    const { voice, ctx } = drumVoice();
+    voice.schedule(drumNote(38), 0);
+    expect(ctx.sources).toHaveLength(2);
+    expect(ctx.sources.filter((s) => s.buffer !== null)).toHaveLength(1);
+    expect(ctx.sources.filter((s) => (s as FakeOscillator).type !== undefined)).toHaveLength(1);
+    voice.stop();
+
+    const { voice: v2, ctx: c2 } = drumVoice();
+    v2.schedule(drumNote(42), 0);
+    expect(c2.sources).toHaveLength(1);
+    expect(c2.sources[0]!.buffer).not.toBeNull();
+    v2.stop();
+  });
+
+  it('★ 打击乐的有效时长远短于旋律音（鼓按自己的余韵收，不跟 MIDI 时值）', () => {
+    const { voice, ctx } = drumVoice();
+    voice.schedule(drumNote(36, 4), 0); // 4 秒的「长」鼓
+    voice.schedule({ time: 0, duration: 4, note: 60, velocity: 100, channel: 0, program: 0 }, 0);
+    const drumLife = lifetime(ctx.sources[0]!);
+    const melodyLife = lifetime(ctx.sources[1]!);
+    expect(drumLife).toBeLessThan(0.35);
+    expect(melodyLife).toBeGreaterThan(3.9);
+    expect(melodyLife / drumLife).toBeGreaterThan(10);
+    voice.stop();
+  });
+
+  it('整条通道的鼓号都能排出节点（改回「跳过通道 9」这一条立刻变红）', () => {
+    const { voice, ctx } = drumVoice();
+    for (const n of [36, 38, 42, 46, 45, 49, 51, 56, 70]) voice.schedule(drumNote(n), 0);
+    expect(ctx.sources.length).toBeGreaterThanOrEqual(9);
+    voice.stop();
+  });
+
+  it('同时发声音数越多峰値越低（`1/sqrt(n)` 的 duck）', () => {
+    const { voice, ctx } = drumVoice();
+    voice.schedule(drumNote(36), 0);
+    voice.schedule(drumNote(36), 0.1);
+    const peaks = ctx.gains
+      .flatMap((g) => g.gain.events)
+      .filter((e) => e.kind === 'linear')
+      .map((e) => e.value);
+    expect(peaks).toHaveLength(2);
+    expect(peaks[1]!).toBeLessThan(peaks[0]!);
+    voice.stop();
+  });
+});
+
+// ------------------------------------------------------------
+//  ★ 解锁前点播 → 解锁后立刻补播（用户报的「BGM 要点击一下才播」）
+// ------------------------------------------------------------
+
+describe('★ 解锁后立刻补播（autoplay 政策）', () => {
+  it('`shouldResumeAfterUnlock`：标题点 MIDI01，其它屏退回清单第一首，已有曲子不打断', () => {
+    expect(shouldResumeAfterUnlock('title', '')).toBe('midi01.mid');
+    expect(shouldResumeAfterUnlock('game', '')).toBe(MIDI_PLAYLIST[0]);
+    expect(shouldResumeAfterUnlock('title', 'midi08.mid')).toBeNull();
+    expect(shouldResumeAfterUnlock('game', 'Rich16.mid')).toBeNull();
+  });
+
+  it('★ 未解锁时 `play()` 记下曲子；`unlock()` 后立刻 `playing === true` 且音符已排', () => {
+    const spy = vi.spyOn(FakeAudioContext.prototype, 'createOscillator');
+    const player = new MusicPlayer();
+    // 浏览器手势之外不许出声：这时点播只能**记下来**
+    player.play('midi01.mid', SONG);
+    expect(player.current).toBe('midi01.mid');
+    expect(player.pending).toBe(true);
+    expect(player.playing).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+
+    player.unlock(); // ← 模拟第一次用户手势
+    expect(player.pending).toBe(false);
+    expect(player.playing).toBe(true);
+    expect(player.current).toBe('midi01.mid');
+    // 「立刻拿到一首曲子」不只是状态：音符真的排到了 AudioContext 上
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+    player.stop();
+    expect(player.playing).toBe(false);
+  });
+
+  it('解锁前的点播被后一首覆盖（旧的那首不会冒出来）', () => {
+    const player = new MusicPlayer();
+    player.play('a.mid', SONG);
+    player.play('b.mid', SONG);
+    expect(player.current).toBe('b.mid');
+    player.unlock();
+    expect(player.current).toBe('b.mid');
+    expect(player.playing).toBe(true);
+    player.stop();
+  });
+
+  it('坏字节不留 pending（解锁后也不会诈尸出声）', () => {
+    const player = new MusicPlayer();
+    player.play('bad.mid', Uint8Array.from([1, 2, 3]));
+    expect(player.pending).toBe(false);
+    expect(player.current).toBe('');
+    player.unlock();
+    expect(player.playing).toBe(false);
+    player.stop();
   });
 });

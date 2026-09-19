@@ -263,13 +263,16 @@ export interface RenderInput {
    */
   actorWalks?: readonly ActorWalk[];
   /**
-   * 「動畫過程」开着吗（原版设定）。关掉就不播补间、直接落格心；
-   * 不给按**开**处理（原版默认是开）。
-   */
-  animation?: boolean;
-  /**
    * 一个 tick 多少毫秒（见 `tick.ts`）。不给按 20（每一帧都 tick）。
    * 替身补间只在这里用；玩家那条由 `startWalk()` 的入参给。
+   *
+   * ★ **这里曾经还有一个 `animation?: boolean`（動畫過程）开关，2026-09-18 删掉了**：
+   *   原版 `[0x497159]`（= RICH4.CFG offset 1）的 22 个读点**全在影片（FLIC）
+   *   播放处**（`0x40EC14..0x40F31C` 那一批道具/卡片的、`0x43D67B` 入獄、
+   *   `0x43ED27` 住院…），走子那两支 `0x40C05C`（`fcn_0040c05c`）与
+   *   `0x40D7C4`（`fcn_0040d7c4`）**一个都没有** ——
+   *   所以「動畫過程」关掉时原版棋子**照样逐格滑**，只是不播那些影片。
+   *   先前用 `animation: false` 把补间整个闸掉（棋子瞬移），是错的。
    */
   tickMs?: number;
   /**
@@ -622,21 +625,31 @@ export interface ActorWalkStep {
  * @source VA 0x0040c5dd..0x0040c659（`fcn_0040c05c` 的 actor ≥ 4 分支，
  *   入口是 `0040c06f cmp ecx,4 / jge 0x40c489`）：
  * ```asm
+ * 0040c4ac  movsx eax, word [ebx]        ; ★ 起点 = **节点记录**的 +0x00（世界 x）
+ * 0040c4b3  movsx eax, word [ebx + 2]    ; ★ 起点 = 节点记录的 +0x02（世界 y）
+ * 0040c5a8  movsx eax, word [ebx]        ; 终点同理（ebx 换成了落点那一条记录）
+ * 0040c5b9  edx = 终点x − 起点x ; edi = 终点y − 起点y
  * 0040c5dd  call fsqrt
- * 0040c5e2  fst  dword [esp+0xc]       ; dist = sqrt(dx² + dy²)（屏幕距离）
- * 0040c5e6  fmul dword [0x4631dc]      ; ★ dist × 0.125f —— **无条件**，没有 fdivr 那一支
- * 0040c5ec  fstp dword [esp+0x1c]      ; N_f
- * 0040c650  fld N_f / call 0x457dbc    ; 向零截断 → [0x4749dc]
+ * 0040c5e2  fst  dword [esp+0xc]         ; dist = sqrt(dx² + dy²)（★ 世界坐标，不是屏幕）
+ * 0040c5e6  fmul dword [0x4631dc]        ; ★ dist × 0.125f —— **无条件**，没有 fdivr 那一支
+ * 0040c5ec  fstp dword [esp+0x1c]        ; N_f
+ * 0040c650  fld N_f / call 0x457dbc      ; 向零截断 → [0x4749dc]
  * ```
  *   即 `tweenTickCount(dx, dy, 0, /*special*\/ true)` —— 与玩家「乘骑/被抬走」同一条。
  *
+ * ★★ **tick 数按世界坐标算，不是屏幕坐标**（2026-09-18 订正）：这一支从头到尾
+ *   没碰过投影（`0x407a2c`）。玩家那一支（`0x40c1d4..0x40c23e`）也一样：
+ *   `[esp+0x18]/[esp+0x14]` 直接取节点记录的 `+0x00`/`+0x02`。
+ *   ⇒ **镜头/视角/缩放都不影响一格要播几 tick**。先前这里按 `worldToScreen` 的
+ *   距离算，于是同一条边换个视角 tick 数就变；节点不在 29×29 窗口里时投影更会
+ *   返回 null、被当成 1 tick（「走回棋盘」那种长边直接瞬移）。
+ *
  * @param nodes 地图节点表（下标 = 节点号 − 1）
- * @param toScreen 世界坐标 → 屏幕坐标（tick 数按**屏幕**距离算，与 exe 同）
+ * @param tickMs 一个 tick 多少毫秒（见 `tick.ts`）
  */
 export function actorWalkSteps(
   path: readonly number[],
   nodes: readonly MapNode[],
-  toScreen: (x: number, y: number) => { x: number; y: number } | null,
   tickMs: number,
 ): ActorWalkStep[] {
   const steps: ActorWalkStep[] = [];
@@ -646,12 +659,8 @@ export function actorWalkSteps(
     const a = nodes[(path[i] ?? 0) - 1];
     const b = nodes[(path[i + 1] ?? 0) - 1];
     if (a === undefined || b === undefined) break;
-    const sa = toScreen(a.x, a.y);
-    const sb = toScreen(b.x, b.y);
-    // ⚠️ 先把可空的两个屏幕端点收成局部常量再算（否则 TS 的收窄过不了）
-    const ticks = sa === null || sb === null ? 1 : tweenTickCount(sb.x - sa.x, sb.y - sa.y, 0, true);
-    const exactTicks =
-      sa === null || sb === null ? 1 : tweenTickExact(sb.x - sa.x, sb.y - sa.y, 0, true);
+    const ticks = tweenTickCount(b.x - a.x, b.y - a.y, 0, true);
+    const exactTicks = tweenTickExact(b.x - a.x, b.y - a.y, 0, true);
     const ms = ticks * tickMs;
     steps.push({
       from: { x: a.x, y: a.y },
@@ -1237,13 +1246,44 @@ export function buildingArtItems(
   const gameMap = state.globalMapId & 3;
   const base = facilitySheetBase(gameStage, gameMap);
   for (const f of map.facilities) {
+    // ★★ 2026-09-18 修「大型空地一开局就被画成青色边框的公園」：**读运行时状态**，
+    //   而且**等级 0 先分流**，与 exe 同序：
+    // ```asm
+    // 004093f3  cmp byte [ebp + 0x1a], 0      ; ★ facility.level（+0x1a）== 0 ？
+    // 004093f7  je  0x409457                  ;   → 空地那一支，**根本不去查 type 跳转表**
+    // ```
+    //   ⚠️ 地图文件里 facility 的 `+0x18`(type) / `+0x19`(owner) / `+0x1a`(level)
+    //   **恒为 0**（`map-format.md` §4.6 的实测表）：它们是运行期字段，
+    //   真值住在 `GameState.facilityType/Level/Owner`（下标 = 設施 id）。
+    //   先前这里读模板的 `f.type/f.level` ⇒ `facilitySlot(0, 0)` = **槽 0 = 公園**，
+    //   于是每一块还没盖的商業用地都被画成了公園 —— 正是用户看到的那一幕。
+    const level = state.facilityLevel[f.id] ?? f.level;
+    const owner = state.facilityOwner[f.id] ?? f.owner;
+    const type = state.facilityType[f.id] ?? f.type;
+    if (level < 1) {
+      // ▸ 空地（等级 0）
+      if (owner === 0) continue;
+      // @source VA 0x0040945e `cmp byte [ebp+0x19], 0 / je 0x409486`（无主 → 不画）
+      // @source VA 0x00409486 `xor edi,edi / mov [slot+0x48a84c], edi` —— 资源 0 ⇒ 整条跳过
+      // @source VA 0x00409464 `mov eax,[0x48aea8]` = map.mkf #25（空地 logo）
+      // @source VA 0x00409478 `al = player[owner-1].+0x13` —— ★ 图号 = **角色号**，不吃视角
+      // @source VA 0x00409457 `[slot+6] = 0xff` —— 这一支**不换归属色**
+      items.push({
+        x: f.x,
+        y: f.y,
+        res: EMPTY_LAND_LOGO_RESOURCE,
+        img: state.players[owner - 1]?.character ?? 0,
+      });
+      continue;
+    }
+    // ▸ 盖过（等级 ≥ 1）才查 `type` 的 5 路跳转表（@source VA 0x00409412 `jmp [eax*4+0x408289]`）
     items.push({
       x: f.x,
       y: f.y,
-      res: base + facilitySlot(f.type, f.level),
+      res: base + facilitySlot(type, level),
       // @source VA 0x004093c3：与建筑同一算式，朝向在 facility +0x1b
       img: buildingImageIndex(f.facing, view),
-      ...(f.owner === 0 ? {} : { ring: characterColor(state, f.owner) }),
+      ...(owner === 0 ? {} : { ring: characterColor(state, owner) }),
     });
   }
 
@@ -1413,13 +1453,20 @@ export class BoardRenderer {
   /**
    * 开始播一步的补间（世界坐标起终点）。
    *
-   * @source `fcn_0040c05c`：tick 数 = `trunc(屏幕距离 / 走子速度)`，
+   * @source `fcn_0040c05c`：tick 数 = `trunc(世界距离 / 走子速度)`，
    *   线性等分、**一个 tick 一帧**（细节与出处见 `tween.ts`）。
-   *   ★ 「動畫過程」关掉时原版根本不播 —— 这里用 `enabled` 表达同一件事。
    *
-   * tick 数按**屏幕**距离算，故要传当前的镜头与视口（都来自调用方）。
+   * ★★ tick 数按**世界坐标**（节点记录 `+0x00`/`+0x02`）算，**与镜头/视角/缩放无关**
+   *   —— 原版这一支从头到尾不碰投影（`@source 0x40c1d4..0x40c23e`：起点取节点记录，
+   *   终点取落点记录，相减求模长）。先前这里用 `worldToScreen` 的距离，于是
+   *   视角一转 tick 数就变、镜头外的落点还会退化成 1 tick。
+   *   屏幕坐标只在**画**的时候用（见 `#walkScreen`）。
    *
-   * @param traffic 交通方式（0 走路 / 1 機車 / 2 汽車 / 3 船）→ 速度 [8,12,16,8] 像素/tick
+   * ⚠️ 「動畫過程」（`[0x497159]`）**不闸**走子补间 —— 原版的 22 个读点全在影片
+   *   （FLIC）播放处，`0x40c05c` / `0x40d7c4` 一个都没有。`enabled` 只留给
+   *   「静音/无动画」这类调试用途，正常开局恒为真。见 `docs/known-deviations.md`。
+   *
+   * @param traffic 交通方式（0 走路 / 1 機車 / 2 汽車 / 3 船）→ 速度 [8,12,16,8]（**世界单位**每 tick）
    * @param special 原版 `slot != 0 || (player.flags & 0x30)` 那一支
    * @param tickMs  一个 tick 多少毫秒（见 `tick.ts`）
    */
@@ -1427,25 +1474,14 @@ export class BoardRenderer {
     player: number,
     from: { x: number; y: number },
     to: { x: number; y: number },
-    enabled: boolean,
-    camera: Camera,
-    vp: { w: number; h: number },
     traffic = 0,
     special = false,
     tickMs = 20,
     now = performance.now(),
   ): void {
-    if (!enabled) {
-      this.#walk = null;
-      return;
-    }
-    const a = worldToScreen(from.x, from.y, camera, vp);
-    const b = worldToScreen(to.x, to.y, camera, vp);
-    const ticks =
-      a === null || b === null ? 1 : tweenTickCount(b.x - a.x, b.y - a.y, traffic, special);
+    const ticks = tweenTickCount(to.x - from.x, to.y - from.y, traffic, special);
     // ★★ 每拍位移除的是**未截断**的 N_f（原版 `0x0040c2ae`），只有末拍吸附落点
-    const exactTicks =
-      a === null || b === null ? 1 : tweenTickExact(b.x - a.x, b.y - a.y, traffic, special);
+    const exactTicks = tweenTickExact(to.x - from.x, to.y - from.y, traffic, special);
     this.#walk = { player, from, to, ticks, exactTicks, tickMs, start: now, ticked: 0 };
     this.#dirty = true;
   }
@@ -1507,22 +1543,19 @@ export class BoardRenderer {
   /**
    * 起一条替身补间 —— `path` 依次经过的节点号（含起点）。
    *
-   * tick 数按**屏幕**距离算，且一律走 `dist × 0.125` 那一支
+   * tick 数按**世界坐标**距离算（镜头无关），且一律走 `dist × 0.125` 那一支
    * （见 `actorWalkSteps` 的出处）。
    */
   #beginActorWalk(
     slot: number,
     nodes: readonly MapNode[],
     path: readonly number[],
-    enabled: boolean,
-    camera: Camera,
-    vp: { w: number; h: number },
     tickMs: number,
     now: number,
   ): void {
     this.#actorWalks.delete(slot);
-    if (!enabled || path.length < 2) return;
-    const steps = actorWalkSteps(path, nodes, (x, y) => worldToScreen(x, y, camera, vp), tickMs);
+    if (path.length < 2) return;
+    const steps = actorWalkSteps(path, nodes, tickMs);
     if (steps.length === 0) return;
     this.#actorWalks.set(slot, { steps, start: now, tickMs, ticked: 0 });
     // @source VA 0x0040deed：起步（`fcn_0040dd1f` 尾）把走路帧清零
@@ -1538,10 +1571,7 @@ export class BoardRenderer {
   #syncActorWalks(
     state: GameState,
     nodes: readonly MapNode[],
-    camera: Camera,
-    vp: { w: number; h: number },
     supplied: readonly ActorWalk[] | undefined,
-    enabled: boolean,
     tickMs: number,
     now: number,
   ): void {
@@ -1553,7 +1583,7 @@ export class BoardRenderer {
       if (r.seen.get(slot) === ACTOR_OFF_BOARD) this.#actorWalks.delete(slot);
     }
     for (const w of r.walks) {
-      this.#beginActorWalk(w.slot, nodes, w.path, enabled, camera, vp, tickMs, now);
+      this.#beginActorWalk(w.slot, nodes, w.path, tickMs, now);
     }
   }
 
@@ -1584,27 +1614,30 @@ export class BoardRenderer {
         break;
       }
     }
-    const a = worldToScreen(step.from.x, step.from.y, cam, vp);
-    const b = worldToScreen(step.to.x, step.to.y, cam, vp);
-    if (a === null || b === null) return null;
-
+    // ★ 插值走**世界坐标**，投影到屏幕 —— 与 exe 同一条：
+    //   原版每 tick 把世界位置加一个 `dx/N_f`，**画的时候**才投影
+    //   （`0x40c38a`/`0x40c3a4` 写 `+0x496b70/+0x496b72`）。投影带透视畸变，
+    //   所以「世界线性」≠「屏幕线性」，不能在屏幕上等分。
     const k = Math.min(step.ticks, Math.floor((elapsed - step.at) / w.tickMs) + 1);
     const absolute = step.tickAt + k;
     if (absolute > w.ticked) {
       this.#actorFrame.set(slot, (this.#actorFrame.get(slot) ?? 0) + (absolute - w.ticked));
       w.ticked = absolute;
     }
-    const p = walkFramesFor(a, b, step.ticks, step.exactTicks)[k - 1];
+    const p = walkFramesFor(step.from, step.to, step.ticks, step.exactTicks)[k - 1];
     if (p === undefined) return null;
+    const s = worldToScreen(p.x, p.y, cam, vp);
+    if (s === null) return null;
     // @source 逐格前进时写 `+9 direction`（`_rich4_calculate_direction`，VA 0x00454fb4）
-    return { x: p.x, y: p.y, nodeId: step.toNode, direction: actorWalkDirection(step) };
+    return { x: s.x, y: s.y, nodeId: step.toNode, direction: actorWalkDirection(step) };
   }
 
   /**
    * 走子补间这一帧该画在**屏幕**的哪里；没有补间返回 null（调用方按格心画）。
    *
-   * ★ 插值走 `framesFor`（纯函数，`tween.ts` 里有单测）——**屏幕坐标**上插值，
-   *   与 exe 一致（它就是把两个屏幕端点等分）。
+   * ★ 插值在**世界坐标**上做、画的时候才投影（`@source 0x40c38a` / `0x40c3a4`：
+   *   原版每 tick 加的是世界位移，投影发生在绘制那一步）。投影有透视畸变，
+   *   在屏幕坐标上等分与原版的曲线**不重合** —— 这是 2026-09-18 订正的第二处。
    *
    * ★ 顺带把走路帧按**已经过去的 tick 数**补齐 —— 与 exe 一样，
    *   补间前进一 tick、走路帧就进一帧（`fcn_0040c05c` 同一处）。
@@ -1617,17 +1650,16 @@ export class BoardRenderer {
   ): { x: number; y: number } | null {
     const w = this.#walk;
     if (w === null || w.player !== playerIndex) return null;
-    const a = worldToScreen(w.from.x, w.from.y, cam, vp);
-    const b = worldToScreen(w.to.x, w.to.y, cam, vp);
-    if (a === null || b === null) return null;
 
     const k = Math.min(w.ticks, Math.floor((now - w.start) / w.tickMs) + 1);
     if (k > w.ticked) {
       this.#walkFrame = (this.#walkFrame + (k - w.ticked)) & 0xff;
       w.ticked = k;
     }
-    const frames = walkFramesFor(a, b, w.ticks, w.exactTicks);
-    return frames[k - 1] ?? null;
+    const frames = walkFramesFor(w.from, w.to, w.ticks, w.exactTicks);
+    const p = frames[k - 1];
+    if (p === undefined) return null;
+    return worldToScreen(p.x, p.y, cam, vp);
   }
 
   /** 某个资源里有几张图（同步，只解表头） */
@@ -1754,16 +1786,7 @@ export class BoardRenderer {
     // ★ 替身（四大惡人／機器娃娃）的走子补间要先同步：它决定这一帧他们是「站」
     //   还是「走」、画在哪个插值点上。首帧只记账不播（见 `#syncActorWalks`）。
     const nowMs = performance.now();
-    this.#syncActorWalks(
-      state,
-      map.nodes,
-      camera,
-      vp,
-      input.actorWalks,
-      input.animation ?? true,
-      input.tickMs ?? 20,
-      nowMs,
-    );
+    this.#syncActorWalks(state, map.nodes, input.actorWalks, input.tickMs ?? 20, nowMs);
 
     const slots: DrawSlot[] = [
       ...this.#buildingSlots(map, state, camera, vp),

@@ -188,7 +188,7 @@ describe('★ 玩家走子：补间的每一帧都出 token（不许空帧、不
     await frames(renderer, input, images, [980, 990, 999], clock);
 
     // 一步：世界距离 40 → 走路速度 8 px/tick → 5 tick；一 tick 20 ms，rAF 8 ms
-    renderer.startWalk(0, { x: 0, y: 0 }, { x: 40, y: 0 }, true, CAM, input.viewport, 0, false, 20);
+    renderer.startWalk(0, { x: 0, y: 0 }, { x: 40, y: 0 }, 0, false, 20);
     const times = Array.from({ length: 14 }, (_, f) => 1000 + f * 8);
     const log = await frames(renderer, input, images, times, clock);
 
@@ -223,7 +223,7 @@ describe('★ 玩家走子：补间的每一帧都出 token（不许空帧、不
     renderer.draw(idle);
     expect(images.filter((i) => i.bitmap.res === 128)).toHaveLength(1);
 
-    renderer.startWalk(0, { x: 0, y: 0 }, { x: 40, y: 0 }, true, CAM, input.viewport, 0, false, 20);
+    renderer.startWalk(0, { x: 0, y: 0 }, { x: 40, y: 0 }, 0, false, 20);
     arcs.n = 0; // 冷启动那一帧（这个槽一张图都还没有）会退回色块，不计入
     const times = Array.from({ length: 8 }, (_, f) => 1000 + f * 8);
     const log = await frames(renderer, input, images, times, clock);
@@ -391,7 +391,7 @@ describe('★ 缓存淘汰时，「上一张」必须一起摘掉（Q-PERF-1 的
     expect(stand).toBeDefined();
 
     // 走起来（走姿解不出来 → 画的是上一张 128）
-    renderer.startWalk(0, { x: 0, y: 0 }, { x: 40, y: 0 }, true, CAM, input.viewport, 0, false, 20);
+    renderer.startWalk(0, { x: 0, y: 0 }, { x: 40, y: 0 }, 0, false, 20);
     clock.now = 1008;
     images.length = 0;
     renderer.draw(input);
@@ -420,11 +420,17 @@ describe('动效出口两条来源共用 @source Q-TOOL-5 ⑤14', () => {
     expect(hits, 'startActionFx 应当有 1 处定义 + 2 处调用').toBe(3);
     // 两条来源都必须在
     expect(src).toContain('startActionFx(action, before);');
-    // 三处旧钩子都收进 `startActionFx` 里了 —— 全文件只该出现这 3 次
-    const hooks = src
+    // 三处旧钩子都收进 `startActionFx` 里了 —— 全文件只该有这 3 处**调用**。
+    // ★ 2026（E6）：機器工人那一条不再按 action 种类分流 —— 它改读 core 写的
+    //   `state.lastBuildUpgrades`（C-ARC-2），于是一行 `startBuildFx(before);`
+    //   同时覆盖 機器工人 / 魔法屋「就地加蓋」/ 天使卡，而不是被
+    //   `if (action.type === 'useTool')` 圈住。判据改成「三处**调用点**各一次」。
+    const hookLines = src
       .split('\n')
-      .filter((l) => /if \(action\.type === 'use(Tool|Card)'\) start/.test(l));
-    expect(hooks.length, '三处动效钩子只该在 startActionFx 里各一次').toBe(3);
+      .filter((l) =>
+        /^\s+(?:if \(action\.type === 'use(Tool|Card)'\) )?start(ObjectFlight|CardFlight|BuildFx)\(/.test(l),
+      );
+    expect(hookLines.length, '三处动效钩子只该在 startActionFx 里各一次').toBe(3);
   });
 });
 

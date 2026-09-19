@@ -15,6 +15,7 @@
  *  - 音效只有**一声** 38（VA 0x0040ded1..0x0040dedc，移动音效表 0x48234a 的
  *    第 9 项），走子途中没有逐格音效。
  */
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   actorTokens,
@@ -113,21 +114,21 @@ describe('★ 替身逐格的朝向（`actorWalkDirection`）—— 与 exe 的 
   it('★ **面朝去路**，不是倒着走 —— 向下走的那一格拿到「正面」那一组图', () => {
     // 节点 2 在节点 1 的正下方（屏幕 y 向下）
     const nodes = [makeNode({ id: 1, x: 0, y: 0 }), makeNode({ id: 2, x: 0, y: 40 })];
-    const steps = actorWalkSteps([1, 2], nodes, (x, y) => ({ x, y }), 20);
+    const steps = actorWalkSteps([1, 2], nodes, 20);
     expect(steps).toHaveLength(1);
     // 0 = 面朝屏幕下 = 正面（见 0380_000 那张正面图）
     expect(actorWalkDirection(steps[0]!)).toBe(0);
     // 视角 0 时图组就是 0；走姿 0x20a 的第 0..4 张 = 正面 5 帧
     expect(screenDirection(0, 0)).toBe(0);
     // 往回走（向上）= 背面那一组（4），与玩家同一套
-    const up = actorWalkSteps([2, 1], nodes, (x, y) => ({ x, y }), 20);
+    const up = actorWalkSteps([2, 1], nodes, 20);
     expect(actorWalkDirection(up[0]!)).toBe(4);
   });
 });
 
 describe('★ 补间每一格带上自己的节点号（娃娃收场后 state 里已经没有它了）', () => {
   it('`fromNode` / `toNode` 就是 `path` 上相邻的两个节点', () => {
-    const steps = actorWalkSteps([3, 4, 5], lineNodes(5), (x, y) => ({ x, y }), 20);
+    const steps = actorWalkSteps([3, 4, 5], lineNodes(5), 20);
     expect(steps.map((s) => [s.fromNode, s.toNode])).toEqual([
       [3, 4],
       [4, 5],
@@ -329,7 +330,7 @@ describe('★ 端到端：`draw()` 里娃娃那一趟真的画得出来（需求
 
     // 走过一格之后位置必须变了（不是钉死在起点）
     const total = actorWalkTotalMs(
-      actorWalkSteps(path, map.nodes, (x, y) => ({ x, y }), 20),
+      actorWalkSteps(path, map.nodes, 20),
     );
     clock = 1000 + Math.floor(total / 2);
     clear();
@@ -345,7 +346,11 @@ describe('★ 端到端：`draw()` 里娃娃那一趟真的画得出来（需求
     expect(dollDraws()).toHaveLength(0);
   });
 
-  it('「動畫過程」关掉 → 补间压根不起，也不画（与原版同一条开关）', () => {
+  it('★ 「動畫過程」**闸不住**走子补间 —— 关掉它棋子照样逐格滑 @source VA 0x0040c05c / 0x0040d7c4', async () => {
+    // 2026-09-18 订正：原版 `[0x497159]`（RICH4.CFG offset 1）的 22 个读点
+    // **全在影片（FLIC）播放处**（0x40EC14..0x40F31C、0x43D67B 入獄、0x43ED27 住院…），
+    // 走子那两支 `fcn_0040c05c` / `fcn_0040d7c4` 一处都没读它。
+    // ⇒ 先前那条「关掉就不起补间」的断言是错的（也正是棋子会瞬移的原因）。
     let clock = 1000;
     vi.spyOn(performance, 'now').mockImplementation(() => clock);
     const state = afterDollWalk([1, 2, 3]);
@@ -359,11 +364,16 @@ describe('★ 端到端：`draw()` 里娃娃那一趟真的画得出来（需求
       viewport: { w: 440, h: 440 },
       actorWalks: state.lastNpcWalks,
       tickMs: 20,
-      animation: false,
     };
     renderer.draw(input);
-    clock = 1005;
+    // 精灵异步解码落地，再画一帧（与上一条端到端测试同一套路）
+    await new Promise((r) => setTimeout(r, 0));
+    clock = 1000 + 5;
     renderer.draw(input);
-    expect(images.filter((i) => i.bitmap.res === 0x20a)).toHaveLength(0);
+    // 补间在跑 ⇒ 这一趟会画出走姿（0x20a）。★ 这里**没有**任何「動畫過程」开关。
+    expect(images.filter((i) => i.bitmap.res === 0x20a).length).toBeGreaterThan(0);
+    // ★ 反证：`DrawInput` 里已经没有 `animation` 这个入口了
+    const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
+    expect(src).not.toContain('input.animation');
   });
 });

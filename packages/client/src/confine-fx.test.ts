@@ -11,6 +11,8 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { MkfArchive, parseFlicInfo } from '@rich4/assets-pipeline';
+import { tickBlockingCounter } from '@rich4/core';
+
 import { LAYOUT } from './stage.ts';
 import {
   CONFINE_FX_ARCHIVE,
@@ -153,6 +155,46 @@ describe('★ 什么时候播（占用表 / 计数的一拍之差）', () => {
     const before = st({ hosp: [1, 0, 0, 0], inHospital: [3, 0, 0, 0] });
     const after = st({ hosp: [0, 0, 0, 0], inHospital: [0, 0, 0, 0] });
     expect(confineFxTrigger(before, after)).toBeNull();
+  });
+
+  it('★★ 刑满待释放（1 → 0x80）**不算**「刚被送医」—— 不许重播救护车', () => {
+    // 需求方第 5 条：「NPC 角色走动后…自动呼出了救护车抬人的动画」。
+    // 0x80 不是「更多天数」，是 `@source 0x41c8ea or ch,0x80` 那个**待释放**状态位。
+    // 旧代码整字节比大小 ⇒ 0x80 > 1 成立 ⇒ 每住一次院都多播一遍 6.2 秒的影片。
+    // —— 真实引擎产出的这一步用 core 的 `tickBlockingCounter` 算，不手写魔数：
+    const release = tickBlockingCounter(1);
+    expect(release.value).toBe(0x80); // 1 → 0x80（挂待释放），value 由 core 给
+    const before = st({ hosp: [1, 0, 0, 0], inHospital: [1, 0, 0, 0] });
+    const after = st({ hosp: [1, 0, 0, 0], inHospital: [release.value, 0, 0, 0] });
+    expect(confineFxTrigger(before, after)).toBeNull();
+    // 监狱同一条：1 → 0x80 也不许播
+    expect(
+      confineFxTrigger(
+        st({ pris: [1, 0, 0, 0], inPrison: [1, 0, 0, 0] }),
+        st({ pris: [1, 0, 0, 0], inPrison: [tickBlockingCounter(1).value, 0, 0, 0] }),
+      ),
+    ).toBeNull();
+  });
+
+  it('★ 但**真的**加刑 / 真的送入照样播（掩掉高位没把这两条一并吞掉）', () => {
+    // 加刑：`confine()` 写的是 `(existing + days) & 0x7f`，低 7 位确实变大
+    expect(
+      confineFxTrigger(
+        st({ hosp: [1, 0, 0, 0], inHospital: [3, 0, 0, 0] }),
+        st({ hosp: [1, 0, 0, 0], inHospital: [5, 0, 0, 0] }),
+      ),
+    ).toBe('hospital');
+    // 待释放期间**又被送进去**：core 的 `confine` 给出 (0x80 + 3) & 0x7f = 3
+    expect(
+      confineFxTrigger(
+        st({ hosp: [1, 0, 0, 0], inHospital: [0x80, 0, 0, 0] }),
+        st({ hosp: [1, 0, 0, 0], inHospital: [3, 0, 0, 0] }),
+      ),
+    ).toBe('hospital');
+    // 首次送入（占用表 0→1）
+    expect(confineFxTrigger(st({}), st({ hosp: [0, 1, 0, 0], inHospital: [0, 3, 0, 0] }))).toBe(
+      'hospital',
+    );
   });
 
   it('什么都没变 → 不播', () => {

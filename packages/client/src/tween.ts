@@ -12,20 +12,28 @@
  * ```asm
  * ; 一格开始时算一次（[0x4749dc] == 0）：
  * tx, ty = mapnode[目标].x, .y                    ; → [0x48bae4] / [0x48bae8]
- * dx = tx - 旧屏幕x ; dy = ty - 旧屏幕y
- * dist = sqrt(dx*dx + dy*dy)
+ *                                                 ; ★ 0x40c1d4/0x40c205：直接取**节点记录**的
+ *                                                 ;   +0x00/+0x02，**不做投影**
+ * dx = tx - 旧x ; dy = ty - 旧y                   ; ★ 旧x/y 也是节点记录（或 player.x/y，
+ *                                                 ;   「走回棋盘」那一支 0x40c0dc）
+ * dist = sqrt(dx*dx + dy*dy)                      ; ★ 世界距离，不是屏幕距离
  * if (slot != 0 || (player.flags & 0x30))  N_f = dist * 0.125      ; [0x4631dc] = 0.125f
  * else                                     N_f = dist / speed[交通方式]
- *                                          ; ★ [0x4749d8] = [8, 12, 16, 8]，单位**像素/tick**
+ *                                          ; ★ [0x4749d8] = [8, 12, 16, 8]，单位**世界单位/tick**
  * stepX = dx / N_f ; stepY = dy / N_f
- * curX = (float)player.screenX ; curY = (float)player.screenY
+ * curX = (float)player.x ; curY = (float)player.y ; ★ 0x40c2d0 起：累加器 = player.x/y
  * N = (int)N_f            ; ★ 向零截断（fcn_00457dbc 把 FPU 舍入位置成 11b）
  * if (N == 0) N = 1
  * N--
  * if (N <= 0) { 吸附到 (tx,ty) ; return 1 }        ; ★ 最后一格不插值
  * curX += stepX ; curY += stepY
- * player.screenX = (int)curX ; player.screenY = (int)curY
+ * player.x = (int)curX ; player.y = (int)curY      ; ★ 0x40c38a/0x40c3a4
  * ```
+ * ★★ **整支都在世界坐标里**（2026-09-18 订正，见 `render.ts` 的 `startWalk`）：
+ *   `player.x/y`（`+0x496b70/+0x496b72`）就是地图坐标，投影只发生在**画**的时候
+ *   （`fcn_00407a2c`）。所以「世界线性」≠「屏幕线性」——画面上那一段有透视畸变。
+ *   一格耗时的真值 = `trunc(世界距离 / 速度) × tickMs(游戏速度)`。
+ *
  * 于是第 k 次 tick 落在 `from + (to - from) × k / N`（k = 1..N），
  * 第 N 次正好是终点 —— 是**线性等分**，不是弧线（老注释里那句「跳跃弧线」是猜的）。
  *
@@ -33,7 +41,7 @@
  */
 
 /**
- * 每种交通方式的走子速度，单位 **像素 / tick**。
+ * 每种交通方式的走子速度，单位 **世界单位 / tick**（不是屏幕像素）。
  * @source VA 0x004749d8（dump 出来就是这 4 个数：走路 8、機車 12、汽車 16、船 8）
  */
 export const WALK_SPEED_PX_PER_TICK: readonly number[] = [8, 12, 16, 8];
@@ -45,7 +53,7 @@ export const WALK_SPEED_PX_PER_TICK: readonly number[] = [8, 12, 16, 8];
 export const SPECIAL_SPEED_RECIP = 0.125;
 
 /**
- * 一帧的落点（屏幕坐标）。
+ * 一帧的落点（**世界坐标** —— 投影是画的时候才做的，见文件头）。
  *
  * 与 exe 一样是**截断前**的浮点值；调用方按需取整。
  * （exe 每一帧都先累加浮点再 `fcn_00457dbc` 向零截断 —— 这里同样保留浮点，
@@ -59,7 +67,7 @@ export interface TweenFrame {
 /**
  * 这一步要播几 tick。
  *
- * @param dx,dy    **屏幕**位移（终点 − 起点）
+ * @param dx,dy    **世界**位移（终点 − 起点，节点 x/y）
  * @param traffic  交通方式（0 走路 / 1 機車 / 2 汽車 / 3 船）
  * @param special  「特殊态」：原版在 `回合记录+1 != 0`（该玩家的**动画序号**非 0）
  *                 或 `player.flags & 0x30`（走回棋盘 / 被外力挪过）时改走
@@ -133,7 +141,7 @@ export function walkFramesFor(
 }
 
 /**
- * 整条补间的帧序列（屏幕坐标）。
+ * 整条补间的帧序列（世界坐标；调用方投影到屏幕）。
  *
  * 第 k 帧（k = 1..N）落在 `from + (to − from) × k / N`，故**最后一帧正好落在终点**，
  * 而第一帧已经离起点一步 —— 与 exe 的 `curX = fromX + stepX` 一致。

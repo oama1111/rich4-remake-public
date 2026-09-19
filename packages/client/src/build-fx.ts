@@ -90,19 +90,42 @@
  *    —— **状态先变、影片后播**（所以影片里那一级已经盖好了）；
  * 2. 大锤 `0x229` **恒播**（只要选到了目标）；
  * 3. 「剛滿 5 級」那一段 `0x20b` 只在 `fcn_0040b110` 返回值的 **bit7** 置位时才接
- *    （0x0044736d `test byte [esp], 0x80`）。bit7 **只有地块那一支置位**：
- *    `0040b169 cmp cl, 5 / jne / or al, 0x80`；設施那一支（0x0040b1f4）是
- *    `mov eax, 1 / inc byte [ebx + 0x1a]`，**没有** `or al, 0x80`；
+ *    （0x0044736d `test byte [esp], 0x80`）。
+ *    ★★ 2026 订正：先前这里写着「bit7 **只有地块那一支置位**，設施那一支
+ *    （0x0040b1f4）是 `mov eax, 1 / inc byte [ebx + 0x1a]`，**没有** `or al, 0x80`」
+ *    —— **读反了**。`0x0040b1f4` 是「設施**等级 0** → 定种类首建」那一条，
+ *    **只有它**不置位；等级 ≥ 1 的設施走 `0x0040b1f9` 那一支：
+ *    ```asm
+ *    0040b212  mov byte [ebx + 0x1a], dl   ; level++
+ *    0040b215  cmp dl, 5 / jne 0x40b21f
+ *    0040b21a  mov eax, 0x81               ; ★ 旅館/購物中心/研究所 4→5 照样置 bit7
+ *    ```
+ *    与地块支（`0x0040b169 cmp cl, 5 / jne` / `0x0040b16e or al, 0x80`）**同形**。
+ *    真值见 `rich4-spec/tests/test_land_mutation_gates.py` 的 `[B]` 段
+ *    （「住宅 4→5 ⇒ 0x81」「旅館 4→5 ⇒ 0x81」）。⇒ 設施盖到满级**也播** `0x20b`。
+ *
+ *    ★ 这条 bit 现在**不由本模块算**（C-ARC-2）：core 把它放在
+ *    `GameState.lastBuildUpgrades`（瞬态、不进指纹，C-DET-4）里，
+ *    本模块只按 `buildFxPlan` 排段序 —— 等级比较一行都不在这里。
  * 4. 全部播完才 `refresh_screen`（0x00447378 → `fcn_0041d546` VA 0x0041d546：
  *    `[0x48be18] = 0` + `fcn_0041906a(1)`，后者往棋盘窗口发 **WM_PAINT（0xf）**
  *    强制重画 —— 在本引擎里对应「下一帧 `requestAnimationFrame` 重绘」，
  *    因为棋盘本来就每帧整幅重画，不需要额外一拍）。
+ * 5. ★ 「大锤 + 0x20b」这套序列**不是機器工人专属**：`0x40b0cd`（播 0x20b 的那一支）
+ *    全 exe 有 8 个调用点，其中 7 处前面就是一条 bit7 判断。复刻接了三处：
+ *    · 機器工人（`0x00447295`）→ `robotWorker`：**大锤 + 0x20b**；
+ *    · 魔法屋「就地加蓋房屋」（`0x00431f67` 那一支，消费点在 `0x00432085`）
+ *      → `magicHouse`：**大锤 + 0x20b**（与機器工人同构）；
+ *    · 天使卡 9（`0x004434c0`，消费点在 `0x004436b5`）→ `angelCard`：
+ *      **只有 0x20b**（该函数里既没有 `push 0x229`，也没有 `call 0x450441`
+ *      / `call 0x45144f` —— 它不播大锤）。
  *
  * ⚠️ 一处 exe 差异（登记在 `docs/deviations/Q-TOOL-6.md`）：原版在
  *   **选到目标就扣道具**（0x004472fb 在 0x00447345 之前），盖不动也照样播；
  *   本引擎只在真正生效时才收走道具，于是「没生效」时**不播**。
  */
 
+import type { BuildUpgradeHint, GameState } from '@rich4/core';
 import type { LoadedFlic } from './assets.ts';
 
 /**
@@ -224,19 +247,76 @@ export interface BuildFx {
   clip: BuildClipName;
   /** 这一段是什么时候开始的（`performance.now()` 时基）*/
   startedAt: number;
-  /** 大锤播完之后要不要接「剛滿 5 級」那一段 = `fcn_0040b110` 的 bit7 */
+  /**
+   * 这一段播完之后要不要接「剛滿 5 級」那一段（`0x20b`）
+   * = `fcn_0040b110` 返回值的 bit7（`BuildUpgradeHint.reachedMaxLevel`）。
+   */
   thenMaxLevel: boolean;
+}
+
+/**
+ * 本 action 该播的**段序**。
+ *
+ * ★ C-ARC-2：这是一张**纯查表**，一个等级都不比 —— bit7 与「谁发起的」
+ *   都在 core 写好的 `GameState.lastBuildUpgrades` 里（`BuildUpgradeHint`）。
+ *
+ * @source · 機器工人 `0x00447295`：`0x0044731a push 0x229` +
+ *   `0x00447326 call 0x450441`（read_mkf）+ `0x0044735c call 0x45144f`（播），
+ *   之后 `0x0044736d test byte [esp], 0x80` → `0x00447373 call 0x40b0cd`；
+ *   · 魔法屋「就地加蓋」`0x00431f67`：`0x00432028 push 0x229` +
+ *   `0x00432034 call 0x450441` + `0x00432074 call 0x45144f`，之后
+ *   `0x00432085 test byte [esp+0xa8], 0x80` → `0x0043208f call 0x40b0cd`；
+ *   · 天使卡 `0x004434c0`：整个函数里**没有** `0x229` / `call 0x450441` /
+ *   `call 0x45144f`，只有 `0x004436b5 test al, 0x80` → `0x004436d4 call 0x40b0cd`。
+ *
+ * 返回 `{ hammer: false, maxLevel: false }` = 本 action 不该起播。
+ */
+export function buildFxPlan(hints: readonly BuildUpgradeHint[]): { hammer: boolean; maxLevel: boolean } {
+  if (hints.length === 0) return { hammer: false, maxLevel: false };
+  // 一条 action 里可能有多条（魔法屋四位中签者 / 天使卡同區批量）。
+  // 原版是阻塞式一段接一段播；本引擎同一时刻只播一条，故取**并集**：
+  // 只要有一次是大锤族就播大锤，只要有一次剛滿 5 級就接 0x20b。
+  const hammer = hints.some((h) => h.source !== 'angelCard');
+  const maxLevel = hints.some((h) => h.reachedMaxLevel);
+  return { hammer, maxLevel };
+}
+
+/** 段名常量（免得散落字面量）@source 两段的资源号见 `BUILD_HAMMER_RESOURCE` / `BUILD_MAX_RESOURCE` */
+const BUILD_HAMMER_NAME: BuildClipName = 'hammer';
+const BUILD_MAX_NAME: BuildClipName = 'maxLevel';
+
+/**
+ * 取**本 action**的加蓋事件；没有就返回空数组。
+ *
+ * ★「本 action」的判据是**引用相等**：core 只在真的发生加蓋时才换一个新数组
+ *   （`state/types.ts` 的 `GameState.lastBuildUpgrades`），所以
+ *   `state.lastBuildUpgrades !== before.lastBuildUpgrades` 就等价于
+ *   「这一条 action 里有加蓋」—— 不需要看 action 种类，也不需要比等级。
+ */
+export function buildUpgradesOf(
+  state: Pick<GameState, 'lastBuildUpgrades'>,
+  before: Pick<GameState, 'lastBuildUpgrades'>,
+): readonly BuildUpgradeHint[] {
+  const now = state.lastBuildUpgrades ?? [];
+  if (now === (before.lastBuildUpgrades ?? [])) return [];
+  return now;
 }
 
 /**
  * 开播。
  *
- * @param reachedMaxLevel `fcn_0040b110` 返回值的 bit7 —— **只有地块**刚盖到 5 级
- *   才置位（VA 0x0040b169 `cmp cl, 5 / jne / or al, 0x80`；
- *   設施那支 0x0040b1f4 不置位）。见 `reachedMaxLandLevel`。
+ * @param reachedMaxLevel `0x40b110` 返回值的 bit7 —— **core 的
+ *   `BuildUpgradeHint.reachedMaxLevel`**（先前是本模块用「地块等级 4→5」
+ *   自己比的，那是把规则抄进表现层，已按 C-ARC-2 改掉）。
+ * @param withHammer 要不要先播大锤 `0x229`。機器工人 / 魔法屋**要**；
+ *   天使卡**不要**（它的函数体里没有 0x229）。
+ *   ⚠️ 前置条件：调用方必须先按 `buildFxPlan` 判过「至少有一段要播」——
+ *   `withHammer = false && reachedMaxLevel = false` 时本函数仍会返回
+ *   `maxLevel` 那一段（那是调用方违约，不是本函数的兜底）。
  */
-export function beginBuildFx(now: number, reachedMaxLevel: boolean): BuildFx {
-  return { clip: 'hammer', startedAt: now, thenMaxLevel: reachedMaxLevel };
+export function beginBuildFx(now: number, reachedMaxLevel: boolean, withHammer = true): BuildFx {
+  if (!withHammer) return { clip: BUILD_MAX_NAME, startedAt: now, thenMaxLevel: false };
+  return { clip: BUILD_HAMMER_NAME, startedAt: now, thenMaxLevel: reachedMaxLevel };
 }
 
 /**
@@ -272,31 +352,16 @@ export function stepBuildFx(fx: BuildFx, now: number): BuildFx | null {
   return null;
 }
 
-/**
- * 这一次用機器工人，目标地块是不是**刚盖到 5 级**。
+/*
+ * ★ 已删除：`reachedMaxLandLevel(before, after, landId)`（C-ARC-2）。
  *
- * @source `fcn_0040b110` VA 0x0040b161..0x0040b16e：
- * ```asm
- * 0040b161  mov cl, byte [ebx + 0x1a]   ; level
- * 0040b164  inc cl
- * 0040b166  mov byte [ebx + 0x1a], cl
- * 0040b169  cmp cl, 5 / jne 0x40b170
- * 0040b16e  or  al, 0x80                ; ★ 刚好变成 5 → bit7
- * ```
- * 即「加之前是 4、加之后是 5」。**只对地块**（`0x7d0 < id < 0xfa0`）；
- * 設施那一支不置位，故設施盖到满级**不播** `0x20b`。
- *
- * @param landId 地块下标（本引擎的 `state.landLevel` 下标，1 基）
+ * 它先前在客户端按「加之前 4、加之后 5」自己判 bit7，还附了一句**写反了的**
+ * 注释（「設施那一支不置位，故設施盖到满级不播 0x20b」，见文件头第 3 条）。
+ * 现在这条 bit 由 core 算（`rules/tool-effects.ts` 的
+ * `BuildResult.reachedMaxLevel` / `buildUpgradeBit7`），经
+ * `GameState.lastBuildUpgrades` 的 `BuildUpgradeHint.reachedMaxLevel` 交过来，
+ * 本模块只读不判 —— 于是「設施 4→5 也置 bit7」这条真值不可能再被抄错一次。
  */
-export function reachedMaxLandLevel(
-  before: readonly number[],
-  after: readonly number[],
-  landId: number,
-): boolean {
-  const a = before[landId];
-  const b = after[landId];
-  return a === 4 && b === 5;
-}
 
 /**
  * 这条动效现在该画哪张图；不在播、或影片还没解好 → `null`。

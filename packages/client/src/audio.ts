@@ -14,6 +14,52 @@ import { isWave, MkfArchive } from '@rich4/assets-pipeline';
 export type SoundArchive = 'Effect.mkf' | 'Speaking.mkf';
 
 /**
+ * 同一句语音在**连续重复请求**下，隔多久才允许重新起播（毫秒）。
+ *
+ * ⚠️ 为什么需要：复刻侧的文字绘制是**每帧**跑的，而 `#NNNN` 的语音触发
+ *   （原版 `drawText_colorcode` → `play_speech`，VA 0x0044fb4e）就挂在绘制里。
+ *   实测魔法屋入口台词每帧被画一次（2 秒 126 次，见 `magic-screen.ts` 的
+ *   `magicBoxText`），同一句于是被 `Stop → Play` 上百次 —— 每次都从 0 起，
+ *   永远只响头几十毫秒，听感就是「**没有语音**」。
+ *   原版每次重画也会重放，但那边字框只在换词时重画；复刻是整屏每帧重画。
+ *
+ * 所以：**换了语音号立刻放；同一号连着来就按这个间隔去抖。** 台词是每句
+ * 一两秒，500 ms 远小于一句，但远大于一帧（16 ms）—— 既不会漏句，
+ * 也不会把一句踩成静音。画出屏幕再回来期间会有一段空档（> 500 ms），
+ * 于是重新进同一屏时同一句照放。
+ */
+export const VOICE_RETRIGGER_GAP_MS = 500;
+
+/**
+ * 这一声语音要不要**重新起播**（纯函数，便于单测）。
+ *
+ * 两道闸门，缺一不可：
+ *  1. `isPlaying` —— 同一句**还在响**就绝不能重起（实测：一个 4.6 s 的女巫语音
+ *     若只按时间去抖，会被每 500 ms 砍掉重放，听感是结巴）；
+ *  2. 时间闸 —— 换了号立刻放；同一号连着来按 `gapMs` 去抖（挡的是**解码还没
+ *     回来**、以及每帧重画那一段）。
+ *
+ * @param lastCode 上一次真正起播的语音号（`null` = 还没放过）
+ * @param lastAt 上一次真正起播的时刻（与 `now` 同一时基）
+ * @param code 这一次请求的语音号
+ * @param now 现在
+ * @param isPlaying 这一号此刻是不是还在响（`SoundPlayer.isPlaying`）
+ * @param gapMs 同一号的去抖间隔（默认 `VOICE_RETRIGGER_GAP_MS`）
+ */
+export function shouldRetriggerVoice(
+  lastCode: number | null,
+  lastAt: number,
+  code: number,
+  now: number,
+  isPlaying: boolean,
+  gapMs = VOICE_RETRIGGER_GAP_MS,
+): boolean {
+  if (isPlaying) return false;
+  if (lastCode !== code) return true;
+  return now - lastAt >= gapMs;
+}
+
+/**
  * 音效播放器。
  *
  * ⚠️ 浏览器要求 `AudioContext` 在**用户手势之后**才能出声。
@@ -158,6 +204,18 @@ export class SoundPlayer {
     const buf = this.#buffers.get(`${archive}:${resource}`);
     if (buf === undefined || buf === null) return null;
     return Math.round(buf.duration * 1000);
+  }
+
+  /**
+   * 某一路的某个资源**此刻是不是还在响**（纯读，用于语音去抖）。
+   *
+   * ★ 为什么需要：`#NNNN` 的触发挂在绘制里，每帧都会被请求一次。只按时间去抖
+   *   仍然会把**一句长语音**每 500 ms 砍掉重放（实测 4.6 s 的女巫语音被砍成
+   *   三截）—— 必须同时看「它还响着没有」。
+   *   播完的 source 会由 `ended` 监听从表里摘掉，所以这里就是「还在响」。
+   */
+  isPlaying(archive: SoundArchive, resource: number): boolean {
+    return this.#voices.has(`${archive}:${resource}`);
   }
 
   /** 停掉**所有**在响的（关机/切屏/静音那类总收） */

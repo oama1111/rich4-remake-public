@@ -38,6 +38,7 @@ import {
   chainStoreResource,
   decorImageIndex,
   EMPTY_LAND_LOGO_RESOURCE,
+  facilitySlot,
   SpriteCache,
   TOOLBAR_ICON_COUNT,
   TOOLBAR_STRIP_IMAGE,
@@ -457,12 +458,9 @@ describe('★ T-047 state → 替身棋子（`actorTokens`）', () => {
 });
 
 describe('★ T-047 替身走子补间：tick 数一律走 dist × 0.125（没有交通方式那一支）', () => {
-  /** 单位缩放的投影 —— 世界坐标即屏幕坐标，好算 */
-  const toScreen = (x: number, y: number): { x: number; y: number } => ({ x, y });
-
-  it('★ tick 数 = trunc(屏幕距离 × 0.125)，且 `special` 恒为真 @source VA 0x0040c5e6', () => {
+  it('★ tick 数 = trunc(世界距离 × 0.125)，且 `special` 恒为真 @source VA 0x0040c5e6', () => {
     const nodes = lineNodes(3); // 节点间隔 40
-    const steps = actorWalkSteps([1, 2, 3], nodes, toScreen, 40);
+    const steps = actorWalkSteps([1, 2, 3], nodes, 40);
     expect(steps).toHaveLength(2);
     for (const s of steps) {
       // 与玩家「乘骑」那一支同一公式；**不是** dist/速度
@@ -473,18 +471,27 @@ describe('★ T-047 替身走子补间：tick 数一律走 dist × 0.125（没�
     }
   });
 
-  it('★ tick 是按**屏幕**距离算的，不是世界距离 —— 镜头缩放会改 tick 数', () => {
+  it('★ tick 数只由**节点世界坐标**定，与镜头/缩放无关 @source VA 0x0040c4ac / 0x0040c5a8', () => {
+    // @source 起点 `movsx eax, word [ebx]`（节点记录 +0x00/+0x02）、
+    //   终点同一条记录表 —— 整支不读 `0x407a2c`（投影），故镜头不进公式。
+    //   `actorWalkSteps` 现在**根本没有镜头入口**，这里把这一点钉死：
+    //   同一条边算两次（同参）必须一样，且与「坐标乘 4」的假投影无关。
     const nodes = lineNodes(3);
-    const zoom = (x: number, y: number): { x: number; y: number } => ({ x: x * 4, y: y * 4 });
-    const plain = actorWalkSteps([1, 2], nodes, toScreen, 20);
-    const scaled = actorWalkSteps([1, 2], nodes, zoom, 20);
-    expect(plain[0]!.ticks).toBe(5); // 40 × 0.125
-    expect(scaled[0]!.ticks).toBe(20); // 160 × 0.125
+    const a = actorWalkSteps([1, 2], nodes, 20);
+    const b = actorWalkSteps([1, 2], nodes, 20);
+    expect(a[0]!.ticks).toBe(5); // trunc(40 × 0.125)，由世界的 40 定
+    expect(b[0]!.ticks).toBe(a[0]!.ticks);
+    // ★ 反证「不是屏幕距离」：源文件里这一支不许再出现投影调用
+    const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
+    const at = src.indexOf('export function actorWalkSteps(');
+    const body = src.slice(at, src.indexOf('\n}', at));
+    expect(body).not.toContain('worldToScreen');
+    expect(body).not.toContain('toScreen');
   });
 
   it('★ 一串格子首尾相接：`at` 累加、帧号跨格连算（`tickAt` 不归零）', () => {
     const nodes = lineNodes(4);
-    const steps = actorWalkSteps([1, 2, 3, 4], nodes, toScreen, 20);
+    const steps = actorWalkSteps([1, 2, 3, 4], nodes, 20);
     expect(steps.map((s) => s.ticks)).toEqual([5, 5, 5]);
     expect(steps.map((s) => s.at)).toEqual([0, 100, 200]);
     expect(steps.map((s) => s.tickAt)).toEqual([0, 5, 10]);
@@ -496,17 +503,94 @@ describe('★ T-047 替身走子补间：tick 数一律走 dist × 0.125（没�
 
   it('空串 / 单节点 / 断链 → 没有补间（不播，直接落格心）', () => {
     const nodes = lineNodes(3);
-    expect(actorWalkSteps([], nodes, toScreen, 20)).toEqual([]);
-    expect(actorWalkSteps([2], nodes, toScreen, 20)).toEqual([]);
+    expect(actorWalkSteps([], nodes, 20)).toEqual([]);
+    expect(actorWalkSteps([2], nodes, 20)).toEqual([]);
     expect(actorWalkTotalMs([])).toBe(0);
     // 中间缺一环：不硬凑，直接截断（宁可少播，也不要画出不存在的格子）
-    expect(actorWalkSteps([1, 2, 99, 3], nodes, toScreen, 20)).toHaveLength(1);
+    expect(actorWalkSteps([1, 2, 99, 3], nodes, 20)).toHaveLength(1);
   });
 
-  it('镜头外（投影返回 null）也照样给 1 tick —— 与原版 `N == 0 → 1` 同一条', () => {
-    const nodes = lineNodes(3);
-    const steps = actorWalkSteps([1, 2], nodes, () => null, 20);
-    expect(steps[0]!.ticks).toBe(1);
+  it('★ 镜头外（旧实现里投影返回 null）再也不会退化成 1 tick', () => {
+    // 先前 `toScreen → null` 会把这一格的 tick 钳成 1（长边直接瞬移）。
+    // 现在 tick 只由世界坐标定：远到天边的两个节点照常算出 `trunc(dist × 0.125)`。
+    const far = [
+      makeNode({ id: 1, x: 0, y: 0 }),
+      makeNode({ id: 2, x: 900, y: 1200 }),
+    ] as unknown as MapNode[];
+    const steps = actorWalkSteps([1, 2], far, 20);
+    expect(steps[0]!.ticks).toBe(Math.trunc(1500 * 0.125)); // 187
+    expect(steps[0]!.ticks).toBeGreaterThan(1);
+  });
+});
+
+/*
+ * ★★ 2026-09-18：走子一格的耗时只由**世界距离**定（需求方「人物走动偏慢」那一轮的
+ *   取证副产物）。原版 `fcn_0040c05c` 全程在世界坐标里算：
+ *   - 起点 `0x40c1d4/0x40c1db`：节点记录 `+0x00/+0x02`；
+ *   - 终点 `0x40c205/0x40c20d`：落点记录同两个偏移；
+ *   - 模长 `0x40c239..0x40c252`；除速度 `0x40c29e`；截断 `0x40c308`。
+ *   ⇒ `n = trunc(世界距离 / speed) × tickMs`，**镜头/视角/缩放一概不进公式**。
+ *   先前复刻用 `worldToScreen` 的距离：同一条边换个视角 tick 数就变，
+ *   而且落点不在 29×29 窗口里时投影返回 null、被当成 1 tick。
+ */
+describe('★ 走子补间：一格的 tick 数按**世界**距离算，与镜头无关', () => {
+  const renderer = (): BoardRenderer =>
+    new BoardRenderer({} as CanvasRenderingContext2D, {
+      addEvictListener: () => {
+        /* 只算时长，不画 */
+      },
+    } as unknown as SpriteCache);
+
+  it('`lastWalkMs()` = trunc(世界距离 / 速度) × tickMs —— 走路/機車/汽車各一条', () => {
+    // 走路 8 世界单位/tick（VA 0x4749d8）：64 → 8 tick；80 → 10 tick；100 → 12 tick
+    for (const [dist, traffic, speed] of [
+      [64, 0, 8],
+      [80, 1, 12],
+      [100, 2, 16],
+      [64, 3, 8],
+    ] as const) {
+      const r = renderer();
+      r.startWalk(0, { x: 1000, y: 1000 }, { x: 1000 + dist, y: 1000 }, traffic, false, 40, 0);
+      expect(r.lastWalkMs(), `dist=${dist} traffic=${traffic}`).toBe(
+        Math.trunc(dist / speed) * 40,
+      );
+      // 与纯函数同源（`tween.ts` 有单测）
+      expect(r.lastWalkMs()).toBe(tweenTickCount(dist, 0, traffic, false) * 40);
+    }
+  });
+
+  it('★ `special`（乘骑/被抬走/替身）走 `dist × 0.125` —— 不管交通方式', () => {
+    const r = renderer();
+    r.startWalk(0, { x: 0, y: 0 }, { x: 100, y: 0 }, 2, true, 80, 0);
+    expect(r.lastWalkMs()).toBe(Math.trunc(100 * 0.125) * 80); // 12 × 80
+  });
+
+  it('★ 同一段位移、任何相机/视角下时长都一样 —— 公开 API 里已经没有镜头入口', () => {
+    // 反证「不是屏幕距离」：`startWalk` 的形参表里不许再出现 `Camera` / 视口。
+    const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
+    const at = src.indexOf('  startWalk(');
+    const head = src.slice(at, src.indexOf('): void {', at));
+    expect(head).not.toContain('Camera');
+    expect(head).not.toContain('vp');
+    // 正证：同一段位移算两次（不同渲染器实例）得到同一个时长
+    const a = renderer();
+    const b = renderer();
+    a.startWalk(0, { x: 500, y: 700 }, { x: 563, y: 748 }, 0, false, 80, 0);
+    b.startWalk(0, { x: 500, y: 700 }, { x: 563, y: 748 }, 0, false, 80, 0);
+    expect(a.lastWalkMs()).toBe(b.lastWalkMs());
+    expect(a.lastWalkMs()).toBe(tweenTickCount(63, 48, 0, false) * 80); // trunc(79.0/8)=9
+  });
+
+  it('★ 补间在**世界**上等分、画的时候才投影（不是在屏幕端点之间等分）', () => {
+    // `#walkScreen` 必须：先 `walkFramesFor(from, to, …)`（世界）再 `worldToScreen`
+    const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
+    const at = src.indexOf('  #walkScreen(');
+    const body = src.slice(at, src.indexOf('\n  }', at));
+    expect(body).toContain('walkFramesFor(w.from, w.to');
+    expect(body).toContain('worldToScreen(p.x, p.y');
+    // 端点的投影不再进插值 —— 旧写法是 `const a = worldToScreen(w.from…`
+    expect(body).not.toContain('worldToScreen(w.from');
+    expect(body).not.toContain('worldToScreen(w.to');
   });
 });
 
@@ -973,12 +1057,14 @@ describe('★ Q-LAND-1 ①：未持有的空地 —— 原版一个像素都不�
 });
 
 describe('★ Q-LAND-1 ②：旋转视角 —— 三类景物都换图，装饰不换', () => {
-  /** 一件设施 + 一家企业 + 一处景观 */
+  /** 一件**盖好的**设施 + 一家企业 + 一处景观 */
   const sceneryMap = (): Rich4Map =>
     ({
       nodes: [],
       lands: [],
-      facilities: [makeFacility({ id: 1, x: 10, y: 20, facing: 3, type: 0, level: 0, owner: 0 })],
+      // ★ 等级 0 的設施是**空地**、原版什么都不画（见下面 ③）—— 这里要验「图号吃视角」，
+      //   所以给一件真的盖起来的（type 0 = 公園，最高 1 级）。
+      facilities: [makeFacility({ id: 1, x: 10, y: 20, facing: 3, type: 0, level: 1, owner: 0 })],
       commercials: [
         {
           id: 1, x: 30, y: 40, name: '銀行', stockIndex: 0, type: 7, facing: 5,
@@ -989,7 +1075,13 @@ describe('★ Q-LAND-1 ②：旋转视角 —— 三类景物都换图，装饰�
       dataSize: 0,
     }) as unknown as Rich4Map;
 
-  const state = makeGameState({ commercialOwners: [{ owner: 0, ranking: [0, 0, 0, 0] }] });
+  const state = makeGameState({
+    commercialOwners: [{ owner: 0, ranking: [0, 0, 0, 0] }],
+    // 运行时值住在 state（下标 = 設施 id）：1 号 = 公園 1 级
+    facilityLevel: [0, 1],
+    facilityType: [0, 0],
+    facilityOwner: [0, 0],
+  });
 
   it('★ 图号 = (8 − (朝向 + 视角)) & 7：设施/企业/景观各按自己的朝向 @source VA 0x004093c3 / 0x0040964d / 0x00409793', () => {
     for (let v = 0; v < 8; v++) {
@@ -1026,6 +1118,110 @@ describe('★ Q-LAND-1 ②：旋转视角 —— 三类景物都换图，装饰�
     expect(decorImageIndex(0)).toBeNull();
     expect(decorImageIndex(1)).toBe(0);
     expect(decorImageIndex(58)).toBe(57);
+  });
+});
+
+/*
+ * ★★ 2026-09-18（需求方第 6 条）：「大型空地一开局就默认被放上了青色边框的公园设施，
+ *   应该是空地才对，点击时浮出的文字说明是空地」。
+ *
+ * 根因**两处**，都在 `buildingArtItems` 的設施那一段：
+ *  ① 读的是**地图模板**的 `f.type`/`f.level`，而不是 `GameState.facilityType/Level`
+ *     —— 而地图文件里这三个字节**恒为 0**（`rich4-spec/.../map-format.md` §4.6、
+ *     Q-FAC-1），所以读到的永远是 `type=0, level=0`；
+ *  ② 于是 `facilitySlot(0, 0)` = **槽 0 = 公園**，每一块没盖的商業用地都被画成公園。
+ *
+ * exe 的判据（`loc_004092f4`，设施那一段）：
+ * ```asm
+ * 004093f3  cmp byte [ebp + 0x1a], 0      ; ★ level == 0 ？
+ * 004093f7  je  0x409457                  ;   → 空地分支（**不查 type 跳转表**）
+ * 0040945e  cmp byte [ebp + 0x19], 0      ; owner == 0 ？
+ * 00409462  je  0x409486
+ * 00409464  mov eax, [0x48aea8]           ; map.mkf #25 = 空地 logo
+ * 00409478  al = player[owner-1].+0x13    ; 图号 = 角色号
+ * 00409486  mov [slot+0x48a84c], 0        ; ★ owner == 0 ⇒ 资源 0 ⇒ 整条跳过（什么都不画）
+ * 00409402  al = byte [ebp + 0x18]        ; 只有 level != 0 才走到这里取 type
+ * 00409412  jmp dword [eax*4 + 0x408289]  ; type 的 5 路跳转表
+ * ```
+ * ⇒ **公園 = `type 0 且 level ≥ 1`（盖出来的）**；空地（level 0）原版一个像素都不画。
+ *   空地格自己那套地砖由地图底图负责，与設施图集无关。
+ */
+describe('★ 設施 level == 0 是**空地**：不画公園贴片（需求方第 6 条）', () => {
+  const facMap = (fac: Partial<Parameters<typeof makeFacility>[0]>): Rich4Map =>
+    ({
+      nodes: [],
+      lands: [],
+      facilities: [makeFacility({ id: 1, x: 100, y: 200, facing: 0, ...fac })],
+      commercials: [],
+      landscapes: [],
+      dataSize: 0,
+    }) as unknown as Rich4Map;
+
+  /** 舞台 0 的設施基号 0x57；槽 0 就是**公園**那张图 —— 这就是用户看到的「青色边框公园」 */
+  it('★ 反证前提：`facilitySlot(0, 0)` 就是槽 0（= 公園），所以「无脑画」必然画出公園', () => {
+    expect(facilitySlot(0, 0)).toBe(0);
+    expect(facilitySlot(0, 1)).toBe(0); // 公園最高 1 级，两档同一张图
+  });
+
+  it('★★ level 0 + 无主 → **一件都不画**（没有任何公園贴片）', () => {
+    // 开局：模板 f.level = 0、state.facilityLevel[1] = 0
+    const state = makeGameState({ facilityLevel: [0, 0], facilityOwner: [0, 0], facilityType: [0, 0] });
+    const items = buildingArtItems(facMap({ level: 0, owner: 0, type: 0 }), state, 0);
+    expect(items).toEqual([]);
+    // 八个视角全试一遍 —— 不是「某个视角刚好不画」
+    for (let v = 0; v < 8; v++) {
+      expect(buildingArtItems(facMap({ level: 0, owner: 0 }), state, v)).toEqual([]);
+    }
+    // ★ 就算**模板**写着「公園 1 级」，只要**运行时**等级是 0（地图数据恒 0）也不许画：
+    //   判据必须取 state，不许回落到模板
+    expect(buildingArtItems(facMap({ level: 1, owner: 0, type: 0 }), state, 0)).toEqual([]);
+  });
+
+  it('★ level 0 + 有主 → map.mkf #25 的空地 logo，图号 = 角色号，且**不换归属色**', () => {
+    // @source VA 0x00409464 / 0x00409478 / 0x00409457（槽 +6 = 0xff）
+    const state = makeGameState({
+      facilityLevel: [0, 0],
+      facilityOwner: [0, 2],
+      facilityType: [0, 0],
+      commercialOwners: [],
+    });
+    const items = buildingArtItems(facMap({ level: 0, owner: 2, type: 0 }), state, 3);
+    expect(items).toEqual([
+      { x: 100, y: 200, res: EMPTY_LAND_LOGO_RESOURCE, img: state.players[1]!.character },
+    ]);
+    // 这一支**不吃视角**（图号是角色号，不是 `8 − (朝向+视角)`）
+    for (let v = 0; v < 8; v++) {
+      expect(buildingArtItems(facMap({ level: 0, owner: 2 }), state, v)).toEqual(items);
+    }
+  });
+
+  it('★★ level ≥ 1 才画設施，而且**种类/等级取 state、朝向取模板**', () => {
+    // 地图模板永远是 type=0/level=0，真值全在 state：1 号 = 旅館(type 1) 3 级
+    const state = makeGameState({
+      facilityLevel: [0, 3],
+      facilityOwner: [0, 1],
+      facilityType: [0, 1],
+    });
+    const items = buildingArtItems(facMap({ level: 0, owner: 0, type: 0, facing: 2 }), state, 0);
+    expect(items).toHaveLength(1);
+    // 旅館 = 槽 5 + level → 0x57 + 8；朝向仍取模板的 +0x1b @source VA 0x004093c3
+    expect(items[0]!.res).toBe(0x57 + facilitySlot(1, 3));
+    expect(items[0]!.res).not.toBe(0x57); // ★ 不再是公園
+    expect(items[0]!.img).toBe((8 - (2 + 0)) & 7);
+    // 有主 → 换归属色
+    expect(items[0]!.ring).toBeDefined();
+  });
+
+  it('★ 真的公園（type 0 + level 1）照样画得出来 —— 别把公園一起吞掉', () => {
+    const state = makeGameState({
+      facilityLevel: [0, 1],
+      facilityOwner: [0, 1],
+      facilityType: [0, 0],
+    });
+    const items = buildingArtItems(facMap({ level: 0, owner: 0, type: 0, facing: 0 }), state, 0);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.res).toBe(0x57 + facilitySlot(0, 1)); // = 0x57，公園那张图
+    expect(items[0]!.ring).toBeDefined();
   });
 });
 
