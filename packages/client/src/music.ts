@@ -431,6 +431,20 @@ export class MusicPlayer {
   #startedAt = 0;
   #timer: number | null = null;
   #loop = true;
+  /** 这一次 `play()` 从曲子的第几秒起（原版 `play mid from %d`：背景曲被场所打断后接着放）*/
+  #fromS = 0;
+  /**
+   * 一首**不循环**的曲子放完时调（`setLoop(false)` 才会到这里）。
+   * 原版靠 `MM_MCINOTIFY` 做同一件事：背景曲放完换下一首（`sub_00454d2c` → `sub_00454d91(0)`）。
+   */
+  onEnded: (() => void) | null = null;
+
+  /** 当前曲子放到第几秒了（没在放 = 0）—— 场所打断背景曲时记下来，回棋盘接着放 */
+  get positionS(): number {
+    if (this.#ctx === null || this.#song === null || this.#timer === null) return 0;
+    const t = this.#ctx.currentTime - this.#startedAt;
+    return Math.max(0, Math.min(t, this.#song.duration));
+  }
   #volume = 0.25;
 
   get playing(): boolean {
@@ -542,8 +556,9 @@ export class MusicPlayer {
    * 还没解锁时**只记下来**（解析仍然当场做，坏字节不留假状态），
    * 等 `unlock()` 里补播 —— 见 `#pending`。
    */
-  play(name: string, data: Uint8Array): void {
+  play(name: string, data: Uint8Array, fromS = 0): void {
     this.stop();
+    this.#fromS = Math.max(0, fromS);
     let song: MidiSong;
     try {
       song = parseMidi(data);
@@ -588,8 +603,14 @@ export class MusicPlayer {
     // 正常路径上 `unlock()` 已经建好后端；这里兜一层是为了「context 就绪但还没
     // 建后端」（例如测试注入了一个现成的 ctx）时也照样出声
     this.#voice ??= this.#makeVoice();
-    this.#cursor = 0;
-    this.#startedAt = ctx.currentTime + 0.1;
+    // 从 `#fromS` 秒起：起点往回挪这么多，游标跳到第一个还没到点的音
+    const from = Math.min(this.#fromS, this.#song.duration);
+    this.#fromS = 0;
+    const notes = this.#song.notes;
+    let cursor = 0;
+    while (cursor < notes.length && notes[cursor]!.time < from) cursor++;
+    this.#cursor = cursor;
+    this.#startedAt = ctx.currentTime + 0.1 - from;
     this.#pump();
     this.#timer = window.setInterval(() => this.#pump(), SCHEDULE_TICK_MS);
   }
@@ -616,8 +637,10 @@ export class MusicPlayer {
         if (this.#loop) {
           this.#cursor = 0;
           this.#startedAt = endsAt;
-        } else {
+        } else if (ctx.currentTime >= endsAt) {
+          // ★ 真放完了才收（上面那道闸提前了一个排程窗口，只为循环时无缝接上）
           this.stop();
+          this.onEnded?.();
         }
       }
     }

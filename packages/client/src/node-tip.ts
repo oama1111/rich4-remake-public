@@ -454,10 +454,12 @@ export function tipLines(map: Rich4Map, state: GameState, inst: TipInstance): Ti
     case 'commercial': {
       const c = map.commercials[inst.id - 1];
       if (c === undefined) return [];
-      const owner = state.commercialOwners[inst.id - 1]?.owner ?? 0;
+      // ★ 这两张表的下标是企業 **id**（1 基，0 号空着，与 core 一致）；`map.commercials` 才是 0 基数组。
+      //   先前两处都写成 `inst.id - 1`：名牌上显示的是**前一家**的董事長与餘股。
+      const owner = state.commercialOwners[inst.id]?.owner ?? 0;
       if (owner !== 0) add(tipPlayerName(state, owner - 1), 0);
       add(c.name, TIP_LINE);
-      add(`餘股:${state.commercialShares[inst.id - 1] ?? 0}`, TIP_LINE * 2);
+      add(`餘股:${state.commercialShares[inst.id] ?? 0}`, TIP_LINE * 2);
       return out;
     }
 

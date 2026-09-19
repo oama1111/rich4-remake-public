@@ -12,6 +12,9 @@ import {
   actorWalkSteps,
   BoardRenderer,
   buildingArtItems,
+  RING_UNOWNED,
+  SLOT_NO_RECOLOR,
+  ringColor,
   actorWalkTotalMs,
   actorWalkTriggers,
   DOLL_STAND_RESOURCE,
@@ -559,6 +562,18 @@ describe('★ 走子补间：一格的 tick 数按**世界**距离算，与镜�
     }
   });
 
+  it('★★ `walkRemainingMs()`：补间**还剩**多久；播完之后是 0（`lastWalkMs()` 播完仍返回整段 —— 拿它排下一步会白等）', () => {
+    const r = renderer();
+    expect(r.walkRemainingMs(0)).toBe(0); // 没有补间
+    r.startWalk(0, { x: 1000, y: 1000 }, { x: 1064, y: 1000 }, 0, false, 40, 1000); // 8 tick × 40 = 320 ms
+    expect(r.walkRemainingMs(1000)).toBe(320);
+    expect(r.walkRemainingMs(1100)).toBe(220);
+    expect(r.walkRemainingMs(1320)).toBe(0);
+    expect(r.walkRemainingMs(9999)).toBe(0);
+    // 对照：这就是先前让「結算 / 收尾 / 下一位开局」每步都多等一整格的那个值
+    expect(r.lastWalkMs()).toBe(320);
+  });
+
   it('★ `special`（乘骑/被抬走/替身）走 `dist × 0.125` —— 不管交通方式', () => {
     const r = renderer();
     r.startWalk(0, { x: 0, y: 0 }, { x: 100, y: 0 }, 2, true, 80, 0);
@@ -1015,11 +1030,11 @@ describe('★ Q-LAND-1 ①：未持有的空地 —— 原版一个像素都不�
   it('等级 0 + 有主 → 空地 logo（map.mkf #25），图号 = 该玩家的 character', () => {
     // @source VA 0x0040921c `mov eax,[0x48aea8]` / VA 0x00409230 `al = player[owner-1].+0x13`
     const art = landArt({ level: 0, owner: 2, character: 5, chain: false, facing: 3, globalMapId: 1, view: 4 });
-    expect(art).toEqual({ resource: EMPTY_LAND_LOGO_RESOURCE, image: 5, paletteOwner: 0 });
+    expect(art).toEqual({ resource: EMPTY_LAND_LOGO_RESOURCE, image: 5, paletteOwner: SLOT_NO_RECOLOR });
     // ★ 这一支**不读视角**：原版图号用的是角色号，不是 `8 − (朝向 + 视角)`
     for (let v = 0; v < 8; v++) {
       const a = landArt({ level: 0, owner: 2, character: 5, chain: false, facing: 3, globalMapId: 1, view: v })!;
-      expect(a).toEqual({ resource: EMPTY_LAND_LOGO_RESOURCE, image: 5, paletteOwner: 0 });
+      expect(a).toEqual({ resource: EMPTY_LAND_LOGO_RESOURCE, image: 5, paletteOwner: SLOT_NO_RECOLOR });
     }
   });
 
@@ -1090,6 +1105,31 @@ describe('★ Q-LAND-1 ②：旋转视角 —— 三类景物都换图，装饰�
       expect(items.map((i) => i.res)).toEqual([0x57, 178, 188]);
       expect(items.map((i) => i.img)).toEqual([(8 - (3 + v)) & 7, (8 - (5 + v)) & 7, (8 - (6 + v)) & 7]);
     }
+  });
+
+  it('★★ 那圈归属线：无主 = **黑**（不是素材里的占位品红）、有主 = 角色色、景观 = 不换色 @source VA 0x00409853..0x0040987d', () => {
+    // 无主：設施（公園，owner 0）与企業（owner 0）都换成黑；景观那一支槽 +6 = 0xff ⇒ 不给 ring
+    const [fac, com, land] = buildingArtItems(sceneryMap(), state, 0);
+    expect(fac!.ring).toEqual(RING_UNOWNED);
+    expect(com!.ring).toEqual(RING_UNOWNED);
+    expect(land!.ring).toBeUndefined();
+    expect(RING_UNOWNED).toEqual([0, 0, 0]);
+
+    // 有主：★ 下标 = 企業 id（1 基）。0 号槽里放个别人 —— 读错下标就会拿到他的颜色
+    const owned = makeGameState({
+      commercialOwners: [{ owner: 2, ranking: [0, 0, 0, 0] }, { owner: 1, ranking: [1, 0, 0, 0] }],
+      facilityLevel: [0, 1], facilityType: [0, 0], facilityOwner: [0, 0],
+    });
+    const com2 = buildingArtItems(sceneryMap(), owned, 0)[1]!;
+    expect(com2.ring).toEqual(ringColor(owned, 1));
+    expect(com2.ring).not.toEqual(ringColor(owned, 2));
+    expect(com2.ring).not.toEqual(RING_UNOWNED);
+  });
+
+  it('ringColor：0xff 不换色 / 0 黑 / 1..4 角色色', () => {
+    expect(ringColor(state, SLOT_NO_RECOLOR)).toBeUndefined();
+    expect(ringColor(state, 0)).toEqual([0, 0, 0]);
+    expect(ringColor(state, 1)).toBeDefined();
   });
 
   it('★ 视角转一圈（0..7）：每一类的图号把 0..7 各取一次（图集确实是 8 向）', () => {

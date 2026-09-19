@@ -12,8 +12,11 @@ import {
   AMOUNT_BAR_DRAG_SOUND,
   AMOUNT_BAR_RECT,
   amountBarDragValue,
+  AMOUNT_GAUGE,
+  AMOUNT_GAUGE_WIDTHS,
   amountCharImage,
   amountDigits,
+  amountGaugeIndex,
   AMOUNT_RESOURCE,
   amountWindowHitMapped,
   amountWindowPlan,
@@ -22,63 +25,85 @@ import {
 } from './amount-window.ts';
 import type { Sprite } from './assets.ts';
 
-describe('★ 金额窗的字：图号与落点 @source loc_00452a05 / fcn_00456512', () => {
-  it('★★ 图号 = 字符 − 0x2b（= − 43）（目视核过：图 4 = C、图 5 = 0、图 13 = 1）', () => {
-    // ★ 不是照抄 `sub eax,0x20` —— 那段汇编后半截在**自己拼图素表项的内存地址**，
-    //   照抄会得到 39 这种越界值。哪张图是什么是**目视核过**的（数字连排）。
-    expect(amountCharImage('0')).toBe(5);
-    expect(amountCharImage('1')).toBe(6);
-    expect(amountCharImage('9')).toBe(14);
+describe('★ 金额窗的字：图号与落点 @source fcn_0045297e（2026-09-19 整支重读）', () => {
+  it('★★ 图号 = 字符 − 0x20（0x00452a0f `sub eax,0x20`）⇒ 图 16..25 —— 液晶字模，不是键帽', () => {
+    expect(amountCharImage('0')).toBe(16);
+    expect(amountCharImage('5')).toBe(21);
+    expect(amountCharImage('9')).toBe(25);
     // 非数字（金额栏里不会出现）返回 −1，让调用方跳过，不去贴越界的图
     expect(amountCharImage('C')).toBe(-1);
     expect(amountCharImage(' ')).toBe(-1);
-    // 每个十进制数字都必须落在 Panel#21 那张 33×17 的字库里（图 4..15）
-    for (let d = 0; d <= 9; d++) {
-      const img = amountCharImage(String(d));
-      expect(img).toBeGreaterThanOrEqual(4);
-      expect(img).toBeLessThanOrEqual(15);
-    }
-    // 十个数字的图号必须**互不相同**（否则就是公式错了）
     const imgs = new Set(Array.from({ length: 10 }, (_, d) => amountCharImage(String(d))));
     expect(imgs.size).toBe(10);
   });
 
-  it('★★ 数字从 `valueAtChar` 起、往右每格 +0xc；末位在最后', () => {
-    const one = amountDigits(7);
-    expect(one).toHaveLength(1);
-    expect(one[0]).toMatchObject({
-      ch: '7',
-      x: AMOUNT_WINDOW.valueAtChar.dx,
-      y: AMOUNT_WINDOW.valueAtChar.dy,
-    });
+  // ★ 旧测试写的是「图 5..14，目视核过」—— 目视核的是**键帽**（上面也印着数字），不是字模。
+  //   这一条拿解包出来的真图量尺寸，把两者分开：字模 9×19，键帽 33×17。
+  const PANEL_DIR = (process.env.RICH4_WORKSPACE ?? '') + '/assets-clean/Panel';
+  const sizeOf = (i: number): [number, number] => {
+    const png = readFileSync(`${PANEL_DIR}/0021_${String(i).padStart(3, '0')}.png`);
+    return [png.readUInt32BE(16), png.readUInt32BE(20)];
+  };
+  (existsSync(`${PANEL_DIR}/0021_016.png`) ? it : it.skip)(
+    '★★ 真图对账：`amountCharImage` 指到的十张都是 9×19 的字模；图 5..14 是 33×17 的键帽',
+    () => {
+      for (let d = 0; d <= 9; d++) expect(sizeOf(amountCharImage(String(d)))).toEqual([9, 19]);
+      for (let i = 5; i <= 14; i++) expect(sizeOf(i)).toEqual([33, 17]);
+      expect(sizeOf(1)).toEqual([108, 12]); // 暗的比例条
+    },
+  );
+
+  it('★★ 右对齐：末位落在 (0x6b, 0x0b)，往前每一位 −0xc @source 0x00452985 / 0x0045298f / 0x00452a28', () => {
+    expect(AMOUNT_WINDOW.valueAt).toEqual({ dx: 0x6b, dy: 0x0b });
+    expect(amountDigits(7)).toEqual([{ ch: '7', image: 23, x: 0x6b, y: 0x0b }]);
     const three = amountDigits(123);
     expect(three.map((d) => d.ch)).toEqual(['1', '2', '3']);
-    expect(three.map((d) => d.x)).toEqual([
-      AMOUNT_WINDOW.valueAtChar.dx,
-      AMOUNT_WINDOW.valueAtChar.dx + AMOUNT_WINDOW.valueDigitPitch,
-      AMOUNT_WINDOW.valueAtChar.dx + 2 * AMOUNT_WINDOW.valueDigitPitch,
-    ]);
+    expect(three.map((d) => d.x)).toEqual([0x6b - 24, 0x6b - 12, 0x6b]);
+    expect(new Set(three.map((d) => d.y))).toEqual(new Set([0x0b]));
   });
 
-  it('★ 最多 9 位（超过就画后 9 位），负数/小数先夹到非负整数', () => {
+  it('★ 最多 9 位（超过就画后 9 位），负数/小数先夹到非负整数；9 位也放得进液晶屏', () => {
     expect(AMOUNT_DIGIT_MAX).toBe(9);
     expect(amountDigits(1234567890).map((d) => d.ch).join('')).toBe('234567890');
     expect(amountDigits(-5).map((d) => d.ch).join('')).toBe('0');
     expect(amountDigits(12.9).map((d) => d.ch).join('')).toBe('12');
-    // 9 位是原版自己的上限（`cmp eax,9 / jge`），本引擎照抄；
-    // ⚠️ 起点 0x40 + 9×0xc 会超出 128 宽的窗 —— 这是**照抄原版的算式**，
-    //   没有替它改成右对齐（两种读法都无法在静态证据上排除，见 amount-keys.ts）
     const nine = amountDigits(123456789);
     expect(nine).toHaveLength(9);
-    expect(nine.map((d) => d.ch).join('')).toBe('123456789');
+    // 首位 x = 0x6b − 8×0xc = 11 ≥ 面板左边框；末位 x + 9 = 116 < 128 ⇒ 整串都在窗内
+    expect(nine[0]!.x).toBe(11);
+    expect(nine[8]!.x + 9).toBeLessThan(AMOUNT_WINDOW.w);
+    // ★ 整串都在**比例条之上**（先前落在 y = 0x21、紧贴 0x2a 的条，液晶屏永远是空的）
+    for (const d of nine) expect(d.y + 19).toBeLessThanOrEqual(AMOUNT_GAUGE.y);
+  });
+});
+
+describe('★ 比例条 @source 0x00452a64..0x00452ad1 / 表 0x47e725', () => {
+  it('档位 = trunc(float32(值/上限) × 33)；值为 0 ⇒ −1（整条都暗）', () => {
+    expect(amountGaugeIndex(0, 1000)).toBe(-1);
+    expect(amountGaugeIndex(5, 0)).toBe(-1);
+    expect(amountGaugeIndex(1, 1000)).toBe(0);
+    expect(amountGaugeIndex(500, 1000)).toBe(16);
+    expect(amountGaugeIndex(999, 1000)).toBe(32);
+    expect(amountGaugeIndex(1000, 1000)).toBe(33);
+    expect(amountGaugeIndex(5000, 1000)).toBe(33); // 不越表
+  });
+
+  it('宽度表 34 项、严格递增、末项 107（< 暗条图的 108 宽）', () => {
+    expect(AMOUNT_GAUGE_WIDTHS).toHaveLength(34);
+    expect(AMOUNT_GAUGE_WIDTHS[0]).toBe(3);
+    expect(AMOUNT_GAUGE_WIDTHS[33]).toBe(107);
+    for (let i = 1; i < 34; i++) expect(AMOUNT_GAUGE_WIDTHS[i]!).toBeGreaterThan(AMOUNT_GAUGE_WIDTHS[i - 1]!);
   });
 });
 
 describe('★ 金额窗的版面与绘制', () => {
-  it('★ 一张底图 + 每个数字一格', () => {
-    const plan = amountWindowPlan(42);
+  it('★ 一张底图 + 暗条 + 亮条那一截 + 每个数字一格', () => {
+    const plan = amountWindowPlan(42, 1000);
     expect(plan.panel).toEqual({ image: 0, x: 0, y: 0 });
+    expect(plan.gaugeDim).toEqual({ image: 1, x: 0x0a, y: 0x2a });
+    expect(plan.gaugeLit).toEqual({ x: 0x0a, y: 0x2a, w: AMOUNT_GAUGE_WIDTHS[1], h: 0x0c });
     expect(plan.digits.map((d) => d.ch)).toEqual(['4', '2']);
+    expect(amountWindowPlan(0, 1000).gaugeLit).toBeNull();
     expect(AMOUNT_RESOURCE).toBe(0x15);
   });
 
@@ -89,26 +114,26 @@ describe('★ 金额窗的版面与绘制', () => {
     expect(drawAmountWindow(ctx, nullSprite, 100)).toBe(false);
   });
 
-  it('★★ 画的位置 = 窗落点 + 面板内偏移（逐张贴图对账）', () => {
-    const calls: { x: number; y: number }[] = [];
+  it('★★ 逐张贴图对账：底图 → 暗条 → 亮条（从底图身上裁）→ 数字', () => {
+    const calls: { image: number; args: number[] }[] = [];
     const ctx = {
-      drawImage: (_b: unknown, x: number, y: number) => {
-        calls.push({ x, y });
+      drawImage: (b: { image: number }, ...args: number[]) => {
+        calls.push({ image: b.image, args });
       },
     } as unknown as CanvasRenderingContext2D;
     const sprite = (a: string, r: number, i: number): Sprite => {
       expect(a).toBe('Panel.mkf');
       expect(r).toBe(AMOUNT_RESOURCE);
-      expect(i).toBeGreaterThanOrEqual(0);
-      return { bitmap: {} as ImageBitmap, width: 9, height: 19, anchorX: 0, anchorY: 0 };
+      return { bitmap: { image: i } as unknown as ImageBitmap, width: 9, height: 19, anchorX: 0, anchorY: 0 };
     };
-    expect(drawAmountWindow(ctx, sprite, 7)).toBe(true);
-    // ① 底图落在窗左上角；② 数字落在窗落点 + valueAtChar
-    expect(calls[0]).toEqual({ x: AMOUNT_WINDOW.x, y: AMOUNT_WINDOW.y });
-    expect(calls[1]).toEqual({
-      x: AMOUNT_WINDOW.x + AMOUNT_WINDOW.valueAtChar.dx,
-      y: AMOUNT_WINDOW.y + AMOUNT_WINDOW.valueAtChar.dy,
-    });
+    expect(drawAmountWindow(ctx, sprite, 7, 10)).toBe(true);
+    const { x: wx, y: wy } = AMOUNT_WINDOW;
+    expect(calls[0]).toEqual({ image: 0, args: [wx, wy] });
+    expect(calls[1]).toEqual({ image: 1, args: [wx + 0x0a, wy + 0x2a] });
+    const w = AMOUNT_GAUGE_WIDTHS[amountGaugeIndex(7, 10)]!;
+    expect(calls[2]).toEqual({ image: 0, args: [0x0a, 0x2a, w, 0x0c, wx + 0x0a, wy + 0x2a, w, 0x0c] });
+    expect(calls[3]).toEqual({ image: 23, args: [wx + 0x6b, wy + 0x0b] });
+    expect(calls).toHaveLength(4);
   });
 });
 

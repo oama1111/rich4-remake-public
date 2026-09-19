@@ -88,7 +88,9 @@ describe('★ 按屏 BGM 的宿主接线点（原版 `fcn_004549cf(id)`）', () 
     // @source `ui_options.asm:1354-1365` —— 確定写回 cfg 之后，
     //   `[0x49715a] != 0 && ebx == 0` 就 `push [0x47e772]; call fcn_004549cf`
     //   （`[0x47e772]` = 当前曲号，由 `fcn_004549cf` 自己写进去）。
-    expect(src).toContain('if (next.music > 0 && !music.playing) void playTrack(next.track)');
+    // ★ 2026-09-19 订正：那一处补的是**背景曲的下一首**（`0x004109cd push ebx(=0) / call sub_00454d91`），
+    //   不是「清单里第 track 首」—— 清单（Midi.txt）不是背景曲单，见 `BOARD_BGM_FILES`。
+    expect(src).toContain('if (next.music > 0 && !music.playing) playBoardBgm(0)');
     expect(src).toContain('if (next.music === 0) music.stop()');
     expect(src).toContain('VA 0x004109e2');
   });

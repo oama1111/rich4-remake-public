@@ -56,7 +56,7 @@ import {  autoAction,
 } from '@rich4/core';
 import { NetClient, netParamsFrom } from './net-client.ts';
 import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
-import { tickMs } from './tick.ts';
+import { RENDER_MS, tickMs } from './tick.ts';
 import { walkTweenFor } from './tween.ts';
 import { drawLobby, hitLobby, isHostSeat, lobbySlots, type LobbyHit } from './lobby.ts';
 import { PANEL_ROWS } from './hud.ts';
@@ -162,7 +162,7 @@ import {
   pickSoundFont,
   type PickResult,
 } from './host.ts';
-import { MIDI_PLAYLIST, PLACE_TOOL_SOUND, SOUND_IDS } from '@rich4/assets-pipeline';
+import { BOARD_BGM_FILES, MIDI_PLAYLIST, PLACE_TOOL_SOUND, SOUND_IDS, nextBoardBgm } from '@rich4/assets-pipeline';
 import {
   BoardRenderer,
   cameraCenter,
@@ -1320,6 +1320,8 @@ function loadState(next: GameState, mapOverride: Rich4Map | null = null): void {
   const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? 1];
   camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   screen = 'game';
+  // ★ 读档进棋盘：背景曲换**下一首** @source `sub_00401981(1)` → `0x004019c6 push 0 / call sub_00454d91`
+  playBoardBgm(0);
   log(`▶ 讀檔：地圖 ${next.globalMapId}　${next.year}/${next.month}/${next.day}`);
 
   setGround(null);
@@ -1359,7 +1361,15 @@ let humanTimer: number | null = null;
  */
 function humanDelay(): number {
   if (!options.animation) return 0;
-  return Math.max(tickMs(options.speed), renderer.lastWalkMs());
+  return paceDelay();
+}
+
+/**
+ * 两条机械步骤之间该等多久：至少一个 tick；刚起了一段走子补间就等它**剩下的**那一截。
+ * 真人（`humanDelay`）与电脑（`aiDelay`）共用 —— 原版不分人机，都是同一个 tick 循环在推。
+ */
+function paceDelay(): number {
+  return Math.max(tickMs(options.speed), renderer.walkRemainingMs());
 }
 
 /**
@@ -2266,7 +2276,10 @@ function onOptionsDown(sx: number, sy: number): void {
     // ★ 原版点一下**立刻换曲**（`fcn_00454d91(行号+1)`），不等「確定」、
     //   取消也不回退。列表里反白的那一行是「正在放的那首」。
     optionsDraft = { ...optionsDraft, track: hit.value };
-    void playTrack(hit.value);
+    // @source 0x00410671..0x00410687：`(y − 0xe2) / 15 + 1` → `sub_00454d91(行号 + 1)` ——
+    //   点的是**背景曲单**里的第几首（8 首），所以它也得记成背景曲，回棋盘才不会被「接回背景曲」顶掉
+    if (hit.value >= 0 && hit.value < BOARD_BGM_FILES.length) playBoardBgm(hit.value + 1);
+    else void playTrack(hit.value);
     requestRender();
     return;
   }
@@ -2860,7 +2873,10 @@ function applyOptions(next: GameOptions): void {
   // ⚠️ 换曲**不在这里** —— 原版是点列表那一下就立刻换（见 `onOptionsDown`），
   //   「確定」只负责把 cfg 写回去、并按新的音量档调播放器（VA 0x004109e2）。
   //   这里只在「音乐本来是关的、现在打开了」时补一次起播。
-  if (next.music > 0 && !music.playing) void playTrack(next.track);
+  // @source 0x004109b5..0x004109da：音乐开着、且刚才是关的（`ebx == 0`）⇒
+  //   当前记的是背景曲（`[0x47e772] & 0x80`）就 `sub_00454d91(0)` = **背景曲的下一首**，
+  //   否则 `fcn_004549cf([0x47e772])` 重放那首场所曲。設定屏只从標題／棋盘进，故这里总是背景曲那一支。
+  if (next.music > 0 && !music.playing) playBoardBgm(0);
   if (next.music === 0) music.stop();
   // ★ 把 16 字节设定 + 28 条键位整份写回 `RICH4.CFG`
   //   @source `rich4_write_config()` VA 0x00411f80 —— 原版「確定」正是这一调
@@ -2977,6 +2993,10 @@ setVoiceSink((voice) => {
  *   顺手放第一首。曲目顺序照 `MIDI_PLAYLIST`（取自游戏目录的 `Midi.txt`）。
  */
 const music = new MusicPlayer();
+// 一首背景曲放完 ⇒ 换下一首 @source `sub_00454d2c`（MCI 的放完通知）→ `sub_00454d91(0)`
+music.onEnded = () => {
+  if (bgmBackground) playBoardBgm(0);
+};
 /** 当前播到清单里的第几首 */
 let musicTrack = 0;
 let musicStarted = false;
@@ -2996,6 +3016,83 @@ async function playTrack(index: number): Promise<void> {
  *   `@rich4/assets-pipeline` 的 `SCREEN_BGM` / `bgmAssetFileFor`。
  */
 async function playTrackFile(name: string): Promise<void> {
+  // ★ 场所曲 / 標題曲打断背景曲：先把「放到哪儿了」记下来，回棋盘时接着放
+  //   @source `fcn_004549cf` 开头：当前是背景曲（`[0x47e772] & 0x80`）⇒ `sub_00454b1a` 记位置
+  if (bgmBackground) bgmSaved = { index: bgmIndex, at: music.positionS };
+  bgmBackground = false;
+  music.setLoop(true); // 场所曲放完原地重放 @source `sub_00454d2c` 的 `play mid from 0`
+  await loadAndPlay(name, 0);
+}
+
+// ── 棋盘背景曲（8 首轮放）—— 三支例程的说明与出处见 `BOARD_BGM_FILES` ──
+
+/** 背景曲号 0..7 @source `[0x47e771]` */
+let bgmIndex = 0;
+/** 此刻放的是不是背景曲 @source `[0x47e772] & 0x80` */
+let bgmBackground = false;
+/** 背景曲被场所曲打断时记下的位置 @source `[0x48cb70 + n]` / `[0x48cb50 + n×4]` */
+let bgmSaved: { index: number; at: number } | null = null;
+
+/**
+ * 放背景曲 @source `sub_00454d91(arg)`：`arg ≠ 0` ⇒ 曲号 = `arg − 1`；`arg = 0` ⇒ 下一首。
+ */
+function playBoardBgm(arg: number): void {
+  bgmIndex = arg !== 0 ? (arg - 1) & 7 : nextBoardBgm(bgmIndex);
+  bgmBackground = true;
+  bgmSaved = null;
+  music.setLoop(false); // 放完换下一首（`music.onEnded`），不是单曲循环
+  void loadAndPlay(BOARD_BGM_FILES[bgmIndex] ?? 'Rich08.mid', 0);
+}
+
+/**
+ * 场所收屏 → 接着放被打断的背景曲 @source `sub_00454bcc`（每个场所的模态循环一返回就调）。
+ * 没有记录（开局就进了场所之类）就从下一首放起。
+ */
+function restoreBoardBgm(): void {
+  const saved = bgmSaved;
+  if (saved === null) {
+    playBoardBgm(0);
+    return;
+  }
+  bgmIndex = saved.index;
+  bgmBackground = true;
+  bgmSaved = null;
+  music.setLoop(false);
+  void loadAndPlay(BOARD_BGM_FILES[bgmIndex] ?? 'Rich08.mid', saved.at);
+}
+
+/** 監獄／醫院探訪屏这一场的配乐点过了没有 */
+let bailBgmOn = false;
+
+/**
+ * 監獄／醫院探訪屏的配乐 @source `0x0043d38c push 0xf`（監獄 ⇒ MIDI15）/ `0x0043ea38 push 0x10`（醫院 ⇒ MIDI16），
+ *   两处紧跟着就是各自的模态循环，返回后 `sub_00454bcc` 接回背景曲（`boardBgmDue`）。
+ */
+function syncBailBgm(): void {
+  const p = state.pending;
+  if (screen !== 'game' || p === null || p.kind !== 'bail') {
+    bailBgmOn = false;
+    return;
+  }
+  if (bailBgmOn) return;
+  bailBgmOn = true;
+  void playTrackFile(p.place === 'prison' ? 'midi15.mid' : 'midi16.mid');
+}
+
+/**
+ * 棋盘上该不该把背景曲接回来：人在棋盘、放的不是背景曲、而且**没有任何场所开着**。
+ * 原版是各场所自己在模态循环返回后调 `sub_00454bcc`；本引擎的场所有的是整屏（`activeUiScreen`）、
+ * 有的挂在 `pending` 上（銀行 / 商店 / 樂透…），统一在渲染循环里判这一条，免得每个出口各写一遍。
+ */
+function boardBgmDue(): boolean {
+  if (screen !== 'game' || bgmBackground) return false;
+  if (activeUiScreen() !== null) return false;
+  const kind = state.pending?.kind;
+  if (kind !== undefined && kind !== 'none') return false;
+  return true;
+}
+
+async function loadAndPlay(name: string, fromS: number): Promise<void> {
   try {
     // ⚠️ 磁盘上的文件名是小写（midi01.mid），`Midi.txt` 里是大写；
     //   大小写敏感的文件系统上按实际文件名取，取不到就试另一种写法。
@@ -3005,7 +3102,7 @@ async function playTrackFile(name: string): Promise<void> {
       log(`⚠ 找不到配乐 ${name}`);
       return;
     }
-    music.play(name, new Uint8Array(await res.arrayBuffer()));
+    music.play(name, new Uint8Array(await res.arrayBuffer()), fromS);
     log(`♪ ${name}`);
     renderPanel();
   } catch {
@@ -3027,6 +3124,8 @@ function unlockAudio(): void {
   // ★ 第一次手势时人在標題畫面 → 点的是標題那一首（`fcn_004026e2` 的 `fcn_004549cf(0)`），
   //   不是 `Midi.txt` 清单的第一首；清单只在棋盘/其它没点名曲子的场合当兜底。
   if (screen === 'title') void playTrackFile('midi01.mid');
+  // 人已经在棋盘 / 片头上（调试直达、或点播没赶上解锁）⇒ 起的是**背景曲**，不是一首场所曲
+  else if (screen === 'game' || screen === 'intro') playBoardBgm(1);
   else void playTrackFile(resume);
 }
 
@@ -3517,7 +3616,15 @@ function scheduleAi(): void {
   aiTimer = window.setTimeout(() => {
     aiTimer = null;
     // ★ 节拍闸（T-047）：替身还在滑就重排、绝不派下一步 —— 判据见 holdForActorWalk
-    if (holdForActorWalk(scheduleAi)) return;
+    //   重排用**一个渲染周期**去看（`aiRepoll`），不是再等一整个 AI 间隔
+    if (
+      holdForActorWalk(() => {
+        aiRepoll = true;
+        scheduleAi();
+      })
+    ) {
+      return;
+    }
     const action = decideAction({ state, map });
     if (action === null) {
       // 轮到电脑却拿不出 action —— 这是**卡住**，不是「没事可做」，
@@ -3561,15 +3668,45 @@ function scheduleAi(): void {
       return;
     }
     history.push(action);
+    aiLastAction = action.type;
     requestRender();
     renderPanel();
     scheduleAi();
     scheduleHumanTurn(); // 电脑走完，轮到人时接着推进机械步骤
-  }, aiDelayMs);
+  }, aiDelay());
 }
 
 let aiAutoPlay = true;
-const aiDelayMs = 120;
+/** 电脑上一条生效的 action —— 只用来定下一条该等多久 */
+let aiLastAction: Action['type'] | null = null;
+/** 这一次排程是不是「演出还没播完，回头再看一眼」 */
+let aiRepoll = false;
+
+/**
+ * 电脑两条 action 之间等多久。
+ *
+ * ★★ 2026-09-19（试玩回报「游戏进行速度偏慢」）：先前这里是**写死的 120 ms**，而且
+ *   `holdForActorWalk` 的重排也按 120 ms 轮询。用飞行记录仪的时间戳实测一个电脑回合：
+ *   `startTurn →(124)→ aiNext →(124)→ aiNext →(124)→ aiNext → rollDice`、落地后
+ *   `settle →(124)→ buy →(124)→ endTurn →(124)→ startTurn` —— **每回合约 1 秒是纯空等**；
+ *   每走一格还被向上取整到 124 ms 的倍数（速度 2 档一格补间 240 ms，实际花 372 ms）。
+ *
+ *   原版没有这种间隔：棋盘由 20 ms 的多媒体定时器驱动、按速度档分频成 tick（`tick.ts`），
+ *   电脑那条「买股 → 卖股 → 特別融資/公佈欄 → 用卡|用道具 → 掷骰」的决策链是**同一个函数
+ *   一口气跑完的**（`fcn_00418c55`，@source VA 0x00418dc6 起），不跨 tick。
+ *
+ * ⇒ 与真人的机械步骤同一条规则（`humanDelay`）：至少一个 tick、走子则等那段补间播完；
+ *   `aiNext` 只是本引擎把那条决策链拆成的内部簿记，**不占时间**；
+ *   等演出的重排按一个渲染周期（20 ms）看。
+ */
+function aiDelay(): number {
+  if (aiRepoll) {
+    aiRepoll = false;
+    return RENDER_MS;
+  }
+  if (aiLastAction === 'aiNext') return 0;
+  return paceDelay();
+}
 
 // ============================================================
 //  渲染循环
@@ -4970,6 +5107,9 @@ function requestRender(): void {
   requestAnimationFrame(() => {
     renderQueued = false;
     resizeCanvas();
+    syncBailBgm();
+    // 场所都收了、放的还是场所曲 ⇒ 把背景曲从被打断的位置接回来（`sub_00454bcc`）
+    if (boardBgmDue()) restoreBoardBgm();
     // ★ 登记过的整屏每帧收一次 `tick`（不管此刻是不是它在接管）——
     //   演出类屏幕靠它察觉状态变化、推进动画。**屏幕自己要续帧就调
     //   `env.requestRender()`**，别指望这里无条件重排（会转成死循环）。
@@ -6149,6 +6289,9 @@ function startGame(): void {
   introSkipped = false;
   introSoundPlayed = false;
   screen = 'intro';
+  // ★ 背景曲从**片头过场里**就起了 @source `0x00415963 push 1 / call sub_00454d91` ⇒ 第一首 = RICH08
+  //   （設定屏那首 MIDI02 在設定屏收掉时就停了：`sub_00401543 → sub_00454edc`）
+  playBoardBgm(1);
   log(
     `開局：地圖 ${setup.mapId}　種子 ${seed}　` +
       players.map((p, i) => `P${i + 1}${p.kind === 'human' ? '人' : '電'}`).join(' '),

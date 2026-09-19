@@ -123,6 +123,44 @@ export function hitToolbar(sx: number, sy: number): number | null {
  *   再写进精灵表调色板 #255。解码统一走 `@rich4/data` 的 `characterColorRgb`，
  *   不要在这里再写一份移位（hud.ts 那条角色色长条走的是同一个口）。
  */
+/** `exactOptionalPropertyTypes` 下不能直接写 `ring: undefined` */
+function withRing(ring: readonly [number, number, number] | undefined): { ring?: readonly [number, number, number] } {
+  return ring === undefined ? {} : { ring };
+}
+
+/**
+ * 绘制槽 `+6`（`[槽 + 0x48a852]`）的「不换色」哨兵。
+ * @source VA 0x00408f60 / 0x0040920f / 0x00409457 / 0x0040978b `mov byte [槽+0x48a852], 0xff`
+ */
+export const SLOT_NO_RECOLOR = 0xff;
+
+/**
+ * 一件立体物那圈「归属线」（精灵调色板 #255）该换成什么颜色。
+ *
+ * @source 绘制槽遍历 VA 0x00409853..0x0040987d：
+ * ```asm
+ * 00409853  mov cl, [esi+0x48a852]        ; 槽 +6
+ * 00409859  cmp cl, 0xff / je 0x409884    ; 0xff ⇒ 调色板原样（不换色）
+ * 0040985e  test cl, cl  / jne 0x409866
+ * 00409862  xor eax, eax / jmp 0x40987d   ; ★ **0（无主）⇒ #255 = 0 = 黑**
+ * 00409866  … player[cl-1].+0x04 → convert_color
+ * 0040987d  mov [ebp+0x1fe], ax           ; 调色板第 255 项
+ * ```
+ * 而贴图 `0x456770` 只按**索引 0** 透明（`0x456899 and eax,0xff / je`），#255 照画 ⇒
+ * **无主的企业 / 建筑那一圈是黑线**，看上去就是「没有彩边」。
+ *
+ * ★ 先前无主时干脆不换色，于是素材里 #255 的**占位色**（品红 / 青 / 黄）原样露出来：
+ *   开局的保險公司一圈桃红，正好撞上錢夫人的角色色，看着像「已被她控股」（2026-09-19 试玩回报）。
+ */
+export function ringColor(state: GameState, slotOwner: number): readonly [number, number, number] | undefined {
+  if (slotOwner === SLOT_NO_RECOLOR) return undefined;
+  if (slotOwner === 0) return RING_UNOWNED;
+  return characterColor(state, slotOwner);
+}
+
+/** 无主时那圈线的颜色 @source VA 0x00409862 `xor eax,eax` */
+export const RING_UNOWNED: readonly [number, number, number] = [0, 0, 0];
+
 function characterColor(state: GameState, owner: number): readonly [number, number, number] {
   const character = state.players[owner - 1]?.character ?? -1;
   const c = character >= 0 ? CHARACTERS[character]?.color : undefined;
@@ -1097,8 +1135,8 @@ export interface LandArt {
   /** 图号：建筑 = 朝向 + 视角；空地 logo = 角色号 */
   image: number;
   /**
-   * 非 0 时按 `player[paletteOwner-1]` 的角色色换掉调色板 #255（1 基玩家号）；
-   * 0 = 不换色。
+   * 绘制槽 `+6` 的原值：1..4 = 按 `player[n-1]` 的角色色换掉调色板 #255；
+   * **0 = 无主 ⇒ 换成黑**；`SLOT_NO_RECOLOR`（0xff）= 不换色。见 `ringColor`。
    */
   paletteOwner: number;
 }
@@ -1151,7 +1189,7 @@ export function landArt(input: {
     // @source VA 0x00409848 `test ebp,ebp / je` → 资源 0 的槽整条跳过
     if (input.owner === 0) return null;
     // @source VA 0x0040920f：这一支槽 +6 = 0xff（不换色）；图号 = 角色号
-    return { resource: EMPTY_LAND_LOGO_RESOURCE, image: input.character, paletteOwner: 0 };
+    return { resource: EMPTY_LAND_LOGO_RESOURCE, image: input.character, paletteOwner: SLOT_NO_RECOLOR };
   }
   // @source VA 0x004091ee（连锁店）与 0x004091e5（按等级）
   const resource = input.chain
@@ -1237,7 +1275,7 @@ export function buildingArtItems(
       // ★ 外圈那圈线按**所有者的角色专属色**换色（见 assets.ts 的 RING_PALETTE_INDEX）：
       //   @source VA 0x00409853 —— 槽 +6 非 0xff 时把 `player[owner-1].+0x04`（角色色）
       //   写进精灵的调色板 #255。
-      ...(art.paletteOwner === 0 ? {} : { ring: characterColor(state, art.paletteOwner) }),
+      ...withRing(ringColor(state, art.paletteOwner)),
     });
   }
 
@@ -1283,7 +1321,8 @@ export function buildingArtItems(
       res: base + facilitySlot(type, level),
       // @source VA 0x004093c3：与建筑同一算式，朝向在 facility +0x1b
       img: buildingImageIndex(f.facing, view),
-      ...(owner === 0 ? {} : { ring: characterColor(state, owner) }),
+      // @source VA 0x004093f9 `mov al,[ebp+0x19] / mov [槽+0x48a852],al` —— 原值照抄，0 也照抄
+      ...withRing(ringColor(state, owner)),
     });
   }
 
@@ -1291,14 +1330,17 @@ export function buildingArtItems(
   for (const c of map.commercials) {
     const res = sceneryResource(c.spriteIndex);
     if (res === null) continue;
-    const co = state.commercialOwners[c.id - 1]?.owner ?? 0;
+    // ★ 下标 = 企業 **id**（1 基，0 号空着）—— 与 core 全体一致（`reduce.ts` / `stock-policy.ts` …）。
+    //   先前写成 `c.id - 1`：2 号企業显示的是 1 号董事長的颜色、1 号永远没有彩边。
+    const co = state.commercialOwners[c.id]?.owner ?? 0;
     items.push({
       x: c.x,
       y: c.y,
       res,
       // @source VA 0x0040964d：朝向在 commercial +0x1b（实测八张地图都在 0..7）
       img: buildingImageIndex(c.facing ?? 0, view),
-      ...(co === 0 ? {} : { ring: characterColor(state, co) }),
+      // @source VA 0x00409643 `mov al,[ebp+0x18] / mov [槽+0x48a852],al` —— 无主 = 0 ⇒ 黑线
+      ...withRing(ringColor(state, co)),
     });
   }
   for (const l of map.landscapes) {
@@ -1503,6 +1545,17 @@ export class BoardRenderer {
   lastWalkMs(): number {
     const w = this.#walk;
     return w === null ? 0 : w.ticks * w.tickMs;
+  }
+
+  /**
+   * 玩家这一步补间**还剩**多久（毫秒）；没有补间 / 已播完 = 0。
+   *
+   * ★ 宿主排「下一步」要用这个而不是 `lastWalkMs()`：后者在补间播完之后**仍然**返回
+   *   整段时长（`#walk` 不清），于是走完之后的 結算 / 收尾 / 下一位开局每一步都白等一整格的时间。
+   */
+  walkRemainingMs(now = performance.now()): number {
+    const w = this.#walk;
+    return w === null ? 0 : Math.max(0, w.ticks * w.tickMs - (now - w.start));
   }
 
   // ── 替身（四大惡人 / 機器娃娃）的走子补间 ──────────────────────────

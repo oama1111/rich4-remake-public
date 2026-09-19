@@ -279,7 +279,40 @@ export const BGM_FILES: readonly string[] = [
   'MIDI01.MID', 'MIDI02.MID', 'MIDI03.MID', 'MIDI04.MID', 'MIDI05.MID',
   'MIDI06.MID', 'MIDI07.MID', 'MIDI08.MID', 'MIDI09.MID', 'MIDI10.MID',
   'MIDI11.MID', 'MIDI12.MID', 'MIDI13.MID',
+  // ★ 2026-09-19 补：表 `0x47e793` 实 dump 是 **17 项**（到 0x47e7d7 才是 0），先前只抄了 13 项，
+  //   于是把監獄 `0xf` / 醫院 `0x10` 记成了「越界、读到什么未定论」—— 其实就是下面这两首。
+  'MIDI14-1.MID', 'MIDI14-2.MID', 'MIDI15.MID', 'MIDI16.MID',
 ];
+
+/**
+ * **棋盘背景曲单** —— 8 首，轮着放。
+ *
+ * @source 表 `0x47e773`（8 个指针，紧挨着上面那张 `0x47e793`；实 dump：
+ *   RICH08 / RICH16 / RICH17 / RICH18 / RICH19 / RICH20 / RICH21 / RICH22）。
+ *
+ * 三支例程（2026-09-19 整支读过）：
+ * - `sub_00454d91(arg)`：`arg ≠ 0` ⇒ 曲号 = `arg − 1`；`arg = 0` ⇒ **下一首** `(曲号 + 1) & 7`。
+ *   放 `表[曲号]`（有游戏光盘时改放 CD 音轨 `曲号 + 2`），并把当前曲记成 `曲号 | 0x80`（0x80 = 背景曲）。
+ *   调用点：片头过场里 `0x415963 push 1`（⇒ **开局第一首 = RICH08**）、读档进棋盘 `0x4019c6 push 0`、
+ *   節日曲那一天过完 `0x41cf93`、設定屏点选曲目 `0x410686`（`(x − 0xe2) / 15 + 1`）。
+ * - `sub_00454d2c`（一首放完的通知）：当前是背景曲 ⇒ `sub_00454d91(0)` 换下一首；
+ *   否则（场所曲）⇒ `play mid from 0` 原地重放。
+ * - `sub_00454bcc`（每个场所的模态循环一返回就调）：停掉场所曲，**从被打断的位置**接着放背景曲
+ *   （`play mid from %d`，位置是 `fcn_004549cf` 打断时由 `sub_00454b1a` 记下的）。
+ *
+ * ★ 先前棋盘上一直放的是 `MIDI02` —— 那只是**開局設定屏**的配乐（`0x40711a push 0x8001`，
+ *   紧接着就是設定屏的模态循环），設定屏一收 `sub_00401543 → sub_00454edc` 就把它停了。
+ *   磁盘上的文件名是 `Rich08.mid` 这种大小写（见 `assets/game/`）。
+ */
+export const BOARD_BGM_FILES: readonly string[] = [
+  'Rich08.mid', 'Rich16.mid', 'Rich17.mid', 'Rich18.mid',
+  'Rich19.mid', 'Rich20.mid', 'Rich21.mid', 'Rich22.mid',
+];
+
+/** 背景曲的「下一首」@source `0x00454dac`：`inc ah / and dl, 7` */
+export function nextBoardBgm(index: number): number {
+  return (index + 1) & 7;
+}
 
 /**
  * 全 exe 22 处 `call fcn_004549cf` 各自传的 **id**（逐处读出的**实参**）。
@@ -293,10 +326,8 @@ export const BGM_FILES: readonly string[] = [
  *   `test byte [esp+0x3d], 0x80 / je … / and dword [esp+0x3c], 0x7fff`
  *   ⇒ 真正的曲号要**去掉 0x8000**（`0x8001` → 1、`0x8006` → 6）。
  *
- * ⚠️ 有两处传的 id **超出** `BGM_FILES`（13 项）的范围：
- *   監獄 `0xf`（prison.asm:917）、醫院 `0x10`（hospital.asm:1529）——
- *   原版那里会顺着表往后读（`[id*4 + 0x47e793]`），读到什么**未定论**，
- *   故本表照抄这两个数、由调用方自己判断（不替它猜一个文件名）。
+ * 監獄 `0xf`（prison.asm:917）= `MIDI15.MID`、醫院 `0x10`（hospital.asm:1529）= `MIDI16.MID`
+ *   （表 `0x47e793` 共 17 项，见 `BGM_FILES`；先前误记成「越界」）。
  */
 export const SCREEN_BGM: Readonly<Record<string, number>> = {
   /** rich4.asm:19212 —— 月結／頒獎屏 */
@@ -324,12 +355,16 @@ export const SCREEN_BGM: Readonly<Record<string, number>> = {
   lotteryDraw: 8,
   /** ui_main.asm:187 / 483 */
   mainMenu: 0,
-  /** ⚠️ 超出表范围的两处（照抄，不猜）*/
+  /** 監獄 = MIDI15、醫院 = MIDI16 */
   prison: 0xf,
   hospital: 0x10,
 };
 
-/** `fcn_004549cf` 的实参里 `0x8000` 是旗标（先停当前曲），真曲号要掩掉它 */
+/**
+ * `fcn_004549cf` 的实参里 `0x8000` 是旗标，真曲号要掩掉它。
+ * ★ 旗标的含义（`0x4549e7..0x454a1a`）：**不要**去记背景曲被打断的位置（`sub_00454b1a`）——
+ *   用在「此刻本来就没有背景曲在放」的场合（開局設定屏、终局屏、節日曲）。不是「先停当前曲」。
+ */
 export function bgmTrackIdOf(rawArg: number): number {
   return rawArg & 0x7fff;
 }

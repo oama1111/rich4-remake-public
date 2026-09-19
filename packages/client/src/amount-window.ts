@@ -45,11 +45,20 @@
  * 所以 (sub esi, 0xc) 的最后一张落在 `valueAt.dx`，倒数第 k 张落在
  * `valueAt.dx + k×0xc`。
  *
- * ⚠️ **y 上还有一处补偿**：`loc_00452a05` 那几行是
- * `push ebp`（= `[0x48cab6] + 0x21`）在前、`push esi`（= `[0x48cab8] + 0x40`）在后，
- * 而参数序是 `(屏, 图, x, y, …)` ⇒ 落点其实是
- * **`x = +0x40`、`y = +0x21`**（`valueAt` 记的 `0x6b/0x0b` 是**显示框**的位置，
- * 数字要落在框中间）。这里两个都留着：`valueAt` 给框、`valueAtChar` 给字。
+ * ★ 2026-09-19 订正：先前这里写着「落点其实是 x=+0x40、y=+0x21」并据此另列 `valueAtChar`，
+ *   还把图号记成「字符 − 0x2b」（= 图 5..14，那是 33×17 的**键帽按下态**）。两条都是误读，
+ *   整支 `fcn_0045297e` 重读后的结论见 `AMOUNT_WINDOW.valueAt` 与 `amountCharImage`。
+ *
+ * ## 比例条（同一支函数的后半，`0x452a64` 起）
+ *
+ * ```asm
+ * 00452a64  blit(屏, 图集#0x15, 图 1, 窗x+0xa, 窗y+0x2a)        ; 先整条贴**暗**条（图 1，108×12）
+ * 00452a92  esi = i ; cmp esi,-1 / je 跳过                        ; 值为 0 ⇒ 整条都暗
+ * 00452a9b  copy(屏 ← 干净面板[0x48caa0], 目标(窗x+0xa, 窗y+0x2a),
+ *                源(0xa, 0x2a), 宽 = byte[0x47e725 + i], 高 0xc)   ; 再把左边那一截还原成面板自带的**亮**条
+ * ```
+ * 其中 `i = trunc( float32(值 / 上限) × 33.0 )`（`0x4529aa fild/fdivp/fstp dword`、
+ * `0x4529c2 fmul [0x466218]`= 33.0、`0x457dbc` 把舍入控制设成截断）。
  */
 
 import type { Sprite } from './assets.ts';
@@ -98,7 +107,10 @@ export function amountCharImage(ch: string): number {
   // 只认 '0'..'9'（金额栏里只有这些）
   const code = ch.charCodeAt(0);
   if (code < 0x30 || code > 0x39) return -1;
-  return code - 0x2b;
+  // @source 0x00452a09 `mov al,[ebx+0x48caac]` / 0x00452a0f `sub eax,0x20` —— 图 = 字符 − 0x20
+  //   ⇒ '0'..'9' = 图 16..25：`Panel.mkf` #0x15 里那十张 **9×19 的液晶字模**
+  //   （图 2..15 是 33×17 的键帽按下态，不是字）。
+  return code - 0x20;
 }
 
 /**
@@ -113,55 +125,95 @@ export function amountCharImage(ch: string): number {
  */
 export function amountDigits(
   value: number,
-  x0 = AMOUNT_WINDOW.valueAtChar.dx,
-  y = AMOUNT_WINDOW.valueAtChar.dy,
+  xLast = AMOUNT_WINDOW.valueAt.dx,
+  y = AMOUNT_WINDOW.valueAt.dy,
 ): { ch: string; image: number; x: number; y: number }[] {
   const text = String(Math.max(0, Math.trunc(value)));
   // 超 9 位取**后** 9 位 —— 只是把原版那条 9 位上限在显示侧再表达一次
   const shown = text.slice(-AMOUNT_DIGIT_MAX);
   const out: { ch: string; image: number; x: number; y: number }[] = [];
-  // ★ 第一个字落在 x0，之后每个 +字距（`sub esi, 0xc` 是往右走的那一支）
+  // ★ 右对齐：末位落在 xLast，往前每一位 −字距 @source 0x00452a28 `sub esi, 0xc`
   for (let i = 0; i < shown.length; i++) {
     const ch = shown[i] ?? '';
     if (ch === '') continue;
     const image = amountCharImage(ch);
     if (image < 0) continue; // 非数字（理论上不会出现）不贴越界的图
-    out.push({ ch, image, x: x0 + i * AMOUNT_WINDOW.valueDigitPitch, y });
+    const fromRight = shown.length - 1 - i;
+    out.push({ ch, image, x: xLast - fromRight * AMOUNT_WINDOW.valueDigitPitch, y });
   }
   return out;
 }
 
+/** 比例条在面板内的位置与高 @source 0x00452a64..0x00452ad1（`+0xa` / `+0x2a` / `push 0xc`）*/
+export const AMOUNT_GAUGE = { x: 0x0a, y: 0x2a, h: 0x0c, dimImage: 1 } as const;
+
 /**
- * 面板的**全部贴图** —— 一张底 + 每个数字一格。纯函数，方便单测钉版面。
- *
- * @returns `panel` 是底图（`(0,0)` 不透明），`digits` 是数字格
+ * 比例条**亮**到第几个像素 @source 表 `0x47e725`（34 项，实 dump）。
+ * 下标 = `amountGaugeIndex` 的返回值。
  */
-export function amountWindowPlan(value: number): {
+export const AMOUNT_GAUGE_WIDTHS: readonly number[] = [
+  3, 6, 9, 12, 15, 19, 22, 25, 28, 31, 34, 38, 41, 44, 47, 50, 53, 57, 60, 63, 66, 69, 73, 76, 79,
+  82, 85, 88, 92, 95, 98, 101, 104, 107,
+];
+
+/**
+ * 比例条的档位：`trunc(float32(值 / 上限) × 33)`；值为 0（或上限 ≤ 0）⇒ −1 = 整条都暗。
+ * @source 0x004529aa..0x004529db（`fstp dword` 先落成 float32，再 `fmul 33.0`、截断取整）
+ */
+export function amountGaugeIndex(value: number, cap: number): number {
+  if (!(value > 0) || !(cap > 0)) return -1;
+  const i = Math.trunc(Math.fround(value / cap) * 33);
+  return Math.min(i, AMOUNT_GAUGE_WIDTHS.length - 1);
+}
+
+/**
+ * 面板的**全部贴图** —— 一张底 + 暗条 + 亮条那一截 + 每个数字一格。纯函数，方便单测钉版面。
+ */
+export function amountWindowPlan(value: number, cap = 0): {
   panel: { image: number; x: number; y: number };
+  /** 暗条（图 1）整条贴上去 */
+  gaugeDim: { image: number; x: number; y: number };
+  /** 再从**面板图自己**身上还原回来的那一截亮条；null = 整条都暗 */
+  gaugeLit: { x: number; y: number; w: number; h: number } | null;
   digits: readonly { ch: string; image: number; x: number; y: number }[];
 } {
+  const gi = amountGaugeIndex(value, cap);
   return {
     panel: { image: 0, x: 0, y: 0 },
+    gaugeDim: { image: AMOUNT_GAUGE.dimImage, x: AMOUNT_GAUGE.x, y: AMOUNT_GAUGE.y },
+    gaugeLit: gi < 0 ? null : { x: AMOUNT_GAUGE.x, y: AMOUNT_GAUGE.y, w: AMOUNT_GAUGE_WIDTHS[gi] ?? 0, h: AMOUNT_GAUGE.h },
     digits: amountDigits(value),
   };
 }
 
-/** 画那扇窗（底图 + 数字）—— 只做 IO */
+/** 画那扇窗（底图 + 比例条 + 数字）—— 只做 IO */
 export function drawAmountWindow(
   ctx: CanvasRenderingContext2D,
   sprite: AmountSprite,
   value: number,
+  cap = 0,
 ): boolean {
-  const plan = amountWindowPlan(value);
+  const plan = amountWindowPlan(value, cap);
   const base = sprite('Panel.mkf', AMOUNT_RESOURCE, plan.panel.image);
   // 底图还没解好时**什么都不画**：让调用方保留它自己的兜底（别画半扇窗）
   if (base === null) return false;
-  ctx.drawImage(base.bitmap, AMOUNT_WINDOW.x + plan.panel.x, AMOUNT_WINDOW.y + plan.panel.y);
+  const wx = AMOUNT_WINDOW.x;
+  const wy = AMOUNT_WINDOW.y;
+  ctx.drawImage(base.bitmap, wx + plan.panel.x, wy + plan.panel.y);
+  // 比例条：先整条暗，再把左边那一截从面板图上原样盖回来（= 亮）
+  const dim = sprite('Panel.mkf', AMOUNT_RESOURCE, plan.gaugeDim.image);
+  if (dim !== null) {
+    ctx.drawImage(dim.bitmap, wx + plan.gaugeDim.x - dim.anchorX, wy + plan.gaugeDim.y - dim.anchorY);
+    const lit = plan.gaugeLit;
+    if (lit !== null && lit.w > 0) {
+      ctx.drawImage(base.bitmap, lit.x, lit.y, lit.w, lit.h, wx + lit.x, wy + lit.y, lit.w, lit.h);
+    }
+  }
   for (const d of plan.digits) {
     const s = sprite('Panel.mkf', AMOUNT_RESOURCE, d.image);
     if (s === null) continue;
     // 字库的锚点全是 0 ⇒ 直接减锚点（`fcn_00456512` 的 `[esi+4]/[esi+6]`）
-    ctx.drawImage(s.bitmap, AMOUNT_WINDOW.x + d.x - s.anchorX, AMOUNT_WINDOW.y + d.y - s.anchorY);
+    ctx.drawImage(s.bitmap, wx + d.x - s.anchorX, wy + d.y - s.anchorY);
   }
   return true;
 }

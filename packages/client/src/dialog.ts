@@ -491,7 +491,8 @@ export function drawDialog(
   //   不再画自造的金框五钮条（B-5(i)/B-6(i)）。
   //   命中已经由 `layoutDialog` 按 `AMOUNT_KEY_RECTS` 铺好了。
   if (l.amountWindow === true && page !== null) {
-    if (drawAmountWindow(ctx, sprite, page.value)) {
+    // 上限喂给比例条（`值 / 上限 × 33`）；拿不到就当 0 ⇒ 整条都暗
+    if (drawAmountWindow(ctx, sprite, page.value, ui.choices[page.choice]?.amount?.max ?? 0)) {
       ctx.restore();
       return;
     }

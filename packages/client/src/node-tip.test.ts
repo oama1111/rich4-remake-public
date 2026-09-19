@@ -299,13 +299,26 @@ describe('文本拼法 @source fcn_00417559 的各分支', () => {
   it('★ 企业 = 董事長 / 企業名 / 餘股，行距 0x1b', () => {
     const map = testMap();
     const state = makeGameState({
-      commercialOwners: [{ owner: 1, ranking: [] }],
-      commercialShares: [1234],
+      // ★ 下标 = 企業 id（1 基，0 号空着）—— 与 core 的 `newGame` 产物同形
+      commercialOwners: [{ owner: 0, ranking: [] }, { owner: 1, ranking: [] }],
+      commercialShares: [0, 1234],
     });
     expect(tipLines(map, state, { kind: 'commercial', id: 1 })).toEqual([
       { text: '約翰喬', dy: 0 },
       { text: '台積電', dy: TIP_LINE },
       { text: '餘股:1234', dy: TIP_LINE * 2 },
+    ]);
+  });
+
+  it('★★ 表的下标是企業 id，不是 id−1：0 号槽里放着别人也**不许**读到（先前读的是前一家）', () => {
+    const map = testMap();
+    const state = makeGameState({
+      commercialOwners: [{ owner: 3, ranking: [] }, { owner: 0, ranking: [] }],
+      commercialShares: [9999, 42],
+    });
+    expect(tipLines(map, state, { kind: 'commercial', id: 1 })).toEqual([
+      { text: '台積電', dy: TIP_LINE },
+      { text: '餘股:42', dy: TIP_LINE * 2 },
     ]);
   });
 
@@ -590,8 +603,8 @@ describe('一整帧模型', () => {
     // 把企业挪到 y=200，好让 y ≥ 116 那条「框往上」的分支也被走到
     map.commercials[0]!.y = 200;
     const state = makeGameState({
-      commercialOwners: [{ owner: 2, ranking: [] }],
-      commercialShares: [77],
+      commercialOwners: [{ owner: 0, ranking: [] }, { owner: 2, ranking: [] }],
+      commercialShares: [0, 77],
     });
     const m = tipModel(map, state, 402, 210, toScreen);
     expect(m).not.toBeNull();

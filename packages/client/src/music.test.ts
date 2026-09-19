@@ -518,3 +518,70 @@ describe('★ 解锁后立刻补播（autoplay 政策）', () => {
     player.stop();
   });
 });
+
+describe('★ 背景曲要用的三样：从半路放起 / 放到哪儿了 / 放完通知（2026-09-19）', () => {
+  const setNow = (ctx: FakeAudioContext, t: number): void => {
+    (ctx as unknown as { currentTime: number }).currentTime = t;
+  };
+
+  it('`play(name, data, fromS)`：起点往回挪 fromS，之前的音不排 @source `play mid from %d`', () => {
+    const { player, ctx } = readyPlayer();
+    player.play('bg.mid', SONG, 0.3);
+    // SONG 的旋律音在 0 / 0.25 / 1.0 秒；从 0.3 秒放起 ⇒ 前两个不排
+    const whens = ctx.sources.map((s) => s.starts[0]!.when);
+    expect(whens.length).toBeLessThan(4);
+    // 1.0 秒那个音落在 (0.1 − 0.3) + 1.0 = 0.8
+    expect(whens.some((w) => Math.abs(w - 0.8) < 1e-6)).toBe(true);
+    expect(whens.every((w) => w >= 0.1 - 1e-9)).toBe(true);
+    player.stop();
+  });
+
+  it('`positionS`：放到第几秒（没在放 = 0）—— 场所打断背景曲时记的就是它', () => {
+    const { player, ctx } = readyPlayer();
+    expect(player.positionS).toBe(0);
+    // 背景曲是**不循环**的（放完换下一首）。循环曲在最后一个排程窗口里起点会提前跳到下一轮，
+    //   那时的「位置」没有意义 —— 也用不到（只有背景曲才记位置）。
+    player.setLoop(false);
+    player.play('bg.mid', SONG);
+    setNow(ctx, 0.6);
+    expect(player.positionS).toBeCloseTo(0.5, 6); // startedAt = 0.1
+    player.stop();
+    expect(player.positionS).toBe(0);
+    // 从半路放起的，位置也从那儿算
+    player.play('bg.mid', SONG, 0.4);
+    expect(player.positionS).toBeCloseTo(0.3, 6); // (0 − (0.1 − 0.4))
+    player.stop();
+  });
+
+  it('★ 不循环的曲子**真放完**才收并通知；循环的不通知', () => {
+    vi.useFakeTimers();
+    try {
+      const { player, ctx } = readyPlayer();
+      const dur = parseMidi(SONG).duration;
+      let ended = 0;
+      player.onEnded = () => { ended++; };
+      player.setLoop(false);
+      player.play('bg.mid', SONG);
+      // 还差一点没放完 —— 先前这里会**提前一个排程窗口（2 秒）**就把曲子掐掉
+      setNow(ctx, 0.1 + dur - 0.05);
+      vi.advanceTimersByTime(600);
+      expect(player.playing).toBe(true);
+      expect(ended).toBe(0);
+      setNow(ctx, 0.1 + dur + 0.01);
+      vi.advanceTimersByTime(600);
+      expect(player.playing).toBe(false);
+      expect(ended).toBe(1);
+
+      // 循环：到点回到曲头，不通知
+      player.setLoop(true);
+      player.play('venue.mid', SONG);
+      setNow(ctx, 0.1 + dur + 5);
+      vi.advanceTimersByTime(600);
+      expect(player.playing).toBe(true);
+      expect(ended).toBe(1);
+      player.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

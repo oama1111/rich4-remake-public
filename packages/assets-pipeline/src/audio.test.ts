@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { MkfArchive } from './mkf.ts';
-import { MIDI_PLAYLIST, BGM_FILES, SCREEN_BGM, bgmTrackIdOf, bgmAssetFileFor, bgmFileFor, bgmEnabled, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from './audio.ts';
+import { MIDI_PLAYLIST, BGM_FILES, BOARD_BGM_FILES, nextBoardBgm, SCREEN_BGM, bgmTrackIdOf, bgmAssetFileFor, bgmFileFor, bgmEnabled, isWave, readWaveInfo, WaveFormatError, DICE_AT, DICE_AT_BASE, DICE_SOUND, MOVE_SOUND, PLACE_TOOL_SOUND, SOUND_IDS } from './audio.ts';
 
 const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 
@@ -74,12 +74,15 @@ describe('★ 背景音乐', () => {
   it('清单有 25 首，与 Midi.txt 同序', () => {
     expect(MIDI_PLAYLIST).toHaveLength(25);
     // ★ 2026-09-17：**按屏取曲**那张表（`fcn_004549cf(id)` 用的），逐字节对照 exe
-    expect(BGM_FILES).toHaveLength(13);
+    // ★ 2026-09-19：表是 **17 项**（先前只抄了 13 项）—— 下面有逐字节对照 exe 的那一段兜着
+    expect(BGM_FILES).toHaveLength(17);
     expect(BGM_FILES[0]).toBe('MIDI01.MID');
     expect(BGM_FILES[12]).toBe('MIDI13.MID');
+    expect(BGM_FILES[16]).toBe('MIDI16.MID');
     // 月結屏那一处：`fcn_004549cf(9)` → MIDI10.MID
     expect(bgmFileFor(9)).toBe('MIDI10.MID');
-    expect(bgmFileFor(13)).toBeNull();
+    expect(bgmFileFor(13)).toBe('MIDI14-1.MID');
+    expect(bgmFileFor(17)).toBeNull();
     // 配置闸门：`[0x49715a] == 0` ⇒ 整条不做
     expect(bgmEnabled(0)).toBe(false);
     expect(bgmEnabled(1)).toBe(true);
@@ -91,11 +94,11 @@ describe('★ 背景音乐', () => {
     expect(bgmTrackIdOf(0x8006)).toBe(6);
     expect(bgmFileFor(bgmTrackIdOf(SCREEN_BGM.newGame!))).toBe('MIDI02.MID');
     expect(bgmFileFor(bgmTrackIdOf(SCREEN_BGM.newGameAlt!))).toBe('MIDI07.MID');
-    // ⚠️ 監獄/醫院那两处**超出 13 项表** ⇒ `bgmFileFor` 必须老实返 null（不替它猜）
+    // 監獄/醫院那两处就在表里（先前误记成「越界」）
     expect(SCREEN_BGM.prison).toBe(0xf);
     expect(SCREEN_BGM.hospital).toBe(0x10);
-    expect(bgmFileFor(SCREEN_BGM.prison!)).toBeNull();
-    expect(bgmFileFor(SCREEN_BGM.hospital!)).toBeNull();
+    expect(bgmFileFor(SCREEN_BGM.prison!)).toBe('MIDI15.MID');
+    expect(bgmFileFor(SCREEN_BGM.hospital!)).toBe('MIDI16.MID');
     // ★ 磁盘上是小写（`Rich4/midi01.mid`）；exe 那张表里是大写
     expect(bgmAssetFileFor(9)).toBe('midi10.mid');
     expect(bgmAssetFileFor(99)).toBeNull();
@@ -113,13 +116,38 @@ describe('★ 背景音乐', () => {
     if (existsSync(EXE)) {
       const buf = readFileSync(EXE);
       const at = (va: number) => 398848 + (va - 0x463000); // 该 exe 的 VA→文件偏移换算
-      // 表 0x47e793 的 13 个指针，各自指向的串必须就是 BGM_FILES[i]
+      // 表 0x47e793 的指针，各自指向的串必须就是 BGM_FILES[i]；★ 第 17 格是 0 = 表到此为止
       for (let i = 0; i < BGM_FILES.length; i++) {
         const ptr = buf.readUInt32LE(at(0x47e793) + i * 4);
         const end = buf.indexOf(0, at(ptr));
         expect(buf.subarray(at(ptr), end).toString('latin1')).toBe(BGM_FILES[i]);
       }
+      expect(buf.readUInt32LE(at(0x47e793) + BGM_FILES.length * 4)).toBe(0);
+      // ★ 棋盘背景曲单：表 0x47e773 的 8 个指针（紧挨着上面那张）
+      expect(BOARD_BGM_FILES).toHaveLength(8);
+      for (let i = 0; i < BOARD_BGM_FILES.length; i++) {
+        const ptr = buf.readUInt32LE(at(0x47e773) + i * 4);
+        const end = buf.indexOf(0, at(ptr));
+        expect(buf.subarray(at(ptr), end).toString('latin1')).toBe(BOARD_BGM_FILES[i]!.toUpperCase());
+      }
+      expect(0x47e773 + 8 * 4).toBe(0x47e793);
     }
+  });
+
+  it('背景曲「下一首」= (曲号 + 1) & 7，8 首一圈 @source 0x00454dac', () => {
+    expect(nextBoardBgm(0)).toBe(1);
+    expect(nextBoardBgm(7)).toBe(0);
+    let i = 0;
+    const seen = new Set<number>();
+    for (let n = 0; n < 8; n++) { seen.add(i); i = nextBoardBgm(i); }
+    expect(seen.size).toBe(8);
+  });
+
+  it('★ 棋盘背景曲的文件名就是随包素材目录里那条真实条目名（大小写一致）', () => {
+    const GAME = new URL('../../../assets/game/', import.meta.url);
+    if (!existsSync(GAME)) return;
+    const entries = new Set(readdirSync(GAME));
+    for (const f of BOARD_BGM_FILES) expect(entries.has(f), `assets/game 里应当有 ${f}`).toBe(true);
   });
 
   it('★ 清单里的文件在游戏目录里都存在', () => {
