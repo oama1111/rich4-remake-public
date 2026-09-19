@@ -1,6 +1,6 @@
 # 大富翁4 高清重制版 · 开发计划与约束
 
-> 版本：v1.3　｜　制定日期：2026-09-13　｜　最近修订：2026-09-14（PRD v1.0 并入）　｜　状态：P1 过半，PRD 定稿
+> 版本：v1.3　｜　制定日期：2026-09-13　｜　最近修订：2026-09-19（§11 与现状同步，见 W-01）　｜　状态：P0/P1/P2 **条目全勾完**（15/15、6/6、22/22，75 张卡全 done）；**第一阶段出口条件（soak / 性能 / 三平台真机包）的验收证据仍在补** —— 清单见 [`docs/WORKPLAN.md`](docs/WORKPLAN.md) 阶段 1，现状速览见 [`docs/handoff.md`](docs/handoff.md) 顶部
 > 模块契约（输入/输出/API/伪代码）见 **§12 → `docs/PRD.md`**；本文 §11 管进度，PRD 管接口。
 > 本文档是项目的**唯一事实来源（Single Source of Truth）**。任何实现决策与本文冲突时，以本文为准；若本文有误，先改本文再改代码。
 
@@ -957,16 +957,34 @@ upscale-queue/
   尺寸**重算锚点（C-AST-6）、写 manifest 条目、幂等不重写；`review` 出并排过审页；
   读侧 `SpriteCache` 按图优先读 hd、缺则回退原图（T-065），hd 路径由 `hdRelativePath`
   单点定义（写读同一函数）。
-  两条已知缺口：**底图不在超分清单里**（Q-GND-4），**LRU 释放内存需 render.ts 接 onEvict**
-  与桌面端 hd 路由（Q-PERF-1）。
-  仍等 P2 定稿哪些图真正上屏再批量跑，避免返工。`assets/hd/` 目前是空的，故读侧此刻
-  全走回退路径——这是正常状态。
+  ~~两条已知缺口：**底图不在超分清单里**（Q-GND-4），**LRU 释放内存需 render.ts 接 onEvict**
+  与桌面端 hd 路由（Q-PERF-1）。~~
+  **两条都已在 2026-09-15 接线结案**（详见 `docs/known-deviations.md` 同名条目；W-01 逐条核对过代码）：
+  - **Q-GND-4 已结案**：`cli-extract` 用 `ground.ts` 的解码器把 `.gnd` 解成 PNG 进清单
+    （`format:'GND'`、2304×2304），分类新增 `byGroundSource`（`packages/assets-pipeline/src/classify.ts:75`）
+    —— 底图现在是**整张**进超分清单（`packages/assets-pipeline/src/cli-extract.ts:51,146`）；接缝判据换
+    `compareAllSeams`。
+  - **Q-PERF-1 已结案**：`SpriteCache` 淘汰回调改成监听列表 `addEvictListener`
+    （`packages/client/src/assets.ts:254`），两个持有者 `render.ts:1415` 与 `hud.ts:615` 都挂了；
+    `DeferredSpriteClose`（`assets.ts:1328`）在下一帧 `draw()` 开头才 `close()`；桌面端 hd 路由
+    `hd_dir()`/`is_hd_path()` 在 `packages/desktop/src-tauri/src/lib.rs:126,140`。
+  现在仍等的是**需求方拍板用哪个外部超分工具/预算**（阶段 4 的 W-30），在那之前只做到 `slice`；
+  `assets/hd/` 仍是空的，故读侧此刻全走回退路径——这是正常状态。
 - **步骤 3 联机**：服务器 `Room`/`Sequencer`/`hub.ts`/`ws-server.ts` + `cli.ts` 可跑（T-070..T-073 ✅），
   客户端 `net-client.ts` 接进 `main.ts`（T-074 ✅，`?ws=&room=&name=` 进联机）、掷骰本地预测动画
   （T-075 ✅）、大厅屏（T-076 ✅：进房、座位板、房主開始、離開）。core 的确定性约束（C-DET）
   一直在 CI 里守着，联机不需要改 core。
-  三条已知缺口：**客户端 desync 自愈**未做（Q-NET-1，要协议补重放路径）、
-  **大厅里改角色/换地图**要协议（Q-NET-2）。
+  ~~三条已知缺口：**客户端 desync 自愈**未做（Q-NET-1，要协议补重放路径）、
+  **大厅里改角色/换地图**要协议（Q-NET-2）。~~
+  **两条都已在 2026-09-15 结案**（详见 `docs/known-deviations.md` 同名条目；W-01 逐条核对过代码）：
+  - **Q-NET-1 已结案**：协议新增 `{t:'resync'}` / `{t:'replay', …}`（`packages/core/src/net/protocol.ts`），
+    服务端 `hub.ts:179` 的 `case 'resync'` 只回请求者全量日志，客户端 `net-client.ts:127`
+    的 `requestResync()`（收到 `desync` 自动调用，`net-client.ts:168`）重建状态。
+  - **Q-NET-2 已结案**：协议新增 `{t:'setCharacter'}` / `{t:'setMap'}`（`protocol.ts:81,89`），
+    服务器三道闸在 `hub.ts:204,213`；座位只从**连接**上认，权限不靠客户端自觉。
+  这两块都是**本项目新增界面**（原版没有联机大厅）。
+  现在缺的是**多机实战验证**（WORKPLAN 的 W-40：本机双客户端端到端指纹比对 / 重连 / AI 补位），
+  以及部署方式的需求方决策（W-41）。
 
 ## 12. ★ 开发需求说明书（PRD）
 
