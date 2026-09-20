@@ -28,7 +28,7 @@ SEATS="${SEATS:-2}"
 TAKEOVER="${TAKEOVER:-6000}"
 TURNS="${TURNS:-50}"
 OUT="$ROOT/.qa-tmp/net"
-URL="http://localhost:5173/?ws=ws://localhost:${PORT}/ws&room=r1"
+URL="http://localhost:5173/?ws=ws://localhost:${PORT}/ws&room=K7M2QP"
 JS=/tmp/net-e2e.js
 PROBE=/tmp/net-probe.js
 

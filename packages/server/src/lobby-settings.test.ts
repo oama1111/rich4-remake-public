@@ -18,6 +18,16 @@ import { readFileSync, existsSync } from 'node:fs';
 import { PROTOCOL_VERSION, parseMap, type Rich4Map, type ServerMessage } from '@rich4/core';
 import { RoomHub, type Conn } from './hub.ts';
 
+/** ★ W-73：`join` 多了必填的 `clientId`；测试里按名字派生一个稳定的 32 位十六进制 */
+const idFor = (seed: string): string =>
+  [...seed]
+    .map((c) => c.charCodeAt(0).toString(16).padStart(2, '0'))
+    .join('')
+    .padEnd(32, '0')
+    .slice(0, 32);
+
+
+const ROOM = 'K7M2QP';
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = (): Rich4Map => parseMap(new Uint8Array(readFileSync(MAP)));
@@ -59,8 +69,8 @@ function twoPlayers(map: Rich4Map) {
   const b = new FakeConn();
   const ha = hub.connect(a);
   const hb = hub.connect(b);
-  ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
-  hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+  ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
+  hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B') });
   return { hub, a, b, ha, hb };
 }
 
@@ -73,11 +83,11 @@ describe('★ Q-NET-2 权限', () => {
     const { hub, b, ha, hb } = twoPlayers(loadMap());
     hb.onMessage({ t: 'setMap', globalMapId: 1 });
     expect(b.last('error')?.message).toContain('房主');
-    expect(hub.roomInfo('r')?.globalMapId).toBe(0);
+    expect(hub.roomInfo(ROOM)?.globalMapId).toBe(0);
 
     // 房主改得动，并且是**广播给全房**（不是只回给房主）
     ha.onMessage({ t: 'setMap', globalMapId: 1 });
-    expect(hub.roomInfo('r')?.globalMapId).toBe(1);
+    expect(hub.roomInfo(ROOM)?.globalMapId).toBe(1);
     expect(b.last('room')?.room.globalMapId).toBe(1);
   });
 
@@ -86,7 +96,7 @@ describe('★ Q-NET-2 权限', () => {
     a.clear();
     ha.onMessage({ t: 'setMap', globalMapId: 5 }); // mapFor 只认 0/1
     expect(a.last('error')?.message).toContain('沒有地圖');
-    expect(hub.roomInfo('r')?.globalMapId).toBe(0);
+    expect(hub.roomInfo(ROOM)?.globalMapId).toBe(0);
   });
 
   run('地图号越界 / 非整数 → 拒', () => {
@@ -96,18 +106,18 @@ describe('★ Q-NET-2 权限', () => {
       ha.onMessage({ t: 'setMap', globalMapId: bad });
       expect(a.last('error')?.message, String(bad)).toContain('不合法');
     }
-    expect(hub.roomInfo('r')?.globalMapId).toBe(0);
+    expect(hub.roomInfo(ROOM)?.globalMapId).toBe(0);
   });
 
   run('改角色只改得动自己那一格（消息里没有座位号，服务器按连接认）', () => {
     const { hub, a, ha, hb } = twoPlayers(loadMap());
     hb.onMessage({ t: 'setCharacter', character: 5 });
-    expect(hub.roomInfo('r')?.seats.map((s) => s.character)).toEqual([0, 5]);
+    expect(hub.roomInfo(ROOM)?.seats.map((s) => s.character)).toEqual([0, 5]);
     // 房主自己那格没被动过
     expect(a.count('error')).toBe(0);
     // 房主改自己的，也不影响别人
     ha.onMessage({ t: 'setCharacter', character: 9 });
-    expect(hub.roomInfo('r')?.seats.map((s) => s.character)).toEqual([9, 5]);
+    expect(hub.roomInfo(ROOM)?.seats.map((s) => s.character)).toEqual([9, 5]);
   });
 });
 
@@ -120,7 +130,7 @@ describe('★ Q-NET-2 角色不能撞车', () => {
     const { hub, b, hb } = twoPlayers(loadMap());
     hb.onMessage({ t: 'setCharacter', character: 0 }); // 0 号是房主的
     expect(b.last('error')?.message).toContain('已經有人');
-    expect(hub.roomInfo('r')?.seats.map((s) => s.character)).toEqual([0, 1]);
+    expect(hub.roomInfo(ROOM)?.seats.map((s) => s.character)).toEqual([0, 1]);
   });
 
   run('角色号越界 / 非整数 → 拒', () => {
@@ -130,7 +140,7 @@ describe('★ Q-NET-2 角色不能撞车', () => {
       hb.onMessage({ t: 'setCharacter', character: bad });
       expect(b.last('error')?.message, String(bad)).toContain('不合法');
     }
-    expect(hub.roomInfo('r')?.seats.map((s) => s.character)).toEqual([0, 1]);
+    expect(hub.roomInfo(ROOM)?.seats.map((s) => s.character)).toEqual([0, 1]);
   });
 
   run('改回自己原来的角色是幂等（不算撞车、也不白广播一次）', () => {
@@ -162,11 +172,11 @@ describe('★ Q-NET-2 开局后一律拒绝', () => {
   run('开局后改角色被拒，服务器镜像/房间快照不变', () => {
     const { hub, a, ha } = twoPlayers(loadMap());
     ha.onMessage({ t: 'start' });
-    const before = hub.roomInfo('r')!;
+    const before = hub.roomInfo(ROOM)!;
     a.clear();
     ha.onMessage({ t: 'setCharacter', character: 6 });
     expect(a.last('error')?.message).toContain('已開局');
-    expect(hub.roomInfo('r')?.seats.map((s) => s.character)).toEqual(before.seats.map((s) => s.character));
+    expect(hub.roomInfo(ROOM)?.seats.map((s) => s.character)).toEqual(before.seats.map((s) => s.character));
   });
 
   run('开局后换地图被拒（房主也不行），房间地图不变', () => {
@@ -175,8 +185,8 @@ describe('★ Q-NET-2 开局后一律拒绝', () => {
     a.clear();
     ha.onMessage({ t: 'setMap', globalMapId: 1 });
     expect(a.last('error')?.message).toContain('已開局');
-    expect(hub.roomInfo('r')?.globalMapId).toBe(0);
-    expect(hub.room('r')!.lobby.globalMapId).toBe(0);
+    expect(hub.roomInfo(ROOM)?.globalMapId).toBe(0);
+    expect(hub.room(ROOM)!.lobby.globalMapId).toBe(0);
   });
 });
 
@@ -199,7 +209,7 @@ describe('★ Q-NET-2 开局读服务器那份设置', () => {
     expect(st.seats.map((s) => s.character)).toEqual([0, 5, 1, 2]);
 
     // Room 保存的大厅设置就是这一份，镜像里的角色也照它建
-    const room = hub.room('r')!;
+    const room = hub.room(ROOM)!;
     expect(room.globalMapId).toBe(1);
     expect(room.lobby.globalMapId).toBe(1);
     expect(room.lobby.seats.map((s) => s.character)).toEqual([0, 5, 1, 2]);

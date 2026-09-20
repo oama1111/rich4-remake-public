@@ -121,7 +121,7 @@ console.log(
     ? '訪問密碼：**關掉了**（--no-gate，只有本機允許）'
     : '訪問密碼：開著（RICH4_PASSWORD / RICH4_COOKIE_SECRET 從環境變數來）',
 );
-console.log(`客戶端（開發）：http://localhost:5173/?ws=${running.url.replace(/^http/, 'ws')}/ws&room=r1&name=小明`);
+console.log(`客戶端（開發）：http://localhost:5173/?ws=${running.url.replace(/^http/, 'ws')}/ws&room=K7M2QP&name=小明`);
 
 process.on('SIGINT', () => {
   running.close();
