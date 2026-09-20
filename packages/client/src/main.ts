@@ -245,6 +245,8 @@ import {
   devilDemolishFilmAt,
   devilDemolishFxTrigger,
 } from './devil-fx.ts';
+// ★ 飛彈 / 核彈的爆炸影片（`Data.mkf` 0x210 / 0x212）—— 规格/判据见 `missile-fx.ts`。
+import { missileFilmFor } from './missile-fx.ts';
 import {
   beginBoardFilm,
   boardFilmBitmap,
@@ -3770,18 +3772,20 @@ function queueSpeech(lines: readonly SpeechLine[]): void {
   const deferred: SpeechBubble[] = [];
   const immediate: SpeechBubble[] = [];
   for (const line of lines) {
-    // ⚠⚠ W-51 **临时取证日志**（取完这段日志就删）：让「台词 vs 影片」的次序在 `#log` 里可读
-    log(`台詞：${line.order} 事件 ${line.bubble.event}（${line.bubble.character}）`);
+    // ⚠⚠ W-51 **临时取证日志**（取完这段日志就删）
+    log(`台詞決策：${line.order} 事件 ${line.bubble.event}（角色 ${line.bubble.character}）`);
     if (deferSpeech(line.order, busy)) deferred.push(line.bubble);
     else immediate.push(line.bubble);
   }
   // ★ 立即说的那几句一上台，先前押着的就作废（后说的那句本来就该盖住前一句）
   if (immediate.length > 0) {
     deferredSpeech = null;
+    log(`台詞上台：事件 ${immediate.map((b) => b.event).join(',')}（立即）`); // ⚠临时
     if (speechQueue.push(immediate, performance.now()) > 0) requestRender();
   }
   if (deferred.length > 0) {
     deferredSpeech = deferred;
+    log(`台詞押後：事件 ${deferred.map((b) => b.event).join(',')}`); // ⚠临时
     // ★ 押着也要续帧：`speechTick()` 靠每一帧回头看「演出收摊了没有」
     //   （`requestRender` 的续帧条件里也有 `deferredSpeech !== null`）
     requestRender();
@@ -3813,6 +3817,12 @@ function startActionFx(action: Action, before: GameState): void {
   //   这一段不带 `options.animation` 闸（原版那一支没有 `cmp [0x497159], 0`），
   //   详见 `dog-fx.ts` / `startDogFx`。
   startDogFx(before, state);
+  // ★★ 飛彈（7）/ 核彈（13）的爆炸影片 —— **必须排在 `startConfineFx` 之前**：
+  //   原版是 `view_to(爆心)` → `damage_area`（里面各次 `send_to_hospital` 播 0x20c）
+  //   → 最后才 `fcn_0045144f` 播自己那一段（0x210 / 0x212）。本引擎一次只播一段，
+  //   所以先来的排前面、后面的自动进 `pendingBoardFilmAfter`（`enqueueBoardFilm`）。
+  //   ⚠️ 不加 `options.animation` 闸（原版这两支里没有 `cmp [0x497159], 0`）。
+  startMissileFx(action, before);
   // ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1 未接清单之一）—— 与 action 种类无关：
   //   判据是**占用表/计数变没变**（`confine-fx.ts` 的 `confineFxTrigger`），
   //   因为送去坐牢/住院的来源有十来个（卡、狗咬、踩雷、命運、新聞、罰款…），
@@ -5441,6 +5451,32 @@ function startDogFx(before: GameState, after: GameState): void {
 }
 
 /**
+ * 这一拍是不是**用了飛彈 / 核彈** —— 是就播那一段爆炸影片（整幅 440×440 盖住棋盘）。
+ *
+ * 规格与判据全在 `missile-fx.ts`（逐字节核过 `Data.mkf` 0x210 / 0x212 的 FLIC 头：
+ * 19 帧 × 114 ms / 26 帧 × 114 ms、音效 81 / 83、`flags` 的 bit1 = 0 ⇒ 点不掉）。
+ *
+ * @source · 飛彈 `0x00446fbc`：`0x00447043 push 0x210` → `0x00447065 view_to(爆心)`
+ *   → `0x0044707a damage_area` → `0x0044708e call 0x45144f`（播）；
+ *   · 核彈 `0x00447ace`：`0x00447b55 push 0x212` → `0x00447b77 view_to(爆心)`
+ *   → `0x00447b8c damage_area(半径 -1)` → `0x00447ba0 call 0x45144f`。
+ *
+ * ⚠️ 判据是**道具号**（原版两支各是一整个函数，影片写死在自己那一段里），
+ *   不看「炸到了什么」；也不加 `options.animation` 闸（原版这两支里没有那一句）。
+ * ⚠️ `applyAction` 只在 `state !== before` 时调 `startActionFx`，而
+ *   `useToolAction` 失败时**原样返回 `state`** ⇒ 没真的打出去就不会误播。
+ */
+function startMissileFx(action: Action, before: GameState): void {
+  if (action.type !== 'useTool') return;
+  const spec = missileFilmFor(action.toolId);
+  if (spec === null) return;
+  // 影片整幅盖住棋盘，`before` / `after` 观感相同；与神明/惡犬/飛碟那几段统一取 `before`。
+  deferredBoardBefore = before;
+  startBoardFilm(spec);
+  log(`影片：${spec.id}（${spec.frames} 帧 × ${spec.frameMs} ms）`);
+}
+
+/**
  * 这一拍是不是「惡魔顯靈把脚下那栋房子拆了」—— 是就播那一段 110×110 的爆破片。
  *
  * W-55 行 4。规格与判据全在 `devil-fx.ts`（逐字节核过 `Data.mkf` 0x20e 的 FLIC 头：
@@ -6117,7 +6153,7 @@ function speechTick(now: number): void {
     if (held !== null) {
       deferredSpeech = null;
       // ⚠⚠ W-51 临时取证日志（取完就删）
-      log(`台詞：押後的 ${held.length} 句上台（演出收攤）`);
+      log(`台詞上台：事件 ${held.map((b) => b.event).join(',')}（押後放行）`);
       if (speechQueue.push(held, now) > 0) requestRender();
     }
   }

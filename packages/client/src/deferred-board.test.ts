@@ -251,11 +251,16 @@ describe('★ main.ts 接线（源码钉子）', () => {
     expect(src).toContain('function boardDrawState(): GameState {');
   });
 
-  it('五条影片（建屋 / 住院入獄 / 神明 / 新聞4飛碟 / 惡犬咬人）起播前都记下 before 快照', () => {
+  it('六条影片（建屋 / 住院入獄 / 神明 / 新聞4飛碟 / 惡犬咬人 / 飛彈核彈爆炸）起播前都记下 before 快照', () => {
     expect(src).toContain('deferredBoardBefore = before;');
     // 2026-09-19：新聞 4「外星人攻打地球」的飛碟影片（房子在 core 里已经被掀掉）
-    // 與「踩到惡犬」的狗咬影片（人已經被寫進醫院）都加進来了，故由 3 → 4 → 5 处。
-    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(5);
+    // 與「踩到惡犬」的狗咬影片（人已經被寫進醫院）先加进来（3 → 4 → 5），
+    // 收尾又补了**飛彈/核彈爆炸**（`startMissileFx`，整幅盖住棋盘）⇒ 6 处。
+    // ⚠️ 「惡魔顯靈拆屋」（`startDevilFx`）是**第 7 条影片**，但它填的是
+    //    `deferredBoardBefore = after;`（原版先拆、重画、再播）⇒ 不计在这里，
+    //    由 `devil-fx.test.ts` 的源码钉单独管。
+    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(6);
+    expect(src).toContain('deferredBoardBefore = after;');
   });
 
   it('★ 两条影片都要等这一步的走子补间播完才起播（试玩3 #1 的正面）', () => {

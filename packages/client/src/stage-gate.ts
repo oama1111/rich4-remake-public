@@ -31,6 +31,18 @@
  *
  * `SayEvent.order` 与 `SpeechDetector.order` 都**没有缺省值**：新增探测器必须
  * 逐条过 W-50 §2.2 的裁定表才能编过（见 `speech.ts` 的 `DETECTORS`）。
+ *
+ * ★★ **为什么没有第三档 `afterNotice`（2026-09-19 收尾核过）**：§2.2 对福神那一句
+ *   裁定的是 `afterNotice`（台词排在**訊息框之后、0x20b 烟花之前**）。回 exe 看，
+ *   那一档与 `afterStage` 在**现有探测器上观察等价**：
+ *   · 福神自己的台词（`0x0040fa1e` / `0x0040fa5c`）只在落点**没升到 5 级**那一支上说
+ *     （`0x004199eb cmp byte [esi+0x1a],5 / jne` 的另一边；升到 5 那一支直接
+ *     `jmp 0x41b077`，**根本不调** `0x40f8be`），而 0x20b 只在升到 5 时才播
+ *     ⇒ 两者互斥，不存在「要排在烟花之前」的台词；
+ *   · 福神升到 5 级那一句是**事件 15**，由 `detectLevelFive` 说，已按 `beforeStage`
+ *     排在 0x20b 之前（2026-09-19 从暂定的 `afterStage` 订正过来）。
+ *   ⇒ 加一档要多动一处闸（`queueSpeech` / `speechTick`）却影响不到任何一句，
+ *   按「不新增原版没有的东西」保留两档；结论记在 `docs/escalations.md` E-19。
  */
 export type SpeechOrder = 'beforeStage' | 'afterStage';
 

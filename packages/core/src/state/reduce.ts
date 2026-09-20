@@ -1703,7 +1703,18 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       const facilityLevel = [...paid.facilityLevel];
       facilityType[fac.id] = action.facilityType;
       facilityLevel[fac.id] = 1;
-      return { ...paid, facilityType, facilityLevel, pending: null, phase: 'turnEnd' };
+      // ★★ W-55 行 3 的**第 4 个**音效点：**付费首建設施（0 → 1 级）**也响
+      //   `Effect.mkf` 50（`0x4823da`）—— 先前只接了天使/福神/自己加蓋三处。
+      //   @source `0x0041a27c inc byte [eax + 0x1a]` → `0x0041a27f call 0x41d476`
+      //     → `0x0041a289 push 0x4823da / call 0x4542ce`（`disasm.py va 0x41a240 50`）。
+      //   ★ 这一支**没有** `0x229`（大锤）、也没有 bit7 —— 原版首建那一支
+      //     （`0x40b1f4 mov eax,1 / inc byte [...] / ret`）本就不置位，所以
+      //     `reachedMaxLevel: false` ⇒ 不播任何影片，只响那一声
+      //     （这正是 `manifestSoundFor` 注释里说的「与影片闸无关」）。
+      return withSingleBuildUpgrade(
+        { ...paid, facilityType, facilityLevel, pending: null, phase: 'turnEnd' },
+        { entity: 0xfa0 + fac.id, reachedMaxLevel: false, source: 'facilityFirstBuild' },
+      );
     }
 
     case 'research': {
@@ -1841,6 +1852,16 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       // ★ 「不了」对**任何**待决交互都合法（rules/interaction.ts 的
       //   `responseMatches` 第一句就是这个），故不只在 awaitingDecision 生效：
       //   银行、樂透、百貨这些柜台也得有办法关门走人。
+      //
+      // ★★ 免费代蓋那一支（天使/福神顯靈 + 真人 + 0 级設施）**有意偏离原版**：
+      //   原版 `0x0040b1e4 call 0x440aac` 取回选類別窗的结果后
+      //   `0x0040b1ec mov byte [ebx+0x18], al` 把**低字节**直接写进种类，
+      //   紧接着 `0x0040b1f4 inc byte [ebx+0x1a]` 加一级 —— **没有** `cmp al,0xff`
+      //   拦截（对照加蓋卡 `0x004431d7 cmp eax,-1 / jne`）。而那扇窗**确实能取消**
+      //   （右键 `0x205` 支与自定义消息 `0x401` 都返回 −1，见 E-20 的证据表）
+      //   ⇒ 原版取消后会盖出一栋**种类 = 0xff（越界）** 的設施。
+      //   复刻保留「取消 = 不蓋」并登记为有意偏离（原版那一路写越界 type，
+      //   状态校验会在别处炸开；玩家按取消的意图也是不建）。
       if (state.phase === 'awaitingDecision') {
         const done: GameState = { ...state, pending: null, phase: 'turnEnd' };
         // 不加蓋也照样走到落点收尾：自己的研究所要问研發（0x0041b0b3）

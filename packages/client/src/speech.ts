@@ -538,7 +538,15 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
   //   那个循环里没有任何 `player_say` ⇒ 附身者自己不吭声（他的那句是事件 8，
   //   见 `detectSmallWealthLine`）。通用路会让附身者按 `monthlyPaid`/`pool` 差分
   //   开口，把「原版不说」说出来 ⇒ 这里让开。
+  // ★★ W-55 行 7 的收尾（2026-09-19）：財神收錢那一拍，**付款的对手也不说话**。
+  //   原版两支里能开口的只有附身者自己一句（小財神 `0x0040ecde` 事件 8 /
+  //   大財神 `0x0040ed85` 走 `fcn_0044f354`），**整个收取循环里没有 `player_say`**
+  //   （小財神收钱在 `0x0040ec99 call 0x41d2c6`、大財神在 `0x0040ed52 call 0x41d3f4`，
+  //   两处前后都没有 `call 0x44f42d` / `0x44f567`）。
+  //   先前只让开了**附身者**（他会按 `monthlyPaid` 被误判），付款方仍按
+  //   `monthlyPaid` 差分说了一句泛用的「付錢」—— 原版不说 ⇒ 整条探测器让开。
   const wealthHost = wealthGodHostThisAction(before, after);
+  if (wealthHost >= 0) return out;
 
   for (let i = 0; i < after.players.length; i++) {
     if (i === wealthHost) continue;
@@ -1119,8 +1127,15 @@ export const DETECTORS: readonly SpeechDetector[] = [
   { name: 'bankrupt', source: [0x0040d237], order: 'afterStage', detect: detectBankrupt },
   // ⚠ C 级：E-19（调用点 `0x0040d060` 前后两列都空）
   { name: 'victory', source: [0x0040d055], order: 'afterStage', detect: detectVictory },
-  // ⚠ C 级：E-19（两个调用点不一致：`0x00419a19` 前有 Yes/No 框、`0x0041ab5b` 前有影片后有訊息框）
-  { name: 'levelFive', source: [0x00419a0e, 0x0041ab4a], order: 'afterStage', detect: detectLevelFive },
+  // ★★ 剛滿 5 級 —— **台词在前、0x20b 烟花在后**（E-19 那条「两个调用点不一致」
+  //   已回 exe 核清：两个调用点是**同一种形状**）：
+  //   · 地块支 `0x00419a19 call 0x44ef41` → `0x00419a21 call 0x40b0cd`（= 0x20b 烟花）；
+  //   · 設施支 `0x0041ab5b call 0x44ef41` → `0x0041ab63 call 0x40b0cd`。
+  //   两支都读 `0x480886` = **事件 15**，且都在「升到 5 級」那一支上
+  //   （`0x004199eb cmp byte [esi+0x1a],5 / jne 0x419a2b` 的另一边）。
+  //   ⇒ `beforeStage`（先说出来、再放烟花）。E-19 表里「前者前有 Yes/No 框」那个框
+  //   是**玩家早就答过**的加蓋确认（`0x00419996 call 0x440ba8`），不是本条 action 的演出。
+  { name: 'levelFive', source: [0x00419a0e, 0x0041ab4a], order: 'beforeStage', detect: detectLevelFive },
   // ★ 同一街區獨佔 ≥ 3 塊（買地 16 / 加蓋 17）—— 要 `topo` 才数得出街區
   // ⚠ C 级：E-19（台词在叶子函数 `0x44f627` 里，调用点 `0x0044f6df` 前后两列都空）
   { name: 'areaMonopoly', source: [0x0044f627, 0x0041a13e, 0x00419a31], order: 'afterStage', detect: detectAreaMonopoly },

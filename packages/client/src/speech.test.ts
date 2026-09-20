@@ -1417,7 +1417,7 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     ['turnStartBlocked', 'beforeStage', '§2.2 表：回合开始那三句（本回合第一件事）'],
     ['bankrupt', 'afterStage', '⚠E-19：调用点 `0x0040d249` 前后两列都空'],
     ['victory', 'afterStage', '⚠E-19：调用点 `0x0040d060` 前后两列都空'],
-    ['levelFive', 'afterStage', '⚠E-19：`0x00419a19` 与 `0x0041ab5b` 两个调用点不一致'],
+    ['levelFive', 'beforeStage', '★E-19 已结案：两个调用点 `0x00419a19` / `0x0041ab5b` 后面**紧跟** `0x40b0cd`（0x20b 烟花）⇒ 台词在前'],
     ['areaMonopoly', 'afterStage', '⚠E-19：调用点 `0x0044f6df`（叶子函数里）两列都空'],
     ['godLeft', 'afterStage', '⚠E-19：调用点 `0x0040e659` 前后两列都空'],
     ['godArrived', 'beforeStage', '§2.2 表：壞神附身 `0x0040ef44`…（台词 → 影片 → 神明窗）'],

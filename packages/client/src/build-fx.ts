@@ -300,7 +300,16 @@ export function playsHammer(source: BuildUpgradeSource): boolean {
  *   `angelCard` 各有自己的大锤/滿級音效（`BUILD_HAMMER.sound` / `BUILD_MAX_LEVEL.sound`）。
  *   号码本身的取证见 `SOUND_IDS.GOD_MANIFEST`（表项 `0x4823da` = 24 × 8 + 0x48231a）。
  */
-export const MANIFEST_SOUND_SOURCES: readonly BuildUpgradeSource[] = ['godManifest', 'ownUpgrade'];
+export const MANIFEST_SOUND_SOURCES: readonly BuildUpgradeSource[] = [
+  'godManifest',
+  'ownUpgrade',
+  // ★ 第 4 个音效点：**付费首建設施**（0 → 1 级）。
+  //   @source `0x0041a289 push 0x4823da / call 0x4542ce`（`disasm.py va 0x41a240 50`）——
+  //   `0x0041a27c inc byte [eax+0x1a]`（等级 0→1）→ `0x0041a27f view_to` → 音效。
+  //   与另外三处同一个表项（`0x4823da` = 表第 24 项 = `Effect.mkf` **50**），
+  //   但**不播任何影片**（那一支里没有 `0x229`、也没有 bit7）。
+  'facilityFirstBuild',
+];
 
 /** 顯靈／自己加蓋那一声的音效号 —— `Effect.mkf` **50** @source 见 `SOUND_IDS.GOD_MANIFEST` */
 export const MANIFEST_BUILD_SOUND: number = SOUND_IDS.GOD_MANIFEST;

@@ -586,7 +586,14 @@ export type BuildUpgradeSource =
    * 神明顯靈加蓋（天使 `0x0040f381` / 福神 `0x0040f8be`）：两支里都**没有** `push 0x229`，
    * 只在 bit7 时 `0x0040f517` / `0x0040fa26 call 0x40b0cd` ⇒ 只播 0x20b、不播大锤。
    */
-  | 'godManifest';
+  | 'godManifest'
+  /**
+   * **付费首建設施**（落点问出来的「蓋設施」，`0x0041a240` 那一支的 `0x0041a27c`）：
+   * 等级 0 → 1、**不置 bit7**、没有 `0x229`，但**要响** `Effect.mkf` 50
+   * （`0x0041a289 push 0x4823da / call 0x4542ce`）。
+   * ⇒ 它是第 4 个（也是最后一个）顯靈音效点；`buildFxPlan` 对它**不播任何影片**。
+   */
+  | 'facilityFirstBuild';
 
 /** 一次「加蓋一级」的事件记录（纯表现；见 `GameState.lastBuildUpgrades`）*/
 export interface BuildUpgradeHint {

@@ -403,14 +403,33 @@ describe('★ 顯靈／自己加蓋的音效 —— 只有 `godManifest` / `ownU
     expect(MANIFEST_BUILD_SOUND).not.toBe(BUILD_MAX_SOUND);
   });
 
-  it('★ 正面表 = `godManifest` / `ownUpgrade`（恰两个，不多不少）', () => {
-    expect([...MANIFEST_SOUND_SOURCES]).toEqual(['godManifest', 'ownUpgrade']);
+  it('★ 正面表 = `godManifest` / `ownUpgrade` / `facilityFirstBuild`（恰三个，不多不少）', () => {
+    // ★ 2026-09-19 收尾补齐第 4 个音效点：`0x0041a289 push 0x4823da / call 0x4542ce`
+    //   （付费首建設施 0 → 1 级，`disasm.py va 0x41a240 50`）。
+    //   先前这里断言「恰两个」—— 那是按当时已知的三处调用点写的，**不完整**；
+    //   `disasm.py find 68da234800` 全 exe 一共 **4** 处。
+    expect([...MANIFEST_SOUND_SOURCES]).toEqual([
+      'godManifest',
+      'ownUpgrade',
+      'facilityFirstBuild',
+    ]);
     expect(playsManifestSound('godManifest')).toBe(true);
     expect(playsManifestSound('ownUpgrade')).toBe(true);
+    expect(playsManifestSound('facilityFirstBuild')).toBe(true);
     // 反证：这四个各有自己的大锤/滿級音，不许再响 50
     for (const s of ['robotWorker', 'magicHouse', 'companyBuild', 'angelCard'] as const) {
       expect(playsManifestSound(s), s).toBe(false);
     }
+  });
+
+  it('★★ 付费首建設施（`facilityFirstBuild`）⇒ 响 50，但**一段影片都不播**', () => {
+    // @source `0x0041a27c inc byte [eax+0x1a]` → `0x0041a289 音效`：
+    //   那一支里既没有 `0x229`（大锤）也没有 bit7 ⇒ plan 全 false、音效照响。
+    const hints = [hint('facilityFirstBuild', false)];
+    expect(buildFxPlan(hints)).toEqual({ hammer: false, maxLevel: false });
+    expect(manifestSoundFor(hints)).toBe(MANIFEST_BUILD_SOUND);
+    // 反证：它不该被当成大锤族
+    expect(playsHammer('facilityFirstBuild')).toBe(false);
   });
 
   it('★ 天使顯靈（`godManifest`，**没到 5 级**）⇒ 响；这时 `buildFxPlan` 是「一段都不播」', () => {
