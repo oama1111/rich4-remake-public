@@ -15,6 +15,7 @@
     "lint": "eslint packages --max-warnings=0",
     "check": "pnpm typecheck && pnpm lint && pnpm test",
     "unpack": "node --experimental-strip-types packages/assets-pipeline/src/cli-extract.ts",
+    "precompress": "node --experimental-strip-types tools/precompress-assets.ts",
     "upscale": "node --experimental-strip-types packages/assets-pipeline/src/cli-upscale.ts",
     "soak": "node --experimental-strip-types tools/soak-cli.ts",
     "dev": "pnpm --filter @rich4/client dev",

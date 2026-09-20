@@ -1,0 +1,61 @@
+# 大富翁4 重制版 —— systemd 单元示例
+#
+# 用法：
+#   sudo cp deploy/rich4.service.example /etc/systemd/system/rich4.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now rich4
+#   systemctl status rich4
+#
+# ★ 三个 BEFORE 请照 docs/deploy.md 做完：
+#   ① 建一个**非 root** 的 `rich4` 用户，仓库与素材都在它名下；
+#   ② 写 `/etc/rich4.env`（两个环境变量，权限 600、属主 rich4）；
+#   ③ `pnpm --filter @rich4/client build` 出 `dist-web/`，
+#      素材 `rsync` 到部署目录并跑过 `tools/precompress-assets.ts`。
+
+[Unit]
+Description=大富翁4 重制版 联机服务器（静态站 + 素材 + WebSocket）
+Documentation=file:///srv/rich4/rich4-remake/docs/deploy.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rich4
+Group=rich4
+WorkingDirectory=/srv/rich4/rich4-remake
+
+# ★ 两个密钥（RICH4_PASSWORD / RICH4_COOKIE_SECRET）只从这里来。
+#   文件权限必须 600 —— 它是整站唯一的门。
+#   `/etc/rich4.env` 里写：
+#     RICH4_PASSWORD=换成一个只有朋友知道的密码
+#     RICH4_COOKIE_SECRET=<openssl rand -hex 32 的输出>
+#   ⚠️ 缺任何一个，进程会**拒绝启动**并打印原因（没有缺省密码）。
+EnvironmentFile=/etc/rich4.env
+
+# ★ `--host 127.0.0.1`：只监听本机，公网流量由 Caddy 反代进来。
+#   `--web` 是构建出来的静态站；`--assets` 是**部署目录**里的素材
+#   （原件 + `.br`/`.gz` + assets-manifest.json，见 docs/deploy.md）。
+#   ⚠️ 不加 `--no-gate`：那等于把整站的门拆掉（而且它只在 `--host` 是本机时才允许）。
+ExecStart=/usr/bin/node --experimental-transform-types packages/server/src/cli.ts \
+	--host 127.0.0.1 --port 8787 \
+	--web packages/client/dist-web \
+	--assets /srv/rich4/deploy/assets/game \
+	--turn-ms 60000
+
+Restart=on-failure
+RestartSec=3
+
+# ── 加固（都能开，服务器不需要写仓库）──
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+# 素材是只读的：整份进程不需要对仓库有写权限
+ReadWritePaths=/srv/rich4
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rich4
+
+[Install]
+WantedBy=multi-user.target

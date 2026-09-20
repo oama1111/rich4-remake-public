@@ -1,0 +1,40 @@
+# 大富翁4 重制版 —— 反向代理示例（Caddy）
+#
+# 用法：把下面的 `rich4.example.com` 换成真域名，放到 /etc/caddy/Caddyfile，
+#       然后 `systemctl reload caddy`（首次 `systemctl restart caddy`）。
+#
+# ★ Caddy 会自动申请并续期 Let's Encrypt 证书 —— 前提是**域名已经解析到这台机器**
+#   且公网 80/443 打得通。
+#
+# ★ 只有这一个进程、一个端口（见 docs/deploy.md）：Caddy 只做 TLS 与反代，
+#   静态站、素材、WebSocket 全在 127.0.0.1:8787 那个 Node 进程里。
+
+rich4.example.com {
+	# ── 压缩 ──
+	# 素材（.mkf）在部署时已经预压缩成 `.br`/`.gz`，服务器会把它们**带着
+	# `Content-Encoding`** 发出去 —— Caddy 看到响应已经有 `Content-Encoding`
+	# 就**不会再压一遍**（那会把已经压过的字节再压一次，白烧 CPU 还更大）。
+	# 这一行管的是**没预压缩的那些**：index.html、assets/*.js、assets/*.css。
+	encode zstd gzip
+
+	# ── 反代 ──
+	# WebSocket（`/ws`）Caddy 自动识别 Upgrade 头并转发，不需要额外配置。
+	reverse_proxy 127.0.0.1:8787 {
+		# 素材是**大文件流**，别让缓冲把整份 76 MB 攒在内存里再吐
+		flush_interval -1
+	}
+
+	# ── 别让搜索引擎收录（服务端还有一层 `X-Robots-Tag`，见 W-70）──
+	header /robots.txt Cache-Control "public, max-age=3600"
+
+	# ── 访问日志（排查「谁能进、谁被 401」时唯一有用的东西）──
+	log {
+		output file /var/log/caddy/rich4.log
+		format json
+	}
+}
+
+# ★ 需要的话，把不带 www 的写法也接上（Caddy 会自动 301 到你指定的那一个）：
+# www.rich4.example.com {
+# 	redir https://<你的域名>{uri} permanent
+# }
