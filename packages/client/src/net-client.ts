@@ -53,6 +53,13 @@ export interface NetClientOptions {
    * 而不是继续增量施加；`NetClient` 已经把序号指针接成 `actions.length`。
    */
   onResync?(replay: { seed: number; globalMapId: number; seats: SeatInfo[]; actions: Action[] }): void;
+  /**
+   * ★ W-74：服务器广播了「这一回合还剩多久」。
+   *
+   * 发的是**剩余毫秒**（不是时刻）；`remainingMs < 0` 表示这一轮计时**作废**了
+   * （有人交了 intent / 换人 / 该座位不再被等）。
+   */
+  onClock?(clock: { seat: number; remainingMs: number; hardRemainingMs: number }): void;
   /** 本地状态的指纹（发校验和用） */
   fingerprint(): string;
 }
@@ -148,6 +155,29 @@ export class NetClient {
     return this.#resyncing;
   }
 
+  /**
+   * ★ W-74：**本机座位已经演完动画、停在等输入上了**。
+   *
+   * 服务器从这一刻起才数 60 秒 —— 不是从广播那一刻（那会把掷骰、走子、
+   * 神明影片的演出时间也算到玩家头上）。
+   *
+   * @param seq **最新**那条广播的序号（`expectedSeq - 1`）。服务器只认最新的：
+   *   演出期间又来了一条 action 的话，「画面停在等输入」这个判断已经不成立。
+   */
+  awaiting(seq: number): void {
+    this.#send({ t: 'awaiting', seq });
+  }
+
+  /** ★ W-74：「我还在操作」（逛股市、百貨公司里挑东西）—— 把截止时刻往后延 */
+  alive(): void {
+    this.#send({ t: 'alive' });
+  }
+
+  /** ★ W-74：本机座位被超时託管了，玩家点一下画面 —— 把座位收回来 */
+  resume(): void {
+    this.#send({ t: 'resume' });
+  }
+
   /** 收到服务器一条文本 */
   receive(text: string): void {
     let msg: ServerMessage;
@@ -199,6 +229,9 @@ export class NetClient {
         });
         return;
       }
+      case 'clock':
+        this.#opts.onClock?.({ seat: msg.seat, remainingMs: msg.remainingMs, hardRemainingMs: msg.hardRemainingMs });
+        return;
       case 'error':
         // 请求被拒（例如还没开局）也要解锁，否则此后不再尝试自愈
         this.#resyncing = false;

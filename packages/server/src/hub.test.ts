@@ -554,3 +554,256 @@ describe('★ W-73 房间生命周期', () => {
     expect(third.last('joined')).toBeDefined();
   });
 });
+
+// ============================================================
+//  W-74：回合计时（60 秒不动 ⇒ 电脑代打；连续两次 ⇒ 託管）
+// ============================================================
+
+/** 这个客户端**收到过**「座位 seat 被超时託管」那条 `setAi` 吗 */
+function sawTimeout(target: FakeConn, seat: number): boolean {
+  return target.inbox.some(
+    (m) =>
+      m.t === 'action' &&
+      m.action.type === 'setAi' &&
+      m.action.player === seat &&
+      ((m.action.whoPlays ?? 0) & WHO_PLAYS_AUTOPILOT) !== 0,
+  );
+}
+
+/** 一个**注入了时钟**的房间：两个真人 A/B，`now` 由测试推（一秒都不真睡） */
+function clockHub(opts: { turnMs?: number; aliveExtendMs?: number; hardCapMs?: number; awaitingFallbackMs?: number } = {}) {
+  let now = 0;
+  const a = new FakeConn();
+  const b = new FakeConn();
+  const hub = new RoomHub({
+    map: loadMap(),
+    globalMapId: 0,
+    seedFor: () => 4242,
+    seatCount: 2,
+    now: () => now,
+    ...opts,
+  });
+  const ha = hub.connect(a);
+  const hb = hub.connect(b);
+  ha.onMessage(joinReq(ROOM, 'A', idFor('A')));
+  hb.onMessage(joinReq(ROOM, 'B', idFor('B')));
+  ha.onMessage({ t: 'start' });
+  const room = hub.room(ROOM)!;
+  return {
+    hub,
+    a,
+    b,
+    ha,
+    hb,
+    room,
+    setNow: (t: number): void => {
+      now = t;
+    },
+    /** `awaiting` 要带**最新**那条广播的序号 */
+    latestSeq: (): number => room.sequenceLength - 1,
+  };
+}
+
+/** 让 `seat` 超时一次（报 awaiting → 推时间 → 扫） */
+function timeoutSeat(h: ReturnType<typeof clockHub>, seat: 0 | 1, at: number): void {
+  (seat === 0 ? h.ha : h.hb).onMessage({ t: 'awaiting', seq: h.latestSeq() });
+  h.setNow(at);
+  h.hub.sweepDisconnected(at);
+}
+
+describe('★ W-74 回合计时', () => {
+  run('★ awaiting 之后 60 秒不动 ⇒ 电脑代打这一回合；**回合结束就还给他**', () => {
+    const h = clockHub();
+    expect(h.room.actingSeat).toBe(0);
+    h.ha.onMessage({ t: 'awaiting', seq: h.latestSeq() });
+    expect(h.a.last('clock')).toMatchObject({ seat: 0, remainingMs: 60_000, hardRemainingMs: 180_000 });
+
+    // 差 1 ms 不动
+    h.setNow(59_999);
+    h.hub.sweepDisconnected(59_999);
+    expect(sawTimeout(h.b, 0)).toBe(false);
+    expect(h.room.currentSeat).toBe(0);
+
+    // 到点：电脑替他把这一回合走完 ⇒ 轮到 B
+    h.setNow(60_000);
+    h.hub.sweepDisconnected(60_000);
+    expect(sawTimeout(h.b, 0)).toBe(true);
+    expect(h.room.currentSeat).toBe(1);
+    // ★ 只超时**一次** ⇒ 他的回合一结束就自动改回真人
+    expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    expect(h.b.last('room')?.room.seats[0]?.autopilot).toBeUndefined();
+    // 「作废」那条 clock 也广播过
+    expect(h.a.inbox.some((m) => m.t === 'clock' && m.remainingMs === -1)).toBe(true);
+  });
+
+  run('★ 连续两次超时 ⇒ **保持託管**，SeatInfo.autopilot === "idle"', () => {
+    const h = clockHub();
+    timeoutSeat(h, 0, 60_000); // A 第一次
+    expect(h.room.currentSeat).toBe(1);
+    timeoutSeat(h, 1, 120_000); // B 第一次（这样回合又回到 A）
+    expect(h.room.currentSeat).toBe(0);
+    expect(h.room.state.players[1]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+
+    timeoutSeat(h, 0, 180_000); // A **连续**第二次
+    expect(h.room.currentSeat).toBe(1);
+    expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT);
+    expect(h.b.last('room')?.room.seats[0]?.autopilot).toBe('idle');
+  });
+
+  run('★ resume ⇒ 归还座位、清零 strikes（下一次超时只算第一次）', () => {
+    const h = clockHub();
+    timeoutSeat(h, 0, 60_000);
+    timeoutSeat(h, 1, 120_000);
+    timeoutSeat(h, 0, 180_000);
+    expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT);
+
+    h.ha.onMessage({ t: 'resume' });
+    expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    expect(h.a.last('room')?.room.seats[0]?.autopilot).toBeUndefined();
+
+    // strikes 清零了：再超时一次仍然只是「第一次」⇒ 回合结束就还
+    timeoutSeat(h, 0, 240_000);
+    expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+  });
+
+  run('★ alive 把截止往后延，但**延不过硬上限 180 秒**', () => {
+    const h = clockHub();
+    h.ha.onMessage({ t: 'awaiting', seq: h.latestSeq() });
+    expect(h.a.last('clock')?.remainingMs).toBe(60_000);
+
+    // 已经过去 50 秒 ⇒ 延到 now+30s = 80s（比原来的 60s 远）
+    h.setNow(50_000);
+    h.ha.onMessage({ t: 'alive' });
+    expect(h.a.last('clock')?.remainingMs).toBe(30_000);
+
+    // 一路 alive 顶到硬上限（起点 + 180 秒）就再也延不动了
+    for (let t = 90_000; t <= 180_000; t += 30_000) {
+      h.setNow(t);
+      h.ha.onMessage({ t: 'alive' });
+    }
+    expect(h.a.last('clock')).toMatchObject({ remainingMs: 0, hardRemainingMs: 0 });
+
+    // 硬上限到点：照样超时
+    h.setNow(180_000);
+    h.hub.sweepDisconnected(180_000);
+    expect(sawTimeout(h.b, 0)).toBe(true);
+  });
+
+  run('★ 没收到 awaiting ⇒ 广播后 45 秒兜底开始数，之后照常 60 秒超时', () => {
+    const h = clockHub();
+    h.setNow(44_999);
+    h.hub.sweepDisconnected(44_999);
+    expect(h.a.last('clock')).toBeUndefined(); // 还没开始数（装表本身不广播）
+
+    h.setNow(45_000);
+    h.hub.sweepDisconnected(45_000);
+    expect(h.a.last('clock')).toMatchObject({ seat: 0, remainingMs: 60_000 });
+
+    h.setNow(104_999);
+    h.hub.sweepDisconnected(104_999);
+    expect(sawTimeout(h.b, 0)).toBe(false);
+
+    h.setNow(105_000);
+    h.hub.sweepDisconnected(105_000);
+    expect(sawTimeout(h.b, 0)).toBe(true);
+  });
+
+  run('★ 非 awaited 座位发的 awaiting / alive 一律忽略；过期的 seq 也忽略', () => {
+    const h = clockHub();
+    // 现在等的是 A(0)，B 来说「我准备好了」不算
+    h.hb.onMessage({ t: 'awaiting', seq: h.latestSeq() });
+    expect(h.b.last('clock')).toBeUndefined();
+    expect(h.a.last('clock')).toBeUndefined();
+    h.hb.onMessage({ t: 'alive' });
+    expect(h.b.last('clock')).toBeUndefined();
+
+    // A 报**过期**的 seq 也不算
+    h.ha.onMessage({ t: 'awaiting', seq: h.latestSeq() - 1 });
+    expect(h.a.last('clock')).toBeUndefined();
+
+    // A 报最新那条才算
+    h.ha.onMessage({ t: 'awaiting', seq: h.latestSeq() });
+    expect(h.a.last('clock')?.remainingMs).toBe(60_000);
+  });
+
+  run('掉线座位不计时：clock 立刻作废，且不会走「超时」那条路', () => {
+    const h = clockHub();
+    h.ha.onMessage({ t: 'awaiting', seq: h.latestSeq() });
+    expect(h.a.last('clock')?.remainingMs).toBe(60_000);
+
+    h.ha.onClose(1_000);
+    expect(h.b.last('clock')?.remainingMs).toBe(-1); // 作废
+    // 还没到掉线代打的阈值（30 s）：什么都没发生
+    h.setNow(21_000);
+    h.hub.sweepDisconnected(21_000);
+    expect(sawTimeout(h.b, 0)).toBe(false);
+    expect(h.b.last('room')?.room.seats[0]?.autopilot).toBeUndefined();
+
+    // 过了阈值：走的是**掉线代打**那条路（`autopilot: 'offline'`），不是超时
+    h.setNow(31_000);
+    h.hub.sweepDisconnected(31_000);
+    expect(h.b.last('room')?.room.seats[0]?.autopilot).toBe('offline');
+  });
+
+  run('被电脑管着的座位不计时（电脑座位走的是同一个 `kind !== "human"` 分支）', () => {
+    const h = clockHub();
+    h.ha.onMessage({ t: 'awaiting', seq: h.latestSeq() });
+    expect(h.a.last('clock')?.remainingMs).toBe(60_000);
+
+    // A 把自己交给电脑（`setAi` 是公开 action，谁都发得出来）
+    h.ha.onMessage({
+      t: 'intent',
+      action: { type: 'setAi', player: 0, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT },
+    });
+    expect(h.hub.clockOf(ROOM)).toBeNull();
+    expect(h.a.last('clock')?.remainingMs).toBe(-1);
+  });
+
+  run('★ 客户端比服务器先准备好：还没装表就报的 awaiting 不会被丢掉', () => {
+    const h = clockHub();
+    // A 掉线（表被作废），随后**带着同一个 clientId** 回来 —— 认回原座、改回真人。
+    // ⚠️ 认回这一段**不装表**（等下一次扫描），而客户端此刻已经有完整局面、
+    //    马上就会报 `awaiting` —— 那一条必须算数，否则要白等 45 秒兜底。
+    h.ha.onClose(1_000);
+    h.setNow(2_000);
+    const back = new FakeConn();
+    const hBack = h.hub.connect(back);
+    hBack.onMessage(joinReq(ROOM, 'A', idFor('A')));
+    expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    expect(h.hub.clockOf(ROOM)).toBeNull(); // 还没装表
+
+    hBack.onMessage({ t: 'awaiting', seq: h.latestSeq() });
+    expect(back.last('clock')).toBeUndefined(); // 表还没装，先记账
+    // 下一次扫描装表时**立刻起数**（不是又从头等 45 秒）
+    h.hub.sweepDisconnected(3_000);
+    expect(back.last('clock')).toMatchObject({ seat: 0, remainingMs: 60_000, hardRemainingMs: 180_000 });
+    // 60 秒后照样超时
+    h.setNow(63_000);
+    h.hub.sweepDisconnected(63_000);
+    expect(sawTimeout(back, 0)).toBe(true);
+  });
+
+  run('★ --turn-ms 0 ⇒ 永不超时', () => {
+    const h = clockHub({ turnMs: 0 });
+    expect(h.hub.clockOf(ROOM)).toBeNull();
+    h.ha.onMessage({ t: 'awaiting', seq: h.latestSeq() });
+    expect(h.a.last('clock')).toBeUndefined();
+
+    h.setNow(10_000_000);
+    h.hub.sweepDisconnected(10_000_000);
+    expect(sawTimeout(h.b, 0)).toBe(false);
+    expect(h.room.currentSeat).toBe(0);
+  });
+
+  run('自己发 intent 走完一回合 ⇒ 计时作废、strikes 清零', () => {
+    const h = clockHub();
+    h.ha.onMessage({ t: 'awaiting', seq: h.latestSeq() });
+    h.setNow(10_000);
+    h.ha.onMessage({ t: 'intent', action: { type: 'startTurn' } });
+    expect(h.a.inbox.some((m) => m.t === 'clock' && m.remainingMs === -1)).toBe(true);
+    // 新局面的表装给了**下一位**（还是 A，因为他这一回合没走完）—— 无论如何不再倒计时旧的
+    h.setNow(10_000 + 59_999);
+    h.hub.sweepDisconnected(10_000 + 59_999);
+    expect(sawTimeout(h.b, 0)).toBe(false);
+  });
+});

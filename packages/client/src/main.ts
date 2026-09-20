@@ -589,6 +589,10 @@ const loadHintEl = $('loadhint');
 const loadRetryEl = $<HTMLButtonElement>('loadretry');
 // ★ W-73 大厅里的「複製邀請連結」（DOM，盖在 canvas 下缘）
 const inviteEl = $<HTMLButtonElement>('invite');
+// ★ W-74 回合计时（棋盘右上角，剩余 ≤ 20 秒才露出来）
+const clockEl = $('clock');
+const clockNumEl = $('clocknum');
+const clockNameEl = $('clockname');
 
 /**
  * 最近若干行日志的**环**（F9 回报里带上）—— 实现在 `log-ring.ts`（可单测）。
@@ -6007,6 +6011,7 @@ function requestRender(): void {
     //   不会再派 action ⇒ 在这里每帧补一次机会。幂等：`shopUi` 已建就什么都不做。
     if (screen === 'game') syncShopUi();
     syncInviteButton();
+    syncClockOverlay();
     syncBailBgm();
     // 场所都收了、放的还是场所曲 ⇒ 把背景曲从被打断的位置接回来（`sub_00454bcc`）
     if (boardBgmDue()) restoreBoardBgm();
@@ -7697,6 +7702,8 @@ function bindInput(): void {
     const p = eventToStage(e);
     if (p === null) return;
     unlockAudio();
+    // ★ W-74：本机座位被超时託管时，点一下画面就收回来（这一下不再往下传）
+    if (reclaimIfAutopiloted()) return;
 
     // ── 登记的整屏（契约见 ui-screen.ts）在的时候不碰棋盘 ──
     // ★ 真正的事件已经在 `mousedown` / `mouseup` 上派过了（`down` = 按下、`up` = 抬手，
@@ -8950,6 +8957,13 @@ function connectOnline(url: string, room: string, name: string): void {
           if (action.type === 'step') stepTick();
           applyAction(action);
         },
+        // ★ W-74：服务器广播的剩余毫秒（`-1` = 这一轮计时作废）
+        onClock: (c) => {
+          clockSeat = c.remainingMs < 0 ? null : c.seat;
+          clockBaseMs = c.remainingMs;
+          clockAt = performance.now();
+          requestRender();
+        },
         onError: (message) => log(`⚠ 伺服器：${message}`),
         onDesync: (d) =>
           log(`⚠ 失步！第 ${d.seq} 號後 ${d.seat + 1} 號座的校驗和 ${d.got} ≠ ${d.expected}，已請求全量重放`),
@@ -8999,6 +9013,8 @@ function connectOnline(url: string, room: string, name: string): void {
     );
     ws.onopen = () => {
       net = client;
+      awaitingSentFor = Number.NaN;
+      startNetTick();
       client.join();
     };
     ws.onmessage = (ev) => client.receive(String(ev.data));
@@ -9153,6 +9169,116 @@ function copyInviteLink(): void {
     () => done('已複製邀請連結！'),
     () => done('複製失敗，請手動複製'),
   );
+}
+
+// ============================================================
+//  ★ W-74 回合计时（客户端这一半）
+// ============================================================
+
+/** 多久检查一次「本机是不是停在等输入上了」 */
+const AWAITING_POLL_MS = 250;
+/** `alive` 最快多久发一次（服务器那边也限了「每 10 秒最多一次」） */
+const ALIVE_MIN_MS = 10_000;
+/** 剩多少毫秒才把倒计时露出来（任务书 W-74 §74-e） */
+const CLOCK_SHOW_MS = 20_000;
+/** 轮到自己时最后这段变红 */
+const CLOCK_HOT_MS = 10_000;
+/** 倒计时落的舞台坐标 —— 棋盘（439×440 @ y=40）的右上角往内缩 8 px */
+const CLOCK_STAGE = { x: 431, y: 48 } as const;
+
+let netTick: number | null = null;
+/** 已经为哪个 `seq` 报过 `awaiting`（`NaN` = 还没报过） */
+let awaitingSentFor = Number.NaN;
+let aliveSentAt = 0;
+/** 服务器最近一次广播的剩余毫秒；`null` = 没在计时 */
+let clockSeat: number | null = null;
+let clockBaseMs = -1;
+/** 收到那条广播的本地时刻 —— 倒计时靠它本地递减（服务器不会再发） */
+let clockAt = 0;
+
+function startNetTick(): void {
+  if (netTick === null) netTick = window.setInterval(tickAwaiting, AWAITING_POLL_MS);
+}
+
+/** 画面此刻是不是**停在等本机输入**上（任务书 W-74 §74-b） */
+function waitingForInput(s: GameState): boolean {
+  if (s.phase === 'awaitingRoll' || s.phase === 'awaitingDecision') return true;
+  const kind = s.pending?.kind;
+  return kind !== undefined && kind !== 'none';
+}
+
+/**
+ * ★ W-74 §74-b：轮到本机座位、动画演完（`stageBusy()` 为假）、画面停在等输入
+ * ⇒ 对**当前** `seq` 报一次（同一个 `seq` 不重发）。
+ *
+ * 服务器收到才开始数 60 秒。不报也有 45 秒兜底，但那样等于把演出时间算进了玩家的账。
+ */
+function tickAwaiting(): void {
+  const client = net;
+  if (client === null || client.seat === null || screen !== 'game') return;
+  if (actingSeat(state) !== client.seat) return;
+  if (stageBusy(stageBusyFlags())) return;
+  if (!waitingForInput(state)) return;
+  const seq = client.expectedSeq - 1;
+  if (seq === awaitingSentFor) return;
+  awaitingSentFor = seq;
+  client.awaiting(seq);
+}
+
+/** ★ W-74 §74-c：有鼠标 / 键盘输入就报「我还在」（每 10 秒最多一次） */
+function noteAlive(): void {
+  const client = net;
+  if (client === null || client.seat === null) return;
+  if (clockSeat !== client.seat) return;
+  const now = performance.now();
+  if (now - aliveSentAt < ALIVE_MIN_MS) return;
+  aliveSentAt = now;
+  client.alive();
+}
+
+/**
+ * ★ W-74 §74-d 第 3 条：本机座位被**超时**託管时，玩家点一下画面就把座位收回来。
+ * @returns 真的发了 `resume` 吗（是的话这一次点击不再往下传）
+ */
+function reclaimIfAutopiloted(): boolean {
+  const client = net;
+  if (client === null || client.seat === null) return false;
+  if (client.room?.seats.find((s) => s.seat === client.seat)?.autopilot !== 'idle') return false;
+  awaitingSentFor = Number.NaN; // 收回来之后要能重新报 `awaiting`
+  client.resume();
+  return true;
+}
+
+/** 本地递减后的剩余毫秒（服务器只在开始 / 延长 / 作废时各发一次，不会逐秒推） */
+function clockLeftMs(): number {
+  if (clockSeat === null) return -1;
+  return Math.max(0, clockBaseMs - (performance.now() - clockAt));
+}
+
+/** 棋盘右上角那颗倒计时 */
+function syncClockOverlay(): void {
+  const left = clockLeftMs();
+  const show = screen === 'game' && clockSeat !== null && left <= CLOCK_SHOW_MS;
+  if (!show) {
+    if (!clockEl.hidden) clockEl.hidden = true;
+    return;
+  }
+  const seat = clockSeat as number;
+  const mine = net !== null && net.seat === seat;
+  clockNumEl.textContent = String(Math.ceil(left / 1000));
+  // 名字在 `SeatInfo` 上（`Player` 只带角色与钱）
+  clockNameEl.textContent = net?.room?.seats.find((s) => s.seat === seat)?.name ?? `${seat + 1} 號座`;
+  clockEl.classList.toggle('hot', mine && left <= CLOCK_HOT_MS);
+  // 舞台坐标 → CSS 像素（与 `eventToStage` 同一套 metrics，方向反过来）
+  const rect = canvas.getBoundingClientRect();
+  const metrics = currentMetrics();
+  const dpr = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+  clockEl.style.left = `${rect.left + (metrics.offsetX + CLOCK_STAGE.x * metrics.scale) / dpr}px`;
+  clockEl.style.top = `${rect.top + (metrics.offsetY + CLOCK_STAGE.y * metrics.scale) / dpr}px`;
+  clockEl.style.transform = 'translateX(-100%)';
+  clockEl.hidden = false;
+  // 它要一格格往下走 ⇒ 自己续帧（服务器不会再发）
+  requestRender();
 }
 
 async function boot(): Promise<void> {
@@ -9658,6 +9784,10 @@ async function boot(): Promise<void> {
     bindAudioUnlock();
     // ★ W-73：大厅那颗 DOM 按钮（可见性由 `syncInviteButton` 每帧同步）
     inviteEl.addEventListener('click', copyInviteLink);
+    // ★ W-74：「我还在这儿」——只要有鼠标 / 键盘输入就报一次（自己有 10 秒节流）
+    for (const type of ['mousemove', 'mousedown', 'keydown', 'wheel'] as const) {
+      window.addEventListener(type, noteAlive, { passive: true });
+    }
     // ★ W-73：老的 `?ws=…&room=…&name=…` 调试入口**保留**（`tools/net-e2e.js` 在用），
     //   它优先级最高；其次是 `?screen=` 调试屏；两者都没有才轮到门厅。
     const debugScreen = new URLSearchParams(window.location.search).has('screen');
