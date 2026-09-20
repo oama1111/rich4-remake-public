@@ -240,7 +240,12 @@
       if (k !== lastKey) { same = 0; busyRun = 0; lastKey = k; }
       else if (isBusy) { busyRun++; } else { same++; busyRun = 0; }
       if (busyRun === 1286) { S.busyStalls.push({ at: S.ticks, k, busy }); busyRun = 0; }
-      if (same === 300) { S.stalls.push({ at: S.ticks, k, steps: s.stepsRemaining, dice: s.dice, busy }); same = 0; }
+      // ★ 小遊戲屏是**实时**的一屏：没人操作时它按自己的表走完才收
+      //   （企鵝 / 氣球 `*_PLAY_TICKS = 0x96` × 100 ms = 15 秒，加片头、入场与 2 秒计分 ≈ 21 秒），
+      //   正好踩在 300 拍的窗口上（2026-09-20 WebKit 长跑误报一条 `turnEnd|0|minigame`，随后自己走下去了）。
+      //   这一屏放宽到 600 拍；它要是 42 秒还不收，那才是真卡。
+      const stallWindow = s.pending && s.pending.kind === 'minigame' ? 600 : 300;
+      if (same === stallWindow) { S.stalls.push({ at: S.ticks, k, steps: s.stepsRemaining, dice: s.dice, busy }); same = 0; }
 
       if (humanPath) {
         // ★ 真人路径的卡死检测：`moving` 且三元组 6 秒没动

@@ -1104,6 +1104,12 @@
   而 `lastEvent` 不是瞬态字段 ⇒ 踩过一次得點券格之后**每走一格都把那句台词重说一遍**（需求方也看到了：
   「台词一直在重复播放」），每格白等 1 秒多，长跑速度掉到 1 回合 / 29 秒。已改成「引用不同才算这一条 action 写的」，
   `speech.test.ts` 加三条钉子；`detectPointsGained` 被同一个毛病一直捂住的问题一并解掉。
+- **WebKit 复跑（2026-09-20，合入 main 之后；Playwright WebKit 26.0 无头，同一条 URL）**：
+  **66 回合、errors 0、页面异常 0、humanStalls 0、soakDispatches 0、goMisses 0、exitStuck 0、busyStalls 0**。
+  `stalls` 记了 1 条 `turnEnd|0|minigame` —— 是**长跑脚本的误报**：真人坐在小遊戲屏里不操作，
+  那一屏按自己的表走完（≈21 秒）才收，正好踩在 300 拍窗口上，之后对局自己走下去了（0 次代派）。
+  脚本已把这一屏的窗口放宽到 600 拍。⇒ 「WebKit 下没跑过长跑」这一条欠账结清。
+  ⚠️ 这是 Playwright 的 WebKit，不是桌面包里的系统 WKWebView —— 内核同源，但不等于在包里实跑过。
 - 阻塞程度：**不阻塞** W-51 的机制与单测（`stage-gate.test.ts` 正反两条死锁用例 +
   `speech.test.ts` 的表驱动 order 全绿；legacy 61 回合 0 停摆）。阻塞的只是
   §2.4 那条「真人路径 60 回合」的**原始验收口径** —— 它现在被 W-14 的缺口挡住。
