@@ -442,8 +442,10 @@ function mkEnv(
   env: UiScreenEnv;
   actions: Action[];
   renders: () => number;
+  flics: { archive: string; resource: number }[];
 } {
   const actions: Action[] = [];
+  const flics: { archive: string; resource: number }[] = [];
   let renders = 0;
   const env = {
     screen: 'game',
@@ -455,8 +457,13 @@ function mkEnv(
     requestRender: () => {
       renders++;
     },
+    // ★ W-68-c：開屏那一下要预取 `Panel#16/#17` —— 这里只记「问过哪一段」
+    flic: (archive: string, resource: number) => {
+      flics.push({ archive, resource });
+      return null;
+    },
   } as unknown as UiScreenEnv;
-  return { env, actions, renders: () => renders };
+  return { env, actions, renders: () => renders, flics };
 }
 
 /** 让这一屏一路演到「可以点号」那一段，返回当时的时刻 */
@@ -475,6 +482,23 @@ describe('整屏出口 @source 窗口过程 0x0042f7fc', () => {
     expect(lotteryScreen.active(mkEnv(mkState({ pending: mkPending() }), 0).env)).toBe(true);
     expect(lotteryScreen.active(mkEnv(mkState(), 0).env)).toBe(false);
     expect(lotteryScreen.active(mkEnv(mkState({ pending: { kind: 'bank' } }), 0).env)).toBe(false);
+  });
+
+  it('★★ 開屏那一下预取開獎屏的两段 ANM（`Panel#16` 摇球 / `#17` 礼花）—— 只问一次', () => {
+    // ★ W-68-c：进開獎屏那一下要在主线程一次解完两段 ⇒ 首席实测 ≈ 1001 ms 的长帧。
+    //   在**投注屏開屏**这一下就各问一次（值丢掉，只为解进缓存）。
+    resetLotteryScreenState();
+    const before = mkState();
+    const after = mkState({ pending: mkPending() });
+    const { env, flics } = mkEnv(after, 0);
+    lotteryScreen.event!(before, after, env);
+    expect(flics).toEqual([
+      { archive: 'Panel.mkf', resource: 0x10 },
+      { archive: 'Panel.mkf', resource: 0x11 },
+    ]);
+    // 同一屏里再来一条 action（选号 / 别人的行动）不再重复预取
+    lotteryScreen.event!(after, after, env);
+    expect(flics).toHaveLength(2);
   });
 
   it('★ 时间轴：哈囉 → 报价 → 可点（每段 2 秒）', () => {

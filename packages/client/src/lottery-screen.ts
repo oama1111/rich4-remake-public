@@ -104,6 +104,7 @@ import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { FONT_FAMILY } from './font.ts';
 // 取消音（`[0x482332] = 4`）—— 与右键/ESC 那条梯子共用同一个号
 import { CANCEL_SOUND } from './panel-cancel.ts';
+import { DRAW_DRUM_RESOURCE, DRAW_FLOWER_RESOURCE } from './lottery-draw-screen.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type LotSprite = (
@@ -836,7 +837,15 @@ export const lotteryScreen: UiScreen = {
     // ★ 只在**開屏那一下**点（原版那句 `push 6 / call` 在模态循环之前，只执行一次）。
     //   先前每来一条 action（含别人的、含每一次选号）都从头重放一遍 ⇒ 听上去像「卡住」
     //   （2026-09-19 第三份试玩回报 #7）。
-    if (after.pending?.kind === 'lottery' && before.pending?.kind !== 'lottery') env.music?.('midi07.mid');
+    if (after.pending?.kind === 'lottery' && before.pending?.kind !== 'lottery') {
+      env.music?.('midi07.mid');
+      // ★★ W-68-c：開獎屏那两段 ANM（`Panel#16` 摇球 42 帧 275×270、`Panel#17` 礼花
+      //   37 帧 280×480）在这里就**预取**一次（值丢掉，只为解进缓存）。
+      //   不预取的话，进開獎屏那一下要在主线程上一次解完两段 ——
+      //   首席实测那一记长帧 ≈ 1001 ms。只加这一处，解码器不动。
+      env.flic('Panel.mkf', DRAW_DRUM_RESOURCE);
+      env.flic('Panel.mkf', DRAW_FLOWER_RESOURCE);
+    }
   },
 
   tick(env: UiScreenEnv): void {
