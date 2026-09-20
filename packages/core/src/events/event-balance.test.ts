@@ -507,8 +507,11 @@ function tallyEventIds(seeds: number[]): { news: Set<number>; fortune: Set<numbe
 }
 
 describe('★ 真跑一局：正向事件真的会抽到（试玩「全是倒霉的」的证伪）', () => {
-  run('★ 12 局里：11 条正向新聞与 9 条正向命運一条不少，且两副牌各覆盖 ≥ 30 条', () => {
-    const { news, fortune } = tallyEventIds([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  // ★ 种子表 2026-09-19 补了 26 / 27：新聞 2 要求**抽到那一刻医院里有人**（`isNewsFeasible`），
+  //   40 个种子里只有 5–7 个会出（改动前 12/21/30/31/34/35/39，接上神明落脚顯靈后对局走向变了 ⇒
+  //   26/27/34/39/40）。原先 1..12 里全靠种子 12 一局撑着 —— 断言没放宽，只是把样本补到仍然覆盖。
+  run('★ 14 局里：11 条正向新聞与 9 条正向命運一条不少，且两副牌各覆盖 ≥ 30 条', () => {
+    const { news, fortune } = tallyEventIds([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 26, 27]);
     const missingNews = [0, 2, 6, 8, 9, 10, 23, 25, 28, 31, 35].filter((id) => !news.has(id));
     const missingFortune = [5, 20, 21, 22, 25, 27, 28, 29, 31].filter((id) => !fortune.has(id));
     expect({ missingNews, missingFortune }).toEqual({ missingNews: [], missingFortune: [] });

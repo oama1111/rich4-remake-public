@@ -488,7 +488,11 @@ export type NoticeKey =
   | 'object.gift'
   | 'object.treasure'
   | 'beggar.alms'
-  | 'thief.loot';
+  | 'thief.loot'
+  // 神明落脚顯靈（`fcn_0040f381` / `fcn_0040f8be`）—— 格式串见 `@rich4/data` 的 `GOD_MANIFEST`
+  | 'god.build'
+  | 'god.demolish'
+  | 'god.seize';
 
 /**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。
@@ -544,7 +548,12 @@ export type BuildUpgradeSource =
   | 'magicHouse'
   | 'companyBuild'
   | 'angelCard'
-  | 'ownUpgrade';
+  | 'ownUpgrade'
+  /**
+   * 神明顯靈加蓋（天使 `0x0040f381` / 福神 `0x0040f8be`）：两支里都**没有** `push 0x229`，
+   * 只在 bit7 时 `0x0040f517` / `0x0040fa26 call 0x40b0cd` ⇒ 只播 0x20b、不播大锤。
+   */
+  | 'godManifest';
 
 /** 一次「加蓋一级」的事件记录（纯表现；见 `GameState.lastBuildUpgrades`）*/
 export interface BuildUpgradeHint {

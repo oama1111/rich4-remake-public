@@ -110,6 +110,7 @@ import {
   canBuyListing,
   cardListPrice,
   decodeEstate,
+  encodeEstate,
   duplicateCards,
   emptyColumn,
   estateListPrice,
@@ -149,7 +150,7 @@ import {
   toolShelf,
   STORE_INDUSTRY,
 } from '../places/shop.ts';
-import { CARDS, CHARACTERS, TOOLS, fortuneEvent, newsEvent, objectNameOf } from '@rich4/data';
+import { CARDS, CHARACTERS, TOOLS, fortuneEvent, godNameOf, newsEvent, objectNameOf } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
@@ -217,6 +218,13 @@ import {
 } from '../rules/facility.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { adjustTollByGod } from '../rules/god-toll.ts';
+import { MUTATE_DEMOLISH_ONE, mutateFacility, mutateLand } from '../cards/monster.ts';
+import {
+  DEVIL_HOSTILITY_FACTOR,
+  isLuckyGod,
+  manifestKindOf,
+  seizeHostilityDelta,
+} from '../rules/god-manifest.ts';
 import { facilityIndexOf } from '../rules/land.ts';
 import { tickBlocking, tickTurnCounters } from '../rules/blocking.ts';
 import { releaseConfinedPlayers } from '../rules/blocking.ts';
@@ -1092,6 +1100,15 @@ function tickDailyCounters(state: GameState, index: number): GameState {
  * @param topo  地图拓扑（只读）
  */
 export function reduce(state: GameState, action: Action, topo: MapTopology): GameState {
+  const next = reduceCore(state, action, topo);
+  // ★ 不可信输入（联机）：不认识的 action type 会让那个 `switch` 穿底、返回 `undefined`，
+  //   服务器靠这个判「被拒」（`server/hub.test.ts`）—— 原样交还，别在这里解引用。
+  if ((next as GameState | undefined) === undefined) return next;
+  // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈
+  return landingTailDue(state, next, action, topo) ? manifestGodOnLanding(state, next, topo) : next;
+}
+
+function reduceCore(state: GameState, action: Action, topo: MapTopology): GameState {
   switch (action.type) {
     case 'reseed': {
       // 唯一的非确定性入口，且其值已被记入 action 日志
@@ -1637,6 +1654,17 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       const player = state.players[state.currentPlayer];
       const fac = facilityAtPlayer(state, topo);
       if (player === undefined || fac === null) return state;
+      if (state.pending.free === true) {
+        // ★ 神明顯靈代蓋的那一次（`0x40b110` 里的 `0x0040b1e4 call 0x440aac`）：
+        //   **不收钱、不看归属、不过衰神闸**（`0x40b110` 整支没有 `call 0x40fa61`）
+        if (!state.pending.choices.includes(action.facilityType)) return state;
+        const built = freeBuildFacilityById(state, topo, fac.id, action.facilityType);
+        if (built === null) return { ...state, pending: null, phase: 'turnEnd' };
+        return withSingleBuildUpgrade(
+          { ...built.state, pending: null, phase: 'turnEnd' },
+          buildHintOf(built, 'godManifest'),
+        );
+      }
       if (fac.owner !== state.currentPlayer + 1 || fac.level !== 0) return state;
       if (!state.pending.choices.includes(action.facilityType)) return state;
       const bought = purchase(player, facilityBuildPrice(fac.landPrice, state.priceIndex));
@@ -1738,11 +1766,15 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
       //   函数体里也**没有** `push 0x229` ⇒ **绝不播大锤**（大锤全 exe 只有 4 处：
       //   `0x0041aab8` / `0x0041ad4d` / `0x00432028` / `0x0044731a`）。
       //   客户端据此把 `source = 'ownUpgrade'` 映射成「只播 0x20b」。
-      return withSingleBuildUpgrade({ ...paid, landLevel, pending: null, phase: 'turnEnd' }, {
+      const upgraded = withSingleBuildUpgrade({ ...paid, landLevel, pending: null, phase: 'turnEnd' }, {
         entity: 0x7d0 + landIndex,
         reachedMaxLevel: buildUpgradeBit7(land.level, land.level + 1),
         source: 'ownUpgrade',
       });
+      // ★ 福神「蓋房子投資加倍」：没到 5 级才轮到它（到 5 级那支 `0x00419a26 jmp 0x41b077` 绕过）
+      //   @source `0x004199eb cmp byte [esi+0x1a],5 / jne 0x419a2b` → `0x00419a48 call 0x40f8be`
+      if (land.level + 1 === MAX_LAND_LEVEL) return upgraded;
+      return luckyGodBonus(state, upgraded, topo, 0x7d0 + landIndex);
     }
 
     case 'buyStock':
@@ -2210,6 +2242,211 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
  *   界面约束而非函数内的分支；本引擎必须自己兜住，否则
  *   一个构造出来的网络消息就能凭空造钱。
  */
+
+// ============================================================
+//  落点尾块：神明顯靈（`fcn_0040f381`）与福神加倍（`fcn_0040f8be`）
+//  判据与取证全文见 `rules/god-manifest.ts` 的文件头
+// ============================================================
+
+/**
+ * 落点问出来的那几种待决交互 —— 它们**收掉**（买 / 不买都算）就等于原版走到了尾块 `0x0041b077`。
+ * 企業格的 `buyShares` 不在表里：格值 6001.. 不在 `0x40f381` 三支的任何区间，必为空操作。
+ */
+const LANDING_PENDING_KINDS: ReadonlySet<string> = new Set([
+  'buyLand',
+  'upgradeLand',
+  'buyFacility',
+  'buildFacility',
+  'upgradeFacility',
+  'research',
+]);
+
+/** 当前玩家脚下那一格的**格值**（`0x7d0+地块` / `0xfa0+設施`）；不是这两类返回 null */
+function estateEntityAtPlayer(state: GameState, topo: MapTopology): number | null {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return null;
+  const node = topo.nodes[me.nodeId - 1];
+  // @source 0x004198b2 的跳表：只有类型 0 会到尾块
+  if (node === undefined || node.specialKind !== 0) return null;
+  const landIndex = landIndexAtPlayer(state, topo);
+  if (landIndex !== null) return encodeEstate('land', landIndex);
+  const fac = facilityAtPlayer(state, topo);
+  return fac === null ? null : encodeEstate('facility', fac.id);
+}
+
+/**
+ * 这一条 action 是不是让**落点例程走到了尾块**。
+ *
+ * 本引擎把原版那一个函数拆成了 `settle` +（可选的）一条待决交互，所以判据是
+ * 「落点这一段刚刚收完」：`settle` 直接落到 `turnEnd`，或落点问出来的那个交互被收掉。
+ * 神明加蓋那扇免费的設施种类框（`pending.free`）收掉时**不再**触发 —— 它本身就在尾块里。
+ */
+function landingTailDue(before: GameState, next: GameState, action: Action, topo: MapTopology): boolean {
+  if (next === before || next.phase !== 'turnEnd' || before.phase === 'turnEnd') return false;
+  if (next.currentPlayer !== before.currentPlayer || next.pending !== null) return false;
+  const fromSettle = action.type === 'settle' && before.phase === 'settling';
+  const pend = before.pending;
+  const fromDecision =
+    before.phase === 'awaitingDecision' &&
+    pend !== null &&
+    LANDING_PENDING_KINDS.has(pend.kind) &&
+    !(pend.kind === 'buildFacility' && pend.free === true);
+  if (!fromSettle && !fromDecision) return false;
+  return estateEntityAtPlayer(next, topo) !== null;
+}
+
+/** 追加一扇訊息框：本 action 已经弹过的排在前面（原版就是先收费框、后顯靈框）*/
+function appendNotice(before: GameState, next: GameState, notice: NoticeHint): GameState {
+  const own = next.notices !== before.notices ? next.notices : [];
+  return { ...next, notices: [...own, notice] };
+}
+
+/** 追加一条加蓋提示：本 action 自己记的（如 `ownUpgrade`）保留，上一条 action 留下的丢掉 */
+function appendBuildUpgrade(before: GameState, next: GameState, hint: BuildUpgradeHint): GameState {
+  const own = next.lastBuildUpgrades !== before.lastBuildUpgrades ? (next.lastBuildUpgrades ?? []) : [];
+  return { ...next, lastBuildUpgrades: [...own, hint] };
+}
+
+/**
+ * `0x40b110(格值)` 由神明代劳的那一次：天使（`0x0040f492`）/ 福神（`0x0040f983`）共用。
+ *
+ * ★ 真人 + 等级 0 的設施：原版在 `0x40b110` 里当场弹种类框（`0x0040b1e4 call 0x440aac`）。
+ *   本引擎把它做成一条**免费**的 `buildFacility` 待决交互（`free: true`），选完才蓋。
+ */
+function godFreeBuild(
+  before: GameState,
+  next: GameState,
+  topo: MapTopology,
+  entity: number,
+  godInfo: number,
+): GameState {
+  const me = next.players[next.currentPlayer];
+  if (me === undefined) return next;
+  const notice: NoticeHint = { key: 'god.build', args: [godNameOf(godInfo)] };
+  const e = decodeEstate(entity);
+  if (e.kind === 'facility') {
+    const fac = effectiveFacility(next, topo, e.index);
+    if (fac === null) return next;
+    if (fac.level === 0 && (me.whoPlays & 0x06) === 0) {
+      // @source 0x0040f455 / 0x0040f93c：等级 0 的設施**先**弹顯靈框（`0x800` 标记），再进 `0x40b110`
+      return {
+        ...appendNotice(before, next, notice),
+        phase: 'awaitingDecision',
+        pending: {
+          kind: 'buildFacility',
+          facilityId: fac.id,
+          name: fac.name,
+          price: 0,
+          choices: [0, 1, 2, 3, 4],
+          free: true,
+        },
+      };
+    }
+  }
+  const built = freeBuildEntity(next, topo, entity, -1);
+  // @source 0x0040f4a2 `test byte [esp+0x88],1 / je` —— 蓋不成（满级 / 連鎖店已建）什么都不弹
+  if (built === null) return next;
+  const withNotice = appendNotice(before, { ...built.state, phase: next.phase, pending: next.pending }, notice);
+  return appendBuildUpgrade(before, withNotice, buildHintOf(built, 'godManifest'));
+}
+
+/**
+ * 福神「蓋房子投資加倍」—— 自己地升級成功、且**没到 5 级**时再白送一级。
+ *
+ * @source `0x004199eb cmp byte [esi+0x1a],5 / jne 0x419a2b` → `0x00419a48 call 0x40f8be`；
+ *   到 5 级那一支 `0x00419a26 jmp 0x41b077` **绕过**了它。
+ *   成功且没到 5 级时 `0x0040fa49 call rand / and eax,1` 挑一句台词 ⇒ **多消费一次随机数**。
+ */
+function luckyGodBonus(before: GameState, next: GameState, topo: MapTopology, entity: number): GameState {
+  const me = next.players[next.currentPlayer];
+  if (me === undefined || !isLuckyGod(me.godInfo)) return next;
+  const out = godFreeBuild(before, next, topo, entity, me.godInfo);
+  const hints = out.lastBuildUpgrades ?? [];
+  const last = hints[hints.length - 1];
+  if (out === next || last === undefined || last.source !== 'godManifest' || last.reachedMaxLevel) return out;
+  const rng = new WatcomRng();
+  rng.setState(out.rngState);
+  rng.next();
+  return { ...out, rngState: rng.getState() };
+}
+
+/** 尾块本体 —— `fcn_0040f381(当前玩家, 脚下那一格)` */
+function manifestGodOnLanding(before: GameState, next: GameState, topo: MapTopology): GameState {
+  const meIndex = next.currentPlayer;
+  const me = next.players[meIndex];
+  if (me === undefined) return next;
+  // @source 0x0040f39e `cmp byte [player+0x32],0 / jne 返回`（住宿中）；0x0040f3ab 出局返回
+  if (me.blocking.inHotel !== 0 || !isAlive(me)) return next;
+  const kind = manifestKindOf(me.godInfo);
+  const entity = estateEntityAtPlayer(next, topo);
+  if (kind === null || entity === null) return next;
+
+  if (kind === 'build') return godFreeBuild(before, next, topo, entity, me.godInfo);
+
+  const e = decodeEstate(entity);
+  const land = e.kind === 'land' ? effectiveLand(next, topo, e.index) : null;
+  const fac = e.kind === 'facility' ? effectiveFacility(next, topo, e.index) : null;
+  const target = land ?? fac;
+  if (target === null) return next;
+
+  if (kind === 'demolish') {
+    // @source 0x0040f538 / 0x0040f59c `cmp byte [+0x1a],0 / je 0x40f5d0`（[esp+0x88] 恒 0 ⇒ 返回）
+    if (target.level === 0) return next;
+    let players = next.players;
+    // @source 0x0040f545 / 0x0040f5a2：有主才记敌意 —— **不排除自己的地**
+    //   （`update_hostility` 自己在 `a == b` 时返回，拆照拆）
+    if (target.owner !== 0) {
+      players = updateHostility(players, target.owner - 1, meIndex, DEVIL_HOSTILITY_FACTOR * next.priceIndex).players;
+    }
+    let out: GameState = { ...next, players };
+    if (land !== null) {
+      const m = mutateLand(land, MUTATE_DEMOLISH_ONE);
+      const landLevel = [...out.landLevel];
+      const landType = [...out.landType];
+      landLevel[land.id] = m.land.level;
+      landType[land.id] = m.land.type;
+      out = { ...out, landLevel, landType };
+      if (m.releasesConfined) out = { ...out, players: releaseConfinedPlayers(out.players) };
+    } else if (fac !== null) {
+      const m = mutateFacility(fac, MUTATE_DEMOLISH_ONE);
+      const facilityLevel = [...out.facilityLevel];
+      const facilityType = [...out.facilityType];
+      facilityLevel[fac.id] = m.facility.level;
+      facilityType[fac.id] = m.facility.type;
+      out = { ...out, facilityLevel, facilityType };
+      if (m.releasesConfined) out = { ...out, players: releaseConfinedPlayers(out.players) };
+    }
+    return appendNotice(before, out, { key: 'god.demolish', args: [] });
+  }
+
+  // ── 土地公 @source 0x0040f68b ──
+  // @source 0x0040f6b4 / 0x0040f792：已经是我的 ⇒ `[esp+0x88]` 仍为 0 ⇒ 不弹不改
+  if (target.owner === meIndex + 1) return next;
+  let players = next.players;
+  if (target.owner !== 0) {
+    const delta = seizeHostilityDelta(target.landPrice, next.priceIndex, target.level);
+    players = updateHostility(players, target.owner - 1, meIndex, delta).players;
+  }
+  // @source 0x0040f718 / 0x0040f7fd：土地權限非無限期、且**原先无主**才写到期日（抢别人的沿用原到期日）
+  const stamp = next.landTenureIndex !== 0 && target.owner === 0;
+  const expiry = stamp ? tenureExpiry(packDate(next), next.landTenureIndex) : 0;
+  let out: GameState = { ...next, players };
+  if (land !== null) {
+    const landOwner = [...out.landOwner];
+    landOwner[land.id] = meIndex + 1;
+    out = { ...out, landOwner, ...(stamp ? { landTenure: withTenure(out.landTenure, land.id, expiry) } : {}) };
+  } else if (fac !== null) {
+    const facilityOwner = [...out.facilityOwner];
+    facilityOwner[fac.id] = meIndex + 1;
+    out = {
+      ...out,
+      facilityOwner,
+      ...(stamp ? { facilityTenure: withTenure(out.facilityTenure, fac.id, expiry) } : {}),
+    };
+  }
+  return appendNotice(before, out, { key: 'god.seize', args: [] });
+}
+
 /**
  * 站在这一格上的物件 handle（下标 + 1）；0 表示这格没有物件。
  *
@@ -2551,16 +2788,21 @@ function applyGodPower(
     case 'none':
       return state;
 
-    // ── 死神：賣光道具 + 卡片（折**點券**）@source 0x0040f2eb ──
+    // ── 死神：道具 + 卡片全部没收（**不折點券**）@source 0x0040f2eb ──
     case 'sellEverything': {
       const me = state.players[host];
       if (me === undefined) return state;
       const t = sellAllTools(me, state.tools, state.toolStock);
       const c = sellAllCards(t.player, state.cardAmount);
-      const gained = addPoints(c.player.points, t.points + c.points);
+      // ★★ G42 订正：死神这一支把两个返回值（折得的點券）**都丢了** ——
+      //   `0x0040f36e call 0x445b3f / add esp,4 / push ebp / 0x0040f377 call 0x441f21 /
+      //   0x0040f37c jmp 0x40f250`，中间没有 `add word [player+0x30], ax`；
+      //   `0x445b3f` / `0x441f21` 本体也不写 `+0x30`（只 `mov eax, ebx / ret`）。
+      //   对照魔法屋「變賣」那两支才有 `0x00431d3d` / `0x00431f62 add word [player+0x30],ax`。
+      //   ⇒ 纯惩罚：道具、卡片清空回库，**點券一分不给**。
       return {
         ...state,
-        players: state.players.map((p, i) => (i === host ? { ...c.player, points: gained } : p)),
+        players: state.players.map((p, i) => (i === host ? c.player : p)),
         tools: t.tools,
         toolStock: t.toolStock,
         cardAmount: c.cardAmount,

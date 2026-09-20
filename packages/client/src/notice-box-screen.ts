@@ -66,7 +66,7 @@
  * 与原版「每扇各自一次可跳过的等待」一致）。
  */
 
-import { FACILITY_TOLL, MESSAGE_BOX, RENT, formatOriginal } from '@rich4/data';
+import { FACILITY_TOLL, GOD_MANIFEST, MESSAGE_BOX, RENT, formatOriginal } from '@rich4/data';
 import type { GameState, NoticeHint, NoticeKey } from '@rich4/core';
 import { drawDialog } from './dialog.ts';
 import type { InteractionUi } from './interactions.ts';
@@ -121,6 +121,10 @@ export const NOTICE_TEXT = {
   'object.treasure': MESSAGE_BOX.got500Points.text,
   'beggar.alms': MESSAGE_BOX.alms.text,
   'thief.loot': MESSAGE_BOX.thiefLoot.text,
+  // ★ 神明落脚顯靈（`fcn_0040f381` / `fcn_0040f8be`）：三句都是 `0x440cac(…, 0x5dc)` 同一扇框
+  'god.build': GOD_MANIFEST.build.text,
+  'god.demolish': GOD_MANIFEST.demolish.text,
+  'god.seize': GOD_MANIFEST.seize.text,
 } as const satisfies Record<NoticeKey, string>;
 
 /** 一条 `{ key, args }` 提示 → 屏上那一句（`%s` / `%d` 全在 `args` 里） */

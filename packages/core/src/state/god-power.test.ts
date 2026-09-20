@@ -242,7 +242,7 @@ describe('★ 請神符走同一条發威（两条附身路径共用 @source 0x0
     expect(after.players[0]!.cash).toBe(100_000 + amount);
   });
 
-  run('★ 請死神上身 → 賣光道具與卡片，所得進**點券** @source 0x0040f2eb', () => {
+  run('★ 請死神上身 → 道具與卡片全部没收，**點券一分不给**（G42）@source 0x0040f36e / 0x0040f377', () => {
     const start = fresh().state;
     const base = rich(start);
     const tools = [...base.tools];
@@ -263,7 +263,12 @@ describe('★ 請神符走同一条發威（两条附身路径共用 @source 0x0
       before.toolStock,
     );
     const expectCards = sellAllCards(expectSold.player, before.cardAmount);
-    expect(after.players[0]!.points).toBe(10 + expectSold.points + expectCards.points);
+    // ★★ G42 订正（2026-09-19）：先前这里断言「所得進點券」，那是**复述旧实现**。
+    //   exe：`0x0040f36e call 0x445b3f / add esp,4 / push ebp / 0x0040f377 call 0x441f21 /
+    //   0x0040f37c jmp 0x40f250` —— 两个返回值（折得的點券）**都被丢弃**，
+    //   中间没有魔法屋那条 `add word [player+0x30], ax`（0x00431d3d / 0x00431f62）。
+    expect(expectSold.points + expectCards.points).toBeGreaterThan(0); // 反证：确实有东西可折
+    expect(after.players[0]!.points).toBe(10);
     // 都回商店库存
     expect(after.toolStock[1]).toBe((before.toolStock[1] ?? 0) + 2);
     expect(after.cardAmount[0]).toBe((before.cardAmount[0] ?? 0) + 1);

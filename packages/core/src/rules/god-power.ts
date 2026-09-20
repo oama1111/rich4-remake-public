@@ -123,7 +123,7 @@ export type GodPower =
   | { kind: 'receiveCards'; count: number }
   /** 衰神：丢卡（`one` = 随机一张 / `half` = 丢一半）@source 0x0040f10c / 0x0040f1de */
   | { kind: 'dropCards'; mode: 'one' | 'half' }
-  /** 死神：賣光道具 + 卡片（都折成**點券**）@source 0x0040f2eb */
+  /** 死神：道具 + 卡片全部没收（返回值被丢弃 ⇒ **不折點券**，G42）@source 0x0040f2eb */
   | { kind: 'sellEverything' };
 
 /**

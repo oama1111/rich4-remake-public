@@ -49,7 +49,18 @@ export type PendingInteraction =
    *   电脑 `rand() % 4 + 1`。价 = 地價 × 物價指數（与買地相同）。
    * `choices` 是 0..4 全部五种 —— 真人可以选公園，电脑抽不到而已。
    */
-  | { kind: 'buildFacility'; facilityId: number; name: string; price: number; choices: readonly number[] }
+  | {
+      kind: 'buildFacility';
+      facilityId: number;
+      name: string;
+      price: number;
+      choices: readonly number[];
+      /**
+       * 神明顯靈**代蓋**的那一次（天使 / 福神，`0x40b110` 里的 `0x0040b1e4 call 0x440aac`）：
+       * 不收钱、不看归属。缺席 = 落点问出来的那个普通首建。
+       */
+      free?: true;
+    }
   /** 自己的設施（等级 ≥ 1）：加蓋一级。价 = 房價 × 物價指數 */
   | { kind: 'upgradeFacility'; facilityId: number; name: string; cost: number; level: number }
   /**
