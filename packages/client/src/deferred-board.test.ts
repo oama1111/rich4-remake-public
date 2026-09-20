@@ -251,11 +251,11 @@ describe('★ main.ts 接线（源码钉子）', () => {
     expect(src).toContain('function boardDrawState(): GameState {');
   });
 
-  it('四条影片（建屋 / 住院入獄 / 神明 / 新聞4飛碟）起播前都记下 before 快照', () => {
+  it('五条影片（建屋 / 住院入獄 / 神明 / 新聞4飛碟 / 惡犬咬人）起播前都记下 before 快照', () => {
     expect(src).toContain('deferredBoardBefore = before;');
-    // 2026-09-19：新聞 4「外星人攻打地球」的飛碟影片也加进来了（房子在 core 里
-    // 已经被掀掉，影片期间必须按 before 画），故由 3 处变 4 处。
-    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(4);
+    // 2026-09-19：新聞 4「外星人攻打地球」的飛碟影片（房子在 core 里已经被掀掉）
+    // 與「踩到惡犬」的狗咬影片（人已經被寫進醫院）都加進来了，故由 3 → 4 → 5 处。
+    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(5);
   });
 
   it('★ 两条影片都要等这一步的走子补间播完才起播（试玩3 #1 的正面）', () => {

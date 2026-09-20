@@ -1288,6 +1288,29 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
 
       // 特殊格优先：原版按 node.flags & 0xff 走 17 路跳表
       if (node.specialKind !== 0) {
+        // ★★ 2026-09-19 补：**夢遊中的落点闸门**（原版分派器开头的第一道判据）。
+        //
+        // ```asm
+        // 0041986c  imul eax, dword ptr [0x49910c], 0x68   ; eax = 当前玩家
+        // 00419873  cmp  byte ptr [eax + 0x496b9f], 0      ; ★ player+0x37 = 夢遊天數
+        // 0041987a  je   0x419884                          ; == 0 ⇒ 照常分派
+        // 0041987c  test ebx, ebx                          ; ebx = [node+0x24] & 0xff = 格子类型
+        // 0041987e  jne  0x41b3d0                           ; ★ 类型 != 0 ⇒ **整段直接返回**
+        // ```
+        //
+        // ⇒ 夢遊中的玩家踩到**任何 type != 0 的格子**（新聞 / 命運 / 監獄 / 醫院 /
+        //   樂透 / 得點 / 抽卡 / 銀行 / 百貨 / 魔法屋 / 三个小游戏）**什么都不发生**；
+        //   只有 type == 0（住宅/設施/企業的买卖与过路费）照旧结算。
+        //   `+0x37` 就是 `days_sleep_walking`（写者 `0x44441d mov byte [eax+0x496b9f], 5`
+        //   与 `0x444369`；`0x40cba5` 用它把回合判成「夢遊跳過」并 `call 0x40dd1f`
+        //   auto_move —— 走得动，但落点这一支被上面那道闸挡掉）。
+        //
+        // ⚠️ 先前 `docs/gaps/05-loop-minigames-ai.md` 里的「梦游由 turn-start 提前拦掉、
+        //   落点根本不进」是**读错了**：`startTurn` 的夢遊支只是**立刻掷骰并自动走完**
+        //   （本引擎在 `startTurn` 里一路走完），落点照进 —— 实测同一个 `startTurn`
+        //   就会把玩家从原格走到新格并 `settle`。少了这道闸，夢遊期間会照抽
+        //   新聞/命運（正是试玩回报里「事件重复触发」的那一类观感）。
+        if (player.blocking.sleepWalking !== 0) return { ...state, phase: 'turnEnd' };
         const out = settleSpecialSquare(
           node.specialKind,
           player,
@@ -4611,14 +4634,58 @@ function newsTargets(
       for (const i of alive) if (countOwned(i) < countOwned(worst)) worst = i;
       return [worst];
     }
-    // ★ 「所有人」那一类：11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利。
-    //   原版这三支（与红利那一支）都是**两层循环扫全部玩家**，且跳过出局者
+    // ★★ 2026-09-19 修：新聞 10「公開表揚股市第一大戶 %s獲得%d元獎勵」——
+    //   `%s` 是**持股市值（股数）最多**的那位，**不是抽牌者**。
+    //   先前这一档没有 case，落到 `default` ⇒ 奖金发给了抽到新闻的人
+    //   （表现层还会把 `%s` 填成抽牌者的名字）。
+    //   @source `fcn_00449b9c`：
+    // ```asm
+    // 00449bd6  mov  eax, esi / shl eax,2 / sub eax,esi / shl eax,5  ; player*0x60
+    // 00449be2  mov  eax, dword ptr [eax + ebx*8 + 0x4971a0]         ; ★ 第 ebx 支的**股数**
+    // 00449be9  add  dword ptr [esp + esi*4 + 0x94], eax             ; 累加到该玩家
+    // 00449bf1  cmp  ecx, 0xc / jl 0x449bd6                          ; ebx = 0..11
+    // 00449c05  imul eax, esi, 0x68
+    // 00449c08  cmp  byte ptr [eax + 0x496b7d], 0                    ; ★ 出局者不参评
+    // 00449c0f  je   0x449c29
+    // 00449c1d  cmp  ecx, ebx / 00449c1f jge 0x449c29                ; 严格 `>` 才更新
+    // 00449c21  mov  ecx, ebx / mov dword ptr [0x48c59c], esi        ; ⇒ 并列取**第一个**
+    // ```
+    //   ⚠️ 奖金额仍是 `10000 * 物價指數`（`0x00449c4a` 的移位序列），
+    //   发放走 news[8] 的收尾（`0x00449c77 jmp 0x4499c1` ⇒ pass 1 才 `add_money`）。
+    case 10: {
+      // 股市第一大户：12 支**股数**之和最大者（并列取第一个）
+      let best = alive[0]!;
+      let bestHeld = -1;
+      for (const i of alive) {
+        const held = (state.holdings[i] ?? []).reduce((s, h) => s + h.amount, 0);
+        if (held > bestHeld) {
+          bestHeld = held;
+          best = i;
+        }
+      }
+      return [best];
+    }
+    // ★ 「所有人」那一类：11 所得稅 / 12 地價稅 / 13 證交稅。
+    //   原版这三支都是**两层循环扫全部玩家**，且跳过出局者
     //   （`cmp byte [player+0x15], 0 / je`）—— 与 `alive` 同一个口径。
     case 11:
     case 12:
     case 13:
-    case 23:
       return alive;
+    // ★ 23 儲金紅利**不是**「所有人」：原版那一支的循环里多一道闸 ——
+    //   有贷款的人**不发**。@source `fcn_0044aedb`：
+    // ```asm
+    // 0044af26  imul ebx, esi, 0x68
+    // 0044af29  cmp  byte ptr [ebx + 0x496b7d], 0   ; 出局跳过
+    // 0044af30  je   0x44b004
+    // 0044af36  mov  ebp, dword ptr [ebx + 0x496b8c] ; ★ +0x24 = loan
+    // 0044af3c  test ebp, ebp
+    // 0044af3e  jne  0x44b004                        ; ★ 有贷款 → 跳过（不发也不画那一行）
+    // 0044af44  fild dword ptr [ebx + 0x496b88]      ; 存款 ×0.1（常量 0x465734 = 0.1）
+    // 0044af5c  push ebp（= 0） / 0044af66 call 0x41d3f4   ; flags 0 ⇒ 进存款
+    // ```
+    case 23:
+      return alive.filter((i) => (state.players[i]?.loan ?? 0) === 0);
     // ★ 2026-09 本轮：新聞 29「違法超貸」的目標**不由這裡挑** —— 它是在企業表裡
     //   隨機抽一家有主企業（**要消耗一次 `rand()`**），再走免罪(21)→嫁禍(19) 二級判定，
     //   整條住在 `events/news-effects.ts` 的 `companyChairmanPrison` 那一支。

@@ -646,3 +646,74 @@
   走完 → null）。
 - 未做：没有把「名牌」那一块（`Data.mkf #0x205` 图 7，400×89）贴出来 —— T-052 的
   Q-SPEECH-4 已登记「它会把 200 宽的气泡整个盖住、且在 640 宽屏上必然溢出」。
+
+### ⏸ E-16（2026-09-19）「有车的人踩到惡犬」原版走**另一段影片**且**不住院**（0x228 / `god-ok.FLC`）—— 本引擎够不到，属规则口径，请首席裁
+
+- 关联任务：第五份试玩回报第 1 条（踩到狗没有动画）的取证副产品；改动本身是
+  `dog-fx.ts` / `main.ts` 的「徒步那一支」，**不阻塞**。
+- 现象（命令 + 输出原文）：
+  - `python3 tools/disasm.py va 0x41b837 120` —— 惡犬那一支（跳表 `ref_0041b3e5` 第 11 项）：
+    ```asm
+    0041b85d  cmp  byte [eax + 0x496b79], 0   ; player+0x11 = traffic_method
+    0041b864  je   0x41b89e                   ; 徒步 → wreck_vehicle + 0x214 + send_to_hospital(3)
+    0041b866  push edi / push edi             ; 有车那一支：x=0, y=0
+    0041b868  push 0x228                      ; read_mkf（Data.mkf 0x228）
+    0041b87d  push 0x55 / push 0x10001 / call 0x45144f
+    0041b899  jmp  0x41c164                   ; ★ 有车这一支**不住院、不 wreck**
+    ```
+  - `Data.mkf` 0x228 的头 + 嵌入源路径（`parseFlicInfo` + 头后 ASCII）：
+    `18 帧 / 440×440 / 71 ms 每帧`、`D:\god-ok.FLC`；0x214（徒步那一支）是
+    `38 帧 / 440×440 / 114 ms`、`D:\RICH4\FLCS\DOG.FLC`。
+  - 本引擎 core（`rules/object-landing.ts:657-673`）：`trafficMethod !== 0` 时
+    `events.push({kind:'dogBite', blockedByVehicle:true})`、`hospitalDays = 0`、
+    `stopMovement = false`、`vehicleWrecked = false`（断言在
+    `object-landing.test.ts:208`「有车就咬不到 —— 不住院、不停步、车也不掉」）。
+- 已试过：`va 0x41b837` / `va 0x41b697`（落点处理全文）/ `va 0x41c140`（收尾）/
+  `va 0x43ec3f`（`send_to_hospital` 全文）/ `callers 0x43ec3f` /
+  `rich4-re/asm/rich4_player_core_actions.asm:2901` 与
+  `rich4-re/asm/rich4_player_info.h`（确认 `0x496b79` 确是 `traffic_method`，
+  该字段在 `_rich4_all_players_state + 17`）。
+  两边的读法都反复核过：**原版有车 = 播 0x228 + 不住院**；
+  **本引擎有车 = 不住院（按现有断言）但也不播任何影片**。
+- 我的怀疑（**没当结论写进代码**）：原版想表达的可能是「有车的人狗咬不到车、
+  只演一段（0x228 那段 `god-ok.FLC` 是 18 帧的短镜头）就把狗送走」；
+  本引擎当初把「有车就咬不到」理解成「什么都不发生」，于是这一段影片从来没有落点。
+  要改就得同时动**规则**（`hospitalDays`/`stopMovement` 要不要给）与
+  **表现**（补 0x228），前者会改现有真值断言 ⇒ 按 WORKPLAN §2 规则 3/4 上报。
+- 阻塞程度：**不阻塞**本次改动（徒步那一支已接、有可证伪回归）。
+  阻塞的只有「有车那一支到底该不该住院」这一条口径。
+
+### ✅ E-16（2026-09-19）踩到惡犬：狗咬影片已接；「有车那一支」的规则口径不一致（首席裁定保留现口径）
+
+- 关联任务：第四份回报第 6 条（踩到狗 → 咬人动画/配音 → 救护车 → 医院台词）
+- 已实现：踏地那条狗的**咬人 FLIC**（`Data.mkf` **0x214** = 38 帧 × 114 ms = **4332 ms**，
+  源路径 `D:\RICH4\FLCS\DOG.FLC`，音效 `0x5d`，flags `0x30001`）按原版次序接在
+  `startConfineFx` **之前**；救护车（`0x20c` = 62 × 100 ms = 6200 ms，落点 (0,210)）
+  早已在。**狗咬那一段不吃「動畫過程」**（`0x41b837..0x41b8f8` 里搜不到 `[0x497159]`），
+  救护车那段吃（`0x43ed27`）。见 `docs/deviations/Q-ANIM-2.md`。
+- **不一致的一处（首席裁定：保留现口径）**：原版 `traffic_method != 0`（开着车）时
+  走另一支 `0x228`（`god-ok.FLC`，18 × 71 ms）、**且不住院**；而本引擎 core 判
+  「有车咬不到」（`hospitalDays = 0`、不停步、车不掉，`rules/object-landing.ts` 有断言）。
+  两者观感不同 —— 但改哪一边都要动**规则**（`hospitalDays`/`trafficMethod` 的语义），
+  而需求方报的是「踩到狗之后没有咬人动画」，那一半已修。
+  ⇒ 保留现口径，登记在此；要改成原版那支需先定「有车到底住不住院」。
+- 另两条**如实登记、不是漏**：① 救护车素材只有 440×74，画面里没有「抬人」内容；
+  ② **原版没有「镜头搬去医院」这一步**（`0x43ec6e`/`0x43eda0` 居中到当事人自己），
+  医院台词本来就有（`detectHospitalEntered`，`@source 0x0043edbc`，只在**新判**时说）。
+
+### ✅ E-17（2026-09-19）第四份回报（三）：進銀行語音 / 新聞命運正負向與重复触发 —— 首席自办的收口
+
+- 進銀行的招呼語音：**只在貸款屏（第②屏）**，ATM 一處都不播（`0x00435200` 的
+  `cfg[1]` 闸 → `0x00435210 mov esi,[0x475830]` → `0x435d8c call 0x44ecb6`
+  → `0x44fb4e call 0x45441a`）；ATM 两段窗口过程里搜不到 `0x45441a/0x44ecb6`。
+  已按「换一句播一次」接上（去抖仍在 `shouldRetriggerVoice`）。
+- 新聞/命運正負向：**原版本身就是坏的多**（新聞 24/36、命運 28/37），
+  正向一条不缺、权重相同（12 局真跑，两条牌堆每条 id 都出现过）。见
+  `packages/core/src/events/event-balance.test.ts`。
+- 顺带查出并修好**三条正向事件的实现错误**：新聞 10 的目标（原版按 12 支**股数**之和、
+  并列取第一个）、新聞 23 的**入存款**（`0x41d3f4` 的 flags=0 → `+0x20`）、
+  新聞 23 的**「有贷款不发」闸**（`0x44af36 mov ebp,[ebx+0x496b8c] / jne`）。
+- 「重复触发」：原版**没有** per-square / day-counter 闸门（`0x41982d` 只有一个调用点），
+  我们也没有；唯一我们原先缺的是 **夢遊闸**（`0x00419873 cmp byte [eax+0x496b9f],0`
+  + `0x0041987c test ebx,ebx / jne`）—— 夢遊中踩任何 `type != 0` 的格子**整段不处理**。
+  已照原版补进 `case 'settle'`（首席裁定：**保留为通用行为**，不收窄到新聞/命運）。

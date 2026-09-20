@@ -239,8 +239,11 @@ describe('★ main.ts 的接线（源码钉子）', () => {
   });
 
   it('★ 这一段**不**吃 `options.animation`（原版那一支没有 `cmp [0x497159], 0`）', () => {
-    const at = src.indexOf('function startDogFx(');
-    const body = src.slice(at, src.indexOf('\nfunction ', at + 1));
+    const at = src.indexOf('function startDogFx(before: GameState, after: GameState): void {');
+    expect(at).toBeGreaterThan(-1);
+    // 只看这个函数体那几十行（下一个函数（`startAlienNewsFx`）的注释里也写着
+    //  `options.animation`，所以不能拿「到下一个 function」当边界）
+    const body = src.slice(at, at + 320);
     expect(body).not.toContain('options.animation');
   });
 });

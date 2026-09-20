@@ -388,6 +388,7 @@ import {
   drawLoanPanels,
   drawLoanPressed,
   loanDueDays,
+  loanBubbleVoice,
   loanSlideDone,
   loanSlideStep,
   loanStart,
@@ -909,6 +910,10 @@ function syncLoanUi(): void {
     //   VA 0x00411e8f 把 72 字节读进 `0x497158`），本引擎对应 `options.animation`。
     //   先前这里写死 `true` —— 设定关掉也照样打招呼（已订正，见 Q-ANIM-1）。
     loanUi = loanStart(options.animation);
+    // ★ 进屏那一句招呼的**语音**（`#0075`）：原版 `0x00435210 mov esi,[0x475830]` →
+    //   `0x00435d8c call 0x44ecb6` → `0x0044edae call 0x44fabc`（认 `#`）→
+    //   `0x0044fb4e call 0x45441a`（`play_speech`）。见 `loanBubbleVoice` 的取证块。
+    loanBubbleVoice(null, loanUi.bubble);
     // ★ 進銀行的配乐 @source `ui_bank.asm:3557` `push 4 / call fcn_004549cf`
     //   ⇒ id 4 → `MIDI05.MID` → 磁盘名 `midi05.mid`（表 `0x47e793`，见 `SCREEN_BGM.bank`）
     void playTrackFile('midi05.mid');
@@ -923,7 +928,7 @@ function syncLoanUi(): void {
 function loanEffect(ui: LoanUi, effect: ReturnType<typeof loanStep>['effect']): void {
   const hadBubble = loanUi?.bubble ?? null;
   loanUi = ui;
-  if (hadBubble !== ui.bubble) loanBubbleAt = performance.now();
+  if (loanBubbleVoice(hadBubble, ui.bubble)) loanBubbleAt = performance.now();
   if (effect === null) return;
   if (effect.kind === 'close') {
     loanUi = null;
@@ -1532,9 +1537,10 @@ function holdForActorWalk(reschedule: () => void): boolean {
   //   本引擎的队列是异步的，不挡就会出现「上一句还没说完，下一个 NPC 已经开始行动」。
   //
   //   ★ 判据取 `speechQueue.length > 0`：队列只在 `speechTick()` 里逐段收
-  //   （`speechQueue.tick`），而 `speechTick` 在演出期间**被冻结**（见那里），
-  //   所以「屏还在演」与「台词还没演完」两件事由这一条一并挡住。
-  if (speechQueue.length > 0) {
+  //   （`speechQueue.tick`），而 `speechTick` 会把**演出期间**派生出来的台词
+  //   押在 `deferredSpeech` 里（见 `queueSpeech`），所以「屏还在演」与
+  //   「台词还没说完」两件事由这一条一并挡住。
+  if (speechQueue.length > 0 || deferredSpeech !== null) {
     reschedule();
     return true;
   }
@@ -3613,7 +3619,7 @@ function applyAction(action: Action): void {
  *   原版这些都**不分人机**。与 `startActionFx` 同一个教训：两条来源必须共用出口。
  */
 function notifyApplied(before: GameState): void {
-  playSoundFor(before, state);
+  const said = playSoundFor(before, state);
   // ★ 状态一变，填数页指着的那个选项下标就可能已经不是同一回事了
   //   （`pending` 换了一种，甚至换了人）。一律收掉。
   amountPage = null;
@@ -3632,6 +3638,44 @@ function notifyApplied(before: GameState): void {
   // ★ 登记的整屏：把「刚刚发生了什么」告诉它们（開獎 / 月結 / 魔法屋 / 事件框靠这个起播）
   const env = uiEnv();
   for (const s of SCREENS) s.event?.(before, state, env);
+  queueSpeech(said);
+}
+
+/**
+ * 把这一条 action 派生出来的台词交出去 —— **演出在演就先押着**。
+ *
+ * ★★ 试玩回报「盘子还没停下来 NPC 的台词都触发了」的修法。
+ *   原版这一句是**同步**说的，而它所在的整段流程里轉盤 / 訊息框 / 事件框都是**阻塞**
+ *   调用，顺序由**调用顺序**定死 —— 設施收費那一段：
+ *   ```asm
+ *   0041a458  call 0x44090e     ; ★ 轉盤（阻塞：轉完才返回盤上的數）
+ *   0041a460  [esp+0xd0] = eax  ; 轉盤值（旅館天數 / 購物中心倍數）
+ *   0041a579  call 0x440cac     ; 費用訊息框（0x5dc ms）
+ *   0041a5c0  call 0x40df69     ; 收費（錢真的轉手）
+ *   0041a71e  call 0x44f42d     ; ★ 付款人的台詞（事件 9/10/11）
+ *   ```
+ *   ⇒ 原版**必定**是「盤停下來 → 訊息框 → 付款人的台詞」。
+ *
+ *   本引擎一条 action 就把后果写完、演出是事后补的，所以这里等 `SCREENS` 的
+ *   `event()` 派完再判：**有演出接管整屏就押后**，由 `speechTick()` 在演出收屏
+ *   之后放上台。
+ *
+ *   ★ 押着的**至多只有一条 action 的那几句**（`deferredSpeech` 是单槽、整体覆写）：
+ *     演出占着屏时 `holdForActorWalk` 不会派下一条 action，所以「押着的被下一条盖掉」
+ *     到不了（真被盖掉也不算错 —— 后说的那句本来就该盖住前一句）。
+ *
+ * ⚠️ 押后而不是「冻结队列」：`SpeechQueue` 的时间基准是**绝对时刻**（`shownAt`），
+ *   冻结再解冻会把整段演出时长算进那 1000 ms 里，那一段台词就一闪而过。
+ *   押在**入队之前**没有这个问题。
+ */
+function queueSpeech(bubbles: readonly SpeechBubble[]): void {
+  if (bubbles.length === 0) return;
+  if (blockingPresentation()) {
+    deferredSpeech = [...bubbles];
+    return;
+  }
+  deferredSpeech = null;
+  if (speechQueue.push(bubbles, performance.now()) > 0) requestRender();
 }
 
 /**
@@ -3754,8 +3798,15 @@ function ensureSpeakingArchive(): void {
  * ⚠️ 原版的 `_rich4_player_say` 是**一句播完再返回**，而这里的两三个
  *   `sound.play` 是即发即忘 —— 同一动作派生多句时会叠着响。登记在
  *   `docs/deviations/T-052.md`。
+ *
+ * ★★ 2026-09-19（试玩回报「盘子还没停下来 NPC 的台词都触发了」）：台词**不再直接排进
+ *   队列**，而是**返回给调用方**（`notifyApplied`）—— 因为原版那一句是**同步**说的，
+ *   而它所在的整段流程里，轉盤 / 訊息框 / 事件框… 都是**阻塞**调用，顺序由**调用顺序**定死
+ *   （設施收費：`0x41a458` 轉盤 → `0x41a579` 訊息框 → `0x41a5c0` 收費 → `0x41a71e` 台词）。
+ *   本引擎一条 action 就把后果写完，演出是事后补的 —— 于是台词必须**等演出完**
+ *   才上台，见 `deferredSpeech`。
  */
-function playSoundFor(before: GameState, after: GameState): void {
+function playSoundFor(before: GameState, after: GameState): SpeechBubble[] {
   // 有人出局
   const deadBefore = before.players.filter((p) => p.whoPlays === 0).length;
   const deadAfter = after.players.filter((p) => p.whoPlays === 0).length;
@@ -3791,11 +3842,8 @@ function playSoundFor(before: GameState, after: GameState): void {
   // ★★ 先出**卡牌台词**（原版那句在卡片函数体内，先于效果引发的台词），
   //   再出状态跃迁派生的台词 —— 顺序与原版一致。
   const cardBubbles = cardPlaySpeech(before, after);
-  if (cardBubbles.length > 0 && speechQueue.push(cardBubbles, performance.now()) > 0) {
-    requestRender();
-  }
   const spoken = speechEventsFor(before, after, topo);
-  if (spoken.length === 0) return;
+  if (spoken.length === 0) return [...cardBubbles];
   ensureSpeakingArchive();
   // ★ 语音**不在这里放** —— 见 `speechTick()`。
   //   原版 `_rich4_player_say` 是**一句播完再返回**（同步），一次 `applyAction`
@@ -3806,9 +3854,7 @@ function playSoundFor(before: GameState, after: GameState): void {
   //   由 `speech-bubble.ts` 负责；`speechBubblesFor` 把 `SayEvent` 翻成排好版的段落。
   //   金貝貝那一列**整列没有文本也没有语音**，只有一张 `Data.mkf #0x207` 的表情图
   //   （见 `@rich4/data` 的 `SPEECH_LINES` 与 `speechEmojiImage`）。
-  if (speechQueue.push(speechBubblesFor(after, spoken), performance.now()) > 0) {
-    requestRender();
-  }
+  return [...cardBubbles, ...speechBubblesFor(after, spoken)];
 }
 
 // ============================================================
@@ -4818,6 +4864,18 @@ let objectFlight: ObjectFlight | null = null;
  */
 const speechQueue = new SpeechQueue();
 
+/**
+ * 被演出**押后**的台词（那一刻起屏上有一段纯演出在演）。
+ *
+ * ★★ 原版「轉盤停 → 訊息框 → 付款人的台詞」是**同步**顺序（見 `queueSpeech` 的
+ *   `@source`）。本引擎一条 action 就把演出与台词一起派生出来，所以台词先押在这里，
+ *   由 `speechTick()` 在演出收屏之后放上台。
+ *
+ * ★ 单槽 + 整体覆写：押着的**至多只有一条 action 的几句**（演出占屏时
+ *   `holdForActorWalk` 不派下一条），见 `queueSpeech`。
+ */
+let deferredSpeech: SpeechBubble[] | null = null;
+
 /** 这一件飞完该放哪个音效号（0 = 不放音） */
 let objectFlightSound = 0;
 
@@ -5307,7 +5365,11 @@ function tickBoardFilm(now: number): void {
     }
     // 还没解好 → 现在就解，并**保留**排队标记：`holdForActorWalk` 靠它
     // 挡住「两段之间的空档」，别让 AI 在第二段起播前先派下一步。
+    // ⚠️ 这一段**必须**自己再排一帧：这一拍 `boardFilm`/`pendingBoardFilm` 都是空，
+    //   谁都叫不醒我们（`.then` 只在**首次**发起解码时挂）。漏了就死等在这里，
+    //   而回合驱动被上面那道闸挡着 —— 整局卡死。
     boardFilmFlicNow(after);
+    requestRender();
     if (boardFilmPending.has(key)) return;
     // 真取不到（没有素材）就整段放弃，免得把回合驱动永远卡在这里
     pendingBoardFilmAfter = null;
@@ -5782,6 +5844,9 @@ function requestRender(): void {
       loanUi !== null ||
       atmCode !== null ||
       speechQueue.length > 0 ||
+      // ★ 押在 `deferredSpeech` 里的那几句也要续帧 —— 演出收屏那一拍就靠它
+      //   把台词放上台（否则要等下一次 action，台词就永远不上台了）
+      deferredSpeech !== null ||
       toastVisible(toast, performance.now())
     ) {
       renderer.clearDirty();
@@ -5807,7 +5872,7 @@ function requestRender(): void {
 let spokenBubble: SpeechBubble | null = null;
 
 function speechTick(now: number): void {
-  // ★★ 演出在演 → 台词**整队冻结**（不倒数、不上台、不放语音）。
+  // ★★ 演出还在演 → 台词**不上台**；演出收屏那一刻才把押着的那几句放上来。
   //
   //   原版每一段演出都是**同步**的：`_rich4_player_say`（VA 0x0044ef41）与
   //   轉盤（`fcn_0044090e` → `fcn_0043f7c6`）都是**阻塞调用**，谁先谁后由
@@ -5819,26 +5884,20 @@ function speechTick(now: number): void {
   //   0041a5c0  call 0x40df69     ; 收費（錢真的轉手）
   //   0041a71e  call 0x44f42d     ; 付款人的台詞（事件 9/10/11）—— 收費之後
   //   ```
-  //   而付款人那一句是**收費那一路**派出来的，所以原版**必定**是
-  //   「轉盤停 → 訊息框 → 付款人的台詞」。
-  //
-  //   本引擎把 consequences 一次写完，台词在 action 落地时就排进了队列；
-  //   先前这里照样逐帧收，于是轉盤還在轉，付款人的台词已经在屏幕上说完
+  //   ⇒ 原版**必定**是「轉盤停 → 訊息框 → 付款人的台詞」。
+  //   本引擎把 consequences 一次写完、演出是事后补的，所以那几句台词先被
+  //   `queueSpeech()` 押在 `deferredSpeech` 里（判据见那里）——这里等演出收屏
+  //   再放上台，等于把「同步演出」的语义补回来
   //   （试玩回报：「盘子还没停下来 NPC 的台词都触发了」）。
-  //   冻在这一支里，等于把「同步演出」的语义补回来：**演出期间台词一步都不走**。
   //
-  //   ⚠️ `SpeechQueue` 的时间基准是**绝对时刻**（`shownAt`），所以解冻时要把
-  //      已经过去的那一段演出从队列的时间轴上挪掉（见 `speechFrozenAt`）——
-  //      否则解冻后第一帧就会把整段冻结期算成「已经演完了」，那一段一闪而过。
-  if (blockingPresentation()) {
-    if (speechFrozenAt === null) speechFrozenAt = now;
-    return;
-  }
-  const frozenAt = speechFrozenAt;
-  if (frozenAt !== null) {
-    // 解冻：冻了多久就从时间轴上挪掉多久（已演的那一截原样保留）
-    speechFrozenAt = null;
-    if (speechQueue.length > 0) speechQueue.rebase(frozenAt, now);
+  //   ⚠️ 押在**入队之前**而不是「冻结队列再解冻」：`SpeechQueue` 的时间基准是
+  //      绝对时刻（`shownAt`），冻结再解冻会把整段演出时长算进那 1000 ms 里，
+  //      那一段台词就一闪而过。
+  if (blockingPresentation()) return;
+  const held = deferredSpeech;
+  if (held !== null) {
+    deferredSpeech = null;
+    if (speechQueue.push(held, now) > 0) requestRender();
   }
   if (speechQueue.tick(now)) requestRender();
   const cur = speechQueue.current();

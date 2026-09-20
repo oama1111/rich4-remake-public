@@ -35,6 +35,9 @@ import { appendDigitKey, backspaceKey } from './amount-keys.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
 import { alignFor } from './hud.ts';
+// ★ 店員那几句话的**语音出口**（`#0075` 那一句就在里面）——
+//   见 `loanBubbleVoice` 的取证块。
+import { playVoiceCode } from './voice-sink.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type BankSprite = (
@@ -571,6 +574,54 @@ export const LOAN_MSG = {
   financeBye: { id: 0x91, raw: '#0091董事長慢走！', text: '董事長慢走！' },
 } as const;
 export type LoanMsg = (typeof LOAN_MSG)[keyof typeof LOAN_MSG];
+
+/**
+ * 貸款屏換了一句台詞 → 走**语音出口**（`playVoiceCode`）。返回这一次到底播没播。
+ *
+ * ## 为什么是「换一句播一次」，以及原版在哪播
+ *
+ * 原版那 16 句话（主屏 10 句 `0x475830..0x475858` + 特別融資子对话框 6 句
+ * `0x47585c..0x475870`）**都不是直接画到屏上的**：每一句都先把串指针压栈，
+ * 再汇到同一支气泡绘制函数。以**进屏那一句招呼**为例，
+ * `@source` `fcn_00435062` 的 `0x405` 分支：
+ *
+ * ```asm
+ * 00435200  cmp  byte ptr [0x497159], 0     ; RICH4.CFG+1 = 動畫過程
+ * 00435207  je   0x43521c                    ; 关掉 ⇒ st=3，不招呼
+ * 00435209  mov  byte ptr [0x48c3dd], 1      ; st = greet
+ * 00435210  mov  esi, dword ptr [0x475830]   ; ★ #0075「歡迎光臨 大富翁銀行！」
+ * 00435216  push esi
+ * 00435217  jmp  0x435d8c
+ * 00435d8c  call 0x44ecb6                    ; ★ 气泡绘制/排版（参数 = 串指针）
+ * ```
+ *
+ * 而 `0x44ecb6` 在 `0x0044edae` 调 `rich4_draw_text`（`0x44fabc`），
+ * 后者认出串首的 `'#'`（`@source 0x0044fb00 cmp ah, 0x23`）就把**紧跟的 4 位数字**
+ * 解析成语音号，并 `@source 0x0044fb4e call 0x45441a`（`play_speech`，
+ * 从 `Speaking.mkf` 取那一段播），随后 `0x44fb56 add ebx, 5` 跳过前缀继续画字。
+ * ⇒ 原版是「**换一句就播一次**」，**不是**每帧播（`0x44ecb6` 只在换句那一拍被调）。
+ *
+ * ★ **只有貸款屏（第 ② 屏）有语音**：ATM 那一屏（`_rich4_ui_bank_atm_entry`，
+ *   VA 0x4379c9）的函数体里**一处 `0x44ecb6` / `0x44fabc` / `0x45441a` 都没有**
+ *   （逐条列出该函数的 `call` 即可复核），也没有别的文本气泡 ⇒ 进 ATM 时原版不发声。
+ *
+ * ★ **本引擎的调用点**（与 `main.ts` 写 `loanBubbleAt` 的那一处同源）：
+ *   `syncLoanUi`（进屏那一句）与 `loanEffect`（状态机换句）。绘制链
+ *   （`drawLoanBubble`）**一处都不许调它** —— 那是整屏每帧重画，会变成每帧一声
+ *   （与 `magic-screen.ts` 踩过的同一个坑同源）。
+ *
+ * ⚠️ 真正的去抖在 `main.ts` 注册的 sink 里（`audio.ts` 的 `shouldRetriggerVoice`，
+ *   同一句还在响就不再起播）—— 本函数只管「这一拍是不是换了句」。
+ *
+ * @param prev 上一句（`null` = 这一屏刚开、还没有上一句）
+ * @param next 这一拍该说的那句（`null` = 不说）
+ * @returns 真的把它送进语音出口了 → true
+ */
+export function loanBubbleVoice(prev: LoanMsg | null, next: LoanMsg | null): boolean {
+  if (next === null || prev === next) return false;
+  playVoiceCode(next.raw);
+  return true;
+}
 
 /** 气泡底图与落点 @source `fcn_00434186` 尾：`fcn_0044ec30(图21, 0xf0, 0x50, 0x14, 0, 0x101010, 0)` */
 export const LOAN_BUBBLE = {
