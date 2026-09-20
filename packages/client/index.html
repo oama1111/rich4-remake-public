@@ -58,6 +58,19 @@
       }
       #invite:hover { background: #2c5280; }
       #invite[hidden] { display: none; }
+      /* ★ W-74 回合计时：棋盘右上角，剩余 ≤ 20 秒才露出来。
+         `pointer-events: none` —— 它是提示，不许挡住棋盘的点击。 */
+      #clock {
+        position: fixed; z-index: 30; pointer-events: none;
+        display: flex; align-items: baseline; gap: 8px;
+        padding: 3px 10px 5px; border-radius: 8px;
+        background: rgba(12, 24, 40, .82); border: 1px solid #3a5a83; color: #e9eef7;
+        font: 700 26px/1.1 -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif;
+        font-variant-numeric: tabular-nums;
+      }
+      #clock[hidden] { display: none; }
+      #clock.hot { color: #ff6b6b; border-color: #b8453f; }
+      #clockname { font-size: 12px; font-weight: 500; color: #a9bcd4; }
       #interaction {
         margin: 10px 0; padding: 10px; border-radius: 8px;
         background: #232a38; border: 1px solid #3a4a68;
@@ -82,6 +95,8 @@
     </aside>
     <!-- ★ W-73 大厅里的「複製邀請連結」；平时 hidden，只有在大厅且已联机时露出来 -->
     <button id="invite" type="button" hidden>複製邀請連結</button>
+    <!-- ★ W-74 回合计时（棋盘右上角） -->
+    <div id="clock" hidden><span id="clocknum">0</span><span id="clockname"></span></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -4,7 +4,8 @@
  *
  *   pnpm --filter @rich4/server start [--port 8787] [--host 127.0.0.1]
  *                                    [--web packages/client/dist-web] [--assets assets/game]
- *                                    [--no-gate] [--map 0] [--seats 4] [--takeover 30000] [--seed N]
+ *                                    [--no-gate] [--map 0] [--seats 4] [--takeover 30000]
+ *                                    [--turn-ms 60000] [--seed N]
  *
  * ★ 整站一道**访问密码**（W-71）：`RICH4_PASSWORD` 与 `RICH4_COOKIE_SECRET`
  *   只从环境变量来，缺一个就**拒绝启动**（没有缺省密码，也不许写进仓库）。
@@ -45,6 +46,12 @@ const host = argStr('host') ?? '127.0.0.1';
 const globalMapId = arg('map', 0);
 const seatCount = Math.max(2, Math.min(4, arg('seats', 4)));
 const takeoverAfterMs = arg('takeover', 30_000);
+/**
+ * ★ W-74：一个回合最长等多久（毫秒）。**0 = 关闭计时**。
+ *
+ * 计时只活在服务器：到点由服务器发 `setAi` 让电脑替这一回合，结果以广播的 action 落地。
+ */
+const turnMs = arg('turn-ms', 60_000);
 /** 复现用的固定种子；−1 = 不固定（取时钟） */
 const fixedSeed = arg('seed', -1);
 
@@ -103,6 +110,7 @@ try {
     mapFor,
     seatCount,
     takeoverAfterMs,
+    turnMs,
     seedFor: () => (fixedSeed >= 0 ? fixedSeed >>> 0 : (Date.now() & 0x7fffffff) >>> 0),
   });
 } catch (err) {
@@ -112,8 +120,9 @@ try {
   process.exit(1);
 }
 console.log(
-  `rich4 聯機伺服器：${running.url}/  ws ${running.url.replace(/^http/, 'ws')}/ws  地圖 ${globalMapId}（房主可在大廳換 0..7）  ${seatCount} 座  掉線 ${takeoverAfterMs / 1000}s 後電腦代打`,
+  `rich4 聯機伺服器：${running.url}/  ws ${running.url.replace(/^http/, 'ws')}/ws  地圖 ${globalMapId}（房主可在大廳換 0..7）  ${seatCount} 座  掉線 ${takeoverAfterMs / 1000}s 後電腦代打  回合 ${turnMs === 0 ? '不計時' : `${turnMs / 1000}s`}`,
 );
+console.log(turnMs === 0 ? '回合計時：**關掉了**（--turn-ms 0）' : `回合計時：${turnMs / 1000}s 不動就由電腦代打（連續兩回合 ⇒ 託管）`);
 console.log(`素材目錄：${assetDir}`);
 console.log(webDir === undefined ? '靜態站：未開（沒給 --web）' : `靜態站：${webDir}`);
 console.log(

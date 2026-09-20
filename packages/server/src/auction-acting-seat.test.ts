@@ -133,6 +133,13 @@ function play(seed: number, turns: number): Played {
   let guard = 0;
   while (!isGameOver(room.state) && room.state.turnCount < turns && guard++ < 100_000) {
     const seat = room.actingSeat;
+    // ★ W-74：**竞价期间计时的是举牌者，不是回合主人** —— 判据就是 `room.actingSeat`
+    //   （与 74-a 的「直接用 `room.actingSeat`，不要另写一套」同一条）
+    if (room.actingSeat !== room.currentSeat) {
+      const clock = hub.clockOf(ROOM);
+      expect(clock, `競價中應當有計時器（舉牌者 ${seat}，回合主人 ${room.currentSeat}）`).not.toBeNull();
+      expect(clock!.seat, `舉牌者 ${seat} vs 回合主人 ${room.currentSeat}`).toBe(seat);
+    }
     if (seat >= HUMANS) {
       // 轮到电脑却没被服务器推走 = 卡死（修之前停在这里的是「回合主人」判据）
       throw new Error(
