@@ -1124,14 +1124,17 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   const stalePower = raw !== state && raw.lastGodPower === state.lastGodPower;
   // ★ W-67-a：同一套规矩也用在 `lastShopGift` 上（董事長赠礼那一条台词）。
   const staleGift = raw !== state && raw.lastShopGift === state.lastShopGift;
+  // ★ W-69：`lastTollLands` 也一样（過路費那段「一起閃一遍」的演出提示）。
+  const staleToll = raw !== state && raw.lastTollLands === state.lastTollLands;
   const next =
-    staleView || staleLine || stalePower || staleGift
+    staleView || staleLine || stalePower || staleGift || staleToll
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
           ...(staleLine ? { lastGodLine: null } : {}),
           ...(stalePower ? { lastGodPower: null } : {}),
           ...(staleGift ? { lastShopGift: null } : {}),
+          ...(staleToll ? { lastTollLands: null } : {}),
         }
       : raw;
   // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈
@@ -1608,7 +1611,17 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
               who = reaper;
             }
           }
-          const withRng: GameState = { ...state, players, rngState: rng.getState() };
+          // ★★ W-69：这一段演出要「把算进这笔过路费的每一块地一起闪一遍」——
+          //   原版在弹費用訊息框**之前**把这些格标进 id 图（`0x00419b9e` 起），
+          //   塊數 ≤ 1 時整段跳過（`0x00419c79 cmp [esp+0xe8],1 / jle`）。
+          //   瞬态字段，规矩同 `lastCardPlay`（见 types.ts 的 `lastTollLands`）。
+          const tollLandsHint = preview.counted.length > 1 ? preview.counted : null;
+          const withRng: GameState = {
+            ...state,
+            players,
+            rngState: rng.getState(),
+            lastTollLands: tollLandsHint,
+          };
           if (total === 0) {
             // @source 免費卡抹成 0 后不付；0x0041a00b 仍记这一笔 = 0
             const landLastToll = [...withRng.landLastToll];

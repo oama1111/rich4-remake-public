@@ -819,3 +819,100 @@ describe('★★ 小偷：`小偷偷得%s\\n\\n給%s！`（0x00463ac0，五处�
     expect(after.notices.some((n) => n.key === 'thief.loot')).toBe(false);
   });
 });
+
+// ============================================================
+//  W-69：这一段演出提示 —— 「这一笔过路费算进了哪几块地」
+// ============================================================
+
+/**
+ * 需求方报的现场：地图 0「台北市」4 块地同属 2 号玩家、各 1 级，0 号踩上去。
+ * 金额 4800 = 1200 × 4（规则早就是对的），缺的是**收費前把这几块一起闪一遍**。
+ *
+ * @source `0x00419b9e` / `0x00419c1a` / `0x00419c61`（把这几格标进 id 图）
+ *   + `0x00419c79 cmp [esp+0xe8],1 / jle`（块数 ≤ 1 整段跳过）。
+ */
+describe('★★ W-69：`lastTollLands` —— 同一条街的连号地块一起闪', () => {
+  const STREET = [11, 12, 13, 14];
+  const rent1200 = [0, 1200, 0, 0, 0, 0];
+  const streetLands = (nameOf: (id: number) => string) =>
+    STREET.map((id) => makeLand({ id, name: nameOf(id), type: 0, owner: 0, level: 0, rentByLevel: rent1200 }));
+  const topoStreet: MapTopology = {
+    nodes: [
+      makeNode({ id: 1, adjacent: [2] }),
+      makeNode({ id: 2, adjacent: [1], type: 0x7d0 + 11, ref: { kind: 'land', index: 11 } }),
+    ],
+    lands: streetLands(() => '台北市'),
+  };
+
+  /** 0 号踩在 11 号上；11..14 全归 1 号（owner = 2）、各 1 级 */
+  function streetState(over: { ally?: boolean } = {}): ReturnType<typeof makeGameState> {
+    const s = makeGameState({
+      players: [
+        makePlayer({ index: 0, character: 0, nodeId: 2, cash: 50_000, moneyInBank: 0 }),
+        makePlayer({
+          index: 1,
+          character: 1,
+          nodeId: 1,
+          cash: 1000,
+          moneyInBank: 0,
+          ...(over.ally === true ? { alliedPlayer: 3 } : {}),
+        }),
+        makePlayer({ index: 2, character: 2, nodeId: 1, cash: 1000, moneyInBank: 0 }),
+      ],
+      phase: 'settling',
+      priceIndex: 1,
+    });
+    const landOwner = [...s.landOwner];
+    const landLevel = [...s.landLevel];
+    for (const id of STREET) {
+      landOwner[id] = 2;
+      landLevel[id] = 1;
+    }
+    return { ...s, landOwner, landLevel };
+  }
+
+  it('★★ 金额回归 4800 = 1200 × 4，且 4 块地的 id 都在提示里', () => {
+    const after = reduce(streetState(), { type: 'settle' }, topoStreet);
+    expect(after.notices[0]?.args[2]).toBe(4800);
+    expect(after.lastTollLands).toEqual(STREET);
+  });
+
+  it('★ 只有一块同街 ⇒ `null`（原版块数 ≤ 1 时那段演出整段跳过）', () => {
+    const topoOne: MapTopology = {
+      nodes: topoStreet.nodes,
+      // 只有 11 号叫「台北市」，另外三块是别的街 ⇒ 算进来的只有一块
+      lands: streetLands((id) => (id === 11 ? '台北市' : '高雄市')),
+    };
+    const after = reduce(streetState(), { type: 'settle' }, topoOne);
+    expect(after.notices[0]?.args[2]).toBe(1200);
+    expect(after.lastTollLands).toBeNull();
+  });
+
+  it('★ 同盟者名下的同街地块也进提示（4 + 2 = 6 块）', () => {
+    const allyLands = streetLands(() => '台北市').map((l) => ({ ...l, id: l.id + 40, owner: 3 }));
+    const topoAlly: MapTopology = { nodes: topoStreet.nodes, lands: [...(topoStreet.lands ?? []), ...allyLands] };
+    const s = streetState({ ally: true });
+    const landOwner = [...s.landOwner];
+    const landLevel = [...s.landLevel];
+    for (const l of allyLands) {
+      landOwner[l.id] = 3;
+      landLevel[l.id] = 1;
+    }
+    const after = reduce({ ...s, landOwner, landLevel }, { type: 'settle' }, topoAlly);
+    expect(after.lastTollLands).toEqual([11, 12, 13, 14, 51, 52, 53, 54]);
+  });
+
+  it('★ 瞬态：只活一条 action（下一条没新写就清成 null，与 `lastCardPlay` 同一套规矩）', () => {
+    const charged = reduce(streetState(), { type: 'settle' }, topoStreet);
+    expect(charged.lastTollLands).not.toBeNull();
+    const next = reduce(charged, { type: 'reseed', seed: 7 }, topoStreet);
+    expect(next.lastTollLands).toBeNull();
+  });
+
+  it('★ 一笔不算钱的落点（自己踩自己）不写这个字段', () => {
+    const s = streetState();
+    const mine = { ...s, currentPlayer: 1 };
+    const after = reduce(mine, { type: 'settle' }, topoStreet);
+    expect(after.lastTollLands).toBeNull();
+  });
+});

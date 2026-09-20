@@ -25,6 +25,7 @@ const IDLE: StageFlags = {
   objectFlight: false,
   walkDone: true,
   diceFxActive: false,
+  tollFlash: false,
 };
 
 /** 只翻**一位**的简写 */
@@ -45,11 +46,12 @@ describe('stageBusy —— 每一位各一条（清单与 holdForActorWalk 同�
     ['objectFlight（卡片飞行也是这一位）', { objectFlight: true }],
     ['!walkDone', { walkDone: false }],
     ['diceFxActive', { diceFxActive: true }],
+    ['tollFlash（過路費閃爍，W-69）', { tollFlash: true }],
   ] as const)('只有 %s ⇒ busy', (_name, patch) => {
     expect(stageBusy(only(patch))).toBe(true);
   });
 
-  it('全 true ⇒ busy（九位一位都不少地参与或运算）', () => {
+  it('全 true ⇒ busy（十位一位都不少地参与或运算）', () => {
     const all: StageFlags = {
       blockingPresentation: true,
       boardFilm: true,
@@ -60,6 +62,7 @@ describe('stageBusy —— 每一位各一条（清单与 holdForActorWalk 同�
       objectFlight: true,
       walkDone: false,
       diceFxActive: true,
+      tollFlash: true,
     };
     expect(stageBusy(all)).toBe(true);
   });

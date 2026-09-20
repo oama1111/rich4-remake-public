@@ -1056,8 +1056,9 @@ describe('★ Q-LAND-1 ①：未持有的空地 —— 原版一个像素都不�
     // ⚠️ 这两张表是**按地块号（1 基）索引**的，下标 0 空着
     const state = makeGameState({ landOwner: [0, 2], landLevel: [0, 0] });
     const land = makeLand({ id: 1, x: 77, y: 88 });
+    // ★ W-69：住宅那一支现在还带**自己那块地的 id**（过路费闪烁要按 id 认图）
     expect(buildingArtItems(oneLandMap(land), state, 0)).toEqual([
-      { x: 77, y: 88, res: EMPTY_LAND_LOGO_RESOURCE, img: state.players[1]!.character },
+      { x: 77, y: 88, res: EMPTY_LAND_LOGO_RESOURCE, img: state.players[1]!.character, landId: 1 },
     ]);
   });
 

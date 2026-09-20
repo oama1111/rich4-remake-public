@@ -6,7 +6,7 @@
 > 有 `~~…~~` / `✅` / 「已结案」→ 结案；其余一律 `?` —— **不读正文猜**。
 > 一个编号一行（首次出现处），同编号的其余出现记在「位置」列的「另有 N 处」。
 
-合计 **239** 个编号：结案 74 · 有意偏离 22 · 未决 0 · ? 143；另有 16 个只在正文出现的编号（见文末）。
+合计 **240** 个编号：结案 74 · 有意偏离 22 · 未决 0 · ? 144；另有 16 个只在正文出现的编号（见文末）。
 
 ## 总表（按编号排序）
 
@@ -216,8 +216,8 @@
 | `Q-SHOP-1` | 百貨公司的进货清单（**已结案 2026-09-14**） | 结案 | docs/known-deviations.md:2067 |
 | `Q-SOUND-1` | 走子音效（`MOVE_SOUND`）的**时机与号** —— 一次订正 + 一个真缺口 | ? | docs/deviations/Q-SOUND-1.md:1 |
 | `Q-SPEECH-1` | 卡面的「1375 段」是错的，真值是 **1374** | ? | docs/deviations/T-051.md:6 |
-| `Q-SPEECH-10` | `Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** | ? | docs/deviations/T-052.md:358 |
-| `Q-SPEECH-11` | 卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） | ? | docs/deviations/T-052.md:374 |
+| `Q-SPEECH-10` | `Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** | ? | docs/deviations/T-052.md:360 |
+| `Q-SPEECH-11` | 卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） | ? | docs/deviations/T-052.md:376 |
 | `Q-SPEECH-2` | 越界**抛错**而不是夹取 —— 这是本项目的选择，不是原版行为 | ? | docs/deviations/T-051.md:19 |
 | `Q-SPEECH-3` | 中间档的 `rand() & 1` 被改成「一律取前一句」 | ? | docs/deviations/T-052.md:36 |
 | `Q-SPEECH-4` | 「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的 | ? | docs/deviations/T-052.md:61 |
@@ -235,6 +235,7 @@
 | `Q-STOCK-5` | 休市日那一屏是**訊息框** —— 只剩「本日休市」，点哪儿都退屏（2026-09-15，T-030） | ? | docs/known-deviations.md:1543 |
 | `Q-STOCK-6` | 偏离登记（股市 · **上市公司資訊**详情卡的「有/无上市公司」两支） | ? | docs/deviations/Q-STOCK-6.md:1（另有 9 处） |
 | `Q-STOCK-7` | 偏离登记（股市 · 行情表／持股页里**未上市**（`stock + 4 == 0`）的行画什么） | ? | docs/deviations/Q-STOCK-7.md:1（另有 3 处） |
+| `Q-TOLL-FX-1` | —— 過路費「同街地块一起闪」的**逐像素** vs **整张精灵** | ? | docs/deviations/Q-TOLL-FX-1.md:1 |
 | `Q-TOOL-1` | 飛彈的爆炸范围是近似的 | ? | docs/known-deviations.md:1821（另有 2 处） |
 | `Q-TOOL-2` | 傳送機的「搬設施」那一路（**已结案 2026-09-14**） | 结案 | docs/known-deviations.md:3666 |
 | `Q-TOOL-3` | 核子飛彈的 AI 判定不接线（**已解决 2026-09-20，第 160 条**） | 结案 | docs/known-deviations.md:3840 |
@@ -381,8 +382,8 @@
 - `Q-SETUP-1`（?）開局設定屏三条「画得出来、规则/表现上还没接」—— **已接线（2026-09-16）** —— docs/known-deviations.md:4380
 - `Q-SOUND-1`（?）走子音效（`MOVE_SOUND`）的**时机与号** —— 一次订正 + 一个真缺口 —— docs/deviations/Q-SOUND-1.md:1
 - `Q-SPEECH-1`（?）卡面的「1375 段」是错的，真值是 **1374** —— docs/deviations/T-051.md:6
-- `Q-SPEECH-10`（?）`Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** —— docs/deviations/T-052.md:358
-- `Q-SPEECH-11`（?）卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） —— docs/deviations/T-052.md:374
+- `Q-SPEECH-10`（?）`Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** —— docs/deviations/T-052.md:360
+- `Q-SPEECH-11`（?）卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） —— docs/deviations/T-052.md:376
 - `Q-SPEECH-2`（?）越界**抛错**而不是夹取 —— 这是本项目的选择，不是原版行为 —— docs/deviations/T-051.md:19
 - `Q-SPEECH-3`（?）中间档的 `rand() & 1` 被改成「一律取前一句」 —— docs/deviations/T-052.md:36
 - `Q-SPEECH-4`（?）「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的 —— docs/deviations/T-052.md:61
@@ -393,6 +394,7 @@
 - `Q-STOCK-5`（?）休市日那一屏是**訊息框** —— 只剩「本日休市」，点哪儿都退屏（2026-09-15，T-030） —— docs/known-deviations.md:1543
 - `Q-STOCK-6`（?）偏离登记（股市 · **上市公司資訊**详情卡的「有/无上市公司」两支） —— docs/deviations/Q-STOCK-6.md:1
 - `Q-STOCK-7`（?）偏离登记（股市 · 行情表／持股页里**未上市**（`stock + 4 == 0`）的行画什么） —— docs/deviations/Q-STOCK-7.md:1
+- `Q-TOLL-FX-1`（?）—— 過路費「同街地块一起闪」的**逐像素** vs **整张精灵** —— docs/deviations/Q-TOLL-FX-1.md:1
 - `Q-TOOL-1`（?）飛彈的爆炸范围是近似的 —— docs/known-deviations.md:1821
 - `Q-TOOL-4`（?）機器工人（9）「无法给自己的地块修成房子」—— 取证、根因与落码 —— docs/deviations/Q-TOOL-4.md:1
 - `Q-TOOL-5`（?）其余 23 个 `_rich4_animate_object` 调用点 + 附身物件的绘制 —— docs/deviations/Q-TOOL-5.md:1

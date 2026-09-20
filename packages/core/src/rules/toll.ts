@@ -46,6 +46,35 @@ export function countChainStores(lands: readonly LandInfo[], ownerId: number): n
 }
 
 /**
+ * 「算进这笔过路费」的每一块地。
+ *
+ * ★ W-69：与 `calculateLandToll` **同一套判据**，单列出来是给收费前那段
+ *   「把算进去的地一起闪一遍」的演出用（原版在棋盘 id 图上把这几块标 0xffff）。
+ *   两个函数共用本判据，免得日后一边改了另一边没改。
+ *
+ * @source `_rich4_calculate_land_toll` 的两个分支（loc_00419760 / loc_004197a5）：
+ *   住宅支按「同主人 + 同名 + 住宅」，连锁店支按「同主人的每一家连锁店」。
+ */
+export function tollLands(
+  lands: readonly LandInfo[],
+  ownerId: number,
+  districtName: string | null,
+): LandInfo[] {
+  const out: LandInfo[] = [];
+  for (const land of lands) {
+    if (!isOwnedBy(land, ownerId)) continue;
+    if (districtName !== null) {
+      if (land.type !== LAND_TYPE_HOUSE) continue;
+      if (land.name !== districtName) continue;
+    } else if (land.type === LAND_TYPE_HOUSE) {
+      continue;
+    }
+    out.push(land);
+  }
+  return out;
+}
+
+/**
  * 计算过路费。
  *
  * 原版有两条互斥分支，由第二个参数（地块名）是否为空决定：
@@ -72,17 +101,9 @@ export function calculateLandToll(
 ): number {
   let base = 0;
 
-  if (districtName !== null) {
-    // 住宅分支 @source loc_00419760
-    for (const land of lands) {
-      if (land.type !== LAND_TYPE_HOUSE) continue;
-      if (!isOwnedBy(land, ownerId)) continue;
-      if (land.name !== districtName) continue;
-      base += land.rentByLevel[land.level] ?? 0;
-    }
-  } else {
-    // 连锁店分支 @source loc_004197a5
-    base += CHAIN_STORE_TOLL * countChainStores(lands, ownerId);
+  // 住宅支按等级查表相加 @source loc_00419760；连锁店支每店固定 @source loc_004197a5
+  for (const land of tollLands(lands, ownerId, districtName)) {
+    base += districtName !== null ? (land.rentByLevel[land.level] ?? 0) : CHAIN_STORE_TOLL;
   }
 
   // @source loc_004197d8: imul eax, price_index

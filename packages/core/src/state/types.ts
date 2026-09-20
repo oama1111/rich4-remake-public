@@ -992,6 +992,20 @@ export interface GameState {
   lastCardPlay: CardPlayHint | null;
 
   /**
+   * ★★ **这一笔过路费把哪些地块算了进去**（地块 id，含同盟那一份）—— W-69。
+   *
+   * 原版在弹费用訊息框**之前**，把 id 图上这几格标 `0xffff` 再闪 16 帧
+   * （`0x00419b9e` / `fcn_00451985`：亮度表 `0x476380`、每帧 30 ms、之后静 400 ms；
+   * 块数 ≤ 1 时整段跳过 —— `0x00419c79 cmp [esp+0xe8],1 / jle`）。
+   * 需求方看不到这段演出，才以为「四块同街的地只算了一块」。
+   *
+   * 规矩与 `lastCardPlay` / `lastViewTarget` 同一套：**纯表现、不进指纹/存档、
+   * 只活一条 action**（`reduce` 出口按引用相等清成 null）。
+   * 只有 `counted.length > 1` 才写，否则 null（原版那时不演）。
+   */
+  lastTollLands: number[] | null;
+
+  /**
    * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。
    *
    * 纯表现提示（不进指纹、不进存档）—— 与 `lastCardPlay` / `notices` 同一套规矩。

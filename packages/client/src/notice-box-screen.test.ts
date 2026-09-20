@@ -10,9 +10,11 @@
  * ③ 三个出口（左抬 / 右抬 / 任意键）都能提前关掉（@source `fcn_004528b9` 的
  *    `PeekMessage` 认 `0x202` / `0x205` / `0x101`）；
  * ④ 触发只看 `notices` 的**引用**（core 每弹一次新建一个数组）；
- * ⑤ 同一 action 里的几扇**排队**一扇一扇放（原版 `0x00419d50` → `0x00419f16`）。
+ * ⑤ 同一 action 里的几扇**排队**一扇一扇放（原版 `0x00419d50` → `0x00419f16`）；
+ * ⑥ W-69：起播前还有**一道闸**（過路費閃爍还没演完就先别弹框，原版那一段在
+ *    `0x00419d5a call 0x440cac` 之前）—— 见 `setNoticeStartGate`。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, afterEach } from 'vitest';
 import { FACILITY_TOLL, MESSAGE_BOX, RENT } from '@rich4/data';
 import { makeGameState, makePlayer, type GameState } from '@rich4/core';
 import type { Sprite } from './assets.ts';
@@ -27,6 +29,7 @@ import {
   noticeText,
   noticeUi,
   resetNoticeBoxScreen,
+  setNoticeStartGate,
 } from './notice-box-screen.ts';
 
 // ============================================================
@@ -441,5 +444,90 @@ describe('★ draw 走通用訊息框的皮', () => {
     // ★ 没有标题、没有按钮的字
     expect(drawn).not.toContain('確定');
     resetNoticeBoxScreen();
+  });
+});
+
+// ============================================================
+//  ★ W-69：起播前的那道闸（過路費閃爍还没演完就先别弹框）
+// ============================================================
+
+describe('★★ W-69：`setNoticeStartGate` —— 起播前先等台上的演出', () => {
+  afterEach(() => {
+    setNoticeStartGate(null);
+    resetNoticeBoxScreen();
+  });
+
+  it('★ 闸关着：帧进队列但**不起播**，而且本屏照样算「在接管」（否则没人来叫 tick）', () => {
+    setNoticeStartGate(() => true);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith([{ ...ONE_OWNER }]);
+    noticeBoxScreen.event!(before, after, fakeEnv(after, 7));
+    expect(noticeBoxScreenState().playing).toBe(false);
+    expect(noticeBoxScreenState().queued).toBe(1);
+    // ★ 关键：`active()` 必须为真，`main.ts` 才会把 `tick` 发给本屏
+    expect(noticeBoxScreen.active(fakeEnv(after))).toBe(true);
+  });
+
+  it('★★ 闸**刚开**、还没起播的那一拍，本屏仍然算「在接管」（否则永远没人来起播）', () => {
+    let open = false;
+    setNoticeStartGate(() => !open);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith([{ ...ONE_OWNER }]);
+    noticeBoxScreen.event!(before, after, fakeEnv(after, 7));
+    expect(noticeBoxScreenState().playing).toBe(false);
+    // 闸开了，但**还没 tick** —— `active()` 必须还是真，`main.ts` 才会叫 tick
+    open = true;
+    expect(noticeBoxScreen.active(fakeEnv(after))).toBe(true);
+  });
+
+  it('★ 闸开着：一帧都不押，照旧立刻起播', () => {
+    setNoticeStartGate(() => false);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith([{ ...ONE_OWNER }]);
+    noticeBoxScreen.event!(before, after, fakeEnv(after, 7));
+    expect(noticeBoxScreenState().playing).toBe(true);
+  });
+
+  it('★★ 闸开的那一刻（tick 里）当场起播，且自己续帧', () => {
+    let open = false;
+    setNoticeStartGate(() => !open);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith([{ ...ONE_OWNER }]);
+    const env = fakeEnv(after, 7);
+    noticeBoxScreen.event!(before, after, env);
+    noticeBoxScreen.tick!(env);
+    expect(noticeBoxScreenState().playing).toBe(false);
+    // 台下的演出演完了
+    open = true;
+    noticeBoxScreen.tick!(env);
+    expect(noticeBoxScreenState().playing).toBe(true);
+    expect(noticeBoxScreenState().playback?.text).toContain('過路費');
+  });
+
+  it('★ 两扇框排队时，闸一开只起第一扇（第二扇还排着）', () => {
+    let open = false;
+    setNoticeStartGate(() => !open);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith(RENT_THEN_REAPER);
+    const env = fakeEnv(after, 7);
+    noticeBoxScreen.event!(before, after, env);
+    open = true;
+    noticeBoxScreen.tick!(env);
+    expect(noticeBoxScreenState().playing).toBe(true);
+    expect(noticeBoxScreenState().queued).toBe(1);
+  });
+
+  it('★ 不设闸（`null`）时行为与加这个口子之前完全一致', () => {
+    setNoticeStartGate(null);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith([{ ...ONE_OWNER }]);
+    noticeBoxScreen.event!(before, after, fakeEnv(after, 7));
+    expect(noticeBoxScreenState().playing).toBe(true);
   });
 });

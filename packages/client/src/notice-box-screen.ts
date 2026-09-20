@@ -178,6 +178,26 @@ let playback: NoticePlayback | null = null;
 /** 正在弹的那一扇之后还排着的（FIFO） */
 let pending: QueuedNotice[] = [];
 
+/**
+ * ★ W-69：起播前的一道闸 —— 「台上还有演出没演完就先别弹框」。
+ *
+ * 目前只有一位客户：**過路費那段「把算进这笔钱的每一块地一起闪一遍」**。
+ * 原版次序是死的（`0x00419c83` 那一段在 `0x00419d5a call 0x440cac` 之前），
+ * 而本引擎的 core 一条 action 就把框和提示一起交出来了 ⇒ 宿主把
+ * 「闪还在播」这件事从这道闸递进来，由本屏**押着**（见 `startNext`）。
+ *
+ * 不给（`null`）时永远放行 —— 单测与其它屏不必知道这件事。
+ */
+let startGate: (() => boolean) | null = null;
+
+export function setNoticeStartGate(f: (() => boolean) | null): void {
+  startGate = f;
+}
+
+function gated(): boolean {
+  return startGate?.() === true;
+}
+
 /** 调试 / 单测用：把整屏关掉（连队列一起清空） */
 export function resetNoticeBoxScreen(): void {
   playback = null;
@@ -192,6 +212,9 @@ export function resetNoticeBoxScreen(): void {
  */
 function startNext(env: UiScreenEnv): void {
   if (playback !== null) return;
+  // ★ W-69：闸没开就先不取队头 —— 队列原样留着，`active()` 靠它保持「还占着屏」
+  //   好让 `tick` 继续叫我们（见 `active` 与 `tick`）。
+  if (gated()) return;
   const item = pending.shift();
   if (item === undefined) {
     pending = [];
@@ -225,7 +248,11 @@ export const noticeBoxScreen: UiScreen = {
    */
   windowed: true,
 
-  active: () => playback !== null,
+  // ★ W-69：**还没起播的那几扇**也算「本屏在接管」—— 不然 `main.ts` 只会把 `tick`
+  //   发给接管整屏的那一屏，排队的那几扇没人来叫 `startNext`（屏自己不会醒）。
+  //   ⚠️ 判据是 `pending.length > 0` 而**不是**「闸还关着」：闸开的那一拍若 `active()`
+  //   已经变假，就再也没人来起播了（浏览器实测：閃完 880 ms 后框**永远不出来**）。
+  active: () => playback !== null || pending.length > 0,
 
   draw(env: UiScreenEnv): void {
     const p = playback;
@@ -241,7 +268,14 @@ export const noticeBoxScreen: UiScreen = {
 
   tick(env: UiScreenEnv): void {
     const p = playback;
-    if (p === null) return;
+    if (p === null) {
+      // ★ W-69：押着等闸的那几扇 —— 闸一开就在这一拍起播，并自己续帧
+      if (pending.length > 0) {
+        startNext(env);
+        if (playback === null) env.requestRender();
+      }
+      return;
+    }
     const next = noticePlaybackTick(p, env.now);
     if (next === null) {
       playback = null;

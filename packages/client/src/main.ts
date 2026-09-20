@@ -300,6 +300,8 @@ import { GO_SIZE, goButton, boardToScreen } from './go-button.ts';
 import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './cursor-warp.ts';
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
 import { shouldResumeDriver } from './driver-resume.ts';
+import { tollFlashLevel } from './toll-flash-fx.ts';
+import { setNoticeStartGate } from './notice-box-screen.ts';
 // ★ W-66-a：走子时那串**剩余步数**的大数字（规格/判据见该模块文件头）。
 import {
   STEPS_COUNTER_ARCHIVE,
@@ -1568,6 +1570,8 @@ function stageBusyFlags(): StageFlags {
     objectFlight: objectFlight !== null,
     walkDone: renderer.walkDone(),
     diceFxActive: diceFx.active,
+    // ★ W-69：過路費閃爍（`fcn_00451985` 是阻塞的，原版在費用訊息框之前）
+    tollFlash: tollFlash !== null,
   };
 }
 
@@ -3748,6 +3752,10 @@ function applyAction(action: Action): void {
  *   原版这些都**不分人机**。与 `startActionFx` 同一个教训：两条来源必须共用出口。
  */
 function notifyApplied(before: GameState): void {
+  // ★ W-69：先认出「这笔过路费算进了哪几块地」—— 下面那一圈 `s.event?.()` 里
+  //   訊息框那一屏要靠它押着不起播（闪 880 ms 之后才轮到框）。
+  //   （`speech.test.ts` 数的是这个函数名带左括号的出现次数，注释里别写全。）
+  noticeTollLands(performance.now());
   const said = playSoundFor(before, state);
   // ★ 状态一变，填数页指着的那个选项下标就可能已经不是同一回事了
   //   （`pending` 换了一种，甚至换了人）。一律收掉。
@@ -5065,6 +5073,70 @@ function activeUiScreen(): UiScreen | null {
 let objectFlight: ObjectFlight | null = null;
 
 /**
+ * ★ W-69：過路費那段「把算进这笔钱的每一块地一起闪一遍」—— 纯表现，不进 state。
+ *
+ * 原版 `fcn_00451985`：16 帧 × 30 ms + 400 ms（表 `0x476380`），**任意滑鼠鍵可跳过**。
+ * 提示本身来自 `state.lastTollLands`（core 的瞬态字段，只有算进去的 > 1 块才写），
+ * 与 `lastCardPlay` / `lastNpcWalks` 同一套「比引用」的判据。
+ */
+let tollFlash: { lands: ReadonlySet<number>; at: number } | null = null;
+/** 已经认过的 `state.lastTollLands`（比引用，见上面） */
+let tollLandsSeen: readonly number[] | null = null;
+
+/**
+ * 认下一条**新的**提示（`state.lastTollLands` 换了引用）。
+ *
+ * ★★ 必须在 `notifyApplied` 的**最前面**认 —— 訊息框那一屏的 `event()`
+ *   是同一条 action 里紧接着跑的（`for (const s of SCREENS) s.event?.(…)`），
+ *   而它要靠「闪在播」这道闸决定起不起播。放到每帧的 `tickTollFlash` 里认就晚了：
+ *   框已经在同一次 dispatch 里起播了（浏览器实测：330 ms 时框已经盖在棋盘上）。
+ *
+ * @source 原版次序：标地（0x00419b9e）→ 闪 16 帧 + 静 400 ms（`fcn_00451985`）
+ *   → 費用訊息框（0x00419d5a `call 0x440cac`）。
+ */
+function noticeTollLands(now: number): void {
+  if (state.lastTollLands === null || state.lastTollLands === tollLandsSeen) return;
+  tollLandsSeen = state.lastTollLands;
+  tollFlash = { lands: new Set(state.lastTollLands), at: now };
+}
+
+/** 这一拍该给渲染器的那份（没在播 / 亮度 0 ⇒ null） */
+function tollFlashInput(now: number): { lands: ReadonlySet<number>; level: number } | null {
+  if (tollFlash === null) return null;
+  const level = tollFlashLevel(now - tollFlash.at);
+  if (level === null || level === 0) return null;
+  return { lands: tollFlash.lands, level };
+}
+
+/**
+ * 每帧推一次：认新提示、到点收摊、没播完就续帧。
+ *
+ * ★ 原版这一整段是**阻塞**的（`fcn_00451985` 里那个等待循环），所以它也得算进
+ *   `stageBusy()`（见 `stage-gate.ts` 的 `tollFlash` 位）—— 訊息框要等它播完。
+ */
+function tickTollFlash(now: number): void {
+  // 兜底：没经过 `notifyApplied` 的那几条路（联机广播 / 读档）也认得出来
+  noticeTollLands(now);
+  if (tollFlash === null) return;
+  if (tollFlashLevel(now - tollFlash.at) === null) {
+    tollFlash = null;
+    return;
+  }
+  requestRender();
+}
+
+/** 任意滑鼠鍵跳過（原版 `fcn_004528b9` 返回非 0 就 break） */
+function skipTollFlash(): void {
+  if (tollFlash === null) return;
+  tollFlash = null;
+  requestRender();
+}
+
+// ★ W-69：訊息框要**等这段闪完**再弹（原版次序：标地 → 闪 16 帧 → 静 400 ms → 才弹框）。
+//   把「闪还在播」这件事从这一道闸递给 `notice-box-screen`（见那里的 `setNoticeStartGate`）。
+setNoticeStartGate(() => tollFlash !== null);
+
+/**
  * 正在排队的角色台词（T-052 的屏幕那一半）。
  *
  * ★ 原版 `_rich4_player_say`（VA 0x0044ef41）是**阻塞**的一句一句演
@@ -5936,6 +6008,8 @@ function requestRender(): void {
     if (screen === 'game') tickBuildFx(performance.now());
     // ★ 送進監獄／醫院那段影片同理（Q-ANIM-1）：按帧时序推进，播完补一次回合驱动
     if (screen === 'game') tickBoardFilm(performance.now());
+    // ★ W-69：過路費閃爍（纯表现）—— 认下 `state.lastTollLands`、到点收摊、没完就续帧
+    if (screen === 'game') tickTollFlash(performance.now());
     // ★ 原版会替玩家把系统指针挪到按钮上（试玩3 #2）：时机刚从关变开就挪一次
     cursorWarper.update();
     if (screen === 'game') shopTick(performance.now());
@@ -6399,6 +6473,8 @@ function drawGameStage(): void {
     // ★ 「盖在棋盘上的阻塞影片」（Q-ANIM-1）—— 落点/尺寸随哪一段变
     //   （住院 440×74 @(0,210)，入獄/神明 440×440 @(0,40)），所以整份交出去。
     boardFilm: currentBoardFilmFrame(performance.now()),
+    // ★ W-69：過路費閃爍 —— 把算进这笔钱的每一块地这一帧调亮（原版是 id 图上逐像素加）
+    landFlash: tollFlashInput(performance.now()),
   });
   // ★★ W-66-a：走子时那串**剩余步数**（原版有、本引擎先前没有）——
   //   画在棋盘画布上、对话框/名牌之下（原版就是在棋盘绘制例程里画的）。
@@ -7707,6 +7783,13 @@ function bindInput(): void {
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
 
+    // ★ W-69：過路費那段闪在播时，任意滑鼠鍵**跳过**它，而且这一下被它吃掉
+    //   （原版 `fcn_004528b9` 的等待循环把这条消息收走了，不会漏给棋盘）。
+    if (tollFlash !== null) {
+      skipTollFlash();
+      return;
+    }
+
     // ── 登记的整屏（契约见 ui-screen.ts）：按下这一拍派 `down` ──
     // ★ 原版对应的就是 `WM_LBUTTONDOWN`；`mouseup`（= `WM_LBUTTONUP`）派 `up`。
     //   两者**必须**分派在真的按下/抬手事件上 —— 见 `click` 那一路的注释。
@@ -8159,6 +8242,11 @@ function bindInput(): void {
 
   });
   window.addEventListener('mouseup', (e) => {
+    // ★ W-69：過路費闪在播时抬手也跳过（同样是「任意滑鼠鍵」）
+    if (tollFlash !== null) {
+      skipTollFlash();
+      return;
+    }
     // 名牌浮标：抬手就擦（原版 `loc_00418878` → `fcn_00417c67` 把底图贴回去）
     if (nodeTip !== null) {
       nodeTip = null;
@@ -8406,6 +8494,12 @@ function bindInput(): void {
   // 右键 = 原版的 `WM_RBUTTONUP (0x205)`：**关掉最上面那一扇窗**
   // （关不掉的最后一档才是「清掉小地图标记」，@source VA 0x00418893）
   canvas.addEventListener('contextmenu', (e) => {
+    // ★ W-69：過路費闪在播时右键也跳过（「任意滑鼠鍵」，同样被它吃掉）
+    if (tollFlash !== null) {
+      e.preventDefault();
+      skipTollFlash();
+      return;
+    }
     // ── 登记的整屏（契约见 ui-screen.ts）：**声明了** `contextmenu` 的屏先收 ──
     // ★ 原版 `WM_RBUTTONUP`（0x205）就是各屏「关掉最上面那扇窗」的那一拍；
     //   大地圖彈窗（`fcn_0040a801`）只有这一条出口。

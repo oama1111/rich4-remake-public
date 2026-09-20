@@ -351,6 +351,17 @@ export interface RenderInput {
    *   坐标已经由宿主换算成**棋盘局部**（屏幕 y − 棋盘原点 40）。
    */
   boardFilm?: { bitmap: CanvasImageSource; x: number; y: number; w: number; h: number } | null;
+  /**
+   * 過路費閃爍（W-69）—— 這一幀要把**哪些地塊**調到多亮。
+   *
+   * ★ 原版 `fcn_00451985` 是改棋盤 **id 圖**上那幾格的像素（+`LEVEL[k]`，單位是
+   *   5 位色分量）；本引擎按**精靈**近似：畫那幾塊地上的建築時套一句
+   *   `ctx.filter = brightness(1 + level/32)`。差异登记在
+   *   `docs/deviations/Q-TOLL-FX-1.md`。
+   *
+   * `level` = 0 或沒在播時整份給 `null`（= 不套）。
+   */
+  landFlash?: { lands: ReadonlySet<number>; level: number } | null;
 }
 
 /**
@@ -1273,6 +1284,14 @@ export interface BuildingArtItem {
   img: number;
   /** 非空时把精灵调色板 #255 换成这个角色色 */
   ring?: readonly [number, number, number];
+  /**
+   * 住宅地块那一支带上**自己那块地的 id**（设施/企业/景观没有）。
+   *
+   * ★ W-69：过路费那段演出要按 id 把「算进这笔钱的地块」一起调亮，
+   *   而调亮发生在**绘制**这一层（`RenderInput.landFlash`）—— 所以清单里
+   *   必须能认出每一件是哪个地块。其它三张表与过路费无关，故可缺省。
+   */
+  landId?: number;
 }
 
 /**
@@ -1330,6 +1349,7 @@ export function buildingArtItems(
       y: land.y,
       res: art.resource,
       img: art.image,
+      landId,
       // ★ 外圈那圈线按**所有者的角色专属色**换色（见 assets.ts 的 RING_PALETTE_INDEX）：
       //   @source VA 0x00409853 —— 槽 +6 非 0xff 时把 `player[owner-1].+0x04`（角色色）
       //   写进精灵的调色板 #255。
@@ -2019,7 +2039,7 @@ export class BoardRenderer {
     this.#syncActorWalks(state, map.nodes, input.actorWalks, input.tickMs ?? 20, nowMs);
 
     const slots: DrawSlot[] = [
-      ...this.#buildingSlots(map, state, camera, vp),
+      ...this.#buildingSlots(map, state, camera, vp, input.landFlash ?? null),
       // ★ 棋盘上的**物件**（神明、路障、地雷、定時炸彈…）—— 原版与建筑同属
       //   类别 0 那一段（`fcn_0040829d` 的对象分支不 or 类别位，VA 0x00408efd），
       //   故一起排序、一起贴。先前**整个漏了**（需求方：「放置后看不到」）。
@@ -2421,6 +2441,7 @@ export class BoardRenderer {
     state: GameState,
     cam: Camera,
     vp: { w: number; h: number },
+    flash: { lands: ReadonlySet<number>; level: number } | null = null,
   ): DrawSlot[] {
     const ctx = this.#ctx;
     const k = 1;
@@ -2429,11 +2450,15 @@ export class BoardRenderer {
       const p = worldToScreen(it.x, it.y, cam, vp);
       // 越出 29×29 窗口的格子原版直接跳过不画，这里保持一致
       if (p === null) continue;
+      // ★ W-69：算进这笔过路费的地块这一帧要调亮（原版是 id 图上逐像素加）。
+      //   level 为 0 时 `landFlash` 整份是 null，所以这里不必再判。
+      const lit = flash !== null && it.landId !== undefined && flash.lands.has(it.landId);
       slots.push({
         key: drawKey(p.y, DRAW_CLASS.building),
         paint: () => {
           const sp = this.#sprite('map.mkf', it.res, it.img, true, it.ring);
           if (sp === null) return;
+          if (lit) ctx.filter = `brightness(${1 + flash.level / 32})`;
           ctx.drawImage(
             sp.bitmap,
             p.x - sp.anchorX * k,
@@ -2441,6 +2466,7 @@ export class BoardRenderer {
             sp.width * k,
             sp.height * k,
           );
+          if (lit) ctx.filter = 'none';
         },
       });
     }

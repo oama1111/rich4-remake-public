@@ -236,3 +236,93 @@ describe('★ 涨价标记：地主那份租金 ×2 @source 0x00419b09', () => {
     expect(collectRent(players(false), lands, 0, lands[0]!, 1).total).toBe(1000);
   });
 });
+
+// ============================================================
+//  W-69：算进这笔过路费的**每一块地**（那段「一起闪一遍」的演出要用）
+// ============================================================
+
+describe('★★ counted —— 「同一条街的连号地块」到底算了几块（W-69）', () => {
+  const rent1200 = [0, 1200, 0, 0, 0, 0];
+  /** 一条街 4 块（同主人、同名、各 1 级），外加别处一块同名的（别人）与一块自己别名的 */
+  function street(over: {
+    owner?: number;
+    ally?: number;
+    allyStreet?: number;
+    chain?: number;
+    otherStreet?: number;
+  } = {}): ReturnType<typeof makeLand>[] {
+    const owner = over.owner ?? 2;
+    const lands = [
+      makeLand({ id: 11, name: '台北市', type: LAND_TYPE_HOUSE, owner, level: 1, rentByLevel: rent1200 }),
+      makeLand({ id: 12, name: '台北市', type: LAND_TYPE_HOUSE, owner, level: 1, rentByLevel: rent1200 }),
+      makeLand({ id: 13, name: '台北市', type: LAND_TYPE_HOUSE, owner, level: 1, rentByLevel: rent1200 }),
+      makeLand({ id: 14, name: '台北市', type: LAND_TYPE_HOUSE, owner, level: 1, rentByLevel: rent1200 }),
+      // 别人的同名地（不算）
+      makeLand({ id: 15, name: '台北市', type: LAND_TYPE_HOUSE, owner: 4, level: 1, rentByLevel: rent1200 }),
+      // 自己别的街（不算）
+      makeLand({ id: 16, name: '高雄市', type: LAND_TYPE_HOUSE, owner, level: 1, rentByLevel: rent1200 }),
+    ];
+    for (let i = 0; i < (over.chain ?? 0); i++) {
+      lands.push(makeLand({ id: 30 + i, name: '連鎖', type: 1, owner, level: 1, rentByLevel: rent1200 }));
+    }
+    for (let i = 0; i < (over.allyStreet ?? 0); i++) {
+      lands.push(makeLand({ id: 40 + i, name: '台北市', type: LAND_TYPE_HOUSE, owner: over.ally ?? 3, level: 1, rentByLevel: rent1200 }));
+    }
+    for (let i = 0; i < (over.otherStreet ?? 0); i++) {
+      lands.push(makeLand({ id: 50 + i, name: '台中市', type: LAND_TYPE_HOUSE, owner, level: 1, rentByLevel: rent1200 }));
+    }
+    return lands;
+  }
+
+  it('★★ 金额回归：4 块同街同主、各 1 级 ⇒ 实付 4800 = 1200 × 4（规则不许动）', () => {
+    const lands = street();
+    const r = collectRent(players(false), lands, 0, lands[0]!, 1);
+    expect(r.total).toBe(4800);
+    expect(r.baseTotal).toBe(4800);
+    expect(r.shares).toEqual([{ payee: 1, amount: 4800 }]);
+    expect(r.counted).toEqual([11, 12, 13, 14]);
+  });
+
+  it('★ 只有一块地 ⇒ counted 就那一个 id（原版块数 ≤ 1 时整段演出跳过，由 core 判）', () => {
+    const lands = [
+      makeLand({ id: 21, name: '台北市', type: LAND_TYPE_HOUSE, owner: 2, level: 1, rentByLevel: rent1200 }),
+      makeLand({ id: 22, name: '高雄市', type: LAND_TYPE_HOUSE, owner: 2, level: 1, rentByLevel: rent1200 }),
+    ];
+    const r = collectRent(players(false), lands, 0, lands[0]!, 1);
+    expect(r.total).toBe(1200);
+    expect(r.counted).toEqual([21]);
+  });
+
+  it('★ 有同盟时，同盟者名下的同街地块也算进去（顺序照棋盘顺序）', () => {
+    const lands = street({ ally: 3, allyStreet: 2 });
+    const r = collectRent(players(true), lands, 0, lands[0]!, 1);
+    // 4 块自己的 + 2 块同盟的 = 6 块 ⇒ 金额也含同盟那份
+    expect(r.counted).toHaveLength(6);
+    expect(r.counted).toEqual([11, 12, 13, 14, 40, 41]);
+    expect(r.total).toBe(7200);
+  });
+
+  it('★ 連鎖店支：地主名下**每一家**連鎖店（同名与否无关）', () => {
+    const lands = street({ chain: 3, otherStreet: 2 });
+    const chain = lands.filter((l) => l.type !== LAND_TYPE_HOUSE);
+    const r = collectRent(players(false), lands, 0, chain[0]!, 1);
+    expect(r.total).toBe(3 * 2000);
+    expect(r.counted).toEqual([30, 31, 32]);
+  });
+
+  it('★ 无主 / 自己的地：counted 是空的（不收租当然不闪）', () => {
+    const lands = street();
+    expect(collectRent(players(false), lands, 0, { ...lands[0]!, owner: 0 }, 1).counted).toEqual([]);
+    // 自己踩自己的：玩家 1（下标 1）踩 owner 2 的地 = 自己的
+    expect(collectRent(players(false), lands, 1, lands[0]!, 1).counted).toEqual([]);
+  });
+
+  it('★ 免費卡 / 神明把金额抹成 0 时，counted 仍然照给（原版先标地、后走那段）', () => {
+    const ps = players(false);
+    ps[0] = makePlayer({ index: 0, cash: 100000, moneyInBank: 0, godInfo: 2 });
+    const lands = street();
+    const r = collectRent(ps, lands, 0, lands[0]!, 1);
+    expect(r.total).toBe(0);
+    expect(r.counted).toEqual([11, 12, 13, 14]);
+  });
+});

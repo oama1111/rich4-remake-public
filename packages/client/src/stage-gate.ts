@@ -71,6 +71,14 @@ export interface StageFlags {
   walkDone: boolean;
   /** 掷骰动效在播（预动作 / 滚骰 / 定格三段） */
   diceFxActive: boolean;
+  /**
+   * 過路費那段「把算進去的每一塊地一起閃一遍」在播（W-69）。
+   *
+   * ★ 原版 `0x00419c83`（這一段）在 `0x00419d5a call 0x440cac`（費用訊息框）**之前**，
+   *   而且 `fcn_00451985` 自己是阻塞的（16×30 ms + 400 ms）——
+   *   所以要把它算進「台上還忙著」：訊息框與回合驅動都得等它。
+   */
+  tollFlash: boolean;
 }
 
 /**
@@ -89,7 +97,8 @@ export function stageBusy(f: StageFlags): boolean {
     f.pendingBuildFx ||
     f.objectFlight ||
     !f.walkDone ||
-    f.diceFxActive
+    f.diceFxActive ||
+    f.tollFlash
   );
 }
 
