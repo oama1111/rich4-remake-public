@@ -25,6 +25,13 @@ export interface NetSocket {
 export interface NetClientOptions {
   room: string;
   name: string;
+  /**
+   * ★ W-73：身份令牌（32 位十六进制）。断线重连**认回原座位**只认它，不认名字。
+   *
+   * 由门厅（`foyer.ts` 的 `loadClientId`）从 `localStorage` 取 / 首次生成；
+   * 老的 `?ws=…&room=…&name=…` 调试入口也一样，从同一个地方取。
+   */
+  clientId: string;
   /** 重连：本地已施加到第几号（含） */
   since?: number;
   /** 每几号 action 上报一次校验和 @default 10 */
@@ -82,7 +89,13 @@ export class NetClient {
 
   /** 连上之后第一件事：加入房间 */
   join(): void {
-    const msg: ClientMessage = { t: 'join', version: PROTOCOL_VERSION, room: this.#opts.room, name: this.#opts.name };
+    const msg: ClientMessage = {
+      t: 'join',
+      version: PROTOCOL_VERSION,
+      room: this.#opts.room,
+      name: this.#opts.name,
+      clientId: this.#opts.clientId,
+    };
     if (this.#opts.since !== undefined) msg.since = this.#opts.since;
     this.#send(msg);
   }

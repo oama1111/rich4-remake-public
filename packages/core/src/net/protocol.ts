@@ -22,8 +22,14 @@ import type { Action } from '../state/actions.ts';
  *   老客户端不认识 `replay` 会按 `default` 忽略（退回「只喊一声」的旧行为），
  *   老服务器不认识 `resync` 也只是不答——规则语义没变，不构成「规则对不上」。
  *   真改了 action 语义或指纹算法时才该 +1。
+ *
+ * ★★ W-73 **+1（1 → 2）**：`join` 多了一个**必填**的 `clientId`，而且
+ *   「认回原座位」的判据从**名字**改成了它 —— 老客户端不带这个字段，
+ *   服务器会把它当成非法 `clientId` 直接拒绝。**这是语义变更，必须 +1**：
+ *   不 +1 的话，两个朋友起同一个名字就会互相串座（W-73 §3 要修的那件事），
+ *   而版本号相同意味着双方都以为对方是「同一版」。
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 // ============================================================
 //  客户端 → 服务器
@@ -35,8 +41,18 @@ export type ClientMessage =
       t: 'join';
       version: number;
       room: string;
-      /** 昵称，仅用于显示；断线重连靠它认回原座位 */
+      /** 昵称，**只用于显示**；断线重连**不再**靠它认座位（见 `clientId`） */
       name: string;
+      /**
+       * ★ W-73：身份令牌 —— 断线重连**认回原座位**的唯一判据。
+       *
+       * 为什么不能再用名字：两个朋友起同一个名字会互相串座（任务书 W-73 §3）。
+       * 名字重复现在是**允许**的（显示时也不去重），座位只认这 32 位十六进制。
+       * 客户端首次生成并存 `localStorage['rich4.clientId']`。
+       *
+       * ⚠️ 它**不进** `SeatInfo`：不广播给别人（那是本机自己的身份，别人用不上）。
+       */
+      clientId: string;
       /** 重连时：本地已施加到第几号 action（含），服务器从下一号补发；不带 = 全量补发 */
       since?: number;
     }
@@ -215,6 +231,61 @@ export function characterTaken(
 /** 房间快照里的地图号；服务器没给就按 0 读（旧快照兼容） */
 export function roomMapId(room: RoomInfo | null | undefined): number {
   return room?.globalMapId ?? 0;
+}
+
+// ============================================================
+//  房间码 / 身份令牌 / 昵称（W-73）
+// ============================================================
+
+/**
+ * 房间码的字符集 —— **去掉了容易看错的 `I` / `O` / `0` / `1`**。
+ *
+ * 这 32 个字符是**口头念给朋友**用的（「房间码 A B C 2 3 4」），
+ * 所以「我念的是 I 还是 1」这种歧义要提前掐掉。
+ * 长度 6 ⇒ 32^6 ≈ 10.7 亿，撞房不是这个规模该操心的事。
+ */
+export const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+export const ROOM_CODE_LENGTH = 6;
+
+/** 与 `ROOM_CODE_ALPHABET` 逐字对应：`A-H` `J-N` `P-Z` `2-9` */
+const ROOM_CODE_RE = /^[A-HJ-NP-Z2-9]{6}$/;
+
+/** 房间码合法吗（6 位、只含上面那 32 个字符） */
+export function isRoomCode(value: unknown): value is string {
+  return typeof value === 'string' && ROOM_CODE_RE.test(value);
+}
+
+/**
+ * `clientId` 的形状：**32 位小写十六进制**（16 字节随机数）。
+ *
+ * 为什么钉死小写：两个客户端「同一个令牌」要能逐字比较，
+ * 大小写混着来就会变成两个身份 —— 那正是「认不回座位」的经典成因。
+ */
+const CLIENT_ID_RE = /^[0-9a-f]{32}$/;
+
+export function isClientId(value: unknown): value is string {
+  return typeof value === 'string' && CLIENT_ID_RE.test(value);
+}
+
+/** 昵称最多几个**码点**（不是 UTF-16 单元 —— 「𠮷」算一个） */
+export const MAX_NAME_CODE_POINTS = 12;
+
+/**
+ * 把客户端报上来的名字洗干净；洗不干净（空 / 太长 / 根本不是字符串）返回 `null`。
+ *
+ * 规则（任务书 W-73 §3）：**去掉控制字符（`\p{Cc}`）**、去首尾空白，
+ * 然后按码点数要求 1..12。
+ *
+ * ⚠️ 判据放在 core 是**有意**的：服务器校验与客户端门厅的即时校验必须用同一份，
+ *   否则会出现「门厅放行、服务器拒绝」这种谁也说不清的现象。
+ */
+export function sanitizeName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  // `\p{Cc}` 是 **Unicode 类别**而不是字面控制字符，所以没有 no-control-regex 的问题
+  const stripped = raw.replace(/\p{Cc}/gu, '').trim();
+  const points = [...stripped];
+  if (points.length === 0 || points.length > MAX_NAME_CODE_POINTS) return null;
+  return stripped;
 }
 
 // ============================================================

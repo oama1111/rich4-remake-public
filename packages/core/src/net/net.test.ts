@@ -256,7 +256,10 @@ describe('★ Q-NET-1 协议：resync / replay', () => {
 });
 
 describe('协议', () => {
-  it('版本号已定', () => {
-    expect(PROTOCOL_VERSION).toBe(1);
+  it('★ W-73：版本号 +1（join 多了必填的 clientId，认座位的判据从名字改成它）', () => {
+    // ⚠️ 这一条**不是**「为了变绿改断言」：任务书 W-73 §3 明写 `PROTOCOL_VERSION` **+1**。
+    //    Q-NET-1 那次「加了消息但不动版本号」的理由（纯增量、语义没变）在这里不成立 ——
+    //    `clientId` 是**必填**，而且改了「认回原座位」的语义，老客户端必须被挡住。
+    expect(PROTOCOL_VERSION).toBe(2);
   });
 });

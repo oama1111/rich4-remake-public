@@ -14,8 +14,11 @@ import {
   WHO_PLAYS_AUTOPILOT,
   WHO_PLAYS_HUMAN,
   characterTaken,
+  isClientId,
   isLobbyCharacter,
   isLobbyMapId,
+  isRoomCode,
+  sanitizeName,
   type Action,
   type ClientMessage,
   type Rich4Map,
@@ -28,6 +31,14 @@ import { Room } from './room.ts';
 /** 一条到客户端的连接：集线器只会往里 send */
 export interface Conn {
   send(msg: ServerMessage): void;
+  /**
+   * ★ W-73：服务端**主动断开**这条连接。
+   *
+   * 只有「加入信息不合法」那一条路会用到（任务书 W-73 §3：不合就回 `error` 并断开）。
+   * 声明成可选的，是为了让只关心消息流的测试替身（`e2e.test.ts` 的 `Client`）
+   * 不必为了这一个用途改写整个类。
+   */
+  close?(): void;
 }
 
 export interface HubOptions {
@@ -49,6 +60,20 @@ export interface HubOptions {
    * 真服务器（`cli.ts`）给一份按需读 `map.mkf` 的实现。
    */
   mapFor?: (globalMapId: number) => Rich4Map | null;
+  /**
+   * ★ W-73 §4：同时存在的房间上限 @default 50。
+   *
+   * 满了之后**新建**回 `error`「伺服器房間已滿」；已经存在的房间照常进出
+   * （否则一个人多了就得把别人踢出去）。
+   */
+  maxRooms?: number;
+  /**
+   * ★ W-73 §4：**全桌无人在线**超过这么久就把房间删掉 @default 600000（10 分钟）。
+   *
+   * 「无人在线」= 一个真人座位的 `conn` 都不在（含从没坐满的空房）。
+   * 挂在本来的 `sweepDisconnected` 定时器上，不另起计时器。
+   */
+  roomIdleMs?: number;
 }
 
 interface SeatSlot {
@@ -58,6 +83,13 @@ interface SeatSlot {
   disconnectedAt: number | null;
   /** 掉线超时后由电脑代打；重连归还 */
   takenOver: boolean;
+  /**
+   * ★ W-73：这条座位的**身份令牌**（电脑座位是 `null`）。
+   *
+   * 认回原座位的判据从「名字相同」改成「`clientId` 相同」—— 两个朋友起同一个
+   * 名字不会再串座。它**不进** `SeatInfo`（不广播给别人）。
+   */
+  clientId: string | null;
 }
 
 interface Table {
@@ -69,6 +101,13 @@ interface Table {
    *   用的就是它 —— **不看**任何客户端上报的本地设置。
    */
   globalMapId: number;
+  /**
+   * ★ W-73 §4：从哪一刻起**全桌无人在线**；只要有人在就为 `null`。
+   *
+   * 由 `sweepDisconnected` 维护（一看就改，没有别的地方写它）——
+   * 挂在事件上容易漏（有人掉线的方式不止一种），放在扫描里最稳。
+   */
+  emptySince: number | null;
 }
 
 /** 一个客户端连接在集线器里的句柄 */
@@ -83,11 +122,21 @@ export interface ClientHandle {
 }
 
 export class RoomHub {
-  readonly #opts: Required<Pick<HubOptions, 'seatCount' | 'takeoverAfterMs' | 'checksumEvery'>> & HubOptions;
+  readonly #opts: Required<
+    Pick<HubOptions, 'seatCount' | 'takeoverAfterMs' | 'checksumEvery' | 'maxRooms' | 'roomIdleMs'>
+  > &
+    HubOptions;
   readonly #tables = new Map<string, Table>();
 
   constructor(opts: HubOptions) {
-    this.#opts = { seatCount: 4, takeoverAfterMs: 30_000, checksumEvery: 10, ...opts };
+    this.#opts = {
+      seatCount: 4,
+      takeoverAfterMs: 30_000,
+      checksumEvery: 10,
+      maxRooms: 50,
+      roomIdleMs: 600_000,
+      ...opts,
+    };
   }
 
   /** 供测试/监控：房间信息 */
@@ -124,12 +173,35 @@ export class RoomHub {
               conn.send({ t: 'error', message: '已经在房间里了' });
               return;
             }
+            // ★ W-73 §3：三样都**服务器校验**，不信客户端；任何一样不合就
+            //   `error` + **断开**（不是只回一句错误让它接着试）。
+            if (!isClientId(msg.clientId)) {
+              conn.send({ t: 'error', message: '拒絕：clientId 必須是 32 位小寫十六進位' });
+              conn.close?.();
+              return;
+            }
+            const name = sanitizeName(msg.name);
+            if (name === null) {
+              conn.send({ t: 'error', message: '拒絕：名字必須是 1–12 個字元（不含控制字元）' });
+              conn.close?.();
+              return;
+            }
+            if (!isRoomCode(msg.room)) {
+              conn.send({ t: 'error', message: '拒絕：房間碼必須是 6 位（字母去 I/O、數字去 0/1）' });
+              conn.close?.();
+              return;
+            }
             const t = this.#tableFor(msg.room);
-            const s = this.#assignSeat(t, msg.name, conn);
+            if (t === null) {
+              conn.send({ t: 'error', message: '伺服器房間已滿' });
+              return;
+            }
+            const s = this.#assignSeat(t, name, msg.clientId, conn);
             if (s === null) {
               conn.send({ t: 'error', message: '房间已满' });
               return;
             }
+            t.emptySince = null;
             table = t;
             seat = s;
             conn.send({ t: 'joined', version: PROTOCOL_VERSION, seat: s, room: this.#info(t) });
@@ -236,12 +308,27 @@ export class RoomHub {
   }
 
   /**
-   * 掉线超时的真人座位交给电脑代打（T-073）。由适配器定时调用；返回本次接管的座位。
+   * 掉线超时的真人座位交给电脑代打（T-073）；顺带回收**空置太久**的房间（W-73 §4）。
+   * 由适配器定时调用；返回本次接管的座位。
+   *
    * 接管后若正轮到该座位，立刻让电脑把这一回合走完。
    */
   sweepDisconnected(now: number): { roomId: string; seat: number }[] {
     const out: { roomId: string; seat: number }[] = [];
-    for (const t of this.#tables.values()) {
+    // ★ 先快照再遍历：下面会 `delete`，边删边遍历容易漏掉相邻的那一间
+    for (const t of [...this.#tables.values()]) {
+      // ── 房间回收（W-73 §4）：全桌无人在线满 `roomIdleMs` 就删 ──
+      // ★ 判据放在**扫描里**而不是「有人掉线那一刻」：掉线的方式不止一种
+      //   （连接关闭、从没坐满、join 失败留下空壳），一个个挂钩子必漏。
+      if (t.seats.some((s) => s.info.kind === 'human' && s.conn !== null)) {
+        t.emptySince = null;
+      } else {
+        t.emptySince ??= now;
+        if (now - t.emptySince >= this.#opts.roomIdleMs) {
+          this.#tables.delete(t.id);
+          continue;
+        }
+      }
       if (t.room === null) continue;
       for (const slot of t.seats) {
         if (slot.info.kind !== 'human' || slot.conn !== null || slot.takenOver) continue;
@@ -266,22 +353,32 @@ export class RoomHub {
   //  内部
   // ------------------------------------------------------------
 
-  #tableFor(id: string): Table {
-    let t = this.#tables.get(id);
-    if (t === undefined) {
-      t = { id, seats: [], room: null, globalMapId: this.#opts.globalMapId };
-      this.#tables.set(id, t);
-    }
+  /** 取房间；不存在就建一个 —— **但房间数已到上限时返回 `null`**（W-73 §4） */
+  #tableFor(id: string): Table | null {
+    const hit = this.#tables.get(id);
+    if (hit !== undefined) return hit;
+    if (this.#tables.size >= this.#opts.maxRooms) return null;
+    // `emptySince` 初值 `null`：下一次扫描会把「此刻还全桌无人」的那一间记上时间戳。
+    // 这里不能填 `now`（集线器没有时钟，时间一律由外部注入 —— 那是同一条规矩）。
+    const t: Table = { id, seats: [], room: null, globalMapId: this.#opts.globalMapId, emptySince: null };
+    this.#tables.set(id, t);
     return t;
   }
 
-  /** 同名且断线中的座位优先认回；否则占下一个空位；开局后不再放新人 */
-  #assignSeat(t: Table, name: string, conn: Conn): number | null {
-    const back = t.seats.find((s) => s.info.kind === 'human' && s.info.name === name && s.conn === null);
+  /**
+   * ★ W-73：**认回原座位的判据是 `clientId`，不是名字**。
+   *
+   * 名字重复现在是**允许**的（显示时也不去重）—— 两个朋友起同名不再串座。
+   * 顺序：先找「同 `clientId` 且断线中」的原座；找不到再占下一个空位；开局后不再放新人。
+   */
+  #assignSeat(t: Table, name: string, clientId: string, conn: Conn): number | null {
+    const back = t.seats.find((s) => s.info.kind === 'human' && s.clientId === clientId && s.conn === null);
     if (back !== undefined) {
       back.conn = conn;
       back.disconnectedAt = null;
       back.info.connected = true;
+      // 名字改了也认回 —— 名字只是显示用的
+      back.info.name = name;
       if (back.takenOver && t.room !== null) {
         // 归还：镜像里把他从託管改回真人（也广播给所有人）
         const r = t.room.submitSystem({ type: 'setAi', player: back.info.seat, whoPlays: WHO_PLAYS_HUMAN });
@@ -300,6 +397,7 @@ export class RoomHub {
       conn,
       disconnectedAt: null,
       takenOver: false,
+      clientId,
     });
     return seat;
   }
@@ -416,6 +514,7 @@ export class RoomHub {
         conn: null,
         disconnectedAt: null,
         takenOver: false,
+        clientId: null,
       });
     }
     const map = this.#mapFor(t.globalMapId);

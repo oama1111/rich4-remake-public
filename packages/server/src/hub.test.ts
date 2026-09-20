@@ -18,14 +18,32 @@ import {
 } from '@rich4/core';
 import { RoomHub, type Conn } from './hub.ts';
 
+const ROOM = 'K7M2QP';
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
+/**
+ * ★ W-73：`join` 多了必填的 `clientId`。测试里按名字派生一个稳定的 32 位十六进制 ——
+ * 同名 ⇒ 同身份，于是「两个同名的人各占一座」要靠**显式传不同的 clientId** 来构造
+ * （那正是 W-73 §3 要钉住的判据）。
+ */
+const idFor = (seed: string): string =>
+  [...seed]
+    .map((c) => c.charCodeAt(0).toString(16).padStart(2, '0'))
+    .join('')
+    .padEnd(32, '0')
+    .slice(0, 32);
+
 
 class FakeConn implements Conn {
   readonly inbox: ServerMessage[] = [];
+  /** ★ W-73：服务端主动断开过这条连接吗 */
+  closed = false;
   send(msg: ServerMessage): void {
     this.inbox.push(msg);
+  }
+  close(): void {
+    this.closed = true;
   }
   last<T extends ServerMessage['t']>(t: T): Extract<ServerMessage, { t: T }> | undefined {
     for (let i = this.inbox.length - 1; i >= 0; i--) {
@@ -59,11 +77,11 @@ describe('★ 加入与开局', () => {
     const a = new FakeConn();
     const b = new FakeConn();
     const ha = hub.connect(a);
-    ha.onMessage({ t: 'join', version: 99, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'join', version: 99, room: ROOM, name: 'A', clientId: idFor('A') });
     expect(a.last('error')?.message).toContain('协议版本');
-    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
     const hb = hub.connect(b);
-    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B') });
     expect(ha.seat).toBe(0);
     expect(hb.seat).toBe(1);
     expect(a.last('room')?.room.seats.map((s) => s.name)).toEqual(['A', 'B']);
@@ -74,10 +92,10 @@ describe('★ 加入与开局', () => {
     const st = b.last('start')!;
     expect(st.seed).toBe(4242);
     expect(st.seats.map((s) => s.kind)).toEqual(['human', 'human', 'computer', 'computer']);
-    expect(hub.roomInfo('r')?.started).toBe(true);
+    expect(hub.roomInfo(ROOM)?.started).toBe(true);
     // 开局后不再放新人
     const c = new FakeConn();
-    hub.connect(c).onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'C' });
+    hub.connect(c).onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'C', clientId: idFor('C') });
     expect(c.last('error')?.message).toContain('已满');
   });
 });
@@ -90,8 +108,8 @@ describe('★ 意图与广播', () => {
     const b = new FakeConn();
     const ha = hub.connect(a);
     const hb = hub.connect(b);
-    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
-    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
+    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B') });
     ha.onMessage({ t: 'start' });
     hb.onMessage({ t: 'intent', action: { type: 'startTurn' } });
     expect(b.last('error')?.message).toContain('notYourTurn');
@@ -102,7 +120,7 @@ describe('★ 意图与广播', () => {
     expect(a.count('action')).toBe(1);
     expect(b.last('action')).toMatchObject({ seq: 0, action: { type: 'startTurn' } });
     // 客户端按广播重放 == 服务器镜像
-    expect(stateFingerprint(mirror(map, b))).toBe(hub.room('r')!.fingerprint);
+    expect(stateFingerprint(mirror(map, b))).toBe(hub.room(ROOM)!.fingerprint);
   });
 
   run('★ 轮到电脑座位时服务器自己替它走完，直到轮回真人', () => {
@@ -110,14 +128,14 @@ describe('★ 意图与广播', () => {
     const hub = hubWith(map);
     const a = new FakeConn();
     const ha = hub.connect(a);
-    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
     ha.onMessage({ t: 'start' }); // 1..3 号全是电脑
     // 真人把自己的回合走完
     const play = (act: Action) => ha.onMessage({ t: 'intent', action: act });
     play({ type: 'startTurn' });
     let guard = 0;
-    while (hub.room('r')!.currentSeat === 0 && guard++ < 50) {
-      const s = hub.room('r')!.state;
+    while (hub.room(ROOM)!.currentSeat === 0 && guard++ < 50) {
+      const s = hub.room(ROOM)!.state;
       const next: Action =
         s.phase === 'awaitingRoll' ? { type: 'rollDice' }
         : s.phase === 'moving' ? { type: 'step' }
@@ -127,10 +145,10 @@ describe('★ 意图与广播', () => {
       play(next);
     }
     // 三个电脑的回合应当已经由服务器推完，又轮回 0 号
-    expect(hub.room('r')!.currentSeat).toBe(0);
-    expect(hub.room('r')!.state.turnCount).toBe(4);
+    expect(hub.room(ROOM)!.currentSeat).toBe(0);
+    expect(hub.room(ROOM)!.state.turnCount).toBe(4);
     expect(a.count('action')).toBeGreaterThan(8);
-    expect(stateFingerprint(mirror(map, a))).toBe(hub.room('r')!.fingerprint);
+    expect(stateFingerprint(mirror(map, a))).toBe(hub.room(ROOM)!.fingerprint);
   });
 });
 
@@ -140,11 +158,11 @@ describe('★ 校验和与失步', () => {
     const hub = hubWith(map);
     const a = new FakeConn();
     const ha = hub.connect(a);
-    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
     ha.onMessage({ t: 'start' });
     ha.onMessage({ t: 'intent', action: { type: 'startTurn' } });
     const seq = a.last('action')!.seq;
-    ha.onMessage({ t: 'checksum', seq, hash: hub.room('r')!.fingerprintAt(seq)! });
+    ha.onMessage({ t: 'checksum', seq, hash: hub.room(ROOM)!.fingerprintAt(seq)! });
     expect(a.count('desync')).toBe(0);
     ha.onMessage({ t: 'checksum', seq, hash: 'bogus' });
     expect(a.last('desync')).toMatchObject({ seq, got: 'bogus', seat: 0 });
@@ -157,14 +175,14 @@ describe('★ Q-NET-1 失步自愈（resync → replay）', () => {
     const hub = hubWith(map);
     const a = new FakeConn();
     const ha = hub.connect(a);
-    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
     ha.onMessage({ t: 'start' });
     // 0 号是真人，1..3 是电脑（服务器代打）——把自己的回合走完，出去一长串 action
     const play = (act: Action) => ha.onMessage({ t: 'intent', action: act });
     play({ type: 'startTurn' });
     let guard = 0;
-    while (hub.room('r')!.currentSeat === 0 && guard++ < 50) {
-      const s = hub.room('r')!.state;
+    while (hub.room(ROOM)!.currentSeat === 0 && guard++ < 50) {
+      const s = hub.room(ROOM)!.state;
       play(
         s.phase === 'awaitingRoll' ? { type: 'rollDice' }
         : s.phase === 'moving' ? { type: 'step' }
@@ -184,7 +202,7 @@ describe('★ Q-NET-1 失步自愈（resync → replay）', () => {
     ha.onMessage({ t: 'resync' });
     const rep = a.last('replay')!;
     expect(rep.seed).toBe(4242);
-    expect(rep.through).toBe(hub.room('r')!.sequenceLength - 1);
+    expect(rep.through).toBe(hub.room(ROOM)!.sequenceLength - 1);
     expect(rep.actions.map((x) => x.seq)).toEqual(Array.from({ length: rep.actions.length }, (_, i) => i));
     expect(rep.actions.length).toBeGreaterThan(1);
 
@@ -198,7 +216,7 @@ describe('★ Q-NET-1 失步自愈（resync → replay）', () => {
       mode: 'multiplayer',
     });
     for (const x of rep.actions) healed = reduce(healed, x.action, topo);
-    expect(stateFingerprint(healed)).toBe(hub.room('r')!.fingerprint);
+    expect(stateFingerprint(healed)).toBe(hub.room(ROOM)!.fingerprint);
   });
 
   run('★ 反作弊：没进房、冒名、掉线后的连接都拿不到重放；重放也不广播', () => {
@@ -206,7 +224,7 @@ describe('★ Q-NET-1 失步自愈（resync → replay）', () => {
     const hub = hubWith(map);
     const a = new FakeConn();
     const ha = hub.connect(a);
-    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
     ha.onMessage({ t: 'start' });
     expect(a.count('replay')).toBe(0);
 
@@ -219,7 +237,7 @@ describe('★ Q-NET-1 失步自愈（resync → replay）', () => {
     // ② 开局后想冒用还在线的 A 的名字 → 进不来，自然也没有重放
     const c = new FakeConn();
     const hc = hub.connect(c);
-    hc.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    hc.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
     expect(hc.seat).toBeNull();
     hc.onMessage({ t: 'resync' });
     expect(c.count('replay')).toBe(0);
@@ -245,16 +263,16 @@ describe('★ 不可信输入', () => {
     const hub = hubWith();
     const a = new FakeConn();
     const ha = hub.connect(a);
-    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
     ha.onMessage({ t: 'start' });
     a.inbox.length = 0;
-    const fp = hub.room('r')!.fingerprint;
+    const fp = hub.room(ROOM)!.fingerprint;
     ha.onMessage({ t: 'intent', action: { type: 'respond', response: { kind: 'choice', index: 0 } } as unknown as Action });
     ha.onMessage({ t: 'intent', action: 'rollDice' as unknown as Action });
     ha.onMessage({ t: 'intent', action: null as unknown as Action });
     expect(a.inbox.filter((m) => m.t === 'error')).toHaveLength(3);
     expect(a.inbox.filter((m) => m.t === 'action')).toHaveLength(0);
-    expect(hub.room('r')!.fingerprint).toBe(fp);
+    expect(hub.room(ROOM)!.fingerprint).toBe(fp);
     // 之后照常能玩。★ 开局后 phase 是 turnStart，此时唯一合法动作是 startTurn
     //   —— 掷骰要等 awaitingRoll（reduce.ts 的 rollDice 分支要求 phase==='awaitingRoll'），
     //   这里若发 rollDice 会被正常拒绝，测的就不是「服务器没被畸形输入搞坏」了。
@@ -271,8 +289,8 @@ describe('★ 掉线：重连补发、超时代打、归还', () => {
     const b = new FakeConn();
     const ha = hub.connect(a);
     const hb = hub.connect(b);
-    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
-    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
+    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B') });
     ha.onMessage({ t: 'start' });
     ha.onMessage({ t: 'intent', action: { type: 'startTurn' } });
     hb.onClose(100);
@@ -280,14 +298,14 @@ describe('★ 掉线：重连补发、超时代打、归还', () => {
     ha.onMessage({ t: 'intent', action: { type: 'rollDice' } });
     const b2 = new FakeConn();
     const hb2 = hub.connect(b2);
-    hb2.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B', since: 0 });
+    hb2.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B'), since: 0 });
     expect(hb2.seat).toBe(1);
     expect(b2.last('start')?.seed).toBe(4242);
     expect(b2.inbox.filter((m) => m.t === 'action').map((m) => (m as { seq: number }).seq)).toEqual([1]);
     // 全量重连
     const b3 = new FakeConn();
     hb2.onClose(200);
-    hub.connect(b3).onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    hub.connect(b3).onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B') });
     expect(b3.inbox.filter((m) => m.t === 'action').length).toBe(2);
   });
 
@@ -298,16 +316,16 @@ describe('★ 掉线：重连补发、超时代打、归还', () => {
     const b = new FakeConn();
     const ha = hub.connect(a);
     const hb = hub.connect(b);
-    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'A' });
-    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
+    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B') });
     ha.onMessage({ t: 'start' });
     // A 走完自己的回合，轮到 B；B 早已断线
     hb.onClose(0);
     const play = (act: Action) => ha.onMessage({ t: 'intent', action: act });
     play({ type: 'startTurn' });
     let guard = 0;
-    while (hub.room('r')!.currentSeat === 0 && guard++ < 50) {
-      const s = hub.room('r')!.state;
+    while (hub.room(ROOM)!.currentSeat === 0 && guard++ < 50) {
+      const s = hub.room(ROOM)!.state;
       play(
         s.phase === 'awaitingRoll' ? { type: 'rollDice' }
         : s.phase === 'moving' ? { type: 'step' }
@@ -316,19 +334,223 @@ describe('★ 掉线：重连补发、超时代打、归还', () => {
         : { type: 'endTurn' },
       );
     }
-    expect(hub.room('r')!.currentSeat).toBe(1);
+    expect(hub.room(ROOM)!.currentSeat).toBe(1);
     // 没到超时：不动
     expect(hub.sweepDisconnected(500)).toEqual([]);
-    expect(hub.room('r')!.currentSeat).toBe(1);
+    expect(hub.room(ROOM)!.currentSeat).toBe(1);
     // 超时：託管 + 立刻代打，直到又轮回真人 A
-    expect(hub.sweepDisconnected(1500)).toEqual([{ roomId: 'r', seat: 1 }]);
-    expect(hub.room('r')!.state.players[1]!.whoPlays).toBe(WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT);
-    expect(hub.room('r')!.currentSeat).toBe(0);
+    expect(hub.sweepDisconnected(1500)).toEqual([{ roomId: ROOM, seat: 1 }]);
+    expect(hub.room(ROOM)!.state.players[1]!.whoPlays).toBe(WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT);
+    expect(hub.room(ROOM)!.currentSeat).toBe(0);
     // 重连：改回真人
     const b2 = new FakeConn();
-    hub.connect(b2).onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: 'B' });
-    expect(hub.room('r')!.state.players[1]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    hub.connect(b2).onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B') });
+    expect(hub.room(ROOM)!.state.players[1]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
     // 客户端 A 按广播重放仍与服务器一致（含 setAi 两条系统 action）
-    expect(stateFingerprint(mirror(map, a))).toBe(hub.room('r')!.fingerprint);
+    expect(stateFingerprint(mirror(map, a))).toBe(hub.room(ROOM)!.fingerprint);
+  });
+});
+
+// ============================================================
+//  W-73：身份令牌、房间码、房间生命周期
+// ============================================================
+
+/** 一条 `join`（自选房间码 / 名字 / 令牌） */
+function joinReq(room: string, name: string, clientId: string, since?: number) {
+  return {
+    t: 'join' as const,
+    version: PROTOCOL_VERSION,
+    room,
+    name,
+    clientId,
+    ...(since === undefined ? {} : { since }),
+  };
+}
+
+/** 第 i 个合法房间码（32 进制展开，字符集与服务器一致） */
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function roomCodeOf(i: number): string {
+  let n = i;
+  let out = '';
+  for (let k = 0; k < 6; k++) {
+    out = CODE_ALPHABET[n % 32]! + out;
+    n = Math.trunc(n / 32);
+  }
+  return out;
+}
+
+describe('★ W-73 同名不串座（身份令牌）', () => {
+  run('同名两人各占一座（名字重复是允许的）', () => {
+    const hub = hubWith();
+    const a = new FakeConn();
+    const b = new FakeConn();
+    const ha = hub.connect(a);
+    const hb = hub.connect(b);
+    ha.onMessage(joinReq('K7M2QP', '小明', idFor('one')));
+    hb.onMessage(joinReq('K7M2QP', '小明', idFor('two')));
+    expect(ha.seat).toBe(0);
+    expect(hb.seat).toBe(1);
+    expect(a.last('room')?.room.seats.map((s) => s.name)).toEqual(['小明', '小明']);
+  });
+
+  run('★ 同 clientId 断线重连认回原座 —— **名字改了也认回**', () => {
+    const hub = hubWith();
+    const a = new FakeConn();
+    const ha = hub.connect(a);
+    ha.onMessage(joinReq('K7M2QP', '小明', idFor('me')));
+    expect(ha.seat).toBe(0);
+    ha.onClose(0);
+    // ⚠️ 断线的那条连接自己收不到这条 `room` 广播（它已经不在座位表里了），
+    //    所以看服务器手上的房间快照，而不是看它自己的收件箱。
+    expect(hub.roomInfo('K7M2QP')?.seats[0]?.connected).toBe(false);
+
+    const again = new FakeConn();
+    const h2 = hub.connect(again);
+    h2.onMessage(joinReq('K7M2QP', '小红', idFor('me')));
+    expect(h2.seat).toBe(0); // 还是原来那座
+    expect(again.last('joined')?.room.seats).toHaveLength(1); // 没有多出一座
+    expect(again.last('joined')?.room.seats[0]?.name).toBe('小红'); // 显示名跟着改
+  });
+
+  run('★ 不同 clientId 同名 **不** 认回 —— 另占一座，原座仍是断线中', () => {
+    const hub = hubWith();
+    const a = new FakeConn();
+    const ha = hub.connect(a);
+    ha.onMessage(joinReq('K7M2QP', '小明', idFor('me')));
+    ha.onClose(0);
+
+    const impostor = new FakeConn();
+    const hb = hub.connect(impostor);
+    hb.onMessage(joinReq('K7M2QP', '小明', idFor('someone-else')));
+    expect(hb.seat).toBe(1);
+    const seats = impostor.last('joined')!.room.seats;
+    expect(seats.map((s) => s.name)).toEqual(['小明', '小明']);
+    expect(seats[0]?.connected).toBe(false); // 原座还空着等他
+    expect(seats[1]?.connected).toBe(true);
+  });
+});
+
+describe('★ W-73 加入信息的服务器校验', () => {
+  run('★ 非法 clientId / 房间码 / 名字：回 error **并断开**', () => {
+    const hub = hubWith();
+    const bad: { room: string; name: string; clientId: string }[] = [
+      { room: 'K7M2QP', name: 'A', clientId: 'not-hex' },
+      { room: 'K7M2QP', name: 'A', clientId: 'A'.repeat(32) }, // 大写不认
+      { room: 'K7M2QP', name: 'A', clientId: '0'.repeat(31) }, // 少一位
+      { room: 'K7M2Q', name: 'A', clientId: idFor('A') }, // 房间码少一位
+      { room: 'IK7M2Q', name: 'A', clientId: idFor('A') }, // 含被排除的 I
+      { room: 'K7M2Q0', name: 'A', clientId: idFor('A') }, // 含被排除的 0
+      { room: 'K7M2QP', name: '', clientId: idFor('A') },
+      { room: 'K7M2QP', name: '   ', clientId: idFor('A') },
+      { room: 'K7M2QP', name: '\u0000\u0007', clientId: idFor('A') },
+      { room: 'K7M2QP', name: 'x'.repeat(13), clientId: idFor('A') },
+    ];
+    for (const req of bad) {
+      const c = new FakeConn();
+      hub.connect(c).onMessage({ t: 'join', version: PROTOCOL_VERSION, ...req });
+      const label = JSON.stringify(req);
+      expect(c.last('error'), label).toBeDefined();
+      expect(c.closed, label).toBe(true);
+      expect(c.last('joined'), label).toBeUndefined();
+    }
+  });
+
+  run('名字里的控制字符被**去掉**而不是整条拒掉；12 个码点算合法', () => {
+    const hub = hubWith();
+    const c = new FakeConn();
+    hub.connect(c).onMessage(joinReq('K7M2QP', '\u0007小明', idFor('c')));
+    expect(c.last('joined')?.room.seats[0]?.name).toBe('小明');
+
+    const long = new FakeConn();
+    hub.connect(long).onMessage(joinReq('QQQQQQ', '𠮷'.repeat(12), idFor('long')));
+    expect(long.last('joined'), '12 个码点（24 个 UTF-16 单元）应当合法').toBeDefined();
+    expect(long.closed).toBe(false);
+  });
+});
+
+describe('★ W-73 房间生命周期', () => {
+  run('★ 全桌无人在线满 10 分钟 ⇒ 房间被删；没到就留着', () => {
+    const hub = new RoomHub({ map: loadMap(), globalMapId: 0, seedFor: () => 4242, roomIdleMs: 600_000 });
+    const a = new FakeConn();
+    const ha = hub.connect(a);
+    ha.onMessage(joinReq('K7M2QP', 'A', idFor('A')));
+    expect(hub.roomInfo('K7M2QP')).not.toBeNull();
+
+    // 有人在线：扫描只把「无人」的计时清掉，不删
+    hub.sweepDisconnected(1_000);
+    expect(hub.roomInfo('K7M2QP')).not.toBeNull();
+
+    // 掉线：第一次扫描记下「从此刻起无人」
+    ha.onClose(2_000);
+    hub.sweepDisconnected(2_000);
+    expect(hub.roomInfo('K7M2QP')).not.toBeNull();
+
+    // 差 1 ms 还在
+    hub.sweepDisconnected(2_000 + 599_999);
+    expect(hub.roomInfo('K7M2QP')).not.toBeNull();
+
+    // 满 10 分钟：删
+    hub.sweepDisconnected(2_000 + 600_000);
+    expect(hub.roomInfo('K7M2QP')).toBeNull();
+  });
+
+  run('掉线后**又有人进来** ⇒ 计时清零，房间不会被回收', () => {
+    const hub = new RoomHub({ map: loadMap(), globalMapId: 0, seedFor: () => 4242, roomIdleMs: 600_000 });
+    const a = new FakeConn();
+    const ha = hub.connect(a);
+    ha.onMessage(joinReq('K7M2QP', 'A', idFor('A')));
+    ha.onClose(0);
+    hub.sweepDisconnected(1_000); // emptySince = 1000
+
+    const b = new FakeConn();
+    hub.connect(b).onMessage(joinReq('K7M2QP', 'B', idFor('B')));
+    hub.sweepDisconnected(500_000);
+    expect(hub.roomInfo('K7M2QP')).not.toBeNull();
+    // 再过很久（B 还连着）也不删
+    hub.sweepDisconnected(5_000_000);
+    expect(hub.roomInfo('K7M2QP')).not.toBeNull();
+  });
+
+  run('★ 同时存在的房间上限 50：第 51 个被拒，**已有的照常进出**', () => {
+    const hub = hubWith();
+    for (let i = 0; i < 50; i++) {
+      const c = new FakeConn();
+      hub.connect(c).onMessage(joinReq(roomCodeOf(i), 'P', idFor(`p${i}`)));
+      expect(c.last('joined'), `第 ${i + 1} 間`).toBeDefined();
+    }
+    const over = new FakeConn();
+    hub.connect(over).onMessage(joinReq(roomCodeOf(50), 'P', idFor('over')));
+    expect(over.last('error')?.message).toContain('房間已滿');
+    expect(over.last('joined')).toBeUndefined();
+    expect(over.closed).toBe(false); // 房间满了只是拒绝这一次，不必断开
+
+    // 已有的第 1 间照常进人
+    const again = new FakeConn();
+    hub.connect(again).onMessage(joinReq(roomCodeOf(0), 'Q', idFor('q')));
+    expect(again.last('joined')).toBeDefined();
+
+    // 上限判的是**当前**房间数：回收掉一间之后（这里靠 `roomIdleMs: 0` 的一次扫描）
+    // 立刻又能建新的 —— 不是「一辈子只许建 50 间」。
+    const reaper = new RoomHub({
+      map: loadMap(),
+      globalMapId: 0,
+      seedFor: () => 4242,
+      maxRooms: 1,
+      roomIdleMs: 0,
+    });
+    const first = new FakeConn();
+    const hFirst = reaper.connect(first);
+    hFirst.onMessage(joinReq('AAAAAA', 'P', idFor('p')));
+    expect(first.last('joined')).toBeDefined();
+    const second = new FakeConn();
+    reaper.connect(second).onMessage(joinReq('BBBBBB', 'P', idFor('q')));
+    expect(second.last('error')?.message).toContain('房間已滿');
+
+    hFirst.onClose(1); // 上一间没人了
+    reaper.sweepDisconnected(2); // `roomIdleMs: 0` ⇒ 一次扫描就回收
+    expect(reaper.roomInfo('AAAAAA')).toBeNull();
+    const third = new FakeConn();
+    reaper.connect(third).onMessage(joinReq('CCCCCC', 'P', idFor(ROOM)));
+    expect(third.last('joined')).toBeDefined();
   });
 });

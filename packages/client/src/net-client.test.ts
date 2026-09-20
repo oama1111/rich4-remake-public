@@ -17,6 +17,8 @@ function harness(extra: Partial<NetClientOptions> = {}) {
     {
       room: 'r1',
       name: '小明',
+      // ★ W-73：join 必带的身份令牌
+      clientId: CLIENT_ID,
       onStart: (s) => events.push(`start:${s.seed}`),
       onAction: (action, seq) => {
         applied.push({ action, seq });
@@ -47,6 +49,9 @@ function harness(extra: Partial<NetClientOptions> = {}) {
 const roll: Action = { type: 'rollDice' };
 const step: Action = { type: 'step' };
 
+/** ★ W-73：join 必带的身份令牌（32 位小写十六进制） */
+const CLIENT_ID = '0123456789abcdef0123456789abcdef';
+
 describe('NetClient', () => {
   it('join 带协议版本与房间名；start / submit 只发消息不施加', () => {
     const h = harness();
@@ -54,7 +59,7 @@ describe('NetClient', () => {
     h.client.start();
     h.client.submit(roll);
     expect(h.sent).toEqual([
-      { t: 'join', version: PROTOCOL_VERSION, room: 'r1', name: '小明' },
+      { t: 'join', version: PROTOCOL_VERSION, room: 'r1', name: '小明', clientId: CLIENT_ID },
       { t: 'start' },
       { t: 'intent', action: roll },
     ]);
@@ -145,7 +150,14 @@ describe('NetClient', () => {
   it('重连：join 带 since，本地从 since+1 开始期待', () => {
     const h = harness({ since: 41 });
     h.client.join();
-    expect(h.sent[0]).toEqual({ t: 'join', version: PROTOCOL_VERSION, room: 'r1', name: '小明', since: 41 });
+    expect(h.sent[0]).toEqual({
+      t: 'join',
+      version: PROTOCOL_VERSION,
+      room: 'r1',
+      name: '小明',
+      clientId: CLIENT_ID,
+      since: 41,
+    });
     expect(h.client.expectedSeq).toBe(42);
     h.push({ t: 'action', seq: 40, action: roll });
     h.push({ t: 'action', seq: 41, action: roll });

@@ -21,7 +21,20 @@ import {
 } from '@rich4/core';
 import { RoomHub, type Conn } from './hub.ts';
 
+const E2E = 'E2E2E2';
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
+/**
+ * ★ W-73：`join` 多了必填的 `clientId`。测试里按名字派生一个稳定的 32 位十六进制 ——
+ * 同名 ⇒ 同身份，于是「两个同名的人各占一座」要靠**显式传不同的 clientId** 来构造
+ * （那正是 W-73 §3 要钉住的判据）。
+ */
+const idFor = (seed: string): string =>
+  [...seed]
+    .map((c) => c.charCodeAt(0).toString(16).padStart(2, '0'))
+    .join('')
+    .padEnd(32, '0')
+    .slice(0, 32);
+
 const run = existsSync(MAP) ? it : it.skip;
 
 class Client implements Conn {
@@ -72,14 +85,14 @@ describe('★ 联机端到端', () => {
     const host = new Client(map, topo);
     const watchers = [new Client(map, topo), new Client(map, topo), new Client(map, topo)];
     const hHost = hub.connect(host);
-    hHost.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'e2e', name: 'host' });
+    hHost.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: E2E, name: 'host', clientId: idFor('host') });
     const hw = watchers.map((w, i) => {
       const h = hub.connect(w);
-      h.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'e2e', name: `w${i}` });
+      h.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: E2E, name: `w${i}`, clientId: idFor(`w${i}`) });
       return h;
     });
     hHost.onMessage({ t: 'start' });
-    const room = hub.room('e2e')!;
+    const room = hub.room(E2E)!;
 
     // 真人座位 0..3 都是真人（四个客户端），每到谁就由那个客户端用脚本决定并发意图
     const handles = [hHost, ...hw];

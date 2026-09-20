@@ -50,6 +50,14 @@
       #loadhint { color: #8d95a5; font-size: 12px; margin-bottom: 8px; }
       #loadhint[hidden] { display: none; }
       #loadretry[hidden] { display: none; }
+      /* ★ W-73 大厅里的「複製邀請連結」—— DOM 按钮，盖在 canvas 下缘居中 */
+      #invite {
+        position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 40;
+        padding: 8px 16px; border-radius: 8px; border: 1px solid #3a5a83;
+        background: #22405f; color: #e9eef7; cursor: pointer; font: 600 13px/1.2 inherit;
+      }
+      #invite:hover { background: #2c5280; }
+      #invite[hidden] { display: none; }
       #interaction {
         margin: 10px 0; padding: 10px; border-radius: 8px;
         background: #232a38; border: 1px solid #3a4a68;
@@ -68,11 +76,12 @@
       <div id="loadbar" hidden><div id="loadfill"></div></div>
       <div id="loadhint" hidden>首次載入約 130 MB，之後會緩存在本機</div>
       <button id="loadretry" type="button" hidden>重試</button>
-      <div id="players"></div>
-      <div id="interaction" hidden></div>
+      <div id="players"></div>      <div id="interaction" hidden></div>
       <div class="row" id="actions"></div>
       <div id="log"></div>
     </aside>
+    <!-- ★ W-73 大厅里的「複製邀請連結」；平时 hidden，只有在大厅且已联机时露出来 -->
+    <button id="invite" type="button" hidden>複製邀請連結</button>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

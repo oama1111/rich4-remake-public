@@ -29,6 +29,16 @@ import {
 } from '@rich4/core';
 import { RoomHub, type Conn } from './hub.ts';
 
+/** ★ W-73：`join` 多了必填的 `clientId`；测试里按名字派生一个稳定的 32 位十六进制 */
+const idFor = (seed: string): string =>
+  [...seed]
+    .map((c) => c.charCodeAt(0).toString(16).padStart(2, '0'))
+    .join('')
+    .padEnd(32, '0')
+    .slice(0, 32);
+
+
+const ROOM = 'K7M2QP';
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 
@@ -112,11 +122,11 @@ function play(seed: number, turns: number): Played {
   const clients = Array.from({ length: HUMANS }, () => new Client(map, topo));
   const handles = clients.map((c, i) => {
     const h = hub.connect(c);
-    h.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: 'r', name: `H${i}` });
+    h.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: `H${i}`, clientId: idFor(`H${i}`) });
     return h;
   });
   handles[0]!.onMessage({ t: 'start' }); // 空座位由 hub 补电脑 ⇒ 座位 2、3 是电脑
-  const room = hub.room('r')!;
+  const room = hub.room(ROOM)!;
 
   let humanBidOnComputerTurn = 0;
   let proxyRejected = 0;
