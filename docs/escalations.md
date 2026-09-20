@@ -953,3 +953,45 @@
   按 WORKPLAN §2 规则 5（原版没有的 UI 一律不加），本卡**没有**把价钱加回去，
   只加了 `pickerShowsPrice()` 这条唯一闸门 + 「画出来的字符串里没有价钱」的行为钉子。
   若首席其实**要**那个价钱，请明示（那是给原版补 UI，属规则 5 的例外）。
+
+### ⏸ E-21（2026-09-19）W-51：真人路径 soak **到不了 60 回合** —— 卡在「脚本答不掉的交互屏/框」，不是回合驱动停摆
+
+- 关联任务：W-51（§2.4 的浏览器长跑验收）。**需要 W-14（真人路径要能过每一块整屏）先落地。**
+- 现象：`tools/soak-browser.js` 的真人路径（`?screen=game&humans=1&ai=3&map=0&seed=7&chars=0,3,5,7&humanPath=1`）
+  用**独立 Chromium**（Playwright，脚本 `.qa-tmp/soak-w51-pw.cjs`，不入库）跑了 5 次，最长 **26 回合**
+  （另一次 17、一次 9、两次 3~5），每次都停在**通用停摆**（`stalls`：同一个
+  `phase|currentPlayer|pending` 连续 300 拍 = 60 s 没变），从没跑到 60。五次里：
+  `humanStalls: []`、`soakDispatches: 0`、`goMisses: 0`、`errors: []`、`pageerror: []` 全程成立。
+
+  停摆那一刻的**判据快照**（我在 `main.ts` 的 `__rich4.debug` 里临时挂了一个只读钩子
+  `__w51stage()`，取的就是 `stageBusyFlags()` / `stageBusy()` / `speechQueue.length` /
+  `deferredSpeech`，**排完已删**）：
+
+  | 停摆的 `k` | `dialog` | `w51.busy` / 九位 | 结论 |
+  |---|---|---|---|
+  | `turnEnd\|0\|buyShares` | 認購股份框，15 颗钮**全是空 label** + 一颗「取消」 | `false`，九位全 false，`speech:0` `deferred:false` | 脚本点空 label 的钮 ⇒ 金额永远填不上 |
+  | `turnEnd\|0\|shop` | 百貨公司「EXIT」@ (222,225) | `false`，同上 | 脚本连点 EXIT 313 次，屏没关 |
+  | `turnEnd\|0\|bail` | 保釋屏（`r.dialog()` 只见「取消」） | —（该次还没挂钩子） | 保釋屏要**点牢房格子**，不是对话框 |
+  | `awaitingDecision\|2\|auction` | `null`，`overlay: 'auction'` | `false`，九位全 false | 競價屏要自己出价，脚本无从下手 |
+  | `turnEnd\|1\|-`（无 pending、骰子 idle） | `null` | —（该次还没挂钩子） | **唯一一条还没拿到九位快照的**，见下 |
+
+- 已试过：
+  1. gstack `browse eval`（共用浏览器）→ 被并行代理的 `goto`/`newtab` 顶掉（22 次 reload），
+     换成**独立 Playwright Chromium** 才拿到连续跑；
+  2. 800×600 与 1280×960（整数倍）两种视口，停摆点一样 ⇒ 不是点击坐标缩放的问题；
+  3. 同一 URL 去掉 `humanPath=1` 跑 legacy 路径：**61 回合、`stalls: []`、`errors: []`、
+     `humanStalls: []`、`days` 到 16** —— 引擎层没有停摆；
+  4. 停摆那一刻的 `stageBusy()` 九位在能取到的三次里**全是 false**（见上表）⇒ 卡的不是
+     `holdForActorWalk` / `stageBusy()` 那套闸，而是「等真人答一块屏」。
+- 我的怀疑（**没当结论写进代码**）：
+  1. 四个交互屏里三个是**脚本层的缺口**（`buyShares` 的空 label 钮、`shop` 的 EXIT 坐标、
+     `auction` 的竞价），正好是 W-14 的题面「按该屏的真实退出方式操作」；
+  2. `bail` 那一次更可能连**屏本身**都要看：脚本 `r.dialog()` 拿到的是「取消」，
+     而保釋屏的命中判据是牢房格（`bail-screen.ts` 的 `[x0,x0+0x79]×[y0,y0+0x89]`）；
+  3. `turnEnd|1|-`（无 pending、骰子 idle、当前玩家是**电脑**）那一条**没能复现**到带快照；
+     它要么是「电脑在 turnEnd 无事可做，已停手」那条 `decideAction` 返回 null 的路
+     （core 层，与 W-51 无关），要么是 NPC 段（`pendingNpcSlots`）跑得久。**请首席在
+     W-14 之后重跑一次这条 URL**；若仍停在 `turnEnd|N|-`，那就是引擎层的问题。
+- 阻塞程度：**不阻塞** W-51 的机制与单测（`stage-gate.test.ts` 正反两条死锁用例 +
+  `speech.test.ts` 的表驱动 order 全绿；legacy 61 回合 0 停摆）。阻塞的只是
+  §2.4 那条「真人路径 60 回合」的**原始验收口径** —— 它现在被 W-14 的缺口挡住。

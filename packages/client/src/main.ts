@@ -3770,6 +3770,8 @@ function queueSpeech(lines: readonly SpeechLine[]): void {
   const deferred: SpeechBubble[] = [];
   const immediate: SpeechBubble[] = [];
   for (const line of lines) {
+    // ⚠⚠ W-51 **临时取证日志**（取完这段日志就删）：让「台词 vs 影片」的次序在 `#log` 里可读
+    log(`台詞：${line.order} 事件 ${line.bubble.event}（${line.bubble.character}）`);
     if (deferSpeech(line.order, busy)) deferred.push(line.bubble);
     else immediate.push(line.bubble);
   }
@@ -6114,6 +6116,8 @@ function speechTick(now: number): void {
     const held = deferredSpeech;
     if (held !== null) {
       deferredSpeech = null;
+      // ⚠⚠ W-51 临时取证日志（取完就删）
+      log(`台詞：押後的 ${held.length} 句上台（演出收攤）`);
       if (speechQueue.push(held, now) > 0) requestRender();
     }
   }
