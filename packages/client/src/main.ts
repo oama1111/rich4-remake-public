@@ -6318,7 +6318,16 @@ function drawGameStage(): void {
   } else if (awaitingHumanRoll() && me !== undefined) {
     // ★ 原版的 GO 鈕 + 骰子数切换（Panel.mkf 资源 7）。
     //   位置是**可拖的**（Q-UI-6），存在 `goButton` 里（= 原版 `[0x475284]/[0x475288]`）
-    drawAdvance(boardCtx, uiSprite, goImageOf(me), maxDiceOf(me), me.ndices, goButton.position());
+    drawAdvance(
+      boardCtx,
+      uiSprite,
+      goImageOf(me),
+      maxDiceOf(me),
+      me.ndices,
+      goButton.position(),
+      me.trafficMethod & 3,
+      me.blocking.stopping !== 0,
+    );
   } else if (state.phase === 'moving' && state.dice.length > 0) {
     drawDice(boardCtx, uiSprite, state.dice, currentScreenDir());
   }
@@ -7999,7 +8008,7 @@ function bindInput(): void {
         inputTrace.rollRequested = false;
         inputTrace.earlyReturn = 'go-branch';
         // 切换钮盖在 GO 的下缘上，必须先问它（原版也是先判那几颗）
-        const n = hitDiceToggle(gx, gy, maxDiceOf(me0), goButton.position());
+        const n = hitDiceToggle(gx, gy, maxDiceOf(me0), goButton.position(), me0.trafficMethod & 3);
         inputTrace.diceToggle = n;
         if (n !== null) {
           inputTrace.earlyReturn = 'dice-toggle';

@@ -23,6 +23,7 @@ import {
   samePos,
 } from './go-button.ts';
 import { hitAdvance, hitDiceToggle, diceToggleRect } from './dialog.ts';
+import { DICE_TOGGLE_LAYOUT, DICE_TOGGLE_X } from './gameui.ts';
 
 /** 屏幕坐标 → 棋盘画布坐标（= 减画布原点） */
 const board = (x: number, y: number) => ({ x: x - GO_CANVAS_ORIGIN.x, y: y - GO_CANVAS_ORIGIN.y });
@@ -58,14 +59,13 @@ describe('GO 鈕的初值与坐标空间', () => {
     expect(hitAdvance(moved.x, moved.y, moved)).toBe(true);
   });
 
-  it('骰子数切换钮跟着 GO 走 —— @source VA 0x00417309 `x+7 / y+0x1a`', () => {
+  it('骰子数切换钮跟着 GO 走 —— @source VA 0x00417309 `x+7 / y+0x1a`（步行支）', () => {
     const pos = board(180, 120);
     // GO 在屏幕 (180,120)（画布 180,80）；切换钮在屏幕 (187,146) → 画布 (187,106)
-    expect(diceToggleRect(0, pos)).toEqual({ x: 187, y: 106, w: 15, h: 15 });
-    expect(diceToggleRect(1, pos)).toEqual({ x: 187, y: 125, w: 15, h: 15 }); // 步进 19
-    expect(hitDiceToggle(187, 106, 3, pos)).toBe(1);
-    expect(hitDiceToggle(187, 125, 3, pos)).toBe(2);
-    expect(hitDiceToggle(187, 106, 3, board(400, 300))).toBeNull(); // 位置变了就点不着
+    expect(diceToggleRect(0, pos, 0)).toEqual({ x: 187, y: 106, w: 15, h: 15 });
+    // ★ 步行支只有 1 颗 ⇒ `maxDice` 传 1（`maxDiceOf()` 由交通方式推出，也是 1）
+    expect(hitDiceToggle(187, 106, 1, pos, 0)).toBe(1);
+    expect(hitDiceToggle(187, 106, 1, board(400, 300), 0)).toBeNull(); // 位置变了就点不着
   });
 });
 
@@ -151,5 +151,65 @@ describe('拖动序列：按下 → 移 → 抬起', () => {
     go.reset();
     expect(go.dragging()).toBe(false);
     expect(go.position()).toEqual(board(180, 120));
+  });
+});
+
+/*
+ * ★★ W-65：骰子数切换钮的纵向排布**按交通方式分三支**。
+ *
+ * 原版 @source `0x004172fb jmp [eax*4 + 0x417181]`（`eax = traffic & 3`，
+ * 表 = `[0x417302, 0x417353, 0x417401, 0x417302]`）：
+ *   0 步行（1 颗）`dy = 0x1a`；1 機車（2 颗）`dy = 0x10, pitch = 19`；
+ *   2 汽車（3 颗）`dy = 9, pitch = 16`；3 与 0 同一支。
+ * 先前只有一套 `{dy: 0x1a, pitch: 19}` —— 開汽車时第三颗底边 79 > GO 高 67（冲出 GO）。
+ */
+describe('★★ W-65 骰子数切换钮按交通方式排布', () => {
+  const pos = board(180, 120); // GO 画布左上 (180,80)
+  const goY = 80;
+
+  it('★ 三种交通方式的每一颗 y（相对 GO 左上角）逐项等于原版表', () => {
+    const want: readonly (readonly [number, number[]])[] = [
+      [0, [0x1a]], // 步行：26
+      [1, [0x10, 0x10 + 19]], // 機車：16 / 35
+      [2, [9, 9 + 16, 9 + 32]], // 汽車：9 / 25 / 41
+      [3, [0x1a]], // 3 与 0 同一支
+    ];
+    for (const [traffic, ys] of want) {
+      ys.forEach((dy, i) => {
+        expect(diceToggleRect(i, pos, traffic).y - goY, `traffic=${traffic} 第 ${i} 颗`).toBe(dy);
+      });
+    }
+  });
+
+  it('★ 步距也逐支对：步行 0 颗、機車 2 颗、汽車 3 颗', () => {
+    expect(DICE_TOGGLE_LAYOUT[0]).toEqual({ dy: 0x1a, pitch: 0 });
+    expect(DICE_TOGGLE_LAYOUT[1]).toEqual({ dy: 0x10, pitch: 19 });
+    expect(DICE_TOGGLE_LAYOUT[2]).toEqual({ dy: 9, pitch: 16 });
+    expect(DICE_TOGGLE_LAYOUT[3]).toEqual(DICE_TOGGLE_LAYOUT[0]);
+    // 反证：把它们混成一套（旧实现）时，汽車第三颗会落到 26 + 2×19 = 64
+    expect(DICE_TOGGLE_LAYOUT[2]!.dy + 2 * DICE_TOGGLE_LAYOUT[2]!.pitch).not.toBe(64);
+  });
+
+  it('★★ 開汽車时第三颗不冲出 GO 鈕（底边 9 + 2×16 + 15 = 56 ≤ 67）', () => {
+    const r = diceToggleRect(2, pos, 2);
+    expect(r.y - goY).toBe(41);
+    expect(r.y - goY + r.h).toBeLessThanOrEqual(GO_SIZE.h); // 56 ≤ 67
+    // 反证：旧实现（dy 26 / pitch 19）第三颗底边 79 —— 冲出 GO
+    expect(0x1a + 2 * 19 + 15).toBeGreaterThan(GO_SIZE.h);
+  });
+
+  it('★ 命中与绘制同一支：三种交通方式各自的每颗中心都命中自己那一号', () => {
+    for (const traffic of [0, 1, 2, 3]) {
+      const max = [1, 2, 3, 1][traffic]!;
+      for (let i = 0; i < max; i++) {
+        const r = diceToggleRect(i, pos, traffic);
+        expect(hitDiceToggle(r.x + r.w / 2, r.y + r.h / 2, max, pos, traffic)).toBe(i + 1);
+      }
+    }
+  });
+
+  it('★ 横向：亮图 +7、暗图 +8（三支相同）', () => {
+    expect(DICE_TOGGLE_X).toEqual({ lit: 7, dim: 8 });
+    expect(diceToggleRect(0, pos, 0).x - 180).toBe(7);
   });
 });

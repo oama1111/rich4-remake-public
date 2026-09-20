@@ -119,11 +119,31 @@ export const DICE_TOGGLE_IMAGE: readonly (readonly [number, number])[] = [
 ];
 
 /**
- * 骰子数切换钮画在 GO 的下方。
- * @source VA 0x00417309 `y + 0x1a`、0x0041731b `x + 7`（暗的那张是 `x + 8`）；
- *   多颗时纵向步进 19（0x0041737e 起 `eax = 19*i` 再加 y + 0x10）。
+ * 骰子数切换钮的**纵向排布**，**按交通方式分三支**（W-65）。
+ *
+ * 原版 @source `0x004172fb jmp [eax*4 + 0x417181]`（`eax = traffic & 3`，
+ * 表 = `[0x417302, 0x417353, 0x417401, 0x417302]`）：
+ *
+ * | `traffic & 3` | 颗数 | 第 i 颗的 y（相对 GO 左上角）| @source |
+ * |---|---|---|---|
+ * | 0 步行 / 3 | 1 | `0x1a`（26）| `0x00417309 add eax, 0x1a` |
+ * | 1 機車 | 2 | `0x10 + 19 × i`（16 / 35）| `0x0041737e..0x00417390`（`i*20 − i` 再 `+0x10`）|
+ * | 2 汽車 | 3 | `9 + 16 × i`（9 / 25 / 41）| `0x0041742c mov eax,ebx / shl eax,4 / … / 0x00417437 add eax, 9` |
+ *
+ * ⚠️ 先前这里只有一套 `{ dx: 7, dy: 0x1a, pitch: 19 }` —— 把**单颗**那一支的 `dy`
+ *   与**機車**那一支的步距混成了一套，于是開汽車时三颗按 26/45/64 排、第三颗
+ *   （底边 79）冲出 GO 鈕（高 67）。**逐支照抄**，不要合成一条公式。
  */
-export const DICE_TOGGLE_AT = { dx: 7, dy: 0x1a, pitch: 19 } as const;
+export const DICE_TOGGLE_LAYOUT: readonly { dy: number; pitch: number }[] = [
+  { dy: 0x1a, pitch: 0 }, // 0 步行：1 颗
+  { dy: 0x10, pitch: 19 }, // 1 機車：2 颗（16 / 35）
+  { dy: 9, pitch: 16 }, // 2 汽車：3 颗（9 / 25 / 41）
+  { dy: 0x1a, pitch: 0 }, // 3：与 0 同一支（跳表第 4 项指回 0x417302）
+];
+
+/** 切换钮的横向：**亮**的那张贴 `GO.x + 7`、**暗**的那张贴 `GO.x + 8`（三支相同）
+ *  @source `0x00417320 add eax,7` / `0x00417345 add eax,8` */
+export const DICE_TOGGLE_X = { lit: 7, dim: 8 } as const;
 export const DICE_TOGGLE_SIZE = { w: 15, h: 15 } as const;
 
 /**
