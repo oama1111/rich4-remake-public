@@ -14,6 +14,11 @@
 #   bash tools/net-e2e.sh           # 默认 2 座（全真人）+ 6 秒托管阈值
 #   SEATS=4 bash tools/net-e2e.sh   # 4 座（2 真人 + 2 电脑）
 #   SEATS=4 SEED=968029213 bash tools/net-e2e.sh   # 固定种子复现（这个种子是 issue #9 的现场：第 7 回合开拍）
+#
+# ★ W-71 起服务器默认装**访问密码**（RICH4_PASSWORD / RICH4_COOKIE_SECRET 从环境变量来）。
+#   这条脚本跑在本机、验的是联机本身，不验门，故起服务器时带 `--no-gate`
+#   （`--no-gate` 只在 `--host` 是本机时允许）。门自己的验收见
+#   `docs/acceptance/w71-20260920.md`。
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -59,7 +64,7 @@ for line in sys.stdin:
 " | while read -r id; do "$B" closetab "$id" >/dev/null 2>&1; done
 sleep 1
 ( cd "$ROOT" && node --experimental-transform-types packages/server/src/cli.ts \
-    --port "$PORT" --map 0 --seats "$SEATS" --takeover "$TAKEOVER" ${SEED:+--seed "$SEED"} > "$OUT/server.log" 2>&1 & )
+    --port "$PORT" --map 0 --seats "$SEATS" --takeover "$TAKEOVER" --no-gate ${SEED:+--seed "$SEED"} > "$OUT/server.log" 2>&1 & )
 sleep 3
 head -1 "$OUT/server.log"
 

@@ -15,7 +15,8 @@ import { join } from 'node:path';
 import { connect } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import type { Rich4Map } from '@rich4/core';
-import { createHttpHandler, startHttpServer } from './http-server.ts';
+import { createHttpHandler, startHttpServer, startServer } from './http-server.ts';
+import { GATE_COOKIE, Gate } from './gate.ts';
 import { MKF_WHITELIST, SECURITY_HEADERS } from './static.ts';
 
 // ============================================================
@@ -42,15 +43,16 @@ function tempDir(prefix: string): string {
   return d;
 }
 
-/** 造一份「像站点、像素材目录」的临时树，并起一个真服务器 */
+/** 造一份「像站点、像素材目录」的临时树，并起一个真服务器（`gate` 给了就装门） */
 async function withServer(
   seed: (dirs: { web: string; assets: string }) => void,
   fn: (f: { port: number; web: string; assets: string }) => Promise<void>,
+  gate?: Gate,
 ): Promise<void> {
   const web = tempDir('rich4-w70-web-');
   const assets = tempDir('rich4-w70-assets-');
   seed({ web, assets });
-  const server = createServer(createHttpHandler({ webDir: web, assetDir: assets }));
+  const server = createServer(createHttpHandler({ webDir: web, assetDir: assets, ...(gate === undefined ? {} : { gate }) }));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as AddressInfo).port;
   leftovers.push({
@@ -59,6 +61,33 @@ async function withServer(
       server.close();
     },
   });
+  await fn({ port, web, assets });
+}
+
+/**
+ * 与 `withServer` 同一套，但**走 `startHttpServer`** —— 只有它挂了 WebSocket 端点。
+ * 凡是碰 `/ws` 的用例都必须用这一个（`createServer(createHttpHandler(...))` 的
+ * `upgrade` 事件没人接，socket 会被直接关掉）。
+ */
+async function withWsServer(
+  seed: (dirs: { web: string; assets: string }) => void,
+  fn: (f: { port: number; web: string; assets: string }) => Promise<void>,
+  gate?: Gate,
+): Promise<void> {
+  const web = tempDir('rich4-w70-web-');
+  const assets = tempDir('rich4-w70-assets-');
+  seed({ web, assets });
+  const running = await startHttpServer({
+    port: 0,
+    assetDir: assets,
+    webDir: web,
+    map: STUB_MAP,
+    globalMapId: 0,
+    seedFor: () => 1,
+    ...(gate === undefined ? {} : { gate }),
+  });
+  leftovers.push({ close: () => running.close() });
+  const port = (running.server.address() as AddressInfo).port;
   await fn({ port, web, assets });
 }
 
@@ -76,7 +105,7 @@ function seedAssets(assets: string): void {
 function get(
   port: number,
   path: string,
-  opts: { headers?: Record<string, string>; method?: string } = {},
+  opts: { headers?: Record<string, string>; method?: string; body?: string } = {},
 ): Promise<Served> {
   return new Promise<Served>((resolve, reject) => {
     const req = request(
@@ -94,13 +123,25 @@ function get(
       },
     );
     req.on('error', reject);
-    req.end();
+    req.end(opts.body);
+  });
+}
+
+/** 表单登录 —— `application/x-www-form-urlencoded` */
+function login(port: number, password: string): Promise<Served> {
+  return get(port, '/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `password=${encodeURIComponent(password)}`,
   });
 }
 
 /** 原始 socket 发一个升级请求，返回响应头那几行 —— 不经过 http 客户端 */
-function upgrade(port: number, path: string): Promise<string> {
+function upgrade(port: number, path: string, headers: Record<string, string> = {}): Promise<string> {
   return new Promise<string>((resolve, reject) => {
+    const extra = Object.entries(headers)
+      .map(([k, v]) => `${k}: ${v}\r\n`)
+      .join('');
     const sock = connect(port, '127.0.0.1', () => {
       sock.write(
         `GET ${path} HTTP/1.1\r\n` +
@@ -108,7 +149,9 @@ function upgrade(port: number, path: string): Promise<string> {
           'Upgrade: websocket\r\n' +
           'Connection: Upgrade\r\n' +
           'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
-          'Sec-WebSocket-Version: 13\r\n\r\n',
+          'Sec-WebSocket-Version: 13\r\n' +
+          extra +
+          '\r\n',
       );
     });
     let buf = '';
@@ -405,5 +448,256 @@ describe('★ startHttpServer 与 /ws', () => {
     leftovers.push({ close: () => running.close() });
     const addr = running.server.address() as AddressInfo;
     expect(addr.address).toBe('127.0.0.1');
+  });
+});
+
+// ============================================================
+//  访问密码（W-71）
+// ============================================================
+
+const PASSWORD = 'open-sesame-2';
+const SECRET = 'k'.repeat(32);
+
+/** 默认**不真睡** —— 500 ms × 十几次会把整个测试套拖慢；要验真实耗时的用例自己建一个 */
+function makeGate(extra: { now?: () => number; maxAttempts?: number; windowMs?: number } = {}): Gate {
+  return new Gate({ password: PASSWORD, cookieSecret: SECRET, sleep: () => Promise.resolve(), ...extra });
+}
+
+/** 从 `Set-Cookie` 里取票值 */
+function ticketOf(res: Served): string {
+  const raw = res.headers['set-cookie'];
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof first !== 'string') throw new Error('没有 Set-Cookie');
+  const pair = first.split(';')[0] ?? '';
+  return pair.slice(pair.indexOf('=') + 1);
+}
+
+describe('★ 访问密码 —— 整站一道门（W-71）', () => {
+  it('没带票：浏览器取 / → 303 去 /login，素材 → 401；robots 与 login 免检', async () => {
+    const gate = makeGate();
+    await withServer(
+      (d) => seedAssets(d.assets),
+      async ({ port }) => {
+        const home = await get(port, '/', { headers: { Accept: 'text/html,application/xhtml+xml' } });
+        expect(home.status).toBe(303);
+        expect(home.headers['location']).toBe('/login');
+        // 三个安全头在 303 上也带着
+        for (const [k, v] of Object.entries(SECURITY_HEADERS)) expect(home.headers[k.toLowerCase()]).toBe(v);
+
+        const asset = await get(port, '/assets/game/Data.mkf');
+        expect(asset.status).toBe(401);
+
+        const robots = await get(port, '/robots.txt');
+        expect(robots.status).toBe(200);
+        expect(robots.body.toString()).toBe('User-agent: *\nDisallow: /\n');
+
+        const form = await get(port, '/login');
+        expect(form.status).toBe(200);
+        expect(form.body.toString()).toContain('type="password"');
+        expect(form.body.toString()).toContain('action="/login"');
+      },
+      gate,
+    );
+  });
+
+  it('错密码 → 401 同一张表单 +「密碼錯誤」，且**真的**等了 ≥ 450 ms', async () => {
+    // 这条用**真** sleep（不给 sleep 注入），验的就是那个常量延迟本身
+    const gate = new Gate({ password: PASSWORD, cookieSecret: SECRET });
+    await withServer(
+      () => undefined,
+      async ({ port }) => {
+        const t0 = Date.now();
+        const bad = await login(port, 'wrong-password');
+        const elapsed = Date.now() - t0;
+        expect(bad.status).toBe(401);
+        expect(bad.body.toString()).toContain('密碼錯誤');
+        expect(elapsed).toBeGreaterThanOrEqual(450);
+      },
+      gate,
+    );
+  });
+
+  it('窗口内第 6 次 POST → 429（前 5 次照常判密码）', async () => {
+    const gate = makeGate();
+    await withServer(
+      () => undefined,
+      async ({ port }) => {
+        for (let i = 1; i <= 5; i++) {
+          const r = await login(port, 'wrong-password');
+          expect(r.status, `第 ${i} 次`).toBe(401);
+        }
+        // 第 6 次**连对密码都不给试**
+        const sixth = await login(port, PASSWORD);
+        expect(sixth.status).toBe(429);
+        expect(sixth.headers['retry-after']).toBe('60');
+      },
+      gate,
+    );
+  });
+
+  it('篡改一位的票 / 过期的票 → 都当没带票', async () => {
+    let now = 1_000_000;
+    const gate = makeGate({ now: () => now });
+    await withServer(
+      (d) => seedAssets(d.assets),
+      async ({ port }) => {
+        const good = gate.issue();
+        const tampered = good.slice(0, -1) + (good.endsWith('0') ? '1' : '0');
+        const tamperedRes = await get(port, '/assets/game/Data.mkf', {
+          headers: { Cookie: `${GATE_COOKIE}=${tampered}` },
+        });
+        expect(tamperedRes.status).toBe(401);
+
+        const okRes = await get(port, '/assets/game/Data.mkf', { headers: { Cookie: `${GATE_COOKIE}=${good}` } });
+        expect(okRes.status).toBe(200);
+
+        now += 2_592_000 * 1000 + 1; // Max-Age 之后
+        const expired = await get(port, '/assets/game/Data.mkf', { headers: { Cookie: `${GATE_COOKIE}=${good}` } });
+        expect(expired.status).toBe(401);
+      },
+      gate,
+    );
+  });
+
+  it('对密码 → 发一张 HttpOnly/SameSite/Path/Max-Age 的票，之后 / 与素材与 /ws 三样都通', async () => {
+    const gate = makeGate();
+    await withWsServer(
+      (d) => {
+        seedAssets(d.assets);
+        seedWeb(d.web);
+      },
+      async ({ port }) => {
+        const ok = await login(port, PASSWORD);
+        expect(ok.status).toBe(303);
+        expect(ok.headers['location']).toBe('/');
+        const raw = ok.headers['set-cookie'];
+        const cookie = Array.isArray(raw) ? (raw[0] ?? '') : (raw ?? '');
+        expect(cookie).toContain(`${GATE_COOKIE}=`);
+        expect(cookie).toContain('HttpOnly');
+        expect(cookie).toContain('SameSite=Lax');
+        expect(cookie).toContain('Path=/');
+        expect(cookie).toContain('Max-Age=2592000');
+        expect(cookie).not.toContain('Secure'); // 没经 HTTPS 不加
+
+        const jar = { Cookie: `${GATE_COOKIE}=${ticketOf(ok)}` };
+        expect((await get(port, '/assets/game/Data.mkf', { headers: jar })).status).toBe(200);
+        expect((await get(port, '/', { headers: { Accept: 'text/html', ...jar } })).status).toBe(200);
+        const ws = await upgrade(port, '/ws', { ...jar, Origin: `http://127.0.0.1:${port}` });
+        expect(ws.startsWith('HTTP/1.1 101')).toBe(true);
+      },
+      gate,
+    );
+  });
+
+  it('经 HTTPS（X-Forwarded-Proto）才加 Secure', async () => {
+    const gate = makeGate();
+    await withServer(
+      () => undefined,
+      async ({ port }) => {
+        const res = await get(port, '/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Forwarded-Proto': 'https' },
+          body: `password=${PASSWORD}`,
+        });
+        const raw = res.headers['set-cookie'];
+        const cookie = Array.isArray(raw) ? (raw[0] ?? '') : (raw ?? '');
+        expect(cookie).toContain('Secure');
+      },
+      gate,
+    );
+  });
+
+  it('WS 升级：没票 → 401；票对了但 Origin 主机名不同 / 干脆没有 Origin → 403', async () => {
+    const gate = makeGate();
+    await withWsServer(
+      () => undefined,
+      async ({ port }) => {
+        expect((await upgrade(port, '/ws')).startsWith('HTTP/1.1 401')).toBe(true);
+        const jar = { Cookie: `${GATE_COOKIE}=${gate.issue()}` };
+        expect((await upgrade(port, '/ws', { ...jar, Origin: 'http://evil.example' })).startsWith('HTTP/1.1 403')).toBe(
+          true,
+        );
+        expect((await upgrade(port, '/ws', jar)).startsWith('HTTP/1.1 403')).toBe(true);
+        expect(
+          (await upgrade(port, '/ws', { ...jar, Origin: `http://127.0.0.1:${port}` })).startsWith('HTTP/1.1 101'),
+        ).toBe(true);
+      },
+      gate,
+    );
+  });
+
+  it('登录正文：超过 1 KB → 413；不是表单类型 → 400', async () => {
+    const gate = makeGate();
+    await withServer(
+      () => undefined,
+      async ({ port }) => {
+        const tooBig = await get(port, '/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `password=${'x'.repeat(2000)}`,
+        });
+        expect(tooBig.status).toBe(413);
+
+        const wrongType = await get(port, '/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: `password=${PASSWORD}`,
+        });
+        expect(wrongType.status).toBe(400);
+      },
+      gate,
+    );
+  });
+});
+
+describe('★ startServer —— 门从环境变量来', () => {
+  const base = { port: 0, map: STUB_MAP, globalMapId: 0, seedFor: () => 1 };
+
+  it('缺 RICH4_COOKIE_SECRET → 抛，且**报错文本里不含密码**', async () => {
+    const assets = tempDir('rich4-w70-assets-');
+    seedAssets(assets);
+    let text = '';
+    try {
+      await startServer({ ...base, assetDir: assets, env: { RICH4_PASSWORD: PASSWORD } });
+    } catch (err) {
+      text = String(err);
+    }
+    expect(text).toMatch(/RICH4_COOKIE_SECRET/);
+    expect(text).not.toContain(PASSWORD);
+  });
+
+  it('缺 RICH4_PASSWORD → 抛', async () => {
+    const assets = tempDir('rich4-w70-assets-');
+    seedAssets(assets);
+    await expect(startServer({ ...base, assetDir: assets, env: { RICH4_COOKIE_SECRET: SECRET } })).rejects.toThrow(
+      /RICH4_PASSWORD/,
+    );
+  });
+
+  it('两个都在 → 装门（不带票取素材得 401）', async () => {
+    const assets = tempDir('rich4-w70-assets-');
+    seedAssets(assets);
+    const running = await startServer({
+      ...base,
+      assetDir: assets,
+      env: { RICH4_PASSWORD: PASSWORD, RICH4_COOKIE_SECRET: SECRET },
+    });
+    leftovers.push({ close: () => running.close() });
+    const port = (running.server.address() as AddressInfo).port;
+    expect((await get(port, '/assets/game/Data.mkf')).status).toBe(401);
+    expect((await get(port, '/robots.txt')).status).toBe(200);
+  });
+
+  it('--no-gate：非本机地址拒绝启动；本机可以，且不受环境变量影响', async () => {
+    const assets = tempDir('rich4-w70-assets-');
+    seedAssets(assets);
+    await expect(startServer({ ...base, assetDir: assets, host: '0.0.0.0', noGate: true, env: {} })).rejects.toThrow(
+      /no-gate/,
+    );
+
+    const running = await startServer({ ...base, assetDir: assets, noGate: true, env: {} });
+    leftovers.push({ close: () => running.close() });
+    const port = (running.server.address() as AddressInfo).port;
+    expect((await get(port, '/assets/game/Data.mkf')).status).toBe(200);
   });
 });

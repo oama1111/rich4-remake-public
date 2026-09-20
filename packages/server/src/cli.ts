@@ -4,8 +4,11 @@
  *
  *   pnpm --filter @rich4/server start [--port 8787] [--host 127.0.0.1]
  *                                    [--web packages/client/dist-web] [--assets assets/game]
- *                                    [--map 0] [--seats 4] [--takeover 30000] [--seed N]
+ *                                    [--no-gate] [--map 0] [--seats 4] [--takeover 30000] [--seed N]
  *
+ * ★ 整站一道**访问密码**（W-71）：`RICH4_PASSWORD` 与 `RICH4_COOKIE_SECRET`
+ *   只从环境变量来，缺一个就**拒绝启动**（没有缺省密码，也不许写进仓库）。
+ *   `--no-gate` 只在 `--host` 是本机时允许。
  * ★ 一个进程、一个端口（任务书 §2）：静态站、原版素材、`/ws` 全在这一个
  *   `http.Server` 上。公网流量由 Caddy 反代进来，故 `--host` 缺省只听本机。
  * ★ 地图结构从随包的 `assets/game/map.mkf` 读（资源号 = 全局地图号×2+1，与 client/assets.ts 同）。
@@ -19,7 +22,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MkfArchive } from '@rich4/assets-pipeline';
 import { parseMap } from '@rich4/core';
-import { startHttpServer } from './http-server.ts';
+import { startServer } from './http-server.ts';
 
 function arg(name: string, dflt: number): number {
   const i = process.argv.indexOf(`--${name}`);
@@ -84,23 +87,40 @@ const mapFor = (id: number): ReturnType<typeof parseMap> | null => {
   }
 };
 
-const running = await startHttpServer({
-  port,
-  host,
-  assetDir,
-  ...(webDir === undefined ? {} : { webDir }),
-  map,
-  globalMapId,
-  mapFor,
-  seatCount,
-  takeoverAfterMs,
-  seedFor: () => (fixedSeed >= 0 ? fixedSeed >>> 0 : (Date.now() & 0x7fffffff) >>> 0),
-});
+/** 开发便利：整站不装门（只有本机允许，见 `startServer`） */
+const noGate = process.argv.includes('--no-gate');
+
+let running;
+try {
+  running = await startServer({
+    port,
+    host,
+    assetDir,
+    ...(webDir === undefined ? {} : { webDir }),
+    noGate,
+    map,
+    globalMapId,
+    mapFor,
+    seatCount,
+    takeoverAfterMs,
+    seedFor: () => (fixedSeed >= 0 ? fixedSeed >>> 0 : (Date.now() & 0x7fffffff) >>> 0),
+  });
+} catch (err) {
+  // ★ 缺环境变量 / --no-gate 用在非本机地址上 —— **拒绝启动**并打印原因。
+  //   注意：这里的文本只来自我们自己写的文案，绝不回显任何变量的值（W-71 §1）。
+  console.error(`起不來：${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
 console.log(
   `rich4 聯機伺服器：${running.url}/  ws ${running.url.replace(/^http/, 'ws')}/ws  地圖 ${globalMapId}（房主可在大廳換 0..7）  ${seatCount} 座  掉線 ${takeoverAfterMs / 1000}s 後電腦代打`,
 );
 console.log(`素材目錄：${assetDir}`);
 console.log(webDir === undefined ? '靜態站：未開（沒給 --web）' : `靜態站：${webDir}`);
+console.log(
+  noGate
+    ? '訪問密碼：**關掉了**（--no-gate，只有本機允許）'
+    : '訪問密碼：開著（RICH4_PASSWORD / RICH4_COOKIE_SECRET 從環境變數來）',
+);
 console.log(`客戶端（開發）：http://localhost:5173/?ws=${running.url.replace(/^http/, 'ws')}/ws&room=r1&name=小明`);
 
 process.on('SIGINT', () => {

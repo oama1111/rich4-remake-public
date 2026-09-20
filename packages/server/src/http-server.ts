@@ -19,6 +19,7 @@
 import { createReadStream, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
+import { LOGIN_PATH, ROBOTS_PATH, gateFromEnv, type Gate } from './gate.ts';
 import {
   ASSET_PREFIX,
   ROBOTS_TXT,
@@ -46,6 +47,11 @@ export interface HttpServerOptions extends WsServerOptions {
   webDir?: string;
   /** 原版素材目录（`cli.ts` 缺省 = 仓库的 `assets/game`） */
   assetDir: string;
+  /**
+   * 整站那道门（W-71）。不给 = 不装门 —— 只有 `startServer({noGate:true})`
+   * 与单测会这么用，`cli.ts` 走的是 `startServer`。
+   */
+  gate?: Gate;
 }
 
 export interface RunningHttpServer {
@@ -59,6 +65,8 @@ export interface RunningHttpServer {
 export interface HandlerOptions {
   assetDir: string;
   webDir?: string;
+  /** 整站那道门（W-71）；不给 = 全放行 */
+  gate?: Gate;
 }
 
 // ============================================================
@@ -68,17 +76,19 @@ export interface HandlerOptions {
 /**
  * 造一个请求处理器（不监听端口）。
  *
- * 拆出来是为了让单测能把它挂到任意端口上，也为了 W-71 能在外面套一层门。
+ * 拆出来是为了让单测能把它挂到任意端口上。
+ *
+ * ★ 处理是**异步**的（`/login` 要读正文、还要为错密码睡 500 ms），
+ *   所以外层 `createServer` 拿到的是一个「点完就返回」的壳：真正的
+ *   `route()` 挂在外面，出错也在这里兜住 —— 别让一个坏请求把进程带崩。
  */
 export function createHttpHandler(opts: HandlerOptions): (req: IncomingMessage, res: ServerResponse) => void {
   const assetDir = opts.assetDir;
   const webDir = opts.webDir;
-  return (req, res) => {
+  const gate = opts.gate;
+
+  const route = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const head = req.method === 'HEAD';
-    if (req.method !== 'GET' && !head) {
-      send(res, 405, { 'Content-Type': 'text/plain; charset=utf-8', Allow: 'GET, HEAD' }, 'Method Not Allowed', head);
-      return;
-    }
     const raw = req.url ?? '/';
     const q = raw.indexOf('?');
     const path = q === -1 ? raw : raw.slice(0, q);
@@ -88,7 +98,9 @@ export function createHttpHandler(opts: HandlerOptions): (req: IncomingMessage, 
       send(res, 400, { 'Content-Type': 'text/plain; charset=utf-8' }, 'Bad Request', head);
       return;
     }
-    if (path === '/robots.txt') {
+    // ── 免检的两条（任务书 W-71 §3）：robots 与登录页本身 ──
+    if (path === ROBOTS_PATH) {
+      if (req.method !== 'GET' && !head) return methodNotAllowed(res, head);
       send(
         res,
         200,
@@ -96,6 +108,20 @@ export function createHttpHandler(opts: HandlerOptions): (req: IncomingMessage, 
         ROBOTS_TXT,
         head,
       );
+      return;
+    }
+    if (path === LOGIN_PATH) {
+      if (gate === undefined) return notFound(res, head);
+      await gate.handleLogin(req, res);
+      return;
+    }
+    // ── 门（除上面两条外的**每一个**请求）──
+    if (gate !== undefined && !gate.allow(req)) {
+      deny(req, res, head);
+      return;
+    }
+    if (req.method !== 'GET' && !head) {
+      methodNotAllowed(res, head);
       return;
     }
     if (path.startsWith(ASSET_PREFIX)) {
@@ -108,6 +134,37 @@ export function createHttpHandler(opts: HandlerOptions): (req: IncomingMessage, 
     }
     notFound(res, head);
   };
+
+  return (req, res) => {
+    void route(req, res).catch(() => {
+      // 走到这里说明我们自己出了岔子（IO / 解析）。响应还没发就回 500，
+      // 已经发了一半就直接掐断 —— 两种情况都不该把进程带走。
+      if (res.headersSent) res.destroy();
+      else send(res, 500, { 'Content-Type': 'text/plain; charset=utf-8' }, 'Internal Server Error', false);
+    });
+  };
+}
+
+/**
+ * 没带有效票的请求怎么打发（任务书 W-71 §3）。
+ *
+ * · `Accept` 含 `text/html`（浏览器地址栏 / 点链接）⇒ 303 去 `/login`，
+ *   用户看到的是登录页而不是一行 401；
+ * · 其余（素材、js、fetch）⇒ 401 —— 这些请求转去 HTML 没有意义，
+ *   而且 401 能让前端明确知道「要登录」。
+ */
+function deny(req: IncomingMessage, res: ServerResponse, head: boolean): void {
+  const accept = req.headers.accept ?? '';
+  if (accept.includes('text/html')) {
+    res.writeHead(303, { ...SECURITY_HEADERS, Location: LOGIN_PATH });
+    res.end();
+    return;
+  }
+  send(res, 401, { 'Content-Type': 'text/plain; charset=utf-8' }, 'Unauthorized', head);
+}
+
+function methodNotAllowed(res: ServerResponse, head: boolean): void {
+  send(res, 405, { 'Content-Type': 'text/plain; charset=utf-8', Allow: 'GET, HEAD' }, 'Method Not Allowed', head);
 }
 
 /** `/assets/game/<rel>` —— 白名单 + 预压缩 */
@@ -255,11 +312,20 @@ function streamFile(
  * 配的那个号（单测用）。
  */
 export async function startHttpServer(opts: HttpServerOptions): Promise<RunningHttpServer> {
-  const handler = createHttpHandler(
-    opts.webDir === undefined ? { assetDir: opts.assetDir } : { assetDir: opts.assetDir, webDir: opts.webDir },
-  );
+  const handler = createHttpHandler({
+    assetDir: opts.assetDir,
+    ...(opts.webDir === undefined ? {} : { webDir: opts.webDir }),
+    ...(opts.gate === undefined ? {} : { gate: opts.gate }),
+  });
   const server = createServer(handler);
-  const ws = await attachWebSocket(server, opts, WS_PATH);
+  // ★ 门在**两个口**上：HTTP 走 `createHttpHandler`，升级走这里。
+  //   同一个 `Gate` 实例，所以限流表、密钥、时钟都是一份。
+  const gate = opts.gate;
+  const ws = await attachWebSocket(
+    server,
+    gate === undefined ? opts : { ...opts, authorizeUpgrade: (req, socket) => gate.allowUpgrade(req, socket) },
+    WS_PATH,
+  );
   const host = opts.host ?? '127.0.0.1';
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error): void => reject(err);
@@ -280,5 +346,61 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<RunningH
       server.closeAllConnections();
       server.close();
     },
+  };
+}
+
+// ============================================================
+//  生产入口：门从环境变量来（W-71）
+// ============================================================
+
+export interface StartServerOptions extends HttpServerOptions {
+  /**
+   * 开发便利：整站**不装门**（任务书 W-71 §5）。
+   *
+   * ⚠️ 只有 `--host` 是本机（`127.0.0.1` / `localhost` / `::1`）时才允许 ——
+   *   不然就是「一个没有密码的公网站点」，那正是这一版要防的事。
+   */
+  noGate?: boolean;
+  /** 环境变量来源 @default `process.env`（单测注入） */
+  env?: Record<string, string | undefined>;
+}
+
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+/** 生产入口：从**环境变量**读密码与密钥，缺了就抛（报错文本里只有变量名，没有值） */
+export async function startServer(opts: StartServerOptions): Promise<RunningHttpServer> {
+  const host = opts.host ?? '127.0.0.1';
+  if (opts.noGate === true) {
+    if (!LOCAL_HOSTS.has(host)) {
+      throw new Error(`拒絕啟動：--no-gate 只允許在 127.0.0.1 / localhost 上用（現在的 --host 是「${host}」）`);
+    }
+    return startHttpServer(baseOptions(opts));
+  }
+  const gate = gateFromEnv(opts.env ?? process.env, opts.now === undefined ? {} : { now: opts.now });
+  return startHttpServer({ ...baseOptions(opts), gate });
+}
+
+/**
+ * 把 `StartServerOptions` 收成 `HttpServerOptions`。
+ *
+ * ★ 逐项列而不是 `{...opts}`：`noGate` / `env` 是这一层的私事，不该漏到下一层去
+ *   （漏下去就会有人以为 `startHttpServer` 也认它们）。
+ * ★ `authorizeUpgrade` 也不放行：升级口的闸**只**由 `gate` 说了算，两处都能定必然打架。
+ */
+function baseOptions(opts: StartServerOptions): HttpServerOptions {
+  return {
+    port: opts.port,
+    assetDir: opts.assetDir,
+    map: opts.map,
+    globalMapId: opts.globalMapId,
+    seedFor: opts.seedFor,
+    ...(opts.host === undefined ? {} : { host: opts.host }),
+    ...(opts.webDir === undefined ? {} : { webDir: opts.webDir }),
+    ...(opts.mapFor === undefined ? {} : { mapFor: opts.mapFor }),
+    ...(opts.seatCount === undefined ? {} : { seatCount: opts.seatCount }),
+    ...(opts.takeoverAfterMs === undefined ? {} : { takeoverAfterMs: opts.takeoverAfterMs }),
+    ...(opts.checksumEvery === undefined ? {} : { checksumEvery: opts.checksumEvery }),
+    ...(opts.sweepEveryMs === undefined ? {} : { sweepEveryMs: opts.sweepEveryMs }),
+    ...(opts.now === undefined ? {} : { now: opts.now }),
   };
 }
