@@ -3772,20 +3772,16 @@ function queueSpeech(lines: readonly SpeechLine[]): void {
   const deferred: SpeechBubble[] = [];
   const immediate: SpeechBubble[] = [];
   for (const line of lines) {
-    // ⚠⚠ W-51 **临时取证日志**（取完这段日志就删）
-    log(`台詞決策：${line.order} 事件 ${line.bubble.event}（角色 ${line.bubble.character}）`);
     if (deferSpeech(line.order, busy)) deferred.push(line.bubble);
     else immediate.push(line.bubble);
   }
   // ★ 立即说的那几句一上台，先前押着的就作废（后说的那句本来就该盖住前一句）
   if (immediate.length > 0) {
     deferredSpeech = null;
-    log(`台詞上台：事件 ${immediate.map((b) => b.event).join(',')}（立即）`); // ⚠临时
     if (speechQueue.push(immediate, performance.now()) > 0) requestRender();
   }
   if (deferred.length > 0) {
     deferredSpeech = deferred;
-    log(`台詞押後：事件 ${deferred.map((b) => b.event).join(',')}`); // ⚠临时
     // ★ 押着也要续帧：`speechTick()` 靠每一帧回头看「演出收摊了没有」
     //   （`requestRender` 的续帧条件里也有 `deferredSpeech !== null`）
     requestRender();
@@ -6152,8 +6148,6 @@ function speechTick(now: number): void {
     const held = deferredSpeech;
     if (held !== null) {
       deferredSpeech = null;
-      // ⚠⚠ W-51 临时取证日志（取完就删）
-      log(`台詞上台：事件 ${held.map((b) => b.event).join(',')}（押後放行）`);
       if (speechQueue.push(held, now) > 0) requestRender();
     }
   }
