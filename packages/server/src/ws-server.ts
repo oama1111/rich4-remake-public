@@ -22,7 +22,9 @@ import { RoomHub, type HubOptions } from './hub.ts';
 interface WsLike {
   on(event: 'message', cb: (data: { toString(): string }) => void): void;
   on(event: 'close', cb: () => void): void;
+  on(event: 'error', cb: (err: Error) => void): void;
   send(data: string): void;
+  terminate(): void;
 }
 interface WsServerLike {
   on(event: 'connection', cb: (socket: WsLike, req: IncomingMessage) => void): void;
@@ -30,7 +32,21 @@ interface WsServerLike {
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, cb: (socket: WsLike) => void): void;
   close(): void;
 }
-type WsModule = { WebSocketServer: new (opts: { noServer: boolean }) => WsServerLike };
+type WsModule = { WebSocketServer: new (opts: { noServer: boolean; maxPayload: number }) => WsServerLike };
+
+/**
+ * 单条消息的上限（字节）。`ws` 的缺省是 100 MiB —— 本协议最大的一条（`intent`）也就几百字节，
+ * 留 64 KiB 绰绰有余；超了 `ws` 会以 1009 关掉这条连接。
+ */
+export const WS_MAX_PAYLOAD = 64 * 1024;
+
+/**
+ * 多久扫一次（掉线代打 / 回合超时 / 空房回收）。
+ *
+ * ★ 首席复核：原先是 5000 —— 回合计时是靠这一扫落地的，于是客户端倒计时数到 0 之后
+ *   还要干等最多 5 秒才真的超时（实测 3 秒的表 7.9 秒才响）。扫一遍只是遍历几张桌子，1 秒一次不值一提。
+ */
+export const SWEEP_EVERY_MS = 1000;
 
 export interface WsServerOptions extends HubOptions {
   /** 掉线扫描周期（毫秒） @default 5000 */
@@ -71,7 +87,7 @@ export async function attachWebSocket(
   const mod = (await import(moduleName)) as unknown as WsModule;
   const hub = new RoomHub(opts);
   const now = opts.now ?? (() => Date.now());
-  const wss = new mod.WebSocketServer({ noServer: true });
+  const wss = new mod.WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD });
 
   wss.on('connection', (socket) => {
     const handle = hub.connect({ send: (msg) => socket.send(JSON.stringify(msg)) });
@@ -83,8 +99,16 @@ export async function attachWebSocket(
         return;
       }
       if (typeof msg !== 'object' || msg === null || typeof msg.t !== 'string') return;
-      handle.onMessage(msg);
+      // ★ 首席复核：消息是**对方写的** —— 形状不对（缺字段 / 类型不对）让 hub 抛了，
+      //   只掐这一条连接，**不许**把进程（= 所有房间）带走。
+      try {
+        handle.onMessage(msg);
+      } catch {
+        socket.terminate();
+      }
     });
+    // ★ `ws` 在协议错误 / 超 `maxPayload` 时发 'error'；没人听 = 未捕获异常 = 进程退出
+    socket.on('error', () => socket.terminate());
     socket.on('close', () => handle.onClose(now()));
   });
 
@@ -93,6 +117,16 @@ export async function attachWebSocket(
   server.on('upgrade', (req, socket, head) => {
     live.add(socket);
     socket.on('close', () => live.delete(socket));
+    // ★ 首席复核：升级口**没有** `createHttpHandler` 那层 `route().catch` —— 这里任何一处抛
+    //   （实测：特制 cookie 让 `timingSafeEqual` 抛）都是未捕获异常。整段兜住，fail closed。
+    socket.on('error', () => socket.destroy());
+    try {
+      upgrade(req, socket, head);
+    } catch {
+      socket.destroy();
+    }
+  });
+  const upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
     if (pathOf(req.url) !== path) {
       socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       socket.destroy();
@@ -100,9 +134,9 @@ export async function attachWebSocket(
     }
     if (opts.authorizeUpgrade !== undefined && !opts.authorizeUpgrade(req, socket)) return;
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-  });
+  };
 
-  const timer = setInterval(() => hub.sweepDisconnected(now()), opts.sweepEveryMs ?? 5000);
+  const timer = setInterval(() => hub.sweepDisconnected(now()), opts.sweepEveryMs ?? SWEEP_EVERY_MS);
   return {
     hub,
     close: () => {

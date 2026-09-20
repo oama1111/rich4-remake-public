@@ -4113,6 +4113,11 @@ function scheduleAi(): void {
   //   本机只替**自己的座位**拿主意（出局后的空转、本机开的託管），并且
   //   照样作为意图发出去，不在本地施加。
   if (!localSeatActive()) return;
+  // ★★ 首席复核（W-74）：本机座位被服务器**超时託管**（`autopilot === 'idle'`）时，这一回合由
+  //   服务器的 `#driveComputers` 同步走完 —— 本机**不许**再替自己拿主意。否则镜像里那个
+  //   AUTOPILOT 位会让本机 AI 也发一份意图：多数被定序器以「不是你的回合」拒掉（对方只看到报错），
+  //   少数会在座位刚还给真人的那一拍被**收下**（替一个已经回到座位上的人掷了骰）。
+  if (net !== null && net.room?.seats.find((x) => x.seat === net?.seat)?.autopilot === 'idle') return;
   // ★ 联机的竞价：AI 控制的那一口（电脑 / 掉线代打 / 本机开的託管）**全部**归服务器出
   //   （`server/hub.ts` 的 `#driveComputers`）；提交权此刻属于举牌者而不是回合主人
   //   （core `actingSeat`），本机再发只会被定序器拒掉（issue #9）。
