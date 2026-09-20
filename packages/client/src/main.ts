@@ -299,6 +299,14 @@ import { GO_SIZE, goButton, boardToScreen } from './go-button.ts';
 import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './cursor-warp.ts';
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
 import { shouldResumeDriver } from './driver-resume.ts';
+// ★ W-66-a：走子时那串**剩余步数**的大数字（规格/判据见该模块文件头）。
+import {
+  STEPS_COUNTER_ARCHIVE,
+  STEPS_COUNTER_RESOURCE,
+  stepsCounterPlan,
+  stepsCounterShown,
+  stepsCounterValue,
+} from './steps-counter.ts';
 
 /**
  * 最近一次棋盘 `mousedown` 走到了哪一步 —— **只读诊断**，给浏览器长跑排错用。
@@ -2010,12 +2018,31 @@ function handleHotkey(fn: number): boolean {
  *   （起点 `0x40c1d4`、终点 `0x40c205` 都是节点记录的 `+0x00/+0x02`），
  *   所以镜头/视角/缩放都不影响一格几 tick。
  */
+/**
+ * ★ W-66-b 的 DEV 量测：每段补间起步时与「上一段补间的**理论结束时刻**」之差（毫秒）。
+ *
+ * 口径：原版是**同一个 tick** 里上一格收尾、下一格起步（`0x0040d936..0x0040d950`），
+ * 缝是 0；本引擎要经过 `setTimeout(paceDelay)` → `holdForActorWalk` 可能再等一个
+ * `RENDER_MS` → rAF 才起下一段。这里只**量**，读数用 `__rich4.walkGaps()`。
+ */
+const walkGaps: number[] = [];
+
+/** 记一段补间的起步缝（只在 DEV、且上一段存在时记）@see walkGaps */
+function noteWalkGap(): void {
+  if (!import.meta.env.DEV) return;
+  const prevEnd = renderer.lastWalkEndAt();
+  if (prevEnd === null) return;
+  walkGaps.push(performance.now() - prevEnd);
+  if (walkGaps.length > 600) walkGaps.shift();
+}
+
 function startStepTween(playerIndex: number): void {
   const p = state.players[playerIndex];
   if (p === undefined) return;
   const from = map.nodes[p.lastNodeId - 1];
   const to = map.nodes[p.nodeId - 1];
   if (from === undefined || to === undefined) return;
+  noteWalkGap();
   renderer.startWalk(
     playerIndex,
     { x: from.x, y: from.y },
@@ -3874,6 +3901,7 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
   if (t === null) return;
   const p = state.players[t.player];
   // ★ `t.special`（不写死 false）：走回棋盘走 `dist × 0.125` 那一支 —— 见 `tween.ts`
+  noteWalkGap();
   renderer.startWalk(
     t.player,
     t.from,
@@ -6251,6 +6279,35 @@ function characterPoseOf(): number | null {
 }
 
 /** 把游戏画面的三块摆到舞台上 */
+/**
+ * 走子时那串**剩余步数**的大数字（W-66-a）—— 规格/判据全在 `steps-counter.ts`。
+ *
+ * @source 棋盘绘制例程 `0x00409937..0x004099fb`：值 = `[0x48baf8]`（还没走完的格数，
+ *   走完一格才减 1），图 = `Data.mkf #0x205` 图 `8 + 数字`，落点（**屏幕**）
+ *   第 k 位 = `(245 − 25×位数 + 50×k, 400)`，带透明（`fcn_00456418` ⇒ 减图自带锚点）。
+ *
+ * ⚠️ 判断「值 > 0 / 不关押 / 不是被挪」四道闸都在 `stepsCounterShown` 里；
+ *   这里**只看**补间在不在跑（`renderer.walkDone()`），**不看 `phase`** ——
+ *   最后一格补间期间 `phase` 已经是 `'settling'`。
+ */
+function drawStepsCounter(now: number): void {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return;
+  const walking = !renderer.walkDone(now);
+  const value = stepsCounterValue(state.stepsRemaining, walking);
+  if (!stepsCounterShown(value, me)) return;
+  for (const d of stepsCounterPlan(value)) {
+    const img = spriteNow(STEPS_COUNTER_ARCHIVE, STEPS_COUNTER_RESOURCE, d.image, true);
+    if (img === null) continue;
+    // 屏幕坐标 → 棋盘画布（减棋盘原点），再减图自带的锚点（数字的锚点在中心）
+    boardCtx.drawImage(
+      img.bitmap,
+      d.x - img.anchorX - LAYOUT.board.x,
+      d.y - img.anchorY - LAYOUT.board.y,
+    );
+  }
+}
+
 function drawGameStage(): void {
   // ★ 百貨公司是**整屏**的一屏，不等于在棋盘上盖个框 —— 它一开，棋盘就不画了。
   if (shopUi !== null && currentDialog() !== null) {
@@ -6307,6 +6364,9 @@ function drawGameStage(): void {
     //   （住院 440×74 @(0,210)，入獄/神明 440×440 @(0,40)），所以整份交出去。
     boardFilm: currentBoardFilmFrame(performance.now()),
   });
+  // ★★ W-66-a：走子时那串**剩余步数**（原版有、本引擎先前没有）——
+  //   画在棋盘画布上、对话框/名牌之下（原版就是在棋盘绘制例程里画的）。
+  drawStepsCounter(performance.now());
   const dlg = currentDialog();
   const me = state.players[state.currentPlayer];
   if (dlg !== null) {
@@ -9209,6 +9269,11 @@ async function boot(): Promise<void> {
           hitAdvance(gx - LAYOUT.board.x, gy - LAYOUT.board.y, goButton.position()),
         /** 最近一次棋盘 mousedown 走到哪一步 —— 长跑排错用（纯读） */
         inputTrace: () => inputTrace,
+        /**
+         * ★ W-66-b：每段走子补间起步时与「上一段理论结束」的缝（毫秒）。
+         * 读数用法：跑 30 格，取中位数 / p95 —— 中位数 ≤ 10 ms 就说明缝可忽略。
+         */
+        walkGaps: () => [...walkGaps],
         /**
          * 骰子那一段现在到哪一相了 —— 长跑排错用（纯读）。
          * `active` 恒真而 `phase` 不前进 = 「掷完骰子人不走」那一类卡死。

@@ -1597,8 +1597,27 @@ export class BoardRenderer {
     // ★★ 每拍位移除的是**未截断**的 N_f（原版 `0x0040c2ae`），只有末拍吸附落点
     const exactTicks = tweenTickExact(to.x - from.x, to.y - from.y, traffic, special);
     this.#walk = { player, from, to, ticks, exactTicks, tickMs, start: now, ticked: 0 };
+    // ★ W-66-b 的量测口径：这一段的**理论结束时刻**（`start + ticks × tickMs`）。
+    //   下一段起步时拿它相减就是「格与格之间的缝」——原版同一个 tick 里收尾并起步，
+    //   缝是 0。只给 DEV 量测读，正常路径不用它（见 `lastWalkEndAt`）。
+    this.#lastWalkEndAt = now + ticks * tickMs;
     this.#dirty = true;
   }
+
+  /**
+   * ★ W-66-b：上一段走子补间的**理论结束时刻**（`performance.now()` 口径）；
+   *   还没播过任何一段时返回 `null`。
+   *
+   * 用途只有一个：`main.ts` 在 DEV 下量「上一格收尾 → 下一格起步」的缝
+   * （`__rich4.walkGaps()`）。**不要**拿它推进动画 —— 表现层的时间轴一律
+   * 由 `walkDone` / `actorCenterWorld` 自己算。
+   */
+  lastWalkEndAt(): number | null {
+    return this.#lastWalkEndAt;
+  }
+
+  /** @see lastWalkEndAt */
+  #lastWalkEndAt: number | null = null;
 
   /** 这一步的补间播完了吗（没有补间也算播完） */
   walkDone(now = performance.now()): boolean {
