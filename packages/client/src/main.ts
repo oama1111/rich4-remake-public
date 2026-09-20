@@ -297,6 +297,8 @@ import {
 import { DICE_FLIC_BASE, GO_IMAGE, type SpriteFn } from './gameui.ts';
 import { GO_SIZE, goButton, boardToScreen } from './go-button.ts';
 import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './cursor-warp.ts';
+// ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
+import { shouldResumeDriver } from './driver-resume.ts';
 
 /**
  * 最近一次棋盘 `mousedown` 走到了哪一步 —— **只读诊断**，给浏览器长跑排错用。
@@ -4897,6 +4899,18 @@ function leaveLobby(): void {
 let titleHot: number | null = null;
 
 let renderQueued = false;
+
+/**
+ * ★★ W-60：**上一帧**的屏号 —— 「刚从别的屏回到棋盘」那一帧要把回合驱动叫起来。
+ *
+ * 起因（第六份试玩回报第 10 条，**阻断**）：人物走子途中点开「遊戲設定」再关掉 ⇒
+ * 棋子停在半路、GO 点不动 —— 因为两条回合驱动的排程入口都有
+ * `if (screen !== 'game') return;`，关屏时没人再叫它们。判据与理由见
+ * `driver-resume.ts` 的文件头（那里是纯函数、有单测）；这里只存「上一帧」。
+ *
+ * 初值 `'title'`：開局第一帧从標題跨进棋盘时要**叫一次**（与 `endIntro()` 那两句同效）。
+ */
+let lastFrameScreen: Screen = 'title';
 // ============================================================
 //  整屏 UI 的登记表（契约见 ui-screen.ts；表本身在 screens.ts）
 // ============================================================
@@ -5809,6 +5823,19 @@ function requestRender(): void {
   requestAnimationFrame(() => {
     renderQueued = false;
     resizeCanvas();
+    // ★★ W-60：**刚回到棋盘**的那一帧把回合驱动重新叫起来（阻断级 bug 的唯一闸门）。
+    //
+    //   两条驱动的排程入口都有 `if (screen !== 'game') return;`（别在標題屏/過場里
+    //   推进回合），而所有「回棋盘」的出口都只写 `screen = …; requestRender();` ——
+    //   于是「走子途中开設定再关掉」会把链条**永久**断掉（棋子停在半路、GO 点不动）。
+    //   判据收在 `driver-resume.ts`（纯函数 + 单测），**一处**判掉，不逐屏补
+    //   （漏一个出口就又卡一次）。`resumeTurnDriver()` 内部两条驱动入口都会先清旧
+    //   定时器，重复叫无害。
+    //
+    //   ⚠️ 位置必须在 `resizeCanvas()` 之后、**这一帧的绘制之前**：驱动起来要排在
+    //      这一帧的 rAF 尾巴上（`schedule*` 用 `setTimeout`），绘制不该等它。
+    if (shouldResumeDriver(lastFrameScreen, screen)) resumeTurnDriver();
+    lastFrameScreen = screen;
     syncBailBgm();
     // 场所都收了、放的还是场所曲 ⇒ 把背景曲从被打断的位置接回来（`sub_00454bcc`）
     if (boardBgmDue()) restoreBoardBgm();
