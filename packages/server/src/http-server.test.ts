@@ -17,7 +17,7 @@ import type { AddressInfo } from 'node:net';
 import type { Rich4Map } from '@rich4/core';
 import { createHttpHandler, startHttpServer, startServer } from './http-server.ts';
 import { GATE_COOKIE, Gate } from './gate.ts';
-import { MKF_WHITELIST, SECURITY_HEADERS } from './static.ts';
+import { MANIFEST_ASSET, MKF_WHITELIST, SECURITY_HEADERS } from './static.ts';
 
 // ============================================================
 //  夹具
@@ -94,6 +94,8 @@ async function withWsServer(
 /** 让临时素材目录里有一套完整的白名单文件，外加几个**绝不该端出去**的 */
 function seedAssets(assets: string): void {
   for (const n of MKF_WHITELIST) writeFileSync(join(assets, n), `RAW:${n}`);
+  // ★ W-72：构建期清单也在白名单里（客户端靠它决定 ?v= 与进度分母）
+  writeFileSync(join(assets, MANIFEST_ASSET), JSON.stringify({ version: 'v1', files: [] }));
   writeFileSync(join(assets, 'midi01.mid'), 'RAW:midi01.mid');
   writeFileSync(join(assets, 'midi14-1.mid'), 'RAW:midi14-1.mid');
   writeFileSync(join(assets, 'rich4.exe'), 'MZ...');
@@ -185,6 +187,11 @@ describe('★ /assets/game —— 白名单', () => {
         expect(r.headers['accept-ranges'], n).toBe('none');
         expect(r.headers['content-length'], n).toBe(String(`RAW:${n}`.length));
       }
+      const manifest = await get(port, `/assets/game/${MANIFEST_ASSET}`);
+      expect(manifest.status).toBe(200);
+      expect(manifest.headers['cache-control']).toBe('no-cache');
+      expect(manifest.headers['content-type']).toBe('application/json; charset=utf-8');
+
       for (const n of ['midi01.mid', 'midi14-1.mid']) {
         const r = await get(port, `/assets/game/${n}`);
         expect(r.status, n).toBe(200);

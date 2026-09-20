@@ -44,6 +44,19 @@ const MKF_LOWER = new Set<string>(MKF_WHITELIST.map((n) => n.toLowerCase()));
 const MID_RE = /^[A-Za-z0-9_-]+\.mid$/;
 
 /**
+ * ★ W-72：构建期清单。
+ *
+ * 客户端靠它决定每个档案 URL 上的 `?v=`（sha256 前 8 位）与载入进度条的分母，
+ * 所以它**必须**和 7 个 `.mkf` 一样能取到 —— 任务书把它的落点定在
+ * 「部署目录的 `/assets/game/` 下」，也就是这里。
+ *
+ * ⚠️ 它只含文件名、字节数与 sha256，**不含任何原版内容**，端出去没有额外风险；
+ *   但白名单仍然**显式**列出它 —— 白名单的规矩是「枚举所有能出网的名字」，
+ *   不是「文件名长得像就放行」。
+ */
+export const MANIFEST_ASSET = 'assets-manifest.json';
+
+/**
  * 这个**请求路径片段**是不是白名单里的素材。
  *
  * ⚠️ 参数是「相对素材根的整段路径」，不是 `basename` —— 模式里没有 `/`，
@@ -55,6 +68,7 @@ export function isAllowedAssetName(name: string): boolean {
   if (name === '' || name.includes('/') || name.includes('\\')) return false;
   const lower = name.toLowerCase();
   if (MKF_LOWER.has(lower)) return true;
+  if (lower === MANIFEST_ASSET) return true;
   return MID_RE.test(lower);
 }
 
@@ -173,6 +187,10 @@ const HASHED_ASSET_RE = /[-.][0-9A-Za-z_]{8,}\.(?:js|css)$/;
  * · 其余：`no-cache`（每次带 `ETag` 回源校验，比押错强）。
  */
 export function cacheControlFor(kind: 'asset' | 'web', rel: string): string {
+  // ★ 清单是**版本指针**（W-72）：它一变，别的档案的 URL 就全变了 ——
+  //   绝不能标 `immutable`，否则发了新版浏览器还拿旧的，客户端会去取一批
+  //   已经不存在的 `?v=`。客户端那边也带 `cache: 'no-store'`，两头都堵住。
+  if (rel.toLowerCase() === MANIFEST_ASSET) return 'no-cache';
   if (kind === 'asset') return 'private, max-age=31536000, immutable';
   if (rel.startsWith('assets/') && HASHED_ASSET_RE.test(rel)) return 'private, max-age=31536000, immutable';
   return 'no-cache';

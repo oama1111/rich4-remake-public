@@ -1221,3 +1221,35 @@
 - 请首席裁定：要连端口一起比的话，改 `gate.ts` 的 `#sameHost`（一处），
   并把 `tools/net-e2e.sh` 改成走 vite 的 `/ws` 代理（或在 `--no-gate` 下跑 —— 现在就是）。
 - 阻塞程度：**不阻塞**。
+
+### ⏸ E-28（2026-09-20）W-72：`assets-manifest.json` **必须**加进 W-70 的素材白名单（跨任务改动）
+
+- 关联任务：W-72 §1（清单的落点）/ W-70 §2（白名单）。**不阻塞** —— 已在 W-72 里一并改掉并验收。
+- 现象：W-70 §2 把白名单写死成「7 个 `.mkf` + `^[A-Za-z0-9_-]+\.mid$`，**其余一律 404**」；
+  而 W-72 §1 把清单放在「**部署目录的 `/assets/game/` 下**」。两条合起来 ⇒
+  客户端 `GET /assets/game/assets-manifest.json` 吃到 **404**，整条 Cache Storage 路径走不通
+  （实测就是 404，见 `docs/acceptance/w72-20260920.md` §2）。
+- 我的处置：在 `static.ts` 里加一个**显式**常量 `MANIFEST_ASSET = 'assets-manifest.json'`，
+  并让 `isAllowedAssetName` 放行它、`cacheControlFor` 给它 `no-cache`
+  （它是**版本指针**，标 `immutable` 会让浏览器一直拿旧版）。仍然**不**放行
+  `hd-manifest.json` / `package.json` 之类的其它 `.json`。
+- 请首席知悉：这算是对 W-70 §2「其余一律 404」的一次**扩容**。若首席希望清单换个落点
+  （例如站点根 `/assets-manifest.json`，走静态站那条路、与素材白名单无关），
+  改 `static.ts` 的 `MANIFEST_ASSET` + `docs/deploy.md` 的一行即可。
+- 阻塞程度：**不阻塞**。
+
+### 📌 E-29（2026-09-20）W-72 §5：清单里"有没有 `hd-manifest.json`"的判据是**两条**，不是一条
+
+- 关联任务：W-72 §5。**不阻塞** —— 已按下面的读法实现并验收。
+- 现象：任务书写「`hdBase()` 在 manifest 的 `files` 里没有 `hd-manifest.json` 时不发请求」。
+  但**仓库里那份 `assets/hd-manifest.json` 一直都在**（3.9 MB），只是 `assets/hd/` 是空的
+  （超分管线没跑过）。照字面「文件在就登记」，清单里会**有**这一条 ⇒
+  网页版照样去拉一次 3.8 MB 的清单，而拿回来一张图也用不上 ——
+  正是 W-70 遗留的 **E-26** 要修的那件事。
+- 我的处置：`tools/precompress-assets.ts` 的 `hdManifestEntry()` 判**两条**：
+  ① `<from>/../hd-manifest.json` 存在，**且** ② `<from>/../hd/` 目录**非空**。
+  两条都满足才把 `hd-manifest.json` 记进 `files`。
+  实测本机（`assets/hd/` 空）：清单里**没有**这一条 ⇒
+  刷新后 Network 面板里 `/assets/hd-manifest.json` **一次请求都没有**（E-26 结清）。
+- 请首席知悉：等 W-30 真的产出 HD 像素之后，这条会自己变成「有」，两端都不用改代码。
+- 阻塞程度：**不阻塞**。

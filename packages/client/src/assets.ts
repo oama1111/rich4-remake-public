@@ -25,6 +25,9 @@ export interface LoadedArchives {
  * 拉取并打开全部档案。
  *
  * @param base 素材目录的 URL 前缀；开发时由 vite 的 fs.allow 暴露
+ *
+ * ★ W-72：**网页版不再走这一条**（它要一次下完 7 个、带进度与 Cache Storage，
+ *   见 `asset-loader.ts`）。这里留给**桌面壳**与退回路径用，行为一行没变。
  */
 export async function loadArchives(base: string): Promise<LoadedArchives> {
   const entries = await Promise.all(
@@ -32,10 +35,27 @@ export async function loadArchives(base: string): Promise<LoadedArchives> {
       const res = await fetch(`${base}/${name}`);
       if (!res.ok) throw new Error(`无法读取 ${name}：HTTP ${res.status}`);
       const buf = new Uint8Array(await res.arrayBuffer());
-      return [name, new MkfArchive(buf)] as const;
+      return [name, buf] as const;
     }),
   );
-  const map = new Map<string, MkfArchive>(entries);
+  return archivesFromBytes(new Map(entries));
+}
+
+/**
+ * ★ W-72：字节已经在手上了，只把它们**打开**成归档。
+ *
+ * 「怎么开归档」只有这一份实现 —— 网页版（先整包下完再开）与桌面壳
+ * （边拉边开）不会开出两个不同的东西来。
+ *
+ * @param files 档案名 → 原始字节；`ARCHIVES` 里的每一个都必须在
+ */
+export function archivesFromBytes(files: ReadonlyMap<string, Uint8Array>): LoadedArchives {
+  const map = new Map<string, MkfArchive>();
+  for (const name of ARCHIVES) {
+    const bytes = files.get(name);
+    if (bytes === undefined) throw new Error(`档案字节缺失：${name}`);
+    map.set(name, new MkfArchive(bytes));
+  }
   return {
     get(name) {
       const a = map.get(name);

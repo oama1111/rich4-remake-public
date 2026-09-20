@@ -14,6 +14,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  MANIFEST_ASSET,
   MKF_WHITELIST,
   ROBOTS_TXT,
   SECURITY_HEADERS,
@@ -52,6 +53,14 @@ describe('★ 素材白名单', () => {
     expect(isAllowedAssetName('midi01.mid')).toBe(true);
     expect(isAllowedAssetName('midi14-1.mid')).toBe(true);
     expect(isAllowedAssetName('Rich08.mid')).toBe(true);
+  });
+
+  it('★ W-72 的构建期清单也放行（客户端靠它决定 ?v= 与进度分母）', () => {
+    expect(isAllowedAssetName(MANIFEST_ASSET)).toBe(true);
+    expect(isAllowedAssetName(MANIFEST_ASSET.toUpperCase())).toBe(true);
+    // 但不能借机放行别的 .json
+    expect(isAllowedAssetName('hd-manifest.json')).toBe(false);
+    expect(isAllowedAssetName('package.json')).toBe(false);
   });
 
   it('白名单之外一律不放行 —— rich4.exe / 存档 / .avi / 索引 / 压缩产物', () => {
@@ -150,6 +159,10 @@ describe('★ findOnDisk —— 大小写不敏感地找磁盘文件', () => {
 describe('★ 缓存策略', () => {
   it('素材一年不可变、且是 private（整站有访问密码）', () => {
     expect(cacheControlFor('asset', 'Data.mkf')).toBe('private, max-age=31536000, immutable');
+  });
+
+  it('★ 清单是版本指针，标 no-cache（标了 immutable 会一直发旧版）', () => {
+    expect(cacheControlFor('asset', MANIFEST_ASSET)).toBe('no-cache');
   });
 
   it('带哈希的构建产物不可变；其余的 no-cache', () => {

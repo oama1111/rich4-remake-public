@@ -38,6 +38,18 @@
       #log div { padding: 2px 0; border-bottom: 1px solid #232732; }
       .meta { color: #8d95a5; font-size: 12px; margin-bottom: 10px; }
       .err { color: #e8524a; white-space: pre-wrap; }
+      /* ★ W-72 素材载入屏：只有百分比 + 一条进度条。**不显示 MB 数** ——
+         分母是原始字节（247 MB）而实际流量是压缩后的（≈130 MB），
+         两个数放一起会让人以为下多了。 */
+      #loadbar {
+        height: 6px; width: 320px; max-width: 100%; overflow: hidden;
+        background: #22262f; border-radius: 3px; margin-bottom: 8px;
+      }
+      #loadbar[hidden] { display: none; }
+      #loadfill { height: 100%; width: 0; background: #4a90d9; }
+      #loadhint { color: #8d95a5; font-size: 12px; margin-bottom: 8px; }
+      #loadhint[hidden] { display: none; }
+      #loadretry[hidden] { display: none; }
       #interaction {
         margin: 10px 0; padding: 10px; border-radius: 8px;
         background: #232a38; border: 1px solid #3a4a68;
@@ -53,6 +65,9 @@
     <canvas id="board"></canvas>
     <aside id="panel">
       <div class="meta" id="meta">载入中…</div>
+      <div id="loadbar" hidden><div id="loadfill"></div></div>
+      <div id="loadhint" hidden>首次載入約 130 MB，之後會緩存在本機</div>
+      <button id="loadretry" type="button" hidden>重試</button>
       <div id="players"></div>
       <div id="interaction" hidden></div>
       <div class="row" id="actions"></div>
