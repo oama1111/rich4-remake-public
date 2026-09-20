@@ -224,3 +224,18 @@ export function netParamsFrom(search: string): { url: string; room: string; name
   if (url === null || url === '') return null;
   return { url, room: q.get('room') ?? 'default', name: q.get('name') ?? `玩家${Math.floor(Math.random() * 1000)}` };
 }
+
+/**
+ * ★ W-70 §6：网页版的**默认**联机地址 —— 朋友点邀请链接进来时地址栏里
+ * 只有房间码，没有 `?ws=`，得从 `location` 推。
+ *
+ * 同源部署下 `wss://<host>/ws` 正好是 Caddy 反代进来的那一条（任务书 §2 的图），
+ * 也是 `attachWebSocket` 钉死的端点。
+ *
+ * ⚠️ 收一个「像 `location` 的东西」而不是直接读全局：单测里能塞假值，
+ * 也逼调用方写清这个值是从哪来的。
+ */
+export function defaultWsUrl(loc: { protocol: string; host: string }): string {
+  const scheme = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${scheme}//${loc.host}/ws`;
+}

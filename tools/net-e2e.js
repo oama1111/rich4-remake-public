@@ -15,7 +15,7 @@
  *   服务器那条路上的判定另有权威信号：日志里的「失步！」与「⟳ 失步自愈」。
  *
  * 用法（由 `tools/net-e2e.sh` 驱动；手工时）：
- *   $B newtab "http://localhost:5173/?ws=ws://localhost:8787&room=r1&name=A"
+ *   $B newtab "http://localhost:5173/?ws=ws://localhost:8787/ws&room=r1&name=A"
  *   $B eval /tmp/net-e2e.js
  *   …跑完读 `globalThis.__net`：
  *   $B js "JSON.stringify(globalThis.__net.summary())"
