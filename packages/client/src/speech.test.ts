@@ -131,6 +131,42 @@ describe('★ 得點券格 / 小遊戲不玩的台词 —— 通道 2 钉住（t
     expect(said(speechEventsFor(before, after))).toEqual([{ player: 0, event: 1, order: 'afterStage' }]);
   });
 
+  it('★★ 那条 lastEvent 是**上一条 action 留下的**（引用没变）⇒ 不再重说（试玩回报：台词一直重复）', () => {
+    // `lastEvent` 不是瞬态字段：core 写下之后一直留到下一个事件。之后的每一条 action
+    // （走一格 / 結算 / 换人）`before.lastEvent === after.lastEvent` ⇒ 一句都不该说。
+    const lastEvent = { kind: 'minigameDecline' as const, id: 0, phraseIndex: 1 };
+    const before = makeGameState({ currentPlayer: 1, lastEvent });
+    const walked = { ...before, stepsRemaining: 3 };
+    expect(said(speechEventsFor(before, walked))).toEqual([]);
+    const nextPlayer = { ...before, currentPlayer: 2 };
+    expect(said(speechEventsFor(before, nextPlayer))).toEqual([]);
+  });
+
+  it('★ 同上：留着旧 lastEvent 时，**新的**點入帳照旧走档位表（先前会被一直捂住）', () => {
+    const lastEvent = { kind: 'minigameDecline' as const, id: 0, phraseIndex: 1 };
+    const before = makeGameState({
+      players: [makePlayer({ index: 0, points: 0 }), makePlayer({ index: 1, points: 0 })],
+      currentPlayer: 0,
+      lastEvent,
+    });
+    const after = {
+      ...before,
+      players: [makePlayer({ index: 0, points: 150 }), makePlayer({ index: 1, points: 0 })],
+    };
+    const evs = said(speechEventsFor(before, after));
+    expect(evs).toHaveLength(1);
+    expect(evs[0]!.player).toBe(0);
+  });
+
+  it('★ 连着两次得 50 點：第二次是**新写的对象** ⇒ 照说', () => {
+    const before = makeGameState({
+      currentPlayer: 1,
+      lastEvent: { kind: 'minigameDecline' as const, id: 0, phraseIndex: 1 },
+    });
+    const after = { ...before, lastEvent: { kind: 'minigameDecline' as const, id: 0, phraseIndex: 1 } };
+    expect(said(speechEventsFor(before, after))).toEqual([{ player: 1, event: 1, order: 'afterStage' }]);
+  });
+
   it('没有那条 lastEvent 时，點入帳照旧走档位表（护栏）', () => {
     const before = makeGameState({
       players: [makePlayer({ index: 0, points: 0 }), makePlayer({ index: 1, points: 0 })],

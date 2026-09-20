@@ -625,7 +625,7 @@ export function detectPointsGained(before: GameState, after: GameState): Detecte
   //   它们各自 `player_say(玩家, 0, 角色表事件)`（`0x41b1f8` / `0x41b28d` / `0x4154b6`），
   //   由下面的 `pointsSquarePhrase` 开口。这里必须**让开**，否则同一笔会说两句
   //   （而且 `0x44f230` 的档位表与角色台词表本来就是两套词）。
-  if (after.lastEvent?.kind === 'minigameDecline') return out;
+  if (pointsSquareEventThisAction(before, after) !== null) return out;
   for (let i = 0; i < after.players.length; i++) {
     const amount = delta(before, after, i, 'points');
     if (amount <= 0) continue;
@@ -645,10 +645,29 @@ export function detectPointsGained(before: GameState, after: GameState): Detecte
  *     得 50 點 = `rand() & 1`（事件 0/1）、得 30 點 = **固定事件 2**、得 10 點 = 不说。
  */
 export function detectPointsSquarePhrase(before: GameState, after: GameState): DetectedSay[] {
-  const ev = after.lastEvent;
-  if (ev === null || ev === undefined || ev.kind !== 'minigameDecline') return [];
-  void before;
+  const ev = pointsSquareEventThisAction(before, after);
+  if (ev === null) return [];
   return [{ player: after.currentPlayer, event: ev.phraseIndex ?? 0 }];
+}
+
+/**
+ * **这一条 action** 写下的「得點券格 / 小遊戲不玩」事件；不是这一条写的返回 null。
+ *
+ * ★★ 判据必须是 `before.lastEvent !== after.lastEvent`（**引用不同**，规矩同 `lastCardPlay`）：
+ *   `lastEvent` **不是**瞬态字段 —— core 写下之后它一直留到下一个事件（得 10 點那一支
+ *   还故意不写，见 `reduce.ts` 的 `phraseIndex === undefined`）。先前这里只看 `after`
+ *   （`void before`）⇒ 踩过一次得點券格之后，**之后每一条 action（每走一格）都重说一遍**，
+ *   直到别的事件把 `lastEvent` 顶掉（试玩回报：「台词一直在重复播放」）；
+ *   同一个毛病还让 `detectPointsGained` 在那段时间里**一直闭嘴**。
+ */
+function pointsSquareEventThisAction(
+  before: Pick<GameState, 'lastEvent'>,
+  after: Pick<GameState, 'lastEvent'>,
+): NonNullable<GameState['lastEvent']> | null {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev.kind !== 'minigameDecline') return null;
+  if (before.lastEvent === ev) return null;
+  return ev;
 }
 
 /**

@@ -6401,11 +6401,17 @@ function characterPoseOf(): number | null {
  *   最后一格补间期间 `phase` 已经是 `'settling'`。
  */
 function drawStepsCounter(now: number): void {
-  const me = state.players[state.currentPlayer];
-  if (me === undefined) return;
-  const walking = !renderer.walkDone(now);
-  const value = stepsCounterValue(state.stepsRemaining, walking);
-  if (!stepsCounterShown(value, me)) return;
+  // ★ E-22：替身（四大惡人 / 機器娃娃）在走 ⇒ 画**他**的剩余步数，且**不看**玩家那两道闸
+  //   @source `0x00409951 cmp eax,4 / jge 直接画`
+  const actorLeft = renderer.actorStepsLeft(now);
+  let value = actorLeft;
+  if (actorLeft === 0) {
+    const me = state.players[state.currentPlayer];
+    if (me === undefined) return;
+    // ⚠️ 只看**玩家自己**那条补间 —— `walkDone()` 含替身，拿它补 1 会在替身走子时凭空画出个「1」
+    value = stepsCounterValue(state.stepsRemaining, !renderer.playerWalkDone(now));
+    if (!stepsCounterShown(value, me)) return;
+  }
   for (const d of stepsCounterPlan(value)) {
     const img = spriteNow(STEPS_COUNTER_ARCHIVE, STEPS_COUNTER_RESOURCE, d.image, true);
     if (img === null) continue;

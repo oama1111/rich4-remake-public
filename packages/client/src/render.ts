@@ -643,6 +643,11 @@ export interface ActorWalk {
   /** 依次经过的节点号，含起点；`path[i] → path[i+1]` 是第 i 格 */
   path: readonly number[];
   /**
+   * 这一趟**起步时定下的步数**（原版 `[0x48baf8]` 的初值；E-22）——
+   * 走子时那串剩余步数从它往下数。缺省 = `path.length − 1`。
+   */
+  steps?: number;
+  /**
    * 这一趟沿途**扫掉的物件**（機器娃娃）；`undefined`/空 = 没有（四大惡人恒没有）。
    *
    * ★ 试玩3 #11：`index` 是**这一趟之前**那份 `state.objects` 的下标 ——
@@ -777,6 +782,27 @@ export function actorWalkDirection(step: {
 export function actorWalkTotalMs(steps: readonly ActorWalkStep[]): number {
   const last = steps[steps.length - 1];
   return last === undefined ? 0 : last.at + last.ms;
+}
+
+/**
+ * 替身这一趟此刻**还没走完的格数** —— 走子时那串大数字对替身的那一支（E-22）。
+ *
+ * @source 棋盘绘制例程 `0x00409951 cmp eax,4 / jge` —— 替身（actor ≥ 4）**跳过**关押/被挪那两道闸，
+ *   直接画 `[0x48baf8]`；该值起步时 = 掷出的步数（`0x0040de64` / `0x0040de3d` / `0x0040debe`），
+ *   **走完一格的那一拍**才减 1（`0x0040d960 dec`）。
+ *   ⇒ 值 = `rolled − 已走完的格数`；补间播完（含半路被收回去、路径提前断）返回 0 = 不画。
+ *
+ * @param rolled 起步时定下的步数（core 的 `NpcWalkHint.steps`）
+ */
+export function actorStepsLeft(
+  steps: readonly ActorWalkStep[],
+  rolled: number,
+  elapsedMs: number,
+): number {
+  if (elapsedMs < 0 || elapsedMs >= actorWalkTotalMs(steps)) return 0;
+  let done = 0;
+  for (const s of steps) if (elapsedMs >= s.at + s.ms) done++;
+  return Math.max(0, rolled - done);
 }
 
 /**
@@ -1501,6 +1527,8 @@ export class BoardRenderer {
     number,
     {
       steps: ActorWalkStep[];
+      /** 起步时定下的步数 —— 见 `actorStepsLeft`（E-22）*/
+      rolled: number;
       start: number;
       tickMs: number;
       ticked: number;
@@ -1709,6 +1737,28 @@ export class BoardRenderer {
     return best;
   }
 
+  /**
+   * 玩家**自己**那条补间播完了吗 —— 与 `walkDone()` 的差别是**不含替身**。
+   * 走子时那串剩余步数要分清「谁在走」（E-22）：替身走的时候不能给玩家的值补 1。
+   */
+  playerWalkDone(now = performance.now()): boolean {
+    const w = this.#walk;
+    return w === null || now - w.start >= w.ticks * w.tickMs;
+  }
+
+  /**
+   * 此刻在走的那个替身**还剩几格**；没有替身在走 = 0（见 `actorStepsLeft`）。
+   * 一条 action 只走一个替身（`npcRoundStep`），同时有多条时取槽位最小的那条。
+   */
+  actorStepsLeft(now = performance.now()): number {
+    for (const slot of [...this.#actorWalks.keys()].sort((a, b) => a - b)) {
+      const w = this.#actorWalks.get(slot)!;
+      const left = actorStepsLeft(w.steps, w.rolled, now - w.start);
+      if (left > 0) return left;
+    }
+    return 0;
+  }
+
   /** 替身补间还在播吗（一条都没有也算播完） */
   actorWalkDone(now = performance.now()): boolean {
     let running = false;
@@ -1745,6 +1795,7 @@ export class BoardRenderer {
     now: number,
     objects: readonly MapObject[] = [],
     cleared: readonly SweptObject[] = [],
+    rolled?: number,
   ): void {
     this.#forgetActorWalk(slot);
     if (path.length < 2) return;
@@ -1752,6 +1803,7 @@ export class BoardRenderer {
     if (steps.length === 0) return;
     this.#actorWalks.set(slot, {
       steps,
+      rolled: rolled ?? steps.length,
       start: now,
       tickMs,
       ticked: 0,
@@ -1782,7 +1834,7 @@ export class BoardRenderer {
       if (r.seen.get(slot) === ACTOR_OFF_BOARD) this.#forgetActorWalk(slot);
     }
     for (const w of r.walks) {
-      this.#beginActorWalk(w.slot, nodes, w.path, tickMs, now, state.objects, w.cleared);
+      this.#beginActorWalk(w.slot, nodes, w.path, tickMs, now, state.objects, w.cleared, w.steps);
     }
   }
 

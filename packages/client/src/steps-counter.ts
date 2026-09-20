@@ -51,7 +51,8 @@ export const STEPS_COUNTER_Y = 0x190;
  *
  * @param stepsRemaining `state.stepsRemaining`
  * @param walking 此刻是不是**玩家自己**的走子补间在跑
- *   （`!renderer.walkDone()`；替身那一趟不算 —— 它不画这个数字）
+ *   （`!renderer.playerWalkDone()` —— **不是** `walkDone()`，后者含替身；
+ *   替身那一趟另走 `renderer.actorStepsLeft()`，见 `render.ts` 的 `actorStepsLeft`，E-22）
  */
 export function stepsCounterValue(stepsRemaining: number, walking: boolean): number {
   return stepsRemaining + (walking ? 1 : 0);

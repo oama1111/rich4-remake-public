@@ -452,7 +452,8 @@ Chromium 下还看不太出来，**桌面包的 WKWebView 下这是卡顿的主�
 
 ### 测试
 - core：4 块同街同主 ⇒ `lastTollLands` = 那 4 个 id；只有 1 块 ⇒ null；同盟者同街另有 2 块 ⇒ 6 个；連鎖店支 ⇒ 地主全部連鎖店。**外加一条金额回归**：上面那个 4800 的用例原样入库（防止以后有人「修」规则）。
-- `toll-flash-fx.test.ts`：0 ms→4、90 ms→16、210 ms→0、450 ms→−16、479 ms→0（第 15 帧）、480..879 ms→0、880 ms→null。
+- `toll-flash-fx.test.ts`：0 ms→4、90 ms→16、210 ms→0、**330 ms→−16**（第 11 帧）、450 ms→0、479 ms→0（第 15 帧）、480..879 ms→0、880 ms→null。
+  （⚠️ 2026-09-20 订正：原先这里写的是「450 ms→−16」，是首席的算术笔误，见 `escalations.md` E-23。）
 - `stage-gate.test.ts`：新位 `tollFlash` 为真 ⇒ busy。
 
 ---

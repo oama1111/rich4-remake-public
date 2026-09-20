@@ -903,7 +903,7 @@ function npcStepOnce(
     {
       ...settled.state,
       rngState: rng.getState(),
-      lastNpcWalks: [{ slot, path: walk.path }],
+      lastNpcWalks: [{ slot, path: walk.path, steps }],
       ...(notices.length > 0 ? { notices } : {}),
     },
     walk.actor,
@@ -2091,7 +2091,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
             ...settled.state,
             specialActors,
             rngState: rng.getState(),
-            lastNpcWalks: [{ slot: slotIdx, path: walk.path }],
+            lastNpcWalks: [{ slot: slotIdx, path: walk.path, steps: npc.stepsRemaining }],
             ...(notices.length > 0 ? { notices } : {}),
           };
 
@@ -3810,7 +3810,9 @@ export function useToolAction(
       // ★ 试玩3 #11：连同 `cleared`（哪一件在哪一格被扫掉）一起交出去 ——
       //   客户端靠它把被扫的物件**留在原地直到补间走到那一格**，
       //   否则那几件在补间第一帧就整个消失（= 报的「没有扫走动画」）。
-      lastNpcWalks: [{ slot: specialSlotOf(ACTOR_DOLL), path: swept.path, cleared: swept.cleared }],
+      lastNpcWalks: [
+        { slot: specialSlotOf(ACTOR_DOLL), path: swept.path, steps: doll.stepsRemaining, cleared: swept.cleared },
+      ],
     });
   }
 

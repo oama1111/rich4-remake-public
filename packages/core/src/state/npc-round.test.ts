@@ -388,6 +388,8 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
       expect(path[0]).toBe(1);
       expect(path[path.length - 1]).toBe(after.specialActors[0]!.nodeId);
       expect(path.length).toBe(steps + 1);
+      // ★ E-22：**掷出的步数**原样交出去（走子时那串剩余步数从它往下数）
+      expect(hint[0]!.steps).toBe(steps);
       expect(steps).toBeGreaterThanOrEqual(2);
       expect(steps).toBeLessThanOrEqual(10);
       for (let i = 0; i + 1 < path.length; i++) {
@@ -450,6 +452,8 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
     expect(hint).toHaveLength(1);
     expect(hint[0]!.slot).toBe(4); // actor 8 → slot 4
     expect(hint[0]!.path).toEqual(Array.from({ length: DOLL_STEPS + 1 }, (_, i) => i + 1));
+    // ★ E-22 @source `0x0040deb9 mov esi,9 / 0x0040debe mov [0x48baf8],esi`
+    expect(hint[0]!.steps).toBe(DOLL_STEPS);
   });
 
   it('★ C-DET：它不进 stateFingerprint（改它不影响校验和）', () => {
