@@ -168,7 +168,6 @@ import { BOARD_BGM_FILES, MIDI_PLAYLIST, PLACE_TOOL_SOUND, SOUND_IDS, nextBoardB
 import {
   BoardRenderer,
   cameraCenter,
-  characterCamera,
   pixelCamera,
   hitToolbar,
   pickNodeAt,
@@ -1368,7 +1367,7 @@ function loadState(next: GameState, mapOverride: Rich4Map | null = null): void {
   nodeTip = null; // 换局面/读档时把名牌收掉（Q-HOVER-1）
   amountPage = null;
   const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? 1];
-  camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
+  camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   screen = 'game';
   // ★ 读档进棋盘：背景曲换**下一首** @source `sub_00401981(1)` → `0x004019c6 push 0 / call sub_00454d91`
   holidayBgmDays = 0; // @source 0x00404128 读档清零（節日曲不进存档）
@@ -6165,10 +6164,16 @@ function cursorWarpFrame(): CursorWarpFrame {
 const cursorWarper = createCursorWarper(warpCursor, cursorWarpFrame);
 
 /**
- * 把镜头平滑地移到当前玩家身上。
+ * 把镜头对到当前行动者身上 —— **逐像素**，不是逐格。
  *
- * 用逼近而非瞬移：棋子一步一步走，镜头硬跟会晃得厉害。
- * 系数 0.18 是「跟得上但不抖」的经验值，不是原版常量。
+ * ★★ 第五份回报第 1 条「镜头一跳一跳」的根因：原版的镜头中心**恒是一对像素坐标**
+ *   （`[0x48b2ac]` / `[0x48b2b0]`）。`fcn_00415e70`（VA 0x00415e70）取行动者的
+ *   `player+0x08/+0x0a`（替身 `0x498de8 + slot*0x10`）原样喂给 `fcn_0040829d`，
+ *   后者把 `>> 5` 拿去查投影表、把 `& 0x1f` 过 `fcn_00407a2c` 的矩阵换成屏幕偏移
+ *   （`004083ae..004083e9`）。而走路例程每 tick 给 `+0x08/+0x0a` 加一个**浮点**步长
+ *   （`0x0040c353 fadd [0x48baec]` … `0x0040c38a`）⇒ 原版镜头随棋子**每 tick 滑几像素**。
+ *   本引擎先前写的是 `tileX: x >> 5` —— 把余量丢了，镜头于是每跨一块（32 世界单位）
+ *   才整格跳一次。现在一律走 `pixelCamera`。没有任何平滑/逼近系数：原版没有。
  *
  * ★ **有标记点时不动** —— 原版 `fcn_00415e70`（VA 0x00415e70）是
  *   「有标记用标记、没标记才用当前玩家」。棋子走到标记上时标记自动清掉，
@@ -6194,7 +6199,7 @@ function centerOnCurrentPlayer(): void {
   const walkWorld = renderer.actorCenterWorld(performance.now());
   const target = cameraFollowTarget(walkWorld, me, (id) => map.nodes[id - 1]);
   if (target !== null && target.reason !== 'node') {
-    camera = { ...camera, tileX: target.x >> 5, tileY: target.y >> 5 };
+    camera = pixelCamera(target.x, target.y, camera.view);
     return;
   }
 
@@ -6208,9 +6213,9 @@ function centerOnCurrentPlayer(): void {
     }
   }
 
-  // 人物视角：摄像机就是**当前玩家所在的那一块**，原版恒在 29×29 窗口正中
-  //   （原先还有一支「地图视角」的平滑逼近，随 `setViewMode` 一起删掉，D-086-5）
-  camera = { ...camera, tileX: node.x >> 5, tileY: node.y >> 5 };
+  // 人物视角：镜头中心 = 当前玩家的**像素**世界坐标（静止时 `+0x08/+0x0a` = 格心，
+  //   `0x0040c3ec` 走完那一拍把目标格坐标原样写回）
+  camera = pixelCamera(node.x, node.y, camera.view);
 }
 
 /**
@@ -6306,7 +6311,7 @@ function minimapCenterFromLocal(localX: number, localY: number): { x: number; y:
 function centerOnMarker(): void {
   if (minimapMarker === null) return;
   followPlayer = false;
-  camera = characterCamera(minimapMarker.x, minimapMarker.y, camera.view);
+  camera = pixelCamera(minimapMarker.x, minimapMarker.y, camera.view);
 }
 
 /**
@@ -6839,7 +6844,7 @@ function startGame(): void {
   goButton.reset();
 
   const first = map.nodes[state.players[0]?.nodeId ?? 1];
-  camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
+  camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   hoverNode = null;
   // ★ 開局先播跳伞过场（T-048）：纯表现、可跳过，之后才进棋盘
   introStartedAt = performance.now();
@@ -8356,7 +8361,7 @@ function connectOnline(url: string, room: string, name: string): void {
           recorder.reset();
           hoverNode = null;
           const first = map.nodes[state.players[0]?.nodeId ?? 1];
-          camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
+          camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
           screen = 'game';
           log(`開局（聯機）：地圖 ${start.globalMapId}　種子 ${start.seed}`);
           ground = null;
@@ -8503,7 +8508,7 @@ async function boot(): Promise<void> {
     resizeCanvas();
     // ★ 原版开局就是人物视角（等距投影、跟着棋子），全局看右下角小地图
     const first = map.nodes[state.players[0]?.nodeId ?? 1];
-    camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
+    camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
     centerOnCurrentPlayer();
 
     // 开发期调试出口：在控制台里能直接看状态与相机，排错方便。

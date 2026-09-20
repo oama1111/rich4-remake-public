@@ -504,10 +504,21 @@ export function projectCell(view: number, row: number, col: number): { x: number
  *
  * @param camTileX 摄像机所在的块坐标（世界坐标 >> 5）
  * @param subX 摄像机相对该块原点的**亚格**偏移（世界单位 0..31）。
- *   贴边推镜头（`Q-PICK-1`）时摄像机是**逐像素**走的（原版步长 8..68 px，
- *   见 `client/picking.ts`），故这里要把那个余量减掉再投影。
- *   `x - subX` 可能为负 —— JS 的 `>>` 是算术右移、`& 0x1f` 取低位，
- *   两者配合正好给出「上一个块的第 31 个余量」，与查表一致。
+ *
+ *   ★ 原版的镜头中心**恒是一对像素坐标**（`[0x48b2ac]` / `[0x48b2b0]`，
+ *   `fcn_0040829d` 入口写入），不只贴边推镜头那一段：
+ *   ```asm
+ *   004083ae  ecx = camX >> 5 → [esp+0x50]      ; 查表用的块
+ *   004083cc  call fcn_00407a2c(camX, camY, &oX, &oY)   ; 镜头**自己**的块内余量过同一张矩阵
+ *   004083e1  oX += 0xdc ; oY += 0x104           ; 再加棋盘区中心 (220, 260)
+ *   ...
+ *   00408590  col = (objX >> 5) − [esp+0x50] + 0xe
+ *   004085dc  call fcn_00407a2c(objX, objY, &pX, &pY)   ; 物件的块内余量
+ *   004085f8  屏幕X = 表[col,row].x − pX + oX     ; ★ 物件的余量**减**、镜头的余量**加**
+ *   ```
+ *   ⇒ 块差按**各自** `>> 5` 取、两份余量**分别**过矩阵再一减一加。
+ *   先前这里写成「把世界点平移 `sub` 再投影」（`(x − sub) >> 5`）——
+ *   投影表带透视、矩阵带取整，两者差 1–2 px，且会让同一物件在镜头滑过块界时抖一下。
  * @param subY 同上（Y 方向）
  */
 export function projectWorld(
@@ -519,18 +530,29 @@ export function projectWorld(
   subX = 0,
   subY = 0,
 ): { x: number; y: number } | null {
-  const px = x - subX;
-  const py = y - subY;
-  const col = (px >> 5) - camTileX + VIEW_CENTER;
-  const row = (py >> 5) - camTileY + VIEW_CENTER;
+  const col = (x >> 5) - camTileX + VIEW_CENTER;
+  const row = (y >> 5) - camTileY + VIEW_CENTER;
   const base = projectCell(view, row, col);
   if (base === null) return null;
 
-  const m = SUBTILE_MATRIX[view % VIEW_COUNT]!;
-  const dx = px & 0x1f;
-  const dy = py & 0x1f;
   // @source fcn_00407a2c：o1 喂 X、o2 喂 Y（配对单向，见 SUBTILE_MATRIX 的说明）
-  const o1 = ((m[0] * dx) >> 5) + ((m[2] * dy) >> 5);
-  const o2 = ((m[1] * dx) >> 5) + ((m[3] * dy) >> 5);
-  return { x: base.x - o1, y: base.y - o2 };
+  const o = subtileOffset(view, x & 0x1f, y & 0x1f);
+  const c = subtileOffset(view, subX & 0x1f, subY & 0x1f);
+  return { x: base.x - o.x + c.x, y: base.y - o.y + c.y };
+}
+
+/**
+ * 块内余量（世界单位 0..31）→ 屏幕像素偏移。
+ *
+ * @source `fcn_00407a2c`（VA 0x00407a2c）逐行：
+ *   `o1 = (m[0]*dx >> 5) + (m[2]*dy >> 5)`、`o2 = (m[1]*dx >> 5) + (m[3]*dy >> 5)`
+ *   （`sar` 是算术右移，负数向下取整 —— 与 JS 的 `>>` 同）。
+ *   物件用它时**减**、镜头用它时**加**（`fcn_0040829d`，见 `projectWorld`）。
+ */
+export function subtileOffset(view: number, dx: number, dy: number): { x: number; y: number } {
+  const m = SUBTILE_MATRIX[view % VIEW_COUNT]!;
+  return {
+    x: ((m[0] * dx) >> 5) + ((m[2] * dy) >> 5),
+    y: ((m[1] * dx) >> 5) + ((m[3] * dy) >> 5),
+  };
 }

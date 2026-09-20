@@ -36,12 +36,12 @@ import {
 import { BUILD_FX_BOARD_Y, BUILD_FX_H, BUILD_FX_W, BUILD_FX_X } from './build-fx.ts';
 import type { MapNode, Rich4Map } from '@rich4/core';
 import {
-  SUBTILE_MATRIX,
   VIEW_CENTER,
   VIEW_COUNT,
   VIEW_SPAN,
   projectCell,
   projectWorld,
+  subtileOffset,
 } from '@rich4/data';
 import type { Sprite, SpriteCache } from './assets.ts';
 import {
@@ -2121,24 +2121,21 @@ export class BoardRenderer {
     dpr: number,
   ): void {
     const ctx = this.#ctx;
-    const cx = vp.w / 2;
-    const cy = vp.h / 2;
     const tilesAcross = ground.width >> 5;
     const tilesDown = ground.height >> 5;
 
     ctx.save();
     ctx.imageSmoothingEnabled = false;
-    // ★ 亚格偏移（贴边推镜头）：整层地面按摄像机的余量**平移**同样的量。
-    //   余量是「世界单位」，转到屏幕要过同一张 SUBTILE_MATRIX
-    //   （与 `projectWorld` 里那两行完全一样）。
-    const subX = cam.subX ?? 0;
-    const subY = cam.subY ?? 0;
-    if (subX !== 0 || subY !== 0) {
-      const m = SUBTILE_MATRIX[cam.view % VIEW_COUNT]!;
-      const o1 = ((m[0] * subX) >> 5) + ((m[2] * subY) >> 5);
-      const o2 = ((m[1] * subX) >> 5) + ((m[3] * subY) >> 5);
-      ctx.translate(-o1 * dpr, -o2 * dpr);
-    }
+    // ★ 镜头的亚格余量：整层地面的角点一律**加**上镜头余量过矩阵的那一对偏移。
+    //   @source `fcn_0040829d`：`004083cc call fcn_00407a2c(camX, camY, …)` 得 (oX, oY)，
+    //   `004083e1 add [esp+0x34],0xdc / add [esp+0x20],0x104` 并进棋盘区中心，
+    //   之后每块四角都是 `表值 + 这一对`（VA 0x00408479..0x004084fe）。
+    //   ⚠️ 先前这里用 `ctx.translate(-o)`：一来**符号反了**，二来下面每块的
+    //   `setTransform` 会把它整个顶掉 ⇒ 地面其实从不跟余量走，镜头逐像素动时
+    //   地面按整格跳、棋子与建筑却在滑 —— 两层错位最多一格。
+    const camOff = subtileOffset(cam.view, (cam.subX ?? 0) & 0x1f, (cam.subY ?? 0) & 0x1f);
+    const cx = vp.w / 2 + camOff.x;
+    const cy = vp.h / 2 + camOff.y;
     // 表是 29×29，取相邻角点故只能铺 28×28 格
     // ⚠️ 余量存在时要多铺一圈：可见范围会跨界（`subX/subY != 0` 时最多偏一格）
     for (let row = 0; row < VIEW_SPAN - 1; row++) {
