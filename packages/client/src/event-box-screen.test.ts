@@ -9,7 +9,7 @@
  *      （不是 310），停 1600ms + 800ms（**两段都可跳过**）；
  *   ③ **抽卡**：先播 `Data#0x218` 的 FLIC（落 208,180；**这一段原版点不掉**，
  *      `fcn_0045144f` 的 `flags=1` ⇒ `[0x48c880]=0`），亮牌时对话框皮 + 卡名
- *      （220,129，正中）落 + 卡面 `Data[卡号+0x23a]`（176×240）落 (138,200)，停 1500ms（可跳过）；
+ *      （220,129，正中）落 + 卡面 `Data[卡号+0x23a]`（**165×256**，见 `CARD_FACE_SIZE`）落 (138,200)，停 1500ms（可跳过）；
  *   ④ **触发**：`lastEvent` 变了 → 新聞/命運；否则手牌变长 → 抽卡；正在播时不起新的。
  *   ⑤ **可跳过性**：`fcn_004544f6`（新聞 / 命運第一段）与 `fcn_004528b9`（命運第二段 /
  *      抽卡亮牌）都认 `0x202`/`0x205`/`0x101` ⇒ 这些段都能被抬手/右键/按键推进或关屏；
@@ -120,14 +120,21 @@ describe('用到的素材 @source fcn_0044b6df / fcn_0044db81 / fcn_00441f73', (
     expect(FORTUNE_SECOND_HOLD_MS).toBe(800);
   });
 
-  it('★ 抽卡：FLIC `Data#0x218` 落 (208,180)、卡面 `卡号+0x23a` 176×240 落 (138,200)', () => {
+  it('★ 抽卡：FLIC `Data#0x218` 落 (208,180)、卡面 `卡号+0x23a` **165×256** 落 (138,200)', () => {
     expect(CARD_FLIC_RESOURCE).toBe(0x218);
     expect(CARD_FLIC_AT).toEqual({ x: 0xd0, y: 0xb4 });
     expect(CARD_FLIC_AT).toEqual({ x: 208, y: 180 });
     expect(CARD_FACE_BASE).toBe(0x23a);
     expect(CARD_FACE_BASE).toBe(570);
-    expect(CARD_FACE_SIZE).toEqual({ w: 176, h: 240 });
+    // ★ W-61 订正：先前那个 176×240 是**按文件大小猜的**（两个尺寸的 ×2 都是 84480，
+    //   所以字节数对得上、**行宽错了** ⇒ 解码出来每行错位、整张卡是乱码）。
+    //   真值来自 exe 的图头模板 `0x441204`（`u16 w = 0x00a5`、`u16 h = 0x0100`）。
+    expect(CARD_FACE_SIZE).toEqual({ w: 165, h: 256 });
+    expect(CARD_FACE_SIZE).toEqual({ w: 0xa5, h: 0x100 });
     expect(CARD_FACE_SIZE.w * CARD_FACE_SIZE.h * 2).toBe(84480); // Data/0571.bin 的字节数
+    // ★ 反证：旧那个猜出来的尺寸**也**能整除 84480 —— 只对字节数是判不出来的
+    expect(176 * 240 * 2).toBe(84480);
+    expect(CARD_FACE_SIZE.w).not.toBe(176);
     expect(CARD_FACE_AT).toEqual({ x: 0x8a, y: 0xc8 });
     expect(CARD_FACE_AT).toEqual({ x: 138, y: 200 });
     // 对话框皮与卡名同一个落点：皮走锚点 → 左上 (97,28)，名是 flag 4 正中
@@ -621,7 +628,7 @@ describe('★ 画一遍：落点与抠黑（照计划执行）', () => {
     });
     expect(draws.map((d) => [d.key, d.x, d.y])).toEqual([
       ['sprite:Data.mkf:517:5', 97, 28],
-      ['raw:Data.mkf:582:176x240', 138, 200],
+      ['raw:Data.mkf:582:165x256', 138, 200],
     ]);
     expect(texts.map((t) => [t.text, t.x, t.y, t.align, t.baseline])).toEqual([
       ['拆除卡', 220, 129, 'center', 'middle'],

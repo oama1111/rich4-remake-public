@@ -143,7 +143,7 @@
  * |---|---|---|---|---|
  * | 新聞插画 | `Data.mkf` `id + 0x1b9`（441..476）| 194776 | 388×251 | 0x0044b75a |
  * | 命運插画 | `Data.mkf` `id + 0x1dd`（477..513）| 194776 | 388×251 | 0x0044dc11 |
- * | 抽卡卡面 | `Data.mkf` `卡号 + 0x23a`（571..600）| 84480 | 176×240 | 0x00441fb1 |
+ * | 抽卡卡面 | `Data.mkf` `卡号 + 0x23a`（571..600）| 84480 | **165×256** | 0x00441fb1 + 图头模板 `0x441204`（`w=0x00a5`/`h=0x0100`，见 `CARD_FACE_SIZE`）|
  *
  * 这三族**没有 SPR/SMP 头**（`assets-clean/manifest.json` 把它们记在 `raw` 下、
  * `signature: "bin"`），而 `env.sprite()` 走 `SpriteCache` → `parseSpriteSheet()`，
@@ -307,8 +307,27 @@ export const CARD_FLIC_AT = { x: 0xd0, y: 0xb4 } as const;
 
 /** 卡面资源基址 @source 0x00441fb1 `add eax, 0x23a` */
 export const CARD_FACE_BASE = 0x23a;
-/** 卡面是 176×240 的无头 RGB555（`Data/0571.bin` = 84480 B = 176×240×2）*/
-export const CARD_FACE_SIZE = { w: 176, h: 240 } as const;
+/**
+ * 卡面尺寸 —— **165 × 256**（不是 176×240）。
+ *
+ * ⚠️ **2026-09-20 订正（W-61）**：先前那个 `176×240` 是**按文件大小猜的**
+ *   （`Data/0571.bin` = 84480 B；176×240×2 与 165×256×2 都是 84480，所以字节数对得上、
+ *   **行宽错了**）⇒ 解码出来每行错位、整张卡是乱码。
+ *   真值来自 exe 的**图头模板**：
+ *
+ * ```asm
+ * ; fcn_00441f73（得卡演出，4 个调用点共用：卡片格 0x0041b302、福神 0x00441baa 等）
+ * 00441f7e  mov esi, 0x441204        ; 图头模板
+ * 00441f83  movsd ×3                 ; 12 字节拷到栈上
+ * ;                    模板 0x441204 的字节 = a5 00 00 01 00 00 00 00 …
+ * ;                    ⇒ u16 宽 = 0x00a5 = 165、u16 高 = 0x0100 = 256、锚点 (0,0)
+ * 00441fc6  ; read_mkf(Data.mkf, 卡号 + 0x23a) 的返回值填进模板的数据指针
+ * 00442046  push 0xc8 / push 0x8a    ; 落点 (138,200) 不变
+ * ```
+ *   ⇒ 165 × 256 × 2 = **84480** ✓（与资源字节数对账）。
+ *   首席已用 165×256 渲染 `extracted/Data/0571.bin`，是一张完整的卡。
+ */
+export const CARD_FACE_SIZE = { w: 0xa5, h: 0x100 } as const;
 /** 卡面落点 (138,200) @source 0x00442046 `push 0xc8 / push 0x8a` */
 export const CARD_FACE_AT = { x: 0x8a, y: 0xc8 } as const;
 /** 对话框皮落点 (220,129) @source 0x0044200a `push 0xdc / push 0x81` */
@@ -602,7 +621,7 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
         blitSprite('Data.mkf', DIALOG_SKIN_RESOURCE, DIALOG_SKIN_IMAGE, true, CARD_SKIN_AT),
         // 卡名：flag 4 = 正中
         textItem(v.cardName, CARD_NAME_AT, CARD_FONT_SIZE, true),
-        // 卡面：176×240 无头 RGB555，**不透明**贴 (138,200)
+        // 卡面：165×256 无头 RGB555（尺寸见 CARD_FACE_SIZE），**不透明**贴 (138,200)
         blitRaw('Data.mkf', CARD_FACE_BASE + v.id, CARD_FACE_SIZE, CARD_FACE_AT),
       ],
       flic: { archive: 'Data.mkf', resource: CARD_FLIC_RESOURCE, at: CARD_FLIC_AT },
