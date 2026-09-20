@@ -842,3 +842,34 @@ export function drawShopScreen(
 
 /** 卡名表（`@rich4/data` 的 `CARDS` 是 1 基，做成按卡片号直接取） */
 const SHOP_LABELS: ReadonlyMap<number, string> = new Map(CARDS.map((c) => [c.id, c.name]));
+
+// ============================================================
+//  气泡与关门（纯判据）—— E-21：道别气泡被点掉之后店永远不关
+// ============================================================
+
+/**
+ * 气泡还在（或正在关门）时点了一下，气泡该变成什么。
+ *
+ * @source `loc_0042de09`：`cmp [0x48c318],3 / je 正常命中`，否则 `push 1 / call fcn_0044ee18`
+ *   —— **提前收掉限时訊息框**，别的都不做。框一收，挂在它后面的流程照常推进
+ *   （关门那一路：状态 2→3→4，`loc_0042e686`）。
+ *
+ * ⇒ 关门中：把道别那一句**改成立刻到期**（`until = 0`），由 `shopTick` 走同一条关门路；
+ *   不在关门：直接收掉（`null`），没有后续。
+ */
+export function shopBubbleAfterClick<T extends { until: number }>(bubble: T | null, closing: boolean): T | null {
+  if (!closing || bubble === null) return null;
+  return { ...bubble, until: 0 };
+}
+
+/**
+ * `shopTick` 这一帧该不该走「气泡收场」那一支。
+ *
+ * ★ `closing && bubble === null` 也算到期 —— 兜底：任何一条路把道别气泡弄没了，门照样要关
+ *   （先前的卡死形态正是这个）。
+ */
+export function shopBubbleExpired(bubble: { until: number } | null, closing: boolean, now: number): boolean {
+  if (bubble === null) return closing;
+  return now >= bubble.until;
+}
+

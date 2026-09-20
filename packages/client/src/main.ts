@@ -101,7 +101,13 @@ import {
 import { onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
 // ★ 「請選擇設施類別」那扇窗（Q-TOOL-4）—— 真人盖**等级 0 的設施**时要先选种类
 //   （原版 `fcn_00440aac` / 窗口过程 `fcn_0043fae4`）。
-import { PICKER_TOOL_ID, openFacilityPicker, pickerNeededFor } from './facility-picker.ts';
+import {
+  PICKER_HIT,
+  PICKER_STRIDE,
+  PICKER_TOOL_ID,
+  openFacilityPicker,
+  pickerNeededFor,
+} from './facility-picker.ts';
 import { needsStealPick, openStealPicker } from './steal-picker.ts';
 import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue } from './amount-window.ts';
 import {
@@ -450,6 +456,9 @@ import {
   drawShopScreen,
   hitShopCell,
   hitShopExit,
+  SHOP_EXIT_HIT,
+  shopBubbleAfterClick,
+  shopBubbleExpired,
   hitShopShelf,
   hitShopSwitch,
   shopEntryOf,
@@ -475,7 +484,7 @@ import { facilityPickerScreen } from './facility-picker.ts';
 import { researchScreen } from './research-screen.ts';
 // ★ 只给 dev 钩子用（`__rich4.auctionView()`）：竞价轮转发生在 canvas 屏里，
 //   自动化看不见就没法验收「电脑跟不跟价、落槌演没演」。
-import { auctionRunForTest } from './auction-screen.ts';
+import { auctionHumanPassPoint, auctionRunForTest } from './auction-screen.ts';
 // ★ 镜头该盯谁：判据是纯函数（第四份回报第 2/5 条）
 import { cameraFollowTarget } from './camera-follow.ts';
 // ★ 只给 dev 钩子用（`__rich4.lotteryDraw()`）：開獎屏要等到 15 号才出现
@@ -6180,7 +6189,7 @@ function shopTick(now: number): void {
     // 滑入到位才说「請挑選…」—— 原版是动画走完那一刻才发 0x40d（`loc_0042d75e` 尾）
     if (slideDone(ui.slide)) shopSay(ui, shopMessage(ui.page, 'hint'), now);
   }
-  if (ui.bubble === null || now < ui.bubble.until) return;
+  if (!shopBubbleExpired(ui.bubble, ui.closing, now)) return;
   ui.bubble = null;
   // ★ 道别那句话说完才真的关门 @source `loc_0042e686` → 状态 2→3→4
   if (ui.closing) dispatch({ type: 'declineDecision' });
@@ -7861,7 +7870,13 @@ function bindInput(): void {
       // 气泡还在时，原版只把气泡收掉（`loc_0042de09` 的 `[0x48c318] != 3` 那条分支），
       //   不做别的；正在等道别那句话说完也一样不接输入。
       if (ui.bubble !== null || ui.closing) {
-        ui.bubble = null;
+        // ★★ E-21 抓到的真卡死：道别气泡还在时再点一下（连点 EXIT 很自然），先前这里把气泡
+        //   直接清成 null，而 `shopTick` 的关门判据恰恰是「气泡**到期**」⇒ `closing` 恒真、
+        //   气泡恒空、店永远不关（`pending = shop` 卡死，试玩 soak 连点 313 次关不掉）。
+        //   原版这一拍是 `fcn_0044ee18(1)`（@source `loc_0042de09`：提前收掉限时訊息框）——
+        //   框一收，后续照常推进（状态 2→3→4，`loc_0042e686`）。故道别那一句**改成立刻到期**，
+        //   交给 `shopTick` 走同一条关门路；别的气泡照旧直接收。
+        ui.bubble = shopBubbleAfterClick(ui.bubble, ui.closing);
         requestRender();
         return;
       }
@@ -9053,6 +9068,66 @@ async function boot(): Promise<void> {
             })),
           };
         },
+        /**
+         * ★ W-14 / E-21：真人此刻被一块**对话框按钮答不掉**的屏拦着时，该用哪一个**真实手势**出去。
+         *   `tools/soak-browser.js` 的真人路径先问它；返回 null = 没有这种屏，照旧点对话框按钮。
+         *
+         *   落点一律取各屏**自己的**命中框常量（`auctionButtonRect` / `SHOP_EXIT_HIT`），
+         *   保釋屏走原版的通用出口 —— **右键**（`WM_RBUTTONUP 0x205`，`panel-cancel.ts` 的 `bail` 层）；
+         *   填数页敲键盘。脚本只管把手势发成真实的鼠标 / 键盘事件。
+         */
+        humanExit: (): {
+          gesture: 'click' | 'rightClick' | 'keys';
+          x: number;
+          y: number;
+          why: string;
+          keys?: readonly string[];
+        } | null => {
+          if (screen !== 'game') return null;
+          const pass = auctionHumanPassPoint(uiEnv());
+          if (pass !== null) return { gesture: 'click', x: pass.x, y: pass.y, why: 'auction:PASS' };
+          // 「請選擇設施類別」浮窗：右键在免费代蓋那一支**无效**（E-20）⇒ 真实出口 = 点一格。
+          //   点第 2 格（旅館）：落点取本窗自己的命中框（`PICKER_HIT` + `PICKER_STRIDE`）。
+          if (activeUiScreen()?.id === 'facility-picker') {
+            return {
+              gesture: 'click',
+              x: PICKER_HIT.x0 + PICKER_STRIDE + PICKER_STRIDE / 2,
+              y: (PICKER_HIT.y0 + PICKER_HIT.y1) / 2,
+              why: 'facility-picker:slot1',
+            };
+          }
+          // 其余登记的整屏（轉盤 / 訊息框 / 事件框…）自己演、自己收，脚本不伸手
+          if (activeUiScreen() !== null) return null;
+          const mid = { x: LAYOUT.board.x + LAYOUT.board.w / 2, y: LAYOUT.board.y + LAYOUT.board.h / 2 };
+          if (shopUi !== null) {
+            if (shopUi.closing) return null;
+            return {
+              gesture: 'click',
+              x: (SHOP_EXIT_HIT.x0 + SHOP_EXIT_HIT.x1) / 2,
+              y: (SHOP_EXIT_HIT.y0 + SHOP_EXIT_HIT.y1) / 2,
+              why: 'shop:EXIT',
+            };
+          }
+          if (state.pending?.kind === 'bail') return { gesture: 'rightClick', ...mid, why: 'bail' };
+          // 通用填数页：右键只是退回上一扇 YES/NO（脚本再点 YES 就成了死循环）⇒ 真人的做法是
+          //   **敲数字 + Enter**（那扇窗自己认主键盘 0-9 / Enter，@source `loc_00452e4b`）。
+          if (amountPage !== null) {
+            return { gesture: 'keys', ...mid, why: 'amountPage', keys: ['Digit1', 'Enter'] };
+          }
+          return null;
+        },
+        /**
+         * ★ W-14：台上此刻是不是在**正当演出**（影片 / 整屏回放 / 补间 / 台词）——
+         *   `tools/soak-browser.js` 的停摆判据要用：魔法屋回放 + 四家各一段建屋影片这种长串，
+         *   `phase|currentPlayer|pending` 会 25 秒不变，但那不是卡死。判据就是回合驱动自己用的那一套
+         *   （`stageBusy(stageBusyFlags())` + 台词队列），不另写一份。
+         */
+        stageBusy: () => ({
+          busy: stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null,
+          flags: stageBusyFlags(),
+          speech: speechQueue.length,
+          deferred: deferredSpeech !== null,
+        }),
         /** 查一张图的尺寸与锚点 —— 命中判定对不上时先看这个 */
         sprite: (archive: 'Data.mkf' | 'Panel.mkf', res: number, idx: number, key = false) => {
           const s2 = spriteNow(archive, res, idx, key);

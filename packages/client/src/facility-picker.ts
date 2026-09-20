@@ -381,6 +381,12 @@ export const facilityPickerScreen: UiScreen = {
       env.requestRender();
       return;
     }
+    // ★★ E-20 订正：神明顯靈**代蓋**那一次（`pending.free`）原版右键**无效** ——
+    //   `0x0043febb cmp dword [0x48c528],0 / 0x0043fec2 je 0x43fd7e`（忽略），而 `[0x48c528]`
+    //   就是 `0x440aac` 的实参（`0x0043fb3c` 在 `0x401` 初始化那一拍存入）；免费那一支
+    //   `0x0040b1e2 push 0`。只有改建卡（`0x004431c2 push 1`）能取消。⇒ 窗留着，必须选一种。
+    const p = env.state.pending;
+    if (p !== null && p.kind === 'buildFacility' && p.free === true) return;
     hover = null;
     env.dispatch({ type: 'declineDecision' });
     env.requestRender();

@@ -1166,6 +1166,20 @@ export function resetAuctionScreenForTest(): void {
   screen = null;
 }
 
+/**
+ * 给**浏览器长跑的真人路径**（W-14 / E-21）：此刻是不是轮到**真人**举牌？
+ * 是就交出 **PASS 钮的中心**（本屏自己的 `auctionButtonRect(0)`，不让脚本手抄坐标）。
+ *
+ * ★ 判据与 `down()` / `up()` 用的是同一个 `humanTurn()` —— 结算演出中、电脑那一手、
+ *   联机下不是本机那一口，一律返回 null（那几种情况脚本不该伸手）。
+ */
+export function auctionHumanPassPoint(env: UiScreenEnv): { x: number; y: number } | null {
+  const st = screen;
+  if (st === null || !humanTurn(env, st)) return null;
+  const r = auctionButtonRect(0);
+  return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+}
+
 /** 只给单测用：读回屏内的运行时 */
 export function auctionRunForTest(): AuctionRun | null {
   return screen?.run ?? null;

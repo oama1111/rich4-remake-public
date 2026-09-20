@@ -384,6 +384,19 @@ describe('★ 待决交互那一支：落点在等级 0 的設施上（`pending.
     expect(second.actions).toEqual([{ type: 'declineDecision' }]);
   });
 
+  it('★★ E-20：神明代蓋那一次（`pending.free`）右键**无效** —— 窗留着、什么都不派 @source 0x0043febb / 0x0040b1e2', () => {
+    resetFacilityPicker();
+    const { env, actions } = mkEnv('buildFacility');
+    (env.state as unknown as { pending: { kind: string; free?: true } }).pending = { kind: 'buildFacility', free: true };
+    facilityPickerScreen.contextmenu?.(100, 300, env);
+    expect(actions).toEqual([]);
+    expect(facilityPickerScreen.active(env)).toBe(true);
+    // 选一格照常出得去
+    facilityPickerScreen.move?.(pickerSlotX(2) + 5, 300, env);
+    facilityPickerScreen.up?.(pickerSlotX(2) + 5, 300, env);
+    expect(actions).toEqual([{ type: 'buildFacility', facilityType: 2 }]);
+  });
+
   it('★ 两级来路互不串台：开了窗（道具那一路）时待决交互那一支不抢', () => {
     resetFacilityPicker();
     const { env, actions } = mkEnv('buildFacility');

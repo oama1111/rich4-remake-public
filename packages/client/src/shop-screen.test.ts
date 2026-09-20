@@ -50,6 +50,8 @@ import {
   slideEnd,
   slideStart,
   slideStep,
+  shopBubbleAfterClick,
+  shopBubbleExpired,
 } from './shop-screen.ts';
 
 describe('用到的图 @source rich4_shop.asm', () => {
@@ -409,3 +411,33 @@ describe('★ 进店/换页那一支 @source loc_0042d577', () => {
     expect(src).toContain('shopEntryOf(page, !ui.shown[page])');
   });
 });
+
+// ============================================================
+//  ★★ E-21：道别气泡被点掉之后店永远不关（真人路径长跑抓到的真卡死）
+// ============================================================
+
+describe('★★ 气泡与关门 @source loc_0042de09（fcn_0044ee18(1)）/ loc_0042e686', () => {
+  it('不在关门：点一下 ⇒ 气泡直接收掉', () => {
+    expect(shopBubbleAfterClick({ until: 9999, text: 'hint' }, false)).toBeNull();
+    expect(shopBubbleAfterClick(null, false)).toBeNull();
+  });
+
+  it('★★ 关门中：点一下 ⇒ 道别那一句**立刻到期**（不是清成 null）', () => {
+    const b = shopBubbleAfterClick({ until: 9999, text: 'bye' }, true);
+    expect(b).toEqual({ until: 0, text: 'bye' });
+    // 下一帧 `shopTick` 就认它到期 ⇒ 走同一条关门路
+    expect(shopBubbleExpired(b, true, 1)).toBe(true);
+  });
+
+  it('★★ 兜底：`closing` 而气泡已空 ⇒ 也算到期（先前的卡死形态）', () => {
+    expect(shopBubbleExpired(null, true, 123)).toBe(true);
+    expect(shopBubbleExpired(null, false, 123)).toBe(false);
+  });
+
+  it('气泡没到点 ⇒ 不收', () => {
+    expect(shopBubbleExpired({ until: 500 }, false, 499)).toBe(false);
+    expect(shopBubbleExpired({ until: 500 }, true, 499)).toBe(false);
+    expect(shopBubbleExpired({ until: 500 }, true, 500)).toBe(true);
+  });
+});
+
