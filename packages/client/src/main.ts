@@ -69,6 +69,7 @@ import {  autoAction,
 } from '@rich4/core';
 import { NetClient, defaultWsUrl, netParamsFrom } from './net-client.ts';
 import { browserStorage, inviteLink, inviteRoomFrom, loadClientId, showFoyer } from './foyer.ts';
+import { NetToasts } from './net-toast.ts';
 import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
 import { RENDER_MS, tickMs } from './tick.ts';
 import { walkTweenFor } from './tween.ts';
@@ -589,6 +590,13 @@ const loadHintEl = $('loadhint');
 const loadRetryEl = $<HTMLButtonElement>('loadretry');
 // ★ W-73 大厅里的「複製邀請連結」（DOM，盖在 canvas 下缘）
 const inviteEl = $<HTMLButtonElement>('invite');
+// ★ W-75 联机提示（右下角堆叠 + 被託管的常驻横幅）
+const toastsEl = $('toasts');
+const autopilotBannerEl = $('autopilotbanner');
+const netToasts = new NetToasts(document, toastsEl, autopilotBannerEl);
+/** 上一份房间快照 —— `roomToasts()` 靠前后两份比出「谁进来了 / 谁掉线 / 谁被託管」 */
+let lastToastRoom: RoomInfo | null = null;
+
 // ★ W-74 回合计时（棋盘右上角，剩余 ≤ 20 秒才露出来）
 const clockEl = $('clock');
 const clockNumEl = $('clocknum');
@@ -8909,6 +8917,10 @@ function connectOnline(url: string, room: string, name: string): void {
         onJoined: (seat, info) => {
           log(`✔ 進房 ${info.id}：我是 ${seat + 1} 號座${seat === 0 ? '（房主，按 START 開局）' : ''}`);
           enterLobby(info);
+          // ★ W-75：第一次拿到快照 ⇒ 屋里已经在的人按「加入了」报一遍
+          lastToastRoom = null;
+          netToasts.update(null, info, seat);
+          lastToastRoom = info;
         },
         onRoom: (info) => {
           log(
@@ -8919,6 +8931,9 @@ function connectOnline(url: string, room: string, name: string): void {
           );
           // 有人进出、有人掉线都要立刻反映在大厅上
           enterLobby(info);
+          // ★ W-75：比较前后两份快照，该弹的弹（谁进来 / 谁掉线 / 谁被超时託管）
+          netToasts.update(lastToastRoom, info, net?.seat ?? null);
+          lastToastRoom = info;
         },
         onStart: (start) => {
           // 重连时 start 会再来一次；局面已在，别重建（那会把 since 之前的进度清掉）
@@ -8954,6 +8969,10 @@ function connectOnline(url: string, room: string, name: string): void {
           scheduleHumanTurn();
         },
         onAction: (action) => {
+          // ★ W-75：服务器那本「连续超时」的账是在**该座位交 intent** 那一刻清零的
+          //   （`hub.ts` 的 `#submit`）。这里照抄同一条规则 —— 用**施加之前**的镜像
+          //   算「这条 action 是谁派的」。
+          netToasts.noteIntent(actingSeat(state));
           if (action.type === 'step') stepTick();
           applyAction(action);
         },
@@ -9792,6 +9811,7 @@ async function boot(): Promise<void> {
     //   它优先级最高；其次是 `?screen=` 调试屏；两者都没有才轮到门厅。
     const debugScreen = new URLSearchParams(window.location.search).has('screen');
     const online = netParamsFrom(window.location.search);
+    lastToastRoom = null;
     if (online !== null) connectOnline(online.url, online.room, online.name);
     else if (straightToGame) startGame();
     else if (isDesktop() || debugScreen) enterTitleScreen();

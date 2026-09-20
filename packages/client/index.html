@@ -71,6 +71,19 @@
       #clock[hidden] { display: none; }
       #clock.hot { color: #ff6b6b; border-color: #b8453f; }
       #clockname { font-size: 12px; font-weight: 500; color: #a9bcd4; }
+      /* ★ W-75 联机提示：右下角堆叠（每条 4 秒自收、最多 3 条）+ 被託管的常驻横幅。
+         两条都 `pointer-events: none` —— 它们是提示，不许挡住棋盘。 */
+      #toasts {
+        position: fixed; right: 16px; bottom: 16px; z-index: 35; pointer-events: none;
+        display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+      }
+      #autopilotbanner {
+        position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 35;
+        padding: 8px 16px; border-radius: 8px; pointer-events: none;
+        background: rgba(120, 40, 30, .92); border: 1px solid #b8453f; color: #ffe9e6;
+        font: 600 14px/1.3 -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif;
+      }
+      #autopilotbanner[hidden] { display: none; }
       #interaction {
         margin: 10px 0; padding: 10px; border-radius: 8px;
         background: #232a38; border: 1px solid #3a4a68;
@@ -95,6 +108,9 @@
     </aside>
     <!-- ★ W-73 大厅里的「複製邀請連結」；平时 hidden，只有在大厅且已联机时露出来 -->
     <button id="invite" type="button" hidden>複製邀請連結</button>
+    <!-- ★ W-75 联机提示：右下角堆叠 + 被託管的常驻横幅 -->
+    <div id="toasts"></div>
+    <div id="autopilotbanner" hidden>你已被託管，點一下畫面收回</div>
     <!-- ★ W-74 回合计时（棋盘右上角） -->
     <div id="clock" hidden><span id="clocknum">0</span><span id="clockname"></span></div>
     <script type="module" src="/src/main.ts"></script>
