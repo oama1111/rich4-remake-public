@@ -86,7 +86,7 @@ export type BubbleSpriteFn = (
 /**
  * 白字字幕的落点 @source VA 0x0044f140：
  * ```asm
- * 0044f140  push 5          ; 最多 5 行
+ * 0044f140  push 5          ; ★ 对齐码 5 = 左对齐 + **垂直居中**（W-64 订正：不是「最多 5 行」）
  * 0044f142  push 0x82       ; y = 130
  * 0044f147  push 0xc8       ; x = 200
  * 0044f14c  push ebx        ; 串
@@ -100,8 +100,22 @@ export type BubbleSpriteFn = (
  */
 export const SPEECH_TEXT_AT = { x: 0xc8, y: 0x82 } as const;
 
-/** 白字最多几行 @source 上面那条 `push 5` */
-export const SPEECH_TEXT_MAX_LINES = 5;
+/**
+ * 白字的**对齐 flag** —— `_rich4_draw_text` 的最后那个实参。
+ *
+ * ⚠️ **2026-09-20 订正（W-64）**：先前这里叫 `SPEECH_TEXT_MAX_LINES = 5`、
+ *   当成「最多 5 行」用（`Math.min(b.lines.length, 5)`）—— 那是**读错了**：
+ *   `0x0044f140 push 5` 是 `draw_text` 的**对齐码**，不是行数上限。
+ *
+ * @source `0x0044f140 push 5` → `0x0044f14f call 0x44fabc`；`0x44fabc` 末段
+ *   `lea eax,[flag-1] / jmp [eax*4 + 0x44faa0]` 是 **7 路跳表**（语义表在 `hud.ts` 文件头，
+ *   已逐条实读）：**flag 5 = 水平左对齐、垂直居中** ——
+ *   `y -= 文字块高 / 2`（`0x0044ff35 mov eax,ebx / sar eax,1 / sub [esp+0xb0],eax`，
+ *   `ebx` = 整块文字高 + 1）。
+ *   ⇒ `(200, 130)` 是文字块的**左边缘 + 垂直中心**，不是左上角。
+ *   行数**不设上限**（原版按串里已有的 `\n` 分行，整块往两边均分）。
+ */
+export const SPEECH_TEXT_FLAG = 5;
 
 /** 字幕的排版：字号 / 行距（原版 `_rich4_create_font(0x10, 0x101010, …)`，16 像素高）*/
 export const SPEECH_TEXT_FONT_SIZE = 0x10;
@@ -584,9 +598,14 @@ export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
     ctx.lineWidth = 3;
     ctx.strokeStyle = '#101010';
     ctx.fillStyle = '#ffffff';
-    const max = Math.min(b.lines.length, SPEECH_TEXT_MAX_LINES);
-    for (let i = 0; i < max; i++) {
-      const y = b.textAt.y + i * SPEECH_TEXT_LINE_HEIGHT;
+    // ★★ W-64：`SPEECH_TEXT_FLAG = 5` = **垂直居中** —— `(200,130)` 是整块文字的
+    //   垂直中心（原版 `0x0044ff35 mov eax,ebx / sar eax,1 / sub [esp+0xb0],eax`，
+    //   `ebx` = 整块文字高 + 1；`sar` 是**算术**右移 ⇒ 用 `>> 1` 而不是 `/ 2`）。
+    //   行数**不设上限**：原版按串里已有的换行分行，整块往两边均分。
+    const blockH = b.lines.length * SPEECH_TEXT_LINE_HEIGHT;
+    const top = b.textAt.y - (blockH >> 1);
+    for (let i = 0; i < b.lines.length; i++) {
+      const y = top + i * SPEECH_TEXT_LINE_HEIGHT;
       const text = b.lines[i]!;
       ctx.strokeText(text, b.textAt.x, y);
       ctx.fillText(text, b.textAt.x, y);

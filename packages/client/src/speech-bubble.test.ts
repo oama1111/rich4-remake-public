@@ -22,7 +22,7 @@ import {
   SPEECH_PORTRAIT_AT,
   SPEECH_TEXT_AT,
   SPEECH_TEXT_LINE_HEIGHT,
-  SPEECH_TEXT_MAX_LINES,
+  SPEECH_TEXT_FLAG,
   SpeechQueue,
   bubbleLines,
   drawSpeechBubble,
@@ -53,8 +53,10 @@ describe('几何常量（逐条对 exe VA）', () => {
     expect(SPEECH_EMOJI_AT.x).toBe(240);
   });
 
-  it('字幕最多 5 行、行距 18（原版 16 像素字 + 2 像素空隙）', () => {
-    expect(SPEECH_TEXT_MAX_LINES).toBe(5);
+  it('字幕的对齐码 = 5、行距 18（原版 16 像素字 + 2 像素空隙）', () => {
+    // ★ W-64：那个 5 是 `_rich4_draw_text` 的对齐码（5 = 左对齐 + 垂直居中），
+    //   不是「最多 5 行」—— 见 `SPEECH_TEXT_FLAG` 的注释。
+    expect(SPEECH_TEXT_FLAG).toBe(5);
     expect(SPEECH_TEXT_LINE_HEIGHT).toBe(0x12);
   });
 
@@ -256,14 +258,26 @@ describe('SpeechQueue：一句演完再演下一句', () => {
  *   与原版 `fcn_00456418` 的 `to_left = x − src->x` 同一套语义 —— 所以下面
  *   那些「落点 = (220,130)」的断言同时钉住了「减锚点」这一步。
  */
-function fakeCtx(): CanvasRenderingContext2D & { calls: string[] } {
+function fakeCtx(): CanvasRenderingContext2D & {
+  calls: string[];
+  /** ★ W-64：字幕**逐行的落点** —— 垂直居中要用到，`calls` 里只有文字没法断言 y */
+  texts: { t: string; x: number; y: number }[];
+} {
   const calls: string[] = [];
+  const texts: { t: string; x: number; y: number }[] = [];
   const target = {
     calls,
+    texts,
     save: () => calls.push('save'),
     restore: () => calls.push('restore'),
-    strokeText: (t: string) => calls.push(`stroke:${t}`),
-    fillText: (t: string) => calls.push(`fill:${t}`),
+    strokeText: (t: string, x: number, y: number) => {
+      calls.push(`stroke:${t}`);
+      texts.push({ t, x, y });
+    },
+    fillText: (t: string, x: number, y: number) => {
+      calls.push(`fill:${t}`);
+      texts.push({ t, x, y });
+    },
     // ⚠️ 只声明前两个参数：本实现只走 `drawImage(bitmap, x, y)` 那一支，
     //   多声明几个没用到的形参会被 lint 判 `no-unused-vars`。
     drawImage: (_b: unknown, a: number, b: number) => calls.push(`img:${a},${b}`),
@@ -278,7 +292,10 @@ function fakeCtx(): CanvasRenderingContext2D & { calls: string[] } {
       (t as Record<string | symbol, unknown>)[k] = v;
       return true;
     },
-  }) as unknown as CanvasRenderingContext2D & { calls: string[] };
+  }) as unknown as CanvasRenderingContext2D & {
+    calls: string[];
+    texts: { t: string; x: number; y: number }[];
+  };
 }
 
 function drawEnv(ctx: CanvasRenderingContext2D, sprite = vi.fn(() => null)): SpeechDrawEnv & {
@@ -418,14 +435,49 @@ describe('drawSpeechBubble', () => {
     expect(ctx.calls.filter((c) => c.startsWith('stroke:'))).toEqual([]);
   });
 
-  it('超过 5 行的台词只画前 5 行（原版那条 `push 5`）', () => {
+  it('★★ W-64：行数**不设上限** —— 那个 `push 5` 是**对齐码**，不是「最多 5 行」', () => {
     const ctx = fakeCtx();
     const env = drawEnv(ctx);
     mockSprites(env);
     const many: SpeechBubble = { ...dummy(0), lines: ['1', '2', '3', '4', '5', '6', '7'] };
     drawSpeechBubble(many, env);
     const fills = ctx.calls.filter((c) => c.startsWith('fill:'));
-    expect(fills).toEqual(['fill:1', 'fill:2', 'fill:3', 'fill:4', 'fill:5']);
+    expect(fills).toEqual(['fill:1', 'fill:2', 'fill:3', 'fill:4', 'fill:5', 'fill:6', 'fill:7']);
+    expect(SPEECH_TEXT_FLAG).toBe(5); // 那个 5 仍然在，只是语义是「左对齐 + 垂直居中」
+  });
+
+  /*
+   * ★★ W-64：`SPEECH_TEXT_AT = (200, 130)` 是文字块的**左边缘 + 垂直中心**
+   *   （flag 5 = 水平左对齐、垂直居中；原版 `0x0044ff35 mov eax,ebx / sar eax,1 /
+   *   sub [esp+0xb0],eax`）。先前按左上角画 ⇒ 整块**偏低半个块高**。
+   */
+  it.each([1, 2, 3, 4, 5])('★★ W-64：%i 行时首行的 y = 130 − ((n × 行距) >> 1)', (n) => {
+    const ctx = fakeCtx();
+    const env = drawEnv(ctx);
+    mockSprites(env);
+    const b: SpeechBubble = { ...dummy(0), lines: Array.from({ length: n }, (_, i) => `L${i + 1}`) };
+    drawSpeechBubble(b, env);
+    const expectedTop = SPEECH_TEXT_AT.y - ((n * SPEECH_TEXT_LINE_HEIGHT) >> 1);
+    const fills = ctx.texts.filter((_t, i) => i % 2 === 1); // stroke/fill 成对，取 fill 那一半
+    expect(fills.map((t) => t.y)).toEqual(
+      Array.from({ length: n }, (_, i) => expectedTop + i * SPEECH_TEXT_LINE_HEIGHT),
+    );
+    // 每一行的 x 都还是 200（水平左对齐，flag 5 的另一半）
+    for (const t of fills) expect(t.x).toBe(SPEECH_TEXT_AT.x);
+  });
+
+  it('★★ W-64：任意行数下「首行顶 + 末行底」的中点 === 130（±1）', () => {
+    for (const n of [1, 2, 3, 4, 5, 6, 7]) {
+      const ctx = fakeCtx();
+      const env = drawEnv(ctx);
+      mockSprites(env);
+      const b: SpeechBubble = { ...dummy(0), lines: Array.from({ length: n }, (_, i) => `L${i + 1}`) };
+      drawSpeechBubble(b, env);
+      const fills = ctx.texts.filter((_t, i) => i % 2 === 1);
+      const top = fills[0]!.y;
+      const bottom = fills[fills.length - 1]!.y + SPEECH_TEXT_LINE_HEIGHT;
+      expect(Math.abs((top + bottom) / 2 - SPEECH_TEXT_AT.y)).toBeLessThanOrEqual(1);
+    }
   });
 
   it('图还没解码好（取到 null）时不画、也不炸', () => {
