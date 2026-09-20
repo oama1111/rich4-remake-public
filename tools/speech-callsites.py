@@ -7,6 +7,7 @@
 本脚本只做机械抽取（不解读跳转）：数据来自 `../rich4-spec/gen/db.txt` 的线性反汇编。
 
 用法：python3 tools/speech-callsites.py > docs/tasks/speech-callsites.md
+      python3 tools/speech-callsites.py 0x41d476 > docs/tasks/view-to-callsites.md   # 换一个目标函数（镜头 view_to）
 """
 import os
 import re
@@ -62,11 +63,12 @@ def main() -> None:
         m = re.match(r"0x([0-9a-f]+)", ops)
         return int(m.group(1), 16) if m else None
 
-    sites = [i for i in range(len(insns)) if target(i) == SAY]
-    print("# `player_say`（VA 0x0044ef41）调用点 × 相邻演出调用（机械抽取）\n")
+    want = int(sys.argv[1], 16) if len(sys.argv) > 1 else SAY
+    sites = [i for i in range(len(insns)) if target(i) == want]
+    print("# `%s`（VA 0x%08x）调用点 × 相邻演出调用（机械抽取）\n" % (STAGE.get(want, "sub").split(" ")[-1], want))
     print("> 由 `tools/speech-callsites.py` 生成，**不要手改**。窗口 = 调用点前后各 %d 条指令（不跨函数）。" % WINDOW)
     print("> 「前」列按**执行方向**从远到近排；线性窗口不解读跳转 —— 分支关系要回 `disasm.py va` 核对。\n")
-    print("| # | 调用点 | 所在函数 | 表情实参(arg2) | 之前的演出调用（远→近） | 之后的演出调用（近→远） |")
+    print("| # | 调用点 | 所在函数 | 实参（arg1, arg2, arg3；`player_say` 的 arg2 = 表情号） | 之前的演出调用（远→近） | 之后的演出调用（近→远） |")
     print("|---|---|---|---|---|---|")
     for n, i in enumerate(sites, 1):
         va, _, _, fn = insns[i]
@@ -90,7 +92,7 @@ def main() -> None:
                 pushes.append(insns[j][2].split("  ")[0].strip())
             if len(pushes) == 3:
                 break
-        arg2 = pushes[1] if len(pushes) >= 2 else "?"
+        arg2 = ", ".join(pushes) if pushes else "?"
         print("| %d | `0x%08x` | `%s` | `%s` | %s | %s |" % (
             n, va, fn, arg2, "<br>".join(before[-6:]) or "—", "<br>".join(after[:4]) or "—"))
     print("\n共 %d 处。" % len(sites), file=sys.stdout)
