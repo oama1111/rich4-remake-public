@@ -9,6 +9,7 @@
  * 以及**未上市的行不读 1 基企业表的第 0 格**（Q-STOCK-7）。
  */
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   BLACK_CARD_NEWS_FLAG,
   RED_CARD_NEWS_FLAG,
@@ -452,5 +453,36 @@ describe('持股页「各玩家持股」零值也要画 @source loc_00429cf9..0x
       // 12 行都会在这一列画「0」（同一位玩家、每支股票一格），所以是「至少一次」
       expect(at.length, `第 ${p + 1} 位玩家的持股格应当画出「0」`).toBeGreaterThan(0);
     }
+  });
+});
+
+/*
+ * ★★ W-63：右键**一下只退一层**（源码钉子）。
+ *
+ * 浏览器一次右键会先后发 `mousedown(button=2)` 与 `contextmenu`。先前 `main.ts` 的
+ * `screen === 'stock'` 那一段在 `mousedown` 里**连右键一起**退卡 / 退屏，于是
+ * `stockDetail` 立刻变 null，紧接着 `contextmenu → cancelTopPanel()` 的梯子就落到
+ * `'stock'` 层把整个股市屏也关了 —— 一下退两层。
+ * 现在 `mousedown` 只认左键，右键交给梯子（`panel-cancel.ts` 的 `'stockDetail'` /
+ * `'stock'` / `'stockPick'` 三层）。
+ *
+ * ⚠️ 这一条是**位置**判据：把 `e.button === 0` 改回 `e.button === 0 || e.button === 2`、
+ *   或者把这两段挪到 `contextmenu` 之后，单测与类型检查都还是绿的，只有实机看得出来。
+ */
+describe('★★ W-63 main.ts 的接线（源码钉子：mousedown 里不许处理右键）', () => {
+  const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+
+  it('★ 全文件 `mousedown` 那一支里不再有 `e.button === 2`', () => {
+    // 右键是 `contextmenu` 的事；`mousedown` 里处理它 = 与取消梯子重复
+    expect(src.includes('e.button === 2')).toBe(false);
+  });
+
+  it('★ 详情卡与休市两处都只认左键', () => {
+    expect(src).toContain('if (e.button === 0) closeStockDetail();');
+    expect(src).toContain('if (e.button === 0) {\n          // ★ 选股模式碰上休市');
+  });
+
+  it('★ 取消梯子上确实有 `stockDetail` 这一层（右键的落点）', () => {
+    expect(src).toContain("case 'stockDetail':");
   });
 });

@@ -7691,7 +7691,10 @@ function bindInput(): void {
       //   （@source `fcn_0042b2ec` 的 0x202/0x205 两路都 `Post_0402_Message(0)`）
       //   —— 所以休市日既看不到行情，也不可能交易。
       if (stockCounterClosed(state)) {
-        if (e.button === 0 || e.button === 2) {
+        // ★ W-63：**只认左键** —— 右键交给 `contextmenu → cancelTopPanel()` 的
+        //   `'stock'` / `'stockPick'` 层（休市屏就是 `screen === 'stock'`，那两层覆盖得到）。
+        //   先前这里连右键一起关，而右键还会再触发一次 `contextmenu` ⇒ 一下退两层。
+        if (e.button === 0) {
           // ★ 选股模式碰上休市：原版这一支走訊息框，任何一下鼠标都 `Post(0)`
           //   抛回 0 ⇒ 卡不消耗、卡片欄被开回来（且不播取消音）
           if (stockPick !== null) cancelStockPick(false);
@@ -7699,9 +7702,14 @@ function bindInput(): void {
         }
         return;
       }
-      // 详情卡开着：左键或右键都直接退卡 @source `loc_0042aa08`
+      // 详情卡开着：**左键**直接退卡 @source `loc_0042aa08`
+      //   ★ W-63：右键**不在这里**关 —— 浏览器一次右键会先后发 `mousedown(button=2)`
+      //   与 `contextmenu`；这里若也关掉，`stockDetail` 立刻变 null，紧接着
+      //   `contextmenu → cancelTopPanel()` 的梯子就落到 `'stock'` 层把**整个股市屏**
+      //   也关了（一下退两层）。梯子上本来就有 `'stockDetail'` 那一层
+      //   （`panel-cancel.ts`），交给它就够。
       if (stockDetail !== null) {
-        if (e.button === 0 || e.button === 2) closeStockDetail();
+        if (e.button === 0) closeStockDetail();
         return;
       }
       if (e.button !== 0) return; // 右键走 contextmenu（换页 / 离开）
