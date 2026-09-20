@@ -1793,6 +1793,57 @@ export class BoardRenderer {
   }
 
   /**
+   * ★★ 镜头该跟着**谁**（屏幕坐标）—— 给「视角跟踪」用。
+   *
+   * 从上一版起，镜头只在换人行动时交还给当前玩家；但需求方指出两件原版就有的行为
+   * （第四份回报第 2 条）：
+   *   ① 棋子**一步步走**的时候镜头要跟着他走；
+   *   ② **機器娃娃/四大惡人**那一趟也要跟着走，走完再回到当前玩家身上。
+   *
+   * 这两条的证据是原版那两支共用同一个「画在哪」的世界坐标：
+   *   · 玩家：`player + 0x08/+0x0a`（走路例程每 tick 累加，`0x40c38a`/`0x40c3a4`）；
+   *   · 替身：`0x498e28 + slot*0x10` 的 `+0x00/+0x02`（`fcn_0040dd1f` 那一族），
+   *     镜头居中用的是**同一个** `fcn_00415e70`（它只问「有没有标记、没有就用
+   *     `[0x49910c]` 那个当前行动者」—— 而娃娃/惡人在盘上时 `[0x49910c]` 就被切成
+   *     4..7，见 `rules/npc-walk.ts` 的说明）。
+   * ⇒ 优先替身补间（它在走就以它为中心），否则走子补间的插值点，再否则 null
+   *   （调用方按当前玩家的格心）。
+   */
+  actorCenterWorld(now: number): { x: number; y: number } | null {
+    // ① 替身（娃娃 / 四大惡人）—— 槽位小的优先（原版游标 4..7 依次走）
+    for (const slot of [...this.#actorWalks.keys()].sort((a, b) => a - b)) {
+      const w = this.#actorWalks.get(slot);
+      if (w === undefined) continue;
+      const elapsed = now - w.start;
+      if (elapsed >= actorWalkTotalMs(w.steps)) {
+        this.#actorWalks.delete(slot);
+        continue;
+      }
+      let step = w.steps[w.steps.length - 1]!;
+      for (const st of w.steps) {
+        if (elapsed < st.at + st.ms) {
+          step = st;
+          break;
+        }
+      }
+      const kk = Math.min(step.ticks, Math.floor((elapsed - step.at) / w.tickMs) + 1);
+      const pt = walkFramesFor(step.from, step.to, step.ticks, step.exactTicks)[kk - 1];
+      if (pt !== undefined) return { x: pt.x, y: pt.y };
+    }
+    // ② 玩家走子补间（`#walkScreen` 内部自己管那一段的推进）
+    const w = this.#walk;
+    if (w !== null) {
+      const elapsed = now - w.start;
+      if (elapsed < w.ticks * w.tickMs) {
+        const kk = Math.min(w.ticks, Math.floor(elapsed / w.tickMs) + 1);
+        const pt = walkFramesFor(w.from, w.to, w.ticks, w.exactTicks)[kk - 1];
+        if (pt !== undefined) return { x: pt.x, y: pt.y };
+      }
+    }
+    return null;
+  }
+
+  /**
    * 走子补间这一帧该画在**屏幕**的哪里；没有补间返回 null（调用方按格心画）。
    *
    * ★ 插值在**世界坐标**上做、画的时候才投影（`@source 0x40c38a` / `0x40c3a4`：

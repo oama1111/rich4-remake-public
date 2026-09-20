@@ -235,6 +235,9 @@ function fakeCtx(): CanvasRenderingContext2D & { calls: string[] } {
     strokeText: (t: string) => calls.push(`stroke:${t}`),
     fillText: (t: string) => calls.push(`fill:${t}`),
     drawImage: (_b: unknown, x: number, y: number) => calls.push(`img:${x},${y}`),
+    // ★ 2026-09-19：台词底板要按**实际字宽**算尺寸（见 `drawSpeechBubble`），
+    //   所以这个替身得能回答 `measureText`。估法按 CJK 全宽 = 字号，够用。
+    measureText: (t: string) => ({ width: t.length * 16 }),
   };
   return new Proxy(target, {
     get(t, k) {

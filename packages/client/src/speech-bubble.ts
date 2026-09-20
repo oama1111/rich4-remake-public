@@ -367,15 +367,39 @@ export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
   const { ctx, sprite, font } = env;
 
   // ── ① 字幕：白字 + 黑描边（原版 `_rich4_create_font(0x10, 0x101010, …)`）──
+  //
+  // ★★ 2026-09-19 补（第四份回报第 3 条）：「台词没有对话框背景」。
+  //   原版那一段（`_rich4_player_say` VA 0x0044ef41，见本文件头的 5 步表）第 ④ 步
+  //   会把 `RECT(0,40,440,260)`（`fcn_00451a97`，@source 0x0044efb0）**从棋盘面抠下来**
+  //   存进离屏面、再连同角色名牌一起贴回 (0,40) —— 也就是说原版那句台词**自带一块
+  //   实心底板**（抠下来的棋盘像素 + 名牌），不是光秃秃一行白字。
+  //   本引擎没有可读回的棋盘表面（`speech-bubble.ts` 头部的「有意偏离」① ② 已登记），
+  //   所以这里画一块**等价观感的半透明深色底板** + 一圈浅边：白字才压得住，
+  //   底部那一块花哨的棋盘不至于让字糊掉。尺寸按**实际行数与字宽**算
+  //   （原版是固定 440×260 的快照方块，本引擎不抠像素、故按文字自适应）。
   if (b.lines.length > 0) {
     ctx.save();
     ctx.font = font(SPEECH_TEXT_FONT_SIZE);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
+    const max = Math.min(b.lines.length, SPEECH_TEXT_MAX_LINES);
+    let widest = 0;
+    for (let i = 0; i < max; i++) widest = Math.max(widest, ctx.measureText(b.lines[i]!).width);
+    const padX = 10;
+    const padY = 6;
+    const boxX = b.textAt.x - padX;
+    const boxY = b.textAt.y - padY;
+    const boxW = widest + padX * 2;
+    const boxH = max * SPEECH_TEXT_LINE_HEIGHT + padY * 2;
+    ctx.fillStyle = 'rgba(16,16,16,0.82)';
+    ctx.fillRect(boxX, boxY, boxW, boxH);
+    ctx.strokeStyle = 'rgba(240,240,240,0.75)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(boxX + 1, boxY + 1, boxW - 2, boxH - 2);
+    // 字的描边在底板之上才看得清（底板已经保证了对比度，描边调浅一档）
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0,0,0,0.85)';
     ctx.fillStyle = '#ffffff';
-    const max = Math.min(b.lines.length, SPEECH_TEXT_MAX_LINES);
     for (let i = 0; i < max; i++) {
       const y = b.textAt.y + i * SPEECH_TEXT_LINE_HEIGHT;
       const text = b.lines[i]!;

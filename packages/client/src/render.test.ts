@@ -1354,3 +1354,40 @@ describe('★ Q-PICK-1：摄像机的**亚格**余量（贴边推镜头要逐像
     expect(b!.x).toBeLessThan(a!.x);
   });
 });
+
+// ============================================================
+//  ★ 视角跟踪（第四份回报第 2 条）：镜头跟走子 / 跟替身
+// ============================================================
+
+describe('★ renderer.actorCenterWorld —— 镜头该跟着谁', () => {
+  /** 只算位置、不画：`SpriteCache` 给一个空实现就够（与上面那条同源） */
+  const rendererForCamera = (): BoardRenderer =>
+    new BoardRenderer({} as CanvasRenderingContext2D, {
+      addEvictListener: () => {
+        /* 只算位置，不画 */
+      },
+    } as unknown as SpriteCache);
+
+  it('★ 没有补间时返回 null（调用方按当前玩家的格心）', () => {
+    const r = rendererForCamera();
+    expect(r.actorCenterWorld(1000)).toBeNull();
+  });
+
+  it('★★ 走子补间期间返回**插值点**，不是整格的起点（镜头跟着棋子一步步走）', () => {
+    const r = rendererForCamera();
+    r.startWalk(0, { x: 0, y: 0 }, { x: 320, y: 0 }, 0, false, 20, 0);
+    const mid = r.actorCenterWorld(20 * 10);
+    expect(mid).not.toBeNull();
+    expect(mid!.x).toBeGreaterThan(0);
+    expect(mid!.x).toBeLessThan(320);
+    // 起点那一刻在第一拍的落点（原版每 tick 累加一次，`k = floor(elapsed/tickMs) + 1`
+    //   —— 见 `#actorWalkScreen` 的 `k`；所以 t=0 是**第一拍之后**的位置，不是 0）
+    expect(r.actorCenterWorld(0)!.x).toBeGreaterThan(0);
+  });
+
+  it('★ 走完之后不再返回（镜头交还给当前玩家）', () => {
+    const r = rendererForCamera();
+    r.startWalk(0, { x: 0, y: 0 }, { x: 32, y: 0 }, 0, false, 20, 0);
+    expect(r.actorCenterWorld(20 * 1000)).toBeNull();
+  });
+});

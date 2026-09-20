@@ -208,6 +208,9 @@ import { confineClip, confineFxTrigger } from './confine-fx.ts';
 // ★ 神明降臨／發威那一段影片（Q-ANIM-1）—— 与住院/入獄同一支 `fcn_0045144f`，
 //   于是共用 `board-film.ts` 的播放与下面那一份「棋盘影片」宿主状态。
 import { godFilmSpec, godFxTrigger } from './god-fx.ts';
+// ★ 「踩到惡犬」那一段影片（試玩回報：踩到狗直接進醫院、没有咬人动画/配音）——
+//   同一支 `fcn_0045144f` 的第三位客人，规格与判据见 `dog-fx.ts`。
+import { dogBiteFxTrigger } from './dog-fx.ts';
 // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報）—— 同一支 `fcn_0045144f`，
 //   规格与判据见 `alien-news-fx.ts`。
 import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
@@ -438,6 +441,8 @@ import { researchScreen } from './research-screen.ts';
 // ★ 只给 dev 钩子用（`__rich4.auctionView()`）：竞价轮转发生在 canvas 屏里，
 //   自动化看不见就没法验收「电脑跟不跟价、落槌演没演」。
 import { auctionRunForTest } from './auction-screen.ts';
+// ★ 镜头该盯谁：判据是纯函数（第四份回报第 2/5 条）
+import { cameraFollowTarget } from './camera-follow.ts';
 // ★ 只给 dev 钩子用（`__rich4.lotteryDraw()`）：開獎屏要等到 15 号才出现
 import { lotteryDrawCue, lotteryDrawView } from './lottery-draw-screen.ts';
 import { openBigMap } from './big-map-screen.ts';
@@ -1463,10 +1468,19 @@ const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
   'god-slot',
 ]);
 
+/**
+ * 此刻是不是有一段**纯演出**在接管整屏（判据就是上面那张表）。
+ *
+ * ★ 抽出来给两处共用：`holdForActorWalk` 的闸，以及 `speechTick` 的**台词冻结**。
+ */
+function blockingPresentation(): boolean {
+  const overlay = activeUiScreen();
+  return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
+}
+
 function holdForActorWalk(reschedule: () => void): boolean {
   if (screen !== 'game') return false;
-  const overlay = activeUiScreen();
-  if (overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id)) {
+  if (blockingPresentation()) {
     reschedule();
     return true;
   }
@@ -1495,9 +1509,33 @@ function holdForActorWalk(reschedule: () => void): boolean {
     reschedule();
     return true;
   }
+  // ★★ 「踩到惡犬」那一段（狗咬 → 救护车）**也是同一份** `boardFilm` 状态，
+  //   所以上面那一条已经把它挡住了；这里多守一道 `pendingBoardFilmAfter`，
+  //   防的是「狗咬刚播完、救护车还没起播」那一拍的空档
+  //   （@source 两只影片都是阻塞的 `fcn_0045144f`，见 `dog-fx.ts` 的文件头）。
+  if (pendingBoardFilmAfter !== null) {
+    reschedule();
+    return true;
+  }
   if (state.lastNpcWalks.length > 0 && state.lastNpcWalks !== npcWalksDrawn) {
     npcWalksDrawn = state.lastNpcWalks;
     requestAnimationFrame(reschedule);
+    return true;
+  }
+  // ★★ 还有台词在演 → 等它演完再派下一步。
+  //
+  //   原版 `_rich4_player_say`（VA 0x0044ef41）是**阻塞**的：画完字幕/表情后
+  //   `push 0x3e8 / call fcn_004544f6`（VA 0x0044f1a6）—— 那是个
+  //   「等消息或到点」的循环（VA 0x00454520 起 `PeekMessage` + `timeGetTime` 比对，
+  //   超时才 `0x4545b1` 返回）。也就是说：**原版在角色把一句话说完（0x3e8 ms）
+  //   之前，调用它的那整条回合流程根本不往下走**。
+  //   本引擎的队列是异步的，不挡就会出现「上一句还没说完，下一个 NPC 已经开始行动」。
+  //
+  //   ★ 判据取 `speechQueue.length > 0`：队列只在 `speechTick()` 里逐段收
+  //   （`speechQueue.tick`），而 `speechTick` 在演出期间**被冻结**（见那里），
+  //   所以「屏还在演」与「台词还没演完」两件事由这一条一并挡住。
+  if (speechQueue.length > 0) {
+    reschedule();
     return true;
   }
   return false;
@@ -3615,6 +3653,12 @@ function startActionFx(action: Action, before: GameState): void {
   startBuildFx(before);
   // 卡片 / 請神符的飞行动效（Q-TOOL-5）—— 是否真的播由 exe 的闸门定
   if (action.type === 'useCard') startCardFlight(before, action);
+  // ★★ 「踩到惡犬」那一段（試玩回報：踩到狗直接進醫院、没有咬人动画/配音）——
+  //   **必须排在 `startConfineFx` 之前**：原版那一支先把 0x214 播完、才走到
+  //   `send_to_hospital` 里的 0x20c（VA 0x0041b837 → 0x0043ed59）。
+  //   这一段不带 `options.animation` 闸（原版那一支没有 `cmp [0x497159], 0`），
+  //   详见 `dog-fx.ts` / `startDogFx`。
+  startDogFx(before, state);
   // ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1 未接清单之一）—— 与 action 种类无关：
   //   判据是**占用表/计数变没变**（`confine-fx.ts` 的 `confineFxTrigger`），
   //   因为送去坐牢/住院的来源有十来个（卡、狗咬、踩雷、命運、新聞、罰款…），
@@ -5091,6 +5135,15 @@ let boardFilm: BoardFilm | null = null;
  */
 let pendingBoardFilm: BoardFilmSpec | null = null;
 
+/**
+ * 「这一段播完，紧接着播下一段」—— 原版那两次 `fcn_0045144f` 是**串行**的
+ * （踩到惡犬那一支：`read_mkf(0x214)` → 播狗咬 → `wreck_vehicle` →
+ * `send_to_hospital` → `read_mkf(0x20c)` → 播救护车，VA 0x0041b8cd / 0x0043ed59），
+ * 而本引擎一次只解一段、只播一段，于是把第二段挂在这里
+ * （@source VA 0x0041b837 那一支，见 `dog-fx.ts` 的文件头）。
+ */
+let pendingBoardFilmAfter: BoardFilmSpec | null = null;
+
 /** 影片缓存（按「档案:资源号」）—— 440×440 × 几十帧不小，播完就 `close()` */
 const boardFilmFlics = new Map<string, LoadedFlic | null>();
 const boardFilmPending = new Set<string>();
@@ -5115,14 +5168,24 @@ function releaseBoardFilmFlics(): void {
   boardFilmFlics.clear();
 }
 
-/** 起播一段棋盘影片（原版那一下 `fcn_0045144f`）*/
-function startBoardFilm(spec: BoardFilmSpec): void {
+/**
+ * 起播一段棋盘影片（原版那一下 `fcn_0045144f`）。
+ *
+ * @param after 这一段播完**紧接着**播的那一段（原版两次 `fcn_0045144f` 是串行的
+ *   —— 只有「踩到惡犬」那一支用得上：狗咬 → 救护车，见 `dog-fx.ts` 的文件头）。
+ *   不传 = 播完就放行（与先前一样）。
+ */
+function startBoardFilm(spec: BoardFilmSpec, after?: BoardFilmSpec): void {
   // 上一条还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
   if (boardFilm !== null) {
     boardFilm = null;
     releaseBoardFilmFlics();
   }
   pendingBoardFilm = spec;
+  // ★ 省略 `after` = **保留**已排好的下一段（「踩到惡犬」那一拍：
+  //   `startDogFx` 先把 0x20c 排在狗咬后面，`startConfineFx` 随后再进来，
+  //   它不带 `after`，不能把那一行覆盖掉）。
+  if (after !== undefined) pendingBoardFilmAfter = after;
   boardFilmFlicNow(spec);
   requestRender();
 }
@@ -5160,6 +5223,28 @@ function startGodFx(before: GameState, after: GameState): void {
     deferredBoardBefore = before;
     startBoardFilm(spec);
   }
+}
+
+/**
+ * 这一拍是不是「踩到惡犬、徒步被咬」—— 是就播狗咬那一段影片，
+ * 并把救护车那一段（`confine-fx.ts` 的 `startConfineFx`）**排队**在它后面。
+ *
+ * ★ **没有** `options.animation` 闸：医院／入獄／神明那三支的调用点各自写着
+ *   `cmp byte [0x497159], 0 / je 跳过`，而惡犬那一支（VA 0x0041b837）从头到尾
+ *   **没有这一句** —— 原版不管「動畫過程」开没开都 `read_mkf(0x214)` + 播。
+ *   照 exe 走（与 `startAlienNewsFx` 同一条规矩）。
+ *
+ * ★ 次序：这一支必须在 `startConfineFx` **之前**跑。两次调用都会写
+ *   `pendingBoardFilmAfter`（狗咬那一段把它设成救护车、`startConfineFx`
+ *   再进来时 `after` 省略 ⇒ 保留原值），于是狗咬播完自动接救护车。
+ */
+function startDogFx(before: GameState, after: GameState): void {
+  const spec = dogBiteFxTrigger(before, after);
+  if (spec === null) return;
+  // 影片窗口里棋盘按 before 画：狗还在那一格上（`deferred-board.ts`）
+  deferredBoardBefore = before;
+  startBoardFilm(spec);
+  log(`影片：踩到惡犬 ${spec.id}（${spec.frames} 帧 × ${spec.frameMs} ms）`);
 }
 
 /**
@@ -5205,6 +5290,28 @@ function startAlienNewsFx(before: GameState, after: GameState): void {
  * 挂在 `requestRender` 的 rAF 回调里，与建屋影片同一个套路。
  */
 function tickBoardFilm(now: number): void {
+  // ── ⓪ 该接下一段了吗（原版两次 `fcn_0045144f` 是串行的：狗咬 → 救护车）──
+  //   判据是「上一段已经收摊」：收摊那条路会把 `boardFilm` 与 `pendingBoardFilm`
+  //   都置空，而这一段**只在两者都空时**接管，于是它既不会插到正在播的那一段
+  //   前面，也不需要跟 `startBoardFilm` 抢 `pendingBoardFilm`。
+  const after = pendingBoardFilmAfter;
+  if (after !== null && boardFilm === null && pendingBoardFilm === null) {
+    const key = `${after.archive}:${after.resource}`;
+    if (boardFilmFlics.has(key)) {
+      pendingBoardFilmAfter = null;
+      boardFilm = beginBoardFilm(after, now);
+      log(`影片：開始 ${after.id}（${after.frames} 帧 × ${after.frameMs} ms）`);
+      if (after.sound >= 0) sound.play('Effect.mkf', after.sound);
+      requestRender();
+      return;
+    }
+    // 还没解好 → 现在就解，并**保留**排队标记：`holdForActorWalk` 靠它
+    // 挡住「两段之间的空档」，别让 AI 在第二段起播前先派下一步。
+    boardFilmFlicNow(after);
+    if (boardFilmPending.has(key)) return;
+    // 真取不到（没有素材）就整段放弃，免得把回合驱动永远卡在这里
+    pendingBoardFilmAfter = null;
+  }
   const pending = pendingBoardFilm;
   if (pending !== null) {
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
@@ -5236,9 +5343,10 @@ function tickBoardFilm(now: number): void {
   }
   boardFilm = null;
   releaseBoardFilmFlics();
-  // ★ 阻塞那一段播完了：把回合驱动接回去（`scheduleHumanTurn` / `scheduleAi`
+  // ★ 阻塞那一段播完了 —— 若后面还排着一段（狗咬 → 救护车），就交给上面 ⓪ 那一步；
+  //   只有**两段都播完**才把回合驱动接回去（`scheduleHumanTurn` / `scheduleAi`
   //   都以它为闸，不补这一下人就永远停在原地）。
-  resumeTurnDriver();
+  if (pendingBoardFilmAfter === null) resumeTurnDriver();
   requestRender();
 }
 
@@ -5699,6 +5807,39 @@ function requestRender(): void {
 let spokenBubble: SpeechBubble | null = null;
 
 function speechTick(now: number): void {
+  // ★★ 演出在演 → 台词**整队冻结**（不倒数、不上台、不放语音）。
+  //
+  //   原版每一段演出都是**同步**的：`_rich4_player_say`（VA 0x0044ef41）与
+  //   轉盤（`fcn_0044090e` → `fcn_0043f7c6`）都是**阻塞调用**，谁先谁后由
+  //   同一段落地流程里的**调用顺序**定死 —— 例如設施收費那一段：
+  //   ```asm
+  //   0041a458  call 0x44090e     ; ★ 轉盤（阻塞：轉完才返回盤上的數）
+  //   0041a460  [esp+0xd0] = eax  ; 轉盤值（旅館天數 / 購物中心倍數）
+  //   0041a579  call 0x440cac     ; 費用訊息框（轉盤之後）
+  //   0041a5c0  call 0x40df69     ; 收費（錢真的轉手）
+  //   0041a71e  call 0x44f42d     ; 付款人的台詞（事件 9/10/11）—— 收費之後
+  //   ```
+  //   而付款人那一句是**收費那一路**派出来的，所以原版**必定**是
+  //   「轉盤停 → 訊息框 → 付款人的台詞」。
+  //
+  //   本引擎把 consequences 一次写完，台词在 action 落地时就排进了队列；
+  //   先前这里照样逐帧收，于是轉盤還在轉，付款人的台词已经在屏幕上说完
+  //   （试玩回报：「盘子还没停下来 NPC 的台词都触发了」）。
+  //   冻在这一支里，等于把「同步演出」的语义补回来：**演出期间台词一步都不走**。
+  //
+  //   ⚠️ `SpeechQueue` 的时间基准是**绝对时刻**（`shownAt`），所以解冻时要把
+  //      已经过去的那一段演出从队列的时间轴上挪掉（见 `speechFrozenAt`）——
+  //      否则解冻后第一帧就会把整段冻结期算成「已经演完了」，那一段一闪而过。
+  if (blockingPresentation()) {
+    if (speechFrozenAt === null) speechFrozenAt = now;
+    return;
+  }
+  const frozenAt = speechFrozenAt;
+  if (frozenAt !== null) {
+    // 解冻：冻了多久就从时间轴上挪掉多久（已演的那一截原样保留）
+    speechFrozenAt = null;
+    if (speechQueue.length > 0) speechQueue.rebase(frozenAt, now);
+  }
   if (speechQueue.tick(now)) requestRender();
   const cur = speechQueue.current();
   if (cur === spokenBubble) return;
@@ -5979,6 +6120,24 @@ function centerOnCurrentPlayer(): void {
   if (me === undefined) return;
   const node = map.nodes[me.nodeId - 1];
   if (node === undefined) return;
+
+  // ★★ 视角跟踪（第四份回报第 2 条，`docs/escalations.md` E-15）：
+  //   ① 棋子正在**一步步走**（走子补间）时，镜头跟他的插值位置；
+  //   ② **機器娃娃 / 四大惡人**那一趟跟替身，走完自动回到当前玩家；
+  //   ③ 手动点过小地图之后，**下一条 action 一起就把镜头交还**（见
+  //      `retargetCameraOnTurnChange`，那一条已在上一版落地）。
+  //   证据：原版镜头居中只有一支 `fcn_00415e70`（VA 0x00415e70），它取的是
+  //   「有标记用标记、否则用 `[0x49910c]` 那个**当前行动者**」；而娃娃/惡人在盘上时
+  //   `[0x49910c]` 被切成 4..7（`rules/npc-walk.ts` 的文件头），所以原版那一段
+  //   本来就跟着替身走。世界位置的写入点：玩家 `0x40c38a`/`0x40c3a4`、
+  //   替身 `fcn_0040dd1f` 那一族。
+  // 判据全在 `camera-follow.ts`（纯函数、有单测）；这里只落镜头
+  const walkWorld = renderer.actorCenterWorld(performance.now());
+  const target = cameraFollowTarget(walkWorld, me, (id) => map.nodes[id - 1]);
+  if (target !== null && target.reason !== 'node') {
+    camera = { ...camera, tileX: target.x >> 5, tileY: target.y >> 5 };
+    return;
+  }
 
   if (minimapMarker !== null) {
     // 走到标记上了？那就把标记收掉，镜头交还给棋子
@@ -6612,6 +6771,8 @@ function startGame(): void {
   releaseBuildFlics();
   boardFilm = null;
   pendingBoardFilm = null;
+  // 「狗咬 → 救护车」那一段的排队也要一起清（同一条理由：旧局的片子不该接着放）
+  pendingBoardFilmAfter = null;
   boardFilmPending.clear();
   releaseBoardFilmFlics();
   deferredBoardBefore = null;
