@@ -1427,6 +1427,7 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     ['smallWealthLine', 'afterStage', '§2.2 表：小財神 `0x0040ecde`（神明台词窗 → 轉盤窗 → 收款 → 台词）'],
     ['bigWealthLine', 'afterStage', 'W-55 行 7（G34）：`0x0040ed85` 排在收款 `0x0040ed52` 之后（§2.2 表没有这一行）'],
     ['moneyPaid', 'afterStage', '§2.2 表：設施收費 `0x0041a71e`（轉盤 → 訊息框 → 收費 → 台词）'],
+    ['shopGift', 'afterStage', '★W-67-a：董事長赠礼 —— 訊息框（0x464378）→ 台词（0x44f230）'],
     ['moneyGained', 'afterStage', '⚠E-19：调用点 `0x0044f420` 前后两列都空'],
     ['hotelStay', 'afterStage', '⚠E-19：`0x0041a7e0` 所在函数没有 `player_say`；`0x0044f347` 两列都空'],
     ['pointsGained', 'afterStage', '⚠E-19：调用点 `0x0044f2b5` 前后两列都空'],

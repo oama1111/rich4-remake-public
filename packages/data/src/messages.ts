@@ -319,6 +319,14 @@ export const GOD_ATTACH = {
  *   天使那支取 `[0x47ed9a]`、福神那支取 `[0x47ed76 + god_info*4]`）、
  *   `0x0040f60b push 0x4634d7`、`0x0040f873 push 0x4634f2`；都走 `0x440cac(…, 0x5dc)`。
  */
+/**
+ * 商店：董事長蒞臨的贈禮 @source `0x464378`（`_rich4_ui_shop_entry` 0x0042e9f8 的 `push 0x464378`）。
+ * `%s` = 送的那件东西的名字（道具名或卡名）。
+ */
+export const SHOP = {
+  chairmanGift: t('歡迎董事長光臨\n\n送您%s！', 0x464378),
+} as const;
+
 export const GOD_MANIFEST = {
   /** 天使 / 小福神 / 大福神 */
   build: t('%s顯靈\n\n加蓋一層房屋！', 0x4634c0),

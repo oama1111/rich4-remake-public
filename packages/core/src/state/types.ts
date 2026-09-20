@@ -404,6 +404,20 @@ export interface GodLineHint {
  *   消费点在財神那两支的台词闸门（`0x0040eca4 cmp esi,0x2bc` /
  *   `0x0040ed74 cmp esi, 5000×物價`）。
  */
+/**
+ * 董事長在商店送出的那一件（W-67-a）—— 纯表现提示，见 `GameState.lastShopGift`。
+ *
+ * 消费者：`client/src/speech.ts` 的 `detectShopGift`（走 `fcn_0044f230` 那一支阶梯）。
+ */
+export interface ShopGiftHint {
+  /** 送的是道具还是卡 */
+  readonly kind: 'tool' | 'card';
+  /** 道具号 / 卡号 */
+  readonly id: number;
+  /** 那件的**點數价** —— 原版传给 `0x44f230` 的就是它（不是现金价）*/
+  readonly points: number;
+}
+
 export interface GodPowerHint {
   /** 附身者（玩家下标 0..3）*/
   player: number;
@@ -525,7 +539,12 @@ export type NoticeKey =
   // 神明落脚顯靈（`fcn_0040f381` / `fcn_0040f8be`）—— 格式串见 `@rich4/data` 的 `GOD_MANIFEST`
   | 'god.build'
   | 'god.demolish'
-  | 'god.seize';
+  | 'god.seize'
+  /**
+   * 董事長蒞臨商店的贈禮（`_rich4_ui_shop_entry` 0x0042e9f8 `push 0x464378`，
+   * 訊息框 1500 ms）—— **在商店窗打开之前**弹，`args[0]` = 送出那件的名字。
+   */
+  | 'shop.chairmanGift';
 
 /**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。
@@ -1057,6 +1076,16 @@ export interface GameState {
    * ★ 两条规矩与 `lastGodLine` 完全一样（引用相等 = 本 action、不进指纹/存档）。
    */
   lastGodPower?: GodPowerHint | null;
+
+  /**
+   * **这一次進商店时董事長送的那一件**（W-67-a）—— 纯表现提示。
+   *
+   * @source `_rich4_ui_shop_entry` `0x0042e9a0..0x0042ea23`：送成了才
+   *   `call 0x44f230(玩家, 那件的**點數价**)`（「好消息」台词阶梯，与 W-55 的
+   *   `pointsGained` 同一支 `fcn_0044f230`）。金额取**点数**（不是现金价）。
+   * 两条规矩与 `lastGodLine` 一样：引用相等 = 本 action、不进指纹/存档。
+   */
+  lastShopGift?: ShopGiftHint | null;
 
   /**
    * **这一次落点要弹的棕色訊息框**（可能不止一条）—— 纯表现提示，见 `NoticeHint`（issue #18）。

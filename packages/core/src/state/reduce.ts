@@ -1122,13 +1122,16 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   const staleView = raw !== state && raw.lastViewTarget === state.lastViewTarget;
   const staleLine = raw !== state && raw.lastGodLine === state.lastGodLine;
   const stalePower = raw !== state && raw.lastGodPower === state.lastGodPower;
+  // ★ W-67-a：同一套规矩也用在 `lastShopGift` 上（董事長赠礼那一条台词）。
+  const staleGift = raw !== state && raw.lastShopGift === state.lastShopGift;
   const next =
-    staleView || staleLine || stalePower
+    staleView || staleLine || stalePower || staleGift
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
           ...(staleLine ? { lastGodLine: null } : {}),
           ...(stalePower ? { lastGodPower: null } : {}),
+          ...(staleGift ? { lastShopGift: null } : {}),
         }
       : raw;
   // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈
@@ -5656,6 +5659,15 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
   const rng = new WatcomRng();
   rng.setState(state.rngState);
   let next: GameState = state;
+  /**
+   * ★★ W-67-a：董事長送出的那一件（`0` = 什么都没送）。
+   *
+   * @source `_rich4_ui_shop_entry` `0x0042e97d..0x0042ea28`：真的送出去了才
+   *   `sprintf(buf, 0x464378, 名字)` → `push 0x5dc / call 0x440cac`（棕色訊息框 1500 ms）
+   *   → `call 0x44f230(玩家, 那件的**點數价**)`（「好消息」台词阶梯），
+   *   而商店窗是**框之后**才开的（`0x0042ea28` 之后）。
+   */
+  let gift: { kind: 'tool' | 'card'; id: number; name: string; points: number } | null = null;
 
   // ① 董事長進門有禮
   if (chairmanOfIndustry(next, topo.commercials, STORE_INDUSTRY) === me) {
@@ -5666,6 +5678,12 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
       if (toolId !== 0) {
         const g = giveTool(next.tools, next.toolStock, me, toolId);
         next = { ...next, tools: g.tools, toolStock: g.stock };
+        gift = {
+          kind: 'tool',
+          id: toolId,
+          name: TOOLS.find((x) => x.id === toolId)?.name ?? `道具${toolId}`,
+          points: toolPrice(toolId),
+        };
       }
     } else {
       const cardId = drawRandomCard(rng, next.cardAmount);
@@ -5676,6 +5694,12 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
         next = withPlayer({ ...next, cardAmount }, me, (p) => {
           Object.assign(p, giveCard(p, cardId));
         });
+        gift = {
+          kind: 'card',
+          id: cardId,
+          name: CARDS.find((c) => c.id === cardId)?.name ?? `卡${cardId}`,
+          points: cardPrice(cardId),
+        };
       }
     }
   }
@@ -5687,6 +5711,14 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
   return {
     ...next,
     rngState: rng.getState(),
+    // ★★ W-67-a：送成了才有这两样 —— 訊息框（表现层弹）+ 台词用的瞬态提示（`lastShopGift`）。
+    //   没送成（库存与牌堆都空）**框和台词都不出**（原版那两支 `je` 直接跳过）。
+    ...(gift === null
+      ? {}
+      : {
+          notices: [{ key: 'shop.chairmanGift' as const, args: [gift.name] }],
+          lastShopGift: { kind: gift.kind, id: gift.id, points: gift.points },
+        }),
     pending: {
       kind: 'shop',
       points: owner.points,

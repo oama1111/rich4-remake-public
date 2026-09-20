@@ -36,6 +36,8 @@ import {
   SHOP_SLOTS,
   SHOP_SWITCH_AT,
   SHOP_SWITCH_HIT,
+  blinkStart,
+  blinkStep,
   cellItemAt,
   hitShopCell,
   hitShopExit,
@@ -278,29 +280,59 @@ describe('滑入 @source VA 0x42d5fe', () => {
   });
 });
 
-describe('老板娘说的那几句话 @source 串表 0x4755c0', () => {
-  it('★ 表是 11 条，按 3*page 取项', () => {
+describe('老板娘说的那几句话 @source 串表 0x4755c0（W-67-c 逐字订正）', () => {
+  /**
+   * ★★ 2026-09-20 订正（W-67-c）：先前这里断言的是**剥掉 `#NNNN` 之后**的串，
+   *   而且第 0 句的换行也抄错了（少了「有什麼我能」后面的换行）。
+   *   真值 = 原版指针表 `0x4755c0` 起每页 6 项，串头**带语音号**。
+   *   `#NNNN` 由 `main.ts` 的 `shopSay()` → `playVoiceCode()` 播掉并剥掉。
+   */
+  const TABLE: readonly string[] = [
+    '#0000有什麼我能\n為你服務的嗎？',
+    '#0001請挑選你想要\n兌換的卡片。',
+    '#0002抱歉！\n你的點數不足！',
+    '#0003對不起！\n您的卡片欄已滿！',
+    '#0004歡迎下次再來！',
+    '#0005歡迎光臨\n道具店！',
+    '#0006您要兌換\n什麼道具？',
+    '#0007對不起，\n您的點券不夠！',
+    '#0008很抱歉！您的\n道具欄已滿！',
+    '#0009這個道具會員\n才能兌換！',
+    '#0010謝謝惠顧！',
+  ];
+
+  it.each(TABLE.map((text, i) => [i, text] as const))('★ 第 %i 条逐字相等', (i, text) => {
+    expect(SHOP_MSG[i]).toBe(text);
+    // 每一条都带语音号（剥掉之后才是气泡里显示的正文）
+    expect(SHOP_MSG[i]!.startsWith('#')).toBe(true);
+  });
+
+  it('★ 表是 11 条整，没有多余的项', () => {
     expect(SHOP_MSG).toHaveLength(11);
-    expect(SHOP_MSG[0]).toBe('有什麼我能為你服務的嗎？');
-    expect(SHOP_MSG[4]).toBe('歡迎下次再來！');
-    expect(SHOP_MSG[5]).toBe('歡迎光臨\n道具店！');
-    expect(SHOP_MSG[10]).toBe('謝謝惠顧！');
   });
 
   it('★ 卡片页：进店 / 提示 / 钱不够 / 栏满 / 离开', () => {
-    expect(shopMessage(SHOP_PAGE.cards, 'entry')).toBe('有什麼我能為你服務的嗎？');
-    expect(shopMessage(SHOP_PAGE.cards, 'hint')).toBe('請挑選你想要\n兌換的卡片。');
-    expect(shopMessage(SHOP_PAGE.cards, 'notEnough')).toBe('抱歉！\n你的點數不足！');
-    expect(shopMessage(SHOP_PAGE.cards, 'full')).toBe('對不起！\n您的卡片欄已滿！');
-    expect(shopMessage(SHOP_PAGE.cards, 'bye')).toBe('歡迎下次再來！');
+    expect(shopMessage(SHOP_PAGE.cards, 'entry')).toBe(TABLE[0]);
+    expect(shopMessage(SHOP_PAGE.cards, 'hint')).toBe(TABLE[1]);
+    expect(shopMessage(SHOP_PAGE.cards, 'notEnough')).toBe(TABLE[2]);
+    expect(shopMessage(SHOP_PAGE.cards, 'full')).toBe(TABLE[3]);
+    expect(shopMessage(SHOP_PAGE.cards, 'bye')).toBe(TABLE[4]);
   });
 
   it('★ 道具页：进店 / 提示 / 钱不够 / 栏满 / 离开（注意離開是第 10 条，跳过了「會員」那条）', () => {
-    expect(shopMessage(SHOP_PAGE.tools, 'entry')).toBe('歡迎光臨\n道具店！');
-    expect(shopMessage(SHOP_PAGE.tools, 'hint')).toBe('您要兌換\n什麼道具？');
-    expect(shopMessage(SHOP_PAGE.tools, 'notEnough')).toBe('對不起，\n您的點券不夠！');
-    expect(shopMessage(SHOP_PAGE.tools, 'full')).toBe('很抱歉！您的\n道具欄已滿！');
-    expect(shopMessage(SHOP_PAGE.tools, 'bye')).toBe('謝謝惠顧！');
+    expect(shopMessage(SHOP_PAGE.tools, 'entry')).toBe(TABLE[5]);
+    expect(shopMessage(SHOP_PAGE.tools, 'hint')).toBe(TABLE[6]);
+    expect(shopMessage(SHOP_PAGE.tools, 'notEnough')).toBe(TABLE[7]);
+    expect(shopMessage(SHOP_PAGE.tools, 'full')).toBe(TABLE[8]);
+    expect(shopMessage(SHOP_PAGE.tools, 'bye')).toBe(TABLE[10]); // 第 9 条「會員」不在任何场合用
+  });
+
+  it('★ 第 9 条（會員）**不在任何场合的映射里**（原版那一页没有它的出口）', () => {
+    for (const page of [SHOP_PAGE.cards, SHOP_PAGE.tools]) {
+      for (const kind of ['entry', 'hint', 'notEnough', 'full', 'bye'] as const) {
+        expect(shopMessage(page, kind), `${page}/${kind}`).not.toBe(TABLE[9]);
+      }
+    }
   });
 });
 
@@ -441,3 +473,128 @@ describe('★★ 气泡与关门 @source loc_0042de09（fcn_0044ee18(1)）/ loc_
   });
 });
 
+
+/*
+ * ★★ W-67-b：老板娘那一整套动画机 —— **带空闲态**（原版每 32 拍只有 2 拍有动作）。
+ *
+ * 先前这里是「每 100 ms 无条件换一张脸」⇒ 一直在抽动；原版平均 3 秒多才动一下。
+ * 判据与状态字分段见 `shop-screen.ts` 的 `ShopBlink` 注释（@source `loc_0042d87e`
+ * 的 5 项跳表 `0x42d36b`）。
+ */
+describe('★★ W-67-b 老板娘的眨眼 / 换脸状态机', () => {
+  /** 一直返回同一个值的 `rnd` */
+  const fixed = (v: number): (() => number) => () => v;
+
+  /** 推进 `n` 拍（每拍 +100 ms），返回这 `n` 拍里贴过的脸 */
+  const run = (
+    b: ReturnType<typeof blinkStart>,
+    page: 0 | 1,
+    n: number,
+    rnd: () => number,
+  ): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const d = blinkStep(b, page, (i + 1) * 100, rnd);
+      if (d !== null && d.face !== 0) out.push(d.face);
+    }
+    return out;
+  };
+
+  it('★ 进店 / 换页 ⇒ 模式 = 页 + 3（卡片页 3、道具页 4）', () => {
+    expect(blinkStart(0).mode).toBe(3);
+    expect(blinkStart(1).mode).toBe(4);
+    expect(blinkStart(0)).toEqual({ mode: 3, frame: 0, face: 0, hold: 0, at: 0 });
+  });
+
+  it('★★ 换脸：抽到与当前脸号相同 ⇒ 这一拍**不动**、模式不变（下一拍再抽）', () => {
+    const b = blinkStart(0);
+    b.face = 2;
+    // 第一次抽到 2（= 当前脸号）⇒ 什么都不贴、模式仍是 3
+    expect(blinkStep(b, 0, 100, fixed(1 / 3))).toBeNull();
+    expect(b.mode).toBe(3);
+    expect(b.face).toBe(2);
+    // 第二拍抽到 3 ⇒ 贴 3 + 3 = 6、脸号 = 3、回空闲
+    expect(blinkStep(b, 0, 200, fixed(2 / 3))).toEqual({ face: 6, mouth: 0 });
+    expect(b.mode).toBe(0);
+    expect(b.face).toBe(3);
+  });
+
+  it('★★ 空闲：32 拍里只有 r == 0 / r == 1 那两拍有动作', () => {
+    const b = blinkStart(0);
+    b.mode = 0;
+    b.face = 1;
+    // r == 7（随便一个「其余 30/32」）⇒ 整整 10 拍什么都不做
+    const idle = run(b, 0, 10, fixed(7 / 32));
+    expect(idle).toEqual([]);
+    expect(b.mode).toBe(0);
+    // r == 0 且脸号 ≠ 0 ⇒ 进眨眼（模式 1）
+    blinkStep(b, 0, 2000, fixed(0));
+    expect(b.mode).toBe(1);
+  });
+
+  it('★★ 空闲 r == 0 但脸号 == 0 ⇒ **不**眨眼（原版那个 `脸号 ≠ 0` 的条件）', () => {
+    const b = blinkStart(0);
+    b.mode = 0;
+    b.face = 0;
+    blinkStep(b, 0, 100, fixed(0));
+    expect(b.mode).toBe(0);
+  });
+
+  it('★★ 空闲 r == 1 ⇒ 换脸（模式 = 页 + 3，且脸号与帧计数都清 0）', () => {
+    const b = blinkStart(0);
+    b.mode = 0;
+    b.face = 3;
+    b.frame = 2;
+    blinkStep(b, 0, 100, fixed(1 / 32));
+    expect(b.mode).toBe(3);
+    expect(b.face).toBe(0);
+    expect(b.frame).toBe(0);
+  });
+
+  it('★★ 卡片页眨眼：四帧 `[7, 8, 7, 5]`，第五拍回空闲并记脸号 2', () => {
+    const b = blinkStart(0);
+    b.mode = 1;
+    const faces = run(b, 0, 5, fixed(0.5));
+    expect(faces).toEqual([7, 8, 7, 5]);
+    expect(b.mode).toBe(0);
+    expect(b.face).toBe(2); // S = 0x200
+    expect(b.frame).toBe(4);
+  });
+
+  it('★★ 道具页眨眼：四帧 `[21, 22, 21, 23]`，第五拍回空闲并记脸号 1', () => {
+    const b = blinkStart(1);
+    b.mode = 2;
+    const faces = run(b, 1, 5, fixed(0.5));
+    expect(faces).toEqual([21, 22, 21, 23]);
+    expect(b.mode).toBe(0);
+    expect(b.face).toBe(1); // S = 0x100
+  });
+
+  it('★★ 10,000 拍里「有动作的拍数」占比在 5%–12%（旧实现 ≈ 100%）', () => {
+    const b = blinkStart(0);
+    b.mode = 0;
+    b.face = 1;
+    let acted = 0;
+    // 用一个固定的低差异序列代替真随机（`rnd` 注入的意义就在这里）
+    let i = 0;
+    const rnd = () => {
+      i = (i * 1103515245 + 12345) & 0x7fffffff;
+      return (i % 32768) / 32768;
+    };
+    for (let t = 0; t < 10000; t++) {
+      const d = blinkStep(b, 0, (t + 1) * 100, rnd);
+      if (d !== null && d.face !== 0) acted += 1;
+    }
+    const ratio = acted / 10000;
+    expect(ratio, `有动作的拍数占比 ${(ratio * 100).toFixed(1)}%`).toBeGreaterThan(0.05);
+    expect(ratio).toBeLessThan(0.12);
+  });
+
+  it('★ 100 ms 不到不推进（原版「隔一次 50 ms 定时器」）', () => {
+    const b = blinkStart(0);
+    b.mode = 3;
+    expect(blinkStep(b, 0, 50, fixed(0.5))).toBeNull();
+    expect(blinkStep(b, 0, 99, fixed(0.5))).toBeNull();
+    expect(blinkStep(b, 0, 100, fixed(0.5))).not.toBeNull();
+  });
+});

@@ -9,7 +9,8 @@
  */
 
 import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
-import { setVoiceSink } from './voice-sink.ts';
+import { parseVoiceCode } from '@rich4/data';
+import { playVoiceCode, setVoiceSink } from './voice-sink.ts';
 import { LogRing } from './log-ring.ts';
 // ★ 开发用的状态注入口（`__rich4.debug.patch` 与三个现成配方，W-53）——
 //   只在 DEV 下挂；它**绕过 reduceRecorded**，故调用时会把记录仪标脏。
@@ -4493,8 +4494,33 @@ function drawBailStage(): void {
 }
 
 /** 原版面板上的两句提示都是 2 秒（`fcn_0044ee18` 的 0x7d0）*/
+/**
+ * 老板娘的台词气泡 —— 串头的 `#NNNN` 是**语音号**：先播语音，再把剥完的串放进气泡。
+ *
+ * ★ W-67-c：先前这里直接把原串塞进气泡（而 `SHOP_MSG` 里的 `#NNNN` 也被剥掉了）
+ *   ⇒ 商店里**一句语音都不响**。改用 `voice-sink.ts` 的 `playVoiceCode()`
+ *   （`event-box-screen.ts` 就是这么用的）。
+ * ★ 气泡时长：语音比 `SHOP_BUBBLE_MS` 长时**撑到语音播完**（仿 `speechTick` 里
+ *   `sound.durationOf` 那两行）。
+ */
 function shopSay(ui: ShopUi, text: string, now: number): void {
-  ui.bubble = { text, until: now + SHOP_BUBBLE_MS };
+  const shown = playVoiceCode(text);
+  let until = now + SHOP_BUBBLE_MS;
+  const voiceMs = voiceDurationOf(text);
+  if (voiceMs !== null) until = Math.max(until, now + voiceMs);
+  ui.bubble = { text: shown, until };
+}
+
+/**
+ * 这句串的语音有多长（毫秒）；没有 `#NNNN` 或拿不到时长就返回 `null`。
+ *
+ * @source 语音号 → `Speaking.mkf` 资源，与 `event-box-screen.ts` / `speechTick` 同一条路
+ */
+function voiceDurationOf(text: string): number | null {
+  const { voice } = parseVoiceCode(text);
+  if (voice === null) return null;
+  const ms = sound.durationOf('Speaking.mkf', voice);
+  return ms === null || ms <= 0 ? null : ms;
 }
 
 /**
@@ -4513,7 +4539,7 @@ function shopGotoPage(ui: ShopUi, page: ShopPage, now: number): void {
     ui.bubble = null;
   }
   ui.slide = entry.slide;
-  ui.blink = blinkStart();
+  ui.blink = blinkStart(page);
 }
 
 /** 开店 / 换玩家换局时把界面状态按当前 `pending` 重铺 */
@@ -4523,6 +4549,12 @@ function syncShopUi(): void {
     shopUi = null;
     return;
   }
+  // ★★ W-67-a：**訊息框还在台上就先别开商店窗**。
+  //   @source `_rich4_ui_shop_entry` `0x0042ea0a push 0x5dc / call 0x440cac`（董事長赠礼框，
+  //   1500 ms）在 `0x0042ea28` 开窗**之前** —— 原版是模态的，框收掉才轮到商店。
+  //   本引擎的訊息框在 `BLOCKING_PRESENTATIONS` 里、回合驱动会等它，
+  //   但 `syncShopUi` 是每次 action 后无条件跑的 ⇒ 这里补一道闸。
+  if (blockingPresentation()) return;
   // ★ 只在**第一次**看见这个商店时建快照：那之后的 `pending.cards/tools` 会因为
   //   买到手而变短，而原版货架上的字是烤进图里的，不会消失。
   if (shopUi === null) {
@@ -4553,7 +4585,7 @@ function syncShopUi(): void {
         tools: shopRows(SHOP_PAGE.tools, pending),
       },
       bought: { cards: new Set<number>(), tools: new Set<number>() },
-      blink: blinkStart(),
+      blink: blinkStart(SHOP_PAGE.cards),
     };
     shopUi = ui;
     // ★ 進商店的配乐 @source `shop.asm:2196` `push 6 / call fcn_004549cf`
@@ -5864,6 +5896,10 @@ function requestRender(): void {
     //      这一帧的 rAF 尾巴上（`schedule*` 用 `setTimeout`），绘制不该等它。
     if (shouldResumeDriver(lastFrameScreen, screen)) resumeTurnDriver();
     lastFrameScreen = screen;
+    // ★★ W-67-a：**訊息框收掉之后商店窗才开得起来** —— `syncShopUi()` 见到
+    //   `blockingPresentation()`（董事長赠礼框还在台上）会先让开，而框自己收掉那一刻
+    //   不会再派 action ⇒ 在这里每帧补一次机会。幂等：`shopUi` 已建就什么都不做。
+    if (screen === 'game') syncShopUi();
     syncBailBgm();
     // 场所都收了、放的还是场所曲 ⇒ 把背景曲从被打断的位置接回来（`sub_00454bcc`）
     if (boardBgmDue()) restoreBoardBgm();

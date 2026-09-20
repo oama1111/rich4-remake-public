@@ -957,6 +957,27 @@ export function detectLuckyGodLine(before: GameState, after: GameState): Detecte
   return [{ player: hint.player, event: hint.event }];
 }
 
+/**
+ * 董事長蒞臨商店的贈禮（W-67-a）—— 事件走**「好消息」档位阶梯** `fcn_0044f230`。
+ *
+ * @source `_rich4_ui_shop_entry` `0x0042ea23`：`call 0x44f230(玩家, 那件的點數价)`。
+ *   ★ 入参是**點數价**（`toolPrice` / `cardPrice`），不是现金价 —— 商店里买东西
+ *     花的就是點數。
+ *
+ * 判据 = `after.lastShopGift` 与 `before` **引用不同**（core 只在真的送成时才写，
+ * 规矩同 `lastCardPlay`）。事件号用同一支阶梯 `smallGainTierFor`（阈值 100 / 50）。
+ */
+export function detectShopGift(before: GameState, after: GameState): DetectedSay[] {
+  const hint = after.lastShopGift ?? null;
+  if (hint === null || before.lastShopGift === hint) return [];
+  const p = after.players[after.currentPlayer];
+  if (p === undefined || !isAlive(p)) return [];
+  if (!speechGatesOpen(p)) return [];
+  const tier = smallGainTierFor(hint.points);
+  if (tier === null) return [];
+  return [{ player: p.index, event: tier }];
+}
+
 // ============================================================
 //  財神的额外台词 —— 小財神 / 大財神（W-55 行 7 / G33 / G34）
 // ============================================================
@@ -1152,6 +1173,9 @@ export const DETECTORS: readonly SpeechDetector[] = [
   //   只有两档（`beforeStage` / `afterStage`）⇒ 按 §2.2 的兜底「先按 `afterStage`
   //   做并在 PR 里注明」。到 5 级那一支的事件 15 另由 `detectLevelFive` 说（不在这里）。
   { name: 'luckyGodLine', source: [0x0040f8be, 0x0040fa49, 0x0040fa5c], order: 'afterStage', detect: detectLuckyGodLine },
+  // ★ W-67-a：董事長蒞臨商店的贈禮 —— 訊息框（`0x464378`，1500 ms）→ 台词（`0x44f230`）
+  //   ⇒ `afterStage`（框在前、台词在后）。
+  { name: 'shopGift', source: [0x0042e9f8, 0x0042ea23], order: 'afterStage', detect: detectShopGift },
   // §2.2 表：設施收費 `0x0041a71e` —— 轉盤 → 訊息框 → 收費 → 台词（其余几个调用点同一条阶梯函数）
   { name: 'moneyPaid', source: [0x0044f42d, 0x0044f4ed, 0x0044f567], order: 'afterStage', detect: detectMoneyPaid },
   // ⚠ C 级：E-19（调用点 `0x0044f420` 前后两列都空）

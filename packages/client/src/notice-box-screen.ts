@@ -66,7 +66,7 @@
  * 与原版「每扇各自一次可跳过的等待」一致）。
  */
 
-import { FACILITY_TOLL, GOD_MANIFEST, MESSAGE_BOX, RENT, formatOriginal } from '@rich4/data';
+import { FACILITY_TOLL, GOD_MANIFEST, MESSAGE_BOX, RENT, SHOP, formatOriginal } from '@rich4/data';
 import type { GameState, NoticeHint, NoticeKey } from '@rich4/core';
 import { drawDialog } from './dialog.ts';
 import type { InteractionUi } from './interactions.ts';
@@ -125,6 +125,8 @@ export const NOTICE_TEXT = {
   'god.build': GOD_MANIFEST.build.text,
   'god.demolish': GOD_MANIFEST.demolish.text,
   'god.seize': GOD_MANIFEST.seize.text,
+  // ★ W-67-a：董事長蒞臨商店的贈禮（`0x464378`）—— 在商店窗打开**之前**弹
+  'shop.chairmanGift': SHOP.chairmanGift.text,
 } as const satisfies Record<NoticeKey, string>;
 
 /** 一条 `{ key, args }` 提示 → 屏上那一句（`%s` / `%d` 全在 `args` 里） */
