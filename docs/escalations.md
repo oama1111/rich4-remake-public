@@ -1204,3 +1204,20 @@
 - 处置：**本轮不修**。任务书把它明确划给 W-72 §5（「网页版跳过 `loadHdSource()`」），
   先改就等于把 W-72 的活提前做了一半，PR 边界会糊。
 - 阻塞程度：**不阻塞**。
+
+### 📌 E-27（2026-09-20）W-71：WS 的 `Origin` 校验比的是**主机名**，不是 `host:port`（有意放宽）
+
+- 关联任务：W-71 §4。**不阻塞** —— 已按下面的读法实现并验收。
+- 现象：任务书写「校验 `Origin` 头的 host 等于 `Host` 头」。若按 `URL.host`（**含端口**）比，
+  开发路径会被一起拒掉：`pnpm dev` 时页面在 `http://localhost:5173`（vite），
+  而 WebSocket 直连 `ws://localhost:8787/ws` —— 两者主机名相同、端口不同。
+  `tools/net-e2e.js`（W-40 的五步验收）走的正是这条路。
+- 我的处置：比 **`new URL(origin).hostname` 与 `Host` 头的主机名**（`bareHostname`，忽略端口）。
+  挡「跨站 WebSocket 劫持」要的正是**主机名不同就拒**（`evil.example` → `rich4.example`）；
+  同主机不同端口在这个部署形态里不是攻击面。
+  另外 **`Origin` 缺席一律拒**（fail closed）—— 浏览器发 WebSocket 一定带它。
+- 证据：`curl --http1.1` 手搓升级 —— 无票 → `401`；带票 + `Origin: http://127.0.0.1:8787` → `101`；
+  带票 + `Origin: http://evil.example` → `403`；带票 + 无 `Origin` → `403`。
+- 请首席裁定：要连端口一起比的话，改 `gate.ts` 的 `#sameHost`（一处），
+  并把 `tools/net-e2e.sh` 改成走 vite 的 `/ws` 代理（或在 `--no-gate` 下跑 —— 现在就是）。
+- 阻塞程度：**不阻塞**。
