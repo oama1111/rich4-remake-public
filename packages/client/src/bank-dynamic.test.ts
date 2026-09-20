@@ -6,7 +6,8 @@
  * 绘制本身不碰 canvas（与仓库里其它屏同一套口径）。
  */
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { setVoiceSink } from './voice-sink.ts';
 import { FINANCE_BORROW, FINANCE_BYE, FINANCE_REPAY } from './bank-loan.ts';
 import type { Sprite } from './assets.ts';
 import {
@@ -45,6 +46,7 @@ import {
   drawLoanPanels,
   drawLoanPressed,
   loanDueDays,
+  loanBubbleVoice,
   loanPanelsVisible,
   loanSlideDone,
   loanSlideIn,
@@ -782,5 +784,112 @@ describe('★ 銀行招呼归「動畫過程」管（@source loc_00435200）', (
     expect(quiet.st).toBe(LOAN_ST.menu);
     expect(quiet.bubble).toBeNull();
     expect(loanStart(true).st).toBe(LOAN_ST.greet);
+  });
+});
+
+// ============================================================
+//  ★ 进银行那一句招呼的**语音**（试玩回报：「进入银行没有触发语音」）
+// ============================================================
+
+describe('★ 貸款屏换一句台詞 → 语音出口（@source 0x435d8c → 0x44ecb6 → 0x44fabc → 0x45441a）', () => {
+  afterEach(() => setVoiceSink(null));
+
+  /** 记下每一次送到语音出口的编号 */
+  const spy = (): number[] => {
+    const played: number[] = [];
+    setVoiceSink((v) => played.push(v));
+    return played;
+  };
+
+  it('★ #0075 那一句 = `大富翁銀行！`，语号 **75**（十进制）—— 与 exe 串表 0x475830 逐字相同', () => {
+    // @source VA 0x00475830 指向的串（BIG5）= `#0075歡迎光臨\n大富翁銀行！`
+    // ★ 语号是**十进制**：`rich4_draw_text` 把 4 个 ASCII 数字按位拼成
+    //   `d0*1000 + d1*100 + d2*10 + d3`（@source 0x0044fb07..0x0044fb4b），
+    //   再 `0x0044fb4e call 0x45441a`（`play_speech`）。
+    //   ⚠️ `LOAN_MSG.*.id` 用的是「把十进制数字写成 0x..」的旧记法（`id: 0x75`
+    //   实际 = 117），只是标注；**真正送出去的号以 `raw` 的 `#NNNN` 为准**。
+    expect(LOAN_MSG.greet.raw.startsWith('#0075')).toBe(true);
+    expect(LOAN_MSG.greet.text).toBe('歡迎光臨\n大富翁銀行！');
+    expect(Number(LOAN_MSG.greet.raw.slice(1, 5))).toBe(75);
+  });
+
+  it('★★ 进屏那一句真的会播：`loanBubbleVoice(null, greet)` → sink 收到 75', () => {
+    const played = spy();
+    const ok = loanBubbleVoice(null, LOAN_MSG.greet);
+    expect(ok).toBe(true);
+    expect(played).toEqual([75]);
+  });
+
+  it('★ 反例（falsification）：同一句连着来第二次**不再播**（原版只在换句那一拍调 0x44ecb6）', () => {
+    const played = spy();
+    expect(loanBubbleVoice(null, LOAN_MSG.greet)).toBe(true);
+    expect(loanBubbleVoice(LOAN_MSG.greet, LOAN_MSG.greet)).toBe(false);
+    expect(loanBubbleVoice(LOAN_MSG.greet, LOAN_MSG.greet)).toBe(false);
+    expect(played).toEqual([75]); // ★ 一次，不是三次
+  });
+
+  it('★ 反例：不说（`null`）时一下都不播；动画关掉时（loanStart(false)）也没有可播的句子', () => {
+    const played = spy();
+    expect(loanBubbleVoice(null, null)).toBe(false);
+    expect(loanBubbleVoice(LOAN_MSG.greet, null)).toBe(false);
+    expect(played).toEqual([]);
+    expect(loanBubbleVoice(null, loanStart(false).bubble)).toBe(false);
+    expect(played).toEqual([]);
+  });
+
+  it('★ 16 句台词的语号逐个对上串表（`#NNNN` 的十进制值 = `id` 那一串数字）', () => {
+    for (const msg of Object.values(LOAN_MSG)) {
+      const fromRaw = msg.raw.slice(1, 5);
+      // `id` 把同一串数字写成了十六进制字面量（`0x75` ↔ `#0075`）：逐句核这层对应
+      expect(msg.id).toBe(Number.parseInt(fromRaw, 16));
+      // 十进制读数就是原版 `play_speech` 会拿到的号（1..134 都在 `Speaking.mkf` 范围内）
+      expect(Number(fromRaw)).toBe(Number.parseInt(fromRaw, 10));
+    }
+  });
+
+  it('★★ 一条真路径：招呼 → #0076 → 就绪，语音正好两次（0x75、0x76），不是每拍一次', () => {
+    const played = spy();
+    // 这一小段就是 main.ts 的 `syncLoanUi` + `loanEffect` 那段接线（同一判据）
+    let prev: (typeof LOAN_MSG)[keyof typeof LOAN_MSG] | null = null;
+    let ui = loanStart(true);
+    if (loanBubbleVoice(prev, ui.bubble)) prev = ui.bubble;
+    expect(ui.st).toBe(LOAN_ST.greet);
+    expect(ui.bubble).toBe(LOAN_MSG.greet);
+    // 0x113 那一拍：招呼看完 → #0076
+    ui = loanStep(ui, { kind: 'bubbleEnd' }).ui;
+    if (loanBubbleVoice(prev, ui.bubble)) prev = ui.bubble;
+    expect(ui.bubble).toBe(LOAN_MSG.menu);
+    // 再看一拍：#0076 看完 → 就绪，没有新句子
+    ui = loanStep(ui, { kind: 'bubbleEnd' }).ui;
+    if (loanBubbleVoice(prev, ui.bubble)) prev = ui.bubble;
+    expect(ui.st).toBe(LOAN_ST.ready);
+    expect(ui.bubble).toBeNull();
+    expect(played).toEqual([75, 76]);
+  });
+
+  it('★ 特別融資子对话框那六句也走同一条出口（@source 0x43465b call 0x44ecb6）', () => {
+    const played = spy();
+    // 进子对话框那一句 #0086（`0x434654 [0x47585c]` → `0x43465b call 0x44ecb6`）
+    const base = { ...loanStart(false), st: LOAN_ST.ready };
+    const r = loanStep(base, {
+      kind: 'press',
+      btn: 3,
+      frozen: false,
+      hasLoan: false,
+      chairman: true,
+      overLimit: false,
+    });
+    expect(r.ui.bubble).toBe(LOAN_MSG.financeGreet);
+    expect(loanBubbleVoice(base.bubble, r.ui.bubble)).toBe(true);
+    expect(played).toEqual([86]);
+  });
+
+  it('★ main.ts 的接线：进屏那一句 + 换句那一处，且**绘制链一处都不碰**', () => {
+    const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(main).toContain('loanBubbleVoice(null, loanUi.bubble)');
+    expect(main).toContain('loanBubbleVoice(hadBubble, ui.bubble)');
+    // 绘制链（`drawLoanBubble`）每帧都跑 —— 那里绝不能有语音触发
+    const dynamic = readFileSync(new URL('./bank-dynamic.ts', import.meta.url), 'utf8');
+    expect(dynamic.match(/playVoiceCode\(/g)).toHaveLength(1);
   });
 });

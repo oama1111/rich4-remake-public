@@ -11,10 +11,23 @@
 
 import type { Player } from '../state/types.ts';
 import type { LandInfo } from '../loaders/map.ts';
-import { calculateLandToll } from './toll.ts';
+import { calculateLandToll, tollLands } from './toll.ts';
 import { transferMoney, type Company } from './payment.ts';
 import { adjustTollByGod } from './god-toll.ts';
 import { truncTowardZero } from './rounding.ts';
+
+/**
+ * 住宅「請付…元」那一句最后那个 `%s`（费名）= **「過路費」**。
+ *
+ * @source 0x00419d2e / 0x00419d63 两处都是 `mov eax, dword [0x47517c]`
+ *   —— 取的是那张 13 项费名指针表的**第 0 项**；`dump 0x47517c 4 4` 读出来
+ *   是 `0x0046388a`，该地址上的串 =「過路費」（`dump 0x46388a 6 1`）。
+ *
+ * ⚠️ 与 `places/company.ts` 的 `FEE_NAMES[0]` 是**同一个串**（同一张表）。
+ *   这里另立一个常量只是为了让 `rules/` 不必反向 import `places/`
+ *   （`places/company.ts` 已经 import 了 `rules/facility.ts`，反过来会成环）。
+ */
+export const LAND_TOLL_FEE_NAME = '過路費';
 
 export interface RentShare {
   /** 收款方玩家下标 */
@@ -33,6 +46,14 @@ export interface RentResult {
   godAdjusted: boolean;
   /** 实际分账明细，无同盟时只有一项 */
   shares: RentShare[];
+  /**
+   * 「算进这笔过路费」的地块 **id**（含同盟那一份），照棋盘顺序。
+   *
+   * ★ W-69：原版在收费**之前**把这几块一起闪一遍（`0x00419b9e` 起把 id 图上的
+   *   这些格标 `0xffff`）—— 需求方就是看不到这一段才以为「只触发当格」。
+   *   只有 `counted.length > 1` 时表现层才放；单块地没有这段演出。
+   */
+  counted: number[];
   /** 付款方是否因此破产 */
   bankrupted: boolean;
 }
@@ -117,11 +138,20 @@ export function collectRent(
     godAdjusted: false,
     shares: [],
     bankrupted: false,
+    counted: [],
   });
   if (land.owner === 0 || owner === undefined || ownerIdx === payer) return none();
 
   // 连锁店分支不按地块名分组 @source cmp byte [land+0x18], 0 / jne
   const districtName = land.type === 0 ? land.name : null;
+  // ★ W-69：「算进去的每一块」的判据**与金额无关**（只管主人 + 同名 + 类型），
+  //   所以先算出来，后面每条返回路径都带上它 —— 原版也是在金额还没定下来
+  //   （神明调整、免費卡都在更后面）的时候就把这些格标进 id 图了。
+  const memberIds = new Set<number>();
+  for (const l of tollLands(lands, land.owner, districtName)) memberIds.add(l.id);
+  const allyId0 = owner.alliedPlayer;
+  if (allyId0 !== 0) for (const l of tollLands(lands, allyId0, districtName)) memberIds.add(l.id);
+  const counted = lands.filter((l) => memberIds.has(l.id)).map((l) => l.id);
   const ownerToll = calculateLandToll(lands, land.owner, priceIndex, districtName);
 
   // @source 0x00419b09 `cmp byte [land+0x17], 0 / je 不翻 / add ebp, ebp`
@@ -136,7 +166,7 @@ export function collectRent(
     allyId === 0 ? 0 : calculateLandToll(lands, allyId, priceIndex, districtName);
 
   const baseTotal = ownerPart + allyToll;
-  if (baseTotal === 0) return none();
+  if (baseTotal === 0) return { ...none(), counted };
 
   // ★ 神明在**付款之前**调整金额（VA 0x0041d709），
   //   财神减免、穷神加成、福神不影响。
@@ -144,7 +174,8 @@ export function collectRent(
   const god = adjustTollByGod(baseTotal, payerPlayer?.godInfo ?? 0);
   const total = god.toll;
   if (total === 0) {
-    return { ...none(), total: 0, baseTotal, godAdjusted: god.changed };
+    // ★ 神明把金额抹成 0：钱不收，但「算进去的每一块」照给 —— 原版标地在调整之前
+    return { ...none(), total: 0, baseTotal, godAdjusted: god.changed, counted };
   }
 
   const shares: RentShare[] = [];
@@ -173,7 +204,7 @@ export function collectRent(
     bankrupted = r1.bankrupted || r2.bankrupted;
   }
 
-  return { players: next, total, baseTotal, godAdjusted: god.changed, shares, bankrupted };
+  return { players: next, total, baseTotal, godAdjusted: god.changed, shares, bankrupted, counted };
 }
 
 /**

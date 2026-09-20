@@ -31,8 +31,9 @@ import {
   DIALOG_SKIN_RESOURCE,
   DICE_RESOURCE,
   DICE_SLOTS,
-  DICE_TOGGLE_AT,
   DICE_TOGGLE_IMAGE,
+  DICE_TOGGLE_LAYOUT,
+  DICE_TOGGLE_X,
   DICE_TOGGLE_SIZE,
   GO_RESOURCE,
   YESNO_IMAGE,
@@ -101,19 +102,38 @@ export function hitAdvance(x: number, y: number, pos: GoPos): boolean {
   return pointInGo(x, y, pos);
 }
 
-/** 骰子数切换钮的第 i 个（棋盘画布坐标；跟着 GO 鈕一起走） */
-export function diceToggleRect(i: number, pos: GoPos): Rect {
+/**
+ * 骰子数切换钮的第 i 个（棋盘画布坐标；跟着 GO 鈕一起走）。
+ *
+ * ★ W-65：纵向**按交通方式分三支**（见 `DICE_TOGGLE_LAYOUT` 的表）——
+ *   `traffic = player.trafficMethod & 3`。横向固定：亮图 `+7`、暗图 `+8`。
+ */
+export function diceToggleRect(i: number, pos: GoPos, traffic: number): Rect {
+  const layout = DICE_TOGGLE_LAYOUT[traffic & 3] ?? DICE_TOGGLE_LAYOUT[0]!;
   return boardRect({
-    x: boardToScreen(pos).x + DICE_TOGGLE_AT.dx,
-    y: boardToScreen(pos).y + DICE_TOGGLE_AT.dy + i * DICE_TOGGLE_AT.pitch,
+    x: boardToScreen(pos).x + DICE_TOGGLE_X.lit,
+    y: boardToScreen(pos).y + layout.dy + i * layout.pitch,
     ...DICE_TOGGLE_SIZE,
   });
 }
 
-/** 点在第几颗骰子的切换钮上（返回颗数 1..maxDice）；没点中返回 null */
-export function hitDiceToggle(x: number, y: number, maxDice: number, pos: GoPos): number | null {
-  for (let i = 0; i < maxDice; i++) {
-    if (inRect(x, y, diceToggleRect(i, pos))) return i + 1;
+/**
+ * 点在第几颗骰子的切换钮上（返回颗数 1..maxDice）；没点中返回 null。
+ *
+ * ⚠️ 原版的命中判据与绘制**同一张分支表**（@source `0x00418228` 起）：
+ *   機車 `y ∈ [19i + 0x10, 19i + 0x20]`、汽車 `y ∈ [16i + 9, 16i + 0x19]` ——
+ *   两端都含，后面的 i 覆盖前面的。「覆盖」这一步由**倒序**查表实现，
+ *   与逐像素 id 图里后写的覆盖先写的一致（W-65）。
+ */
+export function hitDiceToggle(
+  x: number,
+  y: number,
+  maxDice: number,
+  pos: GoPos,
+  traffic: number,
+): number | null {
+  for (let i = maxDice - 1; i >= 0; i--) {
+    if (inRect(x, y, diceToggleRect(i, pos, traffic))) return i + 1;
   }
   return null;
 }
@@ -136,6 +156,9 @@ export function hitDiceToggle(x: number, y: number, maxDice: number, pos: GoPos)
  * @param maxDice 这个玩家最多能掷几颗（走路 1、機車 2、汽車 3）
  * @param ndices  当前选了几颗
  * @param pos     GO 鈕左上角（**棋盘画布**坐标，`GoButton.position()`）
+ * @param traffic 交通方式（`player.trafficMethod & 3`）—— 决定三颗怎么排（W-65）
+ * @param blocked 停留中（`player.blocking.stopping !== 0`）⇒ **三颗全画暗图**
+ *   @source 亮/暗判据 `i <= ndices − 1` **且** `player+0x38`（停留）== 0 ⇒ 亮
  */
 export function drawAdvance(
   ctx: CanvasRenderingContext2D,
@@ -144,6 +167,8 @@ export function drawAdvance(
   maxDice: number,
   ndices: number,
   pos: GoPos,
+  traffic = 0,
+  blocked = false,
 ): void {
   // `pos` 已经是棋盘画布坐标（原版那个全局是屏幕坐标，换算在 `GoButton` 里做过了）
   const at = pos;
@@ -153,10 +178,11 @@ export function drawAdvance(
   for (let i = 0; i < maxDice; i++) {
     const pair = DICE_TOGGLE_IMAGE[i];
     if (pair === undefined) continue;
-    // 亮的那张表示「这一颗算数」
-    const img = sprite('Panel.mkf', GO_RESOURCE, i < ndices ? pair[1] : pair[0], true);
+    // 亮的那张表示「这一颗算数」（停留中一颗都不算数）
+    const lit = !blocked && i < ndices;
+    const img = sprite('Panel.mkf', GO_RESOURCE, lit ? pair[1] : pair[0], true);
     if (img === null) continue;
-    const r = diceToggleRect(i, pos);
+    const r = diceToggleRect(i, pos, traffic);
     ctx.drawImage(img.bitmap, r.x, r.y);
   }
 }
@@ -318,6 +344,16 @@ function wrap(ctx: CanvasRenderingContext2D, text: string, maxW: number): string
 }
 
 /**
+ * 这一次的框是不是原版的 YES/NO 控件。
+ *
+ * ★ **两处共用**：`layoutDialog` 照它画/命中，「原版会替玩家把指针挪进框」
+ *   （试玩3 #2，`cursor-warp.ts`）也照它判时机 —— 两边各判一套迟早对不上。
+ */
+export function usesYesNo(ui: InteractionUi, page: AmountPage | null): boolean {
+  return page === null && ui.choices.length === 2;
+}
+
+/**
  * 算出这一帧对话框的版式。
  *
  * 绘制与命中判定**共用**它 —— 两边各算一遍迟早对不上，而且错法特别难看出来
@@ -361,7 +397,7 @@ export function layoutDialog(
       : ui.choices.map((c, i) => ({ label: c.label, hit: { kind: 'choice' as const, index: i } }));
 
   // ——— 两个选项 → 原版的 YES/NO ———
-  const useYesNo = page === null && ui.choices.length === 2;
+  const useYesNo = usesYesNo(ui, page);
   if (useYesNo) {
     const halves = yesNoHalves();
     return {

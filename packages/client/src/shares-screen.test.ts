@@ -531,3 +531,48 @@ describe('整屏的开关 —— 每月 15 日的分紅演出 @source VA 0x0041d
     expect(sharesScreenState().presenting).toBe(false);
   });
 });
+
+// ============================================================
+//  ★★ 试玩 4 回归：分紅屏**必须**在 3 秒后自动收屏
+// ============================================================
+
+/**
+ * 15 号那天 `sharesScreen` 排在登记表最前，`樂透開獎屏` 紧随其后。
+ * 而 `tick` 只发给「此刻接管整屏的那一屏」（`main.ts` 的 D-T031-4）——
+ * 所以分紅屏**一旦没按时收屏**，開獎屏的 `tick` 一次都收不到，
+ * 它的步号永远停在 0 ⇒ 台词、界面、BGM 全都不出（试玩 4 报的那条）。
+ *
+ * 计时起点必须落在 `tick` 里：先前只在 `draw` 里落，而 `tick` 又
+ * 「`shownAt < 0` 就续帧 return」，一旦 `tick` 因为别的原因不再被调，
+ * 3 秒自动收屏就永远不触发。
+ */
+describe('★★ 分紅屏的自动收屏（试玩 4 回归）', () => {
+  function envAt(state: GameState, now: number): UiScreenEnv {
+    return {
+      screen: 'game',
+      state,
+      topo: TOPO,
+      now,
+      stage: {} as unknown as CanvasRenderingContext2D,
+      sprite: () => null,
+      dispatch: () => {},
+      requestRender: () => {},
+      log: () => {},
+      playEffect: () => {},
+      stopEffect: () => {},
+    } as unknown as UiScreenEnv;
+  }
+
+  it('★★ 光靠 tick 也能落下计时起点、到点自己收屏（一次 draw 都不调）', () => {
+    resetSharesScreen();
+    const before: GameState = { ...marketWithTwo(), day: 14, totalDays: 100 };
+    const after: GameState = { ...before, day: DIVIDEND_DAY, totalDays: 101 };
+    sharesScreen.event!(before, after, envAt(after, 0));
+    expect(sharesScreen.active(envAt(after, 0))).toBe(true);
+    expect(sharesScreenState().shownAt).toBe(-1); // 还没上屏
+    sharesScreen.tick!(envAt(after, 0));
+    expect(sharesScreenState().shownAt).toBeGreaterThanOrEqual(0);
+    sharesScreen.tick!(envAt(after, SHARES_AUTO_CLOSE_MS));
+    expect(sharesScreen.active(envAt(after, 0))).toBe(false);
+  });
+});

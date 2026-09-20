@@ -1333,7 +1333,21 @@ export function applyNewsEffect(
         total += r.paid;
         bankrupted = bankrupted || r.bankrupted;
       } else {
-        players = receiveMoney(players, who, each);
+        // ★★ 2026-09-19 修：**儲金紅利（23）进的是「银行存款」，不是现金**。
+        //   `@source` news[23] 的收尾 `fcn_0044aedb`：
+        // ```asm
+        // 0044af36  mov  ebp, dword ptr [ebx + 0x496b8c]   ; 有贷款就不发（ebp = loan）
+        // 0044af3e  jne  跳过
+        // 0044af44  fild dword ptr [ebx + 0x496b88]        ; ★ +0x20 = money_in_bank
+        // 0044af4a  fmul qword ptr [0x465734]              ; = 0.1（dump 该 double：9a99…b93f）
+        // 0044af50  call 0x457dbc                          ; 向零截断
+        // 0044af5c  push ebp                               ; ★ flags = 0（ebp 此时必为 0）
+        // 0044af65  call 0x41d3f4                           ; add_money(player, 金额, 0)
+        // ```
+        //   `0x41d3f4` 里 `test byte [esp+0x10], 1 / je 进存款` ⇒ flags=0 写 `+0x20`
+        //   （存款），而 `receiveMoney` 的缺省 `toCash = true` 写的是 `+0x1c`（现金）。
+        //   ⚠️ 其余百分比类（11/12/13）都是 `pay`，走不到这一支。
+        players = receiveMoney(players, who, each, eventId !== 23);
         total += each;
       }
     }

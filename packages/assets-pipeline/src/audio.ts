@@ -182,6 +182,38 @@ export const SOUND_IDS = {
   PLACE_BARRIER: 33,
   PLACE_MINE: 34,
   PLACE_TIMEBOMB: 10,
+  /**
+   * **神明顯靈／自己加蓋**那一声 —— 音效 **50**（W-55 行 3）。
+   *
+   * @source 四个调用点都是同一条 `push ref_004823da / call rich4_play_sound_effect`：
+   *
+   * | 调用点 VA | 何时响 |
+   * |---|---|
+   * | `0x0040f4f3` | 天使顯靈：`0x40b110` 成功（`test bh,1`）之后、0x20b 影片**之前** |
+   * | `0x0040f9dc` | 福神顯靈：同上（`test bl,1` 之后） |
+   * | `0x004199de` | 自己的地落点「升級房子」：`inc byte [地块+0x1a]` 之后、`cmp …,5` 之前 |
+   * | `0x0041a289` | 落点首建等级 0 的設施：`inc byte +0x1a` 之后（**本次未接**，见下） |
+   *
+   * ```asm
+   * 0040f4f1  push 0
+   * 0040f4f3  push 0x4823da          ; ★ 表项地址
+   * 0040f4f8  call 0x4542ce          ; rich4_play_sound_effect
+   * ```
+   *
+   * ★ **表项 `0x4823da` → 资源号 50 的换算**：与上面 `PLACE_*` / `DOLL` **同一张表** ——
+   *   基址 `0x48231a`、每项 **8 字节**（+0 = `Effect.mkf` 资源号、+4 = 运行时声音对象）：
+   *   `0x4823da − 0x48231a = 0xc0 = 24 × 8` ⇒ **表项 24**，`disasm.py dump 0x4823da 4 4`
+   *   读出 `[0x4823da] = 50`（下一项 `0x4823e2` = 54，间隔正好 8）。而
+   *   `rich4_play_sound_effect`（VA 0x004542ce）就是 `mov ecx,[eax] / push ecx`（VA 0x004542d8）
+   *   —— 取 `[表项]` 当资源号交给 `0x4540d8`。故 **50 = `Effect.mkf` 资源 50**。
+   *   实测 `Effect.mkf` 资源 50 是 RIFF/WAVE（`audio.test.ts` 有钉子）。
+   *
+   * ⚠️ **第 4 个调用点 `0x0041a289` 本次未接**：落点「首个建一级設施」那一条在
+   *   `reduce.ts` 的 `buildFacility` 分支里**不写 `lastBuildUpgrades`**
+   *   （它不走 `0x40b110`），所以挂在 `lastBuildUpgrades` 上的音效够不到它。
+   *   接它要另加一条 core 瞬态提示 —— 属 W-55 行 9 的邻域，留给首席裁。
+   */
+  GOD_MANIFEST: 50,
 } as const;
 
 /**

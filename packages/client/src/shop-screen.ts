@@ -328,21 +328,33 @@ export const SHOP_CELL_ORIGIN = {
 // ============================================================
 
 /**
- * @source `loc_0042d87e` 的跳表（VA 0x42d36b 起 5 项）。
+ * 「老板娘」那一整套动画机 —— **带空闲态**的状态字 `[0x48c32f]`（W-67-b）。
  *
- * 进店时低 4 位被置成 `页 + 3`（`loc_0042d5d8`），所以真正跑得到的只有 case 3 / 4：
- * `rand()` 抽一张脸 —— 卡片页在 1..3 里抽（图 4..6）、道具页 `rand()&1`（图 23/24）；
- * **与上次抽到的一样就跳过**（`cmp esi, ebp / je`）。
+ * @source `loc_0042d87e`（每隔一次 50 ms 定时器进来一次 = **100 ms 一拍**，
+ *   `xor byte [0x48c348],1 / je 跳过`）。状态字 `S = [0x48c32f]` 的分段：
+ *   **低 4 位 = 模式、bit 4–7 = 帧计数、bit 8–11 = 当前脸号**；
+ *   跳表 `0x42d36b` 5 项：
  *
- * ★ 那几张走的是 `fcn_004563f5`（**不带透明**的整块贴图，见 `loc_0042d977`），
- *   所以换一张就等于把上一张盖掉 —— 这才是它看起来会闪的原因。
+ * | 模式 | 入口 | 行为（**逐字照做**）|
+ * |---|---|---|
+ * | 0 空闲 | `0x42d8ab` | `r = rand15() >> 10`（0..31）。`r == 0` **且** 当前脸号 ≠ 0 ⇒ 模式 = `页 + 1`（眨眼）；`r == 1` ⇒ `S = 页 + 3`（换脸；这一句把脸号与帧计数都清 0）；其余 30/32 什么都不做 |
+ * | 1 卡片页眨眼 | `0x42d8ee` | 帧计数 == 4 ⇒ `S = 0x200`（回空闲，脸号记 2）；否则**不透明**贴图 `[7, 8, 7, 5][帧计数]` 到 (0x195, 0x3c)，帧计数 +1 |
+ * | 2 道具页眨眼 | `0x42d9a3` | 帧计数 == 4 ⇒ `S = 0x100`（回空闲，脸号记 1）；否则贴图 `[21, 22, 21, 23][帧计数]` 到 (0x1a1, 0x32)，帧计数 +1 |
+ * | 3 卡片页换脸 | `0x42da31` | `pick = ((rand15() * 3) >> 15) + 1`（1..3）；`pick ==` 当前脸号 ⇒ 这一拍不动（**模式不变，下一拍再抽**）；否则贴图 `pick + 3` 到 (0x195, 0x3c)，脸号 = pick，模式回 0 |
+ * | 4 道具页换脸 | `0x42daf1` | `pick = (rand15() & 1) + 1`；同上，贴图 `pick + 0x16`（23 / 24）到 (0x1a1, 0x32）|
  *
- * 第二处（图 9–11 / 25–27）由 `[0x48c314]` 那个倒数器驱动（`loc_0042dc4c`）：
- * 倒到 0 先画基准帧（图 9 / 图 25），随后有 `rand()>>11 < 4`（约 1/4）的机会换成
- * 图 10/11 或 26/27，并把倒数重置成 `rand() & 7`（抽到 0 就取 1）。
+ * 进店 / 换页时模式 = `页 + 3`（`loc_0042d5d8`）。第二处（嘴，`[0x48c314]` 倒数器）
+ * 的逻辑**不动**（倒到 0 先画基准帧 9 / 25，随后约 1/4 的机会换成 10/11 或 26/27）。
+ *
+ * ⚠️ 2026-09-20 订正（W-67-b）：先前这里**每 100 ms 无条件换一张脸**（没有任何空闲态），
+ *   于是老板娘一直在抽动、平均 3 秒多才动一下的原版完全不是这样。
  */
 export interface ShopBlink {
-  /** 上一帧画的脸是哪一张 @source `[0x48c32f]` 的 bit 8–11 */
+  /** 低 4 位：模式（0 空闲 / 1 卡片眨眼 / 2 道具眨眼 / 3 卡片换脸 / 4 道具换脸）*/
+  mode: number;
+  /** bit 4–7：帧计数（眨眼那两支用）*/
+  frame: number;
+  /** bit 8–11：当前脸号（1..3 卡片 / 1..2 道具；0 = 还没定过）*/
   face: number;
   /** 第二处的倒数 @source `[0x48c314]` */
   hold: number;
@@ -362,14 +374,23 @@ export const SHOP_BLINK_AT = [
   { face: { x: 0x1a1, y: 0x32 }, mouth: { x: 0x1a1, y: 0x59 } },
 ] as const;
 
-export function blinkStart(): ShopBlink {
-  return { face: 0, hold: 0, at: 0 };
+/** 眨眼那两支的帧序 @source 表 `0x4755b8`（卡片页）/ `0x4755bc`（道具页）*/
+export const SHOP_BLINK_SEQ: readonly (readonly number[])[] = [
+  [7, 8, 7, 5], // 卡片页
+  [21, 22, 21, 23], // 道具页
+];
+
+/** 进店 / 换页时的初值 = **模式 `页 + 3`**（`loc_0042d5d8`）*/
+export function blinkStart(page: ShopPage = SHOP_PAGE.cards): ShopBlink {
+  return { mode: page + 3, frame: 0, face: 0, hold: 0, at: 0 };
 }
 
 /**
  * 推进一次这个动画机；返回这一帧要画哪两张图（`null` = 这一帧什么都不画）。
  *
  * @param rnd 取 `[0, 1)` 的随机数 —— 原版用的是 `_libc_rand`，注入进来是为了单测能钉住序列
+ *   （`rand15() >> 10` 写成 `Math.floor(rnd() * 32)`，`(rand15() * 3) >> 15` 写成
+ *   `Math.floor(rnd() * 3)`，`rand15() & 1` 写成 `Math.floor(rnd() * 2)`）
  */
 export function blinkStep(
   b: ShopBlink,
@@ -380,10 +401,39 @@ export function blinkStep(
   if (now - b.at < SHOP_BLINK_MS) return null;
   b.at = now;
   const cardPage = page === SHOP_PAGE.cards;
+  let drawFace = 0; // 0 = 这一拍不贴脸
 
-  const pick = cardPage ? 1 + Math.floor(rnd() * 3) : 1 + Math.floor(rnd() * 2);
-  const face = cardPage ? pick + 3 : pick + 22;
+  if (b.mode === 0) {
+    // ── 0 空闲：平均 32 拍里只有 2 拍有动作（r == 0 眨眼 / r == 1 换脸）──
+    const r = Math.floor(rnd() * 32);
+    if (r === 0 && b.face !== 0) b.mode = cardPage ? 1 : 2;
+    else if (r === 1) {
+      // `S = 页 + 3`：**这一句把脸号与帧计数都清 0**
+      b.mode = cardPage ? 3 : 4;
+      b.face = 0;
+      b.frame = 0;
+    }
+  } else if (b.mode === 1 || b.mode === 2) {
+    // ── 1 / 2 眨眼：贴四帧，第四拍回空闲并记下脸号 ──
+    const seq = SHOP_BLINK_SEQ[cardPage ? 0 : 1]!;
+    if (b.frame >= seq.length) {
+      b.mode = 0;
+      b.face = cardPage ? 2 : 1; // `S = 0x200` / `S = 0x100`
+    } else {
+      drawFace = seq[b.frame]!;
+      b.frame += 1;
+    }
+  } else {
+    // ── 3 / 4 换脸：抽到与当前脸号相同就**这一拍不动**（模式不变，下一拍再抽）──
+    const pick = cardPage ? 1 + Math.floor(rnd() * 3) : 1 + Math.floor(rnd() * 2);
+    if (pick !== b.face) {
+      drawFace = cardPage ? pick + 3 : pick + 0x16;
+      b.face = pick;
+      b.mode = 0;
+    }
+  }
 
+  // 第二处（嘴）：原版是另一个倒数器 `[0x48c314]`，逻辑不动
   let mouth = 0;
   if (b.hold > 0) {
     b.hold -= 1;
@@ -393,9 +443,8 @@ export function blinkStep(
     b.hold = Math.floor(rnd() * 8) || 1;
   }
 
-  if (face === b.face && mouth === 0) return null;
-  b.face = face;
-  return { face, mouth };
+  if (drawFace === 0 && mouth === 0) return null;
+  return { face: drawFace, mouth };
 }
 
 // ============================================================
@@ -460,18 +509,27 @@ export function hitShopShelf(page: ShopPage, x: number, y: number): number | nul
  * | 4 / 10 | 离开（第 0x202 抬手）|
  * | 9 | 本屏未用（「會員才能兌換」）|
  */
+/**
+ * 商店的 11 句台词 —— **逐字**抄原版，连串头的 `#NNNN`（语音号）一起。
+ *
+ * @source 指针表 `0x4755c0` 起，每页 6 项；首席已 dump。
+ * ★ 2026-09-20 订正（W-67-c）：先前这里把 `#NNNN` **剥掉了**（于是这 11 句
+ *   **一句都不出声**），而且第 0 句的换行也抄错了（少了「有什麼我能」后面的换行）。
+ *   `#NNNN` 由 `main.ts` 的 `shopSay()` 交给 `voice-sink.ts` 的 `playVoiceCode()`
+ *   播掉并剥掉，气泡里显示的是剥完的串。
+ */
 export const SHOP_MSG = [
-  '有什麼我能為你服務的嗎？',
-  '請挑選你想要\n兌換的卡片。',
-  '抱歉！\n你的點數不足！',
-  '對不起！\n您的卡片欄已滿！',
-  '歡迎下次再來！',
-  '歡迎光臨\n道具店！',
-  '您要兌換\n什麼道具？',
-  '對不起，\n您的點券不夠！',
-  '很抱歉！您的\n道具欄已滿！',
-  '這個道具會員\n才能兌換！',
-  '謝謝惠顧！',
+  '#0000有什麼我能\n為你服務的嗎？',
+  '#0001請挑選你想要\n兌換的卡片。',
+  '#0002抱歉！\n你的點數不足！',
+  '#0003對不起！\n您的卡片欄已滿！',
+  '#0004歡迎下次再來！',
+  '#0005歡迎光臨\n道具店！',
+  '#0006您要兌換\n什麼道具？',
+  '#0007對不起，\n您的點券不夠！',
+  '#0008很抱歉！您的\n道具欄已滿！',
+  '#0009這個道具會員\n才能兌換！',
+  '#0010謝謝惠顧！',
 ] as const;
 
 export type ShopMsgKind = 'entry' | 'hint' | 'notEnough' | 'full' | 'bye';
@@ -842,3 +900,34 @@ export function drawShopScreen(
 
 /** 卡名表（`@rich4/data` 的 `CARDS` 是 1 基，做成按卡片号直接取） */
 const SHOP_LABELS: ReadonlyMap<number, string> = new Map(CARDS.map((c) => [c.id, c.name]));
+
+// ============================================================
+//  气泡与关门（纯判据）—— E-21：道别气泡被点掉之后店永远不关
+// ============================================================
+
+/**
+ * 气泡还在（或正在关门）时点了一下，气泡该变成什么。
+ *
+ * @source `loc_0042de09`：`cmp [0x48c318],3 / je 正常命中`，否则 `push 1 / call fcn_0044ee18`
+ *   —— **提前收掉限时訊息框**，别的都不做。框一收，挂在它后面的流程照常推进
+ *   （关门那一路：状态 2→3→4，`loc_0042e686`）。
+ *
+ * ⇒ 关门中：把道别那一句**改成立刻到期**（`until = 0`），由 `shopTick` 走同一条关门路；
+ *   不在关门：直接收掉（`null`），没有后续。
+ */
+export function shopBubbleAfterClick<T extends { until: number }>(bubble: T | null, closing: boolean): T | null {
+  if (!closing || bubble === null) return null;
+  return { ...bubble, until: 0 };
+}
+
+/**
+ * `shopTick` 这一帧该不该走「气泡收场」那一支。
+ *
+ * ★ `closing && bubble === null` 也算到期 —— 兜底：任何一条路把道别气泡弄没了，门照样要关
+ *   （先前的卡死形态正是这个）。
+ */
+export function shopBubbleExpired(bubble: { until: number } | null, closing: boolean, now: number): boolean {
+  if (bubble === null) return closing;
+  return now >= bubble.until;
+}
+

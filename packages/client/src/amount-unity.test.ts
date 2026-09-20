@@ -142,8 +142,13 @@ describe('★ 12 处 `call 0x453544` 一一对应到同一个计算器', () => {
       const withAmount = ui.choices.filter((c) => c.amount !== undefined);
       expect(withAmount.length).toBeGreaterThanOrEqual(1);
       const a = withAmount[0]!.amount!;
-      // 通用 `amount` 那一份形状：label / max / step / fill 四样，一个不多一个不少
-      expect(Object.keys(a).sort()).toEqual(['fill', 'label', 'max', 'step']);
+      // 通用 `amount` 那一份形状：label / max / step / fill 四样，一个不多一个不少；
+      // ★ 2026-09-19 加第五样可选的 `initial`（开窗初值）—— 只有上市企業認購
+      //   那一支给（原版 `0x0041d25a push esi` 把上限当第一个实参传进填数窗，
+      //   = 一开窗就满额）。其余 11 处不给 ⇒ 这里两种形状都算对。
+      expect(Object.keys(a).sort()).toEqual(
+        a.initial === undefined ? ['fill', 'label', 'max', 'step'] : ['fill', 'initial', 'label', 'max', 'step'],
+      );
       expect(typeof a.label).toBe('string');
       expect(Number.isFinite(a.max)).toBe(true);
       expect(Number.isInteger(a.step)).toBe(true);

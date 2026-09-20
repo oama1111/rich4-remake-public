@@ -17,9 +17,12 @@ import {
   SPEECH_BOX,
   SPEECH_EMOJI_AT,
   SPEECH_HOLD_MS,
+  SPEECH_PANEL,
+  SPEECH_PANEL_AT,
+  SPEECH_PORTRAIT_AT,
   SPEECH_TEXT_AT,
   SPEECH_TEXT_LINE_HEIGHT,
-  SPEECH_TEXT_MAX_LINES,
+  SPEECH_TEXT_FLAG,
   SpeechQueue,
   bubbleLines,
   drawSpeechBubble,
@@ -27,6 +30,7 @@ import {
   type SpeechBubble,
   type SpeechDrawEnv,
 } from './speech-bubble.ts';
+import { portraitResource } from './assets.ts';
 import { characterName, speechBubblesFor } from './speech.ts';
 import { makeGameState } from '@rich4/core';
 
@@ -49,21 +53,43 @@ describe('几何常量（逐条对 exe VA）', () => {
     expect(SPEECH_EMOJI_AT.x).toBe(240);
   });
 
-  it('字幕最多 5 行、行距 18（原版 16 像素字 + 2 像素空隙）', () => {
-    expect(SPEECH_TEXT_MAX_LINES).toBe(5);
+  it('字幕的对齐码 = 5、行距 18（原版 16 像素字 + 2 像素空隙）', () => {
+    // ★ W-64：那个 5 是 `_rich4_draw_text` 的对齐码（5 = 左对齐 + 垂直居中），
+    //   不是「最多 5 行」—— 见 `SPEECH_TEXT_FLAG` 的注释。
+    expect(SPEECH_TEXT_FLAG).toBe(5);
     expect(SPEECH_TEXT_LINE_HEIGHT).toBe(0x12);
   });
 
-  it('★ 气泡方块 = RECT(0, 40, 440, 260) @source VA 0x0044efb0 的四个立即数', () => {
-    // `fcn_00451a97(目标, 源面, 源x, 源y, 宽, 高)` ⇒ `0x1b8/0x104` 是**源矩形**的宽高，
-    // 落点是 `(0, 0x28)`。先前记成「200×220 贴 (0,40)」是把形参序读错了。
-    expect(SPEECH_BOX).toEqual({ x: 0, y: 0x28, w: 0x1b8, h: 0x104 });
+  it('★ 台词备份的矩形 = RECT(0, 40, 440, 220) @source VA 0x0044effa 的六个实参', () => {
+    // `fcn_00451a97(dst, 源面, 源x, 源y, 宽, 高)`，调用点 0x0044effa 依次
+    // `push 0xdc(高) / 0x1b8(宽) / 0x28(源y) / 0(源x) / 0(源面) / 0x46caec(dst)`
+    // ⇒ 从棋盘面抠 `RECT(0,40,440,220)` 存到离屏面。
+    //
+    // ★ 这一块**只是「说完还原」的备份**，不是底板（W-50 的头号订正：
+    //   `fd31598` 曾把它当底板用）。底图是 `SPEECH_PANEL` 那张气泡图。
+    expect(SPEECH_BOX).toEqual({ x: 0, y: 0x28, w: 0x1b8, h: 0xdc });
     expect(SPEECH_BOX.w).toBe(440);
-    expect(SPEECH_BOX.h).toBe(260);
-    // 字幕与表情都必须落在这块方框里（否则原版那一步「抠下来再贴回去」会裁掉它们）
+    expect(SPEECH_BOX.h).toBe(220);
+    // 字幕与表情都必须落在这块矩形里（否则原版那一步「抠下来再贴回去」会裁掉它们）
     expect(SPEECH_TEXT_AT.x).toBeLessThan(SPEECH_BOX.x + SPEECH_BOX.w);
     expect(SPEECH_TEXT_AT.y).toBeGreaterThanOrEqual(SPEECH_BOX.y);
     expect(SPEECH_EMOJI_AT.y + 32).toBeLessThanOrEqual(SPEECH_BOX.y + SPEECH_BOX.h);
+  });
+
+  it('★ 气泡底图 = `Data.mkf #0x205` 图 6，落 (220,130) @source VA 0x0044f019..0x0044f033', () => {
+    // `mov eax,[0x48bad8] / add eax,0x54` —— 资源头 0xc + 图 N×0xc ⇒ (0x54−0xc)/0xc = 6
+    expect(SPEECH_PANEL).toEqual({ archive: 'Data.mkf', resource: 0x205, image: 6 });
+    expect(SPEECH_PANEL_AT).toEqual({ x: 0xdc, y: 0x82 });
+    expect(SPEECH_PANEL_AT.x).toBe(220);
+    expect(SPEECH_PANEL_AT.y).toBe(130);
+    // 与神明老虎机那一屏**同一张图**（0x004407a0 也是 `Data#517 图 6`）
+    expect(SPEECH_PANEL.resource).toBe(0x205);
+    expect(SPEECH_PANEL.image).toBe(6);
+  });
+
+  it('★ 头像落点 = (170,130) @source VA 0x0044f03b 的 `push 0x82 / push 0xaa`', () => {
+    expect(SPEECH_PORTRAIT_AT).toEqual({ x: 0xaa, y: 0x82 });
+    expect(SPEECH_PORTRAIT_AT.x).toBe(170);
   });
 
   it('显示时长 = 1000 ms @source `push 0x3e8 / call fcn_004544f6`', () => {
@@ -78,7 +104,7 @@ describe('几何常量（逐条对 exe VA）', () => {
 describe('speechBubbleOf：一段台词', () => {
   it('普通角色：文本取自**自己那一列**，并且带语音号', () => {
     // 角色 3（錢夫人）事件 19 —— 台词表里是「放我出去！！！」那一档
-    const b = speechBubbleOf({ player: 1, event: 19 }, 3, '錢夫人');
+    const b = speechBubbleOf({ player: 1, event: 19, order: 'afterStage' }, 3, '錢夫人');
     expect(b).not.toBeNull();
     expect(b!.lines).toEqual(bubbleLines(speechLine(3, 19)[1]));
     expect(b!.emoji).toBeNull();
@@ -88,7 +114,7 @@ describe('speechBubbleOf：一段台词', () => {
   });
 
   it('★ 12 个角色同一槽位说**不同的话**（不是共用角色 0 那一列）', () => {
-    const texts = CHARACTERS.map((_, c) => speechBubbleOf({ player: 0, event: 0 }, c, 'x')!.lines.join(''));
+    const texts = CHARACTERS.map((_, c) => speechBubbleOf({ player: 0, event: 0, order: 'afterStage' }, c, 'x')!.lines.join(''));
     expect(new Set(texts).size).toBe(CHARACTERS.length);
     // 角色 0 与角色 3 的第 0 句原版就不同（「別忌妒我！」vs「今夜做夢也會笑∼」）
     expect(texts[0]).not.toBe(texts[3]);
@@ -96,7 +122,7 @@ describe('speechBubbleOf：一段台词', () => {
 
   it('多行台词按 `\\n` 拆成多行（原版逐行画）', () => {
     // 角色 0 事件 11 = 「拿去啦，\n不用找了∼」
-    const b = speechBubbleOf({ player: 0, event: 11 }, 0, '約翰喬')!;
+    const b = speechBubbleOf({ player: 0, event: 11, order: 'afterStage' }, 0, '約翰喬')!;
     expect(b.lines).toEqual(['拿去啦，', '不用找了～']);
   });
 
@@ -105,7 +131,7 @@ describe('speechBubbleOf：一段台词', () => {
   //   它的语音号同样满足 `1050 + 27×11 + 事件`：事件 0 的原始串是 `#1347@04`，
   //   而 `1050 + 297 = 1347` ✓。此前这里断言 `voice` 为 null，把 bug 钉死了。
   it('★ 金貝貝（角色 11）：没有字幕，但有表情图**和语音**', () => {
-    const b = speechBubbleOf({ player: 2, event: 0 }, JINBEIBEI, '金貝貝')!;
+    const b = speechBubbleOf({ player: 2, event: 0, order: 'afterStage' }, JINBEIBEI, '金貝貝')!;
     expect(b.emoji).not.toBeNull();
     expect(b.lines).toEqual([]);
     expect(b.voice).toBe(1050 + 27 * JINBEIBEI + 0); // ★ 不再为 null
@@ -117,7 +143,7 @@ describe('speechBubbleOf：一段台词', () => {
 
   it('金貝貝整列 27 条**全部**是表情（无文本），但**每条都有语音**', () => {
     for (let e = 0; e < 27; e++) {
-      const b = speechBubbleOf({ player: 0, event: e }, JINBEIBEI, '金貝貝')!;
+      const b = speechBubbleOf({ player: 0, event: e, order: 'afterStage' }, JINBEIBEI, '金貝貝')!;
       expect(b.emoji, `事件 ${e}`).not.toBeNull();
       expect(b.lines, `事件 ${e}`).toEqual([]);
       // ★ 27 条**都**有语音（`#1347..#1373`）
@@ -131,7 +157,7 @@ describe('speechBubbleOf：一段台词', () => {
     for (const [c] of CHARACTERS.entries()) {
       if (c === JINBEIBEI) continue;
       for (let e = 0; e < 27; e++) {
-        const b = speechBubbleOf({ player: 0, event: e }, c, 'x')!;
+        const b = speechBubbleOf({ player: 0, event: e, order: 'afterStage' }, c, 'x')!;
         expect(b.emoji, `角色 ${c} 事件 ${e}`).toBeNull();
         expect(b.voice, `角色 ${c} 事件 ${e}`).toBe(1050 + 27 * c + e);
         expect(b.lines.length, `角色 ${c} 事件 ${e}`).toBeGreaterThan(0);
@@ -140,10 +166,10 @@ describe('speechBubbleOf：一段台词', () => {
   });
 
   it('角色号 / 槽位越界 → null（表现层不许因为坏状态炸掉）', () => {
-    expect(speechBubbleOf({ player: 0, event: 0 }, 12, 'x')).toBeNull();
-    expect(speechBubbleOf({ player: 0, event: 0 }, -1, 'x')).toBeNull();
-    expect(speechBubbleOf({ player: 0, event: 27 }, 0, 'x')).toBeNull();
-    expect(speechBubbleOf({ player: 0, event: -1 }, 0, 'x')).toBeNull();
+    expect(speechBubbleOf({ player: 0, event: 0, order: 'afterStage' }, 12, 'x')).toBeNull();
+    expect(speechBubbleOf({ player: 0, event: 0, order: 'afterStage' }, -1, 'x')).toBeNull();
+    expect(speechBubbleOf({ player: 0, event: 27, order: 'afterStage' }, 0, 'x')).toBeNull();
+    expect(speechBubbleOf({ player: 0, event: -1, order: 'afterStage' }, 0, 'x')).toBeNull();
   });
 
   it('bubbleLines 丢掉空行（`\n` 结尾之类的串不该多画一行）', () => {
@@ -158,7 +184,7 @@ describe('speechBubbleOf：一段台词', () => {
 // ============================================================
 
 function dummy(player: number): SpeechBubble {
-  return speechBubbleOf({ player, event: 0 }, 0, '約翰喬')!;
+  return speechBubbleOf({ player, event: 0, order: 'afterStage' }, 0, '約翰喬')!;
 }
 
 describe('SpeechQueue：一句演完再演下一句', () => {
@@ -225,16 +251,36 @@ describe('SpeechQueue：一句演完再演下一句', () => {
 //  绘制
 // ============================================================
 
-/** 只记录调用、不真画的 2D 上下文替身 */
-function fakeCtx(): CanvasRenderingContext2D & { calls: string[] } {
+/**
+ * 只记录调用、不真画的 2D 上下文替身。
+ *
+ * ★ W-50：`drawImage` 记录的是**最终落点**（`x − anchorX, y − anchorY`），
+ *   与原版 `fcn_00456418` 的 `to_left = x − src->x` 同一套语义 —— 所以下面
+ *   那些「落点 = (220,130)」的断言同时钉住了「减锚点」这一步。
+ */
+function fakeCtx(): CanvasRenderingContext2D & {
+  calls: string[];
+  /** ★ W-64：字幕**逐行的落点** —— 垂直居中要用到，`calls` 里只有文字没法断言 y */
+  texts: { t: string; x: number; y: number }[];
+} {
   const calls: string[] = [];
+  const texts: { t: string; x: number; y: number }[] = [];
   const target = {
     calls,
+    texts,
     save: () => calls.push('save'),
     restore: () => calls.push('restore'),
-    strokeText: (t: string) => calls.push(`stroke:${t}`),
-    fillText: (t: string) => calls.push(`fill:${t}`),
-    drawImage: (_b: unknown, x: number, y: number) => calls.push(`img:${x},${y}`),
+    strokeText: (t: string, x: number, y: number) => {
+      calls.push(`stroke:${t}`);
+      texts.push({ t, x, y });
+    },
+    fillText: (t: string, x: number, y: number) => {
+      calls.push(`fill:${t}`);
+      texts.push({ t, x, y });
+    },
+    // ⚠️ 只声明前两个参数：本实现只走 `drawImage(bitmap, x, y)` 那一支，
+    //   多声明几个没用到的形参会被 lint 判 `no-unused-vars`。
+    drawImage: (_b: unknown, a: number, b: number) => calls.push(`img:${a},${b}`),
   };
   return new Proxy(target, {
     get(t, k) {
@@ -246,7 +292,10 @@ function fakeCtx(): CanvasRenderingContext2D & { calls: string[] } {
       (t as Record<string | symbol, unknown>)[k] = v;
       return true;
     },
-  }) as unknown as CanvasRenderingContext2D & { calls: string[] };
+  }) as unknown as CanvasRenderingContext2D & {
+    calls: string[];
+    texts: { t: string; x: number; y: number }[];
+  };
 }
 
 function drawEnv(ctx: CanvasRenderingContext2D, sprite = vi.fn(() => null)): SpeechDrawEnv & {
@@ -257,14 +306,60 @@ function drawEnv(ctx: CanvasRenderingContext2D, sprite = vi.fn(() => null)): Spe
   };
 }
 
+/**
+ * 一个**锚点非 0** 的假精灵 —— 复刻实测值（气泡图 271×199 锚 (127,92)、
+ * 头像 40×34 锚 (20,17)）。用非 0 锚点是为了让下面的落点断言能同时证明
+ * 「减掉了图自带的裁切原点」：不减就落错。
+ */
+function fakeSprite(
+  width: number,
+  height: number,
+  anchorX: number,
+  anchorY: number,
+): {
+  bitmap: ImageBitmap;
+  width: number;
+  height: number;
+  anchorX: number;
+  anchorY: number;
+} {
+  return {
+    bitmap: { width, height } as unknown as ImageBitmap,
+    width,
+    height,
+    anchorX,
+    anchorY,
+  };
+}
+
+const PANEL_SPRITE = fakeSprite(271, 199, 127, 92);
+const PORTRAIT_SPRITE = fakeSprite(40, 34, 20, 17);
+const EMOJI_SPRITE = fakeSprite(29, 30, 14, 15);
+
+/** 按**档案**给不同的假精灵 —— 这三张图的锚点都非 0（实测值）*/
+function mockSprites(env: SpeechDrawEnv & { sprite: ReturnType<typeof vi.fn> }): void {
+  env.sprite.mockImplementation((archive: string, resource: number) => {
+    if (archive === 'map.mkf') return PORTRAIT_SPRITE;
+    return resource === 0x207 ? EMOJI_SPRITE : PANEL_SPRITE;
+  });
+}
+
+/** 原版 `to_left = x − src->x` 之后的屏幕落点 */
+function at(x: number, y: number, s: { anchorX: number; anchorY: number }): string {
+  return `img:${x - s.anchorX},${y - s.anchorY}`;
+}
+
 describe('drawSpeechBubble', () => {
-  it('普通台词：每行描边 + 填白，落点按 SPEECH_TEXT_AT + i×行距', () => {
+  it('★ 普通台词：次序 = 气泡(220,130) → 头像(170,130) → 字幕', () => {
     const ctx = fakeCtx();
     const env = drawEnv(ctx);
-    const b = speechBubbleOf({ player: 0, event: 11 }, 0, '約翰喬')!;
+    mockSprites(env);
+    const b = speechBubbleOf({ player: 0, event: 11, order: 'afterStage' }, 0, '約翰喬')!;
     drawSpeechBubble(b, env);
-    // 字那一支自己 save/restore（改 font/lineWidth 后要还原）
+    // ④ 气泡、⑤ 头像各贴一次；⑥ 的字自己 save/restore
     expect(ctx.calls).toEqual([
+      at(SPEECH_PANEL_AT.x, SPEECH_PANEL_AT.y, PANEL_SPRITE),
+      at(SPEECH_PORTRAIT_AT.x, SPEECH_PORTRAIT_AT.y, PORTRAIT_SPRITE),
       'save',
       'stroke:拿去啦，',
       'fill:拿去啦，',
@@ -272,34 +367,123 @@ describe('drawSpeechBubble', () => {
       'fill:不用找了～',
       'restore',
     ]);
-    // 没有表情 → 一次也不取图
-    expect(env.sprite).not.toHaveBeenCalled();
+    // 落点 = (220,130) / (170,130) —— 实测量出来的锚点已经是 0 相减后的结果
+    expect(ctx.calls[0]).toBe('img:93,38');
+    expect(ctx.calls[1]).toBe('img:150,113');
+    // 取图：气泡 = Data#0x205 图 6（抠黑）；头像 = map.mkf portraitResource(角色) 图 expression+1
+    expect(env.sprite).toHaveBeenNthCalledWith(1, 'Data.mkf', 0x205, 6, true);
+    expect(env.sprite).toHaveBeenNthCalledWith(
+      2,
+      'map.mkf',
+      portraitResource(0),
+      b.expression + 1,
+      true,
+    );
   });
 
-  it('超过 5 行的台词只画前 5 行（原版那条 `push 5`）', () => {
+  it('★ 头像图号 = `expression + 1`（原版 `0x0044f050 mov edx,[esp+0x30] / inc edx`）', () => {
+    for (const expression of [0, 1, 2, 3]) {
+      const ctx = fakeCtx();
+      const env = drawEnv(ctx);
+      mockSprites(env);
+      const b: SpeechBubble = { ...dummy(0), expression };
+      drawSpeechBubble(b, env);
+      expect(env.sprite).toHaveBeenNthCalledWith(
+        2,
+        'map.mkf',
+        portraitResource(b.character),
+        expression + 1,
+        true,
+      );
+    }
+  });
+
+  it('★ 图号少一位就变红（必须是 expression+1，不是 expression）', () => {
     const ctx = fakeCtx();
     const env = drawEnv(ctx);
+    mockSprites(env);
+    const b: SpeechBubble = { ...dummy(0), expression: 2 };
+    drawSpeechBubble(b, env);
+    const call = env.sprite.mock.calls[1]!;
+    expect(call[2]).toBe(3);
+    expect(call[2]).not.toBe(2); // ← 少了 `inc edx` 就是这一条抓到
+    expect(call[1]).toBe(portraitResource(b.character));
+  });
+
+  it('★ 金貝貝：不画任何字，但仍**照画气泡与头像**，再贴 `Data.mkf #0x207` 表情图', () => {
+    const ctx = fakeCtx();
+    const env = drawEnv(ctx);
+    mockSprites(env);
+    const b = speechBubbleOf({ player: 1, event: 0, order: 'afterStage' }, JINBEIBEI, '金貝貝')!;
+    drawSpeechBubble(b, env);
+    // ④⑤ 在 ⑥ 的判据**之前** ⇒ 金貝貝那一句也有气泡与头像，次序照旧
+    expect(ctx.calls).toEqual([
+      at(SPEECH_PANEL_AT.x, SPEECH_PANEL_AT.y, PANEL_SPRITE),
+      at(SPEECH_PORTRAIT_AT.x, SPEECH_PORTRAIT_AT.y, PORTRAIT_SPRITE),
+      at(SPEECH_EMOJI_AT.x, SPEECH_EMOJI_AT.y, EMOJI_SPRITE),
+    ]);
+    // 三次取图的档案/资源号：Data#517 图6 → map.mkf 头像 → Data#0x207 表情
+    expect(env.sprite.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+      ['Data.mkf', 0x205],
+      ['map.mkf', portraitResource(JINBEIBEI)],
+      ['Data.mkf', 0x207],
+    ]);
+    expect(env.sprite).toHaveBeenCalledWith('map.mkf', portraitResource(JINBEIBEI), 1, true);
+    // 一个「字」都没画
+    expect(ctx.calls.filter((c) => c === 'save' || c === 'restore')).toEqual([]);
+    expect(ctx.calls.filter((c) => c.startsWith('fill:'))).toEqual([]);
+    expect(ctx.calls.filter((c) => c.startsWith('stroke:'))).toEqual([]);
+  });
+
+  it('★★ W-64：行数**不设上限** —— 那个 `push 5` 是**对齐码**，不是「最多 5 行」', () => {
+    const ctx = fakeCtx();
+    const env = drawEnv(ctx);
+    mockSprites(env);
     const many: SpeechBubble = { ...dummy(0), lines: ['1', '2', '3', '4', '5', '6', '7'] };
     drawSpeechBubble(many, env);
     const fills = ctx.calls.filter((c) => c.startsWith('fill:'));
-    expect(fills).toEqual(['fill:1', 'fill:2', 'fill:3', 'fill:4', 'fill:5']);
+    expect(fills).toEqual(['fill:1', 'fill:2', 'fill:3', 'fill:4', 'fill:5', 'fill:6', 'fill:7']);
+    expect(SPEECH_TEXT_FLAG).toBe(5); // 那个 5 仍然在，只是语义是「左对齐 + 垂直居中」
   });
 
-  it('★ 金貝貝：不画任何字，取 `Data.mkf #0x207` 的那张表情图贴到 (240, 130)', () => {
-    const bitmap = { width: 27, height: 26 } as unknown as ImageBitmap;
+  /*
+   * ★★ W-64：`SPEECH_TEXT_AT = (200, 130)` 是文字块的**左边缘 + 垂直中心**
+   *   （flag 5 = 水平左对齐、垂直居中；原版 `0x0044ff35 mov eax,ebx / sar eax,1 /
+   *   sub [esp+0xb0],eax`）。先前按左上角画 ⇒ 整块**偏低半个块高**。
+   */
+  it.each([1, 2, 3, 4, 5])('★★ W-64：%i 行时首行的 y = 130 − ((n × 行距) >> 1)', (n) => {
     const ctx = fakeCtx();
     const env = drawEnv(ctx);
-    env.sprite.mockReturnValue({ bitmap, width: 27, height: 26, anchorX: 0, anchorY: 0 });
-    const b = speechBubbleOf({ player: 1, event: 0 }, JINBEIBEI, '金貝貝')!;
+    mockSprites(env);
+    const b: SpeechBubble = { ...dummy(0), lines: Array.from({ length: n }, (_, i) => `L${i + 1}`) };
     drawSpeechBubble(b, env);
-    expect(ctx.calls).toEqual([`img:${SPEECH_EMOJI_AT.x},${SPEECH_EMOJI_AT.y}`]);
-    expect(env.sprite).toHaveBeenCalledWith('Data.mkf', 0x207, b.emoji, true);
+    const expectedTop = SPEECH_TEXT_AT.y - ((n * SPEECH_TEXT_LINE_HEIGHT) >> 1);
+    const fills = ctx.texts.filter((_t, i) => i % 2 === 1); // stroke/fill 成对，取 fill 那一半
+    expect(fills.map((t) => t.y)).toEqual(
+      Array.from({ length: n }, (_, i) => expectedTop + i * SPEECH_TEXT_LINE_HEIGHT),
+    );
+    // 每一行的 x 都还是 200（水平左对齐，flag 5 的另一半）
+    for (const t of fills) expect(t.x).toBe(SPEECH_TEXT_AT.x);
   });
 
-  it('表情图还没解码好（取到 null）时不画、也不炸', () => {
+  it('★★ W-64：任意行数下「首行顶 + 末行底」的中点 === 130（±1）', () => {
+    for (const n of [1, 2, 3, 4, 5, 6, 7]) {
+      const ctx = fakeCtx();
+      const env = drawEnv(ctx);
+      mockSprites(env);
+      const b: SpeechBubble = { ...dummy(0), lines: Array.from({ length: n }, (_, i) => `L${i + 1}`) };
+      drawSpeechBubble(b, env);
+      const fills = ctx.texts.filter((_t, i) => i % 2 === 1);
+      const top = fills[0]!.y;
+      const bottom = fills[fills.length - 1]!.y + SPEECH_TEXT_LINE_HEIGHT;
+      expect(Math.abs((top + bottom) / 2 - SPEECH_TEXT_AT.y)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('图还没解码好（取到 null）时不画、也不炸', () => {
     const ctx = fakeCtx();
     const env = drawEnv(ctx); // 默认 sprite 返回 null
-    const b = speechBubbleOf({ player: 1, event: 0 }, JINBEIBEI, '金貝貝')!;
+    const b = speechBubbleOf({ player: 1, event: 0, order: 'afterStage' }, JINBEIBEI, '金貝貝')!;
     drawSpeechBubble(b, env);
     expect(ctx.calls).toEqual([]);
   });
@@ -316,7 +500,7 @@ describe('speechBubblesFor：状态跃迁 → 段落', () => {
     const seat = { ...state.players[1]!, character: 3 };
     const players = [...state.players];
     players[1] = seat;
-    const out = speechBubblesFor({ ...state, players }, [{ player: 1, event: 19 }]);
+    const out = speechBubblesFor({ ...state, players }, [{ player: 1, event: 19, order: 'afterStage' }]);
     expect(out).toHaveLength(1);
     expect(out[0]!.character).toBe(3);
     expect(out[0]!.lines).toEqual(bubbleLines(speechLine(3, 19)[1]));
@@ -324,7 +508,7 @@ describe('speechBubblesFor：状态跃迁 → 段落', () => {
 
   it('越界座位直接丢掉，不抛', () => {
     const state = makeGameState();
-    expect(speechBubblesFor(state, [{ player: 99, event: 0 }])).toEqual([]);
+    expect(speechBubblesFor(state, [{ player: 99, event: 0, order: 'afterStage' }])).toEqual([]);
   });
 
   it('characterName：12 个角色的名字都在，越界给占位', () => {

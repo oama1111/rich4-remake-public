@@ -95,11 +95,11 @@
 import {
   BALL_ONES_AT,
   BALL_TENS_AT,
+  CEREMONY_BASE,
   CEREMONY_PANEL,
   CEREMONY_TICK_MS,
   CEREMONY_VOICE_MS,
   ENTRY,
-  POSE_RIGHT,
   TALLY_PLATES,
   TALLY_TEXT,
   lotteryCeremony,
@@ -107,11 +107,13 @@ import {
   type CeremonyStep,
 } from '@rich4/core';
 import { CHARACTERS, LOTTERY } from '@rich4/data';
+import { isAlive } from '@rich4/core';
 import type { GameState } from '@rich4/core';
 import { FONT_FAMILY, font } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { playVoiceCode } from './voice-sink.ts';
+import { SCREEN_H, SCREEN_W } from './stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type DrawSprite = (
@@ -129,8 +131,14 @@ export const DRAW_DRUM_RESOURCE = 0x10;
 export const DRAW_FLOWER_RESOURCE = 0x11;
 /** 持号表的小数字牌 @source 0x00431739 `push 0xd` */
 export const DRAW_DIGIT_RESOURCE = 0x0d;
-/** 持号表的人像条 @source 0x0040808f `push 0x205`（Data.mkf）*/
-export const DRAW_PORTRAIT_RESOURCE = 0x205;
+// ★★ W-68-a 删掉了 `DRAW_PORTRAIT_RESOURCE = 0x205`（连同 `drawTally` 里那一步）：
+//   `Data.mkf #0x205` 的图 0..3 **不是人像条**，是四块带尖角的**对话框底板**
+//   （189×116，锚点分别在四个角）—— 它们属于 `player_say` 那一段（W-50 的气泡图
+//   就是同一张资源的图 6），不是持号表。原版 `fcn_0042f417` 每个人只画三样：
+//   ① 压暗的 296×60 底框（`fcn_004552e7(…, 0x128, 0x3c, −16)`）、
+//   ② `Panel#15` 图 `25 + 角色号` 的徽章（`0x0042f4b1 mov al,[player+0x13] /
+//      lea edx,[eax+0x19]`）、③ 号码数字 —— **没有第四样**。
+//   先前那一步就是第六份回报里「一进去四个空白对话框」的来源。
 
 /** 人像条与徽章相对铭牌的落点 @source 0x0042f4b0 的 `+0x14` / `+0x1e` */
 export const TALLY_ART_AT = { dx: 0x14, dy: 0x1e } as const;
@@ -193,79 +201,113 @@ export interface EraseRect {
 const S = ENTRY.stage;
 
 /**
- * 状态 3 的台面清理。
+ * 状态 3（摇球）的台面清理 —— ★ **右主持人的站姿要整片擦掉**，再重画摊手那一张。
  *
- * @source 0x0043039d..0x0043041d（`fcn_0045643d(dst, 图0, dx, dy, sx, sy, x1, y1)`，
- *   **x1/y1 是闭区间端点**）：
+ * @source 0x004303d0 / 0x00430418 / 0x00430448；`x1/y1` 是**开区间**端点，
+ *   尺寸 = `x1 − dx`、`y1 − dy`（与 `resolveErase` 同一口径）：
  * ```asm
- * fcn_0045643d(dst, 图0, 0x10, 0x154, 0x10, 0x154, 0x260, 0x182) ; 持号表那一条带
- * fcn_0045643d(dst, 图0, 0x1d8, 0x42, 0x1d8, 0x42, 0x250, 0x15a) ; ★ 右主持人那一整片
- * fcn_0045643d(dst, 图0, 7, 0x74, 7, 0x74, 0x8d, 0xf6)          ; ★ 左主持人的板
- * fcn_0045643d(dst, 图0, 0x1d8, 0x74, 0x1d8, 0x74, 0x204, 0xcd)  ; ★ 右主持人左半
+ * 004303d0 push 0x182/0x260/0x154/0x10/0x154/0x10 / 图0 / dst
+ *          → fcn_0045643d(dst, 图0, 16,340, 16,340, 608,386)   ; 持号表那一条带（core 已给）
+ * 00430418 push 0x42/0x1a2 / 0x24 / dst
+ *          → fcn_00456418(dst, 图8, 472, 66)                   ; ★ 右主持人（图 2）整片擦回台面
+ * 00430448 ... fcn_00456495(dst, 图2, 0,340, 7,116, 134,130)    ; 左主持人的腿（core 已给）
  * ```
+ *
+ * ★★ **先前这三条全抄错了**：宽度被当成闭区间端点、`y1` 又多算了 100 点。
+ *   右主持人那张 `Panel#2` **206 宽**，只擦 48 点是擦不掉的 —— 于是摊手那张
+ *   （图 2，落点 472）叠在站姿那张上，屏上就是**两个主持人**（试玩长跑第 23 条）。
  */
-const S3_RIGHT: EraseRect = { from: S, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42, x1: 0x250, y1: 0x15b };
-const S3_BOARD: EraseRect = { from: S, dx: 7, dy: 0x74, sx: 7, sy: 0x74, x1: 0x8d, y1: 0xf7 };
-const S3_RIGHT_ARM: EraseRect = { from: S, dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x205, y1: 0xce };
+const S3_RIGHT: EraseRect = { from: S, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42, x1: 0x1d8 + 0x1a2, y1: 0x42 + 0x8c };
+const S3_RIGHT_ARM: EraseRect = { from: S, dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x1d8 + 0x1a2, y1: 0x74 + 0x8c };
 
 /**
- * 状态 4 与状态 7 各自的台面清理 @source 0x0043058f 起（状态 4）、0x00430eb0 起（状态 7）：
+ * 状态 4（得主）与状态 7（空号）的台面清理 —— 两条支路**完全一样**。
+ *
+ * @source 0x00430519 / 0x00430543（状态 4）、0x00430e2f / 0x00430e5f（状态 7）：
  * ```asm
- * fcn_0045643d(dst, 图0, 0x1d8, 0x42, 0x1d8, 0x74, 0x208, 0x15a) ; 右主持人的脸
- * fcn_0045643d(dst, 图0, 7,     0x42, 7,     0x74, 0x8d,  0x15a) ; 左主持人的脸
- * fcn_0045643d(dst, 图0, 0x1d8, 0x74, 0x1d8, 0x74, 0x258, 0xf6)  ; 右主持人的下半身
+ * 00430519 push 0xa8/0x19e/0x42/0x1d8/0x42/0x1d8 / 图0 / dst
+ *          → fcn_0045643d(dst, 图0, 472,66, 472,66, 414,168)   ; ★ 大笑那张（图 5）的地
+ * 00430543 push 0x8c/0x19e/0x42/7/0x42/7 / 图0 / dst
+ *          → fcn_0045643d(dst, 图0, 7,66, 7,66, 414,140)       ; 左主持人的板 + 号码球那一片
+ * 0043055f push 0/0 / +0x54 / dst  → 图6 @ (0,0)               ; 左：举板过顶跳（core 已给）
+ * 0043057e push 0x42/0x1f9 / +0x48 / dst → 图5 @ (505,66)      ; 右：大笑（core 已给）
+ * 004305a2 push 0xc8/0x140 / +0x12c / dst → 图24 @ (320,200)   ; 中央红爆炸框（core 已给）
+ * ```
+ * ⚠️ 图号按 `[0x48c360] + 0xNN`、每项 12 字节算：`+0x54` = 图 **6**、`+0x48` = 图 **5**、
+ *   `+0x12c` = 图 **24**。先前把擦除矩形写成 49/135 宽（还把 y1 顶到 0x1fb）——
+ *   图 5 是 **124 宽**、图 2 是 **206 宽**，擦不掉就叠出第二个主持人。
+ */
+const S4_FACE_RIGHT: EraseRect = { from: S, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x42, x1: 0x1d8 + 0xa8, y1: 0x42 + 0x19e };
+const S4_FACE_LEFT: EraseRect = { from: S, dx: 7, dy: 0x42, sx: 7, sy: 0x42, x1: 7 + 0x8c, y1: 0x42 + 0x19e };
+
+/**
+ * 状态 5（数 30 帧）@source 0x00430fe1 / 0x0043100e / 0x0043103e：
+ * ```asm
+ * 00430fe1 push 0xa2/0x78/0x154/0/0x154/0 / 图0 / dst
+ *          → fcn_0045643d(dst, 图0, 0,340, 0,340, 594,460)     ; 号码球那条带连台座一起擦回去
+ * 0043100e push 0/0x154 / +0x54 / dst → 图6 @ (0,340)          ; 举板过顶跳（下半截）
+ * 0043103e push 0/0x154 / +0x48 / dst → 图5 @ (505,340)        ; 大笑（下半截）
  * ```
  */
-const S4_FACE_RIGHT: EraseRect = { from: S, dx: 0x1d8, dy: 0x42, sx: 0x1d8, sy: 0x74, x1: 0x209, y1: 0x1fb };
-const S4_FACE_LEFT: EraseRect = { from: S, dx: 7, dy: 0x42, sx: 7, sy: 0x74, x1: 0x8e, y1: 0x1fb };
-const S4_BODY_RIGHT: EraseRect = { from: S, dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x259, y1: 0x1fb };
-
-/** 状态 5 数满帧之后的两块 @source 0x00430fc8 / 0x00430fe6 */
-const S5_TOP: EraseRect = { from: S, dx: 0, dy: 0x96, sx: 0, sy: 0x96, x1: 0x1a3, y1: 0x10f };
-const S5_MID: EraseRect = { from: S, dx: 0x96, dy: 0x10e, sx: 0x96, sy: 0x10e, x1: 0x12d, y1: 0x169 };
-
-/** 状态 8 的右臂 @source 0x43098c；左脸还原用的是**图 3 自己**@source 0x4309ab */
-const S8_RIGHT_ARM: EraseRect = { from: S, dx: 0x1d8, dy: 0x74, sx: 0x1d8, sy: 0x74, x1: 0x205, y1: 0xce };
-const S8_LEFT_FACE: EraseRect = { from: ENTRY.board, dx: 0x34, dy: 0x59, sx: 0x2d, sy: 0x17, x1: 0x5b, y1: 0x3f };
+const S5_TOP: EraseRect = { from: S, dx: 0, dy: 0x154, sx: 0, sy: 0x154, x1: 0x78, y1: 0x154 + 0xa2 };
 
 /**
  * 每个演出步骤在 core 脚本之外**还要补的**擦除 —— 下标 = `lotteryCeremony()` 的步号。
  *
- * 之所以补在这里而不是改 `lottery-ceremony.ts`：那是**共享**模块，
- * 而本卡只许动自己的 client 文件（见卡片的 files 一栏）。
+ * ⚠️ **只补 core 脚本没给的那些**。`lotteryCeremony()` 的 `patches` 已经带着
+ *   持号表那一条带（`CLEAR_PLATES_BAND`，每个状态都调）、状态 3 里左主持人的腿、
+ *   状态 4/6/8 各自那几块（含状态 8 的右臂 151×364 与左脸 50×40）——
+ *   这里再写一份就会重复（先前正是如此，而且值与 exe 对不上）。
+ *
+ * ⚠️ 这张表的下标是**步号**；`lotteryCeremony()` 的状态序列是
+ *   `[1, 2, 3, 3, 4, 5, 6, 8, 9, 10]`（中奖）或 `[1, 2, 3, 3, 7, 8, 9, 10]`（空号）。
  */
 export const CEREMONY_ERASE: readonly (readonly EraseRect[])[] = [
   [], // 步 0 = 状态 1 开场白
   [], // 步 1 = 状态 2 报幕
-  [S3_RIGHT, S3_BOARD, S3_RIGHT_ARM], // 步 2 = 状态 3 摇球（持号表那一条带 core 脚本已经给了）
-  [], // 步 3 = 状态 3 第二段：开号（台面已经干净，只要贴球）
-  [S4_FACE_RIGHT, S4_FACE_LEFT, S4_BODY_RIGHT], // 步 4 = 状态 4 得主
-  [S5_TOP, S5_MID], // 步 5 = 状态 5 数帧
-  [], // 步 6 = 状态 6 恭喜
-  [S4_FACE_RIGHT, S4_FACE_LEFT, S4_BODY_RIGHT], // 步 7 = 状态 7 空号
-  [S8_RIGHT_ARM, S8_LEFT_FACE], // 步 8 = 状态 8 收尾（与状态 7 是两条支路，各占一格）
-  [], // 步 9 = 状态 9 希望下次
+  // 步 2 = 状态 3 摇球 @source 0x00430418（右主持人整片）+ core 已给的持号表带与左腿
+  [S3_RIGHT, S3_RIGHT_ARM],
+  [], // 步 3 = 状态 3 尾段：开号（core 已给持号表带，台面已经干净）
+  // 步 4 = 状态 4 得主 @source 0x00430519 / 0x00430543
+  [S4_FACE_RIGHT, S4_FACE_LEFT],
+  // 步 5 = 状态 5 数帧 @source 0x00430fe1
+  [S5_TOP],
+  // 步 6 = 状态 6 恭喜（core 已给）
+  [],
+  // 步 7 = 状态 7 空号 @source 0x00430e2f / 0x00430e5f（与状态 4 同一组）
+  //        或 状态 8 收尾 @source 0x00430961（core 已给）
+  [S4_FACE_RIGHT, S4_FACE_LEFT],
+  [],
+  // 步 8 = 状态 9 希望下次
+  [],
+  // 步 9 = 状态 10 行动要快
+  [],
 ];
 
-/** 每个演出步骤在 core 脚本之外**还要补的**贴图 */
+/**
+ * 每个演出步骤在 core 脚本之外**还要补的**贴图。
+ *
+ * ⚠️ 状态 8 那一条（擦完右臂重画点手指的姿势）**core 脚本已经给了**
+ *   （`lotteryCeremony()` 的 `blits: [{ entry: 图1, at: POSE_RIGHT }]`），
+ *   所以这里为空 —— 先前重复贴了两遍。
+ */
 export const CEREMONY_BLIT: readonly (readonly CeremonyBlit[])[] = [
   [], // 步 0 = 状态 1
   [], // 步 1 = 状态 2
   // 步 2 = 状态 3 摇球：擦完台面要**把两个主持人重画回去**
-  //    （原版擦的是他们身上的板与腿，不是他们本人）
-  //    @source 0x430379 图 3 @ (7,0x42)、0x430402 图 2 @ (0x1d8,0x42)
-  //   ★ 与 `CEREMONY_ERASE[2]` 同一格（擦与重画都在状态 3 的第一段）；
-  //     步 3（开号）只贴球。
+  //   （原版擦的是他们身上的板与腿，不是他们本人）
+  //   @source 0x00430418 图 8 @ (472,66) 之后 —— 0x004301b0 那一支里
+  //     图 3 @ (7,0x42)（`push 0x42 / 7 / +0x24`）与 图 2 @ (0x1d8,0x42)
+  //     （`push 0x42 / 0x1d8 / +0x24`）紧接着擦除各贴一次。
   [{ entry: ENTRY.board, at: [7, 0x42] }, { entry: ENTRY.presenting, at: [0x1d8, 0x42] }],
-  [], // 步 3 = 状态 3 开号（脚本已给球，其余为空）
-  [], // 步 4 = 状态 4（脚本已给全）
-  // 步 5 = 状态 5：擦掉台面后，举板要重画 @source 0x431044（两个号码球见 `CEREMONY_BALLS`）
+  [], // 步 3 = 状态 3 开号（core 已给球，其余为空）
+  [], // 步 4 = 状态 4（core 已给全）
+  // 步 5 = 状态 5：擦掉台面后，举板要重画 @source 0x0043100e（两个号码球见 `CEREMONY_BALLS`）
   [{ entry: ENTRY.jumpBoard, at: [0, 0] }],
   [], // 步 6 = 状态 6
-  [], // 步 7 = 状态 7 空号
-  // 步 8 = 状态 8 收尾：擦完右臂与左脸要把点手指的姿势重画回去 @source 0x4309cd
-  [{ entry: ENTRY.pointing, at: POSE_RIGHT }],
-  [], // 步 9 = 状态 9
+  [], // 步 7 = 状态 7 空号 / 状态 8 收尾（core 已给）
+  [], // 步 8 = 状态 9
+  [], // 步 9 = 状态 10
 ];
 
 /**
@@ -478,10 +520,13 @@ export interface DigitAt {
  * @source 0x0042f55b（一行内）与 0x0042f5e9（折行）：
  * 起点 `铭牌 + (0x36, 0x1e)`，每两位数字步进 `0x28`、第二位移 `0x10`；
  * 超过 `0xc` 个字符才折行，折行后 y 再加 `0x1e`。
+ *
+ * ★ `player` 与 `plate` 是**两个号**：前者决定读谁持有的号码，后者决定落在第几块
+ *   铭牌上（原版出局的人不占铭牌，见 `drawTally`）。默认两者相同。
  */
-export function tallyDigits(lottery: readonly number[], player: number): DigitAt[] {
+export function tallyDigits(lottery: readonly number[], player: number, plate = player): DigitAt[] {
   const text = tallyString(lottery, player);
-  const at = TALLY_PLATES[player];
+  const at = TALLY_PLATES[plate];
   if (at === undefined) return [];
   const out: DigitAt[] = [];
   const n = Math.min(text.length, TALLY_LINE_CHARS * 2);
@@ -741,6 +786,72 @@ interface Active {
   faceBlits: readonly FaceBlit[];
   drum: Playing | null;
   flower: Playing | null;
+  /**
+   * ★★ W-68-b：**持久的离屏表面**（640×480）。
+   *
+   * 原版整屏就是这么一块：建屏时画一次（底图 + 两位主持人 + 「累積獎金」+ 金额 +
+   * 持号表），之后每个状态只在上面**擦一块、补一块**，前面画的都还在。
+   * 先前本引擎每帧从底图重画、却只画当前这一步 ⇒ 建屏那一步画的主持人与奖金
+   * 到下一步就没了（截图里状态 2 台上没有主持人、状态 3 左边那块板是空的）。
+   */
+  surface: CeremonySurface | null;
+  /**
+   * 已经**烤进表面**的最后一步。
+   *
+   * ★ 初值 **−2** = 「什么都还没烤」—— 第 **−1** 步是**建屏**那一步
+   *   （底图 + 主持人 + 奖金 + 持号表），所以要烤的下一个下标是 `applied + 1 = −1`。
+   */
+  applied: number;
+  /**
+   * 开场就定下的一份「谁在场 / 各人角色号」快照。
+   *
+   * ★ 持号表每一步都要照它重画（表面持久，晚一步的 `env.state` 可能已经变了），
+   *   出局的人不占铭牌 —— 存档里也拿得到，所以这里存快照而不是每次读 `env`。
+   */
+  characters: readonly number[];
+  alive: readonly boolean[];
+  /** 同一步连着几帧没烤成（图没到货）—— 用来给 `CEREMONY_BAKE_RETRIES` 计数 */
+  bakeTries: number;
+}
+
+/**
+ * 同一步最多等几帧「图到货」（`TICK`/帧率都是 50–60，30 帧 ≈ 半秒）。
+ * 超过就照烤 —— 见 `applyStep` 的 `force`。
+ */
+export const CEREMONY_BAKE_RETRIES = 30;
+
+/** 离屏表面 —— 能拿到 `CanvasRenderingContext2D` 就行 */
+export interface CeremonySurface {
+  readonly canvas: CanvasImageSource;
+  readonly ctx: CanvasRenderingContext2D;
+}
+
+/**
+ * 造一块表面 —— 优先 `OffscreenCanvas`，退回 `<canvas>`；两者都没有返回 `null`
+ * （Node 下的单测就是这种情形，走 `setCeremonySurfaceFactory` 注入假表面）。
+ */
+function defaultSurface(): CeremonySurface | null {
+  if (typeof OffscreenCanvas !== 'undefined') {
+    const c = new OffscreenCanvas(SCREEN_W, SCREEN_H);
+    const ctx = c.getContext('2d');
+    if (ctx !== null) return { canvas: c as unknown as CanvasImageSource, ctx: ctx as unknown as CanvasRenderingContext2D };
+    return null;
+  }
+  if (typeof document !== 'undefined') {
+    const c = document.createElement('canvas');
+    c.width = SCREEN_W;
+    c.height = SCREEN_H;
+    const ctx = c.getContext('2d');
+    if (ctx !== null) return { canvas: c, ctx };
+  }
+  return null;
+}
+
+let surfaceFactory: () => CeremonySurface | null = defaultSurface;
+
+/** ★ 给单测注入假表面（生产代码不调）—— 与 `main.ts` 的 `__devHits` 同一类口子 */
+export function setCeremonySurfaceFactory(f: (() => CeremonySurface | null) | null): void {
+  surfaceFactory = f ?? defaultSurface;
 }
 
 let active: Active | null = null;
@@ -841,6 +952,11 @@ function begin(cue: DrawCue, env: UiScreenEnv): void {
     faceBlits: [],
     drum: null,
     flower: null,
+    surface: surfaceFactory(),
+    applied: -2,
+    characters: env.state.players.map((p) => p.character),
+    alive: env.state.players.map((p) => isAlive(p)),
+    bakeTries: 0,
   };
   // 建屏那一下不在任何状态里（`fcn_0042f6c3` 是 WM_CREATE 直接画的）
   startAnim(steps[0] ?? null, env);
@@ -870,12 +986,30 @@ function tickFace(a: Active, env: UiScreenEnv): void {
 }
 
 /**
+ * ★★ 单步**最多**停多久 —— 过了就无条件往前走（死锁保护）。
+ *
+ * 为什么必须有：`holdDone` 里「等 ANM 放完」那条判据依赖 `env.flic()` 解出帧数。
+ * `main.ts` 的 `uiFlicNow` 会把**解不出来**的结果缓存成 `null`，于是
+ * `p.frames` 永远是 0、`anmDone` 永远为假 —— 屏就永远关不掉，
+ * 而演出闸（`BLOCKING_PRESENTATIONS`）会把整局钉死在这里（试玩长跑第 23 条）。
+ *
+ * 原版不会遇到这种情况：`read_mkf` 是**同步**的，解不出来它自己就崩了。
+ *
+ * 取值 **90 000 ms**：最长的一步是状态 3 的摇球（42 帧 × 880 ms ≈ 37 秒，
+ * 再加 20 拍 = 1 秒）。90 秒是它的两倍多，正常演出永远碰不到这条闸；
+ * 它只在「影片根本解不出来」时兜底。
+ */
+export const CEREMONY_STEP_MAX_MS = 90_000;
+
+/**
  * 这一刻该不该往下一步走 @source 0x004301e8 的「气泡收掉才走下一步」，
  * 加上 `0x0043024c` / `0x00430f43` 那两处「数够帧」与「等 ANM 放完」。
  */
 function holdDone(a: Active, env: UiScreenEnv): boolean {
   const step = a.steps[a.step];
   if (step === undefined) return true;
+  // ★★ 死锁保护：影片解不出来时那条「等 ANM 放完」会永远为假（见 `CEREMONY_STEP_MAX_MS`）
+  if (env.now - a.at >= CEREMONY_STEP_MAX_MS) return true;
   const h = step.hold;
   if (h.pauseMs !== undefined && env.now - a.said < h.pauseMs) return false;
   if (h.ticks !== undefined && (env.now - a.at) / CEREMONY_TICK_MS < h.ticks) return false;
@@ -943,22 +1077,16 @@ function blit(ctx: CanvasRenderingContext2D, s: Sprite | null, b: CeremonyBlit):
  *
  * ★ 不是填背景色 —— 底图上那块本来就画着台座、幕布、地板。
  */
-function erase(
-  ctx: CanvasRenderingContext2D,
-  sprite: DrawSprite,
-  r: EraseRect,
-): void {
+function erase(ctx: CanvasRenderingContext2D, sprite: DrawSprite, r: EraseRect): void {
   const src = sprite('Panel.mkf', DRAW_RESOURCE, r.from, false);
   if (src === null) return;
   const c = resolveErase(r, src.width, src.height);
   if (c === null) return;
-  try {
-    const patch = ctx.getImageData(c.dx, c.dy, c.w, c.h);
-    ctx.putImageData(patch, c.dx, c.dy);
-    ctx.drawImage(src.bitmap, c.sx, c.sy, c.w, c.h, c.dx, c.dy, c.w, c.h);
-  } catch {
-    // 画布不可读（跨域污染）时这一屏就没法「擦」了 —— 静默跳过，别的照画
-  }
+  // ★★ W-68-c：这里原来还有一对**纯空转**的像素回读（先 `getImage`+`Data` 读出来、
+  //   再 `putImage`+`Data` 原样写回去），每帧、每个擦除块都强制一次
+  //   GPU→CPU 同步回读 —— Chromium 下看不出来，桌面包的 WKWebView 下就是卡顿主因。
+  //   现在擦除只在**进入某一步时**做一次（见 `applyStep`），而且只贴这一块。
+  ctx.drawImage(src.bitmap, c.sx, c.sy, c.w, c.h, c.dx, c.dy, c.w, c.h);
 }
 
 /** 画这一帧的 ANM（原版是 `fcn_00456b3e` 贴 RGB555 帧，这里是逐帧位图）*/
@@ -988,25 +1116,37 @@ export function drawTally(
   ctx: CanvasRenderingContext2D,
   sprite: DrawSprite,
   lottery: readonly number[],
-  players: number,
+  characters: readonly number[],
+  alive: readonly boolean[],
 ): void {
-  for (let p = 0; p < players && p < TALLY_PLATES.length; p++) {
-    const art = tallyArtAt(p);
-    if (art === null) continue;
+  // ★★ W-68-a：铭牌号与玩家号**分开数** —— 原版出局的人（`player+0x15 == 0`）
+  //   整个跳过、**不占铭牌**（`0x0042f46b cmp byte [player+0x15],0 / je 0x42f6a2`：
+  //   只 `inc [esp+0x70]` 玩家号，不 `inc [esp+0x74]` 铭牌号）。
+  let plate = 0;
+  for (let p = 0; p < characters.length && plate < TALLY_PLATES.length; p++) {
+    if (alive[p] === false) continue;
+    const art = tallyArtAt(plate);
+    if (art === null) { plate += 1; continue; }
     // ① 压暗的底框（「四个蓝框」）@source 0x0042f482 的 `fcn_004552e7(…, 0x128, 0x3c, −16)`
-    const frame = tallyFrameAt(p);
+    const frame = tallyFrameAt(plate);
     if (frame !== null) {
       ctx.fillStyle = `rgba(0,0,0,${TALLY_FRAME.alpha})`;
       ctx.fillRect(frame.x, frame.y, TALLY_FRAME.w, TALLY_FRAME.h);
     }
-    // ② 人像条（Data#517 图 = 玩家号）
-    drawKeyed(ctx, sprite('Data.mkf', DRAW_PORTRAIT_RESOURCE, p, true), art[0] + TALLY_ART_AT.dx, art[1] + TALLY_ART_AT.dy);
-    // ③ 角色徽章（Panel#15 图 = 25 + 角色号）
-    drawKeyed(ctx, sprite('Panel.mkf', DRAW_RESOURCE, ENTRY.badge + p, true), art[0] + TALLY_ART_AT.dx, art[1] + TALLY_ART_AT.dy);
-    // ④ 持号数字
-    for (const d of tallyDigits(lottery, p)) {
+    // ② 角色徽章（Panel#15 图 = `ENTRY.badge + **角色号**`）
+    //   ★ 先前写的是 `ENTRY.badge + p`（**玩家下标**）—— 错。
+    //   @source `0x0042f4b1 mov al,[player+0x13] / lea edx,[eax+0x19]`（0x19 = 25 = badge）
+    drawKeyed(
+      ctx,
+      sprite('Panel.mkf', DRAW_RESOURCE, ENTRY.badge + (characters[p] ?? 0), true),
+      art[0] + TALLY_ART_AT.dx,
+      art[1] + TALLY_ART_AT.dy,
+    );
+    // ③ 持号数字（内容按**玩家号**读，落点按**铭牌号**）
+    for (const d of tallyDigits(lottery, p, plate)) {
       drawKeyed(ctx, sprite('Panel.mkf', DRAW_DIGIT_RESOURCE, d.digit, true), d.x, d.y);
     }
+    plate += 1;
   }
 }
 
@@ -1102,50 +1242,181 @@ function viewOf(a: Active, env: UiScreenEnv): DrawView {
  *   ★ 持号表那一条带（608×130，压在人腿上）也必须在人之前擦。
  */
 export function drawCeremony(ctx: CanvasRenderingContext2D, env: UiScreenEnv, v: DrawView): void {
-  const sprite = env.sprite;
   const a = active;
   if (a === null) return;
-  const step = a.steps[a.step]!;
+  const surface = a.surface;
+  if (surface === null) return; // 拿不到离屏表面（无 DOM）⇒ 整屏不画，别的照常
 
-  // ① 底图
-  blit(ctx, sprite('Panel.mkf', DRAW_RESOURCE, ENTRY.stage, false), { entry: ENTRY.stage, at: [0, 0], opaque: true });
-
-  // ② 擦台面（本模块订正的 + 脚本自带的）
-  for (const p of [...(CEREMONY_ERASE[v.step] ?? []), ...step.patches.map(coreErase)]) {
-    erase(ctx, sprite, p);
+  // ★★ W-68-b：先把**还没烤的每一步**依次烤进表面（`while` —— 一帧可能跨好几步）。
+  //   原版就是一块持久表面：建屏画一次，之后每个状态只在上面擦一块、补一块。
+  //   有图没解好就整步不烤、下一帧再来；同一张图连等 `CEREMONY_BAKE_RETRIES` 帧还没到
+  //   就照烤（缺哪张少哪张），否则一张永远解不出来的图会把整场戏钉成空白。
+  while (a.applied < v.step) {
+    const next = a.applied + 1;
+    if (!applyStep(a, next, env, a.bakeTries >= CEREMONY_BAKE_RETRIES)) {
+      a.bakeTries += 1;
+      break;
+    }
+    a.bakeTries = 0;
+    a.applied = next;
   }
 
-  // ③ 摇球 ANM —— 原版在铺图之前起播（`fcn_00450ced` 就在状态 3 的开头）
+  // ① 持久表面（底图 + 主持人 + 奖金 + 走过的每一步）
+  ctx.drawImage(surface.canvas, 0, 0);
+
+  // ② 摇球 / 礼花 ANM 的**当前帧**（原版是逐帧贴进表面之外的活画面）
   drawAnim(ctx, env, a.drum);
-
-  // ④ 铺图（脚本自带的 blits + 本模块补的）
-  for (const b of [...step.blits, ...(CEREMONY_BLIT[v.step] ?? [])]) {
-    blit(ctx, sprite('Panel.mkf', DRAW_RESOURCE, b.entry, b.opaque !== true), b);
-  }
-
-  // ⑤ 号码球 —— 单独一步，因为「哪几步要重贴」在 core 脚本里对不上（见 `CEREMONY_BALLS`）
-  drawBalls(ctx, sprite, v);
-
-  // ⑥ 得主礼花（状态 4 起播，压在台上）
   drawAnim(ctx, env, a.flower);
 
-  // ⑦ 脸贴片（原版在状态 4..8 之间有闸，见 `0x004310eb`：那几步脸是冻住的）
+  // ③ 脸贴片（原版在状态 4..8 之间有闸，见 `0x004310eb`：那几步脸是冻住的）
   if (!(v.state >= 4 && v.state <= 8)) {
     for (const f of v.face) {
-      blit(ctx, sprite('Panel.mkf', DRAW_RESOURCE, f.entry, false), { entry: f.entry, at: f.at, opaque: true });
+      blit(ctx, env.sprite('Panel.mkf', DRAW_RESOURCE, f.entry, false), { entry: f.entry, at: f.at, opaque: true });
     }
   }
 
-  // ⑧ 各人持号表
-  drawTally(ctx, sprite, v.lottery, v.players);
-
-  // ⑨ 文字
-  for (const id of step.texts) drawText(ctx, id, v);
-
-  // ⑩ 气泡（最后画，压在人身上）
-  if (v.lines.length > 0) drawBubble(ctx, sprite, v.lines);
+  // ④ 气泡（最后画，压在人身上）
+  if (v.lines.length > 0) drawBubble(ctx, env.sprite as unknown as DrawSprite, v.lines);
 }
 
+/** 这一步要擦的每一块（`CEREMONY_ERASE[step] + step.patches`，次序照原版）*/
+function stepErases(step: CeremonyStep, stepIndex: number): EraseRect[] {
+  return [...(stepIndex < 0 ? [] : (CEREMONY_ERASE[stepIndex] ?? [])), ...step.patches.map(coreErase)];
+}
+
+/** 这一步要铺的每一张（`step.blits + CEREMONY_BLIT[step]`）*/
+function stepBlits(step: CeremonyStep, stepIndex: number): readonly CeremonyBlit[] {
+  return [...step.blits, ...(stepIndex < 0 ? [] : (CEREMONY_BLIT[stepIndex] ?? []))];
+}
+
+/** 擦除块与持号表那一条带（`TALLY_BAND`，608×130）有没有相交 */
+function hitsTallyBand(r: EraseRect): boolean {
+  return r.dx < TALLY_BAND.x + TALLY_BAND.w && r.dx + (r.x1 - r.dx + 1) > TALLY_BAND.x
+    && r.dy < TALLY_BAND.y + TALLY_BAND.h && r.dy + (r.y1 - r.dy + 1) > TALLY_BAND.y;
+}
+
+/**
+ * 这一步要不要**重新**画持号表。
+ *
+ * 建屏那一步（`CEREMONY_BASE.tally === true`）当然要画；除此之外，凡是把铭牌那一条带
+ * 擦回干净底图的步骤（core 脚本里第 3 / 5 / 7 步都带 `CLEAR_PLATES_BAND`）也必须在擦完
+ * 之后补画一遍 —— 否则铭牌会被擦空（首席看到的「四块空白」之二）。
+ * 带没被动过的步骤不必重画：表面是持久的，前面画的还在。
+ */
+function stepDrawsTally(step: CeremonyStep, stepIndex: number): boolean {
+  if (step.tally === true) return true;
+  return stepErases(step, stepIndex).some(hitsTallyBand);
+}
+
+/** 这一步要用到的**每一张** sprite 都解好了吗（有一张没好就整步不烤）*/
+function stepSpritesReady(a: Active, stepIndex: number, env: UiScreenEnv): boolean {
+  const ready = (resource: number, index: number, keyed: boolean): boolean =>
+    (env.sprite as (...xs: unknown[]) => Sprite | null)('Panel.mkf', resource, index, keyed) !== null;
+  const step = stepIndex < 0 ? CEREMONY_BASE : a.steps[stepIndex];
+  if (step === undefined) return false;
+  for (const r of stepErases(step, stepIndex)) if (!ready(DRAW_RESOURCE, r.from, false)) return false;
+  for (const b of stepBlits(step, stepIndex)) if (!ready(DRAW_RESOURCE, b.entry, b.opaque !== true)) return false;
+  if (stepIndex >= 0 && (CEREMONY_BALLS[stepIndex] ?? false)) {
+    const tens = Math.floor(a.cue.number / 10) % 10;
+    const ones = a.cue.number % 10;
+    if (!ready(DRAW_RESOURCE, ENTRY.ball + tens, true)) return false;
+    if (!ready(DRAW_RESOURCE, ENTRY.ball + ones, true)) return false;
+  }
+  // 持号表这一步要重画的话，它用到的徽章与数字牌也得先解好
+  if (stepDrawsTally(step, stepIndex)) {
+    for (let p = 0; p < a.characters.length; p++) {
+      if (a.alive[p] === false) continue;
+      // ★ 徽章也要查！漏了它会让**建屏那一步**在徽章到货之前就烤完，
+      //   而表面是持久的 ⇒ 徽章永远补不回来（2026-09-20 浏览器实测：
+      //   进屏时 `Panel#15` 图 25 还没解出来，四块铭牌上只有号码、没有头像）。
+      if (!ready(DRAW_RESOURCE, ENTRY.badge + (a.characters[p] ?? 0), true)) return false;
+      for (const d of tallyDigits(a.cue.sold, p)) if (!ready(DRAW_DIGIT_RESOURCE, d.digit, true)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * 把**某一步**烤进持久表面（W-68-b）。
+ *
+ * 次序照原版与 `drawCeremony` 的老顺序：
+ * `CEREMONY_ERASE[step] + step.patches`（擦）→ `step.blits + CEREMONY_BLIT[step]`（铺）
+ * → `CEREMONY_BALLS[step]` 为真则两颗球 → `step.tally` 为真则持号表 → `step.texts`。
+ *
+ * 第 **−1** 步 = 建屏：底图 + `CEREMONY_BASE`（两位主持人、气泡底、`poolLabel`/`poolAmount`、
+ * `tally: true`）—— `@rich4/core` 的 `CEREMONY_BASE` 导出了它，客户端此前**从没用过**，
+ * 这正是「开场主持人不见、牌子上没有奖金」的直接原因。
+ *
+ * @param force 图还没解好也照烤（见 `CEREMONY_BAKE_RETRIES`）—— 只在**等得太久**时才由
+ *   `drawCeremony` 传 true：某一张图要是永远解不出来（索引越界之类），
+ *   「不许烤一半」就会变成「整场戏一片空白」，那更糟。
+ *
+ * @returns 真的烤进去了才 `true`；有图没解好、或拿不到表面 ⇒ `false`（下一帧再试，**不烤一半**）
+ */
+export function applyStep(a: Active, stepIndex: number, env: UiScreenEnv, force = false): boolean {
+  const surface = a.surface;
+  if (surface === null) return false;
+  const step = stepIndex < 0 ? CEREMONY_BASE : a.steps[stepIndex];
+  if (step === undefined) return false;
+  if (!force && !stepSpritesReady(a, stepIndex, env)) return false;
+  const ctx = surface.ctx;
+
+  for (const p of stepErases(step, stepIndex)) {
+    erase(ctx, env.sprite as unknown as DrawSprite, p);
+  }
+  for (const b of stepBlits(step, stepIndex)) {
+    blit(ctx, env.sprite('Panel.mkf', DRAW_RESOURCE, b.entry, b.opaque !== true), b);
+  }
+  if (stepIndex >= 0 && (CEREMONY_BALLS[stepIndex] ?? false)) {
+    drawBallsFor(ctx, env.sprite as unknown as DrawSprite, a.cue.number);
+  }
+  if (stepDrawsTally(step, stepIndex)) {
+    drawTally(ctx, env.sprite as unknown as DrawSprite, a.cue.sold, a.characters, a.alive);
+  }
+  applyStepTexts(ctx, step.texts, a, env);
+  return true;
+}
+
+/** 号码球（`applyStep` 用；`drawBalls` 那一版读 `DrawView`，这里直接给号码）*/
+function drawBallsFor(ctx: CanvasRenderingContext2D, sprite: DrawSprite, number: number): void {
+  const tens = Math.floor(number / 10) % 10;
+  const ones = number % 10;
+  blit(ctx, sprite('Panel.mkf', DRAW_RESOURCE, ENTRY.ball + tens, true), { entry: ENTRY.ball + tens, at: BALL_TENS_AT, opaque: true });
+  blit(ctx, sprite('Panel.mkf', DRAW_RESOURCE, ENTRY.ball + ones, true), { entry: ENTRY.ball + ones, at: BALL_ONES_AT, opaque: true });
+}
+
+/** 这一步要画的文字（建屏那一步用 `CEREMONY_BASE` 的）*/
+function applyStepTexts(
+  ctx: CanvasRenderingContext2D,
+  ids: readonly string[],
+  a: Active,
+  env: UiScreenEnv,
+): void {
+  const v: DrawView = viewForBake(a, env);
+  for (const id of ids) drawText(ctx, id, v);
+}
+
+/** 烤表面时用的 `DrawView` —— 只取文字那几项要用的字段（号码/奖金/得主名）*/
+function viewForBake(a: Active, env: UiScreenEnv): DrawView {
+  const announced = a.steps.slice(0, a.step + 1).some((x) => x.texts.includes('winnerName'));
+  return {
+    step: a.step,
+    state: a.steps[a.step]?.state ?? 0,
+    cue: a.cue,
+    face: a.faceBlits,
+    lines: [],
+    balls: [ENTRY.ball, ENTRY.ball],
+    winner: announced && a.cue.winner !== null ? winnerNameFor(a, env) : null,
+    lottery: a.cue.sold,
+    players: a.steps.length,
+  };
+}
+
+/** 得主名 —— 与 `viewOf` 同一处口径（`players[winner].character`）*/
+function winnerNameFor(a: Active, env: UiScreenEnv): string {
+  const idx = a.cue.winner ?? 0;
+  return winnerName(env.state.players[idx]?.character ?? 0);
+}
 /**
  * 中奖号那两颗球。
  *

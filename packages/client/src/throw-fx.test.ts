@@ -474,35 +474,35 @@ describe('★ Q-TOOL-5 ①：闸门与目标种类 —— 该起 / 不该起', (
  * ══════════════════════════════════════════════════════════════════════════
  */
 describe('★ Q-TOOL-5 ②：附身物件的偏移表 / 图号（VA 0x00409065 起那一段）', () => {
-  it('★ 普通那张表就是 0x474951 的 8 项（dy/dx 逐项相同）', () => {
+  it('★ 普通那张表就是 0x474951 的 8 项（内存顺序 **(X, Y)** 逐项相同）', () => {
     expect(ATTACHED_OFFSETS).toEqual([
-      { dy: -10, dx: -22 },
-      { dy: -22, dx: -10 },
-      { dy: -22, dx: 10 },
-      { dy: -10, dx: 22 },
-      { dy: 10, dx: 22 },
-      { dy: 22, dx: 10 },
-      { dy: 22, dx: -10 },
-      { dy: 10, dx: -22 },
+      { x: -10, y: -22 },
+      { x: -22, y: -10 },
+      { x: -22, y: 10 },
+      { x: -10, y: 22 },
+      { x: 10, y: 22 },
+      { x: 22, y: 10 },
+      { x: 22, y: -10 },
+      { x: 10, y: -22 },
     ]);
   });
 
   it('★ 有神时那张（0x474991）是 18/44 的一圈 —— 比普通的 10/22 **更外圈**', () => {
     expect(ATTACHED_OFFSETS_WITH_GOD).toEqual([
-      { dy: -18, dx: -44 },
-      { dy: -44, dx: -18 },
-      { dy: -44, dx: 18 },
-      { dy: -18, dx: 44 },
-      { dy: 18, dx: 44 },
-      { dy: 44, dx: 18 },
-      { dy: 44, dx: -18 },
-      { dy: 18, dx: -44 },
+      { x: -18, y: -44 },
+      { x: -44, y: -18 },
+      { x: -44, y: 18 },
+      { x: -18, y: 44 },
+      { x: 18, y: 44 },
+      { x: 44, y: 18 },
+      { x: 44, y: -18 },
+      { x: 18, y: -44 },
     ]);
     // 逐项半径都更大（不是简单 ×2：10→18、22→44）
     ATTACHED_OFFSETS.forEach((o, i) => {
       const g = ATTACHED_OFFSETS_WITH_GOD[i]!;
-      expect(Math.abs(g.dy)).toBeGreaterThan(Math.abs(o.dy));
-      expect(Math.abs(g.dx)).toBeGreaterThan(Math.abs(o.dx));
+      expect(Math.abs(g.y)).toBeGreaterThan(Math.abs(o.y));
+      expect(Math.abs(g.x)).toBeGreaterThan(Math.abs(o.x));
     });
   });
 
@@ -523,9 +523,9 @@ describe('★ Q-TOOL-5 ②：附身物件的偏移表 / 图号（VA 0x00409065 �
   });
 
   it('★ 定時炸彈(18) + 主人身上已有神 → 大圈；差一个条件就回小圈', () => {
-    expect(attachedOffset(18, 1, 0)).toEqual({ dy: -18, dx: -44 });
-    expect(attachedOffset(18, 0, 0)).toEqual({ dy: -10, dx: -22 }); // 主人没神
-    expect(attachedOffset(5, 1, 0)).toEqual({ dy: -10, dx: -22 }); // 不是炸弹
+    expect(attachedOffset(18, 1, 0)).toEqual({ x: -18, y: -44 });
+    expect(attachedOffset(18, 0, 0)).toEqual({ x: -10, y: -22 }); // 主人没神
+    expect(attachedOffset(5, 1, 0)).toEqual({ x: -10, y: -22 }); // 不是炸弹
     expect(attachedOffset(18, 1, 5)).toEqual(ATTACHED_OFFSETS_WITH_GOD[5]);
     expect(attachedOffset(16, 0, 3)).toEqual(ATTACHED_OFFSETS[3]);
   });
@@ -537,5 +537,105 @@ describe('★ Q-TOOL-5 ②：附身物件的偏移表 / 图号（VA 0x00409065 �
     expect(attachedOwnerVisible({ ...clean, disappearing: 2 })).toBe(false);
     expect(attachedOwnerVisible({ ...clean, inPrison: 3 })).toBe(false);
     expect(attachedOwnerVisible({ ...clean, inHospital: 4 })).toBe(false);
+  });
+
+  /*
+   * ══════════════════════════════════════════════════════════════════════════
+   *  ★ 试玩3 #10：「背着的定時炸彈 / 神明」必须随主人转向、并落在主人**背后**
+   *
+   *  2026-09-19 拿 exe 逐条核过：现状**是对的**（表值逐 dword 相符、取表下标与
+   *  帧号两条都与 VA 对得上），所以这里不改代码，只把这条性质**钉成回归**。
+   *
+   *  方向编**不另写一套**：`unit()` 是「给定位移 → `directionOf` → 看它算成哪一向」
+   *  反推出来的 —— 用例第 1 条先拿 `directionOf` 自己把自己验一遍，
+   *  保证这一层不是凭空写的。
+   *
+   *  ⚠️ 已核实**不属于**本用例范围的一条：8 张**图素**本身画的是哪个朝向
+   *  （即「第 0 帧是不是正面」）。那要从美工资源里认，本次没能可靠读出，
+   *  故这里只钉「偏移相对朝向」这半边 —— 见报告与 `docs/escalations.md`。
+   * ══════════════════════════════════════════════════════════════════════════
+   */
+  describe('★ 试玩3 #10：附身物随主人转向，且落在**朝向的反面**', () => {
+    /**
+     * 世界朝向 → 屏幕单位向量。
+     *
+     * 由 `directionOf` 的真值表反推：`0=下 1=右下 2=右 3=右上 4=上 5=左上 6=左 7=左下`
+     * （`core/state/direction.test.ts` 第 18 行，通道 2 直接跑 `0x454fb4` 得来）。
+     * 屏幕 y 向下 ⇒ x = sin(dir×45°)、y = cos(dir×45°)。
+     */
+    const unit = (dir: number): { x: number; y: number } => {
+      const a = (dir * Math.PI) / 4;
+      return { x: Math.sin(a), y: Math.cos(a) };
+    };
+
+    it('★ `unit()` 与 `directionOf` 自洽 —— 先把自己验一遍（零位移除外）', () => {
+      for (let dir = 0; dir < 8; dir++) {
+        const u = unit(dir);
+        // `directionOf` 的形参是 (dx, dy)，故把单位向量放大到 1000 倍再问它
+        expect(directionOf(Math.round(u.x * 1000), Math.round(u.y * 1000)), `dir=${dir}`).toBe(dir);
+      }
+    });
+
+    it('★ 偏移与主人朝向**反向**（点积 < 0）—— 8 向 × 8 视角全部成立', () => {
+      for (let view = 0; view < 8; view++) {
+        for (let dir = 0; dir < 8; dir++) {
+          const image = attachedImageIndex(dir, view);
+          const { x: dx, y: dy } = attachedOffset(5, 0, image); // 神明(5)：小圈
+          // 主人此刻在屏幕上朝哪 —— 与图号同一个 `screenDirection`（= exe 的 +0x10 经视角）
+          const f = unit(screenDirection(dir, view));
+          const dot = dx * f.x + dy * f.y;
+          // ★ 一旦为正，附身物就跑到主人**身前**去了 —— 这正是 #10 报的现象
+          expect(dot, `view=${view} dir=${dir}`).toBeLessThan(0);
+        }
+      }
+    });
+
+    it('★ 大圈（炸弹 + 主人已有神）同样在朝向的反面 —— 只是挪得更远', () => {
+      for (let dir = 0; dir < 8; dir++) {
+        const { x: dx, y: dy } = attachedOffset(18, 1, attachedImageIndex(dir, 0));
+        const f = unit(dir);
+        expect(dx * f.x + dy * f.y, `dir=${dir}`).toBeLessThan(0);
+      }
+    });
+
+    it('★ 贴的帧恒是「偏移的那一项 + 4」⇒ 图素背对偏移方向（神明背对主人）', () => {
+      for (let view = 0; view < 8; view++) {
+        for (let dir = 0; dir < 8; dir++) {
+          const image = attachedImageIndex(dir, view);
+          // 偏移取的是第 `image` 项、图素取的是第 `image + 4` 项 —— 正好差 180°
+          expect(attachedFrameIndex(image)).toBe((image + 4) & 7);
+        }
+      }
+    });
+
+    it('★ 反证：若把偏移也换成 +4 那一项，就有点积为正（= 跑到身前）', () => {
+      // 只有「偏移用 image、帧用 image+4」这一种组合是「背后」。
+      // 这条把「改错会红」写出来：谁把 `attachedOffset` 的下标也 +4，上一条仍绿、这条会红。
+      let sawFront = false;
+      for (let dir = 0; dir < 8; dir++) {
+        const f = unit(dir);
+        const o = attachedOffset(5, 0, (dir + 4) & 7); // 故意取反的那一项
+        if (o.x * f.x + o.y * f.y > 0) sawFront = true;
+      }
+      expect(sawFront).toBe(true);
+    });
+
+    it('★ 表项就是 `dump 0x474951` 的 16 个 dword，且 +0 喂 X、+4 喂 Y', () => {
+      // 命令：python3 tools/disasm.py dump 0x474951 16 4
+      //   [0] -10 -22  -22 -10  -22 10  -10 22   [8] 10 22  22 10  22 -10  10 -22
+      // 每个表项 i = (dword[2i], dword[2i+1]) = (dy, dx) —— 见 `ATTACHED_OFFSETS` 的 @source
+      const dwords = [
+        -10, -22, -22, -10, -22, 10, -10, 22,
+        10, 22, 22, 10, 22, -10, 10, -22,
+      ];
+      const fromTable = ATTACHED_OFFSETS.map((o) => [o.x, o.y]).flat();
+      expect(fromTable).toEqual(dwords);
+      // 大圈：python3 tools/disasm.py dump 0x474991 16 4
+      const bigDwords = [
+        -18, -44, -44, -18, -44, 18, -18, 44,
+        18, 44, 44, 18, 44, -18, 18, -44,
+      ];
+      expect(ATTACHED_OFFSETS_WITH_GOD.map((o) => [o.x, o.y]).flat()).toEqual(bigDwords);
+    });
   });
 });

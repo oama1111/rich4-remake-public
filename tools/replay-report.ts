@@ -11,6 +11,11 @@
  *   2) `--trace`：逐条打印 action 与 phase / 当前玩家 / 待决交互的变化。
  *   3) `--shot`：把回报里内嵌的截图另存成 PNG，直接看「当时屏上是什么」。
  *
+ * ★ `devPatched: true` 的回报**直接拒绝验指纹**（W-53）：那是开发用注入口
+ *   `__rich4.debug.patch` 改过状态之后落的报告，`base` + `trail` 本来就不再是
+ *   这个状态的来源，重放必然对不上 —— 报「指纹不一致」会把人引向错误的方向。
+ *   这类报告仍然照常打印错误、截图，只是**不做**那个核对。
+ *
  * 写回归时：`--until N` 停在第 N 条之前，把那一刻的状态当 fixture。
  */
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -27,6 +32,8 @@ interface Report {
   createdAt: string;
   note: string;
   reason: string;
+  /** 状态被 `__rich4.debug.patch` 改过（W-53）；老报告里没有这一项 */
+  devPatched?: boolean;
   env: Record<string, unknown>;
   base: string;
   baseTurn: number;
@@ -70,8 +77,12 @@ const until = opt('until');
 const trail = until === null ? report.trail : report.trail.slice(0, Number(until));
 const trace = args.includes('--trace');
 
+/** 状态被注入口改过 ⇒ 指纹核对根本不成立，见文件头 */
+const devPatched = report.devPatched === true;
+
 console.log(`回报：${report.createdAt}  原因=${report.reason}  备注=${report.note || '（无）'}`);
 console.log(`环境：${String(report.env.desktop) === 'true' ? '桌面版' : '浏览器'}  screen=${String(report.env.screen)}  ${String(report.env.userAgent).slice(0, 80)}`);
+if (devPatched) console.log('★ 开发注入口：这份报告的状态被 `__rich4.debug.patch` 改过（`[dev] state patched`）');
 console.log(`起点：第 ${report.baseTurn} 回合；轨迹 ${report.trail.length} 条${until === null ? '' : `（只放前 ${trail.length} 条）`}；错误 ${report.errors.length} 条`);
 for (const e of report.errors) console.log(`  ✗ [${e.kind}] ${e.message}${e.stack === null ? '' : `\n      ${e.stack.split('\n').slice(0, 4).join('\n      ')}`}`);
 
@@ -93,6 +104,13 @@ if (shot !== null && report.screenshot !== null) {
 
 console.log(`终点：第 ${end.turnCount} 回合 ${end.phase} P${end.currentPlayer} pending=${end.pending?.kind ?? '-'}；被拒 ${rejected} 条`);
 if (until !== null) process.exit(0);
+// ★ 被注入口改过的现场：**拒绝**验指纹（见文件头）—— 不是「不一致」，是「不能比」
+if (devPatched) {
+  console.log('❌ 这份报告来自被改过的状态（`devPatched: true`）：`__rich4.debug.patch` 直接改了 `state`，');
+  console.log('   `base` + `trail` 不再是它的来源 ⇒ 无法核对指纹。要看现场请用报告里的截图/日志，');
+  console.log('   或在 `__rich4.debug.patch` **之前**重开一局再走一遍。');
+  process.exit(3);
+}
 const got = stateFingerprint(end);
 if (got === report.finalFingerprint) {
   console.log(`✅ 重放指纹与回报一致（${got}）—— 现场已完整复现`);

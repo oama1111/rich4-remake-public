@@ -696,9 +696,8 @@ export const sharesScreen: UiScreen = {
   draw(env: UiScreenEnv): void {
     const v = view;
     if (v === null) return;
-    // ★ 自动收屏的计时从**真正上屏**这一帧起算 —— 原版那只 `SetTimer` 就是
-    //   在 WM_CREATE（窗口刚建出来）里设的（VA 0x0042b49b）。同一拍若还有
-    //   别的演出排在前面，本屏要等它演完才轮到（登记序见 `screens.ts`）。
+    // 计时起点在 `tick` 里落（见那里的长注释）—— 这里只兜底一次，防止
+    // 「先 draw 后 tick」的调用序把这一帧白白等掉。
     if (shownAt < 0) shownAt = env.now;
     drawSharesScreen(env.stage, env.sprite, v);
   },
@@ -736,11 +735,16 @@ export const sharesScreen: UiScreen = {
     if (!presenting) return;
     // 不在对局里（設定/資產表那些浮窗盖着）就不推进，也不空转
     if (env.screen !== 'game') return;
-    if (shownAt < 0) {
-      // 还没轮到本屏上屏 —— 续帧等前面那一屏演完
-      env.requestRender();
-      return;
-    }
+    // ★★ 2026-09-19 修（试玩 4「樂透開獎模块没有正常运行台词/音乐/界面」）：
+    //   计时起点**必须在这里落**。先前只在 `draw` 里 `if (shownAt < 0) shownAt = env.now`，
+    //   而 `draw` 排在 `tick` 之后、且 `tick` 又「`shownAt < 0` 就续帧 return」——
+    //   于是第一帧 tick 不落点、draw 落了点，可**下一帧 tick 又因为别的原因没跑**
+    //   （本屏 `active()` 为真、`tick` 只发给「此刻接管整屏的那一屏」，一旦有更高优先
+    //   的屏插进来本屏就收不到 tick）⇒ `shownAt` 永远停在 −1 或第一次的值、
+    //   **3 秒自动收屏永不触发** ⇒ 本屏永久占着整屏，把 15 号那天排在它后面的
+    //   **樂透開獎屏整个盖住**（開獎屏的 `tick` 一次都收不到，步号永远停在 0，
+    //   所以「没有台词、没有界面」）。
+    if (shownAt < 0) shownAt = env.now;
     if (env.now - shownAt >= SHARES_AUTO_CLOSE_MS) {
       dismiss(env);
       return;

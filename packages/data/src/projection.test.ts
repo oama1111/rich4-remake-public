@@ -10,7 +10,13 @@
  *   （@source `rich4_ui_use_tool.asm:392`），整格粒度会把 8 px 变成 0/32 px 跳变。
  */
 import { describe, expect, it } from 'vitest';
-import { SUBTILE_MATRIX, VIEW_COUNT, projectCell, projectWorld } from './projection.ts';
+import {
+  SUBTILE_MATRIX,
+  VIEW_COUNT,
+  projectCell,
+  projectWorld,
+  subtileOffset,
+} from './projection.ts';
 
 describe('projectWorld 的基本形状', () => {
   it('屏幕中心那一格投影到 (0,0) 附近', () => {
@@ -41,33 +47,64 @@ describe('★ Q-PICK-1：投影支持摄像机的**亚格**余量', () => {
     }
   });
 
-  it('★ 余量等价于把世界点平移（同一视角下）', () => {
-    // 镜头往 +x 挪 8 ⇒ 点 x=320 的投影 = 镜头不动时点 x=312 的投影
-    const a = projectWorld(0, 320, 320, 5, 5, 8, 0);
-    const b = projectWorld(0, 312, 320, 5, 5, 0, 0);
-    expect(a).toEqual(b);
-  });
-
-  it('★ 余量大于点的块内坐标时跨到**上一个块**（算术右移 + 低位与）', () => {
-    // sub=8、x=4 ⇒ px = −4 ⇒ `px >> 5 = −1`（上一个块）、`px & 31 = 28`（余量）
-    // 等价形式：同一个相机、把世界点左移 8
-    const a = projectWorld(0, 4, 32, 0, 1, 8, 0);
-    const b = projectWorld(0, 4 - 8, 32, 0, 1, 0, 0);
-    expect(a).toEqual(b);
-    expect(a).not.toBeNull();
-    // ★ 它**不等于**「换一台 tileX − 1 的相机」—— 那样 col 会多 1、整格错位
-    const wrong = projectWorld(0, -4, 32, -1, 1, 0, 0);
-    expect(a).not.toEqual(wrong);
-  });
-
-  it('★ 余量对每个视角都只是「平移世界点」（与 SUBTILE_MATRIX 自洽）', () => {
+  // ★★ 2026-09-19 订正：下面三条原先断言的是「余量 ≡ 把世界点平移 `sub` 再投影」——
+  //   那是旧实现的复述，不是 exe 的算法。exe（`fcn_0040829d`）是：
+  //   块差按**各自** `>> 5`（VA 0x00408590 `sar eax,5 / sub eax,[esp+0x50]`）、
+  //   物件余量过矩阵后**减**（VA 0x004085ff）、镜头余量过矩阵后**加**（VA 0x004083cc/0x00408603）。
+  it('★ @source 0x004085f8：屏幕 = 表[块差] − o(物件余量) + o(镜头余量)', () => {
     for (let v = 0; v < VIEW_COUNT; v++) {
-      for (const sub of [1, 8, 17, 31]) {
-        const a = projectWorld(v, 200, 200, 3, 3, sub, 0);
-        const b = projectWorld(v, 200 - sub, 200, 3, 3, 0, 0);
-        expect(a, `视角 ${v} 余量 ${sub}`).toEqual(b);
+      for (const [x, y, cx, cy] of [
+        [320, 320, 168, 160],
+        [200, 200, 97, 127],
+        [4, 32, 8, 32],
+        [1023, 1024, 1000, 1055],
+      ] as const) {
+        const got = projectWorld(v, x, y, cx >> 5, cy >> 5, cx & 31, cy & 31);
+        const cell = projectCell(v, (y >> 5) - (cy >> 5) + 14, (x >> 5) - (cx >> 5) + 14);
+        expect(cell, `视角 ${v}`).not.toBeNull();
+        const o = subtileOffset(v, x & 31, y & 31);
+        const c = subtileOffset(v, cx & 31, cy & 31);
+        expect(got, `视角 ${v} 点 (${x},${y}) 镜头 (${cx},${cy})`).toEqual({
+          x: cell!.x - o.x + c.x,
+          y: cell!.y - o.y + c.y,
+        });
       }
     }
+  });
+
+  it('★ 镜头正对着的那个点恒落在屏幕中心 (0,0) —— 八视角 × 任意余量', () => {
+    // 同块、同余量 ⇒ 表项 (0,0)、两份偏移相消。走子时镜头跟的就是行动者自己
+    // ⇒ 行动者恒在正中，滚动的是棋盘（第五份回报第 1 条的判据）
+    for (let v = 0; v < VIEW_COUNT; v++) {
+      for (const [x, y] of [[0, 0], [321, 655], [1000, 1055], [2084, 220]] as const) {
+        expect(projectWorld(v, x, y, x >> 5, y >> 5, x & 31, y & 31)).toEqual({ x: 0, y: 0 });
+      }
+    }
+  });
+
+  it('★ 镜头每挪 1 px，静止物件在屏幕上最多动 6 px（不再整格跳变）', () => {
+    // 反证旧毛病：`tileX = x >> 5` 的镜头在 31 → 32 那一步让全屏跳一整格（实测最大 53 px）；
+    // 逐像素镜头实测最大 6 px（跨块那一拍：投影表带透视、矩阵带取整 —— exe 同样如此）
+    for (let v = 0; v < VIEW_COUNT; v++) {
+      let prev = projectWorld(v, 400, 400, 384 >> 5, 384 >> 5, 0, 0)!;
+      for (let c = 385; c <= 448; c++) {
+        const cur = projectWorld(v, 400, 400, c >> 5, 384 >> 5, c & 31, 0)!;
+        expect(Math.abs(cur.x - prev.x), `视角 ${v} 镜头 x=${c}`).toBeLessThanOrEqual(6);
+        expect(Math.abs(cur.y - prev.y), `视角 ${v} 镜头 x=${c}`).toBeLessThanOrEqual(6);
+        prev = cur;
+      }
+      // 旧口径（丢掉余量）在跨块那一步的跳变 —— 留着当对照
+      const before = projectWorld(v, 400, 400, 415 >> 5, 384 >> 5, 0, 0)!;
+      const after = projectWorld(v, 400, 400, 416 >> 5, 384 >> 5, 0, 0)!;
+      expect(Math.abs(after.x - before.x) + Math.abs(after.y - before.y)).toBeGreaterThan(20);
+    }
+  });
+
+  it('`subtileOffset` 逐行照 `fcn_00407a2c`：两项**各自**算术右移 5 再相加', () => {
+    // 视角 0 的矩阵 = (-34, 11, -14, -25)（`dump 0x474910`）
+    expect(subtileOffset(0, 31, 0)).toEqual({ x: (-34 * 31) >> 5, y: (11 * 31) >> 5 });
+    expect(subtileOffset(0, 1, 1)).toEqual({ x: -2 + -1, y: 0 + -1 });
+    expect(subtileOffset(0, 0, 0)).toEqual({ x: 0, y: 0 });
   });
 
   it('余量不动边界判定的语义（越界仍 null）', () => {

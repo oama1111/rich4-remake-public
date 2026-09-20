@@ -18,7 +18,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::http::{Response, StatusCode};
-use tauri::{Manager, State};
+use tauri::{Manager, PhysicalPosition, State};
 
 /// 认定「这确实是大富翁4 的目录」所依据的文件。
 ///
@@ -175,6 +175,47 @@ fn looks_like_game_dir(dir: &Path) -> bool {
 #[tauri::command]
 fn log_line(text: String) {
     eprintln!("[前端] {text}");
+}
+
+// ============================================================
+//  替玩家挪**系统鼠标指针**（试玩3 #2）
+// ============================================================
+
+/// 窗口**逻辑**坐标 → **物理**坐标。
+///
+/// ★ 抽出来只为一件事：这条换算能单测（真正那一条要 `Window`，测试里造不出来）。
+///   前端给的是页面 CSS px（= 窗口客户区的逻辑坐标），
+///   `Window::set_cursor_position` 收的是物理坐标。
+fn logical_to_physical(x: f64, y: f64, scale: f64) -> (f64, f64) {
+    (x * scale, y * scale)
+}
+
+/// 把**系统鼠标指针**挪到窗口内的逻辑坐标 `(x, y)`（Tauri 2 `Window::set_cursor_position`）。
+///
+/// ★ 这是**原版行为**，不是我们加的：原版在几个时刻会替玩家把指针挪到按钮上
+///   （USER32 `SetCursorPos`，导入表 IAT `0x0046231c`）。全 exe 9 处调用里，
+///   本条命令服务的是已经取到证的两处：
+///   - **回合开始、GO 鈕上场等真人掷骰** —— 相位 1（跳表 `0x418c3d` 的第 1 项
+///     `0x418d99`）里 `call 0x4196f1`（`[0x46cafd] = 1` + 画 GO 鈕）之后紧接着
+///     `0x00418db0 call SetCursorPos`，落点 `([0x475284] + 0x2e, [0x475288] + 0x22)`；
+///   - **YES/NO 訊息框（買地那一扇 `fcn_00440ba8`）的 `WM_CREATE`** ——
+///     `0x00453719 call SetCursorPos`，落点 `([0x48cac4] + 0x16, [0x48cac8] + 0x16)`
+///     （框左上 + (22,22)，而框 = 资源 0x1b8 那张 96×48 **居中于 (220,320)**）。
+///   前面那句「什么时候挪、挪到哪」的判定与算术全在前端
+///   （`packages/client/src/cursor-warp.ts`）—— 那边能用单测钉住；
+///   这里只做「逻辑坐标 → 物理坐标 → 挪」。
+///
+/// ⚠️ 浏览器版**调不到**这条命令（网页不能挪系统指针）——
+///   前端的 `host.ts` 的 `warpCursor` 在浏览器里是空操作。
+#[tauri::command]
+fn warp_cursor(window: tauri::Window, x: f64, y: f64) -> Result<(), String> {
+    let scale = window
+        .scale_factor()
+        .map_err(|e| format!("取縮放比失敗：{e}"))?;
+    let (px, py) = logical_to_physical(x, y, scale);
+    window
+        .set_cursor_position(PhysicalPosition::new(px, py))
+        .map_err(|e| format!("挪指針失敗：{e}"))
 }
 
 // ============================================================
@@ -631,7 +672,8 @@ pub fn run() {
             list_saves,
             read_config,
             write_config,
-            write_report
+            write_report,
+            warp_cursor
         ])
         .run(tauri::generate_context!())
         .expect("启动失败");
@@ -690,6 +732,18 @@ mod tests {
         assert_eq!(percent_decode("Data.mkf"), "Data.mkf");
         assert_eq!(percent_decode("a%20b.mkf"), "a b.mkf");
         assert_eq!(percent_decode("bad%zz"), "bad%zz");
+    }
+
+    /// ★ 试玩3 #2：挪指针那条命令的「逻辑 → 物理」换算。
+    ///
+    /// 用例里的两个数就是两处落点（GO 鈕 (226,154)、YES/NO 框 (194,318)）——
+    /// 它们由前端 `client/src/cursor-warp.ts` 按 exe 的立即数算出，那边有单测；
+    /// 这里只钉「乘缩放比」这一条。Retina（scale = 2）上物理坐标正好翻倍。
+    #[test]
+    fn 挪指針_邏輯轉物理() {
+        assert_eq!(logical_to_physical(226.0, 154.0, 1.0), (226.0, 154.0));
+        assert_eq!(logical_to_physical(226.0, 154.0, 2.0), (452.0, 308.0));
+        assert_eq!(logical_to_physical(194.5, 318.25, 1.5), (291.75, 477.375));
     }
 
     /// ★ Q-PERF-1：HD 路由的判据必须与 host.ts 的 `hdBase()` 严丝合缝 ——

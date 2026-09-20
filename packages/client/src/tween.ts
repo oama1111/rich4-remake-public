@@ -178,6 +178,21 @@ export function framesFor(
  *     的 0x43d643 与 `state/reduce.ts` 的 `startTurn`）。
  *     ⇒ 判据就是"`x/y` 变了"，不需要另加标记。
  *
+ * ★★ `special`：**走回棋盘必须走「特殊支」**（`dist × 0.125`，8 世界单位/拍），
+ *   与玩家的交通方式无关。依据是 `0x40c05c` 里两次读**同一个字节** `player+0x15`：
+ * ```asm
+ * 0040c0b4  mov  dl, byte [eax + 0x496b7d]      ; 0x10 分支的判据
+ * 0040c0ba  test dl, 0x10 / je 0x40c0ed
+ * ...（中间唯一的调用 0x40b93b 只读不写该字节，@source 0x40b96c）...
+ * 0040c26d  test byte [eax + 0x496b7d], 0x30    ; ★ 同一个字节
+ * 0040c274  je   0x40c282                       ;   普通走法才查速度表 [0x4749d8]
+ * 0040c27a  fmul dword [0x4631dc]               ;   N_f = dist × 0.125f
+ * ```
+ *   ⇒ 能被 `0x10` 分支接走的那一趟，必然也走 `0x40c27a`。
+ *   先前这里一律传 `special=false` + 交通方式 ⇒ 坐牢前開車的人（16/tick）
+ *   走回来会快一倍（`trunc(dist/16)` 而不是 `trunc(dist×0.125)`）。
+ *   走回棋盘的格数恒为 1（`@source 0x40dd40 mov dword [0x48baf8], 1`）。
+ *
  * 返回 `null` = 这一条 action 不起补间。
  * ★ C-ARC-2：只算"画在哪"，不碰规则；补间**绝不进 state**（C-DET-4）。
  */
@@ -185,6 +200,8 @@ export interface WalkTween {
   player: number;
   from: { x: number; y: number };
   to: { x: number; y: number };
+  /** 是否走「特殊支」（`player+0x15 & 0x30`）—— 走回棋盘恒为真，见上 */
+  special: boolean;
 }
 
 export function walkTweenFor(
@@ -202,11 +219,23 @@ export function walkTweenFor(
     const from = nodeAt(b.nodeId);
     const to = nodeAt(a.nodeId);
     if (from === undefined || to === undefined) return null;
-    return { player: idx, from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y } };
+    // 普通走子：原版查速度表 `[0x4749d8]`（`@source 0x40c282..0x40c29e`）
+    return {
+      player: idx,
+      from: { x: from.x, y: from.y },
+      to: { x: to.x, y: to.y },
+      special: false,
+    };
   }
   if (actionType === 'startTurn') {
     if (a.xpos === b.xpos && a.ypos === b.ypos) return null;
-    return { player: idx, from: { x: b.xpos, y: b.ypos }, to: { x: a.xpos, y: a.ypos } };
+    // ★ 「走回棋盘」＝ `player+0x15 & 0x10` 那一支 ⇒ **特殊支**（见上）
+    return {
+      player: idx,
+      from: { x: b.xpos, y: b.ypos },
+      to: { x: a.xpos, y: a.ypos },
+      special: true,
+    };
   }
   return null;
 }

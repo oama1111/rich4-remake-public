@@ -69,6 +69,9 @@ import {
   amountWindowHit,
   type AmountKey,
 } from './amount-keys.ts';
+// ★ W-62：画的位置与命中框必须**同源** —— 命中框走 `boardRect()`（见 `dialog.ts`），
+//   画这一半先前直接拿屏幕坐标往棋盘画布上画，于是整块面板低了 `LAYOUT.board.y`（40 px）。
+import { boardRect } from './gameui.ts';
 
 /** 取图 —— 与 `UiScreenEnv.sprite` / `bank-screen.ts` 的 `BankSprite` 同一个签名 */
 /**
@@ -186,7 +189,16 @@ export function amountWindowPlan(value: number, cap = 0): {
   };
 }
 
-/** 画那扇窗（底图 + 比例条 + 数字）—— 只做 IO */
+/**
+ * 画那扇窗（底图 + 比例条 + 数字）—— 只做 IO。
+ *
+ * ⚠️ **坐标系**：`ctx` 是**棋盘画布**（离屏 439×440，贴到舞台时原点在 (0,40)）；
+ *   `AMOUNT_WINDOW.x/.y` 是原版的**屏幕**坐标（(256,144)，@source `[0x48cab8]`/`[0x48cab6]`），
+ *   所以这里必须先过一遍 `boardRect()` 换成棋盘坐标 —— 否则整块面板会低
+ *   `LAYOUT.board.y`（40 px），玩家照着画面点「7」实际落在「1 2 3」那一排（W-62）。
+ *   股市屏那条路在调用前自己 `translate(LAYOUT.board.x, LAYOUT.board.y)`，
+ *   同样是棋盘坐标系 ⇒ 本函数统一收棋盘坐标。
+ */
 export function drawAmountWindow(
   ctx: CanvasRenderingContext2D,
   sprite: AmountSprite,
@@ -197,8 +209,15 @@ export function drawAmountWindow(
   const base = sprite('Panel.mkf', AMOUNT_RESOURCE, plan.panel.image);
   // 底图还没解好时**什么都不画**：让调用方保留它自己的兜底（别画半扇窗）
   if (base === null) return false;
-  const wx = AMOUNT_WINDOW.x;
-  const wy = AMOUNT_WINDOW.y;
+  // ★ W-62：屏幕坐标 → 棋盘画布坐标（与 `dialog.ts` 的命中框**同一处换算**）
+  const o = boardRect({
+    x: AMOUNT_WINDOW.x,
+    y: AMOUNT_WINDOW.y,
+    w: AMOUNT_WINDOW.w,
+    h: AMOUNT_WINDOW.h,
+  });
+  const wx = o.x;
+  const wy = o.y;
   ctx.drawImage(base.bitmap, wx + plan.panel.x, wy + plan.panel.y);
   // 比例条：先整条暗，再把左边那一截从面板图上原样盖回来（= 亮）
   const dim = sprite('Panel.mkf', AMOUNT_RESOURCE, plan.gaugeDim.image);

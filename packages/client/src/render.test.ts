@@ -580,6 +580,19 @@ describe('★ 走子补间：一格的 tick 数按**世界**距离算，与镜�
     expect(r.lastWalkMs()).toBe(Math.trunc(100 * 0.125) * 80); // 12 × 80
   });
 
+  it('★ `isWalking(player)`：只有**那一位**、且在补间播完之前为真（「走回棋盘」靠它摆走姿）', () => {
+    const r = renderer();
+    expect(r.isWalking(0, 0)).toBe(false); // 没有补间
+    // 走回棋盘：`special = true`、8 世界单位/拍 ⇒ 100 px = 12 拍
+    r.startWalk(1, { x: 0, y: 0 }, { x: 100, y: 0 }, 2, true, 40, 1000);
+    expect(r.isWalking(1, 1000)).toBe(true);
+    expect(r.isWalking(1, 1479)).toBe(true); // 12 × 40 = 480 ms 内的最后一刻
+    expect(r.isWalking(1, 1480)).toBe(false); // 播完
+    // 别的玩家不算 —— 否则会给不相干的人摆走姿
+    expect(r.isWalking(0, 1100)).toBe(false);
+    expect(r.isWalking(2, 1100)).toBe(false);
+  });
+
   it('★ 同一段位移、任何相机/视角下时长都一样 —— 公开 API 里已经没有镜头入口', () => {
     // 反证「不是屏幕距离」：`startWalk` 的形参表里不许再出现 `Camera` / 视口。
     const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
@@ -903,7 +916,7 @@ describe('★ Q-TOOL-5 ②：附身物件的清单（`attachedObjectTokens`）�
     const tokens = attachedObjectTokens(scene({}, [obj(1, 1, 2)]), 0);
     expect(tokens).toHaveLength(1);
     expect(tokens[0]).toMatchObject({
-      index: 0, type: 1, owner: 1, resource: 396, frame: 4, offsetX: -22, offsetY: -10,
+      index: 0, type: 1, owner: 1, resource: 396, frame: 4, offsetX: -10, offsetY: -22,
     });
   });
 
@@ -935,9 +948,10 @@ describe('★ Q-TOOL-5 ②：附身物件的清单（`attachedObjectTokens`）�
       const t = attachedObjectTokens(s, view)[0]!;
       return { dx: t.offsetX, dy: t.offsetY };
     };
-    expect(at(0)).toEqual({ dx: -22, dy: -10 }); // 图号 0
-    expect(at(2)).toEqual({ dx: -10, dy: 22 }); // 图号 6
-    expect(at(4)).toEqual({ dx: 22, dy: 10 }); // 图号 4
+    // ★ 表项的内存顺序是 **(X, Y)**，token 的 `offsetX/offsetY` 照抄（试玩3 #10 订正）
+    expect(at(0)).toEqual({ dx: -10, dy: -22 }); // 图号 0
+    expect(at(2)).toEqual({ dx: 22, dy: -10 }); // 图号 6
+    expect(at(4)).toEqual({ dx: 10, dy: 22 }); // 图号 4
   });
 
   it('★ 主人住店/消失/坐牢/住院 → 整个不画（@source VA 0x00408fbd 的那个 dword）', () => {
@@ -954,12 +968,12 @@ describe('★ Q-TOOL-5 ②：附身物件的清单（`attachedObjectTokens`）�
 
   it('★ 定時炸彈(18) + 主人身上**还有**一个神 → 换外圈那张表（0x474991）', () => {
     const inner = attachedObjectTokens(scene({ godInfo: 0 }, [obj(18, 1, 1)]), 0)[0]!;
-    expect({ dx: inner.offsetX, dy: inner.offsetY }).toEqual({ dx: -22, dy: -10 });
+    expect({ dx: inner.offsetX, dy: inner.offsetY }).toEqual({ dx: -10, dy: -22 });
     const outer = attachedObjectTokens(scene({ godInfo: 3 }, [obj(18, 1, 1)]), 0)[0]!;
-    expect({ dx: outer.offsetX, dy: outer.offsetY }).toEqual({ dx: -44, dy: -18 });
+    expect({ dx: outer.offsetX, dy: outer.offsetY }).toEqual({ dx: -18, dy: -44 });
     // 不是炸弹就一直是内圈
     const god = attachedObjectTokens(scene({ godInfo: 3 }, [obj(5, 1, 1)]), 0)[0]!;
-    expect({ dx: god.offsetX, dy: god.offsetY }).toEqual({ dx: -22, dy: -10 });
+    expect({ dx: god.offsetX, dy: god.offsetY }).toEqual({ dx: -10, dy: -22 });
   });
 
   it('正在飞的那一件要藏起来（請神符：原版先把它从地图上摘掉，VA 0x00444ea8）', () => {
@@ -1042,8 +1056,9 @@ describe('★ Q-LAND-1 ①：未持有的空地 —— 原版一个像素都不�
     // ⚠️ 这两张表是**按地块号（1 基）索引**的，下标 0 空着
     const state = makeGameState({ landOwner: [0, 2], landLevel: [0, 0] });
     const land = makeLand({ id: 1, x: 77, y: 88 });
+    // ★ W-69：住宅那一支现在还带**自己那块地的 id**（过路费闪烁要按 id 认图）
     expect(buildingArtItems(oneLandMap(land), state, 0)).toEqual([
-      { x: 77, y: 88, res: EMPTY_LAND_LOGO_RESOURCE, img: state.players[1]!.character },
+      { x: 77, y: 88, res: EMPTY_LAND_LOGO_RESOURCE, img: state.players[1]!.character, landId: 1 },
     ]);
   });
 
@@ -1338,5 +1353,42 @@ describe('★ Q-PICK-1：摄像机的**亚格**余量（贴边推镜头要逐像
     expect(a).not.toEqual(b);
     // 镜头中心往右挪 8 px ⇒ 同一个世界点看起来往左移
     expect(b!.x).toBeLessThan(a!.x);
+  });
+});
+
+// ============================================================
+//  ★ 视角跟踪（第四份回报第 2 条）：镜头跟走子 / 跟替身
+// ============================================================
+
+describe('★ renderer.actorCenterWorld —— 镜头该跟着谁', () => {
+  /** 只算位置、不画：`SpriteCache` 给一个空实现就够（与上面那条同源） */
+  const rendererForCamera = (): BoardRenderer =>
+    new BoardRenderer({} as CanvasRenderingContext2D, {
+      addEvictListener: () => {
+        /* 只算位置，不画 */
+      },
+    } as unknown as SpriteCache);
+
+  it('★ 没有补间时返回 null（调用方按当前玩家的格心）', () => {
+    const r = rendererForCamera();
+    expect(r.actorCenterWorld(1000)).toBeNull();
+  });
+
+  it('★★ 走子补间期间返回**插值点**，不是整格的起点（镜头跟着棋子一步步走）', () => {
+    const r = rendererForCamera();
+    r.startWalk(0, { x: 0, y: 0 }, { x: 320, y: 0 }, 0, false, 20, 0);
+    const mid = r.actorCenterWorld(20 * 10);
+    expect(mid).not.toBeNull();
+    expect(mid!.x).toBeGreaterThan(0);
+    expect(mid!.x).toBeLessThan(320);
+    // 起点那一刻在第一拍的落点（原版每 tick 累加一次，`k = floor(elapsed/tickMs) + 1`
+    //   —— 见 `#actorWalkScreen` 的 `k`；所以 t=0 是**第一拍之后**的位置，不是 0）
+    expect(r.actorCenterWorld(0)!.x).toBeGreaterThan(0);
+  });
+
+  it('★ 走完之后不再返回（镜头交还给当前玩家）', () => {
+    const r = rendererForCamera();
+    r.startWalk(0, { x: 0, y: 0 }, { x: 32, y: 0 }, 0, false, 20, 0);
+    expect(r.actorCenterWorld(20 * 1000)).toBeNull();
   });
 });

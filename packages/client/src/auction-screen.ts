@@ -907,6 +907,11 @@ function beginSettle(env: UiScreenEnv, st: ScreenState, out: { winner: number; p
   st.anim = null;
   st.pressed = null;
   st.run = { ...st.run, phase: out.winner < 0 ? 'passedIn' : 'sold', winner: out.winner, price: out.winner < 0 ? st.run.price : out.price };
+  // ★ 同时把座位状态按**落槌那一份** `pending` 重新铺一遍：`pending` 是 core 清掉的，
+  //   但 `pendingQueue` 里可能还有下一场（破产清算 / 魔法屋连拍），
+  //   `syncView` 只认 `kind === 'auction'`，排队的那些不会把它带歪。
+  const frozen = env.state.pending;
+  if (frozen !== null && frozen.kind === 'auction') syncView(env, frozen);
   if (out.winner < 0) {
     st.message = AUCTION_PASSED_IN_TEXT;
   } else {
@@ -979,10 +984,24 @@ function applyHumanBid(
 export const auctionScreen: UiScreen = {
   id: 'auction',
 
+  /**
+   * ★★ 接管判据 —— **`pending` 一被 core 清掉，屏还不能立刻退场**。
+   *
+   * 原版落槌之后要演一段（`loc_0043b295`：消息框「○○元成交」+ 拍賣官挥槌），
+   * 本引擎这段演出是靠 `tick` 里的 `beginSettle` 起播的 —— 而 `tick` **只有
+   * 接管整屏的那一屏才收**（`main.ts` 的注释：D-T031-4）。
+   * 先前这里写成 `screen !== null && screen.settling`：`settling` 是 `beginSettle`
+   * 里才置的，于是 core 清掉 `pending` 的那一刻本屏**已经不接管了** ⇒
+   * `tick` 永远不再被调 ⇒ `beginSettle` 永远起不来 ⇒
+   * **落槌结果一次都演不出来**（试玩 4 报的「最终拍卖结果也没看到」）。
+   *
+   * 现在的口径：只要屏里还留着这一场的运行态 **且还没生过结果**，
+   * 就继续接管 —— 让下一帧的 `tick` 把结算演出来。`beginSettle` 会同时置
+   * `settling` 与 `outcome`，所以这一条不会把屏永久钉在台上。
+   */
   active(env: UiScreenEnv): boolean {
     if (env.state.pending?.kind === 'auction') return true;
-    // 结算演出期间 `pending` 已经被 core 清掉，屏还要把结果演完
-    return screen !== null && screen.settling;
+    return screen !== null && (screen.settling || screen.outcome === null);
   },
 
   tick(env: UiScreenEnv): void {
@@ -1145,6 +1164,20 @@ export const auctionScreen: UiScreen = {
 /** 只给单测用：把屏内的运行时清掉 */
 export function resetAuctionScreenForTest(): void {
   screen = null;
+}
+
+/**
+ * 给**浏览器长跑的真人路径**（W-14 / E-21）：此刻是不是轮到**真人**举牌？
+ * 是就交出 **PASS 钮的中心**（本屏自己的 `auctionButtonRect(0)`，不让脚本手抄坐标）。
+ *
+ * ★ 判据与 `down()` / `up()` 用的是同一个 `humanTurn()` —— 结算演出中、电脑那一手、
+ *   联机下不是本机那一口，一律返回 null（那几种情况脚本不该伸手）。
+ */
+export function auctionHumanPassPoint(env: UiScreenEnv): { x: number; y: number } | null {
+  const st = screen;
+  if (st === null || !humanTurn(env, st)) return null;
+  const r = auctionButtonRect(0);
+  return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
 }
 
 /** 只给单测用：读回屏内的运行时 */

@@ -224,8 +224,11 @@ describe('★ main.ts 的接线（源码钉子）', () => {
     expect(src).toContain('if (!options.animation) return;');
     // 起播与驱动闸
     expect(src).toContain('startConfineFx(before, state);');
-    // 影片宿主那一道闸（住院/入獄/神明共用一份状态）
-    expect(src).toContain('if (boardFilm !== null || pendingBoardFilm !== null) {');
+    // 影片宿主那一道闸（住院/入獄/神明共用一份状态）—— W-51 起收在 `stageBusyFlags()`
+    // 的**唯一一处定义**里，回合驱动（`holdForActorWalk`）与台词闸共用同一个纯函数
+    expect(src).toContain('boardFilm: boardFilm !== null,');
+    expect(src).toContain('pendingBoardFilm: pendingBoardFilm !== null,');
+    expect(src).toContain('if (stageBusy(stageBusyFlags())) {');
     // 播完补一次回合驱动
     expect(src).toContain('resumeTurnDriver();');
     // 棋盘局部坐标（屏幕 y − 棋盘原点）

@@ -69,6 +69,17 @@
  *       78 次 GO 点击全中，0 次 `moving` 卡死，0 条异常。
  *     **连续 ~6 秒没变** —— 就是「走子动画收完没人接着推」那一类僵住。
  *
+ * ★ W-14（2026-09-20）：对话框按钮答不掉的屏（競價 / 百貨公司 / 保釋 / 填数页 / 設施類別）
+ *   先问 `__rich4.humanExit()` 拿该屏的**真实退出手势**（落点取各屏自己的命中框），发成真实
+ *   鼠标 / 键盘事件。新增两个读数：
+ *     `exitGestures` = 各出口发了几次；`exitStuck` = 同一出口连发 40 次屏还在（**那是 bug**，
+ *     2026-09-20 就是这样抓到「百貨公司道别气泡被点掉后永远不关门」的）。
+ *   真人路径的完整断言因此是：
+ *     humanPath && soakDispatches === 0 && goClicks > 0 && humanStalls.length === 0
+ *       && stalls.length === 0 && exitStuck.length === 0 && busyStalls.length === 0
+ *   （`stalls` 只数**台上空闲**的拍 —— 判据问 `__rich4.stageBusy()`；演出自己连续 90 秒不收场记 `busyStalls`）
+ *   ⚠️ 标签页必须在**前台**：隐藏时 rAF 被节流，一回合要 30 秒。
+ *
  * 注意：它仍把**真人的**待决交互粗暴答掉，只为让引擎一直跑
  * （真人路径优先点界面上的按钮，点不到才兜底 `declineDecision`）；
  * 要验交互本身请用 `dialog()` 返回的 buttons 点真实鼠标事件（见下面 click()）。
@@ -133,9 +144,12 @@
     goClicks: 0,
     goMisses: 0,
     humanStalls: [],
+    exitGestures: {},
+    exitStuck: [],
+    busyStalls: [],
   };
   globalThis.__soak = S;
-  let lastKey = '', same = 0;
+  let lastKey = '', same = 0, busyRun = 0;
   // `moving` 卡死检测：只看 (currentPlayer, nodeId, stepsRemaining) 这三个
   let moveKey = null, moveSince = 0, moveLogged = false;
   let lastPhase = '';
@@ -146,6 +160,34 @@
     return p !== undefined && (p.whoPlays & 3) === 1;
   };
   const dispatchSelf = (a) => { S.soakDispatches++; r.dispatch(a); };
+  // ── W-14 / E-21：对话框按钮答不掉的屏，用该屏的**真实退出方式** ──
+  //   問 `__rich4.humanExit()`（落点取各屏自己的命中框；其余是原版的通用出口 = 右键）。
+  //   这是 UI 手势，**不计入** `soakDispatches`。同一个出口连点 40 次（≈3 秒）屏还在，
+  //   记进 `exitStuck` —— 那是「真实出口点了不灵」的 bug，不是脚本的缺口。
+  const rightClick = (sx, sy) => {
+    const d = { clientX: rect.left + (ox + sx * scale) / kx, clientY: rect.top + (oy + sy * scale) / ky };
+    c.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, ...d }));
+  };
+  let exitWhy = '', exitRepeat = 0;
+  const tryHumanExit = () => {
+    let h = null;
+    try { h = typeof r.humanExit === 'function' ? r.humanExit() : null; } catch { h = null; }
+    if (!h) { exitWhy = ''; exitRepeat = 0; return false; }
+    if (h.why === exitWhy) exitRepeat++; else { exitWhy = h.why; exitRepeat = 0; }
+    if (exitRepeat === 40) S.exitStuck.push({ at: S.ticks, why: h.why });
+    // 每 5 拍（≈350 ms）发一次：商店的第一下只是收气泡、道别那句要等它说完
+    if (exitRepeat % 5 !== 0) return true;
+    S.exitGestures[h.why] = (S.exitGestures[h.why] || 0) + 1;
+    if (h.gesture === 'rightClick') rightClick(h.x, h.y);
+    else if (h.gesture === 'keys') {
+      for (const code of h.keys || []) {
+        const key = code.startsWith('Digit') ? code.slice(5) : code;
+        window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, code, key }));
+        window.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, code, key }));
+      }
+    } else click(h.x, h.y);
+    return true;
+  };
   const dialogNow = () => {
     const d = r.dialog();
     return d && Array.isArray(d.buttons) && d.buttons.length > 0 ? d : null;
@@ -189,8 +231,16 @@
       const s = r.state;
       S.ticks++;
       const k = `${s.phase}|${s.currentPlayer}|${s.pending ? s.pending.kind : '-'}`;
-      if (k === lastKey) same++; else { same = 0; lastKey = k; }
-      if (same === 300) { S.stalls.push({ at: S.ticks, k, steps: s.stepsRemaining, dice: s.dice }); same = 0; }
+      // ★ W-14：台上在**正当演出**（影片 / 整屏回放 / 补间 / 台词）的那些拍不计入「同态」——
+      //   魔法屋回放 + 几段建屋影片能让 k 连续 25 秒不变，那不是卡死。判据问引擎自己的
+      //   `stageBusy()`；演出本身**连续 90 秒**不收场另记 `busyStalls`（那才是「演出卡死」）。
+      let busy = null;
+      try { busy = typeof r.stageBusy === 'function' ? r.stageBusy() : null; } catch { busy = null; }
+      const isBusy = busy !== null && busy.busy === true;
+      if (k !== lastKey) { same = 0; busyRun = 0; lastKey = k; }
+      else if (isBusy) { busyRun++; } else { same++; busyRun = 0; }
+      if (busyRun === 1286) { S.busyStalls.push({ at: S.ticks, k, busy }); busyRun = 0; }
+      if (same === 300) { S.stalls.push({ at: S.ticks, k, steps: s.stepsRemaining, dice: s.dice, busy }); same = 0; }
 
       if (humanPath) {
         // ★ 真人路径的卡死检测：`moving` 且三元组 6 秒没动
@@ -210,6 +260,9 @@
         lastPhase = s.phase;
 
         const human = isHumanSeat(s);
+        // ★ W-14：競價屏轮到真人那一口时 `currentPlayer` 可能是**电脑**（卖家），
+        //   所以这一问排在 `human` 判据之前 —— `humanExit()` 自己只在真人该作答时才非空。
+        if (tryHumanExit()) return;
         if (s.pending && s.pending.kind !== 'none') {
           // 真人的待决交互：优先点界面上的按钮（UI 动作，不计入 soakDispatches）；
           // 界面点不到（柜台/商店那类整屏）才兜底 declineDecision —— 会计进

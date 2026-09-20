@@ -7,7 +7,15 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { AMOUNT_DIGIT_MAX, AMOUNT_KEY_RECTS, AMOUNT_WINDOW } from './amount-keys.ts';
+import {
+  AMOUNT_DIGIT_MAX,
+  AMOUNT_KEY_RECTS,
+  AMOUNT_WINDOW,
+  amountWindowHit,
+} from './amount-keys.ts';
+// ★ W-62：画的那一半要用 `boardRect()` 换算（与 `dialog.ts` 的命中框同源）
+import { boardRect } from './gameui.ts';
+import { LAYOUT } from './stage.ts';
 import {
   AMOUNT_BAR_DRAG_SOUND,
   AMOUNT_BAR_RECT,
@@ -127,13 +135,69 @@ describe('★ 金额窗的版面与绘制', () => {
       return { bitmap: { image: i } as unknown as ImageBitmap, width: 9, height: 19, anchorX: 0, anchorY: 0 };
     };
     expect(drawAmountWindow(ctx, sprite, 7, 10)).toBe(true);
-    const { x: wx, y: wy } = AMOUNT_WINDOW;
+    // ★ W-62 订正：`ctx` 是**棋盘画布**，而 `AMOUNT_WINDOW` 是原版的**屏幕**坐标
+    //   ⇒ 期望值要用 `boardRect()` 换算后的原点（先前这里写的是屏幕坐标本身，
+    //     那正是「画的位置比命中框低 40 px」的 bug 被测试固化的样子）。
+    const { x: wx, y: wy } = boardRect(AMOUNT_WINDOW);
     expect(calls[0]).toEqual({ image: 0, args: [wx, wy] });
     expect(calls[1]).toEqual({ image: 1, args: [wx + 0x0a, wy + 0x2a] });
     const w = AMOUNT_GAUGE_WIDTHS[amountGaugeIndex(7, 10)]!;
     expect(calls[2]).toEqual({ image: 0, args: [0x0a, 0x2a, w, 0x0c, wx + 0x0a, wy + 0x2a, w, 0x0c] });
     expect(calls[3]).toEqual({ image: 23, args: [wx + 0x6b, wy + 0x0b] });
     expect(calls).toHaveLength(4);
+  });
+
+  it('★★ W-62：面板画在**棋盘坐标**上 —— 与命中框同源，不再低 40 px', () => {
+    const calls: { args: number[] }[] = [];
+    const ctx = {
+      drawImage: (_b: unknown, ...args: number[]) => {
+        calls.push({ args });
+      },
+    } as unknown as CanvasRenderingContext2D;
+    const sprite = (_a: string, _r: number, i: number): Sprite => ({
+      bitmap: { image: i } as unknown as ImageBitmap,
+      width: 9,
+      height: 19,
+      anchorX: 0,
+      anchorY: 0,
+    });
+    expect(drawAmountWindow(ctx, sprite, 7, 10)).toBe(true);
+    // 第一张贴的是底图（`plan.panel` = (0,0)）
+    expect(calls[0]!.args[0]).toBe(AMOUNT_WINDOW.x - LAYOUT.board.x);
+    expect(calls[0]!.args[1]).toBe(AMOUNT_WINDOW.y - LAYOUT.board.y);
+    // 反证：就是这 40 px —— 屏幕 y 与棋盘 y 差 `LAYOUT.board.y`
+    expect(LAYOUT.board.y).toBe(40);
+    expect(calls[0]!.args[1]).not.toBe(AMOUNT_WINDOW.y);
+  });
+
+  it("★★ W-62：画的位置与**命中框**同源 —— 序号 7（'7'）那颗钮对得上", () => {
+    // 命中框那一半（`dialog.ts`）：它把**屏幕**坐标 `AMOUNT_WINDOW.x + r.x` 过一遍
+    //   `boardRect()` 换成棋盘坐标再判定；画这一半现在也走同一个 `boardRect()`。
+    //   两边只要有一边忘了换算，键就会整排错开 40 px（本条的 bug）。
+    const box = boardRect(AMOUNT_WINDOW);
+    const drawnOrigin = { x: AMOUNT_WINDOW.x - LAYOUT.board.x, y: AMOUNT_WINDOW.y - LAYOUT.board.y };
+    expect(box.x).toBe(drawnOrigin.x);
+    expect(box.y).toBe(drawnOrigin.y);
+
+    const key7 = AMOUNT_KEY_RECTS[7]!;
+    // ① 画的落点 + 键矩形 = 命中框（棋盘坐标）
+    const hitBoard = boardRect({
+      x: AMOUNT_WINDOW.x + key7.x,
+      y: AMOUNT_WINDOW.y + key7.y,
+      w: key7.w,
+      h: key7.h,
+    });
+    expect({ x: hitBoard.x, y: hitBoard.y }).toEqual({
+      x: drawnOrigin.x + key7.x,
+      y: drawnOrigin.y + key7.y,
+    });
+    // ② 与命中判据的真值自洽：那颗钮的**屏幕**中心必须命中 7 号
+    const cx = AMOUNT_WINDOW.x + key7.x + key7.w / 2;
+    const cy = AMOUNT_WINDOW.y + key7.y + key7.h / 2;
+    expect(amountWindowHit(cx, cy)).toBe(7);
+    // ③ 反证：不换算（= 旧写法）时，同一颗钮的中心会落到「1 2 3」那一排的号上
+    const wrong = amountWindowHit(cx, cy - LAYOUT.board.y);
+    expect(wrong).not.toBe(7);
   });
 });
 

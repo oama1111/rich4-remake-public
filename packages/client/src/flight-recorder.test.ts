@@ -87,6 +87,30 @@ describe('FlightRecorder：分段与容量', () => {
   it('文件名用本地时间，带原因', () => {
     expect(reportFileName(new Date(2026, 8, 19, 5, 3, 9), 'error')).toBe('rich4-report-20260919-050309-error.json');
   });
+
+  it('没被注入口改过 ⇒ `devPatched: false`（`replay-report.ts` 照常验指纹）', () => {
+    expect(reportOf(new FlightRecorder()).devPatched).toBe(false);
+  });
+
+  it('★ taint() 之后报告带 `devPatched: true`（W-53：`replay-report.ts` 据此拒绝验指纹）', () => {
+    const r = new FlightRecorder();
+    r.record(entry(1), 5, () => 'S');
+    expect(r.devPatched).toBe(false);
+    r.taint();
+    expect(r.devPatched).toBe(true);
+    expect(reportOf(r).devPatched).toBe(true);
+    // 粘的：之后**记新 action**（新回合开新段）也清不掉 —— 那些 action 也从改过的状态长出来
+    r.record(entry(2), 6, () => 'S2');
+    expect(reportOf(r).devPatched).toBe(true);
+  });
+
+  it('★ `reset()` 清 taint：新局 / 读档之后 base 就是新状态，旧状态与报告无关了', () => {
+    const r = new FlightRecorder();
+    r.taint();
+    r.reset();
+    expect(r.devPatched).toBe(false);
+    expect(reportOf(r).devPatched).toBe(false);
+  });
 });
 
 if (haveMap) {

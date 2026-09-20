@@ -34,11 +34,25 @@ const ctx = (over = {}) => ({
   ...over,
 });
 
-/** 1 = 普通格、2 = 监狱、3 = 医院（坐标刻意不同，便于断言「真的搬过去了」） */
+/**
+ * 1 = 普通格、2 = 监狱、3 = 医院（坐标刻意不同，便于断言「真的搬过去了」）。
+ *
+ * ★★ 关押格的判据是节点 `type` = 0x1f42/0x1f41（景观基数 8000 + 记录 2/1），
+ *   **不是** `specialKind`（那是「落点特殊格」的判据）—— 见
+ *   `rules/confinement.ts` 的 `CONFINEMENT_GATE_TYPE`。
+ */
 const NODES = [
   makeNode({ id: 1, x: 100, y: 200 }),
-  makeNode({ id: 2, x: 1935, y: 1039, specialKind: SPECIAL_KIND.PRISON }),
-  makeNode({ id: 3, x: 777, y: 888, specialKind: SPECIAL_KIND.HOSPITAL }),
+  makeNode({
+    id: 2, x: 1935, y: 1039,
+    type: 0x1f42, ref: { kind: 'landscape', index: 2 },
+    specialKind: SPECIAL_KIND.PRISON,
+  }),
+  makeNode({
+    id: 3, x: 777, y: 888,
+    type: 0x1f41, ref: { kind: 'landscape', index: 1 },
+    specialKind: SPECIAL_KIND.HOSPITAL,
+  }),
 ];
 const OBJS = makeObjects(46);
 
@@ -163,7 +177,7 @@ describe('方向与命運一致', () => {
     expect(r.amount).toBe(200);
   });
 
-  it('★★ 儲金紅利（23）= 存款 10%，是**发钱**（公库不动）', () => {
+  it('★★ 儲金紅利（23）= 存款 10%，是**发钱**（公库不动），且进的是**存款**不是现金', () => {
     expect(newsEvent(23)!.factor).toBeNull();
     const r = applyNewsEffect(
       23,
@@ -172,8 +186,22 @@ describe('方向与命運一致', () => {
         players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, cash: 100_000, moneyInBank: 100_000 })),
       }),
     );
-    // 存款 100000 → 红 10000（直接进现金），公库一分不动
-    expect(r.players[0]!.cash).toBe(110_000);
+    // 存款 100000 × 0.1（`@source 0x00465734` 的双精度常量 = 0.1）= 红 10000，
+    // 公库一分不动。
+    // ★ 2026-09-19 订正：这条断言原先写「直接进**现金**」（`cash` 110000）——
+    //   **与机器码不符**。@source `fcn_0044aedb`：
+    // ```asm
+    // 0044af36  mov  ebp, dword ptr [ebx + 0x496b8c]   ; ebp = loan（下面 test/jne 已排除非 0）
+    // 0044af44  fild dword ptr [ebx + 0x496b88]        ; ★ +0x20 = money_in_bank
+    // 0044af4a  fmul qword ptr [0x465734]              ; = 0.1
+    // 0044af50  call 0x457dbc                          ; 向零截断
+    // 0044af5c  push ebp                               ; ★ flags = 0
+    // 0044af66  call 0x41d3f4                           ; add_money(player, 金额, 0)
+    // ```
+    //   `0x41d3f4` 的 `test byte [esp+0x10], 1 / je 进存款 / add [player+0x20]`
+    //   ⇒ flags = 0 写的是**银行存款** `+0x20`，现金 `+0x1c` 一分不动。
+    expect(r.players[0]!.moneyInBank).toBe(110_000);
+    expect(r.players[0]!.cash).toBe(100_000);
     expect(r.pool).toBe(777);
     expect(r.unimplemented).toBe(false);
   });

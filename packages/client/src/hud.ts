@@ -24,7 +24,7 @@ import {
   type GameState,
   type Rich4Map,
 } from '@rich4/core';
-import { CHARACTERS } from '@rich4/data';
+import { CHARACTERS, characterColorRgb } from '@rich4/data';
 import { DeferredSpriteClose, portraitResource, type Sprite, type SpriteCache } from './assets.ts';
 import type { Camera } from './render.ts';
 import { FONT_FAMILY } from './font.ts';
@@ -962,11 +962,16 @@ export class Hud {
     ctx.fillRect(0, top, size, size);
     if (minimapBg !== null) ctx.drawImage(minimapBg, 0, top, minimapBg.width, minimapBg.height);
 
-    // 各格
+    // 各格 —— 有主的格子用**地主的专属色**（同圆点那条，@source 0x00417021）
+    const ownerColor = (owner: number): string => {
+      if (owner === 0) return 'rgba(240,240,240,0.75)';
+      const who = state.players[owner - 1];
+      const rgb = characterColorRgb(CHARACTERS[who?.character ?? 0]?.color ?? 0xffffff);
+      return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+    };
     for (const n of map.nodes) {
       const owner = n.ref.kind === 'land' ? (state.landOwner[n.ref.index] ?? 0) : 0;
-      ctx.fillStyle =
-        owner === 0 ? 'rgba(240,240,240,0.75)' : (MINIMAP_OWNER[owner - 1] ?? '#fff');
+      ctx.fillStyle = ownerColor(owner);
       ctx.fillRect(minimapAt(n.x) - 1, top + minimapAt(n.y) - 1, 3, 3);
     }
 
@@ -995,7 +1000,17 @@ export class Hud {
       const dx = minimapAt(n.x);
       const dy = top + minimapAt(n.y);
       if (p.index === me?.index) meDot = { x: dx, y: dy };
-      ctx.fillStyle = MINIMAP_OWNER[p.index] ?? '#fff';
+      // ★★ 圆点用**角色自己的专属色**（`CharacterDef.color`），不是「按座位固定四色」。
+      //   原版读的是角色图素调色板 +0x54 那一项：
+      //   ```asm
+      //   00417021  imul eax, ebx, 0x34          ; 角色图素表，每项 0x34
+      //   00417024  mov  eax, [eax + 0x498eb0]
+      //   0041702a  add  eax, 0x54               ; ★ 该角色的专属色
+      //   00417034  call 0x456418                ; 画圆点
+      //   ```
+      //   （试玩 4：「小地图上的带颜色圆点好像和角色本身的专属色不一样」。）
+      const color = characterColorRgb(CHARACTERS[p.character]?.color ?? 0xffffff);
+      ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
       ctx.beginPath();
       ctx.arc(dx, dy, 3.5, 0, Math.PI * 2);
       ctx.fill();
@@ -1021,9 +1036,6 @@ export class Hud {
     ctx.restore();
   }
 }
-
-/** 小地图上各玩家的颜色 —— 原版四人四色 */
-const MINIMAP_OWNER = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
 
 /**
  * 取景框是**白的**、标记框是**红的**。

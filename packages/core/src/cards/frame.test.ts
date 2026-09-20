@@ -20,11 +20,25 @@ const four = (cards: number[][] = [[], [], [], []]) =>
 
 const tgt = (index: number) => ({ kind: 'player' as const, index });
 
-/** 1 = 普通格、2 = 监狱、3 = 医院（坐标刻意不同，便于断言「真的搬过去了」） */
+/**
+ * 1 = 普通格、2 = 监狱、3 = 医院（坐标刻意不同，便于断言「真的搬过去了」）。
+ *
+ * ★★ 关押格的判据是节点 `type` = 0x1f42/0x1f41（景观基数 8000 + 记录 2/1），
+ *   **不是** `specialKind`（那是「落点特殊格」的判据）—— 见
+ *   `rules/confinement.ts` 的 `CONFINEMENT_GATE_TYPE`。
+ */
 const NODES = [
   makeNode({ id: 1, x: 100, y: 200 }),
-  makeNode({ id: 2, x: 1935, y: 1039, specialKind: SPECIAL_KIND.PRISON }),
-  makeNode({ id: 3, x: 777, y: 888, specialKind: SPECIAL_KIND.HOSPITAL }),
+  makeNode({
+    id: 2, x: 1935, y: 1039,
+    type: 0x1f42, ref: { kind: 'landscape', index: 2 },
+    specialKind: SPECIAL_KIND.PRISON,
+  }),
+  makeNode({
+    id: 3, x: 777, y: 888,
+    type: 0x1f41, ref: { kind: 'landscape', index: 1 },
+    specialKind: SPECIAL_KIND.HOSPITAL,
+  }),
 ];
 const OBJS = makeObjects(46);
 

@@ -524,16 +524,16 @@ export function drawOptions(
   // ——— 文字：先 10 条（15px），再取消/確定（20px），再右上角三条（20px） ———
   // ★ 上面列表那段把 font 改成了 12px，这里必须**先设回来** ——
   //   原版是每段各自 `rich4_create_font` 一次，不存在"沿用上一段的字号"。
-  ctx.font = `${FONT_SIZE.label}px ${FONT}`;
+  // ★★ 每条文字自带**对齐码**（`0x474b38` 每项第三个 word），先前这里
+  //   一刀切成「前 10 条左对齐、后 2 条居中」—— 于是 `樂  曲` / `視  窗` /
+  //   `日、月曆` / `縮小地圖` / `組合畫面` 这五条（码 = 2）全被画在 x 的**右侧**
+  //   半个字宽处（试玩 4：「樂曲、視窗以及視窗的子选项文字仍然偏离画面」）。
+  //   码 5 = 左缘贴 x、竖直居中；码 2 = 以 (x,y) 为中心。
   ctx.fillStyle = TEXT_COLOR;
   ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  for (const l of OPTION_LABELS.slice(0, 10)) {
-    ctx.fillText(l.text, l.x, l.y);
-  }
-  ctx.font = `${FONT_SIZE.big}px ${FONT}`;
-  for (const l of OPTION_LABELS.slice(10)) {
-    ctx.textAlign = 'center';
+  for (const l of OPTION_LABELS) {
+    ctx.font = `${l.align === 5 ? FONT_SIZE.label : FONT_SIZE.big}px ${FONT}`;
+    ctx.textAlign = l.align === 5 ? 'left' : 'center';
     ctx.fillText(l.text, l.x, l.y);
   }
   const side = SIDE_BUTTONS[variant] ?? SIDE_BUTTONS[0]!;

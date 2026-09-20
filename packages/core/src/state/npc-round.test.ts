@@ -334,10 +334,20 @@ describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起',
 //  lastNpcWalks —— 交给表现层的整趟路径（T-047）
 // ============================================================
 
-/** 監獄格在**路头**的直路：出獄之后每一步只有一个候选，整趟是确定的 */
+/**
+ * 監獄格在**路头**的直路：出獄之后每一步只有一个候选，整趟是确定的。
+ *
+ * ★★ 1 号同时是**落点特殊格**（`specialKind` 4）与**关押格**（`type` 0x1f42，
+ *   = 原版 `[0x48bae0]`）；出獄上路的起点取的是后者 —— 见
+ *   `rules/confinement.ts` 的 `CONFINEMENT_GATE_TYPE`。
+ */
 const away: MapTopology = {
   nodes: [
-    makeNode({ id: 1, adjacent: [2], specialKind: SPECIAL_KIND.PRISON }),
+    makeNode({
+      id: 1, adjacent: [2],
+      type: 0x1f42, ref: { kind: 'landscape', index: 2 },
+      specialKind: SPECIAL_KIND.PRISON,
+    }),
     ...Array.from({ length: 19 }, (_, i) =>
       makeNode({ id: i + 2, adjacent: i === 18 ? [i + 1] : [i + 1, i + 3] }),
     ),
@@ -378,6 +388,8 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
       expect(path[0]).toBe(1);
       expect(path[path.length - 1]).toBe(after.specialActors[0]!.nodeId);
       expect(path.length).toBe(steps + 1);
+      // ★ E-22：**掷出的步数**原样交出去（走子时那串剩余步数从它往下数）
+      expect(hint[0]!.steps).toBe(steps);
       expect(steps).toBeGreaterThanOrEqual(2);
       expect(steps).toBeLessThanOrEqual(10);
       for (let i = 0; i + 1 < path.length; i++) {
@@ -440,6 +452,8 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
     expect(hint).toHaveLength(1);
     expect(hint[0]!.slot).toBe(4); // actor 8 → slot 4
     expect(hint[0]!.path).toEqual(Array.from({ length: DOLL_STEPS + 1 }, (_, i) => i + 1));
+    // ★ E-22 @source `0x0040deb9 mov esi,9 / 0x0040debe mov [0x48baf8],esi`
+    expect(hint[0]!.steps).toBe(DOLL_STEPS);
   });
 
   it('★ C-DET：它不进 stateFingerprint（改它不影响校验和）', () => {

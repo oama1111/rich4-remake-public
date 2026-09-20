@@ -10,40 +10,63 @@
  * 因为那些方向错了单看代码是看不出来的。
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
+  applyDispelCard,
+  attachGod,
   makeGameState,
+  makeLand,
+  makeNode,
   makePlayer,
+  reduce,
   WHO_PLAYS_COMPUTER,
   WHO_PLAYS_DEAD,
   WHO_PLAYS_HUMAN,
   type GameState,
+  type MapTopology,
+  type NoticeKey,
 } from '@rich4/core';
 import { cardLineVoice, SPEECH_EVENTS_PER_CHARACTER, speechEmojiImage, speechIndex } from '@rich4/data';
 import {
+  BIG_WEALTH_GOD_TYPE,
   DETECTORS,
+  HOSTILE_GOD_TYPES,
   MONEY_TIER_HIGH,
   MONEY_TIER_LOW,
   MONEY_TIER_MID,
+  OPENING_SPEECH_EVENT,
+  SMALL_WEALTH_GOD_TYPE,
+  SMALL_WEALTH_LINE_MIN,
+  detectAreaMonopoly,
   detectBankrupt,
+  detectBigWealthLine,
   detectDreamCard,
+  detectGodArrived,
+  detectGodLeft,
   detectHospitalEntered,
   detectHotelStay,
+  detectLandGodLine,
   detectLevelFive,
+  detectLuckyGodLine,
   detectMoneyGained,
   detectMoneyPaid,
   detectPointsGained,
   detectPrisonEntered,
+  detectSmallWealthLine,
   detectTurnStartBlocked,
   detectVictory,
   cardPlaySpeech,
   gainEventFor,
   mostHostilePlayer,
+  openingSpeech,
   payTierFor,
   smallGainTierFor,
   smallLossTierFor,
   speechEventsFor,
+  speechLinesFor,
   speechResourceFor,
   speechResourcesFor,
+  type SayEvent,
 } from './speech.ts';
 
 // ============================================================
@@ -51,6 +74,19 @@ import {
 // ============================================================
 
 const clone = (s: GameState): GameState => JSON.parse(JSON.stringify(s)) as GameState;
+
+/**
+ * 只留「谁 / 哪一句 / **次序**」三位再比。
+ *
+ * `SayEvent` 上还挂着别的卡加的可选字段（W-50 的 `expression?` = `player_say` 的
+ * 第 2 个实参，逐**事件**取值、由 `expressionOf()` 钉在它自己的用例里）。
+ * 那一位不归 W-51 管，两张卡的取值也不该互相绑死 ⇒ 这里先投影掉。
+ * W-51 关心的三样（`player` / `event` / `order`）一个不少地留着。
+ */
+const said = (
+  events: readonly SayEvent[],
+): { player: number; event: number; order: SayEvent['order'] }[] =>
+  events.map(({ player, event, order }) => ({ player, event, order }));
 
 /**
  * 造一对状态：`before` 是默认局，`after` 是它的副本，再由回调分别改。
@@ -77,7 +113,7 @@ describe('★ 得點券格 / 小遊戲不玩的台词 —— 通道 2 钉住（t
     const base = makeGameState({ currentPlayer: 1 });
     for (const event of [0, 1, 2]) {
       const after = { ...base, lastEvent: { kind: 'minigameDecline' as const, id: 0, phraseIndex: event } };
-      expect(speechEventsFor(base, after)).toEqual([{ player: 1, event }]);
+      expect(said(speechEventsFor(base, after))).toEqual([{ player: 1, event, order: 'afterStage' }]);
     }
   });
 
@@ -92,7 +128,43 @@ describe('★ 得點券格 / 小遊戲不玩的台词 —— 通道 2 钉住（t
       lastEvent: { kind: 'minigameDecline' as const, id: 0, phraseIndex: 1 },
     };
     // 只有角色台词表那一条（50 點的 +50 本来会命中 `0x44f230` 的档位）
-    expect(speechEventsFor(before, after)).toEqual([{ player: 0, event: 1 }]);
+    expect(said(speechEventsFor(before, after))).toEqual([{ player: 0, event: 1, order: 'afterStage' }]);
+  });
+
+  it('★★ 那条 lastEvent 是**上一条 action 留下的**（引用没变）⇒ 不再重说（试玩回报：台词一直重复）', () => {
+    // `lastEvent` 不是瞬态字段：core 写下之后一直留到下一个事件。之后的每一条 action
+    // （走一格 / 結算 / 换人）`before.lastEvent === after.lastEvent` ⇒ 一句都不该说。
+    const lastEvent = { kind: 'minigameDecline' as const, id: 0, phraseIndex: 1 };
+    const before = makeGameState({ currentPlayer: 1, lastEvent });
+    const walked = { ...before, stepsRemaining: 3 };
+    expect(said(speechEventsFor(before, walked))).toEqual([]);
+    const nextPlayer = { ...before, currentPlayer: 2 };
+    expect(said(speechEventsFor(before, nextPlayer))).toEqual([]);
+  });
+
+  it('★ 同上：留着旧 lastEvent 时，**新的**點入帳照旧走档位表（先前会被一直捂住）', () => {
+    const lastEvent = { kind: 'minigameDecline' as const, id: 0, phraseIndex: 1 };
+    const before = makeGameState({
+      players: [makePlayer({ index: 0, points: 0 }), makePlayer({ index: 1, points: 0 })],
+      currentPlayer: 0,
+      lastEvent,
+    });
+    const after = {
+      ...before,
+      players: [makePlayer({ index: 0, points: 150 }), makePlayer({ index: 1, points: 0 })],
+    };
+    const evs = said(speechEventsFor(before, after));
+    expect(evs).toHaveLength(1);
+    expect(evs[0]!.player).toBe(0);
+  });
+
+  it('★ 连着两次得 50 點：第二次是**新写的对象** ⇒ 照说', () => {
+    const before = makeGameState({
+      currentPlayer: 1,
+      lastEvent: { kind: 'minigameDecline' as const, id: 0, phraseIndex: 1 },
+    });
+    const after = { ...before, lastEvent: { kind: 'minigameDecline' as const, id: 0, phraseIndex: 1 } };
+    expect(said(speechEventsFor(before, after))).toEqual([{ player: 1, event: 1, order: 'afterStage' }]);
   });
 
   it('没有那条 lastEvent 时，點入帳照旧走档位表（护栏）', () => {
@@ -104,7 +176,7 @@ describe('★ 得點券格 / 小遊戲不玩的台词 —— 通道 2 钉住（t
       ...before,
       players: [makePlayer({ index: 0, points: 150 }), makePlayer({ index: 1, points: 0 })],
     };
-    const evs = speechEventsFor(before, after);
+    const evs = said(speechEventsFor(before, after));
     expect(evs).toHaveLength(1);
     expect(evs[0]!.player).toBe(0);
   });
@@ -610,9 +682,9 @@ describe('speechEventsFor —— 有序列的探测器数组', () => {
       s.players[0]!.monthlyPaid += 9000;
       s.players[1]!.monthlyReceived += 9000;
     });
-    expect(speechEventsFor(b, a)).toEqual([
-      { player: 0, event: 9 },
-      { player: 1, event: 6 },
+    expect(said(speechEventsFor(b, a))).toEqual([
+      { player: 0, event: 9, order: 'afterStage' },
+      { player: 1, event: 6, order: 'afterStage' },
     ]);
   });
 
@@ -626,20 +698,20 @@ describe('speechEventsFor —— 有序列的探测器数组', () => {
       after.players[0]!.blocking.inPrison = 3;
       after.phase = 'gameOver';
     });
-    expect(speechEventsFor(b, a)).toEqual([
-      { player: 0, event: 19 },
-      { player: 0, event: 24 },
+    expect(said(speechEventsFor(b, a))).toEqual([
+      { player: 0, event: 19, order: 'afterStage' },
+      { player: 0, event: 24, order: 'afterStage' },
     ]);
   });
 
   it('状态没动 ⇒ 一句话都不说', () => {
     const [b, a] = to(() => {});
-    expect(speechEventsFor(b, a)).toEqual([]);
+    expect(said(speechEventsFor(b, a))).toEqual([]);
   });
 
   it('对默认局做一次自比为「无变化」的调用：不抛异常', () => {
     const s = makeGameState();
-    expect(() => speechEventsFor(s, clone(s))).not.toThrow();
+    expect(() => said(speechEventsFor(s, clone(s)))).not.toThrow();
   });
 });
 
@@ -770,5 +842,962 @@ describe('★★ 卡牌使用者台词 —— 一条**非状态跃迁**的台词
   it('★ 卡号越界 ⇒ 不抛、返回空（表现层不因坏状态炸掉）', () => {
     const [before, after] = played(0, 0, 99);
     expect(cardPlaySpeech(before, after)).toEqual([]);
+  });
+});
+
+// ============================================================
+//  ★★ 过路费：**谁付**谁说话 —— 人机都要（试玩回报第 4 份 #6）
+// ============================================================
+//
+// 回 exe 取证（租子结算那一段，`0x00419f20..0x0041a008`）：
+//   · **付款方**：`0x00419f67`（有同盟那一支）/ `0x00419fe0`（无同盟）都是
+//     `push 金額 / push 付款人 / call 0x44f42d` —— **前面没有 `who_plays` 闸门**；
+//     設施那一支同形（`0x0041a71e`）；
+//   · **收款方**：`0x00419fa1` / `0x00419ff0` / `0x0041a735` 的
+//     `call 0x44f354(地主, 金額)`。
+//   ⇒ 原版**不分人机**，谁付谁就说 9/10/11。
+//
+// 本引擎的判据是 `monthlyPaid` 的增量（哪个玩家都算），而电脑那条 action
+// 通道**过去**是绕开 `notifyApplied` 自己 `reduce` 的直路 —— 那正是
+// 「NPC 交过路费时没有台词」这一类现象的根因。2026-09-19 起两条来源共用
+// `notifyApplied`（`main.ts`），下面三条钉住它。
+
+describe('★★ 过路费台词：付款方（真人 / 电脑）都要开口', () => {
+  /** 一格是玩家 1 的地（3 级）的小地图；玩家 0 站在那一格上 */
+  const topo: MapTopology = {
+    nodes: [
+      makeNode({ id: 1, adjacent: [2], adjacentSlots: [2, 0, 0, 0], walkable: true }),
+      makeNode({ id: 2, type: 0x7d0 + 1, adjacent: [1], adjacentSlots: [1, 0, 0, 0], walkable: true }),
+    ],
+    // owner 是 1 基：2 = 玩家 1
+    lands: [makeLand({ id: 1, name: '測試路', type: 0, owner: 2, level: 3, landPrice: 1000 })],
+  };
+
+  /** 玩家 0 落在玩家 1 的地上、结算过路费；`payer` 决定他是人是电脑 */
+  function landOnOtherLand(payer: number): [GameState, GameState] {
+    const before = makeGameState({
+      players: [
+        makePlayer({ index: 0, whoPlays: payer, nodeId: 2, cash: 500_000 }),
+        makePlayer({ index: 1, nodeId: 1, cash: 10_000 }),
+        makePlayer({ index: 2, nodeId: 1 }),
+        makePlayer({ index: 3, nodeId: 1 }),
+      ],
+      currentPlayer: 0,
+      phase: 'settling',
+      landOwner: [0, 2],
+      landLevel: [0, 3],
+      landType: [0, 0],
+    });
+    return [before, reduce(before, { type: 'settle' }, topo)];
+  }
+
+  it('★★ 电脑（AI）付我过路费 ⇒ **付款的那个电脑**说 9..11，我作为地主说 6..8', () => {
+    const [before, after] = landOnOtherLand(WHO_PLAYS_COMPUTER);
+    // 这一笔确实由 0 号（电脑）付、1 号（真人）收
+    expect(after.players[0]!.monthlyPaid).toBeGreaterThan(0);
+    expect(after.players[1]!.monthlyReceived).toBeGreaterThan(0);
+    const events = said(speechEventsFor(before, after));
+    expect(events).toContainEqual({ player: 0, event: 11, order: 'afterStage' });
+    expect(events).toContainEqual({ player: 1, event: 8, order: 'afterStage' });
+  });
+
+  it('★ 反过来（真人付给电脑）同样是**付款人**说 9..11 —— 原版不分人机', () => {
+    const [before, after] = landOnOtherLand(WHO_PLAYS_HUMAN);
+    expect(said(speechEventsFor(before, after))).toContainEqual({ player: 0, event: 11, order: 'afterStage' });
+  });
+
+  it('★★ 反例（可证伪）：抹掉付款人的 `monthlyPaid` 增量 ⇒ 他那句就没了', () => {
+    const [before, after] = landOnOtherLand(WHO_PLAYS_COMPUTER);
+    const muted: GameState = {
+      ...after,
+      players: after.players.map((p, i) =>
+        i === 0 ? { ...p, monthlyPaid: before.players[0]!.monthlyPaid } : p,
+      ),
+    };
+    expect(said(speechEventsFor(before, muted))).not.toContainEqual({ player: 0, event: 11 });
+  });
+});
+
+describe('★★ `notifyApplied` 必须是两条来源共用的出口', () => {
+  it('定义 1 处 + 调用 2 处（真人 `applyAction` / 电脑 `scheduleAi` 的 reduce 直路）', () => {
+    // 只要电脑那条直路再一次绕开它，本用例就变红 —— 那正是
+    // 「NPC 付过路费没台词 / 电脑用道具没动效」这一族的根因（Q-TOOL-5 ⑤14 同一教训）。
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src.split('notifyApplied(').length - 1).toBe(3);
+    expect(src).toContain('notifyApplied(before);');
+  });
+});
+
+// ============================================================
+//  ★ 16 / 17 —— 同一街區獨佔 ≥ 3 塊（`fcn_0044f627` @ VA 0x0044f627）
+// ============================================================
+
+describe('★ 同一街區獨佔 —— 16（買地）/ 17（加蓋）', () => {
+  /**
+   * 三条街的地块表：`忠孝東路` = 1..4、`信義路` = 9、`和平東路` = 10。
+   * 原版比较的是 `land + 0x04` 那个名字串（`call 0x458370` = strcmp），
+   * 所以「街區」= **同名**的地块集合（实测地图 0：`台北市` = 地块 1..4 …）。
+   */
+  const lands = [
+    makeLand({ id: 1, name: '忠孝東路' }),
+    makeLand({ id: 2, name: '忠孝東路' }),
+    makeLand({ id: 3, name: '忠孝東路' }),
+    makeLand({ id: 4, name: '忠孝東路' }),
+    makeLand({ id: 9, name: '信義路' }),
+    makeLand({ id: 10, name: '和平東路' }),
+  ];
+  const topo: MapTopology = { nodes: [makeNode({ id: 1 })], lands };
+
+  /** `p0` 已经拥有 `忠孝東路` 的哪几块（`landOwner` 是 1 基：1 = 玩家 0） */
+  function monopolyBefore(owned: readonly number[], pend: GameState['pending']): GameState {
+    const landOwner = new Array<number>(11).fill(0);
+    for (const id of owned) landOwner[id] = 1;
+    return makeGameState({
+      currentPlayer: 0,
+      landOwner,
+      landLevel: new Array<number>(11).fill(0),
+      pending: pend,
+    });
+  }
+
+  it('買下第 3 块同名地 ⇒ 说 16（`0x0041a13e push 0` → 第二参 = 0 那一支 @ 0x0044f6d5）', () => {
+    const before = monopolyBefore([1, 2], {
+      kind: 'buyLand',
+      landId: 3,
+      name: '忠孝東路',
+      price: 1000,
+    });
+    const after: GameState = { ...before, landOwner: [...before.landOwner], pending: null };
+    after.landOwner[3] = 1;
+    expect(detectAreaMonopoly(before, after, topo)).toEqual([{ player: 0, event: 16 }]);
+    expect(said(speechEventsFor(before, after, topo))).toContainEqual({ player: 0, event: 16, order: 'afterStage' });
+  });
+
+  it('★ 可证伪：只獨佔 2 块 ⇒ 一句都不说（`cmp edi,3 / jl` @ 0x0044f66a）', () => {
+    const before = monopolyBefore([1], {
+      kind: 'buyLand',
+      landId: 2,
+      name: '忠孝東路',
+      price: 1000,
+    });
+    const after: GameState = { ...before, landOwner: [...before.landOwner], pending: null };
+    after.landOwner[2] = 1;
+    expect(detectAreaMonopoly(before, after, topo)).toEqual([]);
+  });
+
+  it('★ 可证伪：不是「落点买地/加蓋」那一条路（如購地卡/拍賣直接改归属）⇒ 不说', () => {
+    // pending 为空，但归属确实变成了 3 块 —— 原版那两条路根本不调 `0x44f627`
+    const before = monopolyBefore([1, 2], null);
+    const after: GameState = { ...before, landOwner: [...before.landOwner] };
+    after.landOwner[3] = 1;
+    expect(detectAreaMonopoly(before, after, topo)).toEqual([]);
+  });
+
+  it('★ 可证伪：買地那一步没有真的易主（reducer 没落地）⇒ 不说', () => {
+    const before = monopolyBefore([1, 2, 3], {
+      kind: 'buyLand',
+      landId: 4,
+      name: '忠孝東路',
+      price: 1000,
+    });
+    // after 的归属原样（卡片/钱不够那种被拒的动作）
+    const after: GameState = { ...before, landOwner: [...before.landOwner] };
+    expect(detectAreaMonopoly(before, after, topo)).toEqual([]);
+  });
+
+  it('加蓋後仍是第 3 块（等級 ≠ 5）⇒ 说 17（`0x00419a31 push 1` @ 0x0044f6ab）', () => {
+    const before = monopolyBefore([1, 2, 3], {
+      kind: 'upgradeLand',
+      landId: 3,
+      name: '忠孝東路',
+      cost: 200,
+    });
+    before.landLevel[3] = 2;
+    const after: GameState = {
+      ...before,
+      landOwner: [...before.landOwner],
+      landLevel: [...before.landLevel],
+      pending: null,
+    };
+    after.landLevel[3] = 3;
+    expect(detectAreaMonopoly(before, after, topo)).toEqual([{ player: 0, event: 17 }]);
+  });
+
+  it('★ 可证伪：加蓋**剛好到 5 級** ⇒ 那一步改说事件 15，不说 17（`0x004199eb cmp byte [esi+0x1a],5 / jne`）', () => {
+    const before = monopolyBefore([1, 2, 3], {
+      kind: 'upgradeLand',
+      landId: 3,
+      name: '忠孝東路',
+      cost: 200,
+    });
+    before.landLevel[3] = 4;
+    const after: GameState = {
+      ...before,
+      landOwner: [...before.landOwner],
+      landLevel: [...before.landLevel],
+      pending: null,
+    };
+    after.landLevel[3] = 5;
+    expect(detectAreaMonopoly(before, after, topo)).toEqual([]);
+  });
+
+  it('★ 可证伪：加蓋那一步没有真的升一级 ⇒ 不说', () => {
+    const before = monopolyBefore([1, 2, 3], {
+      kind: 'upgradeLand',
+      landId: 3,
+      name: '忠孝東路',
+      cost: 200,
+    });
+    before.landLevel[3] = 2;
+    const after: GameState = { ...before, landOwner: [...before.landOwner], pending: null };
+    expect(detectAreaMonopoly(before, after, topo)).toEqual([]);
+  });
+
+  it('★ 可证伪：3 块地分属**不同**街區（名字不同）⇒ 不说', () => {
+    const before = monopolyBefore([1, 9], {
+      kind: 'buyLand',
+      landId: 10,
+      name: '和平東路',
+      price: 1000,
+    });
+    const after: GameState = { ...before, landOwner: [...before.landOwner], pending: null };
+    after.landOwner[10] = 1;
+    // 1 = 忠孝東路、9 = 信義路、10 = 和平東路 —— 各 1 块
+    expect(detectAreaMonopoly(before, after, topo)).toEqual([]);
+  });
+
+  it('★ 可证伪：没有 `topo`（街區归属缺席）⇒ 这条探测器不出声，其余槽位照旧', () => {
+    const before = monopolyBefore([1, 2], {
+      kind: 'buyLand',
+      landId: 3,
+      name: '忠孝東路',
+      price: 1000,
+    });
+    const after: GameState = { ...before, landOwner: [...before.landOwner], pending: null };
+    after.landOwner[3] = 1;
+    expect(detectAreaMonopoly(before, after)).toEqual([]);
+    expect(said(speechEventsFor(before, after))).toEqual([]);
+  });
+
+  it('★ 街區名取自**地图**（不是 `pending.name`）：地图里那块叫别的名字 ⇒ 不说', () => {
+    const otherTopo: MapTopology = {
+      nodes: [makeNode({ id: 1 })],
+      lands: lands.map((l) => (l.id === 3 ? { ...l, name: '其他路' } : l)),
+    };
+    const before = monopolyBefore([1, 2], {
+      kind: 'buyLand',
+      landId: 3,
+      name: '忠孝東路',
+      price: 1000,
+    });
+    const after: GameState = { ...before, landOwner: [...before.landOwner], pending: null };
+    after.landOwner[3] = 1;
+    // 忠孝東路 只剩 1、2 两块（3 归到「其他路」）⇒ 不到 3
+    expect(detectAreaMonopoly(before, after, otherTopo)).toEqual([]);
+  });
+});
+
+// ============================================================
+//  ★ 22 / 23 —— 神明（`god_activate` 0x0040ead7 / `0x40e32c`）
+// ============================================================
+
+describe('★ 神明 —— 22（附身）/ 23（離身）', () => {
+  /** 把某个 handle（1 基物件下标）的种类改成 `type` */
+  function withType(s: GameState, handle: number, type: number): GameState {
+    const objects = s.objects.map((o, i) => (i === handle - 1 ? { ...o, type } : o));
+    return { ...s, objects };
+  }
+
+  it('小窮神（種類 5）附身 ⇒ 說 22（`0x0040ef2f`，取串位移 `0x4808a2` = 事件 22）', () => {
+    const before = makeGameState({ currentPlayer: 1 });
+    const after = withType(
+      { ...before, players: before.players.map((p, i) => (i === 1 ? { ...p, godInfo: 5 } : p)) },
+      5,
+      5,
+    );
+    expect(detectGodArrived(before, after)).toEqual([{ player: 1, event: 22 }]);
+  });
+
+  it('★ 五種神明都會說（種類 5/6/7/8/15，`0x40e618..0x40e62f` 那條門檻）', () => {
+    expect([...HOSTILE_GOD_TYPES]).toEqual([5, 6, 7, 8, 15]);
+    for (const [handle, type] of [
+      [5, 5],
+      [6, 6],
+      [7, 7],
+      [8, 8],
+      [15, 15],
+    ] as const) {
+      const before = makeGameState();
+      const after = withType(
+        { ...before, players: before.players.map((p, i) => (i === 0 ? { ...p, godInfo: handle } : p)) },
+        handle,
+        type,
+      );
+      expect(detectGodArrived(before, after), `種類 ${type}`).toEqual([{ player: 0, event: 22 }]);
+    }
+  });
+
+  it('★ 可證偽：小財神（種類 1）附身 ⇒ 不說（那一支的實作 0x40ec14 沒有任何 player_say）', () => {
+    const before = makeGameState();
+    const after = withType(
+      { ...before, players: before.players.map((p, i) => (i === 0 ? { ...p, godInfo: 1 } : p)) },
+      1,
+      1,
+    );
+    expect(detectGodArrived(before, after)).toEqual([]);
+  });
+
+  it('★ 可證偽：`godInfo` 沒變（沒換神）⇒ 不說', () => {
+    const before = makeGameState();
+    const after = { ...before };
+    expect(detectGodArrived(before, after)).toEqual([]);
+    expect(detectGodLeft(before, after)).toEqual([]);
+  });
+
+  it('★ 可證偽：附身那一刻那個人正在**夢遊**（`player_say` 第二道閘 `0x44ef86`）⇒ 不說 22', () => {
+    const before = makeGameState();
+    const after = withType(
+      {
+        ...before,
+        players: before.players.map((p, i) =>
+          i === 0 ? { ...p, godInfo: 5, blocking: { ...p.blocking, sleepWalking: 4 } } : p,
+        ),
+      },
+      5,
+      5,
+    );
+    expect(detectGodArrived(before, after)).toEqual([]);
+  });
+
+  it('★ 可證偽：神明離身時那個人正在睡（`0x44ef93`）⇒ 不說', () => {
+    const before = makeGameState();
+    const before2 = withType(
+      { ...before, players: before.players.map((p, i) => (i === 0 ? { ...p, godInfo: 5 } : p)) },
+      5,
+      5,
+    );
+    const after = {
+      ...before2,
+      players: before2.players.map((p, i) =>
+        i === 0 ? { ...p, godInfo: 0, blocking: { ...p.blocking, sleeping: 3 } } : p,
+      ),
+    };
+    expect(detectGodLeft(before2, after)).toEqual([]);
+    expect(detectGodArrived(before2, after)).toEqual([]);
+  });
+
+  it('★ 可證偽：種類 10（惡魔）離身 —— 送神符送得走它，但 `0x40e618` 那條門檻不含 10 ⇒ 不說', () => {
+    const before = makeGameState();
+    const before2 = withType(
+      { ...before, players: before.players.map((p, i) => (i === 0 ? { ...p, godInfo: 10 } : p)) },
+      10,
+      10,
+    );
+    const after = {
+      ...before2,
+      players: before2.players.map((p, i) => (i === 0 ? { ...p, godInfo: 0 } : p)),
+    };
+    expect(detectGodLeft(before2, after)).toEqual([]);
+  });
+
+  it('★ 可證偽：任期屆滿 / 送神符 —— `[player+0x32]` 那個 dword 有一位非 0（如坐牢）就不說（`0x0040e356`）', () => {
+    const before = makeGameState();
+    const before2 = withType(
+      { ...before, players: before.players.map((p, i) => (i === 0 ? { ...p, godInfo: 5 } : p)) },
+      5,
+      5,
+    );
+    const after = {
+      ...before2,
+      players: before2.players.map((p, i) =>
+        i === 0 ? { ...p, godInfo: 0, blocking: { ...p.blocking, inPrison: 2 } } : p,
+      ),
+    };
+    expect(detectGodLeft(before2, after)).toEqual([]);
+  });
+
+  it('任期屆滿（種類 5 → 無）⇒ 說 23（`0x41cc9b` / `0x40e64a`）', () => {
+    const before = makeGameState();
+    const before2 = withType(
+      { ...before, players: before.players.map((p, i) => (i === 0 ? { ...p, godInfo: 5 } : p)) },
+      5,
+      5,
+    );
+    const after = {
+      ...before2,
+      players: before2.players.map((p, i) => (i === 0 ? { ...p, godInfo: 0 } : p)),
+    };
+    expect(detectGodLeft(before2, after)).toEqual([{ player: 0, event: 23 }]);
+  });
+
+  it('★ 可證偽：**破產**清 `godInfo` 不說 23 —— 原版那條走裸的 `0x40e14d`（`0x40ce40`），不經 `0x40e32c`', () => {
+    const before = makeGameState();
+    const before2 = withType(
+      { ...before, players: before.players.map((p, i) => (i === 0 ? { ...p, godInfo: 5 } : p)) },
+      5,
+      5,
+    );
+    const after = {
+      ...before2,
+      players: before2.players.map((p, i) =>
+        i === 0 ? { ...p, godInfo: 0, whoPlays: WHO_PLAYS_DEAD } : p,
+      ),
+    };
+    expect(detectGodLeft(before2, after)).not.toContainEqual({ player: 0, event: 23 });
+  });
+
+  it('★★ 換神：**先**舊神離身（23）**再**新神附身（22），順序同 `0x40eb3f` → `0x40ec0d`', () => {
+    const before = makeGameState();
+    const before2 = withType(
+      { ...before, players: before.players.map((p, i) => (i === 0 ? { ...p, godInfo: 5 } : p)) },
+      5,
+      5,
+    );
+    const after = withType(
+      {
+        ...before2,
+        players: before2.players.map((p, i) => (i === 0 ? { ...p, godInfo: 7 } : p)),
+      },
+      7,
+      7,
+    );
+    expect(said(speechEventsFor(before2, after))).toEqual([
+      { player: 0, event: 23, order: 'afterStage' },
+      { player: 0, event: 22, order: 'beforeStage' },
+    ]);
+  });
+
+  it('★ 走 core 的 `attachGod`（= `0x40ead7`）：附身小窮神 ⇒ 22；再換大衰神 ⇒ 23 然後 22', () => {
+    const before = makeGameState();
+    const world = {
+      players: before.players,
+      objects: before.objects,
+      tools: before.tools,
+      toolStock: before.toolStock,
+    };
+    // handle 5 = objects[4]，初始種類表（`0x47ed3c`）裡正是 5 = 小窮神
+    expect(before.objects[4]!.type).toBe(5);
+    const a1 = attachGod(world, 0, 5);
+    expect(a1.ok).toBe(true);
+    const after1: GameState = { ...before, players: a1.players, objects: a1.objects };
+    expect(said(speechEventsFor(before, after1))).toEqual([{ player: 0, event: 22, order: 'beforeStage' }]);
+
+    // handle 7 = objects[6]，種類 7 = 小衰神 —— 換神：舊的（5）先走
+    expect(before.objects[6]!.type).toBe(7);
+    const a2 = attachGod(
+      { players: a1.players, objects: a1.objects, tools: a1.tools, toolStock: a1.toolStock },
+      0,
+      7,
+    );
+    expect(a2.ok).toBe(true);
+    const after2: GameState = { ...after1, players: a2.players, objects: a2.objects };
+    expect(said(speechEventsFor(after1, after2))).toEqual([
+      { player: 0, event: 23, order: 'afterStage' },
+      { player: 0, event: 22, order: 'beforeStage' },
+    ]);
+  });
+
+  it('★ 走 core 的**送神符**（`applyDispelCard` = 卡 22，`0x444cc4` → `0x40e32c`）⇒ 23', () => {
+    const base = makeGameState();
+    const before: GameState = {
+      ...base,
+      players: base.players.map((p, i) => (i === 0 ? { ...p, godInfo: 7 } : p)),
+    };
+    expect(before.objects[6]!.type).toBe(7);
+    const r = applyDispelCard(before.players[0]!);
+    expect(r.ok).toBe(true);
+    expect(r.player.godInfo).toBe(0);
+    const after: GameState = {
+      ...before,
+      players: before.players.map((p, i) => (i === 0 ? r.player : p)),
+    };
+    expect(said(speechEventsFor(before, after))).toEqual([{ player: 0, event: 23, order: 'afterStage' }]);
+  });
+});
+
+// ============================================================
+//  ★ 16 / 17 —— 走**真 reducer** 的那条路（钉住 `pending.kind` 的形状）
+// ============================================================
+
+describe('★ 同一街區獨佔：走真 reduce（落点 → 買地 / 加蓋）', () => {
+  /** 三条同名地块 + 一个站在地块 1 上的玩家 0 */
+  const landTopo: MapTopology = {
+    nodes: [
+      makeNode({
+        id: 1,
+        adjacent: [1],
+        type: 0x7d0 + 1,
+        ref: { kind: 'land', index: 1 },
+      }),
+    ],
+    lands: [
+      makeLand({ id: 1, name: '忠孝東路', landPrice: 1000, housePrice: 200 }),
+      makeLand({ id: 2, name: '忠孝東路', landPrice: 1000, housePrice: 200 }),
+      makeLand({ id: 3, name: '忠孝東路', landPrice: 1000, housePrice: 200 }),
+    ],
+  };
+
+  it('`reduce(buyLand)` 之後 `said(speechEventsFor(before, after, topo))` 出 16', () => {
+    const before = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 1, cash: 500_000 })],
+      phase: 'awaitingDecision',
+      // 已经擁有 2、3 两块 → 買下 1 就是第 3 块
+      landOwner: [0, 0, 1, 1],
+      landLevel: [0, 0, 0, 0],
+      pending: { kind: 'buyLand', landId: 1, name: '忠孝東路', price: 1000 },
+    });
+    const after = reduce(before, { type: 'buyLand' }, landTopo);
+    expect(after).not.toBe(before);
+    expect(after.landOwner[1]).toBe(1);
+    expect(said(speechEventsFor(before, after, landTopo))).toContainEqual({ player: 0, event: 16, order: 'afterStage' });
+  });
+
+  it('★ 可證偽：走同一條路但只獨佔 2 块 ⇒ 不出 16', () => {
+    const before = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 1, cash: 500_000 })],
+      phase: 'awaitingDecision',
+      landOwner: [0, 0, 1, 0],
+      landLevel: [0, 0, 0, 0],
+      pending: { kind: 'buyLand', landId: 1, name: '忠孝東路', price: 1000 },
+    });
+    const after = reduce(before, { type: 'buyLand' }, landTopo);
+    expect(after.landOwner[1]).toBe(1);
+    expect(said(speechEventsFor(before, after, landTopo))).not.toContainEqual({ player: 0, event: 16 });
+  });
+
+  it('`reduce(upgradeLand)` 之後出 17（等級 0 → 1，沒到 5）', () => {
+    const before = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 1, cash: 500_000 })],
+      phase: 'awaitingDecision',
+      // 三块都是自己的（1 基 1 = 玩家 0）
+      landOwner: [0, 1, 1, 1],
+      landLevel: [0, 0, 0, 0],
+      pending: { kind: 'upgradeLand', landId: 1, name: '忠孝東路', cost: 200 },
+    });
+    const after = reduce(before, { type: 'upgradeLand' }, landTopo);
+    expect(after.landLevel[1]).toBe(1);
+    expect(said(speechEventsFor(before, after, landTopo))).toContainEqual({ player: 0, event: 17, order: 'afterStage' });
+  });
+});
+
+// ============================================================
+//  ★ 26 —— 開局宣言（VA 0x00407946，全 exe 唯一一處）
+// ============================================================
+
+describe('★ 開局宣言 —— 26（`fcn_00407842`，不走 action）', () => {
+  it('槽位號 = 26；當前玩家（`[0x49910c]`）說自己那一句', () => {
+    expect(OPENING_SPEECH_EVENT).toBe(26);
+    const s = makeGameState({
+      currentPlayer: 3,
+      players: [
+        makePlayer({ index: 0, character: 0 }),
+        makePlayer({ index: 1, character: 1 }),
+        makePlayer({ index: 2, character: 2 }),
+        makePlayer({ index: 3, character: 5 }),
+      ],
+    });
+    const bubbles = openingSpeech(s);
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0]!.character).toBe(5);
+    expect(bubbles[0]!.event).toBe(26);
+    expect(bubbles[0]!.voice).toBe(speechIndex(5, 26));
+    expect(bubbles[0]!.lines).toEqual(['本公主', '決不放棄！']);
+  });
+
+  it('★ 12 個角色各有自己那一句、語音號都 = `speechIndex(角色, 26)`', () => {
+    for (let c = 0; c < 12; c++) {
+      const s = makeGameState({
+        currentPlayer: 0,
+        players: [makePlayer({ index: 0, character: c })],
+      });
+      const b = openingSpeech(s)[0]!;
+      expect(b.voice, `角色 ${c}`).toBe(1050 + 27 * c + 26);
+    }
+  });
+
+  it('★ 可證偽：角色號越界 ⇒ 不吐段落（也**不拋**，與 `speechResourceFor` 同一條規矩）', () => {
+    const s = makeGameState({ players: [makePlayer({ index: 0, character: 99 })] });
+    expect(openingSpeech(s)).toEqual([]);
+  });
+
+  it('★ 可證偽：當前玩家下標越界 ⇒ 空', () => {
+    const s = makeGameState({ currentPlayer: 7 });
+    expect(openingSpeech(s)).toEqual([]);
+  });
+
+  it('★ 它**不經過** `speechEventsFor`：狀態沒動時照樣一句都不說', () => {
+    const s = makeGameState();
+    expect(said(speechEventsFor(s, clone(s)))).not.toContainEqual({ player: 0, event: 26 });
+  });
+});
+
+// ============================================================
+//  ★★ W-51 台词**时机** —— 每个探测器的 order 与裁定表逐条对
+// ============================================================
+
+describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁定表）', () => {
+  /**
+   * **一行一个探测器**。判据 = W-50 `docs/tasks/W-50-playtest5-stage-order.md` §2.2：
+   *
+   * - `§2.2 表` = 首席在表里**明写**了次序的那一行；
+   * - `§2.2 规则` = 表尾那条（查 `docs/tasks/speech-callsites.md` 里同一次 `player_say`
+   *   调用的行：「之前」列有影片/訊息框而「之后」列没有 ⇒ `afterStage`，反之 ⇒ `beforeStage`）；
+   * - `⚠E-19` = 表尾的第三种情形（**两边都没有**，或同一个探测器的两个调用点互相矛盾）
+   *   ⇒ 按 C 级上报 `docs/escalations.md` E-19，**暂定 `afterStage`**（照 §2.2 对
+   *   `afterNotice` 的先例）。首席裁定后改 `DETECTORS` 里那一处、并改这里的期望值。
+   */
+  const ORDERS: readonly (readonly [string, 'beforeStage' | 'afterStage', string])[] = [
+    ['prisonEntered', 'afterStage', '§2.2 表：送監獄 `0x0043d71c`（影片 → 镜头 → 台词）'],
+    ['hospitalEntered', 'afterStage', '§2.2 表：送醫院 `0x0043edcb`（影片 → 镜头 → 台词）'],
+    ['dreamCard', 'afterStage', '⚠E-19：调用点 `0x00444356` 前后两列都空'],
+    ['turnStartBlocked', 'beforeStage', '§2.2 表：回合开始那三句（本回合第一件事）'],
+    ['bankrupt', 'afterStage', '⚠E-19：调用点 `0x0040d249` 前后两列都空'],
+    ['victory', 'afterStage', '⚠E-19：调用点 `0x0040d060` 前后两列都空'],
+    ['levelFive', 'beforeStage', '★E-19 已结案：两个调用点 `0x00419a19` / `0x0041ab5b` 后面**紧跟** `0x40b0cd`（0x20b 烟花）⇒ 台词在前'],
+    ['areaMonopoly', 'afterStage', '⚠E-19：调用点 `0x0044f6df`（叶子函数里）两列都空'],
+    ['godLeft', 'afterStage', '⚠E-19：调用点 `0x0040e659` 前后两列都空'],
+    ['godArrived', 'beforeStage', '§2.2 表：壞神附身 `0x0040ef44`…（台词 → 影片 → 神明窗）'],
+    // ★ W-55 行 6/7 在同一工作区里并行落地的四条 —— 也在这张「一行一个探测器」的表里
+    ['landGodLine', 'afterStage', '§2.2 表：土地公顯靈 `0x0040f8ab`（镜头 → 訊息框 → 台词）'],
+    ['luckyGodLine', 'afterStage', '§2.2 表：福神顯靈 `0x0040fa1e/0x0040fa5c` 裁定 afterNotice；两档制下取 §2.2 兜底的 afterStage'],
+    ['smallWealthLine', 'afterStage', '§2.2 表：小財神 `0x0040ecde`（神明台词窗 → 轉盤窗 → 收款 → 台词）'],
+    ['bigWealthLine', 'afterStage', 'W-55 行 7（G34）：`0x0040ed85` 排在收款 `0x0040ed52` 之后（§2.2 表没有这一行）'],
+    ['moneyPaid', 'afterStage', '§2.2 表：設施收費 `0x0041a71e`（轉盤 → 訊息框 → 收費 → 台词）'],
+    ['shopGift', 'afterStage', '★W-67-a：董事長赠礼 —— 訊息框（0x464378）→ 台词（0x44f230）'],
+    ['moneyGained', 'afterStage', '⚠E-19：调用点 `0x0044f420` 前后两列都空'],
+    ['hotelStay', 'afterStage', '⚠E-19：`0x0041a7e0` 所在函数没有 `player_say`；`0x0044f347` 两列都空'],
+    ['pointsGained', 'afterStage', '⚠E-19：调用点 `0x0044f2b5` 前后两列都空'],
+    ['pointsSquarePhrase', 'afterStage', '⚠E-19：`0x0041b211` 两列都空、`0x004154cf` 前有訊息框'],
+  ];
+
+  it.each(ORDERS)('%s ⇒ %s（%s）', (name, order) => {
+    const d = DETECTORS.find((x) => x.name === name);
+    expect(d, `探测器 ${name} 不在 DETECTORS 里`).toBeDefined();
+    expect(d!.order).toBe(order);
+  });
+
+  it('★ 一个都不漏、一个都不多：DETECTORS 与这张表一一对应', () => {
+    expect([...DETECTORS].map((d) => d.name).sort()).toEqual(ORDERS.map(([n]) => n).sort());
+  });
+
+  it('★ 每条 order 都是显式写的两个字面量之一（没有缺省值可漏）', () => {
+    for (const d of DETECTORS) {
+      expect(['beforeStage', 'afterStage'], `${d.name} 的 order`).toContain(d.order);
+    }
+  });
+
+  it('★ `speechEventsFor` 把**探测器自己的** order 盖在每一条命中上', () => {
+    const [b, a] = to((s) => {
+      s.players[0]!.blocking.inPrison = 3;
+    });
+    expect(said(speechEventsFor(b, a))).toEqual([{ player: 0, event: 19, order: 'afterStage' }]);
+  });
+
+  it('★ 一次跃迁里两种 order 并存：換神 = 23（afterStage）+ 22（beforeStage）', () => {
+    const world = (s: GameState) => ({
+      players: s.players,
+      objects: s.objects,
+      tools: s.tools,
+      toolStock: s.toolStock,
+    });
+    const s0 = makeGameState();
+    const a1 = attachGod(world(s0), 0, 5); // 小窮神（種類 5）
+    const s1: GameState = { ...s0, players: a1.players, objects: a1.objects };
+    const a2 = attachGod(world(s1), 0, 7); // 換小衰神（種類 7）：舊神先走
+    const s2: GameState = { ...s1, players: a2.players, objects: a2.objects };
+    expect(said(speechEventsFor(s1, s2))).toEqual([
+      { player: 0, event: 23, order: 'afterStage' },
+      { player: 0, event: 22, order: 'beforeStage' },
+    ]);
+  });
+
+  it('★ `speechLinesFor` 把段落与 order 一起交出来（`queueSpeech` 靠它分流）', () => {
+    const [b, a] = to((s) => {
+      s.players[0]!.blocking.inPrison = 3;
+    });
+    const lines = speechLinesFor(a, said(speechEventsFor(b, a)));
+    expect(lines.map((l) => l.order)).toEqual(['afterStage']);
+    expect(lines.map((l) => l.bubble.event)).toEqual([19]);
+  });
+});
+
+// ============================================================
+//  ★ W-55 行 6 / 7：神明落脚顯靈与財神的台词（`lastGodLine` / `lastGodPower`）
+// ============================================================
+
+describe('★ 土地公顯靈 —— 事件 0（`0x0040f8ab`，角色台词表 `[角色][0]`）', () => {
+  const withNotice = (s: GameState, key: NoticeKey): GameState => ({
+    ...s,
+    notices: [...s.notices, { key, args: [] }],
+  });
+
+  it('★ 訊息框 `god.seize` 新出现 ⇒ 当前玩家说事件 0', () => {
+    const before = makeGameState({ currentPlayer: 2 });
+    const after = withNotice(before, 'god.seize');
+    expect(detectLandGodLine(before, after)).toEqual([{ player: 2, event: 0 }]);
+  });
+
+  it('★ 可证伪：`god.seize` 上一条 action 就有（没新出现）⇒ 不说', () => {
+    const before = withNotice(makeGameState(), 'god.seize');
+    const after = withNotice(before, 'god.build');
+    expect(detectLandGodLine(before, after)).toEqual([]);
+  });
+
+  it('★ 可证伪：别的框（拆屋/加倍/收租）一律不说 —— 只有 `god.seize` 是土地公', () => {
+    const before = makeGameState();
+    for (const key of ['god.demolish', 'god.build', 'rent.payOneOwner', 'points.card'] as const) {
+      expect(detectLandGodLine(before, withNotice(before, key)), key).toEqual([]);
+    }
+  });
+
+  it('★ `player_say` 三道闸（`0x44ef79/86/93`）：消失 / 夢遊 / 睡眠 任一非 0 ⇒ 不说', () => {
+    for (const blocking of [
+      { disappearing: 1 },
+      { sleepWalking: 4 },
+      { sleeping: 3 },
+    ] as const) {
+      const before = makeGameState();
+      const after = withNotice(
+        {
+          ...before,
+          players: before.players.map((p, i) =>
+            i === 0 ? { ...p, blocking: { ...p.blocking, ...blocking } } : p,
+          ),
+        },
+        'god.seize',
+      );
+      expect(detectLandGodLine(before, after), JSON.stringify(blocking)).toEqual([]);
+    }
+  });
+
+  it('★ 坐牢 / 住院**不在**那三道闸里（照抄原版：`+0x34` / `+0x35` 不查）', () => {
+    const before = makeGameState();
+    const after = withNotice(
+      {
+        ...before,
+        players: before.players.map((p, i) =>
+          i === 0 ? { ...p, blocking: { ...p.blocking, inPrison: 2, inHospital: 3 } } : p,
+        ),
+      },
+      'god.seize',
+    );
+    expect(detectLandGodLine(before, after)).toEqual([{ player: 0, event: 0 }]);
+  });
+});
+
+describe('★ 福神顯靈（没到 5 级）—— 事件 0 / 1，取 core 交出来的 `rand()&1`', () => {
+  /** 只带 `lastGodLine` 的最小跃迁 */
+  function withLine(before: GameState, event: number, player = 0): [GameState, GameState] {
+    const after: GameState = { ...before, lastGodLine: { player, event } };
+    return [before, after];
+  }
+
+  it('★ 事件 0 与 事件 1 **两个槽位都能出**（不是恒取 0）', () => {
+    for (const event of [0, 1]) {
+      const [before, after] = withLine(makeGameState({ currentPlayer: 1 }), event, 1);
+      expect(detectLuckyGodLine(before, after), `event ${event}`).toEqual([
+        { player: 1, event },
+      ]);
+    }
+  });
+
+  it('★ 可证伪：同一个对象引用（上一条 action 留下的）⇒ 不说', () => {
+    const probe: GameState = { ...makeGameState(), lastGodLine: { player: 0, event: 1 } };
+    const after: GameState = { ...probe, rngState: probe.rngState + 1 };
+    expect(detectLuckyGodLine(probe, after)).toEqual([]);
+  });
+
+  it('★ 没有提示（普通升級 / 到 5 级那一支）⇒ 不说', () => {
+    const before = makeGameState();
+    expect(detectLuckyGodLine(before, { ...before, lastGodLine: null })).toEqual([]);
+    expect(detectLuckyGodLine(before, before)).toEqual([]);
+  });
+
+  it('★ 三道闸同样适用', () => {
+    const before = makeGameState();
+    const after: GameState = {
+      ...before,
+      players: before.players.map((p, i) =>
+        i === 0 ? { ...p, blocking: { ...p.blocking, sleepWalking: 5 } } : p,
+      ),
+      lastGodLine: { player: 0, event: 1 },
+    };
+    expect(detectLuckyGodLine(before, after)).toEqual([]);
+  });
+});
+
+describe('★ G33 小財神（`0x0040ecde`）—— 事件 8，`amount > 0x2bc` 才说', () => {
+  function wealth(
+    before: GameState,
+    type: number,
+    amount: number,
+    over: Partial<GameState> = {},
+  ): [GameState, GameState] {
+    const after: GameState = { ...before, ...over, lastGodPower: { player: 0, type, amount } };
+    return [before, after];
+  }
+
+  it('★ 阈值方向：**701 说、700 不说**（`cmp esi,0x2bc / jle`）', () => {
+    expect(SMALL_WEALTH_LINE_MIN).toBe(700);
+    const [b1, a1] = wealth(makeGameState(), SMALL_WEALTH_GOD_TYPE, 701);
+    expect(detectSmallWealthLine(b1, a1)).toEqual([{ player: 0, event: 8 }]);
+    const [b2, a2] = wealth(makeGameState(), SMALL_WEALTH_GOD_TYPE, 700);
+    expect(detectSmallWealthLine(b2, a2)).toEqual([]);
+    const [b3, a3] = wealth(makeGameState(), SMALL_WEALTH_GOD_TYPE, 0);
+    expect(detectSmallWealthLine(b3, a3)).toEqual([]);
+  });
+
+  it('★ 大財神（種類 2）走到这条探测器 ⇒ 不说（走 `detectBigWealthLine`）', () => {
+    const [b, a] = wealth(makeGameState(), BIG_WEALTH_GOD_TYPE, 999);
+    expect(detectSmallWealthLine(b, a)).toEqual([]);
+  });
+
+  it('★ 终局码非 0（`after.phase === "gameOver"`）⇒ 不说 @source 0x0040ecac', () => {
+    const start = makeGameState();
+    const [b, a] = wealth(start, SMALL_WEALTH_GOD_TYPE, 999, { phase: 'gameOver' });
+    expect(detectSmallWealthLine(b, a)).toEqual([]);
+    // 反证：同一笔金额、非终局 ⇒ 说 —— 差异只来自那一道闸
+    const [b2, a2] = wealth(start, SMALL_WEALTH_GOD_TYPE, 999);
+    expect(detectSmallWealthLine(b2, a2)).toEqual([{ player: 0, event: 8 }]);
+  });
+
+  it('★ 可证伪：提示是上一条 action 留下的（引用相同）⇒ 不说', () => {
+    const probe: GameState = {
+      ...makeGameState(),
+      lastGodPower: { player: 0, type: SMALL_WEALTH_GOD_TYPE, amount: 900 },
+    };
+    const after: GameState = { ...probe, rngState: probe.rngState + 1 };
+    expect(detectSmallWealthLine(probe, after)).toEqual([]);
+  });
+});
+
+describe('★ G34 大財神（`0x0040ed85`）—— 走「進帳」档位，闸门 = `≥ 5000×物價`', () => {
+  function wealth(before: GameState, type: number, amount: number): [GameState, GameState] {
+    const after: GameState = { ...before, lastGodPower: { player: 0, type, amount } };
+    return [before, after];
+  }
+
+  it('★ 阈值方向：**5000×物價 说、少 1 元不说**', () => {
+    const start = makeGameState({ priceIndex: 2 });
+    const threshold = MONEY_TIER_MID * 2;
+    const [b1, a1] = wealth(start, BIG_WEALTH_GOD_TYPE, threshold);
+    expect(detectBigWealthLine(b1, a1)).toEqual([{ player: 0, event: 6 }]);
+    const [b2, a2] = wealth(start, BIG_WEALTH_GOD_TYPE, threshold - 1);
+    expect(detectBigWealthLine(b2, a2)).toEqual([]);
+  });
+
+  it('★ 事件号由 `gainEventFor` 给（≥5000 档 ⇒ 事件 6），不是写死的 6', () => {
+    const start = makeGameState({ priceIndex: 1 });
+    const [b, a] = wealth(start, BIG_WEALTH_GOD_TYPE, 9000);
+    expect(gainEventFor(9000, 1)).toBe(6);
+    expect(detectBigWealthLine(b, a)).toEqual([{ player: 0, event: 6 }]);
+  });
+
+  it('★ 小財神（種類 1）走到这条 ⇒ 不说', () => {
+    const start = makeGameState();
+    const [b, a] = wealth(start, SMALL_WEALTH_GOD_TYPE, 9999);
+    expect(detectBigWealthLine(b, a)).toEqual([]);
+  });
+});
+
+describe('★★ W-55：財神那一笔**让开**通用的進帳/付錢两条探测器', () => {
+  it('★★ 小財神：附身者收款 6000 元 + `lastGodPower` ⇒ 通用 `moneyGained` **不开口**（原版那句是事件 8）', () => {
+    const start = makeGameState({
+      players: [makePlayer({ index: 0 }), makePlayer({ index: 1 })],
+      currentPlayer: 0,
+    });
+    const before = start;
+    const gained: GameState = {
+      ...before,
+      players: before.players.map((p, i) => (i === 0 ? { ...p, monthlyReceived: 6000 } : p)),
+    };
+    // 没有提示时（普通進帳）：通用路照旧开口
+    expect(detectMoneyGained(before, gained)).toEqual([{ player: 0, event: 6 }]);
+    // 有財神提示时：让开，由 `detectSmallWealthLine` 独家负责
+    const withHint: GameState = {
+      ...gained,
+      lastGodPower: { player: 0, type: SMALL_WEALTH_GOD_TYPE, amount: 500 },
+    };
+    expect(detectMoneyGained(before, withHint)).toEqual([]);
+    // 500 ≤ 700 ⇒ 小財神那句也不说（原版就是一声不吭）
+    expect(detectSmallWealthLine(before, withHint)).toEqual([]);
+  });
+
+  it('★ 大財神：附身者進帳 9000 ⇒ 通用路让开，`bigWealthLine` 独家说事件 6（**只说一次**）', () => {
+    const before = makeGameState({
+      players: [makePlayer({ index: 0 }), makePlayer({ index: 1 })],
+      currentPlayer: 0,
+    });
+    const after: GameState = {
+      ...before,
+      players: before.players.map((p, i) => (i === 0 ? { ...p, monthlyReceived: 9000 } : p)),
+      lastGodPower: { player: 0, type: BIG_WEALTH_GOD_TYPE, amount: 9000 },
+    };
+    expect(detectMoneyGained(before, after)).toEqual([]);
+    expect(detectBigWealthLine(before, after)).toEqual([{ player: 0, event: 6 }]);
+    // 合起来仍然只有一条
+    expect(said(speechEventsFor(before, after)).filter((e) => e.player === 0 && e.event === 6)).toHaveLength(1);
+  });
+
+  it('★ 大財神：金额 3000（< 5000×物價）⇒ **谁都不说**（原版那一道闸拦住的正是它）', () => {
+    const before = makeGameState({
+      players: [makePlayer({ index: 0 }), makePlayer({ index: 1 })],
+      currentPlayer: 0,
+    });
+    const after: GameState = {
+      ...before,
+      players: before.players.map((p, i) => (i === 0 ? { ...p, monthlyReceived: 3000 } : p)),
+      lastGodPower: { player: 0, type: BIG_WEALTH_GOD_TYPE, amount: 3000 },
+    };
+    // 通用路本来会按 2000×物價 说事件 8 —— 让开之后一声不吭
+    expect(detectMoneyGained(before, after)).toEqual([]);
+    expect(detectBigWealthLine(before, after)).toEqual([]);
+  });
+
+  it('★ 財神提示里的那个人不被通用 `moneyPaid` 重复说（让开）', () => {
+    const before = makeGameState({
+      players: [makePlayer({ index: 0 }), makePlayer({ index: 1 })],
+      currentPlayer: 0,
+    });
+    // 构造「附身者付 9000 进公库」的形状（原版小窮神那一支的付款形状）——
+    // 这一条只钉「提示里那个人不被通用路重复说」这条不变量：
+    // 没有提示时通用路按 `monthlyPaid` + `poolGrew` 会说事件 12，有提示时让开。
+    const paid: GameState = {
+      ...before,
+      players: before.players.map((p, i) => (i === 0 ? { ...p, monthlyPaid: 9000 } : p)),
+      pool: before.pool + 9000,
+    };
+    expect(detectMoneyPaid(before, paid)).toEqual([{ player: 0, event: 12 }]);
+    const withHint: GameState = {
+      ...paid,
+      lastGodPower: { player: 0, type: SMALL_WEALTH_GOD_TYPE, amount: 900 },
+    };
+    expect(detectMoneyPaid(before, withHint)).toEqual([]);
+  });
+});
+
+describe('★ W-55 的探测器都在 `DETECTORS` 里、且 `order` 照 §2.2', () => {
+  it('★ 四条新探测器各有一条 `order`（表里没有的那些按兜底 `afterStage`）', () => {
+    const want: Record<string, string> = {
+      // §2.2：土地公顯靈 —— 镜头 → 訊息框 → 台词
+      landGodLine: 'afterStage',
+      // §2.2 说 `afterNotice`，而 `SpeechOrder` 只有两档 ⇒ 兜底 `afterStage`
+      luckyGodLine: 'afterStage',
+      // §2.2：小財神 —— 神明台词窗 → 轉盤窗 → 收款 → 台词
+      smallWealthLine: 'afterStage',
+      // W-55 表尾指定 `afterStage`（收款之后才说）
+      bigWealthLine: 'afterStage',
+    };
+    for (const [name, order] of Object.entries(want)) {
+      const d = DETECTORS.find((x) => x.name === name);
+      expect(d, name).toBeTruthy();
+      expect(d!.order, name).toBe(order);
+      expect(d!.source.length, name).toBeGreaterThan(0);
+    }
+  });
+
+  it('★ 名词不重复（顺序表里一个名字只能有一条）', () => {
+    const names = DETECTORS.map((d) => d.name);
+    expect(new Set(names).size).toBe(names.length);
   });
 });

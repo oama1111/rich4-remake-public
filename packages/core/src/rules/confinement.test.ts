@@ -4,21 +4,28 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
 import { makeNode, makePlayer } from '../testing/factories.ts';
 import { makeObjects } from '../cards/summon.ts';
-import { SPECIAL_KIND } from '../loaders/map.ts';
+import { SPECIAL_KIND, parseMap } from '../loaders/map.ts';
+import type { LandscapeInfo } from '../loaders/map.ts';
 import { RELEASE_PENDING, tickBlockingCounter } from './blocking.ts';
 import {
+  CONFINEMENT_GATE_TYPE,
   CONFINEMENT_SLOTS,
   KNOWN_PRISON_DAYS,
   OBJECT_SLOT_BASE,
   anyPlayerConfined,
   anyoneConfined,
   confine,
+  confinementGateNodeId,
   isReleasePending,
   release,
   sendToConfinement,
 } from './confinement.ts';
+
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
+const run = existsSync(MAP) ? it : it.skip;
 
 const four = () => [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
 const empty = () => new Array<number>(CONFINEMENT_SLOTS).fill(0);
@@ -274,11 +281,26 @@ describe('★ 送入监狱/医院累加「本月倒楣天數」(+0x42)', () => {
  *   在 Unicorn 里整段跑 `0x43d593`/`0x43ec3f`，表现层调用打桩）。
  */
 describe('sendToConfinement —— 首次关押的传送与跟班搬家', () => {
-  /** 3 个节点：1 = 普通格、2 = 监狱、3 = 医院（坐标刻意各不相同） */
+  /**
+   * 3 个节点：1 = 普通格、2 = 监狱格、3 = 医院格（坐标刻意各不相同）。
+   *
+   * ★★ 关押格的判据是节点 **`type`** = 0x1f42/0x1f41（景观基数 8000 + 记录 2/1），
+   *   **不是** `specialKind`（那是「落点特殊格」的判据，见 rules/confinement.ts 的
+   *   `CONFINEMENT_GATE_TYPE`）—— 所以这里两个字段都给上，坐标与真实地图一致
+   *   （0001.bin：監獄格 `type` 节点 1 @(1752,1871) ≠ 落点格 12 @(1248,1583)）。
+   */
   const nodes = [
     makeNode({ id: 1, x: 100, y: 200 }),
-    makeNode({ id: 2, x: 1935, y: 1039, specialKind: SPECIAL_KIND.PRISON }),
-    makeNode({ id: 3, x: 777, y: 888, specialKind: SPECIAL_KIND.HOSPITAL }),
+    makeNode({
+      id: 2, x: 1935, y: 1039,
+      type: 0x1f42, ref: { kind: 'landscape', index: 2 },
+      specialKind: SPECIAL_KIND.PRISON,
+    }),
+    makeNode({
+      id: 3, x: 777, y: 888,
+      type: 0x1f41, ref: { kind: 'landscape', index: 1 },
+      specialKind: SPECIAL_KIND.HOSPITAL,
+    }),
   ];
   const objs = () => makeObjects(46);
   const onNode = (i: number, nodeId: number) => makePlayer({ index: i, nodeId, xpos: 1, ypos: 2 });
@@ -378,5 +400,103 @@ describe('sendToConfinement —— 首次关押的传送与跟班搬家', () => 
     const r = sendToConfinement([], o, nodes, empty(), 'prison', 0, 5);
     expect(r.teleported).toBe(false);
     expect(r.objects).toHaveLength(o.length);
+  });
+});
+
+// ============================================================
+//  ★★ 关押格的判据：节点 `type`（原版 `[0x48bae0]`/`[0x48bae2]`）
+// ============================================================
+
+/**
+ * 原版把「**落点**特殊格」（`node+0x24` 低字节 4/5 → 走上去开保釋菜单，`0x43d304`）
+ * 与「**关押格**」（节点 `type` == 0x1f41/0x1f42 → `send_to_prison` 搬人进去）
+ * 分成两个概念，地图载入时扫出后两者存进 `[0x48bae2]`/`[0x48bae0]`：
+ * ```asm
+ * ; @source 0x0040803f
+ * 0040803f  cmp word [edx + eax*8 + 0x20], 0x1f41   ; 8001
+ * 00408048  mov word [0x48bae2], bx
+ * 0040805f  cmp word [edx + eax*8 + 0x20], 0x1f42   ; 8002
+ * 00408068  mov word [0x48bae0], bx
+ * ```
+ * ▶ 复刻先前按 `specialKind` 找关押格 ⇒ 在 0001.bin 上搬到了**落点格 12/16** 而不是
+ *   关押格 **1/23**，于是"放出来的人站在監獄/醫院**门口**的格子"这一条对不上。
+ */
+describe('★★ 关押格 = `type` 0x1f41/0x1f42 的那一格（不是 specialKind）', () => {
+  /** 只给 teleportToGate 用的两条景观记录（0 基数组 = 记录 1 / 记录 2） */
+  const LANDS: LandscapeInfo[] = [
+    { id: 1, x: 319, y: 990, name: '醫院', spriteIndex: 144 },
+    { id: 2, x: 1817, y: 1960, name: '綠島', spriteIndex: 259 },
+  ];
+
+  it('常量就是景观基数 8000 + 记录 1/2（@source 0x0040803f `cmp …,0x1f41/0x1f42`）', () => {
+    expect(CONFINEMENT_GATE_TYPE.hospital).toBe(0x1f41);
+    expect(CONFINEMENT_GATE_TYPE.prison).toBe(0x1f42);
+  });
+
+  it('★★★ 可证伪：搬进的是 `type` 那一格 —— 退回去按 `specialKind` 找就变红', () => {
+    // 2 号 = 監獄**落点**特殊格（走上去开保釋菜单）；3 号 = 关押格（`type` 0x1f42）
+    const split = [
+      makeNode({ id: 1, x: 100, y: 200, adjacent: [2] }),
+      makeNode({ id: 2, x: 1248, y: 1583, adjacent: [1, 3], specialKind: SPECIAL_KIND.PRISON }),
+      makeNode({
+        id: 3, x: 1752, y: 1871, adjacent: [2],
+        type: 0x1f42, ref: { kind: 'landscape', index: 2 },
+      }),
+    ];
+    const r = sendToConfinement(
+      [makePlayer({ index: 0, nodeId: 1 })], makeObjects(46), split, empty(), 'prison', 0, 5,
+      undefined, LANDS,
+    );
+    expect(r.teleported).toBe(true);
+    // ★ 旧实现（`specialKind === PRISON`）会给 2 ⇒ 这一条当场红
+    expect(r.players[0]!.nodeId).toBe(3);
+    expect(r.players[0]!.nodeId).not.toBe(2);
+    // x/y 仍然是**景观记录**（綠島），与 nodeId 不是同一个地方（D-CONFINE-1）
+    expect([r.players[0]!.xpos, r.players[0]!.ypos]).toEqual([1817, 1960]);
+  });
+
+  it('同一判据也管医院：`type` 0x1f41 那一格', () => {
+    const split = [
+      makeNode({ id: 1, x: 100, y: 200, adjacent: [2] }),
+      makeNode({ id: 2, x: 767, y: 1631, adjacent: [1, 3], specialKind: SPECIAL_KIND.HOSPITAL }),
+      makeNode({
+        id: 3, x: 384, y: 1056, adjacent: [2],
+        type: 0x1f41, ref: { kind: 'landscape', index: 1 },
+      }),
+    ];
+    const r = sendToConfinement(
+      [makePlayer({ index: 0, nodeId: 1 })], makeObjects(46), split, empty(), 'hospital', 0, 3,
+      undefined, LANDS,
+    );
+    expect(r.players[0]!.nodeId).toBe(3);
+    expect([r.players[0]!.xpos, r.players[0]!.ypos]).toEqual([319, 990]);
+  });
+
+  it('地图上**没有**关押格 ⇒ 不传送（`[0x48bae0]` 为 0 时原版那几行不成立）', () => {
+    const onlyLanding = [
+      makeNode({ id: 1, x: 100, y: 200, adjacent: [2] }),
+      makeNode({ id: 2, x: 1248, y: 1583, adjacent: [1], specialKind: SPECIAL_KIND.PRISON }),
+    ];
+    const r = sendToConfinement(
+      [makePlayer({ index: 0, nodeId: 1 })], makeObjects(46), onlyLanding, empty(), 'prison', 0, 5,
+    );
+    expect(r.teleported).toBe(false);
+    expect(r.players[0]!.nodeId).toBe(1);
+  });
+
+  run('★ 0001.bin：关押格 = 1（綠島）/ 23（醫院大樓）；落点特殊格是另外两个节点 12/16', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP)));
+    expect(confinementGateNodeId(map.nodes, 'prison')).toBe(1);
+    expect(confinementGateNodeId(map.nodes, 'hospital')).toBe(23);
+    // 关押格引用的正是两条景观记录（记录 2 = 綠島、记录 1 = 醫院）
+    const prison = map.nodes.find((n) => n.id === 1)!;
+    const hospital = map.nodes.find((n) => n.id === 23)!;
+    expect(prison.ref).toEqual({ kind: 'landscape', index: 2 });
+    expect(hospital.ref).toEqual({ kind: 'landscape', index: 1 });
+    expect(map.landscapes[1]!.name).toBe('綠島');
+    expect(map.landscapes[0]!.name).toBe('醫院');
+    // ★ 与「落点特殊格」确实不是同一格 —— 这正是先前混为一谈的地方
+    expect(map.nodes.find((n) => n.specialKind === SPECIAL_KIND.PRISON)!.id).toBe(12);
+    expect(map.nodes.find((n) => n.specialKind === SPECIAL_KIND.HOSPITAL)!.id).toBe(16);
   });
 });

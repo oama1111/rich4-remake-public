@@ -32,7 +32,23 @@ export interface InteractionChoice {
   label: string;
   action: Action;
   /** 需要玩家先填一个数（金额、股数…）；控件用它决定要不要给输入框 */
-  amount?: { label: string; max: number; step: number; fill: (n: number) => Action };
+  amount?: {
+    label: string;
+    max: number;
+    step: number;
+    fill: (n: number) => Action;
+    /**
+     * 开窗时先填几股 —— **不给就是 0**。
+     *
+     * ★ 上市企業認購那一支原版开窗时把上限**当第一个实参**压进去
+     *   （`@source 0x0041d25a push esi / call 0x453544`，`esi` 就是
+     *   上面那三道夹出来的 `min(1000, 現金÷每股, 企業餘量)`）——
+     *   也就是**一开窗就是满额**，直接按 Enter 就买满（试玩 4：「MAX 按钮
+     *   应该也有功能（股市中一键拉满）」）。股市柜台那两支没有这个实参，
+     *   所以只有這一处给 `initial`。
+     */
+    initial?: number;
+  };
 }
 
 /** 放弃 —— 任何待决交互都接受它 */
@@ -281,6 +297,8 @@ export function interactionUi(
             amount: {
               label: '買幾股',
               max: pending.max,
+              // 原版开窗即满额（见 `amount.initial` 的 @source）—— 按 Enter 就买满
+              initial: pending.max,
               step: 1,
               fill: (n) => ({ type: 'buyShares', shares: n }),
             },

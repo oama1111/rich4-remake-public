@@ -7,6 +7,8 @@
  * 盘子在 (92,300)、资源 `Panel.mkf` #72；返回值 1..6，取消（0）什么都不发。
  */
 import { describe, expect, it } from 'vitest';
+import type { GameState, MapTopology } from '@rich4/core';
+import { TOOL_SLOTS_PER_PLAYER, makeGameState, makeNode, makePlayer, reduce, toolCount } from '@rich4/core';
 import {
   DICE_BAND_Y0,
   DICE_BAND_Y1,
@@ -25,6 +27,7 @@ import {
   diceLitFrame,
   hitDiceFace,
   remoteDiceAction,
+  remoteDiceActions,
 } from './dice-choose.ts';
 import { REMOTE_DICE_TOOL } from './inventory.ts';
 
@@ -118,5 +121,72 @@ describe('选中 → action（形状与 core 的 useTool 一致）', () => {
 
   it('★ 没点中任何一颗（命中 0）也走同一条路：不发 action', () => {
     expect(remoteDiceAction(hitDiceFace(140, 330))).toBeNull();
+  });
+});
+
+/**
+ * ★★ 试玩回报：「遥控骰子无法正常使用，我选择了1点应该是直接跳过正常扔骰子阶段
+ *   然后让角色走1点」。
+ *
+ * 这里在 **core 上真的跑一遍**：把 `remoteDiceActions(1)` 的两条 action 依次
+ * `reduce`，必须得到「点数 = 1、这一掷就走 1 步」。如果只发 `useTool`
+ * （先前那样），`phase` 会停在 `awaitingRoll`、`dice` 为空 ⇒ 本条变红。
+ */
+describe('★ 选完点数当场走完这一掷 @source VA 0x00447260（fcn_0040dd1f）', () => {
+  const topo = {
+    nodes: [
+      makeNode({ id: 1, x: 0, y: 0, adjacent: [2] }),
+      makeNode({ id: 2, x: 100, y: 0, adjacent: [1] }),
+    ],
+    lands: [],
+    facilities: [],
+    commercials: [],
+  } as unknown as MapTopology;
+
+  /** 轮到玩家 0、正等掷骰、身上有一件遥控骰子（第 8 号槽）*/
+  function ready(): GameState {
+    const tools = new Array<number>(4 * TOOL_SLOTS_PER_PLAYER).fill(0);
+    tools[REMOTE_DICE_TOOL_ID] = 1;
+    return makeGameState({
+      phase: 'awaitingRoll',
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i, nodeId: 1 })),
+      tools,
+    });
+  }
+
+  it('★ 选 1 点 → 真的走 1 步（不是随机点数、也不用再按一次「前進」）', () => {
+    const acts = remoteDiceActions(1);
+    expect(acts).not.toBeNull();
+    let s = ready();
+    for (const a of acts!) s = reduce(s, a, topo);
+    // 点数 = 玩家选的 1（这条会随 RNG 变红，所以能钉住「值被丢掉」）
+    expect(s.dice).toEqual([1]);
+    expect(s.stepsTotal).toBe(1);
+    expect(s.stepsRemaining).toBe(1);
+    expect(s.phase).toBe('moving');
+    // @source VA 0x00447285：掷骰处读出并**当场清零**
+    expect(s.forcedDice).toBe(0);
+    // 走一格就落地（起点 1 → 下一格 2）
+    s = reduce(s, { type: 'step' }, topo);
+    expect(s.stepsRemaining).toBe(0);
+    expect(s.phase).toBe('settling');
+    expect(s.players[0]!.nodeId).toBe(2);
+    // 道具被收走
+    expect(toolCount(s.tools, 0, REMOTE_DICE_TOOL_ID)).toBe(0);
+  });
+
+  it('★ 六颗骰面各走各的步数（不是「选中就恒走 1」）', () => {
+    for (let face = DICE_FACE_MIN; face <= DICE_FACE_MAX; face++) {
+      let s = ready();
+      for (const a of remoteDiceActions(face)!) s = reduce(s, a, topo);
+      expect(s.dice, `骰面 ${face}`).toEqual([face]);
+      expect(s.stepsRemaining, `骰面 ${face}`).toBe(face);
+    }
+  });
+
+  it('★ 取消（0 / 越界）→ 一条 action 都不发', () => {
+    expect(remoteDiceActions(0)).toBeNull();
+    expect(remoteDiceActions(7)).toBeNull();
+    expect(remoteDiceActions(1.5)).toBeNull();
   });
 });

@@ -139,10 +139,16 @@ describe('★★ walkTweenFor：走一格 / 「走回棋盘」两种位移补间
   const P = (nodeId: number, xpos: number, ypos: number) => ({ nodeId, xpos, ypos });
   const st = (p: ReturnType<typeof P>) => ({ currentPlayer: 0, players: [p] });
 
-  it('走一格：起终点 = `lastNodeId`/`nodeId` 两格', () => {
+  it('走一格：起终点 = `lastNodeId`/`nodeId` 两格，**不走特殊支**', () => {
     expect(
       walkTweenFor('step', st(P(7, 768, 1008)), st(P(12, 1248, 1583)), nodeAt),
-    ).toEqual({ player: 0, from: { x: 768, y: 1008 }, to: { x: 1248, y: 1583 } });
+    ).toEqual({
+      player: 0,
+      from: { x: 768, y: 1008 },
+      to: { x: 1248, y: 1583 },
+      // 普通走子查速度表 `[0x4749d8]`（@source 0x40c282..0x40c29e）
+      special: false,
+    });
   });
 
   it('没真的挪窝（被阻碍）⇒ 不起补间', () => {
@@ -152,7 +158,31 @@ describe('★★ walkTweenFor：走一格 / 「走回棋盘」两种位移补间
   it('★★ 「走回棋盘」：x/y 从綠島回填到監獄格 ⇒ 起终点就是这两个坐标', () => {
     // 綠島（景观记录 2）= (1817,1960)、監獄格 12 = (1248,1583)
     const t = walkTweenFor('startTurn', st(P(12, 1817, 1960)), st(P(12, 1248, 1583)), nodeAt);
-    expect(t).toEqual({ player: 0, from: { x: 1817, y: 1960 }, to: { x: 1248, y: 1583 } });
+    expect(t).toEqual({
+      player: 0,
+      from: { x: 1817, y: 1960 },
+      to: { x: 1248, y: 1583 },
+      special: true,
+    });
+  });
+
+  it('★★ 走回棋盘**必须**走特殊支（`dist × 0.125`），与交通方式无关', () => {
+    // 可证伪：`special=false` 时，開車的人（16/tick）这一段会快一倍。
+    // @source 0x40c0ba（0x10 分支）与 0x40c26d（0x30 特殊支）读的是同一个
+    //   `player+0x15` 字节，中间无写入 ⇒ 走回棋盘恒走 0x40c27a。
+    const t = walkTweenFor('startTurn', st(P(12, 1817, 1960)), st(P(12, 1248, 1583)), nodeAt)!;
+    expect(t.special).toBe(true);
+    const dx = t.to.x - t.from.x;
+    const dy = t.to.y - t.from.y;
+    const dist = Math.hypot(dx, dy);
+    // 特殊支：不管交通方式
+    for (const traffic of [0, 1, 2, 3]) {
+      expect(tweenTickCount(dx, dy, traffic, t.special)).toBe(Math.trunc(dist * 0.125));
+    }
+    // 反证：若按交通方式（这里 2 = 汽車），拍数会明显更少
+    expect(tweenTickCount(dx, dy, 2, false)).toBeLessThan(
+      tweenTickCount(dx, dy, 2, t.special),
+    );
   });
 
   it('startTurn 但 x/y 没变（普通开局）⇒ 不起补间', () => {

@@ -144,6 +144,36 @@ export function pickerTypeOf(slot: number): number | null {
   return PICKER_TYPES[slot] ?? null;
 }
 
+/**
+ * 这扇窗要不要显示**建造费用**（W-55 行 9）。
+ *
+ * ★★ **结论先说：原版这扇窗一个价钱都不画，本引擎也不画。**
+ *   逐条核过 `fcn_0043fae4`（窗口过程）的全部绘制调用 —— 只有四处：
+ *   ① 面板 `Data#517` 图 4 落 (43,279)（`0x00440b1b`）；
+ *   ② 悬停三圈黄框（`loc_0043fc6f`）；
+ *   ③ 立绘板 `Data#517` 图 5 落 (220,140)（`loc_0043fc6f`）；
+ *   ④ 标题「請選擇設施類別」落 (220,122) 与**悬停那一格的名字**落 (220,154)
+ *      （`0x00443fd10`/`0x00443fd26` → `0x44fabc`）。
+ *   —— **没有任何一处 `draw_text` 拿价钱**（也没有 `%d元` 那类格式串）。
+ *
+ * ⚠️ 「这扇窗要显示价钱」这个印象来自**它替掉的那块临时画面**：
+ *   `git show 9664bbf~1:packages/client/src/interactions.ts` 里
+ *   `case 'buildFacility'` 的 `detail: \`建築費用 ${money(pending.price)}…\`` ——
+ *   那是重制版自己发明的五按钮对话框，`9664bbf` 接上本窗时**整段删掉**了。
+ *   按 WORKPLAN §2 规则 5（原版没有的 UI/提示一律不加），本窗**不把它加回来**。
+ *
+ * ⇒ 这条谓词是那个决定的**唯一闸门**，留给「日后真要往这扇窗里放价钱」的人：
+ *   它必须过这里，而**神明顯靈代蓋**那一次（`pending.free === true`，
+ *   见 `rules/interaction.ts` 的 `buildFacility.free`）**永远返回 false** ——
+ *   那一次原版不收一分钱，画任何一个数都是错的。
+ *
+ * @param pending `GameState.pending`（只需要 `free` 一个字段；`null`/别的 kind ⇒ 不显示）
+ */
+export function pickerShowsPrice(pending: { free?: true } | null): boolean {
+  if (pending === null) return false;
+  return pending.free !== true;
+}
+
 /** 类型 → 那一格显示的名字 */
 export function pickerNameOf(type: number): string {
   return PICKER_NAMES[type] ?? '';
@@ -351,6 +381,12 @@ export const facilityPickerScreen: UiScreen = {
       env.requestRender();
       return;
     }
+    // ★★ E-20 订正：神明顯靈**代蓋**那一次（`pending.free`）原版右键**无效** ——
+    //   `0x0043febb cmp dword [0x48c528],0 / 0x0043fec2 je 0x43fd7e`（忽略），而 `[0x48c528]`
+    //   就是 `0x440aac` 的实参（`0x0043fb3c` 在 `0x401` 初始化那一拍存入）；免费那一支
+    //   `0x0040b1e2 push 0`。只有改建卡（`0x004431c2 push 1`）能取消。⇒ 窗留着，必须选一种。
+    const p = env.state.pending;
+    if (p !== null && p.kind === 'buildFacility' && p.free === true) return;
     hover = null;
     env.dispatch({ type: 'declineDecision' });
     env.requestRender();

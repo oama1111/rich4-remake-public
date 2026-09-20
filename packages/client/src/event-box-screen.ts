@@ -37,7 +37,52 @@
  *   push 0x465424`，`rich4_news.asm:89`）。
  * - `fcn_004544f6`（VA 0x004544f6，`rich4_sound_effect.asm:915`）是**可跳过**的等待：
  *   每轮 `PeekMessage` 看到 `0x202`（左键抬起）/ `0x205`（右键抬起）/
- *   `0x101`（按键）就提前返回。
+ *   `0x101`（按键）就提前返回；末尾把**剩余时间**再交给 `fcn_004528b9`
+ *   （`004545a8 push edx / 004545a9 call 0x4528b9`），后者也认这三种消息。
+ *
+ * ### ★ `fcn_004528b9` **不是**死等 —— 它认 `0x202`/`0x205`/`0x101`
+ *     （2026-09-19 按 `escalations.md` E-5 订正）
+ *
+ * 旧注释把 `fcn_004528b9` 写成「死等、**不认消息**」——**与汇编不符**。
+ * 它自己的 `PeekMessageA` 循环（VA 0x004528b9；时间 = `timeGetTime` `[0x46246c]`、
+ * 消息 = `PeekMessageA` `[0x46230c]`，两者均由 IAT 名核对）在 `0x004528e5` 起每轮：
+ *
+ * ```asm
+ * 00452901  cmp edx, 0x202 / je 0x452919   ; WM_LBUTTONUP
+ * 00452909  cmp edx, 0x205 / je 0x452919   ; WM_RBUTTONUP
+ * 00452911  cmp edx, 0x101 / jne 0x45291e  ; WM_KEYDOWN
+ * 00452919  mov ebx, 1                     ; ★ 置「跳过」
+ * 00452934  cmp esi, ebp / jae 0x45293c    ; 等满时长也退出
+ * 00452938  test ebx, ebx / je 0x4528da    ; 没被跳过就接着等
+ * 0045293c  mov eax, ebx                   ; 返回值 = 是否被跳过
+ * ```
+ *
+ * ⇒ 三种消息都能提前结束等待。函数**返回**「有没有被跳过」（`0x0045293c`），
+ * 而本屏那两处调用点（`0x0044dd80` / `0x004420ab`）都是 `add esp,4` 把返回值丢掉
+ * —— 跳过唯一的后果就是**不等满、直接往下走**（后面的收尾、清理照跑），
+ * 所以引擎侧把「跳过」映射成「推进一段 / 关屏」。
+ * 全 exe 只有 `0x00451a41 test eax,eax / je` 一处真的用返回值（那是另一支
+ * 16 帧动画的循环出口，与本屏无关）。
+ *
+ * | 段 | 等待/播放函数 | VA | 认 `0x202/0x205/0x101`？ |
+ * |---|---|---|---|
+ * | 新聞 2400ms | `fcn_004544f6(0x960)` | 0x0044b867 → 0x004544f6 | ✅ |
+ * | 命運第一段 1600ms | `fcn_004544f6(0x640)` | 0x0044dd49 → 0x004544f6 | ✅ |
+ * | 命運第二段 800ms | `fcn_004528b9(0x320)` | 0x0044dd80 → 0x004528b9 | ✅ |
+ * | 抽卡亮牌 1500ms | `fcn_004528b9(0x5dc)` | 0x004420ab → 0x004528b9 | ✅ |
+ * | **抽卡第一段 FLIC** | **`fcn_0045144f`**（影片播放，不是等待）| 0x0041b32b → 0x0045144f | ❌ **闸门关着**（见下） |
+ *
+ * ### 抽卡 FLIC 那一段**点不掉**（`fcn_0045144f`，VA 0x0045144f）
+ *
+ * `fcn_0045144f` 的 `PeekMessageA` 循环外面有一道闸：
+ * `0x004514d6 cmp byte [0x48c880], 0 / je 0x4514fd` —— 闸值为 0 时**整段消息检查被跳过**，
+ * 跳过标志永远不置位。而 `[0x48c880]` = `flags & 2`：
+ * `0x00450d95 and al, 2 / 0x00450d97 mov [0x48c880], al`，
+ * 其中 `flags` 是 `fcn_0045144f` 的第 4 个参数
+ * （`fcn_00450ced(img, x, y, flags)`，`0x0045146c call 0x450ced`）。
+ * 抽卡这一处的实参是 **1**（`0x0041b31e 6a 01`，逐字节核过）⇒ `1 & 2 = 0`
+ * ⇒ **这段影片原版就不吃点击/按键**，与 `confine-fx.ts` / `alien-news-fx.ts`
+ * 那几段 `flags` bit1 = 0 的影片同一条规矩（见 `board-film.ts` 的 `boardFilmSkippable`）。
  *
  * ### 命運 `fcn_0044db81`（VA 0x0044db81，`rich4_fortune.asm:2529`）
  *
@@ -49,7 +94,7 @@
  * 0044dc28  push 0x2c / push 0x19             ; 插画同样落 (25,44)
  * 0044dcf6  fcn_004563f5(主表面, 图1, 0, 0)   ; 整窗贴上屏
  * 0044dd44  push 0x640 / call 0x4544f6        ; 等 1600ms（可跳过）
- * 0044dd7b  push 0x320 / call 0x4528b9        ; 再等 800ms（**不可跳过**）
+ * 0044dd7b  push 0x320 / call 0x4528b9        ; 再等 800ms（**也可跳过**，见上）
  * ```
  *
  * - 说明文字同样由事件处理函数画，但落点是 `(0x18, 0x14a) = (24, 330)`
@@ -57,8 +102,10 @@
  *   `rich4_fortune.asm:122`）—— **不是新聞那个 310**。
  * - 表 `0x475fb4` 是 **word** 表（值 `0x1dd..0x204`），引擎侧等价于
  *   `0x1dd + id`；本模块按后者取（表里那段就是连续的）。
- * - 命運用**两段**等待：`0x640`（1600，可跳过）之后事件处理函数以 arg=1
- *   再跑一次（施加效果），然后 `0x320`（800，`fcn_004528b9` 是死等，**不认消息**）。
+ * - 命運用**两段**等待：`0x640`（1600，`fcn_004544f6`，可跳过）之后事件处理函数以 arg=1
+ *   再跑一次（施加效果），然后 `0x320`（800，`fcn_004528b9`，**同样可跳过**）。
+ *   跳过第一段 ⇒ 立刻进第二段（原版第二段是新起的一次等待，时长重新数）；
+ *   跳过第二段 ⇒ 这一段演出就结束（原版接着跑 `0x0044dd8f` 的收尾）。
  *
  * ### 抽卡 `loc_0041b302`（`rich4_player_core_actions.asm:2501`）+ `fcn_00441f73`
  *
@@ -66,6 +113,7 @@
  * ; —— 第一段：卡片出现动画 ——
  * 0041b306  push 0x218                                  ; read_mkf(Data.mkf, 0x218, 0, 0)
  * 0041b31c  push 0x63 / 1 / 0xb4 / 0xd0                 ; fcn_0045144f(img, 0xd0, 0xb4, 1, 0x63)
+ *                                                       ;   flags=1 ⇒ [0x48c880]=0 ⇒ 点不掉
  * 0041b32b  call 0x45144f                               ;   在 (208,180) 播这段 FLIC
  * ; —— 第二段：亮牌 ——
  * 00441f91  create_font(0x10, 0xf0f0f0, 0x101010, 1, 3)
@@ -74,8 +122,20 @@
  * 0044202b  rich4_draw_text(表面, 卡名, 0xdc, 0x81, 4)   ; flag 4 = 正中
  * 00442046  fcn_004563f5(表面, 卡面, 0x8a, 0xc8)         ; 卡面落 (138,200)
  * 00442097  rich4_play_sound_effect(0x482402)
- * 004420a6  push 0x5dc / call 0x4528b9                  ; 等 1500ms（**不可跳过**）
+ * 004420a6  push 0x5dc / call 0x4528b9                  ; 等 1500ms（**也可跳过**）
  * ```
+ *
+ * 抽卡这两段**各有各的**等待/播放函数，可跳过性**不一样**：
+ *
+ * - 第一段 FLIC 走 **`fcn_0045144f`（VA 0x0045144f）**，不是上面那两个 `fcn_004544f6` /
+ *   `fcn_004528b9`。它虽然也有一套 `PeekMessageA` 循环（`0x004514cf`，
+ *   `0x004514e3/0x004514ea/0x004514f1` 认 `0x202`/`0x205`/`0x101`），
+ *   但整段检查被 `0x004514d6 cmp byte [0x48c880],0 / je 0x4514fd` 闸住，
+ *   而这一处的 `flags = 1`（`0x0041b31e 6a 01`）⇒ `[0x48c880] = 1 & 2 = 0`
+ *   ⇒ **这段影片点不掉/按不掉**（照原版，不是缺漏）。
+ *   影片自己走完（帧数 × 每帧时长，见 `Data#0x218` 的头部）才进亮牌。
+ * - 第二段亮牌 1500ms 走 `fcn_004528b9(0x5dc)`（`0x004420a6`），**可跳过**；
+ *   返回值被 `0x004420b0 add esp,4` 丢掉，跳过之后直接跑 `0x004420b3` 起的收尾。
  *
  * ## 素材：插画与卡面是**无头 RGB555**，`sprite()` 取不到
  *
@@ -83,7 +143,7 @@
  * |---|---|---|---|---|
  * | 新聞插画 | `Data.mkf` `id + 0x1b9`（441..476）| 194776 | 388×251 | 0x0044b75a |
  * | 命運插画 | `Data.mkf` `id + 0x1dd`（477..513）| 194776 | 388×251 | 0x0044dc11 |
- * | 抽卡卡面 | `Data.mkf` `卡号 + 0x23a`（571..600）| 84480 | 176×240 | 0x00441fb1 |
+ * | 抽卡卡面 | `Data.mkf` `卡号 + 0x23a`（571..600）| 84480 | **165×256** | 0x00441fb1 + 图头模板 `0x441204`（`w=0x00a5`/`h=0x0100`，见 `CARD_FACE_SIZE`）|
  *
  * 这三族**没有 SPR/SMP 头**（`assets-clean/manifest.json` 把它们记在 `raw` 下、
  * `signature: "bin"`），而 `env.sprite()` 走 `SpriteCache` → `parseSpriteSheet()`，
@@ -233,11 +293,11 @@ export const NEWS_SHARE_PORTRAIT_IMAGE = 3;
 /** 命運说明落点 (24,330) @source 例 `fcn_0044be16` 的 0x0044c132 `push 0x14a / push 0x18` */
 export const FORTUNE_TEXT_AT = { x: 0x18, y: 0x14a } as const;
 
-/** 新聞等待 0x960 = 2400ms（可跳过）@source 0x0044b862 */
+/** 新聞等待 0x960 = 2400ms（可跳过，`fcn_004544f6`）@source 0x0044b862 */
 export const NEWS_HOLD_MS = 0x960;
-/** 命運第一段等待 0x640 = 1600ms（可跳过）@source 0x0044dd44 */
+/** 命運第一段等待 0x640 = 1600ms（可跳过，`fcn_004544f6`）@source 0x0044dd44 */
 export const FORTUNE_HOLD_MS = 0x640;
-/** 命運第二段等待 0x320 = 800ms（**不可跳过**）@source 0x0044dd7b */
+/** 命運第二段等待 0x320 = 800ms（**同样可跳过**，`fcn_004528b9`）@source 0x0044dd7b */
 export const FORTUNE_SECOND_HOLD_MS = 0x320;
 
 /** 抽卡 FLIC = `Data.mkf` **#0x218** @source 0x0041b306 `push 0x218` */
@@ -247,15 +307,34 @@ export const CARD_FLIC_AT = { x: 0xd0, y: 0xb4 } as const;
 
 /** 卡面资源基址 @source 0x00441fb1 `add eax, 0x23a` */
 export const CARD_FACE_BASE = 0x23a;
-/** 卡面是 176×240 的无头 RGB555（`Data/0571.bin` = 84480 B = 176×240×2）*/
-export const CARD_FACE_SIZE = { w: 176, h: 240 } as const;
+/**
+ * 卡面尺寸 —— **165 × 256**（不是 176×240）。
+ *
+ * ⚠️ **2026-09-20 订正（W-61）**：先前那个 `176×240` 是**按文件大小猜的**
+ *   （`Data/0571.bin` = 84480 B；176×240×2 与 165×256×2 都是 84480，所以字节数对得上、
+ *   **行宽错了**）⇒ 解码出来每行错位、整张卡是乱码。
+ *   真值来自 exe 的**图头模板**：
+ *
+ * ```asm
+ * ; fcn_00441f73（得卡演出，4 个调用点共用：卡片格 0x0041b302、福神 0x00441baa 等）
+ * 00441f7e  mov esi, 0x441204        ; 图头模板
+ * 00441f83  movsd ×3                 ; 12 字节拷到栈上
+ * ;                    模板 0x441204 的字节 = a5 00 00 01 00 00 00 00 …
+ * ;                    ⇒ u16 宽 = 0x00a5 = 165、u16 高 = 0x0100 = 256、锚点 (0,0)
+ * 00441fc6  ; read_mkf(Data.mkf, 卡号 + 0x23a) 的返回值填进模板的数据指针
+ * 00442046  push 0xc8 / push 0x8a    ; 落点 (138,200) 不变
+ * ```
+ *   ⇒ 165 × 256 × 2 = **84480** ✓（与资源字节数对账）。
+ *   首席已用 165×256 渲染 `extracted/Data/0571.bin`，是一张完整的卡。
+ */
+export const CARD_FACE_SIZE = { w: 0xa5, h: 0x100 } as const;
 /** 卡面落点 (138,200) @source 0x00442046 `push 0xc8 / push 0x8a` */
 export const CARD_FACE_AT = { x: 0x8a, y: 0xc8 } as const;
 /** 对话框皮落点 (220,129) @source 0x0044200a `push 0xdc / push 0x81` */
 export const CARD_SKIN_AT = { x: 0xdc, y: 0x81 } as const;
 /** 卡名落点 (220,129)、flag 4 = 正中 @source 0x0044202b `push 4 / 0x81 / 0xdc` */
 export const CARD_NAME_AT = { x: 0xdc, y: 0x81 } as const;
-/** 抽卡等待 0x5dc = 1500ms（**不可跳过**）@source 0x004420a6 */
+/** 抽卡等待 0x5dc = 1500ms（**同样可跳过**，`fcn_004528b9`）@source 0x004420a6 */
 export const CARD_HOLD_MS = 0x5dc;
 /** FLIC 取不到时的兜底时长 —— 原版是阻塞播放，本引擎不能卡住帧（见 deviations）*/
 export const CARD_FLIC_FALLBACK_MS = 1200;
@@ -542,7 +621,7 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
         blitSprite('Data.mkf', DIALOG_SKIN_RESOURCE, DIALOG_SKIN_IMAGE, true, CARD_SKIN_AT),
         // 卡名：flag 4 = 正中
         textItem(v.cardName, CARD_NAME_AT, CARD_FONT_SIZE, true),
-        // 卡面：176×240 无头 RGB555，**不透明**贴 (138,200)
+        // 卡面：165×256 无头 RGB555（尺寸见 CARD_FACE_SIZE），**不透明**贴 (138,200)
         blitRaw('Data.mkf', CARD_FACE_BASE + v.id, CARD_FACE_SIZE, CARD_FACE_AT),
       ],
       flic: { archive: 'Data.mkf', resource: CARD_FLIC_RESOURCE, at: CARD_FLIC_AT },
@@ -771,22 +850,31 @@ export function eventBoxPlaybackTick(
 /**
  * 点一下（原版是 `WM_LBUTTONUP` 0x202 / 右键 0x205 / 按键 0x101 三种消息）。
  *
- * ★ **只有 `fcn_004544f6`（可跳过的等待）那两段会提前结束**：
- *   新聞那段 2400ms、命運第一段 1600ms。命運第二段（`fcn_004528b9(0x320)`）
- *   与抽卡亮牌那段（`fcn_004528b9(0x5dc)`）是**死等**，原版也不认消息。
- *   本引擎的 `UiScreen` 只给 `down`/`up`（没有通用按键），故只接 `up`。
+ * ★ 本屏各段的等待/播放函数**不一样**，可跳过性也不一样（详见文件头）：
+ *   - 新聞 2400ms（0x0044b867）与命運第一段 1600ms（0x0044dd49）走
+ *     `fcn_004544f6`（0x004544f6）—— 认这三种消息；
+ *   - 命運第二段 800ms（0x0044dd80）与抽卡亮牌 1500ms（0x004420ab）走
+ *     `fcn_004528b9`（0x004528b9）—— **同样认**这三种消息（E-5 订正）；
+ *   - ★ 抽卡第一段 FLIC（0x0041b32b）走 `fcn_0045144f`（0x0045144f），
+ *     但那一处 `flags = 1`（`0x0041b31e`）⇒ `[0x48c880] = 0` ⇒
+ *     `0x004514d6` 的闸把它自己的消息检查整段跳过 ⇒ **点不掉/按不掉**。
  *
- * @returns 关屏返回 `null`
+ *   原版「跳过」的语义是**不等满、直接往下走**（返回值在调用点被丢掉，
+ *   后面的收尾照跑）：
+ *   - 新聞 / 抽卡亮牌 / 命運第二段：跳过一次就演出结束 ⇒ 关屏；
+ *   - 命運第一段：跳过后原版接着跑效果那趟、再新起一次 800ms 等待 ⇒ 进第二段。
+ *
+ *   本引擎的 `UiScreen` 只给 `down`/`up`（没有通用按键），故 `up` 只接 `up`。
+ *
+ * @returns 关屏返回 `null`；抽卡 FLIC 段不吃跳过，原样返回 `p`
  */
 export function eventBoxPlaybackSkip(p: EventBoxPlayback, now: number): EventBoxPlayback | null {
-  if (p.plan.kind === 'news') return null;
-  if (p.plan.kind === 'fortune') {
-    if (p.secondAt !== 0) return p; // 第二段死等，点不动
-    return { ...p, secondAt: now };
-  }
-  // 抽卡：FLIC 那一段可以点掉，亮牌那 1500ms 点不掉
-  if (p.phase === 'flic') return { ...p, phase: 'show', showAt: now };
-  return p;
+  // 抽卡第一段 FLIC：原版那一段的跳过闸是关的（flags=1 ⇒ [0x48c880]=0）⇒ 不吃跳过
+  if (p.phase === 'flic') return p;
+  // 命運第一段：跳过后进第二段（原版第二段是**新起**的等待，时长重数）
+  if (p.plan.kind === 'fortune' && p.secondAt === 0) return { ...p, secondAt: now };
+  // 新聞 2400 / 命運第二段 800 / 抽卡亮牌 1500：跳过即演出结束
+  return null;
 }
 
 // ============================================================
@@ -870,10 +958,13 @@ export function resetEventBoxScreen(): void {
 }
 
 /**
- * 「跳过」这一拍 —— 原版 0x202 / 0x205 两条消息共用同一条出口。
+ * 「跳过」这一拍 —— 原版 0x202 / 0x205 / 0x101 三条消息共用同一条出口。
  *
- * @source `fcn_004544f6`（`rich4_sound_effect.asm:915-960`）：`PeekMessage` 收到
- *   `0x202`/`0x205`/`0x101` 就提前结束等待；否则等满 2400（新聞）/ 1600+800（命運）。
+ * @source 两个**等待**函数各自都收这三种消息：`fcn_004544f6`（0x454520-0x454554）、
+ *   `fcn_004528b9`（0x4528fd-0x452919）。收不到就等满 2400（新聞）/
+ *   1600+800（命運）/ 1500（抽卡亮牌）。
+ *   ⚠️ 抽卡第一段是 `fcn_0045144f`（0x0041b32b），那一处 `[0x48c880]=0`
+ *   ⇒ 它那三种消息检查整段被跳过，本屏也照原版不接（`eventBoxPlaybackSkip` 直接返回 `p`）。
  */
 function skipPlayback(env: UiScreenEnv): void {
   const p = playback;
@@ -935,15 +1026,17 @@ export const eventBoxScreen: UiScreen = {
   },
 
   /**
-   * 原版那两处「可跳过的等待」认 `WM_LBUTTONUP`（0x202）/ `WM_RBUTTONUP`（0x205）/
-   * `WM_KEYDOWN`（0x101）。
+   * 原版那些**等待**（`fcn_004544f6` / `fcn_004528b9`）都认 `WM_LBUTTONUP`（0x202）/
+   *   `WM_RBUTTONUP`（0x205）/ `WM_KEYDOWN`（0x101）。
    *
    * ★ 2026-09-16：`0x202` 与 `0x205` **两条都接上了** —— 右键那一拍走
    *   `contextmenu`（浏览器里的 `WM_RBUTTONUP`，见 `ui-screen.ts:117`），
-   *   两条都落到同一个 `skipPlayback`。原版 `fcn_004544f6`
-   *   （`rich4_sound_effect.asm:915-960`）的 `PeekMessage` 收的正是这两个。
+   *   两条都落到同一个 `skipPlayback`。
    *   ✅ 2026-09-16：`WM_KEYDOWN`（0x101）也接上了 —— 走新加的 `UiScreen.key`
    *   出口（契约原本只有映射过的 `HOTKEY.*`，收不到「任意键」）。
+   *   ✅ 2026-09-19：跳过对**全部等待段**生效（`fcn_004528b9` 也认这三种消息，
+   *   见 `escalations.md` E-5 与 `eventBoxPlaybackSkip`）。
+   *   ⚠️ 抽卡第一段那段 FLIC 是 `fcn_0045144f`，原版那一段的跳过闸是关的 ⇒ 不接。
    *   **按下**（0x201）原版不认，本屏也不实现 `down`。
    */
   up(_x: number, _y: number, env: UiScreenEnv): void {

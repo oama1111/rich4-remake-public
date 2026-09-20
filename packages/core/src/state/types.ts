@@ -15,7 +15,7 @@ import type { StockHolding } from '../places/stock.ts';
 import type { CommercialOwnership } from '../places/commercial.ts';
 import type { Listing } from '../places/notice-board.ts';
 import type { MapObject } from '../cards/summon.ts';
-import type { SpecialActor } from '../rules/special-actors.ts';
+import type { SpecialActor, SweptObject } from '../rules/special-actors.ts';
 import type { WinConditions } from '../rules/setup.ts';
 import type { VictoryOutcome } from '../rules/victory.ts';
 
@@ -337,6 +337,28 @@ export interface NpcWalkHint {
   slot: number;
   /** 依次经过的节点号，含起点；`path[i] → path[i+1]` 是第 i 格 */
   path: number[];
+  /**
+   * 这一趟**起步时定下的步数**（= 原版 `[0x48baf8]` 的初值）—— 走子时那串剩余步数要用（E-22）。
+   *
+   * @source `0x40dd1f` 的 actor ≥ 4 分支：惡人 `0x0040de64`（`rand()%9+2`）/ `0x0040de3d`（龜行 1）、
+   *   機器娃娃 `0x0040debe`（9）。⚠️ **不等于** `path.length − 1`：半路被收回去 / 踩雷时
+   *   路径提前断，而原版那串数字是从**掷出的步数**往下数的。缺省 = 按路径长度。
+   */
+  steps?: number;
+  /**
+   * 这一趟**沿途扫掉的物件**（只有 機器娃娃 会有；四大惡人恒空/缺省）。
+   *
+   * ★ 为什么要交出来（试玩3 #11）：core 一次就把九格走完，`objects` 里那几件
+   *   交出去时**已经没有 `nodeId`**了 —— 客户端要么整趟一起少、要么就得知道
+   *   「哪一件是在哪一格被扫的」才能让它逐格消失。这就是那个「哪一格」。
+   *   `SweptObject.index` 是**走之前**那份 `state.objects` 的下标，
+   *   故客户端可以拿它去 `before.objects` 里取回那一件的**位置与种类**
+   *   （见 `client/render.ts` 的 `#objectSlots`）。
+   *
+   * ★ 与 `path` 同一类：纯表现提示，不进指纹 / 不进 history / 不进存档。
+   *   缺省（读档、开局、四大惡人那两处覆写）不写这个字段。
+   */
+  cleared?: readonly SweptObject[];
 }
 
 /**
@@ -367,6 +389,172 @@ export interface CardPlayHint {
 }
 
 /**
+ * **神明顯靈时说哪一句**（W-55 行 6）—— 纯表现提示，见 `GameState.lastGodLine`。
+ *
+ * @source 福神 `fcn_0040f8be` 的 `0x0040fa49 call 0x456f2d`（`rand()`）/
+ *   `0x0040fa4e and eax,1` / `0x0040fa51 mov esi,[… + eax*4 + 0x48084a]`
+ *   —— 即**角色台词表的事件 0 或 1**（`0x48084a + 108×角色 + 事件×4`）。
+ */
+export interface GodLineHint {
+  /** 说话的人（玩家下标 0..3）= 原版 `[0x49910c]` 那个当前行动者 */
+  player: number;
+  /**
+   * 台词槽位 = **角色台词表的事件号**（`@rich4/data` 的 `speechIndex(角色, 事件)`）。
+   * 福神那一支是 `rand() & 1` ⇒ `0` 或 `1`。
+   */
+  event: number;
+}
+
+/**
+ * **这一次神明發威掷出来的金额**（W-55 行 7）—— 纯表现提示，见 `GameState.lastGodPower`。
+ *
+ * @source `godPowerOf()`（`rules/god-power.ts`）掷出来的那个三位/四位数；
+ *   消费点在財神那两支的台词闸门（`0x0040eca4 cmp esi,0x2bc` /
+ *   `0x0040ed74 cmp esi, 5000×物價`）。
+ */
+/**
+ * 董事長在商店送出的那一件（W-67-a）—— 纯表现提示，见 `GameState.lastShopGift`。
+ *
+ * 消费者：`client/src/speech.ts` 的 `detectShopGift`（走 `fcn_0044f230` 那一支阶梯）。
+ */
+export interface ShopGiftHint {
+  /** 送的是道具还是卡 */
+  readonly kind: 'tool' | 'card';
+  /** 道具号 / 卡号 */
+  readonly id: number;
+  /** 那件的**點數价** —— 原版传给 `0x44f230` 的就是它（不是现金价）*/
+  readonly points: number;
+}
+
+export interface GodPowerHint {
+  /** 附身者（玩家下标 0..3）*/
+  player: number;
+  /** 神明**种类** 1..15（`objects[godInfo−1].type`，见 `rules/god-power.ts` 的常量）*/
+  type: number;
+  /** 那扇转盘窗拼出来的金额（小財神三位 / 大財神四位）*/
+  amount: number;
+}
+
+/**
+ * 一条**付费类落点的棕色訊息框**要显示什么 —— 纯表现提示。
+ *
+ * ★ 为什么要有它（issue #18）：原版在「走到别人的地产 / 企業」收钱之前，会先
+ *   `sprintf` 一句文案、再 `push 0x5dc / call 0x440cac` 弹**通用訊息框**
+ *   （1500 ms、可跳过）。重制版先前一个都不弹。
+ *
+ * ★★ **框里的金额是神明加成之前的那一笔**。原版：
+ * ```asm
+ * 00419d50  push 0x5dc                        ; 1500
+ * 00419d5a  call 0x440cac                    ; ★ 先弹框（显示 ebp = 地主份 + 同盟份）
+ * 00419d70  call 0x41d709                    ; ★ 之后才按付款方的神明调整金额
+ * ```
+ *   ⇒ 客户端**不许**从 `before → after` 的差分反推金额（神明一调整就对不上），
+ *     必须原样用 core 交出来的数。`rules/rent.ts` 的 `RentResult.baseTotal`
+ *     就是那一个数（`total` 是调过之后的）。
+ *
+ * ★ **纯表现，不参与任何规则判定**：
+ *   - core 里没有任何规则读它（只有写入点与客户端消费者）；
+ *   - **不进 `stateFingerprint`**（`net/protocol.ts` 的形参是**显式列字段**的
+ *     结构类型，本字段不在其中）⇒ 两端不必在「弹没弹框」上一致；
+ *   - **不进 `history`、不进存档**：它描述的是「刚刚发生了什么」。
+ *   ⚠️ 已知的既有口径（`lastNpcWalks` / `lastCardPlay` 同病，非本次引入）：
+ *     `rules/time-machine.ts` 的 `takeSnapshot` 是 `JSON.stringify(state)`，
+ *     所以这个瞬态字段**会**随快照一起回滚。不影响任何规则判定。
+ */
+export interface NoticeHint {
+  /**
+   * 文案键 —— 由客户端查 `@rich4/data` 的 `messages.ts` 翻成原版格式串。
+   *
+   * ⚠️ 这里是**键**而不是文案，是为了让 core 不依赖表现层的排版，也为了让
+   *   「core 交了什么」在单测里可逐字比对（`args` 的顺序就是原版 `sprintf` 的
+   *   参数顺序，见 `client/src/notice-box-screen.ts` 的 `NOTICE_TEXT`）。
+   */
+  key: NoticeKey;
+  /** 原版那次 `sprintf` 的参数，**顺序原样**（`%s` 已经代入好名字，不再是下标） */
+  args: readonly (string | number)[];
+  /**
+   * 这扇框停留多久（ms）；缺席 = `NOTICE_HOLD_MS`（1500，`0x5dc`）。
+   *
+   * ★ 只有**得点格**那三句是 `0x3e8` = 1000 ms：
+   *   `0x0041b1be` / `0x0041b258` / `0x0041b2dc` 三处都是 `push 0x3e8`。
+   *   其余全部走 `0x5dc`。写在这里是为了客户端**不自己编时长**（C-ARC-2）。
+   */
+  holdMs?: number;
+}
+
+/**
+ * 目前接出来的文案键 —— 只收「格式串已经在 `@rich4/data` 的 `messages.ts` 里、
+ * 且 core 在那一处**已经知道确切金额**」的那几条。
+ *
+ * | 键 | 格式串 | @source |
+ * |---|---|---|
+ * | `rent.payOneOwner` | `RENT.payOneOwner` | 0x00419d3e `push 0x4639b3` |
+ * | `rent.payTwoOwners` | `RENT.payTwoOwners` | 0x00419d1a `push 0x46399a` |
+ * | `rent.payChairman` | `RENT.payChairman` | 0x0041ae98 `push 0x463a31` |
+ * | `rent.payBoss` | `RENT.payBoss` | 0x0041ae86 `push 0x463a6a` |
+ * | `rent.freeSealed` | `RENT.freeSealed` | 0x0041d59f `push 0x463bb8` |
+ * | `rent.freeAllied` | `RENT.freeAllied` | 0x0041d5d7 `push 0x463bcd` |
+ * | `rent.freeReaper` | `RENT.freeReaper` | 0x0041d5fa `push 0x463be2` |
+ * | `rent.freeHotel` | `RENT.freeHotel` | 0x0041d613 `push 0x463bf5` |
+ * | `rent.freeVanished` | `RENT.freeVanished` | 0x0041d62c `push 0x463c08` |
+ * | `rent.freePrison` | `RENT.freePrison` | 0x0041d645 `push 0x463c1b` |
+ * | `rent.freeHospital` | `RENT.freeHospital` | 0x0041d65e `push 0x463c2e` |
+ * | `rent.freeWinterSleep` | `RENT.freeWinterSleep` | 0x0041d67a `push 0x463c41` |
+ * | `rent.freeSleepwalk` | `RENT.freeSleepwalk` | 0x0041d696 `push 0x463c54` |
+ * | `rent.reaperPays` | `RENT.reaperPays` | 0x00419f04 `push 0x4639cc` |
+ * | `facility.hotel` | `FACILITY_TOLL.hotel` | 0x0041a46e `push 0x4639ff` |
+ * | `facility.mall` | `FACILITY_TOLL.mall` | 0x0041a4c4 `push 0x463a14` |
+ * | `facility.gasStation` | `RENT.payChairman` | 0x0041a55d `push 0x463a31` |
+ * | `points.50` / `points.30` / `points.10` | `MESSAGE_BOX.points*` | 0x0041b1c3 / 0x0041b25d / 0x0041b2e1 |
+ * | `points.card` | `MESSAGE_BOX.got` | 0x0041b35d `push 0x463aa8` |
+ * | `object.gift` | `MESSAGE_BOX.got` | 0x0041b956 `push 0x463aa8` |
+ * | `object.treasure` | `MESSAGE_BOX.got500Points` | 0x0041bb4e `push 0x463ad3` |
+ * | `beggar.alms` | `MESSAGE_BOX.alms` | 0x0041b656 `push 0x463ab1` |
+ * | `thief.loot` | `MESSAGE_BOX.thiefLoot` | 0x0041ba0a 等五处 `push 0x463ac0` |
+ *
+ * ★ 免收那九种是 `0x0041d559`「九种免收」的全部：豁免成立时原版**先 `sprintf`
+ *   一句、再弹同一个通用訊息框**（`0x41d6a4 push 0x5dc / call 0x440cac`）。
+ *   ⚠️ 参数个数**三种**，照 `0x457110` 的推栈顺序来（详见 `reduce.ts` 的
+ *   `confinementNoticeKey`）：查封与死神只有一个 `%s`（只有費名），
+ *   同盟两个 `%s` 都是「先名字后費名」，其余四种是「地主名 + 費名」。
+ */
+export type NoticeKey =
+  | 'rent.payOneOwner'
+  | 'rent.payTwoOwners'
+  | 'rent.payChairman'
+  | 'rent.payBoss'
+  | 'rent.freeSealed'
+  | 'rent.freeAllied'
+  | 'rent.freeReaper'
+  | 'rent.freeHotel'
+  | 'rent.freeVanished'
+  | 'rent.freePrison'
+  | 'rent.freeHospital'
+  | 'rent.freeWinterSleep'
+  | 'rent.freeSleepwalk'
+  | 'rent.reaperPays'
+  | 'facility.hotel'
+  | 'facility.mall'
+  | 'facility.gasStation'
+  | 'points.50'
+  | 'points.30'
+  | 'points.10'
+  | 'points.card'
+  | 'object.gift'
+  | 'object.treasure'
+  | 'beggar.alms'
+  | 'thief.loot'
+  // 神明落脚顯靈（`fcn_0040f381` / `fcn_0040f8be`）—— 格式串见 `@rich4/data` 的 `GOD_MANIFEST`
+  | 'god.build'
+  | 'god.demolish'
+  | 'god.seize'
+  /**
+   * 董事長蒞臨商店的贈禮（`_rich4_ui_shop_entry` 0x0042e9f8 `push 0x464378`，
+   * 訊息框 1500 ms）—— **在商店窗打开之前**弹，`args[0]` = 送出那件的名字。
+   */
+  | 'shop.chairmanGift';
+
+/**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。
  *
  * @source 三个调用点各自的序列：
@@ -381,7 +569,14 @@ export interface CardPlayHint {
  *     call 0x40b0cd` ⇒ **只播 0x20b，不播大锤**；
  *   · `companyBuild`（建設公司「免費加蓋一處」那一族落点，VA 0x0041ad7e 一带）：
  *     `0x0041ad99 call 0x45144f`（大锤）+ `0x0041adaa test byte [esp+0xbc], 0x80`
- *     → `0x0041adb4 call 0x40b0cd` ⇒ 与機器工人**同构**（先大锤，再 0x20b）。
+ *     → `0x0041adb4 call 0x40b0cd` ⇒ 与機器工人**同构**（先大锤，再 0x20b）；
+ *   · `ownUpgrade`（**自己的地**落点问出来的「升級房子」，VA 0x004198b9 自有地分支）：
+ *     这一段**不走 `0x40b110`**（`0x004199d1 inc byte [esi + 0x1a]` 直接加 1），
+ *     函数体里也**没有** `push 0x229` —— 大锤全 exe 只有 **4** 处
+ *     （`0x0041aab8` / `0x0041ad4d` / `0x00432028` / `0x0044731a`，见下），
+ *     落点例程一处都不在其中。它只在等级刚好到 5 时
+ *     `0x004199eb cmp byte [esi + 0x1a], 5` → `0x00419a21 call 0x40b0cd`
+ *     ⇒ **只播 0x20b，绝不播大锤**。
  *
  * ★★ 补记（本次回 exe 复核发现，README 原记「bit7 全 exe 只有 3 个消费点」
  *   **不完整**）：`0x40b0cd`（播 0x20b 那一支）全 exe 共 **8** 个调用点，
@@ -402,16 +597,43 @@ export interface CardPlayHint {
  *   反向也成立：`0x40b110` 的 8 个调用点**逐一**对上前 7 条 + 0x4436ad，
  *   即**原版每一次 `0x40b110` 都有影片**（天使卡那条只播 0x20b）。
  *   故本引擎在**每一个**免费加蓋出口都记提示，客户端照段序播，不漏不重。
+ *
+ * ★ 大锤 `0x229` 的**全部** 4 个 `push` 点（`disasm.py find 6829020000`
+ *   命中 4 处，无第 5 处）：`0x0041aab8` / `0x0041ad4d`（建設公司那一族）、
+ *   `0x00432028`（魔法屋）、`0x0044731a`（機器工人）。⇒ 只有这三个 `source`
+ *   播大锤；`angelCard` 与 `ownUpgrade` 都只播 0x20b。
  */
-export type BuildUpgradeSource = 'robotWorker' | 'magicHouse' | 'companyBuild' | 'angelCard';
+export type BuildUpgradeSource =
+  | 'robotWorker'
+  | 'magicHouse'
+  | 'companyBuild'
+  | 'angelCard'
+  | 'ownUpgrade'
+  /**
+   * 神明顯靈加蓋（天使 `0x0040f381` / 福神 `0x0040f8be`）：两支里都**没有** `push 0x229`，
+   * 只在 bit7 时 `0x0040f517` / `0x0040fa26 call 0x40b0cd` ⇒ 只播 0x20b、不播大锤。
+   */
+  | 'godManifest'
+  /**
+   * **付费首建設施**（落点问出来的「蓋設施」，`0x0041a240` 那一支的 `0x0041a27c`）：
+   * 等级 0 → 1、**不置 bit7**、没有 `0x229`，但**要响** `Effect.mkf` 50
+   * （`0x0041a289 push 0x4823da / call 0x4542ce`）。
+   * ⇒ 它是第 4 个（也是最后一个）顯靈音效点；`buildFxPlan` 对它**不播任何影片**。
+   */
+  | 'facilityFirstBuild';
 
-/** 一次「免费加蓋一级」的事件记录（纯表现；见 `GameState.lastBuildUpgrades`）*/
+/** 一次「加蓋一级」的事件记录（纯表现；见 `GameState.lastBuildUpgrades`）*/
 export interface BuildUpgradeHint {
   /**
    * 被加蓋的**实体编码**（原版 `0x40b110` 的入参）：
    * · `0x7d0 + 地块下标` = 住宅/連鎖店；
    * · `0xfa0 + 設施下标` = 公園/旅館/購物中心/加油站/研究所。
    * @source `0x40b117 cmp edx, 0x7d0` / `0x40b11f cmp edx, 0xfa0`
+   *
+   * ⚠️ `ownUpgrade`（落点问出来的付费升級，`0x004198b9` 自有地分支）在原版里
+   *   **没有** `0x40b110` 这个入参（它直接 `inc byte [esi + 0x1a]`）。
+   *   这一格仍按同一个编码填 `0x7d0 + 地块下标`，只为让消费方有个统一的标识；
+   *   `buildFxPlan` 并不读它。
    */
   entity: number;
   /**
@@ -778,7 +1000,141 @@ export interface GameState {
   lastCardPlay: CardPlayHint | null;
 
   /**
-   * **本 action 里发生过的「免费加蓋一级」** —— 纯表现提示（C-DET-4）。
+   * ★★ **这一笔过路费把哪些地块算了进去**（地块 id，含同盟那一份）—— W-69。
+   *
+   * 原版在弹费用訊息框**之前**，把 id 图上这几格标 `0xffff` 再闪 16 帧
+   * （`0x00419b9e` / `fcn_00451985`：亮度表 `0x476380`、每帧 30 ms、之后静 400 ms；
+   * 块数 ≤ 1 时整段跳过 —— `0x00419c79 cmp [esp+0xe8],1 / jle`）。
+   * 需求方看不到这段演出，才以为「四块同街的地只算了一块」。
+   *
+   * 规矩与 `lastCardPlay` / `lastViewTarget` 同一套：**纯表现、不进指纹/存档、
+   * 只活一条 action**（`reduce` 出口按引用相等清成 null）。
+   * 只有 `counted.length > 1` 才写，否则 null（原版那时不演）。
+   */
+  lastTollLands: number[] | null;
+
+  /**
+   * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。
+   *
+   * 纯表现提示（不进指纹、不进存档）—— 与 `lastCardPlay` / `notices` 同一套规矩。
+   *
+   * ★ **只活一条 action**：`reduce` 出口会把「本 action 改动了状态、却没新写本字段」
+   *   的那些情况清成 `null`（见 `reduce` 里那一段注释）。所以表现层看到非 null，
+   *   就一定是**刚刚这条 action** 设的，直接照做即可。
+   *
+   * ## 原版语义（W-54 的首席取证）
+   * ```
+   * view_to(x, y, flags):
+   *   flags & 1  ⇒ 只按上一次的中心重画（0x40829d(-1, 0)），**不动镜头**
+   *                 —— 表里实参是 0,0,1 的那 38 处全部属于这一类 ⇒ 忽略
+   *   否则：
+   *     (x, y) == 当前行动者坐标 ⇒ 清标记 [0x48be18] = 0
+   *     不等                     ⇒ [0x48be18] = 1、[0x48be1c]/[0x48be20] = (x, y)
+   *     然后 fcn_00415e70 居中（**有标记用标记**）
+   * ```
+   * `refresh_screen`（`0x0041d546`）一律把标记清 0 ⇒ 镜头回到行动者。
+   *
+   * ★ 这与小地图点选用的是**同一个**标记（本引擎的 `minimapMarker`），
+   *   所以客户端只要把它写进 `minimapMarker`、收屏时清掉，不必另做一套镜头。
+   */
+  lastViewTarget: { x: number; y: number } | null;
+
+  /**
+   * ★ **这一次落点顯靈时那位神明说的那句话**（W-55 行 6）—— 纯表现提示。
+   *
+   * 消费者：`client/src/speech.ts` 的 `detectLuckyGodLine()`。
+   *
+   * ## 为什么要有它
+   *
+   * 福神 `fcn_0040f8be` 在自己地升級成功、且**没到 5 级**那一支里用
+   * `rand() & 1` 在**两句**台词里随机二选一：
+   *
+   * ```asm
+   * 0040fa30  xor  ebx, ebx
+   * 0040fa32  mov  bl, byte [eax + 0x496b7b]        ; 角色号（+0x13）
+   * 0040fa44  shl  eax, 3 / 0040fa47 add ebx, eax    ; ebx = 108 × 角色
+   * 0040fa49  call 0x456f2d                          ; ★ rand()
+   * 0040fa4e  and  eax, 1
+   * 0040fa51  mov  esi, [ebx + eax*4 + 0x48084a]     ; 角色台词表[角色][0 或 1]
+   * 0040fa5b  push edi / 0040fa5c jmp 0x40ecde       ; player_say
+   * ```
+   *
+   * 本引擎的对应物是 `luckyGodBonus()`：它**已经把那次 `rand()` 消费掉**
+   * （`reduce.ts` 那条 `rng.next()`）却只把 `rngState` 写回去 —— 客户端拿不到
+   * 「摇到 0 还是 1」，于是这一句复刻不出来。本字段就是把那个结果交出来。
+   *
+   * ★ **与 `lastCardPlay` / `notices` 同一套规矩**：不进 `stateFingerprint`
+   * （`net/protocol.ts` 的形参是显式列字段的结构类型）、不进存档、不进 `history`；
+   * 「本 action」的判据是**引用相等**（`luckyGodBonus` 每次新建一个对象）。
+   * `reduce` 出口把「没新写本字段」的那些情况清成 `null`（与 `lastViewTarget` 同一处）。
+   *
+   * ⚠️ **只覆盖福神那支的随机二选一**。土地公顯靈那一句是**固定**的事件 0
+   *   （`0x0040f8a0 mov ebp,[…表…+0]`，见 `docs/escalations.md` E-18 的订正），
+   *   客户端直接从 `god.seize` 訊息框认出来即可，不需要本字段。
+   */
+  lastGodLine?: GodLineHint | null;
+
+  /**
+   * ★ **这一次神明發威掷出来的金额**（W-55 行 7）—— 纯表现提示。
+   *
+   * 消费者：`client/src/speech.ts` 的 `detectSmallWealthLine()` / `detectBigWealthLine()`。
+   *
+   * ## 为什么要有它
+   *
+   * 財神那两支的**额外台词**都以那个「转盘摇出来的数」为闸门，而那个数不在
+   * 任何持久字段里（`godPowerOf` 掷完就丢，只把 `rngState` 写回）：
+   *
+   * ```asm
+   * ; 小財神：金额 > 0x2bc（700）才说事件 8（角色台词表 +0x48086a = 事件 8）
+   * 0040eca4  cmp esi, 0x2bc / 0040ecaa jle 0x40ece6
+   * 0040ecac  cmp byte [0x46caf8], 0 / jne 0x40ece6   ; ★ 终局码非 0 就不说
+   * 0040ecd3  mov esi, [ebx + eax*8 + 0x48086a]
+   * 0040ecde  call 0x44ef41
+   * ; 大財神：金额 ≥ 5000 × 物價 才走「進帳」档位函数
+   * 0040ed74  cmp esi, eax / 0040ed76 jl 0x40ece6
+   * 0040ed85  call 0x44f354
+   * ```
+   *
+   * ★ 两条规矩与 `lastGodLine` 完全一样（引用相等 = 本 action、不进指纹/存档）。
+   */
+  lastGodPower?: GodPowerHint | null;
+
+  /**
+   * **这一次進商店时董事長送的那一件**（W-67-a）—— 纯表现提示。
+   *
+   * @source `_rich4_ui_shop_entry` `0x0042e9a0..0x0042ea23`：送成了才
+   *   `call 0x44f230(玩家, 那件的**點數价**)`（「好消息」台词阶梯，与 W-55 的
+   *   `pointsGained` 同一支 `fcn_0044f230`）。金额取**点数**（不是现金价）。
+   * 两条规矩与 `lastGodLine` 一样：引用相等 = 本 action、不进指纹/存档。
+   */
+  lastShopGift?: ShopGiftHint | null;
+
+  /**
+   * **这一次落点要弹的棕色訊息框**（可能不止一条）—— 纯表现提示，见 `NoticeHint`（issue #18）。
+   *
+   * 消费者：`client/src/notice-box-screen.ts`（`screens.ts` 登记为 `'notice'`，
+   * 并进了 `main.ts` 的 `BLOCKING_PRESENTATIONS` ⇒ 每扇 1500 ms 内回合驱动会等它）。
+   *
+   * ★★ **为什么是数组而不是单个字段**：原版在**一条 action** 里会连弹两扇框 ——
+   *   住宅收租那一路先弹租金框（`0x00419d50 push 0x5dc / call 0x440cac`）
+   *   **再**弹死神框（`0x00419f16` 同一个调用）；設施那一路同理
+   *   （`0x41a56f` 之后 `0x41a6f2`）。单个字段会把第一扇顶掉。
+   *   数组按**弹框顺序**排，客户端一条一条放。
+   *
+   * ★ 只在**真的弹**的那一刻写（与 `lastCardPlay` 同一条规矩）：
+   *   空数组 = 这一条 action 没有付费框，客户端就不起播。
+   *   数组的**引用**就是判据：`reduce` 每弹一次都新建一个数组，
+   *   没弹的 action 一路 `{...state}` 把原引用带过来。
+   */
+  notices: NoticeHint[];
+
+  /**
+   * **本 action 里发生过的「加蓋一级」** —— 纯表现提示（C-DET-4）。
+   *
+   * ★ 两个来源都记在这里：
+   *   · **免费加蓋**（`0x40b110` 那一族：機器工人 / 魔法屋 / 天使卡 / 建設公司），
+   *   · **自己的地块上付費升級**（落点例程 `0x004198b9` 自有地分支，
+   *     `source = 'ownUpgrade'`；它不走 `0x40b110`，只 `inc byte [地块+0x1a]`）。
    *
    * ★ 为什么要有它（README §7.142(5) E6）：`0x40b110` 的返回值带两条契约 ——
    *   **bit0 = 成了 / bit7 = 剛好升到 5 級**。全 exe 里 bit7 被消费在

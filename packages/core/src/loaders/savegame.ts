@@ -654,6 +654,11 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     // 纯表现提示：读档后不播「上一局那趟」（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
     lastCardPlay: null,
+    // 纯表现提示：读档后不闪「上一局那笔过路费」（见 state/types.ts 的 GameState.lastTollLands）
+    lastTollLands: null,
+    // 纯表现提示：读档后不弹「上一局那一笔」（见 state/types.ts 的 GameState.notices）
+    notices: [],
+    lastViewTarget: null,
     // 回合边界的惡人队列：读档回到回合边界也是空的（重新起算）
     pendingNpcSlots: [],
     // ★ 樂透号码表（平坦 0x26be = `[0x4990b8]`，36 字节，值 = 持有者 + 1）

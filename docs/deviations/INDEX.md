@@ -6,7 +6,7 @@
 > 有 `~~…~~` / `✅` / 「已结案」→ 结案；其余一律 `?` —— **不读正文猜**。
 > 一个编号一行（首次出现处），同编号的其余出现记在「位置」列的「另有 N 处」。
 
-合计 **238** 个编号：结案 72 · 有意偏离 22 · 未决 0 · ? 144；另有 16 个只在正文出现的编号（见文末）。
+合计 **240** 个编号：结案 74 · 有意偏离 22 · 未决 0 · ? 144；另有 16 个只在正文出现的编号（见文末）。
 
 ## 总表（按编号排序）
 
@@ -66,11 +66,11 @@
 | `D-BOARD-6` | （引擎必需，非美术偏离）换人自动收屏 | ? | docs/deviations/T-033.md:221 |
 | `D-BOARD-7` | （有意偏离）弹出选单优先吃掉点击；点选单以外先收单再按底下一层 | 有意偏离 | docs/deviations/T-033.md:232 |
 | `D-BOARD-8` | （已解决）时序按契约实现：`down` 记账、`up` 成立 | ? | docs/deviations/T-033.md:266 |
-| `D-CONFINE-1` | 2026-09-18：关押/住院时的**屏幕坐标**取节点而非景观（） | ? | docs/known-deviations.md:5530 |
-| `D-LEGACY-1` | 2026-09-18：原版落点分派器里的**两处未初始化栈读** —— 复刻的处置（ / ） | ? | docs/known-deviations.md:5348 |
-| `D-LEGACY-2` | 2026-09-18：原版落点分派器里的**两处未初始化栈读** —— 复刻的处置（ / ） | ? | docs/known-deviations.md:5348 |
-| `D-LEGACY-3` | 2026-09-17：魔法屋**目标筛选器**的第二实参是**未初始化栈读** —— 复刻定为「平手全收」（） | ? | docs/known-deviations.md:5647 |
-| `D-LEGACY-4` | 2026-09-19：AI 数手牌用「非零槽个数」当循环上界 —— 手牌有洞时会漏牌（） | ? | docs/known-deviations.md:5695 |
+| `D-CONFINE-1` | 2026-09-18：关押/住院时的**屏幕坐标**取节点而非景观（） | ? | docs/known-deviations.md:5531 |
+| `D-LEGACY-1` | 2026-09-18：原版落点分派器里的**两处未初始化栈读** —— 复刻的处置（ / ） | ? | docs/known-deviations.md:5349 |
+| `D-LEGACY-2` | 2026-09-18：原版落点分派器里的**两处未初始化栈读** —— 复刻的处置（ / ） | ? | docs/known-deviations.md:5349 |
+| `D-LEGACY-3` | 2026-09-17：魔法屋**目标筛选器**的第二实参是**未初始化栈读** —— 复刻定为「平手全收」（） | ? | docs/known-deviations.md:5662 |
+| `D-LEGACY-4` | 2026-09-19：AI 数手牌用「非零槽个数」当循环上界 —— 手牌有洞时会漏牌（） | ? | docs/known-deviations.md:5710 |
 | `D-MAGIC-1` | （**结构性近似**）落点只能从 `before → after` 反推 | ? | docs/deviations/T-037.md:23 |
 | `D-MAGIC-10` | （近似）女巫只画一处；图 1 在渲染路径里没被画到 | ? | docs/deviations/T-037.md:278 |
 | `D-MAGIC-11` | （近似）绘制顺序：底图 → 字框 → 结果字 → 女巫 → 图标 | ? | docs/deviations/T-037.md:302 |
@@ -98,7 +98,7 @@
 | `D-MONTHLY-10` | （**订正**）行头像的图号 = `3×角色 + 47`，**没有**「帧」 | ? | docs/deviations/T-041.md:518 |
 | `D-MONTHLY-11` | （**多余**）结算屏上那 4 个「数字球」/ 金币 —— 原版**没有**这些 blit | ? | docs/deviations/T-041.md:562 |
 | `D-MONTHLY-12` | （**零件已备齐 · 2026-09-16**）结算屏收尾那只「存款」气泡（图 1，落点 190,10） | ? | docs/deviations/T-041.md:582 |
-| `D-MONTHLY-13` | 2026-09-18 补： 的「计数」多了一个 —— `[0x48c42b]` | ? | docs/known-deviations.md:5370（另有 2 处） |
+| `D-MONTHLY-13` | 2026-09-18 补： 的「计数」多了一个 —— `[0x48c42b]` | ? | docs/known-deviations.md:5371（另有 2 处） |
 | `D-MONTHLY-2` | ✅ （**已解** · 2026-09-17 复核）頒獎屏 4 列头像的 x/y —— x 按「在榜人数」查表、y 照抄原版 | 结案 | docs/deviations/T-041.md:102 |
 | `D-MONTHLY-3` | （**有意补写**）`存款：` / `利息：` 两个标签 | 有意偏离 | docs/deviations/T-041.md:189 |
 | `D-MONTHLY-4` | （**订正**）頒獎屏状态 1 贴的那一小块 —— 是**裁切拷贝**，不是缩放 | ? | docs/deviations/T-041.md:209 |
@@ -149,7 +149,8 @@
 | `Q-AI-1` | AI 买哪一支股票 —— **已按原版打分实现（2026-09-14）** | 结案 | docs/known-deviations.md:3740 |
 | `Q-AI-2` | AI 的「個性闸门」—— 表解出来了（2026-09-14） | ? | docs/known-deviations.md:3770 |
 | `Q-AI-3` | AI 的買地/加蓋判定照 `fcn_0041d7d4` 改写（**已修 2026-09-15**） | 结案 | docs/known-deviations.md:4342 |
-| `Q-ANIM-1` | 「動畫過程」設定（`RICH4.CFG+1` = `[0x497159]`）到底管哪些屏 | ? | docs/known-deviations.md:5083（另有 1 处） |
+| `Q-ANIM-1` | 「動畫過程」設定（`RICH4.CFG+1` = `[0x497159]`）到底管哪些屏 | ? | docs/known-deviations.md:5084（另有 1 处） |
+| `Q-ANIM-2` | 「踩到惡犬」那一段演出（狗咬 FLIC）—— 取证、落码与三处未接 | ? | docs/deviations/Q-ANIM-2.md:1 |
 | `Q-AUC-1` | 拍賣卡挂出的拍賣，电脑那一手没有出价逻辑（**已修 2026-09-15**） | 结案 | docs/known-deviations.md:4296（另有 1 处） |
 | `Q-BANK` | ✅ -1a：特別融資子对话框（`fcn_00434492`）—— **三颗小钮已接（2026-09-16）** | 结案 | docs/deviations/T-029.md:254（另有 5 处） |
 | `Q-BANK-1` | 銀行那两屏的**动态部分**（2026-09-15，T-029；**主体已做，见 T-029c**） | ? | docs/known-deviations.md:3441（另有 3 处） |
@@ -208,23 +209,23 @@
 | `Q-PANEL-1` | 右上角四条彩色竖条**点了会换页** —— 先前记成「不换页」是错的（**已做 2026-09-15**） | 结案 | docs/known-deviations.md:3332 |
 | `Q-PERF-1` | SpriteCache 的 LRU 淘汰**释放不了内存** + 桌面端 HD 路由 —— **已接线 2026-09-15** | ? | docs/known-deviations.md:1374（另有 2 处） |
 | `Q-PICK-1` | ✅ ：目标拾取模式的**贴边推镜头** —— **2026-09-16 已接** | 结案 | docs/known-deviations.md:3369（另有 1 处） |
-| `Q-PICK-2` | ✅ ：股票/物件两类目标、以及遙控骰子的输入 UI —— **三类都做了（2026-09-16）** | 结案 | docs/known-deviations.md:3537（另有 8 处） |
+| `Q-PICK-2` | ✅ ：股票/物件两类目标、以及遙控骰子的输入 UI —— **三类都做了（2026-09-16）** | 结案 | docs/known-deviations.md:3537（另有 9 处） |
 | `Q-SAVE-1` | ✅ ：存档写在 localStorage，不是文件 —— **桌面已落文件（T-053，`<AppData>/saves/SAVE<n>.json`）；浏览器仍走 localStorage 属预期** | 结案 | docs/known-deviations.md:3705 |
 | `Q-SCENE-1` | ✅ ：場所只铺了底图，控件还是通用对话框 —— **已收口（2026-09-15/16，C 组 22 屏全做完）** | 结案 | docs/known-deviations.md:4136 |
 | `Q-SETUP-1` | 開局設定屏三条「画得出来、规则/表现上还没接」—— **已接线（2026-09-16）** | ? | docs/known-deviations.md:4380（另有 1 处） |
 | `Q-SHOP-1` | 百貨公司的进货清单（**已结案 2026-09-14**） | 结案 | docs/known-deviations.md:2067 |
 | `Q-SOUND-1` | 走子音效（`MOVE_SOUND`）的**时机与号** —— 一次订正 + 一个真缺口 | ? | docs/deviations/Q-SOUND-1.md:1 |
 | `Q-SPEECH-1` | 卡面的「1375 段」是错的，真值是 **1374** | ? | docs/deviations/T-051.md:6 |
-| `Q-SPEECH-10` | `Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** | ? | docs/deviations/T-052.md:159 |
-| `Q-SPEECH-11` | 卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） | ? | docs/deviations/T-052.md:171 |
+| `Q-SPEECH-10` | `Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** | ? | docs/deviations/T-052.md:360 |
+| `Q-SPEECH-11` | 卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） | ? | docs/deviations/T-052.md:376 |
 | `Q-SPEECH-2` | 越界**抛错**而不是夹取 —— 这是本项目的选择，不是原版行为 | ? | docs/deviations/T-051.md:19 |
-| `Q-SPEECH-3` | 中间档的 `rand() & 1` 被改成「一律取前一句」 | ? | docs/deviations/T-052.md:27 |
-| `Q-SPEECH-4` | 「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的 | ? | docs/deviations/T-052.md:52 |
-| `Q-SPEECH-5` | 没解的 5 个槽位 | ? | docs/deviations/T-052.md:72 |
-| `Q-SPEECH-6` | ✅ 同一动作派生多句时会**叠着响** —— **2026-09-16 已修** | 结案 | docs/deviations/T-052.md:86 |
-| `Q-SPEECH-7` | 勘误：事件 15 的判据是**地块的 `+0x1a`（等级）**，不是玩家结构 | ? | docs/deviations/T-052.md:106 |
-| `Q-SPEECH-8` | `Speaking.mkf` 改成**按需装载**（本项目的选择） | ? | docs/deviations/T-052.md:122 |
-| `Q-SPEECH-9` | 字幕与表情图**画在整块舞台上**，原版那面「抠下来的截图方块」没复刻 | ? | docs/deviations/T-052.md:136 |
+| `Q-SPEECH-3` | 中间档的 `rand() & 1` 被改成「一律取前一句」 | ? | docs/deviations/T-052.md:36 |
+| `Q-SPEECH-4` | 「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的 | ? | docs/deviations/T-052.md:61 |
+| `Q-SPEECH-5` | ✅ 原先没解的 5 个槽位 —— **2026-09-19 全部接线** | 结案 | docs/deviations/T-052.md:81 |
+| `Q-SPEECH-6` | ✅ 同一动作派生多句时会**叠着响** —— **2026-09-16 已修** | 结案 | docs/deviations/T-052.md:262 |
+| `Q-SPEECH-7` | 勘误：事件 15 的判据是**地块的 `+0x1a`（等级）**，不是玩家结构 | ? | docs/deviations/T-052.md:282 |
+| `Q-SPEECH-8` | `Speaking.mkf` 改成**按需装载**（本项目的选择） | ? | docs/deviations/T-052.md:298 |
+| `Q-SPEECH-9` | ✅ （**2026-09-19 W-50 结案 + 大订正**）台词的气泡/头像**照原样画**，只剩「备份棋盘」不做 | 结案 | docs/deviations/T-052.md:312 |
 | `Q-SPRITE-1` | 地块建筑与特殊格的资源编号（**已结案**） | 结案 | docs/known-deviations.md:1639 |
 | `Q-STAGE-1` | `screen` 切了但画面不动 —— 两处 `return` 抢在 `blitStage()` 前面（**已修 2026-09-15**） | ? | docs/known-deviations.md:3558 |
 | `Q-STOCK-1` | 股市休市日（**已结案 2026-09-14**） | 结案 | docs/known-deviations.md:1500 |
@@ -234,6 +235,7 @@
 | `Q-STOCK-5` | 休市日那一屏是**訊息框** —— 只剩「本日休市」，点哪儿都退屏（2026-09-15，T-030） | ? | docs/known-deviations.md:1543 |
 | `Q-STOCK-6` | 偏离登记（股市 · **上市公司資訊**详情卡的「有/无上市公司」两支） | ? | docs/deviations/Q-STOCK-6.md:1（另有 9 处） |
 | `Q-STOCK-7` | 偏离登记（股市 · 行情表／持股页里**未上市**（`stock + 4 == 0`）的行画什么） | ? | docs/deviations/Q-STOCK-7.md:1（另有 3 处） |
+| `Q-TOLL-FX-1` | —— 過路費「同街地块一起闪」的**逐像素** vs **整张精灵** | ? | docs/deviations/Q-TOLL-FX-1.md:1 |
 | `Q-TOOL-1` | 飛彈的爆炸范围是近似的 | ? | docs/known-deviations.md:1821（另有 2 处） |
 | `Q-TOOL-2` | 傳送機的「搬設施」那一路（**已结案 2026-09-14**） | 结案 | docs/known-deviations.md:3666 |
 | `Q-TOOL-3` | 核子飛彈的 AI 判定不接线（**已解决 2026-09-20，第 160 条**） | 结案 | docs/known-deviations.md:3840 |
@@ -296,11 +298,11 @@
 - `D-BOARD-4`（?）買别人的东西**先弹 YES/NO** —— **2026-09-16 已接** —— docs/deviations/T-033.md:177
 - `D-BOARD-6`（?）（引擎必需，非美术偏离）换人自动收屏 —— docs/deviations/T-033.md:221
 - `D-BOARD-8`（?）（已解决）时序按契约实现：`down` 记账、`up` 成立 —— docs/deviations/T-033.md:266
-- `D-CONFINE-1`（?）2026-09-18：关押/住院时的**屏幕坐标**取节点而非景观（） —— docs/known-deviations.md:5530
-- `D-LEGACY-1`（?）2026-09-18：原版落点分派器里的**两处未初始化栈读** —— 复刻的处置（ / ） —— docs/known-deviations.md:5348
-- `D-LEGACY-2`（?）2026-09-18：原版落点分派器里的**两处未初始化栈读** —— 复刻的处置（ / ） —— docs/known-deviations.md:5348
-- `D-LEGACY-3`（?）2026-09-17：魔法屋**目标筛选器**的第二实参是**未初始化栈读** —— 复刻定为「平手全收」（） —— docs/known-deviations.md:5647
-- `D-LEGACY-4`（?）2026-09-19：AI 数手牌用「非零槽个数」当循环上界 —— 手牌有洞时会漏牌（） —— docs/known-deviations.md:5695
+- `D-CONFINE-1`（?）2026-09-18：关押/住院时的**屏幕坐标**取节点而非景观（） —— docs/known-deviations.md:5531
+- `D-LEGACY-1`（?）2026-09-18：原版落点分派器里的**两处未初始化栈读** —— 复刻的处置（ / ） —— docs/known-deviations.md:5349
+- `D-LEGACY-2`（?）2026-09-18：原版落点分派器里的**两处未初始化栈读** —— 复刻的处置（ / ） —— docs/known-deviations.md:5349
+- `D-LEGACY-3`（?）2026-09-17：魔法屋**目标筛选器**的第二实参是**未初始化栈读** —— 复刻定为「平手全收」（） —— docs/known-deviations.md:5662
+- `D-LEGACY-4`（?）2026-09-19：AI 数手牌用「非零槽个数」当循环上界 —— 手牌有洞时会漏牌（） —— docs/known-deviations.md:5710
 - `D-MAGIC-1`（?）（**结构性近似**）落点只能从 `before → after` 反推 —— docs/deviations/T-037.md:23
 - `D-MAGIC-10`（?）（近似）女巫只画一处；图 1 在渲染路径里没被画到 —— docs/deviations/T-037.md:278
 - `D-MAGIC-11`（?）（近似）绘制顺序：底图 → 字框 → 结果字 → 女巫 → 图标 —— docs/deviations/T-037.md:302
@@ -320,7 +322,7 @@
 - `D-MONTHLY-10`（?）（**订正**）行头像的图号 = `3×角色 + 47`，**没有**「帧」 —— docs/deviations/T-041.md:518
 - `D-MONTHLY-11`（?）（**多余**）结算屏上那 4 个「数字球」/ 金币 —— 原版**没有**这些 blit —— docs/deviations/T-041.md:562
 - `D-MONTHLY-12`（?）（**零件已备齐 · 2026-09-16**）结算屏收尾那只「存款」气泡（图 1，落点 190,10） —— docs/deviations/T-041.md:582
-- `D-MONTHLY-13`（?）2026-09-18 补： 的「计数」多了一个 —— `[0x48c42b]` —— docs/known-deviations.md:5370
+- `D-MONTHLY-13`（?）2026-09-18 补： 的「计数」多了一个 —— `[0x48c42b]` —— docs/known-deviations.md:5371
 - `D-MONTHLY-4`（?）（**订正**）頒獎屏状态 1 贴的那一小块 —— 是**裁切拷贝**，不是缩放 —— docs/deviations/T-041.md:209
 - `D-MONTHLY-5`（?）月結／頒獎屏音效 —— **2026-09-16 已接** —— docs/deviations/T-041.md:239
 - `D-MONTHLY-6`（?）頒獎屏状态 8/9 的 FLIC 动画 —— **2026-09-16 已接** —— docs/deviations/T-041.md:338
@@ -352,7 +354,8 @@
 - `D-WHEEL-8`（?）（**旁证已被否定**）Panel #18 的图 11..21 **不是**转盘素材 —— docs/deviations/T-039.md:143
 - `D-WHEEL-9`（?）（**已接** · 2026-09-16 第三轮）航空 / 保險也走同一扇窗 —— docs/deviations/T-039.md:161
 - `Q-AI-2`（?）AI 的「個性闸门」—— 表解出来了（2026-09-14） —— docs/known-deviations.md:3770
-- `Q-ANIM-1`（?）「動畫過程」設定（`RICH4.CFG+1` = `[0x497159]`）到底管哪些屏 —— docs/known-deviations.md:5083
+- `Q-ANIM-1`（?）「動畫過程」設定（`RICH4.CFG+1` = `[0x497159]`）到底管哪些屏 —— docs/known-deviations.md:5084
+- `Q-ANIM-2`（?）「踩到惡犬」那一段演出（狗咬 FLIC）—— 取证、落码与三处未接 —— docs/deviations/Q-ANIM-2.md:1
 - `Q-BANK-1`（?）銀行那两屏的**动态部分**（2026-09-15，T-029；**主体已做，见 T-029c**） —— docs/known-deviations.md:3441
 - `Q-BANK-1-0`（?）通用金额窗的**面板几何**已补齐（B-5 / B-6 的第一步） —— docs/deviations/T-029.md:153
 - `Q-CARD-1`（?）偏离登记（换地/换屋的目標類別跟脚下走 + 拆除卡的物件分支） —— docs/deviations/Q-CARD-1.md:1
@@ -379,20 +382,19 @@
 - `Q-SETUP-1`（?）開局設定屏三条「画得出来、规则/表现上还没接」—— **已接线（2026-09-16）** —— docs/known-deviations.md:4380
 - `Q-SOUND-1`（?）走子音效（`MOVE_SOUND`）的**时机与号** —— 一次订正 + 一个真缺口 —— docs/deviations/Q-SOUND-1.md:1
 - `Q-SPEECH-1`（?）卡面的「1375 段」是错的，真值是 **1374** —— docs/deviations/T-051.md:6
-- `Q-SPEECH-10`（?）`Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** —— docs/deviations/T-052.md:159
-- `Q-SPEECH-11`（?）卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） —— docs/deviations/T-052.md:171
+- `Q-SPEECH-10`（?）`Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** —— docs/deviations/T-052.md:360
+- `Q-SPEECH-11`（?）卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） —— docs/deviations/T-052.md:376
 - `Q-SPEECH-2`（?）越界**抛错**而不是夹取 —— 这是本项目的选择，不是原版行为 —— docs/deviations/T-051.md:19
-- `Q-SPEECH-3`（?）中间档的 `rand() & 1` 被改成「一律取前一句」 —— docs/deviations/T-052.md:27
-- `Q-SPEECH-4`（?）「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的 —— docs/deviations/T-052.md:52
-- `Q-SPEECH-5`（?）没解的 5 个槽位 —— docs/deviations/T-052.md:72
-- `Q-SPEECH-7`（?）勘误：事件 15 的判据是**地块的 `+0x1a`（等级）**，不是玩家结构 —— docs/deviations/T-052.md:106
-- `Q-SPEECH-8`（?）`Speaking.mkf` 改成**按需装载**（本项目的选择） —— docs/deviations/T-052.md:122
-- `Q-SPEECH-9`（?）字幕与表情图**画在整块舞台上**，原版那面「抠下来的截图方块」没复刻 —— docs/deviations/T-052.md:136
+- `Q-SPEECH-3`（?）中间档的 `rand() & 1` 被改成「一律取前一句」 —— docs/deviations/T-052.md:36
+- `Q-SPEECH-4`（?）「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的 —— docs/deviations/T-052.md:61
+- `Q-SPEECH-7`（?）勘误：事件 15 的判据是**地块的 `+0x1a`（等级）**，不是玩家结构 —— docs/deviations/T-052.md:282
+- `Q-SPEECH-8`（?）`Speaking.mkf` 改成**按需装载**（本项目的选择） —— docs/deviations/T-052.md:298
 - `Q-STAGE-1`（?）`screen` 切了但画面不动 —— 两处 `return` 抢在 `blitStage()` 前面（**已修 2026-09-15**） —— docs/known-deviations.md:3558
 - `Q-STOCK-4`（?）台股屏的**两页**与标题反了（2026-09-15，T-030） —— docs/known-deviations.md:1529
 - `Q-STOCK-5`（?）休市日那一屏是**訊息框** —— 只剩「本日休市」，点哪儿都退屏（2026-09-15，T-030） —— docs/known-deviations.md:1543
 - `Q-STOCK-6`（?）偏离登记（股市 · **上市公司資訊**详情卡的「有/无上市公司」两支） —— docs/deviations/Q-STOCK-6.md:1
 - `Q-STOCK-7`（?）偏离登记（股市 · 行情表／持股页里**未上市**（`stock + 4 == 0`）的行画什么） —— docs/deviations/Q-STOCK-7.md:1
+- `Q-TOLL-FX-1`（?）—— 過路費「同街地块一起闪」的**逐像素** vs **整张精灵** —— docs/deviations/Q-TOLL-FX-1.md:1
 - `Q-TOOL-1`（?）飛彈的爆炸范围是近似的 —— docs/known-deviations.md:1821
 - `Q-TOOL-4`（?）機器工人（9）「无法给自己的地块修成房子」—— 取证、根因与落码 —— docs/deviations/Q-TOOL-4.md:1
 - `Q-TOOL-5`（?）其余 23 个 `_rich4_animate_object` 调用点 + 附身物件的绘制 —— docs/deviations/Q-TOOL-5.md:1
@@ -411,12 +413,12 @@
 - `D-EVENT-4` —— docs/known-deviations.md:4881
 - `D-EVENT-5` —— docs/known-deviations.md:4882
 - `D-EVENT-6` —— docs/known-deviations.md:4883
-- `D-MINI-12` —— docs/known-deviations.md:5050
+- `D-MINI-12` —— docs/known-deviations.md:5051
 - `D-T047-8` —— docs/known-deviations.md:4934
-- `D-T053-1` —— docs/known-deviations.md:4976
-- `D-T053-2` —— docs/known-deviations.md:4977
-- `D-T053-3` —— docs/known-deviations.md:4978
-- `D-T055-1` —— docs/known-deviations.md:4968
-- `D-T055-2` —— docs/known-deviations.md:4970
-- `D-T055-3` —— docs/known-deviations.md:4971
+- `D-T053-1` —— docs/known-deviations.md:4977
+- `D-T053-2` —— docs/known-deviations.md:4978
+- `D-T053-3` —— docs/known-deviations.md:4979
+- `D-T055-1` —— docs/known-deviations.md:4969
+- `D-T055-2` —— docs/known-deviations.md:4971
+- `D-T055-3` —— docs/known-deviations.md:4972
 - `Q-FIN-2` —— docs/known-deviations.md:4046

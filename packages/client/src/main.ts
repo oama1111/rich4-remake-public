@@ -9,7 +9,20 @@
  */
 
 import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
-import { setVoiceSink } from './voice-sink.ts';
+import { parseVoiceCode } from '@rich4/data';
+import { playVoiceCode, setVoiceSink } from './voice-sink.ts';
+import { LogRing } from './log-ring.ts';
+// ★ 开发用的状态注入口（`__rich4.debug.patch` 与三个现成配方，W-53）——
+//   只在 DEV 下挂；它**绕过 reduceRecorded**，故调用时会把记录仪标脏。
+import {
+  applyPatch,
+  attachLogLine,
+  dogLogLine,
+  giveAngel,
+  giveSmallPovertyGod,
+  nextNodeOf,
+  placeDogAhead,
+} from './dev-patch.ts';
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
 import { magicScreenState } from './magic-screen.ts';
@@ -89,7 +102,13 @@ import {
 import { onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
 // ★ 「請選擇設施類別」那扇窗（Q-TOOL-4）—— 真人盖**等级 0 的設施**时要先选种类
 //   （原版 `fcn_00440aac` / 窗口过程 `fcn_0043fae4`）。
-import { PICKER_TOOL_ID, openFacilityPicker, pickerNeededFor } from './facility-picker.ts';
+import {
+  PICKER_HIT,
+  PICKER_STRIDE,
+  PICKER_TOOL_ID,
+  openFacilityPicker,
+  pickerNeededFor,
+} from './facility-picker.ts';
 import { needsStealPick, openStealPicker } from './steal-picker.ts';
 import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue } from './amount-window.ts';
 import {
@@ -140,8 +159,20 @@ import {
   type OptionsOutcome,
 } from './options-pages.ts';
 import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
-import { cardPlaySpeech, speechBubblesFor, speechEventsFor } from './speech.ts';
-import { SpeechQueue, drawSpeechBubble, type SpeechBubble } from './speech-bubble.ts';
+import {
+  cardPlaySpeech,
+  openingSpeech,
+  speechEventsFor,
+  speechLinesFor,
+  type SpeechLine,
+} from './speech.ts';
+import { deferSpeech, filmWaitsForSpeech, stageBusy, type StageFlags } from './stage-gate.ts';
+import {
+  SpeechQueue,
+  drawSpeechBubble,
+  type BubbleSpriteFn,
+  type SpeechBubble,
+} from './speech-bubble.ts';
 // 台词字幕用的是 canvas 文字（原版 `_rich4_create_font(0x10, 0x101010, …)` 那一路）
 import { font } from './font.ts';
 import { MusicPlayer, shouldResumeAfterUnlock } from './music.ts';
@@ -160,13 +191,13 @@ import {
   loadSavedSoundFont,
   pickGameDir,
   pickSoundFont,
+  warpCursor,
   type PickResult,
 } from './host.ts';
 import { BOARD_BGM_FILES, MIDI_PLAYLIST, PLACE_TOOL_SOUND, SOUND_IDS, nextBoardBgm } from '@rich4/assets-pipeline';
 import {
   BoardRenderer,
   cameraCenter,
-  characterCamera,
   pixelCamera,
   hitToolbar,
   pickNodeAt,
@@ -196,6 +227,7 @@ import {
   buildFxPlan,
   buildUpgradesOf,
   BUILD_FX_ARCHIVE,
+  manifestSoundFor,
   stepBuildFx,
   type BuildClipName,
   type BuildFx,
@@ -206,13 +238,34 @@ import { confineClip, confineFxTrigger } from './confine-fx.ts';
 // ★ 神明降臨／發威那一段影片（Q-ANIM-1）—— 与住院/入獄同一支 `fcn_0045144f`，
 //   于是共用 `board-film.ts` 的播放与下面那一份「棋盘影片」宿主状态。
 import { godFilmSpec, godFxTrigger } from './god-fx.ts';
+// ★ 「踩到惡犬」那一段影片（試玩回報：踩到狗直接進醫院、没有咬人动画/配音）——
+//   同一支 `fcn_0045144f` 的第三位客人，规格与判据见 `dog-fx.ts`。
+import { dogBiteFxTrigger } from './dog-fx.ts';
+// ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報）—— 同一支 `fcn_0045144f`，
+//   规格与判据见 `alien-news-fx.ts`。
+import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
+// ★ W-55 行 4：「惡魔顯靈拆屋」那一段 110×110 的爆破片 —— 规格/判据见 `devil-fx.ts`。
+import {
+  DEVIL_DEMOLISH_FRAME_MS,
+  DEVIL_DEMOLISH_FRAMES,
+  DEVIL_FX_RESOURCE,
+  devilDemolishFilmAt,
+  devilDemolishFxTrigger,
+} from './devil-fx.ts';
+// ★ 飛彈 / 核彈的爆炸影片（`Data.mkf` 0x210 / 0x212）—— 规格/判据见 `missile-fx.ts`。
+import { missileFilmFor } from './missile-fx.ts';
 import {
   beginBoardFilm,
   boardFilmBitmap,
   boardFilmDone,
+  enqueueBoardFilm,
   type BoardFilm,
   type BoardFilmSpec,
 } from './board-film.ts';
+// ★ 影片窗口内棋盘按 **before** 那一帧画（试玩3 #1/#9，issue #19）——
+//   原版 `fcn_0045144f` 是阻塞的，播完才重绘棋盘；core 却一条 action 就把
+//   等级/附身写完了。纯函数与逐项判据见 `deferred-board.ts`。
+import { boardFilmWindowOpen, boardStateForFilm, type BoardFilmWindow } from './deferred-board.ts';
 import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 // ★ 「取消」那一拍的梯子 —— ESC 与右键**共用同一份**（原版就是这么干的：
@@ -238,11 +291,25 @@ import {
   hitDiceToggle,
   hitDialog,
   layoutDialog,
+  usesYesNo,
   type AmountPage,
   type DialogHit,
 } from './dialog.ts';
 import { DICE_FLIC_BASE, GO_IMAGE, type SpriteFn } from './gameui.ts';
-import { GO_SIZE, goButton } from './go-button.ts';
+import { GO_SIZE, goButton, boardToScreen } from './go-button.ts';
+import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './cursor-warp.ts';
+// ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
+import { shouldResumeDriver } from './driver-resume.ts';
+import { tollFlashLevel } from './toll-flash-fx.ts';
+import { setNoticeStartGate } from './notice-box-screen.ts';
+// ★ W-66-a：走子时那串**剩余步数**的大数字（规格/判据见该模块文件头）。
+import {
+  STEPS_COUNTER_ARCHIVE,
+  STEPS_COUNTER_RESOURCE,
+  stepsCounterPlan,
+  stepsCounterShown,
+  stepsCounterValue,
+} from './steps-counter.ts';
 
 /**
  * 最近一次棋盘 `mousedown` 走到了哪一步 —— **只读诊断**，给浏览器长跑排错用。
@@ -329,8 +396,9 @@ import {
   DICE_SOUND_PICK,
   drawDiceChoose,
   hitDiceFace,
-  remoteDiceAction,
+  remoteDiceActions,
 } from './dice-choose.ts';
+import { drawToast, reportToast, toastVisible, type Toast } from './toast.ts';
 import { nearestSummonableObject, summonCardAction } from './object-pick.ts';
 import {
   drawTip,
@@ -373,6 +441,7 @@ import {
   drawLoanPanels,
   drawLoanPressed,
   loanDueDays,
+  loanBubbleVoice,
   loanSlideDone,
   loanSlideStep,
   loanStart,
@@ -400,6 +469,9 @@ import {
   drawShopScreen,
   hitShopCell,
   hitShopExit,
+  SHOP_EXIT_HIT,
+  shopBubbleAfterClick,
+  shopBubbleExpired,
   hitShopShelf,
   hitShopSwitch,
   shopEntryOf,
@@ -420,6 +492,16 @@ import {
   type BailSlotView,
 } from './bail-screen.ts';
 import { SCREENS } from './screens.ts';
+// ★ 只给「挪指针」那条判据用（`cursor-warp.ts` 的另外三处固定落点）
+import { facilityPickerScreen } from './facility-picker.ts';
+import { researchScreen } from './research-screen.ts';
+// ★ 只给 dev 钩子用（`__rich4.auctionView()`）：竞价轮转发生在 canvas 屏里，
+//   自动化看不见就没法验收「电脑跟不跟价、落槌演没演」。
+import { auctionHumanPassPoint, auctionRunForTest } from './auction-screen.ts';
+// ★ 镜头该盯谁：判据是纯函数（第四份回报第 2/5 条）
+import { cameraFollowTarget } from './camera-follow.ts';
+// ★ 只给 dev 钩子用（`__rich4.lotteryDraw()`）：開獎屏要等到 15 号才出现
+import { lotteryDrawCue, lotteryDrawView } from './lottery-draw-screen.ts';
 import { openBigMap } from './big-map-screen.ts';
 // ★ 遊戲百科（`helpScreen`）不在这里单独引 —— 它登记在 `screens.ts` 里，
 //   ESC 与右键都走那条登记契约（本屏的 `hotkey` / `contextmenu` 是同一支）。
@@ -479,8 +561,18 @@ const playersEl = $('players');
 const actionsEl = $('actions');
 const interactionEl = $('interaction');
 
+/**
+ * 最近若干行日志的**环**（F9 回报里带上）—— 实现在 `log-ring.ts`（可单测）。
+ *
+ * ★ 为什么要有：日志栏只在屏幕上留 120 行、而且**不进报告** ——
+ *   事后复盘时最想知道的往往正是「出事前那几行说了什么」
+ *   （「⚠ 电脑在 X 无事可做，已停手」「底圖載入失敗」…）。
+ */
+const logRing = new LogRing();
+
 function log(msg: string): void {
   hostLog(msg);
+  logRing.push(msg);
   const d = document.createElement('div');
   d.textContent = msg;
   logEl.prepend(d);
@@ -874,6 +966,10 @@ function syncLoanUi(): void {
     //   VA 0x00411e8f 把 72 字节读进 `0x497158`），本引擎对应 `options.animation`。
     //   先前这里写死 `true` —— 设定关掉也照样打招呼（已订正，见 Q-ANIM-1）。
     loanUi = loanStart(options.animation);
+    // ★ 进屏那一句招呼的**语音**（`#0075`）：原版 `0x00435210 mov esi,[0x475830]` →
+    //   `0x00435d8c call 0x44ecb6` → `0x0044edae call 0x44fabc`（认 `#`）→
+    //   `0x0044fb4e call 0x45441a`（`play_speech`）。见 `loanBubbleVoice` 的取证块。
+    loanBubbleVoice(null, loanUi.bubble);
     // ★ 進銀行的配乐 @source `ui_bank.asm:3557` `push 4 / call fcn_004549cf`
     //   ⇒ id 4 → `MIDI05.MID` → 磁盘名 `midi05.mid`（表 `0x47e793`，见 `SCREEN_BGM.bank`）
     void playTrackFile('midi05.mid');
@@ -888,7 +984,7 @@ function syncLoanUi(): void {
 function loanEffect(ui: LoanUi, effect: ReturnType<typeof loanStep>['effect']): void {
   const hadBubble = loanUi?.bubble ?? null;
   loanUi = ui;
-  if (hadBubble !== ui.bubble) loanBubbleAt = performance.now();
+  if (loanBubbleVoice(hadBubble, ui.bubble)) loanBubbleAt = performance.now();
   if (effect === null) return;
   if (effect.kind === 'close') {
     loanUi = null;
@@ -1039,6 +1135,15 @@ let stockPickAt: number | null = null;
  * @source `rich4_tool_yaokongtouzi.asm` **VA 0x004470f8** 起
  */
 let dicePick: { hover: number | null } | null = null;
+
+/**
+ * 下一条 `rollDice` 是**遥控骰子**定死的点数 → 不播预动作/滚骰（试玩回报：
+ * 「选择了1点应该是直接跳过正常扔骰子阶段然后让角色走1点」）。
+ *
+ * ★ 点数由 `dice-choose.ts` 的 `remoteDiceActions` 写进 `forcedDice`，这里只掐表现；
+ *   纯客户端状态，不进 `GameState`（点数的真值仍在 core）。
+ */
+let forcedRollSkipFx = false;
 
 /** 该股对应的地图企业（没上市就返回 null）@source 股票记录 +4 = 企業序号 */
 function stockCommercial(stockIndex: number): { type: number; stockIndex: number } | null {
@@ -1319,7 +1424,7 @@ function loadState(next: GameState, mapOverride: Rich4Map | null = null): void {
   nodeTip = null; // 换局面/读档时把名牌收掉（Q-HOVER-1）
   amountPage = null;
   const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? 1];
-  camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
+  camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   screen = 'game';
   // ★ 读档进棋盘：背景曲换**下一首** @source `sub_00401981(1)` → `0x004019c6 push 0 / call sub_00454d91`
   holidayBgmDays = 0; // @source 0x00404128 读档清零（節日曲不进存档）
@@ -1419,45 +1524,87 @@ const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
   'monthly',
   'magic',
   'eventBox',
+  'notice',
   'wheel',
   'god-slot',
 ]);
 
+/**
+ * 此刻是不是有一段**纯演出**在接管整屏（判据就是上面那张表）。
+ *
+ * ★ 抽出来给两处共用：`stageBusyFlags()`（`holdForActorWalk` / 台词的闸），
+ *   以及各屏自己的判断。
+ */
+function blockingPresentation(): boolean {
+  const overlay = activeUiScreen();
+  return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
+}
+
+/**
+ * ★★ W-51：此刻「台上还忙着」的九个条件 —— `stageBusy()`（`stage-gate.ts`，
+ * **纯函数、有单测**）的**宿主取值**。这里是唯一一处把它们从运行时状态里取出来的地方。
+ *
+ * 清单与 `holdForActorWalk` / `queueSpeech` / `speechTick` 共用的那一套**必须同一份**：
+ * 两边各写一套必然漂移 —— 多一位 = 台词被永久押着（死锁），少一位 = 台词抢在影片前面。
+ *
+ * 每一位的来历（都在下面 `holdForActorWalk` 的旧注释里、逐条带 @source）：
+ *   - `blockingPresentation`：纯演出整屏（轉盤 / 訊息框 / 事件框 / 月結 …）；
+ *   - `boardFilm` / `pendingBoardFilm`：住院 `0x20c`(62×100ms) / 入獄 `0x20d`(35×71ms) /
+ *     神明 / 狗咬 `0x214` / 飛碟 `0x213` 那几段**阻塞**影片（`fcn_0045144f`）；
+ *   - `pendingBoardFilmAfter`：「狗咬刚播完、救护车还没起播」那一拍的空档；
+ *   - `buildFx` / `pendingBuildFx`：機器工人大锤 3876ms + 满级 2772ms；
+ *   - `objectFlight`：放置類道具的投掷（`place_object → animate_object → 音效` 是阻塞的，
+ *     VA 0x00446bf4 起）。**卡片飞行共用这一位** —— `startCardFlight` 的两个分支都走
+ *     `beginObjectFlight`，没有第二个状态变量；
+ *   - `walkDone`：走子补间（`renderer.walkDone()`，**已含替身那条**）；
+ *   - `diceFxActive`：掷骰三段（预动作 / 滚骰 / 定格）。
+ */
+function stageBusyFlags(): StageFlags {
+  return {
+    blockingPresentation: blockingPresentation(),
+    boardFilm: boardFilm !== null,
+    pendingBoardFilm: pendingBoardFilm !== null,
+    pendingBoardFilmAfter: pendingBoardFilmAfter !== null,
+    buildFx: buildFx !== null,
+    pendingBuildFx: pendingBuildFx !== null,
+    objectFlight: objectFlight !== null,
+    walkDone: renderer.walkDone(),
+    diceFxActive: diceFx.active,
+    // ★ W-69：過路費閃爍（`fcn_00451985` 是阻塞的，原版在費用訊息框之前）
+    tollFlash: tollFlash !== null,
+  };
+}
+
 function holdForActorWalk(reschedule: () => void): boolean {
   if (screen !== 'game') return false;
-  const overlay = activeUiScreen();
-  if (overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id)) {
-    reschedule();
-    return true;
-  }
-  if (!renderer.walkDone()) {
-    reschedule();
-    return true;
-  }
-  // ★ 投掷动效（放置類道具）也在播 → 等它播完再派下一步：原版那一段
-  //   `place_object → animate_object → 音效` 是**阻塞**的（VA 0x00446bf4 起），
-  //   不等就会出现「物件还在飞，下一次 dispatch 已经把画面翻页了」。
-  if (objectFlight !== null) {
-    reschedule();
-    return true;
-  }
-  // ★ 建屋影片（機器工人）同理，而且原版这一段的阻塞更长
-  //   （大锤 3876 ms + 满级 2772 ms，`fcn_0045144f` 是**同步**播放的）——
-  //   不等就会出现「影片还在放，AI 已经把下一条 action 派完了」。
-  if (buildFx !== null || pendingBuildFx !== null) {
-    reschedule();
-    return true;
-  }
-  // ★ 送進監獄／醫院那段影片同理，而且原版是**阻塞**的（`fcn_0045144f` 自己的
-  //   `PeekMessage` 循环）：医院 62×100 ms = 6.2 秒、入獄 35×71 ms ≈ 2.5 秒。
-  //   不等它播完就派下一步，动画就会被下一次棋盘重绘吃掉。
-  if (boardFilm !== null || pendingBoardFilm !== null) {
+  // ★ 台上还有演出 ⇒ 等它收摊再派下一步。判据收在 `stageBusy()`（W-51）里，
+  //   与 `queueSpeech` / `speechTick` 共用同一份清单 —— 逐位的来历见 `stageBusyFlags`。
+  //   （原先这里是九个 `if` 各写一遍：纯演出整屏 / 走子补间 / 物件飞行 / 建屋片 /
+  //     棋盘影片 / 两段影片之间的空档；现在一位不多、一位不少地收在一处。）
+  if (stageBusy(stageBusyFlags())) {
     reschedule();
     return true;
   }
   if (state.lastNpcWalks.length > 0 && state.lastNpcWalks !== npcWalksDrawn) {
     npcWalksDrawn = state.lastNpcWalks;
     requestAnimationFrame(reschedule);
+    return true;
+  }
+  // ★★ 还有台词在演 → 等它演完再派下一步。
+  //
+  //   原版 `_rich4_player_say`（VA 0x0044ef41）是**阻塞**的：画完字幕/表情后
+  //   `push 0x3e8 / call fcn_004544f6`（VA 0x0044f1a6）—— 那是个
+  //   「等消息或到点」的循环（VA 0x00454520 起 `PeekMessage` + `timeGetTime` 比对，
+  //   超时才 `0x4545b1` 返回）。也就是说：**原版在角色把一句话说完（0x3e8 ms）
+  //   之前，调用它的那整条回合流程根本不往下走**。
+  //   本引擎的队列是异步的，不挡就会出现「上一句还没说完，下一个 NPC 已经开始行动」。
+  //
+  //   ★ 判据取 `speechQueue.length > 0`：队列只在 `speechTick()` 里逐段收
+  //   （`speechQueue.tick`），而 `speechTick` 会把**演出期间**派生出来的台词
+  //   押在 `deferredSpeech` 里（见 `queueSpeech`），所以「屏还在演」与
+  //   「台词还没说完」两件事由这一条一并挡住。
+  if (speechQueue.length > 0 || deferredSpeech !== null) {
+    reschedule();
     return true;
   }
   return false;
@@ -1876,12 +2023,31 @@ function handleHotkey(fn: number): boolean {
  *   （起点 `0x40c1d4`、终点 `0x40c205` 都是节点记录的 `+0x00/+0x02`），
  *   所以镜头/视角/缩放都不影响一格几 tick。
  */
+/**
+ * ★ W-66-b 的 DEV 量测：每段补间起步时与「上一段补间的**理论结束时刻**」之差（毫秒）。
+ *
+ * 口径：原版是**同一个 tick** 里上一格收尾、下一格起步（`0x0040d936..0x0040d950`），
+ * 缝是 0；本引擎要经过 `setTimeout(paceDelay)` → `holdForActorWalk` 可能再等一个
+ * `RENDER_MS` → rAF 才起下一段。这里只**量**，读数用 `__rich4.walkGaps()`。
+ */
+const walkGaps: number[] = [];
+
+/** 记一段补间的起步缝（只在 DEV、且上一段存在时记）@see walkGaps */
+function noteWalkGap(): void {
+  if (!import.meta.env.DEV) return;
+  const prevEnd = renderer.lastWalkEndAt();
+  if (prevEnd === null) return;
+  walkGaps.push(performance.now() - prevEnd);
+  if (walkGaps.length > 600) walkGaps.shift();
+}
+
 function startStepTween(playerIndex: number): void {
   const p = state.players[playerIndex];
   if (p === undefined) return;
   const from = map.nodes[p.lastNodeId - 1];
   const to = map.nodes[p.nodeId - 1];
   if (from === undefined || to === undefined) return;
+  noteWalkGap();
   renderer.startWalk(
     playerIndex,
     { x: from.x, y: from.y },
@@ -2139,7 +2305,9 @@ function closeAmountPage(): void {
 }
 
 /** 对话框上点到了什么 */
+const __devHits: unknown[] = [];
 function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
+  if (import.meta.env.DEV) __devHits.push(hit);
   if (hit.kind === 'choice') {
     const c = ui.choices[hit.index];
     if (c === undefined) return;
@@ -2166,7 +2334,12 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
     }
     // 要填数的选项：先进填数页，别直接派 action
     if (c.amount !== undefined) {
-      amountPage = { choice: hit.index, value: AMOUNT_INITIAL };
+      // ★ 开窗初值：原版認購股份那一支把**上限**当第一个实参传进填数窗
+      //   （见 `interactions.ts` 的 `amount.initial`），其余各条照旧从 0 起
+      amountPage = {
+        choice: hit.index,
+        value: c.amount.initial ?? AMOUNT_INITIAL,
+      };
       dialogHot = null;
       requestRender();
       return;
@@ -3264,6 +3437,78 @@ let minimapBg: ImageBitmap | null = null;
  *   走到标记上、或右键点别处，标记就清掉。
  */
 let minimapMarker: { x: number; y: number } | null = null;
+
+/**
+ * ★★ W-54：**上一次照 `view_to` 落下的那一个标记**（按引用比）。
+ *
+ * 原版 `view_to`（VA 0x0041d476）写的是与小地图点选**同一个**标记
+ * （`[0x48be18]`/`[0x48be1c]`/`[0x48be20]`），`refresh_screen`（VA 0x0041d546）
+ * 再把它清 0 ⇒ 镜头回到行动者。core 把这个目标交给 `state.lastViewTarget`
+ * （瞬态提示，见 `GameState.lastViewTarget`），这里记住「哪一次已经照做过了」——
+ * 坐标相同但**换了一个对象**就是新的一次（用户连打两张同坐标的卡也要重切）。
+ */
+let shownViewTarget: { x: number; y: number } | null = null;
+
+/**
+ * 这个标记是**照 `view_to` 落的**吗（= 收屏时该由我们撤掉）。
+ *
+ * ⚠️ 不能靠「把 `shownViewTarget` 清成 null」来表示已收 —— 那会让**同一个**
+ *   `lastViewTarget` 在下一帧又被当成新目标重新落下，镜头于是每帧在
+ *   「目标 ↔ 行动者」之间来回跳（实测到过：`(400,400)` / `(1248,1368)` 逐帧交替）。
+ */
+let viewTargetActive = false;
+
+/**
+ * 把 core 交下来的 `view_to` 目标落成小地图标记；演出收摊后再撤掉。
+ *
+ * 每帧调一次（`drawGameStage` 里、`centerOnCurrentPlayer()` 之前）。
+ *
+ * ⚠️ **忙碌判据**用的是 W-51 的 `stageBusy()`（`stage-gate.ts`，与
+ *   `holdForActorWalk` 同一份清单），再补上台词 —— 原版的 `refresh_screen`
+ *   排在整段流程（影片 + 訊息框 + 台词）的**最后**，所以台词还在台上时
+ *   镜头不该提前切回去。
+ */
+function syncViewTarget(): void {
+  const t = state.lastViewTarget;
+  if (t !== null && t !== shownViewTarget) {
+    shownViewTarget = t;
+    viewTargetActive = true;
+    minimapMarker = { x: t.x, y: t.y };
+    // 立刻居中（= 原版 `view_to` 收尾那句 `fcn_00415e70`）——`followPlayer`
+    //   是**本引擎**的东西，不动它；正常情形下它是 true，下一帧
+    //   `centerOnCurrentPlayer()` 会因为「有标记」而继续停在标记上。
+    camera = pixelCamera(t.x, t.y, camera.view);
+    requestRender();
+    return;
+  }
+  if (!viewTargetActive) return;
+  // 演出全部收完 ⇒ 清标记（= 原版 `refresh_screen`），镜头回行动者
+  if (stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null) return;
+  viewTargetActive = false;
+  minimapMarker = null;
+  requestRender();
+}
+/**
+ * ★★ 换人行动时把小地图标记收掉、镜头交还给当前玩家（试玩 4：
+ *   「手动调整小地图后，镜头无法自动跟随接下来的行动」）。
+ *
+ * 原版 `fcn_00415e70` 的居中判据是**有标记就用标记、否则用当前玩家**；
+ * 而本引擎点小地图会同时置 `followPlayer = false`（`centerOnMarker`）——
+ * 那个标志**只在右键 / 走到标记上**才恢复，于是「下一位开始行动」时镜头
+ * 仍然钉在旧标记上。
+ *
+ * 口径：**回合换人的那一条 action** 到来时把标记收掉（标记是「看一眼」
+ * 的工具，不是模式开关）：这样 NPC 走子与自己的新回合都会重新跟随。
+ */
+function retargetCameraOnTurnChange(before: GameState): void {
+  if (minimapMarker === null && followPlayer) return;
+  const changed =
+    before.currentPlayer !== state.currentPlayer || before.turnCount !== state.turnCount;
+  if (!changed) return;
+  minimapMarker = null;
+  followPlayer = true;
+}
+
 /** 正按着的小地图箭头（松开才转视角）@source `[0x48be28]` */
 let pressedMinimapArrow: MinimapArrowId | null = null;
 /** 鼠标悬停的小地图箭头 —— 悬停时换成高亮图 @source VA 0x00418415 */
@@ -3384,7 +3629,15 @@ function reduceRecorded(action: Action): GameState {
   return next;
 }
 
-/** 出一份问题回报（F9 / 未捕获异常 / `__rich4.report()`）；落盘位置写进日志栏 */
+/**
+ * 屏幕提示条（toast）—— 见 `toast.ts`。只留**最新一条**，到点自己收。
+ *
+ * ★ 原版没有这个东西，是需求方明确要求的（F9 存回报要有明显提示）。
+ *   画在渲染链的最上面（见 `requestRender` 的帧尾），所以任何一屏都盖得住。
+ */
+let toast: Toast | null = null;
+
+/** 出一份问题回报（F9 / 未捕获异常 / `__rich4.report()`）；落盘位置写进日志栏 + toast */
 let reportBusy = false;
 function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
   if (reportBusy) return;
@@ -3404,10 +3657,19 @@ function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
       desktop: isDesktop(),
       url: window.location.href,
       screen,
+      // ★ 此刻接管整屏的那一屏（`null` = 棋盘本身）—— 光看 `screen`
+      //   分不出「卡在魔法屋」还是「卡在開獎屏」，而这两类的复现路径完全不同。
+      overlay: activeUiScreen()?.id ?? null,
+      phase: state.phase,
+      currentPlayer: state.currentPlayer,
+      pending: state.pending?.kind ?? null,
+      turnCount: state.turnCount,
       mode: state.mode,
       net: net === null ? null : { seat: net.seat },
       options,
       canvas: { w: canvas.width, h: canvas.height, dpr: window.devicePixelRatio },
+      // ★ 出事前最后 120 行日志（见 `logRing`）
+      log: logRing.toArray(),
     },
     finalState: serializeGame(state),
     finalFingerprint: stateFingerprint(state),
@@ -3418,6 +3680,9 @@ function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
   void writeReport(reportFileName(now, reason), JSON.stringify(report))
     .then((where) => {
       log(where === null ? '⚠ 問題回報寫不出去' : `📝 問題回報已存：${where}`);
+      // ★ 试玩回报：日志栏那行没人看得见 ⇒ 再立一条明显的 toast（失败是另一类）
+      toast = reportToast(performance.now(), where);
+      requestRender();
     })
     .finally(() => {
       reportBusy = false;
@@ -3427,6 +3692,7 @@ function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
 /** 真正施加一条 action：单机由 dispatch 直达，联机由服务器广播到达 */
 function applyAction(action: Action): void {
   const before = state;
+  retargetCameraOnTurnChange(before);
   // ★ 单机：日推进那一刻由宿主重新播种（原版 `0x41D06E` 的 `srand(GetTickCount())`）——
   //   见 `rng-host.ts`；联机策略下它是空操作。
   state = reduceRecorded(action);
@@ -3434,20 +3700,28 @@ function applyAction(action: Action): void {
     // ★ 掷骰那一段：点数到手 → 开滚。影片没解好先挂着，解完再补。
     //   纯表现，`diceFx` 不读也不写 state（C-DET-4）。
     if (action.type === 'rollDice') {
-      // 单机的预动作已经在 `requestRoll` 里起好了；联机时点数由服务器定序，
-      // 本机这一按只负责把动画领走（不动画就自己起一段）。
-      if (!diceFx.active) {
-        const me = state.players[state.currentPlayer];
-        if (me !== undefined) {
-          diceFlicNow(Math.max(1, Math.min(3, me.ndices || 1)));
-          diceFx.begin(performance.now(), diceAnticipateTicks(me), tickMs(options.speed), me.ndices || 1);
-          // ★ 自己起的动画也要挂上 `dicePoll` —— 这条岔路先前没挂，于是相位没人推进、
-          //   `active` 恒真，回合驱动全被挡死（同一天的第二个卡死来源）。
-          window.setTimeout(dicePoll, 16);
+      // ★ 遥控骰子（8）：点数已经由玩家选定 ⇒ **这一掷不播预动作/滚骰**（试玩回报）。
+      //   原版这一段仍会播滚骰影片（`fcn_00419572` 的 `call 0x45144f`），
+      //   跳过动画是需求方要求的偏离，见 `forcedRollSkipFx` 的注释。
+      if (forcedRollSkipFx) {
+        forcedRollSkipFx = false;
+        diceFx.cancel();
+      } else {
+        // 单机的预动作已经在 `requestRoll` 里起好了；联机时点数由服务器定序，
+        // 本机这一按只负责把动画领走（不动画就自己起一段）。
+        if (!diceFx.active) {
+          const me = state.players[state.currentPlayer];
+          if (me !== undefined) {
+            diceFlicNow(Math.max(1, Math.min(3, me.ndices || 1)));
+            diceFx.begin(performance.now(), diceAnticipateTicks(me), tickMs(options.speed), me.ndices || 1);
+            // ★ 自己起的动画也要挂上 `dicePoll` —— 这条岔路先前没挂，于是相位没人推进、
+            //   `active` 恒真，回合驱动全被挡死（同一天的第二个卡死来源）。
+            window.setTimeout(dicePoll, 16);
+          }
         }
+        diceFx.roll(performance.now(), state.dice, diceFlic.get(state.dice.length) ?? null);
+        playDiceSound();
       }
-      diceFx.roll(performance.now(), state.dice, diceFlic.get(state.dice.length) ?? null);
-      playDiceSound();
     } else if (state.phase !== 'moving' && !diceFx.active) {
       diceFx.cancel();
     }
@@ -3478,7 +3752,11 @@ function applyAction(action: Action): void {
  *   原版这些都**不分人机**。与 `startActionFx` 同一个教训：两条来源必须共用出口。
  */
 function notifyApplied(before: GameState): void {
-  playSoundFor(before, state);
+  // ★ W-69：先认出「这笔过路费算进了哪几块地」—— 下面那一圈 `s.event?.()` 里
+  //   訊息框那一屏要靠它押着不起播（闪 880 ms 之后才轮到框）。
+  //   （`speech.test.ts` 数的是这个函数名带左括号的出现次数，注释里别写全。）
+  noticeTollLands(performance.now());
+  const said = playSoundFor(before, state);
   // ★ 状态一变，填数页指着的那个选项下标就可能已经不是同一回事了
   //   （`pending` 换了一种，甚至换了人）。一律收掉。
   amountPage = null;
@@ -3497,6 +3775,64 @@ function notifyApplied(before: GameState): void {
   // ★ 登记的整屏：把「刚刚发生了什么」告诉它们（開獎 / 月結 / 魔法屋 / 事件框靠这个起播）
   const env = uiEnv();
   for (const s of SCREENS) s.event?.(before, state, env);
+  queueSpeech(said);
+}
+
+/**
+ * 把这一条 action 派生出来的台词交出去 —— **演出在演就先押着**。
+ *
+ * ★★ 试玩回报「盘子还没停下来 NPC 的台词都触发了」的修法。
+ *   原版这一句是**同步**说的，而它所在的整段流程里轉盤 / 訊息框 / 事件框都是**阻塞**
+ *   调用，顺序由**调用顺序**定死 —— 設施收費那一段：
+ *   ```asm
+ *   0041a458  call 0x44090e     ; ★ 轉盤（阻塞：轉完才返回盤上的數）
+ *   0041a460  [esp+0xd0] = eax  ; 轉盤值（旅館天數 / 購物中心倍數）
+ *   0041a579  call 0x440cac     ; 費用訊息框（0x5dc ms）
+ *   0041a5c0  call 0x40df69     ; 收費（錢真的轉手）
+ *   0041a71e  call 0x44f42d     ; ★ 付款人的台詞（事件 9/10/11）
+ *   ```
+ *   ⇒ 原版**必定**是「盤停下來 → 訊息框 → 付款人的台詞」。
+ *
+ *   本引擎一条 action 就把后果写完、演出是事后补的，所以这里等 `SCREENS` 的
+ *   `event()` 派完再按**每一句自己的 `order`**（W-51，来自 W-50 §2.2 的裁定表）分流：
+ *
+ *   - `beforeStage`（例：壞神附身、回合开始那三句）⇒ **立即入队**，并反过来挡住
+ *     这一条 action 的影片起播（`tickBoardFilm` / `tickBuildFx` 等 `speechQueue.length === 0`）；
+ *   - `afterStage`（例：送醫院 / 送監獄 / 設施收費）⇒ `stageBusy()` 为真时押进
+ *     `deferredSpeech`，由 `speechTick()` 在演出收摊之后放上台。
+ *
+ *   ⚠️ **死锁自查**：`beforeStage` 的句子**永不**进 `deferredSpeech`（`deferSpeech()`
+ *     只对 `afterStage` 返回 true）。否则「台词等影片起播、影片等台词说完」互等。
+ *     见 `stage-gate.ts` 的同名规则与它那条 2 秒用例。
+ *
+ *   ★ 押着的**至多只有一条 action 的那几句**（`deferredSpeech` 是单槽、整体覆写）：
+ *     演出占着屏时 `holdForActorWalk` 不会派下一条 action，所以「押着的被下一条盖掉」
+ *     到不了（真被盖掉也不算错 —— 后说的那句本来就该盖住前一句）。
+ *
+ * ⚠️ 押后而不是「冻结队列」：`SpeechQueue` 的时间基准是**绝对时刻**（`shownAt`），
+ *   冻结再解冻会把整段演出时长算进那 1000 ms 里，那一段台词就一闪而过。
+ *   押在**入队之前**没有这个问题。
+ */
+function queueSpeech(lines: readonly SpeechLine[]): void {
+  if (lines.length === 0) return;
+  const busy = stageBusy(stageBusyFlags());
+  const deferred: SpeechBubble[] = [];
+  const immediate: SpeechBubble[] = [];
+  for (const line of lines) {
+    if (deferSpeech(line.order, busy)) deferred.push(line.bubble);
+    else immediate.push(line.bubble);
+  }
+  // ★ 立即说的那几句一上台，先前押着的就作废（后说的那句本来就该盖住前一句）
+  if (immediate.length > 0) {
+    deferredSpeech = null;
+    if (speechQueue.push(immediate, performance.now()) > 0) requestRender();
+  }
+  if (deferred.length > 0) {
+    deferredSpeech = deferred;
+    // ★ 押着也要续帧：`speechTick()` 靠每一帧回头看「演出收摊了没有」
+    //   （`requestRender` 的续帧条件里也有 `deferredSpeech !== null`）
+    requestRender();
+  }
 }
 
 /**
@@ -3518,6 +3854,18 @@ function startActionFx(action: Action, before: GameState): void {
   startBuildFx(before);
   // 卡片 / 請神符的飞行动效（Q-TOOL-5）—— 是否真的播由 exe 的闸门定
   if (action.type === 'useCard') startCardFlight(before, action);
+  // ★★ 「踩到惡犬」那一段（試玩回報：踩到狗直接進醫院、没有咬人动画/配音）——
+  //   **必须排在 `startConfineFx` 之前**：原版那一支先把 0x214 播完、才走到
+  //   `send_to_hospital` 里的 0x20c（VA 0x0041b837 → 0x0043ed59）。
+  //   这一段不带 `options.animation` 闸（原版那一支没有 `cmp [0x497159], 0`），
+  //   详见 `dog-fx.ts` / `startDogFx`。
+  startDogFx(before, state);
+  // ★★ 飛彈（7）/ 核彈（13）的爆炸影片 —— **必须排在 `startConfineFx` 之前**：
+  //   原版是 `view_to(爆心)` → `damage_area`（里面各次 `send_to_hospital` 播 0x20c）
+  //   → 最后才 `fcn_0045144f` 播自己那一段（0x210 / 0x212）。本引擎一次只播一段，
+  //   所以先来的排前面、后面的自动进 `pendingBoardFilmAfter`（`enqueueBoardFilm`）。
+  //   ⚠️ 不加 `options.animation` 闸（原版这两支里没有 `cmp [0x497159], 0`）。
+  startMissileFx(action, before);
   // ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1 未接清单之一）—— 与 action 种类无关：
   //   判据是**占用表/计数变没变**（`confine-fx.ts` 的 `confineFxTrigger`），
   //   因为送去坐牢/住院的来源有十来个（卡、狗咬、踩雷、命運、新聞、罰款…），
@@ -3525,6 +3873,18 @@ function startActionFx(action: Action, before: GameState): void {
   startConfineFx(before, state);
   // ★ 神明降臨／發威（Q-ANIM-1）—— 判据是 `player.godInfo` 刚变（`god-fx.ts`）
   startGodFx(before, state);
+  // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報：那一段被整个跳过）——
+  //   判据是 `lastEvent` 刚变成 `{ news, 4 }`（`alien-news-fx.ts`）。
+  //   ⚠️ **排在这里**（住院影片之后）：原版 `fcn_0044913d` 是先让
+  //   `damage_area` 里那几次 `send_to_hospital`（各自播 0x20c）跑完、
+  //   最后才 `read_mkf(0x213)` + `fcn_0045144f`（VA 0x00449245/0x0044925b）。
+  //   ⚠️ 也**不**加 `options.animation` 闸：原版这一支里没有
+  //   `cmp [0x497159], 0`（与住院/入獄/神明那三支不同），照 exe 走。
+  startAlienNewsFx(before, state);
+  // ★ W-55 行 4：「惡魔顯靈拆屋」那一段 110×110 的爆破片（試玩回報：客户端一段都没播）——
+  //   判据是 `notices` 里**新出现** `god.demolish`（`devil-fx.ts` 的 `devilDemolishFxTrigger`）。
+  //   排在神明附身影片之后：顯靈是**落点尾块**（`0x0041b077`）的事，与 `godInfo` 变没变无关。
+  startDevilFx(before, state);
 }
 
 /**
@@ -3549,12 +3909,14 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
       : null;
   if (t === null) return;
   const p = state.players[t.player];
+  // ★ `t.special`（不写死 false）：走回棋盘走 `dist × 0.125` 那一支 —— 见 `tween.ts`
+  noteWalkGap();
   renderer.startWalk(
     t.player,
     t.from,
     t.to,
     (p?.trafficMethod ?? 0) & 3,
-    false,
+    t.special,
     tickMs(options.speed),
   );
 }
@@ -3604,8 +3966,15 @@ function ensureSpeakingArchive(): void {
  * ⚠️ 原版的 `_rich4_player_say` 是**一句播完再返回**，而这里的两三个
  *   `sound.play` 是即发即忘 —— 同一动作派生多句时会叠着响。登记在
  *   `docs/deviations/T-052.md`。
+ *
+ * ★★ 2026-09-19（试玩回报「盘子还没停下来 NPC 的台词都触发了」）：台词**不再直接排进
+ *   队列**，而是**返回给调用方**（`notifyApplied`）—— 因为原版那一句是**同步**说的，
+ *   而它所在的整段流程里，轉盤 / 訊息框 / 事件框… 都是**阻塞**调用，顺序由**调用顺序**定死
+ *   （設施收費：`0x41a458` 轉盤 → `0x41a579` 訊息框 → `0x41a5c0` 收費 → `0x41a71e` 台词）。
+ *   本引擎一条 action 就把后果写完，演出是事后补的 —— 于是台词必须**等演出完**
+ *   才上台，见 `deferredSpeech`。
  */
-function playSoundFor(before: GameState, after: GameState): void {
+function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   // 有人出局
   const deadBefore = before.players.filter((p) => p.whoPlays === 0).length;
   const deadAfter = after.players.filter((p) => p.whoPlays === 0).length;
@@ -3641,11 +4010,15 @@ function playSoundFor(before: GameState, after: GameState): void {
   // ★★ 先出**卡牌台词**（原版那句在卡片函数体内，先于效果引发的台词），
   //   再出状态跃迁派生的台词 —— 顺序与原版一致。
   const cardBubbles = cardPlaySpeech(before, after);
-  if (cardBubbles.length > 0 && speechQueue.push(cardBubbles, performance.now()) > 0) {
-    requestRender();
-  }
-  const spoken = speechEventsFor(before, after);
-  if (spoken.length === 0) return;
+  const spoken = speechEventsFor(before, after, topo);
+  // ★ W-51：台词现在带**次序**交出去（`SpeechLine.order`），由 `queueSpeech` 分流。
+  //   卡牌台词**不是探测器**（它走 `lastCardPlay` 这条非状态跃迁的通道）⇒ W-50 §2.2
+  //   没有它的行；按**改动最小**取 `afterStage`：W-51 之前它就是「演出占屏时押后」
+  //   那一类（`queueSpeech` 的旧判据 `blockingPresentation()`），且 exe 里几张卡的
+  //   调用点确实是影片在前、台词在后（例：`0x00443afb` 前有 `view_to` + `play_flic`，
+  //   见 `docs/tasks/speech-callsites.md`）。首席若要逐卡裁定，改这一处即可。
+  const cardLines: SpeechLine[] = cardBubbles.map((bubble) => ({ bubble, order: 'afterStage' }));
+  if (spoken.length === 0) return cardLines;
   ensureSpeakingArchive();
   // ★ 语音**不在这里放** —— 见 `speechTick()`。
   //   原版 `_rich4_player_say` 是**一句播完再返回**（同步），一次 `applyAction`
@@ -3653,12 +4026,10 @@ function playSoundFor(before: GameState, after: GameState): void {
   //   （登记为 Q-SPEECH-6）。现在语音跟着**显示队列**走：一段开始显示才放它那句。
   // ★ 2026-09-16：不光出声，还把**说话人自己那一句**显示出来。
   //   原版 `_rich4_player_say` 的两步（白字字幕 + 金貝貝那种 `@DD` 表情图）
-  //   由 `speech-bubble.ts` 负责；`speechBubblesFor` 把 `SayEvent` 翻成排好版的段落。
+  //   由 `speech-bubble.ts` 负责；`speechLinesFor` 把 `SayEvent` 翻成排好版的段落 + 次序。
   //   金貝貝那一列**整列没有文本也没有语音**，只有一张 `Data.mkf #0x207` 的表情图
   //   （见 `@rich4/data` 的 `SPEECH_LINES` 与 `speechEmojiImage`）。
-  if (speechQueue.push(speechBubblesFor(after, spoken), performance.now()) > 0) {
-    requestRender();
-  }
+  return [...cardLines, ...speechLinesFor(after, spoken)];
 }
 
 // ============================================================
@@ -4131,8 +4502,33 @@ function drawBailStage(): void {
 }
 
 /** 原版面板上的两句提示都是 2 秒（`fcn_0044ee18` 的 0x7d0）*/
+/**
+ * 老板娘的台词气泡 —— 串头的 `#NNNN` 是**语音号**：先播语音，再把剥完的串放进气泡。
+ *
+ * ★ W-67-c：先前这里直接把原串塞进气泡（而 `SHOP_MSG` 里的 `#NNNN` 也被剥掉了）
+ *   ⇒ 商店里**一句语音都不响**。改用 `voice-sink.ts` 的 `playVoiceCode()`
+ *   （`event-box-screen.ts` 就是这么用的）。
+ * ★ 气泡时长：语音比 `SHOP_BUBBLE_MS` 长时**撑到语音播完**（仿 `speechTick` 里
+ *   `sound.durationOf` 那两行）。
+ */
 function shopSay(ui: ShopUi, text: string, now: number): void {
-  ui.bubble = { text, until: now + SHOP_BUBBLE_MS };
+  const shown = playVoiceCode(text);
+  let until = now + SHOP_BUBBLE_MS;
+  const voiceMs = voiceDurationOf(text);
+  if (voiceMs !== null) until = Math.max(until, now + voiceMs);
+  ui.bubble = { text: shown, until };
+}
+
+/**
+ * 这句串的语音有多长（毫秒）；没有 `#NNNN` 或拿不到时长就返回 `null`。
+ *
+ * @source 语音号 → `Speaking.mkf` 资源，与 `event-box-screen.ts` / `speechTick` 同一条路
+ */
+function voiceDurationOf(text: string): number | null {
+  const { voice } = parseVoiceCode(text);
+  if (voice === null) return null;
+  const ms = sound.durationOf('Speaking.mkf', voice);
+  return ms === null || ms <= 0 ? null : ms;
 }
 
 /**
@@ -4151,7 +4547,7 @@ function shopGotoPage(ui: ShopUi, page: ShopPage, now: number): void {
     ui.bubble = null;
   }
   ui.slide = entry.slide;
-  ui.blink = blinkStart();
+  ui.blink = blinkStart(page);
 }
 
 /** 开店 / 换玩家换局时把界面状态按当前 `pending` 重铺 */
@@ -4161,6 +4557,12 @@ function syncShopUi(): void {
     shopUi = null;
     return;
   }
+  // ★★ W-67-a：**訊息框还在台上就先别开商店窗**。
+  //   @source `_rich4_ui_shop_entry` `0x0042ea0a push 0x5dc / call 0x440cac`（董事長赠礼框，
+  //   1500 ms）在 `0x0042ea28` 开窗**之前** —— 原版是模态的，框收掉才轮到商店。
+  //   本引擎的訊息框在 `BLOCKING_PRESENTATIONS` 里、回合驱动会等它，
+  //   但 `syncShopUi` 是每次 action 后无条件跑的 ⇒ 这里补一道闸。
+  if (blockingPresentation()) return;
   // ★ 只在**第一次**看见这个商店时建快照：那之后的 `pending.cards/tools` 会因为
   //   买到手而变短，而原版货架上的字是烤进图里的，不会消失。
   if (shopUi === null) {
@@ -4191,7 +4593,7 @@ function syncShopUi(): void {
         tools: shopRows(SHOP_PAGE.tools, pending),
       },
       bought: { cards: new Set<number>(), tools: new Set<number>() },
-      blink: blinkStart(),
+      blink: blinkStart(SHOP_PAGE.cards),
     };
     shopUi = ui;
     // ★ 進商店的配乐 @source `shop.asm:2196` `push 6 / call fcn_004549cf`
@@ -4344,14 +4746,18 @@ function openDicePick(): void {
   requestRender();
 }
 
-/** 点了一颗骰面：发 `useTool{8, value}` 并收盘；`0` = 没点中，什么都不做 */
+/** 点了一颗骰面：发 `useTool{8, value}` + 当场这一掷（`rollDice`）并收盘；`0` = 什么都不做 */
 function dicePickChoose(face: number): void {
-  const act = remoteDiceAction(face);
-  if (act === null) return;
+  const acts = remoteDiceActions(face);
+  if (acts === null) return;
   // @source `loc_00446a39` 的 `play_sound_effect(0x482322)` —— 音效 1
   sound.play('Effect.mkf', DICE_SOUND_PICK);
   dicePick = null;
-  dispatch(act);
+  // ★ 原版道具函数自己把这一回合推起来（VA 0x00447260 `call fcn_0040dd1f`，见
+  //   `dice-choose.ts` 的 `remoteDiceActions`），所以这里紧跟一条 `rollDice`，
+  //   玩家不用再按「前進」。点数已定 ⇒ 这一掷不播预动作/滚骰（见 `forcedRollSkipFx`）。
+  if (state.phase === 'awaitingRoll') forcedRollSkipFx = true;
+  for (const act of acts) dispatch(act);
   requestRender();
 }
 
@@ -4561,6 +4967,18 @@ function leaveLobby(): void {
 let titleHot: number | null = null;
 
 let renderQueued = false;
+
+/**
+ * ★★ W-60：**上一帧**的屏号 —— 「刚从别的屏回到棋盘」那一帧要把回合驱动叫起来。
+ *
+ * 起因（第六份试玩回报第 10 条，**阻断**）：人物走子途中点开「遊戲設定」再关掉 ⇒
+ * 棋子停在半路、GO 点不动 —— 因为两条回合驱动的排程入口都有
+ * `if (screen !== 'game') return;`，关屏时没人再叫它们。判据与理由见
+ * `driver-resume.ts` 的文件头（那里是纯函数、有单测）；这里只存「上一帧」。
+ *
+ * 初值 `'title'`：開局第一帧从標題跨进棋盘时要**叫一次**（与 `endIntro()` 那两句同效）。
+ */
+let lastFrameScreen: Screen = 'title';
 // ============================================================
 //  整屏 UI 的登记表（契约见 ui-screen.ts；表本身在 screens.ts）
 // ============================================================
@@ -4655,6 +5073,70 @@ function activeUiScreen(): UiScreen | null {
 let objectFlight: ObjectFlight | null = null;
 
 /**
+ * ★ W-69：過路費那段「把算进这笔钱的每一块地一起闪一遍」—— 纯表现，不进 state。
+ *
+ * 原版 `fcn_00451985`：16 帧 × 30 ms + 400 ms（表 `0x476380`），**任意滑鼠鍵可跳过**。
+ * 提示本身来自 `state.lastTollLands`（core 的瞬态字段，只有算进去的 > 1 块才写），
+ * 与 `lastCardPlay` / `lastNpcWalks` 同一套「比引用」的判据。
+ */
+let tollFlash: { lands: ReadonlySet<number>; at: number } | null = null;
+/** 已经认过的 `state.lastTollLands`（比引用，见上面） */
+let tollLandsSeen: readonly number[] | null = null;
+
+/**
+ * 认下一条**新的**提示（`state.lastTollLands` 换了引用）。
+ *
+ * ★★ 必须在 `notifyApplied` 的**最前面**认 —— 訊息框那一屏的 `event()`
+ *   是同一条 action 里紧接着跑的（`for (const s of SCREENS) s.event?.(…)`），
+ *   而它要靠「闪在播」这道闸决定起不起播。放到每帧的 `tickTollFlash` 里认就晚了：
+ *   框已经在同一次 dispatch 里起播了（浏览器实测：330 ms 时框已经盖在棋盘上）。
+ *
+ * @source 原版次序：标地（0x00419b9e）→ 闪 16 帧 + 静 400 ms（`fcn_00451985`）
+ *   → 費用訊息框（0x00419d5a `call 0x440cac`）。
+ */
+function noticeTollLands(now: number): void {
+  if (state.lastTollLands === null || state.lastTollLands === tollLandsSeen) return;
+  tollLandsSeen = state.lastTollLands;
+  tollFlash = { lands: new Set(state.lastTollLands), at: now };
+}
+
+/** 这一拍该给渲染器的那份（没在播 / 亮度 0 ⇒ null） */
+function tollFlashInput(now: number): { lands: ReadonlySet<number>; level: number } | null {
+  if (tollFlash === null) return null;
+  const level = tollFlashLevel(now - tollFlash.at);
+  if (level === null || level === 0) return null;
+  return { lands: tollFlash.lands, level };
+}
+
+/**
+ * 每帧推一次：认新提示、到点收摊、没播完就续帧。
+ *
+ * ★ 原版这一整段是**阻塞**的（`fcn_00451985` 里那个等待循环），所以它也得算进
+ *   `stageBusy()`（见 `stage-gate.ts` 的 `tollFlash` 位）—— 訊息框要等它播完。
+ */
+function tickTollFlash(now: number): void {
+  // 兜底：没经过 `notifyApplied` 的那几条路（联机广播 / 读档）也认得出来
+  noticeTollLands(now);
+  if (tollFlash === null) return;
+  if (tollFlashLevel(now - tollFlash.at) === null) {
+    tollFlash = null;
+    return;
+  }
+  requestRender();
+}
+
+/** 任意滑鼠鍵跳過（原版 `fcn_004528b9` 返回非 0 就 break） */
+function skipTollFlash(): void {
+  if (tollFlash === null) return;
+  tollFlash = null;
+  requestRender();
+}
+
+// ★ W-69：訊息框要**等这段闪完**再弹（原版次序：标地 → 闪 16 帧 → 静 400 ms → 才弹框）。
+//   把「闪还在播」这件事从这一道闸递给 `notice-box-screen`（见那里的 `setNoticeStartGate`）。
+setNoticeStartGate(() => tollFlash !== null);
+
+/**
  * 正在排队的角色台词（T-052 的屏幕那一半）。
  *
  * ★ 原版 `_rich4_player_say`（VA 0x0044ef41）是**阻塞**的一句一句演
@@ -4663,6 +5145,18 @@ let objectFlight: ObjectFlight | null = null;
  *   纯表现，不读也不写 `GameState`（C-DET-4）。
  */
 const speechQueue = new SpeechQueue();
+
+/**
+ * 被演出**押后**的台词（那一刻起屏上有一段纯演出在演）。
+ *
+ * ★★ 原版「轉盤停 → 訊息框 → 付款人的台詞」是**同步**顺序（見 `queueSpeech` 的
+ *   `@source`）。本引擎一条 action 就把演出与台词一起派生出来，所以台词先押在这里，
+ *   由 `speechTick()` 在演出收屏之后放上台。
+ *
+ * ★ 单槽 + 整体覆写：押着的**至多只有一条 action 的几句**（演出占屏时
+ *   `holdForActorWalk` 不派下一条），见 `queueSpeech`。
+ */
+let deferredSpeech: SpeechBubble[] | null = null;
 
 /** 这一件飞完该放哪个音效号（0 = 不放音） */
 let objectFlightSound = 0;
@@ -4904,6 +5398,16 @@ function startCardFlight(
 let buildFx: BuildFx | null = null;
 
 /**
+ * 「影片起播那一拍**之前**」的 state 快照（`null` = 现在没有影片在播）——
+ * 影片窗口里棋盘按它画，播完才切回 after。见 `deferred-board.ts`。
+ *
+ * ★ 一份就够：建屋与棋盘影片都由 `startActionFx` 在**同一条 action** 里起，
+ *   而影片期间回合驱动被闸住（`holdForActorWalk`），state 不会再变 ——
+ *   所以两条影片的快照必然是同一次 `applyAction` 的 `before`。
+ */
+let deferredBoardBefore: GameState | null = null;
+
+/**
  * 「该播、但影片还没解好」的待播请求（`null` = 没有）——
  * 原版 `read_mkf` 是**同步**的、解完才 `fcn_0045144f`；浏览器里解 68 帧要几百毫秒，
  * 所以先挂在这里，`tickBuildFx` 一看到影片到货就起时间轴（音效也在那时才响）。
@@ -4971,6 +5475,15 @@ let boardFilm: BoardFilm | null = null;
  */
 let pendingBoardFilm: BoardFilmSpec | null = null;
 
+/**
+ * 「这一段播完，紧接着播下一段」—— 原版那两次 `fcn_0045144f` 是**串行**的
+ * （踩到惡犬那一支：`read_mkf(0x214)` → 播狗咬 → `wreck_vehicle` →
+ * `send_to_hospital` → `read_mkf(0x20c)` → 播救护车，VA 0x0041b8cd / 0x0043ed59），
+ * 而本引擎一次只解一段、只播一段，于是把第二段挂在这里
+ * （@source VA 0x0041b837 那一支，见 `dog-fx.ts` 的文件头）。
+ */
+let pendingBoardFilmAfter: BoardFilmSpec | null = null;
+
 /** 影片缓存（按「档案:资源号」）—— 440×440 × 几十帧不小，播完就 `close()` */
 const boardFilmFlics = new Map<string, LoadedFlic | null>();
 const boardFilmPending = new Set<string>();
@@ -4995,14 +5508,24 @@ function releaseBoardFilmFlics(): void {
   boardFilmFlics.clear();
 }
 
-/** 起播一段棋盘影片（原版那一下 `fcn_0045144f`）*/
-function startBoardFilm(spec: BoardFilmSpec): void {
+/**
+ * 起播一段棋盘影片（原版那一下 `fcn_0045144f`）。
+ *
+ * @param after 这一段播完**紧接着**播的那一段（原版两次 `fcn_0045144f` 是串行的
+ *   —— 只有「踩到惡犬」那一支用得上：狗咬 → 救护车，见 `dog-fx.ts` 的文件头）。
+ *   不传 = 播完就放行（与先前一样）。
+ */
+function startBoardFilm(spec: BoardFilmSpec, after?: BoardFilmSpec): void {
   // 上一条还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
   if (boardFilm !== null) {
     boardFilm = null;
     releaseBoardFilmFlics();
   }
   pendingBoardFilm = spec;
+  // ★ 省略 `after` = **保留**已排好的下一段（「踩到惡犬」那一拍：
+  //   `startDogFx` 先把 0x20c 排在狗咬后面，`startConfineFx` 随后再进来，
+  //   它不带 `after`，不能把那一行覆盖掉）。
+  if (after !== undefined) pendingBoardFilmAfter = after;
   boardFilmFlicNow(spec);
   requestRender();
 }
@@ -5018,7 +5541,23 @@ function startConfineFx(before: GameState, after: GameState): void {
   if (!options.animation) return;
   const kind = confineFxTrigger(before, after);
   if (kind === null) return;
-  startBoardFilm(confineClip(kind));
+  // 影片窗口里棋盘按 before 画（见 `deferred-board.ts`）—— 起播前先记下快照
+  deferredBoardBefore = before;
+  // ★★ 同一条 action 里已经排了一段（踩到惡犬：0x214 在前）⇒ **接在它后面**，
+  //   不许 `startBoardFilm` 把它顶掉（第五份回报第 3 条；判据见 `enqueueBoardFilm`）
+  const clip = confineClip(kind);
+  const slots = enqueueBoardFilm(
+    { pending: pendingBoardFilm, after: pendingBoardFilmAfter },
+    clip,
+    boardFilm !== null,
+  );
+  if (slots.pending !== clip) {
+    pendingBoardFilmAfter = slots.after;
+    boardFilmFlicNow(clip); // 先解码，轮到它时不必再等
+    requestRender();
+    return;
+  }
+  startBoardFilm(clip);
 }
 
 /**
@@ -5032,7 +5571,118 @@ function startGodFx(before: GameState, after: GameState): void {
   const id = godFxTrigger(before, after);
   if (id === null) return;
   const spec = godFilmSpec(id);
-  if (spec !== null) startBoardFilm(spec);
+  if (spec !== null) {
+    // ★ 影片窗口里棋盘按 before 画：神明还站在地上、主人身上还没有标记
+    //   （见 `deferred-board.ts`）。起播前先记下这一拍之前的快照。
+    deferredBoardBefore = before;
+    startBoardFilm(spec);
+  }
+}
+
+/**
+ * 这一拍是不是「踩到惡犬、徒步被咬」—— 是就播狗咬那一段影片，
+ * 并把救护车那一段（`confine-fx.ts` 的 `startConfineFx`）**排队**在它后面。
+ *
+ * ★ **没有** `options.animation` 闸：医院／入獄／神明那三支的调用点各自写着
+ *   `cmp byte [0x497159], 0 / je 跳过`，而惡犬那一支（VA 0x0041b837）从头到尾
+ *   **没有这一句** —— 原版不管「動畫過程」开没开都 `read_mkf(0x214)` + 播。
+ *   照 exe 走（与 `startAlienNewsFx` 同一条规矩）。
+ *
+ * ★ 次序：这一支必须在 `startConfineFx` **之前**跑。两次调用都会写
+ *   `pendingBoardFilmAfter`（狗咬那一段把它设成救护车、`startConfineFx`
+ *   再进来时 `after` 省略 ⇒ 保留原值），于是狗咬播完自动接救护车。
+ */
+function startDogFx(before: GameState, after: GameState): void {
+  const spec = dogBiteFxTrigger(before, after);
+  if (spec === null) return;
+  // 影片窗口里棋盘按 before 画：狗还在那一格上（`deferred-board.ts`）
+  deferredBoardBefore = before;
+  startBoardFilm(spec);
+  log(`影片：踩到惡犬 ${spec.id}（${spec.frames} 帧 × ${spec.frameMs} ms）`);
+}
+
+/**
+ * 这一拍是不是**用了飛彈 / 核彈** —— 是就播那一段爆炸影片（整幅 440×440 盖住棋盘）。
+ *
+ * 规格与判据全在 `missile-fx.ts`（逐字节核过 `Data.mkf` 0x210 / 0x212 的 FLIC 头：
+ * 19 帧 × 114 ms / 26 帧 × 114 ms、音效 81 / 83、`flags` 的 bit1 = 0 ⇒ 点不掉）。
+ *
+ * @source · 飛彈 `0x00446fbc`：`0x00447043 push 0x210` → `0x00447065 view_to(爆心)`
+ *   → `0x0044707a damage_area` → `0x0044708e call 0x45144f`（播）；
+ *   · 核彈 `0x00447ace`：`0x00447b55 push 0x212` → `0x00447b77 view_to(爆心)`
+ *   → `0x00447b8c damage_area(半径 -1)` → `0x00447ba0 call 0x45144f`。
+ *
+ * ⚠️ 判据是**道具号**（原版两支各是一整个函数，影片写死在自己那一段里），
+ *   不看「炸到了什么」；也不加 `options.animation` 闸（原版这两支里没有那一句）。
+ * ⚠️ `applyAction` 只在 `state !== before` 时调 `startActionFx`，而
+ *   `useToolAction` 失败时**原样返回 `state`** ⇒ 没真的打出去就不会误播。
+ */
+function startMissileFx(action: Action, before: GameState): void {
+  if (action.type !== 'useTool') return;
+  const spec = missileFilmFor(action.toolId);
+  if (spec === null) return;
+  // 影片整幅盖住棋盘，`before` / `after` 观感相同；与神明/惡犬/飛碟那几段统一取 `before`。
+  deferredBoardBefore = before;
+  startBoardFilm(spec);
+  log(`影片：${spec.id}（${spec.frames} 帧 × ${spec.frameMs} ms）`);
+}
+
+/**
+ * 这一拍是不是「惡魔顯靈把脚下那栋房子拆了」—— 是就播那一段 110×110 的爆破片。
+ *
+ * W-55 行 4。规格与判据全在 `devil-fx.ts`（逐字节核过 `Data.mkf` 0x20e 的 FLIC 头：
+ * 8 帧 × 114 ms、110×110、音效 `Effect.mkf` 95、`flags = 0x30001` ⇒ 点不掉）。
+ *
+ * @source 原版 `fcn_0040f381` 惡魔那一支（`god_info == 10`）尾段：
+ *   先 `0x0040f618` 拆一级（= core 的 `manifestGodOnLanding`），**再**
+ *   `0x0040f635 call 0x40b066` 取**那一格**的屏幕坐标、`0x0040f642` 解 0x20e、
+ *   `0x0040f65e/0x0040f669` 各 `sub eax, 0x37`（= 110 的一半，居中）后播放。
+ *
+ * ⚠️ 落点是**逐格**的（`boardFilmSpec.x/y` 是起播时定死的静态值），所以这里
+ *   起播那一刻现算 —— 与其它几段 440×440「整块棋盘 @(0,40)」的片子不同类。
+ *
+ * ⚠️ `deferredBoardBefore` 这里填的是 **after**（不是 `before`）：原版是**先拆、
+ *   重画、再播**（`0x0040f618` 在 `0x0040f642` 之前），而这一段只有 110×110，
+ *   四周的棋盘照样看得见 ⇒ 必须显示拆完的样子。其它几段（神明/恶犬/飛碟）
+ *   反过来（影片里「东西还在原地」），所以它们填 `before`。
+ */
+function startDevilFx(before: GameState, after: GameState): void {
+  if (!devilDemolishFxTrigger(before, after)) return;
+  // 被拆的就是行动者**脚下**那一格（`manifestGodOnLanding` 的 `estateEntityAtPlayer`）
+  const me = after.players[after.currentPlayer];
+  if (me === undefined) return;
+  const node = map.nodes[me.nodeId - 1];
+  if (node === undefined) return;
+  const p = worldToScreen(node.x, node.y, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h });
+  if (p === null) return;
+  deferredBoardBefore = after;
+  // 棋盘局部 → **屏幕**坐标（`currentBoardFilmFrame` 会再减回棋盘点）
+  startBoardFilm(devilDemolishFilmAt(p.x + LAYOUT.board.x, p.y + LAYOUT.board.y));
+  log(
+    `影片：惡魔顯靈拆屋 0x${DEVIL_FX_RESOURCE.toString(16)}` +
+      `（${DEVIL_DEMOLISH_FRAMES} 帧 × ${DEVIL_DEMOLISH_FRAME_MS} ms）`,
+  );
+}
+
+/**
+ * 这一拍是不是剛抽到新聞 4「外星人攻打地球」—— 是就播飛碟那一段影片。
+ *
+ * ★ **没有** `options.animation` 闸：住院／入獄／神明那三支的调用点各自写着
+ *   `cmp byte [0x497159], 0 / je 跳过`，而 `fcn_0044913d` 里**没有这一句**
+ *   （VA 0x00449235..0x00449269 一路直下）。原版播它不看「動畫過程」，
+ *   本引擎照 exe 走；playtest 报告里的「被直接跳过」正是这一段从来没接。
+ *
+ * ★ 起播就是同一条 `startBoardFilm` 路：整幅 440×440 贴在屏幕 (0,0x28) =
+ *   棋盘左上角，`pendingBoardFilm` 会等这一拍的走子补间播完才起时间轴
+ *   （`tickBoardFilm`），播完放行回合驱动 —— 与住院/入獄/神明完全一致。
+ */
+function startAlienNewsFx(before: GameState, after: GameState): void {
+  const spec = alienNewsFxTrigger(before, after);
+  if (spec === null) return;
+  // 影片窗口里棋盘按 before 画：房子还没被掀掉（`deferred-board.ts`）
+  deferredBoardBefore = before;
+  startBoardFilm(spec);
+  log(`影片：新聞 ${NEWS_ALIEN_ID} 外星人攻打地球`);
 }
 
 /**
@@ -5040,11 +5690,65 @@ function startGodFx(before: GameState, after: GameState): void {
  *   ① 影片还在解 → 解完才起时间轴（原版 `read_mkf` 在前、`fcn_0045144f` 在后）；
  *   ② 播完 → 收摊（放掉位图）+ **补一次回合驱动**（这一段是阻塞的，见 `holdForWalk`）。
  *
+ * ★★ 起播还要等**这一步的走子补间播完**（试玩3 #1，issue #19）：
+ *   原版这一段影片是在走子例程**里面**、棋子已经滑到那一格之后才被调用的
+ *   （落点处理 VA 0x0041b440 每走一格跑一次 —— 出处见 `rules/object-landing.ts`
+ *   文件头；附身那一支要求剩余步数 `[0x48baf8] == 0`，见同文件的 `@source`）。
+ *   而 `startActionFx` 是在补间**起播的同一拍**调用的（真人那条还排在
+ *   `tweenStepIfMoved` 之前），不等它就会「人物还没走完，神明附身的影片先盖上去」。
+ *
+ * ★★ 新聞 4 那一段还要多等一件事（`spec.afterOverlay`）：原版是訊息框先播满
+ *   2400 ms（`fcn_0044b6df` 的 `0x0044b862 push 0x960`）、框收掉之后事件函数体
+ *   才 `read_mkf(0x213)` + `fcn_0045144f`（VA 0x00449245 / 0x0044925b）。
+ *   本引擎的訊息框是**浮窗**（`event-box-screen.ts` 的 `windowed: true`）盖在
+ *   (0,0)-(440,480)，正好把 (0,40)-(440,480) 的整块影片遮死 ⇒ 不等它收屏，
+ *   飛碟那 4.1 秒就白播了。只对那一支生效（别的影片调用点都在訊息框之外）。
+ *
  * 挂在 `requestRender` 的 rAF 回调里，与建屋影片同一个套路。
  */
 function tickBoardFilm(now: number): void {
+  // ── ⓪ 该接下一段了吗（原版两次 `fcn_0045144f` 是串行的：狗咬 → 救护车）──
+  //   判据是「上一段已经收摊」：收摊那条路会把 `boardFilm` 与 `pendingBoardFilm`
+  //   都置空，而这一段**只在两者都空时**接管，于是它既不会插到正在播的那一段
+  //   前面，也不需要跟 `startBoardFilm` 抢 `pendingBoardFilm`。
+  const after = pendingBoardFilmAfter;
+  if (after !== null && boardFilm === null && pendingBoardFilm === null) {
+    const key = `${after.archive}:${after.resource}`;
+    if (boardFilmFlics.has(key)) {
+      pendingBoardFilmAfter = null;
+      boardFilm = beginBoardFilm(after, now);
+      log(`影片：開始 ${after.id}（${after.frames} 帧 × ${after.frameMs} ms）`);
+      if (after.sound >= 0) sound.play('Effect.mkf', after.sound);
+      requestRender();
+      return;
+    }
+    // 还没解好 → 现在就解，并**保留**排队标记：`holdForActorWalk` 靠它
+    // 挡住「两段之间的空档」，别让 AI 在第二段起播前先派下一步。
+    // ⚠️ 这一段**必须**自己再排一帧：这一拍 `boardFilm`/`pendingBoardFilm` 都是空，
+    //   谁都叫不醒我们（`.then` 只在**首次**发起解码时挂）。漏了就死等在这里，
+    //   而回合驱动被上面那道闸挡着 —— 整局卡死。
+    boardFilmFlicNow(after);
+    requestRender();
+    if (boardFilmPending.has(key)) return;
+    // 真取不到（没有素材）就整段放弃，免得把回合驱动永远卡在这里
+    pendingBoardFilmAfter = null;
+  }
   const pending = pendingBoardFilm;
   if (pending !== null) {
+    // ★★ W-51：**原版说完才播**。`beforeStage`（壞神附身 / 回合开始那三句）的句子
+    //   已经进了 `speechQueue`，这一段影片等它说完 —— 原版那一句 `player_say` 是
+    //   同步返回的，调用它的流程才走到 `read_mkf + fcn_0045144f`。
+    //   ⚠️ 只等 `speechQueue`（= 已经上台的那几句）；押在 `deferredSpeech` 里的
+    //      `afterStage` 本来就该排在影片**之后**，反过来挡影片就是死锁
+    //      （见 `stage-gate.ts` 的 `filmWaitsForSpeech` 与它的单测）。
+    if (filmWaitsForSpeech(speechQueue.length)) return;
+    // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
+    if (!renderer.walkDone(now)) return;
+    // 訊息框那一段盖着整块棋盘 ⇒ 原版次序是框先、片后，等它收屏
+    if (pending.afterOverlay === true && activeUiScreen() !== null) {
+      requestRender();
+      return;
+    }
     const key = `${pending.archive}:${pending.resource}`;
     if (!boardFilmFlics.has(key)) {
       // 还在解（`.then` 会再 `requestRender`）；真取不到就整段放弃，免得卡住回合驱动
@@ -5067,9 +5771,10 @@ function tickBoardFilm(now: number): void {
   }
   boardFilm = null;
   releaseBoardFilmFlics();
-  // ★ 阻塞那一段播完了：把回合驱动接回去（`scheduleHumanTurn` / `scheduleAi`
+  // ★ 阻塞那一段播完了 —— 若后面还排着一段（狗咬 → 救护车），就交给上面 ⓪ 那一步；
+  //   只有**两段都播完**才把回合驱动接回去（`scheduleHumanTurn` / `scheduleAi`
   //   都以它为闸，不补这一下人就永远停在原地）。
-  resumeTurnDriver();
+  if (pendingBoardFilmAfter === null) resumeTurnDriver();
   requestRender();
 }
 
@@ -5116,8 +5821,23 @@ function currentBoardFilmFrame(now: number): {
  *   `read_mkf` 再 `fcn_0045144f`）—— 那之前挂在 `pendingBuildFx` 上，见 `tickBuildFx`。
  */
 function startBuildFx(before: GameState): void {
-  const plan = buildFxPlan(buildUpgradesOf(state, before));
+  const hints = buildUpgradesOf(state, before);
+  const plan = buildFxPlan(hints);
+  // ★★ W-55 行 3：**顯靈／自己加蓋那一声音效** —— `Effect.mkf` 50。
+  //
+  //   @source 三处 `push 0x4823da / call 0x4542ce`（号码与换算见 `SOUND_IDS.GOD_MANIFEST`）：
+  //     · 天使顯靈  VA 0x0040f4f3（`test bh,1` 成功之后、`test bh,0x80` 之前）
+  //     · 福神顯靈  VA 0x0040f9dc（同形）
+  //     · 自己的地升級 VA 0x004199de（`inc byte [地块+0x1a]` 之后、`cmp …,5` 之前）
+  //   ⇒ **在 `plan` 那道闸之前**响：原版这一声在 `0x40b110` 成功之后立刻播，
+  //     与「有没有剛好升到 5 級、要不要接 0x20b」无关（那两段影片才是 `plan` 的事）。
+  const manifestSound = manifestSoundFor(hints);
+  if (manifestSound !== null) sound.play('Effect.mkf', manifestSound);
   if (!plan.hammer && !plan.maxLevel) return;
+  // ★ 加蓋那一级的可见性也要按到影片之后（issue #19 第 9 条）：原版
+  //   `fcn_0040b110` 先把 `+0x1a` 加 1、**再**播大锤，播片期间棋盘不重绘。
+  //   浏览器里解 68 帧要几百毫秒，不按住就会「房子先修好了」（见 `deferred-board.ts`）。
+  deferredBoardBefore = before;
   // 上一条还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
   if (buildFx !== null) {
     buildFx = null;
@@ -5137,11 +5857,22 @@ function startBuildFx(before: GameState): void {
  *
  * 挂在 `requestRender` 的 rAF 回调里，与走子补间 / 投掷动效同一个套路 ——
  * 靠**时间轴**推进（`stepBuildFx` 只在到点时才翻片），不无条件续帧。
+ *
+ * ★ 与棋盘影片同理，起播要等这一步的走子补间播完（试玩3 #1）：原版这些影片都在
+ *   走子例程**之后**才播。機器工人/魔法屋/天使卡这几条 action 本来不带补间，
+ *   所以这道等待通常一次都不触发 —— 加上它只是为了与 `tickBoardFilm` 同一条规矩。
  */
 function tickBuildFx(now: number): void {
   // ── ① 待播：等第一段影片解好 ──
   const pending = pendingBuildFx;
   if (pending !== null) {
+    // ★★ W-51：与 `tickBoardFilm` 同一条规矩 —— **原版说完才播**：`beforeStage`
+    //   的句子（壞神附身 / 回合开始那三句）在 `speechQueue` 里就等它说完。
+    //   ⚠️ 只等 `speechQueue`，不等 `deferredSpeech`（`afterStage` 排在演出之后，
+    //      反过来挡影片就是死锁）。见 `stage-gate.ts` 的 `filmWaitsForSpeech`。
+    if (filmWaitsForSpeech(speechQueue.length)) return;
+    // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
+    if (!renderer.walkDone(now)) return;
     const res = buildClip(pending.first).resource;
     if (!buildFlics.has(res)) {
       // 还在解（`buildFlicNow` 的 `.then` 会再 `requestRender`）；真取不到就整段放弃，
@@ -5189,12 +5920,58 @@ function currentBuildFxBitmap(now: number): CanvasImageSource | null {
   });
 }
 
+/**
+ * 这一帧**棋盘**该按哪一份 state 画 —— 影片窗口里按 before
+ * （加蓋那一格还是旧房子、神明还站在地上而不是附在主人身上）。
+ *
+ * ★ 只换棋盘那一处的入参：侧栏 / 工具栏 / 訊息框都不读这几个字段，
+ *   它们的数字本来就该当场更新（`hud.ts` 里没有 `landLevel`/`godInfo`）。
+ * ★ 窗口的判据是四条影片状态位（正在播 **或** 还没解码）—— 解码那几百毫秒
+ *   棋盘是露着的，正是需求方看到「效果先于动画」的那一段。见 `deferred-board.ts`。
+ */
+function boardDrawState(): GameState {
+  return boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags());
+}
+
+/**
+ * 影片窗口的四个位 —— `boardDrawState()` 与 `centerOnCurrentPlayer()` 的
+ * **冻镜头**判据共用同一份（各写一套必然漂移：一边以为在放片、一边以为没放）。
+ *
+ * ★ W-52：镜头那一处**不能**改用 `boardDrawState()` 的人（`holdBackPlayers` 只按住
+ *   `godInfo`，见 `centerOnCurrentPlayer` 里那段注释），但「窗口开没开」必须同源。
+ */
+function boardFilmWindowFlags(): BoardFilmWindow {
+  return {
+    buildPlaying: buildFx !== null,
+    buildPending: pendingBuildFx !== null,
+    filmPlaying: boardFilm !== null,
+    filmPending: pendingBoardFilm !== null,
+  };
+}
+
 function requestRender(): void {
   if (renderQueued) return;
   renderQueued = true;
   requestAnimationFrame(() => {
     renderQueued = false;
     resizeCanvas();
+    // ★★ W-60：**刚回到棋盘**的那一帧把回合驱动重新叫起来（阻断级 bug 的唯一闸门）。
+    //
+    //   两条驱动的排程入口都有 `if (screen !== 'game') return;`（别在標題屏/過場里
+    //   推进回合），而所有「回棋盘」的出口都只写 `screen = …; requestRender();` ——
+    //   于是「走子途中开設定再关掉」会把链条**永久**断掉（棋子停在半路、GO 点不动）。
+    //   判据收在 `driver-resume.ts`（纯函数 + 单测），**一处**判掉，不逐屏补
+    //   （漏一个出口就又卡一次）。`resumeTurnDriver()` 内部两条驱动入口都会先清旧
+    //   定时器，重复叫无害。
+    //
+    //   ⚠️ 位置必须在 `resizeCanvas()` 之后、**这一帧的绘制之前**：驱动起来要排在
+    //      这一帧的 rAF 尾巴上（`schedule*` 用 `setTimeout`），绘制不该等它。
+    if (shouldResumeDriver(lastFrameScreen, screen)) resumeTurnDriver();
+    lastFrameScreen = screen;
+    // ★★ W-67-a：**訊息框收掉之后商店窗才开得起来** —— `syncShopUi()` 见到
+    //   `blockingPresentation()`（董事長赠礼框还在台上）会先让开，而框自己收掉那一刻
+    //   不会再派 action ⇒ 在这里每帧补一次机会。幂等：`shopUi` 已建就什么都不做。
+    if (screen === 'game') syncShopUi();
     syncBailBgm();
     // 场所都收了、放的还是场所曲 ⇒ 把背景曲从被打断的位置接回来（`sub_00454bcc`）
     if (boardBgmDue()) restoreBoardBgm();
@@ -5231,6 +6008,10 @@ function requestRender(): void {
     if (screen === 'game') tickBuildFx(performance.now());
     // ★ 送進監獄／醫院那段影片同理（Q-ANIM-1）：按帧时序推进，播完补一次回合驱动
     if (screen === 'game') tickBoardFilm(performance.now());
+    // ★ W-69：過路費閃爍（纯表现）—— 认下 `state.lastTollLands`、到点收摊、没完就续帧
+    if (screen === 'game') tickTollFlash(performance.now());
+    // ★ 原版会替玩家把系统指针挪到按钮上（试玩3 #2）：时机刚从关变开就挪一次
+    cursorWarper.update();
     if (screen === 'game') shopTick(performance.now());
     // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
     if (screen === 'game') bankTick(performance.now());
@@ -5443,10 +6224,21 @@ function requestRender(): void {
       const bubble = speechQueue.current();
       if (bubble !== null) {
         stageCtx.save();
-        drawSpeechBubble(bubble, { ctx: stageCtx, sprite: uiSprite, font });
+        // `uiSprite` 的静态类型（`gameui.ts` 的 `SpriteFn`）只列了 Data/Panel 两个档案，
+        // 而台词还要取 `map.mkf` 的头像（W-50）—— 运行时本来就是同一个 `spriteNow`。
+        drawSpeechBubble(bubble, {
+          ctx: stageCtx,
+          sprite: uiSprite as unknown as BubbleSpriteFn,
+          font,
+        });
         stageCtx.restore();
       }
     }
+
+    // ── 屏幕提示条（`toast.ts`）──
+    // ★ 画在**最上面**：整屏接管、模态窗、台词之后。原版没有这东西，是需求方
+    //   明确要求的非叙事提示（F9 回报的落盘确认），所以不必与哪一屏对齐。
+    drawToast(stageCtx, toast, performance.now(), SCREEN_W, SCREEN_H);
 
     // 拾取模式的指针图要**解码完才能用**。首帧拿不到就返回 null，
     // 而光标只在 hover 变化时才刷新 —— 于是「一次都没悬停到」时指针会空着。
@@ -5460,6 +6252,7 @@ function requestRender(): void {
     // 商店开着也要一直要帧 —— 原版那儿挂着一个 50ms 的定时器（`SetTimer(hwnd, 0x32, …)`）。
     // 銀行貸款屏同理（Q-BANK-1：滑入与气泡都要逐帧看）；ATM 只在键盘那一下补一帧。
     // ★ 台词也一样：一段显示 `SPEECH_HOLD_MS` 毫秒，到点由 `speechTick` 收掉并要下一帧。
+    // ★ toast 同理：还没到点就接着要帧（到点那一帧画空 = 自己擦掉）。
     if (
       renderer.dirty ||
       hud.dirty ||
@@ -5468,7 +6261,11 @@ function requestRender(): void {
       shopUi !== null ||
       loanUi !== null ||
       atmCode !== null ||
-      speechQueue.length > 0
+      speechQueue.length > 0 ||
+      // ★ 押在 `deferredSpeech` 里的那几句也要续帧 —— 演出收屏那一拍就靠它
+      //   把台词放上台（否则要等下一次 action，台词就永远不上台了）
+      deferredSpeech !== null ||
+      toastVisible(toast, performance.now())
     ) {
       renderer.clearDirty();
       hud.clearDirty();
@@ -5493,6 +6290,41 @@ function requestRender(): void {
 let spokenBubble: SpeechBubble | null = null;
 
 function speechTick(now: number): void {
+  // ★★ 演出还在演 → **`afterStage`** 的台词不上台；演出收摊那一刻才把押着的那几句放上来。
+  //
+  //   原版每一段演出都是**同步**的：`_rich4_player_say`（VA 0x0044ef41）与
+  //   轉盤（`fcn_0044090e` → `fcn_0043f7c6`）都是**阻塞调用**，谁先谁后由
+  //   同一段落地流程里的**调用顺序**定死 —— 例如設施收費那一段：
+  //   ```asm
+  //   0041a458  call 0x44090e     ; ★ 轉盤（阻塞：轉完才返回盤上的數）
+  //   0041a460  [esp+0xd0] = eax  ; 轉盤值（旅館天數 / 購物中心倍數）
+  //   0041a579  call 0x440cac     ; 費用訊息框（轉盤之後）
+  //   0041a5c0  call 0x40df69     ; 收費（錢真的轉手）
+  //   0041a71e  call 0x44f42d     ; 付款人的台詞（事件 9/10/11）—— 收費之後
+  //   ```
+  //   ⇒ 原版**必定**是「轉盤停 → 訊息框 → 付款人的台詞」。
+  //   本引擎把 consequences 一次写完、演出是事后补的，所以那几句台词先被
+  //   `queueSpeech()` 押在 `deferredSpeech` 里（判据见那里）——这里等演出收摊
+  //   再放上台，等于把「同步演出」的语义补回来
+  //   （试玩回报：「盘子还没停下来 NPC 的台词都触发了」）。
+  //
+  //   ★★ W-51 **死锁自查**：这里只挡**押后的那几句**的放行，**不挡队列本身**。
+  //      队列里可能正躺着 `beforeStage`（壞神附身 / 回合开始那三句）的句子，而
+  //      影片正等着它说完才起播（`tickBoardFilm` 的 `filmWaitsForSpeech`）——
+  //      若这里连 `speechQueue.tick` 一起冻住，两边就永远互等。
+  //      `stage-gate.test.ts` 有一条 2 秒内必须都走完的用例，另有一条把这条规则
+  //      改坏后**必须走不完**的反例。
+  //
+  //   ⚠️ 押在**入队之前**而不是「冻结队列再解冻」：`SpeechQueue` 的时间基准是
+  //      绝对时刻（`shownAt`），冻结再解冻会把整段演出时长算进那 1000 ms 里，
+  //      那一段台词就一闪而过。
+  if (!stageBusy(stageBusyFlags())) {
+    const held = deferredSpeech;
+    if (held !== null) {
+      deferredSpeech = null;
+      if (speechQueue.push(held, now) > 0) requestRender();
+    }
+  }
   if (speechQueue.tick(now)) requestRender();
   const cur = speechQueue.current();
   if (cur === spokenBubble) return;
@@ -5522,7 +6354,7 @@ function shopTick(now: number): void {
     // 滑入到位才说「請挑選…」—— 原版是动画走完那一刻才发 0x40d（`loc_0042d75e` 尾）
     if (slideDone(ui.slide)) shopSay(ui, shopMessage(ui.page, 'hint'), now);
   }
-  if (ui.bubble === null || now < ui.bubble.until) return;
+  if (!shopBubbleExpired(ui.bubble, ui.closing, now)) return;
   ui.bubble = null;
   // ★ 道别那句话说完才真的关门 @source `loc_0042e686` → 状态 2→3→4
   if (ui.closing) dispatch({ type: 'declineDecision' });
@@ -5557,6 +6389,41 @@ function characterPoseOf(): number | null {
 }
 
 /** 把游戏画面的三块摆到舞台上 */
+/**
+ * 走子时那串**剩余步数**的大数字（W-66-a）—— 规格/判据全在 `steps-counter.ts`。
+ *
+ * @source 棋盘绘制例程 `0x00409937..0x004099fb`：值 = `[0x48baf8]`（还没走完的格数，
+ *   走完一格才减 1），图 = `Data.mkf #0x205` 图 `8 + 数字`，落点（**屏幕**）
+ *   第 k 位 = `(245 − 25×位数 + 50×k, 400)`，带透明（`fcn_00456418` ⇒ 减图自带锚点）。
+ *
+ * ⚠️ 判断「值 > 0 / 不关押 / 不是被挪」四道闸都在 `stepsCounterShown` 里；
+ *   这里**只看**补间在不在跑（`renderer.walkDone()`），**不看 `phase`** ——
+ *   最后一格补间期间 `phase` 已经是 `'settling'`。
+ */
+function drawStepsCounter(now: number): void {
+  // ★ E-22：替身（四大惡人 / 機器娃娃）在走 ⇒ 画**他**的剩余步数，且**不看**玩家那两道闸
+  //   @source `0x00409951 cmp eax,4 / jge 直接画`
+  const actorLeft = renderer.actorStepsLeft(now);
+  let value = actorLeft;
+  if (actorLeft === 0) {
+    const me = state.players[state.currentPlayer];
+    if (me === undefined) return;
+    // ⚠️ 只看**玩家自己**那条补间 —— `walkDone()` 含替身，拿它补 1 会在替身走子时凭空画出个「1」
+    value = stepsCounterValue(state.stepsRemaining, !renderer.playerWalkDone(now));
+    if (!stepsCounterShown(value, me)) return;
+  }
+  for (const d of stepsCounterPlan(value)) {
+    const img = spriteNow(STEPS_COUNTER_ARCHIVE, STEPS_COUNTER_RESOURCE, d.image, true);
+    if (img === null) continue;
+    // 屏幕坐标 → 棋盘画布（减棋盘原点），再减图自带的锚点（数字的锚点在中心）
+    boardCtx.drawImage(
+      img.bitmap,
+      d.x - img.anchorX - LAYOUT.board.x,
+      d.y - img.anchorY - LAYOUT.board.y,
+    );
+  }
+}
+
 function drawGameStage(): void {
   // ★ 百貨公司是**整屏**的一屏，不等于在棋盘上盖个框 —— 它一开，棋盘就不画了。
   if (shopUi !== null && currentDialog() !== null) {
@@ -5575,11 +6442,15 @@ function drawGameStage(): void {
     return;
   }
   syncHolidayArt();
+  // ★★ W-54：远处生效的卡/道具/事件把镜头切过去（`view_to` 的**移动**那一支）
+  syncViewTarget();
   if (followPlayer) centerOnCurrentPlayer();
 
   renderer.draw({
     map,
-    state,
+    // ★ 影片窗口里棋盘按 before 画（试玩3 #1/#9）——加蓋那一格/神明标记不许
+    //   在影片起播前先出现。侧栏那几处不读这几个字段，故只换棋盘这一处。
+    state: boardDrawState(),
     camera,
     hoverNode,
     ground: showGround ? ground : null,
@@ -5608,7 +6479,12 @@ function drawGameStage(): void {
     // ★ 「盖在棋盘上的阻塞影片」（Q-ANIM-1）—— 落点/尺寸随哪一段变
     //   （住院 440×74 @(0,210)，入獄/神明 440×440 @(0,40)），所以整份交出去。
     boardFilm: currentBoardFilmFrame(performance.now()),
+    // ★ W-69：過路費閃爍 —— 把算进这笔钱的每一块地这一帧调亮（原版是 id 图上逐像素加）
+    landFlash: tollFlashInput(performance.now()),
   });
+  // ★★ W-66-a：走子时那串**剩余步数**（原版有、本引擎先前没有）——
+  //   画在棋盘画布上、对话框/名牌之下（原版就是在棋盘绘制例程里画的）。
+  drawStepsCounter(performance.now());
   const dlg = currentDialog();
   const me = state.players[state.currentPlayer];
   if (dlg !== null) {
@@ -5620,7 +6496,16 @@ function drawGameStage(): void {
   } else if (awaitingHumanRoll() && me !== undefined) {
     // ★ 原版的 GO 鈕 + 骰子数切换（Panel.mkf 资源 7）。
     //   位置是**可拖的**（Q-UI-6），存在 `goButton` 里（= 原版 `[0x475284]/[0x475288]`）
-    drawAdvance(boardCtx, uiSprite, goImageOf(me), maxDiceOf(me), me.ndices, goButton.position());
+    drawAdvance(
+      boardCtx,
+      uiSprite,
+      goImageOf(me),
+      maxDiceOf(me),
+      me.ndices,
+      goButton.position(),
+      me.trafficMethod & 3,
+      me.blocking.stopping !== 0,
+    );
   } else if (state.phase === 'moving' && state.dice.length > 0) {
     drawDice(boardCtx, uiSprite, state.dice, currentScreenDir());
   }
@@ -5727,11 +6612,46 @@ function eventToStage(e: MouseEvent): { x: number; y: number } | null {
   return toStage((e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr, currentMetrics());
 }
 
+// ============================================================
+//  原版会替玩家把**系统鼠标指针**挪到按钮上（试玩3 #2）
+// ============================================================
+//
+//  时机与落点的取证见 `cursor-warp.ts`；这里只负责把它接上：
+//  「轮到真人等掷骰（GO 鈕上场）」与「棋盘上盖着两个选项的 YES/NO 框」各挪一次。
+//  浏览器下 `warpCursor` 是空操作（网页挪不动系统指针）。
+
+/** 这一拍要看的东西 —— 判定与算术全在 `cursor-warp.ts` */
+function cursorWarpFrame(): CursorWarpFrame {
+  const dlg = currentDialog();
+  return {
+    awaitingRoll: awaitingHumanRoll(),
+    yesNoBox: dlg !== null && usesYesNo(dlg, amountPage),
+    // 另外三处固定落点（(220,320)）的时机 —— @source 见 `cursor-warp.ts` 的顶表：
+    //   「請選擇設施類別」浮窗（0x0043fb54 / 0x0043ffc2）、研究所面板（0x00440355）、
+    //   遥控骰子小盘（0x004467de），四处都是各自窗口的 WM_CREATE。
+    facilityPicker: facilityPickerScreen.active(uiEnv()),
+    research: researchScreen.active(uiEnv()),
+    dicePick: dicePick !== null,
+    // `goButton.position()` 是**棋盘画布**坐标，原版那个全局是屏幕坐标
+    goScreen: boardToScreen(goButton.position()),
+    metrics: currentMetrics(),
+    canvas: measureCanvas(canvas),
+  };
+}
+
+const cursorWarper = createCursorWarper(warpCursor, cursorWarpFrame);
+
 /**
- * 把镜头平滑地移到当前玩家身上。
+ * 把镜头对到当前行动者身上 —— **逐像素**，不是逐格。
  *
- * 用逼近而非瞬移：棋子一步一步走，镜头硬跟会晃得厉害。
- * 系数 0.18 是「跟得上但不抖」的经验值，不是原版常量。
+ * ★★ 第五份回报第 1 条「镜头一跳一跳」的根因：原版的镜头中心**恒是一对像素坐标**
+ *   （`[0x48b2ac]` / `[0x48b2b0]`）。`fcn_00415e70`（VA 0x00415e70）取行动者的
+ *   `player+0x08/+0x0a`（替身 `0x498de8 + slot*0x10`）原样喂给 `fcn_0040829d`，
+ *   后者把 `>> 5` 拿去查投影表、把 `& 0x1f` 过 `fcn_00407a2c` 的矩阵换成屏幕偏移
+ *   （`004083ae..004083e9`）。而走路例程每 tick 给 `+0x08/+0x0a` 加一个**浮点**步长
+ *   （`0x0040c353 fadd [0x48baec]` … `0x0040c38a`）⇒ 原版镜头随棋子**每 tick 滑几像素**。
+ *   本引擎先前写的是 `tileX: x >> 5` —— 把余量丢了，镜头于是每跨一块（32 世界单位）
+ *   才整格跳一次。现在一律走 `pixelCamera`。没有任何平滑/逼近系数：原版没有。
  *
  * ★ **有标记点时不动** —— 原版 `fcn_00415e70`（VA 0x00415e70）是
  *   「有标记用标记、没标记才用当前玩家」。棋子走到标记上时标记自动清掉，
@@ -5743,6 +6663,46 @@ function centerOnCurrentPlayer(): void {
   const node = map.nodes[me.nodeId - 1];
   if (node === undefined) return;
 
+  // ★★ 视角跟踪（第四份回报第 2 条，`docs/escalations.md` E-15）：
+  //   ① 棋子正在**一步步走**（走子补间）时，镜头跟他的插值位置；
+  //   ② **機器娃娃 / 四大惡人**那一趟跟替身，走完自动回到当前玩家；
+  //   ③ 手动点过小地图之后，**下一条 action 一起就把镜头交还**（见
+  //      `retargetCameraOnTurnChange`，那一条已在上一版落地）。
+  //   证据：原版镜头居中只有一支 `fcn_00415e70`（VA 0x00415e70），它取的是
+  //   「有标记用标记、否则用 `[0x49910c]` 那个**当前行动者**」；而娃娃/惡人在盘上时
+  //   `[0x49910c]` 被切成 4..7（`rules/npc-walk.ts` 的文件头），所以原版那一段
+  //   本来就跟着替身走。世界位置的写入点：玩家 `0x40c38a`/`0x40c3a4`、
+  //   替身 `fcn_0040dd1f` 那一族。
+  // 判据全在 `camera-follow.ts`（纯函数、有单测）；这里只落镜头
+  const walkWorld = renderer.actorCenterWorld(performance.now());
+  // ★★ W-52：影片**待播 / 在播**且**没有补间**时 ⇒ **冻住镜头**（下面那一整段都不走）。
+  //
+  //   原版次序（狗咬那一支）：`0x0041b8cd` 狗咬片（**此时人还在原地**）→
+  //   `0x0043ec78 view_to`（对人）→ 搬到医院 → `0x0043ed59` 救护车 →
+  //   `0x0043eda0 view_to`（对医院）→ 台词。也就是说**影片期间**镜头一直停在
+  //   补间的终点（= 人走到的那个格），直到影片收屏才改看医院。
+  //   本引擎一条 action 把「走到狗那一格 + 送医院」一次写完，`after` 里人的
+  //   `nodeId` / `xpos,ypos` 已经是醫院大樓的景观位，于是补间收完到影片盖满棋盘
+  //   之间那几百毫秒镜头会先闪一下医院。
+  //
+  //   ⚠️ **这一句必须排在 `cameraFollowTarget` 之前** —— 它的 `confined` 支读的正是
+  //   after 的 `xpos/ypos`。放在后面等于没冻：浏览器实测（地图 0、`humans=1`、
+  //   徒步踩惡犬、`__rich4.debug.dog()` + `rollDice(forced:1)` + `step`）镜头照样在
+  //   补间收完那一刻跳到 `(319,990)`（醫院大樓景观）。
+  //   ⚠️ 任务书 §3.1 写的是「取玩家时用 `boardDrawState()`」，那一份也**不够**：
+  //   `deferred-board.ts` 的 `holdBackPlayers` 只按住 `godInfo`（它的用途是
+  //   「影片期间别把神明标记画上去」），`nodeId` / `blocking` 仍是 after ⇒ 拿它取人
+  //   照样走 `confined` 支（同样实测过）。
+  //   ⇒ 冻住最贴合原版：镜头停在补间终点（原版 `0x0040c3ec` 走完把目标格坐标写回
+  //   `player+0x08/+0x0a`，`fcn_00415e70` 读到的正是它），影片收屏后本函数自然
+  //   回到行动者 —— 与「影片 → 镜头 → 台词」那一步对得上。
+  if (walkWorld === null && boardFilmWindowOpen(boardFilmWindowFlags())) return;
+  const target = cameraFollowTarget(walkWorld, me, (id) => map.nodes[id - 1]);
+  if (target !== null && target.reason !== 'node') {
+    camera = pixelCamera(target.x, target.y, camera.view);
+    return;
+  }
+
   if (minimapMarker !== null) {
     // 走到标记上了？那就把标记收掉，镜头交还给棋子
     if (Math.abs(node.x - minimapMarker.x) <= 16 && Math.abs(node.y - minimapMarker.y) <= 16) {
@@ -5753,9 +6713,9 @@ function centerOnCurrentPlayer(): void {
     }
   }
 
-  // 人物视角：摄像机就是**当前玩家所在的那一块**，原版恒在 29×29 窗口正中
-  //   （原先还有一支「地图视角」的平滑逼近，随 `setViewMode` 一起删掉，D-086-5）
-  camera = { ...camera, tileX: node.x >> 5, tileY: node.y >> 5 };
+  // 人物视角：镜头中心 = 当前玩家的**像素**世界坐标（静止时 `+0x08/+0x0a` = 格心，
+  //   `0x0040c3ec` 走完那一拍把目标格坐标原样写回）
+  camera = pixelCamera(node.x, node.y, camera.view);
 }
 
 /**
@@ -5851,7 +6811,7 @@ function minimapCenterFromLocal(localX: number, localY: number): { x: number; y:
 function centerOnMarker(): void {
   if (minimapMarker === null) return;
   followPlayer = false;
-  camera = characterCamera(minimapMarker.x, minimapMarker.y, camera.view);
+  camera = pixelCamera(minimapMarker.x, minimapMarker.y, camera.view);
 }
 
 /**
@@ -6366,11 +7326,25 @@ function startGame(): void {
   });
   history.length = 0;
   recorder.reset();
+  // ★ 换局：把上一局「这一刻在播」的影片全收掉。从游戏内菜单走「重新遊戲」时
+  //   （`startGame` 会被直接调到），旧局的影片时间轴还挂着 —— 不清的话新棋盘上
+  //   会盖着旧局的片子，棋盘还会拿旧局的 before 快照当底（`deferred-board.ts`）。
+  buildFx = null;
+  pendingBuildFx = null;
+  buildFlicPending.clear();
+  releaseBuildFlics();
+  boardFilm = null;
+  pendingBoardFilm = null;
+  // 「狗咬 → 救护车」那一段的排队也要一起清（同一条理由：旧局的片子不该接着放）
+  pendingBoardFilmAfter = null;
+  boardFilmPending.clear();
+  releaseBoardFilmFlics();
+  deferredBoardBefore = null;
   // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
   goButton.reset();
 
   const first = map.nodes[state.players[0]?.nodeId ?? 1];
-  camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
+  camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   hoverNode = null;
   // ★ 開局先播跳伞过场（T-048）：纯表现、可跳过，之后才进棋盘
   introStartedAt = performance.now();
@@ -6381,6 +7355,19 @@ function startGame(): void {
   //   （設定屏那首 MIDI02 在設定屏收掉时就停了：`sub_00401543 → sub_00454edc`）
   holidayBgmDays = 0; // @source 0x00401dc4 新开一局清零
   playBoardBgm(1);
+  // ★★ `Speaking.mkf` 在**进棋盘这一刻**就开始拉（57 MB）。
+  //   此前只有「真的要说话」那一条路会拉它（`playSoundFor` / `voice-sink`），
+  //   于是**第一句**——棋盘上的角色台词、樂透投注屏的招呼、開獎屏的主持人——
+  //   在档案到货前被 `SoundPlayer.play` 安静丢掉（试玩 3 第 7/8 条：
+  //   「进樂透页听不到猫女的语音」「整体感觉语音没怎么触发」）。
+  //   棋盘一局是分钟级的，这里提前拉完，后面每一句都在。
+  ensureSpeakingArchive();
+  // ★ 開局宣言（事件 26）—— **不走任何 action**，故 `playSoundFor` 永远看不到它：
+  //   原版那一句在 `fcn_00407842` 里（`@source 0x00407946`，全 exe 唯一一处），
+  //   `callers 0x407842` 只有 `0x40cff0` / `0x41da2d` 两处，都是**开/重开一局**，
+  //   且都在模态消息框之后、棋盘打开之前。这里在开局的同一个点显式播一次。
+  //   台词与語音号：`SPEECH_LINES[角色][26]` / `speechIndex(角色, 26)`。
+  if (speechQueue.push(openingSpeech(state), performance.now()) > 0) requestRender();
   log(
     `開局：地圖 ${setup.mapId}　種子 ${seed}　` +
       players.map((p, i) => `P${i + 1}${p.kind === 'human' ? '人' : '電'}`).join(' '),
@@ -6802,6 +7789,13 @@ function bindInput(): void {
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
 
+    // ★ W-69：過路費那段闪在播时，任意滑鼠鍵**跳过**它，而且这一下被它吃掉
+    //   （原版 `fcn_004528b9` 的等待循环把这条消息收走了，不会漏给棋盘）。
+    if (tollFlash !== null) {
+      skipTollFlash();
+      return;
+    }
+
     // ── 登记的整屏（契约见 ui-screen.ts）：按下这一拍派 `down` ──
     // ★ 原版对应的就是 `WM_LBUTTONDOWN`；`mouseup`（= `WM_LBUTTONUP`）派 `up`。
     //   两者**必须**分派在真的按下/抬手事件上 —— 见 `click` 那一路的注释。
@@ -6865,11 +7859,36 @@ function bindInput(): void {
 
     // ── 股市屏（T-030）──────────────────────────────────────
     if (screen === 'stock') {
+      // ★★ 填数页（计算器）开着时，**任何点击先给它** —— 这一条必须在「休市就退屏」
+      //   之前。原版这扇窗是**独立模态窗**（`fcn_00453544`），自己收 0x201/0x202，
+      //   与柜台窗开不开市无关；先前把它排在休市那一支**之后**，于是
+      //   休市日（或任何 `closedDays` 非 0 的日子）点计算器上任何一颗数字钮
+      //   都等于「点了一下股市屏」⇒ 直接 `closeStock()` 退屏
+      //   （试玩 4 报的「鼠标点计算器的数字按钮没反应」）。
+      if (stockAmount !== null) {
+        const q0 = eventToStage(e);
+        if (import.meta.env.DEV) {
+          __devHits.push({ q0, cx: e.clientX, cy: e.clientY, box: boardCtx.canvas.getBoundingClientRect().width });
+        }
+        if (q0 === null) return;
+        const ui0 = stockAmountUi();
+        if (ui0 !== null) {
+          const h0 = hitDialog(boardCtx, ui0, amountPage, q0.x - LAYOUT.board.x, q0.y - LAYOUT.board.y);
+          if (import.meta.env.DEV) __devHits.push({ hit: h0 });
+          if (h0 !== null && h0 !== 'inside') onDialogHit(ui0, h0);
+          if (amountPage === null) stockAmount = null; // 確定/取消都会关掉它
+          requestRender();
+        }
+        return;
+      }
       // ★ 休市那一支原版走的是**訊息框**窗口过程：任何一下鼠标都退屏
       //   （@source `fcn_0042b2ec` 的 0x202/0x205 两路都 `Post_0402_Message(0)`）
       //   —— 所以休市日既看不到行情，也不可能交易。
       if (stockCounterClosed(state)) {
-        if (e.button === 0 || e.button === 2) {
+        // ★ W-63：**只认左键** —— 右键交给 `contextmenu → cancelTopPanel()` 的
+        //   `'stock'` / `'stockPick'` 层（休市屏就是 `screen === 'stock'`，那两层覆盖得到）。
+        //   先前这里连右键一起关，而右键还会再触发一次 `contextmenu` ⇒ 一下退两层。
+        if (e.button === 0) {
           // ★ 选股模式碰上休市：原版这一支走訊息框，任何一下鼠标都 `Post(0)`
           //   抛回 0 ⇒ 卡不消耗、卡片欄被开回来（且不播取消音）
           if (stockPick !== null) cancelStockPick(false);
@@ -6877,9 +7896,14 @@ function bindInput(): void {
         }
         return;
       }
-      // 详情卡开着：左键或右键都直接退卡 @source `loc_0042aa08`
+      // 详情卡开着：**左键**直接退卡 @source `loc_0042aa08`
+      //   ★ W-63：右键**不在这里**关 —— 浏览器一次右键会先后发 `mousedown(button=2)`
+      //   与 `contextmenu`；这里若也关掉，`stockDetail` 立刻变 null，紧接着
+      //   `contextmenu → cancelTopPanel()` 的梯子就落到 `'stock'` 层把**整个股市屏**
+      //   也关了（一下退两层）。梯子上本来就有 `'stockDetail'` 那一层
+      //   （`panel-cancel.ts`），交给它就够。
       if (stockDetail !== null) {
-        if (e.button === 0 || e.button === 2) closeStockDetail();
+        if (e.button === 0) closeStockDetail();
         return;
       }
       if (e.button !== 0) return; // 右键走 contextmenu（换页 / 离开）
@@ -6895,20 +7919,6 @@ function bindInput(): void {
       }
       const q = eventToStage(e);
       if (q === null) return;
-      if (stockAmount !== null) {
-        // 填数页开着：全部点击先给它（排版照棋盘坐标，命中也照那边算）
-        const ui = stockAmountUi();
-        if (ui !== null) {
-          const h = hitDialog(
-            boardCtx, ui, amountPage,
-            q.x - LAYOUT.board.x, q.y - LAYOUT.board.y,
-          );
-          if (h !== null && h !== 'inside') onDialogHit(ui, h);
-          if (amountPage === null) stockAmount = null; // 確定/取消都会关掉它
-          requestRender();
-        }
-        return;
-      }
       const plate = hitStockPlate(q.x, q.y);
       if (plate !== null) {
         log('▶ 股市：' + ['換頁', '買進', '賣出', '上市公司資訊', '離開'][plate]);
@@ -7089,7 +8099,13 @@ function bindInput(): void {
       // 气泡还在时，原版只把气泡收掉（`loc_0042de09` 的 `[0x48c318] != 3` 那条分支），
       //   不做别的；正在等道别那句话说完也一样不接输入。
       if (ui.bubble !== null || ui.closing) {
-        ui.bubble = null;
+        // ★★ E-21 抓到的真卡死：道别气泡还在时再点一下（连点 EXIT 很自然），先前这里把气泡
+        //   直接清成 null，而 `shopTick` 的关门判据恰恰是「气泡**到期**」⇒ `closing` 恒真、
+        //   气泡恒空、店永远不关（`pending = shop` 卡死，试玩 soak 连点 313 次关不掉）。
+        //   原版这一拍是 `fcn_0044ee18(1)`（@source `loc_0042de09`：提前收掉限时訊息框）——
+        //   框一收，后续照常推进（状态 2→3→4，`loc_0042e686`）。故道别那一句**改成立刻到期**，
+        //   交给 `shopTick` 走同一条关门路；别的气泡照旧直接收。
+        ui.bubble = shopBubbleAfterClick(ui.bubble, ui.closing);
         requestRender();
         return;
       }
@@ -7177,7 +8193,7 @@ function bindInput(): void {
         inputTrace.rollRequested = false;
         inputTrace.earlyReturn = 'go-branch';
         // 切换钮盖在 GO 的下缘上，必须先问它（原版也是先判那几颗）
-        const n = hitDiceToggle(gx, gy, maxDiceOf(me0), goButton.position());
+        const n = hitDiceToggle(gx, gy, maxDiceOf(me0), goButton.position(), me0.trafficMethod & 3);
         inputTrace.diceToggle = n;
         if (n !== null) {
           inputTrace.earlyReturn = 'dice-toggle';
@@ -7232,6 +8248,11 @@ function bindInput(): void {
 
   });
   window.addEventListener('mouseup', (e) => {
+    // ★ W-69：過路費闪在播时抬手也跳过（同样是「任意滑鼠鍵」）
+    if (tollFlash !== null) {
+      skipTollFlash();
+      return;
+    }
     // 名牌浮标：抬手就擦（原版 `loc_00418878` → `fcn_00417c67` 把底图贴回去）
     if (nodeTip !== null) {
       nodeTip = null;
@@ -7479,6 +8500,12 @@ function bindInput(): void {
   // 右键 = 原版的 `WM_RBUTTONUP (0x205)`：**关掉最上面那一扇窗**
   // （关不掉的最后一档才是「清掉小地图标记」，@source VA 0x00418893）
   canvas.addEventListener('contextmenu', (e) => {
+    // ★ W-69：過路費闪在播时右键也跳过（「任意滑鼠鍵」，同样被它吃掉）
+    if (tollFlash !== null) {
+      e.preventDefault();
+      skipTollFlash();
+      return;
+    }
     // ── 登记的整屏（契约见 ui-screen.ts）：**声明了** `contextmenu` 的屏先收 ──
     // ★ 原版 `WM_RBUTTONUP`（0x205）就是各屏「关掉最上面那扇窗」的那一拍；
     //   大地圖彈窗（`fcn_0040a801`）只有这一条出口。
@@ -7866,7 +8893,7 @@ function connectOnline(url: string, room: string, name: string): void {
           recorder.reset();
           hoverNode = null;
           const first = map.nodes[state.players[0]?.nodeId ?? 1];
-          camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
+          camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
           screen = 'game';
           log(`開局（聯機）：地圖 ${start.globalMapId}　種子 ${start.seed}`);
           ground = null;
@@ -7919,6 +8946,8 @@ function connectOnline(url: string, room: string, name: string): void {
           pendingBuildFx = null;
           buildFlicPending.clear();
           releaseBuildFlics();
+          // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
+          deferredBoardBefore = null;
           npcWalksDrawn = null;
           log(`⟳ 失步自愈：重放 ${r.actions.length} 條 action，本地狀態已重建（第 ${r.actions.length} 號）`);
           requestRender();
@@ -8011,7 +9040,7 @@ async function boot(): Promise<void> {
     resizeCanvas();
     // ★ 原版开局就是人物视角（等距投影、跟着棋子），全局看右下角小地图
     const first = map.nodes[state.players[0]?.nodeId ?? 1];
-    camera = characterCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
+    camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
     centerOnCurrentPlayer();
 
     // 开发期调试出口：在控制台里能直接看状态与相机，排错方便。
@@ -8026,7 +9055,10 @@ async function boot(): Promise<void> {
         get camera() { return camera; },
         get history() { return history; },
         report: (note?: string) => { fileReport('manual', note ?? ''); },
-        get recorder() { return { trail: recorder.trailLength, errors: recorder.errorCount }; },
+        get recorder() {
+          // `devPatched` 是 W-53 的脏标志 —— 有它才能在控制台里确认「下一次 F9 报告会被拒验指纹」
+          return { trail: recorder.trailLength, errors: recorder.errorCount, devPatched: recorder.devPatched };
+        },
         get hoverNode() { return hoverNode; },
         get screen() { return screen; },
         /** 目标拾取会话（T-026）—— `null` = 没在拾取 */
@@ -8059,6 +9091,175 @@ async function boot(): Promise<void> {
           state = { ...moved, phase: 'settling' };
           dispatch({ type: 'settle' });
           return true;
+        },
+        /**
+         * ★ **直达一场拍卖**：当回合玩家打出「拍賣卡」（卡 8），把竞价挂成待决交互。
+         *
+         * 走的是与人点手牌**同一条** `useCard` action（不是后门）。加它是因为
+         * 竞价屏**要玩到才会出现**（抽到卡 + 打出 + 有人出得起），而「轮到电脑时
+         * 他自己跟价 / 放弃、落槌演出」只能在这块屏上验收。
+         * @returns 真的开出一场返回 true（`state.pending.kind === 'auction'`）
+         */
+        /** 此刻接管整屏的那一屏的 id（`null` = 棋盘）—— 给自动化用 */
+        overlayId: () => activeUiScreen()?.id ?? null,
+        /**
+         * ★ 直接开股市的**填数页**（计算器）—— 给自动化用。
+         *
+         * 「鼠标点数字钮 / MAX」只能在这扇窗上验收，而它**要休市日之外**才开得出来；
+         * 这条路只把 `stockAmount + amountPage` 摆好，规则（上限算式）仍走
+         * `stock-screen.ts` 的同一批函数。
+         * @param row 股票行号（0 基）
+         */
+        stockAmount: (row = 0, kind: 'buy' | 'sell' = 'buy') => {
+          // 存款为 0 时上限恒 0（买股走存款）；休市日流通量也是 0
+          //   ⇒ 先勾一笔存款与一点流通量，让窗子真开得出来（只为自动化够得着这扇窗）
+          if (kind === 'buy') {
+            state = {
+              ...state,
+              players: state.players.map((p, i) =>
+                i === state.currentPlayer ? { ...p, moneyInBank: Math.max(p.moneyInBank, 50000) } : p,
+              ),
+              market: {
+                ...state.market,
+                stocks: state.market.stocks.map((x, i) => (i === row ? { ...x, f10: 1000 } : x)),
+              },
+            };
+          }
+          const st = state.market.stocks[row];
+          const me = state.players[state.currentPlayer];
+          if (st === undefined || me === undefined) return false;
+          screen = 'stock';
+          stockSel = row;
+          stockAmount =
+            kind === 'buy'
+              ? { kind: 'buy', stock: row, max: stockCounterBuyMax(me.moneyInBank, st.price, st.f10) }
+              : { kind: 'sell', stock: row, max: state.holdings[state.currentPlayer]?.[row]?.amount ?? 0 };
+          amountPage = { choice: 0, value: AMOUNT_INITIAL };
+          dialogHot = null;
+          requestRender();
+          return stockAmount.max > 0;
+        },
+        /**
+         * ★ 直接播一次樂透開獎演出 —— 给自动化用。
+         *
+         * 開獎是「日期跨到 15 日」的副作用，正常玩要等到那天；这条路只把
+         * 那一对 `before/after` 摆出来（`lotteryDrawCue` 的判据与日期推进
+         * 那一条完全一样），演出本身一格都不改。
+         */
+        lotteryDraw: () => {
+          const lot = new Array<number>(36).fill(0);
+          lot[6] = 1; // 1 号玩家持 07 号
+          const before: GameState = {
+            ...state,
+            day: 14,
+            totalDays: state.totalDays,
+            pool: 5000,
+            lottery: lot,
+            players: state.players.map((p, i) => (i === 0 ? { ...p, cash: p.cash + 5000 } : p)),
+          };
+          const after: GameState = {
+            ...before,
+            day: 15,
+            totalDays: before.totalDays + 1,
+            pool: 0,
+            lottery: new Array<number>(36).fill(0),
+          };
+          state = after;
+          const cue = lotteryDrawCue(before, after);
+          if (cue === null) return 'no-cue';
+          // 与状态变化时那条路同一支：各整屏的 `event(before, after)` 统一派
+          for (const sc of SCREENS) sc.event?.(before, state, uiEnv());
+          requestRender();
+          return JSON.stringify(cue);
+        },
+        /** dev：樂透開獎屏这一帧的演出态 + 气泡行（排「台词不出」用） */
+        lotteryView: () => {
+          const v = lotteryDrawView(uiEnv());
+          if (v === null) return 'null';
+          return JSON.stringify({ step: v.step, state: v.state, lines: v.lines, now: uiEnv().now });
+        },
+        /** dev：`onDialogHit` 收到的每一次命中（自动化排错用） */
+        hits: () => JSON.stringify(__devHits),
+        /** 股市填数页的**命中框**（舞台坐标）—— 给自动化点用 */
+        stockAmountRects: () => {
+          const ui = stockAmountUi();
+          if (ui === null) return '[]';
+          return JSON.stringify(
+            layoutDialog(boardCtx, ui, amountPage).buttons.map((b) => ({
+              hit: b.hit,
+              x: b.rect.x + LAYOUT.board.x,
+              y: b.rect.y + LAYOUT.board.y,
+              w: b.rect.w,
+              h: b.rect.h,
+            })),
+          );
+        },
+        /** 股市填数页此刻拿到的上限与当前值 —— 给自动化核对用 */
+        stockAmountState: () =>
+          JSON.stringify({
+            stockAmount,
+            amountPage,
+            rows: state.market.stocks.map((x) => ({ price: x.price, f10: x.f10 })),
+          }),
+        /** 手动走一帧渲染回调（与 `requestRender` 里那条同路）—— 给自动化用 */
+        pump: () => {
+          renderQueued = false;
+          requestRender();
+        },
+        /** 拍卖屏的当前运行态（屏内 + core 的 pending 快照）—— 给自动化用 */
+        auctionView: () => {
+          const run = auctionRunForTest();
+          const p = state.pending;
+          return JSON.stringify({
+            run:
+              run === null
+                ? null
+                : {
+                    current: run.current,
+                    phase: run.phase,
+                    price: run.price,
+                    top: run.top,
+                    seats: run.seats.map((s) => ({ player: s.player, state: s.state, away: s.away })),
+                  },
+            pending:
+              p !== null && p.kind === 'auction' && 'seat' in p
+                ? { seat: p.seat, price: p.price, top: p.top, status: p.status }
+                : null,
+          });
+        },
+        auction: (seat?: number) => {
+          // 手上没有就先塞一张（新开局手牌是空的；这一步只为让自动化够得着这块屏）
+          const who = seat ?? state.currentPlayer;
+          if (!(state.players[who]?.cards ?? []).includes(8)) {
+            state = {
+              ...state,
+              players: state.players.map((p, i) => (i === who ? { ...p, cards: [...p.cards, 8] } : p)),
+            };
+          }
+          // ★ 让**指定的那一家**当回合玩家（= 卖家）—— 竞价名单是「其余三家」，
+          //   只有把人放在买家那一侧，才看得到「点完钮电脑跟不跟」。
+          state = { ...state, currentPlayer: who, phase: 'awaitingRoll' };
+          // ★ 拍賣卡拍的是**他脚下的那块地**；手上没地时先塞一块（只为让自动化够得着）
+          {
+            const nodeId = state.players[who]?.nodeId ?? 0;
+            const land = map.lands.find((l) => l.id === nodeId) ?? null;
+            if (land !== null) {
+              const owner = [...state.landOwner];
+              owner[nodeId] = who + 1;
+              const level = [...state.landLevel];
+              if ((level[nodeId] ?? 0) < 1) level[nodeId] = 1;
+              state = { ...state, landOwner: owner, landLevel: level };
+            }
+          }
+          const beforeP = state.pending;
+          dispatch({ type: 'useCard', cardId: 8, target: { kind: 'none' } });
+          if (state.pending?.kind !== 'auction') {
+            log(
+              `[dev] 開拍賣失敗：phase=${state.phase} pending=${state.pending?.kind ?? '-'}` +
+                `（之前 ${beforeP?.kind ?? '-'}）`,
+            );
+          }
+          return state.pending?.kind === 'auction';
         },
         /**
          * ★ 魔法屋那一屏的状态（`magicScreenState()`）：`playing` / `phase` /
@@ -8107,6 +9308,66 @@ async function boot(): Promise<void> {
             })),
           };
         },
+        /**
+         * ★ W-14 / E-21：真人此刻被一块**对话框按钮答不掉**的屏拦着时，该用哪一个**真实手势**出去。
+         *   `tools/soak-browser.js` 的真人路径先问它；返回 null = 没有这种屏，照旧点对话框按钮。
+         *
+         *   落点一律取各屏**自己的**命中框常量（`auctionButtonRect` / `SHOP_EXIT_HIT`），
+         *   保釋屏走原版的通用出口 —— **右键**（`WM_RBUTTONUP 0x205`，`panel-cancel.ts` 的 `bail` 层）；
+         *   填数页敲键盘。脚本只管把手势发成真实的鼠标 / 键盘事件。
+         */
+        humanExit: (): {
+          gesture: 'click' | 'rightClick' | 'keys';
+          x: number;
+          y: number;
+          why: string;
+          keys?: readonly string[];
+        } | null => {
+          if (screen !== 'game') return null;
+          const pass = auctionHumanPassPoint(uiEnv());
+          if (pass !== null) return { gesture: 'click', x: pass.x, y: pass.y, why: 'auction:PASS' };
+          // 「請選擇設施類別」浮窗：右键在免费代蓋那一支**无效**（E-20）⇒ 真实出口 = 点一格。
+          //   点第 2 格（旅館）：落点取本窗自己的命中框（`PICKER_HIT` + `PICKER_STRIDE`）。
+          if (activeUiScreen()?.id === 'facility-picker') {
+            return {
+              gesture: 'click',
+              x: PICKER_HIT.x0 + PICKER_STRIDE + PICKER_STRIDE / 2,
+              y: (PICKER_HIT.y0 + PICKER_HIT.y1) / 2,
+              why: 'facility-picker:slot1',
+            };
+          }
+          // 其余登记的整屏（轉盤 / 訊息框 / 事件框…）自己演、自己收，脚本不伸手
+          if (activeUiScreen() !== null) return null;
+          const mid = { x: LAYOUT.board.x + LAYOUT.board.w / 2, y: LAYOUT.board.y + LAYOUT.board.h / 2 };
+          if (shopUi !== null) {
+            if (shopUi.closing) return null;
+            return {
+              gesture: 'click',
+              x: (SHOP_EXIT_HIT.x0 + SHOP_EXIT_HIT.x1) / 2,
+              y: (SHOP_EXIT_HIT.y0 + SHOP_EXIT_HIT.y1) / 2,
+              why: 'shop:EXIT',
+            };
+          }
+          if (state.pending?.kind === 'bail') return { gesture: 'rightClick', ...mid, why: 'bail' };
+          // 通用填数页：右键只是退回上一扇 YES/NO（脚本再点 YES 就成了死循环）⇒ 真人的做法是
+          //   **敲数字 + Enter**（那扇窗自己认主键盘 0-9 / Enter，@source `loc_00452e4b`）。
+          if (amountPage !== null) {
+            return { gesture: 'keys', ...mid, why: 'amountPage', keys: ['Digit1', 'Enter'] };
+          }
+          return null;
+        },
+        /**
+         * ★ W-14：台上此刻是不是在**正当演出**（影片 / 整屏回放 / 补间 / 台词）——
+         *   `tools/soak-browser.js` 的停摆判据要用：魔法屋回放 + 四家各一段建屋影片这种长串，
+         *   `phase|currentPlayer|pending` 会 25 秒不变，但那不是卡死。判据就是回合驱动自己用的那一套
+         *   （`stageBusy(stageBusyFlags())` + 台词队列），不另写一份。
+         */
+        stageBusy: () => ({
+          busy: stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null,
+          flags: stageBusyFlags(),
+          speech: speechQueue.length,
+          deferred: deferredSpeech !== null,
+        }),
         /** 查一张图的尺寸与锚点 —— 命中判定对不上时先看这个 */
         sprite: (archive: 'Data.mkf' | 'Panel.mkf', res: number, idx: number, key = false) => {
           const s2 = spriteNow(archive, res, idx, key);
@@ -8145,10 +9406,65 @@ async function boot(): Promise<void> {
         /** 最近一次棋盘 mousedown 走到哪一步 —— 长跑排错用（纯读） */
         inputTrace: () => inputTrace,
         /**
+         * ★ W-66-b：每段走子补间起步时与「上一段理论结束」的缝（毫秒）。
+         * 读数用法：跑 30 格，取中位数 / p95 —— 中位数 ≤ 10 ms 就说明缝可忽略。
+         */
+        walkGaps: () => [...walkGaps],
+        /**
          * 骰子那一段现在到哪一相了 —— 长跑排错用（纯读）。
          * `active` 恒真而 `phase` 不前进 = 「掷完骰子人不走」那一类卡死。
          */
         diceState: () => ({ phase: diceFx.phase, active: diceFx.active }),
+        /**
+         * ★★ **开发用的状态注入口**（W-53）—— 把状态直接摆到「那一刻」，再去验收画面。
+         *
+         * ```js
+         * __rich4.debug.patch((s) => ({ ...s, players: ... }))   // 任意改写
+         * __rich4.debug.dog()                                    // 配方 ①：踩惡犬
+         * __rich4.debug.god(9)                                   // 配方 ②：天使（godInfo = 9）
+         * __rich4.debug.god(5)                                   // 配方 ③：小窮神（godInfo = 5，附身）
+         * __rich4.debug.nextNode()                               // 当前玩家的下一个落点
+         * ```
+         *
+         * ⚠️ **它绕过 `reduceRecorded`**：状态与记录仪里的 action 流从此对不上。
+         *   故每次调用都往 `logRing` 记一行 `[dev] state patched`、并把记录仪标脏
+         *   （报告带 `devPatched: true`，`tools/replay-report.ts` 见到它拒绝验指纹）。
+         *   配方写法见 `docs/handoff.md` §2 与 `dev-patch.ts`。
+         */
+        debug: {
+          patch: (fn: (s: GameState) => GameState) => {
+            const next = applyPatch(
+              { getState: () => state, setState: (s) => { state = s; }, log, taint: () => recorder.taint() },
+              fn,
+            );
+            requestRender();
+            return next;
+          },
+          /** 当前玩家的下一个落点（与引擎走一步同一个 `pickNextNode`，只算不走）*/
+          nextNode: () => nextNodeOf(state, topo),
+          /** 配方 ①：把一只惡犬摆到下一个落点（踩上去那一条的复现入口）*/
+          dog: () => {
+            const out = placeDogAhead(state, topo);
+            state = out.state;
+            log(dogLogLine(out));
+            recorder.taint();
+            requestRender();
+            return out.nodeId;
+          },
+          /** 配方 ②③：给当前玩家一个附身神明；`godInfo` = **物件下标 + 1**（天使 9 / 小窮神 5）*/
+          god: (target = 9) => {
+            if (target !== 9 && target !== 5) {
+              log(`[dev] god(${target})：只有 9（天使）/ 5（小窮神）两条配方，没动状态`);
+              return 0;
+            }
+            const out = target === 5 ? giveSmallPovertyGod(state) : giveAngel(state);
+            state = out.state;
+            log(attachLogLine(target === 5 ? '小窮神' : '天使', out));
+            recorder.taint();
+            requestRender();
+            return out.godInfo;
+          },
+        },
       };
     }
 

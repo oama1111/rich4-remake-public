@@ -256,3 +256,70 @@ describe('★ 放置類道具落地的音效 —— 照 exe 的表（`0x48231a`�
     expect(PLACE_TOOL_SOUND.has(5)).toBe(false);
   });
 });
+
+/**
+ * W-55 行 3 —— 神明顯靈／自己加蓋那一声音效。
+ *
+ * ★ 可证伪：把 50 改成 49/51（或把「表项 24」算成别的项）立刻红；
+ *   两个 `have('rich4.exe')` 用例把**表项地址与值**直接回 exe 读，不靠注释。
+ */
+describe('★ 神明顯靈／自己加蓋的音效 —— 50（表项 0x4823da）', () => {
+  it('★ `SOUND_IDS.GOD_MANIFEST` = 50（**不是** 49/51）', () => {
+    expect(SOUND_IDS.GOD_MANIFEST).toBe(50);
+    // 与同表已具名的几个互不相同 —— 防止日后复制粘贴串号
+    expect(SOUND_IDS.GOD_MANIFEST).not.toBe(SOUND_IDS.DOLL);
+    expect(SOUND_IDS.GOD_MANIFEST).not.toBe(SOUND_IDS.PLACE_BARRIER);
+    expect(SOUND_IDS.GOD_MANIFEST).not.toBe(SOUND_IDS.PLACE_MINE);
+    expect(SOUND_IDS.GOD_MANIFEST).not.toBe(SOUND_IDS.PLACE_TIMEBOMB);
+  });
+
+  /**
+   * 换算规则本身：表基址 `0x48231a`、每项 8 字节 ⇒ `0x4823da` 是**表项 24**，
+   * 而 `[表项]` 就是资源号（与 `PLACE_*` / `DOLL` 同一张表、同一条约定）。
+   * 这条用例把「8 字节一项」钉死 —— 谁把它当 4 字节一项，24 项会变成 48 项。
+   */
+  it('★ 表项地址换算：0x4823da = 基址 0x48231a + 24 × 8', () => {
+    const BASE = 0x48231a;
+    const ENTRY_BYTES = 8;
+    expect((0x4823da - BASE) / ENTRY_BYTES).toBe(24);
+    expect((0x4823da - BASE) % ENTRY_BYTES).toBe(0);
+  });
+
+  have('rich4.exe')('★ 回 exe 读 `[0x4823da]` = 50，且它与下一项相隔正好 8 字节', () => {
+    const DGROUP_VA = 0x463000;
+    const DGROUP_OFF = 398848;
+    const exe = readFileSync(EXE);
+    const at = DGROUP_OFF + (0x4823da - DGROUP_VA);
+    // 资源号（每项 +0）
+    expect(exe.readUInt32LE(at)).toBe(SOUND_IDS.GOD_MANIFEST);
+    // 8 字节一项：下一项的 +0 在 +8 处（0x4823e2 = 54）—— 反证不是 4 字节一项
+    expect(exe.readUInt32LE(at + 8)).toBe(54);
+    expect(exe.readUInt32LE(at + 4)).toBe(0); // +4 = 运行时声音对象（初始 0）
+    // 与同表已具名的 PLACE_TIMEBOMB（表项 8）对读，确认是同一条约定
+    expect(exe.readUInt32LE(DGROUP_OFF + (0x48235a - DGROUP_VA))).toBe(SOUND_IDS.PLACE_TIMEBOMB);
+  });
+
+  have('rich4.exe')('★ 四个调用点的 `push 0x4823da` 字节（含 W-55 未列的第 4 处）', () => {
+    const CODE_VA = 0x401000;
+    const CODE_OFF = 1024;
+    const exe = readFileSync(EXE);
+    const at = (va: number): Buffer =>
+      exe.subarray(CODE_OFF + (va - CODE_VA), CODE_OFF + (va - CODE_VA) + 5);
+    // `push imm32` = 0x68 + 小端 4 字节
+    for (const va of [0x0040f4f3, 0x0040f9dc, 0x004199de, 0x0041a289]) {
+      const b = at(va);
+      expect([...b.subarray(0, 1)], `VA ${va.toString(16)}`).toEqual([0x68]);
+      expect(b.readUInt32LE(1)).toBe(0x004823da);
+    }
+    // 前面一条一定是 `push 0`（`play_sound_effect` 的第二个实参）
+    expect([...at(0x0040f4f1).subarray(0, 2)]).toEqual([0x6a, 0x00]);
+  });
+
+  have('Effect.mkf')('★ `Effect.mkf` 资源 50 确实是 RIFF/WAVE（不是空槽/噪音）', () => {
+    const d = open('Effect.mkf').read(SOUND_IDS.GOD_MANIFEST);
+    expect(isWave(d)).toBe(true);
+    const info = readWaveInfo(d);
+    expect(info.sampleRate).toBeGreaterThan(0);
+    expect(info.channels).toBeGreaterThan(0);
+  });
+});
