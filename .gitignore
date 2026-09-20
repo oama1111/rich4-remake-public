@@ -37,6 +37,12 @@ assets/upscale-done/
 extracted/
 png/
 
+# --- W-70：素材预压缩产物（`tools/precompress-assets.ts`）---
+# ★ 只存在于服务器磁盘上：不许提交进仓库、不许打进公开镜像、
+#   不许传到公开的对象存储 / CDN（任务书 W-76 §4 的红线）。
+*.br
+*.gz
+
 # --- 黄金测试 fixture 中的原版二进制 ---
 # 注：fixtures/ 下只允许提交「从原版导出的数值断言 JSON」，
 #     不允许提交原版存档本身。
