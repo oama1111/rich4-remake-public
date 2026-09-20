@@ -18,11 +18,20 @@
  *
  * ⚠️ 这个脚本**只压不复制**：部署目录里那份 `.mkf` 原件由 `docs/deploy.md`
  *   的 `rsync` 那一步放进去（本脚本不替它做，也就不会在仓库里留副本）。
+ *
+ * ★ 顺手产出 **`assets-manifest.json`**（W-72 §1）：
+ *   `{ "version": "<全部 sha256 拼起来再 sha256 的前 12 位>",
+ *      "files": [{ "name", "size", "sha256" }] }`
+ *   客户端靠它决定 URL 上的 `?v=`（sha256 前 8 位）与进度条的分母（`size`）。
+ *   形状必须与 `packages/client/src/asset-loader.ts` 的 `AssetManifest` 逐字对齐 ——
+ *   两边各写一份迟早会漂，那边有 19 条单测钉着。
  */
 
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { MANIFEST_NAME } from '../packages/client/src/asset-loader.ts';
 import { MKF_WHITELIST } from '../packages/server/src/static.ts';
 
 function argStr(name: string, dflt: string): string {
@@ -60,6 +69,49 @@ function human(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/** 一个进清单的档案 */
+interface ManifestFile {
+  name: string;
+  size: number;
+  sha256: string;
+}
+
+const sha256Of = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+
+/**
+ * 清单里除了 7 个 `.mkf`，还要**如实**记一笔 `hd-manifest.json` 在不在（W-72 §5）——
+ * 网页版据此决定要不要去拉那份 3.8 MB 的 HD 清单。
+ *
+ * ⚠️ **光有 `hd-manifest.json` 不算数**：仓库里那份一直在（3.9 MB），但
+ *   `assets/hd/` 是**空的**（超分管线没跑过），拉回来一张图也用不上 ——
+ *   任务书 §1 末条说的「3.8 MB 白下」就是这件事。
+ *   所以判据是「**清单在，而且 `assets/hd/` 里真的有图**」，两条都满足才登记。
+ *
+ * 位置按 `hdBase()` 的形状算：`<from>` 是 `assets/game`，隔壁就是 `assets/`。
+ */
+function hdManifestEntry(): ManifestFile | null {
+  const manifestPath = resolve(fromDir, '..', 'hd-manifest.json');
+  const pixelDir = resolve(fromDir, '..', 'hd');
+  try {
+    if (!statSync(manifestPath).isFile()) return null;
+    if (readdirSync(pixelDir).length === 0) return null;
+    const bytes = readFileSync(manifestPath);
+    return { name: 'hd-manifest.json', size: bytes.byteLength, sha256: sha256Of(bytes) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 版本号 = **全部 sha256 拼起来再 sha256 的前 12 位**（任务书 W-72 §1 逐字）。
+ *
+ * 顺序按 `files` 的数组顺序（`mkf` 白名单序 + `hd-manifest.json`），
+ * 所以在同一批文件上重跑必得同一个值。
+ */
+function versionOf(files: readonly ManifestFile[]): string {
+  return createHash('sha256').update(files.map((f) => f.sha256).join('')).digest('hex').slice(0, 12);
+}
+
 function main(): void {
   assertNotSourceDir();
   mkdirSync(outDir, { recursive: true });
@@ -70,6 +122,7 @@ function main(): void {
   let rawTotal = 0;
   let brTotal = 0;
   let gzTotal = 0;
+  const manifest: ManifestFile[] = [];
 
   for (const name of MKF_WHITELIST) {
     if (only !== '' && name !== only) continue;
@@ -119,10 +172,14 @@ function main(): void {
     rawTotal += raw.byteLength;
     brTotal += br.byteLength;
     gzTotal += gz.byteLength;
+    manifest.push({ name, size: raw.byteLength, sha256: sha256Of(raw) });
     console.log(
       `· ${name.padEnd(14)} ${human(raw.byteLength).padStart(8)} → br ${human(br.byteLength).padStart(8)} / gz ${human(gz.byteLength).padStart(8)}`,
     );
   }
+
+  const hd = hdManifestEntry();
+  if (hd !== null) manifest.push(hd);
 
   if (rawTotal > 0) {
     console.log('');
@@ -130,6 +187,17 @@ function main(): void {
       `合計 ${human(rawTotal)} → br ${human(brTotal)}（省 ${(100 - (brTotal / rawTotal) * 100).toFixed(1)}%）/ gz ${human(gzTotal)}`,
     );
   }
+
+  // ★ 清单必须与**实际放进去的**那一份一致：少一个档案时客户端会退回「逐个按名字拉」
+  //   （见 `asset-loader.ts`），宁可退化成老路，也不给一个分母偏小的进度条。
+  const doc = { version: versionOf(manifest), files: manifest };
+  writeFileSync(resolve(outDir, MANIFEST_NAME), JSON.stringify(doc, null, 2) + '\n');
+  console.log('');
+  console.log(`清單：${resolve(outDir, MANIFEST_NAME)}  version=${doc.version}  ${manifest.length} 個檔案`);
+  if (manifest.length !== MKF_WHITELIST.length) {
+    console.log(`⚠ 清單裡只有 ${manifest.length} 個檔案（完整要 ${MKF_WHITELIST.length} 個）：客戶端這版會退回逐個按名字下載。`);
+  }
+  if (hd === null) console.log('（沒有 hd-manifest.json —— 網頁版據此跳過 HD 素材，不白拉 3.8 MB）');
   console.log('');
   console.log(`伺服器用法：node --experimental-transform-types packages/server/src/cli.ts --web <站點> --assets ${outDir}`);
 }

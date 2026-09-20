@@ -85,6 +85,7 @@ import {
   type AiSettingsHit,
 } from './ai-settings.ts';
 import {
+  archivesFromBytes,
   loadArchives,
   loadGround,
   loadHdSource,
@@ -99,6 +100,7 @@ import {
   type LoadedArchives,
   type Sprite,
 } from './assets.ts';
+import { loadAllArchives, type LoadProgress } from './asset-loader.ts';
 import { onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
 // ★ 「請選擇設施類別」那扇窗（Q-TOOL-4）—— 真人盖**等级 0 的設施**时要先选种类
 //   （原版 `fcn_00440aac` / 窗口过程 `fcn_0043fae4`）。
@@ -540,6 +542,25 @@ import {
   type SetupState,
 } from './setup.ts';
 
+/**
+ * HD 清单的文件名 —— `hdBase()` 是 `${assetBase() 去掉 /game}/hd`，清单在它旁边。
+ * 与 `packages/server/src/static.ts` 的素材白名单无关（HD 走另一条路）。
+ */
+const HD_MANIFEST_NAME = 'hd-manifest.json';
+
+/**
+ * 网页版要不要去问 HD 素材。
+ *
+ * · `true`＝问一次（`loadHdSource` 内部拿到 404 自己会退回原图，不报错）；
+ * · `false`＝**一次都不发**。
+ *
+ * ★ 初值 `true` 是有意的：桌面壳、以及**没有** `assets-manifest.json` 的
+ *   开发服务器都要走老路（那时候没有清单可查）。只有网页版读到清单之后，
+ *   才可能把它改成 `false`（任务书 W-72 §5）。
+ * @see loadArchivesForWeb
+ */
+let hdListed = true;
+
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
   if (el === null) throw new Error(`缺少元素 #${id}`);
@@ -560,6 +581,11 @@ const metaEl = $('meta');
 const playersEl = $('players');
 const actionsEl = $('actions');
 const interactionEl = $('interaction');
+// ★ W-72 载入屏的三件 DOM（在 `index.html` 里，默认 `hidden`）
+const loadBarEl = $('loadbar');
+const loadFillEl = $('loadfill');
+const loadHintEl = $('loadhint');
+const loadRetryEl = $<HTMLButtonElement>('loadretry');
 
 /**
  * 最近若干行日志的**环**（F9 回报里带上）—— 实现在 `log-ring.ts`（可单测）。
@@ -3934,6 +3960,11 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
  */
 let speakingLoading = false;
 function ensureSpeakingArchive(): void {
+  // ★ W-72：**网页版是空操作**。它在进標題畫面之前就把 7 个档案（含 Speaking.mkf，
+  //   57 MB）整包下完了，`loadArchivesForWeb` 里已经 `sound.addArchive` 装好；
+  //   这里再拉一次就是白拉 57 MB —— 而且联机时第一句语音本来就该已经在了。
+  //   桌面壳没有「整包预载」这一步，照旧按需拉（行为一行没变）。
+  if (!isDesktop()) return;
   if (speakingLoading || sound.muted) return;
   speakingLoading = true;
   void fetch(`${assetBase()}/Speaking.mkf`)
@@ -8979,11 +9010,101 @@ function connectOnline(url: string, room: string, name: string): void {
   open(undefined);
 }
 
+// ============================================================
+//  素材载入屏（W-72）
+// ============================================================
+
+/**
+ * 网页版的素材载入：**7 个档案一次下完**（含 Speaking / Effect），带进度条与
+ * Cache Storage；失败**不抛出去**，而是在载入屏上给一颗「重試」，点了再来一遍。
+ *
+ * ★ 为什么失败要能重试而不是崩到 `boot()` 的 catch：整包 ≈130 MB，
+ *   中途断一次就得刷新整个页面重来，体验差得多。
+ * ★ 7 个到齐之后才 `sound.addArchive` —— 这样联机时第一句语音不会丢
+ *   （以前 Speaking / Effect 是后台拉的，见任务书 §1 对策②）。
+ */
+async function loadArchivesForWeb(): Promise<LoadedArchives> {
+  for (;;) {
+    try {
+      showLoadingScreen();
+      const loaded = await loadAllArchives(assetBase(), renderLoadProgress);
+      // ★ HD 素材：清单里**没有** `hd-manifest.json` 就一次都不问
+      //   （`assets/hd/` 是空的，那份 3.8 MB 的清单白拉 —— 任务书 W-72 §5）
+      hdListed = loaded.manifest?.files.some((f) => f.name === HD_MANIFEST_NAME) ?? true;
+      const speaking = loaded.archives.get('Speaking.mkf');
+      const effect = loaded.archives.get('Effect.mkf');
+      if (speaking !== undefined) {
+        sound.addArchive('Speaking.mkf', speaking);
+        log('語音载入：Speaking.mkf（角色語音）');
+      }
+      if (effect !== undefined) {
+        sound.addArchive('Effect.mkf', effect);
+        log('音效载入：Effect.mkf');
+      }
+      clearLoadingScreen();
+      return archivesFromBytes(loaded.archives);
+    } catch (err) {
+      await showLoadFailure(err);
+    }
+  }
+}
+
+function showLoadingScreen(): void {
+  metaEl.className = 'meta';
+  metaEl.textContent = '正在载入原版素材… 0%';
+  loadBarEl.hidden = false;
+  loadFillEl.style.width = '0%';
+  loadHintEl.hidden = false;
+  loadRetryEl.hidden = true;
+}
+
+/**
+ * 进度条。
+ *
+ * ⚠️ **只显示百分比**（任务书 W-72 §3）：分母是原始字节（247 MB）而实际流量是
+ *   压缩后的（≈130 MB），把 MB 数放上来会让人以为下多了。
+ */
+function renderLoadProgress(p: LoadProgress): void {
+  const pct = p.total > 0 ? Math.floor((p.loaded / p.total) * 100) : 0;
+  metaEl.textContent = `正在载入原版素材… ${pct}%`;
+  loadFillEl.style.width = `${pct}%`;
+  // 已经从缓存里拿到过东西了 —— 「首次载入约 130 MB」那句就不必再挂着
+  if (p.cachedHits > 0) loadHintEl.hidden = true;
+}
+
+/** 失败：亮出「重試」，返回的 Promise 在玩家**点了它**之后才 resolve */
+function showLoadFailure(err: unknown): Promise<void> {
+  metaEl.className = 'meta err';
+  metaEl.textContent = `素材载入失敗：${err instanceof Error ? err.message : String(err)}`;
+  loadBarEl.hidden = true;
+  loadHintEl.hidden = true;
+  loadRetryEl.hidden = false;
+  return new Promise<void>((resolve) => {
+    loadRetryEl.onclick = () => {
+      loadRetryEl.onclick = null;
+      resolve();
+    };
+  });
+}
+
+function clearLoadingScreen(): void {
+  loadBarEl.hidden = true;
+  loadHintEl.hidden = true;
+  loadRetryEl.hidden = true;
+  metaEl.className = 'meta';
+}
+
 async function boot(): Promise<void> {
   try {
     await ensureGameDir();
-    metaEl.textContent = '正在载入原版素材…';
-    archives = await loadArchives(assetBase());
+    // ★ W-72：网页版走「一次下完 7 个」那条路（带进度条 + Cache Storage）；
+    //   桌面壳一行没变 —— 还是边拉边开那 5 个基础档案。
+    if (isDesktop()) {
+      metaEl.textContent = '正在载入原版素材…';
+      archives = await loadArchives(assetBase());
+    } else {
+      archives = await loadArchivesForWeb();
+    }
     // 新聞/命運 插画与 抽卡 卡面是**无头 RGB555 块**（Data.mkf #441+/#477+/#571+），
     // 走不了 `sprite()`（它要求 SPR/SMP 签名）。把档案句柄交给那一屏，照
     // `minigame-bg.ts` 的同一条路子取原图（见 `event-box-screen.ts` 头注释）。
@@ -8991,7 +9112,9 @@ async function boot(): Promise<void> {
 
     // HD 素材可选：拿不到清单（没跑过超分管线、或整个 assets/hd/ 不存在）
     // 就整包走原图。**按图**回退在 SpriteCache 里（PRD §4.5）。
-    hdSource = await loadHdSource(hdBase());
+    // ★ W-72：网页版先看清单里有没有 `hd-manifest.json` —— `assets/hd/` 是空的，
+    //   那份 3.8 MB 的清单白拉（任务书 §1 末条）。
+    hdSource = hdListed ? await loadHdSource(hdBase()) : null;
     sprites = new SpriteCache(archives, hdSource === null ? {} : { hd: hdSource });
     if (hdSource !== null) log('HD 素材：已接上（缺图的按图回退原图）');
 
@@ -9485,14 +9608,19 @@ async function boot(): Promise<void> {
     log(`地图载入：${map.nodes.length} 个节点、${map.lands.length} 块地`);
 
     // 音效档案后台拉取。Speaking.mkf 有 57MB，先不装。
-    void fetch(`${assetBase()}/Effect.mkf`)
-      .then((r) => (r.ok ? r.arrayBuffer() : null))
-      .then((buf) => {
-        if (buf === null) return;
-        sound.addArchive('Effect.mkf', new Uint8Array(buf));
-        log('音效载入：Effect.mkf（首次点击后开声）');
-      })
-      .catch(() => log('⚠ 音效载入失败'));
+    // ★ W-72：**网页版不用拉** —— `loadArchivesForWeb` 已经把 Effect.mkf（和
+    //   Speaking.mkf）装进 `sound` 了，再拉一次就是白拉 3.9 MB。
+    //   桌面壳没有「整包预载」这一步，行为一行没变。
+    if (isDesktop()) {
+      void fetch(`${assetBase()}/Effect.mkf`)
+        .then((r) => (r.ok ? r.arrayBuffer() : null))
+        .then((buf) => {
+          if (buf === null) return;
+          sound.addArchive('Effect.mkf', new Uint8Array(buf));
+          log('音效载入：Effect.mkf（首次点击后开声）');
+        })
+        .catch(() => log('⚠ 音效载入失败'));
+    }
 
     // ⚠️ **不在这里解底图**。它是 2304×2304（530 万像素），
     //   `createImageBitmap` 一跑就把解码管线占满几秒钟，排在后面的
