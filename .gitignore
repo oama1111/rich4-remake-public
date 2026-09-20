@@ -45,6 +45,9 @@ png/
 # ★ W-72：同一支脚本顺手产出的**构建期清单**（W-72 §1）——与 `.br`/`.gz` 一样
 #   是部署产物，只该待在部署目录里。
 assets-manifest.json
+# ★ W-76：`pnpm precompress --out deploy` 会往 `deploy/assets/` 里写素材副本 ——
+#   那是**服务器磁盘上的**部署产物，与 `*.br`/`*.gz` 同一条红线（W-76 §4）。
+deploy/assets/
 
 # --- 黄金测试 fixture 中的原版二进制 ---
 # 注：fixtures/ 下只允许提交「从原版导出的数值断言 JSON」，
