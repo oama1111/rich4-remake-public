@@ -115,3 +115,40 @@ export function boardFilmBitmap(
   const frame = boardFilmFrame(film, now);
   return flic.frames[frame] ?? flic.frames[flic.frames.length - 1] ?? null;
 }
+
+// ============================================================
+//  排队：同一条 action 里的**两段**影片（原版是两次阻塞的 `fcn_0045144f`，串行）
+// ============================================================
+
+/** 影片的两个槽：`pending` = 下一段要起播的、`after` = 排在它后面的 */
+export interface BoardFilmSlots {
+  pending: BoardFilmSpec | null;
+  after: BoardFilmSpec | null;
+}
+
+/**
+ * 同一条 action 里又来一段影片 —— **接在已经排好的那一段后面**，不许顶掉它。
+ *
+ * ★★ 第五份回报第 3 条「狗咬的动画顺序不对」的根因：`startActionFx` 先后调
+ *   `startDogFx`（0x214）与 `startConfineFx`（0x20c），而后者直接
+ *   `pendingBoardFilm = 救护车` 把还没起播的狗咬片**顶掉**了（動畫開着时只剩救护车）。
+ *   原版的次序由调用次序定死：
+ *   ```asm
+ *   0041b8cd  call 0x45144f      ; 0x214 狗咬（阻塞播完）
+ *   0041b8ef  call 0x43ec3f      ; send_to_hospital
+ *     0043ed59  call 0x45144f    ;   0x20c 救护车（動畫過程开着才播，0x0043ed27）
+ *     0043edcb  call 0x44ef41    ;   ★ 台词在两段影片**之后**
+ *   ```
+ *
+ * @param playing 此刻是不是有一段正在播（正在播的不受影响，新的一律排队）
+ */
+export function enqueueBoardFilm(
+  slots: BoardFilmSlots,
+  spec: BoardFilmSpec,
+  playing: boolean,
+): BoardFilmSlots {
+  if (slots.pending === null && !playing) return { pending: spec, after: slots.after };
+  // 已经有一段在前面 ⇒ 排到它后面（`after` 单槽：原版同一条 action 里至多两段）
+  return { pending: slots.pending, after: spec };
+}
+

@@ -217,6 +217,7 @@ import {
   beginBoardFilm,
   boardFilmBitmap,
   boardFilmDone,
+  enqueueBoardFilm,
   type BoardFilm,
   type BoardFilmSpec,
 } from './board-film.ts';
@@ -5260,7 +5261,21 @@ function startConfineFx(before: GameState, after: GameState): void {
   if (kind === null) return;
   // 影片窗口里棋盘按 before 画（见 `deferred-board.ts`）—— 起播前先记下快照
   deferredBoardBefore = before;
-  startBoardFilm(confineClip(kind));
+  // ★★ 同一条 action 里已经排了一段（踩到惡犬：0x214 在前）⇒ **接在它后面**，
+  //   不许 `startBoardFilm` 把它顶掉（第五份回报第 3 条；判据见 `enqueueBoardFilm`）
+  const clip = confineClip(kind);
+  const slots = enqueueBoardFilm(
+    { pending: pendingBoardFilm, after: pendingBoardFilmAfter },
+    clip,
+    boardFilm !== null,
+  );
+  if (slots.pending !== clip) {
+    pendingBoardFilmAfter = slots.after;
+    boardFilmFlicNow(clip); // 先解码，轮到它时不必再等
+    requestRender();
+    return;
+  }
+  startBoardFilm(clip);
 }
 
 /**
