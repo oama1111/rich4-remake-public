@@ -6,33 +6,47 @@
  *   `speech.ts` → `SayEvent[]`（玩家下标 + 槽位号）
  *   本文件      → 把 `SayEvent` 补上**台词文本 / 表情图 / 语音号**，并管一段时长。
  *
- * ── 原版怎么显示（`_rich4_player_say`，VA 0x0044ef41）────────────────
+ * ── 原版怎么显示（`_rich4_player_say`，VA 0x0044ef41，全文 235 条）──────
  *
- * 原版这一段是**阻塞**的，整段只有 5 步（逐条 VA 见下表），画完 `fcn_004544f6(1000)`
- * 等 1 秒 —— 期间按任意键/鼠标还能提前收场（那 1000 ms 是「等消息」不是 `Sleep`）。
+ * 原版这一段是**阻塞**的，按①…⑦的次序做完，`fcn_004544f6(1000)` 等 1 秒
+ * —— 期间按任意键/鼠标还能提前收场（那 1000 ms 是「等消息」不是 `Sleep`）。
  *
- * | 步 | 原版做什么 | VA |
+ * | 步 | 原版做什么 | @source |
  * |---|---|---|
- * | ① | 在**棋盘表面**上 `_rich4_draw_text(串, 0xc8, 0x28, 5)` —— 白字 + 黑描边，落在 **(200, 40)**，最多 5 行 | 0x0044f140 |
- * | ② | 若串是 `@DD`：把 `Data.mkf #0x207` 的第 `3×十位+个位−1` 张图贴到 **(0xf0, 0x82) = (240, 130)** | 0x0044f08a |
- * | ③ | 若串带 `#NNNN`：`fcn_0045441a(NNNN)` 播 `Speaking.mkf` 的那一段语音 | 0x0044f20x |
- * | ④ | 用 `fcn_00451a97(0,0,0x28,0x1b8,0xdc, 0x46caec)` **从棋盘面上抠下** `RECT(0,40,200,220)` 存到离屏面 | 0x0044efb0 |
- * | ⑤ | 把角色**名牌**（`Data.mkf #0x205` 资源基址 `+0x54` = 图 7，400×89）贴到离屏面的 `(0xaa, 0x82)` | 0x0044f00x |
- * | ⑥ | 把离屏面 Blt 回 **(0, 40)**，再 `free` | 0x0044f157 起 |
+ * | ① | 三道闸：`+0x33` 消失 / `+0x37` 夢遊 / `+0x36` 睡眠 任一非 0 ⇒ **整句不说** | 0x0044ef79 / 0x0044ef86 / 0x0044ef93 |
+ * | ② | `view_to`：镜头先对到**说话的人** | 0x0044efbd `call 0x41d476` |
+ * | ③ | **备份**棋盘区 `RECT(0,40)-(440,260)`（宽 `0x1b8`、高 `0xdc`）—— 只是为了说完还原，**不是底板** | 0x0044effa..0x0044f00f `call 0x451a97` |
+ * | ④ | **气泡底图**：`Data.mkf #0x205` 的**图 6**（`[0x48bad8] + 0x54`，`(0x54−0xc)/0xc = 6`），带透明贴到 **(220, 130)** | 0x0044f019 `push 0x82` / `0x0044f01e push 0xdc` … 0x0044f033 `call 0x456418` |
+ * | ⑤ | **说话人的表情头像**：`map.mkf #(0x1b + 角色号)` 的**图 `arg2 + 1`**，带透明贴到 **(170, 130)** | 0x0044f03b `push 0x82` / `0x0044f040 push 0xaa`、0x0044f045 `imul eax,[esp+0x2c],0x34 / mov ecx,[eax+0x498eb0]`、0x0044f050 `mov edx,[esp+0x30] / inc edx`（×12 + 0xc）、0x0044f06c `call 0x456418`；资源装载 0x00407faf..0x00407fc7（`add eax,0x1b` → `[0x498eb0 + 槽*0x34]`）|
+ * | ⑥ | 串以 `#NNNN` 开头 ⇒ 语音号；其后若是 `@DD` ⇒ 贴表情图 `[0x48bad4]` 的第 `DD−1` 张到 **(240, 130)**（**不画字**）；否则 `draw_text(串, 200, 130, 5)` | 0x0044f07c / 0x0044f08d / 0x0044f0b5..0x0044f0e0 / 0x0044f142..0x0044f14f `call 0x44fabc` |
+ * | ⑦ | Blt 到屏幕 → `fcn_004544f6(1000)`（等 1000 ms，可被按键/鼠标提前收）→ 用 ③ 的备份还原 | 0x0044f16c..0x0044f19e、0x0044f1a1 `push 0x3e8`、0x0044f1c4..0x0044f1e4 |
  *
- * ★ 所以原版的观感是：**白字字幕压在棋盘上方**（第 ① 步直接画在棋盘上、不被第 ④ 步
- *   的抠图吃掉，因为抠图存的是离屏副本），然后一个**带角色名牌的截图方块**盖在
- *   左上角 200×220 那块 —— 方块里是发话前一瞬间的棋盘（像拍立得）。
+ * ★ 所以原版的观感是：一块**气泡图**（④）右边罩着**说话人的头像**（⑤），
+ *   白字/表情图（⑥）落在气泡里 —— 这就是试玩回报里说的「人物说台词时的背景对话框」。
+ *
+ * ⚠️ **两条订正**（2026-09-19，W-50；两条都是本文件先前的错读）：
+ *
+ * 1. ★ 先前把第 ③ 步的**备份**当成了底板，还据此断言「原版把棋盘抠下来当底板、
+ *    再贴一张 400×89 的角色名牌」—— **错的**。第 ③ 步只是为了说完还原棋盘；
+ *    原版的底板是第 ④ 步那张**气泡图**（与 `god-slot.ts` 的
+ *    `GOD_SLOT_BUBBLE` 是**同一张**：`Data.mkf #0x205` 图 6，落 (220,130)）。
+ *    `fd31598` 据此错读加的「半透明深色底板 + 浅边」**已删**，换成 ④+⑤。
+ * 2. ★ `rich4-spec/docs/systems/dialogue-voice.md` §二 与本文档 Q-SPEECH-11
+ *    都写过「第二个实参 `flag` 函数体里一次都没读」—— **也是错的**：
+ *    它 grep 的是 `esp + 0x28`，而读取点在两次 `push` 之后，偏移变成 `[esp+0x30]`
+ *    （`0x0044f050`）。**`arg2` = 表情号**（头像图号 = `arg2 + 1`）。
+ *    各调用点传的值见 `docs/tasks/speech-callsites.md` 的「实参」列第 2 项
+ *    （0/1/2/3 都有）。⚠️ `arg2` 的 `0x80` 位**另有用处**：`0x0044ef63`
+ *    `test byte [esp+0x25],0x80` ⇒ 「不重设视窗卷动」，与表情号并存（如 1 号
+ *    调用点传 3 ⇒ 表情 3 且带 0x80 位）。
  *
  * ── 本引擎怎么做（有意偏离，登记在 `docs/deviations/T-052.md`）──────────
  *
- * 原版那套「抠棋盘 + 贴名牌」依赖 `SelectObject` / Blt 那台**离屏 DirectDraw 表面**，
- * 本引擎的棋盘每帧整体重画、没有等价的可读回表面。于是：
- *   1. 名牌那一块**不贴**（原版那个 400×89 的名牌贴上去会把 200 宽的气泡整个盖住，
- *      而且它在 640 宽屏上必然溢出 —— 见偏离登记 Q-SPEECH-4）；
- *   2. 白字字幕（第 ① 步）**照原样**画，它是原版真正让玩家读到台词的那一步；
- *   3. 表情图（第 ② 步）**照原样**画在 (240, 130)；
- *   4. 时长取原版那个 1000 ms（`fcn_004544f6(0x3e8)`）。
+ * ④ ⑤ ⑥ 三步**照原样**画（顺序、坐标、取图、抠黑都照 exe）。
+ * 唯一不做的是第 ③ + ⑦ 那对「抠下棋盘 → 说完贴回」——它依赖
+ * `SelectObject` / Blt 那台**可读回的离屏 DirectDraw 表面**，本引擎的棋盘每帧整体
+ * 重画、没有等价的可读回表面；这也是 Q-SPEECH-9 登记的那一条偏离。
+ * 时长取原版那个 1000 ms（`fcn_004544f6(0x3e8)`）。
  *
  * ⚠️ 本模块是**纯表现**：不读 DOM、不碰音频、不动 PRNG、不写 `GameState`（C-DET-1/2/4）。
  *   取图那一步交给调用方传进来的 `sprite` 出口（`main.ts` 的 `spriteNow`）。
@@ -46,11 +60,20 @@ import {
   type SpeechLine,
 } from '@rich4/data';
 import type { Sprite } from './assets.ts';
+import { portraitResource } from './assets.ts';
 import type { SayEvent } from './speech.ts';
 
-/** 取图出口 —— 与 `main.ts` 的 `spriteNow` 同形（`ArchiveName` 里只用 `Data.mkf`）*/
+/**
+ * 取图出口 —— 与 `main.ts` 的 `spriteNow` 同形。
+ *
+ * ★ W-50 起要用**两个**档案：
+ *   - `Data.mkf`：气泡图 `#0x205` 图 6、表情图 `#0x207`；
+ *   - `map.mkf` ：说话人的表情头像 `#(角色+0x1b)` 图 `表情号+1`（原版 `0x0044f045`
+ *     读的 `[0x498eb0 + 槽*0x34]` 就是 `load_map` 里 `read_mkf(map, 角色+0x1b)` 存下来的
+ *     那批指针，见 `assets.ts` 的 `portraitResource`）。
+ */
 export type BubbleSpriteFn = (
-  archive: 'Data.mkf',
+  archive: 'Data.mkf' | 'map.mkf',
   resource: number,
   index: number,
   colorKeyBlack?: boolean,
@@ -71,8 +94,9 @@ export type BubbleSpriteFn = (
  * 0044f14e  call _rich4_draw_text
  * ```
  * ⚠️ 是 `push 0x82` 在前、`push 0xc8` 在后 ⇒ 按 `_rich4_draw_text(align, 串, x, y, 行数)`
- *   的形参顺序解出 **(x, y) = (200, 130)**。（同一个函数在 `fcn_0044f00x` 那条
- *   名牌分支里也用了 `0xaa / 0x82` 这对，交叉印证 y 是 0x82。）
+ *   的形参顺序解出 **(x, y) = (200, 130)**。
+ *   （同一段里第 ⑤ 步的头像用 `0xaa / 0x82`、第 ④ 步的气泡用 `0xdc / 0x82`，
+ *   三处的 y 都是 0x82，交叉印证形参序读得对。）
  */
 export const SPEECH_TEXT_AT = { x: 0xc8, y: 0x82 } as const;
 
@@ -84,28 +108,74 @@ export const SPEECH_TEXT_FONT_SIZE = 0x10;
 export const SPEECH_TEXT_LINE_HEIGHT = 0x12;
 
 /**
- * 表情图的落点 @source VA 0x0044f0e2 那两条 `push 0x82 / push 0xf0`
+ * 表情图的落点 @source VA 0x0044f0b5 `push 0x82` / 0x0044f0ba `push 0xf0`
  * （`fcn_00456418(图, x, y, 表面)` —— x = 0xf0 = 240、y = 0x82 = 130）。
  */
 export const SPEECH_EMOJI_AT = { x: 0xf0, y: 0x82 } as const;
 
 /**
- * 气泡方块的矩形 @source VA 0x0044efb0 起的第 ④ 步。
+ * ★ **气泡底图**（原版的第 ④ 步）—— `Data.mkf #0x205` 的**图 6**。
+ *
+ * @source VA 0x0044f019..0x0044f033：
+ * ```asm
+ * 0044f019  push 0x82                              ; y = 130
+ * 0044f01e  push 0xdc                              ; x = 220
+ * 0044f023  mov  eax, [0x48bad8]                   ; Data.mkf #0x205 的资源基址
+ * 0044f028  add  eax, 0x54                         ; ★ 图 6 的记录：0xc + 6×0xc = 0x54
+ * 0044f02b  push eax                               ; 图
+ * 0044f02c  mov  ebp, [0x48a08c]                   ; 后台缓冲表面
+ * 0044f032  push ebp
+ * 0044f033  call 0x456418                          ; 带透明（抠黑）贴
+ * ```
+ * `(0x54 − 0xc) / 0xc = 6` —— 与 `god-slot.ts` 的 `GOD_SLOT_BUBBLE`
+ * （`0x004407a0` `fcn_00456418(表面, Data#517 图 6, 0xdc, 0x8c)`）是**同一张图**，
+ * 只是落点不同（神明老虎机落 (220,140)，台词落 (220,130)）。
+ * 实测该图 **271×199，锚点 (127,92)** ⇒ 它占屏幕 (93,38)-(364,237)，
+ * 正好把台词 (200,130) 与表情图 (240,130) 罩住。
+ */
+export const SPEECH_PANEL = { archive: 'Data.mkf' as const, resource: 0x205, image: 6 };
+export const SPEECH_PANEL_AT = { x: 0xdc, y: 0x82 } as const;
+
+/**
+ * ★ **说话人的表情头像**（原版的第 ⑤ 步）—— 落 (170, 130)。
+ *
+ * @source VA 0x0044f03b..0x0044f06c：
+ * ```asm
+ * 0044f03b  push 0x82                              ; y = 130
+ * 0044f040  push 0xaa                              ; x = 170
+ * 0044f045  imul eax, [esp+0x2c], 0x34             ; ★ [esp+0x2c] = 玩家下标
+ * 0044f04a  mov  ecx, [eax + 0x498eb0]             ;   = load_map 里 read_mkf(map, 角色+0x1b)
+ * 0044f050  mov  edx, [esp+0x30]                   ; ★ [esp+0x30] = arg2（表情号）
+ * 0044f054  inc  edx                               ;   图号 = arg2 + 1
+ * 0044f055  mov  eax, edx / shl eax,2 / sub eax,edx / shl eax,2   ; ×12
+ * 0044f05f  add  ecx, 0xc                          ;   资源头 +0xc = 图 0 的记录
+ * 0044f062  add  eax, ecx
+ * 0044f06c  call 0x456418                          ; 带透明（抠黑）贴
+ * ```
+ * 资源号 = `0x1b + 角色`（装载点 0x00407faf `mov al,[角色] / add eax,0x1b`），
+ * 即 `assets.ts` 的 `portraitResource()`。实测该资源 7 张：图 0 是 85×71 的大头像、
+ * 图 1..6 是 40×34 左右的小表情 —— 与「表情号 0..3 + 1」对得上。
+ */
+export const SPEECH_PORTRAIT_AT = { x: 0xaa, y: 0x82 } as const;
+
+/**
+ * 原版**为了说完还原**而备份的棋盘矩形（第 ③ 步）@source VA 0x0044effa 起。
  *
  * ```asm
- * mov dword [esp],     0      ; x
- * mov dword [esp + 4], 0x28   ; y = 40
- * mov dword [esp + 8], 0x1b8  ; w = 440
- * mov dword [esp + 0xc], 0x104; h = 260
- * call fcn_00451a97          ; 从棋盘面 (0,40) 抠 440×260 → 离屏面
+ * 0044effa  push 0xdc       ; 高 = 220
+ * 0044efff  push 0x1b8      ; 宽 = 440
+ * 0044f004  push 0x28       ; 源 y = 40
+ * 0044f006  push 0         ; 源 x = 0
+ * 0044f008  push 0         ; 目标面 0
+ * 0044f00a  push 0x46caec  ; 目标缓冲
+ * 0044f00f  call 0x451a97  ; 从棋盘面抠 440×220 → 离屏面
  * ```
  *
- * ⚠️ **这里先前读错过一次**：`fcn_00451a97` 的形参是
- * `(目标缓冲, 源面, 源x, 源y, 宽, 高)`，所以 `0x1b8/0x104` 是**源矩形**的宽高，
- * 而它的落点是 `(0, 0x28)` —— 即 `RECT(0, 40, 440, 260)`，`x` 不是 0x1b8。
- * 早先按「200×220」记的那一版是把它当成 `_rich4_copy_screen_rect` 的别种形参序了。
+ * ⚠️ **这不是底板** —— 它只是第 ⑦ 步「说完之后把棋盘贴回去」用的副本。
+ * 先前把它当底板用，是 `fd31598` 那块半透明深色面板的由来（已删）。
+ * 名字保留是因为它确实是「台词覆盖的那块矩形」。
  */
-export const SPEECH_BOX = { x: 0, y: 0x28, w: 0x1b8, h: 0x104 } as const;
+export const SPEECH_BOX = { x: 0, y: 0x28, w: 0x1b8, h: 0xdc } as const;
 
 /**
  * 原版的静置时长（毫秒）@source VA 0x0044f19x：`push 0x3e8 / call fcn_004544f6`
@@ -139,6 +209,18 @@ export interface SpeechBubble {
   readonly cardId?: number;
   /** 说话人的**完整名字**（如「金貝貝」）*/
   readonly speaker: string;
+  /**
+   * ★ **表情号**（= 原版 `player_say` 的第 2 个实参 `arg2`）—— 头像图号 = 它 + 1。
+   *
+   * @source 0x0044f050 `mov edx,[esp+0x30] / inc edx`（`[esp+0x30]` 在两次 `push`
+   *   之后正是 `arg2`）、贴图 0x0044f06c；各调用点实参见
+   *   `docs/tasks/speech-callsites.md` 的「实参」列第 2 项。
+   *
+   * ⚠️ **W-50 只通了「画」这一半**：`speech.ts` 的探测器还没把各自的 `arg2`
+   *   填进 `SayEvent`（那是并行的另一张卡），故这里默认 0。
+   *   见 `speech.ts` 的 `SayEvent.expression?` 与 `docs/escalations.md` 的 E-18。
+   */
+  readonly expression: number;
   /** 字幕的行（已按 `\n` 拆好、去掉了空行）*/
   readonly lines: readonly string[];
   /** 语音号（`Speaking.mkf`）；金貝貝那种 `@DD` 串没有可播的语音时为 null */
@@ -184,6 +266,10 @@ export function speechBubbleOf(
     character,
     event: ev.event,
     speaker,
+    // ★ 表情号来自 `SayEvent.expression`（B 卡正在逐探测器填）；缺席时按 0 画
+    //   —— 原版 104 个调用点里传 0 的占多数。TODO(W-50)：等 B 卡填完，
+    //   这里不再是默认值，`speech.test.ts` 里逐调用点对照。
+    expression: ev.expression ?? 0,
     lines: isEmoji ? [] : bubbleLines(text),
     // ★★ 语音号：`1050 + 27×角色 + 槽位`（`speechIndex()`）**对 324 条全部成立**，
     //   **包括金貝貝（角色 11）那 27 条**。
@@ -213,14 +299,90 @@ export function speechBubbleOf(
 }
 
 /**
+ * **逐卡的「表情号」**（= `player_say` 的第 2 个实参 `arg2`，头像图号 = 它 + 1）。
+ *
+ * ★ W-50 §1.2 第 1 条要求的取值 —— 已**逐卡**回 exe 核完（2026-09-19）。
+ *   判据 = 每张卡的效果函数里那一处**读自己槽位**的调用
+ *   （`mov r, [eax + 0x48123a + 4×(卡号−1)]` → `push r` → `push <arg2>` → `push 玩家`
+ *   → `call 0x44ef41`）；`arg2` 就是紧帖在 `push 玩家` **前面**那一条 `push <立即数>`。
+ *
+ * | 卡号 | arg2 | `push <arg2>` 的地址 |
+ * |---|---|---|
+ * | 1 均富 | 3 | `0x00442115` |
+ * | 2 均貧 | 3 | `0x00442222` |
+ * | 3 購地 | 3 | `0x0044242c` |
+ * | 4 換地 | 3 | `0x00442774`（另一支 `0x00442734 jmp 0x442774` 汇到同一条）|
+ * | 5 換屋 | 3 | `0x00442c41` |
+ * | 6 | 3 | `0x00442fb8` |
+ * | 7 改建 | 3 | `0x00443117` |
+ * | 8 | 3 | `0x004432f5` |
+ * | 9 天使 | 3 | `0x00443536` |
+ * | 10 惡魔 | **0** | `0x0044374e` |
+ * | 11 怪獸 | **0** | `0x00443986` |
+ * | 12 拆除 | **0** | `0x00443b87` |
+ * | 13 搶奪 | 3 | `0x00443e99` |
+ * | 14 停留 | 3 | `0x00443fff` |
+ * | 15 冬眠 | 3 | `0x00444127` |
+ * | 16 夢遊 | 3 | `0x0044424a` |
+ * | 17 陷害 | 3 | `0x0044452b` |
+ * | 18–21 | — | **被动卡**，`IMPLEMENTED_CARD_IDS` 里没有它们 ⇒ 本表不列（永不播）|
+ * | 22 送神符 | **0** | 汇合点 `0x0044305e`（`0x00444d15 jmp 0x44305e`）|
+ * | 23 請神符 | **0** | `0x00444e81` |
+ * | 24 紅卡 | **0** | `0x00444f58` |
+ * | 25 黑卡 | **0** | `0x00445070` |
+ * | 26 | **0** | `0x00445262` |
+ * | 27 | **0** | `0x00445499` |
+ * | 28 | **0** | `0x004455fb` |
+ * | 29 | 3 | `0x0044577f` |
+ * | 30 烏龜 | 3 | `0x0044595e` |
+ *
+ * ⚠️ 取值**没有**别的规律可推（不是「前 17 张都 3」：10/11/12 是 0；也不是
+ *   「被动卡都 0」：29/30 是 3）—— 所以是**逐卡抄**的，不要改写成条件式。
+ *   复现：`python3 tools/disasm.py card <卡号> 1400`，在输出里找
+ *   `0x48123a + 4×(卡号−1)` 那一行，往后看三条 `push`。
+ */
+export const CARD_LINE_EXPRESSION: Readonly<Record<number, number>> = {
+  1: 3,
+  2: 3,
+  3: 3,
+  4: 3,
+  5: 3,
+  6: 3,
+  7: 3,
+  8: 3,
+  9: 3,
+  10: 0,
+  11: 0,
+  12: 0,
+  13: 3,
+  14: 3,
+  15: 3,
+  16: 3,
+  17: 3,
+  22: 0,
+  23: 0,
+  24: 0,
+  25: 0,
+  26: 0,
+  27: 0,
+  28: 0,
+  29: 3,
+  30: 3,
+};
+
+/**
  * **用卡时角色说的那一句** —— 来自卡牌台词表（`@rich4/data` 的 `CARD_LINES`）。
  *
  * @source 每张可主动使用的卡都在函数体里读自己那一槽并调 `player_say`：
  * ```asm
  * ; 送神符 @0x444d0e（26 张卡各一处，槽号恒 = 卡号-1）
  * 00444d0e  mov  ebp, dword ptr [eax + 0x48128e]   ; 0x48123a + 4*21
- * 00444d14  push ebp / 00444d15 jmp 0x44305e       ; → player_say(cur, 0, 台词)
+ * 00444d14  push ebp                               ; 第 3 参 = 台词
+ * 00444d15  jmp  0x44305e                          ; → 0x44305e `push 0` / `push 玩家` / `call player_say`
  * ```
+ * ★ **表情号逐卡取值见 `CARD_LINE_EXPRESSION`**（2026-09-19 逐卡核完，
+ *   原先「暂时填 0」的近似已撤，E-18 随之结案）。
+ *
  * 与 `speechBubbleOf` 的差别只有「表不同」：文本/语音/表情的处理完全同构
  * （金貝貝那一列同样是 `@DD`：**照样播语音**，另画一张表情图）。
  */
@@ -244,6 +406,8 @@ export function cardLineBubbleOf(
     event: cardId - 1,
     cardId,
     speaker,
+    // ★ W-50 §1.2 第 1 条：逐卡的 `arg2`，判据与逐卡地址见 `CARD_LINE_EXPRESSION`
+    expression: CARD_LINE_EXPRESSION[cardId] ?? 0,
     lines: isEmoji ? [] : bubbleLines(text),
     // @source 串头 `#NNNN`：`426 + 52×角色 + (卡号-1)`，360 条无例外
     voice: cardLineVoice(character, cardId),
@@ -355,51 +519,72 @@ export interface SpeechDrawEnv {
 }
 
 /**
- * 画一段台词：先字幕（原版第 ① 步），再表情图（第 ② 步）。
+ * ★ **锚点落点绘制** —— `(x, y)` 是图的 `anchorX/anchorY` 所在处
+ * （= 原版那句 `to_left = x − src->x`）。
+ *
+ * @source `fcn_00456418` VA 0x00456418 → `draw_non_zero_image_in_rect`
+ *   （**带透明**：`push 0` 那个第 5 参 = 透明色 0 = 抠黑）。
+ *   与 `shop-screen.ts` 的 `drawAnchored` / `god-slot.ts` 的 `anchored` 同一条语义
+ *   —— 三处各写一份小 helper（屏幕模块之间不互相 import，免得绕出循环依赖），
+ *   语义必须保持一致；改一处时另两处要一起看。
+ */
+function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
+  if (s === null) return;
+  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+}
+
+/**
+ * 画一段台词，**次序照原版**：④ 气泡底图 → ⑤ 说话人头像 → ⑥ 字幕/表情图。
  *
  * ★ 调用方必须已经 `stageCtx.save()/translate()` 到**屏幕坐标**（棋盘原点），
- *   因为这两步在原版里用的就是屏幕坐标（0xc8/0x82、0xf0/0x82）。
+ *   因为这三步在原版里用的就是屏幕坐标（0xdc/0x82、0xaa/0x82、0xc8/0x82）。
  *
- * ⚠️ 表情图那张 `Data.mkf #0x207` 是**黑底**（原版用
- *   `_draw_non_zero_image_in_rect` = 透明色 0），所以取图时 `colorKeyBlack = true`。
+ * ⚠️ ④ ⑤ ⑥ 三张图原来都是**黑底**（原版走的都是带透明的 `fcn_00456418`），
+ *   所以取图时一律 `colorKeyBlack = true`。
+ *
+ * ⚠️ 金貝貝（角色 11）「只出表情图、不出字」的那条判据在 **⑥**（`b.emoji !== null`）；
+ *   ④ ⑤ 排在它**之前** —— 故金貝貝那一句**照样有气泡与头像**（原版就是这么画的）。
  */
 export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
   const { ctx, sprite, font } = env;
 
-  // ── ① 字幕：白字 + 黑描边（原版 `_rich4_create_font(0x10, 0x101010, …)`）──
+  // ── ④ 气泡底图（原版第 ④ 步，@source 0x0044f019..0x0044f033）──
   //
-  // ★★ 2026-09-19 补（第四份回报第 3 条）：「台词没有对话框背景」。
-  //   原版那一段（`_rich4_player_say` VA 0x0044ef41，见本文件头的 5 步表）第 ④ 步
-  //   会把 `RECT(0,40,440,260)`（`fcn_00451a97`，@source 0x0044efb0）**从棋盘面抠下来**
-  //   存进离屏面、再连同角色名牌一起贴回 (0,40) —— 也就是说原版那句台词**自带一块
-  //   实心底板**（抠下来的棋盘像素 + 名牌），不是光秃秃一行白字。
-  //   本引擎没有可读回的棋盘表面（`speech-bubble.ts` 头部的「有意偏离」① ② 已登记），
-  //   所以这里画一块**等价观感的半透明深色底板** + 一圈浅边：白字才压得住，
-  //   底部那一块花哨的棋盘不至于让字糊掉。尺寸按**实际行数与字宽**算
-  //   （原版是固定 440×260 的快照方块，本引擎不抠像素、故按文字自适应）。
-  if (b.lines.length > 0) {
+  // ★★ 2026-09-19 W-50：**这一张就是试玩说的「背景对话框」**。
+  //   此前这里是 `fd31598` 加的「半透明深色底板 + 浅边」，它建立在一个错读上
+  //   （把第 ③ 步的**备份**当成了底板，见本文件头的订正 1）—— 已删。
+  drawAnchored(
+    ctx,
+    sprite(SPEECH_PANEL.archive, SPEECH_PANEL.resource, SPEECH_PANEL.image, true),
+    SPEECH_PANEL_AT.x,
+    SPEECH_PANEL_AT.y,
+  );
+
+  // ── ⑤ 说话人的表情头像（原版第 ⑤ 步，@source 0x0044f03b..0x0044f06c）──
+  //
+  //   资源 = `map.mkf #(0x1b + 角色号)` = `portraitResource(character)`；
+  //   图号 = **表情号 + 1**。
+  drawAnchored(
+    ctx,
+    sprite('map.mkf', portraitResource(b.character), b.expression + 1, true),
+    SPEECH_PORTRAIT_AT.x,
+    SPEECH_PORTRAIT_AT.y,
+  );
+
+  // ── ⑥ 字幕 / 表情图（原版第 ⑥ 步）──
+  if (b.emoji !== null) {
+    // `@DD` 那一支：只贴 `Data.mkf #0x207` 的表情图，**不画字** @source 0x0044f0b5..0x0044f0e0
+    drawAnchored(ctx, sprite('Data.mkf', 0x207, b.emoji, true), b.emojiAt.x, b.emojiAt.y);
+  } else if (b.lines.length > 0) {
+    // 白字 + 黑描边（原版 `_rich4_create_font(0x10, 0x101010, …)` + `draw_text(串,200,130,5)`）
     ctx.save();
     ctx.font = font(SPEECH_TEXT_FONT_SIZE);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    const max = Math.min(b.lines.length, SPEECH_TEXT_MAX_LINES);
-    let widest = 0;
-    for (let i = 0; i < max; i++) widest = Math.max(widest, ctx.measureText(b.lines[i]!).width);
-    const padX = 10;
-    const padY = 6;
-    const boxX = b.textAt.x - padX;
-    const boxY = b.textAt.y - padY;
-    const boxW = widest + padX * 2;
-    const boxH = max * SPEECH_TEXT_LINE_HEIGHT + padY * 2;
-    ctx.fillStyle = 'rgba(16,16,16,0.82)';
-    ctx.fillRect(boxX, boxY, boxW, boxH);
-    ctx.strokeStyle = 'rgba(240,240,240,0.75)';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(boxX + 1, boxY + 1, boxW - 2, boxH - 2);
-    // 字的描边在底板之上才看得清（底板已经保证了对比度，描边调浅一档）
     ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.strokeStyle = '#101010';
     ctx.fillStyle = '#ffffff';
+    const max = Math.min(b.lines.length, SPEECH_TEXT_MAX_LINES);
     for (let i = 0; i < max; i++) {
       const y = b.textAt.y + i * SPEECH_TEXT_LINE_HEIGHT;
       const text = b.lines[i]!;
@@ -407,13 +592,5 @@ export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
       ctx.fillText(text, b.textAt.x, y);
     }
     ctx.restore();
-  }
-
-  // ── ② 表情图（金貝貝专用）──
-  if (b.emoji !== null) {
-    const img = sprite('Data.mkf', 0x207, b.emoji, true);
-    if (img !== null) {
-      ctx.drawImage(img.bitmap, b.emojiAt.x, b.emojiAt.y);
-    }
   }
 }

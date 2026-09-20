@@ -1100,10 +1100,37 @@ function tickDailyCounters(state: GameState, index: number): GameState {
  * @param topo  地图拓扑（只读）
  */
 export function reduce(state: GameState, action: Action, topo: MapTopology): GameState {
-  const next = reduceCore(state, action, topo);
+  const raw = reduceCore(state, action, topo);
   // ★ 不可信输入（联机）：不认识的 action type 会让那个 `switch` 穿底、返回 `undefined`，
   //   服务器靠这个判「被拒」（`server/hub.test.ts`）—— 原样交还，别在这里解引用。
-  if ((next as GameState | undefined) === undefined) return next;
+  if ((raw as GameState | undefined) === undefined) return raw;
+  // ★★ 瞬态提示 `lastViewTarget` 只活**一条 action**（W-54，见 `GameState.lastViewTarget`）。
+  //
+  //   原版的标记（`[0x48be18]`）由 `view_to` 写、由 `refresh_screen` 清 —— 生命周期
+  //   正好是「这条 action 的演出」。本引擎的 action 是原子批，所以在这里统一收：
+  //   凡是**改动了状态**、但**没有新写** `lastViewTarget`（引用没换）的 action ⇒ 清成 null。
+  //   `playCard` / 飛彈 这些真的设了目标的 action 会放一个**新建的对象**进去 ⇒ 引用不同 ⇒ 保留。
+  //
+  //   ⚠️ 两个恒等性约束（既有测试是这么钉的，不许放松）：
+  //   · `raw === state`（没生效的 action，如失败的 `useCard` / 买不起的股票）⇒ **原样返回**，
+  //     连对象都不换（`use-card.test.ts` / `stock-trading.test.ts` 的 `toBe(state)`）；
+  //   · 其余情况只多换一层对象，字段值不变。
+  //
+  //   ★ W-55：同一套规矩也用在 `lastGodLine` / `lastGodPower` 上（两条都是「刚发生了什么」，
+  //     只活一条 action）。**逐字段**判：谁被这一条 action 新写了（引用换了）就保留，
+  //     没新写的清成 null。没东西要清时**原样返回 `raw`**（保持上面的恒等性）。
+  const staleView = raw !== state && raw.lastViewTarget === state.lastViewTarget;
+  const staleLine = raw !== state && raw.lastGodLine === state.lastGodLine;
+  const stalePower = raw !== state && raw.lastGodPower === state.lastGodPower;
+  const next =
+    staleView || staleLine || stalePower
+      ? {
+          ...raw,
+          ...(staleView ? { lastViewTarget: null } : {}),
+          ...(staleLine ? { lastGodLine: null } : {}),
+          ...(stalePower ? { lastGodPower: null } : {}),
+        }
+      : raw;
   // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈
   return landingTailDue(state, next, action, topo) ? manifestGodOnLanding(state, next, topo) : next;
 }
@@ -2366,8 +2393,17 @@ function luckyGodBonus(before: GameState, next: GameState, topo: MapTopology, en
   if (out === next || last === undefined || last.source !== 'godManifest' || last.reachedMaxLevel) return out;
   const rng = new WatcomRng();
   rng.setState(out.rngState);
-  rng.next();
-  return { ...out, rngState: rng.getState() };
+  // ★★ W-55 行 6：原版把这次 `rand()` 的**低一位**当台词槽位 ——
+  //   `0x0040fa49 call 0x456f2d`（rand）/ `0x0040fa4e and eax,1` /
+  //   `0x0040fa51 mov esi,[ebx + eax*4 + 0x48084a]`（角色台词表[角色][0|1]）。
+  //   先前这里只把 `rngState` 写回去、那个 0/1 直接丢掉 ⇒ 这一句复刻不出来。
+  //   现在原样交给 `GameState.lastGodLine`（纯表现瞬态，见那个字段的注释）。
+  const line = rng.next();
+  return {
+    ...out,
+    rngState: rng.getState(),
+    lastGodLine: { player: next.currentPlayer, event: line & 1 },
+  };
 }
 
 /** 尾块本体 —— `fcn_0040f381(当前玩家, 脚下那一格)` */
@@ -2670,7 +2706,16 @@ function applyGodPowerOnAttach(
   const power = godPowerOf(god.type, rng);
   if (power.kind === 'none') return after;
   const out = applyGodPower(after, topo, host, power, rng);
-  return { ...out, rngState: rng.getState() };
+  // ★★ W-55 行 7：把这次掷出来的**金额**交给表现层 —— 財神那两支的额外台词
+  //   都以它为闸门（小財神 `0x0040eca4 cmp esi,0x2bc`、
+  //   大財神 `0x0040ed74 cmp esi, 5000×物價`），而这个数先前掷完就丢。
+  //   只有**带金额**的四位（`GodPower` 的 `amount` 那四项）才有得交；
+  //   福神/衰神/死神那几支不掷数，`lastGodPower` 保持上一条 action 的引用
+  //   ⇒ 由 `reduce` 出口清成 null（引用相等 = 没新写）。
+  const withRng: GameState = { ...out, rngState: rng.getState() };
+  return 'amount' in power
+    ? { ...withRng, lastGodPower: { player: host, type: god.type, amount: power.amount } }
+    : withRng;
 }
 
 /** 把一位神明的發威落到状态上（纯计算；付款/收卡全走既有助手）*/
@@ -2759,22 +2804,37 @@ function applyGodPower(
       // 丢掉的卡**回牌堆**（`_rich4_consume_card` 里 `inc byte [dl + 0x499197]`）
       const cardAmount = [...state.cardAmount];
       const cards = [...me.cards];
+      /** 移除**首个匹配的卡号**（原版 `_rich4_consume_card` 0x00441343 的语义） */
+      const consumeFirst = (id: number): void => {
+        const at = cards.indexOf(id);
+        if (at >= 0) cards.splice(at, 1);
+      };
       if (power.mode === 'one') {
         if (cards.length === 0) return state;
+        // @source 0x00441e8e `call rand` / 0x00441e98 `idiv esi`（esi = 张数）
+        //   ⇒ 索引 = `rand() % 张数`；@source 0x00441eae `mov bl,[索引 + 手牌]`
+        //   ⇒ 先取**那一格上的卡号**；@source 0x00441ec1 `call 0x441343`
+        //   ⇒ 再 `consume_card(卡号)`（移除**首个匹配**，不是第 `索引` 格）。
+        //   ⚠️ G40：卡号有重复时，两者结果**不同**（G40 的用例钉住了这一点）。
         const at = rng.below(cards.length);
         const id = cards[at] ?? 0;
-        cards.splice(at, 1);
+        consumeFirst(id);
         if (id > 0) cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) + 1;
       } else {
         const n = cards.length;
         // @source `cmp eax, 1 / jle 直接返回` —— 只有 0/1 张时什么都不丢
         if (n <= 1) return state;
-        // @source 那个 `for (i = 0; i < n/2; i++) consume(player_cards[i])` 配
-        //   `consume_card` 的**整体左移** ⇒ 实际丢的是第 0、2、4… 张
+        // @source `_rich4_player_drop_half_the_card`（0x00441ece）：
+        //   `edi = 0x441262(玩家)`（**循环外**算一次）、`sar eax,1`（n/2）、
+        //   循环体 `mov al,[ebx + eax + 0x499120]` 读的是**当前手牌的第 i 格**
+        //   （`consume_card` 每次把整条手牌左移，所以 `i` 指向的已经不是原来那一张），
+        //   然后 `call 0x441343` = **移除首个匹配的卡号**。
+        //   ⚠️ G40：本引擎先前写的是 `cards.splice(i, 1)`（移除第 i 格）——
+        //   卡号唯一时两者等价，**卡号有重复时不等价**（`god-power.test.ts` 有用例）。
         for (let i = 0; i < Math.trunc(n / 2); i++) {
           const id = cards[i] ?? 0;
+          consumeFirst(id);
           if (id > 0) cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) + 1;
-          cards.splice(i, 1);
         }
       }
       return {
@@ -3735,12 +3795,17 @@ export function useToolAction(
       // ★ bit7 = `0x40b110` 返回值的 bit7，原版在 0x0044736d 消费它。
       //   `buildOneLevel` 已经把「剛好到 5 級」算好了（`b.reachedMaxLevel`），
       //   表现层只读这一条，不再自己比等级（C-ARC-2）。
+      // ★★ W-54：`0x0044733c call 0x41d476` —— 大锤影片**之前**先把镜头对准
+      //   被盖的那一格（`0x0044730e call 0x40af12` 取的就是这个坐标）。
       return consume(
-        withSingleBuildUpgrade({ ...state, landLevel }, {
-          entity: 0x7d0 + land.id,
-          reachedMaxLevel: b.reachedMaxLevel,
-          source: 'robotWorker',
-        }),
+        withSingleBuildUpgrade(
+          { ...state, landLevel, lastViewTarget: { x: land.x, y: land.y } },
+          {
+            entity: 0x7d0 + land.id,
+            reachedMaxLevel: b.reachedMaxLevel,
+            source: 'robotWorker',
+          },
+        ),
       );
     }
     // 設施也吃这一件（`0x40b110` 对 0xfa0..0x1770 那一段）：
@@ -3748,14 +3813,21 @@ export function useToolAction(
     //   ★ 等级 ≥ 1 的設施到 5 级时**照样置 bit7**（`0x0040b21a mov eax, 0x81`）。
     const built = freeBuildFacility(state, topo, nodeId, value);
     if (built === null) return state;
-    return consume(withSingleBuildUpgrade(built.state, buildHintOf(built, 'robotWorker')));
+    return consume(
+      withSingleBuildUpgrade(
+        { ...built.state, lastViewTarget: nodeViewTarget(state, topo, nodeId) },
+        buildHintOf(built, 'robotWorker'),
+      ),
+    );
   }
 
   // ── 飛彈（7）／核子飛彈（13）──
   if (toolId === TOOL_MISSILE || toolId === TOOL_NUKE) {
     const fired = fireMissile(state, topo, toolId === TOOL_NUKE, nodeId);
     if (fired === null) return state;
-    return consume(fired);
+    // ★★ W-54：`0x00447b77 call 0x41d476`（爆心）在 `0x00447b86` 的
+    //   0x212 爆炸影片**之前** —— 远处那一格要先看得见。
+    return consume({ ...fired, lastViewTarget: nodeViewTarget(state, topo, nodeId) });
   }
 
   // ── 交通工具 ──
@@ -3792,6 +3864,98 @@ export function useToolAction(
  *   @source 卡表 `0x474f5c + 9*4 = 0x004434c0`（`0x4436e0` = 惡魔卡 10，可对表）
  */
 const ANGEL_CARD_ID = 9;
+
+/**
+ * ★★ 「这张卡要把镜头移到哪里」—— `view_to`（VA 0x0041d476）的**移动**那一支。
+ *
+ * 首席取证（W-54）：实参 `flags & 1` 的调用**只重画、不动镜头**（表里 38 处都是这一类），
+ * 所以要接的只有实参形如 `(x, y, 0)` / `(x, y, 2)` / `(x, y, 3)` 的那几处：
+ *
+ * | 原版调用点 | 什么卡/什么动作 | 目标 |
+ * |---|---|---|
+ * | `0x0040d3e6` | 「坏消息」那一段 | 当事人自己 ⇒ 清标记（**不用接**）|
+ * | `0x0040e384` | 神明離身（`0x40e32c`）| 同上 ⇒ 不用接 |
+ * | `0x0040f427` / `0x0040f5fe` / `0x0040f866` | 神明落脚顯靈（`0x40f381`）| 行动者自己 ⇒ 不用接 |
+ * | `0x0041aadf` | 对**企業**（`0x41ab63` 那一支）| 企業所在格 |
+ * | `0x0041ad75` | 对**設施**（`0x41adb4`）| 設施所在格 |
+ * | `0x004446b8` / `0x00444799` | 对**玩家**的卡（`cards.md`「把镜头移到该玩家」）| 目标玩家所在格 |
+ * | `0x0044607a` | 对**地块**的卡（拆除/怪獸/天使/查封/漲價/改建/換地…）| 目标地块坐标 |
+ * | `0x0044733c` | **機器工人** | 被盖的那一格 |
+ * | `0x0044a32f`…`0x0044ae2c` 一族 | 命運/新聞里对**别人**的处置 | 目标坐标 |
+ * | `0x0044c19c`…`0x0044ce4c` 一族（`flags = 3`）| 新聞/命運的场地镜头 | 目标坐标 |
+ *
+ * ★ 本函数只接**卡**那一路（`useCard`）—— 它是「远处生效」最典型的一类，
+ *   而 `CardTarget` 已经把目标写成了 `{kind}`，判据干净。
+ *   ⚠️ `r.patches` 里那一族**地块/設施**卡的效果目标与 `target` 可能不同
+ *   （例如「改建卡」改的是**另一块**），故这里对 `kind === 'none'` 的卡**返回 null**
+ *   （= 不动镜头），不猜。
+ *
+ * ★ **没接的**（表里找不到对应的「会动镜头」的行，或引擎里没有对应分支）：
+ *   `kind === 'stock'`（紅/黑卡：原版不切镜头）、`'actor'`（四大惡人/機器娃娃）、
+ *   `'object'`、`'commercial'`、`'none'` —— 一律返回 `null`。
+ */
+function cardViewTarget(
+  state: GameState,
+  topo: MapTopology,
+  target: CardTarget,
+): { x: number; y: number } | null {
+  switch (target.kind) {
+    case 'entity': {
+      // 住宅/連鎖店 —— `entityId` = `land.id`（见 `cards/target.ts` 与 `picking.ts`）
+      const land = effectiveLand(state, topo, target.entityId);
+      return land === null ? null : { x: land.x, y: land.y };
+    }
+    case 'facility': {
+      const fac = effectiveFacility(state, topo, target.facilityId);
+      return fac === null ? null : { x: fac.x, y: fac.y };
+    }
+    case 'node': {
+      const node = topo.nodes[target.nodeId - 1];
+      return node === undefined ? null : { x: node.x, y: node.y };
+    }
+    case 'player': {
+      // 「把镜头移到该玩家」（`cards.md:2844`）：用**他自己的**世界坐标
+      //   （原版读 `player+0x08/+0x0a`，关押期间那是景观坐标 —— 那正是要看见的地方）
+      const who = state.players[target.index];
+      return who === undefined ? null : { x: who.xpos, y: who.ypos };
+    }
+    default:
+      // 原版那一支是不是真的动镜头没取证 ⇒ 不动（不猜）
+      return null;
+  }
+}
+
+/**
+ * 某一格的中心坐标 —— `view_to` 要的那个坐标。
+ *
+ * @source `fcn_0040af12`（VA 0x0040af12）：按**实体号**查表（< 0x7d0 住宅、
+ *   0x7d0..0xfa0 企業、0xfa0..0x1770 設施、0x1770..0x1f40 景观、…），
+ *   取表项头两个 `int16` = `(x, y)`。原版 `view_to` 的实参就是这么来的
+ *   （例：機器工人 `0x0044730e call 0x40af12` → `0x0044733c call 0x41d476`）。
+ *
+ * ★ 本引擎按**节点**给目标（`useTool` 的参数是 `nodeId`），所以这里做一次反查：
+ *   该节点若是住宅/連鎖店就取它的表项坐标、是設施就取設施表项坐标，
+ *   都不是（景观/空地）则退回节点自己的坐标。
+ */
+function nodeViewTarget(
+  state: GameState,
+  topo: MapTopology,
+  nodeId: number,
+): { x: number; y: number } | null {
+  const node = topo.nodes[nodeId - 1];
+  if (node === undefined) return null;
+  const li = housingIndexOf(node.type);
+  if (li !== null) {
+    const land = effectiveLand(state, topo, li);
+    if (land !== null) return { x: land.x, y: land.y };
+  }
+  const fi = facilityIndexOf(node.type);
+  if (fi !== null) {
+    const fac = effectiveFacility(state, topo, fi);
+    if (fac !== null) return { x: fac.x, y: fac.y };
+  }
+  return { x: node.x, y: node.y };
+}
 
 /**
  * 打出一张手牌。
@@ -3909,7 +4073,7 @@ function playCard(
   // ★ 纯表现提示：把「刚刚谁用出了哪张卡」交给表现层（原版卡片函数里那句
   //   `player_say(出牌者, flag, 卡牌台词表[角色][卡号-1])` 是**调用点参数**，
   //   状态差分推不出来）。只保留最近一次、不进指纹/存档/快照，见 `CardPlayHint`。
-  let next: GameState = { ...state, lastBuildUpgrades: [], lastCardPlay: { player: state.currentPlayer, cardId }, players, rngState: rng.getState(), landOwner, landLevel, landType, landPriceStatus, facilityOwner, facilityLevel, facilityType, facilityPriceStatus, facilityResearchDays, specialActors: r.actors, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market, prisonOccupancy: r.prisonOccupancy, hospitalOccupancy: r.hospitalOccupancy };
+  let next: GameState = { ...state, lastBuildUpgrades: [], lastCardPlay: { player: state.currentPlayer, cardId }, lastViewTarget: cardViewTarget(state, topo, target), players, rngState: rng.getState(), landOwner, landLevel, landType, landPriceStatus, facilityOwner, facilityLevel, facilityType, facilityPriceStatus, facilityResearchDays, specialActors: r.actors, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market, prisonOccupancy: r.prisonOccupancy, hospitalOccupancy: r.hospitalOccupancy };
   // ★★ 天使卡（9）是**唯一**会把地块/設施等级推上去的卡，也就是唯一会撞到
   //   `0x40b110` 返回值的 bit7 的那张 —— README §7.142(5) E6 的第 2 条消费点。
   //

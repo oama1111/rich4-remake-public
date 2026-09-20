@@ -160,6 +160,9 @@ function payerLine(): SpeechBubble {
     character: 0,
     event: 9,
     speaker: '阿土伯',
+    // ★ W-50：`SpeechBubble` 多了 `expression`（原版 `player_say` 的第 2 個實參）。
+    //   這一條只驗佇列語意，表情號不重要 ⇒ 照 `speech.ts` 的缺省填 0。
+    expression: 0,
     lines: ['這是我應得的！'],
     voice: 1234,
     emoji: null,
@@ -225,6 +228,20 @@ function functionBody(src: string, name: string): { line: number; text: string }
 
 const MAIN_SRC = fileURLToPath(new URL('./main.ts', import.meta.url));
 
+/** 從 `openAt` 那個 `{` 起取出整個大括號塊（配對到它自己的 `}`）*/
+function braceBlock(text: string, openAt: number): string {
+  expect(text[openAt]).toBe('{');
+  let depth = 0;
+  for (let i = openAt; i < text.length; i++) {
+    if (text[i] === '{') depth += 1;
+    else if (text[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(openAt, i + 1);
+    }
+  }
+  throw new Error('大括號不配對');
+}
+
 function mainSource(): string | null {
   if (!existsSync(MAIN_SRC)) return null;
   return readFileSync(MAIN_SRC, 'utf8');
@@ -237,32 +254,37 @@ describe('★ main.ts 的三條閘 @source 0x0041a458 / 0x0041a71e / 0x0044f1a6'
     const src = mainSource();
     if (src === null) return;
     const body = functionBody(src, 'queueSpeech').text;
-    // 判據：演出接管整屏 → 押進 `deferredSpeech`；否則才 `speechQueue.push`
-    const deferAt = body.indexOf('if (blockingPresentation())');
-    const deferAssign = body.indexOf('deferredSpeech = [');
-    const pushAt = body.indexOf('speechQueue.push(');
-    expect(deferAt).toBeGreaterThanOrEqual(0);
-    expect(deferAssign).toBeGreaterThan(deferAt);
-    expect(pushAt).toBeGreaterThan(deferAssign);
-    // 押後那一支必須**先 return** —— 否則同一句會既押著又立刻上台
-    const block = body.slice(deferAt, pushAt);
-    expect(block).toContain('return;');
-    // `return;` 就在 `deferredSpeech = […]` 之後、`speechQueue.push` 之前
-    expect(block.indexOf('return;')).toBeGreaterThan(block.indexOf('deferredSpeech = ['));
+    // W-51 起判據是**每一句自己的 `order`**：只有 `afterStage` 且台上忙才押後。
+    // ★★ 死鎖自查的源碼面：押後決定**只**經過 `deferSpeech()`（它只對 `afterStage`
+    //    返回 true）—— `beforeStage` 的句子於是**永不**進 `deferredSpeech`。
+    expect(body).toContain('const busy = stageBusy(stageBusyFlags());');
+    expect(body).toContain('if (deferSpeech(line.order, busy)) deferred.push(line.bubble);');
+    expect(body).toContain('immediate.push(line.bubble);');
+    // 立即的那幾句先上台（`speechQueue.push`），押後的才落在 `deferredSpeech`
+    const pushAt = body.indexOf('speechQueue.push(immediate');
+    const deferAt = body.indexOf('deferredSpeech = deferred;');
+    expect(pushAt).toBeGreaterThanOrEqual(0);
+    expect(deferAt).toBeGreaterThan(pushAt);
+    // 兩支互斥：不可能同一句既押著又立刻上台（各走各的 `push`）
+    expect(body).toContain('deferred.push(line.bubble)');
+    expect(body).toContain('immediate.push(line.bubble)');
   });
 
-  runMain('★ `speechTick`：演出在演 → 直接 return（一句都不上台）', () => {
+  runMain('★ `speechTick`：演出在演 → 押後的**不上台**，但佇列照常推進（死鎖自查）', () => {
     const src = mainSource();
     if (src === null) return;
     const body = functionBody(src, 'speechTick').text;
-    const guardAt = body.indexOf('if (blockingPresentation()) return;');
-    expect(guardAt).toBeGreaterThanOrEqual(0);
-    // ★ 守衛必須把**上台與收尾兩件事**都擋掉：`speechQueue.push`（放上台）
-    //   與 `speechQueue.tick`（收尾）都在它**後面**
-    const pushAt = body.indexOf('speechQueue.push(');
-    const tickAt = body.indexOf('speechQueue.tick(');
-    expect(pushAt).toBeGreaterThan(guardAt);
-    expect(tickAt).toBeGreaterThan(guardAt);
+    const guardOpen = body.indexOf('if (!stageBusy(stageBusyFlags())) {');
+    expect(guardOpen).toBeGreaterThanOrEqual(0);
+    const guard = braceBlock(body, body.indexOf('{', guardOpen));
+    // 閘**裡面**才放行押後的那幾句（`deferredSpeech = null` → `speechQueue.push(held`）
+    expect(guard).toContain('deferredSpeech = null;');
+    expect(guard).toContain('speechQueue.push(held');
+    // ★★ 但 `speechQueue.tick`（收尾）必須在閘的**外面** —— 佇列裡可能正躺著
+    //    `beforeStage` 的句子，而影片正等它說完（`tickBoardFilm` 的起播閘）；
+    //    兩邊都等就是死鎖（`stage-gate.test.ts` 有正反兩條用例）。
+    expect(guard).not.toContain('speechQueue.tick(');
+    expect(body.indexOf('speechQueue.tick(')).toBeGreaterThan(guardOpen + guard.length - 1);
   });
 
   runMain('★ `holdForActorWalk`：還有台詞（在演或押著）就不派下一步', () => {

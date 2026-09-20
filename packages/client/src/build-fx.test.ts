@@ -34,7 +34,11 @@ import {
   clipDone,
   clipTotalMs,
   HAMMER_SOURCES,
+  MANIFEST_BUILD_SOUND,
+  MANIFEST_SOUND_SOURCES,
+  manifestSoundFor,
   playsHammer,
+  playsManifestSound,
   stepBuildFx,
   type BuildFx,
 } from './build-fx.ts';
@@ -376,5 +380,66 @@ describe('★★ 自己的地升級（走真 reduce）—— 绝不播机器工�
     const after = reduce(before, { type: 'upgradeLand' }, topo);
     expect(after.landLevel[1]).toBe(3);
     expect(buildFxPlan(buildUpgradesOf(after, before))).toEqual({ hammer: false, maxLevel: false });
+  });
+});
+
+// ============================================================
+//  ★ W-55 行 3：顯靈／自己加蓋那一声音效（`Effect.mkf` 50）
+// ============================================================
+
+describe('★ 顯靈／自己加蓋的音效 —— 只有 `godManifest` / `ownUpgrade` 响', () => {
+  const hint = (source: BuildUpgradeSource, reachedMaxLevel = false): BuildUpgradeHint => ({
+    entity: 0x7d0 + 1,
+    reachedMaxLevel,
+    source,
+  });
+
+  it('★ 号码 = 50（`SOUND_IDS.GOD_MANIFEST`，表项 0x4823da）—— **不是** 49/51', () => {
+    expect(MANIFEST_BUILD_SOUND).toBe(50);
+    expect(MANIFEST_BUILD_SOUND).not.toBe(49);
+    expect(MANIFEST_BUILD_SOUND).not.toBe(51);
+    // 与建屋那两段的音效不是同一个号（0x5b=91 / 0x5a=90）
+    expect(MANIFEST_BUILD_SOUND).not.toBe(BUILD_HAMMER_SOUND);
+    expect(MANIFEST_BUILD_SOUND).not.toBe(BUILD_MAX_SOUND);
+  });
+
+  it('★ 正面表 = `godManifest` / `ownUpgrade`（恰两个，不多不少）', () => {
+    expect([...MANIFEST_SOUND_SOURCES]).toEqual(['godManifest', 'ownUpgrade']);
+    expect(playsManifestSound('godManifest')).toBe(true);
+    expect(playsManifestSound('ownUpgrade')).toBe(true);
+    // 反证：这四个各有自己的大锤/滿級音，不许再响 50
+    for (const s of ['robotWorker', 'magicHouse', 'companyBuild', 'angelCard'] as const) {
+      expect(playsManifestSound(s), s).toBe(false);
+    }
+  });
+
+  it('★ 天使顯靈（`godManifest`，**没到 5 级**）⇒ 响；这时 `buildFxPlan` 是「一段都不播」', () => {
+    const hints = [hint('godManifest', false)];
+    // 这一条正是「不能挂在 plan 闸之后」的理由：plan 全 false，音效照样要响
+    expect(buildFxPlan(hints)).toEqual({ hammer: false, maxLevel: false });
+    expect(manifestSoundFor(hints)).toBe(MANIFEST_BUILD_SOUND);
+  });
+
+  it('★ 自己的地升級（`ownUpgrade`）⇒ 响；機器工人（`robotWorker`）⇒ **不响**（它自己的大锤音）', () => {
+    expect(manifestSoundFor([hint('ownUpgrade')])).toBe(MANIFEST_BUILD_SOUND);
+    expect(manifestSoundFor([hint('robotWorker')])).toBeNull();
+    expect(manifestSoundFor([hint('angelCard', true)])).toBeNull();
+  });
+
+  it('★ 可证伪：同一条 action 里混着两种 source ⇒ 响（`some` 语义）', () => {
+    expect(manifestSoundFor([hint('robotWorker'), hint('godManifest')])).toBe(MANIFEST_BUILD_SOUND);
+  });
+
+  it('★ 没有加蓋事件 ⇒ `null`（不许每条 action 都响）', () => {
+    expect(manifestSoundFor([])).toBeNull();
+  });
+
+  it('★★ 源码钉子：这一声必须排在 `plan` 那道闸**之前**（否则「没到 5 级」时就不响了）', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    const playAt = src.indexOf("if (manifestSound !== null) sound.play('Effect.mkf', manifestSound);");
+    const gateAt = src.indexOf('if (!plan.hammer && !plan.maxLevel) return;', playAt - 400);
+    expect(playAt).toBeGreaterThan(-1);
+    expect(gateAt).toBeGreaterThan(-1);
+    expect(playAt).toBeLessThan(gateAt);
   });
 });

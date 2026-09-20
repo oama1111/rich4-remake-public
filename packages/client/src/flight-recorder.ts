@@ -54,6 +54,14 @@ export interface FlightReport {
   note: string;
   /** 触发原因：手动（F9）/ 未捕获异常 / 回合链停摆 */
   reason: 'manual' | 'error' | 'stall';
+  /**
+   * ★ 这份现场是不是**被开发用的注入口改过状态**（`__rich4.debug.patch`，W-53）。
+   *
+   * 一旦为 true，`base` + `trail` 就**不再是这个状态的来源** ——
+   * 重放到头必然指纹不符，而那不是 bug。故 `tools/replay-report.ts`
+   * 见到它就**拒绝验指纹**（报「来自被改过的状态」），而不是报一个假的不一致。
+   */
+  devPatched: boolean;
   env: Record<string, unknown>;
   /** 重放起点（最老那一段的快照）*/
   base: string;
@@ -71,10 +79,34 @@ export interface FlightReport {
 export class FlightRecorder {
   readonly #segments: Segment[] = [];
   readonly #errors: RecordedError[] = [];
+  /**
+   * 状态被注入口改过没有（见 `FlightReport.devPatched`）。
+   *
+   * ★ 与 `#errors` 不同，`reset()` 会清它：reset 的语义是「之前的现场与新状态接不上，
+   *   整段作废」——新局 / 读档 / 联机重放都会调它，那之后 base 就是新状态本身，
+   *   taint 的那个「旧状态」已经与报告无关了。
+   */
+  #tainted = false;
 
   /** 新局 / 读档 / 联机重放之后调：之前的现场与新状态接不上，整段作废 */
   reset(): void {
     this.#segments.length = 0;
+    this.#tainted = false;
+  }
+
+  /**
+   * 把记录仪标脏 —— 调用方**绕过了 `reduceRecorded`** 直接改了 `state`
+   * （目前只有 `__rich4.debug.patch` 这一处）。
+   *
+   * 标脏是**粘的**：改过之后，报告里的轨迹与终点不再有因果链，
+   * 只有 `reset()`（= 换了一个新的起点）才能清掉。
+   */
+  taint(): void {
+    this.#tainted = true;
+  }
+
+  get devPatched(): boolean {
+    return this.#tainted;
   }
 
   /**
@@ -125,6 +157,7 @@ export class FlightRecorder {
       createdAt: opts.now.toISOString(),
       note: opts.note,
       reason: opts.reason,
+      devPatched: this.#tainted,
       env: opts.env,
       base: first === undefined ? opts.finalState : first.base,
       baseTurn: first === undefined ? opts.finalTurn : first.turn,

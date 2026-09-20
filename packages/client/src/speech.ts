@@ -63,6 +63,7 @@ import {
   WHO_PLAYS_MASK,
   type GameState,
   type MapTopology,
+  type NoticeHint,
   type Player,
 } from '@rich4/core';
 import {
@@ -72,6 +73,7 @@ import {
   speechIndex,
 } from '@rich4/data';
 import { cardLineBubbleOf, speechBubbleOf, type SpeechBubble } from './speech-bubble.ts';
+import type { SpeechOrder } from './stage-gate.ts';
 
 // ============================================================
 //  对外形状
@@ -86,14 +88,57 @@ import { cardLineBubbleOf, speechBubbleOf, type SpeechBubble } from './speech-bu
 export interface SayEvent {
   player: number;
   event: number;
+  /**
+   * ★ **表情号** —— 原版 `player_say` 的第 2 个实参 `arg2`（头像图号 = 它 + 1）。
+   *
+   * @source 0x0044f050 `mov edx,[esp+0x30] / inc edx`（读取点在两次 `push` 之后，
+   *   故偏移是 `0x30` 而不是 `0x28` —— 这正是「`arg2` 没人读」那条旧结论的错处）；
+   *   各调用点的实参见 `docs/tasks/speech-callsites.md` 的「实参」列第 2 项。
+   *
+   * ⚠️ **可选**：逐探测器的取值由并行的另一张卡（W-50 的 B 卡）填，
+   *   本文件**不为它写死任何值**；缺席时 `speech-bubble.ts` 按 0 画。
+   *   见 `docs/escalations.md` 的 E-18（缺口清单）。
+   */
+  expression?: number;
+  /**
+   * 这句台词在原版里排在**这一段演出之前**还是**之后**（W-51；逐条依据 = W-50 §2.2
+   * 的裁定表）。`queueSpeech()` 按它决定「立即上台」还是「先押进 `deferredSpeech`」。
+   *
+   * ⚠️ **没有缺省值**：`DETECTORS` 里每个探测器都必须显式写一条 `order`
+   *    （`SpeechDetector.order`），新加探测器漏写就编不过 —— 逼着逐条过表。
+   */
+  order: SpeechOrder;
 }
 
-/** 一个探测器：名字 + 取证 VA + 纯函数 */
+/**
+ * 探测器的**原始产出**：只回答「谁说了哪一句」（+ 各探测器自带的其它可选字段，
+ * 如 `expression`），**不含 `order`**。
+ *
+ * 写成 `Omit<SayEvent, 'order'>` 而不是另立一个字面量接口：`SayEvent` 以后再加
+ * 可选字段（例：W-50 的 `expression`）时，探测器这边**自动**跟得上，不用改两处。
+ *
+ * 次序由 `SpeechDetector.order` 在 `speechEventsFor()` 里**一处一值**补上 ——
+ * 不在每个 `push` 上重复写，避免同一个探测器里出现两个不一致的值。
+ */
+export type DetectedSay = Omit<SayEvent, 'order'>;
+
+/** 只要「谁 / 哪一句」的调用方（资源换算、气泡排版）——`SayEvent` 与裸字面量都能传 */
+export type SayKey = Pick<SayEvent, 'player' | 'event'>;
+
+/** 一个探测器：名字 + 取证 VA + **原版次序** + 纯函数 */
 export interface SpeechDetector {
   /** 诊断用名 */
   readonly name: string;
   /** 判据的取证点（exe VA） */
   readonly source: readonly number[];
+  /**
+   * 这句台词在原版里排在**这一段演出之前**还是**之后**。
+   *
+   * 取值只能来自 W-50 §2.2 的裁定表；表里没有的走表尾那条规则（查
+   * `docs/tasks/speech-callsites.md` 同一次调用的行），两边都没有的 ⇒ 上报
+   * `docs/escalations.md`。**没有缺省值**：新探测器必须自己写一条。
+   */
+  readonly order: SpeechOrder;
   /**
    * `before/after` 状态 → 谁说了哪几句。
    *
@@ -104,7 +149,7 @@ export interface SpeechDetector {
     before: GameState,
     after: GameState,
     topo?: MapTopology,
-  ) => SayEvent[];
+  ) => DetectedSay[];
 }
 
 // ============================================================
@@ -284,7 +329,7 @@ export function smallLossTierFor(amount: number): 0 | 1 | 2 | null {
  * call _rich4_player_say              ; @ VA 0x0043d70d
  * ```
  */
-export function detectPrisonEntered(before: GameState, after: GameState): SayEvent[] {
+export function detectPrisonEntered(before: GameState, after: GameState): DetectedSay[] {
   return enteredBlocking(before, after, 'inPrison').map((player) => ({ player, event: 19 }));
 }
 
@@ -293,7 +338,7 @@ export function detectPrisonEntered(before: GameState, after: GameState): SayEve
  * @source `_rich4_add_player_days_in_hospital` @ VA 0x0043ec3f，说在 VA 0x0043edbc
  *   （与监狱同构：`test dh,dh / jne 加刑路径`，只在**新判**时说）
  */
-export function detectHospitalEntered(before: GameState, after: GameState): SayEvent[] {
+export function detectHospitalEntered(before: GameState, after: GameState): DetectedSay[] {
   return enteredBlocking(before, after, 'inHospital').map((player) => ({ player, event: 20 }));
 }
 
@@ -310,7 +355,7 @@ export function detectHospitalEntered(before: GameState, after: GameState): SayE
  * ```
  * 故判据是 `sleepWalking` 由 0 变非 0（由目标本人说）。
  */
-export function detectDreamCard(before: GameState, after: GameState): SayEvent[] {
+export function detectDreamCard(before: GameState, after: GameState): DetectedSay[] {
   return enteredBlocking(before, after, 'sleepWalking').map((player) => ({ player, event: 21 }));
 }
 
@@ -333,12 +378,12 @@ export function detectDreamCard(before: GameState, after: GameState): SayEvent[]
  * ⚠️ 住宿（`inHotel`）与消失（`disappearing`）在原版**只出文字、不出语音**，
  *   故这里不产生任何事件。
  */
-export function detectTurnStartBlocked(before: GameState, after: GameState): SayEvent[] {
+export function detectTurnStartBlocked(before: GameState, after: GameState): DetectedSay[] {
   if (before.phase !== 'turnStart' || after.phase !== 'turnEnd') return [];
   const p = after.players[after.currentPlayer];
   if (p === undefined || !isAlive(p)) return [];
   const b = p.blocking;
-  const out: SayEvent[] = [];
+  const out: DetectedSay[] = [];
   // 原版顺序：住宿/消失（无语音）→ 坐牢 → 住院 → 冬眠
   if (b.inPrison !== 0) out.push({ player: p.index, event: 19 });
   if (b.inHospital !== 0) out.push({ player: p.index, event: 20 });
@@ -362,8 +407,8 @@ export function detectTurnStartBlocked(before: GameState, after: GameState): Say
  *   `jmp 0x40d282` **提前返回** —— 也就是说**终局那一次破产不喊事件 25**
  *   （改由事件 24 说话）。这里按「逐个处理、最后那一个不喊」还原。
  */
-export function detectBankrupt(before: GameState, after: GameState): SayEvent[] {
-  const out: SayEvent[] = [];
+export function detectBankrupt(before: GameState, after: GameState): DetectedSay[] {
+  const out: DetectedSay[] = [];
   let alive = aliveCount(before);
   for (let i = 0; i < after.players.length; i++) {
     const b = before.players[i];
@@ -388,7 +433,7 @@ export function detectBankrupt(before: GameState, after: GameState): SayEvent[] 
  * ⚠️ 只剩电脑时原版**不喊**（`test esi,esi / jne` 走的是「全员人类出局」那条，
  *   直接置终局码 1）—— 这里照搬。
  */
-export function detectVictory(before: GameState, after: GameState): SayEvent[] {
+export function detectVictory(before: GameState, after: GameState): DetectedSay[] {
   if (aliveCount(after) !== 1 || aliveCount(before) <= 1) return [];
   const winner = after.players.find((p) => isAlive(p));
   if (winner === undefined) return [];
@@ -417,7 +462,7 @@ export function detectVictory(before: GameState, after: GameState): SayEvent[] {
  *   但那条 `esi` 指的是**地块记录**（`+0x04` 是地名、`+0x1a` 是等级），
  *   不是玩家结构 —— 见 `docs/deviations/T-052.md` 的 Q-SPEECH-7。
  */
-export function detectLevelFive(before: GameState, after: GameState): SayEvent[] {
+export function detectLevelFive(before: GameState, after: GameState): DetectedSay[] {
   const reached =
     reachedLevelFive(before.landLevel, after.landLevel) ||
     reachedLevelFive(before.facilityLevel, after.facilityLevel);
@@ -442,9 +487,17 @@ function reachedLevelFive(before: readonly number[], after: readonly number[]): 
  *   金额 = `ebp`）、0x0040ed85（命运/新闻进账）；分档与阈值在
  *   `fcn_0044f354`（本文件 `gainEventFor`）。
  */
-export function detectMoneyGained(before: GameState, after: GameState): SayEvent[] {
-  const out: SayEvent[] = [];
+export function detectMoneyGained(before: GameState, after: GameState): DetectedSay[] {
+  const out: DetectedSay[] = [];
+  // ★★ W-55 行 7：財神那一笔**不走**「進帳」档位这条通用路 ——
+  //   小財神有它自己的出口（`0x0040ecde`，事件 8，另有 >700 与终局两道闸），
+  //   大財神虽然也是调 `fcn_0044f354`，但**多一道 `≥ 5000×物價` 的闸**
+  //   （`0x0040ed74`）—— 通用路按 2000×物價 就会开口，会把「原版不说」说成事件 8。
+  //   ⇒ 这里让开，由 `detectSmallWealthLine` / `detectBigWealthLine` 独家负责
+  //   （与 `detectPointsGained` 让开 `minigameDecline` 同一条规矩）。
+  const wealthHost = wealthGodHostThisAction(before, after);
   for (let i = 0; i < after.players.length; i++) {
+    if (i === wealthHost) continue;
     const amount = delta(before, after, i, 'monthlyReceived');
     if (amount <= 0) continue;
     const event = gainEventFor(amount, after.priceIndex);
@@ -476,12 +529,19 @@ export function detectMoneyGained(before: GameState, after: GameState): SayEvent
  * 收款方的还原：同一动作里 `monthlyReceived` 涨了的那个玩家 = 收錢的人；
  * 没有人涨而公库涨了 = 進公库（罰款）。两者都不是（企业/流拍）则不吭声。
  */
-export function detectMoneyPaid(before: GameState, after: GameState): SayEvent[] {
-  const out: SayEvent[] = [];
+export function detectMoneyPaid(before: GameState, after: GameState): DetectedSay[] {
+  const out: DetectedSay[] = [];
   const received = after.players.map((_, i) => delta(before, after, i, 'monthlyReceived'));
   const poolGrew = after.pool - before.pool;
+  // ★★ W-55 行 7：財神發威那一笔**不走**这条路 —— 原版小財神是
+  //   `fcn_0041d2c6(對手, 附身者, 金額, 1)`（`0x0040ec99`）**直接**调付款助手，
+  //   那个循环里没有任何 `player_say` ⇒ 附身者自己不吭声（他的那句是事件 8，
+  //   见 `detectSmallWealthLine`）。通用路会让附身者按 `monthlyPaid`/`pool` 差分
+  //   开口，把「原版不说」说出来 ⇒ 这里让开。
+  const wealthHost = wealthGodHostThisAction(before, after);
 
   for (let i = 0; i < after.players.length; i++) {
+    if (i === wealthHost) continue;
     const amount = delta(before, after, i, 'monthlyPaid');
     if (amount <= 0) continue;
 
@@ -529,8 +589,8 @@ export function detectMoneyPaid(before: GameState, after: GameState): SayEvent[]
  *   （監獄 0x0043d5f9 / 醫院 0x0043eca5 / 0x0040d3f8）；那几笔在
  *   before/after 里与其它扣款无法区分，故未接（见偏离登记）。
  */
-export function detectHotelStay(before: GameState, after: GameState): SayEvent[] {
-  const out: SayEvent[] = [];
+export function detectHotelStay(before: GameState, after: GameState): DetectedSay[] {
+  const out: DetectedSay[] = [];
   for (const i of enteredBlocking(before, after, 'inHotel')) {
     const raw = after.players[i]?.blocking.inHotel ?? 0;
     const days = (raw & 0x7f) + 1;
@@ -551,8 +611,8 @@ export function detectHotelStay(before: GameState, after: GameState): SayEvent[]
  *   - `0x00452753`：`_rich4_receive_card` 之后取同一個卡片字段
  *   本引擎里对应的量就是 `points` 的增量（商店回购、魔法屋、點數格……）。
  */
-export function detectPointsGained(before: GameState, after: GameState): SayEvent[] {
-  const out: SayEvent[] = [];
+export function detectPointsGained(before: GameState, after: GameState): DetectedSay[] {
+  const out: DetectedSay[] = [];
   // ★★ 2026-09-19（第 94 条）：**得點券格 / 小遊戲不玩**那两笔「點入帳」不走 `0x44f230`，
   //   它们各自 `player_say(玩家, 0, 角色表事件)`（`0x41b1f8` / `0x41b28d` / `0x4154b6`），
   //   由下面的 `pointsSquarePhrase` 开口。这里必须**让开**，否则同一笔会说两句
@@ -576,7 +636,7 @@ export function detectPointsGained(before: GameState, after: GameState): SayEven
  *   core 把选中的**事件下标**交在 `lastEvent.phraseIndex` 里：
  *     得 50 點 = `rand() & 1`（事件 0/1）、得 30 點 = **固定事件 2**、得 10 點 = 不说。
  */
-export function detectPointsSquarePhrase(before: GameState, after: GameState): SayEvent[] {
+export function detectPointsSquarePhrase(before: GameState, after: GameState): DetectedSay[] {
   const ev = after.lastEvent;
   if (ev === null || ev === undefined || ev.kind !== 'minigameDecline') return [];
   void before;
@@ -635,7 +695,7 @@ export function detectAreaMonopoly(
   before: GameState,
   after: GameState,
   topo?: MapTopology,
-): SayEvent[] {
+): DetectedSay[] {
   // 只有「落点问出来的買地 / 加蓋」这两个交互会走到 `fcn_0044f627`
   // （卡片、拍賣、新聞那几条改归属的路都不经过它 —— 故这里必须先卡住 pending）
   const pend = before.pending;
@@ -734,8 +794,8 @@ function godTypeOf(state: GameState, handle: number): number | null {
  *   这四个里任何一个非 0 都不出声；再加 `player_say` 自己的两道闸
  *   （`+0x37 sleepWalking` / `+0x36 sleeping`，VA 0x44ef86 / 0x44ef93）。
  */
-export function detectGodLeft(before: GameState, after: GameState): SayEvent[] {
-  const out: SayEvent[] = [];
+export function detectGodLeft(before: GameState, after: GameState): DetectedSay[] {
+  const out: DetectedSay[] = [];
   for (let i = 0; i < after.players.length; i++) {
     const b = before.players[i];
     const a = after.players[i];
@@ -782,8 +842,8 @@ export function detectGodLeft(before: GameState, after: GameState): SayEvent[] {
  * 先送旧神、再附新神）。`player_say` 的三道闸照抄（`disappearing` /
  * `sleepWalking` / `sleeping`）。
  */
-export function detectGodArrived(before: GameState, after: GameState): SayEvent[] {
-  const out: SayEvent[] = [];
+export function detectGodArrived(before: GameState, after: GameState): DetectedSay[] {
+  const out: DetectedSay[] = [];
   for (let i = 0; i < after.players.length; i++) {
     const b = before.players[i];
     const a = after.players[i];
@@ -796,6 +856,179 @@ export function detectGodArrived(before: GameState, after: GameState): SayEvent[
     out.push({ player: i, event: 22 });
   }
   return out;
+}
+
+// ============================================================
+//  神明落脚顯靈的台词 —— 土地公 / 福神（W-55 行 6）
+// ============================================================
+
+/**
+ * 神明**种类**（`objects[godInfo−1].type`）—— 財神那两支（W-55 行 7）。
+ *
+ * @source `0x0040ea9b`（`god_activate` 的 15 项跳表，索引 = 種類 − 1）：
+ *   种类 1 = 小財神（`fcn_0040ec14`）、2 = 大財神（`fcn_0040f0xx` 前一项）。
+ *   ⚠️ 不在本文件里 import `@rich4/core` 的 `GOD_SMALL_WEALTH` —— 那个模块
+ *   （`rules/god-power.ts`）**没有**从 core 的 barrel 导出，而 `GOD_SMALL_LUCK`
+ *   那四个名字在 `rules/god-toll.ts` 里**重名**，整包 `export *` 会撞名。
+ *   与 `HOSTILE_GOD_TYPES` 一样，本文件按值直写并附 VA。
+ */
+export const SMALL_WEALTH_GOD_TYPE = 1;
+export const BIG_WEALTH_GOD_TYPE = 2;
+
+/** 小財神说那句额外台词的金额下限 —— 原版是 `esi > 0x2bc`（**严格大于 700**）@source VA 0x0040eca4 */
+export const SMALL_WEALTH_LINE_MIN = 0x2bc;
+
+/**
+ * `player_say` 开头的三道闸（`0x44ef63`–`0x44ef9a`，全部 `jne → ret`）：
+ * `+0x33 days_disappearing` / `+0x37 days_sleep_walking` / `+0x36 days_sleeping`。
+ *
+ * @source 见 `cardPlaySpeech()` 的文件头引用（同一段汇编）。
+ *   （**不在**里面的：監獄 `+0x34` / 醫院 `+0x35` / 住宿 `+0x32`。）
+ */
+function speechGatesOpen(p: Player): boolean {
+  const b = p.blocking;
+  return b.disappearing === 0 && b.sleepWalking === 0 && b.sleeping === 0;
+}
+
+/** `after.notices` 里比 `before` 多出来的那种訊息框有几条 */
+function newNoticeCount(
+  before: { notices: readonly NoticeHint[] },
+  after: { notices: readonly NoticeHint[] },
+  key: string,
+): number {
+  const count = (ns: readonly NoticeHint[]): number => ns.filter((n) => n.key === key).length;
+  return count(after.notices) - count(before.notices);
+}
+
+/**
+ * 土地公顯靈 —— 事件 **0**「…」（角色台词表 `[角色][0]`）。
+ *
+ * @source `fcn_0040f381` 的土地公那一支（`0x0040f68b`，`god_info == 12`）尾段：
+ * ```asm
+ * 0040f86e  push 0x5dc / push 0x4634f2 / call 0x440cac   ; 訊息框「土地公顯靈」（= god.seize）
+ * 0040f880  edi = [0x49910c]                             ; ★ 当前行动者
+ * 0040f889  mov al, byte [eax + 0x496b7b]                ; +0x13 = 角色号
+ * 0040f8a0  mov ebp, [eax + ebx*8 + 0x48084a]            ; ★ 角色台词表[角色][事件 0]
+ * 0040f8a8  push 0                                         ; arg2（表情号）= 0
+ * 0040f8ab  call 0x44ef41                                  ; player_say
+ * ```
+ * ⇒ **固定事件 0**，与福神那支的 `rand()&1` 不同（见 `docs/escalations.md` E-18 的订正）。
+ *
+ * 判据 = `notices` 里**新出现** `god.seize`（原版那一句紧跟訊息框之后；
+ * 与 `devil-fx.ts` 的 `god.demolish` 同一条做法）。**不看等级/归属差分** ——
+ * 土地公只看「不是我的 ⇒ 归我」，与等级无关。
+ */
+export function detectLandGodLine(before: GameState, after: GameState): DetectedSay[] {
+  if (newNoticeCount(before, after, 'god.seize') <= 0) return [];
+  const p = after.players[after.currentPlayer];
+  if (p === undefined || !isAlive(p)) return [];
+  if (!speechGatesOpen(p)) return [];
+  return [{ player: p.index, event: 0 }];
+}
+
+/**
+ * 福神顯靈（**没到 5 级**那一支）—— 事件 **0 或 1**，由 core 交出来的 `rand()&1` 选。
+ *
+ * @source `fcn_0040f8be` 的 `0x0040fa30`–`0x0040fa5c`：
+ * `call 0x456f2d`（rand）→ `and eax,1` → `mov esi,[角色台词表 + eax*4]` → `player_say`。
+ * core 已经把那次 `rand()` 消费掉、结果放在 `GameState.lastGodLine`（见该字段注释）。
+ *
+ * ★ **判据是引用相等**（与 `cardPlaySpeech` 同一条）：`luckyGodBonus` 每次新建一个对象，
+ *   上一条 action 留下的那个引用不变 ⇒ 不出声。
+ *
+ * ⚠️ **到 5 级那一支不在这里**：`0x0040fa13` 取的是 `0x480886` = **事件 15**
+ *   （`push 0` 也是它的 arg2），那一条已由 `detectLevelFive`（`0x00419a0e` /
+ *   `0x0041ab4a`）在同一个 action 里说出 —— 两处都接会重复说一句。
+ */
+export function detectLuckyGodLine(before: GameState, after: GameState): DetectedSay[] {
+  const hint = after.lastGodLine ?? null;
+  if (hint === null || before.lastGodLine === hint) return [];
+  const p = after.players[hint.player];
+  if (p === undefined || !isAlive(p)) return [];
+  if (!speechGatesOpen(p)) return [];
+  return [{ player: hint.player, event: hint.event }];
+}
+
+// ============================================================
+//  財神的额外台词 —— 小財神 / 大財神（W-55 行 7 / G33 / G34）
+// ============================================================
+
+/** 这一条 action 里神明發威的金额提示（`GameState.lastGodPower`，引用相等 = 本 action）*/
+function godPowerHintThisAction(
+  before: Pick<GameState, 'lastGodPower'>,
+  after: Pick<GameState, 'lastGodPower'>,
+): { player: number; type: number; amount: number } | null {
+  const hint = after.lastGodPower ?? null;
+  if (hint === null || before.lastGodPower === hint) return null;
+  return hint;
+}
+
+/**
+ * 这一条 action 里**財神**發威的那位附身者下标；不是財神就 −1。
+ *
+ * 用途：让通用的「進帳 / 付錢」两条探测器**让开**財神那一笔（见 `detectMoneyGained`
+ * 的注释）。**只让財神（種類 1/2）**—— 窮神那两支的通用台词过说与否不属本卡范围。
+ */
+function wealthGodHostThisAction(
+  before: Pick<GameState, 'lastGodPower'>,
+  after: Pick<GameState, 'lastGodPower'>,
+): number {
+  const hint = godPowerHintThisAction(before, after);
+  if (hint === null) return -1;
+  if (hint.type !== SMALL_WEALTH_GOD_TYPE && hint.type !== BIG_WEALTH_GOD_TYPE) return -1;
+  return hint.player;
+}
+
+/**
+ * 小財神（種類 1）顯靈的**额外台词** —— 事件 **8**（`0x48086a` = `0x48084a + 8×4`）。
+ *
+ * @source `fcn_0040ec14` 的尾段（金額三位數）：
+ * ```asm
+ * 0040eca4  cmp esi, 0x2bc / 0040ecaa jle 0x40ece6   ; ★ **严格大于 700** 才说
+ * 0040ecac  cmp byte [0x46caf8], 0 / 0040ecb3 jne …   ; ★ 终局码非 0（收款途中有人破产）就不说
+ * 0040ecc1  mov bl, byte [player + 0x496b7b]          ; 角色号
+ * 0040ecd3  mov esi, [ebx + eax*8 + 0x48086a]         ; 角色台词表[角色][事件 8]
+ * 0040ecdb  push 3 / 0040ecdd push ecx / 0040ecde call 0x44ef41
+ * ```
+ * 金额取 core 交出来的 `lastGodPower.amount`（不是从钱的差分反推 ——
+ * 小財神是**每个对手各付一笔**，差分里拿到的是总和）。
+ */
+export function detectSmallWealthLine(before: GameState, after: GameState): DetectedSay[] {
+  const hint = godPowerHintThisAction(before, after);
+  if (hint === null || hint.type !== SMALL_WEALTH_GOD_TYPE) return [];
+  // @source 0x0040ecaa `jle` —— 恰好 700 **不说**
+  if (!(hint.amount > SMALL_WEALTH_LINE_MIN)) return [];
+  // @source 0x0040ecac `cmp byte [0x46caf8],0 / jne 0x40ece6`：终局码非 0（对局已结束）就不说
+  if (after.phase === 'gameOver') return [];
+  const p = after.players[hint.player];
+  if (p === undefined || !isAlive(p)) return [];
+  if (!speechGatesOpen(p)) return [];
+  return [{ player: hint.player, event: 8 }];
+}
+
+/**
+ * 大財神（種類 2）顯靈的**额外台词** —— 走的是「進帳」档位函数，事件 6/7/8。
+ *
+ * @source `0x0040f0xx` 的大財神那一支（金額四位數）：
+ * ```asm
+ * 0040ed5a  ebx = [0x4990e8]                     ; 物價指數
+ * 0040ed60..0040ed71  eax = ebx×5×8 − ebx … = **5000 × 物價指數**
+ * 0040ed74  cmp esi, eax / 0040ed76 jl 0x40ece6 ; ★ 够 5000×物價 才说
+ * 0040ed7c  push esi / 0040ed84 push 玩家 / 0040ed85 call 0x44f354   ; = gainEventFor 那条档位表
+ * ```
+ * ⚠️ 因为闸门就是 `≥ 5000 × 物價`，而 `gainEventFor` 在 5000 档以上恒返回 **6** ——
+ *   这里仍然照原版**走一遍分档函数**（不是为了「差不多」，是为了阈值方向写在一处）。
+ */
+export function detectBigWealthLine(before: GameState, after: GameState): DetectedSay[] {
+  const hint = godPowerHintThisAction(before, after);
+  if (hint === null || hint.type !== BIG_WEALTH_GOD_TYPE) return [];
+  if (hint.amount < MONEY_TIER_MID * after.priceIndex) return [];
+  const event = gainEventFor(hint.amount, after.priceIndex);
+  if (event === null) return [];
+  const p = after.players[hint.player];
+  if (p === undefined || !isAlive(p)) return [];
+  if (!speechGatesOpen(p)) return [];
+  return [{ player: hint.player, event }];
 }
 
 // ============================================================
@@ -832,7 +1065,17 @@ export const OPENING_SPEECH_EVENT = 26;
  * （語音号 = `1050 + 27×角色 + 26`）。
  */
 export function openingSpeech(state: GameState): SpeechBubble[] {
-  return speechBubblesFor(state, [{ player: state.currentPlayer, event: OPENING_SPEECH_EVENT }]);
+  return speechBubblesFor(state, [
+    // ★ 開局宣言是**全局第一件事**（`0x00407946` 紧跟模态消息框之后），
+    //   且 `main.ts` 是直接 `speechQueue.push` 的、不经 `queueSpeech` ⇒ 填 `beforeStage`。
+    //   ★ 表情号 3 @source `0x0040794e push 3`（见 `EXPRESSION_BY_EVENT` 的事件 26）。
+    {
+      player: state.currentPlayer,
+      event: OPENING_SPEECH_EVENT,
+      order: 'beforeStage',
+      expression: expressionOf(OPENING_SPEECH_EVENT) ?? 0,
+    },
+  ]);
 }
 
 /**
@@ -841,27 +1084,152 @@ export function openingSpeech(state: GameState): SpeechBubble[] {
  * 顺序照原版在同一笔交易里的调用次序：
  *   付錢的人先开口（`fcn_0044f4ed`/`fcn_0044f42d` 在 0x00419f67），
  *   收錢的人后开口（`fcn_0044f354` 在 0x00419fa1）。
+ *
+ * ★★ W-51：每一条都**必须**带 `order`（`beforeStage` / `afterStage`）—— 判据是
+ *   W-50 §2.2 的次序裁定表（首席已读过 exe）。表里**明写**的五条：
+ *
+ *   | 探测器 | 表里的行 | order |
+ *   |---|---|---|
+ *   | `prisonEntered` | 送監獄 `0x0043d71c` | `afterStage`（影片 → 镜头 → 台词）|
+ *   | `hospitalEntered` | 送醫院 `0x0043edcb` | `afterStage`（影片 → 镜头 → 台词）|
+ *   | `turnStartBlocked` | 回合开始三句 `0x0040ca51/…` | `beforeStage`（本回合第一件事）|
+ *   | `godArrived` | 壞神附身 `0x0040ef44`… | `beforeStage`（台词 → 影片 → 神明窗…）|
+ *   | `moneyPaid` | 設施收費 `0x0041a71e` | `afterStage`（轉盤 → 訊息框 → 收費 → 台词）|
+ *
+ *   表里没明写的走表尾那条规则（查 `docs/tasks/speech-callsites.md` 里同一次
+ *   `player_say` 调用的行：「之前」列有影片/訊息框而「之后」列没有 ⇒ `afterStage`，
+ *   反之 ⇒ `beforeStage`）。其中**两边都没有**（或同一个探测器的两个调用点互相矛盾）
+ *   的十条**已按 C 级上报** `docs/escalations.md` 的 **E-19**（附了每一条的调用点
+ *   与它那两列），在首席裁定之前**暂定 `afterStage`**（照 §2.2 对 `afterNotice` 的
+ *   先例：「做不到就先按 `afterStage` 做并在 PR 里注明」）—— 这十条都用
+ *   `// ⚠ C 级：E-19` 标出，改判只改这一处。
+ *   （`landGodLine` / `luckyGodLine` / `smallWealthLine` / `bigWealthLine` 是
+ *     W-55 行 6/7 在同一个工作区里并行加的，各带自己的依据注释。）
  */
 export const DETECTORS: readonly SpeechDetector[] = [
-  { name: 'prisonEntered', source: [0x0043d70d], detect: detectPrisonEntered },
-  { name: 'hospitalEntered', source: [0x0043edbc], detect: detectHospitalEntered },
-  { name: 'dreamCard', source: [0x0044434b], detect: detectDreamCard },
-  { name: 'turnStartBlocked', source: [0x0040ca46, 0x0040cabf, 0x0040cb41], detect: detectTurnStartBlocked },
-  { name: 'bankrupt', source: [0x0040d237], detect: detectBankrupt },
-  { name: 'victory', source: [0x0040d055], detect: detectVictory },
-  { name: 'levelFive', source: [0x00419a0e, 0x0041ab4a], detect: detectLevelFive },
+  // §2.2 表：送監獄 —— 影片 `0x0043d6aa` → 镜头 → 台词
+  { name: 'prisonEntered', source: [0x0043d70d], order: 'afterStage', detect: detectPrisonEntered },
+  // §2.2 表：送醫院 —— 影片 `0x0043ed59` → 镜头 `0x0043eda0` → 台词
+  { name: 'hospitalEntered', source: [0x0043edbc], order: 'afterStage', detect: detectHospitalEntered },
+  // ⚠ C 级：E-19（调用点 `0x00444356` 前后两列都空）
+  { name: 'dreamCard', source: [0x0044434b], order: 'afterStage', detect: detectDreamCard },
+  // §2.2 表：回合开始那三句 —— 本回合第一件事；`0x0040cb4c` 之后才是訊息框
+  { name: 'turnStartBlocked', source: [0x0040ca46, 0x0040cabf, 0x0040cb41], order: 'beforeStage', detect: detectTurnStartBlocked },
+  // ⚠ C 级：E-19（调用点 `0x0040d249` 前后两列都空）
+  { name: 'bankrupt', source: [0x0040d237], order: 'afterStage', detect: detectBankrupt },
+  // ⚠ C 级：E-19（调用点 `0x0040d060` 前后两列都空）
+  { name: 'victory', source: [0x0040d055], order: 'afterStage', detect: detectVictory },
+  // ⚠ C 级：E-19（两个调用点不一致：`0x00419a19` 前有 Yes/No 框、`0x0041ab5b` 前有影片后有訊息框）
+  { name: 'levelFive', source: [0x00419a0e, 0x0041ab4a], order: 'afterStage', detect: detectLevelFive },
   // ★ 同一街區獨佔 ≥ 3 塊（買地 16 / 加蓋 17）—— 要 `topo` 才数得出街區
-  { name: 'areaMonopoly', source: [0x0044f627, 0x0041a13e, 0x00419a31], detect: detectAreaMonopoly },
+  // ⚠ C 级：E-19（台词在叶子函数 `0x44f627` 里，调用点 `0x0044f6df` 前后两列都空）
+  { name: 'areaMonopoly', source: [0x0044f627, 0x0041a13e, 0x00419a31], order: 'afterStage', detect: detectAreaMonopoly },
   // ★ 神明：**先**旧神离身（23）**再**新神附身（22）—— 原版 `0x40eb3f` → `0x40ec0d`
-  { name: 'godLeft', source: [0x0040e32c, 0x0040e64a, 0x0041cc9b, 0x00444cc4], detect: detectGodLeft },
-  { name: 'godArrived', source: [0x0040ea9b, 0x0040e64a, 0x0040ef2f, 0x0040f2ff], detect: detectGodArrived },
-  { name: 'moneyPaid', source: [0x0044f42d, 0x0044f4ed, 0x0044f567], detect: detectMoneyPaid },
-  { name: 'moneyGained', source: [0x0044f354], detect: detectMoneyGained },
-  { name: 'hotelStay', source: [0x0041a7e0, 0x0044f2c2], detect: detectHotelStay },
-  { name: 'pointsGained', source: [0x0044f230], detect: detectPointsGained },
+  // ⚠ C 级：E-19（调用点 `0x0040e659` 前后两列都空）
+  { name: 'godLeft', source: [0x0040e32c, 0x0040e64a, 0x0041cc9b, 0x00444cc4], order: 'afterStage', detect: detectGodLeft },
+  // §2.2 表：壞神附身（小窮/大窮/小衰/大衰/死神）—— 台词 → 影片 → 神明台词窗 →（轉盤）→ 付款
+  { name: 'godArrived', source: [0x0040ea9b, 0x0040e64a, 0x0040ef2f, 0x0040f2ff], order: 'beforeStage', detect: detectGodArrived },
+  // ★ W-55 行 6：神明**落脚顯靈**的台词（天使/惡魔/福神在落点尾块那一族）。
+  // §2.2 表：土地公顯靈 `0x0040f8ab` —— 镜头 → 訊息框 → 台词 ⇒ `afterStage`。
+  { name: 'landGodLine', source: [0x0040f86e, 0x0040f8ab], order: 'afterStage', detect: detectLandGodLine },
+  // §2.2 表：福神顯靈 `0x0040fa1e`（到 5 级）/ `0x0040fa5c`（没到，`rand()&1` 二选一）
+  //   —— 訊息框 → 音效 → 镜头 → 台词 ⇒ 裁定是 `afterNotice`，而 `SpeechOrder`
+  //   只有两档（`beforeStage` / `afterStage`）⇒ 按 §2.2 的兜底「先按 `afterStage`
+  //   做并在 PR 里注明」。到 5 级那一支的事件 15 另由 `detectLevelFive` 说（不在这里）。
+  { name: 'luckyGodLine', source: [0x0040f8be, 0x0040fa49, 0x0040fa5c], order: 'afterStage', detect: detectLuckyGodLine },
+  // §2.2 表：設施收費 `0x0041a71e` —— 轉盤 → 訊息框 → 收費 → 台词（其余几个调用点同一条阶梯函数）
+  { name: 'moneyPaid', source: [0x0044f42d, 0x0044f4ed, 0x0044f567], order: 'afterStage', detect: detectMoneyPaid },
+  // ⚠ C 级：E-19（调用点 `0x0044f420` 前后两列都空）
+  { name: 'moneyGained', source: [0x0044f354], order: 'afterStage', detect: detectMoneyGained },
+  // ★ W-55 行 7（G33）：小財神 `0x0040ecde` —— 神明台词窗 → 轉盤窗 → 收款 → **台词**
+  //   ⇒ `afterStage`（§2.2 表）。排在收款那两条之后。
+  { name: 'smallWealthLine', source: [0x0040eca4, 0x0040ecde], order: 'afterStage', detect: detectSmallWealthLine },
+  // ★ W-55 行 7（G34）：大財神 `0x0040ed85`（走「進帳」档位函数）—— 收款 → 台词。
+  //   §2.2 表里没有这一条，按 W-55 表尾给的 `afterStage`；依据 = 它就在收款（`0x41d3f4`）
+  //   之后（`0x0040ed52` 收款 / `0x0040ed85` 台词）。
+  { name: 'bigWealthLine', source: [0x0040ed74, 0x0040ed85], order: 'afterStage', detect: detectBigWealthLine },
+  // ⚠ C 级：E-19（`0x0041a7e0` 所在函数里没有 `player_say`；台词在阶梯函数 `0x44f2c2` 的 `0x0044f347`，两列都空）
+  { name: 'hotelStay', source: [0x0041a7e0, 0x0044f2c2], order: 'afterStage', detect: detectHotelStay },
+  // ⚠ C 级：E-19（调用点 `0x0044f2b5` 前后两列都空）
+  { name: 'pointsGained', source: [0x0044f230], order: 'afterStage', detect: detectPointsGained },
   // ★ 得點券格 / 小遊戲不玩：走角色台词表（`0x41b211`/`0x41b29e`/`0x4154b6`）
-  { name: 'pointsSquarePhrase', source: [0x0041b211, 0x0041b29e, 0x004154b6], detect: detectPointsSquarePhrase },
+  // ⚠ C 级：E-19（两个调用点不一致：`0x0041b211` 两列都空、`0x004154cf` 前有訊息框）
+  { name: 'pointsSquarePhrase', source: [0x0041b211, 0x0041b29e, 0x004154b6], order: 'afterStage', detect: detectPointsSquarePhrase },
 ];
+
+/**
+ * ★★ **每一句台词配哪张脸** —— `player_say` 第 2 个实参 `arg2`（= 表情号）。
+ *
+ * W-50 §1.1 的第 ⑤ 步：头像图号 = `arg2 + 1`（`map.mkf #(0x1b + 角色号)`，
+ * 落 (170,130)）。`speech-bubble.ts` 只负责画，**取值在这里**。
+ *
+ * ## 判据 = **事件号**，不是调用点
+ *
+ * 原版每一句台词都是 `player_say(玩家, 立即数, 角色台词表[角色][事件])`
+ * （表基址 `0x48084a`、步长 4 = 一个事件一项；`0x48084a + 4n` = 事件 n）。
+ * 所以**同一个事件号到处都用同一个表情号**，与「谁调用的」无关 ——
+ * 这也是「`moneyGained` / `moneyPaid` 的档位函数自己说、调用点不唯一」
+ * 那条疑虑的答案：拿**事件号**去查表就唯一了。
+ *
+ * ## 逐条 `@source`（全部自己回 exe 读过，命令 = `python3 tools/disasm.py va <地址> <条数>`）
+ *
+ * | 事件 | 表情 | 说这一句的原版位置（`push <表情>` 就在 `call 0x44ef41` 之前） |
+ * |---|---|---|
+ * | 0, 1, 2 | **0** | 小额进帐 `fcn_0044f230`：`0x0044f2b2 push 0`。★ 得點券格 / 小遊戲不玩那三处也是 `push 0`：`0x0041b208`（`0x0041b211`）、`0x0041b295`（`0x0041b29e`）、`0x004154c6`（`0x004154cf`）；土地公 / 福神那两句共用角色台词表事件 0/1：`0x0040f8a8 push 0`、`0x0040fa1b push 0`、`0x0040fa59 push 0`（`0x0040fa5c jmp 0x40ecde`）|
+ * | 3, 4, 5 | **2** | 小额损失 `fcn_0044f2c2`：`0x0044f344 push 2`（住宿/監獄/醫院那几笔都走它）|
+ * | 6, 7, 8 | **3** | 進帳档位 `fcn_0044f354`：`0x0044f41d push 3`。★ 小財神那支也走事件 8：`0x0040ecdb push 3` |
+ * | 9, 10, 11 | **2** | 付錢档位 `fcn_0044f42d`：`0x0044f4dd push 2` |
+ * | 12, 13, 14 | **3** | 罰款档位 `fcn_0044f567`：`0x0044f617 push 3` |
+ * | 15 | **0** | 剛滿 5 級 `0x00419a16 push 0`（福神到 5 级那一支共用，`0x0040fa1b push 0`）|
+ * | 16, 17 | **0** | 同一街區獨佔 `fcn_0044f627`：事件 17 那支 `0x0044f6b3 push 0`；事件 16 那支 `0x0044f6dd push ecx`，而 `ecx = [esp+0x18]` = 「加蓋」旗標 = **0**（`0x0044f673`）|
+ * | 18 | **1** | 最敵對玩家拿走 ≥5000×物價 `fcn_0044f4ed`：`0x0044f551 push 1` |
+ * | 19 | **2** | 入獄 `0x0043d715 push 2`；回合開始被阻 `0x0040ca4e push 2` |
+ * | 20 | **2** | 住院 `0x0043edc4 push 2`；回合開始被阻 `0x0040cac7 push 2` |
+ * | 21 | **1** | 夢遊卡 `0x00444353 push 1`；回合開始被阻 `0x0040cb49 push 1` |
+ * | 22 | **2** | 壞神附身（小窮/大窮/小衰/大衰/死神）—— 五处的 `push 2`：`0x0040ef37` / `0x0040f000` / `0x0040f09f` / `0x0040f171` / `0x0040f307`（取串都在 `0x4808a2` = 事件 22）|
+ * | 23 | **2** | 神明離身 `0x0040e652 push 2` |
+ * | 24 | **3** | 終局 `0x0040d05d push 3` |
+ * | 25 | **2** | 破產 `0x0040d23f push 2` |
+ * | 26 | **3** | 開局宣言 `0x0040794e push 3`（`or ah,0x80` 置「不重设视窗卷动」位；见 `openingSpeech`）|
+ *
+ * ★ **没进这张表的就是没取证**：`expressionOf()` 对未知事件返回 `null`，
+ *   `speechEventsFor` 于是**不写** `expression` 字段（`speechBubbleOf` 回落到 0）。
+ *   不要在这里补「看着差不多」的值 —— 规则 4。
+ */
+export const EXPRESSION_BY_EVENT: Readonly<Record<number, number>> = {
+  0: 0,
+  1: 0,
+  2: 0,
+  3: 2,
+  4: 2,
+  5: 2,
+  6: 3,
+  7: 3,
+  8: 3,
+  9: 2,
+  10: 2,
+  11: 2,
+  12: 3,
+  13: 3,
+  14: 3,
+  15: 0,
+  16: 0,
+  17: 0,
+  18: 1,
+  19: 2,
+  20: 2,
+  21: 1,
+  22: 2,
+  23: 2,
+  24: 3,
+  25: 2,
+  26: 3,
+};
+
+/** 某个事件号的表情号；**没取证的事件返回 `null`**（调用方据此不写该字段） */
+export function expressionOf(event: number): number | null {
+  return EXPRESSION_BY_EVENT[event] ?? null;
+}
 
 /**
  * 一次状态跃迁要说的话（可能不止一句）。
@@ -869,6 +1237,10 @@ export const DETECTORS: readonly SpeechDetector[] = [
  * `topo` 是可选的：只有「同一街區獨佔」（事件 16/17）需要它 —— 街區归属是
  * 地图静态数据（`land.name`），不在 `GameState` 里。缺席时那条探测器不出声，
  * 其余 24 个槽位照常。
+ *
+ * ★ W-51：每条命中的 `order` 由**它自己的探测器**给出（`SpeechDetector.order`），
+ *   这里一处一值地补上 —— 调用方（`main.ts` 的 `queueSpeech`）据此决定
+ *   「立即上台」还是「先押进 `deferredSpeech`」。
  *
  * 纯函数：不读 DOM、不碰音频、不动 PRNG（C-DET-1/2/4）。
  */
@@ -878,7 +1250,14 @@ export function speechEventsFor(
   topo?: MapTopology,
 ): SayEvent[] {
   const out: SayEvent[] = [];
-  for (const d of DETECTORS) out.push(...d.detect(before, after, topo));
+  for (const d of DETECTORS) {
+    for (const ev of d.detect(before, after, topo)) {
+      // ★ W-50 §1.2 第 1 条：表情号按**事件号**查表（判据见 `EXPRESSION_BY_EVENT`）。
+      //   没取证的事件**不写这个字段**（`speechBubbleOf` 回落到 0），不猜。
+      const expression = expressionOf(ev.event);
+      out.push(expression === null ? { ...ev, order: d.order } : { ...ev, order: d.order, expression });
+    }
+  }
   return out;
 }
 
@@ -889,8 +1268,11 @@ export function speechEventsFor(
  *   而原版根本没有边界检查（见 `docs/deviations/T-051.md` 的 Q-SPEECH-2）。
  *   表现层不该因为一份坏状态把整局游戏炸掉，故在这里先判、不合法就不播 ——
  *   这是**调用方的责任**，不是给 `speechIndex` 加夹取。
+ *
+ * ⚠️ 入参收 `SayKey`（只要 `player` / `event`）：资源换算**不关心次序**，
+ *   裸的 `{ player, event }` 字面量（测试与其它调用方）照样能传。
  */
-export function speechResourceFor(state: GameState, ev: SayEvent): number | null {
+export function speechResourceFor(state: GameState, ev: SayKey): number | null {
   const p = state.players[ev.player];
   if (p === undefined) return null;
   const character = p.character;
@@ -904,7 +1286,7 @@ export function speechResourceFor(state: GameState, ev: SayEvent): number | null
 }
 
 /** 一次跃迁要播的资源号（顺序不变，越界的直接丢掉） */
-export function speechResourcesFor(state: GameState, events: readonly SayEvent[]): number[] {
+export function speechResourcesFor(state: GameState, events: readonly SayKey[]): number[] {
   const out: number[] = [];
   for (const ev of events) {
     const res = speechResourceFor(state, ev);
@@ -914,7 +1296,18 @@ export function speechResourcesFor(state: GameState, events: readonly SayEvent[]
 }
 
 /**
- * 一次跃迁要说**哪些话**（排好版的段落，供屏幕显示）。
+ * 一段要上台的台词 + 它在原版里的**次序**（W-51）。
+ *
+ * `main.ts` 的 `queueSpeech()` 按 `order` 分流：`beforeStage` 立即入队、
+ * `afterStage` 在 `stageBusy()` 为真时先押着。
+ */
+export interface SpeechLine {
+  readonly bubble: SpeechBubble;
+  readonly order: SpeechOrder;
+}
+
+/**
+ * 一次跃迁要说**哪些话**（排好版的段落 + 次序，供屏幕显示）。
  *
  * ★ 2026-09-16 加：此前这里只出**语音号**，玩家听得到声音但屏幕上一个字都没有 ——
  *   而原版 `_rich4_player_say`（VA 0x0044ef41）是**先画白字字幕**
@@ -924,18 +1317,23 @@ export function speechResourcesFor(state: GameState, events: readonly SayEvent[]
  *
  * 纯函数：不读 DOM、不碰音频、不动 PRNG（C-DET-1/2/4）。
  */
-export function speechBubblesFor(
-  state: GameState,
-  events: readonly SayEvent[],
-): SpeechBubble[] {
-  const out: SpeechBubble[] = [];
+export function speechLinesFor(state: GameState, events: readonly SayEvent[]): SpeechLine[] {
+  const out: SpeechLine[] = [];
   for (const ev of events) {
     const p = state.players[ev.player];
     if (p === undefined) continue;
     const bubble = speechBubbleOf(ev, p.character, characterName(p.character));
-    if (bubble !== null) out.push(bubble);
+    if (bubble !== null) out.push({ bubble, order: ev.order });
   }
   return out;
+}
+
+/** `speechLinesFor` 的「只要段落」版（沿用旧接口；兼容既有调用方与测试）*/
+export function speechBubblesFor(
+  state: GameState,
+  events: readonly SayEvent[],
+): SpeechBubble[] {
+  return speechLinesFor(state, events).map((line) => line.bubble);
 }
 
 /**
@@ -957,8 +1355,10 @@ export function speechBubblesFor(
  * ```
  *   （**不在**里面的：監獄 `+0x34` / 醫院 `+0x35` / 住宿 `+0x32`。）
  *
- * ⚠️ 原版 `player_say` 的第二个实参（`flag`，各卡传 0 或 3）**函数体里一次都没读**
- *   —— 实测 `grep 'esp + 0x28'` 在该函数 235 条指令里 0 命中，故本引擎无需建模。
+ * ★ **表情号（`expression`）由 `cardLineBubbleOf` 逐卡查表填**
+ *   （`CARD_LINE_EXPRESSION`，2026-09-19 逐卡核完；第二实参在 exe 里确实被读：
+ *   `0x0044f050`，在两次 `push` 之后偏移是 `[esp+0x30]` —— 旧注写成
+ *   「函数体里一次都没读」是 grep 错了偏移）。事件台词那一半见 `EXPRESSION_BY_EVENT`。
  *
  * 纯函数（C-DET-1/2/4）：不读 DOM、不碰音频、不动 PRNG。
  */

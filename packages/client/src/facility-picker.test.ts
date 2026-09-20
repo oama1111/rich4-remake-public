@@ -38,6 +38,7 @@ import {
   pickerKeyedBlack,
   pickerNameOf,
   pickerNeededFor,
+  pickerShowsPrice,
   rebuildPickerNeeded,
   pickerSlotAt,
   pickerSlotX,
@@ -392,5 +393,56 @@ describe('★ 待决交互那一支：落点在等级 0 的設施上（`pending.
     // 走的是回调那条路，不会自己派 action
     expect(answers).toEqual([3]);
     expect(actions).toEqual([]);
+  });
+});
+
+// ============================================================
+//  ★ W-55 行 9：真人 + 0 级設施 + 天使/福神（`pending.free`）
+// ============================================================
+
+describe('★★ W-55 行 9：`free` 那一次**不显示价钱**', () => {
+  it('★★ `pickerShowsPrice`：`free` ⇒ false，普通首建 ⇒ true', () => {
+    expect(pickerShowsPrice({ free: true })).toBe(false);
+    expect(pickerShowsPrice({})).toBe(true);
+    expect(pickerShowsPrice(null)).toBe(false);
+  });
+
+  /**
+   * ★ 这条是**行为钉子**（不是注释钉子）：原版窗口过程（`fcn_0043fae4`）里
+   *   一处拿价钱的绘制都没有 —— 面板图 4 / 三圈黄框 / 立绘板 5 / 标题 / 悬停名字。
+   *   下面把「画出来的字符串」全抓下来，断言里面**一个数字/元/費用都没有**。
+   *   谁日后往这扇窗里加一行价钱，这条会红。
+   */
+  it('★★ 画出来的字符串里**没有任何价钱**（数字 / 元 / 費用 / %d）', () => {
+    const f = fakeCtx();
+    const s = fakeSprite();
+    for (const hover of [null, 0, 1, 2, 3, 4]) {
+      drawFacilityPicker(f.ctx, s.sprite, { hover });
+    }
+    const texts = f.texts.map((t) => t.t);
+    // 只有标题与五格名字（各出现一次）
+    expect(new Set(texts)).toEqual(new Set([PICKER_TITLE, ...PICKER_NAMES]));
+    for (const t of texts) {
+      expect(/[0-9０-９]/.test(t), `「${t}」里不该有数字`).toBe(false);
+      expect(/元|費用|價|价/.test(t), `「${t}」里不该有价钱字样`).toBe(false);
+    }
+  });
+
+  it('★ 器件：`drawFacilityPicker` 的绘制调用里没有「价格」这个入参（源码钉子）', () => {
+    const src = readFileSync(new URL('./facility-picker.ts', import.meta.url), 'utf8');
+    // `PickerDraw` 只有 `hover` 一个字段 —— 要加价钱必须先改这张形状，改动会被看见
+    expect(src).toContain('export interface PickerDraw {');
+    expect(src).toMatch(/export interface PickerDraw \{[\s\S]*?hover: number \| null;[\s\S]*?\}/);
+    expect(src).not.toMatch(/interface PickerDraw \{[\s\S]*?price[\s\S]*?\}/);
+  });
+
+  it('★ `free` 的 pending 走的还是同一条 `buildFacility` 动作（行为不变）', () => {
+    resetFacilityPicker();
+    const { env, actions } = mkEnv('buildFacility');
+    // 带上 `free: true`（core 的 `godFreeBuild` 就是这么挂的）
+    (env.state as { pending: unknown }).pending = { kind: 'buildFacility', free: true };
+    facilityPickerScreen.move?.(pickerSlotX(2) + 5, 300, env);
+    facilityPickerScreen.up?.(pickerSlotX(2) + 5, 300, env);
+    expect(actions).toEqual([{ type: 'buildFacility', facilityType: 2 }]);
   });
 });

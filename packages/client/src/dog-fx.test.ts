@@ -232,8 +232,10 @@ describe('★ main.ts 的接线（源码钉子）', () => {
     expect(src).toContain('startBoardFilm(spec);');
     // ① 排队：狗咬播完接救护车（`startBoardFilm` 的第二个参数）
     expect(src).toContain('let pendingBoardFilmAfter: BoardFilmSpec | null = null;');
-    // ② 闸：两段之间那一拍也要挡住回合驱动
-    expect(src).toContain('if (pendingBoardFilmAfter !== null) {');
+    // ② 闸：两段之间那一拍也要挡住回合驱动（W-51 起这一位收在 `stageBusyFlags()`，
+    //    与 `holdForActorWalk` / 台词闸共用同一个纯函数）
+    expect(src).toContain('pendingBoardFilmAfter: pendingBoardFilmAfter !== null,');
+    expect(src).toContain('if (stageBusy(stageBusyFlags())) {');
     // ③ 只有两段都播完才放行
     expect(src).toContain('if (pendingBoardFilmAfter === null) resumeTurnDriver();');
   });

@@ -2,8 +2,8 @@
 
 > 写给**接手的人**。读完这份 + `docs/PRD.md` + `docs/gaps/README.md` 的 **§七 续做指南** 就能接着干。
 > **接下来做什么：[`WORKPLAN.md`](WORKPLAN.md)**（任务清单、分级、硬规则、验收口径）。
-> 最后更新：**2026-09-19**，测试 **256 文件 / 5,583 项全绿**（`pnpm check` 三绿，0 跳过）；
-> `cargo check` 通过。第三份试玩回报的收口见 `dist-macos/README-试玩说明.md` 顶部的「第六版（f）」。
+> 最后更新：**2026-09-19**，测试 **270 文件 / 5,990 项全绿**（`pnpm check` 三绿，0 跳过）；
+> `cargo check` 通过。第五份试玩回报的收口（W-50..W-55）见 `dist-macos/README-试玩说明.md` 顶部的「第七版（k）」。
 
 ## ★ 现状速览（2026-09-18，以本节为准；下面 09-15 的长文是历史记录）
 
@@ -192,6 +192,103 @@ globalThis.__rich4.goto('assets');       // DEV 下才有的调试出口（main.
 performance.now = () => 0;               // 需要把逐帧推进的屏（过场）冻住时再用
 ```
 `__rich4` 里还有 `state` / `camera` / `dispatch` / `project` / `pick` / `warp`。
+
+### 状态注入口 `__rich4.debug`（DEV only，W-53）
+
+复现「踩狗 / 天使買地 / 坏神附身」不必再碰运气 —— 控制台里直接把状态摆到那一刻。
+实现在 `packages/client/src/dev-patch.ts`，`main.ts` 的 DEV 出口只做接线。
+
+```js
+__rich4.debug.patch(fn)   // state = fn(state)；返回新 state
+__rich4.debug.nextNode()  // 当前玩家的下一个落点（= 引擎走一步用的 pickNextNode，只算不走）
+__rich4.debug.dog()       // 配方 ①
+__rich4.debug.god(9)      // 配方 ②（只认 9 / 5；别的值记一行日志、不动状态）
+__rich4.debug.god(5)      // 配方 ③
+__rich4.recorder          // { trail, errors, devPatched }
+```
+
+⚠️ **`patch` 绕过 `reduceRecorded`**：状态与飞行记录仪里的 action 流从此对不上，
+故每次调用都会往 `logRing` 记一行 `[dev] state patched`、并把记录仪**标脏**。
+之后按 F9 出的报告带 `devPatched: true`，`tools/replay-report.ts` 见到它**拒绝验指纹**
+（退出码 3，报「来自被改过的状态」而不是一个假的不一致）。标脏是**粘的**，
+只有换局 / 读档（`recorder.reset()`）才清。
+
+装配式写法（`patch` 是唯一入口，配方只是拼好的 `fn`）：
+
+```js
+const currentNode = () => __rich4.state.players[__rich4.state.currentPlayer].nodeId;
+
+// ── 配方 ①：把一只惡犬摆在当前玩家**即将踩到**的那一格 ──
+// 触点字段：objects[10].type / .nodeId / .state / .attached
+//           （順带把那一格原本那个**未附身**物件的 nodeId / state / attached 清零 —— 一格只站一个）
+//           `objects[10]` 的下标是这么来的：种类 11 的槽 = `slotRangeForType(11)` = { from: 10 }，
+//           即 `OBJECT_TYPE_TABLE[10] === 11`（种类由槽位决定，写入前先断言这一条）
+__rich4.debug.patch((s) => {
+  const next = __rich4.debug.nextNode();
+  const objects = s.objects.map((o, i) =>
+    i === 10
+      ? { ...o, type: 11, nodeId: next, state: 0, attached: 0 }
+      : o.nodeId === next && o.attached === 0
+        ? { ...o, nodeId: 0, state: 0, attached: 0 }
+        : o);
+  return { ...s, objects };
+});
+
+// ── 配方 ②：给当前玩家 godInfo = 9（天使）──
+// 触点字段：players[i].godInfo / .misfortune(−100) / .fortune(+60) / .luck(+60)
+//           objects[8].nodeId（← 玩家脚下）/ .attached（← 玩家下标 + 1）/ .state（← 7）
+//           `godInfo` 是**物件下标 + 1**：天使是种类 9、住在下标 8 ⇒ handle 9 ⇒ godInfo 9
+// ⚠️ 这段是**裸 patch**，只管「把天使给他」：身上**原本没有**神明、那一格也没有别的神明时才对。
+//    已有神明 / 已有别的物件时用 `__rich4.debug.god(9)` —— 它走 `attachGod`，会送走旧的、
+//    并断言「物件跟到玩家脚下 + attached 对得上」。
+__rich4.debug.patch((s) => ({
+  ...s,
+  players: s.players.map((p, i) =>
+    i === s.currentPlayer
+      ? { ...p, godInfo: 9, misfortune: p.misfortune - 100, fortune: p.fortune + 60, luck: p.luck + 60 }
+      : p),
+  objects: s.objects.map((o, i) =>
+    i === 8 ? { ...o, nodeId: currentNode(), attached: s.currentPlayer + 1, state: 7 } : o),
+}));
+
+// ── 配方 ③：给当前玩家 godInfo = 5（小窮神，附身那一路）──
+// 触点字段同上，但走下标 4、三项修正是 +100 衰運 / −60 財運 / 福運不动
+//           （小窮神种类 5、下标 4 ⇒ handle 5 ⇒ godInfo 5）
+// ⚠️ 同 ②：裸 patch；小窮神开局长在**下标 4 那一格**上，这一段不负责清掉它原来站的那一格
+//    （它跟玩家走之后那一格自然就空了，因为物件只有一份）。
+```
+
+**几条不许忘的前提**（都是引擎自己的不变量，写配方时逐条对过）：
+
+1. **天使 / 小窮神这两支一开局就摆在地图上**（`INITIAL_OBJECT_TYPES = [1,3,5,7,9,11,13,14]`），
+   所以「给玩家 `godInfo = 9`」若不同时把下标 8 那个物件跟到玩家脚下，
+   会得到一个**引擎自己造不出来**的状态（godInfo 指着一个还站在地上的神明，
+   而且 `objects[8].type`（= 9）与 `godInfo`（= 9）对不上 —— 物件的**种类**等于 `godInfo`，
+   这正是「种类 1..14 各占下标 0..13 一格」这条表的副作用）。上面两段都写了 `objects[...]` 那一半。
+2. **`god(9)` / `god(5)` 这两个现成钩子走的是 `attachGod`**（`rules/object-landing.ts`，
+   = 原版 `attach_object` 0x0040ead7 的完整版）：三项修正、`attached = 玩家下标 + 1`、
+   `state = 7`（死神 13）全由引擎算。**身上已经有神明时它会先把旧的送走**，
+   搭档重新登场的落点本引擎没接（Q-OBJ-2）⇒ 旧的被清下地图（`nodeId/state/attached = 0`），
+   日志里那行会写明「舊神明=handle N 已请下地图」。写手工 `patch` 时留意这一点：
+   `godInfo` 是被**覆盖**的，旧神明那一位得自己收尾。
+3. 惡犬**只在停下那一格咬人**（`stepsRemaining === 0`，`applyObjectTo['dog']` 的 `if (moving) return`），
+   而且**有车咬不到**（`trafficMethod !== 0` 只报 `blockedByVehicle`）。
+   `debug.dog()` 摆的是「下一格」；要让狗真咬到，得让玩家正好停在那格。
+4. 一个节点上**只站一个未附身物件**（`place_object` 的语义）。手工摆物件前先看那一格有没有东西。
+
+**实机验收（2026-09-19，Chromium + `?screen=game&humans=0&ai=4&map=0&seed=7`，三个配方依次跑）**：
+
+```
+# ① 前：screen=game overlay=null phase=moving cur=3 node=12 next=81 devPatched=false
+# ① 后：next=81 placed=81 type=11 nodeId=81 state=0 attached=0 该格未附身物件数=1
+# ② 后：god=9 godInfo=9 type=9 物件格=12 玩家格=12 attached=4 state=7
+#        Δ衰運=−100 Δ財運=+60 Δ福運=+60
+# ③ 后：god=5 godInfo=5 type4=5 物件格=12 玩家格=12 attached4=4
+#        旧天使 → {type:9, nodeId:0, state:0, attached:0}，全表 attached≠0 的只有 1 个
+#        devPatched=true   控制台 0 个 pageerror / console error
+```
+
+截图（不入库，`.qa-tmp/w53/`）：`w53-dog.png`（惡犬画在下一格）、`w53-angel.png`、`w53-poverty.png`。
 
 ---
 

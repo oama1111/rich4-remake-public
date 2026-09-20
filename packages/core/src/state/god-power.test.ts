@@ -214,6 +214,62 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
     expect(sum(after.cardAmount)).toBe(sum(before.cardAmount) + 2);
   });
 
+  /**
+   * ★★ G40（W-55 行 8）：原版那一支是
+   * `for (i = 0; i < n/2; i++) consume_card(player_cards[i])`（`0x00441efd` 读当前手牌第 i 格、
+   * `0x00441f0b call 0x441343`），而 `consume_card` 移除的是**首个匹配的卡号**，
+   * **不是第 i 格**。卡号唯一时两者同值，**卡号重复时不同**。
+   */
+  run('★★ G40：手牌有**重复卡号**时，丢一半 = 按卡号移除首个匹配（不是 splice(i)）', () => {
+    const start = fresh().state;
+    const hand = [1, 1, 1, 2, 1, 1]; // n = 6 → 丢 3 张
+    const { before, after } = stepOnto(GOD_BIG_MISFORTUNE, {
+      players: rich(start).players.map((p, i) => (i === 0 ? { ...p, cards: [...hand] } : p)),
+    });
+    expect(before.players[0]!.cards).toEqual(hand);
+
+    // 原版语义（照抄 `0x00441ece`）：每一步读**当前**手牌的第 i 格当卡号，
+    // 再移除该卡号的**首个**匹配。
+    const byId = [...hand];
+    for (let i = 0; i < Math.trunc(hand.length / 2); i++) {
+      const id = byId[i]!;
+      byId.splice(byId.indexOf(id), 1);
+    }
+    // 旧实现（`splice(i, 1)`）的结果 —— 用来证明这条用例**有鉴别力**
+    const byIndex = [...hand];
+    for (let i = 0; i < Math.trunc(hand.length / 2); i++) byIndex.splice(i, 1);
+
+    expect(byId).not.toEqual(byIndex); // ★ 前提：这一组手牌确实能区分两种实现
+    expect(byId.join(',')).toBe('2,1,1');
+    expect(byIndex.join(',')).toBe('1,2,1');
+    expect(after.players[0]!.cards).toEqual(byId);
+    expect(after.players[0]!.cards).not.toEqual(byIndex);
+    // 丢的 3 张都是 1 号卡 ⇒ 全部回牌堆
+    expect(sum(after.cardAmount)).toBe(sum(before.cardAmount) + 3);
+    expect(after.cardAmount[0]).toBe((before.cardAmount[0] ?? 0) + 3);
+  });
+
+  run('★★ G40：小衰神丢一张也按**卡号**移除首个匹配，不是按随机下标', () => {
+    const start = fresh().state;
+    // 6 张、只有在手牌里重复出现的卡号 —— 只要下标不是「首个匹配」就与旧实现不同
+    const hand = [5, 1, 5, 5, 5, 5];
+    const { after, rngAtAttach } = stepOnto(GOD_SMALL_MISFORTUNE, {
+      players: rich(start).players.map((p, i) => (i === 0 ? { ...p, cards: [...hand] } : p)),
+    });
+    // @source 0x00441e8e `call rand` / 0x00441e98 `idiv esi` ⇒ 下标 = rand() % 张数
+    const at = new WatcomRng(rngAtAttach).next() % hand.length;
+    const id = hand[at]!;
+    const byId = [...hand];
+    byId.splice(byId.indexOf(id), 1);
+    const byIndex = [...hand];
+    byIndex.splice(at, 1);
+    // ★ 前提：这一组手牌 + 这个种子必须是**有鉴别力**的（随机下标不是首个匹配）
+    expect(at, '随机下标不该落在首个匹配上').toBeGreaterThan(hand.indexOf(id));
+    expect(byId.join(',')).not.toBe(byIndex.join(','));
+    expect(after.players[0]!.cards).toEqual(byId);
+    expect(after.players[0]!.cards).not.toEqual(byIndex);
+  });
+
   run('大衰神：只有 1 张时不丢（`cmp eax,1 / jle`）', () => {
     const start = fresh().state;
     const { after } = stepOnto(GOD_BIG_MISFORTUNE, {
@@ -309,5 +365,66 @@ describe('★ 附身那一刻的随机数消耗与原版同形', () => {
     // 大衰神：`for (i < n/2) consume(cards[i])` 全是确定的
     const half = stepOnto(GOD_BIG_MISFORTUNE);
     expect(half.after.rngState).toBe(half.rngAtAttach);
+  });
+});
+
+/**
+ * W-55 行 7 —— 神明發威掷出来的**金额**要交给表现层（財神那两支的台词闸门）。
+ *
+ * ★ 可证伪：把 `lastGodPower` 的写入删掉、或把 `amount` 换成从
+ *   `monthlyReceived` 差分反推的数（小財神是「每个对手各付一笔」⇒ 差分是总和），
+ *   下面的用例都会红。
+ */
+describe('★ W-55 行 7：`GameState.lastGodPower` = 那一次掷出来的金额', () => {
+  run('★★ 小財神（種類 1）⇒ amount = **三位数**那一个（不是差分总和、不是四位数）', () => {
+    const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH);
+    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    const hint = after.lastGodPower;
+    expect(hint).toBeTruthy();
+    expect(hint!.player).toBe(0);
+    expect(hint!.type).toBe(GOD_SMALL_WEALTH);
+    expect(hint!.amount).toBe(amount);
+    // ★ 反证：不是「四个对手各付一笔」的总和（除非 0 元那种退化情形）
+    const total = after.players.find((p) => p.index === 0)!.monthlyReceived;
+    if (amount > 0) expect(total).not.toBe(hint!.amount);
+    expect(hint!.amount).toBeLessThan(1000); // 三位数
+  });
+
+  run('★★ 大財神（種類 2）⇒ amount = **四位数**那一个', () => {
+    const { after, rngAtAttach } = stepOnto(GOD_BIG_WEALTH);
+    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
+    const hint = after.lastGodPower;
+    expect(hint).toBeTruthy();
+    expect(hint!.player).toBe(0);
+    expect(hint!.type).toBe(GOD_BIG_WEALTH);
+    expect(hint!.amount).toBe(amount);
+    // 大財神是纯進帳 ⇒ 差分**就是**那一个（与上面小財神相反，两条互相反证）
+    expect(after.players[0]!.monthlyReceived).toBe(amount);
+  });
+
+  run('★ 不掷金额的神明（天使 / 福神 / 死神）⇒ 不写这个提示', () => {
+    for (const [type, name] of [
+      [GOD_ANGEL, '天使'],
+      [GOD_BIG_LUCK, '大福神'],
+      [GOD_REAPER, '死神'],
+    ] as const) {
+      const start = fresh().state;
+      const { after } = stepOnto(type, {
+        players: rich(start).players.map((p, i) => (i === 0 ? { ...p, cards: [1, 2] } : p)),
+      });
+      expect(after.lastGodPower ?? null, name).toBeNull();
+    }
+  });
+
+  run('★ 只活一条 action：下一条没新写它的 action 会被 `reduce` 出口清成 null', () => {
+    const { after, topo } = stepOnto(GOD_BIG_WEALTH);
+    expect(after.lastGodPower).toBeTruthy();
+    // `reseed` 是「一定会改状态」的最小 action（换 `rngState` ⇒ 新对象 ⇒ 清瞬态）
+    const next = reduce(after, { type: 'reseed', seed: (after.rngState ^ 0x1234) >>> 0 }, topo);
+    expect(next).not.toBe(after);
+    expect(next.lastGodPower ?? null).toBeNull();
+    // ★ 恒等性：`raw === state`（没生效的 action）一律原样返回，连瞬态都不清
+    const same = reduce(after, { type: 'endTurn' }, topo);
+    if (same === after) expect(same.lastGodPower).toBe(after.lastGodPower);
   });
 });

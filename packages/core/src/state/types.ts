@@ -381,6 +381,39 @@ export interface CardPlayHint {
 }
 
 /**
+ * **神明顯靈时说哪一句**（W-55 行 6）—— 纯表现提示，见 `GameState.lastGodLine`。
+ *
+ * @source 福神 `fcn_0040f8be` 的 `0x0040fa49 call 0x456f2d`（`rand()`）/
+ *   `0x0040fa4e and eax,1` / `0x0040fa51 mov esi,[… + eax*4 + 0x48084a]`
+ *   —— 即**角色台词表的事件 0 或 1**（`0x48084a + 108×角色 + 事件×4`）。
+ */
+export interface GodLineHint {
+  /** 说话的人（玩家下标 0..3）= 原版 `[0x49910c]` 那个当前行动者 */
+  player: number;
+  /**
+   * 台词槽位 = **角色台词表的事件号**（`@rich4/data` 的 `speechIndex(角色, 事件)`）。
+   * 福神那一支是 `rand() & 1` ⇒ `0` 或 `1`。
+   */
+  event: number;
+}
+
+/**
+ * **这一次神明發威掷出来的金额**（W-55 行 7）—— 纯表现提示，见 `GameState.lastGodPower`。
+ *
+ * @source `godPowerOf()`（`rules/god-power.ts`）掷出来的那个三位/四位数；
+ *   消费点在財神那两支的台词闸门（`0x0040eca4 cmp esi,0x2bc` /
+ *   `0x0040ed74 cmp esi, 5000×物價`）。
+ */
+export interface GodPowerHint {
+  /** 附身者（玩家下标 0..3）*/
+  player: number;
+  /** 神明**种类** 1..15（`objects[godInfo−1].type`，见 `rules/god-power.ts` 的常量）*/
+  type: number;
+  /** 那扇转盘窗拼出来的金额（小財神三位 / 大財神四位）*/
+  amount: number;
+}
+
+/**
  * 一条**付费类落点的棕色訊息框**要显示什么 —— 纯表现提示。
  *
  * ★ 为什么要有它（issue #18）：原版在「走到别人的地产 / 企業」收钱之前，会先
@@ -931,6 +964,92 @@ export interface GameState {
    * ⇒ `speech-bubble.ts` 的 `cardLineBubbleOf()`（显示 + 语音）。
    */
   lastCardPlay: CardPlayHint | null;
+
+  /**
+   * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。
+   *
+   * 纯表现提示（不进指纹、不进存档）—— 与 `lastCardPlay` / `notices` 同一套规矩。
+   *
+   * ★ **只活一条 action**：`reduce` 出口会把「本 action 改动了状态、却没新写本字段」
+   *   的那些情况清成 `null`（见 `reduce` 里那一段注释）。所以表现层看到非 null，
+   *   就一定是**刚刚这条 action** 设的，直接照做即可。
+   *
+   * ## 原版语义（W-54 的首席取证）
+   * ```
+   * view_to(x, y, flags):
+   *   flags & 1  ⇒ 只按上一次的中心重画（0x40829d(-1, 0)），**不动镜头**
+   *                 —— 表里实参是 0,0,1 的那 38 处全部属于这一类 ⇒ 忽略
+   *   否则：
+   *     (x, y) == 当前行动者坐标 ⇒ 清标记 [0x48be18] = 0
+   *     不等                     ⇒ [0x48be18] = 1、[0x48be1c]/[0x48be20] = (x, y)
+   *     然后 fcn_00415e70 居中（**有标记用标记**）
+   * ```
+   * `refresh_screen`（`0x0041d546`）一律把标记清 0 ⇒ 镜头回到行动者。
+   *
+   * ★ 这与小地图点选用的是**同一个**标记（本引擎的 `minimapMarker`），
+   *   所以客户端只要把它写进 `minimapMarker`、收屏时清掉，不必另做一套镜头。
+   */
+  lastViewTarget: { x: number; y: number } | null;
+
+  /**
+   * ★ **这一次落点顯靈时那位神明说的那句话**（W-55 行 6）—— 纯表现提示。
+   *
+   * 消费者：`client/src/speech.ts` 的 `detectLuckyGodLine()`。
+   *
+   * ## 为什么要有它
+   *
+   * 福神 `fcn_0040f8be` 在自己地升級成功、且**没到 5 级**那一支里用
+   * `rand() & 1` 在**两句**台词里随机二选一：
+   *
+   * ```asm
+   * 0040fa30  xor  ebx, ebx
+   * 0040fa32  mov  bl, byte [eax + 0x496b7b]        ; 角色号（+0x13）
+   * 0040fa44  shl  eax, 3 / 0040fa47 add ebx, eax    ; ebx = 108 × 角色
+   * 0040fa49  call 0x456f2d                          ; ★ rand()
+   * 0040fa4e  and  eax, 1
+   * 0040fa51  mov  esi, [ebx + eax*4 + 0x48084a]     ; 角色台词表[角色][0 或 1]
+   * 0040fa5b  push edi / 0040fa5c jmp 0x40ecde       ; player_say
+   * ```
+   *
+   * 本引擎的对应物是 `luckyGodBonus()`：它**已经把那次 `rand()` 消费掉**
+   * （`reduce.ts` 那条 `rng.next()`）却只把 `rngState` 写回去 —— 客户端拿不到
+   * 「摇到 0 还是 1」，于是这一句复刻不出来。本字段就是把那个结果交出来。
+   *
+   * ★ **与 `lastCardPlay` / `notices` 同一套规矩**：不进 `stateFingerprint`
+   * （`net/protocol.ts` 的形参是显式列字段的结构类型）、不进存档、不进 `history`；
+   * 「本 action」的判据是**引用相等**（`luckyGodBonus` 每次新建一个对象）。
+   * `reduce` 出口把「没新写本字段」的那些情况清成 `null`（与 `lastViewTarget` 同一处）。
+   *
+   * ⚠️ **只覆盖福神那支的随机二选一**。土地公顯靈那一句是**固定**的事件 0
+   *   （`0x0040f8a0 mov ebp,[…表…+0]`，见 `docs/escalations.md` E-18 的订正），
+   *   客户端直接从 `god.seize` 訊息框认出来即可，不需要本字段。
+   */
+  lastGodLine?: GodLineHint | null;
+
+  /**
+   * ★ **这一次神明發威掷出来的金额**（W-55 行 7）—— 纯表现提示。
+   *
+   * 消费者：`client/src/speech.ts` 的 `detectSmallWealthLine()` / `detectBigWealthLine()`。
+   *
+   * ## 为什么要有它
+   *
+   * 財神那两支的**额外台词**都以那个「转盘摇出来的数」为闸门，而那个数不在
+   * 任何持久字段里（`godPowerOf` 掷完就丢，只把 `rngState` 写回）：
+   *
+   * ```asm
+   * ; 小財神：金额 > 0x2bc（700）才说事件 8（角色台词表 +0x48086a = 事件 8）
+   * 0040eca4  cmp esi, 0x2bc / 0040ecaa jle 0x40ece6
+   * 0040ecac  cmp byte [0x46caf8], 0 / jne 0x40ece6   ; ★ 终局码非 0 就不说
+   * 0040ecd3  mov esi, [ebx + eax*8 + 0x48086a]
+   * 0040ecde  call 0x44ef41
+   * ; 大財神：金额 ≥ 5000 × 物價 才走「進帳」档位函数
+   * 0040ed74  cmp esi, eax / 0040ed76 jl 0x40ece6
+   * 0040ed85  call 0x44f354
+   * ```
+   *
+   * ★ 两条规矩与 `lastGodLine` 完全一样（引用相等 = 本 action、不进指纹/存档）。
+   */
+  lastGodPower?: GodPowerHint | null;
 
   /**
    * **这一次落点要弹的棕色訊息框**（可能不止一条）—— 纯表现提示，见 `NoticeHint`（issue #18）。

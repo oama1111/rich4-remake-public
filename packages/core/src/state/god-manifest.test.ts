@@ -14,6 +14,7 @@ import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 import { GOD_ANGEL, GOD_BIG_LUCK, GOD_DEVIL, GOD_EARTH, GOD_SMALL_WEALTH } from '../rules/god-power.ts';
 import { manifestKindOf, seizeHostilityDelta } from '../rules/god-manifest.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -286,3 +287,64 @@ describe('★ 福神：自己地升級后再送一级（「蓋房子投資加倍
     expect(out.rngState).toBe(asked.rngState);
   });
 });
+
+describe('★ W-55 行 6：福神挑台词的那一次 `rand() & 1` 要交出来（`GameState.lastGodLine`）', () => {
+  /** 福神 + 自己地 1 级，走到「升級房子」那一步（`luckyGodBonus` 会跑） */
+  function luckyUpgradeFrom(level: number) {
+    const { state, topo, landNode } = setup();
+    const id = landIdAt(state, topo, landNode.id);
+    const landOwner = [...state.landOwner];
+    const landLevel = [...state.landLevel];
+    landOwner[id] = 1;
+    landLevel[id] = level;
+    const s0 = standing(state, landNode.id, GOD_BIG_LUCK, { landOwner, landLevel });
+    const asked = reduce(s0, { type: 'settle' }, topo);
+    return { asked, out: reduce(asked, { type: 'upgradeLand' }, topo), id, topo };
+  }
+
+  run('★★ `lastGodLine` = { 说话人, 事件 = rand()&1 }，与那次多消费的随机数**同一个值**', () => {
+    const { asked, out } = luckyUpgradeFrom(1);
+    // 福神那一支多消费一次 rand()（原版 `0x0040fa49 call 0x456f2d`）
+    expect(out.rngState).not.toBe(asked.rngState);
+    const hint = out.lastGodLine;
+    expect(hint, '福神送了一级 ⇒ 必须交出那句话').toBeTruthy();
+    expect(hint!.player).toBe(0);
+    // ★ 独立核对：拿 `asked.rngState` 走一次 `next()`，低一位就是台词槽位
+    const probe = new WatcomRng(asked.rngState);
+    const roll = probe.next();
+    expect(hint!.event).toBe(roll & 1);
+    // 槽位只能是 0 / 1（角色台词表的两句）
+    expect([0, 1]).toContain(hint!.event);
+    // ★ 与 `rngState` 是**同一次**消费：交出来的状态 = 消费之后的状态
+    expect(probe.getState()).toBe(out.rngState);
+  });
+
+  run('★ 到 5 级那一支**不**写 `lastGodLine`（它绕过福神，一个字都不说）', () => {
+    const { out } = luckyUpgradeFrom(4);
+    expect(out.landLevel[1]).toBe(5);
+    expect(out.lastGodLine ?? null).toBeNull();
+  });
+
+  run('★ 没有福神（普通升級）⇒ `lastGodLine` 不写', () => {
+    const { state, topo, landNode } = setup();
+    const id = landIdAt(state, topo, landNode.id);
+    const landOwner = [...state.landOwner];
+    const landLevel = [...state.landLevel];
+    landOwner[id] = 1;
+    landLevel[id] = 1;
+    const asked = reduce(standing(state, landNode.id, 0, { landOwner, landLevel }), { type: 'settle' }, topo);
+    const out = reduce(asked, { type: 'upgradeLand' }, topo);
+    expect(out.landLevel[id]).toBe(2);
+    expect(out.lastGodLine ?? null).toBeNull();
+  });
+
+  run('★ 只活一条 action：没新写它的下一条 action 会被清成 null（`reduce` 出口）', () => {
+    const { asked, out, topo } = luckyUpgradeFrom(1);
+    expect(out.lastGodLine).toBeTruthy();
+    const after = reduce(out, { type: 'endTurn' }, topo);
+    // `endTurn` 没碰这个字段 ⇒ 出口清掉（引用相等 = 上一条 action 留下的）
+    expect(after.lastGodLine ?? null).toBeNull();
+    expect(asked.lastGodLine ?? null).toBeNull();
+  });
+});
+

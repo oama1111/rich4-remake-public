@@ -136,6 +136,7 @@
  *   本引擎只在真正生效时才收走道具，于是「没生效」时**不播**。
  */
 
+import { SOUND_IDS } from '@rich4/assets-pipeline';
 import type { BuildUpgradeHint, BuildUpgradeSource, GameState } from '@rich4/core';
 import type { LoadedFlic } from './assets.ts';
 
@@ -281,6 +282,44 @@ export const HAMMER_SOURCES = ['robotWorker', 'magicHouse', 'companyBuild'] as c
 /** 这个 `source` 要不要先播大锤 `0x229`（见 `HAMMER_SOURCES` 的取证）*/
 export function playsHammer(source: BuildUpgradeSource): boolean {
   return (HAMMER_SOURCES as readonly string[]).includes(source);
+}
+
+/**
+ * **会响「顯靈／自己加蓋」那一声（`Effect.mkf` 50）的 `source`** —— 正面表。
+ *
+ * @source `push 0x4823da / call 0x4542ce` 全 exe 共 **4** 处
+ *   （`disasm.py find 68da234800`）：
+ *   | VA | 哪一支 | 本引擎的 `source` |
+ *   |---|---|---|
+ *   | `0x0040f4f3` | 天使顯靈（落点尾块）| `godManifest` |
+ *   | `0x0040f9dc` | 福神顯靈（自己地升級后加倍）| `godManifest` |
+ *   | `0x004199de` | 自己的地落点「升級房子」| `ownUpgrade` |
+ *   | `0x0041a289` | 落点首建等级 0 的設施 | **够不到**（那一条不写 `lastBuildUpgrades`）|
+ *
+ *   ⇒ 只有这两个 `source` 会响；`robotWorker` / `magicHouse` / `companyBuild` /
+ *   `angelCard` 各有自己的大锤/滿級音效（`BUILD_HAMMER.sound` / `BUILD_MAX_LEVEL.sound`）。
+ *   号码本身的取证见 `SOUND_IDS.GOD_MANIFEST`（表项 `0x4823da` = 24 × 8 + 0x48231a）。
+ */
+export const MANIFEST_SOUND_SOURCES: readonly BuildUpgradeSource[] = ['godManifest', 'ownUpgrade'];
+
+/** 顯靈／自己加蓋那一声的音效号 —— `Effect.mkf` **50** @source 见 `SOUND_IDS.GOD_MANIFEST` */
+export const MANIFEST_BUILD_SOUND: number = SOUND_IDS.GOD_MANIFEST;
+
+/** 这个 `source` 要不要响那一声（见 `MANIFEST_SOUND_SOURCES`）*/
+export function playsManifestSound(source: BuildUpgradeSource): boolean {
+  return MANIFEST_SOUND_SOURCES.includes(source);
+}
+
+/**
+ * 本 action 该响的「顯靈／自己加蓋」音效号；没有就 `null`。
+ *
+ * ★ 与 `buildFxPlan` **分开**：那一声在 `0x40b110` 成功之后就响（`0x0040f4f3`），
+ *   **早于** 0x20b 影片，而且**盖到 5 级才有片**这件事与它无关 ——
+ *   没到 5 级、一段影片都不播时，这一声照样响。
+ *   ⇒ 调用方**不能**把它挂在 `plan.hammer || plan.maxLevel` 那道闸之后。
+ */
+export function manifestSoundFor(hints: readonly BuildUpgradeHint[]): number | null {
+  return hints.some((h) => playsManifestSound(h.source)) ? MANIFEST_BUILD_SOUND : null;
 }
 
 /**

@@ -207,8 +207,11 @@ describe('★ main.ts 接线（源码钉子）', () => {
     expect(src).toContain('startGodFx(before, state);');
     expect(src).toContain('const spec = godFilmSpec(id);');
     expect(src).toContain('startBoardFilm(spec);');
-    // 同一道闸（住院/入獄/神明三条都从这里过）
-    expect(src).toContain('if (boardFilm !== null || pendingBoardFilm !== null) {');
+    // 同一道闸（住院/入獄/神明三条都从这里过）—— W-51 起收在 `stageBusyFlags()`
+    // 的**唯一一处定义**里，回合驱动与台词闸共用同一个纯函数
+    expect(src).toContain('boardFilm: boardFilm !== null,');
+    expect(src).toContain('pendingBoardFilm: pendingBoardFilm !== null,');
+    expect(src).toContain('if (stageBusy(stageBusyFlags())) {');
     // 棋盘局部坐标
     expect(src).toContain('y: spec.y - LAYOUT.board.y');
   });

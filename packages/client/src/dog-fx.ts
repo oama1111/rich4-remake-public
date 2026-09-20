@@ -28,7 +28,7 @@
  * 0041b888  call 0x45144f                  ; fcn_0045144f（阻塞播放）
  * 0041b891  call 0x456e11                  ; libc_free
  * 0041b899  jmp  0x41c164                  ; ★ 有车这一支**不住院**
- * 0041b89e  push ebp / call 0x40cd07       ; wreck_vehicle(玩家)
+ * 0041b89e  push ebp / call 0x40cd07       ; wreck_vehicle(玩家) —— 见下面「0x40cd07 是带闸的」
  * 0041b8a7  push 0  / push 0 / push 0x214  ; read_mkf 资源 0x214
  * 0041b8b7  call 0x450441
  * 0041b8c1  push 0x5d                      ; arg5 = 音效号 93
@@ -39,6 +39,22 @@
  * 0041b8de  mov  [0x48baf8], 0             ; 剩余步数清零
  * 0041b8e6  push 3 / push ebp / call 0x43ec3f   ; send_to_hospital(玩家, 3)
  * ```
+ *
+ * ### `0x40cd07` 是**带闸的**，不是「无条件毁车」（2026-09-19 W-52 订正）
+ *
+ * ★ 曾经怀疑「徒步那一支（`traffic_method == 0`）却调 `wreck_vehicle`，语义不通」。
+ *   回 exe 读了函数体，**自带两道闸 + 一道分支**，对徒步玩家是安全的
+ *   （@source `python3 tools/disasm.py va 0x40cd07 24`）：
+ * ```asm
+ * 0040cd0f  cmp byte [eax + 0x496b7d], 0 / je 0x40cd70   ; player+0x15（who_plays）== 0 → 直接返回
+ * 0040cd18  cmp dword [eax + 0x496b9a], 0 / jne 0x40cd70 ; +0x32（住宿/消失/坐牢/住院）非 0 → 直接返回
+ * 0040cd21  mov cl, byte [eax + 0x496b79]                ; +0x11 = traffic_method
+ * 0040cd27  test cl, cl / je 0x40cd5b                    ; ★ 徒步 → **跳过**扣车那两行
+ * 0040cd3b  inc byte [0x497324] / 0040cd43 inc byte [0x497325] ; 机车/汽车各归还一件
+ * 0040cd4e  mov byte [eax + 0x496b79], 0                 ; 车没了
+ * ```
+ *   ⇒ 徒步玩家走的只是 `je 0x40cd5b` 之后那半（清 `ndices` 等收尾），**不碰车**。
+ *   所以那一行注释里的 `wreck_vehicle` 名字读窄了，调用本身没问题 —— 不再作为疑点上报。
  *
  * ## 本模块为什么是 **0x214**（不是 0x228）
  *
@@ -61,6 +77,13 @@
  * 中间隔着 `wreck_vehicle` 与 `read_mkf`。本引擎的表现层一次只播一段，
  * 所以 `main.ts` 把救护车那一段**排队**在狗咬那一段之后（`startBoardFilm` 的
  * `after` 参数），次序与原版一致：**狗咬 →（4.332 s）→ 救护车 →（6.2 s）→ 结算**。
+ *
+ * ## 一处**故意不改**的次序差：狗先离场（W-52 §3.3）
+ *
+ * 原版 `0x0041b847 call 0x40e14d`（把惡犬从盘上撤掉）在影片**之前**；
+ * 本引擎的影片窗口里棋盘按 `before` 画（`boardDrawState()`），所以那 4.3 秒里
+ * **狗还画在原地**。影片是整幅 440×440 盖住棋盘的 ⇒ 观感无差，
+ * 按任务书 §3.3 **不改**。
  */
 
 import {

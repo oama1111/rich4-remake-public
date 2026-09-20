@@ -134,6 +134,7 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     lastCardPlay: null,
     // 纯表现提示：还没弹过付费框（见 types.ts 的 GameState.notices）
     notices: [],
+    lastViewTarget: null,
     // 回合边界的惡人队列
     pendingNpcSlots: [],
     lottery: new Array<number>(36).fill(0),

@@ -11,6 +11,17 @@
 import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import { setVoiceSink } from './voice-sink.ts';
 import { LogRing } from './log-ring.ts';
+// ★ 开发用的状态注入口（`__rich4.debug.patch` 与三个现成配方，W-53）——
+//   只在 DEV 下挂；它**绕过 reduceRecorded**，故调用时会把记录仪标脏。
+import {
+  applyPatch,
+  attachLogLine,
+  dogLogLine,
+  giveAngel,
+  giveSmallPovertyGod,
+  nextNodeOf,
+  placeDogAhead,
+} from './dev-patch.ts';
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
 import { magicScreenState } from './magic-screen.ts';
@@ -141,8 +152,20 @@ import {
   type OptionsOutcome,
 } from './options-pages.ts';
 import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
-import { cardPlaySpeech, openingSpeech, speechBubblesFor, speechEventsFor } from './speech.ts';
-import { SpeechQueue, drawSpeechBubble, type SpeechBubble } from './speech-bubble.ts';
+import {
+  cardPlaySpeech,
+  openingSpeech,
+  speechEventsFor,
+  speechLinesFor,
+  type SpeechLine,
+} from './speech.ts';
+import { deferSpeech, filmWaitsForSpeech, stageBusy, type StageFlags } from './stage-gate.ts';
+import {
+  SpeechQueue,
+  drawSpeechBubble,
+  type BubbleSpriteFn,
+  type SpeechBubble,
+} from './speech-bubble.ts';
 // 台词字幕用的是 canvas 文字（原版 `_rich4_create_font(0x10, 0x101010, …)` 那一路）
 import { font } from './font.ts';
 import { MusicPlayer, shouldResumeAfterUnlock } from './music.ts';
@@ -197,6 +220,7 @@ import {
   buildFxPlan,
   buildUpgradesOf,
   BUILD_FX_ARCHIVE,
+  manifestSoundFor,
   stepBuildFx,
   type BuildClipName,
   type BuildFx,
@@ -213,6 +237,14 @@ import { dogBiteFxTrigger } from './dog-fx.ts';
 // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報）—— 同一支 `fcn_0045144f`，
 //   规格与判据见 `alien-news-fx.ts`。
 import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
+// ★ W-55 行 4：「惡魔顯靈拆屋」那一段 110×110 的爆破片 —— 规格/判据见 `devil-fx.ts`。
+import {
+  DEVIL_DEMOLISH_FRAME_MS,
+  DEVIL_DEMOLISH_FRAMES,
+  DEVIL_FX_RESOURCE,
+  devilDemolishFilmAt,
+  devilDemolishFxTrigger,
+} from './devil-fx.ts';
 import {
   beginBoardFilm,
   boardFilmBitmap,
@@ -224,7 +256,7 @@ import {
 // ★ 影片窗口内棋盘按 **before** 那一帧画（试玩3 #1/#9，issue #19）——
 //   原版 `fcn_0045144f` 是阻塞的，播完才重绘棋盘；core 却一条 action 就把
 //   等级/附身写完了。纯函数与逐项判据见 `deferred-board.ts`。
-import { boardStateForFilm } from './deferred-board.ts';
+import { boardFilmWindowOpen, boardStateForFilm, type BoardFilmWindow } from './deferred-board.ts';
 import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 // ★ 「取消」那一拍的梯子 —— ESC 与右键**共用同一份**（原版就是这么干的：
@@ -1476,49 +1508,54 @@ const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
 /**
  * 此刻是不是有一段**纯演出**在接管整屏（判据就是上面那张表）。
  *
- * ★ 抽出来给两处共用：`holdForActorWalk` 的闸，以及 `speechTick` 的**台词冻结**。
+ * ★ 抽出来给两处共用：`stageBusyFlags()`（`holdForActorWalk` / 台词的闸），
+ *   以及各屏自己的判断。
  */
 function blockingPresentation(): boolean {
   const overlay = activeUiScreen();
   return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
 }
 
+/**
+ * ★★ W-51：此刻「台上还忙着」的九个条件 —— `stageBusy()`（`stage-gate.ts`，
+ * **纯函数、有单测**）的**宿主取值**。这里是唯一一处把它们从运行时状态里取出来的地方。
+ *
+ * 清单与 `holdForActorWalk` / `queueSpeech` / `speechTick` 共用的那一套**必须同一份**：
+ * 两边各写一套必然漂移 —— 多一位 = 台词被永久押着（死锁），少一位 = 台词抢在影片前面。
+ *
+ * 每一位的来历（都在下面 `holdForActorWalk` 的旧注释里、逐条带 @source）：
+ *   - `blockingPresentation`：纯演出整屏（轉盤 / 訊息框 / 事件框 / 月結 …）；
+ *   - `boardFilm` / `pendingBoardFilm`：住院 `0x20c`(62×100ms) / 入獄 `0x20d`(35×71ms) /
+ *     神明 / 狗咬 `0x214` / 飛碟 `0x213` 那几段**阻塞**影片（`fcn_0045144f`）；
+ *   - `pendingBoardFilmAfter`：「狗咬刚播完、救护车还没起播」那一拍的空档；
+ *   - `buildFx` / `pendingBuildFx`：機器工人大锤 3876ms + 满级 2772ms；
+ *   - `objectFlight`：放置類道具的投掷（`place_object → animate_object → 音效` 是阻塞的，
+ *     VA 0x00446bf4 起）。**卡片飞行共用这一位** —— `startCardFlight` 的两个分支都走
+ *     `beginObjectFlight`，没有第二个状态变量；
+ *   - `walkDone`：走子补间（`renderer.walkDone()`，**已含替身那条**）；
+ *   - `diceFxActive`：掷骰三段（预动作 / 滚骰 / 定格）。
+ */
+function stageBusyFlags(): StageFlags {
+  return {
+    blockingPresentation: blockingPresentation(),
+    boardFilm: boardFilm !== null,
+    pendingBoardFilm: pendingBoardFilm !== null,
+    pendingBoardFilmAfter: pendingBoardFilmAfter !== null,
+    buildFx: buildFx !== null,
+    pendingBuildFx: pendingBuildFx !== null,
+    objectFlight: objectFlight !== null,
+    walkDone: renderer.walkDone(),
+    diceFxActive: diceFx.active,
+  };
+}
+
 function holdForActorWalk(reschedule: () => void): boolean {
   if (screen !== 'game') return false;
-  if (blockingPresentation()) {
-    reschedule();
-    return true;
-  }
-  if (!renderer.walkDone()) {
-    reschedule();
-    return true;
-  }
-  // ★ 投掷动效（放置類道具）也在播 → 等它播完再派下一步：原版那一段
-  //   `place_object → animate_object → 音效` 是**阻塞**的（VA 0x00446bf4 起），
-  //   不等就会出现「物件还在飞，下一次 dispatch 已经把画面翻页了」。
-  if (objectFlight !== null) {
-    reschedule();
-    return true;
-  }
-  // ★ 建屋影片（機器工人）同理，而且原版这一段的阻塞更长
-  //   （大锤 3876 ms + 满级 2772 ms，`fcn_0045144f` 是**同步**播放的）——
-  //   不等就会出现「影片还在放，AI 已经把下一条 action 派完了」。
-  if (buildFx !== null || pendingBuildFx !== null) {
-    reschedule();
-    return true;
-  }
-  // ★ 送進監獄／醫院那段影片同理，而且原版是**阻塞**的（`fcn_0045144f` 自己的
-  //   `PeekMessage` 循环）：医院 62×100 ms = 6.2 秒、入獄 35×71 ms ≈ 2.5 秒。
-  //   不等它播完就派下一步，动画就会被下一次棋盘重绘吃掉。
-  if (boardFilm !== null || pendingBoardFilm !== null) {
-    reschedule();
-    return true;
-  }
-  // ★★ 「踩到惡犬」那一段（狗咬 → 救护车）**也是同一份** `boardFilm` 状态，
-  //   所以上面那一条已经把它挡住了；这里多守一道 `pendingBoardFilmAfter`，
-  //   防的是「狗咬刚播完、救护车还没起播」那一拍的空档
-  //   （@source 两只影片都是阻塞的 `fcn_0045144f`，见 `dog-fx.ts` 的文件头）。
-  if (pendingBoardFilmAfter !== null) {
+  // ★ 台上还有演出 ⇒ 等它收摊再派下一步。判据收在 `stageBusy()`（W-51）里，
+  //   与 `queueSpeech` / `speechTick` 共用同一份清单 —— 逐位的来历见 `stageBusyFlags`。
+  //   （原先这里是九个 `if` 各写一遍：纯演出整屏 / 走子补间 / 物件飞行 / 建屋片 /
+  //     棋盘影片 / 两段影片之间的空档；现在一位不多、一位不少地收在一处。）
+  if (stageBusy(stageBusyFlags())) {
     reschedule();
     return true;
   }
@@ -3355,6 +3392,57 @@ let minimapBg: ImageBitmap | null = null;
  *   走到标记上、或右键点别处，标记就清掉。
  */
 let minimapMarker: { x: number; y: number } | null = null;
+
+/**
+ * ★★ W-54：**上一次照 `view_to` 落下的那一个标记**（按引用比）。
+ *
+ * 原版 `view_to`（VA 0x0041d476）写的是与小地图点选**同一个**标记
+ * （`[0x48be18]`/`[0x48be1c]`/`[0x48be20]`），`refresh_screen`（VA 0x0041d546）
+ * 再把它清 0 ⇒ 镜头回到行动者。core 把这个目标交给 `state.lastViewTarget`
+ * （瞬态提示，见 `GameState.lastViewTarget`），这里记住「哪一次已经照做过了」——
+ * 坐标相同但**换了一个对象**就是新的一次（用户连打两张同坐标的卡也要重切）。
+ */
+let shownViewTarget: { x: number; y: number } | null = null;
+
+/**
+ * 这个标记是**照 `view_to` 落的**吗（= 收屏时该由我们撤掉）。
+ *
+ * ⚠️ 不能靠「把 `shownViewTarget` 清成 null」来表示已收 —— 那会让**同一个**
+ *   `lastViewTarget` 在下一帧又被当成新目标重新落下，镜头于是每帧在
+ *   「目标 ↔ 行动者」之间来回跳（实测到过：`(400,400)` / `(1248,1368)` 逐帧交替）。
+ */
+let viewTargetActive = false;
+
+/**
+ * 把 core 交下来的 `view_to` 目标落成小地图标记；演出收摊后再撤掉。
+ *
+ * 每帧调一次（`drawGameStage` 里、`centerOnCurrentPlayer()` 之前）。
+ *
+ * ⚠️ **忙碌判据**用的是 W-51 的 `stageBusy()`（`stage-gate.ts`，与
+ *   `holdForActorWalk` 同一份清单），再补上台词 —— 原版的 `refresh_screen`
+ *   排在整段流程（影片 + 訊息框 + 台词）的**最后**，所以台词还在台上时
+ *   镜头不该提前切回去。
+ */
+function syncViewTarget(): void {
+  const t = state.lastViewTarget;
+  if (t !== null && t !== shownViewTarget) {
+    shownViewTarget = t;
+    viewTargetActive = true;
+    minimapMarker = { x: t.x, y: t.y };
+    // 立刻居中（= 原版 `view_to` 收尾那句 `fcn_00415e70`）——`followPlayer`
+    //   是**本引擎**的东西，不动它；正常情形下它是 true，下一帧
+    //   `centerOnCurrentPlayer()` 会因为「有标记」而继续停在标记上。
+    camera = pixelCamera(t.x, t.y, camera.view);
+    requestRender();
+    return;
+  }
+  if (!viewTargetActive) return;
+  // 演出全部收完 ⇒ 清标记（= 原版 `refresh_screen`），镜头回行动者
+  if (stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null) return;
+  viewTargetActive = false;
+  minimapMarker = null;
+  requestRender();
+}
 /**
  * ★★ 换人行动时把小地图标记收掉、镜头交还给当前玩家（试玩 4：
  *   「手动调整小地图后，镜头无法自动跟随接下来的行动」）。
@@ -3657,8 +3745,16 @@ function notifyApplied(before: GameState): void {
  *   ⇒ 原版**必定**是「盤停下來 → 訊息框 → 付款人的台詞」。
  *
  *   本引擎一条 action 就把后果写完、演出是事后补的，所以这里等 `SCREENS` 的
- *   `event()` 派完再判：**有演出接管整屏就押后**，由 `speechTick()` 在演出收屏
- *   之后放上台。
+ *   `event()` 派完再按**每一句自己的 `order`**（W-51，来自 W-50 §2.2 的裁定表）分流：
+ *
+ *   - `beforeStage`（例：壞神附身、回合开始那三句）⇒ **立即入队**，并反过来挡住
+ *     这一条 action 的影片起播（`tickBoardFilm` / `tickBuildFx` 等 `speechQueue.length === 0`）；
+ *   - `afterStage`（例：送醫院 / 送監獄 / 設施收費）⇒ `stageBusy()` 为真时押进
+ *     `deferredSpeech`，由 `speechTick()` 在演出收摊之后放上台。
+ *
+ *   ⚠️ **死锁自查**：`beforeStage` 的句子**永不**进 `deferredSpeech`（`deferSpeech()`
+ *     只对 `afterStage` 返回 true）。否则「台词等影片起播、影片等台词说完」互等。
+ *     见 `stage-gate.ts` 的同名规则与它那条 2 秒用例。
  *
  *   ★ 押着的**至多只有一条 action 的那几句**（`deferredSpeech` 是单槽、整体覆写）：
  *     演出占着屏时 `holdForActorWalk` 不会派下一条 action，所以「押着的被下一条盖掉」
@@ -3668,14 +3764,26 @@ function notifyApplied(before: GameState): void {
  *   冻结再解冻会把整段演出时长算进那 1000 ms 里，那一段台词就一闪而过。
  *   押在**入队之前**没有这个问题。
  */
-function queueSpeech(bubbles: readonly SpeechBubble[]): void {
-  if (bubbles.length === 0) return;
-  if (blockingPresentation()) {
-    deferredSpeech = [...bubbles];
-    return;
+function queueSpeech(lines: readonly SpeechLine[]): void {
+  if (lines.length === 0) return;
+  const busy = stageBusy(stageBusyFlags());
+  const deferred: SpeechBubble[] = [];
+  const immediate: SpeechBubble[] = [];
+  for (const line of lines) {
+    if (deferSpeech(line.order, busy)) deferred.push(line.bubble);
+    else immediate.push(line.bubble);
   }
-  deferredSpeech = null;
-  if (speechQueue.push(bubbles, performance.now()) > 0) requestRender();
+  // ★ 立即说的那几句一上台，先前押着的就作废（后说的那句本来就该盖住前一句）
+  if (immediate.length > 0) {
+    deferredSpeech = null;
+    if (speechQueue.push(immediate, performance.now()) > 0) requestRender();
+  }
+  if (deferred.length > 0) {
+    deferredSpeech = deferred;
+    // ★ 押着也要续帧：`speechTick()` 靠每一帧回头看「演出收摊了没有」
+    //   （`requestRender` 的续帧条件里也有 `deferredSpeech !== null`）
+    requestRender();
+  }
 }
 
 /**
@@ -3718,6 +3826,10 @@ function startActionFx(action: Action, before: GameState): void {
   //   ⚠️ 也**不**加 `options.animation` 闸：原版这一支里没有
   //   `cmp [0x497159], 0`（与住院/入獄/神明那三支不同），照 exe 走。
   startAlienNewsFx(before, state);
+  // ★ W-55 行 4：「惡魔顯靈拆屋」那一段 110×110 的爆破片（試玩回報：客户端一段都没播）——
+  //   判据是 `notices` 里**新出现** `god.demolish`（`devil-fx.ts` 的 `devilDemolishFxTrigger`）。
+  //   排在神明附身影片之后：顯靈是**落点尾块**（`0x0041b077`）的事，与 `godInfo` 变没变无关。
+  startDevilFx(before, state);
 }
 
 /**
@@ -3806,7 +3918,7 @@ function ensureSpeakingArchive(): void {
  *   本引擎一条 action 就把后果写完，演出是事后补的 —— 于是台词必须**等演出完**
  *   才上台，见 `deferredSpeech`。
  */
-function playSoundFor(before: GameState, after: GameState): SpeechBubble[] {
+function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   // 有人出局
   const deadBefore = before.players.filter((p) => p.whoPlays === 0).length;
   const deadAfter = after.players.filter((p) => p.whoPlays === 0).length;
@@ -3843,7 +3955,14 @@ function playSoundFor(before: GameState, after: GameState): SpeechBubble[] {
   //   再出状态跃迁派生的台词 —— 顺序与原版一致。
   const cardBubbles = cardPlaySpeech(before, after);
   const spoken = speechEventsFor(before, after, topo);
-  if (spoken.length === 0) return [...cardBubbles];
+  // ★ W-51：台词现在带**次序**交出去（`SpeechLine.order`），由 `queueSpeech` 分流。
+  //   卡牌台词**不是探测器**（它走 `lastCardPlay` 这条非状态跃迁的通道）⇒ W-50 §2.2
+  //   没有它的行；按**改动最小**取 `afterStage`：W-51 之前它就是「演出占屏时押后」
+  //   那一类（`queueSpeech` 的旧判据 `blockingPresentation()`），且 exe 里几张卡的
+  //   调用点确实是影片在前、台词在后（例：`0x00443afb` 前有 `view_to` + `play_flic`，
+  //   见 `docs/tasks/speech-callsites.md`）。首席若要逐卡裁定，改这一处即可。
+  const cardLines: SpeechLine[] = cardBubbles.map((bubble) => ({ bubble, order: 'afterStage' }));
+  if (spoken.length === 0) return cardLines;
   ensureSpeakingArchive();
   // ★ 语音**不在这里放** —— 见 `speechTick()`。
   //   原版 `_rich4_player_say` 是**一句播完再返回**（同步），一次 `applyAction`
@@ -3851,10 +3970,10 @@ function playSoundFor(before: GameState, after: GameState): SpeechBubble[] {
   //   （登记为 Q-SPEECH-6）。现在语音跟着**显示队列**走：一段开始显示才放它那句。
   // ★ 2026-09-16：不光出声，还把**说话人自己那一句**显示出来。
   //   原版 `_rich4_player_say` 的两步（白字字幕 + 金貝貝那种 `@DD` 表情图）
-  //   由 `speech-bubble.ts` 负责；`speechBubblesFor` 把 `SayEvent` 翻成排好版的段落。
+  //   由 `speech-bubble.ts` 负责；`speechLinesFor` 把 `SayEvent` 翻成排好版的段落 + 次序。
   //   金貝貝那一列**整列没有文本也没有语音**，只有一张 `Data.mkf #0x207` 的表情图
   //   （见 `@rich4/data` 的 `SPEECH_LINES` 与 `speechEmojiImage`）。
-  return [...cardBubbles, ...speechBubblesFor(after, spoken)];
+  return [...cardLines, ...speechLinesFor(after, spoken)];
 }
 
 // ============================================================
@@ -5320,6 +5439,43 @@ function startDogFx(before: GameState, after: GameState): void {
 }
 
 /**
+ * 这一拍是不是「惡魔顯靈把脚下那栋房子拆了」—— 是就播那一段 110×110 的爆破片。
+ *
+ * W-55 行 4。规格与判据全在 `devil-fx.ts`（逐字节核过 `Data.mkf` 0x20e 的 FLIC 头：
+ * 8 帧 × 114 ms、110×110、音效 `Effect.mkf` 95、`flags = 0x30001` ⇒ 点不掉）。
+ *
+ * @source 原版 `fcn_0040f381` 惡魔那一支（`god_info == 10`）尾段：
+ *   先 `0x0040f618` 拆一级（= core 的 `manifestGodOnLanding`），**再**
+ *   `0x0040f635 call 0x40b066` 取**那一格**的屏幕坐标、`0x0040f642` 解 0x20e、
+ *   `0x0040f65e/0x0040f669` 各 `sub eax, 0x37`（= 110 的一半，居中）后播放。
+ *
+ * ⚠️ 落点是**逐格**的（`boardFilmSpec.x/y` 是起播时定死的静态值），所以这里
+ *   起播那一刻现算 —— 与其它几段 440×440「整块棋盘 @(0,40)」的片子不同类。
+ *
+ * ⚠️ `deferredBoardBefore` 这里填的是 **after**（不是 `before`）：原版是**先拆、
+ *   重画、再播**（`0x0040f618` 在 `0x0040f642` 之前），而这一段只有 110×110，
+ *   四周的棋盘照样看得见 ⇒ 必须显示拆完的样子。其它几段（神明/恶犬/飛碟）
+ *   反过来（影片里「东西还在原地」），所以它们填 `before`。
+ */
+function startDevilFx(before: GameState, after: GameState): void {
+  if (!devilDemolishFxTrigger(before, after)) return;
+  // 被拆的就是行动者**脚下**那一格（`manifestGodOnLanding` 的 `estateEntityAtPlayer`）
+  const me = after.players[after.currentPlayer];
+  if (me === undefined) return;
+  const node = map.nodes[me.nodeId - 1];
+  if (node === undefined) return;
+  const p = worldToScreen(node.x, node.y, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h });
+  if (p === null) return;
+  deferredBoardBefore = after;
+  // 棋盘局部 → **屏幕**坐标（`currentBoardFilmFrame` 会再减回棋盘点）
+  startBoardFilm(devilDemolishFilmAt(p.x + LAYOUT.board.x, p.y + LAYOUT.board.y));
+  log(
+    `影片：惡魔顯靈拆屋 0x${DEVIL_FX_RESOURCE.toString(16)}` +
+      `（${DEVIL_DEMOLISH_FRAMES} 帧 × ${DEVIL_DEMOLISH_FRAME_MS} ms）`,
+  );
+}
+
+/**
  * 这一拍是不是剛抽到新聞 4「外星人攻打地球」—— 是就播飛碟那一段影片。
  *
  * ★ **没有** `options.animation` 闸：住院／入獄／神明那三支的调用点各自写着
@@ -5390,6 +5546,13 @@ function tickBoardFilm(now: number): void {
   }
   const pending = pendingBoardFilm;
   if (pending !== null) {
+    // ★★ W-51：**原版说完才播**。`beforeStage`（壞神附身 / 回合开始那三句）的句子
+    //   已经进了 `speechQueue`，这一段影片等它说完 —— 原版那一句 `player_say` 是
+    //   同步返回的，调用它的流程才走到 `read_mkf + fcn_0045144f`。
+    //   ⚠️ 只等 `speechQueue`（= 已经上台的那几句）；押在 `deferredSpeech` 里的
+    //      `afterStage` 本来就该排在影片**之后**，反过来挡影片就是死锁
+    //      （见 `stage-gate.ts` 的 `filmWaitsForSpeech` 与它的单测）。
+    if (filmWaitsForSpeech(speechQueue.length)) return;
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
     // 訊息框那一段盖着整块棋盘 ⇒ 原版次序是框先、片后，等它收屏
@@ -5469,7 +5632,18 @@ function currentBoardFilmFrame(now: number): {
  *   `read_mkf` 再 `fcn_0045144f`）—— 那之前挂在 `pendingBuildFx` 上，见 `tickBuildFx`。
  */
 function startBuildFx(before: GameState): void {
-  const plan = buildFxPlan(buildUpgradesOf(state, before));
+  const hints = buildUpgradesOf(state, before);
+  const plan = buildFxPlan(hints);
+  // ★★ W-55 行 3：**顯靈／自己加蓋那一声音效** —— `Effect.mkf` 50。
+  //
+  //   @source 三处 `push 0x4823da / call 0x4542ce`（号码与换算见 `SOUND_IDS.GOD_MANIFEST`）：
+  //     · 天使顯靈  VA 0x0040f4f3（`test bh,1` 成功之后、`test bh,0x80` 之前）
+  //     · 福神顯靈  VA 0x0040f9dc（同形）
+  //     · 自己的地升級 VA 0x004199de（`inc byte [地块+0x1a]` 之后、`cmp …,5` 之前）
+  //   ⇒ **在 `plan` 那道闸之前**响：原版这一声在 `0x40b110` 成功之后立刻播，
+  //     与「有没有剛好升到 5 級、要不要接 0x20b」无关（那两段影片才是 `plan` 的事）。
+  const manifestSound = manifestSoundFor(hints);
+  if (manifestSound !== null) sound.play('Effect.mkf', manifestSound);
   if (!plan.hammer && !plan.maxLevel) return;
   // ★ 加蓋那一级的可见性也要按到影片之后（issue #19 第 9 条）：原版
   //   `fcn_0040b110` 先把 `+0x1a` 加 1、**再**播大锤，播片期间棋盘不重绘。
@@ -5503,6 +5677,11 @@ function tickBuildFx(now: number): void {
   // ── ① 待播：等第一段影片解好 ──
   const pending = pendingBuildFx;
   if (pending !== null) {
+    // ★★ W-51：与 `tickBoardFilm` 同一条规矩 —— **原版说完才播**：`beforeStage`
+    //   的句子（壞神附身 / 回合开始那三句）在 `speechQueue` 里就等它说完。
+    //   ⚠️ 只等 `speechQueue`，不等 `deferredSpeech`（`afterStage` 排在演出之后，
+    //      反过来挡影片就是死锁）。见 `stage-gate.ts` 的 `filmWaitsForSpeech`。
+    if (filmWaitsForSpeech(speechQueue.length)) return;
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
     const res = buildClip(pending.first).resource;
@@ -5562,12 +5741,23 @@ function currentBuildFxBitmap(now: number): CanvasImageSource | null {
  *   棋盘是露着的，正是需求方看到「效果先于动画」的那一段。见 `deferred-board.ts`。
  */
 function boardDrawState(): GameState {
-  return boardStateForFilm(state, deferredBoardBefore, {
+  return boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags());
+}
+
+/**
+ * 影片窗口的四个位 —— `boardDrawState()` 与 `centerOnCurrentPlayer()` 的
+ * **冻镜头**判据共用同一份（各写一套必然漂移：一边以为在放片、一边以为没放）。
+ *
+ * ★ W-52：镜头那一处**不能**改用 `boardDrawState()` 的人（`holdBackPlayers` 只按住
+ *   `godInfo`，见 `centerOnCurrentPlayer` 里那段注释），但「窗口开没开」必须同源。
+ */
+function boardFilmWindowFlags(): BoardFilmWindow {
+  return {
     buildPlaying: buildFx !== null,
     buildPending: pendingBuildFx !== null,
     filmPlaying: boardFilm !== null,
     filmPending: pendingBoardFilm !== null,
-  });
+  };
 }
 
 function requestRender(): void {
@@ -5826,7 +6016,13 @@ function requestRender(): void {
       const bubble = speechQueue.current();
       if (bubble !== null) {
         stageCtx.save();
-        drawSpeechBubble(bubble, { ctx: stageCtx, sprite: uiSprite, font });
+        // `uiSprite` 的静态类型（`gameui.ts` 的 `SpriteFn`）只列了 Data/Panel 两个档案，
+        // 而台词还要取 `map.mkf` 的头像（W-50）—— 运行时本来就是同一个 `spriteNow`。
+        drawSpeechBubble(bubble, {
+          ctx: stageCtx,
+          sprite: uiSprite as unknown as BubbleSpriteFn,
+          font,
+        });
         stageCtx.restore();
       }
     }
@@ -5886,7 +6082,7 @@ function requestRender(): void {
 let spokenBubble: SpeechBubble | null = null;
 
 function speechTick(now: number): void {
-  // ★★ 演出还在演 → 台词**不上台**；演出收屏那一刻才把押着的那几句放上来。
+  // ★★ 演出还在演 → **`afterStage`** 的台词不上台；演出收摊那一刻才把押着的那几句放上来。
   //
   //   原版每一段演出都是**同步**的：`_rich4_player_say`（VA 0x0044ef41）与
   //   轉盤（`fcn_0044090e` → `fcn_0043f7c6`）都是**阻塞调用**，谁先谁后由
@@ -5900,18 +6096,26 @@ function speechTick(now: number): void {
   //   ```
   //   ⇒ 原版**必定**是「轉盤停 → 訊息框 → 付款人的台詞」。
   //   本引擎把 consequences 一次写完、演出是事后补的，所以那几句台词先被
-  //   `queueSpeech()` 押在 `deferredSpeech` 里（判据见那里）——这里等演出收屏
+  //   `queueSpeech()` 押在 `deferredSpeech` 里（判据见那里）——这里等演出收摊
   //   再放上台，等于把「同步演出」的语义补回来
   //   （试玩回报：「盘子还没停下来 NPC 的台词都触发了」）。
+  //
+  //   ★★ W-51 **死锁自查**：这里只挡**押后的那几句**的放行，**不挡队列本身**。
+  //      队列里可能正躺着 `beforeStage`（壞神附身 / 回合开始那三句）的句子，而
+  //      影片正等着它说完才起播（`tickBoardFilm` 的 `filmWaitsForSpeech`）——
+  //      若这里连 `speechQueue.tick` 一起冻住，两边就永远互等。
+  //      `stage-gate.test.ts` 有一条 2 秒内必须都走完的用例，另有一条把这条规则
+  //      改坏后**必须走不完**的反例。
   //
   //   ⚠️ 押在**入队之前**而不是「冻结队列再解冻」：`SpeechQueue` 的时间基准是
   //      绝对时刻（`shownAt`），冻结再解冻会把整段演出时长算进那 1000 ms 里，
   //      那一段台词就一闪而过。
-  if (blockingPresentation()) return;
-  const held = deferredSpeech;
-  if (held !== null) {
-    deferredSpeech = null;
-    if (speechQueue.push(held, now) > 0) requestRender();
+  if (!stageBusy(stageBusyFlags())) {
+    const held = deferredSpeech;
+    if (held !== null) {
+      deferredSpeech = null;
+      if (speechQueue.push(held, now) > 0) requestRender();
+    }
   }
   if (speechQueue.tick(now)) requestRender();
   const cur = speechQueue.current();
@@ -5995,6 +6199,8 @@ function drawGameStage(): void {
     return;
   }
   syncHolidayArt();
+  // ★★ W-54：远处生效的卡/道具/事件把镜头切过去（`view_to` 的**移动**那一支）
+  syncViewTarget();
   if (followPlayer) centerOnCurrentPlayer();
 
   renderer.draw({
@@ -6212,6 +6418,28 @@ function centerOnCurrentPlayer(): void {
   //   替身 `fcn_0040dd1f` 那一族。
   // 判据全在 `camera-follow.ts`（纯函数、有单测）；这里只落镜头
   const walkWorld = renderer.actorCenterWorld(performance.now());
+  // ★★ W-52：影片**待播 / 在播**且**没有补间**时 ⇒ **冻住镜头**（下面那一整段都不走）。
+  //
+  //   原版次序（狗咬那一支）：`0x0041b8cd` 狗咬片（**此时人还在原地**）→
+  //   `0x0043ec78 view_to`（对人）→ 搬到医院 → `0x0043ed59` 救护车 →
+  //   `0x0043eda0 view_to`（对医院）→ 台词。也就是说**影片期间**镜头一直停在
+  //   补间的终点（= 人走到的那个格），直到影片收屏才改看医院。
+  //   本引擎一条 action 把「走到狗那一格 + 送医院」一次写完，`after` 里人的
+  //   `nodeId` / `xpos,ypos` 已经是醫院大樓的景观位，于是补间收完到影片盖满棋盘
+  //   之间那几百毫秒镜头会先闪一下医院。
+  //
+  //   ⚠️ **这一句必须排在 `cameraFollowTarget` 之前** —— 它的 `confined` 支读的正是
+  //   after 的 `xpos/ypos`。放在后面等于没冻：浏览器实测（地图 0、`humans=1`、
+  //   徒步踩惡犬、`__rich4.debug.dog()` + `rollDice(forced:1)` + `step`）镜头照样在
+  //   补间收完那一刻跳到 `(319,990)`（醫院大樓景观）。
+  //   ⚠️ 任务书 §3.1 写的是「取玩家时用 `boardDrawState()`」，那一份也**不够**：
+  //   `deferred-board.ts` 的 `holdBackPlayers` 只按住 `godInfo`（它的用途是
+  //   「影片期间别把神明标记画上去」），`nodeId` / `blocking` 仍是 after ⇒ 拿它取人
+  //   照样走 `confined` 支（同样实测过）。
+  //   ⇒ 冻住最贴合原版：镜头停在补间终点（原版 `0x0040c3ec` 走完把目标格坐标写回
+  //   `player+0x08/+0x0a`，`fcn_00415e70` 读到的正是它），影片收屏后本函数自然
+  //   回到行动者 —— 与「影片 → 镜头 → 台词」那一步对得上。
+  if (walkWorld === null && boardFilmWindowOpen(boardFilmWindowFlags())) return;
   const target = cameraFollowTarget(walkWorld, me, (id) => map.nodes[id - 1]);
   if (target !== null && target.reason !== 'node') {
     camera = pixelCamera(target.x, target.y, camera.view);
@@ -8538,7 +8766,10 @@ async function boot(): Promise<void> {
         get camera() { return camera; },
         get history() { return history; },
         report: (note?: string) => { fileReport('manual', note ?? ''); },
-        get recorder() { return { trail: recorder.trailLength, errors: recorder.errorCount }; },
+        get recorder() {
+          // `devPatched` 是 W-53 的脏标志 —— 有它才能在控制台里确认「下一次 F9 报告会被拒验指纹」
+          return { trail: recorder.trailLength, errors: recorder.errorCount, devPatched: recorder.devPatched };
+        },
         get hoverNode() { return hoverNode; },
         get screen() { return screen; },
         /** 目标拾取会话（T-026）—— `null` = 没在拾取 */
@@ -8830,6 +9061,56 @@ async function boot(): Promise<void> {
          * `active` 恒真而 `phase` 不前进 = 「掷完骰子人不走」那一类卡死。
          */
         diceState: () => ({ phase: diceFx.phase, active: diceFx.active }),
+        /**
+         * ★★ **开发用的状态注入口**（W-53）—— 把状态直接摆到「那一刻」，再去验收画面。
+         *
+         * ```js
+         * __rich4.debug.patch((s) => ({ ...s, players: ... }))   // 任意改写
+         * __rich4.debug.dog()                                    // 配方 ①：踩惡犬
+         * __rich4.debug.god(9)                                   // 配方 ②：天使（godInfo = 9）
+         * __rich4.debug.god(5)                                   // 配方 ③：小窮神（godInfo = 5，附身）
+         * __rich4.debug.nextNode()                               // 当前玩家的下一个落点
+         * ```
+         *
+         * ⚠️ **它绕过 `reduceRecorded`**：状态与记录仪里的 action 流从此对不上。
+         *   故每次调用都往 `logRing` 记一行 `[dev] state patched`、并把记录仪标脏
+         *   （报告带 `devPatched: true`，`tools/replay-report.ts` 见到它拒绝验指纹）。
+         *   配方写法见 `docs/handoff.md` §2 与 `dev-patch.ts`。
+         */
+        debug: {
+          patch: (fn: (s: GameState) => GameState) => {
+            const next = applyPatch(
+              { getState: () => state, setState: (s) => { state = s; }, log, taint: () => recorder.taint() },
+              fn,
+            );
+            requestRender();
+            return next;
+          },
+          /** 当前玩家的下一个落点（与引擎走一步同一个 `pickNextNode`，只算不走）*/
+          nextNode: () => nextNodeOf(state, topo),
+          /** 配方 ①：把一只惡犬摆到下一个落点（踩上去那一条的复现入口）*/
+          dog: () => {
+            const out = placeDogAhead(state, topo);
+            state = out.state;
+            log(dogLogLine(out));
+            recorder.taint();
+            requestRender();
+            return out.nodeId;
+          },
+          /** 配方 ②③：给当前玩家一个附身神明；`godInfo` = **物件下标 + 1**（天使 9 / 小窮神 5）*/
+          god: (target = 9) => {
+            if (target !== 9 && target !== 5) {
+              log(`[dev] god(${target})：只有 9（天使）/ 5（小窮神）两条配方，没动状态`);
+              return 0;
+            }
+            const out = target === 5 ? giveSmallPovertyGod(state) : giveAngel(state);
+            state = out.state;
+            log(attachLogLine(target === 5 ? '小窮神' : '天使', out));
+            recorder.taint();
+            requestRender();
+            return out.godInfo;
+          },
+        },
       };
     }
 
