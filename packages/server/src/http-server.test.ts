@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { connect } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import type { Rich4Map } from '@rich4/core';
-import { createHttpHandler, startHttpServer, startServer } from './http-server.ts';
+import { baseOptions, createHttpHandler, startHttpServer, startServer } from './http-server.ts';
 import { GATE_COOKIE, Gate } from './gate.ts';
 import { MANIFEST_ASSET, MKF_WHITELIST, SECURITY_HEADERS } from './static.ts';
 
@@ -631,6 +631,76 @@ describe('★ 访问密码 —— 整站一道门（W-71）', () => {
       },
       gate,
     );
+  });
+
+  it('★★ 首席复核：特制 cookie（64 个 0xE9）打升级口 —— 回 401，**进程不许被带走**', async () => {
+    // 64 个 latin1 字符 = 64 个 JS 字符、128 个 UTF-8 字节。原先只比字符数就进 `timingSafeEqual`
+    // ⇒ 抛 `ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH`；升级口没有 catch ⇒ 未捕获异常 ⇒ 整个服务器退出
+    // （没登录就能打，实测复现）。vitest 里未捕获异常会让这条用例直接红。
+    const gate = makeGate();
+    await withWsServer(
+      () => undefined,
+      async ({ port }) => {
+        const first = await new Promise<string>((resolve, reject) => {
+          const sock = connect(port, '127.0.0.1', () => {
+            sock.write(
+              Buffer.concat([
+                Buffer.from(
+                  `GET /ws HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+                    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n' +
+                    `Origin: http://127.0.0.1:${port}\r\nCookie: ${GATE_COOKIE}=9999999999999.`,
+                  'latin1',
+                ),
+                Buffer.alloc(64, 0xe9),
+                Buffer.from('\r\n\r\n', 'latin1'),
+              ]),
+            );
+          });
+          let buf = '';
+          sock.on('data', (d: Buffer) => {
+            buf += d.toString('latin1');
+            sock.destroy();
+          });
+          sock.on('close', () => resolve(buf));
+          sock.on('error', reject);
+          setTimeout(() => sock.destroy(), 1500).unref();
+        });
+        expect(first.startsWith('HTTP/1.1 401')).toBe(true);
+        // 服务器还活着：正经的票照样升得上去
+        const jar = { Cookie: `${GATE_COOKIE}=${gate.issue()}`, Origin: `http://127.0.0.1:${port}` };
+        expect((await upgrade(port, '/ws', jar)).startsWith('HTTP/1.1 101')).toBe(true);
+      },
+      gate,
+    );
+  });
+
+  it('★★ 首席复核：`baseOptions` 逐项列 —— hub 的每一个选项都得带过去（`--turn-ms` 曾被静默丢掉）', () => {
+    const full = {
+      port: 1,
+      host: '127.0.0.1',
+      assetDir: '/a',
+      webDir: '/w',
+      map: {} as Rich4Map,
+      globalMapId: 3,
+      seedFor: () => 1,
+      mapFor: () => null,
+      seatCount: 3,
+      takeoverAfterMs: 11,
+      checksumEvery: 12,
+      sweepEveryMs: 13,
+      now: () => 14,
+      turnMs: 0,
+      awaitingFallbackMs: 15,
+      aliveExtendMs: 16,
+      hardCapMs: 17,
+      maxRooms: 18,
+      roomIdleMs: 19,
+    };
+    const out = baseOptions({ ...full, noGate: true, env: { X: 'y' } }) as unknown as Record<string, unknown>;
+    for (const [k, v] of Object.entries(full)) expect(out[k], k).toBe(v);
+    // 这一层的私事不许漏下去
+    expect('noGate' in out).toBe(false);
+    expect('env' in out).toBe(false);
   });
 
   it('登录正文：超过 1 KB → 413；不是表单类型 → 400', async () => {

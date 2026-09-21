@@ -85,6 +85,14 @@ describe('★ 票（HMAC cookie）', () => {
     expect(g.validCookieValue(ticket)).toBe(true);
   });
 
+  it('★★ 首席复核：形状不对的 mac **返回 false，不许抛**（64 个非 ASCII 字符曾让 `timingSafeEqual` 抛）', () => {
+    const g = gate({ now: () => 1_000_000 });
+    for (const mac of ['é'.repeat(64), '\u00e9'.repeat(32) + 'a'.repeat(32), 'G'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), 'A'.repeat(64)]) {
+      expect(() => g.validCookieValue(`9999999999999.${mac}`)).not.toThrow();
+      expect(g.validCookieValue(`9999999999999.${mac}`)).toBe(false);
+    }
+  });
+
   it('★ 篡改一位就拒（签名覆盖的是整份过期时刻）', () => {
     const g = gate({ now: () => 1_000_000 });
     const ticket = g.issue();

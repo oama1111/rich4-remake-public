@@ -115,9 +115,13 @@ export class Gate {
     const expiry = value.slice(0, dot);
     const mac = value.slice(dot + 1);
     if (!/^\d+$/.test(expiry)) return false;
+    // ★★ 首席复核（2026-09-20）：**先钉死形状再比**。`timingSafeEqual` 在两边**字节数**不同时会**抛**
+    //   （`ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH`），而原先只比了**字符数** —— 64 个 `0xE9`（latin1 头）
+    //   是 64 个字符、128 个 UTF-8 字节 ⇒ 抛。HTTP 那条有 `route().catch` 兜着（回 500），
+    //   **WebSocket 升级口没有** ⇒ 一条没登录的请求就能把整个进程带走（实测复现）。
+    if (!/^[0-9a-f]{64}$/.test(mac)) return false;
     const expected = this.#hmac(expiry);
-    if (mac.length !== expected.length) return false;
-    if (!timingSafeEqual(Buffer.from(mac), Buffer.from(expected))) return false;
+    if (!timingSafeEqual(Buffer.from(mac, 'latin1'), Buffer.from(expected, 'latin1'))) return false;
     return Number(expiry) > this.#now();
   }
 

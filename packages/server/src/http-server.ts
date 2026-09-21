@@ -387,7 +387,8 @@ export async function startServer(opts: StartServerOptions): Promise<RunningHttp
  *   （漏下去就会有人以为 `startHttpServer` 也认它们）。
  * ★ `authorizeUpgrade` 也不放行：升级口的闸**只**由 `gate` 说了算，两处都能定必然打架。
  */
-function baseOptions(opts: StartServerOptions): HttpServerOptions {
+/** @internal 导出只为单测能逐项钉住「一项都没漏」 */
+export function baseOptions(opts: StartServerOptions): HttpServerOptions {
   return {
     port: opts.port,
     assetDir: opts.assetDir,
@@ -402,5 +403,14 @@ function baseOptions(opts: StartServerOptions): HttpServerOptions {
     ...(opts.checksumEvery === undefined ? {} : { checksumEvery: opts.checksumEvery }),
     ...(opts.sweepEveryMs === undefined ? {} : { sweepEveryMs: opts.sweepEveryMs }),
     ...(opts.now === undefined ? {} : { now: opts.now }),
+    // ★★ 首席复核（2026-09-20）：W-73 / W-74 加的这几项当初**没列进来** —— 本函数是逐项列的，
+    //   漏列 = 静默丢掉：`cli.ts --turn-ms 5000` 照样打印「回合 5s」，hub 里却永远是缺省 60 秒
+    //   （`--turn-ms 0` 关不掉计时）。`http-server.test.ts` 有一条逐项对 `HubOptions` 的钉子防再漏。
+    ...(opts.turnMs === undefined ? {} : { turnMs: opts.turnMs }),
+    ...(opts.awaitingFallbackMs === undefined ? {} : { awaitingFallbackMs: opts.awaitingFallbackMs }),
+    ...(opts.aliveExtendMs === undefined ? {} : { aliveExtendMs: opts.aliveExtendMs }),
+    ...(opts.hardCapMs === undefined ? {} : { hardCapMs: opts.hardCapMs }),
+    ...(opts.maxRooms === undefined ? {} : { maxRooms: opts.maxRooms }),
+    ...(opts.roomIdleMs === undefined ? {} : { roomIdleMs: opts.roomIdleMs }),
   };
 }

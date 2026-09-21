@@ -611,6 +611,91 @@ function timeoutSeat(h: ReturnType<typeof clockHub>, seat: 0 | 1, at: number): v
   h.hub.sweepDisconnected(at);
 }
 
+/** 一桌**只有一个真人**、其余三座电脑（首席复核：W-74 原有用例全是「两真人、无电脑」，漏掉了这一种）*/
+function soloClockHub(opts: { turnMs?: number } = {}) {
+  let now = 0;
+  const a = new FakeConn();
+  const hub = new RoomHub({ map: loadMap(), globalMapId: 0, seedFor: () => 4242, seatCount: 4, now: () => now, ...opts });
+  const ha = hub.connect(a);
+  ha.onMessage(joinReq(ROOM, 'A', idFor('A')));
+  ha.onMessage({ t: 'start' });
+  const room = hub.room(ROOM)!;
+  const startTurns = (): number => a.inbox.filter((m) => m.t === 'action' && m.action.type === 'startTurn').length;
+  return {
+    hub,
+    a,
+    ha,
+    room,
+    startTurns,
+    /** 让 A 超时一次 */
+    timeout: (at: number): void => {
+      ha.onMessage({ t: 'awaiting', seq: room.sequenceLength - 1 });
+      now = at;
+      hub.sweepDisconnected(at);
+    },
+    setNow: (t: number): void => {
+      now = t;
+    },
+  };
+}
+
+describe('★★ 首席复核：一桌只有一个真人时，超时**不许**让服务器把整局打完', () => {
+  run('超时一次 ⇒ 电脑替他走**这一回合** + 三个电脑各一回合，然后**停在他身上**等他（已还给真人）', () => {
+    const h = soloClockHub();
+    expect(h.room.actingSeat).toBe(0);
+    const before = h.startTurns();
+    h.timeout(60_000);
+    // 实测修之前：同一瞬间连打几十个回合，直到 guard（10 000 条 action）才停
+    expect(h.startTurns() - before).toBeLessThanOrEqual(5);
+    expect(h.room.currentSeat).toBe(0);
+    expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    expect(h.a.last('room')?.room.seats[0]?.autopilot).toBeUndefined();
+  });
+
+  run('连续两次 ⇒ 长期託管；此后**没有真人在场** ⇒ 服务器停手等人，不往下打；resume 才接着走', () => {
+    const h = soloClockHub();
+    h.timeout(60_000);
+    h.timeout(120_000);
+    expect(h.a.last('room')?.room.seats[0]?.autopilot).toBe('idle');
+    const frozen = h.room.sequenceLength;
+    // 时间再怎么走、再怎么扫，都不许自己往下打
+    for (const t of [180_000, 600_000, 3_600_000]) {
+      h.setNow(t);
+      h.hub.sweepDisconnected(t);
+    }
+    expect(h.room.sequenceLength).toBe(frozen);
+
+    h.ha.onMessage({ t: 'resume' });
+    expect(h.a.last('room')?.room.seats[0]?.autopilot).toBeUndefined();
+    expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    // 收回之后电脑座位把该走的走完，最后停在他身上
+    expect(h.room.actingSeat).toBe(0);
+  });
+
+  run('唯一的真人掉线被代打 ⇒ 同样停手等人；重连后接着走并停在他身上', () => {
+    let now = 0;
+    const a = new FakeConn();
+    const hub = new RoomHub({ map: loadMap(), globalMapId: 0, seedFor: () => 4242, seatCount: 4, takeoverAfterMs: 1000, now: () => now });
+    const ha = hub.connect(a);
+    ha.onMessage(joinReq(ROOM, 'A', idFor('A')));
+    ha.onMessage({ t: 'start' });
+    const room = hub.room(ROOM)!;
+    ha.onClose(0);
+    now = 5000;
+    hub.sweepDisconnected(5000);
+    const frozen = room.sequenceLength;
+    // （别推过 10 分钟：全桌无人那么久房间会被回收，那是 W-73 §4 的另一条规矩）
+    now = 300_000;
+    hub.sweepDisconnected(now);
+    expect(room.sequenceLength).toBe(frozen);
+
+    const a2 = new FakeConn();
+    hub.connect(a2).onMessage(joinReq(ROOM, 'A', idFor('A')));
+    expect(room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    expect(room.actingSeat).toBe(0);
+  });
+});
+
 describe('★ W-74 回合计时', () => {
   run('★ awaiting 之后 60 秒不动 ⇒ 电脑代打这一回合；**回合结束就还给他**', () => {
     const h = clockHub();
@@ -759,27 +844,24 @@ describe('★ W-74 回合计时', () => {
     expect(h.a.last('clock')?.remainingMs).toBe(-1);
   });
 
-  run('★ 客户端比服务器先准备好：还没装表就报的 awaiting 不会被丢掉', () => {
+  run('★ 重连认回原座：**当场装表**，随后的 awaiting 立刻起数（不用等下一次扫描，更不用等 45 秒兜底）', () => {
     const h = clockHub();
     // A 掉线（表被作废），随后**带着同一个 clientId** 回来 —— 认回原座、改回真人。
-    // ⚠️ 认回这一段**不装表**（等下一次扫描），而客户端此刻已经有完整局面、
-    //    马上就会报 `awaiting` —— 那一条必须算数，否则要白等 45 秒兜底。
+    // ★ 首席复核：认回这一段现在会 `#driveComputers` + `#advance`（一桌「停手等人」时得有人把它踢起来），
+    //   于是表在这里就装上了；原先要等下一次 5 秒一扫才装。
     h.ha.onClose(1_000);
     h.setNow(2_000);
     const back = new FakeConn();
     const hBack = h.hub.connect(back);
     hBack.onMessage(joinReq(ROOM, 'A', idFor('A')));
     expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
-    expect(h.hub.clockOf(ROOM)).toBeNull(); // 还没装表
+    expect(h.hub.clockOf(ROOM)).toMatchObject({ seat: 0, counting: false });
 
     hBack.onMessage({ t: 'awaiting', seq: h.latestSeq() });
-    expect(back.last('clock')).toBeUndefined(); // 表还没装，先记账
-    // 下一次扫描装表时**立刻起数**（不是又从头等 45 秒）
-    h.hub.sweepDisconnected(3_000);
     expect(back.last('clock')).toMatchObject({ seat: 0, remainingMs: 60_000, hardRemainingMs: 180_000 });
     // 60 秒后照样超时
-    h.setNow(63_000);
-    h.hub.sweepDisconnected(63_000);
+    h.setNow(62_000);
+    h.hub.sweepDisconnected(62_000);
     expect(sawTimeout(back, 0)).toBe(true);
   });
 

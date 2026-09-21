@@ -328,6 +328,9 @@ export class RoomHub {
               conn.send({ t: 'start', seed: t.room.seed, globalMapId: t.room.globalMapId, seats: t.seats.map((x) => x.info) });
               const from = msg.since === undefined ? 0 : msg.since + 1;
               for (const b of t.room.since(from)) conn.send({ t: 'action', seq: b.seq, action: b.action });
+              // ★ 首席复核：这一桌可能正「停手等人」（见 `#anyonePresent`）—— 人回来了，接着走
+              this.#driveComputers(t);
+              this.#advance(t, this.#now());
             }
             return;
           }
@@ -447,6 +450,7 @@ export class RoomHub {
             const r = table.room.submitSystem({ type: 'setAi', player: seat, whoPlays: WHO_PLAYS_HUMAN });
             if (r.ok) this.#broadcast(table, { t: 'action', seq: r.broadcast.seq, action: r.broadcast.action });
             this.#broadcast(table, { t: 'room', room: this.#info(table) });
+            this.#driveComputers(table);
             this.#advance(table, this.#now());
             return;
           }
@@ -903,6 +907,10 @@ export class RoomHub {
     const room = t.room;
     if (room === null) return;
     for (let guard = 0; guard < 10_000; guard++) {
+      // ★★ 首席复核（2026-09-20，实测复现）：**没有一个真人在场**（全掉线 / 全被超时託管）就**停手等人**。
+      //   不然这一桌只剩电脑座位，本循环会在同一瞬间把**整局**打完 —— 人回来时棋已经下完了。
+      //   有人重连 / `resume` 时那两条路会再调本函数，从停下的地方接着走。
+      if (!this.#anyonePresent(t)) return;
       const seat = room.actingSeat;
       const slot = t.seats[seat];
       if (slot === undefined) return;
@@ -924,6 +932,24 @@ export class RoomHub {
       const r = room.submit(seat, action);
       if (!r.ok) return;
       this.#broadcast(t, { t: 'action', seq: r.broadcast.seq, action: r.broadcast.action });
+      // ★★ 首席复核：「他的回合一结束就把座位还给他」必须在**循环里**结算。
+      //   原先只在循环**之后**（`#advance`）结算 —— 一桌只有他一个真人时，循环里下一位、再下一位
+      //   全是电脑，转一圈又回到他（此刻仍是 `idle`）⇒ 永远停不下来：超时**一次**，服务器就在 0 秒内
+      //   替所有人连打几十个回合（实测）。结算后他变回 HUMAN，轮回到他时上面 `computerControlled` 为假，循环收手。
+      this.#settleTimeoutAutopilot(t);
     }
+  }
+
+  /**
+   * 这一桌此刻有没有**真人在场**：在线、且没被**长期**超时託管（掉线的 `conn === null` 自然不算）。
+   *
+   * ⚠️ 「只超时了一次、电脑正替他走这一回合」的人**算在场**（`pendingRestore` 为真）——
+   *   那一回合必须走完；走完当场还给他（`#settleTimeoutAutopilot`）。连续两次之后
+   *   `pendingRestore` 落回假而 `autopilot` 仍是 `'idle'`，那才是「人不在」。
+   */
+  #anyonePresent(t: Table): boolean {
+    return t.seats.some(
+      (s) => s.info.kind === 'human' && s.conn !== null && (s.info.autopilot !== 'idle' || s.pendingRestore),
+    );
   }
 }
