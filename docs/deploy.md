@@ -17,6 +17,38 @@
 
 ---
 
+## ★ 首次真机部署记录（2026-09-21，RackNerd 1 GB / Ubuntu 24.04 / Caddy 2.11）
+
+这份文档**第一次在真机上走通**，结论：Caddyfile 在真 Caddy 上 `Valid configuration`、证书自动签发成功、
+systemd 单元原样可用；外网实测门 / 白名单 / WebSocket 升级口 / 限流都按设计工作
+（含：经真 Caddy 伪造 `X-Forwarded-For` 换不掉限流桶；E-36 那条「特制 cookie」打线上服务 ⇒ 401，进程没事）。
+服务进程常驻内存 **≈ 220 MB**。走的时候踩了四个坑，照下面做就不会再踩：
+
+1. **有的 VPS 出厂没有 DNS 解析**（`apt` 报 `Temporary failure resolving`，`resolvectl status` 里一个 DNS 都没有）：
+   ```bash
+   sudo mkdir -p /etc/systemd/resolved.conf.d
+   printf '[Resolve]\nDNS=1.1.1.1 8.8.8.8\nFallbackDNS=9.9.9.9\n' | sudo tee /etc/systemd/resolved.conf.d/dns.conf
+   sudo systemctl restart systemd-resolved
+   ```
+2. **别用 root 跑 `caddy validate`**（或跑完记得改属主）：它会顺手创建一个 **root 所有**的
+   `/var/log/caddy/rich4.log`，之后 Caddy（用户 `caddy`）打不开它 ⇒ `caddy.service` 起不来。
+   修：`sudo chown caddy:caddy /var/log/caddy/rich4.log && sudo systemctl restart caddy`。
+3. **`cli.ts` 读地图结构走的是仓库相对路径 `assets/game/map.mkf`**，不是 `--assets`。不 clone 仓库（见下）时要补一个链接：
+   `ln -s /srv/rich4/deploy/assets/game/map.mkf /srv/rich4/rich4-remake/assets/game/map.mkf`。
+4. **域名别走 Cloudflare 代理（橙色云朵）**：证书签发、按来源 IP 的限流、WebSocket 都是按「浏览器直连」测的；用「仅 DNS」。
+
+**实际采用的做法与下文第 2–4 步不同（更省事，推荐）**：服务器上**不 clone 仓库**（不用往服务器放 GitHub 凭据，
+服务器上也就不会出现完整的原版素材目录），而是在自己电脑上构建好再 `rsync` 上去：
+① 本机 `pnpm --filter @rich4/client build` 与 `pnpm precompress --from assets/game --out <本机临时目录>`；
+② `rsync` 三样：服务器要用的源码（`packages/{core,data,assets-pipeline,server}` + 根上的 `package.json` / `pnpm-lock.yaml` /
+`pnpm-workspace.yaml` / `tsconfig*.json` + `deploy/`）、`packages/client/dist-web/`、素材（7 个 `.mkf` 原件 + `.br/.gz` + 清单 + `*.mid`）；
+③ 服务器上只装运行期依赖：`pnpm install --frozen-lockfile --prod --filter "@rich4/server..."`（1 GB 内存十秒装完）。
+更新时重做 ①②（素材没变就不用传素材）再 `systemctl restart rich4`。
+
+**密码由需求方本人设**（谁也不代输）：服务器上放了 `/usr/local/sbin/rich4-set-password` ——
+静默读两遍、校验字符集（systemd 的 `EnvironmentFile` 对引号 / `$` / `#` 敏感，所以只放行字母数字与 `._-@+=!?`）、
+保留 `RICH4_COOKIE_SECRET`、写 `/etc/rich4.env`（600）并重启服务。换密码也是它。
+
 ## 0. 需要什么
 
 | 项 | 说明 |
