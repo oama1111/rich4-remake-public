@@ -175,6 +175,33 @@ describe('★ 限流（每分钟 5 次 POST）', () => {
     expect(g.attemptEntries).toBe(1);
   });
 
+  it('★ 全局兜底：**不看 IP** —— 换来源也刷不动（E-37 那条的底）', () => {
+    const g = gate({ maxGlobalAttempts: 3, maxAttempts: 100, windowMs: 60_000, now: () => 0 });
+    expect(g.tryAttempt('1.1.1.1')).toBe(true);
+    expect(g.tryAttempt('2.2.2.2')).toBe(true);
+    expect(g.tryAttempt('3.3.3.3')).toBe(true);
+    expect(g.tryAttempt('4.4.4.4')).toBe(false); // 换 IP 也没用
+    expect(g.globalAttempts).toBe(4);
+  });
+
+  it('★ 全局窗口滚过之后重新放行；`maxGlobalAttempts: 0` 关掉这一条', () => {
+    let now = 0;
+    const g = gate({ maxGlobalAttempts: 1, maxAttempts: 100, windowMs: 1000, now: () => now });
+    expect(g.tryAttempt('a')).toBe(true);
+    expect(g.tryAttempt('b')).toBe(false);
+    now = 1001;
+    expect(g.tryAttempt('b')).toBe(true);
+
+    const off = gate({ maxGlobalAttempts: 0, maxAttempts: 100, now: () => 0 });
+    for (let i = 0; i < 300; i++) expect(off.tryAttempt(`ip${i}`), `第 ${i} 个来源`).toBe(true);
+  });
+
+  it('缺省是 60/分钟 —— 几个朋友偶尔登一次碰不到它', () => {
+    const g = gate({ now: () => 0 });
+    for (let i = 0; i < 60; i++) expect(g.tryAttempt(`ip-${i}`)).toBe(true);
+    expect(g.tryAttempt('ip-61')).toBe(false);
+  });
+
   it('不同 IP 各算各的', () => {
     const g = gate({ now: () => 0, maxAttempts: 1 });
     expect(g.tryAttempt('1.1.1.1')).toBe(true);
@@ -195,11 +222,24 @@ describe('★ 限流（每分钟 5 次 POST）', () => {
 });
 
 describe('★ 客户端 IP / HTTPS / 主机名', () => {
-  it('X-Forwarded-For 取**最左**一段，没有就用 socket 地址', () => {
-    expect(clientIp(req({ 'x-forwarded-for': '203.0.113.7, 10.0.0.1' }))).toBe('203.0.113.7');
-    expect(clientIp(req({ 'x-forwarded-for': '203.0.113.7' }))).toBe('203.0.113.7');
-    expect(clientIp(req({}, '10.0.0.9'))).toBe('10.0.0.9');
-    expect(clientIp(req({ 'x-forwarded-for': '' }, '10.0.0.9'))).toBe('10.0.0.9');
+  it('★ 首席复核续：X-Forwarded-For 只认**反代（本机）**来的，而且取**最右**一段', () => {
+    // 经 Caddy：对端是回环，真实来源被**追加在最右**
+    expect(clientIp(req({ 'x-forwarded-for': '203.0.113.7, 10.0.0.1' }, '127.0.0.1'))).toBe('10.0.0.1');
+    expect(clientIp(req({ 'x-forwarded-for': '203.0.113.7' }, '::1'))).toBe('203.0.113.7');
+    expect(clientIp(req({ 'x-forwarded-for': '1.2.3.4, 203.0.113.7' }, '::ffff:127.0.0.1'))).toBe('203.0.113.7');
+    // 直连（对端不是回环）：**完全不信** XFF
+    expect(clientIp(req({ 'x-forwarded-for': '1.2.3.4' }, '198.51.100.9'))).toBe('198.51.100.9');
+    // 没有 XFF / 空值 ⇒ 用 socket 地址
+    expect(clientIp(req({}, '127.0.0.1'))).toBe('127.0.0.1');
+    expect(clientIp(req({ 'x-forwarded-for': '' }, '127.0.0.1'))).toBe('127.0.0.1');
+  });
+
+  it('★ 伪造 X-Forwarded-For 换不掉限流桶（原来换得掉 —— 每次换一个假值就是一个新桶）', () => {
+    const behindProxy = (v: string): string => clientIp(req({ 'x-forwarded-for': v }, '127.0.0.1'));
+    // Caddy 把真实来源追加在最右 ⇒ 假值写多少个都落到同一个桶
+    expect(behindProxy('1.1.1.1, 203.0.113.9')).toBe('203.0.113.9');
+    expect(behindProxy('2.2.2.2, 203.0.113.9')).toBe('203.0.113.9');
+    expect(behindProxy('3.3.3.3, 203.0.113.9')).toBe('203.0.113.9');
   });
 
   it('Secure 只看 X-Forwarded-Proto', () => {

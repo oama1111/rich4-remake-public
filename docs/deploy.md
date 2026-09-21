@@ -141,6 +141,10 @@ sudo apt update && sudo apt install -y caddy
 sudo cp /srv/rich4/rich4-remake/deploy/Caddyfile.example /etc/caddy/Caddyfile
 sudo sed -i 's/rich4\.example\.com/你的真域名/g' /etc/caddy/Caddyfile   # ← 换成真域名
 sudo mkdir -p /var/log/caddy && sudo chown caddy:caddy /var/log/caddy
+# ★ 示例里有一行 `header_up X-Forwarded-For {remote_host}` —— **别删**。
+#   反代怎么处理客户端自己带来的这个头，各家各版本不一样（有的**追加**在后面，有的丢掉）；
+#   显式覆盖之后上游只看到一段真实来源，哪一种都对。服务器那边另有两层兜底
+#   （只信本机反代写的最右一段 + 不看来源的全局限流），见 docs/escalations.md E-37 / E-39。
 sudo systemctl reload caddy || sudo systemctl restart caddy
 sudo journalctl -u caddy -n 20 --no-pager     # 期望看到证书申请成功 + 反代 200
 ```
@@ -198,6 +202,7 @@ sudo systemctl restart rich4
 | 打不开 / 证书没过 | `sudo journalctl -u caddy -n 50`；域名解析对不对 |
 | 502 | `systemctl status rich4`；进程是不是拒绝启动了（多半是 `/etc/rich4.env` 少了变量或权限不对） |
 | 一直转圈在 303 | 票没过期但 cookie 被浏览器挡了（第三方 cookie / 隐私模式） |
+| 登录报 429 | 两种限流：**同一来源**每分钟 5 次，**整台服务器**每分钟 60 次（后者不看来源，是防爆破的底）。等一分钟再试 |
 | 素材 404 | `ls /srv/rich4/deploy/assets/game`；`--assets` 指的目录对不对 |
 | 房间满了 | 服务器最多**同时 50 个房间**；没人在线的房间 10 分钟后自动回收 |
 | 有人一回合不动 | 60 秒后由电脑代打；**连续两次**就交给电脑託管（他点一下画面能收回） |

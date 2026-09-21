@@ -865,6 +865,26 @@ describe('★ W-74 回合计时', () => {
     expect(sawTimeout(back, 0)).toBe(true);
   });
 
+  run('★ 首席复核续：**连续两次超时之后重连** ⇒ 座位也要回到真人手里（原来是死座）', () => {
+    const h = clockHub();
+    timeoutSeat(h, 0, 60_000);
+    timeoutSeat(h, 1, 120_000);
+    timeoutSeat(h, 0, 180_000);
+    expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT);
+    expect(h.b.last('room')?.room.seats[0]?.autopilot).toBe('idle');
+
+    // A 刷新页面回来
+    h.ha.onClose(200_000);
+    const back = new FakeConn();
+    const hBack = h.hub.connect(back);
+    hBack.onMessage(joinReq(ROOM, 'A', idFor('A')));
+    // ★ 镜像里必须改回纯真人 —— 否则 `#shouldTime` 不再给他计时、
+    //   `#driveComputers` 又认不出他（它只认 `takenOver` 与 `autopilot`）⇒ 这一座从此没人推
+    expect(h.room.state.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    // 而且这一桌重新「有人在」⇒ 计时表回来了（此刻轮到的是 B，所以等的是 1 号座）
+    expect(h.hub.clockOf(ROOM)).not.toBeNull();
+  });
+
   run('★ --turn-ms 0 ⇒ 永不超时', () => {
     const h = clockHub({ turnMs: 0 });
     expect(h.hub.clockOf(ROOM)).toBeNull();

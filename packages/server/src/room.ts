@@ -194,8 +194,15 @@ export class Room {
   submitSystem(action: Action): { ok: true; broadcast: Broadcast } | { ok: false; reason: string } {
     let advanced: GameState | null = null;
     const r = this.#sequencer.submitSystem(action, (a) => {
-      const next = reduce(this.#mirror, a, this.#topo);
-      if (next === this.#mirror) return false;
+      // ★★ 首席复核续（DeepSeek）：**`undefined` 也要挡**，与 `submit` 那一条同理。
+      //   `reduce` 的 switch 对不认识的 `type` 没有分支可走 ⇒ 返回 `undefined`；
+      //   原先只比了 `next === this.#mirror`，于是 `#mirror` 被换成 `undefined`，
+      //   **紧接着那一行 `stateFingerprint` 就抛**，而且这个房间**从此永久坏掉**
+      //   （之后每一次 `fingerprint` 都抛）。实测复现（`room.test.ts` 里那条）。
+      //   眼下 `submitSystem` 只被服务器自己用 `setAi` 调，够不到这条路 ——
+      //   但这条闸与 `submit` 必须对称，不然下一次加系统 action 就会踩上。
+      const next = reduce(this.#mirror, a, this.#topo) as GameState | undefined;
+      if (next === undefined || next === this.#mirror) return false;
       advanced = next;
       return true;
     });

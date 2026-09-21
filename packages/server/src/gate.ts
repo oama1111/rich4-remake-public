@@ -43,6 +43,19 @@ export interface GateOptions {
   windowMs?: number;
   /** 一个窗口内最多几次 POST @default 5 */
   maxAttempts?: number;
+  /**
+   * ★ 同一个窗口内，**所有来源加起来**最多几次 POST @default 60。
+   *
+   * 为什么还要这一条：按 IP 分桶依赖「IP 是真的」—— 它取决于反代怎么处理
+   * `X-Forwarded-For`（见 E-37）。万一部署姿势与 `deploy/Caddyfile.example` 不一样
+   * （或者以后有人加了 CDN），按 IP 的桶就可能被绕开。这一条**根本不看 IP**，
+   * 于是「猜密码」的总次数被钉死在一个很小的数上：纵使分桶全废，也刷不动。
+   *
+   * ⚠️ 口径：**连对人也是算的**（它就是「这一分钟这台服务器收了多少次登录提交」）。
+   *   60/分钟对「几个朋友偶尔登一次」绰绰有余，对爆破是硬墙。
+   *   `0` = 关掉这一条。
+   */
+  maxGlobalAttempts?: number;
   /** 限流表上限 @default 10000；超了**整表清空** */
   maxEntries?: number;
 }
@@ -69,7 +82,10 @@ export class Gate {
   readonly #windowMs: number;
   readonly #maxAttempts: number;
   readonly #maxEntries: number;
+  readonly #maxGlobalAttempts: number;
   readonly #attempts = new Map<string, Attempt>();
+  /** ★ 全局限流：一个窗口内**所有来源**加起来的次数（不看 IP） */
+  #global: Attempt = { count: 0, windowStart: 0 };
   #lastSweep = 0;
 
   constructor(opts: GateOptions) {
@@ -81,6 +97,7 @@ export class Gate {
     this.#windowMs = opts.windowMs ?? 60_000;
     this.#maxAttempts = opts.maxAttempts ?? 5;
     this.#maxEntries = opts.maxEntries ?? 10_000;
+    this.#maxGlobalAttempts = opts.maxGlobalAttempts ?? 60;
   }
 
   // ----------------------------------------------------------
@@ -224,6 +241,13 @@ export class Gate {
    */
   tryAttempt(ip: string): boolean {
     const now = this.#now();
+    // ★ 全局限流：**先过它**。它不看 IP，所以反代怎么处理 `X-Forwarded-For` 都不影响它
+    //   （E-37 那一条的兜底）。
+    if (this.#maxGlobalAttempts > 0) {
+      if (now - this.#global.windowStart >= this.#windowMs) this.#global = { count: 0, windowStart: now };
+      this.#global.count += 1;
+      if (this.#global.count > this.#maxGlobalAttempts) return false;
+    }
     if (now - this.#lastSweep >= this.#windowMs) {
       this.#lastSweep = now;
       for (const [key, rec] of this.#attempts) {
@@ -243,6 +267,11 @@ export class Gate {
   /** 供测试/监控：限流表里现在有几条 */
   get attemptEntries(): number {
     return this.#attempts.size;
+  }
+
+  /** 供测试/监控：本窗口内**所有来源加起来**已经提交了几次 */
+  get globalAttempts(): number {
+    return this.#global.count;
   }
 
   // ----------------------------------------------------------
@@ -329,15 +358,40 @@ export function gateFromEnv(
 //  小工具
 // ============================================================
 
-/** 客户端 IP：`X-Forwarded-For` **最左一段**（Caddy 会把真实来源放那儿），没有就用 socket */
+/**
+ * 这个地址是不是「本机」（我们的反代就在本机）。
+ *
+ * 部署形态见 `docs/deploy.md`：`--host 127.0.0.1` + Caddy 在同一台机器上。
+ * IPv6 回环可能是 `::1`，也可能是 v4-mapped 的 `::ffff:127.0.0.1`。
+ */
+function isLoopback(address: string): boolean {
+  return address === '::1' || address === '::ffff:127.0.0.1' || address.startsWith('127.');
+}
+
+/**
+ * 客户端 IP —— **登录限流按它分桶**。
+ *
+ * ★★ 首席复核续（DeepSeek）：原来是「`X-Forwarded-For` **最左**一段」。**那一段是客户端
+ *   自己写的**：Caddy 是**追加**（`<客户端自带的>, <真实来源>`），所以最左那段攻击者随便填 ——
+ *   每次换一个假值就等于每次换一个限流桶，**登录限流（唯一的防爆破手段）形同虚设**。
+ *   实测复现（`gate.test.ts` 里那条「伪造 X-Forwarded-For」）。
+ *
+ * 现在两条：
+ *   ① **只认来自回环对端的 `X-Forwarded-For`** —— 直连进来的请求（没起反代）一律用
+ *      socket 地址，别的一概不看（否则攻击者又能自己造桶）；
+ *   ② 取**最右**一段：那是紧挨着我们的那个反代写进去的。
+ *
+ * ⚠️ 这与任务书 W-71 §2 写的「最左一段」**相反** —— 见 escalations **E-37**。
+ */
 export function clientIp(req: IncomingMessage): string {
+  const peer = req.socket.remoteAddress ?? 'unknown';
+  if (!isLoopback(peer)) return peer;
   const raw = req.headers['x-forwarded-for'];
-  const text = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof text === 'string' && text !== '') {
-    const first = text.split(',')[0]?.trim();
-    if (first !== undefined && first !== '') return first;
-  }
-  return req.socket.remoteAddress ?? 'unknown';
+  const text = Array.isArray(raw) ? raw[raw.length - 1] : raw;
+  if (typeof text !== 'string' || text === '') return peer;
+  const parts = text.split(',');
+  const last = parts[parts.length - 1]?.trim();
+  return last !== undefined && last !== '' ? last : peer;
 }
 
 /** 经 Caddy 反代进来的 HTTPS 请求 —— `Secure` 只在这种时候加 */

@@ -727,6 +727,37 @@ describe('★ 访问密码 —— 整站一道门（W-71）', () => {
   });
 });
 
+describe('★ 兜底那一层自己抛，也不许把进程带走（首席复核续）', () => {
+  it('响应已经死了（writeHead 抛）⇒ 不产生未处理的 Promise 拒绝', async () => {
+    const seen: unknown[] = [];
+    const onUnhandled = (e: unknown): void => {
+      seen.push(e);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const handler = createHttpHandler({ assetDir: '/definitely/not/here' });
+      // 一个「一写就抛」的假响应：真机上对应「客户端已经断了，响应对象已经死透」
+      const res = {
+        headersSent: false,
+        writeHead(): never {
+          throw new Error('response is gone');
+        },
+        end(): never {
+          throw new Error('response is gone');
+        },
+        destroy(): void {},
+      };
+      const req = { method: 'GET', url: '/', headers: {} };
+      handler(req as never, res as never);
+      // 给 `.catch` 那一拍留出时间（未处理拒绝是下一拍才报的）
+      await new Promise((r) => setTimeout(r, 80));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(seen).toEqual([]);
+  });
+});
+
 describe('★ startServer —— 门从环境变量来', () => {
   const base = { port: 0, map: STUB_MAP, globalMapId: 0, seedFor: () => 1 };
 

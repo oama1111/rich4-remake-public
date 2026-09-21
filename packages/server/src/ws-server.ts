@@ -16,7 +16,7 @@
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { ClientMessage } from '@rich4/core';
-import { RoomHub, type HubOptions } from './hub.ts';
+import { RoomHub, type ClientHandle, type HubOptions } from './hub.ts';
 
 /** `ws` 里我们用到的那一小截接口，避免把类型依赖钉死在包上 */
 interface WsLike {
@@ -109,7 +109,9 @@ export async function attachWebSocket(
     });
     // ★ `ws` 在协议错误 / 超 `maxPayload` 时发 'error'；没人听 = 未捕获异常 = 进程退出
     socket.on('error', () => socket.terminate());
-    socket.on('close', () => handle.onClose(now()));
+    // ★★ 首席复核续（DeepSeek）：`close` 是**事件回调**，它抛 = 未捕获异常 = 进程退出
+    //   （`onClose` 里会广播、会推进时钟）。断一条连接绝不许带走整台服务器。
+    socket.on('close', () => closeOnce(handle, now()));
   });
 
   // 升级上来的 socket 不走 http.Server 的 closeAllConnections()，得自己收着
@@ -136,7 +138,7 @@ export async function attachWebSocket(
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   };
 
-  const timer = setInterval(() => hub.sweepDisconnected(now()), opts.sweepEveryMs ?? SWEEP_EVERY_MS);
+  const timer = setInterval(() => sweepOnce(hub, now()), opts.sweepEveryMs ?? SWEEP_EVERY_MS);
   return {
     hub,
     close: () => {
@@ -146,6 +148,49 @@ export async function attachWebSocket(
       wss.close();
     },
   };
+}
+
+/**
+ * 扫描**一拍**。
+ *
+ * ★★ 首席复核续（DeepSeek）：这一条**没有外层 catch** —— 扫描里任何一处抛
+ *   （实测：一条发送失败的连接就够）都会是未捕获异常，整台服务器（= 所有房间）退出。
+ *   抽成函数是**为了单测能直接钉住**这一点（真机上 `ws` 的 `send` 在 socket 关到一半时
+ *   是 emit `'error'` 而不是抛，用真客户端造不出那一下）。
+ */
+export function sweepOnce(hub: RoomHub, now: number): void {
+  try {
+    hub.sweepDisconnected(now);
+  } catch (err) {
+    // 这一拍扫不完就下一拍再来：绝不让进程走掉 —— 但**要留痕**（首席复核）：
+    // 回合超时 / 掉线代打 / 空房回收全靠这一扫，它要是每拍都抛，症状是「计时永远不响」，
+    // 吞得一声不吭就没人查得到。
+    reportSwallowed('sweep', err);
+  }
+}
+
+/**
+ * 断开**一条**连接的收尾。
+ *
+ * ★★ 同 `sweepOnce`：`socket.on('close')` 也是**事件回调**，它抛同样是未捕获异常。
+ */
+export function closeOnce(handle: ClientHandle, now: number): void {
+  try {
+    handle.onClose(now);
+  } catch (err) {
+    // 只丢这一条连接的收尾 —— 同样留痕
+    reportSwallowed('close', err);
+  }
+}
+
+/** 每个位置**每分钟最多记一条**：留痕，但一个每秒都抛的 bug 不许把日志刷爆 */
+const lastReported = new Map<string, number>();
+export function reportSwallowed(where: string, err: unknown, nowMs: number = Date.now()): boolean {
+  const last = lastReported.get(where);
+  if (last !== undefined && nowMs - last < 60_000) return false;
+  lastReported.set(where, nowMs);
+  console.error(`[rich4] ${where} 里吞掉一个异常（进程没事，但这是个 bug）：`, err);
+  return true;
 }
 
 /** 去掉 query 的请求路径 */
