@@ -175,6 +175,33 @@ describe('★ 限流（每分钟 5 次 POST）', () => {
     expect(g.attemptEntries).toBe(1);
   });
 
+  it('★ 全局兜底：**不看 IP** —— 换来源也刷不动（E-37 那条的底）', () => {
+    const g = gate({ maxGlobalAttempts: 3, maxAttempts: 100, windowMs: 60_000, now: () => 0 });
+    expect(g.tryAttempt('1.1.1.1')).toBe(true);
+    expect(g.tryAttempt('2.2.2.2')).toBe(true);
+    expect(g.tryAttempt('3.3.3.3')).toBe(true);
+    expect(g.tryAttempt('4.4.4.4')).toBe(false); // 换 IP 也没用
+    expect(g.globalAttempts).toBe(4);
+  });
+
+  it('★ 全局窗口滚过之后重新放行；`maxGlobalAttempts: 0` 关掉这一条', () => {
+    let now = 0;
+    const g = gate({ maxGlobalAttempts: 1, maxAttempts: 100, windowMs: 1000, now: () => now });
+    expect(g.tryAttempt('a')).toBe(true);
+    expect(g.tryAttempt('b')).toBe(false);
+    now = 1001;
+    expect(g.tryAttempt('b')).toBe(true);
+
+    const off = gate({ maxGlobalAttempts: 0, maxAttempts: 100, now: () => 0 });
+    for (let i = 0; i < 300; i++) expect(off.tryAttempt(`ip${i}`), `第 ${i} 个来源`).toBe(true);
+  });
+
+  it('缺省是 60/分钟 —— 几个朋友偶尔登一次碰不到它', () => {
+    const g = gate({ now: () => 0 });
+    for (let i = 0; i < 60; i++) expect(g.tryAttempt(`ip-${i}`)).toBe(true);
+    expect(g.tryAttempt('ip-61')).toBe(false);
+  });
+
   it('不同 IP 各算各的', () => {
     const g = gate({ now: () => 0, maxAttempts: 1 });
     expect(g.tryAttempt('1.1.1.1')).toBe(true);

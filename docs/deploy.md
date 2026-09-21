@@ -141,6 +141,10 @@ sudo apt update && sudo apt install -y caddy
 sudo cp /srv/rich4/rich4-remake/deploy/Caddyfile.example /etc/caddy/Caddyfile
 sudo sed -i 's/rich4\.example\.com/你的真域名/g' /etc/caddy/Caddyfile   # ← 换成真域名
 sudo mkdir -p /var/log/caddy && sudo chown caddy:caddy /var/log/caddy
+# ★ 示例里有一行 `header_up X-Forwarded-For {remote_host}` —— **别删**。
+#   Caddy 缺省是把这个头**追加**（客户端自己带的在前、真实来源在后），
+#   而服务器按它给登录限流分桶：不覆盖的话，最左那段是攻击者随便填的，
+#   5 次/分钟的上限就被绕过了（见 docs/escalations.md E-37）。
 sudo systemctl reload caddy || sudo systemctl restart caddy
 sudo journalctl -u caddy -n 20 --no-pager     # 期望看到证书申请成功 + 反代 200
 ```
@@ -198,6 +202,7 @@ sudo systemctl restart rich4
 | 打不开 / 证书没过 | `sudo journalctl -u caddy -n 50`；域名解析对不对 |
 | 502 | `systemctl status rich4`；进程是不是拒绝启动了（多半是 `/etc/rich4.env` 少了变量或权限不对） |
 | 一直转圈在 303 | 票没过期但 cookie 被浏览器挡了（第三方 cookie / 隐私模式） |
+| 登录报 429 | 两种限流：**同一来源**每分钟 5 次，**整台服务器**每分钟 60 次（后者不看来源，是防爆破的底）。等一分钟再试 |
 | 素材 404 | `ls /srv/rich4/deploy/assets/game`；`--assets` 指的目录对不对 |
 | 房间满了 | 服务器最多**同时 50 个房间**；没人在线的房间 10 分钟后自动回收 |
 | 有人一回合不动 | 60 秒后由电脑代打；**连续两次**就交给电脑託管（他点一下画面能收回） |

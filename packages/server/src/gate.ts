@@ -43,6 +43,19 @@ export interface GateOptions {
   windowMs?: number;
   /** 一个窗口内最多几次 POST @default 5 */
   maxAttempts?: number;
+  /**
+   * ★ 同一个窗口内，**所有来源加起来**最多几次 POST @default 60。
+   *
+   * 为什么还要这一条：按 IP 分桶依赖「IP 是真的」—— 它取决于反代怎么处理
+   * `X-Forwarded-For`（见 E-37）。万一部署姿势与 `deploy/Caddyfile.example` 不一样
+   * （或者以后有人加了 CDN），按 IP 的桶就可能被绕开。这一条**根本不看 IP**，
+   * 于是「猜密码」的总次数被钉死在一个很小的数上：纵使分桶全废，也刷不动。
+   *
+   * ⚠️ 口径：**连对人也是算的**（它就是「这一分钟这台服务器收了多少次登录提交」）。
+   *   60/分钟对「几个朋友偶尔登一次」绰绰有余，对爆破是硬墙。
+   *   `0` = 关掉这一条。
+   */
+  maxGlobalAttempts?: number;
   /** 限流表上限 @default 10000；超了**整表清空** */
   maxEntries?: number;
 }
@@ -69,7 +82,10 @@ export class Gate {
   readonly #windowMs: number;
   readonly #maxAttempts: number;
   readonly #maxEntries: number;
+  readonly #maxGlobalAttempts: number;
   readonly #attempts = new Map<string, Attempt>();
+  /** ★ 全局限流：一个窗口内**所有来源**加起来的次数（不看 IP） */
+  #global: Attempt = { count: 0, windowStart: 0 };
   #lastSweep = 0;
 
   constructor(opts: GateOptions) {
@@ -81,6 +97,7 @@ export class Gate {
     this.#windowMs = opts.windowMs ?? 60_000;
     this.#maxAttempts = opts.maxAttempts ?? 5;
     this.#maxEntries = opts.maxEntries ?? 10_000;
+    this.#maxGlobalAttempts = opts.maxGlobalAttempts ?? 60;
   }
 
   // ----------------------------------------------------------
@@ -224,6 +241,13 @@ export class Gate {
    */
   tryAttempt(ip: string): boolean {
     const now = this.#now();
+    // ★ 全局限流：**先过它**。它不看 IP，所以反代怎么处理 `X-Forwarded-For` 都不影响它
+    //   （E-37 那一条的兜底）。
+    if (this.#maxGlobalAttempts > 0) {
+      if (now - this.#global.windowStart >= this.#windowMs) this.#global = { count: 0, windowStart: now };
+      this.#global.count += 1;
+      if (this.#global.count > this.#maxGlobalAttempts) return false;
+    }
     if (now - this.#lastSweep >= this.#windowMs) {
       this.#lastSweep = now;
       for (const [key, rec] of this.#attempts) {
@@ -243,6 +267,11 @@ export class Gate {
   /** 供测试/监控：限流表里现在有几条 */
   get attemptEntries(): number {
     return this.#attempts.size;
+  }
+
+  /** 供测试/监控：本窗口内**所有来源加起来**已经提交了几次 */
+  get globalAttempts(): number {
+    return this.#global.count;
   }
 
   // ----------------------------------------------------------
