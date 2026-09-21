@@ -141,6 +141,43 @@ describe('NetClient', () => {
     ]);
   });
 
+  it('★ deferChecksum：收下时**不报**；宿主真的施加到第 10 / 20 号时才报，带的是**那一刻**的指纹（第七份试玩回报 #1）', () => {
+    // 宿主把广播排队按演出节拍播：`onAction` 返回时本地状态还没动，那一刻取指纹必然「失步」。
+    const sent: ClientMessage[] = [];
+    const inbox: number[] = [];
+    let appliedCount = 0;
+    const client = new NetClient(
+      { send: (text) => sent.push(JSON.parse(text) as ClientMessage) },
+      {
+        room: 'r1',
+        name: '小明',
+        clientId: CLIENT_ID,
+        deferChecksum: true,
+        onStart: () => undefined,
+        onAction: (_a, seq) => inbox.push(seq),
+        fingerprint: () => `fp${appliedCount}`,
+      },
+    );
+    for (let i = 0; i < 25; i++) client.receive(JSON.stringify({ t: 'action', seq: i, action: roll }));
+    expect(inbox).toHaveLength(25);
+    expect(sent.filter((m) => m.t === 'checksum')).toEqual([]); // 一条都还没施加 ⇒ 一条都不报
+    for (const seq of inbox) {
+      appliedCount++;
+      client.noteApplied(seq);
+    }
+    expect(sent.filter((m) => m.t === 'checksum')).toEqual([
+      { t: 'checksum', seq: 9, hash: 'fp10' },
+      { t: 'checksum', seq: 19, hash: 'fp20' },
+    ]);
+  });
+
+  it('不开 deferChecksum 时 `noteApplied` 是空操作（老路径不重复报）', () => {
+    const h = harness();
+    for (let i = 0; i < 10; i++) h.push({ t: 'action', seq: i, action: roll });
+    h.client.noteApplied(9);
+    expect(h.sent.filter((m) => m.t === 'checksum')).toHaveLength(1);
+  });
+
   it('checksumEvery 可调；0 关掉', () => {
     const h = harness({ checksumEvery: 0 });
     for (let i = 0; i < 25; i++) h.push({ t: 'action', seq: i, action: roll });

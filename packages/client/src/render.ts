@@ -2673,13 +2673,9 @@ export class BoardRenderer {
           paint: () => {
             const x = p.x + off - token.anchorX * k;
             const y = p.y - off - token.anchorY * k;
-            if (pl.index === state.currentPlayer) {
-              // 当前玩家脚下画一圈光晕，免得在密集处认不出轮到谁
-              ctx.beginPath();
-              ctx.ellipse(p.x + off, p.y - off, w * 0.42, h * 0.14, 0, 0, Math.PI * 2);
-              ctx.fillStyle = 'rgba(255,236,120,0.55)';
-              ctx.fill();
-            }
+            // ★ 第七份试玩回报 #2：这里原先给当前玩家脚下垫了一圈黄色光晕 —— **原版没有**
+            //   （棋子绘制 `fcn_0040829d` 只贴精灵；「轮到谁」原版靠的是绘制次序 0xd 压在别人之上 + 側欄头像）。
+            //   是早期为了好认自己加的，已删。
             if (asleep) ctx.filter = ASLEEP_FILTER;
             ctx.drawImage(token.bitmap, x, y, w, h);
             if (asleep) ctx.filter = 'none';

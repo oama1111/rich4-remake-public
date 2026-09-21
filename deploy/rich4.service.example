@@ -40,7 +40,8 @@ ExecStart=/usr/bin/node --experimental-transform-types packages/server/src/cli.t
 	--host 127.0.0.1 --port 8787 \
 	--web packages/client/dist-web \
 	--assets /srv/rich4/deploy/assets/game \
-	--turn-ms 60000
+	--turn-ms 60000 \
+	--awaiting-fallback-ms 120000
 
 Restart=on-failure
 RestartSec=3

@@ -52,6 +52,10 @@ const takeoverAfterMs = arg('takeover', 30_000);
  * 计时只活在服务器：到点由服务器发 `setAi` 让电脑替这一回合，结果以广播的 action 落地。
  */
 const turnMs = arg('turn-ms', 60_000);
+// ★ 第七份试玩回报 #1 之后：客户端把电脑的回合**按演出节拍播完**才报 `awaiting`。三家电脑连着走
+//   （走子 + 掷骰 + 台词 + 影片）很容易超过缺省的 45 秒兜底 —— 那样玩家还在看电脑走棋，60 秒已经开数了。
+//   生产上给到 120 秒（见 `deploy/rich4.service.example`）；缺省不动，`tools/net-e2e.sh` 第 6 步按 45 秒算的。
+const awaitingFallbackMs = arg('awaiting-fallback-ms', 45_000);
 /** 复现用的固定种子；−1 = 不固定（取时钟） */
 const fixedSeed = arg('seed', -1);
 
@@ -111,6 +115,7 @@ try {
     seatCount,
     takeoverAfterMs,
     turnMs,
+    awaitingFallbackMs,
     seedFor: () => (fixedSeed >= 0 ? fixedSeed >>> 0 : (Date.now() & 0x7fffffff) >>> 0),
   });
 } catch (err) {

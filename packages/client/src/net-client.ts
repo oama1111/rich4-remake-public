@@ -36,6 +36,13 @@ export interface NetClientOptions {
   since?: number;
   /** 每几号 action 上报一次校验和 @default 10 */
   checksumEvery?: number;
+  /**
+   * ★ 宿主**自己排队播**广播来的 action（第七份试玩回报第 1 条）时置真：
+   *   `onAction` 只是「收下」，真正施加在之后 —— 校验和就不能在 `onAction` 返回那一刻算
+   *   （那时本地状态还停在老地方，必然「失步」）。改由宿主在**真的施加完**之后调
+   *   `noteApplied(seq)`，到了该报的序号才在那一刻取指纹。
+   */
+  deferChecksum?: boolean;
   /** 开局参数到了：建本地状态 */
   onStart(start: { seed: number; globalMapId: number; seats: SeatInfo[] }): void;
   /** 一条按序号到达的 action：施加到本地状态 */
@@ -252,9 +259,18 @@ export class NetClient {
       this.#pending.delete(seq);
       this.#expected = seq + 1;
       this.#opts.onAction(action, seq);
-      if (every > 0 && (seq + 1) % every === 0) {
+      if (this.#opts.deferChecksum !== true && every > 0 && (seq + 1) % every === 0) {
         this.#send({ t: 'checksum', seq, hash: this.#opts.fingerprint() });
       }
+    }
+  }
+
+  /** `deferChecksum` 模式下：宿主把第 `seq` 号 action **真的施加完**了 —— 到点就报校验和 */
+  noteApplied(seq: number): void {
+    if (this.#opts.deferChecksum !== true) return;
+    const every = this.#opts.checksumEvery ?? 10;
+    if (every > 0 && (seq + 1) % every === 0) {
+      this.#send({ t: 'checksum', seq, hash: this.#opts.fingerprint() });
     }
   }
 

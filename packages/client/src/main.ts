@@ -205,6 +205,7 @@ import {
   pixelCamera,
   hitToolbar,
   pickNodeAt,
+  playerAnchorWorld,
   worldToScreen,
   type Camera,
 } from './render.ts';
@@ -3541,11 +3542,24 @@ function syncViewTarget(): void {
  * 口径：**回合换人的那一条 action** 到来时把标记收掉（标记是「看一眼」
  * 的工具，不是模式开关）：这样 NPC 走子与自己的新回合都会重新跟随。
  */
-function retargetCameraOnTurnChange(before: GameState): void {
+function retargetCameraOnTurnChange(before: GameState, action?: Action): void {
   if (minimapMarker === null && followPlayer) return;
+  // ★ `view_to` 刚落下的标记（W-54 / 台词）有自己的收场（`syncViewTarget`），别在这里抢着清
+  if (viewTargetActive) return;
   const changed =
     before.currentPlayer !== state.currentPlayer || before.turnCount !== state.turnCount;
-  if (!changed) return;
+  // ★★ 第七份试玩回报 #3：**一有人行动，镜头就交还给行动者** —— 不止「换人」那一条。
+  //   原版清标记的是 `refresh_screen`（`fcn_0041d546`：`[0x48be18] = 0` 再重画），30 个调用点里有：
+  //     · **按下 GO**：`0x00401279 call 0x419703 / 0x0040127e call 0x41d546 / 0x00401283 call 0x40dd1f`
+  //       （先清标记、再起步）；棋盘窗口那一支 `0x004182e6 / 0x004182eb` 同形；
+  //     · 落点例程收尾 `0x0041b062`、行动阶段开头 `0x00418d69`、每张卡 / 每件道具用完（`0x0044xxxx` 那一族）；
+  //     · 换人 `0x00418ec2`、右键 `0x00418665`。
+  //   居中函数 `fcn_00415e70` 是「有标记用标记、否则用当前行动者」⇒ 标记一清，下一拍就回到人身上，
+  //   之后照常逐像素跟（**不是**另起一套平滑；见 `centerOnCurrentPlayer` 的文件头）。
+  //   本引擎先前只在换人时交还 ⇒ 手动挪过镜头之后，自己按 GO 走子镜头也不跟（需求方所报）。
+  //   `setAi` / `aiNext` 不是「有人行动」（前者是服务器的系统 action，后者是电脑决策链的内部簿记），不算。
+  const acted = action !== undefined && action.type !== 'setAi' && action.type !== 'aiNext';
+  if (!changed && !acted) return;
   minimapMarker = null;
   followPlayer = true;
 }
@@ -3733,7 +3747,7 @@ function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
 /** 真正施加一条 action：单机由 dispatch 直达，联机由服务器广播到达 */
 function applyAction(action: Action): void {
   const before = state;
-  retargetCameraOnTurnChange(before);
+  retargetCameraOnTurnChange(before, action);
   // ★ 单机：日推进那一刻由宿主重新播种（原版 `0x41D06E` 的 `srand(GetTickCount())`）——
   //   见 `rng-host.ts`；联机策略下它是空操作。
   state = reduceRecorded(action);
@@ -6341,6 +6355,35 @@ function requestRender(): void {
  *   （先前那次 `for (…) sound.play(…)` 登记为 Q-SPEECH-6，已订正）。
  */
 let spokenBubble: SpeechBubble | null = null;
+/** 填数页：鼠标键此刻是不是**按在金额栏上**没松（= 原版 `[0x48cac2] == 0x10`）*/
+let amountBarHeld = false;
+
+/**
+ * ★★ 第七份试玩回报 #3：角色开口说话时，镜头切到**他**身上。
+ *
+ * @source `_rich4_player_say`（VA 0x0044ef41）画气泡之前：
+ * ```asm
+ * 0044ef63  test byte [esp+0x25], 0x80 / je    ; 第 1 实参的 0x8000 位 = 「不重設視窗捲動」
+ * 0044ef6a  xor edx, edx                        ;   置了 ⇒ 不切镜头（開局宣言 `0x0040794e or ah,0x80`）
+ * 0044efa0  test edx, edx / je 0x44efc5
+ * 0044efa8  dx = [player + 0x0a] ; ax = [player + 0x08]   ; 说话人的**像素**位置
+ * 0044efbd  call 0x41d476                        ; ★ view_to(x, y, 0)
+ * ```
+ * 落法与 W-54 的 `syncViewTarget` 同一套：落成标记、立刻居中、`viewTargetActive` 让演出收摊后自动撤掉
+ * （= 原版随后的 `refresh_screen`），镜头回到行动者。
+ */
+const OPENING_SPEECH_EVENT = 26;
+function viewToSpeaker(bubble: SpeechBubble): void {
+  if (screen !== 'game') return;
+  if (bubble.cardId === undefined && bubble.event === OPENING_SPEECH_EVENT) return;
+  const who = state.players[bubble.player];
+  if (who === undefined) return;
+  const at = playerAnchorWorld(who);
+  if (at === null) return;
+  minimapMarker = { x: at.x, y: at.y };
+  viewTargetActive = true;
+  camera = pixelCamera(at.x, at.y, camera.view);
+}
 
 function speechTick(now: number): void {
   // ★★ 演出还在演 → **`afterStage`** 的台词不上台；演出收摊那一刻才把押着的那几句放上来。
@@ -6383,6 +6426,7 @@ function speechTick(now: number): void {
   if (cur === spokenBubble) return;
   // 换段了（含「从无到有」与「清空」）
   spokenBubble = cur;
+  if (cur !== null) viewToSpeaker(cur);
   if (cur === null || cur.voice === null) return;
   sound.play('Speaking.mkf', cur.voice);
   // ★ 语音比字幕长就把字幕撑到语音播完 —— 原版是「播完再数 1000 ms」
@@ -7658,11 +7702,17 @@ function bindInput(): void {
       return;
     }
 
-    // ── 填数页的**金额栏**：鼠标在栏上滑动就改值 ──
-    //   @source `loc_00453394`（通用填数窗的 `WM_MOUSEMOVE`，逐像素 id 必须是 0x10）：
-    //   不需要按下 —— 原版那条路只看「鼠标此刻在不在栏上」，滑到哪就换算到哪，
-    //   每换一次放一声音效 9（`[0x482352]`）。`H` 键是同一支的伪造按下。
-    if (amountPage !== null) {
+    // ── 填数页的**金额栏**：**按住栏**拖动才改值 ──
+    //   @source `loc_00453394`（通用填数窗的 `WM_MOUSEMOVE`）。
+    //   ★★ 第七份试玩回报 #4 订正：先前把开头那句 `cmp dh, 0x10` 读成了「光标下的像素 id 是 0x10」，
+    //     于是写成「不用按下、鼠标划过栏就改值」—— 一进填数页数字就跟着鼠标乱跳（需求方所报）。
+    //     实际上 `dh = [0x48cac2]`（`0x0045320b mov dh,[0x48cac2]`）是**按下那一刻**光标下的控件号：
+    //     `WM_LBUTTONDOWN` 在 `0x00452d5b..0x00452d5e` 把 id 图里那一格写进去，抬手 / 键盘那几支清 0
+    //     （`0x00452e4b xor dl,dl / mov [0x48cac2],dl`）；同一个字节 == 1 时是拖窗（`0x00453211 cmp dh,1`）。
+    //     像素 id 是后面**另一次**查的（`0x004533f9 cmp byte [edx+eax],0x10`）。
+    //   ⇒ 条件是两条都要：**在栏上按下的**、且此刻光标**还在栏上**。每换一次放一声音效 9（`[0x482352]`）。
+    if (amountPage === null) amountBarHeld = false;
+    if (amountPage !== null && amountBarHeld) {
       const barUi = currentDialog();
       const barAmount = barUi?.choices[amountPage.choice]?.amount;
       if (barAmount !== undefined) {
@@ -7843,6 +7893,17 @@ function bindInput(): void {
 
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
+
+    // ★ 填数页金额栏：记下「这一下是不是按在栏上」（@source `0x00452d5e mov [0x48cac2], al`）。
+    //   只记账、不改值、不吞事件 —— 原版按下那一拍对 id 0x10 什么都不做，值是随后的 `WM_MOUSEMOVE` 改的。
+    amountBarHeld = false;
+    if (e.button === 0 && amountPage !== null) {
+      const pt = eventToStage(e);
+      const bar = currentDialog()?.choices[amountPage.choice]?.amount;
+      if (pt !== null && bar !== undefined) {
+        amountBarHeld = amountBarDragValue(pt.x - LAYOUT.board.x, pt.y - LAYOUT.board.y, bar.max) !== null;
+      }
+    }
 
     // ★ W-69：過路費那段闪在播时，任意滑鼠鍵**跳过**它，而且这一下被它吃掉
     //   （原版 `fcn_004528b9` 的等待循环把这条消息收走了，不会漏给棋盘）。
@@ -8303,6 +8364,8 @@ function bindInput(): void {
 
   });
   window.addEventListener('mouseup', (e) => {
+    // 抬手 = 松开金额栏（@source `0x00452e4d mov [0x48cac2], dl`，dl = 0）
+    amountBarHeld = false;
     // ★ W-69：過路費闪在播时抬手也跳过（同样是「任意滑鼠鍵」）
     if (tollFlash !== null) {
       skipTollFlash();
@@ -8973,13 +9036,11 @@ function connectOnline(url: string, room: string, name: string): void {
           scheduleAi();
           scheduleHumanTurn();
         },
-        onAction: (action) => {
-          // ★ W-75：服务器那本「连续超时」的账是在**该座位交 intent** 那一刻清零的
-          //   （`hub.ts` 的 `#submit`）。这里照抄同一条规则 —— 用**施加之前**的镜像
-          //   算「这条 action 是谁派的」。
-          netToasts.noteIntent(actingSeat(state));
-          if (action.type === 'step') stepTick();
-          applyAction(action);
+        // ★★ 第七份试玩回报第 1 条：**收下**，不当场施加 —— 交给 `pumpNetInbox` 一条一条按演出节拍播。
+        deferChecksum: true,
+        onAction: (action, seq) => {
+          netInbox.push({ action, seq });
+          pumpNetInbox();
         },
         // ★ W-74：服务器广播的剩余毫秒（`-1` = 这一轮计时作废）
         onClock: (c) => {
@@ -9007,6 +9068,8 @@ function connectOnline(url: string, room: string, name: string): void {
           });
           history.length = 0;
           recorder.reset();
+          // 收着没播的那些已经包含在这份重放里了（`NetClient` 把序号指针接成了 `actions.length`）
+          clearNetInbox();
           for (const action of r.actions) {
             state = reduce(state, action, topo);
             history.push(action);
@@ -9220,6 +9283,67 @@ let clockBaseMs = -1;
 /** 收到那条广播的本地时刻 —— 倒计时靠它本地递减（服务器不会再发） */
 let clockAt = 0;
 
+// ============================================================
+//  联机：广播来的 action **排队按节拍播**（第七份试玩回报第 1 条）
+// ============================================================
+//
+// 服务器替电脑座位拿主意是**同步**的（`hub.ts` 的 `#driveComputers`）：真人一交出回合，
+// 后面三家电脑的几十条 action 在同一瞬间广播过来。原先 `onAction` 收到就 `applyAction` ⇒
+// 三家的回合「秒结束」，走子 / 掷骰 / 台词 / 影片全被后一条顶掉。
+//
+// 单机那边电脑是被 `scheduleAi` 按 `aiDelay()` + `holdForActorWalk()` 一步一步放出来的；
+// 这里用**同一套闸**去放收件箱：台上有演出（补间 / 掷骰 / 影片 / 整屏 / 台词）就等，
+// 演完再施加下一条，于是联机看到的节拍与单机一致。
+//
+// ★ 锁步不受影响：顺序不变，只是晚一点施加；校验和改在**真的施加完**那一刻取（`noteApplied`）。
+// ★ `awaiting`（W-74）要等收件箱**放空**才报 —— 否则玩家还在看电脑走棋，60 秒已经开数了。
+
+/** 收着还没播的广播 */
+const netInbox: { action: Action; seq: number }[] = [];
+let netPumpTimer: number | null = null;
+/**
+ * 积压超过这个数就不按节拍了，前面的**一口气**施加掉、只留最后这些慢慢播。
+ * 什么时候会积压这么多：中途重连（服务器把整局补发过来）。三家电脑各走一回合约 30–50 条。
+ */
+const NET_INBOX_FAST_FORWARD = 150;
+const NET_INBOX_KEEP = 40;
+
+function clearNetInbox(): void {
+  netInbox.length = 0;
+  if (netPumpTimer !== null) {
+    clearTimeout(netPumpTimer);
+    netPumpTimer = null;
+  }
+}
+
+/** 施加一条广播来的 action（原先 `onAction` 里的那三句）并按需报校验和 */
+function applyNetAction(item: { action: Action; seq: number }): void {
+  // ★ W-75：服务器那本「连续超时」的账是在**该座位交 intent** 那一刻清零的
+  //   （`hub.ts` 的 `#submit`）。这里照抄同一条规则 —— 用**施加之前**的镜像
+  //   算「这条 action 是谁派的」。
+  netToasts.noteIntent(actingSeat(state));
+  if (item.action.type === 'step') stepTick();
+  applyAction(item.action);
+  net?.noteApplied(item.seq);
+}
+
+function pumpNetInbox(delay = 0): void {
+  if (netPumpTimer !== null || netInbox.length === 0) return;
+  if (netInbox.length > NET_INBOX_FAST_FORWARD) {
+    while (netInbox.length > NET_INBOX_KEEP) applyNetAction(netInbox.shift()!);
+  }
+  netPumpTimer = window.setTimeout(() => {
+    netPumpTimer = null;
+    // 与 `scheduleAi` / `scheduleHumanTurn` 同一道闸；被挡下就过一个渲染周期再看
+    if (holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
+    const item = netInbox.shift();
+    if (item === undefined) return;
+    applyNetAction(item);
+    // `aiNext` 只是决策链的内部簿记，不占时间（同 `aiDelay`）；其余至少一个 tick、走子等补间
+    pumpNetInbox(item.action.type === 'aiNext' ? 0 : paceDelay());
+  }, delay);
+}
+
 function startNetTick(): void {
   if (netTick === null) netTick = window.setInterval(tickAwaiting, AWAITING_POLL_MS);
 }
@@ -9241,6 +9365,8 @@ function tickAwaiting(): void {
   const client = net;
   if (client === null || client.seat === null || screen !== 'game') return;
   if (actingSeat(state) !== client.seat) return;
+  // ★ 收件箱没放空 = 画面还在播别人的回合，本机状态也还没追上服务器 —— 不报
+  if (netInbox.length > 0) return;
   if (stageBusy(stageBusyFlags())) return;
   if (!waitingForInput(state)) return;
   const seq = client.expectedSeq - 1;
