@@ -89,6 +89,18 @@ describe('★ 客户端重放房间日志得到同一状态', () => {
     expect(room.fingerprint).toBe(stateFingerprint(client));
   });
 
+  run('★ 首席复核续：submitSystem 喂一个不认识的 action ⇒ 拒绝，且**镜像不许坏**', () => {
+    const room = makeRoom();
+    room.start();
+    const before = room.fingerprint;
+    const r = room.submitSystem({ type: 'nope-not-an-action' } as unknown as Parameters<typeof room.submitSystem>[0]);
+    // 与 `submit` 那一条对称：`reduce` 对不认识的 type 返回 `undefined`，
+    // 原先只比 `next === mirror` ⇒ `#mirror` 被换成 `undefined`，紧接着 `stateFingerprint` 就抛，
+    // 而且这个房间**从此永久坏掉**（之后每一次取指纹都抛）。
+    expect(r).toMatchObject({ ok: false });
+    expect(room.fingerprint).toBe(before);
+  });
+
   run('★ since(0) 补发足以让新客户端追上——无需状态快照', () => {
     const map = loadMap();
     const topo = { nodes: map.nodes, lands: map.lands };

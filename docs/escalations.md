@@ -1374,3 +1374,50 @@
 Playwright 的 WebKit 构建里 Cache Storage 连一个 1 KB 的探针都留不过刷新（测试壳自己的毛病），所以 Safari 要真机看一眼：
 第二次打开还出不出进度条。出的话不影响玩，只是每次都要重新下。
 
+
+### ✅ E-37（2026-09-20）W-71：登录限流的 `X-Forwarded-For` 原来取**最左**一段 —— 攻击者随便伪造（已修，与任务书相反）
+
+- 关联任务：W-71 §2「同一 IP（`X-Forwarded-For` **最左一段**，没有就 socket 地址）」。**已修**。
+- 现象：Caddy 的 `reverse_proxy` 对 `X-Forwarded-For` 是**追加**（`<客户端自己带的>, <真实来源>`），
+  所以**最左那一段是客户端自己写的**。登录限流（W-71 唯一的防爆破手段）按它分桶
+  ⇒ 每次请求换一个假值就等于换一个桶 ⇒ **5 次/分钟的上限形同虚设**，
+  攻击者只剩那 500 ms 固定延迟挡着。
+- 已改（`gate.ts` 的 `clientIp`）：
+  1. **只认对端是回环（`127.0.0.0/8` / `::1` / `::ffff:127.0.0.1`）的 `X-Forwarded-For`** ——
+     直连进来的请求一律用 socket 地址（否则攻击者又能自己造桶）；
+  2. 取**最右**一段 —— 那是紧挨着我们的那个反代写进去的。
+  实测：`1.1.1.1, 203.0.113.9` / `2.2.2.2, 203.0.113.9` / `3.3.3.3, 203.0.113.9` 现在都落进同一个桶
+  （`gate.test.ts` 里钉着）。
+- ⚠️ **这与任务书 W-71 §2 写的「最左一段」相反**。理由：那条写法的前提是反代**覆盖**这个头，
+  而 Caddy 是**追加**。请首席确认这个读法；若坚持最左，正确做法是在 Caddyfile 里
+  `header_up X-Forwarded-For {remote_host}`（**覆盖**而不是追加）——`deploy/Caddyfile.example`
+  还没加这一行，等一句裁定。
+- 单反代形态（`docs/deploy.md` 那套）下「最右 = 真实来源」成立；多反代时最右是最后那一跳。
+- 阻塞程度：**不阻塞**。
+
+### ✅ E-38（2026-09-20）W-74：首席复核续 —— 又三处同族问题（已修）
+
+> 首席在 E-36 里修了 5 处并让我接着找。这是同一轮复核的续集：**同样的手法**
+> （真起服务器 / 真连接 / 喂坏东西）打出来的三处，全部带回归测试。
+
+1. **【严重】一条发送失败的连接能让整台服务器退出。**
+   `#broadcast`（以及 hub 里各处直发）直接 `conn.send(...)`，而 `sweepDisconnected`
+   挂在 `setInterval` 上、`socket.on('close')` 是事件回调 —— **这两条都没有外层 catch**。
+   一条 `send` 抛异常（socket 正关到一半）就够：未捕获异常 ⇒ 进程退出、所有房间一起没。
+   修：hub 统一走 `#sendTo()`（吞掉，只掐那一条）；`ws-server.ts` 的**扫描定时器**与
+   **close 回调**各加一层 try/catch（那两条路没有别的兜底）。
+   钉子：`hub-fuzz.test.ts` 的「一条坏连接不许把整台服务器带走」。
+2. **【严重】连续两次超时之后「刷新页面」⇒ 那个座位从此没人驱动。**
+   重连归还只处理了 `takenOver`（掉线代打），**没处理超时託管**：`info.autopilot` 被删了，
+   可镜像里的 AUTOPILOT 位还在 ⇒ `#shouldTime` 从此不给他计时、`#driveComputers` 又认不出他
+   （它只认 `takenOver` 与 `autopilot`）⇒ 这一桌永远停在他这一回合。
+   修：归还的条件扩成 `takenOver || autopilot === 'idle' || pendingRestore`，并把
+   `pendingRestore` / `strikes` / `lastAwaitingSeq` 一并清干净。
+   钉子：`hub.test.ts` 的「连续两次超时之后重连 ⇒ 座位也要回到真人手里」。
+3. **`Room.submitSystem` 会把镜像**永久**弄坏。** `submit` 有「`reduce` 返回 `undefined` 就拒」
+   那道闸，`submitSystem` **没有** —— 喂一个不认识的 `type` 会把 `#mirror` 换成 `undefined`，
+   紧接着那一行 `stateFingerprint` 就抛，而且这个房间**从此每一次取指纹都抛**。
+   眼下只有服务器自己用 `setAi` 调它，够不到；但两条路必须对称，不然下一次加系统 action 就踩上。
+   修：补上与 `submit` 同样的 `undefined` 闸。钉子：`room.test.ts` 那条。
+
+- 阻塞程度：**不阻塞**（三条都已修 + 有回归）。

@@ -329,15 +329,40 @@ export function gateFromEnv(
 //  小工具
 // ============================================================
 
-/** 客户端 IP：`X-Forwarded-For` **最左一段**（Caddy 会把真实来源放那儿），没有就用 socket */
+/**
+ * 这个地址是不是「本机」（我们的反代就在本机）。
+ *
+ * 部署形态见 `docs/deploy.md`：`--host 127.0.0.1` + Caddy 在同一台机器上。
+ * IPv6 回环可能是 `::1`，也可能是 v4-mapped 的 `::ffff:127.0.0.1`。
+ */
+function isLoopback(address: string): boolean {
+  return address === '::1' || address === '::ffff:127.0.0.1' || address.startsWith('127.');
+}
+
+/**
+ * 客户端 IP —— **登录限流按它分桶**。
+ *
+ * ★★ 首席复核续（DeepSeek）：原来是「`X-Forwarded-For` **最左**一段」。**那一段是客户端
+ *   自己写的**：Caddy 是**追加**（`<客户端自带的>, <真实来源>`），所以最左那段攻击者随便填 ——
+ *   每次换一个假值就等于每次换一个限流桶，**登录限流（唯一的防爆破手段）形同虚设**。
+ *   实测复现（`gate.test.ts` 里那条「伪造 X-Forwarded-For」）。
+ *
+ * 现在两条：
+ *   ① **只认来自回环对端的 `X-Forwarded-For`** —— 直连进来的请求（没起反代）一律用
+ *      socket 地址，别的一概不看（否则攻击者又能自己造桶）；
+ *   ② 取**最右**一段：那是紧挨着我们的那个反代写进去的。
+ *
+ * ⚠️ 这与任务书 W-71 §2 写的「最左一段」**相反** —— 见 escalations **E-37**。
+ */
 export function clientIp(req: IncomingMessage): string {
+  const peer = req.socket.remoteAddress ?? 'unknown';
+  if (!isLoopback(peer)) return peer;
   const raw = req.headers['x-forwarded-for'];
-  const text = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof text === 'string' && text !== '') {
-    const first = text.split(',')[0]?.trim();
-    if (first !== undefined && first !== '') return first;
-  }
-  return req.socket.remoteAddress ?? 'unknown';
+  const text = Array.isArray(raw) ? raw[raw.length - 1] : raw;
+  if (typeof text !== 'string' || text === '') return peer;
+  const parts = text.split(',');
+  const last = parts[parts.length - 1]?.trim();
+  return last !== undefined && last !== '' ? last : peer;
 }
 
 /** 经 Caddy 反代进来的 HTTPS 请求 —— `Secure` 只在这种时候加 */

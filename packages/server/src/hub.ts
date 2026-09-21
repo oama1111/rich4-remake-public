@@ -283,51 +283,51 @@ export class RoomHub {
         switch (msg.t) {
           case 'join': {
             if (msg.version !== PROTOCOL_VERSION) {
-              conn.send({ t: 'error', message: `协议版本不符：服务器 ${PROTOCOL_VERSION}，客户端 ${msg.version}` });
+              this.#sendTo(conn, { t: 'error', message: `协议版本不符：服务器 ${PROTOCOL_VERSION}，客户端 ${msg.version}` });
               return;
             }
             if (table !== null) {
-              conn.send({ t: 'error', message: '已经在房间里了' });
+              this.#sendTo(conn, { t: 'error', message: '已经在房间里了' });
               return;
             }
             // ★ W-73 §3：三样都**服务器校验**，不信客户端；任何一样不合就
             //   `error` + **断开**（不是只回一句错误让它接着试）。
             if (!isClientId(msg.clientId)) {
-              conn.send({ t: 'error', message: '拒絕：clientId 必須是 32 位小寫十六進位' });
+              this.#sendTo(conn, { t: 'error', message: '拒絕：clientId 必須是 32 位小寫十六進位' });
               conn.close?.();
               return;
             }
             const name = sanitizeName(msg.name);
             if (name === null) {
-              conn.send({ t: 'error', message: '拒絕：名字必須是 1–12 個字元（不含控制字元）' });
+              this.#sendTo(conn, { t: 'error', message: '拒絕：名字必須是 1–12 個字元（不含控制字元）' });
               conn.close?.();
               return;
             }
             if (!isRoomCode(msg.room)) {
-              conn.send({ t: 'error', message: '拒絕：房間碼必須是 6 位（字母去 I/O、數字去 0/1）' });
+              this.#sendTo(conn, { t: 'error', message: '拒絕：房間碼必須是 6 位（字母去 I/O、數字去 0/1）' });
               conn.close?.();
               return;
             }
             const t = this.#tableFor(msg.room);
             if (t === null) {
-              conn.send({ t: 'error', message: '伺服器房間已滿' });
+              this.#sendTo(conn, { t: 'error', message: '伺服器房間已滿' });
               return;
             }
             const s = this.#assignSeat(t, name, msg.clientId, conn);
             if (s === null) {
-              conn.send({ t: 'error', message: '房间已满' });
+              this.#sendTo(conn, { t: 'error', message: '房间已满' });
               return;
             }
             t.emptySince = null;
             table = t;
             seat = s;
-            conn.send({ t: 'joined', version: PROTOCOL_VERSION, seat: s, room: this.#info(t) });
+            this.#sendTo(conn, { t: 'joined', version: PROTOCOL_VERSION, seat: s, room: this.#info(t) });
             this.#broadcast(t, { t: 'room', room: this.#info(t) });
             // 重连：补发开局参数与漏掉的 action
             if (t.room !== null) {
-              conn.send({ t: 'start', seed: t.room.seed, globalMapId: t.room.globalMapId, seats: t.seats.map((x) => x.info) });
+              this.#sendTo(conn, { t: 'start', seed: t.room.seed, globalMapId: t.room.globalMapId, seats: t.seats.map((x) => x.info) });
               const from = msg.since === undefined ? 0 : msg.since + 1;
-              for (const b of t.room.since(from)) conn.send({ t: 'action', seq: b.seq, action: b.action });
+              for (const b of t.room.since(from)) this.#sendTo(conn, { t: 'action', seq: b.seq, action: b.action });
               // ★ 首席复核：这一桌可能正「停手等人」（见 `#anyonePresent`）—— 人回来了，接着走
               this.#driveComputers(t);
               this.#advance(t, this.#now());
@@ -337,7 +337,7 @@ export class RoomHub {
           case 'start': {
             if (table === null || seat === null) return;
             if (seat !== 0) {
-              conn.send({ t: 'error', message: '只有房主（0 号座）能开局' });
+              this.#sendTo(conn, { t: 'error', message: '只有房主（0 号座）能开局' });
               return;
             }
             if (table.room !== null) return;
@@ -346,11 +346,11 @@ export class RoomHub {
           }
           case 'intent': {
             if (table === null || seat === null || table.room === null) {
-              conn.send({ t: 'error', message: '还没开局' });
+              this.#sendTo(conn, { t: 'error', message: '还没开局' });
               return;
             }
             if (typeof msg.action !== 'object' || msg.action === null || typeof msg.action.type !== 'string') {
-              conn.send({ t: 'error', message: '拒绝：action 格式不对' });
+              this.#sendTo(conn, { t: 'error', message: '拒绝：action 格式不对' });
               return;
             }
             this.#submit(table, seat, msg.action, conn);
@@ -370,17 +370,17 @@ export class RoomHub {
           //   也谈不上额外泄密：这条连接本来就收得到每一条广播 action。
           case 'resync': {
             if (table === null || seat === null || table.room === null) {
-              conn.send({ t: 'error', message: '還沒開局' });
+              this.#sendTo(conn, { t: 'error', message: '還沒開局' });
               return;
             }
             if (table.seats[seat]?.conn !== conn) {
               // 掉线后沿用旧句柄、或别的连接想蹭同一个座位，都在这里挡住
-              conn.send({ t: 'error', message: '拒絕：這條連接不是該座位' });
+              this.#sendTo(conn, { t: 'error', message: '拒絕：這條連接不是該座位' });
               return;
             }
             const log = table.room.since(0);
             // ⚠️ 只回请求者，不广播（重放是给一个人的）
-            conn.send({
+            this.#sendTo(conn, {
               t: 'replay',
               seed: table.room.seed,
               globalMapId: table.room.globalMapId,
@@ -395,7 +395,7 @@ export class RoomHub {
           //   所以「改别人的角色」不是被拒绝，而是根本表达不出来。
           case 'setCharacter': {
             if (table === null || seat === null) {
-              conn.send({ t: 'error', message: '還沒進房' });
+              this.#sendTo(conn, { t: 'error', message: '還沒進房' });
               return;
             }
             this.#setCharacter(table, seat, msg.character, conn);
@@ -404,7 +404,7 @@ export class RoomHub {
           // ★ Q-NET-2 大厅设置：换房间地图。只有房主（0 号座）。
           case 'setMap': {
             if (table === null || seat === null) {
-              conn.send({ t: 'error', message: '還沒進房' });
+              this.#sendTo(conn, { t: 'error', message: '還沒進房' });
               return;
             }
             this.#setMap(table, seat, msg.globalMapId, conn);
@@ -712,12 +712,22 @@ export class RoomHub {
       back.info.connected = true;
       // 名字改了也认回 —— 名字只是显示用的
       back.info.name = name;
-      if (back.takenOver && t.room !== null) {
+      // ★★ 首席复核续（DeepSeek）：**「超时託管」也要一并归还** —— 原先只处理了 `takenOver`。
+      //
+      //   超时託管（`autopilot === 'idle'` / `pendingRestore`）时镜像里那个 AUTOPILOT 位
+      //   没人清：`#shouldTime` 从此不再给这个座位计时，而 `#driveComputers` 又认不出它
+      //   （它只认 `takenOver` 与 `autopilot === 'idle'`）⇒ **这台座位从此没人驱动**。
+      //   玩家「连续两次超时 → 刷新页面」回来正好撞上：服务器不催、他自己也点不动。
+      //   实测复现（`hub.test.ts` 里那条「连续两次超时之后重连」）。
+      if (t.room !== null && (back.takenOver || back.info.autopilot === 'idle' || back.pendingRestore)) {
         // 归还：镜像里把他从託管改回真人（也广播给所有人）
         const r = t.room.submitSystem({ type: 'setAi', player: back.info.seat, whoPlays: WHO_PLAYS_HUMAN });
         if (r.ok) this.#broadcast(t, { t: 'action', seq: r.broadcast.seq, action: r.broadcast.action });
       }
       back.takenOver = false;
+      back.pendingRestore = false;
+      back.strikes = 0;
+      back.lastAwaitingSeq = Number.NaN;
       delete back.info.autopilot;
       return back.info.seat;
     }
@@ -784,15 +794,15 @@ export class RoomHub {
    */
   #setCharacter(t: Table, seat: number, character: unknown, conn: Conn): void {
     if (t.room !== null) {
-      conn.send({ t: 'error', message: '已開局：角色不能再改' });
+      this.#sendTo(conn, { t: 'error', message: '已開局：角色不能再改' });
       return;
     }
     if (!isLobbyCharacter(character)) {
-      conn.send({ t: 'error', message: '拒絕：角色編號不合法' });
+      this.#sendTo(conn, { t: 'error', message: '拒絕：角色編號不合法' });
       return;
     }
     if (characterTaken(t.seats.map((s) => s.info), character, seat)) {
-      conn.send({ t: 'error', message: '拒絕：這個角色已經有人選了' });
+      this.#sendTo(conn, { t: 'error', message: '拒絕：這個角色已經有人選了' });
       return;
     }
     const slot = t.seats[seat];
@@ -812,19 +822,19 @@ export class RoomHub {
    */
   #setMap(t: Table, seat: number, globalMapId: unknown, conn: Conn): void {
     if (t.room !== null) {
-      conn.send({ t: 'error', message: '已開局：地圖不能再改' });
+      this.#sendTo(conn, { t: 'error', message: '已開局：地圖不能再改' });
       return;
     }
     if (seat !== 0) {
-      conn.send({ t: 'error', message: '只有房主（0 號座）能換地圖' });
+      this.#sendTo(conn, { t: 'error', message: '只有房主（0 號座）能換地圖' });
       return;
     }
     if (!isLobbyMapId(globalMapId)) {
-      conn.send({ t: 'error', message: '拒絕：地圖編號不合法' });
+      this.#sendTo(conn, { t: 'error', message: '拒絕：地圖編號不合法' });
       return;
     }
     if (this.#mapFor(globalMapId) === null) {
-      conn.send({ t: 'error', message: `拒絕：伺服器沒有地圖 ${globalMapId}` });
+      this.#sendTo(conn, { t: 'error', message: `拒絕：伺服器沒有地圖 ${globalMapId}` });
       return;
     }
     if (t.globalMapId === globalMapId) return; // 幂等
@@ -832,8 +842,41 @@ export class RoomHub {
     this.#broadcast(t, { t: 'room', room: this.#info(t) });
   }
 
+  /**
+   * 往**一条**连接发一句话。
+   *
+   * ★★ 首席复核续（DeepSeek）：`send` 是适配层给的（生产里是 `socket.send`），
+   *   它**会抛** —— 而 hub 里有几条调用路径**没有**外层 catch（`sweepDisconnected`
+   *   挂在 `setInterval` 上、`socket.on('close')`、以及各种事件回调）。
+   *   一条发送失败的连接就够让整台服务器（= 所有房间）退出，实测复现
+   *   （`hub-fuzz.test.ts` 的「一条坏连接不许把整台服务器带走」）。
+   *
+   * 这里统一吞掉：那条连接自己会被 `ws` 关掉、走到 `onClose`（掉线代打那条路接管），
+   *   **别的座位照常收到**。
+   */
+  #sendTo(conn: Conn | null, msg: ServerMessage): void {
+    if (conn === null) return;
+    try {
+      conn.send(msg);
+    } catch {
+      /* 只掐这一条：见上 */
+    }
+  }
+
+  /**
+   * 广播给这一桌的每一个在线座位。
+   *
+   * ★★ 首席复核续（DeepSeek）：**某一条连接发不出去不许影响别人，更不许把进程带走**。
+   *   `send` 是适配层给的（生产里是 `socket.send`），它**会抛** —— 而本函数有两条调用
+   *   路径**没有**外层 catch：`sweepDisconnected`（挂在 `setInterval` 上）与
+   *   `socket.on('close')`。一条发送失败的连接就够让整台服务器（= 所有房间）退出。
+   *   实测复现（`hub-fuzz.test.ts` 里那条「投递失败只掐那一条」）。
+   *
+   * 这里逐个兜住：那一条这次收不到就算了 —— 它自己会被 `ws` 关掉并走到 `onClose`
+   *   （掉线代打那条路会接管），而**别的座位照常收到**。
+   */
   #broadcast(t: Table, msg: ServerMessage): void {
-    for (const s of t.seats) s.conn?.send(msg);
+    for (const s of t.seats) this.#sendTo(s.conn, msg);
   }
 
   /**
@@ -883,7 +926,7 @@ export class RoomHub {
     if (room === null) return;
     const r = room.submit(seat, action);
     if (!r.ok) {
-      from?.send({ t: 'error', message: `拒绝：${r.reason}` });
+      this.#sendTo(from, { t: 'error', message: `拒绝：${r.reason}` });
       return;
     }
     const now = this.#now();

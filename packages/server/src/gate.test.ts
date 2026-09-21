@@ -195,11 +195,24 @@ describe('★ 限流（每分钟 5 次 POST）', () => {
 });
 
 describe('★ 客户端 IP / HTTPS / 主机名', () => {
-  it('X-Forwarded-For 取**最左**一段，没有就用 socket 地址', () => {
-    expect(clientIp(req({ 'x-forwarded-for': '203.0.113.7, 10.0.0.1' }))).toBe('203.0.113.7');
-    expect(clientIp(req({ 'x-forwarded-for': '203.0.113.7' }))).toBe('203.0.113.7');
-    expect(clientIp(req({}, '10.0.0.9'))).toBe('10.0.0.9');
-    expect(clientIp(req({ 'x-forwarded-for': '' }, '10.0.0.9'))).toBe('10.0.0.9');
+  it('★ 首席复核续：X-Forwarded-For 只认**反代（本机）**来的，而且取**最右**一段', () => {
+    // 经 Caddy：对端是回环，真实来源被**追加在最右**
+    expect(clientIp(req({ 'x-forwarded-for': '203.0.113.7, 10.0.0.1' }, '127.0.0.1'))).toBe('10.0.0.1');
+    expect(clientIp(req({ 'x-forwarded-for': '203.0.113.7' }, '::1'))).toBe('203.0.113.7');
+    expect(clientIp(req({ 'x-forwarded-for': '1.2.3.4, 203.0.113.7' }, '::ffff:127.0.0.1'))).toBe('203.0.113.7');
+    // 直连（对端不是回环）：**完全不信** XFF
+    expect(clientIp(req({ 'x-forwarded-for': '1.2.3.4' }, '198.51.100.9'))).toBe('198.51.100.9');
+    // 没有 XFF / 空值 ⇒ 用 socket 地址
+    expect(clientIp(req({}, '127.0.0.1'))).toBe('127.0.0.1');
+    expect(clientIp(req({ 'x-forwarded-for': '' }, '127.0.0.1'))).toBe('127.0.0.1');
+  });
+
+  it('★ 伪造 X-Forwarded-For 换不掉限流桶（原来换得掉 —— 每次换一个假值就是一个新桶）', () => {
+    const behindProxy = (v: string): string => clientIp(req({ 'x-forwarded-for': v }, '127.0.0.1'));
+    // Caddy 把真实来源追加在最右 ⇒ 假值写多少个都落到同一个桶
+    expect(behindProxy('1.1.1.1, 203.0.113.9')).toBe('203.0.113.9');
+    expect(behindProxy('2.2.2.2, 203.0.113.9')).toBe('203.0.113.9');
+    expect(behindProxy('3.3.3.3, 203.0.113.9')).toBe('203.0.113.9');
   });
 
   it('Secure 只看 X-Forwarded-Proto', () => {
