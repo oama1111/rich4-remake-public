@@ -1420,4 +1420,15 @@ Playwright 的 WebKit 构建里 Cache Storage 连一个 1 KB 的探针都留不�
    眼下只有服务器自己用 `setAi` 调它，够不到；但两条路必须对称，不然下一次加系统 action 就踩上。
    修：补上与 `submit` 同样的 `undefined` 闸。钉子：`room.test.ts` 那条。
 
-- 阻塞程度：**不阻塞**（三条都已修 + 有回归）。
+4. **【严重】HTTP 的兜底那一层自己抛 ⇒ 未处理的 Promise 拒绝 ⇒ 进程退出。**
+   `createHttpHandler` 的收尾是 `void route(...).catch(() => { …send(500)… })` ——
+   而 `.catch` 的**回调里再掷出去**就没人接了：Node ≥ 15 的缺省行为是**直接退出进程**
+   （实测：`void p.catch(() => { throw … })` 两秒后进程就没了）。触发条件是「回 500 这个
+   动作本身失败」（响应已经死透、`writeHead` 抛）—— 恰好是客户端断线时最常见的一拍。
+   修：那一层再兜一层 try/catch，最后连 `res.destroy()` 都失败就放手。
+   钉子：`http-server.test.ts` 的「响应已经死了（writeHead 抛）⇒ 不产生未处理的 Promise 拒绝」
+   （已确认修之前它是**红的**：拿到 `[Error: response is gone]`）。
+
+- 阻塞程度：**不阻塞**（四条都已修 + 有回归）。另外真机上打了一轮**恶意断连 hammer**
+  （40 个客户端乱发一气 + 突然掐断 + 一局已开局）与 HTTP 三种「发一半就跑」，
+  进程都站得住、重连能认回原座 —— 见 `docs/acceptance/w70-76-hardening-20260920.md` §4.5。

@@ -139,8 +139,22 @@ export function createHttpHandler(opts: HandlerOptions): (req: IncomingMessage, 
     void route(req, res).catch(() => {
       // 走到这里说明我们自己出了岔子（IO / 解析）。响应还没发就回 500，
       // 已经发了一半就直接掐断 —— 两种情况都不该把进程带走。
-      if (res.headersSent) res.destroy();
-      else send(res, 500, { 'Content-Type': 'text/plain; charset=utf-8' }, 'Internal Server Error', false);
+      //
+      // ★★ 首席复核续（DeepSeek）：**这一层自己再抛就真没人接了。**
+      //   `.catch` 的回调里掷出去的东西会变成**未处理的 Promise 拒绝**，
+      //   而 Node ≥ 15 的缺省行为是**直接退出进程**（实测：`void p.catch(() => { throw … })`
+      //   两秒后进程就没了）。也就是说「回一个 500」这个动作本身失败（响应已经死了 /
+      //   `writeHead` 抛）就又是一条杀掉整台服务器的路。所以这里再兜一层。
+      try {
+        if (res.headersSent) res.destroy();
+        else send(res, 500, { 'Content-Type': 'text/plain; charset=utf-8' }, 'Internal Server Error', false);
+      } catch {
+        try {
+          res.destroy();
+        } catch {
+          /* 连掐断都不行 —— 放手，反正这条连接已经在死了 */
+        }
+      }
     });
   };
 }
