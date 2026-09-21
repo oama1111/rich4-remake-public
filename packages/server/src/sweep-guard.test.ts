@@ -9,7 +9,7 @@
  * ⚠️ 为什么不拿真 ws 客户端打：`ws` 在 socket 关到一半时 `send` 是 emit `'error'`
  *   而不是抛（我们听了那个事件），所以**真客户端造不出那一下**。能钉住的是这一层壳。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ClientHandle, RoomHub } from './hub.ts';
 import { closeOnce, sweepOnce } from './ws-server.ts';
 
@@ -34,5 +34,20 @@ describe('★ 扫描 / 断连收尾：抛了也不许往上冒', () => {
 
   it('closeOnce 吞掉（同上，它挂在 socket 的 close 事件上）', () => {
     expect(() => closeOnce(explodingHandle, 1_000)).not.toThrow();
+  });
+});
+
+describe('★ 吞掉的异常要留痕，但不许刷爆日志（首席复核）', () => {
+  it('同一个位置一分钟内只记一条；过了一分钟再记', async () => {
+    const { reportSwallowed } = await import('./ws-server.ts');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(reportSwallowed('unit-test', new Error('x'), 1_000_000)).toBe(true);
+      expect(reportSwallowed('unit-test', new Error('x'), 1_030_000)).toBe(false);
+      expect(reportSwallowed('unit-test', new Error('x'), 1_060_000)).toBe(true);
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

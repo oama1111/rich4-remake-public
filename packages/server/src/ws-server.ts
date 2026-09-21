@@ -161,8 +161,11 @@ export async function attachWebSocket(
 export function sweepOnce(hub: RoomHub, now: number): void {
   try {
     hub.sweepDisconnected(now);
-  } catch {
-    /* 这一拍扫不完就下一拍再来：绝不让进程走掉 */
+  } catch (err) {
+    // 这一拍扫不完就下一拍再来：绝不让进程走掉 —— 但**要留痕**（首席复核）：
+    // 回合超时 / 掉线代打 / 空房回收全靠这一扫，它要是每拍都抛，症状是「计时永远不响」，
+    // 吞得一声不吭就没人查得到。
+    reportSwallowed('sweep', err);
   }
 }
 
@@ -174,9 +177,20 @@ export function sweepOnce(hub: RoomHub, now: number): void {
 export function closeOnce(handle: ClientHandle, now: number): void {
   try {
     handle.onClose(now);
-  } catch {
-    /* 只丢这一条连接的收尾 */
+  } catch (err) {
+    // 只丢这一条连接的收尾 —— 同样留痕
+    reportSwallowed('close', err);
   }
+}
+
+/** 每个位置**每分钟最多记一条**：留痕，但一个每秒都抛的 bug 不许把日志刷爆 */
+const lastReported = new Map<string, number>();
+export function reportSwallowed(where: string, err: unknown, nowMs: number = Date.now()): boolean {
+  const last = lastReported.get(where);
+  if (last !== undefined && nowMs - last < 60_000) return false;
+  lastReported.set(where, nowMs);
+  console.error(`[rich4] ${where} 里吞掉一个异常（进程没事，但这是个 bug）：`, err);
+  return true;
 }
 
 /** 去掉 query 的请求路径 */

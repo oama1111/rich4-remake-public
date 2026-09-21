@@ -142,9 +142,9 @@ sudo cp /srv/rich4/rich4-remake/deploy/Caddyfile.example /etc/caddy/Caddyfile
 sudo sed -i 's/rich4\.example\.com/你的真域名/g' /etc/caddy/Caddyfile   # ← 换成真域名
 sudo mkdir -p /var/log/caddy && sudo chown caddy:caddy /var/log/caddy
 # ★ 示例里有一行 `header_up X-Forwarded-For {remote_host}` —— **别删**。
-#   Caddy 缺省是把这个头**追加**（客户端自己带的在前、真实来源在后），
-#   而服务器按它给登录限流分桶：不覆盖的话，最左那段是攻击者随便填的，
-#   5 次/分钟的上限就被绕过了（见 docs/escalations.md E-37）。
+#   反代怎么处理客户端自己带来的这个头，各家各版本不一样（有的**追加**在后面，有的丢掉）；
+#   显式覆盖之后上游只看到一段真实来源，哪一种都对。服务器那边另有两层兜底
+#   （只信本机反代写的最右一段 + 不看来源的全局限流），见 docs/escalations.md E-37 / E-39。
 sudo systemctl reload caddy || sudo systemctl restart caddy
 sudo journalctl -u caddy -n 20 --no-pager     # 期望看到证书申请成功 + 反代 200
 ```
