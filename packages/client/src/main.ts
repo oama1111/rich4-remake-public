@@ -2293,6 +2293,27 @@ let anticipateFrame = 0;
 let rollRequestedAt = 0;
 /** 催过之后最多等这么久 —— 联机时服务器不答复不能一直空转 */
 const ROLL_WAIT_TIMEOUT_MS = 3000;
+/**
+ * **本机这一掷的 intent 已经发出、还在等服务器回包**（联机）。
+ *
+ * ★★ 第九份试玩回报「多人模式下玩家扔骰子有个很明显的延迟卡顿」（2026-09-22）。
+ *
+ *   改动前是一条**死锁**：`pumpNetInbox` 的节拍闸 `holdForActorWalk` 里有
+ *   `diceFxActive` 这一位，而自己的 `rollDice` 回包恰恰是**唯一能清掉这一位的东西**
+ *   （`diceFx.roll()` 只在 `applyAction` 里调，而 `applyAction` 正被这道闸挡着）
+ *   ⇒ 每掷固定空转到 `ROLL_WAIT_TIMEOUT_MS`（3 秒）才由超时 `cancel()` 松开。
+ *   单机约 1.7 s 的一段，联机变成 4.7 s + RTT。
+ *
+ *   现在两点一起改：
+ *   ① 这一位为真且队首是 `rollDice` 时，**放行**那条回包（它不是在「打断演出」，
+ *      它就是演出在等的东西）；
+ *   ② `dicePoll` 在 dispatch 那一刻就调 `diceFx.predictRoll()` 先滚起来，
+ *      回包只负责补权威点数 ⇒ 连 RTT 也不必等。
+ *
+ * 置位：`dispatch` 的联机分支。清位：`applyNetAction` 施加掉那条回包时 /
+ * 3 秒超时收摊时 / 服务器拒绝时 / 失步自愈时。
+ */
+let awaitingOwnRoll = false;
 
 /**
  * 掷骰那一段的轮询：数满预动作就掷，掷完继续要帧直到 500 ms 定格走完。
@@ -2352,11 +2373,23 @@ function dicePoll(): void {
     dispatch({ type: 'rollDice' });
     // 影片可能还没解完；解完的回调会再挂一次
     diceFx.attachFlic(diceFlic.get(diceFx.diceCount) ?? null);
+    // ★★ 联机预测（第九份试玩回报「掷骰延迟」）：本地不 reduce 自己的输入（等回包），
+    //   但滚骰这一段只是「骰子在滚」的画面、**不含点数**（点数图只在 `hold` 相位画），
+    //   所以可以**当场开滚**，回包到了由 `applyAction` 的 `diceFx.roll()` 补上权威点数
+    //   （`roll()` 对已经在滚的那一段只更新点数、不重启相位）。
+    //   没有这一步就还得白等一个 RTT 才看见骰子动。
+    if (net !== null && diceFx.predictRoll(performance.now(), diceFlic.get(diceFx.diceCount) ?? null)) {
+      // 原版音效随影片一起起；预测起播时就得响，否则会晚一个 RTT
+      playDiceSound();
+    }
   }
 
   // 联机兜底：催过之后服务器迟迟不回就收摊，别一直空转
   if (diceFx.phase === 'anticipate' && rollRequestedAt > 0 && now - rollRequestedAt > ROLL_WAIT_TIMEOUT_MS) {
     diceFx.cancel();
+    // ★ 这条回包不来了（服务器没答）⇒ 撤掉「在等回包」这一位，
+    //   否则 `pumpNetInbox` 会一直放行队首那条 `rollDice`（见 `awaitingOwnRoll`）。
+    awaitingOwnRoll = false;
     // ★ 收摊同样要让回合驱动接着跑（`cancel()` 把相位摆回 idle，而这道闸
     //   一旦没人重排就再也没人叫 `scheduleHumanTurn`）。
     resumeTurnDriver();
@@ -3723,6 +3756,18 @@ function localSeatActive(): boolean {
 
 function dispatch(action: Action): void {
   if (net !== null) {
+    // ★ 记下「本机这一掷在等回包」——`pumpNetInbox` 据此放行，`dicePoll` 据此先滚起来。
+    //   见 `awaitingOwnRoll` 的注释（第九份试玩回报「掷骰延迟」的死锁）。
+    if (action.type === 'rollDice') {
+      awaitingOwnRoll = true;
+      // ★★ 兜底（必须有）：这一位会让队首的 `rollDice` 广播**绕过整个节拍闸**，
+      //   所以绝不能让它一直挂着。回包要是永远不来（断线、被拒、服务器重启），
+      //   到点自己撤掉 —— 之后回包照旧按正常节拍落地，只是不再插队。
+      //   （预测的滚骰只演约 1 s，`dicePoll` 到那时就停了，靠它兜不住这一位。）
+      window.setTimeout(() => {
+        awaitingOwnRoll = false;
+      }, ROLL_WAIT_TIMEOUT_MS);
+    }
     net.submit(action);
     return;
   }
@@ -3843,6 +3888,9 @@ function applyAction(action: Action): void {
         forcedRollSkipFx = false;
         diceFx.cancel();
       } else {
+        // ★ 联机预测（`dicePoll` 的 `predictRoll`）已经让这一段滚起来了 ——
+        //   记下来：既不该再 `begin()` 一段新的预动作，也不该把音效放第二遍。
+        const predicted = diceFx.phase === 'tumble' || diceFx.phase === 'hold';
         // 单机的预动作已经在 `requestRoll` 里起好了；联机时点数由服务器定序，
         // 本机这一按只负责把动画领走（不动画就自己起一段）。
         if (!diceFx.active) {
@@ -3856,7 +3904,8 @@ function applyAction(action: Action): void {
           }
         }
         diceFx.roll(performance.now(), state.dice, diceFlic.get(state.dice.length) ?? null);
-        playDiceSound();
+        // 预测已经起播的那一掷，音效在起播那一刻就响过了（原版音效随影片一起起）
+        if (!predicted) playDiceSound();
       }
     } else if (state.phase !== 'moving' && !diceFx.active) {
       diceFx.cancel();
@@ -9227,7 +9276,17 @@ function connectOnline(url: string, room: string, name: string): void {
           clockAt = performance.now();
           requestRender();
         },
-        onError: (message) => log(`⚠ 伺服器：${message}`),
+        onError: (message) => {
+          log(`⚠ 伺服器：${message}`);
+          // ★ 本机那一掷被服务器拒了（`illegalAction` 等）⇒ 那条回包**不会来了**。
+          //   当场把预测的滚骰收掉并松开节拍闸，别让它空转到 3 秒超时。
+          //   （重复点 GO、超时被别人接管之后再发 intent，都会走到这里。）
+          if (awaitingOwnRoll) {
+            awaitingOwnRoll = false;
+            diceFx.cancel();
+            resumeTurnDriver();
+          }
+        },
         onDesync: (d) =>
           log(`⚠ 失步！第 ${d.seq} 號後 ${d.seat + 1} 號座的校驗和 ${d.got} ≠ ${d.expected}，已請求全量重放`),
         // ★ Q-NET-1 自愈：服务器把**完整** action 日志重放回来了 → 整体重建本地状态。
@@ -9259,6 +9318,8 @@ function connectOnline(url: string, room: string, name: string): void {
           pickHover = null;
           hoverNode = null;
           diceFx.cancel();
+          // 本地状态已重建 ⇒ 那条自己在等的回包（以及它对应的预测动画）不再有意义
+          awaitingOwnRoll = false;
           // ★ 建屋影片也是「这一刻在播」的东西：本地状态已经重建，旧片子不该接着放
           buildFx = null;
           pendingBuildFx = null;
@@ -9502,6 +9563,9 @@ function applyNetAction(item: { action: Action; seq: number }): void {
   netToasts.noteIntent(actingSeat(state));
   if (item.action.type === 'step') stepTick();
   applyAction(item.action);
+  // ★ 本机那一掷的回包到了 ⇒ 撤销「在等回包」这一位（`predictRoll` 起的滚骰
+  //   已在 `applyAction` 里由 `diceFx.roll()` 补上权威点数）。见 `awaitingOwnRoll`。
+  if (item.action.type === 'rollDice') awaitingOwnRoll = false;
   net?.noteApplied(item.seq);
 }
 
@@ -9512,8 +9576,18 @@ function pumpNetInbox(delay = 0): void {
   }
   netPumpTimer = window.setTimeout(() => {
     netPumpTimer = null;
-    // 与 `scheduleAi` / `scheduleHumanTurn` 同一道闸；被挡下就过一个渲染周期再看
-    if (holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
+    // ★★ 放行「本机自己在等的那条 `rollDice` 回包」（第九份试玩回报「掷骰延迟」）。
+    //
+    //   改动前这里是死锁：`holdForActorWalk` 的 `diceFxActive` 这一位只能由
+    //   `applyAction(rollDice)` → `diceFx.roll()` 清掉，而 `applyAction` 正被这道闸挡着
+    //   ⇒ 每掷空转到 3 秒超时才松开（见 `awaitingOwnRoll` 的注释）。
+    //
+    //   ⚠️ 只放行**这一种**：`awaitingOwnRoll` 只在本机发出 `rollDice` 时置位，
+    //   且要求队首就是 `rollDice`。电脑座位那一串 action 照旧受闸 —— 那正是
+    //   第七份试玩回报第 1 条要的（别把电脑回合秒播完、别互相顶掉骰子动画）。
+    const head = netInbox[0];
+    const ownRollEcho = awaitingOwnRoll && head !== undefined && head.action.type === 'rollDice';
+    if (!ownRollEcho && holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
     const item = netInbox.shift();
     if (item === undefined) return;
     applyNetAction(item);

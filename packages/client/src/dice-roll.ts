@@ -118,11 +118,46 @@ export class DiceRollFx {
    * @param flic 已解好的 FLIC；还没到货就先给 `null`，画面会停在预动作最后一帧
    */
   roll(now: number, dice: readonly number[], flic: LoadedFlic | null): void {
+    // ★★ 联机预测（`predictRoll`）已经把这一段滚起来了：这里只把**权威点数**补上，
+    //   **不重启相位、不重置起始时刻** —— 否则服务器回包一到，骰子会从头再滚一遍，
+    //   那正是第九份试玩回报「掷骰延迟」要修的手感（3 秒白等之外的第二段顿挫）。
+    if (this.#phase === 'tumble' || this.#phase === 'hold') {
+      if (dice.length > 0) this.#count = Math.max(1, dice.length);
+      this.#dice = [...dice];
+      if (flic !== null) this.#flic = flic;
+      return;
+    }
     this.#phase = 'tumble';
     this.#at = now;
     this.#dice = [...dice];
     this.#count = Math.max(1, dice.length);
     this.#flic = flic;
+  }
+
+  /**
+   * ★★ 联机预测：**不知道点数**就先开滚（第九份试玩回报「聯機擲骰延遲」，2026-09-22）。
+   *
+   * 为什么「预测」在这里是合法的、也不破坏 C-DET-1/4：
+   *
+   * - 滚骰这一段画的是 `Panel.mkf` 4/5/6 的 **FLIC**，那是一段「骰子在滚」的画面，
+   *   **不含点数**；点数图是滚完之后才盖上去的（`pips()` 只在 `hold` 相位返回非 `null`）。
+   *   ⇒ 「先滚起来」既不需要知道点数、也猜不到点数。
+   * - 本模块仍然不读 `state`、不写 `state`、不用 `Math.random`（文件头三条铁律不变）；
+   *   权威点数一律由 `roll()` 在服务器回包到达时补上。**预测的只是「什么时候画」。**
+   *
+   * 为什么必须预测：联机时 `dispatch` 只把 intent 发给服务器、本地不 reduce
+   * （`main.ts` 的 `dispatch`），若不在这一刻开滚，玩家点 GO 之后要一直等到
+   * 「服务器回包 + 本地节拍」才看见骰子动 —— 那就是卡顿。
+   *
+   * @param flic 必须已经解好；没解好就不预测（那时 `tumbleMs()` 会是 0，相位会当场滑过去）
+   * @returns 这一拍**真的**从预动作进了滚骰 ⇒ 调用方据此放骰子音效（别放两次）
+   */
+  predictRoll(now: number, flic: LoadedFlic | null): boolean {
+    if (this.#phase !== 'anticipate' || flic === null) return false;
+    this.#phase = 'tumble';
+    this.#at = now;
+    this.#flic = flic;
+    return true;
   }
 
   /** 滚骰总时长（毫秒）；没 FLIC 就 0 */
