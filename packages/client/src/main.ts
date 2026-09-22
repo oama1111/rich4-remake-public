@@ -165,6 +165,7 @@ import {
 import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
 import {
   cardPlaySpeech,
+  toolUseSpeech,
   openingSpeech,
   speechEventsFor,
   speechLinesFor,
@@ -4313,6 +4314,11 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   // ★★ 先出**卡牌台词**（原版那句在卡片函数体内，先于效果引发的台词），
   //   再出状态跃迁派生的台词 —— 顺序与原版一致。
   const cardBubbles = cardPlaySpeech(before, after);
+  // ★★ 第十一份試玩回報 #3：**道具台词**（原版 `_tool_strings`，不分人机）。
+  //   与卡牌台词同一条非探测器通道，也同取 `afterStage`（原版那句 `player_say`
+  //   在 `place_object` **之前**，但本引擎的 `useTool` 里没有影片，
+  //   取 `afterStage` 与既有的卡牌台词一致、不会与棋盘影片互等）。
+  const toolBubbles = toolUseSpeech(before, after);
   const spoken = speechEventsFor(before, after, topo);
   // ★ W-51：台词现在带**次序**交出去（`SpeechLine.order`），由 `queueSpeech` 分流。
   //   卡牌台词**不是探测器**（它走 `lastCardPlay` 这条非状态跃迁的通道）⇒ W-50 §2.2
@@ -4320,7 +4326,10 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   //   那一类（`queueSpeech` 的旧判据 `blockingPresentation()`），且 exe 里几张卡的
   //   调用点确实是影片在前、台词在后（例：`0x00443afb` 前有 `view_to` + `play_flic`，
   //   见 `docs/tasks/speech-callsites.md`）。首席若要逐卡裁定，改这一处即可。
-  const cardLines: SpeechLine[] = cardBubbles.map((bubble) => ({ bubble, order: 'afterStage' }));
+  const cardLines: SpeechLine[] = [...cardBubbles, ...toolBubbles].map((bubble) => ({
+    bubble,
+    order: 'afterStage',
+  }));
   if (spoken.length === 0) return cardLines;
   ensureSpeakingArchive();
   // ★ 语音**不在这里放** —— 见 `speechTick()`。

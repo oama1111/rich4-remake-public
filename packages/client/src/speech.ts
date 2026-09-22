@@ -73,7 +73,7 @@ import {
   SPEECH_EVENTS_PER_CHARACTER,
   speechIndex,
 } from '@rich4/data';
-import { cardLineBubbleOf, speechBubbleOf, type SpeechBubble } from './speech-bubble.ts';
+import { cardLineBubbleOf, speechBubbleOf, toolLineBubbleOf, type SpeechBubble } from './speech-bubble.ts';
 import type { SpeechOrder } from './stage-gate.ts';
 
 // ============================================================
@@ -1540,6 +1540,34 @@ export function cardPlaySpeech(before: GameState, after: GameState): SpeechBubbl
   const b = p.blocking;
   if (b.disappearing !== 0 || b.sleepWalking !== 0 || b.sleeping !== 0) return [];
   const bubble = cardLineBubbleOf(play.player, p.character, characterName(p.character), play.cardId);
+  return bubble === null ? [] : [bubble];
+}
+
+/**
+ * ★★ **道具台词**（第十一份試玩回報 #3）—— 用道具那一下角色说的那句话。
+ *
+ * 与 `cardPlaySpeech` 同一个形状：它**不是探测器**（`useTool` 不带可 diff 的状态跃迁），
+ * 走的是 `GameState.lastToolUsed` 这条瞬态提示通道。
+ *
+ * @source 原版 13 件道具在用的那一下都 `player_say(角色, 0, _tool_strings[角色][道具号−1])`
+ *   —— 路障 `0x00446bcc`（`[eax+0x480d5e]`）/ 地雷 `0x00446caa`（+8）/ 定時炸彈 `0x00446d8b`（+12），
+ *   三处都在各自函式的**开头**、`cmp byte [eax+0x496b7d],1 / jne` **之前**
+ *   ⇒ **不分人机，电脑也说**（玩家回报「NPC放置炸弹…好像也有台词」就是这个）。
+ *   表 `0x480d5a`（12×26，行距 0x68），前 13 列 = 道具 1..13；见 `@rich4/data` 的 `TOOL_LINES`。
+ *
+ * 纯函数（C-DET-1/2/4）：不读 DOM、不碰音频、不动 PRNG。
+ */
+export function toolUseSpeech(before: GameState, after: GameState): SpeechBubble[] {
+  const use = after.lastToolUsed;
+  if (use === null) return [];
+  // 同一次用道具只出一次（提示字段是「最近一次」的覆写语义，规矩同 `cardPlaySpeech`）
+  if (before.lastToolUsed === use) return [];
+  const p = after.players[use.player];
+  if (p === undefined) return [];
+  const b = p.blocking;
+  // 消失中 / 梦游 / 冬眠的人不出声（与 `cardPlaySpeech` 同一条）
+  if (b.disappearing !== 0 || b.sleepWalking !== 0 || b.sleeping !== 0) return [];
+  const bubble = toolLineBubbleOf(use.player, p.character, characterName(p.character), use.toolId);
   return bubble === null ? [] : [bubble];
 }
 

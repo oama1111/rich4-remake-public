@@ -1987,8 +1987,17 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     case 'useCard':
       return afterAiStep(state, playCard(state, topo, action.cardId, action.target ?? { kind: 'none' }), topo, 3);
 
-    case 'useTool':
-      return afterAiStep(state, useToolAction(state, topo, action.toolId, action.nodeId ?? 0, action.value ?? 0), topo, 3);
+    case 'useTool': {
+      const used = useToolAction(state, topo, action.toolId, action.nodeId ?? 0, action.value ?? 0);
+      // ★★ 第十一份試玩回報 #3：道具台词（原版 `player_say(角色, 0, _tool_strings[角色][道具号−1])`，
+      //   在 human/AI 分流**之前** ⇒ 电脑也说）。
+      //   与 `lastCardPlay` 同一条规矩：**真的用出去了**才写（`used === state` = 没生效 ⇒ 不说）。
+      const stamped: GameState =
+        used === state
+          ? used
+          : { ...used, lastToolUsed: { player: state.currentPlayer, toolId: action.toolId } };
+      return afterAiStep(state, stamped, topo, 3);
+    }
 
     case 'shop':
       return shopAction(state, action);

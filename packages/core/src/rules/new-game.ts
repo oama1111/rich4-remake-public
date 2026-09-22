@@ -541,6 +541,7 @@ export function newGame(opts: NewGameOptions): GameState {
     // 純表現提示：開局沒人走過（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
     lastCardPlay: null,
+    lastToolUsed: null,
     // 纯表现提示：开局还没有过过路费（见 state/types.ts 的 GameState.lastTollLands）
     lastTollLands: null,
     // 纯表现提示：开局还没有过付费类落点（见 state/types.ts 的 GameState.notices）

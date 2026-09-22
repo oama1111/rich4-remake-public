@@ -132,6 +132,7 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     // 纯表现提示：还没人走过（见 types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
     lastCardPlay: null,
+    lastToolUsed: null,
     // 纯表现提示：还没闪过往过路费的地块（见 types.ts 的 GameState.lastTollLands）
     lastTollLands: null,
     // 纯表现提示：还没弹过付费框（见 types.ts 的 GameState.notices）

@@ -654,6 +654,7 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     // 纯表现提示：读档后不播「上一局那趟」（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
     lastCardPlay: null,
+    lastToolUsed: null,
     // 纯表现提示：读档后不闪「上一局那笔过路费」（见 state/types.ts 的 GameState.lastTollLands）
     lastTollLands: null,
     // 纯表现提示：读档后不弹「上一局那一笔」（见 state/types.ts 的 GameState.notices）

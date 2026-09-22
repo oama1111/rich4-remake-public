@@ -191,3 +191,40 @@ describe('★ 機器工人（9）与飛彈（7/13）需要地图，见 tool-land
     expect(reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo)).toBe(s);
   });
 });
+
+/*
+ * ★★ 第十一份試玩回報 #3（`feedback/20260922-200005`「NPC放置炸弹、定时炸弹时好像也有台词」）：
+ *   原版 13 件道具在用的那一下都 `player_say(角色, 0, _tool_strings[角色][道具号−1])`，
+ *   而且**在 human/AI 分流之前**（所以电脑也说）。本引擎先前整条通道没接 ——
+ *   现在由 `GameState.lastToolUsed` 这条瞬态提示交出去（规矩同 `lastCardPlay`）。
+ */
+describe('★★ 道具台词的提示字段（第十一份回报 #3）', () => {
+  it('★ 真的用出去 ⇒ 写 `lastToolUsed`（谁、哪一件）', () => {
+    const s = withTools({ 2: 1 });
+    const after = reduce(s, { type: 'useTool', toolId: 2, nodeId: 2 }, topo);
+    expect(after.lastToolUsed).toEqual({ player: 0, toolId: 2 });
+  });
+
+  it('★ 没生效（没这道具）⇒ **不写**（与 `lastCardPlay` 同一条规矩：用出去了才写）', () => {
+    const s = withTools({});
+    const after = reduce(s, { type: 'useTool', toolId: 2, nodeId: 2 }, topo);
+    expect(after).toBe(s);
+    expect(after.lastToolUsed).toBeNull();
+  });
+
+  it('★ 目标格被引擎拒（有神明）⇒ 也不写', () => {
+    const base = withTools({ 2: 1 });
+    const withGod = {
+      ...base,
+      objects: base.objects.map((o, i) => (i === 0 ? { ...o, type: 1, nodeId: 2, state: 0, attached: 0 } : o)),
+    };
+    const after = reduce(withGod, { type: 'useTool', toolId: 2, nodeId: 2 }, topo);
+    expect(after.lastToolUsed).toBeNull();
+  });
+
+  it('★ 电脑也会写（原版这句在 human/AI 分流之前）', () => {
+    const s = withTools({ 4: 1 });
+    const after = reduce(s, { type: 'useTool', toolId: 4, nodeId: 2 }, topo);
+    expect(after.lastToolUsed).toEqual({ player: 0, toolId: 4 });
+  });
+});

@@ -394,6 +394,13 @@ export interface NpcWalkHint {
  * ⚠️ 「用出去了」才写（对应原版卡片函数返回非 0）：`ok: false` 的那条路
  *   （= 卡还在手上、一点状态都没动）**不写**这个提示。
  */
+export interface ToolUseHint {
+  /** 用道具的人下标 0..3 */
+  player: number;
+  /** 道具号 1..13（`@rich4/data` 的 `toolLine(character, toolId)` 用它取台词） */
+  toolId: number;
+}
+
 export interface CardPlayHint {
   /** 出牌者下标 0..3 */
   player: number;
@@ -1043,6 +1050,18 @@ export interface GameState {
    * ⇒ `speech-bubble.ts` 的 `cardLineBubbleOf()`（显示 + 语音）。
    */
   lastCardPlay: CardPlayHint | null;
+
+  /**
+   * ★★ **上一次用出去的道具**（用的人 + 道具号）—— 纯表现提示，与 `lastCardPlay` 同一套规矩
+   *   （不进指纹/存档/history；**真的用出去了**才写）。
+   *
+   * 消费者：`client/src/speech.ts` 的 `toolUseSpeech()` —— 原版 13 件道具在用的那一下
+   * 都 `player_say(角色, 0, _tool_strings[角色][道具号−1])`，而且**在 human/AI 分流之前**。
+   *
+   * 第十一份試玩回報 #3（`feedback/20260922-200005`）：「NPC放置炸弹、定时炸弹时好像也有台词」
+   *   —— 这条通道先前整个没接（`DETECTORS` 只覆盖状态跃迁类台词）。
+   */
+  lastToolUsed: ToolUseHint | null;
 
   /**
    * ★★ **这一笔过路费把哪些地块算了进去**（地块 id，含同盟那一份）—— W-69。

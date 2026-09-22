@@ -54,6 +54,8 @@
 import {
   cardLine,
   cardLineVoice,
+  parseVoiceCode,
+  toolLine,
   speechEmojiImage,
   speechIndex,
   speechLine,
@@ -221,6 +223,14 @@ export interface SpeechBubble {
    *     （VA `0x48123a`，见 `@rich4/data` 的 `card-lines.ts`）。
    */
   readonly cardId?: number;
+  /**
+   * 道具台词时给出**道具号 1..13**（普通台词为 `undefined`）。
+   *
+   * 与 `cardId` 同一个理由：工具台词的文本/语音来自**另一张表**
+   * （`@rich4/data` 的 `TOOL_LINES`，原版 `_tool_strings` @0x480d5a），
+   * 而 `event` 这时是 `道具号 − 1`。
+   */
+  readonly toolId?: number;
   /** 说话人的**完整名字**（如「金貝貝」）*/
   readonly speaker: string;
   /**
@@ -425,6 +435,44 @@ export function cardLineBubbleOf(
     lines: isEmoji ? [] : bubbleLines(text),
     // @source 串头 `#NNNN`：`426 + 52×角色 + (卡号-1)`，360 条无例外
     voice: cardLineVoice(character, cardId),
+    emoji: isEmoji ? speechEmojiImage(emojiCode) : null,
+    textAt: SPEECH_TEXT_AT,
+    emojiAt: SPEECH_EMOJI_AT,
+    holdMs: SPEECH_HOLD_MS,
+  };
+}
+
+/**
+ * 一条**道具台词**（第十一份試玩回報 #3）→ 一段可直接画的台词。
+ *
+ * @source 原版 13 件道具在用的那一下都 `player_say(角色, 0, _tool_strings[角色][道具号−1])`
+ *   （路障 `0x00446bcc` / 地雷 `0x00446caa` / 定時炸彈 `0x00446d8b`，各函式**开头**、
+ *   `cmp [who_plays],1` **之前** ⇒ **电脑也说**）。
+ *   表在 `0x480d5a`（12 行 × 26 列，行距 0x68），前 13 列 = 道具 1..13。
+ *
+ * ⚠️ 与卡牌台词不同：**语音号是散列的**（`#0236`/`#0237`/…），不像角色台词表能用公式还原，
+ *   所以 `TOOL_LINES` 的串**保留 `#NNNN` 前缀**，这里用 `parseVoiceCode` 现剥。
+ */
+export function toolLineBubbleOf(
+  player: number,
+  character: number,
+  speaker: string,
+  toolId: number,
+): SpeechBubble | null {
+  const line = toolLine(character, toolId);
+  if (line === null) return null;
+  const [emojiCode, raw] = line;
+  const parsed = parseVoiceCode(raw);
+  const isEmoji = emojiCode !== null;
+  return {
+    player,
+    character,
+    event: toolId - 1,
+    toolId,
+    speaker,
+    expression: 0,
+    lines: isEmoji ? [] : bubbleLines(parsed.rest),
+    voice: parsed.voice,
     emoji: isEmoji ? speechEmojiImage(emojiCode) : null,
     textAt: SPEECH_TEXT_AT,
     emojiAt: SPEECH_EMOJI_AT,
