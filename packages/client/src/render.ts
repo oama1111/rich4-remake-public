@@ -807,13 +807,150 @@ export function actorStepsLeft(
   return Math.max(0, rolled - done);
 }
 
+/** 一个世界坐标点（节点坐标与物件的浮点位置共用同一套单位） */
+export interface KnockPoint {
+  x: number;
+  y: number;
+}
+
 /**
- * 機器娃娃这一趟**扫掉的物件** —— 每一件「该在哪一刻消失」，外加画它要的记录。
+ * `+0x06`（物件记录的「存在/动画计时」）的起手值。
+ * @source VA 0x0040fb9b `mov byte [obj*24 + 0x496d0e], 0xff`
+ */
+export const OBJECT_KNOCK_TIMER0 = 0xff;
+
+/**
+ * 物件被打飞时写进记录的那份状态 —— 物件记录 `+0x06..+0x14`（**全 float32**）。
+ *
+ * @source `fcn_0040fafd(objIdx, fromNode, toNode)` VA 0x0040fafd（规格
+ *   `rich4-spec/docs/systems/tools.md` §6.1.0，通道 2 用例
+ *   `rich4-spec/tests/test_object_float_move.py` 13/13）：
+ * ```asm
+ * 0040fb3e  dx = from.x − to.x / fild / fmul qword [0x46352c] = 0.5
+ * 0040fb55  fstp [obj*24 + 0x496d18]            ; ★ +0x10 = Δx × 0.5
+ * 0040fb6c  fstp [obj*24 + 0x496d1c]            ; ★ +0x14 = Δy × 0.5
+ * 0040fb80  fstp [obj*24 + 0x496d10]            ; ★ +0x08 = from.x + 速度x（起手已推进半格）
+ * 0040fb94  fstp [obj*24 + 0x496d14]            ; ★ +0x0c = from.y + 速度y
+ * 0040fb9b  byte [obj*24 + 0x496d0e] = 0xff     ; ★ +0x06
+ * 0040fba3  dl = byte [obj*24 + 0x496d09]       ; +0x01 = 朝向
+ * 0040fbaa  byte [obj*24 + 0x496d0f] = dl       ; ★ +0x07 ← +0x01（朝向副本）
+ * ```
+ * ★ 落点一律 `fstp dword` = **IEEE-754 单精度**，故这里每一步都过 `Math.fround`。
+ */
+export interface ObjectKnock {
+  /** `+0x08` 世界 x */
+  x: number;
+  /** `+0x0c` 世界 y */
+  y: number;
+  /** `+0x10` x 速度 = (from.x − to.x) × 0.5 */
+  vx: number;
+  /** `+0x14` y 速度 = (from.y − to.y) × 0.5 */
+  vy: number;
+  /** `+0x06` 计时（起手 `0xFF`，**每画一拍 −1**，见 `objectKnockAt`） */
+  timer: number;
+  /** `+0x07` = `+0x01` 的**原样副本**（飞的时候按它取图；`and 7` 留到用的时候做） */
+  facing: number;
+}
+
+/**
+ * `fcn_0040fafd` 的起手：速度 = (from − to) × 0.5、位置 = from + 速度（**都已推进半格**）。
+ *
+ * @param from   打得那一格（娃娃脚下）—— 传的节点号是 `path[step]`
+ * @param to     娃娃**来的上一格** —— 传的节点号是 `path[step − 1]`；原版这两个参数
+ *               来自 `special_players_state + 68/70`（= 用道具那一刻玩家的
+ *               `nodeId` / `lastNodeId`，@source `rich4_tool_jiqiwawa.asm:37-39`），
+ *               在娃娃那一支里逐格就是「当前格 / 上一格」
+ * @param facing 物件记录 `+0x01` 的朝向 —— 原样抄进 `+0x07`
+ */
+export function objectKnockStart(from: KnockPoint, to: KnockPoint, facing = 0): ObjectKnock {
+  // fmul qword [0x46352c] → 常数就是 double 0.5，再 fstp dword（单精度落点）
+  const vx = Math.fround((from.x - to.x) * 0.5);
+  const vy = Math.fround((from.y - to.y) * 0.5);
+  return {
+    x: Math.fround(from.x + vx),
+    y: Math.fround(from.y + vy),
+    vx,
+    vy,
+    timer: OBJECT_KNOCK_TIMER0,
+    facing,
+  };
+}
+
+/**
+ * 走一拍 —— `+0x08 += +0x10` / `+0x0c += +0x14`（`fld`/`fadd`/`fstp dword`，单精度落点）。
+ * @source `rich4.asm` 0x00408d47 那一段（`:1805-1810`）
+ */
+export function objectKnockTick(k: ObjectKnock): ObjectKnock {
+  return { ...k, x: Math.fround(k.x + k.vx), y: Math.fround(k.y + k.vy) };
+}
+
+/**
+ * 第 `tick` 拍（0 = 起手那一拍）物件画在**世界坐标**的哪里。
+ *
+ * @source 逐 tick 的消耗 `rich4.asm:1746-1810`（`fcn_0040829d` 的物件循环）：
+ * ```asm
+ * 00408cd9  cmp byte [obj + 6], 0 / je 0x408e0e   ; 计时到 0 ⇒ 走静态那支（本物件 node 已清 0 ⇒ 不画）
+ * 00408cf4  fx = trunc(+0x08) ; fy = trunc(+0x0c) ; fld/fistp（__round_toward_zero）
+ * 00408d0e  esi = (fx >> 5) − camTileX + 0xe      ; 列：0..0x1c = 29 格窗口
+ * 00408d1a  edi = (fy >> 5) − camTileY + 0xe      ; 行：同上
+ * 00408d23  if (esi < 0 || esi > 0x1c || edi < 0 || edi > 0x1c) {
+ * 00408d32      byte [obj + 6] = 0 ; jmp 下一件    ; ★ 越出窗口 ⇒ 停，而且**这一拍不画**
+ *           }
+ * 00408d47  dec byte [obj + 6]                    ; ★ 先减
+ *           … 算屏幕落点（下面才 += 速度）
+ * 00408db1  fld [+0x10] / fadd [+0x08] / fstp [+0x08]
+ * 00408dc5  fld [+0x14] / fadd [+0x0c] / fstp [+0x0c]
+ * ```
+ * ⇒ 一拍 = **先判窗口 → 再 `dec +0x06` → 画当时的坐标 → 最后才推进位置**。
+ *   计时耗尽（`+0x06` 减到 0 之后的下一拍）物件落回静态那支，而娃娃扫掉的物件
+ *   `nodeId` 已经被清 0 ⇒ **不再画**。
+ *
+ * @param tick      已经过去几拍（0 = 起手/娃娃刚走到那一格）
+ * @param inWindow  这个**截断后的整数**坐标在不在 29×29 窗口里（绘制侧传 `worldToScreen` 那一问）
+ * @returns 这一拍的记录；`null` = 这一拍**不画**（越界 / 计时耗尽 / tick 越界）
+ */
+export function objectKnockAt(
+  from: KnockPoint,
+  to: KnockPoint,
+  facing: number,
+  tick: number,
+  inWindow: (x: number, y: number) => boolean = () => true,
+): ObjectKnock | null {
+  if (!Number.isFinite(tick) || tick < 0) return null;
+  // +0x06 从 0xFF 起逐拍 −1：可画的是第 0..0xFE 拍（第 0xFF 拍时计时已归 0）
+  if (tick >= OBJECT_KNOCK_TIMER0) return null;
+  let s = objectKnockStart(from, to, facing);
+  for (let t = 0; ; t++) {
+    if (s.timer === 0) return null;
+    // ★ 先判窗口，用的是**截断后**的整数坐标（`__round_toward_zero` + `sar 5`）
+    if (!inWindow(Math.trunc(s.x), Math.trunc(s.y))) return null;
+    s = { ...s, timer: s.timer - 1 };
+    if (t === tick) return s;
+    s = objectKnockTick(s);
+  }
+}
+
+/** 娃娃扫掉的一件物件 —— 「该在哪一刻打飞」+ 打飞用的方向（纯数据） */
+export interface SweptObjectDraw {
+  /** 走**之前**那一件的记录（`nodeId` 已按 `path[step]` 补回，见下） */
+  o: MapObject;
+  /** 娃娃走到那一格（= 打飞开始）的时刻，毫秒，自这趟起步算 */
+  hideAt: number;
+  /**
+   * 打飞的方向与朝向 —— `from` = 被打飞的那一格、`to` = 娃娃来的上一格。
+   * `null` = 没有方向可用（`step ≤ 0`，即物件在**出发格**上；`runDoll` 的循环
+   * 第一步就 `path.push`，故它交出来的 `step` 恒 ≥ 1，这一支只是防御）。
+   */
+  knock: { from: KnockPoint; to: KnockPoint; facing: number } | null;
+}
+
+/**
+ * 機器娃娃这一趟**扫掉的物件** —— 每一件「该在哪一刻被打飞」，外加画它要的记录。
  *
  * ★ 出处与判据（试玩3 #11）：原版是**逐格 tick** 走的，落点处理
- *   `0x0041b4f1` 在娃娃**走到那一格**时才把物件打飞并释放
+ *   `0x0041b4e7` 那一支在娃娃**走到那一格**时才把物件打飞并释放
  *   （`@source 0x0041b4e7` 那一段，见 `core/rules/special-actors.ts` 的
- *   `dollSweepNode`）。所以「消失时刻」= 补间走到 `path[step]` 那一格**走完**的时刻，
+ *   `dollSweepNode`）。所以「打飞时刻」= 补间走到 `path[step]` 那一格**走完**的时刻，
  *   也就是 `steps[step - 1].at + steps[step - 1].ms`。
  *
  *   ⚠️ 本引擎 core 一次把九格走完，交出来的 `state.objects` 里那几件已经
@@ -822,19 +959,27 @@ export function actorStepsLeft(
  *   `path[step]`（`dollSweepNode` 找的正是 `o.nodeId === cur`）。
  *   这不是猜：`cleared[].step` 由 `runDoll` 按同一次循环写下。
  *
+ * ★ **打飞**（本轮补，`docs/deviations/Q-TOOL-1.md` 表格第 3 行原登记「没做」）：
+ *   同一对节点就是 `fcn_0040fafd` 的两个参数 —— `from = path[step]`（娃娃脚下）、
+ *   `to = path[step − 1]`（来路）。原版在 `0x0041b519` 依次
+ *   `call fcn_0040fafd`（0x0041b519）+ `call remove_object`（0x0041b529）（@source `rich4_player_core_actions.asm:2663-2681`），
+ *   速度写成 `(from − to) × 0.5` ⇒ **顺着娃娃前进的方向被轰出去**（像扫帚推着走）。
+ *
  * @param steps     `actorWalkSteps(path, …)` 的产物
  * @param objects   这一趟**之后**的 `state.objects`（下标与走之前一一对应 ——
  *                  `dollSweepNode` 只改内容不挪位置）
  * @param path      `runDoll` 交出来的整趟路径（含起点）
  * @param cleared   `runDoll` 交出来的「下标 + 在哪一格」
+ * @param nodes     地图节点表（下标 = 节点号 − 1）—— 取打飞的起终点坐标与物件朝向
  */
 export function sweptObjectHideTimes(
   steps: readonly ActorWalkStep[],
   objects: readonly MapObject[],
   path: readonly number[],
   cleared: readonly SweptObject[],
-): { o: MapObject; hideAt: number }[] {
-  const out: { o: MapObject; hideAt: number }[] = [];
+  nodes: readonly MapNode[],
+): SweptObjectDraw[] {
+  const out: SweptObjectDraw[] = [];
   for (const c of cleared) {
     const o = objects[c.index];
     if (o === undefined) continue;
@@ -844,9 +989,50 @@ export function sweptObjectHideTimes(
     // 「走到那一格」= 那一步走完；`step === 0`（出发格）没有步，故立刻算走完
     const prev = c.step <= 0 ? null : steps[c.step - 1];
     const hideAt = prev === null || prev === undefined ? 0 : prev.at + prev.ms;
-    out.push({ o: { ...o, nodeId }, hideAt });
+    // ★ 打飞方向：from = 这一格、to = 来路那一格。朝向照抄物件自己的
+    //   `+0x01`（原版 `+0x07 ← +0x01`；本引擎不存朝向，按同一条规则现推）。
+    const fromNode = nodes[nodeId - 1];
+    const toId = c.step > 0 ? (path[c.step - 1] ?? 0) : 0;
+    const toNode = toId > 0 ? nodes[toId - 1] : undefined;
+    const knock =
+      fromNode === undefined || toNode === undefined
+        ? null
+        : {
+            from: { x: fromNode.x, y: fromNode.y },
+            to: { x: toNode.x, y: toNode.y },
+            facing: objectFacing(fromNode, nodes, directionOf),
+          };
+    out.push({ o: { ...o, nodeId }, hideAt, knock });
   }
   return out;
+}
+
+/**
+ * 娃娃那趟的一件物件在**这一刻**画在哪 —— 纯函数（`#objectSlots` 与
+ * `#drawSweptFlights` 共用，判据全在上面两个函数里）。
+ *
+ * - `{ kind: 'ground' }`：娃娃还没走到那一格 ⇒ 照旧画在 `s.o.nodeId` 那一格上；
+ * - `{ kind: 'fly', … }`：**已经打飞** ⇒ 按飞行位置画（世界坐标，已截断成整数，
+ *   与原版 `__round_toward_zero` 同）；
+ * - `null`：这一拍不画（越出 29×29 窗口 / 计时耗尽 / 没有方向）。
+ */
+export type SweptObjectFrame =
+  | { kind: 'ground' }
+  | { kind: 'fly'; x: number; y: number; facing: number }
+  | null;
+
+export function sweptObjectFrameAt(
+  s: SweptObjectDraw,
+  elapsedMs: number,
+  tickMs: number,
+  inWindow: (x: number, y: number) => boolean,
+): SweptObjectFrame {
+  if (elapsedMs < s.hideAt) return { kind: 'ground' };
+  if (s.knock === null) return null;
+  const ms = tickMs > 0 ? tickMs : 1;
+  const tick = Math.floor((elapsedMs - s.hideAt) / ms);
+  const k = objectKnockAt(s.knock.from, s.knock.to, s.knock.facing, tick, inWindow);
+  return k === null ? null : { kind: 'fly', x: Math.trunc(k.x), y: Math.trunc(k.y), facing: k.facing };
 }
 
 
@@ -1582,10 +1768,11 @@ export class BoardRenderer {
        * 这一趟沿途**扫掉的物件**（機器娃娃）+ 各自该在第几毫秒消失。
        *
        * ★ 试玩3 #11：`o` 是**走之前**那一件的记录（节点号还在，见
-       *   `sweptObjectHideTimes`），所以补间还没走到它那一格时照常画它；
-       *   `now - start >= hideAt` 之后不再画（= 逐格消失）。
+       *   `sweptObjectHideTimes`），所以补间还没走到它那一格时照常画它
+       *   （`#objectSlots`）；走到之后改画**打飞**那一段
+       *   （`#drawSweptFlights`，`sweptObjectFrameAt` 判）。
        */
-      swept: { o: MapObject; hideAt: number }[];
+      swept: SweptObjectDraw[];
     }
   >();
 
@@ -1605,6 +1792,18 @@ export class BoardRenderer {
    * 宿主没喂 `actorWalks` 时，只有这个变化能告诉我们「他刚走过」。
    */
   readonly #actorSeen = new Map<number, number>();
+  /**
+   * **正在飞的物件**（機器娃娃打飞的那几件）—— 与替身补间**分开存**。
+   *
+   * ★ 为什么不能挂在 `#actorWalks` 上：原版那颗 `+0x06` 计时是**物件自己的**，
+   *   娃娃那一趟走完（补间被 `#actorWalkScreen` 删掉）之后物件照样继续飞
+   *   （`0x408cd9` 那一支每帧照跑）。挂在替身补间上会有一个可见缺口：
+   *   被扫在**最后一格**上的那一件，`hideAt` 正好等于整趟的总时长，
+   *   那一拍补间刚被删 ⇒ 它一辈子也画不出「飞出去」。
+   *
+   * ⚠️ 纯表现、不进 state（C-DET-4）；飞行结束（越出 29×29 / 计时耗尽）即从表里掉。
+   */
+  #sweptFlights: { s: SweptObjectDraw; start: number; tickMs: number }[] = [];
   /**
    * 解码落地时叫一声。
    *
@@ -1820,11 +2019,24 @@ export class BoardRenderer {
     this.#actorWalks.clear();
     this.#actorSeen.clear();
     this.#actorFrame.clear();
+    this.#sweptFlights.length = 0;
   }
 
   /** 一条替身补间播完/被丢掉 */
   #forgetActorWalk(slot: number): void {
     this.#actorWalks.delete(slot);
+  }
+
+  /**
+   * 还有**打飞的物件**在飞吗 —— 宿主拿它续帧。
+   *
+   * ★ 为什么需要：这一族动画与替身补间**不同寿**（物件那颗 `+0x06` 计时自己跑，
+   *   娃娃走完它照样飞，见 `#sweptFlights`）。而本引擎是**按需重绘**的，走完
+   *   那一拍之后若没有别的演出，就没人再要帧了 —— 最后那几拍会冻在屏上。
+   *   只影响「要不要再画一帧」，**不**进 `stageBusy`（原版物件飞行不挡回合）。
+   */
+  sweptFlightActive(): boolean {
+    return this.#sweptFlights.length > 0;
   }
 
   /**
@@ -1847,14 +2059,18 @@ export class BoardRenderer {
     if (path.length < 2) return;
     const steps = actorWalkSteps(path, nodes, tickMs);
     if (steps.length === 0) return;
+    const swept = sweptObjectHideTimes(steps, objects, path, cleared, nodes);
     this.#actorWalks.set(slot, {
       steps,
       rolled: rolled ?? steps.length,
       start: now,
       tickMs,
       ticked: 0,
-      swept: sweptObjectHideTimes(steps, objects, path, cleared),
+      swept,
     });
+    // ★ 打飞那几件的**飞行**另起一份（`#sweptFlights`）—— 它们的时长由物件自己的
+    //   `+0x06` 决定，与娃娃这一趟的补间无关（见那一处字段说明）。
+    for (const s of swept) this.#sweptFlights.push({ s, start: now, tickMs });
     // @source VA 0x0040deed：起步（`fcn_0040dd1f` 尾）把走路帧清零
     this.#actorFrame.set(slot, 0);
     this.#dirty = true;
@@ -2159,6 +2375,10 @@ export class BoardRenderer {
     const flight = input.objectFlight ?? null;
     if (flight !== null) this.#drawObjectFlight(flight, camera, nowMs);
 
+    // ★ 機器娃娃**打飞**的那些物件同样画在清单**之上**（`0x408cd9` 那一支也是
+    //   拿着 `+0x08/+0x0c` 直接贴屏幕的），见 `#drawSweptFlights`。
+    this.#drawSweptFlights(camera, vp, nowMs);
+
     // ★ 建屋影片（機器工人）画在**最后**：原版 `fcn_0045144f` 把 FLIC 直接贴到
     //   后台面/屏幕上（`[0x48c882]` bit0），根本不进绘制槽，位置是常数
     //   —— 屏幕 `(0, 0x28)` = 棋盘局部 `(0, 0)`，尺寸就是整块 440×440 棋盘。
@@ -2378,16 +2598,20 @@ export class BoardRenderer {
     /**
      * ★ 试玩3 #11：**还没被娃娃走到的那几件** —— 它们已经不在 `state.objects`
      * 的图上（`dollSweepNode` 清掉了 `nodeId`），所以 `objectTokens` 不画它们。
-     * 这里按**补间还没到那一刻**把它们补回原地，走到哪一格就消失哪一件。
+     * 这里按**补间还没到那一刻**把它们补回原地；娃娃走到哪一格就打飞哪一件。
      *
-     * 出处：原版是逐格 tick 走的，落点处理 `0x0041b4f1` 在娃娃**到达那一格**时
+     * 出处：原版是逐格 tick 走的，分派器 `0x0041b4e7` 那一支在娃娃**到达那一格**时
      * 才把物件打飞并释放（`@source 0x0041b4e7`）。「哪一件对应哪一格」由 core
      * 的 `runDoll` 给出（`cleared[].step`），时刻由 `sweptObjectHideTimes` 算。
+     *
+     * ★ **打飞那一段不在这里**（`elapsed >= hideAt` 之后）：原版那几拍是把物件
+     *   按 `+0x08/+0x0c` 直接贴屏幕的（`0x408cd9` 那一支），本引擎照
+     *   `#drawObjectFlight` / `buildFx` 的成法画在**清单最后**（`#drawSweptFlights`）。
      */
     for (const w of this.#actorWalks.values()) {
       const elapsed = now - w.start;
       for (const s of w.swept) {
-        if (elapsed >= s.hideAt) continue; // 已经走到那一格 = 消失
+        if (elapsed >= s.hideAt) continue; // 已经走到那一格 = 开始打飞（画在清单最后）
         const node = map.nodes[s.o.nodeId - 1];
         if (node === undefined) continue;
         const resource = objectSpriteResource(s.o.type);
@@ -2525,6 +2749,58 @@ export class BoardRenderer {
       sp.width * k,
       sp.height * k,
     );
+  }
+
+  /**
+   * **機器娃娃打飞的物件**这一帧画在哪 —— 动画本体在纯函数里，这里只管贴图。
+   *
+   * 判据（`docs/deviations/Q-TOOL-1.md` 本轮补的表格第 3 行）：
+   * - 起手 `fcn_0040fafd`：速度 = (本格 − 上一格) × 0.5、位置 = 本格 + 速度、
+   *   `+0x06 = 0xFF`、`+0x07 ← +0x01`（= `objectKnockStart`）；
+   * - 逐 tick：判 29×29 窗口 → `dec +0x06` → 按当时的 `+0x08/+0x0c` 贴图 →
+   *   最后才 `+= 速度`（= `objectKnockAt` / `sweptObjectFrameAt`，出处 `rich4.asm:1746-1810`）；
+   * - 越出窗口 ⇒ `+0x06 = 0`（飞行结束），而这一件的 `nodeId` 已被清 0 ⇒ 不再画。
+   *
+   * ⚠️ 原版这一支的落点其实也走 `[0x48a44c]` 那份绘制槽（`loc_00408f15`），
+   *   但**位置是 `+0x08/+0x0c` 那对浮点**、与格心无关；本引擎按需求方口径照
+   *   `#drawObjectFlight` 的成法画在**清单最后**（不进槽、不受建筑遮挡）。
+   *   原本那套「擦上一帧矩形」的脏矩形处理同样用不上（每帧整幅重绘）。
+   */
+  #drawSweptFlights(cam: Camera, vp: { w: number; h: number }, now: number): void {
+    if (this.#sweptFlights.length === 0) return;
+    const ctx = this.#ctx;
+    const k = 1;
+    const live: { s: SweptObjectDraw; start: number; tickMs: number }[] = [];
+    for (const f of this.#sweptFlights) {
+      const elapsed = now - f.start;
+      // 飞行最长 = 计时 0xFF 拍（`+0x06` 从 0xFF 逐拍减到 0）—— 过了就收掉
+      if (elapsed > f.s.hideAt + OBJECT_KNOCK_TIMER0 * f.tickMs) continue;
+      // ★ 窗口那一问就是绘制时那一问（`worldToScreen` 返回 null = 越出 29×29）
+      const frame = sweptObjectFrameAt(f.s, elapsed, f.tickMs, (x, y) =>
+        worldToScreen(x, y, cam, vp) !== null,
+      );
+      // null = 越出窗口 / 计时耗尽 ⇒ 这一件的飞行结束（原版把 `+0x06` 清 0，不再画）
+      if (frame === null) continue;
+      live.push(f);
+      if (frame.kind !== 'fly') continue; // 还没到那一格：地面那一段由 `#objectSlots` 画
+      const res = objectSpriteResource(f.s.o.type);
+      if (res === null) continue;
+      // 位置已经是**截断后的整数世界坐标**（与原版 `__round_toward_zero` 同）
+      const p = worldToScreen(frame.x, frame.y, cam, vp);
+      if (p === null) continue;
+      // ★ 图号按 `+0x07`（朝向副本）算 —— 与放地上时同一张图
+      //   （@source VA 0x00408ee2 `8 − 视角 + 朝向`，这里用飞行分支的 `+0x07`）
+      const sp = this.#sprite('Data.mkf', res, objectImageIndex(frame.facing, cam.view));
+      if (sp === null) continue;
+      ctx.drawImage(
+        sp.bitmap,
+        Math.trunc(p.x) - sp.anchorX * k,
+        Math.trunc(p.y) - sp.anchorY * k,
+        sp.width * k,
+        sp.height * k,
+      );
+    }
+    this.#sweptFlights = live;
   }
 
   /**

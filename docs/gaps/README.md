@@ -8256,6 +8256,13 @@ occupancy, kind, index, days, otherOccupancy?)` —— 它就是「`send_to_*` �
 （`0x0040fba3` 读 `+0x01` → `0x0040fbaa` 写 `+0x07`）。两处文档已订正，
 并在 `tools.md` 新增 §6.1.0 记录这支起手函数。
 
+★ **2026-09-22：这条口径已落进复刻**（機器娃娃把物件「打飞」的那一段动画）——
+`client/render.ts` 的 `objectKnockStart` / `objectKnockTick` / `objectKnockAt` /
+`sweptObjectFrameAt`（纯函数，逐步 `Math.fround` 复单精度）+ `#drawSweptFlights`，
+13 条口径移植在 `packages/client/src/object-knock.test.ts`；逐 tick 的消耗
+（判 29×29 窗口 → `dec +0x06` → 画 → 才 `+= 速度`）见 `rich4.asm:1746-1810`，
+登记在 `docs/deviations/Q-TOOL-1.md` 表格第 3 行。
+
 #### (3) 机械闭环
 
 通道 2 工作单 **158 个 / 68,768 字节 → 157 个 / 68,581 字节**（−187 字节 = `0x40fafd`）。
