@@ -9,7 +9,24 @@ import { parseMap } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { reduce } from '../state/reduce.ts';
 import { decideAction } from '../ai/policy.ts';
-import { fnv1a, stateFingerprint, PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from './protocol.ts';
+import {
+  fnv1a,
+  isLobbySeatCount,
+  LOBBY_DEFAULT_OPTIONS,
+  LOBBY_MAX_SEATS,
+  LOBBY_MIN_SEATS,
+  LOBBY_OPTION_STEPS,
+  LOBBY_VEHICLE_STEPS,
+  lobbyOptionsError,
+  PROTOCOL_VERSION,
+  roomMapId,
+  roomOptions,
+  stateFingerprint,
+  withLobbyDefaults,
+  type ClientMessage,
+  type LobbyOptions,
+  type ServerMessage,
+} from './protocol.ts';
 import { Sequencer } from './sequencer.ts';
 import { topoOf } from '../testing/factories.ts';
 
@@ -244,6 +261,7 @@ describe('★ Q-NET-1 协议：resync / replay', () => {
     const req: ClientMessage = { t: 'resync' };
     const rep: ServerMessage = {
       t: 'replay',
+      options: LOBBY_DEFAULT_OPTIONS,
       seed: 1,
       globalMapId: 0,
       seats: [],
@@ -256,12 +274,86 @@ describe('★ Q-NET-1 协议：resync / replay', () => {
 });
 
 describe('协议', () => {
-  it('★ 版本号：W-73 +1、W-74 再 +1（两次都改了语义，不是纯增量）', () => {
+  it('★ 版本号：W-73 +1、W-74 再 +1、第十一份回報 #1 再 +1（三次都改了语义）', () => {
     // ⚠️ 这一条**不是**「为了变绿改断言」：任务书 W-73 §3 与 W-74 末尾各明写一次 `+1`。
     //    Q-NET-1 那次「加了消息但不动版本号」的理由（纯增量、语义没变）在这两次都不成立：
     //    · W-73：`join.clientId` 是**必填**，且「认回原座位」的判据从名字改成了它；
     //    · W-74：不发 `awaiting` 的老客户端，那一回合到点会被电脑接走 —— 推进方式变了。
-    //    ⇒ 1 → 2 → 3
-    expect(PROTOCOL_VERSION).toBe(3);
+    //    · 第十一份試玩回報 #1（大廳設置）：`start` 多带了 `options`（總人數/起始資金/載具/
+    //      地產期限/時間/勝利條件），老客戶端不認識 ⇒ 會靜默吃下一局**規則不同**的對局。
+    //    ⇒ 1 → 2 → 3 → 4
+    expect(PROTOCOL_VERSION).toBe(4);
+  });
+});
+
+// ============================================================
+//  ★★ 第十一份試玩回報 #1：大廳的開局設定（人數 = 總人數）
+// ============================================================
+
+describe('★★ 大廳開局設定：範圍與補全', () => {
+  it('★ 人數是 2..4 的整數（原版開局設定屏就只有 二人/三人/四人）', () => {
+    expect(LOBBY_MIN_SEATS).toBe(2);
+    expect(LOBBY_MAX_SEATS).toBe(4);
+    for (const good of [2, 3, 4]) expect(isLobbySeatCount(good), String(good)).toBe(true);
+    for (const bad of [0, 1, 5, 9, -1, 2.5, Number.NaN, '2', null, undefined]) {
+      expect(isLobbySeatCount(bad), String(bad)).toBe(false);
+    }
+  });
+
+  it('★ 逐項校验：一份全合法的 patch 過，任一項不合法就整份不過', () => {
+    expect(lobbyOptionsError({})).toBeNull();
+    expect(
+      lobbyOptionsError({ seatCount: 3, fundIndex: 5, vehicle: 2, landTenure: 5, timeIndex: 5, victoryIndex: 5 }),
+    ).toBeNull();
+
+    // 一旦有一項坏掉，返回的是**那一条**的说明，而不是 null
+    const bads: Partial<LobbyOptions>[] = [
+      { seatCount: 1 },
+      { seatCount: 5 },
+      { fundIndex: -1 },
+      { fundIndex: LOBBY_OPTION_STEPS },
+      { vehicle: LOBBY_VEHICLE_STEPS },
+      { vehicle: -1 },
+      { landTenure: LOBBY_OPTION_STEPS },
+      { timeIndex: LOBBY_OPTION_STEPS },
+      { victoryIndex: LOBBY_OPTION_STEPS },
+      { timeIndex: 1.5 },
+    ];
+    for (const bad of bads) {
+      expect(typeof lobbyOptionsError(bad), JSON.stringify(bad)).toBe('string');
+    }
+  });
+
+  it('★ 缺省值就是單機開局設定屏的初值（四人 / 30 萬 / 步行 / 無限期 / 不限時 / 無限）', () => {
+    expect(LOBBY_DEFAULT_OPTIONS).toEqual({
+      seatCount: 4,
+      fundIndex: 0,
+      vehicle: 0,
+      landTenure: 0,
+      timeIndex: 0,
+      victoryIndex: 0,
+    });
+  });
+
+  it('★ withLobbyDefaults 只補缺的，不覆盖给了的（半份 patch 不會被缺省值蓋掉）', () => {
+    expect(withLobbyDefaults(undefined)).toEqual(LOBBY_DEFAULT_OPTIONS);
+    expect(withLobbyDefaults({})).toEqual(LOBBY_DEFAULT_OPTIONS);
+    expect(withLobbyDefaults({ seatCount: 2, fundIndex: 4 })).toEqual({
+      ...LOBBY_DEFAULT_OPTIONS,
+      seatCount: 2,
+      fundIndex: 4,
+    });
+  });
+
+  it('★ roomOptions / roomMapId：舊快照（沒有這兩個字段）照樣讀得出東西，不返回 undefined', () => {
+    expect(roomOptions(null)).toEqual(LOBBY_DEFAULT_OPTIONS);
+    expect(roomMapId(null)).toBe(0);
+    const legacy = { id: 'r', seats: [], started: false };
+    expect(roomOptions(legacy)).toEqual(LOBBY_DEFAULT_OPTIONS);
+    expect(roomMapId(legacy)).toBe(0);
+
+    const full = { ...legacy, globalMapId: 5, options: withLobbyDefaults({ seatCount: 3, victoryIndex: 2 }) };
+    expect(roomOptions(full)).toEqual({ ...LOBBY_DEFAULT_OPTIONS, seatCount: 3, victoryIndex: 2 });
+    expect(roomMapId(full)).toBe(5);
   });
 });

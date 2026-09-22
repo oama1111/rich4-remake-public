@@ -48,6 +48,7 @@ import {  autoAction,
   parseSave,
   importOriginalSaveWithSnapshots,
   roomMapId,
+  roomOptions,
   specialSlotOf,
   SPECIAL_KIND,
   STOCK_STATUS,
@@ -57,6 +58,7 @@ import {  autoAction,
   isAiControlled,
   stateFingerprint,
   toolCount,
+  GAME_INITIAL_FUNDS,
   winConditionsOf,
   type Action,
   type CardTarget,
@@ -73,7 +75,16 @@ import { NetToasts } from './net-toast.ts';
 import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
 import { RENDER_MS, tickMs } from './tick.ts';
 import { walkTweenFor } from './tween.ts';
-import { drawLobby, hitLobby, isHostSeat, lobbySlots, type LobbyHit } from './lobby.ts';
+import {
+  drawLobby,
+  hitLobby,
+  isHostSeat,
+  lobbySlots,
+  LOBBY_OPTION_ROWS,
+  optionIndexOf,
+  optionValueOf,
+  type LobbyHit,
+} from './lobby.ts';
 import { PANEL_ROWS } from './hud.ts';
 import { panelRows } from './panel.ts';
 import {
@@ -540,7 +551,6 @@ import {
   type PickSession,
 } from './picking.ts';
 import {
-  MONEY_VALUES,
   defaultSetup,
   drawSetup,
   fillComputerSeats,
@@ -6574,7 +6584,9 @@ function requestRender(): void {
     } else if (screen === 'lobby') {
       drawLobby(
         stageCtx,
-        lobbySlots(lobbyRoom, net?.seat ?? null),
+        // ★ 第十一份試玩回報 #1：座位数 = 房间设的**总人数**（不足由电脑补位，
+        //   服务器 `#start` 负责）。画几格就按几格，别永远画四个。
+        lobbySlots(lobbyRoom, net?.seat ?? null, roomOptions(lobbyRoom).seatCount),
         net?.seat ?? null,
         isHostSeat(net?.seat ?? null),
         lobbyRoom?.started ?? false,
@@ -6583,6 +6595,8 @@ function requestRender(): void {
         (t) => stageCtx.measureText(t).width,
         // ★ Q-NET-2：房间地图也来自服务器快照（缺省 0 兼容旧快照）
         roomMapId(lobbyRoom),
+        // ★★ 第十一份試玩回報 #1：開局設定六行也来自服务器快照（缺省补全，兼容旧快照）
+        roomOptions(lobbyRoom),
       );
     } else if (screen === 'options') {
       // 設定是**盖在**原来那一屏上的对话框（原版就是这样）
@@ -7821,7 +7835,7 @@ function startGame(): void {
     //   遊戲時間与勝利條件（`[0x46cb4c]`/`[0x46cb50]` → `[0x49911c]`/`[0x499108]`）
     // @source `VA 0x00407032`（资金）、`0x00407219`（载具）、`0x00406f6b`（权限）、
     //   `0x0040737d..0x004073a3`（勝負條件）
-    initialFund: MONEY_VALUES[setup.money] ?? DEFAULT_INITIAL_FUND,
+    initialFund: GAME_INITIAL_FUNDS[setup.money] ?? DEFAULT_INITIAL_FUND,
     // ★ 开局日期 = **系统当天**钳到 1998-01-01..2010-01-01
     //   @source `_rich4_read_config`（VA 0x00411e8f）用 `libc_getdate()` 覆盖
     //   `CFG+8` 的 day/month/year；钳位常量见 VA 0x00411f30 / 0x00411f49。
@@ -8030,6 +8044,8 @@ function bindInput(): void {
         isHost: isHostSeat(net?.seat ?? null),
         me: net?.seat ?? null,
         started: lobbyRoom?.started ?? false,
+        // ⚠️ 与绘制**同一个数**：不然「画了两格、却点得动第三格」这种鬼事
+        seats: roomOptions(lobbyRoom).seatCount,
       });
       if (JSON.stringify(hit) !== JSON.stringify(lobbyHot)) {
         lobbyHot = hit;
@@ -8225,6 +8241,8 @@ function bindInput(): void {
         isHost: isHostSeat(net?.seat ?? null),
         me: net?.seat ?? null,
         started: lobbyRoom?.started ?? false,
+        // ⚠️ 与绘制**同一个数**：不然「画了两格、却点得动第三格」这种鬼事
+        seats: roomOptions(lobbyRoom).seatCount,
       });
       if (hit === null) return;
       // 座位只读（座位是服务器分的，见 Q-NET-2），点它不做事
@@ -8237,6 +8255,20 @@ function bindInput(): void {
       }
       if (hit.kind === 'map') {
         net?.setMap(hit.globalMapId);
+        return;
+      }
+      // ★★ 第十一份試玩回報 #1：開局設定某一項的 ◀ / ▶ —— 同样只是**发请求**：
+      //   本地按当前值 ±1 档折成新取值，等服务器校验后广播 `room` 回来才更新。
+      //   ⚠️ 档位**夹紧不回绕**（到头那一侧的箭头本来就是压暗的，见 `drawOptionColumn`；
+      //   能点却画成灰的，就是 UI 骗人）。单机那一屏是**下拉浮窗**选值、没有箭头，
+      //   所以这条没有原版对照，是本项目自定的交互。
+      if (hit.kind === 'option') {
+        const row = LOBBY_OPTION_ROWS.find((r) => r.field === hit.field);
+        if (row === undefined) return;
+        const cur = optionIndexOf(roomOptions(lobbyRoom), hit.field);
+        const next = Math.max(0, Math.min(row.steps - 1, cur + hit.delta));
+        if (next === cur) return; // 到端点了：一个字节都不发
+        net?.setOptions({ [hit.field]: optionValueOf(hit.field, next) });
         return;
       }
       if (hit.kind === 'start') {
@@ -9432,6 +9464,18 @@ function connectOnline(url: string, room: string, name: string): void {
             players: start.seats.map((s) => ({ character: s.character, kind: s.kind })),
             seed: start.seed,
             mode: 'multiplayer',
+            // ★★ 第十一份試玩回報 #1：房间的**开局选项**（总人数 + 单机那五项）。
+            //   ⚠️ 必须与 `server/room.ts` 的 `newGame` **逐字段同源**，否则 `stateFingerprint` 对不上。
+            // ★ 用 core 的规则表（不是 setup.ts 的显示表）—— 服务器 `room.ts` 用的就是它，
+            //   两处只有**逐字节同一个数**才能保证 `stateFingerprint` 一致。
+            initialFund: GAME_INITIAL_FUNDS[start.options.fundIndex] ?? DEFAULT_INITIAL_FUND,
+            startingVehicle: start.options.vehicle,
+            landTenure: start.options.landTenure,
+            winConditions: winConditionsOf(
+              start.options.fundIndex,
+              start.options.timeIndex,
+              start.options.victoryIndex,
+            ),
           });
           history.length = 0;
           recorder.reset();
@@ -9532,6 +9576,15 @@ function connectOnline(url: string, room: string, name: string): void {
             players: r.seats.map((s) => ({ character: s.character, kind: s.kind })),
             seed: r.seed,
             mode: 'multiplayer',
+            // ★ 同上：重放重建也必须带上开局选项（否则重建出来的不是同一局）
+            initialFund: GAME_INITIAL_FUNDS[r.options.fundIndex] ?? DEFAULT_INITIAL_FUND,
+            startingVehicle: r.options.vehicle,
+            landTenure: r.options.landTenure,
+            winConditions: winConditionsOf(
+              r.options.fundIndex,
+              r.options.timeIndex,
+              r.options.victoryIndex,
+            ),
           });
           history.length = 0;
           recorder.reset();

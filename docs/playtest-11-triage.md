@@ -6,7 +6,7 @@
 
 | # | 檔名（時:分:秒） | 回合 | 回報原文（逐字） | 歸屬 | 狀態 |
 |---|---|---|---|---|---|
-| 1 | 195857 | 0 | 多人模式无法设置房间人数和起始资金… | client+server（大廳設置） | ⏸ **需需求方拍板**（新功能，四层全缺） |
+| 1 | 195857 | 0 | 多人模式无法设置房间人数和起始资金… | client+server（大廳設置） | ✅ 四層全接（協議 v4 `setOptions` / hub 三道閘 / `Room.newGame` / 大廳「開局設定」六行）；**人數 = 總人數**，不足補電腦（需求方 2026-09-23 拍板） |
 | 2 | 195941 | 4 | 人物扔完骰子开始行动时骰子应该就消失了 | client | ✅ 删掉走子期间重画 `state.dice` 的分支 |
 | 3 | 200005 | 8 | NPC放置炸弹、定时炸弹时好像也有台词 | data+core+client（台詞通道） | ✅ 13 件道具的 `_tool_strings` 整条通道已接（含逐字節回 exe 核對） |
 | 4 | 200144 | 24 | 天降鸿福小游戏开局不应该是黑屏，财神的活动范围不应该只有那么一点点 | client（小遊戲屏） | ✅ 两处：intro 先画底屏再叠 FLIC；转向条件 `<=` 写成 `>` |
@@ -32,14 +32,28 @@
 
 ---
 
-# 進度（第三輪結束時）
+# 進度（第四輪結束時）
 
 | 狀態 | 條目 | 備註 |
 |---|---|---|
-| ✅ 已修 | #2 #3 #4 #5 #6 #7 #8 #9 #10 #13 #14 #15 #16 #17 #18 #19 | **16 / 19** |
-| ⏸ 等需求方拍板 | #1 | 新功能；要定「房間人數語義」與「大廳版式」 |
-| ◑ 部分 | #11 | 已堵 stale-snapshot 泄漏；**可見那半與原版同構**（原版救護車底下也是含角色的凍結畫面） |
-| ⏸ 待專門一輪 | #12 | 核心回合游標：改動打挂 `release-chain.test.ts` 兩條**真值斷言**；要先把「原版 N 天到底丟幾個回合」的計數口徑考證清楚 |
+| ✅ 已修 | #1 #2 #3 #4 #5 #6 #7 #8 #9 #10 #13 #14 #15 #16 #17 #18 #19 | **17 / 19** |
+| ◑ 部分 | #11 | 已堵 stale-snapshot 泄漏；**可見那半與原版同構**（原版救護車底下也是含角色的凍結畫面）。是撤回還是補截圖 ⇒ 已記入 `escalations.md`「待首席確認」 |
+| ⏸ 待專門一輪 | #12 | 核心回合游標：改動打挂 `release-chain.test.ts` 兩條**真值斷言**；已寫成 **E-41**（四個 VA + 兩次撤回的讀數）並記入「待首席確認」 |
+
+## 第四輪：#1 的施工內容（需求方 2026-09-23 拍板後）
+
+需求方：「房间人数是指总人数，比如设置总人数4，然后只有2个真人玩家，点击开局后就自动补2个NPC玩家凑齐4个人数开局；大厅你重构一下即可，考虑清楚需要展示哪些信息」。
+
+| 層 | 改動 |
+|---|---|
+| 協議（`core/net/protocol.ts`） | `LobbyOptions`（`seatCount` 2..4 + 五個檔位，範圍與缺省值都在 core，兩端同一份）+ `lobbyOptionsError` / `withLobbyDefaults` / `isLobbySeatCount` / `roomOptions`；`ClientMessage` 加 `setOptions`（**一條消息改完整份**）；`RoomInfo` / `start` / `replay` 都帶 `options`；`PROTOCOL_VERSION` 3 → **4** |
+| 伺服器（`server/hub.ts`） | `Table.options`；`#setOptions` 三道閘照抄 `#setCharacter`（未開局 / 只有房主 / 逐項合法）+ 第四道「`seatCount` 不能少於已在座的真人」；`#start` 把座位**補到 `t.options.seatCount`**；進房上限改看房間那一份；`--seats` 降級成**新房間的初值**（越界夾回 4） |
+| 局面（`server/room.ts`） | `newGame({ initialFund: GAME_INITIAL_FUNDS[..], startingVehicle, landTenure, winConditions: winConditionsOf(fund, time, victory) })` —— 開局只看伺服器這一份 |
+| 客戶端 | `NetClient.setOptions`；`main.ts` 的 `drawLobby` 傳 `roomOptions`、座位格數跟著 `seatCount`、`onStart`/`onResync` 與 `room.ts` **逐字段同源**（`initialFund` 改用規則層的 `GAME_INITIAL_FUNDS`，不再用顯示表）；大廳新增「開局設定」六行（標題與值表**與單機開局設定屏同一批**），◀/▶ 只房主可點、開局後鎖死、到端點壓暗 |
+| 測試 | `lobby.test.ts` 32 → 44 條（含「六行標題 == `CONFIG_TITLES`」「值逐檔與單機一致」「只讀不畫箭頭」「座位格數跟著總人數」「顯示資金表 == 規則資金表」）；`lobby-settings.test.ts` → 21 條（權限/越界/不落半份/人數下限/進房上限/開局後拒/補電腦/五項真的燒進局面）；`core/net/net.test.ts` 加範圍與補全 |
+
+**本輪的偏離（已寫進 `known-deviations.md`）**：原版**沒有聯機大廳**，這一屏的版式（角色格 / 地圖格 / 開局設定六行 / 座位卡）**全部是本項目新增**，只有素材（`map.mkf` 27..38、`Data.mkf` 520 的圖 2..9）與六項的串/值表沿用原版。
+
 
 ---
 

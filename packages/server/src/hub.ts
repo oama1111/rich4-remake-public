@@ -17,10 +17,15 @@ import {
   isClientId,
   isLobbyCharacter,
   isLobbyMapId,
+  isLobbySeatCount,
   isRoomCode,
+  LOBBY_DEFAULT_OPTIONS,
+  lobbyOptionsError,
   sanitizeName,
+  withLobbyDefaults,
   type Action,
   type ClientMessage,
+  type LobbyOptions,
   type Rich4Map,
   type RoomInfo,
   type SeatInfo,
@@ -171,6 +176,14 @@ interface Table {
    *   用的就是它 —— **不看**任何客户端上报的本地设置。
    */
   globalMapId: number;
+  /**
+   * ★★ 第十一份試玩回報 #1（需求方 2026-09-23）：房间的**开局选项** ——
+   *   总人数 + 起始资金/载具/地产期限/时间/胜利条件。
+   *
+   * 与 `globalMapId` 同一套契约：开局前只有房主能改，开局的 `newGame` **只看这一份**，
+   * 不看任何客户端上报的本地设置。`seatCount` 是**总人数**（不足补电脑）。
+   */
+  options: LobbyOptions;
   /**
    * ★ W-73 §4：从哪一刻起**全桌无人在线**；只要有人在就为 `null`。
    *
@@ -325,7 +338,13 @@ export class RoomHub {
             this.#broadcast(t, { t: 'room', room: this.#info(t) });
             // 重连：补发开局参数与漏掉的 action
             if (t.room !== null) {
-              this.#sendTo(conn, { t: 'start', seed: t.room.seed, globalMapId: t.room.globalMapId, seats: t.seats.map((x) => x.info) });
+              this.#sendTo(conn, {
+                t: 'start',
+                seed: t.room.seed,
+                globalMapId: t.room.globalMapId,
+                seats: t.seats.map((x) => x.info),
+                options: t.options,
+              });
               const from = msg.since === undefined ? 0 : msg.since + 1;
               for (const b of t.room.since(from)) this.#sendTo(conn, { t: 'action', seq: b.seq, action: b.action });
               // ★ 首席复核：这一桌可能正「停手等人」（见 `#anyonePresent`）—— 人回来了，接着走
@@ -385,6 +404,9 @@ export class RoomHub {
               seed: table.room.seed,
               globalMapId: table.room.globalMapId,
               seats: table.seats.map((s) => ({ ...s.info })),
+              // ★ 第十一份試玩回報 #1：重放也要带开局选项 —— `onResync` 用它 `newGame`，
+              //   少了它重建出来的局面与服务器镜像就不是同一局。
+              options: table.options,
               through: log.length === 0 ? -1 : log[log.length - 1]!.seq,
               actions: log.map((b) => ({ seq: b.seq, action: b.action })),
             });
@@ -408,6 +430,15 @@ export class RoomHub {
               return;
             }
             this.#setMap(table, seat, msg.globalMapId, conn);
+            return;
+          }
+          // ★★ 第十一份試玩回報 #1：大厅开局选项（总人数 + 单机那五项）。同一套权限。
+          case 'setOptions': {
+            if (table === null || seat === null) {
+              this.#sendTo(conn, { t: 'error', message: '還沒進房' });
+              return;
+            }
+            this.#setOptions(table, seat, msg.options, conn);
             return;
           }
           // ★ W-74：本机座位**演完了、停在等输入上** —— 从这一刻起才开始数 60 秒。
@@ -693,6 +724,16 @@ export class RoomHub {
       globalMapId: this.#opts.globalMapId,
       emptySince: null,
       clock: null,
+      options: {
+        ...LOBBY_DEFAULT_OPTIONS,
+        // ★ 第十一份試玩回報 #1：`--seats` 从「服务器全局固定人数」降级成**新房间的初值** ——
+        //   人数现在是**房间级**设置（房主在大厅改），开局只看房间那一份。
+        //   保留它当初值，是为了 `--seats 2` 这种「这台机器就开双人房」的老用法还成立。
+        //   ⚠️ 夹进合法区间：`RoomHub` 是公开 API，调用方传个 9 也不该造出打不开的房间。
+        seatCount: isLobbySeatCount(this.#opts.seatCount)
+          ? this.#opts.seatCount
+          : LOBBY_DEFAULT_OPTIONS.seatCount,
+      },
     };
     this.#tables.set(id, t);
     return t;
@@ -732,7 +773,8 @@ export class RoomHub {
       return back.info.seat;
     }
     if (t.room !== null) return null;
-    if (t.seats.length >= this.#opts.seatCount) return null;
+    // ★ 第十一份試玩回報 #1：入座上限跟**房间级**总人数（`--seats` 只当新房的初值）
+    if (t.seats.length >= t.options.seatCount) return null;
     const seat = t.seats.length;
     t.seats.push({
       // ★ 角色不能再无脑取 `seat` 了（Q-NET-2）：前面进来的人可能已经把
@@ -770,6 +812,8 @@ export class RoomHub {
       started: t.room !== null,
       // ★ Q-NET-2：地图是房间级设置，跟着 `room` 广播一起同步给所有人
       globalMapId: t.globalMapId,
+      // ★第十一份試玩回報 #1：开局选项同理（大厅要显示当前值）
+      options: t.options,
     };
   }
 
@@ -880,13 +924,56 @@ export class RoomHub {
   }
 
   /**
+   * ★★ 第十一份試玩回報 #1：改房间的开局选项。
+   *
+   * 三道闸与 `#setCharacter` / `#setMap` **逐条同形**：
+   *   ① 未开局（开局后改会和服务器镜像、其他客户端的局面都不一致）；
+   *   ② 只有房主（0 号座）；
+   *   ③ 逐项取值合法（判据在 core 的 `lobbyOptionsError`，两端同一份）。
+   * ★ 另加一道**只属于这一项**的闸：`seatCount` 不能小于**已经在座的真人**数
+   *   （否则开局时那些座位会被无声地砍掉 —— 房主不能把人踢出局）。
+   * 接受后广播 `{t:'room'}`，所有人（含发起者）照广播更新。
+   */
+  #setOptions(t: Table, seat: number, patch: Partial<LobbyOptions>, conn: Conn): void {
+    if (t.room !== null) {
+      this.#sendTo(conn, { t: 'error', message: '已經開局，不能再改房間設置' });
+      this.#broadcast(t, { t: 'room', room: this.#info(t) });
+      return;
+    }
+    if (seat !== 0) {
+      this.#sendTo(conn, { t: 'error', message: '只有房主能改房間設置' });
+      this.#broadcast(t, { t: 'room', room: this.#info(t) });
+      return;
+    }
+    const bad = lobbyOptionsError(patch);
+    if (bad !== null) {
+      this.#sendTo(conn, { t: 'error', message: bad });
+      this.#broadcast(t, { t: 'room', room: this.#info(t) });
+      return;
+    }
+    const next = withLobbyDefaults({ ...t.options, ...patch });
+    const humans = t.seats.length;
+    if (next.seatCount < humans) {
+      this.#sendTo(conn, { t: 'error', message: `房間人數不能少於已在座的 ${humans} 人` });
+      this.#broadcast(t, { t: 'room', room: this.#info(t) });
+      return;
+    }
+    t.options = next;
+    this.#broadcast(t, { t: 'room', room: this.#info(t) });
+  }
+
+  /**
    * 开局：空座补电脑，建 Room，广播 start，然后若首位就是电脑就让它走。
    *
    * ★ Q-NET-2：这里的**每一个字段都取自服务器手上的大厅设置**
    *   （`t.seats` 的角色 + `t.globalMapId`），不读客户端任何本地设置。
+   * ★★ 第十一份試玩回報 #1：**开局选项**（初始资金/载具/地产期限/时间/胜利条件）
+   *   同样只看 `t.options` 这一份，并且座位补到 `t.options.seatCount`
+   *   —— 需求方原话：「设置总人数4，只有2个真人，点开局后自动补2个NPC凑齐4人」。
    */
   #start(t: Table): void {
-    while (t.seats.length < this.#opts.seatCount) {
+    // ★ 第十一份試玩回報 #1：补座位补到**房间级**的总人数（先前是服务器全局 `--seats`）
+    while (t.seats.length < t.options.seatCount) {
       const seat = t.seats.length;
       t.seats.push({
         // 电脑也挑没人占的角色 —— 真人可能已经把 `seat` 号改掉了
@@ -913,10 +1000,19 @@ export class RoomHub {
       globalMapId: t.globalMapId,
       seed: this.#opts.seedFor(t.id),
       seats,
+      // ★ 第十一份試玩回報 #1：开局选项也进服务器镜像 —— 与客户端 `onStart` 必须**逐字段同源**，
+      //   少一个字段 `stateFingerprint` 就对不上。
+      options: t.options,
     });
     room.start();
     t.room = room;
-    this.#broadcast(t, { t: 'start', seed: room.seed, globalMapId: room.globalMapId, seats });
+    this.#broadcast(t, {
+      t: 'start',
+      seed: room.seed,
+      globalMapId: room.globalMapId,
+      seats,
+      options: t.options,
+    });
     this.#driveComputers(t);
     this.#advance(t, this.#now());
   }

@@ -36,7 +36,14 @@ import type { Action } from '../state/actions.ts';
  *   这不是「纯增量、语义没变」（Q-NET-1 那种），必须 +1 把老客户端挡在门外。
  *   任务书 W-74 末尾也明写「与 W-73 分两次加，各自的 PR 各自加」。
  */
-export const PROTOCOL_VERSION = 3;
+/**
+ * ★ 2026-09-23（第十一份試玩回報 #1：大廳設置）→ **4**。
+ *
+ * 為什麼必須 +1：`start` 消息多带了 `options`（總人數/起始資金/載具/地產期限/時間/勝利條件），
+ * 而老客戶端不認識它們 ⇒ 會**靜默吃下一局規則不同的對局**（分紅、勝負條件、初始資金都不同）。
+ * 這與 W-73（門廳）/ W-74（回合计时）两次 +1 同一性质。
+ */
+export const PROTOCOL_VERSION = 4;
 
 // ============================================================
 //  客户端 → 服务器
@@ -111,6 +118,17 @@ export type ClientMessage =
    */
   | { t: 'setMap'; globalMapId: number }
   /**
+   * ★★ 大厅设置（第十一份試玩回報 #1）：开局选项 —— 房间人数 + 单机那五项。
+   *
+   * 需求方 2026-09-23：「房间人数是指总人数，比如设置总人数4，然后只有2个真人玩家，
+   * 点击开局后就自动补2个NPC玩家凑齐4个人数开局」⇒ `seatCount` 是**总人数**（2..4），
+   * 不足的座位开局时补电脑 —— 与单机开局设定屏的语义一致。
+   *
+   * ⚠️ 与 `setCharacter`/`setMap` 同一套权限：只有房主（0 号座）、且**未开局**才允许；
+   *   `Partial` 只带要改的那几项（服务器逐项校验，任何一项不合法就整条拒）。
+   */
+  | { t: 'setOptions'; options: Partial<LobbyOptions> }
+  /**
    * ★ W-74：**本机座位已经演完动画、停在等输入上了**。
    *
    * 为什么需要这一条：各客户端要把掷骰、走子、影片那一串演完，玩家才点得了 ——
@@ -158,7 +176,7 @@ export type ServerMessage =
    * ★ `seed` 由**服务器**下发——这是联机确定性的关键：
    *   各客户端不得自行取随机数种子。
    */
-  | { t: 'start'; seed: number; globalMapId: number; seats: SeatInfo[] }
+  | { t: 'start'; seed: number; globalMapId: number; seats: SeatInfo[]; options: LobbyOptions }
   /**
    * 定序后的 action。
    *
@@ -186,6 +204,11 @@ export type ServerMessage =
       seed: number;
       globalMapId: number;
       seats: SeatInfo[];
+      /**
+       * ★ 第十一份試玩回報 #1：**开局选项** —— 客户端 `onResync` 用它 `newGame`，
+       *   少了它重建出来的局面与服务器镜像就不是同一局（初始资金/胜负条件都不同）。
+       */
+      options: LobbyOptions;
       through: number;
       actions: { seq: number; action: Action }[];
     }
@@ -232,6 +255,86 @@ export interface RoomInfo {
    *   缺省按 `0` 读（`roomMapId`）。
    */
   globalMapId?: number;
+  /**
+   * 房间开局选项（第十一份試玩回報 #1）。与 `globalMapId` 同样是**可选**的
+   * （`RoomInfo` 是通用快照形状，旧测试/监控不必被迫填）——缺省按 `LOBBY_DEFAULT_OPTIONS` 读。
+   */
+  options?: LobbyOptions;
+}
+
+/**
+ * 大厅的**开局选项** —— 房间人数 + 单机开局设定屏那五项（角色/地图已另有通道）。
+ *
+ * 语义逐个对齐 `client/setup.ts` 的 `SetupState`（也就是原版 `0x46cb88..0x46cc00` 那几张表）：
+ * | 字段 | 范围 | 来源表 |
+ * |---|---|---|
+ * | `seatCount` | 2..4 | `PLAYER_COUNT_LABELS`（原版 `0x46cb88`，值 = 人数 − 2）|
+ * | `fundIndex` | 0..5 | `GAME_INITIAL_FUNDS`（`0x46cb94`，300000/…/10000）|
+ * | `vehicle` | 0..2 | `VEHICLE_LABELS`（`0x46cbac`，步行/機車/汽車）|
+ * | `landTenure` | 0..5 | `TENURE_LABELS`（`0x46cbb8`/`0x46cbd0`，無限期/二年/…/一個月）|
+ * | `timeIndex` | 0..5 | `GAME_TIME_DAYS`（`0x46cbe8`）|
+ * | `victoryIndex` | 0..5 | `VICTORY_FACTORS`（`0x46cc00`，0 = 無限）|
+ *
+ * ★ 放在 core 是**有意**的：这是**服务器校验**的判据，两端必须同一份数字
+ *   （与 `LOBBY_CHARACTER_COUNT` / `LOBBY_MAP_COUNT` 同一个理由）。
+ */
+export interface LobbyOptions {
+  /** **总**人数 2..4（不足的座位开局时补电脑）*/
+  seatCount: number;
+  /** 初始资金档 0..5（下标进 `GAME_INITIAL_FUNDS`）*/
+  fundIndex: number;
+  /** 起始载具 0..2 */
+  vehicle: number;
+  /** 地产有效期档 0..5 */
+  landTenure: number;
+  /** 游戏时间档 0..5 */
+  timeIndex: number;
+  /** 胜利条件档 0..5 */
+  victoryIndex: number;
+}
+
+/** 大厅开局选项的缺省值 —— 与单机开局设定屏的初值一致（四人 / 30 万 / 步行 / 無限期 / 不限時 / 無限）*/
+export const LOBBY_DEFAULT_OPTIONS: LobbyOptions = {
+  seatCount: 4,
+  fundIndex: 0,
+  vehicle: 0,
+  landTenure: 0,
+  timeIndex: 0,
+  victoryIndex: 0,
+};
+
+/** 总人数的合法范围 @source 原版开局设定屏「遊戲人數」只有 二人/三人/四人 */
+export const LOBBY_MIN_SEATS = 2;
+export const LOBBY_MAX_SEATS = 4;
+/** 六档表（资金/地产/时间/胜利）的项数 */
+export const LOBBY_OPTION_STEPS = 6;
+/** 起始载具的项数（步行/機車/汽車）*/
+export const LOBBY_VEHICLE_STEPS = 3;
+
+const isIndex = (v: unknown, steps: number): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < steps;
+
+/** 这一项是不是合法的总人数 */
+export function isLobbySeatCount(v: unknown): v is number {
+  return isIndex(v, LOBBY_MAX_SEATS + 1) && v >= LOBBY_MIN_SEATS;
+}
+
+/** 逐项校验一份（可能是部分的）大厅选项；返回 null = 全部合法 */
+export function lobbyOptionsError(o: Partial<LobbyOptions>): string | null {
+  if (o.seatCount !== undefined && !isLobbySeatCount(o.seatCount)) {
+    return `房間人數要是 ${LOBBY_MIN_SEATS}..${LOBBY_MAX_SEATS} 的整數`;
+  }
+  if (o.fundIndex !== undefined && !isIndex(o.fundIndex, LOBBY_OPTION_STEPS)) return '總資金檔位不合法';
+  if (o.vehicle !== undefined && !isIndex(o.vehicle, LOBBY_VEHICLE_STEPS)) return '行進方式不合法';
+  if (o.landTenure !== undefined && !isIndex(o.landTenure, LOBBY_OPTION_STEPS)) return '土地權限檔位不合法';
+  if (o.timeIndex !== undefined && !isIndex(o.timeIndex, LOBBY_OPTION_STEPS)) return '遊戲時間檔位不合法';
+  if (o.victoryIndex !== undefined && !isIndex(o.victoryIndex, LOBBY_OPTION_STEPS)) return '勝利條件檔位不合法';
+  return null;
+}
+
+/** 把一份（可能是部分的）选项补全到缺省值 */
+export function withLobbyDefaults(o: Partial<LobbyOptions> | undefined): LobbyOptions {
+  return { ...LOBBY_DEFAULT_OPTIONS, ...(o ?? {}) };
 }
 
 /**
@@ -282,6 +385,16 @@ export function characterTaken(
 /** 房间快照里的地图号；服务器没给就按 0 读（旧快照兼容） */
 export function roomMapId(room: RoomInfo | null | undefined): number {
   return room?.globalMapId ?? 0;
+}
+
+/**
+ * 房间快照里的开局选项；服务器没给就补缺省（旧快照兼容）。
+ *
+ * ⚠️ **一定能补全**，不返回 `undefined`：大厅那一栏要照着当前值画，
+ *   拿到半份（或没有）就得自己兜底 —— 那种兜底写两遍迟早漂。
+ */
+export function roomOptions(room: RoomInfo | null | undefined): LobbyOptions {
+  return withLobbyDefaults(room?.options);
 }
 
 // ============================================================

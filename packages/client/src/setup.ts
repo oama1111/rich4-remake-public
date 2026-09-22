@@ -827,7 +827,8 @@ function drawPopup(ctx: CanvasRenderingContext2D, s: SetupState, need: Need): vo
 }
 
 /** 六条下拉的标题 @ 0x463138..0x463165 */
-const CONFIG_TITLES: readonly string[] = [
+/** 六条开局设置的标题 —— 联机大厅的「開局設定」那一栏**共用同一批串**（同一个屏的两处）*/
+export const CONFIG_TITLES: readonly string[] = [
   '遊戲人數',
   '總 資 金',
   '行進方式',

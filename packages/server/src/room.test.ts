@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-import { newGame, parseMap, reduce, stateFingerprint } from '@rich4/core';
+import { LOBBY_DEFAULT_OPTIONS, newGame, parseMap, reduce, stateFingerprint } from '@rich4/core';
 import type { SeatInfo } from '@rich4/core';
 import { Room } from './room.ts';
 
@@ -17,7 +17,14 @@ const seats = (): SeatInfo[] =>
   [0, 1, 2, 3].map((i) => ({ seat: i, name: `P${i}`, character: i, kind: 'human' as const }));
 
 const makeRoom = () =>
-  new Room({ id: 'r1', map: loadMap(), globalMapId: 0, seed: 1234, seats: seats() });
+  new Room({
+    id: 'r1',
+    map: loadMap(),
+    globalMapId: 0,
+    seed: 1234,
+    seats: seats(),
+    options: LOBBY_DEFAULT_OPTIONS,
+  });
 
 describe('开局', () => {
   run('未 start 时拒绝意图', () => {

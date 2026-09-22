@@ -3,7 +3,14 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
-import { PROTOCOL_VERSION, type Action, type ClientMessage, type SeatInfo, type ServerMessage } from '@rich4/core';
+import {
+  LOBBY_DEFAULT_OPTIONS,
+  PROTOCOL_VERSION,
+  type Action,
+  type ClientMessage,
+  type SeatInfo,
+  type ServerMessage,
+} from '@rich4/core';
 import { NetClient, netParamsFrom, type NetClientOptions } from './net-client.ts';
 
 function harness(extra: Partial<NetClientOptions> = {}) {
@@ -71,7 +78,7 @@ describe('NetClient', () => {
     h.push({ t: 'joined', version: PROTOCOL_VERSION, seat: 2, room: { id: 'r1', seats: [], started: false } });
     expect(h.client.seat).toBe(2);
     h.push({ t: 'room', room: { id: 'r1', seats: [{ seat: 0, name: 'a', character: 0, kind: 'human' }], started: false } });
-    h.push({ t: 'start', seed: 7, globalMapId: 0, seats: [] });
+    h.push({ t: 'start', seed: 7, globalMapId: 0, seats: [], options: LOBBY_DEFAULT_OPTIONS });
     h.push({ t: 'error', message: '拒绝' });
     h.push({ t: 'desync', seq: 9, expected: 'a', got: 'b', seat: 1 });
     expect(h.events).toEqual(['joined:2', 'room:1', 'start:7', 'error:拒绝', 'desync:9']);
@@ -233,6 +240,7 @@ describe('NetClient', () => {
     const actions = [roll, step, roll, step, roll];
     h.push({
       t: 'replay',
+      options: LOBBY_DEFAULT_OPTIONS,
       seed: 7,
       globalMapId: 0,
       seats,
@@ -278,6 +286,7 @@ describe('NetClient', () => {
     expect(h.applied).toEqual([]);
     h.push({
       t: 'replay',
+      options: LOBBY_DEFAULT_OPTIONS,
       seed: 1,
       globalMapId: 0,
       seats: [],

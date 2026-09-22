@@ -23,6 +23,10 @@ import {
   type MapTopology,
   type Rich4Map,
   type SeatInfo,
+  DEFAULT_INITIAL_FUND,
+  GAME_INITIAL_FUNDS,
+  winConditionsOf,
+  type LobbyOptions,
 } from '@rich4/core';
 
 export interface RoomOptions {
@@ -32,6 +36,11 @@ export interface RoomOptions {
   /** 由服务器生成并下发——★ 客户端不得自取种子 */
   seed: number;
   seats: SeatInfo[];
+  /**
+   * ★★ 第十一份試玩回報 #1：开局选项（总人数 + 起始资金/载具/地产期限/时间/胜利条件）。
+   *   与 `seats`/`globalMapId` 同一套：**开局那一刻冻结**，只由这一份进 `newGame`。
+   */
+  options: LobbyOptions;
 }
 
 export interface Broadcast {
@@ -55,7 +64,7 @@ export class Room {
    * `globalMapId` 全部取自它，**不读任何客户端上报的本地设置** ——
    * 否则「我以为我选的是忍者、服务器记的是錢夫人」要到指纹对不上才暴露。
    */
-  readonly lobby: { globalMapId: number; seats: readonly SeatInfo[] };
+  readonly lobby: { globalMapId: number; seats: readonly SeatInfo[]; options: LobbyOptions };
 
   readonly #map: Rich4Map;
   readonly #topo: MapTopology;
@@ -72,7 +81,11 @@ export class Room {
     this.seats = opts.seats;
     // ★ 拷一份快照：hub 之后还会改 `Table` 上的座位/地图（比如开局补电脑），
     //   那些改动不该再影响这一局已经定下的设置。
-    this.lobby = { globalMapId: opts.globalMapId, seats: opts.seats.map((s) => ({ ...s })) };
+    this.lobby = {
+      globalMapId: opts.globalMapId,
+      seats: opts.seats.map((s) => ({ ...s })),
+      options: { ...opts.options },
+    };
     this.#map = opts.map;
     // ★ 与客户端 main.ts 的 topo **逐项一致**：少了設施表或企业表，镜像在
     //   設施落点、股市锚点上就会与客户端走岔，指纹对不上却谁也没错。
@@ -89,6 +102,17 @@ export class Room {
       players: opts.seats.map((s) => ({ character: s.character, kind: s.kind })),
       seed: opts.seed,
       mode: 'multiplayer',
+      // ★★ 第十一份試玩回報 #1（需求方 2026-09-23）：单机那五项在联机也要能设。
+      //   逐项照 `client/src/main.ts` 的 `startGame()`（单机的同一处），
+      //   ⚠️ 必须与客户端 `onStart` **逐项同源**，否则 `stateFingerprint` 对不上。
+      initialFund: GAME_INITIAL_FUNDS[opts.options.fundIndex] ?? DEFAULT_INITIAL_FUND,
+      startingVehicle: opts.options.vehicle,
+      landTenure: opts.options.landTenure,
+      winConditions: winConditionsOf(
+        opts.options.fundIndex,
+        opts.options.timeIndex,
+        opts.options.victoryIndex,
+      ),
     });
 
     this.#sequencer = new Sequencer({

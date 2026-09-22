@@ -13,6 +13,7 @@ import {
   type Action,
   type ClientMessage,
   type RoomInfo,
+  type LobbyOptions,
   type SeatInfo,
   type ServerMessage,
 } from '@rich4/core';
@@ -44,7 +45,13 @@ export interface NetClientOptions {
    */
   deferChecksum?: boolean;
   /** 开局参数到了：建本地状态 */
-  onStart(start: { seed: number; globalMapId: number; seats: SeatInfo[] }): void;
+  onStart(start: {
+    seed: number;
+    globalMapId: number;
+    seats: SeatInfo[];
+    /** ★ 第十一份試玩回報 #1：房間的開局選項（總人數 + 單機那五項）*/
+    options: LobbyOptions;
+  }): void;
   /** 一条按序号到达的 action：施加到本地状态 */
   onAction(action: Action, seq: number): void;
   /** 房间信息变化（有人进出、掉线） */
@@ -59,7 +66,13 @@ export interface NetClientOptions {
    * 本地必须以这份参数 `newGame` 再从头 reduce `actions` —— 是**整体替换**
    * 而不是继续增量施加；`NetClient` 已经把序号指针接成 `actions.length`。
    */
-  onResync?(replay: { seed: number; globalMapId: number; seats: SeatInfo[]; actions: Action[] }): void;
+  onResync?(replay: {
+    seed: number;
+    globalMapId: number;
+    seats: SeatInfo[];
+    options: LobbyOptions;
+    actions: Action[];
+  }): void;
   /**
    * ★ W-74：服务器广播了「这一回合还剩多久」。
    *
@@ -146,6 +159,16 @@ export class NetClient {
   }
 
   /**
+   * ★★ 第十一份試玩回報 #1：改房间的**开局选项**（总人数 + 单机那五项）。
+   *
+   * 只带要改的那几项（`Partial`）；服务器逐项校验、只有房主能在未开局时改，
+   * 接受后广播 `{t:'room'}` —— 与 `setCharacter`/`setMap` 同一套。
+   */
+  setOptions(options: Partial<LobbyOptions>): void {
+    this.#send({ t: 'setOptions', options });
+  }
+
+  /**
    * ★ Q-NET-1：请求**全量重放**。收到 `desync` 广播时自动调用；
    * 上层也可以手动再要一次（例如发现序号跳号且补发迟迟不到）。
    *
@@ -205,7 +228,12 @@ export class NetClient {
         this.#opts.onRoom?.(msg.room);
         return;
       case 'start':
-        this.#opts.onStart({ seed: msg.seed, globalMapId: msg.globalMapId, seats: msg.seats });
+        this.#opts.onStart({
+          seed: msg.seed,
+          globalMapId: msg.globalMapId,
+          seats: msg.seats,
+          options: msg.options,
+        });
         return;
       case 'action':
         this.#pending.set(msg.seq, msg.action);
@@ -232,6 +260,7 @@ export class NetClient {
           seed: msg.seed,
           globalMapId: msg.globalMapId,
           seats: msg.seats,
+          options: msg.options,
           actions: msg.actions.map((a) => a.action),
         });
         return;
