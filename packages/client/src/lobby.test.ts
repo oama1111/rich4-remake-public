@@ -208,6 +208,10 @@ function fakeCtx() {
     const marks: { t: string; x: number; y: number }[] = [];
     let images = 0;
     let strokes = 0;
+    /** 每一条 `beginPath..stroke` 上的折线点 —— 用来钉箭头的**朝向**（尖端朝哪边）*/
+    const paths: { x: number; y: number }[][] = [];
+    /** 每条折线落笔时的 `strokeStyle` —— 用来钉「到头那一侧要压暗」*/
+    const pathColors: string[] = [];
     const ctx = {
       font: '',
       fillStyle: '',
@@ -227,9 +231,16 @@ function fakeCtx() {
         marks.push({ t, x, y });
       },
       // ★ 「開局設定」的 ◀ / ▶ 是描出来的折线（`drawArrow`），假 ctx 也得有这条路
-      beginPath: () => undefined,
-      moveTo: () => undefined,
-      lineTo: () => undefined,
+      beginPath: () => {
+        paths.push([]);
+        pathColors.push(ctx.strokeStyle);
+      },
+      moveTo: (x: number, y: number) => {
+        paths[paths.length - 1]?.push({ x, y });
+      },
+      lineTo: (x: number, y: number) => {
+        paths[paths.length - 1]?.push({ x, y });
+      },
       stroke: () => {
         strokes++;
       },
@@ -245,6 +256,8 @@ function fakeCtx() {
       get strokes() {
         return strokes;
       },
+      paths,
+      pathColors,
     };
   }
 
@@ -599,6 +612,52 @@ describe('★★ 大厅「開局設定」六行（第十一份試玩回報 #1）
     const guest = fakeCtx();
     drawLobby(guest.ctx, slots, 1, false, false, null, () => portrait(), (t) => t.length * 14, 0);
     expect(guest.strokes).toBe(0);
+  });
+
+  it('★★ 箭头的**尖端朝着它代表的方向**（把「◀」画成「>」是实际踩过的坑）', () => {
+    const f = fakeCtx();
+    const slots = lobbySlots(room([seat({ seat: 0 })]), 0);
+    drawLobby(f.ctx, slots, 0, true, false, null, () => portrait(), (t) => t.length * 14, 0);
+
+    // `drawOptionColumn` 逐行画「左、右」，所以偶数条 = ◀、奇数条 = ▶
+    expect(f.paths).toHaveLength(LOBBY_OPTION_ROWS.length * 2);
+    for (let i = 0; i < LOBBY_OPTION_ROWS.length; i++) {
+      const [left, right] = [f.paths[i * 2]!, f.paths[i * 2 + 1]!];
+      for (const [name, path, want] of [
+        ['◀', left, -1],
+        ['▶', right, 1],
+      ] as const) {
+        expect(path, name).toHaveLength(3);
+        const tip = path[1]!; // moveTo(尾) → lineTo(尖) → lineTo(尾)
+        const tails = [path[0]!, path[2]!];
+        for (const t of tails) {
+          // 尖端必须在两个尾点的**同一侧**，且那一侧就是 `want`
+          expect(Math.sign(tip.x - t.x), `${name} row ${i}`).toBe(want);
+        }
+        // 形状是一个「V」：两个尾点同 x 同高、尖端在两尾点中间那一条水平线上
+        expect(tails[0]!.x, `${name} row ${i}`).toBe(tails[1]!.x);
+        expect(tails[0]!.y, `${name} row ${i}`).not.toBe(tails[1]!.y);
+        expect(tip.y, `${name} row ${i}`).toBe((tails[0]!.y + tails[1]!.y) / 2);
+      }
+    }
+  });
+
+  it('★ 到端点的那一侧要**压暗**（默认：人數到顶、其余五项都在最低档）', () => {
+    const f = fakeCtx();
+    const slots = lobbySlots(room([seat({ seat: 0 })]), 0);
+    // 缺省值：seatCount=4（最高档）、其余五项都是 0（最低档）
+    drawLobby(f.ctx, slots, 0, true, false, null, () => portrait(), (t) => t.length * 14, 0);
+    const [max, min] = ['#a8b6c8', '#3c4c60'];
+    for (let i = 0; i < LOBBY_OPTION_ROWS.length; i++) {
+      const row = LOBBY_OPTION_ROWS[i]!;
+      const idx = optionIndexOf(LOBBY_DEFAULT_OPTIONS, row.field);
+      const left = f.pathColors[i * 2]!;
+      const right = f.pathColors[i * 2 + 1]!;
+      expect(left, `${row.field} ◀`).toBe(idx <= 0 ? min : max);
+      expect(right, `${row.field} ▶`).toBe(idx >= row.steps - 1 ? min : max);
+    }
+    // 六行里恰好有 5 个「◀ 到头」和 1 个「▶ 到头」
+    expect(f.pathColors.filter((c) => c === min)).toHaveLength(6);
   });
 
   it('★ 六行的标题与当前值都画出来，且值来自传进来的那份选项', () => {

@@ -505,6 +505,14 @@ function drawOptionColumn(
 }
 
 /** 一个「◀ / ▶」小箭头（`dir` = −1 左、+1 右），画在以 (x,y) 为左上角的格子里 */
+/**
+ * 一个「◀ / ▶」小箭头（`dir` = −1 画 ◀、+1 画 ▶），画在以 (x,y) 为左上角的格子里。
+ *
+ * ⚠️ **尖端要朝着 `dir`**：`moveTo` 的两个尾点在 `cx - dir*5`、`lineTo` 的尖点在
+ *   `cx + dir*4`。第一版把这两个写反了，于是「◀」画出来是「>」——
+ *   箭头一反过来，玩家按的就不是他看到的那个方向。
+ *   （实测抓到的，不是想出来的：`/tmp/lobby-1.png` 那一版六行全是反的。）
+ */
 function drawArrow(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -517,9 +525,9 @@ function drawArrow(
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(cx + dir * 4, cy - 6);
-  ctx.lineTo(cx - dir * 3, cy);
-  ctx.lineTo(cx + dir * 4, cy + 6);
+  ctx.moveTo(cx - dir * 5, cy - 6);
+  ctx.lineTo(cx + dir * 4, cy);
+  ctx.lineTo(cx - dir * 5, cy + 6);
   ctx.stroke();
 }
 
