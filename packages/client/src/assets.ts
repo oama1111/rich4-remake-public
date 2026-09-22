@@ -877,7 +877,7 @@ export const CHARACTER_SPRITE_STRIDE = 21;
  * | 9..12 | 8/16/32/40 | 工程车 |
  * | 13..15 | 8/24/32 | 飛行器 |
  * | 16..17 | 8/72 | 走路（另一套） |
- * | 18 | 8 | 出局／墓碑位（@source 0x0040b9b7 `edi + 0x12`） |
+ * | 18 | 8 | ★ **乞丐**（出局者 `who_plays == 0` 与刚被毁车 `& 0x40` 共用，@source 0x0040b9b7 `edi + 0x12`；见 `characterBeggarSprite`）|
  * | 19 | 8 | 白衣（住院？） |
  * | 20 | 8 | 條紋囚衣（坐牢） |
  */
@@ -903,6 +903,26 @@ export const CHARACTER_POSE = { stand: 0, walk: 1, dice: 2 } as const;
  */
 export function characterSetBase(character: number, traffic: number): number {
   return CHARACTER_SPRITE_BASE + character * CHARACTER_SPRITE_STRIDE + (traffic & 3) * 3;
+}
+
+/** 21 张里乞丐那一张的位移 @source `_rich4_update_player_sprite` VA 0x0040b9b7 `add edi, 0x12` */
+export const CHARACTER_BEGGAR_OFFSET = 0x12;
+
+/**
+ * 某个角色的**乞丐造型**（8 张 = 8 向各 1 帧，没有走姿）。
+ *
+ * @source `_rich4_update_player_sprite` VA 0x0040b93b 开头那一支：
+ * ```asm
+ * 0040b96c  mov cl, byte [player + 0x15]   ; who_plays
+ * 0040b972  test cl, cl / je 0x40b97f      ; ★ 出局（乞丐）→ 乞丐图
+ * 0040b976  test cl, 0x40 / je 0x40ba16    ; ★ 刚被毁车（`0x40cd07` 置的位）→ 乞丐图；否则常规三张
+ * 0040b9b7  add edi, 0x12                  ; 资源 = 0x80 + 角色×21 + 18
+ * 0040b9c2  call 0x450441                  ; read_mkf(Data.mkf, …)
+ * ```
+ * 谁会带 0x40 位见 `@rich4/core` 的 `WHO_PLAYS_WRECKED`。
+ */
+export function characterBeggarSprite(character: number): number {
+  return CHARACTER_SPRITE_BASE + character * CHARACTER_SPRITE_STRIDE + CHARACTER_BEGGAR_OFFSET;
 }
 
 

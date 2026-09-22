@@ -29,7 +29,8 @@
  * ★ C-DET-4：这里不写任何 state，只返回一份**给渲染器看的副本**；原对象一个不改。
  */
 
-import type { GameState, MapObject, Player } from '@rich4/core';
+import { WHO_PLAYS_WRECKED, type GameState, type MapObject, type Player } from '@rich4/core';
+import { wreckedThisAction } from './dog-fx.ts';
 
 /**
  * 这一拍棋盘该按哪一份 state 画。
@@ -44,11 +45,12 @@ import type { GameState, MapObject, Player } from '@rich4/core';
  * | `objects[i].attached` | `attach_object`（`objects[i] + 5`）| 神明 12 段 | `god-fx.ts` + `rules/object-landing.ts` 的 `@source` |
  * | `objects[i].nodeId` | 同上（`objects[i] + 2` ← 主人所在格）| 神明 12 段 | 同上 |
  *
- * ⚠️ **只按住这五项**，不是整个棋盘退回 before：同一条 action 里的其它变化
+ * | `players[i].blocking.disappearing` | `fcn_0040d375`（`+0x33`）| 飛碟 / 飛機 | `disappear-fx.ts` 文件头 |
+ * | `players[i]` 的位置 + `inHospital/inPrison`（**刚被送进去**的那位）| `send_to_hospital` / `..._prison`（`0x43ec3f` / `0x43d593`）| 救护车 / 入獄 | `holdBackPlayers` 注释（第八份 #8）|
+ * | `players[i].whoPlays` 的 `WHO_PLAYS_WRECKED` 位（同上那位，惡犬/地雷/炸彈）| `0x40cd07`（`or 0x40`）| 救护车 | `dog-fx.ts` 的 `wreckedThisAction` |
+ *
+ * ⚠️ **只按住这几项**，不是整个棋盘退回 before：同一条 action 里的其它变化
  *   （现金、道具、骰子…）照常按 after 画。
- * ⚠️ 「送進監獄／醫院」那一段（`confine-fx.ts`）**不在**这张清单里：它改的是
- *   `players[i].nodeId` / `blocking`，而 issue #19 报的两条（神明 / 機器工人）
- *   都不涉及它。
  *
  * @param after core 已经写完的那一份（`state`）
  * @param before 影片**起播那一拍之前**的那一份；窗口没开就给 `null`
@@ -60,7 +62,7 @@ export function visibleBoardState(after: GameState, before: GameState | null): G
 
   const landLevel = holdBackNumbers(after.landLevel, before.landLevel);
   const facilityLevel = holdBackNumbers(after.facilityLevel, before.facilityLevel);
-  const players = holdBackPlayers(after.players, before.players);
+  const players = holdBackPlayers(after.players, before.players, { before, after });
   const objects = holdBackObjects(after.objects, before.objects);
 
   // 一处都没被改过（这一段影片改的是别的字段）→ 不必新建对象
@@ -88,25 +90,56 @@ function holdBackNumbers(after: number[], before: readonly number[]): number[] {
 }
 
 /**
- * 玩家身上按住两项：`godInfo`（附身标记）与 `blocking.disappearing`（第八份试玩回报 #3）。
+ * 玩家身上按住三样：`godInfo`（附身标记）、`blocking.disappearing`（第八份试玩回报 #3）、
+ * **刚被送进監獄／醫院的那一位的位置**（第八份试玩回报 #8）。
  *
- * ★ 后者：`fcn_0040d375` 在**播飛碟 / 飛機之前**就写了 `+0x33`（`0x0040d43a`），但影片是盖在
+ * ★ 消失：`fcn_0040d375` 在**播飛碟 / 飛機之前**就写了 `+0x33`（`0x0040d43a`），但影片是盖在
  *   `view_to`（`0x0040d3e6`）那一次重绘的**存下来的背景**上播的 —— 那一帧人还在。影片收屏后的第一次
  *   重绘才按 `+0x33 != 0` 把他隐掉（`render.ts` 的 `confinedPlayerDrawn`）。⇒ 影片期间按 before 画。
+ *
+ * ★ 送醫院 / 送監獄：`send_to_hospital`（`0x43ec3f`）先 `0x0043ec78 view_to(玩家现在的位置)` 重绘一帧，
+ *   **然后**才改 `+0x0c`（所在格）/ `+0x08,+0x0a`（坐标）/ `+0x35`（住院天数），再把救护车片
+ *   （440×74 的一条，`confine-fx.ts`）盖在那一帧上播；播完 `0x0043eda0 view_to(新位置)` 才切到醫院。
+ *   監獄那支（`0x43d593`）同一结构。⇒ 影片窗口里人还**站在事发那一格**，不能按 after 隐掉。
+ *   另外 `0x40cd07`（惡犬 / 地雷 / 炸彈）在这之前给他 `or who_plays, 0x40` 重载成**乞丐造型**
+ *   （`WHO_PLAYS_WRECKED`，判据 `dog-fx.ts` 的 `wreckedThisAction`），`send_to_hospital` 到
+ *   `0x0043ecad and 0xf` 才清 —— 所以救护车那 6.2 秒里他是乞丐。窗口一关，after 接管：人隐掉、镜头去醫院。
  */
-function holdBackPlayers(after: Player[], before: readonly Player[]): Player[] {
+function holdBackPlayers(after: Player[], before: readonly Player[], snapshot?: { before: GameState; after: GameState }): Player[] {
   let changed = false;
   const out = after.map((p, i) => {
     const b = before[i];
     if (b === undefined) return p;
     const godChanged = p.godInfo !== b.godInfo;
     const vanished = p.blocking.disappearing !== b.blocking.disappearing;
-    if (!godChanged && !vanished) return p;
+    const confinedNow =
+      (b.blocking.inHospital === 0 && p.blocking.inHospital !== 0)
+      || (b.blocking.inPrison === 0 && p.blocking.inPrison !== 0);
+    if (!godChanged && !vanished && !confinedNow) return p;
     changed = true;
+    const wrecked = confinedNow && snapshot !== undefined && wreckedThisAction(snapshot.before, snapshot.after, i);
     return {
       ...p,
       ...(godChanged ? { godInfo: b.godInfo } : {}),
-      ...(vanished ? { blocking: { ...p.blocking, disappearing: b.blocking.disappearing } } : {}),
+      ...(confinedNow
+        ? {
+            nodeId: b.nodeId,
+            lastNodeId: b.lastNodeId,
+            xpos: b.xpos,
+            ypos: b.ypos,
+            direction: b.direction,
+            whoPlays: wrecked ? p.whoPlays | WHO_PLAYS_WRECKED : p.whoPlays,
+          }
+        : {}),
+      ...(vanished || confinedNow
+        ? {
+            blocking: {
+              ...p.blocking,
+              ...(vanished ? { disappearing: b.blocking.disappearing } : {}),
+              ...(confinedNow ? { inHospital: b.blocking.inHospital, inPrison: b.blocking.inPrison } : {}),
+            },
+          }
+        : {}),
     };
   });
   return changed ? out : after;

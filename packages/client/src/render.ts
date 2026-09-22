@@ -35,7 +35,7 @@ import {
 // ★ 機器工人建屋影片的落点/尺寸是 exe 里的**常数**（Q-TOOL-6）——
 //   屏幕 (0, 0x28) = 棋盘局部 (0, 0)，整块 440×440。见 `build-fx.ts`。
 import { BUILD_FX_BOARD_Y, BUILD_FX_H, BUILD_FX_W, BUILD_FX_X } from './build-fx.ts';
-import type { MapNode, Rich4Map } from '@rich4/core';
+import { WHO_PLAYS_WRECKED, type MapNode, type Rich4Map } from '@rich4/core';
 import {
   VIEW_CENTER,
   VIEW_COUNT,
@@ -60,6 +60,7 @@ import {
   sceneryResource,
   toolbarIconImage,
   characterSetBase,
+  characterBeggarSprite,
   CHARACTER_POSE,
   directionalImage,
   screenDirection,
@@ -2645,7 +2646,10 @@ export class BoardRenderer {
     //   綠島/醫院大樓，与站在監獄格上的另一位**不是同一处**，错开量不能混用。
     const perNode = new Map<string, number>();
     for (const pl of state.players) {
-      if (pl.whoPlays === 0) continue;
+      // ★ 出局的人**照画** —— 他成了乞丐（`rules/beggar.ts`：谁停在同一格谁掏施捨），原版棋子绘制
+      //   `0x00408683 cmp word [player+0x08], 0 / je 跳过` 只看 `xpos`，**不看** `who_plays`；破产的 memset
+      //   从 +0x1c 起，坐标 / 所在格都还在。图组换成乞丐那一张（见下面 `beggar`）。
+      if (pl.xpos === 0 && pl.whoPlays === 0) continue;
       // ★★ 第八份试玩回报 #3 / #8：住宿 / 消失（出國、被外星人綁架）/ 坐牢 / 住院中的棋子**不画**。
       //   @source 棋子绘制 `0x00408691 cmp dword [player+0x32],0 / je 画` —— 四个计数字节合成一个 dword 比；
       //   非 0 时只有 `0x0040869a test byte [player+0x15],0x20 / jne` 才画（位置被外力挪过那一支）。
@@ -2681,7 +2685,11 @@ export class BoardRenderer {
       //     原版整段（预动作 + 滚骰 + 500 ms 定格）都停在那一组上。
       const override = poseOverride !== null && pl.index === state.currentPlayer ? poseOverride : null;
       const pose = override ?? (moving ? CHARACTER_POSE.walk : CHARACTER_POSE.stand);
-      const res = characterSetBase(pl.character, pl.trafficMethod) + pose;
+      // ★ 乞丐造型：出局者，或刚被惡犬咬 / 地雷炸 / 炸彈炸（`WHO_PLAYS_WRECKED`，影片窗口里由
+      //   `deferred-board.ts` 挂上）—— 原版 `0x40b93b` 见 `who_plays == 0 || & 0x40` 就只装 +18 那 8 张
+      //   （@source 0x0040b972 / 0x0040b976 / 0x0040b9b7），没有走姿与骰子姿。
+      const beggar = pl.whoPlays === 0 || (pl.whoPlays & WHO_PLAYS_WRECKED) !== 0;
+      const res = beggar ? characterBeggarSprite(pl.character) : characterSetBase(pl.character, pl.trafficMethod) + pose;
       const count = this.#imageCount('Data.mkf', res);
       const dir = screenDirection(pl.direction, cam.view);
       /**

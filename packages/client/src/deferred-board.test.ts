@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { makeGameState, makePlayer, type GameState, type MapObject } from '@rich4/core';
+import { WHO_PLAYS_WRECKED, makeGameState, makePlayer, type GameState, type MapObject } from '@rich4/core';
 import {
   boardFilmWindowOpen,
   boardStateForFilm,
@@ -221,6 +221,103 @@ describe('按住的范围只限加蓋 / 附身那五项，别的变化照常按 
     const drawn = visibleBoardState(after, before);
     expect(drawn.players[0]!.godInfo).toBe(0);
     expect(drawn.players[1]).toBe(after.players[1]);
+  });
+});
+
+// ============================================================
+//  第八份试玩回报 #8：送醫院 / 送監獄那一拍，人留在事发格；惡犬 / 地雷 / 炸彈 → 乞丐造型
+// ============================================================
+
+describe('★ 刚被送进醫院 / 監獄的人在影片窗口里留在**事发那一格**（`send_to_hospital` 先 view_to 重绘、后改位置）', () => {
+  /** 玩家 0 站在 7 号格踩到惡犬（槽 0）：after 里人已经在醫院格 23、住院 3 天，狗收走 */
+  function dogTick(over: { object?: MapObject; f64Before?: number; f64After?: number } = {}) {
+    const before = makeGameState({
+      objects: [over.object ?? obj(11, 7, 0)],
+      players: [
+        makePlayer({ index: 0, nodeId: 7, lastNodeId: 6, xpos: 100, ypos: 200, direction: 3, whoPlays: 1, f64: over.f64Before ?? 0 }),
+        makePlayer({ index: 1, nodeId: 30 }),
+      ],
+    });
+    const after = makeGameState({
+      objects: [obj(over.object?.type ?? 11, 0, 0)],
+      players: [
+        makePlayer({
+          index: 0,
+          nodeId: 23,
+          lastNodeId: 0,
+          xpos: 900,
+          ypos: 900,
+          direction: 0xf,
+          whoPlays: 1,
+          f64: over.f64After ?? 0,
+          blocking: { ...before.players[0]!.blocking, inHospital: 3 },
+        }),
+        before.players[1]!,
+      ],
+    });
+    return { before, after };
+  }
+
+  it('位置 / 朝向 / 住院计数按回 before ⇒ `confinedPlayerDrawn` 仍画他、且画在狗格上', () => {
+    const { before, after } = dogTick();
+    const drawn = visibleBoardState(after, before);
+    const p = drawn.players[0]!;
+    expect(p.nodeId).toBe(7);
+    expect(p.lastNodeId).toBe(6);
+    expect(p.xpos).toBe(100);
+    expect(p.ypos).toBe(200);
+    expect(p.direction).toBe(3);
+    expect(p.blocking.inHospital).toBe(0);
+    // 没变的那位沿用原元素
+    expect(drawn.players[1]).toBe(after.players[1]);
+  });
+
+  it('★ 惡犬被踩掉 ⇒ 挂上 `WHO_PLAYS_WRECKED`（乞丐造型）；after 本体的 whoPlays 不动', () => {
+    const { before, after } = dogTick();
+    const drawn = visibleBoardState(after, before);
+    expect(drawn.players[0]!.whoPlays & WHO_PLAYS_WRECKED).toBe(WHO_PLAYS_WRECKED);
+    expect(drawn.players[0]!.whoPlays & 0x3).toBe(1);
+    expect(after.players[0]!.whoPlays).toBe(1);
+  });
+
+  it('★ 地雷（17）被踩掉 / 背的炸彈炸了（f64 → 0）⇒ 同样乞丐', () => {
+    const mine = dogTick({ object: obj(17, 7, 0) });
+    expect(visibleBoardState(mine.after, mine.before).players[0]!.whoPlays & WHO_PLAYS_WRECKED).toBe(WHO_PLAYS_WRECKED);
+    const bomb = dogTick({ object: obj(18, 0, 0), f64Before: 1, f64After: 0 });
+    expect(visibleBoardState(bomb.after, bomb.before).players[0]!.whoPlays & WHO_PLAYS_WRECKED).toBe(WHO_PLAYS_WRECKED);
+  });
+
+  it('卡片 / 新聞把人送进醫院（没有物件被踩掉）⇒ 位置照按住，但**不是**乞丐', () => {
+    const { before, after } = dogTick({ object: obj(11, 0, 0) }); // 狗本来就不在盘上
+    const drawn = visibleBoardState(after, before);
+    expect(drawn.players[0]!.nodeId).toBe(7);
+    expect(drawn.players[0]!.whoPlays & WHO_PLAYS_WRECKED).toBe(0);
+  });
+
+  it('送監獄同一套：位置按住、`inPrison` 按回 0', () => {
+    const before = makeGameState({ players: [makePlayer({ index: 0, nodeId: 7, xpos: 100, ypos: 200 })] });
+    const after = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 1, xpos: 5, ypos: 5, blocking: { ...before.players[0]!.blocking, inPrison: 2 } })],
+    });
+    const drawn = visibleBoardState(after, before);
+    expect(drawn.players[0]!.nodeId).toBe(7);
+    expect(drawn.players[0]!.blocking.inPrison).toBe(0);
+    expect(drawn.players[0]!.whoPlays & WHO_PLAYS_WRECKED).toBe(0);
+  });
+
+  it('本来就住着院（3 → 6 加刑）⇒ **不**按位置：他本来就不在盘上', () => {
+    const before = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 23, blocking: { ...makePlayer().blocking, inHospital: 3 } })],
+    });
+    const after = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 23, blocking: { ...makePlayer().blocking, inHospital: 6 } })],
+    });
+    expect(visibleBoardState(after, before).players).toBe(after.players);
+  });
+
+  it('窗口一关（`boardStateForFilm` 四位全空）⇒ 立刻按 after：人隐掉、镜头去醫院', () => {
+    const { before, after } = dogTick();
+    expect(boardStateForFilm(after, before, NO_FILM)).toBe(after);
   });
 });
 

@@ -61,6 +61,19 @@ export const WHO_PLAYS_RELOCATED = 0x20;
  * @source rich4.asm:6573 (fcn_0040c912) / 0x00418f07 / 0x00418f87
  */
 export const WHO_PLAYS_SPECIAL_MASK = 0x30;
+/**
+ * 比特 6：**刚被毁了车 / 咬了 / 炸了 —— 棋子画成乞丐**。
+ *
+ * `0x40cd07`（惡犬 / 地雷 / 定時炸彈 / 新聞 4 / 命運 10、11 共用的毁车例程）末尾
+ * `0040cd5e or byte [player + 0x15], 0x40` 然后 `call 0x40b93b` 重载棋子图；`0x40b93b` 见到
+ * `who_plays == 0`（出局的乞丐）**或**这一位就装资源 **+0x12 = 18**（`0040b9b7 add edi, 0x12`）——
+ * 补丁衣服那一张。`send_to_hospital` 走到 `0043ecad and byte [+0x15], 0xf` 才清掉。
+ *
+ * ★ 引擎里这一位在同一条 action 内被设又被清（毁车之后紧接着就住院），after 里看不到 ——
+ *   规则层**不写**它；它是给表现层用的记号（`client/deferred-board.ts` 在影片窗口里挂上、
+ *   `client/render.ts` 见位画乞丐）。放在这里只为与原版位含义一一对应。
+ */
+export const WHO_PLAYS_WRECKED = 0x40;
 
 // ============================================================
 //  玩家
