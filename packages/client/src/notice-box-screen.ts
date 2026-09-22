@@ -128,6 +128,9 @@ export const NOTICE_TEXT = {
   'god.seize': GOD_MANIFEST.seize.text,
   'god.blockPurchase': GOD_MANIFEST.blockPurchase.text,
   'god.gotCard': GOD_MANIFEST.gotCard.text,
+  // ★ 大福神得两张那次原版用的是**另一条**格式串（`0x0040eed7 push 0x463353`）——
+  //   一扇框、两个卡名，且串里自己写着「大福神」⇒ `args` 只有两张卡名。
+  'god.gotCardTwo': GOD_MANIFEST.gotCardTwo.text,
   'bank.rejected': BANK.rejected.text,
   // ★ W-67-a：董事長蒞臨商店的贈禮（`0x464378`）—— 在商店窗打开**之前**弹
   'shop.chairmanGift': SHOP.chairmanGift.text,

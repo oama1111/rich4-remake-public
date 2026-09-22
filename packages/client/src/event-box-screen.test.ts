@@ -849,6 +849,22 @@ describe('★ 福神得卡：只有訊息框，不出卡面 @source fcn_0040ed8f
     expect(eventBoxScreen.active(env)).toBe(false);
   });
 
+  it('★★ 手牌变长 + 大福神那扇 `god.gotCardTwo`（一扇两卡名）⇒ 同样不起播', () => {
+    // @source `fcn_0040ee50` 的 `0x0040eed7 push 0x463353`：大福神两张只弹**一扇**
+    //   （`args` = 两张卡名，**不带神明名**、也不带 `cardId`）—— 闸口必须一并认它，
+    //   否则这扇訊息框会被卡面盖住。
+    resetEventBoxScreen();
+    const before = withNotices([player(0, [1])], []);
+    const after = withNotices(
+      [player(0, [1, 12, 14])],
+      [{ key: 'god.gotCardTwo', args: ['拆除卡', '停留卡'], holdMs: 1500 }],
+    );
+    const env = fakeEnv(after);
+    eventBoxScreen.event!(before, after, env);
+    expect(eventBoxScreenState().playing).toBe(false);
+    expect(eventBoxScreen.active(env)).toBe(false);
+  });
+
   it('★ 对照：同一条得卡（手牌变长）但 notices 里没有 `god.gotCard` ⇒ 照旧出卡面', () => {
     resetEventBoxScreen();
     const before = withNotices([player(0, [1])], []);

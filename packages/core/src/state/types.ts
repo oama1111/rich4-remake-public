@@ -570,6 +570,13 @@ export type NoticeKey =
   | 'god.blockPurchase'
   /** 福神附身得卡（`0x0040ee13 push 0x4632fd`，1500 ms）—— `args` = [神明名, 卡名]；`cardId` 给台词配档 */
   | 'god.gotCard'
+  /**
+   * **大福神**附身得两张卡（`0x0040eed7 push 0x463353`，1500 ms）—— **一扇框、两张卡名**。
+   *
+   * `args` = [先抽到的卡名, 後抽到的卡名]（格式串里 `%s` 只出现两次，**不含神明名**：
+   * 「大福神附身\n\n得到%s及%s！」自己写着神明名）⇒ 与 `god.gotCard` 的 args 形状不同。
+   */
+  | 'god.gotCardTwo'
   /** 路过 / 落在銀行格但被拒絕往來（`0x004379ef push 0x464bed`，**1000 ms**）—— `args[0]` = 还剩几天 */
   | 'bank.rejected'
   /**

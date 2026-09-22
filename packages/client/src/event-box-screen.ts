@@ -478,7 +478,8 @@ export interface CardGain {
  *
  * ⚠️ 这个判据对**所有**得卡来源都成立 —— 包括福神显灵送的那张（`receiveCards`）。
  *   原版那一支**没有卡面**（`rich4_gods.asm:693-754`，见 `event()` 的注释），
- *   故 `event()` 在调本函数**之前**先让开带 `god.gotCard` 的那条 action。
+ *   故 `event()` 在调本函数**之前**先让开带 `god.gotCard` 的那条 action
+ *   （大福神得两张那条是 `god.gotCardTwo`，同一个闸口一并让开）。
  */
 export function cardGained(before: GameState, after: GameState): CardGain | null {
   for (let i = 0; i < after.players.length; i++) {
@@ -1085,7 +1086,8 @@ export const eventBoxScreen: UiScreen = {
    *   福神得卡会在 t=0 与附身影片**同时**起这一屏的卡面（本屏 `windowed`，在
    *   `SCREENS` 里又排在 `noticeBoxScreen` 之前，还会盖住那扇訊息框）。
    *   ⇒ 见到本 action 新写的 `god.gotCard`（core 在 `reduce.ts` 的
-   *   `case 'receiveCards'` 里 push 的那条）就让开，交给訊息框与台词。
+   *   `case 'receiveCards'` 里 push 的那条；大福神那次是同一支里的 `god.gotCardTwo`）
+   *   就让开，交给訊息框与台词。
    */
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
     if (playback !== null) return; // 上一段还没播完
@@ -1121,10 +1123,15 @@ export const eventBoxScreen: UiScreen = {
       return;
     }
 
-    // ★★ 福神得卡（`god.gotCard`）只有訊息框，没有卡面（依据见上面 `event` 的注释）。
-    //   判据 = 这条 action **新写**了 notices 且其中带 `god.gotCard`；
+    // ★★ 福神得卡（`god.gotCard` / 大福神两张那条 `god.gotCardTwo`）只有訊息框，没有卡面
+    //   （依据见上面 `event` 的注释）。
+    //   判据 = 这条 action **新写**了 notices 且其中带这两个键之一；
     //   不拿卡袋/手牌反推，免得把卡片格那一路也误伤。
-    if (after.notices !== before.notices && after.notices?.some((n) => n.key === 'god.gotCard')) return;
+    if (
+      after.notices !== before.notices &&
+      after.notices?.some((n) => n.key === 'god.gotCard' || n.key === 'god.gotCardTwo')
+    )
+      return;
 
     const gain = cardGained(before, after);
     if (gain === null) return;
