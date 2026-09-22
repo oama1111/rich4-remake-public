@@ -788,6 +788,14 @@ function loadConfigFromStore(): void {
     autoSave: cfg.autoSave,
     windowView: cfg.view,
   };
+  // ★★ 2026-09-22（第十一份試玩回報 #8「开局默认是日月历模式，但是设置里打开默认是缩小地图模式」）：
+  //   原版**每次重画侧栏都直接读 cfg**（`fcn_00416e6d` 的 `0x416e7d movzx ebp,byte [cfg+5]`、
+  //   `fcn_004169bc` 的 `0x4169cd cmp byte [cfg+5],1`）⇒ 不存在「开机一套、设定屏另一套」。
+  //   本引擎的 `sidebarView` 是个**硬编码 `'calendar'` 的模块变量**，而 `applyOptions`
+  //   （唯一会改它的地方）只在設定屏「確定」时被调 —— 开机读 cfg 那条路**不经过它**
+  //   ⇒ 棋盘永远日月历、設定屏却亮着 cfg 里的「缩小地图」。
+  //   ⇒ 在这里补一次一致化（**不要**在开机跑 `applyOptions`：那会带上音量/写档的副作用）。
+  sidebarView = cfg.view === 1 ? 'map' : 'calendar';
   optionsKeys = configHotkeyKeys(cfg);
 }
 
@@ -3942,6 +3950,20 @@ function applyAction(action: Action): void {
 }
 
 /**
+ * 当前这个 `pending` 是不是「电脑在逛店 / 进银行」—— 那样**不铺场**（原版按 `whoPlays` 分流）。
+ *
+ * @source `_rich4_ui_shop_entry` 的 `0x0042ea32 cmp byte [player+0x15],1 / jne 0x42ed8d`
+ *   与 `_rich4_ui_bank_entry` 的 `0x004366a3` 同形：电脑那一支只跑买卖循环，不读面板、不开窗。
+ *
+ * ★ 2026-09-22（第十一份試玩回報 #16/#18）：抽成一处是为了让**两条**入口
+ *   （`notifyApplied` 与 `requestRender` 里的每帧补呼）用**同一道闸** ——
+ *   先前只有前者有，后者漏了，于是 NPC 的店会被铺起来、放 BGM 与招呼语音。
+ */
+function aiVenuePending(s: GameState): boolean {
+  return isAiTurn(s) && (s.pending?.kind === 'shop' || s.pending?.kind === 'bank');
+}
+
+/**
  * 一条 action **已经落地**之后的通知：音效 / 語音 / 台词气泡、界面状态同步、各整屏的起播。
  *
  * ★★ 2026-09-19（第三份试玩回报 #5 / #6 / #11）：这一段先前**只挂在 `applyAction` 上**，
@@ -3965,7 +3987,7 @@ function notifyApplied(before: GameState): void {
   //   放在这里是因为不管谁答的（本地点、AI、服务器广播）都会经过这一条。
   // ⚠️ 电脑自己逛店 / 进銀行时**不铺场**（保持先前的行为：那两屏是给真人点的，
   //   电脑那一手由 `decidePending` 直接答掉；原版此刻是否铺场未查证，不擅自改）。
-  const aiVenue = isAiTurn(state) && (state.pending?.kind === 'shop' || state.pending?.kind === 'bank');
+  const aiVenue = aiVenuePending(state);
   if (!aiVenue) {
     syncShopUi();
     // ★ 銀行貸款屏的界面状态（T-029c）同理：`pending.kind === 'bank'` 时铺场，
@@ -4216,7 +4238,18 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
     after.lastNpcWalks !== before.lastNpcWalks &&
     after.lastNpcWalks.some((w) => w.slot === specialSlotOf(ACTOR_DOLL))
   ) {
-    sound.play('Effect.mkf', SOUND_IDS.DOLL);
+    // ★★ 2026-09-22（第十一份試玩回報 #9「机器娃娃清扫的语音应该是持续播放」）：
+    //   原版这一声是**循环播放**的 —— `0x40ded1 push 1`（arg3）→ `0x4542ce` →
+    //   `0x454100 call [eax+0x30]` = `IDirectSoundBuffer::Play(..., dwFlags=DSBPLAY_LOOPING)`；
+    //   走完整趟在 `0x40d8dc` 再 `call 0x4542e9`（vtable+0x48 = `Stop`）。
+    //   38 号本身只有约 **0.56 秒**，所以先前「不传 loop」等于整趟只响开头一声。
+    //   ⚠️ 玩家说的「语音」其实是**音效**：原版这一趟**没有**持续的角色语音
+    //      （只有那一次性的「替我除掉障礙物！」，属另一条缺口）。
+    sound.play('Effect.mkf', SOUND_IDS.DOLL, true);
+    // 走完这一趟就把它停掉（原版 `0x0040d8dc` 的 `call 0x4542e9` = `IDirectSoundBuffer::Stop`）。
+    // `+80 ms` 是留一拍余量（原版是同一个 tick 里 Stop，本引擎走子补间按毫秒推进）。
+    const walkMs = renderer.actorWalkRemainingMs();
+    window.setTimeout(() => sound.stop('Effect.mkf', SOUND_IDS.DOLL), Math.max(0, walkMs) + 80);
   }
 
   // ★ **買地 / 買現成設施成功**那一下 —— 音效 49（见 `SOUND_IDS.BUY_PROPERTY`）。
@@ -6326,7 +6359,13 @@ function requestRender(): void {
     // ★★ W-67-a：**訊息框收掉之后商店窗才开得起来** —— `syncShopUi()` 见到
     //   `blockingPresentation()`（董事長赠礼框还在台上）会先让开，而框自己收掉那一刻
     //   不会再派 action ⇒ 在这里每帧补一次机会。幂等：`shopUi` 已建就什么都不做。
-    if (screen === 'game') syncShopUi();
+    // ★★ 2026-09-22（第十一份試玩回報 #16「NPC走到百货公司时就不用触发语音了」）：
+    //   这里先前**没有**人机闸（`notifyApplied` 那一处有），于是 NPC 的 `pending.shop`
+    //   会被每帧这条补呼铺起来 ⇒ `syncShopUi` 内放 `midi07.mid` +
+    //   `shopSay` 播招呼语音 `#0000 有什麼我能為你服務的嗎？`。
+    //   原版 `_rich4_ui_shop_entry` 的 `0x0042ea32 cmp [who_plays],1 / jne 0x42ed8d`
+    //   ⇒ 只有真人才开窗（訊息框与「董事長贈禮」台词在分流**之前**，NPC 说那句是对的，别动）。
+    if (screen === 'game' && !aiVenuePending(state)) syncShopUi();
     syncInviteButton();
     syncClockOverlay();
     syncBailBgm();
@@ -6517,7 +6556,11 @@ function requestRender(): void {
     // 銀行落点那两屏（T-029）：貸款屏先铺（整屏 640×480），ATM 是模態的盖它上面；
     // 若填数页开着，再把棋盘那块（对话框在上面）贴回来 —— 原版的填数页也是
     // 盖在银行屏上的（`fcn_00453544` 那一声调用就在贷款屏的状态机里）。
-    const bank = bankPending();
+    // ★★ 2026-09-22（第十一份試玩回報 #18「NPC踩到银行上时就不用一闪而过银行内部的页面了」）：
+    //   原版 `_rich4_ui_bank_entry` 的 `0x004366a3 cmp byte [player+0x15],1 / jne 0x4367ab`
+    //   ⇒ 电脑那一支**直接借款、全程不画屏**。先前这里只看 `pending.kind === 'bank'`，
+    //   于是 NPC 的银行 pending 期间整张银行内页被画出来（玩家看到的就是「一闪而过」）。
+    const bank = isAiTurn(state) ? null : bankPending();
     if (bank !== null && atm === null) {
       // 三条数额 = 額度 / 已用 / 額度−已用 @source `fcn_00433c20`：
       // 依次是 `arg`、`player+0x28`、`arg − player+0x28`。

@@ -1255,7 +1255,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
               ref.kind === 'landscape'
                 ? topo.landscapes?.find((l) => l.id === ref.index)
                 : undefined;
-            if (land !== undefined) p.direction = directionOf(land.x - gate.x, land.y - gate.y);
+            // ★★ 2026-09-22（第十一份試玩回報 #13「从监狱和医院出来时为什么都是背对着路倒退出来」）：
+            //   原版 `0x0040d6ee/f2` 读 node[關押格].x/y，`0x0040d6f9/704` 读 player.xpos/ypos
+            //   （在押期間 = 綠島/醫院大樓的景觀座標），然後 `sub ecx,edx` / `sub edi,eax`
+            //   ⇒ `directionOf(**關押格 − 景觀位**)`，`0x40d717` 寫進 `player+0x10`。
+            //   先前兩個減數寫反 ⇒ 棋子朝景觀位（背對棋盤）倒退走出去。
+            if (land !== undefined) p.direction = directionOf(gate.x - land.x, gate.y - land.y);
           }
         });
         return { ...cleared, phase: 'turnEnd' };
@@ -1875,7 +1880,15 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   （@source 0x0041ad7e → 0x0041ad99 call 0x45144f（大锤）→ 0x0041adaa
       //   test byte [esp+0xbc], 0x80 → 0x0041adb4 call 0x40b0cd）。
       //   ⇒ 与機器工人同构（先大锤、再 bit7 时 0x20b），客户端按 `companyBuild` 播。
-      let next: GameState = { ...withSingleBuildUpgrade(built.state, buildHintOf(built, 'companyBuild')), pending: null };
+      // ★ 第十一份回报 #7：镜头先移到**待修建的那一处**（原版 `0x41aadf call 0x41d476`，
+      //   在 `0x41aae8` 加蓋与 `0x41ab10` 大锤**之前**）；`syncViewTarget` 会一直停在那儿
+      //   直到大锤影片与台词演完（`stageBusy` 含 `buildFx`）再收回。
+      const viewTarget = entityViewTarget(state, topo, action.entityId);
+      let next: GameState = {
+        ...withSingleBuildUpgrade(built.state, buildHintOf(built, 'companyBuild')),
+        pending: null,
+        ...(viewTarget === null ? {} : { lastViewTarget: viewTarget }),
+      };
       if (pend.charge) {
         // @source 0x0041adc0：工程費 = 那处地的地價 × 物價，付给公司
         const fee = entityLandPrice(next, topo, action.entityId) * next.priceIndex;
@@ -6330,6 +6343,34 @@ function freeBuildEntity(
 }
 
 /** 实体（地块/設施）的地價 —— 建設公司算工程費用 @source 0x0041adc7 / 0x0041ade3 */
+/**
+ * 某个实体（`0x7d0 + land.id` / `0xfa0 + facility.id`）的**屏幕坐标** —— 给 `lastViewTarget` 用。
+ *
+ * @source 原版 `fcn_0040af12(entity, &x, &y)`：建設公司两支在**加蓋之前**用它取坐标，
+ *   紧接着 `call 0x41d476`（`view_to`）把镜头移过去 —— 自家支
+ *   `0x0041aaac call 0x40af12` → `0x0041aadf call 0x41d476`（arg3=0）→ `0x0041aae8` 加蓋
+ *   → `0x0041ab10` 大锤 → `0x0041ab5b` 台词；别人公司那一支同形
+ *   （`0x0041ad41` / `0x0041ad75` / `0x0041ad7e` / `0x0041ad99`）。
+ *   机械清单：`docs/tasks/view-to-callsites.md` 第 22/23 列。
+ *
+ * ★★ 2026-09-22（第十一份試玩回報 #7「NPC走到建筑公司时…镜头应该转移到待修建的建筑为中心」）：
+ *   先前这一族（真人 `buildTarget` + AI 两支）**一条都没写 `lastViewTarget`**，
+ *   而同族的機器工人（`useTool` 那一支）写了 ⇒ 镜头留在建筑公司（＝行动者所在格）。
+ */
+function entityViewTarget(
+  state: GameState,
+  topo: MapTopology,
+  entityId: number,
+): { x: number; y: number } | null {
+  const e = decodeEstate(entityId);
+  if (e.kind === 'land') {
+    const land = effectiveLand(state, topo, e.index);
+    return land === null ? null : { x: land.x, y: land.y };
+  }
+  const fac = effectiveFacility(state, topo, e.index);
+  return fac === null ? null : { x: fac.x, y: fac.y };
+}
+
 function entityLandPrice(state: GameState, topo: MapTopology, entityId: number): number {
   const e = decodeEstate(entityId);
   if (e.kind === 'land') return effectiveLand(state, topo, e.index)?.landPrice ?? 0;
@@ -6491,7 +6532,13 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
         if (target !== 0) {
           // ★ 建設公司这一支的动效（0x229 大锤 + bit7→0x20b）已按提示播放。
           const built = freeBuildEntity(next, topo, target, -1);
-          if (built !== null) next = withSingleBuildUpgrade(built.state, buildHintOf(built, 'companyBuild'));
+          if (built !== null) {
+            const vt = entityViewTarget(next, topo, target);
+            next = {
+              ...withSingleBuildUpgrade(built.state, buildHintOf(built, 'companyBuild')),
+              ...(vt === null ? {} : { lastViewTarget: vt }),
+            };
+          }
         }
       } else {
         const choices = buildableEntities(next, topo, me, true);
@@ -6558,7 +6605,11 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
             built.state, topo, me, c.id, entityLandPrice(built.state, topo, target) * built.state.priceIndex,
           );
           // ★ 建設公司这一支的动效（同上）已按提示播放。
-          next = withSingleBuildUpgrade(paid, buildHintOf(built, 'companyBuild'));
+          const vt = entityViewTarget(paid, topo, target);
+          next = {
+            ...withSingleBuildUpgrade(paid, buildHintOf(built, 'companyBuild')),
+            ...(vt === null ? {} : { lastViewTarget: vt }),
+          };
         }
       }
     } else {
