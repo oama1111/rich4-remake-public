@@ -162,6 +162,7 @@ import {
   tickGod,
   drawGiftTool,
   giftToolBagEmpty,
+  OBJECT_TYPE_ROADBLOCK,
 } from '../rules/object-landing.ts';
 import type { MapObject } from '../cards/summon.ts';
 import { demolishLand, isSealedStrict, sweepPriceStatus } from '../rules/land-mutation.ts';
@@ -1287,6 +1288,8 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
 
     case 'step': {
       if (state.phase !== 'moving') return state;
+      // ★ 路过銀行开着 ATM（`pending.kind === 'atm'`）时不许再走：原版那扇窗是模态的，走子在它后面
+      if (state.pending !== null && state.pending.kind !== 'none') return state;
       const player = state.players[state.currentPlayer];
       if (player === undefined) return state;
       if (state.stepsRemaining <= 0) return { ...state, phase: 'settling' };
@@ -1890,10 +1893,28 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         // 不加蓋也照样走到落点收尾：自己的研究所要问研發（0x0041b0b3）
         return state.pending?.kind === 'upgradeFacility' ? afterOwnLab(done, topo, state.pending.facilityId) : done;
       }
-      return state.pending === null ? state : { ...state, pending: null, phase: 'turnEnd' };
+      if (state.pending === null) return state;
+      // ★ 路过銀行的 ATM 窗在**走子中途**弹出：关窗只是关窗，剩下的步数照走（原版 `fcn_0041b42d` 那一支
+      //   `call 0x4379c9` 返回后接着往下处理这一步，不结束回合）
+      if (state.pending.kind === 'atm') return { ...state, pending: null };
+      return { ...state, pending: null, phase: 'turnEnd' };
     }
 
     case 'bank': {
+      // ★ 路过銀行的 ATM（`pending.kind === 'atm'`）只收存款 / 提款，办完一笔就关（原版 ATM 窗是模态的）
+      if (state.pending?.kind === 'atm') {
+        if (action.op !== 'deposit' && action.op !== 'withdraw') return state;
+        const who = state.players[state.currentPlayer];
+        if (who === undefined || !isAlive(who)) return state;
+        const moved = action.op === 'deposit' ? deposit(who, action.amount) : withdraw(who, action.amount);
+        if (moved === who) return state;
+        const after = withPlayer(state, state.currentPlayer, (p) => {
+          p.cash = moved.cash;
+          p.moneyInBank = moved.moneyInBank;
+        });
+        const settled = action.op === 'withdraw' ? settleBankReserve(after, topo) : after;
+        return { ...settled, pending: null };
+      }
       if (state.pending === null || state.pending.kind !== 'bank') return state;
       const me = state.players[state.currentPlayer];
       if (me === undefined || !isAlive(me)) return state;
@@ -2620,9 +2641,13 @@ export function giveAlmsIfBeggar(state: GameState, topo: MapTopology, nodeId: nu
  *
  * ⚠️ 随机数只在**禮物真的抽到东西**时才推进，见 `randConsumed`。
  */
-function applyArrival(state: GameState, topo: MapTopology): GameState {
-  const me = state.players[state.currentPlayer];
-  if (me === undefined || !isAlive(me)) return state;
+function applyArrival(state0: GameState, topo: MapTopology): GameState {
+  const me0 = state0.players[state0.currentPlayer];
+  if (me0 === undefined || !isAlive(me0)) return state0;
+
+  // ★ 第八份试玩回报 #4：**路过銀行**（还有步数）先过 ATM 入口 `0x4379c9`（在乞丐 `0x0041b5fd` 之前）
+  const state = passingBank(state0, topo);
+  const me = state.players[state.currentPlayer]!;
 
   // ★ 物件派发**之前**先过一遍乞丐（原版顺序，VA 0x0041b5fd）
   const afterAlms = giveAlmsIfBeggar(state, topo, me.nodeId);
@@ -5245,6 +5270,35 @@ function landOnLottery(state: GameState): GameState {
       owned: numbersOf(state.lottery, state.currentPlayer).length,
     },
   };
+}
+
+/**
+ * 走子途中**经过**銀行格（第八份试玩回报 #4）—— 原版走子每到一格都调 `fcn_0041b42d`，其中：
+ * ```asm
+ * 0041b53f  cmp dword [esp+0xa0], 0xe          ; 这一格的特殊種類 = 14 銀行
+ * 0041b550  cmp byte [player+0x37], 0 / jne    ; 夢遊中不弹
+ * 0041b55d  cmp dword [0x48baf8], 0 / je       ; ★ 还有步数才算「路过」（落点走 0x41b3af 那一支）
+ * 0041b56a  cmp dword [esp+0x9c], 0x10 / je    ; 格上的物件是路障（16）⇒ 不弹（人会被拦下）
+ * 0041b5ab  call 0x4379c9                       ; ATM 入口：拒絕往來 → 框；真人 → ATM 窗；电脑 → 按 cashRatio 重分
+ * ```
+ * 之后**接着**走乞丐 / 物件那一段（`0x41b5bd` 起）—— 本函数只做 ATM 这一层。
+ */
+function passingBank(state: GameState, topo: MapTopology): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return state;
+  const node = topo.nodes[me.nodeId - 1];
+  if (node === undefined || node.specialKind !== SPECIAL_KIND.BANK) return state;
+  if (me.blocking.sleepWalking !== 0) return state;
+  if (state.stepsRemaining <= 0) return state;
+  const handle = objectHandleAt(state, me.nodeId);
+  if (handle !== 0 && state.objects[handle - 1]?.type === OBJECT_TYPE_ROADBLOCK) return state;
+  // @source `0x004379da mov ah,[player+0x3b] / 0x004379e2 je` → `push 0x464bed / push 0x3e8 / call 0x440cac`
+  if (me.daysRejectedByBank !== 0) {
+    return { ...state, notices: [{ key: 'bank.rejected', args: [me.daysRejectedByBank & 0x7f], holdMs: 1000 }] };
+  }
+  // @source `0x00437a1e cmp cl,1 / jne 0x437acd`：**恰好** who_plays == 1 的真人才开窗
+  if ((me.whoPlays & 0xff) === WHO_PLAYS_HUMAN) return { ...state, pending: { kind: 'atm' } };
+  return rebalanceBankOnArrival(state);
 }
 
 /**

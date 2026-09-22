@@ -855,8 +855,33 @@ const AMOUNT_INITIAL = 0;
  * `atmFill` 就是那条选项自带的 `amount.fill`（金额定了才发得出去）。
  */
 let atm: AtmState | null = null;
-let atmFill: ((n: number) => Action) | null = null;
+/** 金额定了怎么变成 action；`mode` = 按確認那一刻的存/提（路过銀行那台两个键都能用）*/
+let atmFill: ((n: number, mode: number) => Action) | null = null;
 let atmLabel = '';
+/**
+ * ★ 第八份试玩回报 #4：**路过銀行**的 ATM（`pending.kind === 'atm'`）—— 与落点銀行屏里那台是同一块面板，
+ *   只是没有貸款屏垫底、办完一笔就关（原版 `fcn_004379c9` 的 ATM 窗是模态的，走子在它后面）。
+ *   本标志记「这一次 pending 已经开过窗」：玩家右键关掉后 `declineDecision` 把 pending 清掉，下一次路过再开。
+ */
+let atmPassOpened = false;
+
+/** 每次 action 之后：路过銀行给出 `pending.kind === 'atm'` ⇒ 给本机座位开 ATM；pending 没了 ⇒ 复位 */
+function syncAtmPending(): void {
+  const p = state.pending;
+  if (p === null || p.kind !== 'atm') {
+    atmPassOpened = false;
+    return;
+  }
+  if (atmPassOpened || atm !== null || !localSeatActive()) return;
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return;
+  atmPassOpened = true;
+  atm = { mode: 0, digits: '', limits: [me.cash, me.moneyInBank] };
+  atmFill = (n, mode) => ({ type: 'bank', op: mode === 1 ? 'withdraw' : 'deposit', amount: n });
+  atmLabel = '路過銀行';
+  // 原版 `fcn_004379c9` 开窗那段（`0x437a2d..0x437a76`）只装 Panel #24 + 跑模态窗，**没有**开窗音效
+  requestRender();
+}
 /**
  * ATM 正被按住的「码」（原版 `[0x48c40b]`，= 钮序号 + 1；`null` = 没按住）。
  *
@@ -872,6 +897,17 @@ function closeAtm(): void {
   atm = null;
   atmFill = null;
   atmCode = null;
+}
+
+/**
+ * 「什么都不办」地关掉 ATM（EXIT 钮 / 键盘 EXIT / 右键 / Esc 四条路汇到这里）。
+ * 路过銀行那台还挂着 `pending.kind === 'atm'`：关窗 = 这一格办完了，得把 pending 放掉走子才接得上
+ * （core 的 `declineDecision` 对它只清 pending、不结束回合）。落点銀行屏里那台没有 pending，只关面板。
+ */
+function dismissAtm(): void {
+  closeAtm();
+  if (state.pending?.kind === 'atm') dispatch({ type: 'declineDecision' });
+  requestRender();
 }
 
 /**
@@ -892,10 +928,14 @@ function atmConfirm(): void {
   if (st === null) return;
   const n = Math.trunc(atmAmount(st));
   const fill = atmFill;
+  const mode = st.mode;
   closeAtm();
   if (n > 0 && fill !== null) {
     log(`▶ ${atmLabel} ${n}`);
-    dispatch(fill(n));
+    dispatch(fill(n, mode));
+  } else if (state.pending?.kind === 'atm') {
+    // 路过銀行那台：没填数就按確認 = 关窗走人（原版模态窗返回 0 ⇒ 什么都不办）
+    dispatch({ type: 'declineDecision' });
   }
   requestRender();
 }
@@ -938,8 +978,7 @@ function atmKey(code: number): void {
     return;
   }
   if (btn === 2) {
-    closeAtm();
-    requestRender();
+    dismissAtm();
     return;
   }
   if (btn === 17) {
@@ -1828,8 +1867,7 @@ function applyCancelLayer(layer: CancelLayer): boolean {
       return true;
     // @source loc_0043791e：关面板，★ 不放音
     case 'atm':
-      closeAtm();
-      requestRender();
+      dismissAtm();
       return true;
     case 'amountPage': {
       // @source loc_004534a3：放取消音 → 关填数窗，返回 0（= 没填）
@@ -3865,6 +3903,8 @@ function notifyApplied(before: GameState): void {
     // ★ 銀行貸款屏的界面状态（T-029c）同理：`pending.kind === 'bank'` 时铺场，
     //   离场时清掉。状态机自己会跨 action 活着，所以只在**首次**看见它时建。
     syncLoanUi();
+    // ★ 第八份 #4：路过銀行的 ATM
+    syncAtmPending();
   }
   // ★ 登记的整屏：把「刚刚发生了什么」告诉它们（開獎 / 月結 / 魔法屋 / 事件框靠这个起播）
   const env = uiEnv();
@@ -8256,8 +8296,7 @@ function bindInput(): void {
       }
       const next = atmPress(atm, btn, bankFrozen());
       if (next === null) {
-        closeAtm(); // EXIT
-        requestRender();
+        dismissAtm(); // EXIT
         return;
       }
       if (btn === 17) {

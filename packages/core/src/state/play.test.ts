@@ -47,7 +47,8 @@ function playTurn(
 
   let guard = 0;
   while (s.phase === 'moving') {
-    s = reduce(s, { type: 'step' }, topo);
+    // 路过銀行给真人开的 ATM 窗（第八份试玩回报 #4）：这里的「真人」不进窗，右键关掉接着走
+    s = reduce(s, { type: s.pending?.kind === 'atm' ? 'declineDecision' : 'step' }, topo);
     if (++guard > 100) throw new Error('移动未收敛');
   }
   if (s.phase === 'settling') s = reduce(s, { type: 'settle' }, topo);

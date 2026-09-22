@@ -556,6 +556,8 @@ export type NoticeKey =
   | 'god.blockPurchase'
   /** 福神附身得卡（`0x0040ee13 push 0x4632fd`，1500 ms）—— `args` = [神明名, 卡名]；`cardId` 给台词配档 */
   | 'god.gotCard'
+  /** 路过 / 落在銀行格但被拒絕往來（`0x004379ef push 0x464bed`，**1000 ms**）—— `args[0]` = 还剩几天 */
+  | 'bank.rejected'
   /**
    * 董事長蒞臨商店的贈禮（`_rich4_ui_shop_entry` 0x0042e9f8 `push 0x464378`，
    * 訊息框 1500 ms）—— **在商店窗打开之前**弹，`args[0]` = 送出那件的名字。

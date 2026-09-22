@@ -93,6 +93,17 @@ export type PendingInteraction =
       specialFinance: { owed: number; available: number } | null;
     }
   /**
+   * ★ **路过**銀行格（走子途中经过、不是落点）弹出来的那台 ATM —— 只有存款 / 提款（第八份试玩回报 #4）。
+   *
+   * @source 走子每一格的到达处理 `fcn_0041b42d`：`0x0041b53f cmp [格的特殊種類],0xe`（銀行）/
+   *   `0x0041b550 cmp byte [player+0x37],0`（夢遊中不弹）/ `0x0041b55d cmp [0x48baf8],0`（**还有步数** = 路过）/
+   *   `0x0041b56a cmp [格上物件的種類],0x10`（格上有路障就不弹）→ `0x0041b5ab call 0x4379c9`（ATM 入口：
+   *   真人 `who_plays == 1` 开 ATM 窗；电脑按 `cashRatio` 重分；拒絕往來期内只弹「銀行拒絕往來 還剩%d天！」）。
+   *   窗是模态的：办完一笔（或右键取消）就关，走子接着走。
+   * `phase` 保持 `moving`；`step` 见到它就不动，直到它被清掉。
+   */
+  | { kind: 'atm' }
+  /**
    * 樂透：挑一个没被买走的号码。
    * @source 落点 VA 0x004315cc
    *
@@ -440,6 +451,8 @@ export function responseMatches(
       return response.kind === 'buildTarget';
     case 'bank':
       return response.kind.startsWith('bank');
+    case 'atm':
+      return response.kind === 'bankDeposit' || response.kind === 'bankWithdraw';
     case 'lottery':
       return response.kind === 'lotteryBuy';
     case 'auction':

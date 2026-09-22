@@ -157,6 +157,10 @@ export function decideAction(ctx: AiContext): Action | null {
           return { type: 'rollDice' };
       }
     case 'moving':
+      // ★ 路过銀行的 ATM 窗（`pending.kind === 'atm'`）只给**恰好** who_plays == 1 的真人开；
+      //   走到这里说明他开着窗被托管了（60 s 没动 → AI 接管）—— 替他关窗（原版模态窗返回 0 = 不办），
+      //   否则 `step` 会被 reducer 原样退回、AI 反复提同一手 → 卡死。
+      if (state.pending?.kind === 'atm') return { type: 'declineDecision' };
       return { type: 'step' };
     case 'settling':
       return { type: 'settle' };
