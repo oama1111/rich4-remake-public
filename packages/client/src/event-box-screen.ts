@@ -1095,11 +1095,18 @@ export const eventBoxScreen: UiScreen = {
 
     const ev = after.lastEvent;
     const prev = before.lastEvent;
-    // ⚠️ `magicHouse` 那一支借的是同一条通道**但不出框**（它是魔法屋屏的事，
-    //    见 `magic-screen.ts` 的 `magicViewOfSpin`）—— 别把它当命運演出。
+    // ⚠️ 这条通道是**共用**的，必须用**白名单**只认「新聞 / 命運」两种演出：
+    //   · `magicHouse` —— 魔法屋屏的事（见 `magic-screen.ts` 的 `magicViewOfSpin`）；
+    //   · ★★ `minigameDecline` —— **得點券格 / 小遊戲不玩**那一条，`id` **恒为 0**，
+    //     先前只排除了 `magicHouse` ⇒ 它掉进下面的 `fortuneView(0)`，
+    //     于是玩家踩到得點券格时会看到一张「**強制拆除房屋一棟**」的命運卡
+    //     （第十一份回报 #5「我名下没有房子的时候也会触发强制拆除房屋一栋吗？」与
+    //       #19「强制拆除房屋到底是怎么触发的，怎么NPC触发了还在「感谢阿拉」」的根因
+    //       —— 那两句「感謝阿拉！」其实是得 50 點的**好消息台词**，本身没错）。
+    //   ⇒ 改成白名单，永远不会再有第三种 kind 被误当成命運。
     if (
       ev !== null &&
-      ev.kind !== 'magicHouse' &&
+      (ev.kind === 'news' || ev.kind === 'fortune') &&
       (prev === null || prev.kind !== ev.kind || prev.id !== ev.id)
     ) {
       const who = after.players[after.currentPlayer];

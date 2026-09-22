@@ -479,10 +479,14 @@ function fakeEnv(): FakeEnv {
 function startPlayback(animation = true): FakeEnv {
   resetMagicScreen();
   const f = fakeEnv();
-  const before = { currentPlayer: 0, players: [] } as unknown as GameState;
+  // ★ 2026-09-22：女巫屏是**真人专属**（原版 `rich4_magic_house.asm:2231`
+  //   `cmp byte [eax + 0x496b7d], 1 / jne` ⇒ 电脑不铺场），所以夹具要有一个真人玩家，
+  //   否则 `event()` 的人机闸会（正确地）直接返回。
+  const human = [{ index: 0, whoPlays: 1 }];
+  const before = { currentPlayer: 0, players: human } as unknown as GameState;
   const after = {
     currentPlayer: 0,
-    players: [],
+    players: human,
     lastEvent: { kind: 'magicHouse', id: 3, criterion: 5, targets: [0] },
   } as unknown as GameState;
   (f.env as { animation?: boolean }).animation = animation;
@@ -931,7 +935,7 @@ describe('★ trigger 判据：站在魔法屋上才算 @source VA 0x0043381b', 
   runMap('★★ `event()` 认 core 那条通道：`lastEvent.kind === \'magicHouse\'` 就起播', () => {
     const { map, topo } = load();
     const base = standOnMagic(
-      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })) }),
+      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: (i === 0 ? 'human' : 'computer') as 'human' | 'computer' })) }),
       topo,
     );
     if (base === null) return;
@@ -970,7 +974,7 @@ describe('★ trigger 判据：站在魔法屋上才算 @source VA 0x0043381b', 
   runMap('★★★ 进过一次之后**不许再自己起播**：`lastEvent` 没换、人还站在魔法屋上，后续 action 一律不触发（试玩回报 #12）', () => {
     const { map, topo } = load();
     const base = standOnMagic(
-      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })) }),
+      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: (i === 0 ? 'human' : 'computer') as 'human' | 'computer' })) }),
       topo,
     );
     if (base === null) return;
@@ -1007,7 +1011,7 @@ describe('★ trigger 判据：站在魔法屋上才算 @source VA 0x0043381b', 
   runMap('★ 站在魔法屋上且名单只有自己之外的一个人 → 认出来', () => {
     const { map, topo } = load();
     const base = standOnMagic(
-      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })) }),
+      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: (i === 0 ? 'human' : 'computer') as 'human' | 'computer' })) }),
       topo,
     );
     if (base === null) return;
@@ -1028,7 +1032,7 @@ describe('★ trigger 判据：站在魔法屋上才算 @source VA 0x0043381b', 
     const { map, topo } = load();
     const s = newGame({
       map,
-      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: (i === 0 ? 'human' : 'computer') as 'human' | 'computer' })),
     });
     const other = topo.nodes.find((n) => n.specialKind !== SPECIAL_KIND.MAGIC_HOUSE);
     if (other === undefined) return;
@@ -1043,7 +1047,7 @@ describe('★ trigger 判据：站在魔法屋上才算 @source VA 0x0043381b', 
   runMap('★ 端到端：reduce 落一次魔法屋，屏能从 diff 认出「得一張卡片」这一手', () => {
     const { map, topo } = load();
     const base = standOnMagic(
-      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })) }),
+      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: (i === 0 ? 'human' : 'computer') as 'human' | 'computer' })) }),
       topo,
     );
     if (base === null) return;
@@ -1080,5 +1084,32 @@ describe('可转到的功能 @source VA 0x0043396d', () => {
     expect(MAGIC_REACHABLE_OPTIONS).toContain(6);
     expect(MAGIC_REACHABLE_OPTIONS).not.toContain(11);
     expect([...MAGIC_SPIN_OPTIONS, 6].sort((a, b) => a - b)).toEqual([...MAGIC_REACHABLE_OPTIONS]);
+  });
+});
+
+/*
+ * ★★ 第十一份試玩回報 #10（「NPC触发魔法屋时不应该由玩家来选择」）：
+ *   原版在入口按 `whoPlays` 分流（`rich4_magic_house.asm:2231`
+ *   `cmp byte [eax + 0x496b7d], 1 / jne near loc_0043390b`）—— 电脑**跳过**女巫窗口/素材/BGM。
+ *   本引擎没有那条分流，电脑踩到魔法屋会弹出这面「要玩家点一圈」的整屏，
+ *   而 `'magic'` 在 `BLOCKING_PRESENTATIONS` 里 ⇒ 把电脑的回合卡在演出上。
+ */
+describe('★★ 触发者不是真人 ⇒ 不铺女巫屏（第十一份回报 #10）', () => {
+  runMap('电脑在魔法屋：`event()` 不起播', () => {
+    const { map, topo } = load();
+    // 当前玩家是**电脑**
+    const base = standOnMagic(
+      newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })) }),
+      topo,
+    );
+    resetMagicScreen();
+    const f = fakeEnv();
+    const after = {
+      ...(base as GameState),
+      lastEvent: { kind: 'magicHouse', id: 3, criterion: 5, targets: [0] },
+    } as unknown as GameState;
+    magicScreen.event!(base as GameState, after, f.env);
+    expect(magicScreenState().playing, '电脑那一趟不该铺场').toBe(false);
+    resetMagicScreen();
   });
 });

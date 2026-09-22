@@ -4936,8 +4936,16 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     cardAmount: withDeck.cardAmount,
     // 事件 5「生日收卡」在电脑那一支要随机抽一张（走同一条 rng，rngState 已在下面写回）
     rng,
-    // ★ 第九份 #6：事件 0/1（強制拆除 / 強制徵收）要按 owner + level 逐块筛候选
-    lands: topo.lands,
+    // ★★ 第九份 #6：事件 0/1（強制拆除 / 強制徵收）要按 owner + level 逐块筛候选。
+    //   ⚠️⚠️ 这里**必须**传**运行时**地块表（`allEffectiveLands`），不能传 `topo.lands` ——
+    //   `topo.lands` 是 `map.mkf` 解出来的**静态模板**，`owner` / `level` **恒为 0**
+    //   （8 张图实测：`owner != 0` 0 块、`level != 0` 0 块），
+    //   而 `applyFortuneEffect` 正是用这两个字段筛候选 ⇒ 候选恒空 ⇒ 恒 `unimplemented`、
+    //   恒 `demolished: null` ⇒ **事件 0/1 在真机上永远不生效**（第十一份回报 #5/#19 查出来的）。
+    //   注意 `checkFortune`（可行性判定）那边用的是 `state.landOwner/landLevel`，
+    //   先前这里用了静态模板 ⇒ **判定与生效读的是两份地权数据**。单测因为喂了带运行时值的
+    //   合成地块表所以没抓住 —— 见 `fortune-demolish.test.ts` 新增的那条闸。
+    lands: allEffectiveLands(withDeck, topo),
   });
 
   let applied: GameState = {

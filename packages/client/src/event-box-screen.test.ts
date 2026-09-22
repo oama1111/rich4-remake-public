@@ -1195,3 +1195,21 @@ describe('★ 可跳过性（falsification：这几条红了就说明又回到�
     resetEventBoxScreen();
   });
 });
+
+/*
+ * ★★ 第十一份試玩回報 #5/#19：得點券格（`lastEvent.kind === 'minigameDecline'`，`id` 恒为 0）
+ *   先前会掉进 `fortuneView(0)`，弹出一张「**強制拆除房屋一棟**」的命運卡 ——
+ *   玩家明明只是踩到得點券格拿 50 點，却以为触发了拆房事件。
+ *   这一条用源码钉守住「这条共用通道必须用白名单，只认 news / fortune」。
+ */
+describe('★★ 事件框只认 news / fortune（别的 kind 借道不出框）', () => {
+  const src = readFileSync(new URL('./event-box-screen.ts', import.meta.url), 'utf8');
+
+  it('判据是白名单 `(ev.kind === \'news\' || ev.kind === \'fortune\')`', () => {
+    expect(src).toContain("(ev.kind === 'news' || ev.kind === 'fortune')");
+  });
+
+  it('不许再出现「只排除 magicHouse」那种黑名单写法', () => {
+    expect(src).not.toContain("ev.kind !== 'magicHouse'");
+  });
+});

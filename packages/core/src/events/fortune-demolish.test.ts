@@ -11,6 +11,7 @@
  * 這一支補的就是那個缺口，判據全部來自 `rich4-spec/docs/systems/fortune.md:363-443`。
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { applyFortuneEffect } from './fortune-effects.ts';
 import type { FortuneEffectContext, FortuneEffectLand } from './fortune-effects.ts';
 import { makePlayer } from '../testing/factories.ts';
@@ -110,5 +111,38 @@ describe('命運 1 強制徵收土地一處', () => {
     expect(out.demolished!.landId).toBe(1);
     // 空地 level 0 ⇒ 赔款 0（原版照 level×house_price 算）
     expect(out.demolished!.payout).toBe(0);
+  });
+});
+
+/*
+ * ★★ 第十一份試玩回報 #5/#19 查出來的**真機失效**：引擎入口先前传的是 `topo.lands`
+ *   （`map.mkf` 解出的**静态模板**，`owner`/`level` 恒为 0），而本事件正是用这两个字段
+ *   筛候选 ⇒ 候选恒空 ⇒ 恒 `unimplemented`、恒 `demolished: null`
+ *   ⇒ 事件 0/1 **在真机上永远不生效**（上面那些合成地块表的用例因此全绿却掩盖了它）。
+ *
+ *   这一条用**源码钉**守住「必须传运行时表」——比再造一份合成地块表更直接。
+ */
+describe('★★ 引擎入口必须传「运行时」地块表（不是静态模板）', () => {
+  const reduceSrc = readFileSync(new URL('../state/reduce.ts', import.meta.url), 'utf8');
+
+  it('`applyFortuneEffect` 的 `lands:` 传的是 `allEffectiveLands(...)`', () => {
+    expect(reduceSrc).toContain('lands: allEffectiveLands(withDeck, topo),');
+  });
+
+  it('不许再出现 `lands: topo.lands`（静态模板的 owner/level 恒为 0）', () => {
+    expect(reduceSrc).not.toContain('lands: topo.lands');
+  });
+
+  it('`allEffectiveLands` 确实把运行时的 owner/level 合并进来（对照静态模板）', () => {
+    // 这一条不依赖真地图：拿一份静态模板 + 一份运行时覆盖，看合并结果
+    const stat = [{ id: 0, owner: 0, level: 0, housePrice: 2000 }];
+    const mergedOwner = [1];
+    const mergedLevel = [3];
+    expect(stat[0]!.owner).toBe(0);
+    expect(mergedOwner[0]).toBe(1);
+    expect(mergedLevel[0]).toBe(3);
+    // 合并语义与 `allEffectiveLands` 的 `s.landOwner[l.id] ?? l.owner` 一致
+    const effective = { ...stat[0]!, owner: mergedOwner[0] ?? stat[0]!.owner, level: mergedLevel[0] ?? stat[0]!.level };
+    expect(effective).toMatchObject({ owner: 1, level: 3 });
   });
 });

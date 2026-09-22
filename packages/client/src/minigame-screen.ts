@@ -1119,7 +1119,13 @@ function giftWalkGod(st: GiftGame): void {
       if (st.godFrame === st.godSpawnFrame) giftSpawn(st, st.godX, false);
       st.godFrame += 1;
       st.godX += GIFT_GOD_STEP;
-    } else if (st.godX <= GIFT_MID_X || st.godX === GIFT_GOD_X_MAX || randMod(holder, 4) === 0) {
+    // ★★ 2026-09-22（第十一份回报 #4「财神的活动范围不应该只有那么一点点」）：
+    //   原版（`rich4_small_games.asm:2147-2166`）是「**x > 320 才擲 rand()%4**，且 x == 530 也转身」；
+    //   先前写成 `x <= MID || ...` ⇒ 因为 x 起手就 ≤ MID，**第一拍就短路转身**，
+    //   `randMod` 根本没被调用过 ⇒ 财神永远只在 [110,170] 之间来回（实测 40 种子 × 3000 tick）。
+    //   `&&` 的短路恰好等于原版「x ≤ 320 不掷」；`randMod` 必须在 `=== MAX` **之前**
+    //   （原版 x>320 时无论是否 530 都先掷一次）。
+    } else if (st.godX > GIFT_MID_X && (randMod(holder, 4) === 0 || st.godX === GIFT_GOD_X_MAX)) {
       st.godState = 2;
       st.godFrame = 0;
     } else {
@@ -1144,7 +1150,8 @@ function giftWalkGod(st: GiftGame): void {
       if (st.godFrame === st.godSpawnFrame) giftSpawn(st, st.godX, false);
       st.godFrame += 1;
       st.godX -= GIFT_GOD_STEP;
-    } else if (st.godX >= GIFT_MID_X || st.godX === GIFT_GOD_X_MIN || randMod(holder, 4) === 0) {
+    // ★ 向左对称（`rich4_small_games.asm:2224-2253`）：x < 320 才掷，x == 110 也转身
+    } else if (st.godX < GIFT_MID_X && (randMod(holder, 4) === 0 || st.godX === GIFT_GOD_X_MIN)) {
       st.godState = 3;
       st.godFrame = 0;
     } else {
@@ -1829,6 +1836,19 @@ function flushSounds(env: UiScreenEnv, st: MiniRun): void {
   if (st.gift !== null) playMiniSounds(env, st.gift.sfx);
 }
 
+/**
+ * 画「这一局那一屏」—— 三个小游戏各一支。
+ *
+ * ★★ 2026-09-22（第十一份回报 #4）：抽出来是因为**入场 FLIC 是叠图**
+ *   （索引 0 = 透明），原版是「先把整屏画好、再把 READY/GO 叠上去」，
+ *   所以 intro 期间也得先画这一层，否则就是黑屏。见 `draw()` 里的注释。
+ */
+function drawMiniStage(env: UiScreenEnv, sprite: MiniSprite, st: MiniRun): void {
+  if (st.penguin !== null) drawPenguin(env.stage, sprite, st.penguin);
+  else if (st.balloon !== null) drawBalloon(env.stage, sprite, st.balloon);
+  else if (st.gift !== null) drawGift(env.stage, sprite, st.gift, catcherResource(env));
+}
+
 export const minigameScreen: UiScreen = {
   id: 'minigame',
 
@@ -1881,8 +1901,17 @@ export const minigameScreen: UiScreen = {
     if (st === null) return;
     const sprite: MiniSprite = (archive, resource, index, keyed) =>
       env.sprite(archive, resource, index, keyed);
-    // ★ 入场 FLIC 压在整个小游戏画面之上（原版就是先播完它才铺 HUD）
+    // ★★ 2026-09-22（第十一份回报 #4「天降鸿福小游戏开局不应该是黑屏」）：
+    //   入场 FLIC（`Panel.mkf` #0x4e，20 帧 × 114 ms）是**叠图** —— 索引 0 = 透明
+    //   （原版 BRUN 解碼 `rich4.asm:24695-24700` `mov dx,[edi]` = 抄底下的像素；
+    //    本引擎 `assets-pipeline/src/flic.ts` 落成 alpha=0），第 0 帧更是**整帧全透明**。
+    //   而原版是「WM_CREATE 先把整屏画好（`fcn_0041473b`）→ 10 tick 后 PostMessage 0x405
+    //   → `fcn_0045144f(flic)` 叠在**已经画好的那一屏**上」（`rich4_small_games.asm:4061/4174`）。
+    //   先前这里只画 FLIC 就 `return`，底下那层从没画过 ⇒ 舞台又是 `main.ts` 清的黑底
+    //   ⇒ 前 2.28 秒除 READY/GO 的字以外全黑。
+    //   ⇒ 改成「**先画该局那一屏，再把 FLIC 帧叠上去**」。
     if (st.intro !== null) {
+      drawMiniStage(env, sprite, st);
       const flic = env.flic(MINI_ARCHIVE, MINI_INTRO_FLIC_RES);
       if (flic !== null && flic.frames.length > 0) {
         const ms = flic.frameMs > 0 ? flic.frameMs : minigameTickMs(st.game);
@@ -1895,9 +1924,7 @@ export const minigameScreen: UiScreen = {
       }
       return;
     }
-    if (st.penguin !== null) drawPenguin(env.stage, sprite, st.penguin);
-    else if (st.balloon !== null) drawBalloon(env.stage, sprite, st.balloon);
-    else if (st.gift !== null) drawGift(env.stage, sprite, st.gift, catcherResource(env));
+    drawMiniStage(env, sprite, st);
   },
 
   move(x: number, _y: number, env: UiScreenEnv): void {

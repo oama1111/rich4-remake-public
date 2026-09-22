@@ -6899,9 +6899,15 @@ function drawGameStage(): void {
       me.trafficMethod & 3,
       me.blocking.stopping !== 0,
     );
-  } else if (state.phase === 'moving' && state.dice.length > 0) {
-    drawDice(boardCtx, uiSprite, state.dice, currentScreenDir());
   }
+  // ★★ 2026-09-22（第十一份回报 #2「人物扔完骰子开始行动时骰子应该就消失了」）：
+  //   这里先前还有一条 `else if (state.phase === 'moving' && state.dice.length > 0)
+  //   drawDice(...)` —— **走子的每一帧都把点数图重画一遍**（`state.dice` 要到回合结束
+  //   才清，见 `core/reduce.ts` 换人那两处），于是骰子在角色开始行动之后仍然留在屏上。
+  //   原版全 exe 只有**一个**把点数图（`Panel.mkf` #3，指针 `[0x48be14]`）画出去的地方：
+  //   `rich4.asm:12363`，就在 `fcn_00419572` 内部；走到走子状态（state 1）的那一 tick
+  //   同一张后台面就被 `fcn_0040829d` 全量重画覆盖 ⇒ **骰子当場消失**，从不再画。
+  //   ⇒ 删掉这条分支即可（`dice-roll.ts` 那三段与 500 ms 定格由 `drawDiceFx` 照旧负责）。
   // ── 名牌浮标（Q-HOVER-1）：原版画在棋盘面上、訊息框那类**独立窗口**之下 ──
   if (nodeTip !== null && dlg === null) {
     drawTip(boardCtx, spriteNow(TIP_ARCHIVE, TIP_RESOURCE, nodeTip.image, true), nodeTip);

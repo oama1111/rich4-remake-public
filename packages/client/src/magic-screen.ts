@@ -1843,6 +1843,18 @@ export const magicScreen: UiScreen = {
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
     if (playback !== null) return; // 上一段还没播完
     if (before === after) return;
+    // ★★ 2026-09-22（第十一份回报 #10「NPC触发魔法屋时不应该由玩家来选择」）：
+    //   原版在入口**按 whoPlays 分流** —— `rich4_magic_house.asm:2225-2233`：
+    //     `cmp byte [eax + 0x496b7d], 1` / `jne near loc_0043390b`
+    //   即 **whoPlays != 1（电脑）整段跳过女巫窗口/素材/BGM**，只自己 rand 出结果、
+    //   弹一个 1500 ms 的通用訊息框（`fcn_00440cac`）。
+    //   本引擎没有那条分流 ⇒ 电脑踩到魔法屋也会弹出这面「要玩家点一圈」的整屏，
+    //   而 `'magic'` 在 `BLOCKING_PRESENTATIONS` 里 ⇒ **把电脑的回合卡在演出上**。
+    //   ⇒ 这里补同一道闸：触发者不是真人就不铺场（core 照旧即时结算，不缺口径）。
+    //   ⚠️ 已知偏离（本轮不处理）：真人那一支原版的效果号来自**玩家点选**，本引擎是 core 掷 rand、
+    //   屏幕只做回放（Q-MAGIC-1 记过成本）。
+    const caster = before.players[before.currentPlayer];
+    if (caster === undefined || caster.whoPlays !== 1) return;
     // ★ 优先用 **core 交出来的那一趟**（`lastEvent.kind === 'magicHouse'`）：
     //   条件号/名单是抽出来的，反推只是替补（旧存档 / 少字段的回放）。
     const ev = after.lastEvent;
