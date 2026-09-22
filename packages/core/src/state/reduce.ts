@@ -2395,8 +2395,9 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   ⇒ 同一位**立刻**再得一回合（`0x40dd1f` 这回没有 0x30 ⇒ 正常掷骰），其间没有别人行动，
       //   也不走一天（阻碍计数、保險期等都不 tick）。先前这里照常推进 ⇒ 刑满者演完走回
       //   棋盘还要再等一整轮。
-      //   ⚠️ 只接 0x10。0x20（被挪到旅館）在原版也走这一支，但本引擎那条按第 92 条
-      //   另有处理（下面的 `WHO_PLAYS_RELOCATED`），不在 E-41 的范围里动它。
+      //   ⚠️ 实际只有 0x10 会走到这里：0x20（被挪到旅館）在走路例程**半程**就被抹掉了
+      //   （`0040c3d7 and dl, 0xf / mov [player+0x15], dl`；0x10 那一支在同一处只清计数、
+      //   不清位），回合末 `0x418f07` 看不到它 ⇒ 照常换人，即下面第 92 条那条路。
       if (departing !== undefined && (departing.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0) {
         const again = withPlayer(state, state.currentPlayer, (p) => {
           p.whoPlays &= ~(WHO_PLAYS_RETURN_TO_BOARD | WHO_PLAYS_RELOCATED);
