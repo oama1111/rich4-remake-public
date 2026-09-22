@@ -623,6 +623,20 @@ const autopilotBannerEl = $('autopilotbanner');
 const netToasts = new NetToasts(document, toastsEl, autopilotBannerEl);
 /** 上一份房间快照 —— `roomToasts()` 靠前后两份比出「谁进来了 / 谁掉线 / 谁被託管」 */
 let lastToastRoom: RoomInfo | null = null;
+/**
+ * **进房那一刻这一局开了没有**（`RoomInfo.started`，`hub.ts`：`started: t.room !== null`）。
+ *
+ * ★★ 第九份试玩回报（2026-09-22，Charles）「多人模式开局没有机舱跳伞的过场动画」——
+ *   联机要接 `screen = 'intro'`，但**只有「刚开局」那一次**：
+ *   刷新 / 断线重连时服务器会补发 `start`（`hub.ts` 的 `since` 补发），
+ *   若无条件播过场，每刷新一次就得重看 13 秒。
+ *   `since === undefined` 区分不开这两件事（刷新后它本来就是 undefined），
+ *   而 `onJoined` 拿到的 `started` 分得开：刚开局 = false、重连 = true。
+ *
+ * 在 `onJoined` 里写、在 `onStart` 里读（两者同一个 `connectOnline` 闭包，
+ * 且 `onJoined` 必先于 `onStart`）。
+ */
+let roomJoinedUnstarted = false;
 
 // ★ W-74 回合计时（棋盘右上角，剩余 ≤ 20 秒才露出来）
 const clockEl = $('clock');
@@ -9183,6 +9197,8 @@ function connectOnline(url: string, room: string, name: string): void {
         ...(since === undefined ? {} : { since }),
         onJoined: (seat, info) => {
           log(`✔ 進房 ${info.id}：我是 ${seat + 1} 號座${seat === 0 ? '（房主，按 START 開局）' : ''}`);
+          // ★ 只有「进房时还没开局」才该播開局過場（见 `roomJoinedUnstarted` 的注释）
+          roomJoinedUnstarted = !info.started;
           enterLobby(info);
           // ★ W-75：第一次拿到快照 ⇒ 屋里已经在的人按「加入了」报一遍
           lastToastRoom = null;
@@ -9204,7 +9220,8 @@ function connectOnline(url: string, room: string, name: string): void {
         },
         onStart: (start) => {
           // 重连时 start 会再来一次；局面已在，别重建（那会把 since 之前的进度清掉）
-          if (since !== undefined && screen === 'game') return;
+          // ★ 開局過場也算「已在這一局」—— 否则过场期间若再收到一条 `start`，会重建局面并把过场重置
+          if (since !== undefined && (screen === 'game' || screen === 'intro')) return;
           lobbyRoom = null;
           lobbyHot = null;
           map = parseMap(readMapData(archives, start.globalMapId));
@@ -9220,11 +9237,53 @@ function connectOnline(url: string, room: string, name: string): void {
           history.length = 0;
           recorder.reset();
           hoverNode = null;
+          // ★ 换局：把上一局「这一刻在播」的影片全收掉 —— 与单机 `startGame()`（7602-7617）同一理由，
+          //   旧局的影片时间轴还挂着会盖在新棋盘上，棋盘还会拿旧局的 before 快照当底。
+          buildFx = null;
+          pendingBuildFx = null;
+          buildFlicPending.clear();
+          releaseBuildFlics();
+          boardFilm = null;
+          pendingBoardFilm = null;
+          // 「狗咬 → 救护车」那一段的排队也要一起清（同一条理由）
+          pendingBoardFilmAfter = null;
+          boardFilmPending.clear();
+          releaseBoardFilmFlics();
+          deferredBoardBefore = null;
+          // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
+          goButton.reset();
+
           const first = map.nodes[state.players[0]?.nodeId ?? 1];
           camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
-          screen = 'game';
+          // ★★ 第九份试玩回报（2026-09-22，Charles）：「多人模式开局没有机舱跳伞的过场动画」。
+          //   过场本身一直在（`intro.ts`，单机也一直在播）—— 是**联机这条路根本没接**：
+          //   先前这里直接 `screen = 'game'`，跳过了单机 7622-7626 那四行。
+          //   现在与单机逐项对齐（`intro.ts` 一个字不用改）。
+          //
+          //   ⚠️ 只有「进房时还没开局」才播，否则刷新/重连每来一次就重看 13 秒 —— 见
+          //      `roomJoinedUnstarted` 的注释。过场期间**不报** `awaiting`（`tickAwaiting`
+          //      第一句就是 `screen !== 'game'` 闸），所以 60 秒不会被过场吃掉；
+          //      但前提是过场时长短于服务端的兜底值（4 人局 ≤ 14.9 s ≪ `awaitingFallbackMs` 45 s）。
+          if (roomJoinedUnstarted) {
+            introStartedAt = performance.now();
+            introSkipped = false;
+            introSoundPlayed = false;
+            screen = 'intro';
+          } else {
+            screen = 'game';
+          }
           log(`開局（聯機）：地圖 ${start.globalMapId}　種子 ${start.seed}`);
-          ground = null;
+          // ★ 背景曲从**片头过场里**就起了 @source 0x00415963 `push 1 / call sub_00454d91`
+          //   —— 与单机 7629-7630 同一个点（`bgmBackground` 初值 false，这里不起就没人起）
+          holidayBgmDays = 0;
+          playBoardBgm(1);
+          // ★ `Speaking.mkf` 进棋盘这一刻就开始拉（与单机 7637 同一理由；网页版是 no-op）
+          ensureSpeakingArchive();
+          // ★ 開局宣言（事件 26）—— 与单机 7643 同一个点，纯表现、各台自己放
+          if (speechQueue.push(openingSpeech(state), performance.now()) > 0) requestRender();
+          // 换地图要重新解底图 —— `setGround(null)` 会 close 掉旧位图，
+          // 先前这里只把 `ground` 置 null，旧 bitmap 就泄漏了（与单机 7650 对齐）
+          setGround(null);
           void loadGround(archives, start.globalMapId).then((g) => {
             ground = g;
             requestRender();
@@ -9533,6 +9592,15 @@ function pumpNetInbox(delay = 0): void {
   }
   netPumpTimer = window.setTimeout(() => {
     netPumpTimer = null;
+    // ★★ 過場期間先別施加網絡 action（第九份试玩回报：联机接過場时一并补）。
+    //   過場是**每台自己放、可各自跳過**的純表現（`intro.ts`，不派 action、不同步），
+    //   先跳過的人一掷骰，伺服器就廣播；若這裡照常施加，還在看過場的人第一回合的
+    //   演出（走子/買地/影片）會被靜默吞掉 —— 過場放完直接看到結果。
+    //   排隊等它放完是安全的：過場有硬上限（4 人局 `introMs` ≤ 約 14.9 s），必然結束。
+    if (screen === 'intro') {
+      pumpNetInbox(RENDER_MS);
+      return;
+    }
     // 与 `scheduleAi` / `scheduleHumanTurn` 同一道闸；被挡下就过一个渲染周期再看
     if (holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
     const item = netInbox.shift();
