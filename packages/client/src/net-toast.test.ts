@@ -43,6 +43,12 @@ describe('★ W-75 谁能进来、谁掉线、谁回来', () => {
     expect(roomToasts(down, up).lines).toEqual([{ seat: 1, text: 'P1 回來了' }]);
   });
 
+  it('★ E-34：秒数跟服务器的 `takeoverAfterMs` 走（`--takeover 45000` ⇒ 45 秒），不带就按 30', () => {
+    const up = { ...room(seat({ seat: 0 }), seat({ seat: 1 })), takeoverAfterMs: 45_000 };
+    const down = { ...room(seat({ seat: 0 }), seat({ seat: 1, connected: false })), takeoverAfterMs: 45_000 };
+    expect(roomToasts(up, down).lines).toEqual([{ seat: 1, text: 'P1 離線了，45 秒後由電腦代打' }]);
+  });
+
   it('什么都没变 ⇒ 一句都不说（不会因为「每帧比较一次」就刷屏）', () => {
     const r = room(seat({ seat: 0 }), seat({ seat: 1 }));
     expect(roomToasts(r, room(seat({ seat: 0 }), seat({ seat: 1 }))).lines).toEqual([]);

@@ -23,6 +23,9 @@ export const TOAST_MS = 4000;
 /** 同时最多挂几条 */
 export const TOAST_MAX = 3;
 
+/** 服务器没带 `takeoverAfterMs` 时的缺省（= `hub.ts` 的缺省 30000） */
+export const DEFAULT_TAKEOVER_MS = 30_000;
+
 /** 被超时託管的人自己看到的那句常驻横幅 */
 export const AUTOPILOT_BANNER = '你已被託管，點一下畫面收回';
 
@@ -53,7 +56,9 @@ export function roomToasts(
     }
     // ② 掉线 / ③ 回来
     if (b.connected !== false && s.connected === false) {
-      lines.push({ seat: s.seat, text: `${s.name} 離線了，30 秒後由電腦代打` });
+      // ★ E-34：秒数跟服务器的 `--takeover` 走（`RoomInfo.takeoverAfterMs`），不写死
+      const secs = Math.round((after.takeoverAfterMs ?? DEFAULT_TAKEOVER_MS) / 1000);
+      lines.push({ seat: s.seat, text: `${s.name} 離線了，${secs} 秒後由電腦代打` });
     } else if (b.connected === false && s.connected !== false) {
       lines.push({ seat: s.seat, text: `${s.name} 回來了` });
     }

@@ -260,6 +260,12 @@ export interface RoomInfo {
    * （`RoomInfo` 是通用快照形状，旧测试/监控不必被迫填）——缺省按 `LOBBY_DEFAULT_OPTIONS` 读。
    */
   options?: LobbyOptions;
+  /**
+   * 掉线多久由电脑代打（毫秒）＝ 服务器的 `--takeover`（E-34）。
+   * 客户端「○○ 離線了，N 秒後由電腦代打」照这个数组句，不再各写一份 30。
+   * 可选同 `globalMapId`：旧服务器不带 ⇒ 客户端按缺省 30000 读。
+   */
+  takeoverAfterMs?: number;
 }
 
 /**

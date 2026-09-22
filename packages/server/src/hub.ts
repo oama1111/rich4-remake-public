@@ -814,6 +814,7 @@ export class RoomHub {
       globalMapId: t.globalMapId,
       // ★第十一份試玩回報 #1：开局选项同理（大厅要显示当前值）
       options: t.options,
+      takeoverAfterMs: this.#opts.takeoverAfterMs,
     };
   }
 
