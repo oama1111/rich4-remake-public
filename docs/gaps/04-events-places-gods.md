@@ -234,7 +234,7 @@
 |---|---|---|---|---|---|---|
 | G1 | objects_info 表 | 基址 `0x496d08`、步长 `0x18`（`0x40eb12`）、46 项（`0x407d3a` 的 `0x450`；`0x407d65 cmp 0x2e`） | `rules/objects.ts:16,18,33`；字段见 `cards/summon.ts:48-60` | — | — | 无需修复 |
 | G2 | 字段偏移语义 | `+0x00 type`；`+0x02` 所在格/使用中（`0x40e097`）；`+0x04` 存活回合；`+0x05` 附身对象+1（`0x40eb8b`） | `type`/`nodeId`/`state`/`attached` | — | — | 无需修复 |
-| G3 | `+0x01` 字段 | `0x40e11d` 写、`0x40fafd` 读；语义未决 | 未建模 | 无法判定 | 轻微 | 规格未决 |
+| G3 | `+0x01` 字段 | `0x40e11d` 写、`0x40fafd` 读。★ 2026-09-22：规格已解 —— `tools.md` §6.1 的表定为「`sub_00407a8c` 算出的**朝向**（方向码）」，`0x40fafd` 把它抄进 `+0x07` 给动画用 | **有意不建模**：core 的 `MapObject` 只留 type/nodeId/state/attached，朝向由渲染侧按同一条规则现推（`throw-fx.ts` 的 `objectFacing`，判据 `place_object` 的 `0x40e0ea` 取第一个非 0 邻接槽 → `directionOf(本格 − 邻格)`）| — | 轻微 | 无需修复（C-DET-4：朝向是表现层的事）|
 | G4 | 槽位→种类表 `0x47ed3c` | 46 byte = 1..14,15,15,16×10,17×10,18×10（`0x407d50`） | `objects.ts:50-56` 逐字节一致；`:134-149 slotRangeForType` 与 `0x40e03e` 跳表一致 | — | — | 无需修复 |
 | G5 | 种类→名称表 `0x47ed76` | `0x47ed76+4k`（k=1..16）；`0x40f951` 以 **god_info** 为索引；老虎机用 `0x47ed7a+4·arg` | `data/src/messages.ts:271-291`；`rules/purchase.ts:58-63`（`[16]='路障'`） | — | — | 无需修复 |
 | G6 | `+0x3f god_info` | 物件 1 基槽位；写 `0x40eb66`、清 `0x40e1db` | `types.ts:184-190`；`object-landing.ts:302` | — | — | 无需修复 |
@@ -321,9 +321,9 @@ gods.md §8 未决清单 + 附（gods.md 未载但属神明行为）：
 
 | # | 条目 | 原版规格 | remake 现状 | 类型 | 严重度 | 修复方向 |
 |---|---|---|---|---|---|---|
-| G60 | `objects_info[+0x01]` | `0x40e11d` 写、`0x40fafd` 读；含义未知 | 未建模 | 无法判定 | 轻微 | 规格未决 |
+| G60 | `objects_info[+0x01]` | `0x40e11d` 写、`0x40fafd` 读；含义未知。★ 2026-09-22：同 G3 —— 规格定为**物件朝向**，娃娃「打飞」时它被抄进 `+0x07` 当取图用的朝向 | 同 G3（渲染侧现推，不进 state）| — | 轻微 | 无需修复 |
 | G61 | B/C 修正的其他消费者 | B 读于 `0x41fb92`/`0x41fc9b`/`0x420c35`/`0x4210e6`/`0x421218`/`0x42187a`/`0x421e08`/`0x44b8c4`/`0x44b94e`；C 读于 `0x44b9d6`；落在租金/罚款/卡片金额区，spec 未展开 | 只覆盖 `0x44b896` 家族（`blessing.ts:81-89`/`128-147`） | 无法判定 | 轻微 | 需 spec 展开 |
-| G62 | 同区其余几支 | `0x40f8be`（122 条，读 god_info 与 `0x47ed76`，呼叫点 `0x419a48`）、`0x40fa61`、`0x40fafd`、`0x40fbb8`；`0x40fc00` 已确认为同步所在格。★ 2026-09-22 补：`0x419a48` 的呼叫点不止升級一支 —— `rich4_player_core_actions.asm` 的 `:1079` 買地、`:1169` 付費首建、`:1218` 付費加蓋（jmp `0x419a39`）、`:1726` 買設施 | `0x40fa61` ✅`purchase.ts:30-55`；`0x40fbb8` ✅`toll-flow.ts:67-74`；实测 `0x40f8be` = `god_info∈{3,4}` + 设施 `level==0` → 加盖（福神显灵）**未实现**；`0x40fafd` 未实现；★ 2026-09-22：上述四路均已接线（`reduce.ts` 五条 case 的 `luckyGodBonus`） | 缺失 | 轻微 | 随 G45 一并处理 |
+| G62 | 同区其余几支 | `0x40f8be`（122 条，读 god_info 与 `0x47ed76`，呼叫点 `0x419a48`）、`0x40fa61`、`0x40fafd`、`0x40fbb8`；`0x40fc00` 已确认为同步所在格。★ 2026-09-22 补：`0x419a48` 的呼叫点不止升級一支 —— `rich4_player_core_actions.asm` 的 `:1079` 買地、`:1169` 付費首建、`:1218` 付費加蓋（jmp `0x419a39`）、`:1726` 買設施 | `0x40fa61` ✅`purchase.ts:30-55`；`0x40fbb8` ✅`toll-flow.ts:67-74`；实测 `0x40f8be` = `god_info∈{3,4}` + 设施 `level==0` → 加盖（福神显灵）**未实现**；`0x40fafd` ★ 2026-09-22 **已接** —— 它**只写物件表的 float 字段**（`+0x06..+0x14`）、不产生任何状态效果，故不进 core：機器娃娃「打飞」那一段由 `client/render.ts` 的 `objectKnockStart` / `objectKnockAt` / `sweptObjectFrameAt` + `#drawSweptFlights` 落码（判据与 13 条口径见 `docs/deviations/Q-TOOL-1.md` 本轮补的那一节）；★ 2026-09-22：上述四路均已接线（`reduce.ts` 五条 case 的 `luckyGodBonus`） | 缺失 | 轻微 | 随 G45 一并处理 |
 | G63 | f64 生产者清单 | `0x41c001`（`0x41bfd2` 分支）、`0x41b7bd` | `0x41c001` ✅`object-landing.ts:660-671`；`0x41b7bd` 语义由 `passBomb`（`:548-572`）覆盖 | 无法判定 | 轻微 | 规格未决 |
 | G64 | **`0x437d1a` 是否死码** | gods.md §8.5 称「全檔…找不到任何…指向它（死碼）」 | ❌**规格结论有误**：`callers 0x437d1a` 与字节搜索（`e8d5faffff`，文件偏移 226880）都确认唯一 `call` 在 `0x438240`，`0x438245` 写 `[0x48c42f]`（本月悲情人物），`0x43824a` 再 `call 0x437dfe` → `[0x48c430]`（首富）⇒ 不是死码；remake 已正确接线 | 无法判定 | 严重 | 修订规格；core 副本见 G54 |
 | G65 | 神明图标落点/移动分派 | 只确认分派表 `0x41b3e5` 与 god_activate 三呼叫点 | `object-landing.ts` 的 `attachGod`（玩家 0..3）；**actor 4..7 的物件分支**在 `npc-walk.ts`（小偷拆陷阱 / 5..7 挨陷阱，第 99 条补齐，见 §7.81）；actor 8 在 `special-actors.ts` 的 `runDoll` | — | — | 无需修复 |

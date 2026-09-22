@@ -6622,6 +6622,9 @@ function requestRender(): void {
       // ★ 押在 `deferredSpeech` 里的那几句也要续帧 —— 演出收屏那一拍就靠它
       //   把台词放上台（否则要等下一次 action，台词就永远不上台了）
       deferredSpeech !== null ||
+      // ★ 機器娃娃**打飞**的物件还在飞 ⇒ 接着要帧（它与替身补间不同寿：
+      //   娃娃走完那几拍若没有别的演出，就没人再要帧了，最后几拍会冻在屏上）
+      renderer.sweptFlightActive() ||
       toastVisible(toast, performance.now())
     ) {
       renderer.clearDirty();
