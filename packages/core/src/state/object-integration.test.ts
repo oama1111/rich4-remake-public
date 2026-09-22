@@ -11,7 +11,7 @@ import { decideAction } from '../ai/policy.ts';
 import { applyBankruptcy, reduce, isGameOver } from './reduce.ts';
 import { isAlive } from './types.ts';
 import type { GameState } from './types.ts';
-import { INITIAL_OBJECT_TYPES, placeObjectOfType } from '../rules/object-landing.ts';
+import { INITIAL_OBJECT_TYPES, OBJECT_TYPE_ROADBLOCK, placeObjectOfType } from '../rules/object-landing.ts';
 import { OBJECT_NAMES } from '../rules/purchase.ts';
 import { stateFingerprint } from '../net/protocol.ts';
 
@@ -110,6 +110,49 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
     const { after } = stepOnto(1, 5);
     expect(after.players[0]!.godInfo).toBe(0);
     expect(after.stepsRemaining).toBe(4);
+  });
+
+  /*
+   * ★★ 第九份试玩回报 #5（Charles，2026-09-22）：
+   *   「路障和神灵重合时经过路障没有把我阻拦下来」。
+   *
+   *   两份回报的 `finalState.objects` 里**节点 86 同时有**
+   *   `[0] type=1（小財神, attached=0）` 与 `[16] type=16（路障, attached=0）`。
+   *   原版靠地图节点里的反向索引 `node+0x26` 取种类 —— `place_object` 往里**按位或**
+   *   槽号（`rich4_objects.asm:118-126`），`1 | 17 = 17` ⇒ 读到的是**路障** ⇒ 照样拦人。
+   *   `objectHandleAt` 先前取**下标最小**的那件（恒取神明），而神明那一支带
+   *   `if (moving) return`（@source `0x41c164`）⇒ 路过时什么都不发生。
+   */
+  run('★★ 神明与路障同格：路障照样半途拦人（不再被神明顶掉）', () => {
+    const { state, topo } = fresh();
+    const from = state.players[0]!.nodeId;
+    const to = topo.nodes[from - 1]!.adjacent[0]!;
+    const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+    // 先摆神明（槽 0），再摆路障（槽 16）—— 路障槽号更大，正是原版 OR 压过去的方向
+    const withGod = placeObjectOfType(cleared, 1, to).objects;
+    const both = placeObjectOfType(withGod, OBJECT_TYPE_ROADBLOCK, to).objects;
+    expect(both.filter((o) => o.nodeId === to && o.attached === 0), '两件确实同格').toHaveLength(2);
+
+    const start: GameState = { ...state, objects: both, phase: 'moving', stepsRemaining: 5, stepsTotal: 5 };
+    const after = reduce(start, { type: 'step' }, topo);
+    expect(after.stepsRemaining, '还剩 5 步时踩上路障 ⇒ 当场清零').toBe(0);
+    expect(after.phase).toBe('settling');
+    expect(after.players[0]!.godInfo, '路过不该附身').toBe(0);
+  });
+
+  run('★ 同一根因的另一族：路障与地雷同格 ⇒ 取到的是槽号更大的地雷（原版 17|27 = 27）', () => {
+    const { state, topo } = fresh();
+    const from = state.players[0]!.nodeId;
+    const to = topo.nodes[from - 1]!.adjacent[0]!;
+    const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+    // 路障 = 槽 16（handle 17）、地雷 = 槽 26（handle 27）；原版 OR 得 27 ⇒ 地雷。
+    // ⚠️ 地雷那一支自己也有 `if (moving) return`（`object-landing.ts:711`，踩停才炸），
+    //    所以这里要「停在这一格」而不是「路过」—— 与神明那一支同理。
+    const withBlock = placeObjectOfType(cleared, OBJECT_TYPE_ROADBLOCK, to).objects;
+    const both = placeObjectOfType(withBlock, 17, to).objects;
+    const start: GameState = { ...state, objects: both, phase: 'moving', stepsRemaining: 1, stepsTotal: 1 };
+    const after = reduce(start, { type: 'step' }, topo);
+    expect(after.players[0]!.blocking.inHospital, '地雷生效 ⇒ 住院').toBeGreaterThan(0);
   });
 
   run('地雷 → 住院 3 天，占用表也置位', () => {

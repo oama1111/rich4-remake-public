@@ -1268,6 +1268,35 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       const player = state.players[state.currentPlayer];
       if (player === undefined) return state;
 
+      // ★★ 第九份试玩回报 #3（Charles，2026-09-22）：「豪雨特報 行人休息一回合」。
+      //
+      //   目標選擇本來就是對的 —— `events/news-effects.ts` 的 `stopPedestrians` 分支
+      //   **遍歷全體**玩家、只跳過出局者與交通方式不符者（回報者自己的 dump 也證實
+      //   四人 `trafficMethod=0` 全部寫成 `stopping = 128`）。**缺的是「讀」這一側**：
+      //   `blocking.stopping` 全倉只有 寫 / 遞減 / 清零 / 存讀檔 / GO 鈕圖 五類引用，
+      //   沒有一個判據把它當成「本回合不走」⇒ 其實**誰都沒停**。
+      //   而唯一會隨它變的行為是 GO 鈕被畫成「禁止通行」（`main.ts` 的 `goImageOf`），
+      //   只有輪到的那一位（人類）有 GO 鈕 ⇒ 玩家看到的是「只有我自己停了」。
+      //
+      // @source `0x4012a7`（`rich4_keyboard_hook.asm:251`）
+      //   `cmp byte [eax + 0x496ba0], 0 / jne loc_00401523` —— 非 0 直接 return（本回合不移動）；
+      //   `fcn_0040dd1f`（`rich4_player_utils.asm:1016-1021`）同形：`+0x38 != 0` ⇒ 走子狀態寫 0。
+      //   兩處都在**真正走子**那一步，而不是回合開始的 `fcn_0040c912` ⇒ 閘門放在這裡。
+      //   （AI 的股票 / 卡片 / 道具決策在原版裡排在 `fcn_0040dd1f` **之前**，
+      //     放進 `startTurn` 會把那些也一併省掉 —— 那是過度。）
+      //
+      // ★ 判據用 `!== 0` 而不是 `=== 1`：引擎的遞減在舊玩家的 `endTurn` 裡對
+      //   **新**當前玩家做（`tickDailyCounters`），新聞寫下的 `1` 輪到他時已經被減成
+      //   `0x80`（待釋放），而 `tickBlockingCounter` 的 `0x80 → 0` 要再一輪
+      //   （兩段式照抄自 `0x41c895..0x41c8ea`）⇒ `!== 0` 恰好只丟**一個**回合。
+      //   同一條閘也順帶讓「停留卡」不再是空卡（`docs/gaps/02-cards.md:110` 列的阻斷級缺口）。
+      //
+      // ⚠️ 放在 `rng` 之前 ⇒ **不消耗隨機數**（原版這道閘也在 `rand()` 之前，
+      //   C-DET-4 的同種子重放一致性不能被這一條打亂）。
+      if (player.blocking.stopping !== 0) {
+        return { ...state, phase: 'turnEnd' };
+      }
+
       const rng = new WatcomRng();
       rng.setState(state.rngState);
       // ★ 遙控骰子留下的点数优先，且**用完即消**
@@ -2575,13 +2604,36 @@ function manifestGodOnLanding(before: GameState, next: GameState, topo: MapTopol
  *   （`attach_object` 明写 `objects[i].nodeId = player.nodeId`），
  *   光比 `nodeId` 会把别人身上的財神当成地上的財神再踩一次。
  *   原版靠地图格里那一字节（node +0x26）区分，附身时会把它抹掉。
+ *
+ * ★★ 2026-09-22（第九份试玩回报 #5「路障和神灵重合时经过路障没有把我阻拦下来」）：
+ *   同格有**多件**时取**槽号最大的那一件**，不再取下标最小的。
+ *
+ *   原版并不扫物件表，而是读地图节点里的**反向索引** `node+0x26`
+ *   （`_rich4_player_move_one_step_done` VA 0x0041b4b4：
+ *   `mov eax,[eax+0x24] / and eax,0xff0000 / shr eax,0x10` ⇒ 第 3 字节 = 槽号+1）；
+ *   而 `place_object` 往那一字节里**按位或**槽号（`rich4_objects.asm:118-126`
+ *   `lea edx,[ebx+1] / shl edx,0x10 / or [eax+0x24],edx`）。
+ *
+ *   ⇒ 神明占槽 0..11（handle 1..12）、路障占槽 16..25（handle 17..26），
+ *     两件同格时 OR 的结果落在**路障**那一侧（`1 | 17 = 17`）——
+ *     所以原版在神明格上放路障**照样拦人**。
+ *     取下标最小者（= 恒取神明）等于让路障分支永远进不去：神明那一支带
+ *     `if (moving) return`（`rules/object-landing.ts` 的 default 分支，
+ *     @source `0x41c164`），于是路过时**什么都不发生** —— 既不被拦、也不附身。
+ *
+ *   ⚠️ 这是**近似**而非逐位复刻：真正的 OR 在极端组合下会落到第三件物件
+ *     （例：同一个格上两个神明 handle 1|2 = 3 ⇒ 槽 2）。可实际构造出来的重叠
+ *     （路障 17 压神明 1、路障 17 | 地雷 27 = 27、路障 17 | 炸彈 19 = 19）
+ *     取最大值与 OR 结果一致。要逐位复刻得在 state 里加一张「每格一件」的反向索引
+ *     （见 `docs/gaps/04-events-places-gods.md` 的 G26），那是独立的一步。
  */
 function objectHandleAt(state: GameState, nodeId: number): number {
+  let found = 0;
   for (let i = 0; i < state.objects.length; i++) {
     const o = state.objects[i];
-    if (o !== undefined && o.nodeId === nodeId && o.attached === 0) return i + 1;
+    if (o !== undefined && o.nodeId === nodeId && o.attached === 0) found = i + 1;
   }
-  return 0;
+  return found;
 }
 
 /**
@@ -4743,6 +4795,8 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     cardAmount: withDeck.cardAmount,
     // 事件 5「生日收卡」在电脑那一支要随机抽一张（走同一条 rng，rngState 已在下面写回）
     rng,
+    // ★ 第九份 #6：事件 0/1（強制拆除 / 強制徵收）要按 owner + level 逐块筛候选
+    lands: topo.lands,
   });
 
   let applied: GameState = {
@@ -4784,6 +4838,20 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     for (const stock of out.reown) applied = reownCommercial(applied, stock, applied.currentPlayer);
   }
   if (out.toolStock !== null) applied = { ...applied, toolStock: out.toolStock };
+  // ★★ 第九份試玩回報 #6：事件 0/1 拆掉 / 征收掉的那一块写回。
+  //   `level` 与 `type` 一起清 0，**owner 不动**（原版 `0x0044bf3e` / `0x0044bf42`：
+  //   `mov byte [ebx+0x1a],0` / `mov byte [ebx+0x18],0`，`+0x19` 一个字都不碰）。
+  //   同时把镜头交给表现层：`lastViewTarget` 是「只活一条 action」的瞬态提示，
+  //   客户端 `syncViewTarget()` 会居中、演出收完自动复位
+  //   —— 对应原版 `0x0044bee8 call 0x41d476(x, y, 2)` 与 `0x0044bf51` 的复位。
+  if (out.demolished !== null) {
+    const { landId, x, y } = out.demolished;
+    const landLevel = [...applied.landLevel];
+    const landType = [...applied.landType];
+    landLevel[landId] = 0;
+    landType[landId] = 0;
+    applied = { ...applied, landLevel, landType, lastViewTarget: { x, y } };
+  }
   // ★ 事件 32：道具表 / 卡片库存写回 + 变卖所得进**點券**
   if (out.tools !== null || out.cardAmount !== null) {
     applied = {

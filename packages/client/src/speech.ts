@@ -490,6 +490,11 @@ function reachedLevelFive(before: readonly number[], after: readonly number[]): 
  */
 export function detectMoneyGained(before: GameState, after: GameState): DetectedSay[] {
   const out: DetectedSay[] = [];
+  // ★★ 第九份試玩回報 #6：命運 0「強制拆除房屋」的**赔款**由 `detectDemolishedHouse` 独家说。
+  //   原版那一笔是 `add_money(cur, level×house_price, 1)`（`0x0044bf2f`），
+  //   `monthlyReceived` 会跟着涨 ⇒ 通用「進帳」档位会开口说 6/7/8（「這是我應得的！」），
+  //   而原版此刻说的是「我慘了」—— 必须让开（与 `detectSmallWealthLine` 让开同一条规矩）。
+  if (demolishedHouseThisAction(before, after)) return out;
   // ★★ W-55 行 7：財神那一笔**不走**「進帳」档位这条通用路 ——
   //   小財神有它自己的出口（`0x0040ecde`，事件 8，另有 >700 与终局两道闸），
   //   大財神虽然也是调 `fcn_0044f354`，但**多一道 `≥ 5000×物價` 的闸**
@@ -684,6 +689,46 @@ function pointsSquareEventThisAction(
 ): NonNullable<GameState['lastEvent']> | null {
   const ev = after.lastEvent ?? null;
   if (ev === null || ev.kind !== 'minigameDecline') return null;
+  if (before.lastEvent === ev) return null;
+  return ev;
+}
+
+/**
+ * ★★ 第九份試玩回報 #6（Charles，2026-09-22）：
+ *   「强制拆除房屋一栋，完全没看到到底拆了哪里的房子，如果是真的拆了，
+ *     那房屋主人应该也会触发一个倒霉的台词」。
+ *
+ * 查證：core 那邊**根本沒拆**（事件 0/1 是 `factor: null`，直接 `unimplemented`），
+ * 已由 `fortune-effects.ts` 补上（含镜头）。這一條补的是**台词**。
+ *
+ * @source `0x0044bf9f call 0x44ef41`：`player_say(current_player, 2, 台词[rand()&1])`
+ *   —— 槽 3/4 =「我慘了」/「唉呦喂呀」，`packages/data/src/speech.ts:137,139`
+ *   （`sites` 里就含 `0x0044bf8e`；调用点清单 `docs/tasks/speech-callsites.md:98` 第 91 条）。
+ *   房主 = **抽到命運的人自己**，不是别家。
+ *   原版排在 `sleep 300`（`0x0044bf5e`）与镜头复位（`0x0044bf51`）**之后** ⇒ `afterStage`。
+ *
+ * ⚠️ 原版那一次 `rand()&1` 本引擎**没照抄**（台词二选一不走 core）⇒ 固定取槽 3。
+ *   与 `speech.ts` 文件头「有意偏离」同一条口径，另见 PR 描述。
+ */
+export function detectDemolishedHouse(before: GameState, after: GameState): DetectedSay[] {
+  const ev = demolishedHouseThisAction(before, after);
+  if (ev === null) return [];
+  return [{ player: after.currentPlayer, event: 3, expression: 2 }];
+}
+
+/**
+ * 这一条 action 写下的「命運 0 強制拆除房屋」事件；不是这一条写的返回 null。
+ *
+ * ★ 判据是 `before.lastEvent !== after.lastEvent`（**引用不同**）—— 与
+ *   `pointsSquareEventThisAction` / `lastCardPlay` 同一条规矩：`lastEvent` 不是瞬态字段，
+ *   只看 `after` 会让这一句在之后每一条 action 上重说一遍。
+ */
+function demolishedHouseThisAction(
+  before: Pick<GameState, 'lastEvent'>,
+  after: Pick<GameState, 'lastEvent'>,
+): NonNullable<GameState['lastEvent']> | null {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev.kind !== 'fortune' || ev.id !== 0) return null;
   if (before.lastEvent === ev) return null;
   return ev;
 }
@@ -1253,6 +1298,10 @@ export const DETECTORS: readonly SpeechDetector[] = [
   // ★ 得點券格 / 小遊戲不玩：走角色台词表（`0x41b211`/`0x41b29e`/`0x4154b6`）
   // ⚠ C 级：E-19（两个调用点不一致：`0x0041b211` 两列都空、`0x004154cf` 前有訊息框）
   { name: 'pointsSquarePhrase', source: [0x0041b211, 0x0041b29e, 0x004154b6], order: 'afterStage', detect: detectPointsSquarePhrase },
+  // ★★ 第九份试玩回报 #6：命運 0「強制拆除房屋一棟」—— 房主（= 抽到的人自己）的倒霉台词。
+  //   §2.2 表：镜头（`0x0044bee8`）→ 赔款（`0x0044bf36`）→ 镜头复位（`0x0044bf51`）
+  //   → sleep 300 → 台词（`0x0044bf9f`）⇒ `afterStage`。
+  { name: 'demolishedHouse', source: [0x0044bf9f], order: 'afterStage', detect: detectDemolishedHouse },
 ];
 
 /**

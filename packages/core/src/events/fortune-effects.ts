@@ -85,6 +85,18 @@ export const FORTUNE_MOTORCYCLE_STOLEN = 10;
 export const FORTUNE_CAR_WRECKED = 11;
 /** 事件 32「變賣所有卡片道具」 */
 export const FORTUNE_SELL_ALL_ITEMS = 32;
+/**
+ * 事件 0「強制拆除房屋一棟」 / 事件 1「強制徵收土地一處」。
+ *
+ * @source `0x0044be16` / `0x0044bfb1`，规格见
+ *   `rich4-spec/docs/systems/fortune.md:363-443`（含 asm 与「精确规则」）。
+ *   两条都属于 `factor: null` 那一族 ⇒ 先前在 `applyFortuneEffect` 里**直接早退成
+ *   `unimplemented`**，一格地都没动过（第九份试玩回报 #6 的「完全没看到拆了哪里的房子」
+ *   就是这个：不是表现层看不见，而是**根本没拆**）。
+ */
+export const FORTUNE_DEMOLISH_HOUSE = 0;
+/** 事件 1「強制徵收土地一處」（未开发的那一块，同一条族） */
+export const FORTUNE_CONFISCATE_LAND = 1;
 /** 事件 8 的百分比字面量 @source 事件表 `literal: 10` */
 export const FORTUNE_STOCK_DEFAULT_PCT = 10;
 /** 事件 8 的除数 @source `fdiv dword [0x465a24]` = 100.0 */
@@ -165,6 +177,18 @@ export interface FortuneEffectResult {
   /** 未实现的事件在此标记，便于上层降级处理 */
   unimplemented: boolean;
   /**
+   * ★ 本次被拆 / 被征收的那一块地 —— 表现层要用它**把镜头移过去**并说那句倒霉台词。
+   *
+   * @source 原版 `0x0044bee8 call 0x41d476`（`update_player_info_window(x, y, 2)`，
+   *   镜头移到这块地）→ `0x0044bf51 call 0x41d476(0,0,1)`（复位）→
+   *   `0x0044bf5e call 0x4528b9`（sleep 300）→
+   *   `0x0044bf9f call 0x44ef41`（`player_say(cur, 2, 台词[rand()&1])`）。
+   *
+   * 调用方据此把 `landLevel[landId]` / `landType[landId]` 清 0（**owner 不变**）。
+   * `null` = 本次没拆任何东西。
+   */
+  demolished: { landId: number; x: number; y: number; payout: number } | null;
+  /**
    * ★ 命運 5「生日收卡」**寿星是真人**时要挂出去的分帧信息：还没处理的座位
    *   （升序）。非 `null` 表示「这次一位都没收，等上层把这些人逐个问完」
    *   —— 见 `docs/deviations/T-055.md` 与 `state/reduce.ts` 的 `answerBirthdayCard`。
@@ -186,6 +210,26 @@ export interface FortuneEffectResult {
    *   **函数体内**）关谁赔谁，与新聞 29 的 `chairmanPrison.victim` 同一口径。
    */
   fortuneVictim: number | null;
+}
+
+/**
+ * 事件 0/1 需要的那几个地块字段。
+ *
+ * 取 `MapTopology.lands` 即可（`loaders/map.ts` 的 `LandInfo` 是它的超集）；
+ * 单独列一条接口是为了让**这个模块**不必知道地图的类型，也方便单测直接造。
+ */
+export interface FortuneEffectLand {
+  /** 0 基地块下标（= 原版 `land_index`） */
+  id: number;
+  /** 1 基所有权（0 = 无主）；原版 `+0x19` */
+  owner: number;
+  /** 已开发等级；原版 `+0x1a`。0 = 空地 */
+  level: number;
+  /** 房屋单价；原版 `+0x1e`（uint16），赔款 = level × 它，**不乘物價指數** */
+  housePrice: number;
+  /** 屏幕坐标 —— 表现层要把镜头移过去（`0x41d476` 收的就是这两个） */
+  x: number;
+  y: number;
 }
 
 export interface FortuneEffectContext {
@@ -237,6 +281,15 @@ export interface FortuneEffectContext {
   nodes?: readonly MapNode[];
   /** 特殊景观表（首次关押的屏幕坐标取它）—— 见 `rules/confinement.ts` */
   landscapes?: readonly LandscapeInfo[] | undefined;
+  /**
+   * ★ 地块表 —— **只在事件 0/1（強制拆除 / 強制徵收）用**。
+   *
+   * 事件 0/1 要按「owner == 当前玩家 且 level != 0」逐块筛候选，再 `rand() % 候选数`
+   * 抽一块出来（@source `0x0044be49..0x0044be7a`）。缺省（不传）时这两条报
+   * `unimplemented` —— 那是给不关心盘面的单元测试用的；引擎调用点（`reduce.ts`）
+   * **必须**传。
+   */
+  lands?: readonly FortuneEffectLand[] | undefined;
   /**
    * `0x44b896` 返回的**倍率档位**：2 加倍、1 归零、0 不变。
    * 由玩家的神明加持值决定，见 rules/blessing.ts 的 blessingLevel()。
@@ -322,6 +375,8 @@ export function applyFortuneEffect(
     amount: 0,
     bankrupted: false,
     unimplemented: false,
+    // ★ 事件 0/1 才填（`null` = 本次没拆任何东西）
+    demolished: null,
     birthdaySeats: null,
     // ★ 缺省 null = 本次没走「免罪 21 → 嫁禍 19」的二级判定
     //   （或免罪卡命中、整条作废）—— 只有坐牢/住院/出國·綁架那三条会填。
@@ -656,6 +711,54 @@ export function applyFortuneEffect(
         : q,
     );
     return { ...base, players: next };
+  }
+
+  // ── 事件 0/1：強制拆除房屋一棟 / 強制徵收土地一處 ──
+  //
+  // ★★ 第九份試玩回報 #6（Charles，2026-09-22）：
+  //   「强制拆除房屋一栋，完全没看到到底拆了哪里的房子，如果是真的拆了，
+  //     那房屋主人应该也会触发一个倒霉的台词」。
+  //   查證結果：**根本沒拆** —— 這兩條 `factor: null`，先前在下面那句
+  //   `if (entry.factor === null) return unimplemented` 直接早退（`effects:['give']`
+  //   也救不了，因為早退在它前面）。所以「沒看到拆哪裡」不是表現層的問題。
+  //
+  // @source `0x0044be16`（事件 0）/ `0x0044bfb1`（事件 1）；
+  //   规格与 asm 见 `rich4-spec/docs/systems/fortune.md:363-443`（「精确规则」）：
+  //     候选 = { land i | owner == current_player+1 且 level != 0 }   （事件 1 是 level == 0）
+  //     选中 = 候选[rand() % |候选|]
+  //     赔款 = level × house_price（uint16，**不乘物價指數**）
+  //     add_money(current_player, 赔款, 1)  → 进现金
+  //     sel.level = 0 ; sel.type = 0        → ★ owner **不动**（拆完还是自己的空地）
+  if (eventId === FORTUNE_DEMOLISH_HOUSE || eventId === FORTUNE_CONFISCATE_LAND) {
+    const lands = ctx.lands;
+    const rng = ctx.rng;
+    // 不给盘面或不给随机流 ⇒ 照旧报未实现（单测的缺省口径）
+    if (lands === undefined || rng === undefined) return { ...base, unimplemented: true };
+    // 只认**住宅**用地（原版 `0x498e84` 那一张表），不含设施。
+    const wantDeveloped = eventId === FORTUNE_DEMOLISH_HOUSE;
+    const candidates = lands.filter(
+      (l) => l.owner === ctx.currentPlayer + 1 && (l.level !== 0) === wantDeveloped,
+    );
+    // 候选空：原版这里是 `idiv 0`（除零）。调用点 `events/fortune.ts` 的可行性判定
+    //   已经保证非空 ⇒ 真走到这儿说明有人绕过了判定；按「不生效」收口，不崩。
+    if (candidates.length === 0) return { ...base, unimplemented: true };
+    // ★★ 消耗点的次序说明（C-DET-1/4）：
+    //   原版这一次 `rand()` 在 **pass 0**（`0x0044be65`，訊息框**之前**），
+    //   而写状态（赔款 / 清 level/type / 镜头）在 pass 1（`0x0044becf` 起）。
+    //   本模块是「一次算完」，把消耗点放在**选地这一刻**、且在本次事件任何其它
+    //   随机消耗之前 —— 与 pass 0 在同一位置上。若日后有人在它前面再加一条吃随机
+    //   的分支，必须重新核对次序。
+    //   ⚠️ 另有**第二处** `rand()`：台词二选一 `台词[rand()&1]`（`0x0044bf86`）在
+    //      `player_say` 的实参里。本引擎的台词不走 core（由客户端探测器选），
+    //      故那一次**没有**照抄 —— 这是有意偏离，登记在 PR 描述里。
+    const pick = candidates[rng.below(candidates.length)] ?? candidates[0]!;
+    const payout = pick.level * pick.housePrice;
+    return {
+      ...base,
+      players: receiveMoney(players, ctx.currentPlayer, payout),
+      amount: payout,
+      demolished: { landId: pick.id, x: pick.x, y: pick.y, payout },
+    };
   }
 
   if (entry.factor === null) return { ...base, unimplemented: true };

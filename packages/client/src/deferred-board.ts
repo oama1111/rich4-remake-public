@@ -56,12 +56,26 @@ import { wreckedThisAction } from './dog-fx.ts';
  * @param before 影片**起播那一拍之前**的那一份；窗口没开就给 `null`
  * @returns 窗口开着 → after 的五项被换回 before；否则原样返回 after
  */
-export function visibleBoardState(after: GameState, before: GameState | null): GameState {
+export function visibleBoardState(
+  after: GameState,
+  before: GameState | null,
+  /**
+   * ★ 等级（`landLevel` / `facilityLevel`）要不要按住。
+   *
+   * 機器工人那一段（大锤 `0x229`）要**中途放开**：工人出场时房子还是旧的、
+   * 敲完那一拍才换成新模型（`build-fx.ts` 的 `buildHammerDone`，第 48 帧 = 2736 ms）。
+   * 其余几类影片（神明 / 救护车 / 入獄 / 飛碟）恒为 `true` —— 它们按住的是
+   * 「别让玩家提前看到后果」，与建屋那一段的诉求不同。
+   */
+  holdLevels = true,
+): GameState {
   // 窗口没开：一个字节都不动，直接交 after（引用相等，渲染器那边零成本）
   if (before === null) return after;
 
-  const landLevel = holdBackNumbers(after.landLevel, before.landLevel);
-  const facilityLevel = holdBackNumbers(after.facilityLevel, before.facilityLevel);
+  const landLevel = holdLevels ? holdBackNumbers(after.landLevel, before.landLevel) : after.landLevel;
+  const facilityLevel = holdLevels
+    ? holdBackNumbers(after.facilityLevel, before.facilityLevel)
+    : after.facilityLevel;
   const players = holdBackPlayers(after.players, before.players, { before, after });
   const objects = holdBackObjects(after.objects, before.objects);
 
@@ -208,6 +222,8 @@ export function boardStateForFilm(
   after: GameState,
   before: GameState | null,
   w: BoardFilmWindow,
+  /** 见 `visibleBoardState` 的第三个参数 —— 機器工人大锤片要中途放开等级 */
+  holdLevels = true,
 ): GameState {
-  return visibleBoardState(after, boardFilmWindowOpen(w) ? before : null);
+  return visibleBoardState(after, boardFilmWindowOpen(w) ? before : null, holdLevels);
 }

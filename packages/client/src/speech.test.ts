@@ -1482,6 +1482,9 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     ['hotelStay', 'afterStage', '⚠E-19：`0x0041a7e0` 所在函数没有 `player_say`；`0x0044f347` 两列都空'],
     ['pointsGained', 'afterStage', '⚠E-19：调用点 `0x0044f2b5` 前后两列都空'],
     ['pointsSquarePhrase', 'afterStage', '⚠E-19：`0x0041b211` 两列都空、`0x004154cf` 前有訊息框'],
+    // ★★ 第九份试玩回报 #6：命運 0 強制拆除房屋 —— 镜头(`0x0044bee8`) → 赔款(`0x0044bf36`)
+    //   → 镜头复位(`0x0044bf51`) → sleep 300(`0x0044bf5e`) → 台词(`0x0044bf9f`) ⇒ afterStage
+    ['demolishedHouse', 'afterStage', '第九份 #6：`0x0044bf9f` 排在 sleep 300 与镜头复位之后'],
   ];
 
   it.each(ORDERS)('%s ⇒ %s（%s）', (name, order) => {

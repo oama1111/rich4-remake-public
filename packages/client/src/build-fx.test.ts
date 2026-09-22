@@ -18,6 +18,7 @@ import {
   buildFxBitmap,
   buildFxFrame,
   buildFxPlan,
+  buildHammerDone,
   buildUpgradesOf,
   BUILD_FX_ARCHIVE,
   BUILD_FX_H,
@@ -25,6 +26,7 @@ import {
   BUILD_FX_X,
   BUILD_FX_Y,
   BUILD_HAMMER,
+  BUILD_HAMMER_DONE_FRAME,
   BUILD_HAMMER_RESOURCE,
   BUILD_HAMMER_SOUND,
   BUILD_MAX_LEVEL,
@@ -460,5 +462,55 @@ describe('★ 顯靈／自己加蓋的音效 —— 只有 `godManifest` / `ownU
     expect(playAt).toBeGreaterThan(-1);
     expect(gateAt).toBeGreaterThan(-1);
     expect(playAt).toBeLessThan(gateAt);
+  });
+});
+
+/*
+ * 房屋模型**什么时候**换 —— 第九份试玩回报（2026-09-22，需求方）
+ *
+ * 「机器工人出场时房子还没修好，他们叮叮咚咚敲完的时候同时切换成修好的模型，然后机器工人退场。」
+ *
+ * 帧号与内部节拍是**实测**的（用仓库自己的 `decodeFlic` 解 Data.mkf 0x229），
+ * 不是文档引用 —— `docs/` 与 `rich4-spec/docs/` 里没有 0x229 的内部分帧记录。
+ */
+describe('buildHammerDone —— 大锤片第 48 帧（2736 ms）把房子交出去', () => {
+  const hammer = (startedAt: number): BuildFx => ({ clip: 'hammer', startedAt, thenMaxLevel: false });
+
+  it('★ 帧号常量 = 48，且 48 × 57 ms = 2736 ms', () => {
+    expect(BUILD_HAMMER_DONE_FRAME).toBe(48);
+    expect(BUILD_HAMMER.frameMs).toBe(57);
+    expect(BUILD_HAMMER_DONE_FRAME * BUILD_HAMMER.frameMs).toBe(2736);
+  });
+
+  it('★★ 入场与敲打期间按住（旧房子）；敲完那一拍放开（新模型）', () => {
+    const fx = hammer(1000);
+    const at = (ms: number) => buildHammerDone(fx, 1000 + ms);
+    // 入场 f1–f19（57–1083 ms）—— 房子还是旧的
+    expect(at(57)).toBe(false);
+    expect(at(1083)).toBe(false);
+    // 敲打 + 烟尘 f20–f46（1140–2622 ms）—— 还是旧的
+    expect(at(1140)).toBe(false);
+    expect(at(2622)).toBe(false);
+    // 烟尘开始散 f47（2679）—— 还没到
+    expect(at(2679)).toBe(false);
+    // ★ 敲完 / 工人立定成排 f48（2736）—— 这一拍换新模型
+    expect(at(2736)).toBe(true);
+    // 立定 f49–f50、退场 f51–f58、淡出 f59–f67 都在切换**之后**
+    expect(at(2793)).toBe(true);
+    expect(at(3306)).toBe(true);
+    expect(at(3819)).toBe(true);
+  });
+
+  it('★ 放开点在整段结束之前（否则就是第八份 #6 已否掉的「整段都按」）', () => {
+    const end = clipTotalMs('hammer');
+    expect(BUILD_HAMMER_DONE_FRAME * BUILD_HAMMER.frameMs).toBeLessThan(end);
+    // 也不能一开播就放（那正是第八份 #6 的另一头）
+    expect(BUILD_HAMMER_DONE_FRAME).toBeGreaterThan(0);
+  });
+
+  it('★ 「剛滿 5 級」那段恒为 true —— 等级早在它之前就 +1 了', () => {
+    const fx: BuildFx = { clip: 'maxLevel', startedAt: 1000, thenMaxLevel: false };
+    expect(buildHammerDone(fx, 1000)).toBe(true);
+    expect(buildHammerDone(fx, 999_999)).toBe(true);
   });
 });

@@ -231,6 +231,7 @@ import {
   buildClip,
   buildFxBitmap,
   buildFxPlan,
+  buildHammerDone,
   buildUpgradesOf,
   BUILD_FX_ARCHIVE,
   manifestSoundFor,
@@ -6067,13 +6068,25 @@ function startBuildFx(before: GameState): void {
   const manifestSound = manifestSoundFor(hints);
   if (manifestSound !== null) sound.play('Effect.mkf', manifestSound);
   if (!plan.hammer && !plan.maxLevel) return;
-  // ★★ 第八份试玩回报 #6（2026-09-22）：**不再**把加蓋那一级按到影片之后。
-  //   需求方对着原版看：大锤片里工人一离开那块地，盖好的房子就已经在了 —— 即影片是盖在
-  //   **已经加了一级**的棋盘上播的（`0x00447345 call 0x40b110` 在 `0x00447350` 起播之前，
-  //   与本文件头「状态先变、影片后播」一致）。issue #19 第 9 条当时按住它，是因为解 68 帧要几百毫秒、
-  //   房子会在影片起播**之前**先出现；现在影片起播由 `pendingBuildFx` 等解码，那几百毫秒里棋盘上
-  //   多一层与原版 `0x40b110` 之后到 `0x45144f` 之间那一小段是同一个画面，不再按住。
-  //   ⚠️ 只放开等级；神明附身那几段仍走 `deferredBoardBefore`（`startGodFx`）。
+  // ★★ 第九份试玩回报（2026-09-22，需求方）：「机器工人修房子的动画还是有点问题，应该是
+  //   机器工人出场时房子还没修好，他们叮叮咚咚敲完的时候同时切换成修好的模型，然后机器工人退场。」
+  //
+  //   ⇒ 这是**中间档**，前两版各偏一边：
+  //     · issue #19 第 9 条：整段按住（房子要等两段影片全播完才出现）；
+  //     · 第八份 #6：整段不按（点下去那一拍房子就修好了，工人还没出场）。
+  //
+  //   现在：**大锤段**把等级按回 `before`，走到第 48 帧（= 2736 ms，烟尘散尽、工人立定成排）
+  //   再放开 —— 与需求方描述的次序完全一致（入场/敲打期间旧房子 → 敲完那一拍换新模型 → 退场）。
+  //   放开那一拍的判定在 `boardDrawState()`，帧号与实测节拍见 `build-fx.ts` 的
+  //   `BUILD_HAMMER_DONE_FRAME`。
+  //
+  //   ⚠️ 只在大锤族按住：天使卡 / 自己的地升級那两条**没有**大锤段（见 `HAMMER_SOURCES`），
+  //      等级照旧当场放出来。
+  //   ⚠️ 这一行同时修掉一个既有泄漏：`deferredBoardBefore` 先前只在换局与失步自愈时清空，
+  //      影片收摊时从不清 —— 上一条影片（神明/入獄/恶犬…）留下的**过期快照**会被下一条
+  //      「只用機器工人」的 action 拿去按住 `landLevel`，画出更旧的等级。7 处起播点里
+  //      只有 `startBuildFx` 不写快照，现在补上。
+  if (plan.hammer) deferredBoardBefore = before;
   // 上一条还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
   if (buildFx !== null) {
     buildFx = null;
@@ -6166,7 +6179,15 @@ function currentBuildFxBitmap(now: number): CanvasImageSource | null {
  *   棋盘是露着的，正是需求方看到「效果先于动画」的那一段。见 `deferred-board.ts`。
  */
 function boardDrawState(): GameState {
-  return boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags());
+  // ★★ 機器工人那一段的**中途放出**（第九份试玩回报，见 `startBuildFx` 的注释）：
+  //   大锤片走到第 48 帧（2736 ms，烟尘散尽、工人立定成排）就放开等级 ⇒ 房子在这一拍
+  //   换成修好的模型，工人接着演退场段。
+  //   `buildFx === null`（= 还在 `pendingBuildFx` 等解码）时 released = false ⇒ 继续按住，
+  //   这正是「机器工人出场时房子还没修好」。
+  //   其余影片（神明/救护车/入獄/飛碟）的 `buildFx` 恒为 null ⇒ 恒 false ⇒ 等级照旧一直按住。
+  const now = performance.now();
+  const released = buildFx !== null && buildHammerDone(buildFx, now);
+  return boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released);
 }
 
 /**

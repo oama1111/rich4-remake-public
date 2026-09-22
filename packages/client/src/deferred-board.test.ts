@@ -207,6 +207,48 @@ describe('按住的范围只限加蓋 / 附身那五项，别的变化照常按 
     expect(visibleBoardState(state, state)).toBe(state);
   });
 
+  /*
+   * ★★ 第九份试玩回报：機器工人大锤片要**中途放开**等级（第 48 帧 = 2736 ms）。
+   *   这是那一档的机制面 —— `holdLevels = false` 时等级按 after 画（新房子），
+   *   而神明 / 位置那几项**仍然**按 before 按住（它们是别条影片的诉求）。
+   */
+  describe('holdLevels —— 機器工人中途放开等级', () => {
+    const before = makeGameState({
+      landLevel: [2, 0],
+      facilityLevel: [1, 0],
+      players: [makePlayer({ index: 0, godInfo: 0 }), makePlayer({ index: 1, godInfo: 0 })],
+    });
+
+    it('按住时（缺省）：等级按 before 画 —— 工人出场时房子还没修好', () => {
+      const after: GameState = { ...before, landLevel: [3, 0], facilityLevel: [2, 0] };
+      const drawn = visibleBoardState(after, before);
+      expect(drawn.landLevel[0]).toBe(2);
+      expect(drawn.facilityLevel[0]).toBe(1);
+    });
+
+    it('★ 放开后（holdLevels = false）：等级按 after 画 —— 敲完那一拍换新模型', () => {
+      const after: GameState = { ...before, landLevel: [3, 0], facilityLevel: [2, 0] };
+      const drawn = visibleBoardState(after, before, false);
+      expect(drawn.landLevel[0]).toBe(3);
+      expect(drawn.facilityLevel[0]).toBe(2);
+      // 等级那一对直接沿用 after 的数组本体（渲染器零成本）
+      expect(drawn.landLevel).toBe(after.landLevel);
+      expect(drawn.facilityLevel).toBe(after.facilityLevel);
+    });
+
+    it('★ 放开等级**不影响**神明 / 物件那几项（它们仍按 before 按住）', () => {
+      const godAttached = makePlayer({ index: 0, godInfo: 1 });
+      const after: GameState = {
+        ...before,
+        landLevel: [3, 0],
+        players: [godAttached, before.players[1]!],
+      };
+      const drawn = visibleBoardState(after, before, false);
+      expect(drawn.landLevel[0], '等级放开').toBe(3);
+      expect(drawn.players[0]!.godInfo, '神明仍按住（还没附身）').toBe(0);
+    });
+  });
+
   it('两个玩家同样变 → 两个都按住，没变的那个沿用原元素', () => {
     const before = makeGameState({
       players: [makePlayer({ index: 0, godInfo: 0 }), makePlayer({ index: 1, godInfo: 0 })],
@@ -356,18 +398,27 @@ describe('★ main.ts 接线（源码钉子）', () => {
     expect(src).toContain('function boardDrawState(): GameState {');
   });
 
-  it('六条影片（住院入獄 / 神明 / 新聞4飛碟 / 惡犬咬人 / 飛彈核彈爆炸 / 綁架出國）起播前都记下 before 快照；建屋那段 2026-09-22 起**不按**', () => {
+  it('影片起播前都记下 before 快照；建屋那段按「大锤族才按、中途放开」', () => {
     expect(src).toContain('deferredBoardBefore = before;');
     // 2026-09-19：新聞 4「外星人攻打地球」的飛碟影片（房子在 core 里已经被掀掉）
     // 與「踩到惡犬」的狗咬影片（人已經被寫進醫院）先加进来（3 → 4 → 5），
     // 收尾又补了**飛彈/核彈爆炸**（`startMissileFx`，整幅盖住棋盘）⇒ 6 处；
     // 2026-09-22 第八份 #3 再加**被綁架的飛碟 / 出國的飛機**（`startDisappearFx`）⇒ 7 处；
-    // 同日第八份 #6 把**建屋**那段拿掉（原版大锤片下面就是加好的那一级）⇒ 6 处。
+    // 同日第八份 #6 把**建屋**那段拿掉 ⇒ 6 处；
+    // 同日第九份**又把它加回来**，但改成「按住、走到第 48 帧再放开」⇒ 7 处。
     // ⚠️ 「惡魔顯靈拆屋」（`startDevilFx`）是**第 7 条影片**，但它填的是
     //    `deferredBoardBefore = after;`（原版先拆、重画、再播）⇒ 不计在这里，
     //    由 `devil-fx.test.ts` 的源码钉单独管。
-    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(6);
+    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(7);
     expect(src).toContain('deferredBoardBefore = after;');
+  });
+
+  it('★★ 建屋那一段只在**大锤族**按住，并按第 48 帧中途放开', () => {
+    // 只在 plan.hammer 时按 —— 天使卡 / 自己的地升級那两条没有大锤段
+    expect(src).toContain('if (plan.hammer) deferredBoardBefore = before;');
+    // 放开那一拍的判据交给 build-fx.ts（纯函数，可单测）
+    expect(src).toContain('const released = buildFx !== null && buildHammerDone(buildFx, now);');
+    expect(src).toContain('boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released)');
   });
 
   it('★ 两条影片都要等这一步的走子补间播完才起播（试玩3 #1 的正面）', () => {
