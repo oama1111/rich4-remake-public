@@ -1241,8 +1241,10 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         //   不这么做，被关押期间写的**景观坐标**（綠島/醫院大樓）会一直挂到
         //   下一次掷骰，位置不变量也就没法保持严格。
         //   ⚠️ `withPlayer` 的回调是**原地改**（返回 `void`），别写成 `return …`。
+        // ★★ E-41（第十一份試玩回報 #12）：`0x10` **不在这里**清 —— 原版由这一回合的
+        //   收尾 `0x418ebd` 消费（`00418f87 and byte [player+0x15], 0xf`），
+        //   并且**不推进游标**（`00418f8e jmp 0x419058`）。见 `endTurn` 开头那一支。
         const cleared = withPlayer(state, state.currentPlayer, (p) => {
-          p.whoPlays &= ~WHO_PLAYS_RETURN_TO_BOARD;
           p.blocking = {
             ...p.blocking,
             inHotel: 0,
@@ -2411,9 +2413,36 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   置位，唯一的规则后果在回合开始判定 `0x40c912`：
       //   `dword[+0x32] != 0 && (who & 0x30)` ⇒ `call 0x40dd1f`（auto_move）
       //   **而不显示「住宿中還剩 N 天」**（通道 2：`test_turn_start.py` §C/§D）。
-      //   ⚠️ 0x10（走回棋盘）**不在这里**清 —— 它由 `startTurn` 按第 84 条那套
-      //   「白丢一回合」处理（清早了会少丢那一回合）。
       const departing = state.players[state.currentPlayer];
+
+      // ★★ E-41（第十一份試玩回報 #12「出狱应该等到我行动时才播走出来的动画，
+      //   而不是前一回合就出来了、下一回合才能动」）：「走回棋盘」是一个**纯演出回合、不换人**。
+      //   @source 0x00418ebd：
+      //   ```asm
+      //   00418f07  test byte [eax + 0x496b7d], 0x30   ; 当班者（游标推进之前）带 0x10/0x20？
+      //   00418f87  and  byte [eax + 0x496b7d], 0xf    ; 两位一起消费
+      //   00418f8e  jmp  0x419058                      ; ★ 不 inc 游标、不 call 0x41c84f
+      //   ```
+      //   ⇒ 同一位**立刻**再得一回合（`0x40dd1f` 这回没有 0x30 ⇒ 正常掷骰），其间没有别人行动，
+      //   也不走一天（阻碍计数、保險期等都不 tick）。先前这里照常推进 ⇒ 刑满者演完走回
+      //   棋盘还要再等一整轮。
+      //   ⚠️ 只接 0x10。0x20（被挪到旅館）在原版也走这一支，但本引擎那条按第 92 条
+      //   另有处理（下面的 `WHO_PLAYS_RELOCATED`），不在 E-41 的范围里动它。
+      if (departing !== undefined && (departing.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0) {
+        const again = withPlayer(state, state.currentPlayer, (p) => {
+          p.whoPlays &= ~(WHO_PLAYS_RETURN_TO_BOARD | WHO_PLAYS_RELOCATED);
+        });
+        return {
+          ...again,
+          phase: 'turnStart',
+          pending: null,
+          dice: [],
+          stepsRemaining: 0,
+          stepsTotal: 0,
+          turnCount: state.turnCount + 1,
+        };
+      }
+
       const cleared: GameState =
         departing === undefined || (departing.whoPlays & WHO_PLAYS_RELOCATED) === 0
           ? state

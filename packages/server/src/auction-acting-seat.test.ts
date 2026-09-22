@@ -47,7 +47,8 @@ const run = existsSync(MAP) ? it : it.skip;
  * 下面每条都断言「现场数 > 0」—— 种子走不到现场时宁可红。换种子用文末的搜索器。
  */
 // ★ 2026-09-22 換種子：福神附身買地/買設施/建設施/加蓋白送一級改了進程；原 5 走不到（真人回合、電腦舉牌）現場，兩個一併重掃（原 12 / 5）。
-const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 12;
+// ★ 2026-09-22 換種子（E-41）：「走回棋盤」那一回合收尾不換人，改了輪轉；原 12 走不到（電腦回合、真人舉牌）現場，重掃取 5（8 次）。
+const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 5;
 const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 14;
 const TURNS = 200;
 const HUMANS = 2;
