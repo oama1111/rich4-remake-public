@@ -521,10 +521,23 @@ describe('付錢 / 罰款 ⇒ 事件 9..11 / 12..14 / 18', () => {
     expect(detectMoneyPaid(b2, a2)).toEqual([{ player: 0, event: 12 }]);
   });
 
-  it('★ 钱进了企业（没人涨收入、公库也没涨）就不吭声', () => {
+  it('★★ 钱进了企业（董事長收費 / 保險費）⇒ 付款人**照样**说 9..11（第八份试玩回报 #1；@source 0x0041b006 call 0x44f42d）', () => {
+    // 先前这里钉的是「不吭声」—— 那是读漏了企業收費尾巴上的那一句 `call 0x44f42d`
     const [b, a] = to((s) => {
       s.players[0]!.monthlyPaid += 9000;
       s.companyFunds[3] = (s.companyFunds[3] ?? 0) + 9000;
+    });
+    expect(detectMoneyPaid(b, a)).toEqual([{ player: 0, event: 9 }]);
+    const [b2, a2] = to((s) => {
+      s.players[0]!.monthlyPaid += 100;
+      s.companyFunds[0] = (s.companyFunds[0] ?? 0) + 100;
+    });
+    expect(detectMoneyPaid(b2, a2)).toEqual([{ player: 0, event: 11 }]);
+  });
+
+  it('付了钱但钱去向不明（没人收、公库没涨、企業也没涨）⇒ 不吭声（护栏）', () => {
+    const [b, a] = to((s) => {
+      s.players[0]!.monthlyPaid += 9000;
     });
     expect(detectMoneyPaid(b, a)).toEqual([]);
   });
@@ -1464,6 +1477,7 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     ['bigWealthLine', 'afterStage', 'W-55 行 7（G34）：`0x0040ed85` 排在收款 `0x0040ed52` 之后（§2.2 表没有这一行）'],
     ['moneyPaid', 'afterStage', '§2.2 表：設施收費 `0x0041a71e`（轉盤 → 訊息框 → 收費 → 台词）'],
     ['shopGift', 'afterStage', '★W-67-a：董事長赠礼 —— 訊息框（0x464378）→ 台词（0x44f230）'],
+    ['godCard', 'afterStage', '★第八份 #5：福神附身得卡 —— 开场白 → 卡面 → 訊息框（0x4632fd）→ 台词（0x44f230）'],
     ['moneyGained', 'afterStage', '⚠E-19：调用点 `0x0044f420` 前后两列都空'],
     ['hotelStay', 'afterStage', '⚠E-19：`0x0041a7e0` 所在函数没有 `player_say`；`0x0044f347` 两列都空'],
     ['pointsGained', 'afterStage', '⚠E-19：调用点 `0x0044f2b5` 前后两列都空'],

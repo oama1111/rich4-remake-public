@@ -120,6 +120,8 @@ export const MESSAGE_BOX = {
   points30: t('得點券３０點', 0x463a8e),
   /** 特１０點格 @source 0x0041b2e1 `push 0x463a9b` */
   points10: t('得點券１０點', 0x463a9b),
+  /** 小遊戲「不玩」白拿的點券 @source 0x00415472 `push 0x463797`（框停 0x7d0 = 2000 ms）*/
+  pointsMinigame: t('得點券%d點', 0x463797),
   /** %s 卡片名 / 道具名 —— 抽卡格与禮物**共用同一个串地址** @source 0x0041b35d / 0x0041b956 */
   got: t('得到%s！', 0x463aa8),
   /** 寶箱：无占位符，500 是写死在串里的 @source 0x0041bb4e `push 0x463ad3` */
@@ -334,6 +336,10 @@ export const GOD_MANIFEST = {
   demolish: t('小惡魔顯靈\n\n拆毀一層房屋！', 0x4634d7),
   /** 土地公 */
   seize: t('土地公顯靈\n\n強佔土地！', 0x4634f2),
+  /** 衰神/死神拦下消费（`fcn_0040fa61`）。⚠️「拘資」是原版的错字（应为「投資」），1:1 照抄 */
+  blockPurchase: t('%s顯靈\n\n拘資失敗！', 0x463514),
+  /** 福神附身得卡（`0x0040ee13`）：`%s` = 神明名、卡名 */
+  gotCard: t('%s附身\n\n得到%s！', 0x4632fd),
 } as const;
 
 /**

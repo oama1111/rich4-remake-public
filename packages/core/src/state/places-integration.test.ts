@@ -377,6 +377,8 @@ describe('★ 小游戏「不玩」：恰好消耗两次随机数', () => {
       id: 0,
       phraseIndex: second & 1,
     });
+    // ★ 第八份试玩回报 #9：「不玩」白拿的點券要弹框（0x463797，**2000 ms**）
+    expect(after.notices).toEqual([{ key: 'points.minigame', args: [autoMinigameScore(first)], holdMs: 2000 }]);
   });
 });
 

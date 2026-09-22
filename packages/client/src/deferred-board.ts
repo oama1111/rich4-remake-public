@@ -87,14 +87,27 @@ function holdBackNumbers(after: number[], before: readonly number[]): number[] {
   return changed ? out : after;
 }
 
-/** 玩家身上只有 `godInfo` 这一项属于「附身标记」 */
+/**
+ * 玩家身上按住两项：`godInfo`（附身标记）与 `blocking.disappearing`（第八份试玩回报 #3）。
+ *
+ * ★ 后者：`fcn_0040d375` 在**播飛碟 / 飛機之前**就写了 `+0x33`（`0x0040d43a`），但影片是盖在
+ *   `view_to`（`0x0040d3e6`）那一次重绘的**存下来的背景**上播的 —— 那一帧人还在。影片收屏后的第一次
+ *   重绘才按 `+0x33 != 0` 把他隐掉（`render.ts` 的 `confinedPlayerDrawn`）。⇒ 影片期间按 before 画。
+ */
 function holdBackPlayers(after: Player[], before: readonly Player[]): Player[] {
   let changed = false;
   const out = after.map((p, i) => {
     const b = before[i];
-    if (b === undefined || p.godInfo === b.godInfo) return p;
+    if (b === undefined) return p;
+    const godChanged = p.godInfo !== b.godInfo;
+    const vanished = p.blocking.disappearing !== b.blocking.disappearing;
+    if (!godChanged && !vanished) return p;
     changed = true;
-    return { ...p, godInfo: b.godInfo };
+    return {
+      ...p,
+      ...(godChanged ? { godInfo: b.godInfo } : {}),
+      ...(vanished ? { blocking: { ...p.blocking, disappearing: b.blocking.disappearing } } : {}),
+    };
   });
   return changed ? out : after;
 }
@@ -138,11 +151,19 @@ export interface BoardFilmWindow {
   filmPlaying: boolean;
   /** 棋盘影片还没解好（`pendingBoardFilm !== null`）*/
   filmPending: boolean;
+  /**
+   * ★ 第八份试玩回报 #8：**接着还要播一段**（`pendingBoardFilmAfter !== null`，狗咬 → 救护车）。
+   *   两段之间那一拍 `boardFilm` / `pendingBoardFilm` 都是空 —— 不算进来的话窗口会「关一下」：
+   *   镜头当场跳到醫院（`cameraFollowTarget` 的 `confined` 支读 after 的 `xpos`）、棋盘按 after 画，
+   *   随后救护车才起播 —— 正是需求方看到的「镜头直接转到医院然后播放救护车动画」。
+   *   原版两次 `fcn_0045144f` 是背靠背的阻塞调用，中间没有重绘。
+   */
+  filmQueued?: boolean;
 }
 
-/** 窗口开着吗 = 四条里有一条非空 */
+/** 窗口开着吗 = 五条里有一条非空 */
 export function boardFilmWindowOpen(w: BoardFilmWindow): boolean {
-  return w.buildPlaying || w.buildPending || w.filmPlaying || w.filmPending;
+  return w.buildPlaying || w.buildPending || w.filmPlaying || w.filmPending || w.filmQueued === true;
 }
 
 /**

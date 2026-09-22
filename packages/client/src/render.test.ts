@@ -920,6 +920,21 @@ describe('★ Q-TOOL-5 ②：附身物件的清单（`attachedObjectTokens`）�
     });
   });
 
+  it('★ 定時炸彈背在身上 ⇒ `fuse` = 还剩几步（`state`）；别的物件 null（第八份 #2，@source 0x004098c7..0x00409929）', () => {
+    const s = makeGameState({
+      players: [makePlayer({ index: 0 }), makePlayer({ index: 1 })],
+      objects: [
+        { type: 18, nodeId: 1, attached: 1, state: 3 },
+        { type: 1, nodeId: 1, attached: 2, state: 7 },
+      ],
+    });
+    const tokens = attachedObjectTokens(s, 0);
+    expect(tokens.map((t) => [t.type, t.fuse])).toEqual([
+      [18, 3],
+      [1, null],
+    ]);
+  });
+
   it('★ 跟着主人走：落点一律取**主人的** nodeId，物件记录里的 nodeId 不参与', () => {
     // 物件记录里的 nodeId 故意写成别处（附身时 core 会写主人的节点，但不靠它定位）
     const s = scene({ nodeId: 3 }, [obj(5, 1, 1)]);

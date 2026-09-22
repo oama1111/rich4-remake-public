@@ -9,7 +9,7 @@
  *   · 各人持号表的起点是 `铭牌 + (0x36, 0x1e)`、号码间距 0x28、个位 +0x10，
  *     超过 12 个字符才折行；
  *   · 中奖号那两颗球**不滚**，直接用 37..46 贴出来；
- *   · ANM 的帧间隔是原版那个 880 ms（不是 FLIC 头里的 71）。
+ *   · ANM 的帧间隔 = 開獎屏定时器的 50 ms（一拍推一帧；既不是 FLIC 头里的 71，更不是先前误读的 880）。
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
@@ -365,9 +365,9 @@ describe('各人持号表 @source fcn_0042f417', () => {
 //  ANM 节拍
 // ============================================================
 
-describe('ANM 的帧间隔 @source 0x00450eb1', () => {
-  it('★ 不是 FLIC 头里的 71 ms，是原版那个 880', () => {
-    expect(ANM_FRAME_MS).toBe(0x370);
+describe('ANM 的帧间隔 @source 開獎屏 WM_TIMER 每拍 `0x00430351 call 0x450f04` 推一帧', () => {
+  it('★★ 一帧 = 一拍 = 50 ms（第八份 #7；先前的 880 ms 是把 pitch 读成了延时）', () => {
+    expect(ANM_FRAME_MS).toBe(50);
   });
 
   it('★ 逐帧推进、放完停在最后一帧', () => {

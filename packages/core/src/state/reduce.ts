@@ -229,7 +229,7 @@ import { facilityIndexOf } from '../rules/land.ts';
 import { tickBlocking, tickTurnCounters } from '../rules/blocking.ts';
 import { releaseConfinedPlayers } from '../rules/blocking.ts';
 import { wakeFromSleepwalk } from '../cards/sleepwalk.ts';
-import { purchase, purchaseBlockedBy } from '../rules/purchase.ts';
+import { purchase, purchaseBlockedBy, type PurchaseFailure } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints } from '../rules/special-square.ts';
 import { MAX_LAND_LEVEL, SPECIAL_KIND } from '../loaders/map.ts';
 import { drawEvent } from '../events/deck.ts';
@@ -1497,8 +1497,15 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           //   拦下所有消费（`call 0x40fa61`）。只查前者的话，会给出一个
           //   `buyLand` 待决交互，然后 `buyLand` 必被 `purchase` 拒掉、
           //   状态原样返回、交互留在那里 —— 玩家点一百次「買下」也没反应。
+          // ★★ 2026-09-22 订正（第八份试玩回报 #10）：上面那段话的**结论**是错的。原版五处消费点的次序都是
+          //   「现金够不够 → 弹確認框（真人 YES/NO `0x440ba8` / 电脑 `0x41d7d4`）→ **然后**才 `call 0x40fa61`
+          //   查衰神/死神 → 中了就弹「%s顯靈 拘資失敗！」（`0x463514`，1500 ms）并放弃」
+          //   （買地 `0x0041a0ab → 0x0041a0c7`、加蓋 `0x00419996 → 0x004199ae`、買設施 `0x0041a8ec → 0x0041a908`、
+          //   設施首建 `0x0041a261`、設施加蓋 `0x0041a31e → 0x0041a336`）。
+          //   ⇒ 框**要弹**；点了「買下」才被神明拦下并**告诉你为什么**。先前这里提前拦、又不弹任何提示，
+          //   玩家看到的就是「踩到空地什么都不发生」。拦截与提示统一在 `godBlockedPurchase()`。
           const buy = canPurchase(land, player, state.priceIndex);
-          if (!buy.ok || purchaseBlockedBy(player) !== null) {
+          if (!buy.ok) {
             return { ...state, phase: 'turnEnd' };
           }
           // ★ 价钱由 core 算好放进 `pending`。UI 与联机对端都不该自己再算一遍
@@ -1511,7 +1518,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         }
         case 'own': {
           const up = canUpgrade(land, player, state.priceIndex);
-          if (!up.ok || purchaseBlockedBy(player) !== null) {
+          if (!up.ok) {
             return { ...state, phase: 'turnEnd' };
           }
           return {
@@ -1660,7 +1667,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   并补上 `call 0x40fa61` 的衰神/死神拦截（canPurchase 查的是另一处，
       //   即 loc_0041a013 对土地公的判定，两者并存）。
       const bought = purchase(player, check.price);
-      if (!bought.ok) return state;
+      if (!bought.ok) return godBlockedPurchase(state, bought.reason);
       const paid = withPlayer(state, state.currentPlayer, (p) => {
         p.cash = bought.player.cash;
       });
@@ -1680,7 +1687,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       const fac = facilityAtPlayer(state, topo);
       if (player === undefined || fac === null || fac.owner !== 0) return state;
       const bought = purchase(player, facilityBuyPrice(fac.landPrice, state.priceIndex));
-      if (!bought.ok) return state;
+      if (!bought.ok) return godBlockedPurchase(state, bought.reason);
       const paid = withPlayer(state, state.currentPlayer, (p) => {
         p.cash = bought.player.cash;
       });
@@ -1711,7 +1718,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (fac.owner !== state.currentPlayer + 1 || fac.level !== 0) return state;
       if (!state.pending.choices.includes(action.facilityType)) return state;
       const bought = purchase(player, facilityBuildPrice(fac.landPrice, state.priceIndex));
-      if (!bought.ok) return state;
+      if (!bought.ok) return godBlockedPurchase(state, bought.reason);
       const paid = withPlayer(state, state.currentPlayer, (p) => {
         p.cash = bought.player.cash;
       });
@@ -1783,7 +1790,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (fac.owner !== state.currentPlayer + 1 || fac.level === 0) return state;
       if (!canUpgradeFacility(fac.type, fac.level)) return state;
       const bought = purchase(player, facilityUpgradePrice(fac.housePrice, state.priceIndex));
-      if (!bought.ok) return state;
+      if (!bought.ok) return godBlockedPurchase(state, bought.reason);
       const paid = withPlayer(state, state.currentPlayer, (p) => {
         p.cash = bought.player.cash;
       });
@@ -1806,7 +1813,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (!check.ok) return state;
 
       const built = purchase(player, check.cost);
-      if (!built.ok) return state;
+      if (!built.ok) return godBlockedPurchase(state, built.reason);
       const paid = withPlayer(state, state.currentPlayer, (p) => {
         p.cash = built.player.cash;
       });
@@ -2360,6 +2367,25 @@ function landingTailDue(before: GameState, next: GameState, action: Action, topo
 }
 
 /** 追加一扇訊息框：本 action 已经弹过的排在前面（原版就是先收费框、后顯靈框）*/
+/**
+ * 消费被衰神/死神拦下（`purchase()` 的 `blockedByGod`）：收掉待决交互、回合结束，并弹原版那扇框。
+ *
+ * @source `fcn_0040fa61`：`0x0040fa9b mov esi,[eax*4+0x47ed76]`（物件名）→ `0x0040faa3 push 0x463514`
+ *   （格式串 `%s顯靈\n\n拘資失敗！` —— 「拘」是原版的错字，照抄）→ `0x0040fab5 push 0x5dc`（1500 ms）
+ *   `call 0x440cac`（訊息框）→ 返回 1 ⇒ 调用方放弃这次消费。
+ *   五个调用点都在**確認框之后**（见 `landing` 那段注释），所以这里是「答了 YES 之后」的出口。
+ *
+ * 现金不够（`notEnoughCash`）到不了这里 —— 框只在现金够时才弹；真到了就原样返回（交互留着），
+ * 与先前一致。
+ */
+function godBlockedPurchase(state: GameState, reason: PurchaseFailure | null): GameState {
+  if (reason !== 'blockedByGod') return state;
+  const player = state.players[state.currentPlayer];
+  const who = player === undefined ? null : purchaseBlockedBy(player);
+  if (who === null) return state;
+  return { ...state, pending: null, phase: 'turnEnd', notices: [{ key: 'god.blockPurchase', args: [who], holdMs: 1500 }] };
+}
+
 function appendNotice(before: GameState, next: GameState, notice: NoticeHint): GameState {
   const own = next.notices !== before.notices ? next.notices : [];
   return { ...next, notices: [...own, notice] };
@@ -2824,14 +2850,22 @@ function applyGodPower(
     case 'receiveCards': {
       let players = state.players;
       const cardAmount = [...state.cardAmount];
+      // ★ 第八份试玩回报 #5：每得一张弹一扇「%s附身\n\n得到%s！」（`0x0040ee13 push 0x4632fd`，
+      //   `%s` 依次 = 神明名 `[0x47ed76 + 種類*4]`、卡名 `[卡表 + 卡号*8]`；`0x0040ee25 push 0x5dc` 1500 ms）；
+      //   袋空（`0x441e12` 返回 0，`0x0040edf9 je`）就一扇也不弹。`cardId` 交给表现层配那句好消息台词
+      //   （`0x0040ee39 mov al,[ebx+0x47fdef]`（卡的點數价）→ `0x0040ee46 call 0x44f230`）。
+      const notices: NoticeHint[] = [];
+      const godInfo = state.players[host]?.godInfo ?? 0;
+      const godType = godInfo > 0 ? (state.objects[godInfo - 1]?.type ?? 0) : 0;
       for (let k = 0; k < power.count; k++) {
         // @source `_rich4_player_receive_random_card` 0x441e12：袋空返回 0
         const id = drawRandomCard(rng, cardAmount);
         if (id === 0) break;
         cardAmount[id - 1] = Math.max(0, (cardAmount[id - 1] ?? 0) - 1);
         players = players.map((p, i) => (i === host ? giveCard(p, id) : p));
+        notices.push({ key: 'god.gotCard', args: [godNameOf(godType), cardNameOf(id)], holdMs: 1500, cardId: id });
       }
-      return { ...state, players, cardAmount };
+      return notices.length === 0 ? { ...state, players, cardAmount } : { ...state, players, cardAmount, notices };
     }
 
     // ── 衰神：丢卡 @source 0x0040f10c（随机一张）/ 0x0040f1de（一半）──
@@ -3580,7 +3614,14 @@ function settleMinigame(state: GameState, score: number | null): GameState {
     // 台词交给表现层（core 只负责"按原版把随机数用掉"并交出选中的下标）
     ...(phraseIndex === undefined
       ? {}
-      : { lastEvent: { kind: 'minigameDecline' as const, id: 0, phraseIndex } }),
+      : {
+          lastEvent: { kind: 'minigameDecline' as const, id: 0, phraseIndex },
+          // ★ 第八份试玩回报 #9：「不玩」那一支先弹「得點券%d點」再说台词
+          //   @source `0x00415472 push 0x463797` / `0x00415484 push 0x7d0`（**2000 ms**，不是常见的 1500）
+          //   → `0x0041548e call 0x440cac` → 之后才 `0x004154b6` 掷台词。玩过的那一支（`score !== null`）
+          //   分数由小遊戲屏自己亮 2 秒（`MINI_END_MS`），不走这扇框。
+          notices: [{ key: 'points.minigame', args: [gained], holdMs: 2000 }],
+        }),
   };
 }
 
@@ -6378,7 +6419,7 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   if (fac.owner === 0) {
     // @source 0x0041a86b `cmp [+0x37] 梦游, 0 / jne 结束`；`cmp [+0x3f] 神明, 0xc / je 结束`（土地公）
     const price = facilityBuyPrice(fac.landPrice, state.priceIndex);
-    if (price > player.cash || purchaseBlockedBy(player) !== null) return { ...state, phase: 'turnEnd' };
+    if (price > player.cash) return { ...state, phase: 'turnEnd' };
     return {
       ...state,
       phase: 'awaitingDecision',
@@ -6392,7 +6433,7 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
     if (player.blocking.sleepWalking !== 0) return { ...state, phase: 'turnEnd' };
     if (fac.level === 0) {
       const price = facilityBuildPrice(fac.landPrice, state.priceIndex);
-      if (price > player.cash || purchaseBlockedBy(player) !== null) return { ...state, phase: 'turnEnd' };
+      if (price > player.cash) return { ...state, phase: 'turnEnd' };
       // @source 0x0041a21f `cmp byte [player+0x15], 1 / jne` —— ★ 是**整字节**
       //   「等于 1 才算真人」（§7.141 E2 订正）：`whoPlays = 5`（真人|托管）原版
       //   走电脑支、旧实现 `& 3 == 1` 走了真人支。
@@ -6401,7 +6442,7 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
         rng.setState(state.rngState);
         const chosen = aiPickFacilityType(rng.next());
         const bought = purchase(player, price);
-        if (!bought.ok) return { ...state, rngState: rng.getState(), phase: 'turnEnd' };
+        if (!bought.ok) return godBlockedPurchase({ ...state, rngState: rng.getState() }, bought.reason);
         const paid = withPlayer({ ...state, rngState: rng.getState() }, me, (p) => {
           p.cash = bought.player.cash;
         });
@@ -6425,7 +6466,7 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
     }
     if (!canUpgradeFacility(fac.type, fac.level)) return afterOwnLab({ ...state, phase: 'turnEnd' }, topo, fac.id);
     const cost = facilityUpgradePrice(fac.housePrice, state.priceIndex);
-    if (cost > player.cash || purchaseBlockedBy(player) !== null) {
+    if (cost > player.cash) {
       return afterOwnLab({ ...state, phase: 'turnEnd' }, topo, fac.id);
     }
     return {

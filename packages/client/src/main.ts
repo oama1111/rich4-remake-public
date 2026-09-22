@@ -179,6 +179,7 @@ import {
 } from './speech-bubble.ts';
 // 台词字幕用的是 canvas 文字（原版 `_rich4_create_font(0x10, 0x101010, …)` 那一路）
 import { font } from './font.ts';
+import { GOD_LINE_AT, GOD_LINE_COLOR, GOD_LINE_FONT_PX, GOD_LINE_LINE_HEIGHT, GOD_LINE_SHADOW, godLineActive, godLineRows, godLineTrigger } from './god-line.ts';
 import { MusicPlayer, shouldResumeAfterUnlock } from './music.ts';
 // Q8：音色库（.sf2）—— 用户自备，有就用采样还原音色，没有就退回振荡器
 import { parseSoundFont } from './soundfont.ts';
@@ -249,6 +250,7 @@ import { dogBiteFxTrigger } from './dog-fx.ts';
 // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報）—— 同一支 `fcn_0045144f`，
 //   规格与判据见 `alien-news-fx.ts`。
 import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
+import { disappearFxTrigger } from './disappear-fx.ts';
 // ★ W-55 行 4：「惡魔顯靈拆屋」那一段 110×110 的爆破片 —— 规格/判据见 `devil-fx.ts`。
 import {
   DEVIL_DEMOLISH_FRAME_MS,
@@ -1637,6 +1639,7 @@ function stageBusyFlags(): StageFlags {
     diceFxActive: diceFx.active,
     // ★ W-69：過路費閃爍（`fcn_00451985` 是阻塞的，原版在費用訊息框之前）
     tollFlash: tollFlash !== null,
+    godLine: godLine !== null || pendingGodLine !== null,
   };
 }
 
@@ -3964,6 +3967,8 @@ function startActionFx(action: Action, before: GameState): void {
   startConfineFx(before, state);
   // ★ 神明降臨／發威（Q-ANIM-1）—— 判据是 `player.godInfo` 刚变（`god-fx.ts`）
   startGodFx(before, state);
+  // ★ 第八份试玩回报 #5：附身影片之后那句开场白（`fcn_0040e2a2`，2400 ms）—— 没影片就当场说
+  startGodLine(before, state);
   // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報：那一段被整个跳过）——
   //   判据是 `lastEvent` 刚变成 `{ news, 4 }`（`alien-news-fx.ts`）。
   //   ⚠️ **排在这里**（住院影片之后）：原版 `fcn_0044913d` 是先让
@@ -3972,6 +3977,9 @@ function startActionFx(action: Action, before: GameState): void {
   //   ⚠️ 也**不**加 `options.animation` 闸：原版这一支里没有
   //   `cmp [0x497159], 0`（与住院/入獄/神明那三支不同），照 exe 走。
   startAlienNewsFx(before, state);
+  // ★ 第八份试玩回报 #3：被外星人綁架的飛碟 / 出國的飛機（`disappear-fx.ts`，`fcn_0040d375` 的尾巴）——
+  //   判据是 `blocking.disappearing` 刚从 0 变非 0；原版这一支同样没有「動畫過程」开关。
+  startDisappearFx(before, state);
   // ★ W-55 行 4：「惡魔顯靈拆屋」那一段 110×110 的爆破片（試玩回報：客户端一段都没播）——
   //   判据是 `notices` 里**新出现** `god.demolish`（`devil-fx.ts` 的 `devilDemolishFxTrigger`）。
   //   排在神明附身影片之后：顯靈是**落点尾块**（`0x0041b077`）的事，与 `godInfo` 变没变无关。
@@ -5226,6 +5234,70 @@ function tickTollFlash(now: number): void {
   requestRender();
 }
 
+// ============================================================
+//  神明附身的开场白（`fcn_0040e2a2`）—— 规格在 `god-line.ts`（第八份试玩回报 #5）
+// ============================================================
+
+/** 正在演的那句；`null` = 没有 */
+let godLine: { text: string; at: number } | null = null;
+/** 已经该说、但附身影片还在播 —— 影片收屏那一拍才上（原版是影片 `0x45144f` 之后紧接着 `0x40e2a2`）*/
+let pendingGodLine: string | null = null;
+
+/** 这一拍有神明刚附身 ⇒ 排一句开场白（有影片就等影片，没有就当场说）*/
+function startGodLine(before: GameState, after: GameState): void {
+  const text = godLineTrigger(before, after);
+  if (text === null) return;
+  pendingGodLine = text;
+  tickGodLine(performance.now());
+}
+
+/** 每帧：排队的等影片收屏就上台；到 2400 ms 收场 */
+function tickGodLine(now: number): void {
+  if (pendingGodLine !== null && boardFilm === null && pendingBoardFilm === null) {
+    godLine = { text: pendingGodLine, at: now };
+    pendingGodLine = null;
+    requestRender();
+  }
+  if (godLine !== null && !godLineActive(godLine.at, now)) {
+    godLine = null;
+    requestRender();
+  }
+  // 演着的时候每帧都要再来一拍（到点才收得掉；`stageBusy()` 读的是这里的变量）
+  if (godLine !== null || pendingGodLine !== null) requestRender();
+}
+
+/** 任意滑鼠鍵跳過（`0x4528b9` 收到滑鼠鍵就返回非 0）—— 只跳正在演的这句，排队的照常 */
+function skipGodLine(): boolean {
+  if (godLine === null) return false;
+  godLine = null;
+  requestRender();
+  return true;
+}
+
+/**
+ * 画在棋盘画布上：28 px 白字 + #101010 阴影，换行宽 320，文字块**底边中点**在 (220, 420)（棋盘坐标）。
+ * @source `0x0040e2df call 0x44f9d8(0x1c, 0xffffff, 0x101010, 6, 0)` / `0x0040e2fd call 0x44fabc(…, 0xdc, 0x1cc, 7)`
+ */
+function drawGodLine(ctx: CanvasRenderingContext2D): void {
+  if (godLine === null) return;
+  ctx.save();
+  ctx.font = font(GOD_LINE_FONT_PX);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const rows = godLineRows(godLine.text, (s) => ctx.measureText(s).width);
+  const top = GOD_LINE_AT.y - rows.length * GOD_LINE_LINE_HEIGHT;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    if (row === '') continue;
+    const y = top + i * GOD_LINE_LINE_HEIGHT;
+    ctx.fillStyle = GOD_LINE_SHADOW;
+    ctx.fillText(row, GOD_LINE_AT.x + 2, y + 2);
+    ctx.fillStyle = GOD_LINE_COLOR;
+    ctx.fillText(row, GOD_LINE_AT.x, y);
+  }
+  ctx.restore();
+}
+
 /** 任意滑鼠鍵跳過（原版 `fcn_004528b9` 返回非 0 就 break） */
 function skipTollFlash(): void {
   if (tollFlash === null) return;
@@ -5235,7 +5307,11 @@ function skipTollFlash(): void {
 
 // ★ W-69：訊息框要**等这段闪完**再弹（原版次序：标地 → 闪 16 帧 → 静 400 ms → 才弹框）。
 //   把「闪还在播」这件事从这一道闸递给 `notice-box-screen`（见那里的 `setNoticeStartGate`）。
-setNoticeStartGate(() => tollFlash !== null);
+// ★ 第八份试玩回报 #5：訊息框还要等**棋盘影片与神明开场白**收场 —— 原版这两样都是阻塞调用，排在
+//   `0x440cac` 之前（小福神：影片 `0x45144f` → 开场白 `0x40e2a2` → 发卡 → 框 `0x4632fd` → 台词）。
+setNoticeStartGate(
+  () => tollFlash !== null || godLine !== null || pendingGodLine !== null || boardFilm !== null || pendingBoardFilm !== null,
+);
 
 /**
  * 正在排队的角色台词（T-052 的屏幕那一半）。
@@ -5777,6 +5853,15 @@ function startDevilFx(before: GameState, after: GameState): void {
  *   棋盘左上角，`pendingBoardFilm` 会等这一拍的走子补间播完才起时间轴
  *   （`tickBoardFilm`），播完放行回合驱动 —— 与住院/入獄/神明完全一致。
  */
+function startDisappearFx(before: GameState, after: GameState): void {
+  const spec = disappearFxTrigger(before, after);
+  if (spec === null) return;
+  // 影片窗口里棋盘按 before 画：人还站在那儿，被飛碟吸走 / 上飛機（`deferred-board.ts`）
+  deferredBoardBefore = before;
+  startBoardFilm(spec);
+  log(`影片：${spec.id === 'abduct' ? '被外星人綁架（飛碟）' : '強迫出國觀光（飛機）'}`);
+}
+
 function startAlienNewsFx(before: GameState, after: GameState): void {
   const spec = alienNewsFxTrigger(before, after);
   if (spec === null) return;
@@ -5935,10 +6020,13 @@ function startBuildFx(before: GameState): void {
   const manifestSound = manifestSoundFor(hints);
   if (manifestSound !== null) sound.play('Effect.mkf', manifestSound);
   if (!plan.hammer && !plan.maxLevel) return;
-  // ★ 加蓋那一级的可见性也要按到影片之后（issue #19 第 9 条）：原版
-  //   `fcn_0040b110` 先把 `+0x1a` 加 1、**再**播大锤，播片期间棋盘不重绘。
-  //   浏览器里解 68 帧要几百毫秒，不按住就会「房子先修好了」（见 `deferred-board.ts`）。
-  deferredBoardBefore = before;
+  // ★★ 第八份试玩回报 #6（2026-09-22）：**不再**把加蓋那一级按到影片之后。
+  //   需求方对着原版看：大锤片里工人一离开那块地，盖好的房子就已经在了 —— 即影片是盖在
+  //   **已经加了一级**的棋盘上播的（`0x00447345 call 0x40b110` 在 `0x00447350` 起播之前，
+  //   与本文件头「状态先变、影片后播」一致）。issue #19 第 9 条当时按住它，是因为解 68 帧要几百毫秒、
+  //   房子会在影片起播**之前**先出现；现在影片起播由 `pendingBuildFx` 等解码，那几百毫秒里棋盘上
+  //   多一层与原版 `0x40b110` 之后到 `0x45144f` 之间那一小段是同一个画面，不再按住。
+  //   ⚠️ 只放开等级；神明附身那几段仍走 `deferredBoardBefore`（`startGodFx`）。
   // 上一条还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
   if (buildFx !== null) {
     buildFx = null;
@@ -6047,6 +6135,8 @@ function boardFilmWindowFlags(): BoardFilmWindow {
     buildPending: pendingBuildFx !== null,
     filmPlaying: boardFilm !== null,
     filmPending: pendingBoardFilm !== null,
+    // ★ 第八份 #8：狗咬 → 救护车之间那一拍也算窗口开着（见 `BoardFilmWindow.filmQueued`）
+    filmQueued: pendingBoardFilmAfter !== null,
   };
 }
 
@@ -6618,6 +6708,9 @@ function drawGameStage(): void {
   // ★★ W-66-a：走子时那串**剩余步数**（原版有、本引擎先前没有）——
   //   画在棋盘画布上、对话框/名牌之下（原版就是在棋盘绘制例程里画的）。
   drawStepsCounter(performance.now());
+  // ★ 神明开场白：写在棋盘下缘（影片收屏之后、效果之前；`god-line.ts`）
+  tickGodLine(performance.now());
+  drawGodLine(boardCtx);
   const dlg = currentDialog();
   const me = state.players[state.currentPlayer];
   if (dlg !== null) {
@@ -7947,6 +8040,8 @@ function bindInput(): void {
       skipTollFlash();
       return;
     }
+    // ★ 神明开场白同样「任意滑鼠鍵跳過」，这一下被它吃掉
+    if (skipGodLine()) return;
 
     // ── 登记的整屏（契约见 ui-screen.ts）：按下这一拍派 `down` ──
     // ★ 原版对应的就是 `WM_LBUTTONDOWN`；`mouseup`（= `WM_LBUTTONUP`）派 `up`。

@@ -88,6 +88,9 @@ function possessTick(): { before: GameState; after: GameState } {
 //  ★ 反证：影片还在放 → 必须画 before
 // ============================================================
 
+// ⚠️ 2026-09-22（第八份 #6）：`main.ts` 的 `startBuildFx` **不再**给建屋影片传 before（原版大锤片下面就是加好的
+//    那一级）。下面两条「建屋」用例钉的是**纯函数**「给了 before 就按住等级」这条契约（神明那几段仍靠它），
+//    不代表建屋影片现在还按。
 describe('★★ 反证：影片窗口还开着时画 after = 红（issue #19 的那条 bug）', () => {
   it('建屋影片（大锤还在放）：那 12 号地块**必须**还是 3 级，不能提前变成 4 级', () => {
     const { before, after } = buildTick();
@@ -142,7 +145,12 @@ describe('窗口判据：四条影片状态位（正在播 / 还没解好）任�
     expect(boardFilmWindowOpen(BOARD_FILM_PENDING)).toBe(true);
   });
 
-  it('四条全假 = 关着', () => {
+  it('★ 第八份 #8：「接着还要播一段」（狗咬 → 救护车之间那一拍）也算开着 —— 镜头不能在这一拍跳去醫院', () => {
+    expect(boardFilmWindowOpen({ ...NO_FILM, filmQueued: true })).toBe(true);
+    expect(boardFilmWindowOpen({ ...NO_FILM, filmQueued: false })).toBe(false);
+  });
+
+  it('全假 = 关着', () => {
     expect(boardFilmWindowOpen(NO_FILM)).toBe(false);
   });
 
@@ -251,11 +259,13 @@ describe('★ main.ts 接线（源码钉子）', () => {
     expect(src).toContain('function boardDrawState(): GameState {');
   });
 
-  it('六条影片（建屋 / 住院入獄 / 神明 / 新聞4飛碟 / 惡犬咬人 / 飛彈核彈爆炸）起播前都记下 before 快照', () => {
+  it('六条影片（住院入獄 / 神明 / 新聞4飛碟 / 惡犬咬人 / 飛彈核彈爆炸 / 綁架出國）起播前都记下 before 快照；建屋那段 2026-09-22 起**不按**', () => {
     expect(src).toContain('deferredBoardBefore = before;');
     // 2026-09-19：新聞 4「外星人攻打地球」的飛碟影片（房子在 core 里已经被掀掉）
     // 與「踩到惡犬」的狗咬影片（人已經被寫進醫院）先加进来（3 → 4 → 5），
-    // 收尾又补了**飛彈/核彈爆炸**（`startMissileFx`，整幅盖住棋盘）⇒ 6 处。
+    // 收尾又补了**飛彈/核彈爆炸**（`startMissileFx`，整幅盖住棋盘）⇒ 6 处；
+    // 2026-09-22 第八份 #3 再加**被綁架的飛碟 / 出國的飛機**（`startDisappearFx`）⇒ 7 处；
+    // 同日第八份 #6 把**建屋**那段拿掉（原版大锤片下面就是加好的那一级）⇒ 6 处。
     // ⚠️ 「惡魔顯靈拆屋」（`startDevilFx`）是**第 7 条影片**，但它填的是
     //    `deferredBoardBefore = after;`（原版先拆、重画、再播）⇒ 不计在这里，
     //    由 `devil-fx.test.ts` 的源码钉单独管。

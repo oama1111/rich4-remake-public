@@ -470,6 +470,8 @@ export interface NoticeHint {
    *   参数顺序，见 `client/src/notice-box-screen.ts` 的 `NOTICE_TEXT`）。
    */
   key: NoticeKey;
+  /** `god.gotCard` 专用：得到的那张卡（1 基）—— 表现层按它的點數价配「好消息」台词（`0x44f230`）*/
+  cardId?: number;
   /** 原版那次 `sprintf` 的参数，**顺序原样**（`%s` 已经代入好名字，不再是下标） */
   args: readonly (string | number)[];
   /**
@@ -540,6 +542,8 @@ export type NoticeKey =
   | 'points.30'
   | 'points.10'
   | 'points.card'
+  /** 小遊戲「不玩」白拿的點券（`0x00415472 push 0x463797`，2000 ms）—— `args[0]` = 點數 */
+  | 'points.minigame'
   | 'object.gift'
   | 'object.treasure'
   | 'beggar.alms'
@@ -548,6 +552,10 @@ export type NoticeKey =
   | 'god.build'
   | 'god.demolish'
   | 'god.seize'
+  /** 衰神/死神拦下一次消费（`fcn_0040fa61`，`0x463514`，1500 ms）—— `args[0]` = 物件名 */
+  | 'god.blockPurchase'
+  /** 福神附身得卡（`0x0040ee13 push 0x4632fd`，1500 ms）—— `args` = [神明名, 卡名]；`cardId` 给台词配档 */
+  | 'god.gotCard'
   /**
    * 董事長蒞臨商店的贈禮（`_rich4_ui_shop_entry` 0x0042e9f8 `push 0x464378`，
    * 訊息框 1500 ms）—— **在商店窗打开之前**弹，`args[0]` = 送出那件的名字。

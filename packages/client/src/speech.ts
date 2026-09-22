@@ -67,6 +67,7 @@ import {
   type Player,
 } from '@rich4/core';
 import {
+  CARDS,
   CHARACTERS,
   SPEECH_CHARACTER_COUNT,
   SPEECH_EVENTS_PER_CHARACTER,
@@ -575,9 +576,26 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
     } else if (poolGrew > 0) {
       const tier = payTierFor(amount, after.priceIndex);
       if (tier !== null) out.push({ player: i, event: 12 + tier });
+    } else if (companyFundsGrew(before, after)) {
+      // ★★ 第八份试玩回报 #1（2026-09-22）：付給**企業**（董事長收費 / 保險費）也要说 9/10/11。
+      //   先前这里「企业则不吭声」是读漏了：企業收費那一段的尾巴
+      //   `0x0041b000 cmp edi,[0x49910c] / jne` → `0x0041b004 push ebp（金額）/ push eax（付款人）/
+      //   0x0041b006 call 0x44f42d` —— 与付給玩家同一支阶梯函数，且它**不看收款方是谁**（只有
+      //   付款人与金额两个实参）。少了这一句，訊息框 1500 ms 一到就换人，「字还没看清就下一个」。
+      //   （付款人被死神顶替时 `edi != 当前玩家` ⇒ 不说 —— 那种情形付款人的 `monthlyPaid` 本来就不涨。）
+      const tier = payTierFor(amount, after.priceIndex);
+      if (tier !== null) out.push({ player: i, event: 9 + tier });
     }
   }
   return out;
+}
+
+/** 这一条 action 里有哪家企業的資金涨了（= 钱付给了企業）*/
+function companyFundsGrew(before: GameState, after: GameState): boolean {
+  const a = after.companyFunds ?? [];
+  const b = before.companyFunds ?? [];
+  for (let k = 0; k < a.length; k++) if ((a[k] ?? 0) > (b[k] ?? 0)) return true;
+  return false;
 }
 
 /**
@@ -997,6 +1015,26 @@ export function detectShopGift(before: GameState, after: GameState): DetectedSay
   return [{ player: p.index, event: tier }];
 }
 
+/**
+ * 福神附身得卡之后那句「好消息」（第八份试玩回报 #5）。
+ *
+ * @source `0x0040ee39 mov al,[ebx+0x47fdef]`（那张卡的**點數价**）→ `0x0040ee46 call 0x44f230(玩家, 點數价)`，
+ *   每得一张说一次（大福神两张 ⇒ 两句）；档位阈值 100 / 50 与 `detectShopGift` 同一支阶梯。
+ * 判据 = 这一条 action 新写的 `notices` 里的 `god.gotCard`（`cardId` 由 core 交下来）。
+ */
+export function detectGodCard(before: GameState, after: GameState): DetectedSay[] {
+  if (after.notices === before.notices) return [];
+  const p = after.players[after.currentPlayer];
+  if (p === undefined || !isAlive(p) || !speechGatesOpen(p)) return [];
+  const out: DetectedSay[] = [];
+  for (const n of after.notices) {
+    if (n.key !== 'god.gotCard' || n.cardId === undefined) continue;
+    const tier = smallGainTierFor(CARDS.find((c) => c.id === n.cardId)?.price ?? 0);
+    if (tier !== null) out.push({ player: p.index, event: tier });
+  }
+  return out;
+}
+
 // ============================================================
 //  財神的额外台词 —— 小財神 / 大財神（W-55 行 7 / G33 / G34）
 // ============================================================
@@ -1195,6 +1233,8 @@ export const DETECTORS: readonly SpeechDetector[] = [
   // ★ W-67-a：董事長蒞臨商店的贈禮 —— 訊息框（`0x464378`，1500 ms）→ 台词（`0x44f230`）
   //   ⇒ `afterStage`（框在前、台词在后）。
   { name: 'shopGift', source: [0x0042e9f8, 0x0042ea23], order: 'afterStage', detect: detectShopGift },
+  // ★ 第八份试玩回报 #5：福神附身得卡 —— 神明台词 → 卡面 → 訊息框（`0x4632fd`）→ 台词（`0x44f230`）⇒ `afterStage`
+  { name: 'godCard', source: [0x0040edef, 0x0040ee46], order: 'afterStage', detect: detectGodCard },
   // §2.2 表：設施收費 `0x0041a71e` —— 轉盤 → 訊息框 → 收費 → 台词（其余几个调用点同一条阶梯函数）
   { name: 'moneyPaid', source: [0x0044f42d, 0x0044f4ed, 0x0044f567], order: 'afterStage', detect: detectMoneyPaid },
   // ⚠ C 级：E-19（调用点 `0x0044f420` 前后两列都空）

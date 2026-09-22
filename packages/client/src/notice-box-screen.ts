@@ -117,6 +117,7 @@ export const NOTICE_TEXT = {
   'points.30': MESSAGE_BOX.points30.text,
   'points.10': MESSAGE_BOX.points10.text,
   'points.card': MESSAGE_BOX.got.text,
+  'points.minigame': MESSAGE_BOX.pointsMinigame.text,
   'object.gift': MESSAGE_BOX.got.text,
   'object.treasure': MESSAGE_BOX.got500Points.text,
   'beggar.alms': MESSAGE_BOX.alms.text,
@@ -125,6 +126,8 @@ export const NOTICE_TEXT = {
   'god.build': GOD_MANIFEST.build.text,
   'god.demolish': GOD_MANIFEST.demolish.text,
   'god.seize': GOD_MANIFEST.seize.text,
+  'god.blockPurchase': GOD_MANIFEST.blockPurchase.text,
+  'god.gotCard': GOD_MANIFEST.gotCard.text,
   // ★ W-67-a：董事長蒞臨商店的贈禮（`0x464378`）—— 在商店窗打开**之前**弹
   'shop.chairmanGift': SHOP.chairmanGift.text,
 } as const satisfies Record<NoticeKey, string>;

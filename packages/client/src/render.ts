@@ -10,6 +10,7 @@
 import {
   ACTOR_DOLL,
   ACTOR_PLACE,
+  OBJECT_TYPE_BOMB,
   SPECIAL_ACTOR_BASE,
   SPECIAL_ACTOR_COUNT,
   directionOf,
@@ -1143,6 +1144,49 @@ export interface AttachedObjectToken {
   /** 相对主人的**屏幕**像素偏移 @source 表 0x474951 / 0x474991 */
   offsetX: number;
   offsetY: number;
+  /**
+   * ★ 定時炸彈背在身上时，炸彈上方那个**倒数**（第八份试玩回报 #2）—— 其余物件为 null。
+   *
+   * @source 塞槽时 `0x00408ca7 cmp byte [obj+0x496d08],0x12 / 0x00408cb1 or byte [slot+1],0x40`
+   *   给槽打标；画槽时 `0x004098c7 test al,0x40` → `0x004098f3 mov al,[obj+0x496d0c]`（= `state`，
+   *   还剩几步）→ `sprintf(buf, "%d")`（`0x4631d3`）→ `0x00409929 call 0x44fabc(0, buf, slot.x, slot.y − 0x3c, 2)`
+   *   ⇒ 数字**中心**在物件锚点上方 60 px（对齐 2 = 水平/垂直都居中）。
+   */
+  fuse: number | null;
+}
+
+/** 倒数数字相对物件锚点的位置 @source `0x00409916 sub eax,0x3c` */
+export const BOMB_FUSE_DY = -0x3c;
+
+/**
+ * 住宿 / 消失 / 坐牢 / 住院中的棋子画不画 —— 原版只在「位置被外力挪过」（`whoPlays & 0x20`）时才画。
+ * @source `0x00408691 cmp dword [player+0x32],0 / je` → `0x0040869a test byte [player+0x15],0x20 / je 跳过`
+ */
+export function confinedPlayerDrawn(p: {
+  whoPlays: number;
+  blocking: { inHotel: number; disappearing: number; inPrison: number; inHospital: number };
+}): boolean {
+  const b = p.blocking;
+  const confined = b.inHotel !== 0 || b.disappearing !== 0 || b.inPrison !== 0 || b.inHospital !== 0;
+  return !confined || (p.whoPlays & 0x20) !== 0;
+}
+
+/**
+ * 炸彈上方那个白色小数字 —— 16 px 白字 + #101010 描边（棋盘上的小字都是这一套），中心对齐。
+ * @source `0x00409929 call 0x44fabc(0, "%d", x, y − 60, 2)`（对齐 2 = 中/中）
+ */
+export function drawBombFuse(ctx: CanvasRenderingContext2D, fuse: number, cx: number, cy: number, k = 1): void {
+  ctx.save();
+  ctx.font = `bold ${16 * k}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3 * k;
+  ctx.strokeStyle = '#101010';
+  ctx.fillStyle = '#ffffff';
+  const text = String(fuse);
+  ctx.strokeText(text, cx, cy);
+  ctx.fillText(text, cx, cy);
+  ctx.restore();
 }
 
 /**
@@ -1209,6 +1253,7 @@ export function attachedObjectTokens(
       frame: attachedFrameIndex(image),
       offsetX,
       offsetY,
+      fuse: o.type === OBJECT_TYPE_BOMB ? o.state : null,
     });
   }
   return out;
@@ -2438,6 +2483,8 @@ export class BoardRenderer {
             sp.width * k,
             sp.height * k,
           );
+          // ★ 定時炸彈的倒数：贴完炸彈紧接着写数字（原版在同一个槽的画法里，`0x004098c7` 起）
+          if (t.fuse !== null) drawBombFuse(ctx, t.fuse, x, y + BOMB_FUSE_DY * k, k);
         },
       });
     }
@@ -2599,6 +2646,11 @@ export class BoardRenderer {
     const perNode = new Map<string, number>();
     for (const pl of state.players) {
       if (pl.whoPlays === 0) continue;
+      // ★★ 第八份试玩回报 #3 / #8：住宿 / 消失（出國、被外星人綁架）/ 坐牢 / 住院中的棋子**不画**。
+      //   @source 棋子绘制 `0x00408691 cmp dword [player+0x32],0 / je 画` —— 四个计数字节合成一个 dword 比；
+      //   非 0 时只有 `0x0040869a test byte [player+0x15],0x20 / jne` 才画（位置被外力挪过那一支）。
+      //   先前一律画：被綁架的人还站在地图上、住院的人站在醫院大樓上。
+      if (!confinedPlayerDrawn(pl)) continue;
       const world = playerAnchorWorld(pl);
       if (world === null) continue;
       const key = `${world.x},${world.y}`;

@@ -79,6 +79,11 @@ export interface StageFlags {
    *   所以要把它算進「台上還忙著」：訊息框與回合驅動都得等它。
    */
   tollFlash: boolean;
+  /**
+   * ★ 神明附身的开场白（`fcn_0040e2a2`，2400 ms）正在演 / 排队等影片收屏（第八份试玩回报 #5）。
+   *   原版 `0x4528b9(0x960)` 是阻塞等待，效果（发卡 / 收钱窗）与台词都在它之后。
+   */
+  godLine: boolean;
 }
 
 /**
@@ -98,7 +103,8 @@ export function stageBusy(f: StageFlags): boolean {
     f.objectFlight ||
     !f.walkDone ||
     f.diceFxActive ||
-    f.tollFlash
+    f.tollFlash ||
+    f.godLine
   );
 }
 

@@ -26,6 +26,7 @@ const IDLE: StageFlags = {
   walkDone: true,
   diceFxActive: false,
   tollFlash: false,
+  godLine: false,
 };
 
 /** 只翻**一位**的简写 */
@@ -47,6 +48,7 @@ describe('stageBusy —— 每一位各一条（清单与 holdForActorWalk 同�
     ['!walkDone', { walkDone: false }],
     ['diceFxActive', { diceFxActive: true }],
     ['tollFlash（過路費閃爍，W-69）', { tollFlash: true }],
+    ['godLine（神明开场白，第八份 #5）', { godLine: true }],
   ] as const)('只有 %s ⇒ busy', (_name, patch) => {
     expect(stageBusy(only(patch))).toBe(true);
   });
@@ -63,6 +65,7 @@ describe('stageBusy —— 每一位各一条（清单与 holdForActorWalk 同�
       walkDone: false,
       diceFxActive: true,
       tollFlash: true,
+      godLine: true,
     };
     expect(stageBusy(all)).toBe(true);
   });
