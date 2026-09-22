@@ -193,6 +193,13 @@ export function framesFor(
  *   走回来会快一倍（`trunc(dist/16)` 而不是 `trunc(dist×0.125)`）。
  *   走回棋盘的格数恒为 1（`@source 0x40dd40 mov dword [0x48baf8], 1`）。
  *
+ * ★★ `landing`（第八份试玩回报 #8，2026-09-22）：走一格的**终点是踏上的那一格**，不是 after 里的 `nodeId`。
+ *   两者在「踏上去就被送走」时不同：踩惡犬 / 地雷 / 炸彈炸了 → core 在同一条 `step` 里把人写进醫院
+ *   （`nodeId` = 醫院關押格、`x/y` = 醫院大樓），拿它当终点就成了一段横跨地图的 4 秒「走去醫院」——
+ *   原版是 `0x40c05c` 走到狗格、`fcn_0041b42d` 才处理落点。调用方用引擎自己的 `pickNextNode`
+ *   回放这一步（`dev-patch.ts` 的 `nextNodeOf`：随机流位置就是 before 的 `rngState`）把踏上的格传进来；
+ *   不传就按 after 的 `nodeId`（先前的口径）。
+ *
  * 返回 `null` = 这一条 action 不起补间。
  * ★ C-ARC-2：只算"画在哪"，不碰规则；补间**绝不进 state**（C-DET-4）。
  */
@@ -209,6 +216,7 @@ export function walkTweenFor(
   before: { currentPlayer: number; players: readonly { nodeId: number; xpos: number; ypos: number }[] },
   after: { currentPlayer: number; players: readonly { nodeId: number; xpos: number; ypos: number }[] },
   nodeAt: (nodeId: number) => { x: number; y: number } | undefined,
+  landing: number | null = null,
 ): WalkTween | null {
   const idx = after.currentPlayer;
   const a = after.players[idx];
@@ -216,8 +224,11 @@ export function walkTweenFor(
   if (a === undefined || b === undefined) return null;
   if (actionType === 'step') {
     if (a.nodeId === b.nodeId) return null; // 没真的挪窝（例如被阻碍）
+    // ★ 终点 = 踏上的那一格（见文件头 `landing`）；没给就退回 after 的 `nodeId`
+    const toId = landing ?? a.nodeId;
+    if (toId === b.nodeId) return null;
     const from = nodeAt(b.nodeId);
-    const to = nodeAt(a.nodeId);
+    const to = nodeAt(toId);
     if (from === undefined || to === undefined) return null;
     // 普通走子：原版查速度表 `[0x4749d8]`（`@source 0x40c282..0x40c29e`）
     return {

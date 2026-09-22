@@ -2147,11 +2147,15 @@ function noteWalkGap(): void {
   if (walkGaps.length > 600) walkGaps.shift();
 }
 
-function startStepTween(playerIndex: number): void {
+function startStepTween(playerIndex: number, before: GameState): void {
   const p = state.players[playerIndex];
-  if (p === undefined) return;
-  const from = map.nodes[p.lastNodeId - 1];
-  const to = map.nodes[p.nodeId - 1];
+  const b = before.players[playerIndex];
+  if (p === undefined || b === undefined) return;
+  // ★ 终点 = 踏上的那一格（与 `tweenStepIfMoved` 同源，见 `tween.ts` 文件头 `landing`）
+  const landing = nextNodeOf(before, topo) ?? p.nodeId;
+  if (landing === b.nodeId) return;
+  const from = map.nodes[b.nodeId - 1];
+  const to = map.nodes[landing - 1];
   if (from === undefined || to === undefined) return;
   noteWalkGap();
   renderer.startWalk(
@@ -4042,9 +4046,12 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
   //   ② 「走回棋盘」那一回合（第 86/87 条）：core 把 `x/y` 从綠島/醫院大樓
   //      回填成監獄/醫院格 —— 原版由走路例程逐帧走回去
   //      （`trunc(676 / 8) = 84` tick，**世界距离**，见 `startStepTween`）。
+  // ★ 走一格的终点 = **踏上的那一格**（用引擎自己的 `pickNextNode` 从 before 回放），不是 after 的 `nodeId`
+  //   —— 踩惡犬 / 地雷时 after 已经在醫院，拿它当终点是一段 4 秒横跨地图的补间（第八份 #8）
+  const landing = action.type === 'step' ? nextNodeOf(before, topo) : null;
   const t =
     action.type === 'step' || action.type === 'startTurn'
-      ? walkTweenFor(action.type, before, state, (id) => map.nodes[id - 1])
+      ? walkTweenFor(action.type, before, state, (id) => map.nodes[id - 1], landing)
       : null;
   if (t === null) return;
   const p = state.players[t.player];
@@ -4260,7 +4267,7 @@ function scheduleAi(): void {
     const walker = action.type === 'step' ? state.currentPlayer : null;
     // ★ 与 `applyAction` 同一个宿主播种漏斗（日推进后重播种）
     state = reduceRecorded(action);
-    if (walker !== null && state !== before) startStepTween(walker);
+    if (walker !== null && state !== before) startStepTween(walker, before);
     // ★ 「走回棋盘」那一回合也要演一段位移（与 `tweenStepIfMoved` 同源）
     if (action.type === 'startTurn' && state !== before) tweenStepIfMoved(action, before);
     // ★ 动效出口**与 `applyAction` 共用同一个函数**（Q-TOOL-5 ⑤14）：

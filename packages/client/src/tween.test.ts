@@ -155,6 +155,21 @@ describe('★★ walkTweenFor：走一格 / 「走回棋盘」两种位移补间
     expect(walkTweenFor('step', st(P(12, 1248, 1583)), st(P(12, 1248, 1583)), nodeAt)).toBeNull();
   });
 
+  it('★★ 踏上去就被送进醫院（after 的 nodeId 已是關押格）⇒ 终点是**踏上的那一格** `landing`，不是醫院', () => {
+    const hospitalAt = (id: number) => (id === 23 ? { x: 319, y: 990 } : nodeAt(id));
+    // 7 → 踏上 12（狗格）→ core 同一条 step 里写进醫院 23
+    expect(walkTweenFor('step', st(P(7, 768, 1008)), st(P(23, 319, 990)), hospitalAt, 12)).toEqual({
+      player: 0,
+      from: { x: 768, y: 1008 },
+      to: { x: 1248, y: 1583 },
+      special: false,
+    });
+    // 不给 landing ⇒ 退回先前口径（after 的 nodeId）
+    expect(walkTweenFor('step', st(P(7, 768, 1008)), st(P(23, 319, 990)), hospitalAt)?.to).toEqual({ x: 319, y: 990 });
+    // landing 就是起点（回放说没挪）⇒ 不起
+    expect(walkTweenFor('step', st(P(7, 768, 1008)), st(P(23, 319, 990)), hospitalAt, 7)).toBeNull();
+  });
+
   it('★★ 「走回棋盘」：x/y 从綠島回填到監獄格 ⇒ 起终点就是这两个坐标', () => {
     // 綠島（景观记录 2）= (1817,1960)、監獄格 12 = (1248,1583)
     const t = walkTweenFor('startTurn', st(P(12, 1817, 1960)), st(P(12, 1248, 1583)), nodeAt);
