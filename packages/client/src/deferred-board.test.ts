@@ -415,7 +415,10 @@ describe('★ main.ts 接线（源码钉子）', () => {
 
   it('★★ 建屋那一段只在**大锤族**按住，并按第 48 帧中途放开', () => {
     // 只在 plan.hammer 时按 —— 天使卡 / 自己的地升級那两条没有大锤段
-    expect(src).toContain('if (plan.hammer) deferredBoardBefore = before;');
+    // ★ 2026-09-22（第十一份試玩回報 #11）：改成**无条件**写快照了（收摊也会清）——
+    //   先前只在 `plan.hammer` 时写，配上「收摊不清」正好让过期快照继续生效。
+    expect(src).toContain('deferredBoardBefore = before;');
+    expect(src).not.toContain('if (plan.hammer) deferredBoardBefore = before;');
     // 放开那一拍的判据交给 build-fx.ts（纯函数，可单测）
     expect(src).toContain('const released = buildFx !== null && buildHammerDone(buildFx, now);');
     expect(src).toContain('boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released)');

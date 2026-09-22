@@ -344,6 +344,7 @@ describe('★ main.ts 的接线（源码钉子）', () => {
     expect(src).toContain('let pendingBoardFilmAfter: BoardFilmSpec | null = null;');
     expect(src).toContain('pendingBoardFilmAfter: pendingBoardFilmAfter !== null,');
     expect(src).toContain('if (stageBusy(stageBusyFlags())) {');
-    expect(src).toContain('if (pendingBoardFilmAfter === null) resumeTurnDriver();');
+    // ★ 2026-09-22（#11 堵漏）：收摊那一段多了一句清快照，断言放宽成「里面有这行」
+    expect(src).toContain('if (pendingBoardFilmAfter === null) {');
   });
 });

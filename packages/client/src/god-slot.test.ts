@@ -475,6 +475,10 @@ describe('★ 屏幕本体', () => {
     const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2);
     after.players[0]!.cash = 1100;
     godSlotScreen.event?.(before, after, env);
+    // ★ 2026-09-22（第十一份試玩回報 #6）：`event()` 现在只**记下** cue，要等
+    //   `tick()` 那一拍（且起播闸开着）才真的起播 —— 原版次序是「影片 → 文案 → 老虎机」。
+    //   闸默认是 null（`gated()` 为假），所以这里补一次 tick 即可。
+    godSlotScreen.tick?.(env);
     expect(godSlotState().playing).toBe(true);
     expect(godSlotState().amount).toBe(1000);
     expect(effects).toEqual([GOD_SLOT_SPIN_SOUND]);

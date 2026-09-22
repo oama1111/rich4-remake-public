@@ -310,6 +310,9 @@ import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './curso
 import { shouldResumeDriver } from './driver-resume.ts';
 import { tollFlashLevel } from './toll-flash-fx.ts';
 import { setNoticeStartGate } from './notice-box-screen.ts';
+// ★ 2026-09-22（第十一份試玩回報 #15）：訊息框的起播閘要看「轉盤 / 神明老虎機在不在播」
+import { wheelScreenState } from './wheel-screen.ts';
+import { godSlotState, setGodSlotStartGate } from './god-slot.ts';
 // ★ W-66-a：走子时那串**剩余步数**的大数字（规格/判据见该模块文件头）。
 import {
   STEPS_COUNTER_ARCHIVE,
@@ -4222,6 +4225,25 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
     sound.play('Effect.mkf', SOUND_IDS.BANK);
   }
 
+  // ★★ 2026-09-22（第十一份試玩回報 #17「踩到卡片格子时应该有个提示音」）：
+  //   原版在**落地处理**的分派器**之前**先统一放一声（種類 2..16）——
+  //   @source `0x00419884 cmp ebx,2 / jb`（種類 0/1 含公園不放）、`0x00419889 cmp ebx,0x10 / ja`、
+  //     `0x00419892 mov al,[ebx + 0x475299]`（種類→下標）、`0x0041989b add eax,0x48234a`、
+  //     `0x004198a1 call 0x4542ce`。
+  //   下標表 `0x475299 = [9,0,10,10,10,10,10,10,10,10,16,16,16,16,10,10,10]` ⇒
+  //     種類 2..9 與 14..16 ⇒ Effect **43**；種類 10..13（得點×3 + **卡片**）⇒ Effect **48**。
+  //
+  //   判据取「**这一步真的走到了落点**」= `moving → settling`，而不是「nodeId 变了」——
+  //   后者对走子途中经过的每一个特殊格都会成立（原版只在**停下**那一拍的分派器前放）。
+  if (before.phase === 'moving' && after.phase === 'settling') {
+    const cur = after.currentPlayer;
+    const landed = after.players[cur];
+    const kind = landed === undefined ? 0 : (topo.nodes[landed.nodeId - 1]?.specialKind ?? 0);
+    if (kind >= 2 && kind <= 16) {
+      sound.play('Effect.mkf', kind >= 10 && kind <= 13 ? SOUND_IDS.CARD_SQUARE : SOUND_IDS.SPECIAL_SQUARE);
+    }
+  }
+
   // ★ **使用道具 1（機器娃娃）**那一下 —— 音效 38（见 `SOUND_IDS.DOLL`）。
   //
   // @source VA 0x0040deb9..0x0040dedc（`fcn_0040dd1f` 的 actor 8 分支）：
@@ -5486,8 +5508,29 @@ function skipTollFlash(): void {
 //   把「闪还在播」这件事从这一道闸递给 `notice-box-screen`（见那里的 `setNoticeStartGate`）。
 // ★ 第八份试玩回报 #5：訊息框还要等**棋盘影片与神明开场白**收场 —— 原版这两样都是阻塞调用，排在
 //   `0x440cac` 之前（小福神：影片 `0x45144f` → 开场白 `0x40e2a2` → 发卡 → 框 `0x4632fd` → 台词）。
+// ★★ 第十一份試玩回報 #6（小窮神順序）：神明老虎機要**等附身影片与开场白收场**才起播 ——
+//   原版次序是「抱怨台词 → 影片 0x220 → 白字文案 → 老虎機 → 付款」（`rich4_gods.asm:835-883`）。
+setGodSlotStartGate(
+  () =>
+    boardFilm !== null ||
+    pendingBoardFilm !== null ||
+    godLine !== null ||
+    pendingGodLine !== null,
+);
+
 setNoticeStartGate(
-  () => tollFlash !== null || godLine !== null || pendingGodLine !== null || boardFilm !== null || pendingBoardFilm !== null,
+  () =>
+    tollFlash !== null ||
+    godLine !== null ||
+    pendingGodLine !== null ||
+    boardFilm !== null ||
+    pendingBoardFilm !== null ||
+    // ★★ 2026-09-22（第十一份試玩回報 #15）：转盘 / 神明老虎机在播时，訊息框**押后** ——
+    //   原版是「转盘（阻塞、玩家点停）→ 費用/保費訊息框 → 台词」。
+    //   光是调整 `SCREENS` 顺序还不够：押后期间訊息框的 `active()` 仍为真，
+    //   照样会压住转盘、吃掉玩家的点击（见 `screens.ts` 里那一段注释）。
+    wheelScreenState().playing ||
+    godSlotState().playing,
 );
 
 /**
@@ -6137,7 +6180,16 @@ function tickBoardFilm(now: number): void {
   // ★ 阻塞那一段播完了 —— 若后面还排着一段（狗咬 → 救护车），就交给上面 ⓪ 那一步；
   //   只有**两段都播完**才把回合驱动接回去（`scheduleHumanTurn` / `scheduleAi`
   //   都以它为闸，不补这一下人就永远停在原地）。
-  if (pendingBoardFilmAfter === null) resumeTurnDriver();
+  if (pendingBoardFilmAfter === null) {
+    // ★★ 2026-09-22（第十一份試玩回報 #11 順帶查出的**真隱患**）：
+    //   影片收摊时把 `deferredBoardBefore` 清掉 —— 先前它**从不在收摊时清**
+    //   （只在换局/读档/失步自愈时清），下一条影片起播时才被覆写。
+    //   而 `holdBackPlayers` 的判据是 `before.inHospital===0 && after.inHospital!==0`
+    //   ⇒ 一份**过期快照**会把「期间才被关押的人」在画面上**复活**，
+    //   并因 `wreckedThisAction(staleBefore, after, i)` 为真而画成乞丐、站在很久以前的旧坐标上。
+    deferredBoardBefore = null;
+    resumeTurnDriver();
+  }
   requestRender();
 }
 
@@ -6215,7 +6267,11 @@ function startBuildFx(before: GameState): void {
   //      影片收摊时从不清 —— 上一条影片（神明/入獄/恶犬…）留下的**过期快照**会被下一条
   //      「只用機器工人」的 action 拿去按住 `landLevel`，画出更旧的等级。7 处起播点里
   //      只有 `startBuildFx` 不写快照，现在补上。
-  if (plan.hammer) deferredBoardBefore = before;
+  // ★ 2026-09-22（同 #11）：**无条件**写快照 —— 先前只在 `plan.hammer` 时写，
+  //   于是「天使卡 / 魔法屋加蓋 / 自己的地升級」那几条（没有大锤段）不写，
+  //   配上「收摊不清」就正好让**上一条影片的过期快照**继续生效。
+  //   现在收摊会清、起播必写，这条 stale 路径就没有了。
+  deferredBoardBefore = before;
   // 上一条还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
   if (buildFx !== null) {
     buildFx = null;

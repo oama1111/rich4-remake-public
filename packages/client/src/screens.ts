@@ -49,14 +49,22 @@ export const SCREENS: readonly UiScreen[] = [
   //   「得一張卡片」与卡片格都会让手牌变长，两屏会从同一次 action 各起一段；
   //   魔法屋那一次该由魔法屋屏演（见 `event-box-screen.ts` 头注释）。
   eventBoxScreen,
+  // ★★ 2026-09-22（第十一份試玩回報 #15「踩到保险公司…应该是等玩家点完转盘停下…才弹出金额」）：
+  //   **转盘与老虎机必须排在訊息框之前** —— 原版次序是「转盘（阻塞、玩家点停）→ 費用/保費訊息框
+  //   → 台词」（設施收費 `0x41a458 轉盤 → 0x41a579 費用框`；別人的保險
+  //   `0x41ac3f 轉盤 → 0x41aeaa 保費框`）。
+  //   本引擎只画「此刻接管整屏」的**第一屏**（`main.ts` 的 `activeUiScreen`），
+  //   而且鼠标只发给那一屏 ⇒ 先前訊息框排在前面时，同一 action 里它先起播，
+  //   **压住转盘、还把玩家那一下「点停」吃掉**。
+  wheelScreen,
+  // ★ 「神明附身」那一刻的老虎机窗（Q-GOD-1）：与转盘同一类**演出**屏，
+  //   由 `event(before, after)` diff 出「刚附身 + 四种金額型」时起播。
+  //   ★ 它另有「等附身影片/开场白收场」的闸（见 `god-slot.ts` 的 `pendingCue`）。
+  godSlotScreen,
   // ★ 付费类落点的棕色訊息框（issue #18）：由 `state.notices` 起播，每扇 1500 ms
   //   可跳过（得点格那三扇是 1000 ms）；同一 action 里连弹两扇时按顺序一扇一扇放。
   //   原版弹在**结算当场**（`0x440cac`），与上面几屏不会同时起。
   noticeBoxScreen,
-  wheelScreen,
-  // ★ 「神明附身」那一刻的老虎机窗（Q-GOD-1）：与转盘同一类**演出**屏，
-  //   由 `event(before, after)` diff 出「刚附身 + 四种金額型」时起播。
-  godSlotScreen,
   // ★ 「請選擇設施類別」（Q-TOOL-4）：真人盖**等级 0 的設施**时要先选种类
   //   （原版 `fcn_00440aac`，一扇盖在棋盘上的浮窗）。它由主机的拾取/加蓋流程
   //   主动 `openFacilityPicker()` 打开，`active()` 只在开窗期间为真。

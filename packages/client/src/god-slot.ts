@@ -479,11 +479,33 @@ export function drawGodSlot(
 
 let playback: GodSlotSpin | null = null;
 let playAmount = 0;
+/**
+ * 已 diff 出、但**还在等附身影片/开场白收场**的那一局（第十一份試玩回報 #6）。
+ *
+ * ★★ 原版次序（`fcn_0040ef1b`，小窮神）：
+ *   抱怨台詞(`0x40ef44`) → **附身影片 0x220**(`0x40ef65/78`) → **白字文案**(`0x40ef8e`)
+ *   → **金額老虎機** `fcn_00440706(4)`(`0x40ef98`) → 付款(`0x40efd9`)。
+ *   先前这里是**同步**起播（`event()` 里直接 `godSlotStart`），而 `SCREENS` 的 `event` 派发与
+ *   `startGodFx`/`startGodLine` 同一拍 ⇒ 老虎機搶在影片與文案**之前**出现（還把影片盖在下面）。
+ */
+let pendingCue: GodSlotCue | null = null;
+
+/** 起播闸 —— 与 `notice-box-screen.ts` 的 `setNoticeStartGate` 同一个形状 */
+let startGate: (() => boolean) | null = null;
+
+export function setGodSlotStartGate(f: (() => boolean) | null): void {
+  startGate = f;
+}
+
+function gated(): boolean {
+  return startGate?.() === true;
+}
 
 /** 调试 / 单测用：把整屏关掉 */
 export function resetGodSlot(): void {
   playback = null;
   playAmount = 0;
+  pendingCue = null;
 }
 
 /** 给单测的只读视图 */
@@ -511,7 +533,10 @@ export const godSlotScreen: UiScreen = {
    */
   windowed: true,
 
-  active: () => playback !== null,
+  // ⚠️ **必须**把 `pendingCue` 算进来：`main.ts` 只把 `tick` 发给「此刻接管整屏」的那一屏，
+  //   `active()` 为假就永远没人叫它起床（同 `notice-box-screen.ts` 那条注释的坑）。
+  //   `draw()` 在 `playback === null` 时直接 return，所以押后期间不会画出东西。
+  active: () => playback !== null || pendingCue !== null,
 
   draw(env: UiScreenEnv): void {
     const spin = playback;
@@ -538,6 +563,20 @@ export const godSlotScreen: UiScreen = {
   },
 
   tick(env: UiScreenEnv): void {
+    // ── ① 已 diff 出、还在等附身影片/开场白收场 ──
+    const pendingSpin = pendingCue;
+    if (pendingSpin !== null) {
+      if (gated()) return; // 闸没开：原样留着，`active()` 靠它继续叫我们
+      pendingCue = null;
+      playback = godSlotStart(pendingSpin, env.now);
+      playAmount = pendingSpin.amount;
+      // @source 0x004408a0 / 0x004408b2：原版起循环后**紧接着就停**
+      env.playEffect(GOD_SLOT_SPIN_SOUND, true);
+      env.stopEffect(GOD_SLOT_SPIN_SOUND);
+      env.log(`神明老虎机：${pendingSpin.text.split('\n')[0]} ${pendingSpin.amount} 元`);
+      env.requestRender();
+      return;
+    }
     const spin = playback;
     if (spin === null) return;
     if (godSlotDone(spin, env.now)) {
@@ -568,12 +607,8 @@ export const godSlotScreen: UiScreen = {
     if (before === after) return;
     const cue = godSlotCue(before, after);
     if (cue === null) return;
-    playback = godSlotStart(cue, env.now);
-    playAmount = cue.amount;
-    // @source 0x004408a0 / 0x004408b2：原版起循环后**紧接着就停**
-    env.playEffect(GOD_SLOT_SPIN_SOUND, true);
-    env.stopEffect(GOD_SLOT_SPIN_SOUND);
-    env.log(`神明老虎机：${cue.text.split('\n')[0]} ${cue.amount} 元`);
+    // ★ 第十一份試玩回報 #6：**先记下来**，等附身影片/开场白收场再起播（见 `pendingCue`）
+    pendingCue = cue;
     env.requestRender();
   },
 };
