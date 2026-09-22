@@ -323,3 +323,70 @@ describe('★ 神明顯靈／自己加蓋的音效 —— 50（表项 0x4823da�
     expect(info.channels).toBeGreaterThan(0);
   });
 });
+
+/**
+ * **買地／買現成設施成功**那一声音 —— 音效 49。
+ *
+ * ★ 可证伪：把 49 写成 50（隔壁 `GOD_MANIFEST`）立刻红；下面的
+ *   `have('rich4.exe')` 用例把**表项地址与值**直接回 exe 读，不靠注释。
+ */
+describe('★ 買地／買設施的音效 —— 49（表项 0x4823d2，两条路共用）', () => {
+  it('★ `SOUND_IDS.BUY_PROPERTY` = 49（**不是** 48/50）', () => {
+    expect(SOUND_IDS.BUY_PROPERTY).toBe(49);
+    // 与同表已具名的邻居互不相同 —— 防止日后复制粘贴串号
+    expect(SOUND_IDS.BUY_PROPERTY).not.toBe(SOUND_IDS.GOD_MANIFEST);
+    expect(SOUND_IDS.BUY_PROPERTY).not.toBe(SOUND_IDS.PLACE_MINE);
+    expect(SOUND_IDS.BUY_PROPERTY).not.toBe(SOUND_IDS.PLACE_BARRIER);
+  });
+
+  it('★ 表项地址换算：0x4823d2 = 基址 0x48231a + 23 × 8，下一项正是 0x4823da', () => {
+    const BASE = 0x48231a;
+    const ENTRY_BYTES = 8;
+    expect((0x4823d2 - BASE) / ENTRY_BYTES).toBe(23);
+    expect((0x4823d2 - BASE) % ENTRY_BYTES).toBe(0);
+    // 下一项就是已具名的 GOD_MANIFEST 那一格（0x4823da = 50）—— 两条换算互相印证
+    expect(0x4823d2 + ENTRY_BYTES).toBe(0x4823da);
+  });
+
+  have('rich4.exe')('★ 回 exe 读 `[0x4823d2]` = 49，紧邻的 `[0x4823da]` = 50（8 字节一项）', () => {
+    const DGROUP_VA = 0x463000;
+    const DGROUP_OFF = 398848;
+    const exe = readFileSync(EXE);
+    const at = DGROUP_OFF + (0x4823d2 - DGROUP_VA);
+    // 资源号（每项 +0）
+    expect(exe.readUInt32LE(at)).toBe(SOUND_IDS.BUY_PROPERTY);
+    // 8 字节一项：下一项就是 GOD_MANIFEST —— 反证不是 4 字节一项
+    expect(exe.readUInt32LE(at + 8)).toBe(SOUND_IDS.GOD_MANIFEST);
+    expect(exe.readUInt32LE(at + 4)).toBe(0); // +4 = 运行时声音对象（初始 0）
+  });
+
+  have('rich4.exe')('★ 两个调用点 `push 0x4823d2`（買地 / 買設施），全 exe 只有这两处', () => {
+    const CODE_VA = 0x401000;
+    const CODE_OFF = 1024;
+    const exe = readFileSync(EXE);
+    const at = (va: number): Buffer =>
+      exe.subarray(CODE_OFF + (va - CODE_VA), CODE_OFF + (va - CODE_VA) + 5);
+    // `push imm32` = 0x68 + 小端 4 字节；買地 0x0041a0f1、買現成設施 0x0041a939
+    for (const va of [0x0041a0f1, 0x0041a939]) {
+      const b = at(va);
+      expect([...b.subarray(0, 1)], `VA ${va.toString(16)}`).toEqual([0x68]);
+      expect(b.readUInt32LE(1)).toBe(0x004823d2);
+    }
+    // 「共用同一个号」的硬证据：整段 .text 里 `68 d2 23 48 00` 只出现这两次
+    const textEnd = CODE_OFF + (0x463000 - CODE_VA); // DGROUP 起 = .text 止
+    let hits = 0;
+    for (let i = CODE_OFF; i + 5 <= textEnd; i++) {
+      if (exe[i] === 0x68 && exe.readUInt32LE(i + 1) === 0x004823d2) hits++;
+    }
+    expect(hits).toBe(2);
+  });
+
+  have('Effect.mkf')('★ `Effect.mkf` 资源 49 是 22050Hz / 8-bit / mono 的 RIFF/WAVE', () => {
+    const d = open('Effect.mkf').read(SOUND_IDS.BUY_PROPERTY);
+    expect(isWave(d)).toBe(true);
+    const info = readWaveInfo(d);
+    expect(info.sampleRate).toBe(22050);
+    expect(info.channels).toBe(1);
+    expect(info.bitsPerSample).toBe(8);
+  });
+});

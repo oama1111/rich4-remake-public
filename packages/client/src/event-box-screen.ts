@@ -475,6 +475,10 @@ export interface CardGain {
  * `reduce.ts` 是 `p.cards.push(out.cardDrawn)`（VA 对应 `loc_0041b302` 那条路），
  * 故差集里多出来的那张就是刚抽到的；用多重集差而不是 `slice(before.length)`
  * 是为了对「先被拿掉一张、再加一张」这种 diff 也稳。
+ *
+ * ⚠️ 这个判据对**所有**得卡来源都成立 —— 包括福神显灵送的那张（`receiveCards`）。
+ *   原版那一支**没有卡面**（`rich4_gods.asm:693-754`，见 `event()` 的注释），
+ *   故 `event()` 在调本函数**之前**先让开带 `god.gotCard` 的那条 action。
  */
 export function cardGained(before: GameState, after: GameState): CardGain | null {
   for (let i = 0; i < after.players.length; i++) {
@@ -1069,6 +1073,19 @@ export const eventBoxScreen: UiScreen = {
    *
    * `lastEvent` 优先：命運 id 5「今天是你生日 向每人收取一張卡片」同样会让手牌变长，
    * 那一次该由命運框来演，不是抽卡框。
+   *
+   * ★★ 例外（第九份试玩回报第 1 条）：**福神得卡不许出卡面**。
+   *   原版 `fcn_0040ed8f`（`rich4_gods.asm:693-754`）那一段的顺序是
+   *     附身影片 `Data 0x21e`（`:695`）→ 开场白 `0x4632cc`（`call 0x40e2a2`）
+   *     → `_rich4_player_receive_random_card`（`:732`）→ 訊息框「%s附身 得到%s！」
+   *     `0x4632fd` 1500ms（`:738-746`）→ 台词 `call 0x44f230`（`:754`）。
+   *   **中间没有卡面**：卡面演出 `fcn_00441f73` / `Data.mkf 0x218` 属于**卡片格**
+   *   （`loc_0041b302`）那一支；`_rich4_receive_card` 是纯状态、零图形。
+   *   而 `cardGained()` 的判据「任一玩家 `cards` 变长」对**所有**得卡来源都成立 ⇒
+   *   福神得卡会在 t=0 与附身影片**同时**起这一屏的卡面（本屏 `windowed`，在
+   *   `SCREENS` 里又排在 `noticeBoxScreen` 之前，还会盖住那扇訊息框）。
+   *   ⇒ 见到本 action 新写的 `god.gotCard`（core 在 `reduce.ts` 的
+   *   `case 'receiveCards'` 里 push 的那条）就让开，交给訊息框与台词。
    */
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
     if (playback !== null) return; // 上一段还没播完
@@ -1103,6 +1120,11 @@ export const eventBoxScreen: UiScreen = {
       env.requestRender();
       return;
     }
+
+    // ★★ 福神得卡（`god.gotCard`）只有訊息框，没有卡面（依据见上面 `event` 的注释）。
+    //   判据 = 这条 action **新写**了 notices 且其中带 `god.gotCard`；
+    //   不拿卡袋/手牌反推，免得把卡片格那一路也误伤。
+    if (after.notices !== before.notices && after.notices?.some((n) => n.key === 'god.gotCard')) return;
 
     const gain = cardGained(before, after);
     if (gain === null) return;

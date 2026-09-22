@@ -51,6 +51,7 @@ import {
   chairmanOfIndustry,
 } from '../places/special-finance.ts';
 import { evaluateTurnStart, turnController } from '../rules/turn-start.ts';
+import type { BlockReason } from '../rules/turn-start.ts';
 import type {
   MapNode,
   LandInfo,
@@ -98,7 +99,8 @@ import {
   useVehicleTool,
 } from '../rules/tool-effects.ts';
 import { STOCKED_TOOL_MAX_ID, TOOL_SLOTS_PER_PLAYER, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
-import {
+// ★ 需求方 2026-09-22：放置类道具不许和「唯一物件」同格（见 `hasUniqueObjectAt`）
+import { OBJECT_TYPE_UNIQUE_MAX } from '../rules/objects.ts';import {
   AI_BOARD_LIST_CHANCE,
   AI_BOARD_REPRICE_CHANCE,
   AI_BOARD_SHOP_CHANCE,
@@ -229,6 +231,7 @@ import {
 import { facilityIndexOf } from '../rules/land.ts';
 import { tickBlocking, tickTurnCounters } from '../rules/blocking.ts';
 import { releaseConfinedPlayers } from '../rules/blocking.ts';
+import { DISAPPEARING_MASK, displayRemainingDays } from '../rules/blocking.ts';
 import { wakeFromSleepwalk } from '../cards/sleepwalk.ts';
 import { purchase, purchaseBlockedBy, type PurchaseFailure } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints } from '../rules/special-square.ts';
@@ -1142,6 +1145,51 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   return landingTailDue(state, next, action, topo) ? manifestGodOnLanding(state, next, topo) : next;
 }
 
+/**
+ * 回合开始时「被阻碍」那五扇訊息框（`○○住院中／還剩 N 天！`）。
+ *
+ * @source `fcn_0040c912`（VA 0x0040c912，`rich4.asm:6561`）—— **对当前玩家无条件弹**，
+ *   不分真人与电脑（电脑 `who_plays = 2`，`2 & 0x30 == 0`，`0x0040c969` 那个闸门
+ *   说的是「走回棋盘 0x10 / 被外力挪过 0x20」，与是不是电脑无关）。
+ *   判定顺序（= 本表的键序，`blockReason()` 同序）：
+ *   `rich4.asm:6596(住宿) → 6607(消失) → 6624(坐牢) → 6660(住院) → 6702(冬眠)`。
+ *   推串点见 `@rich4/data` 的 `CONFINEMENT`（`0x4631e0` / `0x4631f5` / `0x46320a`
+ *   / `0x46321f` / `0x463234`）；框时长 = `push 0x5dc`（1500 ms，缺省即此）。
+ *
+ * ⚠️ 消失那一项用 `DISAPPEARING_MASK = 0x3f` 算天数，其余用 `0x7f`
+ *   （@source `rich4.asm:27908-27952`；`rules/blocking.ts` 的同名常量）。
+ *
+ * ⚠️ `special`（`who_plays & 0x30`）与 `notAlive` **不在表内** —— 原版这两支不弹框。
+ */
+const CONFINEMENT_NOTICE: Readonly<
+  Partial<Record<BlockReason, { key: NoticeKey; field: keyof Player['blocking']; mask: number }>>
+> = {
+  inHotel: { key: 'confinement.hotel', field: 'inHotel', mask: 0x7f },
+  disappearing: { key: 'confinement.disappearing', field: 'disappearing', mask: DISAPPEARING_MASK },
+  inPrison: { key: 'confinement.prison', field: 'inPrison', mask: 0x7f },
+  inHospital: { key: 'confinement.hospital', field: 'inHospital', mask: 0x7f },
+  sleeping: { key: 'confinement.sleeping', field: 'sleeping', mask: 0x7f },
+};
+
+/**
+ * 当前玩家这一回合「被阻碍」时要弹的那一扇；不该弹（`special` / `notAlive` / 可行动）时 `null`。
+ *
+ * `args` 顺序 = 原版 `sprintf` 的顺序：[玩家名, 剩余天数]。
+ */
+function confinementNotice(state: GameState, reason: BlockReason | null): NoticeHint | null {
+  if (reason === null) return null;
+  const spec = CONFINEMENT_NOTICE[reason];
+  const player = state.players[state.currentPlayer];
+  if (spec === undefined || player === undefined) return null;
+  return {
+    key: spec.key,
+    args: [
+      playerName(state, state.currentPlayer),
+      displayRemainingDays(player.blocking[spec.field], spec.mask),
+    ],
+  };
+}
+
 function reduceCore(state: GameState, action: Action, topo: MapTopology): GameState {
   switch (action.type) {
     case 'reseed': {
@@ -1218,7 +1266,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
 
       if (who === 'skip') {
         // 被阻碍或已出局 → 直接进入回合结束（天数递减在 endTurn 处理）
-        return { ...state, phase: 'turnEnd' };
+        // ★ 原版在这里**弹一扇框**写「○○住院中／還剩 N 天！」（`fcn_0040c912`，
+        //   对当前玩家无条件弹，不分真人与电脑）。`special`（走回棋盘 / 被外力挪过）
+        //   与 `notAlive` 两支原版不弹 ⇒ `confinementNotice` 查不到就 `null`。
+        const notice = confinementNotice(state, result.blockedBy);
+        const end = { ...state, phase: 'turnEnd' as const };
+        return notice === null ? end : appendNotice(state, end, notice);
       }
       // ★ 時光機的后悔药：真人回合开局先拍一张快照（@source VA 0x004480a0）
       //   电脑的调度步归零（公佈欄那一步挪到了 aiAdvance：原版是买股卖股之后才轮到它）
@@ -1679,7 +1732,17 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       // @source 0x0041a108：土地權限非無限期时写到期日（flast）
       const landTenure = [...paid.landTenure];
       landTenure[landIndex] = tenureExpiry(packDate(state), state.landTenureIndex);
-      return { ...paid, landOwner, landTenure, pending: null, phase: 'turnEnd' };
+      const boughtLand: GameState = { ...paid, landOwner, landTenure, pending: null, phase: 'turnEnd' };
+      // ★★ 2026-09-22 订正（第九份试玩回报第 2 条）：福神附身时**買地也白送一级**。
+      //   買地这一支收尾**不是**回 `0x41b077`，而是 `jmp near loc_00419a48`
+      //   （`rich4_player_core_actions.asm:1079`，`0x0041a013` 那一路：`:1041` 写 owner、
+      //   `:1069` 扣钱之后直接跳）⇒ 与「升級房子」那一支**同一个** `call fcn_0040f8be`
+      //   （`rich4_gods.asm:1589`，只放行 god 3/4）⇒ 再走 `0x40b110` 加一级。
+      //   ⚠️ 同一支 `jmp` 共**四个**源（旧注释只认升級那一个，是错的）：
+      //     買地 `:1079` / 付費首建設施 `:1169` / 付費加蓋設施 `:1218`（jmp `loc_00419a39`）/
+      //     買設施 `:1726`。
+      //   实体号与 `upgradeLand` 那处一致（地块 = `0x7d0 + landIndex`）。
+      return luckyGodBonus(state, boughtLand, topo, 0x7d0 + landIndex);
     }
 
     // ── 設施：買 / 首建（选种类）/ 加蓋 ──
@@ -1699,7 +1762,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       // @source 0x0041a978 `mov [設施 + 0x34], eax`
       const facilityTenure = [...paid.facilityTenure];
       facilityTenure[fac.id] = tenureExpiry(packDate(state), state.landTenureIndex);
-      return { ...paid, facilityOwner, facilityTenure, pending: null, phase: 'turnEnd' };
+      const boughtFacility: GameState = { ...paid, facilityOwner, facilityTenure, pending: null, phase: 'turnEnd' };
+      // ★★ 2026-09-22 订正：買設施收尾同样 `jmp near loc_00419a48`
+      //   （`rich4_player_core_actions.asm:1726`：`loc_0041a97b` 扣完钱直接跳）
+      //   ⇒ 福神再白送一级（等級 0 的設施原版会在 `0x40b110` 里当场弹选种类框，
+      //   即 `godFreeBuild` 的 `free: true` 那一支）。
+      return luckyGodBonus(state, boughtFacility, topo, 0xfa0 + fac.id);
     }
 
     case 'buildFacility': {
@@ -1737,10 +1805,14 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //     （`0x40b1f4 mov eax,1 / inc byte [...] / ret`）本就不置位，所以
       //     `reachedMaxLevel: false` ⇒ 不播任何影片，只响那一声
       //     （这正是 `manifestSoundFor` 注释里说的「与影片闸无关」）。
-      return withSingleBuildUpgrade(
+      const builtFacility = withSingleBuildUpgrade(
         { ...paid, facilityType, facilityLevel, pending: null, phase: 'turnEnd' },
         { entity: 0xfa0 + fac.id, reachedMaxLevel: false, source: 'facilityFirstBuild' },
       );
+      // ★★ 2026-09-22 订正：付費首建（0 → 1）收尾也 `jmp near loc_00419a48`
+      //   （`rich4_player_core_actions.asm:1169`：`0x41a25a` 那一路 `inc [+0x1a]` 后直接跳）
+      //   ⇒ 福神再送一级到 2 级。首建 0 → 1 不可能到 5，故没有 `cmp dh,5` 的绕过。
+      return luckyGodBonus(state, builtFacility, topo, 0xfa0 + fac.id);
     }
 
     case 'research': {
@@ -1799,7 +1871,15 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       });
       const facilityLevel = [...paid.facilityLevel];
       facilityLevel[fac.id] = fac.level + 1;
-      return afterOwnLab({ ...paid, facilityLevel, pending: null, phase: 'turnEnd' }, topo, fac.id);
+      const upgradedFacility: GameState = { ...paid, facilityLevel, pending: null, phase: 'turnEnd' };
+      // ★★ 2026-09-22 订正：付費加蓋（`loc_0041a2b3`）收尾 `jmp near loc_00419a39`
+      //   （`rich4_player_core_actions.asm:1218`）⇒ 与「升級房子」同构地进 `0x40f8be`。
+      //   剛好到 5 级那一支 `cmp dh,5 / je near loc_004199f1` **绕过**福神（照抄，与
+      //   `upgradeLand` 的 `land.level + 1 === MAX_LAND_LEVEL` 同一条规矩）。
+      const luckyFacility =
+        fac.level + 1 === 5 ? upgradedFacility : luckyGodBonus(state, upgradedFacility, topo, 0xfa0 + fac.id);
+      // 尾块在顯靈**之后**（`0x41b0b3 call 0x44101d`），故先福神、后研究所面板
+      return afterOwnLab(luckyFacility, topo, fac.id);
     }
 
     case 'upgradeLand': {
@@ -3952,6 +4032,20 @@ export function useToolAction(
   const objectType = PLACEMENT_TOOLS.get(toolId);
   if (objectType !== undefined) {
     if (nodeId <= 0) return state;
+    // ★★ 需求方 2026-09-22（第九份試玩回報 #4）：「放置路障不能和地图上的神灵重叠」。
+    //   三个放置类道具（路障 2 / 地雷 3 / 定時炸彈 4）**不许**放在已经有唯一物件
+    //   （神明 / 惡犬 / 禮物 / 寶箱 / 死神 —— 类型 1..15）的格子上。
+    //
+    //   ⚠️ 这一条是**主动偏离原版**，需求方明确拍板（「按这个改」）：
+    //     · 原版放置侧**没有任何占用校验** —— `rich4-spec/docs/systems/tools.md:496`
+    //       「合法目标：任意格（无范围检查）」，`place_object` 只在自己 10 个槽里找空位；
+    //     · 原版靠地图节点反向索引 `node+0x26` **按位或**槽号（`rich4_objects.asm:118-126`），
+    //       所以重叠时读到的是路障、照样拦人 —— 原版**允许**重叠且两个都会画。
+    //   ⇒ 登记为有意偏离（见 PR 描述）。
+    //
+    // ★ 放在 core 里就够了：客户端拾取走 `canUseTool`（= `useToolAction(...) !== state`，
+    //   见 `state/preview.ts:86-94`），被这一条挡掉的格子**自动**不进候选、光标点不了。
+    if (hasUniqueObjectAt(state, nodeId)) return state;
     const r = placeObject(state.objects, nodeId, objectType);
     if (!r.ok) return state; // 没有空物件槽
     const taken = takeTool(state.tools, state.toolStock, me.index, toolId);
@@ -3959,6 +4053,21 @@ export function useToolAction(
   }
 
   return state;
+}
+
+/**
+ * 这一格上有没有**唯一物件**（神明 / 惡犬 / 禮物 / 寶箱 / 死神 —— 类型 1..15）。
+ *
+ * 与 `objectHandleAt` 同一套可见性判据（`nodeId` 相同且 `attached === 0`）：
+ * 已经附身或被人带着走的物件跟着主人跑，不算「站在这一格」。
+ */
+function hasUniqueObjectAt(state: GameState, nodeId: number): boolean {
+  for (const o of state.objects) {
+    if (o !== undefined && o.nodeId === nodeId && o.attached === 0 && o.type <= OBJECT_TYPE_UNIQUE_MAX) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

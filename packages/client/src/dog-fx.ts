@@ -56,6 +56,17 @@
  * ```
  * 先前 `dogBiteFxTrigger` 只看「徒步 + 住院计数变大」⇒ 踩地雷也会播狗咬片。现在三段各认各的物件。
  *
+ * ## ★ 機器娃娃（actor 8）扫到惡犬 —— **什么都不播**（试玩10 第 52 条）
+ *
+ * 上面那一段对**娃娃是死代码**：落点处理在種類跳表**之前**就把 actor 8 截住了
+ * （@source VA 0x0041b4ec `cmp eax, 8 / jne 0x41b536`，见 `special-actors.ts` 的
+ * `dollSweepNode`）—— 娃娃只把这一格的物件「打飞」并释放，**不进惡犬那一支**。
+ * 复刻侧先前用状态差分（「before 在盘上、after 收走」）当判据，区分不了
+ * 「有车玩家踩的」与「娃娃扫的」：娃娃扫狗没人住院 ⇒ 误播 0x228「狗被吓跑」。
+ * 现按 `after.lastNpcWalks` 的 `cleared[].index` 把娃娃扫走的那几件剔出去
+ * （判据与理由见 `sweptByDoll`）。**玩家踩狗那两条路（0x214 / 0x228）不受影响** ——
+ * 那两条的 `lastNpcWalks` 里没有对应的 `cleared`。
+ *
  * ## 为什么它和救护车是**两段**、各自一段影片
  *
  * 原版是两次 `fcn_0045144f` **串行**（第二段由 `send_to_hospital` 内部再播一次）。本引擎的表现层
@@ -68,7 +79,7 @@
  * `before` 画，所以那 4.3 秒里**狗还画在原地**。影片是整幅 440×440 盖住棋盘的 ⇒ 观感无差。
  */
 
-import { OBJECT_TYPE_DOG, OBJECT_TYPE_MINE } from '@rich4/core';
+import { ACTOR_DOLL, OBJECT_TYPE_DOG, OBJECT_TYPE_MINE, specialSlotOf } from '@rich4/core';
 import { boardFilmSkippable, boardFilmTotalMs, type BoardFilmSpec } from './board-film.ts';
 
 /** 这几段都在 Data.mkf @source `[0x48a0e4]` */
@@ -165,15 +176,61 @@ export function dogBiteSkippable(): boolean {
 export interface WreckSnapshot {
   players: readonly { trafficMethod: number; f64: number; blocking: { inHospital: number } }[];
   objects: readonly { type: number; nodeId: number; attached: number }[];
+  /**
+   * `GameState.lastNpcWalks` 原样（纯表现提示，`types.ts` 的 `NpcWalkHint`）。
+   *
+   * ★ 只有一处用途：**把「被機器娃娃扫走的」从「被踩掉的」里剔出去**。
+   *   `SweptObject.index` 是**走之前**那份 `state.objects` 的下标，
+   *   与 `before.objects` 的下标同源 —— 就是这里的判据。
+   */
+  lastNpcWalks?: readonly { slot: number; cleared?: readonly { index: number }[] }[];
 }
 
-/** 这一拍有没有某种**放置类物件**被踩掉（before 在盘上、after 已收走）*/
+/** 機器娃娃在替身表里的槽位（actor 8 − 4 = 4）@source `special-actors.ts` 的 `specialSlotOf` */
+const DOLL_SLOT = specialSlotOf(ACTOR_DOLL);
+
+/**
+ * 下标 `index` 那一件**是不是機器娃娃（actor 8）这一趟扫走的**。
+ *
+ * ★ 为什么要这一条（试玩10 第 52 条）：「踩到惡犬」那两段影片先前只用**状态差分**
+ *   当判据 ——「before 在盘上、after 收走」区分不了「有车玩家踩的」与「機器娃娃扫的」。
+ *   娃娃扫狗没人住院 ⇒ 落到 `if (!anyHospital) return DOG_SCARED_FILM`，
+ *   于是**误播 0x228「狗被吓跑」**。原版里娃娃在种类跳表**之前**就被截住
+ *   （@source VA 0x0041b4ec `cmp eax, 8 / jne 正常那一路`，
+ *   见 `special-actors.ts` 的 `dollSweepNode`）⇒ 惡犬那一支对娃娃是**死代码**：
+ *   **娃娃扫狗什么都不该播**。
+ *
+ * ⚠️ `cleared` 只在**機器娃娃**那一趟里出现（四大惡人恒缺省，见 `types.ts` 的
+ *   `NpcWalkHint.cleared`），这里仍按 `slot` 认一遍，不靠「有 cleared 就是娃娃」这个巧合。
+ *
+ * ⚠️ 还要求提示**是这一拍新写的**（`after.lastNpcWalks !== before.lastNpcWalks`）：
+ *   该字段是「只保留最近一次」的持久提示、别的 action 不会清 —— 若只看内容，
+ *   上一拍那趟娃娃留下的旧下标会把**后来新放置**在同一槽位的惡犬也算成「被扫的」，
+ *   玩家的 0x214 / 0x228 就会被吃掉。娃娃那一趟是在同一条 action 里写下的
+ *   （`reduce.ts` 的 `useTool` → `runDoll`），所以这一拍必然是新数组。
+ */
+function sweptByDoll(before: WreckSnapshot, after: WreckSnapshot, index: number): boolean {
+  const walks = after.lastNpcWalks;
+  if (walks === undefined || walks === before.lastNpcWalks) return false;
+  return walks.some(
+    (w) => w.slot === DOLL_SLOT && (w.cleared ?? []).some((c) => c.index === index),
+  );
+}
+
+/**
+ * 这一拍有没有某种**放置类物件**被踩掉（before 在盘上、after 已收走）。
+ *
+ * ★ 被機器娃娃扫走的那几件**不算**（原版娃娃在种类跳表之前就被截住 ⇒ 什么都不播；
+ *   理由与证据见 `sweptByDoll`）。
+ */
 function objectConsumed(before: WreckSnapshot, after: WreckSnapshot, type: number): boolean {
   for (let j = 0; j < before.objects.length; j++) {
     const b = before.objects[j];
     const a = after.objects[j];
     if (b === undefined || a === undefined) continue;
-    if (b.type === type && b.nodeId !== 0 && b.attached === 0 && a.nodeId === 0) return true;
+    if (b.type !== type || b.nodeId === 0 || b.attached !== 0 || a.nodeId !== 0) continue;
+    if (sweptByDoll(before, after, j)) continue;
+    return true;
   }
   return false;
 }
@@ -202,6 +259,8 @@ export function wreckedThisAction(before: WreckSnapshot, after: WreckSnapshot, i
  *
  * - 惡犬被踩掉 + 某位徒步者住院计数变大 ⇒ 0x214 狗咬；
  * - 惡犬被踩掉 + 没人住院 ⇒ 0x228 狗被车吓退（core 的 `dogBite{blockedByVehicle:true}`）；
+ * - **惡犬被機器娃娃扫掉 ⇒ 什么都不播**（原版娃娃在种类跳表之前就被截住；
+ *   见 `sweptByDoll`）—— 「没人住院」不能一律当成有车那一支；
  * - 地雷被踩掉 / 炸彈炸了 + 住院计数变大 ⇒ 0x20d 爆炸。
  */
 export function dogBiteFxTrigger(before: WreckSnapshot, after: WreckSnapshot): BoardFilmSpec | null {

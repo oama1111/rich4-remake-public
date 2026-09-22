@@ -440,7 +440,12 @@ export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 1, va: 0x0044bfb1, factor: null, effects: ['give'], textVa: 0x46592b, text: "#0186強制徵收土地一處", literal: null },
   { id: 2, va: 0x0044c0e8, factor: 10000, effects: ['loan'], textVa: 0x465941, text: "#0187人頭被盜用冒貸%d元", literal: null, blessing: 'penalty' },
   { id: 3, va: 0x0044c229, factor: null, effects: ['bankBan'], textVa: 0x465959, text: "#0188支票跳票\n銀行拒絕往來一個月", literal: null, blessing: 'penalty' },
-  { id: 4, va: 0x0044c2c2, factor: null, effects: ['pay'], textVa: 0x46597a, text: "#0189侵入銀行電腦\n挪用其他人存款%d％", literal: null },
+  // ★★ 2026-09-22（第十份试玩回报）：`literal` 先前是 null ⇒ 文案里的 `%d` 被渲染成「？」
+  //   （`event-box-screen.ts` 的 `eventBoxDescription`：literal→factor×物价→都没有就 '？'）。
+  //   原版这个 `%d` 是**硬编码 10**（`@source 0x0044c2d4 mov ecx,0xa`；
+  //   `rich4-spec/docs/systems/fortune.md:490-513`，`bank.md:1030-1032` 同）。
+  //   ⚠️ **不能改用 `factor`** —— 那会变成 `10 × 物價指數`，与原版不符。
+  { id: 4, va: 0x0044c2c2, factor: null, effects: ['pay'], textVa: 0x46597a, text: "#0189侵入銀行電腦\n挪用其他人存款%d％", literal: 10 },
   { id: 5, va: 0x0044c3b7, factor: null, effects: ['birthdayCard'], textVa: 0x4659a4, text: "#0190今天是你生日\n向每人收取一張卡片", literal: null },
   { id: 6, va: 0x0044c5d8, factor: null, effects: ['disappear'], textVa: 0x4659d8, text: "#0191強迫出國觀光%d天", literal: 3, blessing: 'misfortune' },
   { id: 7, va: 0x0044c6ed, factor: null, effects: ['disappear'], textVa: 0x4659ee, text: "#0192被外星人綁架%d天", literal: 3, blessing: 'misfortune' },

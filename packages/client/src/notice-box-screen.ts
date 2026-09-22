@@ -66,7 +66,7 @@
  * 与原版「每扇各自一次可跳过的等待」一致）。
  */
 
-import { BANK, FACILITY_TOLL, GOD_MANIFEST, MESSAGE_BOX, RENT, SHOP, formatOriginal } from '@rich4/data';
+import { BANK, CONFINEMENT, FACILITY_TOLL, GOD_MANIFEST, MESSAGE_BOX, RENT, SHOP, formatOriginal } from '@rich4/data';
 import type { GameState, NoticeHint, NoticeKey } from '@rich4/core';
 import { drawDialog } from './dialog.ts';
 import type { InteractionUi } from './interactions.ts';
@@ -131,6 +131,13 @@ export const NOTICE_TEXT = {
   'bank.rejected': BANK.rejected.text,
   // ★ W-67-a：董事長蒞臨商店的贈禮（`0x464378`）—— 在商店窗打开**之前**弹
   'shop.chairmanGift': SHOP.chairmanGift.text,
+  // ★ 回合開始時「被阻礙」那五扇（`fcn_0040c912`）—— 对**所有人**都弹（不分真人与电脑），
+  //   1500 ms；`args` = [玩家名, 剩余天数]
+  'confinement.hotel': CONFINEMENT.hotel.text,
+  'confinement.disappearing': CONFINEMENT.disappearing.text,
+  'confinement.prison': CONFINEMENT.prison.text,
+  'confinement.hospital': CONFINEMENT.hospital.text,
+  'confinement.sleeping': CONFINEMENT.sleeping.text,
 } as const satisfies Record<NoticeKey, string>;
 
 /** 一条 `{ key, args }` 提示 → 屏上那一句（`%s` / `%d` 全在 `args` 里） */

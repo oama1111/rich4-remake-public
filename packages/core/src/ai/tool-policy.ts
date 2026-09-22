@@ -44,6 +44,8 @@ import { isAlive } from '../state/types.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
 import { FACILITY_TYPE, FACILITY_MAX_LEVEL } from '../rules/facility.ts';
 import { MISSILE_RADIUS } from '../rules/tool-effects.ts';
+// ★ 需求方 2026-09-22：放置类道具不许和「唯一物件」同格 —— AI 必须与引擎同一条判据
+import { OBJECT_TYPE_UNIQUE_MAX } from '../rules/objects.ts';
 import { anyPlayerConfined } from '../rules/confinement.ts';
 import {
   aiRoll,
@@ -117,6 +119,24 @@ function facilityById(view: ToolAiView, id: number): FacilityInfo | undefined {
 /** 站在这格上的物件（原版的 node+0x24 bits 16-21 每格至多一件） */
 function objectOnNode(view: ToolAiView, nodeId: number): MapObject | undefined {
   return view.state.objects.find((o) => o.nodeId === nodeId);
+}
+
+/**
+ * 这格上有没有**唯一物件**（神明 / 惡犬 / 禮物 / 寶箱 / 死神 —— 类型 1..15）。
+ *
+ * ★★ 需求方 2026-09-22 起，引擎**禁止**把 路障/地雷/定時炸彈 放在这种格子上
+ *   （`reduce.ts` 的 `hasUniqueObjectAt`）。AI 必须与引擎**同一条判据**，否则它会挑到
+ *   一个用不出去的目标 ⇒ `useTool` 返回原状态 ⇒ **整局卡死**
+ *   （`soak.test.ts` 实测报错 `卡死于 awaitingRoll / useTool`）。
+ *
+ * ⚠️ 与 `nodeClear` 的分工：那个连「别的放置类物件」和「站着的人」也一起排除，
+ *   那是原版 AI 自己的挑剔（`node+0x24 bits 12-21`）；这里只排除引擎真正会拒的那一类，
+ *   改动面最小。
+ */
+function uniqueObjectOnNode(view: ToolAiView, nodeId: number): MapObject | undefined {
+  return view.state.objects.find(
+    (o) => o.nodeId === nodeId && o.attached === 0 && o.type <= OBJECT_TYPE_UNIQUE_MAX,
+  );
 }
 
 /** 这格上有没有（活着的）玩家 @source node+0x24 bits 12-15 */
@@ -259,6 +279,7 @@ const luzhang: Handler = (view) => {
     if (!behind.nodes.includes(nid)) continue;
     const node = nodeAt(view, nid);
     if (node === undefined || node.ref.kind !== 'land') continue;
+    if (uniqueObjectOnNode(view, nid) !== undefined) continue;
     const l = landById(view, node.ref.index);
     if (l === undefined || l.owner !== me1) continue;
     const toll = streetTollOf(view.lands, me1, l.name, pi);
@@ -267,7 +288,10 @@ const luzhang: Handler = (view) => {
     best = toll;
     bestNode = nid;
   }
-  return bestNode !== 0 ? place(bestNode) : null;
+  if (bestNode === 0) return null;
+  // ★ 同上：目标格有唯一物件 ⇒ 引擎会拒 ⇒ 这一回合干脆不放（见 `mineLike` 的注释）
+  if (uniqueObjectOnNode(view, bestNode) !== undefined) return null;
+  return place(bestNode);
 };
 
 /**
@@ -309,7 +333,14 @@ function mineLike(view: ToolAiView, salt: number, enemyOnly: boolean): AiToolCho
   }
   if (candidates.length === 0) return null;
   // @source 0x42153e：两件道具共用的收尾——call rand / idiv 候选数
-  return place(candidates[aiRoll(view.state, 0x42153e, candidates.length)]!);
+  const picked = candidates[aiRoll(view.state, 0x42153e, candidates.length)]!;
+  // ★★ 需求方 2026-09-22：引擎不再允许把 路障/地雷/定時炸彈 放到「有唯一物件」的格子上
+  //   （`reduce.ts` 的 `hasUniqueObjectAt`）。**抽完之后**发现目标会被拒就干脆这一回合
+  //   不用这件道具（返回 `null`）—— 候选列表与上面那一次 `rand()` 都**不动**，
+  //   既与原版的随机消耗点一致，对既有固定种子的轨迹扰动也最小
+  //   （先前的写法是「提前过滤候选」，会让 soak / full-game / e2e 的种子走到别处去）。
+  if (uniqueObjectOnNode(view, picked) !== undefined) return null;
+  return place(picked);
 }
 
 const dilei: Handler = (view) => mineLike(view, SALT.dilei, true);

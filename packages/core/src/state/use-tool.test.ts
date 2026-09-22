@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
+import { canUseTool } from './preview.ts';
 import type { GameState } from './types.ts';
 import { TOOL_SLOTS_PER_PLAYER, toolCount } from '../rules/tools.ts';
 import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE, TRAFFIC_WALK } from '../rules/tool-effects.ts';
@@ -86,6 +87,55 @@ describe('★ 放置类道具', () => {
   it('没给格子就不放', () => {
     const s = withTools({ 2: 1 });
     expect(reduce(s, { type: 'useTool', toolId: 2 }, topo)).toBe(s);
+  });
+
+  /*
+   * ★★ 需求方 2026-09-22（第九份試玩回報 #4）拍板：
+   *   「路障/炸弹/定时炸弹 我记得就是不能和神明重叠，按这个改」
+   *
+   * ⚠️ 这是**主动偏离原版**：原版 `tools.md:496` 明说「任意格，无范围检查」，
+   *   放置侧本来就没有占用校验；原版靠 `node+0x26` 反向索引按位或槽号，
+   *   重叠时读到的仍是路障、照样拦人。需求方明确要求禁止，故按此实现。
+   */
+  describe('★★ 不许和神明（唯一物件）同格', () => {
+    /** 把 0 号物件槽（小財神）摆到某一格上 */
+    const withGodAt = (base: GameState, nodeId: number, attached = 0): GameState => ({
+      ...base,
+      objects: base.objects.map((o, i) =>
+        i === 0 ? { ...o, type: 1, nodeId, state: 0, attached } : o,
+      ),
+    });
+
+    it('★ 那一格有神明 ⇒ 路障(2)/地雷(3)/定時炸彈(4) 一个都放不下去，道具也不收走', () => {
+      for (const tool of [2, 3, 4]) {
+        const s = withGodAt(withTools({ [tool]: 1 }), 2);
+        const after = reduce(s, { type: 'useTool', toolId: tool, nodeId: 2 }, topo);
+        expect(after, `道具 ${tool} 不该生效`).toBe(s);
+        expect(toolCount(after.tools, 0, tool), `道具 ${tool} 不该被收走`).toBe(1);
+        expect(after.objects.some((o) => o.nodeId === 2 && o.type >= 16), '地上不该多一件').toBe(false);
+      }
+    });
+
+    it('★ 神明在**别的**格子上不影响放置（不能一禁禁一片）', () => {
+      const s = withGodAt(withTools({ 2: 1 }), 1);
+      const after = reduce(s, { type: 'useTool', toolId: 2, nodeId: 2 }, topo);
+      expect(after).not.toBe(s);
+      expect(after.objects.some((o) => o.nodeId === 2 && o.type === 16)).toBe(true);
+      expect(toolCount(after.tools, 0, 2)).toBe(0);
+    });
+
+    it('★ 已经**附身**的神明不算「站在这一格」（跟着主人走，不挡）', () => {
+      const s = withGodAt(withTools({ 2: 1 }), 2, 1);
+      const after = reduce(s, { type: 'useTool', toolId: 2, nodeId: 2 }, topo);
+      expect(after.objects.some((o) => o.nodeId === 2 && o.type === 16)).toBe(true);
+    });
+
+    it('★ 客户端候选会自动跟着 core 走（`canUseTool` = `useToolAction(...) !== state`）', () => {
+      // 这一条钉的是「不用另写一套客户端过滤」——`picking.ts` 靠的就是 `canUseTool`
+      const s = withGodAt(withTools({ 2: 1 }), 2);
+      expect(canUseTool(s, topo, 2, 2), '有神明那一格 ⇒ 不是合法目标').toBe(false);
+      expect(canUseTool(s, topo, 2, 1), '空的那一格 ⇒ 合法').toBe(true);
+    });
   });
 });
 

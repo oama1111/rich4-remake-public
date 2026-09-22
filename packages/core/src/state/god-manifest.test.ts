@@ -4,7 +4,9 @@
  *
  * 第五份回报第 2 条：「踩到天使后買房应该自动加蓋一层」。取证全文见 `rules/god-manifest.ts`。
  * 可证伪（已验证）：把 `reduce` 里那句 `landingTailDue(...) ? manifestGodOnLanding(...)` 短路掉，
- * 天使 / 惡魔 / 土地公三组带 ★ 的 7 条全部变红；福神那组挂在 `upgradeLand` 里的 `luckyGodBonus` 上。
+ * 天使 / 惡魔 / 土地公三组带 ★ 的 7 条全部变红；福神那组挂在 `luckyGodBonus` 上
+ * （★ 2026-09-22 订正：福神**不止**自己地升級那一支 —— 買地 / 買設施 / 付費首建 /
+ * 付費加蓋也是同一个 `call fcn_0040f8be`，见下面福神那几组与 `god-manifest.ts` 的表）。
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
@@ -37,7 +39,10 @@ function setup(kind: 'computer' | 'human' = 'computer') {
   // 第一块**住宅地**所在的普通格（类型 0）
   const landNode = map.nodes.find((n) => n.specialKind === 0 && n.ref.kind === 'land');
   if (landNode === undefined) throw new Error('地图里找不到住宅地格');
-  return { state, topo, landNode };
+  // 第一处**設施**所在的普通格（类型 0）—— 福神買設施/首建/加蓋那三支要用
+  const facNode = map.nodes.find((n) => n.specialKind === 0 && n.ref.kind === 'facility');
+  if (facNode === undefined) throw new Error('地图里找不到設施格');
+  return { state, topo, landNode, facNode };
 }
 
 /** 玩家 0 站到那一格、进入 `settling`，附上指定的神 */
@@ -58,6 +63,12 @@ function standing(state: GameState, nodeId: number, godInfo: number, over: Parti
 function landIdAt(state: GameState, topo: ReturnType<typeof setup>['topo'], nodeId: number): number {
   const ref = topo.nodes[nodeId - 1]!.ref;
   if (ref.kind !== 'land') throw new Error('不是住宅地');
+  return ref.index;
+}
+
+function facIdAt(state: GameState, topo: ReturnType<typeof setup>['topo'], nodeId: number): number {
+  const ref = topo.nodes[nodeId - 1]!.ref;
+  if (ref.kind !== 'facility') throw new Error('不是設施');
   return ref.index;
 }
 
@@ -284,6 +295,112 @@ describe('★ 福神：自己地升級后再送一级（「蓋房子投資加倍
     const out = reduce(asked, { type: 'upgradeLand' }, topo);
     expect(out.landLevel[id]).toBe(5);
     expect(out.lastBuildUpgrades?.at(-1)?.reachedMaxLevel).toBe(true);
+    expect(out.rngState).toBe(asked.rngState);
+  });
+});
+
+/*
+ * ★★ 2026-09-22（第九份试玩回报第 2 条）：福神**不止**自己地升級那一支。
+ *
+ * 反证用的四个 exe 地址（`rich4_player_core_actions.asm`）—— 这些分支的收尾都不是
+ * 回 `0x41b077`，而是直接跳进 `call fcn_0040f8be` 那个入口：
+ *   `:1079` 買地（`0x0041a013`）→ `jmp near loc_00419a48`
+ *   `:1169` 付費首建設施（`0x41a25a`）→ `jmp near loc_00419a48`
+ *   `:1218` 付費加蓋設施（`loc_0041a2b3`）→ `jmp near loc_00419a39`
+ *   `:1726` 買設施（`loc_0041a97b`）→ `jmp near loc_00419a48`
+ * ⇒ `reduce.ts` 那五条 case 都接 `luckyGodBonus`（升级那一条是老早就有的）。
+ */
+describe('★★ 福神：買地 / 買設施 / 付費首建 / 付費加蓋 也白送一级（四个 `jmp loc_00419a4x`）', () => {
+  run('★★ 買下空地之后自动加蓋到 1 级 @source `:1079 jmp near loc_00419a48`', () => {
+    const { state, topo, landNode } = setup();
+    const id = landIdAt(state, topo, landNode.id);
+    const s0 = standing(state, landNode.id, GOD_BIG_LUCK);
+    const asked = reduce(s0, { type: 'settle' }, topo);
+    expect(asked.pending?.kind).toBe('buyLand');
+    // 还没買 ⇒ 落点尾块没到 ⇒ 一级都没蓋
+    expect(asked.landLevel[id] ?? 0).toBe(0);
+    const bought = reduce(asked, { type: 'buyLand' }, topo);
+    expect(bought.landOwner[id]).toBe(1);
+    expect(bought.landLevel[id]).toBe(1);
+    expect(bought.phase).toBe('turnEnd');
+    expect(bought.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + id, reachedMaxLevel: false, source: 'godManifest' },
+    ]);
+    expect(bought.notices.map((n) => n.key)).toEqual(['god.build']);
+    expect(bought.notices[0]!.args).toEqual(['大福神']);
+  });
+
+  run('★★ 買下无主設施之后自动加蓋到 1 级（电脑按 `0x40b1ad` 掷种类）@source `:1726`', () => {
+    const { state, topo, facNode } = setup();
+    const id = facIdAt(state, topo, facNode.id);
+    const s0 = standing(state, facNode.id, GOD_BIG_LUCK);
+    const asked = reduce(s0, { type: 'settle' }, topo);
+    expect(asked.pending?.kind).toBe('buyFacility');
+    expect(asked.facilityLevel[id] ?? 0).toBe(0); // 買下只写归属，不加級
+    const bought = reduce(asked, { type: 'buyFacility' }, topo);
+    expect(bought.facilityOwner[id]).toBe(1);
+    expect(bought.facilityLevel[id]).toBe(1);
+    expect(bought.lastBuildUpgrades).toEqual([
+      { entity: 0xfa0 + id, reachedMaxLevel: false, source: 'godManifest' },
+    ]);
+    expect(bought.notices.map((n) => n.key)).toEqual(['god.build']);
+  });
+
+  run('★★ 付費首建設施（0 → 1）之后再送一级到 2 @source `:1169 jmp near loc_00419a48`', () => {
+    const { state, topo, facNode } = setup('human');
+    const id = facIdAt(state, topo, facNode.id);
+    const facilityOwner = [...state.facilityOwner];
+    facilityOwner[id] = 1;
+    const s0 = standing(state, facNode.id, GOD_BIG_LUCK, { facilityOwner });
+    const asked = reduce(s0, { type: 'settle' }, topo);
+    expect(asked.pending?.kind).toBe('buildFacility');
+    const built = reduce(asked, { type: 'buildFacility', facilityType: 1 }, topo);
+    expect(built.facilityType[id]).toBe(1);
+    expect(built.facilityLevel[id]).toBe(2);
+    expect(built.lastBuildUpgrades?.map((h) => h.source)).toEqual(['facilityFirstBuild', 'godManifest']);
+    expect(built.lastBuildUpgrades?.at(-1)).toEqual({
+      entity: 0xfa0 + id,
+      reachedMaxLevel: false,
+      source: 'godManifest',
+    });
+  });
+
+  run('★★ 付費加蓋設施（1 → 2）之后再送一级到 3 @source `:1218 jmp near loc_00419a39`', () => {
+    const { state, topo, facNode } = setup();
+    const id = facIdAt(state, topo, facNode.id);
+    const facilityOwner = [...state.facilityOwner];
+    const facilityLevel = [...state.facilityLevel];
+    const facilityType = [...state.facilityType];
+    facilityOwner[id] = 1;
+    facilityLevel[id] = 1;
+    facilityType[id] = 1; // 旅館：上限 5，可加蓋
+    const s0 = standing(state, facNode.id, GOD_BIG_LUCK, { facilityOwner, facilityLevel, facilityType });
+    const asked = reduce(s0, { type: 'settle' }, topo);
+    expect(asked.pending?.kind).toBe('upgradeFacility');
+    const out = reduce(asked, { type: 'upgradeFacility' }, topo);
+    expect(out.facilityLevel[id]).toBe(3);
+    expect(out.lastBuildUpgrades?.at(-1)).toEqual({
+      entity: 0xfa0 + id,
+      reachedMaxLevel: false,
+      source: 'godManifest',
+    });
+    expect(out.notices.map((n) => n.key)).toEqual(['god.build']);
+  });
+
+  run('★ 付費加蓋剛好到 5 级那一支同样**绕过**福神 @source `loc_0041a2b3 cmp dh,5 / je 0x4199f1`', () => {
+    const { state, topo, facNode } = setup();
+    const id = facIdAt(state, topo, facNode.id);
+    const facilityOwner = [...state.facilityOwner];
+    const facilityLevel = [...state.facilityLevel];
+    const facilityType = [...state.facilityType];
+    facilityOwner[id] = 1;
+    facilityLevel[id] = 4;
+    facilityType[id] = 1;
+    const s0 = standing(state, facNode.id, GOD_BIG_LUCK, { facilityOwner, facilityLevel, facilityType });
+    const asked = reduce(s0, { type: 'settle' }, topo);
+    const out = reduce(asked, { type: 'upgradeFacility' }, topo);
+    expect(out.facilityLevel[id]).toBe(5);
+    expect(out.notices.some((n) => n.key === 'god.build')).toBe(false);
     expect(out.rngState).toBe(asked.rngState);
   });
 });
