@@ -526,6 +526,7 @@ export interface NoticeHint {
  * | `object.treasure` | `MESSAGE_BOX.got500Points` | 0x0041bb4e `push 0x463ad3` |
  * | `beggar.alms` | `MESSAGE_BOX.alms` | 0x0041b656 `push 0x463ab1` |
  * | `thief.loot` | `MESSAGE_BOX.thiefLoot` | 0x0041ba0a 等五处 `push 0x463ac0` |
+ * | `confinement.*` | `CONFINEMENT.{hotel,disappearing,prison,hospital,sleeping}` | 0x0040c912 一族的五处推串点 `0x4631e0`/`0x4631f5`/`0x46320a`/`0x46321f`/`0x463234` |
  *
  * ★ 免收那九种是 `0x0041d559`「九种免收」的全部：豁免成立时原版**先 `sprintf`
  *   一句、再弹同一个通用訊息框**（`0x41d6a4 push 0x5dc / call 0x440cac`）。
@@ -575,7 +576,21 @@ export type NoticeKey =
    * 董事長蒞臨商店的贈禮（`_rich4_ui_shop_entry` 0x0042e9f8 `push 0x464378`，
    * 訊息框 1500 ms）—— **在商店窗打开之前**弹，`args[0]` = 送出那件的名字。
    */
-  | 'shop.chairmanGift';
+  | 'shop.chairmanGift'
+  /**
+   * ★ 回合開始時「被阻礙」那五扇框 —— 住宿／消失／坐牢／住院／冬眠。
+   *
+   * @source `fcn_0040c912`（VA 0x0040c912，`rich4.asm:6561`）对**当前玩家无条件**弹，
+   *   不分真人与电脑；`args` = [`玩家名`, `剩余天数`]，天数 = `displayRemainingDays(raw, mask)`
+   *   （消失用 `DISAPPEARING_MASK = 0x3f`，其余 `0x7f`）。
+   *   模板见 `@rich4/data` 的 `CONFINEMENT`（`0x4631e0` / `0x4631f5` / `0x46320a`
+   *   / `0x46321f` / `0x463234`）。
+   */
+  | 'confinement.hotel'
+  | 'confinement.disappearing'
+  | 'confinement.prison'
+  | 'confinement.hospital'
+  | 'confinement.sleeping';
 
 /**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。

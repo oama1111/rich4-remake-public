@@ -81,6 +81,39 @@ export const RENT = {
 } as const;
 
 /**
+ * 回合开始时「被阻碍」的訊息框 —— 住宿／消失／坐牢／住院／冬眠 五句。
+ *
+ * ★ 原版在回合开始判定函数 `fcn_0040c912`（VA 0x0040c912）里**对当前玩家无条件弹**
+ *   （`rich4.asm:6561`）—— 不分真人与电脑。那里的 `test byte [player+0x15], 0x30`
+ *   闸门（`0x0040c969`）是「走回棋盘 0x10 / 被外力挪过 0x20」，**不是电脑位**
+ *   （电脑 `who_plays = 2`，`2 & 0x30 == 0`），命中的那一支不弹框。
+ *
+ * @source 五条模板在 DGROUP 里的地址（`rich4.asm:27908-27952` 那一段
+ *   `ref_004631e0` / `ref_004631f5` / `ref_0046320a` / `ref_0046321f` / `ref_00463234`），
+ *   天数口径照抄：
+ * ```text
+ * 0x4631e0  %s住宿中   天数 = (v & 0x7f) + 1
+ * 0x4631f5  %s消失中   天数 = (v & 0x3f) + 1
+ * 0x46320a  %s坐牢中   天数 = (v & 0x7f) + 1
+ * 0x46321f  %s住院中   天数 = (v & 0x7f) + 1
+ * 0x463234  %s冬眠中   天数 = (v & 0x7f) + 1
+ * ```
+ *   框时长与其余通用訊息框一致 = `push 0x5dc`（1500 ms）。
+ */
+export const CONFINEMENT = {
+  /** %s 玩家名、%d 剩余天数 @source 0x4631e0 */
+  hotel: t('%s住宿中\n\n還剩%d天！', 0x4631e0),
+  /** %s 玩家名、%d 剩余天数 @source 0x4631f5 —— ★ 天数用 `& 0x3f` */
+  disappearing: t('%s消失中\n\n還剩%d天！', 0x4631f5),
+  /** %s 玩家名、%d 剩余天数 @source 0x46320a */
+  prison: t('%s坐牢中\n\n還剩%d天！', 0x46320a),
+  /** %s 玩家名、%d 剩余天数 @source 0x46321f */
+  hospital: t('%s住院中\n\n還剩%d天！', 0x46321f),
+  /** %s 玩家名、%d 剩余天数 @source 0x463234 */
+  sleeping: t('%s冬眠中\n\n還剩%d天！', 0x463234),
+} as const;
+
+/**
  * 設施过路费的棕色訊息框 —— `0x0041a3cc`（設施收费那一路）里那三段 `sprintf`。
  *
  * @source 推串点（`0x457110` = Watcom `sprintf`）：
@@ -411,6 +444,7 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(PROMPT),
   ...Object.values(NOTICE),
   ...Object.values(RENT),
+  ...Object.values(CONFINEMENT),
   ...Object.values(FACILITY_TOLL),
   ...Object.values(MESSAGE_BOX),
   ...Object.values(BUTTON),

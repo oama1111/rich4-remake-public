@@ -11,6 +11,8 @@
  *      `fcn_0045144f` 的 `flags=1` ⇒ `[0x48c880]=0`），亮牌时对话框皮 + 卡名
  *      （220,129，正中）落 + 卡面 `Data[卡号+0x23a]`（**165×256**，见 `CARD_FACE_SIZE`）落 (138,200)，停 1500ms（可跳过）；
  *   ④ **触发**：`lastEvent` 变了 → 新聞/命運；否则手牌变长 → 抽卡；正在播时不起新的。
+ *      ★ 例外：这条 action 新写的 `notices` 里有 `god.gotCard`（福神得卡）⇒ **不出卡面**
+ *      （原版 `fcn_0040ed8f` 那一段没有卡面演出；见文件末「福神得卡」那一组）。
  *   ⑤ **可跳过性**：`fcn_004544f6`（新聞 / 命運第一段）与 `fcn_004528b9`（命運第二段 /
  *      抽卡亮牌）都认 `0x202`/`0x205`/`0x101` ⇒ 这些段都能被抬手/右键/按键推进或关屏；
  *      抽卡第一段 FLIC 是 `fcn_0045144f` 且那一处跳过闸关着 ⇒ 点不掉
@@ -809,6 +811,65 @@ describe('★ event 钩子：lastEvent 变了 / 手牌变长', () => {
     expect(eventBoxScreen.active(fakeEnv(after))).toBe(false);
     // ★ 没在播时右键也不能炸（原版那两处等待各有自己的窗口过程）
     eventBoxScreen.contextmenu!(0, 0, fakeEnv(after, 20));
+    resetEventBoxScreen();
+  });
+});
+
+// ============================================================
+//  ★ 福神得卡不出卡面（第九份试玩回报第 1 条）
+//
+//  @source `fcn_0040ed8f`（`rich4_gods.asm:693-754`）的顺序：
+//    0x21e 附身影片 → `0x40e2a2` 开场白（0x4632cc）→ `_rich4_player_receive_random_card`
+//    → 訊息框 `0x4632fd`「%s附身 得到%s！」(0x5dc) → `0x44f230` 台词
+//  **中间没有卡面** —— 卡面 `fcn_00441f73` / `Data.mkf 0x218` 是卡片格（`loc_0041b302`）
+//  那一支的；`_rich4_receive_card` 纯状态、零图形。
+//  core 在 `reduce.ts` 的 `case 'receiveCards'` 里 push `god.gotCard`（带 `cardId`），
+//  `event()` 见到它就**让开** `cardGained`（否则手牌差集会让卡面与附身影片同时起播）。
+//  反证：删掉 `event()` 里那句 `god.gotCard` 闸，下面第一条就变红。
+// ============================================================
+
+describe('★ 福神得卡：只有訊息框，不出卡面 @source fcn_0040ed8f', () => {
+  /** `stateOf` + notices（`NoticeHint` 那一条就是 core `receiveCards` 交下来的形状） */
+  const withNotices = (
+    players: Player[],
+    notices: GameState['notices'],
+    lastEvent: GameState['lastEvent'] = null,
+  ): GameState => ({ ...stateOf(players, lastEvent), notices });
+
+  it('★★ 手牌变长 + `god.gotCard` ⇒ 不起播（卡面让开訊息框/台词）', () => {
+    resetEventBoxScreen();
+    const before = withNotices([player(0, [1])], []);
+    const after = withNotices(
+      [player(0, [1, 12])],
+      [{ key: 'god.gotCard', args: ['大福神', '拆除卡'], holdMs: 1500, cardId: 12 }],
+    );
+    const env = fakeEnv(after);
+    eventBoxScreen.event!(before, after, env);
+    expect(eventBoxScreenState().playing).toBe(false);
+    expect(eventBoxScreen.active(env)).toBe(false);
+  });
+
+  it('★ 对照：同一条得卡（手牌变长）但 notices 里没有 `god.gotCard` ⇒ 照旧出卡面', () => {
+    resetEventBoxScreen();
+    const before = withNotices([player(0, [1])], []);
+    const after = withNotices([player(0, [1, 12])], [{ key: 'god.build', args: ['大福神'] }]);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(true);
+    expect(eventBoxScreenState().playback?.plan.kind).toBe('card');
+    expect(eventBoxScreenState().playback?.plan.id).toBe(12);
+    resetEventBoxScreen();
+  });
+
+  it('★ 没换过 `notices`（引用相同）时那条老 `god.gotCard` 不算数 ⇒ 照旧出卡面', () => {
+    resetEventBoxScreen();
+    const stale: GameState['notices'] = [
+      { key: 'god.gotCard', args: ['大福神', '拆除卡'], holdMs: 1500, cardId: 12 },
+    ];
+    const before = withNotices([player(0, [1])], stale);
+    const after = withNotices([player(0, [1, 12])], stale);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(true);
+    expect(eventBoxScreenState().playback?.plan.kind).toBe('card');
     resetEventBoxScreen();
   });
 });

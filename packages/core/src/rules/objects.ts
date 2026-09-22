@@ -56,6 +56,17 @@ export const OBJECT_TYPE_TABLE: readonly number[] = [
 ];
 
 /**
+ * 「唯一物件」那一段的**最大类型号** —— 类型 1..15（神明 / 惡犬 / 禮物 / 寶箱 / 死神）。
+ *
+ * @source `OBJECT_TYPE_TABLE` 的三段结构（下标 0..13 → 1..14 各一个；14..15 → 类型 15 两个）；
+ *   16/17/18（路障/地雷/定時炸彈）才是「可反复放置的道具」。
+ *
+ * ★ 用途：需求方 2026-09-22 要求「路障/地雷/定時炸彈 不能和地图上的神灵重叠」
+ *   —— 放置前用 `type <= OBJECT_TYPE_UNIQUE_MAX` 判「这一格有没有唯一物件」。
+ */
+export const OBJECT_TYPE_UNIQUE_MAX = 15;
+
+/**
  * 送神符可以送走的物件类型。
  *
  * @source 送神符 VA 0x00444c9f 起的连续比较：

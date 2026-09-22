@@ -4219,6 +4219,39 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
     sound.play('Effect.mkf', SOUND_IDS.DOLL);
   }
 
+  // ★ **買地 / 買現成設施成功**那一下 —— 音效 49（见 `SOUND_IDS.BUY_PROPERTY`）。
+  //
+  // @source VA 0x0041a0f1（買地，`call 0x4542ce` 在 0x0041a0f6）/ VA 0x0041a939
+  //   （買現成設施），两条**同形**：`push 0x4823d2 / call rich4_play_sound_effect`。
+  //   同一张表 `0x48231a`（8 字节一项）的表项 23 ⇒ `Effect.mkf` 资源 49；
+  //   下一项 0x4823da 就是 `SOUND_IDS.GOD_MANIFEST` 的 50（换算见 audio.ts）。
+  //   全 exe 里 `push 0x4823d2` 只有这两处 ⇒ 買地与買設施**共用** 49。
+  //
+  // ⚠️ 判据是**归属真的变了没有**，不是「有没有点过买」：被衰神／死神拦下时
+  //   `purchase` 直接返回、归属一格都不写（`rules/purchase.ts` 的 `godBlockedPurchase`），
+  //   于是这里**不响** —— 与原版一致（原版那声在扣款/写归属**之后**）。
+  //   `buyLand` 的 pending 是 `{ kind:'buyLand', landId, … }`、比对 `landOwner`；
+  //   `buyFacility` 是 `{ kind:'buyFacility', facilityId, … }`、比对 `facilityOwner`
+  //   —— 两列都拿实体号当下标（`reduce.ts` 里就是 `landOwner[landIndex]` /
+  //   `facilityOwner[fac.id]` 这么写的）。
+  if (before.pending?.kind === 'buyLand') {
+    const id = before.pending.landId;
+    if (
+      after.landOwner[id] === after.currentPlayer + 1 &&
+      before.landOwner[id] !== after.currentPlayer + 1
+    ) {
+      sound.play('Effect.mkf', SOUND_IDS.BUY_PROPERTY);
+    }
+  } else if (before.pending?.kind === 'buyFacility') {
+    const id = before.pending.facilityId;
+    if (
+      after.facilityOwner[id] === after.currentPlayer + 1 &&
+      before.facilityOwner[id] !== after.currentPlayer + 1
+    ) {
+      sound.play('Effect.mkf', SOUND_IDS.BUY_PROPERTY);
+    }
+  }
+
   // 角色語音（T-052）。`speechResourceFor` 已经把越界挡在外面 ——
   // T-051 的 `speechIndex()` 对越界**抛 RangeError**（原版无边界检查），
   // 表现层不该因此把整局打断，故这里只播合法的那几个。

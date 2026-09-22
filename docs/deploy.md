@@ -45,6 +45,25 @@ systemd 单元原样可用；外网实测门 / 白名单 / WebSocket 升级口 /
 ③ 服务器上只装运行期依赖：`pnpm install --frozen-lockfile --prod --filter "@rich4/server..."`（1 GB 内存十秒装完）。
 更新时重做 ①②（素材没变就不用传素材）再 `systemctl restart rich4`。
 
+> ⚠️ **`rsync` 必须落到 `rich4` 名下，否则服务起不来**（2026-09-22 真机踩到）。
+>
+> 服务是 `User=rich4` 跑的。用 `root` 直接 `rsync` 会把新文件写成 root（或你本机的 uid），
+> `node --experimental-transform-types` 读源码时当场
+> `EACCES: permission denied, open '/srv/rich4/rich4-remake/packages/core/src/rules/victory.ts'`，
+> systemd 进入 restart 循环（`systemctl is-active` 在重启间隙还可能显示 `active`，别被骗）。
+>
+> 两种正确做法，任选其一：
+> ```bash
+> # ① 以 rich4 身份推（最稳）
+> sudo -u rich4 rsync -a ... root@<主机>:/srv/rich4/rich4-remake/
+> # ② 推完立刻改属主
+> rsync -a ... && ssh root@<主机> 'chown -R rich4:rich4 /srv/rich4/rich4-remake'
+> ```
+> 落地后**务必**核对三件事：`systemctl is-active rich4` = `active`；
+> `journalctl -u rich4 -n 20` 里能看到那条「rich4 聯機伺服器…」横幅；
+> `dist-web/index.html` 里引用的 `assets/index-*.js` 就是刚构建出来的那一个。
+> 顺手把上一版的 `index-*.js` 删掉（不然旧包一直躺在服务器上）。
+
 **密码由需求方本人设**（谁也不代输）：服务器上放了 `/usr/local/sbin/rich4-set-password` ——
 静默读两遍、校验字符集（systemd 的 `EnvironmentFile` 对引号 / `$` / `#` 敏感，所以只放行字母数字与 `._-@+=!?`）、
 保留 `RICH4_COOKIE_SECRET`、写 `/etc/rich4.env`（600）并重启服务。换密码也是它。

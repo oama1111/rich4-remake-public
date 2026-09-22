@@ -46,8 +46,9 @@ const run = existsSync(MAP) ? it : it.skip;
  * 本文件钉住的两个种子（一局里拍賣难得开一场，30 个种子里没有一个两种现场都走到，故各钉一个）。
  * 下面每条都断言「现场数 > 0」—— 种子走不到现场时宁可红。换种子用文末的搜索器。
  */
+// ★ 2026-09-22 換種子：福神附身買地/買設施/建設施/加蓋白送一級改了進程；原 5 走不到（真人回合、電腦舉牌）現場，兩個一併重掃（原 12 / 5）。
 const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 12;
-const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 5;
+const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 14;
 const TURNS = 200;
 const HUMANS = 2;
 
