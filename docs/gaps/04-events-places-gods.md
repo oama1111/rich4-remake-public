@@ -494,3 +494,5 @@ gods.md §8 未决清单 + 附（gods.md 未载但属神明行为）：
     `core/rules/monthly.ts` 死副本（G54）、`client/src/magic-screen.ts:914` 判据重复（§三.10）。
 19. 登记新增的有意偏离：魔法屋 spin 上限（M35）、乐透点击复核（P20）、贷款/融资额度夹取
     （P11/P16）、新闻 20 的范围近似（Q-TOOL-1 适用）；并回写 §四之二的 R1–R14。
+
+| G63 | 神明**开场白文案与实际效果不符**（原版自己就不实） | `0x4632cc`（小福神「投資事半功倍」）、`0x46330e`（大福神「投資加倍順利、買地不用錢」）：代码里没有任何折扣/加倍，买地照扣钱（`rich4_player_core_actions.asm:1069 sub [player+0x496b84]`，紧接 `:1079 jmp` 才是福神白送一级） | 1:1 照抄，**不改**（需求方 2026-09-22 裁定「按原版呈现即可」）；注明在 `client/src/god-line.ts` 的 `GOD_LINES` 上方 | 有意保留 | 无 | 逐神明核对表见 `docs/audit-gods-text-vs-effect.md` |

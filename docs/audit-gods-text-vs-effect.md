@@ -163,3 +163,38 @@
 - **另有 5 条是「文案过头/不足」**（I-3..I-7），代码同样忠实于原版。
 - **最容易误判成 remake bug 的其实是「文案抄得对不对」**：`god-line.ts:46-71` 的 12 条串与 `S:370-383` 的 dump **逐字相同**（含 `\n\n` 与原版的错字），**没有一条被抄错**。
 - 需要**动手**的地方几乎没有：若要按需求方口径「让文案与效果一致」，那等于**改原版串**（偏离 1:1 复刻），应先走 `docs/escalations.md` 由需求方裁定。
+
+
+---
+
+# 续（2026-09-22）：需求方裁定与两项结案
+
+## 需求方裁定
+> 「『文案与效果不符』按原版呈现即可」；「恶魔沿路破坏不用改」。
+
+⇒ **本报告的全部不一致条目一律「照抄 + 注明」，不改代码、不改原版串。**
+代码侧的注明已加在 `packages/client/src/god-line.ts` 的 `GOD_LINES` 上方（小福神 3 / 大福神 4 那两条）。
+
+## ✅ 结案 1：`0x40fafd` 不是神明效果 —— 是**機器娃娃的「打飛」動畫**
+本报告第四节把它列成「未找到证据」，其实**仓库里早有记载**，是本轮漏接：
+- `docs/deviations/Q-TOOL-1.md:195`（表格第 3 行）：「『物件自己在飞』那套（`objects_info + 6` 计数 +
+  `+8/+0xc` 浮点坐标 + `+0x10/+0x14` 步长）| **没做** | 它由 `fcn_0040fafd`（VA 0x0040fafd）起，
+  **全 exe 只有一个调用点**：`rich4_player_core_actions.asm` 的 `0x0041b519`，条件是
+  `[0x49910c] == 8`（機器娃娃那一支），参数是 `special_players_state + 68/70`（= 機器娃娃开跑时
+  存下的玩家**节点号 / 上一节点号**），飞完再 `remove_object`。」
+- `docs/gaps/03-tools.md:75` 同：「沿途每格 `call 0x40fafd`（打飞动画）+ `call 0x40e14d`（release_object）」
+- 规格：`rich4-spec/docs/systems/tools.md:1137-1160`（§6.1.0）；通道 2 测试
+  `rich4-spec/tests/test_object_float_move.py`（13/13）
+
+⇒ **`0x40fafd` 与神明无关**，`docs/gaps/04-events-places-gods.md` 的 G62/G60/G3 把它与
+`0x40f8be` / `0x40fa61` / `0x40fbb8` 并列，容易误导（它其实是道具那条线的）。
+它是**未实现项**，而且正是玩家回报 `20260922-172529335` 问的「被扫出去的动画」——
+要做的话按 Q-TOOL-1 第 3 行那套实现（数据已在 `SweptObject.index/step` + `path` + `before.objects` 里，
+core 与 `GameState` 一行不用动）。
+
+## ✅ 结案 2：需求方记的「落脚点房子自动拆掉一层」= **惡魔（类型 10）**，且已实现
+- 用户记忆与代码一致：`reduce.ts` 的 `kind === 'demolish'` 分支（惡魔）对**落脚那一格**跑
+  `mutateLand(land, MUTATE_DEMOLISH_ONE)` —— **拆一层**（不是整栋），并弹 `god.demolish`。
+  @source `0x0040f538` / `0x0040f59c`（`cmp byte [+0x1a],0 / je 返回` ⇒ 空地不拆）。
+- **不是死神**：死神（15）是令玩家变卖全部（`sellEverything`，不折點券），不拆房。
+- 「沿路破壞」按需求方裁定**不用改**（原版汇编里也确实只有落脚一次，`fcn_0040f381(player, cell)` 只收一个 cell）。
