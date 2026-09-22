@@ -591,6 +591,29 @@ const loadHintEl = $('loadhint');
 const loadRetryEl = $<HTMLButtonElement>('loadretry');
 // ★ W-73 大厅里的「複製邀請連結」（DOM，盖在 canvas 下缘）
 const inviteEl = $<HTMLButtonElement>('invite');
+// ★ 一键回报（左下角）
+const feedbackBtnEl = $<HTMLButtonElement>('feedback');
+const feedbackPanelEl = $<HTMLDivElement>('feedbackpanel');
+const feedbackNoteEl = $<HTMLTextAreaElement>('feedbacknote');
+const feedbackSendEl = $<HTMLButtonElement>('feedbacksend');
+const feedbackCancelEl = $<HTMLButtonElement>('feedbackcancel');
+feedbackBtnEl.addEventListener('click', () => {
+  feedbackPanelEl.hidden = !feedbackPanelEl.hidden;
+  if (!feedbackPanelEl.hidden) feedbackNoteEl.focus();
+});
+feedbackCancelEl.addEventListener('click', () => {
+  feedbackPanelEl.hidden = true;
+});
+feedbackSendEl.addEventListener('click', () => {
+  const note = feedbackNoteEl.value.trim();
+  feedbackPanelEl.hidden = true;
+  feedbackNoteEl.value = '';
+  fileReport('manual', note);
+});
+// 面板开着时键盘输入是给 textarea 的，别让棋盘的热键（F9 除外）抢走
+feedbackNoteEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'F9') e.stopPropagation();
+});
 // ★ W-75 联机提示（右下角堆叠 + 被託管的常驻横幅）
 const toastsEl = $('toasts');
 const autopilotBannerEl = $('autopilotbanner');
@@ -3720,7 +3743,15 @@ function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
       pending: state.pending?.kind ?? null,
       turnCount: state.turnCount,
       mode: state.mode,
-      net: net === null ? null : { seat: net.seat },
+      net: net === null ? null : { seat: net.seat, room: net.room?.id ?? null },
+      // ★ 一键回报：谁报的（门厅填的名字；单机没填就空）—— 服务器拿它起文件名
+      player: (() => {
+        try {
+          return localStorage.getItem('rich4.name') ?? '';
+        } catch {
+          return '';
+        }
+      })(),
       options,
       canvas: { w: canvas.width, h: canvas.height, dpr: window.devicePixelRatio },
       // ★ 出事前最后 120 行日志（见 `logRing`）
@@ -3732,8 +3763,13 @@ function fileReport(reason: 'manual' | 'error' | 'stall', note = ''): void {
     screenshot,
     now,
   });
-  void writeReport(reportFileName(now, reason), JSON.stringify(report))
+  // 自动触发的（未捕获异常 / 停摆）上传失败就算了，别往下载夹里丢文件；手动按的才退回下载
+  void writeReport(reportFileName(now, reason), JSON.stringify(report), { fallbackDownload: reason === 'manual' })
     .then((where) => {
+      if (where === null && reason !== 'manual') {
+        log('⚠ 自動問題回報沒能上傳（開發環境沒有伺服器時屬正常）');
+        return;
+      }
       log(where === null ? '⚠ 問題回報寫不出去' : `📝 問題回報已存：${where}`);
       // ★ 试玩回报：日志栏那行没人看得见 ⇒ 再立一条明显的 toast（失败是另一类）
       toast = reportToast(performance.now(), where);
@@ -8710,7 +8746,8 @@ function bindInput(): void {
     recorder.error({ t: now, kind: 'stall', message, stack: null });
     hostLog(`[stall] ${message}`);
     log(`⚠ ${message}（按 F9 存問題回報）`);
-    if (isDesktop()) fileReport('stall', message);
+    // 桌面壳落成文件；网页版上传到服务器（上传不了就只记日志，见 `writeReport`）
+    fileReport('stall', message);
   }, 5_000);
 
   window.addEventListener('keydown', (e) => {

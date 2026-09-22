@@ -58,6 +58,28 @@
       }
       #invite:hover { background: #2c5280; }
       #invite[hidden] { display: none; }
+      /* ★ 一键回报（需求方 2026-09-22）：左下角常驻按钮 + 点开的小面板。DOM，不进 canvas。 */
+      #feedback {
+        position: fixed; left: 14px; bottom: 14px; z-index: 40;
+        padding: 7px 12px; border-radius: 8px; border: 1px solid #6b4a2b;
+        background: #4a3319; color: #ffe6c2; cursor: pointer; font: 600 12px/1.2 inherit; opacity: .85;
+      }
+      #feedback:hover { opacity: 1; background: #5c3f1f; }
+      #feedback[hidden] { display: none; }
+      #feedbackpanel {
+        position: fixed; left: 14px; bottom: 52px; z-index: 41; width: 300px;
+        background: #17304f; border: 1px solid #2b4a70; border-radius: 10px; padding: 12px;
+        box-shadow: 0 8px 28px rgba(0,0,0,.35); color: #e9eef7; font: 13px/1.4 inherit;
+      }
+      #feedbackpanel[hidden] { display: none; }
+      #feedbackpanel textarea {
+        width: 100%; box-sizing: border-box; height: 74px; resize: vertical; margin: 6px 0 8px;
+        padding: 6px 8px; border-radius: 6px; border: 1px solid #3a5a83; background: #0e2138; color: #e9eef7; font: inherit;
+      }
+      #feedbackpanel .row { display: flex; gap: 8px; justify-content: flex-end; }
+      #feedbackpanel button { padding: 6px 12px; border-radius: 6px; border: 0; cursor: pointer; font: 600 12px/1.2 inherit; }
+      #feedbacksend { background: #2f7ad6; color: #fff; }
+      #feedbackcancel { background: #2b4a70; color: #e9eef7; }
       /* ★ W-74 回合计时：棋盘右上角，剩余 ≤ 20 秒才露出来。
          `pointer-events: none` —— 它是提示，不许挡住棋盘的点击。 */
       #clock {
@@ -106,6 +128,14 @@
       <div class="row" id="actions"></div>
       <div id="log"></div>
     </aside>
+    <!-- ★ 一键回报：左下角常驻；点开填一句话（可不填），送出 = 飞行记录仪的报告（起点快照 + 每条 action +
+         最后 120 行日志 + 截图）上传到服务器 /api/feedback（没有服务器就退回下载） -->
+    <button id="feedback" type="button" title="F9 也可以">回報問題</button>
+    <div id="feedbackpanel" hidden>
+      <div>發現問題？簡單說一句發生了什麼（可不填）。送出時會連同剛才那幾回合的操作記錄與截圖一起交上去。</div>
+      <textarea id="feedbacknote" maxlength="500" placeholder="例如：踩到空地沒有跳出買地的框"></textarea>
+      <div class="row"><button id="feedbackcancel" type="button">取消</button><button id="feedbacksend" type="button">送出</button></div>
+    </div>
     <!-- ★ W-73 大厅里的「複製邀請連結」；平时 hidden，只有在大厅且已联机时露出来 -->
     <button id="invite" type="button" hidden>複製邀請連結</button>
     <!-- ★ W-75 联机提示：右下角堆叠 + 被託管的常驻横幅 -->

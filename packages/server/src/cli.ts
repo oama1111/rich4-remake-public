@@ -70,6 +70,9 @@ const assetDir = assetsArg === null ? defaultAssets : resolve(assetsArg);
 /** 静态站目录。**不给就不开静态服务**（只留 /robots.txt 与 /assets/game）*/
 const webArg = argStr('web');
 const webDir = webArg === null ? undefined : resolve(webArg);
+/** 一键回报的落盘目录（`--feedback <dir>`）；不给就不开 `/api/feedback` */
+const feedbackArg = argStr('feedback');
+const feedbackDir = feedbackArg === null ? undefined : resolve(feedbackArg);
 
 // 地图档案与素材目录是两件事：地图结构服务器自己要用（`map.mkf`），
 // 但它**端出去**的那份由 `--assets` 决定。
@@ -108,6 +111,7 @@ try {
     host,
     assetDir,
     ...(webDir === undefined ? {} : { webDir }),
+    ...(feedbackDir === undefined ? {} : { feedbackDir }),
     noGate,
     map,
     globalMapId,
@@ -130,6 +134,7 @@ console.log(
 console.log(turnMs === 0 ? '回合計時：**關掉了**（--turn-ms 0）' : `回合計時：${turnMs / 1000}s 不動就由電腦代打（連續兩回合 ⇒ 託管）`);
 console.log(`素材目錄：${assetDir}`);
 console.log(webDir === undefined ? '靜態站：未開（沒給 --web）' : `靜態站：${webDir}`);
+console.log(feedbackDir === undefined ? '一鍵回報：未開（沒給 --feedback）' : `一鍵回報：存到 ${feedbackDir}`);
 console.log(
   noGate
     ? '訪問密碼：**關掉了**（--no-gate，只有本機允許）'

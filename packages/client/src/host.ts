@@ -155,7 +155,11 @@ export function warpCursor(x: number, y: number): void {
  *   `~/Library/Application Support/<bundle id>/reports/`）
  * - 浏览器：触发一次下载（落在「下载」文件夹）
  */
-export async function writeReport(name: string, json: string): Promise<string | null> {
+export async function writeReport(
+  name: string,
+  json: string,
+  opts: { fallbackDownload?: boolean } = {},
+): Promise<string | null> {
   const t = tauri();
   if (t !== null) {
     try {
@@ -165,6 +169,12 @@ export async function writeReport(name: string, json: string): Promise<string | 
       return null;
     }
   }
+  // ★ 网页版（2026-09-22）：先试**上传到服务器**（`POST /api/feedback`，门后面；
+  //   `feedback.ts`）。生产服务器有这条路由；vite 开发服务器没有（404）⇒ 退回下载。
+  //   自动触发的（未捕获异常 / 停摆）在开发环境不该往下载夹里丢文件 —— `fallbackDownload: false`。
+  const uploaded = await uploadReport(json);
+  if (uploaded !== null) return uploaded;
+  if (opts.fallbackDownload === false) return null;
   try {
     const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
     const a = document.createElement('a');
@@ -174,6 +184,28 @@ export async function writeReport(name: string, json: string): Promise<string | 
     window.setTimeout(() => { URL.revokeObjectURL(url); }, 10_000);
     return `下載資料夾/${name}`;
   } catch {
+    return null;
+  }
+}
+
+/** 上传一份报告；服务器没这条路由 / 网络失败 / 被限流 ⇒ null（调用方自己决定退不退回下载） */
+async function uploadReport(json: string): Promise<string | null> {
+  if (typeof fetch !== 'function' || !/^https?:$/.test(window.location.protocol)) return null;
+  try {
+    const res = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: json,
+      credentials: 'same-origin',
+    });
+    if (!res.ok) {
+      hostLog(`回报上传被拒：HTTP ${res.status}`);
+      return null;
+    }
+    const data = (await res.json()) as { file?: unknown };
+    return typeof data.file === 'string' ? `伺服器 ${data.file}` : '伺服器';
+  } catch (e) {
+    hostLog(`回报上传失败：${String(e)}`);
     return null;
   }
 }

@@ -418,7 +418,7 @@ export function bareHostname(host: string): string {
  * ⚠️ 先看 `Content-Length` 再收 —— 光靠累加也能挡住（下面也累加），
  *   但提前拒绝可以省掉「先读 100 MB 再报错」。
  */
-function readBody(req: IncomingMessage, limit: number): Promise<string | null> {
+export function readBody(req: IncomingMessage, limit: number): Promise<string | null> {
   return new Promise((resolve) => {
     const declared = Number(req.headers['content-length'] ?? '0');
     if (Number.isFinite(declared) && declared > limit) {

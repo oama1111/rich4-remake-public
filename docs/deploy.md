@@ -202,6 +202,21 @@ sudo ufw status
 
 ---
 
+## 一键回报（玩家左下角那颗「回報問題」）
+
+玩家点它（或按 F9）会把飞行记录仪的报告（起点快照 + 之后每条 action + 最后 120 行日志 + 截图 + 他填的一句话）
+`POST /api/feedback` 到服务器，落在 `--feedback` 指的目录（生产：`/srv/rich4/feedback/`，文件名
+`<UTC 时刻>-<原因>-<玩家名>.json`）。未捕获异常 / 电脑回合停摆也会**自动**上报一份。
+门在外面（要先登录）；同一来源每分钟最多 20 份；目录里只留最近 500 份。
+
+拉回来看：
+
+```bash
+bash tools/pull-feedback.sh            # rsync 到 ./feedback/（已 .gitignore）并列一句话摘要
+bash tools/pull-feedback.sh --replay   # 再逐份重放验指纹（tools/replay-report.ts）
+node --experimental-transform-types tools/replay-report.ts feedback/<某一份>.json --shot out.png   # 单份细看
+```
+
 ## 怎么更新
 
 ```bash

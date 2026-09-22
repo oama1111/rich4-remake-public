@@ -19,7 +19,8 @@
 import { createReadStream, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { LOGIN_PATH, ROBOTS_PATH, gateFromEnv, type Gate } from './gate.ts';
+import { LOGIN_PATH, ROBOTS_PATH, clientIp, gateFromEnv, readBody, type Gate } from './gate.ts';
+import { FEEDBACK_BODY_LIMIT, FEEDBACK_PATH, FeedbackInbox } from './feedback.ts';
 import {
   ASSET_PREFIX,
   ROBOTS_TXT,
@@ -52,6 +53,8 @@ export interface HttpServerOptions extends WsServerOptions {
    * 与单测会这么用，`cli.ts` 走的是 `startServer`。
    */
   gate?: Gate;
+  /** 一键回报的落盘目录（`POST /api/feedback`）；**不给就不开这条路由**（回 404） */
+  feedbackDir?: string;
 }
 
 export interface RunningHttpServer {
@@ -67,6 +70,8 @@ export interface HandlerOptions {
   webDir?: string;
   /** 整站那道门（W-71）；不给 = 全放行 */
   gate?: Gate;
+  /** 一键回报收件箱；不给 = `/api/feedback` 回 404 */
+  feedback?: FeedbackInbox;
 }
 
 // ============================================================
@@ -86,6 +91,7 @@ export function createHttpHandler(opts: HandlerOptions): (req: IncomingMessage, 
   const assetDir = opts.assetDir;
   const webDir = opts.webDir;
   const gate = opts.gate;
+  const feedback = opts.feedback;
 
   const route = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const head = req.method === 'HEAD';
@@ -120,7 +126,31 @@ export function createHttpHandler(opts: HandlerOptions): (req: IncomingMessage, 
       deny(req, res, head);
       return;
     }
+    // ── 一键回报（门后面）：POST 一份飞行记录仪报告 ──
+    if (path === FEEDBACK_PATH) {
+      if (feedback === undefined || req.method !== 'POST') {
+        // ★ 正文还没读完就回响应，keep-alive 连接上剩下的正文会被当成**下一条请求**的开头
+        //   ⇒ 解析失败 ⇒ 连接被掐（实测 ECONNRESET）。先把正文读完再答。
+        await readBody(req, FEEDBACK_BODY_LIMIT);
+        if (feedback === undefined) return notFound(res, head);
+        send(res, 405, { 'Content-Type': 'text/plain; charset=utf-8', Allow: 'POST' }, 'Method Not Allowed', head);
+        return;
+      }
+      const body = await readBody(req, FEEDBACK_BODY_LIMIT);
+      if (body === null) {
+        send(res, 413, { 'Content-Type': 'text/plain; charset=utf-8' }, 'Payload Too Large', false);
+        return;
+      }
+      const r = feedback.accept(clientIp(req), body);
+      if (!r.ok) {
+        send(res, r.status, { 'Content-Type': 'text/plain; charset=utf-8' }, r.message, false);
+        return;
+      }
+      send(res, 201, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ file: r.file }), false);
+      return;
+    }
     if (req.method !== 'GET' && !head) {
+      await readBody(req, FEEDBACK_BODY_LIMIT); // 同上：先把正文读完再答 405
       methodNotAllowed(res, head);
       return;
     }
@@ -330,6 +360,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<RunningH
     assetDir: opts.assetDir,
     ...(opts.webDir === undefined ? {} : { webDir: opts.webDir }),
     ...(opts.gate === undefined ? {} : { gate: opts.gate }),
+    ...(opts.feedbackDir === undefined ? {} : { feedback: new FeedbackInbox({ dir: opts.feedbackDir, ...(opts.now === undefined ? {} : { now: opts.now }) }) }),
   });
   const server = createServer(handler);
   // ★ 门在**两个口**上：HTTP 走 `createHttpHandler`，升级走这里。
@@ -411,6 +442,7 @@ export function baseOptions(opts: StartServerOptions): HttpServerOptions {
     seedFor: opts.seedFor,
     ...(opts.host === undefined ? {} : { host: opts.host }),
     ...(opts.webDir === undefined ? {} : { webDir: opts.webDir }),
+    ...(opts.feedbackDir === undefined ? {} : { feedbackDir: opts.feedbackDir }),
     ...(opts.mapFor === undefined ? {} : { mapFor: opts.mapFor }),
     ...(opts.seatCount === undefined ? {} : { seatCount: opts.seatCount }),
     ...(opts.takeoverAfterMs === undefined ? {} : { takeoverAfterMs: opts.takeoverAfterMs }),
