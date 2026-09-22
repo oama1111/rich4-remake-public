@@ -165,7 +165,8 @@ describe('★ 释放后的「走回棋盘」回合（第 84 条）', () => {
     const ready: GameState = { ...flagged, phase: 'turnStart', currentPlayer: 1 };
     const skipped = reduce(ready, { type: 'startTurn' }, t());
     expect(skipped.phase).toBe('turnEnd'); // ★ 整回合跳过
-    expect(skipped.players[1]!.whoPlays & WHO_PLAYS_RETURN_TO_BOARD).toBe(0); // 标记已消费
+    // ★ E-41：标记留到这一回合的收尾（`0x418f87`）才消费，见下一条用例
+    expect(skipped.players[1]!.whoPlays & WHO_PLAYS_RETURN_TO_BOARD).toBe(WHO_PLAYS_RETURN_TO_BOARD);
     // ★ 原版这一清在走路例程里（`0x40c3cf mov dword [player+0x32], 0`），本引擎折叠到这里
     expect(skipped.players[1]!.blocking).toMatchObject({
       inHotel: 0,
@@ -173,6 +174,26 @@ describe('★ 释放后的「走回棋盘」回合（第 84 条）', () => {
       inPrison: 0,
       inHospital: 0,
     });
+  });
+
+  run('★★ E-41：「走回棋盘」那一回合收尾**不换人**、不走一天，同一位立刻正常开局', () => {
+    const flagged = reduce(pendingRelease('inPrison', 'prisonOccupancy'), { type: 'endTurn' }, t());
+    const walked = reduce({ ...flagged, phase: 'turnStart', currentPlayer: 1 }, { type: 'startTurn' }, t());
+    const before = walked.turnCount;
+    const again = reduce(walked, { type: 'endTurn' }, t());
+    // @source 0x00418f8e `jmp 0x419058`：不 inc 游标
+    expect(again.currentPlayer).toBe(1);
+    expect(again.phase).toBe('turnStart');
+    // `0x418f87 and 0xf`：0x10/0x20 一起消费
+    expect(again.players[1]!.whoPlays & WHO_PLAYS_SPECIAL_MASK).toBe(0);
+    // 客户端靠 turnCount 判「换回合」
+    expect(again.turnCount).toBe(before + 1);
+    // 不走一天（没 call 0x41c84f）⇒ 日期不动
+    expect([again.year, again.month, again.day]).toEqual([walked.year, walked.month, walked.day]);
+    // 接下来是真回合
+    const play = reduce(again, { type: 'startTurn' }, t());
+    expect(play.phase).toBe('awaitingRoll');
+    expect(play.currentPlayer).toBe(1);
   });
 
   run('★ 医院同理', () => {
@@ -262,41 +283,47 @@ describe('★ 释放后的「走回棋盘」回合（第 84 条）', () => {
     expect(after.players[1]!.whoPlays & WHO_PLAYS_SPECIAL_MASK).toBe(0);
   });
 
-  run('★ 逐步核对回合数：入狱 3 天 = 白丢 4 个回合（原版 N 天 → N+1）', () => {
+  run('★ 逐步核对回合数：入狱 3 天 = 白丢 4 个回合（原版 N 天 → N+1）—— 真实轮转', () => {
     const { map, topo: tp } = topo();
     const s = newGame({
       map,
       players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
     });
-    const jailed = (st: GameState): GameState => ({
-      ...st,
-      players: st.players.map((p, i) =>
+    // ★ E-41：先前这里是合成迴圈（每轮硬写 `currentPlayer: 1` / `0`），「走回棋盘」
+    //   那一回合的离场者对不上。现在由 `endTurn` 自己轮转，别人的回合只是不掷骰直接收尾。
+    let st: GameState = {
+      ...s,
+      phase: 'turnEnd',
+      pendingNpcSlots: [],
+      currentPlayer: 0,
+      players: s.players.map((p, i) =>
         i === 1 ? { ...p, nodeId: 1, blocking: { ...p.blocking, inPrison: 3 } } : p,
       ),
-    });
-    // ★ 递减发生在「新玩家回合开始之前」（= 原版 `0x419039`，游标已 ++）。
-    //   所以 1 号的第一回合**之前**先要有一次 `endTurn`（由上一位 0 号触发）。
-    let st: GameState = reduce(
-      jailed({ ...s, phase: 'turnEnd', pendingNpcSlots: [], currentPlayer: 0 }),
-      { type: 'endTurn' },
-      tp,
-    );
+    };
+    // 1 号每次轮到时记一笔：1 = 这一回合不掷骰；0 = 正常开局
     const missed: number[] = [];
-    for (let i = 0; i < 5; i++) {
-      const started = reduce(
-        { ...st, phase: 'turnStart', currentPlayer: 1 },
-        { type: 'startTurn' },
-        tp,
-      );
-      missed.push(started.phase === 'turnEnd' ? 1 : 0);
-      st = reduce(
-        { ...started, phase: 'turnEnd', currentPlayer: 0 },
-        { type: 'endTurn' },
-        tp,
-      );
+    // 1 号每两次开局之间，别人开局了几次
+    const othersBetween: number[] = [];
+    let others = 0;
+    for (let guard = 0; guard < 200 && !missed.includes(0); guard++) {
+      st = reduce(st, { type: 'endTurn' }, tp);
+      while ((st.pendingNpcSlots ?? []).length > 0) st = reduce(st, { type: 'npcStep' }, tp);
+      expect(st.phase).toBe('turnStart');
+      const started = reduce(st, { type: 'startTurn' }, tp);
+      if (st.currentPlayer === 1) {
+        missed.push(started.phase === 'turnEnd' ? 1 : 0);
+        othersBetween.push(others);
+        others = 0;
+      } else {
+        others++;
+      }
+      st = { ...started, phase: 'turnEnd', pending: null };
     }
-    // T1:3→2、T2:2→1、T3:1→0x80、T4:0x80→释放（这一回合就是「走回棋盘」）、T5 起自由
+    // T1:3→2、T2:2→1、T3:1→0x80、T4:0x80→释放（「走回棋盘」）、T5 自由
     expect(missed).toEqual([1, 1, 1, 1, 0]);
+    // ★★ E-41：T4 → T5 之间**没有别人**行动（原版 `0x418f8e` 不推进游标）
+    expect(othersBetween[4]).toBe(0);
+    expect(othersBetween.slice(1, 4).every((n) => n > 0)).toBe(true);
     expect(st.players[1]!.blocking.inPrison).toBe(0);
   });
 });
