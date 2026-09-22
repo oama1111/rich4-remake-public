@@ -82,7 +82,7 @@ import { useCard } from '../cards/registry.ts';
 import { placeOnNode } from '../rules/position.ts';
 import { rotateViewBy } from '../rules/view.ts';
 import { applyRobCardCard, giveCard, priceOf } from '../cards/rob.ts';
-import { godPowerOf, type GodPower } from '../rules/god-power.ts';
+import { GOD_BIG_LUCK, godPowerOf, type GodPower } from '../rules/god-power.ts';
 import {
   MISSILE_DEMOLISH_HOSTILITY,
   MISSILE_HOSPITAL_DAYS,
@@ -2955,22 +2955,54 @@ function applyGodPower(
     case 'receiveCards': {
       let players = state.players;
       const cardAmount = [...state.cardAmount];
-      // ★ 第八份试玩回报 #5：每得一张弹一扇「%s附身\n\n得到%s！」（`0x0040ee13 push 0x4632fd`，
-      //   `%s` 依次 = 神明名 `[0x47ed76 + 種類*4]`、卡名 `[卡表 + 卡号*8]`；`0x0040ee25 push 0x5dc` 1500 ms）；
-      //   袋空（`0x441e12` 返回 0，`0x0040edf9 je`）就一扇也不弹。`cardId` 交给表现层配那句好消息台词
-      //   （`0x0040ee39 mov al,[ebx+0x47fdef]`（卡的點數价）→ `0x0040ee46 call 0x44f230`）。
-      const notices: NoticeHint[] = [];
       const godInfo = state.players[host]?.godInfo ?? 0;
       const godType = godInfo > 0 ? (state.objects[godInfo - 1]?.type ?? 0) : 0;
+      // ★ 第八份试玩回报 #5：得卡时弹訊息框，`%s` = 神明名 `[0x47ed76 + 種類*4]`、
+      //   卡名 `[卡表 + 卡号*8]`；袋空（`0x441e12` 返回 0，`0x0040edf9 je`）就停手。
+      //   `cardId` 交给表现层配那句好消息台词
+      //   （`0x0040ee39 mov al,[ebx+0x47fdef]`（卡的點數价）→ `0x0040ee46 call 0x44f230`）。
+      /** 这一趟**真正抽到**的卡号，顺序即抽出顺序（袋空就到此为止）*/
+      const drawn: number[] = [];
       for (let k = 0; k < power.count; k++) {
         // @source `_rich4_player_receive_random_card` 0x441e12：袋空返回 0
         const id = drawRandomCard(rng, cardAmount);
         if (id === 0) break;
         cardAmount[id - 1] = Math.max(0, (cardAmount[id - 1] ?? 0) - 1);
         players = players.map((p, i) => (i === host ? giveCard(p, id) : p));
-        notices.push({ key: 'god.gotCard', args: [godNameOf(godType), cardNameOf(id)], holdMs: 1500, cardId: id });
+        drawn.push(id);
       }
-      return notices.length === 0 ? { ...state, players, cardAmount } : { ...state, players, cardAmount, notices };
+      if (drawn.length === 0) return { ...state, players, cardAmount };
+      // ★★ 大福神（種類 4）拿到**两张**时，原版弹的是**一扇两卡名**的框，不是两扇：
+      //   `0x0040eed7 push 0x463353`（`大福神附身\n\n得到%s及%s！`）+
+      //   `0x0040eee9 push 0x5dc`（1500 ms），两个 `%s` = `[ebx]`（先抽到）× `[esi]`（後抽到）
+      //   —— **不含神明名**（格式串自己写着「大福神」）。
+      //   小福神（種類 3）那条是 `0x0040ee13 push 0x4632fd`（`%s附身\n\n得到%s！`，1500 ms），
+      //   每一张各弹一扇 ⇒ 两条形状不同，不能合并。
+      if (godType === GOD_BIG_LUCK && drawn.length === 2) {
+        const [first = 0, second = 0] = drawn;
+        return {
+          ...state,
+          players,
+          cardAmount,
+          notices: [
+            {
+              key: 'god.gotCardTwo',
+              args: [cardNameOf(first), cardNameOf(second)],
+              holdMs: 1500,
+            },
+          ],
+        };
+      }
+      // 其余情形（小福神 / 大福神但只拿到一张 / 其它调用方）保持原样：一扇一卡
+      const notices: NoticeHint[] = drawn.map(
+        (id): NoticeHint => ({
+          key: 'god.gotCard',
+          args: [godNameOf(godType), cardNameOf(id)],
+          holdMs: 1500,
+          cardId: id,
+        }),
+      );
+      return { ...state, players, cardAmount, notices };
     }
 
     // ── 衰神：丢卡 @source 0x0040f10c（随机一张）/ 0x0040f1de（一半）──

@@ -11,6 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
+import { CARDS } from '@rich4/data';
 import { parseMap } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { reduce } from './reduce.ts';
@@ -190,6 +191,38 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
     }
     expect(after.players[0]!.cards).toEqual(ids);
     expect(after.cardAmount).toEqual(deck);
+  });
+
+  /**
+   * ★★ 得卡那一扇訊息框的**形状**：小福神每张一扇（`0x0040ee13 push 0x4632fd`，
+   *   `%s附身\n\n得到%s！`），**大福神两张只弹一扇**（`0x0040eed7 push 0x463353`，
+   *   `大福神附身\n\n得到%s及%s！` —— 串里自己写着神明名，故 `args` 只有两张卡名）。
+   *
+   * 反证：旧实现（每张都 push `god.gotCard`、args 带神明名）在这一组里是**两扇**，
+   *   下面第一条的 `toHaveLength(1)` / `key` / `args` 都会红。
+   */
+  run('★★ 大福神两张 ⇒ **只有一扇** `god.gotCardTwo`，args = [两张卡名]、不含神明名', () => {
+    const { after } = stepOnto(GOD_BIG_LUCK);
+    const cards = after.players[0]!.cards;
+    expect(cards).toHaveLength(2);
+    expect(after.notices).toHaveLength(1);
+    const n = after.notices![0]!;
+    expect(n.key).toBe('god.gotCardTwo');
+    expect(n.holdMs).toBe(1500);
+    // 顺序 = 两张卡各自的名字（先抽到的在前，同原版 `[ebx]` → `[esi]` 的 sprintf 顺序）
+    expect(n.args).toEqual([CARDS[cards[0]! - 1]!.name, CARDS[cards[1]! - 1]!.name]);
+    expect(n.args).not.toContain('大福神');
+    // 这张框的 key 与 `gotCard` 不同 ⇒ 旧的「带神明名」形状不适用；`cardId` 也不带
+    expect(n.cardId).toBeUndefined();
+  });
+
+  run('★ 小福神一张 ⇒ 仍然**一扇** `god.gotCard`、args = [神明名, 卡名]（没误伤）', () => {
+    const { after } = stepOnto(GOD_SMALL_LUCK);
+    const cards = after.players[0]!.cards;
+    expect(cards).toHaveLength(1);
+    expect(after.notices).toEqual([
+      { key: 'god.gotCard', args: ['小福神', CARDS[cards[0]! - 1]!.name], holdMs: 1500, cardId: cards[0]! },
+    ]);
   });
 
   run('★ 小衰神：丢一张（回牌堆）@source 0x0040f10c', () => {

@@ -1018,19 +1018,40 @@ export function detectShopGift(before: GameState, after: GameState): DetectedSay
 /**
  * 福神附身得卡之后那句「好消息」（第八份试玩回报 #5）。
  *
- * @source `0x0040ee39 mov al,[ebx+0x47fdef]`（那张卡的**點數价**）→ `0x0040ee46 call 0x44f230(玩家, 點數价)`，
- *   每得一张说一次（大福神两张 ⇒ 两句）；档位阈值 100 / 50 与 `detectShopGift` 同一支阶梯。
- * 判据 = 这一条 action 新写的 `notices` 里的 `god.gotCard`（`cardId` 由 core 交下来）。
+ * @source `0x0040ee39 mov al,[ebx+0x47fdef]`（那张卡的**點數价**）→ `0x0040ee46 call 0x44f230(玩家, 點數价)`。
+ * 档位阈值 100 / 50 与 `detectShopGift` 同一支阶梯。
+ *
+ * ★★ 2026-09-22 订正（大福神那一条）：先前这里写「大福神两张 ⇒ 两句」并逐条按**各自**的点数价取档，
+ *   **与 exe 不符**。原版大福神（`fcn_0040ee50`）把两张卡的 `+0x47fdef` **相加**
+ *   （`0x0040eefb`-`0x0040ef0c`），`0x44f230` **只叫一次** ⇒ **一句**、档位按**和**取
+ *   （`0040ef16 jmp 0x40ee46 → call 0x44f230`）。
+ *   ⇒ 现在两种 notice 都认：`god.gotCard`（一卡，用它的点数价）与
+ *     `god.gotCardTwo`（大福神两卡，**用两张卡点数价的和**，且只产出一句）。
+ *
+ * 判据 = 这一条 action 新写的 `notices`（`cardId` / 两个卡名由 core 交下来）。
  */
 export function detectGodCard(before: GameState, after: GameState): DetectedSay[] {
   if (after.notices === before.notices) return [];
   const p = after.players[after.currentPlayer];
   if (p === undefined || !isAlive(p) || !speechGatesOpen(p)) return [];
   const out: DetectedSay[] = [];
+  const priceOf = (id: number): number => CARDS.find((c) => c.id === id)?.price ?? 0;
   for (const n of after.notices) {
-    if (n.key !== 'god.gotCard' || n.cardId === undefined) continue;
-    const tier = smallGainTierFor(CARDS.find((c) => c.id === n.cardId)?.price ?? 0);
-    if (tier !== null) out.push({ player: p.index, event: tier });
+    // 一卡（小福神 / 大福神只拿到一张）：用它自己那张的点数价
+    if (n.key === 'god.gotCard') {
+      if (n.cardId === undefined) continue;
+      const tier = smallGainTierFor(priceOf(n.cardId));
+      if (tier !== null) out.push({ player: p.index, event: tier });
+      continue;
+    }
+    // ★★ 大福神两张：`0x463353` 那一扇的 `args` 是**两张卡名**（不含神明名），
+    //   原版按两张的點數价**和**取一次档、只叫一次 `0x44f230` ⇒ 这里也只产出一句。
+    if (n.key === 'god.gotCardTwo') {
+      const ids = n.args.map((name) => CARDS.find((c) => c.name === name)?.id).filter((v): v is number => v !== undefined);
+      if (ids.length === 0) continue;
+      const tier = smallGainTierFor(ids.reduce((sum, id) => sum + priceOf(id), 0));
+      if (tier !== null) out.push({ player: p.index, event: tier });
+    }
   }
   return out;
 }

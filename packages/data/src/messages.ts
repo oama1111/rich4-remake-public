@@ -371,10 +371,25 @@ export const GOD_MANIFEST = {
   demolish: t('小惡魔顯靈\n\n拆毀一層房屋！', 0x4634d7),
   /** 土地公 */
   seize: t('土地公顯靈\n\n強佔土地！', 0x4634f2),
-  /** 衰神/死神拦下消费（`fcn_0040fa61`）。⚠️「拘資」是原版的错字（应为「投資」），1:1 照抄 */
-  blockPurchase: t('%s顯靈\n\n拘資失敗！', 0x463514),
+  /**
+   * 衰神/死神拦下消费（`fcn_0040fa61`）。
+   *
+   * ★★ 2026-09-22 订正：先前这里写「『拘資』是原版错字、1:1 照抄」—— **那句注释是错的**。
+   *   逐字节复核 exe（`0x463514`，fileOff 400148，len 18）：
+   *   `2573c5e3c6460a0aa7ebb8eaa5a2b1d1a149` = `%s顯靈\n\n投資失敗！`；
+   *   整个 DGROUP（158720 字节）里「拘資」出现 **0** 次、「投資失敗」出现 **1** 次。
+   *   ⇒ 当初从 asm/注释转写时写错了字，现在改回 exe 上的原文。
+   */
+  blockPurchase: t('%s顯靈\n\n投資失敗！', 0x463514),
   /** 福神附身得卡（`0x0040ee13`）：`%s` = 神明名、卡名 */
   gotCard: t('%s附身\n\n得到%s！', 0x4632fd),
+  /**
+   * 大福神附身得**两张**卡（`fcn_0040ee50`，`0x0040eed7 push 0x463353`，`0x0040eee9 push 0x5dc`）。
+   *
+   * ⚠️ `%s` × 2 = **两张卡名**（先抽到的那张在前）—— 这一条里**没有**神明名，
+   *   格式串自己写着「大福神」，与 `gotCard` 的 `[神明名, 卡名]` 形状不同。
+   */
+  gotCardTwo: t('大福神附身\n\n得到%s及%s！', 0x463353),
 } as const;
 
 /**
@@ -455,6 +470,11 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(PLACE),
   ...Object.values(TOOLBAR_TIPS),
   ...Object.values(GOD_ATTACH),
+  // ★★ 2026-09-22：`GOD_MANIFEST` 整块进来了（先前只放 `gotCardTwo`）。
+  //   挡了它一阵子的那条 —— `blockPurchase` 的「拘資」——已经订正成 exe 上的「投資失敗」
+  //   （那是当初转写写错的字，不是原版错字；见该条自己的注释），
+  //   所以现在可以整块交给下面那条逐字比对守着，四条都有了护栏。
+  ...Object.values(GOD_MANIFEST),
   ...GOD_NAMES,
   ...OBJECT_NAMES,
 ];
