@@ -247,7 +247,9 @@ describe('★ main.ts 的三條閘 @source 0x0041a458 / 0x0041a71e / 0x0044f1a6'
     // 放行的判據只有一處：`presentation-order.ts` 的 `lineMayEnter`（框 / 影片那一側的快照）
     const release = functionBody(src, 'releaseHeldSpeech').text;
     expect(release).toContain('const boxes = boxSnapshot();');
-    expect(release).toContain('lineMayEnter(heldSpeech[0]!.order, boxes)');
+    expect(release).toContain('if (lineMayEnter(h.order, boxes)) out.push(h.bubble);');
+    // 第十五份：`cue` 没到的那几句跳过（不算数），其余过闸，过不了就停
+    expect(release).toContain('h.cue !== undefined && !cueDone(h.cue)');
     expect(release).toContain('speechQueue.push(out, now)');
     // ★★ 影片那一類（轉盤之外的 W-51 那幾位）照舊擋 `afterStage` 起的句子
     const snap = functionBody(src, 'boxSnapshot').text;

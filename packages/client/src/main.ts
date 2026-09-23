@@ -205,11 +205,13 @@ import {
   SCREEN_BOX_TIER,
   boxMayStart,
   boxRank,
+  countedHeld,
   insertByRank,
   lineMayEnter,
   lineRank,
   speechAheadOfFilms,
   type BoxSnapshot,
+  type SpeechCue,
   type SpeechSnapshot,
 } from './presentation-order.ts';
 import { fastForwardPresentations, presenterMovedOn } from './follow-presenter.ts';
@@ -275,6 +277,7 @@ import {
   buildFxPlan,
   buildHammerDone,
   buildUpgradesOf,
+  clipDone,
   BUILD_FX_ARCHIVE,
   manifestSoundFor,
   MANIFEST_BUILD_SOUND,
@@ -624,6 +627,7 @@ import { openBigMap } from './big-map-screen.ts';
 //   ESC 与右键都走那条登记契约（本屏的 `hotkey` / `contextmenu` 是同一支）。
 import { openHelpAt } from './help-screen.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { dividendDayCrossed } from './shares-screen.ts';
 import {
   CURSOR_ARCHIVE,
   CURSOR_RESOURCE,
@@ -1869,6 +1873,8 @@ function blockingPresentation(): boolean {
   // ★ 2026-09-23：保釋屏答完之后的收尾（醫院「ＯＫ！」/ 犯人道谢 / 護士道别）还在演 ⇒ 回合别往下走
   //   （原版这几句都在那扇模态窗里，关屏才回到回合流程）
   if (bailClosing()) return true;
+  // ★ 第十五份：分紅 / 開獎 / 月结 / 魔法屋押着等台词说完（`deferredScreenEvents`）⇒ 回合别往下走
+  if (deferredScreenEvents.length > 0) return true;
   const overlay = activeUiScreen();
   // ★ 魔法屋女巫窗口停在状态 7（等真人点一格）时**不算演出**：那一刻它就是一个待决交互
   //   （`pending{magicHouse}`），挡住联机收件箱就会死锁 —— 别家那一端点定的答复
@@ -4317,7 +4323,7 @@ function notifyApplied(before: GameState): void {
   holdSpeech(said);
   // ★ 登记的整屏：把「刚刚发生了什么」告诉它们（開獎 / 月結 / 魔法屋 / 事件框靠这个起播）
   const env = uiEnv();
-  for (const s of SCREENS) s.event?.(before, state, env);
+  for (const s of SCREENS) deliverScreenEvent(s, before, state, env);
   releaseHeldSpeech(performance.now());
   if (heldSpeech.length > 0) requestRender();
 }
@@ -4371,8 +4377,32 @@ function holdSpeech(lines: readonly SpeechLine[]): void {
   if (lines.length === 0) return;
   heldSpeech = insertByRank(
     heldSpeech,
-    lines.map((l) => ({ bubble: l.bubble, order: l.order, rank: lineRank(l.order) })),
+    lines.map((l) => ({
+      bubble: l.bubble,
+      order: l.order,
+      rank: lineRank(l.order),
+      ...(l.cue === undefined ? {} : { cue: l.cue }),
+    })),
   );
+}
+
+/**
+ * ★ 第十五份：这一句前面那一段演出（`SpeechCue`）演完了没有 —— 没演完它就不算数。
+ * 判据全是现取的表现状态位（与 `stageBusyFlags` 同一批变量）。
+ */
+function cueDone(cue: SpeechCue): boolean {
+  switch (cue) {
+    case 'godAscend':
+      return godAscend === null;
+    case 'godAttach':
+      return objectFlight === null && pendingCardFlight === null && godAscend === null;
+    case 'manifestBox':
+      return !noticeKeyShowing(MANIFEST_NOTICE_KEY);
+    case 'buildHammer':
+      // 大锤排着 / 正在敲 ⇒ 没完；停在「敲完、等台词」那一拍（`buildFxSeamHeld`）或没有大锤 ⇒ 完了
+      if (pendingBuildFx !== null && pendingBuildFx.first === 'hammer') return false;
+      return !(buildFx !== null && buildFx.clip === 'hammer' && !clipDone(buildFx, performance.now()));
+  }
 }
 
 /**
@@ -4383,13 +4413,27 @@ function releaseHeldSpeech(now: number): void {
   if (heldSpeech.length === 0) return;
   const boxes = boxSnapshot();
   const out: SpeechBubble[] = [];
-  while (heldSpeech.length > 0 && lineMayEnter(heldSpeech[0]!.order, boxes)) out.push(heldSpeech.shift()!.bubble);
+  const keep: typeof heldSpeech = [];
+  let blocked = false;
+  for (const h of heldSpeech) {
+    // ★ 第十五份：前一段还没演完的那几句（`cue`）不算数 —— 跳过它，别让它挡住后面的
+    if (blocked || (h.cue !== undefined && !cueDone(h.cue))) {
+      keep.push(h);
+      continue;
+    }
+    if (lineMayEnter(h.order, boxes)) out.push(h.bubble);
+    else {
+      blocked = true; // 档是排好的：这一句过不了，后面档更大的也过不了
+      keep.push(h);
+    }
+  }
+  heldSpeech = keep;
   if (out.length > 0 && speechQueue.push(out, now) > 0) requestRender();
 }
 
 /** 台词那一侧此刻的样子（框的起播闸用）*/
 function speechSnapshot(): SpeechSnapshot {
-  return { onStage: speechQueue.length, heldRanks: heldSpeech.map((h) => h.rank) };
+  return { onStage: speechQueue.length, heldRanks: countedHeld(heldSpeech, cueDone).map((h) => h.rank) };
 }
 
 /**
@@ -4415,6 +4459,7 @@ function boxSnapshot(): BoxSnapshot {
     }
   }
   const pendingRanks = noticePendingRanks();
+  if (deferredScreenEvents.length > 0) pendingRanks.push(boxRank(SCREEN_BOX_TIER.monthly));
   if (eventBoxPending()) pendingRanks.push(boxRank(SCREEN_BOX_TIER.eventBox));
   if (wheel.pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.wheel));
   if (slot.pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.godSlot));
@@ -4425,6 +4470,54 @@ function boxSnapshot(): BoxSnapshot {
 
 /** 推日期那几屏 + 魔法屋女巫窗：都是 `lead` 档、起播即在屏上（见 `SCREEN_BOX_TIER`）*/
 const DAY_AND_MAGIC_BOXES: ReadonlySet<string> = new Set(['shares', 'lottery-draw', 'monthly', 'magic']);
+
+/**
+ * ★★ 第十五份（需求方拍板）：分紅 / 開獎 / 月结 / 魔法屋女巫窗也走同一道起播闸 ——
+ *   台上还有上一条 action 的气泡时先不起（原版 `player_say` 阻塞，说完才轮到这些模态屏）。
+ *   这几屏都是在 `event()` 里当场起播的，所以闸挡的是**派发**：把那一对 `before/after` 押着，
+ *   闸一开（`flushDeferredScreenEvents`，每帧）再原样派。押着期间算 `lead` 档的排队框、算台上在演。
+ */
+const deferredScreenEvents: { screen: UiScreen; before: GameState; after: GameState }[] = [];
+
+/** 这一对 `before/after` 会不会让这一屏**起播**（判据与各屏 `event()` 的第一道门同一条）*/
+function screenStarts(id: string, before: GameState, after: GameState): boolean {
+  switch (id) {
+    case 'monthly':
+      return after.totalMonths > before.totalMonths;
+    case 'shares':
+      return dividendDayCrossed(before, after);
+    case 'lottery-draw':
+      return lotteryDrawCue(before, after) !== null;
+    case 'magic':
+      return after.pending?.kind === 'magicHouse' && after.pending !== before.pending;
+    default:
+      return false;
+  }
+}
+
+function deliverScreenEvent(s: UiScreen, before: GameState, after: GameState, env: UiScreenEnv): void {
+  if (
+    DAY_AND_MAGIC_BOXES.has(s.id) &&
+    (deferredScreenEvents.some((d) => d.screen === s) ||
+      (screenStarts(s.id, before, after) && !boxMayStart(SCREEN_BOX_TIER.monthly, speechSnapshot())))
+  ) {
+    deferredScreenEvents.push({ screen: s, before, after });
+    requestRender();
+    return;
+  }
+  s.event?.(before, after, env);
+}
+
+/** 每帧：闸开了就把押着的那几条按原先后派出去 */
+function flushDeferredScreenEvents(): void {
+  if (deferredScreenEvents.length === 0) return;
+  if (!boxMayStart(SCREEN_BOX_TIER.monthly, speechSnapshot())) {
+    requestRender();
+    return;
+  }
+  const env = uiEnv();
+  for (const d of deferredScreenEvents.splice(0)) d.screen.event?.(d.before, d.after, env);
+}
 
 /**
  * 一条 action 落地后该起哪些**表现动效** —— 两条来源（真人 `dispatch → applyAction`、
@@ -6350,7 +6443,7 @@ const speechQueue = new SpeechQueue();
  *   由 `releaseHeldSpeech()` 按「框 / 影片收了没有」一句一句放上台（第十五份起连
  *   `beforeStage` 的句子也会押 —— 押在 `lead` 档的框与屏上正开着的框后面）。
  */
-let heldSpeech: { bubble: SpeechBubble; order: SpeechOrder; rank: number }[] = [];
+let heldSpeech: { bubble: SpeechBubble; order: SpeechOrder; rank: number; cue?: SpeechCue }[] = [];
 
 // ============================================================
 //  神明离身升天（`god_detach` VA 0x0040e32c）—— 规格在 `god-ascend-fx.ts`（第十二份试玩回报 #1）
@@ -6386,6 +6479,16 @@ function tickGodAscend(now: number): void {
   if (a.start === null) {
     // 走子补间 / 道具·卡片飞行 / 月结那几屏还在 ⇒ 先等（原版它们都在 `god_detach` 之前、且都阻塞）
     if (!renderer.walkDone(now) || objectFlight !== null) return;
+    // ★ 第十五份：送神 / 換神那一次用卡 —— 亮牌 `0x441f73` → 出牌台词 → 飞行 都在 `god_detach` 之前（请神符
+    //   `0x00444e8a` → `0x00444efa` → 附身里的 `0x0040eb3f`）；先前升天与亮牌同时起播
+    if (
+      cardUsePopupActive() ||
+      eventBoxPending() ||
+      pendingCardFlight !== null ||
+      filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))
+    ) {
+      return;
+    }
     const overlay = activeUiScreen();
     if (overlay !== null && DAY_ROLL_PRESENTATIONS.has(overlay.id)) return;
     a.start = now;
@@ -6717,6 +6820,8 @@ function startCardFlight(
  *   （66 帧 × 42 ms）→ 最后 `refresh_screen`。规格与逐条 VA 见 `build-fx.ts`。
  */
 let buildFx: BuildFx | null = null;
+/** ★ 第十五份：大锤敲完、正停着等台词（见 `tickBuildFx` 的接缝）*/
+let buildFxSeamHeld = false;
 
 /**
  * 「影片起播那一拍**之前**」的 state 快照（`null` = 现在没有影片在播）——
@@ -7179,6 +7284,12 @@ function tickBoardFilm(now: number): void {
     if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) return;
     // ★ 换神：旧神先升天（`0x40eb3f` 在影片之前），演完 `tickGodAscend` 会再叫醒我们
     if (godAscend !== null) return;
+    // ★ 第十五份：卡片 / 物件还在飞 ⇒ 影片等它（卡片函数里 `animate_object` 在影片之前：怪獸 `0x00443a6a` →
+    //   `0x00443aaf`、陷害 `0x00444591` → 送監獄 `0x0044461c`、請神符 `0x00444efa` → 附身影片）
+    if (objectFlight !== null || pendingCardFlight !== null) {
+      requestRender();
+      return;
+    }
     // ★ 魔法屋：原版每一支先 `0x440cac` 弹框（阻塞 1500 ms）、再播影片（拆除 0x211 / 入獄・住院）
     //   ⇒ 那几扇（`NoticeHint.beforeFilms`）还没弹完就先押着；訊息框自己续帧叫醒我们
     if (noticeHoldsFilms()) return;
@@ -7420,6 +7531,25 @@ function tickBuildFx(now: number): void {
   // ── ② 正在播 ──
   const fx = buildFx;
   if (fx === null) return;
+  // ★★ 第十五份：大锤敲完、接 0x20b 之前先等台词 —— 自家建設公司盖到 5 级是
+  //   大锤 `0x0041ab10` → 事件 15 `0x0041ab5b` → 0x20b `0x0041ab63`（那一句带 `cue: buildHammer`，
+  //   敲完才算数）。停在这一拍的期间画面留在大锤最后一帧；放行时 0x20b 从**此刻**起算。
+  if (fx.clip === 'hammer' && fx.thenMaxLevel && clipDone(fx, now)) {
+    if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) {
+      buildFxSeamHeld = true;
+      requestRender();
+      return;
+    }
+    if (buildFxSeamHeld) {
+      buildFxSeamHeld = false;
+      releaseBuildFlic(buildClip(fx.clip).resource);
+      buildFx = { clip: 'maxLevel', startedAt: now, thenMaxLevel: false };
+      playBuildFxSound('maxLevel');
+      buildFlicNow('maxLevel');
+      requestRender();
+      return;
+    }
+  }
   const next = stepBuildFx(fx, now);
   if (next === null) {
     buildFx = null;
@@ -7546,6 +7676,7 @@ function requestRender(): void {
     //   `tick` 只负责推进**自己正在播的那一段** —— 所以给没上屏的屏也 tick
     //   会让它们的动画在别人背后偷跑（分红屏占屏那 3 秒里開獎屏照样在走）。
     //   **屏幕自己要续帧就调 `env.requestRender()`**，别指望这里无条件重排（会死循环）。
+    flushDeferredScreenEvents();
     let overlay = activeUiScreen();
     if (overlay !== null) {
       overlay.tick?.(uiEnv());

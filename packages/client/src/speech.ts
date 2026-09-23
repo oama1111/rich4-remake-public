@@ -59,7 +59,9 @@
 
 import {
   FORTUNE_PAY_TAIL_IDS,
+  emptyOwnership,
   isAlive,
+  ownerOf,
   WHO_PLAYS_HUMAN,
   type GameState,
   type MapTopology,
@@ -76,6 +78,7 @@ import {
 } from '@rich4/data';
 import { cardAnswerBubbleOf, cardLineBubbleOf, speechBubbleOf, toolLineBubbleOf, type SpeechBubble } from './speech-bubble.ts';
 import type { SpeechOrder } from './stage-gate.ts';
+import type { SpeechCue } from './presentation-order.ts';
 
 // ============================================================
 //  对外形状
@@ -111,6 +114,11 @@ export interface SayEvent {
    */
   order: SpeechOrder;
   /**
+   * ★ 第十五份：这一句在 exe 里**夹在两段演出之间**（前一段是它的 `cue`）——
+   *   `cue` 那一段演完之前它不算数（不上台、也不挡任何框 / 影片），演完之后按 `order` 照常排。
+   */
+  cue?: SpeechCue;
+  /**
    * **原样的一句字**（不查角色台词表）—— `player_say(玩家, 表情, 串)` 的第 3 个实参是
    * 字面串而不是 `[0x48084a + …]` 表项的那几处（目前只有魔法屋的「？？？...」，`0x46482f`）。
    * 给了它，`event` 就不再是槽位号（填 −1），`speech-bubble.ts` 直接拿它画、串首没有 `#NNNN` 就不放语音。
@@ -134,6 +142,8 @@ export type DetectedSay = Omit<SayEvent, 'order'> & {
    *   目前只有「剛滿 5 級」：自己加蓋那一支在框之前（`0x00419a19`），福神加蓋那一支在顯靈框之后（`0x0040fa1e`）。
    */
   order?: SpeechOrder;
+  /** ★ 第十五份：这一句自己的 `cue`（缺省取探测器的 `SpeechDetector.cue`）*/
+  cue?: SpeechCue;
 };
 
 /** 只要「谁 / 哪一句」的调用方（资源换算、气泡排版）——`SayEvent` 与裸字面量都能传 */
@@ -153,6 +163,8 @@ export interface SpeechDetector {
    * `docs/escalations.md`。**没有缺省值**：新探测器必须自己写一条。
    */
   readonly order: SpeechOrder;
+  /** ★ 第十五份：这一族台词在 exe 里排在哪一段演出**之后**（见 `SayEvent.cue`）；多数没有 */
+  readonly cue?: SpeechCue;
   /**
    * `before/after` 状态 → 谁说了哪几句。
    *
@@ -477,46 +489,73 @@ export function detectVictory(before: GameState, after: GameState): DetectedSay[
 /**
  * 加蓋到頂（等級 = 5）—— 事件 15「我真佩服自己」。
  *
- * @source VA 0x00419a0e（加蓋流程）：
- * ```asm
- * inc byte [地块 + 0x1a]              ; ★ +0x1a = level（csrc/land.h）
- * …記「本月支出」、播音效…
- * cmp byte [地块 + 0x1a], 5
- * jne 跳过                            ; ★ **正好等于 5** 才说
- * mov edi, [表 + 0x480886]            ; = 事件 15
- * push edi / push 0 / push current_player
- * call _rich4_player_say
- * ```
- * 同一个槽位在 **0x0041ab4a**（建設公司免费加蓋那一路，先 `mov al,[+0x1a] / cmp al,4`）
- * 也出现。最多 5 级、`< 5` 才能续建（`fcn_0040b110`），故这一支只在
- * 「4 → 5」那一次命中。
+ * ★★ 第十五份（需求方拍板「照原版」）：**只有 exe 里那三处**说这一句 ——
+ *   `python3 tools/disasm.py xref 0x480886`（事件 15 的表项）只命中三条指令：
+ *
+ * | 取串 | `player_say` | 那一支 | 本引擎的判据 | 次序 |
+ * |---|---|---|---|---|
+ * | `0x00419a0e` | `0x00419a19` | 自己付费加蓋：住宅 `0x004199eb cmp [+0x1a],5`；設施 `0x0041a35d inc dh / 0x0041a362 cmp dh,5 / je 0x4199f1` | 这一条是答 `upgradeLand` / `upgradeFacility`，且那一处刚好到 5 | 台词 → 0x20b `0x00419a21` ⇒ `beforeStage` |
+ * | `0x0041ab4a` | `0x0041ab5b` | **自家**建設公司代蓋：`0x0041aae8 call 0x40b110`（第一次）的 bit7（`0x0041ab21 test [esp+0xbc],0x80`）| 本条的 `companyBuild` 提示 `reachedMaxLevel`，且公司是自己的 | 大锤 `0x0041ab10` → 台词 → 0x20b `0x0041ab63` ⇒ `beforeStage` + `cue: buildHammer` |
+ * | `0x0040fa13` | `0x0040fa1e` | 福神代蓋（`fcn_0040f8be`）到 5 | 本条有 `godManifest` 提示 `reachedMaxLevel`，且附身的是福神（3 / 4）| 顯靈框 `0x0040f9c9` → 台词 → 0x20b `0x0040fa26` ⇒ `beforeStage` + `cue: manifestBox` |
+ *
+ * **不说**的（先前一律说）：天使顯靈（`fcn_0040f381` 里 `0x0040f517` 只放 0x20b）、别人的建設公司
+ * （`0x0041ad99` 大锤 → `0x0041adb4` 0x20b，中间没有 `player_say`）、機器工人（`0x0044735c` → `0x00447373`）、
+ * 天使卡（`0x004436d4`）、魔法屋（`0x431caa`，那一支说「？？？...」，见 `magicPonder`）。
  *
  * ★ 勘误：`@rich4/data` 的 `speech.ts` 把这一处注成「`player+0x1a == 5`」，
  *   但那条 `esi` 指的是**地块记录**（`+0x04` 是地名、`+0x1a` 是等级），
  *   不是玩家结构 —— 见 `docs/deviations/T-052.md` 的 Q-SPEECH-7。
  */
-export function detectLevelFive(before: GameState, after: GameState): DetectedSay[] {
-  // ★ 魔法屋「就地加蓋」到 5 级：`0x431caa` 那一支是 `0x40b110` → 大锤 → bit7 时 `0x40b0cd`
-  //   → `player_say(中签者, 0, "？？？...")`（`magicPonder`），**不说**事件 15。
+export function detectLevelFive(before: GameState, after: GameState, topo?: MapTopology): DetectedSay[] {
   if (magicHouseThisAction(before, after) !== null) return [];
-  const reached =
-    reachedLevelFive(before.landLevel, after.landLevel) ||
-    reachedLevelFive(before.facilityLevel, after.facilityLevel);
-  if (!reached) return [];
   const p = after.players[after.currentPlayer];
   if (p === undefined || !isAlive(p)) return [];
-  // ★ 第十五份：福神代蓋到 5 级那一支（`fcn_0040f8be`）是「顯靈框 `0x0040f9c9` → 音效 → 镜头 →
-  //   台词 `0x0040fa1e` → 0x20b」—— 框在前（`tail` 档）⇒ 这一句排在尾框之后（`afterTailBox`）。
-  //   自己付费加蓋那一支（`0x00419a19`）/ 建設公司那一支（`0x0041ab5b`）仍是缺省的 `beforeStage`。
-  if (levelFiveByGod(before, after)) return [{ player: p.index, event: 15, order: 'afterTailBox' }];
-  return [{ player: p.index, event: 15 }];
+  const hints = freshBuildHints(before, after);
+  // ③ 福神代蓋到 5：框在前，台词等框收了才算数（`cue`），再挡 0x20b
+  if (hints.some((h) => h.source === 'godManifest' && h.reachedMaxLevel)) {
+    return LUCKY_GOD_INFO.has(p.godInfo) ? [{ player: p.index, event: 15, cue: 'manifestBox' }] : [];
+  }
+  // ② 自家建設公司：只看**第一次** `0x40b110` 的 bit7
+  const company = hints.find((h) => h.source === 'companyBuild');
+  if (company !== undefined) {
+    return company.reachedMaxLevel && ownCompanyBuild(before, topo)
+      ? [{ player: p.index, event: 15, cue: 'buildHammer' }]
+      : [];
+  }
+  // ① 自己付费加蓋，刚好到 5
+  const kind = before.pending?.kind;
+  if (kind !== 'upgradeLand' && kind !== 'upgradeFacility') return [];
+  const reached =
+    reachedLevelFive(before.landLevel, after.landLevel) || reachedLevelFive(before.facilityLevel, after.facilityLevel);
+  return reached ? [{ player: p.index, event: 15 }] : [];
 }
 
-/** 这一条 action 里有没有神明顯靈加蓋（`godManifest`）刚好盖到 5 级 */
-function levelFiveByGod(before: GameState, after: GameState): boolean {
+/**
+ * 附身的是福神（小 3 / 大 4）—— 与 core 的 `isLuckyGod` 同一判据。
+ * @source `fcn_0040f8be` 入口 `0x0040f8da cmp dl,3` / `0x0040f8df cmp dl,4`（比的是 `god_info` 槽位，1..14 恒等于种类）
+ */
+const LUCKY_GOD_INFO: ReadonlySet<number> = new Set([3, 4]);
+
+type BuildHint = NonNullable<GameState['lastBuildUpgrades']>[number];
+
+/** 这一条 action 新写的加蓋提示（`lastBuildUpgrades` 换了引用才算）*/
+function freshBuildHints(before: GameState, after: GameState): readonly BuildHint[] {
   const hints = after.lastBuildUpgrades ?? null;
-  if (hints === null || hints === (before.lastBuildUpgrades ?? null)) return false;
-  return hints.some((h) => h.source === 'godManifest' && h.reachedMaxLevel);
+  if (hints === null || hints === (before.lastBuildUpgrades ?? null)) return [];
+  return hints;
+}
+
+/**
+ * 建設公司代蓋的是不是**自家**公司（`0x0041aa3c` 那一支；别人的公司走 `0x0041acd1`，不说事件 15）。
+ * 真人：`chooseBuildTarget.charge` 为假 = 自家；电脑：落点那家企業的董事長就是自己。
+ */
+function ownCompanyBuild(before: GameState, topo?: MapTopology): boolean {
+  const pend = before.pending;
+  if (pend?.kind === 'chooseBuildTarget') return !pend.charge;
+  const me = before.players[before.currentPlayer];
+  const ref = me === undefined ? undefined : topo?.nodes[me.nodeId - 1]?.ref;
+  if (ref?.kind !== 'commercial') return false;
+  return ownerOf(before.commercialOwners[ref.index] ?? emptyOwnership()) === before.currentPlayer;
 }
 
 /** 有没有哪一块刚好在这一步变成 5 级 */
@@ -1522,15 +1561,21 @@ export const DETECTORS: readonly SpeechDetector[] = [
   //   （`0x004199eb cmp byte [esi+0x1a],5 / jne 0x419a2b` 的另一边）。
   //   ⇒ `beforeStage`（先说出来、再放烟花）。E-19 表里「前者前有 Yes/No 框」那个框
   //   是**玩家早就答过**的加蓋确认（`0x00419996 call 0x440ba8`），不是本条 action 的演出。
-  { name: 'levelFive', source: [0x00419a0e, 0x0041ab4a], order: 'beforeStage', detect: detectLevelFive },
+  { name: 'levelFive', source: [0x00419a0e, 0x0041ab4a, 0x0040fa13], order: 'beforeStage', detect: detectLevelFive },
   // ★ 同一街區獨佔 ≥ 3 塊（買地 16 / 加蓋 17）—— 要 `topo` 才数得出街區
   // ⚠ C 级：E-19（台词在叶子函数 `0x44f627` 里，调用点 `0x0044f6df` 前后两列都空）
   { name: 'areaMonopoly', source: [0x0044f627, 0x0041a13e, 0x00419a31], order: 'afterStage', detect: detectAreaMonopoly },
   // ★ 神明：**先**旧神离身（23）**再**新神附身（22）—— 原版 `0x40eb3f` → `0x40ec0d`
   // ⚠ C 级：E-19（调用点 `0x0040e659` 前后两列都空）
-  { name: 'godLeft', source: [0x0040e32c, 0x0040e64a, 0x0041cc9b, 0x00444cc4], order: 'afterStage', detect: detectGodLeft },
+  // ★★ 第十五份：换神时原版是 `god_activate` 先 `0x0040eb3f call 0x40e32c`（升天动画 → 台词 `0x0040e659`），
+  //   **再**播新神影片 / `0x40e2a2` ⇒ 这一句在升天之后（`cue: godAscend`）、新神的一切之前（`beforeStage`）。
+  //   先前取 `afterStage`（等全部影片），于是排到新神开场白之后。
+  { name: 'godLeft', source: [0x0040e32c, 0x0040e64a, 0x0041cc9b, 0x00444cc4], order: 'beforeStage', cue: 'godAscend', detect: detectGodLeft },
   // §2.2 表：壞神附身（小窮/大窮/小衰/大衰/死神）—— 台词 → 影片 → 神明台词窗 →（轉盤）→ 付款
-  { name: 'godArrived', source: [0x0040ea9b, 0x0040e64a, 0x0040ef2f, 0x0040f2ff], order: 'beforeStage', detect: detectGodArrived },
+  // ★★ 第十五份：請神符是「出牌台词 `0x00444e8a` → 神明飞过来 `0x00444efa` → 附身（台词 → 影片）」⇒
+  //   有卡片 / 物件在飞、或旧神正在升天（换神：`0x0040eb3f call 0x40e32c` 在附身之前）时，这一句等它们演完
+  //   （`cue: godAttach`）；踩到神明、身上原本没神的那一路两样都没有，当场算数。
+  { name: 'godArrived', source: [0x0040ea9b, 0x0040e64a, 0x0040ef2f, 0x0040f2ff], order: 'beforeStage', cue: 'godAttach', detect: detectGodArrived },
   // ★ W-55 行 6：神明**落脚顯靈**的台词（天使/惡魔/福神在落点尾块那一族）。
   // §2.2 表：土地公顯靈 `0x0040f8ab` —— 镜头 → 訊息框 → 台词 ⇒ `afterStage`。
   // ★ 第十五份：顯靈框本身在落点尾块（`0x0041b086 call 0x40f381`），排在付款 / 免收台词**之后**（`tail` 档）
@@ -1684,7 +1729,9 @@ export function speechEventsFor(
       //   没取证的事件**不写这个字段**（`speechBubbleOf` 回落到 0），不猜。
       const expression = expressionOf(ev.event);
       const order = ev.order ?? d.order;
-      out.push(expression === null ? { ...ev, order } : { ...ev, order, expression });
+      const cue = ev.cue ?? d.cue;
+      const base = cue === undefined ? { ...ev, order } : { ...ev, order, cue };
+      out.push(expression === null ? base : { ...base, expression });
     }
   }
   return out;
@@ -1733,6 +1780,8 @@ export function speechResourcesFor(state: GameState, events: readonly SayKey[]):
 export interface SpeechLine {
   readonly bubble: SpeechBubble;
   readonly order: SpeechOrder;
+  /** ★ 第十五份：排在哪一段演出之后（见 `SayEvent.cue`）*/
+  readonly cue?: SpeechCue;
 }
 
 /**
@@ -1752,7 +1801,7 @@ export function speechLinesFor(state: GameState, events: readonly SayEvent[]): S
     const p = state.players[ev.player];
     if (p === undefined) continue;
     const bubble = speechBubbleOf(ev, p.character, characterName(p.character));
-    if (bubble !== null) out.push({ bubble, order: ev.order });
+    if (bubble !== null) out.push(ev.cue === undefined ? { bubble, order: ev.order } : { bubble, order: ev.order, cue: ev.cue });
   }
   return out;
 }

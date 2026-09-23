@@ -86,7 +86,8 @@ describe('★ ②③ 魔法屋那一趟不说通用的「得點券」/「剛滿 
   });
 
   it('★ 就地加蓋到 5 级：不说事件 15', () => {
-    const before = { ...base, landLevel: [0, 4] };
+    // 对照组要是事件 15 **会**说的那一支（第十五份：只有自己付费加蓋 `0x00419a19` 等三处）⇒ 前态挂着加蓋问句
+    const before = { ...base, landLevel: [0, 4], pending: { kind: 'upgradeLand' as const, landId: 1, name: '', cost: 0 } };
     const after = magic(5, [1], [1], { landLevel: [0, 5] });
     expect(detectLevelFive(before, after)).toEqual([]);
     expect(detectLevelFive(before, { ...after, lastEvent: null })).toHaveLength(1);

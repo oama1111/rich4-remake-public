@@ -215,6 +215,32 @@ export const SCREEN_BOX_TIER = {
 } as const satisfies Record<ScreenBox, BoxTier>;
 
 // ============================================================
+//  夹在两段演出之间的台词（`cue`）
+// ============================================================
+
+/**
+ * ★★ 第十五份（需求方拍板「照原版」，把先前明写的四处偏离改对）：有几句台词在 exe 里
+ *   **夹在两段演出中间** —— 前一段演完才说、说完才轮到后一段：
+ *
+ * | `cue` | 前一段 | 台词 | 后一段 |
+ * |---|---|---|---|
+ * | `godAscend` | 旧神升天（`0x40e32c` 的动画）| 「一場惡夢～」`0x0040e659` | 新神影片 / `0x40e2a2`（换神：`0x0040eb3f` 在 `god_activate` 最前）|
+ * | `buildHammer` | 建設公司的大锤 `0x0041ab10` | 事件 15 `0x0041ab5b` | 0x20b `0x0041ab63` |
+ * | `manifestBox` | 福神顯靈框 `0x0040f9c9` | 事件 15 `0x0040fa1e` | 0x20b `0x0040fa26` |
+ * | `godAttach` | 請神符 神明飞过来 `0x00444efa`；换神时旧神升天（`0x0040eb3f` 在 `god_activate` 最前）| 壞神附身那一句 `0x0040ef44` 等 | 附身影片 |
+ *
+ * 做法：台词照常带它的 `order`（都是 `beforeStage` —— 后一段要等它），另带一个 `cue`；
+ * `cue` 那一段还没演完时，这一句**不算数**：不上台，也不挡任何框 / 影片（`heldRanks` 里不算它），
+ * 所以前一段照常起播；演完之后它变回普通的 `beforeStage`，后一段就得等它说完。
+ */
+export type SpeechCue = 'godAscend' | 'buildHammer' | 'manifestBox' | 'godAttach';
+
+/** 押着的台词里，哪几句此刻**算数**（`cue` 为空或那一段已演完）*/
+export function countedHeld<T extends { cue?: SpeechCue }>(held: readonly T[], cueDone: (cue: SpeechCue) => boolean): T[] {
+  return held.filter((h) => h.cue === undefined || cueDone(h.cue));
+}
+
+// ============================================================
 //  两道闸
 // ============================================================
 

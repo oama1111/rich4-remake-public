@@ -4,7 +4,7 @@
  *
  * 三件事：
  *  ① **exe 先后表**：同一条 action 里会一起出现的每一对（台词来源 × 框），原版谁先谁后（带 VA）。
- *     `presentation-order.ts` 的档次必须排出同样的先后（明写的 `deviation` 除外）。
+ *     `presentation-order.ts` 的档次（+ 夹在两段演出之间的 `cue`）必须排出同样的先后 —— 一处例外都没有。
  *  ② **表要全**：长局（4 电脑 × 8 张图）里实际撞见的每一对都必须在表里 ——
  *     以后新加探测器 / 新的訊息框，只要会与另一边同拍出现，这里就红，逼着去 exe 里查先后。
  *  ③ **运行时不变量**：把长局里每一条 action 的框与台词交给同一套闸（`boxMayStart` / `lineMayEnter`，
@@ -32,8 +32,10 @@ import {
   lineMayEnter,
   lineRank,
   speechAheadOfFilms,
+  countedHeld,
   type BoxTier,
   type ScreenBox,
+  type SpeechCue,
 } from './presentation-order.ts';
 import { DETECTORS, cardPlaySpeechLines, toolUseSpeechLines, TOOL_LINE_ORDER } from './speech.ts';
 import type { SpeechOrder } from './stage-gate.ts';
@@ -61,8 +63,6 @@ interface OrderRow {
   exe: 'lineFirst' | 'boxFirst';
   /** 取证（`python3 tools/disasm.py va …` / `callers 0x44ef41`）*/
   va: string;
-  /** 本引擎**明知**排不成原版那样（只错先后、不重叠），写明原因；没有就不写 */
-  deviation?: string;
 }
 
 const RENT_PAY: readonly BoxId[] = ['rent.payOneOwner', 'rent.payTwoOwners', 'rent.payChairman', 'rent.payBoss'];
@@ -234,10 +234,10 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
     va: '福神：框 `0x0040f9c9` → 台词 `0x0040fa5c`',
   },
   {
-    line: 'levelFive@afterTailBox',
+    line: 'levelFive~manifestBox',
     boxes: ['god.build'],
     exe: 'boxFirst',
-    va: '福神盖到 5 级：框 `0x0040f9c9` → 台词 `0x0040fa1e` → 0x20b `0x0040fa26`',
+    va: '福神盖到 5 级：框 `0x0040f9c9` → 台词 `0x0040fa1e` → 0x20b `0x0040fa26`（`cue: manifestBox`）',
   },
   // ── 得点 / 商店 / 寶箱 ──
   {
@@ -296,21 +296,21 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
     boxes: ['godSay', 'godSlot', 'god.gotCard', 'god.gotCardTwo', 'god.lostCard'],
     exe: 'lineFirst',
     va: '换神：`god_activate` 先 `0x40eb3f call 0x40e32c`（升天 → 台词 `0x0040e659`）再播新神影片 / `0x40e2a2`',
-    deviation:
-      '「一場惡夢～」要排在旧神升天之后、新神影片之前，本引擎把它当 `afterStage`（等全部影片），于是排到新神开场白之后；只错先后，不同屏',
   },
   {
-    line: 'levelFive',
-    boxes: ['company.pickBuildSite'],
+    line: 'godArrived',
+    boxes: ['eventBox:cardUse'],
     exe: 'boxFirst',
-    va: '建設公司：框 `0x0041aa62` → 大锤影片 `0x0041ab10` → 台词 `0x0041ab5b` → 0x20b',
-    deviation: '同一个探测器在自己加蓋那一支（`0x00419a19`）是框前；这一支本引擎按 `beforeStage` 排在框之前（不同屏）',
+    va: '請神符：亮牌 `0x00441def` → 卡片函数（出牌台词 `0x00444e8a` → 飞 `0x00444efa`）→ 附身台词',
   },
   // ── 事件框之后的一切后果台词 ──
   ...CONSEQUENCE_LINES.map(
     (line): OrderRow => ({
       line,
-      boxes: [...EVENT, ...MAGIC, ...BLESSING],
+      // 命運的神明加持框（`fcn_0044b896` → `0x440cac`）在施加之前 ⇒ 施加引出的台词都在它之后
+      //   （`0x0044ce9a` → 付款 `0x0044cef9`；`0x0044d88c` → 送監獄 `0x0044d8c2`）。
+      //   「一場惡夢～」是 `beforeStage`（换神那一支），不在命運施加的尾巴上 ⇒ 不配加持框。
+      boxes: line === 'godLeft' ? [...EVENT, ...MAGIC] : [...EVENT, ...MAGIC, ...BLESSING],
       exe: 'boxFirst',
       va: '命運 `0x0044dd49 call 0x4544f6`（框等完）→ `0x0044dd5d call [施加]`；新聞 `0x0044b867` → `0x0044b875`；魔法屋每段框 `0x440cac` 在前；命運加持框 `0x0044d88c` → `0x0044d8c2` 送監獄（醫院同形）',
     }),
@@ -332,6 +332,8 @@ function rowFor(line: LineSource, box: BoxId): OrderRow | undefined {
 
 /** 台词来源 → 档（`order`）*/
 function lineOrderOf(line: LineSource): SpeechOrder {
+  const tilde = line.indexOf('~');
+  if (tilde >= 0) return lineOrderOf(line.slice(0, tilde));
   const at = line.indexOf('@');
   if (at >= 0) return line.slice(at + 1) as SpeechOrder;
   if (line === 'cardLine') return 'beforeStage';
@@ -340,6 +342,23 @@ function lineOrderOf(line: LineSource): SpeechOrder {
   const d = DETECTORS.find((x) => x.name === line);
   if (d === undefined) throw new Error(`没有这个台词来源：${line}`);
   return d.order;
+}
+
+/** 台词来源名里带的 `cue`（`名~cue`；探测器自带的 `SpeechDetector.cue` 不写进名字）*/
+function cueOf(line: LineSource): SpeechCue | undefined {
+  const tilde = line.indexOf('~');
+  if (tilde >= 0) return line.slice(tilde + 1) as SpeechCue;
+  return DETECTORS.find((x) => x.name === line)?.cue;
+}
+
+/** `cue` 等的是哪一种框（其余几种 `cue` 等的是影片 / 升天 / 飞行，不是框）*/
+const CUE_BOXES: Partial<Record<SpeechCue, readonly BoxId[]>> = { manifestBox: ['god.build'] };
+
+/** 按本引擎的档次 + `cue`，这一对谁先 */
+function oursOrder(line: LineSource, box: BoxId): 'lineFirst' | 'boxFirst' {
+  const cue = cueOf(line);
+  if (cue !== undefined && CUE_BOXES[cue]?.includes(box) === true) return 'boxFirst';
+  return lineRank(lineOrderOf(line)) < boxRank(boxTierOf(box)) ? 'lineFirst' : 'boxFirst';
 }
 
 function boxTierOf(box: BoxId): BoxTier {
@@ -356,11 +375,7 @@ describe('① exe 先后表 × 档次', () => {
   it.each(EXE_ORDER_TABLE.flatMap((r) => r.boxes.map((b) => [r.line, b, r] as const)))(
     '%s × %s',
     (line, box, row) => {
-      const lr = lineRank(lineOrderOf(line));
-      const br = boxRank(boxTierOf(box));
-      const ours = lr < br ? 'lineFirst' : 'boxFirst';
-      if (row.deviation === undefined) expect(ours, row.va).toBe(row.exe);
-      else expect(ours, `明写的偏离：${row.deviation}`).not.toBe(row.exe);
+      expect(oursOrder(line, box), row.va).toBe(row.exe);
     },
   );
 
@@ -429,6 +444,7 @@ interface SimLine {
   source: LineSource;
   order: SpeechOrder;
   rank: number;
+  cue?: SpeechCue;
 }
 
 /** 这一条 action 交出来的框（与各整屏 `event()` 的认法同一套）*/
@@ -459,7 +475,8 @@ function boxesOf(before: GameState, after: GameState, topo: MapTopology): SimBox
 /** 这一条 action 派生的台词（与 `main.ts` 的 `playSoundFor` 同一套来源与次序）*/
 function linesOf(before: GameState, after: GameState, topo: MapTopology): SimLine[] {
   const out: SimLine[] = [];
-  const add = (source: LineSource, order: SpeechOrder) => out.push({ source, order, rank: lineRank(order) });
+  const add = (source: LineSource, order: SpeechOrder, cue?: SpeechCue) =>
+    out.push({ source, order, rank: lineRank(order), ...(cue === undefined ? {} : { cue }) });
   for (const l of cardPlaySpeechLines(before, after)) {
     const isAnswer = l.bubble.player !== after.lastCardPlay?.player;
     add(isAnswer ? 'cardAnswer' : l.order === 'beforeStage' ? 'cardLine' : `cardLine@${l.order}`, l.order);
@@ -468,7 +485,9 @@ function linesOf(before: GameState, after: GameState, topo: MapTopology): SimLin
   for (const d of DETECTORS) {
     for (const ev of d.detect(before, after, topo)) {
       const order = ev.order ?? d.order;
-      add(order === d.order ? d.name : `${d.name}@${order}`, order);
+      const cue = ev.cue ?? d.cue;
+      const name = order === d.order ? d.name : `${d.name}@${order}`;
+      add(ev.cue !== undefined && ev.cue !== d.cue ? `${name}~${ev.cue}` : name, order, cue);
     }
   }
   return out;
@@ -484,7 +503,8 @@ interface SimResult {
 /**
  * 逐拍模拟 `main.ts` 的那两道闸（同一份纯函数）：框排成一队（按档稳定排，= 訊息框的 `enqueue`），
  * 台词押进 `heldSpeech`（按档稳定排），`notifyApplied` 的次序 = 先押台词、再让框起播、再放台词。
- * 影片不在模型里（W-51 那一侧另有 `stage-gate.test.ts`），`filmsBusy` 恒 false。
+ * 影片不在模型里（W-51 那一侧另有 `stage-gate.test.ts`），`filmsBusy` 恒 false；
+ * `cue` 只模型「等框」那一种（`manifestBox`：本条的顯靈框收了才算数），等影片的那几种当作已演完。
  */
 function simulate(boxes: readonly SimBox[], lines: readonly SimLine[]): SimResult {
   const LINE_MS = 1000;
@@ -503,21 +523,35 @@ function simulate(boxes: readonly SimBox[], lines: readonly SimLine[]): SimResul
   const started = new Map<string, number>();
   let overlapAt: number | null = null;
   let t = 0;
+  const cueDone = (cue: SpeechCue): boolean => {
+    const boxes = CUE_BOXES[cue];
+    if (boxes === undefined) return true;
+    const up = (key: string) => boxes.some((b) => key.startsWith(`box:${b}#`));
+    return !queue.some((q) => up(q.key)) && !(box.showing !== null && up(box.showing.key));
+  };
   const tryBox = () => {
     const head = queue[0];
     if (box.showing !== null || head === undefined) return;
-    if (!boxMayStart(head.tier, { onStage: stage.length, heldRanks: held.map((h) => h.rank) })) return;
+    const heldRanks = countedHeld(held, cueDone).map((h) => h.rank);
+    if (!boxMayStart(head.tier, { onStage: stage.length, heldRanks })) return;
     queue.shift();
     box.showing = { key: head.key, until: t + head.ms };
     started.set(head.key, t);
   };
   const release = () => {
     const snap = { showing: box.showing !== null, pendingRanks: queue.map((q) => q.rank), filmsBusy: false };
-    while (held.length > 0 && lineMayEnter(held[0]!.order, snap)) {
-      const l = held[0]!;
-      held = held.slice(1);
-      stage.push({ key: l.key, until: 0 });
+    // 与 `main.ts` 的 `releaseHeldSpeech` 同一条：`cue` 没到的跳过，其余按档过闸，过不了就停
+    const keep: typeof held = [];
+    let blocked = false;
+    for (const l of held) {
+      if (blocked || (l.cue !== undefined && !cueDone(l.cue))) keep.push(l);
+      else if (lineMayEnter(l.order, snap)) stage.push({ key: l.key, until: 0 });
+      else {
+        blocked = true;
+        keep.push(l);
+      }
     }
+    held = keep;
   };
   // notifyApplied：先押台词（上面已押）→ 各框 event()（闸开就当场起）→ 放台词
   tryBox();
@@ -585,7 +619,7 @@ describe('②③ 长局：先后表要全、逐拍模拟不重叠不卡死', () 
           boxes.forEach((b, bi) => {
             lines.forEach((l, li) => {
               const row = rowFor(l.source, b.id);
-              if (row === undefined || row.deviation !== undefined) return;
+              if (row === undefined) return;
               const tb = r.started.get(`box:${b.id}#${bi}`);
               const tl = r.started.get(`line:${l.source}#${li}`);
               if (tb === undefined || tl === undefined) return;
@@ -615,4 +649,43 @@ describe('②③ 长局：先后表要全、逐拍模拟不重叠不卡死', () 
     },
     600_000,
   );
+});
+
+describe('★ 夹在两段演出之间的台词（`cue`）', () => {
+  it('`cue` 没到的那几句不算数：不挡框、不挡影片；到了就按档照常算', () => {
+    const held = [
+      { rank: lineRank('beforeStage'), cue: 'manifestBox' as const },
+      { rank: lineRank('afterStage') },
+    ];
+    expect(countedHeld(held, () => false).map((h) => h.rank)).toEqual([lineRank('afterStage')]);
+    expect(countedHeld(held, () => true)).toHaveLength(2);
+    // 顯靈框（`tail`）在 `cue` 没到时照常起播；到了之后影片要等这一句
+    const early = { onStage: 0, heldRanks: countedHeld(held, () => false).map((h) => h.rank) };
+    expect(boxMayStart('tail', early)).toBe(false); // 仍被那句 afterStage 挡（它在尾框之前）
+    expect(boxMayStart('tail', { onStage: 0, heldRanks: [] })).toBe(true);
+    expect(speechAheadOfFilms({ onStage: 0, heldRanks: countedHeld(held, () => true).map((h) => h.rank) })).toBe(1);
+  });
+
+  it('四句「夹在中间」的台词都带着各自的 `cue`（先前明写的四处偏离）', () => {
+    expect(DETECTORS.find((d) => d.name === 'godLeft')).toMatchObject({ order: 'beforeStage', cue: 'godAscend' });
+    expect(DETECTORS.find((d) => d.name === 'godArrived')).toMatchObject({ order: 'beforeStage', cue: 'godAttach' });
+    // 事件 15 的两支 `cue` 由 `detectLevelFive` 逐条给（`buildHammer` / `manifestBox`，见 speech.test.ts）
+    expect(DETECTORS.find((d) => d.name === 'levelFive')?.source).toEqual([0x00419a0e, 0x0041ab4a, 0x0040fa13]);
+  });
+});
+
+describe('★ 分紅 / 開獎 / 月结 / 魔法屋女巫窗也走同一道起播闸（`main.ts`）', () => {
+  const MAIN = new URL('./main.ts', import.meta.url);
+  const runMain = existsSync(MAIN) ? it : it.skip;
+  runMain('整屏的 event() 经 `deliverScreenEvent` 派发；押着时算台上在演、算 `lead` 档的排队框；每帧 flush', () => {
+    const src = readFileSync(MAIN, 'utf8');
+    expect(src).toContain('for (const s of SCREENS) deliverScreenEvent(s, before, state, env);');
+    expect(src).toContain('if (deferredScreenEvents.length > 0) return true;');
+    expect(src).toContain('if (deferredScreenEvents.length > 0) pendingRanks.push(boxRank(SCREEN_BOX_TIER.monthly));');
+    expect(src).toContain('flushDeferredScreenEvents();');
+    for (const id of ['monthly', 'shares', 'lottery-draw', 'magic']) {
+      expect(SCREEN_BOX_TIER[({ 'lottery-draw': 'lotteryDraw' } as Record<string, ScreenBox>)[id] ?? (id as ScreenBox)]).toBe('lead');
+      expect(src).toContain(`case '${id}':`);
+    }
+  });
 });
