@@ -213,3 +213,31 @@ describe('★ 关押 / 消失影片前后的镜头（core `confineViewTargets`�
     expect(body.indexOf('const q = queuedFilmView;')).toBeGreaterThan(body.indexOf('state.lastViewTarget'));
   });
 });
+
+describe('★ 用卡亮牌期间镜头不动（@source 0x00441cbc / 0x00441def 亮牌阻塞 → 0x00441cc6 / 0x00441e00 卡片函数 → 末尾 refresh_screen，如陷害卡 0x00444685）', () => {
+  const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('function syncViewTarget('), src.indexOf('function retargetCameraOnTurnChange('));
+
+  it('syncViewTarget 在读 lastViewTarget / 排队的 view_to / 撤标记之前先看亮牌', () => {
+    const gate = body.indexOf('if (cardUsePopupActive()) return;');
+    expect(gate).toBeGreaterThan(0);
+    expect(gate).toBeLessThan(body.indexOf('state.lastViewTarget'));
+    expect(gate).toBeLessThan(body.indexOf('const q = queuedFilmView;'));
+    expect(gate).toBeLessThan(body.indexOf('viewTargetActive = false;'));
+  });
+
+  runExe('亮牌在卡片函数之前、refresh_screen 在陷害卡末尾（受害者台词之后）', () => {
+    const call = (va: number): number => {
+      const b = exeBytes(va, 5);
+      expect(b[0]).toBe(0xe8);
+      return va + 5 + ((b[1]! | (b[2]! << 8) | (b[3]! << 16) | (b[4]! << 24)) | 0);
+    };
+    expect(call(0x441cbc)).toBe(0x441f73); // 真人亮牌
+    expect(call(0x441def)).toBe(0x441f73); // 电脑亮牌
+    expect(exeBytes(0x441cc6, 7)).toEqual([0xff, 0x14, 0x85, 0x5c, 0x5d, 0x47, 0x00]); // call [eax*4 + 0x475d5c]
+    expect(call(0x44467d)).toBe(0x43d593); // 陷害卡 → send_to_prison（含受害者那句 0x0043d71c）
+    expect(call(0x444685)).toBe(0x41d546); // 紧接着 refresh_screen
+    expect(call(0x43d71c)).toBe(0x44ef41);
+  });
+});
+

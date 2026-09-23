@@ -3722,6 +3722,17 @@ function syncViewTarget(): void {
   // ★ D-MAGIC-16：魔法屋逐人那几段读**这一段**的 `view_to`，而且要等这一段的訊息框收掉
   //   （原版 `0x440cac` 在前、`0x41d476` 在后）；整趟没演完之前不撤标记（`0x431caa` 里没有 `refresh_screen`）
   if (magicSeq !== null && noticeHoldsFilms()) return;
+  // ★★ 第十四份試玩回報（协调方拍板）：**用卡亮牌期间镜头不动**（不落新目标、也不撤旧标记）。
+  //   原版用卡是 `0x00441cbc`（真人）/ `0x00441def`（电脑）`call 0x441f73` —— 亮牌，**阻塞** 1500 ms ——
+  //   返回之后才 `0x00441cc6` / `0x00441e00 call [0x475d5c + 卡号*4]` 进卡片函数；卡片里的 `view_to`
+  //   （含它调的 `send_to_prison` 的 `0x0043d5cc` / `0x0043d6f1`）全在亮牌之后，而清标记的
+  //   `refresh_screen`（`0x41d546`）在卡片函数**末尾**（例：陷害卡 `0x00444685`，排在受害者那句
+  //   `0x0043d71c call 0x44ef41` 之后）。
+  //   本引擎的 core 一条 action 就把卡用完，`lastViewTarget` 在亮牌起播那一拍就已经到了（电脑 / 联机旁观：
+  //   `useCard` 到达时才弹亮牌；真人自己那一张的亮牌在派发之前就演完了，不受影响）⇒ 等亮牌收屏再照做。
+  //   撤标记那一头沿用下面「台上不忙 + 台词说完」的判据（= 卡片函数末尾的 `refresh_screen`）。
+  //   联机旁观被行动者甩下时 `followPresenter` → 事件框 `fastForward` 把亮牌直接收掉 ⇒ 这里当拍放行。
+  if (cardUsePopupActive()) return;
   const t = magicSeq !== null ? (magicSeq.shown?.lastViewTarget ?? null) : state.lastViewTarget;
   if (t !== null && t !== shownViewTarget) {
     shownViewTarget = t;
