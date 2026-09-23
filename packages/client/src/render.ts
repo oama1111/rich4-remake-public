@@ -2155,24 +2155,13 @@ export class BoardRenderer {
   }
 
   /**
-   * ★★ 镜头该跟着**谁**（屏幕坐标）—— 给「视角跟踪」用。
+   * 此刻**正在走的替身**（娃娃 / 四大惡人）的插值世界坐标；没有替身在走 = `null`。
    *
-   * 从上一版起，镜头只在换人行动时交还给当前玩家；但需求方指出两件原版就有的行为
-   * （第四份回报第 2 条）：
-   *   ① 棋子**一步步走**的时候镜头要跟着他走；
-   *   ② **機器娃娃/四大惡人**那一趟也要跟着走，走完再回到当前玩家身上。
-   *
-   * 这两条的证据是原版那两支共用同一个「画在哪」的世界坐标：
-   *   · 玩家：`player + 0x08/+0x0a`（走路例程每 tick 累加，`0x40c38a`/`0x40c3a4`）；
-   *   · 替身：`0x498e28 + slot*0x10` 的 `+0x00/+0x02`（`fcn_0040dd1f` 那一族），
-   *     镜头居中用的是**同一个** `fcn_00415e70`（它只问「有没有标记、没有就用
-   *     `[0x49910c]` 那个当前行动者」—— 而娃娃/惡人在盘上时 `[0x49910c]` 就被切成
-   *     4..7，见 `rules/npc-walk.ts` 的说明）。
-   * ⇒ 优先替身补间（它在走就以它为中心），否则走子补间的插值点，再否则 null
-   *   （调用方按当前玩家的格心）。
+   * 原版那一趟 `[0x49910c]` = 替身号（4..8），坐标在替身记录 `+0x00/+0x02`
+   * （`fcn_0040dd1f` 那一族逐 tick 写）。镜头（`actorCenterWorld`）与侧栏小地图的
+   * 白框（`hud.ts` 的 `minimapFrameCenter`，VA 0x00416f3d 那一支）都认它。
    */
-  actorCenterWorld(now: number): { x: number; y: number } | null {
-    // ① 替身（娃娃 / 四大惡人）—— 槽位小的优先（原版游标 4..7 依次走）
+  npcWalkWorld(now: number): { x: number; y: number } | null {
     for (const slot of [...this.#actorWalks.keys()].sort((a, b) => a - b)) {
       const w = this.#actorWalks.get(slot);
       if (w === undefined) continue;
@@ -2192,6 +2181,30 @@ export class BoardRenderer {
       const pt = walkFramesFor(step.from, step.to, step.ticks, step.exactTicks)[kk - 1];
       if (pt !== undefined) return { x: pt.x, y: pt.y };
     }
+    return null;
+  }
+
+  /**
+   * ★★ 镜头该跟着**谁**（屏幕坐标）—— 给「视角跟踪」用。
+   *
+   * 从上一版起，镜头只在换人行动时交还给当前玩家；但需求方指出两件原版就有的行为
+   * （第四份回报第 2 条）：
+   *   ① 棋子**一步步走**的时候镜头要跟着他走；
+   *   ② **機器娃娃/四大惡人**那一趟也要跟着走，走完再回到当前玩家身上。
+   *
+   * 这两条的证据是原版那两支共用同一个「画在哪」的世界坐标：
+   *   · 玩家：`player + 0x08/+0x0a`（走路例程每 tick 累加，`0x40c38a`/`0x40c3a4`）；
+   *   · 替身：`0x498e28 + slot*0x10` 的 `+0x00/+0x02`（`fcn_0040dd1f` 那一族），
+   *     镜头居中用的是**同一个** `fcn_00415e70`（它只问「有没有标记、没有就用
+   *     `[0x49910c]` 那个当前行动者」—— 而娃娃/惡人在盘上时 `[0x49910c]` 就被切成
+   *     4..7，见 `rules/npc-walk.ts` 的说明）。
+   * ⇒ 优先替身补间（它在走就以它为中心），否则走子补间的插值点，再否则 null
+   *   （调用方按当前玩家的格心）。
+   */
+  actorCenterWorld(now: number): { x: number; y: number } | null {
+    // ① 替身（娃娃 / 四大惡人）—— 槽位小的优先（原版游标 4..7 依次走）
+    const npc = this.npcWalkWorld(now);
+    if (npc !== null) return npc;
     // ② 玩家走子补间（`#walkScreen` 内部自己管那一段的推进）
     const w = this.#walk;
     if (w !== null) {

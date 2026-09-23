@@ -403,6 +403,11 @@ export interface HudInput {
    * @source 原版 `[0x48be18]`（非 0 表示有标记）+ `[0x48be1c]`/`[0x48be20]`（坐标）
    */
   minimapMarker: { x: number; y: number } | null;
+  /**
+   * 此刻**正在走的替身**（娃娃 / 四大惡人）的世界坐标 —— 这时小地图白框框它，不框玩家
+   * （见 `minimapFrameCenter`）。`null` = 轮的是玩家。缺省按 `null`。
+   */
+  npcFrame?: { x: number; y: number } | null;
   /** 正被按下的箭头（1 = 左，2 = 右）；没按返回 null */
   pressedMinimapArrow: MinimapArrowId | null;
   /** 鼠标悬停的箭头；没悬停返回 null */
@@ -1013,19 +1018,18 @@ export class Hud {
     //   先前把 `+0x54` 读成「专属色」、画成一个彩色圆点（试玩 4 那次）。小头像本身就是
     //   角色的主色，远看像一个色点 —— 那次回报说的「带颜色的圆点」就是它。
     //   位置取 `xpos/ypos`（与 `big-map-screen.ts` 的 `bigMapMarkers` 同源：关押时在綠島/醫院）。
-    const me = state.players[state.currentPlayer];
-    let meDot: { x: number; y: number } | null = null;
     for (const p of state.players) {
       if (!isAlive(p) || p.xpos === 0) continue;
       const dx = minimapAt(p.xpos);
       const dy = top + minimapAt(p.ypos);
-      if (p.index === me?.index) meDot = { x: dx, y: dy };
       const head = this.#sprite('map.mkf', portraitResource(p.character), MINIMAP_HEAD_IMAGE, true);
       if (head !== null) ctx.drawImage(head.bitmap, dx - head.anchorX, dy - head.anchorY);
     }
 
-    // 取景框：**当前玩家的圆点**上画 30×30 白框 @source VA 0x00417041
-    // 标记框：标记点上画 30×30 红框，与当前玩家重合时不画 @source VA 0x004170c7
+    // 取景框：**当前行动者**（玩家，或正在走的替身）上画 30×30 白框 @source VA 0x00417041
+    // 标记框：标记点上画 30×30 红框，与取景框重合时不画 @source VA 0x004170c7
+    const frame = minimapFrameCenter(state, input.npcFrame ?? null);
+    const meDot = frame === null ? null : { x: frame.x, y: top + frame.y };
     const box = (cx: number, cy: number, color: string): void => {
       ctx.strokeStyle = color;
       ctx.lineWidth = 1;
@@ -1040,6 +1044,37 @@ export class Hud {
 
     ctx.restore();
   }
+}
+
+/**
+ * 小地图白框的中心（**小地图局部坐标**）—— 框的是 `[0x49910c]` 那个**当前行动者**。
+ *
+ * @source `fcn_00416e6d` 的循环（`ebx` = 0..8，`0x00416faf inc ebx / cmp ebx, 9`）：
+ * ```asm
+ * ; ebx < 玩家数：玩家
+ * 00416fc8  cmp  word [ebx*0x68 + 0x496b70], 0 / je 0x416f9f   ; xpos == 0 ⇒ 不算
+ * 00416fd2  esi = xpos × 89 >> 10 + 0x1b8 / edi = ypos × 89 >> 10 + 顶
+ * ; ebx ≥ 玩家数：替身（表 `0x498de8 + ebx×16` = `0x498e28 + (ebx−4)×16`）
+ * 00416f42  cmp  byte [edx + 0x498df2], 0 / jne 0x416f9f     ; +10 place ≠ 0（監獄/醫院/未出场）⇒ 不算
+ * 00416f4b  cmp  ebx, [0x49910c] / jne 0x416f9f               ; 只算**当前行动者**那一个
+ * 00416f55  esi = word [+0] × 89 >> 10 + 0x1b8 / edi = word [+2] × 89 >> 10 + 顶
+ * ; 两支共用：
+ * 00416f9f  cmp  ebx, [0x49910c] / jne / mov [esp+0x10], esi / mov [esp+0x14], edi
+ * 00417045  test ecx, ecx / je …  0041704d test ebx, ebx / je …   ; 都非 0 才画框
+ * ```
+ * 替身那一趟 `[0x49910c]` = 4..8（`rules/special-actors.ts` 的文件头），坐标是逐 tick
+ * 走的插值点 —— 本引擎由 `render.ts` 的 `npcWalkWorld()` 交来（在走 = 在盘上）。
+ *
+ * @param npc 正在走的替身的世界坐标；`null` = 这一刻轮的是玩家
+ */
+export function minimapFrameCenter(
+  state: GameState,
+  npc: { x: number; y: number } | null,
+): { x: number; y: number } | null {
+  if (npc !== null) return { x: minimapAt(npc.x), y: minimapAt(npc.y) };
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || !isAlive(me) || me.xpos === 0) return null;
+  return { x: minimapAt(me.xpos), y: minimapAt(me.ypos) };
 }
 
 /** 小地图上的棋子标记 = 角色图集（`map.mkf` 角色 + 0x1b）**图 6** @source 0x0041702a `add eax, 0x54` */
