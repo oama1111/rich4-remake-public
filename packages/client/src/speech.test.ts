@@ -66,8 +66,11 @@ import {
   speechLinesFor,
   speechResourceFor,
   speechResourcesFor,
+  TOOL_LINE_ORDER,
+  toolUseSpeechLines,
   type SayEvent,
 } from './speech.ts';
+import { deferSpeech } from './stage-gate.ts';
 
 // ============================================================
 //  构造 before/after
@@ -1935,5 +1938,34 @@ describe('★★ 第十四份 #1 同类排查：保險理賠那一笔原版**不
       s.players[1]!.monthlyReceived += 9000;
     });
     expect(detectMoneyGained(b, a)).toEqual([{ player: 1, event: 6 }]);
+  });
+});
+
+describe('★★ 第十四份 #2：道具台词**先说**、说完才起演出（`TOOL_LINE_ORDER`）', () => {
+  it('★★ 次序是 `beforeStage` —— 13 件道具的 `player_say` 都在选格 / 大锤 / 投掷 / 爆炸之前（機器工人 0x004472ba → 0x0044735c）', () => {
+    expect(TOOL_LINE_ORDER).toBe('beforeStage');
+    // `beforeStage` 永不押后（台上再忙也立即入队 ⇒ 影片 / 建屋动效反过来等它说完）
+    expect(deferSpeech(TOOL_LINE_ORDER, true)).toBe(false);
+  });
+
+  it('★ 用機器工人（9）⇒ 一句、次序 `beforeStage`', () => {
+    const before = makeGameState();
+    const after: GameState = { ...before, lastToolUsed: { player: 0, toolId: 9 } };
+    const lines = toolUseSpeechLines(before, after);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.order).toBe('beforeStage');
+    // 13 件都同一个次序
+    for (let toolId = 1; toolId <= 13; toolId++) {
+      const a: GameState = { ...before, lastToolUsed: { player: 0, toolId } };
+      for (const l of toolUseSpeechLines(before, a)) expect(l.order).toBe('beforeStage');
+    }
+  });
+
+  it('★ `main.ts` 不再把道具台词硬写成 `afterStage`（走 `toolUseSpeechLines`）', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain('toolUseSpeechLines(before, after)');
+    expect(src).not.toMatch(/\.\.\.toolBubbles\]\.map/);
+    // 投掷也等台词说完（`beginObjectFlight` 的 `awaitSpeech`）
+    expect(src).toContain('awaitSpeech: true');
   });
 });

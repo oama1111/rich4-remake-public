@@ -1757,6 +1757,39 @@ export function toolUseSpeech(before: GameState, after: GameState): SpeechBubble
   return bubble === null ? [] : [bubble];
 }
 
+/**
+ * ★★ 第十四份試玩回報 #2（Charles，2026-09-23）：「使用机器工人时应该是先出台词才出特效」。
+ *
+ * 道具台词的**次序**是 `beforeStage`（先说、说完才起影片 / 建屋动效 / 投掷）。
+ *
+ * @source 13 件道具的函数体里，`player_say(当前玩家, 0, _tool_strings[角色][道具号−1])`
+ *   都是**第一个**有表现的调用（`python3 tools/disasm.py va <函数头> 25` 逐个读过）：
+ *   | 道具 | 取串 | `call 0x44ef41` | 其后第一个演出 |
+ *   |---|---|---|---|
+ *   | 1 機器娃娃 | `0x00446b26` | `0x00446b2e` | 娃娃上路 |
+ *   | 2 路障 | `0x00446bc4` | `0x00446bcc` | `0x00446be6` 选格（真人）/ `0x00446bef`（电脑）→ 投掷 |
+ *   | 3 地雷 | `0x00446ca2` | `0x00446caa` | `0x00446cc7` / `0x00446cd0` → 投掷 |
+ *   | 4 定時炸彈 | `0x00446d83` | `0x00446d8b` | `0x00446da8` / `0x00446db1` → 投掷 |
+ *   | 5 機車 | `0x00446ed0` | `0x00446ed8` | — |
+ *   | 6 汽車 | `0x00446f88` | `0x00446f90` | （之前只有 `0x00446f67` 镜头）|
+ *   | 7 飛彈 | `0x00446fdb` | `0x00446fe3` | `0x00447000` / `0x00447009` 选格 → 爆炸影片 |
+ *   | 8 遙控骰子 | `0x00447146` | `0x0044714e` | — |
+ *   | 9 機器工人 | `0x004472b2` | `0x004472ba` | `0x004472d7`/`0x004472e0` 选地 → `0x00447326` 读 0x229 → `0x0044733c` 镜头 → `0x0044735c` 播大锤 → `0x00447373` 0x20b |
+ *   | 10 時光機 | `0x004473a2` | `0x004473aa` | `0x004473b2` |
+ *   | 11 傳送機 | `0x0044744a` | `0x00447451` | `0x0044746e` 选格 |
+ *   | 12 工程車 | `0x00447a99` | `0x00447aa1` | （之前只有 `0x00447a78` 镜头）|
+ *   | 13 核子飛彈 | `0x00447aed` | `0x00447af5` | `0x00447b12` 选格 → 爆炸影片 |
+ *   `player_say` 是同步的（说完才返回，见 W-51 / `stage-gate.ts`）⇒ 影片一律排在台词**之后**。
+ *   先前这里取 `afterStage`（「押到演出收摊之后」）正好把次序弄反：機器工人的大锤、
+ *   飛彈 / 核彈的爆炸、路障等的投掷都先演完，台词才出来。
+ */
+export const TOOL_LINE_ORDER: SpeechOrder = 'beforeStage';
+
+/** `toolUseSpeech` + 次序 —— `main.ts` 的 `playSoundFor` 直接拿去 `queueSpeech` */
+export function toolUseSpeechLines(before: GameState, after: GameState): SpeechLine[] {
+  return toolUseSpeech(before, after).map((bubble) => ({ bubble, order: TOOL_LINE_ORDER }));
+}
+
 /** 角色号的显示名；越界给一个看得出来的占位（与 `main.ts` 里那几处同一套约定）*/
 export function characterName(character: number): string {
   return CHARACTERS[character]?.name ?? `角色${character}`;

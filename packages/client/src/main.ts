@@ -182,7 +182,7 @@ import {
 import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
 import {
   cardPlaySpeech,
-  toolUseSpeech,
+  toolUseSpeechLines,
   openingSpeech,
   speechEventsFor,
   speechLinesFor,
@@ -4532,10 +4532,12 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   //   再出状态跃迁派生的台词 —— 顺序与原版一致。
   const cardBubbles = cardPlaySpeech(before, after);
   // ★★ 第十一份試玩回報 #3：**道具台词**（原版 `_tool_strings`，不分人机）。
-  //   与卡牌台词同一条非探测器通道，也同取 `afterStage`（原版那句 `player_say`
-  //   在 `place_object` **之前**，但本引擎的 `useTool` 里没有影片，
-  //   取 `afterStage` 与既有的卡牌台词一致、不会与棋盘影片互等）。
-  const toolBubbles = toolUseSpeech(before, after);
+  // ★★ 第十四份試玩回報 #2：次序是 `beforeStage`（`TOOL_LINE_ORDER`）—— 原版 13 件道具
+  //   都是**先** `player_say`、**再**选格 / 大锤 / 投掷 / 爆炸（VA 逐件见 `speech.ts`）。
+  //   先前取 `afterStage`，機器工人的大锤（`pendingBuildFx`）一起播就把台词押到了片尾。
+  //   `beforeStage` 永不押后，影片 / 建屋动效 / 投掷都会等 `speechQueue` 说完
+  //   （`filmWaitsForSpeech`；投掷见 `tickObjectFlight`）。
+  const toolLines = toolUseSpeechLines(before, after);
   const spoken = speechEventsFor(before, after, topo);
   // ★ W-51：台词现在带**次序**交出去（`SpeechLine.order`），由 `queueSpeech` 分流。
   //   卡牌台词**不是探测器**（它走 `lastCardPlay` 这条非状态跃迁的通道）⇒ W-50 §2.2
@@ -4543,10 +4545,10 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   //   那一类（`queueSpeech` 的旧判据 `blockingPresentation()`），且 exe 里几张卡的
   //   调用点确实是影片在前、台词在后（例：`0x00443afb` 前有 `view_to` + `play_flic`，
   //   见 `docs/tasks/speech-callsites.md`）。首席若要逐卡裁定，改这一处即可。
-  const cardLines: SpeechLine[] = [...cardBubbles, ...toolBubbles].map((bubble) => ({
-    bubble,
-    order: 'afterStage',
-  }));
+  const cardLines: SpeechLine[] = [
+    ...cardBubbles.map((bubble): SpeechLine => ({ bubble, order: 'afterStage' })),
+    ...toolLines,
+  ];
   if (spoken.length === 0) return cardLines;
   ensureSpeakingArchive();
   // ★ 语音**不在这里放** —— 见 `speechTick()`。
@@ -5885,6 +5887,11 @@ function tickGodAscend(now: number): void {
 /** 这一件飞完该放哪个音效号（0 = 不放音） */
 let objectFlightSound = 0;
 
+/** 投掷在等台词说完才起播（见 `beginObjectFlight` 的 `awaitSpeech`） */
+let objectFlightAwaitsSpeech = false;
+/** 「还没起播」的 `start`：`flightPosAt` 为 null（不画）、`flightDone` 为假（不收） */
+const FLIGHT_NOT_STARTED = Number.POSITIVE_INFINITY;
+
 /**
  * 播完一条投掷：放落地音 + 让静态那件露出来。
  *
@@ -5895,6 +5902,7 @@ function finishObjectFlight(): void {
   if (objectFlight === null) return;
   const id = objectFlightSound;
   objectFlight = null;
+  objectFlightAwaitsSpeech = false;
   objectFlightSound = 0;
   if (id > 0) sound.play('Effect.mkf', id);
   requestRender();
@@ -5907,8 +5915,18 @@ function finishObjectFlight(): void {
  * 免得变成死循环。
  */
 function tickObjectFlight(now: number): void {
-  const f = objectFlight;
+  let f = objectFlight;
   if (f === null) return;
+  // ★★ 第十四份試玩回報 #2：道具台词先说完（`filmWaitsForSpeech`，与影片 / 建屋动效同一道闸）
+  if (objectFlightAwaitsSpeech) {
+    if (filmWaitsForSpeech(speechQueue.length)) {
+      requestRender();
+      return;
+    }
+    objectFlightAwaitsSpeech = false;
+    f = { ...f, start: now };
+    objectFlight = f;
+  }
   if (flightDone(f, now)) {
     finishObjectFlight();
     return;
@@ -5963,6 +5981,8 @@ function startObjectFlight(
     from: a,
     to: b,
     settleMs: THROW_SETTLE_MS,
+    // ★★ 第十四份試玩回報 #2：道具台词（`TOOL_LINE_ORDER = beforeStage`）先说完才投掷
+    awaitSpeech: true,
   });
   if (!started) {
     // @source VA 0x0040e6f2：`fcn_00409a23` 换算后两轴都为 0（起点就是落点，
@@ -5991,12 +6011,21 @@ function beginObjectFlight(args: {
   from: { x: number; y: number } | null;
   to: { x: number; y: number } | null;
   settleMs?: number;
+  /**
+   * ★★ 第十四份試玩回報 #2：起播前先等台上那几句（`speechQueue`）说完。
+   *   原版放置類道具是 `player_say`（同步）→ 选格 → `place_object` → `animate_object`
+   *   （路障 `0x00446bcc` → `0x00446be6`/`0x00446bef` …，见 `speech.ts` 的 `TOOL_LINE_ORDER`）。
+   *   等的期间那一件**哪儿都不画**（`start` 取 +∞ ⇒ `flightPosAt` 为 null、静态槽照样藏着）
+   *   —— 与原版一致：说话那会儿东西还没放下去。
+   */
+  awaitSpeech?: boolean;
 }): boolean {
   const { from, to } = args;
   if (from === null || to === null) return false;
   if (from.x === to.x && from.y === to.y) return false;
   // 上一条还没播完就被顶掉（连着的两次使用）：先把它的音放掉，别吞掉
   if (objectFlight !== null) finishObjectFlight();
+  const awaitSpeech = args.awaitSpeech === true;
   objectFlight = makeObjectFlight({
     objectIndex: args.objectIndex,
     type: args.type,
@@ -6004,9 +6033,10 @@ function beginObjectFlight(args: {
     ...(args.image === undefined ? {} : { image: args.image }),
     from,
     to,
-    start: performance.now(),
+    start: awaitSpeech ? FLIGHT_NOT_STARTED : performance.now(),
     ...(args.settleMs === undefined ? {} : { settleMs: args.settleMs }),
   });
+  objectFlightAwaitsSpeech = awaitSpeech;
   objectFlightSound = 0;
   requestRender();
   return true;
