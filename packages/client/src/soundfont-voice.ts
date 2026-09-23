@@ -131,7 +131,18 @@ export class SoundFontVoice implements MidiVoice {
 
     const src = this.#ctx.createBufferSource();
     src.buffer = this.#bufferFor(zone.sample);
-    src.playbackRate.value = centsToPlaybackRate(zoneDetuneCents(sample, zone, note.note));
+    const cents = zoneDetuneCents(sample, zone, note.note);
+    // ★ 弯音（`MidiNote.bend` / `bends`，见 `midi.ts` 文件头）：半音 × 100 叠到音分上，阶跃排。
+    //   打击乐通道不弯（原版 25 首里 9 号通道一条弯音都没有）。
+    const bent = note.channel !== 9 && (note.bend !== undefined || note.bends !== undefined);
+    const onset = bent ? (note.bend ?? 0) * 100 : 0;
+    src.playbackRate.value = centsToPlaybackRate(cents + onset);
+    if (bent) {
+      src.playbackRate.setValueAtTime(centsToPlaybackRate(cents + onset), at);
+      for (const b of note.bends ?? []) {
+        src.playbackRate.setValueAtTime(centsToPlaybackRate(cents + b.semitones * 100), at + b.at);
+      }
+    }
     const loop = loopPoints(sample.pcm.length, zone);
     if (loop !== null) {
       src.loop = true;
