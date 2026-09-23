@@ -176,9 +176,15 @@ step "5) 关掉 B 端，等过托管阈值，看 A 端还能不能自己推进"
 "$B" tab "$TB" >/dev/null 2>&1; "$B" closetab "$TB" >/dev/null 2>&1
 "$B" tab "$TA" >/dev/null 2>&1; "$B" eval "$JS" >/dev/null 2>&1
 t1=$(summary "$TA" | python3 -c 'import json,sys; print(json.load(sys.stdin)["turnCount"])')
-echo "  关 B 端时 A 的回合数：${t1}；等 $((TAKEOVER/1000 + 12)) 秒…"
-sleep $((TAKEOVER/1000 + 12))
-t2=$(summary "$TA" | python3 -c 'import json,sys; print(json.load(sys.stdin)["turnCount"])')
+# ★ 最多等 60 秒、每 3 秒看一次：一段长演出（樂透開獎按原版逐句等语音、魔法屋逐人演出、
+#   破产连拍…）本身就可能超过 18 秒 —— 只等 18 秒会把「演出还在演」误报成停摆。
+echo "  关 B 端时 A 的回合数：${t1}；最多等 60 秒…"
+t2=$t1; waited=0
+while [ "$waited" -lt 60 ] && [ "$t2" -le "$t1" ]; do
+  sleep 3; waited=$((waited + 3))
+  t2=$(summary "$TA" | python3 -c 'import json,sys; print(json.load(sys.stdin)["turnCount"])')
+done
+echo "  等了 ${waited} 秒"
 echo "  等待后 A 的回合数：${t2}"
 if [ "$t2" -gt "$t1" ]; then echo "PASS 5) 无人操作 B 座，回合仍在推进（服务器补位）"; else
   echo "FAIL 5) 回合停了"
