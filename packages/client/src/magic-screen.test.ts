@@ -58,6 +58,7 @@ import {
   MAGIC_TARGET_ICON_BASE,
   magicCriterionLine,
   magicAwaitingPick,
+  magicCursorHidden,
   magicHumanPickPoint,
   magicLineExpired,
   magicScreen,
@@ -1345,5 +1346,19 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
   it('没开窗 ⇒ false', () => {
     resetMagicScreen();
     expect(magicScreen.fastForward!(fakeEnv(stateOf(null)).env)).toBe(false);
+  });
+});
+
+describe('★ 指针：只有等玩家点那一拍有（`fcn_00402460`：0x00432a16 放出、0x00432fd4 收起）', () => {
+  it('★ 开窗（开场白）藏；状态 7 放；点下去（状态 8）又藏；关窗后不管', () => {
+    const f = open(null, false);
+    expect(magicCursorHidden()).toBe(true);
+    for (let t = 100; t <= 5000 && magicScreenState().state !== 7; t += 100) tickTo(f, t);
+    expect(magicCursorHidden()).toBe(false);
+    const p = MAGIC_RING_AT[3]!;
+    magicScreen.down!(p.x, p.y, f.env);
+    expect(magicCursorHidden()).toBe(true);
+    resetMagicScreen();
+    expect(magicCursorHidden()).toBe(false);
   });
 });

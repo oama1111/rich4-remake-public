@@ -158,3 +158,72 @@ describe('★★ 电脑那一支：先弹「条件\\n\\n效果」（`0x00433981.
     expect(MAGIC_TARGET_NAMES[ev.criterion!]!.startsWith('#')).toBe(false);
   });
 });
+
+describe('★★ D-MAGIC-16：逐人演出分段 `lastMagicBeats`（`0x431caa` 的逐人循环）', () => {
+  it('★★ 存入所有現金，名单 [0, 2] ⇒ 两段；段里当前玩家 = 中签者（0x004320c9）；前一段的结果已在后一段的 before 里', () => {
+    const r = pick(4, [0, 2]);
+    const beats = r.lastMagicBeats!;
+    expect(beats).toHaveLength(2);
+    expect(beats.map((b) => [b.before.currentPlayer, b.after.currentPlayer])).toEqual([[0, 0], [2, 2]]);
+    expect(beats[0]!.after.notices).toEqual([effect(0, 4)]);
+    expect(beats[1]!.after.notices).toEqual([effect(2, 4)]);
+    // 第一段只动 0 号；第二段的 before 里 0 号已存完、2 号还没存
+    expect(beats[0]!.after.players[0]!.cash).toBe(0);
+    expect(beats[0]!.after.players[2]!.cash).toBe(5000);
+    expect(beats[1]!.before.players[0]!.cash).toBe(0);
+    expect(beats[1]!.after.players[2]!.cash).toBe(0);
+    // 最终：当前玩家还原为施法者（0x004324fa），两扇框按序都在
+    expect(r.currentPlayer).toBe(1);
+    expect(r.notices).toEqual([effect(0, 4), effect(2, 4)]);
+    expect(beats[1]!.after.players).toEqual(r.players);
+  });
+
+  it('★ 只活一条 action：下一条改了状态的 action 就清成 null', () => {
+    const r = pick(4, [0]);
+    expect(r.lastMagicBeats).not.toBeNull();
+    const next = reduce(r, { type: 'endTurn' }, topo);
+    expect(next.lastMagicBeats ?? null).toBeNull();
+  });
+
+  it('★★ 抽取命運三張：框一段 + **每一张一段**（`0x00431dbc` 三次 `0x44db81`），主角 = 中签者', () => {
+    const r = pick(1, [3]);
+    const beats = r.lastMagicBeats!;
+    expect(beats.length).toBe(4);
+    expect(beats[0]!.after.notices).toEqual([effect(3, 1)]);
+    for (const b of beats.slice(1)) {
+      expect(b.after.currentPlayer).toBe(3);
+      expect(b.after.lastEvent?.kind).toBe('fortune');
+      expect(b.after.lastEvent).not.toBe(b.before.lastEvent);
+    }
+    expect(r.currentPlayer).toBe(1);
+    expect(r.lastEvent?.kind).toBe('magicHouse');
+  });
+
+  it('★ 加蓋两位：各一段、各自的镜头与加蓋提示；闸没过的人没有段', () => {
+    const t = table();
+    const players = t.players.map((p, i) => (i === 2 ? { ...p, nodeId: 1 } : p));
+    const r = pick(5, [0, 3, 2], { players });
+    const beats = r.lastMagicBeats!;
+    expect(beats.map((b) => b.after.currentPlayer)).toEqual([0, 2]);
+    for (const b of beats) {
+      expect(b.after.lastViewTarget).toEqual({ x: 640, y: 320 });
+      expect(b.after.lastBuildUpgrades).toHaveLength(1);
+    }
+    expect(beats[0]!.after.landLevel[1]).toBe(3);
+    expect(beats[1]!.after.landLevel[1]).toBe(4);
+    expect(r.lastBuildUpgrades).toHaveLength(2);
+  });
+
+  it('★ 电脑那一支：第一段是「条件\\n\\n效果」那一扇（当前玩家 = 施法者）', () => {
+    const base = table({}, WHO_PLAYS_COMPUTER);
+    const s: GameState = {
+      ...base,
+      phase: 'settling',
+      players: base.players.map((p, i) => (i === 1 ? { ...p, nodeId: 3 } : p)),
+    };
+    const r = reduce(s, { type: 'settle' }, topo);
+    const first = r.lastMagicBeats![0]!;
+    expect(first.after.currentPlayer).toBe(1);
+    expect(first.after.notices.map((n) => n.key)).toEqual(['magic.spin']);
+  });
+});

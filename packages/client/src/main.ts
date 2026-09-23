@@ -25,7 +25,7 @@ import {
 } from './dev-patch.ts';
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
-import { magicAwaitingPick, magicHumanPickPoint, magicScreen, magicScreenState } from './magic-screen.ts';
+import { magicAwaitingPick, magicCursorHidden, magicHumanPickPoint, magicScreen, magicScreenState } from './magic-screen.ts';
 import {  autoAction,
   ACTOR_DOLL,
   directionOf,
@@ -275,7 +275,14 @@ import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
 import { newsPlaceFxTrigger } from './news-place-fx.ts';
 import { disappearFxTrigger } from './disappear-fx.ts';
 // ★ 魔法屋「就地拆除房屋」那一段 0x211（女巫窗口关掉之后 `0x431caa` 里播的）—— 规格/判据见 `magic-fx.ts`
-import { MAGIC_DEMOLISH_FILM, magicDemolishFxTrigger } from './magic-fx.ts';
+import {
+  MAGIC_DEMOLISH_FILM,
+  freshMagicBeats,
+  magicDemolishFxTrigger,
+  magicSequenceStart,
+  magicSequenceStep,
+  type MagicSequence,
+} from './magic-fx.ts';
 // ★ W-55 行 4：「惡魔顯靈拆屋」那一段 110×110 的爆破片 —— 规格/判据见 `devil-fx.ts`。
 import {
   DEVIL_DEMOLISH_FRAME_MS,
@@ -1745,6 +1752,11 @@ function stageBusyFlags(): StageFlags {
 
 function holdForActorWalk(reschedule: () => void): boolean {
   if (screen !== 'game') return false;
+  // ★ D-MAGIC-16：魔法屋逐人那几段还没演完（原版 `0x431caa` 整个循环是阻塞的）
+  if (magicSeq !== null) {
+    reschedule();
+    return true;
+  }
   // ★ 台上还有演出 ⇒ 等它收摊再派下一步。判据收在 `stageBusy()`（W-51）里，
   //   与 `queueSpeech` / `speechTick` 共用同一份清单 —— 逐位的来历见 `stageBusyFlags`。
   //   （原先这里是九个 `if` 各写一遍：纯演出整屏 / 走子补间 / 物件飞行 / 建屋片 /
@@ -3689,7 +3701,10 @@ let viewTargetActive = false;
  *   镜头不该提前切回去。
  */
 function syncViewTarget(): void {
-  const t = state.lastViewTarget;
+  // ★ D-MAGIC-16：魔法屋逐人那几段读**这一段**的 `view_to`，而且要等这一段的訊息框收掉
+  //   （原版 `0x440cac` 在前、`0x41d476` 在后）；整趟没演完之前不撤标记（`0x431caa` 里没有 `refresh_screen`）
+  if (magicSeq !== null && noticeHoldsFilms()) return;
+  const t = magicSeq !== null ? (magicSeq.shown?.lastViewTarget ?? null) : state.lastViewTarget;
   if (t !== null && t !== shownViewTarget) {
     shownViewTarget = t;
     viewTargetActive = true;
@@ -3704,6 +3719,7 @@ function syncViewTarget(): void {
   if (!viewTargetActive) return;
   // 演出全部收完 ⇒ 清标记（= 原版 `refresh_screen`），镜头回行动者
   if (stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null) return;
+  if (magicSeq !== null) return;
   viewTargetActive = false;
   minimapMarker = null;
   requestRender();
@@ -4031,6 +4047,13 @@ function aiVenuePending(s: GameState): boolean {
  *   原版这些都**不分人机**。与 `startActionFx` 同一个教训：两条来源必须共用出口。
  */
 function notifyApplied(before: GameState): void {
+  // ★ D-MAGIC-16：魔法屋这一条带着逐人分段 ⇒ 表现改由 `tickMagicSequence` 逐段演（见那里），
+  //   这里只做与演出无关的收尾 + 女巫窗口那一屏的收场（它要看到 pending 撤掉）。
+  const beats = freshMagicBeats(before, state);
+  if (beats !== null) {
+    notifyMagicApplied(before, beats);
+    return;
+  }
   // ★ W-69：先认出「这笔过路费算进了哪几块地」—— 下面那一圈 `s.event?.()` 里
   //   訊息框那一屏要靠它押着不起播（闪 880 ms 之后才轮到框）。
   //   （`speech.test.ts` 数的是这个函数名带左括号的出现次数，注释里别写全。）
@@ -4128,6 +4151,11 @@ function queueSpeech(lines: readonly SpeechLine[]): void {
  * 纯表现：不读也不写 `GameState`（C-DET-4）。
  */
 function startActionFx(action: Action, before: GameState): void {
+  // ★ D-MAGIC-16：魔法屋逐人分段由 `tickMagicSequence` 一段一段起（每段各自走这里一遍）
+  if (freshMagicBeats(before, state) !== null) {
+    magicSeqAction = action;
+    return;
+  }
   // 放置類道具（路障/地雷/定時炸彈）真正落地 → 投掷动效 + 落地音
   if (action.type === 'useTool') startObjectFlight(before, action);
   // 機器工人（9）/ 魔法屋「就地加蓋」/ 天使卡（9）原地建屋 → 大锤影片
@@ -4184,6 +4212,105 @@ function startActionFx(action: Action, before: GameState): void {
   startDevilFx(before, state);
   // ★ 魔法屋「就地拆除房屋」（2026-09-23 补）：訊息框（`beforeFilms`）→ 0x211 影片。不看「動畫過程」。
   startMagicDemolishFx(before, state);
+}
+
+// ============================================================
+//  魔法屋逐人演出（D-MAGIC-16）—— `0x431caa` 的逐人循环
+// ============================================================
+
+/**
+ * 正在逐段演的魔法屋那一趟；`null` = 没在演。
+ *
+ * ★ 原版 `0x431caa` 是**阻塞**的逐人循环：每位中签者整支演完（闸 → `0x41906a(1)` 重画 →
+ *   訊息框 → 镜头 / 影片 → 台词）才轮到下一位，「抽取命運三張」每一张也是一整段命運演出。
+ *   本引擎的 core 一条 action 就写完了，于是交出 `lastMagicBeats`（每段前后的完整状态，
+ *   段里当前玩家 = 那位中签者），这里**一段一段**喂给平常那条表现出口
+ *   （`startActionFx` + `notifyApplied`，训练有素的那些判据 —— 框在片前、台词在片后 —— 原样复用），
+ *   上一段的框 / 影片 / 台词全收了才起下一段。整趟演完之前回合驱动不往下走（`holdForActorWalk`）。
+ */
+let magicSeq: MagicSequence | null = null;
+/** 带出这一趟的那条 action（`startActionFx` 按 action 种类分流的几处要它；魔法屋这条不命中任何一处）*/
+let magicSeqAction: Action | null = null;
+
+/** 本模块把指针藏了没有（只撤自己藏的，别抢拾取那条的 CSS 指针）*/
+let magicCursorOff = false;
+
+/** 女巫窗口的指针：`magicCursorHidden()` 为真就藏，窗口一关 / 到了等点那一拍就放回来 */
+function syncMagicCursor(): void {
+  const hide = screen === 'game' && magicCursorHidden();
+  if (hide === magicCursorOff) return;
+  magicCursorOff = hide;
+  canvas.style.cursor = hide ? 'none' : '';
+}
+
+/** 棋盘 / 侧栏 / 镜头此刻该按哪一份状态看（逐段演的时候是那一段的 after） */
+function magicShownState(): GameState {
+  return magicSeq?.shown ?? state;
+}
+
+/**
+ * 魔法屋那一条 action 落地：与演出无关的收尾照做，演出交给 `tickMagicSequence`。
+ * 女巫窗口要看到 `pending{magicHouse}` 撤掉才会收场（联机旁观 / 託管），所以只给它发 `event`。
+ */
+function notifyMagicApplied(before: GameState, beats: MagicSequence['beats']): void {
+  // 音效那一半照放（落点那一声等），台词一句不要 —— 逐段演的时候各段自己说
+  playSoundFor(before, state);
+  amountPage = null;
+  dialogHot = null;
+  if (!aiVenuePending(state)) {
+    syncShopUi();
+    syncLoanUi();
+    syncAtmPending();
+  }
+  magicScreen.event?.(before, state, uiEnv());
+  magicSeq = magicSequenceStart(beats);
+  log(`魔法屋：逐人演出 ${beats.length} 段`);
+  requestRender();
+}
+
+/** 上一段还没演完吗（框 / 影片 / 建屋 / 走子 / 台词 —— 与回合驱动同一份判据）*/
+function magicSequenceBusy(): boolean {
+  return stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null;
+}
+
+/** 每帧：上一段收了就起下一段；全部演完就收摊（镜头 / 侧栏交还施法者，= 原版 `0x004324fa` 还原当前玩家）*/
+function tickMagicSequence(): void {
+  const seq = magicSeq;
+  if (seq === null) return;
+  const step = magicSequenceStep(seq, magicSequenceBusy());
+  if (step.done) {
+    magicSeq = null;
+    log('魔法屋：逐人演出結束');
+    requestRender();
+    renderPanel();
+    return;
+  }
+  const beat = step.beat;
+  if (beat === null) {
+    requestRender();
+    return;
+  }
+  magicSeq = step.seq;
+  // ★ 每一支开头的 `0x41906a(1)`：把主窗口 WM_PAINT 过程（`0x417e26` 的 `0x418bb9` 那一支）当场跑一遍 ——
+  //   `fcn_00415e70` 居中（有小地图标记就停在标记上，否则居中到**当前玩家** = 这位中签者）、重画侧栏。
+  //   影片待播时 `centerOnCurrentPlayer` 是冻住的，所以在这里当场居中一次。
+  if (minimapMarker === null && followPlayer) {
+    const who = beat.before.players[beat.before.currentPlayer];
+    const at = cameraFollowTarget(null, who, (id) => map.nodes[id - 1]);
+    if (at !== null) camera = pixelCamera(at.x, at.y, camera.view);
+  }
+  // 平常那条表现出口，按**这一段**的前后状态走一遍（出口里读的是全局 `state`，这一刻换成这一段的 after）
+  const real = state;
+  state = beat.after;
+  try {
+    startActionFx(magicSeqAction ?? { type: 'settle' }, beat.before);
+    notifyApplied(beat.before);
+  } finally {
+    state = real;
+  }
+  const who = beat.after.players[beat.after.currentPlayer];
+  log(`魔法屋：第 ${step.seq.next}/${step.seq.beats.length} 段（P${(who?.index ?? 0) + 1}）`);
+  requestRender();
 }
 
 /** 魔法屋「就地拆除房屋」那一段 0x211 —— 判据见 `magic-fx.ts` 的 `magicDemolishFxTrigger` */
@@ -6617,6 +6744,11 @@ function boardDrawState(): GameState {
   //   真正拆下来（清 `god_info`、搭档此时才在地图上登场）⇒ 棋盘按离身**之前**那一份画，
   //   升天那一尊由渲染器藏掉、改画在动效层。
   if (godAscend !== null) return visibleBoardState(state, deferredBoardBefore ?? godAscend.before, !released);
+  // ★ D-MAGIC-16：魔法屋逐人那几段里棋盘按「演到哪一段」画（后面几位的改动还没发生）
+  if (magicSeq !== null) {
+    const base = magicShownState();
+    return boardStateForFilm(base, deferredBoardBefore, boardFilmWindowFlags(), !released);
+  }
   return boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released);
 }
 
@@ -6720,6 +6852,10 @@ function requestRender(): void {
     // ★ 角色台词（T-052）：**不限定 `game` 屏** —— 语音在任何一屏都可能派出来
     //   （开局宣言、破產、勝利宣言…），队列的收尾不能因为屏幕上盖着别的东西就停住。
     speechTick(performance.now());
+    // ★ D-MAGIC-16：魔法屋逐人分段 —— 上一段的框 / 影片 / 台词都收了才起下一段
+    if (screen === 'game') tickMagicSequence();
+    // ★ 女巫窗口里只有「等玩家点」那一拍有指针（`fcn_00402460`，见 `magicCursorHidden`）
+    syncMagicCursor();
 
     stageCtx.imageSmoothingEnabled = false;
     stageCtx.fillStyle = '#000';
@@ -7279,8 +7415,10 @@ function drawGameStage(): void {
   // 工具栏画在棋盘上方（直接画到舞台上）
   renderer.drawToolbarTo(stageCtx, LAYOUT.toolbar.x, LAYOUT.toolbar.y, hotTool);
 
+  // ★ D-MAGIC-16：`0x41906a(1)` 重画主窗口时侧栏跟着「当前玩家」= 那位中签者
+  const hudState = magicShownState();
   hud.draw({
-    state,
+    state: hudState,
     map,
     camera,
     minimapBg,
@@ -7289,8 +7427,8 @@ function drawGameStage(): void {
     pressedMinimapArrow,
     hotMinimapArrow,
     holidayArt,
-    panelPage: panelPages[state.currentPlayer] ?? 0,
-    panelRows: panelRows(state, topo, state.currentPlayer, panelPages[state.currentPlayer] ?? 0),
+    panelPage: panelPages[hudState.currentPlayer] ?? 0,
+    panelRows: panelRows(hudState, topo, hudState.currentPlayer, panelPages[hudState.currentPlayer] ?? 0),
   });
   stageCtx.drawImage(hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y);
 }
@@ -7419,7 +7557,10 @@ const cursorWarper = createCursorWarper(warpCursor, cursorWarpFrame);
  *   镜头随即恢复跟随（原版 VA 0x00418656 `[0x48be18] = 0`）。
  */
 function centerOnCurrentPlayer(): void {
-  const me = state.players[state.currentPlayer];
+  // ★ D-MAGIC-16：魔法屋逐人那几段里「当前玩家」= 那位中签者（`0x004320c9`），
+  //   每一支开头的 `0x41906a(1)` 重画主窗口时 `fcn_00415e70` 就居中到他（有标记则停在标记上）
+  const shown = magicShownState();
+  const me = shown.players[shown.currentPlayer];
   if (me === undefined) return;
   const node = map.nodes[me.nodeId - 1];
   if (node === undefined) return;
@@ -7466,7 +7607,9 @@ function centerOnCurrentPlayer(): void {
 
   if (minimapMarker !== null) {
     // 走到标记上了？那就把标记收掉，镜头交还给棋子
-    if (Math.abs(node.x - minimapMarker.x) <= 16 && Math.abs(node.y - minimapMarker.y) <= 16) {
+    // ★ D-MAGIC-16：魔法屋逐人那几段里不收 —— 原版 `0x431caa` 整个循环里标记（`[0x48be18]`）一直留着，
+    //   下一位的 `0x41906a(1)` 重画时 `fcn_00415e70` 仍停在上一位 `view_to` / 台词留下的标记上
+    if (magicSeq === null && Math.abs(node.x - minimapMarker.x) <= 16 && Math.abs(node.y - minimapMarker.y) <= 16) {
       minimapMarker = null;
       requestRender();
     } else {
@@ -8092,6 +8235,7 @@ function startGame(): void {
   //   会盖着旧局的片子，棋盘还会拿旧局的 before 快照当底（`deferred-board.ts`）。
   buildFx = null;
   pendingBuildFx = null;
+  magicSeq = null;
   buildFlicPending.clear();
   releaseBuildFlics();
   boardFilm = null;
@@ -9750,6 +9894,7 @@ function connectOnline(url: string, room: string, name: string): void {
           //   旧局的影片时间轴还挂着会盖在新棋盘上，棋盘还会拿旧局的 before 快照当底。
           buildFx = null;
           pendingBuildFx = null;
+          magicSeq = null;
           buildFlicPending.clear();
           releaseBuildFlics();
           boardFilm = null;
@@ -10130,6 +10275,7 @@ function settleAfterSilentRebuild(): void {
   // ★ 建屋影片也是「这一刻在播」的东西：本地状态已经重建，旧片子不该接着放
   buildFx = null;
   pendingBuildFx = null;
+  magicSeq = null;
   buildFlicPending.clear();
   releaseBuildFlics();
   // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
@@ -10229,6 +10375,11 @@ function pumpNetInbox(delay = 0): void {
  */
 function followPresenter(): void {
   const closed = fastForwardPresentations(SCREENS, BLOCKING_PRESENTATIONS, uiEnv());
+  // ★ 魔法屋逐人那几段（D-MAGIC-16）同样属于已施加的 action ⇒ 剩下的不演了
+  if (magicSeq !== null) {
+    magicSeq = null;
+    closed.push('magicBeats');
+  }
   if (closed.length === 0) return;
   const voice = lastVoiceCode;
   if (voice !== null && spokenBubble?.voice !== voice && sound.isPlaying('Speaking.mkf', voice)) {

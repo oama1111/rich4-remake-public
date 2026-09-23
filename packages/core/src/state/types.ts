@@ -408,6 +408,12 @@ export interface CardPlayHint {
   cardId: number;
 }
 
+/** 魔法屋一段演出的前后状态（见 `GameState.lastMagicBeats`）*/
+export interface MagicBeat {
+  readonly before: GameState;
+  readonly after: GameState;
+}
+
 /**
  * **这一次樂透開獎开出了什么**（第十二份試玩回報「沒展現出本期開獎號碼」）—— 纯表现提示，
  * 见 `GameState.lastLotteryDraw`。
@@ -1158,6 +1164,19 @@ export interface GameState {
    * 只在原版**真的开屏**时写（至少卖出一张票，`0x00431729 cmp eax,0x24 / je` 那道闸之内）。
    */
   lastLotteryDraw: LotteryDrawHint | null;
+
+  /**
+   * ★ **魔法屋逐人的演出分段**（D-MAGIC-16，2026-09-23）—— 纯表现提示（不进指纹、不进存档），
+   * 只活一条 action（`reduce` 出口按引用相等清成 null）。缺席 / `null` = 这一条不是魔法屋。
+   *
+   * @source 效果派发 `0x431caa` 的逐人循环（`0x004320b4..0x004320aa`）：每位中签者整支演完
+   *   （闸 → `0x41906a(1)` 重画 → 訊息框 → 镜头 / 影片 → 台词）才轮到下一位；「抽取命運三張」
+   *   每一张（`0x00431dbc` 循环 `0x44db81`）也是一段完整的命運演出。
+   *   core 一条 action 就把整趟写完了，所以把**每一段前后的完整状态**交给表现层逐段演
+   *   （段里的 `currentPlayer` = 那位中签者，同原版 `0x004320c9`）。电脑那一支第一段是
+   *   「条件\n\n效果」那一扇（`0x004339bd`）。
+   */
+  lastMagicBeats?: readonly MagicBeat[] | null;
 
   /**
    * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。

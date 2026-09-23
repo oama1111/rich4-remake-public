@@ -417,7 +417,10 @@ describe('动效出口两条来源共用 @source Q-TOOL-5 ⑤14', () => {
     const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
     // 定义 1 处 + 调用 2 处（applyAction 与 scheduleAi 的直路）
     const hits = src.split('startActionFx(').length - 1;
-    expect(hits, 'startActionFx 应当有 1 处定义 + 2 处调用').toBe(3);
+    // ★ D-MAGIC-16（2026-09-23）：第 3 处调用是魔法屋逐人分段（`tickMagicSequence`）——
+    //   同一个出口按**每一段**的前后状态再走一遍，不是又一条绕开它的直路。
+    expect(hits, 'startActionFx 应当有 1 处定义 + 3 处调用').toBe(4);
+    expect(src).toContain('startActionFx(magicSeqAction ?? { type: \'settle\' }, beat.before);');
     // 两条来源都必须在
     expect(src).toContain('startActionFx(action, before);');
     // 三处旧钩子都收进 `startActionFx` 里了 —— 全文件只该有这 3 处**调用**。

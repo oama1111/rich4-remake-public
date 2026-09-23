@@ -936,8 +936,10 @@ describe('★★ `notifyApplied` 必须是两条来源共用的出口', () => {
     // 只要电脑那条直路再一次绕开它，本用例就变红 —— 那正是
     // 「NPC 付过路费没台词 / 电脑用道具没动效」这一族的根因（Q-TOOL-5 ⑤14 同一教训）。
     const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
-    expect(src.split('notifyApplied(').length - 1).toBe(3);
+    // ★ D-MAGIC-16（2026-09-23）：第 3 处调用是魔法屋逐人分段（`tickMagicSequence`）按每一段再走一遍
+    expect(src.split('notifyApplied(').length - 1).toBe(4);
     expect(src).toContain('notifyApplied(before);');
+    expect(src).toContain('notifyApplied(beat.before);');
   });
 });
 

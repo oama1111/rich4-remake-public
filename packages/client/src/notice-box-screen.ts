@@ -379,10 +379,11 @@ export const noticeBoxScreen: UiScreen = {
    * 一起收（它们都属于已施加的 action —— 他那边一扇接一扇早弹完了）。原版每扇都点得掉（`skip`）。
    */
   fastForward(env: UiScreenEnv): boolean {
-    if (playback === null && pending.length === 0) return false;
+    if (playback === null && pending.length === 0 && tail === null) return false;
     const n = pending.length + (playback === null ? 0 : 1);
     playback = null;
     pending.length = 0;
+    tail = null;
     env.log(`付费訊息框：跟著行動者收場（${n} 扇）`);
     env.requestRender();
     return true;

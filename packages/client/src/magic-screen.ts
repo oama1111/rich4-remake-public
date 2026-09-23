@@ -1449,6 +1449,20 @@ export function magicAwaitingPick(): boolean {
 }
 
 /**
+ * 女巫窗口此刻要不要**藏起鼠标指针**。
+ *
+ * @source 原版的指针是软件画的：`fcn_00402250` 在 `[0x48a178] == 1` 时 `GetCursorPos` 后把指针图
+ *   （`[0x48a0f4]` 第 `[0x48a172]` 张）锁主表面画上去，`fcn_0040235d` 擦掉；`fcn_00402460(1/0)`
+ *   置 / 清 `[0x48a178]` 并当场画 / 擦（0x00402467 / 0x0040248f）。
+ *   按 GO 那一刻 `0x0040126f push 0 / call 0x402460` 就把指针收了，走子、落点一路都不画；
+ *   女巫窗口里只有状态 6 → 7（`loc_00432a0f` 0x00432a16 `push 1`）放出来、点下去（0x00432fd4 `call 0x402460`，实参 0）又收起。
+ *   ⇒ 开场白 / 摇签 / 念咒 / 关窗影片这些拍子上**没有指针**，只有等玩家点那一拍有。
+ */
+export function magicCursorHidden(): boolean {
+  return win !== null && win.state !== 7;
+}
+
+/**
  * 状态 7 里真人拿什么手势出去（`tools/soak-browser.js` 的真人路径用）：点「向後轉」那一格。
  * 不在等点的那一拍 / 本机不能点 ⇒ `null`。
  */

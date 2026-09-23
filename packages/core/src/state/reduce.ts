@@ -15,6 +15,7 @@ import type {
   BuildUpgradeSource,
   GameState,
   LotteryDrawHint,
+  MagicBeat,
   NoticeHint,
   NoticeKey,
   Player,
@@ -1148,8 +1149,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   //   已经是 null 的不算「要清」（保持「没东西要清就原样返回 `raw`」的恒等性）。
   const staleDraw =
     raw !== state && raw.lastLotteryDraw !== null && raw.lastLotteryDraw === state.lastLotteryDraw;
+  // ★ 魔法屋逐人演出分段（`lastMagicBeats`）同一套：只活一条 action。
+  const staleBeats =
+    raw !== state && (raw.lastMagicBeats ?? null) !== null && raw.lastMagicBeats === state.lastMagicBeats;
   const next =
-    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw
+    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
@@ -1158,6 +1162,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           ...(staleGift ? { lastShopGift: null } : {}),
           ...(staleToll ? { lastTollLands: null } : {}),
           ...(staleDraw ? { lastLotteryDraw: null } : {}),
+          ...(staleBeats ? { lastMagicBeats: null } : {}),
         }
       : raw;
   // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈
@@ -3327,9 +3332,25 @@ function answerMagicHouse(state: GameState, topo: MapTopology, option: number | 
 }
 
 /**
- * 效果派发 `0x431caa`：对名单里的人逐一施加 `option`。
+ * 效果派发 `0x431caa`：对名单里的人**逐一**施加 `option`，并交出逐人的演出分段（`lastMagicBeats`）。
  *
- * @source 效果派发 0x00431caa（逐人循环 `0x004320aa inc edi / cmp edi,4`）。见 places/magic-house.ts。
+ * @source 效果派发 0x00431caa 的逐人循环：
+ * ```asm
+ * 00431cbd  mov [0x48be18], 0                  ; 清小地图标记（之后的 0x41906a 居中于当前玩家）
+ * 00431cc8  [esp+0xb0] = [0x49910c]            ; 记下施法者
+ * 004320b4  cmp byte [edi + 0x48c380], 0 / je 结束
+ * 004320c9  dec eax / mov [0x49910c], eax      ; ★ 当前玩家 = 这位中签者（整支都按他算）
+ * 004320d6  jmp [option*4 + 0x431c7a]          ; 闸 → 0x41906a(1) → 訊息框 → 施加 / 影片 → 台词
+ * 004320aa  inc edi / cmp edi, 4 / jge 结束
+ * 004324fa  mov [0x49910c], [esp+0xb0]         ; 还原施法者
+ * ```
+ * ⇒ **一个人整支演完才轮到下一个**（框 → 镜头 → 影片 → 台词），而且那一支里「当前玩家」就是他
+ *   （`0x40b110` 的建设施种类、`0x44db81` 抽命運的主角、`0x41906a` 重画时的侧栏与居中都跟着他）。
+ *   本函数照此逐人施加（先前是先把十二支的状态一起改完、再逐个跑子流程 —— 同一个随机流次序，
+ *   但当前玩家一直是施法者）。
+ *
+ * 每一段 `{ before, after }` 是**那一段演出前后的完整状态**（当前玩家 = 中签者），表现层逐段演；
+ * 最终状态的当前玩家还原为施法者（0x004324fa）。
  */
 function applyMagicHouse(
   state: GameState,
@@ -3341,139 +3362,170 @@ function applyMagicHouse(
   /** 电脑那一支（`0x0043390b`）：`0x431caa` 之前先弹「条件\n\n效果」那一扇 */
   spinNotice = false,
 ): GameState {
-  const nodeOf = (playerIndex: number): MagicNodeInfo | null => {
-    const p = state.players[playerIndex];
-    if (p === undefined) return null;
-    const n = topo.nodes[p.nodeId - 1];
-    if (n === undefined) return null;
-    // @source cmp ebx, 0x7d0 / jle 跳过；cmp ebx, 0x1770 / jge 跳过
-    //   住宅(2000..4000) 与设施(4000..6000) 都算，景观与特殊格不算
-    const buildable = housingIndexOf(n.type) !== null || facilityIndexOf(n.type) !== null;
-    return { type: n.type, buildable };
-  };
+  const caster = state.currentPlayer;
+  const effectName = MAGIC_HOUSE_OPTIONS[option]?.name ?? '';
+  // ★ 把「抽中哪个条件、点到谁」交给表现层（id = 效果号，真人点的 / 电脑掷的）
+  const ev = { kind: 'magicHouse' as const, id: option, criterion, targets: [...targets] };
+  const beats: MagicBeat[] = [];
+  const allNotices: NoticeHint[] = [];
+  const allUpgrades: BuildUpgradeHint[] = [];
+  let lastView: { x: number; y: number } | null = null;
 
-  const r = applyMagicEffect(option, targets, {
-    players: state.players,
-    cardAmount: state.cardAmount,
-    tools: state.tools,
-    toolStock: state.toolStock,
-    priceIndex: state.priceIndex,
-    initiator: state.currentPlayer,
-    nodeOf,
-    nextRandom: () => rng.next(),
+  let cur: GameState = { ...state, rngState: rng.getState(), phase: 'turnEnd', lastEvent: ev };
+  if (spinNotice) {
+    const spin: NoticeHint = {
+      key: 'magic.spin',
+      args: [MAGIC_TARGET_NAMES[criterion] ?? '', effectName],
+      beforeFilms: true,
+    };
+    allNotices.push(spin);
+    const after: GameState = { ...cur, notices: [spin] };
+    beats.push({ before: cur, after });
+    cur = after;
+  }
+
+  const finish = (s: GameState): GameState => ({
+    ...s,
+    currentPlayer: caster,
+    lastEvent: ev,
+    notices: allNotices.length > 0 ? allNotices : state.notices,
+    // ★ 本趟的「加蓋」事件（每位中签者各一条，`0x00431f67..0x00432094` 各跑一遍）
+    lastBuildUpgrades: allUpgrades,
+    lastViewTarget: lastView ?? s.lastViewTarget,
+    lastMagicBeats: beats,
   });
 
-  let next: GameState = {
-    ...state,
-    rngState: rng.getState(),
-    players: applyHostilityDeltas(r.players, r.hostilityDeltas),
-    cardAmount: r.cardAmount,
-    tools: r.tools,
-    toolStock: r.toolStock,
-    phase: 'turnEnd',
-    // ★ 把「抽中哪个条件、点到谁」交给表现层 —— 先前表现层只能从 before→after 反推
-    //   （D-MAGIC-1 的近似），反推错时字框会写错一个条件名。
-    //   id = 效果号（真人点的 / 电脑掷的）。
-    lastEvent: {
-      kind: 'magicHouse',
-      id: option,
-      criterion,
-      targets: [...targets],
-    },
-    // ★ 本趟的「加蓋」事件从空开始累积（`applyMagicRequest` 的 `build` 那一支
-    //   往里 append）。与 `lastNpcWalks` 同一套约定：**每个 flow 自己立桩**，
-    //   于是 `lastBuildUpgrades` 的引用一变就代表「本 action 有加蓋」。
-    //   @source 0x00431f67..0x00432094 是**每位中签者各跑一遍**的
-    //   （`0x004320aa inc edi / cmp edi,4 / jge`），所以这里是一份**列表**。
-    lastBuildUpgrades: [],
-  };
+  for (const who of targets) {
+    const p0 = cur.players[who];
+    if (p0 === undefined || !isAlive(p0)) continue;
+    // 0x004320c9：这一支里「当前玩家」= 中签者
+    const before: GameState = { ...cur, currentPlayer: who };
+    const nodeOf = (playerIndex: number): MagicNodeInfo | null => {
+      const p = before.players[playerIndex];
+      if (p === undefined) return null;
+      const n = topo.nodes[p.nodeId - 1];
+      if (n === undefined) return null;
+      // @source cmp ebx, 0x7d0 / jle 跳过；cmp ebx, 0x1770 / jge 跳过
+      //   住宅(2000..4000) 与设施(4000..6000) 都算，景观与特殊格不算
+      const buildable = housingIndexOf(n.type) !== null || facilityIndexOf(n.type) !== null;
+      return { type: n.type, buildable };
+    };
+    rng.setState(before.rngState);
+    const r = applyMagicEffect(option, [who], {
+      players: before.players,
+      cardAmount: before.cardAmount,
+      tools: before.tools,
+      toolStock: before.toolStock,
+      priceIndex: before.priceIndex,
+      initiator: caster,
+      nodeOf,
+      nextRandom: () => rng.next(),
+    });
+    const notice = magicNoticeFor(before, who, option, r);
+    let s: GameState = {
+      ...before,
+      rngState: rng.getState(),
+      players: applyHostilityDeltas(r.players, r.hostilityDeltas),
+      cardAmount: r.cardAmount,
+      tools: r.tools,
+      toolStock: r.toolStock,
+      lastEvent: { ...ev, targets: [who] },
+      lastBuildUpgrades: [],
+      lastViewTarget: null,
+      ...(notice === null ? {} : { notices: [notice] }),
+    };
+    // 闸没过（5/9/11/7 那几支）：整支跳过 —— 没有框、没有重画、状态一个字节不动
+    if (notice === null && r.requests.length === 0) continue;
+    if (notice !== null) allNotices.push(notice);
 
-  // ★ 訊息框（2026-09-23 补）：原版每一支都先 `0x440cac` 弹「名字\n\n效果名」1500 ms，再施加 / 播影片。
-  //   先前 core 一扇都没交 ⇒ 效果悄悄生效（电脑那一支连「转到了什么」都看不到）。
-  const notices = magicHouseNotices(state, option, targets, criterion, r, spinNotice);
-  if (notices.length > 0) next = { ...next, notices };
-
-  for (const req of r.requests) {
-    const who = next.players[req.player];
-    // ★ 加蓋 / 拆除两支在施加之前 `0x40af12(格型别, &x, &y)` + `0x41d476(x, y, 0)` = view_to 那块地
-    //   （0x00432050 / 0x00432341）—— 那两段影片（0x229 / 0x211）贴在棋盘正中，全靠镜头对准那块地。
-    if ((req.kind === 'build' || req.kind === 'demolish') && who !== undefined) {
-      const vt = nodeViewTarget(next, topo, who.nodeId);
-      if (vt !== null) next = { ...next, lastViewTarget: vt };
-    }
-    const upgradesBefore = next.lastBuildUpgrades?.length ?? 0;
-    next = applyMagicRequest(next, topo, req);
-    if (next.phase === 'gameOver') return next;
-    // ★ 大锤影片是**无条件**播的：`0x00432059 call 0x40b110` 之后紧接着 `0x00432074 call 0x45144f`，
-    //   不看 0x40b110 盖没盖动（满级 / 連鎖店已有 / 真人的空設施没选种类）——只有 bit7 那段 0x20b 看返回值。
-    //   ⇒ 没盖动也交一条提示（等级不变），让表现层照样播那一段大锤。
-    if (req.kind === 'build' && who !== undefined && (next.lastBuildUpgrades?.length ?? 0) === upgradesBefore) {
-      const node = topo.nodes[who.nodeId - 1];
-      if (node !== undefined) {
-        next = withBuildUpgrade(next, { entity: node.type, reachedMaxLevel: false, source: 'magicHouse' });
+    for (const req of r.requests) {
+      if (req.kind === 'drawFortune') {
+        // ★ 抽命運三張：先把「名字\n\n抽取命運三張」那一扇演完，再**一张一段**（`0x00431dbc` 循环三次 `0x44db81`，
+        //   每一张都是完整的命運演出，主角 = 当前玩家 = 中签者）
+        beats.push({ before, after: s });
+        for (let i = 0; i < req.amount; i++) {
+          const prev = s;
+          s = { ...drawAndApplyFortune({ ...s, currentPlayer: who }, topo), currentPlayer: who };
+          if (s.notices !== prev.notices) allNotices.push(...s.notices);
+          beats.push({ before: prev, after: s });
+          if (s.phase === 'gameOver') return finish(s);
+        }
+        s = { ...s, phase: s.phase === 'gameOver' ? s.phase : 'turnEnd' };
+        continue;
+      }
+      // ★ 加蓋 / 拆除两支在施加之前 `0x40af12(格型别, &x, &y)` + `0x41d476(x, y, 0)` = view_to 那块地
+      //   （0x00432050 / 0x00432341）—— 那两段影片（0x229 / 0x211）贴在棋盘正中，全靠镜头对准那块地。
+      const tp = s.players[req.player];
+      if ((req.kind === 'build' || req.kind === 'demolish') && tp !== undefined) {
+        const vt = nodeViewTarget(s, topo, tp.nodeId);
+        if (vt !== null) {
+          s = { ...s, lastViewTarget: vt };
+          lastView = vt;
+        }
+      }
+      const upgradesBefore = s.lastBuildUpgrades?.length ?? 0;
+      const noticesBefore = s.notices;
+      s = applyMagicRequest(s, topo, req);
+      if (s.notices !== noticesBefore) {
+        // 子流程（關押 / 拍賣…）自己又弹了框、把 `notices` 整个换掉 ⇒ 魔法屋那一扇排在前面
+        const own = notice === null ? [] : [notice];
+        const extra = s.notices.filter((n) => n !== notice);
+        allNotices.push(...extra);
+        s = { ...s, notices: [...own, ...extra] };
+      }
+      // ★ 大锤影片是**无条件**播的：`0x00432059 call 0x40b110` 之后紧接着 `0x00432074 call 0x45144f`，
+      //   不看 0x40b110 盖没盖动（满级 / 連鎖店已有 / 真人的空設施没选种类）——只有 bit7 那段 0x20b 看返回值。
+      //   ⇒ 没盖动也交一条提示（等级不变），让表现层照样播那一段大锤。
+      if (req.kind === 'build' && tp !== undefined && (s.lastBuildUpgrades?.length ?? 0) === upgradesBefore) {
+        const node = topo.nodes[tp.nodeId - 1];
+        if (node !== undefined) {
+          s = withBuildUpgrade(s, { entity: node.type, reachedMaxLevel: false, source: 'magicHouse' });
+        }
+      }
+      if (s.phase === 'gameOver') {
+        beats.push({ before, after: s });
+        return finish(s);
       }
     }
+    if (option !== 1) beats.push({ before, after: s });
+    allUpgrades.push(...(s.lastBuildUpgrades ?? []));
+    cur = s;
   }
-  // 子流程（命運 / 關押 / 拍賣…）自己又弹了框、把 `notices` 整个换掉 ⇒ 魔法屋那几扇排在前面
-  if (notices.length > 0 && next.notices !== notices && next.notices[0] !== notices[0]) {
-    next = { ...next, notices: [...notices, ...next.notices] };
-  }
-  return next;
+  return finish(cur);
 }
 
 /**
- * 魔法屋这一趟要弹的訊息框（按原版弹出的先后）。
+ * 这位中签者要弹的那一扇訊息框；这一支有闸而闸没过 ⇒ `null`（整支不做、不弹）。
  *
  * @source
- * - 电脑那一支：`0x00433981..0x004339b8` —— 条件名去掉 `#00NN`（`cmp byte [eax], 0x23 / add eax, 5`）、
- *   效果名 `[0x475724 + 16*esi]`，`sprintf(0x464842 "%s\n\n%s")` → `0x440cac(…, 0x5dc)`；
- * - `0x431caa` 逐人（`0x004320aa inc edi / cmp edi, 4`）：每一支开头
- *   `sprintf(0x46482a "%s\n\n", [player+0] 名字)` + `strcat([0x475724 + 16*效果] 效果名)` → `0x440cac(…, 0x5dc)`；
- *   「得一張卡片」那一支（0x004320dd）先发卡、再 `sprintf(0x464839 "得到%s！", 卡名)` 接在名字后面。
- * - **哪几支先有闸**（闸不过就连框都不弹）：
- *   5 就地加蓋 / 9 就地拆除 / 11 拍賣 —— `cmp dword [player+0x32], 0 / jne` + 格型别 `(0x7d0, 0x1770)`
- *   （0x00431f67 / 0x00432259 / 0x0043242b，都在 `push 1 / call 0x41906a` 与弹框**之前**）；
+ * - `0x431caa` 每一支开头：`sprintf(0x46482a "%s\n\n", [player+0] 名字)` + `strcat([0x475724 + 16*效果] 效果名)`
+ *   → `0x440cac(…, 0x5dc)`；「得一張卡片」那一支（0x004320dd）先发卡、再 `sprintf(0x464839 "得到%s！", 卡名)`；
+ * - **哪几支先有闸**：5 就地加蓋 / 9 就地拆除 / 11 拍賣 —— `cmp dword [player+0x32], 0 / jne` + 格型别
+ *   `(0x7d0, 0x1770)`（0x00431f67 / 0x00432259 / 0x0043242b，都在 `push 1 / call 0x41906a` 与弹框**之前**）；
  *   7 向後轉 —— 只有 `[player+0x32]` 那一道（0x00432160）。其余各支无闸，一律弹。
+ * - 电脑那一支另有「条件\n\n效果」（`0x00433981..0x004339b8`，`0x464842 "%s\n\n%s"`），见 `applyMagicHouse`。
  */
-function magicHouseNotices(
-  state: GameState,
-  option: number,
-  targets: readonly number[],
-  criterion: number,
-  r: MagicEffectResult,
-  spinNotice: boolean,
-): NoticeHint[] {
+function magicNoticeFor(state: GameState, who: number, option: number, r: MagicEffectResult): NoticeHint | null {
+  const p = state.players[who];
+  if (p === undefined) return null;
+  const name = playerName(state, who);
   const effectName = MAGIC_HOUSE_OPTIONS[option]?.name ?? '';
-  const out: NoticeHint[] = [];
-  if (spinNotice) {
-    out.push({ key: 'magic.spin', args: [MAGIC_TARGET_NAMES[criterion] ?? '', effectName], beforeFilms: true });
+  if (option === 5 || option === 9 || option === 11) {
+    // 闸 = `applyMagicEffect` 交出 build / demolish / auction 请求的那一道（同一段判据）
+    if (!r.requests.some((q) => q.player === who)) return null;
+  } else if (option === 7) {
+    if (!magicLocalizable(p)) return null;
+  } else if (option === 6) {
+    const got = r.log.find((l) => l.player === who && l.note === '得一張卡片');
+    // ⚠️ 牌堆抽空（`0x441e12` 没发出卡）时原版照样弹、卡名取 `[0x47fdea + 8*0]`（表外）——
+    //   这一格读不出有意义的字，本引擎不弹（登记于 T-037 D-MAGIC-16）。
+    if (got === undefined) return null;
+    return { key: 'magic.gotCard', args: [name, cardNameOf(got.value)], beforeFilms: true };
   }
-  for (const who of targets) {
-    const p = state.players[who];
-    // 与 `applyMagicEffect` 同一道（名单是转目标转盘那一刻的在场者）
-    if (p === undefined || !isAlive(p)) continue;
-    const name = playerName(state, who);
-    if (option === 5 || option === 9 || option === 11) {
-      // 闸 = `applyMagicEffect` 交出 build / demolish / auction 请求的那一道（同一段判据）
-      if (!r.requests.some((q) => q.player === who)) continue;
-    } else if (option === 7) {
-      if (!magicLocalizable(p)) continue;
-    } else if (option === 6) {
-      const got = r.log.find((l) => l.player === who && l.note === '得一張卡片');
-      // ⚠️ 牌堆抽空（`0x441e12` 没发出卡）时原版照样弹、卡名取 `[0x47fdea + 8*0]`（表外）——
-      //   这一格读不出有意义的字，本引擎不弹（登记于 T-037 D-MAGIC-16）。
-      if (got === undefined) continue;
-      out.push({ key: 'magic.gotCard', args: [name, cardNameOf(got.value)], beforeFilms: true });
-      continue;
-    }
-    const afterMs = MAGIC_NOTICE_AFTER_MS[option];
-    out.push(
-      afterMs === undefined
-        ? { key: 'magic.effect', args: [name, effectName], beforeFilms: true }
-        : { key: 'magic.effect', args: [name, effectName], beforeFilms: true, afterMs },
-    );
-  }
-  return out;
+  const afterMs = MAGIC_NOTICE_AFTER_MS[option];
+  return afterMs === undefined
+    ? { key: 'magic.effect', args: [name, effectName], beforeFilms: true }
+    : { key: 'magic.effect', args: [name, effectName], beforeFilms: true, afterMs };
 }
 
 /**

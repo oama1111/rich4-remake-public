@@ -33,7 +33,7 @@
  * ★ C-ARC-2：本模块不含任何规则。★ C-DET-4：动效绝不进 `GameState`。
  */
 
-import type { GameState } from '@rich4/core';
+import type { GameState, MagicBeat } from '@rich4/core';
 import type { BoardFilmSpec } from './board-film.ts';
 
 /** 「就地拆除房屋」的效果号（`MAGIC_HOUSE_OPTIONS[9]`）@source 跳表 `0x431c7a` 第 9 项 = `0x432259` */
@@ -77,4 +77,48 @@ export function magicDemolishFxTrigger(
   if (ev.id !== MAGIC_OPTION_DEMOLISH) return false;
   if (after.notices === before.notices) return false;
   return after.notices.some((n) => n.key === 'magic.effect');
+}
+
+// ============================================================
+//  逐人演出（D-MAGIC-16）—— `0x431caa` 的逐人循环，纯状态机
+// ============================================================
+
+/**
+ * 这一条 action 刚交出的魔法屋逐人分段（`GameState.lastMagicBeats`，引用变了才算）；不是 ⇒ `null`。
+ */
+export function freshMagicBeats(
+  before: Pick<GameState, 'lastMagicBeats'>,
+  after: Pick<GameState, 'lastMagicBeats'>,
+): readonly MagicBeat[] | null {
+  const beats = after.lastMagicBeats ?? null;
+  if (beats === null || beats === (before.lastMagicBeats ?? null) || beats.length === 0) return null;
+  return beats;
+}
+
+/** 逐段演到哪了 */
+export interface MagicSequence {
+  readonly beats: readonly MagicBeat[];
+  /** 下一段的下标 */
+  readonly next: number;
+  /** 最近起播的那一段的 after —— 棋盘 / 侧栏 / 镜头按它画；还没起播 = `null` */
+  readonly shown: GameState | null;
+}
+
+export function magicSequenceStart(beats: readonly MagicBeat[]): MagicSequence {
+  return { beats, next: 0, shown: null };
+}
+
+/**
+ * 走一拍：上一段还在演（`busy`）就原地等；否则起下一段（交出 `beat`）；全部演完 ⇒ `done`。
+ *
+ * ★ 原版 `0x431caa` 是阻塞的：一位中签者整支（框 → 镜头 → 影片 → 台词）演完才 `inc edi` 轮到下一位。
+ */
+export function magicSequenceStep(
+  seq: MagicSequence,
+  busy: boolean,
+): { seq: MagicSequence; beat: MagicBeat | null; done: boolean } {
+  if (busy) return { seq, beat: null, done: false };
+  const beat = seq.beats[seq.next];
+  if (beat === undefined) return { seq, beat: null, done: true };
+  return { seq: { ...seq, next: seq.next + 1, shown: beat.after }, beat, done: false };
 }
