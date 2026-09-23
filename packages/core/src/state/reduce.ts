@@ -7024,6 +7024,19 @@ function payCompany(
  * 0041b022  call 0x41d2c6(付款人, 企業, ebp, 0)      ; 付钱
  * ```
  * 先前本引擎这一路**没调神明**（大財神附身照付、窮神附身不加付）。
+ *
+ * ★ 第十四份：神明之后那一段被动卡 / 死神（与住宅 `0x00419e01..0x00419f28` 逐条同构，共用 `tollPassiveTail`）：
+ * ```asm
+ * 0041aef3  cmp ecx, 2000×物價 / jge ; 或 0041af08 cmp ecx, 现金+存款 / jle 跳过   ; 触发门槛
+ * 0041af0f  call 0x4413ad(付款人, 0x14)  → 0041af20 call 0x444a60(付款人, −1, ebp)  ; 免費卡 ⇒ ebp = 0
+ *           （地主参数 −1：企業没有「地主说一句」那一支，`0x00444b6d cmp ecx,-1 / je`）
+ * 0041af65  call 0x4413ad(付款人, 0x13)  → 0041af75 call 0x44476a(付款人, 1, ebp)   ; 嫁禍卡 ⇒ edi = 替死鬼
+ * 0041af84  test ebp,ebp / jne ;  或 行業 1 且旅遊天数 != 0（0x0041af88 / 0x0041af8e）
+ * 0041af99  call 0x40fbb8(edi)           → 0041afd0 push 0x4639cc（死神框，%s = 死神名 + 費名 esi）
+ * 0041affb  cmp edi,[0x49910c] / jne     ; ★ 付款人的台词只在**当前玩家自己付**时说
+ * 0041b022  call 0x41d2c6(edi, 企業, ebp, 0)
+ * ```
+ * ⚠️ 真人那两问（免費卡 `0x00444ad8` Yes/No、嫁禍卡选人）与住宅 / 設施两条路一样，仍按电脑规则替真人决定（D-008）。
  * 框里 `%s` 依次是 企業名（`lea eax,[ebx+4]`）、董事長名（`0x0041ae41`）、費名（`[行業 + 0x47528e]` 查 `0x47517c`）。
  * 工程費那一路（建設公司，真人选完 / 电脑自选）原版也走这一段 —— 先前没弹框，一并接上。
  * ⚠️ 仍未接：`0x0041af0c` 起的免費卡 / 嫁禍卡 / 死神那一段（与本条无关，另记）。
@@ -7034,6 +7047,7 @@ function chargeCompanyFee(
   payer: number,
   c: { id: number; name: string; type: number },
   amount: number,
+  travelDays = 0,
 ): GameState {
   if (amount === 0) return state;
   const chairman = ownerOf(state.commercialOwners[c.id] ?? emptyOwnership());
@@ -7048,9 +7062,31 @@ function chargeCompanyFee(
   const adjusted = adjustTollByGod(amount, godInfo).toll;
   const godNotice = godTollNotice(godInfo, amount, adjusted, feeName, payer);
   if (godNotice !== null) notices.push(godNotice);
-  const noticed = appendFreshNotice(state, notices[0]!);
-  const withNotices = notices.length > 1 ? appendFreshNotice(noticed, notices[1]!) : noticed;
-  return payCompany(withNotices, topo, payer, c.id, adjusted);
+  // ── 被动卡 / 死神（`0x0041aed7` 起，与住宅同一段尾巴）──
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const tail = tollPassiveTail(state.players, payer, adjusted, state.priceIndex, true, () => rng.next());
+  let players = state.players;
+  let who = payer;
+  let toll = adjusted;
+  if (tail.free) {
+    players = players.map((p, i) => (i === who ? consumeCard(p, PASSIVE_CARDS.FREE) : p));
+    toll = 0;
+  }
+  if (tail.scapegoat !== -1) {
+    players = players.map((p, i) => (i === who ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p));
+    who = tail.scapegoat;
+  }
+  if (toll !== 0 || (c.type === INDUSTRY.airline && travelDays !== 0)) {
+    const reaper = reaperPayer(players, who);
+    if (reaper !== -1) {
+      notices.push({ key: 'rent.reaperPays', args: [playerName(state, reaper), feeName] });
+      who = reaper;
+    }
+  }
+  let next: GameState = { ...state, players, rngState: rng.getState() };
+  for (const n of notices) next = appendFreshNotice(next, n);
+  return payCompany(next, topo, who, c.id, toll);
 }
 
 /** 公司落点收尾：照原版走到出口时再问一次「是否認購股份」（0x0041d1a9） */
@@ -7132,7 +7168,7 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
   // 收費那一段（框 / 神明调整 / 付款）见 `chargeCompanyFee`
   let next: GameState = { ...state, rngState: rng.getState() };
   if (fee.kind === 'fee') {
-    next = chargeCompanyFee(next, topo, me, c, fee.amount);
+    next = chargeCompanyFee(next, topo, me, c, fee.amount, fee.days ?? 0);
   } else if (fee.kind === 'insurance') {
     next = withPlayer(next, me, (p) => {
       p.insuranceDays = addInsuranceDays(p.insuranceDays, fee.days);

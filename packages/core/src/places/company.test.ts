@@ -51,7 +51,7 @@ describe('★ 别人的公司按行業收費 @source 0x0041ab6d', () => {
     expect(spinWheel(WHEEL.travel, 2)).toBe(0);
     expect(companyFeeOnLanding(INDUSTRY.airline, 500, PI, 0, 0, 0, 2)).toEqual({ kind: 'none' });
     // 起点 6 停在 2
-    expect(companyFeeOnLanding(INDUSTRY.airline, 500, PI, 0, 0, 0, 6)).toEqual({ kind: 'fee', amount: 2 * 500 * PI, name: '旅遊費' });
+    expect(companyFeeOnLanding(INDUSTRY.airline, 500, PI, 0, 0, 0, 6)).toEqual({ kind: 'fee', amount: 2 * 500 * PI, name: '旅遊費', days: 2 });
   });
 
   it('★ 電子：地價 × 總天數，不乘物價（0x0041ac2c 跳过了那句）', () => {

@@ -85,7 +85,13 @@ export type CompanyFee =
   /** 什么也不发生（行業 2、7..10，或走路的人踩汽車/石油、航空轉盤轉到 0） */
   | { kind: 'none' }
   /** 付一笔費给公司 */
-  | { kind: 'fee'; amount: number; name: string }
+  | {
+      kind: 'fee';
+      amount: number;
+      name: string;
+      /** 航空那一路转出来的旅遊天数（`[esp+0xd0]`）—— 死神那道闸要看它（`0x0041af8e`）*/
+      days?: number;
+    }
   /** 保險：付費并投保 `days` 天 */
   | { kind: 'insurance'; amount: number; days: number }
   /** 建設：先选一处自己的地免费加蓋一级，再付那块地地價 × 物價的工程費 */
@@ -121,7 +127,7 @@ export function companyFeeOnLanding(
     case INDUSTRY.airline: {
       const n = spinWheel(WHEEL.travel, randValue);
       if (n === 0) return { kind: 'none' };
-      return { kind: 'fee', amount: n * landPrice * priceIndex, name: feeNameOf(industry) };
+      return { kind: 'fee', amount: n * landPrice * priceIndex, name: feeNameOf(industry), days: n };
     }
     case INDUSTRY.electronics:
       return { kind: 'fee', amount: landPrice * totalDays, name: feeNameOf(industry) };

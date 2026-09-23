@@ -669,7 +669,10 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
       //   `0x0041b000 cmp edi,[0x49910c] / jne` → `0x0041b004 push ebp（金額）/ push eax（付款人）/
       //   0x0041b006 call 0x44f42d` —— 与付給玩家同一支阶梯函数，且它**不看收款方是谁**（只有
       //   付款人与金额两个实参）。少了这一句，訊息框 1500 ms 一到就换人，「字还没看清就下一个」。
-      //   （付款人被死神顶替时 `edi != 当前玩家` ⇒ 不说 —— 那种情形付款人的 `monthlyPaid` 本来就不涨。）
+      // ★ 第十四份：付款人被嫁禍卡 / 死神顶替时原版**不说**（`0x0041affb cmp edi,[0x49910c] / jne`）——
+      //   先前注释说「那种情形付款人的 `monthlyPaid` 本来就不涨」，是因为企業那一路当时还没接顶替；
+      //   现在接上了（`chargeCompanyFee`），替死鬼 / 死神的 `monthlyPaid` 会涨 ⇒ 只认当前玩家。
+      if (i !== before.currentPlayer) continue;
       const tier = payTierFor(amount, after.priceIndex);
       if (tier !== null) out.push({ player: i, event: 9 + tier });
     }

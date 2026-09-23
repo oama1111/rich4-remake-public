@@ -1006,3 +1006,52 @@ describe('★★ 第十四份：企業收費也过神明调整（@source 0x0041a
     expect(after.players[0]!.cash).toBe(50_000 - 6000);
   });
 });
+
+describe('★★ 第十四份：企業收費的免費卡 / 嫁禍卡 / 死神（`0x0041aed7` 起，与住宅同一段尾巴）', () => {
+  /** 在 `onRivalCompany` 上补一个 2 号（替死鬼 / 死神候选） */
+  function withThird(payer: Parameters<typeof makePlayer>[0], third: Parameters<typeof makePlayer>[0] = {}) {
+    const s = onRivalCompany(INDUSTRY.sect, payer);
+    return {
+      ...s,
+      players: [...s.players, makePlayer({ index: 2, character: 2, nodeId: 3, cash: 80_000, moneyInBank: 0, ...third })],
+    };
+  }
+  const topoC = () => companyTopo(INDUSTRY.sect);
+
+  it('★★ 免費卡（費 3000 > 現金 100 ⇒ 电脑必用，@source 0x0041af20 / 0x00444ac4）⇒ 卡用掉、一分不付、没有死神框', () => {
+    const before = withThird({ cash: 100, cards: [20] });
+    const after = reduce(before, { type: 'settle' }, topoC());
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.players[0]!.cash).toBe(100);
+    expect(after.players[0]!.monthlyPaid).toBe(0);
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payBoss']);
+  });
+
+  it('★★ 嫁禍卡（@source 0x0041af75 call 0x44476a）⇒ 卡用掉、换人付', () => {
+    // 最恨 2 号 ⇒ 电脑嫁禍给他（@source 0x004448b0 的候选 = hostility 最大者）
+    const before = withThird({ cash: 100, cards: [19], hostility: [0, 0, 5, 0] });
+    const after = reduce(before, { type: 'settle' }, topoC());
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.players[0]!.cash).toBe(100);
+    expect(after.players[2]!.monthlyPaid).toBe(3000);
+    expect(after.companyFunds[CID]).toBe(3000);
+  });
+
+  it('★★ 死神顯靈由他人賠償（@source 0x0041af99 call 0x40fbb8 / 0x0041afd0 push 0x4639cc，%s = 死神名 + 費名）', () => {
+    const before = withThird({}, { godInfo: 0xe });
+    const after = reduce(before, { type: 'settle' }, topoC());
+    expect(after.notices).toEqual([
+      { key: 'rent.payBoss', args: ['測試公司', '沙隆巴斯', 3000, '過路費'] },
+      { key: 'rent.reaperPays', args: ['忍太郎', '過路費'] },
+    ]);
+    expect(after.players[0]!.cash).toBe(50_000);
+    expect(after.players[2]!.cash).toBe(80_000 - 3000);
+  });
+
+  it('★ 大財神抹成 0 ⇒ 免費卡与死神都不走（门槛按调整后的 0 判，`0x0041af84 test ebp,ebp`）', () => {
+    const before = withThird({ godInfo: 2, cash: 100, cards: [20] }, { godInfo: 0xe });
+    const after = reduce(before, { type: 'settle' }, topoC());
+    expect(after.players[0]!.cards).toEqual([20]);
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payBoss', 'god.tollFree']);
+  });
+});
