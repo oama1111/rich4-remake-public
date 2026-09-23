@@ -476,7 +476,10 @@ import {
 import {
   atmAmount,
   atmLimit,
+  atmOp,
+  atmOpen,
   atmPress,
+  atmPressSound,
   drawBankAtm,
   hitAtmButton,
   type AtmState,
@@ -924,17 +927,19 @@ const AMOUNT_INITIAL = 0;
  * `atmFill` 就是那条选项自带的 `amount.fill`（金额定了才发得出去）。
  */
 let atm: AtmState | null = null;
-/** 金额定了怎么变成 action；`mode` = 按確認那一刻的存/提（路过銀行那台两个键都能用）*/
+/** 金额定了怎么变成 action；`mode` = 按確認那一刻的提/存（见 `ATM_MODE`：0 提款、1 存款）*/
 let atmFill: ((n: number, mode: number) => Action) | null = null;
 let atmLabel = '';
 /**
- * ★ 第八份试玩回报 #4：**路过銀行**的 ATM（`pending.kind === 'atm'`）—— 与落点銀行屏里那台是同一块面板，
- *   只是没有貸款屏垫底、办完一笔就关（原版 `fcn_004379c9` 的 ATM 窗是模态的，走子在它后面）。
- *   本标志记「这一次 pending 已经开过窗」：玩家右键关掉后 `declineDecision` 把 pending 清掉，下一次路过再开。
+ * ★ 第八份试玩回报 #4：**路过銀行**的 ATM（`pending.kind === 'atm'`）—— 原版 `fcn_004379c9` 的 ATM 窗是模态的，
+ *   办完一笔（或关窗）就返回，走子在它后面。
+ * ★ 第十三份试玩回报 #2：**落在**銀行上也是先开这一台（`pending.landing`），答掉之后 core 才换成貸款屏
+ *   （`0x0041b396 call 0x4379c9` → `0x0041b3af call 0x436668`）。
+ *   本标志记「这一次 pending 已经开过窗」：玩家右键关掉后 `declineDecision` 把 pending 清掉（或换成貸款屏），下一次再开。
  */
 let atmPassOpened = false;
 
-/** 每次 action 之后：路过銀行给出 `pending.kind === 'atm'` ⇒ 给本机座位开 ATM；pending 没了 ⇒ 复位 */
+/** 每次 action 之后：core 给出 `pending.kind === 'atm'`（路过 / 落点）⇒ 给本机座位开 ATM；pending 没了 ⇒ 复位 */
 function syncAtmPending(): void {
   const p = state.pending;
   if (p === null || p.kind !== 'atm') {
@@ -945,9 +950,10 @@ function syncAtmPending(): void {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return;
   atmPassOpened = true;
-  atm = { mode: 0, digits: '', limits: [me.cash, me.moneyInBank] };
-  atmFill = (n, mode) => ({ type: 'bank', op: mode === 1 ? 'withdraw' : 'deposit', amount: n });
-  atmLabel = '路過銀行';
+  // ★ 第十三份试玩回报 #1：模式 0 = 提款（左上）、1 = 存款（中间）；暫停放款时默认存款 —— 见 `bank-screen.ts` 文件头
+  atm = atmOpen(me.cash, me.moneyInBank, bankFrozen());
+  atmFill = (n, mode) => ({ type: 'bank', op: atmOp(mode), amount: n });
+  atmLabel = p.landing === true ? '銀行' : '路過銀行';
   // 原版 `fcn_004379c9` 开窗那段（`0x437a2d..0x437a76`）只装 Panel #24 + 跑模态窗，**没有**开窗音效
   requestRender();
 }
@@ -960,6 +966,12 @@ function syncAtmPending(): void {
  */
 let atmCode: number | null = null;
 let atmCodeAt = 0;
+
+/** ATM 按下那一声（Effect.mkf）—— 码 → 音效见 `atmPressSound` */
+function atmSound(code: number): void {
+  const id = atmPressSound(code);
+  if (id !== null) sound.play('Effect.mkf', id);
+}
 
 /** 关掉 ATM 面板 */
 function closeAtm(): void {
@@ -1040,6 +1052,8 @@ function atmKey(code: number): void {
   if (st === null) return;
   atmCode = code;
   atmCodeAt = performance.now();
+  // 键盘那一声：`0x00437571` 放 7；H（码 4）改发一次按下走金额栏那一支 ⇒ 9（`atmPressSound` 同一张表）
+  atmSound(code);
   const btn = code - 1;
   if (btn === 3) {
     // @source `loc_004375dc`：合成一次金额栏点击，坐标 (0xdc, 0xdf) = (220,223)
@@ -2076,6 +2090,9 @@ function handleHotkey(fn: number): boolean {
         answerYesNo(true);
         return true;
       }
+      // ★ 貸款屏开着时不认：原版那扇窗（`fcn_00435062`）的消息分派里**没有** `0x100`（键盘），
+      //   只有鼠标与自定义消息；它背后那份后备对话框的 choices 不能被 Y/N 键偷点到
+      if (loanUi !== null) return false;
       const ui = currentDialog();
       if (ui === null) return false;
       onDialogHit(ui, { kind: 'choice', index: 0 });
@@ -2086,6 +2103,7 @@ function handleHotkey(fn: number): boolean {
         answerYesNo(false);
         return true;
       }
+      if (loanUi !== null) return false; // 同上：貸款屏不收键盘
       const ui = currentDialog();
       if (ui === null) return false;
       onDialogHit(ui, { kind: 'choice', index: Math.min(1, ui.choices.length - 1) });
@@ -2540,27 +2558,7 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
   if (hit.kind === 'choice') {
     const c = ui.choices[hit.index];
     if (c === undefined) return;
-    // ★ 存款 / 提款：原版走的是**銀行那台 ATM**（资源 24 的面板 + 数字键盘），
-    //   不是通用填数页 —— 见 bank-screen.ts 头部的取证。
-    if (
-      c.amount !== undefined &&
-      c.action.type === 'bank' &&
-      (c.action.op === 'deposit' || c.action.op === 'withdraw')
-    ) {
-      atm = {
-        mode: c.action.op === 'deposit' ? 0 : 1,
-        digits: '',
-        limits: [
-          c.action.op === 'deposit' ? c.amount.max : 0,
-          c.action.op === 'withdraw' ? c.amount.max : 0,
-        ],
-      };
-      atmFill = c.amount.fill;
-      atmLabel = c.amount.label;
-      dialogHot = null;
-      requestRender();
-      return;
-    }
+    // （存款 / 提款不在任何对话框里：它们只在 ATM（`pending.kind === 'atm'`，`syncAtmPending`）里办）
     // 要填数的选项：先进填数页，别直接派 action
     if (c.amount !== undefined) {
       // ★ 开窗初值：原版認購股份那一支把**上限**当第一个实参传进填数窗
@@ -4432,10 +4430,12 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   const deadAfter = after.players.filter((p) => p.whoPlays === 0).length;
   if (deadAfter > deadBefore) {
     sound.play('Effect.mkf', SOUND_IDS.BANKRUPT);
-  } else if (after.pending?.kind === 'bank' && before.pending?.kind !== 'bank') {
-    // 落在银行
-    sound.play('Effect.mkf', SOUND_IDS.BANK);
   }
+  // ★ 落在銀行**没有**音效：先前这里放的 Effect #4 出自 `0x0043674d push 4`，但那一句紧跟的是
+  //   `0x0043674f call 0x4549cf` —— 那是**播 MIDI**（`sprintf("open sequencer!%s alias mid", [0x47e793 + 4*id])`
+  //   → `mciSendString`），id 4 = `MIDI05.MID`，即貸款屏的配乐（`syncLoanUi` 里 `midi05.mid` 那一句），
+  //   不是 Effect.mkf 的第 4 个音效。它只在 `_rich4_ui_bank_entry` 的**真人**那一支（`0x004366a3
+  //   cmp byte [+0x15],1 / jne 0x4367ab`）；电脑那一支与 ATM 入口 `fcn_004379c9` 都不放音乐。
 
   // ★★ 2026-09-22（第十一份試玩回報 #17「踩到卡片格子时应该有个提示音」）：
   //   原版在**落地处理**的分派器**之前**先统一放一声（種類 2..16）——
@@ -6923,7 +6923,12 @@ function requestRender(): void {
       // ★ 登记的整屏接管：棋盘、侧栏、工具栏一概不画（原版这些屏也是整屏窗口）
       // ★ 例外是**浮窗**（`windowed: true`，如大地圖彈窗）：原版只把被盖住的
       //   那一块盖上去，周围的棋盘/工具栏/侧栏照旧露着 —— 故先照常画一整帧。
-      if (overlay.windowed === true && screen === 'game') drawGameStage();
+      if (overlay.windowed === true && screen === 'game') {
+        drawGameStage();
+        // ★ 模态 ATM 窗在浮窗**底下**：銀行暫停放款时 ATM 窗 `0x401` 铺完面板才 `PostMessage(0x408)`
+        //   弹「銀行暫停放款」訊息框（`0x00437123`）⇒ 框盖在 ATM 上。下面链尾那一句只在没有整屏接管时画 ATM。
+        if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
+      }
       overlay.draw(uiEnv());
     } else if (screen === 'title') {
       drawTitle(stageCtx, titleHot, spriteNow);
@@ -7098,7 +7103,7 @@ function requestRender(): void {
         if (loanUi.bubble !== null) drawLoanBubble(stageCtx, spriteNow, loanUi.bubble.text);
       }
     }
-    if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
+    if (atm !== null && overlay === null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
     if (bank !== null && atm === null && amountPage !== null) {
       // 填数页（`fcn_00453544`）是**另开一个窗口**盖在银行屏上的，所以这里
       // 单独把它画到舞台 —— 不能整块贴回棋盘画布（那样四周会透出地图）。
@@ -8411,7 +8416,11 @@ function bindInput(): void {
     if (atm !== null) {
       if (atmDragToClick(atmCode) !== null) {
         const q = eventToStage(e);
-        if (q !== null) atmSeekTo(q.x);
+        if (q !== null) {
+          // 原版把这次移动**重发成一次按下**（`loc_00437904` → `0x201`）⇒ 每次都走金额栏那一支、放一声 9
+          atmSound(4);
+          atmSeekTo(q.x);
+        }
       }
       return;
     }
@@ -9001,7 +9010,10 @@ function bindInput(): void {
     }
 
     // ── 銀行 ATM 面板（T-029a）──
+    // ★ 只认左键按下：ATM 窗 `fcn_00436ef8` 的分派只接 `0x201` / `0x203`（→ `loc_00437161`），
+    //   右键在**抬手**（`0x205` → `loc_0043791e` 关窗，走 `contextmenu` 那把梯子），按下时既不认钮也不放音
     if (atm !== null) {
+      if (e.button !== 0) return;
       const q = eventToStage(e);
       if (q === null) return;
       const btn = hitAtmButton(q.x, q.y);
@@ -9009,6 +9021,8 @@ function bindInput(): void {
       // 按下图（`[0x48c40b]` = 钮序号 + 1）@source loc_004371f9
       atmCode = btn + 1;
       atmCodeAt = performance.now();
+      // 按下那一声（模式钮 1、金额栏 9、其余 7）@source `0x00437397` 那段分发，见 `atmPressSound`
+      atmSound(atmCode);
       // 金额栏（序号 3）：按住就按位置换算金额，之后再拖动由 `mousemove` 接
       // @source loc_00437413
       if (btn === 3) {

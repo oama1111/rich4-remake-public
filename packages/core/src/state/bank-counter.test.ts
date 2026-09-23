@@ -24,20 +24,12 @@ function atCounter(over: Partial<GameState> = {}): GameState {
 }
 
 describe('★ 银行柜台 —— 先前有交互但没有对应的 action', () => {
-  it('存款：现金 → 存款', () => {
+  it('★ 貸款屏不收存款 / 提款（原版那扇窗的命中表 `0x4757f8` 只有 EXIT / 申請 / 償還 / 特別融資）', () => {
+    // 存提只在它前面那台 ATM 里办（`0x0041b396 call 0x4379c9`，本引擎 `pending.kind === 'atm'`，
+    // 见 bank-landing.test.ts）—— 第十三份试玩回报之后把柜台上这两条去掉了
     const s = atCounter();
-    const r = reduce(s, { type: 'bank', op: 'deposit', amount: 50_000 }, topo);
-    expect(r.players[0]!.cash).toBe(150_000);
-    expect(r.players[0]!.moneyInBank).toBe(150_000);
-    // 柜台还开着
-    expect(r.pending?.kind).toBe('bank');
-  });
-
-  it('取款：存款 → 现金，且取不出超过余额的钱', () => {
-    const s = atCounter();
-    const r = reduce(s, { type: 'bank', op: 'withdraw', amount: 999_999 }, topo);
-    expect(r.players[0]!.moneyInBank).toBe(0);
-    expect(r.players[0]!.cash).toBe(300_000);
+    expect(reduce(s, { type: 'bank', op: 'deposit', amount: 50_000 }, topo)).toBe(s);
+    expect(reduce(s, { type: 'bank', op: 'withdraw', amount: 50_000 }, topo)).toBe(s);
   });
 
   it('★ 借款进的是**存款**，不是现金', () => {
@@ -68,12 +60,12 @@ describe('★ 银行柜台 —— 先前有交互但没有对应的 action', () 
 
   it('不成交时状态原样返回，柜台不关', () => {
     const s = atCounter();
-    expect(reduce(s, { type: 'bank', op: 'deposit', amount: 0 }, topo)).toBe(s);
+    expect(reduce(s, { type: 'bank', op: 'borrow', amount: 0 }, topo)).toBe(s);
     expect(reduce(s, { type: 'bank', op: 'repay', amount: 1000 }, topo)).toBe(s); // 没欠款
   });
 
   it('不在柜台前时任何操作都无效', () => {
     const s = atCounter({ pending: null });
-    expect(reduce(s, { type: 'bank', op: 'deposit', amount: 1000 }, topo)).toBe(s);
+    expect(reduce(s, { type: 'bank', op: 'borrow', amount: 1000 }, topo)).toBe(s);
   });
 });

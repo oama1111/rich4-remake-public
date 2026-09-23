@@ -501,6 +501,10 @@ export function auctionNextBid(
 export function decidePending(state: GameState): Action | null {
   const p = state.pending;
   if (p === null) return null;
+  // ★ 落点那台 ATM（`landing`，phase = turnEnd）只给**恰好** who_plays == 1 的真人开；走到这里说明他开着窗
+  //   被托管了 —— 与路过那台同样替他关窗（模态窗返回 0 = 不办），core 随即换成貸款屏再由下面那支答。
+  //   不答的话调用方会发 `endTurn`，把 ATM 连同后面的貸款屏一起跳掉。
+  if (p.kind === 'atm') return { type: 'declineDecision' };
   if (p.kind === 'shop') {
     // ★ 优先把交通工具买到手：骰子从 1 变 3，是全局最划算的一笔。
     //   其次补放置类道具。都买不起就关门（由调用方发 declineDecision）。

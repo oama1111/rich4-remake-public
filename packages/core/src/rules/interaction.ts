@@ -101,8 +101,14 @@ export type PendingInteraction =
    *   真人 `who_plays == 1` 开 ATM 窗；电脑按 `cashRatio` 重分；拒絕往來期内只弹「銀行拒絕往來 還剩%d天！」）。
    *   窗是模态的：办完一笔（或右键取消）就关，走子接着走。
    * `phase` 保持 `moving`；`step` 见到它就不动，直到它被清掉。
+   *
+   * ★ 第十三份试玩回报 #2：**落在**銀行格上也是先开这台 ATM（`landing: true`），关掉之后才进貸款屏 ——
+   *   @source 落点分派 `0x0041b396 call 0x4379c9`（ATM 入口）→ `0x0041b39b cmp byte [0x46caf8],0 / jne`
+   *   （终局码非 0 就不往下）→ `0x0041b3af call 0x436668`（貸款屏入口）。
+   *   `landing` 缺省 = 路过（旧快照里的 `{ kind: 'atm' }` 照旧是路过那台）；落点那台 `phase` 是 `turnEnd`，
+   *   答掉（办一笔 / 关窗）之后 `pending` 换成 `kind: 'bank'`。
    */
-  | { kind: 'atm' }
+  | { kind: 'atm'; landing?: true }
   /**
    * 樂透：挑一个没被买走的号码。
    * @source 落点 VA 0x004315cc

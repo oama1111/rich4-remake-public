@@ -158,7 +158,9 @@ describe('★ 路过銀行', () => {
     const { state, topo } = beforeBank({ steps: 2, whoPlays: WHO_PLAYS_HUMAN, over: (p) => ({ ...p, daysRejectedByBank: 5 }) });
     const r = reduce(state, { type: 'step' }, topo);
     expect(r.pending).toBeNull();
-    expect(r.notices).toEqual([{ key: 'bank.rejected', args: [5], holdMs: 1000 }]);
+    // ★ 天数 = (+0x3b & 0x7f) + 1 @source `0x004379e6 and al,0x7f` / `0x004379ed inc eax` / `0x004379ee push eax`
+    //   （先前写成 `args: [5]` 是复述实现、漏了那个 `inc`；与状态栏 / 回合开始那五扇框同一口径）
+    expect(r.notices).toEqual([{ key: 'bank.rejected', args: [6], holdMs: 1000 }]);
     expect(r.players[0]!.cash).toBe(5000);
   });
 
