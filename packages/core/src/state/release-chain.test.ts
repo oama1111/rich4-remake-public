@@ -327,3 +327,89 @@ describe('★ 释放后的「走回棋盘」回合（第 84 条）', () => {
     expect(st.players[1]!.blocking.inPrison).toBe(0);
   });
 });
+
+/**
+ * ★★ 第十五份試玩回報（Charles，`wt16/20260923-212221194-manual-Charles.json`）：
+ * 「从监狱里出来那一步为什么没有踩到天使上身？」—— 那一局（地图 2）天使（槽 9）一直停在
+ * 監獄的**关押格**（节点 84，格值 0x1f42，静态禁放位没置）上，人走回棋盘时一动不动。
+ *
+ * 原版走回棋盘那一步与普通走子共用主循环的走子态：
+ * ```asm
+ * 0040dd40  mov  dword [0x48baf8], 1     ; `+0x15 & 0x30` 的人：剩余步数 1，直接进走子态
+ * 0040d950  call 0x40c05c                ; 走路例程（0x10 支：景观位 → 关押格）
+ * 0040d959  mov  byte [0x48bb00], 1      ; 走完 ⇒ 到格
+ * 0040d960  dec  dword [0x48baf8]        ; 1 → 0
+ * 0040d942  call 0x41b42d                ; ★ 落点处理：物件派发 0x41b800 → 神明 0x41b807
+ * 0041b816  cmp  dword [0x48baf8], 0     ;   停下来了 ⇒
+ * 0041b82d  call 0x40ead7                ;   附身（全程不看 0x10/0x30 标记）
+ * ```
+ */
+describe('★★ 走回棋盘那一步照样跑落点处理（`0x40d942 call 0x41b42d`）', () => {
+  /** 1 号刚被放出来、人还在景观位上，关押格上摆着 `slot`（1 基）那件物件 */
+  function onGate(kind: 'prison' | 'hospital', slot: number | null): { st: GameState; gateId: number } {
+    const { map, topo: t } = topo();
+    const field = kind === 'prison' ? 'inPrison' : 'inHospital';
+    const occ = kind === 'prison' ? 'prisonOccupancy' : 'hospitalOccupancy';
+    const released = reduce(pendingRelease(field, occ), { type: 'endTurn' }, t);
+    const gate = map.nodes.find((n) => n.type === (kind === 'prison' ? 0x1f42 : 0x1f41))!;
+    const land = map.landscapes[kind === 'prison' ? 1 : 0]!;
+    const st: GameState = {
+      ...released,
+      phase: 'turnStart',
+      currentPlayer: 1,
+      stepsRemaining: 0,
+      players: released.players.map((p, i) =>
+        i === 1 ? { ...p, nodeId: gate.id, xpos: land.x, ypos: land.y, godInfo: 0 } : p,
+      ),
+      // 关押格上只留这一件（别的都挪开，免得 `objectHandleAt` 拿到别的）
+      objects: released.objects.map((o, i) =>
+        i + 1 === slot
+          ? { ...o, nodeId: gate.id, attached: 0, state: 0 }
+          : o.nodeId === gate.id
+            ? { ...o, nodeId: 0 }
+            : o,
+      ),
+    };
+    return { st, gateId: gate.id };
+  }
+
+  run('★★ 天使（槽 9）在監獄关押格上 ⇒ 走回棋盘那一步附身', () => {
+    const { st, gateId } = onGate('prison', 9);
+    expect(st.objects[8]!.type).toBe(9);
+    const out = reduce(st, { type: 'startTurn' }, topo().topo);
+    // @source 0x0040ead7：god_info = 入参 handle；物件跟到人身上、attached = 玩家 + 1、state = 7
+    expect(out.players[1]!.godInfo).toBe(9);
+    expect(out.objects[8]).toMatchObject({ nodeId: gateId, attached: 2, state: 7 });
+    // 这一回合仍是「走回棋盘」：不掷骰、标记留给收尾（E-41）
+    expect(out.phase).toBe('turnEnd');
+    expect(out.players[1]!.whoPlays & WHO_PLAYS_RETURN_TO_BOARD).toBe(WHO_PLAYS_RETURN_TO_BOARD);
+  });
+
+  run('★ 醫院关押格同一条路（天使）', () => {
+    const { st } = onGate('hospital', 9);
+    const out = reduce(st, { type: 'startTurn' }, topo().topo);
+    expect(out.players[1]!.godInfo).toBe(9);
+    expect(out.phase).toBe('turnEnd');
+  });
+
+  run('★ 惡犬在关押格上 ⇒ 被咬回醫院，`send_to_hospital` 清掉 0x10 ⇒ 收尾照常换人', () => {
+    const { st } = onGate('prison', 11);
+    expect(st.objects[10]!.type).toBe(11);
+    const out = reduce(st, { type: 'startTurn' }, topo().topo);
+    // @source 0x0041b8e6 `push 3 / call send_to_hospital`；0x0043ecad `and byte [player+0x15], 0xf`
+    expect(out.players[1]!.blocking.inHospital).toBe(3);
+    expect(out.players[1]!.whoPlays & WHO_PLAYS_SPECIAL_MASK).toBe(0);
+    expect(out.phase).toBe('turnEnd');
+    const next = reduce(out, { type: 'endTurn' }, topo().topo);
+    expect(next.currentPlayer, '标记没了 ⇒ 0x418f07 那一支不走，游标照常推进').not.toBe(1);
+  });
+
+  run('★ 关押格上什么都没有 ⇒ 与先前完全一样（不动随机数、不附身）', () => {
+    const { st } = onGate('prison', null);
+    const out = reduce(st, { type: 'startTurn' }, topo().topo);
+    expect(out.players[1]!.godInfo).toBe(0);
+    expect(out.rngState).toBe(st.rngState);
+    expect(out.objects).toEqual(st.objects);
+    expect(out.phase).toBe('turnEnd');
+  });
+});

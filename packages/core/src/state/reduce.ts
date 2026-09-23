@@ -1455,7 +1455,30 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
             if (land !== undefined) p.direction = directionOf(gate.x - land.x, gate.y - land.y);
           }
         });
-        return { ...cleared, phase: 'turnEnd' };
+        // ★★ 第十五份試玩回報（「从监狱里出来那一步为什么没有踩到天使上身？」）：
+        //   走回棋盘那一步**照样跑落点处理** `fcn_0041b42d`（关押格上的神明 / 禮物 / 寶箱 / 惡犬…）。
+        // ```asm
+        // 0040dd37  test byte [player+0x15], 0x30 / je  ; 带 0x10/0x20 的人：
+        // 0040dd40  mov  dword [0x48baf8], 1            ;   剩余步数 = 1
+        // 0040dd4a  mov  byte  [回合记录+2], 1           ;   直接进走子态（不掷骰）
+        // ; 主循环 0x40d7c6 的走子态（跳表 0x40d7b4[1] = 0x40d8d3）：
+        // 0040d950  call 0x40c05c                       ; 走路例程（0x10 支：景观位 → 關押格）
+        // 0040d959  mov  byte [0x48bb00], 1             ;   走完这一格 ⇒ 置「到格」
+        // 0040d960  dec  dword [0x48baf8]               ;   剩余步数 1 → 0
+        // 0040d932  cmp  byte [0x48bb00], 0 / je        ; 下一轮：到格了 ⇒
+        // 0040d942  call 0x41b42d                       ;   ★ 落点处理（`[0x48baf8] == 0` = 停下来了）
+        // ; 0x41b42d 里物件派发 0x41b800 `jmp [种类−1 *4 + 0x41b3e5]`，神明那一支
+        // 0041b807  cmp edx(当前行动者), 4 / jge 跳过
+        // 0041b816  cmp dword [0x48baf8], 0 / jne 跳过
+        // 0041b82d  call 0x40ead7                       ;   ★ 附身 —— 全程不看 +0x15 的 0x10/0x30
+        // ```
+        //   ⇒ 与普通走子「停在这一格」同一条出口：本引擎就是 `applyArrival`（剩余步数 0）。
+        //   关押格本身（格值 0x1f41/0x1f42）不在地产 / 特殊格区间，别的落点结算一律不触发。
+        //   惡犬 / 地雷把人送进醫院时，`send_to_hospital` 自己 `and +0x15, 0xf`（`sendToConfinement`）
+        //   ⇒ 标记没了，收尾照常换人（与原版 `0x418f07` 同一判据）。
+        const landed = applyArrival({ ...cleared, stepsRemaining: 0 }, topo);
+        if (landed.phase === 'gameOver') return landed;
+        return { ...landed, phase: 'turnEnd' };
       }
 
       const result = evaluateTurnStart(player);
