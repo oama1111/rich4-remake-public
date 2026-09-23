@@ -75,7 +75,7 @@ import {
   SPEECH_EVENTS_PER_CHARACTER,
   speechIndex,
 } from '@rich4/data';
-import { cardLineBubbleOf, speechBubbleOf, toolLineBubbleOf, type SpeechBubble } from './speech-bubble.ts';
+import { cardAnswerBubbleOf, cardLineBubbleOf, speechBubbleOf, toolLineBubbleOf, type SpeechBubble } from './speech-bubble.ts';
 import type { SpeechOrder } from './stage-gate.ts';
 
 // ============================================================
@@ -531,6 +531,18 @@ export function detectMoneyGained(before: GameState, after: GameState): Detected
     if (event !== null) out.push({ player: g.player, event });
   }
   return out;
+}
+
+/**
+ * ★ 第十四份：「消失」那一刻当事人说的那一句（`fcn_0040d375` 的 `0x0040d3f8 call 0x44f2c2(玩家, 天数)`）——
+ * 命運 6/7 与航空旅遊共用；事件号由 core 交（4..6 天那一档的 `rand()&1` 在 core 掷）。
+ * 次序：台词在理賠框（`0x0040d425`）与飛機 / 飛碟影片（`0x0040d498`）之前 ⇒ 这里 `afterStage`
+ * 排在同一拍的收費框 / 事件框之后，理賠框等台词说完（`noticeAfterSpeech`），影片再等两者（`main.ts`）。
+ */
+export function detectDisappearSay(before: GameState, after: GameState): DetectedSay[] {
+  const say = after.lastDisappearSay ?? null;
+  if (say === null || say === (before.lastDisappearSay ?? null)) return [];
+  return [{ player: say.player, event: say.event }];
 }
 
 /**
@@ -1523,6 +1535,8 @@ export const DETECTORS: readonly SpeechDetector[] = [
   { name: 'noticeSay', source: [0x0041d6dd, 0x0041d7c1, 0x0044d028, 0x0044ce7e, 0x0044d873], order: 'afterStage', detect: detectNoticeSay },
   // ★ 第十四份：命運 9 / 10 / 11 / 32 施加后那一句
   { name: 'fortuneLine', source: [0x0044ca30, 0x0044cb41, 0x0044cc41, 0x0044d777], order: 'afterStage', detect: detectFortuneLine },
+  // ★ 第十四份：出國 / 綁架 / 航空旅遊那一句（`0x0040d3f8 call 0x44f2c2`）
+  { name: 'disappearSay', source: [0x0040d3f8, 0x0044f2c2], order: 'afterStage', detect: detectDisappearSay },
   // ★ W-55 行 7（G33）：小財神 `0x0040ecde` —— 神明台词窗 → 轉盤窗 → 收款 → **台词**
   //   ⇒ `afterStage`（§2.2 表）。排在收款那两条之后。
   { name: 'smallWealthLine', source: [0x0040eca4, 0x0040ecde], order: 'afterStage', detect: detectSmallWealthLine },
@@ -1765,7 +1779,14 @@ export function cardPlaySpeech(before: GameState, after: GameState): SpeechBubbl
   const b = p.blocking;
   if (b.disappearing !== 0 || b.sleepWalking !== 0 || b.sleeping !== 0) return [];
   const bubble = cardLineBubbleOf(play.player, p.character, characterName(p.character), play.cardId);
-  return bubble === null ? [] : [bubble];
+  const out = bubble === null ? [] : [bubble];
+  // ★ 第十四份：被动卡之后回一句（免費卡 → 地主 `0x00444b98`；嫁禍卡 → 替死鬼 `0x00444a4b`），紧跟出牌者那句
+  const ans = play.answeredBy === undefined ? undefined : after.players[play.answeredBy];
+  if (ans !== undefined) {
+    const a = cardAnswerBubbleOf(ans.index, ans.character, characterName(ans.character), play.cardId);
+    if (a !== null) out.push(a);
+  }
+  return out;
 }
 
 /**

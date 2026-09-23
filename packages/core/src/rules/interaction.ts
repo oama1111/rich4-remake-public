@@ -78,6 +78,18 @@ export type PendingInteraction =
    */
   | { kind: 'chooseBuildTarget'; commercialId: number; name: string; choices: readonly number[]; charge: boolean }
   /**
+   * ★ 第十四份（D-008 收口）：收費那一段问**真人**用不用免費卡（`fcn_00444a60` 真人支，
+   *   `0x00444a92 cmp byte [+0x15],1 / je 0x444ad8` → `0x00444af4 call 0x440ba8`，YES = 1 才用）。
+   *   `name` = 付款方名字（问句 `%s\n\n是否使用免費卡？` 的 `%s`）；`tail` = 答完接着走的那一段。
+   */
+  | { kind: 'freeCard'; name: string; tail: TollTailCtx }
+  /**
+   * ★ 第十四份（D-008 收口）：真人嫁禍卡 —— 候选 = 在场、不是自己（`0x004447bf` / `0x004447c8`，按下标序）。
+   *   恰好 1 位 ⇒ YES/NO「是否嫁禍給%s？」（`0x00444849`）；否则 ⇒ 选人窗（`0x004448a1 call 0x440e1a`）。
+   *   答 −1（NO / 右键）⇒ 不嫁禍、卡留着。
+   */
+  | { kind: 'scapegoat'; candidates: readonly number[]; names: readonly string[]; tail: TollTailCtx }
+  /**
    * 银行：存、取、借、还，外加董事長专属的特別融資。
    *
    * @source 落点 VA 0x00436668 —— 先查 `days_rejected_by_bank`，
@@ -448,7 +460,29 @@ export type InteractionResponse =
    */
   | { kind: 'birthdayCard'; seat: number; cardId: number }
   /** 魔法屋：真人点的效果号 0..11（`null` = 託管，电脑替他掷）*/
-  | { kind: 'magicHouse'; option: number | null };
+  | { kind: 'magicHouse'; option: number | null }
+  | { kind: 'freeCard'; use: boolean }
+  | { kind: 'scapegoat'; target: number };
+
+/**
+ * ★ 第十四份：收費那一段「神明调整之后、付钱之前」的被动卡尾巴走到哪了 —— 答完真人那一问好接着走。
+ *   三条路（住宅 `0x00419e01`、設施 `0x0041a648`、企業 `0x0041aed7`）同一个形状。
+ */
+export interface TollTailCtx {
+  route:
+    | { path: 'rent'; landId: number }
+    | { path: 'facility'; facilityId: number; hotelDays: number }
+    | { path: 'company'; commercialId: number; travelDays: number };
+  /** 当前玩家（问的人、免費卡 / 嫁禍卡的持有人）*/
+  payer: number;
+  /** 最后付钱的人（嫁禍 / 死神会换）*/
+  who: number;
+  /** 当前金额（神明调整之后；用了免費卡就是 0）*/
+  toll: number;
+  feeName: string;
+  /** 免費卡那一步已经走过 */
+  freeDone: boolean;
+}
 
 /** 答复与待决交互是否配套——防止 UI 送回驴唇不对马嘴的 action */
 export function responseMatches(
@@ -491,6 +525,10 @@ export function responseMatches(
       return response.kind === 'birthdayCard';
     case 'magicHouse':
       return response.kind === 'magicHouse';
+    case 'freeCard':
+      return response.kind === 'freeCard';
+    case 'scapegoat':
+      return response.kind === 'scapegoat';
     default:
       return false;
   }

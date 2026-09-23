@@ -306,6 +306,18 @@ export type Action =
    */
   | { type: 'birthdayCard'; seat: number; cardId: number }
   /**
+   * ★ 第十四份：真人答「是否使用免費卡？」（`pending.kind === 'freeCard'`）。NO / 右键 = `use: false`
+   *   （`declineDecision` 同义）。@source `0x00444afc cmp eax,1 / jne 不用`
+   *   `null` = 託管：按电脑那一支判（`0x00444a9b` 起的 `rand()` 走同一个发生器，与魔法屋 `option: null` 同一口径）。
+   */
+  | { type: 'answerFreeCard'; use: boolean | null }
+  /**
+   * ★ 第十四份：真人嫁禍给谁（`pending.kind === 'scapegoat'`）—— 玩家下标，−1 = 不嫁禍（卡留着）。
+   *   @source 一位候选 `0x00444851 cmp eax,esi`（YES）/ 多位 `0x004448a9 mov ebx,eax`（选人窗返回值）
+   *   `null` = 託管：按电脑那一支挑（`0x004448b0` 起，含它的亮牌与「嫁禍給%s！」那一扇）。
+   */
+  | { type: 'answerScapegoat'; target: number | null }
+  /**
    * 魔法屋（真人）：在女巫窗口里点定的**效果号**。
    *
    * @source `0x004338b7 mov esi, eax`（窗口返回值 = 点的格号 − 1）→ `0x004339c6 call 0x431caa`。

@@ -406,6 +406,16 @@ export interface CardPlayHint {
   player: number;
   /** 卡号 1..30（`@rich4/data` 的 `cardLine(character, card)` 用它取台词） */
   cardId: number;
+  /**
+   * ★ 第十四份：被动卡（免費卡 / 嫁禍卡）在收費那一段里用掉的 —— 亮牌已经作为訊息框队列里的一扇交出去
+   *   （`NoticeHint.card`，好排在收費框之后），这里 `false` = 事件框**不再**亮这一张，只说台词。
+   */
+  popup?: false;
+  /**
+   * ★ 第十四份：出牌者之后**回一句**的人 —— 免費卡是地主（`0x00444b98`，卡牌台词表槽 79，表情 1；
+   *   企業那一路地主实参 −1 ⇒ 不带），嫁禍卡是替死鬼（`0x00444a4b`，槽 78，表情 2）。
+   */
+  answeredBy?: number;
 }
 
 /** 魔法屋一段演出的前后状态（见 `GameState.lastMagicBeats`）*/
@@ -558,6 +568,11 @@ export interface NoticeHint {
    *     大財神把费用抹成 0 `0x0041d7c1`）。档位由表现层按 `payTierFor` 分。
    */
   say?: { player: number; event: number } | { player: number; reliefAmount: number };
+  /**
+   * ★ 第十四份：这一扇**不是**訊息框，而是亮牌（`fcn_00441f73(卡号, 文字)`：卡面 + 那一句，1500 ms）——
+   *   收費那一段里的被动卡要排在收費框之后、死神框之前，所以跟着訊息框排队。文字 = `key` 的格式串。
+   */
+  card?: number;
 }
 
 /**
@@ -707,7 +722,13 @@ export type NoticeKey =
   | 'god.tollPlusHalf'
   | 'god.tollDouble'
   /** ★ 第十四份：保險理賠（`fcn_0044ba63`，`0x4658fa`，**2000 ms**）—— `args[0]` = 理賠金额 */
-  | 'insurance.payout';
+  | 'insurance.payout'
+  /** ★ 第十四份：被动卡亮牌「使用%s」（带 `card`）—— `args[0]` = 卡名 */
+  | 'card.use'
+  /** ★ 第十四份：嫁禍卡亮牌「%s\n\n嫁禍卡生效！」（带 `card`）—— `args[0]` = 出牌者名 */
+  | 'card.scapegoatOn'
+  /** ★ 第十四份：电脑嫁禍之后「嫁禍給%s！」（`0x004449df`，1500 ms）—— `args[0]` = 替死鬼名 */
+  | 'card.scapegoatTo';
 
 /**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。
@@ -1247,6 +1268,13 @@ export interface GameState {
    * 金额 = 原版压给 `0x44f354` 的那个数；档位由表现层分（`gainEventFor`）。
    */
   lastGainSays?: readonly { player: number; amount: number }[] | null;
+
+  /**
+   * ★ 第十四份：**「消失」那一刻当事人说的那一句**（`fcn_0040d375` 的 `0x0040d3f8 call 0x44f2c2(玩家, 天数)`，
+   * 小额损失那一族 3/4/5；天数 4..6 那一档的 `rand()&1` 在 core 用同一个发生器掷）—— 纯表现，只活一条 action。
+   * 命運 6/7（出國 / 綁架）与航空公司的旅遊（`0x0041b05a`）共用。
+   */
+  lastDisappearSay?: { player: number; event: number } | null;
 
   /**
    * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。

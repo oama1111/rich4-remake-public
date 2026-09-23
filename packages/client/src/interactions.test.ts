@@ -192,3 +192,27 @@ describe('★ 銀行對話：四種 op 都在 choices 裡', () => {
     expect(ops).not.toContain('financeRepay');
   });
 });
+
+describe('★★ 第十四份（D-008 收口）：收費那一段真人的被动卡', () => {
+  const tail = { route: { path: 'rent' as const, landId: 1 }, payer: 0, who: 0, toll: 3000, feeName: '過路費', freeDone: false };
+  const st = makeGameState({ players: [makePlayer({ index: 0 }), makePlayer({ index: 1 })] });
+
+  it('免費卡：原版那一句（`0x465388`），YES / NO 各一个 action', () => {
+    const ui = interactionUi({ kind: 'freeCard', name: '沙隆巴斯', tail }, st)!;
+    expect(ui.detail).toBe('沙隆巴斯\n\n是否使用免費卡？');
+    expect(ui.choices.map((c) => c.action)).toEqual([
+      { type: 'answerFreeCard', use: true },
+      { type: 'answerFreeCard', use: false },
+    ]);
+  });
+
+  it('嫁禍卡：恰好一位 ⇒ YES/NO「是否嫁禍給%s？」；两位以上 ⇒ 不走对话框（选人窗）', () => {
+    const one = interactionUi({ kind: 'scapegoat', candidates: [1], names: ['忍太郎'], tail }, st)!;
+    expect(one.detail).toBe('是否嫁禍給忍太郎？');
+    expect(one.choices.map((c) => c.action)).toEqual([
+      { type: 'answerScapegoat', target: 1 },
+      { type: 'answerScapegoat', target: -1 },
+    ]);
+    expect(interactionUi({ kind: 'scapegoat', candidates: [1, 2], names: ['a', 'b'], tail }, st)).toBeNull();
+  });
+});

@@ -545,6 +545,10 @@ export function decidePending(state: GameState): Action | null {
   //   两个转盘都 rand() —— 走到这里的只会是**被託管的真人**（窗口已挂出）。
   //   `option: null` = 让 reducer 按电脑那一支掷效果（随机数不能进 AI）。
   if (p.kind === 'magicHouse') return { type: 'magicHouse', option: null };
+  // ★ 第十四份：收費那一段的被动卡 —— 走到这里的只会是**被託管的真人**（电脑那一支在 reducer 里当场判完）。
+  //   `null` = 让 reducer 按电脑那一支判（`aiUsesFreeCard` / `aiScapegoat`，随机数不能进 AI）。
+  if (p.kind === 'freeCard') return { type: 'answerFreeCard', use: null };
+  if (p.kind === 'scapegoat') return { type: 'answerScapegoat', target: null };
   // ★ 保釋：电脑玩家那条路在 reducer 里就掷完了（随机数不能进 AI），
   //   走到这里的只会是**被托管的真人**。按 `personality` 的精神保守处理：
   //   救得起同伴就救，不去放犯人。

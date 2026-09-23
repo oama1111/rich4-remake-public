@@ -3,8 +3,11 @@
  * 过路费的免收、免費卡/嫁禍卡自动使用、死神顯靈由他人賠償
  */
 import { describe, expect, it } from 'vitest';
+import { CHARACTERS } from '@rich4/data';
 import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce, type MapTopology } from '../state/reduce.ts';
+import { WHO_PLAYS_COMPUTER } from '../state/types.ts';
+import { decidePending } from '../ai/policy.ts';
 import { aiScapegoat, aiUsesFreeCard, reaperPayer, tollExemption, tollPassiveTail } from './toll-flow.ts';
 import { housingIndexOf } from './land.ts';
 
@@ -104,7 +107,8 @@ describe('★ 免費卡 / 嫁禍卡 自动使用', () => {
   });
 
   it('接到住宅落点：手里有免費卡且費 > 現金 → 免付、扣卡、lastToll 记 0', () => {
-    const s = onRivalLand({ payer: { cash: 100, moneyInBank: 0, cards: [20, 3] } });
+    // 付款方是**电脑**（真人那一支是问一句，见下面「D-008 收口」那一组）
+    const s = onRivalLand({ payer: { cash: 100, moneyInBank: 0, cards: [20, 3], whoPlays: WHO_PLAYS_COMPUTER } });
     const after = settle(s);
     expect(after.players[0]!.cash).toBe(100);
     expect(after.players[0]!.cards).toEqual([3]);
@@ -113,7 +117,7 @@ describe('★ 免費卡 / 嫁禍卡 自动使用', () => {
   });
 
   it('接到住宅落点：手里有嫁禍卡、費 > 現金、恨 2 号 → 2 号付，卡扣掉', () => {
-    const s = onRivalLand({ payer: { cash: 100, cards: [19], hostility: [0, 0, 9, 0] }, third: { cash: 9000 } });
+    const s = onRivalLand({ payer: { cash: 100, cards: [19], hostility: [0, 0, 9, 0], whoPlays: WHO_PLAYS_COMPUTER }, third: { cash: 9000 } });
     const after = settle(s);
     expect(after.players[0]!.cash).toBe(100);
     expect(after.players[0]!.cards).toEqual([]);
@@ -130,5 +134,112 @@ describe('★ 免費卡 / 嫁禍卡 自动使用', () => {
 describe('sanity', () => {
   it('地块节点映射', () => {
     expect(housingIndexOf(0x7d0 + LAND)).toBe(LAND);
+  });
+});
+
+// ============================================================
+//  ★★ 第十四份（D-008 收口）：真人那两问是待决交互 + 答复 action
+// ============================================================
+
+describe('★★ 真人：免費卡问一句（`fcn_00444a60` 真人支 `0x00444ad8`..`0x00444afe`）', () => {
+  const human = () => onRivalLand({ payer: { cash: 100, moneyInBank: 0, cards: [20, 3] } });
+
+  it('★ 落点那一拍停在 `freeCard`（问句 `%s` = 付款方名字）；钱一分没动', () => {
+    const after = settle(human());
+    expect(after.phase).toBe('awaitingDecision');
+    expect(after.pending?.kind).toBe('freeCard');
+    const p = after.pending as Extract<NonNullable<typeof after.pending>, { kind: 'freeCard' }>;
+    expect(p.name).toBe(CHARACTERS[after.players[0]!.character]!.name);
+    expect(after.players[0]!.cards).toEqual([20, 3]);
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payOneOwner']);
+  });
+
+  it('★★ 答 YES ⇒ 用卡、一分不付；亮牌那一扇排在收費框后面；出牌者说、地主回一句', () => {
+    const asked = settle(human());
+    const after = reduce(asked, { type: 'answerFreeCard', use: true }, topo);
+    expect(after.pending).toBeNull();
+    expect(after.phase).toBe('turnEnd');
+    expect(after.players[0]!.cards).toEqual([3]);
+    expect(after.players[0]!.cash).toBe(100);
+    // 这一条 action 自己弹的只有亮牌那一扇（收費框在问之前那一条已经弹过）
+    expect(after.notices.map((n) => n.key)).toEqual(['card.use']);
+    expect(after.notices[0]).toMatchObject({ card: 20, args: ['免費卡'] });
+    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, popup: false, answeredBy: 1 });
+  });
+
+  it('★ 答 NO / 右键（`declineDecision`）⇒ 卡留着、照付（付不起就破产）', () => {
+    for (const a of [{ type: 'answerFreeCard', use: false } as const, { type: 'declineDecision' } as const]) {
+      const after = reduce(settle(human()), a, topo);
+      expect(after.pending).toBeNull();
+      expect(after.notices.map((n) => n.key)).not.toContain('card.use');
+      // 現金 100 付 1200 ⇒ 破產出局（卡随破產清掉）
+      expect(after.players[0]!.whoPlays).toBe(0);
+    }
+    // 付得起的那种：卡留着、照付
+    const rich = onRivalLand({ payer: { cash: 100, moneyInBank: 0, cards: [20, 3] } });
+    const richer = { ...rich, landLevel: rich.landLevel.map((v, i) => (i === LAND ? 4 : v)) };
+    const asked = settle({ ...richer, players: richer.players.map((q, i) => (i === 0 ? { ...q, cash: 30_000 } : q)) });
+    expect(asked.pending?.kind).toBe('freeCard'); // 費 ≥ 2000 ⇒ 照样问
+    const paid = reduce(asked, { type: 'answerFreeCard', use: false }, topo);
+    expect(paid.players[0]!.cards).toEqual([20, 3]);
+    expect(paid.players[0]!.cash).toBe(30_000 - paid.landLastToll[LAND]!);
+  });
+
+  it('★ 託管（`use: null`）⇒ 按电脑那一支判（費 > 現金 ⇒ 用）', () => {
+    const after = reduce(settle(human()), { type: 'answerFreeCard', use: null }, topo);
+    expect(after.players[0]!.cards).toEqual([3]);
+  });
+
+  it('★ 门槛不够（費 1200 < 2000 且付得起）⇒ 根本不问', () => {
+    const after = settle(onRivalLand({ payer: { cards: [20] } }));
+    expect(after.pending).toBeNull();
+    expect(after.players[0]!.cards).toEqual([20]);
+  });
+});
+
+describe('★★ 真人：嫁禍卡（`fcn_0044476a` 真人支 `0x004447a1`..`0x004448ab`）', () => {
+  const human = () => onRivalLand({ payer: { cash: 100, cards: [19] }, third: { cash: 9000 } });
+
+  it('★★ 先亮牌「嫁禍卡生效！」再问；候选 = 在场、不是自己（按下标序）', () => {
+    const after = settle(human());
+    expect(after.pending?.kind).toBe('scapegoat');
+    const p = after.pending as Extract<NonNullable<typeof after.pending>, { kind: 'scapegoat' }>;
+    expect(p.candidates).toEqual([1, 2]);
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payOneOwner', 'card.scapegoatOn']);
+    expect(after.notices[1]).toMatchObject({ card: 19 });
+    expect(after.players[0]!.cards).toEqual([19]);
+  });
+
+  it('★★ 选 2 号 ⇒ 扣卡、2 号付；出牌者说、替死鬼回一句；真人这一支**没有**「嫁禍給%s！」那一扇', () => {
+    const asked = settle(human());
+    const after = reduce(asked, { type: 'answerScapegoat', target: 2 }, topo);
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.players[0]!.cash).toBe(100);
+    expect(after.players[2]!.cash).toBe(9000 - 1200);
+    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 19, popup: false, answeredBy: 2 });
+    // 这一条 action 什么框都不弹（亮牌在问之前那一条）—— `notices` 原样带过去（引用不变 = 不重弹）
+    expect(after.notices).toBe(asked.notices);
+  });
+
+  it('★ −1（NO / 右键）⇒ 卡留着、自己付；不在候选里的人 ⇒ 拒收', () => {
+    const asked = settle(human());
+    const after = reduce(asked, { type: 'answerScapegoat', target: -1 }, topo);
+    expect(after.pending).toBeNull();
+    expect(after.lastCardPlay).toBeNull();
+    expect(after.players[0]!.whoPlays).toBe(0); // 現金 100 自己付 1200 ⇒ 破產
+    expect(reduce(asked, { type: 'answerScapegoat', target: 0 }, topo)).toBe(asked);
+  });
+});
+
+describe('★★ 託管（服务器 AI 接管 / 超时）答这两问：`decidePending` 交 `null`，reducer 按电脑那一支判', () => {
+  it('免費卡 / 嫁禍卡都给 `null`', () => {
+    const asked = settle(onRivalLand({ payer: { cash: 100, moneyInBank: 0, cards: [20] } }));
+    expect(decidePending(asked)).toEqual({ type: 'answerFreeCard', use: null });
+    const asked2 = settle(onRivalLand({ payer: { cash: 100, cards: [19], hostility: [0, 0, 9, 0] }, third: { cash: 9000 } }));
+    expect(decidePending(asked2)).toEqual({ type: 'answerScapegoat', target: null });
+    // 电脑规则：恨 2 号 ⇒ 2 号付；託管那一支不再亮一遍牌，只弹「嫁禍給%s！」
+    const after = reduce(asked2, { type: 'answerScapegoat', target: null }, topo);
+    expect(after.players[2]!.cash).toBe(9000 - 1200);
+    expect(after.notices.map((n) => n.key)).toEqual(['card.scapegoatTo']);
   });
 });

@@ -54,6 +54,12 @@
 import {
   cardLine,
   cardLineVoice,
+  FREE_CARD_ANSWER_LINES,
+  FREE_CARD_ANSWER_SLOT,
+  freeCardAnswerVoice,
+  SCAPEGOAT_ANSWER_LINES,
+  SCAPEGOAT_ANSWER_SLOT,
+  scapegoatAnswerVoice,
   parseVoiceCode,
   toolLine,
   speechEmojiImage,
@@ -678,4 +684,37 @@ export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
     }
     ctx.restore();
   }
+}
+
+/**
+ * ★ 第十四份：被动卡用完之后**回的那一句** —— 卡牌台词表的另两槽：
+ *   - 免費卡（20）→ 地主说槽 79，表情 1（`0x00444b8e mov edi,[eax + 0x481376]` / `0x00444b95 push 1`）；
+ *   - 嫁禍卡（19）→ 替死鬼说槽 78，表情 2（`0x00444a41 mov edi,[eax + 0x481372]` / `0x00444a48 push 2`）。
+ *   其余卡没有这一句 ⇒ null。
+ */
+export function cardAnswerBubbleOf(
+  player: number,
+  character: number,
+  speaker: string,
+  cardId: number,
+): SpeechBubble | null {
+  const free = cardId === 20;
+  if (!free && cardId !== 19) return null;
+  const line = (free ? FREE_CARD_ANSWER_LINES : SCAPEGOAT_ANSWER_LINES)[character];
+  if (line === undefined) return null;
+  const [emojiCode, text] = line;
+  const isEmoji = emojiCode !== null;
+  return {
+    player,
+    character,
+    event: free ? FREE_CARD_ANSWER_SLOT : SCAPEGOAT_ANSWER_SLOT,
+    speaker,
+    expression: free ? 1 : 2,
+    lines: isEmoji ? [] : bubbleLines(text),
+    voice: free ? freeCardAnswerVoice(character) : scapegoatAnswerVoice(character),
+    emoji: isEmoji ? speechEmojiImage(emojiCode) : null,
+    textAt: SPEECH_TEXT_AT,
+    emojiAt: SPEECH_EMOJI_AT,
+    holdMs: SPEECH_HOLD_MS,
+  };
 }

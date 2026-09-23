@@ -121,6 +121,7 @@ import {
   cardUsePopupActive,
   dropOwnCardUse,
   eventBoxScreen,
+  startCardRevealPopup,
   onEventBoxArtReady,
   setEventBoxArchives,
   startOwnCardUsePopup,
@@ -353,6 +354,7 @@ import {
   noticeHoldsFilms,
   noticeKeyShowing,
   noticeWaitingForSpeech,
+  setNoticeCardPopup,
   setNoticeOverlayGate,
   setNoticeSpeechGate,
   setNoticeStartGate,
@@ -564,6 +566,7 @@ import {
 import { SCREENS } from './screens.ts';
 // ★ 只给「挪指针」那条判据用（`cursor-warp.ts` 的另外三处固定落点）
 import { facilityPickerScreen } from './facility-picker.ts';
+import { setScapegoatPickerGate } from './scapegoat-picker.ts';
 import { researchScreen } from './research-screen.ts';
 // ★ 只给 dev 钩子用（`__rich4.auctionView()`）：竞价轮转发生在 canvas 屏里，
 //   自动化看不见就没法验收「电脑跟不跟价、落槌演没演」。
@@ -1803,6 +1806,12 @@ function holdForActorWalk(reschedule: () => void): boolean {
   //   （原先这里是九个 `if` 各写一遍：纯演出整屏 / 走子补间 / 物件飞行 / 建屋片 /
   //     棋盘影片 / 两段影片之间的空档；现在一位不多、一位不少地收在一处。）
   if (stageBusy(stageBusyFlags())) {
+    reschedule();
+    return true;
+  }
+  // ★ 第十四份：飛機 / 飛碟那一段还押着（等台词 / 理賠框）—— 它不进 `stageBusy`
+  //   （否则押后的台词永远等它，而它又在等台词），回合驱动单独在这里等
+  if (pendingDisappearFx !== null) {
     reschedule();
     return true;
   }
@@ -5922,6 +5931,14 @@ setNoticeStartGate(
 setNoticeSpeechGate(() => speechQueue.length > 0 || deferredSpeech !== null);
 // ★ 第十四份：命運 / 新聞的施加阶段（加持框、理賠框…）排在事件提示框收掉之后
 setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
+// ★ 第十四份（D-008 收口）：嫁禍卡的选人窗 —— 与对话框同一道闸（`currentDialog`）：
+//   联机只让当前座位答、电脑 / 託管不开（它们由 `decidePending` / reducer 答）
+setScapegoatPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
+// ★ 第十四份：訊息框队列里的亮牌那一扇（收費那一段的被动卡）交给事件提示框播
+setNoticeCardPopup(
+  (cardId, text) => startCardRevealPopup(cardId, text, uiEnv()),
+  () => cardUsePopupActive(),
+);
 
 /**
  * 正在排队的角色台词（T-052 的屏幕那一半）。
@@ -6656,8 +6673,26 @@ function startDisappearFx(before: GameState, after: GameState): void {
   filmViews.set(spec.id, confineViewTargets(before, after).find((v) => v.kind === 'disappear') ?? null);
   // 影片窗口里棋盘按 before 画：人还站在那儿，被飛碟吸走 / 上飛機（`deferred-board.ts`）
   deferredBoardBefore = before;
-  startBoardFilm(spec);
-  log(`影片：${spec.id === 'abduct' ? '被外星人綁架（飛碟）' : '強迫出國觀光（飛機）'}`);
+  // ★★ 第十四份：`fcn_0040d375` 里是 台词（`0x0040d3f8`）→ 理賠框（`0x0040d425`）→ 影片（`0x0040d498`）
+  //   ⇒ 影片押到同一拍的台词说完、框收完再起（`tickPendingDisappearFx`）。
+  pendingDisappearFx = { spec, before };
+  requestRender();
+}
+
+/** ★ 第十四份：押着等台词 / 訊息框的那一段飛機 / 飛碟 */
+let pendingDisappearFx: { spec: BoardFilmSpec; before: GameState } | null = null;
+
+function tickPendingDisappearFx(): void {
+  const p = pendingDisappearFx;
+  if (p === null) return;
+  if (speechQueue.length > 0 || deferredSpeech !== null || blockingPresentation() || !renderer.walkDone()) {
+    requestRender();
+    return;
+  }
+  pendingDisappearFx = null;
+  deferredBoardBefore = p.before;
+  startBoardFilm(p.spec);
+  log(`影片：${p.spec.id === 'abduct' ? '被外星人綁架（飛碟）' : '強迫出國觀光（飛機）'}`);
 }
 
 /**
@@ -7142,6 +7177,8 @@ function requestRender(): void {
     if (screen === 'game') tickPendingCardRoute();
     // ★ 第十四份 #4：道具台词说完才开选择界面
     if (screen === 'game') tickPendingToolPicker();
+    // ★ 第十四份：飛機 / 飛碟那一段等台词与理賠框（`0x40d375` 里台词 → 理賠 → 影片）
+    if (screen === 'game') tickPendingDisappearFx();
     if (screen === 'game') tickObjectFlight(performance.now());
     // ★ 第十四份 #5：機器娃娃等台词说完才上路
     if (screen === 'game') tickDollRelease();

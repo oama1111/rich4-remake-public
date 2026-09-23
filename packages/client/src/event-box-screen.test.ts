@@ -69,6 +69,8 @@ import {
   newsTitle,
   newsView,
   resetEventBoxScreen,
+  startCardRevealPopup,
+  cardUsePopupActive,
   type EventBoxItem,
   type EventBoxPlan,
 } from './event-box-screen.ts';
@@ -1353,5 +1355,26 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
     resetEventBoxScreen();
     const s = stateOf([player(0, [])], null);
     expect(eventBoxScreen.fastForward!(fakeEnv(s))).toBe(false);
+  });
+});
+
+describe('★★ 第十四份：收費那一段的被动卡亮牌挂在訊息框队列上', () => {
+  it('`lastCardPlay.popup === false` ⇒ 本屏不亮（已经排在訊息框里）', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], null);
+    const after: GameState = { ...before, lastCardPlay: { player: 0, cardId: 20, popup: false, answeredBy: 1 } };
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(false);
+  });
+
+  it('訊息框那边轮到亮牌那一扇 ⇒ `startCardRevealPopup` 起播卡面 + 那一句', () => {
+    resetEventBoxScreen();
+    const s0 = stateOf([player(0, [])], null);
+    startCardRevealPopup(19, '沙隆巴斯\n\n嫁禍卡生效！', fakeEnv(s0, 5));
+    const pb = eventBoxScreenState().playback!;
+    expect(pb.plan.kind).toBe('card');
+    expect(pb.plan.id).toBe(19);
+    expect(cardUsePopupActive()).toBe(true);
+    resetEventBoxScreen();
   });
 });

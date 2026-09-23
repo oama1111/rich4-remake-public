@@ -1066,6 +1066,18 @@ export function resetEventBoxScreen(): void {
 }
 
 /**
+ * ★ 第十四份：訊息框队列里的**亮牌**那一扇（`NoticeHint.card`）由这里起播 —— 与用卡那一次同一扇
+ *   （`fcn_00441f73(卡号, 文字)`：卡面 + 那一句 + 音效），文字由訊息框那边按格式串排好交进来。
+ *   收費那一段的被动卡要排在收費框之后、死神框之前，所以挂在訊息框的队列上（见 `notice-box-screen.ts`）。
+ */
+export function startCardRevealPopup(cardId: number, text: string, env: UiScreenEnv): void {
+  playback = eventBoxPlaybackStart(eventBoxPlan({ ...cardUseView(cardId), cardName: text }), env.now);
+  env.playEffect(CARD_REVEAL_SOUND);
+  env.log(`事件提示框：亮牌 #${cardId}（${text.replace(/\n/g, ' ')}）`);
+  env.requestRender();
+}
+
+/**
  * 本机真人在卡片欄选定一张卡 ⇒ **当场**亮牌（`fcn_00441f73(卡号, "使用%s")`，
  * 真人那一支 `0x00441cbc`，在卡片函数 `0x00441cc6` 之前）。
  * 同时记下「这一张已经亮过」，免得 `useCard` 落地时再亮一遍。
@@ -1309,6 +1321,8 @@ export const eventBoxScreen: UiScreen = {
       ) {
         return;
       }
+      // ★ 第十四份：收費那一段的被动卡 —— 亮牌已经挂在訊息框队列里（`NoticeHint.card`），这里不亮第二遍
+      if (play.popup === false) return;
       playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(play.cardId)), env.now);
       env.playEffect(CARD_REVEAL_SOUND);
       env.log(`事件提示框：使用卡片 #${play.cardId}（P${play.player + 1}）`);
