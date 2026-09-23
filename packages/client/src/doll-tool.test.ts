@@ -377,3 +377,48 @@ describe('★ 端到端：`draw()` 里娃娃那一趟真的画得出来（需求
     expect(src).not.toContain('input.animation');
   });
 });
+
+describe('★★ 第十四份 #5：娃娃等用道具那句台词说完才上路（`holdActorWalk` / `releaseActorWalks`）', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('押着期间一帧都不画娃娃、补间算「没走完」；放开那一刻从头走（@source 0x00446b2e 台词在上路之前）', async () => {
+    let clock = 1000;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const path = [1, 2, 3];
+    const state = afterDollWalk(path);
+    const map = lineMap(3);
+    const { ctx, images, clear } = recordingCtx();
+    const renderer = new BoardRenderer(ctx, fakeCache());
+    const input = { map, state, camera: CAM, hoverNode: null, viewport: { w: 440, h: 440 }, actorWalks: state.lastNpcWalks, tickMs: 20 };
+    const dollDraws = (): number => images.filter((i) => i.bitmap.res === 0x20a).length;
+    const slot = ACTOR_DOLL - 4;
+
+    renderer.holdActorWalk(slot);
+    renderer.draw(input);
+    await new Promise((r) => setTimeout(r, 0));
+    const total = actorWalkTotalMs(actorWalkSteps(path, map.nodes, 20));
+    // 押了整整一趟那么久：还是一帧都不画、也没走完
+    clock = 1000 + total * 2;
+    clear();
+    renderer.draw(input);
+    expect(dollDraws()).toBe(0);
+    expect(renderer.actorWalkHeld(slot)).toBe(true);
+    expect(renderer.walkDone(clock)).toBe(false);
+
+    // 放开：从这一刻起完整走一趟
+    expect(renderer.releaseActorWalks(clock)).toBe(1);
+    expect(renderer.actorWalkRemainingMs(clock)).toBe(total);
+    clock += 5;
+    renderer.draw(input); // 精灵这时才第一次要（押着时没画过）—— 解码是异步的
+    await new Promise((r) => setTimeout(r, 0));
+    clear();
+    renderer.draw(input);
+    expect(dollDraws()).toBe(1);
+    clock += total;
+    clear();
+    renderer.draw(input);
+    expect(dollDraws()).toBe(0);
+  });
+});

@@ -31,7 +31,9 @@ import {
   noticePlaybackTick,
   noticeText,
   noticeUi,
+  noticeWaitingForSpeech,
   resetNoticeBoxScreen,
+  setNoticeOverlayGate,
   setNoticeSpeechGate,
   setNoticeStartGate,
 } from './notice-box-screen.ts';
@@ -719,5 +721,63 @@ describe('★ 第十三份試玩回報 #1：`noticeKeyShowing` —— 顯靈框�
     expect(noticeKeyShowing('god.build')).toBe(true); // 正在弹
     noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS * 2));
     expect(noticeKeyShowing('god.build')).toBe(false);
+  });
+});
+
+// ============================================================
+//  ★★ 第十四份（需求方拍板照原版）：加持框 / 过路费神明框 / 理賠框
+// ============================================================
+
+describe('★★ 第十四份：新接的几扇框', () => {
+  afterEach(() => {
+    setNoticeSpeechGate(null);
+    setNoticeOverlayGate(null);
+    resetNoticeBoxScreen();
+  });
+
+  it('文案逐字（`%s` = 神明名 / 費名，`%d` = 理賠金）', () => {
+    expect(noticeText({ key: 'blessing.penaltyVoid', args: ['小財神'] })).toBe('小財神保佑\n\n免付罰金！');
+    expect(noticeText({ key: 'blessing.misfortuneDouble', args: ['大衰神'] })).toBe('大衰神作祟\n\n倒霉加倍！');
+    expect(noticeText({ key: 'god.tollFree', args: ['過路費'] })).toBe('大財神顯靈\n\n免付過路費！');
+    expect(noticeText({ key: 'god.tollPlusHalf', args: ['過路費'] })).toBe('小窮神顯靈\n\n過路費加付50％！');
+    expect(noticeText({ key: 'insurance.payout', args: [5000] })).toBe('保險期間\n\n得到理賠金\n\n5000元');
+  });
+
+  it('★ 理賠框排在台词之后（六个调用点都是台词在前、`0x44ba63` 在后）', () => {
+    expect(noticeAfterSpeech('insurance.payout')).toBe(true);
+    expect(noticeAfterSpeech('blessing.penaltyVoid')).toBe(false);
+    expect(noticeAfterSpeech('god.tollFree')).toBe(false);
+  });
+
+  it('★★ 只剩一扇等台词的框 ⇒ `noticeWaitingForSpeech` 为真（宿主据此不把它算成台上在演，免得与押后的台词互等）', () => {
+    let speaking = true;
+    setNoticeSpeechGate(() => speaking);
+    const before = stateWith([]);
+    const after = stateWith([{ key: 'insurance.payout' as const, args: [5000], holdMs: 2000 }]);
+    const env = fakeEnv(after, 7);
+    noticeBoxScreen.event!(before, after, env);
+    expect(noticeWaitingForSpeech()).toBe(true);
+    speaking = false;
+    expect(noticeWaitingForSpeech()).toBe(false);
+    noticeBoxScreen.tick!(env);
+    expect(noticeBoxScreenState().playing).toBe(true);
+    expect(noticeBoxScreenState().playback?.text).toContain('5000元');
+  });
+
+  it('★★ 事件提示框还在 ⇒ 连「排在影片之前」的加持框也押着（施加阶段在事件框收掉之后）', () => {
+    let eventBox = true;
+    setNoticeOverlayGate(() => eventBox);
+    const before = stateWith([]);
+    const after = stateWith([{ key: 'blessing.misfortuneVoid' as const, args: ['天使'], beforeFilms: true }]);
+    const env = fakeEnv(after, 7);
+    noticeBoxScreen.event!(before, after, env);
+    expect(noticeBoxScreenState().playing).toBe(false);
+    noticeBoxScreen.tick!(env);
+    expect(noticeBoxScreenState().playing).toBe(false);
+    eventBox = false;
+    noticeBoxScreen.tick!(fakeEnv(after, 5000));
+    expect(noticeBoxScreenState().playing).toBe(true);
+    // 计时从起播那一刻算，不是入队那一刻（否则一出来就过期）
+    expect(noticeBoxScreenState().playback).not.toBeNull();
   });
 });

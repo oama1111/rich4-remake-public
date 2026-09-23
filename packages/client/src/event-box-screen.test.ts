@@ -756,12 +756,30 @@ describe('★ event 钩子：lastEvent 变了 / 手牌变长', () => {
     resetEventBoxScreen();
   });
 
-  it('★ `lastEvent` 没变（同一 kind/id）→ 一次都不起播', () => {
+  it('★ `lastEvent` 没变（**同一个引用** —— 别的 action 原样带过去的）→ 一次都不起播', () => {
     resetEventBoxScreen();
     const before = stateOf([player(0, [])], { kind: 'news', id: 3 });
-    const after = stateOf([player(0, [])], { kind: 'news', id: 3 });
+    const after = { ...before, players: [...before.players] };
     eventBoxScreen.event!(before, after, fakeEnv(after));
     expect(eventBoxScreenState().playing).toBe(false);
+  });
+
+  it('★★ 第十四份：连着两次抽到**同一张**（core 新建了一份 `lastEvent`）⇒ 照样起播', () => {
+    // 先前按 kind/id 比，第二次付保險金的框不出来（浏览器实测：强抽两次命運 30）
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], { kind: 'fortune', id: 30 });
+    const after = stateOf([player(0, [])], { kind: 'fortune', id: 30 });
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playback?.plan.kind).toBe('fortune');
+    expect(eventBoxScreenState().playback?.plan.id).toBe(30);
+    resetEventBoxScreen();
+  });
+
+  it('★★ 第十四份：真的 reduce 两次抽同一张 ⇒ 两个不同的 `lastEvent`；中间无关的 action 不换引用', () => {
+    const src = readFileSync(new URL('../../core/src/state/reduce.ts', import.meta.url), 'utf8');
+    // 命運 / 新聞的 `lastEvent` 只在抽牌那两处新建（其余都是 `{...state}` 带过去）
+    const sites = [...src.matchAll(/lastEvent: \{\s*kind: '(fortune|news)'/g)].length;
+    expect(sites).toBe(2);
   });
 
   it('★ 抽卡：手牌变长 → 起播，卡名对得上', () => {

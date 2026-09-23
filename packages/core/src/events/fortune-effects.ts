@@ -15,7 +15,7 @@
  * 金额一律是 `物价指数 × factor`，系数见 `@rich4/data` 的 FORTUNE_EVENTS。
  */
 
-import type { Player } from '../state/types.ts';
+import type { NoticeHint, NoticeKey, Player } from '../state/types.ts';
 import type { MapNode, LandscapeInfo } from '../loaders/map.ts';
 import type { MapObject } from '../cards/summon.ts';
 import { isAiControlled, isAlive } from '../state/types.ts';
@@ -45,6 +45,91 @@ import { secondaryJudgement } from './news-effects.ts';
  * 故这里自己声明一个更宽的（避免为了一个 `next()` 去改共享类型）。
  */
 type EventRng = { below(n: number): number; next(): number };
+
+/**
+ * 命運「付錢」那一族：施加阶段都落到同一条尾巴 `0x0044cec2`：
+ * ```asm
+ * 0044cec2  call 0x41d2c6            ; pay_money(当前玩家, -1, [0x48c5b4], 0) —— 进公库
+ * 0044ced1  cmp byte [cur+0x15], 0 / je 收尾     ; 付完破產出局 ⇒ 后两步都跳过
+ * 0044cede  cmp byte [0x46caf8], 0 / jne 收尾    ; 终局码非 0 ⇒ 同上
+ * 0044cef9  call 0x44f42d            ; ★ 付錢台词 9/10/11（`player_say`）
+ * 0044cf11  call 0x44ba63            ; ★ 保險理賠（保險期内赔回同一笔）
+ * ```
+ *
+ * @source 各事件的施加入口（`[esp+0x94] != 0` 那一跳），`python3 tools/disasm.py va <入口> 16`：
+ *   - 14 `0x0044cdab jne 0x44ce35` → `0x0044ce5d jne 0x44ce8b` → 顺落 `0x0044cec2`；
+ *   - 15 `0x0044cf55` / 16 `0x0044d0a4` `jne 0x44cfdf` → `0x0044d007 jne 0x44d032`
+ *     → `0x0044d057 … 0x0044d068 jmp 0x44cec2`；
+ *   - 17 `0x0044d0e8` / 18 `0x0044d1b7` / 19 `0x0044d1f2` / 23 `0x0044d430` /
+ *     24 `0x0044d474` / 26 `0x0044d4f9` / 30 `0x0044d606` `jne 0x44d172`
+ *     → `0x0044d19a jne 0x44ce8b` → 顺落 `0x0044cec2`。
+ *   神明加持返回 1（免付罰金）那一支（`0x0044ce5f` / `0x0044d009`）不付钱、改调 `0x44f567`，
+ *   不在这条尾巴上。
+ *
+ * ★★ 第十四份試玩回報 #1 查出来的：先前 Q-INS-1 只把 `0x0044cf11` 记成「行人闖越馬路罰款（14）」
+ *   一条的理赔，**漏了**另外 9 条也经过同一处 —— 保險期内抽到「付保險金 / 亂丟垃圾 / 遺失錢包…」
+ *   原版同样赔回来。
+ */
+export const FORTUNE_PAY_TAIL_IDS: ReadonlySet<number> = new Set([14, 15, 16, 17, 18, 19, 23, 24, 26, 30]);
+
+/** 命運 2「人頭被盜用冒貸」—— 施加完 `0x0044c218 call 0x44ba63`（保險理賠），**没有**台词 */
+export const FORTUNE_FAKE_LOAN_ID = 2;
+
+/**
+ * ★ 第十四份：命運「進帳」那一族：施加阶段都落到 `0x0044d2a9`（`fcn_0044b896(0,0)` 獎金域）——
+ *   返回 1 ⇒ 弹「獎金作廢」框、`0x0044d2e5 jmp 0x44d3d1` 一分不给；否则（2 则先 ×2，`0x0044d309`）
+ *   `0x0044d31f call 0x41d3f4` 进现金 → **`0x0044d334 call 0x44f354`**（進帳台词 6/7/8）。
+ * @source 各自的施加入口 `jne 0x44d2a9`：20 `0x0044d235` / 21 `0x0044d34c` / 22 `0x0044d3ec` /
+ *   25 `0x0044d4b7` / 27 `0x0044d53c` / 28 `0x0044d57f` / 29 `0x0044d5c2` / 31 `0x0044d647`。
+ */
+export const FORTUNE_GIVE_TAIL_IDS: ReadonlySet<number> = new Set([20, 21, 22, 25, 27, 28, 29, 31]);
+
+/**
+ * ★ 第十四份：神明加持返回 **2** 时**也弹框**的那几条（其余几条的调用方只在返回 1 时弹）。
+ *
+ * @source 逐个调用方（`python3 tools/disasm.py va <地址> 40`）：
+ *   - 弹：2 `0x0044c1cb`、6 `0x0044c6a3`、7 `0x0044c7b5`、12/13 `0x0044cd1f`（13 是跳板进 12）、
+ *     14 `0x0044ce95`、15/16 `0x0044d03c`、17/18/19/23/24/26/30 `0x0044ce95`（经 `0x44d172`）、
+ *     20/21/22/25/27/28/29/31 `0x0044d2f4`、33..36 `0x0044d887`（34..36 是跳板进 33）；
+ *   - 不弹（调用方只 `cmp eax,1`）：3 `0x0044c28d`、8 `0x0044c881`、9 `0x0044c997`、
+ *     10 `0x0044cab0`、11 `0x0044cbcb`、32 `0x0044d6ef`。
+ *   返回 1 时**每一条**都弹。
+ */
+const BLESSING_DOUBLE_NOTICE_SILENT: ReadonlySet<number> = new Set([3, 8, 9, 10, 11, 32]);
+
+/** 命運坐牢那一族（33 与跳板 34/35/36）：被神明挡掉时说事件 0 @source `0x0044d862 mov ecx,[… + 0x48084a]` / `0x0044d873` */
+const FORTUNE_PRISON_IDS: ReadonlySet<number> = new Set([33, 34, 35, 36]);
+
+/**
+ * ★ 第十四份：命運施加阶段那一扇**神明加持**框（`fcn_0044b896` 写 `[0x48c5b8]`，调用方 `0x440cac(…, 0x5dc)`）。
+ *   不弹返回 null。`say` 是框之后紧跟的那一句：
+ *   - 罰款尾巴那一族免付（返回 1）⇒ `0x0044ce7e` / `0x0044d028 call 0x44f567(当前玩家, 原额)`（12/13/14）；
+ *   - 坐牢那一族逃过（返回 1）⇒ `0x0044d873 player_say(当前玩家, 0, 事件 0)`。
+ *   `godName` = `[0x47ed76 + god_info*4]`。
+ */
+export function fortuneBlessingNotice(
+  id: number,
+  kind: 'reward' | 'penalty' | 'misfortune',
+  level: number,
+  godName: string,
+  player: number,
+  baseAmount: number,
+): NoticeHint | null {
+  if (level !== BLESSING_VOID && level !== BLESSING_DOUBLE) return null;
+  if (level === BLESSING_DOUBLE && BLESSING_DOUBLE_NOTICE_SILENT.has(id)) return null;
+  const voided = level === BLESSING_VOID;
+  const key: NoticeKey =
+    kind === 'reward'
+      ? voided ? 'blessing.rewardVoid' : 'blessing.rewardDouble'
+      : kind === 'penalty'
+        ? voided ? 'blessing.penaltyVoid' : 'blessing.penaltyDouble'
+        : voided ? 'blessing.misfortuneVoid' : 'blessing.misfortuneDouble';
+  // ★ 框在影片（入獄 / 住院）之前：`0x0044d88c call 0x440cac` 之后才 `0x441210` → `send_to_prison`
+  const notice: NoticeHint = { key, args: [godName], beforeFilms: true };
+  if (voided && FORTUNE_PAY_TAIL_IDS.has(id)) return { ...notice, say: { player, reliefAmount: baseAmount } };
+  if (voided && FORTUNE_PRISON_IDS.has(id)) return { ...notice, say: { player, event: 0 } };
+  return notice;
+}
 
 /**
  * 金额倍率档位 —— 转发 `rules/blessing.ts` 的定义。
