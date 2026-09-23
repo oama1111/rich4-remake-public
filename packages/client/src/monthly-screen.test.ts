@@ -37,6 +37,7 @@ import {
   MONTHLY_DETAIL_LABELS,
   MONTHLY_DETAIL_ROWS,
   MONTHLY_INTRO,
+  MONTHLY_FAREWELL,
   MONTHLY_FAREWELL_BOX,
   MONTHLY_TROPHY_PLATE,
   MONTHLY_FAREWELL_TICKS,
@@ -1466,6 +1467,19 @@ describe('★ 頒獎屏那两张 4 行表底下那块锦缎板（图 2 @ (440,40
     expect(boxOf({ ...base, closing: true })).toBe(0);
     // 最后那一拍（0x13/0x16）才画
     expect(boxOf({ ...base, closing: true, farewell: true, farewellTicks: 0xa })).toBe(1);
+    // ★ 2026-09-23：字心照 `fcn_0044ecb6` —— 左上角 + (宽>>1, 高>>1) + (textX, textY)（假图 66×72、锚点 0）
+    {
+      const { ctx, texts } = fakeCanvas();
+      drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award,
+        { ...base, closing: true, farewell: true, farewellTicks: 0xa });
+      const lines = MONTHLY_FAREWELL.split('\n');
+      const got = texts.filter((t) => lines.includes(t.text) && t.align === 'center');
+      const cx = MONTHLY_FAREWELL_BOX.x + 33 + MONTHLY_FAREWELL_BOX.textX;
+      const cy = MONTHLY_FAREWELL_BOX.y + 36 + MONTHLY_FAREWELL_BOX.textY;
+      // 正文那一遍（无阴影 ⇒ 每行一笔），两行关于字心对称
+      expect(got.map((t) => t.x)).toEqual([cx, cx]);
+      expect(got[0]!.y + got[1]!.y).toBe(2 * cy);
+    }
     // 动画关那条捷径（`skipTicks > 0`）两拍都不画
     expect(boxOf({ ...base, closing: true, skipTicks: MONTHLY_SKIP_TICKS })).toBe(0);
     expect(

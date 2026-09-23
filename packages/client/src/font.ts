@@ -150,3 +150,16 @@ export function drawGdiText(
  *   設施选择 0x00440ac2、嫁禍选人 0x00440f10、研究所 0x004410fd、亮牌 0x00441fa1（八处逐字节同参）
  */
 export const BOX_TEXT_STYLE: GdiTextStyle = { size: 0x10, color: '#f0f0f0', color2: '#101010', flags: 3, spacing: 1 };
+
+/**
+ * 各屏柜台人员 / 主持人的字框（`fcn_0044ec30` 开框 + `fcn_0044ecb6` 写字）那一句 `create_font`：
+ * @source `0x0044ed4d mov ebx, [0x48c628]`（开框第 7 参 = 第二色）→ `test ebx, ebx` →
+ *   非 0：`push 1 / push 3`（粗体 + 阴影）；为 0：`0x0044ed65 push 1 / push 2`（**只粗体**）→ `push 0x14` → `call 0x44f9d8`。
+ *   正文色 = 开框第 6 参（`[0x48c61c]`）。19 处开框里只有魔法屋（`0x00432575 push 0x202020 / push 0xe0e0e0`）
+ *   带第二色，其余全是 `push 0 / push 0x101010` ⇒ 20 号深色粗体、无阴影。
+ */
+export function clerkTextStyle(color = '#101010', color2: string | null = null): GdiTextStyle {
+  return color2 === null
+    ? { size: 0x14, color, color2: '#000000', flags: 2, spacing: 1 }
+    : { size: 0x14, color, color2, flags: 3, spacing: 1 };
+}

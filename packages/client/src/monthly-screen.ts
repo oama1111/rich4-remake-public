@@ -128,7 +128,7 @@ import {
 import { CHARACTERS } from '@rich4/data';
 import type { ArchiveName, LoadedFlic, Sprite } from './assets.ts';
 import { currency } from './panel.ts';
-import { FONT_FAMILY } from './font.ts';
+import { FONT_FAMILY, clerkTextStyle, drawGdiText } from './font.ts';
 import type { UiKeyEvent, UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
@@ -677,10 +677,10 @@ export const MONTHLY_TABLE_PLATE = { chunk: 2, x: 0x1b8, y: 0x195 } as const;
  * 訊息框三连 —— `fcn_0044ec30(image, x, y, textX, textY, color, ?)` 开框 +
  * `fcn_0044ecb6(文字)` 写字（VA 0x0044ec30 / 0x0044ecb6）。
  *
- * ★ `(x,y)` 是**框心**：原版用图头里的 `offX/offY` 反推左上角
+ * ★ `(x,y)` 是**开框点**：原版用图头里的 `offX/offY` 反推左上角
  *   （`sx = x − offX / sy = y − offY`），在本引擎里就是 sprite 的锚点 ⇒
  *   `drawAnchored(sprite, x, y)` 与它逐像素等价。
- * 文字画在**框心 + (textX,textY)**，正中。
+ * 文字画在**左上角 + (宽/2, 高/2) + (textX,textY)**，正中（`fcn_0044ecb6` 0x0044ed7d..0x0044eda0）。
  *
  * | 框 | 图 | 框心 | 文字偏移 | @source |
  * |---|---|---|---|---|
@@ -1468,12 +1468,27 @@ function drawMonthlyBox(
   box: { chunk: number; x: number; y: number; textX: number; textY: number },
   text: string,
 ): void {
-  drawAnchored(ctx, monthlySprite(sprite, box.chunk), box.x, box.y);
-  const lines = text.split('\n');
-  const lineH = MONTHLY_FONT_SIZE + 6;
-  const cy = box.y + box.textY - MONTHLY_FONT_SIZE / 2 - ((lines.length - 1) * lineH) / 2;
+  const img = monthlySprite(sprite, box.chunk);
+  drawAnchored(ctx, img, box.x, box.y);
+  // ★ 2026-09-23 订正（框模板反查）：字心照 `fcn_0044ecb6` —— `x0 + (宽 >> 1) + dx`、`y0 + (高 >> 1) + dy`，
+  //   `x0 / y0` = 开框点减图头锚点（`0x0044ec61..0x0044ec7b`；这三张锚点都是 (0,0) ⇒ 就是开框点）。
+  //   先前把 (x,y) 当成框心，字落在框的左上角；字效也照 `create_font(0x14, 0x101010, 0, 2, 1)`
+  //   （`0x0044ed65`）改成 20 号深色粗体（先前是 18 号白字黑边）。
+  //   图还没到货时按素材表尺寸兜底（Panel#25 图 1 = 290×201、图 3 = 239×193、图 4 = 195×142，锚点均 0）。
+  const fallback: Readonly<Record<number, { w: number; h: number }>> = { 1: { w: 290, h: 201 }, 3: { w: 239, h: 193 }, 4: { w: 195, h: 142 } };
+  const w = img?.width ?? fallback[box.chunk]?.w ?? 0;
+  const h = img?.height ?? fallback[box.chunk]?.h ?? 0;
+  const x0 = box.x - (img?.anchorX ?? 0);
+  const y0 = box.y - (img?.anchorY ?? 0);
+  const cx = x0 + (w >> 1) + box.textX;
+  const cy = y0 + (h >> 1) + box.textY;
+  const lines = text.split('\n').filter((l) => l !== '');
+  const style = clerkTextStyle();
+  const lineH = style.size + 6;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
   lines.forEach((line, i) => {
-    monthlyText(ctx, line, box.x + box.textX, cy + i * lineH, MONTHLY_TEXT.fill, 'center');
+    drawGdiText(ctx, line, cx, cy + (i - (lines.length - 1) / 2) * lineH, style);
   });
 }
 

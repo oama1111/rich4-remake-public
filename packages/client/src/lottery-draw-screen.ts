@@ -101,7 +101,7 @@ import {
 import { CHARACTERS, LOTTERY, stripVoiceCode } from '@rich4/data';
 import { isAlive } from '@rich4/core';
 import type { GameState } from '@rich4/core';
-import { FONT_FAMILY, font } from './font.ts';
+import { clerkTextStyle, drawGdiText, font } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { playVoiceCode, stopVoice, voiceBusy } from './voice-sink.ts';
@@ -1299,13 +1299,12 @@ function drawBubble(
     ? { width: 233, height: 192, anchorX: 120, anchorY: 98 }
     : { width: 187, height: 140, anchorX: 0, anchorY: 0 };
   const c = frameTextCenter(frame, b ?? fallback);
-  ctx.font = `${DRAW_BUBBLE_TEXT.size}px ${FONT_FAMILY}`;
+  // ★ 2026-09-23：字效照 `fcn_0044ecb6` 的 `create_font(0x14, 正文色, 第二色=0, 2, 1)` —— 20 号深色**粗体**（`font.ts` 的 `clerkTextStyle`）
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#101010';
   const lh = DRAW_BUBBLE_TEXT.size + 6;
   lines.forEach((line, i) => {
-    ctx.fillText(line, c.x, c.y + (i - (lines.length - 1) / 2) * lh);
+    drawGdiText(ctx, line, c.x, c.y + (i - (lines.length - 1) / 2) * lh, clerkTextStyle());
   });
 }
 

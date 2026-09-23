@@ -128,7 +128,7 @@ import { MAGIC_HOUSE_OPTIONS, stripVoiceCode } from '@rich4/data';
 import { playVoiceCode, stopVoice, voiceBusy } from './voice-sink.ts';
 import { beginBoardFilm, boardFilmBitmap, boardFilmDone, type BoardFilm, type BoardFilmSpec } from './board-film.ts';
 import { MAGIC_TARGET_NAMES, type GameState } from '@rich4/core';
-import { FONT_FAMILY } from './font.ts';
+import { FONT_FAMILY, clerkTextStyle, drawGdiText } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
@@ -1192,16 +1192,15 @@ export function magicBoxText(
   const lines = magicGreetText(text).split('\n').filter((l) => l !== '');
   if (lines.length === 0) return;
   ctx.save();
-  ctx.font = `${MAGIC_MSG_FONT_SIZE}px ${MAGIC_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.lineWidth = outlineWidth;
-  ctx.strokeStyle = outline;
-  ctx.fillStyle = fill;
+  // ★ 2026-09-23：魔法屋开框带第二色（`0x00432575 push 0x202020 / push 0xe0e0e0`）⇒ `fcn_0044ecb6` 走
+  //   `push 1 / push 3` —— **粗体 + 右下 1 px 阴影**（不是描 3 px 边；见 `font.ts` 的 `clerkTextStyle`）。
+  //   `outlineWidth` 0 = 调用方要不带第二色的那一种（字效 2）。
+  const style = clerkTextStyle(fill, outlineWidth > 0 ? outline : null);
   lines.forEach((line, i) => {
     const y = cy + (i - (lines.length - 1) / 2) * lineH;
-    if (outlineWidth > 0) ctx.strokeText(line, cx, y);
-    ctx.fillText(line, cx, y);
+    drawGdiText(ctx, line, cx, y, style);
   });
   ctx.restore();
 }
