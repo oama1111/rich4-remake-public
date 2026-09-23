@@ -371,6 +371,6 @@ describe('★ main.ts 的接线：亮牌在选目标**之前**（源码钉子）
   });
 
   it('★ 卡片欄只认左键抬手（右键取消后重开的卡片欄不被紧跟的右键抬手关掉）', () => {
-    expect(src).toContain("if (screen === 'inventory') {\n      if (e.button !== 0) return;\n      applyInventoryPick();");
+    expect(src).toContain("if (screen === 'inventory') {\n      if (e.button !== 0) return;\n      // ★ 没按中任何一格");
   });
 });

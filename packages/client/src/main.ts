@@ -8793,7 +8793,12 @@ function bindInput(): void {
 
     // ── 道具欄浮窗（T-024）──
     // 按下只**记下选中项 + 放确认音**，抬手才用出去（VA 0x445c8f / 0x445d84）。
+    // ★ 只认**左键**按下：两扇浮窗的消息回调（卡片欄 `fcn_004416f0`、道具欄 `fcn_00445c14`）
+    //   只接 0x201 / 0x202 / 0x205 / 0x401 / 0xf；`WM_RBUTTONDOWN`（0x204）落在
+    //   `0x441715 jb 0x44191f` / `0x445c39 jb 0x445e13` 那条缺省出口 —— 不记选中、不放音。
+    //   右键的取消在**抬手**（0x205，`contextmenu` 那把梯子）。
     if (screen === 'inventory') {
+      if (e.button !== 0) return;
       const q = eventToStage(e);
       if (q === null) return;
       const slot = hitInventory(q.x, q.y);
@@ -9112,6 +9117,11 @@ function bindInput(): void {
     //   紧跟的右键抬手就落进这里、`invPicked === null` ⇒ 当场又把卡片欄关掉。
     if (screen === 'inventory') {
       if (e.button !== 0) return;
+      // ★ 没按中任何一格（格外 / 空格）就抬手 ⇒ **什么都不做，浮窗留着**：
+      //   `0x441889 cmp [0x48c544],0 / je 0x441579`（卡片欄）、`0x445d84 cmp [0x48c560],0 / je 0x445d7d`（道具欄）。
+      //   两扇都是整窗的模态回调（`0x4018e7` 把所有消息交给回调栈顶），格外的点击也落在这里。
+      //   先前这里一律 `closeInventory()` —— 点空白就关窗是本引擎自己加的。
+      if (invPicked === null) return;
       applyInventoryPick();
       return;
     }
