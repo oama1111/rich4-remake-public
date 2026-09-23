@@ -1281,6 +1281,23 @@ export const lotteryDrawScreen: UiScreen = {
     // 脸与 ANM 是逐帧的 —— 在播就一直续帧
     env.requestRender();
   },
+
+  /**
+   * 联机旁观：行动者那台已经收场（见 `ui-screen.ts` 的 `fastForward`）⇒ 直接关屏。
+   *
+   * ⚠️ 这一屏原版**点不掉**：窗口过程 `fcn_0043010c` 只认 `0xf`（WM_PAINT）/ `0x113`（WM_TIMER）/
+   *   `0x401` / `0x405`（VA 0x00430124..0x00430145），没有 `0x202`/`0x205`/`0x101` 那几支。
+   *   仍然跟着收：行动者那台要等这一屏演完才派下一条 —— 队首到了 = 他那边已经演完；
+   *   本台若还剩半场（常见：同一天先上的分紅屏他点掉了、本台还在等 3 秒），
+   *   留着就是整整一场开奖的落后。结果（号码 / 得主 / 奖金）早在 core 里。
+   */
+  fastForward(env: UiScreenEnv): boolean {
+    if (active === null) return false;
+    active = null;
+    env.log('樂透開獎：跟著行動者收場');
+    env.requestRender();
+    return true;
+  },
 };
 
 /** 给单测的只读视图 */

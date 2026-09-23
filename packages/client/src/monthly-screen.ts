@@ -1848,6 +1848,22 @@ export const monthlyScreen: UiScreen = {
     return true;
   },
 
+  /**
+   * 联机旁观：行动者那台已经收场（见 `ui-screen.ts` 的 `fastForward`）⇒ 直接关屏
+   * （= 点两下「结算屏 → 頒獎屏 → 关」的终态）。`midi10` 不用停：没有整屏接管时
+   * `main.ts` 的 `boardBgmDue()` 自己接回棋盘曲。
+   */
+  fastForward(env: UiScreenEnv): boolean {
+    if (playback === null) return false;
+    playback = null;
+    view = null;
+    award = null;
+    snapshot = null;
+    env.log('每月結算：跟著行動者收場');
+    env.requestRender();
+    return true;
+  },
+
   tick(env: UiScreenEnv): void {
     const p = playback;
     if (p === null) return;

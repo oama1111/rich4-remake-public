@@ -1828,3 +1828,27 @@ describe('★★ 四处「裁切滑动」逐条核实：**都是同坐标还原*
     expect(exeBuf.length === 0 || exeBuf.includes(pushPattern([0x28, 0x50, 0x32, 0x34]))).toBe(true);
   });
 });
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  runMap('结算屏还没点 ⇒ 直接关屏（= 点两下的终态）；没在播 ⇒ false', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP_PATH)));
+    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
+    const base = newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+    });
+    resetMonthlyScreen();
+    const logs: string[] = [];
+    const env = fakeEnv(base, topo, logs);
+    const before: GameState = { ...base, players: base.players.map((p) => ({ ...p, moneyInBank: 100000 })) };
+    const after: GameState = { ...before, totalMonths: before.totalMonths + 1 };
+    monthlyScreen.event!(before, after, env);
+    monthlyScreen.tick!(env);
+    expect(monthlyScreenState().playback?.phase).toBe('settle');
+    expect(monthlyScreen.fastForward!(env)).toBe(true);
+    expect(monthlyScreen.active(env)).toBe(false);
+    expect(monthlyScreenState()).toMatchObject({ playing: false, view: null, award: null });
+    expect(logs).toContain('每月結算：跟著行動者收場');
+    expect(monthlyScreen.fastForward!(env)).toBe(false);
+  });
+});

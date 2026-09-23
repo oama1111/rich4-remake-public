@@ -562,6 +562,21 @@ export const godSlotScreen: UiScreen = {
     return true;
   },
 
+  /**
+   * 联机旁观：行动者那台已经收场（见 `ui-screen.ts` 的 `fastForward`）⇒ 直接关窗，
+   * 连「还在等附身影片收场」的那一局（`pendingCue`）也一并作废（他那边早演完了）。
+   */
+  fastForward(env: UiScreenEnv): boolean {
+    if (playback === null && pendingCue === null) return false;
+    playback = null;
+    pendingCue = null;
+    playAmount = 0;
+    env.stopEffect(GOD_SLOT_SPIN_SOUND);
+    env.log('神明老虎机：跟著行動者收場');
+    env.requestRender();
+    return true;
+  },
+
   tick(env: UiScreenEnv): void {
     // ── ① 已 diff 出、还在等附身影片/开场白收场 ──
     const pendingSpin = pendingCue;

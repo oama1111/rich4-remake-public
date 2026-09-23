@@ -771,4 +771,11 @@ export const sharesScreen: UiScreen = {
   up(_x: number, _y: number, env: UiScreenEnv): void {
     dismiss(env);
   },
+
+  /** 联机旁观：行动者那台已经收场（见 `ui-screen.ts` 的 `fastForward`）⇒ 与抬手同一个 `dismiss` */
+  fastForward(env: UiScreenEnv): boolean {
+    if (!presenting) return false;
+    dismiss(env);
+    return true;
+  },
 };

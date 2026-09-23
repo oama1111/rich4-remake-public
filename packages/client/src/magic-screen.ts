@@ -1282,6 +1282,30 @@ export const magicScreen: UiScreen = {
     env.requestRender();
   },
 
+  /**
+   * 联机旁观：行动者那台已经收场（见 `ui-screen.ts` 的 `fastForward`）⇒ 直接关窗。
+   *
+   * 什么时候会走到：施法者**关窗那一刻**才派 `{type:'magicHouse', option}`（`closeWindow`），
+   * 所以队首是他那一条（或更后面的）= 他的窗口已经关了；本台还停在开场白 / 摇签（晚进屏），
+   * 或还在演「天靈靈地靈靈」那一拍（`resolveFrom` 之后的 hold）。
+   *
+   * ⚠️ 两种情形**不动**（返回 false）：
+   *   - 状态 7（等点选）：那一拍是待决交互，不是演出（`magicAwaitingPick`，`main.ts` 也不拿它挡收件箱）；
+   *   - 本机的窗口、效果号还没交出去（`interactive && !resolved`）：关掉就把这位真人的点选吞了。
+   *
+   * ★ 直接 `resetMagicScreen`，**不走** `closeWindow`（那里会派 action）。随后施加施法者那条答复时
+   *   `event()` 见 `win === null` 且 pending 已撤 ⇒ 不会重新开窗。
+   */
+  fastForward(env: UiScreenEnv): boolean {
+    const w = win;
+    if (w === null || w.state === 7) return false;
+    if (interactive && !resolved) return false;
+    resetMagicScreen();
+    env.log('魔法屋：跟著行動者收場');
+    env.requestRender();
+    return true;
+  },
+
   /** 右键 —— 原版 `WM_RBUTTONUP (0x205)` → `loc_00432e64`：只在开场白那几拍（状态 < 3）跳过 */
   contextmenu(_x: number, _y: number, env: UiScreenEnv): void {
     if (win === null || win.state >= 3) return;

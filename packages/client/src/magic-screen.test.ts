@@ -1043,3 +1043,47 @@ describe('抠黑表 @source 逐调用点对照（0x004563f5 不透明 / 0x004564
     expect(MAGIC_KEYED.has(MAGIC_CHUNK.resultBar)).toBe(false);
   });
 });
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  it('★ 别人的魔法屋、本台还在开场白 ⇒ 直接关窗、不派 action；随后施法者那条答复施加时不再开窗', () => {
+    const f = open(0); // 本机 0 号、施法者 1 号
+    expect(magicScreenState()).toMatchObject({ playing: true, state: 1, interactive: false });
+    expect(magicScreen.fastForward!(f.env)).toBe(true);
+    expect(magicScreenState().playing).toBe(false);
+    expect(f.sent).toEqual([]);
+    expect(f.logs).toContain('魔法屋：跟著行動者收場');
+    // 施法者的 `{type:'magicHouse'}` 到了：pending 撤掉
+    const answered = stateOf(null, 1, { kind: 'magicHouse', id: 3 } as GameState['lastEvent']);
+    magicScreen.event!(f.env.state, answered, f.env);
+    expect(magicScreenState().playing).toBe(false);
+  });
+
+  it('★ 已经在演「点完」那一拍（答复到了之后的 hold）⇒ 也收', () => {
+    const f = openAtPick(0);
+    const answered = stateOf(null, 1, { kind: 'magicHouse', id: 3 } as GameState['lastEvent']);
+    magicScreen.event!(f.env.state, answered, f.env);
+    expect(magicScreenState()).toMatchObject({ playing: true, resolved: true });
+    expect(magicScreenState().state).not.toBe(7);
+    expect(magicScreen.fastForward!(f.env)).toBe(true);
+    expect(magicScreenState().playing).toBe(false);
+  });
+
+  it('★★ 状态 7（等点选）是待决交互，不是演出 ⇒ 不动', () => {
+    const f = openAtPick(0);
+    expect(magicScreen.fastForward!(f.env)).toBe(false);
+    expect(magicScreenState()).toMatchObject({ playing: true, state: 7 });
+  });
+
+  it('★★ 本机自己的窗口、效果号还没交出去 ⇒ 不动（关掉就吞了这位真人的点选）', () => {
+    const f = open(1); // 本机就是施法者
+    expect(magicScreenState().interactive).toBe(true);
+    expect(magicScreen.fastForward!(f.env)).toBe(false);
+    expect(magicScreenState().playing).toBe(true);
+    expect(f.sent).toEqual([]);
+  });
+
+  it('没开窗 ⇒ false', () => {
+    resetMagicScreen();
+    expect(magicScreen.fastForward!(fakeEnv(stateOf(null)).env)).toBe(false);
+  });
+});

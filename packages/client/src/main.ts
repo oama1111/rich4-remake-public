@@ -189,6 +189,7 @@ import {
   type SpeechLine,
 } from './speech.ts';
 import { deferSpeech, filmWaitsForSpeech, stageBusy, type StageFlags } from './stage-gate.ts';
+import { fastForwardPresentations, presenterMovedOn } from './follow-presenter.ts';
 import {
   SpeechQueue,
   drawSpeechBubble,
@@ -10170,6 +10171,12 @@ function pumpNetInbox(delay = 0): void {
     //   且要求队首就是 `rollDice`。电脑座位那一串 action 照旧受闸 —— 那正是
     //   第七份试玩回报第 1 条要的（别把电脑回合秒播完、别互相顶掉骰子动画）。
     const head = netInbox[0];
+    // ★★ 第十二份試玩回報续（需求方拍板：点得掉的整屏提示，旁观端跟着行动者一起关）：
+    //   队首是**别的真人座位**派的下一条 ⇒ 他那台已经把此前的演出全部演完（点掉）了，
+    //   本台还在演的那几屏直接落到终态，不再自己一段段放完（判据与边界见 `follow-presenter.ts`）。
+    //   ⚠️ 必须在 `holdForActorWalk` 之前：那几屏正占着台，节拍闸会一直挡着。
+    //   队首还没施加，此刻的 `state` 就是服务器受理它那一刻的镜像。
+    if (head !== undefined && presenterMovedOn(state, head.action, net?.seat ?? null)) followPresenter();
     const ownRollEcho = awaitingOwnRoll && head !== undefined && head.action.type === 'rollDice';
     if (!ownRollEcho && holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
     const item = netInbox.shift();
@@ -10178,6 +10185,24 @@ function pumpNetInbox(delay = 0): void {
     // `aiNext` 只是决策链的内部簿记，不占时间（同 `aiDelay`）；其余至少一个 tick、走子等补间
     pumpNetInbox(item.action.type === 'aiNext' ? 0 : paceDelay());
   }, delay);
+}
+
+/**
+ * 跟着行动者收场：演出类整屏（`BLOCKING_PRESENTATIONS`）一律落到终态（各屏的 `fastForward`）。
+ *
+ * ★ 顺手收掉那几屏经 `voice-sink` 起的语音（女巫 / 開獎主持人 / 事件框里的 `#NNNN`）——
+ *   屏已经关了，话不该接着说。只停**文本语音**那一路（`lastVoiceCode`）；角色台词
+ *   （`speechQueue`，棋盘上的气泡）不属于整屏，照常演。
+ */
+function followPresenter(): void {
+  const closed = fastForwardPresentations(SCREENS, BLOCKING_PRESENTATIONS, uiEnv());
+  if (closed.length === 0) return;
+  const voice = lastVoiceCode;
+  if (voice !== null && spokenBubble?.voice !== voice && sound.isPlaying('Speaking.mkf', voice)) {
+    sound.stop('Speaking.mkf', voice);
+  }
+  log(`⏭ 跟著 P${actingSeat(state) + 1} 收場：${closed.join(' / ')}`);
+  requestRender();
 }
 
 function startNetTick(): void {
