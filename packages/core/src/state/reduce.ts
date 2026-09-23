@@ -1540,8 +1540,9 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         //
         // ⚠️ 先前 `docs/gaps/05-loop-minigames-ai.md` 里的「梦游由 turn-start 提前拦掉、
         //   落点根本不进」是**读错了**：`startTurn` 的夢遊支只是**立刻掷骰并自动走完**
-        //   （本引擎在 `startTurn` 里一路走完），落点照进 —— 实测同一个 `startTurn`
-        //   就会把玩家从原格走到新格并 `settle`。少了这道闸，夢遊期間会照抽
+        //   （本引擎在 `startTurn` 里当场掷骰，之后只剩机械的 `step` / `settle`），落点照进。
+        //   （2026-09-23：此前 `turnController` 把夢遊的 −1 归成 `skip`，夢遊者其实原地不动 ——
+        //   见 `rules/turn-start.ts`。）少了这道闸，夢遊期間会照抽
         //   新聞/命運（正是试玩回报里「事件重复触发」的那一类观感）。
         if (player.blocking.sleepWalking !== 0) return { ...state, phase: 'turnEnd' };
         const out = settleSpecialSquare(

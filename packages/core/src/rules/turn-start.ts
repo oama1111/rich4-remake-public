@@ -4,14 +4,13 @@
  *
  * @source rich4.asm:6561-6806  fcn_0040c912 @ VA 0x0040c912
  *   该函数在每个回合开始时调用，返回值驱动回合总调度 fcn_00418c55
- *   的 6 路跳表（@0x418c3d）：1 → 人类回合，2/5 → AI 回合，3/4 → 跳过。
+ *   的 6 路跳表（@0x418c3d）：0 → 回合结束，1 → 人类回合，2/5 → AI 回合，3/4/>5（含 −1）→ 直接返回。
  */
 
 import type { Player } from '../state/types.ts';
 import {
   WHO_PLAYS_MASK,
   WHO_PLAYS_DEAD,
-  WHO_PLAYS_AUTOPILOT,
   WHO_PLAYS_SPECIAL_MASK,
   isBlocked,
 } from '../state/types.ts';
@@ -115,15 +114,37 @@ function blockReason(p: Player): BlockReason {
 /**
  * 回合归属：该回合由谁来下决定。
  *
- * @source 回合总调度 fcn_00418c55 的 6 路跳表 @0x418c3d：
- *   1 → 人类回合 UI；2 / 5 → AI 回合；3 / 4 → 跳过
- *   （5 = 1|4，即被托管的人类，故同样交给 AI）
+ * @source 回合总调度 `fcn_00418c55`，取回合开始判定的返回值直接查表（**整值**，不做位掩码）：
+ * ```asm
+ * 00418d70  call 0x40c912
+ * 00418d78  cmp  eax, 5
+ * 00418d7b  ja   0x418e7a                 ; 无符号 > 5（含 −1 = 夢遊）⇒ 直接 return
+ * 00418d81  jmp  dword [eax*4 + 0x418c3d]
+ *   [0] 0x418d88  call 0x418e7f            ; 不在场 / 被阻碍 ⇒ 本回合结束
+ *   [1] 0x418d99  call 0x4196f1            ; 真人
+ *   [2] 0x418dc6                           ; 电脑
+ *   [3] 0x418e7a  return                   ; 3 / 4 ⇒ 什么都不做
+ *   [4] 0x418e7a
+ *   [5] 0x418dc6                           ; 5 = 1|4（託管的真人）⇒ 电脑
+ * ```
+ * ★ −1（夢遊）也落在 `ja` 那一支：`auto_move`（`0x40dd1f`）已经在 `0x40c912` 里起步了，
+ *   调度这边既不开真人 UI、也不走电脑决策，只让它自己走完 ⇒ `'auto'`。
+ *   （先前这里把 −1 一并归成 `'skip'` ⇒ `startTurn` 的夢遊支成了死代码，夢遊的人**原地不动**。）
+ * ★ 3 / 4 / 其余 > 5：原版这一支什么都不做（回合不结束）。本引擎写不出这几个值
+ *   （见 `turn-start.test.ts` 的可达值清单），按「不行动」收成 `'skip'`。
  */
-export type TurnController = 'human' | 'ai' | 'skip';
+export type TurnController = 'human' | 'ai' | 'auto' | 'skip';
 
 export function turnController(result: TurnStartResult): TurnController {
+  if (result.sleepWalk) return 'auto';
   if (!result.canAct) return 'skip';
-  const who = result.raw;
-  if ((who & WHO_PLAYS_AUTOPILOT) !== 0) return 'ai'; // 托管
-  return (who & WHO_PLAYS_MASK) === 1 ? 'human' : 'ai';
+  switch (result.raw) {
+    case 1:
+      return 'human';
+    case 2:
+    case 5:
+      return 'ai';
+    default:
+      return 'skip';
+  }
 }
