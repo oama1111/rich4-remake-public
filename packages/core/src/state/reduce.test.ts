@@ -685,13 +685,37 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     ]);
   });
 
-  it('★ 建設公司（自家、电脑）0→1 ⇒ 记 companyBuild 但 bit7 = false', () => {
+  it('★ 建設公司（自家、电脑）0→2（蓋两次，`0x0041aae8` / `0x0041aafb`）⇒ 记一条 companyBuild、bit7 = false', () => {
     const topo = companyTopo(INDUSTRY.construction);
     const after = reduce(landingOnCompany(0, 0), { type: 'settle' }, topo);
-    expect(after.landLevel[1]).toBe(1);
+    expect(after.landLevel[1]).toBe(2);
     expect(after.lastBuildUpgrades).toEqual([
       { entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'companyBuild' },
     ]);
+  });
+
+  it('★★ 建設公司（自家）3→5：第二次才到 5 级 ⇒ 提示里的 bit7 取**第一次**的（false）—— 原版只看 `[esp+0xbc]`（`0x0041ab21`），不说也不放烟花', () => {
+    const topo = companyTopo(INDUSTRY.construction);
+    const after = reduce(landingOnCompany(0, 3), { type: 'settle' }, topo);
+    expect(after.landLevel[1]).toBe(5);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'companyBuild' },
+    ]);
+  });
+
+  it('★ 建設公司（自家、真人选目标，`charge: false`）也蓋两次；别人的（`charge: true`）只蓋一次', () => {
+    const topo = companyTopo(INDUSTRY.construction);
+    const own = landingOnCompany(0, 1);
+    const s: GameState = {
+      ...own,
+      players: own.players.map((p, i) => (i === 0 ? factoryPlayer({ index: 0, nodeId: 2 }) : p)),
+      landOwner: [0, 1],
+    };
+    const asked = reduce(s, { type: 'settle' }, topo);
+    expect(asked.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: false });
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(3);
+    expect(done.lastBuildUpgrades).toEqual([{ entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'companyBuild' }]);
   });
 
   it('★ 建設公司（真人选目标那一支，`buildTarget`）也记 companyBuild', () => {

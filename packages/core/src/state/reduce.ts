@@ -2089,7 +2089,10 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (state.pending?.kind !== 'chooseBuildTarget') return state;
       const pend = state.pending;
       if (!pend.choices.includes(action.entityId)) return state;
-      const built = freeBuildEntity(state, topo, action.entityId, -1);
+      // ★ 第十五份：自家公司（`charge` 为假）蓋两次（`ownCompanyBuild`）；别人的公司一次
+      const built = pend.charge
+        ? freeBuildEntity(state, topo, action.entityId, -1)
+        : ownCompanyBuild(state, topo, action.entityId);
       if (built === null) return state;
       // ⚠️ 建設公司这一支在原版里也播 0x229 大锤 + 消费 bit7
       //   （@source 0x0041ad7e → 0x0041ad99 call 0x45144f（大锤）→ 0x0041adaa
@@ -7097,6 +7100,28 @@ function buildHintOf(out: FreeBuildOutcome, source: BuildUpgradeSource): BuildUp
 }
 
 /**
+ * ★★ 第十五份：**自家**建設公司代蓋 —— 原版蓋**两次**（第一次没到 5 级才蓋第二次）。
+ *
+ * @source 自家那一支（`0x0041aa3c`，董事長 = 自己）：
+ * ```asm
+ * 0041aae7  push edi / call 0x40b110          ; 第一次
+ * 0041aaf0  mov [esp+0xbc], eax               ; ★ 只存第一次的返回值
+ * 0041aaf7  test al, 0x80 / jne 0x41ab04      ; 第一次剛好到 5 ⇒ 不蓋第二次
+ * 0041aafb  push edi / call 0x40b110          ; 第二次（返回值丢弃）
+ * 0041ab04  … 0x0041ab10 call 0x45144f        ; 大锤 0x229 —— **只播一次**
+ * 0041ab21  test byte [esp+0xbc], 0x80 / je   ; 台词（事件 15，`0x0041ab5b`）与 0x20b（`0x0041ab63`）只看**第一次**的 bit7
+ * ```
+ * 别人的建設公司（`0x0041acd1` 那一支）只蓋一次：`0x0041ad7e call 0x40b110` → `0x0041ad99` 大锤，没有第二次。
+ * ⇒ 返回第二次之后的局面，但 `reachedMaxLevel` 取**第一次**的（第二次才到 5 级时既不说也不放烟花）。
+ */
+function ownCompanyBuild(state: GameState, topo: MapTopology, entity: number): FreeBuildOutcome | null {
+  const first = freeBuildEntity(state, topo, entity, -1);
+  if (first === null || first.reachedMaxLevel) return first;
+  const second = freeBuildEntity(first.state, topo, entity, -1);
+  return second === null ? first : { ...second, reachedMaxLevel: first.reachedMaxLevel };
+}
+
+/**
  * 本 action 的加蓋事件表**从空开始**。
  *
  * ★★ 这一步**不能省**：`reduce` 里大量 `{ ...state, … }` 会把上一条 action 留下的
@@ -7844,7 +7869,8 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
         );
         if (target !== 0) {
           // ★ 建設公司这一支的动效（0x229 大锤 + bit7→0x20b）已按提示播放。
-          const built = freeBuildEntity(next, topo, target, -1);
+          // ★ 第十五份：自家公司蓋两次（`0x0041aae8` / `0x0041aafb`，见 `ownCompanyBuild`）
+          const built = ownCompanyBuild(next, topo, target);
           if (built !== null) {
             const vt = entityViewTarget(next, topo, target);
             next = {

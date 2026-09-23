@@ -235,13 +235,15 @@ describe('★ 踩到上市企業', () => {
     expect(r.players[0]?.cash).toBe(100_000);
   });
 
-  it('★ 建設公司董事長（电脑）：免費给自己租金最高的地加一级', () => {
+  // ★ 第十五份：自家公司蓋**两次**（第一次没到 5 级）—— `0x0041aae8 call 0x40b110` → `0x0041aaf7 test al,0x80 / jne`
+  //   → `0x0041aafb call 0x40b110`；先前这里写「加一级」是只读了第一次调用。
+  it('★ 建設公司董事長（电脑）：免費给自己租金最高的地蓋两级（第一次没到 5 级就再蓋一次）', () => {
     const s0 = landing(0, { players: [0, 1].map((i) => makePlayer({ index: i, nodeId: i === 0 ? 2 : 1, cash: 100_000, whoPlays: 2 })) });
     const landOwner = [...s0.landOwner];
     landOwner[1] = 1;
     const s = { ...s0, landOwner };
     const r = reduce(s, { type: 'settle' }, topoWith(INDUSTRY.construction));
-    expect(r.landLevel[1]).toBe(1);
+    expect(r.landLevel[1]).toBe(2);
     expect(r.players[0]?.cash).toBe(100_000);
   });
 

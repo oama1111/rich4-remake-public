@@ -805,6 +805,16 @@ describe('加蓋到頂（等級 4 → 5）⇒ 事件 15 —— 只有 exe 的三
     expect(detectLevelFive(b, a)).toEqual([{ player: 0, event: 15, cue: 'buildHammer' }]);
   });
 
+  it('② 自家建設公司第二次（`0x0041aafb`）才到 5 级 ⇒ 不说（`0x0041ab21` 只看第一次的 bit7，core 的提示里就是 false）', () => {
+    const [b, a] = step((before, after) => {
+      before.pending = { kind: 'chooseBuildTarget', commercialId: 0, name: '', choices: [0x7d0], charge: false };
+      before.landLevel = [3];
+      after.landLevel = [5];
+      after.lastBuildUpgrades = [{ entity: 0x7d0, reachedMaxLevel: false, source: 'companyBuild' }];
+    });
+    expect(detectLevelFive(b, a)).toEqual([]);
+  });
+
   it('② 别人的建設公司（`0x0041ad99` 大锤 → `0x0041adb4` 0x20b，中间没有台词）⇒ 不说', () => {
     const [b, a] = step((before, after) => {
       before.pending = { kind: 'chooseBuildTarget', commercialId: 0, name: '', choices: [0x7d0], charge: true };
