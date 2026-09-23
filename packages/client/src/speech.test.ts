@@ -755,9 +755,13 @@ describe('旅館住宿 ⇒ 事件 3/4/5（金额 = 住店天数）', () => {
   });
 });
 
-describe('加蓋到頂（等級 4 → 5）⇒ 事件 15', () => {
-  it('地块升到 5 级 ⇒ 事件 15（由当前玩家说）', () => {
+describe('加蓋到頂（等級 4 → 5）⇒ 事件 15 —— 只有 exe 的三处（`xref 0x480886`：0x00419a0e / 0x0041ab4a / 0x0040fa13）', () => {
+  const upgradeLand = { kind: 'upgradeLand' as const, landId: 0, name: '', cost: 0 };
+  const upgradeFacility = { kind: 'upgradeFacility' as const, facilityId: 2, name: '', cost: 0, level: 4 };
+
+  it('① 自己付费加蓋住宅到 5 级 ⇒ 事件 15（`0x004199eb cmp [+0x1a],5` → `0x00419a19`），`beforeStage`、没有 cue', () => {
     const [b, a] = step((before, after) => {
+      before.pending = upgradeLand;
       before.landLevel = [4, 3, 0, 0];
       after.landLevel = [5, 3, 0, 0];
       after.currentPlayer = 0;
@@ -765,8 +769,9 @@ describe('加蓋到頂（等級 4 → 5）⇒ 事件 15', () => {
     expect(detectLevelFive(b, a)).toEqual([{ player: 0, event: 15 }]);
   });
 
-  it('設施升到 5 级也算（同一槽位在 0x0041ab4a 也出现）', () => {
+  it('① 自己付费加蓋設施到 5 级也说（`0x0041a35d inc dh / 0x0041a362 cmp dh,5 / je 0x4199f1`）', () => {
     const [b, a] = step((before, after) => {
+      before.pending = upgradeFacility;
       before.facilityLevel[2] = 4;
       after.facilityLevel[2] = 5;
       after.currentPlayer = 1;
@@ -776,16 +781,69 @@ describe('加蓋到頂（等級 4 → 5）⇒ 事件 15', () => {
 
   it('★ 只有「正好等于 5」才算：升到 4 级、或已经是 5 级都不说', () => {
     const [b, a] = step((before, after) => {
+      before.pending = upgradeLand;
       before.landLevel = [3];
       after.landLevel = [4];
     });
     expect(detectLevelFive(b, a)).toEqual([]);
 
     const [b2, a2] = step((before, after) => {
+      before.pending = upgradeLand;
       before.landLevel = [5];
       after.landLevel = [5];
     });
     expect(detectLevelFive(b2, a2)).toEqual([]);
+  });
+
+  it('② 自家建設公司代蓋、第一次 `0x40b110` 就到 5 ⇒ 事件 15，排在大锤之后（`cue: buildHammer`）', () => {
+    const [b, a] = step((before, after) => {
+      before.pending = { kind: 'chooseBuildTarget', commercialId: 0, name: '', choices: [0x7d0], charge: false };
+      before.landLevel = [4];
+      after.landLevel = [5];
+      after.lastBuildUpgrades = [{ entity: 0x7d0, reachedMaxLevel: true, source: 'companyBuild' }];
+    });
+    expect(detectLevelFive(b, a)).toEqual([{ player: 0, event: 15, cue: 'buildHammer' }]);
+  });
+
+  it('② 别人的建設公司（`0x0041ad99` 大锤 → `0x0041adb4` 0x20b，中间没有台词）⇒ 不说', () => {
+    const [b, a] = step((before, after) => {
+      before.pending = { kind: 'chooseBuildTarget', commercialId: 0, name: '', choices: [0x7d0], charge: true };
+      before.landLevel = [4];
+      after.landLevel = [5];
+      after.lastBuildUpgrades = [{ entity: 0x7d0, reachedMaxLevel: true, source: 'companyBuild' }];
+    });
+    expect(detectLevelFive(b, a)).toEqual([]);
+  });
+
+  it('③ 福神代蓋到 5 ⇒ 事件 15，排在顯靈框之后（`0x0040f9c9` → `0x0040fa1e`，`cue: manifestBox`）；天使顯靈到 5 不说（`0x0040f517` 只放 0x20b）', () => {
+    const lucky = (godInfo: number) =>
+      step((before, after) => {
+        before.pending = upgradeLand;
+        before.landLevel = [3];
+        after.landLevel = [5];
+        after.players[0]!.godInfo = godInfo;
+        after.lastBuildUpgrades = [
+          { entity: 0x7d0, reachedMaxLevel: false, source: 'ownUpgrade' },
+          { entity: 0x7d0, reachedMaxLevel: true, source: 'godManifest' },
+        ];
+      });
+    const [b, a] = lucky(3);
+    expect(detectLevelFive(b, a)).toEqual([{ player: 0, event: 15, cue: 'manifestBox' }]);
+    const [b4, a4] = lucky(4);
+    expect(detectLevelFive(b4, a4)).toHaveLength(1);
+    const [b9, a9] = lucky(9); // 天使
+    expect(detectLevelFive(b9, a9)).toEqual([]);
+  });
+
+  it('★ 機器工人 / 天使卡盖到 5 级（`0x00447373` / `0x004436d4` 只放 0x20b）⇒ 不说', () => {
+    for (const source of ['robotWorker', 'angelCard'] as const) {
+      const [b, a] = step((before, after) => {
+        before.landLevel = [4];
+        after.landLevel = [5];
+        after.lastBuildUpgrades = [{ entity: 0x7d0, reachedMaxLevel: true, source }];
+      });
+      expect(detectLevelFive(b, a), source).toEqual([]);
+    }
   });
 });
 
@@ -1417,7 +1475,7 @@ describe('★ 神明 —— 22（附身）/ 23（離身）', () => {
       7,
     );
     expect(said(speechEventsFor(before2, after))).toEqual([
-      { player: 0, event: 23, order: 'afterStage' },
+      { player: 0, event: 23, order: 'beforeStage' },
       { player: 0, event: 22, order: 'beforeStage' },
     ]);
   });
@@ -1447,7 +1505,7 @@ describe('★ 神明 —— 22（附身）/ 23（離身）', () => {
     expect(a2.ok).toBe(true);
     const after2: GameState = { ...after1, players: a2.players, objects: a2.objects };
     expect(said(speechEventsFor(after1, after2))).toEqual([
-      { player: 0, event: 23, order: 'afterStage' },
+      { player: 0, event: 23, order: 'beforeStage' },
       { player: 0, event: 22, order: 'beforeStage' },
     ]);
   });
@@ -1466,7 +1524,7 @@ describe('★ 神明 —— 22（附身）/ 23（離身）', () => {
       ...before,
       players: before.players.map((p, i) => (i === 0 ? r.player : p)),
     };
-    expect(said(speechEventsFor(before, after))).toEqual([{ player: 0, event: 23, order: 'afterStage' }]);
+    expect(said(speechEventsFor(before, after))).toEqual([{ player: 0, event: 23, order: 'beforeStage' }]);
   });
 });
 
@@ -1619,7 +1677,8 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     ['victory', 'afterStage', '⚠E-19：调用点 `0x0040d060` 前后两列都空'],
     ['levelFive', 'beforeStage', '★E-19 已结案：两个调用点 `0x00419a19` / `0x0041ab5b` 后面**紧跟** `0x40b0cd`（0x20b 烟花）⇒ 台词在前'],
     ['areaMonopoly', 'afterStage', '⚠E-19：调用点 `0x0044f6df`（叶子函数里）两列都空'],
-    ['godLeft', 'afterStage', '⚠E-19：调用点 `0x0040e659` 前后两列都空'],
+    // ★ 第十五份：换神 `0x0040eb3f call 0x40e32c`（升天 → 台词）在新神影片之前 ⇒ `beforeStage` + `cue: godAscend`
+    ['godLeft', 'beforeStage', '第十五份：`0x0040e659` 在升天动画之后、新神影片 / `0x40e2a2` 之前'],
     ['godArrived', 'beforeStage', '§2.2 表：壞神附身 `0x0040ef44`…（台词 → 影片 → 神明窗）'],
     // ★ W-55 行 6/7 在同一工作区里并行落地的四条 —— 也在这张「一行一个探测器」的表里
     // ★ 第十五份：两句都排在「反应台词之后才弹」的框（`tail` 档）之后 —— 第三档 `afterTailBox`
@@ -1673,7 +1732,7 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     expect(said(speechEventsFor(b, a))).toEqual([{ player: 0, event: 19, order: 'afterStage' }]);
   });
 
-  it('★ 一次跃迁里两种 order 并存：換神 = 23（afterStage）+ 22（beforeStage）', () => {
+  it('★ 換神 = 23 + 22，都是 beforeStage（第十五份：23 带 cue godAscend —— 升天演完才算数、新神影片之前说）', () => {
     const world = (s: GameState) => ({
       players: s.players,
       objects: s.objects,
@@ -1686,7 +1745,7 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     const a2 = attachGod(world(s1), 0, 7); // 換小衰神（種類 7）：舊神先走
     const s2: GameState = { ...s1, players: a2.players, objects: a2.objects };
     expect(said(speechEventsFor(s1, s2))).toEqual([
-      { player: 0, event: 23, order: 'afterStage' },
+      { player: 0, event: 23, order: 'beforeStage' },
       { player: 0, event: 22, order: 'beforeStage' },
     ]);
   });
