@@ -49,14 +49,19 @@ describe('★ 買地／買設施成功的音效 —— 49（Effect.mkf）', () =
     expect(body).toContain('before.facilityOwner[id] !== after.currentPlayer + 1');
   });
 
-  it('★ 前两条 `sound.play`（破产 / 娃娃）原样保留，49 排在它们之后', () => {
-    const bankrupt = body.indexOf('SOUND_IDS.BANKRUPT');
+  it('★ 娃娃那条 `sound.play` 原样保留，49 排在它之后', () => {
     const doll = body.indexOf('SOUND_IDS.DOLL');
     const buy = body.indexOf('SOUND_IDS.BUY_PROPERTY');
-    for (const [name, i] of [['BANKRUPT', bankrupt], ['DOLL', doll], ['BUY_PROPERTY', buy]] as const) {
+    for (const [name, i] of [['DOLL', doll], ['BUY_PROPERTY', buy]] as const) {
       expect(i, `${name} 不在 playSoundFor 里`).toBeGreaterThan(-1);
     }
     expect(buy).toBeGreaterThan(doll);
+  });
+
+  it('★ 破产**不**放 Effect.mkf 音效：`0x0040d1cb push 5` 是 `call 0x4549cf`（MIDI06 拍賣配乐）的参数', () => {
+    // 那段配乐只在释放 > 3 处地产、连拍 3 处时放 —— 由拍賣屏开屏时点 `midi06.mid`
+    expect(body).not.toContain('SOUND_IDS.BANKRUPT');
+    expect((SOUND_IDS as Record<string, number>)['BANKRUPT']).toBeUndefined();
   });
 
   it('★ 落在銀行**不**放 Effect.mkf 音效：`0x0043674d push 4` 是 `call 0x4549cf`（MIDI05）的参数', () => {

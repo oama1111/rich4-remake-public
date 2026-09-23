@@ -4425,12 +4425,10 @@ function ensureSpeakingArchive(): void {
  *   才上台，见 `deferredSpeech`。
  */
 function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
-  // 有人出局
-  const deadBefore = before.players.filter((p) => p.whoPlays === 0).length;
-  const deadAfter = after.players.filter((p) => p.whoPlays === 0).length;
-  if (deadAfter > deadBefore) {
-    sound.play('Effect.mkf', SOUND_IDS.BANKRUPT);
-  }
+  // ★ 有人出局**没有**音效：先前这里放的 Effect #5 出自 `0x0040d1cb push 5`，紧跟的是 `call 0x4549cf`
+  //   = **播 MIDI**（id 5 = `MIDI06.MID`，拍賣配乐），而且只在释放的地产 > 3 处（`0x0040d1c6 cmp esi,3 / jle`）、
+  //   接下来要随机连拍 3 处（`0x0040d1d9..0x0040d1f5`）时才放 —— 那几场拍卖开屏时 `auction-screen.ts`
+  //   本来就会点 `midi06.mid`。破产那一刻原版不放 Effect.mkf 的任何音效（第十三份回报复核）。
   // ★ 落在銀行**没有**音效：先前这里放的 Effect #4 出自 `0x0043674d push 4`，但那一句紧跟的是
   //   `0x0043674f call 0x4549cf` —— 那是**播 MIDI**（`sprintf("open sequencer!%s alias mid", [0x47e793 + 4*id])`
   //   → `mciSendString`），id 4 = `MIDI05.MID`，即貸款屏的配乐（`syncLoanUi` 里 `midi05.mid` 那一句），
