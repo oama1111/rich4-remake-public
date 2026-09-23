@@ -989,6 +989,22 @@ export interface GameState {
      */
     shares?: readonly { player: number; amount: number }[];
     /**
+     * ★ 新聞「随机挑一处建筑」那一族（5 外星怪獸 / 15 瓦斯爆炸 / 19 山洪 / 20 超級颱風 /
+     *   21 龍捲風）**挑中的那一处**：`entity` = 实体编码（`0x7d0 + 地块 id` /
+     *   `0xfa0 + 設施 id`，与原版 `[0x48c59c]` 同一套编码），`owner` = **改之前**的
+     *   主人（1 基，0 = 无主；原版在 pass 0 就把 `byte [实体 + 0x19]` 存进 `[0x48c5a0]`）。
+     *
+     * @source 以新聞 21 `fcn_0044ac99` 为例：pass 0 `0x0044acbd rand() % (地块数 + 設施数)`
+     *   → `0x0044acfe strcpy(buf, 实体 + 4)`（名字）→ `0x0044ad79 [0x48c5a0] = owner`
+     *   → `0x0044ad90 sprintf("#0170龍捲風侵襲%s…", 名字)`；pass 1 `0x0044add3 0x40af12(实体)`
+     *   → `0x0044aded view_to(x, y, 2)` → `0x0044adfe mutate_land(实体, 0)` → 影片 0x217 …
+     *   → `0x0044ae4a owner != 0` 才让房主说一句。
+     *
+     * 表现层要它：訊息框里 `%s` 是**这个地名**（不是人名），镜头要移过去，房主要说话。
+     * 纯表现提示（与本字段所在的 `lastEvent` 一样不参与任何规则判定）。
+     */
+    place?: { readonly entity: number; readonly owner: number };
+    /**
      * ★ 魔法屋那一支（`kind === 'magicHouse'`）：**目标转盘抽中的条件号 0..11**。
      *
      * @source `spinMagicHouse` 的 `criterion`（VA 0x0043390b 一带：

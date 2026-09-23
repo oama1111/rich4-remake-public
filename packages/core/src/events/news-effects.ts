@@ -45,6 +45,7 @@ import {
 // ★ 新聞 4 与飛彈/核彈/颱風走的是**同一个** `damage_area`（`0x40ac7b`），
 //   逐块地的重击效果直接复用 `rules/tool-effects.ts` 的 `blastLand`。
 import { blastLand } from '../rules/tool-effects.ts';
+import { ESTATE_FACILITY_BASE, ESTATE_LAND_BASE } from '../places/notice-board.ts';
 
 /**
  * 新聞拆屋类效果尾部的**全场释放** `0x0040dffa()`（见 `rules/blocking.ts`）。
@@ -114,6 +115,14 @@ export interface NewsEffectResult {
    * 只在这四条上有值；其余事件不带这个字段。**含 0**（原版也会算出 0，只是不画那行）。
    */
   shares?: readonly { player: number; amount: number }[];
+  /**
+   * ★ 「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21）**挑中的那一处**
+   *   —— 实体编码 + 改之前的主人（1 基）。**挑中了就带**，与改没改动无关：
+   *   原版 pass 0 就把名字填进訊息框、pass 1 照样移镜头、播影片（新聞 21 挑到
+   *   一块空地时 `mutate_land` 什么都不改，但前后那几步一步不少）。
+   *   纯表现（见 `GameState.lastEvent.place`）；规则只看 `landMutations` / `facilityMutations`。
+   */
+  place?: { entity: number; owner: number };
   /**
    * ★ 新聞 4：**被这发爆炸送进医院的玩家**（原版尾巴那个 `push 3 / call 0x43ec3f`
    *   的落点，VA 0x00449285）。排序 = 原版 `for (i = 0; i < num_players; i++)` 的下标序。
@@ -800,10 +809,14 @@ export function applyNewsEffect(
       return { ...base, unimplemented: true };
     }
     const pick = rng.below(lands.length + facilities.length);
-    const origin =
-      pick < lands.length
-        ? { x: lands[pick]!.x, y: lands[pick]!.y }
-        : { x: facilities[pick - lands.length]!.x, y: facilities[pick - lands.length]!.y };
+    const picked = pick < lands.length ? lands[pick]! : facilities[pick - lands.length]!;
+    const origin = { x: picked.x, y: picked.y };
+    // ★ 挑中的那一处（表现层：訊息框的地名 / 镜头）@source `fcn_0044ab2c`
+    //   pass 0 `0x0044abbc strcpy(名字)` → pass 1 `0x0044ac19 0x40af12` + `0x0044ac33 view_to(x, y, 2)`
+    const place = {
+      entity: (pick < lands.length ? ESTATE_LAND_BASE : ESTATE_FACILITY_BASE) + picked.id,
+      owner: picked.owner,
+    };
     const inBlast = (e: { x: number; y: number }): boolean =>
       Math.abs(e.x - origin.x) <= TYPHOON_RADIUS && Math.abs(e.y - origin.y) <= TYPHOON_RADIUS;
     const landMutations: LandMutation[] = [];
@@ -839,6 +852,7 @@ export function applyNewsEffect(
       amount: landMutations.length + facilityMutations.length,
       landMutations,
       facilityMutations,
+      place,
     };
   }
 
@@ -1066,10 +1080,15 @@ export function applyNewsEffect(
     const total = landCand.length + facCand.length;
     if (total === 0) return { ...base, amount: 0 };
     const pick = rng.below(total);
+    // ★ 挑中的那一处 —— **改没改动都带**（原版 pass 0 已把名字填进訊息框、
+    //   pass 1 照样 `view_to` + 影片；新聞 21 挑到空地时 `mutate_land` 什么都不改）。
+    //   `owner` 取**改之前**的值：原版 pass 0 就 `[0x48c5a0] = byte [实体 + 0x19]`
+    //   （新聞 21 `0x0044ad70..0x0044ad79`；5 / 15 / 19 同形），房主台词看的是它。
     if (pick < landCand.length) {
       const before = landCand[pick]!;
+      const place = { entity: ESTATE_LAND_BASE + before.id, owner: before.owner };
       const after = mutateLand(before, razeMode);
-      if (!after.changed) return { ...base, amount: 0 };
+      if (!after.changed) return { ...base, amount: 0, place };
       return {
         ...base,
         players: applyRelease(base.players, [after.releasesConfined]),
@@ -1077,13 +1096,16 @@ export function applyNewsEffect(
         landMutations: [
           { id: after.land.id, level: after.land.level, type: after.land.type, owner: after.land.owner },
         ],
+        place,
       };
     }
     const before = facCand[pick - landCand.length]!;
+    const place = { entity: ESTATE_FACILITY_BASE + before.id, owner: before.owner };
     const after = mutateFacility(before, razeMode);
-    if (!after.changed) return { ...base, amount: 0 };
+    if (!after.changed) return { ...base, amount: 0, place };
     return {
       ...base,
+      place,
       players: applyRelease(base.players, [after.releasesConfined]),
       amount: 1,
       facilityMutations: [

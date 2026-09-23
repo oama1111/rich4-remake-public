@@ -184,7 +184,7 @@ import { CARDS,
   fortuneEvent,
   newsEvent,
   type EventEntry } from '@rich4/data';
-import type { GameState } from '@rich4/core';
+import type { GameState, MapTopology } from '@rich4/core';
 import {
   loadRaw555Resource,
   type ArchiveName,
@@ -336,6 +336,25 @@ export const CARD_SKIN_AT = { x: 0xdc, y: 0x81 } as const;
 export const CARD_NAME_AT = { x: 0xdc, y: 0x81 } as const;
 /** 抽卡等待 0x5dc = 1500ms（**同样可跳过**，`fcn_004528b9`）@source 0x004420a6 */
 export const CARD_HOLD_MS = 0x5dc;
+/**
+ * 亮牌那一声 —— `Effect.mkf` **62**。
+ *
+ * @source `fcn_00441f73` 的 `0x00442097 push 0x482402 / call 0x4542ce`（play_sound_effect）；
+ *   描述符 `0x482402` = 音效表 `0x48231a` 的第 29 项（8 字节一项），首 dword = **62**
+ *   （`disasm.py dump 0x482402 8 1` → `62 0 0 0 …`；同表 `0x4823da` = 50 的先例见 `build-fx.ts`）。
+ *   这一声在 `fcn_00441f73` 里，所以**得卡与用卡两路都响**。
+ */
+export const CARD_REVEAL_SOUND = 62;
+/**
+ * 用卡那一句的格式串 `"使用%s"`。
+ *
+ * @source `0x465305`（`disasm.py` 取串 = `使用%s`）；两个调用点都在卡片函数**之前**：
+ *   · 真人（卡片欄选定之后）`0x00441ca6 push 0x465305 / 0x00441cb0 sprintf / 0x00441cbc call 0x441f73`
+ *     → `0x00441cc6 call [card_functions + 卡号*4]`；
+ *   · 电脑 `0x00441dd0 push 0x465305 / 0x00441dda sprintf / 0x00441def call 0x441f73`
+ *     → `0x00441e00 call [card_functions + 卡号*4]`（**没有** `who_plays` 闸 —— 电脑用卡照样亮牌）。
+ */
+export const CARD_USE_FORMAT = '使用%s';
 /** FLIC 取不到时的兜底时长 —— 原版是阻塞播放，本引擎不能卡住帧（见 deviations）*/
 export const CARD_FLIC_FALLBACK_MS = 1200;
 
@@ -459,6 +478,36 @@ export function eventSubject(before: GameState, after: GameState, fallback: numb
   return CHARACTERS[after.players[at]?.character ?? -1]?.name ?? '';
 }
 
+/**
+ * ★ 第十二份試玩回報：「龙卷风摧毁房屋没有看到具体哪个房子受影响」——
+ *   新聞「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21）的 `%s` 是**挑中那一处的地名**，
+ *   不是人名。原版 pass 0 就把名字拷出来填进格式串：
+ *
+ * ```asm
+ * ; 新聞 21 fcn_0044ac99（5 / 15 / 19 / 20 同形，调用点见 core 的 `lastEvent.place`）
+ * 0044acbd  call 0x456f2d                  ; rand() % (地块数 + 設施数)
+ * 0044acf2  add  eax, 4 / 0044acfe call 0x457d96   ; strcpy(buf, 地块 + 4)   —— 名字
+ * 0044ad42  add  eax, 4 / 0044ad4e call 0x457d96   ; strcpy(buf, 設施 + 4)   —— 同上（設施支）
+ * 0044ad86  push 0x4656d0 / 0044ad90 call 0x457110 ; sprintf("#0170龍捲風侵襲%s\n摧毀房屋一棟", buf)
+ * ```
+ *
+ * 名字取自地图表（`LandInfo.name` = 地块 `+4`、`FacilityInfo.name` = 設施 `+4`，
+ * `loaders/map.ts`），实体编码与原版同一套（`0x7d0 + id` / `0xfa0 + id`）。
+ *
+ * @returns 地名；编码越界 / 地图里没有这一处时返回 `null`（调用方退回旧口径）
+ */
+export function newsPlaceName(
+  topo: Pick<MapTopology, 'lands' | 'facilities'>,
+  entity: number,
+): string | null {
+  if (entity >= 0xfa0) {
+    const f = topo.facilities?.find((x) => x.id === entity - 0xfa0);
+    return f === undefined ? null : f.name;
+  }
+  const l = topo.lands?.find((x) => x.id === entity - 0x7d0);
+  return l === undefined ? null : l.name;
+}
+
 // ============================================================
 //  抽卡：从手牌差集取「多出来的那张」
 // ============================================================
@@ -515,6 +564,13 @@ export interface EventBoxView {
   description: string;
   /** 卡名；新聞/命運为空 */
   cardName: string;
+  /**
+   * ★ 第十二份試玩回報（「莫名其妙被冬眠5天」）：这是**用卡**那一次亮牌（`"使用%s"`），
+   *   不是卡片格的「抽到」。两者同一支 `fcn_00441f73`，差别只在：
+   *   用卡那两个调用点（`0x00441cbc` / `0x00441def`）前面**没有** 0x218 那段 FLIC
+   *   （FLIC 是卡片格 `0x0041b32b` 自己播的）⇒ 直接进亮牌。
+   */
+  use?: boolean;
   /**
    * ★ 新聞百分比类那四条（11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利）的
    *   **逐人明细**（不是让本屏自己算 —— 规则在 core，见
@@ -629,7 +685,8 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
         // 卡面：165×256 无头 RGB555（尺寸见 CARD_FACE_SIZE），**不透明**贴 (138,200)
         blitRaw('Data.mkf', CARD_FACE_BASE + v.id, CARD_FACE_SIZE, CARD_FACE_AT),
       ],
-      flic: { archive: 'Data.mkf', resource: CARD_FLIC_RESOURCE, at: CARD_FLIC_AT },
+      // 用卡那一路没有 0x218 那段 FLIC（见 `EventBoxView.use`）
+      flic: v.use === true ? null : { archive: 'Data.mkf', resource: CARD_FLIC_RESOURCE, at: CARD_FLIC_AT },
       holdMs: CARD_HOLD_MS,
       hold2Ms: 0,
     };
@@ -719,6 +776,24 @@ export function fortuneView(fortuneId: number, priceIndex: number, subject: stri
     title: '',
     description: eventBoxDescription(fortuneEvent(fortuneId), priceIndex, subject),
     cardName: '',
+  };
+}
+
+/**
+ * **用卡**那一次亮牌的 view —— 卡面 + 「使用XX卡」（第十二份試玩回報）。
+ *
+ * @source 见 `CARD_USE_FORMAT`：`sprintf(buf, "使用%s", 卡名表[卡号])` → `fcn_00441f73(卡号, buf)`。
+ *   卡名表 `[卡号*8 + 0x47fdea]` 就是 `@rich4/data` 的 `CARDS[].name`。
+ */
+export function cardUseView(cardId: number): EventBoxView {
+  const def = CARDS.find((c) => c.id === cardId);
+  return {
+    kind: 'card',
+    id: cardId,
+    title: '',
+    description: '',
+    cardName: def === undefined ? '' : CARD_USE_FORMAT.replace('%s', def.name),
+    use: true,
   };
 }
 
@@ -1017,6 +1092,8 @@ export const eventBoxScreen: UiScreen = {
     const film = p.plan.flic === null ? null : env.flic(p.plan.flic.archive, p.plan.flic.resource);
     const filmMs = film === null ? null : film.frames.length * film.frameMs;
     const next = eventBoxPlaybackTick(p, env.now, filmMs);
+    // ★ 卡片格那一路：FLIC 播完、进亮牌的那一拍响亮牌音（`fcn_00441f73` 的 `0x00442097`）
+    if (next !== null && p.phase === 'flic' && next.phase === 'show') env.playEffect(CARD_REVEAL_SOUND);
     if (next === null) {
       playback = null;
       env.log(`事件提示框：${p.plan.kind} 演出结束`);
@@ -1110,7 +1187,10 @@ export const eventBoxScreen: UiScreen = {
       (prev === null || prev.kind !== ev.kind || prev.id !== ev.id)
     ) {
       const who = after.players[after.currentPlayer];
-      const subject = eventSubject(before, after, after.currentPlayer);
+      // ★ 第十二份試玩回報：带着「挑中的那一处」的那几条新聞，`%s` = **地名**（见 `newsPlaceName`）
+      const placeName =
+        ev.kind === 'news' && ev.place !== undefined ? newsPlaceName(env.topo, ev.place.entity) : null;
+      const subject = placeName ?? eventSubject(before, after, after.currentPlayer);
       // ★ 新聞百分比类那四条：把引擎「先算好」的逐人金额配上角色名交给计划
       const shares = ev.shares?.map((s) => {
         const character = after.players[s.player]?.character ?? -1;
@@ -1140,6 +1220,22 @@ export const eventBoxScreen: UiScreen = {
     )
       return;
 
+    // ★★ 第十二份試玩回報（`20260923-015242569`「莫名其妙被冬眠5天」）：
+    //   电脑用了冬眠卡，玩家这边**什么都没看见**，只在自己回合开始时弹「冬眠中」。
+    //   原版不分人机，卡片函数**之前**先 `fcn_00441f73(卡号, "使用%s")` 亮牌 1500 ms
+    //   （调用点见 `CARD_USE_FORMAT`）—— 这一屏先前只接了「抽到卡」那一路。
+    //   判据 = core 的 `lastCardPlay` **引用变了**（`playCard` 成功时每次新建一个；
+    //   失败原样返回 state ⇒ 不亮牌 —— 本引擎的既定口径是「用不成的卡不发 action」）。
+    //   联机时每一端都 reduce 同一条 `useCard` ⇒ 每一端都亮同一张牌。
+    const play = after.lastCardPlay;
+    if (play !== null && play !== before.lastCardPlay) {
+      playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(play.cardId)), env.now);
+      env.playEffect(CARD_REVEAL_SOUND);
+      env.log(`事件提示框：使用卡片 #${play.cardId}（P${play.player + 1}）`);
+      env.requestRender();
+      return;
+    }
+
     // ★★ 2026-09-23（第十二份試玩回報「卡片商店」那一條的現場日誌）：百貨公司裡得到的卡
     //   —— 董事長進門贈卡、在貨架上買卡 —— **沒有卡面**。先前手牌差集一視同仁，
     //   於是進門贈卡、每買一張都在商店窗上起一段「抽到卡片」（Data 0x218 那段點不掉的 FLIC + 卡面 + 音效）。
@@ -1158,6 +1254,16 @@ export const eventBoxScreen: UiScreen = {
     env.requestRender();
   },
 };
+
+/**
+ * 此刻台上是不是「用卡」那一次亮牌（`fcn_00441f73`，阻塞 1500 ms）。
+ *
+ * 原版亮牌在卡片函数**之前**、而且是阻塞的 ⇒ 那张卡自己的飞行 / 影片 / 建屋
+ * 都要等它收屏才起（`main.ts` 的 `tickBoardFilm` / `tickBuildFx` / 卡片飞行三处以它为闸）。
+ */
+export function cardUsePopupActive(): boolean {
+  return playback !== null && playback.plan.kind === 'card' && playback.plan.flic === null;
+}
 
 /** 给单测的只读视图 */
 export function eventBoxScreenState(): { playing: boolean; playback: EventBoxPlayback | null } {

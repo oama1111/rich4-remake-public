@@ -5217,8 +5217,22 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
       kind: 'news',
       id: draw.eventId,
       ...(out.shares === undefined ? {} : { shares: out.shares }),
+      // ★ 第十二份試玩回報：「龙卷风摧毁房屋没有看到具体哪个房子受影响」——
+      //   「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21）挑中的是哪一处（地名 / 房主）
+      ...(out.place === undefined ? {} : { place: { entity: out.place.entity, owner: out.place.owner } }),
     },
   };
+  // ★ 同上：镜头移到挑中的那一处 —— 这一族的施加阶段都是
+  //   `0x40af12(实体)` 取坐标 → `view_to(x, y, 2)`（flags 无 bit0 ⇒ 真的移镜头），
+  //   然后才 `mutate_land` / `damage_area` + 影片：
+  //   新聞 5 `0x00449424/0x0044943e`、15 `0x0044a52e`（直接读地块 +0/+2）、
+  //   19 `0x0044aa5b/0x0044aa75`、20 `0x0044ac19/0x0044ac33`、21 `0x0044add3/0x0044aded`。
+  //   与命運 0 那一支（上面 `out.demolished`）同一条通道：客户端 `syncViewTarget()`
+  //   居中、演出收完自动复位（= 原版 `refresh_screen`）。
+  if (out.place !== undefined) {
+    const vt = entityViewTarget(applied, topo, out.place.entity);
+    if (vt !== null) applied = { ...applied, lastViewTarget: vt };
+  }
   // 新聞的坐牢/住院也走 send_to_*，保險期内赔 2000×天×物價
   const entry = newsEvent(draw.eventId);
   if (entry !== undefined && !out.unimplemented && (entry.effects.includes('prison') || entry.effects.includes('hospital'))) {
