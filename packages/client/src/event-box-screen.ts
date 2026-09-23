@@ -1248,7 +1248,12 @@ export const eventBoxScreen: UiScreen = {
     if (
       ev !== null &&
       (ev.kind === 'news' || ev.kind === 'fortune') &&
-      (prev === null || prev.kind !== ev.kind || prev.id !== ev.id)
+      // ★★ 第十四份：判据是**引用**，不是 kind/id —— 先前连着两次抽到同一张（例：命運 30
+      //   再抽一次付保險金），第二次的框**不出来**。core 只在新聞 / 命運**真的抽了一张**时
+      //   新建 `lastEvent`（`drawAndApplyFortune` / `drawAndApplyNews`），其余 action 都是
+      //   `{...state}` 原样带过去 ⇒ 引用不变就不重播；读档 / 失步重建都清成 null（`savegame.ts`）
+      //   或静默重放（`onResync` 不派 `event()`），不会补播。
+      ev !== prev
     ) {
       const who = after.players[after.currentPlayer];
       // ★ 第十二份試玩回報：带着「挑中的那一处」的那几条新聞，`%s` = **地名**（见 `newsPlaceName`）

@@ -2002,8 +2002,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       };
       if (pend.charge) {
         // @source 0x0041adc0：工程費 = 那处地的地價 × 物價，付给公司
+        //   ★ 第十四份：选完之后走的是同一段收費（框 `0x0041aeaa` → 神明 `0x0041aec5`，见 `chargeCompanyFee`）
         const fee = entityLandPrice(next, topo, action.entityId) * next.priceIndex;
-        next = payCompany(next, topo, state.currentPlayer, pend.commercialId, fee);
+        const c = topo.commercials?.find((x) => x.id === pend.commercialId);
+        next = c === undefined
+          ? payCompany(next, topo, state.currentPlayer, pend.commercialId, fee)
+          : chargeCompanyFee(next, topo, state.currentPlayer, c, fee);
         if (next.phase === 'gameOver') return next;
         if (!isAlive(next.players[state.currentPlayer]!)) return { ...next, phase: 'turnEnd', pending: null };
       }
@@ -5384,6 +5388,16 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     lands: allEffectiveLands(withDeck, topo),
   });
 
+  // ★ 第十四份：命運 9 / 10 / 11 / 32 施加完（没被神明挡掉）当前玩家说的那一句 —— 角色台词表的事件号。
+  //   @source 9 `0x0044ca1f mov ecx,[… + 0x48085e]`（事件 5）→ `0x0044ca30 call 0x44ef41`；
+  //   10 `0x0044cb28 call rand / and eax,1` → `0x0044cb30 mov edi,[… + eax*4 + 0x480856]`（事件 3|4）→ `0x0044cb41`；
+  //   11 `0x0044cc36 mov ebp,[… + 0x480856]`（事件 3）→ `0x0044cc41`；
+  //   32 `0x0044d76c mov esi,[… + 0x480856]`（事件 3）→ `0x0044d777`。
+  //   10 那一次 `rand()` 走的是同一个发生器（`0x456f2d`）⇒ 在这里掷，所有客户端一致。
+  const fortuneLine = out.cancelled || out.unimplemented ? undefined : FORTUNE_LINE_EVENT.get(effectiveId);
+  const phraseIndex =
+    fortuneLine === undefined ? undefined : effectiveId === FORTUNE_MOTORBIKE_STOLEN ? 3 + (rng.next() & 1) : fortuneLine;
+
   let applied: GameState = {
     ...withDeck,
     rngState: rng.getState(),
@@ -5393,7 +5407,7 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     objects: out.objects,
     prisonOccupancy: out.prisonOccupancy,
     hospitalOccupancy: out.hospitalOccupancy,
-    lastEvent: { kind: 'fortune', id: effectiveId },
+    lastEvent: { kind: 'fortune', id: effectiveId, ...(phraseIndex === undefined ? {} : { phraseIndex }) },
   };
   // ★ 第十四份：神明加持那一扇（`fcn_0044b896` 返回 1/2 时调用方弹 `[0x48c5b8]`，1500 ms）——
   //   施加阶段的第一件事（在付款 / 入獄之前）。`%s` = `[0x47ed76 + god_info*4]`。
@@ -5544,6 +5558,10 @@ function answerBirthdayCard(state: GameState, seat: number, cardId: number): Gam
  * 此处按事件语义现场挑；尚不能判定的事件由 applyNewsEffect
  * 标记 unimplemented，状态不变。
  */
+/** 第十四份：命運 9 / 10 / 11 / 32 施加后那一句的事件号（10 是 3|4 二选一，见 `drawAndApplyFortune`）*/
+const FORTUNE_LINE_EVENT: ReadonlyMap<number, number> = new Map([[9, 5], [10, 3], [11, 3], [32, 3]]);
+const FORTUNE_MOTORBIKE_STOLEN = 10;
+
 /** 新聞「公開表揚 / 補助」那三条（8/9/10）—— 受奖人说進帳台词，见 `drawAndApplyNews` */
 const NEWS_AWARD_IDS: ReadonlySet<number> = new Set([8, 9, 10]);
 
@@ -6995,6 +7013,46 @@ function payCompany(
   return r.bankrupted ? applyBankruptcy(paid, payer, topo) : paid;
 }
 
+/**
+ * ★ 第十四份：别人的企業收費那一段（`0x0041ae37` 起，按行業費 / 保費 / 工程費三路汇到这里）：
+ * ```asm
+ * 0041ae37  test ebp, ebp / je 0x41b067              ; 費 0 ⇒ 不弹、不收
+ * 0041ae86/0041ae98  push 0x463a6a / 0x463a31       ; 幫主 / 董事長那一句
+ * 0041aeaa  push 0x5dc / call 0x440cac               ; 框（金额 = 神明调整**之前**）
+ * 0041aec5  call 0x41d709(当前玩家, 費名, ebp)       ; ★ 神明调整（小財神減半 / 大財神免付 / 窮神加付）
+ * 0041b006  call 0x44f42d(付款人, ebp)               ; 付款人的台词（调整之后的金额）
+ * 0041b022  call 0x41d2c6(付款人, 企業, ebp, 0)      ; 付钱
+ * ```
+ * 先前本引擎这一路**没调神明**（大財神附身照付、窮神附身不加付）。
+ * 框里 `%s` 依次是 企業名（`lea eax,[ebx+4]`）、董事長名（`0x0041ae41`）、費名（`[行業 + 0x47528e]` 查 `0x47517c`）。
+ * 工程費那一路（建設公司，真人选完 / 电脑自选）原版也走这一段 —— 先前没弹框，一并接上。
+ * ⚠️ 仍未接：`0x0041af0c` 起的免費卡 / 嫁禍卡 / 死神那一段（与本条无关，另记）。
+ */
+function chargeCompanyFee(
+  state: GameState,
+  topo: MapTopology,
+  payer: number,
+  c: { id: number; name: string; type: number },
+  amount: number,
+): GameState {
+  if (amount === 0) return state;
+  const chairman = ownerOf(state.commercialOwners[c.id] ?? emptyOwnership());
+  const feeName = feeNameOf(c.type);
+  const notices: NoticeHint[] = [
+    {
+      key: c.type === INDUSTRY.sect ? 'rent.payBoss' : 'rent.payChairman',
+      args: [c.name, playerName(state, chairman), amount, feeName],
+    },
+  ];
+  const godInfo = state.players[payer]?.godInfo ?? 0;
+  const adjusted = adjustTollByGod(amount, godInfo).toll;
+  const godNotice = godTollNotice(godInfo, amount, adjusted, feeName, payer);
+  if (godNotice !== null) notices.push(godNotice);
+  const noticed = appendFreshNotice(state, notices[0]!);
+  const withNotices = notices.length > 1 ? appendFreshNotice(noticed, notices[1]!) : noticed;
+  return payCompany(withNotices, topo, payer, c.id, adjusted);
+}
+
 /** 公司落点收尾：照原版走到出口时再问一次「是否認購股份」（0x0041d1a9） */
 function afterCompany(state: GameState, topo: MapTopology, commercialId: number): GameState {
   const me = state.players[state.currentPlayer];
@@ -7071,33 +7129,15 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
     c.type, c.landPrice, state.priceIndex, state.totalDays, player.trafficMethod, state.stepsTotal,
     industryUsesWheel(c.type) ? rng.next() : 0,
   );
-  /**
-   * ★★ 棕色訊息框（issue #18）—— 「董事長」/「幫主」那一句。
-   *
-   * @source 两条 `push` 就在同一段里，由行業別分：
-   *   `0x0041ae75 cmp byte [ebx+0x1a], 0xc` ⇒ `0x0041ae86 push 0x463a6a`（`RENT.payBoss`）
-   *   否则 `0x0041ae98 push 0x463a31`（`RENT.payChairman`）；
-   *   框在 `0x0041aeaa push 0x5dc / call 0x440cac`，神明调整在它**之后**
-   *   （`0x0041aec5 call 0x41d709`）⇒ `%d` 是 `fee.amount`（本引擎这条路上没调神明）。
-   *
-   * 金额为 0 时原版**不弹**：@source `0x0041ae37 test ebp, ebp / je 0x41b067`。
-   * `%s` 依次是 企業名（`lea eax,[ebx+4]`）、董事長名（`0x0041ae41` 那一支取
-   * `[付款人 + 0x496b68]`，即企業主）、費名（`[行業 + 0x47528e]` 查 `0x47517c` 那张表）。
-   */
-  const companyNotice = (amount: number): NoticeHint => ({
-    key: c.type === INDUSTRY.sect ? 'rent.payBoss' : 'rent.payChairman',
-    args: [c.name, playerName(state, chairman), amount, feeNameOf(c.type)],
-  });
+  // 收費那一段（框 / 神明调整 / 付款）见 `chargeCompanyFee`
   let next: GameState = { ...state, rngState: rng.getState() };
   if (fee.kind === 'fee') {
-    next = payCompany(next, topo, me, c.id, fee.amount);
-    if (fee.amount !== 0) next = { ...next, notices: [companyNotice(fee.amount)] };
+    next = chargeCompanyFee(next, topo, me, c, fee.amount);
   } else if (fee.kind === 'insurance') {
     next = withPlayer(next, me, (p) => {
       p.insuranceDays = addInsuranceDays(p.insuranceDays, fee.days);
     });
-    next = payCompany(next, topo, me, c.id, fee.amount);
-    if (fee.amount !== 0) next = { ...next, notices: [companyNotice(fee.amount)] };
+    next = chargeCompanyFee(next, topo, me, c, fee.amount);
   } else if (fee.kind === 'construction') {
     // ⚠️ 这一支**没有接**訊息框：金额要等「选哪一处地」定下来（真人走
     //   `pending.chooseBuildTarget`），落点这一刻 core 还不知道。
@@ -7110,8 +7150,8 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
       if (target !== 0) {
         const built = freeBuildEntity(next, topo, target, -1);
         if (built !== null) {
-          const paid = payCompany(
-            built.state, topo, me, c.id, entityLandPrice(built.state, topo, target) * built.state.priceIndex,
+          const paid = chargeCompanyFee(
+            built.state, topo, me, c, entityLandPrice(built.state, topo, target) * built.state.priceIndex,
           );
           // ★ 建設公司这一支的动效（同上）已按提示播放。
           const vt = entityViewTarget(paid, topo, target);

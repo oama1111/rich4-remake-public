@@ -978,3 +978,31 @@ describe('★★ 过路费神明调整那一扇（`fcn_0041d709`，`0x0041d7a2 p
     expect(b.lastGainSays ?? null).toBeNull();
   });
 });
+
+describe('★★ 第十四份：企業收費也过神明调整（@source 0x0041aec5 call 0x41d709）', () => {
+  it('★★ 小財神附身 ⇒ 董事長框（原价 3000）之后再弹「減免一半」，只付 1500', () => {
+    const after = reduce(onRivalCompany(INDUSTRY.sect, { godInfo: GOD_SMALL_FORTUNE }), { type: 'settle' }, companyTopo(INDUSTRY.sect));
+    expect(after.notices).toEqual([
+      { key: 'rent.payBoss', args: ['測試公司', '沙隆巴斯', 3000, '過路費'] },
+      { key: 'god.tollHalf', args: ['過路費'] },
+    ]);
+    expect(after.players[0]!.cash).toBe(50_000 - 1500);
+    expect(after.players[0]!.monthlyPaid).toBe(1500);
+  });
+
+  it('★★ 大財神附身 ⇒ 「免付」框 + 付款方「逃过一劫」那一句（原额 3000，@source 0x0041d7c1），一分不付', () => {
+    const after = reduce(onRivalCompany(INDUSTRY.sect, { godInfo: 2 }), { type: 'settle' }, companyTopo(INDUSTRY.sect));
+    expect(after.notices).toEqual([
+      { key: 'rent.payBoss', args: ['測試公司', '沙隆巴斯', 3000, '過路費'] },
+      { key: 'god.tollFree', args: ['過路費'], say: { player: 0, reliefAmount: 3000 } },
+    ]);
+    expect(after.players[0]!.cash).toBe(50_000);
+    expect(after.companyFunds[CID] ?? 0).toBe(0);
+  });
+
+  it('★ 大窮神附身 ⇒ 加倍付（6000）', () => {
+    const after = reduce(onRivalCompany(INDUSTRY.sect, { godInfo: 6 }), { type: 'settle' }, companyTopo(INDUSTRY.sect));
+    expect(after.notices[1]).toEqual({ key: 'god.tollDouble', args: ['過路費'] });
+    expect(after.players[0]!.cash).toBe(50_000 - 6000);
+  });
+});

@@ -133,6 +133,12 @@ describe('★ 触发判据：只有新聞 4 播', () => {
   it('★ 本来就是新聞 4（同一次事件被重放）→ 不重播', () => {
     const same = st({ kind: 'news', id: NEWS_ALIEN_ID });
     expect(alienNewsFxTrigger(same, same)).toBeNull();
+    // 别的 action 把同一个 `lastEvent` 原样带过去 ⇒ 也不重播
+    expect(alienNewsFxTrigger(same, { ...same })).toBeNull();
+  });
+
+  it('★★ 第十四份：连着两次抽到新聞 4（core 新建了一份 `lastEvent`）⇒ 第二次照播', () => {
+    expect(alienNewsFxTrigger(st({ kind: 'news', id: NEWS_ALIEN_ID }), st({ kind: 'news', id: NEWS_ALIEN_ID }))).not.toBeNull();
   });
 
   it('不是事件（lastEvent 为 null）→ 不播', () => {

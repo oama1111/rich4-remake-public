@@ -159,7 +159,8 @@ export function alienNewsFxTrigger(
 ): BoardFilmSpec | null {
   const ev = after.lastEvent;
   if (ev === null || ev.kind !== 'news' || ev.id !== NEWS_ALIEN_ID) return null;
-  const prev = before.lastEvent;
-  if (prev !== null && prev.kind === ev.kind && prev.id === ev.id) return null;
+  // ★ 第十四份：判据是**引用**（core 每抽一张都新建 `lastEvent`，别的 action 原样带过去）——
+  //   先前按 kind/id 比，连着两次抽到同一条新聞，第二次就不播了。
+  if (before.lastEvent === ev) return null;
   return ALIEN_NEWS_FILM;
 }

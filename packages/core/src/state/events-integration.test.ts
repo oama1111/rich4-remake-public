@@ -567,6 +567,30 @@ describe('★ 神明加持真的接上了 @source VA 0x0044b896', () => {
     expect(s4.lastGainSays ?? null).toBeNull();
   });
 
+  run('★★ 命運 10 / 11 施加后那一句：10 用同一个发生器掷 `rand()&1`（@source 0x0044cb28）→ 事件 3|4；11 固定事件 3', () => {
+    // 10 / 11 按座驾重映射（機車 → 10、汽車 → 11，`fortune.ts`）
+    const moto = standFortune(0, 0, { trafficMethod: 1 });
+    const car = standFortune(0, 0, { trafficMethod: 2 });
+    if (moto === null || car === null) return;
+    const s11 = reduce(forceDraw(car.s1, 11), { type: 'settle' }, car.topo);
+    const s10 = reduce(forceDraw(moto.s1, 10), { type: 'settle' }, moto.topo);
+    expect(s11.lastEvent).toEqual({ kind: 'fortune', id: 11, phraseIndex: 3 });
+    expect(s10.lastEvent?.id).toBe(10);
+    // 10 比 11 **多掷一次**（其余消耗两者相同：都是福運 0，不掷加持）
+    const rng = new WatcomRng();
+    rng.setState(s11.rngState);
+    const v = rng.next();
+    expect(s10.rngState).toBe(rng.getState());
+    expect(s10.lastEvent?.phraseIndex).toBe(3 + (v & 1));
+  });
+
+  run('★ 被福運挡掉（逃過此劫）⇒ 不带那一句', () => {
+    const c = standFortune(0, 101, { trafficMethod: 2 });
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 11), { type: 'settle' }, c.topo);
+    expect(s2.lastEvent).toEqual({ kind: 'fortune', id: 11 });
+  });
+
   run('★ 16（汽車超速罰款）接上了加持：財運 > 100 ⇒ 免付', () => {
     const c = standFortune(101, 0, { trafficMethod: 2 });
     if (c === null) return;

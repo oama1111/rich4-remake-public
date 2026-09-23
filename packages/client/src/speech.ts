@@ -512,6 +512,23 @@ export function detectMoneyGained(before: GameState, after: GameState): Detected
 }
 
 /**
+ * ★ 第十四份：命運 9「變賣所有股票求現」/ 10「機車被偷」/ 11「汽車撞電線桿」/ 32「變賣所有卡片道具」
+ * 施加完当前玩家说的那一句（事件号由 core 交在 `lastEvent.phraseIndex`，10 的二选一在 core 掷）。
+ *
+ * @source 9 `0x0044ca30`（事件 5）、10 `0x0044cb41`（事件 3|4，`0x0044cb28 rand()&1`）、
+ *   11 `0x0044cc41`（事件 3）、32 `0x0044d777`（事件 3），表情号都是 `push 2`。
+ *   都在施加之后（卖股 / 清座驾 + 镜头 / 变卖）⇒ 事件框收了才说（`afterStage`）。
+ */
+export function detectFortuneLine(before: GameState, after: GameState): DetectedSay[] {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev === (before.lastEvent ?? null) || ev.kind !== 'fortune') return [];
+  if (!FORTUNE_LINE_IDS.has(ev.id) || ev.phraseIndex === undefined) return [];
+  return [{ player: after.currentPlayer, event: ev.phraseIndex }];
+}
+
+const FORTUNE_LINE_IDS: ReadonlySet<number> = new Set([9, 10, 11, 32]);
+
+/**
  * ★ 第十四份：訊息框之后原版**紧跟着**的那一句（`NoticeHint.say`）。
  *
  * @source 三处：
@@ -1475,6 +1492,8 @@ export const DETECTORS: readonly SpeechDetector[] = [
   { name: 'moneyGained', source: [0x0044f354], order: 'afterStage', detect: detectMoneyGained },
   // ★ 第十四份：訊息框之后紧跟的那一句（免收 → 13、財神/加持免付 → 12..14、坐牢逃过 → 0）
   { name: 'noticeSay', source: [0x0041d6dd, 0x0041d7c1, 0x0044d028, 0x0044ce7e, 0x0044d873], order: 'afterStage', detect: detectNoticeSay },
+  // ★ 第十四份：命運 9 / 10 / 11 / 32 施加后那一句
+  { name: 'fortuneLine', source: [0x0044ca30, 0x0044cb41, 0x0044cc41, 0x0044d777], order: 'afterStage', detect: detectFortuneLine },
   // ★ W-55 行 7（G33）：小財神 `0x0040ecde` —— 神明台词窗 → 轉盤窗 → 收款 → **台词**
   //   ⇒ `afterStage`（§2.2 表）。排在收款那两条之后。
   { name: 'smallWealthLine', source: [0x0040eca4, 0x0040ecde], order: 'afterStage', detect: detectSmallWealthLine },

@@ -68,6 +68,7 @@ import {
   speechResourcesFor,
   TOOL_LINE_ORDER,
   detectNoticeSay,
+  detectFortuneLine,
   ownToolLineSpoken,
   toolUseSpeechLines,
   type SayEvent,
@@ -1565,6 +1566,7 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     ['godCard', 'afterStage', '★第八份 #5：福神附身得卡 —— 开场白 → 卡面 → 訊息框（0x4632fd）→ 台词（0x44f230）'],
     ['moneyGained', 'afterStage', '⚠E-19：调用点 `0x0044f420` 前后两列都空'],
     ['noticeSay', 'afterStage', '第十四份：訊息框之后紧跟的那一句（框在前）'],
+    ['fortuneLine', 'afterStage', '第十四份：命運 9/10/11/32 施加之后（事件框在前）'],
     ['hotelStay', 'afterStage', '⚠E-19：`0x0041a7e0` 所在函数没有 `player_say`；`0x0044f347` 两列都空'],
     ['pointsGained', 'afterStage', '⚠E-19：调用点 `0x0044f2b5` 前后两列都空'],
     ['pointsSquarePhrase', 'afterStage', '⚠E-19：`0x0041b211` 两列都空、`0x004154cf` 前有訊息框'],
@@ -2041,5 +2043,33 @@ describe('★★ 第十四份 #4：真人选定道具时先说，action 落地�
     const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
     expect(src).toContain('renderer.holdActorWalk(specialSlotOf(ACTOR_DOLL))');
     expect(src).toContain('renderer.releaseActorWalks(performance.now())');
+  });
+});
+
+describe('★★ 第十四份：命運 9 / 10 / 11 / 32 施加后那一句（`detectFortuneLine`）', () => {
+  it('事件号取 core 交的 `phraseIndex`，说话的是当前玩家；次序 `afterStage`', () => {
+    for (const [id, event] of [[9, 5], [10, 4], [11, 3], [32, 3]] as const) {
+      const [b, a] = to((s) => {
+        s.currentPlayer = 1;
+        s.lastEvent = { kind: 'fortune', id, phraseIndex: event };
+      });
+      expect(detectFortuneLine(b, a)).toEqual([{ player: 1, event }]);
+    }
+    expect(DETECTORS.find((d) => d.name === 'fortuneLine')?.order).toBe('afterStage');
+  });
+
+  it('被神明挡掉（没有 `phraseIndex`）/ 别的命運 / 同一个引用 ⇒ 不说', () => {
+    const [b, a] = to((s) => {
+      s.lastEvent = { kind: 'fortune', id: 10 };
+    });
+    expect(detectFortuneLine(b, a)).toEqual([]);
+    const [b2, a2] = to((s) => {
+      s.lastEvent = { kind: 'fortune', id: 30, phraseIndex: 3 };
+    });
+    expect(detectFortuneLine(b2, a2)).toEqual([]);
+    const [b3] = to((s) => {
+      s.lastEvent = { kind: 'fortune', id: 11, phraseIndex: 3 };
+    });
+    expect(detectFortuneLine(b3, { ...b3 })).toEqual([]);
   });
 });
