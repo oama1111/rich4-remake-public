@@ -7482,6 +7482,8 @@ function drawGameStage(): void {
     minimapBg,
     sidebarView,
     minimapMarker,
+    // ★ 替身那一趟小地图白框框替身（`hud.ts` 的 `minimapFrameCenter`，VA 0x00416f3d）
+    npcFrame: renderer.npcWalkWorld(performance.now()),
     pressedMinimapArrow,
     hotMinimapArrow,
     holidayArt,

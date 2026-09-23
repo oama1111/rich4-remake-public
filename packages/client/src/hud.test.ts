@@ -6,7 +6,9 @@
  * 数值栏逐栏偏高 8 像素、月曆每行多画一天。这类错单靠肉眼很难发现，
  * 但一条断言当场就抓住 —— 所以补在这里。
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import type { GameState } from '@rich4/core';
 import {
   alignFor,
   CAL,
@@ -23,6 +25,7 @@ import {
   hitPanelTag,
   minimapArrowRect,
   minimapAt,
+  minimapFrameCenter,
   minimapToWorld,
   monthCells,
   PANEL_HEIGHT,
@@ -388,5 +391,44 @@ describe('★ 侧栏的淘汰监听 @source Q-PERF-1', () => {
     const hud = new Hud({} as CanvasRenderingContext2D, cache);
     expect(hud.drainEvicted()).toBe(0);
     expect(hud.drainEvicted()).toBe(0);
+  });
+});
+
+// ============================================================
+//  ★ 小地图白框框的是 `[0x49910c]` 当前行动者 —— 替身那一趟框替身（VA 0x00416f3d）
+// ============================================================
+describe('★ `minimapFrameCenter`：玩家回合框玩家，替身那一趟框替身', () => {
+  const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
+  const run = existsSync(EXE) ? it : it.skip;
+  const at = (va: number, n: number): string => {
+    const d = readFileSync(EXE);
+    const o = 1024 + (va - 0x401000);
+    return d.subarray(o, o + n).toString('hex');
+  };
+  const st = (players: { xpos: number; ypos: number; whoPlays?: number }[], current = 0) =>
+    ({
+      currentPlayer: current,
+      players: players.map((p, i) => ({ index: i, whoPlays: 1, ...p })),
+    }) as unknown as GameState;
+
+  run('exe：替身支判 `+10 == 0`（在盘上）且 `ebx == [0x49910c]`；循环到 9 为止', () => {
+    expect(at(0x00416f42, 7)).toBe('80baf28d490000'); // cmp byte [edx + 0x498df2], 0
+    expect(at(0x00416f4b, 6)).toBe('3b1d0c914900'); //  cmp ebx, [0x49910c]
+    expect(at(0x00416f9f, 6)).toBe('3b1d0c914900'); //  两支共用的「是不是当前行动者」
+    expect(at(0x00416fb0, 3)).toBe('83fb09'); //         cmp ebx, 9
+  });
+
+  it('★ 替身在走 ⇒ 框在替身的插值点上（不是当前玩家）', () => {
+    const s = st([{ xpos: 1024, ypos: 1024 }]);
+    expect(minimapFrameCenter(s, { x: 512, y: 256 })).toEqual({ x: minimapAt(512), y: minimapAt(256) });
+  });
+
+  it('玩家回合 ⇒ 框当前玩家的 xpos/ypos；xpos == 0 或已出局 ⇒ 不画', () => {
+    expect(minimapFrameCenter(st([{ xpos: 1, ypos: 1 }, { xpos: 1024, ypos: 2048 }], 1), null)).toEqual({
+      x: minimapAt(1024),
+      y: minimapAt(2048),
+    });
+    expect(minimapFrameCenter(st([{ xpos: 0, ypos: 500 }]), null)).toBeNull();
+    expect(minimapFrameCenter(st([{ xpos: 500, ypos: 500, whoPlays: 0 }]), null)).toBeNull();
   });
 });

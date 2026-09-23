@@ -53,7 +53,7 @@
  *
  * | 图 | 是哪张 | 尺寸（实测 `map.mkf`）|
  * |---|---|---|
- * | 资源 `地图号+0x10` 图 1 | 大地圖底图（整张画好的地图，含地块与建筑） | 400×400 |
+ * | 资源 `地图号+0x10` 图 1 | 大地圖底图（整张画好的地图，含地块与建筑；**归属色块**另烙，见 `minimap-marks.ts`） | 400×400 |
  * | 资源 `角色号+0x1b` 图 5 | **玩家标记**（一枚小人头，锚点中心） | 30×27 / 23×24 …（逐角色不同）|
  *
  * 图 1 走 `fcn_004563f5`＝`draw_image_in_rect`（**原样拷**，不抠黑）；
@@ -63,6 +63,7 @@
 
 import type { GameState } from '@rich4/core';
 import { isAlive } from '@rich4/core';
+import { MINIMAP_MARK_RESOURCE, drawMinimapMarks, minimapMarks } from './minimap-marks.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 面板落点 **(20, 60)** @source VA 0x0040a883 `push 0x3c` / 0x0040a885 `push 0x14` */
@@ -233,6 +234,15 @@ export const bigMapScreen: UiScreen = {
     drawAt(
       env.stage,
       env.sprite('map.mkf', bigMapResource(env.state.globalMapId), BIG_MAP_BG_IMAGE, false),
+      BIG_MAP_AT.x,
+      BIG_MAP_AT.y,
+    );
+    // ── ★ 归属色块（第十三份試玩回報）：开窗时 `fcn_0040a4e1(1)`（0x0040a82d）把有主的
+    //   地 / 設施 / 企業烙进图 1 的工作面，WM_PAINT 贴的就是它（细节见 `minimap-marks.ts`）──
+    drawMinimapMarks(
+      env.stage,
+      (image) => env.sprite('Data.mkf', MINIMAP_MARK_RESOURCE, image, true),
+      minimapMarks(env.state, env.topo, 'big'),
       BIG_MAP_AT.x,
       BIG_MAP_AT.y,
     );

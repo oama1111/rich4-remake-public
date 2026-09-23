@@ -4,7 +4,8 @@
  *
  * ★ 由 rich4.exe 的两张函数指针表提取：
  *   新聞 `events_calls_table[]`  @ VA 0x00475e24（36 项）
- *   命運 `fortune_call_table[]`  @ VA 0x00475ef0（37 项）
+ *   命運 `fortune_call_table[]`  @ VA 0x00475ef0（前 37 项；实有 49 项，
+ *     37..48 是 33..36 按地图换文案的那一套，见 `FORTUNE_MAP_JAIL_EVENTS`）
  *   复核：`python3 tools/disasm.py scan news all` / `scan fortune all`
  *
  * `factor`：该事件的金额 = `物价指数 × factor`。
@@ -489,6 +490,84 @@ export function newsEvent(id: number): EventEntry | undefined {
 
 export function fortuneEvent(id: number): EventEntry | undefined {
   return FORTUNE_EVENTS.find((e) => e.id === id);
+}
+
+// ============================================================
+//  ★ 第十三份試玩回報（「遺失錢包損失2000元的配圖怎麼是高興的圖」）：
+//    命運的**插画**与 33..36 的**文案**都要经「表槽」查，不是直接拿事件号
+// ============================================================
+
+/**
+ * 命運插画表 —— `Data.mkf` 资源号，49 个 word。
+ *
+ * @source `0x475fb4`（`python3 tools/disasm.py dump 0x475fb4 49 2`），
+ *   读表的两处：
+ * ```asm
+ * 0044dc06  cmp   ebp, 0x21 / jge 0x44dc4d            ; 事件号 v < 33 ?
+ * 0044dc11  movsx eax, word [eax + 0x475fb4]          ; eax = 2v ⇒ 表[v]
+ * 0044dc53  movsx esi, word [0x4991b8]                ; 地图号低位（0..3）
+ * 0044dc5a  movsx eax, word [eax + esi*8 + 0x475fb4]  ; ⇒ 表[v + 4×低位]
+ * ```
+ * ★ **不是等差**：20/21/22（路邊撿錢）共用 497，23/24（遺失錢包）共用 498，
+ *   27/28/29（發票中獎）共用 501。先前按 `0x1dd + v` 取，v ≥ 23 全部错位 ——
+ *   24「遺失錢包損失」画的是 501 = 發票中獎那张笑脸（`0x1dd + 24 = 501`）。
+ */
+export const FORTUNE_ART_TABLE: readonly number[] = [
+  477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492,
+  493, 494, 495, 496, 497, 497, 497, 498, 498, 499, 500, 501, 501, 501, 502, 503,
+  504, 505, 506, 507, 508, 505, 509, 510, 511, 512, 506, 507, 513, 514, 515, 510,
+  516,
+];
+
+/**
+ * 命運 33..36（坐牢那四条）在**地图低位 1..3** 上换成的另一套 —— `fortune_call_table[37..48]`。
+ *
+ * @source 分派 `0x0044dc87 movsx esi, word [0x4991b8] / shl esi, 4 /
+ *   call [esi + eax*4 + 0x475ef0]` ⇒ 槽 = `v + 4×低位`；函数指针表 `0x475ef0`
+ *   实有 **49** 项（到插画表 `0x475fb4` 为止 = 0xc4 字节），不是 37。
+ *   12 支都是 46 字节的跳板：`mov esi, 天数 / push esi / push 文案 / jmp 0x44d7a8`
+ *   （与 34..36 一样落回 fortune[33] 的生效段）⇒ **天数、效果与 33..36 逐一相同**
+ *   （3/5/7/9 天），**只有文案与插画不同**。故 core 照旧只认 33..36，
+ *   本表只给画面用（`fortuneDisplayEntry`）。
+ *
+ * 每条的 `va` / `textVa` / `literal` 都由 `event-table.test.ts` 对 exe 逐字节核过。
+ */
+export const FORTUNE_MAP_JAIL_EVENTS: readonly EventEntry[] = [
+  { id: 37, va: 0x0044d959, factor: null, effects: ['prison'], textVa: 0x465c97, text: "#0222酒醉大鬧警局坐牢%d天", literal: 3 },
+  { id: 38, va: 0x0044d987, factor: null, effects: ['prison'], textVa: 0x465cb1, text: "#0223違法聚眾示威坐牢%d天", literal: 5 },
+  { id: 39, va: 0x0044d9b5, factor: null, effects: ['prison'], textVa: 0x465ccb, text: "#0224獵捕保育動物坐牢%d天", literal: 7 },
+  { id: 40, va: 0x0044d9e3, factor: null, effects: ['prison'], textVa: 0x465ce5, text: "#0225盜賣國寶坐牢%d天", literal: 9 },
+  { id: 41, va: 0x0044da11, factor: null, effects: ['prison'], textVa: 0x465cfb, text: "#0226誘騙未成年少女拘役%d天", literal: 3 },
+  { id: 42, va: 0x0044da3f, factor: null, effects: ['prison'], textVa: 0x465d17, text: "#0227防礙風化坐牢%d天", literal: 5 },
+  { id: 43, va: 0x0044da6d, factor: null, effects: ['prison'], textVa: 0x465d2d, text: "#0228走私毒品坐牢%d天", literal: 7 },
+  { id: 44, va: 0x0044da9b, factor: null, effects: ['prison'], textVa: 0x465d43, text: "#0229施放毒氣坐牢%d天", literal: 9 },
+  { id: 45, va: 0x0044dac9, factor: null, effects: ['prison'], textVa: 0x465d59, text: "#0230非法持有槍械坐牢%d天", literal: 3 },
+  { id: 46, va: 0x0044daf7, factor: null, effects: ['prison'], textVa: 0x465d73, text: "#0231毆打警員坐牢%d天", literal: 5 },
+  { id: 47, va: 0x0044db25, factor: null, effects: ['prison'], textVa: 0x465d89, text: "#0232獵捕保育動物坐牢%d天", literal: 7 },
+  { id: 48, va: 0x0044db53, factor: null, effects: ['prison'], textVa: 0x465da3, text: "#0233盜賣國家機密坐牢%d天", literal: 9 },
+];
+
+/** 事件号 ≥ 33 才走第二套表块 @source `0x0044dc06 cmp ebp, 0x21 / jge` */
+export const FORTUNE_MAP_VARIANT_FROM = 0x21;
+
+/**
+ * 命運事件号 → **表槽**（插画表与函数指针表共用同一个下标）。
+ *
+ * @param globalMapId 引擎的地图号 `[0x4991b6]×4 + [0x4991b8]`；原版这里只读低位 `[0x4991b8]`。
+ */
+export function fortuneSlot(fortuneId: number, globalMapId: number): number {
+  return fortuneId < FORTUNE_MAP_VARIANT_FROM ? fortuneId : fortuneId + 4 * (globalMapId & 3);
+}
+
+/** 命運插画的 `Data.mkf` 资源号（查 `FORTUNE_ART_TABLE`）；越界返回 `undefined` */
+export function fortuneArtResource(fortuneId: number, globalMapId: number): number | undefined {
+  return FORTUNE_ART_TABLE[fortuneSlot(fortuneId, globalMapId)];
+}
+
+/** 画面上该用哪一条文案（33..36 在地图低位 1..3 上换成 `FORTUNE_MAP_JAIL_EVENTS`） */
+export function fortuneDisplayEntry(fortuneId: number, globalMapId: number): EventEntry | undefined {
+  const slot = fortuneSlot(fortuneId, globalMapId);
+  return slot === fortuneId ? fortuneEvent(fortuneId) : FORTUNE_MAP_JAIL_EVENTS.find((e) => e.id === slot);
 }
 
 /** 金额 = 物价指数 × factor */

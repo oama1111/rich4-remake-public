@@ -4902,7 +4902,8 @@ alpha 0.55）。那张「按格子类型给中性色」的表是**重制版自�
 - D-EVENT-3（**近似**）多行文字行距 = 字号 + 6（原版走 GDI `DrawTextA`）
 - D-EVENT-4（**有意保留**）抽卡与魔法屋「得一張卡片」各起一段，本屏排在魔法屋之后
 - D-EVENT-5（**近似**）卡名 flag 4 居中在 (220,129)
-- D-EVENT-6（**近似**）命運插画表 `0x475fb4` 不是等差（id 20..36 可能差 1..6 号）
+- ✅ D-EVENT-6（**2026-09-23 已按表**，第十三份試玩回報「遺失錢包配圖是高興的圖」）命運插画改查 word 表 `0x475fb4`（`@rich4/data` 的 `FORTUNE_ART_TABLE`），id ≥ 33 按地图低位换槽；33..36 的文案同步换成 `fortune_call_table[37..48]` 那一套（`FORTUNE_MAP_JAIL_EVENTS`，天数不变）
+- D-DIALOG-1（**近似**，2026-09-23）通用訊息框 / 询问框（`dialog.ts`，原版 `0x00440cac` / `0x00440ba8`）正文**行距 22 = 字号 16 + 6**。原版多行排版整串交给 GDI `DrawTextA`（`0x44fabc` 里 `0x0044fba9 push 0x400` DT_CALCRECT、`0x0044fe70` DT_CENTER；无自拆 `\n`、无行距常量、无 DT_EXTERNALLEADING）⇒ 行距 = 細明體 `CreateFontA(−16)` 的 `tmHeight`，属字体文件度量、exe 里读不到。字号 / 颜色（16 号、`#f0f0f0` + `#101010` 描边，`create_font(0x10,0xf0f0f0,0x101010,3,1)`）与竖直居中（flag 4）已照原版
 
 ### `docs/deviations/T-042-044.md`
 
