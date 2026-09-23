@@ -3138,7 +3138,7 @@ export function giveAlmsIfBeggar(state: GameState, topo: MapTopology, nodeId: nu
   //   只看物件（或只看自己那一格）会漏：乞丐会落到「有人站着」或
   //   「已经有神明」的格子上，原版不可能出现。见 `rules/beggar.ts`、
   //   `rich4-spec/docs/systems/places.md` §5b.4。
-  const occupied = runtimeOccupiedNodes(r.players, state.objects);
+  const occupied = runtimeOccupiedNodes(r.players, state.objects, state.specialActors);
   const spots = objectNodeCandidates(topo.nodes).filter((n) => !occupied.has(n));
   // ★ 走**远距**那一支：原版 `fcn_0040cc56` 把玩家当前节点当参照点传给
   //   `_rich4_find_random_unoccupied_distant_node`（`rich4.asm:6843` 的 `push eax`）
@@ -3570,7 +3570,7 @@ function respawnPartner(
   // 别叠在已有物件**或玩家**身上 —— 原版 `test dword [node + 0x24], 0x80ffff00`
   // 把两者一起跳过（`rules/object-landing.ts` 的 `runtimeOccupiedNodes`）。
   // ⚠️ 先前这里只反查物件表：搭档登场时会**落到有人站着的格子上**。
-  const occupied = runtimeOccupiedNodes(state.players, objects);
+  const occupied = runtimeOccupiedNodes(state.players, objects, state.specialActors);
   const spots = objectNodeCandidates(topo.nodes).filter((n) => !occupied.has(n));
   const rng = new WatcomRng();
   rng.setState(state.rngState);

@@ -897,14 +897,48 @@ export function objectNodeCandidates(
  *
  * ⚠️ `attached !== 0` 的物件（附在人身上的神明）`nodeId` 虽非 0，
  * 但**不在**地图上，故不算占用。
+ *
+ * ★★ 第十五份（协调方裁定「照原版的占用位」）：**被关着 / 住店 / 消失的人不占位**。
+ *   那几支进去时都把**自己那一位清掉、新格不置**，要等释放才重新登记：
+ * ```asm
+ * ; send_to_prison 0x0043d593（送醫院 0x0043ec3f 同构）
+ * 0043d59b  edi = ~(0x100 << idx)
+ * 0043d61d  and dword [node(旧) + 0x24], edi     ; 清旧格；传送到关押格**不置**（places.md §2.1 第 1 条）
+ * ; 消失 0x0040d375
+ * 0040d444  and dword [node + 0x24], ~(0x100 << idx)
+ * ; 住店 0x0040d5a5（唯一调用点 0x0041a85e）
+ * 0040d5d2  and dword [node + 0x24], ~(0x100 << idx) ; 两支都清，都不置
+ * ; 释放：0x0040d6be（住店 / 監獄 / 醫院共用）0x0040d737 `or [node+0x24], 0x100<<idx`；
+ * ;       消失 0x0040d4e5 的 0x0040d526 同上
+ * ```
+ *   本引擎的「刑满」那一拍（0x80 → 0）就是释放函数那一拍，故判据 = 四个计数里任一非 0。
+ *   ⇒ 有人关在監獄里时，关押格照样能冒出神明（第十五份回报那只天使就在監獄关押格上）。
+ *
+ * ★★ 同一道掩码的 bits 12..15 是**惡人**（actor 4..7）站的格：走路例程替身分支
+ *   `0x1000 << (actor − 4)`（`game-loop.md`「走路例程已整段差分」）。在棋盘上走的那几个也要算；
+ *   关着的（監獄 / 醫院，`0x43d760..` 同样清位不置）与没出场的不算。
  */
 export function runtimeOccupiedNodes(
-  players: readonly { nodeId: number }[],
+  players: readonly {
+    nodeId: number;
+    blocking?: { inPrison: number; inHospital: number; inHotel: number; disappearing: number };
+  }[],
   objects: readonly { nodeId: number; attached: number }[],
+  actors: readonly { nodeId: number; place: number }[] = [],
 ): Set<number> {
   const out = new Set<number>();
-  for (const p of players) if (p.nodeId !== 0) out.add(p.nodeId);
+  for (const p of players) {
+    if (p.nodeId === 0) continue;
+    const b = p.blocking;
+    // @source 0x0043d61d / 0x0040d444 / 0x0040d5d2：关押 / 消失 / 住店期间自己那一位是清掉的
+    if (b !== undefined && (b.inPrison !== 0 || b.inHospital !== 0 || b.inHotel !== 0 || b.disappearing !== 0)) {
+      continue;
+    }
+    out.add(p.nodeId);
+  }
   for (const o of objects) if (o.nodeId !== 0 && o.attached === 0) out.add(o.nodeId);
+  // 惡人 4..7（表的前四项）：在棋盘上（place 0）才占位；機器娃娃（第 5 项）只在用道具那一趟里走
+  for (const a of actors.slice(0, 4)) if (a.place === 0 && a.nodeId !== 0) out.add(a.nodeId);
   return out;
 }
 
