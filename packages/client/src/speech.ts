@@ -61,7 +61,6 @@ import {
   FORTUNE_PAY_TAIL_IDS,
   isAlive,
   WHO_PLAYS_HUMAN,
-  WHO_PLAYS_MASK,
   type GameState,
   type MapTopology,
   type NoticeHint,
@@ -464,7 +463,8 @@ export function detectVictory(before: GameState, after: GameState): DetectedSay[
   if (aliveCount(after) !== 1 || aliveCount(before) <= 1) return [];
   const winner = after.players.find((p) => isAlive(p));
   if (winner === undefined) return [];
-  if ((winner.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) return [];
+  // `who_plays & 1`（bit0）—— 託管的真人也喊（2026-09-23 订正：先前按低 2 位比）
+  if ((winner.whoPlays & WHO_PLAYS_HUMAN) === 0) return [];
   return [{ player: winner.index, event: 24 }];
 }
 

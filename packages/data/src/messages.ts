@@ -617,7 +617,29 @@ export const BAIL_CLERK_TEXT = {
   lowPoints: t('#0002抱歉！\n你的點數不足！', 0x46514e),
   /** 醫院：开屏那一拍（`0x0043db48 mov edx,[0x475cc4]` → 0x465170）*/
   hospitalHello: t('#0127您好！請問您要替誰\n辦理出院手續？', 0x465170),
+  /** 醫院：YES 之后（状态 4，`0x0043e7a4 mov edx,[0x475ccc]` → 0x4651a5）*/
+  hospitalOk: t('#0129ＯＫ！您的朋友已經\n可以出院了！', 0x4651a5),
+  /** 醫院：右键离开（状态 7，`0x0043e924 mov edx,[0x475cd0]` → 0x4651ca）*/
+  hospitalBye: t('#0130要保重身體喔！', 0x4651ca),
+  /** 醫院：付不起（状态 5，`0x0043e7bf mov eax,[0x475cd4]` → 0x4651de）*/
+  hospitalLowPoints: t('#0002抱歉！\n你的點數不足！', 0x4651de),
+  /**
+   * ★ 表里还有一句 `#0128請稍後！`（`[0x475cc8]` → 0x465197），但全 exe **没有一处读** `0x475cc8` ——
+   *   原版从来不说这一句（`tools/disasm.py xref 0x475cc8` = 0 处）。收在这里只为逐字节对 exe，别拿去用。
+   */
+  hospitalWaitUnused: t('#0128請稍後！', 0x465197),
 } as const;
+
+/**
+ * 被保出来的**犯人**那一句道谢 —— 表 `0x475be4[槽]`（槽 4..7 = 小偷 / 強盜 / 流氓 / 間諜）。
+ * @source 監獄 `0x0043d242 mov edx,[esi + 0x475be4]`、醫院 `0x0043de34 mov ebx,[eax*4 + 0x475be4]`
+ */
+export const INMATE_THANKS: readonly OriginalText[] = [
+  t('#0124謝謝你！你真是\n我的再生父母！', 0x4650b4),
+  t('#0125我先走了！大恩\n大德來日再報！', 0x4650d7),
+  t('#0123太感激了！我一\n定會報答你的！', 0x4650fa),
+  t('#0126受人點水之恩，\n必當湧泉已報！', 0x46511d),
+];
 
 /** 把 `%s` / `%d` 依次替换掉 —— 原版用的是 C 的 sprintf，这里只做它用到的那两种 */
 export function formatOriginal(fmt: string, ...args: (string | number)[]): string {
@@ -652,6 +674,7 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(INSURANCE),
   ...Object.values(NOTICE_BOX),
   ...Object.values(BAIL_CLERK_TEXT),
+  ...INMATE_THANKS,
   ...GOD_NAMES,
   ...OBJECT_NAMES,
 ];

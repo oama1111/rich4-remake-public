@@ -18,7 +18,7 @@
  */
 
 import type { Player } from '../state/types.ts';
-import { isAlive, WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from '../state/types.ts';
+import { isAlive, WHO_PLAYS_HUMAN } from '../state/types.ts';
 import type { WinConditions } from './setup.ts';
 import { hasWinConditions } from './setup.ts';
 
@@ -158,7 +158,8 @@ export function checkVictory(
  */
 export function victoryEndCode(humanPlayers: number, winnerWhoPlays: number): 1 | 2 | 3 {
   // @source `test byte [player + 0x15], 1` —— 原版只看 bit0（1 = 真人）
-  if ((winnerWhoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) return 1;
+  //   ⇒ bit0 置位就算真人（託管 1|4 也算；3 也算 —— 读档能搬进来）。2026-09-23 订正：先前按低 2 位 `== 1` 比。
+  if ((winnerWhoPlays & WHO_PLAYS_HUMAN) === 0) return 1;
   // ★ 判据是 `[0x499104] == 1`（**开局存下的**人类数），不是现数在场的人
   return humanPlayers === 1 ? 2 : 3;
 }

@@ -39,7 +39,7 @@ import type { PendingInteraction } from '@rich4/core';
 import { CARDS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { InvEntry } from './inventory.ts';
-import { FONT_FAMILY } from './font.ts';
+import { FONT_FAMILY, clerkTextStyle, drawGdiText } from './font.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type ShopSprite = (
@@ -889,12 +889,11 @@ export function drawShopScreen(
   const cy = SHOP_BUBBLE_AT.y + Math.trunc((b?.height ?? 219) / 2) + SHOP_BUBBLE_TEXT.dy;
   const lines = d.bubble.split('\n').filter((l) => l !== '');
   const lh = SHOP_BUBBLE_TEXT.size + 6;
-  ctx.font = `${SHOP_BUBBLE_TEXT.size}px ${SHOP_FONT}`;
+  // ★ 2026-09-23：字效照 `fcn_0044ecb6` 的 `create_font(0x14, 正文色, 第二色=0, 2, 1)` —— 20 号深色**粗体**（`font.ts` 的 `clerkTextStyle`）
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#101010';
   lines.forEach((line, i) => {
-    ctx.fillText(line, cx, cy + (i - (lines.length - 1) / 2) * lh);
+    drawGdiText(ctx, line, cx, cy + (i - (lines.length - 1) / 2) * lh, clerkTextStyle());
   });
 }
 

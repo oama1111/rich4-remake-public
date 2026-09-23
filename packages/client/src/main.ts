@@ -8,9 +8,9 @@
  *   是同一种 action，引擎分不出也不需要分出来源。
  */
 
-import { BAIL_CLERK_TEXT, CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
+import { BAIL_CLERK_TEXT, CARD_IMPLS, CHARACTERS, INMATE_THANKS, TOOLS, stocksOfMap } from '@rich4/data';
 import { parseVoiceCode } from '@rich4/data';
-import { playVoiceCode, setVoiceBusyProbe, setVoiceSink, setVoiceStopper } from './voice-sink.ts';
+import { playVoiceCode, setVoiceBusyProbe, setVoiceSink, setVoiceStopper, voiceBusy } from './voice-sink.ts';
 import { LogRing } from './log-ring.ts';
 // ★ 开发用的状态注入口（`__rich4.debug.patch` 与三个现成配方，W-53）——
 //   只在 DEV 下挂；它**绕过 reduceRecorded**，故调用时会把记录仪标脏。
@@ -354,7 +354,7 @@ import {
   type AmountPage,
   type DialogHit,
 } from './dialog.ts';
-import { DICE_FLIC_BASE, GO_IMAGE, type SpriteFn } from './gameui.ts';
+import { DICE_FLIC_BASE, GO_IMAGE, YESNO_IMAGE, YESNO_RESOURCE, type SpriteFn } from './gameui.ts';
 import { GO_SIZE, goButton, boardToScreen } from './go-button.ts';
 import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './cursor-warp.ts';
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
@@ -572,12 +572,23 @@ import {
 } from './shop-screen.ts';
 import {
   BAIL_CLERK_MS,
+  BAIL_INMATE_AT,
+  BAIL_INMATE_RESOURCE,
+  BAIL_PLACES,
+  BAIL_YESNO_CENTER,
+  HOSPITAL_BYE_NURSE,
+  bailFlowHasBubble,
+  bailFlowOpen,
+  bailFlowStep,
   canPayOnScreen,
   drawBailClerk,
   drawBailScreen,
   hitBailSlot,
+  hitBailYesNo,
   type BailClerkBubble,
   type BailClerkKey,
+  type BailEvent,
+  type BailFlow,
   type BailSlotView,
 } from './bail-screen.ts';
 import { SCREENS } from './screens.ts';
@@ -1840,6 +1851,9 @@ const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
  *   以及各屏自己的判断。
  */
 function blockingPresentation(): boolean {
+  // ★ 2026-09-23：保釋屏答完之后的收尾（醫院「ＯＫ！」/ 犯人道谢 / 護士道别）还在演 ⇒ 回合别往下走
+  //   （原版这几句都在那扇模态窗里，关屏才回到回合流程）
+  if (bailFlow !== null && state.pending?.kind !== 'bail') return true;
   const overlay = activeUiScreen();
   // ★ 魔法屋女巫窗口停在状态 7（等真人点一格）时**不算演出**：那一刻它就是一个待决交互
   //   （`pending{magicHouse}`），挡住联机收件箱就会死锁 —— 别家那一端点定的答复
@@ -2085,7 +2099,7 @@ function cancelTopPanel(): boolean {
     stockAmount: stockAmount !== null,
     stockPage,
     shop: shopUi !== null,
-    bail: state.pending?.kind === 'bail',
+    bail: bailScreenOn(),
     loan: bankPending() !== null,
     loanReminder: reminderUi !== null,
   });
@@ -2188,8 +2202,11 @@ function applyCancelLayer(layer: CancelLayer): boolean {
       return true;
     // @source loc_0043d266（監獄）/ loc_0043e7c7（醫院）：关屏，返回 0 = 不保釋
     case 'bail':
+      // ★ 2026-09-23：走保釋屏自己的流程 —— 字框挂着 = 收框、YES/NO 开着 = NO、等点时 = 不保
+      //   （監獄当场关屏；醫院先道别「要保重身體喔！」再关）
       bailHot = null;
-      dispatch({ type: 'declineDecision' });
+      if (bailFlow !== null) bailSend({ kind: 'cancel' });
+      else dispatch({ type: 'declineDecision' });
       return true;
     // @source loc_00435f6d：放取消音 + 说再见 + 关贷款屏（状态机自己走）
     case 'loan':
@@ -3696,14 +3713,14 @@ let bailBgmOn = false;
  *   两处紧跟着就是各自的模态循环，返回后 `sub_00454bcc` 接回背景曲（`boardBgmDue`）。
  */
 function syncBailBgm(): void {
-  const p = state.pending;
-  if (screen !== 'game' || p === null || p.kind !== 'bail') {
+  const place = bailPlace();
+  if (screen !== 'game' || place === null) {
     bailBgmOn = false;
     return;
   }
   if (bailBgmOn) return;
   bailBgmOn = true;
-  void playTrackFile(p.place === 'prison' ? 'midi15.mid' : 'midi16.mid');
+  void playTrackFile(place === 'prison' ? 'midi15.mid' : 'midi16.mid');
 }
 
 /**
@@ -5176,11 +5193,31 @@ let shopUi: ShopUi | null = null;
  */
 let bailHot: number | null = null;
 
+/** 保釋屏开着吗（待决交互挂着，或 core 已经答完、屏上还在演收尾）*/
+function bailScreenOn(): boolean {
+  return state.pending?.kind === 'bail' || bailFlow !== null;
+}
+
+/** 这一屏是監獄还是醫院 */
+function bailPlace(): 'prison' | 'hospital' | null {
+  if (bailFlow !== null) return bailFlow.place;
+  const p = state.pending;
+  return p !== null && p.kind === 'bail' ? p.place : null;
+}
+
+/**
+ * 这一帧照哪一份状态画：醫院「ＯＫ！」那一拍原版**还没放人**（状态 4 收尾才放，`0x0043dbd6`）⇒ 画答复之前那一份；
+ * 其余照当前。
+ */
+function bailShownState(): GameState {
+  return bailFlow !== null && bailFlow.stage === 'ok' && bailBefore !== null ? bailBefore : state;
+}
+
 /** 当前这一屏的占用表（監獄 / 醫院各一张，见 `rules/visit.ts`）*/
-function bailOccupancy(): readonly number[] {
-  const pending = state.pending;
-  if (pending === null || pending.kind !== 'bail') return [];
-  return pending.place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+function bailOccupancy(src: GameState = bailShownState()): readonly number[] {
+  const place = bailPlace();
+  if (place === null) return [];
+  return place === 'prison' ? src.prisonOccupancy : src.hospitalOccupancy;
 }
 
 /**
@@ -5192,19 +5229,18 @@ function bailOccupancy(): readonly number[] {
  */
 function bailViews(): BailSlotView[] {
   const out: BailSlotView[] = [];
-  const occ = bailOccupancy();
-  const pending = state.pending;
+  const src = bailShownState();
+  const occ = bailOccupancy(src);
+  // 名字由 core 给（`bailCandidates` 已经按玩家/犯人分好了）；答完之后 pending 没了就用答之前那一份
   const named = new Map<number, string>();
-  if (pending !== null && pending.kind === 'bail') {
-    for (const c of pending.candidates) named.set(c.slot, c.name);
-  }
+  const pending = state.pending?.kind === 'bail' ? state.pending : bailBefore?.pending?.kind === 'bail' ? bailBefore.pending : null;
+  if (pending !== null) for (const c of pending.candidates) named.set(c.slot, c.name);
   for (let slot = 0; slot < occ.length; slot++) {
     if ((occ[slot] ?? 0) === 0) continue;
-    const p = state.players[slot];
+    const p = src.players[slot];
     out.push({
       slot,
       character: p?.character ?? 0,
-      // 名字由 core 给（`bailCandidates` 已经按玩家/犯人分好了）；取不到就兜底
       name: named.get(slot) ?? (p === undefined ? `犯人${slot}` : ''),
     });
   }
@@ -5229,13 +5265,40 @@ function drawStockStage(): void {
 
 /** 監獄／醫院那一屏 —— 与商店一样是**整屏**，画它的时候棋盘不画 */
 function drawBailStage(): void {
-  const pending = state.pending;
-  if (pending === null || pending.kind !== 'bail') return;
-  const me = state.players[state.currentPlayer];
+  const place = bailPlace();
+  if (place === null) return;
+  const src = bailShownState();
+  const me = src.players[src.currentPlayer];
   if (me === undefined) return;
+  const flow = bailFlow;
   stageCtx.fillStyle = '#000';
   stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
-  drawBailScreen(stageCtx, pending.place, bailViews(), me.points, bailHot, spriteNow);
+  // 悬停气泡只在「等点」那一拍（原版字框挂着时 `0x200` 那一支直接返回：監獄 `0x0043cbf5` / 醫院 `0x0043e35b`）
+  const hot = flow === null || flow.stage === 'idle' ? bailHot : null;
+  drawBailScreen(stageCtx, place, bailViews(), me.points, hot, spriteNow, {
+    // 醫院道别那一拍護士换图（`0x0043e8b3` 先把那块底图贴回去）
+    hideDecor: flow?.stage === 'farewell',
+  });
+  if (flow !== null) {
+    // 犯人获释：立绘（`Panel#64` 图 槽−4，抠黑按锚点）@source 監獄 `0x0043d1f8` / 醫院 `0x0043ddd9`
+    if (flow.stage === 'thanks' && flow.slot !== null && flow.slot >= 4) {
+      const at = BAIL_INMATE_AT[place];
+      const img = spriteNow('Panel.mkf', BAIL_INMATE_RESOURCE, flow.slot - 4, true);
+      if (img !== null) stageCtx.drawImage(img.bitmap, at.x - img.anchorX, at.y - img.anchorY);
+    }
+    if (flow.stage === 'farewell') {
+      const img = spriteNow('Panel.mkf', BAIL_PLACES.hospital.resource, HOSPITAL_BYE_NURSE.image, true);
+      if (img !== null) stageCtx.drawImage(img.bitmap, HOSPITAL_BYE_NURSE.x - img.anchorX, HOSPITAL_BYE_NURSE.y - img.anchorY);
+    }
+    // YES/NO（`_rich4_ui_yesno` 居中 (320,240)）：光标在哪一半就亮哪一半
+    if (flow.stage === 'confirm') {
+      const which = flow.yesNo === 'yes' ? YESNO_IMAGE.yes : flow.yesNo === 'no' ? YESNO_IMAGE.no : YESNO_IMAGE.none;
+      const img = spriteNow('Data.mkf', YESNO_RESOURCE, which, true);
+      if (img !== null) {
+        stageCtx.drawImage(img.bitmap, BAIL_YESNO_CENTER.x - img.width / 2, BAIL_YESNO_CENTER.y - img.height / 2);
+      }
+    }
+  }
   // ★ 2026-09-23：柜台人员的字框（`bail-screen.ts` 的 `BAIL_CLERK_FRAMES`）
   if (bailClerk !== null) drawBailClerk(stageCtx, spriteNow, bailClerk);
 }
@@ -5246,14 +5309,37 @@ function noticeBoxScreenActive(): boolean {
   return n.playing || n.queued > 0;
 }
 
+/** 保釋屏的流程（`bail-screen.ts` 的 `bailFlowStep`）；`null` = 没开着 */
+let bailFlow: BailFlow | null = null;
 /** 保釋屏柜台人员这一刻挂着的那一句（`null` = 没挂）*/
 let bailClerk: BailClerkBubble | null = null;
-/** 已经为哪一次 `pending` 说过开屏招呼（醫院 `0x405` 那一拍只说一次）*/
-let bailGreeted: unknown = null;
+/** 为哪一次 `pending` 开的屏（同一次只开一次）*/
+let bailOpenedFor: unknown = null;
+/** 答复落地之前最后那一份状态（醫院「ＯＫ！」那一拍照它画；也用来找出保了哪一格）*/
+let bailBefore: GameState | null = null;
+
+/** 这一句说的是什么（`#NNNN` 还在串头）*/
+function bailLine(key: BailClerkKey, slot?: number): string {
+  switch (key) {
+    case 'lowPoints':
+      return BAIL_CLERK_TEXT.lowPoints.text;
+    case 'hospitalHello':
+      return BAIL_CLERK_TEXT.hospitalHello.text;
+    case 'hospitalOk':
+      return BAIL_CLERK_TEXT.hospitalOk.text;
+    case 'hospitalLowPoints':
+      return BAIL_CLERK_TEXT.hospitalLowPoints.text;
+    case 'hospitalBye':
+      return BAIL_CLERK_TEXT.hospitalBye.text;
+    case 'prisonThanks':
+    case 'hospitalThanks':
+      return INMATE_THANKS[(slot ?? 4) - 4]?.text ?? '';
+  }
+}
 
 /** 挂一句：先播 `#NNNN` 语音，再按 `fcn_0044ee18` 的口径定最早收的时刻（2000 ms / 语音更长就撑到完）*/
-function bailSay(key: BailClerkKey, now: number): void {
-  const raw = key === 'lowPoints' ? BAIL_CLERK_TEXT.lowPoints.text : BAIL_CLERK_TEXT.hospitalHello.text;
+function bailSay(key: BailClerkKey, now: number, slot?: number): void {
+  const raw = bailLine(key, slot);
   const text = playVoiceCode(raw);
   let until = now + BAIL_CLERK_MS;
   const voiceMs = voiceDurationOf(raw);
@@ -5262,28 +5348,67 @@ function bailSay(key: BailClerkKey, now: number): void {
   requestRender();
 }
 
+/** 把流程往前推一步，并把它要的事做掉（说话 / 交答复 / 关屏）*/
+function bailSend(ev: BailEvent, now = performance.now()): void {
+  if (bailFlow === null) return;
+  const r = bailFlowStep(bailFlow, ev);
+  // 答复只由**这一座**交（联机旁观的那几端只演、不答）
+  if (r.effect !== null && r.effect.kind === 'answer' && !localSeatActive()) return;
+  bailFlow = r.flow;
+  // 字框：换阶段就收掉旧的那句（新的一句由 `say` 挂上）
+  if (!bailFlowHasBubble(r.flow.stage)) bailClerk = null;
+  const e = r.effect;
+  if (e !== null) {
+    if (e.kind === 'say') bailSay(e.key, now, e.slot);
+    else if (e.kind === 'answer') {
+      // ★ 真人的答复是一条 action（联机时各端同样落地，再各自从状态差里演收尾）
+      if (e.slot !== null) dispatch({ type: 'bail', slot: e.slot });
+      else dispatch({ type: 'declineDecision' });
+    } else if (e.kind === 'close') {
+      bailFlow = null;
+      bailClerk = null;
+      bailHot = null;
+    }
+  }
+  requestRender();
+}
+
 /**
- * 保釋屏的字框计时：醫院开屏那一拍说招呼（`0x0043db41` 的 `0x405`），到点收起。
- * 没开着就清掉（下一次进屏重新招呼）。
+ * 保釋屏每一帧：开屏（醫院先招呼）、看答复落地没有、字框到点收。
+ *
+ * ★ 答复落地的判据是**状态差**（`pending` 从 bail 变成别的）：本机点的与联机对端点的走同一条路。
+ *   保了哪一格 = 这一屏那张占用表里由 1 变 0 的那一格；没有 = 不保（关屏 / 醫院道别）。
  */
 function bailTick(now: number): void {
   const pending = state.pending;
-  if (pending === null || pending.kind !== 'bail') {
-    bailClerk = null;
-    bailGreeted = null;
+  if (pending !== null && pending.kind === 'bail') {
+    bailBefore = state;
+    if (bailOpenedFor !== pending && (bailFlow === null || bailFlow.stage === 'done')) {
+      bailOpenedFor = pending;
+      const r = bailFlowOpen(pending.place);
+      bailFlow = r.flow;
+      bailClerk = null;
+      bailHot = null;
+      if (r.effect !== null && r.effect.kind === 'say') bailSay(r.effect.key, now);
+    }
+  } else if (bailFlow !== null && bailFlow.stage !== 'ok' && bailFlow.stage !== 'thanks' && bailFlow.stage !== 'farewell') {
+    // 答复落地了（或被别的路径收掉）
+    const before = bailBefore;
+    let bailed: number | null = null;
+    if (before !== null) {
+      const was = bailFlow.place === 'prison' ? before.prisonOccupancy : before.hospitalOccupancy;
+      const now2 = bailFlow.place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+      const hit = was.findIndex((v, i) => v !== 0 && (now2[i] ?? 0) === 0);
+      if (hit >= 0) bailed = hit;
+    }
+    bailSend({ kind: 'resolved', bailed }, now);
+  }
+  if (bailFlow === null) {
+    if (pending === null || pending.kind !== 'bail') bailOpenedFor = null;
     return;
   }
-  if (bailGreeted !== pending) {
-    bailGreeted = pending;
-    // @source `0x0043daf8..0x0043db2e`（`0x401` 开框 + `PostMessage(0x405)`）→ `0x0043db41 mov byte [0x48c4f2], 1` /
-    //   `0x0043db48 mov edx, [0x475cc4]` / `0x0043db4f call 0x44ecb6` —— 只有醫院；監獄开屏不说话
-    if (pending.place === 'hospital') bailSay('hospitalHello', now);
-  }
-  if (bailClerk === null) return;
-  if (now >= bailClerk.until) {
-    bailClerk = null;
-    requestRender();
-    return;
+  if (bailClerk !== null && now >= bailClerk.until && !voiceBusy()) {
+    bailSend({ kind: 'bubbleEnd' }, now);
   }
   requestRender();
 }
@@ -7845,8 +7970,8 @@ function drawGameStage(): void {
     drawShopStage();
     return;
   }
-  // ★ 監獄／醫院保釋屏同样是整屏（T-038）—— 棋盘、侧栏全不画
-  if (screen === 'game' && state.pending?.kind === 'bail') {
+  // ★ 監獄／醫院保釋屏同样是整屏（T-038）—— 棋盘、侧栏全不画（答完之后的收尾也照画这一屏）
+  if (screen === 'game' && bailScreenOn()) {
     drawBailStage();
     return;
   }
@@ -9051,10 +9176,18 @@ function bindInput(): void {
     // 商店是整屏的：它在的时候棋盘不在画，光标底下也没有「节点」可悬停
     if (screen === 'game' && shopUi !== null) return;
 
-    // 監獄／醫院保釋屏：整屏，只记光标在哪个槽位上（原版 0x200 那条路）
-    if (screen === 'game' && state.pending?.kind === 'bail') {
-      const pending = state.pending;
-      const next = hitBailSlot(pending.place, p.x, p.y, bailOccupancy());
+    // 監獄／醫院保釋屏：整屏，只记光标在哪个槽位上（原版 0x200 那条路）；YES/NO 开着时只认那两半
+    if (screen === 'game' && bailScreenOn()) {
+      const place = bailPlace();
+      if (bailFlow !== null && bailFlow.stage === 'confirm') {
+        const half = hitBailYesNo(p.x, p.y);
+        if (half !== bailFlow.yesNo) {
+          bailFlow = { ...bailFlow, yesNo: half };
+          requestRender();
+        }
+        return;
+      }
+      const next = place === null ? null : hitBailSlot(place, p.x, p.y, bailOccupancy());
       if (next !== bailHot) {
         bailHot = next;
         requestRender();
@@ -9233,7 +9366,7 @@ function bindInput(): void {
     //   `click` 这一路不碰它 —— 否则同一次点会被处理两遍。
     if (screen === 'game' && shopUi !== null) return;
     // 監獄／醫院保釋屏同理：整屏接管，别让同一次点再落到通用对话框上
-    if (screen === 'game' && state.pending?.kind === 'bail') return;
+    if (screen === 'game' && bailScreenOn()) return;
 
     // 底下都是棋盘上的交互 —— 其余屏（含個人資產表）到这儿就结束
     if (screen !== 'game') return;
@@ -9745,7 +9878,7 @@ function bindInput(): void {
       by > 0 &&
       currentDialog() === null &&
       sceneFor(state.pending) === null &&
-      state.pending?.kind !== 'bail'
+      !bailScreenOn()
     ) {
       const m = tipModel(map, state, bx, by, (wx, wy) =>
         worldToScreen(wx, wy, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h }),
@@ -9904,27 +10037,30 @@ function bindInput(): void {
       return;
     }
 
-    // ── 監獄／醫院保釋屏：抬手才保釋（原版 0x202，`loc_0043cef6` / `loc_0043e...`）──
-    if (screen === 'game' && state.pending?.kind === 'bail') {
-      const pending = state.pending;
-      const occupancy = pending.place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+    // ── 監獄／醫院保釋屏：抬手（原版 0x202，監獄 `loc_0043cef6` / 醫院 `loc_0043e658`）──
+    //   ★ 2026-09-23：整段走 `bail-screen.ts` 的 `bailFlowStep` —— 字框挂着时点一下只收框；
+    //   付得起先弹 YES/NO（`0x453a32` 居中 (320,240)），YES 才把答复交给 core；
+    //   付不起柜台人员说「抱歉！你的點數不足！」（監獄 (0xe6,0x12c) / 醫院 (8,8) 那只框）。
+    if (screen === 'game' && bailScreenOn()) {
+      // 只认左键抬手（0x202 = WM_LBUTTONUP）；右键那一下由面板取消（0x205）那一路处理
+      if (e.button !== 0) return;
       const q = eventToStage(e);
-      if (q !== null) {
-        const slot = hitBailSlot(pending.place, q.x, q.y, occupancy);
-        if (slot !== null) {
+      const place = bailPlace();
+      if (q !== null && place !== null && bailFlow !== null && state.pending?.kind === 'bail' && localSeatActive()) {
+        if (bailFlow.stage === 'confirm') {
+          bailSend({ kind: 'yesNo', hit: hitBailYesNo(q.x, q.y) });
+        } else {
+          const occupancy = place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+          const slot = hitBailSlot(place, q.x, q.y, occupancy);
           // 够不够用这一屏自己的判据（`>= 赎金`），不是电脑那条更严的。
-          if (canPayOnScreen(state.players[state.currentPlayer]?.points ?? 0, slot)) {
-            dispatch({ type: 'bail', slot });
-            bailHot = null;
-          } else {
-            log('點券不足，付不起這位的保釋金');
-            // ★ 2026-09-23：監獄那一屏付不起 ⇒ 柜台人员开字框「#0002抱歉！你的點數不足！」
-            //   @source `0x0043d0d4 cmp 點券, [槽*4+0x475c44] / jl 0x43cf97` → `0x0043cfb5 call 0x44ec30` /
-            //   `0x0043cfc2 call 0x44ecb6(0x46514e)`（醫院那一屏的点击处理里没有这一句）
-            if (pending.place === 'prison') bailSay('lowPoints', performance.now());
-            requestRender();
-          }
+          const affordable = slot !== null && canPayOnScreen(state.players[state.currentPlayer]?.points ?? 0, slot);
+          if (slot !== null && !affordable) log('點券不足，付不起這位的保釋金');
+          bailSend({ kind: 'click', slot, affordable });
+          bailHot = null;
         }
+      } else if (bailFlow !== null && bailFlowHasBubble(bailFlow.stage)) {
+        // 收尾那几句（答复已落地）也照样点一下就收
+        bailSend({ kind: 'bubbleEnd' });
       }
       return;
     }
@@ -11435,7 +11571,7 @@ async function boot(): Promise<void> {
               why: 'shop:EXIT',
             };
           }
-          if (state.pending?.kind === 'bail') return { gesture: 'rightClick', ...mid, why: 'bail' };
+          if (bailScreenOn()) return { gesture: 'rightClick', ...mid, why: 'bail' };
           // 通用填数页：右键只是退回上一扇 YES/NO（脚本再点 YES 就成了死循环）⇒ 真人的做法是
           //   **敲数字 + Enter**（那扇窗自己认主键盘 0-9 / Enter，@source `loc_00452e4b`）。
           if (amountPage !== null) {

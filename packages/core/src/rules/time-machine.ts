@@ -62,12 +62,13 @@ export function takeSnapshot(state: GameState): string {
 /**
  * 回合开始时给真人存快照。
  *
- * @source 0x004480a0 `test byte [player + 0x15], 1` —— 只给 `who_plays == 1`。
- *   电脑玩家不存，所以托管中的玩家用时光机也是无效的。
+ * @source 0x004480a0 `test byte [player + 0x15], 1` / `0x004480a7 je` —— 只看 **bit0**：
+ *   电脑（2）不存；託管中的真人（1|4 = 5）bit0 仍是 1 ⇒ **照存**。
  */
 export function snapshotOnTurnStart(state: GameState): GameState {
   const me = state.players[state.currentPlayer];
-  if (me === undefined || me.whoPlays !== WHO_PLAYS_HUMAN) return state;
+  // ★ 2026-09-23 订正：`test byte, 1` 看的是 **bit0** —— 託管的真人（1|4）也存；先前写成整字节 `== 1`
+  if (me === undefined || (me.whoPlays & WHO_PLAYS_HUMAN) === 0) return state;
   const snapshots = [...state.snapshots];
   snapshots[state.currentPlayer] = takeSnapshot(state);
   return { ...state, snapshots };

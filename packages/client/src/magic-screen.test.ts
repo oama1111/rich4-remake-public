@@ -292,16 +292,18 @@ interface FakeCtx {
 function fakeCtx(over: Record<number, Partial<{ w: number; h: number; ax: number; ay: number }>> = {}): FakeCtx {
   const images: { chunk: number; x: number; y: number }[] = [];
   const texts: string[] = [];
+  // 阴影那一遍（第二色 #202020，`font.ts` 的 `drawGdiText`）不记，只记正文
+  let fill = '';
   const ctx = {
     save() {}, restore() {},
     drawImage(bitmap: { chunk: number }, x: number, y: number) {
       images.push({ chunk: bitmap.chunk, x, y });
     },
     strokeText(t: string) { void t; },
-    fillText(t: string) { texts.push(t); },
+    fillText(t: string) { if (fill !== '#202020') texts.push(t); },
     beginPath() {}, arc() {}, stroke() {},
     set font(_v: string) {}, set textAlign(_v: string) {}, set textBaseline(_v: string) {},
-    set lineWidth(_v: number) {}, set strokeStyle(_v: string) {}, set fillStyle(_v: string) {},
+    set lineWidth(_v: number) {}, set strokeStyle(_v: string) {}, set fillStyle(v: string) { fill = v; },
   } as unknown as CanvasRenderingContext2D;
   const sprite: MagicSprite = (_a, _r, chunk) => {
     const o = over[chunk] ?? {};

@@ -33,7 +33,7 @@ import { sceneOfMonth } from '@rich4/core';
 import { FINANCE_BORROW, FINANCE_BYE, FINANCE_REPAY } from './bank-loan.ts';
 import { appendDigitKey, backspaceKey } from './amount-keys.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { FONT_FAMILY, clerkTextStyle, drawGdiText } from './font.ts';
 import { alignFor } from './hud.ts';
 // ★ 店員那几句话的**语音出口**（`#0075` 那一句就在里面）——
 //   见 `loanBubbleVoice` 的取证块。
@@ -1187,11 +1187,10 @@ export function drawLoanBubble(
   const cy = LOAN_BUBBLE.y + img.height / 2 + LOAN_BUBBLE.dy;
   const lines = text.split('\n').filter((l) => l !== '');
   const lh = LOAN_BUBBLE.size + 6;
-  ctx.font = `${LOAN_BUBBLE.size}px ${FONT}`;
+  // ★ 2026-09-23：字效照 `fcn_0044ecb6` 的 `create_font(0x14, 正文色, 第二色=0, 2, 1)` —— 20 号深色**粗体**（`font.ts` 的 `clerkTextStyle`）
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = LOAN_BUBBLE.color;
   lines.forEach((line, i) => {
-    ctx.fillText(line, cx, cy + (i - (lines.length - 1) / 2) * lh);
+    drawGdiText(ctx, line, cx, cy + (i - (lines.length - 1) / 2) * lh, clerkTextStyle(LOAN_BUBBLE.color));
   });
 }

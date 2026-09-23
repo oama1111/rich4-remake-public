@@ -101,7 +101,7 @@ import { playVoiceCode } from './voice-sink.ts';
 import { LOTTERY } from '@rich4/data';
 import type { ArchiveName, LoadedFlic, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
-import { FONT_FAMILY } from './font.ts';
+import { clerkTextStyle, drawGdiText } from './font.ts';
 // 取消音（`[0x482332] = 4`）—— 与右键/ESC 那条梯子共用同一个号
 import { CANCEL_SOUND } from './panel-cancel.ts';
 import { DRAW_DRUM_RESOURCE, DRAW_FLOWER_RESOURCE } from './lottery-draw-screen.ts';
@@ -609,8 +609,6 @@ export function stripVoice(text: string): string {
 //  绘制
 // ============================================================
 
-const LOT_FONT = FONT_FAMILY;
-
 /** 资源 12 取图 —— 抠不抠黑由 `LOT_KEYED` 说了算，别在各处手写 */
 function lotSprite(sprite: LotSprite, index: number): Sprite | null {
   return sprite(LOT_ARCHIVE, LOT_RESOURCE, index, LOT_KEYED.has(index));
@@ -706,12 +704,11 @@ export function drawLotteryScreen(
   const cy = LOT_BUBBLE_AT.y + Math.trunc((b?.height ?? 192) / 2) + LOT_BUBBLE_TEXT.dy;
   const lines = stripVoice(v.message).split('\n').filter((l) => l !== '');
   const lh = LOT_BUBBLE_TEXT.size + 6;
-  ctx.font = `${LOT_BUBBLE_TEXT.size}px ${LOT_FONT}`;
+  // ★ 2026-09-23：字效照 `fcn_0044ecb6` 的 `create_font(0x14, 正文色, 第二色=0, 2, 1)` —— 20 号深色**粗体**（`font.ts` 的 `clerkTextStyle`）
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#101010';
   lines.forEach((line, i) => {
-    ctx.fillText(line, cx, cy + (i - (lines.length - 1) / 2) * lh);
+    drawGdiText(ctx, line, cx, cy + (i - (lines.length - 1) / 2) * lh, clerkTextStyle());
   });
 }
 

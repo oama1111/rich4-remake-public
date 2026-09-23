@@ -65,7 +65,7 @@ import {
   isAiControlled,
 } from '@rich4/core';
 import type { Sprite } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { FONT_FAMILY, clerkTextStyle, drawGdiText } from './font.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
@@ -771,14 +771,13 @@ export function drawAuctionScreen(
   const center = auctionBoxTextCenter(box);
   const cx = center.x;
   const cy = center.y;
-  ctx.font = `${AUCTION_BOX_FONT_SIZE}px ${AUCTION_FONT}`;
+  // ★ 2026-09-23：字效照 `fcn_0044ecb6` 的 `create_font(0x14, 正文色, 第二色=0, 2, 1)` —— 20 号深色**粗体**（`font.ts` 的 `clerkTextStyle`）
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#101010';
   const lines = d.message.split('\n').filter((l) => l !== '');
   const lh = AUCTION_BOX_FONT_SIZE + 6;
   lines.forEach((line, i) => {
-    ctx.fillText(line, cx, cy + (i - (lines.length - 1) / 2) * lh);
+    drawGdiText(ctx, line, cx, cy + (i - (lines.length - 1) / 2) * lh, clerkTextStyle());
   });
 }
 

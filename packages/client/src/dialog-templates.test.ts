@@ -206,3 +206,30 @@ describe('★ 框模板的字效（`create_font` 第 4 / 5 参）照每一处调
     }
   });
 });
+
+describe('★ 柜台字框（`fcn_0044ec30` / `fcn_0044ecb6`）的字效：19 处开框只有魔法屋带第二色', () => {
+  /** 每处开框的头两个 push（第 7 参 = 第二色、第 6 参 = 正文色）*/
+  const DARK = [0x6a, 0x00, 0x68, 0x10, 0x10, 0x10, 0x00]; // push 0 / push 0x101010
+  const SITES = [
+    0x0042d344, 0x0042f3db, 0x0042f7b7, 0x00430a6c, 0x00430d99, 0x00434445, 0x004345ff, 0x00435e65,
+    0x00438a31, 0x00438abf, 0x00439120, 0x00439e74, 0x0043c690, 0x0043cf97, 0x0043d21c, 0x0043daf8,
+    0x0043de07, 0x0043df46,
+  ];
+  runExe('exe：18 处都是 `push 0 / push 0x101010`；魔法屋 0x00432575 是 `push 0x202020 / push 0xe0e0e0`', () => {
+    for (const va of SITES) expect({ va, b: exeBytes(va, 7) }).toEqual({ va, b: DARK });
+    expect(exeBytes(0x00432575, 10)).toEqual([0x68, 0x20, 0x20, 0x20, 0x00, 0x68, 0xe0, 0xe0, 0xe0, 0x00]);
+  });
+
+  runExe('exe：`fcn_0044ecb6` 按第二色选字效 —— 非 0 `push 1 / push 3`、为 0 `push 1 / push 2`，字号 0x14', () => {
+    expect(exeBytes(0x0044ed53, 2)).toEqual([0x85, 0xdb]); // test ebx, ebx
+    expect(exeBytes(0x0044ed57, 4)).toEqual([0x6a, 0x01, 0x6a, 0x03]);
+    expect(exeBytes(0x0044ed65, 4)).toEqual([0x6a, 0x01, 0x6a, 0x02]);
+    expect(exeBytes(0x0044ed71, 2)).toEqual([0x6a, 0x14]);
+  });
+
+  it('clerkTextStyle：无第二色 = 20 号粗体无阴影；魔法屋那种 = 粗体 + 阴影', async () => {
+    const { clerkTextStyle } = await import('./font.ts');
+    expect(clerkTextStyle()).toEqual({ size: 0x14, color: '#101010', color2: '#000000', flags: 2, spacing: 1 });
+    expect(clerkTextStyle('#e0e0e0', '#202020')).toEqual({ size: 0x14, color: '#e0e0e0', color2: '#202020', flags: 3, spacing: 1 });
+  });
+});

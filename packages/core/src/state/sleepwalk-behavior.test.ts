@@ -71,17 +71,28 @@ function sleepwalkingGame(days = 3): { state: GameState; topo: ReturnType<typeof
 // ============================================================
 
 describe('★ 系统接管：梦游期间回合开局就自动掷骰', () => {
-  have('`startTurn` 一路自动走完这一回合 —— 绝不停在 `awaitingRoll` 等人', () => {
+  have('`startTurn` 当场掷骰起步，之后只剩机械步（走 / 结算），走完真的挪了格', () => {
     const { state, topo } = sleepwalkingGame();
     const after = reduce({ ...state, phase: 'turnStart' }, { type: 'startTurn' }, topo);
     // 原版 `fcn_0040c912` 对 `+0x37 != 0` 是「立刻 `auto_move()`」并返回 −1，
     // 所以绝不会停在 `awaitingRoll` 等人（本引擎的 `awaitingRoll` = 等玩家点 GO）。
     expect(after.phase).not.toBe('awaitingRoll');
-    // ★ 更强的一条：**这一个 `reduce` 就把整回合走完了** ——
-    //   `startTurn` 内部 `rollDice`，之后 `moving` 的每一步由回合驱动推进，
-    //   落点结算完直接 `turnEnd`。玩家全程没有插手的机会。
-    expect(after.phase).toBe('turnEnd');
-    expect(after.players[0]!.blocking.sleepWalking).toBe(3); // 天数没被顺手清掉
+    // ★ 2026-09-23：先前 `turnController` 把 −1 归成 `skip` ⇒ 这里直接 `turnEnd`、**原地不动**，
+    //   旧断言「一个 reduce 就到 turnEnd」恰好把这个缺陷钉住了。原版 −1 走 `ja 0x418e7a`，
+    //   `auto_move` 已经在路上 ⇒ 这里是 `moving`、骰子已掷。
+    expect(after.phase).toBe('moving');
+    expect(after.dice.length).toBeGreaterThan(0);
+    expect(after.stepsTotal).toBeGreaterThan(0);
+    // 余下只有机械步（岔路不问人，见 `step`）—— 一路推到回合末
+    let s = after;
+    for (let i = 0; i < 200 && s.phase !== 'turnEnd'; i++) {
+      if (s.phase === 'moving') s = reduce(s, { type: 'step' }, topo);
+      else if (s.phase === 'settling') s = reduce(s, { type: 'settle' }, topo);
+      else break;
+    }
+    expect(s.phase).toBe('turnEnd');
+    expect(s.players[0]!.nodeId).not.toBe(state.players[0]!.nodeId);
+    expect(s.players[0]!.blocking.sleepWalking).toBe(3); // 天数没被顺手清掉
   });
 
   have('回合开始判定如实报 `sleepWalk: true`（`raw = -1`）', () => {

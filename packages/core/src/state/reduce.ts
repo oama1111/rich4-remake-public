@@ -1602,8 +1602,9 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         //
         // ⚠️ 先前 `docs/gaps/05-loop-minigames-ai.md` 里的「梦游由 turn-start 提前拦掉、
         //   落点根本不进」是**读错了**：`startTurn` 的夢遊支只是**立刻掷骰并自动走完**
-        //   （本引擎在 `startTurn` 里一路走完），落点照进 —— 实测同一个 `startTurn`
-        //   就会把玩家从原格走到新格并 `settle`。少了这道闸，夢遊期間会照抽
+        //   （本引擎在 `startTurn` 里当场掷骰，之后只剩机械的 `step` / `settle`），落点照进。
+        //   （2026-09-23：此前 `turnController` 把夢遊的 −1 归成 `skip`，夢遊者其实原地不动 ——
+        //   见 `rules/turn-start.ts`。）少了这道闸，夢遊期間会照抽
         //   新聞/命運（正是试玩回报里「事件重复触发」的那一类观感）。
         if (player.blocking.sleepWalking !== 0) return { ...state, phase: 'turnEnd' };
         const out = settleSpecialSquare(
@@ -4309,8 +4310,8 @@ function landAtPlayer(state: GameState, topo: MapTopology, playerIndex: number):
 function enterMinigame(state: GameState, specialKind: number): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return state;
-  // @source cmp byte [player + 0x15], 1 / jne 不玩
-  const human = (me.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN;
+  // @source cmp byte [player + 0x15], 1 / jne 不玩 —— ★ 整字节比较：託管（1|4）也走「不玩」（2026-09-23 订正，先前按低 2 位比）
+  const human = isPlainHuman(me);
   if (!human) return settleMinigame(state, null);
 
   return {
@@ -4393,7 +4394,8 @@ function enterVisit(state: GameState, topo: MapTopology, specialKind: number): G
   // @source 占用表全空即返回
   if (!anyoneConfined(occ)) return { ...state, phase: 'turnEnd' };
 
-  const human = (me.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN;
+  // @source 監獄 `0x0043d331` / 醫院 `0x0043e9d1 cmp byte [player + 0x15], 1 / jne 电脑支` —— ★ 整字节：託管走电脑那一支
+  const human = isPlainHuman(me);
   if (human) {
     return { ...state, pending: pendingForSpecial(state, topo, specialKind) };
   }
@@ -7750,7 +7752,8 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
   const player = state.players[me];
   if (c === undefined || player === undefined) return { ...state, phase: 'turnEnd' };
   const chairman = ownerOf(state.commercialOwners[c.id] ?? emptyOwnership());
-  const human = (player.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN;
+  // @source `0x0041aa3c` / `0x0041acd1 cmp byte [+0x15], 1` —— ★ 整字节：託管走电脑那一支（2026-09-23 订正）
+  const human = isPlainHuman(player);
   const rng = new WatcomRng();
   rng.setState(state.rngState);
 
@@ -7931,7 +7934,8 @@ function afterOwnLab(state: GameState, topo: MapTopology, facilityId: number): G
   // @source 0x0041b102 `test byte [設施+0x1c], 0xf / jne 跳过` ——
   //   **被查封**的研究所不开面板（涨价位 0x50 的低半字节是 0，不受影响）。
   if (isSealedStrict(fac.priceStatus)) return state;
-  if ((player.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) {
+  // @source `0x0044102f cmp byte [+0x15], 1 / jne 0x4411e7` —— ★ 整字节：託管走电脑那一支（2026-09-23 订正）
+  if (!isPlainHuman(player)) {
     const started = startResearch(aiPickResearchProject(fac.level), fac.level);
     if (started === null) return state;
     const facilityResearchProject = [...state.facilityResearchProject];
