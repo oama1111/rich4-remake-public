@@ -10358,7 +10358,7 @@ async function boot(): Promise<void> {
          * 那一对 `before/after` 摆出来（`lotteryDrawCue` 的判据与日期推进
          * 那一条完全一样），演出本身一格都不改。
          */
-        lotteryDraw: () => {
+        lotteryDraw: (won = true) => {
           const lot = new Array<number>(36).fill(0);
           lot[6] = 1; // 1 号玩家持 07 号
           const before: GameState = {
@@ -10367,14 +10367,17 @@ async function boot(): Promise<void> {
             totalDays: state.totalDays,
             pool: 5000,
             lottery: lot,
-            players: state.players.map((p, i) => (i === 0 ? { ...p, cash: p.cash + 5000 } : p)),
+            lastLotteryDraw: null,
+            players: state.players.map((p, i) => (i === 0 && won ? { ...p, cash: p.cash + 5000 } : p)),
           };
+          // ★ 开出的号由 core 交出来（`lastLotteryDraw`）：中奖开 07（槽 6），空号开 23（槽 22）
           const after: GameState = {
             ...before,
             day: 15,
             totalDays: before.totalDays + 1,
-            pool: 0,
-            lottery: new Array<number>(36).fill(0),
+            pool: won ? 0 : 5000,
+            lottery: won ? new Array<number>(36).fill(0) : [...lot],
+            lastLotteryDraw: { number: won ? 6 : 22, winner: won ? 0 : null, pool: 5000, sold: [...lot] },
           };
           state = after;
           const cue = lotteryDrawCue(before, after);

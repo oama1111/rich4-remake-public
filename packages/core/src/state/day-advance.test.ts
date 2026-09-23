@@ -116,6 +116,52 @@ describe('樂透开奖', () => {
     const s = endTurn(makeGameState({ month: 3, day: 14, pool: 500_000 }));
     expect(s.day).toBe(15);
     expect(s.pool).toBe(500_000);
+    // 原版此时根本不开屏（0x00431729）⇒ 也没有「本期号码」可交给表现层
+    expect(s.lastLotteryDraw).toBeNull();
+  });
+
+  describe('★★ 开奖屏要显示的「本期号码」由 core 交出来（第十二份試玩回報）', () => {
+    it('★ 有人中奖：号、得主、开奖前公库、开奖前号码表都在提示里', () => {
+      const before = withTickets(14);
+      const s = endTurn(before);
+      const h = s.lastLotteryDraw;
+      expect(h).not.toBeNull();
+      expect(h!.winner).toBe(0);
+      expect(h!.pool).toBe(500_000);
+      expect(h!.sold).toEqual(before.lottery);
+      // 开出的号确实是玩家 0 的（12 张全归他 → 必定在已售里开）
+      expect(before.lottery[h!.number]).toBe(1);
+    });
+
+    it('★★ 没人中奖：号码表与公库原样 —— 号码**只有**提示里有（表现层先前只能「当 0 号播」）', () => {
+      // 只卖出一张（玩家 1 持 05 号），不超门槛 ⇒ 全 36 号里随机开；找一个开不中的种子
+      const lottery = new Array<number>(36).fill(0);
+      lottery[4] = 2;
+      let found: GameState | null = null;
+      for (let seed = 1; seed < 200 && found === null; seed++) {
+        const s = endTurn(makeGameState({ month: 3, day: 14, lottery, pool: 7_000, rngState: seed }));
+        if (s.lastLotteryDraw?.winner === null) found = s;
+      }
+      expect(found).not.toBeNull();
+      const h = found!.lastLotteryDraw!;
+      expect(h.number).not.toBe(4);
+      expect(h.number).toBeGreaterThanOrEqual(0);
+      expect(h.number).toBeLessThan(36);
+      expect(h.pool).toBe(7_000);
+      expect(found!.lottery).toEqual(lottery); // 规则侧原样结转
+      expect(found!.pool).toBe(7_000);
+    });
+
+    it('★ 纯表现提示只活一条 action：下一条 action 就清回 null', () => {
+      const s = endTurn(withTickets(14));
+      expect(s.lastLotteryDraw).not.toBeNull();
+      const next = endTurn(s);
+      expect(next.lastLotteryDraw).toBeNull();
+    });
+
+    it('★ 不是 15 号：不写', () => {
+      expect(endTurn(withTickets(10)).lastLotteryDraw).toBeNull();
+    });
   });
 });
 
