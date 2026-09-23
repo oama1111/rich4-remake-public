@@ -51,9 +51,24 @@ export interface NetClientOptions {
     seats: SeatInfo[];
     /** ★ 第十一份試玩回報 #1：房間的開局選項（總人數 + 單機那五項）*/
     options: LobbyOptions;
+    /**
+     * ★ 第十二份試玩回報：进房那一刻服务器日志排到第几号（含；-1 = 空 / 旧服务器没带）。
+     *   `> -1` 就说明这是**中途进房**（刷新 / 重连），见 `onCatchUp`。
+     */
+    through: number;
   }): void;
   /** 一条按序号到达的 action：施加到本地状态 */
   onAction(action: Action, seq: number): void;
+  /**
+   * ★★ 第十二份試玩回報（「断线重连后莫名其妙又进入魔法屋」「断线重连后所有文本提示又重新触发了一轮」）：
+   *   中途进房时服务器补发的那一段（`start.through` 之前、含）**攒齐了一次交出来**，
+   *   宿主应当**静默**追上（只 reduce、不起任何演出）—— 那些都是进房之前就已经发生的事，
+   *   这台要么早就演过（刷新前），要么当时根本不在（断线期间）。
+   *
+   *   缺省（不给这个回调）⇒ 退回旧行为：补发的也逐条走 `onAction`。
+   *   攒着的这一段**不报校验和**（与 `onResync` 同一口径：重建不是「施加完一条」）。
+   */
+  onCatchUp?(actions: { action: Action; seq: number }[]): void;
   /** 房间信息变化（有人进出、掉线） */
   onRoom?(room: RoomInfo): void;
   onJoined?(seat: number, room: RoomInfo): void;
@@ -93,6 +108,13 @@ export class NetClient {
   #room: RoomInfo | null = null;
   /** 已发出 `resync` 还没等到 `replay` —— 期间不再重复请求（desync 是广播，可能连发） */
   #resyncing = false;
+  /**
+   * ★ 第十二份試玩回報：这一段（含）之前的补发要静默追上（`start.through`）；-1 = 没有要追的。
+   * 只在给了 `onCatchUp` 时生效。
+   */
+  #catchUpThrough = -1;
+  /** 追赶期间攒着的补发（凑到 `#catchUpThrough` 那一号才一次交出） */
+  readonly #catchUp: { action: Action; seq: number }[] = [];
 
   constructor(socket: NetSocket, opts: NetClientOptions) {
     this.#socket = socket;
@@ -112,6 +134,14 @@ export class NetClient {
   /** 下一条期待的序号 = 本地已施加的条数 */
   get expectedSeq(): number {
     return this.#expected;
+  }
+
+  /**
+   * ★ 第十二份試玩回報：还在追「进房之前」那一段补发 —— 本地状态还没追上服务器，
+   *   宿主此刻别拿它做任何决定（报 `awaiting`、替本机座位出手……）。
+   */
+  get catchingUp(): boolean {
+    return this.#catchUpThrough >= 0 && this.#expected <= this.#catchUpThrough;
   }
 
   /** 连上之后第一件事：加入房间 */
@@ -227,14 +257,21 @@ export class NetClient {
         this.#room = msg.room;
         this.#opts.onRoom?.(msg.room);
         return;
-      case 'start':
+      case 'start': {
+        // 网络来的东西不可信：不是非负整数就当没带（退回旧行为）
+        const through =
+          typeof msg.through === 'number' && Number.isInteger(msg.through) && msg.through >= 0 ? msg.through : -1;
+        this.#catchUp.length = 0;
+        this.#catchUpThrough = this.#opts.onCatchUp === undefined ? -1 : through;
         this.#opts.onStart({
           seed: msg.seed,
           globalMapId: msg.globalMapId,
           seats: msg.seats,
           options: msg.options,
+          through,
         });
         return;
+      }
       case 'action':
         this.#pending.set(msg.seq, msg.action);
         this.#flush();
@@ -256,6 +293,9 @@ export class NetClient {
         this.#pending.clear();
         this.#expected = msg.through + 1;
         this.#resyncing = false;
+        // 重放是整体替换：还没追完的那一段也一并作废（都在重放里了）
+        this.#catchUp.length = 0;
+        this.#catchUpThrough = -1;
         this.#opts.onResync?.({
           seed: msg.seed,
           globalMapId: msg.globalMapId,
@@ -287,6 +327,16 @@ export class NetClient {
       const action = this.#pending.get(seq)!;
       this.#pending.delete(seq);
       this.#expected = seq + 1;
+      // ★ 第十二份試玩回報：进房之前的那一段先攒着，凑齐了一次交给宿主静默追上
+      if (seq <= this.#catchUpThrough) {
+        this.#catchUp.push({ action, seq });
+        if (seq === this.#catchUpThrough) {
+          const batch = this.#catchUp.splice(0);
+          this.#catchUpThrough = -1;
+          this.#opts.onCatchUp?.(batch);
+        }
+        continue;
+      }
       this.#opts.onAction(action, seq);
       if (this.#opts.deferChecksum !== true && every > 0 && (seq + 1) % every === 0) {
         this.#send({ t: 'checksum', seq, hash: this.#opts.fingerprint() });

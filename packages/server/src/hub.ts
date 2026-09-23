@@ -344,6 +344,8 @@ export class RoomHub {
                 globalMapId: t.room.globalMapId,
                 seats: t.seats.map((x) => x.info),
                 options: t.options,
+                // ★ 第十二份試玩回報：补发到第几号为止是「进房之前的事」—— 客户端静默追上，不重演
+                through: t.room.sequenceLength - 1,
               });
               const from = msg.since === undefined ? 0 : msg.since + 1;
               for (const b of t.room.since(from)) this.#sendTo(conn, { t: 'action', seq: b.seq, action: b.action });

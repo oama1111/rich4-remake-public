@@ -25,7 +25,7 @@ import {
 } from './dev-patch.ts';
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
-import { magicScreenState } from './magic-screen.ts';
+import { followPresenterDone, magicCaster, magicScreenState, presenterMovedOn } from './magic-screen.ts';
 import {  autoAction,
   ACTOR_DOLL,
   directionOf,
@@ -3803,6 +3803,9 @@ function localSeatActive(): boolean {
 
 function dispatch(action: Action): void {
   if (net !== null) {
+    // ★ 第十二份試玩回報：还在静默追「进房之前」那一段 ⇒ 本地状态是旧的，拿它做的决定一律作废
+    //   （先前刷新后按旧局面替自己出手，服务器回「拒绝：notYourTurn」）。
+    if (net.catchingUp) return;
     // ★ 记下「本机这一掷在等回包」——`pumpNetInbox` 据此放行，`dicePoll` 据此先滚起来。
     //   见 `awaitingOwnRoll` 的注释（第九份试玩回报「掷骰延迟」的死锁）。
     if (action.type === 'rollDice') {
@@ -4444,6 +4447,7 @@ function scheduleAi(): void {
       return;
     }
     if (net !== null) {
+      if (net.catchingUp) return; // 同 `dispatch`：本地状态还没追上
       net.submit(action);
       return;
     }
@@ -9668,7 +9672,9 @@ function connectOnline(url: string, room: string, name: string): void {
           // ★ `Speaking.mkf` 进棋盘这一刻就开始拉（与单机 7637 同一理由；网页版是 no-op）
           ensureSpeakingArchive();
           // ★ 開局宣言（事件 26）—— 与单机 7643 同一个点，纯表现、各台自己放
-          if (speechQueue.push(openingSpeech(state), performance.now()) > 0) requestRender();
+          // ★★ 第十二份試玩回報（「断线重连后所有文本提示又重新触发了一轮」）：只有**真的开局**才说。
+          //   中途进房（刷新 / 断线重连）时这一局早就开过了，这句已经说过 —— 再说一遍就是重演。
+          if (roomJoinedUnstarted && speechQueue.push(openingSpeech(state), performance.now()) > 0) requestRender();
           // 换地图要重新解底图 —— `setGround(null)` 会 close 掉旧位图，
           // 先前这里只把 `ground` 置 null，旧 bitmap 就泄漏了（与单机 7650 对齐）
           setGround(null);
@@ -9688,6 +9694,9 @@ function connectOnline(url: string, room: string, name: string): void {
           netInbox.push({ action, seq });
           pumpNetInbox();
         },
+        // ★★ 第十二份試玩回報：中途进房（刷新 / 断线重连）时「进房之前」的那一段 —— **静默**追上，
+        //   不走 `pumpNetInbox` 那条会起演出的路（见 `catchUpSilently`）。
+        onCatchUp: (items) => catchUpSilently(items),
         // ★ W-74：服务器广播的剩余毫秒（`-1` = 这一轮计时作废）
         onClock: (c) => {
           clockSeat = c.remainingMs < 0 ? null : c.seat;
@@ -9739,30 +9748,8 @@ function connectOnline(url: string, room: string, name: string): void {
             state = reduce(state, action, topo);
             history.push(action);
           }
-          // 本屏的临时 UI 状态一律收掉：重放可能把 pending 换成了另一种，旧的指认不再成立
-          amountPage = null;
-          dialogHot = null;
-          pick = null;
-          pickHover = null;
-          hoverNode = null;
-          diceFx.cancel();
-          // 本地状态已重建 ⇒ 那条自己在等的回包（以及它对应的预测动画）不再有意义
-          awaitingOwnRoll = false;
-          // ★ 建屋影片也是「这一刻在播」的东西：本地状态已经重建，旧片子不该接着放
-          buildFx = null;
-          pendingBuildFx = null;
-          buildFlicPending.clear();
-          releaseBuildFlics();
-          // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
-          deferredBoardBefore = null;
-          godAscend = null;
-          pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
-          npcWalksDrawn = null;
+          settleAfterSilentRebuild();
           log(`⟳ 失步自愈：重放 ${r.actions.length} 條 action，本地狀態已重建（第 ${r.actions.length} 號）`);
-          requestRender();
-          renderPanel();
-          scheduleAi();
-          scheduleHumanTurn();
         },
         fingerprint: () => stateFingerprint(state),
       },
@@ -9977,6 +9964,72 @@ let netPumpTimer: number | null = null;
 const NET_INBOX_FAST_FORWARD = 150;
 const NET_INBOX_KEEP = 40;
 
+/**
+ * ★★ 第十二份試玩回報（「断线重连后莫名其妙又进入魔法屋」「断线重连后所有文本提示又重新触发了一轮」）：
+ * 中途进房时服务器补发的「进房之前」那一段 —— **只 reduce、不起任何演出**。
+ *
+ * 根因：先前补发与实时广播走同一条 `onAction → pumpNetInbox → applyAction` 路，
+ * 而 `applyAction` 会经 `notifyApplied` 把每一条 `before → after` 派给各整屏的 `event()`。
+ * 刷新页面后服务器从 0 号补发整局 ⇒ 整局的訊息框 / 命運 / 魔法屋 / 台词按节拍**重演一遍**
+ * （回报里的日志：刷新后又出现第 25 回合那次「魔法屋：就地拆除房屋」、几十条「付费訊息框：…」；
+ * 本地局面落后服务器十来个回合，还按旧局面替自己出手 → 「拒绝：notYourTurn」）。
+ *
+ * 口径：**每台只把实时发生的演出演一次**。进房之前的事，这台要么刷新前已经演过、
+ * 要么断线期间根本不在 —— 都不补演；追上之后此刻还挂着的**待决交互**（自己的买地框、
+ * 商店、銀行…）由 `state.pending` 照常画出来，不受影响。
+ *
+ * @param items `NetClient` 攒齐的补发（seq 连续、到 `start.through` 为止）
+ */
+function catchUpSilently(items: readonly { action: Action; seq: number }[]): void {
+  // 断线前已经收下、还没轮到播的那几条排在补发**之前** —— 一并静默施加，保持顺序
+  const queued = netInbox.splice(0);
+  clearNetInbox();
+  for (const item of [...queued, ...items]) {
+    const next = reduce(state, item.action, topo);
+    if (next !== state) history.push(item.action);
+    state = next;
+  }
+  settleAfterSilentRebuild();
+  log(`⟳ 聯機追上：靜默施加 ${queued.length + items.length} 條 action（第 ${state.turnCount} 回合）`);
+}
+
+/**
+ * 本地状态被**静默**重建之后（失步重放 / 中途进房追上）的收尾：
+ * 收掉指着旧局面的临时 UI 与「这一刻在播」的东西，按新局面重排两条回合驱动。
+ */
+function settleAfterSilentRebuild(): void {
+  // 本屏的临时 UI 状态一律收掉：重放可能把 pending 换成了另一种，旧的指认不再成立
+  amountPage = null;
+  dialogHot = null;
+  pick = null;
+  pickHover = null;
+  hoverNode = null;
+  diceFx.cancel();
+  // 本地状态已重建 ⇒ 那条自己在等的回包（以及它对应的预测动画）不再有意义
+  awaitingOwnRoll = false;
+  // ★ 建屋影片也是「这一刻在播」的东西：本地状态已经重建，旧片子不该接着放
+  buildFx = null;
+  pendingBuildFx = null;
+  buildFlicPending.clear();
+  releaseBuildFlics();
+  // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
+  deferredBoardBefore = null;
+  godAscend = null;
+  pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+  npcWalksDrawn = null;
+  // ★ 第十二份試玩回報：追上之后此刻仍挂着的**场所**（商店 / 銀行 / 路過銀行）照常铺起来 ——
+  //   与 `notifyApplied` 同一道人机闸；它们平时只在「一条 action 落地」时同步。
+  if (!aiVenuePending(state)) {
+    syncShopUi();
+    syncLoanUi();
+    syncAtmPending();
+  }
+  requestRender();
+  renderPanel();
+  scheduleAi();
+  scheduleHumanTurn();
+}
+
 function clearNetInbox(): void {
   netInbox.length = 0;
   if (netPumpTimer !== null) {
@@ -10025,6 +10078,12 @@ function pumpNetInbox(delay = 0): void {
     //   且要求队首就是 `rollDice`。电脑座位那一串 action 照旧受闸 —— 那正是
     //   第七份试玩回报第 1 条要的（别把电脑回合秒播完、别互相顶掉骰子动画）。
     const head = netInbox[0];
+    // ★★ 第十二份試玩回報：**别人**踩的魔法屋，施法者那台已经收场（他的下一条 action 都到了）
+    //   ⇒ 本台跟着收场，不再自己把转盘走满（见 `presenterMovedOn` 的注释）。
+    //   队首还没施加，此刻的 `actingSeat(state)` 就是它的派出者。
+    if (head !== undefined && presenterMovedOn(magicCaster(), net?.seat ?? null, actingSeat(state))) {
+      followPresenterDone(uiEnv());
+    }
     const ownRollEcho = awaitingOwnRoll && head !== undefined && head.action.type === 'rollDice';
     if (!ownRollEcho && holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
     const item = netInbox.shift();
@@ -10055,6 +10114,8 @@ function waitingForInput(s: GameState): boolean {
 function tickAwaiting(): void {
   const client = net;
   if (client === null || client.seat === null || screen !== 'game') return;
+  // ★ 第十二份試玩回報：还在追「进房之前」那一段 —— 本地状态是旧的，别替它报「在等输入」
+  if (client.catchingUp) return;
   if (actingSeat(state) !== client.seat) return;
   // ★ 收件箱没放空 = 画面还在播别人的回合，本机状态也还没追上服务器 —— 不报
   if (netInbox.length > 0) return;

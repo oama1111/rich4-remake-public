@@ -1912,3 +1912,64 @@ export function magicScreenState(): {
     (playback !== null && playback.phase === 'spin' && pointer >= 0 ? pointer : -1);
   return { playing: playback !== null, view, hover, phase: playback?.phase ?? null, pointer, ring };
 }
+
+// ============================================================
+//  联机旁观：施法者那一台收场了，本台跟着收场（第十二份試玩回報）
+// ============================================================
+
+/**
+ * 纯判据：**别人**踩出来的这一段魔法屋，施法者那一台是不是已经演完了。
+ *
+ * ★★ 第十二份試玩回報（「2个真人玩家时，触发魔法屋的玩家结束魔法屋回合，另一个真人玩家
+ *   还在魔法屋里不会自动出去」）：
+ *
+ *   这一屏在 core 里没有待决交互（见文件头），施法者那一下「点选」只是**他本机**的表现
+ *   —— 不是 action、不进广播，旁观那一台根本不知道他点了。旁观端于是只能把整段自己
+ *   走到底：入口三句 6 s + 抽签 1 s + 转盘两圈（逐位变慢）≈ 17 s + 1.5 s（转盘等下一位的那几帧
+ *   不续帧，靠别处的重画推进，实际更长）。回报现场：施法者 01:35:27 踩到、
+ *   01:35:37 收场派 `endTurn`；旁观那一台直到 01:36:00 才派出自己的 `startTurn`
+ *   —— 在魔法屋里多待了二十来秒，期间整桌都在等他。
+ *
+ *   施法者那一台的回合驱动**等演出收场才派下一条**（`'magic'` 在
+ *   `BLOCKING_PRESENTATIONS` 里，服务器也不替在线真人出手），所以
+ *   「收件箱队首已经是**施法者座位**派出的下一条 action」= 他那边演完了。
+ *
+ * @param caster 这一段的施法者（`magicCaster()`）；没在播为 null
+ * @param localSeat 本机座位；单机 / 未入座为 null
+ * @param nextActor 收件箱队首那条 action 是谁派的（施加之前的 `actingSeat(state)`）
+ */
+export function presenterMovedOn(caster: number | null, localSeat: number | null, nextActor: number): boolean {
+  if (caster === null) return false;
+  // 自己的魔法屋：自己的回合驱动本来就等着它，不存在「对面已经走了」
+  if (localSeat !== null && caster === localSeat) return false;
+  return nextActor === caster;
+}
+
+/** 正在播的这一段是谁踩出来的（玩家下标）；没在播为 null */
+export function magicCaster(): number | null {
+  if (playback === null) return null;
+  return view?.caster ?? null;
+}
+
+/**
+ * 施法者那一台已经收场 ⇒ 本台直接进最后一拍（`hold`：抬手 + `#0041天靈靈地靈靈～` +
+ * 落点），`MAGIC_HOLD_MS` 后照常自己关屏。
+ *
+ * ★ 跳到 `hold` 而不是当场关：与施法者**点选那一下**（`down()` 的状态 7 → 8）同一个落点 ——
+ *   施法者那台收场前看到的最后一拍就是它，旁观端（多半正是被点到的人）至少要看到结果。
+ *   已经在 `hold` 了就不动（它自己 1.5 s 内就关）。
+ *
+ * @returns 真的改了进度吗
+ */
+export function followPresenterDone(env: UiScreenEnv): boolean {
+  if (playback === null || playback.phase === 'hold') return false;
+  playback = {
+    ...playback,
+    phase: 'hold',
+    holdAt: env.now,
+    spin: { ...playback.spin, option: playback.target, step: magicSpinSteps() },
+  };
+  env.log('魔法屋：施法者已收場，跟著收場');
+  env.requestRender();
+  return true;
+}

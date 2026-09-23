@@ -300,6 +300,133 @@ describe('NetClient', () => {
   });
 });
 
+describe('★★ 第十二份試玩回報：中途进房的补发 —— 攒齐一次交出，静默追上', () => {
+  // 回报：`20260923-014329884`「断线重连后莫名其妙又进入魔法屋」、
+  //       `20260923-014349833`「断线重连后所有文本提示又重新触发了一轮」。
+  //   刷新后服务器从 0 号补发整局，先前与实时广播走同一条 `onAction` → 演出路径，整局重演一遍。
+  const start = (through?: number): ServerMessage => ({
+    t: 'start',
+    seed: 7,
+    globalMapId: 0,
+    seats: [],
+    options: LOBBY_DEFAULT_OPTIONS,
+    ...(through === undefined ? {} : { through }),
+  });
+
+  function catchUpHarness(extra: Partial<NetClientOptions> = {}) {
+    const batches: { action: Action; seq: number }[][] = [];
+    const starts: number[] = [];
+    const h = harness({
+      onCatchUp: (items) => batches.push(items),
+      onStart: (s) => starts.push(s.through),
+      ...extra,
+    });
+    return { ...h, batches, starts };
+  }
+
+  it('start 带 through ⇒ 0..through 攒齐一次交给 onCatchUp，一条都不走 onAction；之后的照常', () => {
+    const h = catchUpHarness();
+    h.push(start(2));
+    expect(h.starts).toEqual([2]);
+    expect(h.client.catchingUp).toBe(true);
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'action', seq: 1, action: step });
+    expect(h.batches).toEqual([]); // 没凑齐不交
+    expect(h.client.catchingUp).toBe(true);
+    h.push({ t: 'action', seq: 2, action: step });
+    expect(h.batches).toEqual([
+      [
+        { action: roll, seq: 0 },
+        { action: step, seq: 1 },
+        { action: step, seq: 2 },
+      ],
+    ]);
+    expect(h.applied).toEqual([]);
+    expect(h.client.catchingUp).toBe(false);
+    // 进房之后的实时广播：照常逐条走 onAction（由宿主按节拍演）
+    h.push({ t: 'action', seq: 3, action: roll });
+    expect(h.applied).toEqual([{ action: roll, seq: 3 }]);
+    expect(h.batches).toHaveLength(1);
+  });
+
+  it('乱序到达也照序号攒；补发那一段不报校验和', () => {
+    const h = catchUpHarness({ checksumEvery: 2 });
+    h.push(start(3));
+    h.push({ t: 'action', seq: 2, action: step });
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'action', seq: 3, action: step });
+    h.push({ t: 'action', seq: 1, action: step });
+    expect(h.batches[0]!.map((x) => x.seq)).toEqual([0, 1, 2, 3]);
+    expect(h.sent.filter((m) => m.t === 'checksum')).toEqual([]);
+  });
+
+  it('断线重连（带 since）：只有 since+1..through 那一段算补发', () => {
+    const h = catchUpHarness({ since: 1 });
+    h.push(start(3));
+    expect(h.client.catchingUp).toBe(true);
+    h.push({ t: 'action', seq: 2, action: roll });
+    h.push({ t: 'action', seq: 3, action: step });
+    expect(h.batches).toEqual([
+      [
+        { action: roll, seq: 2 },
+        { action: step, seq: 3 },
+      ],
+    ]);
+    expect(h.client.catchingUp).toBe(false);
+  });
+
+  it('断线期间什么都没发生（through < since+1）⇒ 没有要追的', () => {
+    const h = catchUpHarness({ since: 3 });
+    h.push(start(3));
+    expect(h.client.catchingUp).toBe(false);
+    h.push({ t: 'action', seq: 4, action: roll });
+    expect(h.applied).toEqual([{ action: roll, seq: 4 }]);
+    expect(h.batches).toEqual([]);
+  });
+
+  it('日志是空的（through = -1）/ 旧服务器不带 through / 带坏值 ⇒ 没有要追的', () => {
+    for (const msg of [start(-1), start(), { ...start(), through: 1.5 } as ServerMessage, { ...start(), through: 'x' } as unknown as ServerMessage]) {
+      const h = catchUpHarness();
+      h.push(msg);
+      expect(h.starts).toEqual([-1]);
+      expect(h.client.catchingUp).toBe(false);
+      h.push({ t: 'action', seq: 0, action: roll });
+      expect(h.applied).toEqual([{ action: roll, seq: 0 }]);
+    }
+  });
+
+  it('宿主不接 onCatchUp ⇒ 退回旧行为（补发也逐条走 onAction）', () => {
+    const h = harness();
+    h.push(start(1));
+    expect(h.client.catchingUp).toBe(false);
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'action', seq: 1, action: step });
+    expect(h.applied.map((x) => x.seq)).toEqual([0, 1]);
+  });
+
+  it('追赶中途来了 replay ⇒ 整体替换，攒着的那一段作废、不再交出', () => {
+    const h = catchUpHarness();
+    h.push(start(5));
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({
+      t: 'replay',
+      seed: 7,
+      globalMapId: 0,
+      seats: [],
+      options: LOBBY_DEFAULT_OPTIONS,
+      through: 1,
+      actions: [
+        { seq: 0, action: roll },
+        { seq: 1, action: step },
+      ],
+    });
+    expect(h.client.catchingUp).toBe(false);
+    h.push({ t: 'action', seq: 2, action: roll });
+    expect(h.batches).toEqual([]);
+    expect(h.applied.at(-1)).toEqual({ action: roll, seq: 2 });
+  });
+});
+
 describe('netParamsFrom', () => {
   it('没有 ws 参数就是单机', () => {
     expect(netParamsFrom('')).toBeNull();
