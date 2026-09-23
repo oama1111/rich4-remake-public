@@ -4,9 +4,9 @@
  *
  * 坐标与判据全部照汇编抄（VA 见 `god-slot.ts` 的文件头）：
  *   机体 = `Panel#67` 图 0（四位數）/ 图 1（三位數）落 (220,320)；
- *   摇杆 = 图 2 落 x = 317/298、y = 240；拉下去叠图 4；
+ *   摇杆 = 图 2 落 x = 317/298、y = 240；拉下去换**图 3**（4 格后换回图 2）；
  *   数字 = 图 `值 + 4`（偶 = 定格、奇 = 滚动中的过渡帧）落 x 表、y = 320；
- *   气泡 = `Data#517` 图 6 落 (220,140)，台詞正中，金额填在中间那个空行。
+ *   气泡 = `Data#517` 图 6 落 (220,140)：转动时只有台詞模板，停稳后**只剩** `%d元`。
  */
 import { describe, expect, it } from 'vitest';
 import { GOD_ATTACH } from '@rich4/data';
@@ -21,44 +21,48 @@ import {
   GOD_SLOT_DIGIT_FIRST,
   GOD_SLOT_DIGIT_X,
   GOD_SLOT_DIGIT_Y,
+  GOD_SLOT_DONE_STATE,
   GOD_SLOT_FILL,
   GOD_SLOT_FONT_SIZE,
-  GOD_SLOT_HOLD_MS,
-  GOD_SLOT_KNOB_IMAGE,
+  GOD_SLOT_HOLD_TICKS,
+  GOD_SLOT_LEVER_DOWN_IMAGE,
+  GOD_SLOT_LEVER_DOWN_TICKS,
   GOD_SLOT_LEVER_IMAGE,
   GOD_SLOT_LEVER_SOUND,
   GOD_SLOT_LEVER_X,
   GOD_SLOT_LEVER_Y,
+  GOD_SLOT_OUTLINE,
   GOD_SLOT_PANEL_IMAGE,
   GOD_SLOT_PANEL_AT,
   GOD_SLOT_RESOURCE,
   GOD_SLOT_REROLL_TICKS,
-  GOD_SLOT_SETTLE_TICKS,
   GOD_SLOT_SPIN_SOUND,
+  GOD_SLOT_STOP_GEAR,
   GOD_SLOT_TICK_MS,
   drawGodSlot,
   godSlotBubbleText,
   godSlotClick,
   godSlotCue,
-  godSlotCurrentAmount,
-  godSlotDigitImage,
   godSlotDigitX,
   godSlotDigits,
   godSlotDone,
+  godSlotFrame,
   godSlotLeverX,
   godSlotPanelImage,
-  godSlotRollImage,
-  godSlotSlotDigit,
-  godSlotSlotRolling,
+  godSlotReelAmount,
+  godSlotReelImage,
+  godSlotReelStep,
   godSlotStart,
   godSlotState,
   godSlotTick,
   godSlotVariant,
   godSlotScreen,
   resetGodSlot,
+  type GodSlotCue,
+  type GodSlotSpin,
 } from './god-slot.ts';
 
-describe('版面与素材 @source 0x004407a0 / 0x004407d0 / 0x004407f3 / loc_0043f073', () => {
+describe('版面与素材 @source 0x00440714 / 0x004407ec / 0x00440811 / 0x0043f08d', () => {
   it('机体 = Panel#67 图 0（四位數）/ 1（三位數），落 (220,320)', () => {
     expect(GOD_SLOT_RESOURCE).toBe(0x43);
     expect(GOD_SLOT_PANEL_IMAGE).toEqual([0, 1]);
@@ -67,9 +71,11 @@ describe('版面与素材 @source 0x004407a0 / 0x004407d0 / 0x004407f3 / loc_004
     expect(godSlotPanelImage(1)).toBe(1);
   });
 
-  it('摇杆 = 图 2 落 x = 317 / 298、y = 240；拉杆圆头 = 图 4', () => {
-    expect(GOD_SLOT_LEVER_IMAGE).toBe(2);
-    expect(GOD_SLOT_KNOB_IMAGE).toBe(4);
+  it('★ 摇杆 = 图 2（`+0x24`）落 x = 317 / 298、y = 240；拉下去 = 图 3（`+0x30`），不是图 4（那是数字 0）', () => {
+    // 图号 = (偏移 − 0xc) / 12：0x24 → 2、0x30 → 3（0x00440801 / 0x0043f3ec / 0x0043f506）
+    expect(GOD_SLOT_LEVER_IMAGE).toBe((0x24 - 0xc) / 12);
+    expect(GOD_SLOT_LEVER_DOWN_IMAGE).toBe((0x30 - 0xc) / 12);
+    expect(GOD_SLOT_LEVER_DOWN_IMAGE).not.toBe(godSlotReelImage(0));
     expect(GOD_SLOT_LEVER_X).toEqual([317, 298]);
     expect(GOD_SLOT_LEVER_Y).toBe(240);
     expect(godSlotLeverX(0)).toBe(317);
@@ -84,23 +90,27 @@ describe('版面与素材 @source 0x004407a0 / 0x004407d0 / 0x004407f3 / loc_004
     expect(godSlotDigitX(1, 0)).toBe(0); // 三位數机体槽 0 不画
   });
 
-  it('气泡 = Data#517 图 6 落 (220,140)；字级 0x10、内文 0xf0f0f0', () => {
+  it('气泡 = Data#517 图 6 落 (220,140)；字级 0x10、内文 0xf0f0f0、描边 0x101010', () => {
     expect(GOD_SLOT_BUBBLE).toEqual({ archive: 'Data.mkf', resource: 517, image: 6 });
     expect(GOD_SLOT_BUBBLE_AT).toEqual({ x: 220, y: 140 });
     expect(GOD_SLOT_FONT_SIZE).toBe(0x10);
     expect(GOD_SLOT_FILL).toBe('#f0f0f0');
+    expect(GOD_SLOT_OUTLINE).toBe('#101010');
   });
 
-  it('音效：循环 51、拉杆那一下 1；一格 30 ms、每 10 格重掷、40 格自动拉杆', () => {
+  it('音效与节拍：循环 51、拉杆 1；一格 30 ms、每 10 格重掷、40 格拉杆、拉下 4 格、档 8 停、停后 40 格收', () => {
     expect(GOD_SLOT_SPIN_SOUND).toBe(51);
     expect(GOD_SLOT_LEVER_SOUND).toBe(1);
     expect(GOD_SLOT_TICK_MS).toBe(0x1e);
     expect(GOD_SLOT_REROLL_TICKS).toBe(10);
     expect(GOD_SLOT_AUTO_TICKS).toBe(0x28);
-    expect(GOD_SLOT_SETTLE_TICKS).toBe(4);
+    expect(GOD_SLOT_LEVER_DOWN_TICKS).toBe(4);
+    expect(GOD_SLOT_STOP_GEAR).toBe(8);
+    expect(GOD_SLOT_HOLD_TICKS).toBe(0x28);
+    expect(GOD_SLOT_DONE_STATE).toBe(10);
   });
 
-  it('★ variant = (arg & 1) ^ 1，四个 arg 一一对上 @source 0x004407c7', () => {
+  it('★ variant = (arg & 1) ^ 1，四个 arg 一一对上 @source 0x004407c0', () => {
     expect(GOD_SLOT_ARG).toEqual({ 1: 0, 2: 1, 5: 4, 6: 5 });
     expect(godSlotVariant(0)).toBe(1); // 小財神 → 三位數
     expect(godSlotVariant(1)).toBe(0); // 大財神 → 四位數
@@ -108,20 +118,20 @@ describe('版面与素材 @source 0x004407a0 / 0x004407d0 / 0x004407f3 / loc_004
     expect(godSlotVariant(5)).toBe(0); // 大窮神 → 四位數
   });
 
-  it('★ 数字图号：定格 = 2d+4、滚动 = 2d+5 @source loc_0043f073', () => {
+  it('★ 转轮值 → 图号 = 值 + 4（偶 = 定格、奇 = 过渡帧）@source 0x0043f093', () => {
     expect(GOD_SLOT_DIGIT_FIRST).toBe(4);
-    expect(godSlotDigitImage(0)).toBe(4);
-    expect(godSlotDigitImage(1)).toBe(6);
-    expect(godSlotDigitImage(9)).toBe(22);
-    expect(godSlotRollImage(0)).toBe(5);
-    expect(godSlotRollImage(9)).toBe(23);
+    expect(godSlotReelImage(0)).toBe(4); // 数字 0
+    expect(godSlotReelImage(18)).toBe(22); // 数字 9
+    expect(godSlotReelImage(19)).toBe(23); // 9→0 的过渡帧
   });
 
-  it('金額 → 每位数字（三位數机体不含千位）', () => {
+  it('金額 → 每位数字（三位數机体不含千位）；转轮拼数 @source 0x0043f630..0x0043f685', () => {
     expect(godSlotDigits(3370, 0)).toEqual([3, 3, 7, 0]);
     expect(godSlotDigits(3370, 1)).toEqual([0, 3, 7, 0]);
     expect(godSlotDigits(7, 0)).toEqual([0, 0, 0, 7]);
-    expect(godSlotDigits(0, 1)).toEqual([0, 0, 0, 0]);
+    expect(godSlotReelAmount([6, 6, 14, 0], 0)).toBe(3370);
+    // 三位數：`test ebp,ebp / jne` 跳过千位 —— 槽 0 是什么都不算
+    expect(godSlotReelAmount([18, 6, 14, 0], 1)).toBe(370);
   });
 });
 
@@ -229,108 +239,174 @@ describe('★ 反推这一趟：金额从金钱差额来、不重掷随机数', 
     expect(godSlotCue(before, after)).toBeNull();
   });
 
-  it('★ 金额填进模板中间那个空行 @source 0x0043f6b6', () => {
-    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2);
-    after.players[0]!.cash = 1100;
-    const cue = godSlotCue(before, after)!;
-    expect(GOD_ATTACH.amount.text).toBe('%d元');
-    expect(godSlotBubbleText(cue, 1000)).toBe('大財神附身\n1000元\n送您...');
-  });
 });
 
 // ============================================================
-//  演出（每格 30 ms）
+//  状态机（逐格照抄 fcn_0043f23e / fcn_0043ef3e）
 // ============================================================
 
-describe('★ 状态机：滚 → 拉杆 → 逐槽停 → 停一会儿', () => {
-  const cue = {
-    godType: 2,
-    arg: 1,
-    variant: 0,
-    amount: 3370,
+function cueOf(amount: number, variant: number, human = false): GodSlotCue {
+  return {
+    godType: variant === 0 ? 2 : 1,
+    arg: variant === 0 ? 1 : 0,
+    variant,
+    amount,
     host: 0,
-    text: '大財神附身\n\n送您...',
-    human: true,
+    text: variant === 0 ? '大財神附身\n\n送您...' : '小財神附身\n\n向所有對手收...',
+    human,
   };
+}
 
-  it('开演：tick 0、没拉杆、没停', () => {
-    const s = godSlotStart(cue, 1000);
-    expect(s.tick).toBe(0);
-    expect(s.pulled).toBe(false);
-    expect(s.settled).toBe(0);
-    expect(s.at).toBe(1000 + GOD_SLOT_TICK_MS);
-    expect(godSlotDone(s, 1000)).toBe(false);
+/** 一格一格跑完，记下每一格的样子 */
+function runAll(cue: GodSlotCue, clickAt: number | null = null): GodSlotSpin[] {
+  let s = godSlotStart(cue, 0);
+  const frames: GodSlotSpin[] = [];
+  for (let i = 0; i < 2000 && !godSlotDone(s); i++) {
+    if (clickAt !== null && i === clickAt) s = godSlotClick(s);
+    s = godSlotFrame(s).spin;
+    frames.push(s);
+  }
+  return frames;
+}
+
+describe('★ 转轮一步 `fcn_0043ef3e`（VA 0x0043ef3e）', () => {
+  it('n = 0：mask 里的槽各 +1（mod 20）；三位數机体（variant 1）不碰槽 0', () => {
+    expect(godSlotReelStep(0, [1, 3, 5, 19], [0, 0, 0], 0xf, 0).reels).toEqual([2, 4, 6, 0]);
+    expect(godSlotReelStep(1, [1, 3, 5, 19], [0, 0, 0], 0xf, 0).reels).toEqual([1, 4, 6, 0]);
+    // mask bit0 = 槽 3、bit3 = 槽 0
+    expect(godSlotReelStep(0, [1, 1, 1, 1], [0, 0, 0], 0xe, 0).reels).toEqual([2, 2, 2, 1]);
+    expect(godSlotReelStep(0, [1, 1, 1, 1], [0, 0, 0], 8, 0).reels).toEqual([2, 1, 1, 1]);
   });
 
-  it('前 40 格只滚不拉杆；第 40 格起拉杆', () => {
-    let s = godSlotStart(cue, 0);
-    let now = 0;
-    for (let i = 0; i < GOD_SLOT_AUTO_TICKS - 1; i++) {
-      now += GOD_SLOT_TICK_MS;
-      s = godSlotTick(s, now);
+  it('★ n = 1 停**个位**（槽 3）：偶数时不起步；奇数起步后再走 7 格停在偶数上，档 8 才返回 1', () => {
+    // 偶数：不起步、照常走
+    let r = godSlotReelStep(0, [0, 0, 0, 4], [0, 0, 0], 0xf, 1);
+    expect(r.gear).toEqual([0, 0, 0]);
+    expect(r.reels[3]).toBe(5);
+    // 奇数：起步
+    let reels = r.reels;
+    let gear = r.gear;
+    const seq: number[] = [];
+    let frames = 0;
+    for (;;) {
+      r = godSlotReelStep(0, reels, gear, 0xf, 1);
+      reels = r.reels;
+      gear = r.gear;
+      frames++;
+      seq.push(reels[3]!);
+      if (r.stopped) break;
     }
-    expect(s.pulled).toBe(false);
-    now += GOD_SLOT_TICK_MS;
-    s = godSlotTick(s, now);
-    expect(s.pulled).toBe(true);
+    expect(reels[3]).toBe((5 + 7) % 20);
+    expect(reels[3]! % 2).toBe(0);
+    // 档 1..7 各走一格、每档停 档 格：1 + (2+3+…+7) + 最后升到 8 那一格 = 29 格
+    expect(frames).toBe(29);
+    expect(gear).toEqual([0, 0, 1]);
+    // 同一格里其余三槽照转
+    expect(seq.length).toBe(29);
   });
+});
 
-  it('★ 拉杆之后逐槽停：每 4 格停一槽，第 16 格全停', () => {
-    let s = godSlotStart(cue, 0);
-    let now = 0;
-    const advance = () => {
-      now += GOD_SLOT_TICK_MS;
-      s = godSlotTick(s, now);
-    };
-    while (s.tick < GOD_SLOT_AUTO_TICKS) advance();
-    expect(s.settled).toBe(0);
-    // 拉杆那一格只拉杆不停槽；之后每 SETTLE_TICKS 格停一槽
-    const seen: number[] = [];
-    for (let i = 1; i <= 4 * GOD_SLOT_SETTLE_TICKS; i++) {
-      advance();
-      seen.push(s.settled);
+describe('★ 状态机：滚 → 拉杆（图 3，4 格）→ 个位/十位/百位/千位逐槽停 → 只剩「%d元」→ 40 格收屏', () => {
+  it('电脑：第 40 格拉杆（音效 1），之前每 10 格重掷一次（重掷值都是奇数）', () => {
+    let s = godSlotStart(cueOf(3370, 0), 0);
+    const pulledAt: number[] = [];
+    for (let i = 1; i <= 45; i++) {
+      const r = godSlotFrame(s);
+      s = r.spin;
+      if (r.events.pulled) pulledAt.push(i);
+      if (i <= 39) expect(s.state, `第 ${i} 格`).toBe(1);
     }
-    expect(seen).toEqual([0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4]);
-    expect(s.settled).toBe(4);
-    expect(s.landedAt).not.toBeNull();
+    expect(pulledAt).toEqual([40]);
+    // 重掷在计数 0/10/20/30 那四格；拉杆那一格判重掷时计数还是 39（`0x0043f2ff inc` 在判断之后）
+    expect(s.rerolls).toBe(4);
   });
 
-  it('★ 停稳之后停 HOLD_MS 才收屏', () => {
-    let s = godSlotStart(cue, 0);
-    let now = 0;
-    while (s.landedAt === null) {
-      now += GOD_SLOT_TICK_MS;
-      s = godSlotTick(s, now);
+  it('★ 拉下去的摇杆（图 3）只停 4 格，然后换回图 2 进状态 4', () => {
+    const frames = runAll(cueOf(3370, 0));
+    const down = frames.map((f, i) => (f.leverDown ? i + 1 : 0)).filter((i) => i > 0);
+    expect(down).toEqual([40, 41, 42, 43]);
+    expect(frames[43]!.state).toBe(4);
+    expect(frames[43]!.leverDown).toBe(false);
+  });
+
+  it('★ 停槽顺序：个位 → 十位 → 百位 → 千位（四位數）；三位數从状态 6 直接跳 8', () => {
+    for (const variant of [0, 1]) {
+      const frames = runAll(cueOf(variant === 0 ? 4821 : 821, variant));
+      const states = frames.map((f) => f.state);
+      const firstOf = (st: number): number => states.indexOf(st);
+      expect(firstOf(5)).toBeGreaterThan(firstOf(4));
+      expect(firstOf(6)).toBeGreaterThan(firstOf(5));
+      if (variant === 0) {
+        expect(firstOf(7)).toBeGreaterThan(firstOf(6));
+        expect(firstOf(8)).toBeGreaterThan(firstOf(7));
+      } else {
+        expect(states).not.toContain(7);
+      }
+      // 状态 5 起个位不再动、状态 6 起十位不再动
+      const s5 = frames[firstOf(5)]!;
+      const s6 = frames[firstOf(6)]!;
+      expect(frames.slice(firstOf(5)).every((f) => f.reels[3] === s5.reels[3])).toBe(true);
+      expect(frames.slice(firstOf(6)).every((f) => f.reels[2] === s6.reels[2])).toBe(true);
     }
-    const landedAt = s.landedAt!;
-    expect(godSlotDone(s, landedAt + GOD_SLOT_HOLD_MS - 1)).toBe(false);
-    expect(godSlotDone(s, landedAt + GOD_SLOT_HOLD_MS)).toBe(true);
   });
 
-  it('★ 真人点一下 = 立刻拉杆停稳；再点一下 = 收屏', () => {
-    const s = godSlotStart(cue, 0);
-    const clicked = godSlotClick(s, 500);
-    expect(clicked.pulled).toBe(true);
-    expect(clicked.settled).toBe(4);
-    expect(clicked.landedAt).toBe(500);
-    expect(godSlotDone(clicked, 500)).toBe(false);
-    const again = godSlotClick(clicked, 600);
-    expect(godSlotDone(again, 600 + GOD_SLOT_HOLD_MS)).toBe(true);
+  it('★ 停下来的四个转轮 = core 给的金额（各种金额 × 各种拉杆时机都对得上）', () => {
+    const amounts0 = [0, 7, 90, 1000, 2013, 3370, 5099, 9999];
+    const amounts1 = [0, 5, 60, 250, 300, 821, 999];
+    for (const [variant, amounts] of [
+      [0, amounts0],
+      [1, amounts1],
+    ] as const) {
+      for (const amount of amounts) {
+        for (const clickAt of [null, 0, 1, 5, 9, 10, 11, 23, 38]) {
+          const frames = runAll(cueOf(amount, variant, true), clickAt);
+          const last = frames[frames.length - 1]!;
+          expect(godSlotDone(last)).toBe(true);
+          expect(godSlotReelAmount(last.reels, variant), `${amount} / 点击 ${clickAt}`).toBe(amount);
+          for (let slot = 3; slot >= variant; slot--) expect(last.reels[slot]! % 2).toBe(0);
+        }
+      }
+    }
   });
 
-  it('停稳的槽给定格值、没停的槽给滚动值', () => {
-    const s = { ...godSlotStart(cue, 0), settled: 2, tick: 5 };
-    expect(godSlotSlotRolling(s, 0)).toBe(false);
-    expect(godSlotSlotRolling(s, 2)).toBe(true);
-    expect(godSlotSlotDigit(s, 0)).toBe(3); // 3370 的千位
-    expect(godSlotSlotDigit(s, 1)).toBe(3);
-    expect(godSlotSlotDigit(s, 2)).toBe((5 + 2 * 3) % 10);
+  it('★ 停稳那一格（状态 8）之后再过 40 格才收屏（点击不能提前关）', () => {
+    const frames = runAll(cueOf(999, 1, true));
+    const landed = frames.findIndex((f) => f.state === 9);
+    expect(frames.length - 1 - landed).toBe(GOD_SLOT_HOLD_TICKS);
+    const hold = frames[landed + 5]!;
+    expect(godSlotClick(hold)).toBe(hold);
   });
 
-  it('这一帧拼出来的金额：全停 = 目标金额', () => {
-    const s = { ...godSlotStart(cue, 0), settled: 4 };
-    expect(godSlotCurrentAmount(s)).toBe(3370);
-    expect(godSlotCurrentAmount({ ...s, cue: { ...cue, variant: 1, amount: 370 } })).toBe(370);
+  it('★ 真人的点击只在状态 1 有用：推到状态 2，下一格拉杆', () => {
+    let s = godSlotStart(cueOf(999, 1, true), 0);
+    s = godSlotFrame(s).spin;
+    s = godSlotClick(s);
+    expect(s.state).toBe(2);
+    const r = godSlotFrame(s);
+    expect(r.events.pulled).toBe(true);
+    expect(r.spin.state).toBe(3);
+    // 电脑点了不算
+    const ai = godSlotFrame(godSlotStart(cueOf(999, 1, false), 0)).spin;
+    expect(godSlotClick(ai)).toBe(ai);
+  });
+
+  it('★ 气泡的字：转动时只有台詞模板（没有数字）；停稳后**只剩**「999元」@source 0x0043f618 / 0x0043f694', () => {
+    expect(GOD_ATTACH.amount.text).toBe('%d元');
+    const frames = runAll(cueOf(999, 1));
+    const landed = frames.findIndex((f) => f.state === 9);
+    for (const f of frames.slice(0, landed)) {
+      expect(godSlotBubbleText(f)).toBe('小財神附身\n\n向所有對手收...');
+    }
+    for (const f of frames.slice(landed)) expect(godSlotBubbleText(f)).toBe('999元');
+  });
+
+  it('godSlotTick：没到点原样返回；到点走一格、下一格 +30 ms', () => {
+    const s = godSlotStart(cueOf(999, 1), 1000);
+    expect(s.at).toBe(1000);
+    expect(godSlotTick(s, 999).spin).toBe(s);
+    const r = godSlotTick(s, 1000);
+    expect(r.spin.counter).toBe(1);
+    expect(r.spin.at).toBe(1000 + GOD_SLOT_TICK_MS);
   });
 });
 
@@ -376,60 +452,54 @@ const fakeSprite = ((archive: string, resource: number, index: number): Sprite =
   }) as Sprite) as unknown as Parameters<typeof drawGodSlot>[1];
 
 describe('★ 绘制：机体/摇杆/数字/气泡的落点', () => {
-  const cue = {
-    godType: 2,
-    arg: 1,
-    variant: 0,
-    amount: 3370,
-    host: 0,
-    text: '大財神附身\n\n送您...',
-    human: true,
-  };
+  const spinOf = (cue: GodSlotCue, over: Partial<GodSlotSpin> = {}): GodSlotSpin => ({
+    ...godSlotStart(cue, 0),
+    ...over,
+  });
 
   it('四位數机体：图 0 落 (220,320)、摇杆图 2 落 (317,240)、四格数字落 x 表', () => {
     const { ctx, images, texts } = fakeCtx();
-    drawGodSlot(ctx, fakeSprite, {
-      cue,
-      amount: 3370,
-      digitImages: [4, 4, 6, 8],
-      pulled: false,
-    });
+    drawGodSlot(ctx, fakeSprite, spinOf(cueOf(3370, 0), { reels: [0, 0, 2, 4] }));
     const panel = images.find((i) => i.index === 0 && i.resource === GOD_SLOT_RESOURCE);
     expect(panel).toMatchObject({ x: 220, y: 320 });
     const lever = images.find((i) => i.index === GOD_SLOT_LEVER_IMAGE);
     expect(lever).toMatchObject({ x: 317, y: 240 });
     const digits = images.filter((i) => i.index >= GOD_SLOT_DIGIT_FIRST && i.y === GOD_SLOT_DIGIT_Y);
-    expect(digits.map((d) => d.x)).toEqual([145, 182, 219, 256]);
-    expect(digits.map((d) => d.index)).toEqual([4, 4, 6, 8]);
+    // 原版从槽 3 倒着贴到槽 0
+    expect(digits.map((d) => d.x)).toEqual([256, 219, 182, 145]);
+    expect(digits.map((d) => d.index)).toEqual([8, 6, 4, 4]);
     const bubble = images.find((i) => i.resource === GOD_SLOT_BUBBLE.resource);
     expect(bubble).toMatchObject({ x: 220, y: 140 });
-    expect(texts.join('|')).toContain('3370元');
+    // 转动中：台詞两行，没有数字
+    expect(texts).toEqual(['大財神附身', '送您...']);
   });
 
-  it('三位數机体：图 1、摇杆 298、只画 3 格（槽 0 的 x = 0 不画）', () => {
+  it('三位數机体：图 1、摇杆 298、只画 3 格（槽 0 不画）', () => {
     const { ctx, images } = fakeCtx();
-    drawGodSlot(ctx, fakeSprite, {
-      cue: { ...cue, variant: 1, arg: 0, amount: 370 },
-      amount: 370,
-      digitImages: [5, 4, 6, 8],
-      pulled: false,
-    });
+    drawGodSlot(ctx, fakeSprite, spinOf(cueOf(370, 1), { reels: [5, 4, 6, 8] }));
     expect(images.some((i) => i.index === 1 && i.resource === GOD_SLOT_RESOURCE)).toBe(true);
     expect(images.some((i) => i.index === GOD_SLOT_LEVER_IMAGE && i.x === 298)).toBe(true);
     const digits = images.filter((i) => i.index >= GOD_SLOT_DIGIT_FIRST && i.y === GOD_SLOT_DIGIT_Y);
-    expect(digits.map((d) => d.x)).toEqual([163, 200, 237]);
+    expect(digits.map((d) => d.x)).toEqual([237, 200, 163]);
   });
 
-  it('拉杆拉下去时叠的是圆头图 4（不是图 2）', () => {
-    const { ctx, images } = fakeCtx();
-    drawGodSlot(ctx, fakeSprite, {
-      cue,
-      amount: 0,
-      digitImages: [4, 4, 4, 4],
-      pulled: true,
-    });
-    expect(images.some((i) => i.index === GOD_SLOT_KNOB_IMAGE)).toBe(true);
-    expect(images.some((i) => i.index === GOD_SLOT_LEVER_IMAGE)).toBe(false);
+  it('★ 第十四份試玩回報：整趟演出里摇杆那一点**从不**贴数字图（先前拉杆后叠图 4 = 「0」）', () => {
+    for (const variant of [0, 1]) {
+      const lx = godSlotLeverX(variant);
+      for (const f of runAll(cueOf(variant === 0 ? 1234 : 999, variant))) {
+        const { ctx, images } = fakeCtx();
+        drawGodSlot(ctx, fakeSprite, f);
+        const atLever = images.filter((i) => i.resource === GOD_SLOT_RESOURCE && i.x === lx);
+        expect(atLever.map((i) => i.index)).toEqual([f.leverDown ? GOD_SLOT_LEVER_DOWN_IMAGE : GOD_SLOT_LEVER_IMAGE]);
+      }
+    }
+  });
+
+  it('★ 停稳之后气泡里只有一行「999元」', () => {
+    const frames = runAll(cueOf(999, 1));
+    const { ctx, texts } = fakeCtx();
+    drawGodSlot(ctx, fakeSprite, frames[frames.length - 1]!);
+    expect(texts).toEqual(['999元']);
   });
 });
 
@@ -469,7 +539,7 @@ describe('★ 屏幕本体', () => {
     expect(godSlotState().playing).toBe(false);
   });
 
-  it('★ 大財神附身 → 起播、放一次循环音 51 并立刻停掉（原版那一手照抄）', () => {
+  it('★ 大財神附身 → 起播循环音 51（0x004408b2 起、0x004408bf 停、0x0043f2ab 再起 ⇒ 转动全程在响）', () => {
     resetGodSlot();
     const { env, effects, stops } = mkEnv();
     const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2);
@@ -480,10 +550,19 @@ describe('★ 屏幕本体', () => {
     //   闸默认是 null（`gated()` 为假），所以这里补一次 tick 即可。
     godSlotScreen.tick?.(env);
     expect(godSlotState().playing).toBe(true);
-    expect(godSlotState().amount).toBe(1000);
     expect(effects).toEqual([GOD_SLOT_SPIN_SOUND]);
-    expect(stops).toEqual([GOD_SLOT_SPIN_SOUND]);
+    expect(stops).toEqual([]);
     expect(godSlotScreen.active(env)).toBe(true);
+    // 跑到底：拉杆响 1、停稳才停 51、收屏
+    let now = 0;
+    for (let i = 0; i < 1000 && godSlotState().playing; i++) {
+      now += GOD_SLOT_TICK_MS;
+      (env as { now: number }).now = now;
+      godSlotScreen.tick?.(env);
+    }
+    expect(godSlotState().playing).toBe(false);
+    expect(effects).toEqual([GOD_SLOT_SPIN_SOUND, GOD_SLOT_LEVER_SOUND]);
+    expect(stops[0]).toBe(GOD_SLOT_SPIN_SOUND);
     resetGodSlot();
   });
 });
