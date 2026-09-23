@@ -1149,9 +1149,33 @@ function settlePlayback(p: EventBoxPlayback, next: EventBoxPlayback | null, env:
  */
 let ownCardUse: { player: number; cardId: number; turnCount: number } | null = null;
 
+/**
+ * ★ 第十五份：已认出、等台上的角色台词说完才起播的那一段（原版 `player_say` 阻塞，
+ *   说完才轮到 `0x44b6df` / `0x441f73`；气泡与框从不同屏）。`start` 在真正起播那一拍才调。
+ */
+let deferredStart: ((env: UiScreenEnv) => void) | null = null;
+
+/** 起播闸（宿主给：`true` = 台上还有气泡）；不给（单测）= 永远放行 */
+let startGate: (() => boolean) | null = null;
+
+export function setEventBoxStartGate(f: (() => boolean) | null): void {
+  startGate = f;
+}
+
+/** 闸开着就当场起，关着就排着等 `tick` */
+function beginOrDefer(start: (env: UiScreenEnv) => void, env: UiScreenEnv): void {
+  if (startGate?.() === true) {
+    deferredStart = start;
+    env.requestRender();
+    return;
+  }
+  start(env);
+}
+
 /** 调试 / 单测用：把整屏关掉 */
 export function resetEventBoxScreen(): void {
   playback = null;
+  deferredStart = null;
   ownCardUse = null;
   tail = null;
 }
@@ -1222,7 +1246,7 @@ export const eventBoxScreen: UiScreen = {
    */
   windowed: true,
 
-  active: () => playback !== null,
+  active: () => playback !== null || deferredStart !== null,
 
   draw(env: UiScreenEnv): void {
     const p = playback;
@@ -1237,6 +1261,17 @@ export const eventBoxScreen: UiScreen = {
   },
 
   tick(env: UiScreenEnv): void {
+    // ★ 第十五份：排着的那一段 —— 台上的气泡收了就起播
+    if (playback === null && deferredStart !== null) {
+      if (startGate?.() === true) {
+        env.requestRender();
+        return;
+      }
+      const start = deferredStart;
+      deferredStart = null;
+      start(env);
+      return;
+    }
     const p = playback;
     if (p === null) return;
     // ⚠️ `env.flic()` 是异步的：第一次问一定 null，解好后 main.ts 自己重画一帧。
@@ -1302,6 +1337,12 @@ export const eventBoxScreen: UiScreen = {
    */
   fastForward(env: UiScreenEnv): boolean {
     const p = playback;
+    if (p === null && deferredStart !== null) {
+      deferredStart = null;
+      env.log('事件提示框：跟著行動者收場（未起播）');
+      env.requestRender();
+      return true;
+    }
     if (p === null) return false;
     playback = null;
     env.log(`事件提示框：${p.plan.kind} 跟著行動者收場`);
@@ -1334,7 +1375,7 @@ export const eventBoxScreen: UiScreen = {
    *   就让开，交给訊息框与台词。
    */
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
-    if (playback !== null) return; // 上一段还没播完
+    if (playback !== null || deferredStart !== null) return; // 上一段还没播完
     if (before === after) return;
 
     const ev = after.lastEvent;
@@ -1376,13 +1417,15 @@ export const eventBoxScreen: UiScreen = {
         ev.kind === 'news'
           ? newsView(ev.id, after.priceIndex, subject, shares)
           : fortuneView(ev.id, after.priceIndex, subject, after.globalMapId);
-      playback = eventBoxPlaybackStart(eventBoxPlan(view), env.now);
+      const label = `事件提示框：${ev.kind === 'news' ? '新聞' : '命運'} #${ev.id}${who === undefined ? '' : `（P${who.index + 1}）`}`;
       // ★ 第十五份：命運 pass 1 送人进監獄 / 醫院 / 消失 ⇒ 第一段收尾时让出框（`eventBoxYieldsToBoard`）
-      if (ev.kind === 'fortune' && fortuneSendsSomeone(before, after)) {
-        playback = { ...playback, yieldAfterFirst: true };
-      }
-      env.log(`事件提示框：${ev.kind === 'news' ? '新聞' : '命運'} #${ev.id}${who === undefined ? '' : `（P${who.index + 1}）`}`);
-      env.requestRender();
+      const yieldAfterFirst = ev.kind === 'fortune' && fortuneSendsSomeone(before, after);
+      beginOrDefer((e) => {
+        playback = eventBoxPlaybackStart(eventBoxPlan(view), e.now);
+        if (yieldAfterFirst) playback = { ...playback, yieldAfterFirst: true };
+        e.log(label);
+        e.requestRender();
+      }, env);
       return;
     }
 
@@ -1418,10 +1461,12 @@ export const eventBoxScreen: UiScreen = {
       }
       // ★ 第十四份：收費那一段的被动卡 —— 亮牌已经挂在訊息框队列里（`NoticeHint.card`），这里不亮第二遍
       if (play.popup === false) return;
-      playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(play.cardId)), env.now);
-      env.playEffect(CARD_REVEAL_SOUND);
-      env.log(`事件提示框：使用卡片 #${play.cardId}（P${play.player + 1}）`);
-      env.requestRender();
+      beginOrDefer((e) => {
+        playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(play.cardId)), e.now);
+        e.playEffect(CARD_REVEAL_SOUND);
+        e.log(`事件提示框：使用卡片 #${play.cardId}（P${play.player + 1}）`);
+        e.requestRender();
+      }, env);
       return;
     }
 
@@ -1442,9 +1487,11 @@ export const eventBoxScreen: UiScreen = {
 
     const gain = cardGained(before, after);
     if (gain === null) return;
-    playback = eventBoxPlaybackStart(eventBoxPlan(cardView(gain.card)), env.now);
-    env.log(`事件提示框：抽到卡片 #${gain.card}`);
-    env.requestRender();
+    beginOrDefer((e) => {
+      playback = eventBoxPlaybackStart(eventBoxPlan(cardView(gain.card)), e.now);
+      e.log(`事件提示框：抽到卡片 #${gain.card}`);
+      e.requestRender();
+    }, env);
   },
 };
 
@@ -1456,6 +1503,11 @@ export const eventBoxScreen: UiScreen = {
  */
 export function cardUsePopupActive(): boolean {
   return playback !== null && playback.plan.kind === 'card' && playback.plan.flic === null;
+}
+
+/** ★ 第十五份：已认出、还在等台上的气泡收掉的那一段（台词那一侧当它是一扇排着的 `lead` 框）*/
+export function eventBoxPending(): boolean {
+  return playback === null && deferredStart !== null;
 }
 
 /** 给单测的只读视图 */

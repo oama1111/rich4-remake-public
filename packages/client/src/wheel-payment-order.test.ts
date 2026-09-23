@@ -26,7 +26,7 @@
  *   超時才 0x0045459e `cmp eax,ecx / jae` → 0x004545b1 返回）。
  *
  * 本引擎的台詞是 action 落地時就派生出來的（非同步），所以 `main.ts` 補了兩條：
- *   ① `queueSpeech()`：演出接管整屏時**先押著**那幾句（`deferredSpeech`）；
+ *   ① `queueSpeech()`：演出接管整屏時**先押著**那幾句（`heldSpeech`）；
  *   ② `speechTick()`：演出收屏之後才把它們放上台；
  *   ③ `holdForActorWalk()`：**等台詞演完**才派下一步。
  *
@@ -187,7 +187,7 @@ describe('★ 台詞佇列：演出期間不上台 → 收屏後仍演滿 SPEECH
 
   it('★ 押後（演出期間一次都不 tick）→ 收屏那一刻才從頭數 1000 ms', () => {
     const q = new SpeechQueue();
-    // 演出期間（t < 3000）：那幾句**還沒入隊**（`queueSpeech` 押在 `deferredSpeech`）
+    // 演出期間（t < 3000）：那幾句**還沒入隊**（`queueSpeech` 押在 `heldSpeech`）
     expect(q.length).toBe(0);
     // 收屏那一拍（t = 3000）才入隊／開始數 —— 這就是押後的效果
     const shownAt = 3000;
@@ -228,20 +228,6 @@ function functionBody(src: string, name: string): { line: number; text: string }
 
 const MAIN_SRC = fileURLToPath(new URL('./main.ts', import.meta.url));
 
-/** 從 `openAt` 那個 `{` 起取出整個大括號塊（配對到它自己的 `}`）*/
-function braceBlock(text: string, openAt: number): string {
-  expect(text[openAt]).toBe('{');
-  let depth = 0;
-  for (let i = openAt; i < text.length; i++) {
-    if (text[i] === '{') depth += 1;
-    else if (text[i] === '}') {
-      depth -= 1;
-      if (depth === 0) return text.slice(openAt, i + 1);
-    }
-  }
-  throw new Error('大括號不配對');
-}
-
 function mainSource(): string | null {
   if (!existsSync(MAIN_SRC)) return null;
   return readFileSync(MAIN_SRC, 'utf8');
@@ -250,41 +236,38 @@ function mainSource(): string | null {
 const runMain = mainSource() !== null ? it : it.skip;
 
 describe('★ main.ts 的三條閘 @source 0x0041a458 / 0x0041a71e / 0x0044f1a6', () => {
-  runMain('★ `queueSpeech`：演出在演就**押後**（不進佇列）', () => {
+  runMain('★ `queueSpeech`：先押上賬，再按「框 / 演出收了沒有」逐句放行（不直接進佇列）', () => {
     const src = mainSource();
     if (src === null) return;
     const body = functionBody(src, 'queueSpeech').text;
-    // W-51 起判據是**每一句自己的 `order`**：只有 `afterStage` 且台上忙才押後。
-    // ★★ 死鎖自查的源碼面：押後決定**只**經過 `deferSpeech()`（它只對 `afterStage`
-    //    返回 true）—— `beforeStage` 的句子於是**永不**進 `deferredSpeech`。
-    expect(body).toContain('const busy = stageBusy(stageBusyFlags());');
-    expect(body).toContain('if (deferSpeech(line.order, busy)) deferred.push(line.bubble);');
-    expect(body).toContain('immediate.push(line.bubble);');
-    // 立即的那幾句先上台（`speechQueue.push`），押後的才落在 `deferredSpeech`
-    const pushAt = body.indexOf('speechQueue.push(immediate');
-    const deferAt = body.indexOf('deferredSpeech = deferred;');
-    expect(pushAt).toBeGreaterThanOrEqual(0);
-    expect(deferAt).toBeGreaterThan(pushAt);
-    // 兩支互斥：不可能同一句既押著又立刻上台（各走各的 `push`）
-    expect(body).toContain('deferred.push(line.bubble)');
-    expect(body).toContain('immediate.push(line.bubble)');
+    // 第十五份起：所有台詞先按檔押進 `heldSpeech`，放行只經過 `releaseHeldSpeech`
+    expect(body).toContain('holdSpeech(lines);');
+    expect(body).toContain('releaseHeldSpeech(performance.now());');
+    expect(body).not.toContain('speechQueue.push(');
+    // 放行的判據只有一處：`presentation-order.ts` 的 `lineMayEnter`（框 / 影片那一側的快照）
+    const release = functionBody(src, 'releaseHeldSpeech').text;
+    expect(release).toContain('const boxes = boxSnapshot();');
+    expect(release).toContain('lineMayEnter(heldSpeech[0]!.order, boxes)');
+    expect(release).toContain('speechQueue.push(out, now)');
+    // ★★ 影片那一類（轉盤之外的 W-51 那幾位）照舊擋 `afterStage` 起的句子
+    const snap = functionBody(src, 'boxSnapshot').text;
+    expect(snap).toContain('stageBusy({ ...stageBusyFlags(), blockingPresentation: bailClosing(), godLine: false })');
+    // 轉盤在演 / 排著 ⇒ 算「框」：在演 = showing、排著 = pendingRanks
+    expect(snap).toContain('wheel.playing');
+    expect(snap).toContain('if (wheel.pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.wheel));');
   });
 
-  runMain('★ `speechTick`：演出在演 → 押後的**不上台**，但佇列照常推進（死鎖自查）', () => {
+  runMain('★ `speechTick`：押後的**按閘放行**，但佇列照常推進（死鎖自查）', () => {
     const src = mainSource();
     if (src === null) return;
     const body = functionBody(src, 'speechTick').text;
-    const guardOpen = body.indexOf('if (!stageBusy(stageBusyFlags())) {');
-    expect(guardOpen).toBeGreaterThanOrEqual(0);
-    const guard = braceBlock(body, body.indexOf('{', guardOpen));
-    // 閘**裡面**才放行押後的那幾句（`deferredSpeech = null` → `speechQueue.push(held`）
-    expect(guard).toContain('deferredSpeech = null;');
-    expect(guard).toContain('speechQueue.push(held');
-    // ★★ 但 `speechQueue.tick`（收尾）必須在閘的**外面** —— 佇列裡可能正躺著
-    //    `beforeStage` 的句子，而影片正等它說完（`tickBoardFilm` 的起播閘）；
-    //    兩邊都等就是死鎖（`stage-gate.test.ts` 有正反兩條用例）。
-    expect(guard).not.toContain('speechQueue.tick(');
-    expect(body.indexOf('speechQueue.tick(')).toBeGreaterThan(guardOpen + guard.length - 1);
+    const releaseAt = body.indexOf('releaseHeldSpeech(now);');
+    expect(releaseAt).toBeGreaterThanOrEqual(0);
+    // ★★ `speechQueue.tick`（收尾）**不受任何閘**：佇列裡可能正躺著 `beforeStage` 的句子，
+    //    而影片正等它說完（`tickBoardFilm` 的起播閘）；兩邊都等就是死鎖。
+    const tickAt = body.indexOf('if (speechQueue.tick(now)) requestRender();');
+    expect(tickAt).toBeGreaterThan(releaseAt);
+    expect(body.slice(0, tickAt)).not.toMatch(/if \(.*\) return;\s*\n\s*releaseHeldSpeech/);
   });
 
   runMain('★ `holdForActorWalk`：還有台詞（在演或押著）就不派下一步', () => {
@@ -292,7 +275,7 @@ describe('★ main.ts 的三條閘 @source 0x0041a458 / 0x0041a71e / 0x0044f1a6'
     if (src === null) return;
     const body = functionBody(src, 'holdForActorWalk').text;
     // 閘要在**放行（最後那個 `return false`）之前**，否則等於沒有
-    const gateAt = body.indexOf('speechQueue.length > 0 || deferredSpeech !== null');
+    const gateAt = body.indexOf('speechQueue.length > 0 || heldSpeech.length > 0');
     const releaseAt = body.lastIndexOf('return false');
     expect(gateAt).toBeGreaterThanOrEqual(0);
     expect(gateAt).toBeLessThan(releaseAt);
@@ -305,7 +288,7 @@ describe('★ main.ts 的三條閘 @source 0x0041a458 / 0x0041a71e / 0x0044f1a6'
     if (src === null) return;
     // 幀尾只認 `speechQueue.length`：押後的那幾句不在佇列裡，演出收屏那一拍
     // 就沒人要下一幀，`speechTick` 也就不會再被調到 —— 台詞卡死
-    const continued = /speechQueue\.length > 0 \|\|\s*\n?\s*deferredSpeech !== null/.test(src);
+    const continued = /speechQueue\.length > 0 \|\|[\s\S]{0,200}?heldSpeech\.length > 0 \|\|/.test(src);
     expect(continued).toBe(true);
   });
 });

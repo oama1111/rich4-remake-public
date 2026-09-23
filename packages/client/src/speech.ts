@@ -128,7 +128,13 @@ export interface SayEvent {
  * 次序由 `SpeechDetector.order` 在 `speechEventsFor()` 里**一处一值**补上 ——
  * 不在每个 `push` 上重复写，避免同一个探测器里出现两个不一致的值。
  */
-export type DetectedSay = Omit<SayEvent, 'order'>;
+export type DetectedSay = Omit<SayEvent, 'order'> & {
+  /**
+   * ★ 第十五份：**这一句**的次序与探测器的缺省不同时才写（同一个事件号在 exe 里有两个位置）。
+   *   目前只有「剛滿 5 級」：自己加蓋那一支在框之前（`0x00419a19`），福神加蓋那一支在顯靈框之后（`0x0040fa1e`）。
+   */
+  order?: SpeechOrder;
+};
 
 /** 只要「谁 / 哪一句」的调用方（资源换算、气泡排版）——`SayEvent` 与裸字面量都能传 */
 export type SayKey = Pick<SayEvent, 'player' | 'event'>;
@@ -499,7 +505,18 @@ export function detectLevelFive(before: GameState, after: GameState): DetectedSa
   if (!reached) return [];
   const p = after.players[after.currentPlayer];
   if (p === undefined || !isAlive(p)) return [];
+  // ★ 第十五份：福神代蓋到 5 级那一支（`fcn_0040f8be`）是「顯靈框 `0x0040f9c9` → 音效 → 镜头 →
+  //   台词 `0x0040fa1e` → 0x20b」—— 框在前（`tail` 档）⇒ 这一句排在尾框之后（`afterTailBox`）。
+  //   自己付费加蓋那一支（`0x00419a19`）/ 建設公司那一支（`0x0041ab5b`）仍是缺省的 `beforeStage`。
+  if (levelFiveByGod(before, after)) return [{ player: p.index, event: 15, order: 'afterTailBox' }];
   return [{ player: p.index, event: 15 }];
+}
+
+/** 这一条 action 里有没有神明顯靈加蓋（`godManifest`）刚好盖到 5 级 */
+function levelFiveByGod(before: GameState, after: GameState): boolean {
+  const hints = after.lastBuildUpgrades ?? null;
+  if (hints === null || hints === (before.lastBuildUpgrades ?? null)) return false;
+  return hints.some((h) => h.source === 'godManifest' && h.reachedMaxLevel);
 }
 
 /** 有没有哪一块刚好在这一步变成 5 级 */
@@ -1516,12 +1533,16 @@ export const DETECTORS: readonly SpeechDetector[] = [
   { name: 'godArrived', source: [0x0040ea9b, 0x0040e64a, 0x0040ef2f, 0x0040f2ff], order: 'beforeStage', detect: detectGodArrived },
   // ★ W-55 行 6：神明**落脚顯靈**的台词（天使/惡魔/福神在落点尾块那一族）。
   // §2.2 表：土地公顯靈 `0x0040f8ab` —— 镜头 → 訊息框 → 台词 ⇒ `afterStage`。
-  { name: 'landGodLine', source: [0x0040f86e, 0x0040f8ab], order: 'afterStage', detect: detectLandGodLine },
+  // ★ 第十五份：顯靈框本身在落点尾块（`0x0041b086 call 0x40f381`），排在付款 / 免收台词**之后**（`tail` 档）
+  //   ⇒ 这一句排在尾框之后（`afterTailBox`），不是与付款台词同档。
+  { name: 'landGodLine', source: [0x0040f86e, 0x0040f8ab], order: 'afterTailBox', detect: detectLandGodLine },
   // §2.2 表：福神顯靈 `0x0040fa1e`（到 5 级）/ `0x0040fa5c`（没到，`rand()&1` 二选一）
   //   —— 訊息框 → 音效 → 镜头 → 台词 ⇒ 裁定是 `afterNotice`，而 `SpeechOrder`
   //   只有两档（`beforeStage` / `afterStage`）⇒ 按 §2.2 的兜底「先按 `afterStage`
   //   做并在 PR 里注明」。到 5 级那一支的事件 15 另由 `detectLevelFive` 说（不在这里）。
-  { name: 'luckyGodLine', source: [0x0040f8be, 0x0040fa49, 0x0040fa5c], order: 'afterStage', detect: detectLuckyGodLine },
+  // ★ 第十五份：`0x00419a48 call 0x40f8be` 在街區台词 `0x00419a31` 之后 ⇒ 福神框是 `tail` 档、这一句 `afterTailBox`
+  //   （这正是上面说的 `afterNotice` —— 第三档现在有了，见 `stage-gate.ts`）。
+  { name: 'luckyGodLine', source: [0x0040f8be, 0x0040fa49, 0x0040fa5c], order: 'afterTailBox', detect: detectLuckyGodLine },
   // ★ W-67-a：董事長蒞臨商店的贈禮 —— 訊息框（`0x464378`，1500 ms）→ 台词（`0x44f230`）
   //   ⇒ `afterStage`（框在前、台词在后）。
   { name: 'shopGift', source: [0x0042e9f8, 0x0042ea23], order: 'afterStage', detect: detectShopGift },
@@ -1662,7 +1683,8 @@ export function speechEventsFor(
       // ★ W-50 §1.2 第 1 条：表情号按**事件号**查表（判据见 `EXPRESSION_BY_EVENT`）。
       //   没取证的事件**不写这个字段**（`speechBubbleOf` 回落到 0），不猜。
       const expression = expressionOf(ev.event);
-      out.push(expression === null ? { ...ev, order: d.order } : { ...ev, order: d.order, expression });
+      const order = ev.order ?? d.order;
+      out.push(expression === null ? { ...ev, order } : { ...ev, order, expression });
     }
   }
   return out;
@@ -1770,6 +1792,24 @@ export function speechBubblesFor(
  * 纯函数（C-DET-1/2/4）：不读 DOM、不碰音频、不动 PRNG。
  */
 export function cardPlaySpeech(before: GameState, after: GameState): SpeechBubble[] {
+  return cardPlaySpeechLines(before, after).map((l) => l.bubble);
+}
+
+/**
+ * ★★ 第十五份：出牌台词的**次序**。
+ *
+ * 从手里出的牌（亮牌 `fcn_00441f73` 在卡片函数之前）：26 张卡的函数体里，出牌台词都是**第一个**演出
+ * —— 在 `animate_object`（`0x40e669`，卡片飞行）、影片、訊息框之前（`python3 tools/disasm.py` 逐个读过；
+ * 例：均貧 `0x00442225` → 飞 `0x004422d6`；怪獸 `0x0044398f` → 飞 `0x00443a6a` → 影片 `0x00443aaf`；
+ * 股票卡 `0x00444f5b` → 框 `0x00444fdb`；查稅 `0x0044526b` → 飞 `0x004452c6` → 框 `0x004453ef`）
+ * ⇒ `beforeStage`（亮牌是 `lead` 档的框，台词排在它之后、飞行 / 影片 / 结果框之前）。
+ *
+ * 收費那一段的被动卡（免費卡 / 嫁禍卡，`popup === false`）：过路费框（`stage`）在前、
+ * 亮牌 → 台词 → 回应台词（`0x00444b25` → `0x00444b5e` → `0x00444b98`）⇒ `afterStage`。
+ * 回应那一句（地主 / 替死鬼）一律 `afterStage`，紧跟出牌者那句。
+ * 先前一律取 `afterStage`（「首席若要逐卡裁定，改这一处即可」）⇒ 从手里出牌时台词被押到飞行 / 影片 / 结果框之后。
+ */
+export function cardPlaySpeechLines(before: GameState, after: GameState): SpeechLine[] {
   const play = after.lastCardPlay;
   if (play === null) return [];
   // 同一次用卡只出一次（提示字段是「最近一次」的覆写语义）
@@ -1778,13 +1818,14 @@ export function cardPlaySpeech(before: GameState, after: GameState): SpeechBubbl
   if (p === undefined) return [];
   const b = p.blocking;
   if (b.disappearing !== 0 || b.sleepWalking !== 0 || b.sleeping !== 0) return [];
+  const out: SpeechLine[] = [];
   const bubble = cardLineBubbleOf(play.player, p.character, characterName(p.character), play.cardId);
-  const out = bubble === null ? [] : [bubble];
+  if (bubble !== null) out.push({ bubble, order: play.popup === false ? 'afterStage' : 'beforeStage' });
   // ★ 第十四份：被动卡之后回一句（免費卡 → 地主 `0x00444b98`；嫁禍卡 → 替死鬼 `0x00444a4b`），紧跟出牌者那句
   const ans = play.answeredBy === undefined ? undefined : after.players[play.answeredBy];
   if (ans !== undefined) {
     const a = cardAnswerBubbleOf(ans.index, ans.character, characterName(ans.character), play.cardId);
-    if (a !== null) out.push(a);
+    if (a !== null) out.push({ bubble: a, order: 'afterStage' });
   }
   return out;
 }

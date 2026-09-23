@@ -27,7 +27,6 @@ import {
   queueLocalNotice,
   noticeBoxScreen,
   noticeBoxScreenState,
-  noticeAfterSpeech,
   noticeHoldsFilms,
   noticeKeyShowing,
   noticePlaybackStart,
@@ -41,6 +40,7 @@ import {
   setNoticeSpeechGate,
   setNoticeStartGate,
 } from './notice-box-screen.ts';
+import { NOTICE_TIER } from './presentation-order.ts';
 
 const EXE = `${process.env.RICH4_WORKSPACE ?? ''}/Rich4/rich4.exe`;
 const runExe = existsSync(EXE) ? it : it.skip;
@@ -663,28 +663,32 @@ describe('★★ 第十三份試玩回報 #2：「住院中／還剩 N 天」等
 
   const HOSPITAL = { key: 'confinement.hospital' as const, args: ['沙隆巴斯', 2] };
 
-  it('★ 只有回合開始被阻那五扇排在台词之后（`0x0040caca call 0x44ef41` → `0x0040cb98 call 0x440cac`）', () => {
+  it('★ 回合開始被阻那五扇排在台词之后（`0x0040caca call 0x44ef41` → `0x0040cb98 call 0x440cac`）：`stage` 档，台词是 `beforeStage`', () => {
     for (const k of ['confinement.hotel', 'confinement.disappearing', 'confinement.prison', 'confinement.hospital', 'confinement.sleeping'] as const) {
-      expect(noticeAfterSpeech(k)).toBe(true);
+      expect(NOTICE_TIER[k]).toBe('stage');
     }
-    // 其余的框原版都是框在前（過路費 `0x00419d5a` → 付款台词 `0x0041a71e`…）
-    expect(noticeAfterSpeech('rent.payOneOwner')).toBe(false);
-    expect(noticeAfterSpeech('god.build')).toBe(false);
-    expect(noticeAfterSpeech('facility.mall')).toBe(false);
+    // 過路費 `0x00419d5a` → 付款台词 `0x0041a71e`：框在前（付款台词是 `afterStage`，档更大）
+    expect(NOTICE_TIER['rent.payOneOwner']).toBe('stage');
+    expect(NOTICE_TIER['facility.mall']).toBe('stage');
+    // 顯靈加蓋在落点尾块（`0x0041b086`），排在付款台词之后
+    expect(NOTICE_TIER['god.build']).toBe('tail');
   });
 
-  it('★★ 那一拍不起播（台词还没入队）；台词在说就一直押着，说完才弹', () => {
-    let speaking = false;
-    setNoticeSpeechGate(() => speaking);
+  it('★★ 台词押在账上（宿主在 `event()` 之前 `holdSpeech`）⇒ 那一拍不起；台词在说就一直押着，说完才弹', () => {
+    let speaking = true; // 「我不要打針！！」（`beforeStage`）已押上账
+    const asked: string[] = [];
+    setNoticeSpeechGate((tier) => {
+      asked.push(tier);
+      return speaking;
+    });
     resetNoticeBoxScreen();
     const before = stateWith([]);
     const after = stateWith([{ ...HOSPITAL }]);
     const env = fakeEnv(after, 7);
     noticeBoxScreen.event!(before, after, env);
-    // 同一条 action 的台词要等 event() 派完才入队 ⇒ 这一拍先不起
     expect(noticeBoxScreenState().playing).toBe(false);
     expect(noticeBoxScreen.active(env)).toBe(true);
-    speaking = true; // `queueSpeech` 把「我不要打針！！」放上台
+    expect(asked).toContain('stage');
     noticeBoxScreen.tick!(env);
     expect(noticeBoxScreenState().playing).toBe(false);
     noticeBoxScreen.tick!(env);
@@ -695,24 +699,31 @@ describe('★★ 第十三份試玩回報 #2：「住院中／還剩 N 天」等
     expect(noticeBoxScreenState().playback?.text).toContain('沙隆巴斯');
   });
 
-  it('★ 没有台词（1/2 没抽中 / 住宿、消失本来就不说）⇒ 下一帧就弹', () => {
+  it('★ 没有台词（1/2 没抽中 / 住宿、消失本来就不说）⇒ 当场就弹', () => {
     setNoticeSpeechGate(() => false);
     resetNoticeBoxScreen();
     const before = stateWith([]);
     const after = stateWith([{ key: 'confinement.hotel' as const, args: ['沙隆巴斯', 2] }]);
     const env = fakeEnv(after, 7);
     noticeBoxScreen.event!(before, after, env);
-    noticeBoxScreen.tick!(env);
     expect(noticeBoxScreenState().playing).toBe(true);
   });
 
-  it('★ 台词闸只管那五扇：過路費框照旧当场起播，不等台词', () => {
-    setNoticeSpeechGate(() => true);
+  it('★★ 第十五份：台词闸管**每一扇** —— 台上有气泡时過路費框也押着（原版 `player_say` 阻塞，气泡与框不同屏）', () => {
+    let speaking = true;
+    setNoticeSpeechGate(() => speaking);
     resetNoticeBoxScreen();
     const before = stateWith([]);
     const after = stateWith([{ ...ONE_OWNER }]);
     noticeBoxScreen.event!(before, after, fakeEnv(after, 7));
+    expect(noticeBoxScreenState().playing).toBe(false);
+    speaking = false;
+    noticeBoxScreen.tick!(fakeEnv(after, 8));
     expect(noticeBoxScreenState().playing).toBe(true);
+  });
+
+  it('★★ 第十五份：电脑用道具「使用%s」是 `lead` 档（`0x00448070` 在道具函数 `0x0044807e` 之前）', () => {
+    expect(NOTICE_TIER['tool.aiUse']).toBe('lead');
   });
 });
 
@@ -755,10 +766,10 @@ describe('★★ 第十四份：新接的几扇框', () => {
     expect(noticeText({ key: 'insurance.payout', args: [5000] })).toBe('保險期間\n\n得到理賠金\n\n5000元');
   });
 
-  it('★ 理賠框排在台词之后（六个调用点都是台词在前、`0x44ba63` 在后）', () => {
-    expect(noticeAfterSpeech('insurance.payout')).toBe(true);
-    expect(noticeAfterSpeech('blessing.penaltyVoid')).toBe(false);
-    expect(noticeAfterSpeech('god.tollFree')).toBe(false);
+  it('★ 理賠框排在台词之后（六个调用点都是台词在前、`0x44ba63` 在后）⇒ `tail` 档', () => {
+    expect(NOTICE_TIER['insurance.payout']).toBe('tail');
+    expect(NOTICE_TIER['blessing.penaltyVoid']).toBe('stage');
+    expect(NOTICE_TIER['god.tollFree']).toBe('stage');
   });
 
   it('★★ 只剩一扇等台词的框 ⇒ `noticeWaitingForSpeech` 为真（宿主据此不把它算成台上在演，免得与押后的台词互等）', () => {
@@ -835,9 +846,9 @@ describe('★★ 第十四份：亮牌那一扇（`NoticeHint.card`）交给事�
 
   it('★ 2026-09-23：小衰神丢卡那一扇（`0x0040f148 call 0x440cac`，串 `0x4633ab`）—— 串里自己写「小衰神」、排在「別鬧了！」之后', () => {
     expect(noticeText({ key: 'god.lostCard', args: ['路障卡'] })).toBe('小衰神附身\n\n遺失路障卡！');
-    // 原版次序：台词 22（`0x0040f0ac call 0x44ef41`）→ 影片 → 开场白 → 丢卡 → 框
-    expect(noticeAfterSpeech('god.lostCard')).toBe(true);
-    expect(noticeAfterSpeech('god.gotCard')).toBe(false);
+    // 原版次序：台词 22（`0x0040f0ac call 0x44ef41`，`beforeStage`）→ 影片 → 开场白 → 丢卡 → 框（`stage` 档）
+    expect(NOTICE_TIER['god.lostCard']).toBe('stage');
+    expect(NOTICE_TIER['god.gotCard']).toBe('stage');
   });
 
   it('★ 2026-09-23：新补的那几扇文案逐字（格式串全在 `NOTICE_BOX`，逐字节对过 exe）', () => {

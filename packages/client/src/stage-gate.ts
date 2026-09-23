@@ -43,8 +43,15 @@
  *     排在 0x20b 之前（2026-09-19 从暂定的 `afterStage` 订正过来）。
  *   ⇒ 加一档要多动一处闸（`queueSpeech` / `speechTick`）却影响不到任何一句，
  *   按「不新增原版没有的东西」保留两档；结论记在 `docs/escalations.md` E-19。
+ *
+ * ★★★ 2026-09-23（第十五份：「台词和棕色对话框又重叠了」全面排查）**加第三档 `afterTailBox`**：
+ *   上面那条「观察等价」只比了台词与**影片**；把台词与**訊息框**逐个调用点对过之后
+ *   （`presentation-order.ts` 的尺子），确有一族台词排在「反应台词之后才弹的框」**之后**：
+ *   土地公 `0x0040f8ab`（落点尾块 `0x0041b086 call 0x40f381`，在付款 / 免收台词之后）、
+ *   福神 `0x0040fa1e` / `0x0040fa5c`（`0x00419a48 call 0x40f8be`，在街區台词 `0x00419a31` 之后）。
+ *   对影片它与 `afterStage` 一样（影片演完才说）；对框它排在 `tail` 档的框之后。
  */
-export type SpeechOrder = 'beforeStage' | 'afterStage';
+export type SpeechOrder = 'beforeStage' | 'afterStage' | 'afterTailBox';
 
 /**
  * `stageBusy()` 的入参 —— 一位一个「台上还忙着」的条件。
@@ -125,7 +132,7 @@ export function stageBusy(f: StageFlags): boolean {
  *   并附一条**反例**（把这条规则改坏 ⇒ 模型 2 秒内走不完）证明它抓得住。
  */
 export function deferSpeech(order: SpeechOrder, busy: boolean): boolean {
-  return order === 'afterStage' && busy;
+  return order !== 'beforeStage' && busy;
 }
 
 /**

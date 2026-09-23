@@ -669,20 +669,45 @@ interface WheelPlayback {
 /** 現在正在播的那一段；`null` = 沒在播 */
 let playback: WheelPlayback | null = null;
 
+/**
+ * ★ 第十五份：已 diff 出、还没起播的那一盘（台上还有角色台词 —— 原版 `player_say` 阻塞，
+ *   说完才轮到 `0x44090e`；气泡与转盘不同屏）。`active()` 算它，免得没人叫 `tick`。
+ */
+let pendingCue: WheelCue | null = null;
+
+/** 起播闸（宿主给：`true` = 还不能起播）—— 与 `god-slot.ts` / `notice-box-screen.ts` 同一个形状 */
+let startGate: (() => boolean) | null = null;
+
+export function setWheelStartGate(f: (() => boolean) | null): void {
+  startGate = f;
+}
+
 /** 调试 / 单测用：把整屏关掉 */
 export function resetWheelScreen(): void {
   playback = null;
+  pendingCue = null;
+}
+
+/** 起播那一下：循環音 52 @source 0x0043f80d（flags = `ebx` = 1 = DSBPLAY_LOOPING）*/
+function beginWheel(cue: WheelCue, env: UiScreenEnv): void {
+  playback = { cue, spin: wheelSpinStart(cue.start, cue.stop, env.now), landedAt: null };
+  env.playEffect(WHEEL_SPIN_SOUND, true);
+  env.log(`轉盤：起點 ${cue.start} → 落點 ${cue.stop}（${cue.value}）`);
+  env.requestRender();
 }
 
 /** 给单测的只读视图 */
 export function wheelScreenState(): {
   playing: boolean;
+  /** ★ 第十五份：已 diff 出、等台词说完才起播 */
+  pending: boolean;
   cue: WheelCue | null;
   slot: number;
   landed: boolean;
 } {
   return {
     playing: playback !== null,
+    pending: pendingCue !== null,
     cue: playback?.cue ?? null,
     slot: playback === null ? 0 : wheelSpinSlot(playback.spin),
     landed: playback === null ? false : wheelSpinLanded(playback.spin),
@@ -744,8 +769,8 @@ export const wheelScreen: UiScreen = {
    */
   windowed: true,
 
-  /** 演出期間接管整屏；停完 `WHEEL_HOLD_MS` 自己關 */
-  active: () => playback !== null,
+  /** 演出期間接管整屏；停完 `WHEEL_HOLD_MS` 自己關（排着没起播的那一盘也算，见 `pendingCue`）*/
+  active: () => playback !== null || pendingCue !== null,
 
   draw(env: UiScreenEnv): void {
     const play = playback;
@@ -789,6 +814,12 @@ export const wheelScreen: UiScreen = {
    */
   fastForward(env: UiScreenEnv): boolean {
     const play = playback;
+    if (play === null && pendingCue !== null) {
+      pendingCue = null;
+      env.log('轉盤：跟著行動者收場（未起播）');
+      env.requestRender();
+      return true;
+    }
     if (play === null) return false;
     if (play.landedAt === null) env.stopEffect(WHEEL_SPIN_SOUND);
     playback = null;
@@ -797,6 +828,17 @@ export const wheelScreen: UiScreen = {
     return true;
   },
   tick(env: UiScreenEnv): void {
+    // ★ 第十五份：排着的那一盘 —— 闸一开就在这一拍起播，并自己续帧
+    if (playback === null && pendingCue !== null) {
+      if (startGate?.() === true) {
+        env.requestRender();
+        return;
+      }
+      const cue = pendingCue;
+      pendingCue = null;
+      beginWheel(cue, env);
+      return;
+    }
     const play = playback;
     if (play === null) return;
     if (play.landedAt !== null) {
@@ -832,14 +874,16 @@ export const wheelScreen: UiScreen = {
    *   **起點槽**都反得出來 —— 它就在 `before.rngState` 的第一次 `rand()` 裡。
    */
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
-    if (playback !== null) return; // 上一段還沒播完
+    if (playback !== null || pendingCue !== null) return; // 上一段還沒播完
     if (before === after) return;
     const cue = wheelCue(before, after, env.topo);
     if (cue === null) return;
-    playback = { cue, spin: wheelSpinStart(cue.start, cue.stop, env.now), landedAt: null };
-    // ★ 起播那一下：循環音 52 @source 0x0043f80d（flags = `ebx` = 1 = DSBPLAY_LOOPING）
-    env.playEffect(WHEEL_SPIN_SOUND, true);
-    env.log(`轉盤：起點 ${cue.start} → 落點 ${cue.stop}（${cue.value}）`);
-    env.requestRender();
+    // ★ 第十五份：台上还有气泡 ⇒ 先排着（`tick` 里闸一开再起播）
+    if (startGate?.() === true) {
+      pendingCue = cue;
+      env.requestRender();
+      return;
+    }
+    beginWheel(cue, env);
   },
 };

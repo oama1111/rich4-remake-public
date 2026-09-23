@@ -3796,7 +3796,12 @@ function applyMagicHouse(
         beats.push({ before, after: s });
         for (let i = 0; i < req.amount; i++) {
           const prev = s;
-          s = { ...drawAndApplyFortune({ ...s, currentPlayer: who }, topo), currentPlayer: who };
+          // ★ 第十五份：每一张各弹各的框 —— 先前上一张的框（「搶得%s的%s」、加持框…）留在 `notices` 里，
+          //   下一张的段落又交出去一遍，表现层把它们**再弹一次**（原版 `0x44db81` 每次只画自己这一张的）。
+          //   交一份「本 action 已作废」的空表进去，`appendFreshNotice` 就从空表起算。
+          const own: NoticeHint[] = [];
+          staleNoticeLists.add(own);
+          s = { ...drawAndApplyFortune({ ...s, currentPlayer: who, notices: own }, topo), currentPlayer: who };
           if (s.notices !== prev.notices) allNotices.push(...s.notices);
           beats.push({ before: prev, after: s });
           if (s.phase === 'gameOver') return finish(s);
