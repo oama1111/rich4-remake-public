@@ -544,6 +544,8 @@ export function newGame(opts: NewGameOptions): GameState {
     lastToolUsed: null,
     // 纯表现提示：开局还没有过过路费（见 state/types.ts 的 GameState.lastTollLands）
     lastTollLands: null,
+    // 纯表现提示：开局还没有开过奖（见 state/types.ts 的 GameState.lastLotteryDraw）
+    lastLotteryDraw: null,
     // 纯表现提示：开局还没有过付费类落点（见 state/types.ts 的 GameState.notices）
     notices: [],
     lastViewTarget: null,

@@ -409,6 +409,29 @@ export interface CardPlayHint {
 }
 
 /**
+ * **这一次樂透開獎开出了什么**（第十二份試玩回報「沒展現出本期開獎號碼」）—— 纯表现提示，
+ * 见 `GameState.lastLotteryDraw`。
+ *
+ * @source 原版 `0x00430b07`–`0x00430b77` 当场掷出号码（`ebx` = 1..36），
+ *   随即 `0x00430b7a sprintf("%02d", ebx)` 拆成两位写进 `[0x48c37d]/[0x48c37e]`，
+ *   开号那一拍 `0x00430c48`/`0x00430c80`（号码球）与 `0x00430cba`/`0x00430cf4`
+ *   （`Data.mkf#517` 的大号绿字）把它画出来 —— **无论有没有人中**。
+ *   这个号在原版只活在开奖屏的那两个字节里，状态机之外没有任何地方留下它；
+ *   本引擎的 core 一条 action 就把开奖做完，表现层事后**反推不出**没人中奖时开的是几号
+ *   （号码表与公库都原样），所以由 core 在开奖那一刻交出来。
+ */
+export interface LotteryDrawHint {
+  /** 中奖号的**槽号 0..35**（屏上显示 `%02d` 的 `number + 1`，与投注屏/持号表同一口径）*/
+  number: number;
+  /** 得主下标；开出的号没人买为 `null` */
+  winner: number | null;
+  /** 开奖那一刻的公库（屏上「累積獎金」那一格；有人中奖时也就是他拿走的数）*/
+  pool: number;
+  /** **开奖前**的号码表（原版到收屏 `0x00430aee` 才 `memset`，演出全程铭牌上都看得见）*/
+  sold: number[];
+}
+
+/**
  * **神明顯靈时说哪一句**（W-55 行 6）—— 纯表现提示，见 `GameState.lastGodLine`。
  *
  * @source 福神 `fcn_0040f8be` 的 `0x0040fa49 call 0x456f2d`（`rand()`）/
@@ -1076,6 +1099,16 @@ export interface GameState {
    * 只有 `counted.length > 1` 才写，否则 null（原版那时不演）。
    */
   lastTollLands: number[] | null;
+
+  /**
+   * ★★ **这一次樂透開獎开出了什么** —— 纯表现提示，见 `LotteryDrawHint`。
+   *
+   * 消费者：`client/src/lottery-draw-screen.ts` 的 `lotteryDrawCue()`（开奖屏的号码球、
+   * 中央大号数字、得主、持号表）。规矩与 `lastTollLands` 同一套：**纯表现、不进指纹/存档、
+   * 只活一条 action**（`reduce` 出口按引用相等清成 null）。
+   * 只在原版**真的开屏**时写（至少卖出一张票，`0x00431729 cmp eax,0x24 / je` 那道闸之内）。
+   */
+  lastLotteryDraw: LotteryDrawHint | null;
 
   /**
    * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。

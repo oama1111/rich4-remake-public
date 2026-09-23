@@ -10,7 +10,15 @@
  */
 
 import type { Action } from './actions.ts';
-import type { BuildUpgradeHint, BuildUpgradeSource, GameState, NoticeHint, NoticeKey, Player } from './types.ts';
+import type {
+  BuildUpgradeHint,
+  BuildUpgradeSource,
+  GameState,
+  LotteryDrawHint,
+  NoticeHint,
+  NoticeKey,
+  Player,
+} from './types.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 import { isAiControlled, isAlive } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
@@ -1130,8 +1138,12 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   const staleGift = raw !== state && raw.lastShopGift === state.lastShopGift;
   // ★ W-69：`lastTollLands` 也一样（過路費那段「一起閃一遍」的演出提示）。
   const staleToll = raw !== state && raw.lastTollLands === state.lastTollLands;
+  // ★ 第十二份試玩回報：`lastLotteryDraw`（开奖屏的「本期号码」）也一样，只活一条 action。
+  //   已经是 null 的不算「要清」（保持「没东西要清就原样返回 `raw`」的恒等性）。
+  const staleDraw =
+    raw !== state && raw.lastLotteryDraw !== null && raw.lastLotteryDraw === state.lastLotteryDraw;
   const next =
-    staleView || staleLine || stalePower || staleGift || staleToll
+    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
@@ -1139,6 +1151,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           ...(stalePower ? { lastGodPower: null } : {}),
           ...(staleGift ? { lastShopGift: null } : {}),
           ...(staleToll ? { lastTollLands: null } : {}),
+          ...(staleDraw ? { lastLotteryDraw: null } : {}),
         }
       : raw;
   // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈
@@ -4711,8 +4724,14 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
       if (d.cleared) companyFunds[c.id] = 0;
     }
   }
+  // ★ 开奖屏要显示的「本期号码」—— 只有 core 知道（见 `GameState.lastLotteryDraw`）
+  let lotteryHint: LotteryDrawHint | null = null;
   if (date.day === LOTTERY_DRAW_DAY) {
     const draw = drawLottery(lottery, pool, rng);
+    // @source 0x00431729 `cmp eax,0x24 / je` —— 一张票都没卖出去就不开屏，也就没有号码可显示
+    if (draw.number !== null) {
+      lotteryHint = { number: draw.number, winner: draw.winner, pool, sold: [...lottery] };
+    }
     lottery = draw.lottery;
     pool = draw.pool;
     // @source give_money(中奖者, 公库, 1) —— 旗标 1 即进现金
@@ -4768,6 +4787,8 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     facilityPriceStatus,
     companyFunds,
     rngState: rng.getState(),
+    // 纯表现提示：只在开了奖的那一天写（其余日子沿用，`reduce` 出口会把旧的清掉）
+    ...(lotteryHint !== null ? { lastLotteryDraw: lotteryHint } : {}),
   };
   // @source 0x0042beba `call 0x40cd87` —— 负紅利把人压破產
   for (const who of dividendBankrupts) out = applyBankruptcy(out, who, topo);
