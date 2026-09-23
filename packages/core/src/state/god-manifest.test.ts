@@ -14,7 +14,7 @@ import { parseMap } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
-import { GOD_ANGEL, GOD_BIG_LUCK, GOD_DEVIL, GOD_EARTH, GOD_SMALL_WEALTH } from '../rules/god-power.ts';
+import { GOD_ANGEL, GOD_BIG_LUCK, GOD_DEVIL, GOD_EARTH, GOD_SMALL_LUCK, GOD_SMALL_WEALTH } from '../rules/god-power.ts';
 import { manifestKindOf, seizeHostilityDelta } from '../rules/god-manifest.ts';
 import { WatcomRng } from '../rng/watcom.ts';
 
@@ -402,6 +402,77 @@ describe('★★ 福神：買地 / 買設施 / 付費首建 / 付費加蓋 也�
     expect(out.facilityLevel[id]).toBe(5);
     expect(out.notices.some((n) => n.key === 'god.build')).toBe(false);
     expect(out.rngState).toBe(asked.rngState);
+  });
+});
+
+/*
+ * ★ 第十四份試玩回報（162102）：「小福神、大福神是不是附身后都会给玩家踩到的、归属自己的土地加盖一层」。
+ *
+ * `fcn_0040f8be`（VA 0x0040f8be，判据 `0x0040f8da cmp dl,3` / `0x0040f8df cmp dl,4`）全 exe **只有一个**
+ * 调用点 `0x00419a48`（`disasm.py callers 0x40f8be`），能走到它的只有五条「花钱」的分支：
+ *   自己地升級成功且没到 5 级（`0x004199ef jne 0x419a2b` 落入）、買地（`0x0041a154 jmp`）、
+ *   付費首建設施（`0x0041a2ae jmp`）、付費加蓋設施没到 5 级（`0x0041a36b jmp 0x419a39`）、買設施（`0x0041a993 jmp`）。
+ * 落点尾块 `0x0041b086 call 0x40f381` 对福神是空操作（只认 9/10/12）。
+ * ⇒ 小福神与大福神一样；**踩到自己的地但不升級**（询问框答「否」/ 满级 / 钱不够）一级都不送；
+ *   踩到别人的地付过路费也不送。
+ */
+describe('★ 第十四份試玩回報：福神只在「自己掏钱買/蓋」时加倍，光踩到自己的地不送', () => {
+  run('★ 小福神（3）与大福神（4）同一条：自己地 1 → 2（付费）→ 3（小福神送）', () => {
+    const { state, topo, landNode } = setup();
+    const id = landIdAt(state, topo, landNode.id);
+    const landOwner = [...state.landOwner];
+    const landLevel = [...state.landLevel];
+    landOwner[id] = 1;
+    landLevel[id] = 1;
+    const asked = reduce(standing(state, landNode.id, GOD_SMALL_LUCK, { landOwner, landLevel }), { type: 'settle' }, topo);
+    expect(asked.pending?.kind).toBe('upgradeLand');
+    const out = reduce(asked, { type: 'upgradeLand' }, topo);
+    expect(out.landLevel[id]).toBe(3);
+    expect(out.notices.at(-1)).toEqual({ key: 'god.build', args: ['小福神'] });
+  });
+
+  run('★ 踩到自己的地、升級询问答「否」⇒ 一级都不送、不弹顯靈框 @source 0x0041999e `cmp eax,1 / jne 0x41b077`', () => {
+    const { state, topo, landNode } = setup('human');
+    const id = landIdAt(state, topo, landNode.id);
+    const landOwner = [...state.landOwner];
+    const landLevel = [...state.landLevel];
+    landOwner[id] = 1;
+    landLevel[id] = 1;
+    for (const god of [GOD_SMALL_LUCK, GOD_BIG_LUCK]) {
+      const asked = reduce(standing(state, landNode.id, god, { landOwner, landLevel }), { type: 'settle' }, topo);
+      expect(asked.pending?.kind).toBe('upgradeLand');
+      const out = reduce(asked, { type: 'declineDecision' }, topo);
+      expect(out.landLevel[id]).toBe(1);
+      expect(out.notices.some((n) => n.key === 'god.build')).toBe(false);
+      expect(out.lastBuildUpgrades ?? []).toEqual(asked.lastBuildUpgrades ?? []);
+    }
+  });
+
+  run('★ 自己的地已经 5 级（不问升級）⇒ 福神不送 @source 0x00419911 `cmp [esi+0x1a],5 / jae 0x41b077`', () => {
+    const { state, topo, landNode } = setup();
+    const id = landIdAt(state, topo, landNode.id);
+    const landOwner = [...state.landOwner];
+    const landLevel = [...state.landLevel];
+    landOwner[id] = 1;
+    landLevel[id] = 5;
+    const out = reduce(standing(state, landNode.id, GOD_BIG_LUCK, { landOwner, landLevel }), { type: 'settle' }, topo);
+    expect(out.pending).toBeNull();
+    expect(out.landLevel[id]).toBe(5);
+    expect(out.notices.some((n) => n.key === 'god.build')).toBe(false);
+  });
+
+  run('★ 踩到别人的地（付过路费）⇒ 福神不给那块地加蓋 @source 0x0041990b `jne 0x419a67`（收费支不进 0x419a48）', () => {
+    const { state, topo, landNode } = setup();
+    const id = landIdAt(state, topo, landNode.id);
+    const landOwner = [...state.landOwner];
+    const landLevel = [...state.landLevel];
+    landOwner[id] = 2;
+    landLevel[id] = 1;
+    let out = reduce(standing(state, landNode.id, GOD_BIG_LUCK, { landOwner, landLevel }), { type: 'settle' }, topo);
+    for (let i = 0; i < 5 && out.phase === 'awaitingDecision'; i++) out = reduce(out, { type: 'declineDecision' }, topo);
+    expect(out.landOwner[id]).toBe(2);
+    expect(out.landLevel[id]).toBe(1);
+    expect(out.notices.some((n) => n.key === 'god.build')).toBe(false);
   });
 });
 

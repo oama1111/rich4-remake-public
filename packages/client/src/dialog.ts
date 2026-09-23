@@ -85,6 +85,8 @@ const INNER = { dx: 12, dy: 41, w: 219, h: 120 } as const;
  *   （同 `event-box-screen.ts` 的 D-EVENT-3），登记为偏离。
  */
 const LINE_H = 22;
+/** 同一个行距给其他 `draw_text(…, flag 4)` 的屏共用（`god-slot.ts` 的气泡）*/
+export const DIALOG_LINE_H = LINE_H;
 const TITLE_H = 24;
 const BTN_H = 24;
 const BTN_GAP = 5;

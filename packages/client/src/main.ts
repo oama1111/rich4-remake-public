@@ -74,6 +74,7 @@ import { browserStorage, inviteLink, inviteRoomFrom, loadClientId, showFoyer } f
 import { NetToasts } from './net-toast.ts';
 import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
 import { RENDER_MS, tickMs } from './tick.ts';
+import { landingPauseRemaining, turnEndPauseTicks, type LandingPause } from './landing-pause.ts';
 import { walkTweenFor } from './tween.ts';
 import {
   drawLobby,
@@ -1809,8 +1810,28 @@ function holdForActorWalk(reschedule: () => void): boolean {
     reschedule();
     return true;
   }
+  // ★ 第十四份試玩回報：落在地産格上，落点例程收尾之后原版还要**原地停 8 个 tick** 才换人
+  //   （`0x0041b111` 返回 0x88 → `0x0040d840` 每 tick 减一 → 数完才 `0x0040d86f call 0x418ebd`）；
+  //   回合开头就被挡（坐牢/住院…框收掉之后）是 3 个 tick（`0x00418ead` 0x83）。
+  //   台上刚空下来那一拍起算（顯靈框收掉、2 级露面的那一次重画就在这 8 tick 里被看见）。
+  if (landingPause !== null) {
+    if (state.phase !== 'turnEnd' || (state.pending !== null && state.pending.kind !== 'none')) {
+      if (state.phase !== 'turnEnd') landingPause = null;
+    } else {
+      const r = landingPauseRemaining(landingPause, performance.now(), tickMs(options.speed));
+      landingPause = r.pause;
+      if (r.waitMs > 0) {
+        reschedule(); // 与上面几道闸同一个重排：一个渲染周期后回头再看
+        return true;
+      }
+      landingPause = null;
+    }
+  }
   return false;
 }
+
+/** 落点收尾后的那 8 tick（`landing-pause.ts`）；`null` = 没有要停的 */
+let landingPause: LandingPause | null = null;
 
 /**
  * 自動存檔。
@@ -4165,6 +4186,10 @@ function queueSpeech(lines: readonly SpeechLine[]): void {
  * 纯表现：不读也不写 `GameState`（C-DET-4）。
  */
 function startActionFx(action: Action, before: GameState): void {
+  // ★ 第十四份試玩回報：换人前的倒数 —— 落在地産格上收尾 8 tick（0x88）、回合开头就被挡 3 tick（0x83）
+  //   （判据与出处见 `landing-pause.ts`）
+  const pauseTicks = turnEndPauseTicks(before, state, topo);
+  if (pauseTicks > 0) landingPause = { ticks: pauseTicks, idleAt: null };
   // ★ D-MAGIC-16：魔法屋逐人分段由 `tickMagicSequence` 一段一段起（每段各自走这里一遍）
   if (freshMagicBeats(before, state) !== null) {
     magicSeqAction = action;

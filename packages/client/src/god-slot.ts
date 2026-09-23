@@ -10,58 +10,70 @@
  *
  * ```asm
  * ; ── 开窗
- * 00440706  read_mkf(Panel.mkf, 0x43) → [0x48c514]          ; ★ 老虎机素材 = Panel **#67**
- * 0044071d  create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)
- * 0044073e  fcn_00451e7e(rect (0,0x28)-(0x1b8,0x1e0))        ; ★ 浮窗：先存下这块
- * 004407a0  fcn_00456418(surface, Data#517 图 6, 0xdc, 0x8c) ; 气泡 = Data#517 图 6 落 (220,140)
- * 004407c7  ebx = (arg & 1) ^ 1
- * 004407d0  fcn_004563f5(surface, Panel#67 图 ebx, 0xdc, 0x140)
+ * 00440714  read_mkf(Panel.mkf, 0x43) → [0x48c514]          ; ★ 老虎机素材 = Panel **#67**
+ * 0044073a  create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)     ; 与訊息框同一句（flag 3 = 描边）
+ * 00440774  fcn_00451e7e(rect (0,0x28)-(0x1b8,0x1e0))        ; ★ 浮窗：先存下这块
+ * 004407b1  fcn_00456418(surface, Data#517 图 6, 0xdc, 0x8c) ; 气泡 = Data#517 图 6 落 (220,140)
+ * 004407c0  ebx = (arg & 1) ^ 1
+ * 004407ec  fcn_004563f5(surface, Panel#67 图 ebx, 0xdc, 0x140)
  *                    ; ★ 机体：图 0 = 四位數（193×183）、图 1 = 三位數（156×183），落 (220,320)
- * 004407f3  fcn_00456418(surface, Panel#67 图 2, [0x475ce0+ebx*4], 0xf0)
+ * 00440811  fcn_00456418(surface, Panel#67 图 2, [0x475ce0+ebx*4], 0xf0)
  *                    ; ★ 摇杆 = 图 2（31×108）落 x = **317**（ebx 0）/ **298**（ebx 1）、y = 240
  * 00440830..00440866  sprintf(buf, 四種模板[arg], _rich4_god_names[arg])
- * 00440873  draw_text(buf, 0xdc, 0x8c, flag 4)               ; 台詞画在气泡里（正中）
- * 004408a0  play_sound_effect(flags=1, &0x475d3c)            ; 音效 **51**（起循环）
- * 004408b2  fcn_004542e9(&0x475d3c)                          ; ★ 紧接着就**停**（听感上是静音）
- * 004408bc  ebx = fcn_0043f23e(ebx)                          ; ★ 9 状态机 → 返回值 = 金額
- * 004408e3  fcn_00454240(&0x475d3c)                          ; 释放
- * 004408f9  fcn_00451edb([0x48c51c], 0, 0x28)                ; 贴回浮窗
+ * 00440886  draw_text(buf, 0xdc, 0x8c, flag 4)               ; 台詞画在气泡里（墨迹框正中）
+ * 004408b2  play_sound_effect(&0x475d3c, 1)                  ; 音效 **51** 循环
+ * 004408bf  fcn_004542e9(&0x475d3c)                          ; Stop ……
+ * 004408c8  ebx = fcn_0043f23e(ebx)                          ; ★ 9 状态机 → 返回值 = 金額
+ *   0043f2ab  play_sound_effect(&0x475d3c, 1)                ; …… ★ 状态机一进门**又起播** ⇒ 转动全程有循环音
+ * 004408d7  fcn_00454240(&0x475d3c)                          ; 释放
+ * 004408ea  fcn_00451edb([0x48c51c], 0, 0x28)                ; 贴回浮窗
  * ```
  *
- * ## 状态机（`fcn_0043f23e`，每格 **0x1e = 30 ms**，`cmp ebx,0x1e / jb`）
+ * ## 状态机（`fcn_0043f23e`，跳表 `0x43f21a`；每格至少 **0x1e = 30 ms**，`0x0043f78e cmp ebx,0x1e / jb`）
+ *
+ * 每一格先做：状态 < 3 且 `计数 % 10 == 0` ⇒ 四个转轮全部重掷成 `rand()%10*2+1`（**奇数** = 过渡帧，
+ * `0x0043f2bc..0x0043f2f6`）；`计数++`（`0x0043f2ff`）；电脑 / 夢遊且计数 ≥ 0x28 且状态 1 ⇒ 状态 2
+ * （`0x0043f306..0x0043f327`）。然后按状态：
  *
  * | 状态 | 干什么 | @source |
  * |---|---|---|
- * | 1 | `fcn_0043ef3e(variant, 0xf, 0)` —— 四位一起滚 | `loc_0043f33f` |
- * | 2 | 同上 + 画**拉杆**（`fcn_00456418(Panel#67 图 4)` 落在摇杆那一点）+ 音效 **1**（`0x482322`）→ 状态 3、计数清零 | `loc_0043f351` |
- * | 3 | 滚；计数到 **4** 才往下 | `loc_0043f45d` |
- * | 4..7 | **逐槽停**：`fcn_0043ef3e(variant, 0xf, 1)` → `(0xe, 2)` → `(0xc, 3)` → `(8, 4)`，每次都等它返回 1（= 那一槽停稳）再进下一状态 | `loc_0043f55f` / `0x43f57f` / `0x43f59f` / `0x43f5bd` |
- * | 8 | 停循环音（`fcn_004542e9`）→ 状态 9 | `loc_0043f5dd` |
- * | 9 | 收尾：把四个数字拼成 `c4*1000+c5*100+c6*10+c7` 当返回值 | `loc_0043f6fa` |
+ * | 1 | `fcn_0043ef3e(variant, 0xf, 0)` —— 四位一起滚 | `0x0043f33f` |
+ * | 2 | 同上；摇杆那块贴回底图、画**图 3**（拉下去的摇杆，31×72）；音效 **1**（`0x482322`）；→ 3、计数清零 | `0x0043f351..0x0043f458` |
+ * | 3 | 滚；计数到 **4** 时摇杆换回**图 2** → 4 | `0x0043f45d..0x0043f555` |
+ * | 4 | `fcn_0043ef3e(variant, 0xf, 1)` 返回 1 → 5（**个位**先停）| `0x0043f55f` |
+ * | 5 | `(variant, 0xe, 2)` → 6（十位）| `0x0043f57f` |
+ * | 6 | `(variant, 0xc, 3)` → **`7 + variant`**（百位；三位數机体直接跳过 7）| `0x0043f59f` / `0x0043f5b5 lea esi,[ebp+7]` |
+ * | 7 | `(variant, 8, 4)` → 8（千位）| `0x0043f5bd` |
+ * | 8 | → 9、计数清零；**停循环音**；**重画气泡**（把台詞整个盖掉）后只写 `"%d元"`（`0x465284`）于 (220,140) flag 4 | `0x0043f5dd..0x0043f6f8` |
+ * | 9 | 计数到 **0x28 = 40** 格 → 10 = 收屏返回 | `0x0043f6fa` |
  *
- * 每格还会：`[0x48c504+i]` 每格 **+1**（`cmp ch,0x14 / jb`，0..19 循环）；
- * 状态 < 3 时每 **10** 格重掷一次 `rand()%10*2+1`（`loc_0043f2d7`）；
- * 真人（`whoPlays == 1` 且非夢遊）在**状态 1** 按一下（`0x202`/`0x205`/`0x101`）
- * 就把状态推到 2（`loc_0043f752`），计数到 **0x28 = 40** 格也会自动推 —— 与转盘同一套。
+ * 真人（`whoPlays == 1` 且非夢遊）的点击（`0x202`/`0x205`/`0x101`）**只在状态 1 有用**：推到状态 2
+ * （`0x0043f752..0x0043f770`）；其余时候点了什么都不发生（消息被 `PeekMessage` 吃掉）。
  *
- * ## 数字怎么画（`fcn_0043ef3e` = VA 0x0043ef3e）
+ * ## 转轮与逐槽减速（`fcn_0043ef3e(variant, mask, n)` = VA 0x0043ef3e）
  *
- * - 机体上那 4/3 格数字是**图**：`Panel#67 图 (值 + 4)`，38×36，**不透明**贴
- *   （`loc_0043f073` 的 `fcn_004563f5`）；
- * - 值 = `[0x48c504+槽]`：**偶数 = 定格的那一位**（`2d` → 图 `2d+4`），
- *   **奇数 = 滚动中的过渡帧**（图 5/7/9… 上半是 d、下半是 d+1，逐张看过）；
- * - 落点：`x = [0x475ce8 + variant*8 + 槽*2]`（word 表）、`y = 0x140 = 320`。
- *   四位盤 x = **145 / 182 / 219 / 256**、三位盤 x = **0 / 163 / 200 / 237**（槽 0 不用）；
- * - 每帧还会把**气泡与金额**重画一遍：`sprintf("%d元", 当前值)` 落 (220,140) ——
- *   正好盖在模板第二行**那个空行**上（`%s附身\n\n向所有對手收...`），这就是那个空行的用处。
+ * - 槽 `ebx` 从 **3 倒数到 `variant`**（`0x0043efdd mov ebx,3` / `0x0043eff2 cmp ebx,edi / jl`）——
+ *   三位數机体根本不碰槽 0；mask 的 bit0 = 槽 3、bit3 = 槽 0；
+ * - 在 mask 里的槽每格 `值 = (值 + 1) % 20`（`0x0043f022..0x0043f037`），再**不透明**贴
+ *   `Panel#67 图 (值 + 4)`（38×36）于 `x = [0x475ce8 + variant*8 + 槽*2]`、`y = 0x140`；
+ *   **偶数 = 定格的那一位**（`2d` → 图 `2d+4`），**奇数 = 过渡帧**（上半 d、下半 d+1）；
+ * - `n ≠ 0` 时对槽 `4 − n` 减速：三个静态字节 `[0x475d5c]`（档）/`[0x475d5d]`（档内计数）/`[0x475d5e]`（上一次的 n）——
+ *   `n` 头一回出现且那一槽正好是**奇数**才起步（档 = 1）；之后每格 `档 <= 档内计数` 就升一档，
+ *   `档 > 档内计数` 的那一格该槽不走；**档到 8** 就返回 1（`0x0043f0fc`）。
+ *   ⇒ 从起步那一格算，该槽再走 **7 格**（奇 + 7 = 偶，正好停在一个整数字上）。
  *
  * ## 与本引擎的接线
  *
  * 本屏**没有待決交互**：core 在附身那一刻就把钱/卡结算完了（`applyGodPowerOnAttach`），
  * 本屏只是 `event(before, after)` 里 diff 出「刚附身 + 是那四种金額型」，把**已经发生**
  * 的那笔钱用老虎机演出来（金額从**金钱差额**反推）。所以：
- * - **不掷随机数**（C-DET-4）：core 已经掷过那四个数字了，这里再掷会把随机数流错开；
- * - 滚动节奏取固定值（原版每槽停在哪一格取决于真人点击时机，见 D-003 同类处置）。
+ * - **不掷随机数**（C-DET-4）：core 已经掷过那四个数字了；
+ * - 状态机**逐格照抄**（上表），只有两处替身：
+ *   ① 状态 1/2 的重掷值用确定性的奇数序列（原版是 `rand()`，表现层不许碰随机数流）；
+ *   ② 拉杆那一格（状态 2，之后再没有重掷）按 core 的金额把四个转轮**各挪一个偶数**：
+ *      之后的格数只取决于奇偶，挪偶数不改节奏，于是逐槽减速停下来**正好**是那个金额；
+ * - 电脑那一路 40 格自动拉杆；真人原版要自己点才拉杆 —— 本引擎对真人也 40 格自动拉杆
+ *   （与转盘同一处置，D-003「真人点击时机不复刻」），真人在状态 1 点一下可以提早拉。
  */
 
 import { GOD_ATTACH, formatOriginal, godNameOf } from '@rich4/data';
@@ -71,6 +83,7 @@ import {
   type GameState,
 } from '@rich4/core';
 import { FONT_FAMILY } from './font.ts';
+import { DIALOG_LINE_H, dialogRowMiddles } from './dialog.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv, UiKeyEvent } from './ui-screen.ts';
 
@@ -86,32 +99,34 @@ export type SlotSprite = (
 //  素材与版面（全部照 exe）
 // ============================================================
 
-/** 老虎机素材在 `Panel.mkf` 的**资源号** @source 0x004407a0 `push 0x43` */
+/** 老虎机素材在 `Panel.mkf` 的**资源号** @source 0x00440714 `push 0x43` */
 export const GOD_SLOT_ARCHIVE = 'Panel.mkf' as const;
 export const GOD_SLOT_RESOURCE = 0x43;
 
 /**
- * 气泡：`Data.mkf` 资源 **0x205 = 517 图 6**，落 (220,140) @source 0x004407a0
- * （与转盘那一屏同一个气泡图）。
+ * 气泡：`Data.mkf` 资源 **0x205 = 517 图 6**，落 (220,140) @source 0x004407a1 `[0x48bad8]+0x48`
+ * （与转盘那一屏同一个气泡图）；状态 8 再贴一次（0x0043f618）把台詞盖掉。
  */
 export const GOD_SLOT_BUBBLE = { archive: 'Data.mkf' as const, resource: 0x205, image: 6 };
 export const GOD_SLOT_BUBBLE_AT = { x: 0xdc, y: 0x8c } as const;
 
-/** 字级 0x10、内文 `0xf0f0f0`、阴影 `0x101010` @source 0x0044071d `rich4_create_font` */
+/**
+ * 字级 0x10、内文 `0xf0f0f0`、**描边** `0x101010` @source 0x0044073a
+ * `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` —— 与询问框/訊息框同一句（flag 3 = 带描边，
+ * 见 `dialog.ts` 的 `BODY_OUTLINE`）。
+ */
 export const GOD_SLOT_FONT_SIZE = 0x10;
 export const GOD_SLOT_FILL = '#f0f0f0';
-export const GOD_SLOT_SHADOW = '#101010';
+export const GOD_SLOT_OUTLINE = '#101010';
 
-/** 台詞与金额都落 (220,140) flag 4（正中）@source 0x00440873 / 0x0043f6b6 */
+/** 台詞与金额都落 (220,140) flag 4（墨迹框正中）@source 0x00440886 / 0x0043f6b9 */
 export const GOD_SLOT_TEXT_AT = { x: 0xdc, y: 0x8c } as const;
 
-/** 机体落点 (220,320) @source 0x004407d0（`push 0x140 / push 0xdc`）*/
+/** 机体落点 (220,320) @source 0x004407c6（`push 0x140 / push 0xdc`）*/
 export const GOD_SLOT_PANEL_AT = { x: 0xdc, y: 0x140 } as const;
 
 /**
- * 机体图号：`(arg & 1) ^ 1`
- * - 0 = 193×183（**四位數**：小財神/大窮神那一支的 `arg` 是偶数 → 图 1？见下表）
- * - 1 = 156×183（**三位數**）
+ * 机体图号 = `ebx = (arg & 1) ^ 1`
  *
  * | 神 | `arg` | `ebx` | 机体 | 金額位數 |
  * |---|---|---|---|---|
@@ -122,22 +137,28 @@ export const GOD_SLOT_PANEL_AT = { x: 0xdc, y: 0x140 } as const;
  */
 export const GOD_SLOT_PANEL_IMAGE = [0, 1] as const;
 
-/** 摇杆 = `Panel#67` 图 **2**（31×108），落 (x, 0xf0)；x 见表 @source 0x004407f3 */
+/** 摇杆（立着）= `Panel#67` 图 **2**（31×108），落 (x, 0xf0) @source 0x00440801 `[0x48c514]+0x24` */
 export const GOD_SLOT_LEVER_IMAGE = 2;
-/** 拉下去时叠在上面的圆头 = 图 **4**（38×36）@source 0x0043f3b8 那一支 */
-export const GOD_SLOT_KNOB_IMAGE = 4;
+/**
+ * 摇杆（拉下去）= 图 **3**（31×72，锚点 (0,−35) ⇒ 往下挪 35）@source 0x0043f3ec `[0x48c514]+0x30`
+ * —— `(0x30 − 0xc) / 12 = 3`。状态 3 计数到 4 时换回图 2（0x0043f506 `+0x24`）。
+ *
+ * ★ 第十四份試玩回報：先前这里当成「图 4 = 拉杆圆头」一直叠到收屏 —— 可图 4 是**数字 0**
+ *   （`值 0 → 图 0 + 4`，与转轮同一套图）⇒ 摇杆上多出一个「0」。
+ */
+export const GOD_SLOT_LEVER_DOWN_IMAGE = 3;
 /** 摇杆 x：`[0x475ce0]` = 317（四位數机体）/ `[0x475ce4]` = 298（三位數）*/
 export const GOD_SLOT_LEVER_X = [0x13d, 0x12a] as const;
 export const GOD_SLOT_LEVER_Y = 0xf0;
 
-/** 数字图 = 图 `(值 + 4)`，38×36 @source loc_0043f073 */
+/** 数字图 = 图 `(值 + 4)`，38×36 @source 0x0043f08d..0x0043f0ab */
 export const GOD_SLOT_DIGIT_FIRST = 4;
-/** 数字的 y（exe 里固定 0x140）@source loc_0043efb7 `mov dword [esp+4], 0x140` */
+/** 数字的 y（exe 里固定 0x140）@source 0x0043efb7 `mov dword [esp+4], 0x140` */
 export const GOD_SLOT_DIGIT_Y = 0x140;
 /**
  * 每一槽的 x —— 表 `0x475ce8`（word）：
- * 四位盤 `[145, 182, 219, 256]`、三位盤 `[0, 163, 200, 237]`（槽 0 = 0 ⇒ 不画）。
- * 槽号 = 十进制位：槽 0 = 千/百位、槽 3 = 个位。
+ * 四位盤 `[145, 182, 219, 256]`、三位盤 `[0, 163, 200, 237]`（槽 0 不画、也不转）。
+ * 槽号 = 十进制位：槽 0 = 千位、槽 3 = 个位。
  */
 export const GOD_SLOT_DIGIT_X: readonly (readonly number[])[] = [
   [0x91, 0xb6, 0xdb, 0x100],
@@ -146,23 +167,27 @@ export const GOD_SLOT_DIGIT_X: readonly (readonly number[])[] = [
 
 /** 循环音 = `Effect.mkf` **51** @source `0x475d3c` 第一格 dword */
 export const GOD_SLOT_SPIN_SOUND = 51;
-/** 拉杆那一下的一次性音 = **1** @source `0x482322`（与转盘落地同一颗）*/
+/** 拉杆那一下的一次性音 = **1** @source 0x0043f43d `push 0x482322`（与转盘落地同一颗）*/
 export const GOD_SLOT_LEVER_SOUND = 1;
-/** 一格 = 0x1e = 30 ms @source `loc_0043f709` 的 `cmp ebx,0x1e / jb` */
+/** 一格 = 0x1e = 30 ms @source 0x0043f78e `cmp ebx,0x1e / jb` */
 export const GOD_SLOT_TICK_MS = 0x1e;
-/** 状态 < 3 时每 10 格重掷一次数字 @source loc_0043f2d7 的 `div 0xa` */
+/** 状态 < 3 时每 10 格重掷一次数字 @source 0x0043f2c1 `mov ecx,0xa / div` */
 export const GOD_SLOT_REROLL_TICKS = 10;
-/** 真人不动手时，计数到 0x28 = 40 格自动推进到「拉杆」@source loc_0043f318 */
+/** 计数到 0x28 = 40 格自动拉杆 @source 0x0043f318 `cmp [esp+0xb0], 0x28` */
 export const GOD_SLOT_AUTO_TICKS = 0x28;
-/** 每一槽停稳要几格（原版 state 3 的 `cmp [esp+0xb0], 4`）@source loc_0043f45d */
-export const GOD_SLOT_SETTLE_TICKS = 4;
-/** 全停之后停留多久才收屏（本引擎的收尾时长；原版靠「再点一下」）*/
-export const GOD_SLOT_HOLD_MS = 1000;
+/** 摇杆拉下去停几格（状态 3 `cmp [esp+0xb0], 4`）@source 0x0043f46a */
+export const GOD_SLOT_LEVER_DOWN_TICKS = 4;
+/** 减速档到几就算停稳 @source 0x0043f0fc `cmp byte [0x475d5c], 8` */
+export const GOD_SLOT_STOP_GEAR = 8;
+/** 停稳之后再留几格才收屏（状态 9 `cmp [esp+0xb0], 0x28`）@source 0x0043f6fa */
+export const GOD_SLOT_HOLD_TICKS = 0x28;
+/** 收屏状态（`0x0043f797 cmp esi,0xa / jl`）*/
+export const GOD_SLOT_DONE_STATE = 0xa;
 
 /** 四种 `arg` —— 跳表 `0x4406ee` 的四个分支（其余神明不开这扇窗）*/
 export const GOD_SLOT_ARG: Readonly<Record<number, number>> = { 1: 0, 2: 1, 5: 4, 6: 5 };
 
-/** `arg` → 机体/摇杆的 variant `ebx = (arg & 1) ^ 1` @source 0x004407c7 */
+/** `arg` → 机体/摇杆的 variant `ebx = (arg & 1) ^ 1` @source 0x004407c0 */
 export function godSlotVariant(arg: number): number {
   return (arg & 1) ^ 1;
 }
@@ -182,23 +207,27 @@ export function godSlotDigitX(variant: number, slot: number): number {
   return GOD_SLOT_DIGIT_X[variant]?.[slot] ?? 0;
 }
 
-/** 定格的那一位画哪张图：值 = `2d` → 图 `2d + 4` @source loc_0043f073 */
-export function godSlotDigitImage(digit: number): number {
-  return GOD_SLOT_DIGIT_FIRST + digit * 2;
+/** 转轮值（0..19）画哪张图 @source 0x0043f093 `lea edx,[eax+4]` */
+export function godSlotReelImage(value: number): number {
+  return GOD_SLOT_DIGIT_FIRST + value;
 }
 
-/** 滚动中的过渡帧：值 = `2d+1` → 图 `2d + 5`（上半 d、下半 d+1）*/
-export function godSlotRollImage(digit: number): number {
-  return GOD_SLOT_DIGIT_FIRST + digit * 2 + 1;
-}
-
-/** 金額 → 每槽的十进制位（槽 0 = 最高位；三位數机体槽 0 不画）*/
+/** 金額 → 每槽的十进制位（槽 0 = 千位；三位數机体槽 0 恒 0）*/
 export function godSlotDigits(amount: number, variant: number): number[] {
   const n = Math.max(0, Math.trunc(amount));
   const s = String(n).padStart(4, '0').slice(-4);
   const all = [Number(s[0]), Number(s[1]), Number(s[2]), Number(s[3])];
-  // 三位數机体：千位那一槽不画（原版表里槽 0 的 x = 0）
   return variant === 1 ? [0, all[1]!, all[2]!, all[3]!] : all;
+}
+
+/**
+ * 四个转轮拼出来的金额 @source 0x0043f630..0x0043f685：
+ * `100*(c5>>1) + 10*(c6>>1) + (c7>>1)`，`variant == 0` 再加 `1000*(c4>>1)`。
+ */
+export function godSlotReelAmount(reels: readonly number[], variant: number): number {
+  const d = (i: number): number => (reels[i] ?? 0) >> 1;
+  const low = d(1) * 100 + d(2) * 10 + d(3);
+  return variant === 0 ? low + d(0) * 1000 : low;
 }
 
 // ============================================================
@@ -292,98 +321,231 @@ export function godSlotCue(before: GameState, after: GameState): GodSlotCue | nu
   };
 }
 
-/** 气泡里那一整段（模板 + 金额填进中间那个空行）*/
-export function godSlotBubbleText(cue: GodSlotCue, amount: number): string {
-  return cue.text.replace('\n\n', `\n${formatOriginal(GOD_ATTACH.amount.text, amount)}\n`);
+/**
+ * 气泡里这一帧的字：状态 8 之前是台詞模板（`%s附身\n\n…`，**不带数字**），
+ * 状态 8 重画气泡之后**只剩** `"%d元"` 一行 @source 0x0043f618 / 0x0043f694。
+ *
+ * ★ 第十四份試玩回報：先前把金额（还跟着转轮一起跳）塞进模板中间那个空行 ——
+ *   原版转动时气泡里根本没有数字，停稳那一拍才把整块气泡换成「999元」。
+ */
+export function godSlotBubbleText(spin: GodSlotSpin): string {
+  if (spin.state >= 9) {
+    return formatOriginal(GOD_ATTACH.amount.text, godSlotReelAmount(spin.reels, spin.cue.variant));
+  }
+  return spin.cue.text;
 }
 
 // ============================================================
-//  演出（30 ms 一格；滚 → 逐槽停 → 停一会儿）
+//  状态机（逐格照抄 `fcn_0043f23e` / `fcn_0043ef3e`）
 // ============================================================
+
+/** `[0x475d5c]` 档 / `[0x475d5d]` 档内计数 / `[0x475d5e]` 上一次的 n */
+export type GodSlotGear = readonly [number, number, number];
 
 export interface GodSlotSpin {
   cue: GodSlotCue;
-  /** 已经演到第几格（30 ms 一格）*/
-  tick: number;
+  /** 状态机 `esi`（1..10；10 = 收屏）*/
+  state: number;
+  /** `[esp+0xb0]` */
+  counter: number;
+  /** 四个转轮 `[0x48c504..0x48c507]`，0..19（偶 = 定格、奇 = 过渡帧）*/
+  reels: readonly number[];
+  gear: GodSlotGear;
+  /** 摇杆拉下去了（图 3）*/
+  leverDown: boolean;
+  /** 已经重掷过几次（替身序列用）*/
+  rerolls: number;
   /** 下一格的时间点 */
   at: number;
-  /** 已经停稳的槽数（0..3）*/
-  settled: number;
-  /** 拉杆拉下去了吗（状态 2 之后）*/
+}
+
+/** 这一格发生了什么（给宿主放音效 / 记日志）*/
+export interface GodSlotFrameEvents {
+  /** 状态 2：拉杆（音效 1）*/
   pulled: boolean;
-  /** 停稳的时刻；`null` = 还在演 */
-  landedAt: number | null;
+  /** 状态 8：停稳（停循环音）*/
+  landed: boolean;
 }
 
-/** 开演 */
+/**
+ * `fcn_0043ef3e(variant, mask, n)` 一次：转一格，返回「槽 `4 − n` 停稳了没」。
+ * 逐条对应见文件头「转轮与逐槽减速」。
+ */
+export function godSlotReelStep(
+  variant: number,
+  reels: readonly number[],
+  gear: GodSlotGear,
+  mask: number,
+  n: number,
+): { reels: number[]; gear: GodSlotGear; stopped: boolean } {
+  let [c, d, e] = gear;
+  const out = [...reels];
+  if (n !== 0) {
+    let slow = false;
+    // @source 0x0043ef57..0x0043ef8a：n 头一回出现且那一槽是奇数 ⇒ 档 1 起步
+    if (e !== n && ((out[4 - n] ?? 0) & 1) !== 0) {
+      c = 1;
+      d = 0;
+      e = n;
+      slow = true;
+    } else if (c !== 0) {
+      slow = true; // @source 0x0043ef8c
+    }
+    if (slow) {
+      // @source 0x0043ef95..0x0043efb1
+      if (c <= d) {
+        d = 0;
+        c += 1;
+      }
+      d += 1;
+    }
+  }
+  for (let slot = 3, bit = 1; slot >= variant; slot--, bit <<= 1) {
+    if ((mask & bit) === 0) continue;
+    // @source 0x0043f004..0x0043f01c：正在减速的那一槽，档 > 档内计数的格不走
+    if (4 - slot === n && c > d) continue;
+    out[slot] = ((out[slot] ?? 0) + 1) % 20;
+  }
+  let stopped = false;
+  // @source 0x0043f0fc：档到 8 ⇒ 清零、返回 1
+  if (c === GOD_SLOT_STOP_GEAR) {
+    c = 0;
+    d = 0;
+    stopped = true;
+  }
+  return { reels: out, gear: [c, d, e], stopped };
+}
+
+/** 状态 1/2 的重掷替身：确定性的奇数（原版 `rand()%10*2+1`，表现层不碰随机数流）*/
+function rerollReels(cue: GodSlotCue, k: number): number[] {
+  return [0, 1, 2, 3].map((slot) => ((cue.amount * 7 + k * 3 + slot * 5 + slot * k) % 10) * 2 + 1);
+}
+
+/** 状态 → 这一格的 `fcn_0043ef3e` 实参 @source 跳表 0x43f21a */
+const STOP_STEPS: Readonly<Record<number, readonly [number, number]>> = {
+  4: [0xf, 1],
+  5: [0xe, 2],
+  6: [0xc, 3],
+  7: [8, 4],
+};
+
+/** 状态分派（`0x0043f32c` 之后那一段）；`aim` = 状态 2 那一格要不要按金额挪转轮 */
+function dispatch(spin: GodSlotSpin, aim: boolean, ev: GodSlotFrameEvents): GodSlotSpin {
+  const v = spin.cue.variant;
+  const spinAll = (s: GodSlotSpin): GodSlotSpin => {
+    const r = godSlotReelStep(v, s.reels, s.gear, 0xf, 0);
+    return { ...s, reels: r.reels, gear: r.gear };
+  };
+  switch (spin.state) {
+    case 1:
+      return spinAll(spin);
+    case 2: {
+      const aimed = aim ? { ...spin, reels: aimReels(spin) } : spin;
+      ev.pulled = true;
+      return { ...spinAll(aimed), leverDown: true, state: 3, counter: 0 };
+    }
+    case 3: {
+      const s = spinAll(spin);
+      return s.counter === GOD_SLOT_LEVER_DOWN_TICKS ? { ...s, leverDown: false, state: 4 } : s;
+    }
+    case 4:
+    case 5:
+    case 6:
+    case 7: {
+      const [mask, n] = STOP_STEPS[spin.state]!;
+      const r = godSlotReelStep(v, spin.reels, spin.gear, mask, n);
+      const next = { ...spin, reels: r.reels, gear: r.gear };
+      if (!r.stopped) return next;
+      // @source 0x0043f5b5 `lea esi,[ebp+7]`：三位數机体从 6 直接跳到 8
+      return { ...next, state: spin.state === 6 ? 7 + v : spin.state + 1 };
+    }
+    case 8:
+      ev.landed = true;
+      return { ...spin, state: 9, counter: 0 };
+    case 9:
+      return spin.counter === GOD_SLOT_HOLD_TICKS ? { ...spin, state: GOD_SLOT_DONE_STATE } : spin;
+    default:
+      return spin;
+  }
+}
+
+/** 一格里分派之前那一段（重掷 / 计数 / 自动拉杆）@source 0x0043f2bc..0x0043f327 */
+function prelude(spin: GodSlotSpin): GodSlotSpin {
+  let s = spin;
+  if (s.state < 3 && s.counter % GOD_SLOT_REROLL_TICKS === 0) {
+    s = { ...s, reels: rerollReels(s.cue, s.rerolls), rerolls: s.rerolls + 1 };
+  }
+  const counter = s.counter + 1;
+  // 原版只对电脑 / 夢遊自动拉杆；本引擎对真人也自动（D-003，见文件头）
+  const state = counter >= GOD_SLOT_AUTO_TICKS && s.state === 1 ? 2 : s.state;
+  return { ...s, counter, state };
+}
+
+/**
+ * 拉杆那一格：把转轮各挪一个偶数，让之后逐槽停下来正好是 core 的金额。
+ *
+ * 之后再没有重掷（状态 ≥ 3），每一格走不走只看奇偶 ⇒ 先照原样空跑到状态 9 看落在哪，
+ * 再把差值（必为偶数：同一次重掷出来的四个值奇偶相同、一起走）加回去。
+ */
+function aimReels(spin: GodSlotSpin): number[] {
+  const ev: GodSlotFrameEvents = { pulled: false, landed: false };
+  let sim = dispatch(spin, false, ev);
+  for (let guard = 0; sim.state < 9 && guard < 10_000; guard++) sim = dispatch(prelude(sim), false, ev);
+  const want = godSlotDigits(spin.cue.amount, spin.cue.variant);
+  return spin.reels.map((r, slot) => {
+    if (slot < spin.cue.variant) return r;
+    const delta = (((want[slot]! * 2 - (sim.reels[slot] ?? 0)) % 20) + 20) % 20;
+    return (r + delta) % 20;
+  });
+}
+
+/** 开演 —— 状态 1、计数 0；第一格马上到（原版进门就转）*/
 export function godSlotStart(cue: GodSlotCue, now: number): GodSlotSpin {
-  return { cue, tick: 0, at: now + GOD_SLOT_TICK_MS, settled: 0, pulled: false, landedAt: null };
-}
-
-/** 这一格该显示哪一位（槽 `slot`）：停稳的槽给定格值，其余给滚动值 */
-export function godSlotSlotDigit(spin: GodSlotSpin, slot: number): number {
-  const target = godSlotDigits(spin.cue.amount, spin.cue.variant)[slot] ?? 0;
-  if (slot < spin.settled) return target;
-  // 滚动：每格换一个数字（取「值」的十进制位，画的时候再折成过渡帧）
-  return (spin.tick + slot * 3) % 10;
-}
-
-/** 这一格要不要画成「滚动中的过渡帧」 */
-export function godSlotSlotRolling(spin: GodSlotSpin, slot: number): boolean {
-  return slot >= spin.settled;
-}
-
-/** 进一格；到点没到就原样返回（与转盘 `wheelSpinTick` 同一套）*/
-export function godSlotTick(spin: GodSlotSpin, now: number): GodSlotSpin {
-  if (spin.landedAt !== null) {
-    if (now - spin.landedAt < GOD_SLOT_HOLD_MS) return spin;
-    return { ...spin, at: now };
-  }
-  if (now < spin.at) return spin;
-  const tick = spin.tick + 1;
-  if (tick < GOD_SLOT_AUTO_TICKS) return { ...spin, tick, at: spin.at + GOD_SLOT_TICK_MS };
-  if (!spin.pulled) {
-    return { ...spin, tick, pulled: true, at: spin.at + GOD_SLOT_TICK_MS };
-  }
-  // 拉杆之后逐槽停：每 SETTLE_TICKS 格停一槽
-  const since = tick - GOD_SLOT_AUTO_TICKS;
-  const settled = Math.min(4, Math.floor(since / GOD_SLOT_SETTLE_TICKS));
-  const landed = settled >= 4;
   return {
-    ...spin,
-    tick,
-    settled,
-    at: spin.at + GOD_SLOT_TICK_MS,
-    landedAt: landed ? now : null,
+    cue,
+    state: 1,
+    counter: 0,
+    reels: [1, 1, 1, 1],
+    gear: [0, 0, 0],
+    leverDown: false,
+    rerolls: 0,
+    at: now,
   };
 }
 
-/** 这一趟演完了吗 */
-export function godSlotDone(spin: GodSlotSpin, now: number): boolean {
-  return spin.landedAt !== null && now - spin.landedAt >= GOD_SLOT_HOLD_MS;
+/** 走一格（不看时间）*/
+export function godSlotFrame(spin: GodSlotSpin): { spin: GodSlotSpin; events: GodSlotFrameEvents } {
+  const events: GodSlotFrameEvents = { pulled: false, landed: false };
+  if (spin.state >= GOD_SLOT_DONE_STATE) return { spin, events };
+  return { spin: dispatch(prelude(spin), true, events), events };
 }
 
-/** 真人点一下：还在滚就立刻拉杆并停稳；停好了就收屏 */
-export function godSlotClick(spin: GodSlotSpin, now: number): GodSlotSpin {
-  if (spin.landedAt !== null) return { ...spin, landedAt: now - GOD_SLOT_HOLD_MS };
-  const tick = Math.max(spin.tick, GOD_SLOT_AUTO_TICKS + GOD_SLOT_SETTLE_TICKS * 4);
-  return { ...spin, tick, pulled: true, settled: 4, at: now + GOD_SLOT_TICK_MS, landedAt: now };
+/** 到点就走一格；没到点原样返回 */
+export function godSlotTick(spin: GodSlotSpin, now: number): { spin: GodSlotSpin; events: GodSlotFrameEvents } {
+  if (now < spin.at || spin.state >= GOD_SLOT_DONE_STATE) {
+    return { spin, events: { pulled: false, landed: false } };
+  }
+  const r = godSlotFrame(spin);
+  return { spin: { ...r.spin, at: spin.at + GOD_SLOT_TICK_MS }, events: r.events };
+}
+
+/** 这一趟演完了吗（状态 10）*/
+export function godSlotDone(spin: GodSlotSpin): boolean {
+  return spin.state >= GOD_SLOT_DONE_STATE;
+}
+
+/**
+ * 真人点一下 @source 0x0043f752..0x0043f770：**只在状态 1** 把状态推到 2（下一格拉杆）；
+ * 其余时候原样返回（原版的消息被吃掉，什么都不发生）。
+ */
+export function godSlotClick(spin: GodSlotSpin): GodSlotSpin {
+  if (spin.state !== 1 || !spin.cue.human) return spin;
+  return { ...spin, state: 2 };
 }
 
 // ============================================================
 //  绘制（纯 IO）
 // ============================================================
-
-/** 这一帧要画成什么 */
-export interface GodSlotDraw {
-  cue: GodSlotCue;
-  /** 气泡里显示的金额（滚动时 = 当前四个数字拼出来的数）*/
-  amount: number;
-  /** 每槽的图号（已经折好过渡帧）*/
-  digitImages: readonly number[];
-  /** 摇杆拉下去了吗 */
-  pulled: boolean;
-}
 
 function anchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
@@ -402,35 +564,40 @@ function opaque(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: n
   ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
 }
 
-/** 带描边的正中文字（原版 `_rich4_draw_text` 的阴影：右下 1px）*/
+/**
+ * `draw_text(…, 0xdc, 0x8c, flag 4)`：整块字的**墨迹框**以 (x,y) 为中心，先描边再填字 ——
+ * 与询问框/訊息框同一个画法（`dialog.ts` 的 `dialogRowMiddles` / `DIALOG_LINE_H`，D-DIALOG-1）。
+ */
 function centerText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number): void {
+  const lines = text.split('\n');
+  const mids = dialogRowMiddles(
+    lines.map((t) => ({ h: DIALOG_LINE_H, size: GOD_SLOT_FONT_SIZE, blank: t === '' })),
+    y,
+  );
   ctx.font = `${GOD_SLOT_FONT_SIZE}px ${FONT_FAMILY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const lines = text.split('\n');
-  const lineH = GOD_SLOT_FONT_SIZE + 6;
-  const y0 = y - ((lines.length - 1) * lineH) / 2;
+  ctx.lineWidth = 3;
   lines.forEach((line, i) => {
-    const ly = y0 + i * lineH;
-    ctx.fillStyle = GOD_SLOT_SHADOW;
-    ctx.fillText(line, x + 1, ly + 1);
+    if (line === '') return;
+    const ly = mids[i] ?? y;
+    ctx.strokeStyle = GOD_SLOT_OUTLINE;
+    ctx.strokeText(line, x, ly);
     ctx.fillStyle = GOD_SLOT_FILL;
     ctx.fillText(line, x, ly);
   });
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
 }
 
 /**
- * 画整屏。
+ * 画整屏（这一格的样子）。
  *
- * 顺序照原版：气泡（0x004407a0）→ 机体（0x004407d0）→ 摇杆（0x004407f3）→
- * 台詞（0x00440873）；状态机每格再把**金额**重画一遍盖在模板第二行（那个空行）上。
+ * 顺序照原版：气泡（0x004407b1）→ 机体（0x004407ec）→ 摇杆（0x00440811 / 状态 2、3 的换图）→
+ * 转轮（`fcn_0043ef3e` 逐格贴）→ 气泡里的字（开窗时的台詞；状态 8 起换成 `"%d元"`）。
  */
-export function drawGodSlot(
-  ctx: CanvasRenderingContext2D,
-  sprite: SlotSprite,
-  d: GodSlotDraw,
-): void {
-  const variant = d.cue.variant;
+export function drawGodSlot(ctx: CanvasRenderingContext2D, sprite: SlotSprite, spin: GodSlotSpin): void {
+  const variant = spin.cue.variant;
   // ① 气泡
   anchored(
     ctx,
@@ -445,32 +612,27 @@ export function drawGodSlot(
     GOD_SLOT_PANEL_AT.x,
     GOD_SLOT_PANEL_AT.y,
   );
-  // ③ 摇杆（拉下去时换成圆头叠在同一落点）
-  const lx = godSlotLeverX(variant);
-  if (d.pulled) {
-    anchored(
-      ctx,
-      sprite(GOD_SLOT_ARCHIVE, GOD_SLOT_RESOURCE, GOD_SLOT_KNOB_IMAGE, true),
-      lx,
-      GOD_SLOT_LEVER_Y,
-    );
-  } else {
-    anchored(
-      ctx,
-      sprite(GOD_SLOT_ARCHIVE, GOD_SLOT_RESOURCE, GOD_SLOT_LEVER_IMAGE, true),
-      lx,
-      GOD_SLOT_LEVER_Y,
-    );
-  }
-  // ④ 四位/三位数字（不透明贴，槽 0 在三位盤上 x = 0 ⇒ 不画）
-  for (let slot = 0; slot < 4; slot++) {
+  // ③ 摇杆：立着 = 图 2；拉下去（状态 2 起 4 格）= 图 3
+  anchored(
+    ctx,
+    sprite(
+      GOD_SLOT_ARCHIVE,
+      GOD_SLOT_RESOURCE,
+      spin.leverDown ? GOD_SLOT_LEVER_DOWN_IMAGE : GOD_SLOT_LEVER_IMAGE,
+      true,
+    ),
+    godSlotLeverX(variant),
+    GOD_SLOT_LEVER_Y,
+  );
+  // ④ 转轮（不透明贴；槽 3 倒数到 variant —— 三位數机体不碰槽 0）
+  for (let slot = 3; slot >= variant; slot--) {
     const x = godSlotDigitX(variant, slot);
-    const img = d.digitImages[slot];
-    if (x === 0 || img === undefined) continue;
-    opaque(ctx, sprite(GOD_SLOT_ARCHIVE, GOD_SLOT_RESOURCE, img, false), x, GOD_SLOT_DIGIT_Y);
+    const value = spin.reels[slot];
+    if (x === 0 || value === undefined) continue;
+    opaque(ctx, sprite(GOD_SLOT_ARCHIVE, GOD_SLOT_RESOURCE, godSlotReelImage(value), false), x, GOD_SLOT_DIGIT_Y);
   }
-  // ⑤ 台詞 + 金额（金额填在中间那个空行）
-  centerText(ctx, godSlotBubbleText(d.cue, d.amount), GOD_SLOT_TEXT_AT.x, GOD_SLOT_TEXT_AT.y);
+  // ⑤ 气泡里的字
+  centerText(ctx, godSlotBubbleText(spin), GOD_SLOT_TEXT_AT.x, GOD_SLOT_TEXT_AT.y);
 }
 
 // ============================================================
@@ -478,7 +640,6 @@ export function drawGodSlot(
 // ============================================================
 
 let playback: GodSlotSpin | null = null;
-let playAmount = 0;
 /**
  * 已 diff 出、但**还在等附身影片/开场白收场**的那一局（第十一份試玩回報 #6）。
  *
@@ -504,24 +665,16 @@ function gated(): boolean {
 /** 调试 / 单测用：把整屏关掉 */
 export function resetGodSlot(): void {
   playback = null;
-  playAmount = 0;
   pendingCue = null;
 }
 
-/** 给单测的只读视图 */
+/** 给单测 / 宿主的只读视图；`amount` = 这一格四个转轮拼出来的数 */
 export function godSlotState(): { playing: boolean; spin: GodSlotSpin | null; amount: number } {
-  return { playing: playback !== null, spin: playback, amount: playAmount };
-}
-
-/**
- * 这一帧四个数字拼出来的金额（停稳的槽定格、其余滚动）。
- * 三位數机体只有 3 格 ⇒ 从槽 1 开始拼（槽 0 不画）。
- */
-export function godSlotCurrentAmount(spin: GodSlotSpin): number {
-  const first = spin.cue.variant === 1 ? 1 : 0;
-  let out = 0;
-  for (let slot = first; slot < 4; slot++) out = out * 10 + godSlotSlotDigit(spin, slot);
-  return out;
+  return {
+    playing: playback !== null,
+    spin: playback,
+    amount: playback === null ? 0 : godSlotReelAmount(playback.reels, playback.cue.variant),
+  };
 }
 
 export const godSlotScreen: UiScreen = {
@@ -529,7 +682,7 @@ export const godSlotScreen: UiScreen = {
 
   /**
    * ★ 浮窗：原版把 (0,0x28)-(0x1b8,0x1e0) 那块画在**棋盘之上**
-   *   （`fcn_00451e7e` / `fcn_00451edb`，VA 0x0044073e / 0x004408f9）。
+   *   （`fcn_00451e7e` / `fcn_00451edb`，VA 0x00440774 / 0x004408ea）。
    */
   windowed: true,
 
@@ -541,16 +694,7 @@ export const godSlotScreen: UiScreen = {
   draw(env: UiScreenEnv): void {
     const spin = playback;
     if (spin === null) return;
-    const digits = [0, 1, 2, 3].map((slot) => {
-      const d = godSlotSlotDigit(spin, slot);
-      return godSlotSlotRolling(spin, slot) ? godSlotRollImage(d) : godSlotDigitImage(d);
-    });
-    drawGodSlot(env.stage, env.sprite, {
-      cue: spin.cue,
-      amount: playAmount,
-      digitImages: digits,
-      pulled: spin.pulled,
-    });
+    drawGodSlot(env.stage, env.sprite, spin);
   },
 
   up(_x: number, _y: number, env: UiScreenEnv): void {
@@ -570,7 +714,6 @@ export const godSlotScreen: UiScreen = {
     if (playback === null && pendingCue === null) return false;
     playback = null;
     pendingCue = null;
-    playAmount = 0;
     env.stopEffect(GOD_SLOT_SPIN_SOUND);
     env.log('神明老虎机：跟著行動者收場');
     env.requestRender();
@@ -584,32 +727,28 @@ export const godSlotScreen: UiScreen = {
       if (gated()) return; // 闸没开：原样留着，`active()` 靠它继续叫我们
       pendingCue = null;
       playback = godSlotStart(pendingSpin, env.now);
-      playAmount = pendingSpin.amount;
-      // @source 0x004408a0 / 0x004408b2：原版起循环后**紧接着就停**
+      // @source 0x004408b2 起播 → 0x004408bf 停 → 0x0043f2ab 状态机进门**再起播**：
+      //   净效果 = 转动全程循环 51，状态 8（0x0043f5f0）才停
       env.playEffect(GOD_SLOT_SPIN_SOUND, true);
-      env.stopEffect(GOD_SLOT_SPIN_SOUND);
       env.log(`神明老虎机：${pendingSpin.text.split('\n')[0]} ${pendingSpin.amount} 元`);
       env.requestRender();
       return;
     }
     const spin = playback;
     if (spin === null) return;
-    if (godSlotDone(spin, env.now)) {
+    if (godSlotDone(spin)) {
       playback = null;
       env.stopEffect(GOD_SLOT_SPIN_SOUND);
       env.log('神明老虎机：演出结束');
       env.requestRender();
       return;
     }
-    const next = godSlotTick(spin, env.now);
-    if (next !== spin) {
-      playback = next;
-      playAmount = godSlotCurrentAmount(next);
-      if (next.pulled && !spin.pulled) env.playEffect(GOD_SLOT_LEVER_SOUND);
-      if (next.landedAt !== null && spin.landedAt === null) {
-        env.stopEffect(GOD_SLOT_SPIN_SOUND);
-        env.log(`神明老虎机：停在 ${playAmount} 元`);
-      }
+    const { spin: next, events } = godSlotTick(spin, env.now);
+    playback = next;
+    if (events.pulled) env.playEffect(GOD_SLOT_LEVER_SOUND);
+    if (events.landed) {
+      env.stopEffect(GOD_SLOT_SPIN_SOUND);
+      env.log(`神明老虎机：停在 ${godSlotReelAmount(next.reels, next.cue.variant)} 元`);
     }
     env.requestRender();
   },
@@ -631,10 +770,8 @@ export const godSlotScreen: UiScreen = {
 function clickGodSlot(env: UiScreenEnv): void {
   const spin = playback;
   if (spin === null) return;
-  if (!spin.cue.human) return;
-  const next = godSlotClick(spin, env.now);
+  const next = godSlotClick(spin);
+  if (next === spin) return;
   playback = next;
-  playAmount = godSlotCurrentAmount(next);
-  if (next.landedAt !== null) env.stopEffect(GOD_SLOT_SPIN_SOUND);
   env.requestRender();
 }
