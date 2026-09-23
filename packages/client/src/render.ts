@@ -35,6 +35,7 @@ import {
 // ★ 機器工人建屋影片的落点/尺寸是 exe 里的**常数**（Q-TOOL-6）——
 //   屏幕 (0, 0x28) = 棋盘局部 (0, 0)，整块 440×440。见 `build-fx.ts`。
 import { BUILD_FX_BOARD_Y, BUILD_FX_H, BUILD_FX_W, BUILD_FX_X } from './build-fx.ts';
+import { godAscendPoseAt } from './god-ascend-fx.ts';
 import { WHO_PLAYS_WRECKED, type MapNode, type Rich4Map } from '@rich4/core';
 import {
   VIEW_CENTER,
@@ -332,6 +333,14 @@ export interface RenderInput {
    *   改由动效层画（见 `draw()` 末尾）。规格与出处见 `throw-fx.ts`。
    */
   objectFlight?: ObjectFlight | null;
+  /**
+   * 正在播的**神明升天**（第十二份试玩回报 #1）—— 纯表现，不进 state。
+   *
+   * ★ 原版 `god_detach`（VA 0x0040e32c）先把那尊神从主人身上摘掉重画一次，
+   *   再把它**直接贴屏幕**往上转着飞（不进绘制槽）；规格见 `god-ascend-fx.ts`。
+   *   `state` 是离身**之前**那一份（起点 = 那一尊附身时画在哪、画的第几张）。
+   */
+  godAscend?: { state: GameState; objectIndex: number; elapsed: number } | null;
   /**
    * 正在播的**機器工人建屋影片**（Q-TOOL-6）—— 这一帧该贴的那张图，`null` = 没在播
    * （或影片还没解好）。
@@ -2351,18 +2360,20 @@ export class BoardRenderer {
     //   还是「走」、画在哪个插值点上。首帧只记账不播（见 `#syncActorWalks`）。
     const nowMs = performance.now();
     this.#syncActorWalks(state, map.nodes, input.actorWalks, input.tickMs ?? 20, nowMs);
+    // 升天中的那一尊不进静态绘制槽（见 `RenderInput.godAscend`）
+    const ascendHidden = input.godAscend?.objectIndex ?? null;
 
     const slots: DrawSlot[] = [
       ...this.#buildingSlots(map, state, camera, vp, input.landFlash ?? null),
       // ★ 棋盘上的**物件**（神明、路障、地雷、定時炸彈…）—— 原版与建筑同属
       //   类别 0 那一段（`fcn_0040829d` 的对象分支不 or 类别位，VA 0x00408efd），
       //   故一起排序、一起贴。先前**整个漏了**（需求方：「放置后看不到」）。
-      ...this.#objectSlots(map, state, camera, vp, input.objectFlight ?? null, nowMs),
+      ...this.#objectSlots(map, state, camera, vp, input.objectFlight ?? null, nowMs, ascendHidden),
       // ★ **附身于人**的物件（神明 / 被请上身的东西）—— 原版同一个循环的另一支
       //   （`test dh,dh / je` 的反面，VA 0x00408fa5），画在**主人身上**：
       //   位置 = 主人的屏幕坐标（走子补间时用插值点）+ 8 向偏移表，
       //   帧号 = 8 − 视角 + **主人**朝向 + 4。同样与建筑同一档排序。
-      ...this.#attachedObjectSlots(map, state, camera, vp, input.objectFlight ?? null),
+      ...this.#attachedObjectSlots(map, state, camera, vp, input.objectFlight ?? null, ascendHidden),
       ...this.#playerSlots(map, state, camera, vp, input.characterPose ?? null),
       ...this.#actorSlots(map, state, camera, vp, input.currentActor ?? null, nowMs),
     ];
@@ -2374,6 +2385,11 @@ export class BoardRenderer {
     //   根本不进绘制槽（所以飞着的物件能盖过比它高的建筑）。@source VA 0x0040e669
     const flight = input.objectFlight ?? null;
     if (flight !== null) this.#drawObjectFlight(flight, camera, nowMs);
+
+    // ★ 神明升天同样直接贴屏幕（`god_detach` 的 `0x0040e57c call 0x456770`），画在清单之上
+    this.#godAscendEnded = false;
+    const ascend = input.godAscend ?? null;
+    if (ascend !== null) this.#drawGodAscend(map, ascend, camera, vp, nowMs);
 
     // ★ 機器娃娃**打飞**的那些物件同样画在清单**之上**（`0x408cd9` 那一支也是
     //   拿着 `+0x08/+0x0c` 直接贴屏幕的），见 `#drawSweptFlights`。
@@ -2592,9 +2608,12 @@ export class BoardRenderer {
     vp: { w: number; h: number },
     flight: ObjectFlight | null,
     now: number,
+    ascendHidden: number | null = null,
   ): DrawSlot[] {
     const slots: DrawSlot[] = [];
-    const tokens = objectTokens(state, map.nodes, cam.view, flight?.objectIndex ?? null);
+    const tokens = objectTokens(state, map.nodes, cam.view, flight?.objectIndex ?? null).filter(
+      (t) => t.index !== ascendHidden,
+    );
     /**
      * ★ 试玩3 #11：**还没被娃娃走到的那几件** —— 它们已经不在 `state.objects`
      * 的图上（`dollSweepNode` 清掉了 `nodeId`），所以 `objectTokens` 不画它们。
@@ -2680,12 +2699,15 @@ export class BoardRenderer {
     cam: Camera,
     vp: { w: number; h: number },
     flight: ObjectFlight | null,
+    ascendHidden: number | null = null,
   ): DrawSlot[] {
     const ctx = this.#ctx;
     const k = 1;
     const nowMs = performance.now();
     const slots: DrawSlot[] = [];
     for (const t of attachedObjectTokens(state, cam.view, flight?.objectIndex ?? null)) {
+      // ★ 升天中的那一尊：`0x0040e3ba` 把它的 `+2` 清 0 再重画 ⇒ 主人身上不画它
+      if (t.index === ascendHidden) continue;
       const owner = state.players[t.owner];
       if (owner === undefined) continue;
       const node = map.nodes[owner.nodeId - 1];
@@ -2727,6 +2749,63 @@ export class BoardRenderer {
    *   （`fcn_00456469` / `_rich4_rect_union`）—— 那是因为它直接往主表面画。
    *   本引擎每帧整幅重绘，用不上。
    */
+  /**
+   * 神明升天这一帧 —— 起点取离身**之前**那一份 state 里这尊神附身时画在哪、画第几张
+   * （原版 `0x0040e3b0 call 0x40b066` 从绘制槽里取 `+8/+0xa/+7`），逐帧上升、转图。
+   * 演完（帧数到顶或整张图高过棋盘顶边）记下 `#godAscendEnded`，宿主据此收摊。
+   */
+  #drawGodAscend(
+    map: Rich4Map,
+    a: { state: GameState; objectIndex: number; elapsed: number },
+    cam: Camera,
+    vp: { w: number; h: number },
+    now: number,
+  ): void {
+    const t = attachedObjectTokens(a.state, cam.view).find((x) => x.index === a.objectIndex);
+    if (t === undefined) {
+      this.#godAscendEnded = true;
+      return;
+    }
+    const owner = a.state.players[t.owner];
+    const node = owner === undefined ? undefined : map.nodes[owner.nodeId - 1];
+    if (owner === undefined || node === undefined) {
+      this.#godAscendEnded = true;
+      return;
+    }
+    const p = this.#walkScreen(owner.index, cam, vp, now) ?? worldToScreen(node.x, node.y, cam, vp);
+    if (p === null) {
+      this.#godAscendEnded = true;
+      return;
+    }
+    const k = 1;
+    const x = p.x + t.offsetX * k;
+    const y = p.y + t.offsetY * k;
+    const pose = godAscendPoseAt(a.elapsed, y, t.frame, (img) => {
+      const sp = this.#sprite('Data.mkf', t.resource, img);
+      return sp === null ? null : { anchorY: sp.anchorY * k, height: sp.height * k };
+    });
+    if (pose === null) {
+      this.#godAscendEnded = true;
+      return;
+    }
+    const sp = this.#sprite('Data.mkf', t.resource, pose.image);
+    if (sp === null) return;
+    this.#ctx.drawImage(
+      sp.bitmap,
+      x - sp.anchorX * k,
+      y + pose.dy * k - sp.anchorY * k,
+      sp.width * k,
+      sp.height * k,
+    );
+  }
+
+  /** 上一帧画的升天已经演完了（帧数到顶 / 高过棋盘顶边 / 起点找不到）*/
+  godAscendEnded(): boolean {
+    return this.#godAscendEnded;
+  }
+
+  #godAscendEnded = false;
+
   #drawObjectFlight(flight: ObjectFlight, cam: Camera, now: number): void {
     const at = flightPosAt(flight, now);
     if (at === null) return;
