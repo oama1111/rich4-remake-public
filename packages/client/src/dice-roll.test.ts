@@ -331,3 +331,44 @@ describe('pumpNetInbox —— 放行自己在等的那条 rollDice', () => {
     expect(applyBody).toContain('if (!predicted) playDiceSound();');
   });
 });
+
+describe('★★ 掷骰姿停在哪一帧（第十四份试玩回报 #3「扔完骰子后应该是手上没骰子的模型」）', () => {
+  // 那一组图每向 N 帧：前几帧捧着骰子、最后一帧骰子已出手（宮本寶藏 Data.mkf #256：0..5 捧骰、8 空手）。
+  // @source 0x0040dee4 帧号清 0；0x0040d975 数到 N 那一 tick 不重画、直接掷；
+  //   fcn_00419572（滚骰 + 500 ms 定格）不调 0x40829d ⇒ 屏幕停在第 N−1 帧。
+  it('★ 预动作从第 0 帧起、一 tick 一帧', () => {
+    const fx = new DiceRollFx();
+    expect(fx.poseFrame(0)).toBeNull();
+    fx.begin(1000, 9, TICK, 1);
+    expect(fx.poseFrame(1000)).toBe(0);
+    expect(fx.poseFrame(1000 + TICK)).toBe(1);
+    expect(fx.poseFrame(1000 + 8 * TICK + 79)).toBe(8);
+  });
+
+  it('★★ 滚骰 + 定格整段**定在最后一帧**（N−1 = 空手），不跟任何计数器转', () => {
+    const fx = new DiceRollFx();
+    fx.begin(0, 9, TICK, 1);
+    fx.roll(9 * TICK, [4], fakeFlic(36, 14));
+    for (const t of [9 * TICK, 9 * TICK + 100, 9 * TICK + 504, 9 * TICK + 504 + 499]) {
+      expect(fx.poseFrame(t), `t=${t}`).toBe(8);
+    }
+    // 定格走完 → 不再盖姿态（原版 0x0040da37 切成走子）
+    expect(fx.poseFrame(9 * TICK + 504 + DICE_HOLD_MS)).toBeNull();
+  });
+
+  it('★ 每向帧数不是 9 的载具也一样（N−1 随 begin 给的帧数走）', () => {
+    const fx = new DiceRollFx();
+    fx.begin(0, 4, TICK, 2);
+    fx.roll(0, [1, 2], fakeFlic(36, 14));
+    expect(fx.poseFrame(10)).toBe(3);
+  });
+
+  it('★ 接线：主循环把帧号交给渲染器，渲染器按它取图而不是全局走路帧', () => {
+    const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(main).toContain('characterPoseFrame: diceFx.poseFrame(performance.now()),');
+    const render = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
+    expect(render).toContain('input.characterPose ?? null, input.characterPoseFrame ?? null');
+    expect(render).toContain('directionalImage(count, dir, frameNow)');
+    expect(render).toContain('const frameNow = fixedFrame ?? this.#walkFrame;');
+  });
+});

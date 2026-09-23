@@ -7403,6 +7403,8 @@ function drawGameStage(): void {
     ground: showGround ? ground : null,
     groundOffset,
     characterPose: characterPoseOf(),
+    // ★ 掷骰姿画第几帧：预动作 0 → N−1，滚骰 + 定格定在 N−1（空手）—— 第十四份试玩回报 #3
+    characterPoseFrame: diceFx.poseFrame(performance.now()),
     viewport: { w: LAYOUT.board.w, h: LAYOUT.board.h },
     // ★ 替身（四大惡人／機器娃娃）那一趟的整趟路径由 core 交出来（T-047）：
     //   `runNpc` / `runDoll` 的中间格是岔路上 rand() 选的，渲染器事后推不出来，
