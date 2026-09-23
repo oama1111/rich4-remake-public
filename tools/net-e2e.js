@@ -55,7 +55,7 @@
     c.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, ...d }));
   };
   /** 联机大厅的「開始」（`client/lobby.ts` 的 `BTN_START`，舞台坐标）*/
-  const START = { x: 506 + 55, y: 416 + 17 };
+  const START = { x: 506 + 55, y: 398 + 17 };
 
   // ── 座位号：从页面日志里读（客户端没有把 `net.seat` 挂到调试出口上）──
   const logLines = () => {
