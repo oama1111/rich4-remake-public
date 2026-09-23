@@ -891,6 +891,48 @@ describe('★ 福神得卡：只有訊息框，不出卡面 @source fcn_0040ed8f
 });
 
 // ============================================================
+//  ★ 百貨公司裡得到的卡（董事長贈卡 / 貨架買卡）不出卡面
+//  @source 贈卡 `0x0042e9c0 call 0x441e12`（rand + `receive_card`），買卡 `0x0042d242 call 0x4412e4`
+//  —— 兩條都不經 `fcn_00441f73`（卡面）。第十二份試玩回報的日誌裡，進門贈卡與每一次買卡都起了
+//  「事件提示框：抽到卡片」（`20260923-013753079` 的 #22、`20260923-014200829` 的 #12 / #13）。
+//  反證：刪掉 `event()` 裡那句 `pending.shop` 閘，下面前兩條就變紅。
+// ============================================================
+
+describe('★ 百貨公司得卡：不出卡面 @source 0x0042e9c0 / 0x0042d242', () => {
+  const shopPending = { kind: 'shop', points: 0, cards: [], tools: [], owned: { cards: [], tools: [] } } as unknown as GameState['pending'];
+  const withPending = (players: Player[], pending: GameState['pending']): GameState => ({
+    ...stateOf(players),
+    pending,
+  });
+
+  it('★★ 進門那一條（settle → pending.shop）董事長贈卡 ⇒ 不起播', () => {
+    resetEventBoxScreen();
+    const before = withPending([player(0, [])], null);
+    const after = withPending([player(0, [22])], shopPending);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(false);
+  });
+
+  it('★★ 商店裡買卡（shop → shop）⇒ 不起播', () => {
+    resetEventBoxScreen();
+    const before = withPending([player(0, [22])], shopPending);
+    const after = withPending([player(0, [22, 12])], shopPending);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(false);
+  });
+
+  it('★ 对照：卡片格抽卡（前后都没有 pending.shop）⇒ 照旧出卡面', () => {
+    resetEventBoxScreen();
+    const before = withPending([player(0, [])], null);
+    const after = withPending([player(0, [12])], null);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(true);
+    expect(eventBoxScreenState().playback?.plan.kind).toBe('card');
+    resetEventBoxScreen();
+  });
+});
+
+// ============================================================
 //  ★ D-EVENT-1 结案：`WM_KEYDOWN`（0x101）也能跳过
 //    @source `fcn_004544f6`（`rich4_sound_effect.asm:915-960`）的 `PeekMessage`
 //    认三种消息：`0x202`（左键抬起）/ `0x205`（右键）/ **`0x101`（按键）**，

@@ -1140,6 +1140,17 @@ export const eventBoxScreen: UiScreen = {
     )
       return;
 
+    // ★★ 2026-09-23（第十二份試玩回報「卡片商店」那一條的現場日誌）：百貨公司裡得到的卡
+    //   —— 董事長進門贈卡、在貨架上買卡 —— **沒有卡面**。先前手牌差集一視同仁，
+    //   於是進門贈卡、每買一張都在商店窗上起一段「抽到卡片」（Data 0x218 那段點不掉的 FLIC + 卡面 + 音效）。
+    //   @source 卡面只在**顯式**調 `fcn_00441f73` 的地方出現（全 exe 10 處：卡片格 `0x0041b373`、
+    //   `0x00441cbc`/`0x00441def`、`0x004446de`..`0x00444bff`、`0x00452740`），百貨公司一處都沒有：
+    //   - 贈卡 `0x0042e9c0 call 0x441e12` —— `0x441e12` 只有 `rand`（`0x441e4a`）+ `receive_card`（`0x441e64 call 0x4412e4`）；
+    //   - 買卡 `_rich4_player_buy_card` `0x0042d242 call 0x4412e4` —— `0x4412e4` 只調 `0x441262`/`0x44128f`/`0x441343`，零圖形。
+    //   判據：這一條 action 前後任一邊掛著 `pending.shop`（進門那條是 settle → shop，買卡那條 shop → shop）。
+    //   卡片格落點不會同時是百貨公司格，所以不會誤傷真正的抽卡。
+    if (before.pending?.kind === 'shop' || after.pending?.kind === 'shop') return;
+
     const gain = cardGained(before, after);
     if (gain === null) return;
     playback = eventBoxPlaybackStart(eventBoxPlan(cardView(gain.card)), env.now);
