@@ -1,0 +1,189 @@
+{
+  "sheet-Panel-0004-0": {
+    "kind": "seedvr2-image",
+    "models": [
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 42,
+    "target": "3120x3484",
+    "outputs": 1,
+    "seconds": 31,
+    "at": "2026-09-23T13:04:31.642Z"
+  },
+  "sheet-Panel-0004-1": {
+    "kind": "seedvr2-image",
+    "models": [
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 42,
+    "target": "3120x3484",
+    "outputs": 1,
+    "seconds": 46,
+    "at": "2026-09-23T13:05:17.659Z"
+  },
+  "sheet-Panel-0004-2": {
+    "kind": "seedvr2-image",
+    "models": [
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 42,
+    "target": "3120x3484",
+    "outputs": 1,
+    "seconds": 30,
+    "at": "2026-09-23T13:05:47.587Z"
+  },
+  "sheet-Panel-0000-0": {
+    "kind": "seedvr2-image",
+    "models": [
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 42,
+    "target": "2464x2272",
+    "outputs": 1,
+    "seconds": 24,
+    "at": "2026-09-23T13:06:12.056Z"
+  },
+  "sheet-Data-0381-0": {
+    "kind": "seedvr2-image",
+    "models": [
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 42,
+    "target": "2564x2604",
+    "outputs": 1,
+    "seconds": 23,
+    "at": "2026-09-23T13:06:35.174Z"
+  },
+  "sheet-Data-0001-0": {
+    "kind": "seedvr2-image",
+    "models": [
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 42,
+    "target": "3520x2380",
+    "outputs": 1,
+    "seconds": 22,
+    "at": "2026-09-23T13:06:56.729Z"
+  },
+  "video-Panel-4": {
+    "kind": "seedvr2-video",
+    "models": [
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 42,
+    "target": "756x1140",
+    "outputs": 36,
+    "seconds": 282,
+    "at": "2026-09-23T13:11:38.854Z"
+  },
+  "seedvr2-ground": {
+    "kind": "seedvr2-image",
+    "models": [
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 42,
+    "target": "2304x2304",
+    "outputs": 1,
+    "seconds": 47,
+    "at": "2026-09-23T13:12:25.800Z"
+  },
+  "qwen-title": {
+    "kind": "qwen-repaint",
+    "models": [
+      "qwen_image_2.1_bf16.safetensors",
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 20260923,
+    "steps": 30,
+    "resolution": 1280,
+    "prompt": "把这张游戏标题画面重绘成高清版本。严格保持构图、每个物体的位置与大小、轮廓、配色完全不变，不要增加或删除任何元素，文字「大富翁4」的字形保持不变。只提升清晰度与细节：地图的陆地与海洋纹理更细腻，立体字的金属与塑料质感更干净。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+    "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+    "target": "2560x1920",
+    "outputs": 1,
+    "seconds": 75,
+    "at": "2026-09-23T13:13:41.160Z"
+  },
+  "qwen-ground": {
+    "kind": "qwen-repaint",
+    "models": [
+      "qwen_image_2.1_bf16.safetensors",
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 20260923,
+    "steps": 30,
+    "resolution": 1152,
+    "prompt": "把这张俯视游戏地图的局部重绘成高清版本。严格保持构图、道路与地块格线的位置、海岸线形状、配色完全不变，不要增加或删除任何元素，英文字「Taiwan」保持原样。只提升清晰度与细节：草地、岩石、沙滩、海浪纹理更细腻。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+    "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+    "target": "2304x2304",
+    "outputs": 1,
+    "seconds": 101,
+    "at": "2026-09-23T13:15:21.853Z"
+  },
+  "qwen-title-v2": {
+    "kind": "qwen-repaint",
+    "models": [
+      "qwen_image_2.1_bf16.safetensors",
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 20260923,
+    "steps": 30,
+    "resolution": 1280,
+    "repaint": "1280x960",
+    "prompt": "把这张游戏标题画面重绘成高清版本。严格保持构图、每个物体的位置与大小、轮廓、配色完全不变，不要增加或删除任何元素，文字「大富翁4」的字形保持不变。只提升清晰度与细节：地图的陆地与海洋纹理更细腻，立体字的金属与塑料质感更干净。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+    "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+    "target": "2560x1920",
+    "outputs": 1,
+    "seconds": 61,
+    "at": "2026-09-23T13:16:33.722Z"
+  },
+  "seedvr2-ground-v2": {
+    "kind": "seedvr2-image",
+    "models": [
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 42,
+    "target": "2304x2304",
+    "vaeTile": 2304,
+    "outputs": 1,
+    "seconds": 24,
+    "at": "2026-09-23T13:17:41.888Z"
+  },
+  "qwen-ground-d35": {
+    "kind": "qwen-repaint",
+    "models": [
+      "qwen_image_2.1_bf16.safetensors",
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 20260923,
+    "steps": 30,
+    "resolution": 1152,
+    "repaint": "1152x1152",
+    "denoise": 0.35,
+    "prompt": "把这张俯视游戏地图的局部重绘成高清版本。严格保持构图、道路与地块格线的位置、海岸线形状、配色完全不变，不要增加或删除任何元素，英文字「Taiwan」保持原样。只提升清晰度与细节：草地、岩石、沙滩、海浪纹理更细腻。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+    "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+    "target": "2304x2304",
+    "vaeTile": 1024,
+    "outputs": 1,
+    "seconds": 66,
+    "at": "2026-09-23T13:19:32.465Z"
+  },
+  "qwen-ground-d50": {
+    "kind": "qwen-repaint",
+    "models": [
+      "qwen_image_2.1_bf16.safetensors",
+      "seedvr2_7b_int8_convrot.safetensors"
+    ],
+    "seed": 20260923,
+    "steps": 30,
+    "resolution": 1152,
+    "repaint": "1152x1152",
+    "denoise": 0.5,
+    "prompt": "把这张俯视游戏地图的局部重绘成高清版本。严格保持构图、道路与地块格线的位置、海岸线形状、配色完全不变，不要增加或删除任何元素，英文字「Taiwan」保持原样。只提升清晰度与细节：草地、岩石、沙滩、海浪纹理更细腻。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+    "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+    "target": "2304x2304",
+    "vaeTile": 1024,
+    "outputs": 1,
+    "seconds": 52,
+    "at": "2026-09-23T13:20:24.510Z"
+  }
+}

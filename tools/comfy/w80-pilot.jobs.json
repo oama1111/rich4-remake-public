@@ -1,0 +1,175 @@
+{
+ "jobs": [
+  {
+   "id": "sheet-Panel-0004-0",
+   "kind": "seedvr2-image",
+   "input": "rich4-pilot/pack/Panel/0004-0.png",
+   "out": "pack-done/rgb/Panel/0004-0.png",
+   "width": 3120,
+   "height": 3484,
+   "seed": 42
+  },
+  {
+   "id": "sheet-Panel-0004-1",
+   "kind": "seedvr2-image",
+   "input": "rich4-pilot/pack/Panel/0004-1.png",
+   "out": "pack-done/rgb/Panel/0004-1.png",
+   "width": 3120,
+   "height": 3484,
+   "seed": 42
+  },
+  {
+   "id": "sheet-Panel-0004-2",
+   "kind": "seedvr2-image",
+   "input": "rich4-pilot/pack/Panel/0004-2.png",
+   "out": "pack-done/rgb/Panel/0004-2.png",
+   "width": 3120,
+   "height": 3484,
+   "seed": 42
+  },
+  {
+   "id": "sheet-Panel-0000-0",
+   "kind": "seedvr2-image",
+   "input": "rich4-pilot/pack/Panel/0000-0.png",
+   "out": "pack-done/rgb/Panel/0000-0.png",
+   "width": 2464,
+   "height": 2272,
+   "seed": 42
+  },
+  {
+   "id": "sheet-Data-0381-0",
+   "kind": "seedvr2-image",
+   "input": "rich4-pilot/pack/Data/0381-0.png",
+   "out": "pack-done/rgb/Data/0381-0.png",
+   "width": 2564,
+   "height": 2604,
+   "seed": 42
+  },
+  {
+   "id": "sheet-Data-0001-0",
+   "kind": "seedvr2-image",
+   "input": "rich4-pilot/pack/Data/0001-0.png",
+   "out": "pack-done/rgb/Data/0001-0.png",
+   "width": 3520,
+   "height": 2380,
+   "seed": 42
+  },
+  {
+   "id": "video-Panel-4",
+   "kind": "seedvr2-video",
+   "inputDir": "rich4-pilot/video/Panel-4",
+   "frames": 36,
+   "out": "video-done/Panel-4",
+   "width": 756,
+   "height": 1140,
+   "seed": 42
+  },
+  {
+   "id": "seedvr2-ground",
+   "kind": "seedvr2-image",
+   "input": "rich4-pilot/src/ground/map0-crop.png",
+   "out": "variants/ground-seedvr2.png",
+   "width": 2304,
+   "height": 2304,
+   "seed": 42
+  },
+  {
+   "id": "qwen-title",
+   "kind": "qwen-repaint",
+   "input": "rich4-pilot/src/title/title-bg.png",
+   "out": "variants/title-qwen.png",
+   "width": 2560,
+   "height": 1920,
+   "seed": 20260923,
+   "prompt": "把这张游戏标题画面重绘成高清版本。严格保持构图、每个物体的位置与大小、轮廓、配色完全不变，不要增加或删除任何元素，文字「大富翁4」的字形保持不变。只提升清晰度与细节：地图的陆地与海洋纹理更细腻，立体字的金属与塑料质感更干净。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+   "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+   "resolution": 1280,
+   "steps": 30
+  },
+  {
+   "id": "qwen-ground",
+   "kind": "qwen-repaint",
+   "input": "rich4-pilot/src/ground/map0-crop.png",
+   "out": "variants/ground-qwen.png",
+   "width": 2304,
+   "height": 2304,
+   "seed": 20260923,
+   "prompt": "把这张俯视游戏地图的局部重绘成高清版本。严格保持构图、道路与地块格线的位置、海岸线形状、配色完全不变，不要增加或删除任何元素，英文字「Taiwan」保持原样。只提升清晰度与细节：草地、岩石、沙滩、海浪纹理更细腻。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+   "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+   "resolution": 1152,
+   "steps": 30
+  },
+  {
+   "id": "qwen-title-v2",
+   "kind": "qwen-repaint",
+   "input": "rich4-pilot/src/title/title-bg.png",
+   "out": "variants/title-qwen-v2.png",
+   "width": 2560,
+   "height": 1920,
+   "seed": 20260923,
+   "prompt": "把这张游戏标题画面重绘成高清版本。严格保持构图、每个物体的位置与大小、轮廓、配色完全不变，不要增加或删除任何元素，文字「大富翁4」的字形保持不变。只提升清晰度与细节：地图的陆地与海洋纹理更细腻，立体字的金属与塑料质感更干净。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+   "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+   "resolution": 1280,
+   "steps": 30,
+   "repaintWidth": 1280,
+   "repaintHeight": 960
+  },
+  {
+   "id": "qwen-ground-v2",
+   "kind": "qwen-repaint",
+   "input": "rich4-pilot/src/ground/map0-crop.png",
+   "out": "variants/ground-qwen-v2.png",
+   "width": 2304,
+   "height": 2304,
+   "seed": 20260923,
+   "prompt": "把这张俯视游戏地图的局部重绘成高清版本。严格保持构图、道路与地块格线的位置、海岸线形状、配色完全不变，不要增加或删除任何元素，英文字「Taiwan」保持原样。只提升清晰度与细节：草地、岩石、沙滩、海浪纹理更细腻。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+   "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+   "resolution": 1152,
+   "steps": 30,
+   "repaintWidth": 1152,
+   "repaintHeight": 1152
+  },
+  {
+   "id": "seedvr2-ground-v2",
+   "kind": "seedvr2-image",
+   "input": "rich4-pilot/src/ground/map0-crop.png",
+   "out": "variants/ground-seedvr2-v2.png",
+   "width": 2304,
+   "height": 2304,
+   "seed": 42,
+   "vaeTile": 2304
+  },
+  {
+   "id": "qwen-ground-d35",
+   "kind": "qwen-repaint",
+   "input": "rich4-pilot/src/ground/map0-crop.png",
+   "out": "variants/ground-qwen-d35.png",
+   "width": 2304,
+   "height": 2304,
+   "seed": 20260923,
+   "prompt": "把这张俯视游戏地图的局部重绘成高清版本。严格保持构图、道路与地块格线的位置、海岸线形状、配色完全不变，不要增加或删除任何元素，英文字「Taiwan」保持原样。只提升清晰度与细节：草地、岩石、沙滩、海浪纹理更细腻。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+   "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+   "resolution": 1152,
+   "steps": 30,
+   "repaintWidth": 1152,
+   "repaintHeight": 1152,
+   "denoise": 0.35
+  },
+  {
+   "id": "qwen-ground-d50",
+   "kind": "qwen-repaint",
+   "input": "rich4-pilot/src/ground/map0-crop.png",
+   "out": "variants/ground-qwen-d50.png",
+   "width": 2304,
+   "height": 2304,
+   "seed": 20260923,
+   "prompt": "把这张俯视游戏地图的局部重绘成高清版本。严格保持构图、道路与地块格线的位置、海岸线形状、配色完全不变，不要增加或删除任何元素，英文字「Taiwan」保持原样。只提升清晰度与细节：草地、岩石、沙滩、海浪纹理更细腻。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏美术。",
+   "negative": "模糊, 噪点, 压缩伪影, 文字变形, 新增物体, 删除物体, 改变构图, 改变配色, 写实照片风格, 动漫线稿, 水印",
+   "resolution": 1152,
+   "steps": 30,
+   "repaintWidth": 1152,
+   "repaintHeight": 1152,
+   "denoise": 0.5
+  }
+ ]
+}

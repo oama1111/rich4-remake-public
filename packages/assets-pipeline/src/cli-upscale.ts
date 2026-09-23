@@ -5,7 +5,7 @@
  *
  * 用法：
  *   plan     <assets-clean> <hd>            生成待办清单
- *   slice    <assets-clean> <queue> [N]     按帧切片 + Alpha 分离（T-061）
+ *   slice    <assets-clean> <queue> [N] [--only 档案/资源,…]  按帧切片 + Alpha 分离（T-061）
  *   pack     <queue> <pack-dir> [--gutter 8] [--max 2048] [--fill flat|edge]
  *                                           同一资源的帧拼成网格（W-80 §4.3，防帧间闪烁）
  *   unpack   <pack-dir> <pack-done> <upscale-done>
@@ -170,9 +170,28 @@ export function cmdPlan(cleanDir: string, hdDir: string): void {
  *
  * @param limit 只切前 N 张（试跑/抽查用；不传则全量）
  */
-export function cmdSlice(cleanDir: string, queueDir: string, limit?: number): void {
+/**
+ * 按 `档案/资源号` 挑任务（试点只切几组资源用）。
+ * `only` 形如 `['Data/381', 'Panel/0']`；空数组 = 不筛。
+ *
+ * @throws 某一项写错（不是「档案/非负整数」）或一个任务都没命中 —— 试点批次选错了要当场知道
+ */
+export function selectTasks<T extends { archive: string; resource: number }>(tasks: readonly T[], only: readonly string[]): T[] {
+  if (only.length === 0) return [...tasks];
+  const want = new Set<string>();
+  for (const item of only) {
+    const m = /^([A-Za-z]+)\/(\d+)$/.exec(item.trim());
+    if (m === null) throw new Error(`--only 的每一项要写成「档案/资源号」，如 Data/381，收到 ${item}`);
+    want.add(`${m[1]}/${Number(m[2])}`);
+  }
+  const out = tasks.filter((t) => want.has(`${t.archive}/${t.resource}`));
+  if (out.length === 0) throw new Error(`--only ${only.join(',')} 一个任务都没命中`);
+  return out;
+}
+
+export function cmdSlice(cleanDir: string, queueDir: string, limit?: number, only: readonly string[] = []): void {
   const entries = loadSourceManifest(cleanDir);
-  const tasks = planUpscale(entries);
+  const tasks = selectTasks(planUpscale(entries), only);
   const chosen = limit === undefined ? tasks : tasks.slice(0, limit);
 
   const frames: QueueManifest['frames'] = [];
@@ -1000,10 +1019,15 @@ function main(argv: string[]): void {
       if (rest.length < 2) throw new Error('用法: plan <assets-clean> <hd>');
       cmdPlan(rest[0]!, rest[1]!);
       break;
-    case 'slice':
-      if (rest.length < 2) throw new Error('用法: slice <assets-clean> <upscale-queue> [前N张]');
-      cmdSlice(rest[0]!, rest[1]!, rest[2] === undefined ? undefined : Number(rest[2]));
+    case 'slice': {
+      // `--only Data/381,Panel/0` —— 试点只切这几组（值是列表，不走 parseFlags）
+      const at = rest.indexOf('--only');
+      const only = at < 0 ? [] : (rest[at + 1] ?? '').split(',').filter((x) => x !== '');
+      const args = at < 0 ? rest : [...rest.slice(0, at), ...rest.slice(at + 2)];
+      if (args.length < 2) throw new Error('用法: slice <assets-clean> <upscale-queue> [前N张] [--only 档案/资源,…]');
+      cmdSlice(args[0]!, args[1]!, args[2] === undefined ? undefined : Number(args[2]), only);
       break;
+    }
     case 'merge':
       if (rest.length < 2) throw new Error('用法: merge <upscale-queue> <upscale-done>');
       cmdMerge(rest[0]!, rest[1]!);
@@ -1038,7 +1062,7 @@ function main(argv: string[]): void {
           '画质升级管线',
           '',
           '  plan     <assets-clean> <hd>            生成待办清单',
-          '  slice    <assets-clean> <queue> [N]     按帧切片 + Alpha 分离（T-061）',
+          '  slice    <assets-clean> <queue> [N] [--only 档案/资源,…]  按帧切片 + Alpha 分离（T-061）',
           '  pack     <queue> <pack-dir> [--gutter 8] [--max 2048] [--fill flat|edge]   同资源帧拼网格（防帧间闪烁）',
           '  unpack   <pack-dir> <pack-done> <upscale-done>          拼图按格切回逐帧',
           '  merge    <queue> <upscale-done>         回填校验 + Alpha 合并（T-062）',

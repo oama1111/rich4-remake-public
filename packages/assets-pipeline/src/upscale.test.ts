@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { selectTasks } from './cli-upscale.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import {
   BATCH_RULES,
@@ -294,5 +295,26 @@ describe('★ W-80 §4.7：ingest 的产物定位（旧 ingest 只认原名，cl
   it('Windows 分隔符与前导斜杠归一', () => {
     const t = { ...task, input: '\\Data\\0000_000.png' };
     expect(locateIngestOutput(t, has('Data/0000_000.png'))).toMatchObject({ kind: 'legacy', from: 'Data/0000_000.png' });
+  });
+});
+
+describe('selectTasks（slice --only）', () => {
+  const tasks = [
+    { archive: 'Data', resource: 381, image: 0 },
+    { archive: 'Data', resource: 381, image: 1 },
+    { archive: 'Data', resource: 38, image: 0 },
+    { archive: 'Panel', resource: 0, image: 0 },
+  ];
+  it('按「档案/资源号」挑，不会把 38 当成 381 的前缀', () => {
+    expect(selectTasks(tasks, ['Data/381', 'Panel/0']).map((t) => `${t.archive}/${t.resource}/${t.image}`)).toEqual([
+      'Data/381/0',
+      'Data/381/1',
+      'Panel/0/0',
+    ]);
+    expect(selectTasks(tasks, [])).toHaveLength(4);
+  });
+  it('★ 写错或一个都没命中 → 当场报错', () => {
+    expect(() => selectTasks(tasks, ['Data-381'])).toThrow('档案/资源号');
+    expect(() => selectTasks(tasks, ['Data/999'])).toThrow('没命中');
   });
 });
