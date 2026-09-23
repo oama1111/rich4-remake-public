@@ -47,7 +47,7 @@
  */
 
 import type { Sprite } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { FONT_FAMILY, drawGdiText, type GdiTextStyle } from './font.ts';
 import { bailCost } from '@rich4/core';
 
 export const BAIL_ARCHIVE = 'Panel.mkf';
@@ -348,5 +348,66 @@ export function drawBailScreen(
     ctx.fillText(`${bailCost(hot)}點數`, tx, by + BAIL_BUBBLE.costValueDy);
   }
 
+  ctx.restore();
+}
+
+
+// ============================================================
+//  ★ 2026-09-23：柜台人员的字框（`fcn_0044ec30` 开框 + `fcn_0044ecb6` 写字）
+// ============================================================
+
+/**
+ * 这一屏里两处**稳当读得出来**的字框（其余几处 —— 犯人获释的道谢、醫院護士的三段 —— 挂在
+ * 各自的状态机上，本轮没接，见最终报告）：
+ *
+ * | 哪句 | 框图 | 锚点 | 字心偏移 | @source |
+ * |---|---|---|---|---|
+ * | 監獄：付不起 | `Panel#63` 图 1 | (0xe6, 0x12c) | (0, −6) | `0x0043cf97..0x0043cfc2`：`0x44ec30(+0x18, 0xe6, 0x12c, 0, −6, 0x101010, 0)` → `0x44ecb6(0x46514e)` |
+ * | 醫院：开屏招呼 | `Panel#65` 图 2 | (8, 8) | (0, 0) | `0x0043daf8..0x0043db10`（`0x401` 开框）→ `0x0043db41..0x0043db4f`（`0x405` 写字）|
+ *
+ * 字：`fcn_0044ecb6` 里 `0x0044ed65 push 1 / push 2 / push ebx(=0) / push esi(0x101010) / push 0x14`
+ * ⇒ **20 号、#101010、粗体、无阴影**（第二色 0 ⇒ 字效 2），`draw_text(…, x0 + w/2 + dx, y0 + h/2 + dy, flag 4)`。
+ * 挂多久：`fcn_0044ee18` —— 满 0x7d0 = 2000 ms **且**语音不响了才收（与商店 / 貸款屏同一支）。
+ */
+export const BAIL_CLERK_FRAMES = {
+  lowPoints: { place: 'prison', image: 1, x: 0xe6, y: 0x12c, dx: 0, dy: -6 },
+  hospitalHello: { place: 'hospital', image: 2, x: 8, y: 8, dx: 0, dy: 0 },
+} as const;
+export type BailClerkKey = keyof typeof BAIL_CLERK_FRAMES;
+
+/** 字框至少挂多久 @source `0x0044ee4e cmp eax, 0x7d0` */
+export const BAIL_CLERK_MS = 0x7d0;
+
+/** 字效 @source `0x0044ed65..0x0044ed73`（第二色 0 ⇒ `push 2`）*/
+export const BAIL_CLERK_STYLE: GdiTextStyle = { size: 0x14, color: '#101010', color2: '#000000', flags: 2, spacing: 1 };
+
+/** 这一刻挂着的那一句（`text` 已剥掉 `#NNNN`）*/
+export interface BailClerkBubble {
+  key: BailClerkKey;
+  text: string;
+  /** 最早什么时候能收（起播 + 2000 ms，语音更长就撑到语音完）*/
+  until: number;
+}
+
+/** 画那一句字框（锚点贴框图，字在框的正中再偏 dx/dy）*/
+export function drawBailClerk(ctx: CanvasRenderingContext2D, sprite: BailSpriteFn, b: BailClerkBubble): void {
+  const f = BAIL_CLERK_FRAMES[b.key];
+  const spec = BAIL_PLACES[f.place];
+  const img = sprite(BAIL_ARCHIVE, spec.resource, f.image, true);
+  if (img === null) return;
+  const x0 = f.x - img.anchorX;
+  const y0 = f.y - img.anchorY;
+  ctx.drawImage(img.bitmap, x0, y0);
+  const cx = x0 + img.width / 2 + f.dx;
+  const cy = y0 + img.height / 2 + f.dy;
+  const lines = b.text.split('\n');
+  const lh = BAIL_CLERK_STYLE.size + 6;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  lines.forEach((line, i) => {
+    if (line === '') return;
+    drawGdiText(ctx, line, cx, cy + (i - (lines.length - 1) / 2) * lh, BAIL_CLERK_STYLE);
+  });
   ctx.restore();
 }

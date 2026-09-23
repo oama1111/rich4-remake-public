@@ -162,7 +162,7 @@ import {
   toolShelf,
   STORE_INDUSTRY,
 } from '../places/shop.ts';
-import { CARDS, CHARACTERS, MAGIC_HOUSE_OPTIONS, TOOLS, eventAmount, fortuneEvent, godNameOf, newsEvent, objectNameOf } from '@rich4/data';
+import { CARDS, CHARACTERS, MAGIC_HOUSE_OPTIONS, TOOLS, eventAmount, fortuneEvent, godNameOf, newsEvent, objectNameOf, stocksOfMap } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
@@ -273,11 +273,12 @@ import {
   anyoneConfined,
   anyPlayerConfined,
   confinementGateNodeId,
+  OBJECT_SLOT_BASE,
   release,
   sendToConfinement,
   type ConfinementKind,
 } from '../rules/confinement.ts';
-import { applyBail, bailCandidates, decideBail } from '../rules/visit.ts';
+import { INMATE_NAMES, applyBail, bailCandidates, decideBail } from '../rules/visit.ts';
 import {
   isUnimplementedPlace,
   needsInteraction,
@@ -661,7 +662,12 @@ function settleBankReserve(s: GameState, topo: MapTopology): GameState {
     specialFinance: Math.max(0, boss.specialFinance - call.shortfall),
   };
   const players = s.players.map((p, i) => (i === call.chairman ? after : p));
-  const next: GameState = { ...s, players };
+  // ★ 2026-09-23：垫付之前弹「銀行資金準備\n\n不足%d元\n\n由經營者%s墊付！」（**2500 ms**）
+  //   @source `0x00436c03 push 0x464b75`（`%d` = 缺口 esi、`%s` = 董事長名）→ `0x00436c15 push 0x9c4` → `0x00436c1f call 0x440cac`
+  const next: GameState = appendFreshNotice(
+    { ...s, players },
+    { key: 'bank.reserveShortfall', args: [call.shortfall, playerName(s, call.chairman)], holdMs: 0x9c4 },
+  );
   // ⚠️ 垫付到破产这一支原版也有（0x00433c16 调破產）；这里交给统一的破产流程
   return paid.bankrupt ? settleBankruptcies(next, [call.chairman], topo) : next;
 }
@@ -1701,6 +1707,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         case 'own': {
           const up = canUpgrade(land, player, state.priceIndex);
           if (!up.ok) {
+            // ★ 2026-09-23：前几道闸都过了、只差现金 ⇒ 弹「您的現金不足！」（1500 ms，真人电脑都弹）
+            //   @source `0x0041994b cmp ebp, [現金] / jg 0x419a52` → `0x00419a52 push 0x5dc` /
+            //   `0x00419a57 mov eax, 0x46398b` → `0x00419a5d call 0x440cac`
+            if (up.reason === 'notEnoughCash') {
+              return appendFreshNotice({ ...state, phase: 'turnEnd' }, { key: 'land.cashShort', args: [] });
+            }
             return { ...state, phase: 'turnEnd' };
           }
           return {
@@ -2037,7 +2049,22 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
 
     case 'buyStock':
     case 'sellStock': {
-      const traded = tradeStock(state, action);
+      let traded = tradeStock(state, action);
+      // ★ 2026-09-23：**电脑**买 / 卖股各弹一扇「%s\n\n買進%s%d張」/「賣出」（1500 ms）——
+      //   `[玩家名, 股名 [股*36+0x496980], 张数]`。真人在股市柜台（`0x0042afc6`）买卖**不弹**。
+      //   @source 买 `0x0042c770 push 0x464186` → `0x0042c78c call 0x440cac`；
+      //           卖 `0x0042d076 push 0x4641cc` → `0x0042d092 call 0x440cac`
+      const trader = state.players[state.currentPlayer];
+      if (traded !== state && trader !== undefined && isAiControlled(trader)) {
+        traded = appendFreshNotice(traded, {
+          key: action.type === 'buyStock' ? 'stock.aiBuy' : 'stock.aiSell',
+          args: [
+            playerName(state, state.currentPlayer),
+            stocksOfMap(state.globalMapId)[action.stock]?.name ?? '',
+            action.shares,
+          ],
+        });
+      }
       // @source 0x0042d0a2：還款壓力下賣完一支若 現金+存款 仍 < 貸款×1.1，就回头再賣 —— 调度步停在 1
       const seller = traded.players[state.currentPlayer];
       const keepSelling =
@@ -2054,7 +2081,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     }
 
     case 'buyShares':
-      return buySharesFromCommercial(state, action.shares);
+      return buySharesFromCommercial(state, action.shares, topo);
 
     case 'useCard':
       return afterAiStep(state, playCard(state, topo, action.cardId, action.target ?? { kind: 'none' }), topo, 3);
@@ -2064,10 +2091,23 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       // ★★ 第十一份試玩回報 #3：道具台词（原版 `player_say(角色, 0, _tool_strings[角色][道具号−1])`，
       //   在 human/AI 分流**之前** ⇒ 电脑也说）。
       //   与 `lastCardPlay` 同一条规矩：**真的用出去了**才写（`used === state` = 没生效 ⇒ 不说）。
-      const stamped: GameState =
+      let stamped: GameState =
         used === state
           ? used
           : { ...used, lastToolUsed: { player: state.currentPlayer, toolId: action.toolId } };
+      // ★ 2026-09-23：**电脑**用道具先弹「使用%s」（`%s` = 道具名 `[id*8+0x47feda]`，1500 ms），再施加 ——
+      //   排在道具自己的影片（飛彈 / 機器工人…）**之前** ⇒ `beforeFilms`。
+      //   @source 电脑道具循环 `0x00448039 call 0x420e9a`（要不要用）→ `0x00448054 push 0x4653e5` →
+      //   `0x00448066 push 0x5dc` → `0x00448070 call 0x440cac`；真人走道具欄，不弹。
+      const user = state.players[state.currentPlayer];
+      if (used !== state && user !== undefined && isAiControlled(user)) {
+        // 排在道具自己可能弹的框之前（这一扇在施加之前）
+        const own = staleNoticeLists.has(stamped.notices) ? [] : stamped.notices;
+        stamped = {
+          ...stamped,
+          notices: [{ key: 'tool.aiUse', args: [toolNameOf(action.toolId)], beforeFilms: true }, ...own],
+        };
+      }
       return afterAiStep(state, stamped, topo, 3);
     }
 
@@ -2181,7 +2221,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       // （取款之后那次特別融資对账 `0x0043784d push 1 / call 0x436b0a` 在 ATM 那一支，见上）
 
       // 刷新柜台上显示的数字（额度会随贷款与融资变）
-      return {
+      const refreshed: GameState = {
         ...after,
         pending: {
           kind: 'bank',
@@ -2190,6 +2230,18 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           specialFinance: specialFinanceOf(after, topo, state.currentPlayer),
         },
       };
+      // ★ 2026-09-23：**电脑**在柜台贷款之后弹「%s\n\n向銀行貸款\n\n%d元」（`%d` = 贷款字段 `[+0x24]`，1500 ms —
+      //   原版电脑支只在 `loan == 0` 时借（`0x004367ab`），所以那就是这一笔）；
+      //   真人走貸款屏的填数窗，不弹。@source `0x00436906 add [存款], eax` → `0x0043692f push 0x464b0c` →
+      //   `0x00436941 push 0x5dc` → `0x0043694b call 0x440cac`
+      if (action.op === 'borrow' && isAiControlled(me) && next.loan > me.loan) {
+        return appendFreshNotice(refreshed, {
+          key: 'bank.aiBorrow',
+          // @source `0x00436921 mov ecx, [eax + 0x496b8c]`（+0x24 = 贷款）
+          args: [playerName(state, state.currentPlayer), next.loan],
+        });
+      }
+      return refreshed;
     }
 
     case 'lottery': {
@@ -4280,7 +4332,14 @@ function enterVisit(state: GameState, topo: MapTopology, specialKind: number): G
 
   const r = applyBail(rolled.players, occ, kind, state.currentPlayer, d.slot);
   if (!r.ok) return rolled;
-  const paid: GameState = { ...rolled, players: r.players };
+  // ★ 2026-09-23：电脑保釋先弹「保釋%s」（1500 ms）—— `%s` = 玩家名（槽 < 4，`[槽*0x68 + 0x496b68]`）
+  //   或犯人名（`[槽*4 + 0x47ed5a]`）。@source 監獄 `0x0043d534 push 0x465169` / `0x0043d550 call 0x440cac`；
+  //   醫院 `0x0043ebe0 push 0x465207` / `0x0043ebfc call 0x440cac`
+  const bailed = d.slot < OBJECT_SLOT_BASE ? playerName(rolled, d.slot) : (INMATE_NAMES[d.slot - OBJECT_SLOT_BASE] ?? '');
+  const paid: GameState = appendFreshNotice(
+    { ...rolled, players: r.players },
+    { key: kind === 'prison' ? 'bail.prison' : 'bail.hospital', args: [bailed] },
+  );
   return kind === 'prison'
     ? { ...paid, prisonOccupancy: r.occupancy }
     : { ...paid, hospitalOccupancy: r.occupancy };
@@ -4748,7 +4807,14 @@ function playCard(
   //   证明「30 张卡从 `remove_card` 之后的每一条出口都返回非 0」。
   //   所以「已扣卡但没生效」那类情形在 registry 里是 `ok: true` + 什么都不改
   //   （`noEffect()`），不会走到这里。
-  if (!r.ok) return state;
+  if (!r.ok) {
+    // ★ 2026-09-23：購地卡只差现金 ⇒ 弹「您的現金不足！」（1500 ms），卡**不扣**、状态不动
+    //   @source `0x004423bb jg 0x4425f1` → `0x004425f1 push 0x5dc / push 0x46530c / call 0x440cac` → `0x00442618 mov eax, esi`（0）
+    if (cardId === 3 && r.error === 'notEnoughCash') {
+      return appendFreshNotice(state, { key: 'card.cashShort', args: [] });
+    }
+    return state;
+  }
 
   const landOwner = [...state.landOwner];
   const landLevel = [...state.landLevel];
@@ -4857,6 +4923,9 @@ function playCard(
   for (const rs of r.respawns) {
     next = respawnPartner(next, topo, rs);
   }
+  // ★ 2026-09-23（框模板反查）：卡片函数**里面**弹的那几扇訊息框（1500 ms）
+  const cardNotice = cardEffectNotice(state, cardId, target, r.taxed);
+  if (cardNotice !== null) next = appendFreshNotice(next, cardNotice);
   // 拍賣卡：把竞价挂成待决交互。★ Q-AUC-1 之后竞价循环归 core ——
   //   挂出来时就把座位表、心理价位、现价、轮到谁一并建好（见 openAuction）。
   if (r.followUp !== null) {
@@ -4869,6 +4938,42 @@ function playCard(
   // ★ 請神符把神明**附身**上去那一刻的發威 —— 与落点那条走同一个助手
   //   （原版两条都汇到 `_rich4_attach_god` 的跳表，见 rules/god-power.ts）
   return applyGodPowerOnAttach(state, next, topo);
+}
+
+/**
+ * 卡片函数里面那几扇訊息框（都在效果落地的同一段里，1500 ms）：
+ * - 搶奪卡（13）**电脑**抢到一张卡：「搶得%s的\n\n%s」`[受害者, 卡名]`
+ *   @source `0x00441942 cmp [+0x15],1 / jne 0x441a5d`（电脑支）→ `0x00441a95 push 0x4652f8` → `0x00441ab1 call 0x440cac`；
+ *   真人支在选牌窗里挑，不弹（`0x00441a5b jmp 0x441ab9`）。`%s`#2 取的是**卡片表**（`[esi*8+0x47fdea]`），
+ *   ⇒ 只在抢到**卡**时弹（抢道具那一路原版读出来的是卡片表外的指针，不复刻）。
+ * - 紅卡（24）/ 黑卡（25）**电脑**：「對%s使用%s！」`[股名, 卡名]`
+ *   @source 紅 `0x00444f6a cmp [+0x15],1 / je`（真人走股市屏）→ `0x00444fbf push 0x4653ae` → `0x00444fdb`；
+ *           黑 `0x00445138` → `0x00445154`
+ * - 查稅卡（26）真的收到税：「抽取%s\n\n%d元稅金！」`[被查的人, 税额]`（真人电脑都弹）
+ *   @source `0x00445375 cmp ebx, 当前 / je 跳过` → `0x004453d3 push 0x4653c0` → `0x004453ef call 0x440cac`
+ */
+function cardEffectNotice(
+  state: GameState,
+  cardId: number,
+  target: CardTarget,
+  taxed: { victim: number; amount: number } | undefined,
+): NoticeHint | null {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return null;
+  const ai = isAiControlled(me);
+  if (cardId === 13 && ai && target.kind === 'player' && target.steal?.kind === 'card') {
+    return { key: 'card.robbed', args: [playerName(state, target.index), cardNameOf(target.steal.id)] };
+  }
+  if ((cardId === 24 || cardId === 25) && ai && target.kind === 'stock') {
+    return {
+      key: 'card.useOnStock',
+      args: [stocksOfMap(state.globalMapId)[target.index]?.name ?? '', cardNameOf(cardId)],
+    };
+  }
+  if (cardId === 26 && taxed !== undefined) {
+    return { key: 'card.taxed', args: [playerName(state, taxed.victim), taxed.amount] };
+  }
+  return null;
 }
 
 /**
@@ -4910,7 +5015,7 @@ function reownCommercial(state: GameState, stockIndex: number, buyer: number): G
  *   4 人的持股排名（企业记录 +0x1c..+0x1f），据此决定企业归谁。
  *   那一段尚未实现，见 known-deviations 的 Q-COM-1。
  */
-function buySharesFromCommercial(state: GameState, shares: number): GameState {
+function buySharesFromCommercial(state: GameState, shares: number, topo: MapTopology): GameState {
   const pending = state.pending;
   if (pending === null || pending.kind !== 'buyShares') return state;
   if (!Number.isInteger(shares) || shares <= 0) return state;
@@ -4936,7 +5041,20 @@ function buySharesFromCommercial(state: GameState, shares: number): GameState {
     commercialShares,
     pending: null,
   };
-  return reownCommercial(next, pending.stock, state.currentPlayer);
+  const reowned = reownCommercial(next, pending.stock, state.currentPlayer);
+  // ★ 2026-09-23：認購之后**易主**（`0x428d2a` → `0x4294d5` 返回 1）就弹一扇：
+  //   門派（行業 0xc）「恭喜您成為幫主！」、其余「恭喜您獲得經營權！」（1500 ms）
+  //   @source `0x0041d289 cmp eax,1 / jne` → `0x0041d28e cmp byte [企業+0x1a], 0xc` →
+  //   `0x0041d299 push 0x463b94` / `0x0041d2a5 push 0x463ba5` → `0x0041d2aa call 0x440cac`
+  const cid = state.market.stocks[pending.stock]?.commercialIndex ?? pending.commercialId;
+  const before = state.commercialOwners[cid]?.owner ?? 0;
+  const after = reowned.commercialOwners[cid]?.owner ?? 0;
+  if (after === before) return reowned;
+  const type = topo.commercials?.find((x) => x.id === cid)?.type;
+  return appendFreshNotice(reowned, {
+    key: type === INDUSTRY.sect ? 'shares.becameBoss' : 'shares.becameChairman',
+    args: [],
+  });
 }
 
 /**
@@ -5485,6 +5603,10 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
   }
   // ★ 事件 8/9 尾巴的特別融資收回：`push 0 / call 0x436b0a`
   if (out.recallFinance) applied = sweepSpecialFinance(applied, topo);
+  // ★ 2026-09-23：生日收卡（电脑寿星）每收一张弹一扇「搶得%s的\n\n%s」（`fcn_0044192a` 电脑支 `0x00441ab1`）
+  for (const rb of out.robbed ?? []) {
+    applied = appendFreshNotice(applied, { key: 'card.robbed', args: [playerName(applied, rb.victim), cardNameOf(rb.card)] });
+  }
   // ★ 保險理賠的三处命運调用点：坐牢/住院走 send_to_*（0x0043d749 / 0x0043edf8）；
   //   「冒貸」（id 2，0x0044c218）与**命運罰款共用尾巴**（0x0044cf11）直接赔金额。
   // ★★ 第十四份試玩回報 #1：`0x0044cf11` 不只「行人闖越馬路罰款」（14）一条 ——
@@ -6057,7 +6179,21 @@ function bankAtmEntry(state: GameState, landing: boolean): GameState {
  */
 function enterBankRoom(state: GameState, topo: MapTopology): GameState {
   if (state.phase === 'gameOver') return { ...state, pending: null };
-  return { ...state, pending: pendingForSpecial(state, topo, SPECIAL_KIND.BANK) };
+  const opened: GameState = { ...state, pending: pendingForSpecial(state, topo, SPECIAL_KIND.BANK) };
+  // ★ 2026-09-23：貸款屏开窗那一拍（`0x405`）正暫停放款 ⇒ 先弹「銀行暫停放款\n\n還剩%d天！」，
+  //   **整扇右移 100**（`0x800005dc`），然后才是那一句招呼。只有**恰好**真人才开这扇窗
+  //   （`0x004366a3 cmp byte [+0x15], 1 / jne` 电脑支）。
+  //   @source `0x00435197 cmp byte [player+0x3c], 0 / je 0x435200` → `0x004351ce (+0x3c & 0x7f) + 1` →
+  //   `0x004351dc push 0x464ad5` → `0x004351ee push 0x800005dc` → `0x004351f8 call 0x440cac`
+  const me = opened.players[opened.currentPlayer];
+  if (opened.pending?.kind === 'bank' && me !== undefined && isPlainHuman(me) && me.bankFreezeDays !== 0) {
+    return appendFreshNotice(opened, {
+      key: 'bank.loanFrozen',
+      args: [displayRemainingDays(me.bankFreezeDays)],
+      shiftRight: true,
+    });
+  }
+  return opened;
 }
 
 /**
@@ -6228,6 +6364,11 @@ function sweepSpecialFinance(state: GameState, topo: MapTopology): GameState {
     if (i === chairman) continue;
     const p = s.players[i];
     if (p === undefined || !isAlive(p) || p.specialFinance === 0) continue;
+    // ★ 2026-09-23：每收回一位先弹两扇（各 1500 ms）：「銀行經營權易主！」→「%s\n\n強制償還%d元\n\n銀行特別融資！」
+    //   @source `0x00436cc6 push 0x464b9e` / `0x00436ccb call 0x440cac` →
+    //   `0x00436ce1 push 0x464baf`（`%s` = 那人、`%d` = 欠额 `[+0x28]`）/ `0x00436cfd call 0x440cac`
+    s = appendFreshNotice(s, { key: 'bank.chairmanChanged', args: [] });
+    s = appendFreshNotice(s, { key: 'bank.forcedSpecialRepay', args: [playerName(s, i), p.specialFinance] });
     const r = payFromBank(p, p.specialFinance);
     s = { ...s, players: s.players.map((q, k) => (k === i ? { ...r.player, specialFinance: 0 } : q)) };
     if (r.bankrupt) s = applyBankruptcy(s, i, topo);
@@ -7469,6 +7610,9 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
           }
         }
       } else {
+        // ★ 2026-09-23：真人先弹「%s\n\n請選擇欲加蓋地點」（`%s` = 企業名，1500 ms）再选地
+        //   @source 自己的建設公司 `0x0041aa3c cmp [+0x15],1` → `0x0041aa46 push 0x463a4a` → `0x0041aa62 call 0x440cac`
+        next = appendFreshNotice(next, { key: 'company.pickBuildSite', args: [c.name] });
         const choices = buildableEntities(next, topo, me, true);
         if (choices.length > 0) {
           return {
@@ -7494,6 +7638,11 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
   // ★ 第十四份：收費那一段可能停在真人那一问（免費卡 / 嫁禍卡）⇒ `chargeCompanyFee` 自己走到出口
   //   （認購那一问 `afterCompany`），这里直接交出去，别再往下盖掉它的 `pending`。
   let next: GameState = { ...state, rngState: rng.getState() };
+  // ★ 2026-09-23：航空公司转盘转到 0 ⇒ 弹「不用出國！」（1500 ms），之后没有收費那一段
+  //   @source `0x0041abd4 test eax,eax / je 0x41abe6` → `0x0041abe6 push 0x5dc / push 0x463a5f / call 0x440cac`
+  if (fee.kind === 'none' && c.type === INDUSTRY.airline) {
+    next = appendFreshNotice(next, { key: 'company.noTravel', args: [] });
+  }
   if (fee.kind === 'fee') {
     return chargeCompanyFee(next, topo, me, c, fee.amount, fee.days ?? 0);
   } else if (fee.kind === 'insurance') {
@@ -7523,6 +7672,8 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
         }
       }
     } else {
+      // ★ 2026-09-23：别人的建設公司同一句（`0x0041acd1 cmp [+0x15],1` → `0x0041acdb push 0x463a4a` → `0x0041acf7`）
+      next = appendFreshNotice(next, { key: 'company.pickBuildSite', args: [c.name] });
       const choices = buildableEntities(next, topo, me, true);
       if (choices.length > 0) {
         return {
@@ -7558,6 +7709,7 @@ function tickOwnResearch(state: GameState, topo: MapTopology): GameState {
   const project = [...state.facilityResearchProject];
   const days = [...state.facilityResearchDays];
   let touched = false;
+  const done: NoticeHint[] = [];
   for (const f of topo.facilities ?? []) {
     if ((state.facilityType[f.id] ?? 0) !== FACILITY_TYPE.lab) continue;
     if ((state.facilityOwner[f.id] ?? 0) !== me + 1) continue;
@@ -7570,6 +7722,9 @@ function tickOwnResearch(state: GameState, topo: MapTopology): GameState {
     project[f.id] = r.next.project;
     days[f.id] = r.next.daysLeft;
     if (r.produced !== 0) {
+      // ★ 2026-09-23：先弹「%s開發完成！」（`%s` = 道具名 `[項目*8 + 0x47ff1a]`，1500 ms）再发道具
+      //   @source `0x0041cdea mov ebp,[eax*8+0x47ff1a]` → `0x0041cdf2 push 0x463b68` → `0x0041ce0e call 0x440cac`
+      done.push({ key: 'research.done', args: [toolNameOf(r.produced)] });
       // @source 0x0041ce25 give_tool —— 不查上限，給不出去就凭空消失（与搶奪卡同理）
       const g = giveTool(tools, toolStock, me, r.produced);
       tools = g.tools;
@@ -7577,7 +7732,9 @@ function tickOwnResearch(state: GameState, topo: MapTopology): GameState {
     }
   }
   if (!touched) return state;
-  return { ...state, tools, toolStock, facilityResearchProject: project, facilityResearchDays: days };
+  let next: GameState = { ...state, tools, toolStock, facilityResearchProject: project, facilityResearchDays: days };
+  for (const n of done) next = appendFreshNotice(next, n);
+  return next;
 }
 
 
@@ -7911,15 +8068,41 @@ function toolNameOf(toolId: number): string {
  * ```
  *   `%s`#1 = 物件名（`objectNameOf`，同一张 `0x47edaa` 表）、`%s`#2 = 主人名。
  *
- * ⚠️ **只接 loot**：同一支函数里另外那几句（`偷取%s\n\n%d點點券！`、
- *   `奪取%s%s！`、`強盜搶奪銀行…`、`勒索%s…`、`取走過路費/盈餘…`）**不在
- *   `messages.ts` 里**，本次没有加（不在任务范围内）—— 不要在这里现写中文。
+ * ★ 2026-09-23（框模板反查）：同一支函数里另外那六句也接上了（格式串在 `NOTICE_BOX`）——
+ *   每句都在对应的 `pay_money` / 转移**之前**弹，所以名字、金额取的都是事件里记的那一笔：
+ *   · 偷點券 `0x0041c239 push 0x463ae4` + `push 0x3e8`（**1000 ms**）`[受害者, 點數]`；
+ *   · 奪卡 `0x0041c2ce push 0x463af7` + `push 0x3e8`（1000 ms）`[受害者, 卡名 [eax*8+0x47fdea]]`；
+ *   · 搶銀行 `0x0041c3f9 push 0x463b02` + `push 0x7d0`（**2000 ms**）`[各笔之和, 主人]` —— 循环走完才弹；
+ *   · 勒索 `0x0041c552` / `0x0041c676 push 0x463b21`（1500 ms）`[地主, 金额]`；
+ *   · 間諜取過路費 `0x0041c5b9` / `0x0041c6d2 push 0x463b36`、取盈餘 `0x0041c75c push 0x463b49`（1500 ms）`[金额]`。
  */
-function npcNotices(state: GameState, events: readonly NpcEvent[], owner: number): NoticeHint[] {
+export function npcNotices(state: GameState, events: readonly NpcEvent[], owner: number): NoticeHint[] {
   const out: NoticeHint[] = [];
   for (const e of events) {
-    if (e.kind === 'loot') {
-      out.push({ key: 'thief.loot', args: [objectNameOf(e.objectType), playerName(state, owner)] });
+    switch (e.kind) {
+      case 'loot':
+        out.push({ key: 'thief.loot', args: [objectNameOf(e.objectType), playerName(state, owner)] });
+        break;
+      case 'points':
+        out.push({ key: 'npc.stealPoints', args: [playerName(state, e.victim), e.amount], holdMs: 0x3e8 });
+        break;
+      case 'card':
+        out.push({ key: 'npc.stealCard', args: [playerName(state, e.victim), cardNameOf(e.card)], holdMs: 0x3e8 });
+        break;
+      case 'robBankDone':
+        out.push({ key: 'npc.robBank', args: [e.total, playerName(state, owner)], holdMs: 0x7d0 });
+        break;
+      case 'protection':
+        out.push({ key: 'npc.protection', args: [playerName(state, e.landlord), e.amount] });
+        break;
+      case 'toll':
+        out.push({ key: 'npc.spyToll', args: [e.amount] });
+        break;
+      case 'surplus':
+        out.push({ key: 'npc.spySurplus', args: [e.amount] });
+        break;
+      default:
+        break;
     }
   }
   return out;

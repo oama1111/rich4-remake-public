@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
+import { CARDS } from '@rich4/data';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { reduce } from './reduce.ts';
@@ -280,6 +281,23 @@ describe('★ 命運 5 生日收卡：真人寿星**分帧**问每一位（T-055
     expect(s2.players[1]!.cards).toEqual([3, 7]);
     expect(s2.players[2]!.cards).toEqual([9]);
     expect(s2.players[0]!.cards).toEqual([]);
+  });
+
+  run('★ 2026-09-23：**电脑**寿星当场收完，每收一张弹一扇「搶得%s的\\n\\n%s」（`fcn_0044192a` 电脑支 0x00441ab1）', () => {
+    const { topo, s } = birthdayScene();
+    if (s === null) return;
+    const ai: GameState = { ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, whoPlays: 2 } : p)) };
+    const s2 = reduce(ai, { type: 'settle' }, topo);
+    expect(s2.pending?.kind).not.toBe('birthdayCard');
+    const got = s2.players[0]!.cards;
+    const robbed = s2.notices.filter((n) => n.key === 'card.robbed');
+    expect(robbed).toHaveLength(got.length);
+    expect(got.length).toBeGreaterThan(0);
+    const names = ['沙隆巴斯', '忍太郎'];
+    robbed.forEach((n, k) => {
+      expect(n.args[0]).toBe(names[k]);
+      expect(n.args[1]).toBe(CARDS[got[k]! - 1]!.name);
+    });
   });
 
   run('★ 答一位走一位：挑中的牌进寿星手里，全答完 pending 清空', () => {

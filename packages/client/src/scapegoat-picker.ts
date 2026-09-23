@@ -28,7 +28,7 @@
  */
 
 import type { Sprite } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { BOX_TEXT_STYLE, drawGdiText } from './font.ts';
 import { PASSIVE_CARD_TEXT } from '@rich4/data';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
@@ -132,14 +132,10 @@ export const scapegoatPickerScreen: UiScreen = {
     const sprite = env.sprite as unknown as PickerSprite;
     const skin = sprite(SCAPEGOAT_PICKER_ARCHIVE, SCAPEGOAT_SKIN.resource, SCAPEGOAT_SKIN.chunk, true);
     if (skin !== null) ctx.drawImage(skin.bitmap, SCAPEGOAT_SKIN.x - skin.anchorX, SCAPEGOAT_SKIN.y - skin.anchorY);
-    ctx.font = `16px ${FONT_FAMILY}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#101010';
-    ctx.strokeText(PASSIVE_CARD_TEXT.scapegoatPick.text, SCAPEGOAT_SKIN.x, SCAPEGOAT_SKIN.y);
-    ctx.fillStyle = '#f0f0f0';
-    ctx.fillText(PASSIVE_CARD_TEXT.scapegoatPick.text, SCAPEGOAT_SKIN.x, SCAPEGOAT_SKIN.y);
+    // `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` @source 0x00440f10 —— 粗体 + 右下 1 px 阴影（`font.ts`）
+    drawGdiText(ctx, PASSIVE_CARD_TEXT.scapegoatPick.text, SCAPEGOAT_SKIN.x, SCAPEGOAT_SKIN.y, BOX_TEXT_STYLE);
 
     const n = p.candidates.length;
     const frame = frameOf(env, n);

@@ -55,7 +55,7 @@ import type { PendingInteraction } from '@rich4/core';
 import { RESEARCH_MIN_PROJECT, RESEARCH_MAX_PROJECT, researchTool } from '@rich4/core';
 import { TOOLS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { drawGdiText } from './font.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 立绘板与五格条所在的档案 @source `read_mkf(Data.mkf, 0x205)`（VA 0x00408072 尾）*/
@@ -388,14 +388,10 @@ function researchText(
   x: number,
   y: number,
 ): void {
-  ctx.font = `${RESEARCH_FONT_SIZE}px ${FONT_FAMILY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = RESEARCH_OUTLINE;
-  ctx.strokeText(text, x, y);
-  ctx.fillStyle = RESEARCH_FILL;
-  ctx.fillText(text, x, y);
+  // `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` @source 0x004410fd —— 粗体 + 右下 1 px 阴影（`font.ts`）
+  drawGdiText(ctx, text, x, y, { size: RESEARCH_FONT_SIZE, color: RESEARCH_FILL, color2: RESEARCH_OUTLINE, flags: 3, spacing: 1 });
 }
 
 /**

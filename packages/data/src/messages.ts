@@ -539,6 +539,82 @@ export function objectNameOf(type: number): string {
   return OBJECT_NAMES[type - 13]?.text ?? '';
 }
 
+/**
+ * ★ 2026-09-23 框模板反查补齐的訊息框（`0x440cac` 的 104 个调用点里先前一扇都没弹的那些）。
+ * 每条的 VA = 推串点压的那个串；调用点 / 时长见 `@rich4/core` 的 `NoticeKey` 各条。
+ */
+export const NOTICE_BOX = {
+  /** 小偷偷點券：`%s` 受害者、`%d` 點數（0x0041c239，1000 ms）*/
+  stealPoints: t('偷取%s\n\n%d點點券！', 0x463ae4),
+  /** 惡人奪卡：`%s` 受害者、`%s` 卡名（0x0041c2ce，1000 ms）*/
+  stealCard: t('奪取%s%s！', 0x463af7),
+  /** 強盜搶銀行：`%d` 总得款、`%s` 主人（0x0041c3f9，2000 ms）*/
+  robBank: t('強盜搶奪銀行\n\n得款%d元\n\n給%s！', 0x463b02),
+  /** 流氓勒索：`%s` 地主、`%d` 保護費（0x0041c552 / 0x0041c676）*/
+  protection: t('勒索%s\n\n%d元保護費！', 0x463b21),
+  /** 間諜取走過路費：`%d`（0x0041c5b9 / 0x0041c6d2）*/
+  spyToll: t('取走過路費\n\n%d元！', 0x463b36),
+  /** 間諜取走盈餘：`%d`（0x0041c75c）*/
+  spySurplus: t('取走盈餘\n\n%d元！', 0x463b49),
+  /** 航空公司轉盤轉到 0（0x0041abeb）*/
+  noTravel: t('不用出國！', 0x463a5f),
+  /** 研究所研發完成：`%s` 道具名（0x0041cdf2）*/
+  researchDone: t('%s開發完成！', 0x463b68),
+  /** 認購后成为門派幫主（0x0041d299）*/
+  becameBoss: t('恭喜您成為幫主！', 0x463b94),
+  /** 認購后获得经营权（0x0041d2a5）*/
+  becameChairman: t('恭喜您獲得經營權！', 0x463ba5),
+  /** 电脑买股：`%s` 玩家、`%s` 股名、`%d` 张数（0x0042c770）*/
+  aiBuyStock: t('%s\n\n買進%s%d張', 0x464186),
+  /** 电脑卖股（0x0042d076）*/
+  aiSellStock: t('%s\n\n賣出%s%d張', 0x4641cc),
+  /** 股市柜台：漲停不能买（0x0042af1d，`0x800003e8` = 右移 100、1000 ms）*/
+  limitUpNoBuy: t('漲停無法買進！', 0x464088),
+  /** 股市柜台：跌停不能卖（0x0042b050，同上）*/
+  limitDownNoSell: t('跌停無法賣出！', 0x464097),
+  /** 貸款屏进门时正暫停放款（0x004351dc，`0x800005dc` = 右移 100）*/
+  loanFrozen: t('銀行暫停放款\n\n還剩%d天！', 0x464ad5),
+  /** 电脑还贷（0x0043685b）*/
+  aiRepayLoan: t('%s\n\n償還銀行貸款\n\n%d元', 0x464af5),
+  /** 电脑贷款（0x0043692f）*/
+  aiBorrow: t('%s\n\n向銀行貸款\n\n%d元', 0x464b0c),
+  /** 贷款到期（0x00436aa0）*/
+  loanDueForced: t('貸款到期日\n\n強制執行！', 0x464b2c),
+  /** 距到期 1 天（0x00436ae4）*/
+  loanDueOneDay: t('距貸款到期日\n\n還剩１天！', 0x464b43),
+  /** 距到期 2 天（0x00436afa）*/
+  loanDueTwoDays: t('距貸款到期日\n\n還剩２天！', 0x464b5c),
+  /** 銀行準備金不足、董事長垫付：`%d` 缺口、`%s` 董事長（0x00436c03，2500 ms）*/
+  reserveShortfall: t('銀行資金準備\n\n不足%d元\n\n由經營者%s墊付！', 0x464b75),
+  /** 特別融資收回之前那一句（0x00436cc6）*/
+  bankChairmanChanged: t('銀行經營權易主！', 0x464b9e),
+  /** 特別融資强制收回：`%s` 玩家、`%d` 金额（0x00436ce1）*/
+  forcedSpecialRepay: t('%s\n\n強制償還%d元\n\n銀行特別融資！', 0x464baf),
+  /** 醫院那一处「保釋%s」（監獄那一处是 `BAIL.bailWho` 0x465169）（0x0043ebe0）*/
+  bailWhoHospital: t('保釋%s', 0x465207),
+  /** 搶奪卡（电脑）：`%s` 受害者、`%s` 卡名（0x00441a95）*/
+  robbed: t('搶得%s的\n\n%s', 0x4652f8),
+  /** 購地卡现金不够（0x004425f6）*/
+  cardCashShort: t('您的現金不足！', 0x46530c),
+  /** 紅卡 / 黑卡（电脑）：`%s` 股名、`%s` 卡名（0x00444fbf / 0x00445138）*/
+  useOnStock: t('對%s使用%s！', 0x4653ae),
+  /** 查稅卡：`%s` 被查的人、`%d` 税金（0x004453d3）*/
+  taxed: t('抽取%s\n\n%d元稅金！', 0x4653c0),
+  /** 电脑用道具：`%s` 道具名（0x00448054）*/
+  aiUseTool: t('使用%s', 0x4653e5),
+} as const;
+
+/**
+ * ★ 2026-09-23：監獄 / 醫院保釋屏里那位**柜台人员**的字框台词（`fcn_0044ec30` 开框 + `fcn_0044ecb6` 写字）。
+ * 串头 `#NNNN` 是语音号（`voice-code.ts`）。
+ */
+export const BAIL_CLERK_TEXT = {
+  /** 監獄：点了付不起的那一格（`0x0043cfbd push 0x46514e`）*/
+  lowPoints: t('#0002抱歉！\n你的點數不足！', 0x46514e),
+  /** 醫院：开屏那一拍（`0x0043db48 mov edx,[0x475cc4]` → 0x465170）*/
+  hospitalHello: t('#0127您好！請問您要替誰\n辦理出院手續？', 0x465170),
+} as const;
+
 /** 把 `%s` / `%d` 依次替换掉 —— 原版用的是 C 的 sprintf，这里只做它用到的那两种 */
 export function formatOriginal(fmt: string, ...args: (string | number)[]): string {
   let i = 0;
@@ -570,6 +646,8 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(BLESSING),
   ...Object.values(PASSIVE_CARD_TEXT),
   ...Object.values(INSURANCE),
+  ...Object.values(NOTICE_BOX),
+  ...Object.values(BAIL_CLERK_TEXT),
   ...GOD_NAMES,
   ...OBJECT_NAMES,
 ];

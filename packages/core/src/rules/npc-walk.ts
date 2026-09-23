@@ -87,6 +87,12 @@ export type NpcEvent =
   | { kind: 'points'; victim: number; amount: number }
   | { kind: 'card'; victim: number; card: number }
   | { kind: 'robBank'; from: number; amount: number }
+  /**
+   * 強盜搶完银行之后那一扇框「強盜搶奪銀行\n\n得款%d元\n\n給%s！」—— 纯表现，不动状态。
+   * @source 0x0041c3ad 起：循环（`0x0041c34f`..`0x0041c3ab`，`edi += 每笔`）走完**无条件**弹框（`0x0041c415`），
+   *   得款 = `edi`（各笔之和，可以是 0）。
+   */
+  | { kind: 'robBankDone'; total: number }
   | { kind: 'protection'; landlord: number; amount: number }
   /** 間諜取走過路費 —— 与 protection 同一入账口（`push 0` → 進存款） */
   | { kind: 'toll'; landlord: number; amount: number }
@@ -257,9 +263,12 @@ export function runNpc(
     // ── ④ 強盜踩銀行 → 抢所有对手的存款 ──
     // @source 0x0041c330 `cmp [0x49910c], 5` + `cmp 格子, 0xe`
     if (actor === NPC.robber && kind === SPECIAL_KIND.BANK) {
+      let total = 0;
       for (const r of bankRobbery(state.players, owner, isAlive)) {
         events.push({ kind: 'robBank', from: r.from, amount: r.amount });
+        total += r.amount;
       }
+      events.push({ kind: 'robBankDone', total });
     }
 
     // ── ⑤ 流氓踩到别人的地產／設施 → 勒索保護費 ──
@@ -470,6 +479,9 @@ export function applyNpcEvents(
       }
       case 'home':
         // 占用表由调用方改 —— 它要同时动 prisonOccupancy / hospitalOccupancy
+        break;
+      case 'robBankDone':
+        // 只是那一扇框（`npcNotices`），不动状态
         break;
     }
   }

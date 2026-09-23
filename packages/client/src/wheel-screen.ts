@@ -103,7 +103,7 @@ import {
   type GameState,
   type MapTopology,
 } from '@rich4/core';
-import { FONT_FAMILY } from './font.ts';
+import { drawGdiText } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv, UiKeyEvent} from './ui-screen.ts';
 
@@ -240,8 +240,6 @@ export const WHEEL_TEXT = {
   lineGap: 6,
 } as const;
 
-/** 舞台字體（與其他屏同一套 CJK 字體棧）*/
-const WHEEL_FONT = FONT_FAMILY;
 
 // ============================================================
 //  幀序（純函式，單測釘住）
@@ -642,17 +640,19 @@ export function drawWheelScreen(
   const lines = d.text.split('\n');
   if (lines.length === 0) return;
   const lh = WHEEL_TEXT.size + WHEEL_TEXT.lineGap;
-  ctx.font = `${WHEEL_TEXT.size}px ${WHEEL_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   lines.forEach((line, i) => {
     if (line === '') return;
     const y = WHEEL_TEXT_AT.y + (i - (lines.length - 1) / 2) * lh;
-    // 陰影：原地往右下 1px 再畫一遍 @source 0x0044fd54 起那三趟 DrawTextA
-    ctx.fillStyle = WHEEL_TEXT.shadow;
-    ctx.fillText(line, WHEEL_TEXT_AT.x + 1, y + 1);
-    ctx.fillStyle = WHEEL_TEXT.fill;
-    ctx.fillText(line, WHEEL_TEXT_AT.x, y);
+    // 粗体 + 右下 1 px 阴影（`create_font(…, 3, 1)` 的 bit1 / bit0，@source 0x0044fa3f / 0x0044fc31）
+    drawGdiText(ctx, line, WHEEL_TEXT_AT.x, y, {
+      size: WHEEL_TEXT.size,
+      color: WHEEL_TEXT.fill,
+      color2: WHEEL_TEXT.shadow,
+      flags: 3,
+      spacing: 1,
+    });
   });
 }
 

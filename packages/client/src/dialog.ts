@@ -52,7 +52,7 @@ import { AMOUNT_KEY_RECTS, AMOUNT_WINDOW, amountSlotOfId } from './amount-keys.t
 import { drawAmountWindow } from './amount-window.ts';
 import { boardToScreen, pointInGo, type GoPos } from './go-button.ts';
 import { LAYOUT } from './stage.ts';
-import { FONT_FAMILY } from './font.ts';
+import { BOX_TEXT_STYLE, FONT_FAMILY, drawGdiText, gdiFont } from './font.ts';
 
 /** 框心（棋盘区坐标）—— 由屏幕坐标换算，见 gameui.ts */
 export const DIALOG_ANCHOR = toBoard(DIALOG_ANCHOR_SCREEN);
@@ -94,16 +94,16 @@ const BTN_MIN_W = 56;
 
 const TITLE_SIZE = 16;
 /**
- * 框里正文 16 号、`#f0f0f0` 填充 + `#101010` 描边。
+ * 框里正文 16 号、`#f0f0f0`、**粗体 + 右下 1 px `#101010` 阴影**。
  * @source 两扇框同一句 `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`：
- *   询问框 0x00440baf..0x00440bbf、訊息框 0x00440d06..0x00440d16
- *   （flag 3 = 带描边，与 `ai-settings.ts` 的 `set_font(…, 3, 1)` 同一口径）
+ *   询问框 0x00440baf..0x00440bbf、訊息框 0x00440d06..0x00440d16。
+ *   ★ 2026-09-23 订正：第 4 参 3 = bit0 阴影 + bit1 粗体（不是「描边」，描边是 bit2），
+ *   逐位取证见 `font.ts` 的 `GdiTextStyle`；画法统一走 `drawGdiText(BOX_TEXT_STYLE)`。
  */
-const BODY_SIZE = 0x10;
-const BODY_FILL = '#f0f0f0';
-const BODY_OUTLINE = '#101010';
-const FONT_TITLE = `bold ${TITLE_SIZE}px ${FONT_FAMILY}`;
-const FONT_BODY = `${BODY_SIZE}px ${FONT_FAMILY}`;
+const BODY_SIZE = BOX_TEXT_STYLE.size;
+const BODY_FILL = BOX_TEXT_STYLE.color;
+/** 排版量宽用的字（与画的时候同一套：粗体）*/
+const FONT_BODY = gdiFont(BOX_TEXT_STYLE);
 /** 自排按钮列的字（⚠️ 我们的做法，原版那几屏各有专屏）—— 保持原先的 14 号 */
 const FONT_BUTTON = `14px ${FONT_FAMILY}`;
 
@@ -623,18 +623,14 @@ export function drawDialog(
   let row = 0;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  // 先描边（`#101010`）再填字
-  const line = (text: string, font: string, fill: string): void => {
+  // ★ 2026-09-23 订正：字效照 `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` 的 **3 = 粗体 + 右下 1 px 阴影**
+  //   （`font.ts` 的 `drawGdiText`，逐位读法见那里的取证块）—— 先前是「描 3 px 黑边、不加粗」。
+  const line = (text: string, fill: string): void => {
     const y = mids[row++] ?? DIALOG_ANCHOR.y;
-    ctx.font = font;
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = BODY_OUTLINE;
-    ctx.strokeText(text, cx, y);
-    ctx.fillStyle = fill;
-    ctx.fillText(text, cx, y);
+    drawGdiText(ctx, text, cx, y, { ...BOX_TEXT_STYLE, color: fill });
   };
-  if (l.title !== '') line(l.title, FONT_TITLE, '#ffe8a5');
-  for (const t of l.lines) line(t, FONT_BODY, BODY_FILL);
+  if (l.title !== '') line(l.title, '#ffe8a5');
+  for (const t of l.lines) line(t, BODY_FILL);
 
   // ——— 按钮 ———
   if (l.yesNo) {

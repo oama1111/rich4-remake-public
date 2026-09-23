@@ -573,6 +573,14 @@ export interface NoticeHint {
    *   收費那一段里的被动卡要排在收費框之后、死神框之前，所以跟着訊息框排队。文字 = `key` 的格式串。
    */
   card?: number;
+  /**
+   * ★ 2026-09-23：`0x440cac` 的时长参数带 **bit31**（`0x80000000 | ms`）—— 框整体**右移 100**。
+   * @source `0x00440cef test esi, 0x80000000 / je` → `0x00440cf7 and esi, 0x7fffffff` →
+   *   `0x00440cfd add [esp], 0x64` / `0x00440d01 add [esp+8], 0x64`（x0 / x1 各 +100，锚点跟着走）。
+   *   全 exe 只有三处带它：股市柜台漲停 / 跌停（`0x0042af18` / `0x0042b04b push 0x800003e8`）
+   *   与貸款屏进门的暫停放款（`0x004351ee push 0x800005dc`）。
+   */
+  shiftRight?: boolean;
 }
 
 /**
@@ -733,7 +741,62 @@ export type NoticeKey =
   /** ★ 第十四份：嫁禍卡亮牌「%s\n\n嫁禍卡生效！」（带 `card`）—— `args[0]` = 出牌者名 */
   | 'card.scapegoatOn'
   /** ★ 第十四份：电脑嫁禍之后「嫁禍給%s！」（`0x004449df`，1500 ms）—— `args[0]` = 替死鬼名 */
-  | 'card.scapegoatTo';
+  | 'card.scapegoatTo'
+  // ── ★ 2026-09-23 框模板反查补齐（格式串见 `@rich4/data` 的 `NOTICE_BOX`；时长缺席 = 1500）──
+  /** 惡人：小偷偷點券 `[受害者, 點數]`（0x0041c255，1000 ms）*/
+  | 'npc.stealPoints'
+  /** 惡人：奪卡 `[受害者, 卡名]`（0x0041c2ea，1000 ms）*/
+  | 'npc.stealCard'
+  /** 惡人：強盜搶銀行 `[总得款, 主人]`（0x0041c415，2000 ms）*/
+  | 'npc.robBank'
+  /** 惡人：流氓勒索 `[地主, 金额]`（0x0041c56e / 0x0041c692）*/
+  | 'npc.protection'
+  /** 惡人：間諜取走過路費 `[金额]`（0x0041c56e / 0x0041c692 的另一支）*/
+  | 'npc.spyToll'
+  /** 惡人：間諜取走盈餘 `[金额]`（0x0041c778）*/
+  | 'npc.spySurplus'
+  /** 航空公司轉盤 0「不用出國！」（0x0041abf0）*/
+  | 'company.noTravel'
+  /** 建設公司（真人）选地之前「%s\n\n請選擇欲加蓋地點」`[企業名]`（0x0041aa62 / 0x0041acf7）*/
+  | 'company.pickBuildSite'
+  /** 研究所研發完成 `[道具名]`（0x0041ce0e）*/
+  | 'research.done'
+  /** 認購之后易主：門派「恭喜您成為幫主！」/ 其余「恭喜您獲得經營權！」（0x0041d2aa）*/
+  | 'shares.becameBoss'
+  | 'shares.becameChairman'
+  /** 电脑买 / 卖股 `[玩家, 股名, 张数]`（0x0042c78c / 0x0042d092）*/
+  | 'stock.aiBuy'
+  | 'stock.aiSell'
+  /**
+   * 股市柜台（客户端自己弹，core 不产出）：漲停不能买 / 跌停不能卖
+   * （`0x0042af18` / `0x0042b04b push 0x800003e8` —— **1000 ms、右移 100**）
+   */
+  | 'stock.limitUpNoBuy'
+  | 'stock.limitDownNoSell'
+  /** 貸款屏进门时正暫停放款 `[还剩天数]`（0x004351f8，**右移 100**）*/
+  | 'bank.loanFrozen'
+  /** 电脑贷款 `[玩家, 金额]`（0x0043694b）*/
+  | 'bank.aiBorrow'
+  /** 銀行準備金不足、董事長垫付 `[缺口, 董事長]`（0x00436c1f，2500 ms）*/
+  | 'bank.reserveShortfall'
+  /** 特別融資收回：先「銀行經營權易主！」（0x00436ccb），再 `[玩家, 金额]`（0x00436cfd）*/
+  | 'bank.chairmanChanged'
+  | 'bank.forcedSpecialRepay'
+  /** 电脑保釋 `[被保的人]`：監獄 0x0043d550 / 醫院 0x0043ebfc */
+  | 'bail.prison'
+  | 'bail.hospital'
+  /** 自己的地升级但现金不够「您的現金不足！」（0x00419a5d）*/
+  | 'land.cashShort'
+  /** 購地卡现金不够「您的現金不足！」（0x004425fb）*/
+  | 'card.cashShort'
+  /** 搶奪卡（电脑）/ 命運生日（电脑寿星）`[受害者, 卡名]`（0x00441ab1）*/
+  | 'card.robbed'
+  /** 紅卡 / 黑卡（电脑）`[股名, 卡名]`（0x00444fdb / 0x00445154）*/
+  | 'card.useOnStock'
+  /** 查稅卡 `[被查的人, 税金]`（0x004453ef）*/
+  | 'card.taxed'
+  /** 电脑用道具 `[道具名]`（0x00448070）*/
+  | 'tool.aiUse';
 
 /**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。

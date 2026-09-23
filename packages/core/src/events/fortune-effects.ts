@@ -295,6 +295,12 @@ export interface FortuneEffectResult {
    *   **函数体内**）关谁赔谁，与新聞 29 的 `chairmanPrison.victim` 同一口径。
    */
   fortuneVictim: number | null;
+  /**
+   * ★ 2026-09-23：命運 5「生日收卡」**电脑寿星**当场收的每一张（按收的顺序）——
+   *   `fcn_0044192a` 电脑支每收一张弹一扇「搶得%s的\n\n%s」（`0x00441ab1`，1500 ms），调用方据此弹框。
+   *   其余事件为 `undefined`。
+   */
+  robbed?: { victim: number; card: number }[];
 }
 
 /**
@@ -567,6 +573,7 @@ export function applyFortuneEffect(
     if (rng === undefined) return { ...base, unimplemented: true };
     const next = [...players];
     let taken = 0;
+    const robbed: { victim: number; card: number }[] = [];
     for (let i = 0; i < next.length; i++) {
       if (i === ctx.currentPlayer) continue;
       const other = next[i];
@@ -578,9 +585,10 @@ export function applyFortuneEffect(
       next[i] = { ...other, cards: hand };
       const me = next[ctx.currentPlayer];
       if (me !== undefined) next[ctx.currentPlayer] = giveCard(me, card);
+      robbed.push({ victim: i, card });
       taken++;
     }
-    return { ...base, players: next, amount: taken };
+    return { ...base, players: next, amount: taken, robbed };
   }
 
   // ── 命運 6/7：強迫出國觀光 / 被外星人綁架 ───────────────────────

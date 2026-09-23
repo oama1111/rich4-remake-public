@@ -603,6 +603,8 @@ describe('★ 研究所：选項目 → 5 天 → 道具到手', () => {
     s = reduce({ ...s, currentPlayer: owner, phase: 'turnStart' }, { type: 'startTurn' }, labTopo);
     expect(s.facilityResearchDays[LAB]).toBe(0);
     expect(toolCount(s.tools, owner, 11)).toBe(1); // 傳送機
+    // ★ 2026-09-23：到手那一拍先弹「%s開發完成！」（`0x0041ce0e`，道具名 `[項目*8+0x47ff1a]`）
+    expect(s.notices).toContainEqual({ key: 'research.done', args: ['傳送機'] });
   });
 
   it('★ 拆到等级不够，研發作废（不是暂停）', () => {

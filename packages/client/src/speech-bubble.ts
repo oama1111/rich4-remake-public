@@ -71,6 +71,7 @@ import {
 import type { Sprite } from './assets.ts';
 import { portraitResource } from './assets.ts';
 import type { SayEvent } from './speech.ts';
+import { drawGdiText, type GdiTextStyle } from './font.ts';
 
 /**
  * 取图出口 —— 与 `main.ts` 的 `spriteNow` 同形。
@@ -128,6 +129,14 @@ export const SPEECH_TEXT_FLAG = 5;
 
 /** 字幕的排版：字号 / 行距（原版 `_rich4_create_font(0x10, 0x101010, …)`，16 像素高）*/
 export const SPEECH_TEXT_FONT_SIZE = 0x10;
+/** 字幕的整套字效 @source 0x0044efd2 `create_font(0x10, 0x101010, 0, 2, 1)`：深色、粗体、无阴影 */
+export const SPEECH_TEXT_STYLE: GdiTextStyle = {
+  size: SPEECH_TEXT_FONT_SIZE,
+  color: '#101010',
+  color2: '#000000',
+  flags: 2,
+  spacing: 1,
+};
 export const SPEECH_TEXT_LINE_HEIGHT = 0x12;
 
 /**
@@ -633,7 +642,7 @@ function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number
  *   ④ ⑤ 排在它**之前** —— 故金貝貝那一句**照样有气泡与头像**（原版就是这么画的）。
  */
 export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
-  const { ctx, sprite, font } = env;
+  const { ctx, sprite } = env;
 
   // ── ④ 气泡底图（原版第 ④ 步，@source 0x0044f019..0x0044f033）──
   //
@@ -663,14 +672,12 @@ export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
     // `@DD` 那一支：只贴 `Data.mkf #0x207` 的表情图，**不画字** @source 0x0044f0b5..0x0044f0e0
     drawAnchored(ctx, sprite('Data.mkf', 0x207, b.emoji, true), b.emojiAt.x, b.emojiAt.y);
   } else if (b.lines.length > 0) {
-    // 白字 + 黑描边（原版 `_rich4_create_font(0x10, 0x101010, …)` + `draw_text(串,200,130,5)`）
+    // ★ 2026-09-23 订正：原版 `create_font(0x10, 0x101010, 0, 2, 1)`（@source 0x0044efc7..0x0044efd2）
+    //   = **深色 #101010 正文、粗体（bit1）、无阴影无描边**（bit0 / bit2 都没置）——
+    //   先前画成「白字 + 3 px 黑描边」。`draw_text(串, 200, 130, 5)` 不变。
     ctx.save();
-    ctx.font = font(SPEECH_TEXT_FONT_SIZE);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#101010';
-    ctx.fillStyle = '#ffffff';
     // ★★ W-64：`SPEECH_TEXT_FLAG = 5` = **垂直居中** —— `(200,130)` 是整块文字的
     //   垂直中心（原版 `0x0044ff35 mov eax,ebx / sar eax,1 / sub [esp+0xb0],eax`，
     //   `ebx` = 整块文字高 + 1；`sar` 是**算术**右移 ⇒ 用 `>> 1` 而不是 `/ 2`）。
@@ -680,8 +687,7 @@ export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
     for (let i = 0; i < b.lines.length; i++) {
       const y = top + i * SPEECH_TEXT_LINE_HEIGHT;
       const text = b.lines[i]!;
-      ctx.strokeText(text, b.textAt.x, y);
-      ctx.fillText(text, b.textAt.x, y);
+      drawGdiText(ctx, text, b.textAt.x, y, SPEECH_TEXT_STYLE);
     }
     ctx.restore();
   }

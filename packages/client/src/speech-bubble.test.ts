@@ -362,12 +362,12 @@ describe('drawSpeechBubble', () => {
       at(SPEECH_PANEL_AT.x, SPEECH_PANEL_AT.y, PANEL_SPRITE),
       at(SPEECH_PORTRAIT_AT.x, SPEECH_PORTRAIT_AT.y, PORTRAIT_SPRITE),
       'save',
-      'stroke:拿去啦，',
+      // ★ 2026-09-23：`create_font(0x10, 0x101010, 0, 2, 1)`（0x0044efd2）= 深色粗体、**无描边无阴影** ⇒ 每行只填一遍
       'fill:拿去啦，',
-      'stroke:不用找了～',
       'fill:不用找了～',
       'restore',
     ]);
+    expect(ctx.calls.some((c) => c.startsWith('stroke:'))).toBe(false);
     // 落点 = (220,130) / (170,130) —— 实测量出来的锚点已经是 0 相减后的结果
     expect(ctx.calls[0]).toBe('img:93,38');
     expect(ctx.calls[1]).toBe('img:150,113');
@@ -459,7 +459,7 @@ describe('drawSpeechBubble', () => {
     const b: SpeechBubble = { ...dummy(0), lines: Array.from({ length: n }, (_, i) => `L${i + 1}`) };
     drawSpeechBubble(b, env);
     const expectedTop = SPEECH_TEXT_AT.y - ((n * SPEECH_TEXT_LINE_HEIGHT) >> 1);
-    const fills = ctx.texts.filter((_t, i) => i % 2 === 1); // stroke/fill 成对，取 fill 那一半
+    const fills = ctx.texts; // 每行只填一遍（无描边，见上）
     expect(fills.map((t) => t.y)).toEqual(
       Array.from({ length: n }, (_, i) => expectedTop + i * SPEECH_TEXT_LINE_HEIGHT),
     );
@@ -474,7 +474,7 @@ describe('drawSpeechBubble', () => {
       mockSprites(env);
       const b: SpeechBubble = { ...dummy(0), lines: Array.from({ length: n }, (_, i) => `L${i + 1}`) };
       drawSpeechBubble(b, env);
-      const fills = ctx.texts.filter((_t, i) => i % 2 === 1);
+      const fills = ctx.texts;
       const top = fills[0]!.y;
       const bottom = fills[fills.length - 1]!.y + SPEECH_TEXT_LINE_HEIGHT;
       expect(Math.abs((top + bottom) / 2 - SPEECH_TEXT_AT.y)).toBeLessThanOrEqual(1);

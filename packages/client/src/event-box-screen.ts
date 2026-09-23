@@ -116,7 +116,7 @@
  *                                                       ;   flags=1 ⇒ [0x48c880]=0 ⇒ 点不掉
  * 0041b32b  call 0x45144f                               ;   在 (208,180) 播这段 FLIC
  * ; —— 第二段：亮牌 ——
- * 00441f91  create_font(0x10, 0xf0f0f0, 0x101010, 1, 3)
+ * 00441fa1  create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)       ; （2026-09-23 订正：先前把后两参抄反成 1, 3）
  * 00441fb1  add eax, 0x23a                              ; 卡面 = Data[卡号 + 0x23a]
  * 0044200a  fcn_00456418(表面, Data#517 图5, 0xdc, 0x81) ; 对话框皮落 (220,129)
  * 0044202b  rich4_draw_text(表面, 卡名, 0xdc, 0x81, 4)   ; flag 4 = 正中
@@ -193,7 +193,7 @@ import {
   type LoadedFlic,
   type Sprite,
 } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { drawGdiText } from './font.ts';
 import { portraitResource } from './assets.ts';
 import { DIALOG_SKIN_IMAGE, DIALOG_SKIN_RESOURCE } from './gameui.ts';
 import type { UiScreen, UiScreenEnv,
@@ -363,6 +363,12 @@ export const EVENT_FONT_SIZE = 0x1c;
 export const CARD_FONT_SIZE = 0x10;
 /** 事件文字颜色 @source 同上：填充 0xf0f0f0、阴影 0x101010 */
 export const EVENT_TEXT = { fill: '#f0f0f0', stroke: '#101010' } as const;
+/** 字效 3 = 粗体 + 右下 1 px 阴影 @source `push 3`：新聞 0x0044b747 / 命運 0x0044dbed / 亮牌 0x00441fa1 */
+export const EVENT_TEXT_FLAGS = 3;
+/** 新聞 / 命運的字距参数 = **0**（`push 0`）⇒ `SetTextCharacterExtra(−1)` @source 0x0044b747 / 0x0044dbed */
+export const EVENT_TEXT_SPACING = 0;
+/** 亮牌卡名的字距参数 = 1（不加）@source 0x00441fa1 `push 1` */
+export const CARD_TEXT_SPACING = 1;
 /**
  * 多行文字的行距 —— **近似**。
  *
@@ -617,6 +623,14 @@ export interface EventBoxText {
   baseline: CanvasTextBaseline;
   fill: string;
   stroke: string;
+  /**
+   * `create_font` 第 4 / 5 参（字效 / 字距）—— 画法见 `font.ts` 的 `drawGdiText`。
+   * ★ 2026-09-23：三处都是字效 **3 = 粗体 + 右下 1 px 阴影**（先前一律描 3 px 黑边）；
+   *   字距：亮牌 `0x00441fa1` 是 1（不加），新聞 `0x0044b747` / 命運 `0x0044dbed` 是 **0**
+   *   ⇒ `SetTextCharacterExtra(−1)`（`0x0044fb93 dec eax`），字挤 1 px。
+   */
+  flags: number;
+  spacing: number;
 }
 
 export type EventBoxItem = EventBoxBlit | EventBoxText;
@@ -662,6 +676,7 @@ function textItem(
   at: { readonly x: number; readonly y: number },
   size: number,
   centered: boolean,
+  spacing = EVENT_TEXT_SPACING,
 ): EventBoxText {
   return {
     kind: 'text',
@@ -672,6 +687,8 @@ function textItem(
     baseline: centered ? 'middle' : 'top',
     fill: EVENT_TEXT.fill,
     stroke: EVENT_TEXT.stroke,
+    flags: EVENT_TEXT_FLAGS,
+    spacing,
   };
 }
 
@@ -685,7 +702,7 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
         // 对话框皮（Data#517 图 5，249×170、锚点 (123,101)）→ 落点在 (97,28)
         blitSprite('Data.mkf', DIALOG_SKIN_RESOURCE, DIALOG_SKIN_IMAGE, true, CARD_SKIN_AT),
         // 卡名：flag 4 = 正中
-        textItem(v.cardName, CARD_NAME_AT, CARD_FONT_SIZE, true),
+        textItem(v.cardName, CARD_NAME_AT, CARD_FONT_SIZE, true, CARD_TEXT_SPACING),
         // 卡面：165×256 无头 RGB555（尺寸见 CARD_FACE_SIZE），**不透明**贴 (138,200)
         blitRaw('Data.mkf', CARD_FACE_BASE + v.id, CARD_FACE_SIZE, CARD_FACE_AT),
       ],
@@ -991,16 +1008,17 @@ function drawItem(
   }
   // `\n` 分段：原版交给 GDI 的 DrawTextA，行高见 `EVENT_TEXT_LINE_H`
   const lines = it.text.split('\n');
-  ctx.font = `${it.size}px ${FONT_FAMILY}`;
   ctx.textAlign = it.align;
   ctx.textBaseline = it.baseline;
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = it.stroke;
-  ctx.fillStyle = it.fill;
   for (let i = 0; i < lines.length; i++) {
     const y = it.at.y + i * EVENT_TEXT_LINE_H;
-    ctx.strokeText(lines[i]!, it.at.x, y);
-    ctx.fillText(lines[i]!, it.at.x, y);
+    drawGdiText(ctx, lines[i]!, it.at.x, y, {
+      size: it.size,
+      color: it.fill,
+      color2: it.stroke,
+      flags: it.flags,
+      spacing: it.spacing,
+    });
   }
 }
 
