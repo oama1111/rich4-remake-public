@@ -292,11 +292,15 @@ describe('★ 接线：非真人落銀行格时重分，真人不重分', () => 
     });
   }
 
-  it('电脑（who_plays = 2）：settle 时先重分，再开柜台', () => {
+  it('电脑（who_plays = 2）：settle 时先重分，再当场走貸款屏的电脑那一支（不挂柜台）', () => {
     const r = reduce(onBank(WHO_PLAYS_COMPUTER), { type: 'settle' }, topo);
     expect(r.players[0]?.cash).toBe(500);
     expect(r.players[0]?.moneyInBank).toBe(500);
-    expect(r.pending?.kind).toBe('bank');
+    // ★ 2026-09-23：电脑**不开**貸款屏 —— `0x004366a3 cmp byte [+0x15],1 / jne 0x4367ab` 那一支当场还 / 借，
+    //   不经 pending（先前这里断言「挂着 bank 柜台」，复述的是让 `decidePending` 代答的旧实现）。
+    //   这位 `loanRatio = 0`（`0x004368e1 test bh,bh / je`）⇒ 什么都不借。
+    expect(r.pending).toBeNull();
+    expect(r.players[0]?.loan).toBe(0);
   });
 
   it('真人（who_plays = 1）：原版走的是 ATM 对话框那一支，不重分', () => {

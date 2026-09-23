@@ -13,6 +13,7 @@ import type { GameState } from './types.ts';
 import { isAlive } from './types.ts';
 import { topoOf } from '../testing/factories.ts';
 import { WatcomRng } from '../rng/watcom.ts';
+import { dayNumberSince1998, weekdayOf } from '../places/calendar.ts';
 import { PASSIVE_CARDS } from '../cards/passive.ts';
 import { DISAPPEAR_REASON_ABDUCTED, FORTUNE_PAY_TAIL_IDS } from '../events/fortune-effects.ts';
 
@@ -1013,5 +1014,40 @@ describe('★★ 第十四份：新聞 8/9/10 受奖人的進帳台词提示（@
     expect(s2.lastEvent?.id).toBe(8);
     expect(s2.lastGainSays).toEqual([{ player: 1, amount: 10000 * s2.priceIndex }]);
     expect(s2.players[1]!.monthlyReceived - forced.players[1]!.monthlyReceived).toBe(10000 * s2.priceIndex);
+  });
+});
+
+/**
+ * ★ 命運「冒貸」也定还款日：`0x0044c1fa add [player+0x24], edx` 紧跟 `0x0044c201 call 0x433b7e`。
+ *   神明作廢（`0x0044c191 cmp eax,1 / jne` 那一支 `jmp 0x44c220`）碰不到这两句。
+ */
+describe('★ 命運「冒貸」→ 还款日 = 今天 + 0x5a 天（顺延）@source 0x0044c201', () => {
+  function setupLoan(fortune: number): { state: GameState; topo: ReturnType<typeof topoOf> } | null {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const base = newGame({ map, players: players(), seed: 5 });
+    const on = standOn(base, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return null;
+    const state: GameState = {
+      ...on,
+      fortuneDeck: { order: [2, ...on.fortuneDeck.order.filter((x) => x !== 2)], cursor: 0 },
+      players: on.players.map((p, i) => (i === on.currentPlayer ? { ...p, fortune, loan: 0, loanDueDate: 0 } : p)),
+    };
+    return { state, topo };
+  }
+
+  run('贷款加上去了 ⇒ 还款日落在 90 天之后的第一个营业日', () => {
+    const env = setupLoan(0);
+    if (env === null) return;
+    const after = reduce(env.state, { type: 'settle' }, env.topo);
+    expect(after.lastEvent?.id).toBe(2);
+    const me = after.players[after.currentPlayer]!;
+    expect(me.loan).toBeGreaterThan(0);
+    const dueDay = dayNumberSince1998(me.loanDueDate >>> 16, (me.loanDueDate >>> 8) & 0xff, me.loanDueDate & 0xff);
+    const left = dueDay - dayNumberSince1998(after.year, after.month, after.day);
+    expect(left).toBeGreaterThanOrEqual(0x5a);
+    // 顺延只跳星期日与節日（连着的假日至多几天）
+    expect(left).toBeLessThan(0x5a + 7);
+    expect(weekdayOf(me.loanDueDate >>> 16, (me.loanDueDate >>> 8) & 0xff, me.loanDueDate & 0xff)).not.toBe(0);
   });
 });

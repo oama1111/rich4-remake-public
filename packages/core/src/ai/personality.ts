@@ -94,7 +94,9 @@ export function aiCanUseTools(aiFlags: number): boolean {
 export function autoLoanAmount(wealth: number, loanRatio: number): number {
   if (loanRatio === 0 || wealth <= 0) return 0;
   // @source imul edx, [0x48c3b0] / mov ebx, 100 / idiv ebx —— 向零取整
-  return Math.trunc((wealth * loanRatio) / 100);
+  // ★ `imul r32, m32` 只留低 32 位（`0x004368e9`）⇒ 比例 × 身家超过 2^31 时原版会绕成负数，
+  //   `test eax,eax / je` 拦不住负数 ⇒ 照写进 `+0x24` / 存款。`Math.imul` 就是这条乘法。
+  return Math.trunc(Math.imul(wealth, loanRatio) / 100);
 }
 
 // ============================================================

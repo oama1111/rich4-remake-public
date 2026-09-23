@@ -289,13 +289,19 @@ import {
   type TollTailCtx,
 } from '../rules/interaction.ts';
 import {
+  aiBorrowGate,
+  aiRepaysLoan,
   borrow,
   deposit,
+  forceLoanRepayment,
   loanCapacity,
+  loanDueStep,
   rebalanceCashByRatio,
   repay,
+  withLoanDueDate,
   withdraw,
 } from '../places/bank.ts';
+import { autoLoanAmount } from '../ai/personality.ts';
 import {
   LOTTERY_TICKET_PRICE,
   aiBuyTicket,
@@ -1029,6 +1035,60 @@ function npcRoundStep(state: GameState, topo: MapTopology, next: number): GameSt
  * 导致**每一輪**都少给一位玩家走一天（在押/住宿/冬眠永不到期）。
  */
 function beginActorTurn(state: GameState, topo: MapTopology, index: number): GameState {
+  // ★ 0x41c84f 的第二句 `0x0041c86d call 0x436a5a` —— 还款日检查排在**一切计数之前**
+  //   （第一句 `0x42915a` 是股市可成交量，本引擎在日推进里做）。
+  const due = checkLoanDue(state, topo, index);
+  // 真人还款提醒窗（`0x43695e` 是模态的）：剩下那一段等窗关了（`declineDecision`）才走
+  if (due.pending?.kind === 'loanReminder' || due.phase === 'gameOver') return due;
+  // @source `0x0041c875 cmp byte [player+0x15], 0 / je 0x41cf5d` —— 强制执行把人扣破產了 ⇒ 后面全不走
+  const me = due.players[index];
+  if (me === undefined || !isAlive(me)) return due;
+  return tickActorDay(due, topo, index);
+}
+
+/**
+ * 还款日检查 `fcn_00436a5a`（`0x41c84f` 回合边界里 `0x0041c86d` 那一句）—— 判据见 `places/bank.ts` 的 `loanDueStep`。
+ *
+ * - 0 天：框「貸款到期日\n\n強制執行！」（`0x00436aa0 push 0x464b2c` / `0x00436a9b push 0x5dc` = 1500 ms）
+ *   → `0x00436abe call 0x433bd8(player, loan)`（打穿即破產）→ `0x00436acf` 贷款、还款日两格清零；
+ * - 1 / 2 天：框「距貸款到期日\n\n還剩１天！/ ２天！」（`0x00436ae4` / `0x00436afa`，1500 ms）；
+ * - 3 天：`0x00436b01 call 0x43695e` —— **恰好** `who_plays == 1`（`0x00436969 cmp byte [+0x15], 1`）
+ *   才开还款提醒窗（`0x004369ec push 0x436034`，模态）⇒ 挂 `pending {kind:'loanReminder'}`，
+ *   相位留在 `turnStart`；其余玩家什么都不做。
+ *
+ * ⚠️ 用的是 `[0x49910c]`（= 即将行动的这一位，与 `0x41c84f` 的参数同一人）。
+ */
+function checkLoanDue(state: GameState, topo: MapTopology, index: number): GameState {
+  const me = state.players[index];
+  if (me === undefined) return state;
+  const step = loanDueStep(me, state);
+  if (step === null) return state;
+  if (step === 'oneDay' || step === 'twoDays') {
+    return appendFreshNotice(state, { key: step === 'oneDay' ? 'bank.loanDueOneDay' : 'bank.loanDueTwoDays', args: [] });
+  }
+  if (step === 'reminder') {
+    return (me.whoPlays & 0xff) === WHO_PLAYS_HUMAN ? { ...state, pending: { kind: 'loanReminder' } } : state;
+  }
+  // 'forced'：先弹框、再扣钱（`0x00436aa5 call 0x440cac` 在 `0x00436abe call 0x433bd8` 之前）
+  const boxed = appendFreshNotice(state, { key: 'bank.loanDueForced', args: [] });
+  const r = forceLoanRepayment(me);
+  const paid = withPlayer(boxed, index, (p) => {
+    p.cash = r.player.cash;
+    p.moneyInBank = r.player.moneyInBank;
+    p.loan = 0;
+    p.loanDueDate = 0;
+  });
+  // @source `0x00433c11 push player / call 0x40cd87`
+  return r.bankrupt ? applyBankruptcy(paid, index, topo) : paid;
+}
+
+/**
+ * `0x41c84f` 在还款日检查之后的那一大段：阻碍计数 → 释放 → 其余回合计数 → 神明任期。
+ *
+ * ★ 与 `beginActorTurn` 拆开，是因为真人的还款提醒窗（`0x43695e`）是**模态**的 ——
+ *   窗开着时这一段还没走；关窗（`declineDecision`）之后才接着走。
+ */
+function tickActorDay(state: GameState, topo: MapTopology, index: number): GameState {
   const tick = tickBlocking(state.players[index]!.blocking);
   let afterTick = withPlayer(state, index, (p) => {
     p.blocking = tick.blocking;
@@ -1282,6 +1342,8 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     case 'startTurn': {
       const player = state.players[state.currentPlayer];
       if (player === undefined) return state;
+      // ★ 还款提醒窗还开着（`0x43695e` 模态，在 `0x41c84f` 里）⇒ 回合还没真正开始，先关窗
+      if (state.pending?.kind === 'loanReminder') return state;
 
       // ★★ 2026-09-18（第 84 条）：**「走回棋盘」那一回合**。
       //   释放后 `+0x15 |= 0x10`（`0x40d6be`），这一回合整回合不掷骰
@@ -1656,6 +1718,8 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         if (node.specialKind === SPECIAL_KIND.BANK) {
           next = bankAtmEntry(next, true);
           if (next.pending?.kind === 'atm') return next;
+          // ★ ATM 入口返回 ⇒ `0x0041b3af call 0x436668`：真人开貸款屏，其余当场走电脑那一支
+          return enterBankRoom(next, topo);
         }
 
         // 其余特殊格：交给「待决交互」机制。
@@ -2145,6 +2209,11 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         return state.pending?.kind === 'upgradeFacility' ? afterOwnLab(done, topo, state.pending.facilityId) : done;
       }
       if (state.pending === null) return state;
+      // ★ 还款提醒窗（`0x436034`）关了 ⇒ `0x43695e` 返回、`0x436a5a` 返回，`0x41c84f` 接着走完这一天
+      //   （阻碍计数 → 释放 → 其余回合计数 → 神明任期），相位仍是 `turnStart`。
+      if (state.pending.kind === 'loanReminder') {
+        return tickActorDay({ ...state, pending: null }, topo, state.currentPlayer);
+      }
       // ★ 路过銀行的 ATM 窗在**走子中途**弹出：关窗只是关窗，剩下的步数照走（原版 `fcn_0041b42d` 那一支
       //   `call 0x4379c9` 返回后接着往下处理这一步，不结束回合）
       //   ★ 落点那台（`landing`）关窗 = ATM 入口返回 ⇒ 接着进貸款屏（`0x0041b3af call 0x436668`）
@@ -2187,9 +2256,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   ATM（`0x0041b396 call 0x4379c9`，本引擎的 `pending.kind === 'atm'`）里办。
       //   故 `deposit` / `withdraw` 在这里落进 default（原样返回）。
       switch (action.op) {
-        case 'borrow':
-          next = borrow(me, action.amount, wealth).player;
+        case 'borrow': {
+          const r = borrow(me, action.amount, wealth);
+          // @source `0x0043526d call 0x433b7e` —— 借到手（额 ≠ 0，`0x0043524f test eax,eax / je`）就定还款日
+          next = r.borrowed === 0 ? r.player : withLoanDueDate(r.player, state, state.globalMapId);
           break;
+        }
         case 'repay':
           next = repay(me, action.amount);
           break;
@@ -2613,7 +2685,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
 
       // ③ 给**新**当前玩家走一天（阻碍计数 → 释放 → 其余回合计数 → 神明任期）。
       //   与惡人段那条路径共用 `beginActorTurn`（第 85 条：两处都不能漏）。
-      const ticked = beginActorTurn(base, topo, next);
+      // ★ 待决交互属于**那个玩家的那个回合**，不能带进下一回合。
+      //   商店这类模态窗口尤其明显：不清掉，下家一上来就站在别人的柜台前。
+      //   ⇒ 在走这一天**之前**清掉；之后 `beginActorTurn` 自己挂出来的（还款提醒窗 /
+      //   强制执行打破產之后的下線拍卖）才是新回合的。
+      const ticked = beginActorTurn({ ...base, pending: null }, topo, next);
+      if (ticked.phase === 'gameOver') return { ...ticked, pendingNpcSlots: [], currentPlayer: next };
 
       // ★ 物价指数在回合边界采样一次 —— 已在 `advanceGameDay` 内部（② 那一步，
       //   @source `0041902e call 0x41cf67` → `0x41cfbf call 0x423acf`），
@@ -2622,10 +2699,9 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         ...ticked,
         pendingNpcSlots: [],
         currentPlayer: next,
-        phase: 'turnStart',
-        // ★ 待决交互属于**那个玩家的那个回合**，不能带进下一回合。
-        //   商店这类模态窗口尤其明显：不清掉，下家一上来就站在别人的柜台前。
-        pending: null,
+        // 下線拍卖（`awaitingDecision`）照原样；其余（含还款提醒窗）都停在 `turnStart`
+        phase: ticked.phase === 'awaitingDecision' ? 'awaitingDecision' : 'turnStart',
+        pending: ticked.pending,
         dice: [],
         stepsRemaining: 0,
         stepsTotal: 0,
@@ -5626,6 +5702,16 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
       // ★ 第十四份：出國 / 綁架同样理赔（`0x0040d425 call 0x44ba63(玩家, 2000×天×物價, 0)`，在 `0x40d375` 里）
       applied = insureConfinement(applied, topo, awayVictim, out.amount);
     } else if (entry.effects.includes('loan') || FORTUNE_PAY_TAIL_IDS.has(effectiveId)) {
+      // ★ 命運「冒貸」：`0x0044c1fa add [player+0x24], edx` 紧接着 `0x0044c201 call 0x433b7e` 定还款日
+      //   （神明作廢那一支 `0x0044c194 jne` 之前就 `jmp 0x44c220`，碰不到这两句 ⇒ 看贷款真的变了没有）
+      const before = withDeck.players[me];
+      const after = applied.players[me];
+      if (entry.effects.includes('loan') && before !== undefined && after !== undefined && after.loan !== before.loan) {
+        const dated = withLoanDueDate(after, applied, applied.globalMapId);
+        applied = withPlayer(applied, me, (p) => {
+          p.loanDueDate = dated.loanDueDate;
+        });
+      }
       applied = insurancePayoutTo(applied, topo, me, out.amount);
     }
     // ★ 第十四份：「進帳」那一族没被作廢 ⇒ `0x0044d334 call 0x44f354(当前玩家, 金额)`（6/7/8）
@@ -6179,6 +6265,12 @@ function bankAtmEntry(state: GameState, landing: boolean): GameState {
  */
 function enterBankRoom(state: GameState, topo: MapTopology): GameState {
   if (state.phase === 'gameOver') return { ...state, pending: null };
+  const who = state.players[state.currentPlayer];
+  // @source `0x0043667b cmp byte [player+0x3b], 0 / jne 0x436953` —— 拒絕往來期内整个入口直接返回
+  if (who === undefined || who.daysRejectedByBank !== 0) return { ...state, pending: null };
+  // @source `0x004366a3 cmp byte [player+0x15], 1 / jne 0x4367ab` —— **恰好**真人才开窗；
+  //   电脑 / 托管（含 ATM 开着时被托管的真人）当场走电脑那一支，不经 pending（要掷 `rand()`）。
+  if ((who.whoPlays & 0xff) !== WHO_PLAYS_HUMAN) return aiBankRoom({ ...state, pending: null }, topo);
   const opened: GameState = { ...state, pending: pendingForSpecial(state, topo, SPECIAL_KIND.BANK) };
   // ★ 2026-09-23：貸款屏开窗那一拍（`0x405`）正暫停放款 ⇒ 先弹「銀行暫停放款\n\n還剩%d天！」，
   //   **整扇右移 100**（`0x800005dc`），然后才是那一句招呼。只有**恰好**真人才开这扇窗
@@ -6194,6 +6286,76 @@ function enterBankRoom(state: GameState, topo: MapTopology): GameState {
     });
   }
   return opened;
+}
+
+/** 某位玩家此刻的全口径身家（`fcn_004239b9`）—— 现金 + 存款 − 贷款 + 持股市值 + 名下地产与設施 */
+function fullWealthOf(state: GameState, topo: MapTopology, index: number): number {
+  const p = state.players[index];
+  if (p === undefined) return 0;
+  return calculatePlayerWealth(p, allEffectiveLands(state, topo), allEffectiveFacilities(state, topo), valuationsOf(state, index));
+}
+
+/**
+ * 电脑的貸款屏 —— `_rich4_ui_bank_entry` 的 `0x004367ab` 那一支（**不开窗**）。
+ *
+ * @source VA 0x00436668..0x00436953：
+ * ```asm
+ * 0043668f  call 0x4239b9 → [0x48c3b0]                 ; 身家快照（放款用）
+ * 004367ab  cmp [player+0x24], 0 / je 0x436893
+ * ; ── 有贷款：要不要全额提前还（判据见 places/bank.ts 的 aiRepaysLoan）──
+ * 0043683e  call 0x433bd8(player, loan)                 ; 先存款后现金，打穿即破產
+ * 0043685b  push 0x464af5 / … / 0x0043686d push 0x5dc / call 0x440cac   ; 「%s\n\n償還銀行貸款\n\n%d元」
+ * 00436888  mov [player+0x24], 0                         ; ★ 只清贷款，**不清** +0x2c 还款日
+ * ; ── 没贷款：要不要放款（闸见 aiBorrowGate）──
+ * 00436893  call 0x456f2d（rand）…
+ * 004368fc  mov [player+0x24], trunc(比例 × 身家 / 100)   ; ★ 赋值
+ * 00436902  test eax, eax / je 返回
+ * 00436906  add [player+0x20], eax                       ; 进存款
+ * 00436912  call 0x433b7e(player)                         ; 定还款日
+ * 0043692f  push 0x464b0c / … / 0x00436941 push 0x5dc / call 0x440cac   ; 「%s\n\n向銀行貸款\n\n%d元」
+ * ```
+ */
+function aiBankRoom(state: GameState, topo: MapTopology): GameState {
+  const index = state.currentPlayer;
+  const me = state.players[index];
+  if (me === undefined || !isAlive(me)) return state;
+
+  if (me.loan !== 0) {
+    if (!aiRepaysLoan(me, state)) return state;
+    const r = payFromBank(me, me.loan);
+    let s = withPlayer(state, index, (p) => {
+      p.cash = r.player.cash;
+      p.moneyInBank = r.player.moneyInBank;
+    });
+    if (r.bankrupt) s = applyBankruptcy(s, index, topo);
+    // @source `0x0043684d mov ecx, [eax + 0x496b8c]` —— 框里的数是 `0x433bd8` **之后**读的贷款字段
+    s = appendFreshNotice(s, { key: 'bank.aiRepay', args: [playerName(s, index), s.players[index]?.loan ?? 0] });
+    return withPlayer(s, index, (p) => {
+      p.loan = 0;
+    });
+  }
+
+  // @source 0x00436893 —— 这一支才掷 `rand()`
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const roll = rng.next();
+  const rolled: GameState = { ...state, rngState: rng.getState() };
+  if (!aiBorrowGate(roll, me)) return rolled;
+  // @source 0x004368e9 `imul edx, [0x48c3b0]` / `idiv 100`（快照取自 `0x0043668f`）
+  const amount = autoLoanAmount(fullWealthOf(state, topo, index), me.loanRatio);
+  if (amount === 0) return rolled;
+  const borrowed = withLoanDueDate(
+    { ...me, loan: amount, moneyInBank: me.moneyInBank + amount },
+    state,
+    state.globalMapId,
+  );
+  const s = withPlayer(rolled, index, (p) => {
+    p.loan = borrowed.loan;
+    p.moneyInBank = borrowed.moneyInBank;
+    p.loanDueDate = borrowed.loanDueDate;
+  });
+  // @source `0x00436921 mov ecx, [eax + 0x496b8c]`（+0x24 = 贷款）
+  return appendFreshNotice(s, { key: 'bank.aiBorrow', args: [playerName(s, index), borrowed.loan] });
 }
 
 /**
@@ -6263,7 +6425,9 @@ function pendingForSpecial(
   if (specialKind === SPECIAL_KIND.BANK) {
     // @source 落点 VA 0x0043667b：拒绝往来期内直接返回
     if (me.daysRejectedByBank !== 0) return null;
-    const wealth = calculatePlayerWealth(me, [], []);
+    // @source `0x0043668f call 0x4239b9` → `[0x48c3b0]`：**全口径**身家（现金 + 存款 − 贷款 + 持股 + 地产 + 設施），
+    //   与月结/勝負判定同一个函数。先前这里传了空地块表与空持股 ⇒ 额度只算了现金 + 存款 − 贷款。
+    const wealth = fullWealthOf(state, topo, state.currentPlayer);
     return {
       kind: 'bank',
       wealth,

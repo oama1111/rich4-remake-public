@@ -71,6 +71,59 @@ export function weekdayOf(year: number, month: number, day: number): number {
   return (dayNumberSince1998(year, month, day) + 4) % 7;
 }
 
+/**
+ * 天号 → 打包日期（`日 | 月<<8 | 年<<16`）—— `dayNumberSince1998` 的逆。
+ *
+ * @source VA 0x0045201f：
+ * ```asm
+ * ecx = 0x7ce（1998）; esi = 1; edx = 0x16d
+ * 0045203a  cmp ebx, edx / jl → ebx -= edx; ecx++        ; 逐年扣
+ *           edx = 0x16d + (ecx % 4 == 0)                  ; 下一年的天数
+ *           cmp ebx, edx / jge 0x45203a
+ * 00452069  cmp ebx, edx / jl → ebx -= edx; esi++        ; 逐月扣（2 月闰年 0x1d，余查 0x47638f）
+ * 00452095  eax = (ecx << 16) + (esi << 8) + ebx + 1
+ * ```
+ * 只对 `n >= 0` 有意义（原版的调用点都是「今天 + 正数」）。
+ */
+export function packedFromDayNumber(n: number): number {
+  let rest = n;
+  let year = EPOCH_YEAR;
+  while (rest >= (isLeapYear(year) ? 366 : 365)) {
+    rest -= isLeapYear(year) ? 366 : 365;
+    year++;
+  }
+  let month = 1;
+  while (rest >= daysInMonth(year, month)) {
+    rest -= daysInMonth(year, month);
+    month++;
+  }
+  return ((year << 16) | (month << 8) | (rest + 1)) >>> 0;
+}
+
+/** 打包日期 → 天号（`0x451f8c` 就是拆包后走 `dayNumberSince1998`）*/
+export function dayNumberOfPacked(packed: number): number {
+  return dayNumberSince1998(packed >>> 16, (packed >>> 8) & 0xff, packed & 0xff);
+}
+
+/**
+ * 打包日期 + `n` 天。
+ * @source VA 0x0045218f：`push date / call 0x451f8c / add eax, [esp+8] / push eax / call 0x45201f`
+ */
+export function addDaysPacked(packed: number, n: number): number {
+  return packedFromDayNumber(dayNumberOfPacked(packed) + n);
+}
+
+/**
+ * 两个打包日期的天数差 **`b − a`**。
+ * @source VA 0x004521aa：`0x451f8c(a)` 存 ebx，`0x451f8c(b)`，`sub eax, ebx`
+ *
+ * ⚠️ 打包值 0（「没有到期日」）按原版照算：年 0 < 1998 ⇒ 年循环一次不走、月循环一次不走、
+ *   `日 − 1 = −1` ⇒ 天号 −1（`dayNumberSince1998(0, 0, 0)` 同样给 −1）。
+ */
+export function packedDayDiff(a: number, b: number): number {
+  return dayNumberOfPacked(b) - dayNumberOfPacked(a);
+}
+
 // ============================================================
 //  底图
 // ============================================================

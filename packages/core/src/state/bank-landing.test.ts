@@ -136,23 +136,27 @@ describe('★ 落在銀行：先 ATM（0x0041b396 → 0x4379c9），关掉才进
     const taken = { ...landed, players: landed.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_HUMAN | 4 } : p)) };
     expect(decideAction({ state: taken, map })).toEqual({ type: 'declineDecision' });
     const c = reduce(taken, { type: 'declineDecision' }, topo);
-    expect(c.pending?.kind).toBe('bank');
+    // ★ 2026-09-23：关窗 = ATM 入口返回 ⇒ `0x436668` 此刻看 `+0x15`：已经是 1|4 ⇒ 走电脑那一支、**不开**貸款屏
+    //   （`0x004366a3 cmp byte [+0x15],1 / jne 0x4367ab`）。先前断言「换成貸款屏」是让 AI 代答 pending 的旧实现。
+    expect(c.pending).toBeNull();
+    expect(c.phase).toBe('turnEnd');
   });
 
   /** 全部现金在手、目标比很低 ⇒ 一定重分 */
   const allCash = (p: P): P => ({ ...p, cashRatio: 20, cash: 8000, moneyInBank: 0 });
 
-  run('电脑落点 → 不开 ATM：按 cashRatio 重分，然后直接是貸款屏（照旧）', () => {
-    const { landed } = landOnBank({ whoPlays: WHO_PLAYS_COMPUTER, over: allCash });
-    expect(landed.pending?.kind).toBe('bank');
+  run('电脑落点 → 不开 ATM：按 cashRatio 重分，然后当场走貸款屏的电脑那一支（不挂柜台）', () => {
+    // ★ 2026-09-23：`0x004366a3 cmp byte [+0x15],1 / jne 0x4367ab` —— 电脑不开窗（先前断言挂 `bank` 是旧实现）
+    const { landed } = landOnBank({ whoPlays: WHO_PLAYS_COMPUTER, over: (p) => ({ ...allCash(p), loanRatio: 0 }) });
+    expect(landed.pending).toBeNull();
     const me = landed.players[0]!;
     expect(me.cash + me.moneyInBank).toBe(8000);
     expect(me.cash).toBe(Math.trunc(8000 * cashRatioTarget(20, landed.day)));
   });
 
   run('真人被托管（1|4）落点 → 同电脑那一支', () => {
-    const { landed } = landOnBank({ whoPlays: WHO_PLAYS_HUMAN | 4, over: allCash });
-    expect(landed.pending?.kind).toBe('bank');
+    const { landed } = landOnBank({ whoPlays: WHO_PLAYS_HUMAN | 4, over: (p) => ({ ...allCash(p), loanRatio: 0 }) });
+    expect(landed.pending).toBeNull();
     expect(landed.players[0]!.cash).toBe(Math.trunc(8000 * cashRatioTarget(20, landed.day)));
   });
 

@@ -52,7 +52,7 @@ function initialFundOf(state: { initialFund?: number }): number {
   return state.initialFund ?? DEFAULT_INITIAL_FUND;
 }
 import { CARDS, TOOLS } from '@rich4/data';
-import { aiCanUseCards, aiCanUseTools, autoLoanAmount, personalityAllows } from './personality.ts';
+import { aiCanUseCards, aiCanUseTools, personalityAllows } from './personality.ts';
 import { aiCardChoice, aiRoll, cardsToConsider, type AiCardChoice, type CardAiView } from './card-policy.ts';
 import { aiToolChoice, toolsToConsider, TOOL_RING_SALT, type AiToolChoice } from './tool-policy.ts';
 import {
@@ -143,6 +143,8 @@ export function decideAction(ctx: AiContext): Action | null {
 
   switch (state.phase) {
     case 'turnStart':
+      // ★ 回合开始时挂着的还款提醒窗（真人开着窗被托管）先答掉，否则 `startTurn` 被原样退回、卡死
+      if (state.pending?.kind === 'loanReminder') return decidePending(state);
       return { type: 'startTurn' };
     case 'awaitingRoll':
       // ★ 掷骰前的顺序照 0x00418dc6：买股 → 卖股 → [特別融資收回 → 公佈欄 → rand&1] → 用卡 | 用道具 → 掷骰
@@ -558,19 +560,13 @@ export function decidePending(state: GameState): Action | null {
       .sort((a, b) => a.cost - b.cost)[0];
     return cheap === undefined ? null : { type: 'bail', slot: cheap.slot };
   }
-  // ★ 银行：按角色的**借贷激进度**（f24）一次性借出身家的某个百分比。
-  // @source 银行落点的 AI 分支 VA 0x004368db，见 ai/personality.ts。
-  // ⚠️ 原版那一句是**赋值** `loan = trunc(身家 × f24 / 100)`，既不叠加
-  //   也不查额度上限；本引擎的 `bankBorrow` 会按额度拦，故这里先夹一次，
-  //   免得提一个必被拒的 action 把自己卡死。
-  if (p.kind === 'bank') {
-    const me = state.players[state.currentPlayer];
-    if (me === undefined) return null;
-    // @source 0x004368ce `cmp byte [+0x3c], 0` —— 銀行暫停放款期内電腦不借
-    if (me.bankFreezeDays !== 0) return null;
-    const want = Math.min(autoLoanAmount(p.wealth, me.loanRatio), p.loanCapacity);
-    return want > 0 ? { type: 'bank', op: 'borrow', amount: want } : null;
-  }
+  // ★ 貸款屏：电脑（与托管）**收不到**这一扇 —— 原版 `0x004366a3 cmp byte [+0x15],1 / jne 0x4367ab`
+  //   让它们当场走电脑那一支（提前还贷 / `rand()%10` 放款，reducer 的 `aiBankRoom`），不开窗。
+  //   走到这里的只会是**开着貸款屏被托管的真人** —— 与 ATM 同样替他关窗（模态窗返回 = EXIT）。
+  if (p.kind === 'bank') return { type: 'declineDecision' };
+  // ★ 还款提醒窗（`0x436034`）：只有「恰好真人」才开，窗里没有任何选择 —— 被托管就替他关窗，
+  //   core 随即走完这一天的回合边界（`0x41c84f` 的其余部分）。
+  if (p.kind === 'loanReminder') return { type: 'declineDecision' };
   // 樂透**没有**分支：电脑在原版里根本没得挑（`rich4_ui_letou_bar_entry`
   // 的电脑那支一口气买完、不弹屏），所以它在落点当场就结掉了 —— 见
   // `state/reduce.ts` 的 `landOnLottery`，号码与是否出手都由 reducer 定

@@ -11,6 +11,9 @@
 
 import type { Player } from '../state/types.ts';
 import { truncTowardZero } from '../rules/rounding.ts';
+import { advanceDate, packDate, unpackDate } from '../rules/calendar.ts';
+import type { GameDate } from '../rules/calendar.ts';
+import { addDaysPacked, isHoliday, packedDayDiff } from './calendar.ts';
 
 // ============================================================
 //  存取款
@@ -292,4 +295,149 @@ export function rebalanceCashByRatio(player: Player, day: number): Player {
   // @source loc_00437bca：新現金 = trunc(总资产 × target)，余额进存款
   const cash = truncTowardZero(total * target);
   return { ...player, cash, moneyInBank: total - cash };
+}
+
+// ============================================================
+//  还款日（`player+0x2c` = `loanDueDate`，打包日期）
+// ============================================================
+
+/** 贷款期限 = 90 天 @source `0x00433b91 push 0x5a` */
+export const LOAN_TERM_DAYS = 0x5a;
+
+/**
+ * 放款时定还款日 —— `fcn_00433b7e(player)`。
+ *
+ * @source VA 0x00433b7e：
+ * ```asm
+ * 00433b88  cmp dword [player+0x2c], 0 / jne 返回      ; ★ 已有还款日就**不重算**
+ * 00433b91  push 0x5a / push [0x497160] / call 0x45218f ; 今天 + 90 天
+ * 00433ba2  mov [player+0x2c], eax
+ * 00433bb2  call 0x4523d5(还款日)                        ; 星期日 / 節日表标记的假日？
+ * 00433bba  cmp eax, 1 / jne 返回
+ * 00433bca  call 0x452117(&player+0x2c) / jmp 0x433bab   ; 是 ⇒ 顺延一天再判
+ * ```
+ * 调用点三处：真人申請貸款 `0x0043526d`（额 ≠ 0 才走到）、电脑自动放款 `0x00436912`、
+ * 命運「冒貸」`0x0044c201`。**特別融資（`0x434665`）不调它** —— 那笔账没有还款日。
+ *
+ * ★ 「已有就不重算」有后果：电脑提前还贷（`0x43682d`）只清 `loan`、**不清** `+0x2c`，
+ *   下一次再借就沿用那个旧日期（见 `aiRepaysLoan`）。
+ */
+export function withLoanDueDate(player: Player, today: GameDate, globalMapId: number): Player {
+  if (player.loanDueDate !== 0) return player;
+  let due = unpackDate(addDaysPacked(packDate(today), LOAN_TERM_DAYS));
+  while (isHoliday(globalMapId, due.year, due.month, due.day)) due = advanceDate(due).date;
+  return { ...player, loanDueDate: packDate(due) };
+}
+
+/** 距还款日 ≤ 3 天（含已过期的负数）才往下判 @source `0x00436a7c cmp eax, 3 / jg` */
+export const LOAN_DUE_CHECK_DAYS = 3;
+
+/**
+ * 回合开始的还款日检查 `fcn_00436a5a` 这一回合该做什么。
+ *
+ * @source VA 0x00436a5a（唯一调用点 `0x0041c86d`，`0x41c84f` 回合边界的第二句）：
+ * ```asm
+ * 00436a72  call 0x4521aa([0x497160], [player+0x2c])   ; eax = 还款日 − 今天
+ * 00436a7c  cmp eax, 3 / jg 返回
+ * 00436a87  push 1 / call 0x41906a                       ; 重画主窗口（纯表现）
+ * 00436a8f  cmp ebx, 3 / ja 返回                          ; ★ 无符号 ⇒ 负数（逾期）也返回
+ * 00436a94  jmp [ebx*4 + 0x436a4a]                        ; 0x436a9b / 0x436adf / 0x436af5 / 0x436b01
+ * ```
+ * | 差 | 去处 | 做什么 |
+ * |---|---|---|
+ * | 0 | `0x436a9b` | 框「貸款到期日\n\n強制執行！」→ `0x433bd8(player, loan)` → `loan = 0`、`+0x2c = 0` |
+ * | 1 | `0x436adf` | 框「距貸款到期日\n\n還剩１天！」 |
+ * | 2 | `0x436af5` | 框「距貸款到期日\n\n還剩２天！」 |
+ * | 3 | `0x436b01` | `call 0x43695e`：**恰好** `who_plays == 1` 才开还款提醒窗（三句），其余什么都不做 |
+ *
+ * ⚠️ 判的**只有日期**，不看 `loan` —— 电脑提前还贷后 `+0x2c` 还留着（`0x43682d` 不清它），
+ *   届时照样弹「還剩２天」「還剩１天」，到期那天照样「強制執行」（扣 0 元）并把两格清零。
+ *   `+0x2c == 0`（从没借过）时差是 `−1 − 今天的天号`，必为负 ⇒ 什么都不做。
+ */
+export type LoanDueStep = 'forced' | 'oneDay' | 'twoDays' | 'reminder';
+
+export function loanDueStep(player: Player, today: GameDate): LoanDueStep | null {
+  const left = packedDayDiff(packDate(today), player.loanDueDate);
+  // @source 0x00436a7c `jg` 与 0x00436a8f `ja`（无符号）合起来 ⇒ 只有 0..3
+  if (left < 0 || left > LOAN_DUE_CHECK_DAYS) return null;
+  return (['forced', 'oneDay', 'twoDays', 'reminder'] as const)[left]!;
+}
+
+/**
+ * 到期强制执行 `0x436a9b..0x436ad5` 的账面：`0x433bd8(player, loan)` 后 `loan = 0`、`+0x2c = 0`。
+ *
+ * `0x433bd8` = 先扣存款，不够用现金补；现金也打穿 ⇒ 现金归 0 并**破產**（`0x433c11 call 0x40cd87`）。
+ * ⚠️ 扣的是**本金原值**（原版贷款无利息）。
+ */
+export function forceLoanRepayment(player: Player): { player: Player; bankrupt: boolean } {
+  let bank = player.moneyInBank - player.loan;
+  let cash = player.cash;
+  let bankrupt = false;
+  if (bank < 0) {
+    cash += bank;
+    bank = 0;
+    if (cash < 0) {
+      cash = 0;
+      bankrupt = true;
+    }
+  }
+  return { player: { ...player, cash, moneyInBank: bank, loan: 0, loanDueDate: 0 }, bankrupt };
+}
+
+// ============================================================
+//  电脑的貸款屏（`_rich4_ui_bank_entry` 的 `0x004367ab` 那一支）
+// ============================================================
+
+/** 距还款日 ≤ 6 天才看「还得起」@source `0x004367ce cmp eax, 6 / jg` */
+export const AI_REPAY_DUE_DAYS = 6;
+/** 还得起 = 現金 + 存款 ≥ 貸款 × 1.1 @source `0x004367fc fmul qword [0x464b24]`（double 1.1）*/
+export const AI_REPAY_COVER_RATIO = 1.1;
+/** 放款的随机闸：`rand() % 10 == 0` @source `0x0043689a mov ecx, 0xa / idiv ecx` */
+export const AI_BORROW_RAND_MOD = 0xa;
+/** 或者 現金 + 存款 < 30000 @source `0x004368bb cmp edx, 0x7530 / jge 不借` */
+export const AI_BORROW_CASH_LIMIT = 0x7530;
+
+/**
+ * 电脑有贷款时这一趟要不要**全额提前还清**。
+ *
+ * @source VA 0x004367ab：
+ * ```asm
+ * 004367ab  cmp [player+0x24], 0 / je 0x436893          ; 没贷款 → 去放款那一支
+ * 004367c6  call 0x4521aa(今天, [player+0x2c])            ; 距还款日
+ * 004367ce  cmp eax, 6 / jg 0x43680e
+ * 004367ef  fild (現金+存款) / fild 貸款 / fmul [0x464b24] / fcompp
+ * 00436807  ja 0x43680e                                   ; 貸款×1.1 > 現金+存款 ⇒ 不置
+ * 00436809  mov ebx, 1                                    ; 「还得起」
+ * 0043681b  add edx, edx / cmp edx, [player+0x20]         ; 2×貸款 vs 存款
+ * 00436823  jl 0x43682d                                   ; 2×貸款 < 存款 ⇒ 直接还
+ * 00436825  test ebx, ebx / je 返回                        ; 否则要「还得起」才还
+ * ```
+ * ★ x87 精度控制字是 PC=53（`buy-land.ts` 同一条结论），`fild`×double 的乘积舍成 double，
+ *   故 `loan * 1.1` 与原版逐位相同。`add edx, edx` 是 32 位加法（`| 0`）。
+ */
+export function aiRepaysLoan(player: Player, today: GameDate): boolean {
+  if (player.loan === 0) return false;
+  let covered = false;
+  if (packedDayDiff(packDate(today), player.loanDueDate) <= AI_REPAY_DUE_DAYS) {
+    covered = !(player.loan * AI_REPAY_COVER_RATIO > player.cash + player.moneyInBank);
+  }
+  return ((player.loan + player.loan) | 0) < player.moneyInBank || covered;
+}
+
+/**
+ * 电脑没贷款时这一趟**放不放款**的第一道闸（`rand()` 由调用方掷好传进来）。
+ *
+ * @source VA 0x00436893：
+ * ```asm
+ * 00436893  call 0x456f2d / cdq / idiv 10 / test edx, edx / je 0x4368c7   ; rand()%10 == 0 ⇒ 放
+ * 004368af  edx = 現金 + 存款 / cmp edx, 0x7530 / jge 返回                  ; 否则要 < 30000
+ * 004368c7  cmp byte [player+0x3c], 0 / jne 返回                           ; 銀行暫停放款
+ * 004368db  mov bh, [player+0x18] / test bh, bh / je 返回                   ; 比例 0 ⇒ 不借
+ * ```
+ * ⚠️ `rand()` **只在没贷款时**掷（有贷款那一支从头到尾不碰随机数）。
+ */
+export function aiBorrowGate(rand: number, player: Player): boolean {
+  if (rand % AI_BORROW_RAND_MOD !== 0 && player.cash + player.moneyInBank >= AI_BORROW_CASH_LIMIT) return false;
+  if (player.bankFreezeDays !== 0) return false;
+  return player.loanRatio !== 0;
 }

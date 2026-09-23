@@ -777,6 +777,13 @@ export type NoticeKey =
   | 'bank.loanFrozen'
   /** 电脑贷款 `[玩家, 金额]`（0x0043694b）*/
   | 'bank.aiBorrow'
+  /** 电脑提前还清贷款 `[玩家, 金额]`（0x00436877，1500 ms）*/
+  | 'bank.aiRepay'
+  /** 回合开始、今天就是还款日「貸款到期日\n\n強制執行！」（0x00436aa5，1500 ms）—— 之后当场扣款 */
+  | 'bank.loanDueForced'
+  /** 回合开始、距还款日 1 天 / 2 天（0x00436ae9，1500 ms）*/
+  | 'bank.loanDueOneDay'
+  | 'bank.loanDueTwoDays'
   /** 銀行準備金不足、董事長垫付 `[缺口, 董事長]`（0x00436c1f，2500 ms）*/
   | 'bank.reserveShortfall'
   /** 特別融資收回：先「銀行經營權易主！」（0x00436ccb），再 `[玩家, 金额]`（0x00436cfd）*/
