@@ -18,6 +18,7 @@ import type { WinConditions } from './setup.ts';
 import { CARDS, CHARACTERS } from '@rich4/data';
 import { traitsOf } from '../ai/personality.ts';
 import { placeOnNodeId } from './position.ts';
+import { directionOf } from '../state/reduce.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
 import { CARD_IMPLS } from '@rich4/data';
 import { FORTUNE_DECK_SIZE, NEWS_DECK_SIZE, createDeck } from '../events/deck.ts';
@@ -175,12 +176,66 @@ export function drawStartNodes(
   count: number,
   rng: WatcomRng,
 ): number[] {
-  const out: number[] = [];
+  return drawStartPlacements(nodes, count, rng).map((p) => p.nodeId);
+}
+
+/** 一名玩家开局落在哪一格、「从哪一格来」、面朝哪边 */
+export interface StartPlacement {
+  nodeId: number;
+  /** `last_node_id`（+0x0e）—— 起始格的一个**随机邻格**，第一步不会走回它 */
+  lastNodeId: number;
+  /** `direction`（+0x10）= 从 `lastNodeId` 指向 `nodeId` 的八向朝向 */
+  direction: number;
+}
+
+/**
+ * 开局摆人 —— 起始格 + 「来路」+ 朝向，**每人两次 `rand()`**。
+ *
+ * @source 開局摆人（`fcn_0040829d` 里「当前玩家还没上盘」那一段）：
+ * ```asm
+ * 004082d9  call 0x40aa0f                      ; ① rand() 抽起始格（见 drawStartNodes）
+ * 004082fb  mov  word [player + 0x0c], bx      ;    node_id
+ * 00408302  for (slot = 0; slot < 4; slot++)   ; 起始格四个邻接槽（节点 +0x18 起 4 个 uint16）
+ * 0040831b    if (adj[slot] != 0) cand[n++] = adj[slot]   ; ★ 只看非 0，不看封路位
+ * 00408328  call 0x456f2d / cdq / idiv edi     ; ② rand() % n
+ * 00408340  mov  word [player + 0x0e], dx      ;    last_node_id = cand[rand() % n]
+ * 0040835e  call 0x407a8c(last, node)          ;    = 0x454fb4(node.x − last.x, node.y − last.y)
+ * 0040836f  mov  byte [player + 0x10], al      ;    direction
+ * ```
+ * 即人物**背对一个随机邻格站着**，而那一格又是 `last_node_id` ⇒ 第一步
+ * （`pickNextNode` 排除上一格）一定走别的方向 —— 站姿朝向与接下来要走的方向一致
+ * （第十四份试玩回报 #2）。先前 `last_node_id = node_id`、`direction = 0`，
+ * 人物一律朝同一个方向站着，第一步可能往任何一边走。
+ *
+ * ⚠️ 原版这一段是**惰性**的：谁第一次被镜头对准（自己的第一个回合）才摆谁，
+ *   所以 P2..P4 那两次 `rand()` 与前面玩家的掷骰/走路交错。本引擎沿用既有做法在
+ *   `newGame` 里一次摆完（Q-INIT-2），只把每人的两次抽签按原版的**先后**排好。
+ */
+export function drawStartPlacements(
+  nodes: Rich4Map['nodes'],
+  count: number,
+  rng: WatcomRng,
+): StartPlacement[] {
+  const out: StartPlacement[] = [];
   for (let i = 0; i < count; i++) {
-    const free = objectNodeCandidates(nodes).filter((n) => !out.includes(n));
-    out.push(pickObjectNode(free, rng.next()));
+    const taken = out.map((p) => p.nodeId);
+    const free = objectNodeCandidates(nodes).filter((n) => !taken.includes(n));
+    const nodeId = pickObjectNode(free, rng.next());
+    out.push(startFacing(nodes, nodeId, rng));
   }
   return out;
+}
+
+/** `drawStartPlacements` 的第 ② 步：给定起始格，抽「来路」并求朝向 */
+function startFacing(nodes: Rich4Map['nodes'], nodeId: number, rng: WatcomRng): StartPlacement {
+  const node = nodes[nodeId - 1];
+  const cand = node === undefined ? [] : node.adjacentSlots.filter((n) => n !== 0);
+  // 候选为空时原版会 `idiv 0`（筛起始格时已排除孤立格，走不到这里）—— 不抽、原地
+  if (node === undefined || cand.length === 0) return { nodeId, lastNodeId: nodeId, direction: 0 };
+  const lastNodeId = cand[rng.next() % cand.length]!;
+  const last = nodes[lastNodeId - 1];
+  const direction = last === undefined ? 0 : directionOf(node.x - last.x, node.y - last.y);
+  return { nodeId, lastNodeId, direction };
 }
 
 /**
@@ -219,10 +274,11 @@ function makeInitialPlayer(
   index: number,
   setup: PlayerSetup,
   fund: number,
-  startNode: number,
+  start: StartPlacement,
   vehicle: number,
   nodes: readonly MapNode[],
 ): Player {
+  const startNode = start.nodeId;
   const money = startingMoney(setup.character, fund);
   const base: Player = {
     index,
@@ -231,8 +287,9 @@ function makeInitialPlayer(
     xpos: 0,
     ypos: 0,
     nodeId: startNode,
-    lastNodeId: startNode,
-    direction: 0,
+    // @source 0x00408340 / 0x0040836f：来路 = 随机邻格、朝向 = 来路 → 起始格（见 drawStartPlacements）
+    lastNodeId: start.lastNodeId,
+    direction: start.direction,
     // @source VA 0x00407219：交通工具与骰子数都由开局设置定，`ndices = traffic + 1`
     trafficMethod: vehicle,
     ndices: vehicle + 1,
@@ -458,7 +515,7 @@ export function newGame(opts: NewGameOptions): GameState {
     objects = placeObjectOfType(objects, type, node).objects;
   }
 
-  const startNodes = drawStartNodes(map.nodes, players.length, rng);
+  const starts = drawStartPlacements(map.nodes, players.length, rng);
 
   return {
     mode,
@@ -474,7 +531,9 @@ export function newGame(opts: NewGameOptions): GameState {
         i,
         s,
         initialFund,
-        startNodeId > 0 ? startNodeId : (startNodes[i] ?? 1),
+        startNodeId > 0
+          ? { nodeId: startNodeId, lastNodeId: startNodeId, direction: 0 }
+          : (starts[i] ?? { nodeId: 1, lastNodeId: 1, direction: 0 }),
         vehicle,
         map.nodes,
       ),

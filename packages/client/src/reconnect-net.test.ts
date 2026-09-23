@@ -69,10 +69,8 @@ describe('第十二份試玩回報：中途进房静默追上', () => {
     }
   });
 
-  it('★ 開局宣言只在真的开局时说（中途进房不再说一遍）', () => {
-    expect(onStart).toContain(
-      'if (roomJoinedUnstarted && speechQueue.push(openingSpeech(state), performance.now()) > 0) requestRender();',
-    );
+  it('★ 開局宣言：真开局与中途进房都不说（第十四份試玩回報 #1：新局那条路原版不调 `0x407842`）', () => {
+    expect(onStart).not.toContain('openingSpeech(');
   });
 
   it('★ 追赶期间不拿旧局面做决定：不发意图、不报 awaiting', () => {

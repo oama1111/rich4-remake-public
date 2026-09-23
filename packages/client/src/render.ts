@@ -289,6 +289,14 @@ export interface RenderInput {
    */
   characterPose?: number | null;
   /**
+   * `characterPose` 那一组图画**第几帧**（每向帧号）；不给就跟全局走路帧走。
+   *
+   * ★ 掷骰姿必须给：预动作从第 0 帧数起，滚骰 + 定格期间**定在最后一帧**（骰子已出手、
+   *   两手空空）—— 见 `dice-roll.ts` 文件头 ★★ 与 `DiceRollFx.poseFrame`
+   *   （@source `0x0040dee4` / `0x0040d975` / `fcn_00419572` 不重画棋盘）。
+   */
+  characterPoseFrame?: number | null;
+  /**
    * 棋盘区的尺寸。
    *
    * ★ 必须显式给出，**不能再从画布尺寸推**：原版的棋盘区是固定的
@@ -2387,7 +2395,7 @@ export class BoardRenderer {
       //   位置 = 主人的屏幕坐标（走子补间时用插值点）+ 8 向偏移表，
       //   帧号 = 8 − 视角 + **主人**朝向 + 4。同样与建筑同一档排序。
       ...this.#attachedObjectSlots(map, state, camera, vp, input.objectFlight ?? null, ascendHidden),
-      ...this.#playerSlots(map, state, camera, vp, input.characterPose ?? null),
+      ...this.#playerSlots(map, state, camera, vp, input.characterPose ?? null, input.characterPoseFrame ?? null),
       ...this.#actorSlots(map, state, camera, vp, input.currentActor ?? null, nowMs),
     ];
     // 原版用 qsort 比低 16 位 int16；这里用稳定排序，键相同时保持压入顺序（不影响观感）
@@ -3004,6 +3012,7 @@ export class BoardRenderer {
     cam: Camera,
     vp: { w: number; h: number },
     poseOverride: number | null,
+    poseFrame: number | null,
   ): DrawSlot[] {
     const ctx = this.#ctx;
     const slots: DrawSlot[] = [];
@@ -3080,6 +3089,13 @@ export class BoardRenderer {
        * 登记在 deviations D-T047-4。
        */
       const asleep = isAsleep(pl.blocking);
+      // ★ 盖了姿态（掷骰）且给了帧号 ⇒ 按那一帧画，不跟全局走路帧（第十四份试玩回报 #3）。
+      //   帧号钳在 `每向帧数 − 1` 以内：原版帧号 `[+0x498ea3]` 在掷骰姿里只到 N−1（数到 N 就去掷）。
+      const perDir = Math.max(1, count >> 3);
+      const fixedFrame =
+        override !== null && poseFrame !== null ? Math.min(perDir - 1, Math.max(0, poseFrame)) : null;
+      const frameNow = fixedFrame ?? this.#walkFrame;
+      const frameNext = fixedFrame ?? this.#walkFrame + 1;
       // ★ 图号一 tick 换一张（`#walkFrame`）——新图号没解好时**退回本槽上一张**，
       //   不许整帧不画（否则走子/掷骰预动作时人物一闪一灭，见 `#spriteHeld`）。
       const token =
@@ -3088,8 +3104,8 @@ export class BoardRenderer {
               `p${pl.index}`,
               'Data.mkf',
               res,
-              directionalImage(count, dir, this.#walkFrame),
-              directionalImage(count, dir, this.#walkFrame + 1),
+              directionalImage(count, dir, frameNow),
+              directionalImage(count, dir, frameNext),
             )
           : (this.#held.get(`p${pl.index}`) ?? null);
       if (token !== null) {

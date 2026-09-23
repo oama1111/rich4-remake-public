@@ -19,6 +19,19 @@
  *
  * ★ 角色在整段里都保持「手持骰子」那一组图：原版把 state 设成 1（走子）
  *   是在 `fcn_00419572` **返回之后**，也就是 500 ms 定格走完之后。
+ *
+ * ★★ 但**停在哪一帧**有讲究（第十四份试玩回报 #3「扔完骰子后应该是手上没骰子的模型」）：
+ *   那一组图每向 N 帧，前几帧手里捧着骰子、中间把骰子抛出去、**最后一帧两手空空**
+ *   （宮本寶藏 `Data.mkf` #256 实测：帧 0..5 捧骰、6..7 出手、8 空手）。原版
+ *   - `0x0040dee4`：切到掷骰姿（`0x0040dd87 mov byte [+0x498ea2], 2`）的同一趟把帧号
+ *     `[+0x498ea3]` 清 0 ⇒ 预动作**从第 0 帧**起；
+ *   - `0x0040d975..0x0040d99e`：每 tick `帧号 += 1`，≠ N 就照常重画棋盘；**= N 那一 tick 不重画**，
+ *     直接 `call 0x447285` / `call 0x419572` 去掷 ⇒ 屏幕上最后画出来的是**第 N−1 帧（空手）**；
+ *   - `fcn_00419572` 只在主表面上播骰子 FLIC、盖点数图、`0x004196df` 等 500 ms，
+ *     **不重画棋盘**（全函数没有 `call 0x40829d`）⇒ 滚骰 + 定格期间人物一直是那张空手图；
+ *   - 返回后 `0x0040da37` 才把姿态切成 1（走）、帧号清 0（`0x0040da40`）。
+ *   ⇒ 由 `poseFrame()` 把这一帧交给渲染器；先前渲染器拿全局走路帧计数器取模，
+ *     起点不归 0、滚骰期间也不定在最后一帧，于是经常停在「手里还捧着骰子」那几张。
  */
 
 import type { LoadedFlic } from './assets.ts';
@@ -99,6 +112,22 @@ export class DiceRollFx {
    */
   anticipationDone(now: number): boolean {
     return this.#phase === 'anticipate' && now - this.#at >= this.#anticipateTicks * this.#tickMs;
+  }
+
+  /**
+   * 掷骰姿现在该画第几帧（每向帧号，0 起）；不在这一段返回 null。
+   *
+   * - 预动作：`anticipationFrame(now)`（0 → N−1，一 tick 一帧）
+   * - 滚骰 / 定格：**N−1**（最后一帧 = 骰子已出手、两手空空），见文件头 ★★。
+   *
+   * @source `0x0040dee4` 帧号清 0；`0x0040d975` 数到 N 就去掷、那一 tick 不重画；
+   *   `fcn_00419572` 不重画棋盘 ⇒ 屏幕停在第 N−1 帧。
+   */
+  poseFrame(now: number): number | null {
+    this.#advance(now);
+    if (this.#phase === 'anticipate') return this.anticipationFrame(now);
+    if (this.#phase === 'tumble' || this.#phase === 'hold') return this.#anticipateTicks - 1;
+    return null;
   }
 
   /** 预动作跑到第几帧了（画角色用） */

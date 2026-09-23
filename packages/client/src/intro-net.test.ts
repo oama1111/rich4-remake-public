@@ -59,11 +59,13 @@ describe('聯機開局過場', () => {
       'holidayBgmDays = 0;',
       'playBoardBgm(1);',
       'ensureSpeakingArchive();',
-      'speechQueue.push(openingSpeech(state), performance.now())',
       'setGround(null);',
     ]) {
       expect(onStart, `onStart 應含 ${line}`).toContain(line);
     }
+    // ★★ 第十四份試玩回報 #1：開局**不說**事件 26（與單機 startGame 同一條）——
+    //   新局那條路 `0x406de7 → … → 0x415872` 不調 `0x407842`
+    expect(onStart).not.toContain('openingSpeech(');
     // 不再裸寫 `ground = null`（那會泄漏舊 bitmap）
     expect(onStart).not.toContain('ground = null;');
   });
