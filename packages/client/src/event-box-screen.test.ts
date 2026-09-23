@@ -561,6 +561,8 @@ function fakeCanvas(): {
       /* 不记 */
     },
     fillText(text: string, x: number, y: number): void {
+      // 字效 3 的阴影那一遍（第二色 #101010，`font.ts` 的 `drawGdiText`）不记 —— 只记正文
+      if (String(this.fillStyle) === '#101010') return;
       texts.push({
         text,
         x,
@@ -615,8 +617,8 @@ describe('★ 画一遍：落点与抠黑（照计划执行）', () => {
       [24, 8],
       [24, 310],
     ]);
-    // 28 号宋体
-    expect(texts[0]!.size.startsWith('28px')).toBe(true);
+    // 28 号宋体、**粗体**（`create_font(0x1c, …, 3, 0)` 的 bit1，0x0044b747；2026-09-23 订正）
+    expect(texts[0]!.size.startsWith('bold 28px')).toBe(true);
   });
 
   it('★ 命運：说明画在 (24,330) 而不是 (24,310)', () => {

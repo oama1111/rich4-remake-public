@@ -181,3 +181,28 @@ describe('★ 素材：图 5 = 棕色金边框、图 6 = 红边白底云朵 @sou
     expect(px(six, six.anchorX, six.anchorY)[1]).toBeGreaterThan(200);
   });
 });
+
+describe('★ 框模板的字效（`create_font` 第 4 / 5 参）照每一处调用点', () => {
+  it('询问框 / 訊息框 / 老虎机 / 转盘 / 嫁禍 / 設施 / 研究所 / 亮牌 = 3,1（粗体 + 阴影）；台词气泡 = 2,1（粗体、深色、无阴影）', async () => {
+    const { BOX_TEXT_STYLE } = await import('./font.ts');
+    const { GOD_SLOT_TEXT_STYLE } = await import('./god-slot.ts');
+    const { SPEECH_TEXT_STYLE } = await import('./speech-bubble.ts');
+    const { eventBoxPlan, EVENT_TEXT_FLAGS, EVENT_TEXT_SPACING, CARD_TEXT_SPACING } = await import('./event-box-screen.ts');
+    expect(BOX_TEXT_STYLE).toMatchObject({ flags: 3, spacing: 1, color: '#f0f0f0', color2: '#101010' });
+    expect(GOD_SLOT_TEXT_STYLE).toEqual(BOX_TEXT_STYLE);
+    // @source 0x0044efc7 push 2 / 0x0044efc9 push 0 / 0x0044efcb push 0x101010：正文色是 #101010
+    expect(SPEECH_TEXT_STYLE).toMatchObject({ size: 0x10, color: '#101010', flags: 2, spacing: 1 });
+    expect([EVENT_TEXT_FLAGS, EVENT_TEXT_SPACING, CARD_TEXT_SPACING]).toEqual([3, 0, 1]);
+    const card = eventBoxPlan({ kind: 'card', id: 1, cardName: '均富卡' } as Parameters<typeof eventBoxPlan>[0]);
+    const text = card.items.find((i) => i.kind === 'text');
+    expect(text).toMatchObject({ flags: 3, spacing: 1 });
+  });
+
+  runExe('台词气泡 `0x0044efd2` 前五个 push = `6a 01 6a 02 6a 00 68 10 10 10 00 6a 10`；新聞/命運第 5 参是 0', () => {
+    expect(exeBytes(0x0044efd2 - 13, 13)).toEqual([0x6a, 0x01, 0x6a, 0x02, 0x6a, 0x00, 0x68, 0x10, 0x10, 0x10, 0x00, 0x6a, 0x10]);
+    for (const call of [0x0044b747, 0x0044dbed]) {
+      // push 0 / push 3 / push 0x101010 / push 0xf0f0f0 / push 0x1c
+      expect(exeBytes(call - 16, 16)).toEqual([0x6a, 0x00, 0x6a, 0x03, 0x68, 0x10, 0x10, 0x10, 0x00, 0x68, 0xf0, 0xf0, 0xf0, 0x00, 0x6a, 0x1c]);
+    }
+  });
+});

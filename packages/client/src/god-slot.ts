@@ -83,7 +83,7 @@ import {
   WHO_PLAYS_MASK,
   type GameState,
 } from '@rich4/core';
-import { FONT_FAMILY } from './font.ts';
+import { drawGdiText, type GdiTextStyle } from './font.ts';
 import { DIALOG_LINE_H, dialogRowMiddles } from './dialog.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv, UiKeyEvent } from './ui-screen.ts';
@@ -119,13 +119,21 @@ export const GOD_SLOT_BUBBLE = { archive: 'Data.mkf' as const, resource: 0x205, 
 export const GOD_SLOT_BUBBLE_AT = { x: 0xdc, y: 0x8c } as const;
 
 /**
- * 字级 0x10、内文 `0xf0f0f0`、**描边** `0x101010` @source 0x0044073a
- * `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` —— 与询问框/訊息框同一句（flag 3 = 带描边，
- * 见 `dialog.ts` 的 `BODY_OUTLINE`）。
+ * 字级 0x10、内文 `0xf0f0f0`、第二色 `0x101010` @source 0x0044073a
+ * `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` —— 与询问框/訊息框同一句：
+ * **3 = 粗体 + 右下 1 px 阴影**（2026-09-23 订正，先前当成描边；见 `font.ts` 的 `BOX_TEXT_STYLE`）。
  */
 export const GOD_SLOT_FONT_SIZE = 0x10;
 export const GOD_SLOT_FILL = '#f0f0f0';
 export const GOD_SLOT_OUTLINE = '#101010';
+/** 画字用的整套样式 = 框模板那一句（`font.ts` 的 `BOX_TEXT_STYLE`）*/
+export const GOD_SLOT_TEXT_STYLE: GdiTextStyle = {
+  size: GOD_SLOT_FONT_SIZE,
+  color: GOD_SLOT_FILL,
+  color2: GOD_SLOT_OUTLINE,
+  flags: 3,
+  spacing: 1,
+};
 
 /** 台詞与金额都落 (220,140) flag 4（墨迹框正中）@source 0x00440886 / 0x0043f6b9 */
 export const GOD_SLOT_TEXT_AT = { x: 0xdc, y: 0x8c } as const;
@@ -573,7 +581,7 @@ function opaque(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: n
 }
 
 /**
- * `draw_text(…, 0xdc, 0x8c, flag 4)`：整块字的**墨迹框**以 (x,y) 为中心，先描边再填字 ——
+ * `draw_text(…, 0xdc, 0x8c, flag 4)`：整块字的**墨迹框**以 (x,y) 为中心，粗体 + 1 px 阴影 ——
  * 与询问框/訊息框同一个画法（`dialog.ts` 的 `dialogRowMiddles` / `DIALOG_LINE_H`，D-DIALOG-1）。
  */
 function centerText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number): void {
@@ -582,17 +590,12 @@ function centerText(ctx: CanvasRenderingContext2D, text: string, x: number, y: n
     lines.map((t) => ({ h: DIALOG_LINE_H, size: GOD_SLOT_FONT_SIZE, blank: t === '' })),
     y,
   );
-  ctx.font = `${GOD_SLOT_FONT_SIZE}px ${FONT_FAMILY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.lineWidth = 3;
   lines.forEach((line, i) => {
     if (line === '') return;
     const ly = mids[i] ?? y;
-    ctx.strokeStyle = GOD_SLOT_OUTLINE;
-    ctx.strokeText(line, x, ly);
-    ctx.fillStyle = GOD_SLOT_FILL;
-    ctx.fillText(line, x, ly);
+    drawGdiText(ctx, line, x, ly, GOD_SLOT_TEXT_STYLE);
   });
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';

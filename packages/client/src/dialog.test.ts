@@ -178,6 +178,16 @@ describe('★ 訊息框 / 询问框的字：整块竖直居中在锚点 (0xdc,0x
       fill: string;
       stroke: string;
     }[];
+    shadows: {
+      text: string;
+      x: number;
+      y: number;
+      baseline: string;
+      align: string;
+      font: string;
+      fill: string;
+      stroke: string;
+    }[];
   } {
     const texts: {
       text: string;
@@ -189,6 +199,7 @@ describe('★ 訊息框 / 询问框的字：整块竖直居中在锚点 (0xdc,0x
       fill: string;
       stroke: string;
     }[] = [];
+    const shadows: typeof texts = [];
     const ctx = {
       font: '',
       textAlign: 'left',
@@ -204,7 +215,8 @@ describe('★ 訊息框 / 询问框的字：整块竖直居中在锚点 (0xdc,0x
       strokeText: () => undefined,
       measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
       fillText(this: CanvasRenderingContext2D, text: string, x: number, y: number) {
-        texts.push({
+        // 阴影那一遍（第二色 #101010，`font.ts` 的 `drawGdiText`）单独记，正文才进 `texts`
+        (String(this.fillStyle) === '#101010' ? shadows : texts).push({
           text,
           x,
           y,
@@ -216,7 +228,7 @@ describe('★ 訊息框 / 询问框的字：整块竖直居中在锚点 (0xdc,0x
         });
       },
     } as unknown as CanvasRenderingContext2D;
-    return { ctx, texts };
+    return { ctx, texts, shadows };
   }
 
   it('★ 锚点就是框皮的锚点：屏幕 (220,140) → 棋盘区 (220,100)', () => {
@@ -256,15 +268,17 @@ describe('★ 訊息框 / 询问框的字：整块竖直居中在锚点 (0xdc,0x
     expect(ys[0]! + ys[ys.length - 1]!).toBe(2 * DIALOG_ANCHOR.y);
   });
 
-  it('★ 字体照原版：16 号、#f0f0f0 填充 + #101010 描边；行距 22（字号 + 6，D-DIALOG-1）', () => {
-    const { ctx, texts } = recordingCtx();
+  it('★ 字体照原版：16 号**粗体**、#f0f0f0 正文 + #101010 **右下 1 px 阴影**（`create_font(…, 3, 1)`：bit1 粗体 + bit0 阴影）；行距 22（字号 + 6，D-DIALOG-1）', () => {
+    // 2026-09-23 订正：第 4 参 3 = 阴影 + 粗体，不是「描边」（描边是 bit2 = 4，见 `font.test.ts` 的逐字节取证）
+    const { ctx, texts, shadows } = recordingCtx();
     drawDialog(ctx, () => null, { title: '', detail: '甲\n乙', choices: [] }, null, null);
     expect(texts).toHaveLength(2);
-    for (const t of texts) {
-      expect(t.font.startsWith('16px ')).toBe(true);
+    expect(shadows).toHaveLength(2);
+    texts.forEach((t, i) => {
+      expect(t.font.startsWith('bold 16px ')).toBe(true);
       expect(t.fill).toBe('#f0f0f0');
-      expect(t.stroke).toBe('#101010');
-    }
+      expect(shadows[i]).toMatchObject({ text: t.text, x: t.x + 1, y: t.y + 1, fill: '#101010' });
+    });
     expect(texts[1]!.y - texts[0]!.y).toBe(22);
   });
 

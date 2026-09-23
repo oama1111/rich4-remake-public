@@ -358,8 +358,9 @@ describe('drawResearchScreen（假 ctx）', () => {
       drawImage: (_b: unknown, dx: number, dy: number) => {
         images.push({ archive: current!, dx, dy });
       },
-      fillText: (t: string, x: number, y: number) => {
-        textAt.push({ t, x, y });
+      // 字效 3 的阴影那一遍（第二色 #101010，`font.ts` 的 `drawGdiText`）不记 —— 只记正文
+      fillText(this: { fillStyle: unknown }, t: string, x: number, y: number) {
+        if (String(this.fillStyle) !== '#101010') textAt.push({ t, x, y });
       },
       strokeText: () => undefined,
       fillRect: (x: number, y: number, w: number, h: number) => {

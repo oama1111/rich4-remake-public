@@ -80,7 +80,10 @@ function fakeCtx(): {
     restore: () => undefined,
     drawImage: (b: { chunk: number }, x: number, y: number) => images.push({ chunk: b.chunk, x, y }),
     strokeRect: (x: number, y: number, w: number, h: number) => rects.push({ x, y, w, h }),
-    fillText: (t: string, x: number, y: number) => texts.push({ t, x, y }),
+    // 字效 3 的阴影那一遍（第二色 #101010，`font.ts` 的 `drawGdiText`）不记 —— 只记正文
+    fillText(this: { fillStyle: unknown }, t: string, x: number, y: number) {
+      if (String(this.fillStyle) !== '#101010') texts.push({ t, x, y });
+    },
     strokeText: () => undefined,
     font: '16px sans-serif',
     textAlign: 'left',

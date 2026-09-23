@@ -43,7 +43,7 @@
 
 import type { GameState, MapTopology } from '@rich4/core';
 import type { Sprite } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { drawGdiText } from './font.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 面板与立绘板所在的档案 @source `[0x48bad8]`（= `read_mkf(Data.mkf, 0x205)`）*/
@@ -250,14 +250,10 @@ function text(
   y: number,
   flag: 2 | 4,
 ): void {
-  ctx.font = `${PICKER_FONT_SIZE}px ${FONT_FAMILY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = flag === 2 ? 'middle' : 'middle';
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = PICKER_OUTLINE;
-  ctx.strokeText(s, x, y);
-  ctx.fillStyle = PICKER_FILL;
-  ctx.fillText(s, x, y);
+  // `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` @source 0x00440ac2 —— 粗体 + 右下 1 px 阴影（`font.ts`）
+  drawGdiText(ctx, s, x, y, { size: PICKER_FONT_SIZE, color: PICKER_FILL, color2: PICKER_OUTLINE, flags: 3, spacing: 1 });
 }
 
 /** 画整扇窗（只在这一屏接管时调）*/

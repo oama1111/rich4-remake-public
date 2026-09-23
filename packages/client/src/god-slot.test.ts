@@ -437,7 +437,10 @@ function fakeCtx(): { ctx: CanvasRenderingContext2D; images: Drawn[]; texts: str
     drawImage: (b: Drawn, x: number, y: number) => {
       images.push({ archive: b.archive, resource: b.resource, index: b.index, x, y });
     },
-    fillText: (t: string) => texts.push(t),
+    // 字效 3 的阴影那一遍（第二色 #101010，`font.ts` 的 `drawGdiText`）不记 —— 只记正文
+    fillText(this: { fillStyle: unknown }, t: string) {
+      if (String(this.fillStyle) !== '#101010') texts.push(t);
+    },
     strokeText: () => undefined,
   };
   return { ctx: ctx as unknown as CanvasRenderingContext2D, images, texts };
