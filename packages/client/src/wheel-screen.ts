@@ -93,7 +93,6 @@ import {
   WHEEL_SLOTS,
   WHEEL_TABLE,
   WHO_PLAYS_HUMAN,
-  WHO_PLAYS_MASK,
   WatcomRng,
   addInsuranceDays,
   effectiveFacility,
@@ -507,8 +506,8 @@ export function wheelCue(
   if (node === undefined || node.specialKind !== 0) return null;
   // ★ 一個 rand() 都沒取 = 這一趟沒有轉盤（免收那三條 / 不取隨機數的行業）
   if (before.rngState === after.rngState) return null;
-  const human =
-    (p.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN && p.blocking.sleepWalking === 0;
+  // @source `0x0043f84f cmp byte [+0x15], 1 / ja` / `0x0043fa6d cmp byte [+0x15], 1 / jne` —— ★ 整字节：託管不算真人（2026-09-23 订正）
+  const human = p.whoPlays === WHO_PLAYS_HUMAN && p.blocking.sleepWalking === 0;
   const slots = (wheel: number): Pick<WheelCue, 'start' | 'stop' | 'value'> => {
     const start = new WatcomRng(before.rngState).next() % WHEEL_SLOTS;
     const stop = firstFilledSlot(wheel, start);

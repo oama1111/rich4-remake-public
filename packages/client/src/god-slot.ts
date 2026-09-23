@@ -80,7 +80,6 @@
 import { GOD_ATTACH, formatOriginal, godNameOf } from '@rich4/data';
 import {
   WHO_PLAYS_HUMAN,
-  WHO_PLAYS_MASK,
   type GameState,
 } from '@rich4/core';
 import { drawGdiText, type GdiTextStyle } from './font.ts';
@@ -333,7 +332,8 @@ export function godSlotCue(before: GameState, after: GameState): GodSlotCue | nu
     amount,
     host,
     text: formatOriginal(fmt, godNameOf(god.type)),
-    human: (now.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN && now.blocking.sleepWalking === 0,
+    // @source `0x0043f75e cmp byte [+0x15], 1 / jne` —— ★ 整字节：託管（1|4）不认点击（2026-09-23 订正）
+    human: now.whoPlays === WHO_PLAYS_HUMAN && now.blocking.sleepWalking === 0,
   };
 }
 
