@@ -1610,7 +1610,7 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
    *   ⇒ 按 C 级上报 `docs/escalations.md` E-19，**暂定 `afterStage`**（照 §2.2 对
    *   `afterNotice` 的先例）。首席裁定后改 `DETECTORS` 里那一处、并改这里的期望值。
    */
-  const ORDERS: readonly (readonly [string, 'beforeStage' | 'afterStage', string])[] = [
+  const ORDERS: readonly (readonly [string, 'beforeStage' | 'afterStage' | 'afterTailBox', string])[] = [
     ['prisonEntered', 'afterStage', '§2.2 表：送監獄 `0x0043d71c`（影片 → 镜头 → 台词）'],
     ['hospitalEntered', 'afterStage', '§2.2 表：送醫院 `0x0043edcb`（影片 → 镜头 → 台词）'],
     ['dreamCard', 'afterStage', '⚠E-19：调用点 `0x00444356` 前后两列都空'],
@@ -1622,8 +1622,11 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     ['godLeft', 'afterStage', '⚠E-19：调用点 `0x0040e659` 前后两列都空'],
     ['godArrived', 'beforeStage', '§2.2 表：壞神附身 `0x0040ef44`…（台词 → 影片 → 神明窗）'],
     // ★ W-55 行 6/7 在同一工作区里并行落地的四条 —— 也在这张「一行一个探测器」的表里
-    ['landGodLine', 'afterStage', '§2.2 表：土地公顯靈 `0x0040f8ab`（镜头 → 訊息框 → 台词）'],
-    ['luckyGodLine', 'afterStage', '§2.2 表：福神顯靈 `0x0040fa1e/0x0040fa5c` 裁定 afterNotice；两档制下取 §2.2 兜底的 afterStage'],
+    // ★ 第十五份：两句都排在「反应台词之后才弹」的框（`tail` 档）之后 —— 第三档 `afterTailBox`
+    //   （顯靈框在落点尾块 `0x0041b086 call 0x40f381`，付款台词 `0x00419f67` 之后；
+    //    福神框 `0x00419a48 call 0x40f8be` 在街區台词 `0x00419a31` 之后）
+    ['landGodLine', 'afterTailBox', '§2.2 表：土地公顯靈 `0x0040f8ab`（镜头 → 訊息框 → 台词）；框是 `tail` 档'],
+    ['luckyGodLine', 'afterTailBox', '§2.2 表：福神顯靈 `0x0040fa1e/0x0040fa5c` 裁定 afterNotice = 第十五份的 `afterTailBox`'],
     ['smallWealthLine', 'afterStage', '§2.2 表：小財神 `0x0040ecde`（神明台词窗 → 轉盤窗 → 收款 → 台词）'],
     ['bigWealthLine', 'afterStage', 'W-55 行 7（G34）：`0x0040ed85` 排在收款 `0x0040ed52` 之后（§2.2 表没有这一行）'],
     ['moneyPaid', 'afterStage', '§2.2 表：設施收費 `0x0041a71e`（轉盤 → 訊息框 → 收費 → 台词）'],
@@ -1657,9 +1660,9 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     expect([...DETECTORS].map((d) => d.name).sort()).toEqual(ORDERS.map(([n]) => n).sort());
   });
 
-  it('★ 每条 order 都是显式写的两个字面量之一（没有缺省值可漏）', () => {
+  it('★ 每条 order 都是显式写的三个字面量之一（没有缺省值可漏）', () => {
     for (const d of DETECTORS) {
-      expect(['beforeStage', 'afterStage'], `${d.name} 的 order`).toContain(d.order);
+      expect(['beforeStage', 'afterStage', 'afterTailBox'], `${d.name} 的 order`).toContain(d.order);
     }
   });
 
@@ -1958,10 +1961,10 @@ describe('★★ W-55：財神那一笔**让开**通用的進帳/付錢两条探
 describe('★ W-55 的探测器都在 `DETECTORS` 里、且 `order` 照 §2.2', () => {
   it('★ 四条新探测器各有一条 `order`（表里没有的那些按兜底 `afterStage`）', () => {
     const want: Record<string, string> = {
-      // §2.2：土地公顯靈 —— 镜头 → 訊息框 → 台词
-      landGodLine: 'afterStage',
-      // §2.2 说 `afterNotice`，而 `SpeechOrder` 只有两档 ⇒ 兜底 `afterStage`
-      luckyGodLine: 'afterStage',
+      // §2.2：土地公顯靈 —— 镜头 → 訊息框 → 台词；框在落点尾块（第十五份：`tail` 档）⇒ `afterTailBox`
+      landGodLine: 'afterTailBox',
+      // §2.2 说 `afterNotice` —— 第十五份起就是第三档 `afterTailBox`
+      luckyGodLine: 'afterTailBox',
       // §2.2：小財神 —— 神明台词窗 → 轉盤窗 → 收款 → 台词
       smallWealthLine: 'afterStage',
       // W-55 表尾指定 `afterStage`（收款之后才说）

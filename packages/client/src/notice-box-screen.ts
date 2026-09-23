@@ -85,6 +85,7 @@ import {
 } from '@rich4/data';
 import type { GameState, NoticeHint, NoticeKey } from '@rich4/core';
 import { drawDialog } from './dialog.ts';
+import { boxRank, noticeTier, type BoxTier } from './presentation-order.ts';
 import type { InteractionUi } from './interactions.ts';
 import { LAYOUT } from './stage.ts';
 import type { UiKeyEvent, UiScreen, UiScreenEnv } from './ui-screen.ts';
@@ -276,49 +277,49 @@ interface QueuedNotice {
   beforeFilms: boolean;
   /** 框收掉之后还要**空等**多久（见 core 的 `NoticeHint.afterMs`）*/
   afterMs: number;
-  /** 原版排在同一拍的**角色台词之后**（见 `noticeAfterSpeech`）*/
-  afterSpeech: boolean;
+  /**
+   * 这一扇在「框 / 台词」先后尺子上的档（`presentation-order.ts` 的 `NOTICE_TIER`）——
+   * 起播前问台词那一侧：台上有气泡、或有档更小的台词还押着 ⇒ 先等（第十五份）。
+   */
+  tier: BoxTier;
   /** ★ 第十四份：这一扇是亮牌（`NoticeHint.card`）—— 交给事件提示框播 */
   card?: number;
   /** 右移 100 的那一种（`NoticeHint.shiftRight`）*/
   shiftRight?: boolean;
 }
 
-/**
- * 这一扇在原版里是不是排在**角色台词之后**才弹。
- *
- * ★ 第十三份試玩回報 #2（150236）：「NPC在医院里还剩多少天的弹窗被台词框遮住了」。
- *   回合開始被阻那五扇（`fcn_0040c912`）的次序是**先说、后弹框**：
- * ```asm
- * 0040ca20  call 0x456f2d / test al,1 / je      ; 坐牢：1/2 機率说事件 19
- * 0040ca51  call 0x44ef41                       ; player_say —— 阻塞：语音放完再等 1000 ms（`fcn_004544f6(0x3e8)`）
- * 0040ca81  call 0x457110                       ; 才 sprintf「還剩 N 天」
- * 0040caca  call 0x44ef41                       ; 住院那句（事件 20）同形
- * 0040cb4c  call 0x44ef41                       ; 冬眠那句（事件 21）同形
- * 0040cb98  call 0x440cac(文字, 0x5dc)          ; ★ 所有台词都说完之后才弹这一扇框（1500 ms）
- * ```
- *   ⇒ 台词气泡（`player_say` 画在 (170..,130) 一带）与这扇框（锚点 (220,140)）在原版里**从不同时在屏上**。
- *   本引擎的台词是队列、框是整屏，一条 action 同时交出来 ⇒ 这几扇框等台词队列说完再起播。
- *   其余的框（過路費 → 付款台词、神明顯靈 → 台词…）原版都是**框在前**，不走这条。
+/*
+ * ★★ 第十五份（2026-09-23）：先前这里有一个 `noticeAfterSpeech(key)` —— 只有回合開始被挡那五扇、
+ *   保險理賠、小衰神丢卡这几扇**等台词说完**，其余的框一律与台词同时起播。于是凡是「台词在框之前」
+ *   而又没登记的地方都重叠（电脑用道具：「使用定時炸彈」框与道具台词同屏）。
+ *   现在**每一扇**起播前都问台词那一侧（`presentation-order.ts` 的 `boxMayStart`）：
+ *   台上有气泡 ⇒ 等（互斥）；有档更小的台词还押着 ⇒ 等（先后）。档次逐键写在 `NOTICE_TIER`。
+ *   · 回合開始被挡：`fcn_0040c912` 三句台词 `0x0040ca51`/`0x0040caca`/`0x0040cb4c` → 框 `0x0040cb98` ⇒ `stage`；
+ *   · 保險理賠：六个调用点都在台词之后 ⇒ `tail`；
+ *   · 小衰神丢卡：台词 `0x0040f0ac` → 影片 → 开场白 → 框 `0x0040f148` ⇒ `stage`。
  */
-export function noticeAfterSpeech(key: NoticeKey): boolean {
-  // ★ 第十四份：保險理賠那一扇在六个调用点上**都排在台词之后**（`fcn_0044ba63` 里没有台词，
-  //   它前面那一句是付款 / 入獄 / 住院 / 住店的台词）：
-  //   命運罰款 `0x0044cef9 call 0x44f42d` → `0x0044cf11 call 0x44ba63`；
-  //   坐牢 `0x0043d71c player_say` → `0x0043d749`；住院 `0x0043edcb` → `0x0043edf8`；
-  //   住旅館 `0x0041a7e0 call 0x44f2c2` → `0x0041a82d`。
-  // ★ 2026-09-23：小衰神丢卡那一扇排在「別鬧了！」（事件 22，`0x0040f0ac call 0x44ef41`）之后 ——
-  //   原版次序：台词 → 影片 0x222 → 开场白 `0x40e2a2` → 丢卡 `0x441e77` → 框 `0x0040f148`。
-  return key.startsWith('confinement.') || key === 'insurance.payout' || key === 'god.lostCard';
-}
 
 /**
- * ★ 第十四份：队头那一扇正在**等台词说完**（`noticeAfterSpeech` 且台词闸关着）。
+ * ★ 第十四份：队头那一扇正在**等台词说完**（台词闸对它的档关着，见 `setNoticeSpeechGate`）。
  *   这时本屏只是「排着」，不该算台上在演 —— 否则押在演出之后的台词（`afterStage`）
  *   与这扇框互相等（`main.ts` 的 `blockingPresentation` 用它）。
  */
 export function noticeWaitingForSpeech(): boolean {
-  return playback === null && tail === null && pending[0]?.afterSpeech === true && speechGate?.() === true;
+  const head = pending[0];
+  return playback === null && tail === null && head !== undefined && speechGate?.(head.tier) === true;
+}
+
+/**
+ * ★ 第十五份：屏上**此刻**正有一扇框（含收掉之后那段点不掉的空等 `tail`）——
+ *   台词那一侧的闸（`lineMayEnter`）靠它做互斥。排着没起播的不算（见 `noticePendingRanks`）。
+ */
+export function noticeShowing(): boolean {
+  return playback !== null || tail !== null;
+}
+
+/** ★ 第十五份：排着、还没起播的那几扇各自的档（`boxRank`）—— 台词不许抢到档更小的框前面 */
+export function noticePendingRanks(): number[] {
+  return pending.map((n) => boxRank(n.tier));
 }
 
 /** 正在弹的那一扇是不是「排在影片之前」的那一种 */
@@ -356,10 +357,13 @@ export function setNoticeStartGate(f: (() => boolean) | null): void {
   startGate = f;
 }
 
-/** 「台词队列还在说」—— 只对 `noticeAfterSpeech` 的那几扇生效（不给 = 永远放行） */
-let speechGate: (() => boolean) | null = null;
+/**
+ * 台词那一侧的闸：给这一扇的档，返回 `true` = **还不能起播**（台上有气泡，或有档更小的台词押着）。
+ * 宿主用 `presentation-order.ts` 的 `boxMayStart` 实现；不给（单测）= 永远放行。
+ */
+let speechGate: ((tier: BoxTier) => boolean) | null = null;
 
-export function setNoticeSpeechGate(f: (() => boolean) | null): void {
+export function setNoticeSpeechGate(f: ((tier: BoxTier) => boolean) | null): void {
   speechGate = f;
 }
 
@@ -437,8 +441,9 @@ function startNext(env: UiScreenEnv): void {
   //   ★ 例外：「排在影片之前」的那几扇（魔法屋）不看这道闸 —— 反过来是影片等它们
   //     （`noticeHoldsFilms`），两边都等就是死锁。
   if (pending[0]?.beforeFilms !== true && gated()) return;
-  // ★ 第十三份試玩回報 #2：回合開始被阻那几扇等台词说完（`noticeAfterSpeech`）
-  if (pending[0]?.afterSpeech === true && speechGate?.() === true) return;
+  // ★ 第十五份：每一扇都先问台词那一侧（互斥 + 先后，`presentation-order.ts`）
+  const head = pending[0];
+  if (head !== undefined && speechGate?.(head.tier) === true) return;
   const item = pending.shift();
   if (item === undefined) {
     pending = [];
@@ -594,21 +599,21 @@ export const noticeBoxScreen: UiScreen = {
     if (list === before.notices || list.length === 0) return;
     // ★ **不丢**：正在播就把新的排到队尾（原版是一次 action 里连弹几扇，见头注释）
     for (const n of list) {
-      pending.push({
+      enqueue({
         key: n.key,
         text: noticeText(n),
         holdMs: n.holdMs ?? NOTICE_HOLD_MS,
         beforeFilms: n.beforeFilms === true,
         afterMs: n.afterMs ?? 0,
-        afterSpeech: noticeAfterSpeech(n.key),
+        tier: noticeTier(n.key),
         ...(n.card === undefined ? {} : { card: n.card }),
         ...(n.shiftRight === true ? { shiftRight: true } : {}),
       });
     }
-    // ★ 第十三份試玩回報 #2：排在台词之后的那几扇**不在这一拍起播** —— 同一条 action 的台词
-    //   要等各整屏的 `event()` 派完才入队（`main.ts` 的 `notifyApplied` → `queueSpeech`），
-    //   此刻台词队列还是空的；交给下一帧的 `tick` 再看台词闸。
-    if (playback === null && tail === null && pending[0]?.afterSpeech !== true) startNext(env);
+    // ★ 第十五份：当场起播与否全凭闸（`startNext` 里问台词那一侧）—— 宿主在派 `event()` **之前**
+    //   已把这一条 action 的台词押上账（`main.ts` 的 `notifyApplied` → `holdSpeech`），
+    //   所以排在台词之后的框（回合開始被挡、理賠…）此刻就知道要等；闸关着就交给下一帧的 `tick`。
+    if (playback === null && tail === null) startNext(env);
     env.requestRender();
   },
 };
@@ -619,15 +624,27 @@ export const noticeBoxScreen: UiScreen = {
  *   core 并不知道玩家点了一下。排到队尾，下一拍 `tick` 起播（`active()` 因队列非空而为真）。
  */
 export function queueLocalNotice(n: NoticeHint): void {
-  pending.push({
+  enqueue({
     key: n.key,
     text: noticeText(n),
     holdMs: n.holdMs ?? NOTICE_HOLD_MS,
     beforeFilms: false,
     afterMs: 0,
-    afterSpeech: false,
+    tier: noticeTier(n.key),
     ...(n.shiftRight === true ? { shiftRight: true } : {}),
   });
+}
+
+/**
+ * 按档排进队列（**稳定**：同档保持 core 交出来的先后 = exe 里的弹框先后）。
+ *
+ * ★ 第十五份：core 一条 action 交出来的框本来就是 exe 的先后，按档排不会改动它们；
+ *   这一步是防死锁的保险 —— 若档更大的框排在档更小的框前面，前者等台词、台词等后者，就互等了。
+ */
+function enqueue(item: QueuedNotice): void {
+  let i = pending.length;
+  while (i > 0 && boxRank(pending[i - 1]!.tier) > boxRank(item.tier)) i--;
+  pending.splice(i, 0, item);
 }
 
 /** 给单测的只读视图 */
