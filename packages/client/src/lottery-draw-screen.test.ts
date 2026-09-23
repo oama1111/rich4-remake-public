@@ -63,11 +63,14 @@ import {
   tallyString,
   voiceOf,
   setCeremonySurfaceFactory,
+  DRAW_VOICE_MAX_ASKS,
+  DRAW_VOICE_RETRY_MS,
 } from './lottery-draw-screen.ts';
 import type { DrawSprite } from './lottery-draw-screen.ts';
 import * as mod from './lottery-draw-screen.ts';
 import type { LoadedFlic, Sprite } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
+import { setVoiceBusyProbe, setVoiceSink, setVoiceStopper } from './voice-sink.ts';
 
 // ============================================================
 //  素材与常量
@@ -1405,6 +1408,41 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
     expect(lotteryDrawScreen.fastForward!(env)).toBe(false);
   });
 
+  it('★ 收屏时把本台正在念的那一句停掉（需求方拍板 2026-09-23）', () => {
+    resetLotteryDrawScreenState();
+    const [before, after] = winPair();
+    const env = makeEnv(after, FLICS());
+    let stops = 0;
+    setVoiceStopper(() => {
+      stops += 1;
+    });
+    try {
+      lotteryDrawScreen.event!(before, after, env);
+      tickUntilStep(env, 2);
+      expect(lotteryDrawScreen.fastForward!(env)).toBe(true);
+      expect(stops).toBe(1);
+    } finally {
+      setVoiceStopper(null);
+    }
+  });
+
+  it('★ 还没上屏就收 ⇒ 不去停别人的语音（本屏一句都还没说）', () => {
+    resetLotteryDrawScreenState();
+    const [before, after] = losePair();
+    const env = makeEnv(after, FLICS());
+    let stops = 0;
+    setVoiceStopper(() => {
+      stops += 1;
+    });
+    try {
+      lotteryDrawScreen.event!(before, after, env);
+      expect(lotteryDrawScreen.fastForward!(env)).toBe(true);
+      expect(stops).toBe(0);
+    } finally {
+      setVoiceStopper(null);
+    }
+  });
+
   it('★ 还没上屏（分紅屏还占着）也一并收', () => {
     resetLotteryDrawScreenState();
     const [before, after] = losePair();
@@ -1415,5 +1453,120 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
     lotteryDrawScreen.tick!(env);
     expect(env.tracks).toEqual([]); // 不会再上屏换曲
     expect(lotteryDrawActive()).toBe(false);
+  });
+});
+
+// ============================================================
+//  第十三份試玩回報：「乐透开奖的语音重复」
+// ============================================================
+
+/**
+ * 跑完整场：每拍之间画 3 帧（生产里 `draw` 每帧都来），收集送进语音出口的号。
+ *
+ * `busy` 模拟 `main.ts` 注册的「语音还在响吗」：给出每个语音号的时长（ms），
+ * 以最近一次起播为准 —— 与 `0x4544b9` 只问**唯一那一路**缓冲一样。
+ */
+/** `Speaking.mkf` 实测时长（ms）*/
+const REAL_VOICE_MS: Record<number, number> = { 17: 3122, 18: 2511, 19: 1282, 32: 1629, 33: 2780, 34: 1725, 35: 1836, 36: 963 };
+
+function runWithVoices(
+  pair: [GameState, GameState],
+  durations: Record<number, number> = REAL_VOICE_MS,
+  at: number[] = [],
+): number[] {
+  resetLotteryDrawScreenState();
+  const [before, after] = pair;
+  const env = makeEnv(after, FLICS());
+  const voices: number[] = [];
+  let last: { code: number; at: number } | null = null;
+  setVoiceSink((v) => {
+    voices.push(v);
+    at.push(env.now);
+    last = { code: v, at: env.now };
+  });
+  setVoiceBusyProbe(() => {
+    const l = last as { code: number; at: number } | null;
+    return l !== null && env.now - l.at < (durations[l.code] ?? 0);
+  });
+  try {
+    lotteryDrawScreen.event!(before, after, env);
+    for (let i = 0; i < 4000 && lotteryDrawActive(); i++) {
+      tickOnce(env);
+      for (let k = 0; k < 3; k++) lotteryDrawScreen.draw(env);
+    }
+    expect(lotteryDrawActive()).toBe(false);
+  } finally {
+    setVoiceSink(null);
+    setVoiceBusyProbe(null);
+  }
+  return voices;
+}
+
+describe('★★ 第十三份試玩回報「乐透开奖的语音重复」：每句台词的语音**只请求一次**', () => {
+  it('★ 空号那一场：#0017 → #0018 → #0033 → #0034 → #0035 → #0036，各一次（先前短句在 2 秒字框里每帧重请求）', () => {
+    // 次序 @source 0x0043010c（core `lottery-ceremony.ts` 文件头的表）
+    expect(runWithVoices(losePair())).toEqual([17, 18, 33, 34, 35, 36]);
+  });
+
+  it('★ 兜底：语音一直没响起来（桌面版 `Speaking.mkf` 还没到货）⇒ 每句**只补一次**、在 +500 ms', () => {
+    const at: number[] = [];
+    const got = runWithVoices(losePair(), {}, at);
+    expect(got).toEqual([17, 17, 18, 18, 33, 33, 34, 34, 35, 35, 36, 36]);
+    for (let i = 0; i < got.length; i += 2) expect(at[i + 1]! - at[i]!).toBe(DRAW_VOICE_RETRY_MS);
+    expect(DRAW_VOICE_RETRY_MS).toBe(500);
+    expect(DRAW_VOICE_MAX_ASKS).toBe(2);
+  });
+
+  it('★ 有人中那一场：#0017 → #0018 → #0019 → #0032 →（6→8 不说话）→ #0035 → #0036，各一次', () => {
+    expect(runWithVoices(winPair())).toEqual([17, 18, 19, 32, 35, 36]);
+  });
+
+  it('★ 绘制链只剥不播：`bubbleLines` 不碰语音出口', () => {
+    const voices: number[] = [];
+    setVoiceSink((v) => voices.push(v));
+    try {
+      expect(bubbleLines('#0036行動要快喔！')).toEqual(['行動要快喔！']);
+      expect(voices).toEqual([]);
+    } finally {
+      setVoiceSink(null);
+    }
+  });
+});
+
+describe('★★ 字框寿命 = max(2 秒, 语音时长) @source `fcn_0044ee18` 0x0044ee4e / 0x0044ee6c', () => {
+  it('★ 语音还在响（#0017 实长 3122 ms）⇒ 满 2 秒也不报幕；响完那一拍才进下一句', () => {
+    resetLotteryDrawScreenState();
+    const [before, after] = losePair();
+    const env = makeEnv(after, FLICS());
+    let busyUntil = -1;
+    setVoiceSink(() => {
+      busyUntil = env.now + 3122;
+    });
+    setVoiceBusyProbe(() => env.now < busyUntil);
+    try {
+      lotteryDrawScreen.event!(before, after, env);
+      lotteryDrawScreen.tick!(env); // 上屏：说开场白
+      expect(lotteryDrawStep()).toBe(0);
+      while (env.now < 3100) tickOnce(env);
+      expect(lotteryDrawStep()).toBe(0); // 先前固定 2 秒：这里早已跳到「現在馬上…」，把 #0017 截在半路
+      expect(lotteryDrawView(env)!.lines.join('')).toContain('開獎時間');
+      tickOnce(env);
+      expect(lotteryDrawStep()).toBe(1);
+    } finally {
+      setVoiceSink(null);
+      setVoiceBusyProbe(null);
+    }
+  });
+
+  it('★ 没有「语音在响」（音效档关着 / 单测）⇒ 仍是 2 秒', () => {
+    resetLotteryDrawScreenState();
+    const [before, after] = losePair();
+    const env = makeEnv(after, FLICS());
+    lotteryDrawScreen.event!(before, after, env);
+    lotteryDrawScreen.tick!(env);
+    while (env.now < 1950) tickOnce(env);
+    expect(lotteryDrawStep()).toBe(0);
+    tickOnce(env);
+    expect(lotteryDrawStep()).toBe(1);
   });
 });
