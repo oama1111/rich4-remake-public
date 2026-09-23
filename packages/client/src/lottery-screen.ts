@@ -105,6 +105,7 @@ import { FONT_FAMILY } from './font.ts';
 // 取消音（`[0x482332] = 4`）—— 与右键/ESC 那条梯子共用同一个号
 import { CANCEL_SOUND } from './panel-cancel.ts';
 import { DRAW_DRUM_RESOURCE, DRAW_FLOWER_RESOURCE } from './lottery-draw-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type LotSprite = (
@@ -624,7 +625,7 @@ function digitSprite(sprite: LotSprite, index: number): Sprite | null {
 /** 锚点落点绘制（图的 anchorX/anchorY 对到 (x,y)）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**

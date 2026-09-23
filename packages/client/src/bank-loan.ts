@@ -57,6 +57,7 @@
 import type { ArchiveName, Sprite } from './assets.ts';
 import { bankSprite } from './bank-dynamic.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type LoanSprite = (
@@ -441,13 +442,13 @@ export function drawBankLoan(
   const office = view.chairman && view.subDialog;
   const roomImage = office ? LOAN_ROOM.chairman : LOAN_ROOM.normal;
   const room = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, roomImage);
-  if (room !== null) ctx.drawImage(room.bitmap, 0, 0);
+  if (room !== null) drawSprite(ctx, room, 0, 0);
 
   if (office) {
     // ★ 三条数额底下那张红条面板（图 20）—— 原版是**贴进办公室底图**里的，
     //   竖着叠在数额下面，所以先画它再画字（`fcn_00456280` 不透明贴）。
     const panel = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, LOAN_FINANCE_PANEL.image);
-    if (panel !== null) ctx.drawImage(panel.bitmap, LOAN_FINANCE_PANEL.x, LOAN_FINANCE_PANEL.y);
+    if (panel !== null) drawSprite(ctx, panel, LOAN_FINANCE_PANEL.x, LOAN_FINANCE_PANEL.y);
     // 董事長室那一支：三行 16 号 + 特别融資 + 两颗小钮的字
     // ★ 标签是**底图自己带的**（`fcn_00434186` 画进图 2 里的），数字才是子对话框画的
     for (let i = 0; i < LOAN_FINANCE_ROWS.length; i++) {
@@ -464,7 +465,7 @@ export function drawBankLoan(
     // @source `fcn_00434186` 的三次 `fcn_004562a5`
     for (const [img, x, y] of [[16, 11, 305], [16, 11, 362], [18, 11, 419]] as const) {
       const s = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, img);
-      if (s !== null) ctx.drawImage(s.bitmap, x, y);
+      if (s !== null) drawSprite(ctx, s, x, y);
     }
   } else {
     // 柜台那一屏：两张白单子上的字（董事長自己也走这两颗 —— 原版 `loc_00435d48`
@@ -475,8 +476,9 @@ export function drawBankLoan(
     if (!view.chairman) {
       const blind = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, LOAN_BLIND_WINDOW.image);
       if (blind !== null) {
-        ctx.drawImage(
-          blind.bitmap,
+        drawSprite(
+          ctx,
+          blind,
           LOAN_BLIND_WINDOW.x - blind.anchorX,
           LOAN_BLIND_WINDOW.y - blind.anchorY,
         );
@@ -488,7 +490,7 @@ export function drawBankLoan(
   // —— 原版是子对话框 `fcn_00434492` 的 100 ms 定时器在画（`loc_00434958`）。
   if (office && view.blink !== null) {
     const eyes = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, view.blink);
-    if (eyes !== null) ctx.drawImage(eyes.bitmap, LOAN_BLINK_AT.x, LOAN_BLINK_AT.y);
+    if (eyes !== null) drawSprite(ctx, eyes, LOAN_BLINK_AT.x, LOAN_BLINK_AT.y);
   }
 
   // 冻结中：禁止章 —— **贴进当屏那张底图**，所以两个落点（见 LOAN_FROZEN_MARK）
@@ -498,7 +500,7 @@ export function drawBankLoan(
     const at = office ? LOAN_FROZEN_MARK_CHAIRMAN : LOAN_FROZEN_MARK;
     const mark = bankSprite(sprite, 'Panel.mkf', LOAN_RESOURCE, at.image);
     if (mark !== null) {
-      ctx.drawImage(mark.bitmap, at.x - mark.anchorX, at.y - mark.anchorY);
+      drawSprite(ctx, mark, at.x - mark.anchorX, at.y - mark.anchorY);
     }
   }
 }

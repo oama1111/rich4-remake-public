@@ -85,6 +85,7 @@
  */
 import { FONT_FAMILY } from './font.ts';
 import type { ArchiveName } from './assets.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 過場整屏尺寸（原版主表面 640×480，`0x40163d` 的 `SetDisplayMode(0x280,0x1e0,0x10)`）*/
 export const INTRO_SIZE = { w: 0x280, h: 0x1e0 } as const;
@@ -314,6 +315,9 @@ export type IntroSpriteFn = (
 
 export interface IntroSprite {
   bitmap: CanvasImageSource;
+  /** 逻辑宽高（超分图的像素比它大，见 `hd-stage.ts`）*/
+  width: number;
+  height: number;
   anchorX: number;
   anchorY: number;
 }
@@ -419,7 +423,7 @@ function paintSegment(
   if (seg.frameMs === 0) {
     // 底圖：SMP 的一張，不透明鋪在落點（原版 `blitRect(surface, 表+0xc/0x18, 0, 0)`）
     const img = deps.sprite?.(INTRO_ARCHIVE, seg.resource, seg.image, false) ?? null;
-    if (img !== null) ctx.drawImage(img.bitmap, seg.at.x, seg.at.y);
+    if (img !== null) drawSprite(ctx, img, seg.at.x, seg.at.y);
     return;
   }
   const flic = deps.flic?.(INTRO_ARCHIVE, seg.resource) ?? null;

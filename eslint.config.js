@@ -98,6 +98,23 @@ export default tseslint.config(
     rules: { ...zeroDepRules },
   },
 
+  // 高清舞台（hd-stage.ts）：精灵的 `width/height` 是**逻辑**尺寸，超分图的位图更大。
+  // 直接 `drawImage(x.bitmap, …)` 会按位图像素画 —— 超分图一上就是 4 倍大、裁块也裁错。
+  {
+    files: ['packages/client/src/**/*.ts'],
+    ignores: ['**/*.test.ts', 'packages/client/src/hd-stage.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.property.name='drawImage'][arguments.0.property.name='bitmap']",
+          message:
+            '精灵请用 hd-stage.ts 的 drawSprite / drawSpriteRegion（按逻辑尺寸画，超分图才不会画成 4 倍大）。',
+        },
+      ],
+    },
+  },
+
   // 测试与工具链不受确定性约束
   {
     files: ['**/*.test.ts', '**/*.spec.ts', 'packages/assets-pipeline/**/*.ts', 'packages/server/**/*.ts'],

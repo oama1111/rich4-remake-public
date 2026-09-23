@@ -110,6 +110,7 @@
 import { INMATE_NAMES, OBJECT_NAMES, isAlive, type GameState, type Rich4Map } from '@rich4/core';
 import { CHARACTERS } from '@rich4/data';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 // ============================================================
 //  名板图
@@ -666,7 +667,7 @@ export function drawTip(
   const bx = model.cursor.x - model.anchor.x;
   const by = model.cursor.y - model.anchor.y;
   if (sprite !== null) {
-    ctx.drawImage(sprite.bitmap, bx, by);
+    drawSprite(ctx, sprite, bx, by);
   } else {
     // 图还没解出来：先垫一块同色的底，免得整帧看不见（下一帧会补上真图）
     ctx.fillStyle = '#1f5fa8';

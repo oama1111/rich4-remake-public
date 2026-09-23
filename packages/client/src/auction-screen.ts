@@ -67,6 +67,7 @@ import {
 import type { Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type AuctionSprite = (
@@ -546,7 +547,7 @@ function drawAnchored(
   y: number,
 ): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 export interface AuctionSeatView {
@@ -666,7 +667,7 @@ export function drawAuctionScreen(
   d: AuctionDraw,
 ): void {
   const bg = auctionSprite(sprite, AUCTION_CHUNK.bg);
-  if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0);
+  if (bg !== null) drawSprite(ctx, bg, 0, 0);
   drawAnchored(
     ctx,
     auctionSprite(sprite, AUCTION_CHUNK.auctioneer),

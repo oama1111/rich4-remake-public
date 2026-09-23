@@ -49,6 +49,7 @@
 import type { Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
 import { bailCost } from '@rich4/core';
+import { drawSprite } from './hd-stage.ts';
 
 export const BAIL_ARCHIVE = 'Panel.mkf';
 
@@ -275,12 +276,12 @@ export function drawBailScreen(
 
   // 底图**不抠黑**（这是一整屏的画，它的黑是真黑）@source `fcn_004563f5`
   const bg = sprite(BAIL_ARCHIVE, spec.resource, 0, false);
-  if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0);
+  if (bg !== null) drawSprite(ctx, bg, 0, 0);
 
   if (spec.decor !== undefined) {
     const d = sprite(BAIL_ARCHIVE, spec.resource, spec.decor.image, true);
     if (d !== null) {
-      ctx.drawImage(d.bitmap, spec.decor.x - d.anchorX, spec.decor.y - d.anchorY);
+      drawSprite(ctx, d, spec.decor.x - d.anchorX, spec.decor.y - d.anchorY);
     }
   }
 
@@ -294,12 +295,12 @@ export function drawBailScreen(
     if (content !== null) {
       const img = sprite(BAIL_ARCHIVE, spec.resource, content, true);
       if (img !== null) {
-        ctx.drawImage(img.bitmap, at.x - img.anchorX, at.y - img.anchorY);
+        drawSprite(ctx, img, at.x - img.anchorX, at.y - img.anchorY);
       }
     }
     if (occupied && spec.overlayImage !== null) {
       const bar = sprite(BAIL_ARCHIVE, spec.resource, spec.overlayImage, true);
-      if (bar !== null) ctx.drawImage(bar.bitmap, at.x - bar.anchorX, at.y - bar.anchorY);
+      if (bar !== null) drawSprite(ctx, bar, at.x - bar.anchorX, at.y - bar.anchorY);
     }
   }
 
@@ -316,7 +317,7 @@ export function drawBailScreen(
   // 點數底板 + 数字
   const plate = sprite(BAIL_ARCHIVE, spec.resource, spec.plateImage, true);
   if (plate !== null) {
-    ctx.drawImage(plate.bitmap, spec.plateAt.x - plate.anchorX, spec.plateAt.y - plate.anchorY);
+    drawSprite(ctx, plate, spec.plateAt.x - plate.anchorX, spec.plateAt.y - plate.anchorY);
   }
   ctx.font = POINTS_FONT;
   ctx.textAlign = 'right';
@@ -336,7 +337,7 @@ export function drawBailScreen(
     const by = at.y + BAIL_BUBBLE.dy;
     const balloon = sprite(BAIL_ARCHIVE, spec.resource, BAIL_BUBBLE.image, true);
     if (balloon !== null) {
-      ctx.drawImage(balloon.bitmap, bx - balloon.anchorX, by - balloon.anchorY);
+      drawSprite(ctx, balloon, bx - balloon.anchorX, by - balloon.anchorY);
     }
     ctx.font = BUBBLE_FONT;
     ctx.textAlign = 'center';

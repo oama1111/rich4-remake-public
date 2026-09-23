@@ -93,7 +93,7 @@ function fakeSprite(): { fn: IntroSpriteFn; asked: { res: number; image: number 
   const asked: { res: number; image: number }[] = [];
   const fn: IntroSpriteFn = (_archive, res, image) => {
     asked.push({ res, image });
-    return { bitmap: { res, image } as unknown as CanvasImageSource, anchorX: 0, anchorY: 0 };
+    return { bitmap: { res, image } as unknown as CanvasImageSource, width: 0, height: 0, anchorX: 0, anchorY: 0 };
   };
   return { fn, asked };
 }

@@ -37,6 +37,7 @@ import type { GameState, Player } from '@rich4/core';
 import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from '@rich4/core';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 // ============================================================
 //  资源
@@ -497,7 +498,7 @@ export function drawAiSettings(
 
   // 底图（含标题条、五个暗色选项底板、五个暗圆点、两条滑槽与箭头、两颗按钮面）
   const bg = sprite(AI_ARCHIVE, AI_RESOURCE, AI_BG);
-  if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0);
+  if (bg !== null) drawSprite(ctx, bg, 0, 0);
 
   const dotOn = sprite(AI_ARCHIVE, AI_RESOURCE, AI_DOT);
 
@@ -507,8 +508,9 @@ export function drawAiSettings(
     rows.forEach((row) => {
       rowFlags(row).forEach((on, k) => {
         if (!on) return;
-        ctx.drawImage(
-          dotOn.bitmap,
+        drawSprite(
+          ctx,
+          dotOn,
           AI_DOT_X - (dotOn.width >> 1),
           AI_DOT_AT[k]! - (dotOn.height >> 1),
         );
@@ -567,11 +569,11 @@ export function drawAiSettings(
       AI_ARCHIVE, AI_RESOURCE,
       n === sel ? AI_ROW_ON : AI_ROW_OFF,
     );
-    if (plate !== null) ctx.drawImage(plate.bitmap, AI_PLATE_X, ry);
+    if (plate !== null) drawSprite(ctx, plate, AI_PLATE_X, ry);
 
     // ② 圆点：托管开着才点亮（底板里那颗暗点已经烤在图上）
     if (dotOn !== null && (row.whoPlays & WHO_PLAYS_AUTOPILOT) !== 0) {
-      ctx.drawImage(dotOn.bitmap, AI_LED_AT.x, ry + AI_LED_AT.dy);
+      drawSprite(ctx, dotOn, AI_LED_AT.x, ry + AI_LED_AT.dy);
     }
 
     // ③ 头像：图 `6 + character`，画在 (80, y+40) —— ★ **要减锚点**
@@ -579,8 +581,9 @@ export function drawAiSettings(
     if (p === undefined) return;
     const portrait = sprite(AI_ARCHIVE, AI_RESOURCE, AI_PORTRAIT_BASE + p.character);
     if (portrait !== null) {
-      ctx.drawImage(
-        portrait.bitmap,
+      drawSprite(
+        ctx,
+        portrait,
         AI_PORTRAIT_AT.x - portrait.anchorX,
         ry + AI_PORTRAIT_AT.dy - portrait.anchorY,
       );

@@ -28,6 +28,7 @@ import { CHARACTERS, characterColorRgb } from '@rich4/data';
 import { DeferredSpriteClose, portraitResource, type Sprite, type SpriteCache } from './assets.ts';
 import type { Camera } from './render.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 侧栏整图尺寸 @source Panel.mkf 资源 0 的图 0 */
 export const PANEL_WIDTH = 200;
@@ -692,7 +693,7 @@ export class Hud {
       ctx.drawImage(input.holidayArt, ox, oy, w, h);
     } else {
       const bg = this.#sprite('Panel.mkf', 2, sceneOfMonth(month));
-      if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
+      if (bg !== null) drawSprite(ctx, bg, ox, oy, w, h);
       else {
         ctx.fillStyle = '#7f9fbf';
         ctx.fillRect(ox, oy, w, h);
@@ -701,9 +702,9 @@ export class Hud {
 
     // 太阳与月亮 —— 图 0..3 没有烤这两个，所以这里必须画
     const sun = this.#sprite('Panel.mkf', 2, SUN_IMAGE, true);
-    if (sun !== null) ctx.drawImage(sun.bitmap, ox + CAL.sun.x, oy + CAL.sun.y);
+    if (sun !== null) drawSprite(ctx, sun, ox + CAL.sun.x, oy + CAL.sun.y);
     const moon = this.#sprite('Panel.mkf', 2, MOON_IMAGE, true);
-    if (moon !== null) ctx.drawImage(moon.bitmap, ox + CAL.moon.x, oy + CAL.moon.y);
+    if (moon !== null) drawSprite(ctx, moon, ox + CAL.moon.x, oy + CAL.moon.y);
 
     const holiday = isHoliday(globalMapId, year, month, day);
     /**
@@ -787,7 +788,7 @@ export class Hud {
     const { x: ox, y: oy, w, h } = SIDEBAR;
 
     const bg = this.#sprite('Panel.mkf', 2, MONTH_VIEW_BASE + sceneOfMonth(month));
-    if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
+    if (bg !== null) drawSprite(ctx, bg, ox, oy, w, h);
     else {
       ctx.fillStyle = '#7f9fbf';
       ctx.fillRect(ox, oy, w, h);
@@ -853,7 +854,7 @@ export class Hud {
     const page = input.panelPage % PANEL_PAGE_COUNT;
     const bg = this.#sprite('Panel.mkf', 0, page);
     if (bg !== null) {
-      ctx.drawImage(bg.bitmap, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+      drawSprite(ctx, bg, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
     } else {
       ctx.fillStyle = '#e8dcc0';
       ctx.fillRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
@@ -878,7 +879,7 @@ export class Hud {
     if (face !== null) {
       // @source VA 0x0041618f `fcn_00456418(surface, 头像图, 0x1e2(482), 0x28(40))`
       //   —— 那两数是**锚点**落点，故按锚点画（侧栏局部 = 屏幕 − 440）
-      ctx.drawImage(face.bitmap, 0x1e2 - 440 - face.anchorX, 0x28 - face.anchorY);
+      drawSprite(ctx, face, 0x1e2 - 440 - face.anchorX, 0x28 - face.anchorY);
     }
 
     // 名字下面那条**角色色长条**（截图上那条红带）——
@@ -987,7 +988,7 @@ export class Hud {
       );
       // ★ `fcn_00456418` 把图按**锚点**摆（VA 0x00455c64 `sub [ebp+0x18], anchorX`），
       //   所以「画在 (443, 顶+3)」指的是锚点落在那儿。
-      if (img !== null) ctx.drawImage(img.bitmap, r.x - img.anchorX, top + r.y - img.anchorY);
+      if (img !== null) drawSprite(ctx, img, r.x - img.anchorX, top + r.y - img.anchorY);
     }
 
     // 棋子（圆点），并记下**当前玩家**的圆点位置

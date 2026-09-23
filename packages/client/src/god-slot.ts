@@ -73,6 +73,7 @@ import {
 import { FONT_FAMILY } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv, UiKeyEvent } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type SlotSprite = (
@@ -387,7 +388,7 @@ export interface GodSlotDraw {
 
 function anchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**
@@ -399,7 +400,7 @@ function anchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y:
  */
 function opaque(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /** 带描边的正中文字（原版 `_rich4_draw_text` 的阴影：右下 1px）*/

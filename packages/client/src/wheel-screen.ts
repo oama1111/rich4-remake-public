@@ -106,6 +106,7 @@ import {
 import { FONT_FAMILY } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv, UiKeyEvent} from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取圖（與 `main.ts` 的 `spriteNow` 同一個簽名） */
 export type WheelSprite = (
@@ -590,7 +591,7 @@ export interface WheelDraw {
 /** 錨點落點繪製 @source `fcn_00456418`（`to_left = x − src->x`）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /** 三張圖原版都走帶透明的 `fcn_00456418`（0x004409c6 / 0x0043f1ae / 0x0043f1d7）*/

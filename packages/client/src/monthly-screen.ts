@@ -130,6 +130,7 @@ import type { ArchiveName, LoadedFlic, Sprite } from './assets.ts';
 import { currency } from './panel.ts';
 import { FONT_FAMILY } from './font.ts';
 import type { UiKeyEvent, UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite, drawSpriteRegion } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type MonthlySprite = (
@@ -1391,7 +1392,7 @@ const MONTHLY_FONT = FONT_FAMILY;
 /** 锚点落点绘制 @source `fcn_00456418` / `fcn_004563f5`（`to_left = x − src->x`）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**
@@ -1619,8 +1620,9 @@ export function drawMonthlyScreen(
   if (p.phase === 'settle' && p.blinkTicks === MONTHLY_BLINK_TICKS - 1) {
     const blink = monthlySprite(sprite, MONTHLY_CHUNK.panel, false);
     if (blink !== null) {
-      ctx.drawImage(
-        blink.bitmap,
+      drawSpriteRegion(
+        ctx,
+        blink,
         MONTHLY_BLINK_PATCH.srcX - blink.anchorX,
         MONTHLY_BLINK_PATCH.srcY - blink.anchorY,
         MONTHLY_BLINK_PATCH.w,
@@ -1646,8 +1648,9 @@ export function drawMonthlyScreen(
   //   70×24，见 T-041 的 D-MONTHLY-8；本轮只登记、不改（不属于本次报的缺陷）。
   const patch = monthlySprite(sprite, MONTHLY_CHUNK.bubble, false);
   if (patch !== null) {
-    ctx.drawImage(
-      patch.bitmap,
+    drawSpriteRegion(
+      ctx,
+      patch,
       MONTHLY_AWARD_PATCH.srcX - patch.anchorX,
       MONTHLY_AWARD_PATCH.srcY - patch.anchorY,
       MONTHLY_AWARD_PATCH.w,

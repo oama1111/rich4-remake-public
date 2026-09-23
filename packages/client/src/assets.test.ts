@@ -15,6 +15,7 @@ import {
   hdSourceFromManifest,
   loadGround,
   loadHdSource,
+  groundLogicalSize,
   SpriteCache,
   type HdSource,
   type LoadedArchives,
@@ -176,7 +177,7 @@ const pngOf = (width: number, height: number): Uint8Array =>
 
 /** 一个只认识给定几条记录的假 HD 来源 */
 function fakeHd(
-  entries: Record<string, { anchorX: number; anchorY: number }>,
+  entries: Record<string, { anchorX: number; anchorY: number; srcWidth?: number; srcHeight?: number }>,
   bytes: Record<string, Uint8Array | null> = {},
 ): HdSource {
   const idOf = (archive: string, resource: number, image: number): string =>
@@ -234,13 +235,24 @@ describe('HD 优先、按图回退原图', () => {
     expect({ x: s!.anchorX, y: s!.anchorY }).toEqual({ x: 1, y: 1 });
   });
 
-  it('有 HD 记录且产物可用 → 用 HD：尺寸与锚点都来自 HD 侧', async () => {
+  it('有 HD 记录且产物可用 → 位图用 HD，**逻辑**尺寸与锚点仍是原版表头的', async () => {
     const c = cacheWith({
       hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
     });
     const s = await c.get('Data.mkf', 0, 0);
     expect(bitmapSize(s!)).toEqual({ w: 8, h: 8 }); // 2×2 的 4 倍
-    expect({ x: s!.anchorX, y: s!.anchorY }).toEqual({ x: 4, y: 4 }); // 清单给的，不是自己乘的
+    // ★ 高清舞台按逻辑坐标画（hd-stage.ts）：锚点若取清单里的 HD 像素值 (4,4)，
+    //   精灵会整体偏出去 4 倍
+    expect({ w: s!.width, h: s!.height }).toEqual({ w: 2, h: 2 });
+    expect({ x: s!.anchorX, y: s!.anchorY }).toEqual({ x: 1, y: 1 });
+  });
+
+  it('★ 要换色槽（ring）的图先不走 HD —— 超分后占位色已不是精确值，换不动', async () => {
+    const c = cacheWith({
+      hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
+    });
+    const s = await c.get('Data.mkf', 0, 0, false, [255, 0, 0]);
+    expect(bitmapSize(s!)).toEqual({ w: 2, h: 2 });
   });
 
   it('★ 有记录但产物拉不到 → 回退原图（不是报错、也不是空白）', async () => {
@@ -266,8 +278,8 @@ describe('HD 优先、按图回退原图', () => {
     });
     const zero = await c.get('Data.mkf', 0, 0);
     const one = await c.get('Data.mkf', 0, 1);
-    expect(bitmapSize(zero!)).toEqual({ w: 12, h: 8 }); // HD（3×2 的 4 倍）
-    expect({ x: zero!.anchorX, y: zero!.anchorY }).toEqual({ x: 8, y: 4 });
+    expect(bitmapSize(zero!)).toEqual({ w: 12, h: 8 }); // HD 位图
+    expect({ x: zero!.anchorX, y: zero!.anchorY, w: zero!.width, h: zero!.height }).toEqual({ x: 2, y: 1, w: 3, h: 2 }); // 逻辑 = 原版表头
     expect(bitmapSize(one!)).toEqual({ w: 2, h: 2 }); // 原图
     expect({ x: one!.anchorX, y: one!.anchorY }).toEqual({ x: 1, y: 1 });
   });
@@ -437,6 +449,14 @@ describe('hdSourceFromManifest', () => {
       results: {},
     });
     expect(hd.entry('Data.mkf', 0, 0)).toBeNull();
+  });
+
+  it('★ 任务带源图尺寸 → 条目也带上（底图靠它知道 HD 是几倍）', () => {
+    const hd = hdSourceFromManifest('/assets/hd', {
+      tasks: [{ archive: 'map', resource: 6, image: 0, srcWidth: 2304, srcHeight: 2304 }],
+      results: { 'map/0006_000': { outAnchorX: 0, outAnchorY: 0 } },
+    });
+    expect(hd.entry('map.mkf', 6, 0)).toEqual({ anchorX: 0, anchorY: 0, srcWidth: 2304, srcHeight: 2304 });
   });
 
   it('有结果 → 给出锚点（已按实际输出尺寸缩放好）', () => {
@@ -635,11 +655,24 @@ describe('★ loadGround：有 HD 就用 HD，缺了就按图回退原图', () =
   };
 
   it('★★ 清单里有 `map/6_0` ⇒ 走 HD（解码器收到的是 PNG 字节的 Blob）', async () => {
-    const hd = fakeHd({ 'map/6_0': { anchorX: 0, anchorY: 0 } }, { 'map/6_0': new Uint8Array([1, 2, 3]) });
+    const hd = fakeHd(
+      { 'map/6_0': { anchorX: 0, anchorY: 0, srcWidth: 2304, srcHeight: 2304 } },
+      { 'map/6_0': new Uint8Array([1, 2, 3]) },
+    );
     const { decode, calls } = spyDecode();
     const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, hd, decode);
     expect(calls).toEqual(['blob']);
     expect(bmp!.width).toBe(9216);
+    // ★ 棋盘按逻辑尺寸数格子（32 像素一格），不按位图像素
+    expect(groundLogicalSize(bmp!)).toEqual({ width: 2304, height: 2304 });
+  });
+
+  it('★ 清单条目没有源图尺寸 ⇒ 不知道 HD 是几倍，宁可回退原图', async () => {
+    const hd = fakeHd({ 'map/6_0': { anchorX: 0, anchorY: 0 } }, { 'map/6_0': new Uint8Array([1, 2, 3]) });
+    const { decode, calls } = spyDecode();
+    const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, hd, decode);
+    expect(calls).toEqual(['imagedata']);
+    expect(groundLogicalSize(bmp!)).toEqual({ width: 32, height: 32 });
   });
 
   it('★ 清单里没有 ⇒ 现解 `.gnd`（解码器收到 ImageData，尺寸是原图的）', async () => {
@@ -659,7 +692,10 @@ describe('★ loadGround：有 HD 就用 HD，缺了就按图回退原图', () =
   });
 
   it('★ HD 解不开（坏图）也不致命：落到原图', async () => {
-    const hd = fakeHd({ 'map/6_0': { anchorX: 0, anchorY: 0 } }, { 'map/6_0': new Uint8Array([9]) });
+    const hd = fakeHd(
+      { 'map/6_0': { anchorX: 0, anchorY: 0, srcWidth: 32, srcHeight: 32 } },
+      { 'map/6_0': new Uint8Array([9]) },
+    );
     const calls: string[] = [];
     const decode = async (src: ImageData | Blob): Promise<ImageBitmap> => {
       calls.push(src instanceof Blob ? 'blob' : 'imagedata');

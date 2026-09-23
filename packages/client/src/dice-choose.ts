@@ -73,6 +73,7 @@
  */
 
 import type { ArchiveName, Sprite } from './assets.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type DiceSprite = (
@@ -200,10 +201,10 @@ export function drawDiceChoose(
   hover: number | null,
 ): void {
   const panel = sprite(DICE_PANEL_ARCHIVE, DICE_PANEL_RESOURCE, 0, false);
-  if (panel !== null) ctx.drawImage(panel.bitmap, DICE_PANEL_ORIGIN.x, DICE_PANEL_ORIGIN.y);
+  if (panel !== null) drawSprite(ctx, panel, DICE_PANEL_ORIGIN.x, DICE_PANEL_ORIGIN.y);
   if (hover === null || hover < DICE_FACE_MIN || hover > DICE_FACE_MAX) return;
   const lit = sprite(DICE_PANEL_ARCHIVE, DICE_PANEL_RESOURCE, diceLitFrame(hover), false);
   if (lit === null) return;
   const r = diceButtonRect(hover);
-  ctx.drawImage(lit.bitmap, r.x, r.y);
+  drawSprite(ctx, lit, r.x, r.y);
 }

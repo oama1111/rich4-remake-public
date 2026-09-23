@@ -112,6 +112,7 @@ import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { playVoiceCode } from './voice-sink.ts';
 import { SCREEN_H, SCREEN_W } from './stage.ts';
+import { currentSurfaceScale, drawSprite, drawSpriteRegion } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type DrawSprite = (
@@ -833,20 +834,38 @@ export interface CeremonySurface {
  * （Node 下的单测就是这种情形，走 `setCeremonySurfaceFactory` 注入假表面）。
  */
 function defaultSurface(): CeremonySurface | null {
+  // ★ 高清舞台：表面按**建它那一刻**的离屏倍率开像素、挂变换（`hd-stage.ts`）；
+  //   贴回舞台时按逻辑 640×480 贴（`drawCeremonySurface`），中途倍率变了也不会错位。
+  //   倍率为 1 时一行不多做 —— 与改造前相同。
+  const s = currentSurfaceScale();
+  const scaled = (ctx: CanvasRenderingContext2D): CanvasRenderingContext2D => {
+    if (s !== 1) {
+      ctx.setTransform(s, 0, 0, s, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+    }
+    return ctx;
+  };
   if (typeof OffscreenCanvas !== 'undefined') {
-    const c = new OffscreenCanvas(SCREEN_W, SCREEN_H);
+    const c = new OffscreenCanvas(Math.round(SCREEN_W * s), Math.round(SCREEN_H * s));
     const ctx = c.getContext('2d');
-    if (ctx !== null) return { canvas: c as unknown as CanvasImageSource, ctx: ctx as unknown as CanvasRenderingContext2D };
+    if (ctx !== null) return { canvas: c as unknown as CanvasImageSource, ctx: scaled(ctx as unknown as CanvasRenderingContext2D) };
     return null;
   }
   if (typeof document !== 'undefined') {
     const c = document.createElement('canvas');
-    c.width = SCREEN_W;
-    c.height = SCREEN_H;
+    c.width = Math.round(SCREEN_W * s);
+    c.height = Math.round(SCREEN_H * s);
     const ctx = c.getContext('2d');
-    if (ctx !== null) return { canvas: c, ctx };
+    if (ctx !== null) return { canvas: c, ctx: scaled(ctx) };
   }
   return null;
+}
+
+/** 把持久表面贴回舞台 —— 表面比 640×480 大（高清舞台）就按逻辑尺寸塞回去 */
+function drawCeremonySurface(ctx: CanvasRenderingContext2D, surface: CeremonySurface): void {
+  const w = (surface.canvas as { width?: unknown }).width;
+  if (typeof w === 'number' && w !== SCREEN_W) ctx.drawImage(surface.canvas, 0, 0, SCREEN_W, SCREEN_H);
+  else ctx.drawImage(surface.canvas, 0, 0);
 }
 
 let surfaceFactory: () => CeremonySurface | null = defaultSurface;
@@ -1059,13 +1078,13 @@ function advance(a: Active, env: UiScreenEnv): void {
 /** 抠黑画（`fcn_00456418`：索引 0 透明）*/
 function drawKeyed(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /** 不透明画（`fcn_004563f5`）*/
 function drawOpaque(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 function blit(ctx: CanvasRenderingContext2D, s: Sprite | null, b: CeremonyBlit): void {
@@ -1087,7 +1106,7 @@ function erase(ctx: CanvasRenderingContext2D, sprite: DrawSprite, r: EraseRect):
   //   再 `putImage`+`Data` 原样写回去），每帧、每个擦除块都强制一次
   //   GPU→CPU 同步回读 —— Chromium 下看不出来，桌面包的 WKWebView 下就是卡顿主因。
   //   现在擦除只在**进入某一步时**做一次（见 `applyStep`），而且只贴这一块。
-  ctx.drawImage(src.bitmap, c.sx, c.sy, c.w, c.h, c.dx, c.dy, c.w, c.h);
+  drawSpriteRegion(ctx, src, c.sx, c.sy, c.w, c.h, c.dx, c.dy, c.w, c.h);
 }
 
 /** 画这一帧的 ANM（原版是 `fcn_00456b3e` 贴 RGB555 帧，这里是逐帧位图）*/
@@ -1263,7 +1282,7 @@ export function drawCeremony(ctx: CanvasRenderingContext2D, env: UiScreenEnv, v:
   }
 
   // ① 持久表面（底图 + 主持人 + 奖金 + 走过的每一步）
-  ctx.drawImage(surface.canvas, 0, 0);
+  drawCeremonySurface(ctx, surface);
 
   // ② 摇球 / 礼花 ANM 的**当前帧**（原版是逐帧贴进表面之外的活画面）
   drawAnim(ctx, env, a.drum);

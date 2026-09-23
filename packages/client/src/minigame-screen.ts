@@ -111,6 +111,7 @@ import { SPECIAL_KIND, WatcomRng } from '@rich4/core';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { getMinigameBackground } from './minigame-bg.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同签名） */
 export type MiniSprite = (
@@ -1358,17 +1359,17 @@ function drawAnchored(
 ): void {
   if (s === null) return;
   if (scale === 1) {
-    ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+    drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
     return;
   }
   // `fcn_004568c2`：锚点**不跟着缩放**、只有宽高乘 scale（@0x004568c2 的 `sub [ebp+0x14], eax` 在前）
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY, s.width * scale, s.height * scale);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY, s.width * scale, s.height * scale);
 }
 
 /** 整块不透明贴图（`fcn_004563f5`）*/
 function drawPlain(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x, y);
+  drawSprite(ctx, s, x, y);
 }
 
 /**

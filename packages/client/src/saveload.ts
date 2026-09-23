@@ -37,6 +37,7 @@ import { deserializeGame, serializeGame } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import { inRect, type Rect } from './gameui.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** Data.mkf 里这一屏的资源号 @source 0x00403d83 `push 0x208` */
 export const SAVELOAD_RESOURCE = 0x208;
@@ -260,7 +261,7 @@ export function drawSaveLoad(
   }
 
   const bg = sprite('Data.mkf', SAVELOAD_RESOURCE, SAVELOAD_IMAGE[mode], true);
-  if (bg !== null) ctx.drawImage(bg.bitmap, p.x, p.y);
+  if (bg !== null) drawSprite(ctx, bg, p.x, p.y);
   else {
     ctx.fillStyle = '#6b8c7b';
     ctx.fillRect(p.x, p.y, p.w, p.h);
@@ -280,7 +281,7 @@ export function drawSaveLoad(
     // ★ 一行三段，全照原版：粉底板（写年月日）｜ 地圖縮圖 ｜ 参与角色的头像
     const st = info?.state ?? null;
     const plate = sprite('Data.mkf', SAVELOAD_RESOURCE, EMPTY_CELL_IMAGE, true);
-    if (plate !== null) ctx.drawImage(plate.bitmap, r.x, r.y, ROW.size, ROW.size);
+    if (plate !== null) drawSprite(ctx, plate, r.x, r.y, ROW.size, ROW.size);
 
     ctx.textAlign = 'center';
     ctx.fillStyle = '#10231a';
@@ -298,14 +299,14 @@ export function drawSaveLoad(
       const thumb = sprite(
         'Data.mkf', SAVELOAD_RESOURCE, MAP_THUMB_BASE + (st.globalMapId & 7), true,
       );
-      if (thumb !== null) ctx.drawImage(thumb.bitmap, ROW_THUMB_X, r.y, ROW.size, ROW.size);
+      if (thumb !== null) drawSprite(ctx, thumb, ROW_THUMB_X, r.y, ROW.size, ROW.size);
 
       // ★ 参与这一局的**每个**角色都画出来，不是只画轮到的那个
       //   @source 0x00404056 的循环，上界是存档头里的玩家数
       for (let i = 0; i < st.players.length; i++) {
         const face = sprite('Data.mkf', PORTRAIT_RESOURCE, st.players[i]?.character ?? 0, true);
         if (face === null) continue;
-        ctx.drawImage(face.bitmap, ROW_FACE_X0 + i * ROW_FACE_PITCH, r.y, ROW.size, ROW.size);
+        drawSprite(ctx, face, ROW_FACE_X0 + i * ROW_FACE_PITCH, r.y, ROW.size, ROW.size);
       }
     } else if (info !== undefined && info.error !== null) {
       ctx.textAlign = 'left';

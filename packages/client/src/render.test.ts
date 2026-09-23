@@ -312,7 +312,7 @@ describe('★ T-047 替身的图组资源号 —— 全部照 exe，不许猜', 
     const at = src.indexOf('if (asleep) ctx.filter = ASLEEP_FILTER;');
     expect(at).toBeGreaterThan(0);
     const after = src.slice(at, at + 200);
-    expect(after).toContain('ctx.drawImage(token.bitmap');
+    expect(after).toContain('drawSprite(ctx, token');
     expect(after, '画完必须清掉 filter').toContain("if (asleep) ctx.filter = 'none';");
   });
 
@@ -1322,12 +1322,12 @@ describe('★ T-047：替身冬眠变灰（`record + 12`）@source `rich4.asm:15
     ]) {
       expect(src, `缺标记：${marker}`).toContain(marker);
     }
-    // 两个标记必须夹着那一次 `ctx.drawImage(`
+    // 两个标记必须夹着那一次绘制（`drawSprite(`，见 hd-stage.ts）
     const a = src.indexOf('if (t.frozen) ctx.filter = ASLEEP_FILTER;');
     const b = src.indexOf("if (t.frozen) ctx.filter = 'none';");
     expect(a).toBeGreaterThan(0);
     expect(b).toBeGreaterThan(a);
-    expect(src.slice(a, b)).toContain('ctx.drawImage(');
+    expect(src.slice(a, b)).toContain('drawSprite(');
   });
 });
 

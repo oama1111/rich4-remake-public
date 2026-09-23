@@ -122,6 +122,7 @@ import {
 import { FONT_FAMILY } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type MagicSprite = (
@@ -1314,7 +1315,7 @@ export const MAGIC_SOUND_PRESS = 1;
 /** 锚点落点绘制 @source `fcn_00456418`（`to_left = x − src->x`）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**

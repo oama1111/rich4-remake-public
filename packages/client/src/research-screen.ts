@@ -57,6 +57,7 @@ import { TOOLS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 立绘板与五格条所在的档案 @source `read_mkf(Data.mkf, 0x205)`（VA 0x00408072 尾）*/
 export const RESEARCH_ARCHIVE: ArchiveName = 'Data.mkf';
@@ -447,8 +448,9 @@ export function drawResearchScreen(
   // ── 立绘板 + 标题 ──
   const title = researchSprite(sprite, RESEARCH_ARCHIVE, RESEARCH_RESOURCE, RESEARCH_TITLE_CHUNK);
   if (title !== null) {
-    ctx.drawImage(
-      title.bitmap,
+    drawSprite(
+      ctx,
+      title,
       RESEARCH_TITLE_CHUNK_AT.x - title.anchorX,
       RESEARCH_TITLE_CHUNK_AT.y - title.anchorY,
     );
@@ -458,8 +460,9 @@ export function drawResearchScreen(
   // ── 五格条 ──
   const strip = researchSprite(sprite, RESEARCH_ARCHIVE, RESEARCH_RESOURCE, RESEARCH_STRIP_CHUNK);
   if (strip !== null) {
-    ctx.drawImage(
-      strip.bitmap,
+    drawSprite(
+      ctx,
+      strip,
       RESEARCH_STRIP_AT.x - strip.anchorX,
       RESEARCH_STRIP_AT.y - strip.anchorY,
     );
@@ -475,7 +478,7 @@ export function drawResearchScreen(
     );
     if (icon !== null) {
       const at = researchIconAt(i);
-      ctx.drawImage(icon.bitmap, at.x - icon.anchorX, at.y - icon.anchorY);
+      drawSprite(ctx, icon, at.x - icon.anchorX, at.y - icon.anchorY);
     }
     const g = researchGrayRectAt(i);
     researchGray(ctx, g.x, g.y, g.w, g.h);

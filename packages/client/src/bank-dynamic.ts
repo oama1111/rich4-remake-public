@@ -38,6 +38,7 @@ import { alignFor } from './hud.ts';
 // ★ 店員那几句话的**语音出口**（`#0075` 那一句就在里面）——
 //   见 `loanBubbleVoice` 的取证块。
 import { playVoiceCode } from './voice-sink.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type BankSprite = (
@@ -1036,7 +1037,7 @@ function bankMoney(n: number): string {
 /** 锚点落点绘制（`fcn_004562a5` / `fcn_00456418` 内部都减锚点）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, Math.round(x - s.anchorX), Math.round(y - s.anchorY));
+  drawSprite(ctx, s, Math.round(x - s.anchorX), Math.round(y - s.anchorY));
 }
 
 /**
@@ -1063,7 +1064,7 @@ export function drawLoanPanels(
   ctx.rect(LOAN_INFO_PANEL.x, y, LOAN_INFO_PANEL.w, LOAN_INFO_PANEL.h);
   ctx.clip();
   const bg = bankSprite(sprite, 'Panel.mkf', LOAN_INFO_PANEL.resource, LOAN_INFO_PANEL.image);
-  if (bg !== null) ctx.drawImage(bg.bitmap, LOAN_INFO_PANEL.x, y);
+  if (bg !== null) drawSprite(ctx, bg, LOAN_INFO_PANEL.x, y);
   // 头像 = map.mkf 资源 `角色 + 0x1b` 图 0，锚点落 (0x2a, 0x28) @source `fcn_004562a5`
   drawAnchored(
     ctx,
@@ -1102,7 +1103,7 @@ export function drawLoanPanels(
   } else {
     // 季节底图 = 资源 2 图 `sceneOfMonth(月)` @source 表 0x475218（在 `@rich4/core` 里）
     const scene = bankSprite(sprite, 'Panel.mkf', BANK_RES.date, sceneOfMonth(v.date.month));
-    if (scene !== null) ctx.drawImage(scene.bitmap, dx, y);
+    if (scene !== null) drawSprite(ctx, scene, dx, y);
   }
   const t = LOAN_DATE_TEXT;
   bankText(ctx, String(v.date.day), dx + t.day.x, y + t.day.y, t.day.size, t.day.flag, '#ffffff', true);
