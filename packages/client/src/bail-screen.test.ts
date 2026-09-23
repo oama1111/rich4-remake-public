@@ -8,6 +8,12 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import {
+  BAIL_INMATE_AT,
+  BAIL_YESNO_CENTER,
+  HOSPITAL_BYE_NURSE,
+  bailFlowOpen,
+  bailFlowStep,
+  hitBailYesNo,
   BAIL_CLERK_FRAMES,
   BAIL_CLERK_MS,
   BAIL_CLERK_STYLE,
@@ -24,6 +30,8 @@ import {
   hitBailSlot,
 } from './bail-screen.ts';
 import type { Sprite } from './assets.ts';
+
+const runExeFlow = existsSync(`${process.env.RICH4_WORKSPACE ?? ''}/Rich4/rich4.exe`) ? it : it.skip;
 
 describe('槽位坐标 —— 逐字节取自 exe 的表', () => {
   it('★ 監獄八个窗格：两行四列 @source 0x00475c04', () => {
@@ -209,7 +217,9 @@ describe('drawBailScreen（假 ctx，只查落点与文字）', () => {
       drawImage: (_b: unknown, dx: number, dy: number) => {
         images.push({ dx, dy });
       },
-      fillText: (t: string, x: number, y: number) => {
+      // 阴影那一遍（第二色 #101010，點券数字的字效 3）不记，只记正文
+      fillText(this: { fillStyle: string }, t: string, x: number, y: number) {
+        if (String(this.fillStyle) === '#101010' && t === String(Number(t))) return;
         texts.push(t);
         textAt.push({ t, x, y });
       },
@@ -275,7 +285,8 @@ describe('drawBailScreen（假 ctx，只查落点与文字）', () => {
     const f = fakeCtx();
     drawBailScreen(f.ctx, 'prison', [{ slot: 4, character: 0, name: '小偷' }], 500, 4, sprite);
     // 點券 + 气泡三行
-    expect(f.texts).toEqual(['500', '小偷', '保釋點數', '300點數']);
+    // ★ 2026-09-23 订正：第三行是 `%d點`（0x465149），不是「點數」
+    expect(f.texts).toEqual(['500', '小偷', '保釋點數', '300點']);
     // 气泡图 = 图 2，落点 = 槽位 + (0x14, 0x78)，再减锚点 (10,20)
     const at = { dx: 33 + 0x14 - 10, dy: 183 + 0x78 - 20 };
     expect(f.images.some((i) => i.dx === at.dx && i.dy === at.dy)).toBe(true);
@@ -284,13 +295,20 @@ describe('drawBailScreen（假 ctx，只查落点与文字）', () => {
   it('★ 悬停**玩家**槽写 30 點數（赎金按槽位分档）', () => {
     const f = fakeCtx();
     drawBailScreen(f.ctx, 'prison', [{ slot: 1, character: 0, name: '約翰喬' }], 500, 1, sprite);
-    expect(f.texts).toEqual(['500', '約翰喬', '保釋點數', '30點數']);
+    expect(f.texts).toEqual(['500', '約翰喬', '保釋點數', '30點']);
   });
 
-  it('医院不画監獄那版气泡（几何不同，未做）', () => {
+  it('★ 2026-09-23：医院悬停气泡 = Panel#65 图 3 落 (槽.x − 0x50, 槽.y)，三行在 (+0x29, +0x1a/0x30/0x46) @source loc_0043e456', () => {
     const f = fakeCtx();
     drawBailScreen(f.ctx, 'hospital', [{ slot: 6, character: 0, name: '流氓' }], 500, 6, sprite);
-    expect(f.texts).toEqual(['500']);
+    expect(f.texts).toEqual(['500', '流氓', '保釋點數', '300點']);
+    const at = { x: 481 - 0x50, y: 241 };
+    expect(f.images.some((i) => i.dx === at.x - 10 && i.dy === at.y - 20)).toBe(true);
+    expect(f.textAt.slice(1).map((t) => [t.x, t.y])).toEqual([
+      [at.x + 0x29, at.y + 0x1a],
+      [at.x + 0x29, at.y + 0x30],
+      [at.x + 0x29, at.y + 0x46],
+    ]);
   });
 
   it('精灵全缺也不抛', () => {
@@ -360,5 +378,94 @@ describe('★ 柜台人员字框 @source 0x0043cfb5 / 0x0043db10（`fcn_0044ec30
     }
     expect(BAIL_CLERK_STYLE.flags).toBe(2);
     expect(BAIL_CLERK_MS).toBe(2000);
+  });
+});
+
+describe('★ 保釋屏整屏流程（`bailFlowStep`）@source 監獄 fcn_0043caab / 醫院 fcn_0043da27', () => {
+  const run = (place: 'prison' | 'hospital', evs: Parameters<typeof bailFlowStep>[1][]) => {
+    const o = bailFlowOpen(place);
+    let flow = o.flow;
+    const effects = [o.effect];
+    for (const ev of evs) {
+      const r = bailFlowStep(flow, ev);
+      flow = r.flow;
+      effects.push(r.effect);
+    }
+    return { flow, effects: effects.filter((e) => e !== null) };
+  };
+
+  it('醫院开屏先说招呼（状态 1）；招呼挂着时点一格只收框、不选人', () => {
+    const r = run('hospital', [{ kind: 'click', slot: 5, affordable: true }]);
+    expect(r.effects).toEqual([{ kind: 'say', key: 'hospitalHello' }]);
+    expect(r.flow.stage).toBe('idle');
+  });
+
+  it('付得起 ⇒ YES/NO；NO 回去；YES 才交答复（一条 action）', () => {
+    const no = run('prison', [{ kind: 'click', slot: 5, affordable: true }, { kind: 'yesNo', hit: 'no' }]);
+    expect(no.flow.stage).toBe('idle');
+    expect(no.effects).toEqual([]);
+    const yes = run('prison', [{ kind: 'click', slot: 5, affordable: true }, { kind: 'yesNo', hit: 'yes' }]);
+    expect(yes.effects).toEqual([{ kind: 'answer', slot: 5 }]);
+    expect(yes.flow.stage).toBe('waiting');
+    // 点在 YES/NO 图外什么都不发生
+    expect(run('prison', [{ kind: 'click', slot: 5, affordable: true }, { kind: 'yesNo', hit: null }]).flow.stage).toBe('confirm');
+  });
+
+  it('付不起 ⇒ 那一句（監獄 lowPoints / 醫院 hospitalLowPoints），收了回到等点', () => {
+    expect(run('prison', [{ kind: 'click', slot: 1, affordable: false }]).effects).toEqual([{ kind: 'say', key: 'lowPoints' }]);
+    const h = run('hospital', [{ kind: 'bubbleEnd' }, { kind: 'click', slot: 1, affordable: false }, { kind: 'bubbleEnd' }]);
+    expect(h.effects.slice(1)).toEqual([{ kind: 'say', key: 'hospitalLowPoints' }]);
+    expect(h.flow.stage).toBe('idle');
+  });
+
+  it('監獄：保犯人 ⇒ 立绘 + 道谢，收了关屏；保玩家 ⇒ 当场关屏', () => {
+    const inmate = run('prison', [{ kind: 'resolved', bailed: 6 }, { kind: 'bubbleEnd' }]);
+    expect(inmate.effects).toEqual([{ kind: 'say', key: 'prisonThanks', slot: 6 }, { kind: 'close' }]);
+    expect(run('prison', [{ kind: 'resolved', bailed: 2 }]).effects).toEqual([{ kind: 'close' }]);
+  });
+
+  it('醫院：YES ⇒「ＯＫ！」（状态 4）→ 犯人道谢（状态 6）→ 关；玩家 ⇒「ＯＫ！」→ 关', () => {
+    const inmate = run('hospital', [{ kind: 'bubbleEnd' }, { kind: 'resolved', bailed: 4 }, { kind: 'bubbleEnd' }, { kind: 'bubbleEnd' }]);
+    expect(inmate.effects.slice(1)).toEqual([
+      { kind: 'say', key: 'hospitalOk' },
+      { kind: 'say', key: 'hospitalThanks', slot: 4 },
+      { kind: 'close' },
+    ]);
+    const player = run('hospital', [{ kind: 'bubbleEnd' }, { kind: 'resolved', bailed: 0 }, { kind: 'bubbleEnd' }]);
+    expect(player.effects.slice(1)).toEqual([{ kind: 'say', key: 'hospitalOk' }, { kind: 'close' }]);
+  });
+
+  it('右键：監獄等点时 = 不保（交答复）→ 落地关屏；醫院 = 不保 → 護士道别 → 关；YES/NO 上右键 = NO', () => {
+    expect(run('prison', [{ kind: 'cancel' }]).effects).toEqual([{ kind: 'answer', slot: null }]);
+    expect(run('prison', [{ kind: 'cancel' }, { kind: 'resolved', bailed: null }]).effects).toEqual([
+      { kind: 'answer', slot: null },
+      { kind: 'close' },
+    ]);
+    const h = run('hospital', [{ kind: 'bubbleEnd' }, { kind: 'cancel' }, { kind: 'resolved', bailed: null }, { kind: 'bubbleEnd' }]);
+    expect(h.effects.slice(1)).toEqual([{ kind: 'answer', slot: null }, { kind: 'say', key: 'hospitalBye' }, { kind: 'close' }]);
+    expect(run('prison', [{ kind: 'click', slot: 5, affordable: true }, { kind: 'cancel' }]).flow.stage).toBe('idle');
+  });
+
+  it('YES/NO 居中 (320,240)、96×48，左半 YES 右半 NO', () => {
+    expect(BAIL_YESNO_CENTER).toEqual({ x: 320, y: 240 });
+    expect(hitBailYesNo(300, 240)).toBe('yes');
+    expect(hitBailYesNo(340, 240)).toBe('no');
+    expect(hitBailYesNo(320 - 49, 240)).toBeNull();
+  });
+
+  runExeFlow('exe：YES/NO 居中点 / 犯人立绘落点 / 醫院護士道别图', () => {
+    const at = (va: number, n: number): number[] => {
+      const d = readFileSync(`${process.env.RICH4_WORKSPACE ?? ''}/Rich4/rich4.exe`);
+      const off = 1024 + (va - 0x401000);
+      return [...d.subarray(off, off + n)];
+    };
+    expect(at(0x0043d0e0, 10)).toEqual([0x68, 0xf0, 0x00, 0x00, 0x00, 0x68, 0x40, 0x01, 0x00, 0x00]); // push 0xf0 / push 0x140
+    expect(at(0x0043e77c, 10)).toEqual([0x68, 0xf0, 0x00, 0x00, 0x00, 0x68, 0x40, 0x01, 0x00, 0x00]);
+    expect(at(0x0043d1cf, 10)).toEqual([0x68, 0xc2, 0x01, 0x00, 0x00, 0x68, 0x6d, 0x01, 0x00, 0x00]); // 監獄立绘 (0x16d,0x1c2)
+    expect(at(0x0043dda7, 10)).toEqual([0x68, 0xc2, 0x01, 0x00, 0x00, 0x68, 0xa4, 0x01, 0x00, 0x00]); // 醫院立绘 (0x1a4,0x1c2)
+    expect(at(0x0043e8bb, 4)).toEqual([0x6a, 0x70, 0x6a, 0x5b]); // 護士道别 (0x5b,0x70)
+    expect(at(0x0043e8c4, 3)).toEqual([0x83, 0xc0, 0x78]); // 图 9
+    expect(BAIL_INMATE_AT).toEqual({ prison: { x: 0x16d, y: 0x1c2 }, hospital: { x: 0x1a4, y: 0x1c2 } });
+    expect(HOSPITAL_BYE_NURSE).toEqual({ image: 9, x: 0x5b, y: 0x70 });
   });
 });
