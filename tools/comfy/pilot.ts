@@ -19,6 +19,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { dirname, join, relative, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { decodePng, encodePng } from '../../packages/assets-pipeline/src/png.ts';
 
 const BASE = (process.env['COMFY_URL'] ?? '').replace(/\/+$/, '');
 
@@ -53,6 +54,21 @@ interface JobBase {
    *   底图类整张不分块（或分块 ≥ 图边长）。
    */
   vaeTile?: number;
+  /**
+   * VAE 时间分块（帧，默认 4096 = 整段一次）。视频任务要小：
+   * 20 帧 640×480 放 4× 整段解码在 24 GB 上爆显存（采样已过、死在 VAEDecodeTiled）。
+   */
+  vaeTemporal?: number;
+  /**
+   * 放大前先做一次极轻的高斯模糊（sigma，原图像素）。原版是 16 位色、带抖动噪点，
+   * SeedVR2 会把噪点当细节锐化成颗粒纹理（过场立体字、标题屏上都看得到）。
+   */
+  preBlur?: number;
+  /**
+   * 取回后裁到左上角 `w×h`（像素）。配合「本地先把原图右/下边缘复制填充到 ×2 是 32 的倍数」
+   * 的输入：重绘画布比例与原图严格一致，放大后再裁掉填充 —— 画面一点不拉伸（C-AST-3）。
+   */
+  crop?: { w: number; h: number };
 }
 
 /** SeedVR2 单张：忠实超分（lab 调色贴回原图） */
@@ -70,6 +86,12 @@ export interface SeedVr2VideoJob extends JobBase {
   inputDir: string;
   frames: number;
   color?: 'lab' | 'wavelet' | 'adain' | 'none';
+  /**
+   * 按显存自动切时间段（`SeedVR2TemporalChunk` auto，段间重叠 `temporalOverlap` 个 latent 帧交叉淡化）。
+   * 640×480 的过场 40–49 帧放到 4× 一次性进不了 24 GB 显存。
+   */
+  temporalChunk?: boolean;
+  temporalOverlap?: number;
 }
 
 /** Qwen-Image 2.1 按指令重绘（补细节）→ SeedVR2 放大到目标尺寸 */
@@ -106,24 +128,51 @@ export type Job = SeedVr2ImageJob | SeedVr2VideoJob | QwenRepaintJob;
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 
 /** SeedVR2 那一段：输入节点 `src` → 放大到长边 `longSide` → 采样 → 调色贴回 → 缩到精确尺寸 → 存 */
-function seedvr2Tail(g: Graph, src: [string, number], job: JobBase, color: string, prefix: string): void {
+function seedvr2Tail(
+  g: Graph,
+  src: [string, number],
+  job: JobBase,
+  color: string,
+  prefix: string,
+  chunk?: { overlap: number },
+): void {
   const longSide = Math.max(job.width, job.height);
-  g['101'] = { class_type: 'ImageScaleToMaxDimension', inputs: { image: src, upscale_method: 'lanczos', largest_size: longSide } };
+  let from = src;
+  if (job.preBlur !== undefined && job.preBlur > 0) {
+    g['99'] = { class_type: 'ImageBlur', inputs: { image: src, blur_radius: 1, sigma: job.preBlur } };
+    from = ['99', 0];
+  }
+  g['101'] = { class_type: 'ImageScaleToMaxDimension', inputs: { image: from, upscale_method: 'lanczos', largest_size: longSide } };
   g['102'] = { class_type: 'SeedVR2Preprocess', inputs: { resized_images: ['101', 0] } };
   g['103'] = { class_type: 'VAELoader', inputs: { vae_name: MODELS.seedvr2Vae } };
   g['104'] = { class_type: 'UNETLoader', inputs: { unet_name: MODELS.seedvr2, weight_dtype: 'default' } };
   g['105'] = {
     class_type: 'VAEEncodeTiled',
-    inputs: { pixels: ['102', 0], vae: ['103', 0], tile_size: job.vaeTile ?? 1024, overlap: 128, temporal_size: 4096, temporal_overlap: 8 },
+    inputs: {
+      pixels: ['102', 0],
+      vae: ['103', 0],
+      tile_size: job.vaeTile ?? 1024,
+      overlap: 128,
+      temporal_size: job.vaeTemporal ?? 4096,
+      temporal_overlap: job.vaeTemporal === undefined ? 8 : 4,
+    },
   };
-  g['106'] = { class_type: 'SeedVR2Conditioning', inputs: { model: ['104', 0], vae_conditioning: ['105', 0] } };
+  // 时间分块：之后的条件 / 采样对每一段各跑一遍（ComfyUI 的列表语义），再按重叠合回来
+  const latent: [string, number] = chunk === undefined ? ['105', 0] : ['120', 0];
+  if (chunk !== undefined) {
+    g['120'] = {
+      class_type: 'SeedVR2TemporalChunk',
+      inputs: { latent: ['105', 0], temporal_overlap: chunk.overlap, chunking_mode: 'auto' },
+    };
+  }
+  g['106'] = { class_type: 'SeedVR2Conditioning', inputs: { model: ['104', 0], vae_conditioning: latent } };
   g['107'] = {
     class_type: 'KSampler',
     inputs: {
       model: ['104', 0],
       positive: ['106', 0],
       negative: ['106', 1],
-      latent_image: ['105', 0],
+      latent_image: latent,
       seed: job.seed,
       steps: 1,
       cfg: 1,
@@ -132,9 +181,19 @@ function seedvr2Tail(g: Graph, src: [string, number], job: JobBase, color: strin
       denoise: 1,
     },
   };
+  if (chunk !== undefined) {
+    g['121'] = { class_type: 'SeedVR2TemporalMerge', inputs: { latents: ['107', 0], temporal_overlap: ['120', 1] } };
+  }
   g['108'] = {
     class_type: 'VAEDecodeTiled',
-    inputs: { samples: ['107', 0], vae: ['103', 0], tile_size: job.vaeTile ?? 1024, overlap: 128, temporal_size: 4096, temporal_overlap: 8 },
+    inputs: {
+      samples: chunk === undefined ? ['107', 0] : ['121', 0],
+      vae: ['103', 0],
+      tile_size: job.vaeTile ?? 1024,
+      overlap: 128,
+      temporal_size: job.vaeTemporal ?? 4096,
+      temporal_overlap: job.vaeTemporal === undefined ? 8 : 4,
+    },
   };
   g['109'] = {
     class_type: 'SeedVR2PostProcessing',
@@ -158,7 +217,7 @@ export function buildGraph(job: Job): Graph {
         class_type: 'VHS_LoadImagesPath',
         inputs: { directory: `${REMOTE_INPUT_ABS}/${job.inputDir}`, image_load_cap: 0, skip_first_images: 0, select_every_nth: 1 },
       };
-      seedvr2Tail(g, ['1', 0], job, job.color ?? 'lab', prefix);
+      seedvr2Tail(g, ['1', 0], job, job.color ?? 'lab', prefix, job.temporalChunk === true ? { overlap: job.temporalOverlap ?? 2 } : undefined);
       return g;
     case 'qwen-repaint': {
       g['1'] = { class_type: 'LoadImage', inputs: { image: job.input } };
@@ -311,6 +370,15 @@ async function download(img: HistoryImage, to: string): Promise<void> {
   writeFileSync(to, new Uint8Array(await res.arrayBuffer()));
 }
 
+/** 就地裁到左上角 w×h */
+function cropTopLeft(path: string, w: number, h: number): void {
+  const img = decodePng(new Uint8Array(readFileSync(path)));
+  if (img.width === w && img.height === h) return;
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) rgba.set(img.rgba.subarray(y * img.width * 4, y * img.width * 4 + w * 4), y * w * 4);
+  writeFileSync(path, encodePng({ width: w, height: h, anchorX: 0, anchorY: 0, rgba }));
+}
+
 /** 任务的本地产物是否已经在了（断点续跑：在就跳过） */
 function done(root: string, job: Job): boolean {
   if (job.kind === 'seedvr2-video') {
@@ -392,6 +460,7 @@ export async function run(jobsFile: string, only: readonly string[], ahead = 3):
         } else {
           await download(main[0]!, join(root, job.out));
           if (repaint[0] !== undefined) await download(repaint[0], join(root, job.out.replace(/\.png$/, '.repaint.png')));
+          if (job.crop !== undefined) cropTopLeft(join(root, job.out), job.crop.w, job.crop.h);
         }
         log[job.id] = {
           kind: job.kind,
@@ -409,6 +478,8 @@ export async function run(jobsFile: string, only: readonly string[], ahead = 3):
             : {}),
           target: `${job.width}x${job.height}`,
           vaeTile: job.vaeTile ?? 1024,
+      vaeTemporal: job.vaeTemporal ?? 4096,
+      preBlur: job.preBlur ?? 0,
           outputs: main.length,
           seconds: Math.round((Date.now() - t0) / 1000),
           at: new Date().toISOString(),
