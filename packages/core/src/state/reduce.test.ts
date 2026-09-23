@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { WatcomRng } from '../rng/watcom.ts';
 import { readFileSync, existsSync } from 'node:fs';
-import { reduce, reduceAll, nextCandidates, nextAlivePlayer, applyMagicRequest } from './reduce.ts';
+import { reduce, reduceAll, nextCandidates, nextAlivePlayer, applyMagicRequest, pickNextNode } from './reduce.ts';
 import type { MapTopology } from './reduce.ts';
 import type { Action } from './actions.ts';
 import { WHO_PLAYS_RETURN_TO_BOARD, type GameState, type Player } from './types.ts';
@@ -357,6 +357,65 @@ describe('在真实地图上推演', () => {
       }
     }
     expect(s.turnCount).toBe(200);
+  });
+});
+
+/**
+ * ★★ 第十三份試玩回報 `20260923-150207228`（地图 7，第 38 回合）：「为什么这个回合沙隆巴斯走了个回环」。
+ *
+ * 沙隆巴斯（P2，电脑，三颗骰 6+4+6 = 16 步）从 87（来自 88）出发：
+ * `87 → 21 → 22 → 23 → 24 → 25 → 26 → 81 → 82 → 83 → 84 → 85 → 86 → 21 → 87 → 88 → 89`
+ * （第 16 步踩到自己上回合反瞻放下的地雷 ⇒ 醫院）。绕 21–26–86 那一圈又从 21 拐回 87，
+ * 看起来像「掉头」，其实是**三次岔路各掷一次 `rand() % 候选数`**：
+ *
+ * | 岔路 | 来路 | 候选（去掉来路 / 空槽 / 封路位）| 掷到 |
+ * |---|---|---|---|
+ * | 21 | 87 | [22, 20, 86] | 22 |
+ * | 26 | 25 | [80, 81, 27] | 81 |
+ * | 21 | 86 | [22, 20, **87**] | 87 |
+ *
+ * 规则 @source 走路例程 `0x0040c12c..0x0040c1a5`（spec `game-loop.md`「走路例程 0x40c05c 已整段差分」）：
+ * 只排除 `player.last_node`（+0x0e）、空槽、`node.flags & (0x40000000 >> slot)` 的封路槽；
+ * **没有**「方向 / 顺逆时针 / 单行道」的概念 —— 地图文件的邻接是无向的（地图 7 逐条互指），
+ * 唯一的「单行」手段是封路位（地图 7 只有 51 号的槽 2 → 95 那条支线被封）。
+ * 下面三个 rng 值就是回报轨迹里那三步 `step` 之前的 `rngState`（重放指纹一致 579fc9d1）。
+ */
+describe('★★ 地图 7 的岔路（第十三份試玩回報 150207「沙隆巴斯走了个回环」）', () => {
+  const MAP7 = `${ROOT}/extracted/map/0015.bin`;
+  const has7 = existsSync(MAP7);
+
+  it.skipIf(!has7)('地图 7：邻接逐条互指（无单行道），四个岔路口 21/26/51/62，封路位只在 51 号槽 2', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP7)));
+    const byId = new Map(map.nodes.map((n) => [n.id, n]));
+    for (const n of map.nodes) {
+      for (const a of n.adjacentSlots) {
+        if (a === 0) continue;
+        expect(byId.get(a)!.adjacentSlots).toContain(n.id);
+      }
+    }
+    const forks = map.nodes.filter((n) => n.adjacentSlots.filter((a) => a !== 0).length > 2).map((n) => n.id);
+    expect(forks).toEqual([21, 26, 51, 62]);
+    expect(byId.get(21)!.adjacentSlots).toEqual([22, 20, 87, 86]);
+    expect(byId.get(26)!.adjacentSlots).toEqual([80, 25, 81, 27]);
+    const blocked = map.nodes.filter((n) => (n.flags & 0x78000000) !== 0).map((n) => [n.id, n.flags & 0x78000000]);
+    expect(blocked).toEqual([[51, 0x10000000]]); // 0x40000000 >> 2 ⇒ 槽 2（= 95）
+  });
+
+  it.skipIf(!has7)('★ 回报那一趟的三次岔路：21←87 掷到 22、26←25 掷到 81、21←86 掷到 87（原版 rand()%n）', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP7)));
+    const topo: MapTopology = { nodes: map.nodes };
+    const pick = (from: number, prev: number, state: number): number | null => {
+      const rng = new WatcomRng();
+      rng.setState(state);
+      return pickNextNode(topo, from, prev, rng);
+    };
+    expect(nextCandidates(topo, 21, 87)).toEqual([22, 20, 86]);
+    expect(pick(21, 87, 2415734341)).toBe(22);
+    expect(nextCandidates(topo, 26, 25)).toEqual([80, 81, 27]);
+    expect(pick(26, 25, 40306022)).toBe(81);
+    // ★ 绕完一圈回到 21：来路是 86，87 **重新成了候选** —— 原版只禁「上一格」，不记更早走过哪
+    expect(nextCandidates(topo, 21, 86)).toEqual([22, 20, 87]);
+    expect(pick(21, 86, 2442039289)).toBe(87);
   });
 });
 
