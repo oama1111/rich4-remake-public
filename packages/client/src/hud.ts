@@ -18,16 +18,18 @@
 import {
   PANEL_PAGE_COUNT,
   daysInMonth,
+  isAlive,
   isHoliday,
   sceneOfMonth,
   weekdayOf,
   type GameState,
   type Rich4Map,
 } from '@rich4/core';
-import { CHARACTERS, characterColorRgb } from '@rich4/data';
+import { CHARACTERS } from '@rich4/data';
 import { DeferredSpriteClose, portraitResource, type Sprite, type SpriteCache } from './assets.ts';
 import type { Camera } from './render.ts';
 import { FONT_FAMILY } from './font.ts';
+import { MINIMAP_MARK_RESOURCE, drawMinimapMarks, minimapMarks } from './minimap-marks.ts';
 
 /** 侧栏整图尺寸 @source Panel.mkf 资源 0 的图 0 */
 export const PANEL_WIDTH = 200;
@@ -940,9 +942,10 @@ export class Hud {
    * 层次**按原版的绘制顺序**：
    * ```asm
    * 00416e78  底图 = [0x48badc] 图0（map.mkf 资源 地图号+0x10 的 200×200 成品图）
+   *           （工作面：`fcn_0040a4e1(0)` 已把**归属色块**烙在上面，见 minimap-marks.ts）
    * 00416e89  左箭头 = [0x48bad8]+0xfc（Data.mkf 517 图20）  画在 (443, 顶+3)
    * 00416e9c  右箭头 = [0x48bad8]+0x108（图21）              画在 (468, 顶+3)
-   * 00416fb9  各玩家的圆点（按 (世界×89)>>10 定位）
+   * 00416fb9  各玩家的小头像（map.mkf 角色+0x1b 图 6，按 (世界×89)>>10 定位）
    * 00417041  当前玩家：30×30 白框，中心在它的圆点上
    * 004170c7  标记点：30×30 红框（与当前玩家重合时不画）
    * ```
@@ -962,17 +965,23 @@ export class Hud {
     ctx.fillRect(0, top, size, size);
     if (minimapBg !== null) ctx.drawImage(minimapBg, 0, top, minimapBg.width, minimapBg.height);
 
-    // 各格 —— 有主的格子用**地主的专属色**（同圆点那条，@source 0x00417021）
-    const ownerColor = (owner: number): string => {
-      if (owner === 0) return 'rgba(240,240,240,0.75)';
-      const who = state.players[owner - 1];
-      const rgb = characterColorRgb(CHARACTERS[who?.character ?? 0]?.color ?? 0xffffff);
-      return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-    };
-    for (const n of map.nodes) {
-      const owner = n.ref.kind === 'land' ? (state.landOwner[n.ref.index] ?? 0) : 0;
-      ctx.fillStyle = ownerColor(owner);
-      ctx.fillRect(minimapAt(n.x) - 1, top + minimapAt(n.y) - 1, 3, 3);
+    // ★★ 第十三份試玩回報（「应该是用专属色块标注地图上已经被玩家购买的土地和建筑」）：
+    //   底图上烙**归属色块** —— 有主的地 / 設施 / 企業各一块地主色的方或菱
+    //   （原版 `fcn_0040a4e1(0)` 烙进工作面 `[0x48badc]`，本函数 0x00416ed7 贴的就是它；
+    //   细节见 `minimap-marks.ts`）。
+    //   先前这里给**每个节点**画一个 3×3 小方块（有主的地染地主色）—— 那是自己加的，
+    //   原版这一屏没有逐格画点，路网本来就画在底图里。只在底图还没到时留着当占位。
+    if (minimapBg !== null) {
+      drawMinimapMarks(
+        ctx,
+        (image) => this.#sprite('Data.mkf', MINIMAP_MARK_RESOURCE, image, true),
+        minimapMarks(state, map, 'small'),
+        0,
+        top,
+      );
+    } else {
+      ctx.fillStyle = 'rgba(240,240,240,0.75)';
+      for (const n of map.nodes) ctx.fillRect(minimapAt(n.x) - 1, top + minimapAt(n.y) - 1, 3, 3);
     }
 
     // 两颗箭头 —— 画在圆点之前（原版就是这个顺序），状态色见 #arrowImage
@@ -990,33 +999,29 @@ export class Hud {
       if (img !== null) ctx.drawImage(img.bitmap, r.x - img.anchorX, top + r.y - img.anchorY);
     }
 
-    // 棋子（圆点），并记下**当前玩家**的圆点位置
+    // 棋子标记，并记下**当前玩家**那一枚的位置
+    // ★★ 第十三份試玩回報顺修：原版画的是**角色小头像**，不是自己画的圆：
+    //   ```asm
+    //   00416fc8  cmp  word [player + 0x08], 0 / je 跳过   ; ★ 判据 = xpos != 0
+    //   00416fd4  x = word [player + 0x08] × 89 >> 10 + 0x1b8
+    //   00416ff8  y = word [player + 0x0a] × 89 >> 10 + 顶
+    //   00417021  imul eax, ebx, 0x34
+    //   00417024  mov  eax, [eax + 0x498eb0]       ; = map.mkf 资源 角色 + 0x1b（portraitResource）
+    //   0041702a  add  eax, 0x54                   ; ★ 0xc + 12×6 ⇒ **图 6**（10×9 的小头像）
+    //   00417034  call 0x456418                    ; 按锚点、抠黑贴
+    //   ```
+    //   先前把 `+0x54` 读成「专属色」、画成一个彩色圆点（试玩 4 那次）。小头像本身就是
+    //   角色的主色，远看像一个色点 —— 那次回报说的「带颜色的圆点」就是它。
+    //   位置取 `xpos/ypos`（与 `big-map-screen.ts` 的 `bigMapMarkers` 同源：关押时在綠島/醫院）。
     const me = state.players[state.currentPlayer];
     let meDot: { x: number; y: number } | null = null;
     for (const p of state.players) {
-      if (p.whoPlays === 0) continue;
-      const n = map.nodes[p.nodeId - 1];
-      if (n === undefined) continue;
-      const dx = minimapAt(n.x);
-      const dy = top + minimapAt(n.y);
+      if (!isAlive(p) || p.xpos === 0) continue;
+      const dx = minimapAt(p.xpos);
+      const dy = top + minimapAt(p.ypos);
       if (p.index === me?.index) meDot = { x: dx, y: dy };
-      // ★★ 圆点用**角色自己的专属色**（`CharacterDef.color`），不是「按座位固定四色」。
-      //   原版读的是角色图素调色板 +0x54 那一项：
-      //   ```asm
-      //   00417021  imul eax, ebx, 0x34          ; 角色图素表，每项 0x34
-      //   00417024  mov  eax, [eax + 0x498eb0]
-      //   0041702a  add  eax, 0x54               ; ★ 该角色的专属色
-      //   00417034  call 0x456418                ; 画圆点
-      //   ```
-      //   （试玩 4：「小地图上的带颜色圆点好像和角色本身的专属色不一样」。）
-      const color = characterColorRgb(CHARACTERS[p.character]?.color ?? 0xffffff);
-      ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
-      ctx.beginPath();
-      ctx.arc(dx, dy, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#000';
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      const head = this.#sprite('map.mkf', portraitResource(p.character), MINIMAP_HEAD_IMAGE, true);
+      if (head !== null) ctx.drawImage(head.bitmap, dx - head.anchorX, dy - head.anchorY);
     }
 
     // 取景框：**当前玩家的圆点**上画 30×30 白框 @source VA 0x00417041
@@ -1036,6 +1041,9 @@ export class Hud {
     ctx.restore();
   }
 }
+
+/** 小地图上的棋子标记 = 角色图集（`map.mkf` 角色 + 0x1b）**图 6** @source 0x0041702a `add eax, 0x54` */
+export const MINIMAP_HEAD_IMAGE = 6;
 
 /**
  * 取景框是**白的**、标记框是**红的**。
