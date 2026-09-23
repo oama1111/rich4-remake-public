@@ -21,7 +21,9 @@ import { LOTTERY } from './messages.ts';
 
 const DGROUP_FILE_OFFSET = 398848;
 const DGROUP_VA = 0x463000;
-const EXE = new URL('../../../../Rich4/rich4.exe', import.meta.url);
+// ★ 与其余真值测试同一口径：从 `RICH4_WORKSPACE` 起算（`vitest.config.ts` 缺省 = 仓库上一级）。
+//   先前按仓库相对路径 `../../../../Rich4` 找，在 git worktree（`wt12/<名>/`）里找不到 ⇒ 静默 skip。
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 
 const exists = (() => {
   try {
