@@ -168,9 +168,12 @@ describe('★ main.ts 的接线（源码钉子）', () => {
     // 只看这个函数体：到下一个顶层 `}` 为止（`startActionFx` 后面紧跟空行 + 新注释）
     const body = src.slice(at, src.indexOf('\n}\n', at));
     expect(body).toContain('startAlienNewsFx(before, state);');
-    // 且排在住院影片**之后**（原版是先 send_to_hospital 的 0x20c、最后才 0x213）
+    // ★ 2026-09-23 订正（第十五份，协调方「照 exe 次序排队」）：排在住院影片**之前**。
+    //   先前这里写「原版先 send_to_hospital 的 0x20c、最后才 0x213」—— 与 exe 相反：
+    //   `fcn_0044913d` 是 `0x0044925b call 0x45144f`（飛碟）在前，`0x0044926e..0x0044928e`
+    //   逐人 `0x00449285 call 0x43ec3f`（send_to_hospital，各播 0x20c）在后（`confine-fx.test.ts` 有字节钉）。
     expect(body.indexOf('startConfineFx(before, state);')).toBeGreaterThan(0);
-    expect(body.indexOf('startAlienNewsFx(before, state);')).toBeGreaterThan(
+    expect(body.indexOf('startAlienNewsFx(before, state);')).toBeLessThan(
       body.indexOf('startConfineFx(before, state);'),
     );
     // 上面那个函数真的接了共用那条棋盘影片路

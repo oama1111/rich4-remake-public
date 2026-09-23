@@ -22,7 +22,7 @@ import { auctionScreen } from './auction-screen.ts';
 import { lotteryScreen } from './lottery-screen.ts';
 import { lotteryDrawScreen } from './lottery-draw-screen.ts';
 import { magicScreen } from './magic-screen.ts';
-import { eventBoxScreen } from './event-box-screen.ts';
+import { eventBoxScreen, eventTailScreen } from './event-box-screen.ts';
 import { noticeBoxScreen } from './notice-box-screen.ts';
 import { wheelScreen } from './wheel-screen.ts';
 import { godSlotScreen } from './god-slot.ts';
@@ -66,6 +66,8 @@ export const SCREENS: readonly UiScreen[] = [
   //   可跳过（得点格那三扇是 1000 ms）；同一 action 里连弹两扇时按顺序一扇一扇放。
   //   原版弹在**结算当场**（`0x440cac`），与上面几屏不会同时起。
   noticeBoxScreen,
+  // ★ 第十五份：命運让出框之后那 800 ms（`0x0044dd7b`）—— 排在訊息框之后：pass 1 的理賠框先演完才开始数
+  eventTailScreen,
   // ★ 「請選擇設施類別」（Q-TOOL-4）：真人盖**等级 0 的設施**时要先选种类
   //   （原版 `fcn_00440aac`，一扇盖在棋盘上的浮窗）。它由主机的拾取/加蓋流程
   //   主动 `openFacilityPicker()` 打开，`active()` 只在开窗期间为真。

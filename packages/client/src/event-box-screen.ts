@@ -185,7 +185,7 @@ import { CARDS,
   fortuneDisplayEntry,
   newsEvent,
   type EventEntry } from '@rich4/data';
-import type { GameState, MapTopology } from '@rich4/core';
+import { confineViewTargets, type GameState, type MapTopology } from '@rich4/core';
 import {
   loadRaw555Resource,
   type ArchiveName,
@@ -918,6 +918,12 @@ export interface EventBoxPlayback {
   showAt: number;
   /** 命運第二段开始的时刻；0 = 还没进第二段 */
   secondAt: number;
+  /**
+   * ★ 第十五份：这一张命運的 pass 1 里有 `send_to_*` / `0x40d375`（入獄・住院・消失）——
+   *   它们开头那一次 `view_to`（`0x0043d5cc` / `0x0043ec78` / `0x0040d3e6`）会**重画整块棋盘**
+   *   把框抹掉，第二段 800 ms 是在影片、理賠框之后对着棋盘停的。见 `eventBoxYieldsToBoard`。
+   */
+  yieldAfterFirst?: boolean;
 }
 
 export function eventBoxPlaybackStart(plan: EventBoxPlan, now: number): EventBoxPlayback {
@@ -1059,6 +1065,72 @@ export function drawEventBoxScreen(
 let playback: EventBoxPlayback | null = null;
 
 /**
+ * ★ 第十五份：命運第二段（800 ms，`0x0044dd7b push 0x320 / call 0x4528b9`）**让出框之后**的那一截。
+ *
+ * `waiting` = pass 1 里的影片 / 理賠框 / 台词还没演完（原版它们都在 `0x0044dd71` 那一次调用里、
+ * 阻塞的）；演完才开始数 800 ms（`until`）。这一截屏上只有棋盘（框已被 `view_to` 抹掉）。
+ */
+let tail: { waiting: true } | { waiting: false; until: number } | null = null;
+
+/**
+ * 命運第一段收尾（停满 1600 ms 或被点掉）的那一拍：这一张要不要**让出框**。
+ *
+ * ★ 原版 pass 1 里 `send_to_prison` / `send_to_hospital` / `0x40d375`（消失）开头都先
+ *   `view_to`（`0x41d476`）。那一支**无条件**重画棋盘并刷屏：
+ * ```asm
+ * 0041d50e  call 0x415e70(0)            ; view_to 里
+ * 00415e84  … push 镜头 x / y
+ * 00415ed7  call 0x40829d               ; ★ 把整块棋盘重画进后台面（框就贴在这块面上 —— 0x0044b814 / 0x0044dcf6）
+ * 00415f4f  or byte [0x475110], 2       ; 标「棋盘区脏」
+ * 0041d53f  call 0x4192f7               ; 刷脏区：
+ * 004193c4  test dh, 2 / je            ;   棋盘区 (0,0x28)-(0x1b8,0x1e0)
+ * 004193a5  call [edx + 0x1c]           ;   后台面 → 前台面
+ * ```
+ *   ⇒ 框在棋盘区被抹掉，接着才播警车 / 救护车 / 飛機飛碟（`fcn_0045144f`），最后回到
+ *   `0x0044dd7b` 对着棋盘再停 800 ms（可点掉）。
+ */
+export function eventBoxYieldsToBoard(p: EventBoxPlayback, next: EventBoxPlayback | null): boolean {
+  return p.yieldAfterFirst === true && p.secondAt === 0 && next !== null && next.secondAt !== 0;
+}
+
+/**
+ * 这一张命運的 pass 1 有没有 `send_to_*` / 消失（= 有没有那一次重画棋盘的 `view_to`）。
+ * 判据交给 core 的 `confineViewTargets`（加刑也算：`view_to` ① 在 `test dh,dh` 之前）。
+ * 只给了 `lastEvent` 的精简状态（单测夹具）⇒ 当作没有。
+ */
+function fortuneSendsSomeone(before: GameState, after: GameState): boolean {
+  if (!Array.isArray(before.prisonOccupancy) || !Array.isArray(after.prisonOccupancy)) return false;
+  return confineViewTargets(before, after).length > 0;
+}
+
+/** 命運让出框之后还有那一截 800 ms 没走完（等影片 / 正在停）—— 回合驱动要等它 */
+export function eventBoxTailPending(): boolean {
+  return tail !== null;
+}
+
+/**
+ * 宿主每帧问一次：pass 1 里的演出（影片 / 理賠框 / 台词）都收了 ⇒ 开始数那 800 ms。
+ *
+ * @param busy pass 1 那几段还有没有在演
+ */
+export function eventBoxTailTick(busy: boolean, now: number): void {
+  if (tail === null || !tail.waiting || busy) return;
+  tail = { waiting: false, until: now + FORTUNE_SECOND_HOLD_MS };
+}
+
+/** 本屏走一拍 / 点一下之后的落地（命運让出框的那一拍在这里接手） */
+function settlePlayback(p: EventBoxPlayback, next: EventBoxPlayback | null, env: UiScreenEnv): void {
+  if (eventBoxYieldsToBoard(p, next)) {
+    playback = null;
+    tail = { waiting: true };
+    env.log('事件提示框：命運 pass 1 重画棋盘（框让位）');
+    env.requestRender();
+    return;
+  }
+  playback = next;
+}
+
+/**
  * 本机真人**已经亮过牌**的那一次用卡（D-CARD-USE-1 第 3 条收掉之后）。
  *
  * 原版真人那一支是「卡片欄选定 → 亮牌 → 卡片函数（里头才选目标）」：
@@ -1081,6 +1153,7 @@ let ownCardUse: { player: number; cardId: number; turnCount: number } | null = n
 export function resetEventBoxScreen(): void {
   playback = null;
   ownCardUse = null;
+  tail = null;
 }
 
 /**
@@ -1133,7 +1206,7 @@ function skipPlayback(env: UiScreenEnv): void {
     playback = null;
     env.log('事件提示框：跳过');
   } else {
-    playback = next;
+    settlePlayback(p, next, env);
   }
   env.requestRender();
 }
@@ -1179,7 +1252,7 @@ export const eventBoxScreen: UiScreen = {
       env.requestRender();
       return;
     }
-    playback = next;
+    settlePlayback(p, next, env);
     // ★ **必须自己续帧**：`main.ts` 只把 `tick` 发给**此刻接管整屏**的那一屏，
     //   而本屏的换段/关屏都是「时间到」才有的事 —— 不续帧就永远到不了那个
     //   deadline（屏就一直挂在台上）。演出最长 2.4 秒，续帧的代价可接受。
@@ -1304,6 +1377,10 @@ export const eventBoxScreen: UiScreen = {
           ? newsView(ev.id, after.priceIndex, subject, shares)
           : fortuneView(ev.id, after.priceIndex, subject, after.globalMapId);
       playback = eventBoxPlaybackStart(eventBoxPlan(view), env.now);
+      // ★ 第十五份：命運 pass 1 送人进監獄 / 醫院 / 消失 ⇒ 第一段收尾时让出框（`eventBoxYieldsToBoard`）
+      if (ev.kind === 'fortune' && fortuneSendsSomeone(before, after)) {
+        playback = { ...playback, yieldAfterFirst: true };
+      }
       env.log(`事件提示框：${ev.kind === 'news' ? '新聞' : '命運'} #${ev.id}${who === undefined ? '' : `（P${who.index + 1}）`}`);
       env.requestRender();
       return;
@@ -1385,3 +1462,49 @@ export function cardUsePopupActive(): boolean {
 export function eventBoxScreenState(): { playing: boolean; playback: EventBoxPlayback | null } {
   return { playing: playback !== null, playback };
 }
+
+/**
+ * ★ 第十五份：命運让出框之后那 800 ms（`0x0044dd7b push 0x320 / call 0x4528b9`）——
+ *   屏上只有棋盘（浮窗、什么都不画），**可点掉**（`fcn_004528b9` 认 0x202 / 0x205 / 0x101）。
+ *   只在真正开始数的那一截 `active()`；等 pass 1 演出那一截由宿主的回合闸（`eventBoxTailPending`）挡着。
+ */
+function skipTail(env: UiScreenEnv): void {
+  if (tail === null || tail.waiting) return;
+  tail = null;
+  env.log('事件提示框：命運第二段 跳过');
+  env.requestRender();
+}
+
+export const eventTailScreen: UiScreen = {
+  id: 'eventTail',
+  windowed: true,
+  active: () => tail !== null && !tail.waiting,
+  draw(): void {
+    // 框已被 `view_to` 抹掉：只剩棋盘（`windowed` ⇒ 宿主先画了整帧）
+  },
+  tick(env: UiScreenEnv): void {
+    if (tail === null || tail.waiting) return;
+    if (env.now >= tail.until) {
+      tail = null;
+      env.log('事件提示框：命運第二段 结束');
+    }
+    env.requestRender();
+  },
+  up(_x: number, _y: number, env: UiScreenEnv): void {
+    skipTail(env);
+  },
+  contextmenu(_x: number, _y: number, env: UiScreenEnv): void {
+    skipTail(env);
+  },
+  key(_key: UiKeyEvent, env: UiScreenEnv): boolean {
+    if (tail === null || tail.waiting) return false;
+    skipTail(env);
+    return true;
+  },
+  fastForward(env: UiScreenEnv): boolean {
+    if (tail === null) return false;
+    tail = null;
+    env.requestRender();
+    return true;
+  },
+};

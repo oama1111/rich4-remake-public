@@ -26,6 +26,7 @@ import {
   confineFxDone,
   confineFxFrame,
   confineFxTrigger,
+  confineFxTriggers,
   confineSkippable,
   confineTotalMs,
   type ConfineKind,
@@ -320,10 +321,48 @@ describe('★★ 新聞 / 命運引出的入獄・住院：等事件提示框收
 
   it('main.ts 接线：送进去那一拍按判据带上 `afterEventBox`，起播两处都问事件框', () => {
     const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
-    expect(src).toContain('const clip = confineAfterEventBox(before, after)');
-    expect(src).toContain('? { ...confineClip(kind), afterEventBox: true }');
+    expect(src).toContain('const afterBox = confineAfterEventBox(before, after);');
+    expect(src).toContain('afterBox ? { ...confineClip(hit.kind), afterEventBox: true }');
     expect(src).toContain('if (boardFilmWaitsForEventBox(pending, eventBoxScreen.active(uiEnv()))) {');
     expect(src).toContain('!boardFilmWaitsForEventBox(after, eventBoxScreen.active(uiEnv()))');
+  });
+});
+
+describe('★★ 新聞 4：先飛碟，再每位受害者一辆救护车（不再被顶掉）', () => {
+  it('`confineFxTriggers` 逐人列出（按玩家号；加刑的不列）', () => {
+    const before = st({ inHospital: [0, 0, 2, 0] });
+    const after = st({ hosp: [1, 1, 1, 1], inHospital: [3, 3, 5, 3] });
+    expect(confineFxTriggers(before, after)).toEqual([
+      { player: 0, kind: 'hospital' },
+      { player: 1, kind: 'hospital' },
+      { player: 3, kind: 'hospital' },
+    ]);
+    expect(confineFxTrigger(before, after)).toBe('hospital');
+  });
+
+  it('main.ts 接线：飛碟先排、救护车逐段排在后面（`fcn_0044913d`：0x0044925b 播 0x213 → 0x00449285 各次 0x20c）', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    const fx = src.slice(src.indexOf('function startActionFx('));
+    expect(fx.indexOf('startAlienNewsFx(before, state);')).toBeLessThan(fx.indexOf('startConfineFx(before, state);'));
+    const confine = src.slice(src.indexOf('function startConfineFx('), src.indexOf('function startGodFx('));
+    expect(confine).toContain('for (const hit of hits) {');
+    expect(confine).toContain('queueBoardFilm(clip);');
+    const alien = src.slice(src.indexOf('function startAlienNewsFx('));
+    expect(alien.slice(0, alien.indexOf('\n}\n'))).toContain('queueBoardFilm(spec);');
+    expect(alien.slice(0, alien.indexOf('\n}\n'))).not.toContain('startBoardFilm(spec);');
+    // 取走队头之后接下一段
+    expect(src).toContain('pendingBoardFilmAfter = boardFilmQueueRest.shift() ?? null;');
+  });
+
+  runExe('★ 回 exe 钉：新聞 4 先播飛碟（0x0044925b call 0x45144f）、后逐人 `send_to_hospital`（0x00449285）', () => {
+    expect(0x44925b).toBeLessThan(0x449285);
+    const d = exeBytes(0x449285, 5);
+    expect(d[0]).toBe(0xe8);
+    const rel = (d[1]! | (d[2]! << 8) | (d[3]! << 16) | (d[4]! << 24)) | 0;
+    expect(0x449285 + 5 + rel).toBe(0x43ec3f);
+    const f = exeBytes(0x44925b, 5);
+    const rel2 = (f[1]! | (f[2]! << 8) | (f[3]! << 16) | (f[4]! << 24)) | 0;
+    expect(0x44925b + 5 + rel2).toBe(0x45144f);
   });
 });
 

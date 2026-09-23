@@ -254,8 +254,10 @@ describe('★ 登记的整屏：声明了右键的那几屏', () => {
     //   见 `magic-screen.ts` 的 `contextmenu`。
     // ★ 第十四份：嫁禍卡选人窗（`fcn_0043ff56` 的 `0x205` 那一支 `0x00440255` = −1，卡留着），
     //   见 `scapegoat-picker.ts` 的 `contextmenu`。
+    // ★ 第十五份：命運让出框之后那 800 ms（`0x0044dd80 call 0x4528b9`，`0x00452909 cmp edx, 0x205`），
+    //   见 `event-box-screen.ts` 的 `eventTailScreen`。
     expect(withCtx).toEqual([
-      'big-map', 'eventBox', 'facility-picker', 'help', 'lottery', 'magic', 'notice', 'notice-board',
+      'big-map', 'eventBox', 'eventTail', 'facility-picker', 'help', 'lottery', 'magic', 'notice', 'notice-board',
       'research', 'scapegoat-picker', 'steal-picker',
     ]);
   });

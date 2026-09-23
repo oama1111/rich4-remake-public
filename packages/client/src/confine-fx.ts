@@ -158,25 +158,37 @@ export function confineSkippable(kind: ConfineKind): boolean {
  * ★★ 2026-09-18（需求方第 5 条）：计数高位 0x80 是「待释放」状态位（@source 0x41c8ea `or ch, 0x80`），
  *   1 → 0x80 那一步不是送入 —— 按整字节「原为 0」判，这一条自然成立。
  *
- * ⚠️ 两边同时成立（一次 action 里既进医院又进监狱）时取**医院**：
- *   原版是两次 `fcn_0045144f` 串行播，本引擎的表现层一次只播一段，
- *   先播医院那一段（`inHospital` 的调用点更多）；这种组合在现有规则里到不了，
- *   登记在 `Q-ANIM-1.md`。
+ * 返回**第一段**（按玩家号、医院在前）。宿主按 `confineFxTriggers` 把每一段都排上
+ *   （第十五份起：原版每次 `send_to_*` 各播一次、串行）。
  *
  * @param before / after 同一拍的前后状态（只读占用表与 `players`）
  */
 export function confineFxTrigger(
-  before: {
-    prisonOccupancy: readonly number[];
-    hospitalOccupancy: readonly number[];
-    players: readonly { blocking: { inPrison: number; inHospital: number } }[];
-  },
-  after: {
-    prisonOccupancy: readonly number[];
-    hospitalOccupancy: readonly number[];
-    players: readonly { blocking: { inPrison: number; inHospital: number } }[];
-  },
+  before: ConfineFxState,
+  after: ConfineFxState,
 ): ConfineKind | null {
+  return confineFxTriggers(before, after)[0]?.kind ?? null;
+}
+
+/** `confineFxTrigger` 读的那几样 */
+interface ConfineFxState {
+  prisonOccupancy: readonly number[];
+  hospitalOccupancy: readonly number[];
+  players: readonly { blocking: { inPrison: number; inHospital: number } }[];
+}
+
+/**
+ * ★ 第十五份：这一拍**每一位**首次被送进去的人（按玩家号）—— 各播一段。
+ *
+ * 原版每次 `send_to_*` 调用各播一次（阻塞、串行）：新聞 4 `fcn_0044913d` 先播飛碟 0x213
+ * （`0x0044925b`），再逐人 `send_to_hospital`（`0x00449285`），各自一辆救护车 0x20c。
+ * 判据与 `confineFxTrigger` 相同（逐人：医院在前、监狱在后）。
+ */
+export function confineFxTriggers(
+  before: ConfineFxState,
+  after: ConfineFxState,
+): { player: number; kind: ConfineKind }[] {
+  const out: { player: number; kind: ConfineKind }[] = [];
   for (let i = 0; i < after.players.length; i++) {
     const b = before.players[i];
     const a = after.players[i];
@@ -185,14 +197,14 @@ export function confineFxTrigger(
     const hospital =
       b.blocking.inHospital === 0
       && ((after.hospitalOccupancy[i] === 1 && before.hospitalOccupancy[i] !== 1) || a.blocking.inHospital !== 0);
-    if (hospital) return 'hospital';
+    if (hospital) out.push({ player: i, kind: 'hospital' });
     // @source 0x0043d5da `test dh, dh / jne`
     const prison =
       b.blocking.inPrison === 0
       && ((after.prisonOccupancy[i] === 1 && before.prisonOccupancy[i] !== 1) || a.blocking.inPrison !== 0);
-    if (prison) return 'prison';
+    if (prison) out.push({ player: i, kind: 'prison' });
   }
-  return null;
+  return out;
 }
 
 /**
