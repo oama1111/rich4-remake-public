@@ -196,6 +196,25 @@ export function confineFxTrigger(
 }
 
 /**
+ * 这一次送进去是不是**新聞 / 命運事件**引出的 —— 是就要等事件提示框收掉再播。
+ *
+ * 判据与事件框起播同一条（`event-box-screen.ts` 的 `event()`）：`lastEvent` **换了引用**
+ * 且是 `news` / `fortune`（core 只在真的抽了一张时新建它）。
+ *
+ * @source 新聞 `0x0044b862 push 0x960 / call 0x4544f6`（框停 2400 ms）→ `0x0044b875` pass 1
+ *   → 新聞 29 `0x0044b362 call 0x43d593`；命運 `0x0044dd49`（1600 ms）→ pass 1 → 命運 33
+ *   `0x0044d8c2 call 0x43d593`。警车 `0x21a` / 救护车 `0x20c` 在 `send_to_*` 体内（`0x0043d688` /
+ *   `0x0043ed34`），故都在框之后。详见 `board-film.ts` 的 `afterEventBox`。
+ */
+export function confineAfterEventBox(
+  before: { lastEvent: { kind: string } | null },
+  after: { lastEvent: { kind: string } | null },
+): boolean {
+  const ev = after.lastEvent;
+  return ev !== null && ev !== before.lastEvent && (ev.kind === 'news' || ev.kind === 'fortune');
+}
+
+/**
  * 正在播的这一段。
  *
  * ★ 纯数据：`main.ts` 拿它当**表现层的状态位**，不进 `GameState`（C-DET-4）。

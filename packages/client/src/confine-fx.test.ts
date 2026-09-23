@@ -14,11 +14,13 @@ import { MkfArchive, parseFlicInfo } from '@rich4/assets-pipeline';
 import { tickBlockingCounter } from '@rich4/core';
 
 import { LAYOUT } from './stage.ts';
+import { boardFilmWaitsForEventBox } from './board-film.ts';
 import {
   CONFINE_FX_ARCHIVE,
   CONFINE_HOSPITAL,
   CONFINE_PRISON,
   beginConfineFx,
+  confineAfterEventBox,
   confineClip,
   confineFxBitmap,
   confineFxDone,
@@ -264,6 +266,64 @@ describe('★ main.ts 的接线（源码钉子）', () => {
     const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
     expect(src).toContain('BUILD_FX_BOARD_Y');
     expect(src).not.toContain('BUILD_FX_Y, BUILD_FX_W');
+  });
+});
+
+/**
+ * ★★ 第十五份試玩回報（Charles，`wt16/20260923-212047821-manual-Charles.json`）：
+ * 「忍太郎刚刚进监狱的动画太快了，前一个事件的弹窗还没看清楚就触发」——
+ * 那一局 P3 踩到新聞格，抽到 29「%s違法超貸 經營者%s坐牢５天」，经营者是忍太郎（P1）；
+ * 日志：`事件提示框：新聞 #29` 紧接着就是 `影片：開始 prison`（同一拍），框还没停满警车就开了。
+ */
+describe('★★ 新聞 / 命運引出的入獄・住院：等事件提示框收掉再播', () => {
+  const ev = (kind: string) => ({ lastEvent: { kind } });
+
+  it('判据 = `lastEvent` 换了引用且是新聞 / 命運（与事件框起播同一条）', () => {
+    const none = { lastEvent: null };
+    expect(confineAfterEventBox(none, ev('news'))).toBe(true);
+    expect(confineAfterEventBox(none, ev('fortune'))).toBe(true);
+    // 同一个引用 = 这一拍没抽事件（例：陷害卡、踩到惡犬）
+    const same = ev('news');
+    expect(confineAfterEventBox(same, same)).toBe(false);
+    // 魔法屋 / 小遊戲不玩那两条走的是别的屏
+    expect(confineAfterEventBox(none, ev('magicHouse'))).toBe(false);
+    expect(confineAfterEventBox(none, ev('minigameDecline'))).toBe(false);
+    expect(confineAfterEventBox(none, none)).toBe(false);
+  });
+
+  it('`afterEventBox` 只在事件框还在时押着；普通那一段不受影响', () => {
+    const held = { ...confineClip('prison'), afterEventBox: true };
+    expect(boardFilmWaitsForEventBox(held, true)).toBe(true);
+    expect(boardFilmWaitsForEventBox(held, false)).toBe(false);
+    expect(boardFilmWaitsForEventBox(confineClip('prison'), true)).toBe(false);
+  });
+
+  runExe('★ 回 exe 钉：框先停满，pass 1 才调 `send_to_prison`（影片在它里面）', () => {
+    // 新聞 fcn_0044b6df：0x0044b862 push 0x960 / call 0x4544f6（2400 ms）
+    expect(exeBytes(0x44b862, 10)).toEqual([0x68, 0x60, 0x09, 0x00, 0x00, 0xe8, 0x8a, 0x8c, 0x00, 0x00]);
+    expect(0x44b867 + 5 + 0x8c8a).toBe(0x4544f6);
+    // 0x0044b86f mov eax,[esp+0x10] / push 1 / call [eax*4 + 0x475e24] —— pass 1 在等待之后
+    expect(exeBytes(0x44b86f, 13)).toEqual([
+      0x8b, 0x44, 0x24, 0x10, 0x6a, 0x01, 0xff, 0x14, 0x85, 0x24, 0x5e, 0x47, 0x00,
+    ]);
+    // 新聞 29 pass 1：0x0044b35f push 5 / push eax / call 0x43d593（send_to_prison）
+    expect(exeBytes(0x44b35f, 8)).toEqual([0x6a, 0x05, 0x50, 0xe8, 0x2c, 0x22, 0xff, 0xff]);
+    expect(0x44b362 + 5 + (0xffff222c | 0)).toBe(0x43d593);
+    // 命運 fcn_0044db81：0x0044dd44 push 0x640 / call 0x4544f6（1600 ms）→ pass 1 → 0x0044dd7b 800 ms
+    expect(exeBytes(0x44dd44, 10)).toEqual([0x68, 0x40, 0x06, 0x00, 0x00, 0xe8, 0xa8, 0x67, 0x00, 0x00]);
+    expect(exeBytes(0x44dd6f, 9)).toEqual([0x6a, 0x01, 0xff, 0x94, 0x03, 0xf0, 0x5e, 0x47, 0x00]);
+    expect(exeBytes(0x44dd7b, 10)).toEqual([0x68, 0x20, 0x03, 0x00, 0x00, 0xe8, 0x34, 0x4b, 0x00, 0x00]);
+    // 命運 33 pass 1：0x0044d8c2 call 0x43d593
+    expect(exeBytes(0x44d8c2, 5)).toEqual([0xe8, 0xcc, 0xfc, 0xfe, 0xff]);
+    expect(0x44d8c2 + 5 + (0xfffefccc | 0)).toBe(0x43d593);
+  });
+
+  it('main.ts 接线：送进去那一拍按判据带上 `afterEventBox`，起播两处都问事件框', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain('const clip = confineAfterEventBox(before, after)');
+    expect(src).toContain('? { ...confineClip(kind), afterEventBox: true }');
+    expect(src).toContain('if (boardFilmWaitsForEventBox(pending, eventBoxScreen.active(uiEnv()))) {');
+    expect(src).toContain('!boardFilmWaitsForEventBox(after, eventBoxScreen.active(uiEnv()))');
   });
 });
 

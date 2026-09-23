@@ -269,7 +269,7 @@ import {
 } from './build-fx.ts';
 // ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1 的「受管辖但仍未接」之一）——
 //   与建屋影片同一套：整幅 FLIC 直接盖在棋盘上、**阻塞**、播完才放行回合驱动。
-import { confineClip, confineFxTrigger } from './confine-fx.ts';
+import { confineAfterEventBox, confineClip, confineFxTrigger } from './confine-fx.ts';
 // ★ 神明降臨／發威那一段影片（Q-ANIM-1）—— 与住院/入獄同一支 `fcn_0045144f`，
 //   于是共用 `board-film.ts` 的播放与下面那一份「棋盘影片」宿主状态。
 import { godFilmSpec, godFxTrigger } from './god-fx.ts';
@@ -307,6 +307,7 @@ import {
   boardFilmBitmap,
   boardFilmDone,
   boardFilmRedrawn,
+  boardFilmWaitsForEventBox,
   enqueueBoardFilm,
   type BoardFilm,
   type BoardFilmSpec,
@@ -6831,9 +6832,13 @@ function startConfineFx(before: GameState, after: GameState): void {
   filmViews.set(confineClip(kind).id, view);
   // 影片窗口里棋盘按 before 画（见 `deferred-board.ts`）—— 起播前先记下快照
   deferredBoardBefore = before;
+  // ★★ 第十五份試玩回報：新聞 29 / 命運 33 引出的入獄（住院同理）是事件处理函数 pass 1 才调
+  //   `send_to_*` 的 ⇒ 事件提示框停满（或被点掉）之后才播（`afterEventBox`，见 `board-film.ts`）
+  const clip = confineAfterEventBox(before, after)
+    ? { ...confineClip(kind), afterEventBox: true }
+    : confineClip(kind);
   // ★★ 同一条 action 里已经排了一段（踩到惡犬：0x214 在前）⇒ **接在它后面**，
   //   不许 `startBoardFilm` 把它顶掉（第五份回报第 3 条；判据见 `enqueueBoardFilm`）
-  const clip = confineClip(kind);
   const slots = enqueueBoardFilm(
     { pending: pendingBoardFilm, after: pendingBoardFilmAfter },
     clip,
@@ -7050,7 +7055,14 @@ function tickBoardFilm(now: number): void {
   //   都置空，而这一段**只在两者都空时**接管，于是它既不会插到正在播的那一段
   //   前面，也不需要跟 `startBoardFilm` 抢 `pendingBoardFilm`。
   const after = pendingBoardFilmAfter;
-  if (after !== null && boardFilm === null && pendingBoardFilm === null && !noticeHoldsFilms()) {
+  if (
+    after !== null &&
+    boardFilm === null &&
+    pendingBoardFilm === null &&
+    !noticeHoldsFilms() &&
+    // ★ 第十五份：事件（新聞 / 命運）引出的那一段等事件提示框收掉（`afterEventBox`）
+    !boardFilmWaitsForEventBox(after, eventBoxScreen.active(uiEnv()))
+  ) {
     const key = `${after.archive}:${after.resource}`;
     if (boardFilmFlics.has(key)) {
       pendingBoardFilmAfter = null;
@@ -7092,6 +7104,12 @@ function tickBoardFilm(now: number): void {
     // ★ 第十二份試玩回報：用卡那一次亮牌（`fcn_00441f73`）在卡片函数**之前**、阻塞 1500 ms
     //   ⇒ 卡片引出的影片（入獄 / 神明附身…）一律等它收屏
     if ((pending.afterOverlay === true && activeUiScreen() !== null) || cardUsePopupActive()) {
+      requestRender();
+      return;
+    }
+    // ★★ 第十五份試玩回報（「前一个事件的弹窗还没看清楚就触发」）：新聞 / 命運引出的入獄・住院
+    //   等**事件提示框**那一屏收掉（只看那一屏 —— 保險理賠框排在影片后面，等它就是死锁）
+    if (boardFilmWaitsForEventBox(pending, eventBoxScreen.active(uiEnv()))) {
       requestRender();
       return;
     }

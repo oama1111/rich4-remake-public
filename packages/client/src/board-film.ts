@@ -53,9 +53,31 @@ export interface BoardFilmSpec {
    * 440×480 那一块，恰好把 (0,40)-(440,480) 的整块棋盘影片**整段遮住**；
    * 不等它收屏，这 4.1 秒就会在框底下白播。
    *
-   * 未置位 = 不等（住院/入獄/神明那几支的调用点都在訊息框之外）。
+   * 未置位 = 不等。住院/入獄那两支由新聞 / 命運引出时**在**事件框之后，但走的是
+   * 下面的 `afterEventBox`（只等事件框那一屏，理由见那里）。
    */
   afterOverlay?: boolean;
+  /**
+   * 起播前要不要等**事件提示框**（新聞 / 命運，`event-box-screen.ts`）收掉 —— 只看那一屏。
+   *
+   * ★ 第十五份試玩回報（「忍太郎刚刚进监狱的动画太快了，前一个事件的弹窗还没看清楚就触发」）：
+   *   新聞 29 / 命運 33 这类「事件里送人进監獄/醫院」的，警车 / 救护车在 `send_to_*` **里面**播，
+   *   而 `send_to_*` 是事件处理函数 **pass 1** 才调的 —— 框先停满、片后播：
+   * ```asm
+   * ; 新聞 fcn_0044b6df
+   * 0044b862  push 0x960 / call 0x4544f6         ; 框停 2400 ms（可跳过）
+   * 0044b873  push 1 / call [eax*4 + 0x475e24]   ; pass 1 → 新聞 29 0x0044b362 call 0x43d593（入獄 + 0x21a）
+   * ; 命運 fcn_0044db81
+   * 0044dd44  push 0x640 / call 0x4544f6         ; 框停 1600 ms（可跳过）
+   * 0044dd6f  push 1 / call [ebx+eax + 0x475ef0] ; pass 1（编号 ≥ 0x21 那一支；< 0x21 是 0x0044dd5b）
+   *                                            ;   → 命運 33 0x0044d8c2 call 0x43d593
+   * 0044dd7b  push 0x320 / call 0x4528b9         ; 再停 800 ms
+   * ```
+   * ⚠️ **不能**借 `afterOverlay`：那道闸看的是「任何一屏还在」，而入獄 / 住院尾段的
+   *   保險理賠框（`0x43d755 → 0x44ba63`）排在影片**之后**、队列里等着 `pendingBoardFilm`
+   *   ⇒ 訊息框屏 `active()` 为真 ⇒ 两边互等，整局卡死。这里只等事件提示框那一屏。
+   */
+  afterEventBox?: boolean;
   /**
    * 起播那一刻**放开**棋盘的「按 before 画」（`deferred-board.ts`）—— 影片期间棋盘按 after 画。
    *
@@ -107,6 +129,15 @@ export function boardFilmFrame(film: BoardFilm, now: number): number {
 /** 这一段播完了吗（时间到）*/
 export function boardFilmDone(film: BoardFilm, now: number): boolean {
   return now - film.startedAt >= boardFilmTotalMs(film.spec);
+}
+
+/**
+ * 这一段此刻还得押着等事件提示框吗（`afterEventBox`，见 `BoardFilmSpec`）。
+ *
+ * @param eventBoxActive 事件提示框（新聞 / 命運）那一屏此刻还在不在演
+ */
+export function boardFilmWaitsForEventBox(spec: BoardFilmSpec, eventBoxActive: boolean): boolean {
+  return spec.afterEventBox === true && eventBoxActive;
 }
 
 /**
