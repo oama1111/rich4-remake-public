@@ -1225,7 +1225,9 @@ describe('★ 可跳过性（falsification：这几条红了就说明又回到�
   it('★★ 命運全段：抬手跳过第一段 → 按键关掉第二段（屏幕真的不再接管）', () => {
     resetEventBoxScreen();
     const before = stateOf([player(0, [])], { kind: 'news', id: 1 });
-    const after = stateOf([player(0, [])], { kind: 'fortune', id: 12 });
+    // ★ 第十五份：用命運 **4**（挪用存款，施加阶段整支没有 `view_to`）—— 其余大多数命運的 pass 1
+    //   一进来就重画棋盘把框抹掉、第二段改在棋盘上停（见 `event-box-yield.test.ts`），这里专测框上那一段
+    const after = stateOf([player(0, [])], { kind: 'fortune', id: 4 });
     eventBoxScreen.event!(before, after, fakeEnv(after));
     expect(eventBoxScreenState().playback?.plan.kind).toBe('fortune');
     eventBoxScreen.up!(0, 0, fakeEnv(after, 10)); // 第一段 → 进第二段

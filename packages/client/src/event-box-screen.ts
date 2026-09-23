@@ -185,7 +185,7 @@ import { CARDS,
   fortuneDisplayEntry,
   newsEvent,
   type EventEntry } from '@rich4/data';
-import { confineViewTargets, type GameState, type MapTopology } from '@rich4/core';
+import type { GameState, MapTopology } from '@rich4/core';
 import {
   loadRaw555Resource,
   type ArchiveName,
@@ -919,9 +919,9 @@ export interface EventBoxPlayback {
   /** 命運第二段开始的时刻；0 = 还没进第二段 */
   secondAt: number;
   /**
-   * ★ 第十五份：这一张命運的 pass 1 里有 `send_to_*` / `0x40d375`（入獄・住院・消失）——
-   *   它们开头那一次 `view_to`（`0x0043d5cc` / `0x0043ec78` / `0x0040d3e6`）会**重画整块棋盘**
-   *   把框抹掉，第二段 800 ms 是在影片、理賠框之后对着棋盘停的。见 `eventBoxYieldsToBoard`。
+   * ★ 第十五份：这一张命運的 pass 1 会先 `view_to`（**重画整块棋盘**把框抹掉），第二段 800 ms
+   *   是在施加阶段的演出（加持框、影片、理賠框、台词）之后对着棋盘停的。
+   *   见 `eventBoxYieldsToBoard` 与 `fortuneRedrawsBoard` 的逐张表。
    */
   yieldAfterFirst?: boolean;
 }
@@ -1094,13 +1094,55 @@ export function eventBoxYieldsToBoard(p: EventBoxPlayback, next: EventBoxPlaybac
 }
 
 /**
- * 这一张命運的 pass 1 有没有 `send_to_*` / 消失（= 有没有那一次重画棋盘的 `view_to`）。
- * 判据交给 core 的 `confineViewTargets`（加刑也算：`view_to` ① 在 `test dh,dh` 之前）。
- * 只给了 `lastEvent` 的精简状态（单测夹具）⇒ 当作没有。
+ * ★ 第十五份（协调方：逐张查）：命運 pass 1 **一进来就无条件** `view_to` 的那几张 —— 框必被抹掉。
+ *
+ * 逐张的施加入口（`fcn_0044db81` 的 `0x0044dd5d` / `0x0044dd71 call [表 0x475ef0]`，arg = 1）
+ * 与那一次 `call 0x41d476`（`python3 tools/disasm.py va <入口> 40`）：
+ *
+ * | 命運 | 施加入口 | `view_to` | 说明 |
+ * |---|---|---|---|
+ * | 0 拆屋 / 1 徵收 | `0x0044becf` / `0x0044c067` | `0x0044bee8` / `0x0044c080`（镜头到那块地，flags 2）| 入口第一件事 |
+ * | 6 出國 / 7 綁架 | `0x0044c658` / `0x0044c76d` | `0x0044c66f` / `0x0044c784`（0,0,3）| `0x44b896` 之后、不看返回值 |
+ * | 9 賣股 | `0x0044c978` | `0x0044c98f` | 同上 |
+ * | 10 機車被偷 | `0x0044ca9f` | 返回 1：`0x0044cabb`；否则 `0x0044cb00` | 两支都有 |
+ * | 11 汽車全毀 | `0x0044cbac` | `0x0044cbc3` | |
+ * | 12 / 13 住院 | `0x0044ccd4`（13 `0x0044cd7e` 跳进来）| `0x0044cceb` | 之后才 `send_to_hospital` `0x0044cd65` |
+ * | 14 罰款 | `0x0044ce35` | `0x0044ce4c` | |
+ * | 15 / 16 罰款 | `0x0044cfdf`（没车那一支 `0x0044cf40` / `0x0044d08f` 改走 12）| `0x0044cff6` | |
+ * | 17 18 19 23 24 26 30 | `0x0044d172` | `0x0044d189` | 共用罰款尾巴 |
+ * | 20 21 22 25 27 28 29 31 | `0x0044d2a9` | `0x0044d2c0` | 共用進帳尾巴 |
+ * | 32 賣卡 | `0x0044d6d0` | `0x0044d6e7` | |
+ * | 33–36 坐牢 | `0x0044d80b`（34–36 跳进来）| `0x0044d822` | 之后才 `send_to_prison` `0x0044d8c2` |
+ *
+ * **有条件**的四张（见 `fortuneRedrawsBoard`）：2 冒貸（返回 1 `0x0044c19c` / 返回 2 `0x0044c1c3`，
+ * 都紧跟加持框）、3 跳票（返回 1 `0x0044c298`）、8 違約交割（返回 1 `0x0044c88c`）、
+ * 5 生日（收到至少一张 `0x0044c57b test edi,edi` → `0x0044c585`）。**4 挪用存款**整支没有 `view_to`。
+ * 另两个出口：0 的收尾 `0x0044bf51 view_to(0,0,1)`、11 的 `0x0044cc11`，都在第一次之后，不改结论。
  */
-function fortuneSendsSomeone(before: GameState, after: GameState): boolean {
-  if (!Array.isArray(before.prisonOccupancy) || !Array.isArray(after.prisonOccupancy)) return false;
-  return confineViewTargets(before, after).length > 0;
+const FORTUNE_REDRAW_ALWAYS: ReadonlySet<number> = new Set([
+  0, 1, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+  34, 35, 36,
+]);
+
+/**
+ * 这一张命運的 pass 1 会不会走到那一次重画棋盘的 `view_to`（= 框在第一段收尾时被抹掉）。
+ *
+ * 有条件那几张按 core 交出的结果判：2 / 3 / 8 是「弹了神明加持框」（那一支就是 `view_to` + 框，
+ * core 只在原版弹框的那几档交 `blessing.*`，见 `fortune-effects.ts` 的 `fortuneBlessingNotice`）；
+ * 5 是「真的收到了卡」（有人手牌变少）。
+ */
+export function fortuneRedrawsBoard(before: GameState, after: GameState, id: number): boolean {
+  if (FORTUNE_REDRAW_ALWAYS.has(id)) return true;
+  if (id === 2 || id === 3 || id === 8) {
+    const fresh = after.notices !== before.notices ? (after.notices ?? []) : [];
+    return fresh.some((n) => n.key.startsWith('blessing.'));
+  }
+  if (id === 5) {
+    return (after.players ?? []).some(
+      (p, i) => i !== after.currentPlayer && p.cards.length < (before.players?.[i]?.cards.length ?? 0),
+    );
+  }
+  return false;
 }
 
 /** 命運让出框之后还有那一截 800 ms 没走完（等影片 / 正在停）—— 回合驱动要等它 */
@@ -1418,8 +1460,8 @@ export const eventBoxScreen: UiScreen = {
           ? newsView(ev.id, after.priceIndex, subject, shares)
           : fortuneView(ev.id, after.priceIndex, subject, after.globalMapId);
       const label = `事件提示框：${ev.kind === 'news' ? '新聞' : '命運'} #${ev.id}${who === undefined ? '' : `（P${who.index + 1}）`}`;
-      // ★ 第十五份：命運 pass 1 送人进監獄 / 醫院 / 消失 ⇒ 第一段收尾时让出框（`eventBoxYieldsToBoard`）
-      const yieldAfterFirst = ev.kind === 'fortune' && fortuneSendsSomeone(before, after);
+      // ★ 第十五份：命運 pass 1 先重画棋盘的那几张 ⇒ 第一段收尾时让出框（`eventBoxYieldsToBoard`）
+      const yieldAfterFirst = ev.kind === 'fortune' && fortuneRedrawsBoard(before, after, ev.id);
       beginOrDefer((e) => {
         playback = eventBoxPlaybackStart(eventBoxPlan(view), e.now);
         if (yieldAfterFirst) playback = { ...playback, yieldAfterFirst: true };

@@ -4576,7 +4576,8 @@ function notifyMagicApplied(before: GameState, beats: MagicSequence['beats']): v
 
 /** 上一段还没演完吗（框 / 影片 / 建屋 / 走子 / 台词 —— 与回合驱动同一份判据）*/
 function magicSequenceBusy(): boolean {
-  return stageBusy(stageBusyFlags()) || speechQueue.length > 0 || heldSpeech.length > 0;
+  // ★ 第十五份：「抽取命運三張」每一张的 800 ms（命運让出框之后那一截）也算 —— 原版 `0x44db81` 整段阻塞
+  return stageBusy(stageBusyFlags()) || speechQueue.length > 0 || heldSpeech.length > 0 || eventBoxTailPending();
 }
 
 /** 每帧：上一段收了就起下一段；全部演完就收摊（镜头 / 侧栏交还施法者，= 原版 `0x004324fa` 还原当前玩家）*/

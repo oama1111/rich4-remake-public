@@ -18,6 +18,7 @@ import {
   eventBoxTailTick,
   eventBoxYieldsToBoard,
   eventTailScreen,
+  fortuneRedrawsBoard,
   fortuneView,
   resetEventBoxScreen,
   FORTUNE_HOLD_MS,
@@ -125,9 +126,9 @@ describe('★★ 命運 pass 1 里有 `send_to_*` ⇒ 第一段收尾让出框�
     resetEventBoxScreen();
   });
 
-  it('反向：没送人的命運照旧（第二段仍在框上停）；新聞 29 也不让（pass 1 在 2400 ms 之后，框已收）', () => {
+  it('反向：施加阶段不重画棋盘的命運（4 挪用存款）照旧在框上停第二段；新聞 29 也不让（pass 1 在 2400 ms 之后，框已收）', () => {
     resetEventBoxScreen();
-    const plain = drew('fortune', 25, false);
+    const plain = drew('fortune', 4, false);
     eventBoxScreen.event!(plain.before, plain.after, env(plain.after, 0));
     eventBoxScreen.tick!(env(plain.after, FORTUNE_HOLD_MS));
     expect(eventBoxScreen.active(env(plain.after, FORTUNE_HOLD_MS))).toBe(true);
@@ -141,6 +142,58 @@ describe('★★ 命運 pass 1 里有 `send_to_*` ⇒ 第一段收尾让出框�
     expect(eventBoxScreen.active(env(news.after, NEWS_HOLD_MS))).toBe(false);
     expect(eventBoxTailPending()).toBe(false);
     resetEventBoxScreen();
+  });
+
+  it('★ 逐张判据：32 张无条件；2 / 3 / 8 看有没有弹加持框；5 看有没有收到卡；4 从不', () => {
+    const { before, after } = drew('fortune', 0, false);
+    for (const id of [0, 1, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]) {
+      expect(fortuneRedrawsBoard(before, after, id), `命運 ${id}`).toBe(true);
+    }
+    expect(fortuneRedrawsBoard(before, after, 4)).toBe(false);
+    for (const id of [2, 3, 8]) {
+      expect(fortuneRedrawsBoard(before, after, id), `命運 ${id} 没弹框`).toBe(false);
+      const blessed: GameState = { ...after, notices: [{ key: 'blessing.penaltyVoid', args: ['天使'] }] };
+      expect(fortuneRedrawsBoard(before, blessed, id), `命運 ${id} 弹了框`).toBe(true);
+    }
+    expect(fortuneRedrawsBoard(before, after, 5)).toBe(false);
+    const b5: GameState = { ...before, players: before.players.map((p, i) => (i === 1 ? { ...p, cards: [3] } : p)) };
+    const a5: GameState = { ...after, players: after.players.map((p, i) => (i === 0 ? { ...p, cards: [3] } : p)) };
+    expect(fortuneRedrawsBoard(b5, a5, 5)).toBe(true);
+  });
+
+  runExe('★ 回 exe 钉：逐张施加入口后的那一次 `view_to`（0x41d476）', () => {
+    // [施加入口 jne 所在, 入口, view_to 调用点]
+    const rows: [number, number, number][] = [
+      [0x44be27, 0x44becf, 0x44bee8], // 0
+      [0x44bfc2, 0x44c067, 0x44c080], // 1
+      [0x44c5e9, 0x44c658, 0x44c66f], // 6
+      [0x44c6fe, 0x44c76d, 0x44c784], // 7
+      [0x44c928, 0x44c978, 0x44c98f], // 9
+      [0x44cb5c, 0x44cbac, 0x44cbc3], // 11
+      [0x44cc65, 0x44ccd4, 0x44cceb], // 12（13 跳进来）
+      [0x44cdab, 0x44ce35, 0x44ce4c], // 14
+      [0x44d0e8, 0x44d172, 0x44d189], // 17 18 19 23 24 26 30
+      [0x44d235, 0x44d2a9, 0x44d2c0], // 20 21 22 25 27 28 29 31
+      [0x44d680, 0x44d6d0, 0x44d6e7], // 32
+      [0x44d795, 0x44d80b, 0x44d822], // 33（34–36 跳进来）
+    ];
+    for (const [jne, entry, call] of rows) {
+      const j = exeBytes(jne, 2);
+      // jne rel8（0x75）或 jne rel32（0x0f 0x85）
+      const target = j[0] === 0x75 ? jne + 2 + ((j[1]! << 24) >> 24) : (() => {
+        const b = exeBytes(jne, 6);
+        return jne + 6 + ((b[2]! | (b[3]! << 8) | (b[4]! << 16) | (b[5]! << 24)) | 0);
+      })();
+      expect(target, `jne @${jne.toString(16)}`).toBe(entry);
+      expect(callTarget(call), `view_to @${call.toString(16)}`).toBe(0x41d476);
+    }
+    // 4 挪用存款整支（0x44c2c2..0x44c3b7）没有 `call 0x41d476`
+    const d = exeBytes(0x44c2c2, 0x44c3b7 - 0x44c2c2);
+    for (let i = 0; i + 5 <= d.length; i++) {
+      if (d[i] !== 0xe8) continue;
+      const rel = (d[i + 1]! | (d[i + 2]! << 8) | (d[i + 3]! << 16) | (d[i + 4]! << 24)) | 0;
+      expect(0x44c2c2 + i + 5 + rel).not.toBe(0x41d476);
+    }
   });
 
   runExe('★ 回 exe 钉：`send_to_*` / 消失开头的 `view_to` 无条件重画棋盘并刷屏', () => {
@@ -159,5 +212,28 @@ describe('★★ 命運 pass 1 里有 `send_to_*` ⇒ 第一段收尾让出框�
     // 命運 fcn_0044db81：pass 1 调用 → 0x0044dd7b push 0x320 / call 0x4528b9（800 ms）
     expect(exeBytes(0x44dd71, 7)).toEqual([0xff, 0x94, 0x03, 0xf0, 0x5e, 0x47, 0x00]);
     expect(callTarget(0x44dd80)).toBe(0x4528b9);
+  });
+
+  runExe('★ 命運 33 那一句（入獄台词）的位置：影片 → 镜头 ② → 台词 → 理賠框 → 回到命運 → 800 ms', () => {
+    // send_to_prison：0x0043d6aa 影片 → 0x0043d6f1 view_to(監獄) → 0x0043d71c player_say → 0x0043d749 理賠
+    expect(callTarget(0x43d6aa)).toBe(0x45144f);
+    expect(callTarget(0x43d6f1)).toBe(0x41d476);
+    expect(callTarget(0x43d71c)).toBe(0x44ef41);
+    expect(callTarget(0x43d749)).toBe(0x44ba63);
+    // 命運 33：0x0044d8c2 send_to_prison 之后 0x0044d8ca jmp 0x44d800（收尾返回）⇒ 回到 0x0044dd7b 的 800 ms
+    expect(callTarget(0x44d8c2)).toBe(0x43d593);
+    const j = exeBytes(0x44d8ca, 5); // jmp rel32
+    expect(j[0]).toBe(0xe9);
+    expect(0x44d8ca + 5 + ((j[1]! | (j[2]! << 8) | (j[3]! << 16) | (j[4]! << 24)) | 0)).toBe(0x44d800);
+  });
+
+  it('★ 宿主接线：800 ms 要等 pass 1 的台词说完（含押着的）才开始数；数的时候台词不许上台', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    const tick = src.slice(src.indexOf('eventBoxTailTick('), src.indexOf('performance.now(),', src.indexOf('eventBoxTailTick(')));
+    expect(tick).toContain('speechQueue.length > 0');
+    expect(tick).toContain('heldSpeech.length > 0');
+    expect(tick).toContain('boardFilm !== null');
+    expect(tick).toContain('noticeBoxScreenActive()');
+    expect(src).toContain('eventTailScreen.active(env);');
   });
 });
