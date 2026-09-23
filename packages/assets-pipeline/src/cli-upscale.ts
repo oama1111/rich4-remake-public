@@ -47,7 +47,8 @@ import {
   type UpscaleManifest,
 } from './upscale.ts';
 import {
-  DEFAULT_GATE_THRESHOLDS,
+  GATE_PROFILES,
+  profileForModel,
   gateCompare,
   summarizeGate,
   worstRows,
@@ -432,7 +433,10 @@ export function cmdMerge(queueDir: string, doneDir: string): void {
       continue;
     }
 
-    const merged = mergeUpscaled(rgb!, alpha!);
+    // 交出去的那张 1× rgb（已 bleed）—— 边缘带取它的颜色（`edge.ts`）
+    const origPath = join(queueDir, frame.rgb);
+    const original = existsSync(origPath) ? decodePng(new Uint8Array(readFileSync(origPath))) : undefined;
+    const merged = mergeUpscaled(rgb!, alpha!, frame.scale, original);
     // ★ 合并完就把交出去的那两张解开的图放掉（Q-GND-4 的底图：9216² 每张 324MB）。
     //   下面 encodePng 自己还要开一份整幅的缓冲，两者叠起来就是这一步的峰值 ——
     //   实测（底图 9216²）：不放手时 arrayBuffers 峰值 2030MB，放手后少 648MB。
@@ -543,7 +547,8 @@ function gateReportPath(hdDir: string): string {
 export function cmdGate(
   hdDir: string,
   cleanDir: string,
-  thresholds: GateThresholds = DEFAULT_GATE_THRESHOLDS,
+  /** 给了就全批一个口径；不给 = 按每张记录的模型名自动分档（`profileForModel`） */
+  thresholds?: GateThresholds,
 ): GateReport {
   const manifest = loadManifest(hdDir);
   const rows: GateRow[] = [];
@@ -567,7 +572,8 @@ export function cmdGate(
     try {
       const original = decodePng(new Uint8Array(readFileSync(srcPath)));
       const hd = decodePng(new Uint8Array(readFileSync(hdPath)));
-      rows.push({ id: task.id, hd: rel, ...gateCompare(original, hd, thresholds) });
+      const t = thresholds ?? GATE_PROFILES[profileForModel(manifest.results[task.id]?.model ?? '')];
+      rows.push({ id: task.id, hd: rel, ...gateCompare(original, hd, t) });
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e));
     }
@@ -576,7 +582,7 @@ export function cmdGate(
 
   const report: GateReport = {
     generatedAt: new Date().toISOString(),
-    thresholds,
+    thresholds: thresholds ?? GATE_PROFILES.faithful,
     summary: summarizeGate(rows),
     rows,
   };
@@ -585,7 +591,9 @@ export function cmdGate(
   const s = report.summary;
   console.log(
     `回缩比对 ${s.checked} 张：过 ${s.passed}、打回 ${s.failed}` +
-      `（阈值 IoU ≥ ${thresholds.minIou}、均值 ΔE ≤ ${thresholds.maxMeanDeltaE}、95 分位 ΔE ≤ ${thresholds.maxP95DeltaE}）`,
+      (thresholds === undefined
+        ? '（按做法分档：忠实 8 / 25、重绘 10 / 30，IoU ≥ 0.97）'
+        : `（阈值 IoU ≥ ${thresholds.minIou}、均值 ΔE ≤ ${thresholds.maxMeanDeltaE}、95 分位 ΔE ≤ ${thresholds.maxP95DeltaE}）`),
   );
   if (withResult.length < manifest.tasks.length) {
     console.log(`  另有 ${manifest.tasks.length - withResult.length} 张还没有产物，未比。`);
@@ -998,13 +1006,21 @@ function main(argv: string[]): void {
     case 'gate': {
       const { positional, flags } = parseFlags(rest, ['iou', 'mean-de', 'p95-de']);
       if (positional.length < 2) {
-        throw new Error('用法: gate <hd> <assets-clean> [--iou 0.97] [--mean-de 6] [--p95-de 15]');
+        throw new Error('用法: gate <hd> <assets-clean> [--iou 0.97] [--mean-de 8] [--p95-de 25]（不给 = 按模型名分档）');
       }
-      const report = cmdGate(positional[0]!, positional[1]!, {
-        minIou: flags['iou'] ?? DEFAULT_GATE_THRESHOLDS.minIou,
-        maxMeanDeltaE: flags['mean-de'] ?? DEFAULT_GATE_THRESHOLDS.maxMeanDeltaE,
-        maxP95DeltaE: flags['p95-de'] ?? DEFAULT_GATE_THRESHOLDS.maxP95DeltaE,
-      });
+      // 一个阈值都没给 ⇒ 按模型名自动分档；给了任意一个 ⇒ 全批用这一套（缺的取忠实档）
+      const custom = flags['iou'] !== undefined || flags['mean-de'] !== undefined || flags['p95-de'] !== undefined;
+      const report = cmdGate(
+        positional[0]!,
+        positional[1]!,
+        custom
+          ? {
+              minIou: flags['iou'] ?? GATE_PROFILES.faithful.minIou,
+              maxMeanDeltaE: flags['mean-de'] ?? GATE_PROFILES.faithful.maxMeanDeltaE,
+              maxP95DeltaE: flags['p95-de'] ?? GATE_PROFILES.faithful.maxP95DeltaE,
+            }
+          : undefined,
+      );
       if (report.summary.failed > 0) process.exitCode = 1;
       break;
     }

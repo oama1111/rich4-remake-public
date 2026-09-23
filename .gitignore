@@ -39,6 +39,8 @@ assets/upscale-queue/
 assets/upscale-done/
 # W-80 试点的拼图 / 云端产物 / 过审页（像素一律不入库）
 assets/pilot/
+# W-80 全量批次的工作目录（解包 / 队列 / 拼图 / 云端产物）
+assets/work/
 extracted/
 png/
 

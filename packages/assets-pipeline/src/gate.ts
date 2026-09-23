@@ -172,6 +172,27 @@ export const DEFAULT_GATE_THRESHOLDS: Readonly<GateThresholds> = {
   maxP95DeltaE: 15,
 };
 
+/**
+ * ★ 2026-09-23 需求方拍板（W-80 §5.2 第 2 条）：按**做法**分两档，轮廓一律严格。
+ *
+ * - 忠实放大（SeedVR2 等）：只会锐化、提对比，小精灵上色差天然偏大 —— 均值 8 / p95 25；
+ * - 重绘（Qwen 等，允许补细节）：均值 10 / p95 30；
+ * - IoU 都是 0.97：形状跑偏才是硬伤。
+ *
+ * 试点实测：SeedVR2 小精灵均值 ~7–9、p95 ~20–25；Qwen 标题（比例修正后）9.0 / 22.6。
+ */
+export const GATE_PROFILES = {
+  faithful: { minIou: 0.97, maxMeanDeltaE: 8, maxP95DeltaE: 25 },
+  repaint: { minIou: 0.97, maxMeanDeltaE: 10, maxP95DeltaE: 30 },
+} as const satisfies Record<string, GateThresholds>;
+
+export type GateProfile = keyof typeof GATE_PROFILES;
+
+/** 由清单里记的模型名判断用哪一档：名字里带 `qwen`（重绘）的走 repaint，其余 faithful */
+export function profileForModel(model: string): GateProfile {
+  return /qwen/i.test(model) ? 'repaint' : 'faithful';
+}
+
 export interface GateMetrics {
   /** 比对所在的尺寸（= 原图尺寸） */
   width: number;

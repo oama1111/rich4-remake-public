@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest';
 import type { DecodedImage } from './sprite.ts';
 import { srgbToLab } from './seams.ts';
 import {
+  GATE_PROFILES,
+  profileForModel,
   DEFAULT_GATE_THRESHOLDS,
   downscaleArea,
   gateCompare,
@@ -255,5 +257,14 @@ describe('报告汇总', () => {
   it('最差的排前：没算出指标的最前，其次 IoU 塌掉的，再次色差大的；过了的不列', () => {
     expect(worstRows(rows).map((r) => r.id)).toEqual(['c', 'd', 'b']);
     expect(worstRows(rows, 1).map((r) => r.id)).toEqual(['c']);
+  });
+});
+
+describe('GATE_PROFILES / profileForModel（2026-09-23 按做法分档）', () => {
+  it('模型名带 qwen 的走重绘档，其余忠实档；轮廓一律 0.97', () => {
+    expect(profileForModel('qwen-image-2.1-repaint-1280x960+seedvr2-7b-lab')).toBe('repaint');
+    expect(profileForModel('seedvr2-7b-int8-lab-seed42-sheet')).toBe('faithful');
+    expect(GATE_PROFILES.faithful).toEqual({ minIou: 0.97, maxMeanDeltaE: 8, maxP95DeltaE: 25 });
+    expect(GATE_PROFILES.repaint).toEqual({ minIou: 0.97, maxMeanDeltaE: 10, maxP95DeltaE: 30 });
   });
 });

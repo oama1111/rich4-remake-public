@@ -219,20 +219,37 @@ function need(): string {
   return BASE;
 }
 
-/** 网络层偶发断连（云端隔着公网代理）：重试 3 次；HTTP 错误不重试，直接报 */
-async function fetchRetry(url: string, init?: RequestInit): Promise<Response> {
+/**
+ * 网络层偶发断连 / 吊死（云端隔着公网代理，实测有请求被代理挂住、永远不返回）：
+ * 每次请求限时 `REQUEST_TIMEOUT_MS`，超时或断连重试 4 次；HTTP 错误不重试，直接报。
+ * ⚠️ 没有超时的 fetch 会让整批任务无声地停在某一张上（全量第一次启动就这样卡了）。
+ */
+const REQUEST_TIMEOUT_MS = 180_000;
+/** 轮询 / 排队这类小请求：代理挂住时别干等 3 分钟 */
+const SMALL_TIMEOUT_MS = 20_000;
+
+async function fetchRetry(url: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
   for (let i = 0; ; i++) {
+    const t0 = Date.now();
     try {
-      return await fetch(url, init);
+      const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      // 响应体也可能读到一半被挂住 —— 在超时之内读完再交出去
+      const body = await res.arrayBuffer();
+      const ms = Date.now() - t0;
+      if (ms > 5000) console.log(`  （慢请求 ${Math.round(ms / 1000)} s：${url.replace(/^https?:\/\/[^/]+/, '').slice(0, 80)}）`);
+      return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
     } catch (e) {
-      if (i >= 3) throw e;
-      await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+      console.log(`  （请求失败 ${Math.round((Date.now() - t0) / 1000)} s，第 ${i + 1} 次：${url.replace(/^https?:\/\/[^/]+/, '').slice(0, 80)}）`);
+      if (i >= 4) throw e;
+      await new Promise((r) => setTimeout(r, 3000 * (i + 1)));
     }
   }
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetchRetry(`${need()}${path}`, init);
+  // 带文件的（上传）给长超时，其余一律按小请求
+  const big = init?.body instanceof FormData;
+  const res = await fetchRetry(`${need()}${path}`, init, big ? REQUEST_TIMEOUT_MS : SMALL_TIMEOUT_MS);
   if (!res.ok) throw new Error(`${path} → HTTP ${res.status}: ${(await res.text()).slice(0, 400)}`);
   return (await res.json()) as T;
 }
@@ -282,7 +299,7 @@ async function waitFor(promptId: string): Promise<Record<string, { images?: Hist
     const e = h[promptId];
     if (e?.status?.status_str === 'error') throw new Error(`任务出错：${JSON.stringify(e.status.messages).slice(0, 1500)}`);
     if (e?.outputs !== undefined && e.status?.status_str === 'success') return e.outputs;
-    await new Promise((r) => setTimeout(r, 3000));
+    await new Promise((r) => setTimeout(r, 1500));
   }
 }
 
@@ -294,56 +311,129 @@ async function download(img: HistoryImage, to: string): Promise<void> {
   writeFileSync(to, new Uint8Array(await res.arrayBuffer()));
 }
 
-export async function run(jobsFile: string, only: readonly string[]): Promise<void> {
+/** 任务的本地产物是否已经在了（断点续跑：在就跳过） */
+function done(root: string, job: Job): boolean {
+  if (job.kind === 'seedvr2-video') {
+    const dir = join(root, job.out);
+    return existsSync(dir) && readdirSync(dir).filter((n) => n.endsWith('.png')).length >= job.frames;
+  }
+  return existsSync(join(root, job.out));
+}
+
+/** 任务要的输入若标了本地来源（`upload` / `uploadDir`），排队前先传上去 */
+async function stageInputs(root: string, job: Job): Promise<void> {
+  const j = job as Job & { upload?: string; uploadDir?: string };
+  if (j.upload !== undefined && (job.kind === 'seedvr2-image' || job.kind === 'qwen-repaint')) {
+    const sub = dirname(job.input);
+    const form = new FormData();
+    form.append('image', new Blob([readFileSync(join(root, j.upload))], { type: 'image/png' }), basename(job.input));
+    form.append('subfolder', sub);
+    form.append('type', 'input');
+    form.append('overwrite', 'true');
+    await api('/upload/image', { method: 'POST', body: form });
+  }
+  if (j.uploadDir !== undefined && job.kind === 'seedvr2-video') {
+    for (const f of listPngs(join(root, j.uploadDir))) {
+      const form = new FormData();
+      form.append('image', new Blob([readFileSync(f)], { type: 'image/png' }), basename(f));
+      form.append('subfolder', job.inputDir);
+      form.append('type', 'input');
+      form.append('overwrite', 'true');
+      await api('/upload/image', { method: 'POST', body: form });
+    }
+  }
+}
+
+/**
+ * 跑一批任务。
+ *
+ * ★ 流水线：同时最多 `ahead` 个任务在服务器上（一个在算、其余排队），本地同时在传下一张、
+ *   取上一张 —— 全量批次十几个小时，传输不能占 GPU 的时间。
+ * ★ 断点续跑：本地产物已在的任务跳过；单个任务出错只记进日志（`error`），不中断整批。
+ */
+export async function run(jobsFile: string, only: readonly string[], ahead = 3): Promise<void> {
   const root = dirname(jobsFile);
-  const jobs = (JSON.parse(readFileSync(jobsFile, 'utf8')) as { jobs: Job[] }).jobs.filter(
+  const all = (JSON.parse(readFileSync(jobsFile, 'utf8')) as { jobs: Job[] }).jobs.filter(
     (j) => only.length === 0 || only.includes(j.id),
   );
+  const jobs = all.filter((j) => !done(root, j));
+  console.log(`共 ${all.length} 个任务，已完成 ${all.length - jobs.length}，本次跑 ${jobs.length}`);
   const logFile = jobsFile.replace(/\.json$/, '.log.json');
   const log: Record<string, unknown> = existsSync(logFile) ? (JSON.parse(readFileSync(logFile, 'utf8')) as Record<string, unknown>) : {};
+  const saveLog = (): void => writeFileSync(logFile, `${JSON.stringify(log, null, 2)}\n`);
   const clientId = `rich4-pilot-${Date.now()}`;
+  const t00 = Date.now();
 
-  for (const job of jobs) {
-    const t0 = Date.now();
-    const { prompt_id } = await api<{ prompt_id: string }>('/prompt', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: buildGraph(job), client_id: clientId }),
-    });
-    console.log(`[${job.id}] 排队 ${prompt_id} …`);
-    const outputs = await waitFor(prompt_id);
-    const main = outputs['111']?.images ?? [];
-    const repaint = outputs['9']?.images ?? [];
-    if (main.length === 0) throw new Error(`[${job.id}] 没有产物`);
-    if (job.kind === 'seedvr2-video') {
-      for (let i = 0; i < main.length; i++) await download(main[i]!, join(root, job.out, `${String(i).padStart(4, '0')}.png`));
-    } else {
-      await download(main[0]!, join(root, job.out));
-      if (repaint[0] !== undefined) await download(repaint[0], join(root, job.out.replace(/\.png$/, '.repaint.png')));
+  let next = 0;
+  let finished = 0;
+  /**
+   * ★ `ahead` 个工人各自把一个任务走完整个生命周期（上传 → 排队 → 等 → 下载）。
+   *   ComfyUI 那边本来就串行跑 GPU；我们这边并行，是为了让隔着公网代理的上传/下载
+   *   （实测一张小图上传 7–25 s、取回 12 s）和 GPU 的计算叠在一起，而不是轮流等。
+   */
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const job = jobs[next++];
+      if (job === undefined) return;
+      const t0 = Date.now();
+      try {
+        await stageInputs(root, job);
+        const { prompt_id } = await api<{ prompt_id: string }>('/prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: buildGraph(job), client_id: clientId }),
+        });
+        const outputs = await waitFor(prompt_id);
+        const main = outputs['111']?.images ?? [];
+        const repaint = outputs['9']?.images ?? [];
+        if (main.length === 0) throw new Error('没有产物');
+        if (job.kind === 'seedvr2-video') {
+          for (let i = 0; i < main.length; i++) await download(main[i]!, join(root, job.out, `${String(i).padStart(4, '0')}.png`));
+        } else {
+          await download(main[0]!, join(root, job.out));
+          if (repaint[0] !== undefined) await download(repaint[0], join(root, job.out.replace(/\.png$/, '.repaint.png')));
+        }
+        log[job.id] = {
+          kind: job.kind,
+          models: job.kind === 'qwen-repaint' ? [MODELS.qwen, MODELS.seedvr2] : [MODELS.seedvr2],
+          seed: job.seed,
+          ...(job.kind === 'qwen-repaint'
+            ? {
+                steps: job.steps,
+                resolution: job.resolution,
+                repaint: `${job.repaintWidth ?? '-'}x${job.repaintHeight ?? '-'}`,
+                denoise: job.denoise ?? 1,
+                prompt: job.prompt,
+                negative: job.negative,
+              }
+            : {}),
+          target: `${job.width}x${job.height}`,
+          vaeTile: job.vaeTile ?? 1024,
+          outputs: main.length,
+          seconds: Math.round((Date.now() - t0) / 1000),
+          at: new Date().toISOString(),
+        };
+      } catch (e) {
+        log[job.id] = { error: String(e).slice(0, 800), at: new Date().toISOString() };
+        console.log(`[${job.id}] 失败：${String(e).slice(0, 200)}`);
+      }
+      saveLog();
+      finished++;
+      const el = (Date.now() - t00) / 1000;
+      const eta = (el / finished) * (jobs.length - finished);
+      console.log(`[${finished}/${jobs.length}] ${job.id}  已用 ${Math.round(el / 60)} 分，预计还要 ${Math.round(eta / 60)} 分`);
     }
-    const secs = Math.round((Date.now() - t0) / 1000);
-    log[job.id] = {
-      kind: job.kind,
-      models: job.kind === 'qwen-repaint' ? [MODELS.qwen, MODELS.seedvr2] : [MODELS.seedvr2],
-      seed: job.seed,
-      ...(job.kind === 'qwen-repaint'
-        ? { steps: job.steps, resolution: job.resolution, repaint: `${job.repaintWidth ?? '-'}x${job.repaintHeight ?? '-'}`, denoise: job.denoise ?? 1, prompt: job.prompt, negative: job.negative }
-        : {}),
-      target: `${job.width}x${job.height}`,
-      vaeTile: job.vaeTile ?? 1024,
-      outputs: main.length,
-      seconds: secs,
-      at: new Date().toISOString(),
-    };
-    writeFileSync(logFile, `${JSON.stringify(log, null, 2)}\n`);
-    console.log(`[${job.id}] 完成 ${main.length} 张，${secs} s`);
-  }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, ahead) }, () => worker()));
 }
 
 async function main(argv: string[]): Promise<void> {
   const [cmd, ...rest] = argv;
   if (cmd === 'upload' && rest.length === 2) return upload(rest[0]!, rest[1]!);
-  if (cmd === 'run' && rest.length >= 1) return run(rest[0]!, (rest[1] ?? '').split(',').filter((x) => x !== ''));
+  if (cmd === 'run' && rest.length >= 1) {
+    const ahead = Number(process.env['COMFY_AHEAD'] ?? 3);
+    return run(rest[0]!, (rest[1] ?? '').split(',').filter((x) => x !== ''), ahead);
+  }
   console.log('用法: pilot.ts upload <本地目录> <远端子目录> | run <jobs.json> [id,…]（需 COMFY_URL）');
   process.exitCode = 1;
 }
