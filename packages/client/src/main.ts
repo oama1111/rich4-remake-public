@@ -9568,6 +9568,11 @@ function bindInput(): void {
   }, 5_000);
 
   window.addEventListener('keydown', (e) => {
+    // ★ 浏览器自动填充（Chrome 填账号/密码时）会派发**不是 KeyboardEvent** 的 `keydown`：
+    //   没有 `code` / `key`。下游一律按 `e.code.startsWith(…)` 读物理键位 ⇒ 抛
+    //   「Cannot read properties of undefined (reading 'startsWith')」（2026-09-23 Ruan 的自动回报，
+    //   标题画面、刚进站）。这种事件不是按键，整条丢掉。
+    if (typeof e.code !== 'string' || typeof e.key !== 'string') return;
     // ★ F9 = 问题回报（原版的键名表里没有 F1..F12，不占任何原版热键）
     if (e.key === 'F9') {
       e.preventDefault();
