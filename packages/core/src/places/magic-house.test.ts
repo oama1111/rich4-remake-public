@@ -272,7 +272,7 @@ describe('转盘怎么转', () => {
     }
   });
 
-  it('★ 第 11 条「拍賣當格土地」永远转不到 —— 取模底数是 11 不是 12', () => {
+  it('★ 电脑那一支：第 11 条「拍賣當格土地」永远转不到 —— 取模底数是 11 不是 12（真人点得到，见 state/magic-choice.test.ts）', () => {
     expect(MAGIC_OPTION_MODULUS).toBe(11);
     const ps = four([{ cash: 100 }]);
     const seen = new Set<number>();

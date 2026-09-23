@@ -322,6 +322,20 @@ export type PendingInteraction =
       /** 还没处理的座位（升序）；空数组不会挂出来（那一位都不合格时当场收尾）*/
       seats: readonly number[];
     }
+  /**
+   * 魔法屋（**真人**那一支）：目标转盘已经转完，等玩家在女巫窗口里**点一个效果**。
+   *
+   * @source 入口 `0x0043380a`：`0x0043381b cmp byte [player+0x15], 1 / jne 0x43390b`
+   *   —— `who_plays == 1` 开女巫窗口 `0x4325c2`（`0x004338af`），**窗口返回值就是效果号**
+   *   （`0x004338b7 mov esi, eax` → `0x004339c5 push esi / call 0x431caa`）。
+   *   目标转盘在窗口里转（状态 4，`loc_00432719`：`rand() % 12` 选不出人就重抽），
+   *   玩家在状态 7 点 1..12 格（`loc_00432e8e`），返回 `格号 − 1`（`0x00432a74`）。
+   *   电脑（`who_plays != 1`）不开窗，两个转盘都 `rand()`（`0x0043390b`），不挂本交互。
+   *
+   * 答 `{type:'magicHouse', option}`：`option` = 0..11（全部 12 项都点得到）；
+   *   `null` = 真人被託管、由电脑那一支替他掷（`rollMagicOption`）。
+   */
+  | { kind: 'magicHouse'; criterion: number; targets: readonly number[] }
   | { kind: 'unimplemented'; place: string; specialKind: number; options?: readonly string[] };
 
 /**
@@ -426,7 +440,9 @@ export type InteractionResponse =
    * 命運 5 生日收卡：挑一位手里的一张（T-055）。
    * `cardId = 0` = 跳过这位（原版选牌窗右键取消）。
    */
-  | { kind: 'birthdayCard'; seat: number; cardId: number };
+  | { kind: 'birthdayCard'; seat: number; cardId: number }
+  /** 魔法屋：真人点的效果号 0..11（`null` = 託管，电脑替他掷）*/
+  | { kind: 'magicHouse'; option: number | null };
 
 /** 答复与待决交互是否配套——防止 UI 送回驴唇不对马嘴的 action */
 export function responseMatches(
@@ -467,6 +483,8 @@ export function responseMatches(
       return response.kind === 'bail';
     case 'birthdayCard':
       return response.kind === 'birthdayCard';
+    case 'magicHouse':
+      return response.kind === 'magicHouse';
     default:
       return false;
   }

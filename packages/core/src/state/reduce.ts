@@ -177,10 +177,13 @@ import {
   isMinigame,
 } from '../places/minigame.ts';
 import {
+  MAGIC_EFFECT_COUNT,
   applyMagicEffect,
-  spinMagicHouse,
+  rollMagicCriterion,
+  rollMagicOption,
   type MagicNodeInfo,
   type MagicRequest,
+  type MagicTargetContext,
 } from '../places/magic-house.ts';
 import type { TradeResult } from '../places/stock.ts';
 import {
@@ -2028,6 +2031,10 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       // ★ 路过銀行的 ATM 窗在**走子中途**弹出：关窗只是关窗，剩下的步数照走（原版 `fcn_0041b42d` 那一支
       //   `call 0x4379c9` 返回后接着往下处理这一步，不结束回合）
       if (state.pending.kind === 'atm') return { ...state, pending: null };
+      // ★ 魔法屋的女巫窗口**没有取消**（原版状态 7 只收 1..13 格的左键，右键只在
+      //   状态 < 3 跳过开场白，@source 0x00432e64 / 0x00432e8e）——「不了」不能让这一趟
+      //   什么都不发生。按託管处理：电脑那一支替他掷效果（见 `answerMagicHouse`）。
+      if (state.pending.kind === 'magicHouse') return answerMagicHouse(state, topo, null);
       return { ...state, pending: null, phase: 'turnEnd' };
     }
 
@@ -2341,6 +2348,9 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
      */
     case 'birthdayCard':
       return answerBirthdayCard(state, action.seat, action.cardId);
+
+    case 'magicHouse':
+      return answerMagicHouse(state, topo, action.option);
 
     case 'setDate': {
       const { year, month, day } = action;
@@ -3199,17 +3209,8 @@ function respawnPartner(
   return { ...state, objects, rngState: rng.getState() };
 }
 
-/**
- * 魔法屋 —— 转两个转盘，然后对被点到的人逐一施加效果。
- *
- * ★ 它**不是待决交互**：原版两个转盘都是自己转的（`rand()`），
- *   玩家一次也插不上手，所以按即时结算处理，与新聞/命運同类。
- *
- * @source 转盘 VA 0x0043390b，效果派发 0x00431caa。见 places/magic-house.ts。
- */
-function runMagicHouse(state: GameState, topo: MapTopology): GameState {
-  const rng = new WatcomRng();
-  rng.setState(state.rngState);
+/** 目标转盘要的那几个计数（与 `places/magic-house.ts` 的 `MagicTargetContext` 同形）*/
+function magicTargetContext(state: GameState, topo: MapTopology): MagicTargetContext {
   const lands = allEffectiveLands(state, topo);
   const facilities = allEffectiveFacilities(state, topo);
 
@@ -3229,7 +3230,7 @@ function runMagicHouse(state: GameState, topo: MapTopology): GameState {
     return n;
   };
 
-  const targetCtx = {
+  return {
     players: state.players,
     landCountOf: (i: number) => owns(i, false),
     houseCountOf: (i: number) => owns(i, true),
@@ -3239,9 +3240,88 @@ function runMagicHouse(state: GameState, topo: MapTopology): GameState {
       return calculatePlayerWealth(p, lands, facilities, valuationsOf(state, i));
     },
   };
+}
 
-  const spin = spinMagicHouse(targetCtx, state.currentPlayer, () => rng.next());
+/**
+ * 魔法屋 —— 先转**目标转盘**，再定效果、对被点到的人逐一施加。
+ *
+ * ★★ 2026-09-23 订正（第十二份试玩回报「选所有女生存入现金，金貝貝不受影响」
+ *   「为什么默认就展示就地拆除房屋」）：**真人那一支的效果是玩家自己点的**，
+ *   不是 `rand()`。先前这里对真人也掷了效果转盘，于是玩家在屏上点「存入所有現金」，
+ *   core 实际施加的却是它自己掷出的「就地拆除房屋」（屏上开场就在转向那一格）。
+ *
+ * @source 入口 `0x0043380a`：
+ * ```asm
+ * 0043381b  cmp  byte [player + 0x15], 1   ; ★ who_plays == 1？
+ * 00433822  jne  0x43390b                  ; 否 → 电脑：两个转盘都 rand()
+ * 004338af  call 0x4018e7(0x4325c2)         ; 是 → 女巫窗口（状态 4 里转目标转盘，
+ *                                          ;       状态 7 等玩家点 1..12 格）
+ * 004338b7  mov  esi, eax                  ; ★ 效果号 = 窗口返回值（格号 − 1）
+ * 004339c5  push esi / call 0x431caa        ; 两支汇合：逐人施加
+ * ```
+ *   ⇒ 真人：本函数只转目标转盘，挂 `pending{magicHouse}` 等 `{type:'magicHouse', option}`；
+ *     电脑：照旧当场转完两个转盘并结算（`0x0043390b..0x0043397e`）。
+ *   ⚠️ 判的是 `who_plays == 1` **整字节相等**（不是 `& 6`）：带託管位的真人（1|4）走电脑那一支。
+ */
+function runMagicHouse(state: GameState, topo: MapTopology): GameState {
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const rolled = rollMagicCriterion(magicTargetContext(state, topo), () => rng.next());
+  const me = state.players[state.currentPlayer];
+  if (me !== undefined && me.whoPlays === WHO_PLAYS_HUMAN) {
+    return {
+      ...state,
+      rngState: rng.getState(),
+      phase: 'turnEnd',
+      pending: { kind: 'magicHouse', criterion: rolled.criterion, targets: [...rolled.targets] },
+    };
+  }
+  const { option } = rollMagicOption(rolled.targets, state.currentPlayer, () => rng.next());
+  return applyMagicHouse({ ...state, rngState: rng.getState() }, topo, rolled.criterion, rolled.targets, option, rng);
+}
 
+/**
+ * 真人在女巫窗口里点定了效果（或被託管、由电脑替他掷）—— 汇合到 `0x431caa`。
+ * 见 `actions.ts` 的 `magicHouse`。
+ */
+function answerMagicHouse(state: GameState, topo: MapTopology, option: number | null): GameState {
+  const p = state.pending;
+  if (p === null || p.kind !== 'magicHouse') return state;
+  if (state.phase !== 'turnEnd') return state;
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  let chosen: number;
+  if (option === null) {
+    // 託管：借电脑那一支的效果转盘（@source 0x00433934..0x0043397e）
+    chosen = rollMagicOption(p.targets, state.currentPlayer, () => rng.next()).option;
+  } else {
+    // @source 0x004320cf `cmp esi, 0xb / ja` —— 0..11 之外的效果号原版直接不做
+    if (!Number.isInteger(option) || option < 0 || option >= MAGIC_EFFECT_COUNT) return state;
+    chosen = option;
+  }
+  return applyMagicHouse(
+    { ...state, pending: null, rngState: rng.getState() },
+    topo,
+    p.criterion,
+    [...p.targets],
+    chosen,
+    rng,
+  );
+}
+
+/**
+ * 效果派发 `0x431caa`：对名单里的人逐一施加 `option`。
+ *
+ * @source 效果派发 0x00431caa（逐人循环 `0x004320aa inc edi / cmp edi,4`）。见 places/magic-house.ts。
+ */
+function applyMagicHouse(
+  state: GameState,
+  topo: MapTopology,
+  criterion: number,
+  targets: readonly number[],
+  option: number,
+  rng: WatcomRng,
+): GameState {
   const nodeOf = (playerIndex: number): MagicNodeInfo | null => {
     const p = state.players[playerIndex];
     if (p === undefined) return null;
@@ -3253,7 +3333,7 @@ function runMagicHouse(state: GameState, topo: MapTopology): GameState {
     return { type: n.type, buildable };
   };
 
-  const r = applyMagicEffect(spin.option, spin.targets, {
+  const r = applyMagicEffect(option, targets, {
     players: state.players,
     cardAmount: state.cardAmount,
     tools: state.tools,
@@ -3274,12 +3354,12 @@ function runMagicHouse(state: GameState, topo: MapTopology): GameState {
     phase: 'turnEnd',
     // ★ 把「抽中哪个条件、点到谁」交给表现层 —— 先前表现层只能从 before→after 反推
     //   （D-MAGIC-1 的近似），反推错时字框会写错一个条件名。
-    //   id = 效果转盘的落点（表现层原本也是拿它当 `target` 的）。
+    //   id = 效果号（真人点的 / 电脑掷的）。
     lastEvent: {
       kind: 'magicHouse',
-      id: spin.option,
-      criterion: spin.criterion,
-      targets: [...spin.targets],
+      id: option,
+      criterion,
+      targets: [...targets],
     },
     // ★ 本趟的「加蓋」事件从空开始累积（`applyMagicRequest` 的 `build` 那一支
     //   往里 append）。与 `lastNpcWalks` 同一套约定：**每个 flow 自己立桩**，

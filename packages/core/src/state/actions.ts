@@ -304,6 +304,18 @@ export type Action =
    * ⚠️ 只认 `pending.kind === 'birthdayCard'` 且 `seat === seats[0]` 的那一拍；
    *   其余一律原样返回（陈旧/乱序的答复不该动状态）。
    */
-  | { type: 'birthdayCard'; seat: number; cardId: number };
+  | { type: 'birthdayCard'; seat: number; cardId: number }
+  /**
+   * 魔法屋（真人）：在女巫窗口里点定的**效果号**。
+   *
+   * @source `0x004338b7 mov esi, eax`（窗口返回值 = 点的格号 − 1）→ `0x004339c6 call 0x431caa`。
+   *   `0x004320cf cmp esi, 0xb / ja` ⇒ 合法值 **0..11**（12 项全部点得到）。
+   *
+   * ★ `option = null` = **託管**（真人被电脑接管）：借电脑那一支的效果转盘
+   *   （名单有自己 → 6；否则 `rand() % 11`、6 改 7，@source 0x00433934..0x0043397e）。
+   *
+   * ⚠️ 只认 `pending.kind === 'magicHouse'`；其余一律原样返回。
+   */
+  | { type: 'magicHouse'; option: number | null };
 
 export type ActionType = Action['type'];

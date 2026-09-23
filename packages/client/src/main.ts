@@ -25,7 +25,7 @@ import {
 } from './dev-patch.ts';
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
-import { magicScreenState } from './magic-screen.ts';
+import { magicAwaitingPick, magicHumanPickPoint, magicScreenState } from './magic-screen.ts';
 import {  autoAction,
   ACTOR_DOLL,
   directionOf,
@@ -1680,6 +1680,10 @@ const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
  */
 function blockingPresentation(): boolean {
   const overlay = activeUiScreen();
+  // ★ 魔法屋女巫窗口停在状态 7（等真人点一格）时**不算演出**：那一刻它就是一个待决交互
+  //   （`pending{magicHouse}`），挡住联机收件箱就会死锁 —— 别家那一端点定的答复
+  //   （或託管替他掷的那一条）永远进不来，本机只能一直看着「等玩家点」。
+  if (overlay !== null && overlay.id === 'magic' && magicAwaitingPick()) return false;
   return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
 }
 
@@ -10266,8 +10270,8 @@ async function boot(): Promise<void> {
           return state.pending?.kind === 'auction';
         },
         /**
-         * ★ 魔法屋那一屏的状态（`magicScreenState()`）：`playing` / `phase` /
-         *   `hover` / `ring` / `view`。
+         * ★ 魔法屋那一屏的状态（`magicScreenState()`）：`playing` / `state`（原版 `[0x48c3a2]` 1..8）/
+         *   `line`（字框里那一句，`null` = 收起）/ `criterion` / `chosen` / `hover` / `interactive`。
          *
          * 加它是因为这一屏**要玩到才会出现**（落点随机），而「一圈十二格每一项
          * 都点得到」只能用鼠标真的去点、再读状态来验收；`#log` 里那句
@@ -10339,6 +10343,12 @@ async function boot(): Promise<void> {
               y: (PICKER_HIT.y0 + PICKER_HIT.y1) / 2,
               why: 'facility-picker:slot1',
             };
+          }
+          // 魔法屋女巫窗口：状态 7 等真人点一格（原版窗口返回值 = 效果号，`0x004338b7`）
+          //   ⇒ 真实出口 = 点一圈里的一格；落点取本屏自己的图标中心表（`MAGIC_RING_AT`）
+          if (activeUiScreen()?.id === 'magic') {
+            const pick = magicHumanPickPoint();
+            return pick === null ? null : { gesture: 'click', x: pick.x, y: pick.y, why: 'magic:pick' };
           }
           // 其余登记的整屏（轉盤 / 訊息框 / 事件框…）自己演、自己收，脚本不伸手
           if (activeUiScreen() !== null) return null;
