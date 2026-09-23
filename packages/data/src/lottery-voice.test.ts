@@ -21,7 +21,9 @@ import { LOTTERY } from './messages.ts';
 
 const DGROUP_FILE_OFFSET = 398848;
 const DGROUP_VA = 0x463000;
-const EXE = new URL('../../../../Rich4/rich4.exe', import.meta.url);
+// ★ 从 RICH4_WORKSPACE 起算（`vitest.config.ts` 的约定，与 `core/places/calendar.test.ts` 同写法）——
+//   先前写死相对路径 `../../../../Rich4`，放进 `wt*/` 这类深一层的工作树就找不到、静默 skip。
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 
 const exists = (() => {
   try {
