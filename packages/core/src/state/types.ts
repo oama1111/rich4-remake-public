@@ -1556,6 +1556,14 @@ export interface GameState {
   pendingQueue: AuctionRequest[];
 
   /**
+   * ★ 推日期（`0x41cf67`）里开出了拍卖（分紅打破產的下線拍卖）时，新当前玩家的回合边界
+   * `0x41c84f`（还款日检查 / 阻碍计数 / 神明任期…）要等那串拍卖打完才走 —— 原版拍卖是阻塞调用，
+   * `0x419039 call 0x41c84f` 排在 `0x41902e call 0x41cf67` 之后。这里记下「打完之后给谁走」；
+   * 缺省 / `null` = 没有押着的。
+   */
+  deferredTurnStart?: number | null;
+
+  /**
    * 全局道具表，`tools[player * 15 + toolId]`。
    * @source [0x0049915b]，步长 15，见 rules/tools.ts
    */

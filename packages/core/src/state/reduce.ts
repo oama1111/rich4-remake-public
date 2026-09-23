@@ -543,7 +543,14 @@ function startAuction(state: GameState, topo: MapTopology, request: AuctionReque
  */
 function chainQueuedAuction(state: GameState, topo: MapTopology): GameState {
   const next = state.pendingQueue[0];
-  if (next === undefined) return state;
+  if (next === undefined) {
+    // ★ 推日期时开出的那串拍卖打完了 ⇒ 这才轮到新当前玩家的 `0x41c84f`（见 `afterDayRollover`）
+    const who = state.deferredTurnStart ?? null;
+    if (who !== null && state.pending === null && state.phase !== 'gameOver') {
+      return startActorTurn({ ...state, currentPlayer: who, phase: 'turnStart' }, topo, who);
+    }
+    return state;
+  }
   return startAuction({ ...state, pendingQueue: state.pendingQueue.slice(1) }, topo, next);
 }
 
@@ -1001,6 +1008,19 @@ function npcRoundStep(state: GameState, topo: MapTopology, next: number): GameSt
   //   （`rich4.asm:11826 call 0x41cf67` 之后才 `ret`，下一轮从 `currentPlayer` 起算）。
   const rolled = advanceGameDay({ ...done, pendingNpcSlots: [] }, topo);
   if (rolled.phase === 'gameOver') return rolled;
+  // ★ 推日期里开出了拍卖（分紅打破產的下線拍卖）⇒ 拍卖先打，`0x41c84f` 押到拍卖链收尾（见 `afterDayRollover`）
+  if (rolled.pending !== null || rolled.pendingQueue.length > 0) {
+    return {
+      ...rolled,
+      currentPlayer: next,
+      phase: 'awaitingDecision',
+      deferredTurnStart: next,
+      dice: [],
+      stepsRemaining: 0,
+      stepsTotal: 0,
+      turnCount: state.turnCount + 1,
+    };
+  }
   // ★ 下一位玩家由**调用方**算好传进来（`endTurn` 里已经算过 `nextAlivePlayer`）——
   //   在这一段里再算一遍会看到惡人段开始之后才变化的状态，与原版那条游标不同。
   //   ⚠️ 「给新玩家走一天」由**调用方**补：`endTurn`（同一 action 内走完）或
@@ -1047,6 +1067,30 @@ function beginActorTurn(state: GameState, topo: MapTopology, index: number): Gam
 }
 
 /**
+ * 推完日期（`0x41cf67`）之后轮到 `next`：`currentPlayer` / `turnCount` 等已摆好。
+ *
+ * - 推日期里开出了拍卖（`pending` / `pendingQueue` 非空）⇒ 相位 `awaitingDecision` 先打拍卖，
+ *   记下 `deferredTurnStart = next`，由拍卖链收尾（`chainQueuedAuction`）再走 `0x41c84f`；
+ * - 否则当场走 `0x41c84f`（`beginActorTurn`），相位回 `turnStart`
+ *   （新回合自己开出的下線拍卖 / 还款提醒窗照原样留着）。
+ */
+function afterDayRollover(state: GameState, topo: MapTopology, next: number): GameState {
+  if (state.phase === 'gameOver') return state;
+  if (state.pending !== null || state.pendingQueue.length > 0) {
+    return { ...state, phase: 'awaitingDecision', deferredTurnStart: next };
+  }
+  return startActorTurn(state, topo, next);
+}
+
+/** 当场给 `next` 走 `0x41c84f` 并进 `turnStart`（新回合自己开出来的 pending 照原样留着）*/
+function startActorTurn(state: GameState, topo: MapTopology, next: number): GameState {
+  const ticked = beginActorTurn({ ...state, pending: null, deferredTurnStart: null }, topo, next);
+  if (ticked.phase === 'gameOver') return ticked;
+  // 下線拍卖（`awaitingDecision`）照原样；其余（含还款提醒窗）都停在 `turnStart`
+  return { ...ticked, phase: ticked.phase === 'awaitingDecision' ? 'awaitingDecision' : 'turnStart' };
+}
+
+/**
  * 还款日检查 `fcn_00436a5a`（`0x41c84f` 回合边界里 `0x0041c86d` 那一句）—— 判据见 `places/bank.ts` 的 `loanDueStep`。
  *
  * - 0 天：框「貸款到期日\n\n強制執行！」（`0x00436aa0 push 0x464b2c` / `0x00436a9b push 0x5dc` = 1500 ms）
@@ -1067,7 +1111,9 @@ function checkLoanDue(state: GameState, topo: MapTopology, index: number): GameS
     return appendFreshNotice(state, { key: step === 'oneDay' ? 'bank.loanDueOneDay' : 'bank.loanDueTwoDays', args: [] });
   }
   if (step === 'reminder') {
-    return (me.whoPlays & 0xff) === WHO_PLAYS_HUMAN ? { ...state, pending: { kind: 'loanReminder' } } : state;
+    return (me.whoPlays & 0xff) === WHO_PLAYS_HUMAN && state.pending === null
+      ? { ...state, pending: { kind: 'loanReminder' } }
+      : state;
   }
   // 'forced'：先弹框、再扣钱（`0x00436aa5 call 0x440cac` 在 `0x00436abe call 0x433bd8` 之前）
   const boxed = appendFreshNotice(state, { key: 'bank.loanDueForced', args: [] });
@@ -2597,7 +2643,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   `npcStep` —— 这里不补，**每一輪**都会漏掉这位玩家的一天
       //   （在押/住宿/冬眠永不到期）。走完的标志是 `npcRoundStep` 切到了 `turnStart`。
       if (after.phase !== 'turnStart') return after;
-      return beginActorTurn(after, topo, after.currentPlayer);
+      return startActorTurn(after, topo, after.currentPlayer);
     }
 
     case 'endTurn': {
@@ -2645,10 +2691,14 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         };
       }
 
+      // ★ 待决交互属于**那个玩家的那个回合**，不能带进下一回合（商店这类模态窗口尤其明显：
+      //   不清掉，下家一上来就站在别人的柜台前）。⇒ **推日期之前**就清掉离场那位的；
+      //   推日期里开出来的（分紅打破產的下線拍卖）与新回合开出来的（还款提醒窗）都要留着。
+      const leaving: GameState = { ...state, pending: null };
       const cleared: GameState =
         departing === undefined || (departing.whoPlays & WHO_PLAYS_RELOCATED) === 0
-          ? state
-          : withPlayer(state, state.currentPlayer, (p) => {
+          ? leaving
+          : withPlayer(leaving, state.currentPlayer, (p) => {
               p.whoPlays &= ~WHO_PLAYS_RELOCATED;
             });
 
@@ -2690,30 +2740,23 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         }
       }
 
-      // ③ 给**新**当前玩家走一天（阻碍计数 → 释放 → 其余回合计数 → 神明任期）。
-      //   与惡人段那条路径共用 `beginActorTurn`（第 85 条：两处都不能漏）。
-      // ★ 待决交互属于**那个玩家的那个回合**，不能带进下一回合。
-      //   商店这类模态窗口尤其明显：不清掉，下家一上来就站在别人的柜台前。
-      //   ⇒ 在走这一天**之前**清掉；之后 `beginActorTurn` 自己挂出来的（还款提醒窗 /
-      //   强制执行打破產之后的下線拍卖）才是新回合的。
-      const ticked = beginActorTurn({ ...base, pending: null }, topo, next);
-      if (ticked.phase === 'gameOver') return { ...ticked, pendingNpcSlots: [], currentPlayer: next };
-
       // ★ 物价指数在回合边界采样一次 —— 已在 `advanceGameDay` 内部（② 那一步，
       //   @source `0041902e call 0x41cf67` → `0x41cfbf call 0x423acf`），
       //   且在勝負判定**之后**：达标那天不再更新物价指数。
-      return {
-        ...ticked,
+      const moved: GameState = {
+        ...base,
         pendingNpcSlots: [],
         currentPlayer: next,
-        // 下線拍卖（`awaitingDecision`）照原样；其余（含还款提醒窗）都停在 `turnStart`
-        phase: ticked.phase === 'awaitingDecision' ? 'awaitingDecision' : 'turnStart',
-        pending: ticked.pending,
         dice: [],
         stepsRemaining: 0,
         stepsTotal: 0,
         turnCount: cleared.turnCount + 1,
       };
+      // ③ 给**新**当前玩家走一天（阻碍计数 → 释放 → 其余回合计数 → 神明任期）。
+      //   与惡人段那条路径共用 `beginActorTurn`（第 85 条：两处都不能漏）。
+      //   ★ 推日期里开了拍卖（`0x41cf67` 里分紅打破產 → 下線拍卖，原版是**阻塞**调用，
+      //   跑完才轮到 `0x419039 call 0x41c84f`）⇒ 先把拍卖打完，`0x41c84f` 押到拍卖链收尾再走。
+      return afterDayRollover(moved, topo, next);
     }
   }
 }
