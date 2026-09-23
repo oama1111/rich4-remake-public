@@ -47,6 +47,16 @@ cat > "$PROBE" <<'EOF'
 })()
 EOF
 
+# ★ 冻结比对：驱动停了，两端的收件箱 / 演出还在消化（观测到 2 秒不够：一端 moving、一端 settling）。
+#   每秒比一次，最多 10 次，摘要一致就收；到点仍不一致才算数。
+settle_pair() {
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    ca=$(cp_of "$TA"); cb=$(cp_of "$TB")
+    [ "$(echo "$ca" | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])' 2>/dev/null)" = \
+      "$(echo "$cb" | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])' 2>/dev/null)" ] && return
+  done
+}
 step() { printf '\n=== %s ===\n' "$1"; }
 # 读一个标签页的 checkpoint（用 eval <file>，多行脚本不要走 browse js）
 cp_of() { "$B" tab "$1" >/dev/null 2>&1; "$B" eval "$PROBE"; }
@@ -120,8 +130,7 @@ done
 
 # ── 2) 冻结比对 ─────────────────────────────────────────────
 step "2) 冻结两端比对全量摘要"
-pause_both; sleep 2
-ca=$(cp_of "$TA"); cb=$(cp_of "$TB")
+pause_both; settle_pair
 echo "A: $ca"; echo "B: $cb"
 python3 - "$ca" "$cb" <<'PY'
 import json, sys
@@ -138,8 +147,7 @@ sleep 5
 "$B" eval "$JS" >/dev/null 2>&1
 resume_both
 sleep 8
-pause_both; sleep 2
-ca=$(cp_of "$TA"); cb=$(cp_of "$TB")
+pause_both; settle_pair
 echo "A: $ca"; echo "B: $cb"
 python3 - "$ca" "$cb" <<'PY'
 import json, sys
@@ -155,8 +163,7 @@ resume_both; sleep 2
 "$B" js "JSON.stringify(globalThis.__net.tamper())"
 sleep 15
 for t in "$TA" "$TB"; do echo "  tab $t 失步行："; summary "$t" | python3 -c 'import json,sys; d=json.load(sys.stdin); [print("   ", x[:140]) for x in d["desyncLines"]]' 2>/dev/null; done
-pause_both; sleep 2
-ca=$(cp_of "$TA"); cb=$(cp_of "$TB")
+pause_both; settle_pair
 python3 - "$ca" "$cb" <<'PY'
 import json, sys
 a, b = (json.loads(x) for x in sys.argv[1:3])
