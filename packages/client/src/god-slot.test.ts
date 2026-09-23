@@ -487,3 +487,38 @@ describe('★ 屏幕本体', () => {
     resetGodSlot();
   });
 });
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  it('★ 在转 ⇒ 关窗并停掉 51', () => {
+    resetGodSlot();
+    const { env, stops } = mkEnv();
+    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2);
+    after.players[0]!.cash = 1100;
+    godSlotScreen.event?.(before, after, env);
+    godSlotScreen.tick?.(env);
+    expect(godSlotState().playing).toBe(true);
+    stops.length = 0;
+    expect(godSlotScreen.fastForward!(env)).toBe(true);
+    expect(godSlotScreen.active(env)).toBe(false);
+    expect(stops).toEqual([GOD_SLOT_SPIN_SOUND]);
+  });
+
+  it('★ 还在等附身影片收场（`pendingCue`）的那一局也作废 —— 之后闸开了也不再起播', () => {
+    resetGodSlot();
+    const { env } = mkEnv();
+    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2);
+    after.players[0]!.cash = 1100;
+    godSlotScreen.event?.(before, after, env);
+    expect(godSlotScreen.active(env)).toBe(true); // 押着，没起播
+    expect(godSlotState().playing).toBe(false);
+    expect(godSlotScreen.fastForward!(env)).toBe(true);
+    expect(godSlotScreen.active(env)).toBe(false);
+    godSlotScreen.tick?.(env);
+    expect(godSlotState().playing).toBe(false);
+  });
+
+  it('没在演 ⇒ false', () => {
+    resetGodSlot();
+    expect(godSlotScreen.fastForward!(mkEnv().env)).toBe(false);
+  });
+});

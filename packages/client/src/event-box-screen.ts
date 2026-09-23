@@ -1143,6 +1143,21 @@ export const eventBoxScreen: UiScreen = {
   },
 
   /**
+   * 联机旁观：行动者那台已经收场（见 `ui-screen.ts` 的 `fastForward`）⇒ 整段直接落到终态。
+   *
+   * ★ 与点一下（`eventBoxPlaybackSkip`）不同：命運不停在第二段、抽卡第一段那段点不掉的
+   *   FLIC 也一并收 —— 行动者那台整段都演完了，留着只会让本台越落越远。
+   */
+  fastForward(env: UiScreenEnv): boolean {
+    const p = playback;
+    if (p === null) return false;
+    playback = null;
+    env.log(`事件提示框：${p.plan.kind} 跟著行動者收場`);
+    env.requestRender();
+    return true;
+  },
+
+  /**
    * 察觉「刚刚落了一次新聞/命運/卡片格」。
    *
    * 判据两条（都纯查状态）：

@@ -319,6 +319,20 @@ export const noticeBoxScreen: UiScreen = {
   },
 
   /**
+   * 联机旁观：行动者那台已经收场（见 `ui-screen.ts` 的 `fastForward`）⇒ 这一扇**连同排队的几扇**
+   * 一起收（它们都属于已施加的 action —— 他那边一扇接一扇早弹完了）。原版每扇都点得掉（`skip`）。
+   */
+  fastForward(env: UiScreenEnv): boolean {
+    if (playback === null && pending.length === 0) return false;
+    const n = pending.length + (playback === null ? 0 : 1);
+    playback = null;
+    pending.length = 0;
+    env.log(`付费訊息框：跟著行動者收場（${n} 扇）`);
+    env.requestRender();
+    return true;
+  },
+
+  /**
    * 察觉「刚刚落了要弹框的 action」。
    *
    * 判据是**引用**：`reduce.ts` 每弹一次都新建一个 `notices` 数组，没弹的

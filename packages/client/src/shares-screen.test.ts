@@ -576,3 +576,32 @@ describe('★★ 分紅屏的自动收屏（试玩 4 回归）', () => {
     expect(sharesScreen.active(envAt(after, 0))).toBe(false);
   });
 });
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  const env = (state: GameState, logs: string[] = []): UiScreenEnv =>
+    ({
+      screen: 'game',
+      state,
+      topo: TOPO,
+      now: 0,
+      stage: {} as unknown as CanvasRenderingContext2D,
+      sprite: () => null,
+      dispatch: () => {},
+      requestRender: () => {},
+      log: (m: string) => logs.push(m),
+      playEffect: () => {},
+      stopEffect: () => {},
+    }) as unknown as UiScreenEnv;
+
+  it('在演 ⇒ 与抬手同一个 `dismiss`；没在演 ⇒ false', () => {
+    resetSharesScreen();
+    const before: GameState = { ...marketWithTwo(), day: 14, totalDays: 100 };
+    const after: GameState = { ...before, day: DIVIDEND_DAY, totalDays: 101 };
+    const logs: string[] = [];
+    sharesScreen.event!(before, after, env(after, logs));
+    expect(sharesScreen.fastForward!(env(after, logs))).toBe(true);
+    expect(sharesScreen.active(env(after))).toBe(false);
+    expect(logs).toContain('上市公司分紅：收屏');
+    expect(sharesScreen.fastForward!(env(after))).toBe(false);
+  });
+});

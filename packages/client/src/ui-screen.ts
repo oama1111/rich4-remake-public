@@ -199,6 +199,26 @@ export interface UiScreen {
    */
   tick?(env: UiScreenEnv): void;
 
+  /**
+   * **联机旁观：跟着行动者收场**（第十二份試玩回報续，需求方拍板：
+   * 「所有点得掉的整屏提示 —— 訊息框 / 事件框 / 转盘 / 老虎机 … —— 在旁观端要跟着行动的那位一起关」）。
+   *
+   * 由 `main.ts` 的 `pumpNetInbox` 在「收件箱队首是**别的真人座位**派的下一条」时调用
+   * （判据见 `follow-presenter.ts` 的 `presenterMovedOn`）：那一台的回合驱动要等自己的演出
+   * 全部收场才会派下一条 ⇒ 本台此刻还在演的、属于**已施加** action 的演出，他那边早演完了。
+   *
+   * 语义 = **直接落到终态**（与本屏自己演完那一刻一样：`active()` 变假、排队的也清掉），
+   * 不是「点一下」那一步 —— 行动者那台已经整段收场了。要做的只有表现层的收尾：
+   * 停掉本屏起的**循环音**（转盘 52 / 老虎机那一路）。背景曲不用管 —— 没有整屏在接管时
+   * `main.ts` 的 `boardBgmDue()` 自己把棋盘曲接回来。
+   *
+   * ⚠️ 本屏若此刻是**待决交互**（魔法屋状态 7 等本机点选、本机还没交出去的答复）
+   *   必须**不动**并返回 false —— 那不是演出，关掉就吞了一个 action。
+   *
+   * @returns 真的收掉了什么（没在播 / 不该动 ⇒ false）
+   */
+  fastForward?(env: UiScreenEnv): boolean;
+
   /** 一次 action 让状态变了 —— 演出类屏幕（開獎 / 月結 / 魔法屋）靠它起播 */
   event?(before: GameState, after: GameState, env: UiScreenEnv): void;
 

@@ -1255,3 +1255,36 @@ describe('★★ 事件框只认 news / fortune（别的 kind 借道不出框）
     expect(src).not.toContain("ev.kind !== 'magicHouse'");
   });
 });
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  it('★ 命運第一段 ⇒ 整段直接收（不像点一下那样停到第二段）', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], null);
+    const after = stateOf([player(0, [])], { kind: 'fortune', id: 12 });
+    const logs: string[] = [];
+    eventBoxScreen.event!(before, after, fakeEnv(after, 0, null, logs));
+    expect(eventBoxScreen.fastForward!(fakeEnv(after, 10, null, logs))).toBe(true);
+    expect(eventBoxScreenState().playing).toBe(false);
+    expect(eventBoxScreen.active(fakeEnv(after))).toBe(false);
+    expect(logs).toContain('事件提示框：fortune 跟著行動者收場');
+  });
+
+  it('★ 抽卡第一段那段点不掉的 FLIC 也收（行动者那台早演完了）', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [1])], null);
+    const after = stateOf([player(0, [1, 12])], null);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playback?.phase).toBe('flic');
+    // 点一下不动（原版那一段的跳过闸是关的）
+    eventBoxScreen.up!(0, 0, fakeEnv(after, 10));
+    expect(eventBoxScreenState().playing).toBe(true);
+    expect(eventBoxScreen.fastForward!(fakeEnv(after, 10))).toBe(true);
+    expect(eventBoxScreenState().playing).toBe(false);
+  });
+
+  it('没在播 ⇒ false', () => {
+    resetEventBoxScreen();
+    const s = stateOf([player(0, [])], null);
+    expect(eventBoxScreen.fastForward!(fakeEnv(s))).toBe(false);
+  });
+});

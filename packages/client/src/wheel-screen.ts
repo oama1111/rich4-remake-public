@@ -777,6 +777,23 @@ export const wheelScreen: UiScreen = {
     clickWheel(env);
     return true;
   },
+
+  /**
+   * 联机旁观：行动者那台已经收场（见 `ui-screen.ts` 的 `fastForward`）⇒ 直接关屏。
+   *
+   * ★ 不看 `wheelClickable`：那是「这一下点击算不算」（电脑的转盘点了不算），
+   *   这里是「行动者那台整段都转完、关掉了」—— 无论谁的转盘都已落定（值在 core 里早算好）。
+   *   还在转就把循环的 52 号停掉（落地那一声 1 不补：他那边早响过了）。
+   */
+  fastForward(env: UiScreenEnv): boolean {
+    const play = playback;
+    if (play === null) return false;
+    if (play.landedAt === null) env.stopEffect(WHEEL_SPIN_SOUND);
+    playback = null;
+    env.log('轉盤：跟著行動者收場');
+    env.requestRender();
+    return true;
+  },
   tick(env: UiScreenEnv): void {
     const play = playback;
     if (play === null) return;

@@ -531,3 +531,39 @@ describe('★★ W-69：`setNoticeStartGate` —— 起播前先等台上的演�
     expect(noticeBoxScreenState().playing).toBe(true);
   });
 });
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  it('正在播的那一扇 + 排队的几扇一起收，`active()` 变假', () => {
+    setNoticeStartGate(null);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith(RENT_THEN_REAPER.map((n) => ({ ...n })));
+    const logs: string[] = [];
+    noticeBoxScreen.event!(before, after, fakeEnv(after, 0, logs));
+    expect(noticeBoxScreenState().queued).toBe(1);
+    expect(noticeBoxScreen.fastForward!(fakeEnv(after, 10, logs))).toBe(true);
+    expect(noticeBoxScreenState()).toMatchObject({ playing: false, queued: 0 });
+    expect(noticeBoxScreen.active(fakeEnv(after))).toBe(false);
+    expect(logs).toContain('付费訊息框：跟著行動者收場（2 扇）');
+    // 之后 tick 不会再起第二扇
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS));
+    expect(noticeBoxScreenState().playing).toBe(false);
+  });
+
+  it('★ 还押在闸后面、没起播的那几扇也收（它们同样属于已施加的 action）', () => {
+    setNoticeStartGate(() => true);
+    resetNoticeBoxScreen();
+    const after = stateWith([{ ...ONE_OWNER }]);
+    noticeBoxScreen.event!(stateWith([]), after, fakeEnv(after));
+    expect(noticeBoxScreenState()).toMatchObject({ playing: false, queued: 1 });
+    expect(noticeBoxScreen.fastForward!(fakeEnv(after))).toBe(true);
+    expect(noticeBoxScreen.active(fakeEnv(after))).toBe(false);
+    setNoticeStartGate(null);
+  });
+
+  it('没在播 ⇒ false、什么都不动', () => {
+    resetNoticeBoxScreen();
+    const s = stateWith([]);
+    expect(noticeBoxScreen.fastForward!(fakeEnv(s))).toBe(false);
+  });
+});

@@ -857,3 +857,39 @@ describe('★ WM_KEYDOWN（0x101）也是「點一下」@source `0x0043fa66`', (
     expect(src).toContain('export interface UiKeyEvent {');
   });
 });
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  runMap('★ 还在转 ⇒ 停掉循环的 52、直接关屏；**电脑的转盘也收**（点击算不算与此无关）、不补落地音', () => {
+    resetWheelScreen();
+    const s = scene();
+    if (s === null) return;
+    const after = reduce(s.before, { type: 'settle' }, s.topo);
+    const env = makeEnv(after, s.topo);
+    wheelScreen.event!(s.before, after, env);
+    expect(wheelScreenState().cue?.human).toBe(false);
+    expect(wheelScreen.fastForward!(env)).toBe(true);
+    expect(wheelScreen.active(env)).toBe(false);
+    expect(env.effects).toEqual([`play:${WHEEL_SPIN_SOUND}:loop`, `stop:${WHEEL_SPIN_SOUND}`]);
+    expect(env.logs).toContain('轉盤：跟著行動者收場');
+    // 再问一次：没在播 ⇒ false
+    expect(wheelScreen.fastForward!(env)).toBe(false);
+  });
+
+  runMap('已经落地（52 早停了）⇒ 只关屏，不再停一次', () => {
+    resetWheelScreen();
+    const s = scene();
+    if (s === null) return;
+    const after = reduce(s.before, { type: 'settle' }, s.topo);
+    const env = makeEnv(after, s.topo);
+    wheelScreen.event!(s.before, after, env);
+    let guard = 0;
+    while (!wheelScreenState().landed && guard++ < 500) {
+      env.now += 1000;
+      wheelScreen.tick!(env);
+    }
+    const n = env.effects.length;
+    expect(wheelScreen.fastForward!(env)).toBe(true);
+    expect(wheelScreen.active(env)).toBe(false);
+    expect(env.effects).toHaveLength(n);
+  });
+});

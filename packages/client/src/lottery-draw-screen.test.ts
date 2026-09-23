@@ -1389,3 +1389,31 @@ describe('死锁保护：影片解不出来时屏也必须能关掉', () => {
     expect(lotteryDrawActive()).toBe(false);
   });
 });
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  it('★ 演到一半 ⇒ 直接关屏（原版点不掉，但行动者那台已经演完）；没在播 ⇒ false', () => {
+    resetLotteryDrawScreenState();
+    const [before, after] = winPair();
+    const env = makeEnv(after, FLICS());
+    lotteryDrawScreen.event!(before, after, env);
+    tickUntilStep(env, 2);
+    expect(lotteryDrawActive()).toBe(true);
+    expect(lotteryDrawScreen.fastForward!(env)).toBe(true);
+    expect(lotteryDrawActive()).toBe(false);
+    expect(lotteryDrawScreen.active(env)).toBe(false);
+    expect(env.logs).toContain('樂透開獎：跟著行動者收場');
+    expect(lotteryDrawScreen.fastForward!(env)).toBe(false);
+  });
+
+  it('★ 还没上屏（分紅屏还占着）也一并收', () => {
+    resetLotteryDrawScreenState();
+    const [before, after] = losePair();
+    const env = makeEnv(after, FLICS());
+    lotteryDrawScreen.event!(before, after, env);
+    expect(env.tracks).toEqual([]);
+    expect(lotteryDrawScreen.fastForward!(env)).toBe(true);
+    lotteryDrawScreen.tick!(env);
+    expect(env.tracks).toEqual([]); // 不会再上屏换曲
+    expect(lotteryDrawActive()).toBe(false);
+  });
+});
