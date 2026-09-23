@@ -25,7 +25,7 @@ import {
 } from './dev-patch.ts';
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
-import { followPresenterDone, magicCaster, magicScreenState, presenterMovedOn } from './magic-screen.ts';
+import { magicAwaitingPick, magicHumanPickPoint, magicScreenState } from './magic-screen.ts';
 import {  autoAction,
   ACTOR_DOLL,
   directionOf,
@@ -1687,6 +1687,10 @@ const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
  */
 function blockingPresentation(): boolean {
   const overlay = activeUiScreen();
+  // ★ 魔法屋女巫窗口停在状态 7（等真人点一格）时**不算演出**：那一刻它就是一个待决交互
+  //   （`pending{magicHouse}`），挡住联机收件箱就会死锁 —— 别家那一端点定的答复
+  //   （或託管替他掷的那一条）永远进不来，本机只能一直看着「等玩家点」。
+  if (overlay !== null && overlay.id === 'magic' && magicAwaitingPick()) return false;
   return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
 }
 
@@ -10078,12 +10082,6 @@ function pumpNetInbox(delay = 0): void {
     //   且要求队首就是 `rollDice`。电脑座位那一串 action 照旧受闸 —— 那正是
     //   第七份试玩回报第 1 条要的（别把电脑回合秒播完、别互相顶掉骰子动画）。
     const head = netInbox[0];
-    // ★★ 第十二份試玩回報：**别人**踩的魔法屋，施法者那台已经收场（他的下一条 action 都到了）
-    //   ⇒ 本台跟着收场，不再自己把转盘走满（见 `presenterMovedOn` 的注释）。
-    //   队首还没施加，此刻的 `actingSeat(state)` 就是它的派出者。
-    if (head !== undefined && presenterMovedOn(magicCaster(), net?.seat ?? null, actingSeat(state))) {
-      followPresenterDone(uiEnv());
-    }
     const ownRollEcho = awaitingOwnRoll && head !== undefined && head.action.type === 'rollDice';
     if (!ownRollEcho && holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
     const item = netInbox.shift();
@@ -10477,8 +10475,8 @@ async function boot(): Promise<void> {
           return state.pending?.kind === 'auction';
         },
         /**
-         * ★ 魔法屋那一屏的状态（`magicScreenState()`）：`playing` / `phase` /
-         *   `hover` / `ring` / `view`。
+         * ★ 魔法屋那一屏的状态（`magicScreenState()`）：`playing` / `state`（原版 `[0x48c3a2]` 1..8）/
+         *   `line`（字框里那一句，`null` = 收起）/ `criterion` / `chosen` / `hover` / `interactive`。
          *
          * 加它是因为这一屏**要玩到才会出现**（落点随机），而「一圈十二格每一项
          * 都点得到」只能用鼠标真的去点、再读状态来验收；`#log` 里那句
@@ -10550,6 +10548,12 @@ async function boot(): Promise<void> {
               y: (PICKER_HIT.y0 + PICKER_HIT.y1) / 2,
               why: 'facility-picker:slot1',
             };
+          }
+          // 魔法屋女巫窗口：状态 7 等真人点一格（原版窗口返回值 = 效果号，`0x004338b7`）
+          //   ⇒ 真实出口 = 点一圈里的一格；落点取本屏自己的图标中心表（`MAGIC_RING_AT`）
+          if (activeUiScreen()?.id === 'magic') {
+            const pick = magicHumanPickPoint();
+            return pick === null ? null : { gesture: 'click', x: pick.x, y: pick.y, why: 'magic:pick' };
           }
           // 其余登记的整屏（轉盤 / 訊息框 / 事件框…）自己演、自己收，脚本不伸手
           if (activeUiScreen() !== null) return null;

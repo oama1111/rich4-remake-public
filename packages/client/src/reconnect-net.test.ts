@@ -83,11 +83,11 @@ describe('第十二份試玩回報：中途进房静默追上', () => {
 });
 
 describe('第十二份試玩回報：旁观别人的魔法屋，施法者收场本台跟着收场', () => {
-  it('★ 收件箱每一拍（在节拍闸之前）问一次「施法者那台演完了没」', () => {
-    const check = pump.indexOf('presenterMovedOn(magicCaster(), net?.seat ?? null, actingSeat(state))');
-    expect(check).toBeGreaterThan(0);
-    expect(pump).toContain('followPresenterDone(uiEnv());');
-    // 必须在 `holdForActorWalk` 之前：魔法屋正占着屏，节拍闸会一直挡着
-    expect(check).toBeLessThan(pump.indexOf('holdForActorWalk('));
+  // 魔法屋的点选如今是一条 action（`{type:'magicHouse', option}`，见 core `magic-choice.test.ts`），
+  // 旁观端收到它就按同一条结算收场；前提是女巫窗口停在状态 7 等人点时**不挡收件箱**。
+  it('★ 状态 7（等真人点一格）不算演出 ⇒ 别家点定的那条 action 进得来', () => {
+    expect(main).toContain(
+      "if (overlay !== null && overlay.id === 'magic' && magicAwaitingPick()) return false;",
+    );
   });
 });

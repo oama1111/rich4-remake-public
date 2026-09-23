@@ -537,6 +537,10 @@ export function decidePending(state: GameState): Action | null {
   // ★ 小游戏：AI 从来不玩（原版 `who_plays != 1` 直接走「不玩」出口）。
   //   真人被托管时也走这条——托管的意思就是让 AI 替你打，不该弹出玩法。
   if (p.kind === 'minigame') return { type: 'minigame', score: null };
+  // ★ 魔法屋：电脑在原版里**不开女巫窗口**（`0x0043381b cmp [player+0x15],1 / jne 0x43390b`），
+  //   两个转盘都 rand() —— 走到这里的只会是**被託管的真人**（窗口已挂出）。
+  //   `option: null` = 让 reducer 按电脑那一支掷效果（随机数不能进 AI）。
+  if (p.kind === 'magicHouse') return { type: 'magicHouse', option: null };
   // ★ 保釋：电脑玩家那条路在 reducer 里就掷完了（随机数不能进 AI），
   //   走到这里的只会是**被托管的真人**。按 `personality` 的精神保守处理：
   //   救得起同伴就救，不去放犯人。

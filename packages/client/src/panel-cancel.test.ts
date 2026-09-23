@@ -248,8 +248,11 @@ describe('★ 登记的整屏：声明了右键的那几屏', () => {
     //   `0x00440de7 push 0x5dc / call 0x4528b9`，而 `0x00452901/00452909/00452911`
     //   的 `PeekMessage` 收 `0x202` / `0x205` / `0x101` 三种 ⇒ 见
     //   `notice-box-screen.ts` 的 `contextmenu`。
+    // ★ 魔法屋女巫窗口（第十二份回报那一轮接上）：窗口过程 `fcn_004325c2` 的
+    //   `cmp eax, 0x205 / jbe loc_00432e64` —— 开场白那几拍（状态 < 3）右键 = 跳过，
+    //   见 `magic-screen.ts` 的 `contextmenu`。
     expect(withCtx).toEqual([
-      'big-map', 'eventBox', 'facility-picker', 'help', 'lottery', 'notice', 'notice-board',
+      'big-map', 'eventBox', 'facility-picker', 'help', 'lottery', 'magic', 'notice', 'notice-board',
       'research', 'steal-picker',
     ]);
   });

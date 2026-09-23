@@ -1,18 +1,23 @@
 /*
- * 魔法屋屏（外圈 12 功能悬停高亮 + 中央文字 + 音）—— T-037 / U-9 / MOD-12
+ * 魔法屋屏（女巫窗口：开场白 → 摇签 → 玩家点一格）—— T-037 / U-9 / MOD-12
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * ★ 这一屏在 core 里**没有待决交互**：`runMagicHouse()`（VA 0x0043390b）两个转盘
- *   都是自己 `rand()` 转的，玩家一次也插不上手（`reduce.ts` 的 `settle` 分支）。
- *   所以本模块是**回放这次结果**的演出：`event(before, after, env)` 察觉
- *   「刚刚落了一次魔法屋」，反推出转盘落点，播完自己关。
+ * ★★ 2026-09-23 订正（第十二份试玩回报）：这一屏**是真人拿主意的那一屏**，不是回放。
+ *   入口 `0x0043380a` 按 `who_plays == 1` 分流（`0x0043381b`）：真人开女巫窗口
+ *   `0x4325c2`，**窗口返回值就是效果号**（`0x004338b7 mov esi, eax` → `0x431caa`）；
+ *   电脑不开窗，两个转盘都 `rand()`（`0x0043390b`）。
+ *   ⇒ core 在落点只转**目标转盘**、挂 `pending{magicHouse}`；本屏照原版状态机
+ *   `[0x48c3a2]` 1..8 走一遍：三句开场白 → 摇签（字框收起）→ 条件名 → 「輪到你了」→
+ *   **状态 7 等玩家点 1..12 格** → 抬手 + 「天靈靈地靈靈」→ 关窗时派
+ *   `{type:'magicHouse', option}`。
+ *   先前本屏把 core 已经掷好的效果「转两圈停在那一格」回放出来 —— 玩家点什么都不算数
+ *   （回报「选所有女生存入现金，金貝貝不受影响」），而且一开屏日志就是那个效果名
+ *   （回报「为什么魔法屋默认就展示就地拆除房屋」）。
  *
- * ⚠️ **但原版那一屏是可点的**（`WM_LBUTTONDOWN` → `loc_00432e8e`，VA 0x00432e8e）：
- *   状态 < 3 时点一下 = 跳过开场白；状态 7（转盘停了）时点 1..12 格 = 选定
- *   那个功能（`[0x48c3a1]` 就是回传的格号），点中央 13 = 再报一次抽中的条件名；
- *   那一下还会把女巫换成「抬手」那张、写上 `#0041天靈靈地靈靈～`。本引擎的落点
- *   由 core 决定（见 D-MAGIC-1），所以这一屏把那三拍折成：
- *   **跳过开场白 / 高亮并报出选中项 / 推进到「抬手」那一拍** —— 见 `down()`。
+ * ★★ 字框（图 8 落 (320,384)）**不是整屏一直在**：`fcn_0044ecb6` 挂上一句时存下框底下那块，
+ *   `fcn_0044ee18` 到期（≥ 2000 ms）就把它贴回去（0x0044eeb4）⇒ **摇签（状态 4）与
+ *   等玩家点（状态 7）时屏上没有字框**。先前一直画着，280×173 的框把最下面那三格
+ *   （5/6/7 号，中心 y ≈ 390）整块盖住（回报「魔法屋的文案挡住了最下面的转盘」）。
  *
  * ## 出处（窗口过程 VA 0x004325c2；入口 `magic_house` VA 0x0043380a）
  *
@@ -101,24 +106,17 @@
  *
  * ## 音效
  *
- * 三支各有出处（VA 0x00432e40 结果 39 / 0x00433531 悬停 0 / 0x0043365c 按下 1），
- * 本屏按 `MAGIC_SOUND_RESULT` / `MAGIC_SOUND_HOVER` / `MAGIC_SOUND_PRESS` 放。
- * ⚠️ 先前这一段的「表 `0x4757e7` 里是 dword 16、本模块一个音都不放」两条都不成立
- * （首字节是 **0x27 = 39**），已在 `MAGIC_SOUND_RESULT` 的注释里订正。
+ * 这扇窗**只有一个音**：状态 7 悬停到 1..12 格时 `_rich4_play_sound_effect(0, &0x4757e7)`
+ * （0x00432e42；`0x4757e7` 首字节 = **0x27 = 39**，由入口 `0x00433828` 载入）。
+ * 点下去那一支（`loc_00432e8e`）**不放音**。
+ * ⚠️ 先前本屏还放了 0 号（「悬停」@0x00433531）与 1 号（「按下」@0x0043365c）——
+ * 那两处在 `0x433088` 起的**死神窗口**（`_rich4_call_god_of_death_callback`）里，
+ * 不是这扇窗的，已去掉。
  */
 
 import { MAGIC_HOUSE_OPTIONS, stripVoiceCode } from '@rich4/data';
 import { playVoiceCode } from './voice-sink.ts';
-import {
-  LAND_TYPE_HOUSE,
-  MAGIC_TARGET_NAMES,
-  SPECIAL_KIND,
-  allEffectiveFacilities,
-  allEffectiveLands,
-  type GameState,
-  type MapTopology,
-  type Player,
-} from '@rich4/core';
+import { MAGIC_TARGET_NAMES, type GameState } from '@rich4/core';
 import { FONT_FAMILY } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
@@ -536,18 +534,11 @@ export function hitMagicOption(x: number, y: number): number | null {
  */
 
 // ============================================================
-//  回放脚本（纯函数）
+//  窗口状态机（纯函数）—— 照 `[0x48c3a2]` 1..8 一拍一拍走
 // ============================================================
 
-/** 转盘最高速 @source 原版挂 100ms 定时器、隔一次动一下 = 约 200ms 一位 */
-export const MAGIC_SPIN_MS = 200;
-/** 越转越慢：每一位比上一位多停这么多 */
-export const MAGIC_SPIN_SLOW = 45;
-/** 转到结果后停多久再关屏 —— 原版点中之后 1.5 秒就走（`push 0x5dc`，VA 0x004339b3） */
-export const MAGIC_HOLD_MS = 1500;
-
 /**
- * 入口台詞那三句 —— **文字框**先由 `fcn_0044ec30` 设好，再由 `fcn_0044ecb6` 逐句画。
+ * 入口台詞那三句 —— **文字框**先由 `fcn_0044ec30` 设好，再由 `fcn_0044ecb6` 逐句挂上。
  *
  * @source 字框（VA **0x00432596** 那一句 `call 0x44ec30`，整段 0x00432575–0x0043259e）：
  * ```asm
@@ -560,7 +551,7 @@ export const MAGIC_HOLD_MS = 1500;
  *
  * @source 串（`fcn_0044ecb6` 的参数，串表指针逐个 dump）：
  *   `0x475694` / `0x475698` / `0x47569c`；`0x4756a0`（`#0040嘿～輪到你了！`）与
- *   `0x4756a4`（`#0041天靈靈地靈靈～`）是后面几拍用的，本模块只做入口这三句。
+ *   `0x4756a4`（`#0041天靈靈地靈靈～`）是后面几拍用的。
  */
 export const MAGIC_GREET_LINES: readonly string[] = [
   '#0037進來魔法屋，就得\n完全照我的指示！',
@@ -569,19 +560,20 @@ export const MAGIC_GREET_LINES: readonly string[] = [
 ];
 
 /**
- * 一句台詞停多久。
+ * 字框里一句话**至少**挂多久。
  *
  * @source `fcn_0044ee18`（VA 0x0044ee18）：`call timeGetTime` 减去
- *   `[0x4762c4]`（`fcn_0044ecb6` 记下的「挂上那一刻」）之后
- *   `cmp eax, 0x7d0 / jb` —— 到 **2000 ms** 就算到期。同一个数也在
- *   `lottery-ceremony.ts` 的 `CEREMONY_VOICE_MS` 上（那边是同一支
- *   `fcn_0044ee18` 的另一处调用）。
+ *   `[0x4762c4]`（`fcn_0044ecb6` 记下的「挂上那一刻」，0x0044ee0e）之后
+ *   `cmp eax, 0x7d0 / jb` —— 到 **2000 ms** 才算到期；到期那一下把框底下存的那块
+ *   **贴回去**（0x0044eeb4 `call 0x4563f5`）= 字框收起。
  *
  * ⚠️ 原版还有一条「音效开着就等语音播完」（`cmp byte [0x49715b], 0` 之后
  *   `call 0x4544b9`）—— 语音时长要到 `Speaking.mkf` 里查，本屏拿不到那个出口，
  *   故按**底数 2000 ms**走（登记在 `T-037.md` 的 D-MAGIC-12）。
  */
 export const MAGIC_GREET_MS = 0x7d0;
+/** 同一个数，按它真正的含义起的名：字框一句话的寿命 */
+export const MAGIC_LINE_MS = MAGIC_GREET_MS;
 
 /**
  * 魔法屋那条定时器：**100 ms** 一拍。
@@ -596,52 +588,58 @@ export const MAGIC_TIMER_MS = 0x64;
  *
  * @source `loc_00432951`（状态 3 → 4）：
  * ```asm
- * cmp byte [0x48c3a5], 0     ; [0x48c3a5] = **!動畫過程**
- * je  short loc_004329e3     ; 关掉 → 走下面那句
- * mov byte [0x48c3a1], 1     ; ★ 关掉：只摇 1 拍（= 立刻开）
- * jmp …
+ * cmp byte [0x48c3a5], 0     ; [0x48c3a5] = **!動畫過程**（跳过开场白也会置 1）
+ * je  short loc_004329e3
+ * mov byte [0x48c3a1], 1     ; ★ 关掉：只摇 1 拍
  * loc_004329e3:
  * mov byte [0x48c3a1], 0xa   ; ★ 开着：**10 拍**（1 秒）
  * ```
  * 之后每个 `0x113` 把 `[0x48c3a1]` 递减（`loc_004326e5`），减到 0 才
- * `loc_00432719` 抽条件 ⇒ 一共 `MAGIC_ROLL_TICKS × MAGIC_TIMER_MS` 毫秒。
+ * `loc_00432719` 亮出条件（条件号本身由 core 在落点那一刻抽好，见 `pending.criterion`）。
  */
 export const MAGIC_ROLL_TICKS = 0xa;
-/** 动画关掉时只摇 **1** 拍 @source 同上 `mov byte [0x48c3a1], 1` */
+/** 动画关掉（或跳过了开场白）时只摇 **1** 拍 @source 同上 `mov byte [0x48c3a1], 1` */
 export const MAGIC_ROLL_TICKS_FAST = 1;
 
 /**
- * 抽中的**条件名**在字框里停多久 —— 恰好一拍。
- *
- * @source 状态 5 是 `loc_00432719` 抽完写进去的那一句
- *   （`fcn_0044ecb6([0x4756b8 + 条件下标*4])`），下一个 `0x113` 就推进状态 6；
- *   状态 6 一到就把字框换成 `#0040`（`loc_004329ef`）。
- */
-export const MAGIC_CRITERION_MS = MAGIC_TIMER_MS;
-
-/**
- * 「輪到你了」那一句 —— 状态 6 写进字框。
+ * 「輪到你了」那一句 —— 状态 5 → 6 写进字框。
  * @source `loc_004329ef`：`cmp byte [0x48c3a5], 0 / jne loc_00432944` ⇒ **动画关掉不写**；
  *   开着则 `push [0x4756a0]` → `fcn_0044ecb6`（串 `#0040嘿～輪到你了！`）。
  */
 export const MAGIC_TURN_LINE = '#0040嘿～輪到你了！';
 
 /**
- * 「天靈靈地靈靈～」那一句 —— 状态 8（挑完功能、播完那段 FLIC 之后）。
- * @source `loc_00432fea` 一带：`mov byte [0x48c3a2], 8` → `push [0x4756a4]` → `fcn_0044ecb6`
- *   （同一句也用在另一条「施法」支线 `[0x48c3ad] = 5` 上）。
+ * 「天靈靈地靈靈～」那一句 —— 点下去那一拍（状态 7 → 8）。
+ * @source `loc_00432e8e` 尾：`0x00432fdc mov byte [0x48c3a2], 8` → `push [0x4756a4]` →
+ *   `0x00432fea call 0x44ecb6`。
  */
 export const MAGIC_SPELL_LINE = '#0041天靈靈地靈靈～';
 
 /**
- * 字框里的字号 —— `fcn_0044ec30` 的第 4 参 `push 0x14` = **20**（`fcn_0044ecb6`
- * 里 `create_font(0x14, …)` 用的也是它）。
+ * 十二个**条件名**（带语音号）—— 状态 5 写进字框的那一句。
+ *
+ * @source 串表 `0x4756b8`（12 个指针，逐个 dump）：`0x4646cc '#0046財產最多的人'` …
+ *   `0x464786 '#0057所有女生'`；`loc_00432719` 尾 `mov edx,[eax*4 + 0x4756b8] / call 0x44ecb6`
+ *   —— 原样挂上，**`#NNNN` 前缀照样触发女巫语音**。先前本屏用的是 core 那份去掉前缀的
+ *   `MAGIC_TARGET_NAMES`，条件名那一句于是一声不响。
+ */
+export const MAGIC_CRITERION_LINES: readonly string[] = MAGIC_TARGET_NAMES.map(
+  (name, i) => `#${String(46 + i).padStart(4, '0')}${name}`,
+);
+
+/** 第 `criterion` 个条件那一句（越界给空串）*/
+export function magicCriterionLine(criterion: number): string {
+  return MAGIC_CRITERION_LINES[criterion] ?? '';
+}
+
+/**
+ * 字框里的字号 —— `fcn_0044ecb6` 里 `0x0044ed71 push 0x14 / call 0x44f9d8` = **20**。
  */
 export const MAGIC_MSG_FONT_SIZE = 0x14;
 /** 字框里的行距 —— 与 `drawLoanBubble` 同口径（字号 + 6）*/
 export const MAGIC_MSG_LINE_H = MAGIC_MSG_FONT_SIZE + 6;
 
-/** 入口台詞的字框参数（见 `MAGIC_GREET_LINES` 的注释）*/
+/** 字框参数（见 `MAGIC_GREET_LINES` 的注释）*/
 export const MAGIC_MSG_BOX = {
   chunk: 8,
   x: 0x140,
@@ -656,189 +654,170 @@ export const MAGIC_MSG_BOX = {
 /** 转盘数（十二个功能）*/
 export const MAGIC_SECTOR_COUNT = 12;
 
-export interface MagicSpin {
-  /** 已经转过的位数 */
-  step: number;
-  /** 上一位换掉的时刻 */
-  at: number;
-  /** 这一位要停多久 */
-  wait: number;
-  /** 正指着的功能 */
-  option: number;
-}
-
-export function magicSpinStart(option: number, now: number): MagicSpin {
-  return { step: 0, at: now, wait: MAGIC_SPIN_MS, option };
-}
-
-/** 转盘结束前总共转多少位：把最后一圈走满，保证「从哪起转都看得见落点」 */
-export function magicSpinSteps(): number {
-  return MAGIC_SECTOR_COUNT * 2;
-}
-
 /**
- * 转盘往前走。走满 `magicSpinSteps()` 位就停在 `target` 上。
+ * 女巫窗口此刻的状态 —— 字段与原版全局一一对应：
  *
- * 帧序：第 `n` 位指到 `(n + 1) % 12`，最后一位指到 `target` ——
- * 即「先自己转两圈、再停在结果上」。
- */
-export function magicSpinTick(s: MagicSpin, target: number, now: number): MagicSpin {
-  const total = magicSpinSteps();
-  if (s.step >= total) return { ...s, option: target };
-  const dt = now - s.at;
-  if (dt < s.wait) return s;
-  const step = s.step + 1;
-  // ★ 位数**直接由 `target` 往前数**：第 `step` 位指到 `target + step − total`。
-  //   先前写成 `target + total − over`（over 从 0 起）在 `target === over` 时
-  //   会算成同一个数 —— 转盘会卡在落点上不转。
-  const option =
-    step >= total
-      ? target
-      : (((target + step - total) % MAGIC_SECTOR_COUNT) + MAGIC_SECTOR_COUNT) %
-        MAGIC_SECTOR_COUNT;
-  return {
-    step,
-    at: now,
-    wait: s.wait + MAGIC_SPIN_SLOW,
-    option,
-  };
-}
-
-export function magicSpinDone(s: MagicSpin): boolean {
-  return s.step >= magicSpinSteps() && s.option >= 0;
-}
-
-/**
- * 一次回放的五个阶段 —— 照原版 `[0x48c3a2]` 的状态号切出来：
- *
- * | 本模块 | 原版状态 | 停多久 | 字框里是什么 |
- * |---|---|---|---|
- * | `greet` | 1/2/3 | 每句 `MAGIC_GREET_MS` | 入口三句（`#0037`/`#0038`/`#0039`）|
- * | `roll` | 4 | `MAGIC_ROLL_TICKS × MAGIC_TIMER_MS` | 仍是最后那句入口台詞 |
- * | `criterion` | 5 | `MAGIC_CRITERION_MS` | **抽中的条件名**（`MAGIC_TARGET_NAMES[criterion]`）|
- * | `spin` | 6/7 | 转盘节拍 | `#0040嘿～輪到你了！`（`MAGIC_TURN_LINE`）|
- * | `hold` | 8 | `MAGIC_HOLD_MS` | `#0041天靈靈地靈靈～`（`MAGIC_SPELL_LINE`）|
- */
-export type MagicPhase = 'greet' | 'roll' | 'criterion' | 'spin' | 'hold';
-
-export interface MagicPlayback {
-  phase: MagicPhase;
-  spin: MagicSpin;
-  /** 转盘最后停下的功能（回放的目标）*/
-  target: number;
-  /** 停在结果上的时刻 */
-  holdAt: number;
-  /** `phase === 'greet'` 时正说第几句（`MAGIC_GREET_LINES` 的下标）*/
-  greet: number;
-  /** 这一句挂上的时刻 */
-  greetAt: number;
-  /** 抽签那一拍开始的时刻（`phase === 'roll' | 'criterion'` 用）*/
-  rollAt: number;
-  /** 这一局摇几拍（动画开 10 / 关 1，见 `MAGIC_ROLL_TICKS`）*/
-  rollTicks: number;
-  /** 抽中的条件名 —— 状态 5 写进字框的那一句（`view.criterionName`）*/
-  criterionName: string;
-}
-
-/**
- * 起播。
- *
- * @param greet 要不要先走**入口台詞**那三句 —— `env.animation !== false`。
- *   @source `loc_004326b9`（VA 0x004326b9）：`cmp byte [0x48c3a5], 0 / jne loc_00432e82`
- *   —— 设定关掉时（`[0x48c3a5] = !anim`）**直接跳过消息框**，也就是不播这三句
- *   （见 `Q-ANIM-1.md` 的魔法屋那一行与 `T-037.md` 的 D-MAGIC-12）。
- */
-export function magicPlaybackStart(
-  target: number,
-  now: number,
-  greet = true,
-  criterionName = '',
-  rollTicks = MAGIC_ROLL_TICKS,
-): MagicPlayback {
-  return {
-    // ★ 动画关掉（`greet = false`）时原版**只跳过消息框那三句**，
-    //   抽签那一拍照走 —— 只是 `[0x48c3a1]` 被置成 1（一拍就开奖）。
-    phase: greet ? 'greet' : 'roll',
-    // 台詞／抽签期间这个 `spin` 只是个占位；转盘真正起转时会按**那一刻**重起一个
-    //   （`magicPlaybackTick`），免得前面那几拍算进转盘节拍。
-    spin: magicSpinStart(target, now),
-    target,
-    holdAt: 0,
-    greet: 0,
-    greetAt: now,
-    rollAt: now,
-    rollTicks: greet ? rollTicks : Math.min(rollTicks, MAGIC_ROLL_TICKS_FAST),
-    criterionName,
-  };
-}
-
-/**
- * 这一拍字框里该写哪一句 —— 纯函数（画的时候直接用）。
- *
- * | 阶段 | 写什么 | @source |
+ * | 字段 | 原版 | 含义 |
  * |---|---|---|
- * | `greet` | 入口三句的第 `greet` 句 | `loc_004326b9` 起那三处 `fcn_0044ecb6` |
- * | `roll` | 仍是最后那句（`#0039你來決定他們的命運～`）—— 原版摇签那 10 拍不换字 | `loc_00432951` |
- * | `criterion` | **抽中的条件名**（`[0x4756b8 + 下标*4]`）| `loc_00432719` 尾 |
- * | `spin` | `#0040嘿～輪到你了！` | `loc_004329ef` |
- * | `hold` | `#0041天靈靈地靈靈～` | `loc_00432fea` |
+ * | `state` | `[0x48c3a2]` | 1/2/3 开场白 · 4 摇签 · 5 条件名 · 6 輪到你了 · 7 等玩家点 · 8 点完 |
+ * | `line` / `lineAt` | `[0x4762c0]` / `[0x4762c4]` | 字框里挂着的那一句与挂上的时刻；`null` = 框已收起 |
+ * | `quick` | `[0x48c3a5]` | `!動畫過程`；跳过开场白时也置 1（0x00432e71）|
+ * | `rollLeft` | `[0x48c3a1]` | 状态 4 的摇签倒数 |
+ * | `tickAt` | 定时器 | 上一次 `0x113` 的时刻（100 ms 一拍）|
+ * | `criterion` | `[0x48c3a3]` | 目标转盘（core 已抽好，状态 5 才亮出来）|
+ * | `chosen` | `[0x48c3a1] − 1` | 点定的效果号；没点之前 −1 |
  */
-export function magicBoxLineFor(p: MagicPlayback): string {
-  switch (p.phase) {
-    case 'greet':
-      return MAGIC_GREET_LINES[p.greet] ?? '';
-    case 'roll':
-      return MAGIC_GREET_LINES[MAGIC_GREET_LINES.length - 1] ?? '';
-    case 'criterion':
-      return p.criterionName;
-    case 'spin':
-      return MAGIC_TURN_LINE;
-    case 'hold':
-      return MAGIC_SPELL_LINE;
+export interface MagicWindow {
+  state: number;
+  line: string | null;
+  lineAt: number;
+  quick: boolean;
+  rollLeft: number;
+  tickAt: number;
+  criterion: number;
+  chosen: number;
+}
+
+/**
+ * 开窗：`0x401`（铺场 + 起定时器）紧接着 `0x405`（第一句）。
+ *
+ * @source `loc_00432647`：`[0x48c3a5] = cfg+1 ^ 1`（= `!動畫過程`）、铺场、
+ *   `PostMessage(0x405)`；`loc_004326b9`：`cmp byte [0x48c3a5], 0 / jne loc_00432e82`
+ *   —— 动画关掉**直接进状态 3**（三句一句不说），否则状态 1 + `#0037`。
+ */
+export function magicWindowOpen(criterion: number, now: number, animation = true): MagicWindow {
+  const quick = !animation;
+  return {
+    state: quick ? 3 : 1,
+    line: quick ? null : (MAGIC_GREET_LINES[0] ?? null),
+    lineAt: now,
+    quick,
+    rollLeft: 0,
+    tickAt: now,
+    criterion,
+    chosen: -1,
+  };
+}
+
+/** 字框那一句在 `t` 时到期没有（`fcn_0044ee18` 的 `cmp eax, 0x7d0 / jb`）*/
+export function magicLineExpired(w: MagicWindow, t: number): boolean {
+  return w.line !== null && t - w.lineAt >= MAGIC_LINE_MS;
+}
+
+/**
+ * 定时器走**一拍**（一个 `0x113`）。返回 `null` = 窗口关了（状态 8 那一拍收尾）。
+ *
+ * @source `loc_004326e5`：
+ * ```asm
+ * cmp [0x48c3a2], 4 / jne loc_00432828
+ * dec [0x48c3a1] / jne loc_00432828          ; 状态 4：摇签倒数
+ * loc_00432719: …亮出条件… [0x48c3a2] = 5 / fcn_0044ecb6(条件名)
+ * loc_00432828: call fcn_0044ee18            ; ★ 字框还挂着（没到期）→ 返回 0 → 本拍到此为止
+ *               jmp [state−1 → 0x4325a2]     ; 到期（框收起）或本来就没框 → 按状态推进：
+ *   1 → 2 + `#0038`      2 → 3 + `#0039`      3 → 4（闭眼、摇签 10/1 拍）
+ *   4 → —               5 → 6 + `#0040`（动画关掉不写）
+ *   6 → 7（`fcn_00402460(1)` 放开鼠标，补发一个 `WM_MOUSEMOVE`）
+ *   7 → —               8 → KillTimer / `Post_0402([0x48c3a1] − 1)` = 关窗、交出效果号
+ * ```
+ */
+export function magicWindowTimer(w: MagicWindow, t: number): MagicWindow | null {
+  let next: MagicWindow = { ...w, tickAt: t };
+  if (next.state === 4) {
+    next.rollLeft -= 1;
+    if (next.rollLeft <= 0) {
+      // loc_00432719 → 状态 5：条件名挂上字框（刚挂上 ⇒ 下面那次 ee18 必定「没到期」）
+      return { ...next, state: 5, rollLeft: 0, line: magicCriterionLine(next.criterion), lineAt: t };
+    }
+  }
+  // fcn_0044ee18：还挂着就等；到期就收起（贴回框底下那块）
+  if (next.line !== null) {
+    if (!magicLineExpired(next, t)) return next;
+    next = { ...next, line: null };
+  }
+  switch (next.state) {
+    case 1:
+      return { ...next, state: 2, line: MAGIC_GREET_LINES[1] ?? null, lineAt: t };
+    case 2:
+      return { ...next, state: 3, line: MAGIC_GREET_LINES[2] ?? null, lineAt: t };
+    case 3:
+      return { ...next, state: 4, rollLeft: next.quick ? MAGIC_ROLL_TICKS_FAST : MAGIC_ROLL_TICKS };
+    case 5:
+      return next.quick
+        ? { ...next, state: 6 }
+        : { ...next, state: 6, line: MAGIC_TURN_LINE, lineAt: t };
+    case 6:
+      return { ...next, state: 7 };
+    case 8:
+      return null;
+    default:
+      return next;
   }
 }
 
-/** 推进一步；台詞走完进 `spin`，转盘走完进 `hold`，`hold` 满 `MAGIC_HOLD_MS` 返回 `null` */
-export function magicPlaybackTick(p: MagicPlayback, now: number): MagicPlayback | null {
-  if (p.phase === 'greet') {
-    if (now - p.greetAt < MAGIC_GREET_MS) return p;
-    const next = p.greet + 1;
-    if (next < MAGIC_GREET_LINES.length) return { ...p, greet: next, greetAt: now };
-    // 三句说完进**抽签那一拍**（原版状态 3 → 4：铺五芒星 + 摇 `[0x48c3a1]` 拍）
-    return { ...p, phase: 'roll', rollAt: now };
+/** 把 `now` 之前该走的定时器拍子都走完（`null` = 关窗）*/
+export function magicWindowAdvance(w: MagicWindow, now: number): MagicWindow | null {
+  let cur: MagicWindow | null = w;
+  // 一次最多补 600 拍（1 分钟）—— 标签页被挂起回来时不至于空转
+  for (let i = 0; i < 600 && cur !== null && now - cur.tickAt >= MAGIC_TIMER_MS; i++) {
+    cur = magicWindowTimer(cur, cur.tickAt + MAGIC_TIMER_MS);
   }
-  if (p.phase === 'roll') {
-    if (now - p.rollAt < p.rollTicks * MAGIC_TIMER_MS) return p;
-    // 摇完 → 状态 5：把**抽中的条件名**写进字框
-    return { ...p, phase: 'criterion', rollAt: now };
-  }
-  if (p.phase === 'criterion') {
-    if (now - p.rollAt < MAGIC_CRITERION_MS) return p;
-    // 状态 6/7：字框换成「嘿～輪到你了！」并起转盘
-    return { ...p, phase: 'spin', spin: magicSpinStart(p.target, now) };
-  }
-  if (p.phase === 'spin') {
-    const spin = magicSpinTick(p.spin, p.target, now);
-    if (spin.step >= magicSpinSteps()) return { ...p, phase: 'hold', spin, holdAt: now };
-    return spin === p.spin ? p : { ...p, spin };
-  }
-  if (now - p.holdAt >= MAGIC_HOLD_MS) return null;
-  return p;
+  return cur;
+}
+
+/**
+ * 开场白那几拍（状态 < 3）点一下 / 右键 = **跳过**。
+ *
+ * @source `loc_00432e71`（左键 `0x201/0x203` 的 `cmp cl, 3 / jb` 与右键 `0x205` 的 `loc_00432e64` 共用）：
+ *   `mov byte [0x48c3a5], 1`（★ 之后按「动画关掉」走：摇签只 1 拍、不说「輪到你了」）
+ *   → `fcn_0044ee18(1)`（立刻收起字框）→ `[0x48c3a2] = 3`。
+ */
+export function magicWindowSkip(w: MagicWindow): MagicWindow {
+  if (w.state >= 3) return w;
+  return { ...w, state: 3, quick: true, line: null };
+}
+
+/**
+ * 状态 7 点中 1..12 格：**选定这个效果**。
+ *
+ * @source `loc_00432e8e`：还原悬停弹窗那块（0x00432f1a）→ 贴图 2（抬手，0x00432f72）
+ *   → 贴条件图标（0x00432fab）→ `fcn_00402460(0)`（收起鼠标）→ `[0x48c3a2] = 8`
+ *   → `fcn_0044ecb6([0x4756a4])`（`#0041天靈靈地靈靈～`）。
+ */
+export function magicWindowPick(w: MagicWindow, option: number, now: number): MagicWindow {
+  if (w.state !== 7 || option < 0 || option >= MAGIC_SECTOR_COUNT) return w;
+  return { ...w, state: 8, chosen: option, line: MAGIC_SPELL_LINE, lineAt: now };
+}
+
+/**
+ * 状态 7 点中央那块（13）：**再报一次条件名**，回状态 6（到期后又回到 7）。
+ * @source `loc_00432ff7`：`[0x48c3a2] = 6` / `fcn_0044ecb6([0x4756b8 + 条件*4])`。
+ */
+export function magicWindowAskCriterion(w: MagicWindow, now: number): MagicWindow {
+  if (w.state !== 7) return w;
+  return { ...w, state: 6, line: magicCriterionLine(w.criterion), lineAt: now };
+}
+
+/**
+ * **别处答掉了**这一趟（託管替他掷 / 联机时是别家那一端在点）—— 直接进点完那一拍。
+ *
+ * ⚠️ 原版没有这种情形（窗口是模态的，只有这块屏上的人能点）；这是联机 / 託管的收口：
+ *   屏上照样演「抬手 + 天靈靈地靈靈」，到期关窗、**不再派答复**。
+ *   `option = −1`：不知道点了哪一格（例如「抽取命運三張」之后 `lastEvent` 已是命運），不高亮。
+ */
+export function magicWindowResolve(w: MagicWindow, option: number, now: number): MagicWindow {
+  if (w.state === 8) return w;
+  return { ...w, state: 8, chosen: option, line: MAGIC_SPELL_LINE, lineAt: now };
 }
 
 // ============================================================
-//  从状态 diff 反推这次魔法屋
+//  core 交出来的那一趟 → 画面要的几个名字
 // ============================================================
 
 /**
- * **core 交出来的那一趟** → `MagicView` —— 条件号与名单是**抽出来的**，
- * 不该由表现层从 diff 反推（那是 D-MAGIC-1 的近似）。
+ * `state.lastEvent`（`kind === 'magicHouse'`）→ `MagicView`。
  *
- * @param ev `state.lastEvent`（`kind === 'magicHouse'`）：
- *   `id` = 效果转盘落点、`criterion` = 目标转盘落点、`targets` = 筛出的名单
- *   （@source `runMagicHouse` 里的 `spinMagicHouse`：`criterion` 来自
- *   `rand()%12` + `fcn_00431842` 复检，VA 0x0043390b 一带）。
- * @returns `criterion` 缺失（旧存档/回放）时返回 `null`，调用方退回反推那条路
+ * @param ev `id` = 效果号（真人点的 / 电脑掷的）、`criterion` = 目标转盘、`targets` = 名单
+ * @returns `criterion` 缺失 / 越界时返回 `null`
  */
 export function magicViewOfSpin(
   ev: { id: number; criterion?: number; targets?: readonly number[] },
@@ -859,331 +838,20 @@ export function magicViewOfSpin(
   };
 }
 
-/** 这次回放要显示什么 */
+/** 这一趟的名字们 */
 export interface MagicView {
   /** 触发者（`state.currentPlayer`）*/
   caster: number;
-  /** 效果转盘落点 0..11 */
+  /** 效果号 0..11；还没点 / 不知道 = −1 */
   option: number;
   /** 功能名（`MAGIC_HOUSE_OPTIONS[option].name`）*/
   name: string;
-  /** 被点到的人（玩家下标），可能不止一个 */
+  /** 被点到的人（玩家下标）*/
   targets: number[];
-  /** 目标转盘落点 0..11 */
+  /** 目标转盘 0..11 */
   criterion: number;
-  /** 目标条件的名字（`MAGIC_TARGET_NAMES[criterion]`）*/
+  /** 目标条件的名字（`MAGIC_TARGET_NAMES[criterion]`，不带语音号）*/
   criterionName: string;
-}
-
-/** 判断某个玩家这一刻是不是站在魔法屋上 @source `node.type == SPECIAL_KIND.MAGIC_HOUSE` */
-export function onMagicHouse(state: GameState, topo: MapTopology): boolean {
-  const p = state.players[state.currentPlayer];
-  if (p === undefined) return false;
-  const node = topo.nodes[p.nodeId - 1];
-  return node !== undefined && node.specialKind === SPECIAL_KIND.MAGIC_HOUSE;
-}
-
-/**
- * 本引擎里可能出现的落点。
- *
- * @source VA 0x0043396d：效果转盘 `mov ecx, 0xb`（取模 **11**）＋
- *   `cmp edx, 6 / lea esi, [edx+1]`（抽到 6 改成 7）—— 所以**随机**能转到的
- *   只有 `{0,1,2,3,4,5,7,8,9,10}` 十个；第 11 条（拍賣當格土地）在零售版里
- *   **永远转不到**。
- *
- * ★ 但「得一張卡片」(6) **确实会出现**：名单里有当前玩家时
- *   `mov esi, 6`（VA 0x0043395a）直接定死，不再抽 —— 所以反推时要把它算进来。
- */
-export const MAGIC_REACHABLE_OPTIONS: readonly number[] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-
-/** 随机转盘真正能抽到的十个（不含「得一張卡片」）@source `mov ecx, 0xb` */
-export const MAGIC_SPIN_OPTIONS: readonly number[] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10];
-
-/**
- * 把玩家身上**确定**会被某个效果改掉的字段摘出来比 —— 效果之外的东西
- * （位置、朝向、神明…）一律不看，那些是 `settle` 之前就动过的。
- *
- * ⚠️ 这是**近似**：原版存的是转盘落点，本引擎存的是「转完之后的状态」，
- *   只能反推。见 `docs/deviations/T-037.md`。
- */
-function effectSig(p: Player): string {
-  return [
-    p.cash,
-    p.moneyInBank,
-    p.points,
-    p.direction,
-    p.trafficMethod,
-    p.ndices,
-    p.godInfo,
-    p.blocking.stopping,
-    p.blocking.inPrison,
-    p.blocking.inHospital,
-    p.blocking.inHotel,
-    p.blocking.disappearing,
-    p.cards.join(','),
-  ].join('|');
-}
-
-/** 这次 diff 里，除 `who` 外**谁都没动**？（魔法屋只动名单里的人）*/
-function untouchedExcept(before: GameState, after: GameState, who: readonly number[]): boolean {
-  const set = new Set(who);
-  for (let i = 0; i < before.players.length; i++) {
-    if (set.has(i)) continue;
-    const b = before.players[i];
-    const a = after.players[i];
-    if (b === undefined || a === undefined) continue;
-    if (effectSig(b) !== effectSig(a)) return false;
-  }
-  return true;
-}
-
-/** `誰` 在手牌 / 現金 / 存款 / 點券 上有没有变 */
-function fieldsChanged(b: Player, a: Player): Set<'cards' | 'cash' | 'bank' | 'points'> {
-  const out = new Set<'cards' | 'cash' | 'bank' | 'points'>();
-  if (b.cards.join(',') !== a.cards.join(',')) out.add('cards');
-  if (b.cash !== a.cash) out.add('cash');
-  if (b.moneyInBank !== a.moneyInBank) out.add('bank');
-  if (b.points !== a.points) out.add('points');
-  return out;
-}
-
-/** 效果只动**名单里的人**，而且名单里的人各自的变化要对得上 */
-function matchesEffect(
-  option: number,
-  targets: readonly number[],
-  before: GameState,
-  after: GameState,
-): boolean {
-  if (!untouchedExcept(before, after, targets)) return false;
-  for (const who of targets) {
-    const b = before.players[who];
-    const a = after.players[who];
-    if (b === undefined || a === undefined) return false;
-    if (effectSig(b) === effectSig(a)) return false; // 被点到的人必须真的变了
-    const ch = fieldsChanged(b, a);
-    if (option !== 0 && option !== 4 && option !== 8 && ch.has('points')) return false;
-    if (option !== 4 && ch.has('bank')) return false;
-    if (option !== 0 && option !== 4 && option !== 8 && ch.has('cash')) return false;
-    // 「得一張卡片」是**唯一**会往手里加牌的 @source `p.cards = [...p.cards, id]`
-    if (option !== 6 && a.cards.length > b.cards.length) return false;
-    // 「變賣所有卡片」把牌**清空**、點券按標價全额入账
-    if (option === 0) {
-      if (a.cards.length !== 0) return false;
-      if (b.cards.length > 0 && a.points <= b.points) return false;
-      if (b.cards.length === 0 && a.points !== b.points) return false;
-    }
-    if (option === 8 && a.points < b.points) return false;
-    if (option === 4 && (a.moneyInBank < b.moneyInBank || a.cash !== 0)) return false;
-  }
-  return true;
-}
-
-/**
- * 这一组（option, targets）能不能解释这次 diff；能解释的话，
- * 它的「动作强度」有多大 —— 强度 0 表示**什么都没动**（例如手里没牌时的
- * 「變賣所有卡片」，那一条谁都能匹配上，不能当证据）。
- */
-function matchStrength(
-  option: number,
-  targets: readonly number[],
-  before: GameState,
-  after: GameState,
-): number {
-  if (!matchesEffect(option, targets, before, after)) return 0;
-  let strength = 0;
-  for (const who of targets) {
-    const b = before.players[who];
-    const a = after.players[who];
-    if (b === undefined || a === undefined) continue;
-    if (b.cards.join(',') !== a.cards.join(',')) strength += 8;
-    if (b.cash !== a.cash) strength += 4;
-    if (b.moneyInBank !== a.moneyInBank) strength += 4;
-    if (b.points !== a.points) strength += 4;
-    if (b.direction !== a.direction) strength += 2;
-    if (b.trafficMethod !== a.trafficMethod) strength += 2;
-    if (b.blocking.stopping !== a.blocking.stopping) strength += 2;
-    if (b.blocking.inPrison !== a.blocking.inPrison) strength += 2;
-    if (b.blocking.inHospital !== a.blocking.inHospital) strength += 2;
-    if (b.godInfo !== a.godInfo) strength += 2;
-  }
-  return strength;
-}
-
-/**
- * 反推这次魔法屋：先确认「落点就在魔法屋上」，再把
- * `before → after` 与 `magicTargets` / 十个效果一一对上。
- *
- * ⚠️ **取证据最强的那一组**，不是第一个对上的：
- *   「變賣所有卡片」在手里没牌时**什么都不改**，`matchesEffect` 会让它
- *   匹配任何 diff。所以强度为 0 的组合只能当兜底。
- *
- * @returns 解不出来（不是魔法屋）返回 `null`；是魔法屋但 diff 对不上任何
- *   组合时返回 `option: -1` 的一份空结果（照样起播）。见 deviations。
- */
-export function magicView(before: GameState, after: GameState, topo: MapTopology): MagicView | null {
-  if (!onMagicHouse(before, topo)) return null;
-  const caster = before.currentPlayer;
-  const players = before.players.length;
-
-  let best: MagicView | null = null;
-  let bestStrength = 0;
-
-  for (let criterion = 0; criterion < MAGIC_TARGET_NAMES.length; criterion++) {
-    const targets = magicTargetsFor(criterion, before, topo);
-    if (targets.length === 0) continue;
-    const kept = targets.filter((t) => t >= 0 && t < players);
-    for (const option of MAGIC_REACHABLE_OPTIONS) {
-      const strength = matchStrength(option, targets, before, after);
-      if (strength <= bestStrength) continue;
-      bestStrength = strength;
-      best = {
-        caster,
-        option,
-        name: MAGIC_HOUSE_OPTIONS[option]?.name ?? '',
-        criterion,
-        criterionName: MAGIC_TARGET_NAMES[criterion] ?? '',
-        targets: kept,
-      };
-      if (strength >= 8) return best; // 已经抓到「手牌变了 / 实体变了」这一档
-    }
-  }
-  if (best !== null) return best;
-
-  // 兜底：diff 解释不通（例如随机抽卡那几步）——仍然起播，只不知道落点
-  return {
-    caster,
-    option: -1,
-    name: '',
-    criterion: -1,
-    criterionName: '',
-    targets: [],
-  };
-}
-
-// ============================================================
-//  目标筛选（与 core 的 `magicTargets` 同一套判据，这里要「先算再比」）
-// ============================================================
-
-function landCounts(state: GameState, topo: MapTopology): { land: number[]; house: number[] } {
-  const land = new Array<number>(state.players.length).fill(0);
-  const house = new Array<number>(state.players.length).fill(0);
-  for (const l of allEffectiveLands(state, topo)) {
-    if (l.owner === 0) continue;
-    const i = l.owner - 1;
-    if (i < 0 || i >= land.length) continue;
-    land[i] = (land[i] ?? 0) + 1;
-    if (l.level !== 0) house[i] = (house[i] ?? 0) + 1;
-  }
-  for (const f of allEffectiveFacilities(state, topo)) {
-    if (f.owner === 0) continue;
-    const i = f.owner - 1;
-    if (i < 0 || i >= land.length) continue;
-    land[i] = (land[i] ?? 0) + 1;
-    if (f.level !== 0) house[i] = (house[i] ?? 0) + 1;
-  }
-  return { land, house };
-}
-
-/** @source `places/magic-house.ts` 的 `magicTargets`（另见 doc 表）*/
-function magicTargetsFor(criterion: number, state: GameState, topo: MapTopology): number[] {
-  const ps = state.players;
-  const alive = (p: Player): boolean => p.whoPlays !== 0;
-  const counts = criterion === 1 || criterion === 2 ? landCounts(state, topo) : null;
-
-  const maxBy = (metric: (p: Player) => number, skipZero: boolean): number[] => {
-    let best = 0;
-    let out: number[] = [];
-    for (const p of ps) {
-      if (!alive(p)) continue;
-      const v = metric(p);
-      if (skipZero && v === 0) continue;
-      if (out.length === 0 || v > best) {
-        best = v;
-        out = [p.index];
-      } else if (v === best) {
-        out.push(p.index);
-      }
-    }
-    return out;
-  };
-  const allWhere = (pred: (p: Player) => boolean): number[] =>
-    ps.filter((p) => alive(p) && pred(p)).map((p) => p.index);
-
-  let pick: number[];
-  switch (criterion) {
-    case 0:
-      pick = maxBy((p) => wealthOf(state, topo, p.index), false);
-      break;
-    case 1:
-      pick = maxBy((p) => counts?.land[p.index] ?? 0, true);
-      break;
-    case 2:
-      pick = maxBy((p) => counts?.house[p.index] ?? 0, true);
-      break;
-    case 3:
-      pick = maxBy((p) => p.cash, true);
-      break;
-    case 4:
-      pick = maxBy((p) => p.moneyInBank, true);
-      break;
-    case 5:
-      pick = maxBy((p) => p.points, true);
-      break;
-    case 6:
-      pick = allWhere((p) => (p.trafficMethod & 3) === 0);
-      break;
-    case 7:
-      pick = allWhere((p) => (p.trafficMethod & 3) === 1);
-      break;
-    case 8:
-      pick = allWhere((p) => (p.trafficMethod & 3) === 2);
-      break;
-    case 9:
-      pick = allWhere((p) => p.godInfo !== 0);
-      break;
-    case 10:
-      pick = allWhere((p) => p.isMale);
-      break;
-    case 11:
-      pick = allWhere((p) => !p.isMale);
-      break;
-    default:
-      pick = [];
-      break;
-  }
-  return pick.slice(0, 4);
-}
-
-/**
- * 身家的**近似**（criterion 0 用）。
- *
- * 地产那部分是照 `rules/wealth.ts` 的 `calculatePlayerWealth` 抄的
- * （住宅 `landPrice + level×housePrice`、連鎖店 `landPrice + housePrice`、
- * 設施 `level×housePrice + landPrice`）。
- *
- * ⚠️ 少了**股票**那一项：core 的 `runMagicHouse` 会调 `valuationsOf(...)`
- *   拿当天行情算持股，UI 这层拿不到行情，故只有在「財產最多的人」这一条上
- *   可能与 core 分歧。见 `docs/deviations/T-037.md`。
- */
-function wealthOf(state: GameState, topo: MapTopology, playerIndex: number): number {
-  const p = state.players[playerIndex];
-  if (p === undefined) return 0;
-  const ownerId = playerIndex + 1;
-  let total = p.cash + p.moneyInBank - p.loan;
-
-  for (const l of allEffectiveLands(state, topo)) {
-    if (l.owner !== ownerId) continue;
-    total += l.landPrice;
-    // @source loc_00423a2d：連鎖店固定加一份房价、不乘等级
-    if (l.type !== LAND_TYPE_HOUSE) total += l.housePrice;
-    else if (l.level !== 0) total += l.level * l.housePrice;
-  }
-  // @source loc_00423a96
-  for (const f of allEffectiveFacilities(state, topo)) {
-    if (f.owner !== ownerId) continue;
-    total += f.level * f.housePrice + f.landPrice;
-  }
-  return total;
 }
 
 // ============================================================
@@ -1192,60 +860,24 @@ function wealthOf(state: GameState, topo: MapTopology, playerIndex: number): num
 
 /** 这一帧要画成什么样 */
 export interface MagicDraw {
-  view: MagicView;
-  /** 这一刻正指着哪个功能（转盘过程中会变）*/
-  pointer: number;
+  /** 窗口状态 `[0x48c3a2]`（1..8）*/
+  state: number;
+  /** 抽中的条件号（状态 ≥ 5 才画它的图标）*/
+  criterion: number;
+  /** 点定的效果号（状态 8；−1 = 不知道）*/
+  chosen: number;
   /**
    * 女巫这一帧要不要叠一张「说话」的嘴（原版 `rand()&1`，@source 0x00432ad3）。
-   *
-   * ★ 2026-09-16 订正：原版这一支叠的是**嘴**（图 5，60×21，落 (0x11e,0xdc)），
-   *   不是「把整只女巫换成头部特写」。先前换成图 9/10（142×120 的悬停弹窗框）
-   *   ⇒ 女巫被红框盖掉，屏上剩两只空框（B-2 症状③）。
+   * 只在图 1（抱水晶球）那一拍有意义。
    */
   witchBlink: boolean;
-  /**
-   * 现在演到第几拍（1 / 2）—— 照原版的状态号切：
-   *
-   * | beat | 原版状态 | 屏上是什么 |
-   * |---|---|---|
-   * | 1 | 1..7 | **图 1**（抱水晶球，落 (241,140)）+ 闭眼贴片 + 嘴 + 抽中的**条件图标** |
-   * | 2 | 8（点下去之后）| **图 2**（抬手，落 (182,142)，把图 1 整块盖住）+ 条件图标 |
-   *
-   * @source 0x00432543 / 0x00432791（图 1）· 0x00432f60（图 2）。**两张不同时画**。
-   */
-  beat: 1 | 2;
-  /**
-   * 女巫**闭眼**（图 3）要不要画 —— 原版 `loc_00432951` 是**状态 3→4 那一下**
-   * 贴的，之后一直在（状态 4 再叠眼睑/嘴）。
-   *
-   * ⇒ `greet`（入口三句）时为 false；`roll` / `criterion` / `spin` / `hold` 为 true。
-   * @source 0x00432951（见 `MAGIC_EYES_AT` 的长注释）
-   */
-  eyesShut: boolean;
-  /** 鼠标正指着的扇区（原版 `[0x48c3a1]`），0 = 不在任何扇区上 */
+  /** 鼠标正指着的扇区（原版 `[0x48c3a1]`，只在状态 7 更新），0 = 不在任何扇区上 */
   hover: number;
   /**
-   * 一圈里**这一帧要高亮**的那一格（功能号 0..11）—— `-1` = 不高亮。
+   * 字框里这一句 —— `null` = **框已收起**（不画框）。
    *
-   * ★ 原版只贴**悬停的那一格**（`0x00432cbe` 起那一支，状态 7）；其余十一格
-   *   本来就画在底图 `#18` 图 0 里，不需要重画。
-   *   本模块把**转盘指针**也算进来（那是本引擎给「回放」补的可视化，见 deviations）。
-   */
-  ring: number;
-  /**
-   * 入口台詞那一拍：`null` = 不在这一拍；数字 = 正说第几句（`MAGIC_GREET_LINES`）。
-   *
-   * ★ 台詞期间**只画底图 + 女巫 + 那只字框**（原版这时五芒星还没铺）——
-   *   所以 `drawMagicScreen` 见到它就先画「铺场那一拍」再画字框、然后 return。
-   */
-  greet: number | null;
-  /**
-   * 这一刻字框里该写什么 —— `null` = 不画字框。
-   *
-   * ★ 字框（图 8 落 (320,384)）是**开屏那一次**由 `fcn_0044ec30` 设好、整屏期间一直在的，
-   *   里面的话随状态换：入口三句 → 抽中的条件名 → `#0040嘿～輪到你了！` →
-   *   `#0041天靈靈地靈靈～`。本字段就是「这一拍写哪一句」（`MAGIC_GREET_LINES` 的原文，
-   *   带 `#NNNN` 前缀，画的时候由 `magicGreetText` 去掉）。
+   * ★ 字框不是整屏一直在：`fcn_0044ee18` 到期就把框底下那块贴回去（0x0044eeb4）。
+   *   摇签（状态 4）与等玩家点（状态 7）时它都是 `null` —— 最下面那三格才露得出来。
    */
   boxLine: string | null;
 }
@@ -1258,58 +890,34 @@ export interface MagicDraw {
  */
 export const MAGIC_HOVER = { color: '#ffe080', width: 2, radius: 34 } as const;
 
-/** 字框里那行字的字号 @source 0x00432dfc `push 0xe` */
+/** 弹窗里功能名的字号 @source 0x00432df0 `push 0xe / call 0x44f9d8` */
 export const MAGIC_FONT_SIZE = 0x0e;
-/** 字色 / 描边 @source 0x00432df7 `push 0xe0e0e0` / `push 0x202020` */
+/** 字色 / 描边 @source 0x00432de9 `push 0xe0e0e0` / `push 0x202020` */
 export const MAGIC_TEXT = { fill: '#e0e0e0', stroke: '#202020' } as const;
 
 const MAGIC_FONT = FONT_FAMILY;
 
 /**
- * 弹窗里那两行字画在哪。
- *
- * @source 原版把功能名写在**弹窗框那一点**：`draw_text(字, x, y, flag 2)`
- *   （VA 0x00432e06 起），而 x/y 取 `[0x47570c/0x475710 + 16×功能号]`，
- *   与弹窗框（图 6/7/9/10 里的某一张）**同点** ⇒ 就是 `magicPopupAt(option)`。
- *
- * ★★ 2026-09-16 订正（外部审查 B-2 症状①）：先前固定用五芒星中心 (320,238)，
- *   而框在 (140,241) 附近 —— 字整个落在框外。**字必须跟着落点的功能走。**
- *   ★ 2026-09 再订正：落点也不是**图标**位置（`magicIconAt`）—— 图标在
- *   `MAGIC_RING_AT` 那十二个中线上（图 0 里就画着），框与字在记录表的 x/y。
+ * 弹窗里功能名画在哪 —— 与弹窗框**同点**（记录表的 x/y，`magicPopupAt`）。
+ * @source 0x00432e12..0x00432e29（`draw_text(名称, x, y, 2)`，x/y = `[0x47570c/0x475710 + 16k]`）
  */
 export function magicTextAt(option: number): { x: number; y: number } {
   return option >= 0 && option < MAGIC_SECTOR_COUNT ? magicPopupAt(option) : MAGIC_CENTER;
 }
 
-/** 两行字之间的行距 */
-export const MAGIC_TEXT_LINE_H = 22;
-
 /**
  * **条件图标**的图号基数 @source `loc_00432719` 尾：`lea edx, [eax + 0xb]`
  *   ⇒ 抽中的第 `criterion` 个条件的图 = 图 `criterion + 11`（11..22）。
- *   ⚠️ 是**条件号**（`[0x48c3a3]` = 目标转盘），不是效果号 —— 见
- *   `magicTargetIconChunk` 与 `MAGIC_RESULT_ICON_AT`。
  */
 export const MAGIC_RESULT_ICON_BASE = 0x0b;
 
 /**
- * 魔法屋放的三条音效。
+ * 这扇窗唯一的音：状态 7 悬停到 1..12 格。
  *
- * | 常量 | 号 | 出处 |
- * |---|---|---|
- * | `MAGIC_SOUND_RESULT` | **39 (0x27)** | `_rich4_play_sound_effect(0x27, &0x4757e7)` @source 0x00432e42；`rich4.asm:40970` 的 `ref_004757e7: db 0x27` 是结构首字节 = 音效号 |
- * | `MAGIC_SOUND_HOVER` | 0 | `_rich4_play_sound_effect(0, &0x48231a)` @source 0x00433531（`rich4.asm:50864` `db 0x00`）|
- * | `MAGIC_SOUND_PRESS` | 1 | `_rich4_play_sound_effect(1, &0x482322)` @source 0x0043365c（`rich4.asm:50871` `db 0x01`）|
- *
- * ★ 同一模块还有第 4 号（`&0x482332` @source 0x0043376b，取消那一路）；
- *   本引擎这一屏是**回放**、没有取消动作，故不放。
- *   ⚠️ `T-037.md` 的 D-MAGIC-5 先前写「16」并说「`SOUND_IDS` 里没有这一条」——
- *   两条都不成立：号是 **39**，而 `SOUND_IDS` 只是约十条**已具名**的映射，
- *   不是 `Effect.mkf` 的全集（`assets-clean/manifest.json` 的 Effect 资源是 0..114）。
+ * @source 0x00432e40 `push 0 / push 0x4757e7 / call _rich4_play_sound_effect`；
+ *   `0x4757e7` 首字节 = **0x27 = 39**（入口 `0x00433828 push 0x4757e7 / call 0x454176` 载入）。
  */
-export const MAGIC_SOUND_RESULT = 0x27;
-export const MAGIC_SOUND_HOVER = 0;
-export const MAGIC_SOUND_PRESS = 1;
+export const MAGIC_SOUND_HOVER = 0x27;
 
 /** 锚点落点绘制 @source `fcn_00456418`（`to_left = x − src->x`）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
@@ -1320,13 +928,12 @@ function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number
 /**
  * 哪几张图要**抠掉纯黑**。
  *
- * ★ 原版有两支贴图函数，**逐图挑**，判定只能照调用点抄，不能靠「看黑多不多」：
+ * ★ 原版有两支贴图函数，**逐图挑**，判定只能照调用点抄：
  *
  * | 函数 | 行为 | @source |
  * |---|---|---|
- * | `fcn_004563f5` | **不透明**拷贝（`rep movsd`，无判断）→ 0x455b3a | 0x004563f5 |
- * | `fcn_00456418` | **抠黑**：源像素 `or ax,ax / je` 为 0 就跳过 → 0x455c52 | 0x00456418 |
- * | `fcn_0045643d` | 带一个矩形参数的拷贝 | 0x0045643d |
+ * | `fcn_004563f5` | **不透明**拷贝 | 0x004563f5 |
+ * | `fcn_00456418` | **抠黑**：源像素为 0 就跳过 | 0x00456418 |
  *
  * | 图 | 原版走哪支 | 抠黑 | 出处 |
  * |---|---|---|---|
@@ -1335,36 +942,18 @@ function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number
  * | **2 女巫（抬手）** | **`fcn_00456418`** | **✓** | 0x00432f72 |
  * | 3/4/5 脸上的贴片 | `fcn_004563f5`（不透明） | ✗ | 0x004329a7 / 0x00432902 / 0x00432b1a |
  * | 6/7/9/10 锦缎框 | `fcn_00456418` | ✓ | 0x00432de6 |
- * | 8 中央木牌（字框） | `fcn_004563f5` | ✗ | 0x0043253b（`fcn_0044ec30` 里那支）|
+ * | 8 中央木牌（字框） | `fcn_00456418`（`fcn_0044ecb6` 里 0x0044ed45）| ✗（沿用）| 只有 2% 黑、都在边角，抠不抠看不出差别；本模块沿用不抠 |
  * | **11..22 条件图标** | `fcn_00456418` | ✓ | 0x004327c9 |
  * | **23..34 功能高亮图标** | `fcn_00456418` | ✓ | 0x00432d0e |
- *
- * ⚠️ **图 2 必须抠黑**：它是 284×210、43% 纯黑背景的精灵。
- *   不抠就是一块**盖住右下半个五芒星的黑矩形**（浏览器里已复现）。
- *   本模块第一版那张表漏了 2/9/10 与十二个图标 —— 那是按「哪些像框」猜的，
- *   不是照调用点抄的，现按上表订正。
- *
- * ⚠️ **11..22（条件图标）也必须抠黑** —— 原版那两处（0x004327c9 / 0x00432fab）
- *   走的都是 `fcn_00456418`。先前完全没把它们算进来（那时这一批图被当成
- *   「每个功能两张」里的第一张）。
- *
- * ⚠️ 图 8（中央木牌）走的是**不透明**那支：它只有 2% 黑、且黑都在边角，
- *   抠不抠都看不出差别 —— 这里跟原版一样**不抠**。
  */
 export const MAGIC_KEYED = new Set<number>([
   MAGIC_CHUNK.witchIntro,
   MAGIC_CHUNK.witchIdle,
   MAGIC_CHUNK.frame,
   MAGIC_CHUNK.frameAlt,
-  // ★ 图 9/10 是**悬停弹窗框**（142×120），不是女巫的头 —— 名字见 `MAGIC_CHUNK`
   MAGIC_CHUNK.hoverFrame,
   MAGIC_CHUNK.hoverFrameAlt,
-  // ★ 图 3/4/5 **不进**抠黑表：原版三处贴片（眼睛/合嘴/张嘴）都走
-  //   `fcn_004563f5`（**不透明**）：0x004329a7、0x00432902、0x00432b1a。
-  //   先前把它们当「文字长条」抠黑，会把脸上的贴片抠出黑洞。
-  // 条件图标：图 11..22（`magicTargetIconChunk` 就是这个区间）
   ...Array.from({ length: 12 }, (_, i) => MAGIC_CHUNK.targetIconFirst + i),
-  // 功能高亮图标：图 23..34（`magicIconChunk` 就是这个区间）
   ...Array.from({ length: 12 }, (_, i) => MAGIC_CHUNK.ringFirst + i),
 ]);
 
@@ -1374,69 +963,30 @@ function magicSprite(sprite: MagicSprite, chunk: number): Sprite | null {
 }
 
 /**
- * 第 `option` 个功能的**高亮**图标 @source 0x00432d0e（`fcn_00456418`，抠黑）。
- * 图 23..34 一张不多一张不少 —— 原版悬停只贴这一张，没有「第二张」。
- */
-function magicIconSprite(sprite: MagicSprite, option: number): Sprite | null {
-  return magicSprite(sprite, magicIconChunk(option));
-}
-
-/** 抽中的第 `criterion` 个条件的图标 @source 0x004327c9（同样是抠黑那支）*/
-function magicTargetIconSprite(sprite: MagicSprite, criterion: number): Sprite | null {
-  return magicSprite(sprite, magicTargetIconChunk(criterion));
-}
-
-/**
  * 台詞串去掉 `#NNNN` 语音前缀后的**可见文字**（`\n` 保留，画的时候拆行）。
- *
- * ★★ 2026-09 **纯函数化**：先前这里顺手 `playVoiceCode(line)`（= 既播又剥），
- *   而 `magicBoxText` 每帧都调它、`drawMagicMessageBox` 又先把结果算一遍
- *   ⇒ 一句台词在 2 秒里被请求 **126 次**（实测），且一次绘制请求 **两遍**。
- *   现在绘制链**只剥不播**；语音改在**换词那一拍**请求一次
- *   （`requestVoiceLine`，见 `magicScreen.event` / `magicScreen.tick`）。
+ * ★ 纯函数：绘制链**只剥不播**，语音在换词那一拍请求一次（`requestVoiceLine`）。
  */
 export function magicGreetText(line: string): string {
   return stripVoiceCode(line);
 }
 
 /**
- * 同一句台詞**再请求一次**的最小间隔（毫秒）。
- *
- * ★ 只用来兜一件事：`Speaking.mkf` 是 **57 MB 的懒加载档案**（`main.ts` 的
- *   `ensureSpeakingArchive()` 由语音出口第一次被调用时才去 fetch），
- *   所以**进屏那一瞬间**请求的 `#0037` 很可能被 `SoundPlayer` 悄悄丢掉
- *   （档案还没到货）—— 用户报的「第一次进魔法屋没有女巫语音」。
- *   这里按这个间隔**补问一次**（同一句最多问两次：换词那一次 + 一次兜底），
- *   档案到货的那一次就能响。
- *
- * ⚠️ 与 `audio.ts` 的 `VOICE_RETRIGGER_GAP_MS` **同值**（那边是 sink 侧的第二道
- *   闸门：同一句还在响就不重起）。这里不 import 那个模块 —— 整屏不该被拖进
- *   `SoundPlayer` / `MkfaArchive` 的依赖里。
+ * 同一句台詞**再请求一次**的最小间隔（毫秒）—— 兜 `Speaking.mkf`（57 MB 懒加载）
+ * 进屏那一瞬间还没到货、第一次请求被丢掉的情形。与 `audio.ts` 的
+ * `VOICE_RETRIGGER_GAP_MS` 同值。
  */
 export const MAGIC_VOICE_RETRY_MS = 500;
+/** 同一句最多请求几次（换词一次 + 兜底一次）*/
+export const MAGIC_VOICE_MAX_ASKS = 2;
 
 /** 上一次**真正送进语音出口**的那一句，与那一刻（`null` = 还没送过）*/
 let voiceLine: string | null = null;
 let voiceAt = 0;
-/**
- * 这一句已经问过几次。**最多 `MAGIC_VOICE_MAX_ASKS` 次**：
- * 换词那一次 + 一次兜底（懒加载的 `Speaking.mkf` 可能还没到货）。
- * 不能无限补问 —— 那等于把「每帧请求」换个样子搬回来。
- */
 let voiceAsks = 0;
-
-/** 同一句最多请求几次（换词一次 + 兜底一次）*/
-export const MAGIC_VOICE_MAX_ASKS = 2;
 
 /**
  * 把「字框里这一拍的话」送进语音出口（`playVoiceCode` 顺手播 `#NNNN`）。
- *
- * 调用点**只有三处**，全在状态推进上：`event`（起播）、`tick`（换词 / 补问）、
- * `down`（跳过开场白）。**绘制链一处都不许调** —— 见 `MAGIC_VOICE_RETRY_MS`。
- *
- * @param now 现在的时刻（`env.now`）—— 同一句按 `MAGIC_VOICE_RETRY_MS` 去抖、
- *   且最多 `MAGIC_VOICE_MAX_ASKS` 次
- * @returns 这一次是否真的发起了请求
+ * 调用点只在状态推进上（`event` / `tick` / `down`）—— **绘制链一处都不许调**。
  */
 function requestVoiceLine(line: string | null, now: number): boolean {
   if (line === null || line === '') return false;
@@ -1454,8 +1004,7 @@ function requestVoiceLine(line: string | null, now: number): boolean {
 }
 
 /**
- * 入口台詞那只字框（`fcn_0044ecb6`）—— 字画在**盒心 +(dx,dy)**、每行正中、
- * 行距 `MAGIC_MSG_LINE_H`，字色/描边由调用方给（本屏是 `#e0e0e0` / `#202020`）。
+ * 字框里的字（`fcn_0044ecb6`）—— 画在**盒心 +(dx,dy)**、每行正中、行距 `MAGIC_MSG_LINE_H`。
  */
 export function magicBoxText(
   ctx: CanvasRenderingContext2D,
@@ -1502,32 +1051,9 @@ function magicText(
 }
 
 /**
- * 画整屏。
+ * 画字框 + 里面这一句（`fcn_0044ec30` 设框、`fcn_0044ecb6` 挂字）。
  *
- * 顺序照原版（`fcn_00432511` 铺场 → `loc_00432719` 抽中条件 → `loc_00432f60` 点下去）：
- * **底图(0) → 悬停弹窗框 → 弹窗里的字 → 女巫（按 beat 二选一）→ 脸上的贴片 →
- * 条件图标 → 一圈里高亮的那一格 → 中央字框**。
- *
- * ★★ 2026-09 按真值重订（玩家报的「2 个女巫 / 排版混乱」）：
- *   ① **两张女巫不同时画**：beat 1 只画图 1（(241,140)），beat 2 只画图 2（(182,142)）。
- *      先前**同一拍画两张**，而且图 1 的 x/y 写反成 (140,241) ⇒ 屏上并排两只女巫。
- *   ② **一圈的图标只在 `d.ring` 那一格画**（图 23..34，落 `MAGIC_RING_AT`）。
- *      其余十一格本来就画在底图里；先前把十二张全画在**弹窗位置**上（散满全屏）。
- *   ③ **条件图标取 `criterion + 11`**（0x004327aa 读的是 `[0x48c3a3]` = 条件号），
- *      落 (326,296)；先前按 `option + 11` 画。
- *   ④ **删掉「第二拍压一张 280×173 结果条」那一笔** —— 那是把 60×18 的合嘴贴片
- *      （图 4，落 (286,220)）误读成图 8，原版没有这张框。
- *   ⑤ beat 2（= 状态 8）**不叠闭眼/嘴的贴片**：图 2 把 (182,142)+(284×210) 整块盖住，
- *      闭眼贴片（画在 (286,188)）在它底下 —— 原版那一拍只贴图 2 + 条件图标。
- *
- * @source `fcn_00432511`（铺场）· `loc_00432719`（女巫 + 条件图标）· `loc_00432951`（闭眼）·
- *   `loc_00432894`（合嘴）· `loc_00432b00`（张嘴）· `loc_00432e8e`/`0x00432f60`（抬手那张）·
- *   `0x00432cbe..0x00432e29`（悬停：高亮图标 + 弹窗框 + 名字）
- */
-/**
- * 画那只**一直在**的字框 + 里面这一拍的话（`fcn_0044ec30` 设框、`fcn_0044ecb6` 写字）。
- *
- * @param line `null` = 不画（理论上不会：开屏那一次就把框设好了）
+ * @param line `null` = **框已收起**，什么都不画（`fcn_0044ee18` 到期把底下那块贴回去了）
  */
 export function drawMagicMessageBox(
   ctx: CanvasRenderingContext2D,
@@ -1535,117 +1061,77 @@ export function drawMagicMessageBox(
   line: string | null,
 ): void {
   if (line === null) return;
-  drawAnchored(ctx, magicSprite(sprite, MAGIC_MSG_BOX.chunk), MAGIC_MSG_BOX.x, MAGIC_MSG_BOX.y);
   const box = magicSprite(sprite, MAGIC_MSG_BOX.chunk);
+  drawAnchored(ctx, box, MAGIC_MSG_BOX.x, MAGIC_MSG_BOX.y);
   const cx = MAGIC_MSG_BOX.x - (box?.anchorX ?? 0) + (box?.width ?? 280) / 2 + MAGIC_MSG_BOX.dx;
   const cy = MAGIC_MSG_BOX.y - (box?.anchorY ?? 0) + (box?.height ?? 173) / 2 + MAGIC_MSG_BOX.dy;
-  magicBoxText(
-    ctx,
-    line, // ★ 只剥不播（`magicBoxText` 里那一次 `magicGreetText` 就是唯一的剥）
-    cx,
-    cy,
-    MAGIC_MSG_BOX.fill,
-    MAGIC_MSG_BOX.outline,
-    MAGIC_MSG_BOX.outlineWidth,
-  );
+  magicBoxText(ctx, line, cx, cy, MAGIC_MSG_BOX.fill, MAGIC_MSG_BOX.outline, MAGIC_MSG_BOX.outlineWidth);
 }
 
+/** 一圈里的高亮图标（兜底描圈）*/
+function drawRingIcon(ctx: CanvasRenderingContext2D, sprite: MagicSprite, option: number): void {
+  const at = magicIconAt(option);
+  const s = magicSprite(sprite, magicIconChunk(option));
+  drawAnchored(ctx, s, at.x, at.y);
+  if (s === null) {
+    ctx.save();
+    ctx.lineWidth = MAGIC_HOVER.width;
+    ctx.strokeStyle = MAGIC_HOVER.color;
+    ctx.beginPath();
+    ctx.arc(at.x, at.y, MAGIC_HOVER.radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/**
+ * 画整屏 —— 按状态叠，顺序照原版各拍的贴图先后：
+ *
+ * | 状态 | 屏上有什么 | @source |
+ * |---|---|---|
+ * | 1..3 | 底图 + 图 1（抱水晶球）+ 字框（开场白）| `fcn_00432511`、`loc_004326b9` |
+ * | 4 | + **闭眼**贴片（图 3）；字框已收起 | `loc_00432951` |
+ * | 5..7 | 图 1 **重贴**（眼睛又睁开）+ 条件图标（图 `条件+11` 落 (326,296)）| `loc_00432719` |
+ * | 7 | + 悬停那一格的高亮图标 + 锦缎框 + 功能名（字框收起）| `0x00432cbe..0x00432e29` |
+ * | 8 | 悬停弹窗还原掉；**图 2（抬手）**盖在上面 + 条件图标 + 字框 `#0041` | `loc_00432e8e` |
+ */
 export function drawMagicScreen(
   ctx: CanvasRenderingContext2D,
   sprite: MagicSprite,
   d: MagicDraw,
 ): void {
   drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.bg), MAGIC_BG_AT.x, MAGIC_BG_AT.y);
+  const showCriterion = d.state >= 5 && d.criterion >= 0 && d.criterion < MAGIC_TARGET_NAMES.length;
 
-  // ── 入口台詞那三拍：底图 + **图 1**（抱水晶球）+ 字框（五芒星还没铺）──
-  //    @source `loc_00432647`（铺场 `fcn_00432511`）→ `loc_004326b9`（第一句）
-  if (d.greet !== null) {
-    drawAnchored(
-      ctx,
-      magicSprite(sprite, MAGIC_CHUNK.witchIntro),
-      MAGIC_WITCH_BALL_AT.x,
-      MAGIC_WITCH_BALL_AT.y,
-    );
-    drawMagicMessageBox(ctx, sprite, d.boxLine);
-    return;
-  }
-
-  const pointerOption = d.pointer >= 0 && d.pointer < MAGIC_SECTOR_COUNT ? d.pointer : -1;
-  // 结果落点（回放解不出时退回转盘指针那一格）
-  const option = d.view.option >= 0 ? d.view.option : pointerOption;
-  // 鼠标指着的那一格（原版 `[0x48c3a1]`）—— 弹窗、字、高亮图都跟着它
-  const hoveredOption = optionOfSector(d.hover);
-
-  // ── 弹窗框 + 功能名（**同点**：记录表的 x/y）→ 女巫压在上面 ──
-  const popup = hoveredOption ?? option;
-  if (popup >= 0) {
-    const at = magicFrameAt(popup);
-    drawAnchored(ctx, magicSprite(sprite, magicFrameChunk(popup)), at.x, at.y);
-    const who = d.view.targets.map((i) => `P${i + 1}`).join(' ');
-    const line =
-      hoveredOption !== null
-        ? (MAGIC_HOUSE_OPTIONS[hoveredOption]?.name ?? '')
-        : `${d.view.name}${who === '' ? '' : ` → ${who}`}`;
-    if (line !== '') magicText(ctx, line, at.x, at.y, MAGIC_FONT_SIZE + 3);
-    if (hoveredOption === null && d.view.criterionName !== '') {
-      magicText(ctx, d.view.criterionName, at.x, at.y + MAGIC_TEXT_LINE_H, MAGIC_FONT_SIZE);
-    }
-  }
-
-  // ── 女巫：beat 1 = 图 1 在 (241,140)；beat 2 = 图 2 在 (182,142)（它把图 1 盖住）──
-  if (d.beat === 2) {
-    drawAnchored(
-      ctx,
-      magicSprite(sprite, MAGIC_CHUNK.witchIdle),
-      MAGIC_WITCH_HAND_AT.x,
-      MAGIC_WITCH_HAND_AT.y,
-    );
+  if (d.state === 8) {
+    // 选中那一格的高亮是状态 7 悬停时贴的，点下去不还原 ⇒ 仍在，压在抬手女巫底下
+    if (d.chosen >= 0 && d.chosen < MAGIC_SECTOR_COUNT) drawRingIcon(ctx, sprite, d.chosen);
+    drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.witchIdle), MAGIC_WITCH_HAND_AT.x, MAGIC_WITCH_HAND_AT.y);
   } else {
-    drawAnchored(
-      ctx,
-      magicSprite(sprite, MAGIC_CHUNK.witchIntro),
-      MAGIC_WITCH_BALL_AT.x,
-      MAGIC_WITCH_BALL_AT.y,
-    );
-    // ★ **闭眼**贴片（图 3，60×35）—— 原版**状态 3→4 那一下**贴的，之后一直在。
-    //   入口三句那几拍还没有（`greet` 那一路上面就 return 了），beat 2 被图 2 盖住。
-    if (d.eyesShut) {
+    drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.witchIntro), MAGIC_WITCH_BALL_AT.x, MAGIC_WITCH_BALL_AT.y);
+    // ★ 闭眼只在摇签那一拍：`loc_00432719` 亮条件时把图 1 整张**重贴**（0x00432791），眼睛又睁开
+    if (d.state === 4) {
       drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.eyesShut), MAGIC_EYES_AT.x, MAGIC_EYES_AT.y);
     }
-    // 「说话」那一拍叠一张嘴（图 5，60×21）—— 不是换整只女巫
     if (d.witchBlink) {
       drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.mouthTalk), MAGIC_MOUTH_AT.x, MAGIC_MOUTH_AT.y);
     }
   }
 
-  // ── 抽中的**条件**图标：图 `criterion + 11` 落 (326,296) ──
-  if (d.view.criterion >= 0 && d.view.criterion < MAGIC_TARGET_NAMES.length) {
-    drawAnchored(
-      ctx,
-      magicTargetIconSprite(sprite, d.view.criterion),
-      MAGIC_RESULT_ICON_AT.x,
-      MAGIC_RESULT_ICON_AT.y,
-    );
+  if (showCriterion) {
+    drawAnchored(ctx, magicSprite(sprite, magicTargetIconChunk(d.criterion)), MAGIC_RESULT_ICON_AT.x, MAGIC_RESULT_ICON_AT.y);
   }
 
-  // ── 一圈里**高亮**的那一格（原版只贴这一张；其余十一格在底图里）──
-  if (d.ring >= 0 && d.ring < MAGIC_SECTOR_COUNT) {
-    const at = magicIconAt(d.ring);
-    const s = magicIconSprite(sprite, d.ring);
-    drawAnchored(ctx, s, at.x, at.y);
-    // ★ 兜底：高亮图取不到（离线 / HD 缺图）才描一圈，否则「指到谁」看不出
-    if (s === null) {
-      ctx.save();
-      ctx.lineWidth = MAGIC_HOVER.width;
-      ctx.strokeStyle = MAGIC_HOVER.color;
-      ctx.beginPath();
-      ctx.arc(at.x, at.y, MAGIC_HOVER.radius, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-    }
+  // ── 状态 7：悬停那一格 —— 高亮图标 → 锦缎框 → 功能名（0x00432d0e → 0x00432de6 → 0x00432e29）──
+  const hovered = d.state === 7 ? optionOfSector(d.hover) : null;
+  if (hovered !== null) {
+    drawRingIcon(ctx, sprite, hovered);
+    const at = magicFrameAt(hovered);
+    drawAnchored(ctx, magicSprite(sprite, magicFrameChunk(hovered)), at.x, at.y);
+    const name = MAGIC_HOUSE_OPTIONS[hovered]?.name ?? '';
+    if (name !== '') magicText(ctx, name, at.x, at.y, MAGIC_FONT_SIZE);
   }
 
-  // ★ 字框整屏一直在（原版 `fcn_0044ec30` 开屏设好之后没关过）
   drawMagicMessageBox(ctx, sprite, d.boxLine);
 }
 
@@ -1653,79 +1139,106 @@ export function drawMagicScreen(
 //  屏幕本体
 // ============================================================
 
-/** 现在正在播的那一段；`null` = 没在播 */
-let playback: MagicPlayback | null = null;
-/** 这一次回放的落点（解不出时 = -1）*/
-let view: MagicView | null = null;
-/** 鼠标现在指着的扇区（原版 `[0x48c3a1]`）*/
+/** 窗口；`null` = 没开 */
+let win: MagicWindow | null = null;
+/** 本机能不能替触发者点（单机热座 = 能；联机 = 只有他自己那一端能）*/
+let interactive = false;
+/** 这一趟已经被答掉了（本机点的已派出 / 别处答掉）—— 关窗时不再派 */
+let resolved = false;
+/** 触发者（`state.currentPlayer`）*/
+let caster = -1;
+/** 鼠标现在指着的扇区（原版 `[0x48c3a1]`，只在状态 7 更新）*/
 let hover = 0;
+/** 最近一次鼠标位置（状态 6 → 7 补发 `WM_MOUSEMOVE` 用，@source 0x00432a0f `GetCursorPos`）*/
+let lastMouse: { x: number; y: number } | null = null;
 
 /**
- * 调试 / 单测用：把整屏关掉（`playback` 是模块级的，跨用例会残留）。
- * 与 `resetStealPicker` / `resetEventBoxArt` 同一手法。
+ * 调试 / 单测用：把整屏关掉（模块级状态跨用例会残留）。
  */
 export function resetMagicScreen(): void {
-  playback = null;
-  view = null;
+  win = null;
+  interactive = false;
+  resolved = false;
+  caster = -1;
   hover = 0;
+  lastMouse = null;
   voiceLine = null;
   voiceAt = 0;
   voiceAsks = 0;
 }
 
+/** 窗口关掉：本机点定、还没被别处答掉 ⇒ 这时才把效果号交给 core（原版关窗后才 `call 0x431caa`）*/
+function closeWindow(env: UiScreenEnv): void {
+  const w = win;
+  const p = env.state.pending;
+  if (w !== null && interactive && !resolved && w.chosen >= 0 && p !== null && p.kind === 'magicHouse') {
+    env.dispatch({ type: 'magicHouse', option: w.chosen });
+  }
+  resetMagicScreen();
+  env.log('魔法屋：結束');
+  env.requestRender();
+}
+
+/** 别处答掉了：演「点完」那一拍（见 `magicWindowResolve`）*/
+function resolveFrom(after: GameState, before: GameState | null, now: number): void {
+  if (win === null) return;
+  resolved = true;
+  const ev = after.lastEvent;
+  // `before === null`（tick 兜底）时分不清 lastEvent 是不是这一趟的 ⇒ 不认
+  const fresh = before !== null && ev !== null && ev.kind === 'magicHouse' && ev !== before.lastEvent;
+  const option = win.chosen >= 0 ? win.chosen : fresh ? ev.id : -1;
+  win = magicWindowResolve(win, option, now);
+}
+
+/**
+ * 窗口停在状态 7（等真人点一格）—— 此刻它是**待决交互**而不是演出。
+ * `main.ts` 的 `blockingPresentation` 据此放行联机收件箱（别家那一端的答复 / 託管那一条）。
+ */
+export function magicAwaitingPick(): boolean {
+  return win !== null && win.state === 7;
+}
+
+/**
+ * 状态 7 里真人拿什么手势出去（`tools/soak-browser.js` 的真人路径用）：点「向後轉」那一格。
+ * 不在等点的那一拍 / 本机不能点 ⇒ `null`。
+ */
+export function magicHumanPickPoint(): { x: number; y: number } | null {
+  if (win === null || win.state !== 7 || !interactive) return null;
+  return magicRingAt(7);
+}
+
 export const magicScreen: UiScreen = {
   id: 'magic',
 
-  /** 演出期间接管整屏；播完自己关 @source 原版是 `[0x48c3a2] == 8` 就退出 */
-  active: () => playback !== null,
+  /** 窗口开着就接管整屏 */
+  active: () => win !== null,
 
   draw(env: UiScreenEnv): void {
-    const v = view;
-    if (v === null) return;
-    const pointer = playback?.spin.option ?? v.option;
-    const witchBlink = Math.random() < MAGIC_WITCH_BLINK_P;
-    // ★ 转盘还在转 = 第一拍；进了 hold = 第二拍（图 2 抬手那张 ＋ 条件图标）
-    const beat: 1 | 2 = playback !== null && playback.phase === 'hold' ? 2 : 1;
-    const phase = playback?.phase ?? null;
-    const greet = playback !== null && phase === 'greet' ? playback.greet : null;
-    // ★ 字框整屏一直在（`fcn_0044ec30` 开屏设好），里面的话按状态换：
-    //   greet 三句 → 抽中的条件名 → `#0040` → `#0041`（见 `MagicPhase` 那张表）
-    const boxLine = playback === null ? null : magicBoxLineFor(playback);
-    // ★ 一圈里高亮哪一格：鼠标指着的那一格优先（原版状态 7 的行为），
-    //   没有鼠标（回放）时跟着**转盘指针**走 —— 那是本引擎给回放补的可视化，
-    //   原版状态 6/7 不画转盘，见 deviations T-037 的 D-MAGIC-*。
-    const hoveredOption = optionOfSector(hover);
-    const ring =
-      hoveredOption ?? (playback !== null && phase === 'spin' && pointer >= 0 ? pointer : -1);
+    const w = win;
+    if (w === null) return;
     drawMagicScreen(env.stage, env.sprite, {
-      view: v,
-      pointer,
-      witchBlink,
-      beat,
-      // 闭眼：过了入口三句才有（`greet` 段原版还在入口，状态 3 才贴）
-      eyesShut: playback !== null && playback.phase !== 'greet',
+      state: w.state,
+      criterion: w.criterion,
+      chosen: w.chosen,
+      // 说话的嘴只在有话（字框挂着）且不是抬手那一拍（@source 0x00432871 `cmp state,8 / je`）
+      witchBlink: w.state !== 8 && w.line !== null && Math.random() < MAGIC_WITCH_BLINK_P,
       hover,
-      ring,
-      greet,
-      boxLine,
+      boxLine: w.line,
     });
   },
 
   /**
-   * 鼠标移动 —— 原版 `WM_MOUSEMOVE (0x200)` 那一支（VA 0x00432b50 → 0x00432cbe）：
-   * 查命中表拿到扇区、贴该格的**高亮图**、在记录表的 x/y 上开弹窗写功能名、响一声。
-   *
-   * ★ 契约（`ui-screen.ts` 第 23 行）说「要重画就自己 `env.requestRender()`」——
-   *   先前这里**没叫**，而 `main.ts` 的 mousemove 对整屏 overlay 是
-   *   `overlay.move?.(…)` 之后**直接 return**（不重画）⇒ 悬停高亮要么不出现、
-   *   要么等下一次 tick 才被顺带刷出来（「点不动/没反应」的一部分）。
+   * 鼠标移动 —— 原版 `WM_MOUSEMOVE (0x200)`（VA 0x00432b50）**只在状态 7 查**命中表：
+   * 换了一格就贴该格的高亮图、开弹窗写功能名、响一声 39。
    */
   move(x: number, y: number, env: UiScreenEnv): void {
+    lastMouse = { x, y };
+    if (win === null || win.state !== 7) return;
     const next = sectorAt(x, y);
     if (next === hover) return;
-    // 指到功能上响一声 @source `_rich4_play_sound_effect(0, &0x48231a)` 0x00433531
-    if (optionOfSector(next) !== null) env.playEffect(MAGIC_SOUND_HOVER);
     hover = next;
+    // @source 0x00432e40：只有 1..12 格才走到放音那一句（0 / 13 在 0x00432ca3 就跳走了）
+    if (optionOfSector(next) !== null) env.playEffect(MAGIC_SOUND_HOVER);
     env.requestRender();
   },
 
@@ -1734,242 +1247,133 @@ export const magicScreen: UiScreen = {
    *
    * | 状态 | 原版做什么 |
    * |---|---|
-   * | `< 3`（入口三句还在说）| `[0x48c3a2] = 3` + `fcn_0044ee18(1)` —— **跳过那几句**（0x00432e71）|
-   * | `!= 7`（正在摇签/转）| 什么都不做（0x00432e9c `jne 0x4326ad`）|
-   * | `== 7` 且点在 1..12 | 贴**图 2（抬手）**+ 条件图标，写 `#0041天靈靈地靈靈～`，进状态 8（0x00432f60 起）|
-   * | `== 7` 且点在 13（中央）| 把**抽中的条件名**再写进字框（0x00432ff7）|
-   *
-   * ⚠️ **先前整个 `down()` 在演出期间一句 `return`** —— 这一屏活着的每一刻都在演出，
-   *   于是**每一次点击都被吞掉**（玩家报的「一圈…无法点击」）。现在照上表分流。
+   * | `< 3`（开场白）| 跳过（`magicWindowSkip`）|
+   * | `!= 7` | 什么都不做 |
+   * | `== 7` 且点在 1..12 | 选定（`magicWindowPick`）|
+   * | `== 7` 且点在 13（中央）| 再报一次条件名（`magicWindowAskCriterion`）|
    */
   down(x: number, y: number, env: UiScreenEnv): void {
-    const sector = sectorAt(x, y);
-    const option = optionOfSector(sector);
-
-    // ── 入口三句还在说：点一下就跳过（原版状态 < 3 那一支）──
-    if (playback !== null && playback.phase === 'greet') {
-      playback = { ...playback, phase: 'roll', rollAt: env.now };
-      // 跳過之後字框里那句仍是入口最后一句 —— 与换词同一处理
-      requestVoiceLine(magicBoxLineFor(playback), env.now);
+    lastMouse = { x, y };
+    const w = win;
+    if (w === null) return;
+    if (w.state < 3) {
+      win = magicWindowSkip(w);
       env.log('魔法屋：跳過開場台詞');
       env.requestRender();
       return;
     }
-
-    // ── 点在中央那块（13）：把抽中的条件名再写一次 ──
+    if (w.state !== 7) return;
+    // 原版按的是**上一次 WM_MOUSEMOVE 记下的格号**；触屏没有悬停，这里按点下去那一点重查一遍
+    const sector = sectorAt(x, y);
+    hover = sector;
     if (sector === MAGIC_HIT_CENTER) {
-      hover = sector;
-      env.log(`魔法屋：條件 ${view?.criterionName ?? ''}`);
+      win = magicWindowAskCriterion(w, env.now);
+      requestVoiceLine(win.line, env.now);
+      env.log(`魔法屋：條件 ${MAGIC_TARGET_NAMES[w.criterion] ?? ''}`);
       env.requestRender();
       return;
     }
-
+    const option = optionOfSector(sector);
     if (option === null) return; // 命中 0：什么都不做 @source 0x00432ea7
-
-    // 按下这一拍也响一声 @source `_rich4_play_sound_effect(1, &0x482322)` 0x0043365c
-    env.playEffect(MAGIC_SOUND_PRESS);
-    hover = sector;
+    if (!interactive) return; // 联机：不是自己的魔法屋，只能看
+    win = magicWindowPick(w, option, env.now);
+    requestVoiceLine(win.line, env.now);
     env.log(`魔法屋：選定 ${sector}（${MAGIC_HOUSE_OPTIONS[option]?.name ?? ''}）`);
-    // ★ 状态 7 → 8：抬手那张女巫 + 条件图标 + `#0041`
-    //   （@source 0x00432fdc `mov byte [0x48c3a2], 8`）。回放期间就是「把剩下的转盘跳过」。
-    if (playback !== null && playback.phase !== 'hold') {
-      playback = {
-        ...playback,
-        phase: 'hold',
-        holdAt: env.now,
-        spin: { ...playback.spin, option: playback.target, step: magicSpinSteps() },
-      };
-    }
+    env.requestRender();
+  },
+
+  /** 右键 —— 原版 `WM_RBUTTONUP (0x205)` → `loc_00432e64`：只在开场白那几拍（状态 < 3）跳过 */
+  contextmenu(_x: number, _y: number, env: UiScreenEnv): void {
+    if (win === null || win.state >= 3) return;
+    win = magicWindowSkip(win);
+    env.log('魔法屋：跳過開場台詞');
     env.requestRender();
   },
 
   tick(env: UiScreenEnv): void {
-    if (playback === null) return;
-    const wasSpinning = playback.phase === 'spin';
-    const next = magicPlaybackTick(playback, env.now);
+    const w = win;
+    if (w === null) return;
+    // 兜底：pending 已经不在了（重连 / 同步把它冲掉了）却没收到那一拍 ⇒ 当作别处答掉
+    if (!resolved && env.state.pending?.kind !== 'magicHouse') resolveFrom(env.state, null, env.now);
+    const cur = win ?? w;
+    const next = magicWindowAdvance(cur, env.now);
     if (next === null) {
-      playback = null;
-      view = null;
-      hover = 0;
-      voiceLine = null; // 屏关了 —— 下次进屏同一句要能重新请求
-      voiceAsks = 0;
-      env.log('魔法屋：回放结束');
-      env.requestRender();
+      closeWindow(env);
       return;
     }
-    // ★★ 语音就在**这里**请求（状态推进处，整屏唯一的一处）：换词立刻请求；
-    //    同一句按 `MAGIC_VOICE_RETRY_MS` 最多补问一次 —— 兜 `Speaking.mkf` 的懒加载。
-    //    ⚠️ 绘制链**一处都不许**调 `playVoiceCode`（先前挂在那里，每帧一次）。
-    requestVoiceLine(magicBoxLineFor(next), env.now);
-    // ★ 转盘停下来的那一下：放**结果音**。
-    //   @source `_rich4_play_sound_effect(0x27, &0x4757e7)`（VA 0x00432e42）——
-    //   `[0x4757e7]` 的首字节 = 0x27 = **39**（`rich4.asm:40970`）。
-    //   ⚠️ 先前 T-037 的 D-MAGIC-5 写「16」是错的，见该文件的订正。
-    if (wasSpinning && next.phase === 'hold') {
-      env.playEffect(MAGIC_SOUND_RESULT);
-      env.requestRender();
-      playback = next;
-      return;
+    win = next;
+    // 换了词立刻请求；同一句按去抖 + 上限两次补问（兜 `Speaking.mkf` 懒加载）
+    requestVoiceLine(next.line, env.now);
+    if (next.state !== cur.state) {
+      if (next.state === 2 || next.state === 3) {
+        if (next.line !== null) env.log(`魔法屋：台詞 ${next.state}/${MAGIC_GREET_LINES.length}`);
+      } else if (next.state === 5) {
+        env.log(`魔法屋：條件 ${MAGIC_TARGET_NAMES[next.criterion] ?? ''}`);
+      } else if (next.state === 7) {
+        // @source 0x00432a0f：进状态 7 时补发一个 `WM_MOUSEMOVE`（当前鼠标位置）
+        hover = lastMouse === null ? 0 : sectorAt(lastMouse.x, lastMouse.y);
+      }
     }
-    const prevOption = playback.spin.option;
-    const prevPhase = playback.phase;
-    const prevGreet = playback.greet;
-    playback = next;
-    // ★ 台詞那一拍：**每帧都要续帧**（它是按 `MAGIC_GREET_MS` 计时的，
-    //   不续帧就没人再叫 `tick`，三句永远说不完）。
-    if (next.phase === 'greet') {
-      if (next.greet !== prevGreet) env.log(`魔法屋：台詞 ${next.greet + 1}/${MAGIC_GREET_LINES.length}`);
-      env.requestRender();
-      return;
-    }
-    // ★ 换了一位、或刚进 `hold`：画面变了要重画。
-    //   转盘「还在等下一位」的那几帧没有变化，不续帧；`hold` 期间要续帧，
-    //   否则 `tick` 不再被调用，屏就永远关不掉了。
-    if (next.spin.option !== prevOption || next.phase !== prevPhase) {
-      env.requestRender();
-    } else if (next.phase === 'hold') {
-      env.requestRender();
-    }
+    // ★ 等玩家点的那一拍（状态 7）画面不会自己变 —— 不续帧；其余各拍都在计时，要续帧
+    if (next.state !== 7 || next !== cur) env.requestRender();
   },
 
   /**
-   * 察觉「刚刚落了一次魔法屋」。
+   * 两件事：① `pending{magicHouse}` **刚挂出** ⇒ 开窗；② 开着窗时 pending 没了 ⇒ 这一趟答掉了。
    *
-   * ★ 触发判据分两步（都纯查状态）：① `before` 里触发者正站在魔法屋上；
-   *   ② `before → after` 的玩家字段能被某一组（目标条件 × 效果）解释。
-   *   第 ② 步解不出也照样起播 —— 只显示转盘、不显示落点文字，
-   *   免得漏掉一次演出。这条近似记在 `docs/deviations/T-037.md`。
+   * ★ 电脑踩魔法屋 core 当场就结算完、不挂 pending（`0x0043381b` 的分流），这里也就不开窗
+   *   （第十一份回报 #10「NPC 触发魔法屋时不应该由玩家来选择」）。
    */
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
-    if (playback !== null) return; // 上一段还没播完
-    if (before === after) return;
-    // ★★ 2026-09-22（第十一份回报 #10「NPC触发魔法屋时不应该由玩家来选择」）：
-    //   原版在入口**按 whoPlays 分流** —— `rich4_magic_house.asm:2225-2233`：
-    //     `cmp byte [eax + 0x496b7d], 1` / `jne near loc_0043390b`
-    //   即 **whoPlays != 1（电脑）整段跳过女巫窗口/素材/BGM**，只自己 rand 出结果、
-    //   弹一个 1500 ms 的通用訊息框（`fcn_00440cac`）。
-    //   本引擎没有那条分流 ⇒ 电脑踩到魔法屋也会弹出这面「要玩家点一圈」的整屏，
-    //   而 `'magic'` 在 `BLOCKING_PRESENTATIONS` 里 ⇒ **把电脑的回合卡在演出上**。
-    //   ⇒ 这里补同一道闸：触发者不是真人就不铺场（core 照旧即时结算，不缺口径）。
-    //   ⚠️ 已知偏离（本轮不处理）：真人那一支原版的效果号来自**玩家点选**，本引擎是 core 掷 rand、
-    //   屏幕只做回放（Q-MAGIC-1 记过成本）。
-    const caster = before.players[before.currentPlayer];
-    if (caster === undefined || caster.whoPlays !== 1) return;
-    // ★ 优先用 **core 交出来的那一趟**（`lastEvent.kind === 'magicHouse'`）：
-    //   条件号/名单是抽出来的，反推只是替补（旧存档 / 少字段的回放）。
-    const ev = after.lastEvent;
-    // ★★ 只认**这一条 action 刚写出来的**那一趟（`lastEvent` 换了对象）。
-    //   `lastEvent` 会一直留在 state 里，直到下一个事件把它顶掉 —— 先前这里只判
-    //   「当前是 magicHouse」，于是进过一次魔法屋之后，**每一条** action（走一步、电脑出牌、
-    //   收尾…）都会在上一段播完后把魔法屋屏重新起播一遍：重复触发、每回合都被卡在里面
-    //   （2026-09-19 第三份试玩回报第 12 条）。
-    const fresh = ev !== null && ev !== before.lastEvent;
-    const direct =
-      fresh && ev.kind === 'magicHouse' ? magicViewOfSpin(ev, after.currentPlayer) : null;
-    // ★ 反推那条替补路**只在落点结算那一条 action 上**试（`before.phase === 'settling'`）。
-    //   它的判据是「action 之前当前玩家站在魔法屋上」，而人是会**一直站在那儿**到下一回合的 ——
-    //   先前不限阶段，于是下一回合的 `startTurn` / `rollDice` 都会被它当成「又进了一次魔法屋」
-    //   （还带着那句「diff 解释不通也照样起播」的兜底）。
-    const v =
-      direct ?? (before.phase === 'settling' && !fresh ? magicView(before, after, env.topo) : null);
-    if (v === null) return;
-    view = v;
-    const target = v.option >= 0 ? v.option : 0;
-    // ★ 入口台詞归「動畫過程」管：@source `loc_004326b9`（VA 0x004326b9）
-    //   `cmp byte [0x48c3a5], 0 / jne loc_00432e82` —— 关掉时**直接跳过消息框**
-    //   （`[0x48c3a5] = !anim`，见 `Q-ANIM-1.md` 与 `T-037.md` 的 D-MAGIC-12）。
-    playback = magicPlaybackStart(target, env.now, env.animation !== false, v.criterionName);
-    // ★ 進屏那一刻就把第一句送出去：`playVoiceCode` 会经 `main.ts` 的语音出口
-    //   顺手 `ensureSpeakingArchive()`（= 预载 57MB 的 `Speaking.mkf`）。
-    //   档案到货前的请求会按 `MAGIC_VOICE_RETRY_MS` 由 `tick` 补问，见 `requestVoiceLine`。
-    requestVoiceLine(magicBoxLineFor(playback), env.now);
-    // ★ 進魔法屋的配乐 @source `magic_house.asm:2269` / `:2512` `push 7 / call fcn_004549cf`
-    //   ⇒ id 7 → `MIDI08.MID` → 磁盘名 `midi08.mid`（见 `SCREEN_BGM.magicHouse`）
-    env.music?.('midi08.mid');
-    env.log(`魔法屋：${v.name === '' ? '（落点未解出）' : v.name}`);
-    env.requestRender();
+    const bp = before.pending;
+    const ap = after.pending;
+    if (win === null) {
+      if (ap === null || ap.kind !== 'magicHouse' || ap === bp) return;
+      const who = after.players[after.currentPlayer];
+      if (who === undefined || who.whoPlays !== 1) return;
+      caster = after.currentPlayer;
+      interactive = env.localSeat === null || env.localSeat === undefined || env.localSeat === caster;
+      resolved = false;
+      hover = 0;
+      win = magicWindowOpen(ap.criterion, env.now, env.animation !== false);
+      requestVoiceLine(win.line, env.now);
+      // ★ 進魔法屋的配乐 @source 0x0043389e `push 7 / call fcn_004549cf`（`magic_house.asm:2269`，真人那一支才放）
+      //   ⇒ id 7 → `MIDI08.MID` → 磁盘名 `midi08.mid`（见 `SCREEN_BGM.magicHouse`）
+      env.music?.('midi08.mid');
+      env.log('魔法屋：開屏');
+      env.requestRender();
+      return;
+    }
+    if (bp !== null && bp.kind === 'magicHouse' && (ap === null || ap.kind !== 'magicHouse')) {
+      if (!resolved) resolveFrom(after, before, env.now);
+      env.requestRender();
+    }
   },
 };
 
 /**
- * 给单测 / 自动化用的只读视图（`active()` 之外的状态）。
- *
- * ★ 2026-09 加 `phase` / `pointer` / `ring`：浏览器里验收「每一项都能点」时，
- *   要点完看得到状态推进（`pointer` / `phase` 变了、`hover` 落在那一格）。
+ * 给单测 / 自动化用的只读视图。
  */
 export function magicScreenState(): {
   playing: boolean;
-  view: MagicView | null;
+  state: number;
+  line: string | null;
+  criterion: number;
+  chosen: number;
   hover: number;
-  phase: MagicPhase | null;
-  pointer: number;
-  ring: number;
+  interactive: boolean;
+  resolved: boolean;
+  caster: number;
 } {
-  const hoveredOption = optionOfSector(hover);
-  const pointer = playback?.spin.option ?? view?.option ?? -1;
-  const ring =
-    hoveredOption ??
-    (playback !== null && playback.phase === 'spin' && pointer >= 0 ? pointer : -1);
-  return { playing: playback !== null, view, hover, phase: playback?.phase ?? null, pointer, ring };
-}
-
-// ============================================================
-//  联机旁观：施法者那一台收场了，本台跟着收场（第十二份試玩回報）
-// ============================================================
-
-/**
- * 纯判据：**别人**踩出来的这一段魔法屋，施法者那一台是不是已经演完了。
- *
- * ★★ 第十二份試玩回報（「2个真人玩家时，触发魔法屋的玩家结束魔法屋回合，另一个真人玩家
- *   还在魔法屋里不会自动出去」）：
- *
- *   这一屏在 core 里没有待决交互（见文件头），施法者那一下「点选」只是**他本机**的表现
- *   —— 不是 action、不进广播，旁观那一台根本不知道他点了。旁观端于是只能把整段自己
- *   走到底：入口三句 6 s + 抽签 1 s + 转盘两圈（逐位变慢）≈ 17 s + 1.5 s（转盘等下一位的那几帧
- *   不续帧，靠别处的重画推进，实际更长）。回报现场：施法者 01:35:27 踩到、
- *   01:35:37 收场派 `endTurn`；旁观那一台直到 01:36:00 才派出自己的 `startTurn`
- *   —— 在魔法屋里多待了二十来秒，期间整桌都在等他。
- *
- *   施法者那一台的回合驱动**等演出收场才派下一条**（`'magic'` 在
- *   `BLOCKING_PRESENTATIONS` 里，服务器也不替在线真人出手），所以
- *   「收件箱队首已经是**施法者座位**派出的下一条 action」= 他那边演完了。
- *
- * @param caster 这一段的施法者（`magicCaster()`）；没在播为 null
- * @param localSeat 本机座位；单机 / 未入座为 null
- * @param nextActor 收件箱队首那条 action 是谁派的（施加之前的 `actingSeat(state)`）
- */
-export function presenterMovedOn(caster: number | null, localSeat: number | null, nextActor: number): boolean {
-  if (caster === null) return false;
-  // 自己的魔法屋：自己的回合驱动本来就等着它，不存在「对面已经走了」
-  if (localSeat !== null && caster === localSeat) return false;
-  return nextActor === caster;
-}
-
-/** 正在播的这一段是谁踩出来的（玩家下标）；没在播为 null */
-export function magicCaster(): number | null {
-  if (playback === null) return null;
-  return view?.caster ?? null;
-}
-
-/**
- * 施法者那一台已经收场 ⇒ 本台直接进最后一拍（`hold`：抬手 + `#0041天靈靈地靈靈～` +
- * 落点），`MAGIC_HOLD_MS` 后照常自己关屏。
- *
- * ★ 跳到 `hold` 而不是当场关：与施法者**点选那一下**（`down()` 的状态 7 → 8）同一个落点 ——
- *   施法者那台收场前看到的最后一拍就是它，旁观端（多半正是被点到的人）至少要看到结果。
- *   已经在 `hold` 了就不动（它自己 1.5 s 内就关）。
- *
- * @returns 真的改了进度吗
- */
-export function followPresenterDone(env: UiScreenEnv): boolean {
-  if (playback === null || playback.phase === 'hold') return false;
-  playback = {
-    ...playback,
-    phase: 'hold',
-    holdAt: env.now,
-    spin: { ...playback.spin, option: playback.target, step: magicSpinSteps() },
+  return {
+    playing: win !== null,
+    state: win?.state ?? 0,
+    line: win?.line ?? null,
+    criterion: win?.criterion ?? -1,
+    chosen: win?.chosen ?? -1,
+    hover,
+    interactive,
+    resolved,
+    caster,
   };
-  env.log('魔法屋：施法者已收場，跟著收場');
-  env.requestRender();
-  return true;
 }
