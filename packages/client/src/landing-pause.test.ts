@@ -4,7 +4,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { GameState, MapTopology } from '@rich4/core';
-import { LANDING_TAIL_TICKS, landingPauseRemaining, landingPauseTicks } from './landing-pause.ts';
+import {
+  BLOCKED_TURN_TICKS,
+  LANDING_TAIL_TICKS,
+  blockedTurnPauseTicks,
+  landingPauseRemaining,
+  landingPauseTicks,
+  turnEndPauseTicks,
+} from './landing-pause.ts';
 
 const topo = {
   nodes: [
@@ -16,8 +23,8 @@ const topo = {
   ],
 } as unknown as Pick<MapTopology, 'nodes'>;
 
-function st(phase: string, nodeId: number, currentPlayer = 0): GameState {
-  return { phase, currentPlayer, players: [{ nodeId }, { nodeId }] } as unknown as GameState;
+function st(phase: string, nodeId: number, currentPlayer = 0, whoPlays = 1): GameState {
+  return { phase, currentPlayer, players: [{ nodeId, whoPlays }, { nodeId, whoPlays }] } as unknown as GameState;
 }
 
 describe('★ 落点收尾的换人停顿 @source 0x0041b111 (0x88) / 0x0040d840 / 0x0040d86f', () => {
@@ -51,5 +58,31 @@ describe('★ 落点收尾的换人停顿 @source 0x0041b111 (0x88) / 0x0040d840
     expect(r.waitMs).toBe(20);
     r = landingPauseRemaining(p, 1320, 40);
     expect(r.waitMs).toBe(0);
+  });
+});
+
+describe('★ 回合开头就被挡：框收掉后停 3 tick 才换人 @source 0x00418d70 / 0x00418d88 / 0x00418ead (0x83)', () => {
+  it('0x83 的低 7 位 = 3', () => {
+    expect(BLOCKED_TURN_TICKS).toBe(3);
+  });
+
+  it('★ startTurn 直接进 turnEnd（坐牢/住院/冬眠…的 skip 支）⇒ 3', () => {
+    expect(blockedTurnPauseTicks(st('turnStart', 3), st('turnEnd', 3))).toBe(3);
+    expect(turnEndPauseTicks(st('turnStart', 1), st('turnEnd', 1), topo)).toBe(3);
+  });
+
+  it('走回棋盘 / 被外力挪过（whoPlays & 0x30）那一支不接（控制流待核，见文件头）', () => {
+    expect(blockedTurnPauseTicks(st('turnStart', 3, 0, 1 | 0x10), st('turnEnd', 3, 0, 1 | 0x10))).toBe(0);
+    expect(blockedTurnPauseTicks(st('turnStart', 3, 0, 1 | 0x20), st('turnEnd', 3, 0, 1 | 0x20))).toBe(0);
+  });
+
+  it('正常开局（进 awaitingRoll）/ 换了人 ⇒ 0', () => {
+    expect(blockedTurnPauseTicks(st('turnStart', 3), st('awaitingRoll', 3))).toBe(0);
+    expect(blockedTurnPauseTicks(st('turnStart', 3), st('turnEnd', 3, 1))).toBe(0);
+  });
+
+  it('turnEndPauseTicks：落点收尾仍是 8，特殊格落点 0（0x80 = 下一 tick）', () => {
+    expect(turnEndPauseTicks(st('settling', 1), st('turnEnd', 1), topo)).toBe(8);
+    expect(turnEndPauseTicks(st('settling', 3), st('turnEnd', 3), topo)).toBe(0);
   });
 });
