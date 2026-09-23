@@ -14,7 +14,7 @@ const DGROUP_FILE_OFFSET = 398848;
 const DGROUP_VA = 0x463000;
 const TABLE_VA = 0x480d5a;
 const ROW_STRIDE = 0x68;
-const EXE = new URL('../../../../Rich4/rich4.exe', import.meta.url);
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 
 const exists = (() => {
   try {
