@@ -2073,3 +2073,20 @@ describe('★★ 第十四份：命運 9 / 10 / 11 / 32 施加后那一句（`de
     expect(detectFortuneLine(b3, { ...b3 })).toEqual([]);
   });
 });
+
+describe('★★ 第十四份：企業收費被嫁禍 / 死神顶替 ⇒ 付款人不说（@source 0x0041affb cmp edi,[0x49910c] / jne）', () => {
+  it('当前玩家自己付 ⇒ 说；别人替他付 ⇒ 不说', () => {
+    const [b, a] = to((s) => {
+      s.currentPlayer = 0;
+      s.players[0]!.monthlyPaid += 9000;
+      s.companyFunds[3] = (s.companyFunds[3] ?? 0) + 9000;
+    });
+    expect(detectMoneyPaid(b, a)).toEqual([{ player: 0, event: 9 }]);
+    const [b2, a2] = to((s) => {
+      s.currentPlayer = 0;
+      s.players[2]!.monthlyPaid += 9000;
+      s.companyFunds[3] = (s.companyFunds[3] ?? 0) + 9000;
+    });
+    expect(detectMoneyPaid(b2, a2)).toEqual([]);
+  });
+});
