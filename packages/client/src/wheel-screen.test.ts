@@ -99,8 +99,8 @@ describe('用到的圖 @source 0x0044093a / 0x004409b5 / 0x0043f18d', () => {
     expect(wheelDiscChunk(11)).toBe(13);
   });
 
-  it('★ 氣泡是 Data.mkf 資源 0x205 = 517 的圖 6（271×199）', () => {
-    expect(WHEEL_BUBBLE).toEqual({ archive: 'Data.mkf', resource: 517, image: 6 });
+  it('★ 對話框是 Data.mkf 資源 0x205 = 517 的圖 5（249×170 棕色訊息框；`add eax,0x48` ⇒ (0x48−0xc)/12）', () => {
+    expect(WHEEL_BUBBLE).toEqual({ archive: 'Data.mkf', resource: 517, image: 5 });
   });
 });
 
@@ -619,11 +619,11 @@ function fakeCtx(): { ctx: CanvasRenderingContext2D; images: Drawn[]; texts: str
   return { ctx: ctx as unknown as CanvasRenderingContext2D, images, texts };
 }
 
-/** 假精靈：錨點照 manifest（圓盤 82,82 / 天使 (−6,0) / (0,0) / 氣泡 127,92）*/
+/** 假精靈：錨點照 manifest（圓盤 82,82 / 天使 (−6,0) / (0,0) / 對話框 Data#517 圖 5 = 123,101）*/
 function fakeSprite(archive: string, resource: number, index: number): Sprite | null {
   const anchor =
     archive === 'Data.mkf'
-      ? { x: 127, y: 92 }
+      ? { x: 123, y: 101 }
       : index === 0
         ? { x: -6, y: 0 }
         : index === 1
@@ -770,7 +770,7 @@ describe('★ 繪製：三張圖的落點與那一格圓盤', () => {
     });
 
     const bubble = ctx.images.find((i) => i.archive === 'Data.mkf');
-    expect(bubble).toMatchObject({ resource: 517, index: 6, x: 220 - 127, y: 140 - 92 });
+    expect(bubble).toMatchObject({ resource: 517, index: 5, x: 220 - 123, y: 140 - 101 });
     const disc = ctx.images.find((i) => i.resource === wheelResource(cue.wheel) && i.index >= 2);
     expect(disc).toMatchObject({ index: wheelDiscChunk(cue.start), x: 220 - 82, y: 320 - 82 });
     // 天使常態那張的錨點是 (−6,0) → 實際落點 (271,230)

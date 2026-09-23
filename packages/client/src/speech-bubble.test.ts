@@ -82,7 +82,8 @@ describe('几何常量（逐条对 exe VA）', () => {
     expect(SPEECH_PANEL_AT).toEqual({ x: 0xdc, y: 0x82 });
     expect(SPEECH_PANEL_AT.x).toBe(220);
     expect(SPEECH_PANEL_AT.y).toBe(130);
-    // 与神明老虎机那一屏**同一张图**（0x004407a0 也是 `Data#517 图 6`）
+    // ★ 2026-09-23 订正：神明老虎机（0x004407a6 `add eax,0x48`）是图 **5**（棕色訊息框），
+    //   **不是**这张 —— 全 exe 只有 player_say 用图 6（见 `dialog-templates.test.ts`）
     expect(SPEECH_PANEL.resource).toBe(0x205);
     expect(SPEECH_PANEL.image).toBe(6);
   });
