@@ -6,7 +6,12 @@
  * 落到窗格外面去，而底图上那八个窗格是**唯一的参照物**（看图就能发现）。
  */
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
 import {
+  BAIL_CLERK_FRAMES,
+  BAIL_CLERK_MS,
+  BAIL_CLERK_STYLE,
+  drawBailClerk,
   BAIL_PLACES,
   BAIL_PLAYER_SLOTS,
   BAIL_SLOT_HIT,
@@ -292,5 +297,68 @@ describe('drawBailScreen（假 ctx，只查落点与文字）', () => {
     const f = fakeCtx();
     drawBailScreen(f.ctx, 'prison', [{ slot: 0, character: 1, name: '丙' }], 30, null, () => null);
     expect(f.texts).toEqual(['30']);
+  });
+});
+
+// ============================================================
+//  ★ 2026-09-23：柜台人员的字框
+// ============================================================
+
+describe('★ 柜台人员字框 @source 0x0043cfb5 / 0x0043db10（`fcn_0044ec30`）', () => {
+  const EXE = `${process.env.RICH4_WORKSPACE ?? ''}/Rich4/rich4.exe`;
+  const runExe = existsSync(EXE) ? it : it.skip;
+  const at = (va: number, n: number): number[] => {
+    const d = readFileSync(EXE);
+    const off = 1024 + (va - 0x401000);
+    return [...d.subarray(off, off + n)];
+  };
+
+  runExe('監獄付不起：`push 0 / 0x101010 / −6 / 0 / 0x12c / 0xe6` + `[0x48c4b4]+0x18`（Panel#63 图 1）+ 串 0x46514e', () => {
+    // 0043cf97 6a 00 / 68 10 10 10 00 / 6a fa / 6a 00 / 68 2c 01 00 00 / 68 e6 00 00 00
+    expect(at(0x0043cf97, 22)).toEqual([
+      0x6a, 0x00, 0x68, 0x10, 0x10, 0x10, 0x00, 0x6a, 0xfa, 0x6a, 0x00, 0x68, 0x2c, 0x01, 0x00, 0x00, 0x68, 0xe6, 0x00, 0x00, 0x00, 0xa1,
+    ]);
+    expect(at(0x0043cfb1, 3)).toEqual([0x83, 0xc0, 0x18]); // +0x18 = 图 1
+    expect(at(0x0043cfbd, 5)).toEqual([0x68, 0x4e, 0x51, 0x46, 0x00]); // push 0x46514e
+    expect(BAIL_CLERK_FRAMES.lowPoints).toEqual({ place: 'prison', image: 1, x: 0xe6, y: 0x12c, dx: 0, dy: -6 });
+  });
+
+  runExe('醫院开屏：`0x44ec30([0x48c4d4]+0x24 = Panel#65 图 2, 8, 8, 0, 0, 0x101010, 0)`', () => {
+    expect(at(0x0043daf8, 13)).toEqual([0x6a, 0x00, 0x68, 0x10, 0x10, 0x10, 0x00, 0x6a, 0x00, 0x6a, 0x00, 0x6a, 0x08]);
+    expect(at(0x0043db05, 2)).toEqual([0x6a, 0x08]);
+    expect(at(0x0043db0c, 3)).toEqual([0x83, 0xc0, 0x24]); // +0x24 = 图 2
+    expect(BAIL_CLERK_FRAMES.hospitalHello).toEqual({ place: 'hospital', image: 2, x: 8, y: 8, dx: 0, dy: 0 });
+  });
+
+  it('画：框按锚点贴、字在框正中再偏 dy；20 号 #101010 粗体、无阴影', () => {
+    const draws: { x: number; y: number }[] = [];
+    const texts: { t: string; x: number; y: number; font: string; fill: string }[] = [];
+    const ctx = {
+      save: () => undefined,
+      restore: () => undefined,
+      drawImage: (_b: unknown, x: number, y: number) => draws.push({ x, y }),
+      fillText(this: { font: string; fillStyle: string }, t: string, x: number, y: number) {
+        texts.push({ t, x, y, font: this.font, fill: String(this.fillStyle) });
+      },
+      font: '',
+      fillStyle: '',
+      textAlign: 'left',
+      textBaseline: 'top',
+    } as unknown as CanvasRenderingContext2D;
+    const sprite = (() => ({ bitmap: {} as never, width: 200, height: 100, anchorX: 10, anchorY: 20 })) as unknown as Parameters<typeof drawBailClerk>[1];
+    drawBailClerk(ctx, sprite, { key: 'lowPoints', text: '抱歉！\n你的點數不足！', until: 0 });
+    expect(draws).toEqual([{ x: 0xe6 - 10, y: 0x12c - 20 }]);
+    const cx = 0xe6 - 10 + 100;
+    const cy = 0x12c - 20 + 50 - 6;
+    expect(texts.map((t) => [t.t, t.x, t.y])).toEqual([
+      ['抱歉！', cx, cy - 13],
+      ['你的點數不足！', cx, cy + 13],
+    ]);
+    for (const t of texts) {
+      expect(t.font.startsWith('bold 20px')).toBe(true);
+      expect(t.fill).toBe('#101010');
+    }
+    expect(BAIL_CLERK_STYLE.flags).toBe(2);
+    expect(BAIL_CLERK_MS).toBe(2000);
   });
 });

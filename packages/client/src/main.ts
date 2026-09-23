@@ -8,7 +8,7 @@
  *   是同一种 action，引擎分不出也不需要分出来源。
  */
 
-import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
+import { BAIL_CLERK_TEXT, CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import { parseVoiceCode } from '@rich4/data';
 import { playVoiceCode, setVoiceBusyProbe, setVoiceSink, setVoiceStopper } from './voice-sink.ts';
 import { LogRing } from './log-ring.ts';
@@ -559,9 +559,13 @@ import {
   type ShopSlide,
 } from './shop-screen.ts';
 import {
+  BAIL_CLERK_MS,
   canPayOnScreen,
+  drawBailClerk,
   drawBailScreen,
   hitBailSlot,
+  type BailClerkBubble,
+  type BailClerkKey,
   type BailSlotView,
 } from './bail-screen.ts';
 import { SCREENS } from './screens.ts';
@@ -5123,6 +5127,50 @@ function drawBailStage(): void {
   stageCtx.fillStyle = '#000';
   stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
   drawBailScreen(stageCtx, pending.place, bailViews(), me.points, bailHot, spriteNow);
+  // ★ 2026-09-23：柜台人员的字框（`bail-screen.ts` 的 `BAIL_CLERK_FRAMES`）
+  if (bailClerk !== null) drawBailClerk(stageCtx, spriteNow, bailClerk);
+}
+
+/** 保釋屏柜台人员这一刻挂着的那一句（`null` = 没挂）*/
+let bailClerk: BailClerkBubble | null = null;
+/** 已经为哪一次 `pending` 说过开屏招呼（醫院 `0x405` 那一拍只说一次）*/
+let bailGreeted: unknown = null;
+
+/** 挂一句：先播 `#NNNN` 语音，再按 `fcn_0044ee18` 的口径定最早收的时刻（2000 ms / 语音更长就撑到完）*/
+function bailSay(key: BailClerkKey, now: number): void {
+  const raw = key === 'lowPoints' ? BAIL_CLERK_TEXT.lowPoints.text : BAIL_CLERK_TEXT.hospitalHello.text;
+  const text = playVoiceCode(raw);
+  let until = now + BAIL_CLERK_MS;
+  const voiceMs = voiceDurationOf(raw);
+  if (voiceMs !== null) until = Math.max(until, now + voiceMs);
+  bailClerk = { key, text, until };
+  requestRender();
+}
+
+/**
+ * 保釋屏的字框计时：醫院开屏那一拍说招呼（`0x0043db41` 的 `0x405`），到点收起。
+ * 没开着就清掉（下一次进屏重新招呼）。
+ */
+function bailTick(now: number): void {
+  const pending = state.pending;
+  if (pending === null || pending.kind !== 'bail') {
+    bailClerk = null;
+    bailGreeted = null;
+    return;
+  }
+  if (bailGreeted !== pending) {
+    bailGreeted = pending;
+    // @source `0x0043daf8..0x0043db2e`（`0x401` 开框 + `PostMessage(0x405)`）→ `0x0043db41 mov byte [0x48c4f2], 1` /
+    //   `0x0043db48 mov edx, [0x475cc4]` / `0x0043db4f call 0x44ecb6` —— 只有醫院；監獄开屏不说话
+    if (pending.place === 'hospital') bailSay('hospitalHello', now);
+  }
+  if (bailClerk === null) return;
+  if (now >= bailClerk.until) {
+    bailClerk = null;
+    requestRender();
+    return;
+  }
+  requestRender();
 }
 
 /** 原版面板上的两句提示都是 2 秒（`fcn_0044ee18` 的 0x7d0）*/
@@ -7205,6 +7253,8 @@ function requestRender(): void {
     // ★ 原版会替玩家把系统指针挪到按钮上（试玩3 #2）：时机刚从关变开就挪一次
     cursorWarper.update();
     if (screen === 'game') shopTick(performance.now());
+    // ★ 2026-09-23：保釋屏柜台人员的字框（醫院开屏招呼 / 監獄付不起）
+    if (screen === 'game') bailTick(performance.now());
     // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
     if (screen === 'game') bankTick(performance.now());
     // ★ 角色台词（T-052）：**不限定 `game` 屏** —— 语音在任何一屏都可能派出来
@@ -9731,13 +9781,16 @@ function bindInput(): void {
       if (q !== null) {
         const slot = hitBailSlot(pending.place, q.x, q.y, occupancy);
         if (slot !== null) {
-          // ★ 钱不够就**什么都不做**（原版弹一个「點券不足」的訊息框，见下方偏差记录）。
-          //   够不够用这一屏自己的判据（`>= 赎金`），不是电脑那条更严的。
+          // 够不够用这一屏自己的判据（`>= 赎金`），不是电脑那条更严的。
           if (canPayOnScreen(state.players[state.currentPlayer]?.points ?? 0, slot)) {
             dispatch({ type: 'bail', slot });
             bailHot = null;
           } else {
             log('點券不足，付不起這位的保釋金');
+            // ★ 2026-09-23：監獄那一屏付不起 ⇒ 柜台人员开字框「#0002抱歉！你的點數不足！」
+            //   @source `0x0043d0d4 cmp 點券, [槽*4+0x475c44] / jl 0x43cf97` → `0x0043cfb5 call 0x44ec30` /
+            //   `0x0043cfc2 call 0x44ecb6(0x46514e)`（醫院那一屏的点击处理里没有这一句）
+            if (pending.place === 'prison') bailSay('lowPoints', performance.now());
             requestRender();
           }
         }

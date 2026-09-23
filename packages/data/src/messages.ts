@@ -604,6 +604,17 @@ export const NOTICE_BOX = {
   aiUseTool: t('使用%s', 0x4653e5),
 } as const;
 
+/**
+ * ★ 2026-09-23：監獄 / 醫院保釋屏里那位**柜台人员**的字框台词（`fcn_0044ec30` 开框 + `fcn_0044ecb6` 写字）。
+ * 串头 `#NNNN` 是语音号（`voice-code.ts`）。
+ */
+export const BAIL_CLERK_TEXT = {
+  /** 監獄：点了付不起的那一格（`0x0043cfbd push 0x46514e`）*/
+  lowPoints: t('#0002抱歉！\n你的點數不足！', 0x46514e),
+  /** 醫院：开屏那一拍（`0x0043db48 mov edx,[0x475cc4]` → 0x465170）*/
+  hospitalHello: t('#0127您好！請問您要替誰\n辦理出院手續？', 0x465170),
+} as const;
+
 /** 把 `%s` / `%d` 依次替换掉 —— 原版用的是 C 的 sprintf，这里只做它用到的那两种 */
 export function formatOriginal(fmt: string, ...args: (string | number)[]): string {
   let i = 0;
@@ -636,6 +647,7 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(PASSIVE_CARD_TEXT),
   ...Object.values(INSURANCE),
   ...Object.values(NOTICE_BOX),
+  ...Object.values(BAIL_CLERK_TEXT),
   ...GOD_NAMES,
   ...OBJECT_NAMES,
 ];
