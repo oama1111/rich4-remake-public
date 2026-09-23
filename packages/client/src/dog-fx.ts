@@ -73,10 +73,16 @@
  * 一次只播一段，`main.ts` 把救护车那一段**排队**在本段之后（`pendingBoardFilmAfter`），
  * 两段之间窗口不关（`BoardFilmWindow.filmQueued`）。
  *
- * ## 一处**故意不改**的次序差：狗先离场（W-52 §3.3）
+ * ## 狗什么时候从棋盘上消失（第十四份試玩回報「狗咬人咬完之后狗的模型应该就消失了」）
  *
- * 原版 `0x0041b847 call 0x40e14d`（把惡犬从盘上撤掉）在影片**之前**；本引擎的影片窗口里棋盘按
- * `before` 画，所以那 4.3 秒里**狗还画在原地**。影片是整幅 440×440 盖住棋盘的 ⇒ 观感无差。
+ * ⚠️ 先前（W-52 §3.3）写的是「影片整幅盖住棋盘 ⇒ 狗画在原地观感无差」—— **错**：FLIC 的
+ * 索引 0 是透明的（只有中间那团打斗烟尘），底下的棋盘露着；而且救护车那 6.2 秒（440×74 一条）
+ * 期间棋盘仍按 `before` 画 ⇒ 狗一直蹲在原格上。
+ * 原版：`0x0041b845 remove_object` 在片子**之前**，0x214 的 `flags` = 0x30001 的第三字节 = 3
+ * ⇒ `fcn_0045144f` 在第 3 个计数（第 2 帧、烟尘正盖住人和狗那一拍）调 `0x40829d` 按当前状态
+ * **重画一次棋盘**（逐条见 `board-film.ts` 的 `boardFilmRedrawFrame`）⇒ 烟尘散开时狗已经没了，
+ * 只剩乞丐站在原格；再由救护车（`flags` 第三字节 = 0x1e）在第 30 个计数把人接走。
+ * 宿主：`main.ts` 的 `applyBoardFilmRedraw`；「只放物件、人仍按住」的判据是 `filmPrecedesSendToHospital`。
  */
 
 import { ACTOR_DOLL, OBJECT_TYPE_DOG, OBJECT_TYPE_MINE, specialSlotOf } from '@rich4/core';
@@ -158,6 +164,21 @@ export const EXPLOSION_FILM: BoardFilmSpec = {
   sound: 0x52,
   flags: 0x30001,
 };
+
+/**
+ * 这一段播完之后原版**还要** `send_to_hospital` 吗 —— 狗咬 0x214 与爆炸 0x20d 是；
+ * 狗被车吓退 0x228 不是（有车那一支 `0x0041b899 jmp 0x41c164` 直接走）。
+ *
+ * ★ 用途（第十四份試玩回報「狗咬完狗就该消失」）：这两段的 `flags` 都是 0x30001 ⇒
+ *   第 3 个计数重画一次棋盘（`board-film.ts` 的 `boardFilmRedrawFrame`）。那时
+ *   `remove_object`（`0x0041b845` / `0x0041be8c`）与 `0x40cd07`（乞丐）都已做完，
+ *   而改位置 / 住院天数的 `send_to_hospital` 还在**片子之后**
+ *   （`0x0041b8e6` / `0x0041b775`）⇒ 重画出来的是「狗 / 地雷没了、乞丐还站在原格」。
+ *   与「動畫過程」开关无关：救护车片关掉了，`send_to_hospital` 照样在这段之后才调。
+ */
+export function filmPrecedesSendToHospital(spec: BoardFilmSpec): boolean {
+  return spec.id === DOG_BITE_FILM.id || spec.id === EXPLOSION_FILM.id;
+}
 
 /** 这一段影片总共播多久（毫秒）= 38 × 114 = 4332 */
 export function dogBiteTotalMs(): number {

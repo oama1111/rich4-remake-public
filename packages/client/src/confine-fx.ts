@@ -137,23 +137,26 @@ export function confineSkippable(kind: ConfineKind): boolean {
 /**
  * 这一次状态变化要不要播、播哪一段。
  *
- * 判据（纯查两张占用表 + 两个计数，都是 `GameState` 里的公开字段）：
- *   ① 占用表**由 0 变 1**（`confine()` 把槽位置 1 的那一下）—— 这是「刚被送进去」；
- *   ② 计数**变大**（`blocking.inPrison` / `inHospital` 的**低 7 位**）——
- *      覆盖「本来就在里面、又被加刑」那一路（原版 `send_to_*` 每次调用都重播影片）。
+ * 判据：某位玩家**首次**被送进去 —— 计数字节（`blocking.inPrison` / `inHospital`，**整字节**）
+ * 原为 0，且这一拍占用表由 0 变 1 或计数变成非 0。
  *
- * ★★ 2026-09-18 修「NPC 走动后自动呼出救护车」（需求方第 5 条）：
- *   计数比较**必须先 `& 0x7f`**。计数字节的高位 `0x80` 不是「更多天数」，而是
- *   **「刑期已满、待释放」这个状态本身**：
+ * ★★ 2026-09-23 订正（第十四份試玩回報，协调方拍板照 exe）：**加刑不播**。
+ *   先前这里写「本来就在里面、又被加刑 → 照样播（原版 `send_to_*` 每次调用都重播影片）」—— 与 exe 不符：
  * ```asm
- * 0041c8e3  test dh, 0x3f / jne 跳过     ; 归零判据
- * 0041c8ea  or   ch, 0x80                ; ★ 减到 0 → 挂 0x80（等下一次才真放人）
+ * ; send_to_prison 0x0043d593
+ * 0043d5cc  call 0x41d476                 ; ① view_to(受害者)      ← 加刑也走
+ * 0043d5d4  mov  dh, [ebx + 0x496b9c]     ; 计数字节（整字节，含 0x80 待释放位）
+ * 0043d5da  test dh, dh
+ * 0043d5dc  jne  0x43d6bd                 ; ★ 非 0 ⇒ 直接去「加天数」，跳过搬位置 + 0x21a 警车
+ * 0043d6bd  … add cl, al / and ch, 0x7f   ;   (existing + days) & 0x7f
+ * 0043d6d6  … call 0x41d476               ; ② view_to(新位置)      ← 加刑也走
+ * ; send_to_hospital 0x0043ec3f 同形：0x0043ec86 test dh,dh / 0x0043ec88 jne 0x43ed6c 跳过 0x20c 救护车
  * ```
- *   于是「1 → 0x80」这一步**不是一次送入**，却满足 `0x80 > 1` ⇒ 旧代码误判成
- *   「刚被送医」并重播 6.2 秒的救护车影片。实测复现（5180、`?screen=game&humans=0&ai=4`）：
- *   `inHospital` 由 `0,0,0,1` 变 `0,0,0,128` 的那一拍，`#log` 里第二次出现
- *   `影片：開始 hospital（62 帧 × 100 ms）`，而此时两张占用表都没变、没人被送进去。
- *   掩掉高位之后：1 → 0x80 判为**不触发**；真加刑（3 → 5）与首次送入（0 → 3）照旧触发。
+ *   ⇒ 「待释放」（0x80）期间又被送进去也是非 0 ⇒ 同样只加天数、不播。
+ *   两次 `view_to` 照走（镜头看監獄 / 醫院），见 core 的 `confineViewTargets`（`extended`）。
+ *
+ * ★★ 2026-09-18（需求方第 5 条）：计数高位 0x80 是「待释放」状态位（@source 0x41c8ea `or ch, 0x80`），
+ *   1 → 0x80 那一步不是送入 —— 按整字节「原为 0」判，这一条自然成立。
  *
  * ⚠️ 两边同时成立（一次 action 里既进医院又进监狱）时取**医院**：
  *   原版是两次 `fcn_0045144f` 串行播，本引擎的表现层一次只播一段，
@@ -174,19 +177,19 @@ export function confineFxTrigger(
     players: readonly { blocking: { inPrison: number; inHospital: number } }[];
   },
 ): ConfineKind | null {
-  // @source 0x41c8ea `or ch, 0x80` —— 高位是「待释放」状态，不是天数的一部分
-  const days = (raw: number): number => raw & 0x7f;
   for (let i = 0; i < after.players.length; i++) {
     const b = before.players[i];
     const a = after.players[i];
     if (b === undefined || a === undefined) continue;
+    // @source 0x0043ec86 `test dh, dh / jne` —— 原计数非 0 ⇒ 加刑支，不播
     const hospital =
-      (after.hospitalOccupancy[i] === 1 && before.hospitalOccupancy[i] !== 1)
-      || days(a.blocking.inHospital) > days(b.blocking.inHospital);
+      b.blocking.inHospital === 0
+      && ((after.hospitalOccupancy[i] === 1 && before.hospitalOccupancy[i] !== 1) || a.blocking.inHospital !== 0);
     if (hospital) return 'hospital';
+    // @source 0x0043d5da `test dh, dh / jne`
     const prison =
-      (after.prisonOccupancy[i] === 1 && before.prisonOccupancy[i] !== 1)
-      || days(a.blocking.inPrison) > days(b.blocking.inPrison);
+      b.blocking.inPrison === 0
+      && ((after.prisonOccupancy[i] === 1 && before.prisonOccupancy[i] !== 1) || a.blocking.inPrison !== 0);
     if (prison) return 'prison';
   }
   return null;

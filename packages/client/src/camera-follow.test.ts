@@ -114,7 +114,8 @@ describe('★ main.ts 的 W-52 接线（源码钉子：冻镜头那一句的**�
   it('★ 判据与 `boardDrawState()` 同源（同一个 `boardFilmWindowFlags()`）', () => {
     // 第九份試玩回報起，`boardDrawState()` 多带一个「等級有沒有放出來」的入參
     // （機器工人大锤片第 48 帧中途放开）—— 判據來源仍是同一個 `boardFilmWindowFlags()`
-    expect(src).toContain('boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released)');
+    // 第十四份試玩回報起再多一档「片中重画后只按住人」（`playersOnly`）—— 判據來源照旧
+    expect(src).toContain('boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released && !playersOnly, !playersOnly)');
     expect((src.match(/boardFilmWindowFlags\(\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
 

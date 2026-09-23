@@ -325,29 +325,51 @@ export function smallLossTierFor(amount: number): 0 | 1 | 2 | null {
 // ============================================================
 
 /**
- * 入狱 —— 事件 19「放我出去！」。
- *
- * @source `_rich4_add_player_days_in_prison` @ VA 0x0043d593：
- * ```asm
- * dh = player.days_in_prison
- * test dh, dh / jne 加刑路径          ; ★ 已经在牢里 → 只累加，不吭声
- * …搬到监狱格…
- * mov edi, [表 + 0x480896]            ; = 事件 19
- * push edi / push 2 / push player
- * call _rich4_player_say              ; @ VA 0x0043d70d
- * ```
+ * 这一拍谁**被调了一次** `send_to_prison` / `send_to_hospital`：新判（计数 0 → 非 0）**或**加刑
+ * （原计数非 0、低 7 位变大 —— `(existing + days) & 0x7f`）。
+ * 高位 0x80 是「待释放」状态位（@source 0x0041c8ea `or ch, 0x80`），1 → 0x80 那一步不是送入。
  */
-export function detectPrisonEntered(before: GameState, after: GameState): DetectedSay[] {
-  return enteredBlocking(before, after, 'inPrison').map((player) => ({ player, event: 19 }));
+function sentToBlocking(before: GameState, after: GameState, field: 'inPrison' | 'inHospital'): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < after.players.length; i++) {
+    const b = before.players[i]?.blocking[field];
+    const a = after.players[i]?.blocking[field];
+    if (b === undefined || a === undefined) continue;
+    if (b === 0 ? a !== 0 : (a & 0x7f) > (b & 0x7f)) out.push(i);
+  }
+  return out;
 }
 
 /**
- * 住院 —— 事件 20「我不要打針！！」。
- * @source `_rich4_add_player_days_in_hospital` @ VA 0x0043ec3f，说在 VA 0x0043edbc
- *   （与监狱同构：`test dh,dh / jne 加刑路径`，只在**新判**时说）
+ * 入狱 —— 事件 19「放我出去！」。**新判与加刑都说**。
+ *
+ * @source `_rich4_add_player_days_in_prison` @ VA 0x0043d593：
+ * ```asm
+ * 0043d5d4  mov  dh, [player + 0x34]      ; days_in_prison（整字节）
+ * 0043d5da  test dh, dh
+ * 0043d5dc  jne  0x43d6bd                 ; 加刑：只跳过「搬到监狱格 + 警车片」
+ * …搬到监狱格… / 0043d6aa 警车 0x21a
+ * 0043d6bd  … (existing + days) & 0x7f    ; 加刑支
+ * 0043d6d6  push 0 … 0043d6f1 call 0x41d476   ; ← 两支在这里汇合，中间没有任何跳转
+ * 0043d70d  mov  edi, [表 + 0x480896]      ; = 事件 19
+ * 0043d714  push edi / push 2 / push player
+ * 0043d71c  call _rich4_player_say
+ * ```
+ * ⚠️ 2026-09-23 订正（第十四份試玩回報，协调方拍板照 exe）：先前这里写「已经在牢里 → 只累加，不吭声」——
+ *   `jne 0x43d6bd` 落点之后一路直下到 `0x0043d71c`，加刑同样说这一句。
+ */
+export function detectPrisonEntered(before: GameState, after: GameState): DetectedSay[] {
+  return sentToBlocking(before, after, 'inPrison').map((player) => ({ player, event: 19 }));
+}
+
+/**
+ * 住院 —— 事件 20「我不要打針！！」。**新判与加刑都说**。
+ * @source `_rich4_add_player_days_in_hospital` @ VA 0x0043ec3f：`0x0043ec86 test dh,dh / 0x0043ec88 jne 0x43ed6c`
+ *   只跳过搬位置与救护车片；加刑支 `0x0043ed6c..0x0043ed7f` 落到 `0x0043ed85`，与新判汇合，
+ *   `0x0043eda0 view_to` → `0x0043edcb call 0x44ef41`（事件 20，表 `0x48089a`）照说。
  */
 export function detectHospitalEntered(before: GameState, after: GameState): DetectedSay[] {
-  return enteredBlocking(before, after, 'inHospital').map((player) => ({ player, event: 20 }));
+  return sentToBlocking(before, after, 'inHospital').map((player) => ({ player, event: 20 }));
 }
 
 /**

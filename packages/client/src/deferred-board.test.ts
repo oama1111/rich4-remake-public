@@ -425,7 +425,8 @@ describe('★ main.ts 接线（源码钉子）', () => {
     expect(src).not.toContain('if (plan.hammer) deferredBoardBefore = before;');
     // 放开那一拍的判据交给 build-fx.ts（纯函数，可单测）
     expect(src).toContain('const released = buildFx !== null && buildHammerDone(buildFx, now);');
-    expect(src).toContain('boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released)');
+    // 第十四份試玩回報：多了「片中重画后只按住人」那一档（`playersOnly`），`!released` 这一项照旧
+    expect(src).toContain('boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released && !playersOnly, !playersOnly)');
   });
 
   it('★ 两条影片都要等这一步的走子补间播完才起播（试玩3 #1 的正面）', () => {

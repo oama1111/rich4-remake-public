@@ -68,6 +68,8 @@ import {  autoAction,
   type RoomInfo,
   type TargetClass,
   orphanedAuction,
+  confineViewTargets,
+  type ConfineView,
 } from '@rich4/core';
 import { NetClient, defaultWsUrl, netParamsFrom } from './net-client.ts';
 import { browserStorage, inviteLink, inviteRoomFrom, loadClientId, showFoyer } from './foyer.ts';
@@ -268,7 +270,7 @@ import { godFilmSpec, godFxTrigger } from './god-fx.ts';
 import { GOD_ASCEND_MAX_MS, GOD_ASCEND_SOUND, godAscendTrigger, type GodAscendCue } from './god-ascend-fx.ts';
 // ★ 「踩到惡犬」那一段影片（試玩回報：踩到狗直接進醫院、没有咬人动画/配音）——
 //   同一支 `fcn_0045144f` 的第三位客人，规格与判据见 `dog-fx.ts`。
-import { dogBiteFxTrigger } from './dog-fx.ts';
+import { dogBiteFxTrigger, filmPrecedesSendToHospital } from './dog-fx.ts';
 // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報）—— 同一支 `fcn_0045144f`，
 //   规格与判据见 `alien-news-fx.ts`。
 import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
@@ -298,6 +300,7 @@ import {
   beginBoardFilm,
   boardFilmBitmap,
   boardFilmDone,
+  boardFilmRedrawn,
   enqueueBoardFilm,
   type BoardFilm,
   type BoardFilmSpec,
@@ -3739,6 +3742,17 @@ function syncViewTarget(): void {
   // ★ D-MAGIC-16：魔法屋逐人那几段读**这一段**的 `view_to`，而且要等这一段的訊息框收掉
   //   （原版 `0x440cac` 在前、`0x41d476` 在后）；整趟没演完之前不撤标记（`0x431caa` 里没有 `refresh_screen`）
   if (magicSeq !== null && noticeHoldsFilms()) return;
+  // ★★ 第十四份試玩回報（协调方拍板）：**用卡亮牌期间镜头不动**（不落新目标、也不撤旧标记）。
+  //   原版用卡是 `0x00441cbc`（真人）/ `0x00441def`（电脑）`call 0x441f73` —— 亮牌，**阻塞** 1500 ms ——
+  //   返回之后才 `0x00441cc6` / `0x00441e00 call [0x475d5c + 卡号*4]` 进卡片函数；卡片里的 `view_to`
+  //   （含它调的 `send_to_prison` 的 `0x0043d5cc` / `0x0043d6f1`）全在亮牌之后，而清标记的
+  //   `refresh_screen`（`0x41d546`）在卡片函数**末尾**（例：陷害卡 `0x00444685`，排在受害者那句
+  //   `0x0043d71c call 0x44ef41` 之后）。
+  //   本引擎的 core 一条 action 就把卡用完，`lastViewTarget` 在亮牌起播那一拍就已经到了（电脑 / 联机旁观：
+  //   `useCard` 到达时才弹亮牌；真人自己那一张的亮牌在派发之前就演完了，不受影响）⇒ 等亮牌收屏再照做。
+  //   撤标记那一头沿用下面「台上不忙 + 台词说完」的判据（= 卡片函数末尾的 `refresh_screen`）。
+  //   联机旁观被行动者甩下时 `followPresenter` → 事件框 `fastForward` 把亮牌直接收掉 ⇒ 这里当拍放行。
+  if (cardUsePopupActive()) return;
   const t = magicSeq !== null ? (magicSeq.shown?.lastViewTarget ?? null) : state.lastViewTarget;
   if (t !== null && t !== shownViewTarget) {
     shownViewTarget = t;
@@ -3748,6 +3762,18 @@ function syncViewTarget(): void {
     //   是**本引擎**的东西，不动它；正常情形下它是 true，下一帧
     //   `centerOnCurrentPlayer()` 会因为「有标记」而继续停在标记上。
     camera = pixelCamera(t.x, t.y, camera.view);
+    requestRender();
+    return;
+  }
+  // ★ 第十四份試玩回報（协调方追加）：关押 / 消失影片前后的 `view_to`（`applyFilmView` 排进来的）——
+  //   与上面同一个标记，排在 `lastViewTarget` 之后：原版卡片 / 道具自己的 `view_to` 在前，
+  //   `send_to_*` 里那一次在后（例：陷害卡 `0x0044467d call 0x43d593`）。
+  const q = queuedFilmView;
+  if (q !== null) {
+    queuedFilmView = null;
+    viewTargetActive = true;
+    minimapMarker = { x: q.x, y: q.y };
+    camera = pixelCamera(q.x, q.y, camera.view);
     requestRender();
     return;
   }
@@ -6180,6 +6206,30 @@ let buildFx: BuildFx | null = null;
 let deferredBoardBefore: GameState | null = null;
 
 /**
+ * 关押 / 消失那几段影片各自的镜头（按影片 id）—— 起播时照 ① 移、播完照 ② 移。
+ * 目标全部来自 core 的 `confineViewTargets`（exe 序列见该文件头），表现层只决定「影片什么时候起播」。
+ * `null` = 受害者就是行动者（原版 `view_to` 清标记 ⇒ 看行动者，冻镜头 / `confined` 支本来就是）。
+ */
+const filmViews = new Map<string, ConfineView | null>();
+
+/** 下一帧要照做的那一次 `view_to`（排在 `lastViewTarget` 之后，见 `syncViewTarget`） */
+let queuedFilmView: { x: number; y: number } | null = null;
+
+/** 这一段影片起播（`from`）/ 收屏（`to`）时该不该移镜头 */
+function applyFilmView(spec: BoardFilmSpec, at: 'from' | 'to'): void {
+  const t = filmViews.get(spec.id)?.[at] ?? null;
+  if (t === null) return;
+  queuedFilmView = t;
+  requestRender();
+}
+
+/**
+ * 片中重画之后「等级 / 物件放开、**人仍按住**」的那一份快照（换了快照 ⇒ 自动失效）。
+ * 只有「这一段之后还要 `send_to_hospital`」时才用得上（狗咬 / 爆炸 → 救护车），见 `applyBoardFilmRedraw`。
+ */
+let boardFilmRedrawKeepsPlayersFor: GameState | null = null;
+
+/**
  * 顯靈加蓋那一扇框还没收时，棋盘上被加蓋的那几格少画的级数（`manifest-hold.ts`）；`null` = 没在按。
  * 由 `startBuildFx` 立、`tickManifestHold` 在框收掉那一拍放。
  */
@@ -6337,9 +6387,21 @@ function startBoardFilm(spec: BoardFilmSpec, after?: BoardFilmSpec): void {
  *   判据（占用表 0→1 / 计数变大）见 `confine-fx.ts` 的 `confineFxTrigger`。
  */
 function startConfineFx(before: GameState, after: GameState): void {
-  if (!options.animation) return;
+  // ★ 镜头（`view_to` ① / ②，core 的 `confineViewTargets`）—— 两次都不在「動畫過程」闸
+  //   （`cmp [0x497159], 0`）里，也不在加刑那道跳转（`0x0043d5da` / `0x0043ec86 test dh,dh / jne`）里：
+  //   没有影片夹在中间（動畫過程关着 / 加刑）⇒ ① 与 ② 背靠背，镜头停在 ②。
+  const views = confineViewTargets(before, after).filter((v) => v.kind !== 'disappear');
   const kind = confineFxTrigger(before, after);
-  if (kind === null) return;
+  if (kind === null || !options.animation) {
+    const to = views.find((v) => v.to !== null)?.to ?? null;
+    if (to !== null) {
+      queuedFilmView = to;
+      requestRender();
+    }
+    return;
+  }
+  const view = views.find((v) => v.kind === kind && !v.extended) ?? null;
+  filmViews.set(confineClip(kind).id, view);
   // 影片窗口里棋盘按 before 画（见 `deferred-board.ts`）—— 起播前先记下快照
   deferredBoardBefore = before;
   // ★★ 同一条 action 里已经排了一段（踩到惡犬：0x214 在前）⇒ **接在它后面**，
@@ -6478,6 +6540,8 @@ function startDevilFx(before: GameState, after: GameState): void {
 function startDisappearFx(before: GameState, after: GameState): void {
   const spec = disappearFxTrigger(before, after);
   if (spec === null) return;
+  // ★ 镜头 ①（`0x0040d3e6 view_to(受害者)`，在播片之前；这一支没有 ②）—— core 的 `confineViewTargets`
+  filmViews.set(spec.id, confineViewTargets(before, after).find((v) => v.kind === 'disappear') ?? null);
   // 影片窗口里棋盘按 before 画：人还站在那儿，被飛碟吸走 / 上飛機（`deferred-board.ts`）
   deferredBoardBefore = before;
   startBoardFilm(spec);
@@ -6492,8 +6556,9 @@ function startDisappearFx(before: GameState, after: GameState): void {
  * 演出收完复位）；这一段落在屏幕 (0,0x28) 整块棋盘上，正好盖住那一处。
  *
  * ★ 影片窗口里棋盘按 **before** 画（房子还在）：原版是 `mutate_land` 在前、影片在后，
- *   但与大锤 / 飛碟那几段同一个口径 —— 片子播完才看到「少了一级」，
- *   玩家这才看得出**是哪一栋**受了影响（第十二份回报的原话）。
+ *   起播时房子还在，玩家这才看得出**是哪一栋**受了影响（第十二份回报的原话）。
+ *   第十四份試玩回報起：到 `flags` 第三字节那一帧（0x80001 = 第 8 个计数，龍捲風正压在房子上；
+ *   0x50001 / 0x200001 同理）原版片中重画一次棋盘 ⇒ 房子在片中当场少一级（`applyBoardFilmRedraw`）。
  * ★ 不加 `options.animation` 闸：这四个函数里都没有 `cmp byte [0x497159], 0`。
  */
 function startNewsPlaceFx(before: GameState, after: GameState): void {
@@ -6545,6 +6610,7 @@ function tickBoardFilm(now: number): void {
     if (boardFilmFlics.has(key)) {
       pendingBoardFilmAfter = null;
       boardFilm = beginBoardFilm(after, now);
+      applyFilmView(after, 'from');
       log(`影片：開始 ${after.id}（${after.frames} 帧 × ${after.frameMs} ms）`);
       if (after.sound >= 0) sound.play('Effect.mkf', after.sound);
       requestRender();
@@ -6593,6 +6659,7 @@ function tickBoardFilm(now: number): void {
     }
     pendingBoardFilm = null;
     boardFilm = beginBoardFilm(pending, now);
+    applyFilmView(pending, 'from');
     // 魔法屋拆房：原版 `0x40ab4a`（重画地图）在 `fcn_0045144f` 之前 ⇒ 影片期间棋盘已是拆过的样子
     if (pending.releaseBoardOnStart === true) deferredBoardBefore = null;
     log(`影片：開始 ${pending.id}（${pending.frames} 帧 × ${pending.frameMs} ms）`);
@@ -6602,12 +6669,17 @@ function tickBoardFilm(now: number): void {
   }
   const film = boardFilm;
   if (film === null) return;
+  // ★ 第十四份試玩回報：片中那一次重画（`flags` 第三字节）—— 必须在「播完没」之前看，
+  //   掉帧时两件事可能落在同一拍
+  applyBoardFilmRedraw(film, now);
   if (!boardFilmDone(film, now)) {
     requestRender();
     return;
   }
   boardFilm = null;
   releaseBoardFilmFlics();
+  applyFilmView(film.spec, 'to');
+  filmViews.delete(film.spec.id);
   // ★ 阻塞那一段播完了 —— 若后面还排着一段（狗咬 → 救护车），就交给上面 ⓪ 那一步；
   //   只有**两段都播完**才把回合驱动接回去（`scheduleHumanTurn` / `scheduleAi`
   //   都以它为闸，不补这一下人就永远停在原地）。
@@ -6619,9 +6691,42 @@ function tickBoardFilm(now: number): void {
     //   ⇒ 一份**过期快照**会把「期间才被关押的人」在画面上**复活**，
     //   并因 `wreckedThisAction(staleBefore, after, i)` 为真而画成乞丐、站在很久以前的旧坐标上。
     deferredBoardBefore = null;
+    boardFilmRedrawKeepsPlayersFor = null;
     resumeTurnDriver();
   }
   requestRender();
+}
+
+/**
+ * 原版 `fcn_0045144f` 的**片中重画**（`flags` 第三字节，逐条见 `board-film.ts` 的
+ * `boardFilmRedrawFrame`）：到那一帧就按**当时的游戏状态**重画影片底下的棋盘。
+ *
+ * ★ 第十四份試玩回報两条都是它：
+ *   · 「警车开过角色后角色就该消失」—— 入獄 0x21a `flags` 0x120001 ⇒ 第 18 个计数
+ *     （第 17 帧，警车正盖住人）重画；此前 `0x0043d627..0x0043d652` 已把人搬进監獄 ⇒ 人没了。
+ *     住院 0x20c（0x1e0001）同理，第 30 个计数（救护车停在人身上、开着门那一帧）。
+ *   · 「狗咬完狗就该消失」—— 0x214 `flags` 0x30001 ⇒ 第 3 个计数重画；`remove_object`
+ *     在片子之前 ⇒ 烟尘散开时狗已经没了。
+ *
+ * 那一刻原版的状态 = 调用 `fcn_0045144f` 之前写下的一切：
+ *   · 一般情况就是整条 action 的 after ⇒ 放掉快照（`deferredBoardBefore = null`）；
+ *   · 这一段之后**还要** `send_to_hospital`（狗咬 / 爆炸，或后面排着一段）⇒ 位置、住院天数、
+ *     乞丐造型那几项还没发生 ⇒ 只放开等级与物件，人仍按住，等下一段自己的重画。
+ * 镜头不动：`view_to(新位置)` 在片子**之后**（入獄 `0x0043d6f1`），镜头的冻结判据只看窗口开没开。
+ */
+function applyBoardFilmRedraw(film: BoardFilm, now: number): void {
+  if (deferredBoardBefore === null || !boardFilmRedrawn(film, now)) return;
+  if (pendingBoardFilmAfter !== null || filmPrecedesSendToHospital(film.spec)) {
+    boardFilmRedrawKeepsPlayersFor = deferredBoardBefore;
+    return;
+  }
+  deferredBoardBefore = null;
+  requestRender();
+}
+
+/** 片中重画之后是不是「只按住人」那一档 */
+function boardRedrawKeepsPlayersOnly(): boolean {
+  return boardFilmRedrawKeepsPlayersFor !== null && boardFilmRedrawKeepsPlayersFor === deferredBoardBefore;
 }
 
 /** 这一刻该贴哪一帧（屏幕落点由规格给）—— 没在播或影片没到货就是 null */
@@ -6819,6 +6924,8 @@ function boardDrawState(): GameState {
   //   其余影片（神明/救护车/入獄/飛碟）的 `buildFx` 恒为 null ⇒ 恒 false ⇒ 等级照旧一直按住。
   const now = performance.now();
   const released = buildFx !== null && buildHammerDone(buildFx, now);
+  // ★ 第十四份試玩回報：狗咬 / 爆炸片中重画之后，狗（地雷）已撤、人还按住（`applyBoardFilmRedraw`）
+  const playersOnly = boardRedrawKeepsPlayersOnly();
   // ★★ 神明升天期间（第十二份试玩回报 #1）：原版 `god_detach` 在演完之后才 `0x40e604 call 0x40e14d`
   //   真正拆下来（清 `god_info`、搭档此时才在地图上登场）⇒ 棋盘按离身**之前**那一份画，
   //   升天那一尊由渲染器藏掉、改画在动效层。
@@ -6828,11 +6935,11 @@ function boardDrawState(): GameState {
   // ★ D-MAGIC-16：魔法屋逐人那几段里棋盘按「演到哪一段」画（后面几位的改动还没发生）
   if (magicSeq !== null) {
     const base = magicShownState();
-    return boardStateForFilm(base, deferredBoardBefore, boardFilmWindowFlags(), !released);
+    return boardStateForFilm(base, deferredBoardBefore, boardFilmWindowFlags(), !released && !playersOnly, !playersOnly);
   }
   // ★ 第十三份試玩回報 #1：顯靈框底下还是顯靈之前的等级（`manifest-hold.ts`）
   return applyManifestHold(
-    boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released),
+    boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released && !playersOnly, !playersOnly),
     state,
     manifestHold,
   );

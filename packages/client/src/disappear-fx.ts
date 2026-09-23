@@ -31,7 +31,9 @@
  * | `0x22e` 飛機 | 40 | 440×440 | 42 ms | 1680 ms | (0,40) | 0x60 | 0x140001 |
  *
  * 判据：某位玩家的 `blocking.disappearing` 从 0 变成非 0（原因取高位 `>> 6`）。
- * 影片窗口里棋盘按 **before** 画（人还在，飛碟把他吸走 —— `deferred-board.ts`）。
+ * 影片窗口里棋盘按 **before** 画（人还在，飛碟把他吸走 —— `deferred-board.ts`），
+ * 直到 `flags` 第三字节那一帧（飛碟 0x1c = 光柱罩住人、飛機 0x14）原版片中重画一次棋盘，人随之隐掉
+ * （`board-film.ts` 的 `boardFilmRedrawFrame`，宿主 `main.ts` 的 `applyBoardFilmRedraw`）。
  */
 
 import { DISAPPEAR_REASON_ABDUCTED } from '@rich4/core';
