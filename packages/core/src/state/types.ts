@@ -547,6 +547,17 @@ export interface NoticeHint {
    *   向後轉 `push 0x1f4`（500 ms，0x004321e6）。
    */
   afterMs?: number;
+  /**
+   * ★ 第十四份（2026-09-23）：**这扇框之后**原版紧跟着的那一句 `player_say`（纯表现）。
+   *
+   * 两种形状：
+   *   - `{ player, event }`：固定槽位（免收九种之后当前玩家的事件 13 `0x0041d6dd`；
+   *     命運坐牢被神明挡掉之后的事件 0 `0x0044d873`）；
+   *   - `{ player, reliefAmount }`：走 `fcn_0044f567` 那条「逃过一劫」阶梯（12/13/14），
+   *     金额是**没付的那一笔**（命運罰金免付 `0x0044ce7e` / `0x0044d028`，
+   *     大財神把费用抹成 0 `0x0041d7c1`）。档位由表现层按 `payTierFor` 分。
+   */
+  say?: { player: number; event: number } | { player: number; reliefAmount: number };
 }
 
 /**
@@ -676,7 +687,27 @@ export type NoticeKey =
    * 格式串 `0x464842 "%s\n\n%s"`，1500 ms），**然后**才进 `0x431caa` 逐人施加。
    * `args` = [条件名（去掉 `#00NN`）, 效果名]。真人那一支没有这一扇（女巫窗口就是它）。
    */
-  | 'magic.spin';
+  | 'magic.spin'
+  /**
+   * ★ 第十四份：命運的**神明加持**那六扇（`fcn_0044b896` 写 `[0x48c5b8]`，调用方 1500 ms）——
+   * `args[0]` = 神明名（`[0x47ed76 + god_info*4]`）。见 `@rich4/data` 的 `BLESSING`。
+   */
+  | 'blessing.rewardDouble'
+  | 'blessing.rewardVoid'
+  | 'blessing.penaltyDouble'
+  | 'blessing.penaltyVoid'
+  | 'blessing.misfortuneDouble'
+  | 'blessing.misfortuneVoid'
+  /**
+   * ★ 第十四份：过路费的神明调整（`fcn_0041d709`，金额变了才弹，1500 ms）—— `args[0]` = 費名。
+   * 小財神 `0x463c67` / 大財神 `0x463c80` / 小窮神 `0x463c95` / 大窮神 `0x463cae`。
+   */
+  | 'god.tollHalf'
+  | 'god.tollFree'
+  | 'god.tollPlusHalf'
+  | 'god.tollDouble'
+  /** ★ 第十四份：保險理賠（`fcn_0044ba63`，`0x4658fa`，**2000 ms**）—— `args[0]` = 理賠金额 */
+  | 'insurance.payout';
 
 /**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。
@@ -1199,6 +1230,20 @@ export interface GameState {
    *   （第十三份試玩回報，需求方拍板「按原版 1/2 概率」）
    */
   lastBlockedSays?: readonly number[] | null;
+
+  /**
+   * ★ 第十四份（2026-09-23）：**这一条 action 里原版调了「進帳」档位函数 `fcn_0044f354` 的那几笔**
+   * —— 纯表现提示（不进指纹、不进存档），只活一条 action。缺席 / `null` = 这一条没有。
+   *
+   * `0x44f354`（事件 6/7/8）全 exe 只有 6 个调用点，除大財神那一处（`0x0040ed85`，
+   * 走 `lastGodPower`）外都在这里交出去：
+   *   - `0x00419fa1` / `0x00419ff0`：過路費的**地主**（有同盟时只算地主那一份，同盟那份不说）；
+   *   - `0x0041a735`：設施費的主人；
+   *   - `0x00449a80`：新聞 8/9/10 的受奖人；
+   *   - `0x0044d334`：命運「進帳」那一族（20/21/22/25/27/28/29/31）没被神明作廢时。
+   * 金额 = 原版压给 `0x44f354` 的那个数；档位由表现层分（`gainEventFor`）。
+   */
+  lastGainSays?: readonly { player: number; amount: number }[] | null;
 
   /**
    * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。

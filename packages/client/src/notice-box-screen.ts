@@ -66,7 +66,7 @@
  * 与原版「每扇各自一次可跳过的等待」一致）。
  */
 
-import { BANK, CONFINEMENT, FACILITY_TOLL, GOD_MANIFEST, MAGIC_HOUSE_TEXT, MESSAGE_BOX, RENT, SHOP, formatOriginal } from '@rich4/data';
+import { BANK, BLESSING, CONFINEMENT, FACILITY_TOLL, GOD_MANIFEST, INSURANCE, MAGIC_HOUSE_TEXT, MESSAGE_BOX, RENT, SHOP, formatOriginal } from '@rich4/data';
 import type { GameState, NoticeHint, NoticeKey } from '@rich4/core';
 import { drawDialog } from './dialog.ts';
 import type { InteractionUi } from './interactions.ts';
@@ -147,6 +147,20 @@ export const NOTICE_TEXT = {
   'magic.effect': MAGIC_HOUSE_TEXT.nameHead.text + '%s',
   'magic.gotCard': MAGIC_HOUSE_TEXT.nameHead.text + MAGIC_HOUSE_TEXT.gotCard.text,
   'magic.spin': MAGIC_HOUSE_TEXT.spin.text,
+  // ★ 第十四份：命運的神明加持（`fcn_0044b896` → `[0x48c5b8]`，调用方 1500 ms）
+  'blessing.rewardDouble': BLESSING.rewardDouble.text,
+  'blessing.rewardVoid': BLESSING.rewardVoid.text,
+  'blessing.penaltyDouble': BLESSING.penaltyDouble.text,
+  'blessing.penaltyVoid': BLESSING.penaltyVoid.text,
+  'blessing.misfortuneDouble': BLESSING.misfortuneDouble.text,
+  'blessing.misfortuneVoid': BLESSING.misfortuneVoid.text,
+  // ★ 第十四份：过路费的神明调整（`fcn_0041d709` 跳表四支，`0x0041d7a2 push 0x5dc`）
+  'god.tollHalf': RENT.halfLuckyGod.text,
+  'god.tollFree': RENT.freeBigLuckyGod.text,
+  'god.tollPlusHalf': RENT.plusHalfSmallPoorGod.text,
+  'god.tollDouble': RENT.doubleBigPoorGod.text,
+  // ★ 第十四份：保險理賠（`fcn_0044ba63`，2000 ms）
+  'insurance.payout': INSURANCE.payout.text,
 } as const satisfies Record<NoticeKey, string>;
 
 /** 一条 `{ key, args }` 提示 → 屏上那一句（`%s` / `%d` 全在 `args` 里） */
@@ -216,7 +230,21 @@ interface QueuedNotice {
  *   其余的框（過路費 → 付款台词、神明顯靈 → 台词…）原版都是**框在前**，不走这条。
  */
 export function noticeAfterSpeech(key: NoticeKey): boolean {
-  return key.startsWith('confinement.');
+  // ★ 第十四份：保險理賠那一扇在六个调用点上**都排在台词之后**（`fcn_0044ba63` 里没有台词，
+  //   它前面那一句是付款 / 入獄 / 住院 / 住店的台词）：
+  //   命運罰款 `0x0044cef9 call 0x44f42d` → `0x0044cf11 call 0x44ba63`；
+  //   坐牢 `0x0043d71c player_say` → `0x0043d749`；住院 `0x0043edcb` → `0x0043edf8`；
+  //   住旅館 `0x0041a7e0 call 0x44f2c2` → `0x0041a82d`。
+  return key.startsWith('confinement.') || key === 'insurance.payout';
+}
+
+/**
+ * ★ 第十四份：队头那一扇正在**等台词说完**（`noticeAfterSpeech` 且台词闸关着）。
+ *   这时本屏只是「排着」，不该算台上在演 —— 否则押在演出之后的台词（`afterStage`）
+ *   与这扇框互相等（`main.ts` 的 `blockingPresentation` 用它）。
+ */
+export function noticeWaitingForSpeech(): boolean {
+  return playback === null && tail === null && pending[0]?.afterSpeech === true && speechGate?.() === true;
 }
 
 /** 正在弹的那一扇是不是「排在影片之前」的那一种 */
@@ -265,6 +293,17 @@ function gated(): boolean {
   return startGate?.() === true;
 }
 
+/**
+ * ★ 第十四份：**连「排在影片之前」的那几扇也要等**的闸 —— 事件提示框（新聞 / 命運）还在演。
+ *   原版命運的施加阶段（神明加持框、理賠框…）在事件框收掉之后才走（pass 0 画框、pass 1 施加）。
+ *   先前框在事件框底下就起了计时，事件框一收它早已过期（一闪就没）。
+ */
+let overlayGate: (() => boolean) | null = null;
+
+export function setNoticeOverlayGate(f: (() => boolean) | null): void {
+  overlayGate = f;
+}
+
 /** 调试 / 单测用：把整屏关掉（连队列一起清空） */
 export function resetNoticeBoxScreen(): void {
   playback = null;
@@ -305,6 +344,7 @@ export function noticeHoldsFilms(): boolean {
  */
 function startNext(env: UiScreenEnv): void {
   if (playback !== null || tail !== null) return;
+  if (overlayGate?.() === true) return;
   // ★ W-69：闸没开就先不取队头 —— 队列原样留着，`active()` 靠它保持「还占着屏」
   //   好让 `tick` 继续叫我们（见 `active` 与 `tick`）。
   //   ★ 例外：「排在影片之前」的那几扇（魔法屋）不看这道闸 —— 反过来是影片等它们

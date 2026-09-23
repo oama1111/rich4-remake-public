@@ -47,6 +47,12 @@ export interface RentResult {
   /** 实际分账明细，无同盟时只有一项 */
   shares: RentShare[];
   /**
+   * ★ 第十四份：**地主那一份的应收额**（付款之前算的，不因付款人掏不出而截断）——
+   *   原版 `0x00419f92 ebx = ebp − 同盟份` → `0x00419fa1 call 0x44f354(地主, ebx)`（有同盟）、
+   *   `0x00419ff0 call 0x44f354(地主, ebp)`（无同盟）都在 `pay_money` **之前**。纯表现（進帳台词）。
+   */
+  ownerDue: number;
+  /**
    * 「算进这笔过路费」的地块 **id**（含同盟那一份），照棋盘顺序。
    *
    * ★ W-69：原版在收费**之前**把这几块一起闪一遍（`0x00419b9e` 起把 id 图上的
@@ -137,6 +143,7 @@ export function collectRent(
     baseTotal: 0,
     godAdjusted: false,
     shares: [],
+    ownerDue: 0,
     bankrupted: false,
     counted: [],
   });
@@ -179,6 +186,7 @@ export function collectRent(
   }
 
   const shares: RentShare[] = [];
+  let ownerDue = 0;
   let next = [...players];
   let bankrupted = false;
 
@@ -188,10 +196,12 @@ export function collectRent(
     next = r.players;
     bankrupted = r.bankrupted;
     shares.push({ payee: ownerIdx, amount: r.paid });
+    ownerDue = total;
   } else {
     // 比例由两份**原始**租金决定，再套到（可能被神明改过的）实付总额上
     const allyGets = allianceShareOf(ownerToll, allyToll, total);
     const ownerGets = total - allyGets;
+    ownerDue = ownerGets;
     // ★ 顺序照搬：先付地主（0x00419fb4），再付同盟（0x0041a003）
     const r1 = transferMoney(next, companies, 0, payer, ownerIdx, ownerGets, 0);
     next = r1.players;
@@ -204,7 +214,7 @@ export function collectRent(
     bankrupted = r1.bankrupted || r2.bankrupted;
   }
 
-  return { players: next, total, baseTotal, godAdjusted: god.changed, shares, bankrupted, counted };
+  return { players: next, total, baseTotal, godAdjusted: god.changed, shares, ownerDue, bankrupted, counted };
 }
 
 /**

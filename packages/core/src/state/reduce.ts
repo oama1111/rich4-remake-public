@@ -161,7 +161,7 @@ import {
   toolShelf,
   STORE_INDUSTRY,
 } from '../places/shop.ts';
-import { CARDS, CHARACTERS, MAGIC_HOUSE_OPTIONS, TOOLS, fortuneEvent, godNameOf, newsEvent, objectNameOf } from '@rich4/data';
+import { CARDS, CHARACTERS, MAGIC_HOUSE_OPTIONS, TOOLS, eventAmount, fortuneEvent, godNameOf, newsEvent, objectNameOf } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
@@ -248,16 +248,18 @@ import { tickBlocking, tickTurnCounters } from '../rules/blocking.ts';
 import { releaseConfinedPlayers } from '../rules/blocking.ts';
 import { DISAPPEARING_MASK, displayRemainingDays } from '../rules/blocking.ts';
 import { wakeFromSleepwalk } from '../cards/sleepwalk.ts';
-import { purchase, purchaseBlockedBy, type PurchaseFailure } from '../rules/purchase.ts';
+import { OBJECT_NAMES, purchase, purchaseBlockedBy, type PurchaseFailure } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints } from '../rules/special-square.ts';
 import { MAX_LAND_LEVEL, SPECIAL_KIND } from '../loaders/map.ts';
 import { drawEvent } from '../events/deck.ts';
 import { isNewsFeasible } from '../events/news.ts';
 import { checkFortune } from '../events/fortune.ts';
 import {
+  FORTUNE_GIVE_TAIL_IDS,
   FORTUNE_PAY_TAIL_IDS,
   FORTUNE_STOCK_LIQUIDATE,
   applyFortuneEffect,
+  fortuneBlessingNotice,
 } from '../events/fortune-effects.ts';
 import {
   blessingLevelWithDraw,
@@ -1120,7 +1122,14 @@ function tickDailyCounters(state: GameState, index: number): GameState {
  * @param topo  地图拓扑（只读）
  */
 export function reduce(state: GameState, action: Action, topo: MapTopology): GameState {
-  const raw = reduceCore(state, action, topo);
+  if (reduceDepth === 0) staleNoticeLists.add(state.notices);
+  reduceDepth++;
+  let raw: GameState;
+  try {
+    raw = reduceCore(state, action, topo);
+  } finally {
+    reduceDepth--;
+  }
   // ★ 不可信输入（联机）：不认识的 action type 会让那个 `switch` 穿底、返回 `undefined`，
   //   服务器靠这个判「被拒」（`server/hub.test.ts`）—— 原样交还，别在这里解引用。
   if ((raw as GameState | undefined) === undefined) return raw;
@@ -1156,8 +1165,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   // ★ 第十三份試玩回報：回合开始被挡那几句（`lastBlockedSays`）同一套：只活一条 action。
   const staleSays =
     raw !== state && (raw.lastBlockedSays ?? null) !== null && raw.lastBlockedSays === state.lastBlockedSays;
+  // ★ 第十四份：「進帳」台词那几笔（`lastGainSays`）同一套：只活一条 action。
+  const staleGain =
+    raw !== state && (raw.lastGainSays ?? null) !== null && raw.lastGainSays === state.lastGainSays;
   const next =
-    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays
+    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
@@ -1168,6 +1180,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           ...(staleDraw ? { lastLotteryDraw: null } : {}),
           ...(staleBeats ? { lastMagicBeats: null } : {}),
           ...(staleSays ? { lastBlockedSays: null } : {}),
+          ...(staleGain ? { lastGainSays: null } : {}),
         }
       : raw;
   // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈
@@ -1723,6 +1736,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
               exemption,
               playerName(state, land.owner - 1),
               LAND_TOLL_FEE_NAME,
+              state.currentPlayer,
             );
             if (notice === null) return { ...state, phase: 'turnEnd' };
             return { ...state, notices: [notice], phase: 'turnEnd' };
@@ -1757,6 +1771,15 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           //   （@source 0x00419f04 `push 0x4639cc` + 0x00419f16 `push 0x5dc /
           //   call 0x440cac`）——所以这里是数组，不是单个字段（见 types.ts 的 `notices`）。
           const notices: NoticeHint[] = [notice];
+          // ★ 第十四份：租金框之后 `0x00419d70 call 0x41d709` —— 付款方身上的財神 / 窮神改了金额就再弹一扇
+          const godNotice = godTollNotice(
+            state.players[state.currentPlayer]?.godInfo ?? 0,
+            preview.baseTotal,
+            preview.total,
+            LAND_TOLL_FEE_NAME,
+            state.currentPlayer,
+          );
+          if (godNotice !== null) notices.push(godNotice);
           const rng = new WatcomRng();
           rng.setState(state.rngState);
           // ★ 尾巴照 0x00419e36 起：免費卡 → 嫁禍卡 → 死神顯靈由他人賠償
@@ -1803,7 +1826,21 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           // @source 0x0041a00b `mov [land + 0x2c], ebp` —— 记下这一笔（間諜要用）
           const landLastToll = [...withRng.landLastToll];
           landLastToll[land.id] = out.total;
-          const paid: GameState = { ...withRng, players: out.players, landLastToll, notices, phase: 'turnEnd' };
+          // ★ 第十四份：地主的「進帳」台词（`0x00419fa1` / `0x00419ff0 call 0x44f354(地主, 地主那份)`）——
+          //   付款人（嫁禍 / 死神换过之后的 `edi`）就是地主或同盟时整段跳过（`0x00419f32` / `0x00419f42`）
+          const ownerIdx = land.owner - 1;
+          const gainSays =
+            out.total !== 0 && who !== ownerIdx && who !== landlord.alliedPlayer - 1
+              ? [{ player: ownerIdx, amount: out.ownerDue }]
+              : null;
+          const paid: GameState = {
+            ...withRng,
+            players: out.players,
+            landLastToll,
+            notices,
+            phase: 'turnEnd',
+            ...(gainSays === null ? {} : { lastGainSays: gainSays }),
+          };
           // ★ 付不起就破产——这是对局能真正结束的唯一途径
           return out.bankrupted ? applyBankruptcy(paid, who, topo) : paid;
         }
@@ -2648,6 +2685,41 @@ function godBlockedPurchase(state: GameState, reason: PurchaseFailure | null): G
   const who = player === undefined ? null : purchaseBlockedBy(player);
   if (who === null) return state;
   return { ...state, pending: null, phase: 'turnEnd', notices: [{ key: 'god.blockPurchase', args: [who], holdMs: 1500 }] };
+}
+
+/**
+ * ★ 第十四份：过路费神明调整那一扇（`fcn_0041d709`）。金额没变不弹（`0x0041d79e cmp ebx,esi / je`）；
+ *   抹成 0 时付款方说「逃过一劫」那一档（`0x0041d7b4 test ebx,ebx / jne` → `0x0041d7c1 call 0x44f567(付款方, 原额)`）。
+ *
+ * @source 跳表 `0x0041d6f1`：1 小財神 `0x0041d742 push 0x463c67` / 2 大財神 `0x0041d759 push 0x463c80` /
+ *   5 小窮神 `0x0041d770 push 0x463c95` / 6 大窮神 `0x0041d789 push 0x463cae`；框 `0x0041d7a2 push 0x5dc`。
+ */
+function godTollNotice(godInfo: number, before: number, after: number, feeName: string, payer: number): NoticeHint | null {
+  if (after === before) return null;
+  const key = GOD_TOLL_NOTICE_KEYS.get(godInfo);
+  if (key === undefined) return null;
+  return { key, args: [feeName], ...(after === 0 ? { say: { player: payer, reliefAmount: before } } : {}) };
+}
+
+const GOD_TOLL_NOTICE_KEYS: ReadonlyMap<number, NoticeKey> = new Map<number, NoticeKey>([
+  [1, 'god.tollHalf'],
+  [2, 'god.tollFree'],
+  [5, 'god.tollPlusHalf'],
+  [6, 'god.tollDouble'],
+]);
+
+/**
+ * ★ 第十四份：**上一条 action 留下来的** `notices` 数组（`reduce` 入口登记，只登记最外层那一次）。
+ *   `insurancePayoutTo` 这类被很多处调用、手里没有「动作前状态」的函数，靠它判断
+ *   `state.notices` 是本 action 自己弹的（接着往后排）还是上一条留下的（从空开始）。
+ *   纯表现（notices 不进指纹、不进存档）。
+ */
+const staleNoticeLists = new WeakSet<readonly NoticeHint[]>();
+let reduceDepth = 0;
+
+function appendFreshNotice(state: GameState, notice: NoticeHint): GameState {
+  const own = staleNoticeLists.has(state.notices) ? [] : state.notices;
+  return { ...state, notices: [...own, notice] };
 }
 
 function appendNotice(before: GameState, next: GameState, notice: NoticeHint): GameState {
@@ -3805,6 +3877,18 @@ function gateNodeOf(topo: MapTopology, kind: ConfinementKind): number {
  *                     設施 = `facilityFeeNameOf(type)`（`0x47528b` 表）
  */
 function exemptionNotice(
+  exemption: TollExemption,
+  landlordName: string,
+  feeName: string,
+  payer: number,
+): NoticeHint {
+  // ★ 第十四份：九种免收**都**汇到 `0x0041d6a0`：`0x0041d6a4 call 0x440cac(…, 0x5dc)` 弹完框，
+  //   `0x0041d6d2 mov edx,[… + 0x48087e]`（事件 **13**）→ `0x0041d6dd player_say([0x49910c], 3, …)`
+  //   —— 当前玩家（= 付款方）庆幸一句。
+  return { ...exemptionNoticeText(exemption, landlordName, feeName), say: { player: payer, event: 13 } };
+}
+
+function exemptionNoticeText(
   exemption: TollExemption,
   landlordName: string,
   feeName: string,
@@ -5311,6 +5395,21 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     hospitalOccupancy: out.hospitalOccupancy,
     lastEvent: { kind: 'fortune', id: effectiveId },
   };
+  // ★ 第十四份：神明加持那一扇（`fcn_0044b896` 返回 1/2 时调用方弹 `[0x48c5b8]`，1500 ms）——
+  //   施加阶段的第一件事（在付款 / 入獄之前）。`%s` = `[0x47ed76 + god_info*4]`。
+  const blessEntry = fortuneEvent(effectiveId);
+  if (blessKind !== undefined && blessEntry !== undefined && me !== undefined) {
+    const blessNotice = fortuneBlessingNotice(
+      effectiveId,
+      blessKind,
+      blessLevel,
+      OBJECT_NAMES[me.godInfo] ?? '',
+      withDeck.currentPlayer,
+      // 免付那一句用的是**没乘倍率**的原额 `[0x48c5b4]`（`0x0044d01b mov ebp,[0x48c5b4]`）
+      blessEntry.factor === null ? 0 : eventAmount(blessEntry, withDeck.priceIndex),
+    );
+    if (blessNotice !== null) applied = appendFreshNotice(applied, blessNotice);
+  }
 
   // ★★ 第 160 条：**命運 `pay` 支的破产结算**（README §7.142(5) 的 E3）。
   //   @source `0x44cec2 call 0x41d2c6`（`pay_money`：现金 → 存款 → **破产**），
@@ -5389,6 +5488,10 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     } else if (entry.effects.includes('loan') || FORTUNE_PAY_TAIL_IDS.has(effectiveId)) {
       applied = insurancePayoutTo(applied, topo, me, out.amount);
     }
+    // ★ 第十四份：「進帳」那一族没被作廢 ⇒ `0x0044d334 call 0x44f354(当前玩家, 金额)`（6/7/8）
+    if (FORTUNE_GIVE_TAIL_IDS.has(effectiveId) && out.amount > 0) {
+      applied = { ...applied, lastGainSays: [{ player: me, amount: out.amount }] };
+    }
   }
   // ★ 命運 5 生日收卡：寿星是真人 ⇒ 效果**一位都没收**，把座位挂成待决交互，
   //   由客户端逐个开选牌窗（T-055）。电脑寿星那一支在上面已经当场收完了。
@@ -5441,6 +5544,9 @@ function answerBirthdayCard(state: GameState, seat: number, cardId: number): Gam
  * 此处按事件语义现场挑；尚不能判定的事件由 applyNewsEffect
  * 标记 unimplemented，状态不变。
  */
+/** 新聞「公開表揚 / 補助」那三条（8/9/10）—— 受奖人说進帳台词，见 `drawAndApplyNews` */
+const NEWS_AWARD_IDS: ReadonlySet<number> = new Set([8, 9, 10]);
+
 function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng): GameState {
   const lands = allEffectiveLands(state, topo);
   // ★★ 2026-09-19 修（§7.141，通道 2 `test_event_dispatch.py` 259/259 的 D2–D5）：
@@ -5493,9 +5599,10 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
   const withDeck: GameState = { ...state, newsDeck: draw.deck };
   if (draw.eventId < 0) return withDeck;
 
+  const affected = newsTargets(draw.eventId, withDeck, lands, facilities);
   const out = applyNewsEffect(draw.eventId, {
     players: withDeck.players,
-    affected: newsTargets(draw.eventId, withDeck, lands, facilities),
+    affected,
     priceIndex: withDeck.priceIndex,
     pool: withDeck.pool,
     // ★ 首次关押要传送到监狱／医院格 + 跟班搬家（`send_to_prison` 函数体内的事），
@@ -5553,6 +5660,12 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
       //   「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21）挑中的是哪一处（地名 / 房主）
       ...(out.place === undefined ? {} : { place: { entity: out.place.entity, owner: out.place.owner } }),
     },
+    // ★ 第十四份：新聞 8/9/10 的受奖人 —— 共用尾巴 `0x00449a24`：`0x00449a5c call 0x41d3f4`（进现金）
+    //   → `0x00449a80 call 0x44f354([0x48c59c], [0x48c5a0])`（進帳台词 6/7/8）。
+    //   入口：8 `0x004498c6` / 9 `0x00449a9d` / 10 `0x00449baf` `jne 0x449a24`。
+    ...(NEWS_AWARD_IDS.has(draw.eventId) && !out.unimplemented && affected[0] !== undefined && out.amount > 0
+      ? { lastGainSays: [{ player: affected[0], amount: out.amount }] }
+      : {}),
   };
   // ★ 同上：镜头移到挑中的那一处 —— 这一族的施加阶段都是
   //   `0x40af12(实体)` 取坐标 → `view_to(x, y, 2)`（flags 无 bit0 ⇒ 真的移镜头），
@@ -6809,6 +6922,11 @@ function buildableEntities(state: GameState, topo: MapTopology, player: number, 
 export function insurancePayoutTo(state: GameState, topo: MapTopology, index: number, loss: number): GameState {
   const p = state.players[index];
   if (p === undefined || !isAlive(p) || p.insuranceDays === 0 || loss <= 0) return state;
+  // ★ 第十四份：理賠那一扇 `0x0044baa5 push 0x4658fa` / `0x0044bab7 push 0x7d0`（2000 ms），在付钱**之前**弹
+  return insurancePayoutMoney(appendFreshNotice(state, { key: 'insurance.payout', args: [loss], holdMs: 0x7d0 }), topo, index, loss);
+}
+
+function insurancePayoutMoney(state: GameState, topo: MapTopology, index: number, loss: number): GameState {
   const co = (topo.commercials ?? []).find((c) => c.type === INDUSTRY.insurance);
   if (co === undefined) {
     // @source 0x0044bad8：玩家侧可见效果 = 现金 += loss、本月意外之財 += loss
@@ -7225,7 +7343,7 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   const landlord = state.players[ownerIdx];
   const exemption = landlord === undefined ? null : tollExemption(landlord, payer, fac.priceStatus);
   if (landlord === undefined || exemption !== null) {
-    const notice = exemption === null ? null : exemptionNotice(exemption, playerName(state, ownerIdx), feeName);
+    const notice = exemption === null ? null : exemptionNotice(exemption, playerName(state, ownerIdx), feeName, payer);
     if (notice === null) return { ...state, phase: 'turnEnd' };
     return { ...state, notices: [notice], phase: 'turnEnd' };
   }
@@ -7294,6 +7412,9 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
 
   // 神明在付款前调整金额（与住宅同一条规则）
   const god = adjustTollByGod(base, me.godInfo);
+  // ★ 第十四份：`0x0041a58a call 0x41d709` 改了金额就弹那一扇（抹成 0 时付款方再庆幸一句）
+  const godNotice = godTollNotice(me.godInfo, base, god.toll, feeName, payer);
+  if (godNotice !== null) notices.push(godNotice);
   if (god.toll === 0) return { ...withRng, notices, phase: 'turnEnd' };
 
   // ★ 尾巴照 0x0041a648 起：嫁禍卡（設施这条没有免費卡）→ 死神顯靈由他人賠償（費 != 0 或是旅館）
@@ -7318,7 +7439,17 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   // @source 0x0041a75e `mov [設施 + 0x30], ebp` —— 记的是**这一笔**，不是累计
   const facilityLastToll = [...withTail.facilityLastToll];
   facilityLastToll[fac.id] = god.toll;
-  let paid: GameState = { ...withTail, players: r.players, pool: r.pool, facilityLastToll, notices, phase: 'turnEnd' };
+  // ★ 第十四份：設施主人的「進帳」台词 `0x0041a735 call 0x44f354(主人, ebp)`（付款人就是主人时 `0x0041a70b je` 跳过）
+  const gainSays = who !== ownerIdx ? [{ player: ownerIdx, amount: god.toll }] : null;
+  let paid: GameState = {
+    ...withTail,
+    players: r.players,
+    pool: r.pool,
+    facilityLastToll,
+    notices,
+    phase: 'turnEnd',
+    ...(gainSays === null ? {} : { lastGainSays: gainSays }),
+  };
 
   // @source 0x0041a7aa 旅館：住 N 天、記「本月意外損失」2000×N×物價、倒楣天数 +N
   if (hotelDays > 0 && !r.bankrupted) {

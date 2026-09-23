@@ -1764,6 +1764,9 @@ export class BoardRenderer {
    *   （`fcn_0040c05c` 的 actor ≥ 4 分支，VA 0x0040c489）。
    *   ★ 纯表现，不进 state（C-DET-4）；丢了只是少一段平滑。
    */
+  /** 押着没起步的替身槽（见 `holdActorWalk`）*/
+  readonly #heldActorSlots = new Set<number>();
+
   readonly #actorWalks = new Map<
     number,
     {
@@ -1982,6 +1985,38 @@ export class BoardRenderer {
    *   而补间要等下一次 `draw()` 才起得来，所以 `lastWalkMs()` 帮不上忙 ——
    *   宿主得在 dispatch **之后**再问这个（见 `docs/deviations/T-047.md`）。
    */
+  /**
+   * ★ 第十四份：**押着**这一格的下一趟替身补间（機器娃娃要等用道具那句台词说完才上路）。
+   *   押着期间那一趟照常「登记」（沿途要被扫掉的物件照旧画在原地），但起点定在 +∞：
+   *   替身不画、物件不飞；`releaseActorWalks(now)` 那一刻才从头走。
+   *
+   * @source 機器娃娃 `0x00446b2e call 0x44ef41`（台词，同步）在娃娃上路（`fcn_0040dd1f`）之前。
+   */
+  holdActorWalk(slot: number): void {
+    this.#heldActorSlots.add(slot);
+  }
+
+  /** 放开 `holdActorWalk` 押着的那几趟：起点改成 `now`（沿途物件的打飞计时一起挪）。返回放开了几趟 */
+  releaseActorWalks(now = performance.now()): number {
+    let n = 0;
+    for (const slot of this.#heldActorSlots) {
+      const w = this.#actorWalks.get(slot);
+      if (w === undefined || Number.isFinite(w.start)) continue;
+      w.start = now;
+      for (const f of this.#sweptFlights) if (w.swept.includes(f.s)) f.start = now;
+      n++;
+    }
+    this.#heldActorSlots.clear();
+    this.#dirty = true;
+    return n;
+  }
+
+  /** 这一格的补间是不是还押着没起步（见 `holdActorWalk`）*/
+  actorWalkHeld(slot: number): boolean {
+    const w = this.#actorWalks.get(slot);
+    return this.#heldActorSlots.has(slot) || (w !== undefined && !Number.isFinite(w.start));
+  }
+
   actorWalkRemainingMs(now = performance.now()): number {
     let best = 0;
     for (const w of this.#actorWalks.values()) {
@@ -2069,17 +2104,19 @@ export class BoardRenderer {
     const steps = actorWalkSteps(path, nodes, tickMs);
     if (steps.length === 0) return;
     const swept = sweptObjectHideTimes(steps, objects, path, cleared, nodes);
+    // ★ 第十四份：押着的那一格起点定在 +∞（`releaseActorWalks` 再改成放开那一刻）
+    const start = this.#heldActorSlots.has(slot) ? Number.POSITIVE_INFINITY : now;
     this.#actorWalks.set(slot, {
       steps,
       rolled: rolled ?? steps.length,
-      start: now,
+      start,
       tickMs,
       ticked: 0,
       swept,
     });
     // ★ 打飞那几件的**飞行**另起一份（`#sweptFlights`）—— 它们的时长由物件自己的
     //   `+0x06` 决定，与娃娃这一趟的补间无关（见那一处字段说明）。
-    for (const s of swept) this.#sweptFlights.push({ s, start: now, tickMs });
+    for (const s of swept) this.#sweptFlights.push({ s, start, tickMs });
     // @source VA 0x0040deed：起步（`fcn_0040dd1f` 尾）把走路帧清零
     this.#actorFrame.set(slot, 0);
     this.#dirty = true;
@@ -2125,6 +2162,8 @@ export class BoardRenderer {
     const w = this.#actorWalks.get(slot);
     if (w === undefined) return null;
     const elapsed = now - w.start;
+    // ★ 第十四份：押着还没起步（`holdActorWalk`）⇒ 这一帧不画替身
+    if (elapsed < 0) return null;
     if (elapsed >= actorWalkTotalMs(w.steps)) {
       this.#actorWalks.delete(slot);
       return null;

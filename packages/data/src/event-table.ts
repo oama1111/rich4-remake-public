@@ -458,10 +458,12 @@ export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 10, va: 0x0044ca46, factor: null, effects: [], textVa: 0x465a3e, text: "#0195機車被偷遺失", literal: null, blessing: 'misfortune' },
   { id: 11, va: 0x0044cb53, factor: null, effects: [], textVa: 0x465a50, text: "#0196汽車撞電線桿全毀", literal: null, blessing: 'misfortune' },
   { id: 12, va: 0x0044cc53, factor: null, effects: ['hospital'], textVa: 0x465a66, text: "#0197掉進水溝就醫%d天", literal: 3, blessing: 'misfortune' },
-  { id: 13, va: 0x0044cd6c, factor: null, effects: ['hospital'], textVa: 0x465a7c, text: "#0198騎機車摔傷住院%d天", literal: 3 },
+  // ★ 第十四份：13 是跳板（`0x0044cd7e jne 0x44ccd4`）进 12 的施加段 ⇒ 同样先问 `fcn_0044b896(1,1)`
+  { id: 13, va: 0x0044cd6c, factor: null, effects: ['hospital'], textVa: 0x465a7c, text: "#0198騎機車摔傷住院%d天", literal: 3, blessing: 'misfortune' },
   { id: 14, va: 0x0044cd99, factor: 3000, effects: ['pay'], textVa: 0x465a94, text: "#0199行人闖越馬路罰款%d元", literal: null, blessing: 'penalty' },
   { id: 15, va: 0x0044cf1e, factor: 3000, effects: ['pay'], textVa: 0x465aae, text: "#0200騎機車未戴安全帽\n罰款%d元", literal: null, blessing: 'penalty' },
-  { id: 16, va: 0x0044d06d, factor: 3000, effects: ['pay'], textVa: 0x465acd, text: "#0201汽車超速罰款%d元", literal: null },
+  // ★ 第十四份：`0x0044d0a4 jne 0x44cfdf` → `0x0044cfe3 call 0x44b896(0,1)`（罰金域，与 15 同一段）
+  { id: 16, va: 0x0044d06d, factor: 3000, effects: ['pay'], textVa: 0x465acd, text: "#0201汽車超速罰款%d元", literal: null, blessing: 'penalty' },
   { id: 17, va: 0x0044d0d6, factor: 6000, effects: ['pay'], textVa: 0x465ae3, text: "#0202請所有人吃大餐\n花費%d元", literal: null, blessing: 'penalty' },
   { id: 18, va: 0x0044d1a5, factor: 600, effects: ['pay'], textVa: 0x465b00, text: "#0203亂丟垃圾罰款%d元", literal: null, blessing: 'penalty' },
   { id: 19, va: 0x0044d1e0, factor: 1500, effects: ['pay'], textVa: 0x465b16, text: "#0204你家小狗亂大小便\n罰款%d元", literal: null, blessing: 'penalty' },
@@ -479,9 +481,11 @@ export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 31, va: 0x0044d636, factor: 5000, effects: ['give'], textVa: 0x465c0f, text: "#0216領取保險金%d元", literal: null, blessing: 'reward' },
   { id: 32, va: 0x0044d677, factor: null, effects: [], textVa: 0x465c23, text: "#0217變賣所有卡片道具", literal: null, blessing: 'misfortune' },
   { id: 33, va: 0x0044d783, factor: null, effects: ['prison'], textVa: 0x465c39, text: "#0218酒醉大鬧警局坐牢%d天", literal: 3, blessing: 'misfortune' },
-  { id: 34, va: 0x0044d8cf, factor: null, effects: ['prison'], textVa: 0x465c53, text: "#0219防礙風化坐牢%d天", literal: 5 },
-  { id: 35, va: 0x0044d8fd, factor: null, effects: ['prison'], textVa: 0x465c69, text: "#0220走私毒品坐牢%d天", literal: 7 },
-  { id: 36, va: 0x0044d92b, factor: null, effects: ['prison'], textVa: 0x465c7f, text: "#0221販賣大補帖坐牢%d天", literal: 9 },
+  // ★ 第十四份：34/35/36 是跳板（`0x0044d8e1` / `0x0044d90f` / `0x0044d93d jne 0x44d80b`）进 33 的
+  //   施加段 `0x0044d80f call 0x44b896(1,1)`
+  { id: 34, va: 0x0044d8cf, factor: null, effects: ['prison'], textVa: 0x465c53, text: "#0219防礙風化坐牢%d天", literal: 5, blessing: 'misfortune' },
+  { id: 35, va: 0x0044d8fd, factor: null, effects: ['prison'], textVa: 0x465c69, text: "#0220走私毒品坐牢%d天", literal: 7, blessing: 'misfortune' },
+  { id: 36, va: 0x0044d92b, factor: null, effects: ['prison'], textVa: 0x465c7f, text: "#0221販賣大補帖坐牢%d天", literal: 9, blessing: 'misfortune' },
 ];
 
 export function newsEvent(id: number): EventEntry | undefined {

@@ -267,14 +267,16 @@ describe('★ 神明加持：三条问法与档位语义 @source VA 0x0044b896',
    * `6a <arg1> 6a <arg0> e8 <rel32>` 自行判定用法，因此不会随表一起漂。
    * 这里只留「数量 + 几处易错点」的粗筛，避免出现第二份会漂的硬编码表。
    */
-  it('★ 事件表里的 `blessing`：28 条，且 19/20/22 的用法已订正', () => {
+  it('★ 事件表里的 `blessing`：33 条，且 19/20/22 的用法已订正', () => {
     const table: Record<number, string> = {};
     for (const e of FORTUNE_EVENTS) if (e.blessing !== undefined) table[e.id] = e.blessing;
-    expect(Object.keys(table)).toHaveLength(28);
+    expect(Object.keys(table)).toHaveLength(33);
     expect(table[19]).toBe('penalty'); // 罰款 → penalty 尾
     expect(table[20]).toBe('reward'); // 撿到錢 → reward 尾
     expect(table[22]).toBe('reward');
-    expect(table[16]).toBeUndefined(); // ★ 原版**没接**加持的那一个
+    // ★ 第十四份：16 与 15 同构（`0x0044d0a4 jne 0x44cfdf`）；13 / 34..36 是跳板进 12 / 33
+    expect(table[16]).toBe('penalty');
+    expect([13, 34, 35, 36].map((id) => table[id])).toEqual(['misfortune', 'misfortune', 'misfortune', 'misfortune']);
   });
 
   it('★ 档位 1 对罚款是「免付」——一分不付、公库也收不到', () => {

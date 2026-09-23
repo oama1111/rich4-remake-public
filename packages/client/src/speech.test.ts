@@ -67,6 +67,8 @@ import {
   speechResourceFor,
   speechResourcesFor,
   TOOL_LINE_ORDER,
+  detectNoticeSay,
+  ownToolLineSpoken,
   toolUseSpeechLines,
   type SayEvent,
 } from './speech.ts';
@@ -460,22 +462,23 @@ describe('最敵對玩家 @ VA 0x0040d2d3', () => {
 //  金额分档型探测器
 // ============================================================
 
+// ★★ 第十四份（需求方拍板照原版）：「進帳」只认原版调了 `0x44f354` 的那几处 —— core 交 `lastGainSays`
 describe('進帳 ⇒ 事件 6/7/8', () => {
-  it('本月收入 +9000 ⇒ 事件 6', () => {
+  it('9000 ⇒ 事件 6', () => {
     const [b, a] = to((s) => {
-      s.players[1]!.monthlyReceived += 9000;
+      s.lastGainSays = [{ player: 1, amount: 9000 }];
     });
     expect(detectMoneyGained(b, a)).toEqual([{ player: 1, event: 6 }]);
   });
 
-  it('+3000 ⇒ 事件 8；+1000 ⇒ 不吭声', () => {
+  it('3000 ⇒ 事件 8；1000 ⇒ 不吭声', () => {
     const [b, a] = to((s) => {
-      s.players[1]!.monthlyReceived += 3000;
+      s.lastGainSays = [{ player: 1, amount: 3000 }];
     });
     expect(detectMoneyGained(b, a)).toEqual([{ player: 1, event: 8 }]);
 
     const [b2, a2] = to((s) => {
-      s.players[2]!.monthlyReceived += 1000;
+      s.lastGainSays = [{ player: 2, amount: 1000 }];
     });
     expect(detectMoneyGained(b2, a2)).toEqual([]);
   });
@@ -484,9 +487,22 @@ describe('進帳 ⇒ 事件 6/7/8', () => {
     const [b, a] = step((before, after) => {
       before.priceIndex = 2;
       after.priceIndex = 2;
-      after.players[0]!.monthlyReceived += 9000;
+      after.lastGainSays = [{ player: 0, amount: 9000 }];
     });
     expect(detectMoneyGained(b, a)).toEqual([{ player: 0, event: 8 }]);
+  });
+
+  it('★★ 没有提示 ⇒ 谁进了钱都**不说**（樂透 / 拍賣 / 分紅 / 理賠… 原版都不调 `0x44f354`）', () => {
+    const [b, a] = to((s) => {
+      s.players[1]!.monthlyReceived += 9000;
+    });
+    expect(detectMoneyGained(b, a)).toEqual([]);
+  });
+
+  it('★ 提示是上一条留下来的（引用没换）⇒ 不再说', () => {
+    const says = [{ player: 1, amount: 9000 }];
+    const b: GameState = { ...makeGameState(), lastGainSays: says };
+    expect(detectMoneyGained(b, { ...b })).toEqual([]);
   });
 });
 
@@ -495,6 +511,7 @@ describe('付錢 / 罰款 ⇒ 事件 9..11 / 12..14 / 18', () => {
     const [b, a] = to((s) => {
       s.players[0]!.monthlyPaid += 9000;
       s.players[1]!.monthlyReceived += 9000;
+      s.lastGainSays = [{ player: 1, amount: 9000 }];
     });
     expect(detectMoneyPaid(b, a)).toEqual([{ player: 0, event: 9 }]);
     expect(detectMoneyGained(b, a)).toEqual([{ player: 1, event: 6 }]);
@@ -759,6 +776,7 @@ describe('speechEventsFor —— 有序列的探测器数组', () => {
     const [b, a] = to((s) => {
       s.players[0]!.monthlyPaid += 9000;
       s.players[1]!.monthlyReceived += 9000;
+      s.lastGainSays = [{ player: 1, amount: 9000 }];
     });
     expect(said(speechEventsFor(b, a))).toEqual([
       { player: 0, event: 9, order: 'afterStage' },
@@ -1546,6 +1564,7 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     ['shopGift', 'afterStage', '★W-67-a：董事長赠礼 —— 訊息框（0x464378）→ 台词（0x44f230）'],
     ['godCard', 'afterStage', '★第八份 #5：福神附身得卡 —— 开场白 → 卡面 → 訊息框（0x4632fd）→ 台词（0x44f230）'],
     ['moneyGained', 'afterStage', '⚠E-19：调用点 `0x0044f420` 前后两列都空'],
+    ['noticeSay', 'afterStage', '第十四份：訊息框之后紧跟的那一句（框在前）'],
     ['hotelStay', 'afterStage', '⚠E-19：`0x0041a7e0` 所在函数没有 `player_say`；`0x0044f347` 两列都空'],
     ['pointsGained', 'afterStage', '⚠E-19：调用点 `0x0044f2b5` 前后两列都空'],
     ['pointsSquarePhrase', 'afterStage', '⚠E-19：`0x0041b211` 两列都空、`0x004154cf` 前有訊息框'],
@@ -1801,8 +1820,8 @@ describe('★★ W-55：財神那一笔**让开**通用的進帳/付錢两条探
       ...before,
       players: before.players.map((p, i) => (i === 0 ? { ...p, monthlyReceived: 6000 } : p)),
     };
-    // 没有提示时（普通進帳）：通用路照旧开口
-    expect(detectMoneyGained(before, gained)).toEqual([{ player: 0, event: 6 }]);
+    // ★ 第十四份：「進帳」只认 core 交出来的 `lastGainSays`（財神那一笔 core 不交）⇒ 本来就不开口
+    expect(detectMoneyGained(before, gained)).toEqual([]);
     // 有財神提示时：让开，由 `detectSmallWealthLine` 独家负责
     const withHint: GameState = {
       ...gained,
@@ -1931,14 +1950,6 @@ describe('★★ 第十四份 #1 同类排查：保險理賠那一笔原版**不
       expect(detectMoneyGained(b, a)).toEqual([]);
     }
   });
-
-  it('对照：同样的進帳、人**没**保險 ⇒ 通用「進帳」路照旧（不是理赔，不在本条范围）', () => {
-    const [b, a] = to((s) => {
-      s.lastEvent = { kind: 'fortune', id: 30 };
-      s.players[1]!.monthlyReceived += 9000;
-    });
-    expect(detectMoneyGained(b, a)).toEqual([{ player: 1, event: 6 }]);
-  });
 });
 
 describe('★★ 第十四份 #2：道具台词**先说**、说完才起演出（`TOOL_LINE_ORDER`）', () => {
@@ -1967,5 +1978,68 @@ describe('★★ 第十四份 #2：道具台词**先说**、说完才起演出�
     expect(src).not.toMatch(/\.\.\.toolBubbles\]\.map/);
     // 投掷也等台词说完（`beginObjectFlight` 的 `awaitSpeech`）
     expect(src).toContain('awaitSpeech: true');
+  });
+});
+
+describe('★★ 第十四份：訊息框之后紧跟的那一句（`detectNoticeSay`）', () => {
+  it('★ 免收九种 ⇒ 当前玩家事件 13（@source 0x0041d6dd）', () => {
+    const [b, a] = to((s) => {
+      s.notices = [{ key: 'rent.freePrison', args: ['x', '過路費'], say: { player: 0, event: 13 } }];
+    });
+    expect(detectNoticeSay(b, a)).toEqual([{ player: 0, event: 13 }]);
+  });
+
+  it('★★ 免付（`0x44f567`）按原额分档：≥9000 ⇒ 12、5000..9000 ⇒ 12（rand&1 取 0）、>0 ⇒ 14', () => {
+    for (const [amount, event] of [[9000, 12], [5000, 12], [1200, 14]] as const) {
+      const [b, a] = to((s) => {
+        s.notices = [{ key: 'god.tollFree', args: ['過路費'], say: { player: 2, reliefAmount: amount } }];
+      });
+      expect(detectNoticeSay(b, a)).toEqual([{ player: 2, event }]);
+    }
+  });
+
+  it('★ 同一份 notices（上一条留下的）⇒ 不再说；次序 `afterStage`（框在前）', () => {
+    const [b] = to((s) => {
+      s.notices = [{ key: 'rent.freeSealed', args: ['過路費'], say: { player: 0, event: 13 } }];
+    });
+    expect(detectNoticeSay(b, { ...b })).toEqual([]);
+    expect(DETECTORS.find((d) => d.name === 'noticeSay')?.order).toBe('afterStage');
+  });
+
+  it('★★ 回报现场同类：宮本寶藏被神明免付 5000 ⇒ 说 12「哈哈哈，很羨慕吧！」—— 这回是**真的**逃过一劫', () => {
+    const [b, a] = to((s) => {
+      s.players[0]!.character = 6;
+      s.notices = [{ key: 'blessing.penaltyVoid', args: ['小財神'], say: { player: 0, reliefAmount: 5000 } }];
+    });
+    const lines = speechLinesFor(a, speechEventsFor(b, a));
+    expect(lines.map((l) => l.bubble.lines.join(''))).toEqual(['哈哈哈，很羨慕吧！']);
+  });
+});
+
+describe('★★ 第十四份 #4：真人选定道具时先说，action 落地不再说第二遍', () => {
+  const base = makeGameState({ turnCount: 7 });
+  const used: GameState = { ...base, lastToolUsed: { player: 0, toolId: 9 } };
+
+  it('同一回合、同一人、同一件 ⇒ 吞掉', () => {
+    expect(ownToolLineSpoken(base, used, { player: 0, toolId: 9, turnCount: 7 })).toBe(true);
+  });
+
+  it('旁观端（没有本机记录）/ 换了一件 / 换了回合 ⇒ 照说', () => {
+    expect(ownToolLineSpoken(base, used, null)).toBe(false);
+    expect(ownToolLineSpoken(base, used, { player: 0, toolId: 2, turnCount: 7 })).toBe(false);
+    expect(ownToolLineSpoken(base, used, { player: 0, toolId: 9, turnCount: 8 })).toBe(false);
+  });
+
+  it('`main.ts`：选格 / 骰面盘的道具先说再开界面（`sayOwnToolLine`），落地时吞掉本机说过的那句', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain('sayOwnToolLine(id, () => startToolPick(id, param))');
+    expect(src).toContain('sayOwnToolLine(id, () => openDicePick())');
+    expect(src).toContain('ownToolLineSpoken(before, after, ownToolLine)');
+  });
+
+  it('★ #5 機器娃娃：那一趟押着等台词（`holdActorWalk`），台词说完才放（`tickDollRelease`）', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain('renderer.holdActorWalk(specialSlotOf(ACTOR_DOLL))');
+    expect(src).toContain('renderer.releaseActorWalks(performance.now())');
   });
 });

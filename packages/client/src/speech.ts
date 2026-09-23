@@ -58,7 +58,6 @@
  */
 
 import {
-  FORTUNE_FAKE_LOAN_ID,
   FORTUNE_PAY_TAIL_IDS,
   isAlive,
   WHO_PLAYS_HUMAN,
@@ -492,34 +491,50 @@ function reachedLevelFive(before: readonly number[], after: readonly number[]): 
 /**
  * 進帳 —— 事件 6/7/8（「這是我應得的！」/「我是全球首富」/「蠅頭小利～」）。
  *
- * @source 调用点 VA 0x00419fa1 / 0x00419ff0 / 0x0041a735（過路費給地主，
- *   金额 = `ebp`）、0x0040ed85（命运/新闻进账）；分档与阈值在
- *   `fcn_0044f354`（本文件 `gainEventFor`）。
+ * ★★ 第十四份（2026-09-23，需求方拍板「照原版」）：**只认原版调了 `fcn_0044f354` 的那几处**。
+ *   先前这里按 `monthlyReceived` 的差分「谁进了钱谁就说」—— 樂透、拍賣、分紅、理賠、
+ *   拆屋赔款……原版一句都不说的地方全都开口。`0x44f354` 全 exe 只有 6 个调用点：
+ *   `0x00419fa1` / `0x00419ff0`（過路費的地主）、`0x0041a735`（設施費的主人）、
+ *   `0x00449a80`（新聞 8/9/10）、`0x0044d334`（命運「進帳」那一族）、`0x0040ed85`（大財神）。
+ *   前五处由 core 在那一刻交出来（`GameState.lastGainSays`，金额 = 原版压栈的那个数），
+ *   大財神那一处有它自己的闸，由 `detectBigWealthLine` 负责（走 `lastGodPower`）。
+ *   分档与阈值在 `fcn_0044f354`（本文件 `gainEventFor`）。
  */
 export function detectMoneyGained(before: GameState, after: GameState): DetectedSay[] {
+  const says = after.lastGainSays ?? null;
+  if (says === null || says === (before.lastGainSays ?? null)) return [];
   const out: DetectedSay[] = [];
-  // ★★ 第九份試玩回報 #6：命運 0「強制拆除房屋」的**赔款**由 `detectDemolishedHouse` 独家说。
-  //   原版那一笔是 `add_money(cur, level×house_price, 1)`（`0x0044bf2f`），
-  //   `monthlyReceived` 会跟着涨 ⇒ 通用「進帳」档位会开口说 6/7/8（「這是我應得的！」），
-  //   而原版此刻说的是「我慘了」—— 必须让开（与 `detectSmallWealthLine` 让开同一条规矩）。
-  if (demolishedHouseThisAction(before, after)) return out;
-  // ★★ W-55 行 7：財神那一笔**不走**「進帳」档位这条通用路 ——
-  //   小財神有它自己的出口（`0x0040ecde`，事件 8，另有 >700 与终局两道闸），
-  //   大財神虽然也是调 `fcn_0044f354`，但**多一道 `≥ 5000×物價` 的闸**
-  //   （`0x0040ed74`）—— 通用路按 2000×物價 就会开口，会把「原版不说」说成事件 8。
-  //   ⇒ 这里让开，由 `detectSmallWealthLine` / `detectBigWealthLine` 独家负责
-  //   （与 `detectPointsGained` 让开 `minigameDecline` 同一条规矩）。
-  const wealthHost = wealthGodHostThisAction(before, after);
-  // ★★ 第十四份試玩回報 #1 的同类排查：保險理賠那一笔原版不说（见 `insurancePayeesThisAction`）
-  const insurancePayees = insurancePayeesThisAction(before, after);
-  for (let i = 0; i < after.players.length; i++) {
-    if (i === wealthHost) continue;
-    if (insurancePayees.has(i)) continue;
-    const amount = delta(before, after, i, 'monthlyReceived');
-    if (amount <= 0) continue;
-    const event = gainEventFor(amount, after.priceIndex);
-    if (event === null) continue;
-    out.push({ player: i, event });
+  for (const g of says) {
+    const event = gainEventFor(g.amount, after.priceIndex);
+    if (event !== null) out.push({ player: g.player, event });
+  }
+  return out;
+}
+
+/**
+ * ★ 第十四份：訊息框之后原版**紧跟着**的那一句（`NoticeHint.say`）。
+ *
+ * @source 三处：
+ *   - 免收九种（`0x0041d559`）：`0x0041d6a4` 弹框 → `0x0041d6dd player_say(当前玩家, 3, 事件 13)`；
+ *   - 大財神把过路费抹成 0（`0x0041d709`）：`0x0041d7a2` 弹框 → `0x0041d7c1 call 0x44f567(付款方, 原额)`；
+ *   - 命運的神明加持：罰金免付 `0x0044d009` 弹框 → `0x0044d028 call 0x44f567(当前玩家, 原额)`；
+ *     坐牢逃过 `0x0044d83f` 弹框 → `0x0044d873 player_say(当前玩家, 0, 事件 0)`。
+ *   `0x44f567` 的档位与 `payTierFor` 同（9000 / 5000 / >0 × 物價），基址事件 12
+ *   （`0x0044f59c` / `0x0044f5e9` / `0x0044f60f`）。
+ * 次序：框在前 ⇒ `afterStage`（框是纯演出整屏，押着的台词等它收）。
+ */
+export function detectNoticeSay(before: GameState, after: GameState): DetectedSay[] {
+  if (after.notices === before.notices) return [];
+  const out: DetectedSay[] = [];
+  for (const n of after.notices) {
+    const say = n.say;
+    if (say === undefined) continue;
+    if ('event' in say) {
+      out.push({ player: say.player, event: say.event });
+      continue;
+    }
+    const tier = payTierFor(say.reliefAmount, after.priceIndex);
+    if (tier !== null) out.push({ player: say.player, event: 12 + tier });
   }
   return out;
 }
@@ -645,32 +660,6 @@ function fortunePayTailThisAction(
 function isAlivePlayer(state: GameState, i: number): boolean {
   const p = state.players[i];
   return p !== undefined && isAlive(p);
-}
-
-/**
- * 这一条 action 里**拿到保險理賠**的人（下标集合）。
- *
- * `fcn_0044ba63`（保險理賠）只有一个 `sprintf` + 訊息框（`0x4658fa`「保險期間\n\n得到理賠金\n\n%d元」，
- * 2000 ms）+ `pay_money(保險公司, 玩家, 損失, 1)`（`0x0044bad8`），**没有** `player_say`；
- * 它的 6 个调用点（`callers 0x44ba63`）前后也都不调「進帳」档位函数 `0x44f354` ⇒ 原版**不说**。
- * 而 `pay_money` 照样把这笔记进 `+0x60`（本月意外之財）⇒ 通用「進帳」路会把它当成進帳，
- * 说出「這是我應得的！」/「蠅頭小利～」—— 坐牢、住院、罰款之后冒一句高兴话。必须让开。
- *
- * 认人：保險期（`insuranceDays`）在动作前非 0，且这一条是会理赔的那几种：
- *   - 命運罰款尾巴（`0x0044cf11`）与冒貸（`0x0044c218`）→ 抽到的人；
- *   - 住旅館（`0x0041a82d` / `0x0040d425`）、坐牢（`0x0043d749`）、住院（`0x0043edf8`）→ 刚进去的人。
- */
-function insurancePayeesThisAction(before: GameState, after: GameState): Set<number> {
-  const out = new Set<number>();
-  const insured = (i: number): boolean => (before.players[i]?.insuranceDays ?? 0) !== 0;
-  const id = fortuneIdThisAction(before, after);
-  if (id !== null && (FORTUNE_PAY_TAIL_IDS.has(id) || id === FORTUNE_FAKE_LOAN_ID) && insured(before.currentPlayer)) {
-    out.add(before.currentPlayer);
-  }
-  for (const field of ['inPrison', 'inHospital', 'inHotel'] as const) {
-    for (const i of enteredBlocking(before, after, field)) if (insured(i)) out.add(i);
-  }
-  return out;
 }
 
 /** 这一条 action 里有哪家企業的資金涨了（= 钱付给了企業）*/
@@ -1484,6 +1473,8 @@ export const DETECTORS: readonly SpeechDetector[] = [
   { name: 'moneyPaid', source: [0x0044f42d, 0x0044f4ed, 0x0044f567], order: 'afterStage', detect: detectMoneyPaid },
   // ⚠ C 级：E-19（调用点 `0x0044f420` 前后两列都空）
   { name: 'moneyGained', source: [0x0044f354], order: 'afterStage', detect: detectMoneyGained },
+  // ★ 第十四份：訊息框之后紧跟的那一句（免收 → 13、財神/加持免付 → 12..14、坐牢逃过 → 0）
+  { name: 'noticeSay', source: [0x0041d6dd, 0x0041d7c1, 0x0044d028, 0x0044ce7e, 0x0044d873], order: 'afterStage', detect: detectNoticeSay },
   // ★ W-55 行 7（G33）：小財神 `0x0040ecde` —— 神明台词窗 → 轉盤窗 → 收款 → **台词**
   //   ⇒ `afterStage`（§2.2 表）。排在收款那两条之后。
   { name: 'smallWealthLine', source: [0x0040eca4, 0x0040ecde], order: 'afterStage', detect: detectSmallWealthLine },
@@ -1748,13 +1739,21 @@ export function toolUseSpeech(before: GameState, after: GameState): SpeechBubble
   if (use === null) return [];
   // 同一次用道具只出一次（提示字段是「最近一次」的覆写语义，规矩同 `cardPlaySpeech`）
   if (before.lastToolUsed === use) return [];
-  const p = after.players[use.player];
-  if (p === undefined) return [];
+  const bubble = toolLineOf(after, use.player, use.toolId);
+  return bubble === null ? [] : [bubble];
+}
+
+/**
+ * 某人用某件道具那一句（`_tool_strings[角色][道具号−1]`）；不出声返回 null。
+ * ★ 第十四份 #4：本机真人**选定道具、开选择界面之前**也用它先说（见 `main.ts` 的 `sayOwnToolLine`）。
+ */
+export function toolLineOf(state: GameState, player: number, toolId: number): SpeechBubble | null {
+  const p = state.players[player];
+  if (p === undefined) return null;
   const b = p.blocking;
   // 消失中 / 梦游 / 冬眠的人不出声（与 `cardPlaySpeech` 同一条）
-  if (b.disappearing !== 0 || b.sleepWalking !== 0 || b.sleeping !== 0) return [];
-  const bubble = toolLineBubbleOf(use.player, p.character, characterName(p.character), use.toolId);
-  return bubble === null ? [] : [bubble];
+  if (b.disappearing !== 0 || b.sleepWalking !== 0 || b.sleeping !== 0) return null;
+  return toolLineBubbleOf(player, p.character, characterName(p.character), toolId);
 }
 
 /**
@@ -1788,6 +1787,29 @@ export const TOOL_LINE_ORDER: SpeechOrder = 'beforeStage';
 /** `toolUseSpeech` + 次序 —— `main.ts` 的 `playSoundFor` 直接拿去 `queueSpeech` */
 export function toolUseSpeechLines(before: GameState, after: GameState): SpeechLine[] {
   return toolUseSpeech(before, after).map((bubble) => ({ bubble, order: TOOL_LINE_ORDER }));
+}
+
+/**
+ * ★ 第十四份 #4：本机真人**已经在开选择界面之前说过**的那一句（选格 / 骰面盘的道具）。
+ *
+ * @source 需要选目标的那几件，`player_say` 都在选择界面**之前**：路障 `0x00446bcc` → `0x00446be6`、
+ *   地雷 `0x00446caa` → `0x00446cc7`、定時炸彈 `0x00446d8b` → `0x00446da8`、飛彈 `0x00446fe3` → `0x00447000`、
+ *   遙控骰子 `0x0044714e` → `0x00447171`（点数盘）、機器工人 `0x004472ba` → `0x004472d7`、
+ *   傳送機 `0x00447451` → `0x0044746e`、核子飛彈 `0x00447af5` → `0x00447b12`（`0x446ae8` = 真人选格）。
+ *   本引擎的 `useTool` 带着目标才发出去 ⇒ 真人那一句在选定道具时先说，action 落地时**不再说第二遍**
+ *   （同一回合、同一人、同一件）；旁观端没有这份记录，照旧在 action 到达时说。
+ */
+export interface OwnToolLine {
+  player: number;
+  toolId: number;
+  turnCount: number;
+}
+
+/** 这一条 action 的道具台词是不是本机已经说过的那一句（是就该吞掉） */
+export function ownToolLineSpoken(before: GameState, after: GameState, own: OwnToolLine | null): boolean {
+  const use = after.lastToolUsed;
+  if (own === null || use === null || before.lastToolUsed === use) return false;
+  return use.player === own.player && use.toolId === own.toolId && after.turnCount === own.turnCount;
 }
 
 /** 角色号的显示名；越界给一个看得出来的占位（与 `main.ts` 里那几处同一套约定）*/

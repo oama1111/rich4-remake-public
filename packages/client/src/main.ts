@@ -117,6 +117,7 @@ import { loadAllArchives, type LoadProgress } from './asset-loader.ts';
 import {
   cardUsePopupActive,
   dropOwnCardUse,
+  eventBoxScreen,
   onEventBoxArtReady,
   setEventBoxArchives,
   startOwnCardUsePopup,
@@ -183,6 +184,10 @@ import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
 import {
   cardPlaySpeech,
   toolUseSpeechLines,
+  toolLineOf,
+  ownToolLineSpoken,
+  TOOL_LINE_ORDER,
+  type OwnToolLine,
   openingSpeech,
   speechEventsFor,
   speechLinesFor,
@@ -341,7 +346,14 @@ import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './curso
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
 import { shouldResumeDriver } from './driver-resume.ts';
 import { tollFlashLevel } from './toll-flash-fx.ts';
-import { noticeHoldsFilms, noticeKeyShowing, setNoticeSpeechGate, setNoticeStartGate } from './notice-box-screen.ts';
+import {
+  noticeHoldsFilms,
+  noticeKeyShowing,
+  noticeWaitingForSpeech,
+  setNoticeOverlayGate,
+  setNoticeSpeechGate,
+  setNoticeStartGate,
+} from './notice-box-screen.ts';
 // ★ 第十三份試玩回報 #1：顯靈加蓋那一格等「顯靈框」收掉才画成新等级（两次重画、两声音效 50）
 import {
   MANIFEST_NOTICE_KEY,
@@ -1731,6 +1743,9 @@ function blockingPresentation(): boolean {
   //   （`pending{magicHouse}`），挡住联机收件箱就会死锁 —— 别家那一端点定的答复
   //   （或託管替他掷的那一条）永远进不来，本机只能一直看着「等玩家点」。
   if (overlay !== null && overlay.id === 'magic' && magicAwaitingPick()) return false;
+  // ★ 第十四份：訊息框屏只是**排着一扇等台词说完的框**（保險理賠那一扇）时不算台上在演 ——
+  //   否则押在演出之后的那一句（付款 / 入獄台词，`afterStage`）与这扇框互相等。
+  if (overlay !== null && overlay.id === 'notice' && noticeWaitingForSpeech()) return false;
   return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
 }
 
@@ -4485,11 +4500,11 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
     //   38 号本身只有约 **0.56 秒**，所以先前「不传 loop」等于整趟只响开头一声。
     //   ⚠️ 玩家说的「语音」其实是**音效**：原版这一趟**没有**持续的角色语音
     //      （只有那一次性的「替我除掉障礙物！」，属另一条缺口）。
-    sound.play('Effect.mkf', SOUND_IDS.DOLL, true);
-    // 走完这一趟就把它停掉（原版 `0x0040d8dc` 的 `call 0x4542e9` = `IDirectSoundBuffer::Stop`）。
-    // `+80 ms` 是留一拍余量（原版是同一个 tick 里 Stop，本引擎走子补间按毫秒推进）。
-    const walkMs = renderer.actorWalkRemainingMs();
-    window.setTimeout(() => sound.stop('Effect.mkf', SOUND_IDS.DOLL), Math.max(0, walkMs) + 80);
+    // ★★ 第十四份 #5：娃娃**等用道具那句台词说完**才上路（`0x00446b2e call 0x44ef41` 同步，
+    //   之后才 `fcn_0040dd1f` 起步）⇒ 这一趟先押着（`renderer.holdActorWalk`），
+    //   `tickDollRelease` 在台词队列空了那一拍放开、再起这一声循环音。
+    renderer.holdActorWalk(specialSlotOf(ACTOR_DOLL));
+    dollWalkHeld = true;
   }
 
   // ★ **買地 / 買現成設施成功**那一下 —— 音效 49（见 `SOUND_IDS.BUY_PROPERTY`）。
@@ -4537,7 +4552,10 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   //   先前取 `afterStage`，機器工人的大锤（`pendingBuildFx`）一起播就把台词押到了片尾。
   //   `beforeStage` 永不押后，影片 / 建屋动效 / 投掷都会等 `speechQueue` 说完
   //   （`filmWaitsForSpeech`；投掷见 `tickObjectFlight`）。
-  const toolLines = toolUseSpeechLines(before, after);
+  // ★★ 第十四份 #4：本机真人选定道具时已经先说过（`sayOwnToolLine`）⇒ 这一条不再说第二遍
+  const spokenOwn = ownToolLineSpoken(before, after, ownToolLine);
+  if (spokenOwn) ownToolLine = null;
+  const toolLines = spokenOwn ? [] : toolUseSpeechLines(before, after);
   const spoken = speechEventsFor(before, after, topo);
   // ★ W-51：台词现在带**次序**交出去（`SpeechLine.order`），由 `queueSpeech` 分流。
   //   卡牌台词**不是探测器**（它走 `lastCardPlay` 这条非状态跃迁的通道）⇒ W-50 §2.2
@@ -5259,7 +5277,7 @@ function applyInventoryPick(): void {
   }
   // ★ 遙控骰子（8）：原版真人那一支直接开点数盘（**VA 0x004470f8** 起），不进拾取模式
   if (id === REMOTE_DICE_TOOL) {
-    openDicePick();
+    sayOwnToolLine(id, () => openDicePick());
     return;
   }
   // 需要目标的那几件：进拾取模式（T-026）。参数表见 `picking.ts` 的 TOOL_SELECT_PARAM。
@@ -5268,7 +5286,44 @@ function applyInventoryPick(): void {
     log(`「${TOOLS[id - 1]?.name ?? `道具${id}`}」的目标选择原版走的是另一套（还没接）`);
     return;
   }
-  startToolPick(id, param);
+  sayOwnToolLine(id, () => startToolPick(id, param));
+}
+
+/** ★ 第十四份 #4：本机真人先说过的那一句道具台词（见 `speech.ts` 的 `OwnToolLine`） */
+let ownToolLine: OwnToolLine | null = null;
+/** 那一句说完才开的选择界面（原版 `player_say` 同步，说完才进 `0x446ae8` / 点数盘） */
+let pendingToolPicker: { open: () => void; at: GameState } | null = null;
+
+/**
+ * 需要选目标的道具：**先说**用道具那一句，说完再开选择界面（`OwnToolLine` 的 @source）。
+ * 选择界面里取消 ⇒ 道具不消耗，那一句原版也已经说过了（不收回）。
+ */
+function sayOwnToolLine(toolId: number, openPicker: () => void): void {
+  const player = state.currentPlayer;
+  ownToolLine = { player, toolId, turnCount: state.turnCount };
+  const bubble = toolLineOf(state, player, toolId);
+  if (bubble !== null) {
+    ensureSpeakingArchive();
+    queueSpeech([{ bubble, order: TOOL_LINE_ORDER }]);
+  }
+  pendingToolPicker = { open: openPicker, at: state };
+  requestRender();
+}
+
+function tickPendingToolPicker(): void {
+  const p = pendingToolPicker;
+  if (p === null) return;
+  // 说话期间局面变了（换人 / 重连重建 / 换局）⇒ 这一次作废，不再开选择界面
+  if (state !== p.at) {
+    pendingToolPicker = null;
+    return;
+  }
+  if (filmWaitsForSpeech(speechQueue.length)) {
+    requestRender();
+    return;
+  }
+  pendingToolPicker = null;
+  p.open();
 }
 
 /**
@@ -5812,7 +5867,11 @@ setNoticeStartGate(
 // ★ 第十三份試玩回報 #2：回合開始被阻那几扇框（「○○住院中／還剩 N 天」）排在角色台词**之后**
 //   （`fcn_0040c912`：`0x0040caca call 0x44ef41` 阻塞说完 → `0x0040cb98 call 0x440cac`）。
 //   判据取 `speechQueue.length > 0`（= 台上还有句子没收），与 `filmWaitsForSpeech` 同一口径。
-setNoticeSpeechGate(() => speechQueue.length > 0);
+// ★ 第十四份：保險理賠那一扇排在付款 / 入獄台词之后，而那一句多半还押在 `deferredSpeech` 里
+//   （演出收摊才上台）⇒ 押着的也算「还没说完」。
+setNoticeSpeechGate(() => speechQueue.length > 0 || deferredSpeech !== null);
+// ★ 第十四份：命運 / 新聞的施加阶段（加持框、理賠框…）排在事件提示框收掉之后
+setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
 
 /**
  * 正在排队的角色台词（T-052 的屏幕那一半）。
@@ -5886,6 +5945,29 @@ function tickGodAscend(now: number): void {
 
 /** 这一件飞完该放哪个音效号（0 = 不放音） */
 let objectFlightSound = 0;
+
+/** ★ 第十四份 #5：機器娃娃那一趟押着等台词（见 `playSoundFor` 那一支） */
+let dollWalkHeld = false;
+
+/**
+ * 台词队列空了（用道具那一句说完）就放娃娃上路，并起那一声循环音效 38。
+ *
+ * @source 循环：`0x40ded1 push 1` → `0x4542ce` → `IDirectSoundBuffer::Play(…, DSBPLAY_LOOPING)`；
+ *   走完 `0x0040d8dc call 0x4542e9`（Stop）。`+80 ms` 是留一拍余量。
+ */
+function tickDollRelease(): void {
+  if (!dollWalkHeld) return;
+  if (filmWaitsForSpeech(speechQueue.length)) {
+    requestRender();
+    return;
+  }
+  dollWalkHeld = false;
+  renderer.releaseActorWalks(performance.now());
+  sound.play('Effect.mkf', SOUND_IDS.DOLL, true);
+  const walkMs = renderer.actorWalkRemainingMs();
+  window.setTimeout(() => sound.stop('Effect.mkf', SOUND_IDS.DOLL), Math.max(0, walkMs) + 80);
+  requestRender();
+}
 
 /** 投掷在等台词说完才起播（见 `beginObjectFlight` 的 `awaitSpeech`） */
 let objectFlightAwaitsSpeech = false;
@@ -6927,7 +7009,11 @@ function requestRender(): void {
     if (screen === 'game') tickPendingCardFlight();
     // ★ 本机选定的卡：亮牌收屏之后才走卡片函数那一段（选目标 / 发 `useCard`）
     if (screen === 'game') tickPendingCardRoute();
+    // ★ 第十四份 #4：道具台词说完才开选择界面
+    if (screen === 'game') tickPendingToolPicker();
     if (screen === 'game') tickObjectFlight(performance.now());
+    // ★ 第十四份 #5：機器娃娃等台词说完才上路
+    if (screen === 'game') tickDollRelease();
     // ★ 神明升天（第十二份试玩回报 #1）：等前面的演出收摊才起，演完才放行回合驱动
     if (screen === 'game') tickGodAscend(performance.now());
     // ★ 第十三份試玩回報 #1：顯靈框收掉那一拍放开按住的等级 + 第二声音效（须在 `tickBuildFx` 之前）

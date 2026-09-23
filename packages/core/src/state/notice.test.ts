@@ -32,6 +32,12 @@ import { SPECIAL_KIND } from '../loaders/map.ts';
 //  住宅：走到别人的地產上
 // ============================================================
 
+/**
+ * ★ 第十四份：九种免收弹完框之后当前玩家（付款方，这里是 0 号）说事件 13
+ * @source `0x0041d6d2 mov edx,[… + 0x48087e]` → `0x0041d6dd player_say([0x49910c], 3, …)`
+ */
+const FREE_SAY = { player: 0, event: 13 } as const;
+
 const LAND = 1;
 /** 同盟者名下的同名地塊（level 1 → 租金表[1] = 500） */
 const ALLY_LAND = 2;
@@ -132,6 +138,7 @@ describe('★★ 住宅：`RENT.payOneOwner`（0x00419d3e）', () => {
     expect(after.notices[0]).toEqual({
       key: 'rent.freePrison',
       args: ['沙隆巴斯', '過路費'],
+      say: FREE_SAY,
     });
     // 钱一分没动 —— 弹框不改规则
     expect(after.players[0]!.cash).toBe(50_000);
@@ -160,13 +167,13 @@ describe('★★ 免收訊息框：九种全弹', () => {
   it.each(cases)('★★★ 可证伪：地主 $reason ⇒ 键 $key（不弹就是红的）', ({ blocking, key }) => {
     const after = settle(onRivalLand({ owner: { blocking: confined(blocking) } }));
     // 旧实现（豁免直接 `return {...state, phase:'turnEnd'}`）这里是空数组 ⇒ 红
-    expect(after.notices[0]).toEqual({ key, args: ['沙隆巴斯', '過路費'] });
+    expect(after.notices[0]).toEqual({ key, args: ['沙隆巴斯', '過路費'], say: FREE_SAY });
   });
 
   it('★★★ 可证伪：查封（priceStatus 高低半字节都非 0）⇒ `rent.freeSealed`，**只有一个 `%s`**', () => {
     // @source 0x0041d59f `push 0x463bb8` —— 这一支只推了 esi（費名）
     const after = settle(onRivalLand({ priceStatus: 0x11 }));
-    expect(after.notices[0]).toEqual({ key: 'rent.freeSealed', args: ['過路費'] });
+    expect(after.notices[0]).toEqual({ key: 'rent.freeSealed', args: ['過路費'], say: FREE_SAY });
     // 多填一个名字就会红
     expect(after.notices[0]?.args).not.toEqual(['沙隆巴斯', '過路費']);
   });
@@ -174,13 +181,13 @@ describe('★★ 免收訊息框：九种全弹', () => {
   it('★★★ 可证伪：同盟（地主的同盟对象 == 付款方 + 1）⇒ `rent.freeAllied`，名字 + 費名', () => {
     // @source 0x0041d5ce `push esi`（費名）+ `0x41d5cf lea eax,[esp+0x84]`（地主名）
     const after = settle(onRivalLand({ owner: { alliedPlayer: 1 } }));
-    expect(after.notices[0]).toEqual({ key: 'rent.freeAllied', args: ['沙隆巴斯', '過路費'] });
+    expect(after.notices[0]).toEqual({ key: 'rent.freeAllied', args: ['沙隆巴斯', '過路費'], say: FREE_SAY });
   });
 
   it('★★★ 可证伪：死神顯靈（god_info 0xf）⇒ `rent.freeReaper`，**只有一个 `%s`**', () => {
     // @source 0x0041d5fa `push 0x463be2` —— 与查封同形，只有一个实参
     const after = settle(onRivalLand({ owner: { godInfo: 0xf } }));
-    expect(after.notices[0]).toEqual({ key: 'rent.freeReaper', args: ['過路費'] });
+    expect(after.notices[0]).toEqual({ key: 'rent.freeReaper', args: ['過路費'], say: FREE_SAY });
     expect(after.notices[0]?.args).not.toEqual(['沙隆巴斯', '過路費']);
   });
 
@@ -545,7 +552,7 @@ describe('★★ 設施的免收框：費名查 `0x47528b` 表（不是住宅的
     const { state, topo } = facilityScene({ type, ownerBlocking: { inHospital: 2 } });
     const after = reduce(state, { type: 'settle' }, topo);
     // @source 0x0041a3b0 `movzx esi, byte [type + 0x47528b]` → `[esi*4 + 0x47517c]`
-    expect(after.notices[0]).toEqual({ key: 'rent.freeHospital', args: ['沙隆巴斯', fee] });
+    expect(after.notices[0]).toEqual({ key: 'rent.freeHospital', args: ['沙隆巴斯', fee], say: FREE_SAY });
     expect(after.notices[0]?.args[1]).not.toBe('過路費');
   });
 
@@ -914,5 +921,60 @@ describe('★★ W-69：`lastTollLands` —— 同一条街的连号地块一起
     const mine = { ...s, currentPlayer: 1 };
     const after = reduce(mine, { type: 'settle' }, topoStreet);
     expect(after.lastTollLands).toBeNull();
+  });
+});
+
+// ============================================================
+//  ★★ 第十四份（需求方拍板照原版）：过路费的神明调整框 + 進帳台词提示
+// ============================================================
+
+describe('★★ 过路费神明调整那一扇（`fcn_0041d709`，`0x0041d7a2 push 0x5dc`）', () => {
+  it('★★ 小財神减半 ⇒ 租金框之后再弹「小財神顯靈／過路費減免一半！」；地主按减半后的那一笔说進帳', () => {
+    const after = settle(onRivalLand({ payer: { godInfo: GOD_SMALL_FORTUNE } }));
+    expect(after.notices).toEqual([
+      { key: 'rent.payOneOwner', args: ['測試地', '沙隆巴斯', 1200, '過路費'] },
+      { key: 'god.tollHalf', args: ['過路費'] },
+    ]);
+    // @source 0x00419ff0 call 0x44f354(地主, ebp) —— ebp 是神明调过之后的 600
+    expect(after.lastGainSays).toEqual([{ player: 1, amount: 600 }]);
+  });
+
+  it('★★ 大財神免付 ⇒ 「大財神顯靈／免付過路費！」+ 付款方说「逃过一劫」那一句（原额 1200，@source 0x0041d7c1）；地主不说', () => {
+    const after = settle(onRivalLand({ payer: { godInfo: 2 } }));
+    expect(after.notices).toEqual([
+      { key: 'rent.payOneOwner', args: ['測試地', '沙隆巴斯', 1200, '過路費'] },
+      { key: 'god.tollFree', args: ['過路費'], say: { player: 0, reliefAmount: 1200 } },
+    ]);
+    expect(after.players[0]!.cash).toBe(50_000);
+    expect(after.lastGainSays ?? null).toBeNull();
+  });
+
+  it('★ 窮神两支：小窮神 ×1.5（`god.tollPlusHalf`）、大窮神 ×2（`god.tollDouble`），都不带 say', () => {
+    expect(settle(onRivalLand({ payer: { godInfo: 5 } })).notices[1]).toEqual({ key: 'god.tollPlusHalf', args: ['過路費'] });
+    expect(settle(onRivalLand({ payer: { godInfo: 6 } })).notices[1]).toEqual({ key: 'god.tollDouble', args: ['過路費'] });
+  });
+
+  it('★ 福神（3/4）不改金额 ⇒ 不弹（`0x0041d79e cmp ebx,esi / je`）', () => {
+    expect(settle(onRivalLand({ payer: { godInfo: 3 } })).notices).toHaveLength(1);
+  });
+
+  it('★★ 同盟分账 ⇒ 只有**地主**说進帳，金额是地主那一份（`0x00419f92 ebx = ebp − 同盟份` → `0x00419fa1`）', () => {
+    const after = settle(onRivalLand({ owner: { alliedPlayer: 3 } }));
+    const says = after.lastGainSays ?? [];
+    expect(says).toHaveLength(1);
+    expect(says[0]!.player).toBe(1);
+    expect(says[0]!.amount).toBeLessThan(1700);
+    // 同盟那份没被截断（付款方钱够）⇒ 地主那份 = 1700 − 同盟实收
+    expect(says[0]!.amount).toBe(1700 - after.players[2]!.monthlyReceived);
+  });
+
+  it('★★ 設施：主人说進帳（`0x0041a735`）；大財神免付 ⇒ 框 + 付款方那一句、主人不说', () => {
+    const plain = facilityScene({ type: FACILITY_TYPE.gasStation });
+    const a = reduce(plain.state, { type: 'settle' }, plain.topo);
+    expect(a.lastGainSays).toEqual([{ player: 1, amount: a.facilityLastToll[FAC] }]);
+    const waived = facilityScene({ type: FACILITY_TYPE.gasStation, godInfo: 2 });
+    const b = reduce(waived.state, { type: 'settle' }, waived.topo);
+    expect(b.notices.at(-1)).toEqual({ key: 'god.tollFree', args: ['加油費'], say: { player: 0, reliefAmount: expect.any(Number) } });
+    expect(b.lastGainSays ?? null).toBeNull();
   });
 });

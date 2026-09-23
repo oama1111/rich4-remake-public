@@ -494,6 +494,89 @@ describe('★ 神明加持真的接上了 @source VA 0x0044b896', () => {
     }
   });
 
+  // ════════════════════════════════════════════════════════════════
+  //  ★★ 第十四份（需求方拍板照原版）：神明加持那一扇框 + 框之后那一句 + 理賠框 + 進帳台词提示
+  // ════════════════════════════════════════════════════════════════
+  const standFortune = (fortune: number, luck = 0, extra: Partial<GameState['players'][number]> = {}) => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return null;
+    const me = on.currentPlayer;
+    const s1: GameState = {
+      ...on,
+      players: on.players.map((p, i) => (i === me ? { ...p, fortune, luck, godInfo: 0, ...extra } : p)),
+    };
+    return { s1, me, topo };
+  };
+
+  run('★★ 罰款被神明免付 ⇒ 「%s保佑／免付罰金！」框（@source 0x0044b9c9）+ 之后 0x44f567 那一句（原额）', () => {
+    const c = standFortune(101);
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 30), { type: 'settle' }, c.topo);
+    expect(s2.notices).toEqual([
+      { key: 'blessing.penaltyVoid', args: ['間諜'], beforeFilms: true, say: { player: c.me, reliefAmount: 5000 } },
+    ]);
+    expect(s2.pool).toBe(c.s1.pool);
+  });
+
+  run('★★ 罰款加倍 + 保險期 ⇒ 「罰金加倍」框在前、理賠框（2000 ms，×2 那一笔）在后；不带 say', () => {
+    const c = standFortune(-1, 0, { insuranceDays: 30 });
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 30), { type: 'settle' }, c.topo);
+    expect(s2.notices).toEqual([
+      { key: 'blessing.penaltyDouble', args: ['間諜'], beforeFilms: true },
+      { key: 'insurance.payout', args: [10000], holdMs: 2000 },
+    ]);
+  });
+
+  run('★ 事件 3（支票跳票）財運 < 0 ⇒ 调用方只认 1（`0x0044c28d cmp eax,1`）⇒ **不弹**', () => {
+    const c = standFortune(-1);
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 3), { type: 'settle' }, c.topo);
+    if (s2.lastEvent?.id !== 3) return; // 这张图上 3 不可抽就跳过
+    expect(s2.notices.filter((n) => n.key.startsWith('blessing.'))).toEqual([]);
+  });
+
+  run('★★ 坐牢被福運挡掉 ⇒ 「逃過此劫」框 + 之后事件 0（@source 0x0044d873）', () => {
+    for (const id of [33, 34, 35, 36]) {
+      const c = standFortune(0, 101);
+      if (c === null) return;
+      const s2 = reduce(forceDraw(c.s1, id), { type: 'settle' }, c.topo);
+      expect(s2.lastEvent?.id).toBe(id);
+      expect(s2.notices).toEqual([
+        { key: 'blessing.misfortuneVoid', args: ['間諜'], beforeFilms: true, say: { player: c.me, event: 0 } },
+      ]);
+      expect(s2.players[c.me]!.blocking.inPrison).toBe(0);
+    }
+  });
+
+  run('★★ 命運「進帳」那一族 ⇒ `lastGainSays`（0x0044d334）；獎金作廢 ⇒ 没有、只弹框', () => {
+    const ok = standFortune(0);
+    if (ok === null) return;
+    const s2 = reduce(forceDraw(ok.s1, 25), { type: 'settle' }, ok.topo);
+    expect(s2.lastGainSays).toEqual([{ player: ok.me, amount: 10000 }]);
+    const voided = standFortune(-1);
+    if (voided === null) return;
+    const s3 = reduce(forceDraw(voided.s1, 25), { type: 'settle' }, voided.topo);
+    expect(s3.lastGainSays ?? null).toBeNull();
+    expect(s3.notices.map((n) => n.key)).toEqual(['blessing.rewardVoid']);
+    // 只活一条 action
+    const s4 = reduce(s2, { type: 'endTurn' }, ok.topo);
+    expect(s4.lastGainSays ?? null).toBeNull();
+  });
+
+  run('★ 16（汽車超速罰款）接上了加持：財運 > 100 ⇒ 免付', () => {
+    const c = standFortune(101, 0, { trafficMethod: 2 });
+    if (c === null) return;
+    const cash = c.s1.players[c.me]!.cash;
+    const s2 = reduce(forceDraw(c.s1, 16), { type: 'settle' }, c.topo);
+    if (s2.lastEvent?.id !== 16) return;
+    expect(s2.players[c.me]!.cash).toBe(cash);
+    expect(s2.notices[0]?.key).toBe('blessing.penaltyVoid');
+  });
+
   run('★★ 財運 = 0 ⇒ 照常付一次（不受影响）', () => {
     const map = loadMap();
     const topo = topoOf(map);
@@ -846,5 +929,28 @@ describe('★★ 命運的免罪(21)/嫁禍(19) 二級判定接進 reducer @sour
     expect(after.players[me]!.blocking.inPrison).toBe(3);
     expect(after.prisonOccupancy[me]).toBe(1);
     expect(after.rngState).toBe(env.state.rngState);
+  });
+});
+
+describe('★★ 第十四份：新聞 8/9/10 受奖人的進帳台词提示（@source 0x00449a80 call 0x44f354）', () => {
+  run('新聞 8「表揚第一大地主」⇒ `lastGainSays` = [受奖人, 10000×物價]', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.NEWS);
+    if (on === null) return;
+    // 让 1 号名下有一块地 ⇒ 他就是第一大地主
+    const landId = (map.lands ?? [])[0]!.id;
+    const landOwner = [...on.landOwner];
+    landOwner[landId] = 2;
+    const forced: GameState = {
+      ...on,
+      landOwner,
+      newsDeck: { ...on.newsDeck, order: [8, ...on.newsDeck.order.filter((x) => x !== 8)], cursor: 0 },
+    };
+    const s2 = reduce(forced, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id).toBe(8);
+    expect(s2.lastGainSays).toEqual([{ player: 1, amount: 10000 * s2.priceIndex }]);
+    expect(s2.players[1]!.monthlyReceived - forced.players[1]!.monthlyReceived).toBe(10000 * s2.priceIndex);
   });
 });

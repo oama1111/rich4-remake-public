@@ -76,6 +76,15 @@ export const RENT = {
   freeSleepwalk: t('%s夢遊中\n\n免收%s！', 0x463c54),
   /** 小财神减半 */
   halfLuckyGod: t('小財神顯靈\n\n%s減免一半！', 0x463c67),
+  /**
+   * ★ 第十四份（2026-09-23）：`fcn_0041d709`（过路费的神明调整）其余三支的框。
+   * @source 跳表 `0x0041d6f1`：大財神 `0x0041d759 push 0x463c80`、小窮神 `0x0041d770 push 0x463c95`、
+   *   大窮神 `0x0041d789 push 0x463cae`；`%s` = 費名（第 2 实参 `edx`）。金额真变了才弹
+   *   （`0x0041d79e cmp ebx,esi / je`），`0x0041d7a2 push 0x5dc`。
+   */
+  freeBigLuckyGod: t('大財神顯靈\n\n免付%s！', 0x463c80),
+  plusHalfSmallPoorGod: t('小窮神顯靈\n\n%s加付50％！', 0x463c95),
+  doubleBigPoorGod: t('大窮神顯靈\n\n加倍付%s！', 0x463cae),
   /** 死神显灵，由 %s 赔偿 %s */
   reaperPays: t('死神顯靈\n\n由%s賠償%s', 0x4639cc),
 } as const;
@@ -421,6 +430,32 @@ export const MAGIC_HOUSE_TEXT = {
 } as const;
 
 /**
+ * ★ 第十四份（2026-09-23）：命運的**神明加持**那六扇框（`fcn_0044b896` 写进 `[0x48c5b8]`，
+ * 调用方 `push 0x5dc / push 0x48c5b8 / call 0x440cac`）—— `%s` = `[0x47ed76 + god_info*4]`。
+ *
+ * @source `fcn_0044b896` 的三个域（`[esp+0x14]` / `[esp+0x18]` 两个实参）：
+ *   `(0,0)` 獎金：2 → `0x0044b914 push 0x465888`、1 → `0x0044b941 push 0x46589b`；
+ *   `(0,1)` 罰金：2 → `0x0044b99c push 0x4658ae`、1 → `0x0044b9c9 push 0x4658c1`；
+ *   `(1,*)` 劫难：2 → `0x0044ba24 push 0x4658d4`、1 → `0x0044ba4a push 0x4658e7`。
+ */
+export const BLESSING = {
+  rewardDouble: t('%s保佑\n\n獎金加倍！', 0x465888),
+  rewardVoid: t('%s作祟\n\n獎金作廢！', 0x46589b),
+  penaltyDouble: t('%s作祟\n\n罰金加倍！', 0x4658ae),
+  penaltyVoid: t('%s保佑\n\n免付罰金！', 0x4658c1),
+  misfortuneDouble: t('%s作祟\n\n倒霉加倍！', 0x4658d4),
+  misfortuneVoid: t('%s保佑\n\n逃過此劫！', 0x4658e7),
+} as const;
+
+/**
+ * ★ 第十四份：保險理賠那一扇 @source `fcn_0044ba63`：`0x0044baa5 push 0x4658fa` →
+ *   `0x0044baaf sprintf(…, 損失)` → `0x0044bab7 push 0x7d0`（**2000 ms**）`call 0x440cac`。
+ */
+export const INSURANCE = {
+  payout: t('保險期間\n\n得到理賠金\n\n%d元', 0x4658fa),
+} as const;
+
+/**
  * 神明的名字 —— 16 項，**下标 = 物件種類 − 1**。
  *
  * @source `_rich4_god_names` @ VA 0x47ed7a（指针表），每條串間隔 7 字節
@@ -504,6 +539,8 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   //   所以现在可以整块交给下面那条逐字比对守着，四条都有了护栏。
   ...Object.values(GOD_MANIFEST),
   ...Object.values(MAGIC_HOUSE_TEXT),
+  ...Object.values(BLESSING),
+  ...Object.values(INSURANCE),
   ...GOD_NAMES,
   ...OBJECT_NAMES,
 ];
