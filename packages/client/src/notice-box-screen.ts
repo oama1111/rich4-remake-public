@@ -132,6 +132,8 @@ export const NOTICE_TEXT = {
   //   一扇框、两个卡名，且串里自己写着「大福神」⇒ `args` 只有两张卡名。
   'god.gotCardTwo': GOD_MANIFEST.gotCardTwo.text,
   'bank.rejected': BANK.rejected.text,
+  // ★ ATM 窗 `0x408`：銀行暫停放款期内开 ATM，框盖在 ATM 上（1500 ms）
+  'bank.frozen': BANK.frozen.text,
   // ★ W-67-a：董事長蒞臨商店的贈禮（`0x464378`）—— 在商店窗打开**之前**弹
   'shop.chairmanGift': SHOP.chairmanGift.text,
   // ★ 回合開始時「被阻礙」那五扇（`fcn_0040c912`）—— 对**所有人**都弹（不分真人与电脑），

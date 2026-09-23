@@ -922,13 +922,15 @@ let atm: AtmState | null = null;
 let atmFill: ((n: number, mode: number) => Action) | null = null;
 let atmLabel = '';
 /**
- * ★ 第八份试玩回报 #4：**路过銀行**的 ATM（`pending.kind === 'atm'`）—— 与落点銀行屏里那台是同一块面板，
- *   只是没有貸款屏垫底、办完一笔就关（原版 `fcn_004379c9` 的 ATM 窗是模态的，走子在它后面）。
- *   本标志记「这一次 pending 已经开过窗」：玩家右键关掉后 `declineDecision` 把 pending 清掉，下一次路过再开。
+ * ★ 第八份试玩回报 #4：**路过銀行**的 ATM（`pending.kind === 'atm'`）—— 原版 `fcn_004379c9` 的 ATM 窗是模态的，
+ *   办完一笔（或关窗）就返回，走子在它后面。
+ * ★ 第十三份试玩回报 #2：**落在**銀行上也是先开这一台（`pending.landing`），答掉之后 core 才换成貸款屏
+ *   （`0x0041b396 call 0x4379c9` → `0x0041b3af call 0x436668`）。
+ *   本标志记「这一次 pending 已经开过窗」：玩家右键关掉后 `declineDecision` 把 pending 清掉（或换成貸款屏），下一次再开。
  */
 let atmPassOpened = false;
 
-/** 每次 action 之后：路过銀行给出 `pending.kind === 'atm'` ⇒ 给本机座位开 ATM；pending 没了 ⇒ 复位 */
+/** 每次 action 之后：core 给出 `pending.kind === 'atm'`（路过 / 落点）⇒ 给本机座位开 ATM；pending 没了 ⇒ 复位 */
 function syncAtmPending(): void {
   const p = state.pending;
   if (p === null || p.kind !== 'atm') {
@@ -942,7 +944,7 @@ function syncAtmPending(): void {
   // ★ 第十三份试玩回报 #1：模式 0 = 提款（左上）、1 = 存款（中间）；暫停放款时默认存款 —— 见 `bank-screen.ts` 文件头
   atm = atmOpen(me.cash, me.moneyInBank, bankFrozen());
   atmFill = (n, mode) => ({ type: 'bank', op: atmOp(mode), amount: n });
-  atmLabel = '路過銀行';
+  atmLabel = p.landing === true ? '銀行' : '路過銀行';
   // 原版 `fcn_004379c9` 开窗那段（`0x437a2d..0x437a76`）只装 Panel #24 + 跑模态窗，**没有**开窗音效
   requestRender();
 }
@@ -6870,7 +6872,12 @@ function requestRender(): void {
       // ★ 登记的整屏接管：棋盘、侧栏、工具栏一概不画（原版这些屏也是整屏窗口）
       // ★ 例外是**浮窗**（`windowed: true`，如大地圖彈窗）：原版只把被盖住的
       //   那一块盖上去，周围的棋盘/工具栏/侧栏照旧露着 —— 故先照常画一整帧。
-      if (overlay.windowed === true && screen === 'game') drawGameStage();
+      if (overlay.windowed === true && screen === 'game') {
+        drawGameStage();
+        // ★ 模态 ATM 窗在浮窗**底下**：銀行暫停放款时 ATM 窗 `0x401` 铺完面板才 `PostMessage(0x408)`
+        //   弹「銀行暫停放款」訊息框（`0x00437123`）⇒ 框盖在 ATM 上。下面链尾那一句只在没有整屏接管时画 ATM。
+        if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
+      }
       overlay.draw(uiEnv());
     } else if (screen === 'title') {
       drawTitle(stageCtx, titleHot, spriteNow);
@@ -7045,7 +7052,7 @@ function requestRender(): void {
         if (loanUi.bubble !== null) drawLoanBubble(stageCtx, spriteNow, loanUi.bubble.text);
       }
     }
-    if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
+    if (atm !== null && overlay === null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
     if (bank !== null && atm === null && amountPage !== null) {
       // 填数页（`fcn_00453544`）是**另开一个窗口**盖在银行屏上的，所以这里
       // 单独把它画到舞台 —— 不能整块贴回棋盘画布（那样四周会透出地图）。

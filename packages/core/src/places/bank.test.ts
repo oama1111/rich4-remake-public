@@ -303,7 +303,10 @@ describe('★ 接线：非真人落銀行格时重分，真人不重分', () => 
     const r = reduce(onBank(WHO_PLAYS_HUMAN), { type: 'settle' }, topo);
     expect(r.players[0]?.cash).toBe(0);
     expect(r.players[0]?.moneyInBank).toBe(1000);
-    expect(r.pending?.kind).toBe('bank');
+    // ★ 第十三份试玩回报 #2：先挂 ATM 对话框（`0x0041b396 call 0x4379c9` → `0x00437a71` 模态窗），
+    //   关掉之后才是柜台（`0x0041b3af call 0x436668`）—— 先前这里断言「直接是柜台」，复述的是漏了 ATM 的旧实现
+    expect(r.pending).toEqual({ kind: 'atm', landing: true });
+    expect(reduce(r, { type: 'declineDecision' }, topo).pending?.kind).toBe('bank');
   });
 
   it('被銀行拒绝往来期内（+0x3b ≠ 0）：连柜台都不开，也不重分', () => {

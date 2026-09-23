@@ -1579,10 +1579,15 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         // 樂透投注站：电脑自己匿名买一注就走，真人才开投注屏
         if (node.specialKind === SPECIAL_KIND.LOTTERY) return landOnLottery(next);
 
-        // ★ 銀行：非真人在进柜台之前先按 `cashRatio`(+0x19) 重分現金／存款
-        //   （原版 `_rich4_ui_bank_atm_entry` 的 `loc_00437acd` 那一支）。
-        //   见 `rebalanceBankOnArrival`。
-        if (node.specialKind === SPECIAL_KIND.BANK) next = rebalanceBankOnArrival(next);
+        // ★ 銀行：落点先走 **ATM 入口**（`0x0041b396 call 0x4379c9`），再进貸款屏（`0x0041b3af call 0x436668`）。
+        //   - 拒絕往來：ATM 入口弹框 1000 ms，貸款屏入口 `0x0043667b` 也直接返回 ⇒ 什么交互都不给；
+        //   - **恰好** who_plays == 1 的真人：先挂 ATM（`pending {kind:'atm', landing:true}`），
+        //     答掉之后才换成貸款屏（第十三份试玩回报 #2，见 `enterBankRoom`）；
+        //   - 其余（电脑 / 托管）：按 `cashRatio`(+0x19) 重分現金／存款（`loc_00437acd`），再进柜台。
+        if (node.specialKind === SPECIAL_KIND.BANK) {
+          next = bankAtmEntry(next, true);
+          if (next.pending?.kind === 'atm') return next;
+        }
 
         // 其余特殊格：交给「待决交互」机制。
         // ★ 这样每一格都**可达**：已实现的给出具体交互，
@@ -2051,7 +2056,10 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (state.pending === null) return state;
       // ★ 路过銀行的 ATM 窗在**走子中途**弹出：关窗只是关窗，剩下的步数照走（原版 `fcn_0041b42d` 那一支
       //   `call 0x4379c9` 返回后接着往下处理这一步，不结束回合）
-      if (state.pending.kind === 'atm') return { ...state, pending: null };
+      //   ★ 落点那台（`landing`）关窗 = ATM 入口返回 ⇒ 接着进貸款屏（`0x0041b3af call 0x436668`）
+      if (state.pending.kind === 'atm') {
+        return state.pending.landing === true ? enterBankRoom(state, topo) : { ...state, pending: null };
+      }
       // ★ 魔法屋的女巫窗口**没有取消**（原版状态 7 只收 1..13 格的左键，右键只在
       //   状态 < 3 跳过开场白，@source 0x00432e64 / 0x00432e8e）——「不了」不能让这一趟
       //   什么都不发生。按託管处理：电脑那一支替他掷效果（见 `answerMagicHouse`）。
@@ -2061,10 +2069,14 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
 
     case 'bank': {
       // ★ 路过銀行的 ATM（`pending.kind === 'atm'`）只收存款 / 提款，办完一笔就关（原版 ATM 窗是模态的）
+      //   落点那台（`landing`）办完这一笔接着进貸款屏（见 `enterBankRoom`）。
       if (state.pending?.kind === 'atm') {
         if (action.op !== 'deposit' && action.op !== 'withdraw') return state;
         const who = state.players[state.currentPlayer];
         if (who === undefined || !isAlive(who)) return state;
+        // ★ 銀行暫停放款期内 ATM 只给「存款」：`0x00437028 mov [0x48c3f0],1`（模式 = 存款）且
+        //   `0x004371e5 cmp byte [+0x3c],0 / 0x004371ee mov ebx,[0x48c3f0]` 把「点提款钮」换成当前模式 ⇒ 提不了
+        if (action.op === 'withdraw' && who.bankFreezeDays !== 0) return state;
         const moved = action.op === 'deposit' ? deposit(who, action.amount) : withdraw(who, action.amount);
         if (moved === who) return state;
         const after = withPlayer(state, state.currentPlayer, (p) => {
@@ -2072,7 +2084,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           p.moneyInBank = moved.moneyInBank;
         });
         const settled = action.op === 'withdraw' ? settleBankReserve(after, topo) : after;
-        return { ...settled, pending: null };
+        return state.pending.landing === true ? enterBankRoom(settled, topo) : { ...settled, pending: null };
       }
       if (state.pending === null || state.pending.kind !== 'bank') return state;
       const me = state.players[state.currentPlayer];
@@ -5794,13 +5806,52 @@ function passingBank(state: GameState, topo: MapTopology): GameState {
   if (state.stepsRemaining <= 0) return state;
   const handle = objectHandleAt(state, me.nodeId);
   if (handle !== 0 && state.objects[handle - 1]?.type === OBJECT_TYPE_ROADBLOCK) return state;
-  // @source `0x004379da mov ah,[player+0x3b] / 0x004379e2 je` → `push 0x464bed / push 0x3e8 / call 0x440cac`
+  return bankAtmEntry(state, false);
+}
+
+/**
+ * **ATM 入口** `fcn_004379c9`（`_rich4_ui_bank_atm_entry`）—— 路过（`0x0041b5ab`）与落点（`0x0041b396`）
+ * 共用的那一个函数。三支：
+ * ```asm
+ * 004379da  mov  ah, [player+0x3b] / test ah,ah / je 0x437a18   ; 拒絕往來？
+ * 004379e6  and  al, 0x7f / … / inc eax                          ; ★ 天数 = (+0x3b & 0x7f) + 1
+ * 004379ef  push 0x464bed / … / push 0x3e8 / call 0x440cac       ; 訊息框 1000 ms，然后返回
+ * 00437a18  mov  cl, [player+0x15] / cmp cl,1 / jne 0x437acd      ; **恰好** who_plays == 1 的真人
+ * 00437a71  push 0x436ef8 / call 0x4018e7                        ; → 模态 ATM 窗（办一笔或关窗就返回）
+ * 00437acd  …                                                    ; 其余 → 按 cashRatio 重分現金/存款
+ * ```
+ * ATM 窗 `0x401`（`0x00436fdd`）：`+0x3c`（銀行暫停放款）!= 0 ⇒ `PostMessage(0x408)`，
+ * 那一支弹「銀行暫停放款\n\n還剩%d天！」（`0x464bd4`，1500 ms）盖在 ATM 上 ⇒ 与 pending 同一条 action 交出去。
+ *
+ * @param landing 落点那台（关掉之后接着进貸款屏）；`false` = 路过那台
+ */
+function bankAtmEntry(state: GameState, landing: boolean): GameState {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return state;
   if (me.daysRejectedByBank !== 0) {
-    return { ...state, notices: [{ key: 'bank.rejected', args: [me.daysRejectedByBank & 0x7f], holdMs: 1000 }] };
+    return {
+      ...state,
+      notices: [{ key: 'bank.rejected', args: [displayRemainingDays(me.daysRejectedByBank)], holdMs: 1000 }],
+    };
   }
-  // @source `0x00437a1e cmp cl,1 / jne 0x437acd`：**恰好** who_plays == 1 的真人才开窗
-  if ((me.whoPlays & 0xff) === WHO_PLAYS_HUMAN) return { ...state, pending: { kind: 'atm' } };
+  if ((me.whoPlays & 0xff) === WHO_PLAYS_HUMAN) {
+    const opened: GameState = { ...state, pending: landing ? { kind: 'atm', landing: true } : { kind: 'atm' } };
+    if (me.bankFreezeDays === 0) return opened;
+    return { ...opened, notices: [{ key: 'bank.frozen', args: [displayRemainingDays(me.bankFreezeDays)] }] };
+  }
   return rebalanceBankOnArrival(state);
+}
+
+/**
+ * 落点那台 ATM 关掉之后 —— 进**貸款屏**（`_rich4_ui_bank_entry` @ 0x436668）。
+ *
+ * @source `0x0041b39b cmp byte [0x46caf8], 0 / jne 0x41b3d0`：终局码非 0（ATM 里提款触发的
+ *   特別融資垫付把人拖破产、刚好分出胜负）就不进；否则 `0x0041b3af call 0x436668` ——
+ *   它进门先 `0x0043668f call 0x4239b9` 取**这一刻**的身家快照（`[0x48c3b0]`），所以额度在 ATM 之后才算。
+ */
+function enterBankRoom(state: GameState, topo: MapTopology): GameState {
+  if (state.phase === 'gameOver') return { ...state, pending: null };
+  return { ...state, pending: pendingForSpecial(state, topo, SPECIAL_KIND.BANK) };
 }
 
 /**

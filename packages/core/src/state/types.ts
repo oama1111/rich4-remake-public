@@ -629,8 +629,18 @@ export type NoticeKey =
    * 「大福神附身\n\n得到%s及%s！」自己写着神明名）⇒ 与 `god.gotCard` 的 args 形状不同。
    */
   | 'god.gotCardTwo'
-  /** 路过 / 落在銀行格但被拒絕往來（`0x004379ef push 0x464bed`，**1000 ms**）—— `args[0]` = 还剩几天 */
+  /**
+   * 路过 / 落在銀行格但被拒絕往來（`0x004379ef push 0x464bed`，**1000 ms**）—— `args[0]` = 还剩几天
+   * = `(+0x3b & 0x7f) + 1`（@source `0x004379e6 and al,0x7f` / `0x004379ed inc eax`）
+   */
   | 'bank.rejected'
+  /**
+   * 真人开 ATM 时正「銀行暫停放款」（`+0x3c != 0`）：ATM 窗 `0x401` 铺完面板后 `PostMessage(0x408)`
+   * （`0x004370a5`），`0x408` 那一支 `0x00437123 push 0x464bd4`「銀行暫停放款\n\n還剩%d天！」+
+   * `0x00437135 push 0x5dc`（1500 ms）`call 0x440cac` —— 框盖在 ATM 上。`args[0]` = `(+0x3c & 0x7f) + 1`
+   * （`0x0043711b and al,0x7f` / `0x00437121 inc ebx`）。
+   */
+  | 'bank.frozen'
   /**
    * 董事長蒞臨商店的贈禮（`_rich4_ui_shop_entry` 0x0042e9f8 `push 0x464378`，
    * 訊息框 1500 ms）—— **在商店窗打开之前**弹，`args[0]` = 送出那件的名字。

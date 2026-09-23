@@ -205,6 +205,8 @@ export const FIELD = {
 export const BANK = {
   /** ATM 入口 `fcn_004379c9`：拒絕往來期内 @source `0x004379ef push 0x464bed`（框停 `0x3e8` = 1000 ms）*/
   rejected: t('銀行拒絕往來\n\n還剩%d天！', 0x464bed),
+  /** ATM 窗 `0x408` 那一支：銀行暫停放款期内开 ATM @source `0x00437123 push 0x464bd4`（框停 `0x5dc` = 1500 ms）*/
+  frozen: t('銀行暫停放款\n\n還剩%d天！', 0x464bd4),
   applyLoan: t('申請貸款', 0x464a81),
   repayLoan: t('償還貸款', 0x464a8a),
   specialFinance: t('特別融資', 0x464a93),
