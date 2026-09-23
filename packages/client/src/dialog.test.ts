@@ -7,7 +7,7 @@
  * 「每个按钮的正中一定命中它自己」。
  */
 import { describe, expect, it } from 'vitest';
-import { BOX_SCREEN, hitDialog, layoutDialog } from './dialog.ts';
+import { BOX_SCREEN, DIALOG_ANCHOR, dialogRowMiddles, drawDialog, hitDialog, layoutDialog } from './dialog.ts';
 import { DIALOG_ANCHOR_SCREEN, YESNO_CENTER_SCREEN, YESNO_SIZE } from './gameui.ts';
 import type { InteractionUi } from './interactions.ts';
 import { LAYOUT } from './stage.ts';
@@ -156,5 +156,96 @@ describe('对话框版式', () => {
     expect(l.buttons.filter((b) => b.hit.kind === 'amountStep')).toHaveLength(0);
     // 当前值要显示出来，否则玩家不知道自己在填什么
     expect(l.lines.join('')).toContain('3,000');
+  });
+});
+
+// ============================================================
+//  ★ 第十三份試玩回報：「获得点券的文本提示框的文字应该上下居中，现在太偏上了」
+//  原版 `draw_text(…, 0xdc, 0x8c, 4)`：flag 4 = 墨迹框**两轴**居中在框皮锚点上
+// ============================================================
+describe('★ 訊息框 / 询问框的字：整块竖直居中在锚点 (0xdc,0x8c) @source 0x00440dac / 0x00440c3f', () => {
+  /** 记下每一次 fillText 的 (字, x, y) 与当时的对齐方式 */
+  function recordingCtx(): {
+    ctx: CanvasRenderingContext2D;
+    texts: { text: string; x: number; y: number; baseline: string; align: string }[];
+  } {
+    const texts: { text: string; x: number; y: number; baseline: string; align: string }[] = [];
+    const ctx = {
+      font: '',
+      textAlign: 'left',
+      textBaseline: 'alphabetic',
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 0,
+      save: () => undefined,
+      restore: () => undefined,
+      drawImage: () => undefined,
+      fillRect: () => undefined,
+      strokeRect: () => undefined,
+      strokeText: () => undefined,
+      measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
+      fillText(this: CanvasRenderingContext2D, text: string, x: number, y: number) {
+        texts.push({ text, x, y, baseline: this.textBaseline, align: this.textAlign });
+      },
+    } as unknown as CanvasRenderingContext2D;
+    return { ctx, texts };
+  }
+
+  it('★ 锚点就是框皮的锚点：屏幕 (220,140) → 棋盘区 (220,100)', () => {
+    expect(DIALOG_ANCHOR).toEqual({ x: 0xdc, y: 0x8c - LAYOUT.board.y });
+  });
+
+  it('★★ 单行「得點券１０點」：字的中线就在锚点上（先前贴在框内顶边，y ≈ 锚点 − 45）', () => {
+    const { ctx, texts } = recordingCtx();
+    drawDialog(ctx, () => null, { title: '', detail: '得點券１０點', choices: [] }, null, null);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toMatchObject({ text: '得點券１０點', x: DIALOG_ANCHOR.x, y: DIALOG_ANCHOR.y });
+    expect(texts[0]!.baseline).toBe('middle');
+    expect(texts[0]!.align).toBe('center');
+  });
+
+  it('★ 多行（`\\n\\n` 拆出空行）：首末两行关于锚点对称，行距不变', () => {
+    const { ctx, texts } = recordingCtx();
+    drawDialog(
+      ctx,
+      () => null,
+      { title: '', detail: '測試地\n\n此地屬沙隆巴斯\n\n請付1200元過路費', choices: [] },
+      null,
+      null,
+    );
+    const inked = texts.filter((t) => t.text !== '');
+    const ys = inked.map((t) => t.y);
+    expect(inked.map((t) => t.text)).toEqual(['測試地', '此地屬沙隆巴斯', '請付1200元過路費']);
+    expect(ys[0]! + ys[2]!).toBe(2 * DIALOG_ANCHOR.y);
+    expect(ys[1]).toBe(DIALOG_ANCHOR.y);
+    expect(ys[1]! - ys[0]!).toBe(ys[2]! - ys[1]!);
+  });
+
+  it('★ 两个选项的询问框（0x440ba8，同一个 draw_text 调用形态）也居中', () => {
+    const { ctx, texts } = recordingCtx();
+    drawDialog(ctx, () => null, ui(), null, null);
+    const ys = texts.filter((t) => t.text !== '').map((t) => t.y);
+    expect(ys[0]! + ys[ys.length - 1]!).toBe(2 * DIALOG_ANCHOR.y);
+  });
+
+  it('`dialogRowMiddles`：首尾空行不算墨迹；全空时原样返回', () => {
+    const rows = [
+      { h: 20, size: 14, blank: true },
+      { h: 20, size: 14, blank: false },
+      { h: 20, size: 14, blank: true },
+    ];
+    expect(dialogRowMiddles(rows, 100)).toEqual([80, 100, 120]);
+    expect(dialogRowMiddles([{ h: 20, size: 14, blank: true }], 100)).toEqual([10]);
+    // 标题行（24 高、16 号）+ 一行正文（20 高、14 号）：墨迹 [12−8, 34+7] 的中点落在锚点
+    const m = dialogRowMiddles(
+      [
+        { h: 24, size: 16, blank: false },
+        { h: 20, size: 14, blank: false },
+      ],
+      100,
+    );
+    expect(m[1]! - m[0]!).toBe(22);
+    // 整数落点：与锚点至多差半个像素（原版 `sar` 也取整）
+    expect(Math.abs((m[0]! - 8 + (m[1]! + 7)) / 2 - 100)).toBeLessThanOrEqual(0.5);
   });
 });

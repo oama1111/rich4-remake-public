@@ -79,8 +79,47 @@ const BTN_H = 24;
 const BTN_GAP = 5;
 const BTN_MIN_W = 56;
 
-const FONT_TITLE = `bold 16px ${FONT_FAMILY}`;
-const FONT_BODY = `14px ${FONT_FAMILY}`;
+const TITLE_SIZE = 16;
+const BODY_SIZE = 14;
+const FONT_TITLE = `bold ${TITLE_SIZE}px ${FONT_FAMILY}`;
+const FONT_BODY = `${BODY_SIZE}px ${FONT_FAMILY}`;
+
+/**
+ * 框里每一行字的**竖直中线**（棋盘区坐标）—— 整块字的墨迹框竖直居中在 `anchorY`。
+ *
+ * @source `rich4_draw_text`（VA 0x0044fabc）flag 2/3/4 那一支：
+ * ```asm
+ * 0044feef  call 0x44f70c              ; 扫离屏面非 0 像素 → 墨迹框 [x0,y0,x1,y1]
+ * 0044ff00  mov ebx, [y1] / sub ebx, [y0] / inc ebx   ; 高 = y1 − y0 + 1
+ * 0044ff2a  x −= 宽 >> 1
+ * 0044ff35  y −= 高 >> 1               ; ★ 竖直也居中（flag 2/3/4 落到同一段）
+ * ```
+ * 墨迹只看有字的行：首尾的空行（`\n\n` 拆出来的）不占墨迹高度，中间的照样占行距。
+ * 每行的墨迹按「行中线 ± 字号/2」近似（本引擎画字用 `textBaseline = 'middle'`）。
+ */
+export function dialogRowMiddles(
+  rows: readonly { h: number; size: number; blank: boolean }[],
+  anchorY: number,
+): number[] {
+  const mids: number[] = [];
+  let top = 0;
+  for (const r of rows) {
+    mids.push(top + r.h / 2);
+    top += r.h;
+  }
+  let first = -1;
+  let last = -1;
+  rows.forEach((r, i) => {
+    if (r.blank) return;
+    if (first < 0) first = i;
+    last = i;
+  });
+  if (first < 0) return mids;
+  const inkTop = mids[first]! - rows[first]!.size / 2;
+  const inkBottom = mids[last]! + rows[last]!.size / 2;
+  const shift = Math.round(anchorY - (inkTop + inkBottom) / 2);
+  return mids.map((m) => m + shift);
+}
 
 
 // ============================================================
@@ -545,12 +584,25 @@ export function drawDialog(
   }
 
   // ——— 文字 ———
-  const cx = l.inner.x + l.inner.w / 2;
-  let y = l.inner.y + 4;
+  // ★ 第十三份試玩回報（「获得点券的文本提示框的文字应该上下居中，现在太偏上了」）：
+  //   原版两扇框（询问 0x00440c3f / 訊息 0x00440dac）都是 `draw_text(…, 0xdc, 0x8c, flag 4)`
+  //   —— flag 4 = **整块字的墨迹框以 (x,y) 为中心**（`0x44ff2a`：x −= 宽/2、y −= 高/2，
+  //   宽高由 `0x44f70c` 扫离屏面上非 0 像素得来），而 (0xdc,0x8c) 正是框皮的锚点。
+  //   先前从框内顶边往下排（`inner.y + 4`），单行的「得點券１０點」就贴在上沿。
+  const mids = dialogRowMiddles(
+    [
+      ...(l.title !== '' ? [{ h: TITLE_H, size: TITLE_SIZE, blank: false }] : []),
+      ...l.lines.map((t) => ({ h: LINE_H, size: BODY_SIZE, blank: t === '' })),
+    ],
+    DIALOG_ANCHOR.y,
+  );
+  const cx = DIALOG_ANCHOR.x;
+  let row = 0;
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
+  ctx.textBaseline = 'middle';
   // 金框上的字要够亮，且描一圈黑边才压得住底纹
   const line = (text: string, font: string, fill: string): void => {
+    const y = mids[row++] ?? DIALOG_ANCHOR.y;
     ctx.font = font;
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0,0,0,0.75)';
@@ -558,14 +610,8 @@ export function drawDialog(
     ctx.fillStyle = fill;
     ctx.fillText(text, cx, y);
   };
-  if (l.title !== '') {
-    line(l.title, FONT_TITLE, '#ffe8a5');
-    y += TITLE_H;
-  }
-  for (const t of l.lines) {
-    line(t, FONT_BODY, '#fff6e0');
-    y += LINE_H;
-  }
+  if (l.title !== '') line(l.title, FONT_TITLE, '#ffe8a5');
+  for (const t of l.lines) line(t, FONT_BODY, '#fff6e0');
 
   // ——— 按钮 ———
   if (l.yesNo) {
