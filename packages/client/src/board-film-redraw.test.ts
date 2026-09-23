@@ -188,3 +188,28 @@ describe('★ main.ts 接线（源码钉子）', () => {
     ).toBe(2);
   });
 });
+
+describe('★ 关押 / 消失影片前后的镜头（core `confineViewTargets`）接线', () => {
+  const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+
+  it('两处起播都照 ① 移镜头、收屏照 ② 移', () => {
+    expect(src.split("applyFilmView(pending, 'from');").length - 1).toBe(1);
+    expect(src.split("applyFilmView(after, 'from');").length - 1).toBe(1);
+    expect(src).toContain("applyFilmView(film.spec, 'to');");
+  });
+
+  it('目标只来自 core：startConfineFx / startDisappearFx 都调 confineViewTargets', () => {
+    expect(src.split('confineViewTargets(before, after)').length - 1).toBe(2);
+  });
+
+  it('「動畫過程」关着：没有影片，① ② 背靠背 ⇒ 直接停在 ②', () => {
+    const body = src.slice(src.indexOf('function startConfineFx('));
+    const gate = body.indexOf('if (!options.animation) {');
+    expect(gate).toBeGreaterThan(body.indexOf('confineViewTargets(before, after)'));
+  });
+
+  it('排在 lastViewTarget 之后（卡片自己的 view_to 在前、send_to_* 那一次在后）', () => {
+    const body = src.slice(src.indexOf('function syncViewTarget('));
+    expect(body.indexOf('const q = queuedFilmView;')).toBeGreaterThan(body.indexOf('state.lastViewTarget'));
+  });
+});

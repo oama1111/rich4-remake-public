@@ -68,6 +68,8 @@ import {  autoAction,
   type RoomInfo,
   type TargetClass,
   orphanedAuction,
+  confineViewTargets,
+  type ConfineView,
 } from '@rich4/core';
 import { NetClient, defaultWsUrl, netParamsFrom } from './net-client.ts';
 import { browserStorage, inviteLink, inviteRoomFrom, loadClientId, showFoyer } from './foyer.ts';
@@ -3732,6 +3734,18 @@ function syncViewTarget(): void {
     requestRender();
     return;
   }
+  // ★ 第十四份試玩回報（协调方追加）：关押 / 消失影片前后的 `view_to`（`applyFilmView` 排进来的）——
+  //   与上面同一个标记，排在 `lastViewTarget` 之后：原版卡片 / 道具自己的 `view_to` 在前，
+  //   `send_to_*` 里那一次在后（例：陷害卡 `0x0044467d call 0x43d593`）。
+  const q = queuedFilmView;
+  if (q !== null) {
+    queuedFilmView = null;
+    viewTargetActive = true;
+    minimapMarker = { x: q.x, y: q.y };
+    camera = pixelCamera(q.x, q.y, camera.view);
+    requestRender();
+    return;
+  }
   if (!viewTargetActive) return;
   // 演出全部收完 ⇒ 清标记（= 原版 `refresh_screen`），镜头回行动者
   if (stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null) return;
@@ -6157,6 +6171,24 @@ let buildFx: BuildFx | null = null;
 let deferredBoardBefore: GameState | null = null;
 
 /**
+ * 关押 / 消失那几段影片各自的镜头（按影片 id）—— 起播时照 ① 移、播完照 ② 移。
+ * 目标全部来自 core 的 `confineViewTargets`（exe 序列见该文件头），表现层只决定「影片什么时候起播」。
+ * `null` = 受害者就是行动者（原版 `view_to` 清标记 ⇒ 看行动者，冻镜头 / `confined` 支本来就是）。
+ */
+const filmViews = new Map<string, ConfineView | null>();
+
+/** 下一帧要照做的那一次 `view_to`（排在 `lastViewTarget` 之后，见 `syncViewTarget`） */
+let queuedFilmView: { x: number; y: number } | null = null;
+
+/** 这一段影片起播（`from`）/ 收屏（`to`）时该不该移镜头 */
+function applyFilmView(spec: BoardFilmSpec, at: 'from' | 'to'): void {
+  const t = filmViews.get(spec.id)?.[at] ?? null;
+  if (t === null) return;
+  queuedFilmView = t;
+  requestRender();
+}
+
+/**
  * 片中重画之后「等级 / 物件放开、**人仍按住**」的那一份快照（换了快照 ⇒ 自动失效）。
  * 只有「这一段之后还要 `send_to_hospital`」时才用得上（狗咬 / 爆炸 → 救护车），见 `applyBoardFilmRedraw`。
  */
@@ -6320,9 +6352,18 @@ function startBoardFilm(spec: BoardFilmSpec, after?: BoardFilmSpec): void {
  *   判据（占用表 0→1 / 计数变大）见 `confine-fx.ts` 的 `confineFxTrigger`。
  */
 function startConfineFx(before: GameState, after: GameState): void {
-  if (!options.animation) return;
   const kind = confineFxTrigger(before, after);
   if (kind === null) return;
+  // ★ 镜头（`view_to` ① / ②，core 的 `confineViewTargets`）—— 「動畫過程」关着也照样移：
+  //   两次 `view_to` 不在 `cmp [0x497159], 0` 那道闸里（0x0043d5cc / 0x0043d6f1）；没有影片夹在中间，
+  //   ① 与 ② 背靠背 ⇒ 最后停在 ②。
+  const view = confineViewTargets(before, after).find((v) => v.kind === kind) ?? null;
+  if (!options.animation) {
+    const to = view?.to ?? null;
+    if (to !== null) queuedFilmView = to;
+    return;
+  }
+  filmViews.set(confineClip(kind).id, view);
   // 影片窗口里棋盘按 before 画（见 `deferred-board.ts`）—— 起播前先记下快照
   deferredBoardBefore = before;
   // ★★ 同一条 action 里已经排了一段（踩到惡犬：0x214 在前）⇒ **接在它后面**，
@@ -6461,6 +6502,8 @@ function startDevilFx(before: GameState, after: GameState): void {
 function startDisappearFx(before: GameState, after: GameState): void {
   const spec = disappearFxTrigger(before, after);
   if (spec === null) return;
+  // ★ 镜头 ①（`0x0040d3e6 view_to(受害者)`，在播片之前；这一支没有 ②）—— core 的 `confineViewTargets`
+  filmViews.set(spec.id, confineViewTargets(before, after).find((v) => v.kind === 'disappear') ?? null);
   // 影片窗口里棋盘按 before 画：人还站在那儿，被飛碟吸走 / 上飛機（`deferred-board.ts`）
   deferredBoardBefore = before;
   startBoardFilm(spec);
@@ -6529,6 +6572,7 @@ function tickBoardFilm(now: number): void {
     if (boardFilmFlics.has(key)) {
       pendingBoardFilmAfter = null;
       boardFilm = beginBoardFilm(after, now);
+      applyFilmView(after, 'from');
       log(`影片：開始 ${after.id}（${after.frames} 帧 × ${after.frameMs} ms）`);
       if (after.sound >= 0) sound.play('Effect.mkf', after.sound);
       requestRender();
@@ -6577,6 +6621,7 @@ function tickBoardFilm(now: number): void {
     }
     pendingBoardFilm = null;
     boardFilm = beginBoardFilm(pending, now);
+    applyFilmView(pending, 'from');
     // 魔法屋拆房：原版 `0x40ab4a`（重画地图）在 `fcn_0045144f` 之前 ⇒ 影片期间棋盘已是拆过的样子
     if (pending.releaseBoardOnStart === true) deferredBoardBefore = null;
     log(`影片：開始 ${pending.id}（${pending.frames} 帧 × ${pending.frameMs} ms）`);
@@ -6595,6 +6640,8 @@ function tickBoardFilm(now: number): void {
   }
   boardFilm = null;
   releaseBoardFilmFlics();
+  applyFilmView(film.spec, 'to');
+  filmViews.delete(film.spec.id);
   // ★ 阻塞那一段播完了 —— 若后面还排着一段（狗咬 → 救护车），就交给上面 ⓪ 那一步；
   //   只有**两段都播完**才把回合驱动接回去（`scheduleHumanTurn` / `scheduleAi`
   //   都以它为闸，不补这一下人就永远停在原地）。
