@@ -254,6 +254,7 @@ import {
   buildUpgradesOf,
   BUILD_FX_ARCHIVE,
   manifestSoundFor,
+  MANIFEST_BUILD_SOUND,
   stepBuildFx,
   type BuildClipName,
   type BuildFx,
@@ -340,7 +341,15 @@ import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './curso
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
 import { shouldResumeDriver } from './driver-resume.ts';
 import { tollFlashLevel } from './toll-flash-fx.ts';
-import { noticeHoldsFilms, setNoticeSpeechGate, setNoticeStartGate } from './notice-box-screen.ts';
+import { noticeHoldsFilms, noticeKeyShowing, setNoticeSpeechGate, setNoticeStartGate } from './notice-box-screen.ts';
+// ★ 第十三份試玩回報 #1：顯靈加蓋那一格等「顯靈框」收掉才画成新等级（两次重画、两声音效 50）
+import {
+  MANIFEST_NOTICE_KEY,
+  applyManifestHold,
+  immediateManifestHints,
+  manifestHoldOf,
+  type ManifestHold,
+} from './manifest-hold.ts';
 // ★ 2026-09-22（第十一份試玩回報 #15）：訊息框的起播閘要看「轉盤 / 神明老虎機在不在播」
 import { wheelScreenState } from './wheel-screen.ts';
 import { godSlotState, setGodSlotStartGate } from './god-slot.ts';
@@ -6141,6 +6150,33 @@ let buildFx: BuildFx | null = null;
 let deferredBoardBefore: GameState | null = null;
 
 /**
+ * 顯靈加蓋那一扇框还没收时，棋盘上被加蓋的那几格少画的级数（`manifest-hold.ts`）；`null` = 没在按。
+ * 由 `startBuildFx` 立、`tickManifestHold` 在框收掉那一拍放。
+ */
+let manifestHold: ManifestHold | null = null;
+
+/**
+ * 顯靈框收掉了 ⇒ 放开按住的等级，并补那第二声音效 50
+ * （天使 `0x0040f4f8` / 福神 `0x0040f9e1`，都在框之后、重画 `0x41d476(0,0,1)` 之前）。
+ */
+function tickManifestHold(): void {
+  const hold = manifestHold;
+  if (hold === null || noticeKeyShowing(MANIFEST_NOTICE_KEY)) return;
+  manifestHold = null;
+  sound.play('Effect.mkf', MANIFEST_BUILD_SOUND);
+  // 盖到 5 级的那一支：原版先重画出 5 级（`0x0040f506`）再播 0x20b（`0x0040f517`）⇒
+  //   等 0x20b 起播的那段窗口里棋盘按**新等级**画，而不是退回整条 action 之前的 before
+  if (hold.reachedMaxLevel && deferredBoardBefore !== null && (pendingBuildFx !== null || buildFx !== null)) {
+    deferredBoardBefore = {
+      ...deferredBoardBefore,
+      landLevel: state.landLevel,
+      facilityLevel: state.facilityLevel,
+    };
+  }
+  requestRender();
+}
+
+/**
  * 「该播、但影片还没解好」的待播请求（`null` = 没有）——
  * 原版 `read_mkf` 是**同步**的、解完才 `fcn_0045144f`；浏览器里解 68 帧要几百毫秒，
  * 所以先挂在这里，`tickBuildFx` 一看到影片到货就起时间轴（音效也在那时才响）。
@@ -6611,7 +6647,12 @@ function startBuildFx(before: GameState): void {
   //     · 自己的地升級 VA 0x004199de（`inc byte [地块+0x1a]` 之后、`cmp …,5` 之前）
   //   ⇒ **在 `plan` 那道闸之前**响：原版这一声在 `0x40b110` 成功之后立刻播，
   //     与「有没有剛好升到 5 級、要不要接 0x20b」无关（那两段影片才是 `plan` 的事）。
-  const manifestSound = manifestSoundFor(hints);
+  // ★★ 第十三份試玩回報 #1：弹了顯靈框的那几条顯靈加蓋（天使 `0x0040f4f8` / 福神 `0x0040f9e1`）
+  //   这一声在**框收掉之后**才响，棋盘也等那时才画成新等级（`tickManifestHold`）；
+  //   同一条 action 里先发生的付费首建 / 自己的地升級那一声照旧当场响。
+  const hold = manifestHoldOf(before, state);
+  if (hold !== null) manifestHold = hold;
+  const manifestSound = manifestSoundFor(immediateManifestHints(hints, hold));
   if (manifestSound !== null) sound.play('Effect.mkf', manifestSound);
   if (!plan.hammer && !plan.maxLevel) return;
   // ★★ 第九份试玩回报（2026-09-22，需求方）：「机器工人修房子的动画还是有点问题，应该是
@@ -6665,6 +6706,9 @@ function tickBuildFx(now: number): void {
   // ── ① 待播：等第一段影片解好 ──
   const pending = pendingBuildFx;
   if (pending !== null) {
+    // ★ 第十三份試玩回報 #1：顯靈加蓋盖到 5 级那一段 0x20b 排在顯靈框**之后**
+    //   （`0x0040f4d9 call 0x440cac` → `0x0040f517 call 0x40b0cd`）⇒ 框收掉（`tickManifestHold` 放开）才起播
+    if (manifestHold !== null) return;
     // ★★ W-51：与 `tickBoardFilm` 同一条规矩 —— **原版说完才播**：`beforeStage`
     //   的句子（壞神附身 / 回合开始那三句）在 `speechQueue` 里就等它说完。
     //   ⚠️ 只等 `speechQueue`，不等 `deferredSpeech`（`afterStage` 排在演出之后，
@@ -6748,13 +6792,20 @@ function boardDrawState(): GameState {
   // ★★ 神明升天期间（第十二份试玩回报 #1）：原版 `god_detach` 在演完之后才 `0x40e604 call 0x40e14d`
   //   真正拆下来（清 `god_info`、搭档此时才在地图上登场）⇒ 棋盘按离身**之前**那一份画，
   //   升天那一尊由渲染器藏掉、改画在动效层。
-  if (godAscend !== null) return visibleBoardState(state, deferredBoardBefore ?? godAscend.before, !released);
+  if (godAscend !== null) {
+    return applyManifestHold(visibleBoardState(state, deferredBoardBefore ?? godAscend.before, !released), state, manifestHold);
+  }
   // ★ D-MAGIC-16：魔法屋逐人那几段里棋盘按「演到哪一段」画（后面几位的改动还没发生）
   if (magicSeq !== null) {
     const base = magicShownState();
     return boardStateForFilm(base, deferredBoardBefore, boardFilmWindowFlags(), !released);
   }
-  return boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released);
+  // ★ 第十三份試玩回報 #1：顯靈框底下还是顯靈之前的等级（`manifest-hold.ts`）
+  return applyManifestHold(
+    boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released),
+    state,
+    manifestHold,
+  );
 }
 
 /**
@@ -6843,6 +6894,8 @@ function requestRender(): void {
     if (screen === 'game') tickObjectFlight(performance.now());
     // ★ 神明升天（第十二份试玩回报 #1）：等前面的演出收摊才起，演完才放行回合驱动
     if (screen === 'game') tickGodAscend(performance.now());
+    // ★ 第十三份試玩回報 #1：顯靈框收掉那一拍放开按住的等级 + 第二声音效（须在 `tickBuildFx` 之前）
+    tickManifestHold();
     // ★ 建屋动效（機器工人）同理：两段时间轴没走完就再排一帧，走完就放掉位图
     if (screen === 'game') tickBuildFx(performance.now());
     // ★ 送進監獄／醫院那段影片同理（Q-ANIM-1）：按帧时序推进，播完补一次回合驱动
@@ -8250,6 +8303,7 @@ function startGame(): void {
   boardFilmPending.clear();
   releaseBoardFilmFlics();
   deferredBoardBefore = null;
+  manifestHold = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
   pendingCardRoute = null; // 亮牌后待走的那一张同理
@@ -9914,6 +9968,7 @@ function connectOnline(url: string, room: string, name: string): void {
           boardFilmPending.clear();
           releaseBoardFilmFlics();
           deferredBoardBefore = null;
+          manifestHold = null;
           godAscend = null;
           pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
           pendingCardRoute = null; // 亮牌后待走的那一张同理
@@ -10290,6 +10345,7 @@ function settleAfterSilentRebuild(): void {
   releaseBuildFlics();
   // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
   deferredBoardBefore = null;
+  manifestHold = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
   pendingCardRoute = null; // 亮牌后待走的那一张同理
