@@ -648,7 +648,8 @@ export function drawBonusMarquee(
   const frame = film.frames[bonusFrameAt(now) % film.frames.length];
   if (frame === undefined) return false;
   // 原版 `fcn_00450ced(sprite, x, y, flags)` 的 x/y 是**左上角**（帧缓冲从 (x,y) 起铺）
-  ctx.drawImage(frame, LOT_BONUS_AT.x, LOT_BONUS_AT.y);
+  // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+  drawSprite(ctx, { bitmap: frame, width: film.width, height: film.height }, LOT_BONUS_AT.x, LOT_BONUS_AT.y);
   return true;
 }
 

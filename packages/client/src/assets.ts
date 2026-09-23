@@ -242,7 +242,51 @@ export interface SpriteCacheOptions {
    */
   onEvict?: (sprite: Sprite) => void;
   createBitmap?: BitmapFactory;
+  /**
+   * 给超分图上归属色（建筑外圈那圈线）。默认用 `OffscreenCanvas` 合成；
+   * 环境里没有（Node 单测）就返回 null ⇒ 这张图继续用原图换色的结果。
+   * @see recolorHdRing
+   */
+  recolorHd?: HdRingRecolor;
 }
+
+/**
+ * 超分图的换色：`mask` 是**原图尺寸**的遮罩（RGBA，换色槽像素 alpha=255，其余 0），
+ * 放大到超分图尺寸后在那一圈上盖归属色。
+ */
+export type HdRingRecolor = (
+  hd: ImageBitmap,
+  mask: ImageData,
+  color: readonly [number, number, number],
+) => Promise<ImageBitmap | null>;
+
+/**
+ * 默认的超分换色：遮罩平滑放大 → `source-in` 染成归属色 → 盖在超分图上。
+ *
+ * ★ 为什么不像原图那样「按颜色逐像素换」：AI 重绘后那圈线的颜色早已不是调色板 #255
+ *   那个精确值（有明暗、有抗锯齿），按色找不到；而**位置**没变（C-AST-3 不许改轮廓），
+ *   所以用原图的位置当遮罩。遮罩放大后边缘是软的，正好盖住抗锯齿的那一圈。
+ */
+export const defaultRecolorHd: HdRingRecolor = async (hd, mask, color) => {
+  if (typeof OffscreenCanvas === 'undefined') return null;
+  const small = new OffscreenCanvas(mask.width, mask.height);
+  const sctx = small.getContext('2d');
+  const layer = new OffscreenCanvas(hd.width, hd.height);
+  const lctx = layer.getContext('2d');
+  const out = new OffscreenCanvas(hd.width, hd.height);
+  const octx = out.getContext('2d');
+  if (sctx === null || lctx === null || octx === null) return null;
+  sctx.putImageData(mask, 0, 0);
+  lctx.imageSmoothingEnabled = true;
+  lctx.imageSmoothingQuality = 'high';
+  lctx.drawImage(small, 0, 0, hd.width, hd.height);
+  lctx.globalCompositeOperation = 'source-in';
+  lctx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+  lctx.fillRect(0, 0, hd.width, hd.height);
+  octx.drawImage(hd, 0, 0);
+  octx.drawImage(layer, 0, 0);
+  return createImageBitmap(out);
+};
 
 /** 默认上限：够覆盖一张地图的全部静态图素，又远低于内存预算 */
 export const DEFAULT_MAX_SPRITES = 4096;
@@ -273,6 +317,11 @@ export class SpriteCache {
   readonly #flics = new Map<string, LoadedFlic | null>();
   readonly #sprites = new Map<string, Sprite | null>();
   readonly #bytes = new Map<string, Uint8Array | null>();
+  readonly #recolorHd: HdRingRecolor;
+  /** 高清换上来之后要叫谁（重画一帧）—— 见 `addUpgradeListener` */
+  readonly #upgradeListeners: (() => void)[] = [];
+  /** 还在路上的高清升级 —— `settled()` 等它们 */
+  readonly #upgrading = new Set<Promise<void>>();
 
   constructor(archives: LoadedArchives, options: SpriteCacheOptions = {}) {
     this.#archives = archives;
@@ -281,6 +330,32 @@ export class SpriteCache {
     this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     if (options.onEvict !== undefined) this.#evictListeners.push(options.onEvict);
     this.#createBitmap = options.createBitmap ?? defaultBitmapFactory;
+    this.#recolorHd = options.recolorHd ?? defaultRecolorHd;
+  }
+
+  /**
+   * 高清图到货（原地换上了位图）时叫一声 —— 宿主拿它排一帧重画。
+   * 见 `get` 的「先原图、后高清」。
+   */
+  addUpgradeListener(fn: () => void): void {
+    this.#upgradeListeners.push(fn);
+  }
+
+  /** 等所有在路上的高清升级落地（单测与截图验收用） */
+  async settled(): Promise<void> {
+    while (this.#upgrading.size > 0) await Promise.all([...this.#upgrading]);
+  }
+
+  /** 登记一次后台升级，落地后通知监听者 */
+  #track(p: Promise<boolean>): void {
+    const done = p.then(
+      (changed) => {
+        if (changed) for (const fn of this.#upgradeListeners) fn();
+      },
+      () => undefined,
+    );
+    this.#upgrading.add(done);
+    void done.finally(() => this.#upgrading.delete(done));
   }
 
   /**
@@ -352,19 +427,42 @@ export class SpriteCache {
     }
     const frames: ImageBitmap[] = [];
     for (const rgba of decoded.frames) {
-      frames.push(await this.#createBitmap(new ImageData(rgba, decoded.info.width, decoded.info.height)));
+      frames.push(await this.#createBitmap(toImageData(decoded.info.width, decoded.info.height, rgba)));
     }
+    let closed = false;
     const out: LoadedFlic = {
       frames,
       width: decoded.info.width,
       height: decoded.info.height,
       frameMs: decoded.info.frameMs,
       close: () => {
+        closed = true;
         for (const b of frames) b.close();
         this.#flics.delete(key);
       },
     };
     this.#flics.set(key, out);
+    // ★ 超分过的帧后台拉、到一帧换一帧（逻辑尺寸仍是 `width/height`，画的地方按它塞框）
+    const hd = this.#hd;
+    if (hd !== null) {
+      this.#track(
+        (async () => {
+          let changed = false;
+          for (let k = 0; k < frames.length; k++) {
+            if (hd.entry(archive, resource, k) === null) continue;
+            const bmp = await this.#hdBitmap(archive, resource, k);
+            if (bmp === null) continue;
+            if (closed) {
+              bmp.close();
+              return changed;
+            }
+            frames[k] = bmp; // 旧的 1× 帧交给 GC：别处可能还攥着这一帧正在画
+            changed = true;
+          }
+          return changed;
+        })(),
+      );
+    }
     return out;
   }
 
@@ -403,49 +501,114 @@ export class SpriteCache {
       return hit;
     }
 
-    // ★ 要换色槽（建筑外圈的归属色）的图**先不走 HD**：换色靠逐像素比对调色板 #255
-    //   的占位色，超分后那圈颜色早已不是一个精确值。等管线交出换色遮罩再接。
-    const sprite =
-      (ring === undefined ? await this.#hdSprite(archive, resource, index) : null) ??
-      (await this.#originalSprite(archive, resource, index, colorKeyBlack, ring));
+    // ★★ **先原图、后高清**：原图解码便宜，立刻交出去先画上；有超分记录的再后台拉，
+    //   到了就在**同一个** `Sprite` 上把位图换掉（`width/height/anchor*` 是逻辑值，换前换后
+    //   一样），所有持有这个对象的地方（`main.ts` 的 spriteReady、渲染器/側欄的 `#ready`）
+    //   下一帧自动用上高清 —— 不必一处处通知。
+    //   ⚠️ 先前是「有 HD 就等 HD」：一张 640×480 的 4× 底图约 10 MB，拉+解码期间这张图
+    //   一个像素都不画（标题屏一瞬黑屏）；网页版隔着网络只会更久。
+    const sprite = await this.#originalSprite(archive, resource, index, colorKeyBlack, ring);
     this.#insert(key, sprite);
+    if (sprite !== null && this.#hd !== null && this.#hd.entry(archive, resource, index) !== null) {
+      this.#track(this.#upgrade(key, sprite, archive, resource, index, colorKeyBlack, ring));
+    }
     return sprite;
   }
 
   /**
-   * HD 那张。没有记录、拉不到、解不开——一律返回 null 让调用方回退原图。
+   * 把一张已交出去的原图原地升级成高清。
+   * @returns 真的换了没有（换了才需要重画）
+   */
+  async #upgrade(
+    key: string,
+    sprite: Sprite,
+    archive: ArchiveName,
+    resource: number,
+    index: number,
+    colorKeyBlack: boolean,
+    ring: readonly [number, number, number] | undefined,
+  ): Promise<boolean> {
+    const hd = await this.#hdBitmap(archive, resource, index);
+    if (hd === null) return false;
+    let bmp = hd;
+    if (ring !== undefined) {
+      const mask = this.#ringMask(archive, resource, index, colorKeyBlack, ring);
+      if (mask === 'unknown') {
+        hd.close();
+        return false;
+      }
+      if (mask !== null) {
+        const tinted = await this.#recolorHd(hd, mask, ring).catch(() => null);
+        hd.close();
+        // 合成不了（没有 OffscreenCanvas）⇒ 留着原图换色的结果，别给一张没上色的高清图
+        if (tinted === null) return false;
+        bmp = tinted;
+      }
+    }
+    // 途中被 LRU 淘汰了（持有者已经把它丢了）⇒ 这张高清图没人要
+    if (this.#sprites.get(key) !== sprite) {
+      bmp.close();
+      return false;
+    }
+    // 旧的 1× 位图交给 GC，不 close：别处可能还攥着它（如指针图已拷进 CSS）
+    sprite.bitmap = bmp;
+    return true;
+  }
+
+  /**
+   * 换色槽遮罩（原图尺寸）。这张图压根没有换色槽像素 → null（直接用高清图）；
+   * 表头/调色板取不到 → `'unknown'`（不敢换，留原图）。
+   * 判据与原图换色（`recolorRing`）同一条：颜色 == 调色板 #255 且不透明。
+   */
+  #ringMask(
+    archive: ArchiveName,
+    resource: number,
+    index: number,
+    colorKeyBlack: boolean,
+    to: readonly [number, number, number],
+  ): ImageData | null | 'unknown' {
+    const sheet = this.#sheetOf(archive, resource);
+    const data = this.#bytesOf(archive, resource);
+    if (sheet === null || data === null || sheet.palette === null || index >= sheet.images.length) return 'unknown';
+    const [r, g, b] = paletteRgb(sheet.palette, RING_PALETTE_INDEX);
+    if (r === to[0] && g === to[1] && b === to[2]) return null; // 本来就是这个色，不用换
+    const img = decodeImage(sheet, data, index, { colorKeyBlack });
+    const out = new Uint8ClampedArray(img.width * img.height * 4);
+    let any = false;
+    for (let i = 0; i < img.rgba.length; i += 4) {
+      if (img.rgba[i] === r && img.rgba[i + 1] === g && img.rgba[i + 2] === b && img.rgba[i + 3] !== 0) {
+        out[i] = 255;
+        out[i + 1] = 255;
+        out[i + 2] = 255;
+        out[i + 3] = 255;
+        any = true;
+      }
+    }
+    if (!any) return null;
+    const mask = new ImageData(img.width, img.height);
+    mask.data.set(out);
+    return mask;
+  }
+
+  /**
+   * 拉一张超分位图。没有记录、拉不到、解不开 —— 一律 null（调用方继续用原图）。
    *
    * ★ **不补 `colorKeyBlack`**：透明性在管线里已经烘进 alpha 了
    *   （`slice` 把 alpha 单独交出、`merge` 再盖回来），而 AI 放大后
    *   「纯黑」早已不是精确的 0，按 RGB==0 再抠一次只会抠不动或抠错。
    */
-  async #hdSprite(archive: ArchiveName, resource: number, index: number): Promise<Sprite | null> {
+  async #hdBitmap(archive: ArchiveName, resource: number, index: number): Promise<ImageBitmap | null> {
     const hd = this.#hd;
-    if (hd === null) return null;
-    const entry = hd.entry(archive, resource, index);
-    if (entry === null) return null;
-
+    if (hd === null || hd.entry(archive, resource, index) === null) return null;
     const bytes = await hd.fetchBytes(archive, resource, index);
     if (bytes === null) return null;
-
     try {
       // ★ 交给**浏览器原生解码**（`createImageBitmap` 直接吃 Blob），不自己解 PNG：
       //   一是不必把 `decodePng` 拖进前端（它依赖 `node:zlib`，见 Q-BUILD-1），
       //   二是 4× 的图很大，原生解码比 JS 快得多。
       const bitmap = await this.#createBitmap(new Blob([bytes as BlobPart], { type: 'image/png' }));
       if (bitmap.width === 0 || bitmap.height === 0) return null;
-      // ★ 逻辑尺寸与锚点 = **原版表头**（高清舞台按逻辑坐标画，见 `hd-stage.ts`）。
-      //   清单里的 `outAnchorX/Y` 是 HD 像素里的锚点，给管线自检用；
-      //   这里若拿它当逻辑锚点，精灵会整体偏出去 4 倍。
-      const info = this.#sheetOf(archive, resource)?.images[index];
-      if (info === undefined || info.width === 0 || info.height === 0) return null;
-      return {
-        bitmap,
-        width: info.width,
-        height: info.height,
-        anchorX: info.x,
-        anchorY: info.y,
-      };
+      return bitmap;
     } catch {
       // HD 产物损坏不该让这张图消失——回退原图即可
       return null;

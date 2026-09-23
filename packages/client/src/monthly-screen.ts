@@ -1573,7 +1573,8 @@ export function drawMonthlyAwardFlic(
   const off = monthlyAwardFlicOffset(win.character, trophy ? 'trophy' : 'sad');
   const x = Math.round(at.avatar.x + off.x);
   const y = Math.round(MONTHLY_AWARD_FLIC_DX + off.y);
-  ctx.drawImage(bmp, x, y);
+  // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+  drawSprite(ctx, { bitmap: bmp, width: film.width, height: film.height }, x, y);
   return true;
 }
 

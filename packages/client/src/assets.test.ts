@@ -6,6 +6,7 @@
  * ImageData 用最小替身补全局，位图工厂与 HD 来源走 SpriteCache 的注入口。
  * 于是「按图回退」「LRU」这些最容易写错的规矩可以逐条钉死。
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { type DecodedImage, type MkfArchive } from '@rich4/assets-pipeline';
 // PNG 编解码走 Node 专用出口（用了 node:zlib，不能进前端包）—— 测试跑在 Node 下，够用
@@ -23,7 +24,7 @@ import {
   characterSetBase,
   CHARACTER_POSE,
 } from './assets.ts';
-import { assetBase, hdBase } from './host.ts';
+import { assetBase, hdBase, hdTierDir } from './host.ts';
 
 // ============================================================
 //  浏览器全局的最小替身
@@ -54,9 +55,9 @@ const fakeBitmapOf = async (source: ImageData | Blob): Promise<ImageBitmap> => {
   // ★ 把像素一并带上：换色（Q-LAYOUT-8）这类改像素的功能要靠它断言
   if (source instanceof Blob) {
     const img = decodePng(new Uint8Array(await source.arrayBuffer()));
-    return { width: img.width, height: img.height, rgba: img.rgba } as unknown as ImageBitmap;
+    return { width: img.width, height: img.height, rgba: img.rgba, close: () => undefined } as unknown as ImageBitmap;
   }
-  return { width: source.width, height: source.height, rgba: source.data } as unknown as ImageBitmap;
+  return { width: source.width, height: source.height, rgba: source.data, close: () => undefined } as unknown as ImageBitmap;
 };
 
 /** 取假位图里第 i 个像素的 RGB */
@@ -97,6 +98,16 @@ function spr2x2(): Uint8Array {
   view.setUint16(startOffset + 1 * 2, 0x7fff, true);
   // 像素
   buf.set([1, 0, 0, 1], startOffset + 512);
+  return buf;
+}
+
+/** 2×2 的 SPR，带**换色槽**：调色板 #255 是占位青（0x03FF），一个像素用它 */
+function sprRing(): Uint8Array {
+  const buf = spr2x2();
+  const startOffset = 12 + 12;
+  const view = new DataView(buf.buffer);
+  view.setUint16(startOffset + 255 * 2, 0x03ff, true);
+  buf.set([1, 255, 0, 1], startOffset + 512);
   return buf;
 }
 
@@ -235,24 +246,23 @@ describe('HD 优先、按图回退原图', () => {
     expect({ x: s!.anchorX, y: s!.anchorY }).toEqual({ x: 1, y: 1 });
   });
 
-  it('有 HD 记录且产物可用 → 位图用 HD，**逻辑**尺寸与锚点仍是原版表头的', async () => {
+  it('有 HD 记录且产物可用 → 先交原图，高清到货后**同一个对象**换成 HD 位图；逻辑尺寸与锚点不变', async () => {
     const c = cacheWith({
       hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
     });
+    let upgrades = 0;
+    c.addUpgradeListener(() => upgrades++);
     const s = await c.get('Data.mkf', 0, 0);
+    // ★ 先原图：高清在路上时这张图照样画得出来（先前要等 HD，标题屏会黑一瞬）
+    expect(bitmapSize(s!)).toEqual({ w: 2, h: 2 });
+    await c.settled();
     expect(bitmapSize(s!)).toEqual({ w: 8, h: 8 }); // 2×2 的 4 倍
+    expect(upgrades).toBe(1); // 换上来那一刻叫宿主重画
+    expect(await c.get('Data.mkf', 0, 0)).toBe(s); // 缓存里就是这一个对象
     // ★ 高清舞台按逻辑坐标画（hd-stage.ts）：锚点若取清单里的 HD 像素值 (4,4)，
     //   精灵会整体偏出去 4 倍
     expect({ w: s!.width, h: s!.height }).toEqual({ w: 2, h: 2 });
     expect({ x: s!.anchorX, y: s!.anchorY }).toEqual({ x: 1, y: 1 });
-  });
-
-  it('★ 要换色槽（ring）的图先不走 HD —— 超分后占位色已不是精确值，换不动', async () => {
-    const c = cacheWith({
-      hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
-    });
-    const s = await c.get('Data.mkf', 0, 0, false, [255, 0, 0]);
-    expect(bitmapSize(s!)).toEqual({ w: 2, h: 2 });
   });
 
   it('★ 有记录但产物拉不到 → 回退原图（不是报错、也不是空白）', async () => {
@@ -278,10 +288,55 @@ describe('HD 优先、按图回退原图', () => {
     });
     const zero = await c.get('Data.mkf', 0, 0);
     const one = await c.get('Data.mkf', 0, 1);
+    await c.settled();
     expect(bitmapSize(zero!)).toEqual({ w: 12, h: 8 }); // HD 位图
     expect({ x: zero!.anchorX, y: zero!.anchorY, w: zero!.width, h: zero!.height }).toEqual({ x: 2, y: 1, w: 3, h: 2 }); // 逻辑 = 原版表头
     expect(bitmapSize(one!)).toEqual({ w: 2, h: 2 }); // 原图
     expect({ x: one!.anchorX, y: one!.anchorY }).toEqual({ x: 1, y: 1 });
+  });
+
+  it('★ 高清在路上时被 LRU 淘汰了 → 不再往这个对象上换（持有者已丢掉它），也不叫重画', async () => {
+    const c = cacheWith({
+      resources: { 0: sprTwoFrames() },
+      maxSprites: 1,
+      hd: fakeHd({ 'Data/0_0': { anchorX: 8, anchorY: 4 } }, { 'Data/0_0': pngOf(12, 8) }),
+    });
+    let upgrades = 0;
+    c.addUpgradeListener(() => upgrades++);
+    const zero = await c.get('Data.mkf', 0, 0);
+    await c.get('Data.mkf', 0, 1); // 挤掉帧 0
+    await c.settled();
+    expect(bitmapSize(zero!)).toEqual({ w: 3, h: 2 });
+    expect(upgrades).toBe(0);
+  });
+
+  it('★ 要换色槽的图：有 HD 时用原图的换色槽位置当遮罩给 HD 上色（合成器收到的遮罩 = 原图尺寸）', async () => {
+    const seen: { w: number; h: number; lit: number; color: readonly number[] }[] = [];
+    const c = new SpriteCache(fakeArchives({ 0: sprRing() }), {
+      createBitmap: fakeBitmapOf,
+      hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
+      recolorHd: async (hd, mask, color) => {
+        let lit = 0;
+        for (let i = 3; i < mask.data.length; i += 4) if (mask.data[i] === 255) lit++;
+        seen.push({ w: mask.width, h: mask.height, lit, color });
+        return { width: hd.width, height: hd.height, tinted: true } as unknown as ImageBitmap;
+      },
+    });
+    const s = await c.get('Data.mkf', 0, 0, false, [255, 0, 0]);
+    await c.settled();
+    expect(seen).toEqual([{ w: 2, h: 2, lit: 1, color: [255, 0, 0] }]);
+    expect((s!.bitmap as unknown as { tinted?: boolean }).tinted).toBe(true);
+  });
+
+  it('★ 换色合成器拿不到（Node 下没有 OffscreenCanvas）→ 留原图换色的结果，不给没上色的 HD', async () => {
+    const c = new SpriteCache(fakeArchives({ 0: sprRing() }), {
+      createBitmap: fakeBitmapOf,
+      hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
+      recolorHd: async () => null,
+    });
+    const s = await c.get('Data.mkf', 0, 0, false, [255, 0, 0]);
+    await c.settled();
+    expect(bitmapSize(s!)).toEqual({ w: 2, h: 2 });
   });
 
   it('资源或图号不存在 → null（原版空槽很常见）', async () => {
@@ -420,9 +475,17 @@ describe('★ hdBase —— 桌面壳与浏览器各拼各的前缀，路由两�
     delete tauriGlobal.__TAURI__;
   });
 
-  it('浏览器：与 /assets/game 同源，换成 /assets/hd', () => {
+  it('浏览器：与 /assets/game 同源，默认读 2× 网页档 /assets/hd-2x', () => {
     expect(assetBase()).toBe('/assets/game');
-    expect(hdBase()).toBe('/assets/hd');
+    expect(hdBase()).toBe('/assets/hd-2x');
+  });
+
+  it('★ 分档：浏览器 `?hdtier=4` 读 4× 母版，其余一律 2×；桌面壳恒读母版', () => {
+    expect(hdTierDir('')).toBe('hd-2x');
+    expect(hdTierDir('?hdtier=4')).toBe('hd');
+    expect(hdTierDir('?hdtier=2&hd=1')).toBe('hd-2x');
+    tauriGlobal.__TAURI__ = { core: { invoke: async () => null } };
+    expect(hdTierDir('?hdtier=2')).toBe('hd');
   });
 
   it('★ 桌面壳：rich4://localhost/hd —— Rust 那条 is_hd_path 放行的正是它', () => {
@@ -712,5 +775,34 @@ describe('★ loadGround：有 HD 就用 HD，缺了就按图回退原图', () =
     const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, null, decode);
     expect(calls).toEqual(['imagedata']);
     expect(bmp!.width).toBe(32);
+  });
+});
+
+// ============================================================
+//  ★ FLIC 影片的超分帧（W-80 §4.4）：先原帧，超分帧到一帧换一帧
+// ============================================================
+
+describe('★ getFlic：有超分记录的帧后台换成 HD，逻辑尺寸仍是影片的', () => {
+  it('Panel.mkf #4（滚骰）：帧 0 有 HD、帧 1 没有 —— 各走各的；影片 width/height 不变', async () => {
+    const { MkfArchive } = await import('@rich4/assets-pipeline');
+    const panel = new MkfArchive(new Uint8Array(readFileSync(new URL('../../../assets/game/Panel.mkf', import.meta.url))));
+    const archives: LoadedArchives = { get: () => panel };
+    const first = await new SpriteCache(archives, { createBitmap: fakeBitmapOf }).getFlic('Panel.mkf', 4);
+    expect(first).not.toBeNull();
+    const { width, height } = first!;
+
+    const c = new SpriteCache(archives, {
+      createBitmap: fakeBitmapOf,
+      hd: fakeHd({ 'Panel/4_0': { anchorX: 0, anchorY: 0 } }, { 'Panel/4_0': pngOf(width * 4, height * 4) }),
+    });
+    let upgrades = 0;
+    c.addUpgradeListener(() => upgrades++);
+    const film = await c.getFlic('Panel.mkf', 4);
+    expect(film!.frames[0]!.width).toBe(width); // 先原帧
+    await c.settled();
+    expect(film!.frames[0]!.width).toBe(width * 4);
+    expect(film!.frames[1]!.width).toBe(width);
+    expect({ w: film!.width, h: film!.height }).toEqual({ w: width, h: height });
+    expect(upgrades).toBe(1);
   });
 });

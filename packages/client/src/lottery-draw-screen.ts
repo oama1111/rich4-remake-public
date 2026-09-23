@@ -1119,7 +1119,8 @@ function drawAnim(ctx: CanvasRenderingContext2D, env: UiScreenEnv, p: Playing | 
   if (frame === undefined) return;
   // ★ 原版这里**不能用锚点**：`fcn_00450ced(sprite, x, y, flags)` 的 x/y 是
   //   **左上角**（帧缓冲从 (x,y) 起铺），@source 0x00450d2a 起
-  ctx.drawImage(frame, p.at[0], p.at[1]);
+  // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+  drawSprite(ctx, { bitmap: frame, width: film.width, height: film.height }, p.at[0], p.at[1]);
 }
 
 /**

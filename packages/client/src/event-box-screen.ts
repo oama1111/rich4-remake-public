@@ -945,7 +945,8 @@ export function drawEventBoxScreen(
     );
     const bitmap = film.frames[frame];
     if (bitmap === undefined) return;
-    ctx.drawImage(bitmap, at.x, at.y);
+    // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+    drawSprite(ctx, { bitmap, width: film.width, height: film.height }, at.x, at.y);
     return;
   }
   for (const it of plan.items) drawItem(ctx, sprite, raw, it);

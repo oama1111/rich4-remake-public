@@ -202,6 +202,7 @@ import {
   configStore,
   initSaveStore,
   hdBase,
+  hdTierDir,
   isDesktop,
   hostLog,
   writeReport,
@@ -574,7 +575,7 @@ import {
  * HD 清单的文件名 —— `hdBase()` 是 `${assetBase() 去掉 /game}/hd`，清单在它旁边。
  * 与 `packages/server/src/static.ts` 的素材白名单无关（HD 走另一条路）。
  */
-const HD_MANIFEST_NAME = 'hd-manifest.json';
+const HD_MANIFEST_NAME = `${hdTierDir()}-manifest.json`;
 
 /**
  * 网页版要不要去问 HD 素材。
@@ -6460,346 +6461,370 @@ function boardFilmWindowFlags(): BoardFilmWindow {
 function requestRender(): void {
   if (renderQueued) return;
   renderQueued = true;
-  requestAnimationFrame(() => {
-    renderQueued = false;
-    resizeCanvas();
-    // ★★ W-60：**刚回到棋盘**的那一帧把回合驱动重新叫起来（阻断级 bug 的唯一闸门）。
-    //
-    //   两条驱动的排程入口都有 `if (screen !== 'game') return;`（别在標題屏/過場里
-    //   推进回合），而所有「回棋盘」的出口都只写 `screen = …; requestRender();` ——
-    //   于是「走子途中开設定再关掉」会把链条**永久**断掉（棋子停在半路、GO 点不动）。
-    //   判据收在 `driver-resume.ts`（纯函数 + 单测），**一处**判掉，不逐屏补
-    //   （漏一个出口就又卡一次）。`resumeTurnDriver()` 内部两条驱动入口都会先清旧
-    //   定时器，重复叫无害。
-    //
-    //   ⚠️ 位置必须在 `resizeCanvas()` 之后、**这一帧的绘制之前**：驱动起来要排在
-    //      这一帧的 rAF 尾巴上（`schedule*` 用 `setTimeout`），绘制不该等它。
-    if (shouldResumeDriver(lastFrameScreen, screen)) resumeTurnDriver();
-    lastFrameScreen = screen;
-    // ★★ W-67-a：**訊息框收掉之后商店窗才开得起来** —— `syncShopUi()` 见到
-    //   `blockingPresentation()`（董事長赠礼框还在台上）会先让开，而框自己收掉那一刻
-    //   不会再派 action ⇒ 在这里每帧补一次机会。幂等：`shopUi` 已建就什么都不做。
-    // ★★ 2026-09-22（第十一份試玩回報 #16「NPC走到百货公司时就不用触发语音了」）：
-    //   这里先前**没有**人机闸（`notifyApplied` 那一处有），于是 NPC 的 `pending.shop`
-    //   会被每帧这条补呼铺起来 ⇒ `syncShopUi` 内放 `midi07.mid` +
-    //   `shopSay` 播招呼语音 `#0000 有什麼我能為你服務的嗎？`。
-    //   原版 `_rich4_ui_shop_entry` 的 `0x0042ea32 cmp [who_plays],1 / jne 0x42ed8d`
-    //   ⇒ 只有真人才开窗（訊息框与「董事長贈禮」台词在分流**之前**，NPC 说那句是对的，别动）。
-    if (screen === 'game' && !aiVenuePending(state)) syncShopUi();
-    syncInviteButton();
-    syncClockOverlay();
-    syncBailBgm();
-    // 场所都收了、放的还是场所曲 ⇒ 把背景曲从被打断的位置接回来（`sub_00454bcc`）
-    if (boardBgmDue()) restoreBoardBgm();
-    // ★ 登记过的整屏每帧收一次 `tick`（不管此刻是不是它在接管）——
-    //   演出类屏幕靠它察觉状态变化、推进动画。**屏幕自己要续帧就调
-    //   `env.requestRender()`**，别指望这里无条件重排（会转成死循环）。
-    // ★ 只有**此刻接管整屏的那一屏**收 `tick`（D-T031-4）。
-    //   每一屏的「起播」都走 `event()`（`main.ts` 在 state 变化时统一派），
-    //   `tick` 只负责推进**自己正在播的那一段** —— 所以给没上屏的屏也 tick
-    //   会让它们的动画在别人背后偷跑（分红屏占屏那 3 秒里開獎屏照样在走）。
-    //   **屏幕自己要续帧就调 `env.requestRender()`**，别指望这里无条件重排（会死循环）。
-    let overlay = activeUiScreen();
-    if (overlay !== null) {
-      overlay.tick?.(uiEnv());
-      // ★★ 2026-09-16 修「收屏那一帧整屏全黑」（外部审查 B-10）：`tick()` 可能
-      //   **自己把屏收掉**（樂透投注屏的 `bye` 到点就 `active()` 变假并清掉
-      //   `byeView`；月結屏、魔法屋也是同一写法）。而下面那句
-      //   `if (overlay !== null) { … overlay.draw() }` 用的是**tick 之前**的
-      //   快照 —— 于是这一帧既不画棋盘（overlay 还在）又什么都没画出来
-      //   （draw 已无内容可画），在刚被 `fillRect('#000')` 清黑的舞台上就是
-      //   一整帧纯黑。原版收屏是销毁窗口、当场露出棋盘，所以这里必须在
-      //   tick 之后**重新问一次**「现在谁接管」，让这一帧就画回棋盘。
-      overlay = activeUiScreen();
-    }
-    // ★ 走子补间要**逐帧**重绘（T-046）：补间没播完就再排一帧，
-    //   否则棋子会停在这一步的第一帧上，直到下一次 dispatch 才动。
-    if (screen === 'game' && !renderer.walkDone()) requestRender();
-    // ★ 走子整趟结束时停掉移动音效（逐格不停，见 `syncMoveSound`）
-    if (screen === 'game') syncMoveSound();
-    // ★ 投掷动效（放置類道具）同理：没播完就再排一帧；播完那一下才放落地音
-    //   （原版顺序：动画 → 收尾停 100 ms → 音效，见 `startObjectFlight`）
-    if (screen === 'game') tickObjectFlight(performance.now());
-    // ★ 建屋动效（機器工人）同理：两段时间轴没走完就再排一帧，走完就放掉位图
-    if (screen === 'game') tickBuildFx(performance.now());
-    // ★ 送進監獄／醫院那段影片同理（Q-ANIM-1）：按帧时序推进，播完补一次回合驱动
-    if (screen === 'game') tickBoardFilm(performance.now());
-    // ★ W-69：過路費閃爍（纯表现）—— 认下 `state.lastTollLands`、到点收摊、没完就续帧
-    if (screen === 'game') tickTollFlash(performance.now());
-    // ★ 原版会替玩家把系统指针挪到按钮上（试玩3 #2）：时机刚从关变开就挪一次
-    cursorWarper.update();
-    if (screen === 'game') shopTick(performance.now());
-    // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
-    if (screen === 'game') bankTick(performance.now());
-    // ★ 角色台词（T-052）：**不限定 `game` 屏** —— 语音在任何一屏都可能派出来
-    //   （开局宣言、破產、勝利宣言…），队列的收尾不能因为屏幕上盖着别的东西就停住。
-    speechTick(performance.now());
+  requestAnimationFrame(renderFrameTimed);
+}
 
-    stageCtx.imageSmoothingEnabled = false;
-    stageCtx.fillStyle = '#000';
+/**
+ * ★ DEV：每帧的绘制耗时超过 `LONG_FRAME_MS` 就记一条（屏幕 / 阶段 / 高清倍率），
+ *   读数用 `__rich4.longFrames()`。第二份高清反馈里那次「掷骰后卡 1 秒」事后复现不出来，
+ *   下次再遇到要有现场可查，而不是靠猜。
+ */
+const LONG_FRAME_MS = 50;
+const longFrames: { at: number; ms: number; screen: string; phase: string; scale: number }[] = [];
+
+function renderFrameTimed(): void {
+  const t0 = performance.now();
+  try {
+    renderFrame();
+  } finally {
+    const ms = performance.now() - t0;
+    if (import.meta.env.DEV && ms > LONG_FRAME_MS) {
+      longFrames.push({ at: Math.round(t0), ms: Math.round(ms), screen, phase: state.phase, scale: surfaceScale });
+      if (longFrames.length > 200) longFrames.shift();
+    }
+  }
+}
+
+/** 一帧：推进各段表现、画整个舞台、贴到窗口（由 `requestRender` 排进 rAF） */
+function renderFrame(): void {
+  renderQueued = false;
+  resizeCanvas();
+  // ★★ W-60：**刚回到棋盘**的那一帧把回合驱动重新叫起来（阻断级 bug 的唯一闸门）。
+  //
+  //   两条驱动的排程入口都有 `if (screen !== 'game') return;`（别在標題屏/過場里
+  //   推进回合），而所有「回棋盘」的出口都只写 `screen = …; requestRender();` ——
+  //   于是「走子途中开設定再关掉」会把链条**永久**断掉（棋子停在半路、GO 点不动）。
+  //   判据收在 `driver-resume.ts`（纯函数 + 单测），**一处**判掉，不逐屏补
+  //   （漏一个出口就又卡一次）。`resumeTurnDriver()` 内部两条驱动入口都会先清旧
+  //   定时器，重复叫无害。
+  //
+  //   ⚠️ 位置必须在 `resizeCanvas()` 之后、**这一帧的绘制之前**：驱动起来要排在
+  //      这一帧的 rAF 尾巴上（`schedule*` 用 `setTimeout`），绘制不该等它。
+  if (shouldResumeDriver(lastFrameScreen, screen)) resumeTurnDriver();
+  lastFrameScreen = screen;
+  // ★★ W-67-a：**訊息框收掉之后商店窗才开得起来** —— `syncShopUi()` 见到
+  //   `blockingPresentation()`（董事長赠礼框还在台上）会先让开，而框自己收掉那一刻
+  //   不会再派 action ⇒ 在这里每帧补一次机会。幂等：`shopUi` 已建就什么都不做。
+  // ★★ 2026-09-22（第十一份試玩回報 #16「NPC走到百货公司时就不用触发语音了」）：
+  //   这里先前**没有**人机闸（`notifyApplied` 那一处有），于是 NPC 的 `pending.shop`
+  //   会被每帧这条补呼铺起来 ⇒ `syncShopUi` 内放 `midi07.mid` +
+  //   `shopSay` 播招呼语音 `#0000 有什麼我能為你服務的嗎？`。
+  //   原版 `_rich4_ui_shop_entry` 的 `0x0042ea32 cmp [who_plays],1 / jne 0x42ed8d`
+  //   ⇒ 只有真人才开窗（訊息框与「董事長贈禮」台词在分流**之前**，NPC 说那句是对的，别动）。
+  if (screen === 'game' && !aiVenuePending(state)) syncShopUi();
+  syncInviteButton();
+  syncClockOverlay();
+  syncBailBgm();
+  // 场所都收了、放的还是场所曲 ⇒ 把背景曲从被打断的位置接回来（`sub_00454bcc`）
+  if (boardBgmDue()) restoreBoardBgm();
+  // ★ 登记过的整屏每帧收一次 `tick`（不管此刻是不是它在接管）——
+  //   演出类屏幕靠它察觉状态变化、推进动画。**屏幕自己要续帧就调
+  //   `env.requestRender()`**，别指望这里无条件重排（会转成死循环）。
+  // ★ 只有**此刻接管整屏的那一屏**收 `tick`（D-T031-4）。
+  //   每一屏的「起播」都走 `event()`（`main.ts` 在 state 变化时统一派），
+  //   `tick` 只负责推进**自己正在播的那一段** —— 所以给没上屏的屏也 tick
+  //   会让它们的动画在别人背后偷跑（分红屏占屏那 3 秒里開獎屏照样在走）。
+  //   **屏幕自己要续帧就调 `env.requestRender()`**，别指望这里无条件重排（会死循环）。
+  let overlay = activeUiScreen();
+  if (overlay !== null) {
+    overlay.tick?.(uiEnv());
+    // ★★ 2026-09-16 修「收屏那一帧整屏全黑」（外部审查 B-10）：`tick()` 可能
+    //   **自己把屏收掉**（樂透投注屏的 `bye` 到点就 `active()` 变假并清掉
+    //   `byeView`；月結屏、魔法屋也是同一写法）。而下面那句
+    //   `if (overlay !== null) { … overlay.draw() }` 用的是**tick 之前**的
+    //   快照 —— 于是这一帧既不画棋盘（overlay 还在）又什么都没画出来
+    //   （draw 已无内容可画），在刚被 `fillRect('#000')` 清黑的舞台上就是
+    //   一整帧纯黑。原版收屏是销毁窗口、当场露出棋盘，所以这里必须在
+    //   tick 之后**重新问一次**「现在谁接管」，让这一帧就画回棋盘。
+    overlay = activeUiScreen();
+  }
+  // ★ 走子补间要**逐帧**重绘（T-046）：补间没播完就再排一帧，
+  //   否则棋子会停在这一步的第一帧上，直到下一次 dispatch 才动。
+  if (screen === 'game' && !renderer.walkDone()) requestRender();
+  // ★ 走子整趟结束时停掉移动音效（逐格不停，见 `syncMoveSound`）
+  if (screen === 'game') syncMoveSound();
+  // ★ 投掷动效（放置類道具）同理：没播完就再排一帧；播完那一下才放落地音
+  //   （原版顺序：动画 → 收尾停 100 ms → 音效，见 `startObjectFlight`）
+  if (screen === 'game') tickObjectFlight(performance.now());
+  // ★ 建屋动效（機器工人）同理：两段时间轴没走完就再排一帧，走完就放掉位图
+  if (screen === 'game') tickBuildFx(performance.now());
+  // ★ 送進監獄／醫院那段影片同理（Q-ANIM-1）：按帧时序推进，播完补一次回合驱动
+  if (screen === 'game') tickBoardFilm(performance.now());
+  // ★ W-69：過路費閃爍（纯表现）—— 认下 `state.lastTollLands`、到点收摊、没完就续帧
+  if (screen === 'game') tickTollFlash(performance.now());
+  // ★ 原版会替玩家把系统指针挪到按钮上（试玩3 #2）：时机刚从关变开就挪一次
+  cursorWarper.update();
+  if (screen === 'game') shopTick(performance.now());
+  // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
+  if (screen === 'game') bankTick(performance.now());
+  // ★ 角色台词（T-052）：**不限定 `game` 屏** —— 语音在任何一屏都可能派出来
+  //   （开局宣言、破產、勝利宣言…），队列的收尾不能因为屏幕上盖着别的东西就停住。
+  speechTick(performance.now());
+
+  stageCtx.imageSmoothingEnabled = false;
+  stageCtx.fillStyle = '#000';
+  stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+
+  if (overlay !== null) {
+    // ★ 登记的整屏接管：棋盘、侧栏、工具栏一概不画（原版这些屏也是整屏窗口）
+    // ★ 例外是**浮窗**（`windowed: true`，如大地圖彈窗）：原版只把被盖住的
+    //   那一块盖上去，周围的棋盘/工具栏/侧栏照旧露着 —— 故先照常画一整帧。
+    if (overlay.windowed === true && screen === 'game') drawGameStage();
+    overlay.draw(uiEnv());
+  } else if (screen === 'title') {
+    drawTitle(stageCtx, titleHot, spriteNow);
+  } else if (screen === 'intro') {
+    // ★ 过场要**逐帧**推进：没播完就再排一帧（与走子补间同一个道理），
+    //   否则只画第一帧就冻住 —— 类型检查与单测都看不出这一条。
+    // ★ 也**不能在这里 `return`** —— 见下面 assets 那条的同一条注释：
+    //   `blitStage()` 在这条链末尾，提前返回就是白画（过场此前就是这样，
+    //   一直没显示出来）。
+    // ★ 2026-09-16：接上原版的**回退分支**素材（jump.mkf 的底图 + 跳伞 FLIC +
+    //   角色 FLIC + Effect #25）。原先只画一块占位框。素材都在 `assets/`，
+    //   取不到就那一步静默跳过（只剩一行「按任意鍵跳過」）。
+    // ★ 2026-09-18：**每个玩家各两段**（Jxx 跳出去 + Fxx 背降落伞下降）——
+    //   资源号由**该玩家的 `character`** 索引（`0x2f+角色` / `0x3b+角色`），
+    //   所以这里必须把**全桌**的角色号交给它，不能只给 `players[0]`。
+    //   @source `fcn_00415872` VA 0x004158e0（预载）与 0x00415b58 / 0x00415c76（播放）。
+    const introCast = state.players.map((p) => p.character);
+    drawIntro(stageCtx, performance.now() - introStartedAt, {
+      sprite: spriteNow,
+      flic: uiFlicNow,
+      // ★ 音效只放一次：`drawIntro` 只在 `soundPlayed !== true` 那一帧回调，
+      //   这里回调到就把标志立起来（原版也在铺完底图之后放一下）。
+      playEffect: (id: number) => {
+        if (introSoundPlayed) return;
+        introSoundPlayed = true;
+        sound.play('Effect.mkf', id);
+      },
+      characters: introCast,
+      soundPlayed: introSoundPlayed,
+    });
+    if (introDone(introStartedAt, performance.now(), introSkipped, introCast)) endIntro();
+    else requestRender();
+  } else if (screen === 'assets') {
+    // ★ **不要在这里 `return`** —— `blitStage()` 在这条链的末尾，
+    //   提前返回等于画了不上屏（上一轮就是这样：`screen` 都切过去了，
+    //   画面却一直停在棋盘上）。
+    drawAssetSheet(stageCtx, spriteNow, state, topo, assetWho, assetView, sheetUi);
+  } else if (screen === 'inventory') {
+    // 浮窗**盖在棋盘上**（原版只是把被盖住的那块存下来、退出时贴回去），
+    // 所以先照常画一整帧棋盘，再把浮窗叠上去。
+    drawGameStage();
+    drawInventory(
+      stageCtx,
+      spriteNow,
+      invKind,
+      invKind === 'tools'
+        ? toolEntries(state, state.currentPlayer)
+        : cardEntries(state, state.currentPlayer),
+      // 载具徽章只有道具欄有：`traffic_method` 1 = 機車、2 = 汽車 @source VA 0x447e08
+      invKind === 'tools'
+        ? (INV_VEHICLE_IMAGE.get(state.players[state.currentPlayer]?.trafficMethod ?? 0) ?? null)
+        : null,
+    );
+  } else if (screen === 'setup') {
+    // ★ 这一屏的定时器是**一直跑**的（背景在横向循环滚、小人在逐帧走），
+    //   所以每次画完都再排一帧 —— 与过场同一个道理 @source VA 0x00404feb
+    const now = performance.now();
+    const outro =
+      setupOutroAt === null ? null : setupOutro(now, setupOutroAt, setupOutroScroll);
+    // ★ 拉幕播完（最后一名小人走出画面）→ 这才真的开局。
+    //   原版是自己给自己 PostMessage 一个 WM_KEYDOWN，见 setup.ts 的注释。
+    if (drawSetup(stageCtx, setup, spriteNow, now, setupScene, outro)) {
+      finishSetupOutro();
+      return;
+    }
+    requestRender();
+  } else if (screen === 'saveload') {
+    // 盖在原来那一屏上（原版也是这样）
+    if (saveLoadReturn === 'game') drawGameStage();
+    else drawTitle(stageCtx, null, spriteNow);
+    stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
     stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+    drawSaveLoad(stageCtx, saveLoadMode, saveLoadSlots, saveLoadHot, uiSprite);
+  } else if (screen === 'aiSettings') {
+    // 託管AI 是**盖在棋盘上**的对话框（原版就是这样），与設定同一套画法
+    if (aiReturn === 'game') drawGameStage();
+    stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
+    stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+    const draft = aiDraft ?? [];
+    drawAiSettings(stageCtx, state, draft, aiHot, (archive, resource, index) =>
+      spriteNow(archive, resource, index, true),
+    );
+  } else if (screen === 'lobby') {
+    drawLobby(
+      stageCtx,
+      // ★ 第十一份試玩回報 #1：座位数 = 房间设的**总人数**（不足由电脑补位，
+      //   服务器 `#start` 负责）。画几格就按几格，别永远画四个。
+      lobbySlots(lobbyRoom, net?.seat ?? null, roomOptions(lobbyRoom).seatCount),
+      net?.seat ?? null,
+      isHostSeat(net?.seat ?? null),
+      lobbyRoom?.started ?? false,
+      lobbyHot,
+      (archive, resource, index) => spriteNow(archive, resource, index),
+      (t) => stageCtx.measureText(t).width,
+      // ★ Q-NET-2：房间地图也来自服务器快照（缺省 0 兼容旧快照）
+      roomMapId(lobbyRoom),
+      // ★★ 第十一份試玩回報 #1：開局設定六行也来自服务器快照（缺省补全，兼容旧快照）
+      roomOptions(lobbyRoom),
+    );
+  } else if (screen === 'options') {
+    // 設定是**盖在**原来那一屏上的对话框（原版就是这样）
+    if (optionsReturn === 'game') drawGameStage();
+    else drawTitle(stageCtx, null, spriteNow);
+    stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
+    stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+    drawOptions(
+      stageCtx,
+      optionsDraft,
+      optionsVariant,
+      optionsPressed,
+      musicTrack,
+      (i, key = false) => spriteNow('Data.mkf', OPTIONS_RESOURCE, i, key),
+    );
+    // ── 副屏盖在主面板上（原版是另开一扇窗口）──
+    if (optionsSub !== null) drawOptionsSub();
+  } else if (screen === 'stock') {
+    // 股市是**整屏**的（原版那扇窗口盖住棋盘），画法与銀行那两屏同一条路
+    drawStockScreen(stageCtx, spriteNow, stockView());
+    // 详情卡是**模态**的（原版另开一扇窗口），盖在最上面
+    const detail = stockDetailView();
+    if (detail !== null) drawStockDetail(stageCtx, spriteNow, detail);
+    const ui = stockAmountUi();
+    if (ui !== null && amountPage !== null) {
+      // 填数页照棋盘坐标排版，整体平移过去（`fcn_00453544` 也是另开一窗）
+      stageCtx.save();
+      stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
+      drawDialog(stageCtx, uiSprite, ui, amountPage, dialogHot);
+      stageCtx.restore();
+    }
+  } else {
+    drawGameStage();
+  }
 
-    if (overlay !== null) {
-      // ★ 登记的整屏接管：棋盘、侧栏、工具栏一概不画（原版这些屏也是整屏窗口）
-      // ★ 例外是**浮窗**（`windowed: true`，如大地圖彈窗）：原版只把被盖住的
-      //   那一块盖上去，周围的棋盘/工具栏/侧栏照旧露着 —— 故先照常画一整帧。
-      if (overlay.windowed === true && screen === 'game') drawGameStage();
-      overlay.draw(uiEnv());
-    } else if (screen === 'title') {
-      drawTitle(stageCtx, titleHot, spriteNow);
-    } else if (screen === 'intro') {
-      // ★ 过场要**逐帧**推进：没播完就再排一帧（与走子补间同一个道理），
-      //   否则只画第一帧就冻住 —— 类型检查与单测都看不出这一条。
-      // ★ 也**不能在这里 `return`** —— 见下面 assets 那条的同一条注释：
-      //   `blitStage()` 在这条链末尾，提前返回就是白画（过场此前就是这样，
-      //   一直没显示出来）。
-      // ★ 2026-09-16：接上原版的**回退分支**素材（jump.mkf 的底图 + 跳伞 FLIC +
-      //   角色 FLIC + Effect #25）。原先只画一块占位框。素材都在 `assets/`，
-      //   取不到就那一步静默跳过（只剩一行「按任意鍵跳過」）。
-      // ★ 2026-09-18：**每个玩家各两段**（Jxx 跳出去 + Fxx 背降落伞下降）——
-      //   资源号由**该玩家的 `character`** 索引（`0x2f+角色` / `0x3b+角色`），
-      //   所以这里必须把**全桌**的角色号交给它，不能只给 `players[0]`。
-      //   @source `fcn_00415872` VA 0x004158e0（预载）与 0x00415b58 / 0x00415c76（播放）。
-      const introCast = state.players.map((p) => p.character);
-      drawIntro(stageCtx, performance.now() - introStartedAt, {
-        sprite: spriteNow,
-        flic: uiFlicNow,
-        // ★ 音效只放一次：`drawIntro` 只在 `soundPlayed !== true` 那一帧回调，
-        //   这里回调到就把标志立起来（原版也在铺完底图之后放一下）。
-        playEffect: (id: number) => {
-          if (introSoundPlayed) return;
-          introSoundPlayed = true;
-          sound.play('Effect.mkf', id);
-        },
-        characters: introCast,
-        soundPlayed: introSoundPlayed,
+  // 銀行落点那两屏（T-029）：貸款屏先铺（整屏 640×480），ATM 是模態的盖它上面；
+  // 若填数页开着，再把棋盘那块（对话框在上面）贴回来 —— 原版的填数页也是
+  // 盖在银行屏上的（`fcn_00453544` 那一声调用就在贷款屏的状态机里）。
+  // ★★ 2026-09-22（第十一份試玩回報 #18「NPC踩到银行上时就不用一闪而过银行内部的页面了」）：
+  //   原版 `_rich4_ui_bank_entry` 的 `0x004366a3 cmp byte [player+0x15],1 / jne 0x4367ab`
+  //   ⇒ 电脑那一支**直接借款、全程不画屏**。先前这里只看 `pending.kind === 'bank'`，
+  //   于是 NPC 的银行 pending 期间整张银行内页被画出来（玩家看到的就是「一闪而过」）。
+  const bank = isAiTurn(state) ? null : bankPending();
+  if (bank !== null && atm === null) {
+    // 三条数额 = 額度 / 已用 / 額度−已用 @source `fcn_00433c20`：
+    // 依次是 `arg`、`player+0x28`、`arg − player+0x28`。
+    // 而 `pending.specialFinance.available` 就是 `額度 − 已用`（core 的
+    // `specialFinanceAvailable`）⇒ 額度 = available + owed。
+    const fin = state.pending?.kind === 'bank' ? state.pending.specialFinance : null;
+    const owed = fin?.owed ?? 0;
+    const room = fin?.available ?? 0;
+    // ★ 三条数额的**数字**只有子对话框开着才画（原版是子对话框 0x405 那一拍
+    //   调 `fcn_00433c20` 画的）；点「窗」之前只有底图上那几个**标签**。
+    const financeOpen = loanUi?.financeOpen === true;
+    drawBankLoan(stageCtx, spriteNow, {
+      chairman: bank.chairman,
+      frozen: bankFrozen(),
+      subDialog: financeOpen,
+      finance: financeOpen ? [room + owed, owed, room] : null,
+      // 董事长眨眼（子对话框那支 100 ms 定时器）；它不在时（或填数页开着时）不眨
+      // @source `0x4347a2` 的 `cmp [0x48c3cc], 4 / je`
+      blink: financeOpen && amountPage === null ? loanBlinkImage(loanBlink) : null,
+    });
+    // Q-BANK-1：两块**滑入面板**压在底图上 —— 玩家面板 200×280 @(0,y)、
+    // 日期面板 200×200 @(280,y)，y = `[0x48c3d5]` @source fcn_00435062。
+    if (loanUi !== null) {
+      drawLoanPanels(stageCtx, spriteNow, loanPanelView(loanUi));
+      // EXIT 的按下图（图 19）—— 四颗钮里只有它有 @source loc_00435cca
+      drawLoanPressed(stageCtx, spriteNow, loanUi.pressed, {
+        x0: LOAN_BUTTONS[LOAN_EXIT]!.x0,
+        y0: LOAN_BUTTONS[LOAN_EXIT]!.y0,
       });
-      if (introDone(introStartedAt, performance.now(), introSkipped, introCast)) endIntro();
-      else requestRender();
-    } else if (screen === 'assets') {
-      // ★ **不要在这里 `return`** —— `blitStage()` 在这条链的末尾，
-      //   提前返回等于画了不上屏（上一轮就是这样：`screen` 都切过去了，
-      //   画面却一直停在棋盘上）。
-      drawAssetSheet(stageCtx, spriteNow, state, topo, assetWho, assetView, sheetUi);
-    } else if (screen === 'inventory') {
-      // 浮窗**盖在棋盘上**（原版只是把被盖住的那块存下来、退出时贴回去），
-      // 所以先照常画一整帧棋盘，再把浮窗叠上去。
-      drawGameStage();
-      drawInventory(
-        stageCtx,
-        spriteNow,
-        invKind,
-        invKind === 'tools'
-          ? toolEntries(state, state.currentPlayer)
-          : cardEntries(state, state.currentPlayer),
-        // 载具徽章只有道具欄有：`traffic_method` 1 = 機車、2 = 汽車 @source VA 0x447e08
-        invKind === 'tools'
-          ? (INV_VEHICLE_IMAGE.get(state.players[state.currentPlayer]?.trafficMethod ?? 0) ?? null)
-          : null,
-      );
-    } else if (screen === 'setup') {
-      // ★ 这一屏的定时器是**一直跑**的（背景在横向循环滚、小人在逐帧走），
-      //   所以每次画完都再排一帧 —— 与过场同一个道理 @source VA 0x00404feb
-      const now = performance.now();
-      const outro =
-        setupOutroAt === null ? null : setupOutro(now, setupOutroAt, setupOutroScroll);
-      // ★ 拉幕播完（最后一名小人走出画面）→ 这才真的开局。
-      //   原版是自己给自己 PostMessage 一个 WM_KEYDOWN，见 setup.ts 的注释。
-      if (drawSetup(stageCtx, setup, spriteNow, now, setupScene, outro)) {
-        finishSetupOutro();
-        return;
-      }
-      requestRender();
-    } else if (screen === 'saveload') {
-      // 盖在原来那一屏上（原版也是这样）
-      if (saveLoadReturn === 'game') drawGameStage();
-      else drawTitle(stageCtx, null, spriteNow);
-      stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
-      stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
-      drawSaveLoad(stageCtx, saveLoadMode, saveLoadSlots, saveLoadHot, uiSprite);
-    } else if (screen === 'aiSettings') {
-      // 託管AI 是**盖在棋盘上**的对话框（原版就是这样），与設定同一套画法
-      if (aiReturn === 'game') drawGameStage();
-      stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
-      stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
-      const draft = aiDraft ?? [];
-      drawAiSettings(stageCtx, state, draft, aiHot, (archive, resource, index) =>
-        spriteNow(archive, resource, index, true),
-      );
-    } else if (screen === 'lobby') {
-      drawLobby(
-        stageCtx,
-        // ★ 第十一份試玩回報 #1：座位数 = 房间设的**总人数**（不足由电脑补位，
-        //   服务器 `#start` 负责）。画几格就按几格，别永远画四个。
-        lobbySlots(lobbyRoom, net?.seat ?? null, roomOptions(lobbyRoom).seatCount),
-        net?.seat ?? null,
-        isHostSeat(net?.seat ?? null),
-        lobbyRoom?.started ?? false,
-        lobbyHot,
-        (archive, resource, index) => spriteNow(archive, resource, index),
-        (t) => stageCtx.measureText(t).width,
-        // ★ Q-NET-2：房间地图也来自服务器快照（缺省 0 兼容旧快照）
-        roomMapId(lobbyRoom),
-        // ★★ 第十一份試玩回報 #1：開局設定六行也来自服务器快照（缺省补全，兼容旧快照）
-        roomOptions(lobbyRoom),
-      );
-    } else if (screen === 'options') {
-      // 設定是**盖在**原来那一屏上的对话框（原版就是这样）
-      if (optionsReturn === 'game') drawGameStage();
-      else drawTitle(stageCtx, null, spriteNow);
-      stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
-      stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
-      drawOptions(
-        stageCtx,
-        optionsDraft,
-        optionsVariant,
-        optionsPressed,
-        musicTrack,
-        (i, key = false) => spriteNow('Data.mkf', OPTIONS_RESOURCE, i, key),
-      );
-      // ── 副屏盖在主面板上（原版是另开一扇窗口）──
-      if (optionsSub !== null) drawOptionsSub();
-    } else if (screen === 'stock') {
-      // 股市是**整屏**的（原版那扇窗口盖住棋盘），画法与銀行那两屏同一条路
-      drawStockScreen(stageCtx, spriteNow, stockView());
-      // 详情卡是**模态**的（原版另开一扇窗口），盖在最上面
-      const detail = stockDetailView();
-      if (detail !== null) drawStockDetail(stageCtx, spriteNow, detail);
-      const ui = stockAmountUi();
-      if (ui !== null && amountPage !== null) {
-        // 填数页照棋盘坐标排版，整体平移过去（`fcn_00453544` 也是另开一窗）
-        stageCtx.save();
-        stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
-        drawDialog(stageCtx, uiSprite, ui, amountPage, dialogHot);
-        stageCtx.restore();
-      }
-    } else {
-      drawGameStage();
+      // 店員那句话（气泡底图 = 资源 23 图 21，锚点落 (240,80)）@source fcn_00434186
+      if (loanUi.bubble !== null) drawLoanBubble(stageCtx, spriteNow, loanUi.bubble.text);
     }
+  }
+  if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
+  if (bank !== null && atm === null && amountPage !== null) {
+    // 填数页（`fcn_00453544`）是**另开一个窗口**盖在银行屏上的，所以这里
+    // 单独把它画到舞台 —— 不能整块贴回棋盘画布（那样四周会透出地图）。
+    // 它的排版仍照棋盘坐标走，于是整体平移过去；命中判定也照旧走棋盘坐标。
+    const pageDlg = currentDialog();
+    if (pageDlg !== null) {
+      stageCtx.save();
+      stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
+      drawDialog(stageCtx, uiSprite, pageDlg, amountPage, dialogHot);
+      stageCtx.restore();
+    }
+  }
 
-    // 銀行落点那两屏（T-029）：貸款屏先铺（整屏 640×480），ATM 是模態的盖它上面；
-    // 若填数页开着，再把棋盘那块（对话框在上面）贴回来 —— 原版的填数页也是
-    // 盖在银行屏上的（`fcn_00453544` 那一声调用就在贷款屏的状态机里）。
-    // ★★ 2026-09-22（第十一份試玩回報 #18「NPC踩到银行上时就不用一闪而过银行内部的页面了」）：
-    //   原版 `_rich4_ui_bank_entry` 的 `0x004366a3 cmp byte [player+0x15],1 / jne 0x4367ab`
-    //   ⇒ 电脑那一支**直接借款、全程不画屏**。先前这里只看 `pending.kind === 'bank'`，
-    //   于是 NPC 的银行 pending 期间整张银行内页被画出来（玩家看到的就是「一闪而过」）。
-    const bank = isAiTurn(state) ? null : bankPending();
-    if (bank !== null && atm === null) {
-      // 三条数额 = 額度 / 已用 / 額度−已用 @source `fcn_00433c20`：
-      // 依次是 `arg`、`player+0x28`、`arg − player+0x28`。
-      // 而 `pending.specialFinance.available` 就是 `額度 − 已用`（core 的
-      // `specialFinanceAvailable`）⇒ 額度 = available + owed。
-      const fin = state.pending?.kind === 'bank' ? state.pending.specialFinance : null;
-      const owed = fin?.owed ?? 0;
-      const room = fin?.available ?? 0;
-      // ★ 三条数额的**数字**只有子对话框开着才画（原版是子对话框 0x405 那一拍
-      //   调 `fcn_00433c20` 画的）；点「窗」之前只有底图上那几个**标签**。
-      const financeOpen = loanUi?.financeOpen === true;
-      drawBankLoan(stageCtx, spriteNow, {
-        chairman: bank.chairman,
-        frozen: bankFrozen(),
-        subDialog: financeOpen,
-        finance: financeOpen ? [room + owed, owed, room] : null,
-        // 董事长眨眼（子对话框那支 100 ms 定时器）；它不在时（或填数页开着时）不眨
-        // @source `0x4347a2` 的 `cmp [0x48c3cc], 4 / je`
-        blink: financeOpen && amountPage === null ? loanBlinkImage(loanBlink) : null,
+  // ── 遙控骰子的点数盘（Q-PICK-2）──
+  // ★ 原版是**另开一扇模态窗口**盖在棋盘上（`_rich4_use_tool_yaokongtouzi` 把
+  //   `Panel.mkf` #72 贴到 (92,300) 之后才进 `Wait_0402_Message`），
+  //   所以这里也画在链尾、盖住底下那一屏。
+  if (dicePick !== null) drawDiceChoose(stageCtx, spriteNow, dicePick.hover);
+
+  // ── 角色台词（T-052 的屏幕那一半）──
+  // ★ 画在链尾、盖住底下那一屏，与原版一致：`_rich4_player_say` 的第 ① 步
+  //   （白字字幕）与第 ② 步（金貝貝的 `Data.mkf #0x207` 表情图）都是直接
+  //   画在**整块舞台**上的（坐标就是屏幕坐标，见 `speech-bubble.ts`）。
+  //   ⚠️ 不能画在 `drawGameStage()` 里 —— 那一趟只在 `screen === 'game'` 时走，
+  //   而语音是**任何一屏**都可能派出来的。
+  {
+    const bubble = speechQueue.current();
+    if (bubble !== null) {
+      stageCtx.save();
+      // `uiSprite` 的静态类型（`gameui.ts` 的 `SpriteFn`）只列了 Data/Panel 两个档案，
+      // 而台词还要取 `map.mkf` 的头像（W-50）—— 运行时本来就是同一个 `spriteNow`。
+      drawSpeechBubble(bubble, {
+        ctx: stageCtx,
+        sprite: uiSprite as unknown as BubbleSpriteFn,
+        font,
       });
-      // Q-BANK-1：两块**滑入面板**压在底图上 —— 玩家面板 200×280 @(0,y)、
-      // 日期面板 200×200 @(280,y)，y = `[0x48c3d5]` @source fcn_00435062。
-      if (loanUi !== null) {
-        drawLoanPanels(stageCtx, spriteNow, loanPanelView(loanUi));
-        // EXIT 的按下图（图 19）—— 四颗钮里只有它有 @source loc_00435cca
-        drawLoanPressed(stageCtx, spriteNow, loanUi.pressed, {
-          x0: LOAN_BUTTONS[LOAN_EXIT]!.x0,
-          y0: LOAN_BUTTONS[LOAN_EXIT]!.y0,
-        });
-        // 店員那句话（气泡底图 = 资源 23 图 21，锚点落 (240,80)）@source fcn_00434186
-        if (loanUi.bubble !== null) drawLoanBubble(stageCtx, spriteNow, loanUi.bubble.text);
-      }
+      stageCtx.restore();
     }
-    if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
-    if (bank !== null && atm === null && amountPage !== null) {
-      // 填数页（`fcn_00453544`）是**另开一个窗口**盖在银行屏上的，所以这里
-      // 单独把它画到舞台 —— 不能整块贴回棋盘画布（那样四周会透出地图）。
-      // 它的排版仍照棋盘坐标走，于是整体平移过去；命中判定也照旧走棋盘坐标。
-      const pageDlg = currentDialog();
-      if (pageDlg !== null) {
-        stageCtx.save();
-        stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
-        drawDialog(stageCtx, uiSprite, pageDlg, amountPage, dialogHot);
-        stageCtx.restore();
-      }
-    }
+  }
 
-    // ── 遙控骰子的点数盘（Q-PICK-2）──
-    // ★ 原版是**另开一扇模态窗口**盖在棋盘上（`_rich4_use_tool_yaokongtouzi` 把
-    //   `Panel.mkf` #72 贴到 (92,300) 之后才进 `Wait_0402_Message`），
-    //   所以这里也画在链尾、盖住底下那一屏。
-    if (dicePick !== null) drawDiceChoose(stageCtx, spriteNow, dicePick.hover);
+  // ── 屏幕提示条（`toast.ts`）──
+  // ★ 画在**最上面**：整屏接管、模态窗、台词之后。原版没有这东西，是需求方
+  //   明确要求的非叙事提示（F9 回报的落盘确认），所以不必与哪一屏对齐。
+  drawToast(stageCtx, toast, performance.now(), SCREEN_W, SCREEN_H);
 
-    // ── 角色台词（T-052 的屏幕那一半）──
-    // ★ 画在链尾、盖住底下那一屏，与原版一致：`_rich4_player_say` 的第 ① 步
-    //   （白字字幕）与第 ② 步（金貝貝的 `Data.mkf #0x207` 表情图）都是直接
-    //   画在**整块舞台**上的（坐标就是屏幕坐标，见 `speech-bubble.ts`）。
-    //   ⚠️ 不能画在 `drawGameStage()` 里 —— 那一趟只在 `screen === 'game'` 时走，
-    //   而语音是**任何一屏**都可能派出来的。
-    {
-      const bubble = speechQueue.current();
-      if (bubble !== null) {
-        stageCtx.save();
-        // `uiSprite` 的静态类型（`gameui.ts` 的 `SpriteFn`）只列了 Data/Panel 两个档案，
-        // 而台词还要取 `map.mkf` 的头像（W-50）—— 运行时本来就是同一个 `spriteNow`。
-        drawSpeechBubble(bubble, {
-          ctx: stageCtx,
-          sprite: uiSprite as unknown as BubbleSpriteFn,
-          font,
-        });
-        stageCtx.restore();
-      }
-    }
+  // 拾取模式的指针图要**解码完才能用**。首帧拿不到就返回 null，
+  // 而光标只在 hover 变化时才刷新 —— 于是「一次都没悬停到」时指针会空着。
+  // 图到货（spriteArrived）时补一次，这一条不能省。
+  if (pick !== null && spriteArrived) refreshPickCursor();
 
-    // ── 屏幕提示条（`toast.ts`）──
-    // ★ 画在**最上面**：整屏接管、模态窗、台词之后。原版没有这东西，是需求方
-    //   明确要求的非叙事提示（F9 回报的落盘确认），所以不必与哪一屏对齐。
-    drawToast(stageCtx, toast, performance.now(), SCREEN_W, SCREEN_H);
+  blitStage();
 
-    // 拾取模式的指针图要**解码完才能用**。首帧拿不到就返回 null，
-    // 而光标只在 hover 变化时才刷新 —— 于是「一次都没悬停到」时指针会空着。
-    // 图到货（spriteArrived）时补一次，这一条不能省。
-    if (pick !== null && spriteArrived) refreshPickCursor();
-
-    blitStage();
-
-    // 有精灵在本帧解码完成 → 再画一次，把它们补上；
-    // 骰子在滚也要继续要帧，否则动画只有一格；
-    // 商店开着也要一直要帧 —— 原版那儿挂着一个 50ms 的定时器（`SetTimer(hwnd, 0x32, …)`）。
-    // 銀行貸款屏同理（Q-BANK-1：滑入与气泡都要逐帧看）；ATM 只在键盘那一下补一帧。
-    // ★ 台词也一样：一段显示 `SPEECH_HOLD_MS` 毫秒，到点由 `speechTick` 收掉并要下一帧。
-    // ★ toast 同理：还没到点就接着要帧（到点那一帧画空 = 自己擦掉）。
-    if (
-      renderer.dirty ||
-      hud.dirty ||
-      spriteArrived ||
-      diceFx.active ||
-      shopUi !== null ||
-      loanUi !== null ||
-      atmCode !== null ||
-      speechQueue.length > 0 ||
-      // ★ 押在 `deferredSpeech` 里的那几句也要续帧 —— 演出收屏那一拍就靠它
-      //   把台词放上台（否则要等下一次 action，台词就永远不上台了）
-      deferredSpeech !== null ||
-      // ★ 機器娃娃**打飞**的物件还在飞 ⇒ 接着要帧（它与替身补间不同寿：
-      //   娃娃走完那几拍若没有别的演出，就没人再要帧了，最后几拍会冻在屏上）
-      renderer.sweptFlightActive() ||
-      toastVisible(toast, performance.now())
-    ) {
-      renderer.clearDirty();
-      hud.clearDirty();
-      spriteArrived = false;
-      requestRender();
-    }
-  });
+  // 有精灵在本帧解码完成 → 再画一次，把它们补上；
+  // 骰子在滚也要继续要帧，否则动画只有一格；
+  // 商店开着也要一直要帧 —— 原版那儿挂着一个 50ms 的定时器（`SetTimer(hwnd, 0x32, …)`）。
+  // 銀行貸款屏同理（Q-BANK-1：滑入与气泡都要逐帧看）；ATM 只在键盘那一下补一帧。
+  // ★ 台词也一样：一段显示 `SPEECH_HOLD_MS` 毫秒，到点由 `speechTick` 收掉并要下一帧。
+  // ★ toast 同理：还没到点就接着要帧（到点那一帧画空 = 自己擦掉）。
+  if (
+    renderer.dirty ||
+    hud.dirty ||
+    spriteArrived ||
+    diceFx.active ||
+    shopUi !== null ||
+    loanUi !== null ||
+    atmCode !== null ||
+    speechQueue.length > 0 ||
+    // ★ 押在 `deferredSpeech` 里的那几句也要续帧 —— 演出收屏那一拍就靠它
+    //   把台词放上台（否则要等下一次 action，台词就永远不上台了）
+    deferredSpeech !== null ||
+    // ★ 機器娃娃**打飞**的物件还在飞 ⇒ 接着要帧（它与替身补间不同寿：
+    //   娃娃走完那几拍若没有别的演出，就没人再要帧了，最后几拍会冻在屏上）
+    renderer.sweptFlightActive() ||
+    toastVisible(toast, performance.now())
+  ) {
+    renderer.clearDirty();
+    hud.clearDirty();
+    spriteArrived = false;
+    requestRender();
+  }
 }
 
 /**
@@ -6928,7 +6953,7 @@ function drawDiceFx(ctx: CanvasRenderingContext2D, now: number): void {
   if (!diceFx.active) return;
   const flic = diceFx.flicBitmap(now);
   if (flic !== null) {
-    drawDiceFlic(ctx, flic, currentScreenDir());
+    drawDiceFlic(ctx, flic, currentScreenDir(), diceFx.flicSize());
     return;
   }
   // 定格段：点数图盖上去。滚骰段走到这儿只可能是影片还没解好 —— 也先把点数摆出来，
@@ -10045,6 +10070,8 @@ async function boot(): Promise<void> {
     //   那份 3.8 MB 的清单白拉（任务书 §1 末条）。
     hdSource = hdListed ? await loadHdSource(hdBase()) : null;
     sprites = new SpriteCache(archives, hdSource === null ? {} : { hd: hdSource });
+    // ★ 高清图是后台拉、到了原地换位图（先原图、后高清）—— 换上来那一刻重画一帧
+    sprites.addUpgradeListener(() => requestRender());
     if (hdSource !== null) log('HD 素材：已接上（缺图的按图回退原图）');
 
     // 先用地址栏（或默认值）建一局，好让渲染器与面板有东西可读；
@@ -10425,7 +10452,8 @@ async function boot(): Promise<void> {
           const s2 = spriteNow(archive, res, idx, key);
           return s2 === null
             ? null
-            : { w: s2.width, h: s2.height, ax: s2.anchorX, ay: s2.anchorY };
+            : // bw/bh = 位图像素（超分图比逻辑 w/h 大）—— 验「先原图、后高清」用
+              { w: s2.width, h: s2.height, ax: s2.anchorX, ay: s2.anchorY, bw: s2.bitmap.width, bh: s2.bitmap.height };
         },
         viewport: () => ({ w: LAYOUT.board.w, h: LAYOUT.board.h }),
         /** 某个节点此刻画在**棋盘区**的哪里；不在视野内返回 null */
@@ -10462,6 +10490,7 @@ async function boot(): Promise<void> {
          * 读数用法：跑 30 格，取中位数 / p95 —— 中位数 ≤ 10 ms 就说明缝可忽略。
          */
         walkGaps: () => [...walkGaps],
+        longFrames: () => [...longFrames],
         /**
          * 骰子那一段现在到哪一相了 —— 长跑排错用（纯读）。
          * `active` 恒真而 `phase` 不前进 = 「掷完骰子人不走」那一类卡死。

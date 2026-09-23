@@ -247,9 +247,12 @@ export function drawDiceFlic(
   ctx: CanvasRenderingContext2D,
   frame: ImageBitmap,
   screenDir: number,
+  /** 影片的逻辑尺寸；不给就当原图（像素 = 逻辑）*/
+  size: { width: number; height: number } | null = null,
 ): void {
   const at = diceFlicOrigin(screenDir);
-  ctx.drawImage(frame, at.x, at.y);
+  // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+  drawSprite(ctx, { bitmap: frame, width: size?.width ?? frame.width, height: size?.height ?? frame.height }, at.x, at.y);
 }
 
 /** 一次点击可能落在哪 */
