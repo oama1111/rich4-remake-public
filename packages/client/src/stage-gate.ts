@@ -84,6 +84,11 @@ export interface StageFlags {
    *   原版 `0x4528b9(0x960)` 是阻塞等待，效果（发卡 / 收钱窗）与台词都在它之后。
    */
   godLine: boolean;
+  /**
+   * ★ 神明离身升天（`god_detach` VA 0x0040e32c，至多 24 帧 × 60 ms）正在演 / 排队（第十二份试玩回报 #1）。
+   *   原版是阻塞的：演完才 `0x40e14d` 拆下来、才说「一場惡夢～」（事件 23，`afterStage`）。
+   */
+  godAscend: boolean;
 }
 
 /**
@@ -104,7 +109,8 @@ export function stageBusy(f: StageFlags): boolean {
     !f.walkDone ||
     f.diceFxActive ||
     f.tollFlash ||
-    f.godLine
+    f.godLine ||
+    f.godAscend
   );
 }
 

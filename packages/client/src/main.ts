@@ -257,6 +257,7 @@ import { confineClip, confineFxTrigger } from './confine-fx.ts';
 // ★ 神明降臨／發威那一段影片（Q-ANIM-1）—— 与住院/入獄同一支 `fcn_0045144f`，
 //   于是共用 `board-film.ts` 的播放与下面那一份「棋盘影片」宿主状态。
 import { godFilmSpec, godFxTrigger } from './god-fx.ts';
+import { GOD_ASCEND_MAX_MS, GOD_ASCEND_SOUND, godAscendTrigger, type GodAscendCue } from './god-ascend-fx.ts';
 // ★ 「踩到惡犬」那一段影片（試玩回報：踩到狗直接進醫院、没有咬人动画/配音）——
 //   同一支 `fcn_0045144f` 的第三位客人，规格与判据见 `dog-fx.ts`。
 import { dogBiteFxTrigger } from './dog-fx.ts';
@@ -285,7 +286,7 @@ import {
 // ★ 影片窗口内棋盘按 **before** 那一帧画（试玩3 #1/#9，issue #19）——
 //   原版 `fcn_0045144f` 是阻塞的，播完才重绘棋盘；core 却一条 action 就把
 //   等级/附身写完了。纯函数与逐项判据见 `deferred-board.ts`。
-import { boardFilmWindowOpen, boardStateForFilm, type BoardFilmWindow } from './deferred-board.ts';
+import { boardFilmWindowOpen, boardStateForFilm, visibleBoardState, type BoardFilmWindow } from './deferred-board.ts';
 import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 // ★ 「取消」那一拍的梯子 —— ESC 与右键**共用同一份**（原版就是这么干的：
@@ -1716,6 +1717,7 @@ function stageBusyFlags(): StageFlags {
     // ★ W-69：過路費閃爍（`fcn_00451985` 是阻塞的，原版在費用訊息框之前）
     tollFlash: tollFlash !== null,
     godLine: godLine !== null || pendingGodLine !== null,
+    godAscend: godAscend !== null,
   };
 }
 
@@ -4109,6 +4111,10 @@ function startActionFx(action: Action, before: GameState): void {
   //   因为送去坐牢/住院的来源有十来个（卡、狗咬、踩雷、命運、新聞、罰款…），
   //   逐个 action 种类去接必漏。
   startConfineFx(before, state);
+  // ★★ 第十二份试玩回报 #1：神明**离身升天**（`god_detach` 0x40e32c）—— 必须排在
+  //   `startGodFx` 之前：换神那一支是 `god_activate` 里先 `0x40eb3f call 0x40e32c`
+  //   把旧神送走（升天），**然后**才播新神那一段影片（`tickBoardFilm` 会等它演完）。
+  startGodAscend(before, state);
   // ★ 神明降臨／發威（Q-ANIM-1）—— 判据是 `player.godInfo` 刚变（`god-fx.ts`）
   startGodFx(before, state);
   // ★ 第八份试玩回报 #5：附身影片之后那句开场白（`fcn_0040e2a2`，2400 ms）—— 没影片就当场说
@@ -5574,6 +5580,54 @@ const speechQueue = new SpeechQueue();
  */
 let deferredSpeech: SpeechBubble[] | null = null;
 
+// ============================================================
+//  神明离身升天（`god_detach` VA 0x0040e32c）—— 规格在 `god-ascend-fx.ts`（第十二份试玩回报 #1）
+// ============================================================
+
+/**
+ * 正在演（或排着等前面演出收摊）的那一次升天；`null` = 没有。
+ * `start === null` = 还在排队；`before` = 离身**之前**那一份（起点与棋盘都按它画）。
+ */
+let godAscend: { cue: GodAscendCue; before: GameState; start: number | null } | null = null;
+
+/**
+ * 月结 / 開獎 / 分紅这几屏排在回合边界里**更早**的位置（`0x41902e call 0x41cf67` 推日期
+ * 在 `0x419039 call 0x41c84f` 之前）⇒ 任期届满的升天要等它们收屏。
+ * ⚠️ 只等这几屏，**不**等訊息框：换神时新神的訊息框在押后等影片、影片又在等升天 ——
+ *   把訊息框也算进来就是三方互等。
+ */
+const DAY_ROLL_PRESENTATIONS: ReadonlySet<string> = new Set(['monthly', 'lottery-draw', 'shares']);
+
+/** 这一拍有神明经 `god_detach` 离身 ⇒ 排一次升天（一拍至多一位：任期只减当前那位）*/
+function startGodAscend(before: GameState, after: GameState): void {
+  const cue = godAscendTrigger(before, after)[0];
+  if (cue === undefined) return;
+  godAscend = { cue, before, start: null };
+  requestRender();
+}
+
+/** 每帧：前面的演出收摊就起播（放音），演完收摊 */
+function tickGodAscend(now: number): void {
+  const a = godAscend;
+  if (a === null) return;
+  requestRender();
+  if (a.start === null) {
+    // 走子补间 / 道具·卡片飞行 / 月结那几屏还在 ⇒ 先等（原版它们都在 `god_detach` 之前、且都阻塞）
+    if (!renderer.walkDone(now) || objectFlight !== null) return;
+    const overlay = activeUiScreen();
+    if (overlay !== null && DAY_ROLL_PRESENTATIONS.has(overlay.id)) return;
+    a.start = now;
+    // @source `0x0040e46f push 0 / push 0x4823e2 / call 0x4542ce` —— 升天之前响一声
+    sound.play('Effect.mkf', GOD_ASCEND_SOUND);
+    log(`神明升天：P${a.cue.player} 物件 #${a.cue.objectIndex + 1}（種類 ${a.cue.type}）`);
+    return;
+  }
+  // 渲染器上一帧已经判出「演完了」（帧数到顶 / 整张图高过棋盘顶边），或兜底的时长到了
+  if (renderer.godAscendEnded() || now - a.start >= GOD_ASCEND_MAX_MS) {
+    godAscend = null;
+  }
+}
+
 /** 这一件飞完该放哪个音效号（0 = 不放音） */
 let objectFlightSound = 0;
 
@@ -6167,6 +6221,8 @@ function tickBoardFilm(now: number): void {
     //      `afterStage` 本来就该排在影片**之后**，反过来挡影片就是死锁
     //      （见 `stage-gate.ts` 的 `filmWaitsForSpeech` 与它的单测）。
     if (filmWaitsForSpeech(speechQueue.length)) return;
+    // ★ 换神：旧神先升天（`0x40eb3f` 在影片之前），演完 `tickGodAscend` 会再叫醒我们
+    if (godAscend !== null) return;
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
     // 訊息框那一段盖着整块棋盘 ⇒ 原版次序是框先、片后，等它收屏
@@ -6391,6 +6447,10 @@ function boardDrawState(): GameState {
   //   其余影片（神明/救护车/入獄/飛碟）的 `buildFx` 恒为 null ⇒ 恒 false ⇒ 等级照旧一直按住。
   const now = performance.now();
   const released = buildFx !== null && buildHammerDone(buildFx, now);
+  // ★★ 神明升天期间（第十二份试玩回报 #1）：原版 `god_detach` 在演完之后才 `0x40e604 call 0x40e14d`
+  //   真正拆下来（清 `god_info`、搭档此时才在地图上登场）⇒ 棋盘按离身**之前**那一份画，
+  //   升天那一尊由渲染器藏掉、改画在动效层。
+  if (godAscend !== null) return visibleBoardState(state, deferredBoardBefore ?? godAscend.before, !released);
   return boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released);
 }
 
@@ -6475,6 +6535,8 @@ function requestRender(): void {
     // ★ 投掷动效（放置類道具）同理：没播完就再排一帧；播完那一下才放落地音
     //   （原版顺序：动画 → 收尾停 100 ms → 音效，见 `startObjectFlight`）
     if (screen === 'game') tickObjectFlight(performance.now());
+    // ★ 神明升天（第十二份试玩回报 #1）：等前面的演出收摊才起，演完才放行回合驱动
+    if (screen === 'game') tickGodAscend(performance.now());
     // ★ 建屋动效（機器工人）同理：两段时间轴没走完就再排一帧，走完就放掉位图
     if (screen === 'game') tickBuildFx(performance.now());
     // ★ 送進監獄／醫院那段影片同理（Q-ANIM-1）：按帧时序推进，播完补一次回合驱动
@@ -6985,6 +7047,15 @@ function drawGameStage(): void {
     // 放置類道具的投掷动效（纯表现，不进 state）—— 飞着的那一件由渲染器画在
     // 清单之上，同时把它从静态槽里藏掉（原版动画期间棋盘不重绘）
     objectFlight,
+    // ★ 神明升天（`god_detach` 0x40e32c）—— 起播之后才交给渲染器（之前那尊还画在主人身上）
+    godAscend:
+      godAscend !== null && godAscend.start !== null
+        ? {
+            state: godAscend.before,
+            objectIndex: godAscend.cue.objectIndex,
+            elapsed: performance.now() - godAscend.start,
+          }
+        : null,
     // 機器工人（9）的原地建屋影片（Q-TOOL-6）—— 两段 FLIC 合起来 440×440
     // 盖在棋盘左上角，**不进绘制槽**、也没有自己的落点（落点是常数）。
     buildFx: currentBuildFxBitmap(performance.now()),
@@ -7861,6 +7932,7 @@ function startGame(): void {
   boardFilmPending.clear();
   releaseBoardFilmFlics();
   deferredBoardBefore = null;
+  godAscend = null;
   // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
   goButton.reset();
 
@@ -9493,6 +9565,7 @@ function connectOnline(url: string, room: string, name: string): void {
           boardFilmPending.clear();
           releaseBoardFilmFlics();
           deferredBoardBefore = null;
+          godAscend = null;
           // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
           goButton.reset();
 
@@ -9610,6 +9683,7 @@ function connectOnline(url: string, room: string, name: string): void {
           releaseBuildFlics();
           // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
           deferredBoardBefore = null;
+          godAscend = null;
           npcWalksDrawn = null;
           log(`⟳ 失步自愈：重放 ${r.actions.length} 條 action，本地狀態已重建（第 ${r.actions.length} 號）`);
           requestRender();
