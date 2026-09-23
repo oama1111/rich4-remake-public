@@ -23,7 +23,7 @@
  * 只在自己回合开始时弹「冬眠中」—— 这就是「莫名其妙」。
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { CARDS } from '@rich4/data';
 import { makeGameState, makePlayer, reduce, type GameState } from '@rich4/core';
 
@@ -34,6 +34,7 @@ import {
   cardUsePopupActive,
   cardUseView,
   cardView,
+  dropOwnCardUse,
   eventBoxPlan,
   eventBoxPlaybackSkip,
   eventBoxPlaybackStart,
@@ -41,6 +42,7 @@ import {
   eventBoxScreen,
   eventBoxScreenState,
   resetEventBoxScreen,
+  startOwnCardUsePopup,
 } from './event-box-screen.ts';
 import type { LoadedFlic } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
@@ -194,5 +196,181 @@ describe('★ main.ts 的接线：亮牌在卡片函数**之前**、阻塞（源
     const build = src.slice(src.indexOf('function tickBuildFx('), src.indexOf('function tickBuildFx(') + 2000);
     expect(build).toContain('if (cardUsePopupActive()) {');
     expect(src).toContain('objectFlight: objectFlight !== null || pendingCardFlight !== null,');
+  });
+});
+
+/*
+ * ★★ D-CARD-USE-1 第 3 条（需求方 2026-09-23 拍板「照原版次序」）：
+ *   真人用卡 = 卡片欄选定 → **亮牌** → 卡片函数（里头才选目标）→ 生效；
+ *   目标取消 ⇒ 卡片函数返回 0 ⇒ 失败音 3 + 卡片欄重开（卡不消耗），再选一张再亮一次。
+ */
+const ROOT = process.env.RICH4_WORKSPACE ?? '';
+const EXE = `${ROOT}/Rich4/rich4.exe`;
+const runExe = existsSync(EXE) ? it : it.skip;
+/** VA → 文件偏移（与 `tools/disasm.py` 同一条换算）*/
+function exeBytes(va: number, n: number): number[] {
+  const d = readFileSync(EXE);
+  const off = 1024 + (va - 0x401000);
+  return [...d.subarray(off, off + n)];
+}
+/** `call rel32` / `jcc rel32` 的落点 */
+function rel32Target(va: number, len: number, bytes: number[]): number {
+  const b = bytes.slice(len - 4, len);
+  const rel = (b[0]! | (b[1]! << 8) | (b[2]! << 16) | (b[3]! << 24)) | 0;
+  return va + len + rel;
+}
+
+describe('★ 真人用卡的次序 @source `_rich4_ui_use_card_entry`（回 exe 钉字节）', () => {
+  runExe('★★ 卡片欄只有「取消」（卡号 0）绕过亮牌：`0x441c98 test ebx,ebx / je 0x441ce1`', () => {
+    const b = exeBytes(0x441c98, 4);
+    expect(b.slice(0, 2)).toEqual([0x85, 0xdb]); // test ebx, ebx
+    expect(b[2]).toBe(0x74); // je rel8
+    expect(0x441c9c + b[3]!).toBe(0x441ce1);
+  });
+
+  runExe('★★ 亮牌 `0x441cbc call 0x441f73` 在卡片函数 `0x441cc6 call [eax*4+0x475d5c]` 之前', () => {
+    const popup = exeBytes(0x441cbc, 5);
+    expect(popup[0]).toBe(0xe8);
+    expect(rel32Target(0x441cbc, 5, popup)).toBe(0x441f73);
+    expect(exeBytes(0x441cc6, 7)).toEqual([0xff, 0x14, 0x85, 0x5c, 0x5d, 0x47, 0x00]);
+    expect(0x441cbc).toBeLessThan(0x441cc6);
+  });
+
+  runExe('★★ 卡片函数返回 0 ⇒ 失败音 `0x48233a`（= 3）+ `je 0x441c22` 回到卡片欄（循环体里又会亮牌）', () => {
+    expect(exeBytes(0x441cd4, 5)).toEqual([0x68, 0x3a, 0x23, 0x48, 0x00]); // push 0x48233a
+    const loop = exeBytes(0x441ce1, 8);
+    expect(loop.slice(0, 2)).toEqual([0x85, 0xf6]); // test esi, esi
+    expect(loop.slice(2, 4)).toEqual([0x0f, 0x84]); // je rel32
+    expect(rel32Target(0x441ce1, 8, loop)).toBe(0x441c22);
+    // 亮牌在循环体内（0x441c22 ≤ 0x441cbc < 0x441ce1）
+    expect(0x441c22).toBeLessThan(0x441cbc);
+  });
+
+  runExe('★ 选目标在卡片函数**里**：均貧卡 `0x4421cd call 0x446ae8`，取消（0）⇒ `je 0x443069`（`mov eax, ebx` = 0）', () => {
+    const sel = exeBytes(0x4421cd, 5);
+    expect(sel[0]).toBe(0xe8);
+    expect(rel32Target(0x4421cd, 5, sel)).toBe(0x446ae8);
+    const bail = exeBytes(0x4421e0, 8);
+    expect(bail.slice(0, 4)).toEqual([0x85, 0xdb, 0x0f, 0x84]);
+    expect(rel32Target(0x4421e0, 8, bail)).toBe(0x443069);
+  });
+});
+
+describe('★ 本机真人：选定即亮牌，`useCard` 落地时不亮第二遍', () => {
+  const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i }));
+  const base = makeGameState({ players, currentPlayer: 0, lastCardPlay: null, turnCount: 7 });
+
+  it('★★ `startOwnCardUsePopup`：当场起播「使用均貧卡」、响 62、算「用卡亮牌」（挡住后续）', () => {
+    resetEventBoxScreen();
+    const sounds: number[] = [];
+    startOwnCardUsePopup(2, 0, 7, fakeEnv(base, 0, sounds));
+    expect(texts()).toEqual(['使用均貧卡']);
+    expect(sounds).toEqual([62]);
+    expect(cardUsePopupActive()).toBe(true);
+    eventBoxScreen.tick!(fakeEnv(base, 1500, sounds));
+    expect(cardUsePopupActive()).toBe(false);
+    resetEventBoxScreen();
+  });
+
+  it('★★ 之后同一人、同一张、同一回合的 `lastCardPlay` ⇒ 不再亮（本机已亮过）；再下一次照亮', () => {
+    resetEventBoxScreen();
+    const sounds: number[] = [];
+    startOwnCardUsePopup(2, 0, 7, fakeEnv(base, 0, sounds));
+    eventBoxScreen.tick!(fakeEnv(base, 1500, sounds));
+    const after = { ...base, lastCardPlay: { player: 0, cardId: 2 } };
+    eventBoxScreen.event!(base, after, fakeEnv(after, 3000, sounds));
+    expect(eventBoxScreenState().playing).toBe(false);
+    expect(sounds).toEqual([62]);
+    // 「已亮过」只抵一次：下一次用卡（比如电脑）照常亮
+    const after2 = { ...after, currentPlayer: 1, lastCardPlay: { player: 1, cardId: 15 } };
+    eventBoxScreen.event!(after, after2, fakeEnv(after2, 4000, sounds));
+    expect(texts()).toEqual(['使用冬眠卡']);
+    resetEventBoxScreen();
+  });
+
+  it('★ 联机旁观端（没有本机亮牌）⇒ `useCard` 到达时亮牌', () => {
+    resetEventBoxScreen();
+    const after = { ...base, lastCardPlay: { player: 0, cardId: 2 } };
+    eventBoxScreen.event!(base, after, fakeEnv(after));
+    expect(texts()).toEqual(['使用均貧卡']);
+    resetEventBoxScreen();
+  });
+
+  it('★ 对不上（别人 / 别的卡 / 别的回合）⇒ 照亮；`dropOwnCardUse` 之后也照亮', () => {
+    for (const play of [
+      { player: 1, cardId: 2, turn: 7 },
+      { player: 0, cardId: 4, turn: 7 },
+      { player: 0, cardId: 2, turn: 8 },
+    ]) {
+      resetEventBoxScreen();
+      startOwnCardUsePopup(2, 0, 7, fakeEnv(base));
+      resetEventBoxScreenPlaybackOnly();
+      const before = { ...base, turnCount: play.turn };
+      const after = { ...before, lastCardPlay: { player: play.player, cardId: play.cardId } };
+      eventBoxScreen.event!(before, after, fakeEnv(after));
+      expect(eventBoxScreenState().playing).toBe(true);
+    }
+    resetEventBoxScreen();
+    startOwnCardUsePopup(2, 0, 7, fakeEnv(base));
+    resetEventBoxScreenPlaybackOnly();
+    dropOwnCardUse();
+    const after = { ...base, lastCardPlay: { player: 0, cardId: 2 } };
+    eventBoxScreen.event!(base, after, fakeEnv(after));
+    expect(texts()).toEqual(['使用均貧卡']);
+    resetEventBoxScreen();
+  });
+
+  /** 只收掉台上那一段（跳过），不动「已亮过」那一格 —— 模拟亮牌播完 */
+  function resetEventBoxScreenPlaybackOnly(): void {
+    eventBoxScreen.tick!(fakeEnv(base, 1e9));
+    expect(eventBoxScreenState().playing).toBe(false);
+  }
+});
+
+describe('★ main.ts 的接线：亮牌在选目标**之前**（源码钉子）', () => {
+  const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+  const bodyOf = (sig: string): string => {
+    const at = src.indexOf(sig);
+    expect(at).toBeGreaterThan(-1);
+    return src.slice(at, src.indexOf('\n}\n', at));
+  };
+
+  it('★★ 卡片欄选定 ⇒ 当场亮牌，只记下待走的那一张（不预演、不开拾取、不派 action）', () => {
+    const body = bodyOf('function applyCardPick(cardId: number): void {');
+    expect(body).toContain('startOwnCardUsePopup(cardId, state.currentPlayer, state.turnCount, uiEnv());');
+    expect(body).toContain('pendingCardRoute = {');
+    expect(body).not.toContain('routeCardPick(');
+    expect(body).not.toContain('dispatch(');
+    expect(body).not.toContain('startCardPick(');
+  });
+
+  it('★★ 亮牌收屏之后才走卡片函数那一段（`routeCardUse`：预演 / 选目标 / 派 `useCard`）', () => {
+    const tick = bodyOf('function tickPendingCardRoute(): void {');
+    expect(tick).toContain('if (cardUsePopupActive()) {');
+    expect(tick).toContain('routeCardUse(p.cardId);');
+    expect(src).toContain("if (screen === 'game') tickPendingCardRoute();");
+    const route = bodyOf('function routeCardUse(cardId: number): void {');
+    expect(route).toContain('routeCardPick(state, topo, cardId)');
+    expect(route).toContain('startCardPick(cardId, route.cls, route.param);');
+  });
+
+  it('★★ 没用成（返回 0）= 失败音 3 + 卡片欄重开 + 忘掉「已亮过」', () => {
+    const failed = bodyOf('function cardUseFailed(): void {');
+    expect(failed).toContain('dropOwnCardUse();');
+    expect(failed).toContain("sound.play('Effect.mkf', SOUND_CARD_FAILED);");
+    expect(failed).toContain("openInventory('cards');");
+  });
+
+  it('★★ 各条「目标取消」都走 `cardUseFailed`：棋盘拾取右键 / 搶奪卡选牌窗 / 選股 / 改建卡選類別', () => {
+    const cancel = bodyOf('function applyCancelLayer(layer: CancelLayer): boolean {');
+    expect(cancel).toContain("if (source.kind === 'card') cardUseFailed();");
+    expect(src).toContain('if (pick === null) {\n              cardUseFailed();\n              return;\n            }');
+    expect(bodyOf('function cancelStockPick(playSound = true): void {')).toContain('cardUseFailed();');
+    const route = bodyOf('function routeCardUse(cardId: number): void {');
+    expect(route).toContain('if (type === null) {\n        cardUseFailed();');
+  });
+
+  it('★ 卡片欄只认左键抬手（右键取消后重开的卡片欄不被紧跟的右键抬手关掉）', () => {
+    expect(src).toContain("if (screen === 'inventory') {\n      if (e.button !== 0) return;\n      applyInventoryPick();");
   });
 });

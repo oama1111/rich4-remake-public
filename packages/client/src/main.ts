@@ -114,7 +114,13 @@ import {
   type Sprite,
 } from './assets.ts';
 import { loadAllArchives, type LoadProgress } from './asset-loader.ts';
-import { cardUsePopupActive, onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
+import {
+  cardUsePopupActive,
+  dropOwnCardUse,
+  onEventBoxArtReady,
+  setEventBoxArchives,
+  startOwnCardUsePopup,
+} from './event-box-screen.ts';
 // ★ 「請選擇設施類別」那扇窗（Q-TOOL-4）—— 真人盖**等级 0 的設施**时要先选种类
 //   （原版 `fcn_00440aac` / 窗口过程 `fcn_0043fae4`）。
 import {
@@ -1414,8 +1420,9 @@ function cancelStockPick(playSound = true): void {
   stockPick = null;
   stockPickAt = null;
   closeStock();
-  // 抛回 0 ⇒ `_rich4_ui_use_card_entry` 把卡片欄再开回来（@source `loc_00441ce1`）
-  openInventory('cards');
+  // 抛回 0 ⇒ 紅卡/黑卡函数返回 0（`0x0044501e test esi,esi / je 0x445032` → `mov eax, ebx`）
+  //   ⇒ `_rich4_ui_use_card_entry` 失败音 3 + 把卡片欄再开回来（@source `0x00441cd9` / `loc_00441ce1`）
+  cardUseFailed();
 }
 
 /** 12 支股票的名字 —— core 的状态不带名字，在 `@rich4/data` 的表里 */
@@ -1910,7 +1917,11 @@ function applyCancelLayer(layer: CancelLayer): boolean {
       // @source loc_004466b8：可取消的才退；目标必选（`[0x48c594]` bit3）的不认
       if (pick !== null && pick.cancellable) {
         sound.play('Effect.mkf', CANCEL_SOUND);
+        const source = pick.source;
         endPick();
+        // ★ 卡片那一类：拾取窗 `Post(0)` ⇒ 卡片函数返回 0（如均貧卡 `0x004421e2 je 0x443069`）
+        //   ⇒ `_rich4_ui_use_card_entry` 失败音 3 + 卡片欄重开（`0x00441cd9` / `0x00441ce3`）
+        if (source.kind === 'card') cardUseFailed();
       }
       return true;
     case 'dicePick':
@@ -5126,22 +5137,69 @@ function cancelDicePick(): void {
 }
 
 /**
- * 卡片欄选了一张卡之后。
+ * 卡片欄选了一张卡之后 —— **先亮牌**，亮完才走卡片函数那一段（`routeCardUse`）。
  *
- * @source `_rich4_ui_use_card_entry` VA 0x441c22 起：弹窗拿到卡号后
- *   `sprintf("使用%s", 卡名)` → 报台词 → `call card_functions[卡号]`；
- *   **返回 0（没用成）就播失败音并重新弹一次卡片欄**（`jmp loc_00441c22`）。
+ * @source `_rich4_ui_use_card_entry` VA 0x441c22 起（真人那一支）：
+ *   `0x00441c7e` 卡片欄拿到卡号（0 = 右键取消 → `0x441c9a je 0x441ce1` 直接收场）→
+ *   `sprintf("使用%s", 卡名)` → **`0x00441cbc call 0x441f73` 亮牌（阻塞 1500 ms、可跳过）** →
+ *   `0x00441cc6 call card_functions[卡号]`（**选目标在卡片函数里**，如 `0x004421cd call 0x446ae8`）；
+ *   **返回 0（没用成 / 目标取消）就播失败音并重新弹一次卡片欄**（`0x441cd9` → `jmp loc_00441c22`）。
+ *   亮牌只有「卡片欄右键取消」绕得过 ⇒ 被动卡、用不成的卡也照样先亮牌再失败。
+ */
+function applyCardPick(cardId: number): void {
+  log(`使用${CARD_IMPLS[cardId - 1]?.name ?? `卡${cardId}`}`);
+  startOwnCardUsePopup(cardId, state.currentPlayer, state.turnCount, uiEnv());
+  pendingCardRoute = { cardId, player: state.currentPlayer, turnCount: state.turnCount };
+  requestRender();
+}
+
+/**
+ * 亮牌之后等着走的那一张（`applyCardPick` 记下、亮牌收屏后 `tickPendingCardRoute` 取走）。
+ * 原版亮牌是阻塞的 —— 卡片函数（选目标 / 生效）在它返回之后才跑。
+ */
+let pendingCardRoute: { cardId: number; player: number; turnCount: number } | null = null;
+
+function tickPendingCardRoute(): void {
+  const p = pendingCardRoute;
+  if (p === null) return;
+  if (cardUsePopupActive()) {
+    requestRender();
+    return;
+  }
+  pendingCardRoute = null;
+  // 亮牌期间局面换了人（重连重建 / 换局）⇒ 这一张作废
+  if (state.currentPlayer !== p.player || state.turnCount !== p.turnCount) {
+    dropOwnCardUse();
+    return;
+  }
+  routeCardUse(p.cardId);
+}
+
+/**
+ * 「卡片函数返回 0」—— 这张卡**没用成**（目标取消 / 用不了）。
+ *
+ * @source `_rich4_ui_use_card_entry`：`0x00441cd9 call 0x4542ce(0x48233a)`（失败音 3）→
+ *   `0x00441ce3 je loc_00441c22`（卡片欄重开；卡不消耗）。
+ *   再选一张会**再亮一次牌**（`0x00441cbc` 在循环体里）。
+ */
+function cardUseFailed(): void {
+  dropOwnCardUse();
+  sound.play('Effect.mkf', SOUND_CARD_FAILED);
+  openInventory('cards');
+}
+
+/**
+ * 亮牌之后：相当于原版的 `call card_functions[卡号]`（`0x00441cc6`）。
  *
  * 这里照同一条路走：先用 core 预演「这张牌现在出不出得了」——
  *   - 出得了且**不需要目标** → 直接发 `useCard{target: none}`；
  *   - 需要目标 → 进 T-026 拾取模式（选择参数取自卡片表）；
- *   - 出不了（被动卡、或时机不对）→ 播失败音（音效 4）并**把弹窗再开回来**。
+ *   - 出不了（被动卡、或时机不对）→ 播失败音（音效 3）并**把弹窗再开回来**。
  *
  * ★ 原版**不灰显**被动卡（`fcn_00441b0a` 只画卡名，一个颜色一张字体），
  *   所以这里也不灰显 —— 上一轮卡里写的「被动卡灰显不可点」是自己想的。
  */
-function applyCardPick(cardId: number): void {
-  log(`使用${CARD_IMPLS[cardId - 1]?.name ?? `卡${cardId}`}`);
+function routeCardUse(cardId: number): void {
   const route = routeCardPick(state, topo, cardId);
   if (route.kind === 'use') {
     dispatch({ type: 'useCard', cardId, target: { kind: 'none' } });
@@ -5162,8 +5220,7 @@ function applyCardPick(cardId: number): void {
     const handle = nearestSummonableObject(state, topo);
     const act = summonCardAction(handle);
     if (act === null) {
-      sound.play('Effect.mkf', SOUND_CARD_FAILED);
-      openInventory('cards');
+      cardUseFailed();
       return;
     }
     dispatch(act);
@@ -5176,8 +5233,7 @@ function applyCardPick(cardId: number): void {
   if (route.kind === 'facilityPick') {
     openFacilityPicker((type) => {
       if (type === null) {
-        sound.play('Effect.mkf', SOUND_CARD_FAILED);
-        openInventory('cards');
+        cardUseFailed();
         return;
       }
       dispatch({ type: 'useCard', cardId, target: { kind: 'none', facilityType: type } });
@@ -5185,9 +5241,11 @@ function applyCardPick(cardId: number): void {
     return;
   }
   // 用不成：失败音 + 把弹窗开回来（原版的循环）
-  sound.play('Effect.mkf', SOUND_CARD_FAILED);
-  if (route.needsOwnList) log('（这张卡要选目标 —— 那类选择界面还没做）');
-  else openInventory('cards');
+  if (route.needsOwnList) {
+    dropOwnCardUse();
+    sound.play('Effect.mkf', SOUND_CARD_FAILED);
+    log('（这张卡要选目标 —— 那类选择界面还没做）');
+  } else cardUseFailed();
 }
 
 /**
@@ -6609,6 +6667,8 @@ function requestRender(): void {
     // ★ 投掷动效（放置類道具）同理：没播完就再排一帧；播完那一下才放落地音
     //   （原版顺序：动画 → 收尾停 100 ms → 音效，见 `startObjectFlight`）
     if (screen === 'game') tickPendingCardFlight();
+    // ★ 本机选定的卡：亮牌收屏之后才走卡片函数那一段（选目标 / 发 `useCard`）
+    if (screen === 'game') tickPendingCardRoute();
     if (screen === 'game') tickObjectFlight(performance.now());
     // ★ 神明升天（第十二份试玩回报 #1）：等前面的演出收摊才起，演完才放行回合驱动
     if (screen === 'game') tickGodAscend(performance.now());
@@ -8009,6 +8069,7 @@ function startGame(): void {
   deferredBoardBefore = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+  pendingCardRoute = null; // 亮牌后待走的那一张同理
   // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
   goButton.reset();
 
@@ -9045,7 +9106,12 @@ function bindInput(): void {
     }
 
     // ── 道具欄浮窗：抬手把选中项用出去（VA 0x445d84）──
+    // ★ 只认**左键**抬手（`WM_LBUTTONUP` 0x202）；右键走 `contextmenu` 那把取消梯子。
+    //   不加这一条：macOS 上右键是「按下 → contextmenu → 抬手」，目标拾取右键取消后
+    //   `cardUseFailed` 刚把卡片欄开回来（原版 `0x00441ce3 je 0x441c22`），
+    //   紧跟的右键抬手就落进这里、`invPicked === null` ⇒ 当场又把卡片欄关掉。
     if (screen === 'inventory') {
+      if (e.button !== 0) return;
       applyInventoryPick();
       return;
     }
@@ -9132,7 +9198,12 @@ function bindInput(): void {
         const t = hit.target;
         if (t.kind === 'player' && needsStealPick(state, source.cardId, t)) {
           openStealPicker(t.index, 'steal', (pick) => {
-            if (pick === null) return; // 取消：什么都不派（照抄 exe）
+            // 取消：什么都不派（照抄 exe）；卡片函数返回 0（`loc_00441f1b` 的 `mov eax, ebx`）
+            //   ⇒ 调度器失败音 3 + 卡片欄重开（`0x00441cd9` / `0x00441ce3`）
+            if (pick === null) {
+              cardUseFailed();
+              return;
+            }
             dispatch({
               type: 'useCard',
               cardId: source.cardId,
@@ -9646,6 +9717,7 @@ function connectOnline(url: string, room: string, name: string): void {
           deferredBoardBefore = null;
           godAscend = null;
           pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+          pendingCardRoute = null; // 亮牌后待走的那一张同理
           // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
           goButton.reset();
 
@@ -10020,6 +10092,7 @@ function settleAfterSilentRebuild(): void {
   deferredBoardBefore = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+  pendingCardRoute = null; // 亮牌后待走的那一张同理
   npcWalksDrawn = null;
   // ★ 第十二份試玩回報：追上之后此刻仍挂着的**场所**（商店 / 銀行 / 路過銀行）照常铺起来 ——
   //   与 `notifyApplied` 同一道人机闸；它们平时只在「一条 action 落地」时同步。

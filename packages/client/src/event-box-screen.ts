@@ -1032,9 +1032,50 @@ export function drawEventBoxScreen(
 /** 现在正在播的那一段；`null` = 没在播 */
 let playback: EventBoxPlayback | null = null;
 
+/**
+ * 本机真人**已经亮过牌**的那一次用卡（D-CARD-USE-1 第 3 条收掉之后）。
+ *
+ * 原版真人那一支是「卡片欄选定 → 亮牌 → 卡片函数（里头才选目标）」：
+ * ```asm
+ * 00441c7e  call 0x4018e7                 ; 卡片欄（模态）→ ebx = 卡号，0 = 右键取消
+ * 00441c98  test ebx, ebx / je 0x441ce1   ; 只有「取消」绕过亮牌
+ * 00441cbc  call 0x441f73                 ; ★ 亮牌（无条件）
+ * 00441cc6  call [eax*4 + 0x475d5c]       ; 卡片函数：选目标（0x446ae8 等）→ 生效；取消 ⇒ 返回 0
+ * 00441cd9  call 0x4542ce(0x48233a)       ; 返回 0：失败音 3
+ * 00441ce3  je 0x441c22                   ; 返回 0：卡片欄重开（卡不消耗）
+ * ```
+ * ⇒ 亮牌由 `main.ts` 在**选定卡片那一刻**起播（`startOwnCardUsePopup`），
+ *   之后那条 `useCard` 落地时 `lastCardPlay` 照样会变 —— 这一格记着「这一张本机已经亮过」，
+ *   `event` 见到**同一人、同一张、同一回合**的那一次就不再亮第二遍。
+ *   联机旁观端没有这一格 ⇒ 仍在 `useCard` 到达时亮牌（亮的是「真的用出去的那一张」）。
+ */
+let ownCardUse: { player: number; cardId: number; turnCount: number } | null = null;
+
 /** 调试 / 单测用：把整屏关掉 */
 export function resetEventBoxScreen(): void {
   playback = null;
+  ownCardUse = null;
+}
+
+/**
+ * 本机真人在卡片欄选定一张卡 ⇒ **当场**亮牌（`fcn_00441f73(卡号, "使用%s")`，
+ * 真人那一支 `0x00441cbc`，在卡片函数 `0x00441cc6` 之前）。
+ * 同时记下「这一张已经亮过」，免得 `useCard` 落地时再亮一遍。
+ */
+export function startOwnCardUsePopup(cardId: number, player: number, turnCount: number, env: UiScreenEnv): void {
+  playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(cardId)), env.now);
+  ownCardUse = { player, cardId, turnCount };
+  env.playEffect(CARD_REVEAL_SOUND);
+  env.log(`事件提示框：使用卡片 #${cardId}（P${player + 1}，卡片欄选定）`);
+  env.requestRender();
+}
+
+/**
+ * 那一张没用成（卡片函数返回 0：目标取消 / 用不了）⇒ 忘掉「已亮过」。
+ * 原版之后是失败音 + 卡片欄重开，再选一张会**再亮一次**。
+ */
+export function dropOwnCardUse(): void {
+  ownCardUse = null;
 }
 
 /**
@@ -1229,6 +1270,17 @@ export const eventBoxScreen: UiScreen = {
     //   联机时每一端都 reduce 同一条 `useCard` ⇒ 每一端都亮同一张牌。
     const play = after.lastCardPlay;
     if (play !== null && play !== before.lastCardPlay) {
+      // ★ 本机真人这一张在卡片欄选定时已经亮过（`startOwnCardUsePopup`）⇒ 不亮第二遍
+      const own = ownCardUse;
+      ownCardUse = null;
+      if (
+        own !== null &&
+        own.player === play.player &&
+        own.cardId === play.cardId &&
+        own.turnCount === before.turnCount
+      ) {
+        return;
+      }
       playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(play.cardId)), env.now);
       env.playEffect(CARD_REVEAL_SOUND);
       env.log(`事件提示框：使用卡片 #${play.cardId}（P${play.player + 1}）`);
