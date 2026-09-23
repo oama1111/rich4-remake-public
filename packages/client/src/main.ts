@@ -25,7 +25,7 @@ import {
 } from './dev-patch.ts';
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
-import { magicAwaitingPick, magicHumanPickPoint, magicScreenState } from './magic-screen.ts';
+import { magicAwaitingPick, magicHumanPickPoint, magicScreen, magicScreenState } from './magic-screen.ts';
 import {  autoAction,
   ACTOR_DOLL,
   directionOf,
@@ -10027,6 +10027,11 @@ function settleAfterSilentRebuild(): void {
     syncShopUi();
     syncLoanUi();
     syncAtmPending();
+  }
+  // ★ 同理：追上之后仍挂着**真人**的魔法屋点选（`pending{magicHouse}`，重连前没点完）⇒ 把女巫窗口重新铺起来，
+  //   否则这位真人只能干等回合计时替他托管。窗口只认「pending 刚挂出」，所以拿去掉 pending 的一份当 before。
+  if (state.pending?.kind === 'magicHouse' && !magicScreenState().playing) {
+    magicScreen.event?.({ ...state, pending: null }, state, uiEnv());
   }
   requestRender();
   renderPanel();

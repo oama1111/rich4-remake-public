@@ -82,6 +82,15 @@ describe('第十二份試玩回報：中途进房静默追上', () => {
   });
 });
 
+describe('第十二份試玩回報：重连追上之后仍欠着魔法屋点选', () => {
+  it('★ 静默重建之后把女巫窗口重新铺起来（否则只能等回合计时托管）', () => {
+    const fn = main.slice(main.indexOf('function settleAfterSilentRebuild'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    expect(body).toContain("if (state.pending?.kind === 'magicHouse' && !magicScreenState().playing) {");
+    expect(body).toContain('magicScreen.event?.({ ...state, pending: null }, state, uiEnv());');
+  });
+});
+
 describe('第十二份試玩回報：旁观别人的魔法屋，施法者收场本台跟着收场', () => {
   // 魔法屋的点选如今是一条 action（`{type:'magicHouse', option}`，见 core `magic-choice.test.ts`），
   // 旁观端收到它就按同一条结算收场；前提是女巫窗口停在状态 7 等人点时**不挡收件箱**。
