@@ -7,7 +7,10 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
-import { newGame, UNVERIFIED_CARDS_PER_KIND } from './new-game.ts';
+import { drawStartPlacements, newGame, UNVERIFIED_CARDS_PER_KIND } from './new-game.ts';
+import { objectNodeCandidates } from './object-landing.ts';
+import { WatcomRng } from '../rng/watcom.ts';
+import { directionOf, nextCandidates, pickNextNode } from '../state/reduce.ts';
 import { CARDS } from '@rich4/data';
 import { DEFAULT_INITIAL_FUND, GAME_INITIAL_FUNDS, startingMoney } from './setup.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
@@ -174,5 +177,87 @@ describe('開局自帶載具', () => {
     }
     // 汽車是道具 6，四个人各领一件
     expect(s.toolStock[6]).toBe((base.toolStock[6] ?? 0) - 4);
+  });
+});
+
+// ============================================================
+//  ★ 开局摆人：来路 + 朝向（第十四份试玩回报 #2「开局时人物的站立方向
+//    应该和他接下来要行动的方向一致」）
+// ============================================================
+
+describe('★ 开局摆人 —— `last_node_id` = 随机邻格、`direction` = 来路 → 起始格', () => {
+  run('每人**两次** `rand()`：先抽起始格（`0x40aa0f`），再抽来路（`0x00408328`）', () => {
+    const map = loadMap();
+    for (const seed of [1, 7, 1326428325, 0xdeadbeef]) {
+      const rng = new WatcomRng(seed >>> 0);
+      const got = drawStartPlacements(map.nodes, 4, rng);
+      // 独立复算：同一个种子手工抽 8 次
+      const ref = new WatcomRng(seed >>> 0);
+      const taken: number[] = [];
+      for (let i = 0; i < 4; i++) {
+        const free = objectNodeCandidates(map.nodes).filter((n) => !taken.includes(n));
+        const nodeId = free[ref.next() % free.length]!;
+        taken.push(nodeId);
+        // @source 0x00408302..0x00408326：四个邻接槽里**非 0** 的按槽序排（不看封路位）
+        const adj = map.nodes[nodeId - 1]!.adjacentSlots.filter((n) => n !== 0);
+        const lastNodeId = adj[ref.next() % adj.length]!;
+        const a = map.nodes[lastNodeId - 1]!;
+        const b = map.nodes[nodeId - 1]!;
+        expect(got[i], `种子 ${seed} 玩家 ${i}`).toEqual({
+          nodeId,
+          lastNodeId,
+          // @source 0x0040835e `call 0x407a8c(last, node)` = 0x454fb4(node − last)
+          direction: directionOf(b.x - a.x, b.y - a.y),
+        });
+      }
+      // ★ 可证偽：两边消耗的随机数一样多（少抽一次后面全部错位）
+      expect(rng.getState()).toBe(ref.getState());
+    }
+  });
+
+  run('newGame 把它写进玩家：来路是起始格的邻格，朝向背对来路', () => {
+    const map = loadMap();
+    for (let seed = 1; seed <= 40; seed++) {
+      const s = newGame({ map, players: setup(4), seed });
+      for (const p of s.players) {
+        const node = map.nodes[p.nodeId - 1]!;
+        expect(node.adjacentSlots, `种子 ${seed} P${p.index}`).toContain(p.lastNodeId);
+        expect(p.lastNodeId).not.toBe(p.nodeId);
+        const last = map.nodes[p.lastNodeId - 1]!;
+        expect(p.direction).toBe(directionOf(node.x - last.x, node.y - last.y));
+      }
+    }
+  });
+
+  run('★ 第一步不会走回来路 —— 站姿朝向就是接下来要走的方向（两邻格的直路上逐格相等）', () => {
+    const map = loadMap();
+    const topo = {
+      nodes: map.nodes,
+      lands: map.lands,
+      facilities: map.facilities,
+      commercials: map.commercials,
+      landscapes: map.landscapes,
+    };
+    let straight = 0;
+    for (let seed = 1; seed <= 40; seed++) {
+      const s = newGame({ map, players: setup(4), seed });
+      for (const p of s.players) {
+        const next = pickNextNode(topo, p.nodeId, p.lastNodeId, new WatcomRng(seed));
+        const cands = nextCandidates(topo, p.nodeId, p.lastNodeId);
+        if (cands.length > 0) expect(next, `种子 ${seed} P${p.index}`).not.toBe(p.lastNodeId);
+        // 直路（恰两个邻格、且三点共线）上：朝向 = 第一步的位移方向
+        const node = map.nodes[p.nodeId - 1]!;
+        const last = map.nodes[p.lastNodeId - 1]!;
+        const to = map.nodes[next! - 1]!;
+        const adj = node.adjacentSlots.filter((n) => n !== 0);
+        const colinear = (node.x - last.x) * (to.y - node.y) === (node.y - last.y) * (to.x - node.x);
+        if (adj.length === 2 && colinear) {
+          straight++;
+          expect(p.direction).toBe(directionOf(to.x - node.x, to.y - node.y));
+        }
+      }
+    }
+    // 有鉴别力：这 160 次开局里确有直路上的起点
+    expect(straight).toBeGreaterThan(0);
   });
 });

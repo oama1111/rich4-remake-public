@@ -48,8 +48,10 @@ const run = existsSync(MAP) ? it : it.skip;
  */
 // ★ 2026-09-22 換種子：福神附身買地/買設施/建設施/加蓋白送一級改了進程；原 5 走不到（真人回合、電腦舉牌）現場，兩個一併重掃（原 12 / 5）。
 // ★ 2026-09-22 換種子（E-41）：「走回棋盤」那一回合收尾不換人，改了輪轉；原 12 走不到（電腦回合、真人舉牌）現場，重掃取 5（8 次）。
-const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 5;
-const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 14;
+// ★ 2026-09-23 換種子（第十四份試玩回報 #2）：開局擺人每人多抽一次「來路」（`0x00408328`），隨機序列整體後移；
+//   重掃 1..40：14 = 電腦回合真人舉牌 6 次，5 = 真人回合電腦舉牌 6 次（兩個恰好對調）。
+const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 14;
+const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 5;
 const TURNS = 200;
 const HUMANS = 2;
 
