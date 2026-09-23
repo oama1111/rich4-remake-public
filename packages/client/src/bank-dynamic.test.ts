@@ -414,8 +414,8 @@ describe('ATM 悬停 / 拖动 / 按下态', () => {
   });
 
   it('★ 按下图画哪张：图号 = 码（金额栏除外）@source loc_004371f9', () => {
-    expect(atmPressedImage(1)).toBe(1); // 存款
-    expect(atmPressedImage(2)).toBe(2); // 提款
+    expect(atmPressedImage(1)).toBe(1); // 提款（钮 0，左上）
+    expect(atmPressedImage(2)).toBe(2); // 存款（钮 1，中间）
     expect(atmPressedImage(3)).toBe(3); // EXIT
     expect(atmPressedImage(4)).toBeNull(); // 金额栏：原版贴满格图后立刻重画进度条
     expect(atmPressedImage(5)).toBe(5); // '7'

@@ -1,13 +1,15 @@
 /*
- * 銀行 —— **ATM 面板**（存款 / 提款那一半）
+ * 銀行 —— **ATM 面板**（提款 / 存款那一半）
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * ★ 银行落点原版开**两屏**（`rich4_player_core_actions.asm:2549` 起）：
- *   1. **`_rich4_ui_bank_atm_entry`**（VA 0x4379c9）—— 就是这台 ATM：存款/提款
+ * ★ 银行落点原版开**两屏**（落点分派 `0x0041b396` 起）：
+ *   1. **`_rich4_ui_bank_atm_entry`**（VA 0x4379c9）—— 就是这台 ATM：提款/存款
  *      + 一台**数字键盘**（本模块）；
- *   2. 回来之后 `_rich4_ui_bank_entry`（VA 0x436668）—— 貸款屏（申請/償還/
- *      特別融資，`Panel.mkf` **资源 23**）。
- *   第 2 屏另开一张卡（T-029b），本模块只管第 1 屏。
+ *   2. 回来之后（`0x0041b39b` 终局码为 0 才往下）`0x0041b3af call 0x436668`
+ *      `_rich4_ui_bank_entry` —— 貸款屏（申請/償還/特別融資，`Panel.mkf` **资源 23**）。
+ *   第 2 屏另开一张卡（T-029b），本模块只管第 1 屏。core 那边落点先挂
+ *   `pending {kind:'atm', landing:true}`，答掉之后才换成 `kind:'bank'`（第十三份试玩回报 #2）。
+ *   **路过**銀行（`0x0041b5ab`）开的也是这同一台，只是关掉之后接着走。
  *
  * ## 出处
  *
@@ -37,8 +39,26 @@
  *   1 2 3        ← 图 11..13
  *   C 0 ←        ← 图 14..16（清空 / 0 / 退格）
  * ```
- * 上面两颗大图：图 1 = **存款**（手伸向钱）、图 2 = **提款**（手拿卡）、
+ * 上面两颗大图：图 1（**左上**，钮 0）= **提款**、图 2（**中间**，钮 1）= **存款**、
  * 图 3 = **EXIT**；图 4 = 金额栏的底。
+ *
+ * ★★ 第十三份试玩回报 #1「左上角应该是取款，中间是存款」—— 先前这里凭**看图**把两颗认反了
+ *   （「手伸向钱 = 存款」），整台 ATM 的存/提因此对调。改按 exe 的**数据流**定：
+ * ```asm
+ * ; 按下钮 0 / 钮 1（抬手分发 `[0x48c40b]` = 钮序号 + 1）
+ * 004373ab  cmp al,1 …  mov [0x48c3f0], 0            ; 码 1（钮 0，左上）→ 模式 0
+ * 004373d1  mov eax,[player+0x496b88] → [0x48c3ec]  ;   上限 = **存款余额**
+ * 004373eb  …           mov [0x48c3f0], 1            ; 码 2（钮 1，中间）→ 模式 1
+ * 0043740b  mov eax,[player+0x496b84] → [0x48c3ec]  ;   上限 = **現金**
+ * ; 按確認（`0x4377e6`）
+ * 0043781e  cmp dword [0x48c3f0], 0 / jne 0x437856
+ * 00437827  sub [player+0x496b88], ebx  ; 模式 0：存款 −= x
+ * 0043782d  add [player+0x496b84], ebx  ;         現金 += x   ⇒ **提款**（之后 `0x43784d` 查特別融資垫付）
+ * 00437856  add [player+0x496b88], ebx  ; 模式 1：存款 += x、現金 −= x ⇒ **存款**
+ * ```
+ *   ⇒ 模式 0 = 提款（钮 0，左上）、模式 1 = 存款（钮 1，中间）；开窗默认模式 0（`0x0043705f`），
+ *   暫停放款时默认模式 1（`0x00437028`）且钮 0 按了不认（`0x004371e5`）—— 暫停的是「放款」＝提款。
+ *   ATM 的键盘表（`loc_004374ac`）**没有**切模式的键（只有数字 / C / ← / M / Enter / H），无需改。
  */
 
 import type { ArchiveName, Sprite } from './assets.ts';
@@ -78,8 +98,8 @@ export interface AtmButton {
  *
  * | # | 图 | 矩形 | 是什么 |
  * |---|---|---|---|
- * | 0 | 1 | (57,49)-(137,90) | 存款 |
- * | 1 | 2 | (139,49)-(219,90) | 提款 |
+ * | 0 | 1 | (57,49)-(137,90) | 提款（模式 0）|
+ * | 1 | 2 | (139,49)-(219,90) | 存款（模式 1）|
  * | 2 | 3 | (221,49)-(264,90) | EXIT |
  * | 3 | 4 | (53,137)-(268,166) | 金额栏底（不是钮）|
  * | 4..15 | 5..16 | 4×3 格 33×17 | 数字盘 `789 / 456 / 123 / C0←` |
@@ -135,17 +155,38 @@ export function atmButtonRect(i: number): { x: number; y: number; w: number; h: 
   return { x: ATM_ORIGIN.x + b.x0, y: ATM_ORIGIN.y + b.y0, w: b.x1 - b.x0 + 1, h: b.y1 - b.y0 + 1 };
 }
 
+/** 两种模式 @source `[0x48c3f0]`：0 = 提款（钮 0，左上）、1 = 存款（钮 1，中间）—— 见文件头 */
+export const ATM_MODE = { withdraw: 0, deposit: 1 } as const;
+
 /**
  * ATM 这一刻的状态。
  *
- * @param mode 0 = 存款 / 1 = 提款（原版 `[0x48c3f0]`）
+ * @param mode 0 = 提款 / 1 = 存款（原版 `[0x48c3f0]`，见 `ATM_MODE`）
  * @param digits 已键入的数字串（原版 `[0x48c3f8]`，是 ASCII）
- * @param limits `[存款上限, 提款上限]` —— 存款 = 現金、提款 = 存款余额
+ * @param limits `[提款上限, 存款上限]` —— 提款 = 存款余额、存款 = 現金（按模式下标取）
  */
 export interface AtmState {
   mode: number;
   digits: string;
   limits: readonly [number, number];
+}
+
+/**
+ * 开窗那一刻的状态 @source ATM 窗 `0x401`（`0x00436fdd`）：
+ * `+0x3c`（銀行暫停放款）!= 0 ⇒ 模式 1 = 存款（`0x00437028`，上限 = 現金）；否则模式 0 = 提款
+ * （`0x0043705f`，上限 = 存款）。金额串 = `"0"`（`fcn_00436edb`），本模块以空串表示「还没输入」。
+ */
+export function atmOpen(cash: number, moneyInBank: number, frozen: boolean): AtmState {
+  return {
+    mode: frozen ? ATM_MODE.deposit : ATM_MODE.withdraw,
+    digits: '',
+    limits: [moneyInBank, cash],
+  };
+}
+
+/** 按確認那一刻的模式 → core 的 `bank` op @source `0x0043781e`：模式 0 提款、模式 1 存款 */
+export function atmOp(mode: number): 'withdraw' | 'deposit' {
+  return mode === ATM_MODE.deposit ? 'deposit' : 'withdraw';
 }
 
 /** 当前金额 */
@@ -166,11 +207,11 @@ export function atmLimit(st: AtmState): number {
  * （@source `fcn_00436d3a` 的 `cmp edi, 0xa`）。
  * `MAX` 把金额填成上限（图 17 上印的就是 `MAX`）；
  * 两颗模式钮**点当前那件不做任何事**（@source `loc_00437161` 的
- * `cmp ebx,[0x48c3f0] / je`），换模式则把已键入的清掉。
+ * `cmp ebx,[0x48c3f0] / je`），换模式则把已键入的清掉。钮序号 = 模式号（钮 0 提款、钮 1 存款）。
  */
 export function atmPress(st: AtmState, btn: number, frozen = false): AtmState | null {
   if (btn === 2) return null; // EXIT
-  // ★ 冻结时点「存款」不认（原版改用当前模式那件）@source `loc_004371da`
+  // ★ 暫停放款时点「提款」（钮 0）不认（原版改用当前模式那件）@source `loc_004371da`
   if (btn === 0 && frozen) return st;
   if (btn === 0) return st.mode === 0 ? st : { ...st, mode: 0, digits: '' };
   if (btn === 1) return st.mode === 1 ? st : { ...st, mode: 1, digits: '' };
@@ -196,11 +237,11 @@ export function atmKeyOf(btn: number): (typeof ATM_KEYS)[number] | null {
  *
  * @source `loc_00436f9d`：`cmp byte [player+0x3c], 0 / je 跳过` 之后才
  *   `fcn_00456418(screen, sheet+0x168, 0x9d(157), 0x8d(141))` —— 即
- *   **只有 `bank_freeze_days != 0` 时**才盖在**存款**那颗钮的中心。
- *   同一状态下 `loc_004371da` 也把「点存款」这一下吃掉（改用当前模式）。
+ *   **只有 `bank_freeze_days != 0` 时**才盖在**提款**（钮 0，左上）那颗钮的中心。
+ *   同一状态下 `loc_004371da` 也把「点提款」这一下吃掉（改用当前模式）。
  */
 export const ATM_FROZEN_MARK = 29;
-/** 禁止章的落点（存款钮的中心）@source `push 0x8d / push 0x9d` */
+/** 禁止章的落点（提款钮 = 钮 0 的中心）@source `push 0x8d / push 0x9d` */
 export const ATM_FROZEN_AT = { x: 0x9d, y: 0x8d } as const;
 
 /** 某一颗钮的中心（屏幕坐标）—— 悬停标记就画在这儿 */
@@ -217,7 +258,7 @@ export function atmButtonCenter(i: number): { x: number; y: number } {
  * → 正被按住那颗的按下图。
  *
  * ★ **两颗模式钮只画当前那一支**：@source `loc_00436f9d` 的
- *   `if (player+0x3c != 0) 画图 2（提款）/ else 画图 1（存款）` ——
+ *   `if (player+0x3c != 0) 画图 2（存款）/ else 画图 1（提款）` ——
  *   面板底图（图 0）里本来就有两颗钮，图 1/2 是它们的**高亮态**。
  *
  * @param frozen `bank_freeze_days != 0` —— 盖上「銀行暫停放款」禁止章
@@ -240,7 +281,7 @@ export function drawBankAtm(
   at(0, ox, oy); // 面板底（图 0，锚点 (0,0)）
   // 「銀行暫停放款」禁止章（图 29，锚点 (14,14)）—— 只在冻结时盖
   if (frozen) at(ATM_FROZEN_MARK, ATM_FROZEN_AT.x, ATM_FROZEN_AT.y);
-  // 当前模式那颗钮的高亮图 @source `loc_00436f9d`：存款 → 图 1、提款 → 图 2
+  // 当前模式那颗钮的高亮图 @source `loc_00436f9d`：提款（模式 0）→ 图 1、存款（模式 1）→ 图 2
   const modeBtn = ATM_BUTTONS[st.mode === 1 ? 1 : 0]!;
   at(ATM_IMAGE_BASE + (st.mode === 1 ? 1 : 0), ox + modeBtn.x0, oy + modeBtn.y0);
 

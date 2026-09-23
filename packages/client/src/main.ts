@@ -465,8 +465,11 @@ import {
   type LoanOp,
 } from './bank-loan.ts';
 import {
+  ATM_MODE,
   atmAmount,
   atmLimit,
+  atmOp,
+  atmOpen,
   atmPress,
   drawBankAtm,
   hitAtmButton,
@@ -915,7 +918,7 @@ const AMOUNT_INITIAL = 0;
  * `atmFill` 就是那条选项自带的 `amount.fill`（金额定了才发得出去）。
  */
 let atm: AtmState | null = null;
-/** 金额定了怎么变成 action；`mode` = 按確認那一刻的存/提（路过銀行那台两个键都能用）*/
+/** 金额定了怎么变成 action；`mode` = 按確認那一刻的提/存（见 `ATM_MODE`：0 提款、1 存款）*/
 let atmFill: ((n: number, mode: number) => Action) | null = null;
 let atmLabel = '';
 /**
@@ -936,8 +939,9 @@ function syncAtmPending(): void {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return;
   atmPassOpened = true;
-  atm = { mode: 0, digits: '', limits: [me.cash, me.moneyInBank] };
-  atmFill = (n, mode) => ({ type: 'bank', op: mode === 1 ? 'withdraw' : 'deposit', amount: n });
+  // ★ 第十三份试玩回报 #1：模式 0 = 提款（左上）、1 = 存款（中间）；暫停放款时默认存款 —— 见 `bank-screen.ts` 文件头
+  atm = atmOpen(me.cash, me.moneyInBank, bankFrozen());
+  atmFill = (n, mode) => ({ type: 'bank', op: atmOp(mode), amount: n });
   atmLabel = '路過銀行';
   // 原版 `fcn_004379c9` 开窗那段（`0x437a2d..0x437a76`）只装 Panel #24 + 跑模态窗，**没有**开窗音效
   requestRender();
@@ -2538,12 +2542,13 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
       c.action.type === 'bank' &&
       (c.action.op === 'deposit' || c.action.op === 'withdraw')
     ) {
+      // 模式 0 = 提款、1 = 存款；limits 按模式下标（见 `bank-screen.ts` 的 `ATM_MODE`）
       atm = {
-        mode: c.action.op === 'deposit' ? 0 : 1,
+        mode: c.action.op === 'withdraw' ? ATM_MODE.withdraw : ATM_MODE.deposit,
         digits: '',
         limits: [
-          c.action.op === 'deposit' ? c.amount.max : 0,
           c.action.op === 'withdraw' ? c.amount.max : 0,
+          c.action.op === 'deposit' ? c.amount.max : 0,
         ],
       };
       atmFill = c.amount.fill;
