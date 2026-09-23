@@ -340,7 +340,7 @@ import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './curso
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
 import { shouldResumeDriver } from './driver-resume.ts';
 import { tollFlashLevel } from './toll-flash-fx.ts';
-import { noticeHoldsFilms, setNoticeStartGate } from './notice-box-screen.ts';
+import { noticeHoldsFilms, setNoticeSpeechGate, setNoticeStartGate } from './notice-box-screen.ts';
 // ★ 2026-09-22（第十一份試玩回報 #15）：訊息框的起播閘要看「轉盤 / 神明老虎機在不在播」
 import { wheelScreenState } from './wheel-screen.ts';
 import { godSlotState, setGodSlotStartGate } from './god-slot.ts';
@@ -5791,6 +5791,11 @@ setNoticeStartGate(
     wheelScreenState().playing ||
     godSlotState().playing,
 );
+
+// ★ 第十三份試玩回報 #2：回合開始被阻那几扇框（「○○住院中／還剩 N 天」）排在角色台词**之后**
+//   （`fcn_0040c912`：`0x0040caca call 0x44ef41` 阻塞说完 → `0x0040cb98 call 0x440cac`）。
+//   判据取 `speechQueue.length > 0`（= 台上还有句子没收），与 `filmWaitsForSpeech` 同一口径。
+setNoticeSpeechGate(() => speechQueue.length > 0);
 
 /**
  * 正在排队的角色台词（T-052 的屏幕那一半）。
