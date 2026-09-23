@@ -263,6 +263,8 @@ import { dogBiteFxTrigger } from './dog-fx.ts';
 // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報）—— 同一支 `fcn_0045144f`，
 //   规格与判据见 `alien-news-fx.ts`。
 import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
+// 第十二份試玩回報：新聞 5 / 15 / 20 / 21 的整块影片（龍捲風 0x217 等），见 `news-place-fx.ts`
+import { newsPlaceFxTrigger } from './news-place-fx.ts';
 import { disappearFxTrigger } from './disappear-fx.ts';
 // ★ W-55 行 4：「惡魔顯靈拆屋」那一段 110×110 的爆破片 —— 规格/判据见 `devil-fx.ts`。
 import {
@@ -4121,6 +4123,10 @@ function startActionFx(action: Action, before: GameState): void {
   //   ⚠️ 也**不**加 `options.animation` 闸：原版这一支里没有
   //   `cmp [0x497159], 0`（与住院/入獄/神明那三支不同），照 exe 走。
   startAlienNewsFx(before, state);
+  // ★ 第十二份試玩回報：新聞 5 / 15 / 20 / 21「随机挑一处建筑」那一族的整块影片
+  //   （龍捲風 0x217 等，`news-place-fx.ts` 的表）。判据是 `lastEvent` 刚变成带 `place` 的
+  //   那几条新聞；与新聞 4 同样**不看**「動畫過程」开关、同样等訊息框收屏（`afterOverlay`）。
+  startNewsPlaceFx(before, state);
   // ★ 第八份试玩回报 #3：被外星人綁架的飛碟 / 出國的飛機（`disappear-fx.ts`，`fcn_0040d375` 的尾巴）——
   //   判据是 `blocking.disappearing` 刚从 0 变非 0；原版这一支同样没有「動畫過程」开关。
   startDisappearFx(before, state);
@@ -6099,6 +6105,26 @@ function startDisappearFx(before: GameState, after: GameState): void {
   deferredBoardBefore = before;
   startBoardFilm(spec);
   log(`影片：${spec.id === 'abduct' ? '被外星人綁架（飛碟）' : '強迫出國觀光（飛機）'}`);
+}
+
+/**
+ * 这一拍是不是剛抽到新聞 5 / 15 / 20 / 21（「随机挑一处建筑」那一族）—— 是就播那一段影片。
+ *
+ * 规格与判据全在 `news-place-fx.ts`（四个调用点逐条读过：资源 / 音效 / flags）。
+ * 镜头不在这里：core 已把挑中那一处写进 `lastViewTarget`（`syncViewTarget()` 居中，
+ * 演出收完复位）；这一段落在屏幕 (0,0x28) 整块棋盘上，正好盖住那一处。
+ *
+ * ★ 影片窗口里棋盘按 **before** 画（房子还在）：原版是 `mutate_land` 在前、影片在后，
+ *   但与大锤 / 飛碟那几段同一个口径 —— 片子播完才看到「少了一级」，
+ *   玩家这才看得出**是哪一栋**受了影响（第十二份回报的原话）。
+ * ★ 不加 `options.animation` 闸：这四个函数里都没有 `cmp byte [0x497159], 0`。
+ */
+function startNewsPlaceFx(before: GameState, after: GameState): void {
+  const spec = newsPlaceFxTrigger(before, after);
+  if (spec === null) return;
+  deferredBoardBefore = before;
+  startBoardFilm(spec);
+  log(`影片：新聞 ${after.lastEvent?.id ?? '?'} ${spec.id}（${spec.frames} 帧 × ${spec.frameMs} ms）`);
 }
 
 function startAlienNewsFx(before: GameState, after: GameState): void {

@@ -717,6 +717,41 @@ export function detectDemolishedHouse(before: GameState, after: GameState): Dete
 }
 
 /**
+ * ★★ 第十二份試玩回報（「龙卷风摧毁房屋没有看到具体哪个房子受影响」）：
+ *   新聞「随机挑一处建筑」那一族里，挑中那一处**有主**时，房主说一句倒霉台词。
+ *
+ * @source 四个函数的尾巴同一个形状（以新聞 21 `fcn_0044ac99` 为例）：
+ * ```asm
+ * 0044ae4a  mov  eax, [0x48c5a0]          ; pass 0 存下的 owner（1 基，改之前）
+ * 0044ae4f  test eax, eax / je 0x44ab21   ; ★ 无主 ⇒ 不说
+ * 0044ae57  dec  eax / imul eax, 0x68     ; 房主的玩家记录
+ * 0044ae5d  mov  dl, [eax + 0x496b7b]     ; 角色号
+ * 0044ae74  call 0x456f2d / and eax, 1    ; rand() & 1
+ * 0044ae7c  mov  edx, [ebx + eax*4 + 0x480856]   ; 角色台词表 +0xc ⇒ **事件 3 / 4**
+ * 0044ae84  push edx / jmp 0x44ab10       ; → push 2 / push owner−1 / call 0x44ef41
+ * ```
+ *   新聞 5（`0x0044948e`..`0x004494cd`）、15（`0x0044a58f`..`0x0044a5c3`）、
+ *   19（`0x0044aad7`..`0x0044ab19`）同一张表 `0x480856`、同一个 `push 2`。
+ *   新聞 20「超級颱風」**没有**这一段（`0x0044ac87` sleep 500 之后直接返回）。
+ *
+ * ⚠️ 与命運 0（`detectDemolishedHouse`）同一条「有意偏离」：那一次 `rand()&1` 本引擎
+ *   **不照抄**（台词二选一不走 core，不动 RNG 流）⇒ 固定取事件 3。
+ */
+export function detectNewsPlaceOwner(before: GameState, after: GameState): DetectedSay[] {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev.kind !== 'news' || before.lastEvent === ev) return [];
+  if (!NEWS_PLACE_OWNER_LINE.has(ev.id)) return [];
+  const owner = ev.place?.owner ?? 0;
+  const who = after.players[owner - 1];
+  // ★ `player_say` 开头那三道闸（消失 / 梦游 / 冬眠的人不出声）
+  if (owner === 0 || who === undefined || !speechGatesOpen(who)) return [];
+  return [{ player: owner - 1, event: 3, expression: 2 }];
+}
+
+/** 尾巴有「房主说一句」的那几条新聞 @source 见 `detectNewsPlaceOwner` */
+export const NEWS_PLACE_OWNER_LINE: ReadonlySet<number> = new Set([5, 15, 19, 21]);
+
+/**
  * 这一条 action 写下的「命運 0 強制拆除房屋」事件；不是这一条写的返回 null。
  *
  * ★ 判据是 `before.lastEvent !== after.lastEvent`（**引用不同**）—— 与
@@ -1323,6 +1358,9 @@ export const DETECTORS: readonly SpeechDetector[] = [
   //   §2.2 表：镜头（`0x0044bee8`）→ 赔款（`0x0044bf36`）→ 镜头复位（`0x0044bf51`）
   //   → sleep 300 → 台词（`0x0044bf9f`）⇒ `afterStage`。
   { name: 'demolishedHouse', source: [0x0044bf9f], order: 'afterStage', detect: detectDemolishedHouse },
+  // ★★ 第十二份試玩回報：新聞 5 / 15 / 19 / 21「随机挑一处建筑」—— 那一处的**房主**说一句。
+  //   调用点都在 `view_to` → `mutate_land` →（影片 → sleep）**之后**、函数的最后一步 ⇒ `afterStage`。
+  { name: 'newsPlaceOwner', source: [0x004494cd, 0x0044a5c3, 0x0044ab19, 0x0044ae84], order: 'afterStage', detect: detectNewsPlaceOwner },
 ];
 
 /**

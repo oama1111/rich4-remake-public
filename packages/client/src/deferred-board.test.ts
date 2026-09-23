@@ -409,7 +409,8 @@ describe('★ main.ts 接线（源码钉子）', () => {
     // ⚠️ 「惡魔顯靈拆屋」（`startDevilFx`）是**第 7 条影片**，但它填的是
     //    `deferredBoardBefore = after;`（原版先拆、重画、再播）⇒ 不计在这里，
     //    由 `devil-fx.test.ts` 的源码钉单独管。
-    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(7);
+    // 2026-09-23 第十二份：新聞 5/15/20/21 的整块影片（`startNewsPlaceFx`，龍捲風 0x217 等）⇒ 8 处。
+    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(8);
     expect(src).toContain('deferredBoardBefore = after;');
   });
 

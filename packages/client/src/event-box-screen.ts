@@ -184,7 +184,7 @@ import { CARDS,
   fortuneEvent,
   newsEvent,
   type EventEntry } from '@rich4/data';
-import type { GameState } from '@rich4/core';
+import type { GameState, MapTopology } from '@rich4/core';
 import {
   loadRaw555Resource,
   type ArchiveName,
@@ -457,6 +457,36 @@ export function eventSubject(before: GameState, after: GameState, fallback: numb
   }
   const at = best >= 0 ? best : fallback;
   return CHARACTERS[after.players[at]?.character ?? -1]?.name ?? '';
+}
+
+/**
+ * ★ 第十二份試玩回報：「龙卷风摧毁房屋没有看到具体哪个房子受影响」——
+ *   新聞「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21）的 `%s` 是**挑中那一处的地名**，
+ *   不是人名。原版 pass 0 就把名字拷出来填进格式串：
+ *
+ * ```asm
+ * ; 新聞 21 fcn_0044ac99（5 / 15 / 19 / 20 同形，调用点见 core 的 `lastEvent.place`）
+ * 0044acbd  call 0x456f2d                  ; rand() % (地块数 + 設施数)
+ * 0044acf2  add  eax, 4 / 0044acfe call 0x457d96   ; strcpy(buf, 地块 + 4)   —— 名字
+ * 0044ad42  add  eax, 4 / 0044ad4e call 0x457d96   ; strcpy(buf, 設施 + 4)   —— 同上（設施支）
+ * 0044ad86  push 0x4656d0 / 0044ad90 call 0x457110 ; sprintf("#0170龍捲風侵襲%s\n摧毀房屋一棟", buf)
+ * ```
+ *
+ * 名字取自地图表（`LandInfo.name` = 地块 `+4`、`FacilityInfo.name` = 設施 `+4`，
+ * `loaders/map.ts`），实体编码与原版同一套（`0x7d0 + id` / `0xfa0 + id`）。
+ *
+ * @returns 地名；编码越界 / 地图里没有这一处时返回 `null`（调用方退回旧口径）
+ */
+export function newsPlaceName(
+  topo: Pick<MapTopology, 'lands' | 'facilities'>,
+  entity: number,
+): string | null {
+  if (entity >= 0xfa0) {
+    const f = topo.facilities?.find((x) => x.id === entity - 0xfa0);
+    return f === undefined ? null : f.name;
+  }
+  const l = topo.lands?.find((x) => x.id === entity - 0x7d0);
+  return l === undefined ? null : l.name;
 }
 
 // ============================================================
@@ -1110,7 +1140,10 @@ export const eventBoxScreen: UiScreen = {
       (prev === null || prev.kind !== ev.kind || prev.id !== ev.id)
     ) {
       const who = after.players[after.currentPlayer];
-      const subject = eventSubject(before, after, after.currentPlayer);
+      // ★ 第十二份試玩回報：带着「挑中的那一处」的那几条新聞，`%s` = **地名**（见 `newsPlaceName`）
+      const placeName =
+        ev.kind === 'news' && ev.place !== undefined ? newsPlaceName(env.topo, ev.place.entity) : null;
+      const subject = placeName ?? eventSubject(before, after, after.currentPlayer);
       // ★ 新聞百分比类那四条：把引擎「先算好」的逐人金额配上角色名交给计划
       const shares = ev.shares?.map((s) => {
         const character = after.players[s.player]?.character ?? -1;
