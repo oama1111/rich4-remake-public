@@ -19,9 +19,12 @@ import { FACILITY_TOLL, MAGIC_HOUSE_TEXT, MESSAGE_BOX, RENT } from '@rich4/data'
 import { makeGameState, makePlayer, type GameState } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import type { UiScreenEnv, UiKeyEvent } from './ui-screen.ts';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   NOTICE_HOLD_MS,
+  NOTICE_SHIFT_X,
   NOTICE_TEXT,
+  queueLocalNotice,
   noticeBoxScreen,
   noticeBoxScreenState,
   noticeAfterSpeech,
@@ -38,6 +41,14 @@ import {
   setNoticeSpeechGate,
   setNoticeStartGate,
 } from './notice-box-screen.ts';
+
+const EXE = `${process.env.RICH4_WORKSPACE ?? ''}/Rich4/rich4.exe`;
+const runExe = existsSync(EXE) ? it : it.skip;
+const exeAt = (va: number, n: number): number[] => {
+  const d = readFileSync(EXE);
+  const off = 1024 + (va - 0x401000);
+  return [...d.subarray(off, off + n)];
+};
 
 // ============================================================
 //  文案
@@ -827,5 +838,74 @@ describe('★★ 第十四份：亮牌那一扇（`NoticeHint.card`）交给事�
     // 原版次序：台词 22（`0x0040f0ac call 0x44ef41`）→ 影片 → 开场白 → 丢卡 → 框
     expect(noticeAfterSpeech('god.lostCard')).toBe(true);
     expect(noticeAfterSpeech('god.gotCard')).toBe(false);
+  });
+
+  it('★ 2026-09-23：新补的那几扇文案逐字（格式串全在 `NOTICE_BOX`，逐字节对过 exe）', () => {
+    expect(noticeText({ key: 'npc.robBank', args: [30000, '約翰喬'] })).toBe('強盜搶奪銀行\n\n得款30000元\n\n給約翰喬！');
+    expect(noticeText({ key: 'stock.aiBuy', args: ['約翰喬', '中國信託', 100] })).toBe('約翰喬\n\n買進中國信託100張');
+    expect(noticeText({ key: 'bank.loanFrozen', args: [3] })).toBe('銀行暫停放款\n\n還剩3天！');
+    expect(noticeText({ key: 'bank.reserveShortfall', args: [30000, '沙隆巴斯'] })).toBe('銀行資金準備\n\n不足30000元\n\n由經營者沙隆巴斯墊付！');
+    expect(noticeText({ key: 'card.taxed', args: ['忍太郎', 20000] })).toBe('抽取忍太郎\n\n20000元稅金！');
+    expect(noticeText({ key: 'company.pickBuildSite', args: ['測試公司'] })).toBe('測試公司\n\n請選擇欲加蓋地點');
+    expect(noticeText({ key: 'stock.limitUpNoBuy', args: [] })).toBe('漲停無法買進！');
+    expect(noticeText({ key: 'stock.limitDownNoSell', args: [] })).toBe('跌停無法賣出！');
+  });
+});
+
+describe('★ 2026-09-23：時長带 bit31 的那一种 —— 整扇右移 100 @source 0x00440cef..0x00440d01', () => {
+  const recorder = (): { ctx: CanvasRenderingContext2D; translated: { x: number; y: number }[] } => {
+    const translated: { x: number; y: number }[] = [];
+    const ctx = {
+      save: () => undefined,
+      restore: () => undefined,
+      translate: (x: number, y: number) => translated.push({ x, y }),
+      drawImage: () => undefined,
+      fillRect: () => undefined,
+      strokeRect: () => undefined,
+      fillText: () => undefined,
+      strokeText: () => undefined,
+      measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
+      font: '',
+      textAlign: 'left',
+      textBaseline: 'top',
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 0,
+    } as unknown as CanvasRenderingContext2D;
+    return { ctx, translated };
+  };
+
+  it('core 交出来的 `shiftRight`（貸款屏的暫停放款）⇒ 平移多 100', async () => {
+    const { LAYOUT } = await import('./stage.ts');
+    const { ctx, translated } = recorder();
+    resetNoticeBoxScreen();
+    const env: UiScreenEnv = { ...fakeEnv(stateWith([]), 0), stage: ctx };
+    noticeBoxScreen.event!(stateWith([]), stateWith([{ key: 'bank.loanFrozen', args: [3], shiftRight: true }]), env);
+    noticeBoxScreen.draw(env);
+    expect(NOTICE_SHIFT_X).toBe(100);
+    expect(translated).toEqual([{ x: LAYOUT.board.x + 100, y: LAYOUT.board.y }]);
+  });
+
+  it('客户端自己弹的那一扇（股市柜台漲停）：`queueLocalNotice` 排进队、下一拍起播、1000 ms、右移', async () => {
+    const { LAYOUT } = await import('./stage.ts');
+    const { ctx, translated } = recorder();
+    resetNoticeBoxScreen();
+    queueLocalNotice({ key: 'stock.limitUpNoBuy', args: [], holdMs: 1000, shiftRight: true });
+    const env: UiScreenEnv = { ...fakeEnv(stateWith([]), 5), stage: ctx };
+    expect(noticeBoxScreen.active(env)).toBe(true);
+    noticeBoxScreen.tick!(env);
+    expect(noticeBoxScreenState().playback).toMatchObject({ text: '漲停無法買進！', holdMs: 1000, shiftRight: true });
+    noticeBoxScreen.draw(env);
+    expect(translated).toEqual([{ x: LAYOUT.board.x + 100, y: LAYOUT.board.y }]);
+    resetNoticeBoxScreen();
+  });
+
+  runExe('exe：`0x0042af18 push 0x800003e8` / `0x0042b04b push 0x800003e8` / `0x004351ee push 0x800005dc`', () => {
+    expect(exeAt(0x0042af18, 5)).toEqual([0x68, 0xe8, 0x03, 0x00, 0x80]);
+    expect(exeAt(0x0042b04b, 5)).toEqual([0x68, 0xe8, 0x03, 0x00, 0x80]);
+    expect(exeAt(0x004351ee, 5)).toEqual([0x68, 0xdc, 0x05, 0x00, 0x80]);
+    // 0x440cfd add dword [esp], 0x64 / 0x440d01 add dword [esp+8], 0x64
+    expect(exeAt(0x00440cfd, 4)).toEqual([0x83, 0x04, 0x24, 0x64]);
+    expect(exeAt(0x00440d01, 5)).toEqual([0x83, 0x44, 0x24, 0x08, 0x64]);
   });
 });

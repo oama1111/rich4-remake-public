@@ -111,6 +111,8 @@ export interface TaxResult {
   defended: boolean;
   hostilityDelta: number;
   players: Player[];
+  /** 实际被查的人（嫁祸之后的 `ebx`）—— 「抽取%s\n\n%d元稅金！」那扇框的 `%s`；被免费卡挡下时是原目标 */
+  victim?: number;
 }
 
 /**
@@ -256,6 +258,7 @@ export function applyTaxCard(
     error: null,
     tax: tax2, // 实际转移的金额
     defended: false,
+    victim: finalIndex,
     hostilityDelta,
     // ⚠️ 敌意 `tax/100` 用的是**最初**那个 `tax`（`@source 0x004452fa`，在嫁祸之前），
     //    故上面那个字段保持不动。

@@ -67,6 +67,7 @@
  */
 
 import {
+  BAIL,
   BANK,
   BLESSING,
   CONFINEMENT,
@@ -75,6 +76,8 @@ import {
   INSURANCE,
   MAGIC_HOUSE_TEXT,
   MESSAGE_BOX,
+  NOTICE,
+  NOTICE_BOX,
   PASSIVE_CARD_TEXT,
   RENT,
   SHOP,
@@ -180,6 +183,35 @@ export const NOTICE_TEXT = {
   'card.use': PASSIVE_CARD_TEXT.use.text,
   'card.scapegoatOn': PASSIVE_CARD_TEXT.scapegoatOn.text,
   'card.scapegoatTo': PASSIVE_CARD_TEXT.scapegoatTo.text,
+  // ★ 2026-09-23 框模板反查补齐（`0x440cac` 调用点里先前没弹的那些；VA 见 `NOTICE_BOX` 各条）
+  'npc.stealPoints': NOTICE_BOX.stealPoints.text,
+  'npc.stealCard': NOTICE_BOX.stealCard.text,
+  'npc.robBank': NOTICE_BOX.robBank.text,
+  'npc.protection': NOTICE_BOX.protection.text,
+  'npc.spyToll': NOTICE_BOX.spyToll.text,
+  'npc.spySurplus': NOTICE_BOX.spySurplus.text,
+  'company.noTravel': NOTICE_BOX.noTravel.text,
+  'company.pickBuildSite': NOTICE.pickBuildSite.text,
+  'research.done': NOTICE_BOX.researchDone.text,
+  'shares.becameBoss': NOTICE_BOX.becameBoss.text,
+  'shares.becameChairman': NOTICE_BOX.becameChairman.text,
+  'stock.aiBuy': NOTICE_BOX.aiBuyStock.text,
+  'stock.aiSell': NOTICE_BOX.aiSellStock.text,
+  'stock.limitUpNoBuy': NOTICE_BOX.limitUpNoBuy.text,
+  'stock.limitDownNoSell': NOTICE_BOX.limitDownNoSell.text,
+  'bank.loanFrozen': NOTICE_BOX.loanFrozen.text,
+  'bank.aiBorrow': NOTICE_BOX.aiBorrow.text,
+  'bank.reserveShortfall': NOTICE_BOX.reserveShortfall.text,
+  'bank.chairmanChanged': NOTICE_BOX.bankChairmanChanged.text,
+  'bank.forcedSpecialRepay': NOTICE_BOX.forcedSpecialRepay.text,
+  'bail.prison': BAIL.bailWho.text,
+  'bail.hospital': NOTICE_BOX.bailWhoHospital.text,
+  'land.cashShort': NOTICE.cashShort.text,
+  'card.cashShort': NOTICE_BOX.cardCashShort.text,
+  'card.robbed': NOTICE_BOX.robbed.text,
+  'card.useOnStock': NOTICE_BOX.useOnStock.text,
+  'card.taxed': NOTICE_BOX.taxed.text,
+  'tool.aiUse': NOTICE_BOX.aiUseTool.text,
 } as const satisfies Record<NoticeKey, string>;
 
 /** 一条 `{ key, args }` 提示 → 屏上那一句（`%s` / `%d` 全在 `args` 里） */
@@ -203,10 +235,23 @@ export interface NoticePlayback {
   at: number;
   /** 这一扇停留多久（ms）—— 原版每扇框各自 `push` 一个时长 */
   holdMs: number;
+  /** 时长参数带 bit31 ⇒ 整扇框右移 `NOTICE_SHIFT_X`（见 core 的 `NoticeHint.shiftRight`）*/
+  shiftRight?: boolean;
 }
 
-export function noticePlaybackStart(text: string, now: number, holdMs: number = NOTICE_HOLD_MS): NoticePlayback {
-  return { text, at: now, holdMs };
+/**
+ * 时长参数带 `0x80000000` 时整扇框（框皮与字）右移的距离。
+ * @source `0x00440cfd add dword [esp], 0x64` / `0x00440d01 add dword [esp+8], 0x64`
+ */
+export const NOTICE_SHIFT_X = 0x64;
+
+export function noticePlaybackStart(
+  text: string,
+  now: number,
+  holdMs: number = NOTICE_HOLD_MS,
+  shiftRight = false,
+): NoticePlayback {
+  return shiftRight ? { text, at: now, holdMs, shiftRight: true } : { text, at: now, holdMs };
 }
 
 /** 走一帧；该关屏了返回 `null` */
@@ -231,6 +276,8 @@ interface QueuedNotice {
   afterSpeech: boolean;
   /** ★ 第十四份：这一扇是亮牌（`NoticeHint.card`）—— 交给事件提示框播 */
   card?: number;
+  /** 右移 100 的那一种（`NoticeHint.shiftRight`）*/
+  shiftRight?: boolean;
 }
 
 /**
@@ -396,7 +443,7 @@ function startNext(env: UiScreenEnv): void {
   playingBeforeFilms = item.beforeFilms;
   playingAfterMs = item.afterMs;
   playingKey = item.key;
-  playback = noticePlaybackStart(item.text, env.now, item.holdMs);
+  playback = noticePlaybackStart(item.text, env.now, item.holdMs, item.shiftRight === true);
   env.log(`付费訊息框：${item.key}`);
   // ★ 第十四份：亮牌那一扇交给事件提示框（它排在本屏之前，接管画面与点击）；本屏只等它收
   if (item.card !== undefined && cardPopup !== null) {
@@ -451,7 +498,8 @@ export const noticeBoxScreen: UiScreen = {
     //   而 `UiScreenEnv.stage` 是整块 640×480 —— 不平移就会画到屏幕 y = −1 上去。
     //   股市屏那扇填数窗就是同一处理（`main.ts` 的 `save/translate/drawDialog`）。
     env.stage.save();
-    env.stage.translate(LAYOUT.board.x, LAYOUT.board.y);
+    // ★ 2026-09-23：`0x80000000` 那一种整扇右移 100（股市柜台的漲停 / 跌停、貸款屏的暫停放款）
+    env.stage.translate(LAYOUT.board.x + (p.shiftRight === true ? NOTICE_SHIFT_X : 0), LAYOUT.board.y);
     drawDialog(env.stage, env.sprite, noticeUi(p.text), null, null);
     env.stage.restore();
   },
@@ -550,6 +598,7 @@ export const noticeBoxScreen: UiScreen = {
         afterMs: n.afterMs ?? 0,
         afterSpeech: noticeAfterSpeech(n.key),
         ...(n.card === undefined ? {} : { card: n.card }),
+        ...(n.shiftRight === true ? { shiftRight: true } : {}),
       });
     }
     // ★ 第十三份試玩回報 #2：排在台词之后的那几扇**不在这一拍起播** —— 同一条 action 的台词
@@ -559,6 +608,23 @@ export const noticeBoxScreen: UiScreen = {
     env.requestRender();
   },
 };
+
+/**
+ * ★ 2026-09-23：**客户端自己**弹的那一扇（不经 core）—— 股市柜台是纯表现层的屏，
+ *   「漲停無法買進！」/「跌停無法賣出！」（`0x0042af23`，`0x800003e8`）原版就是那一屏自己弹的，
+ *   core 并不知道玩家点了一下。排到队尾，下一拍 `tick` 起播（`active()` 因队列非空而为真）。
+ */
+export function queueLocalNotice(n: NoticeHint): void {
+  pending.push({
+    key: n.key,
+    text: noticeText(n),
+    holdMs: n.holdMs ?? NOTICE_HOLD_MS,
+    beforeFilms: false,
+    afterMs: 0,
+    afterSpeech: false,
+    ...(n.shiftRight === true ? { shiftRight: true } : {}),
+  });
+}
 
 /** 给单测的只读视图 */
 export function noticeBoxScreenState(): {

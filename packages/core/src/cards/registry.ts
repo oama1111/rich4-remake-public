@@ -83,7 +83,9 @@ export type UseCardError =
   | 'nothingToRob'
   | 'landNotFound'
   | 'notStandingOnLand'
-  | 'marketClosed';
+  | 'marketClosed'
+  /** 購地卡：现金不够（原版弹「您的現金不足！」`0x004425fb`，卡不扣）*/
+  | 'notEnoughCash';
 
 /** 卡片使用的结果 */
 export interface UseCardResult {
@@ -132,6 +134,11 @@ export interface UseCardResult {
   hostilityDeltas: HostilityDelta[];
   /** 是否被防御性被动卡挡下 */
   defended: boolean;
+  /**
+   * 查稅卡真的收到税（没被免费卡挡下）时：被查的人与税额 ——
+   * 「抽取%s\n\n%d元稅金！」那扇框（`0x004453ef`）要用，调用方弹。
+   */
+  taxed?: { victim: number; amount: number };
   /**
    * 本次要送回物件表的物件 handle（下标 + 1）。
    *
@@ -426,6 +433,7 @@ export function useCard(
   const respawns: { partner: number; nearNode: number }[] = [];
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
+  let taxed: { victim: number; amount: number } | undefined;
   let releasedObjects: number[] = [];
   // ★ 拍賣那一条是**开拍请求**（AuctionRequest）：座位/心理价位等由 reduce 补齐
   let followUp: PendingInteraction | AuctionRequest | null = null;
@@ -627,6 +635,7 @@ export function useCard(
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       defended = r.defended;
+      if (!r.defended && r.victim !== undefined && r.victim !== cur) taxed = { victim: r.victim, amount: r.tax };
       hostilityDeltas = [{ from: targetPlayer, to: cur, delta: r.hostilityDelta }];
       break;
     }
@@ -731,7 +740,8 @@ export function useCard(
       const here = standingLand(ctx, cur);
       if (here === null || here.land === null) return fail('notStandingOnLand');
       const r = applyBuyLandCard(here.node.type, here.land, me, ctx.priceIndex);
-      if (!r.ok) return fail('noEffect');
+      // @source `0x004423b5 cmp edi, [現金] / jg 0x4425f1`：只差现金那一支弹「您的現金不足！」（卡不扣）
+      if (!r.ok) return fail(r.reason === 'notEnoughCash' ? 'notEnoughCash' : 'noEffect');
       // @source push 0 / push edi(成交价) / push esi(原地主) / push current / call 0x41d2c6
       //   flags = 0 → 付款方**先扣现金**，收款方进**银行存款**
       const pay = transferMoney(players, [], 0, cur, r.previousOwner, r.price, 0);
@@ -1035,5 +1045,5 @@ export function useCard(
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
   // ★ 走到这里 = 原版返回非 0（成功）：效果已落地，卡已被扣
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset, ...(taxed === undefined ? {} : { taxed }) };
 }

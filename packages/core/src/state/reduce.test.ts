@@ -704,6 +704,8 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     };
     const asked = reduce(s, { type: 'settle' }, topo);
     expect(asked.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: true });
+    // ★ 2026-09-23：真人选地之前先弹「%s\n\n請選擇欲加蓋地點」（`0x0041acf7`，`%s` = 企業名）
+    expect(asked.notices).toEqual([{ key: 'company.pickBuildSite', args: ['測試公司'] }]);
     const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
     expect(done.landLevel[1]).toBe(5);
     expect(done.lastBuildUpgrades).toEqual([

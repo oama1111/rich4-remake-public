@@ -358,6 +358,7 @@ import {
   setNoticeOverlayGate,
   setNoticeSpeechGate,
   setNoticeStartGate,
+  queueLocalNotice,
 } from './notice-box-screen.ts';
 // ★ 第十三份試玩回報 #1：顯靈加蓋那一格等「顯靈框」收掉才画成新等级（两次重画、两声音效 50）
 import {
@@ -1525,7 +1526,11 @@ function stockTrade(kind: 'buy' | 'sell'): void {
   const status = stockStatus(st.openPrice, st.price);
   if (kind === 'buy') {
     if (status === STOCK_STATUS.limitUp) {
-      log(`▶ ${STOCK_NO_BUY}`); // @source 串 0x464088
+      // ★ 2026-09-23：原版弹訊息框「漲停無法買進！」—— `0x0042af18 push 0x800003e8` / `0x0042af1d mov eax,0x464088`
+      //   / `0x0042af23 call 0x440cac`：**1000 ms、整扇右移 100**（bit31）。先前只写了一行日志。
+      log(`▶ ${STOCK_NO_BUY}`);
+      queueLocalNotice({ key: 'stock.limitUpNoBuy', args: [], holdMs: 1000, shiftRight: true });
+      requestRender();
       return;
     }
     // 上限 = min(流通量, 存款 ÷ 股价) @source `loc_0042af30`
@@ -1535,12 +1540,17 @@ function stockTrade(kind: 'buy' | 'sell'): void {
     if (max <= 0) return;
     stockAmount = { kind: 'buy', stock: row, max };
   } else {
-    if (status === STOCK_STATUS.limitDown) {
-      log(`▶ ${STOCK_NO_SELL}`); // @source 串 0x464097
-      return;
-    }
+    // ★ 次序照原版：先看有没有持股（`0x0042b019 cmp [持股], 0 / je 退`），再看跌停 —— 没持股就连框都不弹
     const held = state.holdings[state.currentPlayer]?.[row]?.amount ?? 0;
     if (held <= 0) return;
+    if (status === STOCK_STATUS.limitDown) {
+      // ★ 2026-09-23：「跌停無法賣出！」—— `0x0042b04b push 0x800003e8` / `0x0042b050 mov eax,0x464097`
+      //   / `jmp 0x42af22`（与漲停同一处 `call 0x440cac`）：1000 ms、右移 100
+      log(`▶ ${STOCK_NO_SELL}`);
+      queueLocalNotice({ key: 'stock.limitDownNoSell', args: [], holdMs: 1000, shiftRight: true });
+      requestRender();
+      return;
+    }
     stockAmount = { kind: 'sell', stock: row, max: held };
   }
   amountPage = { choice: 0, value: AMOUNT_INITIAL };

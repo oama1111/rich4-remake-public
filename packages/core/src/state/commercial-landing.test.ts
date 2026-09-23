@@ -166,6 +166,23 @@ describe('★ 上市企业落点', () => {
     expect(after.pending).toBeNull();
   });
 
+  have('★ 2026-09-23：買下之后**易主**（`0x4294d5` 返回 1）⇒ 弹「恭喜您獲得經營權！」/ 門派「恭喜您成為幫主！」@source 0x0041d2aa', () => {
+    const { state, topo } = landOnCommercial();
+    if (state.pending === null || state.pending.kind !== 'buyShares') throw new Error('没拿到待决交互');
+    const cid = state.market.stocks[state.pending.stock]!.commercialIndex;
+    const before = state.commercialOwners[cid]?.owner ?? 0;
+    const after = reduce(state, { type: 'buyShares', shares: 10 }, topo);
+    const owner = after.commercialOwners[cid]?.owner ?? 0;
+    const type = topo.commercials?.find((c) => c.id === cid)?.type;
+    const want = owner === before ? [] : [{ key: type === 0xc ? 'shares.becameBoss' : 'shares.becameChairman', args: [] }];
+    expect(owner, '这一条要真的易主才有鉴别力').not.toBe(before);
+    expect((after.notices ?? []).filter((n) => n.key.startsWith('shares.'))).toEqual(want);
+    // 再买一次：已经是老板 ⇒ 不再弹
+    const input = { ...after, pending: state.pending };
+    const again = reduce(input, { type: 'buyShares', shares: 1 }, topo);
+    expect(again.notices).toBe(input.notices); // 没有新弹的框（引用没变 = 客户端不起播）
+  });
+
   have('买超过企业余量会被拒', () => {
     const { state, topo } = landOnCommercial();
     if (state.pending === null || state.pending.kind !== 'buyShares') {

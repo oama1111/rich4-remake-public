@@ -242,6 +242,8 @@ describe('★ 強盜踩銀行', () => {
     expect(w.events).toEqual([
       { kind: 'robBank', from: 1, amount: 10_000 },
       { kind: 'robBank', from: 2, amount: 20_000 },
+      // ★ 2026-09-23：循环走完无条件弹一扇（`0x0041c415`），得款 = 各笔之和
+      { kind: 'robBankDone', total: 30_000 },
     ]);
 
     // ★ 搶銀行那笔**進現金**（@source `push 5`，bit0 = 進現金）
@@ -261,7 +263,10 @@ describe('★ 強盜踩銀行', () => {
     const s = makeGameState({ players });
     const w = runNpc(NPC.robber, releaseNpc(1, 1, 5), s, map, line, rng());
     // 0 号存款为零（抢不到），1 号是主人（不抢），只剩 2 号
-    expect(w.events).toEqual([{ kind: 'robBank', from: 2, amount: 20_000 }]);
+    expect(w.events).toEqual([
+      { kind: 'robBank', from: 2, amount: 20_000 },
+      { kind: 'robBankDone', total: 20_000 },
+    ]);
   });
 });
 
