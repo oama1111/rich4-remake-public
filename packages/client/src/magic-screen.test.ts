@@ -70,6 +70,9 @@ import {
   magicScreenState,
   magicViewOfSpin,
   resetMagicScreen,
+  followPresenterDone,
+  magicCaster,
+  presenterMovedOn,
   magicPlaybackTick,
   magicSpinDone,
   magicSpinStart,
@@ -494,6 +497,63 @@ function startPlayback(animation = true): FakeEnv {
   f.logs.length = 0;
   return f;
 }
+
+describe('★★ 第十二份試玩回報：联机旁观 —— 施法者那台收场，本台跟着收场', () => {
+  // 回报 `20260923-013618309`：「2个真人玩家时，触发魔法屋的玩家结束魔法屋回合，
+  //   另一个真人玩家还在魔法屋里不会自动出去」。施法者的点选不是 action，旁观端只能自己
+  //   把转盘走满；施法者 01:35:37 就收场了，旁观端到 01:36:00 才出来。
+
+  it('判据：别人的魔法屋 + 队首是施法者派的下一条 ⇒ 真', () => {
+    expect(presenterMovedOn(1, 0, 1)).toBe(true);
+    // 未入座（纯旁观）也照样跟
+    expect(presenterMovedOn(1, null, 1)).toBe(true);
+  });
+
+  it('判据：自己的魔法屋 / 队首不是施法者派的 / 没在播 ⇒ 假', () => {
+    // 自己的：自己的回合驱动本来就等着它
+    expect(presenterMovedOn(0, 0, 0)).toBe(false);
+    // 施法者还没派下一条（队首是别人的，例如服务器替电脑出的那一串还在他之前）
+    expect(presenterMovedOn(1, 0, 2)).toBe(false);
+    expect(presenterMovedOn(null, 0, 1)).toBe(false);
+  });
+
+  it('播放中报出施法者；没在播为 null', () => {
+    resetMagicScreen();
+    expect(magicCaster()).toBeNull();
+    startPlayback(true);
+    expect(magicCaster()).toBe(0);
+    resetMagicScreen();
+  });
+
+  it('★ 跟着收场 = 直接进最后一拍（hold，落点对准结果），`MAGIC_HOLD_MS` 后自己关屏', () => {
+    const f = startPlayback(true); // 还在入口三句
+    expect(magicScreenState().phase).toBe('greet');
+    const env = { ...f.env, now: 1000 } as typeof f.env;
+    expect(followPresenterDone(env)).toBe(true);
+    const st = magicScreenState();
+    expect(st.phase).toBe('hold');
+    expect(st.pointer).toBe(3); // 夹具的效果落点 id = 3
+    expect(f.logs).toContain('魔法屋：施法者已收場，跟著收場');
+    // 没到点不关
+    magicScreen.tick!({ ...f.env, now: 1000 + MAGIC_HOLD_MS - 1 } as typeof f.env);
+    expect(magicScreenState().playing).toBe(true);
+    magicScreen.tick!({ ...f.env, now: 1000 + MAGIC_HOLD_MS } as typeof f.env);
+    expect(magicScreenState().playing).toBe(false);
+    resetMagicScreen();
+  });
+
+  it('已经在 hold / 没在播 ⇒ 不动（不把 hold 的计时往后推）', () => {
+    const f = startPlayback(false);
+    magicScreen.down!(MAGIC_RING_AT[0]!.x, MAGIC_RING_AT[0]!.y, { ...f.env, now: 500 } as typeof f.env);
+    expect(magicScreenState().phase).toBe('hold');
+    expect(followPresenterDone({ ...f.env, now: 1400 } as typeof f.env)).toBe(false);
+    // hold 仍按 500 起算
+    magicScreen.tick!({ ...f.env, now: 500 + MAGIC_HOLD_MS } as typeof f.env);
+    expect(magicScreenState().playing).toBe(false);
+    expect(followPresenterDone(f.env)).toBe(false);
+    resetMagicScreen();
+  });
+});
 
 describe('★★ 一圈每一项都点得到（`down` 不再吞点击）', () => {
   it('★★ 十二个中心逐个点：报告出这一项的名字、hover 落在本格、且状态推进到 hold', () => {

@@ -81,3 +81,13 @@ describe('第十二份試玩回報：中途进房静默追上', () => {
     expect(awaitingFn).toContain('if (client.catchingUp) return;');
   });
 });
+
+describe('第十二份試玩回報：旁观别人的魔法屋，施法者收场本台跟着收场', () => {
+  it('★ 收件箱每一拍（在节拍闸之前）问一次「施法者那台演完了没」', () => {
+    const check = pump.indexOf('presenterMovedOn(magicCaster(), net?.seat ?? null, actingSeat(state))');
+    expect(check).toBeGreaterThan(0);
+    expect(pump).toContain('followPresenterDone(uiEnv());');
+    // 必须在 `holdForActorWalk` 之前：魔法屋正占着屏，节拍闸会一直挡着
+    expect(check).toBeLessThan(pump.indexOf('holdForActorWalk('));
+  });
+});
