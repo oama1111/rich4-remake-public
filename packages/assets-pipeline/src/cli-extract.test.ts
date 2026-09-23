@@ -110,7 +110,7 @@ describe('★ Q-GND-4：groundAsset 产出可直接进清单的一条', () => {
     const g = decodeGround(data);
 
     expect({ w: png.width, h: png.height }).toEqual({ w: g.width, h: g.height });
-    // 整幅逐字节 —— 走 PNG 往返（encodePng 是 store 模式，无损）
+    // 整幅逐字节 —— 走 PNG 往返（encodePng 无损）
     expect([...png.rgba]).toEqual([...g.rgba]);
     // 顺带确认排布表在 PNG 里也生效了（不是「碰巧全同色」）
     expect(gridRgb(png, 0, 0)).toEqual([0, 0, 255]);

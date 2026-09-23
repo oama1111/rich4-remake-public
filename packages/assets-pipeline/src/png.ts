@@ -10,32 +10,56 @@
  * 全是纯 Uint8Array 运算，两边都跑得。
  */
 
-import { inflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 import type { DecodedImage } from './sprite.ts';
 
 /**
  * 编码为 PNG。
  *
  * 手写实现以保持 assets-pipeline 的零依赖（避免为一个编码器引入整条图像库链）。
- * 使用 zlib 的 store 模式（不压缩）加 CRC32，产出体积偏大但完全合规，
- * 后续如需压缩可在此替换。
+ * 逐行按「绝对值和最小」挑 filter（None/Sub/Up/Average/Paeth，libpng 的默认启发式），
+ * 再交给 `node:zlib` 的 deflate（level 9）。
+ *
+ * ⚠️ 先前是 zlib **store**（不压缩）：超分产物是原图的 16 倍像素，一轮 4× 能到几十 GB，
+ *   网页档（`tier`）更是直接上线的体积 —— 压缩后通常只剩 1/3～1/10。像素逐字节不变（无损）。
  */
 export function encodePng(img: DecodedImage): Uint8Array {
   const { width, height, rgba } = img;
+  const stride = width * 4;
 
-  // 每行前置 1 字节 filter type (0 = None)
-  const raw = new Uint8Array(height * (1 + width * 4));
+  // 每行前置 1 字节 filter type
+  const raw = new Uint8Array(height * (1 + stride));
+  const cand = [0, 1, 2, 3, 4].map(() => new Uint8Array(stride));
   for (let y = 0; y < height; y++) {
-    const src = y * width * 4;
-    const dst = y * (1 + width * 4);
-    raw[dst] = 0;
-    raw.set(rgba.subarray(src, src + width * 4), dst + 1);
+    const cur = rgba.subarray(y * stride, (y + 1) * stride);
+    const prev = y > 0 ? rgba.subarray((y - 1) * stride, y * stride) : null;
+    let best = 0;
+    let bestScore = Infinity;
+    for (let f = 0; f < 5; f++) {
+      const out = cand[f]!;
+      let score = 0;
+      for (let i = 0; i < stride; i++) {
+        const a = i >= 4 ? cur[i - 4]! : 0;
+        const b = prev !== null ? prev[i]! : 0;
+        const c = prev !== null && i >= 4 ? prev[i - 4]! : 0;
+        const v = (cur[i]! - filterPredict(f, a, b, c)) & 0xff;
+        out[i] = v;
+        score += v < 128 ? v : 256 - v;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = f;
+      }
+    }
+    const dst = y * (1 + stride);
+    raw[dst] = best;
+    raw.set(cand[best]!, dst + 1);
   }
 
   const chunks: Uint8Array[] = [
     new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     pngChunk('IHDR', ihdr(width, height)),
-    pngChunk('IDAT', zlibStore(raw)),
+    pngChunk('IDAT', new Uint8Array(deflateSync(raw, { level: 9 }))),
     pngChunk('IEND', new Uint8Array(0)),
   ];
 
@@ -73,33 +97,25 @@ function pngChunk(type: string, data: Uint8Array): Uint8Array {
   return out;
 }
 
-/** zlib 容器 + deflate 的 stored（未压缩）块 */
-function zlibStore(data: Uint8Array): Uint8Array {
-  const MAX = 0xffff;
-  const nBlocks = Math.max(1, Math.ceil(data.length / MAX));
-  const out = new Uint8Array(2 + nBlocks * 5 + data.length + 4);
-  let at = 0;
-  out[at++] = 0x78; // CMF: deflate, 32K window
-  out[at++] = 0x01; // FLG
-
-  for (let i = 0; i < nBlocks; i++) {
-    const start = i * MAX;
-    const len = Math.min(MAX, data.length - start);
-    out[at++] = i === nBlocks - 1 ? 1 : 0; // BFINAL
-    out[at++] = len & 0xff;
-    out[at++] = (len >> 8) & 0xff;
-    out[at++] = ~len & 0xff;
-    out[at++] = (~len >> 8) & 0xff;
-    out.set(data.subarray(start, start + len), at);
-    at += len;
+/** PNG filter 的预测值（a = 左、b = 上、c = 左上）@see PNG 规范 §9.2 */
+function filterPredict(f: number, a: number, b: number, c: number): number {
+  switch (f) {
+    case 1:
+      return a;
+    case 2:
+      return b;
+    case 3:
+      return (a + b) >> 1;
+    case 4: {
+      const p = a + b - c;
+      const pa = Math.abs(p - a);
+      const pb = Math.abs(p - b);
+      const pc = Math.abs(p - c);
+      return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+    }
+    default:
+      return 0;
   }
-
-  const a = adler32(data);
-  out[at++] = (a >>> 24) & 0xff;
-  out[at++] = (a >>> 16) & 0xff;
-  out[at++] = (a >>> 8) & 0xff;
-  out[at++] = a & 0xff;
-  return out.subarray(0, at);
 }
 
 let crcTable: Uint32Array | null = null;
@@ -119,15 +135,6 @@ function crc32(data: Uint8Array): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-function adler32(data: Uint8Array): number {
-  let a = 1;
-  let b = 0;
-  for (let i = 0; i < data.length; i++) {
-    a = (a + data[i]!) % 65521;
-    b = (b + a) % 65521;
-  }
-  return ((b << 16) | a) >>> 0;
-}
 
 // ============================================================
 //  PNG 解码 —— encodePng 的逆运算，供切片/回填读图
@@ -144,8 +151,8 @@ const COLOR_TYPE_BPP: Record<number, number> = { 0: 1, 2: 3, 4: 2, 6: 4 };
  * 解码 PNG → RGBA8888。
  *
  * 支持非交错的 8bit 灰度/RGB/灰度+Alpha/RGBA，五种 scanline filter
- * 全部还原（自己 encodePng 的产物恒为 filter 0 + zlib store，
- * 但外部超分工具回传的图会用真压缩与各类 filter，必须都能读）。
+ * 全部还原（自己 encodePng 的产物也逐行选 filter + deflate，
+ * 外部超分工具回传的图同样各式各样，必须都能读）。
  *
  * 锚点无处可得（PNG 不存），恒为 0/0——锚点以 manifest 为准。
  */

@@ -156,10 +156,30 @@ export function taskIdOf(e: { archive: string; resource: number; image: number }
   return `${e.archive}/${String(e.resource).padStart(4, '0')}_${String(e.image).padStart(3, '0')}`;
 }
 
-/** 由素材清单生成超分任务列表 */
+/** 同一资源（档案 + 资源号）的分组键 —— 帧数统计与整组拼图都按它分 */
+export function resourceKeyOf(e: { archive: string; resource: number }): string {
+  return `${e.archive}/${String(e.resource).padStart(4, '0')}`;
+}
+
+/**
+ * 由素材清单生成超分任务列表。
+ *
+ * ★ 条目没带 `frames` 时，按**同一资源在清单里有几张图**现数出来。
+ *   `cli-extract` 从来不写 `frames`，于是先前 `toClassifyEntry` 一律按 1 计，
+ *   分类器的「帧数 > 1 → sprite」那条规则在真实数据上**一次都没命中过**——
+ *   8591 张 Data 精灵帧、3099 张 FLIC 影片帧全被归成 `ui`，建议模型也跟着错。
+ *   现数的口径与 extract 的落盘一致：一个资源 = 一张 sprite sheet / 一段影片。
+ */
 export function planUpscale(entries: readonly AssetEntryLike[]): UpscaleTask[] {
+  const frameCounts = new Map<string, number>();
+  for (const e of entries) {
+    const k = resourceKeyOf(e);
+    frameCounts.set(k, (frameCounts.get(k) ?? 0) + 1);
+  }
   return entries.map((e) => {
     const { batch, scale } = classify(e.width, e.height);
+    // 显式给了 frames 就尊重它（测试夹具、将来 extract 自己写）
+    const counted = e.frames === undefined ? { ...e, frames: frameCounts.get(resourceKeyOf(e)) ?? 1 } : e;
     return {
       id: taskIdOf(e),
       archive: e.archive,
@@ -171,11 +191,52 @@ export function planUpscale(entries: readonly AssetEntryLike[]): UpscaleTask[] {
       srcAnchorX: e.anchorX,
       srcAnchorY: e.anchorY,
       format: e.format,
-      category: classifyAsset(toClassifyEntry(e)),
+      category: classifyAsset(toClassifyEntry(counted)),
       scale,
       batch,
     };
   });
+}
+
+// ============================================================
+//  ingest 的产物定位（W-80 §4.7）
+// ============================================================
+
+/**
+ * `ingest` 在 hd 目录里找到的一张产物：
+ *   · `canonical` —— 已经在 `hdRelativePath`（client 读的那个名字），原地记账；
+ *   · `legacy`    —— 按素材原名（`task.input`，如 `Data/0000_000.png`）放进来的，
+ *                    **先挪到** `hdRelativePath` 再记账；
+ *   · `absent`    —— 两处都没有。
+ */
+export type IngestLocation =
+  | { kind: 'canonical'; rel: string }
+  | { kind: 'legacy'; from: string; to: string }
+  | { kind: 'absent' };
+
+/**
+ * 找一条任务的 ingest 产物。
+ *
+ * ⚠️ 这就是 W-80 §4.7 那个 bug 的修法：旧 `ingest` 只认 `<hd>/<task.input>`，
+ *   而 client 拉的是 `<hd>/<hdRelativePath>`（`Data/0-0.png`）—— 回填成功、记账成功，
+ *   游戏里却**一张都用不上**（静默回退原图，与 `hdRelativePath` 注释里说的症状一模一样）。
+ *
+ * ★ 两处都有时认**旧名**那份：旧名文件只可能是用户新放进来的（上一轮 ingest 已经把它
+ *   挪走了），它比 canonical 那份新。挪过去即覆盖，于是重跑幂等 —— 第二轮只剩 canonical。
+ *
+ * @param exists 相对 hd 目录的路径是否存在（CLI 传 fs，测试传集合）
+ */
+export function locateIngestOutput(
+  task: Pick<UpscaleTask, 'archive' | 'resource' | 'image' | 'input'>,
+  exists: (rel: string) => boolean,
+): IngestLocation {
+  const canonical = hdRelativePath(task.archive, task.resource, task.image);
+  const legacy = task.input.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (legacy !== '' && legacy !== canonical && exists(legacy)) {
+    return { kind: 'legacy', from: legacy, to: canonical };
+  }
+  if (exists(canonical)) return { kind: 'canonical', rel: canonical };
+  return { kind: 'absent' };
 }
 
 // ============================================================

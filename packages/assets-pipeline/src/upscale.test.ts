@@ -10,8 +10,10 @@ import {
   classify,
   emptyManifest,
   hdRelativePath,
+  locateIngestOutput,
   pendingTasks,
   planUpscale,
+  resourceKeyOf,
   recordResult,
   scaleAnchor,
   summarize,
@@ -204,8 +206,9 @@ describe('★ 真实素材清单', () => {
     const s = summarize(tasks);
     // 绝大多数是小图——中位面积约 4000 px
     expect(s['small']!.count).toBeGreaterThan(tasks.length / 2);
-    // 大图很少
-    expect(s['large']?.count ?? 0).toBeLessThan(100);
+    // 大图很少 —— 影片帧除外：jump 的过场全是 640×480、Data 的特效多是 440×440，
+    // 重新解包（FLIC 接进来之后）那 2500 多帧都落 large
+    expect(tasks.filter((t) => t.batch === 'large' && t.format !== 'FLIC').length).toBeLessThan(100);
 
     // id 全局唯一，否则回填时会互相覆盖
     expect(new Set(tasks.map((t) => t.id)).size).toBe(tasks.length);
@@ -218,5 +221,78 @@ describe('★ 真实素材清单', () => {
       expect(Number.isInteger(t.srcAnchorX)).toBe(true);
       expect(Number.isInteger(t.srcAnchorY)).toBe(true);
     }
+  });
+
+  run('★ FLIC / GND（重新解包之后才有）：影片帧按动画归 sprite 或全屏 background，底图归 tile', () => {
+    const m = JSON.parse(readFileSync(MANIFEST, 'utf8')) as { images: AssetEntryLike[] };
+    const tasks = planUpscale(m.images);
+    const flic = tasks.filter((t) => t.format === 'FLIC');
+    const gnd = tasks.filter((t) => t.format === 'GND');
+    if (flic.length === 0 && gnd.length === 0) return; // 旧的 assets-clean：还没有这两种
+    for (const t of flic) {
+      expect(t.category === 'sprite' || t.category === 'background' || t.category === 'ui').toBe(true);
+      if (t.archive !== 'Panel') expect(t.category).not.toBe('ui');
+      expect(t.scale).toBe(4);
+    }
+    for (const t of gnd) expect({ category: t.category, batch: t.batch }).toEqual({ category: 'tile', batch: 'large' });
+  });
+});
+
+describe('★ 帧数现数（extract 不写 frames，分类器的「多帧 → sprite」先前从没命中过）', () => {
+  it('同一资源多张图 → sprite；单张 → 不受影响', () => {
+    const tasks = planUpscale([
+      entry({ resource: 7, image: 0, file: 'Data/0007_000.png' }),
+      entry({ resource: 7, image: 1, file: 'Data/0007_001.png' }),
+      entry({ resource: 8, image: 0, file: 'Data/0008_000.png' }),
+    ]);
+    expect(tasks.map((t) => t.category)).toEqual(['sprite', 'sprite', 'ui']);
+  });
+
+  it('★ FLIC 影片帧同理：多帧 → sprite；640×480 的过场仍是 background（尺寸规则在前）', () => {
+    const flic = (resource: number, image: number, w: number, h: number): AssetEntryLike =>
+      entry({ archive: 'jump', resource, image, file: `jump/${resource}_${image}.png`, width: w, height: h, format: 'FLIC' });
+    const tasks = planUpscale([flic(46, 0, 220, 240), flic(46, 1, 220, 240), flic(47, 0, 640, 480), flic(47, 1, 640, 480)]);
+    expect(tasks.map((t) => t.category)).toEqual(['sprite', 'sprite', 'background', 'background']);
+    expect(tasks.map((t) => t.batch)).toEqual(['medium', 'medium', 'large', 'large']);
+  });
+
+  it('显式给了 frames 就尊重它', () => {
+    expect(planUpscale([entry({ frames: 5 })])[0]!.category).toBe('sprite');
+    expect(planUpscale([entry({ frames: 1 }), entry({ image: 3, frames: 1 })])[0]!.category).toBe('ui');
+  });
+
+  it('分组键与任务 id 的前半截一致', () => {
+    expect(resourceKeyOf({ archive: 'Data', resource: 2 })).toBe('Data/0002');
+    expect(taskIdOf({ archive: 'Data', resource: 2, image: 5 }).startsWith(resourceKeyOf({ archive: 'Data', resource: 2 }))).toBe(true);
+  });
+});
+
+describe('★ W-80 §4.7：ingest 的产物定位（旧 ingest 只认原名，client 却读 hdRelativePath）', () => {
+  const task = { archive: 'Data', resource: 0, image: 0, input: 'Data/0000_000.png' };
+  const has = (...files: string[]) => (rel: string) => files.includes(rel);
+
+  it('只有原名那份 → legacy：要从 input 名挪到 hdRelativePath', () => {
+    expect(locateIngestOutput(task, has('Data/0000_000.png'))).toEqual({
+      kind: 'legacy',
+      from: 'Data/0000_000.png',
+      to: 'Data/0-0.png',
+    });
+  });
+
+  it('只有 hdRelativePath 那份 → canonical：原地记账', () => {
+    expect(locateIngestOutput(task, has('Data/0-0.png'))).toEqual({ kind: 'canonical', rel: 'Data/0-0.png' });
+  });
+
+  it('★ 两处都有 → 认原名那份（那是新放进来的；挪过去即覆盖，重跑只剩 canonical）', () => {
+    expect(locateIngestOutput(task, has('Data/0000_000.png', 'Data/0-0.png')).kind).toBe('legacy');
+  });
+
+  it('都没有 → absent', () => {
+    expect(locateIngestOutput(task, has())).toEqual({ kind: 'absent' });
+  });
+
+  it('Windows 分隔符与前导斜杠归一', () => {
+    const t = { ...task, input: '\\Data\\0000_000.png' };
+    expect(locateIngestOutput(t, has('Data/0000_000.png'))).toMatchObject({ kind: 'legacy', from: 'Data/0000_000.png' });
   });
 });
