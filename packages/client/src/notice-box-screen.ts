@@ -192,12 +192,37 @@ interface QueuedNotice {
   beforeFilms: boolean;
   /** 框收掉之后还要**空等**多久（见 core 的 `NoticeHint.afterMs`）*/
   afterMs: number;
+  /** 原版排在同一拍的**角色台词之后**（见 `noticeAfterSpeech`）*/
+  afterSpeech: boolean;
+}
+
+/**
+ * 这一扇在原版里是不是排在**角色台词之后**才弹。
+ *
+ * ★ 第十三份試玩回報 #2（150236）：「NPC在医院里还剩多少天的弹窗被台词框遮住了」。
+ *   回合開始被阻那五扇（`fcn_0040c912`）的次序是**先说、后弹框**：
+ * ```asm
+ * 0040ca20  call 0x456f2d / test al,1 / je      ; 坐牢：1/2 機率说事件 19
+ * 0040ca51  call 0x44ef41                       ; player_say —— 阻塞：语音放完再等 1000 ms（`fcn_004544f6(0x3e8)`）
+ * 0040ca81  call 0x457110                       ; 才 sprintf「還剩 N 天」
+ * 0040caca  call 0x44ef41                       ; 住院那句（事件 20）同形
+ * 0040cb4c  call 0x44ef41                       ; 冬眠那句（事件 21）同形
+ * 0040cb98  call 0x440cac(文字, 0x5dc)          ; ★ 所有台词都说完之后才弹这一扇框（1500 ms）
+ * ```
+ *   ⇒ 台词气泡（`player_say` 画在 (170..,130) 一带）与这扇框（锚点 (220,140)）在原版里**从不同时在屏上**。
+ *   本引擎的台词是队列、框是整屏，一条 action 同时交出来 ⇒ 这几扇框等台词队列说完再起播。
+ *   其余的框（過路費 → 付款台词、神明顯靈 → 台词…）原版都是**框在前**，不走这条。
+ */
+export function noticeAfterSpeech(key: NoticeKey): boolean {
+  return key.startsWith('confinement.');
 }
 
 /** 正在弹的那一扇是不是「排在影片之前」的那一种 */
 let playingBeforeFilms = false;
 /** 正在弹的那一扇收掉之后要空等多久 */
 let playingAfterMs = 0;
+/** 正在弹的那一扇的文案键（`noticeKeyShowing` 用）*/
+let playingKey: NoticeKey | null = null;
 
 /**
  * 框已收掉、还在**空等**的那一段（原版 `fcn_0045285e(ms)` 忙等，点不掉）；`null` = 没在等。
@@ -227,6 +252,13 @@ export function setNoticeStartGate(f: (() => boolean) | null): void {
   startGate = f;
 }
 
+/** 「台词队列还在说」—— 只对 `noticeAfterSpeech` 的那几扇生效（不给 = 永远放行） */
+let speechGate: (() => boolean) | null = null;
+
+export function setNoticeSpeechGate(f: (() => boolean) | null): void {
+  speechGate = f;
+}
+
 function gated(): boolean {
   return startGate?.() === true;
 }
@@ -237,7 +269,18 @@ export function resetNoticeBoxScreen(): void {
   pending = [];
   playingBeforeFilms = false;
   playingAfterMs = 0;
+  playingKey = null;
   tail = null;
+}
+
+/**
+ * 这个文案键的框此刻还在不在（正在弹，或排在队里还没轮到）。
+ *
+ * ★ 第十三份試玩回報 #1：顯靈加蓋那一格要等「顯靈框」收掉才画成新等级（见 `manifest-hold.ts`）。
+ */
+export function noticeKeyShowing(key: NoticeKey): boolean {
+  if (playback !== null && playingKey === key) return true;
+  return pending.some((n) => n.key === key);
 }
 
 /**
@@ -265,6 +308,8 @@ function startNext(env: UiScreenEnv): void {
   //   ★ 例外：「排在影片之前」的那几扇（魔法屋）不看这道闸 —— 反过来是影片等它们
   //     （`noticeHoldsFilms`），两边都等就是死锁。
   if (pending[0]?.beforeFilms !== true && gated()) return;
+  // ★ 第十三份試玩回報 #2：回合開始被阻那几扇等台词说完（`noticeAfterSpeech`）
+  if (pending[0]?.afterSpeech === true && speechGate?.() === true) return;
   const item = pending.shift();
   if (item === undefined) {
     pending = [];
@@ -272,6 +317,7 @@ function startNext(env: UiScreenEnv): void {
   }
   playingBeforeFilms = item.beforeFilms;
   playingAfterMs = item.afterMs;
+  playingKey = item.key;
   playback = noticePlaybackStart(item.text, env.now, item.holdMs);
   env.log(`付费訊息框：${item.key}`);
 }
@@ -407,9 +453,13 @@ export const noticeBoxScreen: UiScreen = {
         holdMs: n.holdMs ?? NOTICE_HOLD_MS,
         beforeFilms: n.beforeFilms === true,
         afterMs: n.afterMs ?? 0,
+        afterSpeech: noticeAfterSpeech(n.key),
       });
     }
-    if (playback === null && tail === null) startNext(env);
+    // ★ 第十三份試玩回報 #2：排在台词之后的那几扇**不在这一拍起播** —— 同一条 action 的台词
+    //   要等各整屏的 `event()` 派完才入队（`main.ts` 的 `notifyApplied` → `queueSpeech`），
+    //   此刻台词队列还是空的；交给下一帧的 `tick` 再看台词闸。
+    if (playback === null && tail === null && pending[0]?.afterSpeech !== true) startNext(env);
     env.requestRender();
   },
 };

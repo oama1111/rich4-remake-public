@@ -24,12 +24,15 @@ import {
   NOTICE_TEXT,
   noticeBoxScreen,
   noticeBoxScreenState,
+  noticeAfterSpeech,
   noticeHoldsFilms,
+  noticeKeyShowing,
   noticePlaybackStart,
   noticePlaybackTick,
   noticeText,
   noticeUi,
   resetNoticeBoxScreen,
+  setNoticeSpeechGate,
   setNoticeStartGate,
 } from './notice-box-screen.ts';
 
@@ -630,5 +633,91 @@ describe('★★ 魔法屋那几扇 @source `0x431caa` / `0x004339bd`', () => {
     noticeBoxScreen.event!(before, after, fakeEnv(after, 0));
     expect(noticeBoxScreenState().playing).toBe(false);
     expect(noticeHoldsFilms()).toBe(false);
+  });
+});
+
+// ============================================================
+//  ★ 第十三份試玩回報 #2：回合開始被阻那几扇框排在角色台词之后
+// ============================================================
+
+describe('★★ 第十三份試玩回報 #2：「住院中／還剩 N 天」等台词说完再弹（`fcn_0040c912`）', () => {
+  afterEach(() => {
+    setNoticeSpeechGate(null);
+    setNoticeStartGate(null);
+    resetNoticeBoxScreen();
+  });
+
+  const HOSPITAL = { key: 'confinement.hospital' as const, args: ['沙隆巴斯', 2] };
+
+  it('★ 只有回合開始被阻那五扇排在台词之后（`0x0040caca call 0x44ef41` → `0x0040cb98 call 0x440cac`）', () => {
+    for (const k of ['confinement.hotel', 'confinement.disappearing', 'confinement.prison', 'confinement.hospital', 'confinement.sleeping'] as const) {
+      expect(noticeAfterSpeech(k)).toBe(true);
+    }
+    // 其余的框原版都是框在前（過路費 `0x00419d5a` → 付款台词 `0x0041a71e`…）
+    expect(noticeAfterSpeech('rent.payOneOwner')).toBe(false);
+    expect(noticeAfterSpeech('god.build')).toBe(false);
+    expect(noticeAfterSpeech('facility.mall')).toBe(false);
+  });
+
+  it('★★ 那一拍不起播（台词还没入队）；台词在说就一直押着，说完才弹', () => {
+    let speaking = false;
+    setNoticeSpeechGate(() => speaking);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith([{ ...HOSPITAL }]);
+    const env = fakeEnv(after, 7);
+    noticeBoxScreen.event!(before, after, env);
+    // 同一条 action 的台词要等 event() 派完才入队 ⇒ 这一拍先不起
+    expect(noticeBoxScreenState().playing).toBe(false);
+    expect(noticeBoxScreen.active(env)).toBe(true);
+    speaking = true; // `queueSpeech` 把「我不要打針！！」放上台
+    noticeBoxScreen.tick!(env);
+    expect(noticeBoxScreenState().playing).toBe(false);
+    noticeBoxScreen.tick!(env);
+    expect(noticeBoxScreenState().playing).toBe(false);
+    speaking = false; // 台词收了
+    noticeBoxScreen.tick!(env);
+    expect(noticeBoxScreenState().playing).toBe(true);
+    expect(noticeBoxScreenState().playback?.text).toContain('沙隆巴斯');
+  });
+
+  it('★ 没有台词（1/2 没抽中 / 住宿、消失本来就不说）⇒ 下一帧就弹', () => {
+    setNoticeSpeechGate(() => false);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith([{ key: 'confinement.hotel' as const, args: ['沙隆巴斯', 2] }]);
+    const env = fakeEnv(after, 7);
+    noticeBoxScreen.event!(before, after, env);
+    noticeBoxScreen.tick!(env);
+    expect(noticeBoxScreenState().playing).toBe(true);
+  });
+
+  it('★ 台词闸只管那五扇：過路費框照旧当场起播，不等台词', () => {
+    setNoticeSpeechGate(() => true);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith([{ ...ONE_OWNER }]);
+    noticeBoxScreen.event!(before, after, fakeEnv(after, 7));
+    expect(noticeBoxScreenState().playing).toBe(true);
+  });
+});
+
+describe('★ 第十三份試玩回報 #1：`noticeKeyShowing` —— 顯靈框还在不在', () => {
+  afterEach(() => {
+    setNoticeStartGate(null);
+    resetNoticeBoxScreen();
+  });
+
+  it('正在弹 / 排在队里都算；收掉就不算', () => {
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith([{ ...ONE_OWNER }, { key: 'god.build' as const, args: ['天使'] }]);
+    const env = fakeEnv(after, 0);
+    noticeBoxScreen.event!(before, after, env);
+    expect(noticeKeyShowing('god.build')).toBe(true); // 排在過路費框后面
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS));
+    expect(noticeKeyShowing('god.build')).toBe(true); // 正在弹
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS * 2));
+    expect(noticeKeyShowing('god.build')).toBe(false);
   });
 });
