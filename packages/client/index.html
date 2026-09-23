@@ -7,8 +7,14 @@
     <style>
       :root { color-scheme: dark; }
       * { box-sizing: border-box; }
+      /* ★ 第十二份試玩回報：iPad Safari 地址栏遮住工具栏。**不用 `100vh`** —— 它在 iOS/iPadOS
+         Safari 上是「地址栏收起时」的最大高度，地址栏展开时比可视区高，文档还能被拖着卷上去。
+         改成固定定位贴满当前视口（包含块随地址栏伸缩），文档本身没有可滚的高度；
+         有 `visualViewport` 时 main.ts 再把 top/left/width/height 钉成它那块（见 viewport.ts）。 */
+      html { height: 100%; overflow: hidden; overscroll-behavior: none; }
       body {
-        margin: 0; height: 100vh; overflow: hidden; display: flex; background: #000; color: #e6e8ee;
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        margin: 0; overflow: hidden; overscroll-behavior: none; display: flex; background: #000; color: #e6e8ee;
         font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
       }
       /* ★ 游戏画面是一块 640×480 的定屏，整数倍放大居中 —— 见 stage.ts */

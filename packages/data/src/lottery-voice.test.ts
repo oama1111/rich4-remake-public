@@ -21,7 +21,7 @@ import { LOTTERY } from './messages.ts';
 
 const DGROUP_FILE_OFFSET = 398848;
 const DGROUP_VA = 0x463000;
-const EXE = new URL('../../../../Rich4/rich4.exe', import.meta.url);
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
 
 const exists = (() => {
   try {

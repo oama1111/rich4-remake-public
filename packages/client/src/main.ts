@@ -376,6 +376,7 @@ import { clockSeed, reduceWithHostRng, reseedAfterLoad } from './rng-host.ts';
 import { FlightRecorder, reportFileName } from './flight-recorder.ts';
 import { holidayBgmOnDayAdvance } from './holiday-bgm.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
+import { installViewportFit } from './viewport.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import { drawIntro, introDone } from './intro.ts';
 import {
@@ -588,6 +589,9 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 const canvas = $<HTMLCanvasElement>('board');
+// ★ 第十二份試玩回報：iPad Safari 地址栏遮住工具栏 —— 页面钉在 `visualViewport` 上，
+//   不再用 `100vh`（见 viewport.ts）。越早越好：大厅/门厅也在这块区域里。
+installViewportFit(window, document.body.style);
 // ⚠️ 側欄不再是独立的 HTML 画布 —— 它是舞台 640×480 里的一块
 //   （见 stage.ts 的 LAYOUT.panel），跟着一起缩放，命中判定也走舞台坐标。
 const ctx = (() => {
@@ -9099,6 +9103,9 @@ function bindInput(): void {
   });
 
   window.addEventListener('resize', requestRender);
+  // 地址栏展开/收起、分屏、Stage Manager 改窗口 —— iPad Safari 上**不一定**发 window
+  // `resize`，但一定发 `visualViewport` 的；页面矩形已由 `installViewportFit` 重钉，这里排一帧
+  window.visualViewport?.addEventListener('resize', requestRender);
 
   // ── 熱鍵 ──────────────────────────────────────────────
   //
