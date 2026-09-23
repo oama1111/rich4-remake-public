@@ -205,6 +205,7 @@ describe('drawBailScreen（假 ctx，只查落点与文字）', () => {
     const images: { dx: number; dy: number }[] = [];
     const texts: string[] = [];
     const textAt: { t: string; x: number; y: number }[] = [];
+    const strokes: number[] = [];
     const ctx = {
       font: '',
       fillStyle: '',
@@ -224,10 +225,12 @@ describe('drawBailScreen（假 ctx，只查落点与文字）', () => {
         textAt.push({ t, x, y });
       },
       strokeText: () => undefined,
-      strokeRect: () => undefined,
+      strokeRect: (x: number) => {
+        strokes.push(x);
+      },
     };
     void texts;
-    return { ctx: ctx as unknown as CanvasRenderingContext2D, images, texts, textAt };
+    return { ctx: ctx as unknown as CanvasRenderingContext2D, images, texts, textAt, strokes };
   }
 
   /** 每张图都报 (10, 20) 的锚点，好把「有没有减锚点」也测出来 */
@@ -251,6 +254,15 @@ describe('drawBailScreen（假 ctx，只查落点与文字）', () => {
     // 槽 2 的两次落点一致（脸与栅同点，栅后画压在上面）
     const at = { dx: 336 - 10, dy: 24 - 20 };
     expect(f.images.filter((i) => i.dx === at.dx && i.dy === at.dy)).toHaveLength(2);
+  });
+
+  it('★ 悬停只贴气泡、不描框（原版 0x200 那一支没有框；先前自加的白框已删）', () => {
+    for (const place of ['prison', 'hospital'] as const) {
+      const f = fakeCtx();
+      drawBailScreen(f.ctx, place, [{ slot: 5, character: 0, name: '乙' }], 500, 5, sprite);
+      expect(f.strokes).toEqual([]);
+      expect(f.texts).toContain('乙'); // 气泡照样在
+    }
   });
 
   it('★ 医院不画空床：8 张床只画有人的', () => {

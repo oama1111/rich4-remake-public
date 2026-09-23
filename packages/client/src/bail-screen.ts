@@ -279,7 +279,7 @@ export const BAIL_COST_LABEL = '保釋點數';
  * @param occupancy 占用表（core 的 `prisonOccupancy` / `hospitalOccupancy`）
  * @param views     每个**有人**的槽：slot 与 character（顺序不限）
  * @param points    当前玩家的點券（`loc_0043d8f2` 读的是 `[0x49910c]` 那位）
- * @param hot       光标底下的槽位（`[0x48c4c4]`），用于高亮
+ * @param hot       光标底下的槽位（`[0x48c4c4]`），用于悬停气泡
  */
 export function drawBailScreen(
   ctx: CanvasRenderingContext2D,
@@ -326,15 +326,8 @@ export function drawBailScreen(
     }
   }
 
-  // 鼠标底下那格描一道（本项目自己加的：原版靠气泡，没有框）
-  if (hot !== null) {
-    const r = bailSlotRect(place, hot);
-    if (r !== null) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
-    }
-  }
+  // ★ 2026-09-23：鼠标底下那格**不描框** —— 原版 0x200 那一支只贴气泡（監獄 `0x0043cbf5` 一带 /
+  //   醫院 `0x0043e35b` 一带），先前这里自加的白框已删。
 
   // 點數底板 + 数字
   const plate = sprite(BAIL_ARCHIVE, spec.resource, spec.plateImage, true);
