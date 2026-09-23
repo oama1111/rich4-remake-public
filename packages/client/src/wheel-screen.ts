@@ -26,7 +26,7 @@
  * | 圓盤落點 **(0xdc, 0x140) = (220,320)** | 0x004409ce / 0x004409d3；轉動中 0x0043f17d / 0x0043f182 |
  * | 天使常態 = 圖 **0**（75×61，錨點 (−6,0)），落點 **(0x109, 0xe6) = (265,230)** | 0x004409fe `add eax,0xc` |
  * | 天使轉動 = 圖 **1**（87×61，錨點 (0,0)），同一落點 | 0x0043f1cc `add eax,0x18` |
- * | 對話氣泡 = `Data.mkf` **資源 0x205 = 517，圖 6**（271×199，錨點 (127,92)）| 0x004409b6 `mov eax,[0x48bad8]` + 0x004409bb `add eax,0x48`；載入點 rich4_load_map.asm:576 |
+ * | 對話框 = `Data.mkf` **資源 0x205 = 517，圖 5**（249×170，錨點 (123,101)，棕色金邊訊息框）| 0x004409b6 `mov eax,[0x48bad8]` + 0x004409bb `add eax,0x48` ⇒ `(0x48−0xc)/12 = 5`；載入點 rich4_load_map.asm:576 |
  * | 氣泡落點 **(0xdc, 0x8c) = (220,140)** | 0x004409ac `push 0x8c` / 0x004409b1 `push 0xdc` |
  * | 氣泡文字 = 表 `0x475cf8` 的第 `轉盤` 項，`sprintf(buf, 該串, 地主名)`，畫在 **(220,140) flag 4（正中）** | 0x00440a20 / 0x00440a35 |
  * | 字級 **0x10 = 16**、內文 `0xf0f0f0`、陰影 `0x101010`（1px 右下）| 0x0044094e `_rich4_create_font`；陰影畫法 0x0044fc31 起 |
@@ -157,12 +157,15 @@ export function wheelDiscChunk(slot: number): number {
 }
 
 /**
- * 對話氣泡：`Data.mkf` **資源 517（0x205）圖 6**，271×199，錨點 (127,92)。
+ * 對話框：`Data.mkf` **資源 517（0x205）圖 5**，249×170，錨點 (123,101) —— 棕色金邊的**訊息框**，
+ * 與詢問框 / 訊息框 / 神明老虎機同一張（`gameui.ts` 的 `DIALOG_SKIN_IMAGE`）。
  *
  * @source 載入點 `rich4_load_map.asm:576`（`_read_mkf(data_mkf, 0x205, 0, 0)`）；
- *   繪製點 0x004409bb `add eax,0x48`（0x48/12 = 圖 6）。
+ *   繪製點 0x004409bb `add eax,0x48`：精靈記錄從 `+0x0c` 起每張 12 字節 ⇒ `(0x48 − 0x0c) / 12 = 5`。
+ *   ★ 2026-09-23 訂正：先前寫成「0x48/12 = 圖 6」（漏減 0x0c 表頭），畫成了 `player_say` 的
+ *   紅邊雲朵（圖 6，只有 0x0044f028 `add eax,0x54` 用它）。`dialog-templates.test.ts` 逐字節釘住。
  */
-export const WHEEL_BUBBLE = { archive: 'Data.mkf', resource: 0x205, image: 6 } as const;
+export const WHEEL_BUBBLE = { archive: 'Data.mkf', resource: 0x205, image: 5 } as const;
 
 /**
  * 氣泡裡的兩行字 —— 表 `0x475cf8` 指到的四個串，**逐字照抄**（Big5）。

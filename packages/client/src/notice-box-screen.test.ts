@@ -821,4 +821,11 @@ describe('★★ 第十四份：亮牌那一扇（`NoticeHint.card`）交给事�
     expect(noticeText({ key: 'card.scapegoatOn', args: ['沙隆巴斯'] })).toBe('沙隆巴斯\n\n嫁禍卡生效！');
     expect(noticeText({ key: 'card.scapegoatTo', args: ['忍太郎'] })).toBe('嫁禍給忍太郎！');
   });
+
+  it('★ 2026-09-23：小衰神丢卡那一扇（`0x0040f148 call 0x440cac`，串 `0x4633ab`）—— 串里自己写「小衰神」、排在「別鬧了！」之后', () => {
+    expect(noticeText({ key: 'god.lostCard', args: ['路障卡'] })).toBe('小衰神附身\n\n遺失路障卡！');
+    // 原版次序：台词 22（`0x0040f0ac call 0x44ef41`）→ 影片 → 开场白 → 丢卡 → 框
+    expect(noticeAfterSpeech('god.lostCard')).toBe(true);
+    expect(noticeAfterSpeech('god.gotCard')).toBe(false);
+  });
 });

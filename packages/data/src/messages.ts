@@ -415,6 +415,12 @@ export const GOD_MANIFEST = {
    *   格式串自己写着「大福神」，与 `gotCard` 的 `[神明名, 卡名]` 形状不同。
    */
   gotCardTwo: t('大福神附身\n\n得到%s及%s！', 0x463353),
+  /**
+   * **小衰神**附身丢掉一张卡（`0x0040f12c push 0x4633ab` / `0x0040f13e push 0x5dc` /
+   * `0x0040f148 call 0x440cac`）：`%s` = 丢掉那张的卡名（`[eax*8 + 0x47fdea]`，eax = `0x441e77` 的返回值）；
+   * 手里没卡（`0x0040f11c test eax,eax / je`）就不弹。格式串自己写着「小衰神」，不含神明名。
+   */
+  lostCard: t('小衰神附身\n\n遺失%s！', 0x4633ab),
 } as const;
 
 /**

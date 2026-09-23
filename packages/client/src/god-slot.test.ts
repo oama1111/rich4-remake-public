@@ -6,7 +6,8 @@
  *   机体 = `Panel#67` 图 0（四位數）/ 图 1（三位數）落 (220,320)；
  *   摇杆 = 图 2 落 x = 317/298、y = 240；拉下去换**图 3**（4 格后换回图 2）；
  *   数字 = 图 `值 + 4`（偶 = 定格、奇 = 滚动中的过渡帧）落 x 表、y = 320；
- *   气泡 = `Data#517` 图 6 落 (220,140)：转动时只有台詞模板，停稳后**只剩** `%d元`。
+ *   底框 = `Data#517` **图 5**（棕色訊息框，`0x004407a6 add eax,0x48`）落 (220,140)：
+ *   转动时只有台詞模板，停稳后**只剩** `%d元`。
  */
 import { describe, expect, it } from 'vitest';
 import { GOD_ATTACH } from '@rich4/data';
@@ -90,8 +91,9 @@ describe('版面与素材 @source 0x00440714 / 0x004407ec / 0x00440811 / 0x0043f
     expect(godSlotDigitX(1, 0)).toBe(0); // 三位數机体槽 0 不画
   });
 
-  it('气泡 = Data#517 图 6 落 (220,140)；字级 0x10、内文 0xf0f0f0、描边 0x101010', () => {
-    expect(GOD_SLOT_BUBBLE).toEqual({ archive: 'Data.mkf', resource: 517, image: 6 });
+  it('★ 底框 = Data#517 图 5（棕色訊息框，`add eax,0x48` ⇒ (0x48−0xc)/12）落 (220,140)；字级 0x10、内文 0xf0f0f0、描边 0x101010', () => {
+    // 2026-09-23 需求方：「神明那个对话框……原版用的是棕色那个」—— 先前误作图 6（player_say 的红云朵）
+    expect(GOD_SLOT_BUBBLE).toEqual({ archive: 'Data.mkf', resource: 517, image: 5 });
     expect(GOD_SLOT_BUBBLE_AT).toEqual({ x: 220, y: 140 });
     expect(GOD_SLOT_FONT_SIZE).toBe(0x10);
     expect(GOD_SLOT_FILL).toBe('#f0f0f0');

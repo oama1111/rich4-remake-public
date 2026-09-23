@@ -13,7 +13,8 @@
  * 00440714  read_mkf(Panel.mkf, 0x43) → [0x48c514]          ; ★ 老虎机素材 = Panel **#67**
  * 0044073a  create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)     ; 与訊息框同一句（flag 3 = 描边）
  * 00440774  fcn_00451e7e(rect (0,0x28)-(0x1b8,0x1e0))        ; ★ 浮窗：先存下这块
- * 004407b1  fcn_00456418(surface, Data#517 图 6, 0xdc, 0x8c) ; 气泡 = Data#517 图 6 落 (220,140)
+ * 004407b1  fcn_00456418(surface, Data#517 图 5, 0xdc, 0x8c) ; 底框 = Data#517 **图 5**（棕色訊息框）落 (220,140)
+ *                    ;   `004407a6 add eax,0x48` ⇒ (0x48 − 0xc) / 12 = **5**（不是 6，见 `GOD_SLOT_BUBBLE`）
  * 004407c0  ebx = (arg & 1) ^ 1
  * 004407ec  fcn_004563f5(surface, Panel#67 图 ebx, 0xdc, 0x140)
  *                    ; ★ 机体：图 0 = 四位數（193×183）、图 1 = 三位數（156×183），落 (220,320)
@@ -104,10 +105,17 @@ export const GOD_SLOT_ARCHIVE = 'Panel.mkf' as const;
 export const GOD_SLOT_RESOURCE = 0x43;
 
 /**
- * 气泡：`Data.mkf` 资源 **0x205 = 517 图 6**，落 (220,140) @source 0x004407a1 `[0x48bad8]+0x48`
- * （与转盘那一屏同一个气泡图）；状态 8 再贴一次（0x0043f618）把台詞盖掉。
+ * 底框：`Data.mkf` 资源 **0x205 = 517 图 5**（249×170、锚点 (123,101) 的**棕色金边訊息框**），
+ * 落 (220,140) @source 0x004407a1 `mov eax,[0x48bad8]` / 0x004407a6 `add eax,0x48`
+ * —— 精灵记录从 `+0x0c` 起每张 12 字节 ⇒ `(0x48 − 0x0c) / 12 = 5`；状态 8 再贴一次
+ * （0x0043f618 / 0x0043f61d 同样 `add eax,0x48`）把台詞盖掉。
+ * 与询问框 / 訊息框（`gameui.ts` 的 `DIALOG_SKIN_IMAGE`）、转盘（`WHEEL_BUBBLE`）是**同一张**。
+ *
+ * ★ 2026-09-23 需求方：「神明那个对话框不是这个模板……我记得用的是棕色那个」——
+ *   先前这里写成**图 6**（271×199 的红边白底云朵，`+0x54`，只有 `player_say` 0x0044f028 用它），
+ *   是把 `0x48 / 12` 直接当图号、漏减了 `0x0c` 的表头。`dialog-templates.test.ts` 逐字节钉住。
  */
-export const GOD_SLOT_BUBBLE = { archive: 'Data.mkf' as const, resource: 0x205, image: 6 };
+export const GOD_SLOT_BUBBLE = { archive: 'Data.mkf' as const, resource: 0x205, image: 5 };
 export const GOD_SLOT_BUBBLE_AT = { x: 0xdc, y: 0x8c } as const;
 
 /**

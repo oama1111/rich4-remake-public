@@ -236,6 +236,32 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
     expect(sum(after.cardAmount)).toBe(sum(before.cardAmount) + 1);
   });
 
+  /**
+   * ★ 2026-09-23（神明对话框反查）：丢了卡就弹訊息框「小衰神附身\n\n遺失%s！」（1500 ms）。
+   * @source `0x0040f114 call 0x441e77` → `0x0040f11c test eax,eax / je`（没丢不弹）→
+   *   `0x0040f124 mov esi,[eax*8 + 0x47fdea]`（卡名）→ `0x0040f12c push 0x4633ab` →
+   *   `0x0040f13e push 0x5dc` → `0x0040f148 call 0x440cac`
+   */
+  run('★ 小衰神丢卡 ⇒ 訊息框 god.lostCard（args = 丢掉那张的卡名，1500 ms）', () => {
+    const start = fresh().state;
+    const { after } = stepOnto(GOD_SMALL_MISFORTUNE, {
+      players: rich(start).players.map((p, i) => (i === 0 ? { ...p, cards: [1, 2, 3] } : p)),
+    });
+    const left = after.players[0]!.cards;
+    const lost = [1, 2, 3].find((id) => !left.includes(id))!;
+    expect(after.notices).toEqual([{ key: 'god.lostCard', args: [CARDS[lost - 1]!.name], holdMs: 1500 }]);
+  });
+
+  run('★ 小衰神附身时手里没卡 ⇒ 什么都不丢、也不弹框（`0x0040f11e je 0x40ece6`）', () => {
+    const start = fresh().state;
+    const { before, after } = stepOnto(GOD_SMALL_MISFORTUNE, {
+      players: rich(start).players.map((p, i) => (i === 0 ? { ...p, cards: [] } : p)),
+    });
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.notices ?? []).not.toContainEqual(expect.objectContaining({ key: 'god.lostCard' }));
+    expect(sum(after.cardAmount)).toBe(sum(before.cardAmount));
+  });
+
   run('★ 大衰神：丢一半（原版那个循环丢的是第 0、2、4… 张）@source 0x0040f1de', () => {
     const start = fresh().state;
     const { before, after } = stepOnto(GOD_BIG_MISFORTUNE, {
