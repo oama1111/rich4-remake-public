@@ -73,7 +73,8 @@
  *
  * 1. **脸的槽（眨眼）改成按帧号推**，不消耗游戏随机流（C-DET-1）；原版 `rand()>>9`。
  * 2. **ANM 一帧 = 定时器一拍 = 50 ms**（见 `ANM_FRAME_MS`）。
- * 3. 字框寿命固定 2 秒（`CEREMONY_VOICE_MS`）；原版开了语音时还要等语音播完（`fcn_004544b9`）。
+ * 3. ~~字框寿命固定 2 秒~~ —— 第十三份試玩回報起照原版 `fcn_0044ee18`：满 2 秒**且**语音不在响才收
+ *    （见 `Active.bubbleDown`）；语音只在进步那一拍请求一次（见 `enterStep`）。
  * 4. **铭牌底框的压暗**改写成 **canvas 半透明黑**（`TALLY_FRAME.alpha = 16/32`）。
  * 5. **号码表的清理时机不动 core**：core 在开奖那一下就清，本模块用 `DrawCue.sold` 显示。
  */
@@ -97,13 +98,13 @@ import {
   type CeremonyFrameId,
   type CeremonyStep,
 } from '@rich4/core';
-import { CHARACTERS, LOTTERY } from '@rich4/data';
+import { CHARACTERS, LOTTERY, stripVoiceCode } from '@rich4/data';
 import { isAlive } from '@rich4/core';
 import type { GameState } from '@rich4/core';
 import { FONT_FAMILY, font } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
-import { playVoiceCode } from './voice-sink.ts';
+import { playVoiceCode, voiceBusy } from './voice-sink.ts';
 import { SCREEN_H, SCREEN_W } from './stage.ts';
 
 
@@ -494,12 +495,20 @@ export function frameTextCenter(
   return { x: left + Math.floor(sprite.width / 2) + f.text[0], y: top + Math.floor(sprite.height / 2) + f.text[1] };
 }
 
-/** 气泡里的字（`#NNNN` 语音前缀被吃掉）@source `_rich4_draw_text` VA 0x0044fabc 开头 */
+/**
+ * 气泡里的字（`#NNNN` 语音前缀被吃掉）@source `_rich4_draw_text` VA 0x0044fabc 开头
+ *
+ * ★★ **只剥不播**（第十三份試玩回報「乐透开奖的语音重复」）。先前这里顺手 `playVoiceCode`，
+ *   而 `viewOf`（绘制链）**每一帧**都调它 —— 字框挂着的 2 秒里每帧都请求一次语音；
+ *   `main.ts` 的去抖只挡「还在响」与「500 ms 内」，于是**短于 2 秒**的那几句
+ *   （`#0019` 1.28 s、`#0032` 1.63 s、`#0034` 1.73 s、`#0035` 1.84 s、`#0036` 0.96 s）
+ *   一播完就被下一帧重新起播 —— `#0036「行動要快喔！」` 响三遍。
+ *   原版 `_rich4_draw_text` 只在字框**画上去那一次**解析 `#NNNN`（`call 0x45441a`），
+ *   本屏对应的是进步那一拍（`enterStep`）。
+ */
 export function bubbleLines(text: string | null): string[] {
   if (text === null) return [];
-  // ★ 收敛到唯一入口：顺手播 `#NNNN`
-  const body = playVoiceCode(text);
-  return body.split('\n').filter((l) => l !== '');
+  return stripVoiceCode(text).split('\n').filter((l) => l !== '');
 }
 
 /** 台词串首的语音号；没有返回 `null` */
@@ -566,6 +575,17 @@ interface Active {
   at: number;
   /** 当前这一步的话是什么时候说的 */
   said: number;
+  /**
+   * ★★ 这一步的字框**已经收掉**了没有 —— 原版 `fcn_0044ee18(0)`（VA 0x0044ee18）：
+   * ```asm
+   * 0044ee4e  cmp  eax, 0x7d0 / jb 0x44ee5f           ; 不满 2000 ms → 还挂着
+   * 0044ee63  cmp  byte [0x49715b], 0 / je 0x44ee76    ; 音效档关着 → 到期
+   * 0044ee6c  call 0x4544b9 / mov [0x4762c4], eax      ; 语音还在响 → 继续挂着
+   * ```
+   * ⇒ 挂 **max(2000 ms, 语音时长)**；`0x004301e8..0x00430215` 等它返回非 0 才进下一状态。
+   * 由 `tick` 置位（`draw` 只读），`enterStep` 清零。「音效档关着」那道闸在 `voiceBusy()` 里。
+   */
+  bubbleDown: boolean;
   /** 现在的字框（`fcn_0044ec30` 最近一次设的那一种）*/
   frame: CeremonyFrameId;
   face: FaceCtl;
@@ -699,6 +719,7 @@ function begin(cue: DrawCue, env: UiScreenEnv): void {
     waitSince: -1,
     at: env.now,
     said: env.now,
+    bubbleDown: false,
     frame: CEREMONY_BASE.frame ?? 'bubble',
     face: faceCtlStart(),
     faceBlits: [],
@@ -735,9 +756,15 @@ function enterStep(a: Active, env: UiScreenEnv): void {
   const step = a.steps[a.step];
   a.at = env.now;
   a.said = env.now;
+  a.bubbleDown = false;
   if (step === undefined) return;
   if (step.frame !== undefined) a.frame = step.frame;
-  if (step.line !== null) env.log(`樂透開獎：${bubbleLines(step.line.text).join('')}`);
+  if (step.line !== null) {
+    // ★★ 语音**只在这里**请求一次（字框画上去那一拍，`0x0044fabc` → `0x45441a`）；
+    //   绘制链只剥不播（见 `bubbleLines`）。
+    playVoiceCode(step.line.text);
+    env.log(`樂透開獎：${bubbleLines(step.line.text).join('')}`);
+  }
   if (step.sound !== undefined) env.playEffect(step.sound);
   startAnim(a, step.anim, env);
 }
@@ -799,8 +826,19 @@ function holdDone(a: Active, env: UiScreenEnv): boolean {
       if (p.frames > 0 && !playingDone(p, env.now)) return false;
     }
   }
-  if (h.voice === true && step.line !== null && env.now - a.said < CEREMONY_VOICE_MS) return false;
+  if (h.voice === true && step.line !== null && !a.bubbleDown) return false;
   return true;
+}
+
+/**
+ * 字框到期没有 —— `fcn_0044ee18(0)`：满 `CEREMONY_VOICE_MS` **且**语音不在响（见 `Active.bubbleDown`）。
+ * 一旦收掉就不再挂回去（原版把 `[0x4762c4]` 清 0）。
+ */
+function tickBubble(a: Active, env: UiScreenEnv): void {
+  if (a.bubbleDown) return;
+  if (env.now - a.said < CEREMONY_VOICE_MS) return;
+  if (voiceBusy()) return;
+  a.bubbleDown = true;
 }
 
 /** 推进一步 */
@@ -990,7 +1028,7 @@ function revealedBy(a: Active, step: number): boolean {
 function viewOf(a: Active, env: UiScreenEnv): DrawView {
   const step = a.steps[a.step]!;
   const line = step.line;
-  const showBubble = a.shown && line !== null && env.now - a.said <= CEREMONY_VOICE_MS;
+  const showBubble = a.shown && line !== null && !a.bubbleDown;
   const [tens, ones] = numberDigits(a.cue.number);
   // 公布得主那一步起，到「恭喜」那一步把中央那块擦掉为止，名字一直在
   const named = a.steps.slice(0, a.step + 1).some((x) => x.texts.includes('winnerName'));
@@ -1277,6 +1315,7 @@ export const lotteryDrawScreen: UiScreen = {
       return;
     }
     tickFace(a, env);
+    tickBubble(a, env);
     if (holdDone(a, env)) advance(a, env);
     // 脸与 ANM 是逐帧的 —— 在播就一直续帧
     env.requestRender();
