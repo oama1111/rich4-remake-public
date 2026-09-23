@@ -114,7 +114,7 @@ import {
   type Sprite,
 } from './assets.ts';
 import { loadAllArchives, type LoadProgress } from './asset-loader.ts';
-import { onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
+import { cardUsePopupActive, onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
 // ★ 「請選擇設施類別」那扇窗（Q-TOOL-4）—— 真人盖**等级 0 的設施**时要先选种类
 //   （原版 `fcn_00440aac` / 窗口过程 `fcn_0043fae4`）。
 import {
@@ -1712,7 +1712,9 @@ function stageBusyFlags(): StageFlags {
     pendingBoardFilmAfter: pendingBoardFilmAfter !== null,
     buildFx: buildFx !== null,
     pendingBuildFx: pendingBuildFx !== null,
-    objectFlight: objectFlight !== null,
+    // ★ 挂起的卡片飞行（等亮牌收屏）也算「台上还忙」—— 否则亮牌一收、飞行起播之前那一拍
+    //   回合驱动会抢先派下一步
+    objectFlight: objectFlight !== null || pendingCardFlight !== null,
     walkDone: renderer.walkDone(),
     diceFxActive: diceFx.active,
     // ★ W-69：過路費閃爍（`fcn_00451985` 是阻塞的，原版在費用訊息框之前）
@@ -4093,7 +4095,10 @@ function startActionFx(action: Action, before: GameState): void {
   // （盖到 5 级时接 `0x20b`）。判据在 core 的 `lastBuildUpgrades` 里，不看 action 种类。
   startBuildFx(before);
   // 卡片 / 請神符的飞行动效（Q-TOOL-5）—— 是否真的播由 exe 的闸门定
-  if (action.type === 'useCard') startCardFlight(before, action);
+  // ★★ 第十二份試玩回報：原版用卡是「亮牌 1500 ms（`fcn_00441f73`，阻塞）→ 卡片函数」，
+  //   飞行在卡片函数**里面** ⇒ 先挂起，等亮牌收屏再起（`tickPendingCardFlight`）。
+  //   亮牌本身由事件框那一屏认 `lastCardPlay` 起播（`event-box-screen.ts` 的 `cardUseView`）。
+  if (action.type === 'useCard') pendingCardFlight = { before, action };
   // ★★ 「踩到惡犬」那一段（試玩回報：踩到狗直接進醫院、没有咬人动画/配音）——
   //   **必须排在 `startConfineFx` 之前**：原版那一支先把 0x214 播完、才走到
   //   `send_to_hospital` 里的 0x20c（VA 0x0041b837 → 0x0043ed59）。
@@ -5730,6 +5735,30 @@ function beginObjectFlight(args: {
  *    —— 这是 exe 的实际行为（同一条函数开头那个字段的另一个用法把 1 钉成人类），
  *    照抄。故本动效在**电脑出牌**（或被托管）时才看得见。
  */
+/**
+ * 挂起的卡片飞行：`startActionFx` 记下、亮牌（`fcn_00441f73`）收屏之后才起播。
+ *
+ * @source 原版两条用卡路径都是 `call 0x441f73`（亮牌，阻塞）在前、
+ *   `call [card_functions + 卡号*4]` 在后（真人 `0x00441cbc` → `0x00441cc6`、
+ *   电脑 `0x00441def` → `0x00441e00`），而飞行（`animate_object`）在卡片函数体内。
+ */
+let pendingCardFlight: {
+  before: GameState;
+  action: { type: 'useCard'; cardId: number; target?: CardTarget };
+} | null = null;
+
+function tickPendingCardFlight(): void {
+  const p = pendingCardFlight;
+  if (p === null) return;
+  if (cardUsePopupActive()) {
+    requestRender();
+    return;
+  }
+  pendingCardFlight = null;
+  startCardFlight(p.before, p.action);
+  requestRender();
+}
+
 function startCardFlight(
   before: GameState,
   action: { type: 'useCard'; cardId: number; target?: CardTarget },
@@ -6196,7 +6225,9 @@ function tickBoardFilm(now: number): void {
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
     // 訊息框那一段盖着整块棋盘 ⇒ 原版次序是框先、片后，等它收屏
-    if (pending.afterOverlay === true && activeUiScreen() !== null) {
+    // ★ 第十二份試玩回報：用卡那一次亮牌（`fcn_00441f73`）在卡片函数**之前**、阻塞 1500 ms
+    //   ⇒ 卡片引出的影片（入獄 / 神明附身…）一律等它收屏
+    if ((pending.afterOverlay === true && activeUiScreen() !== null) || cardUsePopupActive()) {
       requestRender();
       return;
     }
@@ -6352,6 +6383,11 @@ function tickBuildFx(now: number): void {
     if (filmWaitsForSpeech(speechQueue.length)) return;
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
+    // ★ 天使卡（9）的建屋片同理：等「使用天使卡」那一次亮牌收屏（见 `tickBoardFilm`）
+    if (cardUsePopupActive()) {
+      requestRender();
+      return;
+    }
     const res = buildClip(pending.first).resource;
     if (!buildFlics.has(res)) {
       // 还在解（`buildFlicNow` 的 `.then` 会再 `requestRender`）；真取不到就整段放弃，
@@ -6500,6 +6536,7 @@ function requestRender(): void {
     if (screen === 'game') syncMoveSound();
     // ★ 投掷动效（放置類道具）同理：没播完就再排一帧；播完那一下才放落地音
     //   （原版顺序：动画 → 收尾停 100 ms → 音效，见 `startObjectFlight`）
+    if (screen === 'game') tickPendingCardFlight();
     if (screen === 'game') tickObjectFlight(performance.now());
     // ★ 建屋动效（機器工人）同理：两段时间轴没走完就再排一帧，走完就放掉位图
     if (screen === 'game') tickBuildFx(performance.now());
@@ -7887,6 +7924,7 @@ function startGame(): void {
   boardFilmPending.clear();
   releaseBoardFilmFlics();
   deferredBoardBefore = null;
+  pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
   // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
   goButton.reset();
 
@@ -9519,6 +9557,7 @@ function connectOnline(url: string, room: string, name: string): void {
           boardFilmPending.clear();
           releaseBoardFilmFlics();
           deferredBoardBefore = null;
+          pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
           // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
           goButton.reset();
 
@@ -9636,6 +9675,7 @@ function connectOnline(url: string, room: string, name: string): void {
           releaseBuildFlics();
           // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
           deferredBoardBefore = null;
+          pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
           npcWalksDrawn = null;
           log(`⟳ 失步自愈：重放 ${r.actions.length} 條 action，本地狀態已重建（第 ${r.actions.length} 號）`);
           requestRender();
