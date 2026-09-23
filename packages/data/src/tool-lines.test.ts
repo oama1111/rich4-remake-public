@@ -14,7 +14,12 @@ const DGROUP_FILE_OFFSET = 398848;
 const DGROUP_VA = 0x463000;
 const TABLE_VA = 0x480d5a;
 const ROW_STRIDE = 0x68;
-const EXE = new URL('../../../../Rich4/rich4.exe', import.meta.url);
+// ★ 与全仓其余真值测试同一个口径：先认 `RICH4_WORKSPACE`（`vitest.config.ts`），
+//   否则按「仓库在工作区根下」的相对路径找 —— 放在 git worktree 里跑时后者找不到，会静默 skip。
+const EXE =
+  process.env.RICH4_WORKSPACE !== undefined && process.env.RICH4_WORKSPACE !== ''
+    ? `${process.env.RICH4_WORKSPACE}/Rich4/rich4.exe`
+    : new URL('../../../../Rich4/rich4.exe', import.meta.url);
 
 const exists = (() => {
   try {
