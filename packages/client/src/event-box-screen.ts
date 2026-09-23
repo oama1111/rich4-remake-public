@@ -1063,6 +1063,35 @@ let ownCardUse: { player: number; cardId: number; turnCount: number } | null = n
 export function resetEventBoxScreen(): void {
   playback = null;
   ownCardUse = null;
+  deferredCardUse = null;
+}
+
+/**
+ * ★ 第十四份：收費那一段里用掉的免費卡 —— 亮牌排在同一拍的收費訊息框**之后**
+ *   （`CardPlayHint.afterNotices`；原版租金框 `0x00419d5a` / 企業框 `0x0041aeaa` 在前，
+ *   `0x00444b25 call 0x441f73` 亮牌在后）。先记着，訊息框收了（`tickDeferredCardUse`）再起。
+ */
+let deferredCardUse: { cardId: number; player: number } | null = null;
+
+/** 有没有一张押着等訊息框收掉的亮牌（宿主据此把台上算成「还在演」） */
+export function cardUseDeferred(): boolean {
+  return deferredCardUse !== null;
+}
+
+/** 每帧：押着的那张亮牌，等訊息框那一屏收了就起播 */
+export function tickDeferredCardUse(env: UiScreenEnv, noticesBusy: boolean): void {
+  const d = deferredCardUse;
+  if (d === null) return;
+  if (noticesBusy || playback !== null) {
+    // ★ 自己续帧：框收掉那一拍之后再没人叫醒我们（台词也押着等这一张，否则死等）
+    env.requestRender();
+    return;
+  }
+  deferredCardUse = null;
+  playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(d.cardId)), env.now);
+  env.playEffect(CARD_REVEAL_SOUND);
+  env.log(`事件提示框：使用卡片 #${d.cardId}（P${d.player + 1}，收費框之后）`);
+  env.requestRender();
 }
 
 /**
@@ -1307,6 +1336,11 @@ export const eventBoxScreen: UiScreen = {
         own.cardId === play.cardId &&
         own.turnCount === before.turnCount
       ) {
+        return;
+      }
+      if (play.afterNotices === true) {
+        deferredCardUse = { cardId: play.cardId, player: play.player };
+        env.requestRender();
         return;
       }
       playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(play.cardId)), env.now);

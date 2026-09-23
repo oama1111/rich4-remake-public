@@ -69,6 +69,7 @@ import {
   TOOL_LINE_ORDER,
   detectNoticeSay,
   detectFortuneLine,
+  detectDisappearSay,
   ownToolLineSpoken,
   toolUseSpeechLines,
   type SayEvent,
@@ -1567,6 +1568,7 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     ['moneyGained', 'afterStage', '⚠E-19：调用点 `0x0044f420` 前后两列都空'],
     ['noticeSay', 'afterStage', '第十四份：訊息框之后紧跟的那一句（框在前）'],
     ['fortuneLine', 'afterStage', '第十四份：命運 9/10/11/32 施加之后（事件框在前）'],
+    ['disappearSay', 'afterStage', '第十四份：出國 / 綁架 / 航空旅遊（台词 → 理賠框 → 影片）'],
     ['hotelStay', 'afterStage', '⚠E-19：`0x0041a7e0` 所在函数没有 `player_say`；`0x0044f347` 两列都空'],
     ['pointsGained', 'afterStage', '⚠E-19：调用点 `0x0044f2b5` 前后两列都空'],
     ['pointsSquarePhrase', 'afterStage', '⚠E-19：`0x0041b211` 两列都空、`0x004154cf` 前有訊息框'],
@@ -2088,5 +2090,30 @@ describe('★★ 第十四份：企業收費被嫁禍 / 死神顶替 ⇒ 付款�
       s.companyFunds[3] = (s.companyFunds[3] ?? 0) + 9000;
     });
     expect(detectMoneyPaid(b2, a2)).toEqual([]);
+  });
+});
+
+describe('★★ 第十四份：免費卡之后地主回一句 / 出國那一句', () => {
+  it('★ `answeredBy` ⇒ 出牌者那句（卡 20）之后地主说槽 79（表情 1，语音 426+52×角色+48）', () => {
+    const before = makeGameState({ players: [makePlayer({ index: 0, character: 0 }), makePlayer({ index: 1, character: 3 })] });
+    const after: GameState = { ...before, lastCardPlay: { player: 0, cardId: 20, afterNotices: true, answeredBy: 1 } };
+    const bubbles = cardPlaySpeech(before, after);
+    expect(bubbles.map((b) => [b.player, b.lines.join('')])).toEqual([
+      [0, '有錢也不給你！'],
+      [1, '小氣巴拉～'],
+    ]);
+    expect(bubbles[1]!.expression).toBe(1);
+    expect(bubbles[1]!.voice).toBe(426 + 52 * 3 + 48);
+    // 企業那一路没有地主 ⇒ 只有出牌者那句
+    expect(cardPlaySpeech(before, { ...before, lastCardPlay: { player: 0, cardId: 20, afterNotices: true } })).toHaveLength(1);
+  });
+
+  it('★ `lastDisappearSay` ⇒ 当事人那一句；同一个引用不再说；次序 afterStage', () => {
+    const [b, a] = to((s) => {
+      s.lastDisappearSay = { player: 2, event: 5 };
+    });
+    expect(detectDisappearSay(b, a)).toEqual([{ player: 2, event: 5 }]);
+    expect(detectDisappearSay(a, { ...a })).toEqual([]);
+    expect(DETECTORS.find((d) => d.name === 'disappearSay')?.order).toBe('afterStage');
   });
 });

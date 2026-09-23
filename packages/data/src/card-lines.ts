@@ -500,3 +500,39 @@ export const CARD_LINES: readonly (readonly SpeechLine[])[] = [
 
 /** 全部 360 条（= 12 × 30） */
 export const CARD_LINE_COUNT = CARD_LINES.length * CARD_LINES_PER_CHARACTER;
+
+/**
+ * ★ 第十四份：**免費卡用完之后地主回的那一句** —— 同一张指针表的**槽 79**（`0x48123a + 79×4 = 0x481376`）。
+ *
+ * @source `0x00444b72`..`0x00444b98`（免費卡 `fcn_00444a60` 的尾巴）：
+ * ```asm
+ * 00444b66  mov ecx, [esp+0x98]          ; 第 2 实参 = 地主（企業那一路传 −1）
+ * 00444b6d  cmp ecx, -1 / je 收尾
+ * 00444b8e  mov edi, [eax + 0x481376]    ; 地主的角色行 + 槽 79
+ * 00444b95  push 1 / push ecx / call 0x44ef41   ; 表情号 1
+ * ```
+ * 语音号就是串头的 `#NNNN`：`426 + 52×角色 + 48`（12 条无例外，`card-lines.test.ts` 逐条对 exe）。
+ */
+export const FREE_CARD_ANSWER_SLOT = 79;
+export const FREE_CARD_ANSWER_VOICE_OFFSET = 48;
+
+/** 角色 0..11 → 地主那一句（`[表情图号, 文本]`，金貝貝那一格是 `@DD`） */
+export const FREE_CARD_ANSWER_LINES: readonly SpeechLine[] = [
+  [null, '算了！\n老子有的是錢。'],
+  [null, '吝嗇鬼！！！'],
+  [null, '想白吃白喝啊？'],
+  [null, '小氣巴拉～'],
+  [null, '噠嘛好啊！'],
+  [null, '下次就沒\n這麼好運了！'],
+  [null, '嘖！'],
+  [null, '這點錢\n都要賒賬～'],
+  [null, '烏咪討厭\n賴賬的人！！'],
+  [null, '小錢也要省？！'],
+  [null, '給我錢！！'],
+  [15, '@15'],
+];
+
+/** 地主那一句的语音号 */
+export function freeCardAnswerVoice(character: number): number {
+  return CARD_LINE_VOICE_BASE + CARD_LINE_VOICE_STRIDE * character + FREE_CARD_ANSWER_VOICE_OFFSET;
+}

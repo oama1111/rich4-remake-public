@@ -1055,3 +1055,50 @@ describe('★★ 第十四份：企業收費的免費卡 / 嫁禍卡 / 死神（
     expect(after.notices.map((n) => n.key)).toEqual(['rent.payBoss', 'god.tollFree']);
   });
 });
+
+describe('★★ 第十四份：免費卡的亮牌 + 出牌者那句 + 地主回一句（`fcn_00444a60` 的 `0x00444b07`..`0x00444b98`）', () => {
+  it('★★ 住宅：`lastCardPlay` = 付款方用了卡 20，排在收費框之后，地主（1 号）回一句', () => {
+    const after = settle(onRivalLand({ payer: { cash: 100, cards: [20] } }));
+    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, afterNotices: true, answeredBy: 1 });
+  });
+
+  it('★ 企業：地主实参 −1（`0x0041af1d push -1`）⇒ 没有回话', () => {
+    const s = onRivalCompany(INDUSTRY.sect, { cash: 100, cards: [20] });
+    const after = reduce(s, { type: 'settle' }, companyTopo(INDUSTRY.sect));
+    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, afterNotices: true });
+  });
+
+  it('★ 没用卡 ⇒ 不写 `lastCardPlay`', () => {
+    expect(settle(onRivalLand()).lastCardPlay).toBeNull();
+  });
+});
+
+describe('★★ 第十四份：航空的旅遊（`0x0041b05a call 0x40d375(付款人, 天数, 0)`）', () => {
+  /** 找一个让航空转盘转出非 0 天的随机状态 */
+  function airline(payer: Parameters<typeof makePlayer>[0] = {}) {
+    const topoA = companyTopo(INDUSTRY.airline);
+    for (let seed = 1; seed < 200; seed++) {
+      const s = { ...onRivalCompany(INDUSTRY.airline, payer), rngState: seed };
+      const after = reduce(s, { type: 'settle' }, topoA);
+      if (after.notices.some((n) => n.key === 'rent.payChairman')) return { before: s, after };
+    }
+    throw new Error('no seed');
+  }
+
+  it('★★ 付完旅遊費就出國：`+0x33 = 天数`（原因 0），倒楣天数累加，说小额损失那一句', () => {
+    const { before, after } = airline();
+    const fee = after.notices.find((n) => n.key === 'rent.payChairman')!.args[2] as number;
+    const days = fee / 500; // 費 = 天 × 地價 500 × 物價 1
+    expect(after.players[0]!.blocking.disappearing).toBe(days);
+    expect(after.players[0]!.totalWinterSleepDays).toBe(before.players[0]!.totalWinterSleepDays + days);
+    // 1..3 天 ⇒ `fcn_0044f2c2` 最低档：事件 5
+    expect(after.lastDisappearSay).toEqual({ player: 0, event: 5 });
+  });
+
+  it('★ 保險期内 ⇒ 出國也理赔 2000×天×物價（`0x0040d425`），框排在台词之后', () => {
+    const { after } = airline({ insuranceDays: 30 });
+    const days = after.players[0]!.blocking.disappearing;
+    expect(after.notices.at(-1)).toEqual({ key: 'insurance.payout', args: [2000 * days], holdMs: 2000 });
+  });
+
+});

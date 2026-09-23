@@ -115,9 +115,11 @@ import {
 } from './assets.ts';
 import { loadAllArchives, type LoadProgress } from './asset-loader.ts';
 import {
+  cardUseDeferred,
   cardUsePopupActive,
   dropOwnCardUse,
   eventBoxScreen,
+  tickDeferredCardUse,
   onEventBoxArtReady,
   setEventBoxArchives,
   startOwnCardUsePopup,
@@ -347,6 +349,7 @@ import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './curso
 import { shouldResumeDriver } from './driver-resume.ts';
 import { tollFlashLevel } from './toll-flash-fx.ts';
 import {
+  noticeBoxScreen,
   noticeHoldsFilms,
   noticeKeyShowing,
   noticeWaitingForSpeech,
@@ -1746,6 +1749,8 @@ function blockingPresentation(): boolean {
   // ★ 第十四份：訊息框屏只是**排着一扇等台词说完的框**（保險理賠那一扇）时不算台上在演 ——
   //   否则押在演出之后的那一句（付款 / 入獄台词，`afterStage`）与这扇框互相等。
   if (overlay !== null && overlay.id === 'notice' && noticeWaitingForSpeech()) return false;
+  // ★ 第十四份：押着等收費框收掉的免費卡亮牌也算台上在演（台词等它、回合驱动等它）
+  if (cardUseDeferred()) return true;
   return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
 }
 
@@ -1800,6 +1805,12 @@ function holdForActorWalk(reschedule: () => void): boolean {
   //   （原先这里是九个 `if` 各写一遍：纯演出整屏 / 走子补间 / 物件飞行 / 建屋片 /
   //     棋盘影片 / 两段影片之间的空档；现在一位不多、一位不少地收在一处。）
   if (stageBusy(stageBusyFlags())) {
+    reschedule();
+    return true;
+  }
+  // ★ 第十四份：飛機 / 飛碟那一段还押着（等台词 / 理賠框）—— 它不进 `stageBusy`
+  //   （否则押后的台词永远等它，而它又在等台词），回合驱动单独在这里等
+  if (pendingDisappearFx !== null) {
     reschedule();
     return true;
   }
@@ -6568,8 +6579,26 @@ function startDisappearFx(before: GameState, after: GameState): void {
   if (spec === null) return;
   // 影片窗口里棋盘按 before 画：人还站在那儿，被飛碟吸走 / 上飛機（`deferred-board.ts`）
   deferredBoardBefore = before;
-  startBoardFilm(spec);
-  log(`影片：${spec.id === 'abduct' ? '被外星人綁架（飛碟）' : '強迫出國觀光（飛機）'}`);
+  // ★★ 第十四份：`fcn_0040d375` 里是 台词（`0x0040d3f8`）→ 理賠框（`0x0040d425`）→ 影片（`0x0040d498`）
+  //   ⇒ 影片押到同一拍的台词说完、框收完再起（`tickPendingDisappearFx`）。
+  pendingDisappearFx = { spec, before };
+  requestRender();
+}
+
+/** ★ 第十四份：押着等台词 / 訊息框的那一段飛機 / 飛碟 */
+let pendingDisappearFx: { spec: BoardFilmSpec; before: GameState } | null = null;
+
+function tickPendingDisappearFx(): void {
+  const p = pendingDisappearFx;
+  if (p === null) return;
+  if (speechQueue.length > 0 || deferredSpeech !== null || blockingPresentation() || !renderer.walkDone()) {
+    requestRender();
+    return;
+  }
+  pendingDisappearFx = null;
+  deferredBoardBefore = p.before;
+  startBoardFilm(p.spec);
+  log(`影片：${p.spec.id === 'abduct' ? '被外星人綁架（飛碟）' : '強迫出國觀光（飛機）'}`);
 }
 
 /**
@@ -7011,6 +7040,10 @@ function requestRender(): void {
     if (screen === 'game') tickPendingCardRoute();
     // ★ 第十四份 #4：道具台词说完才开选择界面
     if (screen === 'game') tickPendingToolPicker();
+    // ★ 第十四份：免費卡亮牌等收費框收掉再起
+    if (screen === 'game') tickDeferredCardUse(uiEnv(), noticeBoxScreen.active(uiEnv()));
+    // ★ 第十四份：飛機 / 飛碟那一段等台词与理賠框（`0x40d375` 里台词 → 理賠 → 影片）
+    if (screen === 'game') tickPendingDisappearFx();
     if (screen === 'game') tickObjectFlight(performance.now());
     // ★ 第十四份 #5：機器娃娃等台词说完才上路
     if (screen === 'game') tickDollRelease();

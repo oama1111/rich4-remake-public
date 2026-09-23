@@ -54,6 +54,9 @@
 import {
   cardLine,
   cardLineVoice,
+  FREE_CARD_ANSWER_LINES,
+  FREE_CARD_ANSWER_SLOT,
+  freeCardAnswerVoice,
   parseVoiceCode,
   toolLine,
   speechEmojiImage,
@@ -678,4 +681,28 @@ export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
     }
     ctx.restore();
   }
+}
+
+/**
+ * ★ 第十四份：免費卡用完之后**地主回的那一句**（卡牌台词表槽 79，表情号 1）。
+ * @source `0x00444b8e mov edi,[eax + 0x481376]` / `0x00444b95 push 1` / `0x00444b98 call 0x44ef41`
+ */
+export function freeCardAnswerBubbleOf(player: number, character: number, speaker: string): SpeechBubble | null {
+  const line = FREE_CARD_ANSWER_LINES[character];
+  if (line === undefined) return null;
+  const [emojiCode, text] = line;
+  const isEmoji = emojiCode !== null;
+  return {
+    player,
+    character,
+    event: FREE_CARD_ANSWER_SLOT,
+    speaker,
+    expression: 1,
+    lines: isEmoji ? [] : bubbleLines(text),
+    voice: freeCardAnswerVoice(character),
+    emoji: isEmoji ? speechEmojiImage(emojiCode) : null,
+    textAt: SPEECH_TEXT_AT,
+    emojiAt: SPEECH_EMOJI_AT,
+    holdMs: SPEECH_HOLD_MS,
+  };
 }

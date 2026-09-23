@@ -69,6 +69,8 @@ import {
   newsTitle,
   newsView,
   resetEventBoxScreen,
+  cardUseDeferred,
+  tickDeferredCardUse,
   type EventBoxItem,
   type EventBoxPlan,
 } from './event-box-screen.ts';
@@ -1353,5 +1355,23 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
     resetEventBoxScreen();
     const s = stateOf([player(0, [])], null);
     expect(eventBoxScreen.fastForward!(fakeEnv(s))).toBe(false);
+  });
+});
+
+describe('★★ 第十四份：收費那一段里的免費卡亮牌排在收費框之后（`afterNotices`）', () => {
+  it('先押着（不起播、但算「押着」），訊息框收了才起', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], null);
+    const after: GameState = { ...before, lastCardPlay: { player: 0, cardId: 20, afterNotices: true, answeredBy: 1 } };
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(false);
+    expect(cardUseDeferred()).toBe(true);
+    tickDeferredCardUse(fakeEnv(after, 10), true); // 框还在
+    expect(eventBoxScreenState().playing).toBe(false);
+    tickDeferredCardUse(fakeEnv(after, 1600), false); // 框收了
+    expect(eventBoxScreenState().playback?.plan.kind).toBe('card');
+    expect(eventBoxScreenState().playback?.plan.id).toBe(20);
+    expect(cardUseDeferred()).toBe(false);
+    resetEventBoxScreen();
   });
 });

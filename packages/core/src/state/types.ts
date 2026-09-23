@@ -406,6 +406,16 @@ export interface CardPlayHint {
   player: number;
   /** 卡号 1..30（`@rich4/data` 的 `cardLine(character, card)` 用它取台词） */
   cardId: number;
+  /**
+   * ★ 第十四份：被动卡（免費卡）在收費那一段里用掉的 —— 亮牌排在同一拍的**收費訊息框之后**
+   *   （原版 `0x00419d5a` 租金框 / `0x0041aeaa` 企業框在前，`0x00444b25 call 0x441f73` 亮牌在后）。
+   */
+  afterNotices?: boolean;
+  /**
+   * ★ 第十四份：免費卡用完后**回一句**的地主（`0x00444b6d cmp ecx,-1 / je` → `0x00444b98
+   *   player_say(地主, 1, 卡牌台词表[角色][槽 79])`）。企業那一路传 −1 ⇒ 不带。
+   */
+  answeredBy?: number;
 }
 
 /** 魔法屋一段演出的前后状态（见 `GameState.lastMagicBeats`）*/
@@ -1247,6 +1257,13 @@ export interface GameState {
    * 金额 = 原版压给 `0x44f354` 的那个数；档位由表现层分（`gainEventFor`）。
    */
   lastGainSays?: readonly { player: number; amount: number }[] | null;
+
+  /**
+   * ★ 第十四份：**「消失」那一刻当事人说的那一句**（`fcn_0040d375` 的 `0x0040d3f8 call 0x44f2c2(玩家, 天数)`，
+   * 小额损失那一族 3/4/5；天数 4..6 那一档的 `rand()&1` 在 core 用同一个发生器掷）—— 纯表现，只活一条 action。
+   * 命運 6/7（出國 / 綁架）与航空公司的旅遊（`0x0041b05a`）共用。
+   */
+  lastDisappearSay?: { player: number; event: number } | null;
 
   /**
    * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。

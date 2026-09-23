@@ -591,6 +591,25 @@ describe('★ 神明加持真的接上了 @source VA 0x0044b896', () => {
     expect(s2.lastEvent).toEqual({ kind: 'fortune', id: 11 });
   });
 
+  run('★★ 命運 6 出國 3 天 ⇒ `0x0040d3f8` 那一句（事件 5）+ 保險期内理赔（`0x0040d425`）', () => {
+    const c = standFortune(0, 0, { insuranceDays: 30 });
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 6), { type: 'settle' }, c.topo);
+    expect(s2.lastEvent?.id).toBe(6);
+    const victim = s2.lastDisappearSay?.player ?? -1;
+    expect(s2.lastDisappearSay).toEqual({ player: victim, event: 5 });
+    expect(s2.players[victim]!.blocking.disappearing & 0x3f).toBe(3);
+    expect(s2.notices.at(-1)).toEqual({ key: 'insurance.payout', args: [6000], holdMs: 2000 });
+  });
+
+  run('★ 倒霉加倍（6 天）⇒ 中间档 `rand()&1`：事件 3|4，用同一个发生器掷', () => {
+    const c = standFortune(0, -1);
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 6), { type: 'settle' }, c.topo);
+    expect(s2.lastEvent?.id).toBe(6);
+    expect([3, 4]).toContain(s2.lastDisappearSay?.event);
+  });
+
   run('★ 16（汽車超速罰款）接上了加持：財運 > 100 ⇒ 免付', () => {
     const c = standFortune(101, 0, { trafficMethod: 2 });
     if (c === null) return;

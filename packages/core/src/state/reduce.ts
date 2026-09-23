@@ -1168,8 +1168,10 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   // ★ 第十四份：「進帳」台词那几笔（`lastGainSays`）同一套：只活一条 action。
   const staleGain =
     raw !== state && (raw.lastGainSays ?? null) !== null && raw.lastGainSays === state.lastGainSays;
+  const staleAway =
+    raw !== state && (raw.lastDisappearSay ?? null) !== null && raw.lastDisappearSay === state.lastDisappearSay;
   const next =
-    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain
+    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain || staleAway
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
@@ -1181,6 +1183,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           ...(staleBeats ? { lastMagicBeats: null } : {}),
           ...(staleSays ? { lastBlockedSays: null } : {}),
           ...(staleGain ? { lastGainSays: null } : {}),
+          ...(staleAway ? { lastDisappearSay: null } : {}),
         }
       : raw;
   // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈
@@ -1787,6 +1790,11 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           let players = state.players;
           let who = state.currentPlayer;
           if (tail.free) players = players.map((p, i) => (i === who ? consumeCard(p, PASSIVE_CARDS.FREE) : p));
+          // ★ 第十四份：免費卡的亮牌 + 出牌者那句 + 地主回一句（`0x00444b07`..`0x00444b98`，
+          //   `0x00419e58 call 0x444a60(当前玩家, 地主, ebp)`）
+          const freeCardPlay = tail.free
+            ? { player: who, cardId: PASSIVE_CARDS.FREE, afterNotices: true, answeredBy: land.owner - 1 }
+            : null;
           if (tail.scapegoat !== -1) {
             players = players.map((p, i) => (i === who ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p));
             who = tail.scapegoat;
@@ -1815,6 +1823,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
             players,
             rngState: rng.getState(),
             lastTollLands: tollLandsHint,
+            ...(freeCardPlay === null ? {} : { lastCardPlay: freeCardPlay }),
           };
           if (total === 0) {
             // @source 免費卡抹成 0 后不付；0x0041a00b 仍记这一笔 = 0
@@ -5397,6 +5406,13 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
   const fortuneLine = out.cancelled || out.unimplemented ? undefined : FORTUNE_LINE_EVENT.get(effectiveId);
   const phraseIndex =
     fortuneLine === undefined ? undefined : effectiveId === FORTUNE_MOTORBIKE_STOLEN ? 3 + (rng.next() & 1) : fortuneLine;
+  // ★ 第十四份：命運 6/7 真的把人送走了（`fcn_0040d375` 首次那一支）⇒ `0x0040d3f8` 那一句（同一个发生器）
+  const awayEntry = fortuneEvent(effectiveId);
+  const awayVictim =
+    awayEntry !== undefined && awayEntry.effects.includes('disappear') && !out.cancelled && !out.unimplemented && out.amount > 0
+      ? (out.fortuneVictim ?? withDeck.currentPlayer)
+      : null;
+  const awaySay = awayVictim === null ? null : disappearSay(awayVictim, out.amount, rng);
 
   let applied: GameState = {
     ...withDeck,
@@ -5408,6 +5424,7 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
     prisonOccupancy: out.prisonOccupancy,
     hospitalOccupancy: out.hospitalOccupancy,
     lastEvent: { kind: 'fortune', id: effectiveId, ...(phraseIndex === undefined ? {} : { phraseIndex }) },
+    ...(awaySay === null ? {} : { lastDisappearSay: awaySay }),
   };
   // ★ 第十四份：神明加持那一扇（`fcn_0044b896` 返回 1/2 时调用方弹 `[0x48c5b8]`，1500 ms）——
   //   施加阶段的第一件事（在付款 / 入獄之前）。`%s` = `[0x47ed76 + god_info*4]`。
@@ -5499,6 +5516,9 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
       //   与新聞 29 的 `out.chairmanPrison.victim` 同一口径。
       const victim = out.fortuneVictim ?? me;
       applied = insureConfinement(applied, topo, victim, out.amount);
+    } else if (awayVictim !== null) {
+      // ★ 第十四份：出國 / 綁架同样理赔（`0x0040d425 call 0x44ba63(玩家, 2000×天×物價, 0)`，在 `0x40d375` 里）
+      applied = insureConfinement(applied, topo, awayVictim, out.amount);
     } else if (entry.effects.includes('loan') || FORTUNE_PAY_TAIL_IDS.has(effectiveId)) {
       applied = insurancePayoutTo(applied, topo, me, out.amount);
     }
@@ -7073,6 +7093,8 @@ function chargeCompanyFee(
     players = players.map((p, i) => (i === who ? consumeCard(p, PASSIVE_CARDS.FREE) : p));
     toll = 0;
   }
+  // ★ 第十四份：免費卡的亮牌 + 出牌者那句（`0x0041af20 call 0x444a60(付款人, −1, ebp)`：地主 −1 ⇒ 没有回话）
+  const freeCardPlay = tail.free ? { player: payer, cardId: PASSIVE_CARDS.FREE, afterNotices: true } : null;
   if (tail.scapegoat !== -1) {
     players = players.map((p, i) => (i === who ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p));
     who = tail.scapegoat;
@@ -7084,9 +7106,81 @@ function chargeCompanyFee(
       who = reaper;
     }
   }
-  let next: GameState = { ...state, players, rngState: rng.getState() };
+  let next: GameState = {
+    ...state,
+    players,
+    rngState: rng.getState(),
+    ...(freeCardPlay === null ? {} : { lastCardPlay: freeCardPlay }),
+  };
   for (const n of notices) next = appendFreshNotice(next, n);
-  return payCompany(next, topo, who, c.id, toll);
+  const paid = payCompany(next, topo, who, c.id, toll);
+  // ★ 第十四份：航空的旅遊 —— `0x0041b02a cmp byte [企業+0x1a],1` / `0x0041b030 [esp+0xd0] != 0`（天数）/
+  //   `0x0041b03d 付款人 who_plays != 0` / `0x0041b046 终局码 == 0` → `0x0041b05a call 0x40d375(付款人, 天数, 0)`。
+  //   付款人是**最后付钱的那个**（嫁禍 / 死神换过之后的 `edi`）；免費卡抹成 0 也照样出國。
+  if (c.type === INDUSTRY.airline && travelDays !== 0 && paid.phase !== 'gameOver' && isAlive(paid.players[who]!)) {
+    return sendAway(paid, topo, who, travelDays, 0 /* DISAPPEAR_REASON_ABROAD：`0x0041b04f push 0` */);
+  }
+  return paid;
+}
+
+/**
+ * ★ 第十四份：`fcn_0040d375(玩家, 天数, 原因)` —— 「消失」（出國 / 被綁架）的施加。
+ *
+ * ```asm
+ * 0040d39e  ah = [+0x33] / test / jne 0x40d4c5   ; 已经在外：天数累加（低 6 位 + 新值，原因位跟着新值）
+ * 0040d3ad  call 0x40d761                        ; 首次：清监狱 / 医院占用与四个计数
+ * 0040d3e6  call 0x41d476(玩家 x, y, 0)          ; 镜头到当事人（是当前玩家时 = 复位）
+ * 0040d3f8  call 0x44f2c2(玩家, 天数)            ; 小额损失台词 3/4/5（4..6 天那一档 rand()&1）
+ * 0040d425  call 0x44ba63(玩家, 2000×天×物價, 0)  ; 保險理賠
+ * 0040d431  add [+0x42], 天数                     ; 本月倒楣天数
+ * 0040d43a  [+0x33] = 天数 | 原因 << 6
+ * 0040d44b  原因 0 → 影片 0x22e（飛機）/ 1 → 0x215（飛碟）（客户端 `disappear-fx.ts` 按 `+0x33` 的跃迁播）
+ * ```
+ */
+function sendAway(state: GameState, topo: MapTopology, victim: number, days: number, reason: number): GameState {
+  const p = state.players[victim];
+  if (p === undefined) return state;
+  const packed = ((days & 0x3f) | (reason << 6)) & 0xff;
+  if (p.blocking.disappearing !== 0) {
+    // @source 0x0040d4c5 `dl = ah & 0x3f` / `0x0040d4d5 add dh, al`
+    return withPlayer(state, victim, (q) => {
+      q.blocking = { ...q.blocking, disappearing: ((p.blocking.disappearing & 0x3f) + packed) & 0xff };
+    });
+  }
+  const prisonOccupancy = [...state.prisonOccupancy];
+  const hospitalOccupancy = [...state.hospitalOccupancy];
+  if (p.blocking.inPrison !== 0) prisonOccupancy[victim] = 0;
+  if (p.blocking.inHospital !== 0) hospitalOccupancy[victim] = 0;
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const say = disappearSay(victim, days, rng);
+  let next: GameState = {
+    ...state,
+    prisonOccupancy,
+    hospitalOccupancy,
+    rngState: rng.getState(),
+    ...(say === null ? {} : { lastDisappearSay: say }),
+    // `0x0040d3e6 view_to(玩家 +0x08, +0x0a)`：是当前玩家时就是复位（不写）；否则移到他站的那一格
+    ...(victim === state.currentPlayer || topo.nodes[p.nodeId - 1] === undefined
+      ? {}
+      : { lastViewTarget: { x: topo.nodes[p.nodeId - 1]!.x, y: topo.nodes[p.nodeId - 1]!.y } }),
+  };
+  next = insureConfinement(next, topo, victim, days);
+  return withPlayer(next, victim, (q) => {
+    q.totalWinterSleepDays = misfortuneDaysAfter(q.totalWinterSleepDays, days);
+    q.blocking = { ...q.blocking, inHotel: 0, inPrison: 0, inHospital: 0, disappearing: packed };
+  });
+}
+
+/**
+ * `0x0040d3f8 call 0x44f2c2(玩家, 天数)` 那一句（`fcn_0044f2c2`：>6 → 事件 3；>3 → 3|4 `rand()&1`；≠0 → 5）。
+ * ★ 中间档那一次 `rand()` 走的是同一个发生器 ⇒ 在这里掷（与旅館住店那一处的既有口径不同，见 T-052）。
+ */
+function disappearSay(player: number, days: number, rng: WatcomRng): { player: number; event: number } | null {
+  if (days > 6) return { player, event: 3 };
+  if (days > 3) return { player, event: 3 + (rng.next() & 1) };
+  if (days !== 0) return { player, event: 5 };
+  return null;
 }
 
 /** 公司落点收尾：照原版走到出口时再问一次「是否認購股份」（0x0041d1a9） */
