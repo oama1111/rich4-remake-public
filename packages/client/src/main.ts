@@ -527,8 +527,7 @@ import {
   drawLoanPressed,
   loanDueDays,
   loanBubbleVoice,
-  loanSlideDone,
-  loanSlideStep,
+  loanTickSlide,
   loanStart,
   loanStep,
   type LoanPanelsView,
@@ -1355,9 +1354,8 @@ function bankTick(now: number): void {
   }
   if (now - loanAt < LOAN_TICK_MS) return;
   loanAt = now;
-  if (!loanSlideDone(loanUi.slide)) {
-    loanUi = { ...loanUi, slide: loanSlideStep(loanUi.slide) };
-  }
+  // 先走滑入那一段（退净 + 办成过一笔 → st = 0xb），再轮到气泡到点那张表 —— 与原版同一拍的次序
+  loanUi = loanTickSlide(loanUi);
   const bubble = loanUi.bubble;
   if (bubble === null || now - loanBubbleAt >= LOAN_BUBBLE_MS) {
     loanSend({ kind: 'bubbleEnd' });
@@ -7678,8 +7676,8 @@ function requestRender(): void {
         // @source `0x4347a2` 的 `cmp [0x48c3cc], 4 / je`
         blink: financeOpen && amountPage === null ? loanBlinkImage(loanBlink) : null,
       });
-      // Q-BANK-1：两块**滑入面板**压在底图上 —— 玩家面板 200×280 @(0,y)、
-      // 日期面板 200×200 @(280,y)，y = `[0x48c3d5]` @source fcn_00435062。
+      // Q-BANK-1：两块**滑入面板**从右边横着滑进来 —— 玩家面板 200×280 @(x,0)、
+      // 日期面板 200×200 @(x,280)，x = `[0x48c3d5]`（640 → 440）@source fcn_00435062 0x435552 / 0x43557c。
       if (loanUi !== null) {
         drawLoanPanels(stageCtx, spriteNow, loanPanelView(loanUi));
         // EXIT 的按下图（图 19）—— 四颗钮里只有它有 @source loc_00435cca
@@ -7692,10 +7690,10 @@ function requestRender(): void {
       }
     }
     // ── 还款提醒窗（`0x436034`）：`0x434186(0)` 的店員室（非董事長那一支，冻结时盖章）+ 两块面板
-    //   **直接贴在到位处**（`0x004360f6` / `0x00436115` 的 y = 0x1b8，不滑入）+ 店員的气泡 ──
+    //   **直接贴在到位处**（`0x004360f6` (0x1b8, 0) / `0x00436115` (0x1b8, 0x118)，即 x = 440，不滑入）+ 店員的气泡 ──
     if (reminderUi !== null) {
       drawBankLoan(stageCtx, spriteNow, { chairman: false, frozen: bankFrozen(), subDialog: false, finance: null, blink: null });
-      drawLoanPanels(stageCtx, spriteNow, loanPanelView({ slide: { y: LOAN_SLIDE.shown, dy: 0 } }));
+      drawLoanPanels(stageCtx, spriteNow, loanPanelView({ slide: { x: LOAN_SLIDE.shown, dx: 0 } }));
       if (reminderUi.text !== null) drawLoanBubble(stageCtx, spriteNow, reminderUi.text);
     }
     if (atm !== null && overlay === null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
