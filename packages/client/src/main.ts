@@ -183,7 +183,6 @@ import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
 import {
   cardPlaySpeech,
   toolUseSpeech,
-  openingSpeech,
   speechEventsFor,
   speechLinesFor,
   type SpeechLine,
@@ -8342,12 +8341,14 @@ function startGame(): void {
   //   「进樂透页听不到猫女的语音」「整体感觉语音没怎么触发」）。
   //   棋盘一局是分钟级的，这里提前拉完，后面每一句都在。
   ensureSpeakingArchive();
-  // ★ 開局宣言（事件 26）—— **不走任何 action**，故 `playSoundFor` 永远看不到它：
-  //   原版那一句在 `fcn_00407842` 里（`@source 0x00407946`，全 exe 唯一一处），
-  //   `callers 0x407842` 只有 `0x40cff0` / `0x41da2d` 两处，都是**开/重开一局**，
-  //   且都在模态消息框之后、棋盘打开之前。这里在开局的同一个点显式播一次。
-  //   台词与語音号：`SPEECH_LINES[角色][26]` / `speechIndex(角色, 26)`。
-  if (speechQueue.push(openingSpeech(state), performance.now()) > 0) requestRender();
+  // ★★ 開局**不说话**（第十四份试玩回报 #1「开局从机舱里跳伞出来时不应该有台词」）。
+  //   先前这里播了一句事件 26（「我要再接再勵…」）—— 那是**输了之后续局**的台词：
+  //   全 exe 唯一一处 `0x00407946` 在 `fcn_00407842` 里（先开模态框 `0x00407919`、选了才说），
+  //   `callers 0x407842` 只有 `0x40cff0`（破产流程「唯一真人出局」）与 `0x41da2d`
+  //   （`0x41d89e` 胜负判定里电脑赢了的那一支）。新开一局的路
+  //   `0x401cd0 call 0x406de7 → 0x401543 → 0x407ad2 → 0x4190cf → 0x4291d6 → 0x415872`（跳伞过场）
+  //   `→ 0x401981` **一句台词都不调**。那个续局模态框本引擎还没复刻（known-deviations），
+  //   故 26 这一句眼下没有落点；`openingSpeech()` 留在 `speech.ts` 等它。
   log(
     `開局：地圖 ${setup.mapId}　種子 ${seed}　` +
       players.map((p, i) => `P${i + 1}${p.kind === 'human' ? '人' : '電'}`).join(' '),
@@ -10023,10 +10024,9 @@ function connectOnline(url: string, room: string, name: string): void {
           playBoardBgm(1);
           // ★ `Speaking.mkf` 进棋盘这一刻就开始拉（与单机 7637 同一理由；网页版是 no-op）
           ensureSpeakingArchive();
-          // ★ 開局宣言（事件 26）—— 与单机 7643 同一个点，纯表现、各台自己放
-          // ★★ 第十二份試玩回報（「断线重连后所有文本提示又重新触发了一轮」）：只有**真的开局**才说。
-          //   中途进房（刷新 / 断线重连）时这一局早就开过了，这句已经说过 —— 再说一遍就是重演。
-          if (roomJoinedUnstarted && speechQueue.push(openingSpeech(state), performance.now()) > 0) requestRender();
+          // ★★ 開局**不说话** —— 与单机 `startGame()` 同一条（第十四份试玩回报 #1）：
+          //   事件 26 是「输了续局」那一句（`fcn_00407842`，只在 `0x40cff0` / `0x41da2d` 调），
+          //   新开一局的路（`0x406de7 → … → 0x415872` 跳伞过场）不说。
           // 换地图要重新解底图 —— `setGround(null)` 会 close 掉旧位图，
           // 先前这里只把 `ground` 置 null，旧 bitmap 就泄漏了（与单机 7650 对齐）
           setGround(null);

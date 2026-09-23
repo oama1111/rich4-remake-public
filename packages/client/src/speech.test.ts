@@ -1442,6 +1442,15 @@ describe('★ 開局宣言 —— 26（`fcn_00407842`，不走 action）', () =>
     const s = makeGameState();
     expect(said(speechEventsFor(s, clone(s)))).not.toContainEqual({ player: 0, event: 26 });
   });
+
+  it('★★ 新開一局**不說**（第十四份試玩回報 #1「开局从机舱里跳伞出来时不应该有台词」）', () => {
+    // @source 新局 `0x401cd0 call 0x406de7 → 0x401543 → 0x407ad2 → 0x4190cf → 0x4291d6 → 0x415872`
+    //   （跳傘過場）`→ 0x401981`：沒有 `0x407842`；26 只在 `0x40cff0` / `0x41da2d`（輸了續局）說。
+    //   單機 `startGame()` 與聯機開局那兩處都不許再播它。
+    const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(main).not.toMatch(/speechQueue\.push\(openingSpeech\(/);
+    expect(main).not.toMatch(/^\s*openingSpeech,$/m);
+  });
 });
 
 // ============================================================

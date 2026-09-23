@@ -1247,9 +1247,13 @@ export function detectBigWealthLine(before: GameState, after: GameState): Detect
  * （`0x00407919 call 0x4018e7` / `Wait_0402_Message`）之后；`callers 0x407842`
  * 只有两处 —— `0x40cff0`（`0x40cd87` 破产流程里「唯一真人出局」那一支）
  * 与 `0x41da2d`（`0x41d89e` 的续局分支，它先把 `[0x49910c]` 归零再调）。
- * 两条都是**开局/重开**，都不经过任何 action ⇒ `playSoundFor` 永远看不到它。
+ * 两条都是**输了之后续局**（单人类局里真人破产 / 电脑达成胜利条件），都不经过任何 action
+ * ⇒ `playSoundFor` 永远看不到它。
  *
- * ⇒ 本引擎由 `main.ts` 的 `startGame()` 显式播一次（`openingSpeech`）。
+ * ★★ **新开一局不说**（第十四份试玩回报 #1）：`0x401cd0 call 0x406de7 → … → 0x415872`
+ *   （跳伞过场）→ `0x401981` 那条路上没有 `0x407842`。先前 `main.ts` 的 `startGame()`
+ *   每开一局都播一次（E-14 的「有意偏离」），需求方判定为错 —— 已撤掉。
+ *   续局模态框本引擎尚未复刻，本函数留给它用。
  */
 export const OPENING_SPEECH_EVENT = 26;
 
