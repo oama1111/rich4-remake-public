@@ -189,7 +189,11 @@ export type Action =
    */
   | {
       type: 'bank';
-      op: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'financeBorrow' | 'financeRepay';
+      /**
+       * ★ `'auto'`（`amount` 不看）= 貸款屏开着时座位被**托管** ⇒ 按电脑那一支（`0x004367ab`：提前还贷 /
+       *   `rand()%10` 放款）替他办完并关屏。只认「不是恰好 `who_plays == 1`」的当前玩家（托管 = 1|4）。
+       */
+      op: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'financeBorrow' | 'financeRepay' | 'auto';
       amount: number;
     }
   /** 保釋監獄/醫院里的某个槽位（0..3 玩家、4..7 NPC） */

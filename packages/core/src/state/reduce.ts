@@ -2249,6 +2249,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (state.pending === null || state.pending.kind !== 'bank') return state;
       const me = state.players[state.currentPlayer];
       if (me === undefined || !isAlive(me)) return state;
+      // ★ 貸款屏开着时被托管：座位已归电脑 ⇒ 按电脑那一支（`0x004367ab`）办完、关屏。
+      //   恰好真人（`who_plays == 1`）不认这一手 —— 他的选择只能是屏上那几颗钮。
+      if (action.op === 'auto') {
+        if ((me.whoPlays & 0xff) === WHO_PLAYS_HUMAN) return state;
+        return aiBankRoom({ ...state, pending: null }, topo);
+      }
       const wealth = state.pending.wealth;
       let next: Player;
       // ★ 貸款屏**没有**存款 / 提款：原版那扇窗（`fcn_00435062`）的命中表 `0x4757f8` 只有四颗

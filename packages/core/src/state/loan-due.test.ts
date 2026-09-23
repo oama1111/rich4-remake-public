@@ -372,3 +372,44 @@ describe('★ 电脑落銀行：当场走 0x4367ab 那一支（不挂柜台）',
     expect(r.players[0]!.loanDueDate).toBe(due(20));
   });
 });
+
+describe('★ 貸款屏开着时被托管 ⇒ 按电脑那一支替他办（需求方拍板：托管 = 电脑代打）', () => {
+  const openScreen = (whoPlays: number, rngState: number, over: Partial<Player> = {}): GameState =>
+    makeGameState({
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: 1, whoPlays: i === 0 ? whoPlays : WHO_PLAYS_COMPUTER, cash: 9000, moneyInBank: 1000, loanRatio: 100, ...(i === 0 ? over : {}) }),
+      ),
+      pending: { kind: 'bank', wealth: 10_000, loanCapacity: 10_000, specialFinance: null },
+      phase: 'turnEnd',
+      rngState,
+    });
+  const map = { nodes: [] } as unknown as Rich4Map;
+
+  it('策略给 `{bank, auto}`；reducer 走 0x4367ab：rand()%10==0 ⇒ 借 100% 身家、定还款日、关屏', () => {
+    const seed = seedWhere((x) => x % 10 === 0);
+    const s = openScreen(WHO_PLAYS_HUMAN | 4, seed);
+    const a = decideAction({ state: s, map });
+    expect(a).toEqual({ type: 'bank', op: 'auto', amount: 0 });
+    const r = reduce(s, a!, bankTopo);
+    expect(r.pending).toBeNull();
+    expect(r.phase).toBe('turnEnd');
+    expect(r.players[0]!.loan).toBe(10_000);
+    expect(r.players[0]!.moneyInBank).toBe(11_000);
+    expect(r.players[0]!.loanDueDate).toBe(packed(1998, 4, 6));
+    expect(r.notices).toContainEqual({ key: 'bank.aiBorrow', args: ['約翰喬', 10_000] });
+  });
+
+  it('有贷款且满足提前还 ⇒ 还清（还款日留着）', () => {
+    const s = openScreen(WHO_PLAYS_HUMAN | 4, 1, { cash: 0, moneyInBank: 30_000, loan: 10_000, loanDueDate: due(40) });
+    const r = reduce(s, { type: 'bank', op: 'auto', amount: 0 }, bankTopo);
+    expect(r.players[0]!.loan).toBe(0);
+    expect(r.players[0]!.moneyInBank).toBe(20_000);
+    expect(r.players[0]!.loanDueDate).toBe(due(40));
+    expect(r.pending).toBeNull();
+  });
+
+  it('恰好真人（who_plays == 1）不认 auto —— 原样返回', () => {
+    const s = openScreen(WHO_PLAYS_HUMAN, 1);
+    expect(reduce(s, { type: 'bank', op: 'auto', amount: 0 }, bankTopo)).toBe(s);
+  });
+});

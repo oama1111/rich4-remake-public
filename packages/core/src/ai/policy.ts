@@ -562,8 +562,9 @@ export function decidePending(state: GameState): Action | null {
   }
   // ★ 貸款屏：电脑（与托管）**收不到**这一扇 —— 原版 `0x004366a3 cmp byte [+0x15],1 / jne 0x4367ab`
   //   让它们当场走电脑那一支（提前还贷 / `rand()%10` 放款，reducer 的 `aiBankRoom`），不开窗。
-  //   走到这里的只会是**开着貸款屏被托管的真人** —— 与 ATM 同样替他关窗（模态窗返回 = EXIT）。
-  if (p.kind === 'bank') return { type: 'declineDecision' };
+  //   走到这里的只会是**开着貸款屏被托管的真人** —— 托管就是由电脑代打 ⇒ 按电脑那一支替他办完
+  //   （`op: 'auto'`，随机数在 reducer 里掷）。
+  if (p.kind === 'bank') return { type: 'bank', op: 'auto', amount: 0 };
   // ★ 还款提醒窗（`0x436034`）：只有「恰好真人」才开，窗里没有任何选择 —— 被托管就替他关窗，
   //   core 随即走完这一天的回合边界（`0x41c84f` 的其余部分）。
   if (p.kind === 'loanReminder') return { type: 'declineDecision' };

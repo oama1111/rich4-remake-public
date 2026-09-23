@@ -105,6 +105,8 @@ function humanAction(state: GameState, map: ReturnType<typeof parseMap>, seat: n
   if (state.phase === 'awaitingRoll') return { type: 'rollDice' };
   const a = decideAction({ state: asAi(state, seat), map });
   if (a === null) throw new Error(`座位 ${seat} 无决策：${state.phase} / ${state.pending?.kind ?? '-'}`);
+  // ★ 貸款屏上 AI 给的是「托管 ⇒ 按电脑那一支办」（`bank/auto`），恰好真人不认这一手 ⇒ 真人这一端按 EXIT 离开
+  if (a.type === 'bank' && a.op === 'auto') return { type: 'declineDecision' };
   return a;
 }
 
