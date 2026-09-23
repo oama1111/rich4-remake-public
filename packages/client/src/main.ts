@@ -470,6 +470,7 @@ import {
   atmOp,
   atmOpen,
   atmPress,
+  atmPressSound,
   drawBankAtm,
   hitAtmButton,
   type AtmState,
@@ -957,6 +958,12 @@ function syncAtmPending(): void {
 let atmCode: number | null = null;
 let atmCodeAt = 0;
 
+/** ATM 按下那一声（Effect.mkf）—— 码 → 音效见 `atmPressSound` */
+function atmSound(code: number): void {
+  const id = atmPressSound(code);
+  if (id !== null) sound.play('Effect.mkf', id);
+}
+
 /** 关掉 ATM 面板 */
 function closeAtm(): void {
   atm = null;
@@ -1036,6 +1043,8 @@ function atmKey(code: number): void {
   if (st === null) return;
   atmCode = code;
   atmCodeAt = performance.now();
+  // 键盘那一声：`0x00437571` 放 7；H（码 4）改发一次按下走金额栏那一支 ⇒ 9（`atmPressSound` 同一张表）
+  atmSound(code);
   const btn = code - 1;
   if (btn === 3) {
     // @source `loc_004375dc`：合成一次金额栏点击，坐标 (0xdc, 0xdf) = (220,223)
@@ -4412,10 +4421,12 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   const deadAfter = after.players.filter((p) => p.whoPlays === 0).length;
   if (deadAfter > deadBefore) {
     sound.play('Effect.mkf', SOUND_IDS.BANKRUPT);
-  } else if (after.pending?.kind === 'bank' && before.pending?.kind !== 'bank') {
-    // 落在银行
-    sound.play('Effect.mkf', SOUND_IDS.BANK);
   }
+  // ★ 落在銀行**没有**音效：先前这里放的 Effect #4 出自 `0x0043674d push 4`，但那一句紧跟的是
+  //   `0x0043674f call 0x4549cf` —— 那是**播 MIDI**（`sprintf("open sequencer!%s alias mid", [0x47e793 + 4*id])`
+  //   → `mciSendString`），id 4 = `MIDI05.MID`，即貸款屏的配乐（`syncLoanUi` 里 `midi05.mid` 那一句），
+  //   不是 Effect.mkf 的第 4 个音效。它只在 `_rich4_ui_bank_entry` 的**真人**那一支（`0x004366a3
+  //   cmp byte [+0x15],1 / jne 0x4367ab`）；电脑那一支与 ATM 入口 `fcn_004379c9` 都不放音乐。
 
   // ★★ 2026-09-22（第十一份試玩回報 #17「踩到卡片格子时应该有个提示音」）：
   //   原版在**落地处理**的分派器**之前**先统一放一声（種類 2..16）——
@@ -8344,7 +8355,11 @@ function bindInput(): void {
     if (atm !== null) {
       if (atmDragToClick(atmCode) !== null) {
         const q = eventToStage(e);
-        if (q !== null) atmSeekTo(q.x);
+        if (q !== null) {
+          // 原版把这次移动**重发成一次按下**（`loc_00437904` → `0x201`）⇒ 每次都走金额栏那一支、放一声 9
+          atmSound(4);
+          atmSeekTo(q.x);
+        }
       }
       return;
     }
@@ -8934,7 +8949,10 @@ function bindInput(): void {
     }
 
     // ── 銀行 ATM 面板（T-029a）──
+    // ★ 只认左键按下：ATM 窗 `fcn_00436ef8` 的分派只接 `0x201` / `0x203`（→ `loc_00437161`），
+    //   右键在**抬手**（`0x205` → `loc_0043791e` 关窗，走 `contextmenu` 那把梯子），按下时既不认钮也不放音
     if (atm !== null) {
+      if (e.button !== 0) return;
       const q = eventToStage(e);
       if (q === null) return;
       const btn = hitAtmButton(q.x, q.y);
@@ -8942,6 +8960,8 @@ function bindInput(): void {
       // 按下图（`[0x48c40b]` = 钮序号 + 1）@source loc_004371f9
       atmCode = btn + 1;
       atmCodeAt = performance.now();
+      // 按下那一声（模式钮 1、金额栏 9、其余 7）@source `0x00437397` 那段分发，见 `atmPressSound`
+      atmSound(atmCode);
       // 金额栏（序号 3）：按住就按位置换算金额，之后再拖动由 `mousemove` 接
       // @source loc_00437413
       if (btn === 3) {

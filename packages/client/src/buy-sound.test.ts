@@ -49,14 +49,19 @@ describe('★ 買地／買設施成功的音效 —— 49（Effect.mkf）', () =
     expect(body).toContain('before.facilityOwner[id] !== after.currentPlayer + 1');
   });
 
-  it('★ 前三条 `sound.play`（破产 / 银行 / 娃娃）原样保留，49 排在它们之后', () => {
+  it('★ 前两条 `sound.play`（破产 / 娃娃）原样保留，49 排在它们之后', () => {
     const bankrupt = body.indexOf('SOUND_IDS.BANKRUPT');
-    const bank = body.indexOf('SOUND_IDS.BANK)');
     const doll = body.indexOf('SOUND_IDS.DOLL');
     const buy = body.indexOf('SOUND_IDS.BUY_PROPERTY');
-    for (const [name, i] of [['BANKRUPT', bankrupt], ['BANK', bank], ['DOLL', doll], ['BUY_PROPERTY', buy]] as const) {
+    for (const [name, i] of [['BANKRUPT', bankrupt], ['DOLL', doll], ['BUY_PROPERTY', buy]] as const) {
       expect(i, `${name} 不在 playSoundFor 里`).toBeGreaterThan(-1);
     }
     expect(buy).toBeGreaterThan(doll);
+  });
+
+  it('★ 落在銀行**不**放 Effect.mkf 音效：`0x0043674d push 4` 是 `call 0x4549cf`（MIDI05）的参数', () => {
+    // 那一句的配乐在 `syncLoanUi`（`midi05.mid`）—— 只在真人进貸款屏时放
+    expect(body).not.toContain('SOUND_IDS.BANK)');
+    expect((SOUND_IDS as Record<string, number>)['BANK']).toBeUndefined();
   });
 });

@@ -102,13 +102,17 @@ export function readWaveInfo(data: Uint8Array): WaveInfo {
  *   所以 `sound.play('Effect.mkf', [表项])` 就是原版那一下。
  */
 export const SOUND_IDS = {
-  /** 破产 @source VA 0x0040d1cb `push 5`，在 player_bankrupt 内 */
+  /**
+   * 破产 @source VA 0x0040d1cb `push 5`，在 player_bankrupt 内
+   * ⚠️ 2026-09-23 复核：`0x0040d1cd` 紧跟的是 `call 0x4549cf` = **播 MIDI**（`open sequencer!%s`，
+   *   表 `0x47e793`，id 5 = `MIDI06.MID`），不是 Effect.mkf 的音效 —— 与下面两项同一个误读。未改接线，待另案。
+   */
   BANKRUPT: 5,
-  /** 落在银行 @source VA 0x0043674d `push 4`，在银行落点 0x00436668 内 */
-  BANK: 4,
-  /** 樂透开奖 @source VA 0x004317a7 `push 8`，在开奖流程 0x00431712 内 */
+  // ★ 先前这里有 `BANK: 4`（「落在银行 @source 0x0043674d push 4」）—— 那是 `call 0x4549cf`（播 MIDI05，
+  //   貸款屏配乐）的参数，不是音效号；落在銀行原版**不放**任何 Effect.mkf 音效。已删（第十三份试玩回报复核）。
+  /** 樂透开奖 @source VA 0x004317a7 `push 8` ⚠️ 实为 `call 0x4549cf`（MIDI09），不是音效；client 未用 */
   LOTTERY_DRAW: 8,
-  /** 拍卖 @source VA 0x0043c6ca `push 5`，在 run_auction 0x0043bde5 内 */
+  /** 拍卖 @source VA 0x0043c6ca `push 5` ⚠️ 实为 `call 0x4549cf`（MIDI06），不是音效；client 未用 */
   AUCTION: 5,
   /**
    * 標題／選單的**悬停**音 —— 音效 **0**。

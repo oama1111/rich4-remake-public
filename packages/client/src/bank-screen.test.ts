@@ -25,6 +25,7 @@ import {
   atmOp,
   atmOpen,
   atmPress,
+  atmPressSound,
   ATM_MODE,
   drawAtmBar,
   hitAtmButton,
@@ -119,18 +120,32 @@ describe('ATM 的按键逻辑（纯函数）', () => {
     expect(atmLimit({ ...base, mode: 1 })).toBe(20000);
   });
 
-  it('★ 模式钮：点当前那件什么都不做；换模式把已键入的清掉', () => {
+  it('★ 模式钮：每按一次都把金额清掉 —— 点当前那件也一样', () => {
+    // @source `0x004371ce cmp ebx,[0x48c3f0] / je 0x43738f` 只跳过重画高亮；之后照样写码，
+    //   `0x004373ab`（码 1）/ `0x004373eb`（码 2）设模式与上限再 `call 0x436edb`（金额串 = "0"）
+    //   （先前断言「点当前那件原样、连 digits 都留」是把那个 `je` 读成了整段跳过 —— 第十三份试玩回报复核订正）
     const withdraw: AtmState = { mode: 0, digits: '99', limits: [50000, 20000] };
-    expect(atmPress(withdraw, 0)).toEqual(withdraw); // 已经是提款 → 原样（连 digits 都留）
+    expect(atmPress(withdraw, 0)).toEqual({ ...withdraw, digits: '' }); // 已经是提款 → 模式不变、金额清掉
     const asDeposit = atmPress(withdraw, 1)!;
     expect(asDeposit.mode).toBe(1);
     expect(asDeposit.digits).toBe('');
   });
 
-  it('★ 暫停放款时点「提款」（钮 0）不认（原版改用当前模式）', () => {
-    const depositFirst: AtmState = { mode: 1, digits: '', limits: [50000, 20000] };
-    expect(atmPress(depositFirst, 0, true)).toEqual(depositFirst); // 暫停 → 原样
+  it('★ 暫停放款时点「提款」（钮 0）当成点当前那件（原版改用当前模式）', () => {
+    // @source `0x004371e5 cmp byte [+0x3c],0` / `0x004371ee mov ebx,[0x48c3f0]`
+    const depositFirst: AtmState = { mode: 1, digits: '5', limits: [50000, 20000] };
+    expect(atmPress(depositFirst, 0, true)).toEqual({ ...depositFirst, digits: '' }); // 暫停 → 仍是存款
     expect(atmPress(depositFirst, 0, false)!.mode).toBe(0); // 没暫停 → 切得过去
+  });
+
+  it('★ 按下那一声：模式钮 1、金额栏 9、其余 7；越界不放 @source `0x004373b5` / `0x00437415` / `0x0043749a` / `0x00437571`', () => {
+    expect(atmPressSound(1)).toBe(1); // 提款
+    expect(atmPressSound(2)).toBe(1); // 存款
+    expect(atmPressSound(3)).toBe(7); // EXIT
+    expect(atmPressSound(4)).toBe(9); // 金额栏（含拖动、键盘 H）
+    for (let code = 5; code <= 18; code++) expect(atmPressSound(code)).toBe(7);
+    expect(atmPressSound(0)).toBeNull();
+    expect(atmPressSound(19)).toBeNull();
   });
 
   it('★ EXIT 返回 null（关面板）；↵ 不改状态（发 action 是调用方的事）', () => {
@@ -227,6 +242,6 @@ describe('★ 第十三份试玩回报 #1：左上 = 提款、中间 = 存款（
     const st = atmOpen(5000, 3000, true);
     expect(st.mode).toBe(ATM_MODE.deposit);
     expect(atmLimit(st)).toBe(5000);
-    expect(atmPress(st, 0, true)).toEqual(st);
+    expect(atmPress(st, 0, true)!.mode).toBe(ATM_MODE.deposit);
   });
 });

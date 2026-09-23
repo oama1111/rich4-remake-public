@@ -205,16 +205,21 @@ export function atmLimit(st: AtmState): number {
  *
  * 数字盘那 12 颗照着图上的字走：`C` 清空、`←` 退格；最多 10 位
  * （@source `fcn_00436d3a` 的 `cmp edi, 0xa`）。
- * `MAX` 把金额填成上限（图 17 上印的就是 `MAX`）；
- * 两颗模式钮**点当前那件不做任何事**（@source `loc_00437161` 的
- * `cmp ebx,[0x48c3f0] / je`），换模式则把已键入的清掉。钮序号 = 模式号（钮 0 提款、钮 1 存款）。
+ * `MAX` 把金额填成上限（图 17 上印的就是 `MAX`）。
+ *
+ * 两颗模式钮（钮序号 = 模式号：钮 0 提款、钮 1 存款）**每按一次都重设**：模式、上限、金额串归 `"0"`
+ * —— 点的是当前那件也一样。@source `loc_00437161`：`0x004371ce cmp ebx,[0x48c3f0] / je 0x43738f`
+ * 只是**跳过重画高亮**，照样 `0x0043738f` 写码 → `0x004373ab`（码 1）/ `0x004373eb`（码 2）设模式与上限
+ * 后 `call 0x436edb(1)`（`0x00436edb mov byte [0x48c3f8],0x30` = 金额串清成 `"0"`）。
+ * （第十三份试玩回报复核订正：先前写成「点当前那件什么都不做、连 digits 都留」，把那个 `je` 读成了整段跳过。）
  */
 export function atmPress(st: AtmState, btn: number, frozen = false): AtmState | null {
   if (btn === 2) return null; // EXIT
-  // ★ 暫停放款时点「提款」（钮 0）不认（原版改用当前模式那件）@source `loc_004371da`
-  if (btn === 0 && frozen) return st;
-  if (btn === 0) return st.mode === 0 ? st : { ...st, mode: 0, digits: '' };
-  if (btn === 1) return st.mode === 1 ? st : { ...st, mode: 1, digits: '' };
+  if (btn === 0 || btn === 1) {
+    // ★ 暫停放款时点「提款」（钮 0）换成当前模式那件 @source `0x004371e5` / `0x004371ee mov ebx,[0x48c3f0]`
+    const mode = btn === 0 && frozen ? st.mode : btn;
+    return { ...st, mode, digits: '' };
+  }
   if (btn === 16) return { ...st, digits: String(atmLimit(st)) };
   if (btn === 17) return st; // ↵ 由调用方发 action，不改状态
   const key = atmKeyOf(btn);
@@ -224,6 +229,28 @@ export function atmPress(st: AtmState, btn: number, frozen = false): AtmState | 
   if (st.digits.length >= ATM_DIGIT.max) return st;
   if (st.digits === '' && key === '0') return st; // 前导 0 不攒
   return { ...st, digits: st.digits + key };
+}
+
+/**
+ * 按下（鼠标 `0x201` / 键盘 `0x100`）那一下放的音效（Effect.mkf 编号）；`null` = 不放。
+ *
+ * @param code 按下码（`[0x48c40b]` = 钮序号 + 1；键盘见 `ATM_KEY_VK`）
+ *
+ * | 码 | 音效 | @source |
+ * |---|---|---|
+ * | 1 / 2（提款 / 存款）| **1**（`[0x482322]`）| `0x004373b5` / `0x004373ed push 0x482322 / call 0x4542ce` |
+ * | 4（金额栏；拖动时每次移动都重发一次按下，`loc_00437904`）| **9**（`[0x482352]`）| `0x00437415` |
+ * | 其余 3、5..18（EXIT / 数字 / C / ← / MAX / ↵）| **7**（`[0x48234a]`）| `0x0043749a` |
+ *
+ * 键盘那一路（`loc_004374ac`）：除 `H`（码 4，改发一次 `0x201` 走上面金额栏那一支 ⇒ 9）外都在
+ * `0x00437571 push 0x48234a` 放 **7** —— 键盘码从来不是 1/2，所以同一张表就够。
+ * 抬手（`0x202`）与右键关窗（`loc_0043791e`）都不放音。
+ */
+export function atmPressSound(code: number): number | null {
+  if (code === 1 || code === 2) return 1;
+  if (code === 4) return 9;
+  if (code >= 3 && code <= 18) return 7;
+  return null;
 }
 
 /** 第 `btn` 颗是哪个键；不是数字盘返回 null */
