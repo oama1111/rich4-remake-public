@@ -7161,9 +7161,8 @@ function drawShopStage(): void {
 /** 舞台 → 窗口：整数倍放大、居中、不插值 */
 function blitStage(): void {
   const m = currentMetrics();
-  // ★ 高清舞台下舞台已是 `surfaceScale` 倍像素：倍数正好相等就是 1:1 贴；
-  //   窗口倍数是小数（舞台向上取整开了更大）时是略缩一点 —— 那一下要平滑，否则会跳像素
-  ctx.imageSmoothingEnabled = surfaceScale !== 1 && surfaceScale !== m.scale;
+  // ★ 高清舞台下舞台已是 `surfaceScale`（= 窗口倍数）倍像素：这一下是 1:1 拷贝，不插值
+  ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(stage, m.offsetX, m.offsetY, SCREEN_W * m.scale, SCREEN_H * m.scale);

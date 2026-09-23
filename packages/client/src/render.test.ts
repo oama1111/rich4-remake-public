@@ -35,6 +35,7 @@ import {
   TOOLBAR,
   TOOLBAR_RIGHT,
   toolbarIconAt,
+  WALK_CHAIN_MS,
 } from './render.ts';
 import {
   buildingResource,
@@ -572,6 +573,33 @@ describe('★ 走子补间：一格的 tick 数按**世界**距离算，与镜�
     expect(r.walkRemainingMs(9999)).toBe(0);
     // 对照：这就是先前让「結算 / 收尾 / 下一位开局」每步都多等一整格的那个值
     expect(r.lastWalkMs()).toBe(320);
+  });
+
+  it('★★ 连续走格首尾相接：下一格从上一格的**理论结束时刻**起算，走子速度与帧率无关', () => {
+    const r = renderer();
+    // 8 tick × 40 = 320 ms：0 → 320
+    r.startWalk(0, { x: 1000, y: 1000 }, { x: 1064, y: 1000 }, 0, false, 40, 0);
+    // 帧慢，370 才发现走完、起下一格 —— 仍从 320 起算，640 结束（而不是 690）
+    r.startWalk(0, { x: 1064, y: 1000 }, { x: 1128, y: 1000 }, 0, false, 40, 370);
+    expect(r.lastWalkEndAt()).toBe(640);
+    expect(r.walkRemainingMs(370)).toBe(270);
+  });
+
+  it('★ 不回拨的三种情形：停过（缝超出窗口）/ 换了人 / 不首尾相接', () => {
+    const late = renderer();
+    late.startWalk(0, { x: 0, y: 0 }, { x: 64, y: 0 }, 0, false, 40, 0);
+    late.startWalk(0, { x: 64, y: 0 }, { x: 128, y: 0 }, 0, false, 40, 320 + WALK_CHAIN_MS + 1);
+    expect(late.lastWalkEndAt()).toBe(320 + WALK_CHAIN_MS + 1 + 320);
+
+    const other = renderer();
+    other.startWalk(0, { x: 0, y: 0 }, { x: 64, y: 0 }, 0, false, 40, 0);
+    other.startWalk(1, { x: 64, y: 0 }, { x: 128, y: 0 }, 0, false, 40, 350);
+    expect(other.lastWalkEndAt()).toBe(670);
+
+    const jump = renderer();
+    jump.startWalk(0, { x: 0, y: 0 }, { x: 64, y: 0 }, 0, false, 40, 0);
+    jump.startWalk(0, { x: 500, y: 0 }, { x: 564, y: 0 }, 0, false, 40, 350);
+    expect(jump.lastWalkEndAt()).toBe(670);
   });
 
   it('★ `special`（乘骑/被抬走/替身）走 `dist × 0.125` —— 不管交通方式', () => {
