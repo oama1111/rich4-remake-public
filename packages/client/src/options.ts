@@ -314,7 +314,9 @@ export interface GameOptions {
 }
 
 export const DEFAULT_OPTIONS: GameOptions = {
-  speed: 1,
+  // ★ 2026-09-23 需求方：默认 **3 格**（最快档，`cfg[0] = 2`）—— 整体节奏与他对原版的体感一致。
+  //   原版装好后的 RICH4.CFG 是 1（2 格）；这是有意偏离，只改默认，已存的设定照旧读。
+  speed: 2,
   animation: true,
   music: 3,
   sound: 3,
