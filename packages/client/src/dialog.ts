@@ -73,16 +73,37 @@ export const BOX_SCREEN: Rect = { x: 0xdc - 123, y: 0x8c - 101, w: 249, h: 170 }
  */
 const INNER = { dx: 12, dy: 41, w: 219, h: 120 } as const;
 
-const LINE_H = 20;
+/**
+ * 正文行距 —— **22 = 字号 16 + 6（近似，D-DIALOG-1）**。
+ *
+ * 原版的多行排版**全交给 GDI**：`rich4_draw_text`（VA 0x0044fabc）把整串（含 `\n`）
+ * 一次交给 `DrawTextA`（IAT `[0x4622e4]`）——先 `0x0044fba9 push 0x400`（DT_CALCRECT）量框，
+ * 再 `0x0044fe70 push 1`（DT_CENTER，flag 4/7）或 `0x0044fe8c push 0`（DT_LEFT）真画；
+ * 函数里**没有**自己拆 `\n`、也没有逐行加的常量，flags 里也没有 DT_EXTERNALLEADING。
+ * ⇒ 行距 = 所选字体（細明體，`CreateFontA(cHeight = −16)`，见 `font.ts`）的 `tmHeight`，
+ *   那是**字体文件**的度量，exe 里读不到。故按本项目多行字的既定近似「字号 + 6」
+ *   （同 `event-box-screen.ts` 的 D-EVENT-3），登记为偏离。
+ */
+const LINE_H = 22;
 const TITLE_H = 24;
 const BTN_H = 24;
 const BTN_GAP = 5;
 const BTN_MIN_W = 56;
 
 const TITLE_SIZE = 16;
-const BODY_SIZE = 14;
+/**
+ * 框里正文 16 号、`#f0f0f0` 填充 + `#101010` 描边。
+ * @source 两扇框同一句 `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`：
+ *   询问框 0x00440baf..0x00440bbf、訊息框 0x00440d06..0x00440d16
+ *   （flag 3 = 带描边，与 `ai-settings.ts` 的 `set_font(…, 3, 1)` 同一口径）
+ */
+const BODY_SIZE = 0x10;
+const BODY_FILL = '#f0f0f0';
+const BODY_OUTLINE = '#101010';
 const FONT_TITLE = `bold ${TITLE_SIZE}px ${FONT_FAMILY}`;
 const FONT_BODY = `${BODY_SIZE}px ${FONT_FAMILY}`;
+/** 自排按钮列的字（⚠️ 我们的做法，原版那几屏各有专屏）—— 保持原先的 14 号 */
+const FONT_BUTTON = `14px ${FONT_FAMILY}`;
 
 /**
  * 框里每一行字的**竖直中线**（棋盘区坐标）—— 整块字的墨迹框竖直居中在 `anchorY`。
@@ -496,7 +517,7 @@ export function layoutDialog(
   }
 
   // ——— 其余：框下面排一列按钮（⚠️ 我们的做法，不是原版）———
-  ctx.font = FONT_BODY;
+  ctx.font = FONT_BUTTON;
   const widths = labels.map((l) => Math.max(BTN_MIN_W, Math.ceil(ctx.measureText(l.label).width) + 18));
   const rowW = box.w;
   const rows: number[][] = [];
@@ -600,18 +621,18 @@ export function drawDialog(
   let row = 0;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  // 金框上的字要够亮，且描一圈黑边才压得住底纹
+  // 先描边（`#101010`）再填字
   const line = (text: string, font: string, fill: string): void => {
     const y = mids[row++] ?? DIALOG_ANCHOR.y;
     ctx.font = font;
     ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+    ctx.strokeStyle = BODY_OUTLINE;
     ctx.strokeText(text, cx, y);
     ctx.fillStyle = fill;
     ctx.fillText(text, cx, y);
   };
   if (l.title !== '') line(l.title, FONT_TITLE, '#ffe8a5');
-  for (const t of l.lines) line(t, FONT_BODY, '#fff6e0');
+  for (const t of l.lines) line(t, FONT_BODY, BODY_FILL);
 
   // ——— 按钮 ———
   if (l.yesNo) {
@@ -638,7 +659,7 @@ export function drawDialog(
       ctx.lineWidth = 1;
       ctx.strokeRect(b.rect.x + 0.5, b.rect.y + 0.5, b.rect.w - 1, b.rect.h - 1);
       ctx.fillStyle = '#2a1d0e';
-      ctx.font = FONT_BODY;
+      ctx.font = FONT_BUTTON;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(b.label, b.rect.x + b.rect.w / 2, b.rect.y + b.rect.h / 2 + 1);

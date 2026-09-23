@@ -6,6 +6,7 @@
  * 判定各算了一遍版式。`layoutDialog` 是唯一的版式来源，这里就钉住
  * 「每个按钮的正中一定命中它自己」。
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { BOX_SCREEN, DIALOG_ANCHOR, dialogRowMiddles, drawDialog, hitDialog, layoutDialog } from './dialog.ts';
 import { DIALOG_ANCHOR_SCREEN, YESNO_CENTER_SCREEN, YESNO_SIZE } from './gameui.ts';
@@ -167,9 +168,27 @@ describe('★ 訊息框 / 询问框的字：整块竖直居中在锚点 (0xdc,0x
   /** 记下每一次 fillText 的 (字, x, y) 与当时的对齐方式 */
   function recordingCtx(): {
     ctx: CanvasRenderingContext2D;
-    texts: { text: string; x: number; y: number; baseline: string; align: string }[];
+    texts: {
+      text: string;
+      x: number;
+      y: number;
+      baseline: string;
+      align: string;
+      font: string;
+      fill: string;
+      stroke: string;
+    }[];
   } {
-    const texts: { text: string; x: number; y: number; baseline: string; align: string }[] = [];
+    const texts: {
+      text: string;
+      x: number;
+      y: number;
+      baseline: string;
+      align: string;
+      font: string;
+      fill: string;
+      stroke: string;
+    }[] = [];
     const ctx = {
       font: '',
       textAlign: 'left',
@@ -185,7 +204,16 @@ describe('★ 訊息框 / 询问框的字：整块竖直居中在锚点 (0xdc,0x
       strokeText: () => undefined,
       measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
       fillText(this: CanvasRenderingContext2D, text: string, x: number, y: number) {
-        texts.push({ text, x, y, baseline: this.textBaseline, align: this.textAlign });
+        texts.push({
+          text,
+          x,
+          y,
+          baseline: this.textBaseline,
+          align: this.textAlign,
+          font: this.font,
+          fill: String(this.fillStyle),
+          stroke: String(this.strokeStyle),
+        });
       },
     } as unknown as CanvasRenderingContext2D;
     return { ctx, texts };
@@ -226,6 +254,29 @@ describe('★ 訊息框 / 询问框的字：整块竖直居中在锚点 (0xdc,0x
     drawDialog(ctx, () => null, ui(), null, null);
     const ys = texts.filter((t) => t.text !== '').map((t) => t.y);
     expect(ys[0]! + ys[ys.length - 1]!).toBe(2 * DIALOG_ANCHOR.y);
+  });
+
+  it('★ 字体照原版：16 号、#f0f0f0 填充 + #101010 描边；行距 22（字号 + 6，D-DIALOG-1）', () => {
+    const { ctx, texts } = recordingCtx();
+    drawDialog(ctx, () => null, { title: '', detail: '甲\n乙', choices: [] }, null, null);
+    expect(texts).toHaveLength(2);
+    for (const t of texts) {
+      expect(t.font.startsWith('16px ')).toBe(true);
+      expect(t.fill).toBe('#f0f0f0');
+      expect(t.stroke).toBe('#101010');
+    }
+    expect(texts[1]!.y - texts[0]!.y).toBe(22);
+  });
+
+  const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
+  const run = existsSync(EXE) ? it : it.skip;
+  run('exe：两扇框都是 `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`；多行交给 DrawTextA（先 DT_CALCRECT 0x400）', () => {
+    const d = readFileSync(EXE);
+    const at = (va: number, n: number): string => d.subarray(1024 + (va - 0x401000), 1024 + (va - 0x401000) + n).toString('hex');
+    // push 1 / push 3 / push 0x101010 / push 0xf0f0f0 / push 0x10
+    expect(at(0x00440baf, 16)).toBe('6a016a03681010100068f0f0f0006a10'); // 询问框
+    expect(at(0x00440d06, 16)).toBe('6a016a03681010100068f0f0f0006a10'); // 訊息框
+    expect(at(0x0044fba9, 5)).toBe('6800040000'); // push 0x400 (DT_CALCRECT)
   });
 
   it('`dialogRowMiddles`：首尾空行不算墨迹；全空时原样返回', () => {
