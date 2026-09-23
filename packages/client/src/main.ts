@@ -465,7 +465,6 @@ import {
   type LoanOp,
 } from './bank-loan.ts';
 import {
-  ATM_MODE,
   atmAmount,
   atmLimit,
   atmOp,
@@ -2073,6 +2072,9 @@ function handleHotkey(fn: number): boolean {
         answerYesNo(true);
         return true;
       }
+      // ★ 貸款屏开着时不认：原版那扇窗（`fcn_00435062`）的消息分派里**没有** `0x100`（键盘），
+      //   只有鼠标与自定义消息；它背后那份后备对话框的 choices 不能被 Y/N 键偷点到
+      if (loanUi !== null) return false;
       const ui = currentDialog();
       if (ui === null) return false;
       onDialogHit(ui, { kind: 'choice', index: 0 });
@@ -2083,6 +2085,7 @@ function handleHotkey(fn: number): boolean {
         answerYesNo(false);
         return true;
       }
+      if (loanUi !== null) return false; // 同上：貸款屏不收键盘
       const ui = currentDialog();
       if (ui === null) return false;
       onDialogHit(ui, { kind: 'choice', index: Math.min(1, ui.choices.length - 1) });
@@ -2537,28 +2540,7 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
   if (hit.kind === 'choice') {
     const c = ui.choices[hit.index];
     if (c === undefined) return;
-    // ★ 存款 / 提款：原版走的是**銀行那台 ATM**（资源 24 的面板 + 数字键盘），
-    //   不是通用填数页 —— 见 bank-screen.ts 头部的取证。
-    if (
-      c.amount !== undefined &&
-      c.action.type === 'bank' &&
-      (c.action.op === 'deposit' || c.action.op === 'withdraw')
-    ) {
-      // 模式 0 = 提款、1 = 存款；limits 按模式下标（见 `bank-screen.ts` 的 `ATM_MODE`）
-      atm = {
-        mode: c.action.op === 'withdraw' ? ATM_MODE.withdraw : ATM_MODE.deposit,
-        digits: '',
-        limits: [
-          c.action.op === 'withdraw' ? c.amount.max : 0,
-          c.action.op === 'deposit' ? c.amount.max : 0,
-        ],
-      };
-      atmFill = c.amount.fill;
-      atmLabel = c.amount.label;
-      dialogHot = null;
-      requestRender();
-      return;
-    }
+    // （存款 / 提款不在任何对话框里：它们只在 ATM（`pending.kind === 'atm'`，`syncAtmPending`）里办）
     // 要填数的选项：先进填数页，别直接派 action
     if (c.amount !== undefined) {
       // ★ 开窗初值：原版認購股份那一支把**上限**当第一个实参传进填数窗

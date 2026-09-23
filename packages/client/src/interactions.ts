@@ -163,27 +163,9 @@ export function interactionUi(
           `${FIELD.totalAssets.text} ${money(pending.wealth)}　${BANK.creditLeft.text} ${money(pending.loanCapacity)}` +
           `　${FIELD.cash.text} ${money(cash)}　${FIELD.deposit.text} ${money(me?.moneyInBank ?? 0)}` +
           `　${FIELD.loan.text} ${money(me?.loan ?? 0)}`,
+        // ★ 没有「存款 / 取款」：原版貸款屏（`fcn_00435062`，命中表 `0x4757f8`）只有 EXIT / 申請貸款 /
+        //   償還貸款 / 特別融資四颗；存提在它前面那台 ATM（`pending.kind === 'atm'`）里办。
         choices: [
-          {
-            label: '存款',
-            action: { type: 'bank', op: 'deposit', amount: cash },
-            amount: {
-              label: '存多少',
-              max: cash,
-              step: 1000,
-              fill: (n) => ({ type: 'bank', op: 'deposit', amount: n }),
-            },
-          },
-          {
-            label: '取款',
-            action: { type: 'bank', op: 'withdraw', amount: me?.moneyInBank ?? 0 },
-            amount: {
-              label: '取多少',
-              max: me?.moneyInBank ?? 0,
-              step: 1000,
-              fill: (n) => ({ type: 'bank', op: 'withdraw', amount: n }),
-            },
-          },
           {
             label: BANK.applyLoan.text,
             action: { type: 'bank', op: 'borrow', amount: pending.loanCapacity },

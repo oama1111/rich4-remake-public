@@ -83,12 +83,11 @@ function answerable(s: GameState, candidates: Action[]): boolean {
 }
 
 describe('★ 每一种待决交互都答得掉', () => {
-  it('銀行', () => {
+  it('銀行（貸款屏）', () => {
     const wealth = 1_000_000;
     const s = withPending({ kind: 'bank', wealth, loanCapacity: loanCapacity(wealth, 0), specialFinance: null });
     expect(
       answerable(s, [
-        { type: 'bank', op: 'deposit', amount: 1000 },
         { type: 'bank', op: 'borrow', amount: 1000 },
       ]),
     ).toBe(true);

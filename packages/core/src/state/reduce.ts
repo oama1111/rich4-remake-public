@@ -2091,13 +2091,11 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (me === undefined || !isAlive(me)) return state;
       const wealth = state.pending.wealth;
       let next: Player;
+      // ★ 貸款屏**没有**存款 / 提款：原版那扇窗（`fcn_00435062`）的命中表 `0x4757f8` 只有四颗
+      //   —— EXIT / 申請貸款(週轉現金) / 償還貸款(歸還款項) / 窗(特別融資)；存提只在它前面那台
+      //   ATM（`0x0041b396 call 0x4379c9`，本引擎的 `pending.kind === 'atm'`）里办。
+      //   故 `deposit` / `withdraw` 在这里落进 default（原样返回）。
       switch (action.op) {
-        case 'deposit':
-          next = deposit(me, action.amount);
-          break;
-        case 'withdraw':
-          next = withdraw(me, action.amount);
-          break;
         case 'borrow':
           next = borrow(me, action.amount, wealth).player;
           break;
@@ -2129,18 +2127,16 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         ...state,
         players: state.players.map((p, i) => (i === state.currentPlayer ? next : p)),
       };
-      // ★ 取款会让「客戶存款總額」变小，可能跌破董事長的已融資额度 ——
-      //   原版就是在取款之后立刻查一次（@source VA 0x0043784d `push 1`）。
-      const settled = action.op === 'withdraw' ? settleBankReserve(after, topo) : after;
+      // （取款之后那次特別融資对账 `0x0043784d push 1 / call 0x436b0a` 在 ATM 那一支，见上）
 
       // 刷新柜台上显示的数字（额度会随贷款与融资变）
       return {
-        ...settled,
+        ...after,
         pending: {
           kind: 'bank',
           wealth,
           loanCapacity: loanCapacity(wealth, next.loan),
-          specialFinance: specialFinanceOf(settled, topo, state.currentPlayer),
+          specialFinance: specialFinanceOf(after, topo, state.currentPlayer),
         },
       };
     }
