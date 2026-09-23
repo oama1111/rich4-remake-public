@@ -202,9 +202,9 @@ describe('★ 关押 / 消失影片前后的镜头（core `confineViewTargets`�
     expect(src.split('confineViewTargets(before, after)').length - 1).toBe(2);
   });
 
-  it('「動畫過程」关着：没有影片，① ② 背靠背 ⇒ 直接停在 ②', () => {
+  it('「動畫過程」关着 / 加刑：没有影片，① ② 背靠背 ⇒ 直接停在 ②', () => {
     const body = src.slice(src.indexOf('function startConfineFx('));
-    const gate = body.indexOf('if (!options.animation) {');
+    const gate = body.indexOf('if (kind === null || !options.animation) {');
     expect(gate).toBeGreaterThan(body.indexOf('confineViewTargets(before, after)'));
   });
 

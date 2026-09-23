@@ -6352,17 +6352,20 @@ function startBoardFilm(spec: BoardFilmSpec, after?: BoardFilmSpec): void {
  *   判据（占用表 0→1 / 计数变大）见 `confine-fx.ts` 的 `confineFxTrigger`。
  */
 function startConfineFx(before: GameState, after: GameState): void {
+  // ★ 镜头（`view_to` ① / ②，core 的 `confineViewTargets`）—— 两次都不在「動畫過程」闸
+  //   （`cmp [0x497159], 0`）里，也不在加刑那道跳转（`0x0043d5da` / `0x0043ec86 test dh,dh / jne`）里：
+  //   没有影片夹在中间（動畫過程关着 / 加刑）⇒ ① 与 ② 背靠背，镜头停在 ②。
+  const views = confineViewTargets(before, after).filter((v) => v.kind !== 'disappear');
   const kind = confineFxTrigger(before, after);
-  if (kind === null) return;
-  // ★ 镜头（`view_to` ① / ②，core 的 `confineViewTargets`）—— 「動畫過程」关着也照样移：
-  //   两次 `view_to` 不在 `cmp [0x497159], 0` 那道闸里（0x0043d5cc / 0x0043d6f1）；没有影片夹在中间，
-  //   ① 与 ② 背靠背 ⇒ 最后停在 ②。
-  const view = confineViewTargets(before, after).find((v) => v.kind === kind) ?? null;
-  if (!options.animation) {
-    const to = view?.to ?? null;
-    if (to !== null) queuedFilmView = to;
+  if (kind === null || !options.animation) {
+    const to = views.find((v) => v.to !== null)?.to ?? null;
+    if (to !== null) {
+      queuedFilmView = to;
+      requestRender();
+    }
     return;
   }
+  const view = views.find((v) => v.kind === kind && !v.extended) ?? null;
   filmViews.set(confineClip(kind).id, view);
   // 影片窗口里棋盘按 before 画（见 `deferred-board.ts`）—— 起播前先记下快照
   deferredBoardBefore = before;

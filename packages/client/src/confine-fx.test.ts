@@ -32,6 +32,14 @@ import {
 const DATA_MKF = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Data.mkf';
 const hasData = existsSync(DATA_MKF);
 const runData = hasData ? it : it.skip;
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
+const runExe = existsSync(EXE) ? it : it.skip;
+/** `rich4.exe` 的 VA → 文件偏移（与 `tools/disasm.py` 的换算同一条）*/
+function exeBytes(va: number, n: number): number[] {
+  const d = readFileSync(EXE);
+  const off = 1024 + (va - 0x401000);
+  return [...d.subarray(off, off + n)];
+}
 
 /** 只有占用表/计数两个字段的最小状态 */
 function st(over: {
@@ -142,13 +150,30 @@ describe('★ 什么时候播（占用表 / 计数的一拍之差）', () => {
     expect(confineFxTrigger(st({}), st({ pris: [0, 0, 0, 1] }))).toBe('prison');
   });
 
-  it('★ 本来就是 1（加刑）但计数变大 → 照样播（原版每次 `send_to_*` 都重播）', () => {
+  // ★★ 2026-09-23 订正（第十四份試玩回報，协调方拍板照 exe）：先前这一条断言「加刑照样播
+  //   （原版每次 `send_to_*` 都重播）」—— exe 里不是这样：
+  //     send_to_prison    0x0043d5d4 mov dh, [计数] / 0x0043d5da test dh, dh / 0x0043d5dc jne 0x43d6bd
+  //     send_to_hospital  0x0043ec80 mov dh, [计数] / 0x0043ec86 test dh, dh / 0x0043ec88 jne 0x43ed6c
+  //   原计数非 0 ⇒ 直接跳去「加天数」，搬位置与 0x21a / 0x20c 那一次 `fcn_0045144f` 都被跳过。
+  //   字节钉在下面 `runExe` 那一条（以及 core 的 `confine-view.test.ts`）。
+  it('★ 本来就在里面（加刑）计数变大 → **不播**（@source 0x0043ec86 / 0x0043d5da `test dh,dh / jne` 跳过播片）', () => {
     const before = st({ hosp: [1, 0, 0, 0], inHospital: [2, 0, 0, 0] });
     const after = st({ hosp: [1, 0, 0, 0], inHospital: [5, 0, 0, 0] });
-    expect(confineFxTrigger(before, after)).toBe('hospital');
+    expect(confineFxTrigger(before, after)).toBeNull();
     const b2 = st({ pris: [1, 0, 0, 0], inPrison: [1, 0, 0, 0] });
     const a2 = st({ pris: [1, 0, 0, 0], inPrison: [4, 0, 0, 0] });
-    expect(confineFxTrigger(b2, a2)).toBe('prison');
+    expect(confineFxTrigger(b2, a2)).toBeNull();
+  });
+
+  runExe('★ 回 exe 钉：加刑那一支的跳转在播片之前', () => {
+    // 0x0043d5da test dh, dh / jne rel32 → 0x43d6bd（> 0x0043d6aa 那一次 call 0x45144f）
+    expect(exeBytes(0x43d5da, 8)).toEqual([0x84, 0xf6, 0x0f, 0x85, 0xdb, 0x00, 0x00, 0x00]);
+    expect(0x43d5da + 2 + 6 + 0xdb).toBe(0x43d6bd);
+    expect(0x43d6bd).toBeGreaterThan(0x43d6aa);
+    // 0x0043ec86 test dh, dh / jne rel32 → 0x43ed6c（> 0x0043ed59 那一次 call 0x45144f）
+    expect(exeBytes(0x43ec86, 8)).toEqual([0x84, 0xf6, 0x0f, 0x85, 0xde, 0x00, 0x00, 0x00]);
+    expect(0x43ec86 + 2 + 6 + 0xde).toBe(0x43ed6c);
+    expect(0x43ed6c).toBeGreaterThan(0x43ed59);
   });
 
   it('放出来（1→0、计数变小）不播', () => {
@@ -176,21 +201,21 @@ describe('★ 什么时候播（占用表 / 计数的一拍之差）', () => {
     ).toBeNull();
   });
 
-  it('★ 但**真的**加刑 / 真的送入照样播（掩掉高位没把这两条一并吞掉）', () => {
-    // 加刑：`confine()` 写的是 `(existing + days) & 0x7f`，低 7 位确实变大
+  it('★ 首次送入照样播；加刑 / 待释放期间又被送进去都不播（原计数字节非 0 ⇒ 加刑支）', () => {
+    // 加刑：`confine()` 写的是 `(existing + days) & 0x7f` —— 走 0x0043ed6c，不播
     expect(
       confineFxTrigger(
         st({ hosp: [1, 0, 0, 0], inHospital: [3, 0, 0, 0] }),
         st({ hosp: [1, 0, 0, 0], inHospital: [5, 0, 0, 0] }),
       ),
-    ).toBe('hospital');
-    // 待释放期间**又被送进去**：core 的 `confine` 给出 (0x80 + 3) & 0x7f = 3
+    ).toBeNull();
+    // 待释放期间**又被送进去**：计数字节 0x80 非 0 ⇒ 同样走加刑支（(0x80 + 3) & 0x7f = 3），不播
     expect(
       confineFxTrigger(
         st({ hosp: [1, 0, 0, 0], inHospital: [0x80, 0, 0, 0] }),
         st({ hosp: [1, 0, 0, 0], inHospital: [3, 0, 0, 0] }),
       ),
-    ).toBe('hospital');
+    ).toBeNull();
     // 首次送入（占用表 0→1）
     expect(confineFxTrigger(st({}), st({ hosp: [0, 1, 0, 0], inHospital: [0, 3, 0, 0] }))).toBe(
       'hospital',

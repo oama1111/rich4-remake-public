@@ -41,6 +41,12 @@ export interface ConfineView {
   from: { x: number; y: number } | null;
   /** ② 影片**之后**对准的位置（監獄／醫院的新位置）；消失那一支没有 ②、受害者就是行动者 ⇒ `null` */
   to: { x: number; y: number } | null;
+  /**
+   * ★ 加刑（原计数字节非 0）：`0x0043d5da` / `0x0043ec86` `test dh, dh / jne` 跳过搬位置与播片，
+   *   但 ① ② 两次 `view_to` 照走（都在那道跳转之外）⇒ 没有影片夹在中间，镜头直接停在 ②。
+   *   消失那一支恒 `false`（本来在消失的整段跳过，连 ① 都没有 —— 不出条目）。
+   */
+  extended: boolean;
 }
 
 /** 计数字节的高位 0x80 是「待释放」状态，不是天数 @source 0x0041c8ea `or ch, 0x80` */
@@ -50,8 +56,8 @@ const days = (raw: number): number => raw & 0x7f;
  * 这一拍（一条 action 的前后）有哪几位被送进監獄／醫院、开始消失 —— 按玩家下标排，
  * 每人一条（同一人两样都有时医院在前，与表现层 `confineFxTrigger` 的取法一致）。
  *
- * 判据与表现层起播影片的判据同一套（`confine-fx.ts` 的 `confineFxTrigger` /
- * `disappear-fx.ts`）：占用表 0→1 或天数（低 7 位）变大 = 调了一次 `send_to_*`；
+ * 「调了一次 `send_to_*`」= 占用表 0→1 或天数（低 7 位）变大；其中原计数字节（整字节）非 0 的是
+ * 加刑（`extended`，不播片）—— 与表现层起播影片的判据（`confine-fx.ts` 的 `confineFxTrigger`）同一套。
  * `disappearing` 0→非 0 = 调了一次 `0x40d375` 且走了首次那一支。
  *
  * 行动者 = `before.currentPlayer`（原版 `[0x49910c]`，调用那一刻还没换人）。
@@ -69,14 +75,14 @@ export function confineViewTargets(before: GameState, after: GameState): Confine
     const hospital =
       (after.hospitalOccupancy[i] === 1 && before.hospitalOccupancy[i] !== 1)
       || days(a.blocking.inHospital) > days(b.blocking.inHospital);
-    if (hospital) out.push({ player: i, kind: 'hospital', from, to });
+    if (hospital) out.push({ player: i, kind: 'hospital', from, to, extended: b.blocking.inHospital !== 0 });
     const prison =
       (after.prisonOccupancy[i] === 1 && before.prisonOccupancy[i] !== 1)
       || days(a.blocking.inPrison) > days(b.blocking.inPrison);
-    if (prison) out.push({ player: i, kind: 'prison', from, to });
+    if (prison) out.push({ player: i, kind: 'prison', from, to, extended: b.blocking.inPrison !== 0 });
     // @source 0x0040d3a6 `test ah, ah / jne 0x40d4c5` —— 本来就在消失：只加天数，不移镜头、不播片
     if (b.blocking.disappearing === 0 && a.blocking.disappearing !== 0) {
-      out.push({ player: i, kind: 'disappear', from, to: null });
+      out.push({ player: i, kind: 'disappear', from, to: null, extended: false });
     }
   }
   return out;

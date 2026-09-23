@@ -68,7 +68,7 @@ describe('confineViewTargets', () => {
       ],
     });
     expect(confineViewTargets(before, after)).toEqual([
-      { player: 1, kind: 'prison', from: { x: 300, y: 400 }, to: { x: 900, y: 950 } },
+      { player: 1, kind: 'prison', from: { x: 300, y: 400 }, to: { x: 900, y: 950 }, extended: false },
     ]);
   });
 
@@ -79,7 +79,7 @@ describe('confineViewTargets', () => {
       hospitalOccupancy: occ(0),
       players: [makePlayer({ index: 0, xpos: 700, ypos: 800, blocking: { ...blocking, inHospital: 3 } })],
     });
-    expect(confineViewTargets(before, after)).toEqual([{ player: 0, kind: 'hospital', from: null, to: null }]);
+    expect(confineViewTargets(before, after)).toEqual([{ player: 0, kind: 'hospital', from: null, to: null, extended: false }]);
   });
 
   it('飛碟 / 飛機：只有 ①（to = null）；本来就在消失 ⇒ 不移', () => {
@@ -91,7 +91,7 @@ describe('confineViewTargets', () => {
       currentPlayer: 0,
       players: [before.players[0]!, makePlayer({ index: 1, xpos: 50, ypos: 60, blocking: { ...blocking, disappearing: 0x43 } })],
     });
-    expect(confineViewTargets(before, after)).toEqual([{ player: 1, kind: 'disappear', from: { x: 50, y: 60 }, to: null }]);
+    expect(confineViewTargets(before, after)).toEqual([{ player: 1, kind: 'disappear', from: { x: 50, y: 60 }, to: null, extended: false }]);
     const again = makeGameState({
       currentPlayer: 0,
       players: [before.players[0]!, makePlayer({ index: 1, blocking: { ...blocking, disappearing: 0x42 } })],
@@ -101,6 +101,32 @@ describe('confineViewTargets', () => {
       players: [before.players[0]!, makePlayer({ index: 1, blocking: { ...blocking, disappearing: 0x45 } })],
     });
     expect(confineViewTargets(again, more)).toEqual([]);
+  });
+
+  it('★ 加刑（原计数非 0，含待释放 0x80）：extended = true，① ② 照给（都在监獄里）', () => {
+    const at = { xpos: 900, ypos: 950 };
+    const before = makeGameState({
+      currentPlayer: 0,
+      prisonOccupancy: occ(1),
+      hospitalOccupancy: occ(1),
+      players: [
+        makePlayer({ index: 0 }),
+        makePlayer({ index: 1, ...at, blocking: { ...blocking, inPrison: 2, inHospital: 0x80 } }),
+      ],
+    });
+    const after = makeGameState({
+      currentPlayer: 0,
+      prisonOccupancy: occ(1),
+      hospitalOccupancy: occ(1),
+      players: [
+        before.players[0]!,
+        makePlayer({ index: 1, ...at, blocking: { ...blocking, inPrison: 7, inHospital: 3 } }),
+      ],
+    });
+    expect(confineViewTargets(before, after)).toEqual([
+      { player: 1, kind: 'hospital', from: { x: 900, y: 950 }, to: { x: 900, y: 950 }, extended: true },
+      { player: 1, kind: 'prison', from: { x: 900, y: 950 }, to: { x: 900, y: 950 }, extended: true },
+    ]);
   });
 
   it('计数高位 0x80（待释放）不算加刑：1 → 0x80 没有镜头', () => {
