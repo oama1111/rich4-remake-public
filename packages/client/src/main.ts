@@ -3590,7 +3590,15 @@ async function loadAndPlay(name: string, fromS: number): Promise<void> {
 }
 
 /** 第一次用户手势：把音效与音乐一起解锁，并补播解锁前点过的那一首 */
+/**
+ * `?mute=1`：整页静音 —— 自动化测试（net-e2e / 子代理的浏览器验证）用，别在需求方前台出声。
+ * 做法是**不解锁**：AudioContext 一直不建，音效 / 语音 / MIDI 全都发不出声；游戏逻辑与演出时序不受影响
+ * （台词与开奖等「等语音说完」的闸在没有上下文时按最短时长走，与关掉音效时相同）。
+ */
+const MUTED_BY_URL = new URLSearchParams(window.location.search).get('mute') === '1';
+
 function unlockAudio(): void {
+  if (MUTED_BY_URL) return;
   sound.unlock();
   music.unlock();
   if (musicStarted) return;

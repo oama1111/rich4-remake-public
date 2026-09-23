@@ -167,6 +167,8 @@
   if (N.timer) clearInterval(N.timer);
   N.timer = setInterval(tick, 60);
 
+  /** 客户端日志最后 25 行（排查停摆用）*/
+  N.logTail = () => { const l = logLines(); return { head: l.slice(0, 20), tail: l.slice(-20) }; };
   N.summary = () => {
     const turn = r.state.turnCount;
     return {

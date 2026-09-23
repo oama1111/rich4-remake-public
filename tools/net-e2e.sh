@@ -33,7 +33,7 @@ OUT="$ROOT/.qa-tmp/net"
 #   换一个码之后老标签页自成一房，本跑互不干扰；它们那一房没人在线满 10 分钟会被
 #   服务器自己回收（正是 W-73 §4 那条）。
 ROOM="${ROOM:-$(python3 -c "import random;print(''.join(random.choice('ABCDEFGHJKLMNPQRSTUVWXYZ23456789') for _ in range(6)))")}"
-URL="http://localhost:5173/?ws=ws://localhost:${PORT}/ws&room=${ROOM}"
+URL="http://localhost:5173/?mute=1&ws=ws://localhost:${PORT}/ws&room=${ROOM}"
 JS=/tmp/net-e2e.js
 PROBE=/tmp/net-probe.js
 
@@ -180,7 +180,14 @@ echo "  关 B 端时 A 的回合数：${t1}；等 $((TAKEOVER/1000 + 12)) 秒…
 sleep $((TAKEOVER/1000 + 12))
 t2=$(summary "$TA" | python3 -c 'import json,sys; print(json.load(sys.stdin)["turnCount"])')
 echo "  等待后 A 的回合数：${t2}"
-if [ "$t2" -gt "$t1" ]; then echo "PASS 5) 无人操作 B 座，回合仍在推进（服务器补位）"; else echo "FAIL 5) 回合停了"; fi
+if [ "$t2" -gt "$t1" ]; then echo "PASS 5) 无人操作 B 座，回合仍在推进（服务器补位）"; else
+  echo "FAIL 5) 回合停了"
+  # 现场：A 端此刻停在哪、等谁、屏上是什么
+  "$B" tab "$TA" >/dev/null 2>&1
+  "$B" js "(() => { const r = globalThis.__rich4, s = r.state; return JSON.stringify({ screen: r.screen, phase: s.phase, cur: s.currentPlayer, pending: s.pending, turn: s.turnCount, who: s.players.map((p) => [p.whoPlays, p.autopilot ?? null]), busy: r.stageBusy ? r.stageBusy() : null }); })()"
+  "$B" js "JSON.stringify((globalThis.__net && globalThis.__net.logTail) ? globalThis.__net.logTail() : null)"
+  grep -v 'ExperimentalWarning\|trace-warnings' "$OUT/server.log" | tail -15
+fi
 
 
 # ── 6) W-74 回合计时 ────────────────────────────────────────

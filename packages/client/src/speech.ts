@@ -390,15 +390,11 @@ export function detectTurnStartBlocked(before: GameState, after: GameState): Det
   if (before.phase !== 'turnStart' || after.phase !== 'turnEnd') return [];
   const p = after.players[after.currentPlayer];
   if (p === undefined || !isAlive(p)) return [];
-  const b = p.blocking;
-  const out: DetectedSay[] = [];
-  // 原版顺序：住宿/消失（无语音）→ 坐牢 → 住院 → 冬眠
-  if (b.inPrison !== 0) out.push({ player: p.index, event: 19 });
-  if (b.inHospital !== 0) out.push({ player: p.index, event: 20 });
-  if (b.sleeping !== 0 && (b.inHotel | b.disappearing) === 0) {
-    out.push({ player: p.index, event: 21 });
-  }
-  return out;
+  // ★ 第十三份試玩回報（需求方拍板「按原版」）：三句**各有 1/2 概率**，由 core 在 `startTurn` 里
+  //   用同一个随机数发生器掷好（`GameState.lastBlockedSays`，`fcn_0040c912` 的三处 `call rand / test al,1`）。
+  //   先前这里「计数非 0 就说」—— 一直说，且冬眠那一支只查了住宿/消失（原版 `dword [+0x32]` 连坐牢/住院一起查）。
+  //   原版顺序：住宿/消失（无语音）→ 坐牢 → 住院 → 冬眠 —— core 按这个顺序掷、按这个顺序记。
+  return (after.lastBlockedSays ?? []).map((event) => ({ player: p.index, event }));
 }
 
 /**

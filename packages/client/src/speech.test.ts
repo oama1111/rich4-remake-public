@@ -307,51 +307,49 @@ describe('回合開始被阻 @ fcn_0040c912（turnStart → turnEnd）', () => {
       mutate(after);
     });
 
-  it('坐牢 ⇒ 事件 19', () => {
+  // ★ 第十三份試玩回報：哪几句要说由 core 掷（`GameState.lastBlockedSays`，各 1/2，见
+  //   core `blocked-says.test.ts`）；这里只验「照 core 的结果说、顺序不变、没有就不说」。
+  it('照 core 掷出的 `lastBlockedSays` 说：坐牢 ⇒ 事件 19', () => {
     const [b, a] = blocked((s) => {
       s.players[1]!.blocking.inPrison = 2;
+      s.lastBlockedSays = [19];
     });
     expect(detectTurnStartBlocked(b, a)).toEqual([{ player: 1, event: 19 }]);
   });
 
-  it('住院 ⇒ 事件 20', () => {
+  it('★ 计数非 0 但 core 掷到「不说」⇒ 不说（原版 `test al,1 / je` 那一半）', () => {
     const [b, a] = blocked((s) => {
       s.players[1]!.blocking.inHospital = 2;
-    });
-    expect(detectTurnStartBlocked(b, a)).toEqual([{ player: 1, event: 20 }]);
-  });
-
-  it('冬眠 ⇒ 事件 21', () => {
-    const [b, a] = blocked((s) => {
-      s.players[1]!.blocking.sleeping = 2;
-    });
-    expect(detectTurnStartBlocked(b, a)).toEqual([{ player: 1, event: 21 }]);
-  });
-
-  it('★ 冬眠那一支还要求住宿/消失为 0（`cmp dword [eax+50],0 / jne`）', () => {
-    const [b, a] = blocked((s) => {
-      s.players[1]!.blocking.sleeping = 2;
-      s.players[1]!.blocking.inHotel = 1;
+      s.lastBlockedSays = [];
     });
     expect(detectTurnStartBlocked(b, a)).toEqual([]);
   });
 
-  it('★ 住宿/消失原本就**不出语音**（只出状态文字）', () => {
-    const [b, a] = blocked((s) => {
-      s.players[1]!.blocking.inHotel = 4;
-    });
-    expect(detectTurnStartBlocked(b, a)).toEqual([]);
-  });
-
-  it('坐牢与住院可以同时命中（原版三条 if 各自独立）', () => {
+  it('坐牢与住院可以同时命中，顺序 = core 记的顺序（原版三条 if 各自独立）', () => {
     const [b, a] = blocked((s) => {
       s.players[1]!.blocking.inPrison = 2;
       s.players[1]!.blocking.inHospital = 2;
+      s.lastBlockedSays = [19, 20];
     });
     expect(detectTurnStartBlocked(b, a)).toEqual([
       { player: 1, event: 19 },
       { player: 1, event: 20 },
     ]);
+  });
+
+  it('冬眠 ⇒ 事件 21', () => {
+    const [b, a] = blocked((s) => {
+      s.players[1]!.blocking.sleeping = 2;
+      s.lastBlockedSays = [21];
+    });
+    expect(detectTurnStartBlocked(b, a)).toEqual([{ player: 1, event: 21 }]);
+  });
+
+  it('★ 住宿/消失原本就**不出语音**（core 不掷、不记）', () => {
+    const [b, a] = blocked((s) => {
+      s.players[1]!.blocking.inHotel = 4;
+    });
+    expect(detectTurnStartBlocked(b, a)).toEqual([]);
   });
 
   it('★ 不是 turnStart → turnEnd 的那种跃迁就不算（例如 settling → turnEnd）', () => {

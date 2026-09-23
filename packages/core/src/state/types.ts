@@ -1189,6 +1189,18 @@ export interface GameState {
   lastMagicBeats?: readonly MagicBeat[] | null;
 
   /**
+   * ★ **回合开始被挡时这一回合说了哪几句**（事件 19 坐牢 / 20 住院 / 21 冬眠）—— 纯表现提示
+   * （不进指纹、不进存档），只活一条 action。缺席 / `null` = 这一条不是被挡的回合开始。
+   *
+   * @source `fcn_0040c912`（主循环 `0x00418d70 push 0` 那一路）：三个计数各自非零时**各掷一次**
+   *   `rand()`，`test al,1` 为真才说 —— 坐牢 `0x0040ca20`、住院 `0x0040ca99`、
+   *   冬眠 `0x0040cb1b`（冬眠还要 `dword [+0x32] == 0`，即住宿/消失/坐牢/住院全为 0，`0x0040cb12`）。
+   *   这几次 `rand()` 与游戏逻辑共用同一个发生器 ⇒ 在 core 里掷，所有客户端一致。
+   *   （第十三份試玩回報，需求方拍板「按原版 1/2 概率」）
+   */
+  lastBlockedSays?: readonly number[] | null;
+
+  /**
    * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。
    *
    * 纯表现提示（不进指纹、不进存档）—— 与 `lastCardPlay` / `notices` 同一套规矩。

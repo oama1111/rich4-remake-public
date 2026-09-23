@@ -1152,8 +1152,11 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   // ★ 魔法屋逐人演出分段（`lastMagicBeats`）同一套：只活一条 action。
   const staleBeats =
     raw !== state && (raw.lastMagicBeats ?? null) !== null && raw.lastMagicBeats === state.lastMagicBeats;
+  // ★ 第十三份試玩回報：回合开始被挡那几句（`lastBlockedSays`）同一套：只活一条 action。
+  const staleSays =
+    raw !== state && (raw.lastBlockedSays ?? null) !== null && raw.lastBlockedSays === state.lastBlockedSays;
   const next =
-    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats
+    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
@@ -1163,6 +1166,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           ...(staleToll ? { lastTollLands: null } : {}),
           ...(staleDraw ? { lastLotteryDraw: null } : {}),
           ...(staleBeats ? { lastMagicBeats: null } : {}),
+          ...(staleSays ? { lastBlockedSays: null } : {}),
         }
       : raw;
   // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈
@@ -1212,6 +1216,35 @@ function confinementNotice(state: GameState, reason: BlockReason | null): Notice
       displayRemainingDays(player.blocking[spec.field], spec.mask),
     ],
   };
+}
+
+/**
+ * 回合开始被挡：坐牢 / 住院 / 冬眠三句台词各自的 1/2 判定（见 `GameState.lastBlockedSays`）。
+ *
+ * @source `fcn_0040c912`：
+ * ```asm
+ * 0040ca17  cmp byte [p+0x34], 0 / je     ; 坐牢
+ * 0040ca20  call rand / test al,1 / je    ; ⇒ 事件 19（0x480896）
+ * 0040ca90  cmp byte [p+0x35], 0 / je     ; 住院
+ * 0040ca99  call rand / test al,1 / je    ; ⇒ 事件 20（0x48089a）
+ * 0040cb09  cmp byte [p+0x36], 0 / je     ; 冬眠
+ * 0040cb12  cmp dword [p+0x32], 0 / jne   ; 住宿/消失/坐牢/住院有一个非 0 ⇒ 不掷
+ * 0040cb1b  call rand / test al,1 / je    ; ⇒ 事件 21（0x48089e）
+ * ```
+ */
+export function rollBlockedSays(
+  rngState: number,
+  b: Player['blocking'],
+): { rngState: number; says: number[] } {
+  const rng = new WatcomRng();
+  rng.setState(rngState);
+  const says: number[] = [];
+  if (b.inPrison !== 0 && (rng.next() & 1) !== 0) says.push(19);
+  if (b.inHospital !== 0 && (rng.next() & 1) !== 0) says.push(20);
+  if (b.sleeping !== 0 && (b.inHotel | b.disappearing | b.inPrison | b.inHospital) === 0 && (rng.next() & 1) !== 0) {
+    says.push(21);
+  }
+  return { rngState: rng.getState(), says };
 }
 
 function reduceCore(state: GameState, action: Action, topo: MapTopology): GameState {
@@ -1301,8 +1334,17 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         //   对当前玩家无条件弹，不分真人与电脑）。`special`（走回棋盘 / 被外力挪过）
         //   与 `notAlive` 两支原版不弹 ⇒ `confinementNotice` 查不到就 `null`。
         const notice = confinementNotice(state, result.blockedBy);
-        const end = { ...state, phase: 'turnEnd' as const };
-        return notice === null ? end : appendNotice(state, end, notice);
+        if (notice === null) return { ...state, phase: 'turnEnd' as const };
+        // ★ 第十三份試玩回報：框之前那几句台词**各有 1/2 概率**（见 `GameState.lastBlockedSays`）。
+        //   与弹框同一个闸（`special` / `notAlive` 两支原版走 `0x40dd1f` / 直接返回，不掷）。
+        const rolled = rollBlockedSays(state.rngState, player.blocking);
+        const end = {
+          ...state,
+          rngState: rolled.rngState,
+          lastBlockedSays: rolled.says,
+          phase: 'turnEnd' as const,
+        };
+        return appendNotice(state, end, notice);
       }
       // ★ 時光機的后悔药：真人回合开局先拍一张快照（@source VA 0x004480a0）
       //   电脑的调度步归零（公佈欄那一步挪到了 aiAdvance：原版是买股卖股之后才轮到它）
