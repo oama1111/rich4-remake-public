@@ -143,12 +143,26 @@ export function hitSheetExit(x: number, y: number): boolean {
 /** 头像：`map.mkf` 的角色图，锚点落在 (60,100) @source VA 0x4230bf */
 export const SHEET_PORTRAIT_AT = { x: 0x3c, y: 0x64 } as const;
 /**
- * 神明图标：图 `13 + (godInfo − 1)`，锚点落在 (60,188) @source VA 0x4231a1。
- * 表 `0x475464` 是**步长 4** 的 dword 表：`[0, 13, 14, 15, 16]`。
+ * 神明图标：图 `SHEET_GOD_ICON[godInfo]`，锚点落在 (60,188) @source VA 0x4231a1。
+ * @source `0x0042311f mov dl,[p+0x3f] / 0x00423125 mov edx,[edx*4 + 0x475464]` —— 按 **godInfo（物件槽号 + 1）**
+ *   查**步长 4** 的 dword 表 `0x475464`（`disasm.py dump 0x475464 17 4` 原样抄下）。
+ *   ★ 第十二份試玩回報：先前写成 `13 + godInfo − 1`，槽号 1..10 恰好对得上，11 起就错了。
  * `godInfo == 0` 时这一块（连着下面那行天数）**整个不画** @source VA 0x4231a6。
  */
 export const SHEET_GOD_AT = { x: 0x3c, y: 0xbc } as const;
-export const SHEET_GOD_FIRST = 13;
+export const SHEET_GOD_ICON: readonly number[] = [0, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 0, 23, 0, 0, 24, 24];
+/**
+ * 神明图标下面那行「N天」的 N = **该神明物件的剩余任期** `objects[godInfo − 1].state`。
+ * @source `0x00423167 imul eax,[0x48c27c],0x68 / mov al,[eax+0x496ba7]`（godInfo）→ `lea edx,[eax−1]` →
+ *   `0x00423183 mov al,[eax*8 + 0x496d0c]`（物件表步长 24 的 `state` 字节）→ `push 0x463e26`（"%d天"）。
+ * ★ 第十二份試玩回報「大福神时间到了仍然有加盖房屋效果」：先前这里画的是 `insuranceDays`（保險期），
+ *   没投保就一直显示「0天」—— 神明其实还剩 1..7 天，看上去就是「时间到了还在生效」。
+ */
+export function sheetGodDays(state: GameState, player: number): number | null {
+  const me = state.players[player];
+  if (me === undefined || me.godInfo === 0) return null;
+  return state.objects[me.godInfo - 1]?.state ?? 0;
+}
 /** 神明剩餘天数：`(60,234)`、16 号字、flag 2 @source VA 0x42321f */
 export const SHEET_GOD_DAYS = { x: 0x3c, y: 0xea, size: 0x10 } as const;
 
@@ -655,10 +669,10 @@ export function drawAssetSheet(
   if (me !== undefined && me.godInfo !== 0) {
     drawAnchored(
       ctx, sprite, 'Panel.mkf', SHEET_RESOURCE,
-      SHEET_GOD_FIRST + me.godInfo - 1,
+      SHEET_GOD_ICON[me.godInfo] ?? 0,
       SHEET_GOD_AT.x, SHEET_GOD_AT.y, true,
     );
-    blackText(ctx, `${me.insuranceDays}天`, SHEET_GOD_DAYS.x, SHEET_GOD_DAYS.y, SHEET_GOD_DAYS.size, 'center');
+    blackText(ctx, `${sheetGodDays(state, selectedPlayer) ?? 0}天`, SHEET_GOD_DAYS.x, SHEET_GOD_DAYS.y, SHEET_GOD_DAYS.size, 'center');
   }
 
   // ── 12 个行标签 @source VA 0x422443 ──
