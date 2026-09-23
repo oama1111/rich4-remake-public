@@ -56,6 +56,14 @@ export interface BoardFilmSpec {
    * 未置位 = 不等（住院/入獄/神明那几支的调用点都在訊息框之外）。
    */
   afterOverlay?: boolean;
+  /**
+   * 起播那一刻**放开**棋盘的「按 before 画」（`deferred-board.ts`）—— 影片期间棋盘按 after 画。
+   *
+   * 只有魔法屋「就地拆除房屋」那一段用（`magic-fx.ts`）：原版是先 `0x40ab4a` 拆（里面
+   * `0x40a4e1` 重画地图）、**再**播 0x211 —— 影片期间那块地已经是拆过的样子；而影片之前
+   * 那一扇訊息框（1500 ms）期间房子还在。未置位 = 整段都按 before 画（其它影片的口径）。
+   */
+  releaseBoardOnStart?: boolean;
 }
 
 /** 正在播的这一段（纯数据，宿主自己拿着）*/

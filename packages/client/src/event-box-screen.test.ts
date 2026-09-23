@@ -933,6 +933,29 @@ describe('★ 百貨公司得卡：不出卡面 @source 0x0042e9c0 / 0x0042d242'
 });
 
 // ============================================================
+//  ★ 魔法屋「得一張卡片」不出卡面（2026-09-23）
+//  @source `0x004320ee call 0x441e12`（rand + `receive_card`，零圖形）→ `0x00432156 call 0x440cac`
+//  （「名字\n\n得到XX卡！」訊息框）—— 整支没有 `fcn_00441f73`。浏览器实测先前起了「抽到卡片」。
+// ============================================================
+
+describe('★ 魔法屋得卡：不出卡面 @source 0x004320dd', () => {
+  it('★★ lastEvent 刚写成魔法屋（效果 6）⇒ 不起播；对照：旧的 lastEvent 不挡', () => {
+    resetEventBoxScreen();
+    const ev = { kind: 'magicHouse', id: 6, criterion: 9, targets: [0] } as unknown as GameState['lastEvent'];
+    const before = stateOf([player(0, [])], null);
+    const after = stateOf([player(0, [24])], ev);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(false);
+    // 对照：lastEvent 没变（是上一趟留下的）⇒ 这一条的得卡照旧出卡面
+    const b2 = stateOf([player(0, [])], ev);
+    const a2 = stateOf([player(0, [12])], ev);
+    eventBoxScreen.event!(b2, a2, fakeEnv(a2));
+    expect(eventBoxScreenState().playing).toBe(true);
+    resetEventBoxScreen();
+  });
+});
+
+// ============================================================
 //  ★ D-EVENT-1 结案：`WM_KEYDOWN`（0x101）也能跳过
 //    @source `fcn_004544f6`（`rich4_sound_effect.asm:915-960`）的 `PeekMessage`
 //    认三种消息：`0x202`（左键抬起）/ `0x205`（右键）/ **`0x101`（按键）**，

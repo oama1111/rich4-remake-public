@@ -273,7 +273,7 @@ export interface MagicEffectResult {
  * 该玩家此刻能不能被「就地」类效果作用。
  * @source `cmp dword [player + 0x32], 0 / jne 跳过` —— 住宿/消失/坐牢/住院中免疫
  */
-function localizable(p: Player): boolean {
+export function localizable(p: Player): boolean {
   const b = p.blocking;
   return b.inHotel === 0 && b.disappearing === 0 && b.inPrison === 0 && b.inHospital === 0;
 }

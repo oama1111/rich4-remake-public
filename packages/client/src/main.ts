@@ -10,7 +10,7 @@
 
 import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import { parseVoiceCode } from '@rich4/data';
-import { playVoiceCode, setVoiceSink } from './voice-sink.ts';
+import { playVoiceCode, setVoiceBusyProbe, setVoiceSink, setVoiceStopper } from './voice-sink.ts';
 import { LogRing } from './log-ring.ts';
 // ★ 开发用的状态注入口（`__rich4.debug.patch` 与三个现成配方，W-53）——
 //   只在 DEV 下挂；它**绕过 reduceRecorded**，故调用时会把记录仪标脏。
@@ -274,6 +274,8 @@ import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
 // 第十二份試玩回報：新聞 5 / 15 / 20 / 21 的整块影片（龍捲風 0x217 等），见 `news-place-fx.ts`
 import { newsPlaceFxTrigger } from './news-place-fx.ts';
 import { disappearFxTrigger } from './disappear-fx.ts';
+// ★ 魔法屋「就地拆除房屋」那一段 0x211（女巫窗口关掉之后 `0x431caa` 里播的）—— 规格/判据见 `magic-fx.ts`
+import { MAGIC_DEMOLISH_FILM, magicDemolishFxTrigger } from './magic-fx.ts';
 // ★ W-55 行 4：「惡魔顯靈拆屋」那一段 110×110 的爆破片 —— 规格/判据见 `devil-fx.ts`。
 import {
   DEVIL_DEMOLISH_FRAME_MS,
@@ -331,7 +333,7 @@ import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './curso
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
 import { shouldResumeDriver } from './driver-resume.ts';
 import { tollFlashLevel } from './toll-flash-fx.ts';
-import { setNoticeStartGate } from './notice-box-screen.ts';
+import { noticeHoldsFilms, setNoticeStartGate } from './notice-box-screen.ts';
 // ★ 2026-09-22（第十一份試玩回報 #15）：訊息框的起播閘要看「轉盤 / 神明老虎機在不在播」
 import { wheelScreenState } from './wheel-screen.ts';
 import { godSlotState, setGodSlotStartGate } from './god-slot.ts';
@@ -3406,6 +3408,14 @@ setVoiceSink((voice) => {
   lastVoiceAt = now;
   sound.play('Speaking.mkf', voice);
 });
+// ★ 字框的到期判据要问「语音还在响吗」（`fcn_0044ee18` → `0x4544b9`，音效档 `[0x49715b]` 关掉不问）
+//   与「立刻收起时停掉语音」（`fcn_0044ee18(1)` → `0x454493`）—— 见 `voice-sink.ts`。
+setVoiceBusyProbe(
+  () => options.sound > 0 && lastVoiceCode !== null && sound.isPlaying('Speaking.mkf', lastVoiceCode),
+);
+setVoiceStopper(() => {
+  if (lastVoiceCode !== null) sound.stop('Speaking.mkf', lastVoiceCode);
+});
 
 /**
  * 背景音乐。
@@ -3532,7 +3542,11 @@ function boardBgmDue(): boolean {
   if (screen !== 'game' || bgmBackground) return false;
   // 節日曲还在放 ⇒ 不接背景曲 @source `sub_00454bcc` 的 0x00454bd5 同一道闸
   if (holidayBgmDays > 0) return false;
-  if (activeUiScreen() !== null) return false;
+  // ★ 棕色訊息框（`0x440cac`）不是场所：原版场所的模态循环一返回就 `sub_00454bcc`，之后才弹框。
+  //   例：魔法屋 `0x004338b9 call 0x454bcc`（关窗影片播完、窗口返回）在 `0x004339c6 call 0x431caa`
+  //   （逐人弹「名字\n\n效果」）之前 —— 先前这里被訊息框挡着，背景曲要等四扇框全弹完才接回。
+  const overlay = activeUiScreen();
+  if (overlay !== null && overlay.id !== 'notice') return false;
   const kind = state.pending?.kind;
   if (kind !== undefined && kind !== 'none') return false;
   return true;
@@ -4168,6 +4182,17 @@ function startActionFx(action: Action, before: GameState): void {
   //   判据是 `notices` 里**新出现** `god.demolish`（`devil-fx.ts` 的 `devilDemolishFxTrigger`）。
   //   排在神明附身影片之后：顯靈是**落点尾块**（`0x0041b077`）的事，与 `godInfo` 变没变无关。
   startDevilFx(before, state);
+  // ★ 魔法屋「就地拆除房屋」（2026-09-23 补）：訊息框（`beforeFilms`）→ 0x211 影片。不看「動畫過程」。
+  startMagicDemolishFx(before, state);
+}
+
+/** 魔法屋「就地拆除房屋」那一段 0x211 —— 判据见 `magic-fx.ts` 的 `magicDemolishFxTrigger` */
+function startMagicDemolishFx(before: GameState, after: GameState): void {
+  if (!magicDemolishFxTrigger(before, after)) return;
+  // 訊息框那 1500 ms 里房子还在（棋盘按 before 画）；起播那一刻放开（`releaseBoardOnStart`）
+  deferredBoardBefore = before;
+  startBoardFilm(MAGIC_DEMOLISH_FILM);
+  log(`影片：魔法屋拆房 0x${MAGIC_DEMOLISH_FILM.resource.toString(16)}（${MAGIC_DEMOLISH_FILM.frames} 帧 × ${MAGIC_DEMOLISH_FILM.frameMs} ms）`);
 }
 
 /**
@@ -6317,7 +6342,7 @@ function tickBoardFilm(now: number): void {
   //   都置空，而这一段**只在两者都空时**接管，于是它既不会插到正在播的那一段
   //   前面，也不需要跟 `startBoardFilm` 抢 `pendingBoardFilm`。
   const after = pendingBoardFilmAfter;
-  if (after !== null && boardFilm === null && pendingBoardFilm === null) {
+  if (after !== null && boardFilm === null && pendingBoardFilm === null && !noticeHoldsFilms()) {
     const key = `${after.archive}:${after.resource}`;
     if (boardFilmFlics.has(key)) {
       pendingBoardFilmAfter = null;
@@ -6349,6 +6374,9 @@ function tickBoardFilm(now: number): void {
     if (filmWaitsForSpeech(speechQueue.length)) return;
     // ★ 换神：旧神先升天（`0x40eb3f` 在影片之前），演完 `tickGodAscend` 会再叫醒我们
     if (godAscend !== null) return;
+    // ★ 魔法屋：原版每一支先 `0x440cac` 弹框（阻塞 1500 ms）、再播影片（拆除 0x211 / 入獄・住院）
+    //   ⇒ 那几扇（`NoticeHint.beforeFilms`）还没弹完就先押着；訊息框自己续帧叫醒我们
+    if (noticeHoldsFilms()) return;
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
     // 訊息框那一段盖着整块棋盘 ⇒ 原版次序是框先、片后，等它收屏
@@ -6367,6 +6395,8 @@ function tickBoardFilm(now: number): void {
     }
     pendingBoardFilm = null;
     boardFilm = beginBoardFilm(pending, now);
+    // 魔法屋拆房：原版 `0x40ab4a`（重画地图）在 `fcn_0045144f` 之前 ⇒ 影片期间棋盘已是拆过的样子
+    if (pending.releaseBoardOnStart === true) deferredBoardBefore = null;
     log(`影片：開始 ${pending.id}（${pending.frames} 帧 × ${pending.frameMs} ms）`);
     if (pending.sound >= 0) sound.play('Effect.mkf', pending.sound);
     requestRender();
@@ -6510,6 +6540,9 @@ function tickBuildFx(now: number): void {
     if (filmWaitsForSpeech(speechQueue.length)) return;
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
+    // ★ 魔法屋「就地加蓋」：原版先 `0x440cac` 弹「名字\n\n就地加蓋房屋」1500 ms（0x00432003），
+    //   再 `read_mkf(0x229)` + `fcn_0045144f`（0x00432074）⇒ 等那一扇框收掉（訊息框自己续帧叫醒我们）
+    if (noticeHoldsFilms()) return;
     // ★ 天使卡（9）的建屋片同理：等「使用天使卡」那一次亮牌收屏（见 `tickBoardFilm`）
     if (cardUsePopupActive()) {
       requestRender();

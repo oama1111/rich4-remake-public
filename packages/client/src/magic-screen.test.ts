@@ -14,10 +14,12 @@
  *      （第十二份回报「选所有女生存入现金，金貝貝不受影响」「默认就展示就地拆除房屋」）。
  */
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { MkfArchive, parseFlicInfo } from '@rich4/assets-pipeline';
 import type { Sprite } from './assets.ts';
 import { MAGIC_TARGET_NAMES, type Action, type GameState } from '@rich4/core';
 import { MAGIC_HOUSE_OPTIONS, parseVoiceCode } from '@rich4/data';
-import { setVoiceSink } from './voice-sink.ts';
+import { setVoiceBusyProbe, setVoiceSink, setVoiceStopper } from './voice-sink.ts';
 import {
   MAGIC_CENTER,
   MAGIC_CRITERION_LINES,
@@ -78,6 +80,11 @@ import {
   type MagicWindow,
   sectorAt,
   MAGIC_MOUTH_AT,
+  MAGIC_MOUTH_GATE,
+  MAGIC_MOUTH_REST_SRC,
+  MAGIC_CLOSE_FILM,
+  setMagicMouthRand,
+  type MagicFacePatch,
   MAGIC_RESULT_ICON_AT,
   MAGIC_RESULT_ICON_BASE,
   MAGIC_WITCH_BEAT2_AT,
@@ -317,7 +324,6 @@ function drawState(over: Partial<MagicDraw> = {}): FakeCtx {
     state: 7,
     criterion: 5,
     chosen: -1,
-    witchBlink: false,
     hover: 0,
     boxLine: null,
     ...over,
@@ -343,12 +349,16 @@ describe('★★ 女巫：每一拍**只有一只**（玩家报的「2 个女巫
     expect(MAGIC_WITCH_INTRO_AT).toEqual(MAGIC_WITCH_BALL_AT); // 旧名同值
   });
 
-  it('★★ 状态 8（点下去之后）：只画图 2（抬手）落 (182,142)，**不画**图 1', () => {
+  it('★★ 状态 8（点下去之后）：图 2（抬手）落 (182,142) **抠黑**盖在图 1 上 —— 图 1 仍在底下', () => {
+    // @source `loc_00432e8e`：只把悬停弹窗贴回（0x00432f1a），**没有**还原图 1 那块；
+    //   图 2 走抠黑那支（0x00432f72 `fcn_00456418`）⇒ 图 2 的透明处露出图 1（两边袖口，约 4170 像素）。
+    //   ★ 2026-09-23 订正：先前本条断言「状态 8 不画图 1」，那几块于是露出底图。
     const f = drawState({ state: 8, chosen: 3 });
     const w = witches(f);
-    expect(w).toHaveLength(1);
-    expect(w[0]!.chunk).toBe(MAGIC_CHUNK.witchIdle);
-    expect(w[0]).toMatchObject({ x: 182, y: 142 });
+    expect(w.map((i) => i.chunk)).toEqual([MAGIC_CHUNK.witchIntro, MAGIC_CHUNK.witchIdle]);
+    expect(w[0]).toMatchObject({ x: 241, y: 140 });
+    expect(w[1]).toMatchObject({ x: 182, y: 142 });
+    expect(MAGIC_KEYED.has(MAGIC_CHUNK.witchIdle)).toBe(true);
     expect(MAGIC_WITCH_HAND_AT).toEqual({ x: 0xb6, y: 0x8e });
     expect(MAGIC_WITCH_BEAT2_AT).toEqual(MAGIC_WITCH_HAND_AT);
   });
@@ -361,18 +371,24 @@ describe('★★ 女巫：每一拍**只有一只**（玩家报的「2 个女巫
     expect((ox * oy) / (WITCH_BALL_SIZE.w * WITCH_BALL_SIZE.h)).toBeGreaterThan(0.95);
   });
 
-  it('★ 闭眼贴片（图 3）**只在摇签那一拍**（状态 4）—— 亮条件时图 1 整张重贴（0x00432791），眼睛又睁开', () => {
-    for (let state = 1; state <= 8; state++) {
-      const f = drawState({ state });
-      expect(f.images.filter((i) => i.chunk === MAGIC_CHUNK.eyesShut), `状态 ${state}`).toHaveLength(state === 4 ? 1 : 0);
-    }
+  it('★ 脸上的贴片按先后叠在图 1 上（闭眼 = 图 3、合嘴 = 图 4、张嘴 = 图 5、原嘴 = 图 1 的一块）', () => {
+    const f = drawState({ state: 4, face: ['eyes', 'mouthOpen', 'mouthShut'] });
+    const patches = f.images.filter((i) => [3, 4, 5].includes(i.chunk));
+    expect(patches).toEqual([
+      { chunk: MAGIC_CHUNK.eyesShut, x: 0x11e, y: 0xbc },
+      { chunk: MAGIC_CHUNK.mouth, x: 0x11e, y: 0xd9 },
+      { chunk: MAGIC_CHUNK.eyelid, x: 0x11e, y: 0xdc },
+    ]);
+    // 贴片在图 1 之后
+    expect(f.images.findIndex((i) => i.chunk === MAGIC_CHUNK.witchIntro)).toBeLessThan(f.images.indexOf(patches[0]!));
+    // 没有贴片 ⇒ 图 1 原样
+    expect(drawState({ state: 4 }).images.filter((i) => [3, 4, 5].includes(i.chunk))).toEqual([]);
     expect(MAGIC_EYES_AT).toEqual({ x: 0x11e, y: 0xbc });
-  });
-
-  it('★ 说话的嘴只叠在图 1 上；状态 8 被图 2 盖住', () => {
-    expect(drawState({ state: 1, witchBlink: true }).images.filter((i) => i.chunk === MAGIC_CHUNK.mouthTalk)).toHaveLength(1);
-    expect(drawState({ state: 8, witchBlink: true }).images.filter((i) => i.chunk === MAGIC_CHUNK.mouthTalk)).toHaveLength(0);
     expect(MAGIC_EYELID_AT).toEqual({ x: 0x11e, y: 0xdc });
+    // 原嘴 = 图 1 的 (0x2d,0x4d) 起 60×21 贴回 (0x11e,0xd9)（= 图 1 落 (0xf1,0x8c) 时这块本来的位置）
+    expect(MAGIC_MOUTH_REST_SRC).toEqual({ x: 0x2d, y: 0x4d, w: 0x3c, h: 0x15 });
+    expect(MAGIC_WITCH_BALL_AT.x + MAGIC_MOUTH_REST_SRC.x).toBe(MAGIC_MOUTH_AT.x);
+    expect(MAGIC_WITCH_BALL_AT.y + MAGIC_MOUTH_REST_SRC.y).toBe(MAGIC_MOUTH_AT.y);
   });
 
   it('★★ 条件图标取 `criterion + 11` 落 (326,296)，状态 5 起才有（`loc_00432719` 才贴）', () => {
@@ -571,20 +587,24 @@ describe('★★ 女巫窗口状态机 @source `loc_004326e5` + 跳表 `0x4325a2
     expect(magicWindowSkip(r.w)).toBe(r.w);
   });
 
-  it('★★ 状态 7 点中 1..12 格 ⇒ 状态 8 + `#0041`；到期后那一拍**关窗**（返回 null）', () => {
+  it('★★ 状态 7 点中 1..12 格 ⇒ 状态 8 + `#0041`；到期那一拍进**关窗那一段**（`loc_00432a4c`：KillTimer → 影片）', () => {
     const r = runUntil(magicWindowOpen(11, 0, false), 7, 0);
     // 不是状态 7 时点格子不算
     expect(magicWindowPick(magicWindowOpen(11, 0, true), 4, 0).state).toBe(1);
     const w = magicWindowPick(r.w, 4, r.t);
-    expect(w).toMatchObject({ state: 8, chosen: 4, line: MAGIC_SPELL_LINE, lineAt: r.t });
+    expect(w).toMatchObject({ state: 8, chosen: 4, line: MAGIC_SPELL_LINE, lineAt: r.t, closing: false });
     expect(magicLineExpired(w, r.t + MAGIC_LINE_MS - 1)).toBe(false);
-    let cur: MagicWindow | null = w;
+    let cur: MagicWindow = w;
     let t = r.t;
-    while (cur !== null) {
+    while (!cur.closing) {
       t += MAGIC_TIMER_MS;
       cur = magicWindowTimer(cur, t);
     }
     expect(t - r.t).toBe(MAGIC_LINE_MS);
+    expect(cur).toMatchObject({ state: 8, chosen: 4, line: null, closing: true });
+    // 定时器停了：之后再来 0x113 也不动（KillTimer）
+    expect(magicWindowTimer(cur, t + 5000)).toBe(cur);
+    expect(magicWindowAdvance(cur, t + 5000)).toBe(cur);
   });
 
   it('★ 12 格都选得到（含 6「得一張卡片」、11「拍賣當格土地」）；越界不算', () => {
@@ -612,8 +632,27 @@ describe('★★ 女巫窗口状态机 @source `loc_004326e5` + 跳表 `0x4325a2
   it('★ `magicWindowAdvance` 一次补齐该走的拍子', () => {
     const w = magicWindowOpen(0, 0, false);
     const a = magicWindowAdvance(w, 250);
-    expect(a?.tickAt).toBe(200);
-    expect(a?.state).toBe(5);
+    expect(a.tickAt).toBe(200);
+    expect(a.state).toBe(5);
+  });
+
+  it('★★ 一句话挂 **max(2000 ms, 语音时长)**：满 2000 ms 但语音还在响 ⇒ 还挂着（`fcn_0044ee18` 0x0044ee6c `call 0x4544b9`）', () => {
+    const w = magicWindowOpen(0, 0, true);
+    expect(magicLineExpired(w, MAGIC_LINE_MS, false)).toBe(true);
+    expect(magicLineExpired(w, MAGIC_LINE_MS, true)).toBe(false);
+    expect(magicLineExpired(w, MAGIC_LINE_MS - 1, false)).toBe(false);
+    // 语音一直响到 3300 ms：3300 那一拍之前都不换句；语音停下的那一拍才换
+    let cur = w;
+    let t = 0;
+    while (cur.state === 1) {
+      t += MAGIC_TIMER_MS;
+      cur = magicWindowTimer(cur, t, { voiceBusy: t < 3300 });
+    }
+    expect(t).toBe(3300);
+    expect(cur.line).toBe(MAGIC_GREET_LINES[1]);
+    // 不到 2000 ms 时语音早就停了也不换（下限还是 2000）
+    const r = runUntil(cur, 3, t);
+    expect(r.t - t).toBe(MAGIC_LINE_MS);
   });
 });
 
@@ -920,7 +959,7 @@ describe('★★ 女巫语音：换词那一拍请求一次（绘制链一次都
     const f = fakeCtx();
     for (let i = 0; i < 200; i++) {
       drawMagicScreen(f.ctx, f.sprite, {
-        state: 1, criterion: 0, chosen: -1, witchBlink: false, hover: 0, boxLine: MAGIC_GREET_LINES[0] ?? null,
+        state: 1, criterion: 0, chosen: -1, hover: 0, boxLine: MAGIC_GREET_LINES[0] ?? null,
       });
     }
     expect(voices).toEqual([]);
@@ -1038,9 +1077,230 @@ describe('抠黑表 @source 逐调用点对照（0x004563f5 不透明 / 0x004564
     }
   });
 
-  it('★ 底图与中央木牌（图 8）**不抠** —— 原版走的是不透明那支', () => {
+  it('★ 底图**不抠**（0x0043253b `fcn_004563f5`）；中央木牌（图 8）**抠黑**（`fcn_0044ecb6` 0x0044ed45 `fcn_00456418`）', () => {
     expect(MAGIC_KEYED.has(MAGIC_CHUNK.bg)).toBe(false);
-    expect(MAGIC_KEYED.has(MAGIC_CHUNK.resultBar)).toBe(false);
+    // ★ 2026-09-23 订正：先前「2% 黑、看不出差别」就沿用不抠 —— 调用点是抠黑那支
+    expect(MAGIC_KEYED.has(MAGIC_CHUNK.resultBar)).toBe(true);
+  });
+});
+
+// ============================================================
+//  ⑧ 2026-09-23 再审：摆嘴型 / 闭眼 / 语音计时 / 关窗影片
+// ============================================================
+
+/** 一串确定的 `rand()` 返回值（用完就一直给最后一个）*/
+function seq(...vals: number[]): () => number {
+  let i = 0;
+  return () => vals[Math.min(i++, vals.length - 1)]!;
+}
+
+describe('★★ 女巫摆嘴型 @source `loc_00432871` / `loc_00432894` / `loc_00432a85`', () => {
+  it('★ 门槛：`rand() >> 11` 小于 4 才摆（= 1/4 的拍子）；过了门槛再 `rand() & 1` 选嘴型、`rand() & 7` 定停几拍（0 当 1）', () => {
+    expect(MAGIC_MOUTH_GATE).toBe(4);
+    const w = magicWindowOpen(0, 0, true); // 状态 1，字框挂着 = 在说话
+    // 门槛没过（4 << 11）：不动
+    expect(magicWindowTimer(w, 100, { rand: seq(4 << 11) })).toMatchObject({ face: [], mouthHold: 0 });
+    // 过了门槛、偶数 ⇒ 图 5 张嘴；停 5 拍
+    const a = magicWindowTimer(w, 100, { rand: seq(3 << 11, 2, 5) });
+    expect(a).toMatchObject({ face: ['mouthOpen'], mouthHold: 5 });
+    // 奇数 ⇒ 图 1 原嘴；`rand()&7 == 0` ⇒ 停 1 拍
+    const b = magicWindowTimer(w, 100, { rand: seq(0, 1, 8) });
+    expect(b).toMatchObject({ face: ['mouthRest'], mouthHold: 1 });
+  });
+
+  it('★★ 嘴型停满那一拍贴**图 4（合嘴）**，之后一直留着；字框收起后也会把没停满的停完', () => {
+    let w = magicWindowTimer(magicWindowOpen(0, 0, true), 100, { rand: seq(0, 0, 2) });
+    expect(w).toMatchObject({ face: ['mouthOpen'], mouthHold: 2 });
+    w = magicWindowTimer(w, 200, { rand: seq(0x7fff) });
+    expect(w).toMatchObject({ face: ['mouthOpen'], mouthHold: 1 });
+    w = magicWindowTimer(w, 300, { rand: seq(0x7fff) });
+    // 图 4（60×18 @ (0x11e,0xdc)）只盖住张嘴那张的下面 18 行 ⇒ 两张都留在列表里
+    expect(w).toMatchObject({ face: ['mouthOpen', 'mouthShut'], mouthHold: 0 });
+    // 不在说话、也没有没停满的嘴型 ⇒ 一次 rand 都不调
+    let calls = 0;
+    const quiet = { ...w, line: null };
+    magicWindowTimer({ ...quiet, state: 7 }, 400, { rand: () => { calls++; return 0; } });
+    expect(calls).toBe(0);
+    // 字框收起了但嘴型还没停满 ⇒ 照样倒数、停满贴图 4
+    const hold = magicWindowTimer({ ...quiet, state: 7, mouthHold: 1, face: ['mouthRest'] }, 400, { rand: seq(0) });
+    expect(hold).toMatchObject({ face: ['mouthRest', 'mouthShut'], mouthHold: 0 });
+  });
+
+  it('★ 新嘴型整块盖住旧嘴型（列表里只留还看得见的）；闭眼那张不被去掉', () => {
+    const w: MagicWindow = { ...magicWindowOpen(0, 0, true), face: ['eyes', 'mouthOpen', 'mouthShut'] };
+    const n = magicWindowTimer(w, 100, { rand: seq(0, 1, 3) });
+    expect(n.face).toEqual<MagicFacePatch[]>(['eyes', 'mouthRest']);
+  });
+
+  it('★★ 状态 8（抬手）起不再摆嘴型（`0x00432871 cmp [0x48c3a2], 8 / je`）', () => {
+    const r = runUntil(magicWindowOpen(0, 0, false), 7, 0);
+    const picked = magicWindowPick(r.w, 3, r.t);
+    let calls = 0;
+    const n = magicWindowTimer(picked, r.t + 100, { rand: () => { calls++; return 0; } });
+    expect(calls).toBe(0);
+    expect(n.face).toEqual(picked.face);
+  });
+
+  it('★★ 闭眼：状态 3 → 4 贴图 3，状态 4 → 5 图 1 整张重贴（贴片全抹掉、眼睛睁开）', () => {
+    const quiet = { rand: seq(0x7fff) };
+    let w = magicWindowOpen(2, 0, false); // 直接状态 3
+    w = magicWindowTimer(w, 100, quiet);
+    expect(w).toMatchObject({ state: 4, face: ['eyes'] });
+    w = magicWindowTimer(w, 200, quiet);
+    expect(w).toMatchObject({ state: 5, face: [] });
+  });
+});
+
+describe('★★ 开场白跳过时停掉语音（`fcn_0044ee18(1)` → 0x0044ee30 `call 0x454493`）', () => {
+  it('★ 左键 / 右键跳过都停语音；状态 ≥ 3 再点不停', () => {
+    let stops = 0;
+    setVoiceStopper(() => { stops++; });
+    const f = open();
+    magicScreen.down!(5, 5, f.env);
+    expect(stops).toBe(1);
+    magicScreen.down!(5, 5, f.env);
+    expect(stops).toBe(1);
+    resetMagicScreen();
+    const g = open();
+    magicScreen.contextmenu!(0, 0, g.env);
+    expect(stops).toBe(2);
+    resetMagicScreen();
+    setVoiceStopper(null);
+  });
+});
+
+describe('★★ 语音还在响 ⇒ 字框不换句（屏幕本体按 `voiceBusy()` 每拍问）', () => {
+  it('★ 满 2000 ms、语音还在响 ⇒ 仍是第一句；语音一停那一拍换第二句', () => {
+    let busy = true;
+    setVoiceBusyProbe(() => busy);
+    const f = open();
+    for (let t = 100; t <= 3000; t += 100) tickTo(f, t);
+    expect(magicScreenState()).toMatchObject({ state: 1, line: MAGIC_GREET_LINES[0] });
+    busy = false;
+    tickTo(f, 3100);
+    expect(magicScreenState()).toMatchObject({ state: 2, line: MAGIC_GREET_LINES[1] });
+    resetMagicScreen();
+    setVoiceBusyProbe(null);
+  });
+});
+
+describe('★ 进状态 7 那一拍补发的 `WM_MOUSEMOVE` 与普通移动同一支：格号变了就响 39', () => {
+  it('★ 鼠标本来就停在第 k 格上 ⇒ 进状态 7 那一拍高亮它并响一声；停在中央 / 外面不响', () => {
+    const f = open(null, false);
+    const p = MAGIC_RING_AT[9]!;
+    magicScreen.move!(p.x, p.y, f.env);
+    for (let t = 100; t <= 5000 && magicScreenState().state !== 7; t += 100) tickTo(f, t);
+    expect(magicScreenState().hover).toBe(10);
+    expect(f.effects).toEqual([MAGIC_SOUND_HOVER]);
+    resetMagicScreen();
+    const g = open(null, false);
+    magicScreen.move!(MAGIC_CENTER.x, MAGIC_CENTER.y, g.env);
+    for (let t = 100; t <= 5000 && magicScreenState().state !== 7; t += 100) tickTo(g, t);
+    expect(magicScreenState().hover).toBe(MAGIC_HIT_CENTER);
+    expect(g.effects).toEqual([]);
+    resetMagicScreen();
+  });
+});
+
+describe('★★ 关窗影片 `Panel #20`（`loc_00432a4c`，D-MAGIC-15 收口）', () => {
+  /** 假影片：`frames` 帧、每帧 `ms` 毫秒 */
+  function withFilm(f: FakeEnv, frames = 25, ms = 71): { asked: string[] } {
+    const asked: string[] = [];
+    const bitmaps = Array.from({ length: frames }, (_, i) => ({ frame: i }) as unknown as ImageBitmap);
+    (f.env as unknown as { flic: (a: string, r: number) => unknown }).flic = (a: string, r: number) => {
+      asked.push(`${a}#${r}`);
+      return { frames: bitmaps, width: 640, height: 480, frameMs: ms, close: () => undefined };
+    };
+    return { asked };
+  }
+
+  it('★ 规格：Panel.mkf #20、25 帧 × 71 ms、落 (0,0)、音效 0x3b、flags 0（打断不了）', () => {
+    expect(MAGIC_CLOSE_FILM).toMatchObject({
+      archive: 'Panel.mkf', resource: 0x14, frames: 0x19, frameMs: 0x47, width: 640, height: 480,
+      x: 0, y: 0, sound: 0x3b, flags: 0,
+    });
+  });
+
+  const PANEL_MKF = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Panel.mkf';
+  const runPanel = existsSync(PANEL_MKF) ? it : it.skip;
+  runPanel('★ 真值：Panel.mkf #20 的资源头 = 25 帧 × 71 ms、640×480（`+0x06 = 0x19`、`+0x10 = 0x47`）', () => {
+    const a = new MkfArchive(new Uint8Array(readFileSync(PANEL_MKF)));
+    const info = parseFlicInfo(a.read(MAGIC_CLOSE_FILM.resource));
+    expect(info).toEqual({
+      width: MAGIC_CLOSE_FILM.width,
+      height: MAGIC_CLOSE_FILM.height,
+      frames: MAGIC_CLOSE_FILM.frames,
+      frameMs: MAGIC_CLOSE_FILM.frameMs,
+    });
+  });
+
+  it('★★ 念完「天靈靈地靈靈」⇒ 播影片（第一帧响 59）⇒ 播完（25×71 ms）才关窗、派答复', () => {
+    const f = openAtPick();
+    const { asked } = withFilm(f);
+    const p = MAGIC_RING_AT[4]!;
+    magicScreen.down!(p.x, p.y, f.env);
+    const t0 = f.env.now;
+    tickTo(f, t0 + MAGIC_LINE_MS);
+    expect(magicScreenState()).toMatchObject({ playing: true, state: 8, closing: true, line: null });
+    expect(asked).toContain('Panel.mkf#20');
+    expect(f.effects.at(-1)).toBe(0x3b);
+    expect(f.sent).toEqual([]);
+    // 影片期间点击 / 右键都不算（flags 0）
+    magicScreen.down!(p.x, p.y, f.env);
+    magicScreen.contextmenu!(0, 0, f.env);
+    tickTo(f, t0 + MAGIC_LINE_MS + 25 * 71 - 1);
+    expect(magicScreenState().playing).toBe(true);
+    expect(f.sent).toEqual([]);
+    tickTo(f, t0 + MAGIC_LINE_MS + 25 * 71);
+    expect(magicScreenState().playing).toBe(false);
+    expect(f.sent).toEqual([{ type: 'magicHouse', option: 4 }]);
+    expect(f.logs).toContain('魔法屋：關窗影片（25 帧 × 71 ms）');
+    expect(f.logs.at(-1)).toBe('魔法屋：結束');
+  });
+
+  it('★ 影片不看「動畫過程」（`loc_00432a4c` 里没有 `[0x48c3a5]` 的判断）；别处答掉那一支也照样播', () => {
+    const f = openAtPick(0); // 联机旁观
+    withFilm(f);
+    const before = f.env.state;
+    const after = stateOf(null, 1, { kind: 'magicHouse', id: 4, criterion: 11, targets: [0] });
+    f.env.state = after;
+    magicScreen.event!(before, after, f.env);
+    tickTo(f, f.env.now + MAGIC_LINE_MS);
+    expect(magicScreenState()).toMatchObject({ playing: true, closing: true });
+    tickTo(f, f.env.now + 25 * 71);
+    expect(magicScreenState().playing).toBe(false);
+    expect(f.sent).toEqual([]);
+  });
+
+  it('★ 开窗那一刻就先把影片要起来（原版 `read_mkf(Panel, 0x14)` 在进窗口时，0x0043386d）', () => {
+    resetMagicScreen();
+    const before = stateOf(null);
+    const after = stateOf({ ...PENDING, targets: [...PENDING.targets] });
+    const f = fakeEnv(after);
+    const { asked } = withFilm(f);
+    magicScreen.event!(before, after, f.env);
+    expect(asked).toEqual(['Panel.mkf#20']);
+    resetMagicScreen();
+  });
+
+  it('★ 影片取不到（没有素材 / 还没解好）⇒ 不卡：直接关窗、照样派答复', () => {
+    const f = openAtPick();
+    const p = MAGIC_RING_AT[2]!;
+    magicScreen.down!(p.x, p.y, f.env);
+    tickTo(f, f.env.now + MAGIC_LINE_MS);
+    expect(magicScreenState().playing).toBe(false);
+    expect(f.sent).toEqual([{ type: 'magicHouse', option: 2 }]);
+  });
+});
+
+describe('★ 摆嘴型的 rand 可替换（单测用）', () => {
+  it('★ `setMagicMouthRand` 生效、`null` 还原', () => {
+    setMagicMouthRand(seq(0, 0, 3));
+    const f = open();
+    tickTo(f, 100);
+    expect(magicScreenState()).toMatchObject({ face: ['mouthOpen'], mouthHold: 3 });
+    resetMagicScreen();
+    setMagicMouthRand(null);
   });
 });
 

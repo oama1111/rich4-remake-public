@@ -69,6 +69,7 @@ import {
 import {
   CARDS,
   CHARACTERS,
+  MAGIC_HOUSE_TEXT,
   SPEECH_CHARACTER_COUNT,
   SPEECH_EVENTS_PER_CHARACTER,
   speechIndex,
@@ -109,6 +110,12 @@ export interface SayEvent {
    *    （`SpeechDetector.order`），新加探测器漏写就编不过 —— 逼着逐条过表。
    */
   order: SpeechOrder;
+  /**
+   * **原样的一句字**（不查角色台词表）—— `player_say(玩家, 表情, 串)` 的第 3 个实参是
+   * 字面串而不是 `[0x48084a + …]` 表项的那几处（目前只有魔法屋的「？？？...」，`0x46482f`）。
+   * 给了它，`event` 就不再是槽位号（填 −1），`speech-bubble.ts` 直接拿它画、串首没有 `#NNNN` 就不放语音。
+   */
+  text?: string;
 }
 
 /**
@@ -464,6 +471,9 @@ export function detectVictory(before: GameState, after: GameState): DetectedSay[
  *   不是玩家结构 —— 见 `docs/deviations/T-052.md` 的 Q-SPEECH-7。
  */
 export function detectLevelFive(before: GameState, after: GameState): DetectedSay[] {
+  // ★ 魔法屋「就地加蓋」到 5 级：`0x431caa` 那一支是 `0x40b110` → 大锤 → bit7 时 `0x40b0cd`
+  //   → `player_say(中签者, 0, "？？？...")`（`magicPonder`），**不说**事件 15。
+  if (magicHouseThisAction(before, after) !== null) return [];
   const reached =
     reachedLevelFive(before.landLevel, after.landLevel) ||
     reachedLevelFive(before.facilityLevel, after.facilityLevel);
@@ -644,6 +654,9 @@ export function detectHotelStay(before: GameState, after: GameState): DetectedSa
  */
 export function detectPointsGained(before: GameState, after: GameState): DetectedSay[] {
   const out: DetectedSay[] = [];
+  // ★ 魔法屋「變賣所有卡片 / 道具」：`0x431caa` 那两支直接 `add word [player+0x30], ax`
+  //   （0x00431d3d），不经过 `fcn_0044f230` ⇒ 原版这一笔**不说话**。
+  if (magicHouseThisAction(before, after) !== null) return out;
   // ★★ 2026-09-19（第 94 条）：**得點券格 / 小遊戲不玩**那两笔「點入帳」不走 `0x44f230`，
   //   它们各自 `player_say(玩家, 0, 角色表事件)`（`0x41b1f8` / `0x41b28d` / `0x4154b6`），
   //   由下面的 `pointsSquarePhrase` 开口。这里必须**让开**，否则同一笔会说两句
@@ -1293,6 +1306,69 @@ export function openingSpeech(state: GameState): SpeechBubble[] {
  *   （`landGodLine` / `luckyGodLine` / `smallWealthLine` / `bigWealthLine` 是
  *     W-55 行 6/7 在同一个工作区里并行加的，各带自己的依据注释。）
  */
+/**
+ * **这一条 action** 写下的魔法屋那一趟（`lastEvent` 刚变成 `kind: 'magicHouse'`）；不是返回 null。
+ * 判据按引用（`lastEvent` 不是瞬态字段，见 `pointsSquareEventThisAction`）。
+ */
+function magicHouseThisAction(
+  before: Pick<GameState, 'lastEvent'>,
+  after: Pick<GameState, 'lastEvent'>,
+): NonNullable<GameState['lastEvent']> | null {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev === (before.lastEvent ?? null) || ev.kind !== 'magicHouse') return null;
+  return ev;
+}
+
+/** 魔法屋那三支收尾说的「？？？...」 */
+const MAGIC_PONDER_TEXT = MAGIC_HOUSE_TEXT.ponder.text;
+
+/**
+ * 魔法屋「就地加蓋 / 就地拆除」两支收尾：中签者说「？？？...」（表情 0）。
+ *
+ * @source `0x00432094 push 0x46482f / push 0 / push [0x49910c]（= 中签者）/ 0x004320a2 call player_say` ——
+ *   加蓋那一支在大锤（+bit7 时 0x20b）之后（0x0043208f 之后落到 0x00432094）、
+ *   拆除那一支在 0x211 影片之后（0x0043237f `jmp 0x4320a2`）。两支前面都有同一道闸
+ *   （`[player+0x32]` + 格型别），闸没过就整支跳过、不说话 —— core 过闸时才交 `magic.effect` 那一扇框，
+ *   这里拿那一扇认人。
+ * ★ 拍賣那一支（`0x0043242b`）同样收尾说这一句，但在**拍賣窗口关掉之后** —— 见 `detectMagicAuctionPonder`。
+ */
+export function detectMagicPonder(before: GameState, after: GameState): DetectedSay[] {
+  const ev = magicHouseThisAction(before, after);
+  if (ev === null || (ev.id !== 5 && ev.id !== 9)) return [];
+  if (after.notices === before.notices) return [];
+  const out: DetectedSay[] = [];
+  for (const who of ev.targets ?? []) {
+    const p = after.players[who];
+    if (p === undefined || !speechGatesOpen(p)) continue;
+    const name = characterName(p.character);
+    const passed = after.notices.some((n) => n.key === 'magic.effect' && n.args[0] === name);
+    if (!passed) continue;
+    out.push({ player: who, event: -1, expression: 0, text: MAGIC_PONDER_TEXT });
+  }
+  return out;
+}
+
+/**
+ * 魔法屋「拍賣當格土地」那一支：拍賣窗口（`0x43bde5`，模态）关掉之后，卖方（= 中签者）说「？？？...」。
+ *
+ * @source 0x004324d5 `call 0x43bde5` → `push 1 / call 0x41906a` → `push 0x46482f / push 0 / push 中签者`
+ *   → `jmp 0x4320a2 call player_say`。
+ * 判据：这一条 action 把 `pending{auction}` 收掉了，而 `lastEvent` 还是魔法屋「拍賣當格土地」那一趟
+ *   （拍賣本身不写 `lastEvent`）。
+ */
+export function detectMagicAuctionPonder(before: GameState, after: GameState): DetectedSay[] {
+  const bp = before.pending;
+  if (bp === null || bp.kind !== 'auction') return [];
+  if (after.pending !== null && after.pending.kind === 'auction') return [];
+  const ev = after.lastEvent;
+  if (ev === null || ev.kind !== 'magicHouse' || ev.id !== 11) return [];
+  const seller = bp.seller;
+  if (seller === undefined) return [];
+  const p = after.players[seller];
+  if (p === undefined || !speechGatesOpen(p)) return [];
+  return [{ player: seller, event: -1, expression: 0, text: MAGIC_PONDER_TEXT }];
+}
+
 export const DETECTORS: readonly SpeechDetector[] = [
   // §2.2 表：送監獄 —— 影片 `0x0043d6aa` → 镜头 → 台词
   { name: 'prisonEntered', source: [0x0043d70d], order: 'afterStage', detect: detectPrisonEntered },
@@ -1361,6 +1437,10 @@ export const DETECTORS: readonly SpeechDetector[] = [
   // ★★ 第十二份試玩回報：新聞 5 / 15 / 19 / 21「随机挑一处建筑」—— 那一处的**房主**说一句。
   //   调用点都在 `view_to` → `mutate_land` →（影片 → sleep）**之后**、函数的最后一步 ⇒ `afterStage`。
   { name: 'newsPlaceOwner', source: [0x004494cd, 0x0044a5c3, 0x0044ab19, 0x0044ae84], order: 'afterStage', detect: detectNewsPlaceOwner },
+  // ★ 魔法屋（2026-09-23）：加蓋 / 拆除两支收尾「？？？...」—— 框 → 影片 →（0x20b）→ 台词 ⇒ `afterStage`
+  { name: 'magicPonder', source: [0x00432094, 0x004320a2], order: 'afterStage', detect: detectMagicPonder },
+  // ★ 魔法屋拍賣那一支：拍賣窗口关掉之后才说
+  { name: 'magicAuctionPonder', source: [0x004324d5, 0x004320a2], order: 'afterStage', detect: detectMagicAuctionPonder },
 ];
 
 /**

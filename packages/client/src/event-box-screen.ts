@@ -1313,6 +1313,10 @@ export const eventBoxScreen: UiScreen = {
     //   判據：這一條 action 前後任一邊掛著 `pending.shop`（進門那條是 settle → shop，買卡那條 shop → shop）。
     //   卡片格落點不會同時是百貨公司格，所以不會誤傷真正的抽卡。
     if (before.pending?.kind === 'shop' || after.pending?.kind === 'shop') return;
+    // ★ 魔法屋「得一張卡片」同理：`0x004320dd` 那一支是 `0x004320ee call 0x441e12`（同上：只有 rand + receive_card，
+    //   零圖形）→ 弹「名字\n\n得到XX卡！」訊息框（`magic.gotCard`）—— **没有卡面**。
+    //   判據：這一條 action 剛寫下 `lastEvent.kind === 'magicHouse'`。
+    if (after.lastEvent !== before.lastEvent && after.lastEvent?.kind === 'magicHouse') return;
 
     const gain = cardGained(before, after);
     if (gain === null) return;
