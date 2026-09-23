@@ -176,7 +176,25 @@ export type ServerMessage =
    * ★ `seed` 由**服务器**下发——这是联机确定性的关键：
    *   各客户端不得自行取随机数种子。
    */
-  | { t: 'start'; seed: number; globalMapId: number; seats: SeatInfo[]; options: LobbyOptions }
+  | {
+      t: 'start';
+      seed: number;
+      globalMapId: number;
+      seats: SeatInfo[];
+      options: LobbyOptions;
+      /**
+       * ★★ 第十二份試玩回報（「斷線重連後莫名其妙又進入魔法屋」「所有文本提示又重新觸發了一輪」）：
+       *   **进房那一刻日志已经排到第几号**（含；日志为空则 -1）。只在「局已开、有人进房/重连」
+       *   那条补发里带；开局广播不带（那时日志是空的）。
+       *
+       *   紧跟着的补发 action 里，`seq <= through` 的都是**这个人进房之前就已经发生的事**
+       *   —— 客户端据此把它们**静默追上**（只 reduce、不起演出），只有之后的实时广播才照常演。
+       *   先前客户端分不出「补发」与「实时」，刷新页面后把整局的訊息框 / 魔法屋 / 台词重演一遍。
+       *
+       *   可选字段：旧服务器不带 ⇒ 客户端退回旧行为（逐条照常施加）。
+       */
+      through?: number;
+    }
   /**
    * 定序后的 action。
    *
