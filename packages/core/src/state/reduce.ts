@@ -3271,6 +3271,18 @@ function applyGodPower(
         const id = cards[at] ?? 0;
         consumeFirst(id);
         if (id > 0) cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) + 1;
+        // ★ 2026-09-23（神明对话框反查）：丢了卡就弹一扇訊息框「小衰神附身\n\n遺失%s！」——
+        //   @source `0x0040f114 call 0x441e77` → `0x0040f11c test eax,eax / je 0x40ece6`（没丢就不弹）→
+        //   `0x0040f124 mov esi,[eax*8 + 0x47fdea]`（卡名）→ `0x0040f12c push 0x4633ab` →
+        //   `0x0040f13e push 0x5dc`（1500 ms）→ `0x0040f148 call 0x440cac`。先前这一扇**整个没弹**。
+        if (id > 0) {
+          return {
+            ...state,
+            players: state.players.map((p, i) => (i === host ? { ...p, cards } : p)),
+            cardAmount,
+            notices: [{ key: 'god.lostCard', args: [cardNameOf(id)], holdMs: 1500 }],
+          };
+        }
       } else {
         const n = cards.length;
         // @source `cmp eax, 1 / jle 直接返回` —— 只有 0/1 张时什么都不丢

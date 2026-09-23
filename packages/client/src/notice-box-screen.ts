@@ -144,6 +144,8 @@ export const NOTICE_TEXT = {
   // ★ 大福神得两张那次原版用的是**另一条**格式串（`0x0040eed7 push 0x463353`）——
   //   一扇框、两个卡名，且串里自己写着「大福神」⇒ `args` 只有两张卡名。
   'god.gotCardTwo': GOD_MANIFEST.gotCardTwo.text,
+  // ★ 2026-09-23：小衰神附身丢卡（`0x0040f148 call 0x440cac`，`0x4633ab`，1500 ms）—— 串里自己写着「小衰神」
+  'god.lostCard': GOD_MANIFEST.lostCard.text,
   'bank.rejected': BANK.rejected.text,
   // ★ ATM 窗 `0x408`：銀行暫停放款期内开 ATM，框盖在 ATM 上（1500 ms）
   'bank.frozen': BANK.frozen.text,
@@ -254,7 +256,9 @@ export function noticeAfterSpeech(key: NoticeKey): boolean {
   //   命運罰款 `0x0044cef9 call 0x44f42d` → `0x0044cf11 call 0x44ba63`；
   //   坐牢 `0x0043d71c player_say` → `0x0043d749`；住院 `0x0043edcb` → `0x0043edf8`；
   //   住旅館 `0x0041a7e0 call 0x44f2c2` → `0x0041a82d`。
-  return key.startsWith('confinement.') || key === 'insurance.payout';
+  // ★ 2026-09-23：小衰神丢卡那一扇排在「別鬧了！」（事件 22，`0x0040f0ac call 0x44ef41`）之后 ——
+  //   原版次序：台词 → 影片 0x222 → 开场白 `0x40e2a2` → 丢卡 `0x441e77` → 框 `0x0040f148`。
+  return key.startsWith('confinement.') || key === 'insurance.payout' || key === 'god.lostCard';
 }
 
 /**
