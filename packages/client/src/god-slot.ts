@@ -680,9 +680,10 @@ export function resetGodSlot(): void {
 }
 
 /** 给单测 / 宿主的只读视图；`amount` = 这一格四个转轮拼出来的数 */
-export function godSlotState(): { playing: boolean; spin: GodSlotSpin | null; amount: number } {
+export function godSlotState(): { playing: boolean; pending: boolean; spin: GodSlotSpin | null; amount: number } {
   return {
     playing: playback !== null,
+    pending: playback === null && pendingCue !== null,
     spin: playback,
     amount: playback === null ? 0 : godSlotReelAmount(playback.reels, playback.cue.variant),
   };

@@ -120,7 +120,10 @@ import { loadAllArchives, type LoadProgress } from './asset-loader.ts';
 import {
   cardUsePopupActive,
   dropOwnCardUse,
+  eventBoxPending,
   eventBoxScreen,
+  eventBoxScreenState,
+  setEventBoxStartGate,
   startCardRevealPopup,
   onEventBoxArtReady,
   setEventBoxArchives,
@@ -186,7 +189,7 @@ import {
 } from './options-pages.ts';
 import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
 import {
-  cardPlaySpeech,
+  cardPlaySpeechLines,
   toolUseSpeechLines,
   toolLineOf,
   ownToolLineSpoken,
@@ -196,7 +199,19 @@ import {
   speechLinesFor,
   type SpeechLine,
 } from './speech.ts';
-import { deferSpeech, filmWaitsForSpeech, stageBusy, type StageFlags } from './stage-gate.ts';
+import { filmWaitsForSpeech, stageBusy, type SpeechOrder, type StageFlags } from './stage-gate.ts';
+// ★★ 第十五份：台词气泡 × 各种框的先后与互斥 —— 一把尺子、两道闸（规格见该模块文件头）
+import {
+  SCREEN_BOX_TIER,
+  boxMayStart,
+  boxRank,
+  insertByRank,
+  lineMayEnter,
+  lineRank,
+  speechAheadOfFilms,
+  type BoxSnapshot,
+  type SpeechSnapshot,
+} from './presentation-order.ts';
 import { fastForwardPresentations, presenterMovedOn } from './follow-presenter.ts';
 import {
   SpeechQueue,
@@ -363,6 +378,8 @@ import { tollFlashLevel } from './toll-flash-fx.ts';
 import {
   noticeHoldsFilms,
   noticeKeyShowing,
+  noticePendingRanks,
+  noticeShowing,
   noticeWaitingForSpeech,
   setNoticeCardPopup,
   setNoticeOverlayGate,
@@ -380,7 +397,7 @@ import {
   type ManifestHold,
 } from './manifest-hold.ts';
 // ★ 2026-09-22（第十一份試玩回報 #15）：訊息框的起播閘要看「轉盤 / 神明老虎機在不在播」
-import { wheelScreenState } from './wheel-screen.ts';
+import { setWheelStartGate, wheelScreenState } from './wheel-screen.ts';
 import { godSlotState, setGodSlotStartGate } from './god-slot.ts';
 // ★ W-66-a：走子时那串**剩余步数**的大数字（规格/判据见该模块文件头）。
 import {
@@ -1853,7 +1870,7 @@ const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
 function blockingPresentation(): boolean {
   // ★ 2026-09-23：保釋屏答完之后的收尾（醫院「ＯＫ！」/ 犯人道谢 / 護士道别）还在演 ⇒ 回合别往下走
   //   （原版这几句都在那扇模态窗里，关屏才回到回合流程）
-  if (bailFlow !== null && state.pending?.kind !== 'bail') return true;
+  if (bailClosing()) return true;
   const overlay = activeUiScreen();
   // ★ 魔法屋女巫窗口停在状态 7（等真人点一格）时**不算演出**：那一刻它就是一个待决交互
   //   （`pending{magicHouse}`），挡住联机收件箱就会死锁 —— 别家那一端点定的答复
@@ -1863,6 +1880,11 @@ function blockingPresentation(): boolean {
   //   否则押在演出之后的那一句（付款 / 入獄台词，`afterStage`）与这扇框互相等。
   if (overlay !== null && overlay.id === 'notice' && noticeWaitingForSpeech()) return false;
   return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
+}
+
+/** 保釋屏答完之后那段收尾还在演（见 `blockingPresentation`）*/
+function bailClosing(): boolean {
+  return bailFlow !== null && state.pending?.kind !== 'bail';
 }
 
 /**
@@ -1941,9 +1963,9 @@ function holdForActorWalk(reschedule: () => void): boolean {
   //
   //   ★ 判据取 `speechQueue.length > 0`：队列只在 `speechTick()` 里逐段收
   //   （`speechQueue.tick`），而 `speechTick` 会把**演出期间**派生出来的台词
-  //   押在 `deferredSpeech` 里（见 `queueSpeech`），所以「屏还在演」与
+  //   押在 `heldSpeech` 里（见 `queueSpeech`），所以「屏还在演」与
   //   「台词还没说完」两件事由这一条一并挡住。
-  if (speechQueue.length > 0 || deferredSpeech !== null) {
+  if (speechQueue.length > 0 || heldSpeech.length > 0) {
     reschedule();
     return true;
   }
@@ -3901,6 +3923,12 @@ function syncViewTarget(): void {
   //   撤标记那一头沿用下面「台上不忙 + 台词说完」的判据（= 卡片函数末尾的 `refresh_screen`）。
   //   联机旁观被行动者甩下时 `followPresenter` → 事件框 `fastForward` 把亮牌直接收掉 ⇒ 这里当拍放行。
   if (cardUsePopupActive()) return;
+  // ★ 第十五份：`beforeStage` 的台词（出牌 / 道具台词…）还没说完 ⇒ 新目标先不落。
+  //   原版卡片 / 道具函数里的 `view_to` 全在那一句 `player_say` 之后（查稅 `0x0044526b` → 飞 `0x004452c6`；
+  //   怪獸 `0x0044398f` → `0x00443a76`；拆除 `0x00443b8a` → `0x00443c04`；請神符 `0x00444e8a` → `0x00444eb6`），
+  //   而 `player_say` 自己先把镜头移到说话人（`0x0044efbd call 0x41d476`，见 `viewToSpeaker`）——
+  //   先前亮牌一收，镜头就被这里拉去目标，出牌台词的气泡于是指着被害人。
+  if (speechAheadOfFilms(speechSnapshot()) > 0) return;
   const t = magicSeq !== null ? (magicSeq.shown?.lastViewTarget ?? null) : state.lastViewTarget;
   if (t !== null && t !== shownViewTarget) {
     shownViewTarget = t;
@@ -3927,7 +3955,7 @@ function syncViewTarget(): void {
   }
   if (!viewTargetActive) return;
   // 演出全部收完 ⇒ 清标记（= 原版 `refresh_screen`），镜头回行动者
-  if (stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null) return;
+  if (stageBusy(stageBusyFlags()) || speechQueue.length > 0 || heldSpeech.length > 0) return;
   if (magicSeq !== null) return;
   viewTargetActive = false;
   minimapMarker = null;
@@ -4285,10 +4313,15 @@ function notifyApplied(before: GameState): void {
     // ★ 第八份 #4：路过銀行的 ATM
     syncAtmPending();
   }
+  // ★★ 第十五份：台词**先**押进 `heldSpeech`（还不上台），**再**让各整屏认这一条 action ——
+  //   各框起播前要问「有没有排在我前面的台词」（`boxMayStart`），那几句此刻就得已经在账上；
+  //   先前台词在 `event()` 之后才交出来，框只好一律当场起播（或一律推到下一帧）。
+  holdSpeech(said);
   // ★ 登记的整屏：把「刚刚发生了什么」告诉它们（開獎 / 月結 / 魔法屋 / 事件框靠这个起播）
   const env = uiEnv();
   for (const s of SCREENS) s.event?.(before, state, env);
-  queueSpeech(said);
+  releaseHeldSpeech(performance.now());
+  if (heldSpeech.length > 0) requestRender();
 }
 
 /**
@@ -4307,20 +4340,20 @@ function notifyApplied(before: GameState): void {
  *   ⇒ 原版**必定**是「盤停下來 → 訊息框 → 付款人的台詞」。
  *
  *   本引擎一条 action 就把后果写完、演出是事后补的，所以这里等 `SCREENS` 的
- *   `event()` 派完再按**每一句自己的 `order`**（W-51，来自 W-50 §2.2 的裁定表）分流：
+ *   `event()` 派完，把这一条 action 的台词按**档**（`order` → `lineRank`）排进 `heldSpeech`，
+ *   再由 `releaseHeldSpeech` 按 `presentation-order.ts` 的 `lineMayEnter` 一句一句放上台：
  *
- *   - `beforeStage`（例：壞神附身、回合开始那三句）⇒ **立即入队**，并反过来挡住
- *     这一条 action 的影片起播（`tickBoardFilm` / `tickBuildFx` 等 `speechQueue.length === 0`）；
- *   - `afterStage`（例：送醫院 / 送監獄 / 設施收費）⇒ `stageBusy()` 为真时押进
- *     `deferredSpeech`，由 `speechTick()` 在演出收摊之后放上台。
+ *   - `beforeStage`（道具 / 出牌台词、壞神附身、回合开始那三句）⇒ 只等 `lead` 档的框
+ *     （「使用%s」、亮牌、事件框）与屏上正开着的框；影片反过来等它（`speechAheadOfFilms`）；
+ *   - `afterStage`（送醫院 / 送監獄 / 設施收費…）⇒ 等 `stage` 档的框与影片那一类演完；
+ *   - `afterTailBox`（土地公 / 福神）⇒ 连 `tail` 档的框（顯靈框、理賠框）也等。
  *
- *   ⚠️ **死锁自查**：`beforeStage` 的句子**永不**进 `deferredSpeech`（`deferSpeech()`
- *     只对 `afterStage` 返回 true）。否则「台词等影片起播、影片等台词说完」互等。
- *     见 `stage-gate.ts` 的同名规则与它那条 2 秒用例。
+ *   ★★ 第十五份（「台词和棕色对话框又重叠了」）：先前 `beforeStage` 的句子「永不押后」，
+ *     于是电脑用道具时「使用定時炸彈」框（`0x00448070`，在道具函数**之前**）与道具台词同时上屏。
+ *     现在任何一句都不会在屏上有框时上台，框也不会在台上有气泡时起播（`boxMayStart`）。
  *
- *   ★ 押着的**至多只有一条 action 的那几句**（`deferredSpeech` 是单槽、整体覆写）：
- *     演出占着屏时 `holdForActorWalk` 不会派下一条 action，所以「押着的被下一条盖掉」
- *     到不了（真被盖掉也不算错 —— 后说的那句本来就该盖住前一句）。
+ *   ⚠️ **死锁自查**：台词只等**档更小**的框、框只等档更小的台词，影片只等 `beforeStage`；
+ *     没有环（`presentation-order.test.ts` 的长局逐拍模拟验证「不重叠、不卡死」）。
  *
  * ⚠️ 押后而不是「冻结队列」：`SpeechQueue` 的时间基准是**绝对时刻**（`shownAt`），
  *   冻结再解冻会把整段演出时长算进那 1000 ms 里，那一段台词就一闪而过。
@@ -4328,25 +4361,72 @@ function notifyApplied(before: GameState): void {
  */
 function queueSpeech(lines: readonly SpeechLine[]): void {
   if (lines.length === 0) return;
-  const busy = stageBusy(stageBusyFlags());
-  const deferred: SpeechBubble[] = [];
-  const immediate: SpeechBubble[] = [];
-  for (const line of lines) {
-    if (deferSpeech(line.order, busy)) deferred.push(line.bubble);
-    else immediate.push(line.bubble);
-  }
-  // ★ 立即说的那几句一上台，先前押着的就作废（后说的那句本来就该盖住前一句）
-  if (immediate.length > 0) {
-    deferredSpeech = null;
-    if (speechQueue.push(immediate, performance.now()) > 0) requestRender();
-  }
-  if (deferred.length > 0) {
-    deferredSpeech = deferred;
-    // ★ 押着也要续帧：`speechTick()` 靠每一帧回头看「演出收摊了没有」
-    //   （`requestRender` 的续帧条件里也有 `deferredSpeech !== null`）
-    requestRender();
-  }
+  holdSpeech(lines);
+  releaseHeldSpeech(performance.now());
+  // ★ 押着也要续帧：`speechTick()` 靠每一帧回头看「框 / 演出收摊了没有」
+  //   （`requestRender` 的续帧条件里也有 `heldSpeech.length > 0`）
+  requestRender();
 }
+
+/** 按档押进 `heldSpeech`（不放行）—— `notifyApplied` 在各整屏认 action **之前**调 */
+function holdSpeech(lines: readonly SpeechLine[]): void {
+  if (lines.length === 0) return;
+  heldSpeech = insertByRank(
+    heldSpeech,
+    lines.map((l) => ({ bubble: l.bubble, order: l.order, rank: lineRank(l.order) })),
+  );
+}
+
+/**
+ * 押着的台词能上台的就上台（按档从小到大，只看队头：档更大的一定更受限）。
+ * 每帧由 `speechTick` 调，`queueSpeech` 交进来那一拍也调一次。
+ */
+function releaseHeldSpeech(now: number): void {
+  if (heldSpeech.length === 0) return;
+  const boxes = boxSnapshot();
+  const out: SpeechBubble[] = [];
+  while (heldSpeech.length > 0 && lineMayEnter(heldSpeech[0]!.order, boxes)) out.push(heldSpeech.shift()!.bubble);
+  if (out.length > 0 && speechQueue.push(out, now) > 0) requestRender();
+}
+
+/** 台词那一侧此刻的样子（框的起播闸用）*/
+function speechSnapshot(): SpeechSnapshot {
+  return { onStage: speechQueue.length, heldRanks: heldSpeech.map((h) => h.rank) };
+}
+
+/**
+ * 框那一侧此刻的样子（台词的上台闸用）。
+ *
+ * - `showing`：屏上正开着的框 —— 訊息框（含收掉后的空等）、事件框 / 亮牌、轉盤、神明老虎机、
+ *   神明台词窗，以及推日期那几屏（分紅 / 開獎 / 月结）与魔法屋女巫窗（等真人点格那一拍除外）；
+ * - `pendingRanks`：已经排定、还没起播的框的档；
+ * - `filmsBusy`：W-51 那几位里**不是框**的（影片 / 建屋片 / 投掷 / 走子 / 掷骰 / 閃爍 / 升天）+ 保釋屏收尾。
+ */
+function boxSnapshot(): BoxSnapshot {
+  const env = uiEnv();
+  const wheel = wheelScreenState();
+  const slot = godSlotState();
+  let showing =
+    godLine !== null || noticeShowing() || eventBoxScreenState().playing || wheel.playing || slot.playing;
+  if (!showing) {
+    for (const s of SCREENS) {
+      if (!DAY_AND_MAGIC_BOXES.has(s.id) || !s.active(env)) continue;
+      if (s.id === 'magic' && magicAwaitingPick()) continue;
+      showing = true;
+      break;
+    }
+  }
+  const pendingRanks = noticePendingRanks();
+  if (eventBoxPending()) pendingRanks.push(boxRank(SCREEN_BOX_TIER.eventBox));
+  if (wheel.pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.wheel));
+  if (slot.pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.godSlot));
+  if (pendingGodLine !== null) pendingRanks.push(boxRank(SCREEN_BOX_TIER.godSay));
+  const filmsBusy = stageBusy({ ...stageBusyFlags(), blockingPresentation: bailClosing(), godLine: false });
+  return { showing, pendingRanks, filmsBusy };
+}
+
+/** 推日期那几屏 + 魔法屋女巫窗：都是 `lead` 档、起播即在屏上（见 `SCREEN_BOX_TIER`）*/
+const DAY_AND_MAGIC_BOXES: ReadonlySet<string> = new Set(['shares', 'lottery-draw', 'monthly', 'magic']);
 
 /**
  * 一条 action 落地后该起哪些**表现动效** —— 两条来源（真人 `dispatch → applyAction`、
@@ -4483,7 +4563,7 @@ function notifyMagicApplied(before: GameState, beats: MagicSequence['beats']): v
 
 /** 上一段还没演完吗（框 / 影片 / 建屋 / 走子 / 台词 —— 与回合驱动同一份判据）*/
 function magicSequenceBusy(): boolean {
-  return stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null;
+  return stageBusy(stageBusyFlags()) || speechQueue.length > 0 || heldSpeech.length > 0;
 }
 
 /** 每帧：上一段收了就起下一段；全部演完就收摊（镜头 / 侧栏交还施法者，= 原版 `0x004324fa` 还原当前玩家）*/
@@ -4628,7 +4708,7 @@ function ensureSpeakingArchive(): void {
  *   而它所在的整段流程里，轉盤 / 訊息框 / 事件框… 都是**阻塞**调用，顺序由**调用顺序**定死
  *   （設施收費：`0x41a458` 轉盤 → `0x41a579` 訊息框 → `0x41a5c0` 收費 → `0x41a71e` 台词）。
  *   本引擎一条 action 就把后果写完，演出是事后补的 —— 于是台词必须**等演出完**
- *   才上台，见 `deferredSpeech`。
+ *   才上台，见 `heldSpeech`。
  */
 function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   // ★ 有人出局**没有**音效：先前这里放的 Effect #5 出自 `0x0040d1cb push 5`，紧跟的是 `call 0x4549cf`
@@ -4728,7 +4808,7 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   // 表现层不该因此把整局打断，故这里只播合法的那几个。
   // ★★ 先出**卡牌台词**（原版那句在卡片函数体内，先于效果引发的台词），
   //   再出状态跃迁派生的台词 —— 顺序与原版一致。
-  const cardBubbles = cardPlaySpeech(before, after);
+  const cardSpeech = cardPlaySpeechLines(before, after);
   // ★★ 第十一份試玩回報 #3：**道具台词**（原版 `_tool_strings`，不分人机）。
   // ★★ 第十四份試玩回報 #2：次序是 `beforeStage`（`TOOL_LINE_ORDER`）—— 原版 13 件道具
   //   都是**先** `player_say`、**再**选格 / 大锤 / 投掷 / 爆炸（VA 逐件见 `speech.ts`）。
@@ -4741,15 +4821,12 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   const toolLines = spokenOwn ? [] : toolUseSpeechLines(before, after);
   const spoken = speechEventsFor(before, after, topo);
   // ★ W-51：台词现在带**次序**交出去（`SpeechLine.order`），由 `queueSpeech` 分流。
-  //   卡牌台词**不是探测器**（它走 `lastCardPlay` 这条非状态跃迁的通道）⇒ W-50 §2.2
-  //   没有它的行；按**改动最小**取 `afterStage`：W-51 之前它就是「演出占屏时押后」
-  //   那一类（`queueSpeech` 的旧判据 `blockingPresentation()`），且 exe 里几张卡的
-  //   调用点确实是影片在前、台词在后（例：`0x00443afb` 前有 `view_to` + `play_flic`，
-  //   见 `docs/tasks/speech-callsites.md`）。首席若要逐卡裁定，改这一处即可。
-  const cardLines: SpeechLine[] = [
-    ...cardBubbles.map((bubble): SpeechLine => ({ bubble, order: 'afterStage' })),
-    ...toolLines,
-  ];
+  //   卡牌台词**不是探测器**（它走 `lastCardPlay` 这条非状态跃迁的通道）。
+  //   ★ 第十五份：逐卡裁定过了 —— 从手里出的牌，出牌台词是卡片函数里**第一个**演出
+  //   （在飞行 / 影片 / 结果框之前）⇒ `beforeStage`；收費那一段的被动卡与回应台词 `afterStage`
+  //   （`speech.ts` 的 `cardPlaySpeechLines`）。先前一律 `afterStage` 引的 `0x00443afb` 是怪獸卡
+  //   影片**之后**的第二句（效果台词），出牌那句是 `0x0044398f`，在飞行 `0x00443a6a` 之前。
+  const cardLines: SpeechLine[] = [...cardSpeech, ...toolLines];
   if (spoken.length === 0) return cardLines;
   ensureSpeakingArchive();
   // ★ 语音**不在这里放** —— 见 `speechTick()`。
@@ -5475,6 +5552,9 @@ function syncShopUi(): void {
   //   本引擎的訊息框在 `BLOCKING_PRESENTATIONS` 里、回合驱动会等它，
   //   但 `syncShopUi` 是每次 action 后无条件跑的 ⇒ 这里补一道闸。
   if (blockingPresentation()) return;
+  // ★ 第十五份：董事長贈禮那一句（`0x0042ea23 call 0x44f230`）也在开窗（`0x0042ea28`）之前 ——
+  //   台上还有气泡 / 押着的台词就先别开（开了气泡就叠在商店窗上）
+  if (shopUi === null && (speechQueue.length > 0 || heldSpeech.length > 0)) return;
   // ★ 只在**第一次**看见这个商店时建快照：那之后的 `pending.cards/tools` 会因为
   //   买到手而变短，而原版货架上的字是烤进图里的，不会消失。
   if (shopUi === null) {
@@ -5675,7 +5755,7 @@ function tickPendingToolPicker(): void {
     pendingToolPicker = null;
     return;
   }
-  if (filmWaitsForSpeech(speechQueue.length)) {
+  if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) {
     requestRender();
     return;
   }
@@ -6135,12 +6215,22 @@ function startGodLine(before: GameState, after: GameState): void {
   const text = godLineTrigger(before, after);
   if (text === null) return;
   pendingGodLine = text;
-  tickGodLine(performance.now());
+  // ★ 第十五份：**不**当场起 —— 同一条 action 的壞神台词（`beforeStage`，`0x0040ef44` 在影片与
+  //   `0x40e2a2` 之前）要等 `notifyApplied` 才交出来；交给下一帧的 `tickGodLine` 看闸
+  requestRender();
 }
 
 /** 每帧：排队的等影片收屏就上台；到 2400 ms 收场 */
 function tickGodLine(now: number): void {
-  if (pendingGodLine !== null && boardFilm === null && pendingBoardFilm === null) {
+  if (
+    pendingGodLine !== null &&
+    boardFilm === null &&
+    pendingBoardFilm === null &&
+    // ★ 第十五份：台上有气泡 / 押着排在它前面的台词 ⇒ 等（原版台词 `0x0040ef44` → 影片 → `0x40e2a2`；
+    //   没有影片时（「動畫過程」关掉）先前会与那句台词同屏）；亮牌 / 事件框还开着也等（它们在更前面）
+    boxMayStart(SCREEN_BOX_TIER.godSay, speechSnapshot()) &&
+    !eventBoxScreen.active(uiEnv())
+  ) {
     godLine = { text: pendingGodLine, at: now };
     pendingGodLine = null;
     requestRender();
@@ -6203,7 +6293,9 @@ setGodSlotStartGate(
     boardFilm !== null ||
     pendingBoardFilm !== null ||
     godLine !== null ||
-    pendingGodLine !== null,
+    pendingGodLine !== null ||
+    // ★ 第十五份：台上有气泡 / 押着排在它前面的台词 ⇒ 等（`presentation-order.ts`）
+    !boxMayStart(SCREEN_BOX_TIER.godSlot, speechSnapshot()),
 );
 
 setNoticeStartGate(
@@ -6218,15 +6310,19 @@ setNoticeStartGate(
     //   光是调整 `SCREENS` 顺序还不够：押后期间訊息框的 `active()` 仍为真，
     //   照样会压住转盘、吃掉玩家的点击（见 `screens.ts` 里那一段注释）。
     wheelScreenState().playing ||
-    godSlotState().playing,
+    // ★ 第十五份：转盘 / 老虎机排着等台词时也算（它们在訊息框之前）
+    wheelScreenState().pending ||
+    godSlotState().playing ||
+    godSlotState().pending,
 );
 
-// ★ 第十三份試玩回報 #2：回合開始被阻那几扇框（「○○住院中／還剩 N 天」）排在角色台词**之后**
-//   （`fcn_0040c912`：`0x0040caca call 0x44ef41` 阻塞说完 → `0x0040cb98 call 0x440cac`）。
-//   判据取 `speechQueue.length > 0`（= 台上还有句子没收），与 `filmWaitsForSpeech` 同一口径。
-// ★ 第十四份：保險理賠那一扇排在付款 / 入獄台词之后，而那一句多半还押在 `deferredSpeech` 里
-//   （演出收摊才上台）⇒ 押着的也算「还没说完」。
-setNoticeSpeechGate(() => speechQueue.length > 0 || deferredSpeech !== null);
+// ★★ 第十五份：**每一扇**訊息框起播前都问台词那一侧（`presentation-order.ts` 的 `boxMayStart`）——
+//   台上有气泡 ⇒ 等（互斥：原版 `player_say` 阻塞）；有档更小的台词押着 ⇒ 等（先后）。
+//   先前只有回合開始被挡（第十三份 #2）、保險理賠、小衰神丢卡这几扇等，其余一律与台词同屏。
+setNoticeSpeechGate((tier) => !boxMayStart(tier, speechSnapshot()));
+// ★ 第十五份：事件框 / 亮牌 / 抽卡卡面（`lead` 档）与轉盤（`stage` 档）同一道闸
+setEventBoxStartGate(() => !boxMayStart(SCREEN_BOX_TIER.eventBox, speechSnapshot()));
+setWheelStartGate(() => !boxMayStart(SCREEN_BOX_TIER.wheel, speechSnapshot()));
 // ★ 第十四份：命運 / 新聞的施加阶段（加持框、理賠框…）排在事件提示框收掉之后
 setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
 // ★ 第十四份（D-008 收口）：嫁禍卡的选人窗 —— 与对话框同一道闸（`currentDialog`）：
@@ -6249,16 +6345,14 @@ setNoticeCardPopup(
 const speechQueue = new SpeechQueue();
 
 /**
- * 被演出**押后**的台词（那一刻起屏上有一段纯演出在演）。
+ * 还没上台的台词（按档排好：`lineRank`，同档保持来时的先后）。
  *
  * ★★ 原版「轉盤停 → 訊息框 → 付款人的台詞」是**同步**顺序（見 `queueSpeech` 的
  *   `@source`）。本引擎一条 action 就把演出与台词一起派生出来，所以台词先押在这里，
- *   由 `speechTick()` 在演出收屏之后放上台。
- *
- * ★ 单槽 + 整体覆写：押着的**至多只有一条 action 的几句**（演出占屏时
- *   `holdForActorWalk` 不派下一条），见 `queueSpeech`。
+ *   由 `releaseHeldSpeech()` 按「框 / 影片收了没有」一句一句放上台（第十五份起连
+ *   `beforeStage` 的句子也会押 —— 押在 `lead` 档的框与屏上正开着的框后面）。
  */
-let deferredSpeech: SpeechBubble[] | null = null;
+let heldSpeech: { bubble: SpeechBubble; order: SpeechOrder; rank: number }[] = [];
 
 // ============================================================
 //  神明离身升天（`god_detach` VA 0x0040e32c）—— 规格在 `god-ascend-fx.ts`（第十二份试玩回报 #1）
@@ -6322,7 +6416,8 @@ let dollWalkHeld = false;
  */
 function tickDollRelease(): void {
   if (!dollWalkHeld) return;
-  if (filmWaitsForSpeech(speechQueue.length)) {
+  // ★ 第十五份：电脑用娃娃时「使用機器娃娃」框（`0x00448070`）在道具函数之前 ⇒ 也等它
+  if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot())) || noticeHoldsFilms()) {
     requestRender();
     return;
   }
@@ -6366,7 +6461,8 @@ function tickObjectFlight(now: number): void {
   if (f === null) return;
   // ★★ 第十四份試玩回報 #2：道具台词先说完（`filmWaitsForSpeech`，与影片 / 建屋动效同一道闸）
   if (objectFlightAwaitsSpeech) {
-    if (filmWaitsForSpeech(speechQueue.length)) {
+    // ★ 第十五份：电脑用道具那一扇「使用%s」（`0x00448070`，`lead` 档）也在投掷之前
+    if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot())) || noticeHoldsFilms()) {
       requestRender();
       return;
     }
@@ -6524,7 +6620,9 @@ let pendingCardFlight: {
 function tickPendingCardFlight(): void {
   const p = pendingCardFlight;
   if (p === null) return;
-  if (cardUsePopupActive()) {
+  // ★ 第十五份：出牌台词（`beforeStage`）在卡片函数里排在 `animate_object` 之前
+  //   （均貧 `0x00442225` → `0x004422d6`、怪獸 `0x0044398f` → `0x00443a6a` …）⇒ 说完才飞
+  if (cardUsePopupActive() || eventBoxPending() || filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) {
     requestRender();
     return;
   }
@@ -6983,7 +7081,7 @@ let pendingDisappearFx: { spec: BoardFilmSpec; before: GameState } | null = null
 function tickPendingDisappearFx(): void {
   const p = pendingDisappearFx;
   if (p === null) return;
-  if (speechQueue.length > 0 || deferredSpeech !== null || blockingPresentation() || !renderer.walkDone()) {
+  if (speechQueue.length > 0 || heldSpeech.length > 0 || blockingPresentation() || !renderer.walkDone()) {
     requestRender();
     return;
   }
@@ -7077,10 +7175,10 @@ function tickBoardFilm(now: number): void {
     // ★★ W-51：**原版说完才播**。`beforeStage`（壞神附身 / 回合开始那三句）的句子
     //   已经进了 `speechQueue`，这一段影片等它说完 —— 原版那一句 `player_say` 是
     //   同步返回的，调用它的流程才走到 `read_mkf + fcn_0045144f`。
-    //   ⚠️ 只等 `speechQueue`（= 已经上台的那几句）；押在 `deferredSpeech` 里的
+    //   ⚠️ 只等 `speechQueue` + 押着的 `beforeStage`（`speechAheadOfFilms`）；押在 `heldSpeech` 里的
     //      `afterStage` 本来就该排在影片**之后**，反过来挡影片就是死锁
     //      （见 `stage-gate.ts` 的 `filmWaitsForSpeech` 与它的单测）。
-    if (filmWaitsForSpeech(speechQueue.length)) return;
+    if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) return;
     // ★ 换神：旧神先升天（`0x40eb3f` 在影片之前），演完 `tickGodAscend` 会再叫醒我们
     if (godAscend !== null) return;
     // ★ 魔法屋：原版每一支先 `0x440cac` 弹框（阻塞 1500 ms）、再播影片（拆除 0x211 / 入獄・住院）
@@ -7291,9 +7389,9 @@ function tickBuildFx(now: number): void {
     if (manifestHold !== null) return;
     // ★★ W-51：与 `tickBoardFilm` 同一条规矩 —— **原版说完才播**：`beforeStage`
     //   的句子（壞神附身 / 回合开始那三句）在 `speechQueue` 里就等它说完。
-    //   ⚠️ 只等 `speechQueue`，不等 `deferredSpeech`（`afterStage` 排在演出之后，
+    //   ⚠️ 只等 `speechAheadOfFilms`（台上的 + 押着的 `beforeStage`），不等押着的 `afterStage`（排在演出之后，
     //      反过来挡影片就是死锁）。见 `stage-gate.ts` 的 `filmWaitsForSpeech`。
-    if (filmWaitsForSpeech(speechQueue.length)) return;
+    if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) return;
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
     // ★ 魔法屋「就地加蓋」：原版先 `0x440cac` 弹「名字\n\n就地加蓋房屋」1500 ms（0x00432003），
@@ -7739,6 +7837,7 @@ function requestRender(): void {
         });
         stageCtx.restore();
       }
+      watchSpeechBoxOverlap(bubble !== null);
     }
 
     // ── 屏幕提示条（`toast.ts`）──
@@ -7769,9 +7868,9 @@ function requestRender(): void {
       reminderUi !== null ||
       atmCode !== null ||
       speechQueue.length > 0 ||
-      // ★ 押在 `deferredSpeech` 里的那几句也要续帧 —— 演出收屏那一拍就靠它
+      // ★ 押在 `heldSpeech` 里的那几句也要续帧 —— 框 / 演出收屏那一拍就靠它
       //   把台词放上台（否则要等下一次 action，台词就永远不上台了）
-      deferredSpeech !== null ||
+      heldSpeech.length > 0 ||
       // ★ 機器娃娃**打飞**的物件还在飞 ⇒ 接着要帧（它与替身补间不同寿：
       //   娃娃走完那几拍若没有别的演出，就没人再要帧了，最后几拍会冻在屏上）
       renderer.sweptFlightActive() ||
@@ -7828,6 +7927,20 @@ function viewToSpeaker(bubble: SpeechBubble): void {
   camera = pixelCamera(at.x, at.y, camera.view);
 }
 
+/**
+ * ★ 第十五份：**运行时自检** —— 气泡与框同屏（原版不可能：两边都是阻塞调用）就记一行日志。
+ *   每一段只记一次（进入同屏那一拍）。日志会进试玩回报的 `env.log`，下次漏网能直接定位。
+ */
+let speechBoxOverlap = false;
+function watchSpeechBoxOverlap(bubbleUp: boolean): void {
+  const both = bubbleUp && boxSnapshot().showing;
+  if (both && !speechBoxOverlap) {
+    const overlay = activeUiScreen();
+    log(`⚠ 台詞氣泡與框同屏（${overlay?.id ?? (godLine !== null ? 'godLine' : '?')}）`);
+  }
+  speechBoxOverlap = both;
+}
+
 function speechTick(now: number): void {
   // ★★ 演出还在演 → **`afterStage`** 的台词不上台；演出收摊那一刻才把押着的那几句放上来。
   //
@@ -7843,9 +7956,10 @@ function speechTick(now: number): void {
   //   ```
   //   ⇒ 原版**必定**是「轉盤停 → 訊息框 → 付款人的台詞」。
   //   本引擎把 consequences 一次写完、演出是事后补的，所以那几句台词先被
-  //   `queueSpeech()` 押在 `deferredSpeech` 里（判据见那里）——这里等演出收摊
-  //   再放上台，等于把「同步演出」的语义补回来
-  //   （试玩回报：「盘子还没停下来 NPC 的台词都触发了」）。
+  //   `queueSpeech()` 押在 `heldSpeech` 里（判据见那里）——这里每帧问一次
+  //   「框 / 演出收了没有」（`releaseHeldSpeech` → `lineMayEnter`），收了才放上台，
+  //   等于把「同步演出」的语义补回来（试玩回报：「盘子还没停下来 NPC 的台词都触发了」；
+  //   第十五份：「台词和棕色对话框又重叠了」）。
   //
   //   ★★ W-51 **死锁自查**：这里只挡**押后的那几句**的放行，**不挡队列本身**。
   //      队列里可能正躺着 `beforeStage`（壞神附身 / 回合开始那三句）的句子，而
@@ -7857,13 +7971,7 @@ function speechTick(now: number): void {
   //   ⚠️ 押在**入队之前**而不是「冻结队列再解冻」：`SpeechQueue` 的时间基准是
   //      绝对时刻（`shownAt`），冻结再解冻会把整段演出时长算进那 1000 ms 里，
   //      那一段台词就一闪而过。
-  if (!stageBusy(stageBusyFlags())) {
-    const held = deferredSpeech;
-    if (held !== null) {
-      deferredSpeech = null;
-      if (speechQueue.push(held, now) > 0) requestRender();
-    }
-  }
+  releaseHeldSpeech(now);
   if (speechQueue.tick(now)) requestRender();
   const cur = speechQueue.current();
   if (cur === spokenBubble) return;
@@ -11586,10 +11694,10 @@ async function boot(): Promise<void> {
          *   （`stageBusy(stageBusyFlags())` + 台词队列），不另写一份。
          */
         stageBusy: () => ({
-          busy: stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null,
+          busy: stageBusy(stageBusyFlags()) || speechQueue.length > 0 || heldSpeech.length > 0,
           flags: stageBusyFlags(),
           speech: speechQueue.length,
-          deferred: deferredSpeech !== null,
+          deferred: heldSpeech.length > 0,
         }),
         /** 查一张图的尺寸与锚点 —— 命中判定对不上时先看这个 */
         sprite: (archive: 'Data.mkf' | 'Panel.mkf', res: number, idx: number, key = false) => {
