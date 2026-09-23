@@ -276,6 +276,24 @@ export function speechBubbleOf(
   character: number,
   speaker: string,
 ): SpeechBubble | null {
+  // ★ 字面串那一种（`SayEvent.text`，如魔法屋的「？？？...」）：不查角色台词表；
+  //   串首有 `#NNNN` 才放语音（`0x0044f07c cmp byte [ebx], 0x23`），否则只画字。
+  if (ev.text !== undefined) {
+    const { voice, rest } = parseVoiceCode(ev.text);
+    return {
+      player: ev.player,
+      character,
+      event: ev.event,
+      speaker,
+      expression: ev.expression ?? 0,
+      lines: bubbleLines(rest),
+      voice,
+      emoji: null,
+      textAt: SPEECH_TEXT_AT,
+      emojiAt: SPEECH_EMOJI_AT,
+      holdMs: SPEECH_HOLD_MS,
+    };
+  }
   let line: SpeechLine;
   try {
     line = speechLine(character, ev.event);

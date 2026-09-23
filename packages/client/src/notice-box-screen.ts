@@ -66,7 +66,7 @@
  * 与原版「每扇各自一次可跳过的等待」一致）。
  */
 
-import { BANK, CONFINEMENT, FACILITY_TOLL, GOD_MANIFEST, MESSAGE_BOX, RENT, SHOP, formatOriginal } from '@rich4/data';
+import { BANK, CONFINEMENT, FACILITY_TOLL, GOD_MANIFEST, MAGIC_HOUSE_TEXT, MESSAGE_BOX, RENT, SHOP, formatOriginal } from '@rich4/data';
 import type { GameState, NoticeHint, NoticeKey } from '@rich4/core';
 import { drawDialog } from './dialog.ts';
 import type { InteractionUi } from './interactions.ts';
@@ -141,6 +141,10 @@ export const NOTICE_TEXT = {
   'confinement.prison': CONFINEMENT.prison.text,
   'confinement.hospital': CONFINEMENT.hospital.text,
   'confinement.sleeping': CONFINEMENT.sleeping.text,
+  // ★ 魔法屋（2026-09-23）：`sprintf("%s\n\n", 名字)` 之后 `strcat` 效果名 ⇒ 两段拼起来就是一个格式串
+  'magic.effect': MAGIC_HOUSE_TEXT.nameHead.text + '%s',
+  'magic.gotCard': MAGIC_HOUSE_TEXT.nameHead.text + MAGIC_HOUSE_TEXT.gotCard.text,
+  'magic.spin': MAGIC_HOUSE_TEXT.spin.text,
 } as const satisfies Record<NoticeKey, string>;
 
 /** 一条 `{ key, args }` 提示 → 屏上那一句（`%s` / `%d` 全在 `args` 里） */
@@ -184,7 +188,22 @@ interface QueuedNotice {
   key: NoticeKey;
   text: string;
   holdMs: number;
+  /** 原版排在同一条 action 的影片**之前**（见 core 的 `NoticeHint.beforeFilms`）*/
+  beforeFilms: boolean;
+  /** 框收掉之后还要**空等**多久（见 core 的 `NoticeHint.afterMs`）*/
+  afterMs: number;
 }
+
+/** 正在弹的那一扇是不是「排在影片之前」的那一种 */
+let playingBeforeFilms = false;
+/** 正在弹的那一扇收掉之后要空等多久 */
+let playingAfterMs = 0;
+
+/**
+ * 框已收掉、还在**空等**的那一段（原版 `fcn_0045285e(ms)` 忙等，点不掉）；`null` = 没在等。
+ * 期间本屏仍算接管（回合驱动押着），但什么都不画。
+ */
+let tail: { until: number; beforeFilms: boolean } | null = null;
 
 /** 现在正在弹的那一个；`null` = 没在弹 */
 let playback: NoticePlayback | null = null;
@@ -216,6 +235,21 @@ function gated(): boolean {
 export function resetNoticeBoxScreen(): void {
   playback = null;
   pending = [];
+  playingBeforeFilms = false;
+  playingAfterMs = 0;
+  tail = null;
+}
+
+/**
+ * 此刻有没有「原版排在影片之前」的框还没弹完（正在弹，或排在队头等着弹）。
+ *
+ * ★ 宿主的建屋影片 / 棋盘影片起播前问它：是 ⇒ 先别起播（魔法屋 `0x431caa` 每一支都是
+ *   先 `0x440cac` 阻塞 1500 ms、再 `fcn_0045144f`）。
+ */
+export function noticeHoldsFilms(): boolean {
+  if (playback !== null) return playingBeforeFilms;
+  if (tail !== null) return tail.beforeFilms;
+  return pending[0]?.beforeFilms === true;
 }
 
 /**
@@ -225,15 +259,19 @@ export function resetNoticeBoxScreen(): void {
  *   两扇共用一个 1500 ms 计时就会让第二扇一出现就已经超时。
  */
 function startNext(env: UiScreenEnv): void {
-  if (playback !== null) return;
+  if (playback !== null || tail !== null) return;
   // ★ W-69：闸没开就先不取队头 —— 队列原样留着，`active()` 靠它保持「还占着屏」
   //   好让 `tick` 继续叫我们（见 `active` 与 `tick`）。
-  if (gated()) return;
+  //   ★ 例外：「排在影片之前」的那几扇（魔法屋）不看这道闸 —— 反过来是影片等它们
+  //     （`noticeHoldsFilms`），两边都等就是死锁。
+  if (pending[0]?.beforeFilms !== true && gated()) return;
   const item = pending.shift();
   if (item === undefined) {
     pending = [];
     return;
   }
+  playingBeforeFilms = item.beforeFilms;
+  playingAfterMs = item.afterMs;
   playback = noticePlaybackStart(item.text, env.now, item.holdMs);
   env.log(`付费訊息框：${item.key}`);
 }
@@ -249,8 +287,17 @@ function skip(env: UiScreenEnv): void {
   if (playback === null) return;
   playback = null;
   env.log('付费訊息框：跳过');
-  startNext(env);
+  finishBox(env);
   env.requestRender();
+}
+
+/** 一扇框收掉：要空等的先空等（`fcn_0045285e` 点不掉），否则直接接下一扇 */
+function finishBox(env: UiScreenEnv): void {
+  if (playingAfterMs > 0) {
+    tail = { until: env.now + playingAfterMs, beforeFilms: playingBeforeFilms };
+    return;
+  }
+  startNext(env);
 }
 
 export const noticeBoxScreen: UiScreen = {
@@ -266,7 +313,7 @@ export const noticeBoxScreen: UiScreen = {
   //   发给接管整屏的那一屏，排队的那几扇没人来叫 `startNext`（屏自己不会醒）。
   //   ⚠️ 判据是 `pending.length > 0` 而**不是**「闸还关着」：闸开的那一拍若 `active()`
   //   已经变假，就再也没人来起播了（浏览器实测：閃完 880 ms 后框**永远不出来**）。
-  active: () => playback !== null || pending.length > 0,
+  active: () => playback !== null || pending.length > 0 || tail !== null,
 
   draw(env: UiScreenEnv): void {
     const p = playback;
@@ -281,6 +328,15 @@ export const noticeBoxScreen: UiScreen = {
   },
 
   tick(env: UiScreenEnv): void {
+    // 框收掉之后的空等（`fcn_0045285e`）：到点才接下一扇
+    if (tail !== null) {
+      if (env.now >= tail.until) {
+        tail = null;
+        startNext(env);
+      }
+      env.requestRender();
+      return;
+    }
     const p = playback;
     if (p === null) {
       // ★ W-69：押着等闸的那几扇 —— 闸一开就在这一拍起播，并自己续帧
@@ -295,7 +351,7 @@ export const noticeBoxScreen: UiScreen = {
       playback = null;
       env.log('付费訊息框：結束');
       // ★ 后面还有排队的就接着弹（原版那几扇框是一扇接一扇）
-      startNext(env);
+      finishBox(env);
     }
     // ★ **必须自己续帧**：`main.ts` 只把 `tick` 发给**此刻接管整屏**的那一屏，
     //   而关屏是「时间到」才有的事 —— 不续帧就永远到不了那个 deadline
@@ -330,9 +386,15 @@ export const noticeBoxScreen: UiScreen = {
     if (list === before.notices || list.length === 0) return;
     // ★ **不丢**：正在播就把新的排到队尾（原版是一次 action 里连弹几扇，见头注释）
     for (const n of list) {
-      pending.push({ key: n.key, text: noticeText(n), holdMs: n.holdMs ?? NOTICE_HOLD_MS });
+      pending.push({
+        key: n.key,
+        text: noticeText(n),
+        holdMs: n.holdMs ?? NOTICE_HOLD_MS,
+        beforeFilms: n.beforeFilms === true,
+        afterMs: n.afterMs ?? 0,
+      });
     }
-    if (playback === null) startNext(env);
+    if (playback === null && tail === null) startNext(env);
     env.requestRender();
   },
 };

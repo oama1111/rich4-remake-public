@@ -106,16 +106,27 @@
  *
  * ## 音效
  *
- * 这扇窗**只有一个音**：状态 7 悬停到 1..12 格时 `_rich4_play_sound_effect(0, &0x4757e7)`
+ * 窗口过程里**只有一个音**：状态 7 悬停到 1..12 格时 `_rich4_play_sound_effect(0, &0x4757e7)`
  * （0x00432e42；`0x4757e7` 首字节 = **0x27 = 39**，由入口 `0x00433828` 载入）。
- * 点下去那一支（`loc_00432e8e`）**不放音**。
+ * 点下去那一支（`loc_00432e8e`）**不放音**。关窗影片（`Panel` #20）自带一声 **0x3b = 59**
+ * （`fcn_0045144f` 的 arg5，见 `MAGIC_CLOSE_FILM`）。
+ *
+ * ## ★★ 2026-09-23 再审（逐拍对 `0x4325c2`）订正的几处
+ *
+ * - 字框一句话挂 **max(2000 ms, 语音时长)**（`fcn_0044ee18` → `0x4544b9`），不是固定 2000 ms；
+ * - 开场白里点一下跳过时**停掉语音**（`fcn_0044ee18(1)` → `0x454493`）；
+ * - 女巫嘴型按**定时器拍**摆（1/4 的拍子换、停 1..7 拍、停满贴合嘴），贴片一直留到图 1 重贴；
+ * - 状态 8 图 1 仍在图 2 底下（图 2 抠黑贴，两边袖口露出图 1）；字框（图 8）抠黑贴；
+ * - 进状态 7 补发的 `WM_MOUSEMOVE` 落在 1..12 格上也响 39；
+ * - 念完「天靈靈地靈靈」之后先播**关窗影片** Panel #20（25 帧 × 71 ms、音效 59）再关窗（D-MAGIC-15 收口）。
  * ⚠️ 先前本屏还放了 0 号（「悬停」@0x00433531）与 1 号（「按下」@0x0043365c）——
  * 那两处在 `0x433088` 起的**死神窗口**（`_rich4_call_god_of_death_callback`）里，
  * 不是这扇窗的，已去掉。
  */
 
 import { MAGIC_HOUSE_OPTIONS, stripVoiceCode } from '@rich4/data';
-import { playVoiceCode } from './voice-sink.ts';
+import { playVoiceCode, stopVoice, voiceBusy } from './voice-sink.ts';
+import { beginBoardFilm, boardFilmBitmap, boardFilmDone, type BoardFilm, type BoardFilmSpec } from './board-film.ts';
 import { MAGIC_TARGET_NAMES, type GameState } from '@rich4/core';
 import { FONT_FAMILY } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
@@ -144,7 +155,7 @@ export const MAGIC_RESOURCE = 18;
  * | 4 | 60×18 | **合着的嘴**（一条线）| 状态 4 的眨眼拍 | 0x004328f2 |
  * | 5 | 60×21 | **张开的嘴** | 状态 4 的眨眼拍 | 0x00432b1a |
  * | 6 / 7 | 142×120 | 悬停弹窗的锦缎框 | 悬停 | 0x00432de6 |
- * | 8 | 280×173 | 中央那只**木牌**（字框）| 开屏起一直在 | 0x00432596 |
+ * | 8 | 280×173 | 中央那只**木牌**（字框）| 挂着一句话时（到期贴回底下那块）| 0x00432596 / `fcn_0044ecb6` |
  * | 9 / 10 | 142×120 | 悬停弹窗框（另两张）| 悬停 | 0x00432de6 |
  * | **11..22** | 40..57 | **十二个「条件」的图标**（寶箱 / 土地 / 房屋 / 现钞 / 存摺 / 點券 / 走路 / 機車 / 汽車 / 神明 / ♂ / ♀）| 抽中的条件 | 0x004327aa |
  * | **23..34** | 40..64 | **十二个「功能」的图标**（= 图 0 里那十二个的**高亮版**）| 悬停/转盘指针 | 0x00432cfd |
@@ -347,12 +358,23 @@ export function magicFrameChunk(option: number): number {
 }
 
 /**
- * 女巫「张嘴」的每拍概率。
+ * 女巫「原本那张嘴」在图 1 里的矩形 —— 摆嘴型那一支 `rand()` 为奇数时拿它贴回
+ * (0x11e,0xd9)（= 图 1 落 (0xf1,0x8c) 时这块本来的位置）。
  *
- * @source 0x00432a85：先 `rand() >> 11`（⇒ **1/4** 的门槛），过了再 `rand() & 1`
- *   ⇒ 真正贴图 5 的概率是 **1/8**（先前只按 `rand()&1` 写成 1/2）。
+ * @source 0x00432ab5..0x00432acb：`push 0x15 / push 0x3c / push 0x4d / push 0x2d / y / x /
+ *   [0x48c398]+0x18（图 1）/ 表面 → call fcn_0045643d`（矩形拷贝，不透明）。
+ *
+ * ★★ 2026-09-23 订正：先前本屏把这一段写成「每**帧**以 1/8 的概率叠一张图 5」——
+ *   ① 原版是**定时器那一拍**（100 ms）才摆一次、摆了要停 `rand()&7`（1..7）拍；
+ *   ② 两种嘴型（图 5 张嘴 / 图 1 原嘴）各半，停满那一拍贴**图 4（合嘴）**，
+ *      之后一直留着，直到图 1 整张重贴（状态 5）；
+ *   ③ 字框收起后嘴型照样停满才合上（`[0x48c3a0]` 非 0 也会进这一段）。
+ *   见 `magicMouthTick`。
  */
-export const MAGIC_WITCH_BLINK_P = 1 / 8;
+export const MAGIC_MOUTH_REST_SRC = { x: 0x2d, y: 0x4d, w: 0x3c, h: 0x15 } as const;
+
+/** 摆嘴型的门槛：`rand() >> 11` **小于 4** 才换（= 1/4 的拍子）@source 0x00432a8c `cmp eax, 4 / jge` */
+export const MAGIC_MOUTH_GATE = 4;
 
 /**
  * **闭眼**贴片（图 3，60×35）的落点 = **(286,188)**。
@@ -567,9 +589,15 @@ export const MAGIC_GREET_LINES: readonly string[] = [
  *   `cmp eax, 0x7d0 / jb` —— 到 **2000 ms** 才算到期；到期那一下把框底下存的那块
  *   **贴回去**（0x0044eeb4 `call 0x4563f5`）= 字框收起。
  *
- * ⚠️ 原版还有一条「音效开着就等语音播完」（`cmp byte [0x49715b], 0` 之后
- *   `call 0x4544b9`）—— 语音时长要到 `Speaking.mkf` 里查，本屏拿不到那个出口，
- *   故按**底数 2000 ms**走（登记在 `T-037.md` 的 D-MAGIC-12）。
+ * ★★ 2026-09-23 订正：这只是**下限**。满 2000 ms 之后还有一道「音效开着就等语音播完」：
+ * ```asm
+ * 0044ee63  cmp  byte [0x49715b], 0 / je 0x44ee76   ; 音效档（RICH4.CFG+3）关着 → 到期
+ * 0044ee6c  call 0x4544b9                           ; 语音缓冲还在 PLAYING → 返回 1
+ * 0044ee71  mov  [0x4762c4], eax / … / jne 0x44ef34 ; ⇒ 还挂着（下一拍再问）
+ * ```
+ *   ⇒ 一句话挂 **max(2000 ms, 语音时长)**。先前一律按 2000 ms 收，长句（如 `#0037`）
+ *   语音还没念完字框就换下一句、下一句的语音把它截断。现在按 `voice-sink.ts` 的
+ *   `voiceBusy()` 每拍问一次（见 `magicLineExpired`）。
  */
 export const MAGIC_GREET_MS = 0x7d0;
 /** 同一个数，按它真正的含义起的名：字框一句话的寿命 */
@@ -655,6 +683,21 @@ export const MAGIC_MSG_BOX = {
 export const MAGIC_SECTOR_COUNT = 12;
 
 /**
+ * 女巫脸上贴过的**贴片**（按贴上去的先后）—— 原版贴在离屏面上、一直留着，
+ * 直到图 1 整张重贴（`loc_00432719` @0x00432791，状态 4 → 5）才一起抹掉。
+ *
+ * | 贴片 | 图 / 矩形 | 落点 | @source |
+ * |---|---|---|---|
+ * | `eyes` | 图 3（60×35，闭眼）| (0x11e,0xbc) | `loc_00432951`（状态 3 → 4）|
+ * | `mouthOpen` | 图 5（60×21，张嘴）| (0x11e,0xd9) | 0x00432b00 起（`rand()` 偶数那一支）|
+ * | `mouthRest` | **图 1 自己**的 (0x2d,0x4d) 起 60×21（= 图 1 原本那张嘴）| (0x11e,0xd9) | 0x00432acb `fcn_0045643d`（`rand()` 奇数那一支）|
+ * | `mouthShut` | 图 4（60×18，合嘴）| (0x11e,0xdc) | 0x004328f2（嘴型停满、`[0x48c3a0]` 减到 0 那一拍）|
+ *
+ * 全部走不透明那一支（`fcn_004563f5` / `fcn_0045643d`）。
+ */
+export type MagicFacePatch = 'eyes' | 'mouthOpen' | 'mouthRest' | 'mouthShut';
+
+/**
  * 女巫窗口此刻的状态 —— 字段与原版全局一一对应：
  *
  * | 字段 | 原版 | 含义 |
@@ -666,6 +709,9 @@ export const MAGIC_SECTOR_COUNT = 12;
  * | `tickAt` | 定时器 | 上一次 `0x113` 的时刻（100 ms 一拍）|
  * | `criterion` | `[0x48c3a3]` | 目标转盘（core 已抽好，状态 5 才亮出来）|
  * | `chosen` | `[0x48c3a1] − 1` | 点定的效果号；没点之前 −1 |
+ * | `mouthHold` | `[0x48c3a0]` | 当前嘴型还要停几拍（0 = 没在摆嘴型）|
+ * | `face` | 离屏面 | 图 1 上叠着的贴片（见 `MagicFacePatch`）|
+ * | `closing` | `KillTimer` | 状态 8 那一句到期、进了关窗那一段（`loc_00432a4c`）：定时器已停，只剩影片 |
  */
 export interface MagicWindow {
   state: number;
@@ -676,14 +722,35 @@ export interface MagicWindow {
   tickAt: number;
   criterion: number;
   chosen: number;
+  mouthHold: number;
+  face: readonly MagicFacePatch[];
+  closing: boolean;
+}
+
+/**
+ * 定时器那一拍要问外面的两件事 —— 都不在窗口状态里：
+ *
+ * - `voiceBusy`：语音还在响吗（`fcn_0044ee18` → `0x4544b9`，见 `magicLineExpired`）；
+ * - `rand`：原版 `_libc_rand`（0..0x7fff）。只用于女巫**摆嘴型**那几拍（`loc_00432a85`）——
+ *   纯表现；原版这几次 `rand()` 会推进全局随机流，本引擎做不到逐位对齐（D-MAGIC-13 同一条）。
+ */
+export interface MagicTickIo {
+  voiceBusy?: boolean;
+  rand?: () => number;
+}
+
+/** 缺省的 `rand()`：0..0x7fff（与 Watcom `rand` 同值域）*/
+function defaultRand(): number {
+  return Math.floor(Math.random() * 0x8000);
 }
 
 /**
  * 开窗：`0x401`（铺场 + 起定时器）紧接着 `0x405`（第一句）。
  *
- * @source `loc_00432647`：`[0x48c3a5] = cfg+1 ^ 1`（= `!動畫過程`）、铺场、
- *   `PostMessage(0x405)`；`loc_004326b9`：`cmp byte [0x48c3a5], 0 / jne loc_00432e82`
- *   —— 动画关掉**直接进状态 3**（三句一句不说），否则状态 1 + `#0037`。
+ * @source `loc_00432647`：`[0x48c3a0..0x48c3a4]` 全部清 0、`[0x48c3a5] = cfg+1 ^ 1`（= `!動畫過程`）、
+ *   铺场（`fcn_00432511`：图 0 + 图 1）、`PostMessage(0x405)`；`loc_004326b9`：
+ *   `cmp byte [0x48c3a5], 0 / jne loc_00432e82` —— 动画关掉**直接进状态 3**（三句一句不说），
+ *   否则状态 1 + `#0037`。
  */
 export function magicWindowOpen(criterion: number, now: number, animation = true): MagicWindow {
   const quick = !animation;
@@ -696,70 +763,137 @@ export function magicWindowOpen(criterion: number, now: number, animation = true
     tickAt: now,
     criterion,
     chosen: -1,
+    mouthHold: 0,
+    face: [],
+    closing: false,
   };
 }
 
-/** 字框那一句在 `t` 时到期没有（`fcn_0044ee18` 的 `cmp eax, 0x7d0 / jb`）*/
-export function magicLineExpired(w: MagicWindow, t: number): boolean {
-  return w.line !== null && t - w.lineAt >= MAGIC_LINE_MS;
+/**
+ * 字框那一句在 `t` 时到期没有 —— `fcn_0044ee18`：
+ * **满 2000 ms**（`cmp eax, 0x7d0 / jb`）**且**语音已经念完（`0x0044ee6c call 0x4544b9`，
+ * 音效档关掉时不问 —— 那道闸在 `voiceBusy` 的注册方里）。
+ */
+export function magicLineExpired(w: MagicWindow, t: number, voiceBusy = false): boolean {
+  return w.line !== null && t - w.lineAt >= MAGIC_LINE_MS && !voiceBusy;
+}
+
+/** 贴一张脸上的贴片：新贴的嘴型把**整块盖住**的旧嘴型去掉（闭眼那张留着，它只被盖住下面几行）*/
+function pushFace(face: readonly MagicFacePatch[], p: MagicFacePatch): MagicFacePatch[] {
+  if (p === 'eyes') return [...face.filter((f) => f !== 'eyes'), p];
+  // 张嘴 / 原嘴 = (0x11e,0xd9) 起 60×21，盖住图 4 那块 (0x11e,0xdc) 起 60×18 与自己
+  const covered = p === 'mouthShut' ? ['mouthShut'] : ['mouthOpen', 'mouthRest', 'mouthShut'];
+  return [...face.filter((f) => !covered.includes(f)), p];
 }
 
 /**
- * 定时器走**一拍**（一个 `0x113`）。返回 `null` = 窗口关了（状态 8 那一拍收尾）。
+ * 女巫**摆嘴型**的那一段（每拍都跑，状态 8 除外）。
+ *
+ * @source `loc_00432871` → `loc_00432894` → `loc_00432a85`：
+ * ```asm
+ * 00432871  cmp  [0x48c3a2], 8 / je 返回             ; 点完那一拍起不再动嘴
+ *           call fcn_0044ef3b / test eax,eax / jne   ; 字框还挂着（= 在说话）…
+ *           cmp  [0x48c3a0], 0 / je 返回              ; …或上一个嘴型还没停满
+ * 00432894  mov  ah, [0x48c3a0] / test ah,ah / je loc_00432a85
+ *           dec  [0x48c3a0] / jne 返回                ; 嘴型停满那一拍：
+ *           贴图 4（合嘴）到 (0x11e,0xdc)              ; 0x004328f2
+ * 00432a85  rand() >> 11 / cmp eax, 4 / jge 返回     ; ★ 1/4 的拍子才换嘴型
+ *           rand() & 1 ? 图 1 的 (0x2d,0x4d) 60×21     ; 0x00432acb：原本那张嘴
+ *                      : 图 5（张嘴）                  ; 0x00432b00
+ *           → (0x11e,0xd9)
+ *           [0x48c3a0] = rand() & 7 || 1              ; 0x00432b36：停 1..7 拍
+ * ```
+ */
+function magicMouthTick(w: MagicWindow, rand: () => number): MagicWindow {
+  if (w.state === 8 || w.closing) return w;
+  const talking = w.line !== null;
+  if (!talking && w.mouthHold === 0) return w;
+  if (w.mouthHold !== 0) {
+    const hold = w.mouthHold - 1;
+    return hold === 0 ? { ...w, mouthHold: 0, face: pushFace(w.face, 'mouthShut') } : { ...w, mouthHold: hold };
+  }
+  if (rand() >> 11 >= MAGIC_MOUTH_GATE) return w;
+  const patch: MagicFacePatch = (rand() & 1) !== 0 ? 'mouthRest' : 'mouthOpen';
+  const hold = rand() & 7;
+  return { ...w, face: pushFace(w.face, patch), mouthHold: hold === 0 ? 1 : hold };
+}
+
+/**
+ * 定时器走**一拍**（一个 `0x113`）。
  *
  * @source `loc_004326e5`：
  * ```asm
  * cmp [0x48c3a2], 4 / jne loc_00432828
  * dec [0x48c3a1] / jne loc_00432828          ; 状态 4：摇签倒数
- * loc_00432719: …亮出条件… [0x48c3a2] = 5 / fcn_0044ecb6(条件名)
- * loc_00432828: call fcn_0044ee18            ; ★ 字框还挂着（没到期）→ 返回 0 → 本拍到此为止
+ * loc_00432719: …亮出条件（图 1 整张重贴）… [0x48c3a2] = 5 / fcn_0044ecb6(条件名)
+ * loc_00432828: call fcn_0044ee18            ; ★ 字框还挂着（没到期）→ 返回 0 → 跳过下面的推进
  *               jmp [state−1 → 0x4325a2]     ; 到期（框收起）或本来就没框 → 按状态推进：
  *   1 → 2 + `#0038`      2 → 3 + `#0039`      3 → 4（闭眼、摇签 10/1 拍）
  *   4 → —               5 → 6 + `#0040`（动画关掉不写）
  *   6 → 7（`fcn_00402460(1)` 放开鼠标，补发一个 `WM_MOUSEMOVE`）
- *   7 → —               8 → KillTimer / `Post_0402([0x48c3a1] − 1)` = 关窗、交出效果号
+ *   7 → —               8 → `loc_00432a4c`：KillTimer → Panel #20 影片 → `Post_0402([0x48c3a1] − 1)`
+ * loc_00432871: 摆嘴型（见 `magicMouthTick`）
  * ```
+ * ★ 状态 8 到期后返回 `closing: true` 的窗口 —— 定时器停了，之后只剩关窗影片（屏幕本体那边播）。
  */
-export function magicWindowTimer(w: MagicWindow, t: number): MagicWindow | null {
+export function magicWindowTimer(w: MagicWindow, t: number, io: MagicTickIo = {}): MagicWindow {
+  if (w.closing) return w; // KillTimer 之后不再有 0x113
+  const rand = io.rand ?? defaultRand;
   let next: MagicWindow = { ...w, tickAt: t };
   if (next.state === 4) {
     next.rollLeft -= 1;
     if (next.rollLeft <= 0) {
-      // loc_00432719 → 状态 5：条件名挂上字框（刚挂上 ⇒ 下面那次 ee18 必定「没到期」）
-      return { ...next, state: 5, rollLeft: 0, line: magicCriterionLine(next.criterion), lineAt: t };
+      // loc_00432719 → 状态 5：图 1 整张重贴（贴片全没了）、条件名挂上字框
+      //   （刚挂上 ⇒ 下面那次 ee18 必定「没到期」⇒ 直接落到摆嘴型那一段）
+      next = { ...next, state: 5, rollLeft: 0, line: magicCriterionLine(next.criterion), lineAt: t, face: [] };
+      return magicMouthTick(next, rand);
     }
   }
   // fcn_0044ee18：还挂着就等；到期就收起（贴回框底下那块）
   if (next.line !== null) {
-    if (!magicLineExpired(next, t)) return next;
+    if (!magicLineExpired(next, t, io.voiceBusy === true)) return magicMouthTick(next, rand);
     next = { ...next, line: null };
   }
   switch (next.state) {
     case 1:
-      return { ...next, state: 2, line: MAGIC_GREET_LINES[1] ?? null, lineAt: t };
+      next = { ...next, state: 2, line: MAGIC_GREET_LINES[1] ?? null, lineAt: t };
+      break;
     case 2:
-      return { ...next, state: 3, line: MAGIC_GREET_LINES[2] ?? null, lineAt: t };
+      next = { ...next, state: 3, line: MAGIC_GREET_LINES[2] ?? null, lineAt: t };
+      break;
     case 3:
-      return { ...next, state: 4, rollLeft: next.quick ? MAGIC_ROLL_TICKS_FAST : MAGIC_ROLL_TICKS };
+      next = {
+        ...next,
+        state: 4,
+        rollLeft: next.quick ? MAGIC_ROLL_TICKS_FAST : MAGIC_ROLL_TICKS,
+        face: pushFace(next.face, 'eyes'),
+      };
+      break;
     case 5:
-      return next.quick
-        ? { ...next, state: 6 }
-        : { ...next, state: 6, line: MAGIC_TURN_LINE, lineAt: t };
+      next = next.quick ? { ...next, state: 6 } : { ...next, state: 6, line: MAGIC_TURN_LINE, lineAt: t };
+      break;
     case 6:
-      return { ...next, state: 7 };
+      next = { ...next, state: 7 };
+      break;
     case 8:
-      return null;
+      // loc_00432a4c：KillTimer + 影片（阻塞）+ Post_0402 —— 之后 `jmp 0x43286e` 落到 `cmp state,8 / je 返回`
+      return { ...next, closing: true };
     default:
-      return next;
+      break;
   }
+  return magicMouthTick(next, rand);
 }
 
-/** 把 `now` 之前该走的定时器拍子都走完（`null` = 关窗）*/
-export function magicWindowAdvance(w: MagicWindow, now: number): MagicWindow | null {
-  let cur: MagicWindow | null = w;
+/**
+ * 把 `now` 之前该走的定时器拍子都走完。
+ *
+ * ⚠️ `io.voiceBusy` 是「此刻」的答案：补拍时每一拍都按它算（补拍只在标签页被挂起回来时才有）。
+ */
+export function magicWindowAdvance(w: MagicWindow, now: number, io: MagicTickIo = {}): MagicWindow {
+  let cur = w;
   // 一次最多补 600 拍（1 分钟）—— 标签页被挂起回来时不至于空转
-  for (let i = 0; i < 600 && cur !== null && now - cur.tickAt >= MAGIC_TIMER_MS; i++) {
-    cur = magicWindowTimer(cur, cur.tickAt + MAGIC_TIMER_MS);
+  for (let i = 0; i < 600 && !cur.closing && now - cur.tickAt >= MAGIC_TIMER_MS; i++) {
+    cur = magicWindowTimer(cur, cur.tickAt + MAGIC_TIMER_MS, io);
   }
   return cur;
 }
@@ -769,7 +903,8 @@ export function magicWindowAdvance(w: MagicWindow, now: number): MagicWindow | n
  *
  * @source `loc_00432e71`（左键 `0x201/0x203` 的 `cmp cl, 3 / jb` 与右键 `0x205` 的 `loc_00432e64` 共用）：
  *   `mov byte [0x48c3a5], 1`（★ 之后按「动画关掉」走：摇签只 1 拍、不说「輪到你了」）
- *   → `fcn_0044ee18(1)`（立刻收起字框）→ `[0x48c3a2] = 3`。
+ *   → `fcn_0044ee18(1)`（**停掉语音**（0x0044ee30 `call 0x454493`）并立刻收起字框）→ `[0x48c3a2] = 3`。
+ *   停语音那一下由屏幕本体做（`stopVoice`），这里只管状态。
  */
 export function magicWindowSkip(w: MagicWindow): MagicWindow {
   if (w.state >= 3) return w;
@@ -801,13 +936,49 @@ export function magicWindowAskCriterion(w: MagicWindow, now: number): MagicWindo
  * **别处答掉了**这一趟（託管替他掷 / 联机时是别家那一端在点）—— 直接进点完那一拍。
  *
  * ⚠️ 原版没有这种情形（窗口是模态的，只有这块屏上的人能点）；这是联机 / 託管的收口：
- *   屏上照样演「抬手 + 天靈靈地靈靈」，到期关窗、**不再派答复**。
+ *   屏上照样演「抬手 + 天靈靈地靈靈」，到期播关窗影片再关窗、**不再派答复**。
  *   `option = −1`：不知道点了哪一格（例如「抽取命運三張」之后 `lastEvent` 已是命運），不高亮。
  */
 export function magicWindowResolve(w: MagicWindow, option: number, now: number): MagicWindow {
   if (w.state === 8) return w;
   return { ...w, state: 8, chosen: option, line: MAGIC_SPELL_LINE, lineAt: now };
 }
+
+// ============================================================
+//  关窗影片（`loc_00432a4c`）—— D-MAGIC-15 收口
+// ============================================================
+
+/**
+ * **关窗前那段影片** = `Panel.mkf` **#20**（25 帧 × 71 ms、640×480，源文件 `C:\256_S\256FLC.FLC`）。
+ *
+ * @source 入口 `0x0043386d push 0x14 / call read_mkf` → `[0x48c390]`；
+ *   状态 8 到期那一支 `loc_00432a4c`：
+ * ```asm
+ * 00432a4c  KillTimer(hwnd, [0x48c39c])
+ * 00432a5a  push 0x3b / push 0 / push 0 / push 0 / push [0x48c390]
+ * 00432a6b  call fcn_0045144f          ; (影片, x=0, y=0, flags=0, 音效=0x3b)
+ * 00432a74  mov al, [0x48c3a1] / dec eax / push eax
+ * 00432a7a  call Post_0402_Message     ; ★ 影片播完才关窗、交出效果号
+ * ```
+ * - 帧数 / 每帧毫秒取资源头（`+0x06 = 0x19`、`+0x10 = 0x47`）；
+ * - `flags = 0` ⇒ bit1 没置 ⇒ **点击/按键打断不了**（`fcn_0045144f` 的 `[0x48c880]`，0x004514d6）；
+ * - 音效 `0x3b` = 59，第一帧那一刻响（0x004514ad `call 0x45434f`）；
+ * - 落 (0,0)、整屏；索引 0 的像素露出下面那一屏（= 状态 8 那一屏）。
+ * - **不看**「動畫過程」：这一支里没有 `[0x48c3a5]` 的判断。
+ */
+export const MAGIC_CLOSE_FILM: BoardFilmSpec = {
+  id: 'magic-close',
+  archive: 'Panel.mkf',
+  resource: 0x14,
+  frames: 0x19,
+  width: 640,
+  height: 480,
+  frameMs: 0x47,
+  x: 0,
+  y: 0,
+  sound: 0x3b,
+  flags: 0,
+};
 
 // ============================================================
 //  core 交出来的那一趟 → 画面要的几个名字
@@ -867,10 +1038,10 @@ export interface MagicDraw {
   /** 点定的效果号（状态 8；−1 = 不知道）*/
   chosen: number;
   /**
-   * 女巫这一帧要不要叠一张「说话」的嘴（原版 `rand()&1`，@source 0x00432ad3）。
-   * 只在图 1（抱水晶球）那一拍有意义。
+   * 图 1 上叠着的贴片（闭眼 / 三种嘴型，按贴上去的先后）—— 见 `MagicFacePatch`。
+   * 缺省 = 没有贴片（图 1 原样）。
    */
-  witchBlink: boolean;
+  face?: readonly MagicFacePatch[];
   /** 鼠标正指着的扇区（原版 `[0x48c3a1]`，只在状态 7 更新），0 = 不在任何扇区上 */
   hover: number;
   /**
@@ -942,7 +1113,7 @@ function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number
  * | **2 女巫（抬手）** | **`fcn_00456418`** | **✓** | 0x00432f72 |
  * | 3/4/5 脸上的贴片 | `fcn_004563f5`（不透明） | ✗ | 0x004329a7 / 0x00432902 / 0x00432b1a |
  * | 6/7/9/10 锦缎框 | `fcn_00456418` | ✓ | 0x00432de6 |
- * | 8 中央木牌（字框） | `fcn_00456418`（`fcn_0044ecb6` 里 0x0044ed45）| ✗（沿用）| 只有 2% 黑、都在边角，抠不抠看不出差别；本模块沿用不抠 |
+ * | 8 中央木牌（字框） | `fcn_00456418`（`fcn_0044ecb6` 里 0x0044ed45）| **✓** | ★ 2026-09-23 订正：先前「2% 黑、看不出差别」就沿用不抠 —— 调用点就是抠黑那一支，照抄 |
  * | **11..22 条件图标** | `fcn_00456418` | ✓ | 0x004327c9 |
  * | **23..34 功能高亮图标** | `fcn_00456418` | ✓ | 0x00432d0e |
  */
@@ -953,6 +1124,8 @@ export const MAGIC_KEYED = new Set<number>([
   MAGIC_CHUNK.frameAlt,
   MAGIC_CHUNK.hoverFrame,
   MAGIC_CHUNK.hoverFrameAlt,
+  // @source `fcn_0044ecb6` 0x0044ed3e..0x0044ed45：`push [0x4762bc]`（= 图 8）/ `call 0x456418`
+  MAGIC_CHUNK.resultBar,
   ...Array.from({ length: 12 }, (_, i) => MAGIC_CHUNK.targetIconFirst + i),
   ...Array.from({ length: 12 }, (_, i) => MAGIC_CHUNK.ringFirst + i),
 ]);
@@ -1084,16 +1257,46 @@ function drawRingIcon(ctx: CanvasRenderingContext2D, sprite: MagicSprite, option
   }
 }
 
+/** 图 1 上的一张贴片（不透明，见 `MagicFacePatch`）*/
+function drawFacePatch(ctx: CanvasRenderingContext2D, sprite: MagicSprite, p: MagicFacePatch): void {
+  switch (p) {
+    case 'eyes':
+      drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.eyesShut), MAGIC_EYES_AT.x, MAGIC_EYES_AT.y);
+      return;
+    case 'mouthShut':
+      drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.eyelid), MAGIC_EYELID_AT.x, MAGIC_EYELID_AT.y);
+      return;
+    case 'mouthOpen':
+      drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.mouth), MAGIC_MOUTH_AT.x, MAGIC_MOUTH_AT.y);
+      return;
+    case 'mouthRest': {
+      // `fcn_0045643d` 是矩形拷贝、**不抠黑** ⇒ 取不抠黑的那一份图 1
+      const s = sprite('Panel.mkf', MAGIC_RESOURCE, MAGIC_CHUNK.witchIntro, false);
+      if (s === null) return;
+      const r = MAGIC_MOUTH_REST_SRC;
+      ctx.drawImage(s.bitmap, r.x, r.y, r.w, r.h, MAGIC_MOUTH_AT.x, MAGIC_MOUTH_AT.y, r.w, r.h);
+      return;
+    }
+  }
+}
+
 /**
- * 画整屏 —— 按状态叠，顺序照原版各拍的贴图先后：
+ * 画整屏 —— 按原版离屏面上**贴图的先后**叠（原版不重画整屏，只在各拍往上贴）：
  *
- * | 状态 | 屏上有什么 | @source |
- * |---|---|---|
- * | 1..3 | 底图 + 图 1（抱水晶球）+ 字框（开场白）| `fcn_00432511`、`loc_004326b9` |
- * | 4 | + **闭眼**贴片（图 3）；字框已收起 | `loc_00432951` |
- * | 5..7 | 图 1 **重贴**（眼睛又睁开）+ 条件图标（图 `条件+11` 落 (326,296)）| `loc_00432719` |
- * | 7 | + 悬停那一格的高亮图标 + 锦缎框 + 功能名（字框收起）| `0x00432cbe..0x00432e29` |
- * | 8 | 悬停弹窗还原掉；**图 2（抬手）**盖在上面 + 条件图标 + 字框 `#0041` | `loc_00432e8e` |
+ * | 顺序 | 贴什么 | 什么时候贴的 | @source |
+ * |---|---|---|---|
+ * | 1 | 底图（图 0）| 铺场 | `fcn_00432511` |
+ * | 2 | 图 1（抱水晶球）落 (241,140) | 铺场；状态 4 → 5 整张重贴 | 0x00432543 / 0x00432791 |
+ * | 3 | 脸上的贴片（闭眼 / 嘴型，按先后）| 状态 3 → 4 闭眼；每拍摆嘴型 | `loc_00432951` / `loc_00432871` |
+ * | 4 | 条件图标（图 `条件+11` 落 (326,296)）| 状态 4 → 5 | `loc_00432719` |
+ * | 5 | 悬停 / 选中那一格的高亮图标 | 状态 7 悬停 | 0x00432d0e |
+ * | 6 | 状态 7：锦缎框 + 功能名（存了底、离开就贴回）| 状态 7 悬停 | 0x00432de6 / 0x00432e29 |
+ * | 7 | 状态 8：**图 2（抬手）**抠黑盖上 + 条件图标再贴一次 | 点下去 | 0x00432f72 / 0x00432fab |
+ * | 8 | 字框（存了底、到期贴回）| 挂一句话 | `fcn_0044ecb6` |
+ *
+ * ★★ 2026-09-23 订正：状态 8 **图 1 仍在底下** —— 点下去那一支（`loc_00432e8e`）只把悬停弹窗
+ *   贴回去，没有还原图 1 那块，图 2 又是**抠黑**贴的（`fcn_00456418`）⇒ 图 2 的透明处
+ *   露出图 1（两边袖口那几块，约 4170 像素）。先前状态 8 不画图 1，那几块变成了底图。
  */
 export function drawMagicScreen(
   ctx: CanvasRenderingContext2D,
@@ -1102,24 +1305,20 @@ export function drawMagicScreen(
 ): void {
   drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.bg), MAGIC_BG_AT.x, MAGIC_BG_AT.y);
   const showCriterion = d.state >= 5 && d.criterion >= 0 && d.criterion < MAGIC_TARGET_NAMES.length;
+  const criterionIcon = (): void => {
+    drawAnchored(ctx, magicSprite(sprite, magicTargetIconChunk(d.criterion)), MAGIC_RESULT_ICON_AT.x, MAGIC_RESULT_ICON_AT.y);
+  };
+
+  drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.witchIntro), MAGIC_WITCH_BALL_AT.x, MAGIC_WITCH_BALL_AT.y);
+  for (const p of d.face ?? []) drawFacePatch(ctx, sprite, p);
+  // 状态 8 那一次（0x00432fab，在图 2 之后）同图同点整张盖住这一次 ⇒ 状态 8 只画后一次
+  if (showCriterion && d.state !== 8) criterionIcon();
 
   if (d.state === 8) {
     // 选中那一格的高亮是状态 7 悬停时贴的，点下去不还原 ⇒ 仍在，压在抬手女巫底下
     if (d.chosen >= 0 && d.chosen < MAGIC_SECTOR_COUNT) drawRingIcon(ctx, sprite, d.chosen);
     drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.witchIdle), MAGIC_WITCH_HAND_AT.x, MAGIC_WITCH_HAND_AT.y);
-  } else {
-    drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.witchIntro), MAGIC_WITCH_BALL_AT.x, MAGIC_WITCH_BALL_AT.y);
-    // ★ 闭眼只在摇签那一拍：`loc_00432719` 亮条件时把图 1 整张**重贴**（0x00432791），眼睛又睁开
-    if (d.state === 4) {
-      drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.eyesShut), MAGIC_EYES_AT.x, MAGIC_EYES_AT.y);
-    }
-    if (d.witchBlink) {
-      drawAnchored(ctx, magicSprite(sprite, MAGIC_CHUNK.mouthTalk), MAGIC_MOUTH_AT.x, MAGIC_MOUTH_AT.y);
-    }
-  }
-
-  if (showCriterion) {
-    drawAnchored(ctx, magicSprite(sprite, magicTargetIconChunk(d.criterion)), MAGIC_RESULT_ICON_AT.x, MAGIC_RESULT_ICON_AT.y);
+    if (showCriterion) criterionIcon();
   }
 
   // ── 状态 7：悬停那一格 —— 高亮图标 → 锦缎框 → 功能名（0x00432d0e → 0x00432de6 → 0x00432e29）──
@@ -1147,10 +1346,20 @@ let interactive = false;
 let resolved = false;
 /** 触发者（`state.currentPlayer`）*/
 let caster = -1;
-/** 鼠标现在指着的扇区（原版 `[0x48c3a1]`，只在状态 7 更新）*/
+/** 鼠标现在指着的扇区（原版 `[0x48c3a1]`，只在状态 7 更新），0 = 不在任何扇区上 */
 let hover = 0;
 /** 最近一次鼠标位置（状态 6 → 7 补发 `WM_MOUSEMOVE` 用，@source 0x00432a0f `GetCursorPos`）*/
 let lastMouse: { x: number; y: number } | null = null;
+/** 关窗影片（`loc_00432a4c`）正在播的那一段；`null` = 还没起播 */
+let film: BoardFilm | null = null;
+
+/** 摆嘴型用的 `rand()`（单测换成确定序列）；`null` = `Math.random` */
+let mouthRand: (() => number) | null = null;
+
+/** 单测用：把摆嘴型那几次 `rand()` 换成确定序列（`null` 还原）*/
+export function setMagicMouthRand(fn: (() => number) | null): void {
+  mouthRand = fn;
+}
 
 /**
  * 调试 / 单测用：把整屏关掉（模块级状态跨用例会残留）。
@@ -1162,12 +1371,21 @@ export function resetMagicScreen(): void {
   caster = -1;
   hover = 0;
   lastMouse = null;
+  film = null;
   voiceLine = null;
   voiceAt = 0;
   voiceAsks = 0;
 }
 
-/** 窗口关掉：本机点定、还没被别处答掉 ⇒ 这时才把效果号交给 core（原版关窗后才 `call 0x431caa`）*/
+/** 定时器那一拍要问外面的东西（语音在不在响 / 摆嘴型的 `rand`）*/
+function tickIo(): MagicTickIo {
+  return mouthRand === null ? { voiceBusy: voiceBusy() } : { voiceBusy: voiceBusy(), rand: mouthRand };
+}
+
+/**
+ * 窗口关掉（关窗影片播完 = `Post_0402`）：本机点定、还没被别处答掉 ⇒ 这时才把效果号交给 core
+ * （原版 `0x004338b7 mov esi, eax` 之后才 `call 0x431caa`）。
+ */
 function closeWindow(env: UiScreenEnv): void {
   const w = win;
   const p = env.state.pending;
@@ -1176,6 +1394,38 @@ function closeWindow(env: UiScreenEnv): void {
   }
   resetMagicScreen();
   env.log('魔法屋：結束');
+  env.requestRender();
+}
+
+/**
+ * 关窗那一段：影片起播 / 播完。
+ *
+ * ★ 原版 `read_mkf(Panel, 0x14)` 是**进窗口时**就读好的（0x0043386d），`fcn_0045144f` 当场就播；
+ *   本引擎的 FLIC 是异步解的，故开窗那一刻就先问一次（`event`），到这里通常早解好了。
+ *   真到这一拍还没解好（或根本没有素材）就**不播、直接关窗** —— 少一段影片，不卡回合。
+ */
+function tickClosing(env: UiScreenEnv): void {
+  if (film === null) {
+    const flic = env.flic(MAGIC_CLOSE_FILM.archive, MAGIC_CLOSE_FILM.resource);
+    if (flic === null) {
+      env.log('魔法屋：關窗影片還沒解好，略過');
+      closeWindow(env);
+      return;
+    }
+    film = beginBoardFilm(
+      { ...MAGIC_CLOSE_FILM, frames: flic.frames.length, frameMs: flic.frameMs },
+      env.now,
+    );
+    // @source 0x004514ad：第一帧那一刻 `call 0x45434f` 放 `fcn_00454304(0x3b)` 载好的那一声
+    env.playEffect(MAGIC_CLOSE_FILM.sound);
+    env.log(`魔法屋：關窗影片（${film.spec.frames} 帧 × ${film.spec.frameMs} ms）`);
+    env.requestRender();
+    return;
+  }
+  if (boardFilmDone(film, env.now)) {
+    closeWindow(env);
+    return;
+  }
   env.requestRender();
 }
 
@@ -1207,6 +1457,15 @@ export function magicHumanPickPoint(): { x: number; y: number } | null {
   return magicRingAt(7);
 }
 
+/** 换了一格悬停：记下、响一声 39（只有 1..12 格才响）@source 0x00432b91..0x00432e42 */
+function hoverTo(next: number, env: UiScreenEnv): boolean {
+  if (next === hover) return false;
+  hover = next;
+  // @source 0x00432e40：只有 1..12 格才走到放音那一句（0 / 13 在 0x00432ca3 就跳走了）
+  if (optionOfSector(next) !== null) env.playEffect(MAGIC_SOUND_HOVER);
+  return true;
+}
+
 export const magicScreen: UiScreen = {
   id: 'magic',
 
@@ -1220,11 +1479,15 @@ export const magicScreen: UiScreen = {
       state: w.state,
       criterion: w.criterion,
       chosen: w.chosen,
-      // 说话的嘴只在有话（字框挂着）且不是抬手那一拍（@source 0x00432871 `cmp state,8 / je`）
-      witchBlink: w.state !== 8 && w.line !== null && Math.random() < MAGIC_WITCH_BLINK_P,
+      face: w.face,
       hover,
       boxLine: w.line,
     });
+    // 关窗影片整幅盖在状态 8 那一屏上（索引 0 = 透明 ⇒ 露出底下那一屏）
+    if (film !== null) {
+      const bmp = boardFilmBitmap(film, env.now, env.flic(film.spec.archive, film.spec.resource));
+      if (bmp !== null) env.stage.drawImage(bmp, film.spec.x, film.spec.y);
+    }
   },
 
   /**
@@ -1234,12 +1497,7 @@ export const magicScreen: UiScreen = {
   move(x: number, y: number, env: UiScreenEnv): void {
     lastMouse = { x, y };
     if (win === null || win.state !== 7) return;
-    const next = sectorAt(x, y);
-    if (next === hover) return;
-    hover = next;
-    // @source 0x00432e40：只有 1..12 格才走到放音那一句（0 / 13 在 0x00432ca3 就跳走了）
-    if (optionOfSector(next) !== null) env.playEffect(MAGIC_SOUND_HOVER);
-    env.requestRender();
+    if (hoverTo(sectorAt(x, y), env)) env.requestRender();
   },
 
   /**
@@ -1247,7 +1505,7 @@ export const magicScreen: UiScreen = {
    *
    * | 状态 | 原版做什么 |
    * |---|---|
-   * | `< 3`（开场白）| 跳过（`magicWindowSkip`）|
+   * | `< 3`（开场白）| 跳过（`magicWindowSkip`；`fcn_0044ee18(1)` 顺手**停掉语音**）|
    * | `!= 7` | 什么都不做 |
    * | `== 7` 且点在 1..12 | 选定（`magicWindowPick`）|
    * | `== 7` 且点在 13（中央）| 再报一次条件名（`magicWindowAskCriterion`）|
@@ -1257,9 +1515,7 @@ export const magicScreen: UiScreen = {
     const w = win;
     if (w === null) return;
     if (w.state < 3) {
-      win = magicWindowSkip(w);
-      env.log('魔法屋：跳過開場台詞');
-      env.requestRender();
+      skipGreeting(env);
       return;
     }
     if (w.state !== 7) return;
@@ -1285,9 +1541,7 @@ export const magicScreen: UiScreen = {
   /** 右键 —— 原版 `WM_RBUTTONUP (0x205)` → `loc_00432e64`：只在开场白那几拍（状态 < 3）跳过 */
   contextmenu(_x: number, _y: number, env: UiScreenEnv): void {
     if (win === null || win.state >= 3) return;
-    win = magicWindowSkip(win);
-    env.log('魔法屋：跳過開場台詞');
-    env.requestRender();
+    skipGreeting(env);
   },
 
   tick(env: UiScreenEnv): void {
@@ -1296,22 +1550,33 @@ export const magicScreen: UiScreen = {
     // 兜底：pending 已经不在了（重连 / 同步把它冲掉了）却没收到那一拍 ⇒ 当作别处答掉
     if (!resolved && env.state.pending?.kind !== 'magicHouse') resolveFrom(env.state, null, env.now);
     const cur = win ?? w;
-    const next = magicWindowAdvance(cur, env.now);
-    if (next === null) {
-      closeWindow(env);
+    if (cur.closing) {
+      tickClosing(env);
       return;
     }
+    const next = magicWindowAdvance(cur, env.now, tickIo());
     win = next;
+    if (next.closing) {
+      env.log('魔法屋：念完咒語');
+      tickClosing(env);
+      return;
+    }
     // 换了词立刻请求；同一句按去抖 + 上限两次补问（兜 `Speaking.mkf` 懒加载）
     requestVoiceLine(next.line, env.now);
     if (next.state !== cur.state) {
       if (next.state === 2 || next.state === 3) {
         if (next.line !== null) env.log(`魔法屋：台詞 ${next.state}/${MAGIC_GREET_LINES.length}`);
+      } else if (next.state === 4) {
+        env.log('魔法屋：搖籤');
       } else if (next.state === 5) {
         env.log(`魔法屋：條件 ${MAGIC_TARGET_NAMES[next.criterion] ?? ''}`);
+      } else if (next.state === 6) {
+        if (next.line !== null) env.log('魔法屋：輪到你了');
       } else if (next.state === 7) {
-        // @source 0x00432a0f：进状态 7 时补发一个 `WM_MOUSEMOVE`（当前鼠标位置）
-        hover = lastMouse === null ? 0 : sectorAt(lastMouse.x, lastMouse.y);
+        // @source 0x00432a0f：进状态 7 时补发一个 `WM_MOUSEMOVE`（当前鼠标位置）——
+        //   它与普通的鼠标移动走同一支（0x00432b50）：格号变了就贴高亮、开弹窗、**响 39**。
+        hoverTo(lastMouse === null ? 0 : sectorAt(lastMouse.x, lastMouse.y), env);
+        env.log('魔法屋：等玩家點選');
       }
     }
     // ★ 等玩家点的那一拍（状态 7）画面不会自己变 —— 不续帧；其余各拍都在计时，要续帧
@@ -1322,7 +1587,8 @@ export const magicScreen: UiScreen = {
    * 两件事：① `pending{magicHouse}` **刚挂出** ⇒ 开窗；② 开着窗时 pending 没了 ⇒ 这一趟答掉了。
    *
    * ★ 电脑踩魔法屋 core 当场就结算完、不挂 pending（`0x0043381b` 的分流），这里也就不开窗
-   *   （第十一份回报 #10「NPC 触发魔法屋时不应该由玩家来选择」）。
+   *   （第十一份回报 #10「NPC 触发魔法屋时不应该由玩家来选择」）。电脑那一支原版弹的
+   *   「条件\n\n效果」訊息框（`0x004339b3`）走 `notices`，见 core 的 `magic.spin`。
    */
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
     const bp = before.pending;
@@ -1335,8 +1601,11 @@ export const magicScreen: UiScreen = {
       interactive = env.localSeat === null || env.localSeat === undefined || env.localSeat === caster;
       resolved = false;
       hover = 0;
+      film = null;
       win = magicWindowOpen(ap.criterion, env.now, env.animation !== false);
       requestVoiceLine(win.line, env.now);
+      // ★ 關窗那段影片 `Panel #20` 原版在进窗口时就 `read_mkf` 好了（0x0043386d）—— 这里先起解
+      env.flic(MAGIC_CLOSE_FILM.archive, MAGIC_CLOSE_FILM.resource);
       // ★ 進魔法屋的配乐 @source 0x0043389e `push 7 / call fcn_004549cf`（`magic_house.asm:2269`，真人那一支才放）
       //   ⇒ id 7 → `MIDI08.MID` → 磁盘名 `midi08.mid`（见 `SCREEN_BGM.magicHouse`）
       env.music?.('midi08.mid');
@@ -1351,6 +1620,15 @@ export const magicScreen: UiScreen = {
   },
 };
 
+/** 开场白里点一下 / 右键：跳过（`loc_00432e71`：置 `[0x48c3a5]`、`fcn_0044ee18(1)` 停语音收框、进状态 3）*/
+function skipGreeting(env: UiScreenEnv): void {
+  if (win === null) return;
+  win = magicWindowSkip(win);
+  stopVoice();
+  env.log('魔法屋：跳過開場台詞');
+  env.requestRender();
+}
+
 /**
  * 给单测 / 自动化用的只读视图。
  */
@@ -1364,6 +1642,11 @@ export function magicScreenState(): {
   interactive: boolean;
   resolved: boolean;
   caster: number;
+  face: readonly MagicFacePatch[];
+  mouthHold: number;
+  closing: boolean;
+  /** 关窗影片播到第几帧（0 基）；没在播 = −1 */
+  filmFrame: number;
 } {
   return {
     playing: win !== null,
@@ -1375,5 +1658,9 @@ export function magicScreenState(): {
     interactive,
     resolved,
     caster,
+    face: win?.face ?? [],
+    mouthHold: win?.mouthHold ?? 0,
+    closing: win?.closing ?? false,
+    filmFrame: film === null ? -1 : Math.min(film.spec.frames - 1, Math.floor((performance.now() - film.startedAt) / film.spec.frameMs)),
   };
 }

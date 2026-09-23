@@ -160,7 +160,7 @@ import {
   toolShelf,
   STORE_INDUSTRY,
 } from '../places/shop.ts';
-import { CARDS, CHARACTERS, TOOLS, fortuneEvent, godNameOf, newsEvent, objectNameOf } from '@rich4/data';
+import { CARDS, CHARACTERS, MAGIC_HOUSE_OPTIONS, TOOLS, fortuneEvent, godNameOf, newsEvent, objectNameOf } from '@rich4/data';
 import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
@@ -186,9 +186,12 @@ import {
 } from '../places/minigame.ts';
 import {
   MAGIC_EFFECT_COUNT,
+  MAGIC_TARGET_NAMES,
   applyMagicEffect,
+  localizable as magicLocalizable,
   rollMagicCriterion,
   rollMagicOption,
+  type MagicEffectResult,
   type MagicNodeInfo,
   type MagicRequest,
   type MagicTargetContext,
@@ -3290,7 +3293,8 @@ function runMagicHouse(state: GameState, topo: MapTopology): GameState {
     };
   }
   const { option } = rollMagicOption(rolled.targets, state.currentPlayer, () => rng.next());
-  return applyMagicHouse({ ...state, rngState: rng.getState() }, topo, rolled.criterion, rolled.targets, option, rng);
+  // ★ 电脑那一支先弹「条件\n\n效果」（0x004339b3 `push 0x5dc / call 0x440cac`）再进 `0x431caa`
+  return applyMagicHouse({ ...state, rngState: rng.getState() }, topo, rolled.criterion, rolled.targets, option, rng, true);
 }
 
 /**
@@ -3334,6 +3338,8 @@ function applyMagicHouse(
   targets: readonly number[],
   option: number,
   rng: WatcomRng,
+  /** 电脑那一支（`0x0043390b`）：`0x431caa` 之前先弹「条件\n\n效果」那一扇 */
+  spinNotice = false,
 ): GameState {
   const nodeOf = (playerIndex: number): MagicNodeInfo | null => {
     const p = state.players[playerIndex];
@@ -3382,12 +3388,102 @@ function applyMagicHouse(
     lastBuildUpgrades: [],
   };
 
+  // ★ 訊息框（2026-09-23 补）：原版每一支都先 `0x440cac` 弹「名字\n\n效果名」1500 ms，再施加 / 播影片。
+  //   先前 core 一扇都没交 ⇒ 效果悄悄生效（电脑那一支连「转到了什么」都看不到）。
+  const notices = magicHouseNotices(state, option, targets, criterion, r, spinNotice);
+  if (notices.length > 0) next = { ...next, notices };
+
   for (const req of r.requests) {
+    const who = next.players[req.player];
+    // ★ 加蓋 / 拆除两支在施加之前 `0x40af12(格型别, &x, &y)` + `0x41d476(x, y, 0)` = view_to 那块地
+    //   （0x00432050 / 0x00432341）—— 那两段影片（0x229 / 0x211）贴在棋盘正中，全靠镜头对准那块地。
+    if ((req.kind === 'build' || req.kind === 'demolish') && who !== undefined) {
+      const vt = nodeViewTarget(next, topo, who.nodeId);
+      if (vt !== null) next = { ...next, lastViewTarget: vt };
+    }
+    const upgradesBefore = next.lastBuildUpgrades?.length ?? 0;
     next = applyMagicRequest(next, topo, req);
     if (next.phase === 'gameOver') return next;
+    // ★ 大锤影片是**无条件**播的：`0x00432059 call 0x40b110` 之后紧接着 `0x00432074 call 0x45144f`，
+    //   不看 0x40b110 盖没盖动（满级 / 連鎖店已有 / 真人的空設施没选种类）——只有 bit7 那段 0x20b 看返回值。
+    //   ⇒ 没盖动也交一条提示（等级不变），让表现层照样播那一段大锤。
+    if (req.kind === 'build' && who !== undefined && (next.lastBuildUpgrades?.length ?? 0) === upgradesBefore) {
+      const node = topo.nodes[who.nodeId - 1];
+      if (node !== undefined) {
+        next = withBuildUpgrade(next, { entity: node.type, reachedMaxLevel: false, source: 'magicHouse' });
+      }
+    }
+  }
+  // 子流程（命運 / 關押 / 拍賣…）自己又弹了框、把 `notices` 整个换掉 ⇒ 魔法屋那几扇排在前面
+  if (notices.length > 0 && next.notices !== notices && next.notices[0] !== notices[0]) {
+    next = { ...next, notices: [...notices, ...next.notices] };
   }
   return next;
 }
+
+/**
+ * 魔法屋这一趟要弹的訊息框（按原版弹出的先后）。
+ *
+ * @source
+ * - 电脑那一支：`0x00433981..0x004339b8` —— 条件名去掉 `#00NN`（`cmp byte [eax], 0x23 / add eax, 5`）、
+ *   效果名 `[0x475724 + 16*esi]`，`sprintf(0x464842 "%s\n\n%s")` → `0x440cac(…, 0x5dc)`；
+ * - `0x431caa` 逐人（`0x004320aa inc edi / cmp edi, 4`）：每一支开头
+ *   `sprintf(0x46482a "%s\n\n", [player+0] 名字)` + `strcat([0x475724 + 16*效果] 效果名)` → `0x440cac(…, 0x5dc)`；
+ *   「得一張卡片」那一支（0x004320dd）先发卡、再 `sprintf(0x464839 "得到%s！", 卡名)` 接在名字后面。
+ * - **哪几支先有闸**（闸不过就连框都不弹）：
+ *   5 就地加蓋 / 9 就地拆除 / 11 拍賣 —— `cmp dword [player+0x32], 0 / jne` + 格型别 `(0x7d0, 0x1770)`
+ *   （0x00431f67 / 0x00432259 / 0x0043242b，都在 `push 1 / call 0x41906a` 与弹框**之前**）；
+ *   7 向後轉 —— 只有 `[player+0x32]` 那一道（0x00432160）。其余各支无闸，一律弹。
+ */
+function magicHouseNotices(
+  state: GameState,
+  option: number,
+  targets: readonly number[],
+  criterion: number,
+  r: MagicEffectResult,
+  spinNotice: boolean,
+): NoticeHint[] {
+  const effectName = MAGIC_HOUSE_OPTIONS[option]?.name ?? '';
+  const out: NoticeHint[] = [];
+  if (spinNotice) {
+    out.push({ key: 'magic.spin', args: [MAGIC_TARGET_NAMES[criterion] ?? '', effectName], beforeFilms: true });
+  }
+  for (const who of targets) {
+    const p = state.players[who];
+    // 与 `applyMagicEffect` 同一道（名单是转目标转盘那一刻的在场者）
+    if (p === undefined || !isAlive(p)) continue;
+    const name = playerName(state, who);
+    if (option === 5 || option === 9 || option === 11) {
+      // 闸 = `applyMagicEffect` 交出 build / demolish / auction 请求的那一道（同一段判据）
+      if (!r.requests.some((q) => q.player === who)) continue;
+    } else if (option === 7) {
+      if (!magicLocalizable(p)) continue;
+    } else if (option === 6) {
+      const got = r.log.find((l) => l.player === who && l.note === '得一張卡片');
+      // ⚠️ 牌堆抽空（`0x441e12` 没发出卡）时原版照样弹、卡名取 `[0x47fdea + 8*0]`（表外）——
+      //   这一格读不出有意义的字，本引擎不弹（登记于 T-037 D-MAGIC-16）。
+      if (got === undefined) continue;
+      out.push({ key: 'magic.gotCard', args: [name, cardNameOf(got.value)], beforeFilms: true });
+      continue;
+    }
+    const afterMs = MAGIC_NOTICE_AFTER_MS[option];
+    out.push(
+      afterMs === undefined
+        ? { key: 'magic.effect', args: [name, effectName], beforeFilms: true }
+        : { key: 'magic.effect', args: [name, effectName], beforeFilms: true, afterMs },
+    );
+  }
+  return out;
+}
+
+/**
+ * 魔法屋几支在施加之后的**空等**（`fcn_0045285e(ms)`，忙等、点不掉）。
+ *
+ * @source 0 變賣卡片 / 8 變賣道具 → `0x00431d3a` → `0x00431d53 push 0xc8`；
+ *   4 存入現金 → `jmp 0x431d4b` → 同一句 `push 0xc8`；
+ *   7 向後轉 → `0x004321e6 push 0x1f4` → `jmp 0x431d58`。其余各支没有。
+ */
+const MAGIC_NOTICE_AFTER_MS: Readonly<Record<number, number>> = { 0: 0xc8, 4: 0xc8, 7: 0x1f4, 8: 0xc8 };
 
 /** 魔法屋里跨子系统的那几件事 */
 export function applyMagicRequest(

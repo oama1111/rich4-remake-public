@@ -410,7 +410,10 @@ describe('★ main.ts 接线（源码钉子）', () => {
     //    `deferredBoardBefore = after;`（原版先拆、重画、再播）⇒ 不计在这里，
     //    由 `devil-fx.test.ts` 的源码钉单独管。
     // 2026-09-23 第十二份：新聞 5/15/20/21 的整块影片（`startNewsPlaceFx`，龍捲風 0x217 等）⇒ 8 处。
-    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(8);
+    // 2026-09-23 魔法屋「就地拆除房屋」0x211（`startMagicDemolishFx`：框那 1500 ms 房子还在，
+    //   起播那一刻由 `releaseBoardOnStart` 放开 —— 原版先拆、重画、再播）⇒ 9 处。
+    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(9);
+    expect(src).toContain('if (pending.releaseBoardOnStart === true) deferredBoardBefore = null;');
     expect(src).toContain('deferredBoardBefore = after;');
   });
 

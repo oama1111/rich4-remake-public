@@ -15,7 +15,7 @@
  *    `0x00419d5a call 0x440cac` 之前）—— 见 `setNoticeStartGate`。
  */
 import { describe, expect, it, afterEach } from 'vitest';
-import { FACILITY_TOLL, MESSAGE_BOX, RENT } from '@rich4/data';
+import { FACILITY_TOLL, MAGIC_HOUSE_TEXT, MESSAGE_BOX, RENT } from '@rich4/data';
 import { makeGameState, makePlayer, type GameState } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import type { UiScreenEnv, UiKeyEvent } from './ui-screen.ts';
@@ -24,6 +24,7 @@ import {
   NOTICE_TEXT,
   noticeBoxScreen,
   noticeBoxScreenState,
+  noticeHoldsFilms,
   noticePlaybackStart,
   noticePlaybackTick,
   noticeText,
@@ -529,5 +530,69 @@ describe('★★ W-69：`setNoticeStartGate` —— 起播前先等台上的演�
     const after = stateWith([{ ...ONE_OWNER }]);
     noticeBoxScreen.event!(before, after, fakeEnv(after, 7));
     expect(noticeBoxScreenState().playing).toBe(true);
+  });
+});
+
+// ============================================================
+//  魔法屋（2026-09-23）：文案 + 「框在影片之前」
+// ============================================================
+
+describe('★★ 魔法屋那几扇 @source `0x431caa` / `0x004339bd`', () => {
+  afterEach(() => {
+    resetNoticeBoxScreen();
+    setNoticeStartGate(null);
+  });
+
+  it('★ 文案：「名字\\n\\n效果名」/「名字\\n\\n得到XX卡！」/「条件\\n\\n效果」', () => {
+    // `sprintf("%s\n\n", 名字)` + `strcat(效果名)`（0x00431cee / 0x00431d11）
+    expect(NOTICE_TEXT['magic.effect']).toBe(MAGIC_HOUSE_TEXT.nameHead.text + '%s');
+    expect(noticeText({ key: 'magic.effect', args: ['金貝貝', '存入所有現金'] })).toBe('金貝貝\n\n存入所有現金');
+    expect(noticeText({ key: 'magic.gotCard', args: ['金貝貝', '天使卡'] })).toBe('金貝貝\n\n得到天使卡！');
+    expect(noticeText({ key: 'magic.spin', args: ['所有女生', '存入所有現金'] })).toBe('所有女生\n\n存入所有現金');
+  });
+
+  it('★★ 「排在影片之前」的框：不看起播闸；弹着 / 排在队头时 `noticeHoldsFilms()` 为真', () => {
+    setNoticeStartGate(() => true); // 有影片挂着（通用口径：框等影片）
+    const before = stateWith([]);
+    const after = stateWith([{ key: 'magic.effect', args: ['金貝貝', '就地拆除房屋'], beforeFilms: true }]);
+    noticeBoxScreen.event!(before, after, fakeEnv(after, 0));
+    expect(noticeBoxScreenState().playing).toBe(true);
+    expect(noticeHoldsFilms()).toBe(true);
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS));
+    expect(noticeBoxScreenState().playing).toBe(false);
+    expect(noticeHoldsFilms()).toBe(false);
+  });
+
+  it('★★ `afterMs`：框收掉（到点或被点掉）之后还**空等**那么久才接下一扇（`fcn_0045285e`，点不掉）', () => {
+    const before = stateWith([]);
+    const after = stateWith([
+      { key: 'magic.effect', args: ['金貝貝', '存入所有現金'], beforeFilms: true, afterMs: 200 },
+      { key: 'magic.effect', args: ['錢夫人', '存入所有現金'], beforeFilms: true, afterMs: 200 },
+    ]);
+    noticeBoxScreen.event!(before, after, fakeEnv(after, 0));
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS));
+    // 第一扇收掉了，但还在空等：不画、不起下一扇、仍接管、仍押影片
+    expect(noticeBoxScreenState()).toMatchObject({ playing: false, queued: 1 });
+    expect(noticeBoxScreen.active(fakeEnv(after, NOTICE_HOLD_MS))).toBe(true);
+    expect(noticeHoldsFilms()).toBe(true);
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS + 199));
+    expect(noticeBoxScreenState().playing).toBe(false);
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS + 200));
+    expect(noticeBoxScreenState()).toMatchObject({ playing: true, queued: 0 });
+    // 点掉第二扇：同样要空等，空等期间再点无效
+    noticeBoxScreen.up!(0, 0, fakeEnv(after, NOTICE_HOLD_MS + 300));
+    expect(noticeBoxScreen.active(fakeEnv(after, NOTICE_HOLD_MS + 300))).toBe(true);
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS + 500));
+    expect(noticeBoxScreen.active(fakeEnv(after, NOTICE_HOLD_MS + 500))).toBe(false);
+    expect(noticeHoldsFilms()).toBe(false);
+  });
+
+  it('★ 普通的框照旧等闸、也不押影片', () => {
+    setNoticeStartGate(() => true);
+    const before = stateWith([]);
+    const after = stateWith([ONE_OWNER]);
+    noticeBoxScreen.event!(before, after, fakeEnv(after, 0));
+    expect(noticeBoxScreenState().playing).toBe(false);
+    expect(noticeHoldsFilms()).toBe(false);
   });
 });

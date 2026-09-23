@@ -402,6 +402,23 @@ export const GOD_MANIFEST = {
 } as const;
 
 /**
+ * 魔法屋效果派发 `0x431caa` 与电脑那一支（`0x0043380a`）的訊息框 / 台词串（2026-09-23）。
+ *
+ * @source
+ * - `nameHead`：`0x00431cee push 0x46482a`（十二支都是它）→ `sprintf(buf, "%s\n\n", [player+0] 名字)`，
+ *   随后 `strcat(buf, [0x475724 + 16*效果] 效果名)` → `0x440cac(buf, 0x5dc)`；
+ * - `gotCard`：「得一張卡片」那一支 `0x00432122 push 0x464839`（发卡 `0x004320ee call 0x441e12` 之后） → `sprintf("得到%s！", 卡名)` 再 strcat；
+ * - `spin`：电脑那一支 `0x004339a1 push 0x464842` → `sprintf("%s\n\n%s", 条件名, 效果名)` → `0x440cac(…, 0x5dc)`；
+ * - `ponder`：加蓋 / 拆除 / 拍賣三支收尾 `0x00432094 push 0x46482f / push 0 / push 中签者 / 0x004320a2 call player_say`。
+ */
+export const MAGIC_HOUSE_TEXT = {
+  nameHead: t('%s\n\n', 0x46482a),
+  gotCard: t('得到%s！', 0x464839),
+  spin: t('%s\n\n%s', 0x464842),
+  ponder: t('？？？...', 0x46482f),
+} as const;
+
+/**
  * 神明的名字 —— 16 項，**下标 = 物件種類 − 1**。
  *
  * @source `_rich4_god_names` @ VA 0x47ed7a（指针表），每條串間隔 7 字節
@@ -484,6 +501,7 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   //   （那是当初转写写错的字，不是原版错字；见该条自己的注释），
   //   所以现在可以整块交给下面那条逐字比对守着，四条都有了护栏。
   ...Object.values(GOD_MANIFEST),
+  ...Object.values(MAGIC_HOUSE_TEXT),
   ...GOD_NAMES,
   ...OBJECT_NAMES,
 ];
