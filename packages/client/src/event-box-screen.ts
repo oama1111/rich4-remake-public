@@ -181,7 +181,8 @@
 
 import { CARDS,
   CHARACTERS,
-  fortuneEvent,
+  fortuneArtResource,
+  fortuneDisplayEntry,
   newsEvent,
   type EventEntry } from '@rich4/data';
 import type { GameState, MapTopology } from '@rich4/core';
@@ -239,15 +240,13 @@ export const EVENT_ART_AT = { x: 0x19, y: 0x2c } as const;
 /** 新聞插画资源基址 @source 0x0044b75a `lea edi, [ebx + 0x1b9]` */
 export const NEWS_ART_BASE = 0x1b9;
 /**
- * 命運插画资源基址 @source 0x0044dc11 `movsx eax, word [eax*2 + 0x475fb4]`
+ * 命運插画表**第 0 项**（= 477）@source 0x0044dc11 `movsx eax, word [eax*2 + 0x475fb4]`
  *
- * ⚠️ 表 `0x475fb4` **不是**严格的 `0x1dd + id`：`tools/disasm.py dump 0x475fb4 40 2`
- *   读出来前 37 项是
- *   `477..496, 497,497,497, 498,498, 499,500,501,501,501, 502..508`
- *   —— id 20/21/22 与 23/24 与 27/28/29 **共用同一张图**，且 id ≥ 0x21 走的是
- *   另一支（`cmp ebp, 0x21 / jge 0x44dc4d`，用 `[0x4991b8]` 当行偏移再查一次表）。
- *   本模块按任务书给的等价式 `0x1dd + id` 取（id 0..19 与表完全一致），
- *   见 `docs/deviations/T-041.md` 的 D-EVENT-6。
+ * ★★ 第十三份試玩回報（「遺失錢包損失2000元的配圖怎麼是高興的圖」）：
+ *   表 `0x475fb4` **不是**等差，先前按 `0x1dd + id` 取（D-EVENT-6「近似」）⇒
+ *   id ≥ 23 全部错位 —— 24「遺失錢包損失」画成了 501（發票中獎的笑脸）。
+ *   现在一律查表：`@rich4/data` 的 `fortuneArtResource(id, globalMapId)`
+ *   （含 id ≥ 33 按地图低位换图那一支，`0x0044dc5a`）。本常量只留作表头的值。
  */
 export const FORTUNE_ART_BASE = 0x1dd;
 
@@ -565,6 +564,11 @@ export interface EventBoxView {
   /** 卡名；新聞/命運为空 */
   cardName: string;
   /**
+   * 引擎地图号（命運用）—— id ≥ 33 的插画与文案按它的低位换槽
+   * （@source `0x0044dc53 movsx esi, word [0x4991b8]`）。缺省 0。
+   */
+  globalMapId?: number;
+  /**
    * ★ 第十二份試玩回報（「莫名其妙被冬眠5天」）：这是**用卡**那一次亮牌（`"使用%s"`），
    *   不是卡片格的「抽到」。两者同一支 `fcn_00441f73`，差别只在：
    *   用卡那两个调用点（`0x00441cbc` / `0x00441def`）前面**没有** 0x218 那段 FLIC
@@ -693,6 +697,8 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
   }
 
   const fortune = v.kind === 'fortune';
+  // ★ 命運查表 `0x475fb4`（不是 `0x1dd + id`，见 `FORTUNE_ART_BASE`）；新聞是 `id + 0x1b9`（0x0044b75a）
+  const art = fortune ? fortuneArtResource(v.id, v.globalMapId ?? 0) : NEWS_ART_BASE + v.id;
   const items: EventBoxItem[] = [
     // 外框（440×480）**不透明**贴 (0,0) @source 0x0044b84c / 0x0044dd3c
     blitSprite(
@@ -702,14 +708,9 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
       false,
       { x: 0, y: 0 },
     ),
-    // 插画（388×251，无头 RGB555）**不透明**贴 (25,44)
-    blitRaw(
-      'Data.mkf',
-      (fortune ? FORTUNE_ART_BASE : NEWS_ART_BASE) + v.id,
-      EVENT_ART_SIZE,
-      EVENT_ART_AT,
-    ),
   ];
+  // 插画（388×251，无头 RGB555）**不透明**贴 (25,44)；表外的号（不会发生）就不画
+  if (art !== undefined) items.push(blitRaw('Data.mkf', art, EVENT_ART_SIZE, EVENT_ART_AT));
   if (!fortune) items.push(textItem(v.title, NEWS_TITLE_AT, EVENT_FONT_SIZE, false));
   if (v.description !== '') {
     items.push(
@@ -769,13 +770,20 @@ export function newsView(
 }
 
 /** 命運那一段的 view */
-export function fortuneView(fortuneId: number, priceIndex: number, subject: string): EventBoxView {
+export function fortuneView(
+  fortuneId: number,
+  priceIndex: number,
+  subject: string,
+  globalMapId = 0,
+): EventBoxView {
   return {
     kind: 'fortune',
     id: fortuneId,
     title: '',
-    description: eventBoxDescription(fortuneEvent(fortuneId), priceIndex, subject),
+    // ★ 33..36 在地图低位 1..3 上原版分派到 37..48 那一套（文案不同、天数相同）
+    description: eventBoxDescription(fortuneDisplayEntry(fortuneId, globalMapId), priceIndex, subject),
     cardName: '',
+    globalMapId,
   };
 }
 
@@ -1259,7 +1267,7 @@ export const eventBoxScreen: UiScreen = {
       const view =
         ev.kind === 'news'
           ? newsView(ev.id, after.priceIndex, subject, shares)
-          : fortuneView(ev.id, after.priceIndex, subject);
+          : fortuneView(ev.id, after.priceIndex, subject, after.globalMapId);
       playback = eventBoxPlaybackStart(eventBoxPlan(view), env.now);
       env.log(`事件提示框：${ev.kind === 'news' ? '新聞' : '命運'} #${ev.id}${who === undefined ? '' : `（P${who.index + 1}）`}`);
       env.requestRender();

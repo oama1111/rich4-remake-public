@@ -353,9 +353,7 @@ describe('★ 新聞那一段的绘制计划 @source 0x0044b6df', () => {
 describe('★ 命運那一段的绘制计划 @source 0x0044db81', () => {
   const plan = eventBoxPlan(fortuneView(12, 1, '糖糖'));
 
-  it('★ 外框图 1、插画 `0x1dd+12` 落 (25,44)', () => {
-    // ⚠️ 真表 `0x475fb4` 不是等差（id 20..36 有几项重复/走另一支），
-    //   这里按任务书给的等价式钉；见 D-EVENT-6。
+  it('★ 外框图 1、插画 = 表 `0x475fb4`[12]（= 0x1dd+12，表的前 23 项恰好等差）落 (25,44)', () => {
     const blits = blitsOf(plan);
     expect(blits[0]).toMatchObject({ index: EVENT_FORTUNE_FRAME, keyed: false, at: { x: 0, y: 0 } });
     expect(EVENT_FORTUNE_FRAME).toBe(1);
@@ -378,6 +376,34 @@ describe('★ 命運那一段的绘制计划 @source 0x0044db81', () => {
   it('★ 1600ms + 800ms', () => {
     expect(plan.holdMs).toBe(1600);
     expect(plan.hold2Ms).toBe(800);
+  });
+});
+
+describe('★★ 第十三份試玩回報：命運插画一律查表 `0x475fb4`（不是 `0x1dd + id`）', () => {
+  const artOf = (id: number, map = 0): number | undefined =>
+    blitsOf(eventBoxPlan(fortuneView(id, 1, '阿土伯', map))).find((b) => b.archive === 'Data.mkf')?.resource;
+
+  it('★ 24「遺失錢包損失2000元」→ 498（与 23 同一张），不是 501（發票中獎那张）', () => {
+    // 回报 `20260923-150322722`：地图 7、命運 #24，先前画的是 0x1dd+24 = 501
+    expect(artOf(24, 7)).toBe(498);
+    expect(artOf(23, 7)).toBe(498);
+    expect(artOf(27)).toBe(501);
+    expect(artOf(24)).not.toBe(FORTUNE_ART_BASE + 24);
+  });
+
+  it('★ 其余重复/错位的几项：20..22 → 497、25 → 499、26 → 500、30..32 → 502..504', () => {
+    expect([20, 21, 22].map((id) => artOf(id))).toEqual([497, 497, 497]);
+    expect([25, 26, 28, 29, 30, 31, 32].map((id) => artOf(id))).toEqual([499, 500, 501, 501, 502, 503, 504]);
+  });
+
+  it('★ 33..36（坐牢）按地图低位换图，也换文案（fortune_call_table[37..48]），天数不变', () => {
+    expect([33, 34, 35, 36].map((id) => artOf(id, 0))).toEqual([505, 506, 507, 508]);
+    expect([33, 34, 35, 36].map((id) => artOf(id, 1))).toEqual([505, 509, 510, 511]);
+    expect([33, 34, 35, 36].map((id) => artOf(id, 2))).toEqual([512, 506, 507, 513]);
+    expect([33, 34, 35, 36].map((id) => artOf(id, 3))).toEqual([514, 515, 510, 516]);
+    expect(fortuneView(34, 1, '阿土伯', 0).description).toBe('防礙風化坐牢5天');
+    expect(fortuneView(34, 1, '阿土伯', 1).description).toBe('違法聚眾示威坐牢5天');
+    expect(fortuneView(36, 1, '阿土伯', 3).description).toBe('盜賣國家機密坐牢9天');
   });
 });
 
