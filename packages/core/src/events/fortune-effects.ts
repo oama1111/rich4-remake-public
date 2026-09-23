@@ -47,6 +47,35 @@ import { secondaryJudgement } from './news-effects.ts';
 type EventRng = { below(n: number): number; next(): number };
 
 /**
+ * 命運「付錢」那一族：施加阶段都落到同一条尾巴 `0x0044cec2`：
+ * ```asm
+ * 0044cec2  call 0x41d2c6            ; pay_money(当前玩家, -1, [0x48c5b4], 0) —— 进公库
+ * 0044ced1  cmp byte [cur+0x15], 0 / je 收尾     ; 付完破產出局 ⇒ 后两步都跳过
+ * 0044cede  cmp byte [0x46caf8], 0 / jne 收尾    ; 终局码非 0 ⇒ 同上
+ * 0044cef9  call 0x44f42d            ; ★ 付錢台词 9/10/11（`player_say`）
+ * 0044cf11  call 0x44ba63            ; ★ 保險理賠（保險期内赔回同一笔）
+ * ```
+ *
+ * @source 各事件的施加入口（`[esp+0x94] != 0` 那一跳），`python3 tools/disasm.py va <入口> 16`：
+ *   - 14 `0x0044cdab jne 0x44ce35` → `0x0044ce5d jne 0x44ce8b` → 顺落 `0x0044cec2`；
+ *   - 15 `0x0044cf55` / 16 `0x0044d0a4` `jne 0x44cfdf` → `0x0044d007 jne 0x44d032`
+ *     → `0x0044d057 … 0x0044d068 jmp 0x44cec2`；
+ *   - 17 `0x0044d0e8` / 18 `0x0044d1b7` / 19 `0x0044d1f2` / 23 `0x0044d430` /
+ *     24 `0x0044d474` / 26 `0x0044d4f9` / 30 `0x0044d606` `jne 0x44d172`
+ *     → `0x0044d19a jne 0x44ce8b` → 顺落 `0x0044cec2`。
+ *   神明加持返回 1（免付罰金）那一支（`0x0044ce5f` / `0x0044d009`）不付钱、改调 `0x44f567`，
+ *   不在这条尾巴上。
+ *
+ * ★★ 第十四份試玩回報 #1 查出来的：先前 Q-INS-1 只把 `0x0044cf11` 记成「行人闖越馬路罰款（14）」
+ *   一条的理赔，**漏了**另外 9 条也经过同一处 —— 保險期内抽到「付保險金 / 亂丟垃圾 / 遺失錢包…」
+ *   原版同样赔回来。
+ */
+export const FORTUNE_PAY_TAIL_IDS: ReadonlySet<number> = new Set([14, 15, 16, 17, 18, 19, 23, 24, 26, 30]);
+
+/** 命運 2「人頭被盜用冒貸」—— 施加完 `0x0044c218 call 0x44ba63`（保險理賠），**没有**台词 */
+export const FORTUNE_FAKE_LOAN_ID = 2;
+
+/**
  * 金额倍率档位 —— 转发 `rules/blessing.ts` 的定义。
  *
  * @source 施加阶段先 `call 0x44b896` 取档位，`2` 加倍、`1` 归零。

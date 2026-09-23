@@ -13,7 +13,7 @@ import { isAlive } from './types.ts';
 import { topoOf } from '../testing/factories.ts';
 import { WatcomRng } from '../rng/watcom.ts';
 import { PASSIVE_CARDS } from '../cards/passive.ts';
-import { DISAPPEAR_REASON_ABDUCTED } from '../events/fortune-effects.ts';
+import { DISAPPEAR_REASON_ABDUCTED, FORTUNE_PAY_TAIL_IDS } from '../events/fortune-effects.ts';
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -455,6 +455,43 @@ describe('★ 神明加持真的接上了 @source VA 0x0044b896', () => {
     expect(s2.lastEvent?.id).toBe(14);
     // 3000 × 物价指数 1 × 2
     expect(s2.players[s2.currentPlayer]!.cash).toBe(cash - 6000);
+  });
+
+  // ★★ 第十四份試玩回報 #1 顺带查出：命運罰款那一族**共用**尾巴 `0x0044cec2`，
+  //   `0x0044cf11 call 0x44ba63`（保險理賠）不只 14 一条（见 `FORTUNE_PAY_TAIL_IDS` 的逐条入口）。
+  run('★★ 保險期内抽到「付保險金 / 亂丟垃圾 / 請客 / 遺失錢包 / 被倒會」⇒ 付完**照样理赔**（@source 0x0044cf11）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const me = on.currentPlayer;
+    // factor × 物價指數 1（`event-table.ts`）
+    const cases: [number, number][] = [[17, 6000], [18, 600], [19, 1500], [23, 1000], [24, 2000], [26, 8000], [30, 5000]];
+    expect(cases.every(([id]) => FORTUNE_PAY_TAIL_IDS.has(id))).toBe(true);
+    for (const [id, amount] of cases) {
+      const insured: GameState = {
+        ...on,
+        players: on.players.map((p, i) => (i === me ? { ...p, fortune: 0, insuranceDays: 30 } : p)),
+      };
+      const cash = insured.players[me]!.cash;
+      const s2 = reduce(forceDraw(insured, id), { type: 'settle' }, topo);
+      expect(s2.lastEvent).toEqual({ kind: 'fortune', id });
+      // 罚金照付进公库，保險公司再赔回同一笔（進現金，`pay_money` 旗标 1）
+      expect(s2.pool).toBe(insured.pool + amount);
+      expect(s2.players[me]!.monthlyPaid).toBe(insured.players[me]!.monthlyPaid + amount);
+      expect(s2.players[me]!.monthlyReceived).toBe(insured.players[me]!.monthlyReceived + amount);
+      expect(s2.players[me]!.cash).toBe(cash);
+
+      // 没保險 ⇒ 只付不赔
+      const bare: GameState = {
+        ...on,
+        players: on.players.map((p, i) => (i === me ? { ...p, fortune: 0, insuranceDays: 0 } : p)),
+      };
+      const s3 = reduce(forceDraw(bare, id), { type: 'settle' }, topo);
+      expect(s3.players[me]!.cash).toBe(bare.players[me]!.cash - amount);
+      expect(s3.players[me]!.monthlyReceived).toBe(bare.players[me]!.monthlyReceived);
+    }
   });
 
   run('★★ 財運 = 0 ⇒ 照常付一次（不受影响）', () => {

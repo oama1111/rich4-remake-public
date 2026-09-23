@@ -58,6 +58,8 @@
  */
 
 import {
+  FORTUNE_FAKE_LOAN_ID,
+  FORTUNE_PAY_TAIL_IDS,
   isAlive,
   WHO_PLAYS_HUMAN,
   WHO_PLAYS_MASK,
@@ -508,8 +510,11 @@ export function detectMoneyGained(before: GameState, after: GameState): Detected
   //   ⇒ 这里让开，由 `detectSmallWealthLine` / `detectBigWealthLine` 独家负责
   //   （与 `detectPointsGained` 让开 `minigameDecline` 同一条规矩）。
   const wealthHost = wealthGodHostThisAction(before, after);
+  // ★★ 第十四份試玩回報 #1 的同类排查：保險理賠那一笔原版不说（见 `insurancePayeesThisAction`）
+  const insurancePayees = insurancePayeesThisAction(before, after);
   for (let i = 0; i < after.players.length; i++) {
     if (i === wealthHost) continue;
+    if (insurancePayees.has(i)) continue;
     const amount = delta(before, after, i, 'monthlyReceived');
     if (amount <= 0) continue;
     const event = gainEventFor(amount, after.priceIndex);
@@ -559,9 +564,12 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
   //   `monthlyPaid` 差分说了一句泛用的「付錢」—— 原版不说 ⇒ 整条探测器让开。
   const wealthHost = wealthGodHostThisAction(before, after);
   if (wealthHost >= 0) return out;
+  // 命運罰款共用尾巴那一句只给**抽到的人**、且他付完还在场（`0x0044ced1`）
+  const fortunePayer = fortunePayTailThisAction(before, after) ? before.currentPlayer : -1;
 
   for (let i = 0; i < after.players.length; i++) {
     if (i === wealthHost) continue;
+    if (i === fortunePayer && !isAlivePlayer(after, i)) continue;
     const amount = delta(before, after, i, 'monthlyPaid');
     if (amount <= 0) continue;
 
@@ -585,8 +593,22 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
       const tier = payTierFor(amount, after.priceIndex);
       if (tier !== null) out.push({ player: i, event: 9 + tier });
     } else if (poolGrew > 0) {
-      const tier = payTierFor(amount, after.priceIndex);
-      if (tier !== null) out.push({ player: i, event: 12 + tier });
+      // ★★ 第十四份試玩回報 #1（Charles，2026-09-23）：「为什么交保险这个倒霉的事情触发的是
+      //   高兴的玩家台词」—— 命運 30「付保險金」进公库，先前这里一律说 12/13/14，
+      //   而那一档是**逃过一劫**的庆幸话（約翰喬「上帝保佑～」、宮本寶藏「哈哈哈，很羨慕吧！」）。
+      //   `fcn_0044f567`（12/13/14）全 exe 只有 3 个调用点，**全是「这笔钱没付」**：
+      //     · `0x0044ce7e` / `0x0044d028`：命運罰金被神明加持挡掉（`0x44b896` 返回 1，
+      //       框「%s保佑\n\n免付罰金！」`0x4658c1`）—— 走这一支就**不**调 `pay_money`；
+      //     · `0x0041d7c1`：大財神附身把费用减到 0（`0x0041d7b4 test ebx,ebx / jne`）。
+      //   真付了钱的命運罰款走共用尾巴 `0x0044cec2 pay_money(cur,-1,金额,0)` →
+      //   `0x0044ced1 [cur+0x15] != 0`、`0x0044cede [0x46caf8] == 0` →
+      //   **`0x0044cef9 call 0x44f42d`** = 付錢那一档 9/10/11（「老本都快沒了～」…）。
+      //   除此之外进公库的钱（乞丐 `0x41b686`、大窮神 `0x40f076`、新聞的稅 / 罰款、
+      //   无卖家的拍卖…）原版都**不**经过 `0x44f42d` / `0x44f567` ⇒ 不说。
+      if (i === fortunePayer) {
+        const tier = payTierFor(amount, after.priceIndex);
+        if (tier !== null) out.push({ player: i, event: 9 + tier });
+      }
     } else if (companyFundsGrew(before, after)) {
       // ★★ 第八份试玩回报 #1（2026-09-22）：付給**企業**（董事長收費 / 保險費）也要说 9/10/11。
       //   先前这里「企业则不吭声」是读漏了：企業收費那一段的尾巴
@@ -597,6 +619,56 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
       const tier = payTierFor(amount, after.priceIndex);
       if (tier !== null) out.push({ player: i, event: 9 + tier });
     }
+  }
+  return out;
+}
+
+/** **这一条 action** 刚抽出来的命運事件号；不是这一条抽的返回 null（判据同 `demolishedHouseThisAction`）*/
+function fortuneIdThisAction(
+  before: Pick<GameState, 'lastEvent'>,
+  after: Pick<GameState, 'lastEvent'>,
+): number | null {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev.kind !== 'fortune' || before.lastEvent === ev) return null;
+  return ev.id;
+}
+
+/** 命運罰款共用尾巴那一族（`FORTUNE_PAY_TAIL_IDS`，逐条 `@source` 在 core）是不是这一条抽的 */
+function fortunePayTailThisAction(
+  before: Pick<GameState, 'lastEvent'>,
+  after: Pick<GameState, 'lastEvent'>,
+): boolean {
+  const id = fortuneIdThisAction(before, after);
+  return id !== null && FORTUNE_PAY_TAIL_IDS.has(id);
+}
+
+function isAlivePlayer(state: GameState, i: number): boolean {
+  const p = state.players[i];
+  return p !== undefined && isAlive(p);
+}
+
+/**
+ * 这一条 action 里**拿到保險理賠**的人（下标集合）。
+ *
+ * `fcn_0044ba63`（保險理賠）只有一个 `sprintf` + 訊息框（`0x4658fa`「保險期間\n\n得到理賠金\n\n%d元」，
+ * 2000 ms）+ `pay_money(保險公司, 玩家, 損失, 1)`（`0x0044bad8`），**没有** `player_say`；
+ * 它的 6 个调用点（`callers 0x44ba63`）前后也都不调「進帳」档位函数 `0x44f354` ⇒ 原版**不说**。
+ * 而 `pay_money` 照样把这笔记进 `+0x60`（本月意外之財）⇒ 通用「進帳」路会把它当成進帳，
+ * 说出「這是我應得的！」/「蠅頭小利～」—— 坐牢、住院、罰款之后冒一句高兴话。必须让开。
+ *
+ * 认人：保險期（`insuranceDays`）在动作前非 0，且这一条是会理赔的那几种：
+ *   - 命運罰款尾巴（`0x0044cf11`）与冒貸（`0x0044c218`）→ 抽到的人；
+ *   - 住旅館（`0x0041a82d` / `0x0040d425`）、坐牢（`0x0043d749`）、住院（`0x0043edf8`）→ 刚进去的人。
+ */
+function insurancePayeesThisAction(before: GameState, after: GameState): Set<number> {
+  const out = new Set<number>();
+  const insured = (i: number): boolean => (before.players[i]?.insuranceDays ?? 0) !== 0;
+  const id = fortuneIdThisAction(before, after);
+  if (id !== null && (FORTUNE_PAY_TAIL_IDS.has(id) || id === FORTUNE_FAKE_LOAN_ID) && insured(before.currentPlayer)) {
+    out.add(before.currentPlayer);
+  }
+  for (const field of ['inPrison', 'inHospital', 'inHotel'] as const) {
+    for (const i of enteredBlocking(before, after, field)) if (insured(i)) out.add(i);
   }
   return out;
 }

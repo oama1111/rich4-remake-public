@@ -255,6 +255,7 @@ import { drawEvent } from '../events/deck.ts';
 import { isNewsFeasible } from '../events/news.ts';
 import { checkFortune } from '../events/fortune.ts';
 import {
+  FORTUNE_PAY_TAIL_IDS,
   FORTUNE_STOCK_LIQUIDATE,
   applyFortuneEffect,
 } from '../events/fortune-effects.ts';
@@ -5371,7 +5372,9 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
   // ★ 事件 8/9 尾巴的特別融資收回：`push 0 / call 0x436b0a`
   if (out.recallFinance) applied = sweepSpecialFinance(applied, topo);
   // ★ 保險理賠的三处命運调用点：坐牢/住院走 send_to_*（0x0043d749 / 0x0043edf8）；
-  //   「冒貸」（id 2，0x0044c218）与「行人闖越馬路罰款」（id 14，0x0044cf11）直接赔金额
+  //   「冒貸」（id 2，0x0044c218）与**命運罰款共用尾巴**（0x0044cf11）直接赔金额。
+  // ★★ 第十四份試玩回報 #1：`0x0044cf11` 不只「行人闖越馬路罰款」（14）一条 ——
+  //   14/15/16/17/18/19/23/24/26/30 十条都落在同一条尾巴上（`FORTUNE_PAY_TAIL_IDS`）。
   const entry = fortuneEvent(effectiveId);
   if (entry !== undefined && !out.unimplemented) {
     const me = withDeck.currentPlayer;
@@ -5383,7 +5386,7 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
       //   与新聞 29 的 `out.chairmanPrison.victim` 同一口径。
       const victim = out.fortuneVictim ?? me;
       applied = insureConfinement(applied, topo, victim, out.amount);
-    } else if (entry.effects.includes('loan') || effectiveId === FORTUNE_JAYWALK_FINE) {
+    } else if (entry.effects.includes('loan') || FORTUNE_PAY_TAIL_IDS.has(effectiveId)) {
       applied = insurancePayoutTo(applied, topo, me, out.amount);
     }
   }
@@ -6796,7 +6799,7 @@ function buildableEntities(state: GameState, topo: MapTopology, player: number, 
  * ```
  * 六个调用点（Q-INS-1 已找齐）：住旅館的 2000×天×物價（0x0041a82d 落点 / 0x0040d425 通用住店）、
  * 坐牢 2000×天×物價（0x0043d749）、住院 2000×天×物價（0x0043edf8）、命運「冒貸」的金额（0x0044c218）、
- * 命運「行人闖越馬路罰款」（0x0044cf11）。
+ * 命運罰款共用尾巴（0x0044cf11；十条事件共用，见 `FORTUNE_PAY_TAIL_IDS`）。
  * ⚠️ 没有保險公司的地图上原版**照样赔玩家**，只是把扣款写到「企业家数 + 1」那个**越界槽**
  *   （`0x44bad8 pay_money(100 + ebx, …)`，`ebx = 家数 + 1`）—— Q-INS-2 的真值。
  *   2026-09-19 订正（§7.141，通道 2 `test_insurance_richest.py` 135/135）：
@@ -6825,9 +6828,6 @@ export function insurancePayoutTo(state: GameState, topo: MapTopology, index: nu
     companyProfit: r.companies.map((c) => c.fundsMirror),
   };
 }
-
-/** 命運「行人闖越馬路罰款」的事件号（0x0044cd99，尾部 0x0044cf11 调保險） */
-const FORTUNE_JAYWALK_FINE = 14;
 
 /**
  * 住店／坐牢／住院的「意外損失」= 2000 × 天 × 物價，保險期内由保險公司赔
