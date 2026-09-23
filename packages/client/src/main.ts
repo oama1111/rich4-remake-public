@@ -7679,14 +7679,17 @@ function requestRender(): void {
       // Q-BANK-1：两块**滑入面板**从右边横着滑进来 —— 玩家面板 200×280 @(x,0)、
       // 日期面板 200×200 @(x,280)，x = `[0x48c3d5]`（640 → 440）@source fcn_00435062 0x435552 / 0x43557c。
       if (loanUi !== null) {
+        // 店員那句话（气泡底图 = 资源 23 图 21，锚点落 (240,80)）@source fcn_00434186
+        // ★ 与面板谁在上 = 原版谁后画（`LoanUi.bubbleOnTop`：换句 → 气泡在上；滑动那几拍 → 面板在上）
+        const bubbleText = loanUi.bubble?.text ?? null;
+        if (bubbleText !== null && !loanUi.bubbleOnTop) drawLoanBubble(stageCtx, spriteNow, bubbleText);
         drawLoanPanels(stageCtx, spriteNow, loanPanelView(loanUi));
         // EXIT 的按下图（图 19）—— 四颗钮里只有它有 @source loc_00435cca
         drawLoanPressed(stageCtx, spriteNow, loanUi.pressed, {
           x0: LOAN_BUTTONS[LOAN_EXIT]!.x0,
           y0: LOAN_BUTTONS[LOAN_EXIT]!.y0,
         });
-        // 店員那句话（气泡底图 = 资源 23 图 21，锚点落 (240,80)）@source fcn_00434186
-        if (loanUi.bubble !== null) drawLoanBubble(stageCtx, spriteNow, loanUi.bubble.text);
+        if (bubbleText !== null && loanUi.bubbleOnTop) drawLoanBubble(stageCtx, spriteNow, bubbleText);
       }
     }
     // ── 还款提醒窗（`0x436034`）：`0x434186(0)` 的店員室（非董事長那一支，冻结时盖章）+ 两块面板

@@ -33,7 +33,7 @@ import { sceneOfMonth } from '@rich4/core';
 import { FINANCE_BORROW, FINANCE_BYE, FINANCE_REPAY } from './bank-loan.ts';
 import { appendDigitKey, backspaceKey } from './amount-keys.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
-import { clerkTextStyle, drawGdiText, type GdiTextStyle } from './font.ts';
+import { clerkTextStyle, drawGdiText, gdiFont, gdiPasses, type GdiTextStyle } from './font.ts';
 import { alignFor } from './hud.ts';
 // ★ 店員那几句话的**语音出口**（`#0075` 那一句就在里面）——
 //   见 `loanBubbleVoice` 的取证块。
@@ -375,7 +375,7 @@ export const LOAN_INFO_TEXT = {
  * | 是什么 | 落点 | 字号 | flag | 对齐 |
  * |---|---|---|---|---|
  * | 日 | (0x3c,0x60) | 0x3c = 60 | 2 | 正中 |
- * | 星期 | (0x0e,0x48) | 0x10 = 16 | 3 | **竖排**·正中（`fcn_0044f7c7`）|
+ * | 星期 | (0x0e,0x48) | 0x10 = 16 | 3 | **竖排**·墨迹框正中（`fcn_0044f7c7` + `0x44f70c`）|
  * | 年 | (0x8c,0x08) | 0x18 = 24 | 0 | 左上 |
  * | 月 | (0x3c,0x30) | 0x1c = 28 | 2 | 正中（`sprintf("%d月")`）|
  * | 距還款日 | (0x14,0xb0) | 0x14 = 20 | 5 | 左·垂直居中 |
@@ -700,6 +700,16 @@ export interface LoanUi {
    */
   dealDone: boolean;
   /**
+   * 气泡与两块面板**谁后画**（原版是一整块帧缓冲，后画的盖住先画的）。
+   *
+   * @source 气泡：换句那一拍 `fcn_0044ecb6` 画一次（如 `00435d8c`、`00435340`）；
+   *   面板：`0x113` 每拍滑动时 `00435552`/`0043557c` 贴一次（以及填数页回来时
+   *   `004352dd`/`00435443` 重贴，紧跟着就换句）。
+   * ⇒ 换了一句 → 气泡在上；面板挪了一拍 → 面板在上。
+   * （资源 23 图 21 宽 195、落在 x 240 → 右缘 434，与 x ≥ 440 的面板栏其实不相交；照抄次序只为不走样。）
+   */
+  bubbleOnTop: boolean;
+  /**
    * 这一刻填数页要开哪一支（`borrowIn`/`repayIn` 那两格共用一段代码，
    * 光看 `st` 分不出「一般貸款」还是「特別融資」）。
    *
@@ -741,6 +751,7 @@ export function loanStart(showGreeting: boolean): LoanUi {
     slide: { x: LOAN_SLIDE.hidden, dx: 0 },
     pressed: 0,
     dealDone: false,
+    bubbleOnTop: true,
     financeOpen: false,
     formOp: null,
   };
@@ -754,10 +765,11 @@ export function loanStart(showGreeting: boolean): LoanUi {
 export function loanTickSlide(ui: LoanUi): LoanUi {
   if (loanSlideDone(ui.slide)) return ui;
   const slide = loanSlideStep(ui.slide);
+  // 挪了一拍 = 面板刚贴过 ⇒ 盖在气泡上面
   if (loanSlideDone(slide) && slide.x === LOAN_SLIDE.hidden && ui.dealDone) {
-    return { ...ui, slide, st: LOAN_ST.bye, bubble: null };
+    return { ...ui, slide, st: LOAN_ST.bye, bubble: null, bubbleOnTop: false };
   }
-  return { ...ui, slide };
+  return { ...ui, slide, bubbleOnTop: false };
 }
 
 /** 状态机发出的**副作用**（纯函数只描述，不执行）*/
@@ -824,6 +836,15 @@ export interface LoanStepResult {
  * ```
  */
 export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
+  const r = loanStepInner(ui, ev);
+  // 换了一句 = `fcn_0044ecb6` 刚画过气泡 ⇒ 气泡盖在面板上面（见 `LoanUi.bubbleOnTop`）
+  if (r.ui.bubble !== null && r.ui.bubble !== ui.bubble && !r.ui.bubbleOnTop) {
+    return { ...r, ui: { ...r.ui, bubbleOnTop: true } };
+  }
+  return r;
+}
+
+function loanStepInner(ui: LoanUi, ev: LoanEvent): LoanStepResult {
   const same = (): LoanStepResult => ({ ui, effect: null });
   switch (ev.kind) {
     case 'bubbleEnd': {
@@ -1076,11 +1097,64 @@ export function verticalAdvance(s: GdiTextStyle): number {
   return s.size + (s.spacing ?? 1) + ((s.flags & 6) !== 0 ? 1 : 0);
 }
 
+/** 一个字的墨迹（`measureText` 在 `textBaseline = 'top'`、`textAlign = 'left'` 下量的四个量）*/
+export interface GlyphInk {
+  left: number;
+  right: number;
+  ascent: number;
+  descent: number;
+}
+
+/**
+ * 竖排（flag 3）整块的**落点** —— 照 `rich4_draw_text`（VA 0x0044fabc）逐步算：
+ *
+ * ```asm
+ * 0044fe53  call fcn_0044f7c7(dc, 正文偏移, 正文偏移, 串)   ; 离屏面上逐字 TextOut(左上对齐)，
+ *                                                          ;   第 k 个字的顶 = k × advance
+ * 0044fc76 / 0044fccc..0044fddd                            ; 阴影 / 描边那几遍同样画进离屏面
+ * 0044feef  call 0x44f70c                                  ; 扫非 0 像素 → 墨迹框 [x0,y0,x1,y1]
+ * 0044fef7  宽 = x1 − x0 + 1   0044ff00  高 = y1 − y0 + 1
+ * 0044ff2a  x −= 宽 >> 1       0044ff35  y −= 高 >> 1       ; 墨迹框左上角落在这里
+ * ```
+ * 返回：第 0 个字的字格左上角该落在屏上哪里（之后第 k 个字 = `oy + k × advance`）。
+ * 墨迹框 = 各字墨迹（按字格原点）∪ 各遍偏移（`gdiPasses`）。
+ */
+export function verticalInkOrigin(
+  inks: readonly GlyphInk[],
+  advance: number,
+  flags: number,
+  x: number,
+  y: number,
+): { ox: number; oy: number } {
+  const passes = gdiPasses(flags);
+  const pdx = passes.map((p) => p.dx);
+  const pdy = passes.map((p) => p.dy);
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  inks.forEach((g, k) => {
+    x0 = Math.min(x0, -g.left);
+    x1 = Math.max(x1, g.right);
+    y0 = Math.min(y0, k * advance - g.ascent);
+    y1 = Math.max(y1, k * advance + g.descent);
+  });
+  if (inks.length === 0) return { ox: x, oy: y };
+  // 像素化：墨迹覆盖的像素列 [floor(x0), ceil(x1) − 1]
+  const px0 = Math.floor(x0 + Math.min(...pdx));
+  const px1 = Math.ceil(x1 + Math.max(...pdx)) - 1;
+  const py0 = Math.floor(y0 + Math.min(...pdy));
+  const py1 = Math.ceil(y1 + Math.max(...pdy)) - 1;
+  const w = px1 - px0 + 1;
+  const h = py1 - py0 + 1;
+  return { ox: x - (w >> 1) - px0, oy: y - (h >> 1) - py0 };
+}
+
 /**
  * 按 `draw_text` 的对齐 flag 画一条（`alignFor`）。
  *
- * flag 3 = **竖排**、整块正中：`0044fbf2 cmp ebp, 3` 把外框宽高对调，`0044fc71`/`0044fe53`
- * 走逐字竖写的 `fcn_0044f7c7`；落点再按墨迹框正中对齐（`0044ff2a`）。
+ * flag 3 = **竖排**、墨迹框正中：`0044fbf2 cmp ebp, 3` 把外框宽高对调，`0044fe53`
+ * 走逐字竖写的 `fcn_0044f7c7`；落点按墨迹框正中对齐（见 `verticalInkOrigin`）。
  */
 function panelText(
   ctx: CanvasRenderingContext2D,
@@ -1090,15 +1164,28 @@ function panelText(
   flag: number,
   style: GdiTextStyle,
 ): void {
-  const a = alignFor(flag);
-  ctx.textAlign = a.align;
-  ctx.textBaseline = a.baseline;
   if (flag === 3) {
     const chars = [...s];
     const adv = verticalAdvance(style);
-    chars.forEach((ch, k) => drawGdiText(ctx, ch, x, y + (k - (chars.length - 1) / 2) * adv, style));
+    ctx.font = gdiFont(style);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    const inks = chars.map((ch): GlyphInk => {
+      const m = ctx.measureText(ch);
+      return {
+        left: m.actualBoundingBoxLeft,
+        right: m.actualBoundingBoxRight,
+        ascent: m.actualBoundingBoxAscent,
+        descent: m.actualBoundingBoxDescent,
+      };
+    });
+    const { ox, oy } = verticalInkOrigin(inks, adv, style.flags, x, y);
+    chars.forEach((ch, k) => drawGdiText(ctx, ch, ox, oy + k * adv, style));
     return;
   }
+  const a = alignFor(flag);
+  ctx.textAlign = a.align;
+  ctx.textBaseline = a.baseline;
   drawGdiText(ctx, s, x, y, style);
 }
 

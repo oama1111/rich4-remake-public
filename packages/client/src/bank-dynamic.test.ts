@@ -51,6 +51,7 @@ import {
   loanTickSlide,
   LOAN_TEXT_STYLE,
   verticalAdvance,
+  verticalInkOrigin,
   loanSlideDone,
   loanSlideIn,
   loanSlideOut,
@@ -271,6 +272,26 @@ describe('貸款屏状态机 @source fcn_00435062', () => {
     expect(ui.bubble).toBeNull();
     // 同一拍 `0x44ee18` 没有气泡返回 1 → case 0xb → 关屏
     expect(step(ui, { kind: 'bubbleEnd' }).effect).toEqual({ kind: 'close' });
+  });
+
+  it('★ 气泡与面板谁在上 = 原版谁后画：换句 → 气泡在上；滑动那几拍 → 面板在上', () => {
+    let ui: LoanUi = { ...loanStart(false), st: LOAN_ST.ready };
+    // 点「申請貸款」：00435d8c 先画 #0078 → 气泡在上
+    ui = press(ui, 1);
+    expect(ui.bubble).toBe(LOAN_MSG.askBorrow);
+    expect(ui.bubbleOnTop).toBe(true);
+    // 下一拍面板贴了一次（00435552 / 0043557c）→ 面板盖在 #0078 上，到位后也还是
+    ui = loanTickSlide(ui);
+    expect(ui.bubbleOnTop).toBe(false);
+    ui = tickUntilStill(ui).at(-1)!;
+    expect(ui.bubbleOnTop).toBe(false);
+    // 借到手：00435340 画 #0079 → 气泡在上；#0080 同理
+    ui = step(ui, { kind: 'bubbleEnd' }).ui;
+    ui = step(ui, { kind: 'formClosed', amount: 5000, cash: 0, deposit: 0 }).ui;
+    expect(ui.bubble).toBe(LOAN_MSG.borrowDone);
+    expect(ui.bubbleOnTop).toBe(true);
+    // 静止时走一拍不改次序
+    expect(loanTickSlide(ui).bubbleOnTop).toBe(true);
   });
 
   it('★ 还款办完、借款填 0：面板退净后**不**关屏（[0x48c3e2] 只在借到手时置 1）', () => {
@@ -565,6 +586,13 @@ describe('两块滑入面板的绘制（假 ctx，只查落点）', () => {
       clip: () => undefined,
       beginPath: () => undefined,
       rect: () => undefined,
+      // 假墨迹：每个字 16 宽、顶下 1 px 起墨、墨到 15（textBaseline = 'top' 口径）
+      measureText: () => ({
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: 16,
+        actualBoundingBoxAscent: -1,
+        actualBoundingBoxDescent: 15,
+      }),
       drawImage: (
         _b: unknown,
         dx: number,
@@ -643,12 +671,16 @@ describe('两块滑入面板的绘制（假 ctx，只查落点）', () => {
     expect(at('1998')).toEqual({ x: 440 + 0x8c + O, y: 280 + 0x08 + O });
     expect(at('3月')).toEqual({ x: 440 + 0x3c + O, y: 280 + 0x30 + O });
     expect(at(LOAN_DUE_TEXT.replace('%d', '88'))).toEqual({ x: 440 + 0x14 + O, y: 280 + 0xb0 + O });
-    // ★ 星期是 flag 3 = **竖排**：一字一行，整块以 (0x0e, 0x48) 为中心，
-    //   字距 = 字号 16 + 字距 1 + 粗/描边 1 = 18 @source fcn_0044f7c7 0x44f7de..0x44f7f2
+    // ★ 星期是 flag 3 = **竖排**：一字一行（字距 = 字号 16 + 字距 1 + 粗/描边 1 = 18
+    //   @source fcn_0044f7c7 0x44f7de..0x44f7f2），**墨迹框**以 (0x0e, 0x48) 为中心（0x44ff2a）。
+    //   假墨迹下：框 x ∈ [0, 16+2) → 宽 18；y ∈ [1, 2×18+15+2) → 高 52
+    //   ⇒ 框左上 = (X − 9, Y − 26)，字格原点 = (X − 9, Y − 27)，正文再 (+1,+1)。
     expect(f.texts.some((e) => e.t === '星期四')).toBe(false);
-    expect(at('星')).toEqual({ x: 440 + 0x0e + O, y: 280 + 0x48 - 18 + O });
-    expect(at('期')).toEqual({ x: 440 + 0x0e + O, y: 280 + 0x48 + O });
-    expect(at('四')).toEqual({ x: 440 + 0x0e + O, y: 280 + 0x48 + 18 + O });
+    const X = 440 + 0x0e;
+    const Y = 280 + 0x48;
+    expect(at('星')).toEqual({ x: X - 9 + O, y: Y - 27 + O });
+    expect(at('期')).toEqual({ x: X - 9 + O, y: Y - 27 + 18 + O });
+    expect(at('四')).toEqual({ x: X - 9 + O, y: Y - 27 + 36 + O });
     // ★ 到位时所有字都落在屏内（先前读成顶边 y 时，440 + 0xe4 早就出了 480）
     for (const e of f.texts) {
       expect(e.x).toBeGreaterThanOrEqual(440);
@@ -664,6 +696,17 @@ describe('两块滑入面板的绘制（假 ctx，只查落点）', () => {
     expect(LOAN_TEXT_STYLE.info).toEqual({ size: 22, color: '#ffffff', color2: '#101010', flags: 6, spacing: 0 });
     expect(LOAN_TEXT_STYLE.date(0x10)).toEqual({ size: 16, color: '#101010', color2: '#ffffff', flags: 6, spacing: 1 });
     expect(verticalAdvance(LOAN_TEXT_STYLE.date(0x10))).toBe(18);
+  });
+
+  it('★ 竖排落点 = 墨迹框（含阴影/描边那几遍）正中 @source 0x44f70c / 0x44ff2a', () => {
+    const g = { left: 0, right: 16, ascent: -1, descent: 15 };
+    // 字效 6（粗+描边）：各遍偏移 0..2 → 框 18×52，框左上 (100−9, 200−26)，原点再减框的 y0 = 1
+    expect(verticalInkOrigin([g, g, g], 18, 6, 100, 200)).toEqual({ ox: 91, oy: 173 });
+    // 字效 0（无阴影无描边）：框 16×50 → (100−8, 200−25−1)
+    expect(verticalInkOrigin([g, g, g], 18, 0, 100, 200)).toEqual({ ox: 92, oy: 174 });
+    // 奇数宽高按 `sar 1` 向下取：框 17×51 → x − 8、y − 25
+    const odd = { left: 0, right: 17, ascent: 0, descent: 15 };
+    expect(verticalInkOrigin([odd, odd, odd], 18, 0, 100, 200)).toEqual({ ox: 92, oy: 175 });
   });
 
   it('★ 滑到一半（x = 520）：两块面板一起横移，y 不动', () => {
