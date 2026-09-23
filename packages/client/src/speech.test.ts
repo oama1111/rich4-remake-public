@@ -10,7 +10,7 @@
  * 因为那些方向错了单看代码是看不出来的。
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   applyDispelCard,
   attachGod,
@@ -107,6 +107,16 @@ function to(mutate: (after: GameState) => void): [GameState, GameState] {
 // ============================================================
 //  分档阈值 —— 逐个照抄 exe
 // ============================================================
+
+
+const EXE = `${process.env.RICH4_WORKSPACE ?? ''}/Rich4/rich4.exe`;
+const runExe = existsSync(EXE) ? it : it.skip;
+/** `rich4.exe` 的 VA → 文件偏移（与 `tools/disasm.py` 的换算同一条）*/
+function exeBytes(va: number, n: number): number[] {
+  const d = readFileSync(EXE);
+  const off = 1024 + (va - 0x401000);
+  return [...d.subarray(off, off + n)];
+}
 
 describe('★ 得點券格 / 小遊戲不玩的台词 —— 通道 2 钉住（test_points_squares.py 18/18）', () => {
   it('★★ `lastEvent.phraseIndex` 直接用**角色台词表**的事件号（50 點 0/1、30 點 2）', () => {
@@ -268,12 +278,57 @@ describe('入狱 / 住院 / 夢遊（「新判」那一条路径）', () => {
     expect(detectPrisonEntered(b, a)).toEqual([{ player: 1, event: 19 }]);
   });
 
-  it('★ 加刑（本来就在牢里）不说 —— 原版 `test dh,dh / jne 加刑路径`', () => {
+  // ★★ 2026-09-23 订正（第十四份試玩回報，协调方拍板照 exe）：先前这一条断言「加刑不说」——
+  //   `0x0043d5da test dh,dh / 0x0043d5dc jne 0x43d6bd` 只跳过搬位置与警车片；加刑支 `0x0043d6bd..0x0043d6d0`
+  //   直落 `0x0043d6d6`（与新判汇合），`0x0043d6f1 view_to` → `0x0043d71c call 0x44ef41`（事件 19）照说。
+  //   住院同形：`0x0043ec88 jne 0x43ed6c` → `0x0043ed85` 汇合 → `0x0043edcb call 0x44ef41`（事件 20）。
+  it('★ 加刑（本来就在牢里 / 医院里）照样说 —— 加刑支与新判在 0x0043d6d6 / 0x0043ed85 汇合', () => {
     const [b, a] = step((before, after) => {
       before.players[2]!.blocking.inPrison = 3;
       after.players[2]!.blocking.inPrison = 5;
     });
+    expect(detectPrisonEntered(b, a)).toEqual([{ player: 2, event: 19 }]);
+    const [hb, ha] = step((before, after) => {
+      before.players[1]!.blocking.inHospital = 0x80; // 待释放期间又被送进去：(0x80 + 3) & 0x7f = 3
+      after.players[1]!.blocking.inHospital = 3;
+    });
+    expect(detectHospitalEntered(hb, ha)).toEqual([{ player: 1, event: 20 }]);
+  });
+
+  it('刑满待释放（1 → 0x80）不是送入 —— 不说', () => {
+    const [b, a] = step((before, after) => {
+      before.players[2]!.blocking.inPrison = 1;
+      after.players[2]!.blocking.inPrison = 0x80;
+    });
     expect(detectPrisonEntered(b, a)).toEqual([]);
+  });
+
+  runExe('★ 回 exe 钉：加刑支落点之后一路直下到那一句', () => {
+    const call = (va: number): number => {
+      const x = exeBytes(va, 5);
+      expect(x[0]).toBe(0xe8);
+      return va + 5 + ((x[1]! | (x[2]! << 8) | (x[3]! << 16) | (x[4]! << 24)) | 0);
+    };
+    // jne rel32 的落点
+    const jne = (va: number): number => {
+      const x = exeBytes(va, 6);
+      expect([x[0], x[1]]).toEqual([0x0f, 0x85]);
+      return va + 6 + ((x[2]! | (x[3]! << 8) | (x[4]! << 16) | (x[5]! << 24)) | 0);
+    };
+    expect(jne(0x43d5dc)).toBe(0x43d6bd);
+    expect(call(0x43d71c)).toBe(0x44ef41);
+    expect(jne(0x43ec88)).toBe(0x43ed6c);
+    expect(call(0x43edcb)).toBe(0x44ef41);
+    // 两段加刑支整段原字节 = mov al,[esp+0x18] / mov cl,dh / add cl,al / mov [计数],cl / mov ch,cl /
+    //   and ch,0x7f / mov [计数],ch —— 七条 mov/add/and，没有跳转，直落汇合点
+    expect(exeBytes(0x43d6bd, 0x43d6d6 - 0x43d6bd)).toEqual([
+      0x8a, 0x44, 0x24, 0x18, 0x88, 0xf1, 0x00, 0xc1, 0x88, 0x8b, 0x9c, 0x6b, 0x49, 0x00, 0x88, 0xcd, 0x80, 0xe5,
+      0x7f, 0x88, 0xab, 0x9c, 0x6b, 0x49, 0x00,
+    ]);
+    expect(exeBytes(0x43ed6c, 0x43ed85 - 0x43ed6c)).toEqual([
+      0x8a, 0x44, 0x24, 0x18, 0x88, 0xf1, 0x00, 0xc1, 0x88, 0x8b, 0x9d, 0x6b, 0x49, 0x00, 0x88, 0xcd, 0x80, 0xe5,
+      0x7f, 0x88, 0xab, 0x9d, 0x6b, 0x49, 0x00,
+    ]);
   });
 
   it('住院：inHospital 0 → 非 0 ⇒ 事件 20', () => {
