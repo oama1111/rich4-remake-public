@@ -359,6 +359,7 @@ import {
   setNoticeSpeechGate,
   setNoticeStartGate,
   queueLocalNotice,
+  noticeBoxScreenState,
 } from './notice-box-screen.ts';
 // ★ 第十三份試玩回報 #1：顯靈加蓋那一格等「顯靈框」收掉才画成新等级（两次重画、两声音效 50）
 import {
@@ -1154,6 +1155,10 @@ const BANK_TICK_MS = LOAN_TICK_MS;
 
 /** 气泡是哪一刻挂上的（到点自收，与商店同一支 `fcn_0044ee18`）*/
 let loanBubbleAt = 0;
+/** 进门那扇「銀行暫停放款」还在弹，开场押着（记的是那条 action 的 `notices` 引用）*/
+let loanFrozenWait: GameState['notices'] | null = null;
+/** 已经等过的那一份 `notices`（押过一次就不再押）*/
+let loanFrozenHandled: GameState['notices'] | null = null;
 
 /**
  * 董事長眨眼（Q-BANK-1a）—— 子对话框 `fcn_00434492` 那一支的 100 ms 定时器。
@@ -1172,6 +1177,13 @@ function syncLoanUi(): void {
     return;
   }
   if (loanUi === null) {
+    // ★ 2026-09-23：进门正暫停放款时，原版在 `0x405` 那一拍**先**弹「銀行暫停放款」（阻塞 1500 ms，
+    //   `0x004351f8 call 0x440cac`），框收了才往下走到招呼（`0x00435200`）⇒ 框还在就先不开场。
+    if (state.notices !== loanFrozenHandled && state.notices.some((n) => n.key === 'bank.loanFrozen')) {
+      // 这一拍訊息框还没入队（`notifyApplied` 里整屏的 `event` 在本函数之后）⇒ 先记下，交给 `bankTick` 等它收
+      loanFrozenWait = state.notices;
+      return;
+    }
     // ★ 那一句招呼归「動畫過程」管：@source `loc_00435200`（VA 0x00435200，銀行 `0x405` 那一拍）
     //   `cmp byte [0x497159], 0 / je → st = 3`（`[0x48c3d5]` 直接跳到「需要我為您服務嗎」
     //   那一档，**不**说 `#0075`）。`[0x497159]` 就是 `RICH4.CFG+1`（`rich4_read_config()`
@@ -1250,6 +1262,14 @@ function loanFormClosed(amount: number): void {
  */
 function bankTick(now: number): void {
   if (atmCode !== null && now - atmCodeAt >= BANK_TICK_MS) atmCode = null;
+  // ★ 2026-09-23：进门那扇「銀行暫停放款」收了才开场（见 `syncLoanUi`）
+  if (loanUi === null && loanFrozenWait !== null) {
+    if (noticeBoxScreenActive()) return;
+    loanFrozenHandled = loanFrozenWait;
+    loanFrozenWait = null;
+    if (!aiVenuePending(state)) syncLoanUi();
+    requestRender();
+  }
   if (loanUi === null) return;
   // ★ 董事长眨眼：**子对话框那一支自己的 100 ms 定时器**，与下面那 50 ms 分开数；
   //   而且它只在「填数页没开着」时才走 @source `0x4347a2` 的 `cmp [0x48c3cc], 4 / je`。
@@ -5118,6 +5138,22 @@ function bailViews(): BailSlotView[] {
   return out;
 }
 
+/** 股市那一屏（整屏；原版那扇窗口盖住棋盘）—— 详情卡 / 填数页是另开的窗，盖在上面 */
+function drawStockStage(): void {
+  drawStockScreen(stageCtx, spriteNow, stockView());
+  // 详情卡是**模态**的（原版另开一扇窗口），盖在最上面
+  const detail = stockDetailView();
+  if (detail !== null) drawStockDetail(stageCtx, spriteNow, detail);
+  const ui = stockAmountUi();
+  if (ui !== null && amountPage !== null) {
+    // 填数页照棋盘坐标排版，整体平移过去（`fcn_00453544` 也是另开一窗）
+    stageCtx.save();
+    stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
+    drawDialog(stageCtx, uiSprite, ui, amountPage, dialogHot);
+    stageCtx.restore();
+  }
+}
+
 /** 監獄／醫院那一屏 —— 与商店一样是**整屏**，画它的时候棋盘不画 */
 function drawBailStage(): void {
   const pending = state.pending;
@@ -5129,6 +5165,12 @@ function drawBailStage(): void {
   drawBailScreen(stageCtx, pending.place, bailViews(), me.points, bailHot, spriteNow);
   // ★ 2026-09-23：柜台人员的字框（`bail-screen.ts` 的 `BAIL_CLERK_FRAMES`）
   if (bailClerk !== null) drawBailClerk(stageCtx, spriteNow, bailClerk);
+}
+
+/** 訊息框还在弹 / 还排着（`noticeBoxScreenState` 的只读视图）*/
+function noticeBoxScreenActive(): boolean {
+  const n = noticeBoxScreenState();
+  return n.playing || n.queued > 0;
 }
 
 /** 保釋屏柜台人员这一刻挂着的那一句（`null` = 没挂）*/
@@ -7269,17 +7311,27 @@ function requestRender(): void {
     stageCtx.fillStyle = '#000';
     stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
 
+    // ★ 2026-09-23：浮窗（訊息框等）要画在**它底下那一屏的最上面** —— 貸款屏（下面那段「銀行落点那两屏」）
+    //   与股市屏也算。先前浮窗先画、貸款屏后画 ⇒ 貸款屏进门那扇「銀行暫停放款」（0x004351f8）被整屏盖掉；
+    //   股市屏开着时浮窗底下画的是棋盘 ⇒「漲停無法買進！」（0x0042af23）落在棋盘上。
+    let deferredOverlay: typeof overlay = null;
     if (overlay !== null) {
       // ★ 登记的整屏接管：棋盘、侧栏、工具栏一概不画（原版这些屏也是整屏窗口）
       // ★ 例外是**浮窗**（`windowed: true`，如大地圖彈窗）：原版只把被盖住的
       //   那一块盖上去，周围的棋盘/工具栏/侧栏照旧露着 —— 故先照常画一整帧。
-      if (overlay.windowed === true && screen === 'game') {
-        drawGameStage();
-        // ★ 模态 ATM 窗在浮窗**底下**：銀行暫停放款时 ATM 窗 `0x401` 铺完面板才 `PostMessage(0x408)`
-        //   弹「銀行暫停放款」訊息框（`0x00437123`）⇒ 框盖在 ATM 上。下面链尾那一句只在没有整屏接管时画 ATM。
-        if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
+      if (overlay.windowed === true && (screen === 'game' || screen === 'stock')) {
+        if (screen === 'stock') {
+          drawStockStage();
+        } else {
+          drawGameStage();
+          // ★ 模态 ATM 窗在浮窗**底下**：銀行暫停放款时 ATM 窗 `0x401` 铺完面板才 `PostMessage(0x408)`
+          //   弹「銀行暫停放款」訊息框（`0x00437123`）⇒ 框盖在 ATM 上。下面链尾那一句只在没有整屏接管时画 ATM。
+          if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
+        }
+        deferredOverlay = overlay;
+      } else {
+        overlay.draw(uiEnv());
       }
-      overlay.draw(uiEnv());
     } else if (screen === 'title') {
       drawTitle(stageCtx, titleHot, spriteNow);
     } else if (screen === 'intro') {
@@ -7395,19 +7447,7 @@ function requestRender(): void {
       // ── 副屏盖在主面板上（原版是另开一扇窗口）──
       if (optionsSub !== null) drawOptionsSub();
     } else if (screen === 'stock') {
-      // 股市是**整屏**的（原版那扇窗口盖住棋盘），画法与銀行那两屏同一条路
-      drawStockScreen(stageCtx, spriteNow, stockView());
-      // 详情卡是**模态**的（原版另开一扇窗口），盖在最上面
-      const detail = stockDetailView();
-      if (detail !== null) drawStockDetail(stageCtx, spriteNow, detail);
-      const ui = stockAmountUi();
-      if (ui !== null && amountPage !== null) {
-        // 填数页照棋盘坐标排版，整体平移过去（`fcn_00453544` 也是另开一窗）
-        stageCtx.save();
-        stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
-        drawDialog(stageCtx, uiSprite, ui, amountPage, dialogHot);
-        stageCtx.restore();
-      }
+      drawStockStage();
     } else {
       drawGameStage();
     }
@@ -7466,6 +7506,8 @@ function requestRender(): void {
         stageCtx.restore();
       }
     }
+    // 浮窗压在最上面（见上面 `deferredOverlay` 那条注释）
+    if (deferredOverlay !== null) deferredOverlay.draw(uiEnv());
 
     // ── 遙控骰子的点数盘（Q-PICK-2）──
     // ★ 原版是**另开一扇模态窗口**盖在棋盘上（`_rich4_use_tool_yaokongtouzi` 把
