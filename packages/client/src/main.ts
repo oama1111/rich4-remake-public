@@ -321,6 +321,16 @@ import { interactionUi, type InteractionUi } from './interactions.ts';
 //   钩子把取消键变成 `WM_RBUTTONUP 0x205`，主窗口过程只交给栈顶那扇窗）。
 //   取证与全表见 `panel-cancel.ts` 头部。
 import { CANCEL_SOUND, cancelLayerOf, type CancelLayer } from './panel-cancel.ts';
+import {
+  REMINDER_BGM,
+  REMINDER_CANCEL_SOUND,
+  REMINDER_CLICK_SOUND,
+  reminderCancel,
+  reminderClick,
+  reminderStart,
+  reminderTick,
+  type LoanReminderUi,
+} from './loan-reminder.ts';
 // ★ 股市柜台的填数页壳 —— 与銀行/公佈欄/上市企業**同一个**通用填数页。
 import { stockAmountForm } from './amount-form.ts';
 // ★ 通用填数窗**自己那张键盘表**（@source `loc_00452e4b`）：0-9 / 退格 / C / M / H / Enter。
@@ -506,6 +516,7 @@ import {
 import {
   ATM_BAR,
   LOAN_BUBBLE_MS,
+  LOAN_SLIDE,
   LOAN_TICK_MS,
   atmApplyCode,
   atmCodeOfKey,
@@ -1255,6 +1266,56 @@ function loanFormClosed(amount: number): void {
   });
 }
 
+// ── 还款提醒窗（距还款日 3 天、恰好真人，`0x43695e` → `0x436034`）──────────
+//
+// core 挂 `pending {kind:'loanReminder'}`（相位 `turnStart`）；演法全在 `loan-reminder.ts`，
+// 这里只接 IO：开场、每拍、鼠标、关窗时派 `declineDecision`。
+
+/** 提醒窗的演出状态；`null` = 没开 */
+let reminderUi: LoanReminderUi | null = null;
+/** 已经关过的那一份 pending（联机时关窗那一条还没广播回来，别把同一扇再开一次）*/
+let reminderClosed: GameState['pending'] = null;
+
+/** 提醒窗上称呼的名字（`0x00436176 mov ecx, [player+0x00]` → `0x452946` 取名）*/
+function reminderName(): string {
+  const me = state.players[state.currentPlayer];
+  return me === undefined ? '' : (CHARACTERS[me.character]?.name ?? '');
+}
+
+/** 该不该开 / 该不该还开着 */
+function syncLoanReminder(now: number): void {
+  const p = state.pending;
+  if (p === null || p.kind !== 'loanReminder' || isAiTurn(state) || p === reminderClosed) {
+    reminderUi = null;
+    return;
+  }
+  if (reminderUi !== null) return;
+  // ★ 这扇窗在 `0x41c84f` 里，排在同一条 `endTurn` 的日推进（月結屏 / 開獎 / 訊息框…）之后 ⇒ 那些先收场
+  if (activeUiScreen() !== null) return;
+  reminderUi = reminderStart(reminderName(), now);
+  // @source `0x004369e0 push 4 / call 0x4549cf` —— 貸款屏那一首
+  void playTrackFile(REMINDER_BGM);
+  requestRender();
+}
+
+/** 每帧：开场 / 50 ms 一拍的换句 / 第三句收了就关窗 */
+function reminderFrame(now: number): void {
+  syncLoanReminder(now);
+  if (reminderUi === null) return;
+  const r = reminderTick(reminderUi, now, reminderName());
+  if (r.ui !== reminderUi) {
+    reminderUi = r.ui;
+    requestRender();
+  }
+  if (r.close) {
+    // @source `0x0043622f KillTimer` / `0x00436240 call 0x401966(0)` —— 窗关了，`0x41c84f` 接着走
+    reminderClosed = state.pending;
+    reminderUi = null;
+    requestRender();
+    dispatch({ type: 'declineDecision' });
+  }
+}
+
 /**
  * 貸款屏每帧走一次（对应原版那支 50ms 的 `0x113` 定时器）：
  * 推滑入、气泡到点（`fcn_0044ee18` —— **没有气泡时它也返回 1**）、
@@ -1262,6 +1323,7 @@ function loanFormClosed(amount: number): void {
  */
 function bankTick(now: number): void {
   if (atmCode !== null && now - atmCodeAt >= BANK_TICK_MS) atmCode = null;
+  reminderFrame(now);
   // ★ 2026-09-23：进门那扇「銀行暫停放款」收了才开场（见 `syncLoanUi`）
   if (loanUi === null && loanFrozenWait !== null) {
     if (noticeBoxScreenActive()) return;
@@ -1303,7 +1365,7 @@ function bankTick(now: number): void {
  * | 節日插画 | `fcn_004521f0(今天) != −1` 时整张盖掉季节底图 |
  * | 距還款日 | `player+0x2c`（还款到期日）与今天的天号差 @source `fcn_004521aa` |
  */
-function loanPanelView(ui: LoanUi): LoanPanelsView {
+function loanPanelView(ui: Pick<LoanUi, 'slide'>): LoanPanelsView {
   const me = state.players[state.currentPlayer];
   const today = { year: state.year, month: state.month, day: state.day };
   const packed = me?.loanDueDate ?? 0;
@@ -2025,6 +2087,7 @@ function cancelTopPanel(): boolean {
     shop: shopUi !== null,
     bail: state.pending?.kind === 'bail',
     loan: bankPending() !== null,
+    loanReminder: reminderUi !== null,
   });
   return layer === null ? false : applyCancelLayer(layer);
 }
@@ -2132,6 +2195,16 @@ function applyCancelLayer(layer: CancelLayer): boolean {
     case 'loan':
       loanSend({ kind: 'cancel' });
       return true;
+    // @source loc_004365b4：还没到第三句 ⇒ 取消音 + 跳到第三句并收掉（下一拍关窗）；第三句时不理
+    case 'loanReminder': {
+      const cut = reminderUi === null ? null : reminderCancel(reminderUi);
+      if (cut !== null) {
+        sound.play('Effect.mkf', REMINDER_CANCEL_SOUND);
+        reminderUi = cut;
+        requestRender();
+      }
+      return true;
+    }
   }
 }
 
@@ -7493,6 +7566,13 @@ function requestRender(): void {
         if (loanUi.bubble !== null) drawLoanBubble(stageCtx, spriteNow, loanUi.bubble.text);
       }
     }
+    // ── 还款提醒窗（`0x436034`）：`0x434186(0)` 的店員室（非董事長那一支，冻结时盖章）+ 两块面板
+    //   **直接贴在到位处**（`0x004360f6` / `0x00436115` 的 y = 0x1b8，不滑入）+ 店員的气泡 ──
+    if (reminderUi !== null) {
+      drawBankLoan(stageCtx, spriteNow, { chairman: false, frozen: bankFrozen(), subDialog: false, finance: null, blink: null });
+      drawLoanPanels(stageCtx, spriteNow, loanPanelView({ slide: { y: LOAN_SLIDE.shown, dy: 0 } }));
+      if (reminderUi.text !== null) drawLoanBubble(stageCtx, spriteNow, reminderUi.text);
+    }
     if (atm !== null && overlay === null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
     if (bank !== null && atm === null && amountPage !== null) {
       // 填数页（`fcn_00453544`）是**另开一个窗口**盖在银行屏上的，所以这里
@@ -7561,6 +7641,7 @@ function requestRender(): void {
       diceFx.active ||
       shopUi !== null ||
       loanUi !== null ||
+      reminderUi !== null ||
       atmCode !== null ||
       speechQueue.length > 0 ||
       // ★ 押在 `deferredSpeech` 里的那几句也要续帧 —— 演出收屏那一拍就靠它
@@ -9357,6 +9438,14 @@ function bindInput(): void {
       return;
     }
 
+    // ── 还款提醒窗：左键（`0x201`/`0x203`）哪儿都行 —— 音效 1 + 这一句当场收掉 @source 0x00436596 ──
+    if (e.button === 0 && reminderUi !== null) {
+      sound.play('Effect.mkf', REMINDER_CLICK_SOUND);
+      reminderUi = reminderClick(reminderUi);
+      requestRender();
+      return;
+    }
+
     // ── 銀行貸款屏（T-029b/T-029c）：四颗钮在**舞台坐标**上 @source loc_00435c12 ──
     const loanNow = bankPending();
     if (e.button === 0 && loanNow !== null && atm === null && amountPage === null) {
@@ -11054,6 +11143,8 @@ async function boot(): Promise<void> {
         get sheetUi() { return sheetUi; },
         /** 卡片商店／道具商店的界面状态（页号、滑入位置、气泡、货架快照）*/
         get shopUi() { return shopUi; },
+        /** 还款提醒窗的演出状态（`null` = 没开）*/
+        get reminderUi() { return reminderUi; },
         get setup() { return setup; },
         get options() { return { saved: options, draft: optionsDraft, variant: optionsVariant }; },
         goto: (s: Screen) => { screen = s; requestRender(); },

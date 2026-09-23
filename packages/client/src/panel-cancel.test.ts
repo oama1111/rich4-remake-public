@@ -73,6 +73,7 @@ const CASES: readonly { layer: CancelLayer; snap: CancelSnapshot }[] = [
   { layer: 'shop', snap: snap({ shop: true, dialog: true }) },
   { layer: 'bail', snap: snap({ bail: true, dialog: true }) },
   { layer: 'loan', snap: snap({ loan: true, dialog: true }) },
+  { layer: 'loanReminder', snap: snap({ loanReminder: true }) },
 ];
 
 describe('★ 取消梯子：一层一条', () => {
