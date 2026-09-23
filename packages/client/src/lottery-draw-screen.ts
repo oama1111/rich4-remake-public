@@ -104,7 +104,7 @@ import type { GameState } from '@rich4/core';
 import { FONT_FAMILY, font } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
-import { playVoiceCode, voiceBusy } from './voice-sink.ts';
+import { playVoiceCode, stopVoice, voiceBusy } from './voice-sink.ts';
 import { SCREEN_H, SCREEN_W } from './stage.ts';
 
 
@@ -586,6 +586,12 @@ interface Active {
    * 由 `tick` 置位（`draw` 只读），`enterStep` 清零。「音效档关着」那道闸在 `voiceBusy()` 里。
    */
   bubbleDown: boolean;
+  /** 这一步的语音已经请求过几次（进步那一次 + 至多一次兜底，见 `DRAW_VOICE_MAX_ASKS`）*/
+  voiceAsks: number;
+  /** 最近一次请求语音的时刻 */
+  voiceAt: number;
+  /** 这一步的语音**响起来过**没有（`tick` 看到 `voiceBusy()` 为真就置位）—— 响过就不再兜底 */
+  voiceHeard: boolean;
   /** 现在的字框（`fcn_0044ec30` 最近一次设的那一种）*/
   frame: CeremonyFrameId;
   face: FaceCtl;
@@ -720,6 +726,9 @@ function begin(cue: DrawCue, env: UiScreenEnv): void {
     at: env.now,
     said: env.now,
     bubbleDown: false,
+    voiceAsks: 0,
+    voiceAt: env.now,
+    voiceHeard: false,
     frame: CEREMONY_BASE.frame ?? 'bubble',
     face: faceCtlStart(),
     faceBlits: [],
@@ -757,12 +766,16 @@ function enterStep(a: Active, env: UiScreenEnv): void {
   a.at = env.now;
   a.said = env.now;
   a.bubbleDown = false;
+  a.voiceAsks = 0;
+  a.voiceAt = env.now;
+  a.voiceHeard = false;
   if (step === undefined) return;
   if (step.frame !== undefined) a.frame = step.frame;
   if (step.line !== null) {
     // ★★ 语音**只在这里**请求一次（字框画上去那一拍，`0x0044fabc` → `0x45441a`）；
     //   绘制链只剥不播（见 `bubbleLines`）。
     playVoiceCode(step.line.text);
+    a.voiceAsks = 1;
     env.log(`樂透開獎：${bubbleLines(step.line.text).join('')}`);
   }
   if (step.sound !== undefined) env.playEffect(step.sound);
@@ -828,6 +841,34 @@ function holdDone(a: Active, env: UiScreenEnv): boolean {
   }
   if (h.voice === true && step.line !== null && !a.bubbleDown) return false;
   return true;
+}
+
+/**
+ * 同一句语音**兜底再请求一次**的最小间隔（ms）与总次数上限 —— 与魔法屋
+ * `MAGIC_VOICE_RETRY_MS` / `MAGIC_VOICE_MAX_ASKS` 同值、同用途。
+ *
+ * 引擎自己的兜底（原版同步读档，不会漏）：桌面版 `Speaking.mkf`（57 MB）是按需拉的，
+ * 进步那一拍若还没到货，那一次请求会被 `SoundPlayer.play` 安静丢掉。
+ * 只在这一句**从没响起来过**时补一次：`tick` 每拍看 `voiceBusy()`，看到在响就记下
+ * `voiceHeard`，之后永不再补 —— 否则短于 2 秒的句子念完、字框还挂着时又会被补一遍
+ * （正是这份回报的毛病）。本屏最短的 `#0036` 也有 963 ms，500 ms 前必被看到在响。
+ */
+export const DRAW_VOICE_RETRY_MS = 500;
+export const DRAW_VOICE_MAX_ASKS = 2;
+
+/** 字框还挂着、语音却没在响、满 `DRAW_VOICE_RETRY_MS` ⇒ 再请求一次（至多一次）*/
+function tickVoiceRetry(a: Active, env: UiScreenEnv): void {
+  const line = a.steps[a.step]?.line ?? null;
+  if (line === null || a.bubbleDown || a.voiceHeard) return;
+  if (voiceBusy()) {
+    a.voiceHeard = true;
+    return;
+  }
+  if (a.voiceAsks === 0 || a.voiceAsks >= DRAW_VOICE_MAX_ASKS) return;
+  if (env.now - a.voiceAt < DRAW_VOICE_RETRY_MS) return;
+  a.voiceAsks += 1;
+  a.voiceAt = env.now;
+  playVoiceCode(line.text);
 }
 
 /**
@@ -1315,6 +1356,7 @@ export const lotteryDrawScreen: UiScreen = {
       return;
     }
     tickFace(a, env);
+    tickVoiceRetry(a, env);
     tickBubble(a, env);
     if (holdDone(a, env)) advance(a, env);
     // 脸与 ANM 是逐帧的 —— 在播就一直续帧
@@ -1332,6 +1374,10 @@ export const lotteryDrawScreen: UiScreen = {
    */
   fastForward(env: UiScreenEnv): boolean {
     if (active === null) return false;
+    // ★ 本台正在念的那一句一并停掉（需求方拍板 2026-09-23）：整屏已经收了，
+    //   字框没了、声音还拖着半句不合适。只在**已上屏**（说过话）时停 ——
+    //   还没上屏就收，最近那一路语音不是本屏的，别去碰。
+    if (active.shown) stopVoice();
     active = null;
     env.log('樂透開獎：跟著行動者收場');
     env.requestRender();

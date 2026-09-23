@@ -63,12 +63,14 @@ import {
   tallyString,
   voiceOf,
   setCeremonySurfaceFactory,
+  DRAW_VOICE_MAX_ASKS,
+  DRAW_VOICE_RETRY_MS,
 } from './lottery-draw-screen.ts';
 import type { DrawSprite } from './lottery-draw-screen.ts';
 import * as mod from './lottery-draw-screen.ts';
 import type { LoadedFlic, Sprite } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
-import { setVoiceBusyProbe, setVoiceSink } from './voice-sink.ts';
+import { setVoiceBusyProbe, setVoiceSink, setVoiceStopper } from './voice-sink.ts';
 
 // ============================================================
 //  素材与常量
@@ -1406,6 +1408,41 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
     expect(lotteryDrawScreen.fastForward!(env)).toBe(false);
   });
 
+  it('★ 收屏时把本台正在念的那一句停掉（需求方拍板 2026-09-23）', () => {
+    resetLotteryDrawScreenState();
+    const [before, after] = winPair();
+    const env = makeEnv(after, FLICS());
+    let stops = 0;
+    setVoiceStopper(() => {
+      stops += 1;
+    });
+    try {
+      lotteryDrawScreen.event!(before, after, env);
+      tickUntilStep(env, 2);
+      expect(lotteryDrawScreen.fastForward!(env)).toBe(true);
+      expect(stops).toBe(1);
+    } finally {
+      setVoiceStopper(null);
+    }
+  });
+
+  it('★ 还没上屏就收 ⇒ 不去停别人的语音（本屏一句都还没说）', () => {
+    resetLotteryDrawScreenState();
+    const [before, after] = losePair();
+    const env = makeEnv(after, FLICS());
+    let stops = 0;
+    setVoiceStopper(() => {
+      stops += 1;
+    });
+    try {
+      lotteryDrawScreen.event!(before, after, env);
+      expect(lotteryDrawScreen.fastForward!(env)).toBe(true);
+      expect(stops).toBe(0);
+    } finally {
+      setVoiceStopper(null);
+    }
+  });
+
   it('★ 还没上屏（分紅屏还占着）也一并收', () => {
     resetLotteryDrawScreenState();
     const [before, after] = losePair();
@@ -1429,7 +1466,14 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
  * `busy` 模拟 `main.ts` 注册的「语音还在响吗」：给出每个语音号的时长（ms），
  * 以最近一次起播为准 —— 与 `0x4544b9` 只问**唯一那一路**缓冲一样。
  */
-function runWithVoices(pair: [GameState, GameState], durations: Record<number, number> = {}): number[] {
+/** `Speaking.mkf` 实测时长（ms）*/
+const REAL_VOICE_MS: Record<number, number> = { 17: 3122, 18: 2511, 19: 1282, 32: 1629, 33: 2780, 34: 1725, 35: 1836, 36: 963 };
+
+function runWithVoices(
+  pair: [GameState, GameState],
+  durations: Record<number, number> = REAL_VOICE_MS,
+  at: number[] = [],
+): number[] {
   resetLotteryDrawScreenState();
   const [before, after] = pair;
   const env = makeEnv(after, FLICS());
@@ -1437,6 +1481,7 @@ function runWithVoices(pair: [GameState, GameState], durations: Record<number, n
   let last: { code: number; at: number } | null = null;
   setVoiceSink((v) => {
     voices.push(v);
+    at.push(env.now);
     last = { code: v, at: env.now };
   });
   setVoiceBusyProbe(() => {
@@ -1463,10 +1508,13 @@ describe('★★ 第十三份試玩回報「乐透开奖的语音重复」：每
     expect(runWithVoices(losePair())).toEqual([17, 18, 33, 34, 35, 36]);
   });
 
-  it('★ 语音按实长挂着（`Speaking.mkf` 实测 ms）也一样各一次 —— 不会在字框里重起', () => {
-    const real = { 17: 3122, 18: 2511, 19: 1282, 32: 1629, 33: 2780, 34: 1725, 35: 1836, 36: 963 };
-    expect(runWithVoices(losePair(), real)).toEqual([17, 18, 33, 34, 35, 36]);
-    expect(runWithVoices(winPair(), real)).toEqual([17, 18, 19, 32, 35, 36]);
+  it('★ 兜底：语音一直没响起来（桌面版 `Speaking.mkf` 还没到货）⇒ 每句**只补一次**、在 +500 ms', () => {
+    const at: number[] = [];
+    const got = runWithVoices(losePair(), {}, at);
+    expect(got).toEqual([17, 17, 18, 18, 33, 33, 34, 34, 35, 35, 36, 36]);
+    for (let i = 0; i < got.length; i += 2) expect(at[i + 1]! - at[i]!).toBe(DRAW_VOICE_RETRY_MS);
+    expect(DRAW_VOICE_RETRY_MS).toBe(500);
+    expect(DRAW_VOICE_MAX_ASKS).toBe(2);
   });
 
   it('★ 有人中那一场：#0017 → #0018 → #0019 → #0032 →（6→8 不说话）→ #0035 → #0036，各一次', () => {
