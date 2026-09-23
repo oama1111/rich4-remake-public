@@ -13,8 +13,18 @@
  *   音色是**音源**，做不到，也不该假装做到。
  *
  * 覆盖范围：格式 0/1、变长量、running status、tempo 变化、
- * note on/off（力度 0 的 note on 当作 note off）、program change。
+ * note on/off（力度 0 的 note on 当作 note off）、program change、
+ * **弯音**（0xE0 + RPN 0 弯音幅度 + CC121 复位，见 `MidiNote.bend`）。
  * 不处理：SMPTE 分辨率、格式 2（原版这 25 个文件都用不到）。
+ *
+ * ★★ 弯音是**数据**（与音高、时值同一类），不是音色 —— 先前整条丢掉，
+ *   于是靠弯音「换和弦」的长音被弹成**一个死和弦**。最典型的是百貨公司 / 樂透那首
+ *   `midi07.mid`（`SCREEN_BGM` id 6）：2 号通道（Synth Strings，program 50）
+ *   从头按住 A 大三和弦 **23.9 秒**（音符 61/64/69），靠 2 号通道上 322 条弯音每两小节在
+ *   0 与 −8192（= −2 半音，缺省幅度）之间来回扫，跟着低音 D ↔ A 换和弦；
+ *   不认弯音 ⇒ 24 秒纹丝不动（第十二份試玩回報「背景音乐卡住了」）。
+ *   全部 25 首里有 16 首带弯音（Rich17 一首就上千条），RPN 0 在
+ *   Rich08/16/17/20/21 里改过幅度（12 → 2 / 2.44 半音）。
  */
 
 /** 一个音符 */
@@ -31,6 +41,22 @@ export interface MidiNote {
   channel: number;
   /** 发声时该通道的 GM 音色号 */
   program: number;
+  /**
+   * 起音那一刻该通道的弯音，**半音**（可为小数、可为负）。
+   * 只有非 0 才写 —— 不带弯音的音符与先前的形状完全一样。
+   */
+  bend?: number;
+  /**
+   * 发声期间该通道的弯音变化：`at` = 相对**起音**的秒数，`semitones` = 从那一刻起的弯音。
+   * 只有真的变过才写。MIDI 弯音本身是阶跃事件，合成端按阶跃排（`setValueAtTime`）。
+   */
+  bends?: MidiBend[];
+}
+
+/** 一次弯音变化（相对起音） */
+export interface MidiBend {
+  at: number;
+  semitones: number;
 }
 
 export interface MidiSong {
@@ -50,6 +76,14 @@ export const DEFAULT_TEMPO_US = 500_000;
 
 /** 打击乐通道 @source GM 规范 */
 export const DRUM_CHANNEL = 9;
+
+/** 弯音幅度缺省 ±2 半音 @source GM1 规范（RPN 0 Pitch Bend Sensitivity 的上电值） */
+export const DEFAULT_BEND_RANGE_SEMITONES = 2;
+
+/** 14 位弯音的中点 @source SMF / MIDI 1.0：0xE0 lsb msb，0x2000 = 不弯 */
+const BEND_CENTER = 0x2000;
+/** RPN 的「未选中」（CC101/CC100 = 127/127）@source MIDI 1.0 RPN null */
+const RPN_NULL = 0x3fff;
 
 const u32 = (d: Uint8Array, at: number): number =>
   ((d[at]! << 24) | (d[at + 1]! << 16) | (d[at + 2]! << 8) | d[at + 3]!) >>> 0;
@@ -182,6 +216,22 @@ export function parseMidi(data: Uint8Array): MidiSong {
   let seconds = 0;
   const secondsPerTick = (): number => tempo / 1_000_000 / ticksPerQuarter;
 
+  // ★ 弯音：每通道当前弯音（半音）、幅度（RPN 0 = 半音 + 音分）、当前选中的 RPN
+  const bendSemis = new Array<number>(16).fill(0);
+  const rangeSemis = new Array<number>(16).fill(DEFAULT_BEND_RANGE_SEMITONES);
+  const rangeCents = new Array<number>(16).fill(0);
+  const rpn = new Array<number>(16).fill(RPN_NULL);
+
+  /** 通道弯音变了：记下来，并给这条通道上**还按着**的音各记一笔 */
+  const setBend = (channel: number, semitones: number, at: number): void => {
+    if (bendSemis[channel] === semitones) return;
+    bendSemis[channel] = semitones;
+    for (const n of sounding.values()) {
+      if (n.channel !== channel) continue;
+      (n.bends ??= []).push({ at: Math.max(0, at - n.time), semitones });
+    }
+  };
+
   const closeNote = (channel: number, pitch: number, endAt: number): void => {
     const key = channel * 128 + pitch;
     const n = sounding.get(key);
@@ -205,6 +255,29 @@ export function parseMidi(data: Uint8Array): MidiSong {
       program[channel] = e.a;
       continue;
     }
+    // ★ 弯音 0xE0：14 位值（lsb = a、msb = b），中点 0x2000；半音 = 偏移 / 8192 × 幅度
+    if (kind === 0xe0) {
+      const raw = ((e.b & 0x7f) << 7) | (e.a & 0x7f);
+      const range = (rangeSemis[channel] ?? DEFAULT_BEND_RANGE_SEMITONES) + (rangeCents[channel] ?? 0) / 100;
+      setBend(channel, ((raw - BEND_CENTER) / BEND_CENTER) * range, seconds);
+      continue;
+    }
+    if (kind === 0xb0) {
+      const cc = e.a;
+      const v = e.b & 0x7f;
+      // RPN 选择：CC101 = MSB、CC100 = LSB；RPN 0/0 = 弯音幅度
+      if (cc === 101) rpn[channel] = (v << 7) | ((rpn[channel] ?? RPN_NULL) & 0x7f);
+      else if (cc === 100) rpn[channel] = ((rpn[channel] ?? RPN_NULL) & 0x3f80) | v;
+      // Data Entry：MSB = 半音、LSB = 音分（只认 RPN 0；别的 RPN/NRPN 与弯音无关）
+      else if (cc === 6 && rpn[channel] === 0) rangeSemis[channel] = v;
+      else if (cc === 38 && rpn[channel] === 0) rangeCents[channel] = v;
+      // CC121 Reset All Controllers：弯音回中、RPN 回「未选中」（幅度不动）@source GM RP-015
+      else if (cc === 121) {
+        rpn[channel] = RPN_NULL;
+        setBend(channel, 0, seconds);
+      }
+      continue;
+    }
     // ★ 力度 0 的 note on 等同 note off —— 大量文件靠它配合 running status 省字节
     if (kind === 0x80 || (kind === 0x90 && e.b === 0)) {
       closeNote(channel, e.a, seconds);
@@ -220,6 +293,8 @@ export function parseMidi(data: Uint8Array): MidiSong {
         channel,
         program: program[channel] ?? 0,
       };
+      const bend = bendSemis[channel] ?? 0;
+      if (bend !== 0) n.bend = bend;
       sounding.set(channel * 128 + e.a, n);
       notes.push(n);
     }

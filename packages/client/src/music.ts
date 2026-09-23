@@ -62,6 +62,11 @@ function freq(note: number): number {
   return 440 * Math.pow(2, (note - 69) / 12);
 }
 
+/** 弯音（半音）→ 频率倍数 */
+export function bendRatio(semitones: number): number {
+  return semitones === 0 ? 1 : Math.pow(2, semitones / 12);
+}
+
 /**
  * 一次最多同时排多少个音。
  *
@@ -279,7 +284,14 @@ export class OscillatorVoice implements MidiVoice {
 
     const osc = this.#ctx.createOscillator();
     osc.type = waveFor(n.program);
-    osc.frequency.value = freq(n.note);
+    const base = freq(n.note);
+    osc.frequency.value = base * bendRatio(n.bend ?? 0);
+    // ★ 弯音（`MidiNote.bend` / `bends`，解析见 `midi.ts` 文件头）：阶跃排到频率上。
+    //   没有弯音的音符一条都不多排（形状与先前一样）。
+    if (n.bend !== undefined || n.bends !== undefined) {
+      osc.frequency.setValueAtTime(base * bendRatio(n.bend ?? 0), at);
+      for (const b of n.bends ?? []) osc.frequency.setValueAtTime(base * bendRatio(b.semitones), at + b.at);
+    }
 
     const gain = this.#ctx.createGain();
     // 力度 0..127 → 音量；再按**当前同时在响的音数**收一收，别几十路叠爆
