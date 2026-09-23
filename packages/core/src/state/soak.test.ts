@@ -67,12 +67,48 @@ function soak(seed: number, maxTurns: number, mapPath: string = MAP): SoakResult
 }
 
 /**
- * 同样跑一局，但每回合把存款按回合前的值还原 —— 等于关掉银行月息。
+ * 钱的总账：玩家（现金 + 存款 + 持股成本 − 贷款）+ 公库 + **企業帳户**（`+0x28`）。
  *
- * 用来把「钱变多」这件事的来源钉死：关掉唯一那台印钞机之后，
- * 总额必须只减不增。
+ * ★ 企業帳户必须算进来：保險理賠是 `pay_money(100 + 設施號, 玩家, 金額, 1)`
+ *   （`0x0044bad8`）从企業帳户付的，企業帳户可以被付成负数 —— 只数玩家那一侧就会把
+ *   这笔**转账**看成印钞（E-42）。
  */
-function soakWithoutInterest(seed: number, maxTurns: number): GameState {
+function ledger(g: GameState): number {
+  return (
+    g.players.reduce((t, p) => t + p.cash + p.moneyInBank + holdingsCost(g, p.index) - p.loan, 0) +
+    g.pool +
+    g.companyFunds.reduce((t, f) => t + f, 0)
+  );
+}
+
+/** 命運里用 `add_money`（`0x41d3f4`，凭空入账、进现金）给当前玩家发钱的那几张 */
+const FORTUNE_ADD_MONEY = new Set([
+  0, //  強制拆除：level × house_price 賠款 `0x0044bf2f`
+  1, //  強制徵收：land_price 賠款 `0x0044c0c6`
+  20, 21, 22, 25, 27, 28, 29, 31, // 撿錢 / 遺產 / 發票 / 領保險金：共用尾段 `0x0044d30f`
+]);
+/** 新聞 8/9/10 的獎勵 / 補助：`0x00449a5c call 0x41d3f4(受獎人, 金額, 1)` */
+const NEWS_AWARD = new Set([8, 9, 10]);
+
+/**
+ * 同样跑一局，但把原版的**每一台印钞机**都记进账：
+ *
+ * | 来源 | 记法 | @source |
+ * |---|---|---|
+ * | 银行月息（无贷款者存款 ×1.1）| 每次 `endTurn` 把存款按回合前的值还原（整台关掉）| `rules/monthly.ts` 的 `fmul qword [0x464e88]` |
+ * | 股市已实现盈亏（賣股）| 存款增量 − 成本减少量 | 賣出價由行情给出 `0x428e23` |
+ * | 命運 9 變賣所有股票 | 同上（现金 + 存款）| `0x0044c9ec call 0x428e23` |
+ * | 命運 8 違約交割 | 公库增量 − 成本减少量（按**市值**进公库）| `0x00428ea7 add [0x499080], eax` |
+ * | 命運 0/1/20–22/25/27–29/31 | 当前玩家现金增量 | `add_money` `0x0044bf2f` / `0x0044c0c6` / `0x0044d30f` |
+ * | 新聞 8/9/10 獎勵 | 各人现金增量 | `0x00449a5c call 0x41d3f4` |
+ * | 新聞 23 儲金紅利（存款 10%）| 各人存款增量 | `0x0044af44 fild [bank] / fmul 0.1` |
+ * | 新聞 31 海外投資獲利 | 企業帳户增量 | `add dword [ebx+0x28], 0x4e20`（`0x44b419` 起）|
+ * | 大財神附身 | 转盘金额 | `0x0040ecf1` → `0x41d3f4(玩家, 金額, 1)` |
+ *
+ * 其余一切（过路费、保險理賠、分紅、罚款进公库、买地盖房……）都是**转账或销毁**，
+ * 故扣掉上面这些之后总账只许减不许增。
+ */
+function soakLedger(seed: number, maxTurns: number): { state: GameState; printed: number; initial: number } {
   const map = loadMap();
   // ★ 2026-09-16：这里原来只传了 nodes/lands —— 于是**設施与企业那两条落点路
   //   从来没被这场长跑考到**（地圖 7 是纯設施图，120 回合一个設施都没卖出去，
@@ -85,29 +121,46 @@ function soakWithoutInterest(seed: number, maxTurns: number): GameState {
     commercials: map.commercials,
   };
   let state = newGame({ map, players: players(), seed });
+  const initial = ledger(state);
+  let printed = 0;
 
   for (let steps = 0; steps < 200_000; steps++) {
     const a = decideAction({ state, map });
     if (a === null) break;
     const before = state.players.map((p) => p.moneyInBank);
     const costBefore = state.players.map((p) => holdingsCost(state, p.index));
-    const next = reduce(state, a, topo);
+    let next = reduce(state, a, topo);
     if (next === state) throw new Error(`卡死于 ${state.phase} / ${a.type}`);
+    const i = state.currentPlayer;
+    const cost = (g: GameState, k: number) => holdingsCost(g, k);
+    const d = (f: (g: GameState, k: number) => number, k: number) => f(next, k) - f(state, k);
+    const cash = (g: GameState, k: number) => g.players[k]!.cash;
+    const bank = (g: GameState, k: number) => g.players[k]!.moneyInBank;
     if (a.type === 'endTurn') {
-      state = { ...next, players: next.players.map((p, i) => ({ ...p, moneyInBank: before[i]! })) };
+      // 月息：整台关掉（存款按回合前的值还原）
+      next = { ...next, players: next.players.map((p, k) => ({ ...p, moneyInBank: before[k]! })) };
     } else if (a.type === 'sellStock') {
-      // ★ 第二台「印钞机」是股市本身：賣出價高于成本的差额（已实现盈亏）由行情凭空给出，
-      //   与月息同理不算「玩家之间搬钱」。AI 接上賣股（T-016）后要把它也冻住：
-      //   把 存款增量 − 成本减少量 从存款里抠回去（亏着卖则补回）。
-      const i = state.currentPlayer;
-      const realized = (next.players[i]!.moneyInBank - before[i]!) - (costBefore[i]! - holdingsCost(next, i));
-      state = { ...next, players: next.players.map((p, k) => (k === i ? { ...p, moneyInBank: p.moneyInBank - realized } : p)) };
-    } else {
-      state = next;
+      printed += d(bank, i) - (costBefore[i]! - cost(next, i));
     }
+    const ev = next.lastEvent;
+    if (ev !== null && ev !== state.lastEvent) {
+      const everyone = next.players.map((_p, k) => k);
+      if (ev.kind === 'fortune' && FORTUNE_ADD_MONEY.has(ev.id)) printed += Math.max(0, d(cash, i));
+      if (ev.kind === 'fortune' && ev.id === 9) printed += d(cash, i) + d(bank, i) - (costBefore[i]! - cost(next, i));
+      if (ev.kind === 'fortune' && ev.id === 8) printed += next.pool - state.pool - (costBefore[i]! - cost(next, i));
+      if (ev.kind === 'news' && NEWS_AWARD.has(ev.id)) printed += everyone.reduce((t, k) => t + Math.max(0, d(cash, k)), 0);
+      if (ev.kind === 'news' && ev.id === 23) printed += everyone.reduce((t, k) => t + Math.max(0, d(bank, k)), 0);
+      if (ev.kind === 'news' && ev.id === 31) {
+        printed += next.companyFunds.reduce((t, f, k) => t + Math.max(0, f - (state.companyFunds[k] ?? 0)), 0);
+      }
+    }
+    const god = next.lastGodPower ?? null;
+    // 大財神（种类 2）：`0x0040ecf1` 那一支 `add_money`；小財神（1）是对手付给他 —— 转账
+    if (god !== null && god !== (state.lastGodPower ?? null) && god.type === 2) printed += god.amount;
+    state = next;
     if (state.turnCount >= maxTurns) break;
   }
-  return state;
+  return { state, printed, initial };
 }
 
 describe('★ 长局冒烟', () => {
@@ -145,7 +198,7 @@ describe('★ 长局冒烟', () => {
     expect(chairs, '300 回合后没有任何企业有董事长 —— 企业落点这条路可能没接上').toBeGreaterThan(0);
   });
 
-  run('★ 钱确实会凭空出现 —— 唯一的印钞机是银行月息', () => {
+  run('★ 钱确实会凭空出现 —— 印钞机只有原版那几台（月息、進帳类事件、大財神…）', () => {
     // ⚠️ 这条断言先前写反了（要求「净值 + 公库 ≤ 初始总额」）。
     //   那是接入日期推进之前的模型：那时没有月结，钱确实只在玩家之间搬。
     //   现在每跨一个月，无贷款者的存款 ×1.1（rules/monthly.ts，
@@ -167,20 +220,14 @@ describe('★ 长局冒烟', () => {
     const initial = 300_000 * 4;
     expect(netWorth + r.state.pool).toBeGreaterThan(initial);
 
-    // 关掉月息这唯一一台印钞机，总额就该只减不增（钱变成了地产、进了公库）
-    //
-    // ⚠️ **必须减掉贷款**。银行放贷会把钱凭空加进存款
-    //   （`borrow`：`money_in_bank += amount; loan += amount`），
-    //   那不是印钞，是**负债**——净值没变。AI 接上 `loanRatio`（角色表 f24）
-    //   之后它们真的会去借，不减这一项这条断言当场就假。
-    const noInterest = soakWithoutInterest(2024, 400);
-    // ⚠️ 这里按**成本**而不是市值算持仓：买入是把钱 1:1 换成成本，成本守恒；
-    //   市值会随行情涨跌，那是账面盈亏，不是新印出来的钱。
-    const frozen = noInterest.players.reduce(
-      (t, p) => t + p.cash + p.moneyInBank + holdingsCost(noInterest, p.index) - p.loan,
-      0,
-    );
-    expect(frozen + noInterest.pool).toBeLessThanOrEqual(initial);
+    // ★★ 2026-09-23（E-42，协调方裁定）：先前这里写「关掉月息 ⇒ 只减不增」，
+    //   但原版还有别的印钞机（命運進帳、新聞獎勵、儲金紅利、大財神…），那条断言只是靠种子过关
+    //   （基线 seed 1 就不成立）。现在把每一台都按 exe 记账（见 `soakLedger` 的表），
+    //   扣掉之后总账必须只减不增 —— 任何没登记的「凭空来钱」都会让它红。
+    for (const seed of [2024, 1, 7]) {
+      const led = soakLedger(seed, 400);
+      expect(ledger(led.state) - led.printed, `seed ${seed}`).toBeLessThanOrEqual(led.initial);
+    }
   });
 
   run('★ 同种子可完整复现', () => {
