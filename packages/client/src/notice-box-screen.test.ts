@@ -33,6 +33,7 @@ import {
   noticeUi,
   noticeWaitingForSpeech,
   resetNoticeBoxScreen,
+  setNoticeCardPopup,
   setNoticeOverlayGate,
   setNoticeSpeechGate,
   setNoticeStartGate,
@@ -779,5 +780,45 @@ describe('★★ 第十四份：新接的几扇框', () => {
     expect(noticeBoxScreenState().playing).toBe(true);
     // 计时从起播那一刻算，不是入队那一刻（否则一出来就过期）
     expect(noticeBoxScreenState().playback).not.toBeNull();
+  });
+});
+
+describe('★★ 第十四份：亮牌那一扇（`NoticeHint.card`）交给事件提示框，收了才接下一扇', () => {
+  afterEach(() => {
+    setNoticeCardPopup(null);
+    resetNoticeBoxScreen();
+  });
+
+  it('收費框 → 亮牌（起播交出去、等它收）→ 下一扇', () => {
+    const started: [number, string][] = [];
+    let popup = false;
+    setNoticeCardPopup(
+      (cardId, text) => {
+        started.push([cardId, text]);
+        popup = true;
+      },
+      () => popup,
+    );
+    const before = stateWith([]);
+    const after = stateWith([
+      { ...ONE_OWNER },
+      { key: 'card.use' as const, args: ['免費卡'], card: 20 },
+      { key: 'rent.reaperPays' as const, args: ['X', '過路費'] },
+    ]);
+    noticeBoxScreen.event!(before, after, fakeEnv(after, 0));
+    expect(started).toEqual([]);
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS)); // 收費框到点 → 亮牌起
+    expect(started).toEqual([[20, '使用免費卡']]);
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS * 3));
+    expect(noticeKeyShowing('rent.reaperPays')).toBe(true); // 还排着：亮牌没收
+    expect(noticeBoxScreenState().playback?.text).toBe('使用免費卡');
+    popup = false;
+    noticeBoxScreen.tick!(fakeEnv(after, NOTICE_HOLD_MS * 3 + 1));
+    expect(noticeBoxScreenState().playback?.text).toContain('死神顯靈');
+  });
+
+  it('文案：嫁禍卡亮牌 / 电脑嫁禍之后那一扇', () => {
+    expect(noticeText({ key: 'card.scapegoatOn', args: ['沙隆巴斯'] })).toBe('沙隆巴斯\n\n嫁禍卡生效！');
+    expect(noticeText({ key: 'card.scapegoatTo', args: ['忍太郎'] })).toBe('嫁禍給忍太郎！');
   });
 });

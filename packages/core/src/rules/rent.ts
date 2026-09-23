@@ -134,6 +134,11 @@ export function collectRent(
   land: LandInfo,
   priceIndex: number,
   companies: readonly Company[] = [],
+  /**
+   * ★ 第十四份：已经调好的实付总额（神明调整在当前玩家身上做过一次，`0x00419d70`）——
+   *   嫁禍 / 死神换了付款人之后付的仍是那一笔 `ebp`，不按新付款人的神明再调。
+   */
+  settledTotal?: number,
 ): RentResult {
   const ownerIdx = land.owner - 1;
   const owner = players[ownerIdx];
@@ -178,7 +183,10 @@ export function collectRent(
   // ★ 神明在**付款之前**调整金额（VA 0x0041d709），
   //   财神减免、穷神加成、福神不影响。
   const payerPlayer = players[payer];
-  const god = adjustTollByGod(baseTotal, payerPlayer?.godInfo ?? 0);
+  const god =
+    settledTotal === undefined
+      ? adjustTollByGod(baseTotal, payerPlayer?.godInfo ?? 0)
+      : { toll: settledTotal, changed: false };
   const total = god.toll;
   if (total === 0) {
     // ★ 神明把金额抹成 0：钱不收，但「算进去的每一块」照给 —— 原版标地在调整之前

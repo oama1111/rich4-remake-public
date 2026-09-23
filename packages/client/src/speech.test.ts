@@ -2096,7 +2096,7 @@ describe('★★ 第十四份：企業收費被嫁禍 / 死神顶替 ⇒ 付款�
 describe('★★ 第十四份：免費卡之后地主回一句 / 出國那一句', () => {
   it('★ `answeredBy` ⇒ 出牌者那句（卡 20）之后地主说槽 79（表情 1，语音 426+52×角色+48）', () => {
     const before = makeGameState({ players: [makePlayer({ index: 0, character: 0 }), makePlayer({ index: 1, character: 3 })] });
-    const after: GameState = { ...before, lastCardPlay: { player: 0, cardId: 20, afterNotices: true, answeredBy: 1 } };
+    const after: GameState = { ...before, lastCardPlay: { player: 0, cardId: 20, popup: false, answeredBy: 1 } };
     const bubbles = cardPlaySpeech(before, after);
     expect(bubbles.map((b) => [b.player, b.lines.join('')])).toEqual([
       [0, '有錢也不給你！'],
@@ -2105,7 +2105,7 @@ describe('★★ 第十四份：免費卡之后地主回一句 / 出國那一句
     expect(bubbles[1]!.expression).toBe(1);
     expect(bubbles[1]!.voice).toBe(426 + 52 * 3 + 48);
     // 企業那一路没有地主 ⇒ 只有出牌者那句
-    expect(cardPlaySpeech(before, { ...before, lastCardPlay: { player: 0, cardId: 20, afterNotices: true } })).toHaveLength(1);
+    expect(cardPlaySpeech(before, { ...before, lastCardPlay: { player: 0, cardId: 20, popup: false } })).toHaveLength(1);
   });
 
   it('★ `lastDisappearSay` ⇒ 当事人那一句；同一个引用不再说；次序 afterStage', () => {
@@ -2115,5 +2115,19 @@ describe('★★ 第十四份：免費卡之后地主回一句 / 出國那一句
     expect(detectDisappearSay(b, a)).toEqual([{ player: 2, event: 5 }]);
     expect(detectDisappearSay(a, { ...a })).toEqual([]);
     expect(DETECTORS.find((d) => d.name === 'disappearSay')?.order).toBe('afterStage');
+  });
+});
+
+describe('★★ 第十四份：嫁禍卡之后替死鬼回一句（槽 78，表情 2）', () => {
+  it('出牌者（卡 19 那句）→ 替死鬼', () => {
+    const before = makeGameState({ players: [makePlayer({ index: 0, character: 0 }), makePlayer({ index: 1, character: 5 })] });
+    const after: GameState = { ...before, lastCardPlay: { player: 0, cardId: 19, popup: false, answeredBy: 1 } };
+    const bubbles = cardPlaySpeech(before, after);
+    expect(bubbles.map((b) => [b.player, b.lines.join('')])).toEqual([
+      [0, '怕你不成！！！'],
+      [1, '真是無妄之災！'],
+    ]);
+    expect(bubbles[1]!.expression).toBe(2);
+    expect(bubbles[1]!.voice).toBe(426 + 52 * 5 + 47);
   });
 });

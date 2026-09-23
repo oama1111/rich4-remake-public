@@ -115,11 +115,10 @@ import {
 } from './assets.ts';
 import { loadAllArchives, type LoadProgress } from './asset-loader.ts';
 import {
-  cardUseDeferred,
   cardUsePopupActive,
   dropOwnCardUse,
   eventBoxScreen,
-  tickDeferredCardUse,
+  startCardRevealPopup,
   onEventBoxArtReady,
   setEventBoxArchives,
   startOwnCardUsePopup,
@@ -349,10 +348,10 @@ import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './curso
 import { shouldResumeDriver } from './driver-resume.ts';
 import { tollFlashLevel } from './toll-flash-fx.ts';
 import {
-  noticeBoxScreen,
   noticeHoldsFilms,
   noticeKeyShowing,
   noticeWaitingForSpeech,
+  setNoticeCardPopup,
   setNoticeOverlayGate,
   setNoticeSpeechGate,
   setNoticeStartGate,
@@ -564,6 +563,7 @@ import {
 import { SCREENS } from './screens.ts';
 // ★ 只给「挪指针」那条判据用（`cursor-warp.ts` 的另外三处固定落点）
 import { facilityPickerScreen } from './facility-picker.ts';
+import { setScapegoatPickerGate } from './scapegoat-picker.ts';
 import { researchScreen } from './research-screen.ts';
 // ★ 只给 dev 钩子用（`__rich4.auctionView()`）：竞价轮转发生在 canvas 屏里，
 //   自动化看不见就没法验收「电脑跟不跟价、落槌演没演」。
@@ -1749,8 +1749,6 @@ function blockingPresentation(): boolean {
   // ★ 第十四份：訊息框屏只是**排着一扇等台词说完的框**（保險理賠那一扇）时不算台上在演 ——
   //   否则押在演出之后的那一句（付款 / 入獄台词，`afterStage`）与这扇框互相等。
   if (overlay !== null && overlay.id === 'notice' && noticeWaitingForSpeech()) return false;
-  // ★ 第十四份：押着等收費框收掉的免費卡亮牌也算台上在演（台词等它、回合驱动等它）
-  if (cardUseDeferred()) return true;
   return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
 }
 
@@ -5883,6 +5881,14 @@ setNoticeStartGate(
 setNoticeSpeechGate(() => speechQueue.length > 0 || deferredSpeech !== null);
 // ★ 第十四份：命運 / 新聞的施加阶段（加持框、理賠框…）排在事件提示框收掉之后
 setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
+// ★ 第十四份（D-008 收口）：嫁禍卡的选人窗 —— 与对话框同一道闸（`currentDialog`）：
+//   联机只让当前座位答、电脑 / 託管不开（它们由 `decidePending` / reducer 答）
+setScapegoatPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
+// ★ 第十四份：訊息框队列里的亮牌那一扇（收費那一段的被动卡）交给事件提示框播
+setNoticeCardPopup(
+  (cardId, text) => startCardRevealPopup(cardId, text, uiEnv()),
+  () => cardUsePopupActive(),
+);
 
 /**
  * 正在排队的角色台词（T-052 的屏幕那一半）。
@@ -7040,8 +7046,6 @@ function requestRender(): void {
     if (screen === 'game') tickPendingCardRoute();
     // ★ 第十四份 #4：道具台词说完才开选择界面
     if (screen === 'game') tickPendingToolPicker();
-    // ★ 第十四份：免費卡亮牌等收費框收掉再起
-    if (screen === 'game') tickDeferredCardUse(uiEnv(), noticeBoxScreen.active(uiEnv()));
     // ★ 第十四份：飛機 / 飛碟那一段等台词与理賠框（`0x40d375` 里台词 → 理賠 → 影片）
     if (screen === 'game') tickPendingDisappearFx();
     if (screen === 'game') tickObjectFlight(performance.now());

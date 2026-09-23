@@ -69,8 +69,8 @@ import {
   newsTitle,
   newsView,
   resetEventBoxScreen,
-  cardUseDeferred,
-  tickDeferredCardUse,
+  startCardRevealPopup,
+  cardUsePopupActive,
   type EventBoxItem,
   type EventBoxPlan,
 } from './event-box-screen.ts';
@@ -1358,20 +1358,23 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
   });
 });
 
-describe('★★ 第十四份：收費那一段里的免費卡亮牌排在收費框之后（`afterNotices`）', () => {
-  it('先押着（不起播、但算「押着」），訊息框收了才起', () => {
+describe('★★ 第十四份：收費那一段的被动卡亮牌挂在訊息框队列上', () => {
+  it('`lastCardPlay.popup === false` ⇒ 本屏不亮（已经排在訊息框里）', () => {
     resetEventBoxScreen();
     const before = stateOf([player(0, [])], null);
-    const after: GameState = { ...before, lastCardPlay: { player: 0, cardId: 20, afterNotices: true, answeredBy: 1 } };
+    const after: GameState = { ...before, lastCardPlay: { player: 0, cardId: 20, popup: false, answeredBy: 1 } };
     eventBoxScreen.event!(before, after, fakeEnv(after));
     expect(eventBoxScreenState().playing).toBe(false);
-    expect(cardUseDeferred()).toBe(true);
-    tickDeferredCardUse(fakeEnv(after, 10), true); // 框还在
-    expect(eventBoxScreenState().playing).toBe(false);
-    tickDeferredCardUse(fakeEnv(after, 1600), false); // 框收了
-    expect(eventBoxScreenState().playback?.plan.kind).toBe('card');
-    expect(eventBoxScreenState().playback?.plan.id).toBe(20);
-    expect(cardUseDeferred()).toBe(false);
+  });
+
+  it('訊息框那边轮到亮牌那一扇 ⇒ `startCardRevealPopup` 起播卡面 + 那一句', () => {
+    resetEventBoxScreen();
+    const s0 = stateOf([player(0, [])], null);
+    startCardRevealPopup(19, '沙隆巴斯\n\n嫁禍卡生效！', fakeEnv(s0, 5));
+    const pb = eventBoxScreenState().playback!;
+    expect(pb.plan.kind).toBe('card');
+    expect(pb.plan.id).toBe(19);
+    expect(cardUsePopupActive()).toBe(true);
     resetEventBoxScreen();
   });
 });

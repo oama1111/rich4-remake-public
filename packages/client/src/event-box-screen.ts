@@ -1063,34 +1063,17 @@ let ownCardUse: { player: number; cardId: number; turnCount: number } | null = n
 export function resetEventBoxScreen(): void {
   playback = null;
   ownCardUse = null;
-  deferredCardUse = null;
 }
 
 /**
- * ★ 第十四份：收費那一段里用掉的免費卡 —— 亮牌排在同一拍的收費訊息框**之后**
- *   （`CardPlayHint.afterNotices`；原版租金框 `0x00419d5a` / 企業框 `0x0041aeaa` 在前，
- *   `0x00444b25 call 0x441f73` 亮牌在后）。先记着，訊息框收了（`tickDeferredCardUse`）再起。
+ * ★ 第十四份：訊息框队列里的**亮牌**那一扇（`NoticeHint.card`）由这里起播 —— 与用卡那一次同一扇
+ *   （`fcn_00441f73(卡号, 文字)`：卡面 + 那一句 + 音效），文字由訊息框那边按格式串排好交进来。
+ *   收費那一段的被动卡要排在收費框之后、死神框之前，所以挂在訊息框的队列上（见 `notice-box-screen.ts`）。
  */
-let deferredCardUse: { cardId: number; player: number } | null = null;
-
-/** 有没有一张押着等訊息框收掉的亮牌（宿主据此把台上算成「还在演」） */
-export function cardUseDeferred(): boolean {
-  return deferredCardUse !== null;
-}
-
-/** 每帧：押着的那张亮牌，等訊息框那一屏收了就起播 */
-export function tickDeferredCardUse(env: UiScreenEnv, noticesBusy: boolean): void {
-  const d = deferredCardUse;
-  if (d === null) return;
-  if (noticesBusy || playback !== null) {
-    // ★ 自己续帧：框收掉那一拍之后再没人叫醒我们（台词也押着等这一张，否则死等）
-    env.requestRender();
-    return;
-  }
-  deferredCardUse = null;
-  playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(d.cardId)), env.now);
+export function startCardRevealPopup(cardId: number, text: string, env: UiScreenEnv): void {
+  playback = eventBoxPlaybackStart(eventBoxPlan({ ...cardUseView(cardId), cardName: text }), env.now);
   env.playEffect(CARD_REVEAL_SOUND);
-  env.log(`事件提示框：使用卡片 #${d.cardId}（P${d.player + 1}，收費框之后）`);
+  env.log(`事件提示框：亮牌 #${cardId}（${text.replace(/\n/g, ' ')}）`);
   env.requestRender();
 }
 
@@ -1338,11 +1321,8 @@ export const eventBoxScreen: UiScreen = {
       ) {
         return;
       }
-      if (play.afterNotices === true) {
-        deferredCardUse = { cardId: play.cardId, player: play.player };
-        env.requestRender();
-        return;
-      }
+      // ★ 第十四份：收費那一段的被动卡 —— 亮牌已经挂在訊息框队列里（`NoticeHint.card`），这里不亮第二遍
+      if (play.popup === false) return;
       playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(play.cardId)), env.now);
       env.playEffect(CARD_REVEAL_SOUND);
       env.log(`事件提示框：使用卡片 #${play.cardId}（P${play.player + 1}）`);

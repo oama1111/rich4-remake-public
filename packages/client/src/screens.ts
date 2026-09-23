@@ -33,6 +33,7 @@ import { helpScreen } from './help-screen.ts';
 import { bigMapScreen } from './big-map-screen.ts';
 import { sharesScreen } from './shares-screen.ts';
 import { facilityPickerScreen } from './facility-picker.ts';
+import { scapegoatPickerScreen } from './scapegoat-picker.ts';
 import { stealPickerScreen } from './steal-picker.ts';
 
 export const SCREENS: readonly UiScreen[] = [
@@ -74,6 +75,9 @@ export const SCREENS: readonly UiScreen[] = [
   //   由主机的「目标拾取」拾到人之后主动 `openStealPicker()` 打开。
   //   ★ 与施設类别窗同一类：`windowed: true`、`active()` 只在开窗期间为真。
   stealPickerScreen,
+  // ★ 第十四份（D-008 收口）：嫁禍卡的选人窗（真人、候选两位以上）—— 排在訊息框之后：
+  //   原版先亮牌「嫁禍卡生效！」（`0x00444889`）再开这扇窗（`0x004448a1`）。
+  scapegoatPickerScreen,
   // 待决交互类
   boardScreen,
   auctionScreen,

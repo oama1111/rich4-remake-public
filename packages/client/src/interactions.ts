@@ -346,6 +346,34 @@ export function interactionUi(
         choices: [{ label: BUTTON.cancel.text, action: { type: 'declineDecision' } }],
       };
 
+    // ★ 第十四份（D-008 收口）：收費那一段真人的被动卡 —— 原版 YES/NO 框（`fcn_00440ba8`），
+    //   问句逐字取 exe（不补別的字）。NO / 右键 = `declineDecision`（core 当「不用」接着收費）。
+    case 'freeCard':
+      // @source 0x00444adf push 0x465388 / 0x00444af4 call 0x440ba8
+      return {
+        title: '',
+        detail: formatOriginal(PROMPT.freeCard.text, pending.name),
+        choices: [
+          { label: BUTTON.ok.text, action: { type: 'answerFreeCard', use: true } },
+          { label: BUTTON.cancel.text, action: { type: 'answerFreeCard', use: false } },
+        ],
+      };
+
+    case 'scapegoat': {
+      // 恰好一位候选 ⇒ YES/NO「是否嫁禍給%s？」（@source 0x00444834 push 0x46534e / 0x00444849 call 0x440ba8）；
+      // 两位以上 ⇒ 选人窗（`scapegoat-picker.ts`，`0x004448a1 call 0x440e1a`），不走这扇框
+      if (pending.candidates.length !== 1) return null;
+      const target = pending.candidates[0]!;
+      return {
+        title: '',
+        detail: formatOriginal(PROMPT.frameUp.text, pending.names[0] ?? ''),
+        choices: [
+          { label: BUTTON.ok.text, action: { type: 'answerScapegoat', target } },
+          { label: BUTTON.cancel.text, action: { type: 'answerScapegoat', target: -1 } },
+        ],
+      };
+    }
+
     case 'unimplemented':
       return {
         title: pending.place,

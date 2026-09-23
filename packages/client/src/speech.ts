@@ -75,7 +75,7 @@ import {
   SPEECH_EVENTS_PER_CHARACTER,
   speechIndex,
 } from '@rich4/data';
-import { cardLineBubbleOf, freeCardAnswerBubbleOf, speechBubbleOf, toolLineBubbleOf, type SpeechBubble } from './speech-bubble.ts';
+import { cardAnswerBubbleOf, cardLineBubbleOf, speechBubbleOf, toolLineBubbleOf, type SpeechBubble } from './speech-bubble.ts';
 import type { SpeechOrder } from './stage-gate.ts';
 
 // ============================================================
@@ -1754,10 +1754,10 @@ export function cardPlaySpeech(before: GameState, after: GameState): SpeechBubbl
   if (b.disappearing !== 0 || b.sleepWalking !== 0 || b.sleeping !== 0) return [];
   const bubble = cardLineBubbleOf(play.player, p.character, characterName(p.character), play.cardId);
   const out = bubble === null ? [] : [bubble];
-  // ★ 第十四份：免費卡之后地主回一句（`0x00444b98`，紧跟出牌者那句）
+  // ★ 第十四份：被动卡之后回一句（免費卡 → 地主 `0x00444b98`；嫁禍卡 → 替死鬼 `0x00444a4b`），紧跟出牌者那句
   const ans = play.answeredBy === undefined ? undefined : after.players[play.answeredBy];
   if (ans !== undefined) {
-    const a = freeCardAnswerBubbleOf(ans.index, ans.character, characterName(ans.character));
+    const a = cardAnswerBubbleOf(ans.index, ans.character, characterName(ans.character), play.cardId);
     if (a !== null) out.push(a);
   }
   return out;

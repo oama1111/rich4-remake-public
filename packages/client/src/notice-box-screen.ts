@@ -66,7 +66,20 @@
  * 与原版「每扇各自一次可跳过的等待」一致）。
  */
 
-import { BANK, BLESSING, CONFINEMENT, FACILITY_TOLL, GOD_MANIFEST, INSURANCE, MAGIC_HOUSE_TEXT, MESSAGE_BOX, RENT, SHOP, formatOriginal } from '@rich4/data';
+import {
+  BANK,
+  BLESSING,
+  CONFINEMENT,
+  FACILITY_TOLL,
+  GOD_MANIFEST,
+  INSURANCE,
+  MAGIC_HOUSE_TEXT,
+  MESSAGE_BOX,
+  PASSIVE_CARD_TEXT,
+  RENT,
+  SHOP,
+  formatOriginal,
+} from '@rich4/data';
 import type { GameState, NoticeHint, NoticeKey } from '@rich4/core';
 import { drawDialog } from './dialog.ts';
 import type { InteractionUi } from './interactions.ts';
@@ -161,6 +174,10 @@ export const NOTICE_TEXT = {
   'god.tollDouble': RENT.doubleBigPoorGod.text,
   // ★ 第十四份：保險理賠（`fcn_0044ba63`，2000 ms）
   'insurance.payout': INSURANCE.payout.text,
+  // ★ 第十四份：收費那一段的被动卡（亮牌两句带 `card`，由事件提示框画；「嫁禍給%s！」是普通框）
+  'card.use': PASSIVE_CARD_TEXT.use.text,
+  'card.scapegoatOn': PASSIVE_CARD_TEXT.scapegoatOn.text,
+  'card.scapegoatTo': PASSIVE_CARD_TEXT.scapegoatTo.text,
 } as const satisfies Record<NoticeKey, string>;
 
 /** 一条 `{ key, args }` 提示 → 屏上那一句（`%s` / `%d` 全在 `args` 里） */
@@ -210,6 +227,8 @@ interface QueuedNotice {
   afterMs: number;
   /** 原版排在同一拍的**角色台词之后**（见 `noticeAfterSpeech`）*/
   afterSpeech: boolean;
+  /** ★ 第十四份：这一扇是亮牌（`NoticeHint.card`）—— 交给事件提示框播 */
+  card?: number;
 }
 
 /**
@@ -304,9 +323,22 @@ export function setNoticeOverlayGate(f: (() => boolean) | null): void {
   overlayGate = f;
 }
 
+/**
+ * ★ 第十四份：亮牌那一扇的出口 —— `start(卡号, 文字)` 起播、`active()` 问它收了没有。
+ *   不给（单测）时亮牌那一扇**按普通框**计时（1500 ms，与原版 `fcn_00441f73` 同长）。
+ */
+let cardPopup: { start: (cardId: number, text: string) => void; active: () => boolean } | null = null;
+/** 正在等事件提示框播完的那一张亮牌 */
+let playingCard = false;
+
+export function setNoticeCardPopup(start: ((cardId: number, text: string) => void) | null, active?: () => boolean): void {
+  cardPopup = start === null || active === undefined ? null : { start, active };
+}
+
 /** 调试 / 单测用：把整屏关掉（连队列一起清空） */
 export function resetNoticeBoxScreen(): void {
   playback = null;
+  playingCard = false;
   pending = [];
   playingBeforeFilms = false;
   playingAfterMs = 0;
@@ -362,6 +394,11 @@ function startNext(env: UiScreenEnv): void {
   playingKey = item.key;
   playback = noticePlaybackStart(item.text, env.now, item.holdMs);
   env.log(`付费訊息框：${item.key}`);
+  // ★ 第十四份：亮牌那一扇交给事件提示框（它排在本屏之前，接管画面与点击）；本屏只等它收
+  if (item.card !== undefined && cardPopup !== null) {
+    playingCard = true;
+    cardPopup.start(item.card, item.text);
+  }
 }
 
 /**
@@ -426,6 +463,18 @@ export const noticeBoxScreen: UiScreen = {
       return;
     }
     const p = playback;
+    // ★ 第十四份：亮牌那一扇 —— 事件提示框收了才算这一扇完（点掉 / 到点都在那边）
+    if (p !== null && playingCard) {
+      if (cardPopup?.active() === true) {
+        env.requestRender();
+        return;
+      }
+      playingCard = false;
+      playback = null;
+      finishBox(env);
+      env.requestRender();
+      return;
+    }
     if (p === null) {
       // ★ W-69：押着等闸的那几扇 —— 闸一开就在这一拍起播，并自己续帧
       if (pending.length > 0) {
@@ -496,6 +545,7 @@ export const noticeBoxScreen: UiScreen = {
         beforeFilms: n.beforeFilms === true,
         afterMs: n.afterMs ?? 0,
         afterSpeech: noticeAfterSpeech(n.key),
+        ...(n.card === undefined ? {} : { card: n.card }),
       });
     }
     // ★ 第十三份試玩回報 #2：排在台词之后的那几扇**不在这一拍起播** —— 同一条 action 的台词

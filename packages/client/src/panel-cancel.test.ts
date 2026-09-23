@@ -251,9 +251,11 @@ describe('★ 登记的整屏：声明了右键的那几屏', () => {
     // ★ 魔法屋女巫窗口（第十二份回报那一轮接上）：窗口过程 `fcn_004325c2` 的
     //   `cmp eax, 0x205 / jbe loc_00432e64` —— 开场白那几拍（状态 < 3）右键 = 跳过，
     //   见 `magic-screen.ts` 的 `contextmenu`。
+    // ★ 第十四份：嫁禍卡选人窗（`fcn_0043ff56` 的 `0x205` 那一支 `0x00440255` = −1，卡留着），
+    //   见 `scapegoat-picker.ts` 的 `contextmenu`。
     expect(withCtx).toEqual([
       'big-map', 'eventBox', 'facility-picker', 'help', 'lottery', 'magic', 'notice', 'notice-board',
-      'research', 'steal-picker',
+      'research', 'scapegoat-picker', 'steal-picker',
     ]);
   });
 

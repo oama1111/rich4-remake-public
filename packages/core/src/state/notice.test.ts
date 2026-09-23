@@ -27,6 +27,7 @@ import { WatcomRng } from '../rng/watcom.ts';
 import { initialToolStock, toolsOf } from '../rules/tools.ts';
 import { releaseNpc } from '../rules/special-actors.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
+import { WHO_PLAYS_COMPUTER } from './types.ts';
 
 // ============================================================
 //  住宅：走到别人的地產上
@@ -118,7 +119,7 @@ describe('★★ 住宅：`RENT.payOneOwner`（0x00419d3e）', () => {
 
   it('★ 免費卡把那笔抹成 0 时，框**照样弹**（原版弹框在免費卡那一段之前）', () => {
     // 費 1200 > 現金 100 ⇒ 电脑必用免費卡（@source 0x444a9b）
-    const after = settle(onRivalLand({ payer: { cash: 100, cards: [20] } }));
+    const after = settle(onRivalLand({ payer: { cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER } }));
     expect(after.players[0]!.cash).toBe(100);
     expect(after.landLastToll[LAND]).toBe(0);
     expect(after.notices[0]).toEqual({
@@ -250,11 +251,11 @@ describe('★★ 死神顯靈由他人賠償：租金框之后**再**弹一扇',
 
   it('★★★ 可证伪：免費卡把那笔抹成 0 时死神框**不弹**（原版 `test ebp,ebp / je`）', () => {
     // @source 0x00419ec7 `test ebp, ebp / je 0x419f2a` —— 费为 0 就跳过死神框
-    const s = onRivalLand({ payer: { cash: 100, cards: [20] } });
+    const s = onRivalLand({ payer: { cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER } });
     const players = s.players.map((p, i) => (i === 2 ? { ...p, godInfo: 0x0f } : p));
     const after = reduce({ ...s, players }, { type: 'settle' }, topo);
-    expect(after.notices).toHaveLength(1);
-    expect(after.notices[0]?.key).toBe('rent.payOneOwner');
+    // （免費卡的亮牌那一扇排在后面 —— 第十四份；死神框没有）
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payOneOwner', 'card.use']);
   });
 });
 
@@ -1019,17 +1020,17 @@ describe('★★ 第十四份：企業收費的免費卡 / 嫁禍卡 / 死神（
   const topoC = () => companyTopo(INDUSTRY.sect);
 
   it('★★ 免費卡（費 3000 > 現金 100 ⇒ 电脑必用，@source 0x0041af20 / 0x00444ac4）⇒ 卡用掉、一分不付、没有死神框', () => {
-    const before = withThird({ cash: 100, cards: [20] });
+    const before = withThird({ cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER });
     const after = reduce(before, { type: 'settle' }, topoC());
     expect(after.players[0]!.cards).toEqual([]);
     expect(after.players[0]!.cash).toBe(100);
     expect(after.players[0]!.monthlyPaid).toBe(0);
-    expect(after.notices.map((n) => n.key)).toEqual(['rent.payBoss']);
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payBoss', 'card.use']);
   });
 
   it('★★ 嫁禍卡（@source 0x0041af75 call 0x44476a）⇒ 卡用掉、换人付', () => {
     // 最恨 2 号 ⇒ 电脑嫁禍给他（@source 0x004448b0 的候选 = hostility 最大者）
-    const before = withThird({ cash: 100, cards: [19], hostility: [0, 0, 5, 0] });
+    const before = withThird({ cash: 100, cards: [19], hostility: [0, 0, 5, 0], whoPlays: WHO_PLAYS_COMPUTER });
     const after = reduce(before, { type: 'settle' }, topoC());
     expect(after.players[0]!.cards).toEqual([]);
     expect(after.players[0]!.cash).toBe(100);
@@ -1049,7 +1050,7 @@ describe('★★ 第十四份：企業收費的免費卡 / 嫁禍卡 / 死神（
   });
 
   it('★ 大財神抹成 0 ⇒ 免費卡与死神都不走（门槛按调整后的 0 判，`0x0041af84 test ebp,ebp`）', () => {
-    const before = withThird({ godInfo: 2, cash: 100, cards: [20] }, { godInfo: 0xe });
+    const before = withThird({ godInfo: 2, cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER }, { godInfo: 0xe });
     const after = reduce(before, { type: 'settle' }, topoC());
     expect(after.players[0]!.cards).toEqual([20]);
     expect(after.notices.map((n) => n.key)).toEqual(['rent.payBoss', 'god.tollFree']);
@@ -1058,14 +1059,15 @@ describe('★★ 第十四份：企業收費的免費卡 / 嫁禍卡 / 死神（
 
 describe('★★ 第十四份：免費卡的亮牌 + 出牌者那句 + 地主回一句（`fcn_00444a60` 的 `0x00444b07`..`0x00444b98`）', () => {
   it('★★ 住宅：`lastCardPlay` = 付款方用了卡 20，排在收費框之后，地主（1 号）回一句', () => {
-    const after = settle(onRivalLand({ payer: { cash: 100, cards: [20] } }));
-    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, afterNotices: true, answeredBy: 1 });
+    const after = settle(onRivalLand({ payer: { cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER } }));
+    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, popup: false, answeredBy: 1 });
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payOneOwner', 'card.use']);
   });
 
   it('★ 企業：地主实参 −1（`0x0041af1d push -1`）⇒ 没有回话', () => {
-    const s = onRivalCompany(INDUSTRY.sect, { cash: 100, cards: [20] });
+    const s = onRivalCompany(INDUSTRY.sect, { cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER });
     const after = reduce(s, { type: 'settle' }, companyTopo(INDUSTRY.sect));
-    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, afterNotices: true });
+    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, popup: false });
   });
 
   it('★ 没用卡 ⇒ 不写 `lastCardPlay`', () => {
@@ -1101,4 +1103,33 @@ describe('★★ 第十四份：航空的旅遊（`0x0041b05a call 0x40d375(付�
     expect(after.notices.at(-1)).toEqual({ key: 'insurance.payout', args: [2000 * days], holdMs: 2000 });
   });
 
+});
+
+describe('★★ 第十四份（D-008 收口）：企業 / 設施两条路的真人那一问', () => {
+  it('★ 企業：真人有免費卡 ⇒ 停在 `freeCard`；答 YES ⇒ 用卡，出口照问認購（`afterCompany`）', () => {
+    const s = onRivalCompany(INDUSTRY.sect, { cash: 100, cards: [20] });
+    const asked = reduce(s, { type: 'settle' }, companyTopo(INDUSTRY.sect));
+    expect(asked.pending?.kind).toBe('freeCard');
+    const after = reduce(asked, { type: 'answerFreeCard', use: true }, companyTopo(INDUSTRY.sect));
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.players[0]!.cash).toBe(100);
+    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, popup: false });
+    expect(after.pending?.kind ?? null).not.toBe('freeCard');
+  });
+
+  it('★ 設施：没有免費卡那一问（`0x0041a648`），嫁禍卡照问', () => {
+    const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.gasStation, steps: 12 });
+    const withCards: typeof state = {
+      ...state,
+      players: [
+        ...state.players.map((p, i) => (i === 0 ? { ...p, cash: 100, moneyInBank: 0, cards: [20, 19] } : p)),
+        makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 }),
+      ],
+    };
+    const asked = reduce(withCards, { type: 'settle' }, t);
+    expect(asked.pending?.kind).toBe('scapegoat');
+    const after = reduce(asked, { type: 'answerScapegoat', target: 2 }, t);
+    expect(after.players[0]!.cards).toEqual([20]);
+    expect(after.players[2]!.monthlyPaid).toBeGreaterThan(0);
+  });
 });

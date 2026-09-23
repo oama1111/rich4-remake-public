@@ -32,6 +32,11 @@ export const PROMPT = {
   buyShares: t('%s\n\n每股售價%d\n\n是否認購股份？', 0x463b75),
   /** 嫁祸卡选人：%s 对象名 */
   frameUp: t('是否嫁禍給%s？', 0x46534e),
+  /**
+   * ★ 第十四份：免費卡（真人）那一问 —— `%s` = 付款方名字。
+   * @source `fcn_00444a60` 真人支：`0x00444adf push 0x465388` → `0x00444af4 call 0x440ba8`（YES/NO 框）
+   */
+  freeCard: t('%s\n\n是否使用免費卡？', 0x465388),
 } as const;
 
 /** 提示与失败 */
@@ -448,6 +453,23 @@ export const BLESSING = {
 } as const;
 
 /**
+ * ★ 第十四份：被动卡（免費卡 / 嫁禍卡）那几句 —— 亮牌（`fcn_00441f73(卡号, 文字)`）与訊息框。
+ * @source `fcn_00444a60`（免費卡）`0x00444b0e push 0x465305`；`fcn_0044476a`（嫁禍卡）
+ *   `0x004447ea` / `0x00444874` / `0x00444982 push 0x46533d`、`0x00444893 push 0x46535d`（选人窗标题）、
+ *   `0x004449c3 push 0x46536f`（电脑那一支的訊息框，1500 ms）。
+ */
+export const PASSIVE_CARD_TEXT = {
+  /** 亮牌：「使用%s」（`%s` = 卡名）*/
+  use: t('使用%s', 0x465305),
+  /** 嫁禍卡亮牌：`%s` = 出牌者名 */
+  scapegoatOn: t('%s\n\n嫁禍卡生效！', 0x46533d),
+  /** 选人窗那一句（`fcn_00440e1a` 第 3 实参）*/
+  scapegoatPick: t('請選擇嫁禍對象...', 0x46535d),
+  /** 电脑嫁禍之后那一扇：`%s` = 替死鬼名 */
+  scapegoatTo: t('嫁禍給%s！', 0x46536f),
+} as const;
+
+/**
  * ★ 第十四份：保險理賠那一扇 @source `fcn_0044ba63`：`0x0044baa5 push 0x4658fa` →
  *   `0x0044baaf sprintf(…, 損失)` → `0x0044bab7 push 0x7d0`（**2000 ms**）`call 0x440cac`。
  */
@@ -540,6 +562,7 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(GOD_MANIFEST),
   ...Object.values(MAGIC_HOUSE_TEXT),
   ...Object.values(BLESSING),
+  ...Object.values(PASSIVE_CARD_TEXT),
   ...Object.values(INSURANCE),
   ...GOD_NAMES,
   ...OBJECT_NAMES,
