@@ -164,6 +164,7 @@ import {
   applyOptionsHit,
   controlHit,
   drawOptions,
+  sidebarViewOf,
   hitControl,
   volumeOf,
   HOTKEY_NAMES,
@@ -798,10 +799,11 @@ let nodeTip: TipModel | null = null;
 let renderer: BoardRenderer;
 /**
  * 右下角那块 200×200 现在显示哪一面。
- * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流
- *   —— 原版默认哪一个没查证，这里先开日曆（那是它的原生面貌）。
+ * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流；
+ *   出厂值（没有 cfg）是 **01 小地圖**（`0x00411efc mov [0x49715d], ah`，`ah = 1`）。
+ * ★ 初值与开机、設定「確定」同源（`sidebarViewOf`），不再硬编码 —— 见 `DEFAULT_OPTIONS`。
  */
-let sidebarView: SidebarView = 'calendar';
+let sidebarView: SidebarView = sidebarViewOf(DEFAULT_OPTIONS.windowView);
 
 /**
  * 右上角面板现在显示第几页（0 資金 / 1 地產 / 2 股票 / 3 其他）—— **每个玩家一份**。
@@ -897,25 +899,28 @@ let optionsKeys: number[] = [...HOTKEY_DEFAULT_KEYS];
  */
 function loadConfigFromStore(): void {
   const cfg = decodeConfig(configStore().read());
-  if (cfg === null) return;
-  options = {
-    ...options,
-    speed: cfg.speed,
-    animation: cfg.animation,
-    music: cfg.music,
-    sound: cfg.sound,
-    autoSave: cfg.autoSave,
-    windowView: cfg.view,
-  };
+  if (cfg !== null) {
+    options = {
+      ...options,
+      speed: cfg.speed,
+      animation: cfg.animation,
+      music: cfg.music,
+      sound: cfg.sound,
+      autoSave: cfg.autoSave,
+      windowView: cfg.view,
+    };
+    optionsKeys = configHotkeyKeys(cfg);
+  }
+  // ★★ 2026-09-24（第十六份試玩回報「默认展示缩小地图…是不是没部署到多人模式」）：
+  //   **没有 cfg 也要走到这一行** —— 先前 `cfg === null` 就直接 return，侧栏停在硬编码的
+  //   `'calendar'` 上，而 `options` 是出厂值 ⇒ 新窗口（例如联机开的第二个窗口）里侧栏与設定屏各说各的。
+  //   单机与联机都只在这里定一次（三条开局路都不改 `options` / `sidebarView`）。
   // ★★ 2026-09-22（第十一份試玩回報 #8「开局默认是日月历模式，但是设置里打开默认是缩小地图模式」）：
   //   原版**每次重画侧栏都直接读 cfg**（`fcn_00416e6d` 的 `0x416e7d movzx ebp,byte [cfg+5]`、
   //   `fcn_004169bc` 的 `0x4169cd cmp byte [cfg+5],1`）⇒ 不存在「开机一套、设定屏另一套」。
-  //   本引擎的 `sidebarView` 是个**硬编码 `'calendar'` 的模块变量**，而 `applyOptions`
-  //   （唯一会改它的地方）只在設定屏「確定」时被调 —— 开机读 cfg 那条路**不经过它**
-  //   ⇒ 棋盘永远日月历、設定屏却亮着 cfg 里的「缩小地图」。
-  //   ⇒ 在这里补一次一致化（**不要**在开机跑 `applyOptions`：那会带上音量/写档的副作用）。
-  sidebarView = cfg.view === 1 ? 'map' : 'calendar';
-  optionsKeys = configHotkeyKeys(cfg);
+  //   `applyOptions`（設定屏「確定」）之外，开机读 cfg 这条路也得把侧栏一致化
+  //   （**不要**在开机跑 `applyOptions`：那会带上音量/写档的副作用）。
+  sidebarView = sidebarViewOf(options.windowView);
 }
 
 /**
@@ -3519,7 +3524,7 @@ function applyOptions(next: GameOptions): void {
   music.setVolume(next.music === 0 ? 0 : volumeOf(next.music) * 0.25);
   // 設定里那三项：00 日曆 / 01 小地圖 / 02 兩者輪流（RICH4.CFG offset 5）
   // ⚠️ 「兩者輪流」怎么轮没查证，先当日曆（点一下可以手动换）
-  sidebarView = next.windowView === 1 ? 'map' : 'calendar';
+  sidebarView = sidebarViewOf(next.windowView);
   // ⚠️ 换曲**不在这里** —— 原版是点列表那一下就立刻换（见 `onOptionsDown`），
   //   「確定」只负责把 cfg 写回去、并按新的音量档调播放器（VA 0x004109e2）。
   //   这里只在「音乐本来是关的、现在打开了」时补一次起播。
@@ -11108,8 +11113,10 @@ function connectOnline(url: string, room: string, name: string): void {
           //   新开一局的路（`0x406de7 → … → 0x415872` 跳伞过场）不说。
           // 换地图要重新解底图 —— `setGround(null)` 会 close 掉旧位图，
           // 先前这里只把 `ground` 置 null，旧 bitmap 就泄漏了（与单机 7650 对齐）
+          // ★★ 第十六份试玩回报「以后两边模式都要同步」：先前这里漏了 `hdSource`（单机 `startGame()` 有）
+          //   ⇒ 开了高清底图的人一进联机就退回原图。与单机同一个调用。
           setGround(null);
-          void loadGround(archives, start.globalMapId).then((g) => {
+          void loadGround(archives, start.globalMapId, hdSource).then((g) => {
             ground = g;
             requestRender();
           });

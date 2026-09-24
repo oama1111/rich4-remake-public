@@ -64,6 +64,7 @@
  */
 
 import type { Sprite } from './assets.ts';
+import type { SidebarView } from './hud.ts';
 import { FONT_FAMILY } from './font.ts';
 
 /** Data.mkf 里这一屏的资源号 */
@@ -312,15 +313,43 @@ export interface GameOptions {
   track: number;
 }
 
+/**
+ * 没有 `RICH4.CFG`（新浏览器 / 隐身窗口 / 新装机）时的那一份。
+ *
+ * ★★ 2026-09-24（第十六份试玩回报「默认展示缩小地图、游戏速度最快是不是没部署到多人模式？」）：
+ *   单机与联机**本来就读同一份**（开机 `loadConfigFromStore()` 一次，两条开局路都不再改）。
+ *   回报里单机那边是 `speed 2 / windowView 1`，那是**浏览器里存着的 RICH4.CFG**；
+ *   联机那边若是新窗口 / 另一台机器（没有 cfg），吃的就是这里的出厂值 —— 而这里先前是
+ *   `speed 1 / windowView 0`（日月曆），所以「单机对、联机不对」。
+ *
+ * - `windowView: 1`（縮小地圖）—— **原版出厂值**：`rich4_read_config()` 找不到文件时
+ *   `0x00411edc..0x00411efc` 把 `ah = 1` 写进 `[0x49715d]`（= `cfg+5`，視窗）。
+ * - `speed: 2`（3 格、最快）—— ⚠️ **有意偏离**：需求方 2026-09-23 拍板（「3 格的整体节奏与他对
+ *   原版的体感一致」，当时那一笔 `9835a02` 落在 `ds/hd-stage` 分支上、没有进主线）。
+ *   原版出厂值是 1（`0x00411edc mov [0x497158], ah`，`ah = 1`）。
+ *
+ * ⚠️ 其余三项与原版出厂值不同、未改（待需求方裁定，见 `docs/known-deviations.md` D-OPT-DEFAULT-1）：
+ *   原版 `music = 4` / `sound = 4`（`0x00411eea` / `0x00411ef0`，`dh = 4`）、
+ *   `autoSave = 1`（`0x00411ef6`）。
+ */
 export const DEFAULT_OPTIONS: GameOptions = {
-  speed: 1,
+  speed: 2,
   animation: true,
   music: 3,
   sound: 3,
   autoSave: false,
-  windowView: 0,
+  windowView: 1,
   track: 0,
 };
+
+/**
+ * 右下角那块该显示哪一面 —— **唯一**的换算处（开机、設定「確定」、新開局都走它）。
+ * @source 原版每次重画侧栏都直接读 `cfg+5`（`fcn_00416e6d` `0x416e7d`、`fcn_004169bc` `0x4169cd cmp byte [cfg+5],1`）
+ * ⚠️ `2`（兩者輪流）怎么轮没查证，暂按日曆（与先前一致）。
+ */
+export function sidebarViewOf(windowView: number): SidebarView {
+  return windowView === 1 ? 'map' : 'calendar';
+}
 
 /** 音量档 0..4 → 0..1 */
 export function volumeOf(level: number): number {

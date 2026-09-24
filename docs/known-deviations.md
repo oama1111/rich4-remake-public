@@ -5853,3 +5853,22 @@ for (const id of view.state.players[hated]!.cards) { … }
 
 新聞 18「強烈地震」（逐块循环）与 19 的 `0x409b18` / `0x456c0a` 两个调用（19 **没有**整块影片）
 尚未接演出（19 只接了地名 / 镜头 / 房主台词）。
+
+## D-OPT-DEFAULT-1（2026-09-24，第十六份試玩回報）：出厂设定 —— 视窗照原版、速度有意偏离、三项待裁定
+
+没有 `RICH4.CFG` 时（新浏览器 / 隐身窗口 / 另一台机器 —— 联机开第二个窗口就是这种），
+客户端吃 `options.ts` 的 `DEFAULT_OPTIONS`。原版的出厂值在 `rich4_read_config()`（VA 0x00411e8f）
+`fopen` 失败那一支 `0x00411eda..0x00411f04`：
+
+| 字段 | 原版出厂 | 本引擎 | 说明 |
+|---|---|---|---|
+| 速度 `cfg+0` | 1（`0x00411edc`） | **2** | ⚠️ 有意偏离：需求方 2026-09-23 拍板「默认最快」（`9835a02` 当时落在 `ds/hd-stage`，未进主线） |
+| 動畫 `cfg+1` | 1 | 开 | 一致 |
+| 音樂 `cfg+2` | **4**（`0x00411eea`） | 3 | 待需求方裁定 |
+| 音效 `cfg+3` | **4**（`0x00411ef0`） | 3 | 待需求方裁定 |
+| 自動存檔 `cfg+4` | **1**（`0x00411ef6`） | 关 | 待需求方裁定（本引擎自動存檔的时机本身未查证，见 `autosaveIfEnabled`） |
+| 視窗 `cfg+5` | **1 小地圖**（`0x00411efc`） | **1** | 2026-09-24 起照原版（先前是 0 日曆） |
+
+另：先前没有 cfg 时 `loadConfigFromStore()` 直接 return，侧栏停在硬编码的 `'calendar'`；
+现在侧栏初值、开机、設定「確定」三处都走 `sidebarViewOf`。单机 `startGame()`、联机 `onStart`、
+失步重建 `onResync` 都不改 `options` / `sidebarView`（`options-defaults.test.ts` 钉住）。
