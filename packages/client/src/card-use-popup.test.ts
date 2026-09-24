@@ -43,6 +43,7 @@ import {
   eventBoxScreenState,
   resetEventBoxScreen,
   startOwnCardUsePopup,
+  startRemoteCardUsePopup,
 } from './event-box-screen.ts';
 import type { LoadedFlic } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
@@ -372,5 +373,96 @@ describe('★ main.ts 的接线：亮牌在选目标**之前**（源码钉子）
 
   it('★ 卡片欄只认左键抬手（右键取消后重开的卡片欄不被紧跟的右键抬手关掉）', () => {
     expect(src).toContain("if (screen === 'inventory') {\n      if (e.button !== 0) return;\n      // ★ 没按中任何一格");
+  });
+});
+
+// ============================================================
+//  ★ gap-audit #7（协议 v8）：联机旁观端跟着行动方的卡片欄亮牌 / 失败
+// ============================================================
+
+describe('★ gap-audit #7：旁观端收到 `present{cardReveal}` ⇒ 与行动方同一刻亮牌，`useCard` 落地时不亮第二遍', () => {
+  const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i }));
+  // 行动方是 1 号（别的真人），本机只是旁观
+  const base = makeGameState({ players, currentPlayer: 1, lastCardPlay: null, turnCount: 7 });
+
+  it('★★ 亮牌（「使用均貧卡」+ 音 62）；随后那条 `useCard` 不再亮', () => {
+    resetEventBoxScreen();
+    const sounds: number[] = [];
+    startRemoteCardUsePopup(2, 1, 7, fakeEnv(base, 0, sounds));
+    expect(texts()).toEqual(['使用均貧卡']);
+    expect(sounds).toEqual([62]);
+    expect(cardUsePopupActive()).toBe(true);
+    eventBoxScreen.tick!(fakeEnv(base, 1500, sounds));
+    const after = { ...base, lastCardPlay: { player: 1, cardId: 2 } };
+    eventBoxScreen.event!(base, after, fakeEnv(after, 3000, sounds));
+    expect(eventBoxScreenState().playing).toBe(false);
+    expect(sounds).toEqual([62]);
+    resetEventBoxScreen();
+  });
+
+  it('★★ 目标取消（`present{cardFailed}` ⇒ `dropOwnCardUse`）之后再用：`useCard` 到达时照亮（原版再选一张会再亮一次）', () => {
+    resetEventBoxScreen();
+    const sounds: number[] = [];
+    startRemoteCardUsePopup(2, 1, 7, fakeEnv(base, 0, sounds));
+    eventBoxScreen.tick!(fakeEnv(base, 1500, sounds));
+    dropOwnCardUse();
+    const after = { ...base, lastCardPlay: { player: 1, cardId: 2 } };
+    eventBoxScreen.event!(base, after, fakeEnv(after, 3000, sounds));
+    expect(texts()).toEqual(['使用均貧卡']);
+    expect(sounds).toEqual([62, 62]);
+    resetEventBoxScreen();
+  });
+});
+
+describe('★ gap-audit #7：main.ts 的接线（源码钉子）—— 单机不发、联机发；旁观端按收件箱次序演', () => {
+  const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+  const bodyOf = (sig: string): string => {
+    const at = src.indexOf(sig);
+    expect(at).toBeGreaterThan(-1);
+    return src.slice(at, src.indexOf('\n}\n', at));
+  };
+
+  it('★★ `presentToTable`：单机（`net === null`）什么都不做；联机只在轮到本机座位时发', () => {
+    const body = bodyOf('function presentToTable(cue: PresentCue): void {');
+    expect(body).toContain('if (client === null || client.seat === null || actingSeat(state) !== client.seat) return;');
+    expect(body).toContain('client.present(cue);');
+  });
+
+  it('★★ 行动方：卡片欄选定 ⇒ `cardReveal`；没用成 ⇒ `cardFailed`；道具台词 ⇒ `toolLine`；选格 / 骰面盘取消 ⇒ `toolCancel`', () => {
+    expect(bodyOf('function applyCardPick(cardId: number): void {')).toContain("presentToTable({ kind: 'cardReveal', cardId });");
+    expect(bodyOf('function cardUseFailed(): void {')).toContain('presentCardFailed();');
+    expect(bodyOf('function presentCardFailed(): void {')).toContain("presentToTable({ kind: 'cardFailed', cardId });");
+    expect(bodyOf('function routeCardUse(cardId: number): void {')).toContain('presentCardFailed();');
+    expect(bodyOf('function sayOwnToolLine(toolId: number, openPicker: () => void): void {')).toContain(
+      "presentToTable({ kind: 'toolLine', toolId });",
+    );
+    expect(bodyOf('function cancelDicePick(): void {')).toContain("presentToTable({ kind: 'toolCancel', toolId: REMOTE_DICE_TOOL });");
+    expect(bodyOf('function applyCancelLayer(layer: CancelLayer): boolean {')).toContain(
+      "else if (source.kind === 'tool') presentToTable({ kind: 'toolCancel', toolId: source.toolId });",
+    );
+  });
+
+  it('★★ 旁观端：`onPresent` 排进收件箱；轮到它时先跟行动方收场、再过节拍闸、才演（不 reduce）', () => {
+    expect(src).toContain('onPresent: ({ seat, cue }) => {\n          netInbox.push({ cue, seat });\n          pumpNetInbox();');
+    const pump = bodyOf('function pumpNetInbox(delay = 0): void {');
+    // 队首是别人的提示 ⇒ 跟着收场（在节拍闸之前）；过了节拍闸才演
+    const follow = pump.indexOf(': head.seat !== (net?.seat ?? null))');
+    expect(follow).toBeGreaterThan(-1);
+    expect(follow).toBeLessThan(pump.indexOf('holdForActorWalk('));
+    expect(pump.indexOf('holdForActorWalk(')).toBeLessThan(pump.indexOf('applyNetCue(item.seat, item.cue);'));
+    const apply = bodyOf('function applyNetCue(seat: number, cue: PresentCue): void {');
+    expect(apply).toContain('startRemoteCardUsePopup(cue.cardId, seat, state.turnCount, uiEnv());');
+    expect(apply).toContain('dropOwnCardUse();');
+    expect(apply).toContain("sound.play('Effect.mkf', SOUND_CARD_FAILED);");
+    expect(apply).toContain('ownToolLine = { player: seat, toolId: cue.toolId, turnCount: state.turnCount };');
+    expect(apply).toContain("sound.play('Effect.mkf', CANCEL_SOUND);");
+    expect(apply).not.toContain('reduce(');
+    expect(apply).not.toContain('dispatch(');
+  });
+
+  it('★ 静默追上 / 回前台补施加 / 积压快进：演出提示一律不演', () => {
+    expect(bodyOf('function catchUpSilently(')).toContain('if (!isNetAction(item)) continue;');
+    expect(bodyOf('function catchUpNetAfterHidden(): void {')).toContain('if (!isNetAction(item)) continue;');
+    expect(bodyOf('function pumpNetInbox(delay = 0): void {')).toContain('if (isNetAction(item)) applyNetAction(item);');
   });
 });

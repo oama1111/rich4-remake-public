@@ -15,8 +15,10 @@ import {
   type JoinMode,
   type RoomInfo,
   type LobbyOptions,
+  type PresentCue,
   type SeatInfo,
   type ServerMessage,
+  isPresentCue,
 } from '@rich4/core';
 
 /** 往服务器写文本的口子 */
@@ -114,6 +116,14 @@ export interface NetClientOptions {
   onClock?(clock: { seat: number; remainingMs: number; hardRemainingMs: number }): void;
   /** ★ 聯機存檔（v6）：房主存了一份檔（廣播給全桌）*/
   onSaved?(name: string): void;
+  /**
+   * ★ v8（gap-audit #7）：别的座位转来的**纯演出**提示（亮牌 / 用卡失败 / 道具台词 / 选格取消）。
+   *
+   * 交出来的时机 = 第 `after` 号 action 已经交给 `onAction` 之后、下一号之前 —— 宿主把它排进
+   * 收件箱同一个位置即可（行动方做这件事时已经演完了此前的全部 action）。
+   * 追赶补发 / 等重放期间收到的一律丢掉（那时本地局面不是它说的那一刻）。
+   */
+  onPresent?(present: { seat: number; cue: PresentCue }): void;
   /** 本地状态的指纹（发校验和用） */
   fingerprint(): string;
 }
@@ -134,6 +144,8 @@ export class NetClient {
   #catchUpThrough = -1;
   /** 追赶期间攒着的补发（凑到 `#catchUpThrough` 那一号才一次交出） */
   readonly #catchUp: { action: Action; seq: number }[] = [];
+  /** ★ v8：排在还没到齐的 action 后面的演出提示（按 `after` 等着，见 `onPresent`）*/
+  readonly #cues: { after: number; seat: number; cue: PresentCue }[] = [];
 
   constructor(socket: NetSocket, opts: NetClientOptions) {
     this.#socket = socket;
@@ -275,6 +287,14 @@ export class NetClient {
     this.#send({ t: 'save', name });
   }
 
+  /**
+   * ★ v8（gap-audit #7）：把本机真人刚在自己 UI 里做的一件「原版全桌都看得见」的事告诉同桌
+   *   （纯演出，不是意图 —— 不等回包、不改本地局面）。
+   */
+  present(cue: PresentCue): void {
+    this.#send({ t: 'present', cue });
+  }
+
   /** ★ W-74：本机座位被超时託管了，玩家点一下画面 —— 把座位收回来 */
   resume(): void {
     this.#send({ t: 'resume' });
@@ -304,6 +324,7 @@ export class NetClient {
         const through =
           typeof msg.through === 'number' && Number.isInteger(msg.through) && msg.through >= 0 ? msg.through : -1;
         this.#catchUp.length = 0;
+        this.#cues.length = 0;
         this.#catchUpThrough = this.#opts.onCatchUp === undefined ? -1 : through;
         this.#opts.onStart({
           seed: msg.seed,
@@ -339,6 +360,7 @@ export class NetClient {
         this.#resyncing = false;
         // 重放是整体替换：还没追完的那一段也一并作废（都在重放里了）
         this.#catchUp.length = 0;
+        this.#cues.length = 0;
         this.#catchUpThrough = -1;
         this.#opts.onResync?.({
           seed: msg.seed,
@@ -354,6 +376,16 @@ export class NetClient {
       case 'saved':
         this.#opts.onSaved?.(msg.name);
         return;
+      case 'present': {
+        // 网络来的东西不可信：形状不对就当没收到
+        if (typeof msg.seat !== 'number' || typeof msg.after !== 'number' || !isPresentCue(msg.cue)) return;
+        if (this.#resyncing || this.catchingUp) return;
+        const have = this.#expected - 1;
+        if (msg.after === have) this.#opts.onPresent?.({ seat: msg.seat, cue: msg.cue });
+        // 前面还有 action 没到齐（乱序）⇒ 等它们；`after` 比手上的还旧 ⇒ 那一刻已经过去了，丢掉
+        else if (msg.after > have) this.#cues.push({ after: msg.after, seat: msg.seat, cue: msg.cue });
+        return;
+      }
       case 'clock':
         this.#opts.onClock?.({ seat: msg.seat, remainingMs: msg.remainingMs, hardRemainingMs: msg.hardRemainingMs });
         return;
@@ -389,6 +421,16 @@ export class NetClient {
       this.#opts.onAction(action, seq);
       if (this.#opts.deferChecksum !== true && every > 0 && (seq + 1) % every === 0) {
         this.#send({ t: 'checksum', seq, hash: this.#opts.fingerprint() });
+      }
+      // ★ v8：排在这一号后面的演出提示
+      for (let i = 0; i < this.#cues.length; ) {
+        const c = this.#cues[i]!;
+        if (c.after > seq) {
+          i++;
+          continue;
+        }
+        this.#cues.splice(i, 1);
+        if (c.after === seq) this.#opts.onPresent?.({ seat: c.seat, cue: c.cue });
       }
     }
   }

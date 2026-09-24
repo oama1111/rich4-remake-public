@@ -10,6 +10,7 @@
 
 import {
   LOBBY_CHARACTER_COUNT,
+  PRESENT_RATE,
   PROTOCOL_VERSION,
   WHO_PLAYS_AUTOPILOT,
   WHO_PLAYS_HUMAN,
@@ -20,6 +21,7 @@ import {
   isUnplaced,
   isClientId,
   isJoinMode,
+  isPresentCue,
   isLobbyCharacter,
   isLobbyMapId,
   isLobbySeatCount,
@@ -29,11 +31,13 @@ import {
   sanitizeName,
   sanitizeSaveName,
   serializeGame,
+  toolCount,
   withLobbyDefaults,
   type Action,
   type ClientMessage,
   type GameState,
   type LobbyOptions,
+  type PresentCue,
   type Rich4Map,
   type RoomInfo,
   type RoomSummary,
@@ -300,6 +304,8 @@ export class RoomHub {
   readonly #members = new Map<Conn, Member>();
   readonly #saves: SaveStore | null;
   readonly #today: (() => Date) | null;
+  /** ★ v8：每条连接最近几条 `present` 的时刻（限速用，见 `#relayPresent`）*/
+  readonly #presentLog = new WeakMap<Conn, number[]>();
 
   constructor(opts: HubOptions) {
     this.#opts = {
@@ -781,6 +787,12 @@ export class RoomHub {
           this.#broadcast(me.table, { t: 'room', room: this.#info(me.table) });
           this.#driveComputers(me.table);
           this.#advance(me.table, this.#now());
+          return;
+        }
+        // ★ v8（gap-audit #7）：纯演出提示 —— 校验、限速之后转给同桌其余各端（不进日志）
+        case 'present': {
+          if (me.table === null || me.seat === null) return;
+          this.#relayPresent(me.table, me.seat, conn, msg.cue);
           return;
         }
         default:
@@ -1804,6 +1816,47 @@ export class RoomHub {
     this.#broadcast(t, { t: 'action', seq: r.broadcast.seq, action: r.broadcast.action });
     this.#driveComputers(t);
     this.#advance(t, now);
+  }
+
+  /**
+   * ★ v8（gap-audit #7）：转发一条纯演出提示（亮牌 / 用卡失败 / 道具台词 / 选格取消）。
+   *
+   * 闸（任何一道不过就**静默丢弃** —— 这是演出，不回 error 免得刷屏）：
+   *   ① 已开局、未终局，这条连接真坐在这一座；
+   *   ② 这一座是**轮到的那一座**（`actingSeat`）且不是服务器在替它出手（掉线代打 / 超时託管 / 电脑）——
+   *      原版这几件事只发生在真人自己的回合里（卡片欄 / 道具欄都是回合里的面板）；
+   *   ③ 手里**真有**那张卡 / 那件道具（对服务器镜像查，不信客户端）；
+   *   ④ 限速 `PRESENT_RATE`（每座每窗口至多几条）。
+   *
+   * ⚠️ 不 `submit`、不进日志、不进 `replay`、不碰指纹、不动回合计时 —— 局面一个字节都不变。
+   *   不发回发起者（他自己那一端已经演了）。
+   */
+  #relayPresent(t: Table, seat: number, conn: Conn, cue: unknown): void {
+    const room = t.room;
+    if (room === null || room.state.phase === 'gameOver') return;
+    const slot = t.seats[seat];
+    if (slot === undefined || slot.conn !== conn) return;
+    if (!isPresentCue(cue)) return;
+    if (room.actingSeat !== seat) return;
+    if (slot.info.kind !== 'human' || slot.takenOver || slot.info.autopilot === 'idle') return;
+    const player = room.state.players[seat];
+    if (player === undefined || !isInGame(player)) return;
+    const holds =
+      cue.kind === 'cardReveal' || cue.kind === 'cardFailed'
+        ? player.cards.includes(cue.cardId)
+        : toolCount(room.state.tools, seat, cue.toolId) > 0;
+    if (!holds) return;
+    const now = this.#now();
+    const recent = (this.#presentLog.get(conn) ?? []).filter((at) => now - at < PRESENT_RATE.windowMs);
+    if (recent.length >= PRESENT_RATE.max) {
+      this.#presentLog.set(conn, recent);
+      return;
+    }
+    recent.push(now);
+    this.#presentLog.set(conn, recent);
+    const msg: ServerMessage = { t: 'present', seat, after: room.sequenceLength - 1, cue: { ...cue } as PresentCue };
+    for (const s of t.seats) if (s.conn !== conn) this.#sendTo(s.conn, msg);
+    for (const g of t.guests) this.#sendTo(g, msg);
   }
 
   /**

@@ -64,6 +64,7 @@ import {  autoAction,
   winConditionsOf,
   type Action,
   type CardTarget,
+  type PresentCue,
   type GameState,
   type JoinMode,
   type MapTopology,
@@ -139,6 +140,7 @@ import {
   eventBoxTailTick,
   setEventBoxStartGate,
   startCardRevealPopup,
+  startRemoteCardUsePopup,
   onEventBoxArtReady,
   setEventBoxArchives,
   startOwnCardUsePopup,
@@ -2272,6 +2274,8 @@ function applyCancelLayer(layer: CancelLayer): boolean {
         // ★ 卡片那一类：拾取窗 `Post(0)` ⇒ 卡片函数返回 0（如均貧卡 `0x004421e2 je 0x443069`）
         //   ⇒ `_rich4_ui_use_card_entry` 失败音 3 + 卡片欄重开（`0x00441cd9` / `0x00441ce3`）
         if (source.kind === 'card') cardUseFailed();
+        // ★ v8：道具那一类取消只有这一声音效 4（`0x4466b8`）—— 联机时同桌也听得到
+        else if (source.kind === 'tool') presentToTable({ kind: 'toolCancel', toolId: source.toolId });
       }
       return true;
     case 'dicePick':
@@ -4038,6 +4042,8 @@ function catchUpNetAfterHidden(): void {
     netPumpTimer = null;
   }
   for (const item of burst) {
+    // ★ v8：演出提示不补演（与静默追上同一口径）
+    if (!isNetAction(item)) continue;
     const next = reduce(state, item.action, topo);
     if (next !== state) history.push(item.action);
     state = next;
@@ -6104,6 +6110,8 @@ let pendingToolPicker: { open: () => void; at: GameState } | null = null;
 function sayOwnToolLine(toolId: number, openPicker: () => void): void {
   const player = state.currentPlayer;
   ownToolLine = { player, toolId, turnCount: state.turnCount };
+  // ★ v8（gap-audit #7）：联机时同桌各端同一刻听到这一句（不必等 `useTool` 落地）
+  presentToTable({ kind: 'toolLine', toolId });
   const bubble = toolLineOf(state, player, toolId);
   if (bubble !== null) {
     ensureSpeakingArchive();
@@ -6160,6 +6168,7 @@ function dicePickChoose(face: number): void {
 function cancelDicePick(): void {
   // @source `loc_00446a68` 的 `play_sound_effect(0x482332)` —— 音效 4
   sound.play('Effect.mkf', DICE_SOUND_CANCEL);
+  presentToTable({ kind: 'toolCancel', toolId: REMOTE_DICE_TOOL });
   dicePick = null;
   requestRender();
 }
@@ -6177,6 +6186,9 @@ function cancelDicePick(): void {
 function applyCardPick(cardId: number): void {
   log(`使用${CARD_IMPLS[cardId - 1]?.name ?? `卡${cardId}`}`);
   startOwnCardUsePopup(cardId, state.currentPlayer, state.turnCount, uiEnv());
+  // ★ v8（gap-audit #7）：联机时同桌各端**同一刻**亮同一扇牌（原版全桌看的是同一块屏）
+  ownPickedCard = cardId;
+  presentToTable({ kind: 'cardReveal', cardId });
   pendingCardRoute = { cardId, player: state.currentPlayer, turnCount: state.turnCount };
   requestRender();
 }
@@ -6213,7 +6225,65 @@ function tickPendingCardRoute(): void {
 function cardUseFailed(): void {
   dropOwnCardUse();
   sound.play('Effect.mkf', SOUND_CARD_FAILED);
+  presentCardFailed();
   openInventory('cards');
+}
+
+/** ★ v8：本机真人最近一次在卡片欄选定的那一张（`cardFailed` 提示要带卡号）*/
+let ownPickedCard: number | null = null;
+
+/** ★ v8：告诉同桌「刚亮的那张没用成」（失败音 3；再用一张会再亮一次）*/
+function presentCardFailed(): void {
+  const cardId = ownPickedCard;
+  ownPickedCard = null;
+  if (cardId !== null) presentToTable({ kind: 'cardFailed', cardId });
+}
+
+/**
+ * ★ v8（gap-audit #7）：本机真人刚在自己的 UI 里做了一件「原版全桌都看得见」的事 —— 联机时转告同桌
+ *   （纯演出，服务器校验后转发，不进日志；见 core `protocol.ts` 的 `PresentCue`）。单机什么都不做。
+ */
+function presentToTable(cue: PresentCue): void {
+  const client = net;
+  if (client === null || client.seat === null || actingSeat(state) !== client.seat) return;
+  client.present(cue);
+}
+
+/**
+ * ★ v8（gap-audit #7）：旁观端演出别人转来的那一件（收件箱排到它时才演 —— 与行动方同一个位置）。
+ *
+ * | kind | 演什么 | 原版 |
+ * |---|---|---|
+ * | `cardReveal` | 亮牌（卡面 +「使用X卡」+ 音效），记下「已亮过」| `0x00441cbc call 0x441f73` |
+ * | `cardFailed` | 失败音 3，忘掉「已亮过」| `0x00441cd9` |
+ * | `toolLine` | 那一句道具台词，记下「已说过」| 道具函数第一个 `player_say`（`speech.ts` 的 `OwnToolLine`）|
+ * | `toolCancel` | 音效 4 | `0x4466b8` / `loc_00446a68` |
+ */
+function applyNetCue(seat: number, cue: PresentCue): void {
+  if (seat === net?.seat) return;
+  switch (cue.kind) {
+    case 'cardReveal':
+      startRemoteCardUsePopup(cue.cardId, seat, state.turnCount, uiEnv());
+      break;
+    case 'cardFailed':
+      dropOwnCardUse();
+      sound.play('Effect.mkf', SOUND_CARD_FAILED);
+      log(`P${seat + 1} 的${CARD_IMPLS[cue.cardId - 1]?.name ?? `卡${cue.cardId}`}没用成（联机提示）`);
+      break;
+    case 'toolLine': {
+      ownToolLine = { player: seat, toolId: cue.toolId, turnCount: state.turnCount };
+      const bubble = toolLineOf(state, seat, cue.toolId);
+      if (bubble !== null) {
+        ensureSpeakingArchive();
+        queueSpeech([{ bubble, order: TOOL_LINE_ORDER }]);
+      }
+      break;
+    }
+    case 'toolCancel':
+      sound.play('Effect.mkf', CANCEL_SOUND);
+      break;
+  }
+  requestRender();
 }
 
 /**
@@ -6272,6 +6342,7 @@ function routeCardUse(cardId: number): void {
   if (route.needsOwnList) {
     dropOwnCardUse();
     sound.play('Effect.mkf', SOUND_CARD_FAILED);
+    presentCardFailed();
     log('（这张卡要选目标 —— 那类选择界面还没做）');
   } else cardUseFailed();
 }
@@ -11608,6 +11679,11 @@ function connectOnline(
           netInbox.push({ action, seq });
           pumpNetInbox();
         },
+        // ★ v8（gap-audit #7）：别的座位转来的纯演出提示 —— 排进收件箱同一个位置，轮到它才演
+        onPresent: ({ seat, cue }) => {
+          netInbox.push({ cue, seat });
+          pumpNetInbox();
+        },
         // ★★ 第十二份試玩回報：中途进房（刷新 / 断线重连）时「进房之前」的那一段 —— **静默**追上，
         //   不走 `pumpNetInbox` 那条会起演出的路（见 `catchUpSilently`）。
         onCatchUp: (items) => catchUpSilently(items),
@@ -11909,8 +11985,18 @@ let clockAt = 0;
 // ★ 锁步不受影响：顺序不变，只是晚一点施加；校验和改在**真的施加完**那一刻取（`noteApplied`）。
 // ★ `awaiting`（W-74）要等收件箱**放空**才报 —— 否则玩家还在看电脑走棋，60 秒已经开数了。
 
+/**
+ * 收件箱的一格：定序后的 action，或 ★ v8 别的座位转来的**纯演出**提示（`present`，gap-audit #7）——
+ * 提示排在它到达那一刻的位置（`NetClient.onPresent` 保证在第 `after` 号之后），轮到它才演，不 reduce。
+ */
+type NetInboxItem = { action: Action; seq: number } | { cue: PresentCue; seat: number };
+
+function isNetAction(item: NetInboxItem): item is { action: Action; seq: number } {
+  return 'action' in item;
+}
+
 /** 收着还没播的广播 */
-const netInbox: { action: Action; seq: number }[] = [];
+const netInbox: NetInboxItem[] = [];
 let netPumpTimer: number | null = null;
 /**
  * 积压超过这个数就不按节拍了，前面的**一口气**施加掉、只留最后这些慢慢播。
@@ -11940,6 +12026,8 @@ function catchUpSilently(items: readonly { action: Action; seq: number }[]): voi
   const queued = netInbox.splice(0);
   clearNetInbox();
   for (const item of [...queued, ...items]) {
+    // ★ v8：排着的演出提示随追赶一并作废（那一刻已经过去了）
+    if (!isNetAction(item)) continue;
     const next = reduce(state, item.action, topo);
     if (next !== state) history.push(item.action);
     state = next;
@@ -12018,7 +12106,11 @@ function applyNetAction(item: { action: Action; seq: number }): void {
 function pumpNetInbox(delay = 0): void {
   if (netPumpTimer !== null || netInbox.length === 0) return;
   if (netInbox.length > NET_INBOX_FAST_FORWARD) {
-    while (netInbox.length > NET_INBOX_KEEP) applyNetAction(netInbox.shift()!);
+    while (netInbox.length > NET_INBOX_KEEP) {
+      const item = netInbox.shift()!;
+      // ★ v8：一口气施加的那一截里，演出提示直接丢（不演）
+      if (isNetAction(item)) applyNetAction(item);
+    }
   }
   netPumpTimer = window.setTimeout(() => {
     netPumpTimer = null;
@@ -12048,11 +12140,25 @@ function pumpNetInbox(delay = 0): void {
     //   本台还在演的那几屏直接落到终态，不再自己一段段放完（判据与边界见 `follow-presenter.ts`）。
     //   ⚠️ 必须在 `holdForActorWalk` 之前：那几屏正占着台，节拍闸会一直挡着。
     //   队首还没施加，此刻的 `state` 就是服务器受理它那一刻的镜像。
-    if (head !== undefined && presenterMovedOn(state, head.action, net?.seat ?? null)) followPresenter();
-    const ownRollEcho = awaitingOwnRoll && head !== undefined && head.action.type === 'rollDice';
+    // ★ v8：队首是别的真人转来的演出提示（`present`）⇒ 同样说明他那台已经把此前的演出演完（点掉）了
+    //   （服务器只收「轮到的那一座、不是代打」的 `present`，故发起者必是真人自己的客户端）
+    if (
+      head !== undefined &&
+      (isNetAction(head)
+        ? presenterMovedOn(state, head.action, net?.seat ?? null)
+        : head.seat !== (net?.seat ?? null))
+    )
+      followPresenter();
+    const ownRollEcho = awaitingOwnRoll && head !== undefined && isNetAction(head) && head.action.type === 'rollDice';
     if (!ownRollEcho && holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
     const item = netInbox.shift();
     if (item === undefined) return;
+    // ★ v8：演出提示过了同一道节拍闸才演（不 reduce、不报校验和）
+    if (!isNetAction(item)) {
+      applyNetCue(item.seat, item.cue);
+      pumpNetInbox(paceDelay());
+      return;
+    }
     applyNetAction(item);
     // `aiNext` 只是决策链的内部簿记，不占时间（同 `aiDelay`）；其余至少一个 tick、走子等补间
     pumpNetInbox(item.action.type === 'aiNext' ? 0 : paceDelay());

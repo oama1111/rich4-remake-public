@@ -494,3 +494,52 @@ describe('★ 房主交接（v6）', () => {
     expect(sent).toEqual([{ t: 'leave' }]);
   });
 });
+
+describe('★ gap-audit #7（v8）：纯演出提示 `present`', () => {
+  const reveal = { kind: 'cardReveal', cardId: 7 } as const;
+
+  function presentHarness() {
+    const order: string[] = [];
+    const h = harness({
+      onAction: (action, seq) => order.push(`action:${seq}`),
+      onPresent: (p) => order.push(`present:${p.seat}:${p.cue.kind}`),
+      onCatchUp: (items) => order.push(`catchUp:${items.length}`),
+    });
+    return { ...h, order };
+  }
+
+  it('`present()` 只发一条 `present`（不是意图、不改本地）', () => {
+    const h = presentHarness();
+    h.client.present(reveal);
+    expect(h.sent).toEqual([{ t: 'present', cue: reveal }]);
+    expect(h.order).toEqual([]);
+  });
+
+  it('`after` 就是手上最后一号 ⇒ 当场交出；排在还没到的 action 后面 ⇒ 等那一号交出之后再交', () => {
+    const h = presentHarness();
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'present', seat: 1, after: 0, cue: reveal });
+    // 乱序：2 号先到、1 号未到；提示排在 2 号之后
+    h.push({ t: 'action', seq: 2, action: step });
+    h.push({ t: 'present', seat: 1, after: 2, cue: { kind: 'cardFailed', cardId: 7 } });
+    expect(h.order).toEqual(['action:0', 'present:1:cardReveal']);
+    h.push({ t: 'action', seq: 1, action: step });
+    expect(h.order).toEqual(['action:0', 'present:1:cardReveal', 'action:1', 'action:2', 'present:1:cardFailed']);
+  });
+
+  it('过期的（`after` 比手上的还旧）/ 形状不对的 / 追赶补发期间的 ⇒ 丢掉', () => {
+    const h = presentHarness();
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'action', seq: 1, action: step });
+    h.push({ t: 'present', seat: 1, after: 0, cue: reveal });
+    h.push({ t: 'present', seat: 1, after: 1, cue: { kind: 'nope' } } as unknown as ServerMessage);
+    expect(h.order).toEqual(['action:0', 'action:1']);
+
+    const c = presentHarness();
+    c.push({ t: 'start', seed: 7, globalMapId: 0, seats: [], options: LOBBY_DEFAULT_OPTIONS, through: 1 });
+    c.push({ t: 'action', seq: 0, action: roll });
+    c.push({ t: 'present', seat: 1, after: 0, cue: reveal });
+    c.push({ t: 'action', seq: 1, action: step });
+    expect(c.order).toEqual(['catchUp:2']);
+  });
+});
