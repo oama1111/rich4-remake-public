@@ -20,7 +20,6 @@ import type { GameState } from '../state/types.ts';
 import type { LandInfo, Rich4Map } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, facilityIndexOf, housingIndexOf } from '../rules/land.ts';
-import { purchaseBlockedBy } from '../rules/purchase.ts';
 import { buyTool } from '../places/shop.ts';
 import { isAiControlled } from '../state/types.ts';
 import { canUseCard } from '../state/preview.ts';
@@ -637,13 +636,16 @@ export function decideAtLanding(state: GameState, map: Rich4Map): Action {
     level: state.landLevel[idx] ?? 0,
   };
 
-  // ★ 衰神/大衰神/死神附身时**一切消费都被拦**（`call 0x40fa61`），
-  //   而 `canPurchase` 查的是另一处（土地公只挡买无主地）。
-  //   AI 是纯函数：提一个 reducer 必拒的 action 会被原样重提，
-  //   直接卡死在 awaitingDecision —— 与当初卡片那次是同一类事故。
-  //   故这里先照 `purchase` 的规矩预演一遍。
-  if (purchaseBlockedBy(me) !== null) return { type: 'declineDecision' };
-
+  // ★★ 2026-09-24（第十九份试玩回报「小衰神显灵投资失败的弹窗没显示」）：
+  //   这里原先有一道「衰神/大衰神/死神附身 ⇒ 直接放弃」的短路 —— 那是当年 reducer
+  //   **拒收**被拦的 `buyLand` 时防卡死用的。现在 reducer 把被拦的消费收成
+  //   「弹 `god.blockPurchase` + 回合结束」（`godBlockedPurchase`），短路反而让电脑
+  //   **永远不去碰** `0x40fa61`，那扇「%s顯靈 投資失敗！」就再也弹不出来。
+  //   原版电脑两支都是**先照常决定、再过衰神闸**：
+  //   - 買地 `0x0041a089 call 0x41d7d4`（想买 ⇒ edi=1）→ `0x0041a0c7 call 0x40fa61`；
+  //   - 加蓋 `0x00419976 test [player+0x15],6 / jne 0x4199a7` → `0x004199ae call 0x40fa61`
+  //     （电脑不问，够钱就直接进闸）。
+  //   故这里不再预演 `purchase`，照常出手，由 reducer 弹框收场。
   const buy = canPurchase(land, me, state.priceIndex);
   if (buy.ok && aiShouldPurchase(me, buy.price, initialFundOf(state), state.priceIndex)) {
     return { type: 'buyLand' };

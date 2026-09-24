@@ -2936,9 +2936,11 @@ function landingTailDue(before: GameState, next: GameState, action: Action, topo
  * 消费被衰神/死神拦下（`purchase()` 的 `blockedByGod`）：收掉待决交互、回合结束，并弹原版那扇框。
  *
  * @source `fcn_0040fa61`：`0x0040fa9b mov esi,[eax*4+0x47ed76]`（物件名）→ `0x0040faa3 push 0x463514`
- *   （格式串 `%s顯靈\n\n拘資失敗！` —— 「拘」是原版的错字，照抄）→ `0x0040fab5 push 0x5dc`（1500 ms）
+ *   （格式串 `%s顯靈\n\n投資失敗！`，exe 逐字节复核见 `messages.ts` 的 `blockPurchase`）→ `0x0040fab5 push 0x5dc`（1500 ms）
  *   `call 0x440cac`（訊息框）→ 返回 1 ⇒ 调用方放弃这次消费。
  *   五个调用点都在**確認框之后**（见 `landing` 那段注释），所以这里是「答了 YES 之后」的出口。
+ *   ★ 电脑同样走到这里（買地先过 `0x41d7d4` 再进闸、加蓋不问直接进闸）—— AI 不许提前放弃，
+ *   否则这扇框永远弹不出来（第十九份回报，见 `ai/policy.ts` 的 `decideAtLanding`）。
  *
  * 现金不够（`notEnoughCash`）到不了这里 —— 框只在现金够时才弹；真到了就原样返回（交互留着），
  * 与先前一致。
