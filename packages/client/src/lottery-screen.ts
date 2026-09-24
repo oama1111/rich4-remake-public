@@ -960,6 +960,12 @@ export const lotteryScreen: UiScreen = {
    * ★ 与 ESC 同源：原版钩子把取消键补成 `WM_RBUTTONUP`（@source VA 0x004011c3）。
    * ⚠️ 本屏原来只有 ESC 一条出口（需求方第 3 条报的正是这一类）。
    */
+  contextmenuLive(env: UiScreenEnv): boolean {
+    // 与 `contextmenu` 同两道闸
+    if (ui.dismissed || ui.phase === 'bye' || ui.phase === 'closing' || ui.phase === 'noCash') return false;
+    return lotteryPending(env.state) !== null;
+  },
+
   contextmenu(_x: number, _y: number, env: UiScreenEnv): void {
     // 已经在拜拜/收屏/现金不足那几拍：按不动（原版 `cmp dl,3 / ja` 同一条闸）
     if (ui.dismissed || ui.phase === 'bye' || ui.phase === 'closing' || ui.phase === 'noCash') {

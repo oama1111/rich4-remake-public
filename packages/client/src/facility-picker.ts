@@ -388,6 +388,13 @@ export const facilityPickerScreen: UiScreen = {
     env.requestRender();
   },
 
+  /** 与 `contextmenu` 同一道闸：神明代蓋（`free`）那一次右键无效 */
+  contextmenuLive(env: UiScreenEnv): boolean {
+    if (pending !== null) return true;
+    const p = env.state.pending;
+    return !(p !== null && p.kind === 'buildFacility' && p.free === true);
+  },
+
   key(): boolean {
     // 原版这扇窗的跳表只认 0xf / 0x200 / 0x202 / 0x205 / 0x401 —— 键盘落到 DefWindowProc
     return false;

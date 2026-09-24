@@ -21,7 +21,26 @@
       #board {
         flex: 1 1 0; min-width: 0; width: 100%; height: 100%; display: block;
         cursor: default; image-rendering: pixelated;
+        /* ★ 触屏（需求方 2026-09-24）：手势全由 touch-input.ts 接管 —— 不滚动/不缩放、
+           长按不弹 iOS 的放大镜/拷贝菜单、不选字、点按不闪灰底 */
+        touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+        -webkit-tap-highlight-color: transparent;
       }
+      /* ★ 触屏的「取消」钮 = 一次右键（原版处处用右键取消，触屏上没有右键）。
+         只在触屏、且此刻右键有东西可取消时露出来；位置由 touch-input.ts 的
+         `cancelButtonPlacement` 算（优先放舞台外的黑边）。配色随门厅那套。 */
+      #touchcancel {
+        position: fixed; z-index: 42; padding: 0; border-radius: 10px;
+        border: 1px solid #3a5a83; background: #22405f; color: #e9eef7;
+        font: 600 16px/1.1 -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; letter-spacing: 2px;
+        box-shadow: 0 4px 14px rgba(0,0,0,.4);
+        touch-action: manipulation; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #touchcancel:active { background: #2f5680; }
+      #touchcancel[hidden] { display: none; }
+      #touchcancel.side { writing-mode: vertical-rl; letter-spacing: 6px; }
+      #touchcancel.corner { font-size: 13px; letter-spacing: 1px; opacity: .72; border-radius: 8px; }
       /* 侧栏收成调试抽屉：默认收起，D 键开关。游戏本身的側欄画在画布里 */
       #panel {
         width: 300px; flex: none; padding: 10px; overflow-y: auto;
@@ -134,6 +153,8 @@
       <textarea id="feedbacknote" maxlength="500" placeholder="例如：踩到空地沒有跳出買地的框"></textarea>
       <div class="row"><button id="feedbackcancel" type="button">取消</button><button id="feedbacksend" type="button">送出</button></div>
     </div>
+    <!-- ★ 触屏的「取消」钮（= 一次右键；只在触屏、且有东西可取消时出现） -->
+    <button id="touchcancel" type="button" hidden>取消</button>
     <!-- ★ W-75 联机提示：右下角堆叠 + 被託管的常驻横幅 -->
     <div id="toasts"></div>
     <div id="autopilotbanner" hidden>你已被託管，點一下畫面收回</div>

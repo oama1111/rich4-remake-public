@@ -1581,6 +1581,11 @@ export const magicScreen: UiScreen = {
     skipGreeting(env);
   },
 
+  /** 与 `contextmenu` 同一道闸：只有开场白那几拍（状态 < 3）右键才有反应 */
+  contextmenuLive(): boolean {
+    return win !== null && win.state < 3;
+  },
+
   tick(env: UiScreenEnv): void {
     const w = win;
     if (w === null) return;

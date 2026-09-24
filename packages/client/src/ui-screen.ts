@@ -182,6 +182,13 @@ export interface UiScreen {
   contextmenu?(x: number, y: number, env: UiScreenEnv): void;
 
   /**
+   * 这一拍收右键**会不会有反应**（纯查询，不许改状态）。只给触屏的「取消」钮定显隐用
+   * （见 `touch-input.ts` 的 `rightClickMeaningful`）—— 不影响 `contextmenu` 本身。
+   * 不给 = 声明了 `contextmenu` 就当一直有反应。
+   */
+  contextmenuLive?(env: UiScreenEnv): boolean;
+
+  /**
    * 键盘按下（原版 `WM_KEYDOWN` = **0x101**）。
    *
    * ★ 为什么要有这个出口：原版那一族**可跳过的等待**（`fcn_004544f6` /

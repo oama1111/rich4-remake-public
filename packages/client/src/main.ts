@@ -349,7 +349,9 @@ import { interactionUi, type InteractionUi } from './interactions.ts';
 // ★ 「取消」那一拍的梯子 —— ESC 与右键**共用同一份**（原版就是这么干的：
 //   钩子把取消键变成 `WM_RBUTTONUP 0x205`，主窗口过程只交给栈顶那扇窗）。
 //   取证与全表见 `panel-cancel.ts` 头部。
-import { CANCEL_SOUND, cancelLayerOf, type CancelLayer } from './panel-cancel.ts';
+import { CANCEL_SOUND, cancelLayerOf, type CancelLayer, type CancelSnapshot } from './panel-cancel.ts';
+// ★ 触屏的「右键」：长按 = 右键 + 可见的「取消」钮（需求方 2026-09-24，见 `touch-input.ts`）
+import { bindTouchGestures, cancelButtonPlacement, dispatchMouse, isTouchDevice, rightClickMeaningful } from './touch-input.ts';
 import {
   REMINDER_BGM,
   REMINDER_CANCEL_SOUND,
@@ -2160,7 +2162,13 @@ function maxDiceOf(p: { trafficMethod: number }): number {
  * @returns true = 这一拍有人接了（调用方该把事件吃掉）
  */
 function cancelTopPanel(): boolean {
-  const layer = cancelLayerOf({
+  const layer = cancelLayerOf(cancelSnapshot());
+  return layer === null ? false : applyCancelLayer(layer);
+}
+
+/** 梯子的输入 —— 全是纯查询（`cancelTopPanel` 与触屏「取消」钮的显隐共用这一份）*/
+function cancelSnapshot(): CancelSnapshot {
+  return {
     screen,
     overlay: activeUiScreen() !== null,
     pick: pick !== null,
@@ -2177,8 +2185,25 @@ function cancelTopPanel(): boolean {
     bail: bailScreenOn(),
     loan: bankPending() !== null,
     loanReminder: reminderUi !== null,
+  };
+}
+
+/**
+ * 此刻右键**有没有东西可取消/可跳过** —— 与下面 `contextmenu` 处理同一串判据
+ * （纯查询；判定本身在 `touch-input.ts` 的 `rightClickMeaningful`，单测钉着）。
+ * 触屏上的「取消」钮只在它为真时露出来。
+ */
+function rightClickMeaningfulNow(): boolean {
+  const overlay = activeUiScreen();
+  let overlayContextmenu: boolean | null = null;
+  if (overlay?.contextmenu !== undefined) overlayContextmenu = overlay.contextmenuLive?.(uiEnv()) ?? true;
+  return rightClickMeaningful({
+    tollFlash: tollFlash !== null,
+    overlayContextmenu,
+    cancel: cancelSnapshot(),
+    pickCancellable: pick?.cancellable ?? false,
+    minimapMarker: minimapMarker !== null,
   });
-  return layer === null ? false : applyCancelLayer(layer);
 }
 
 /** 真正动手的那一半 —— 与 `cancelLayerOf` **一对一**（梯子上每层恰好一条） */
@@ -8113,6 +8138,8 @@ function requestRender(): void {
     if (pick !== null && spriteArrived) refreshPickCursor();
 
     blitStage();
+    // 触屏「取消」钮：放在这一帧**画完之后**判 —— 本帧的 `tick` 可能刚把某一屏收掉
+    syncTouchCancel();
 
     // 有精灵在本帧解码完成 → 再画一次，把它们补上；
     // 骰子在滚也要继续要帧，否则动画只有一格；
@@ -11755,6 +11782,52 @@ function clockLeftMs(): number {
   return Math.max(0, clockBaseMs - (performance.now() - clockAt));
 }
 
+// ============================================================
+//  触屏的「取消」钮（需求方 2026-09-24：触屏上没有右键，用了卡片 / 开了卡片欄就退不出来）
+// ============================================================
+//
+//  点它 = 在画布上派**一次右键**（`contextmenu`），走的就是下面 `bindInput` 里那条右键处理，
+//  不另写取消逻辑。只在触屏、且 `rightClickMeaningfulNow()` 为真时露出来；
+//  放在舞台外的黑边里（竖屏手机在下、横放 iPad 在右），放不下才压在棋盘右下角。
+
+const touchCancelEl = $<HTMLButtonElement>('touchcancel');
+touchCancelEl.addEventListener('click', (e) => {
+  e.preventDefault();
+  // 各屏的 `contextmenu` 都不看坐标，但 `main.ts` 那条处理要求落在舞台里 ⇒ 取舞台正中
+  const c = stageToClient(SCREEN_W / 2, SCREEN_H / 2);
+  dispatchMouse(canvas, 'contextmenu', c.x, c.y);
+  requestRender();
+});
+
+/** 舞台坐标 → 页面 CSS 像素（`eventToStage` 反过来）*/
+function stageToClient(x: number, y: number): { x: number; y: number } {
+  const rect = canvas.getBoundingClientRect();
+  const m = currentMetrics();
+  const dpr = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+  return { x: rect.left + (m.offsetX + x * m.scale) / dpr, y: rect.top + (m.offsetY + y * m.scale) / dpr };
+}
+
+function syncTouchCancel(): void {
+  const show = isTouchDevice(window) && rightClickMeaningfulNow();
+  if (!show) {
+    if (!touchCancelEl.hidden) touchCancelEl.hidden = true;
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const tl = stageToClient(0, 0);
+  const br = stageToClient(SCREEN_W, SCREEN_H);
+  const at = cancelButtonPlacement(
+    { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+    { left: tl.x, top: tl.y, width: br.x - tl.x, height: br.y - tl.y },
+  );
+  touchCancelEl.className = at.mode;
+  touchCancelEl.style.left = `${at.left}px`;
+  touchCancelEl.style.top = `${at.top}px`;
+  touchCancelEl.style.width = `${at.width}px`;
+  touchCancelEl.style.height = `${at.height}px`;
+  touchCancelEl.hidden = false;
+}
+
 /** 棋盘右上角那颗倒计时 */
 function syncClockOverlay(): void {
   const left = clockLeftMs();
@@ -12296,6 +12369,8 @@ async function boot(): Promise<void> {
 
     document.body.classList.add('no-debug');
     bindInput();
+    // ★ 触屏：长按 = 右键；点 / 拖照旧派成鼠标事件，由上面同一批监听收（见 `touch-input.ts`）
+    bindTouchGestures(canvas);
     // ★ 第一次交互就解锁音频 —— 画布之外的任意一点/任意一键也算（autoplay 政策）
     bindAudioUnlock();
     // ★ W-74：「我还在这儿」——只要有鼠标 / 键盘输入就报一次（自己有 10 秒节流）
