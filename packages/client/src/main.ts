@@ -122,10 +122,8 @@ import {
   dropOwnCardUse,
   eventBoxPending,
   eventBoxScreen,
-  eventBoxScreenState,
   eventBoxTailPending,
   eventBoxTailTick,
-  eventTailScreen,
   setEventBoxStartGate,
   startCardRevealPopup,
   onEventBoxArtReady,
@@ -206,9 +204,6 @@ import { filmWaitsForSpeech, stageBusy, type SpeechOrder, type StageFlags } from
 // ★★ 第十五份：台词气泡 × 各种框的先后与互斥 —— 一把尺子、两道闸（规格见该模块文件头）
 import {
   SCREEN_BOX_TIER,
-  boxMayStart,
-  boxRank,
-  countedHeld,
   insertByRank,
   lineMayEnter,
   lineRank,
@@ -384,9 +379,6 @@ import { tollFlashLevel } from './toll-flash-fx.ts';
 import {
   noticeHoldsFilms,
   noticeKeyShowing,
-  noticePendingRanks,
-  noticeShowing,
-  noticeWaitingForSpeech,
   setNoticeCardPopup,
   setNoticeOverlayGate,
   setNoticeSpeechGate,
@@ -630,7 +622,8 @@ import { openBigMap } from './big-map-screen.ts';
 //   ESC 与右键都走那条登记契约（本屏的 `hotkey` / `contextmenu` 是同一支）。
 import { openHelpAt } from './help-screen.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
-import { pendingScreens, selectOverlay } from './overlay.ts';
+import { pendingScreens } from './overlay.ts';
+import { BLOCKING_PRESENTATIONS, DAY_AND_MAGIC_BOXES, PresentationHost } from './presentation-host.ts';
 import { dividendDayCrossed } from './shares-screen.ts';
 import {
   CURSOR_ARCHIVE,
@@ -1856,18 +1849,7 @@ let npcWalksDrawn: GameState['lastNpcWalks'] | null = null;
  * ⚠️ 只列**纯演出**的屏。待决交互类（拍賣 / 樂透投注 / 研究所 / 小遊戲 / 買賣框）不在此列 ——
  *   它们要靠回合驱动或屏自己把 `pending` 答掉，挡了会死锁。
  */
-const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
-  'shares',
-  'lottery-draw',
-  'monthly',
-  'magic',
-  'eventBox',
-  // ★ 第十五份：命運让出框之后那 800 ms（`0x0044dd7b`）
-  'eventTail',
-  'notice',
-  'wheel',
-  'god-slot',
-]);
+// ★ 第十六份：表本体搬到 `presentation-host.ts`（`BLOCKING_PRESENTATIONS`），与单测共用
 
 /**
  * 此刻是不是有一段**纯演出**在接管整屏（判据就是上面那张表）。
@@ -1876,20 +1858,9 @@ const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
  *   以及各屏自己的判断。
  */
 function blockingPresentation(): boolean {
-  // ★ 2026-09-23：保釋屏答完之后的收尾（醫院「ＯＫ！」/ 犯人道谢 / 護士道别）还在演 ⇒ 回合别往下走
-  //   （原版这几句都在那扇模态窗里，关屏才回到回合流程）
-  if (bailClosing()) return true;
-  // ★ 第十五份：分紅 / 開獎 / 月结 / 魔法屋押着等台词说完（`deferredScreenEvents`）⇒ 回合别往下走
-  if (deferredScreenEvents.length > 0) return true;
-  const overlay = activeUiScreen();
-  // ★ 魔法屋女巫窗口停在状态 7（等真人点一格）时**不算演出**：那一刻它就是一个待决交互
-  //   （`pending{magicHouse}`），挡住联机收件箱就会死锁 —— 别家那一端点定的答复
-  //   （或託管替他掷的那一条）永远进不来，本机只能一直看着「等玩家点」。
-  if (overlay !== null && overlay.id === 'magic' && magicAwaitingPick()) return false;
-  // ★ 第十四份：訊息框屏只是**排着一扇等台词说完的框**（保險理賠那一扇）时不算台上在演 ——
-  //   否则押在演出之后的那一句（付款 / 入獄台词，`afterStage`）与这扇框互相等。
-  if (overlay !== null && overlay.id === 'notice' && noticeWaitingForSpeech()) return false;
-  return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
+  // ★★ 第十六份：判据收在 `presentation-host.ts`（与单测同一份）—— 保釋收尾 / 押着的推日期屏 /
+  //   接管整屏的那一屏是演出类（女巫窗等点格、訊息框只是排着等台词这两种除外）
+  return presentationHost.screensBlocking();
 }
 
 /** 保釋屏答完之后那段收尾还在演（见 `blockingPresentation`）*/
@@ -1916,9 +1887,11 @@ function bailClosing(): boolean {
  *   - `walkDone`：走子补间（`renderer.walkDone()`，**已含替身那条**）；
  *   - `diceFxActive`：掷骰三段（预动作 / 滚骰 / 定格）。
  */
-function stageBusyFlags(): StageFlags {
+function stageBusyFlags(withScreens = true): StageFlags {
   return {
-    blockingPresentation: blockingPresentation(),
+    // ★ 第十六份：`withScreens = false` 给「影片那一类」用（`presentationHost` 的 `filmsBusy`）——
+    //   那条路**不许**回头问整屏判据（上一版就是在这里转成了无限递归）
+    blockingPresentation: withScreens ? blockingPresentation() : bailClosing(),
     boardFilm: boardFilm !== null,
     pendingBoardFilm: pendingBoardFilm !== null,
     pendingBoardFilmAfter: pendingBoardFilmAfter !== null,
@@ -1937,35 +1910,40 @@ function stageBusyFlags(): StageFlags {
 }
 
 function holdForActorWalk(reschedule: () => void): boolean {
-  if (screen !== 'game') return false;
+  const held = holdForActorWalkReason();
+  noteHold(held);
+  if (held === null) return false;
+  if (held === 'npcWalk') requestAnimationFrame(reschedule);
+  else reschedule();
+  return true;
+}
+
+/** `holdForActorWalk` 的判据本体：挡着就返回原因，放行返回 null（第十六份：拆出来好计时）*/
+function holdForActorWalkReason(): string | null {
+  if (screen !== 'game') return null;
   // ★ D-MAGIC-16：魔法屋逐人那几段还没演完（原版 `0x431caa` 整个循环是阻塞的）
   if (magicSeq !== null) {
-    reschedule();
-    return true;
+    return 'magicSeq';
   }
   // ★ 台上还有演出 ⇒ 等它收摊再派下一步。判据收在 `stageBusy()`（W-51）里，
   //   与 `queueSpeech` / `speechTick` 共用同一份清单 —— 逐位的来历见 `stageBusyFlags`。
   //   （原先这里是九个 `if` 各写一遍：纯演出整屏 / 走子补间 / 物件飞行 / 建屋片 /
   //     棋盘影片 / 两段影片之间的空档；现在一位不多、一位不少地收在一处。）
   if (stageBusy(stageBusyFlags())) {
-    reschedule();
-    return true;
+    return `stage:${stageBusyReason()}`;
   }
   // ★ 第十四份：飛機 / 飛碟那一段还押着（等台词 / 理賠框）—— 它不进 `stageBusy`
   //   （否则押后的台词永远等它，而它又在等台词），回合驱动单独在这里等
   if (pendingDisappearFx !== null) {
-    reschedule();
-    return true;
+    return 'disappearFx';
   }
   // ★ 第十五份：命運 pass 1 里的演出之后还要对着棋盘停 800 ms（`0x0044dd7b`），数完才轮下一步
   if (eventBoxTailPending()) {
-    reschedule();
-    return true;
+    return 'eventBoxTail';
   }
   if (state.lastNpcWalks.length > 0 && state.lastNpcWalks !== npcWalksDrawn) {
     npcWalksDrawn = state.lastNpcWalks;
-    requestAnimationFrame(reschedule);
-    return true;
+    return 'npcWalk';
   }
   // ★★ 还有台词在演 → 等它演完再派下一步。
   //
@@ -1981,8 +1959,7 @@ function holdForActorWalk(reschedule: () => void): boolean {
   //   押在 `heldSpeech` 里（见 `queueSpeech`），所以「屏还在演」与
   //   「台词还没说完」两件事由这一条一并挡住。
   if (speechQueue.length > 0 || heldSpeech.length > 0) {
-    reschedule();
-    return true;
+    return 'speech';
   }
   // ★ 第十四份試玩回報：落在地産格上，落点例程收尾之后原版还要**原地停 8 个 tick** 才换人
   //   （`0x0041b111` 返回 0x88 → `0x0040d840` 每 tick 减一 → 数完才 `0x0040d86f call 0x418ebd`）；
@@ -1995,13 +1972,41 @@ function holdForActorWalk(reschedule: () => void): boolean {
       const r = landingPauseRemaining(landingPause, performance.now(), tickMs(options.speed));
       landingPause = r.pause;
       if (r.waitMs > 0) {
-        reschedule(); // 与上面几道闸同一个重排：一个渲染周期后回头再看
-        return true;
+        return 'landingPause'; // 与上面几道闸同一个重排：一个渲染周期后回头再看
       }
       landingPause = null;
     }
   }
-  return false;
+  return null;
+}
+
+/** 台上忙的是哪一位（`stageBusy` 为真时）—— 计时 / 日志用；`blockingPresentation` 再细到哪一屏 */
+function stageBusyReason(): string {
+  const f = stageBusyFlags();
+  if (f.blockingPresentation) return `screen:${activeUiScreen()?.id ?? (bailClosing() ? 'bail' : deferredScreenEvents.length > 0 ? 'deferred' : '?')}`;
+  for (const [k, v] of Object.entries(f)) if (k === 'walkDone' ? v === false : v === true) return k;
+  return '?';
+}
+
+/**
+ * ★ 第十六份：回合驱动 / 联机收件箱**被挡了多久、挡在哪**（每条原因累计毫秒）—— `__rich4.presStats()` 读。
+ * 两次询问之间的时间记给上一次的原因（驱动每个渲染周期问一次）。
+ */
+const presentationStats: { holdMs: Record<string, number>; unwinds: number; lastAt: number; lastReason: string | null } = {
+  holdMs: {},
+  unwinds: 0,
+  lastAt: 0,
+  lastReason: null,
+};
+function noteHold(reason: string | null): void {
+  const now = performance.now();
+  const prev = presentationStats.lastReason;
+  if (prev !== null && presentationStats.lastAt > 0) {
+    const dt = Math.min(now - presentationStats.lastAt, 1000);
+    presentationStats.holdMs[prev] = (presentationStats.holdMs[prev] ?? 0) + dt;
+  }
+  presentationStats.lastAt = now;
+  presentationStats.lastReason = reason;
 }
 
 /** 落点收尾后的那 8 tick（`landing-pause.ts`）；`null` = 没有要停的 */
@@ -4442,47 +4447,31 @@ function releaseHeldSpeech(now: number): void {
   if (out.length > 0 && speechQueue.push(out, now) > 0) requestRender();
 }
 
+/**
+ * ★★ 第十六份：框 / 台词两侧的判据收在 `presentation-host.ts`（单测跑的是同一份），这里只交现取的状态。
+ * ⚠️ `filmsBusy` 用 `stageBusyFlags(false)`：不回头问整屏判据（断环，见那个文件的文件头）。
+ */
+const presentationHost = new PresentationHost({
+  screens: SCREENS,
+  env: () => uiEnv(),
+  filmsBusy: () => stageBusy({ ...stageBusyFlags(false), godLine: false }),
+  godLine: () => ({ showing: godLine !== null, pending: pendingGodLine !== null }),
+  speech: () => ({ onStage: speechQueue.length, held: heldSpeech }),
+  cueDone: (cue) => cueDone(cue),
+  deferredScreens: () => deferredScreenEvents.length,
+  magicAwaitingPick: () => magicAwaitingPick(),
+  bailClosing: () => bailClosing(),
+});
+
 /** 台词那一侧此刻的样子（框的起播闸用）*/
 function speechSnapshot(): SpeechSnapshot {
-  return { onStage: speechQueue.length, heldRanks: countedHeld(heldSpeech, cueDone).map((h) => h.rank) };
+  return presentationHost.speechSnapshot();
 }
 
-/**
- * 框那一侧此刻的样子（台词的上台闸用）。
- *
- * - `showing`：屏上正开着的框 —— 訊息框（含收掉后的空等）、事件框 / 亮牌、轉盤、神明老虎机、
- *   神明台词窗，以及推日期那几屏（分紅 / 開獎 / 月结）与魔法屋女巫窗（等真人点格那一拍除外）；
- * - `pendingRanks`：已经排定、还没起播的框的档；
- * - `filmsBusy`：W-51 那几位里**不是框**的（影片 / 建屋片 / 投掷 / 走子 / 掷骰 / 閃爍 / 升天）+ 保釋屏收尾。
- */
+/** 框那一侧此刻的样子（台词的上台闸用）—— 见 `PresentationHost.boxSnapshot` */
 function boxSnapshot(): BoxSnapshot {
-  const env = uiEnv();
-  const wheel = wheelScreenState();
-  const slot = godSlotState();
-  let showing =
-    godLine !== null || noticeShowing() || eventBoxScreenState().playing || wheel.playing || slot.playing ||
-    // ★ 第十五份：命運让出框之后那 800 ms（`0x0044dd7b` 阻塞等待）—— 原版这期间谁也不说话
-    eventTailScreen.active(env);
-  if (!showing) {
-    for (const s of SCREENS) {
-      if (!DAY_AND_MAGIC_BOXES.has(s.id) || !s.active(env)) continue;
-      if (s.id === 'magic' && magicAwaitingPick()) continue;
-      showing = true;
-      break;
-    }
-  }
-  const pendingRanks = noticePendingRanks();
-  if (deferredScreenEvents.length > 0) pendingRanks.push(boxRank(SCREEN_BOX_TIER.monthly));
-  if (eventBoxPending()) pendingRanks.push(boxRank(SCREEN_BOX_TIER.eventBox));
-  if (wheel.pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.wheel));
-  if (slot.pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.godSlot));
-  if (pendingGodLine !== null) pendingRanks.push(boxRank(SCREEN_BOX_TIER.godSay));
-  const filmsBusy = stageBusy({ ...stageBusyFlags(), blockingPresentation: bailClosing(), godLine: false });
-  return { showing, pendingRanks, filmsBusy };
+  return presentationHost.boxSnapshot();
 }
-
-/** 推日期那几屏 + 魔法屋女巫窗：都是 `lead` 档、起播即在屏上（见 `SCREEN_BOX_TIER`）*/
-const DAY_AND_MAGIC_BOXES: ReadonlySet<string> = new Set(['shares', 'lottery-draw', 'monthly', 'magic']);
 
 /**
  * ★★ 第十五份（需求方拍板）：分紅 / 開獎 / 月结 / 魔法屋女巫窗也走同一道起播闸 ——
@@ -4512,7 +4501,7 @@ function deliverScreenEvent(s: UiScreen, before: GameState, after: GameState, en
   if (
     DAY_AND_MAGIC_BOXES.has(s.id) &&
     (deferredScreenEvents.some((d) => d.screen === s) ||
-      (screenStarts(s.id, before, after) && !boxMayStart(SCREEN_BOX_TIER.monthly, speechSnapshot())))
+      (screenStarts(s.id, before, after) && presentationHost.boxBlocked(SCREEN_BOX_TIER.monthly)))
   ) {
     deferredScreenEvents.push({ screen: s, before, after });
     requestRender();
@@ -4524,7 +4513,7 @@ function deliverScreenEvent(s: UiScreen, before: GameState, after: GameState, en
 /** 每帧：闸开了就把押着的那几条按原先后派出去 */
 function flushDeferredScreenEvents(): void {
   if (deferredScreenEvents.length === 0) return;
-  if (!boxMayStart(SCREEN_BOX_TIER.monthly, speechSnapshot()) || boxSnapshot().showing) {
+  if (presentationHost.boxBlocked(SCREEN_BOX_TIER.monthly)) {
     requestRender();
     return;
   }
@@ -6237,7 +6226,7 @@ function uiEnv(): UiScreenEnv {
 function activeUiScreen(): UiScreen | null {
   // ★★ 第十六份（线上卡死）：**开着**的屏优先 —— 排着等起播的屏（`pendingOnly`）不抢接管位置，
   //   否则开着的那扇收不到 `tick`、永远收不掉（见 `overlay.ts` 文件头那三方互等）。
-  return selectOverlay(SCREENS, uiEnv());
+  return presentationHost.overlay();
 }
 
 /**
@@ -6334,9 +6323,8 @@ function tickGodLine(now: number): void {
     pendingBoardFilm === null &&
     // ★ 第十五份：台上有气泡 / 押着排在它前面的台词 ⇒ 等（原版台词 `0x0040ef44` → 影片 → `0x40e2a2`；
     //   没有影片时（「動畫過程」关掉）先前会与那句台词同屏）；亮牌 / 事件框还开着也等（它们在更前面）
-    boxMayStart(SCREEN_BOX_TIER.godSay, speechSnapshot()) &&
     // ★ 第十六份：屏上已经开着一扇框（訊息框 / 老虎机…）⇒ 等它收（原版同一时刻只有一扇）
-    !boxSnapshot().showing &&
+    !presentationHost.boxBlocked(SCREEN_BOX_TIER.godSay) &&
     !eventBoxScreen.active(uiEnv())
   ) {
     godLine = { text: pendingGodLine, at: now };
@@ -6403,9 +6391,8 @@ setGodSlotStartGate(
     godLine !== null ||
     pendingGodLine !== null ||
     // ★ 第十五份：台上有气泡 / 押着排在它前面的台词 ⇒ 等（`presentation-order.ts`）
-    !boxMayStart(SCREEN_BOX_TIER.godSlot, speechSnapshot()) ||
-    // ★ 第十六份：屏上已经开着一扇框 ⇒ 等它收
-    boxSnapshot().showing,
+    // ★ 第十六份：台词那一侧没放行、或屏上已经开着一扇框 ⇒ 等
+    presentationHost.boxBlocked(SCREEN_BOX_TIER.godSlot),
 );
 
 setNoticeStartGate(
@@ -6431,10 +6418,10 @@ setNoticeStartGate(
 //   先前只有回合開始被挡（第十三份 #2）、保險理賠、小衰神丢卡这几扇等，其余一律与台词同屏。
 // ★★ 第十六份（线上卡死）：屏上已经开着别的框（老虎机 / 事件框 / 神明台词窗…）⇒ 也不起 ——
 //   原版全是阻塞调用，同一时刻只有一扇；先前「使用地雷」框在排着的老虎机之外照起，才有那三方互等。
-setNoticeSpeechGate((tier) => !boxMayStart(tier, speechSnapshot()) || boxSnapshot().showing);
+setNoticeSpeechGate((tier) => presentationHost.boxBlocked(tier));
 // ★ 第十五份：事件框 / 亮牌 / 抽卡卡面（`lead` 档）与轉盤（`stage` 档）同一道闸
-setEventBoxStartGate(() => !boxMayStart(SCREEN_BOX_TIER.eventBox, speechSnapshot()) || boxSnapshot().showing);
-setWheelStartGate(() => !boxMayStart(SCREEN_BOX_TIER.wheel, speechSnapshot()) || boxSnapshot().showing);
+setEventBoxStartGate(() => presentationHost.boxBlocked(SCREEN_BOX_TIER.eventBox));
+setWheelStartGate(() => presentationHost.boxBlocked(SCREEN_BOX_TIER.wheel));
 // ★ 第十四份：命運 / 新聞的施加阶段（加持框、理賠框…）排在事件提示框收掉之后
 setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
 // ★ 第十四份（D-008 收口）：嫁禍卡的选人窗 —— 与对话框同一道闸（`currentDialog`）：
@@ -8227,6 +8214,7 @@ function watchPresentationDeadlock(now: number): void {
   }
   if (now - presentationStallSince < PRESENTATION_STALL_MS) return;
   presentationUnwindLevel++;
+  presentationStats.unwinds++;
   const message = `⚠ 演出死锁自解（第 ${presentationUnwindLevel} 级，${PRESENTATION_STALL_MS / 1000} 秒无进展）：${key}`;
   log(message);
   hostLog(`[stall] ${message}`);
@@ -8278,7 +8266,7 @@ function unwindPresentations(level: number): void {
  */
 let speechBoxOverlap = false;
 function watchSpeechBoxOverlap(bubbleUp: boolean): void {
-  const both = bubbleUp && boxSnapshot().showing;
+  const both = bubbleUp && presentationHost.boxShowing();
   if (both && !speechBoxOverlap) {
     const overlay = activeUiScreen();
     log(`⚠ 台詞氣泡與框同屏（${overlay?.id ?? (godLine !== null ? 'godLine' : '?')}）`);
@@ -11755,6 +11743,11 @@ async function boot(): Promise<void> {
         hoverToolbar: (i: number | null) => { hotTool = i; requestRender(); },
         /** 直接派一个 action —— 自动化测试用，走的与人点按钮同一条路 */
         dispatch: (a: Action) => { dispatch(a); },
+        /** ★ 第十六份：驱动 / 收件箱被演出挡了多久（按原因）与演出死锁看门狗放行次数 */
+        presStats: () => ({
+          unwinds: presentationStats.unwinds,
+          holdMs: Object.fromEntries(Object.entries(presentationStats.holdMs).map(([k, v]) => [k, Math.round(v)])),
+        }),
         /**
          * 把当前玩家挪到某一格并结算 —— **只给自动化测试用**。
          * 走的是引擎的傳送機规则（rules/teleport.ts）加一次 settle，

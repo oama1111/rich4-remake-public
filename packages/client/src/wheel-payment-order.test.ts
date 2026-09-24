@@ -252,11 +252,12 @@ describe('★ main.ts 的三條閘 @source 0x0041a458 / 0x0041a71e / 0x0044f1a6'
     expect(release).toContain('h.cue !== undefined && !cueDone(h.cue)');
     expect(release).toContain('speechQueue.push(out, now)');
     // ★★ 影片那一類（轉盤之外的 W-51 那幾位）照舊擋 `afterStage` 起的句子
-    const snap = functionBody(src, 'boxSnapshot').text;
-    expect(snap).toContain('stageBusy({ ...stageBusyFlags(), blockingPresentation: bailClosing(), godLine: false })');
+    //    （第十六份起判據在 `presentation-host.ts`，`main.ts` 只交影片位：不回頭問整屏判據）
+    expect(src).toContain('filmsBusy: () => stageBusy({ ...stageBusyFlags(false), godLine: false }),');
+    const host = readFileSync(new URL('./presentation-host.ts', import.meta.url), 'utf8');
     // 轉盤在演 / 排著 ⇒ 算「框」：在演 = showing、排著 = pendingRanks
-    expect(snap).toContain('wheel.playing');
-    expect(snap).toContain('if (wheel.pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.wheel));');
+    expect(host).toContain('if (wheelScreenState().playing || godSlotState().playing) return true;');
+    expect(host).toContain('if (wheelScreenState().pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.wheel));');
   });
 
   runMain('★ `speechTick`：押後的**按閘放行**，但佇列照常推進（死鎖自查）', () => {
@@ -275,14 +276,18 @@ describe('★ main.ts 的三條閘 @source 0x0041a458 / 0x0041a71e / 0x0044f1a6'
   runMain('★ `holdForActorWalk`：還有台詞（在演或押著）就不派下一步', () => {
     const src = mainSource();
     if (src === null) return;
-    const body = functionBody(src, 'holdForActorWalk').text;
-    // 閘要在**放行（最後那個 `return false`）之前**，否則等於沒有
+    // 第十六份：判據本體拆到 `holdForActorWalkReason`（擋著就交原因，好計時）
+    const body = functionBody(src, 'holdForActorWalkReason').text;
+    // 閘要在**放行（最後那個 `return null`）之前**，否則等於沒有
     const gateAt = body.indexOf('speechQueue.length > 0 || heldSpeech.length > 0');
-    const releaseAt = body.lastIndexOf('return false');
+    const releaseAt = body.lastIndexOf('return null');
     expect(gateAt).toBeGreaterThanOrEqual(0);
     expect(gateAt).toBeLessThan(releaseAt);
+    expect(body.slice(gateAt, releaseAt)).toContain("return 'speech';");
     // 擋下時要 reschedule（不然兩個驅動從此不再回頭）
-    expect(body.slice(gateAt, releaseAt)).toContain('reschedule()');
+    const outer = functionBody(src, 'holdForActorWalk').text;
+    expect(outer).toContain('if (held === null) return false;');
+    expect(outer).toContain('else reschedule();');
   });
 
   runMain('★ 演出期間續幀的條件也要認押後的那幾句（否則押著的台詞永不上台）', () => {

@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { makeGameState, makePlayer, type Action, type GameState } from '@rich4/core';
 import { fastForwardPresentations, presenterMovedOn } from './follow-presenter.ts';
+import { BLOCKING_PRESENTATIONS } from './presentation-host.ts';
 import { SCREENS } from './screens.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
@@ -161,8 +162,8 @@ const follow = slice('function followPresenter(', 'function startNetTick(');
 
 /** `main.ts` 里 `BLOCKING_PRESENTATIONS` 那张表的 id */
 function blockingIds(): string[] {
-  const body = slice('const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([', ']);');
-  return [...body.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  // 第十六份：表本体搬到 `presentation-host.ts`（与单测共用），`main.ts` 从那里 import
+  return [...BLOCKING_PRESENTATIONS];
 }
 
 describe('main.ts 接线', () => {

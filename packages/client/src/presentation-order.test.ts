@@ -680,8 +680,11 @@ describe('★ 分紅 / 開獎 / 月结 / 魔法屋女巫窗也走同一道起播
   runMain('整屏的 event() 经 `deliverScreenEvent` 派发；押着时算台上在演、算 `lead` 档的排队框；每帧 flush', () => {
     const src = readFileSync(MAIN, 'utf8');
     expect(src).toContain('for (const s of SCREENS) deliverScreenEvent(s, before, state, env);');
-    expect(src).toContain('if (deferredScreenEvents.length > 0) return true;');
-    expect(src).toContain('if (deferredScreenEvents.length > 0) pendingRanks.push(boxRank(SCREEN_BOX_TIER.monthly));');
+    // 第十六份：判据在 `presentation-host.ts`（与单测共用），`main.ts` 把押着的条数交进去
+    const host = readFileSync(new URL('./presentation-host.ts', import.meta.url), 'utf8');
+    expect(host).toContain('if (this.deps.deferredScreens() > 0) return true;');
+    expect(host).toContain('if (this.deps.deferredScreens() > 0) pendingRanks.push(boxRank(SCREEN_BOX_TIER.monthly));');
+    expect(src).toContain('deferredScreens: () => deferredScreenEvents.length,');
     expect(src).toContain('flushDeferredScreenEvents();');
     for (const id of ['monthly', 'shares', 'lottery-draw', 'magic']) {
       expect(SCREEN_BOX_TIER[({ 'lottery-draw': 'lotteryDraw' } as Record<string, ScreenBox>)[id] ?? (id as ScreenBox)]).toBe('lead');
