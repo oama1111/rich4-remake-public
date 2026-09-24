@@ -13,13 +13,18 @@
  *
  * 这里钉三件事：
  *   ① 出厂值：視窗 = 小地圖（原版 `0x00411efc`）、速度 = 最快（需求方拍板，有意偏离）；
- *   ② 没有 cfg / 有 cfg 两种开机，侧栏都从同一个换算（`sidebarViewOf`）来；
- *   ③ 两条开局路都**不改** `options` / `sidebarView`，且开机先读 cfg 再分流到单机 / 联机 ——
+ *   ② 没有 cfg / 有 cfg 两种开机，侧栏都从同一处（`options.windowView`，每帧直读）来；
+ *   ③ 两条开局路都**不改** `options`，且开机先读 cfg 再分流到单机 / 联机 ——
  *      ⇒ 同一台机器上两边一定是同一套；另附「单机开局的换局清理，联机逐行都有」的漂移检测。
+ *
+ * ★ 第二十一份（「设置里配置组合画面时和原版不符」）起，先前那份另存的 `sidebarView`
+ *   （连同换算 `sidebarViewOf`）已拆掉：右栏版式每帧直读 `options.windowView`（`hud.ts` 的
+ *   `sidebarLayout`），日/月曆版式另放 `calendarPage`。「同源」这条不变量于是更强了 —— 根本没有第二份。
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_OPTIONS, sidebarViewOf } from './options.ts';
+import { DEFAULT_OPTIONS } from './options.ts';
+import { sidebarLayout } from './hud.ts';
 
 const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
 
@@ -42,7 +47,7 @@ const applyOptionsFn = slice('function applyOptions(next: GameOptions): void {',
 describe('★★ 出厂设定（没有 RICH4.CFG 时）', () => {
   it('視窗 = 01 小地圖 @source 0x00411efc `mov byte [0x49715d], ah`（ah = 1）', () => {
     expect(DEFAULT_OPTIONS.windowView).toBe(1);
-    expect(sidebarViewOf(DEFAULT_OPTIONS.windowView)).toBe('map');
+    expect(sidebarLayout(DEFAULT_OPTIONS.windowView)).toEqual({ panel: 'full', minimapTop: 280, calendar: false });
   });
 
   it('速度 = 2（3 格、最快）—— 需求方 2026-09-23 拍板；原版出厂是 1（0x00411edc）', () => {
@@ -56,10 +61,10 @@ describe('★★ 出厂设定（没有 RICH4.CFG 时）', () => {
     expect(DEFAULT_OPTIONS.animation).toBe(true);
   });
 
-  it('`sidebarViewOf`：01 → 小地圖；00 / 02 → 日曆（02 輪流未查证，维持暂定）', () => {
-    expect(sidebarViewOf(0)).toBe('calendar');
-    expect(sidebarViewOf(1)).toBe('map');
-    expect(sidebarViewOf(2)).toBe('calendar');
+  it('`sidebarLayout`：00 日曆 / 01 小地圖 / 02 組合畫面（窄版面板 + 小地图 + 日曆）@source 0x00418bcd', () => {
+    expect(sidebarLayout(0)).toEqual({ panel: 'full', minimapTop: null, calendar: true });
+    expect(sidebarLayout(1)).toEqual({ panel: 'full', minimapTop: 280, calendar: false });
+    expect(sidebarLayout(2)).toEqual({ panel: 'compact', minimapTop: 80, calendar: true });
   });
 
   it('没有 cfg ⇒ 就是出厂值（`options` 初值 = `DEFAULT_OPTIONS`，读 cfg 只在有文件时覆盖）', () => {
@@ -75,17 +80,20 @@ describe('★★ 单机与联机同源：只在开机定一次，两条开局路
     }
   });
 
-  it('侧栏初值不再硬编码，与出厂值同源', () => {
-    expect(main).toContain('let sidebarView: SidebarView = sidebarViewOf(DEFAULT_OPTIONS.windowView);');
-    expect(main).not.toMatch(/let sidebarView: SidebarView = '(calendar|map|month)'/);
+  it('侧栏版式没有另存的一份：画的时候直接读 `options.windowView`', () => {
+    expect(main).not.toMatch(/let sidebarView\b/);
+    expect(main).not.toMatch(/^\s*sidebarView = /m);
+    expect(main).toContain('windowView: options.windowView,');
+    // 日/月曆那一格（`[0x497164]`）出厂是日曆
+    expect(main).toContain("let calendarPage: CalendarPage = 'calendar';");
   });
 
-  it('开机读 cfg：没有 cfg 也走完（不提前 return），侧栏按同一个换算定', () => {
-    expect(loadCfg).toContain('sidebarView = sidebarViewOf(options.windowView);');
+  it('开机读 cfg：没有 cfg 也走完（不提前 return）', () => {
     expect(loadCfg).not.toMatch(/if \(cfg === null\) return/);
-    // 設定屏「確定」也走同一个换算
-    expect(main).toContain('sidebarView = sidebarViewOf(next.windowView);');
-    // 除上面两处与侧栏自己的切换钮外，没有别处再按 windowView 自己换算
+    expect(loadCfg).toContain('windowView: cfg.view,');
+    // 設定屏「確定」把整份取值换进 `options`（版式随之而变）
+    expect(applyOptionsFn).toContain('options = next;');
+    // 没有别处再按 windowView 自己换算版式
     expect(main.match(/windowView === 1 \? 'map'/g)).toBeNull();
   });
 
@@ -101,7 +109,6 @@ describe('★★ 单机与联机同源：只在开机定一次，两条开局路
   it('★ 三条开局路（单机 / 联机开局 / 失步重建）都不改 `options` / `sidebarView`', () => {
     for (const [name, s] of Object.entries({ startGame, onStart, onResync })) {
       expect(s, name).not.toMatch(/\boptions = /);
-      expect(s, name).not.toMatch(/\bsidebarView = /);
       expect(s, name).not.toContain('loadConfigFromStore(');
     }
   });

@@ -162,10 +162,12 @@ import {
   hitMinimapArrow,
   hitMinimapBody,
   hitPanelTag,
+  hitMinimapArea,
   hitSidebar,
   minimapToWorld,
+  sidebarLayout,
+  type CalendarPage,
   type MinimapArrowId,
-  type SidebarView,
 } from './hud.ts';
 import {
   CONTROL,
@@ -175,7 +177,6 @@ import {
   applyOptionsHit,
   controlHit,
   drawOptions,
-  sidebarViewOf,
   hitControl,
   volumeOf,
   HOTKEY_NAMES,
@@ -829,12 +830,16 @@ let hoverNode: number | null = null;
 let nodeTip: TipModel | null = null;
 let renderer: BoardRenderer;
 /**
- * 右下角那块 200×200 现在显示哪一面。
- * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流；
- *   出厂值（没有 cfg）是 **01 小地圖**（`0x00411efc mov [0x49715d], ah`，`ah = 1`）。
- * ★ 初值与开机、設定「確定」同源（`sidebarViewOf`），不再硬编码 —— 见 `DEFAULT_OPTIONS`。
+ * 日曆那一面画哪个版式（原版 `[0x497164]` = `RICH4.CFG` +12，出厂 0 = 日曆）。
+ *
+ * ★★ 第二十一份（「设置里配置组合画面时和原版不符」）：先前这里是一个把**两件事**揉在一起的
+ *   `sidebarView: 'calendar' | 'month' | 'map'` —— 右栏版式（`cfg+5`）与日/月曆版式（`[0x497164]`）。
+ *   于是 `cfg+5 = 2`（組合畫面）没处可放，被当成日曆。现在拆开：
+ *   **右栏版式每帧直接读 `options.windowView`**（原版每次重画都直接读 `cfg+5`，
+ *   `fcn_00416e6d` 的 `0x416e74`、`fcn_004169bc` 的 `0x4169c3`、WM_PAINT 的 `0x418bcd`），
+ *   这里只留日/月曆那一格。版式见 `hud.ts` 的 `sidebarLayout`。
  */
-let sidebarView: SidebarView = sidebarViewOf(DEFAULT_OPTIONS.windowView);
+let calendarPage: CalendarPage = 'calendar';
 
 /**
  * 右上角面板现在显示第几页（0 資金 / 1 地產 / 2 股票 / 3 其他）—— **每个玩家一份**。
@@ -942,16 +947,9 @@ function loadConfigFromStore(): void {
     };
     optionsKeys = configHotkeyKeys(cfg);
   }
-  // ★★ 2026-09-24（第十六份試玩回報「默认展示缩小地图…是不是没部署到多人模式」）：
-  //   **没有 cfg 也要走到这一行** —— 先前 `cfg === null` 就直接 return，侧栏停在硬编码的
-  //   `'calendar'` 上，而 `options` 是出厂值 ⇒ 新窗口（例如联机开的第二个窗口）里侧栏与設定屏各说各的。
-  //   单机与联机都只在这里定一次（三条开局路都不改 `options` / `sidebarView`）。
-  // ★★ 2026-09-22（第十一份試玩回報 #8「开局默认是日月历模式，但是设置里打开默认是缩小地图模式」）：
-  //   原版**每次重画侧栏都直接读 cfg**（`fcn_00416e6d` 的 `0x416e7d movzx ebp,byte [cfg+5]`、
-  //   `fcn_004169bc` 的 `0x4169cd cmp byte [cfg+5],1`）⇒ 不存在「开机一套、设定屏另一套」。
-  //   `applyOptions`（設定屏「確定」）之外，开机读 cfg 这条路也得把侧栏一致化
-  //   （**不要**在开机跑 `applyOptions`：那会带上音量/写档的副作用）。
-  sidebarView = sidebarViewOf(options.windowView);
+  // ★★ 第十一份 #8 / 第十六份：侧栏与設定屏必须同源 —— 现在右栏版式**每帧直接读
+  //   `options.windowView`**（`hud.draw` 的 `windowView`），不再有另存的一份，
+  //   开机、設定「確定」、熱鍵「切換視窗組」改的都是 `options` 这一处 ⇒ 单机与联机同一条路。
   // 音量也在开机就按 cfg（或出厂值）作用上 —— 只有音量，不写档、不起停曲子（见 `applyVolumes`）
   applyVolumes(options);
 }
@@ -2469,9 +2467,17 @@ function handleHotkey(fn: number): boolean {
       return true;
     case HOTKEY.switchOption:
     case HOTKEY.switchWindowGroup:
-      // 右下角那块 200×200 轮换：日曆 → 月曆 → 小地圖
-      sidebarView =
-        sidebarView === 'calendar' ? 'month' : sidebarView === 'month' ? 'map' : 'calendar';
+      // ★★ 第二十一份：熱鍵「切換視窗組」轮的是 **`cfg+5` 三态**（日、月曆 → 縮小地圖 → 組合畫面），
+      //   不是「日曆 → 月曆 → 小地圖」（日/月曆只由太阳/月亮两颗钮换，`[0x497164]` 不归它管）。
+      // @source VA 0x0040121b..0x0040125d（棋盘窗口的熱鍵分派，键 = `[0x497176]` = 熱鍵表第 7 条）：
+      //   `inc byte [cfg+5] / cmp dh, 3 / jne / mov [cfg+5], 0` → `fcn_00419703` + `fcn_0041906a(1)` 整屏重画，不放音效。
+      //   ⚠️ 原版只改内存里的 cfg，**「結束程式」时**才写档（`0x0040148f call 0x411f80`）；
+      //   浏览器没有「结束」那一下，故这里当场写回 —— 与原版退出时落盘的结果相同。
+      //   `[0x497174]`（熱鍵第 6 条「切換選項」）在这个分派里没有引用，两条默认都是 Tab，照旧同一支。
+      if (screen !== 'game') return false;
+      options = { ...options, windowView: (options.windowView + 1) % 3 };
+      saveConfigToStore();
+      requestRender();
       return true;
     case HOTKEY.query:
       openAssets();
@@ -2485,6 +2491,8 @@ function handleHotkey(fn: number): boolean {
         pageEstateList(fn === HOTKEY.pageUp ? -1 : 1);
         return true;
       }
+      // 組合畫面那块窄版面板**没有页**：原版 `0x004014b1 cmp [cfg+5], 2 / je 0x401523` 把两键吃掉
+      if (sidebarLayout(options.windowView).panel !== 'full') return true;
       cyclePanelPage(fn === HOTKEY.pageUp ? -1 : 1);
       return true;
 
@@ -3650,9 +3658,9 @@ function applyVolumes(o: GameOptions): void {
 function applyOptions(next: GameOptions): void {
   options = next;
   applyVolumes(next);
-  // 設定里那三项：00 日曆 / 01 小地圖 / 02 兩者輪流（RICH4.CFG offset 5）
-  // ⚠️ 「兩者輪流」怎么轮没查证，先当日曆（点一下可以手动换）
-  sidebarView = sidebarViewOf(next.windowView);
+  // 設定里「視 窗」三选一（RICH4.CFG +5）：右栏每帧直接读 `options.windowView`，这里不必另存。
+  // @source 設定屏「確定」VA 0x00410969..0x00410a10：整份 16 字节拷回 cfg，`cfg+5` 变了就回 0x8000
+  //   让棋盘窗口整屏重画 —— 下一帧 `hud.draw` 按新版式画（组合画面见 `sidebarLayout`）。
   // ⚠️ 换曲**不在这里** —— 原版是点列表那一下就立刻换（见 `onOptionsDown`），
   //   「確定」只负责把 cfg 写回去、并按新的音量档调播放器（VA 0x004109e2）。
   //   这里只在「音乐本来是关的、现在打开了」时补一次起播。
@@ -8895,7 +8903,8 @@ function drawGameStage(): void {
     map,
     camera,
     minimapBg,
-    sidebarView,
+    windowView: options.windowView,
+    calendarPage,
     minimapMarker,
     // ★ 替身那一趟小地图白框框替身（`hud.ts` 的 `minimapFrameCenter`，VA 0x00416f3d）
     npcFrame: renderer.npcWalkWorld(performance.now()),
@@ -9990,9 +9999,9 @@ function bindInput(): void {
     }
 
     // 右下角小地图那两颗箭头的**悬停**（原版 VA 0x00418415：鼠标在箭头条上就换成高亮图）
-    const hotArrow = sidebarView === 'map' && hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)
-      ? hitMinimapArrow(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y - SIDEBAR.y)
-      : null;
+    // （小地图顶边随「視窗」三态走：縮小地圖 280、組合畫面 80 —— `hitMinimapArea`，表 `0x4752aa`）
+    const mmHover = hitMinimapArea(options.windowView, p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y);
+    const hotArrow = mmHover !== null ? hitMinimapArrow(mmHover.x, mmHover.y) : null;
     if (hotArrow !== hotMinimapArrow) {
       hotMinimapArrow = hotArrow;
       requestRender();
@@ -10609,7 +10618,9 @@ function bindInput(): void {
 
     // 右上角那四条彩色竖条：**点一下就换页** @source VA 0x004182fa
     // 页号 = `y / 70`；页没变就什么都不做（原版连音效都不放）。
-    const tag = hitPanelTag(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y);
+    // ★ 組合畫面没有竖条（窄版面板），那一段 y 是小地图：`0x004182fa cmp [cfg+5], 2 / je` 整支跳过
+    const layout = sidebarLayout(options.windowView);
+    const tag = layout.panel === 'full' ? hitPanelTag(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y) : null;
     if (tag !== null) {
       setPanelPage(state.currentPlayer, tag);
       return;
@@ -10621,35 +10632,33 @@ function bindInput(): void {
       requestRender();
       return; // 点在工具栏上就不要同时开始拖动地图
     }
-    if (hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)) {
-      // ★ 右下角那 200×200 —— **日曆那一面也有两颗钮**：太阳/月亮是「日曆 ↔ 月曆」
-      //   的切换钮（VA 0x0041838c）。**只有純小地圖那一面（cfg+5 = 1）什么都不接。**
-      const lx = p.x - LAYOUT.panel.x;
-      const ly = p.y - LAYOUT.panel.y - SIDEBAR.y;
-      if (sidebarView !== 'map') {
-        const to = hitCalendarToggle(lx, ly);
-        if (to !== null) {
-          // 已经是这一面 → 什么都不做（原版连音效都不放）
-          if (to !== sidebarView) {
-            sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
-            sidebarView = to;
-            requestRender();
-          }
-          return;
-        }
-        return;
+    // ★ 右栏下面两块按「視窗」三态分（`sidebarLayout`）：日曆那 200×200 恒在 y = 280，
+    //   小地图在 280（縮小地圖）或 80（組合畫面）。原版判的顺序也是先日曆、后小地图
+    //   （VA 0x0041835f → 0x00418415）。
+    if (layout.calendar && hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)) {
+      // 日曆那一面的两颗钮：太阳/月亮是「日曆 ↔ 月曆」的切换钮（VA 0x0041838c）。
+      // **只有純小地圖那一态（cfg+5 = 1）没有这一面**（`0x0041835f cmp [cfg+5], 1 / je`）。
+      const to = hitCalendarToggle(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y - SIDEBAR.y);
+      // 已经是这一面 → 什么都不做（原版连音效都不放）
+      if (to !== null && to !== calendarPage) {
+        sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+        calendarPage = to;
+        requestRender();
       }
-
-      const arrow = hitMinimapArrow(lx, ly);
+      return;
+    }
+    const mm = hitMinimapArea(options.windowView, p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y);
+    if (mm !== null) {
+      const arrow = hitMinimapArrow(mm.x, mm.y);
       if (arrow !== null) {
         // 按下先记账 + 亮起来，**松开才转** —— 原版是按下/抬起两段（VA 0x00418415 / 0x004186cb）
         pressedMinimapArrow = arrow;
         requestRender();
         return;
       }
-      if (hitMinimapBody(lx, ly)) {
+      if (hitMinimapBody(mm.x, mm.y)) {
         // 点小地图本体：把光标处的局部坐标换成世界坐标、夹紧，镜头就停在那儿（可继续拖）
-        minimapMarker = minimapCenterFromLocal(lx, ly);
+        minimapMarker = minimapCenterFromLocal(mm.x, mm.y);
         draggingMinimap = true;
         centerOnMarker();
         requestRender();
@@ -10985,8 +10994,9 @@ function bindInput(): void {
       // 按着小地图拖 —— 光标停在哪，镜头就移到哪（原版 VA 0x0041899b 也是这么算的）
       const p = eventToStage(e);
       if (p === null) return;
+      // 顶边随「視窗」三态走（VA 0x0041895b：組合畫面 `lea esi, [edx - 0x50]`）
       const lx = p.x - LAYOUT.panel.x;
-      const ly = p.y - LAYOUT.panel.y - SIDEBAR.y;
+      const ly = p.y - LAYOUT.panel.y - (sidebarLayout(options.windowView).minimapTop ?? SIDEBAR.y);
       minimapMarker = minimapCenterFromLocal(
         Math.min(SIDEBAR.w - 1, Math.max(0, lx)),
         Math.min(SIDEBAR.h - 1, Math.max(0, ly)),

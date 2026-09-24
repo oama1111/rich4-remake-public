@@ -29,6 +29,7 @@ import { CHARACTERS } from '@rich4/data';
 import { DeferredSpriteClose, portraitResource, type Sprite, type SpriteCache } from './assets.ts';
 import type { Camera } from './render.ts';
 import { FONT_FAMILY } from './font.ts';
+import { currency } from './panel.ts';
 import { MINIMAP_MARK_RESOURCE, drawMinimapMarks, minimapMarks } from './minimap-marks.ts';
 
 /** 侧栏整图尺寸 @source Panel.mkf 资源 0 的图 0 */
@@ -42,8 +43,8 @@ export const PANEL_HEIGHT = 280;
  * ```
  * RICH4.CFG  offset 5:  00 日曆   01 小地圖   02 兩者輪流
  * ```
- * （@source rich4-re/docs/rich4_cfg.txt —— 这是配置文件的字段说明，
- *   不涉及规则，属可信的一类线索。）
+ * （@source rich4-re/docs/rich4_cfg.txt —— 配置文件的字段说明。
+ *   ⚠️ 其中「02 兩者輪流」是猜错的：02 是設定屏的「組合畫面」，三块同屏，见 `sidebarLayout`。）
  *
  * 日曆那一面的底图就在 `Panel.mkf` 资源 2：
  * - 图 0..3 四季实景，**不带**日曆框（另有他用）
@@ -260,11 +261,133 @@ export function monthCells(year: number, month: number): MonthCell[] {
 }
 
 /**
- * 右下角显示哪一面。
- * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流。
- *   「日曆」这一面自己又分**日曆**与**月曆**两个版式（见 `CAL`）。
+ * 日曆那一面的两个版式 —— 原版 `[0x497164]`（= `RICH4.CFG` +12）：0 日曆 / 1 月曆，
+ * 由太阳/月亮两颗钮切换（见 `CAL_TOGGLE_HIT`）。**与 `cfg+5`（視窗）互相独立**：
+ * 視窗决定「日曆那一面在不在屏上」，这一格决定「在的时候画哪个版式」。
  */
-export type SidebarView = 'calendar' | 'month' | 'map';
+export type CalendarPage = 'calendar' | 'month';
+
+// ============================================================
+//  視窗三态（設定屏「視 窗」三选一 / 熱鍵「切換視窗組」）
+// ============================================================
+
+/**
+ * `cfg+5`（`[0x49715d]`）三态下，小地图那 200×200 的**顶边**（屏幕 y；0 = 这一态不画小地图）。
+ *
+ * @source 表 `0x4752aa`（3 × dword）= `[0, 0x118, 0x50]` = `[0, 280, 80]`，
+ *   `fcn_00416e6d` 开头 `movzx ebp, byte [cfg+5] / mov ebp, [ebp*4 + 0x4752aa] / test ebp, ebp / je ret`；
+ *   命中（`0x00418436`）、箭头（`0x004184d5`）、拖动（`0x0041895b`）都查同一张表。
+ */
+export const MINIMAP_TOP_BY_VIEW = [0, 0x118, 0x50] as const;
+
+/**
+ * 右栏在某一个「視窗」取值下的版式。
+ *
+ * @source 棋盘窗口过程 WM_PAINT 那一支（VA **0x00418bcd**）按 `cfg+5` 三路分派：
+ * ```asm
+ * 00418bcd  mov al, [cfg+5]
+ * ;  0 日、月曆  → 00418be2  fcn_00415f69(0)  整版四页面板（200×280）
+ * ;                00418bee  fcn_004169bc(0)  日曆/月曆 @ (440,280)
+ * ;  1 縮小地圖  → 00418bf5  fcn_00415f69(0)  整版四页面板
+ * ;                00418c01  fcn_00416e6d(0)  小地图   @ (440,280)
+ * ;  2 組合畫面  → 00418c08  fcn_004166f8(0)  ★ 窄版面板（200×80）
+ * ;                00418c14  fcn_00416e6d(0)  ★ 小地图 @ (440, 80)
+ * ;                00418c1e  fcn_004169bc(0)  ★ 日曆/月曆 @ (440,280)
+ * ```
+ * 三个画函数各自再守一道闸：`fcn_00415f69` 在 `cfg+5 == 2` 时直接 ret（`0x00415f83`），
+ * `fcn_004166f8` 只在 `== 2` 时画（`0x0041670d`），`fcn_004169bc` 在 `== 1` 时 ret（`0x004169c3`）。
+ *
+ * ★ 所以「組合畫面」= **窄版面板 + 小地图 + 日曆三块同屏**（80 + 200 + 200 = 480），
+ *   不是「日曆与小地图轮流」—— `RICH4.CFG` 说明里那句「02 兩者輪流」是**猜的**，exe 里
+ *   没有任何按时间换面的代码（`[cfg+5]` 的 26 处引用里只有热键 `0x0040122e` 与設定屏会写它）。
+ */
+export interface SidebarLayout {
+  /** 上面那块：`full` = 200×280 四页面板（`Panel.mkf` 0 图 0..3）；`compact` = 200×80 窄版（图 4） */
+  panel: 'full' | 'compact';
+  /** 小地图 200×200 的顶边（侧栏局部 y，侧栏原点 y = 0）；`null` = 这一态没有小地图 */
+  minimapTop: number | null;
+  /** 日曆/月曆那 200×200（恒在 y = 280）画不画 */
+  calendar: boolean;
+}
+
+/** `cfg+5` → 版式。0 / 1 / 2 之外的值（坏档）按 0 处理 —— 原版会查表越界，这里不照抄 */
+export function sidebarLayout(windowView: number): SidebarLayout {
+  if (windowView === 1) return { panel: 'full', minimapTop: MINIMAP_TOP_BY_VIEW[1], calendar: false };
+  if (windowView === 2) return { panel: 'compact', minimapTop: MINIMAP_TOP_BY_VIEW[2], calendar: true };
+  return { panel: 'full', minimapTop: null, calendar: true };
+}
+
+/**
+ * 点在小地图那 200×200 里吗？在就返回**小地图局部坐标**，不在返回 null。
+ * 坐标是**侧栏局部**（侧栏原点 = 屏幕 (440, 0)）。
+ *
+ * @source VA 0x00418415（`fcn_00417e26` 的 WM_LBUTTONDOWN）：
+ * ```asm
+ * 00418415  mov ch, [cfg+5] / test ch, ch / je 不是小地图     ; 日、月曆那一态没有小地图
+ * 00418423  cmp esi, 0x1b8 / jle …                           ; x > 440
+ * 00418436  mov ecx, [cfg+5 × 4 + 0x4752aa]                  ; 顶边
+ * 0041843c  cmp edx, ecx / jle …                             ; y > 顶
+ * 00418444  lea ebx, [ecx + 0xc8] / cmp edx, ebx / jge …     ; y < 顶 + 200
+ * ```
+ */
+export function hitMinimapArea(
+  windowView: number,
+  x: number,
+  y: number,
+): { x: number; y: number } | null {
+  const top = sidebarLayout(windowView).minimapTop;
+  if (top === null) return null;
+  // 照 exe 的开闭：x > 440（`jle`）、顶 < y（`jle`）< 顶 + 200（`jge`）；右缘 640 是屏幕边，这里补上侧栏宽
+  if (x <= 0 || x >= SIDEBAR.w || y <= top || y >= top + SIDEBAR.h) return null;
+  return { x, y: y - top };
+}
+
+/**
+ * 「組合畫面」那块 200×80 窄版面板的版式 —— **全部**取自 `fcn_004166f8`（VA 0x004166f8）
+ * 与开局时往图 4 上烙字的那一段（VA 0x00418043..0x004180a5）。坐标都已减去侧栏原点 440。
+ *
+ * ```asm
+ * 00416748  blit(Panel.mkf 0 图4 = [0x48be0c]+0x3c, 0x1b8, 0)      ; 底图，不抠黑
+ * 004167fb  fill(0x211, 0x21, 0x6a, 4, 黑)                           ; 名牌色条的黑边 (529,33) 106×4
+ * 0041681f  fill(0x210, 0x20, 0x6a, 4, [0x496b6c + p×0x68] 角色色)         ; 色条 (528,32) 106×4
+ * 00416837  blit_keyed(头像 = 角色图集 图0, 0x1e2, 0x28)              ; 锚点落在 (482,40)，与整版同一处
+ * 00416898  font(0x14 = 20, 0x101010) ; draw(名字, 0x246, 0x10, 2)   ; (582,16) 正中
+ * 004168ca  font(0xc = 12, 0x101010)
+ * 004168de  num_to_currency(現金 [0x496b84 + p×0x68]) ; draw(…, 0x27a, 0x29, 1)   ; (634,41) 右上
+ * 0041690a  num_to_currency(存款 [0x496b88 + p×0x68]) ; draw(…, 0x27a, 0x3f, 1)   ; (634,63) 右上
+ * ; 开局烙在图 4 上的两个标签（`0x452946` 去掉串里的空格）：
+ * 00418053  strip("現  金") ; draw(图4, …, 0x5a, 0x28, 0)            ; (90,40) 左上、12 号
+ * 00418080  strip("存  款") ; draw(图4, …, 0x5a, 0x3e, 0)            ; (90,62)
+ * ```
+ * ★ 没有四个竖标签、没有物價指數、没有第三行 —— 这一态**不能换页**：
+ *   PgUp/PgDn（`0x004014b1 cmp [cfg+5],2 / je 吃掉`）与点竖条（`0x004182fa`）都被闸掉。
+ */
+export const COMPACT = {
+  /** `Panel.mkf` 资源 0 的图 4（200×80） */
+  image: 4,
+  w: 200,
+  h: 80,
+  barShadow: { x: 0x211 - 440, y: 0x21, w: 0x6a, h: 4 },
+  bar: { x: 0x210 - 440, y: 0x20, w: 0x6a, h: 4 },
+  portrait: { x: 0x1e2 - 440, y: 0x28 },
+  name: { x: 0x246 - 440, y: 0x10, size: 0x14 },
+  labels: [
+    { text: '現金', x: 0x5a, y: 0x28 },
+    { text: '存款', x: 0x5a, y: 0x3e },
+  ],
+  labelSize: 0xc,
+  valueRight: 0x27a - 440,
+  valueY: [0x29, 0x3f] as const,
+  valueSize: 0xc,
+} as const;
+
+/**
+ * 窄版面板那两行的文字：現金、存款 —— 与整版「資金」页前两行同一个格式函数
+ * （`num_to_currency_string` VA 0x00452793，见 `panel.ts` 的 `currency`）。
+ */
+export function compactRows(p: { cash: number; moneyInBank: number }): readonly [string, string] {
+  return [currency(p.cash), currency(p.moneyInBank)];
+}
 
 
 // ============================================================
@@ -342,9 +465,8 @@ const PANEL_TAG_COLOR_OTHER = '#404040';
  * 即：**最右 24px（局部 x∈[176,200)）、整条 280 高、每 70 一格**。
  * 四格的页号与四条竖条的中心（35 / 108 / 178 / 250）一一对得上。
  *
- * ⚠️ 原版这一支前面有 `cfg+5 == 2` 的闸门 —— 因为 `fcn_00415f69` 在
- *   `cfg+5 == 2`（兩者輪流）时**整块面板都不画**（VA 0x004166ed 直接 ret），
- *   没有竖条可点。本引擎任何一态都画面板，故这里不加那道闸门。
+ * ★ 原版这一支前面有 `cfg+5 == 2` 的闸门 —— 組合畫面画的是 200×80 窄版面板（`fcn_004166f8`），
+ *   没有竖条，那一段 y 是小地图。本函数只管几何，闸门在调用方（`main.ts` 按 `sidebarLayout(…).panel`）。
  */
 export const PANEL_TAG_HIT = { x: 176, h: 70, count: 4 } as const;
 
@@ -395,8 +517,13 @@ export interface HudInput {
   camera: Camera;
   /** 小地图底图（`map.mkf` 资源 `地图号+0x10` 图 0，200×200）；null 时只画节点 */
   minimapBg: ImageBitmap | null;
-  /** 右下角那 200×200 现在显示哪一面 */
-  sidebarView: SidebarView;
+  /**
+   * 設定屏「視 窗」三选一 = `RICH4.CFG` +5（`[0x49715d]`）：0 日、月曆 / 1 縮小地圖 / 2 組合畫面。
+   * 版式见 `sidebarLayout`。
+   */
+  windowView: number;
+  /** 日曆那一面画哪个版式（`[0x497164]`）；这一态没有日曆时不看 */
+  calendarPage: CalendarPage;
   /**
    * 小地图上的**标记点**（世界坐标）—— 点小地图留下的十字位置。
    * null 表示没有。
@@ -676,10 +803,70 @@ export class Hud {
     const { width, height } = ctx.canvas;
     ctx.clearRect(0, 0, width, height);
 
-    this.#drawPanel(input);
-    if (input.sidebarView === 'calendar') this.#drawCalendar(input);
-    else if (input.sidebarView === 'month') this.#drawMonth(input);
-    else this.#drawMinimap(input, SIDEBAR.y);
+    // 顺序照 WM_PAINT 那一支（VA 0x00418bcd，见 `sidebarLayout`）：面板 → 小地图 → 日曆
+    const layout = sidebarLayout(input.windowView);
+    if (layout.panel === 'full') this.#drawPanel(input);
+    else this.#drawCompactPanel(input);
+    if (layout.minimapTop !== null) this.#drawMinimap(input, layout.minimapTop);
+    if (layout.calendar) {
+      if (input.calendarPage === 'month') this.#drawMonth(input);
+      else this.#drawCalendar(input);
+    }
+  }
+
+  /**
+   * 「組合畫面」那块 200×80 窄版面板 —— 照 `fcn_004166f8`（VA 0x004166f8），版式见 `COMPACT`。
+   *
+   * ★ 与整版（`#drawPanel`）画的是**同一个人**、同一张头像、同一处锚点 (482,40)；
+   *   只剩名字、名牌色条、現金、存款四样。
+   */
+  #drawCompactPanel(input: HudInput): void {
+    const ctx = this.#ctx;
+    const me = input.state.players[input.state.currentPlayer];
+    if (me === undefined) return;
+
+    const bg = this.#sprite('Panel.mkf', 0, COMPACT.image);
+    if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0, COMPACT.w, COMPACT.h);
+    else {
+      ctx.fillStyle = '#e8dcc0';
+      ctx.fillRect(0, 0, COMPACT.w, COMPACT.h);
+    }
+
+    // 名牌色条：先 1px 错开的黑底，再角色色 @source 0x004167fb / 0x0041681f
+    const cc = CHARACTERS[me.character]?.color ?? 0xffffff;
+    const { barShadow: sh, bar } = COMPACT;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(sh.x, sh.y, sh.w, sh.h);
+    ctx.fillStyle = `rgb(${(cc >> 16) & 0xff},${(cc >> 8) & 0xff},${cc & 0xff})`;
+    ctx.fillRect(bar.x, bar.y, bar.w, bar.h);
+
+    // 头像（抠黑、按锚点）@source 0x00416852
+    const face = this.#sprite('map.mkf', portraitResource(me.character), 0, true);
+    if (face !== null) {
+      ctx.drawImage(face.bitmap, COMPACT.portrait.x - face.anchorX, COMPACT.portrait.y - face.anchorY);
+    }
+
+    // 名字：20 号、flag 2（正中）@source 0x00416898 / 0x004168b5
+    ctx.fillStyle = '#101010';
+    ctx.font = `${COMPACT.name.size}px ${FONT_FAMILY}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(CHARACTERS[me.character]?.name ?? `角色${me.character}`, COMPACT.name.x, COMPACT.name.y);
+
+    // 两个标签（原版开局烙进图 4 的，这里每帧照同样坐标画）@source 0x00418053 / 0x00418080
+    ctx.font = `${COMPACT.labelSize}px ${FONT_FAMILY}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    for (const l of COMPACT.labels) ctx.fillText(l.text, l.x, l.y);
+
+    // 現金 / 存款：12 号、flag 1（右上）@source 0x004168de / 0x0041690a
+    const [cash, bank] = compactRows(me);
+    ctx.font = `${COMPACT.valueSize}px ${FONT_FAMILY}`;
+    ctx.textAlign = 'right';
+    ctx.fillText(cash, COMPACT.valueRight, COMPACT.valueY[0]);
+    ctx.fillText(bank, COMPACT.valueRight, COMPACT.valueY[1]);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
   }
 
   /**
