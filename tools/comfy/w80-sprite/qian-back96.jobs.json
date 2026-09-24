@@ -1,0 +1,94 @@
+{
+ "jobs": [
+  {
+   "id": "FPQ-walk3-back96",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/e2-in/walk3-soft.png",
+   "input": "rich4-pilot/work/q2/walk3-soft.png",
+   "reference": "rich4-pilot/work/q2/walk3.png",
+   "referenceUpload": "fringe-pilot/e2-in/walk3.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/e/qian-portrait.png",
+     "upload": "fringe-pilot/e-in/qian-portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/e/qian-turnaround.png",
+     "upload": "fringe-pilot/e-in/qian-turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/done-Q2c/walk3.png",
+   "width": 1152,
+   "height": 1600,
+   "seed": 20260924,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。角色是《大富翁4》里的钱夫人（香港的名媛贵妇）。这一组画的是她的**背影**：人物背对镜头，镜头从她身后看过去，画面里完全看不到她的脸、眼睛、鼻子和嘴。能看到的是：玫红偏紫色的后脑勺头发（有一缕一缕的发丝纹理和光泽）、头顶高高竖起的尖锥形冲天发髻、发髻根部正对镜头的一圈白色珍珠、向上扬起的扇形马尾辫、脖子后面、玫红色紧身长礼服的背面和荷叶边裙摆；手臂从身体两侧露出一点（皮肤色，按人体结构连着肩膀）。她完全背对镜头、朝画面上方。从背后看，头顶那束马尾辫是一大束**头发**：由许多一缕一缕的发丝组成，从发髻处向上、向两侧扇形散开，发梢分叉飘动，有明显的发丝纹理、层次和光泽；它不是一块平板、不是布料、不是帽子。后脑勺的头发也要画出发丝的走向。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 布料马尾, 丝带, 帽子, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 二维动画风格, 写实照片风格, 文字, 水印, 悬空的手, 没有手臂的手掌, 断开的手臂, 漂浮的手, 脸, 眼睛, 正脸, 面向镜头, 转身, 五官, 平板状的头发, 塑料质感的头发, 布料",
+   "resolution": 0,
+   "repaintWidth": 1152,
+   "repaintHeight": 1600,
+   "steps": 30,
+   "denoise": 0.96,
+   "noUpscale": true
+  },
+  {
+   "id": "FPQ-dice3-back96",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/e2-in/dice3-soft.png",
+   "input": "rich4-pilot/work/q2/dice3-soft.png",
+   "reference": "rich4-pilot/work/q2/dice3.png",
+   "referenceUpload": "fringe-pilot/e2-in/dice3.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/e/qian-portrait.png",
+     "upload": "fringe-pilot/e-in/qian-portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/e/qian-turnaround.png",
+     "upload": "fringe-pilot/e-in/qian-turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/done-Q2c/dice3.png",
+   "width": 864,
+   "height": 1696,
+   "seed": 20260924,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。角色是《大富翁4》里的钱夫人（香港的名媛贵妇）。这一组画的是她的**背影**：人物背对镜头，镜头从她身后看过去，画面里完全看不到她的脸、眼睛、鼻子和嘴。能看到的是：玫红偏紫色的后脑勺头发（有一缕一缕的发丝纹理和光泽）、头顶高高竖起的尖锥形冲天发髻、发髻根部正对镜头的一圈白色珍珠、向上扬起的扇形马尾辫、脖子后面、玫红色紧身长礼服的背面和荷叶边裙摆；手臂从身体两侧露出一点（皮肤色，按人体结构连着肩膀）。她完全背对镜头、朝画面上方。她在身前玩一颗白色的圆角立方体骰子（红色圆点）：先捧着、再抛到空中；骰子的位置、大小与图1每一格一致。从背后看，头顶那束马尾辫是一大束**头发**：由许多一缕一缕的发丝组成，从发髻处向上、向两侧扇形散开，发梢分叉飘动，有明显的发丝纹理、层次和光泽；它不是一块平板、不是布料、不是帽子。后脑勺的头发也要画出发丝的走向。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 布料马尾, 丝带, 帽子, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 二维动画风格, 写实照片风格, 文字, 水印, 悬空的手, 没有手臂的手掌, 断开的手臂, 漂浮的手, 脸, 眼睛, 正脸, 面向镜头, 转身, 五官, 平板状的头发, 塑料质感的头发, 布料",
+   "resolution": 0,
+   "repaintWidth": 864,
+   "repaintHeight": 1696,
+   "steps": 30,
+   "denoise": 0.96,
+   "noUpscale": true
+  },
+  {
+   "id": "FPQ-dice4-back96",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/e2-in/dice4-soft.png",
+   "input": "rich4-pilot/work/q2/dice4-soft.png",
+   "reference": "rich4-pilot/work/q2/dice4.png",
+   "referenceUpload": "fringe-pilot/e2-in/dice4.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/e/qian-portrait.png",
+     "upload": "fringe-pilot/e-in/qian-portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/e/qian-turnaround.png",
+     "upload": "fringe-pilot/e-in/qian-turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/done-Q2c/dice4.png",
+   "width": 992,
+   "height": 1696,
+   "seed": 20260924,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。角色是《大富翁4》里的钱夫人（香港的名媛贵妇）。这一组画的是她的**背影**：人物背对镜头，镜头从她身后看过去，画面里完全看不到她的脸、眼睛、鼻子和嘴。能看到的是：玫红偏紫色的后脑勺头发（有一缕一缕的发丝纹理和光泽）、头顶高高竖起的尖锥形冲天发髻、发髻根部正对镜头的一圈白色珍珠、向上扬起的扇形马尾辫、脖子后面、玫红色紧身长礼服的背面和荷叶边裙摆；手臂从身体两侧露出一点（皮肤色，按人体结构连着肩膀）。她背对镜头、朝画面右上方，只能看到一点右侧的耳朵和珍珠耳环，看不到脸。她在身前玩一颗白色的圆角立方体骰子（红色圆点）：先捧着、再抛到空中；骰子的位置、大小与图1每一格一致。从背后看，头顶那束马尾辫是一大束**头发**：由许多一缕一缕的发丝组成，从发髻处向上、向两侧扇形散开，发梢分叉飘动，有明显的发丝纹理、层次和光泽；它不是一块平板、不是布料、不是帽子。后脑勺的头发也要画出发丝的走向。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 布料马尾, 丝带, 帽子, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 二维动画风格, 写实照片风格, 文字, 水印, 悬空的手, 没有手臂的手掌, 断开的手臂, 漂浮的手, 脸, 眼睛, 正脸, 面向镜头, 转身, 五官, 平板状的头发, 塑料质感的头发, 布料",
+   "resolution": 0,
+   "repaintWidth": 992,
+   "repaintHeight": 1696,
+   "steps": 30,
+   "denoise": 0.96,
+   "noUpscale": true
+  }
+ ]
+}
