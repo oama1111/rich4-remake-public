@@ -226,7 +226,7 @@ describe('★★ 仅本机：别人的回合不换、不放（`localTurn`）', (
 
 describe('★ 哪几屏放指针、哪几屏不放（与 exe 的 `fcn_00402460(1)` 调用点对账）', () => {
   it('★ 演出类（地址段里没有 `call 0x402460`）没有 `cursor` 出口 ⇒ 一直藏着', () => {
-    const presentation = ['shares', 'lottery-draw', 'monthly', 'eventBox', 'wheel', 'god-slot', 'notice', 'eventTail'];
+    const presentation = ['shares', 'lottery-draw', 'monthly', 'eventBox', 'wheel', 'god-slot', 'notice', 'eventTail', 'bankrupt'];
     for (const id of presentation) {
       const s = SCREENS.find((x) => x.id === id);
       expect(s, id).toBeDefined();
@@ -255,7 +255,7 @@ describe('★ 哪几屏放指针、哪几屏不放（与 exe 的 `fcn_00402460(1
     }
     // 每一屏都归了类（新加的屏要在这里表态）
     expect(SCREENS.map((s) => s.id).sort()).toEqual(
-      [...input, 'shares', 'lottery-draw', 'monthly', 'eventBox', 'wheel', 'god-slot', 'notice', 'eventTail'].sort(),
+      [...input, 'shares', 'lottery-draw', 'monthly', 'eventBox', 'wheel', 'god-slot', 'notice', 'eventTail', 'bankrupt'].sort(),
     );
   });
 });
