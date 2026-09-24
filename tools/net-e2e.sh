@@ -66,7 +66,7 @@ summary() { "$B" tab "$1" >/dev/null 2>&1; "$B" js "JSON.stringify(globalThis.__
 
 # ── 起服务器 ────────────────────────────────────────────────
 step "起服务器（--seats ${SEATS} --takeover ${TAKEOVER}）"
-pkill -f "server/src/cli.ts" 2>/dev/null
+pkill -f "server/src/cli.ts --port $PORT " 2>/dev/null  # 只收自己这个端口的（别误杀别人在跑的测试服务器）
 sleep 1
 # ★ 上一条服务器没死透的话，新的会 EADDRINUSE —— 而它只把警告写进日志，
 #   脚本看起来「起来了」，其实一直在跟**旧的**（带着旧的房间与旧座位）说话。踩过一次。
