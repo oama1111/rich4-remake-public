@@ -30,8 +30,9 @@
  *   五种寶物的「挖到」动画 = **86..90**（表 `0x48bd14`，`[0x48bd10 + 类型*4]`）。
  * - **命中表 = 81**：640×480 的 8bpp，**每个像素的值就是格号**（0..80，0 = 不在棋盘上）。
  *   鼠标分支 0x00414abe 直接 `row = 值/9、col = 值%9` 送 `fcn_0041211c`。
- *   本模块拿不到这张 `.bin`（D-MINI-2），改用格坐标表 `0x474d7c` + 菱形几何重建，
- *   与 #81 逐像素比对过：64 个有效格的格心像素**全中**。
+ *   ★ 已接（D-MINI-2 已解）：`main.ts` 开局从经素材闸门载入的 `Panel.mkf` 里 `readRawBytes` 取 #81，
+ *   `minigame-bg.ts` 交接，`down` 按原版逐像素查（`penguinHitCell` 的 `mask`）；
+ *   只有素材缺席时才退回格坐标表 `0x474d7c` + 菱形几何的近似。
  * - 棋盘：9×9 索引表，其中 **17 格 `x=0` = 不在棋盘上**（原版就是拿 `word[+0] == 0` 判无效），
  *   连正中的冰屋那格共 64 个可走格（菱形，半宽 48 / 半高 24，格心 = 表里的 x/y）。
  * - 埋寶 @0x00412014：按 `0x411fc8` 的 `[3,12,3,9,1]` 共 **28 个**，逐个在**剩余空格里**抽
@@ -45,7 +46,8 @@
  *   —— `fcn_0041461b(1)` @0x004148b9；入场结束的 0x405 里改传 0，土堆就没了）。
  * - 结算姿势按分数 @0x00414986：`< 40` → 动画 5（资源 85）、`> 55` → 动画 4（资源 84）、
  *   中间 → 动画 6（只是把光标图重画 16 次）；动画走完后 `[0x48bd58] = 1 → 2`，
- *   画大号分数 `fcn_00414789`，等 **2000ms**（`fcn_0045285e(0x7d0)`），关屏。
+ *   画大号分数 `fcn_00414789`，`[0x48bd2c] = 0x14`（20 × 100ms = 2000ms）倒数到 0 关屏；**这 2 秒点一下下一拍就关**
+ *   （0x00414ab2 `[0x48bd2c] = 1`，见 `penguinSkipScore` / D-MINI-13）。
  * - ★ **指针换成靶圈**（第二十一份回报「打气球时鼠标指针没换成瞄准镜」顺带对企鵝复核）：
  *   入场演出之后（0x405 那一支 0x00414a8f..0x00414a9f）`fcn_004021f8(0x2a, 1, 0)` + `fcn_00402460(1)`
  *   —— `Data.mkf` #0 图 **42**（蓝色椭圆靶圈）；结算姿势放完、`[0x48bd58]` 1 → 2 那一拍
@@ -128,7 +130,7 @@ import { SPECIAL_KIND, WatcomRng } from '@rich4/core';
 import type { GameState } from '@rich4/core';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
-import { getMinigameBackground } from './minigame-bg.ts';
+import { getMinigameBackground, getPenguinHitMask } from './minigame-bg.ts';
 import { cursorShape, showCursor, type CursorShape, type CursorWant } from './soft-cursor.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同签名） */
@@ -166,7 +168,14 @@ export const MINI_BIG_DIGIT_FIRST = 10;
 export const MINI_BIG_PITCH = 0x42;
 export const MINI_BIG_CENTER_X = 0x161;
 export const MINI_BIG_Y = 0x96;
-/** 结算演出停留 @source `fcn_0045285e(0x7d0)`（三屏都是 2000ms） */
+/**
+ * 结算演出停留 2000ms（三屏一样长，但**来源不同**）：
+ * - 七彩氣球 / 財神：`fcn_0045285e(0x7d0)` @0x00414d3d / 0x00415144 —— **阻塞**的忙等，
+ *   期间 `PeekMessage(…, PM_REMOVE)` 把消息全吃掉（只理 0x3b9 MCI 通知，@0x00452880..0x004528a9），
+ *   **点击被丢掉、跳不过**；
+ * - 企鵝：不走 `fcn_0045285e`，而是 `[0x48bd2c] = 0x14`（20 × 100ms 定时器）@0x00414a23，
+ *   倒数到 0 在 WM_TIMER 里关屏 @0x0041492c..0x0041494a —— **点一下可以提前关**（见 `penguinSkipScore`）。
+ */
 export const MINI_END_MS = 2000;
 /** 得分上限 @source `cmp edx, 0x3e8 / mov dword [0x48bcec], 0x3e7`（0x00414ece） */
 export const MINI_SCORE_CAP = 999;
@@ -306,7 +315,7 @@ export const PENGUIN_LOOT_RES: readonly number[] = [0x56, 0x57, 0x58, 0x59, 0x5a
 export const PENGUIN_ICON_FIRST = 3;
 /** 冰屋图 = 图 3，落点固定 @source `push 0xe1 / push 0x140` @0x00412cbf（见 D-MINI-8）*/
 export const PENGUIN_IGLOO = { x: 0x140, y: 0xe1, image: 3 } as const;
-/** 格子是菱形：半宽 48、半高 24（量自命中表 #81，格心 = 表里的 x/y） */
+/** 格子是菱形：半宽 48、半高 24（量自命中表 #81，格心 = 表里的 x/y）—— 只给画面与**无素材时的退回命中**用 */
 export const PENGUIN_TILE = { halfW: 48, halfH: 24 } as const;
 /**
  * 9×9 格心坐标 `(x, y)` @source VA 0x00474d7c（每格 8 字节 `{int16 x, int16 y, uint16, uint16}`，
@@ -366,16 +375,73 @@ export function penguinCellValid(i: number): boolean {
   return i >= 0 && i < PENGUIN_CELLS && penguinCellX(i) !== 0;
 }
 
+/** 命中表 = `Panel.mkf` **#81** @source `push 0x51` @0x0041529e → `read_mkf` → `[0x48bd38]` @0x004152af */
+export const PENGUIN_HIT_RES = 0x51;
+/**
+ * 命中表的尺寸 = 整屏 640×480、**每像素 1 字节**（无头；`Panel/0081.bin` 正好 307200 字节）。
+ * 行宽 640 @source 0x00414af5..0x00414afc `ecx = y; ecx = (ecx*4 + y) << 7` = `y*640`
+ */
+export const PENGUIN_HIT_W = 640;
+export const PENGUIN_HIT_H = 480;
+
+/**
+ * 把 `Panel.mkf` #81 的原始字节收成命中表；长度不够 640×480 就当没有（返回 `null`）。
+ *
+ * ★ 与財神屏 #92 同一条路：`Panel.mkf` 整包是运行时经素材闸门载进来的（`LoadedArchives`），
+ *   这里只 `readRawBytes` 取一段 —— **不走 extract 管线、不落任何派生文件进仓库**。
+ */
+export function parsePenguinHitMask(bytes: Uint8Array | null): Uint8Array | null {
+  const n = PENGUIN_HIT_W * PENGUIN_HIT_H;
+  if (bytes === null || bytes.length < n) return null;
+  return bytes.subarray(0, n);
+}
+
 /**
  * 命中：这一下点在哪一格上；不在棋盘上返回 `null`。
  *
- * 原版是拿 **命中表 #81** 的像素值当格号（@0x00414abe `mov cl, byte [ecx + ebx]; idiv 9`）。
- * 本模块拿不到那张 `.bin`（D-MINI-2），改用格心 + 菱形几何反推：
- * 每格是以格心为中心、半宽 48 / 半高 24 的菱形，拼起来正好铺满棋盘
- * （相邻格心相距 `(48, ±24)`，两张 96×48 的菱形严丝合缝）。与 #81 逐像素比对：
- * **64 个有效格的格心像素值都等于它的格号**，菱形尺寸也是从同一张图量出来的。
+ * 原版（`0x201` 左键**按下** / `0x203` 双击都进这一支，@0x00414868 / 0x0041488e → 0x00414aa9）：
+ * ```asm
+ * 00414abe  cmp  dword [0x48bccc], 0     ; 企鵝不在走/挖（动画号 0）
+ * 00414ac7  cmp  byte  [0x48bd58], 0     ; 还没进结算
+ * 00414ad4  cmp  dword [0x48bd7c], 0     ; 入场 1 秒已过
+ * 00414ae1  bx  = LOWORD(lParam)          ; x（窗口客户区 = 640×480 舞台坐标）
+ * 00414ae6  eax = HIWORD(lParam)          ; y
+ * 00414af5  ecx = (y*4 + y) << 7          ; y*640
+ * 00414aff  eax = [0x48bd38]              ; ★ read_mkf(panel, 0x51) —— 命中表 #81
+ * 00414b06  cl  = byte [ecx + eax + ebx]  ; ★ 像素值（无符号字节）= 格号
+ * 00414b0f  ebx = 值 % 9 ; eax = 值 / 9    ; 列、行
+ * 00414b2f  call fcn_0041211c(列, 行)      ; 表 0x474d7c 那格 word[+0]==0 → 返回 0，什么都不做
+ * ```
+ * 即：**像素值本身就是格号**（行×9+列），不是「非透明即中」、也不看调色板；
+ * 值 0（棋盘外）与 40（冰屋）落到表里 `x==0` 的无效格上，`fcn_0041211c` 直接返回 0。
+ *
+ * @param mask `parsePenguinHitMask` 的产物（客户端开局从 `Panel.mkf` #81 读好，
+ *   经 `minigame-bg.ts` 交接）。`null` = 素材没载到 —— 只在没有原版素材的单测 / 退回路径上出现，
+ *   这时退回**格心 + 菱形几何**的近似（半宽 48 / 半高 24；与 #81 有 3439 个边缘像素不一致，
+ *   见 D-MINI-2 的订正记录）。
  */
-export function penguinHitCell(mx: number, my: number): number | null {
+export function penguinHitCell(
+  mx: number,
+  my: number,
+  mask: Uint8Array | null = null,
+): number | null {
+  if (mask !== null) {
+    // 舞台坐标可能带小数（画布缩放）；原版 lParam 是整像素 —— 取所在那个像素
+    const x = Math.floor(mx);
+    const y = Math.floor(my);
+    // 原版不夹边界（鼠标消息只会落在客户区里）；这里越界一律当「棋盘外」
+    if (x < 0 || y < 0 || x >= PENGUIN_HIT_W || y >= PENGUIN_HIT_H) return null;
+    const cell = mask[y * PENGUIN_HIT_W + x] ?? 0;
+    return penguinCellValid(cell) ? cell : null;
+  }
+  return penguinHitCellGeometric(mx, my);
+}
+
+/**
+ * **退回用**的几何近似（素材不在手边时）：以格心为中心、半宽 48 / 半高 24 的菱形。
+ * 格心像素与 #81 一致，但菱形边缘（尤其上沿那一行、左右两个尖）与 #81 差一两个像素 —— 见 D-MINI-2。
+ */
+export function penguinHitCellGeometric(mx: number, my: number): number | null {
   const { halfW, halfH } = PENGUIN_TILE;
   for (let i = 0; i < PENGUIN_CELLS; i++) {
     if (!penguinCellValid(i)) continue;
@@ -504,13 +570,43 @@ export function penguinStart(seed: number): PenguinGame {
   };
 }
 
-/** 点一下：把目标格交给企鵝走 @source 鼠标分支 0x00414abe → `fcn_0041211c` */
-export function penguinClick(st: PenguinGame, mx: number, my: number): PenguinGame {
+/**
+ * 点一下：把目标格交给企鵝走 @source 鼠标分支 0x00414abe → 查 #81 → `fcn_0041211c`
+ *
+ * @param mask 命中表 #81（`penguinHitCell` 的同名参数）；屏幕的 `down` 传 `getPenguinHitMask()`
+ */
+export function penguinClick(
+  st: PenguinGame,
+  mx: number,
+  my: number,
+  mask: Uint8Array | null = null,
+): PenguinGame {
   if (st.phase !== 'play') return st;
-  const cell = penguinHitCell(mx, my);
+  const cell = penguinHitCell(mx, my, mask);
   if (cell === null || cell === st.cell) return st;
   if (st.to !== null || st.dig > 0) return st; // 正在走/正在挖，原版也不会改目标
   return { ...st, target: cell, to: nextCellToward(st.cell, cell), sub: 0 };
+}
+
+/**
+ * 企鵝结算大号分数那 2 秒里**点一下提前关屏**。
+ *
+ * @source 左键按下 / 双击的入口 0x00414aa9：
+ * ```asm
+ * 00414aa9  cmp  byte [0x48bd58], 2        ; 已经在画大号分数（0x00414a1c 置 2、[0x48bd2c] = 0x14）
+ * 00414ab0  jne  0x414abe                  ; 否 → 走挖宝命中那一支
+ * 00414ab2  mov  dword [0x48bd2c], 1       ; ★ 剩余拍数改成 1
+ * ```
+ * 下一个 WM_TIMER（100ms 定时器）里 `dec` 到 0 → `KillTimer` + `fcn_00401966(0)` 关屏
+ * （0x0041491d..0x0041494a）—— 即「**下一拍**就关」，不是当场关；分数早在
+ * `[0x48bd58]` 置 2 之前就定了，关屏只是把它交出去。结算姿势那一段（`[0x48bd58] == 1`）点了不算
+ * （0x00414ac7 的闸），所以只有 `score` 这一相能跳。
+ *
+ * @param at 下一个定时器拍子的时刻（屏幕按自己的 tick 累加器算好传进来）
+ */
+export function penguinSkipScore(st: PenguinGame, at: number): PenguinGame {
+  if (st.phase !== 'score' || at >= st.scoreUntil) return st;
+  return { ...st, scoreUntil: at };
 }
 
 /**
@@ -965,8 +1061,12 @@ export function balloonStep(st: BalloonGame, now: number): BalloonGame {
   let phase: BalloonPhase = st.phase === 'play' && ticks === 0 ? 'ending' : st.phase;
   // @0x00413229：时间到 + 屏上没气球了 → 结算
   if (phase === 'ending' && !anyActive) phase = 'score';
-  // 刚进结算那一刻才起算「大号分数停留 2000ms」（`fcn_0045285e(0x7d0)`）
-  const justScored = st.phase !== 'ending' && phase === 'score';
+  // 刚进结算那一刻才起算「大号分数停留 2000ms」（`fcn_0045285e(0x7d0)` @0x00414d3d）。
+  // ★ 2026-09-24 订正：旧式是 `st.phase !== 'ending'`，正常收场恰恰是 ending → score，
+  //   于是 `scoreUntil` 停在 0、进 score 那一拍就送分 —— 大号分数一帧都没停。
+  //   原版不分从哪一相进来：`[0x48bd58] == 2` 那一拍（0x00414cf6）一律画分、忙等 2000ms。
+  //   （`st.phase === 'score'` 已在函数开头返回，走到这里进 score 就是「刚进」。）
+  const justScored = phase === 'score';
 
   return {
     rngState: holder.rngState,
@@ -1976,6 +2076,12 @@ export function minigameIntroStage(): 'entry' | 'film' | 'play' | null {
   return introBlocking(run) ? 'film' : 'play';
 }
 
+/** 测试 / 调试用：这一局玩法状态机此刻的相位（`null` = 没有这一屏） */
+export function minigameRunPhase(): string | null {
+  if (run === null) return null;
+  return run.penguin?.phase ?? run.balloon?.phase ?? run.gift?.phase ?? null;
+}
+
 /** 这一局演完了没有 */
 function runDone(st: MiniRun, now: number): boolean {
   if (st.penguin !== null) return st.penguin.phase === 'score' && now >= st.penguin.scoreUntil;
@@ -2188,10 +2294,22 @@ export const minigameScreen: UiScreen = {
     if (st === null) return;
     // ★ 旁观端点了不算（分数只收玩家那一台的）
     if (st.spectator) return;
+    // 分已经送出去了（等 core 清 pending 的那几帧）：什么都不再收，免得重复送
+    if (st.sent) return;
     // ★ 0x405 的影片在阻塞放（或还在等它解好）：原版这时根本收不到点击
     if (introBlocking(st)) return;
     st.mx = x;
-    if (st.penguin !== null) st.penguin = penguinClick(st.penguin, x, y);
+    if (st.penguin !== null && st.penguin.phase === 'score') {
+      // ★ 企鵝大号分数那 2 秒：点一下 → 下一拍关屏（@0x00414ab2 `[0x48bd2c] = 1`）。
+      //   只挪 `scoreUntil`，送分仍由 `tick` 的 `runDone → finish` 做、且只做一次（`sent`）。
+      //   氣球 / 財神那 2 秒是 `fcn_0045285e` 的阻塞忙等，点击被吃掉 —— 不跳（见 `MINI_END_MS`）。
+      // 下一拍 = 上次推进的时刻 + 这一拍还差的毫秒（`tick` 里的累加器）；已经过点就「现在」
+      const nextTick = Math.max(env.now, st.at + minigameTickMs(st.game) - st.acc);
+      st.penguin = penguinSkipScore(st.penguin, nextTick);
+      env.requestRender();
+      return;
+    }
+    if (st.penguin !== null) st.penguin = penguinClick(st.penguin, x, y, getPenguinHitMask());
     else if (st.balloon !== null) st.balloon = balloonClick(st.balloon, x, y);
     // ★ 点这一下登记的（点爆 21 / 点空 20）当场倒出去
     flushSounds(env, st);
