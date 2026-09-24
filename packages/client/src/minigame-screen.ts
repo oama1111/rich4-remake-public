@@ -46,7 +46,8 @@
  *   —— `fcn_0041461b(1)` @0x004148b9；入场结束的 0x405 里改传 0，土堆就没了）。
  * - 结算姿势按分数 @0x00414986：`< 40` → 动画 5（资源 85）、`> 55` → 动画 4（资源 84）、
  *   中间 → 动画 6（只是把光标图重画 16 次）；动画走完后 `[0x48bd58] = 1 → 2`，
- *   画大号分数 `fcn_00414789`，等 **2000ms**（`fcn_0045285e(0x7d0)`），关屏。
+ *   画大号分数 `fcn_00414789`，`[0x48bd2c] = 0x14`（20 × 100ms = 2000ms）倒数到 0 关屏；**这 2 秒点一下下一拍就关**
+ *   （0x00414ab2 `[0x48bd2c] = 1`，见 `penguinSkipScore` / D-MINI-13）。
  * - ★ **指针换成靶圈**（第二十一份回报「打气球时鼠标指针没换成瞄准镜」顺带对企鵝复核）：
  *   入场演出之后（0x405 那一支 0x00414a8f..0x00414a9f）`fcn_004021f8(0x2a, 1, 0)` + `fcn_00402460(1)`
  *   —— `Data.mkf` #0 图 **42**（蓝色椭圆靶圈）；结算姿势放完、`[0x48bd58]` 1 → 2 那一拍
@@ -167,7 +168,14 @@ export const MINI_BIG_DIGIT_FIRST = 10;
 export const MINI_BIG_PITCH = 0x42;
 export const MINI_BIG_CENTER_X = 0x161;
 export const MINI_BIG_Y = 0x96;
-/** 结算演出停留 @source `fcn_0045285e(0x7d0)`（三屏都是 2000ms） */
+/**
+ * 结算演出停留 2000ms（三屏一样长，但**来源不同**）：
+ * - 七彩氣球 / 財神：`fcn_0045285e(0x7d0)` @0x00414d3d / 0x00415144 —— **阻塞**的忙等，
+ *   期间 `PeekMessage(…, PM_REMOVE)` 把消息全吃掉（只理 0x3b9 MCI 通知，@0x00452880..0x004528a9），
+ *   **点击被丢掉、跳不过**；
+ * - 企鵝：不走 `fcn_0045285e`，而是 `[0x48bd2c] = 0x14`（20 × 100ms 定时器）@0x00414a23，
+ *   倒数到 0 在 WM_TIMER 里关屏 @0x0041492c..0x0041494a —— **点一下可以提前关**（见 `penguinSkipScore`）。
+ */
 export const MINI_END_MS = 2000;
 /** 得分上限 @source `cmp edx, 0x3e8 / mov dword [0x48bcec], 0x3e7`（0x00414ece） */
 export const MINI_SCORE_CAP = 999;
@@ -578,6 +586,27 @@ export function penguinClick(
   if (cell === null || cell === st.cell) return st;
   if (st.to !== null || st.dig > 0) return st; // 正在走/正在挖，原版也不会改目标
   return { ...st, target: cell, to: nextCellToward(st.cell, cell), sub: 0 };
+}
+
+/**
+ * 企鵝结算大号分数那 2 秒里**点一下提前关屏**。
+ *
+ * @source 左键按下 / 双击的入口 0x00414aa9：
+ * ```asm
+ * 00414aa9  cmp  byte [0x48bd58], 2        ; 已经在画大号分数（0x00414a1c 置 2、[0x48bd2c] = 0x14）
+ * 00414ab0  jne  0x414abe                  ; 否 → 走挖宝命中那一支
+ * 00414ab2  mov  dword [0x48bd2c], 1       ; ★ 剩余拍数改成 1
+ * ```
+ * 下一个 WM_TIMER（100ms 定时器）里 `dec` 到 0 → `KillTimer` + `fcn_00401966(0)` 关屏
+ * （0x0041491d..0x0041494a）—— 即「**下一拍**就关」，不是当场关；分数早在
+ * `[0x48bd58]` 置 2 之前就定了，关屏只是把它交出去。结算姿势那一段（`[0x48bd58] == 1`）点了不算
+ * （0x00414ac7 的闸），所以只有 `score` 这一相能跳。
+ *
+ * @param at 下一个定时器拍子的时刻（屏幕按自己的 tick 累加器算好传进来）
+ */
+export function penguinSkipScore(st: PenguinGame, at: number): PenguinGame {
+  if (st.phase !== 'score' || at >= st.scoreUntil) return st;
+  return { ...st, scoreUntil: at };
 }
 
 /**
@@ -1032,8 +1061,12 @@ export function balloonStep(st: BalloonGame, now: number): BalloonGame {
   let phase: BalloonPhase = st.phase === 'play' && ticks === 0 ? 'ending' : st.phase;
   // @0x00413229：时间到 + 屏上没气球了 → 结算
   if (phase === 'ending' && !anyActive) phase = 'score';
-  // 刚进结算那一刻才起算「大号分数停留 2000ms」（`fcn_0045285e(0x7d0)`）
-  const justScored = st.phase !== 'ending' && phase === 'score';
+  // 刚进结算那一刻才起算「大号分数停留 2000ms」（`fcn_0045285e(0x7d0)` @0x00414d3d）。
+  // ★ 2026-09-24 订正：旧式是 `st.phase !== 'ending'`，正常收场恰恰是 ending → score，
+  //   于是 `scoreUntil` 停在 0、进 score 那一拍就送分 —— 大号分数一帧都没停。
+  //   原版不分从哪一相进来：`[0x48bd58] == 2` 那一拍（0x00414cf6）一律画分、忙等 2000ms。
+  //   （`st.phase === 'score'` 已在函数开头返回，走到这里进 score 就是「刚进」。）
+  const justScored = phase === 'score';
 
   return {
     rngState: holder.rngState,
@@ -2043,6 +2076,12 @@ export function minigameIntroStage(): 'entry' | 'film' | 'play' | null {
   return introBlocking(run) ? 'film' : 'play';
 }
 
+/** 测试 / 调试用：这一局玩法状态机此刻的相位（`null` = 没有这一屏） */
+export function minigameRunPhase(): string | null {
+  if (run === null) return null;
+  return run.penguin?.phase ?? run.balloon?.phase ?? run.gift?.phase ?? null;
+}
+
 /** 这一局演完了没有 */
 function runDone(st: MiniRun, now: number): boolean {
   if (st.penguin !== null) return st.penguin.phase === 'score' && now >= st.penguin.scoreUntil;
@@ -2255,9 +2294,21 @@ export const minigameScreen: UiScreen = {
     if (st === null) return;
     // ★ 旁观端点了不算（分数只收玩家那一台的）
     if (st.spectator) return;
+    // 分已经送出去了（等 core 清 pending 的那几帧）：什么都不再收，免得重复送
+    if (st.sent) return;
     // ★ 0x405 的影片在阻塞放（或还在等它解好）：原版这时根本收不到点击
     if (introBlocking(st)) return;
     st.mx = x;
+    if (st.penguin !== null && st.penguin.phase === 'score') {
+      // ★ 企鵝大号分数那 2 秒：点一下 → 下一拍关屏（@0x00414ab2 `[0x48bd2c] = 1`）。
+      //   只挪 `scoreUntil`，送分仍由 `tick` 的 `runDone → finish` 做、且只做一次（`sent`）。
+      //   氣球 / 財神那 2 秒是 `fcn_0045285e` 的阻塞忙等，点击被吃掉 —— 不跳（见 `MINI_END_MS`）。
+      // 下一拍 = 上次推进的时刻 + 这一拍还差的毫秒（`tick` 里的累加器）；已经过点就「现在」
+      const nextTick = Math.max(env.now, st.at + minigameTickMs(st.game) - st.acc);
+      st.penguin = penguinSkipScore(st.penguin, nextTick);
+      env.requestRender();
+      return;
+    }
     if (st.penguin !== null) st.penguin = penguinClick(st.penguin, x, y, getPenguinHitMask());
     else if (st.balloon !== null) st.balloon = balloonClick(st.balloon, x, y);
     // ★ 点这一下登记的（点爆 21 / 点空 20）当场倒出去
