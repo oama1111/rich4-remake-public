@@ -479,7 +479,7 @@ cards:
     越界即整条拒绝（11 条边界 + 「一项越界则合法项也不生效」）/ 只改指定玩家 /
     cashRatio 初值来自角色表 f25。
   files: [packages/client/src/ai-settings.ts, packages/client/src/ai-settings.test.ts, packages/client/src/main.ts, packages/core/src/state/set-ai.test.ts]
-  notes: "⚠️ 两个亮/暗行图的用法没跟到（Q-LAYOUT-1）；cashRatio 目前没有规则读它（Q-BANK-3）。目视验证已完成（Q-BUILD-1 已修），并按实机截图与反汇编订正了字号与对齐（flag 跳表 0x44faa0）。"
+  notes: "两个亮/暗行图 = 玩家行底板（Q-LAYOUT-1 已结案 2026-09-24）；cashRatio 目前没有规则读它（Q-BANK-3）。目视验证已完成（Q-BUILD-1 已修），并按实机截图与反汇编订正了字号与对齐（flag 跳表 0x44faa0）。"
 
 - id: T-022
   group: C

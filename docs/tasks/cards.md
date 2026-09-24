@@ -836,7 +836,7 @@
 - packages/client/src/main.ts
 - packages/core/src/state/set-ai.test.ts
 
-> ⚠️ 两个亮/暗行图的用法没跟到（Q-LAYOUT-1）；cashRatio 目前没有规则读它（Q-BANK-3）。目视验证已完成（Q-BUILD-1 已修），并按实机截图与反汇编订正了字号与对齐（flag 跳表 0x44faa0）。
+> 两个亮/暗行图 = 玩家行底板（Q-LAYOUT-1 已结案 2026-09-24）；cashRatio 目前没有规则读它（Q-BANK-3）。目视验证已完成（Q-BUILD-1 已修），并按实机截图与反汇编订正了字号与对齐（flag 跳表 0x44faa0）。
 
 ### T-022
 

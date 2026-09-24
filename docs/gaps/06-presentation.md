@@ -123,7 +123,7 @@
 | `0x4103a3` | 設定屏 本體（OPTION） | 宿主 `0x00411b53`；16 项控件矩形表 `0x474b92` + 16 路跳表 `0x41034b`（`known-deviations.md:2506-2521`） | `options.ts:6,70-93`；`main.ts:2204,4942` | 有差异 | 「結束遊戲」原版是「存 CFG + 置退出标志」，remake 只 `screen='title'`（`known-deviations.md:2642`）；主面板 16 条控件表已照抄 |
 | `0x414858` | 小遊戲 · 企鵝挖寶 | 宿主 `0x00415215` 引用「得點券%d點」（`ui.md:170`）；入口 `0x00415215`（`small-games.md:224`）；音效集 `0x475057`（11..18） | `screens.ts:69`；`minigame-screen.ts:11,26,33,212-227` | 有差异 | `T-042-044.md:88`（命中表 `Panel.mkf #81` 取不到 → 用 `0x474d7c` + 菱形几何绕开）、`:154`（**没有**原版的「不玩」支）、`:177`（走行/土堆整数格简化） |
 | `0x414fcd` | 小遊戲 · 喜從天降＝財神接金幣 | 宿主 `0x004155fc`（`small-games.md:778`）；底图 `Panel.mkf #92`；音效集 `0x4750bf`（22,23,24,15） | `screens.ts:69`；`minigame-screen.ts:13,69,235-239` | 有差异 | `T-042-044.md:56`（底图 #92 无头 RGB555 另走 `readRaw555Resource`）、`:193`（接住判定按当前帧贴图量近似）、`:154`（无「不玩」支）；音效 23 未使用 |
-| `0x41dda9` | AI 個性設定屏（託管） | 宿主 `0x0041e345` 引用「個 性／資金運用比例／使用卡片／使用道具／乖寶寶（`ui.md:172,235,273`）」 | `ai-settings.ts:5,45-47`；`main.ts:2796,4914` | 有差异 | `known-deviations.md:1264-1279`（Q-LAYOUT-1）：两张 116×86 亮/暗行图的**用法没跟到**，remake 自行决定「按行画 + 裁到 32 px」 |
+| `0x41dda9` | AI 個性設定屏（託管） | 宿主 `0x0041e345` 引用「個 性／資金運用比例／使用卡片／使用道具／乖寶寶（`ui.md:172,235,273`）」 | `ai-settings.ts:5,45-47`；`main.ts:2796,4914` | 有差异 | `known-deviations.md:1264-1279`（Q-LAYOUT-1）：两张 116×86 亮/暗行图的**用法没跟到**，remake 自行决定「按行画 + 裁到 32 px」；✅ 2026-09-24 结案（gap-audit #20）：是**玩家行**底板，代码早已照此画（入口 0x0041e61c 图 2、WM_PAINT `loc_0041dbe0` 选中行图 1） |
 | `0x423cf3` | 個人資產表 | 宿主 `0x00424492`＝工具栏跳表 `0x417d39[6]`；底图 `Panel.mkf #9`（`scenes.ts:10`） | `asset-sheet.ts:10,79-81`；`main.ts:3491-3499,4877` | **1:1** | 三个视图、页签、EXIT、下钻钮、道具/卡片欄均带 VA 逐条落码；无登记的界面级偏离（唯一全局差异是系统字体替代原点阵字）。⚠️ 但该屏在规格 §四属热点 `0x00417e26`（8 处音效），**音效全缺**（见 §五 5.3） |
 | `0x4258c1` | 公佈欄屏内「賣股票 選物窗」（规格**未命名**该宿主） | 宿主 `0x00428296`（`ui.md:174`）；处理器即 `fcn_004258c1`（`board-screen.ts:17`）；底图 `Panel.mkf #73` 图 1（336×416，`board-screen.ts:25`） | `board-screen.ts:18,397,2142-2150` | 有差异 | ① 出价输入改用 `dialog.ts` 的 `AmountPage`，**不是**原版的数字键盘窗（`docs/deviations/T-033.md:37` D-BOARD-2）；② 界面名靠 remake 侧判定（U3′）；③ `board-screen.ts` **全文 0 处音效播放**（该屏在规格 §四热点 `0x00417e26` 内） |
 | `0x427c21` | 规格名 = **持股明细屏**；remake 名 = **公佈欄屏主窗口过程** | 宿主 `0x004284be`（`ui.md:175`）；规格 §二 用 `EXIT/地點：/市價：/張數：/持有張數/總市價/等級：` 命名（`ui.md:233`）。⚠️ `rich4-spec/gen/string-xrefs.json` 显示 `0x004284be` 引用的正是**公佈欄详情框**（图 6/7/8）标签（`board-screen.ts:31-40`），而 `board-screen.ts:14` 记该函数为 `_rich4_ui_sale_entry` | `board-screen.ts:15,2142-2190`；`screens.ts:65`；右键逐层关（`Q-UI-8.md` §2.2） | 有差异 | ① **名称／功能归属分歧**：规格称持股明细屏、remake 称公佈欄屏（挂/撤/买/出价）。remake 的详情框也确实同时含 `地點：/市價：/張數：` ⇒ **哪个名称正确无法判定**（U4′），但**规格侧命名与自身字符串证据冲突**这一点是确定的；② 出价输入同上为 `AmountPage`（`T-033.md:37`）；③ `T-033.md:151` 记一处选物窗分类近似 |
@@ -290,7 +290,7 @@
 | `0x4750f8` | `0x41595b`/`0x415cb2` | `0x415872` | 25,26 | 25 = `intro.ts:52`（`INTRO_SOUND`）；**26 未见** | 部分 | ❌ / ❌ |
 | `0x475590` | `0x42b74a`/`0x42ba65` | 股市行情屏 | 40,41 | `stock-screen.ts` 全文 **0 处播放** | ❌ **未播** | ❌ / ❌ |
 | `0x4755a8` | `0x42baa6`/`0x42be65` | 公司分红屏 | **61（1 项）** | `shares-screen.ts:262` 定义 `SHARES_SOUND={open:0,page:1,choice:2}` 且**全仓无使用** | ❌ **未播**，且把 1 项表当 3 项下标 | ❌ / ❌ |
-| `0x47566b` | `0x4315ec`/`0x431691` | 樂透/開獎 `0x4315cc` | 31 | `lottery-screen.ts:943` 只播 4 | ❌ **未播** | ❌ / ❌ | ✅ 2026-09-24 已补（gap-audit #13）：`lottery-screen.ts` 的 `LOTTERY_BUY_SOUND` 买中那一下放（只在买的那一台） |
+| `0x47566b` | `0x4315ec`/`0x431691` | 樂透/開獎 `0x4315cc` | 31 | `lottery-screen.ts:943` 只播 4 | ❌ **未播** | ❌ / ❌；✅ 2026-09-24 已补（gap-audit #13）：`lottery-screen.ts` 的 `LOTTERY_BUY_SOUND` 买中那一下放（只在买的那一台） |
 | `0x47567b` | `0x431737`/`0x431805` | 樂透/開獎 `0x431712` | 57,58 | `lottery-draw-screen.ts` 全文 **0 处播放** | ❌ **未播** | ❌ / ❌ |
 | `0x4757e7` | `0x43382d`/`0x4338c3` | 魔法屋转盘 | 39 | `magic-screen.ts:1476`（`MAGIC_SOUND_RESULT=0x27`） | ✅ | ❌ / ❌ |
 | `0x475b17` | `0x439c09`/`0x439efa` | 银行月结 | 27,28,60 | `monthly-screen.ts:1787-1789`（`STEP=27`/`DETAIL=60`/`CLOSE=28`） | ✅ 三条全对 | ❌ / ❌ |
@@ -327,8 +327,8 @@ remake 对 `0x47509f`（19,20,21）有播放（`minigame-screen.ts:229-233`）�
 
 | # | 原版 | remake | 类型 | 严重度 |
 |---|---|---|---|---|
-| S11 | 公司分红屏音效集 `0x4755a8` = **61**（1 项） | `shares-screen.ts:262` 定义 `SHARES_SOUND={open:0,page:1,choice:2}`（定义未用）；**61 未播** | 数值错 | 严重 | ✅ 2026-09-24 已补（gap-audit #13）：`shares-screen.ts` 的 `SHARES_OPEN_SOUND` 上屏那一刻放 61，旧下标表删了 |
-| S12 | 通用填数窗按键音 = 表 `0x48234a` 第 0 项 = **7**（VA `0x00452f0e`，remake 自记于 `amount-keys.ts:15`） | `main.ts:2185-2196`（`onAmountKey`）与 `:2117-2138` 全程**无播放** | 缺失 | 轻微 | ✅ 2026-09-24 已补（gap-audit #13）：`amount-keys.ts` 的 `amountKeySound`（`H` 不放），`main.ts` `onAmountKey` 与 `board-screen.ts` 填数钮都放 |
+| S11 | 公司分红屏音效集 `0x4755a8` = **61**（1 项） | `shares-screen.ts:262` 定义 `SHARES_SOUND={open:0,page:1,choice:2}`（定义未用）；**61 未播** | 数值错 | 严重；✅ 2026-09-24 已补（gap-audit #13）：`shares-screen.ts` 的 `SHARES_OPEN_SOUND` 上屏那一刻放 61，旧下标表删了 |
+| S12 | 通用填数窗按键音 = 表 `0x48234a` 第 0 项 = **7**（VA `0x00452f0e`，remake 自记于 `amount-keys.ts:15`） | `main.ts:2185-2196`（`onAmountKey`）与 `:2117-2138` 全程**无播放** | 缺失 | 轻微；✅ 2026-09-24 已补（gap-audit #13）：`amount-keys.ts` 的 `amountKeySound`（`H` 不放），`main.ts` `onAmountKey` 与 `board-screen.ts` 填数钮都放 |
 | S13 | 股市屏 **40/41**、樂透 **31**、開獎 **57/58** | `stock-screen.ts`、`lottery-draw-screen.ts` 全文 0 处；`lottery-screen.ts:943` 只播 4 | 缺失 | 严重 |
 | S14 | remake 播 **90/91**（`0x5a`/`0x5b`），**超出规格 §三「最大 63」** | `build-fx.ts:161,167`（`BUILD_HAMMER_SOUND=0x5b`、`BUILD_MAX_SOUND=0x5a`）→ `main.ts:4554` 播放 | 无法判定 | 轻微 |
 

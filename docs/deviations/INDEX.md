@@ -185,7 +185,7 @@
 | `Q-LAB-1` | 研究所 —— 触发点找到了（2026-09-14 结案） | 结案 | docs/known-deviations.md:688 |
 | `Q-LAND-1` | 开局地块上**没有**自造色块；四类立体物的图号都吃视角（2026-09-16） | ? | docs/known-deviations.md:4620 |
 | `Q-LAND-2` | 查封／漲價的涨价位没进状态（**已结案 2026-09-14，T-008 + T-084**） | 结案 | docs/known-deviations.md:783 |
-| `Q-LAYOUT-1` | 「託管AI」屏那两个亮/暗行图的**用法**没跟到 | ? | docs/known-deviations.md:1268 |
+| ~~`Q-LAYOUT-1`~~ | 「託管AI」屏那两个亮/暗行图的用法 —— **已结案 2026-09-24**（玩家行底板，gap-audit #20） | ✅ | docs/known-deviations.md:1268 |
 | `Q-LAYOUT-2` | 日曆底图 —— **「逐月查表」这条推论已被推翻；真正随地图变的是「節日插画」** | ? | docs/known-deviations.md:797 |
 | `Q-LAYOUT-3` | 棋盘「纵向拉长」—— **几何全部核对无误；另修掉真实的地图取景 bug** | ? | docs/known-deviations.md:1173 |
 | `Q-LAYOUT-4` | 建筑没有正确落在格子里 —— **已修（2026-09-14）** | 结案 | docs/known-deviations.md:1134 |
@@ -370,7 +370,7 @@
 - `Q-INS-2`（?）地图上没有保險公司时原版会写到企業表外 —— docs/known-deviations.md:663
 - `Q-INTRO-1`（?）開局跳伞过场的**画面**复刻不了（AVI 是残档 + 专有编码） —— docs/known-deviations.md:3226
 - `Q-LAND-1`（?）开局地块上**没有**自造色块；四类立体物的图号都吃视角（2026-09-16） —— docs/known-deviations.md:4620
-- `Q-LAYOUT-1`（?）「託管AI」屏那两个亮/暗行图的**用法**没跟到 —— docs/known-deviations.md:1268
+- ~~`Q-LAYOUT-1`~~（✅）「託管AI」屏那两个亮/暗行图的用法 —— 已结案 2026-09-24（玩家行底板） —— docs/known-deviations.md:1268
 - `Q-LAYOUT-2`（?）日曆底图 —— **「逐月查表」这条推论已被推翻；真正随地图变的是「節日插画」** —— docs/known-deviations.md:797
 - `Q-LAYOUT-3`（?）棋盘「纵向拉长」—— **几何全部核对无误；另修掉真实的地图取景 bug** —— docs/known-deviations.md:1173
 - `Q-LAYOUT-7`（?）樂透投注屏的规则与美术都不对 —— docs/known-deviations.md:1016
