@@ -106,7 +106,7 @@ import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { playVoiceCode, stopVoice, voiceBusy } from './voice-sink.ts';
 import { SCREEN_H, SCREEN_W } from './stage.ts';
-import { currentSurfaceScale, drawSprite, drawSpriteRegion } from './hd-stage.ts';
+import { currentSurfaceScale, drawSprite, drawSpriteRegion, type SpriteLike } from './hd-stage.ts';
 
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
@@ -956,12 +956,14 @@ export function clipSrc(
 }
 
 /** 这一段 ANM 这一刻该贴哪一帧；还在起播停顿里（或解不出来）⇒ `null`（不贴）*/
-function anmFrameNow(env: UiScreenEnv, p: Playing): CanvasImageSource | null {
+function anmFrameNow(env: UiScreenEnv, p: Playing): SpriteLike | null {
   const film = env.flic('Panel.mkf', p.resource);
   if (film === null || film.frames.length === 0) return null;
   const from = anmRunFrom(p);
   if (env.now < from) return null;
-  return film.frames[anmFrameAt(env.now, from, film.frames.length, false)] ?? null;
+  const bitmap = film.frames[anmFrameAt(env.now, from, film.frames.length, false)];
+  // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+  return bitmap === undefined ? null : { bitmap, width: film.width, height: film.height };
 }
 
 /**
@@ -972,7 +974,7 @@ function anmFrameNow(env: UiScreenEnv, p: Playing): CanvasImageSource | null {
 function drawAnim(ctx: CanvasRenderingContext2D, env: UiScreenEnv, p: Playing | null): void {
   if (p === null) return;
   const frame = anmFrameNow(env, p);
-  if (frame !== null) ctx.drawImage(frame, p.at[0], p.at[1]);
+  if (frame !== null) drawSprite(ctx, frame, p.at[0], p.at[1]);
 }
 
 /**
@@ -1225,7 +1227,8 @@ function bakeFinishedAnims(a: Active, ctx: CanvasRenderingContext2D, env: UiScre
     if (!p.settled && !playingDone(p, env.now)) continue;
     const film = env.flic('Panel.mkf', p.resource);
     const last = film?.frames[film.frames.length - 1];
-    if (last !== undefined) ctx.drawImage(last, p.at[0], p.at[1]);
+    // FLIC 帧按影片的**逻辑**尺寸画（超分帧塞回同一个框，`hd-stage.ts`）
+    if (film !== null && last !== undefined) drawSprite(ctx, { bitmap: last, width: film.width, height: film.height }, p.at[0], p.at[1]);
     a[key] = null;
   }
 }

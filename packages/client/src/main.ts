@@ -265,6 +265,7 @@ import {
   configStore,
   initSaveStore,
   hdBase,
+  hdTierDir,
   isDesktop,
   hostLog,
   writeReport,
@@ -727,7 +728,7 @@ import { drawSprite, drawSurface, hdStageRequested, setCurrentSurfaceScale, size
  * HD 清单的文件名 —— `hdBase()` 是 `${assetBase() 去掉 /game}/hd`，清单在它旁边。
  * 与 `packages/server/src/static.ts` 的素材白名单无关（HD 走另一条路）。
  */
-const HD_MANIFEST_NAME = 'hd-manifest.json';
+const HD_MANIFEST_NAME = `${hdTierDir()}-manifest.json`;
 
 /**
  * 网页版要不要去问 HD 素材。
@@ -9083,7 +9084,7 @@ function drawDiceFx(ctx: CanvasRenderingContext2D, now: number): void {
   if (!diceFx.active) return;
   const flic = diceFx.flicBitmap(now);
   if (flic !== null) {
-    drawDiceFlic(ctx, flic, currentScreenDir());
+    drawDiceFlic(ctx, flic, currentScreenDir(), diceFx.flicSize());
     return;
   }
   // 定格段：点数图盖上去。滚骰段走到这儿只可能是影片还没解好 —— 也先把点数摆出来，
@@ -12667,6 +12668,8 @@ async function boot(): Promise<void> {
     //   那份 3.8 MB 的清单白拉（任务书 §1 末条）。
     hdSource = hdListed ? await loadHdSource(hdBase()) : null;
     sprites = new SpriteCache(archives, hdSource === null ? {} : { hd: hdSource });
+    // ★ 高清图是后台拉、到了原地换位图（先原图、后高清）—— 换上来那一刻重画一帧
+    sprites.addUpgradeListener(() => requestRender());
     if (hdSource !== null) log('HD 素材：已接上（缺图的按图回退原图）');
 
     // 先用地址栏（或默认值）建一局，好让渲染器与面板有东西可读；
@@ -13083,7 +13086,8 @@ async function boot(): Promise<void> {
           const s2 = spriteNow(archive, res, idx, key);
           return s2 === null
             ? null
-            : { w: s2.width, h: s2.height, ax: s2.anchorX, ay: s2.anchorY };
+            : // bw/bh = 位图像素（超分图比逻辑 w/h 大）—— 验「先原图、后高清」用
+              { w: s2.width, h: s2.height, ax: s2.anchorX, ay: s2.anchorY, bw: s2.bitmap.width, bh: s2.bitmap.height };
         },
         viewport: () => ({ w: LAYOUT.board.w, h: LAYOUT.board.h }),
         /** 某个节点此刻画在**棋盘区**的哪里；不在视野内返回 null */

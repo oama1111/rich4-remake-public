@@ -1505,7 +1505,9 @@ export const magicScreen: UiScreen = {
     // 关窗影片整幅盖在状态 8 那一屏上（索引 0 = 透明 ⇒ 露出底下那一屏）
     if (film !== null) {
       const bmp = boardFilmBitmap(film, env.now, env.flic(film.spec.archive, film.spec.resource));
-      if (bmp !== null) env.stage.drawImage(bmp, film.spec.x, film.spec.y);
+      const f = env.flic(film.spec.archive, film.spec.resource);
+      // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+      if (bmp !== null && f !== null) drawSprite(env.stage, { bitmap: bmp, width: f.width, height: f.height }, film.spec.x, film.spec.y);
     }
   },
 

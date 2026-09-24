@@ -209,6 +209,12 @@ export class DiceRollFx {
     return Math.min(flic.frames.length - 1, Math.max(0, k));
   }
 
+  /** 滚骰影片的逻辑尺寸（超分帧位图更大，画时塞回这个框）；还没解好时 null */
+  flicSize(): { width: number; height: number } | null {
+    const f = this.#flic;
+    return f === null ? null : { width: f.width, height: f.height };
+  }
+
   /** 当前这一帧的位图；不在滚骰段或没 FLIC 时 null */
   flicBitmap(now: number): ImageBitmap | null {
     const k = this.flicFrame(now);

@@ -328,6 +328,9 @@ export type IntroFlicFn = (archive: ArchiveName, resource: number) => IntroFlic 
 export interface IntroFlic {
   frames: readonly CanvasImageSource[];
   frameMs: number;
+  /** 逻辑宽高（超分帧位图更大，画时塞回这个框；见 `hd-stage.ts`）*/
+  width: number;
+  height: number;
 }
 
 /** 播過場要的外部句柄；不傳就退化成「只畫一行跳過提示」*/
@@ -431,5 +434,6 @@ function paintSegment(
   const i = Math.max(0, Math.min(frame, flic.frames.length - 1));
   const bmp = flic.frames[i];
   if (bmp === undefined) return;
-  ctx.drawImage(bmp, seg.at.x, seg.at.y);
+  // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+  drawSprite(ctx, { bitmap: bmp, width: flic.width, height: flic.height }, seg.at.x, seg.at.y);
 }

@@ -32,6 +32,9 @@
 # ★ assets/game/ 现在**入库**（走 LFS），见 .gitattributes 与 docs/assets.md
 # 以下全是**派生物**——由 assets/game/ 经我们自己的管线生成，故不版本化：
 assets/hd/
+# 分档产物（`pnpm upscale tier`）连同它的清单都能从 hd + hd-manifest.json 重算
+assets/hd-2x/
+assets/hd-2x-manifest.json
 assets/upscale-queue/
 assets/upscale-done/
 extracted/

@@ -870,7 +870,8 @@ function drawOp(ctx: CanvasRenderingContext2D, get: MonthlySprite, flic: (resour
     case 'film': {
       const f = flic(op.resource);
       const last = f?.frames[f.frames.length - 1];
-      if (last !== undefined) ctx.drawImage(last, op.x, op.y);
+      // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+      if (f !== null && last !== undefined) drawSprite(ctx, { bitmap: last, width: f.width, height: f.height }, op.x, op.y);
       return;
     }
   }
@@ -915,7 +916,8 @@ export function drawMonthlyScreen(
       const k = Math.max(0, Math.floor((now - f.startedAt) / ms));
       const frame = Math.min(film.frames.length * f.plays - 1, k) % film.frames.length;
       const bmp = film.frames[frame];
-      if (bmp !== undefined) ctx.drawImage(bmp, f.x, f.y);
+      // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+      if (bmp !== undefined) drawSprite(ctx, { bitmap: bmp, width: film.width, height: film.height }, f.x, f.y);
     }
   }
 }

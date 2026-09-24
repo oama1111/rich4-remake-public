@@ -112,7 +112,7 @@ function fakeFlic(spec: Record<number, { frames: number; frameMs: number }>): {
       { length: s.frames },
       (_, i) => ({ res, frame: i }) as unknown as CanvasImageSource,
     );
-    return { frames, frameMs: s.frameMs } satisfies IntroFlic;
+    return { frames, frameMs: s.frameMs, width: 0, height: 0 } satisfies IntroFlic;
   };
   return { fn, asked };
 }

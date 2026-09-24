@@ -2269,7 +2269,8 @@ export const minigameScreen: UiScreen = {
           Math.max(0, Math.floor((env.now - st.intro.at) / ms)),
         );
         const bmp = flic.frames[i];
-        if (bmp !== undefined) env.stage.drawImage(bmp, 0, 0);
+        // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+        if (bmp !== undefined) drawSprite(env.stage, { bitmap: bmp, width: flic.width, height: flic.height }, 0, 0);
       }
       return;
     }

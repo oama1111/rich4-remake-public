@@ -6,13 +6,16 @@ import { fileURLToPath } from 'node:url';
 import type { ServerResponse } from 'node:http';
 
 const gameDir = fileURLToPath(new URL('../../assets/game', import.meta.url));
-/** 超分产物（不入库；空目录/不存在时一律 404，客户端回退原图） */
-const hdDir = fileURLToPath(new URL('../../assets/hd', import.meta.url));
-const hdManifest = fileURLToPath(new URL('../../assets/hd-manifest.json', import.meta.url));
+/**
+ * 超分产物（不入库；空目录/不存在时一律 404，客户端回退原图）。
+ * `hd` = 4× 母版，`hd-2x` = `pnpm upscale tier` 缩出来的网页档（见 `host.ts` 的 `hdTierDir`）。
+ */
+const assetsRoot = fileURLToPath(new URL('../../assets', import.meta.url));
+const HD_TIERS = ['hd', 'hd-2x'] as const;
 
 /**
- * 把原版素材目录挂到 `/assets/game/*`，超分产物挂到 `/assets/hd/*`
- * （清单在 `/assets/hd-manifest.json`，与 `hdBase()` 的约定一致）。
+ * 把原版素材目录挂到 `/assets/game/*`，超分产物挂到 `/assets/hd/*` 与 `/assets/hd-2x/*`
+ * （清单在同级的 `<档>-manifest.json`，与 `hdBase()` 的约定一致）。
  *
  * 不用 `publicDir` —— 那会让 vite 在构建时把 237MB 复制一份到 dist。
  * 素材是按需 fetch 的大文件，直接流式返回即可。
@@ -24,11 +27,13 @@ function serveGameAssets(): Plugin {
       server.middlewares.use((req, res, next) => {
         if (req.url === undefined) return next();
         const url = req.url.split('?')[0]!;
-        if (url === '/assets/hd-manifest.json') return streamFile(hdManifest, 'application/json', res, next);
+        const tier = HD_TIERS.find((t) => url === `/assets/${t}-manifest.json`);
+        if (tier !== undefined) return streamFile(join(assetsRoot, `${tier}-manifest.json`), 'application/json', res, next);
+        const hdTier = HD_TIERS.find((t) => url.startsWith(`/assets/${t}/`));
         const mount = url.startsWith('/assets/game/')
           ? { prefix: '/assets/game/', dir: gameDir, type: 'application/octet-stream' }
-          : url.startsWith('/assets/hd/')
-            ? { prefix: '/assets/hd/', dir: hdDir, type: 'image/png' }
+          : hdTier !== undefined
+            ? { prefix: `/assets/${hdTier}/`, dir: join(assetsRoot, hdTier), type: 'image/png' }
             : null;
         if (mount === null) return next();
 
