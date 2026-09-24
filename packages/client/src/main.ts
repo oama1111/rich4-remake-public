@@ -12114,7 +12114,7 @@ async function loadArchivesForWeb(): Promise<LoadedArchives> {
 
 function showLoadingScreen(): void {
   metaEl.className = 'meta';
-  metaEl.textContent = '正在载入原版素材… 0%';
+  metaEl.textContent = '正在载入素材… 0%';
   loadBarEl.hidden = false;
   loadFillEl.style.width = '0%';
   loadHintEl.hidden = false;
@@ -12129,7 +12129,7 @@ function showLoadingScreen(): void {
  */
 function renderLoadProgress(p: LoadProgress): void {
   const pct = p.total > 0 ? Math.floor((p.loaded / p.total) * 100) : 0;
-  metaEl.textContent = `正在载入原版素材… ${pct}%`;
+  metaEl.textContent = `正在载入素材… ${pct}%`;
   loadFillEl.style.width = `${pct}%`;
   // 已经从缓存里拿到过东西了 —— 「首次载入约 130 MB」那句就不必再挂着
   if (p.cachedHits > 0) loadHintEl.hidden = true;
@@ -12631,7 +12631,7 @@ async function boot(): Promise<void> {
     // ★ W-72：网页版走「一次下完 7 个」那条路（带进度条 + Cache Storage）；
     //   桌面壳一行没变 —— 还是边拉边开那 5 个基础档案。
     if (isDesktop()) {
-      metaEl.textContent = '正在载入原版素材…';
+      metaEl.textContent = '正在载入素材…';
       archives = await loadArchives(assetBase());
     } else {
       archives = await loadArchivesForWeb();

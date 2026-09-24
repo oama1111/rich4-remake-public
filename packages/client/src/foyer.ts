@@ -458,7 +458,6 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
         nameInput,
         err,
         entries,
-        el(doc, 'p', 'margin:14px 0 0;font-size:11px;color:#7f92aa;line-height:1.5', '聯機的每個人都要各自有原版素材。'),
       );
 
       /** 名字过了才返回它；顺便存起来 */
