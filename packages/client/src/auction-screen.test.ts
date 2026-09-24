@@ -450,6 +450,11 @@ function withNow(env: UiScreenEnv, now: number): UiScreenEnv {
   return { ...env, now };
 }
 
+/** ★ pt23：开场那句（`AUCTION_BOX_MS`）走完才轮到真人举牌（原版相位 3，`0x0043bb2f`）—— 点钮的测试都从这一刻起 */
+function afterIntro(env: UiScreenEnv): UiScreenEnv {
+  return withNow(env, env.now + AUCTION_BOX_MS);
+}
+
 describe('整屏接线（UiScreen 契约）', () => {
   it('★ 只有 auction 待决交互才接管', () => {
     const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
@@ -493,8 +498,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env, actions } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
     auctionScreen.tick!(env);
     const y = auctionButtonY(3);
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
+    auctionScreen.down!(406, y, afterIntro(env));
+    auctionScreen.up!(406, y, afterIntro(env));
     expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'raise', step: 1000 }]);
     // ★ 现价由 core 落账；屏内这一帧还没变（旧版是屏自己改，那是两条循环）
     expect(auctionRunForTest()!.price).toBe(5000);
@@ -506,8 +511,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env, actions } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
     auctionScreen.tick!(env);
     const y = auctionButtonY(0);
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
+    auctionScreen.down!(406, y, afterIntro(env));
+    auctionScreen.up!(406, y, afterIntro(env));
     expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'pass', step: 0 }]);
   });
 
@@ -517,8 +522,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env, actions } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
     auctionScreen.tick!(env);
     const y = auctionButtonY(6);
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
+    auctionScreen.down!(406, y, afterIntro(env));
+    auctionScreen.up!(406, y, afterIntro(env));
     expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'giveUp', step: 0 }]);
   });
 
@@ -528,8 +533,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env, actions } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
     auctionScreen.tick!(env);
     const y = auctionButtonY(3); // +1000 > 5500 − 5000
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
+    auctionScreen.down!(406, y, afterIntro(env));
+    auctionScreen.up!(406, y, afterIntro(env));
     expect(actions).toEqual([]);
   });
 
@@ -563,8 +568,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const mine: UiScreenEnv = { ...env, localSeat: 0 };
     auctionScreen.tick!(mine);
     const y = auctionButtonY(0);
-    auctionScreen.down!(406, y, mine);
-    auctionScreen.up!(406, y, mine);
+    auctionScreen.down!(406, y, afterIntro(mine));
+    auctionScreen.up!(406, y, afterIntro(mine));
     expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'pass', step: 0 }]);
   });
 
@@ -575,8 +580,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const other: UiScreenEnv = { ...env, localSeat: 1 };
     auctionScreen.tick!(other);
     const y = auctionButtonY(0);
-    auctionScreen.down!(406, y, other);
-    auctionScreen.up!(406, y, other);
+    auctionScreen.down!(406, y, afterIntro(other));
+    auctionScreen.up!(406, y, afterIntro(other));
     expect(actions).toEqual([]);
   });
 
@@ -616,10 +621,14 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env } = mkEnv(pending, players);
     auctionScreen.tick!(env);
     const y = auctionButtonY(3);
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
-    const settled = { ...env, state: { ...env.state, pending: null } as GameState };
+    const ready = afterIntro(env);
+    auctionScreen.down!(406, y, ready);
+    auctionScreen.up!(406, y, ready);
+    // ★ pt23：落槌那一口的挥槌先演完（`0x0043ab40` → 相位 5 才判终局）
+    const settled = { ...ready, state: { ...env.state, pending: null } as GameState };
     auctionScreen.tick!(settled);
+    expect(auctionRunForTest()!.phase).toBe('bidding');
+    auctionScreen.tick!(withNow(settled, ready.now + AUCTION_FRAME_MS * AUCTION_HAMMER_FRAMES));
     expect(auctionRunForTest()!.phase).toBe('sold');
     expect(auctionRunForTest()!.winner).toBe(0);
     // 演出结束后屏自己退出接管
@@ -688,12 +697,16 @@ describe('★★ 试玩 4 回归：落槌那一刻屏**不能**立刻退场（�
     const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
     const { env } = mkEnv(auctionPending({ bidders: [0, 1], limits: [0, 9000] }), players);
     auctionScreen.tick!(env); // 建桌
-    // 真人点 +1000（屏内记下「0 号加过 1000」）
+    // 真人点 +1000（屏内记下「0 号加过 1000」）—— 开场那句走完、挥槌也走完（pt23）
     const y = auctionButtonY(3);
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
+    const ready = afterIntro(env);
+    auctionScreen.down!(406, y, ready);
+    auctionScreen.up!(406, y, ready);
     // core 落槌 ⇒ pending 变 null，此刻 settling/outcome **都还是假的**
-    const settled = { ...env, state: { ...env.state, pending: null } as GameState };
+    const settled = {
+      ...withNow(ready, ready.now + AUCTION_FRAME_MS * AUCTION_HAMMER_FRAMES),
+      state: { ...env.state, pending: null } as GameState,
+    };
     // ★★ 这一条就是那个 bug：先前 `active()` 是 `screen.settling`，
     //   而 `settling` 要等 `tick` 里的 `beginSettle` 才置 —— 于是 `active()` 先变假、
     //   `tick` 再也不被调、`beginSettle` 永远起不来（结果一次都演不出来）。

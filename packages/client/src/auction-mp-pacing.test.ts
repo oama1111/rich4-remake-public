@@ -19,7 +19,11 @@ import {
   AUCTION_SOUND_BID,
   auctionBidPacing,
   auctionButtonY,
+  auctionHumanPassPoint,
+  auctionPresentationOnly,
+  auctionRunForTest,
   auctionScreen,
+  auctionTrace,
   resetAuctionScreenForTest,
 } from './auction-screen.ts';
 import { PresentationHost } from './presentation-host.ts';
@@ -85,7 +89,12 @@ function applyBid(state: GameState, a: Action): GameState {
 }
 
 /** 一块屏的宿主：时钟、状态、音效流水 —— `dispatch` 在单机里当场 reduce 并派 `event`（同 `main.ts` 的 `notifyApplied`）*/
-function host(players: Player[], pending: AuctionPending, localSeat: number | null) {
+function host(
+  players: Player[],
+  pending: AuctionPending,
+  localSeat: number | null,
+  reduceBid: (state: GameState, a: Action) => GameState = applyBid,
+) {
   let now = 0;
   let state = {
     pending,
@@ -128,7 +137,7 @@ function host(players: Player[], pending: AuctionPending, localSeat: number | nu
   });
   const apply = (a: Action): void => {
     const before = state;
-    state = applyBid(state, a);
+    state = reduceBid(state, a);
     auctionScreen.event!(before, state, env());
   };
   return {
@@ -285,5 +294,128 @@ describe('★ gap-audit #4：联机拍卖的逐口挥槌 + 音效 0x3f，节拍�
     auctionScreen.up!(406, y, solo.env());
     expect(solo.dispatched).toHaveLength(1);
     expect(solo.sounds).toEqual([AUCTION_BOX_MS + FRAME]);
+  });
+});
+
+/**
+ * ★★ pt23（联机拍卖活体 e2e，`tools/net-e2e-auction.mjs` 实测到的两处）—— 单机 / 联机同一块屏，两种模式各钉一遍：
+ *
+ * ① 真人能在上一口挥槌的第一帧（联机实测 22–34 ms）、甚至开场那句还挂着时就点钮 ⇒ 上一口的挥槌被截成一帧。
+ *   原版只在相位 3 收钮（`0x0043bb2f`），挥槌帧计数非 0 一律不收（`0x0043bb3c`）；开场那句挂着时点一下只收掉那一句
+ *   （`0x0043bb27 fcn_0044ee18(1)`）。
+ * ② 落槌那一口的挥槌一帧都没画（core 一清 `pending` 下一拍就 `beginSettle` 把 `anim` 清了）。
+ *   原版挥槌三帧走完才进相位 5（`0x0043ab40`），相位 5 才判终局弹「成交 / 流標」（`0x0043b262` → `0x0043b295`）。
+ */
+describe('★★ pt23：真人要等上一口挥槌 / 开场那句走完才点得动；落槌那一口的挥槌演完才宣布', () => {
+  const click = (env: UiScreenEnv, btn: number): void => {
+    const y = auctionButtonY(btn);
+    auctionScreen.down!(406, y, env);
+    auctionScreen.up!(406, y, env);
+  };
+  /** 落槌：这一口之后 core 清掉 `pending`（成交）*/
+  const hammerDown = (state: GameState, a: Action): GameState => {
+    const next = applyBid(state, a);
+    return { ...next, pending: null };
+  };
+
+  for (const mode of ['单机', '联机'] as const) {
+    const local = mode === '单机' ? null : 1;
+
+    it(`${mode}：电脑那一口挥槌期间真人点钮不算（钮也不摆）；挥槌收尾后才点得动`, () => {
+      resetAuctionScreenForTest();
+      auctionTrace(true);
+      const h = host([mkPlayer(0, COMPUTER), mkPlayer(1, HUMAN)], auctionPending([0, 1], [900_000, 0]), local);
+      auctionScreen.tick!(h.env());
+      h.setNow(AUCTION_BOX_MS);
+      if (local === null) auctionScreen.tick!(h.env()); // 单机：屏自己出电脑那一口
+      else h.apply({ type: 'auctionBid', bidder: 0, status: 'raise', step: 1000 }); // 联机：服务器广播来的
+      const bidAt = AUCTION_BOX_MS;
+      expect(h.sounds).toEqual([bidAt]);
+      // 已轮到真人（core 转了座），但挥槌还在演 ⇒ 不是相位 3
+      h.setNow(bidAt + FRAME);
+      auctionScreen.tick!(h.env());
+      expect(auctionHumanPassPoint(h.env())).toBeNull();
+      click(h.env(), 1);
+      const before = h.dispatched.length;
+      expect(h.dispatched.filter((a) => a.type === 'auctionBid' && a.bidder === 1)).toEqual([]);
+      expect(h.sounds).toEqual([bidAt]); // 没被截：没有第二声、电脑那一口的挥槌照演
+      // 挥槌收尾 ⇒ 相位 3
+      h.setNow(bidAt + BID_MS);
+      auctionScreen.tick!(h.env());
+      expect(auctionHumanPassPoint(h.env())).not.toBeNull();
+      click(h.env(), 1);
+      expect(h.dispatched.length).toBe(before + 1);
+      expect(h.dispatched[h.dispatched.length - 1]).toEqual({ type: 'auctionBid', bidder: 1, status: 'raise', step: 100 });
+      expect(h.sounds).toEqual([bidAt, bidAt + BID_MS]);
+      // 取证钩子：电脑那一口的来源（单机屏自己出 / 联机广播补演）与本机那一口
+      const tr = auctionTrace();
+      expect(tr.anims.map((x) => x.source)).toEqual([local === null ? 'solo' : 'broadcast', 'local']);
+      expect(tr.opens).toEqual([0]);
+    });
+
+    it(`${mode}：开场那句挂着时点一下只收掉那一句、不算出价；下一下才出价`, () => {
+      resetAuctionScreenForTest();
+      const h = host([mkPlayer(0, COMPUTER), mkPlayer(1, HUMAN)], auctionPending([1, 0], [900_000, 0]), local);
+      auctionScreen.tick!(h.env());
+      h.setNow(FRAME);
+      expect(auctionHumanPassPoint(h.env())).toBeNull();
+      click(h.env(), 1);
+      expect(h.dispatched).toEqual([]);
+      expect(h.sounds).toEqual([]);
+      // 开场那句收掉了 ⇒ 下一拍就是相位 3（不再等满 2 秒）
+      h.setNow(FRAME * 2);
+      auctionScreen.tick!(h.env());
+      click(h.env(), 1);
+      expect(h.dispatched).toEqual([{ type: 'auctionBid', bidder: 1, status: 'raise', step: 100 }]);
+      expect(h.sounds).toEqual([FRAME * 2]);
+    });
+  }
+
+  it('单机：落槌那一口（真人点的）挥槌演完才宣布成交；其间屏仍接管、算纯演出', () => {
+    resetAuctionScreenForTest();
+    auctionTrace(true);
+    const h = host([mkPlayer(0, HUMAN), mkPlayer(1, COMPUTER)], auctionPending([0, 1], [0, 900_000]), null, hammerDown);
+    auctionScreen.tick!(h.env());
+    h.setNow(AUCTION_BOX_MS);
+    auctionScreen.tick!(h.env());
+    click(h.env(), 1);
+    expect(h.env().state.pending).toBeNull(); // core 当场落槌
+    for (let t = AUCTION_BOX_MS + FRAME; t < AUCTION_BOX_MS + BID_MS; t += FRAME) {
+      h.setNow(t);
+      auctionScreen.tick!(h.env());
+      expect(auctionRunForTest()!.phase).toBe('bidding');
+      expect(auctionScreen.active(h.env())).toBe(true);
+      expect(auctionPresentationOnly(h.env())).toBe(true);
+    }
+    h.setNow(AUCTION_BOX_MS + BID_MS);
+    auctionScreen.tick!(h.env());
+    expect(auctionRunForTest()!.phase).toBe('sold');
+    expect(auctionRunForTest()!.winner).toBe(0);
+  });
+
+  it('联机旁观端：广播来的落槌那一口同样先挥完槌再宣布（收件箱其间照挡）', () => {
+    resetAuctionScreenForTest();
+    // 第二口（1 号 PASS）落槌
+    let k = 0;
+    const secondFalls = (state: GameState, a: Action): GameState => (++k >= 2 ? hammerDown(state, a) : applyBid(state, a));
+    const h = host([mkPlayer(0, COMPUTER), mkPlayer(1, COMPUTER), mkPlayer(2, HUMAN)], auctionPending([0, 1], [900_000, 900_000]), 2, secondFalls);
+    auctionScreen.tick!(h.env());
+    h.setNow(AUCTION_BOX_MS);
+    h.apply({ type: 'auctionBid', bidder: 0, status: 'raise', step: 1000 });
+    const last = AUCTION_BOX_MS + BID_MS;
+    h.setNow(last);
+    expect(auctionBidPacing(h.env())).toBe(false);
+    h.apply({ type: 'auctionBid', bidder: 1, status: 'pass', step: 0 });
+    expect(h.sounds).toEqual([AUCTION_BOX_MS, last]);
+    for (let t = last + FRAME; t < last + BID_MS; t += FRAME) {
+      h.setNow(t);
+      auctionScreen.tick!(h.env());
+      expect(auctionRunForTest()!.phase).toBe('bidding');
+      expect(auctionPresentationOnly(h.env())).toBe(true);
+    }
+    h.setNow(last + BID_MS);
+    auctionScreen.tick!(h.env());
+    expect(auctionRunForTest()!.phase).toBe('sold');
+    expect(auctionRunForTest()!.winner).toBe(0);
   });
 });

@@ -675,7 +675,7 @@ import { setScapegoatPickerGate } from './scapegoat-picker.ts';
 import { researchScreen } from './research-screen.ts';
 // ★ 只给 dev 钩子用（`__rich4.auctionView()`）：竞价轮转发生在 canvas 屏里，
 //   自动化看不见就没法验收「电脑跟不跟价、落槌演没演」。
-import { auctionHumanPassPoint, auctionRunForTest } from './auction-screen.ts';
+import { auctionHumanPassPoint, auctionRunForTest, auctionTrace } from './auction-screen.ts';
 // ★ 镜头该盯谁：判据是纯函数（第四份回报第 2/5 条）
 import { cameraFollowTarget } from './camera-follow.ts';
 // ★ 只给 dev 钩子用（`__rich4.lotteryDraw()`）：開獎屏要等到 15 号才出现
@@ -6633,6 +6633,12 @@ function uiFlicNow(archive: string, resource: number): LoadedFlic | null {
  * ⚠️ 每调一次算一次 `performance.now()` —— 屏幕若要「本帧同一个时刻」，
  *   自己取一次 `env.now` 存着用。
  */
+/**
+ * ★ gap-audit #4 活体验收：整屏发出的每一声音效（时刻 + 号）—— **只在 DEV 构建里记**，`__rich4.sfxLog()` 读。
+ *   `?mute=1` 时音频不出声，但「该不该放、放了几次」照样看得到（`tools/net-e2e-auction.mjs` 数 0x3f 用）。
+ */
+const devSfxLog: { t: number; id: number }[] = [];
+
 function uiEnv(): UiScreenEnv {
   return {
     screen,
@@ -6659,7 +6665,13 @@ function uiEnv(): UiScreenEnv {
     //   循环的那一路原版是 `_rich4_play_sound_effect(flags=1, …)`（= `DSBPLAY_LOOPING`），
     //   第一处用途是轉盤的 52 号（0.089 s，不循环就只是一声「嗒」）——
     //   见 `wheel-screen.ts` 与 `audio.ts` 的 `play(archive, resource, loop)`。
-    playEffect: (id: number, loop = false) => sound.play('Effect.mkf', id, loop),
+    playEffect: (id: number, loop = false) => {
+      if (import.meta.env.DEV) {
+        devSfxLog.push({ t: performance.now(), id });
+        if (devSfxLog.length > 500) devSfxLog.shift();
+      }
+      sound.play('Effect.mkf', id, loop);
+    },
     stopEffect: (id: number) => sound.stop('Effect.mkf', id),
     // ★ 按屏取曲（原版 `fcn_004549cf(id)`）：屏只报**磁盘文件名**，
     //   载入/替换由这里统一做（与 `playTrack` 同一条载入路径）。
@@ -12844,7 +12856,14 @@ async function boot(): Promise<void> {
           renderQueued = false;
           requestRender();
         },
-        /** 拍卖屏的当前运行态（屏内 + core 的 pending 快照）—— 给自动化用 */
+        /**
+         * ★ gap-audit #4 活体验收：拍卖屏每一口挥槌的取证（来源 / 起点 / 实际画出的帧）+ 本机回包没演第二遍的次数。
+         *   `auctionTrace(true)` 开（清空）、`auctionTrace()` 读 —— 见 `tools/net-e2e-auction.mjs`。
+         */
+        auctionTrace: (on?: boolean) => auctionTrace(on),
+        /** ★ gap-audit #4：整屏音效的发出记录（`performance.now()` + 音效号；DEV 才记）*/
+        sfxLog: () => [...devSfxLog],
+                /** 拍卖屏的当前运行态（屏内 + core 的 pending 快照）—— 给自动化用 */
         auctionView: () => {
           const run = auctionRunForTest();
           const p = state.pending;
