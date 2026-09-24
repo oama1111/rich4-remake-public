@@ -71,6 +71,7 @@ export * from './rules/npc-walk.ts';
 export * from './places/company.ts';
 export * from './places/commercial.ts';
 export * from './ai/stock-policy.ts';
+export * from './ai/dice-policy.ts';
 export * from './cards/average-cash.ts';
 export * from './cards/hibernate.ts';
 export * from './cards/rebuild.ts';

@@ -134,6 +134,19 @@ export interface NewsEffectResult {
    */
   blastedHospital?: readonly number[];
   /**
+   * ★ 新聞 4：**爆心**的地图坐标（挑中那一处地块/設施的 `+0/+2`）—— 纯表现，交给
+   *   `GameState.lastViewTarget` 让镜头移过去。
+   *
+   * @source `fcn_0044913d` VA 0x00449203 `call 0x40af12`（取挑中实体的 (x, y)）→
+   *   VA 0x0044920b..0x0044921d `push 2 / push y / push x / call 0x41d476`（`view_to(x, y, 2)`，
+   *   flags 无 bit0 ⇒ **真的移镜头**）→ 之后才 `damage_area`（0x0044922d）与飛碟影片（0x0044925b）。
+   *   ★ 第二十一份試玩回報「外星人攻打地球，射到我自己为什么不会进医院」：先前这一支**不交**爆心，
+   *     镜头留在刚踩上新聞格的行动者身上，而那段 440×440 的飛碟影片固定盖在整块棋盘上
+   *     （`alien-news-fx.ts`）⇒ 画面看着像是射中了行动者本人；实际爆心在别处，
+   *     他不在半径 0x64 的窗里，当然不住院。候选集为空（原版 idiv 除零）时不带。
+   */
+  blastOrigin?: { x: number; y: number };
+  /**
    * ★ 新聞 4：被 `0x40cd07` 毁掉的座驾要回**全局库存**（道具 5 機車 / 6 汽車）。
    *   与 `fortune-effects.ts` 的事件 10/11 同一个约定（`inc byte [0x497324]` /
    *   `[0x497325]`）：**给了 `ctx.toolStock` 才带这个字段**。
@@ -997,6 +1010,8 @@ export function applyNewsEffect(
       landMutations,
       facilityMutations,
       ...(blastedHospital.length === 0 ? {} : { blastedHospital }),
+      // ★ 爆心坐标 → 镜头（`view_to(x, y, 2)` @ 0x0044921d）；见 `NewsEffectResult.blastOrigin`
+      blastOrigin: origin,
       // 没给 `ctx.toolStock` 就不带这个字段（与 `fortune-effects.ts` 10/11 同一约定）
       ...(ctx.toolStock === undefined ? {} : { toolStock }),
     };

@@ -54,7 +54,10 @@ const run = existsSync(MAP) ? it : it.skip;
 const SEED = 5;
 const HUMANS = 2;
 /** 第几回合让 H1 超时一次、第几回合让 H1 掉线 */
-const TIMEOUT_AT_TURN = 150;
+// ★ 2026-09-24（第二十一份：电脑起步前按 `fcn_004221c0` 改骰子数 ⇒ 电脑多出 `setDiceCount`、轨迹换了）：
+//   种子 5 的新轨迹里 H1 第 150..169 回合都在住院（踩不到「轮到他掷骰」那一刻，超时剧本走不到），
+//   超时点挪到 145（他第 145 回合正等掷骰）；断言一条没动。
+const TIMEOUT_AT_TURN = 145;
 const DISCONNECT_AT_TURN = 170;
 const TURNS = 200;
 

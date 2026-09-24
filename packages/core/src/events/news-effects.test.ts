@@ -735,6 +735,28 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
     expect(r.facilityMutations?.some((m) => m.id === 2)).toBe(false);
   });
 
+  it('★★ 第二十一份：爆心坐标交出去（`0x40af12` → `view_to(x, y, 2)` @ 0x0044921d）；窗外的人不住院', () => {
+    // 回报现场的形状：踩上新聞格的人（节点 1，(0,0)）离爆心很远 —— 他不该住院，
+    //   但镜头必须移到爆心，否则整幅盖在棋盘上的飛碟影片看着像射中了他
+    const lands = [built(1, 1, 0, 2, 5000, 5000)];
+    const nodes = [makeNode({ id: 1, x: 0, y: 0 }), makeNode({ id: 2, x: 5050, y: 5000 }), NODES[2]!];
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: i === 3 ? 2 : 1 }));
+    const r = applyNewsEffect(4, ctx({ players, lands, facilities: [], nodes, rng: { below: () => 0 } }));
+    expect(r.blastOrigin).toEqual({ x: 5000, y: 5000 });
+    // 只有站在窗内（节点 2）的 3 号住院 3 天；踩新聞格的 0 号不在窗里
+    expect(r.blastedHospital).toEqual([3]);
+    expect(r.players[0]!.blocking.inHospital).toBe(0);
+    expect(r.players[3]!.blocking.inHospital).not.toBe(0);
+    // 設施当爆心同理（候选表「地先、設施后」）
+    const r2 = applyNewsEffect(
+      4,
+      ctx({ lands: [], facilities: [fac(1, 2, 1, 2, 700, 800)], rng: { below: () => 0 } }),
+    );
+    expect(r2.blastOrigin).toEqual({ x: 700, y: 800 });
+    // 候选集为空（原版 idiv 除零）⇒ 不带
+    expect(applyNewsEffect(4, ctx({ lands: [], facilities: [], rng: { below: () => 0 } })).blastOrigin).toBeUndefined();
+  });
+
   it('★★ 設施重击无条件 `0x40dffa`：**全场被关押者**挂「下一天释放」', () => {
     const confined = (i: number, inHotel: number) =>
       makePlayer({ index: i, nodeId: 2, blocking: { ...makePlayer().blocking, inHotel } });

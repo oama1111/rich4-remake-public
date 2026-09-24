@@ -6125,6 +6125,13 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     const vt = entityViewTarget(applied, topo, out.place.entity);
     if (vt !== null) applied = { ...applied, lastViewTarget: vt };
   }
+  // ★ 第二十一份（「外星人攻打地球，射到我自己为什么不会进医院」）：新聞 4 同样先移镜头到爆心 ——
+  //   `fcn_0044913d` 0x00449203 `call 0x40af12` 取挑中那一处的坐标 → 0x0044921d `view_to(x, y, 2)`
+  //   → 0x0044922d `damage_area` → 0x0044925b 飛碟影片。先前没交爆心，镜头留在刚踩上新聞格的
+  //   行动者身上，整幅盖在棋盘上的飛碟影片看着就像射中了他本人（他其实不在爆心的窗里）。
+  if (out.blastOrigin !== undefined) {
+    applied = { ...applied, lastViewTarget: { x: out.blastOrigin.x, y: out.blastOrigin.y } };
+  }
   // 新聞的坐牢/住院也走 send_to_*，保險期内赔 2000×天×物價
   const entry = newsEvent(draw.eventId);
   if (entry !== undefined && !out.unimplemented && (entry.effects.includes('prison') || entry.effects.includes('hospital'))) {
