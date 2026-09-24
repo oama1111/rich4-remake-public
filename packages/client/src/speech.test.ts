@@ -75,6 +75,7 @@ import {
   type SayEvent,
 } from './speech.ts';
 import { deferSpeech } from './stage-gate.ts';
+import { SPEECH_RAND_SITE, speechCoin, speechRand } from './speech-coin.ts';
 
 // ============================================================
 //  构造 before/after
@@ -209,67 +210,75 @@ describe('★ 分档阈值与 exe 写死的数一致', () => {
 });
 
 describe('進帳 6/7/8 @ fcn_0044f354（9000 / 5000 / 2000 × 物價指數）', () => {
-  it('物價指數 1 时的三段', () => {
-    expect(gainEventFor(9000, 1)).toBe(6); // ≥ 9000 → 6
-    expect(gainEventFor(8999, 1)).toBe(6); // 中间档：原版 rand&1，取 0 ⇒ 6
-    expect(gainEventFor(5000, 1)).toBe(6);
-    expect(gainEventFor(4999, 1)).toBe(8); // ≥ 2000 → 8
-    expect(gainEventFor(2000, 1)).toBe(8);
+  it('物價指數 1 时的三段；中间档按 `coin` 二选一（`0x0044f3d1 rand()&1`，WP-3）', () => {
+    for (const coin of [0, 1]) {
+      expect(gainEventFor(9000, 1, coin)).toBe(6); // ≥ 9000 → 6（不掷）
+      expect(gainEventFor(8999, 1, coin)).toBe(6 + coin); // 中间档 ⇒ 6 | 7
+      expect(gainEventFor(5000, 1, coin)).toBe(6 + coin);
+      expect(gainEventFor(4999, 1, coin)).toBe(8); // ≥ 2000 → 8（不掷）
+      expect(gainEventFor(2000, 1, coin)).toBe(8);
+    }
   });
 
   it('★ 低于 2000 × 物價指數**不吭声**（原版 `jl` 直接返回）', () => {
-    expect(gainEventFor(1999, 1)).toBeNull();
-    expect(gainEventFor(1, 1)).toBeNull();
-    expect(gainEventFor(0, 1)).toBeNull();
+    expect(gainEventFor(1999, 1, 0)).toBeNull();
+    expect(gainEventFor(1, 1, 1)).toBeNull();
+    expect(gainEventFor(0, 1, 0)).toBeNull();
   });
 
   it('★ 三档都随物價指數放大（阈值是 9000×PI 而不是常数）', () => {
-    expect(gainEventFor(18_000, 2)).toBe(6);
-    expect(gainEventFor(17_999, 2)).toBe(6);
-    expect(gainEventFor(10_000, 2)).toBe(6);
-    expect(gainEventFor(9_999, 2)).toBe(8);
-    expect(gainEventFor(4_000, 2)).toBe(8);
-    expect(gainEventFor(3_999, 2)).toBeNull();
+    expect(gainEventFor(18_000, 2, 1)).toBe(6);
+    expect(gainEventFor(17_999, 2, 1)).toBe(7);
+    expect(gainEventFor(10_000, 2, 0)).toBe(6);
+    expect(gainEventFor(9_999, 2, 1)).toBe(8);
+    expect(gainEventFor(4_000, 2, 1)).toBe(8);
+    expect(gainEventFor(3_999, 2, 1)).toBeNull();
   });
 });
 
 describe('付錢 / 罰款 9..11 与 12..14 @ fcn_0044f42d / fcn_0044f567', () => {
-  it('★ 最低档是「> 0」，没有 2000 那道线（与進帳不同）', () => {
-    expect(payTierFor(9000, 1)).toBe(0); // → 9 / 12
-    expect(payTierFor(8999, 1)).toBe(0); // 中间档取 0
-    expect(payTierFor(5000, 1)).toBe(0);
-    expect(payTierFor(4999, 1)).toBe(2); // → 11 / 14
-    expect(payTierFor(1, 1)).toBe(2);
+  it('★ 最低档是「> 0」，没有 2000 那道线（与進帳不同）；中间档按 `coin`（0x0044f4a7 / 0x0044f5e1）', () => {
+    for (const coin of [0, 1]) {
+      expect(payTierFor(9000, 1, coin)).toBe(0); // → 9 / 12
+      expect(payTierFor(8999, 1, coin)).toBe(coin); // → 9|10 / 12|13
+      expect(payTierFor(5000, 1, coin)).toBe(coin);
+      expect(payTierFor(4999, 1, coin)).toBe(2); // → 11 / 14
+      expect(payTierFor(1, 1, coin)).toBe(2);
+    }
   });
 
   it('0 或负数不吭声（`test ebx,ebx / jle`）', () => {
-    expect(payTierFor(0, 1)).toBeNull();
-    expect(payTierFor(-5, 1)).toBeNull();
+    expect(payTierFor(0, 1, 1)).toBeNull();
+    expect(payTierFor(-5, 1, 0)).toBeNull();
   });
 });
 
 describe('小额获得 100 / 50 @ fcn_0044f230', () => {
-  it('★ 边界：100 本身落在中间档（`jle 0x64`）', () => {
-    expect(smallGainTierFor(101)).toBe(0);
-    expect(smallGainTierFor(100)).toBe(0);
-    expect(smallGainTierFor(51)).toBe(0);
+  it('★ 边界：100 本身落在中间档（`jle 0x64`）⇒ 按 `coin`（0x0044f280）', () => {
+    for (const coin of [0, 1]) {
+      expect(smallGainTierFor(101, coin)).toBe(0);
+      expect(smallGainTierFor(100, coin)).toBe(coin);
+      expect(smallGainTierFor(51, coin)).toBe(coin);
+    }
   });
 
   it('★ 50 本身落在最低档（`jle 0x32`）', () => {
-    expect(smallGainTierFor(50)).toBe(2);
-    expect(smallGainTierFor(1)).toBe(2);
-    expect(smallGainTierFor(0)).toBeNull();
+    expect(smallGainTierFor(50, 1)).toBe(2);
+    expect(smallGainTierFor(1, 1)).toBe(2);
+    expect(smallGainTierFor(0, 1)).toBeNull();
   });
 });
 
 describe('小额损失 6 / 3 @ fcn_0044f2c2', () => {
-  it('★ 边界：6 与 3 本身都落下一档', () => {
-    expect(smallLossTierFor(7)).toBe(0);
-    expect(smallLossTierFor(6)).toBe(0);
-    expect(smallLossTierFor(4)).toBe(0);
-    expect(smallLossTierFor(3)).toBe(2);
-    expect(smallLossTierFor(1)).toBe(2);
-    expect(smallLossTierFor(0)).toBeNull();
+  it('★ 边界：6 与 3 本身都落下一档；中间档按 `coin`（0x0044f312）', () => {
+    for (const coin of [0, 1]) {
+      expect(smallLossTierFor(7, coin)).toBe(0);
+      expect(smallLossTierFor(6, coin)).toBe(coin);
+      expect(smallLossTierFor(4, coin)).toBe(coin);
+      expect(smallLossTierFor(3, coin)).toBe(2);
+      expect(smallLossTierFor(1, coin)).toBe(2);
+      expect(smallLossTierFor(0, coin)).toBeNull();
+    }
   });
 });
 
@@ -649,15 +658,21 @@ describe('付錢 / 罰款 ⇒ 事件 9..11 / 12..14 / 18', () => {
     expect(detectMoneyPaid(b, a)).toEqual([]);
   });
 
-  it('★★ 回报现场：命運 30「付保險金」5000 元（物價 1）⇒ 宮本寶藏说 9「啊啊啊…世事無常…」，不是 12「哈哈哈，很羨慕吧！」', () => {
+  it('★★ 回报现场：命運 30「付保險金」5000 元（物價 1）⇒ 宮本寶藏说付錢那一档 9|10，不是 12「哈哈哈，很羨慕吧！」', () => {
     const [b, a] = to((s) => {
       s.players[0]!.character = 6; // 宮本寶藏
       s.players[0]!.monthlyPaid += 5000;
       s.pool += 5000;
       s.lastEvent = { kind: 'fortune', id: 30 };
     });
-    const lines = speechLinesFor(a, speechEventsFor(b, a));
-    expect(lines.map((l) => l.bubble.lines.join(''))).toEqual(['啊啊啊…世事無常…']);
+    const events = speechEventsFor(b, a);
+    // 5000 = 中间档 ⇒ `0x0044f4a7 rand()&1`（WP-3：`speechCoin`）；两面都是付錢那一档，绝不是 12/13
+    expect(events.map((e) => e.event)).toEqual([9 + speechCoin(a, 0, SPEECH_RAND_SITE.pay)]);
+    const lines = speechLinesFor(a, events);
+    expect(lines.map((l) => l.bubble.lines.join(''))).not.toContain('哈哈哈，很羨慕吧！');
+    // 9 那一面就是回报里要的那句
+    const nine = speechLinesFor(a, [{ player: 0, event: 9, order: 'afterStage' }]);
+    expect(nine.map((l) => l.bubble.lines.join(''))).toEqual(['啊啊啊…世事無常…']);
   });
 
   it('★★ 钱进了企业（董事長收費 / 保險費）⇒ 付款人**照样**说 9..11（第八份试玩回报 #1；@source 0x0041b006 call 0x44f42d）', () => {
@@ -681,24 +696,33 @@ describe('付錢 / 罰款 ⇒ 事件 9..11 / 12..14 / 18', () => {
     expect(detectMoneyPaid(b, a)).toEqual([]);
   });
 
-  it('★ 被「最敵對玩家」拿走 ≥ 5000 × 物價指數 ⇒ 事件 18（顶替 9..11）', () => {
-    const [b, a] = step((before, after) => {
-      before.players[0]!.hostility = [0, 5, 1, 0];
-      after.players[0]!.hostility = [0, 5, 1, 0];
-      after.players[0]!.monthlyPaid += 6000;
-      after.players[1]!.monthlyReceived += 6000;
-    });
-    expect(detectMoneyPaid(b, a)).toEqual([{ player: 0, event: 18 }]);
+  it('★ 被「最敵對玩家」拿走 ≥ 5000 × 物價指數 ⇒ 1/2 说事件 18（顶替 9..11），没中照常 9|10（WP-3）', () => {
+    // @source 0x0044f525 `call rand / test al,1 / je 0x44f561`；没中 ⇒ 调用点 0x00419f67 `call 0x44f42d`（中间档再掷一次）
+    const seen = new Set<number>();
+    for (let r = 0; r < 64; r++) {
+      const [b, a] = step((before, after) => {
+        before.players[0]!.hostility = [0, 5, 1, 0];
+        after.players[0]!.hostility = [0, 5, 1, 0];
+        after.players[0]!.monthlyPaid += 6000;
+        after.players[1]!.monthlyReceived += 6000;
+        after.rngState = r * 7919;
+      });
+      const hit = (speechRand(a, 0, SPEECH_RAND_SITE.hostile) & 1) !== 0;
+      const expected = hit ? 18 : 9 + speechCoin(a, 0, SPEECH_RAND_SITE.pay);
+      expect(detectMoneyPaid(b, a)).toEqual([{ player: 0, event: expected }]);
+      seen.add(expected);
+    }
+    expect([...seen].sort((x, y) => x - y)).toEqual([9, 10, 18]);
   });
 
-  it('★ 收款方不是最敵對的那一个 ⇒ 照常说 9..11', () => {
+  it('★ 收款方不是最敵對的那一个 ⇒ 照常说 9..11（中间档 9|10 按 0x0044f4a7 的硬币）', () => {
     const [b, a] = step((before, after) => {
       before.players[0]!.hostility = [0, 1, 5, 0]; // 最敵對是 2 号
       after.players[0]!.hostility = [0, 1, 5, 0];
       after.players[0]!.monthlyPaid += 6000;
       after.players[1]!.monthlyReceived += 6000; // 却付给了 1 号
     });
-    expect(detectMoneyPaid(b, a)).toEqual([{ player: 0, event: 9 }]);
+    expect(detectMoneyPaid(b, a)).toEqual([{ player: 0, event: 9 + speechCoin(a, 0, SPEECH_RAND_SITE.pay) }]);
   });
 
   it('★ 金额不足 5000 × 物價指數 ⇒ 即使是最敵對也只说 9..11', () => {
@@ -725,11 +749,11 @@ describe('旅館住宿 ⇒ 事件 3/4/5（金额 = 住店天数）', () => {
     expect(detectHotelStay(b, a)).toEqual([{ player: 0, event: 3 }]);
   });
 
-  it('住 4 天（+0x32 = 3）⇒ 事件 3', () => {
+  it('住 4 天（+0x32 = 3）⇒ 中间档 3|4（`0x0044f312 rand()&1`，WP-3）', () => {
     const [b, a] = to((s) => {
       s.players[0]!.blocking.inHotel = 3;
     });
-    expect(detectHotelStay(b, a)).toEqual([{ player: 0, event: 3 }]);
+    expect(detectHotelStay(b, a)).toEqual([{ player: 0, event: 3 + speechCoin(a, 0, SPEECH_RAND_SITE.smallLoss) }]);
   });
 
   it('住 3 天（+0x32 = 2）⇒ 事件 5', () => {
@@ -1588,18 +1612,31 @@ describe('★ 同一街區獨佔：走真 reduce（落点 → 買地 / 加蓋）
     expect(said(speechEventsFor(before, after, landTopo))).not.toContainEqual({ player: 0, event: 16 });
   });
 
-  it('`reduce(upgradeLand)` 之後出 17（等級 0 → 1，沒到 5）', () => {
-    const before = makeGameState({
-      players: [makePlayer({ index: 0, nodeId: 1, cash: 500_000 })],
-      phase: 'awaitingDecision',
-      // 三块都是自己的（1 基 1 = 玩家 0）
-      landOwner: [0, 1, 1, 1],
-      landLevel: [0, 0, 0, 0],
-      pending: { kind: 'upgradeLand', landId: 1, name: '忠孝東路', cost: 200 },
-    });
-    const after = reduce(before, { type: 'upgradeLand' }, landTopo);
-    expect(after.landLevel[1]).toBe(1);
-    expect(said(speechEventsFor(before, after, landTopo))).toContainEqual({ player: 0, event: 17, order: 'afterStage' });
+  it('`reduce(upgradeLand)` 之後 1/3 出 17（等級 0 → 1，沒到 5；`0x0044f67b rand()%3 == 0` 才说，WP-3）', () => {
+    let spoke = 0;
+    const N = 90;
+    for (let r = 0; r < N; r++) {
+      const before = makeGameState({
+        players: [makePlayer({ index: 0, nodeId: 1, cash: 500_000 })],
+        phase: 'awaitingDecision',
+        rngState: r * 104_729 + 1,
+        // 三块都是自己的（1 基 1 = 玩家 0）
+        landOwner: [0, 1, 1, 1],
+        landLevel: [0, 0, 0, 0],
+        pending: { kind: 'upgradeLand', landId: 1, name: '忠孝東路', cost: 200 },
+      });
+      const after = reduce(before, { type: 'upgradeLand' }, landTopo);
+      expect(after.landLevel[1]).toBe(1);
+      const says = said(speechEventsFor(before, after, landTopo)).some((e) => e.event === 17);
+      expect(says).toBe(speechRand(after, 0, SPEECH_RAND_SITE.areaMonopoly) % 3 === 0);
+      if (says) {
+        expect(said(speechEventsFor(before, after, landTopo))).toContainEqual({ player: 0, event: 17, order: 'afterStage' });
+        spoke++;
+      }
+    }
+    // 1/3 ± 宽裕的余量（90 次里期望 30）
+    expect(spoke).toBeGreaterThan(15);
+    expect(spoke).toBeLessThan(45);
   });
 });
 
@@ -1930,7 +1967,8 @@ describe('★ G34 大財神（`0x0040ed85`）—— 走「進帳」档位，闸�
     const start = makeGameState({ priceIndex: 2 });
     const threshold = MONEY_TIER_MID * 2;
     const [b1, a1] = wealth(start, BIG_WEALTH_GOD_TYPE, threshold);
-    expect(detectBigWealthLine(b1, a1)).toEqual([{ player: 0, event: 6 }]);
+    // 5000×物價 落在中间档 ⇒ 6|7（`0x0044f3d1`）
+    expect(detectBigWealthLine(b1, a1)).toEqual([{ player: 0, event: 6 + speechCoin(a1, 0, SPEECH_RAND_SITE.gain) }]);
     const [b2, a2] = wealth(start, BIG_WEALTH_GOD_TYPE, threshold - 1);
     expect(detectBigWealthLine(b2, a2)).toEqual([]);
   });
@@ -1938,7 +1976,7 @@ describe('★ G34 大財神（`0x0040ed85`）—— 走「進帳」档位，闸�
   it('★ 事件号由 `gainEventFor` 给（≥5000 档 ⇒ 事件 6），不是写死的 6', () => {
     const start = makeGameState({ priceIndex: 1 });
     const [b, a] = wealth(start, BIG_WEALTH_GOD_TYPE, 9000);
-    expect(gainEventFor(9000, 1)).toBe(6);
+    expect(gainEventFor(9000, 1, 1)).toBe(6);
     expect(detectBigWealthLine(b, a)).toEqual([{ player: 0, event: 6 }]);
   });
 
@@ -2068,7 +2106,7 @@ describe('★★ 第十四份 #1 同类排查：保險理賠那一笔原版**不
       after.lastEvent = { kind: 'fortune', id: 30 };
     });
     expect(detectMoneyGained(b, a)).toEqual([]);
-    expect(said(speechEventsFor(b, a)).map((e) => [e.player, e.event])).toEqual([[0, 9]]);
+    expect(said(speechEventsFor(b, a)).map((e) => [e.player, e.event])).toEqual([[0, 9 + speechCoin(a, 0, SPEECH_RAND_SITE.pay)]]);
   });
 
   it('★ 冒貸（命運 2）的理赔 ⇒ 不说（@source 0x0044c218，前后没有 0x44f354）', () => {
@@ -2129,12 +2167,13 @@ describe('★★ 第十四份：訊息框之后紧跟的那一句（`detectNotic
     expect(detectNoticeSay(b, a)).toEqual([{ player: 0, event: 13 }]);
   });
 
-  it('★★ 免付（`0x44f567`）按原额分档：≥9000 ⇒ 12、5000..9000 ⇒ 12（rand&1 取 0）、>0 ⇒ 14', () => {
-    for (const [amount, event] of [[9000, 12], [5000, 12], [1200, 14]] as const) {
+  it('★★ 免付（`0x44f567`）按原额分档：≥9000 ⇒ 12、5000..9000 ⇒ 12|13（`0x0044f5e1 rand&1`）、>0 ⇒ 14', () => {
+    for (const [amount, event, mid] of [[9000, 12, false], [5000, 12, true], [1200, 14, false]] as const) {
       const [b, a] = to((s) => {
         s.notices = [{ key: 'god.tollFree', args: ['過路費'], say: { player: 2, reliefAmount: amount } }];
       });
-      expect(detectNoticeSay(b, a)).toEqual([{ player: 2, event }]);
+      const coin = mid ? speechCoin(a, 2, SPEECH_RAND_SITE.fine) : 0;
+      expect(detectNoticeSay(b, a)).toEqual([{ player: 2, event: event + coin }]);
     }
   });
 
@@ -2151,8 +2190,11 @@ describe('★★ 第十四份：訊息框之后紧跟的那一句（`detectNotic
       s.players[0]!.character = 6;
       s.notices = [{ key: 'blessing.penaltyVoid', args: ['小財神'], say: { player: 0, reliefAmount: 5000 } }];
     });
-    const lines = speechLinesFor(a, speechEventsFor(b, a));
-    expect(lines.map((l) => l.bubble.lines.join(''))).toEqual(['哈哈哈，很羨慕吧！']);
+    // 5000 = 中间档 ⇒ 12|13（`0x0044f5e1`）；两面都是「逃过一劫」那一档
+    const events = speechEventsFor(b, a);
+    expect(events.map((e) => e.event)).toEqual([12 + speechCoin(a, 0, SPEECH_RAND_SITE.fine)]);
+    const twelve = speechLinesFor(a, [{ player: 0, event: 12, order: 'afterStage' }]);
+    expect(twelve.map((l) => l.bubble.lines.join(''))).toEqual(['哈哈哈，很羨慕吧！']);
   });
 });
 

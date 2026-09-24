@@ -6,7 +6,7 @@
 > 有 `~~…~~` / `✅` / 「已结案」→ 结案；其余一律 `?` —— **不读正文猜**。
 > 一个编号一行（首次出现处），同编号的其余出现记在「位置」列的「另有 N 处」。
 
-合计 **240** 个编号：结案 74 · 有意偏离 22 · 未决 0 · ? 144；另有 16 个只在正文出现的编号（见文末）。
+合计 **240** 个编号：结案 75 · 有意偏离 22 · 未决 0 · ? 143；另有 16 个只在正文出现的编号（见文末）。
 
 ## 总表（按编号排序）
 
@@ -219,7 +219,7 @@
 | `Q-SPEECH-10` | `Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** | ? | docs/deviations/T-052.md:360 |
 | `Q-SPEECH-11` | 卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） | ? | docs/deviations/T-052.md:376 |
 | `Q-SPEECH-2` | 越界**抛错**而不是夹取 —— 这是本项目的选择，不是原版行为 | ? | docs/deviations/T-051.md:19 |
-| `Q-SPEECH-3` | 中间档的 `rand() & 1` 被改成「一律取前一句」 | ? | docs/deviations/T-052.md:36 |
+| `Q-SPEECH-3` | ✅ 中间档的 `rand() & 1`（原「一律取前一句」）—— **2026-09-24 WP-3 改判：状态哈希掷硬币** | 结案 | docs/deviations/T-052.md:36 |
 | `Q-SPEECH-4` | 「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的 | ? | docs/deviations/T-052.md:61 |
 | `Q-SPEECH-5` | ✅ 原先没解的 5 个槽位 —— **2026-09-19 全部接线** | 结案 | docs/deviations/T-052.md:81 |
 | `Q-SPEECH-6` | ✅ 同一动作派生多句时会**叠着响** —— **2026-09-16 已修** | 结案 | docs/deviations/T-052.md:262 |
@@ -385,7 +385,6 @@
 - `Q-SPEECH-10`（?）`Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** —— docs/deviations/T-052.md:360
 - `Q-SPEECH-11`（?）卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） —— docs/deviations/T-052.md:376
 - `Q-SPEECH-2`（?）越界**抛错**而不是夹取 —— 这是本项目的选择，不是原版行为 —— docs/deviations/T-051.md:19
-- `Q-SPEECH-3`（?）中间档的 `rand() & 1` 被改成「一律取前一句」 —— docs/deviations/T-052.md:36
 - `Q-SPEECH-4`（?）「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的 —— docs/deviations/T-052.md:61
 - `Q-SPEECH-7`（?）勘误：事件 15 的判据是**地块的 `+0x1a`（等级）**，不是玩家结构 —— docs/deviations/T-052.md:282
 - `Q-SPEECH-8`（?）`Speaking.mkf` 改成**按需装载**（本项目的选择） —— docs/deviations/T-052.md:298
