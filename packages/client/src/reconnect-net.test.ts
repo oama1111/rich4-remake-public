@@ -93,8 +93,9 @@ describe('第十二份試玩回報：旁观别人的魔法屋，施法者收场�
   // 魔法屋的点选如今是一条 action（`{type:'magicHouse', option}`，见 core `magic-choice.test.ts`），
   // 旁观端收到它就按同一条结算收场；前提是女巫窗口停在状态 7 等人点时**不挡收件箱**。
   it('★ 状态 7（等真人点一格）不算演出 ⇒ 别家点定的那条 action 进得来', () => {
-    expect(main).toContain(
-      "if (overlay !== null && overlay.id === 'magic' && magicAwaitingPick()) return false;",
-    );
+    // 第十六份：整屏判据搬到 `presentation-host.ts`（与单测共用），`main.ts` 把 `magicAwaitingPick` 交进去
+    const host = readFileSync(new URL('./presentation-host.ts', import.meta.url), 'utf8');
+    expect(host).toContain("if (overlay.id === 'magic' && this.deps.magicAwaitingPick()) return false;");
+    expect(main).toContain('magicAwaitingPick: () => magicAwaitingPick(),');
   });
 });

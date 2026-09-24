@@ -234,6 +234,8 @@ describe('★★ 命運 pass 1 里有 `send_to_*` ⇒ 第一段收尾让出框�
     expect(tick).toContain('heldSpeech.length > 0');
     expect(tick).toContain('boardFilm !== null');
     expect(tick).toContain('noticeBoxScreenActive()');
-    expect(src).toContain('eventTailScreen.active(env);');
+    // 第十六份：「屏上开着一扇框」的判据搬到 `presentation-host.ts`（`eventTail` 在逐屏问 `active()` 的那一组里）
+    const host = readFileSync(new URL('./presentation-host.ts', import.meta.url), 'utf8');
+    expect(host).toContain("new Set([...DAY_AND_MAGIC_BOXES, 'eventTail'])");
   });
 });

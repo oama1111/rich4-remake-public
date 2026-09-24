@@ -26,16 +26,16 @@ import {
   type GameState,
   type MapTopology,
 } from '@rich4/core';
-import { eventBoxScreen, eventBoxScreenState, resetEventBoxScreen, setEventBoxStartGate } from './event-box-screen.ts';
+import { eventBoxScreen, resetEventBoxScreen, setEventBoxStartGate } from './event-box-screen.ts';
 import { godLineTrigger } from './god-line.ts';
 import { freshMagicBeats } from './magic-fx.ts';
 import { godSlotScreen, godSlotState, resetGodSlot, setGodSlotStartGate } from './god-slot.ts';
 import {
   noticeBoxScreen,
   noticeHoldsFilms,
-  noticeShowing,
-  noticePendingRanks,
   resetNoticeBoxScreen,
+  noticeBoxScreenState,
+  queueLocalNotice,
   setNoticeOverlayGate,
   setNoticeSpeechGate,
   setNoticeStartGate,
@@ -44,14 +44,14 @@ import { pendingScreens, selectOverlay } from './overlay.ts';
 import {
   SCREEN_BOX_TIER,
   boxMayStart,
-  boxRank,
-  countedHeld,
   insertByRank,
   lineMayEnter,
   lineRank,
   speechAheadOfFilms,
+  type BoxTier,
   type SpeechCue,
 } from './presentation-order.ts';
+import { PresentationHost } from './presentation-host.ts';
 import { SpeechQueue, type SpeechBubble } from './speech-bubble.ts';
 import { cardPlaySpeechLines, speechEventsFor, speechLinesFor, toolUseSpeechLines, type SpeechLine } from './speech.ts';
 import type { SpeechOrder } from './stage-gate.ts';
@@ -78,6 +78,11 @@ interface RunResult {
   overlaps: number;
   stuck: string;
 }
+
+/**
+ * 上一趟的吞吐：最后一条施加的时刻；**演出链签名**连续不变（= `main.ts` 的演出死锁看门狗会出手）的最长一段（ms）。
+ */
+let lastRun = { appliedAt: 0, longestStall: 0 };
 
 interface Step {
   before: GameState;
@@ -124,6 +129,12 @@ function runPipeline(
   map: ReturnType<typeof parseMap>,
   oldRules: boolean,
   drainMs = 120_000,
+  /**
+   * ★ 第十六份第二轮：`true` = 联机收件箱那样**拉**（`pumpNetInbox`）—— action 到了也要等
+   *   `holdForActorWalk` 放行才施加；积压超过 150 条就一口气施加到剩 40 条（补帧）。
+   *   `false` = 按到达时刻硬灌（第一轮那种「补帧」极端）。
+   */
+  inbox = false,
 ): RunResult {
   resetNoticeBoxScreen();
   resetEventBoxScreen();
@@ -166,17 +177,23 @@ function runPipeline(
   } as unknown as UiScreenEnv;
 
   const cueDone = (cue: SpeechCue): boolean => (cue === 'godAttach' ? flight === null && !flightAwaits : true);
-  const speechSnap = () => ({ onStage: speechQueue.length, heldRanks: countedHeld(held, cueDone).map((h) => h.rank) });
-  const showing = () =>
-    godLine !== null || noticeShowing() || eventBoxScreenState().playing || wheelScreenState().playing || godSlotState().playing;
-  const boxSnap = () => {
-    const pendingRanks = noticePendingRanks();
-    if (wheelScreenState().pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.wheel));
-    if (godSlotState().pending) pendingRanks.push(boxRank(SCREEN_BOX_TIER.godSlot));
-    if (pendingGodLine) pendingRanks.push(boxRank(SCREEN_BOX_TIER.godSay));
-    return { showing: showing(), pendingRanks, filmsBusy: film !== null || pendingFilm || flight !== null || flightAwaits };
-  };
-  const other = () => (oldRules ? false : showing());
+  const filmsBusy = () => film !== null || pendingFilm || flight !== null || flightAwaits;
+  // ★ 与 `main.ts` **同一份**判据（`presentation-host.ts`）—— 只把现取的状态换成本宿主的
+  const host = new PresentationHost({
+    screens: SCREENS,
+    env: () => env,
+    filmsBusy,
+    godLine: () => ({ showing: godLine !== null, pending: pendingGodLine }),
+    speech: () => ({ onStage: speechQueue.length, held }),
+    cueDone,
+    deferredScreens: () => 0,
+    magicAwaitingPick: () => false,
+    bailClosing: () => false,
+  });
+  const speechSnap = () => host.speechSnapshot();
+  const showing = () => host.boxShowing();
+  /** 旧规矩（复现用）：只看台词那一侧、不看别的框 */
+  const blocked = (tier: BoxTier) => (oldRules ? !boxMayStart(tier, speechSnap()) : host.boxBlocked(tier));
 
   // ── 闸（与 `main.ts` 的 `set…Gate` 同一接线）──
   setNoticeStartGate(
@@ -191,15 +208,13 @@ function runPipeline(
       godSlotState().pending,
   );
   setNoticeOverlayGate(() => eventBoxScreen.active(env));
-  setNoticeSpeechGate((tier) => !boxMayStart(tier, speechSnap()) || other());
-  setGodSlotStartGate(
-    () => film !== null || pendingFilm || godLine !== null || pendingGodLine || !boxMayStart(SCREEN_BOX_TIER.godSlot, speechSnap()) || other(),
-  );
-  setEventBoxStartGate(() => !boxMayStart(SCREEN_BOX_TIER.eventBox, speechSnap()) || other());
-  setWheelStartGate(() => !boxMayStart(SCREEN_BOX_TIER.wheel, speechSnap()) || other());
+  setNoticeSpeechGate((tier) => blocked(tier));
+  setGodSlotStartGate(() => film !== null || pendingFilm || godLine !== null || pendingGodLine || blocked(SCREEN_BOX_TIER.godSlot));
+  setEventBoxStartGate(() => blocked(SCREEN_BOX_TIER.eventBox));
+  setWheelStartGate(() => blocked(SCREEN_BOX_TIER.wheel));
 
   const release = () => {
-    const snap = boxSnap();
+    const snap = host.boxSnapshot();
     const keep: Held[] = [];
     const out: SpeechBubble[] = [];
     let blocked = false;
@@ -245,12 +260,12 @@ function runPipeline(
     if (oldRules) {
       overlay = SCREENS.find((s) => s.active(env)) ?? null;
     } else {
-      overlay = selectOverlay(SCREENS, env);
+      overlay = host.overlay();
       for (const s of pendingScreens(SCREENS, overlay, env)) s.tick?.(env);
     }
     overlay?.tick?.(env);
     // 开场白（`tickGodLine`）
-    if (pendingGodLine && film === null && !pendingFilm && boxMayStart(SCREEN_BOX_TIER.godSay, speechSnap()) && !eventBoxScreen.active(env) && !other()) {
+    if (pendingGodLine && film === null && !pendingFilm && !blocked(SCREEN_BOX_TIER.godSay) && !eventBoxScreen.active(env)) {
       godLine = now;
       pendingGodLine = false;
     }
@@ -274,15 +289,75 @@ function runPipeline(
 
   let overlaps = 0;
   const DT = 16;
-  for (const s of steps) {
-    while (now < s.at) {
+  /** `holdForActorWalk` 的演出那一半：整屏在接管 / 影片那一类在演 / 台词没说完 */
+  const driverHeld = () => host.screensBlocking() || filmsBusy() || godLine !== null || pendingGodLine || speechQueue.length > 0 || held.length > 0;
+  let appliedAt = 0;
+  let applied = 0;
+  // 演出链签名（与 `main.ts` 的 `presentationSignature` 同一思路）：有东西排 / 押着、签名又一直不变 = 停滞
+  let sig = '';
+  let sigSince = 0;
+  let longestStall = 0;
+  const watch = () => {
+    const n = noticeBoxScreenState();
+    const waiting = held.length > 0 || pendingFilm || pendingGodLine || flightAwaits || SCREENS.some((x) => x.active(env) && x.pendingOnly?.(env) === true);
+    const k = [
+      SCREENS.filter((x) => x.active(env)).map((x) => `${x.id}${x.pendingOnly?.(env) === true ? '?' : ''}`).join(','),
+      held.length,
+      speechQueue.length,
+      speechQueue.current()?.lines.join('') ?? '-',
+      `${n.queued}:${n.playback?.at ?? '-'}`,
+      `${film}:${pendingFilm}:${flight}:${flightAwaits}:${godLine}:${pendingGodLine}`,
+      applied,
+    ].join('|');
+    if (!waiting || k !== sig) {
+      sig = k;
+      sigSince = now;
+      return;
+    }
+    longestStall = Math.max(longestStall, now - sigSince);
+  };
+  if (!inbox) {
+    for (const s of steps) {
+      while (now < s.at) {
+        frame();
+        watch();
+        if (speechQueue.current() !== null && showing()) overlaps++;
+        now += DT;
+      }
+      if (s.followPresenter === true) for (const sc of SCREENS) sc.fastForward?.(env);
+      apply(s.before, s.after, s.action);
+      applied++;
+    }
+  } else {
+    // 联机收件箱：到了的 action 排队，驱动放行才施加一条，之后至少隔一个 tick（`paceDelay`）
+    const TICK = 160;
+    let next = 0;
+    let nextPump = 0;
+    const queue: Step[] = [];
+    while (next < steps.length || queue.length > 0) {
+      while (next < steps.length && steps[next]!.at <= now) queue.push(steps[next++]!);
+      const catchUp = () => {
+        const s = queue.shift()!;
+        if (s.followPresenter === true) for (const sc of SCREENS) sc.fastForward?.(env);
+        apply(s.before, s.after, s.action);
+        applied++;
+      };
+      if (queue.length > 150) while (queue.length > 40) catchUp();
+      if (queue.length > 0 && now >= nextPump) {
+        if (!driverHeld()) {
+          catchUp();
+          appliedAt = now;
+          nextPump = now + TICK;
+        }
+      }
       frame();
+      watch();
       if (speechQueue.current() !== null && showing()) overlaps++;
       now += DT;
+      if (now > 6 * 60 * 60_000) break; // 六个钟头都灌不完 = 吞吐塌了
     }
-    if (s.followPresenter === true) for (const sc of SCREENS) sc.fastForward?.(env);
-    apply(s.before, s.after, s.action);
   }
+  lastRun = { appliedAt, longestStall };
   const t0 = now;
   const quiet = () =>
     SCREENS.every((s) => !s.active(env)) &&
@@ -296,6 +371,8 @@ function runPipeline(
     !flightAwaits;
   while (now - t0 < drainMs) {
     frame();
+    watch();
+    lastRun.longestStall = Math.max(lastRun.longestStall, longestStall);
     if (speechQueue.current() !== null && showing()) overlaps++;
     if (quiet()) return { quiescentAt: now - t0, overlaps, stuck: '' };
     now += DT;
@@ -338,7 +415,7 @@ const runSoak = existsSync(MAP_BIN(0)) ? it : it.skip;
 
 describe('★★ 第十六份：48 局长跑灌进同一台宿主 —— 从不卡死、从不同屏', () => {
   runSoak(
-    '8 张图 × 6 局；action 到达间隔 0–400 ms（含联机补帧那种 0 间隔的一串）；百分之二的 action 之前旁观端跟着行动者收场',
+    '8 张图 × 6 局；action 到达间隔 0–400 ms（含联机补帧那种 0 间隔的一串）；百分之二的 action 之前旁观端跟着行动者收场；再走一遍联机收件箱（驱动放行才施加）',
     () => {
       const failures: string[] = [];
       let toolUses = 0;
@@ -347,6 +424,9 @@ describe('★★ 第十六份：48 局长跑灌进同一台宿主 —— 从不�
       let oldStuck = 0;
       // ★ 48 局（原 24 局）：第十六份規則修正（研究所面板 / 被关者不进落点）改了电脑长局的轨迹，
       //   旧规矩在前 24 局里恰好不再撞上那种互等；对照组要撞得到才有意义 ⇒ 每张图多跑 3 局。
+      let longestStall = 0;
+      let worstRatio = 0;
+      let compared = 0;
       for (let g = 0; g < 48; g++) {
         const globalMapId = g % 8;
         const map = parseMap(new Uint8Array(readFileSync(MAP_BIN(globalMapId))));
@@ -389,10 +469,28 @@ describe('★★ 第十六份：48 局长跑灌进同一台宿主 —— 从不�
         }
         actions += steps.length;
         const res = runPipeline(steps, topo, map, false, 30 * 60_000);
+        const stall = lastRun.longestStall;
         // 对照：同一串 action 用旧规矩跑 —— 证明这套长跑抓得住那一类互等
         if (runPipeline(steps, topo, map, true, 30 * 60_000).quiescentAt === null) oldStuck++;
         if (res.quiescentAt === null) failures.push(`g${g} 图${globalMapId} 卡死：${res.stuck}`);
         if (res.overlaps > 0) failures.push(`g${g} 图${globalMapId} 同屏 ${res.overlaps} 帧`);
+        // ★ 第十六份第二轮：同一串 action 走**联机收件箱**那条路（驱动放行才施加）——
+        //   吞吐不许塌：驱动连续被挡不得到演出看门狗的 15 秒，全部施加完、全部收场
+        if (stall >= 15_000) failures.push(`g${g} 停滞 ${stall} ms（看门狗会出手）`);
+        longestStall = Math.max(longestStall, stall);
+        const viaInbox = runPipeline(steps, topo, map, false, 30 * 60_000, true);
+        if (viaInbox.quiescentAt === null) failures.push(`g${g} 收件箱 卡死：${viaInbox.stuck}`);
+        if (viaInbox.overlaps > 0) failures.push(`g${g} 收件箱 同屏 ${viaInbox.overlaps} 帧`);
+        if (lastRun.longestStall >= 15_000) failures.push(`g${g} 收件箱 停滞 ${lastRun.longestStall} ms（看门狗会出手）`);
+        longestStall = Math.max(longestStall, lastRun.longestStall);
+        const newSpan = lastRun.appliedAt;
+        // 吞吐对照：同一串 action 用第十六份之前的规矩走收件箱（那一版在线上跑满 50 回合）；它没卡死的局，
+        // 新规矩施加完的用时不许明显更长（第一版修复就是这里塌了：一扇框起播就爆栈、驱动停摆）
+        const oldInbox = runPipeline(steps, topo, map, true, 30 * 60_000, true);
+        if (oldInbox.quiescentAt !== null && lastRun.appliedAt > 0) {
+          compared++;
+          worstRatio = Math.max(worstRatio, newSpan / lastRun.appliedAt);
+        }
       }
       expect(failures).toEqual([]);
       // 防空转：确实撞到了道具与神明附身
@@ -400,6 +498,11 @@ describe('★★ 第十六份：48 局长跑灌进同一台宿主 —— 从不�
       expect(possessions).toBeGreaterThan(20);
       expect(actions).toBeGreaterThan(10_000);
       expect(oldStuck, '旧规矩在这 48 局里至少卡死一局（否则这套长跑测不出那一类问题）').toBeGreaterThan(0);
+      // 收件箱那条路：从不停滞到看门狗那一步；吞吐不比旧规矩差多少
+      console.log(`[收件箱] 最长停滞 ${longestStall} ms；与旧规矩对照 ${compared} 局，施加完用时之比最差 ${worstRatio.toFixed(2)}`);
+      expect(longestStall).toBeLessThan(15_000);
+      expect(compared).toBeGreaterThan(10);
+      expect(worstRatio).toBeLessThan(1.25);
     },
     600_000,
   );
@@ -436,7 +539,42 @@ describe('`main.ts`：演出死锁看门狗 + 停摆回报', () => {
     expect(src).toContain("fileReport('stall', message);");
     expect(src).toContain('function unwindPresentations(level: number): void {');
     expect(src).toContain("const autoPhase = state.phase === 'turnStart' || state.phase === 'moving' || state.phase === 'settling';");
-    expect(src).toContain('return selectOverlay(SCREENS, uiEnv());');
+    expect(src).toContain('return presentationHost.overlay();');
+    // 判据与单测共用一份；影片那一类不回头问整屏判据（上一版的无限递归）
+    expect(src).toContain('const presentationHost = new PresentationHost({');
+    expect(src).toContain('filmsBusy: () => stageBusy({ ...stageBusyFlags(false), godLine: false }),');
     expect(src).toContain('for (const s of pendingScreens(SCREENS, overlay, uiEnv())) s.tick?.(uiEnv());');
+  });
+});
+
+describe('`presentation-host.ts`：结构上断环（第十六份第二轮：上一版在 main.ts 里无限递归）', () => {
+  it('即使 `filmsBusy` 回头去问整屏判据，框的起播闸 / 整屏判据也不会互相递归', () => {
+    resetNoticeBoxScreen();
+    let calls = 0;
+    const env = { screen: 'game', now: 0, requestRender: () => undefined, log: () => undefined } as unknown as UiScreenEnv;
+    const host: PresentationHost = new PresentationHost({
+      screens: SCREENS,
+      env: () => env,
+      // 故意写坏：影片位回头问整屏判据（上一版 `stageBusyFlags()` 里的 `blockingPresentation()`）
+      filmsBusy: () => {
+        calls++;
+        return calls < 50 && host.screensBlocking();
+      },
+      godLine: () => ({ showing: false, pending: false }),
+      speech: () => ({ onStage: 0, held: [] }),
+      cueDone: () => true,
+      deferredScreens: () => 0,
+      magicAwaitingPick: () => false,
+      bailClosing: () => false,
+    });
+    setNoticeSpeechGate((tier) => host.boxBlocked(tier));
+    // 訊息框单独排着、台词刚说完 —— 上一版正是这一拍爆栈
+    queueLocalNotice({ key: 'rent.payOneOwner', args: ['台北', '約翰喬', 500] });
+    expect(() => host.screensBlocking()).not.toThrow();
+    expect(() => host.boxBlocked('stage')).not.toThrow();
+    expect(() => host.boxSnapshot()).not.toThrow();
+    expect(calls).toBeLessThan(5); // 起播闸 / 整屏判据根本不碰影片位
+    setNoticeSpeechGate(null);
+    resetNoticeBoxScreen();
   });
 });
