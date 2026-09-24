@@ -84,13 +84,16 @@ describe('★★ 单机与联机同源：只在开机定一次，两条开局路
     expect(main).not.toMatch(/let sidebarView\b/);
     expect(main).not.toMatch(/^\s*sidebarView = /m);
     expect(main).toContain('windowView: options.windowView,');
-    // 日/月曆那一格（`[0x497164]`）出厂是日曆
-    expect(main).toContain("let calendarPage: CalendarPage = 'calendar';");
+    // 日/月曆那一格（`[0x497164]` = cfg+12）也没有另存的一份（pt22 #12）：出厂日曆，每帧从 `options` 取
+    expect(DEFAULT_OPTIONS.calendar).toBe(0);
+    expect(main).not.toMatch(/let calendarPage\b/);
+    expect(main).toContain('calendarPage: calendarPageOf(options),');
   });
 
   it('开机读 cfg：没有 cfg 也走完（不提前 return）', () => {
     expect(loadCfg).not.toMatch(/if \(cfg === null\) return/);
     expect(loadCfg).toContain('windowView: cfg.view,');
+    expect(loadCfg).toContain('calendar: cfg.calendar ?? 0,');
     // 設定屏「確定」把整份取值换进 `options`（版式随之而变）
     expect(applyOptionsFn).toContain('options = next;');
     // 没有别处再按 windowView 自己换算版式

@@ -2556,7 +2556,10 @@ RICH4.CFG  offset 5:  00 日曆   01 小地圖   02 兩者輪流
 `0x4752aa = [0, 280, 80]`；这一态 PgUp/PgDn（0x004014b1）与点竖条（0x004182fa）都被闸掉。
 熱鍵「切換視窗組」（Tab）轮的也是这三态（0x0040122e），不是日曆/月曆/小地圖。
 落码：`hud.ts` 的 `sidebarLayout` / `COMPACT` / `hitMinimapArea`；钉在 `window-view.test.ts`。
-⚠️ 仍未画：窄版与整版面板上的「結盟對象」小图（`[0x496ba9 + p×0x68]`，0x0041685a / 0x00416256）。
+~~⚠️ 仍未画：窄版与整版面板上的「結盟對象」小图（`[0x496ba9 + p×0x68]`，0x0041685a / 0x00416256）。~~
+✅ **pt22 #3 已画**：`[p+0x41]`（`0x496ba9`，allied_player = 对方下标 + 1 = core `alliedPlayer`）≠ 0 ⇒ 盟友图集图 1（`+0x18`）
+锚点 (524,64)，两版都画（`hud.ts` 的 `MINI_PORTRAIT` / `allyPortraitPlayer`）；同批补了惡人回合那一版面板（pt22 #2，
+`panelSubject` / `VILLAIN_PANEL`，0x00415fc1..0x00416108 / 0x00416767..0x004167e4）。钉在 `sidebar-panel.test.ts`。
 
 ### Q-OPT-1：設定屏主面板 + 三个副屏 + 通用 YES/NO 框（**已按表/汇编复刻**）
 

@@ -354,7 +354,7 @@ describe('④ main.ts：熱鍵、两道闸、单机/联机同一条绘制路', (
     expect(main.match(/\bhud\.draw\(/g)?.length).toBe(1);
     const call = between('hud.draw({', '});');
     expect(call).toContain('windowView: options.windowView,');
-    expect(call).toContain('calendarPage,');
+    expect(call).toContain('calendarPage: calendarPageOf(options),');
     expect(call).not.toMatch(/\bnet\b/);
   });
 });
