@@ -117,6 +117,21 @@ export interface QwenRepaintJob extends JobBase {
    * 纯超分又把原版地砖之间的接缝放大出来 —— 低去噪介于两者之间。
    */
   denoise?: number;
+  /**
+   * 局部重绘遮罩（服务器上的输入路径，白 = 可重绘；尺寸 = 重绘画布）。给了就在起始 latent 上挂
+   * `SetLatentNoiseMask`：遮罩外逐步贴回起始图，AI 只能在轮廓里作画（精灵完全重绘时防「画出轮廓 / 轮廓里留背景」）。
+   * 起始 latent：`denoise < 1` 或给了遮罩时都用 `input` 编码。
+   */
+  mask?: string;
+  /** 遮罩的本地来源（同 `upload`） */
+  maskUpload?: string;
+  /**
+   * 参考图（服务器上的输入路径）：喂给 Qwen 看的那张，默认就是 `input`。
+   * 「只给轮廓与骨架」的变体：参考图用剔过杂色的原图，起始图用重度模糊的粗稿，或反过来。
+   */
+  reference?: string;
+  /** 参考图的本地来源（同 `upload`） */
+  referenceUpload?: string;
 }
 
 export type Job = SeedVr2ImageJob | SeedVr2VideoJob | QwenRepaintJob;
@@ -228,6 +243,19 @@ export function buildGraph(job: Job): Graph {
           inputs: { image: ['1', 0], upscale_method: 'lanczos', width: job.repaintWidth, height: job.repaintHeight, crop: 'disabled' },
         };
       }
+      const start: [string, number] = exact ? ['12', 0] : ['1', 0];
+      let ref = start;
+      if (job.reference !== undefined) {
+        g['14'] = { class_type: 'LoadImage', inputs: { image: job.reference } };
+        ref = ['14', 0];
+        if (exact) {
+          g['15'] = {
+            class_type: 'ImageScale',
+            inputs: { image: ['14', 0], upscale_method: 'lanczos', width: job.repaintWidth, height: job.repaintHeight, crop: 'disabled' },
+          };
+          ref = ['15', 0];
+        }
+      }
       g['2'] = { class_type: 'UNETLoader', inputs: { unet_name: MODELS.qwen, weight_dtype: 'default' } };
       g['3'] = { class_type: 'QwenImage21Cache', inputs: { model: ['2', 0], device: 'auto', dtype: 'default' } };
       g['4'] = { class_type: 'CLIPLoader', inputs: { clip_name: MODELS.qwenClip, type: 'qwen_image', device: 'default' } };
@@ -239,19 +267,28 @@ export function buildGraph(job: Job): Graph {
           prompt: job.prompt,
           negative_prompt: job.negative,
           resolution: exact ? 0 : job.resolution,
-          'images.image_1': exact ? ['12', 0] : ['1', 0],
+          'images.image_1': ref,
           vae: ['5', 0],
         },
       };
-      const img2img = job.denoise !== undefined && job.denoise < 1;
-      if (img2img) g['13'] = { class_type: 'VAEEncode', inputs: { pixels: exact ? ['12', 0] : ['1', 0], vae: ['5', 0] } };
+      const fromStart = (job.denoise !== undefined && job.denoise < 1) || job.mask !== undefined;
+      let latent: [string, number] = ['6', 2];
+      if (fromStart) {
+        g['13'] = { class_type: 'VAEEncode', inputs: { pixels: start, vae: ['5', 0] } };
+        latent = ['13', 0];
+      }
+      if (job.mask !== undefined) {
+        g['16'] = { class_type: 'LoadImageMask', inputs: { image: job.mask, channel: 'red' } };
+        g['17'] = { class_type: 'SetLatentNoiseMask', inputs: { samples: latent, mask: ['16', 0] } };
+        latent = ['17', 0];
+      }
       g['7'] = {
         class_type: 'KSampler',
         inputs: {
           model: ['3', 0],
           positive: ['6', 0],
           negative: ['6', 1],
-          latent_image: img2img ? ['13', 0] : ['6', 2],
+          latent_image: latent,
           seed: job.seed,
           steps: job.steps,
           cfg: 1,
@@ -391,14 +428,18 @@ function done(root: string, job: Job): boolean {
 /** 任务要的输入若标了本地来源（`upload` / `uploadDir`），排队前先传上去 */
 async function stageInputs(root: string, job: Job): Promise<void> {
   const j = job as Job & { upload?: string; uploadDir?: string };
-  if (j.upload !== undefined && (job.kind === 'seedvr2-image' || job.kind === 'qwen-repaint')) {
-    const sub = dirname(job.input);
+  const put = async (local: string, remote: string): Promise<void> => {
     const form = new FormData();
-    form.append('image', new Blob([readFileSync(join(root, j.upload))], { type: 'image/png' }), basename(job.input));
-    form.append('subfolder', sub);
+    form.append('image', new Blob([readFileSync(join(root, local))], { type: 'image/png' }), basename(remote));
+    form.append('subfolder', dirname(remote));
     form.append('type', 'input');
     form.append('overwrite', 'true');
     await api('/upload/image', { method: 'POST', body: form });
+  };
+  if (j.upload !== undefined && (job.kind === 'seedvr2-image' || job.kind === 'qwen-repaint')) await put(j.upload, job.input);
+  if (job.kind === 'qwen-repaint') {
+    if (job.maskUpload !== undefined && job.mask !== undefined) await put(job.maskUpload, job.mask);
+    if (job.referenceUpload !== undefined && job.reference !== undefined) await put(job.referenceUpload, job.reference);
   }
   if (j.uploadDir !== undefined && job.kind === 'seedvr2-video') {
     for (const f of listPngs(join(root, j.uploadDir))) {
