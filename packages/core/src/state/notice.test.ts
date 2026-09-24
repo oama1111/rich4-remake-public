@@ -26,6 +26,7 @@ import { FACILITY_TYPE, WHEEL, spinWheel } from '../rules/facility.ts';
 import { WatcomRng } from '../rng/watcom.ts';
 import { initialToolStock, toolsOf } from '../rules/tools.ts';
 import { releaseNpc } from '../rules/special-actors.ts';
+import { tickTurnCounters } from '../rules/blocking.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import { WHO_PLAYS_COMPUTER } from './types.ts';
 
@@ -1101,6 +1102,27 @@ describe('★★ 第十四份：航空的旅遊（`0x0041b05a call 0x40d375(付�
     const { after } = airline({ insuranceDays: 30 });
     const days = after.players[0]!.blocking.disappearing;
     expect(after.notices.at(-1)).toEqual({ key: 'insurance.payout', args: [2000 * days], holdMs: 2000 });
+  });
+
+  /**
+   * ★★ 第十九份試玩回報「梦游还能被送出国旅游吗」：**能**，原版就是这样。
+   *   · 夢遊者的落点闸（`0x00419873`）只挡 `node+0x24 & 0xff != 0` 的特殊格；企業格是 0 ⇒ 照常收费；
+   *   · 航空那一支 `0x0041b02a..0x0041b05a` 的闸门只有：企業是航空、转出的天数非 0、付款人在场（`who_plays != 0`）、
+   *     终局码 0 —— **不看** `+0x37`；
+   *   · `0x40d375` 自己只查 `+0x33`（已经在消失就不再送，`0x0040d39e`），同样**不看** `+0x37`。
+   *   · 出國期间夢遊天數**冻住**：回合边界 `0x0041caf7 cmp dword [p+0x32], 0 / jne` 把 `+0x36` / `+0x37` 两项一起跳过
+   *     （`rules/blocking.ts` 的 `tickTurnCounters`），回来后接着夢遊剩下的天数。
+   */
+  it('★★ 夢遊中的付款人照样被航空送出國；夢遊天數原样保留（出國期间不走）', () => {
+    const sleepwalk = { ...makePlayer().blocking, sleepWalking: 3 };
+    const { after } = airline({ blocking: sleepwalk });
+    const days = after.players[0]!.blocking.disappearing;
+    expect(days).toBeGreaterThan(0);
+    expect(after.players[0]!.blocking.sleepWalking).toBe(3);
+    // 出國期间回合边界：夢遊天數不减（`0x0041caf7` 那道闸）
+    const ticked = tickTurnCounters(after.players[0]!);
+    expect(ticked.player.blocking.sleepWalking).toBe(3);
+    expect(ticked.wakeFromSleepwalk).toBe(false);
   });
 
 });

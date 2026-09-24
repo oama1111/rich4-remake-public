@@ -188,3 +188,75 @@ describe('★ 电脑：首建抽中研究所，当场开一项（`0x4411e7`：�
     expect(r.facilityResearchProject[fac]).toBe(2);
   });
 });
+
+/**
+ * ★★ 第十九份試玩回報（联机，`20260924-105216869`）：「为什么研究所修好了还没有自动呼出研究清单」。
+ *
+ * 那一局的研究所是**機器工人**（道具 9）在掷骰**之前**蓋的（轨迹 #111 `useTool 9 node 79 value 4`），
+ * 不是落点付費首建 ⇒ 原版**本来就不问**：
+ *   · 面板 `0x44101d` 全 exe **只有一个**调用点 `0x0041b109`（落点尾块；`disasm.py callers 0x44101d`，
+ *     `find 1d104400` 也没有函数指针表引用它）；
+ *   · 機器工人 `0x00447295`：`0x00447345 call 0x40b110`（蓋一层；等级 0 时在里面 `0x0040b1e4 call 0x440aac`
+ *     选种类）→ 大锤影片 → `0x00447378 call 0x41d546` → `ret` —— **没有** `call 0x44101d`。
+ * ⇒ 下次**停在**自己的研究所上（落点尾块）才问。单机与联机同一条 core 路径。
+ */
+describe('★★ 機器工人蓋研究所：当场**不**问研發，下次停在上面才问（`0x44101d` 只在落点尾块）', () => {
+  /** 0 号（真人）掷骰前、手里一件機器工人，那处設施是自己的空地 @source 道具表下标 = 玩家×15 + 道具号 */
+  function beforeRoll(kind: 'computer' | 'human') {
+    const { state, topo, nodeId, fac } = setup(kind);
+    const s = onFacility(state, nodeId, fac, { owner: 1, level: 0, type: 0 });
+    const tools = [...s.tools];
+    tools[9] = 1;
+    // 人站在别处（不在那处設施上）—— 回报现场就是这样：站 80 号、蓋 79 号
+    const elsewhere = topo.nodes.find((n) => n.id !== nodeId && n.specialKind === 0)!.id;
+    return {
+      state: {
+        ...s,
+        phase: 'awaitingRoll' as const,
+        tools,
+        players: s.players.map((p, i) => (i === 0 ? { ...p, nodeId: elsewhere } : p)),
+      },
+      topo,
+      nodeId,
+      fac,
+    };
+  }
+
+  run('★ 真人用機器工人把空地蓋成研究所 ⇒ 1 级研究所，**没有** research 待决，仍在掷骰前', () => {
+    const { state, topo, nodeId, fac } = beforeRoll('human');
+    const r = reduce(state, { type: 'useTool', toolId: 9, nodeId, value: FACILITY_TYPE.lab }, topo);
+    expect(r).not.toBe(state);
+    expect(r.facilityType[fac]).toBe(FACILITY_TYPE.lab);
+    expect(r.facilityLevel[fac]).toBe(1);
+    expect(r.pending).toBeNull();
+    expect(r.phase).toBe('awaitingRoll');
+    expect(r.facilityResearchDays[fac]).toBe(0);
+  });
+
+  run('★ 之后停在这处研究所上 ⇒ 落点尾块照常问研發（`0x0041b109`）', () => {
+    const { state, topo, nodeId, fac } = beforeRoll('human');
+    const built = reduce(state, { type: 'useTool', toolId: 9, nodeId, value: FACILITY_TYPE.lab }, topo);
+    const landed: GameState = {
+      ...built,
+      phase: 'settling',
+      players: built.players.map((p, i) => (i === 0 ? { ...p, nodeId } : p)),
+    };
+    const asked = reduce(landed, { type: 'settle' }, topo);
+    // 自己的 1 级研究所：先问加蓋（钱够），谢绝后才轮到尾块的研究所面板
+    const atPanel = asked.pending?.kind === 'upgradeFacility' ? reduce(asked, { type: 'declineDecision' }, topo) : asked;
+    expect(atPanel.pending).toMatchObject({ kind: 'research', facilityId: fac, level: 1, choices: [1] });
+  });
+
+  run('电脑用機器工人蓋出研究所也不当场开研發（同一个 `0x447295`，没有 `0x4411e7` 那一支）', () => {
+    const { state, topo, nodeId, fac } = beforeRoll('computer');
+    for (let seed = 1; seed < 200; seed++) {
+      const r = reduce({ ...state, rngState: seed }, { type: 'useTool', toolId: 9, nodeId }, topo);
+      if (r.facilityType[fac] !== FACILITY_TYPE.lab) continue;
+      expect(r.facilityLevel[fac]).toBe(1);
+      expect(r.facilityResearchDays[fac]).toBe(0);
+      expect(r.pending).toBeNull();
+      return;
+    }
+    throw new Error('200 个种子里电脑没抽中研究所');
+  });
+});
