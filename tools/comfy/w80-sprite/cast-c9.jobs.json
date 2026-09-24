@@ -1,0 +1,484 @@
+{
+ "jobs": [
+  {
+   "id": "C9-walk0",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/walk0-soft.png",
+   "input": "rich4-pilot/work/cast/c9/walk0-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/walk0.png",
+   "referenceUpload": "fringe-pilot/cast/c9/walk0.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/walk0.png",
+   "width": 1408,
+   "height": 1312,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。造型以图2的头像和图3他/她各个角度的样子为准：角色是《大富翁4》里的孙小美——可爱乖巧的 9 岁中国小女孩。红色头发，厚厚的齐刘海盖住额头；头两侧各盘一个圆环状的丸子发髻（像两个大圆圈），发髻根部系米色发带；蓝色大眼睛；穿红色中式上衣和红色裤子，白色滚边和白色袖口；红色小鞋子，鞋头有白色小花。这一组基本面向镜头（略朝画面左下）。能看到脸的时候，是一张正常的脸：两只眼睛都要画出来（按朝向，远侧那只可以被挡住一部分，但不能省略、不能画成一只眼长在脸中间）。手臂要按正常的人体结构画完整：从肩膀连出手臂到手掌；原图里被身体挡住、只露出一个小手掌的那只手，要把手臂补出来自然地连到身体上，不能只剩一个飘在空中的手掌。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印",
+   "resolution": 0,
+   "repaintWidth": 1408,
+   "repaintHeight": 1312,
+   "steps": 30,
+   "denoise": 0.95,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-dice0",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/dice0-soft.png",
+   "input": "rich4-pilot/work/cast/c9/dice0-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/dice0.png",
+   "referenceUpload": "fringe-pilot/cast/c9/dice0.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/dice0.png",
+   "width": 1152,
+   "height": 1568,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。造型以图2的头像和图3他/她各个角度的样子为准：角色是《大富翁4》里的孙小美——可爱乖巧的 9 岁中国小女孩。红色头发，厚厚的齐刘海盖住额头；头两侧各盘一个圆环状的丸子发髻（像两个大圆圈），发髻根部系米色发带；蓝色大眼睛；穿红色中式上衣和红色裤子，白色滚边和白色袖口；红色小鞋子，鞋头有白色小花。这一组基本面向镜头（略朝画面左下）。能看到脸的时候，是一张正常的脸：两只眼睛都要画出来（按朝向，远侧那只可以被挡住一部分，但不能省略、不能画成一只眼长在脸中间）。手臂要按正常的人体结构画完整：从肩膀连出手臂到手掌；原图里被身体挡住、只露出一个小手掌的那只手，要把手臂补出来自然地连到身体上，不能只剩一个飘在空中的手掌。这是一段连续动画：每一格里都恰好只有一颗骰子（不能多、不能少），它是一颗很大的白色圆角立方体骰子（红色圆点），大小、位置、朝向和手势都必须与图1同一格完全一致——前几格双手把大骰子抱在身前，后几格骰子被抛到头顶上方的空中、手张开；不要改变任何一格的动作。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 两颗骰子, 多颗骰子, 没有骰子, 小骰子, 改变动作",
+   "resolution": 0,
+   "repaintWidth": 1152,
+   "repaintHeight": 1568,
+   "steps": 30,
+   "denoise": 0.92,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-walk1",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/walk1-soft.png",
+   "input": "rich4-pilot/work/cast/c9/walk1-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/walk1.png",
+   "referenceUpload": "fringe-pilot/cast/c9/walk1.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/walk1.png",
+   "width": 1408,
+   "height": 1344,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。造型以图2的头像和图3他/她各个角度的样子为准：角色是《大富翁4》里的孙小美——可爱乖巧的 9 岁中国小女孩。红色头发，厚厚的齐刘海盖住额头；头两侧各盘一个圆环状的丸子发髻（像两个大圆圈），发髻根部系米色发带；蓝色大眼睛；穿红色中式上衣和红色裤子，白色滚边和白色袖口；红色小鞋子，鞋头有白色小花。这一组朝画面左下方，是 3/4 侧面。能看到脸的时候，是一张正常的脸：两只眼睛都要画出来（按朝向，远侧那只可以被挡住一部分，但不能省略、不能画成一只眼长在脸中间）。手臂要按正常的人体结构画完整：从肩膀连出手臂到手掌；原图里被身体挡住、只露出一个小手掌的那只手，要把手臂补出来自然地连到身体上，不能只剩一个飘在空中的手掌。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印",
+   "resolution": 0,
+   "repaintWidth": 1408,
+   "repaintHeight": 1344,
+   "steps": 30,
+   "denoise": 0.95,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-dice1",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/dice1-soft.png",
+   "input": "rich4-pilot/work/cast/c9/dice1-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/dice1.png",
+   "referenceUpload": "fringe-pilot/cast/c9/dice1.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/dice1.png",
+   "width": 1440,
+   "height": 1536,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。造型以图2的头像和图3他/她各个角度的样子为准：角色是《大富翁4》里的孙小美——可爱乖巧的 9 岁中国小女孩。红色头发，厚厚的齐刘海盖住额头；头两侧各盘一个圆环状的丸子发髻（像两个大圆圈），发髻根部系米色发带；蓝色大眼睛；穿红色中式上衣和红色裤子，白色滚边和白色袖口；红色小鞋子，鞋头有白色小花。这一组朝画面左下方，是 3/4 侧面。能看到脸的时候，是一张正常的脸：两只眼睛都要画出来（按朝向，远侧那只可以被挡住一部分，但不能省略、不能画成一只眼长在脸中间）。手臂要按正常的人体结构画完整：从肩膀连出手臂到手掌；原图里被身体挡住、只露出一个小手掌的那只手，要把手臂补出来自然地连到身体上，不能只剩一个飘在空中的手掌。这是一段连续动画：每一格里都恰好只有一颗骰子（不能多、不能少），它是一颗很大的白色圆角立方体骰子（红色圆点），大小、位置、朝向和手势都必须与图1同一格完全一致——前几格双手把大骰子抱在身前，后几格骰子被抛到头顶上方的空中、手张开；不要改变任何一格的动作。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 两颗骰子, 多颗骰子, 没有骰子, 小骰子, 改变动作",
+   "resolution": 0,
+   "repaintWidth": 1440,
+   "repaintHeight": 1536,
+   "steps": 30,
+   "denoise": 0.92,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-walk2",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/walk2-soft.png",
+   "input": "rich4-pilot/work/cast/c9/walk2-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/walk2.png",
+   "referenceUpload": "fringe-pilot/cast/c9/walk2.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/walk2.png",
+   "width": 1376,
+   "height": 1312,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。这一组画的是孙小美的背影：人物背对镜头、朝画面左上方，画面里看不到脸、眼睛、鼻子和嘴。看到的是红色头发的后脑、头两侧两个圆环状的丸子发髻和米色发带、红色衣服的背面、红色小鞋。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 脸, 眼睛, 正脸, 面向镜头, 五官",
+   "resolution": 0,
+   "repaintWidth": 1376,
+   "repaintHeight": 1312,
+   "steps": 30,
+   "denoise": 0.96,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-dice2",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/dice2-soft.png",
+   "input": "rich4-pilot/work/cast/c9/dice2-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/dice2.png",
+   "referenceUpload": "fringe-pilot/cast/c9/dice2.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/dice2.png",
+   "width": 1504,
+   "height": 1440,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。这一组画的是孙小美的背影：人物背对镜头、朝画面左上方，画面里看不到脸、眼睛、鼻子和嘴。看到的是红色头发的后脑、头两侧两个圆环状的丸子发髻和米色发带、红色衣服的背面、红色小鞋。这是一段连续动画：每一格里都恰好只有一颗骰子（不能多、不能少），它是一颗很大的白色圆角立方体骰子（红色圆点），大小、位置、朝向和手势都必须与图1同一格完全一致——前几格双手把大骰子抱在身前，后几格骰子被抛到头顶上方的空中、手张开；不要改变任何一格的动作。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 脸, 眼睛, 正脸, 面向镜头, 五官, 两颗骰子, 多颗骰子, 没有骰子, 小骰子, 改变动作",
+   "resolution": 0,
+   "repaintWidth": 1504,
+   "repaintHeight": 1440,
+   "steps": 30,
+   "denoise": 0.92,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-walk3",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/walk3-soft.png",
+   "input": "rich4-pilot/work/cast/c9/walk3-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/walk3.png",
+   "referenceUpload": "fringe-pilot/cast/c9/walk3.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/walk3.png",
+   "width": 1408,
+   "height": 1344,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。这一组画的是孙小美的背影：人物完全背对镜头、朝画面上方，画面里看不到脸、眼睛、鼻子和嘴。看到的是红色头发的后脑、头两侧两个圆环状的丸子发髻和米色发带、红色衣服的背面、红色小鞋。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 脸, 眼睛, 正脸, 面向镜头, 五官",
+   "resolution": 0,
+   "repaintWidth": 1408,
+   "repaintHeight": 1344,
+   "steps": 30,
+   "denoise": 0.96,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-dice3",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/dice3-soft.png",
+   "input": "rich4-pilot/work/cast/c9/dice3-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/dice3.png",
+   "referenceUpload": "fringe-pilot/cast/c9/dice3.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/dice3.png",
+   "width": 1152,
+   "height": 1440,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。这一组画的是孙小美的背影：人物完全背对镜头、朝画面上方，画面里看不到脸、眼睛、鼻子和嘴。看到的是红色头发的后脑、头两侧两个圆环状的丸子发髻和米色发带、红色衣服的背面、红色小鞋。这是一段连续动画：每一格里都恰好只有一颗骰子（不能多、不能少），它是一颗很大的白色圆角立方体骰子（红色圆点），大小、位置、朝向和手势都必须与图1同一格完全一致——前几格双手把大骰子抱在身前，后几格骰子被抛到头顶上方的空中、手张开；不要改变任何一格的动作。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 脸, 眼睛, 正脸, 面向镜头, 五官, 两颗骰子, 多颗骰子, 没有骰子, 小骰子, 改变动作",
+   "resolution": 0,
+   "repaintWidth": 1152,
+   "repaintHeight": 1440,
+   "steps": 30,
+   "denoise": 0.92,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-walk4",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/walk4-soft.png",
+   "input": "rich4-pilot/work/cast/c9/walk4-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/walk4.png",
+   "referenceUpload": "fringe-pilot/cast/c9/walk4.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/walk4.png",
+   "width": 1408,
+   "height": 1312,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。这一组画的是孙小美的背影：人物背对镜头、朝画面右上方，画面里看不到脸、眼睛、鼻子和嘴。看到的是红色头发的后脑、头两侧两个圆环状的丸子发髻和米色发带、红色衣服的背面、红色小鞋。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 脸, 眼睛, 正脸, 面向镜头, 五官",
+   "resolution": 0,
+   "repaintWidth": 1408,
+   "repaintHeight": 1312,
+   "steps": 30,
+   "denoise": 0.96,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-dice4",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/dice4-soft.png",
+   "input": "rich4-pilot/work/cast/c9/dice4-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/dice4.png",
+   "referenceUpload": "fringe-pilot/cast/c9/dice4.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/dice4.png",
+   "width": 1152,
+   "height": 1440,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。这一组画的是孙小美的背影：人物背对镜头、朝画面右上方，画面里看不到脸、眼睛、鼻子和嘴。看到的是红色头发的后脑、头两侧两个圆环状的丸子发髻和米色发带、红色衣服的背面、红色小鞋。这是一段连续动画：每一格里都恰好只有一颗骰子（不能多、不能少），它是一颗很大的白色圆角立方体骰子（红色圆点），大小、位置、朝向和手势都必须与图1同一格完全一致——前几格双手把大骰子抱在身前，后几格骰子被抛到头顶上方的空中、手张开；不要改变任何一格的动作。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 脸, 眼睛, 正脸, 面向镜头, 五官, 两颗骰子, 多颗骰子, 没有骰子, 小骰子, 改变动作",
+   "resolution": 0,
+   "repaintWidth": 1152,
+   "repaintHeight": 1440,
+   "steps": 30,
+   "denoise": 0.92,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-walk5",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/walk5-soft.png",
+   "input": "rich4-pilot/work/cast/c9/walk5-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/walk5.png",
+   "referenceUpload": "fringe-pilot/cast/c9/walk5.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/walk5.png",
+   "width": 1408,
+   "height": 1312,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。造型以图2的头像和图3他/她各个角度的样子为准：角色是《大富翁4》里的孙小美——可爱乖巧的 9 岁中国小女孩。红色头发，厚厚的齐刘海盖住额头；头两侧各盘一个圆环状的丸子发髻（像两个大圆圈），发髻根部系米色发带；蓝色大眼睛；穿红色中式上衣和红色裤子，白色滚边和白色袖口；红色小鞋子，鞋头有白色小花。这一组侧身朝画面右方，只看得到一部分侧脸（图1里看得到的才画）。手臂要按正常的人体结构画完整：从肩膀连出手臂到手掌；原图里被身体挡住、只露出一个小手掌的那只手，要把手臂补出来自然地连到身体上，不能只剩一个飘在空中的手掌。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印",
+   "resolution": 0,
+   "repaintWidth": 1408,
+   "repaintHeight": 1312,
+   "steps": 30,
+   "denoise": 0.95,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-dice5",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/dice5-soft.png",
+   "input": "rich4-pilot/work/cast/c9/dice5-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/dice5.png",
+   "referenceUpload": "fringe-pilot/cast/c9/dice5.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/dice5.png",
+   "width": 1440,
+   "height": 1440,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。造型以图2的头像和图3他/她各个角度的样子为准：角色是《大富翁4》里的孙小美——可爱乖巧的 9 岁中国小女孩。红色头发，厚厚的齐刘海盖住额头；头两侧各盘一个圆环状的丸子发髻（像两个大圆圈），发髻根部系米色发带；蓝色大眼睛；穿红色中式上衣和红色裤子，白色滚边和白色袖口；红色小鞋子，鞋头有白色小花。这一组侧身朝画面右方，只看得到一部分侧脸（图1里看得到的才画）。手臂要按正常的人体结构画完整：从肩膀连出手臂到手掌；原图里被身体挡住、只露出一个小手掌的那只手，要把手臂补出来自然地连到身体上，不能只剩一个飘在空中的手掌。这是一段连续动画：每一格里都恰好只有一颗骰子（不能多、不能少），它是一颗很大的白色圆角立方体骰子（红色圆点），大小、位置、朝向和手势都必须与图1同一格完全一致——前几格双手把大骰子抱在身前，后几格骰子被抛到头顶上方的空中、手张开；不要改变任何一格的动作。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 两颗骰子, 多颗骰子, 没有骰子, 小骰子, 改变动作",
+   "resolution": 0,
+   "repaintWidth": 1440,
+   "repaintHeight": 1440,
+   "steps": 30,
+   "denoise": 0.92,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-walk6",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/walk6-soft.png",
+   "input": "rich4-pilot/work/cast/c9/walk6-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/walk6.png",
+   "referenceUpload": "fringe-pilot/cast/c9/walk6.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/walk6.png",
+   "width": 1376,
+   "height": 1344,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。造型以图2的头像和图3他/她各个角度的样子为准：角色是《大富翁4》里的孙小美——可爱乖巧的 9 岁中国小女孩。红色头发，厚厚的齐刘海盖住额头；头两侧各盘一个圆环状的丸子发髻（像两个大圆圈），发髻根部系米色发带；蓝色大眼睛；穿红色中式上衣和红色裤子，白色滚边和白色袖口；红色小鞋子，鞋头有白色小花。这一组朝画面右下方，是 3/4 侧面。能看到脸的时候，是一张正常的脸：两只眼睛都要画出来（按朝向，远侧那只可以被挡住一部分，但不能省略、不能画成一只眼长在脸中间）。手臂要按正常的人体结构画完整：从肩膀连出手臂到手掌；原图里被身体挡住、只露出一个小手掌的那只手，要把手臂补出来自然地连到身体上，不能只剩一个飘在空中的手掌。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印",
+   "resolution": 0,
+   "repaintWidth": 1376,
+   "repaintHeight": 1344,
+   "steps": 30,
+   "denoise": 0.95,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-dice6",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/dice6-soft.png",
+   "input": "rich4-pilot/work/cast/c9/dice6-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/dice6.png",
+   "referenceUpload": "fringe-pilot/cast/c9/dice6.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/dice6.png",
+   "width": 1472,
+   "height": 1536,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。造型以图2的头像和图3他/她各个角度的样子为准：角色是《大富翁4》里的孙小美——可爱乖巧的 9 岁中国小女孩。红色头发，厚厚的齐刘海盖住额头；头两侧各盘一个圆环状的丸子发髻（像两个大圆圈），发髻根部系米色发带；蓝色大眼睛；穿红色中式上衣和红色裤子，白色滚边和白色袖口；红色小鞋子，鞋头有白色小花。这一组朝画面右下方，是 3/4 侧面。能看到脸的时候，是一张正常的脸：两只眼睛都要画出来（按朝向，远侧那只可以被挡住一部分，但不能省略、不能画成一只眼长在脸中间）。手臂要按正常的人体结构画完整：从肩膀连出手臂到手掌；原图里被身体挡住、只露出一个小手掌的那只手，要把手臂补出来自然地连到身体上，不能只剩一个飘在空中的手掌。这是一段连续动画：每一格里都恰好只有一颗骰子（不能多、不能少），它是一颗很大的白色圆角立方体骰子（红色圆点），大小、位置、朝向和手势都必须与图1同一格完全一致——前几格双手把大骰子抱在身前，后几格骰子被抛到头顶上方的空中、手张开；不要改变任何一格的动作。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 两颗骰子, 多颗骰子, 没有骰子, 小骰子, 改变动作",
+   "resolution": 0,
+   "repaintWidth": 1472,
+   "repaintHeight": 1536,
+   "steps": 30,
+   "denoise": 0.92,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-walk7",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/walk7-soft.png",
+   "input": "rich4-pilot/work/cast/c9/walk7-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/walk7.png",
+   "referenceUpload": "fringe-pilot/cast/c9/walk7.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/walk7.png",
+   "width": 1408,
+   "height": 1344,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。造型以图2的头像和图3他/她各个角度的样子为准：角色是《大富翁4》里的孙小美——可爱乖巧的 9 岁中国小女孩。红色头发，厚厚的齐刘海盖住额头；头两侧各盘一个圆环状的丸子发髻（像两个大圆圈），发髻根部系米色发带；蓝色大眼睛；穿红色中式上衣和红色裤子，白色滚边和白色袖口；红色小鞋子，鞋头有白色小花。这一组面向镜头（略朝画面右下）。能看到脸的时候，是一张正常的脸：两只眼睛都要画出来（按朝向，远侧那只可以被挡住一部分，但不能省略、不能画成一只眼长在脸中间）。手臂要按正常的人体结构画完整：从肩膀连出手臂到手掌；原图里被身体挡住、只露出一个小手掌的那只手，要把手臂补出来自然地连到身体上，不能只剩一个飘在空中的手掌。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印",
+   "resolution": 0,
+   "repaintWidth": 1408,
+   "repaintHeight": 1344,
+   "steps": 30,
+   "denoise": 0.95,
+   "noUpscale": true
+  },
+  {
+   "id": "C9-dice7",
+   "kind": "qwen-repaint",
+   "upload": "fringe-pilot/cast/c9/dice7-soft.png",
+   "input": "rich4-pilot/work/cast/c9/dice7-soft.png",
+   "reference": "rich4-pilot/work/cast/c9/dice7.png",
+   "referenceUpload": "fringe-pilot/cast/c9/dice7.png",
+   "extraRefs": [
+    {
+     "path": "rich4-pilot/work/cast/c9/portrait.png",
+     "upload": "fringe-pilot/cast/c9/portrait.png"
+    },
+    {
+     "path": "rich4-pilot/work/cast/c9/turnaround.png",
+     "upload": "fringe-pilot/cast/c9/turnaround.png"
+    }
+   ],
+   "out": "fringe-pilot/cast/c9/out/dice7.png",
+   "width": 1184,
+   "height": 1568,
+   "seed": 7,
+   "prompt": "把图1这组游戏角色动作帧（网格排列，每一格是同一个角色、同一个朝向的一帧）重绘成高清的 3D 渲染角色。严格保持每一格角色的位置、大小、姿态和朝向，背景保持纯绿色。造型以图2的头像和图3他/她各个角度的样子为准：角色是《大富翁4》里的孙小美——可爱乖巧的 9 岁中国小女孩。红色头发，厚厚的齐刘海盖住额头；头两侧各盘一个圆环状的丸子发髻（像两个大圆圈），发髻根部系米色发带；蓝色大眼睛；穿红色中式上衣和红色裤子，白色滚边和白色袖口；红色小鞋子，鞋头有白色小花。这一组面向镜头（略朝画面右下）。能看到脸的时候，是一张正常的脸：两只眼睛都要画出来（按朝向，远侧那只可以被挡住一部分，但不能省略、不能画成一只眼长在脸中间）。手臂要按正常的人体结构画完整：从肩膀连出手臂到手掌；原图里被身体挡住、只露出一个小手掌的那只手，要把手臂补出来自然地连到身体上，不能只剩一个飘在空中的手掌。这是一段连续动画：每一格里都恰好只有一颗骰子（不能多、不能少），它是一颗很大的白色圆角立方体骰子（红色圆点），大小、位置、朝向和手势都必须与图1同一格完全一致——前几格双手把大骰子抱在身前，后几格骰子被抛到头顶上方的空中、手张开；不要改变任何一格的动作。所有帧的头发、衣服的质感必须完全一致（同样清晰的发丝与布料纹理），不能有的帧清晰、有的帧扁平。画面干净清晰：颜色过渡平滑自然，没有色带、没有噪点颗粒，材质细腻，光影柔和，边缘干净利落。画风：2000 年代初的 Q 版 3D 预渲染 CG 游戏角色（三维渲染质感，不是二维动画风）。",
+   "negative": "独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印, 两颗骰子, 多颗骰子, 没有骰子, 小骰子, 改变动作",
+   "resolution": 0,
+   "repaintWidth": 1184,
+   "repaintHeight": 1568,
+   "steps": 30,
+   "denoise": 0.92,
+   "noUpscale": true
+  }
+ ]
+}
