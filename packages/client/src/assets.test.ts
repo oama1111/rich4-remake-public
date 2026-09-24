@@ -101,6 +101,24 @@ function spr2x2(): Uint8Array {
   return buf;
 }
 
+/** 2×2 的 SMP（RGB555，无调色板）：左上一格纯黑（抠黑时透明），其余白 */
+function smp2x2Black(): Uint8Array {
+  const startOffset = 12 + 12;
+  const gsize = 2 * 2 * 2;
+  const buf = new Uint8Array(startOffset + gsize);
+  const view = new DataView(buf.buffer);
+  buf.set([0x53, 0x4d, 0x50]); // 'SMP'
+  view.setUint32(4, 1, true);
+  view.setUint32(8, startOffset, true);
+  view.setInt16(12, 2, true);
+  view.setInt16(14, 2, true);
+  view.setInt16(16, 1, true);
+  view.setInt16(18, 1, true);
+  view.setUint32(20, gsize, true);
+  for (const [i, v] of [0x0000, 0x7fff, 0x7fff, 0x7fff].entries()) view.setUint16(startOffset + i * 2, v, true);
+  return buf;
+}
+
 /** 2×2 的 SPR，带**换色槽**：调色板 #255 是占位青（0x03FF），一个像素用它 */
 function sprRing(): Uint8Array {
   const buf = spr2x2();
@@ -311,28 +329,49 @@ describe('HD 优先、按图回退原图', () => {
   });
 
   it('★ 要换色槽的图：有 HD 时用原图的换色槽位置当遮罩给 HD 上色（合成器收到的遮罩 = 原图尺寸）', async () => {
-    const seen: { w: number; h: number; lit: number; color: readonly number[] }[] = [];
+    const seen: { w: number; h: number; lit: number; color: readonly number[]; alpha: boolean }[] = [];
     const c = new SpriteCache(fakeArchives({ 0: sprRing() }), {
       createBitmap: fakeBitmapOf,
       hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
-      recolorHd: async (hd, mask, color) => {
+      composeHd: async (hd, ops) => {
+        const mask = ops.ring!.mask;
         let lit = 0;
         for (let i = 3; i < mask.data.length; i += 4) if (mask.data[i] === 255) lit++;
-        seen.push({ w: mask.width, h: mask.height, lit, color });
-        return { width: hd.width, height: hd.height, tinted: true } as unknown as ImageBitmap;
+        seen.push({ w: mask.width, h: mask.height, lit, color: ops.ring!.color, alpha: ops.alpha !== undefined });
+        return { width: hd.width, height: hd.height, tinted: true, close: () => undefined } as unknown as ImageBitmap;
       },
     });
     const s = await c.get('Data.mkf', 0, 0, false, [255, 0, 0]);
     await c.settled();
-    expect(seen).toEqual([{ w: 2, h: 2, lit: 1, color: [255, 0, 0] }]);
+    expect(seen).toEqual([{ w: 2, h: 2, lit: 1, color: [255, 0, 0], alpha: false }]);
     expect((s!.bitmap as unknown as { tinted?: boolean }).tinted).toBe(true);
   });
 
-  it('★ 换色合成器拿不到（Node 下没有 OffscreenCanvas）→ 留原图换色的结果，不给没上色的 HD', async () => {
+  it('★ 「黑即透明」的图（colorKeyBlack）：HD 套上原图抠黑后的形状 —— 试点里標題按钮顶着黑底就是缺这一步', async () => {
+    const seen: number[][] = [];
+    const c = new SpriteCache(fakeArchives({ 0: smp2x2Black() }), {
+      createBitmap: fakeBitmapOf,
+      hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
+      composeHd: async (hd, ops) => {
+        const a = ops.alpha!;
+        seen.push([a.width, a.height, ...[3, 7, 11, 15].map((i) => a.data[i]!)]);
+        return { width: hd.width, height: hd.height, keyed: true, close: () => undefined } as unknown as ImageBitmap;
+      },
+    });
+    const keyed = await c.get('Data.mkf', 0, 0, true);
+    const plain = await c.get('Data.mkf', 0, 0, false);
+    await c.settled();
+    // 只有要抠黑的那一份走合成；遮罩 = 原图 2×2，黑像素那格 alpha 0
+    expect(seen).toEqual([[2, 2, 0, 255, 255, 255]]);
+    expect((keyed!.bitmap as unknown as { keyed?: boolean }).keyed).toBe(true);
+    expect(bitmapSize(plain!)).toEqual({ w: 8, h: 8 }); // 不抠黑的那份直接用 HD
+  });
+
+  it('★ 合成器拿不到（Node 下没有 OffscreenCanvas）→ 留原图的结果，不给没上色 / 没抠形状的 HD', async () => {
     const c = new SpriteCache(fakeArchives({ 0: sprRing() }), {
       createBitmap: fakeBitmapOf,
       hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
-      recolorHd: async () => null,
+      composeHd: async () => null,
     });
     const s = await c.get('Data.mkf', 0, 0, false, [255, 0, 0]);
     await c.settled();

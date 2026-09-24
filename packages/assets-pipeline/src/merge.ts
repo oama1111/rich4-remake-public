@@ -26,6 +26,7 @@
 
 import type { DecodedImage } from './sprite.ts';
 import { bleedColors, mergeFrame, type QueueFrame } from './slice.ts';
+import { cleanEdges, smoothAlpha } from './edge.ts';
 
 /** alpha 二值化阈值（灰度 ≥ 128 判为不透明） */
 export const ALPHA_THRESHOLD = 128;
@@ -172,7 +173,19 @@ export function rebleedTransparent(img: DecodedImage): DecodedImage {
  *
  * @throws rgb 与 alpha 尺寸不一致（调用方应先过 validatePair）
  */
-export function mergeUpscaled(rgb: DecodedImage, alpha: DecodedImage): DecodedImage {
+export function mergeUpscaled(
+  rgb: DecodedImage,
+  alpha: DecodedImage,
+  scale?: number,
+  /** 交给外部工具之前的那张 rgb（1×，已 bleed）—— 给了才做边缘带重建 */
+  original?: DecodedImage,
+): DecodedImage {
+  // ★ W-80 试点后：给了倍率（≥ 2）与原图就走「轮廓平滑 + 边缘带取原图」（`edge.ts`）——
+  //   二值化 + 1 像素中值去彩边只够 1×，4× 下原版渲染背景混进来的那圈残色是 4 个像素宽，
+  //   AI 还往里补了纹理（需求方：「周围一圈杂色」）。不给保留旧行为（旧单测与旧产物）。
+  if (scale !== undefined && scale >= 2 && original !== undefined) {
+    return rebleedTransparent(cleanEdges(mergeFrame(rgb, smoothAlpha(alpha, scale)), original, scale));
+  }
   const merged = mergeFrame(rgb, binarizeAlpha(alpha));
   return rebleedTransparent(deFringe(merged));
 }

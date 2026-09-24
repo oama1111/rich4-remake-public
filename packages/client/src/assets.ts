@@ -243,48 +243,70 @@ export interface SpriteCacheOptions {
   onEvict?: (sprite: Sprite) => void;
   createBitmap?: BitmapFactory;
   /**
-   * 给超分图上归属色（建筑外圈那圈线）。默认用 `OffscreenCanvas` 合成；
-   * 环境里没有（Node 单测）就返回 null ⇒ 这张图继续用原图换色的结果。
-   * @see recolorHdRing
+   * 超分图的后期合成（透明遮罩 / 归属色）。默认用 `OffscreenCanvas`；
+   * 环境里没有（Node 单测）就返回 null ⇒ 这张图继续用原图。
+   * @see defaultComposeHd
    */
-  recolorHd?: HdRingRecolor;
+  composeHd?: HdCompose;
+}
+
+/** 超分图要补的两样东西 —— 都取自**原图**（逻辑尺寸），放大后套到超分图上 */
+export interface HdComposeOps {
+  /**
+   * 透明遮罩：原图按黑抠过之后的 alpha（「黑即透明」的 SMP 小图，如標題按钮、工具栏图标）。
+   * ★ 这种图的透明是**运行时**按调用点决定抠不抠的，管线导出时不知道，产出的 alpha 全是不透明 ——
+   *   试点里標題按钮在高清下就顶着一块黑底。所以沿用原图抠出来的形状。
+   */
+  alpha?: ImageData;
+  /** 换色槽：原图调色板 #255 那圈的位置 + 要换成的归属色 */
+  ring?: { mask: ImageData; color: readonly [number, number, number] };
+}
+
+export type HdCompose = (hd: ImageBitmap, ops: HdComposeOps) => Promise<ImageBitmap | null>;
+
+/** 把一张原图尺寸的遮罩平滑放大到 w×h 画进 ctx（边缘软，正好盖住超分图的抗锯齿） */
+function drawMaskScaled(
+  ctx: OffscreenCanvasRenderingContext2D,
+  mask: ImageData,
+  w: number,
+  h: number,
+): boolean {
+  const small = new OffscreenCanvas(mask.width, mask.height);
+  const sctx = small.getContext('2d');
+  if (sctx === null) return false;
+  sctx.putImageData(mask, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(small, 0, 0, w, h);
+  return true;
 }
 
 /**
- * 超分图的换色：`mask` 是**原图尺寸**的遮罩（RGBA，换色槽像素 alpha=255，其余 0），
- * 放大到超分图尺寸后在那一圈上盖归属色。
- */
-export type HdRingRecolor = (
-  hd: ImageBitmap,
-  mask: ImageData,
-  color: readonly [number, number, number],
-) => Promise<ImageBitmap | null>;
-
-/**
- * 默认的超分换色：遮罩平滑放大 → `source-in` 染成归属色 → 盖在超分图上。
+ * 默认合成：先盖归属色（遮罩 `source-in` 染色后叠上去），再用透明遮罩 `destination-in` 抠形状。
  *
- * ★ 为什么不像原图那样「按颜色逐像素换」：AI 重绘后那圈线的颜色早已不是调色板 #255
- *   那个精确值（有明暗、有抗锯齿），按色找不到；而**位置**没变（C-AST-3 不许改轮廓），
- *   所以用原图的位置当遮罩。遮罩放大后边缘是软的，正好盖住抗锯齿的那一圈。
+ * ★ 为什么不像原图那样「按颜色逐像素换 / 按黑抠」：AI 重绘后那圈线、那片黑早已不是精确值
+ *   （有明暗、有抗锯齿），按色找不到；而**位置**没变（C-AST-3 不许改轮廓），所以用原图的位置。
  */
-export const defaultRecolorHd: HdRingRecolor = async (hd, mask, color) => {
+export const defaultComposeHd: HdCompose = async (hd, ops) => {
   if (typeof OffscreenCanvas === 'undefined') return null;
-  const small = new OffscreenCanvas(mask.width, mask.height);
-  const sctx = small.getContext('2d');
-  const layer = new OffscreenCanvas(hd.width, hd.height);
-  const lctx = layer.getContext('2d');
   const out = new OffscreenCanvas(hd.width, hd.height);
   const octx = out.getContext('2d');
-  if (sctx === null || lctx === null || octx === null) return null;
-  sctx.putImageData(mask, 0, 0);
-  lctx.imageSmoothingEnabled = true;
-  lctx.imageSmoothingQuality = 'high';
-  lctx.drawImage(small, 0, 0, hd.width, hd.height);
-  lctx.globalCompositeOperation = 'source-in';
-  lctx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
-  lctx.fillRect(0, 0, hd.width, hd.height);
+  if (octx === null) return null;
   octx.drawImage(hd, 0, 0);
-  octx.drawImage(layer, 0, 0);
+  if (ops.ring !== undefined) {
+    const layer = new OffscreenCanvas(hd.width, hd.height);
+    const lctx = layer.getContext('2d');
+    if (lctx === null || !drawMaskScaled(lctx, ops.ring.mask, hd.width, hd.height)) return null;
+    const [r, g, b] = ops.ring.color;
+    lctx.globalCompositeOperation = 'source-in';
+    lctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+    lctx.fillRect(0, 0, hd.width, hd.height);
+    octx.drawImage(layer, 0, 0);
+  }
+  if (ops.alpha !== undefined) {
+    octx.globalCompositeOperation = 'destination-in';
+    if (!drawMaskScaled(octx, ops.alpha, hd.width, hd.height)) return null;
+  }
   return createImageBitmap(out);
 };
 
@@ -317,7 +339,7 @@ export class SpriteCache {
   readonly #flics = new Map<string, LoadedFlic | null>();
   readonly #sprites = new Map<string, Sprite | null>();
   readonly #bytes = new Map<string, Uint8Array | null>();
-  readonly #recolorHd: HdRingRecolor;
+  readonly #composeHd: HdCompose;
   /** 高清换上来之后要叫谁（重画一帧）—— 见 `addUpgradeListener` */
   readonly #upgradeListeners: (() => void)[] = [];
   /** 还在路上的高清升级 —— `settled()` 等它们 */
@@ -330,7 +352,7 @@ export class SpriteCache {
     this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     if (options.onEvict !== undefined) this.#evictListeners.push(options.onEvict);
     this.#createBitmap = options.createBitmap ?? defaultBitmapFactory;
-    this.#recolorHd = options.recolorHd ?? defaultRecolorHd;
+    this.#composeHd = options.composeHd ?? defaultComposeHd;
   }
 
   /**
@@ -531,19 +553,29 @@ export class SpriteCache {
     const hd = await this.#hdBitmap(archive, resource, index);
     if (hd === null) return false;
     let bmp = hd;
+    const ops: HdComposeOps = {};
     if (ring !== undefined) {
       const mask = this.#ringMask(archive, resource, index, colorKeyBlack, ring);
       if (mask === 'unknown') {
         hd.close();
         return false;
       }
-      if (mask !== null) {
-        const tinted = await this.#recolorHd(hd, mask, ring).catch(() => null);
+      if (mask !== null) ops.ring = { mask, color: ring };
+    }
+    if (colorKeyBlack) {
+      const alpha = this.#keyMask(archive, resource, index);
+      if (alpha === 'unknown') {
         hd.close();
-        // 合成不了（没有 OffscreenCanvas）⇒ 留着原图换色的结果，别给一张没上色的高清图
-        if (tinted === null) return false;
-        bmp = tinted;
+        return false;
       }
+      if (alpha !== null) ops.alpha = alpha;
+    }
+    if (ops.ring !== undefined || ops.alpha !== undefined) {
+      const composed = await this.#composeHd(hd, ops).catch(() => null);
+      hd.close();
+      // 合成不了（没有 OffscreenCanvas）⇒ 留着原图，别给一张没抠形状 / 没上色的高清图
+      if (composed === null) return false;
+      bmp = composed;
     }
     // 途中被 LRU 淘汰了（持有者已经把它丢了）⇒ 这张高清图没人要
     if (this.#sprites.get(key) !== sprite) {
@@ -553,6 +585,27 @@ export class SpriteCache {
     // 旧的 1× 位图交给 GC，不 close：别处可能还攥着它（如指针图已拷进 CSS）
     sprite.bitmap = bmp;
     return true;
+  }
+
+  /**
+   * 「黑即透明」的形状（原图尺寸，按黑抠过之后的 alpha）。原图本来就没有透明像素 → null；
+   * 取不到 → `'unknown'`。
+   */
+  #keyMask(archive: ArchiveName, resource: number, index: number): ImageData | null | 'unknown' {
+    const sheet = this.#sheetOf(archive, resource);
+    const data = this.#bytesOf(archive, resource);
+    if (sheet === null || data === null || index >= sheet.images.length) return 'unknown';
+    const img = decodeImage(sheet, data, index, { colorKeyBlack: true });
+    let any = false;
+    const out = new Uint8ClampedArray(img.width * img.height * 4).fill(255);
+    for (let i = 3; i < img.rgba.length; i += 4) {
+      out[i] = img.rgba[i]!;
+      if (img.rgba[i] !== 255) any = true;
+    }
+    if (!any) return null;
+    const mask = new ImageData(img.width, img.height);
+    mask.data.set(out);
+    return mask;
   }
 
   /**
