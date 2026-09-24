@@ -290,7 +290,7 @@ describe('★ gap-audit #18：一行的字与图全照 0x00403f1d..0x00404094', 
       restore: () => {},
       fillRect: () => {},
       strokeRect: () => {},
-      fillText(text: string, x: number, y: number) {
+      fillText(this: { fillStyle: string; font: string }, text: string, x: number, y: number) {
         texts.push({ text, x, y, fill: String(this.fillStyle), font: String(this.font) });
       },
       drawImage: (b: { res: number; index: number }, x: number, y: number) => images.push({ ...b, x, y }),
