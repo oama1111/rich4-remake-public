@@ -22,7 +22,7 @@ function diceBlocks(img: any, alphaOf: (i: number) => number) {
 const lines: string[] = []; const flagged: string[] = []; let ious: number[] = [];
 for (const [name, L] of Object.entries<any>(lay)) {
   if (only.length && !only.includes(name)) continue;
-  const dice = name.startsWith('dice'), file = `${dir}/out/${name}.repaint.png`;
+  const dice = name.startsWith('dice'), file = `${dir}/${process.env.OUT ?? 'out2'}/${name}.repaint.png`;
   if (!existsSync(file)) { lines.push(`${name}：没有产物`); continue; }
   for (const fr of L.frames) {
     const [, rs, is] = /^Data\/(\d+)_(\d+)$/.exec(fr.id)!;
