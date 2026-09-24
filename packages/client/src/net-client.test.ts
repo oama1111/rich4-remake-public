@@ -445,3 +445,44 @@ describe('netParamsFrom', () => {
     expect(p?.name).toMatch(/^玩家\d+$/);
   });
 });
+
+describe('★ 聯機存檔（v6）', () => {
+  it('join 帶 mode / fromSave / claimSeat；claim / unclaim / save 各發一條', () => {
+    const { client, sent } = harness({ mode: 'create', fromSave: 'm-1' });
+    client.join();
+    expect(sent[0]).toMatchObject({ t: 'join', mode: 'create', fromSave: 'm-1' });
+    expect('claimSeat' in sent[0]!).toBe(false);
+    const h2 = harness({ mode: 'join', claimSeat: 2 });
+    h2.client.join();
+    expect(h2.sent[0]).toMatchObject({ t: 'join', mode: 'join', claimSeat: 2 });
+    client.claim(1);
+    client.unclaim(3);
+    client.save('週末');
+    expect(sent.slice(1)).toEqual([
+      { t: 'claim', seat: 1 },
+      { t: 'unclaim', seat: 3 },
+      { t: 'save', name: '週末' },
+    ]);
+  });
+
+  it('start / replay 的 snapshot 與 startDate 原樣交上去；日期形狀不對就當沒帶；saved 交給 onSaved', () => {
+    const starts: unknown[] = [];
+    const saved: string[] = [];
+    const replays: unknown[] = [];
+    const { push } = harness({
+      onStart: (s) => starts.push(s),
+      onSaved: (n) => saved.push(n),
+      onResync: (r) => replays.push(r),
+    });
+    const options = { seatCount: 2, fundIndex: 0, vehicle: 0, landTenure: 0, timeIndex: 0, victoryIndex: 0 };
+    push({ t: 'start', seed: 1, globalMapId: 0, seats: [], options, snapshot: '{"s":1}', startDate: { year: 2003, month: 4, day: 5 } });
+    push({ t: 'start', seed: 1, globalMapId: 0, seats: [], options, startDate: { year: 'x' } as never });
+    expect(starts[0]).toMatchObject({ snapshot: '{"s":1}', startDate: { year: 2003, month: 4, day: 5 } });
+    expect(starts[1]).not.toHaveProperty('startDate');
+    expect(starts[1]).not.toHaveProperty('snapshot');
+    push({ t: 'replay', seed: 1, globalMapId: 0, seats: [], options, snapshot: '{"s":2}', through: -1, actions: [] });
+    expect(replays[0]).toMatchObject({ snapshot: '{"s":2}' });
+    push({ t: 'saved', name: '週末' });
+    expect(saved).toEqual(['週末']);
+  });
+});

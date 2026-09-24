@@ -12,6 +12,7 @@ import {
   PROTOCOL_VERSION,
   type Action,
   type ClientMessage,
+  type JoinMode,
   type RoomInfo,
   type LobbyOptions,
   type SeatInfo,
@@ -33,6 +34,15 @@ export interface NetClientOptions {
    * 老的 `?ws=…&room=…&name=…` 调试入口也一样，从同一个地方取。
    */
   clientId: string;
+  /**
+   * ★ 房間列表（v5）：`'create'` = 建房（码必须还没人用）；`'join'` = 进一间**已有的**；
+   *   不给 = 旧语义（有就进、没有就建）—— 见 core `protocol.ts` 的 `join.mode`。
+   */
+  mode?: JoinMode;
+  /** ★ 聯機存檔（v6）：建房時從這份存檔繼續（只與 `mode: 'create'` 一起）*/
+  fromSave?: string;
+  /** ★ 聯機存檔（v6）：加入已開局的存檔房時認領這一座（只與 `mode: 'join'` 一起）*/
+  claimSeat?: number;
   /** 重连：本地已施加到第几号（含） */
   since?: number;
   /** 每几号 action 上报一次校验和 @default 10 */
@@ -51,6 +61,10 @@ export interface NetClientOptions {
     seats: SeatInfo[];
     /** ★ 第十一份試玩回報 #1：房間的開局選項（總人數 + 單機那五項）*/
     options: LobbyOptions;
+    /** ★ 聯機存檔（v6）：起點局面（從存檔繼續的局才有）—— 見 `net-start.ts` */
+    snapshot?: string;
+    /** ★ v6：開局日期（服務器的今天）*/
+    startDate?: { year: number; month: number; day: number };
     /**
      * ★ 第十二份試玩回報：进房那一刻服务器日志排到第几号（含；-1 = 空 / 旧服务器没带）。
      *   `> -1` 就说明这是**中途进房**（刷新 / 重连），见 `onCatchUp`。
@@ -86,6 +100,9 @@ export interface NetClientOptions {
     globalMapId: number;
     seats: SeatInfo[];
     options: LobbyOptions;
+    /** ★ 聯機存檔（v6）：起點局面 */
+    snapshot?: string;
+    startDate?: { year: number; month: number; day: number };
     actions: Action[];
   }): void;
   /**
@@ -95,6 +112,8 @@ export interface NetClientOptions {
    * （有人交了 intent / 换人 / 该座位不再被等）。
    */
   onClock?(clock: { seat: number; remainingMs: number; hardRemainingMs: number }): void;
+  /** ★ 聯機存檔（v6）：房主存了一份檔（廣播給全桌）*/
+  onSaved?(name: string): void;
   /** 本地状态的指纹（发校验和用） */
   fingerprint(): string;
 }
@@ -154,6 +173,9 @@ export class NetClient {
       clientId: this.#opts.clientId,
     };
     if (this.#opts.since !== undefined) msg.since = this.#opts.since;
+    if (this.#opts.mode !== undefined) msg.mode = this.#opts.mode;
+    if (this.#opts.fromSave !== undefined) msg.fromSave = this.#opts.fromSave;
+    if (this.#opts.claimSeat !== undefined) msg.claimSeat = this.#opts.claimSeat;
     this.#send(msg);
   }
 
@@ -233,6 +255,21 @@ export class NetClient {
     this.#send({ t: 'alive' });
   }
 
+  /** ★ 聯機存檔（v6）：存檔房大廳裡「這是我」 */
+  claim(seat: number): void {
+    this.#send({ t: 'claim', seat });
+  }
+
+  /** ★ 聯機存檔（v6）：把一座放回「沒人坐」（房主：任何人的；其他人：自己的）*/
+  unclaim(seat: number): void {
+    this.#send({ t: 'unclaim', seat });
+  }
+
+  /** ★ 聯機存檔（v6）：房主存一份檔 */
+  save(name: string): void {
+    this.#send({ t: 'save', name });
+  }
+
   /** ★ W-74：本机座位被超时託管了，玩家点一下画面 —— 把座位收回来 */
   resume(): void {
     this.#send({ t: 'resume' });
@@ -268,6 +305,8 @@ export class NetClient {
           globalMapId: msg.globalMapId,
           seats: msg.seats,
           options: msg.options,
+          ...(typeof msg.snapshot === 'string' ? { snapshot: msg.snapshot } : {}),
+          ...(isDate(msg.startDate) ? { startDate: msg.startDate } : {}),
           through,
         });
         return;
@@ -301,10 +340,15 @@ export class NetClient {
           globalMapId: msg.globalMapId,
           seats: msg.seats,
           options: msg.options,
+          ...(typeof msg.snapshot === 'string' ? { snapshot: msg.snapshot } : {}),
+          ...(isDate(msg.startDate) ? { startDate: msg.startDate } : {}),
           actions: msg.actions.map((a) => a.action),
         });
         return;
       }
+      case 'saved':
+        this.#opts.onSaved?.(msg.name);
+        return;
       case 'clock':
         this.#opts.onClock?.({ seat: msg.seat, remainingMs: msg.remainingMs, hardRemainingMs: msg.hardRemainingMs });
         return;
@@ -356,6 +400,13 @@ export class NetClient {
   #send(msg: ClientMessage): void {
     this.#socket.send(JSON.stringify(msg));
   }
+}
+
+/** 网络来的日期：三个正整数才收（不然当没带，退回 core 缺省）*/
+function isDate(v: unknown): v is { year: number; month: number; day: number } {
+  if (typeof v !== 'object' || v === null) return false;
+  const d = v as Record<string, unknown>;
+  return [d.year, d.month, d.day].every((x) => typeof x === 'number' && Number.isInteger(x) && x > 0);
 }
 
 /** 从页面 URL 读联机参数：`?ws=ws://host:port&room=r1&name=小明`；缺 ws 就是单机 */

@@ -5,7 +5,7 @@
  *   pnpm --filter @rich4/server start [--port 8787] [--host 127.0.0.1]
  *                                    [--web packages/client/dist-web] [--assets assets/game]
  *                                    [--no-gate] [--map 0] [--seats 4] [--takeover 30000]
- *                                    [--turn-ms 60000] [--seed N]
+ *                                    [--turn-ms 60000] [--seed N] [--saves /srv/rich4/saves]
  *
  * ★ 整站一道**访问密码**（W-71）：`RICH4_PASSWORD` 与 `RICH4_COOKIE_SECRET`
  *   只从环境变量来，缺一个就**拒绝启动**（没有缺省密码，也不许写进仓库）。
@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { MkfArchive } from '@rich4/assets-pipeline';
 import { parseMap } from '@rich4/core';
 import { startServer } from './http-server.ts';
+import { FileSaveStore, SAVE_CAP } from './saves.ts';
 
 function arg(name: string, dflt: number): number {
   const i = process.argv.indexOf(`--${name}`);
@@ -101,6 +102,13 @@ const mapFor = (id: number): ReturnType<typeof parseMap> | null => {
   }
 };
 
+/**
+ * ★ 聯機存檔（v6）：`--saves <目錄>` —— 自動存檔（每過一天）與房主的手動存檔都落在這裡，
+ *   重啟 / 部署之後從房間列表「建立房間 → 從存檔繼續」接著玩。不給就不存。
+ */
+const savesArg = argStr('saves');
+const saves = savesArg === null ? null : new FileSaveStore(resolve(savesArg));
+
 /** 开发便利：整站不装门（只有本机允许，见 `startServer`） */
 const noGate = process.argv.includes('--no-gate');
 
@@ -120,6 +128,7 @@ try {
     takeoverAfterMs,
     turnMs,
     awaitingFallbackMs,
+    ...(saves === null ? {} : { saves }),
     seedFor: () => (fixedSeed >= 0 ? fixedSeed >>> 0 : (Date.now() & 0x7fffffff) >>> 0),
   });
 } catch (err) {
@@ -136,11 +145,17 @@ console.log(`素材目錄：${assetDir}`);
 console.log(webDir === undefined ? '靜態站：未開（沒給 --web）' : `靜態站：${webDir}`);
 console.log(feedbackDir === undefined ? '一鍵回報：未開（沒給 --feedback）' : `一鍵回報：存到 ${feedbackDir}`);
 console.log(
+  saves === null || savesArg === null
+    ? '聯機存檔：未開（沒給 --saves）'
+    : `聯機存檔：${resolve(savesArg)}（現有 ${saves.list().length} 份，最多 ${SAVE_CAP} 份）`,
+);
+console.log(
   noGate
     ? '訪問密碼：**關掉了**（--no-gate，只有本機允許）'
     : '訪問密碼：開著（RICH4_PASSWORD / RICH4_COOKIE_SECRET 從環境變數來）',
 );
-console.log(`客戶端（開發）：http://localhost:5173/?ws=${running.url.replace(/^http/, 'ws')}/ws&room=K7M2QP&name=小明`);
+console.log(`客戶端（開發）：http://localhost:5173/?ws=${running.url.replace(/^http/, 'ws')}/ws（門廳 → 在線聯機 → 房間列表）`);
+console.log(`  老調試入口：http://localhost:5173/?ws=${running.url.replace(/^http/, 'ws')}/ws&room=K7M2QP&name=小明`);
 
 process.on('SIGINT', () => {
   running.close();

@@ -458,5 +458,8 @@ export function baseOptions(opts: StartServerOptions): HttpServerOptions {
     ...(opts.hardCapMs === undefined ? {} : { hardCapMs: opts.hardCapMs }),
     ...(opts.maxRooms === undefined ? {} : { maxRooms: opts.maxRooms }),
     ...(opts.roomIdleMs === undefined ? {} : { roomIdleMs: opts.roomIdleMs }),
+    // ★ v6：聯機存檔倉庫、開局日期的時鐘
+    ...(opts.saves === undefined ? {} : { saves: opts.saves }),
+    ...(opts.today === undefined ? {} : { today: opts.today }),
   };
 }

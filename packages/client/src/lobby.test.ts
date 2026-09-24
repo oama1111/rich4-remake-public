@@ -24,7 +24,10 @@ import {
   drawLobby,
   hitLobby,
   isHostSeat,
+  lobbyIsHost,
   lobbySlots,
+  seatButtonOf,
+  seatButtonRect,
   LOBBY_OPTION_ROWS,
   LOBBY_SEATS,
   MAX_SEATS,
@@ -695,5 +698,62 @@ describe('★★ 大厅「開局設定」六行（第十一份試玩回報 #1）
       me: 0,
       seats: 3,
     })).toBeNull();
+  });
+});
+
+describe('★ 聯機存檔（v6）：存檔房的大廳', () => {
+  const saveRoom = (over: Partial<RoomInfo> = {}): RoomInfo => ({
+    id: 'ABCDEF',
+    started: false,
+    fromSave: { name: '週末' },
+    hostSeat: 1,
+    seats: [
+      { seat: 0, name: 'A', character: 4, kind: 'human', connected: false, vacant: true },
+      { seat: 1, name: 'H', character: 2, kind: 'human', connected: true },
+      { seat: 2, name: 'X', character: 7, kind: 'human', connected: true },
+      { seat: 3, name: '電腦4', character: 0, kind: 'computer' },
+    ],
+    ...over,
+  });
+
+  it('房主看 hostSeat（不一定是 0 號座）；-1 = 還沒入座，不是房主', () => {
+    expect(lobbyIsHost(saveRoom(), 1)).toBe(true);
+    expect(lobbyIsHost(saveRoom(), 0)).toBe(false);
+    expect(lobbyIsHost(saveRoom({ hostSeat: -1 }), -1)).toBe(false);
+    // 一般房間：沒帶 hostSeat ⇒ 0 號座
+    expect(lobbyIsHost({ id: 'X', started: false, seats: [] }, 0)).toBe(true);
+  });
+
+  it('座位小鈕：沒入座的人在空座上看到「這是我」；自己的座位「離座」；房主對別人「請離座」；開局後都沒有', () => {
+    const r = saveRoom();
+    const slotsGuest = lobbySlots(r, -1, 4);
+    expect(slotsGuest.some((s) => s.isMe)).toBe(false);
+    expect(slotsGuest.map((s) => seatButtonOf(s, -1, false, r)?.label ?? null)).toEqual(['這是我', null, null, null]);
+    const slotsHost = lobbySlots(r, 1, 4);
+    expect(slotsHost.map((s) => seatButtonOf(s, 1, true, r)?.label ?? null)).toEqual([null, '離座', '請離座', null]);
+    const slotsX = lobbySlots(r, 2, 4);
+    expect(slotsX.map((s) => seatButtonOf(s, 2, false, r)?.label ?? null)).toEqual([null, null, '離座', null]);
+    const started = saveRoom({ started: true });
+    expect(lobbySlots(started, -1, 4).map((s) => seatButtonOf(s, -1, false, started))).toEqual([null, null, null, null]);
+    // 一般房間永遠沒有
+    const plain: RoomInfo = { id: 'P', started: false, seats: r.seats.map((s) => {
+      const c = { ...s };
+      delete c.vacant;
+      return c;
+    }) };
+    expect(lobbySlots(plain, 0, 4).map((s) => seatButtonOf(s, 0, true, plain))).toEqual([null, null, null, null]);
+  });
+
+  it('命中：小鈕先於座位卡；存檔房的角色 / 地圖 / 設定一律點不動（鎖定）', () => {
+    const r = saveRoom();
+    const b = seatButtonRect(0);
+    expect(hitLobby(b.x + 5, b.y + 5, { isHost: false, me: -1, room: r, seats: 4 })).toEqual({ kind: 'claim', seat: 0 });
+    const u = seatButtonRect(2);
+    expect(hitLobby(u.x + 5, u.y + 5, { isHost: true, me: 1, room: r, seats: 4 })).toEqual({ kind: 'unclaim', seat: 2 });
+    // 鎖定：房主點角色格 / 地圖格都是 null
+    expect(hitLobby(CHAR_PICK.x + 5, CHAR_PICK.y + 5, { isHost: true, me: 1, room: r, seats: 4 })).toBeNull();
+    expect(hitLobby(MAP_PICK.x + 5, MAP_PICK.y + 5, { isHost: true, me: 1, room: r, seats: 4 })).toBeNull();
+    // 空座卡片本身仍只是「落在座位上」
+    expect(hitLobby(LOBBY_SEATS.x + 100, LOBBY_SEATS.y + 10, { isHost: false, me: -1, room: r, seats: 4 })).toEqual({ kind: 'seat', index: 0 });
   });
 });
