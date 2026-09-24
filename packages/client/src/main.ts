@@ -4690,7 +4690,8 @@ const deferredScreenEvents: { screen: UiScreen; before: GameState; after: GameSt
 function screenStarts(id: string, before: GameState, after: GameState): boolean {
   switch (id) {
     case 'monthly':
-      return after.totalMonths > before.totalMonths;
+      // ★ 第二十一份：与 `monthlyScreen.event` 同一道门 —— 跨月且 core 交下了这一次的月结现场
+      return after.totalMonths > before.totalMonths && (after.lastMonthlySettle ?? null) !== null;
     case 'shares':
       return dividendDayCrossed(before, after);
     case 'lottery-draw':

@@ -256,8 +256,10 @@ describe('★ 登记的整屏：声明了右键的那几屏', () => {
     //   见 `scapegoat-picker.ts` 的 `contextmenu`。
     // ★ 第十五份：命運让出框之后那 800 ms（`0x0044dd80 call 0x4528b9`，`0x00452909 cmp edx, 0x205`），
     //   见 `event-box-screen.ts` 的 `eventTailScreen`。
+    // ★ 第二十一份：月結 / 頒獎窗口过程 `fcn_00437e61` 的 `0x00437e9f cmp eax, 0x205 / je 0x439b62`
+    //   —— 右键与左键抬手同一支（收字框 + 停语音 + 跳过），见 `monthly-screen.ts` 的 `contextmenu`。
     expect(withCtx).toEqual([
-      'big-map', 'eventBox', 'eventTail', 'facility-picker', 'help', 'lottery', 'magic', 'notice', 'notice-board',
+      'big-map', 'eventBox', 'eventTail', 'facility-picker', 'help', 'lottery', 'magic', 'monthly', 'notice', 'notice-board',
       'research', 'scapegoat-picker', 'steal-picker',
     ]);
   });
