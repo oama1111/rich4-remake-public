@@ -580,6 +580,9 @@ import {
   SHOP_SLIDE_MS,
   blinkStart,
   blinkStep,
+  keeperPaintAfter,
+  keeperPaintStart,
+  type ShopKeeperPaint,
   cellItemAt,
   drawShopScreen,
   hitShopCell,
@@ -597,7 +600,6 @@ import {
   slideStep,
   type ShopBlink,
   type ShopPage,
-  type ShopShelfRow,
   type ShopSlide,
 } from './shop-screen.ts';
 import {
@@ -5402,7 +5404,8 @@ function closeInventory(): void {
 // | `pressed` | `[0x48c347]` | 正按住的钮（抬手才动作）|
 // | `bubble` | `[0x4762c4]` | 老板娘那句话 + 到点自收 |
 // | `blink` | `[0x48c32f] / [0x48c314]` | 老板娘脸上那两个小动作 |
-// | `shelf` / `bought` | `[0x48c31c]` / `[0x48c2f8]` | 货架快照 + 已经买掉的行 |
+// | `bought` | `[0x48c31c]` / `[0x48c2f8]` 清 0 | 本机点过、回包还没到的行（货架本身与 `sold` 在 core 的 `pending` 里）|
+// | `keeper` | 后台缓冲上贴着的那两块 | 老板娘脸上此刻留着的脸 / 嘴（每帧都画）|
 
 interface ShopUi {
   page: ShopPage;
@@ -5424,11 +5427,14 @@ interface ShopUi {
    *   `fcn_00451d4e`（复原）并重贴一次格子底图。
    */
   pressedCell: number | null;
-  /** 开店那一刻的货架 —— 买过的行**不从这份快照里去掉** */
-  shelf: { cards: readonly ShopShelfRow[]; tools: readonly ShopShelfRow[] };
-  /** 已经买掉的行下标（原版是把那两个货架数组的对应字节清 0）*/
+  /**
+   * 本机已经点买、回包还没到的行下标 —— 联机时 `pending.cards/tools[行].sold` 要等服务器回包才变，
+   * 这之间也得灰、也不能再点（原版点下去当场清 0）。真相在 core：画与判都是「core 的 sold ∪ 这里」。
+   */
   bought: { cards: Set<number>; tools: Set<number> };
   blink: ShopBlink;
+  /** 老板娘脸上此刻留着的那两块（换页 = 整屏重画时清掉）*/
+  keeper: ShopKeeperPaint;
 }
 
 let shopUi: ShopUi | null = null;
@@ -5707,6 +5713,8 @@ function shopGotoPage(ui: ShopUi, page: ShopPage, now: number): void {
   }
   ui.slide = entry.slide;
   ui.blink = blinkStart(page);
+  // 换页 = 整屏重画（`fcn_0042d299`）⇒ 先前贴在老板娘脸上的都没了
+  ui.keeper = keeperPaintStart();
 }
 
 /** 开店 / 换玩家换局时把界面状态按当前 `pending` 重铺 */
@@ -5725,8 +5733,7 @@ function syncShopUi(): void {
   // ★ 第十五份：董事長贈禮那一句（`0x0042ea23 call 0x44f230`）也在开窗（`0x0042ea28`）之前 ——
   //   台上还有气泡 / 押着的台词就先别开（开了气泡就叠在商店窗上）
   if (shopUi === null && (speechQueue.length > 0 || heldSpeech.length > 0)) return;
-  // ★ 只在**第一次**看见这个商店时建快照：那之后的 `pending.cards/tools` 会因为
-  //   买到手而变短，而原版货架上的字是烤进图里的，不会消失。
+  // ★ 只在**第一次**看见这个商店时铺界面状态（货架不再快照：core 的行留在原位、买过的记 `sold`）
   if (shopUi === null) {
     const ui: ShopUi = {
       page: SHOP_PAGE.cards,
@@ -5750,12 +5757,9 @@ function syncShopUi(): void {
       bubble: null,
       closing: false,
       pressedCell: null,
-      shelf: {
-        cards: shopRows(SHOP_PAGE.cards, pending),
-        tools: shopRows(SHOP_PAGE.tools, pending),
-      },
       bought: { cards: new Set<number>(), tools: new Set<number>() },
       blink: blinkStart(SHOP_PAGE.cards),
+      keeper: keeperPaintStart(),
     };
     shopUi = ui;
     // ★ 進商店的配乐 @source `shop.asm:2196` `push 6 / call fcn_004549cf`
@@ -5827,11 +5831,11 @@ function shopSell(page: ShopPage, slot: number): boolean {
 function shopBuy(page: ShopPage, row: number, now: number): void {
   const ui = shopUi;
   if (ui === null || state.pending?.kind !== 'shop') return;
-  const rows = page === SHOP_PAGE.cards ? ui.shelf.cards : ui.shelf.tools;
   const sold = page === SHOP_PAGE.cards ? ui.bought.cards : ui.bought.tools;
-  const item = rows[row];
+  const item = shopRows(page, state.pending, sold)[row];
   const me = state.players[state.currentPlayer];
-  if (item === undefined || sold.has(row) || me === undefined) return;
+  // ★ 买过的那一行（core 记了 `sold`，或本机刚点、回包未到）点了没反应 @source 0x0042e197 / 0x0042e3ec `je 返回`
+  if (item === undefined || item.sold || me === undefined) return;
 
   if (me.points < item.price) {
     shopSay(ui, shopMessage(page, 'notEnough'), now);
@@ -5853,8 +5857,8 @@ function shopBuy(page: ShopPage, row: number, now: number): void {
   sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
   dispatch(
     page === SHOP_PAGE.cards
-      ? { type: 'shop', op: 'buyCard', id: item.id }
-      : { type: 'shop', op: 'buyTool', id: item.id },
+      ? { type: 'shop', op: 'buyCard', id: item.id, row }
+      : { type: 'shop', op: 'buyTool', id: item.id, row },
   );
 }
 
@@ -8664,6 +8668,10 @@ function drawShopStage(): void {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return;
 
+  // 老板娘的动画机每 100 ms 走一拍；这一拍贴的叠进「此刻留着的」—— 画的是后者（每帧都画，不再只闪一帧）。
+  // 原版用 `_libc_rand`；这一处纯装饰，不进确定性状态，所以用 `Math.random`。
+  // 嘴只在说话（气泡挂着）时动 @source 0x0042dc36 `call 0x44ef3b`
+  ui.keeper = keeperPaintAfter(ui.keeper, blinkStep(ui.blink, ui.page, performance.now(), Math.random, ui.bubble !== null));
   stageCtx.fillStyle = '#000';
   stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
   drawShopScreen(stageCtx, spriteNow, {
@@ -8671,7 +8679,7 @@ function drawShopStage(): void {
     panelX: ui.slide.panelX,
     gridX: ui.slide.gridX,
     points: me.points,
-    shelf: ui.page === SHOP_PAGE.cards ? ui.shelf.cards : ui.shelf.tools,
+    shelf: shopRows(ui.page, pending, ui.page === SHOP_PAGE.cards ? ui.bought.cards : ui.bought.tools),
     cells:
       ui.page === SHOP_PAGE.cards
         ? cardEntries(state, state.currentPlayer)
@@ -8679,8 +8687,7 @@ function drawShopStage(): void {
     bubble: ui.bubble === null ? null : ui.bubble.text,
     pressed: ui.pressed,
     pressedCell: ui.pressedCell,
-    // 原版用 `_libc_rand`；这一处纯装饰，不进确定性状态，所以用 `Math.random`
-    blink: blinkStep(ui.blink, ui.page, performance.now(), Math.random),
+    keeper: ui.keeper,
   });
 }
 

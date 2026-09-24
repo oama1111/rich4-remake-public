@@ -6953,7 +6953,7 @@ function transferListing(
  *    随机道具（0x445ada），否则送一张牌堆里的随机卡（0x441e12）；
  * 2. 抄一份牌堆，抽 `rand()%10+6` 件卡片上货架（加权、不放回）；
  * 3. 道具货架 = 1..8 号里库存 > 0 的全部。
- * 货架进 `pending.cards` / `pending.tools`，买卡只认货架上有的、买一件少一件。
+ * 货架进 `pending.cards` / `pending.tools`，买只认货架上还没卖掉的那一行；买过的行留在原位记 `sold`（原版变灰）。
  */
 function enterShop(state: GameState, topo: MapTopology): GameState {
   const me = state.currentPlayer;
@@ -7049,6 +7049,26 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
   };
 }
 
+/**
+ * 这一次买的是货架第几行；买不了（不在货架上 / 那一行已经卖掉 / 行号与编号对不上）返回 −1。
+ *
+ * @source 窗口过程按**点中的行**取货架字节：卡片 `0x0042e190 cmp byte [行 + 0x48c31c], 0 / je 返回`、
+ *   道具 `0x0042e3e4 mov dh, [行 + 0x48c2f8] / test dh, dh / je 返回`；买成之后那一格清 0
+ *   （`0x0042e379` / `0x0042e5f6`）⇒ **同一行本次进店只能买一次**。
+ * ★ `row` 缺省（电脑的购买、旧回报的轨迹）= 同号的行里第一行还没卖掉的 —— 结果（买到什么、花多少）
+ *   与指定行号完全一样，差别只在变灰的是哪一行。
+ */
+function shelfRowFor(
+  shelf: readonly { id: number; sold?: true }[],
+  id: number,
+  row: number | undefined,
+): number {
+  if (row === undefined) return shelf.findIndex((it) => it.id === id && it.sold !== true);
+  if (!Number.isInteger(row) || row < 0 || row >= shelf.length) return -1;
+  const it = shelf[row]!;
+  return it.id === id && it.sold !== true ? row : -1;
+}
+
 function shopAction(state: GameState, action: Action & { type: 'shop' }): GameState {
   const pending = state.pending;
   if (pending === null || pending.kind !== 'shop') return state;
@@ -7070,13 +7090,14 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
 
   switch (action.op) {
     case 'buyCard': {
-      // ★ 只认货架上有的；买一件少一件（货架是从牌堆抽的，牌堆本身由 buyCard 扣）
-      const at = pending.cards.findIndex((c) => c.id === action.id);
+      // ★ 只认货架上**还没卖掉**的那一行；买完那一行留在原位、记 `sold`（原版变灰 + 清 0，
+      //   本次进店不能再买）。货架是从牌堆抽的，牌堆本身由 buyCard 扣。
+      const at = shelfRowFor(pending.cards, action.id, action.row);
       if (at === -1) return state;
       const r = buyCard(me, action.id);
       if (!r.ok) return state;
       const bought = commit(r.player);
-      const cards = pending.cards.filter((_, i) => i !== at);
+      const cards = pending.cards.map((c, i) => (i === at ? { ...c, sold: true as const } : c));
       return { ...bought, pending: { ...pending, points: r.player.points, cards } };
     }
     case 'sellCard': {
@@ -7084,19 +7105,19 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
       return r.ok ? commit(r.player) : state;
     }
     case 'buyTool': {
-      // ★ 与 buyCard 同构：买一件少一件 —— 原版两页都这么干
+      // ★ 与 buyCard 同构：买过的那一行记 `sold`、本次进店不能再买 —— 原版两页都这么干
       //   @source `rich4_shop.asm` 0x42e466 尾 `mov byte [ebx + 0x48c2f8], 0`
       //
       // ⚠️ 这一条**必须**同时保证「AI 不会提一个货架上没有的购买」：
       //   `ai/policy.ts` 的 shop 分支是按「买得起 + 装得下」挑的，不查货架；
       //   删掉之后 reducer 会拒，而 AI 是纯函数、被拒就原样重提 —— 立刻卡死在
       //   `turnEnd / shop`（`soak.test.ts` 抓得住）。所以那边也加了货架判据。
-      const at = pending.tools.findIndex((t) => t.id === action.id);
+      const at = shelfRowFor(pending.tools, action.id, action.row);
       if (at === -1) return state;
       const r = buyTool(me, state.tools, state.toolStock, action.id);
       if (!r.ok) return state;
       const bought = commit(r.player, r.tools, r.stock);
-      const tools = pending.tools.filter((_, i) => i !== at);
+      const tools = pending.tools.map((t, i) => (i === at ? { ...t, sold: true as const } : t));
       return { ...bought, pending: { ...pending, points: r.player.points, tools } };
     }
     case 'sellTool': {

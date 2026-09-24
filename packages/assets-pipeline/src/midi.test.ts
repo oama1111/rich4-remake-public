@@ -244,6 +244,24 @@ describe('★ 原版那 25 首都能解开', () => {
     }
   });
 
+  run('★ 第十七份：弯音全是有限值、幅度 ≤ 12 半音，且都落在音符的发声期内（不会把振荡器推到奇怪的频率）', () => {
+    // 25 首里 RPN 0 只改过 12 / 2 / 2.44 半音（Rich08/16/17/20/21），14 位满偏 × 幅度 ⇒ |弯音| ≤ 12
+    for (const f of MIDI_PLAYLIST) {
+      if (!has(f)) continue;
+      for (const n of parseMidi(load(f)).notes) {
+        const all = [n.bend ?? 0, ...(n.bends ?? []).map((b) => b.semitones)];
+        for (const v of all) {
+          expect(Number.isFinite(v), f).toBe(true);
+          expect(Math.abs(v), f).toBeLessThanOrEqual(12);
+        }
+        for (const b of n.bends ?? []) {
+          expect(b.at, f).toBeGreaterThanOrEqual(0);
+          expect(b.at, f).toBeLessThanOrEqual(n.duration);
+        }
+      }
+    }
+  });
+
   run('★ 清单里 25 首一首不少', () => {
     expect(MIDI_PLAYLIST).toHaveLength(25);
     const missing = MIDI_PLAYLIST.filter((f) => !has(f));

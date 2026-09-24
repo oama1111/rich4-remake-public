@@ -95,3 +95,21 @@ describe('★ 按屏 BGM 的宿主接线点（原版 `fcn_004549cf(id)`）', () 
     expect(src).toContain('VA 0x004109e2');
   });
 });
+
+describe('★ 第十七份：商店配乐只在**开店那一下**点一次（不会每帧重起）', () => {
+  it("`playTrackFile('midi07.mid')` 只出现在 `syncShopUi` 建 `shopUi` 的那一支里", () => {
+    // `syncShopUi()` 每帧都跑（渲染循环里那一句），所以点曲必须挂在「shopUi 还没建」那一支 ——
+    //   否则每帧从头起一次 midi07（一串 1/60 秒的开头 = 杂音）。
+    expect(src.split("playTrackFile('midi07.mid')").length - 1).toBe(1);
+    const fn = src.slice(src.indexOf('function syncShopUi(): void {'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    const branch = body.indexOf('if (shopUi === null) {\n    const ui: ShopUi');
+    const play = body.indexOf("void playTrackFile('midi07.mid')");
+    const assigned = body.indexOf('shopUi = ui;');
+    expect(branch).toBeGreaterThan(0);
+    expect(play).toBeGreaterThan(assigned);
+    expect(assigned).toBeGreaterThan(branch);
+    // 建完就赋值 ⇒ 下一帧 `shopUi !== null`，这一支不再进
+    expect(body.slice(branch, play)).not.toContain('return');
+  });
+});

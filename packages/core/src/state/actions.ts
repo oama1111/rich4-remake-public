@@ -162,8 +162,16 @@ export type Action =
   | { type: 'noticeBoard'; op: 'withdraw'; slot: number }
   | { type: 'noticeBoard'; op: 'buy'; seller: number; slot: number }
 
-  | { type: 'shop'; op: 'buyCard' | 'sellCard'; id: number }
-  | { type: 'shop'; op: 'buyTool' | 'sellTool'; id: number; count?: number }
+  /**
+   * 百貨公司买卖。买的两种可带 `row` = **货架第几行**（`pending.cards` / `pending.tools` 的下标）：
+   * 原版买的是**点中的那一行**（`[0x48c31c + 行]` / `[0x48c2f8 + 行]`），买完那一行变灰、清 0
+   * （@source 0x0042e236..0x0042e379 / 0x0042e4ba..0x0042e5f6）。卡片货架可以有同号的两行，
+   * 所以只给 `id` 分不清变灰的是哪一行。不带 `row`（电脑 / 旧回报的轨迹）= 同号里第一行还没卖掉的。
+   */
+  | { type: 'shop'; op: 'buyCard'; id: number; row?: number }
+  | { type: 'shop'; op: 'sellCard'; id: number }
+  | { type: 'shop'; op: 'buyTool'; id: number; row?: number }
+  | { type: 'shop'; op: 'sellTool'; id: number; count?: number }
 
   /** 结束当前玩家回合，轮转到下一位 */
   /**
