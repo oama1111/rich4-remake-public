@@ -4846,8 +4846,9 @@ function syncMagicCursor(): void {
 let minigameCursorOff = false;
 
 /**
- * 七彩氣球：系统指针藏起来，准星由小游戏屏自己画在舞台上（`minigameCursorHidden`）——
- * @source 0x00414d8b `fcn_004021f8(9, 3, 5)`（`Data.mkf` #0 图 9..11），见 `BALLOON_CURSOR`。
+ * 七彩氣球 / 企鵝挖寶：系统指针藏起来，准星 / 靶圈由小游戏屏自己画在舞台上（`minigameCursorHidden`）——
+ * @source 0x00414d8b `fcn_004021f8(9, 3, 5)`（`Data.mkf` #0 图 9..11），见 `BALLOON_CURSOR`；
+ *   0x00414a95 `fcn_004021f8(0x2a, 1, 0)`（图 42），见 `PENGUIN_CURSOR`。
  */
 function syncMinigameCursor(): void {
   // ★ 先看 pending：局一收（`minigame` 已施加）指针当拍就放回来 —— 不等小游戏屏下一次 `tick` 才把 run 清掉
@@ -8149,7 +8150,7 @@ function requestRender(): void {
     if (screen === 'game') tickMagicSequence();
     // ★ 女巫窗口里只有「等玩家点」那一拍有指针（`fcn_00402460`，见 `magicCursorHidden`）
     syncMagicCursor();
-    // ★ 七彩氣球：系统指针换成舞台上画的准星（第二十一份回报，见 `minigameCursorHidden`）
+    // ★ 七彩氣球 / 企鵝挖寶：系统指针换成舞台上画的准星 / 靶圈（第二十一份回报，见 `minigameCursorHidden`）
     syncMinigameCursor();
 
     stageCtx.imageSmoothingEnabled = false;

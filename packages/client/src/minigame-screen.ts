@@ -46,6 +46,11 @@
  * - 结算姿势按分数 @0x00414986：`< 40` → 动画 5（资源 85）、`> 55` → 动画 4（资源 84）、
  *   中间 → 动画 6（只是把光标图重画 16 次）；动画走完后 `[0x48bd58] = 1 → 2`，
  *   画大号分数 `fcn_00414789`，等 **2000ms**（`fcn_0045285e(0x7d0)`），关屏。
+ * - ★ **指针换成靶圈**（第二十一份回报「打气球时鼠标指针没换成瞄准镜」顺带对企鵝复核）：
+ *   入场演出之后（0x405 那一支 0x00414a8f..0x00414a9f）`fcn_004021f8(0x2a, 1, 0)` + `fcn_00402460(1)`
+ *   —— `Data.mkf` #0 图 **42**（蓝色椭圆靶圈）；结算姿势放完、`[0x48bd58]` 1 → 2 那一拍
+ *   （0x00414a0f..0x00414a3d）`fcn_00402460(0)` 藏起、换回箭头 `0x29`，才画大号分数。
+ *   见 `PENGUIN_CURSOR` / `penguinCursorShown`。
  *
  * ### 二、七彩氣球（VA 0x004154dc，载入 0x4e/0x4f/0x5b）
  * - 底图 + 气球 + 爆开 = **91**（图 0 底、图 `类型+1` 气球、图 13 爆开）；计时/计分 = 79。
@@ -759,6 +764,32 @@ export function miniCursorImage(spec: MiniCursorSpec, elapsedMs: number): number
  */
 export function balloonCursorShown(st: BalloonGame): boolean {
   return balloonShootable(st);
+}
+
+/**
+ * 企鵝挖寶的**指针**：`Data.mkf` #0 图 **42**（31×17，热点 (16,9)，蓝色椭圆靶圈），单帧不动。
+ * @source 入场结束的 0x405 那一支：0x00414a60 播完入场影片 → 0x00414a8f `push 0` / 0x00414a91 `push 1` /
+ *   0x00414a93 `push 0x2a` / 0x00414a95 `call fcn_004021f8`，0x00414a9f `fcn_00402460(1)` 放出来。
+ */
+export const PENGUIN_CURSOR: MiniCursorSpec = { image: 0x2a, frames: 1, delay: 0 };
+
+/**
+ * 企鵝挖寶这一拍**画不画指针** —— 纯函数。
+ *
+ * @source 显示：0x00414a9f `fcn_00402460(1)`（0x405，入场影片之后）。
+ *   藏起：0x00414a0f `[0x48bd58] == 1` → 0x00414a1c 置 2、0x00414a2f `fcn_00402460(0)`、
+ *   0x00414a3d 换回箭头 `fcn_004021f8(0x29, 1, 0)`，再 0x00414a45 画大号分数。
+ *   `[0x48bd58] = 1` 只在 `fcn_004124c8` 里**结算姿势放完**时写（0x00412b95；mid 0x0041264c、
+ *   hi 0x00412aa7 也跳过去），而 0x00414a0a 调完它紧接着就查 1 → 改 2 —— 同一个定时器拍里，
+ *   `1` 从来留不到下一拍。所以本引擎的阶段对上原版：
+ *   - `play` = `[0x48bd58] == 0`、`[0x48bd2c] > 0`；
+ *   - `end`  = `[0x48bd58] == 0`、`[0x48bd2c] == 0`（0x00414986 `jle` 之后，姿势动画还在放）；
+ *   - `score` = `[0x48bd58] == 2`。
+ *   ⇒ 指针在 `play` 与 `end` 两段都在（姿势动画期间点了也不算：0x00414abe `[0x48bccc] != 0` 不理），
+ *   `intro`（`[0x48bd7c]` 倒数，0x405 还没来）与 `score` 没有。
+ */
+export function penguinCursorShown(st: PenguinGame): boolean {
+  return st.phase === 'play' || st.phase === 'end';
 }
 
 export interface Balloon {
@@ -2000,45 +2031,64 @@ function drawMiniStage(env: UiScreenEnv, sprite: MiniSprite, st: MiniRun): void 
   else if (st.gift !== null) drawGift(env.stage, sprite, st.gift, catcherResource(env), big);
 }
 
+/** `miniCursorAt` / `syncCursorClock` 要看的那几项 */
+interface MiniCursorRun {
+  balloon: BalloonGame | null;
+  penguin?: PenguinGame | null;
+  spectator: boolean;
+  cursorAt: number | null;
+  intro: { at: number; until: number } | null;
+}
+
 /**
- * 这一局此刻该画的**软件指针**（准星）：`{图号, 舞台坐标}`；不画就 `null` —— 纯函数。
+ * 这一局此刻换上的是哪一支指针；这一段没有指针就 `null` —— 纯函数。
  *
- * 只有七彩氣球换指针（@source 0x00414d8b `fcn_004021f8(9,3,5)`）；
- * 旁观端不画（他不能打）；指针不在画布上不画。
+ * 换指针的只有两屏：七彩氣球（@source 0x00414d8b `fcn_004021f8(9,3,5)`）与
+ * 企鵝挖寶（@source 0x00414a95 `fcn_004021f8(0x2a,1,0)`）；財神接金幣整屏没调过
+ * `fcn_004021f8` / `fcn_00402460`（指针一直藏着，接盘跟着 `GetCursorPos` 走）。
+ * 入场影片还在放（0x405 那一支还没走到换指针那句）也没有。
+ */
+function miniCursorSpec(st: MiniCursorRun): MiniCursorSpec | null {
+  if (st.intro !== null) return null;
+  if (st.balloon !== null) return balloonCursorShown(st.balloon) ? BALLOON_CURSOR : null;
+  const penguin = st.penguin ?? null;
+  if (penguin !== null) return penguinCursorShown(penguin) ? PENGUIN_CURSOR : null;
+  return null;
+}
+
+/**
+ * 这一局此刻该画的**软件指针**（准星 / 靶圈）：`{图号, 舞台坐标}`；不画就 `null` —— 纯函数。
+ *
+ * 哪一屏换哪一支见 `miniCursorSpec`；旁观端不画（他不能打）；指针不在画布上不画。
  */
 export function miniCursorAt(
-  st: {
-    balloon: BalloonGame | null;
-    spectator: boolean;
-    cursorAt: number | null;
-    intro: { at: number; until: number } | null;
-  },
+  st: MiniCursorRun,
   at: { x: number; y: number } | null,
   now: number,
 ): { image: number; x: number; y: number } | null {
-  if (st.spectator || at === null || st.intro !== null) return null;
-  if (st.balloon === null || !balloonCursorShown(st.balloon) || st.cursorAt === null) return null;
-  return { image: miniCursorImage(BALLOON_CURSOR, now - st.cursorAt), x: at.x, y: at.y };
+  if (st.spectator || at === null || st.cursorAt === null) return null;
+  const spec = miniCursorSpec(st);
+  if (spec === null) return null;
+  return { image: miniCursorImage(spec, now - st.cursorAt), x: at.x, y: at.y };
 }
 
-/** 准星的换上 / 收起跟着氣球的阶段走（见 `balloonCursorShown`）*/
+/** 指针的换上 / 收起跟着这一局的阶段走（见 `balloonCursorShown` / `penguinCursorShown`）*/
 function syncCursorClock(st: MiniRun, now: number): void {
-  const shown = st.balloon !== null && st.intro === null && balloonCursorShown(st.balloon);
-  if (!shown) st.cursorAt = null;
+  if (miniCursorSpec(st) === null) st.cursorAt = null;
   else if (st.cursorAt === null) st.cursorAt = now;
 }
 
 /**
  * `main.ts` 每帧问一次：画布上的**系统指针**要不要藏起来。
  *
- * ★ 七彩氣球整局（入场、打、结算）都藏：原版的指针本来就是软件画的，
- *   从按 GO 起就收着（0x0040126f `fcn_00402460(0)`），入场演出后才换成准星放出来
- *   （0x00414d93），收场那一拍又收起（0x00414d05）—— 准星由本屏自己画在舞台上
- *   （`miniCursorAt`），这样触屏的点 / 拖也能看到准星跟着手指走。
+ * ★ 七彩氣球 / 企鵝挖寶整局（入场、玩、结算）都藏：原版的指针本来就是软件画的，
+ *   从按 GO 起就收着（0x0040126f `fcn_00402460(0)`），入场演出后才换上放出来
+ *   （氣球 0x00414d93、企鵝 0x00414a9f），收场那一拍又收起（氣球 0x00414d05、企鵝 0x00414a2f）
+ *   —— 指针由本屏自己画在舞台上（`miniCursorAt`），这样触屏的点 / 拖也能看到它跟着手指走。
  *   旁观端不藏（他什么都不能点，留着系统指针）。
  */
 export function minigameCursorHidden(): boolean {
-  return run !== null && run.balloon !== null && !run.spectator;
+  return run !== null && (run.balloon !== null || run.penguin !== null) && !run.spectator;
 }
 
 /** 指针离开画布（`main.ts` 的 `mouseleave`）：准星跟着消失，回来时再出现 */
