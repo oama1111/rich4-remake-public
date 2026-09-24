@@ -36,6 +36,8 @@ import {
 //   屏幕 (0, 0x28) = 棋盘局部 (0, 0)，整块 440×440。见 `build-fx.ts`。
 import { BUILD_FX_BOARD_Y, BUILD_FX_H, BUILD_FX_W, BUILD_FX_X } from './build-fx.ts';
 import { godAscendPoseAt } from './god-ascend-fx.ts';
+import { paintBrightness } from './sprite-brightness.ts';
+import { TOLL_FLASH_FULL_SCALE } from './toll-flash-fx.ts';
 import { WHO_PLAYS_WRECKED, type MapNode, type Rich4Map } from '@rich4/core';
 import {
   VIEW_CENTER,
@@ -374,8 +376,8 @@ export interface RenderInput {
    * 過路費閃爍（W-69）—— 這一幀要把**哪些地塊**調到多亮。
    *
    * ★ 原版 `fcn_00451985` 是改棋盤 **id 圖**上那幾格的像素（+`LEVEL[k]`，單位是
-   *   5 位色分量）；本引擎按**精靈**近似：畫那幾塊地上的建築時套一句
-   *   `ctx.filter = brightness(1 + level/32)`。差异登记在
+   *   5 位色分量）；本引擎按**精靈**近似：畫那幾塊地上的建築時疊成
+   *   `brightness(1 + level/32)`（`sprite-brightness.ts`，不靠 Safari 不支持的 `ctx.filter`）。差异登记在
    *   `docs/deviations/Q-TOLL-FX-1.md`。
    *
    * `level` = 0 或沒在播時整份給 `null`（= 不套）。
@@ -2973,15 +2975,24 @@ export class BoardRenderer {
         paint: () => {
           const sp = this.#sprite('map.mkf', it.res, it.img, true, it.ring);
           if (sp === null) return;
-          if (lit) ctx.filter = `brightness(${1 + flash.level / 32})`;
-          ctx.drawImage(
-            sp.bitmap,
-            p.x - sp.anchorX * k,
-            p.y - sp.anchorY * k,
-            sp.width * k,
-            sp.height * k,
-          );
-          if (lit) ctx.filter = 'none';
+          const dx = p.x - sp.anchorX * k;
+          const dy = p.y - sp.anchorY * k;
+          ctx.drawImage(sp.bitmap, dx, dy, sp.width * k, sp.height * k);
+          // ★ 不用 `ctx.filter`：WebKit（iPhone / iPad / Mac Safari）不支持，赋值被静默忽略
+          //   ⇒ 需求方在 iPhone 上看不到闪（2026-09-24）。改成叠一层，见 `sprite-brightness.ts`。
+          if (lit) {
+            paintBrightness(
+              ctx,
+              sp.bitmap,
+              dx,
+              dy,
+              sp.width * k,
+              sp.height * k,
+              flash.level / TOLL_FLASH_FULL_SCALE,
+              sp.width,
+              sp.height,
+            );
+          }
         },
       });
     }

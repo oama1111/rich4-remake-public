@@ -41,6 +41,8 @@ import {
   setNoticeStartGate,
 } from './notice-box-screen.ts';
 import { NOTICE_TIER } from './presentation-order.ts';
+import { TOLL_FLASH_FULL_SCALE, TOLL_FLASH_TOTAL_MS, tollFlashLevel } from './toll-flash-fx.ts';
+import { paintBrightness } from './sprite-brightness.ts';
 
 const EXE = `${process.env.RICH4_WORKSPACE ?? ''}/Rich4/rich4.exe`;
 const runExe = existsSync(EXE) ? it : it.skip;
@@ -470,6 +472,48 @@ describe('★ draw 走通用訊息框的皮', () => {
 // ============================================================
 
 describe('★★ W-69：`setNoticeStartGate` —— 起播前先等台上的演出', () => {
+  /*
+   * ★★ 需求方 2026-09-24「连着一条街收过路费时地块闪烁特效怎么没了」（iPhone）：
+   *   整条演出线逐拍走一遍 —— 闪的起点 = 那条 action 落地（`noticeTollLands`），
+   *   闸 = 「闪还在播」（`main.ts` 的 `setNoticeStartGate` 第一位），每一拍把地块**真的**画亮 / 画暗
+   *   （`sprite-brightness.ts`，不靠 WebKit 不认的 `ctx.filter`），880 ms 之后框才起。
+   * @source `fcn_00451985`（16 × 30 ms + 400 ms）→ `0x00419d5a call 0x440cac`
+   */
+  it('★★ 连街收费逐拍：0..880 ms 地块每拍都有叠层、框不起；880 ms 那一拍框才起', () => {
+    const t0 = 1000;
+    let now = t0;
+    setNoticeStartGate(() => tollFlashLevel(now - t0) !== null);
+    resetNoticeBoxScreen();
+    const before = stateWith([]);
+    const after = stateWith([{ ...ONE_OWNER }]);
+    noticeBoxScreen.event!(before, after, fakeEnv(after, now));
+    const overlays: string[] = [];
+    const ctx = {
+      save: () => undefined,
+      restore: () => undefined,
+      drawImage: () => overlays.push(`${now - t0}`),
+      globalAlpha: 1,
+      globalCompositeOperation: 'source-over',
+    } as unknown as CanvasRenderingContext2D;
+    const bitmap = {} as CanvasImageSource;
+    const surface = () => ({
+      canvas: {} as CanvasImageSource,
+      ctx: { drawImage: () => undefined, fillRect: () => undefined } as unknown as CanvasRenderingContext2D,
+    });
+    let startedAt: number | null = null;
+    for (; now <= t0 + TOLL_FLASH_TOTAL_MS + 60; now += 10) {
+      const level = tollFlashLevel(now - t0);
+      if (level !== null && level !== 0) {
+        overlays.length = 0;
+        paintBrightness(ctx, bitmap, 0, 0, 16, 24, level / TOLL_FLASH_FULL_SCALE, 16, 24, surface);
+        expect(overlays, `${now - t0} ms：level ${level} 却一层都没叠`).toHaveLength(1);
+      }
+      noticeBoxScreen.tick!(fakeEnv(after, now));
+      if (startedAt === null && noticeBoxScreenState().playing) startedAt = now - t0;
+    }
+    expect(startedAt).toBe(TOLL_FLASH_TOTAL_MS);
+  });
+
   afterEach(() => {
     setNoticeStartGate(null);
     resetNoticeBoxScreen();
