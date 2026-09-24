@@ -216,16 +216,15 @@ describe('★ 第十六份：買地 / 買設施 / 設施首建 / 設施加蓋 �
     expect(reduce(standing(1500, WHO_PLAYS_HUMAN, fac(1, 1, FACILITY_TYPE.mall)), { type: 'settle' }, facTopo).pending).toMatchObject({ kind: 'upgradeFacility' });
   });
 
-  it('前面的闸没过就不弹：夢遊 / 土地公（買地 0x0041a01a / 0x0041a027）、土地公（買設施 0x0041a878）、設施已满级（0x0041a2c8）', () => {
+  it('前面的闸没过就不弹：夢遊 / 土地公（買地 0x0041a01a / 0x0041a027）、夢遊 / 土地公（買設施 0x0041a86b / 0x0041a878）、設施已满级（0x0041a2c8）', () => {
     const noLand = { landOwner: [0, 0], landLevel: [0, 0], landType: [0, 0] };
     // （土地公那一支落进尾块后照样「強佔」—— 只看有没有現金不足那一扇）
     for (const player of [{ blocking: { ...makePlayer().blocking, sleepWalking: 3 } }, { godInfo: GOD_BLOCKS_PURCHASE }]) {
       const l = standing(0, WHO_PLAYS_HUMAN, noLand, player);
       expect(reduce(l, { type: 'settle' }, landTopo).notices).not.toContainEqual(CASH_SHORT[0]);
     }
-    // 買設施：只接土地公那道（夢遊那道与 sleepwalk-behavior.test.ts 的真值断言冲突，已上报）
-    {
-      const player = { godInfo: GOD_BLOCKS_PURCHASE };
+    // 買設施：夢遊 `0x0041a86b` / 土地公 `0x0041a878`（E-43 裁定）
+    for (const player of [{ blocking: { ...makePlayer().blocking, sleepWalking: 3 } }, { godInfo: GOD_BLOCKS_PURCHASE }]) {
       const f = standing(0, WHO_PLAYS_HUMAN, fac(0, 0, 0), player);
       const rf = reduce(f, { type: 'settle' }, facTopo);
       expect(rf.notices).not.toContainEqual(CASH_SHORT[0]);

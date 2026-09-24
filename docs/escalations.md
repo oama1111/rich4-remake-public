@@ -1595,7 +1595,7 @@ Playwright 的 WebKit 构建里 Cache Storage 连一个 1 KB 的探针都留不�
     跑 seed 2024 / 1 / 7（16 个种子余量都在 −6 万 ~ −16 万）。
 
 
-### E-43（2026-09-24，`ds/pt16-rules`）無主設施「要不要買」有没有夢遊闸：exe 与 `sleepwalk-behavior.test.ts` 的真值断言冲突
+### ✅ E-43（2026-09-24，`ds/pt16-rules`）無主設施「要不要買」有没有夢遊闸：exe 与 `sleepwalk-behavior.test.ts` 的真值断言冲突
 - 关联：第十六份「您的現金不足！」补四条路径（買地 / 買設施 / 設施首建 / 設施加蓋）时，照 exe 给買設施接前置闸。
 - exe：`0x0041a1ab imul eax, [0x49910c], 0x68`（eax = 当前玩家偏移，到 `0x0041a1bd je 0x41a86b` 之间不再改）→
   `0x0041a86b cmp byte [eax + 0x496b9f], 0 / jne 0x41b077`；`0x496b9f − 0x496b68 = 0x37`（十进制 55）= `days_sleep_walking`
@@ -1605,3 +1605,7 @@ Playwright 的 WebKit 构建里 Cache Storage 连一个 1 KB 的探针都留不�
 - 我的做法：**没改这条断言**；買設施只接了土地公那道闸与现金不足框，夢遊那道留着没接（代码里有 ⚠️ 注释）。
 - 请裁定：若采纳 exe 读法，改这条断言为「夢遊中无主設施不弹框」，并在 `landOnFacility` 的无主分支加 `sleepWalking !== 0` 早退。
 - 阻塞程度：不阻塞；只影响「夢遊者走到无主設施」这一种。
+- **首席裁定（2026-09-24）：采纳 exe 读法。** 核对 `0x0041a86b cmp byte [eax+0x496b9f], 0` / `0x0041a872 jne 0x41b077`：
+  `0x496b9f − 0x496b68 = +0x37` = 夢遊天数；消失是 `+0x33` ⇒ `sleepwalk-behavior.test.ts:223` 当初把偏移读错。
+  **已办**：该断言改为「夢遊中无主設施不弹框」（注释写明 VA 与偏移算式）；`landOnFacility` 无主分支加 `sleepWalking !== 0` 早退；
+  `notice-audit.test.ts` 的「前置闸不弹現金不足」补回買設施的夢遊那一格。

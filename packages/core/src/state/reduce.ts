@@ -8138,10 +8138,9 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   // ── 无主：买不买 ──
   if (fac.owner === 0) {
     // @source 0x0041a86b `cmp [+0x37] 梦游, 0 / jne 结束`；`cmp [+0x3f] 神明, 0xc / je 结束`（土地公）
-    //   ★ 第十六份：土地公那道闸接上（`0x0041a878 cmp byte [+0x3f], 0xc / je 0x41b077`）。
-    //   ⚠️ 夢遊那道（`0x0041a86b cmp byte [eax+0x496b9f], 0`，`0x496b9f − 0x496b68 = 0x37`）与
-    //   `sleepwalk-behavior.test.ts` 的真值断言「无主設施没有夢遊闸」冲突 ⇒ 暂不接，已上报（C 级）。
-    if (player.godInfo === GOD_BLOCKS_PURCHASE) return { ...state, phase: 'turnEnd' };
+    //   ★ 第十六份（E-43 裁定）：两道闸都接上 —— 夢遊 `0x0041a86b cmp byte [eax+0x496b9f], 0 / 0x0041a872 jne 0x41b077`
+    //   （`0x496b9f − 0x496b68 = +0x37` = 夢遊天数；消失是 `+0x33`），土地公 `0x0041a878 cmp byte [+0x3f], 0xc / je 0x41b077`。
+    if (player.blocking.sleepWalking !== 0 || player.godInfo === GOD_BLOCKS_PURCHASE) return { ...state, phase: 'turnEnd' };
     const price = facilityBuyPrice(fac.landPrice, state.priceIndex);
     // ★ 第十六份：只差现金 ⇒「您的現金不足！」@source `0x0041a897 cmp ebp, [現金] / jg 0x41a159` → `0x440cac`
     if (price > player.cash) return cashShortLanding(state);
