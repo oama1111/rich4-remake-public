@@ -67,6 +67,7 @@
  *   `idx = row*9 + 9` 最大到 **44**，而号码表 [0x4990b8] 只有 0x24 = 36 字节 ——
  *   越界写是原版的 bug。本模块**不照抄**：越界一律返回 `null`（见 `hitNumber`）。
  *   **36 个号码本来就画在底图上**，本屏不另贴格子。
+ *   已售出的号格在建屏时被**压暗**（`LOT_SOLD_SHADE`，@source 0x42f32c）、点了不认（上面那条 `!= 0`）。
  *
  * ## 流程（整条时间轴由 0x113 定时器驱动）
  *
@@ -396,6 +397,59 @@ export function hitNumber(x: number, y: number): number | null {
   return row * g.cols + col;
 }
 
+/**
+ * **已售出**的号格要压暗（任何人买的都算，自己的也一样）。
+ *
+ * @source 建屏 `fcn_0042f32c`（VA 0x0042f32c）开头那一圈 —— 在铺底图**之前**就地改图 0 的像素：
+ * ```asm
+ * 0042f331  mov ebx, 0x1f                  ; x（首格左上角 +1）
+ * 0042f336  mov edi, 0x110                 ; y
+ * 0042f343  cmp byte [esi + 0x4990b8], 0   ; 号码表[i] == 0（没卖出）⇒ 不动
+ * 0042f34c  push -0xa / push 0x2e / push 0x3e / push edi / push ebx
+ * 0042f35c  push 图 0                      ; ★ 改的是**底图本身**，不是屏幕
+ * 0042f35d  call fcn_004552e7              ; 换色表 `0x485d68 + (−0xa)*32`
+ * 0042f365  add ebx, 0x40 / cmp ebx, 0x25f ; 9 列（0x1f + 9*0x40 = 0x25f 换行）
+ * 0042f370  mov ebx, 0x1f / add edi, 0x30  ; 下一行
+ * ```
+ * 换色表 −0xa（dump @0x485c28）= `0,1,1,2,3,3,4,5,5,6,7,7,8,9,9,10,11,12,…,20,20,21`
+ * ≈ 每个 5 位分量 × 22/32 —— 本引擎整屏重画，照 `lottery-draw-screen.ts` 的
+ * `TALLY_FRAME`（−16 ⇒ 16/32）同一口径叠一层 `10/32` 的黑（`docs/deviations/T-036.md`）。
+ *
+ * ★ 只在**开屏那一刻**读号码表 —— 这一次买中的号不会当场变暗（只画粉笔弧）；
+ *   全 exe 碰号码表的只有建屏这一圈、命中 `0x42ff1d`、写入 `0x42fff7` 三处。
+ * ★ 压暗块比命中格内缩 1 px（`0x1f` vs `0x1e`、`0x110` vs `0x10f`），62×46。
+ * ★ 改的是底图 ⇒ 压在它**上面**的貓女郎（图 1 下沿到 y=293，盖住第一行上半）不受影响。
+ */
+export const LOT_SOLD_SHADE = {
+  x: 0x1f,
+  y: 0x110,
+  w: 0x3e,
+  h: 0x2e,
+  /** 换色表序号 @source 0x42f34c `push -0xa` */
+  level: -0x0a,
+  /** 叠黑的不透明度 = −level / 32 */
+  alpha: 0x0a / 32,
+} as const;
+
+/** 第 `n` 号的压暗块（屏幕坐标）；越界 `null` */
+export function soldShadeRect(n: number): { x: number; y: number; w: number; h: number } | null {
+  if (!Number.isInteger(n) || n < 0 || n >= LOT_NUMBERS) return null;
+  return {
+    x: LOT_SOLD_SHADE.x + (n % LOT_GRID.cols) * LOT_GRID.w,
+    y: LOT_SOLD_SHADE.y + Math.floor(n / LOT_GRID.cols) * LOT_GRID.h,
+    w: LOT_SOLD_SHADE.w,
+    h: LOT_SOLD_SHADE.h,
+  };
+}
+
+/** 已售出的号 = 不在 `available` 里的那些（`pending.available` 就是开屏那一刻的号码表）*/
+export function soldNumbers(available: readonly number[]): number[] {
+  const free = new Set(available);
+  const out: number[] = [];
+  for (let n = 0; n < LOT_NUMBERS; n++) if (!free.has(n)) out.push(n);
+  return out;
+}
+
 // ============================================================
 //  这一屏要画成什么样
 // ============================================================
@@ -672,6 +726,12 @@ export function drawLotteryScreen(
 
   // ── 底图（36 个号格烤在里面）── 不抠黑
   drawAnchored(ctx, lotSprite(sprite, LOT_CHUNK.bg), LOT_BG_AT.x, LOT_BG_AT.y);
+  // ── 已售出的号格压暗 —— 原版改的是底图本身，所以紧跟底图、压在貓女郎**之下** @source 0x42f32c ──
+  ctx.fillStyle = `rgba(0,0,0,${LOT_SOLD_SHADE.alpha})`;
+  for (const n of soldNumbers(v.available)) {
+    const r = soldShadeRect(n);
+    if (r !== null) ctx.fillRect(r.x, r.y, r.w, r.h);
+  }
 
   // ── 貓女郎：建屏只画图 1；买中之后换成图 2 ──（两张都抠黑）
   if (v.phase === 'bye') {

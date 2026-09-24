@@ -41,6 +41,7 @@ import {
   LOT_PHASE_MS,
   LOT_PLATE_AT,
   LOT_RESOURCE,
+  LOT_SOLD_SHADE,
   LOT_TICK_MS,
   amountGlyphs,
   animStart,
@@ -59,6 +60,8 @@ import {
   numberCenter,
   numberRect,
   resetLotteryScreenState,
+  soldNumbers,
+  soldShadeRect,
   stripVoice,
   type LotSprite,
   type LotView,
@@ -692,6 +695,9 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
   function fakeCtx() {
     const images: { index: number; resource: number; x: number; y: number; flic: boolean }[] = [];
     const textAt: { t: string; x: number; y: number }[] = [];
+    const rects: { x: number; y: number; w: number; h: number; fill: string }[] = [];
+    /** 画的先后（图号 / `rect`）—— 查压暗块夹在哪两张图之间 */
+    const ops: string[] = [];
     const ctx = {
       font: '',
       fillStyle: '',
@@ -705,12 +711,17 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
       strokeRect: () => undefined,
       drawImage: (b: { index: number; resource: number; flic?: boolean }, dx: number, dy: number) => {
         images.push({ index: b.index, resource: b.resource, x: dx, y: dy, flic: b.flic === true });
+        ops.push(`${b.flic === true ? 'flic' : b.resource}:${b.index}`);
+      },
+      fillRect(x: number, y: number, w: number, h: number) {
+        rects.push({ x, y, w, h, fill: String((this as { fillStyle: string }).fillStyle) });
+        ops.push('rect');
       },
       fillText: (t: string, x: number, y: number) => {
         textAt.push({ t, x, y });
       },
     };
-    return { ctx: ctx as unknown as CanvasRenderingContext2D, images, textAt };
+    return { ctx: ctx as unknown as CanvasRenderingContext2D, images, textAt, rects, ops };
   }
 
   /** 跑馬燈的假影片：5 帧，每帧带自己的帧号 */
@@ -775,6 +786,65 @@ describe('drawLotteryScreen（假 ctx，只查落点与文字）', () => {
     mouth: null,
     bonusFrame: 0,
     ...over,
+  });
+
+  /**
+   * ★ 第十九份回报「已经被买的彩票号码没有变成灰色」。
+   * @source 建屏 `fcn_0042f32c`：号码表[i] != 0 ⇒ `fcn_004552e7(图 0, 0x1f+col*0x40, 0x110+row*0x30, 0x3e, 0x2e, −0xa)`
+   */
+  describe('★ 已售出号格压暗（0x42f32c）', () => {
+    it('常量逐个对 exe 立即数：内缩 1 px 的 62×46、换色表 −0xa ⇒ 叠 10/32 的黑', () => {
+      expect(LOT_SOLD_SHADE).toEqual({ x: 0x1f, y: 0x110, w: 0x3e, h: 0x2e, level: -0x0a, alpha: 10 / 32 });
+      expect(soldShadeRect(0)).toEqual({ x: 0x1f, y: 0x110, w: 62, h: 46 });
+      // 第 1 行最后一格 / 第 2 行第一格：9 列换行（ebx 到 0x25f 就回 0x1f）
+      expect(soldShadeRect(8)).toEqual({ x: 0x1f + 8 * 0x40, y: 0x110, w: 62, h: 46 });
+      expect(soldShadeRect(9)).toEqual({ x: 0x1f, y: 0x140, w: 62, h: 46 });
+      expect(soldShadeRect(35)).toEqual({ x: 0x21f, y: 0x1a0, w: 62, h: 46 });
+      expect(soldShadeRect(36)).toBeNull();
+      // 压暗块整个落在命中格里（命中格左上角 −1 px）
+      for (let n = 0; n < LOT_NUMBERS; n++) {
+        const hit = numberRect(n)!;
+        const sh = soldShadeRect(n)!;
+        expect(sh.x - hit.x).toBe(1);
+        expect(sh.y - hit.y).toBe(1);
+        expect(hitNumber(sh.x, sh.y)).toBe(n);
+        expect(hitNumber(sh.x + sh.w - 1, sh.y + sh.h - 1)).toBe(n);
+      }
+    });
+
+    it('soldNumbers = 36 个号里不在 available 的那些', () => {
+      expect(soldNumbers(Array.from({ length: 36 }, (_, i) => i))).toEqual([]);
+      expect(soldNumbers([0, 1, 2]).length).toBe(33);
+      expect(soldNumbers([0, 1, 2])[0]).toBe(3);
+    });
+
+    it('卖出去的号（不论谁买的）各压一块、没卖的不压；叠的是 10/32 的黑', () => {
+      const f = fakeCtx();
+      const sold = [3, 10, 23, 35];
+      const available = Array.from({ length: 36 }, (_, i) => i).filter((n) => !sold.includes(n));
+      drawLotteryScreen(f.ctx, spySprite().fn, noFlic, view({ available }));
+      expect(f.rects.map(({ x, y, w, h }) => ({ x, y, w, h }))).toEqual(sold.map((n) => soldShadeRect(n)));
+      for (const r of f.rects) expect(r.fill).toBe(`rgba(0,0,0,${10 / 32})`);
+    });
+
+    it('一个都没卖 ⇒ 一块都不压', () => {
+      const f = fakeCtx();
+      drawLotteryScreen(f.ctx, spySprite().fn, noFlic, view({ available: Array.from({ length: 36 }, (_, i) => i) }));
+      expect(f.rects).toEqual([]);
+    });
+
+    it('★ 改的是底图 ⇒ 紧跟底图、在貓女郎之前（貓女郎盖住第一行上半，不能被压暗）', () => {
+      const f = fakeCtx();
+      drawLotteryScreen(f.ctx, spySprite().fn, noFlic, view({ available: [0] }));
+      const bg = f.ops.indexOf(`${LOT_RESOURCE}:${LOT_CHUNK.bg}`);
+      const cat = f.ops.indexOf(`${LOT_RESOURCE}:${LOT_CHUNK.kitty}`);
+      const firstRect = f.ops.indexOf('rect');
+      const lastRect = f.ops.lastIndexOf('rect');
+      expect(bg).toBeGreaterThanOrEqual(0);
+      expect(firstRect).toBe(bg + 1);
+      expect(lastRect).toBeLessThan(cat);
+      expect(f.rects).toHaveLength(35);
+    });
   });
 
   it('★ 默认一段（无气泡、无贴片）：底图 → 貓女郎图 1 → 蓝板 → 金额字形', () => {
