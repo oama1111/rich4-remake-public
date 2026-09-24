@@ -454,6 +454,52 @@ export interface MagicBeat {
 }
 
 /**
+ * ★★ 第二十一份（`20260924-144653022`「这个页面应该有台词，评比本月最倒霉和最幸运…2个评比」）：
+ * **这一次月结的现场** —— 纯表现提示，见 `GameState.lastMonthlySettle`。
+ *
+ * 原版月结屏 `fcn_00439bfa` / 窗口过程 `fcn_00437e61` 读的全是**结算那一刻**的值：
+ * - 每行名牌（`0x00439cd7` 循环，画进图 `11+行`）：`存款：` = 加息**之前**的 `+0x20`、`利息：` = `trunc(存款×0.1)`
+ *   或红字 `貸款中`（`+0x24 != 0`）；
+ * - 状态 2（`0x004380d5`）才把存款 ×1.1（`0x00438201`），随后 `fcn_00437d1a` 评「本月悲情人物」
+ *   （读 `+0x5c/+0x60/+0x42/+0x44`）、`fcn_00437dfe` 评「本月冠軍」（`calculate_player_wealth` 最大者）；
+ * - 两张 4 行表（状态 7 / 0x11）画的是那两位**那一刻**的 `+0x5c/+0x60/+0x42` 与 `+0x1c/+0x20/总资产`；
+ * - 模态循环结束后（`0x00439ec6`）才把三项月度累加器清零。
+ *
+ * 本引擎在 `advanceGameDay` 里一口气结完（累加器当场清零），表现层事后**反推不出**这些值
+ * （先前的月结屏拿结算**之后**的累加器评奖 ⇒ 永远是 0 ⇒ 悲情人物那一段从来不出）。
+ * 所以由 core 在结算那一刻交出来。
+ */
+export interface MonthlySettleHint {
+  /** 在场玩家（`who_plays != 0`），**按 `players` 序**（= 原版 `[0x48c418]` 的填法 `0x00439caa`）*/
+  readonly rows: readonly MonthlySettleRow[];
+  /** 本月悲情人物（`fcn_00437d1a`）在 `players` 里的下标；`-1` = 无（原版 `0xff`）*/
+  readonly unlucky: number;
+  /** 本月冠軍 = 首富（`fcn_00437dfe`）在 `players` 里的下标 */
+  readonly champion: number;
+}
+
+/** `MonthlySettleHint` 的一行 */
+export interface MonthlySettleRow {
+  readonly player: number;
+  /** 加息之前的存款（名牌上的 `存款：`）@source `0x00439d6a mov eax, [p+0x20]` */
+  readonly bankBefore: number;
+  /** 这一笔利息（名牌上的 `利息：`；有贷款时为 0、名牌写 `貸款中`）*/
+  readonly interest: number;
+  /** 结算那一刻的贷款（`+0x24`，非 0 ⇒ `貸款中`）*/
+  readonly loan: number;
+  /** 本月意外損失 `+0x5c`（清零之前）*/
+  readonly unexpectedLoss: number;
+  /** 本月意外之財 `+0x60`（清零之前）*/
+  readonly unexpectedGain: number;
+  /** 本月倒楣天數 `+0x42`（清零之前）*/
+  readonly unluckyDays: number;
+  /** 加息之后的现金 / 存款 / 总资产（冠軍那张表 `0x00438e38` 起）*/
+  readonly cash: number;
+  readonly bank: number;
+  readonly wealth: number;
+}
+
+/**
  * **这一次樂透開獎开出了什么**（第十二份試玩回報「沒展現出本期開獎號碼」）—— 纯表现提示，
  * 见 `GameState.lastLotteryDraw`。
  *
@@ -1358,6 +1404,13 @@ export interface GameState {
    *   （第十三份試玩回報，需求方拍板「按原版 1/2 概率」）
    */
   lastBlockedSays?: readonly number[] | null;
+
+  /**
+   * ★★ 第二十一份：**这一次月结的现场**（见 `MonthlySettleHint`）—— 纯表现提示（不进指纹、不进存档），
+   * 只活一条 action（`reduce` 出口按引用相等清成 null）。缺席 / `null` = 这一条没有跨月。
+   * 消费者：`client/src/monthly-screen.ts`。
+   */
+  lastMonthlySettle?: MonthlySettleHint | null;
 
   /**
    * ★ 第十四份（2026-09-23）：**这一条 action 里原版调了「進帳」档位函数 `fcn_0044f354` 的那几笔**

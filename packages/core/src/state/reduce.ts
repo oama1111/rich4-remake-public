@@ -16,6 +16,7 @@ import type {
   GameState,
   LotteryDrawHint,
   MagicBeat,
+  MonthlySettleHint,
   NoticeHint,
   NoticeKey,
   Player,
@@ -208,7 +209,7 @@ import {
   tickStockMarket,
 } from '../places/stock-market.ts';
 import { advanceDate, daysInMonth, packDate } from '../rules/calendar.ts';
-import { misfortuneDaysAfter, settleMonthlyBank } from '../rules/monthly.ts';
+import { misfortuneDaysAfter, monthlySettleHint, settleMonthlyBank } from '../rules/monthly.ts';
 import {
   WHO_PLAYS_AUTOPILOT,
   WHO_PLAYS_COMPUTER,
@@ -1276,6 +1277,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     raw !== state && (raw.lastGainSays ?? null) !== null && raw.lastGainSays === state.lastGainSays;
   const staleAway =
     raw !== state && (raw.lastDisappearSay ?? null) !== null && raw.lastDisappearSay === state.lastDisappearSay;
+  // ★★ 第二十一份：月结现场（`lastMonthlySettle`）同一套：只活一条 action。
+  const staleMonthly =
+    raw !== state && (raw.lastMonthlySettle ?? null) !== null && raw.lastMonthlySettle === state.lastMonthlySettle;
   // ★ 第十八份：拍卖落槌提示（`lastAuctionResults`）同一套：只活一条 action。
   //   写入点是**追加**（同一条 action 里可能连拍几场），所以新写了的那一份要把
   //   上一条 action 留下的前缀切掉；只在最外层做（嵌套的 `reduce` 拿到的是中间态）。
@@ -1290,7 +1294,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   const staleAuction = reduceDepth === 0 && raw !== state && auctionsNow !== null && !auctionsAppended;
   const trimAuction = reduceDepth === 0 && auctionsAppended && priorAuctions !== null && priorAuctions.length > 0;
   const next =
-    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain || staleAway || staleAuction || trimAuction
+    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain || staleAway || staleMonthly || staleAuction || trimAuction
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
@@ -1303,6 +1307,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           ...(staleSays ? { lastBlockedSays: null } : {}),
           ...(staleGain ? { lastGainSays: null } : {}),
           ...(staleAway ? { lastDisappearSay: null } : {}),
+          ...(staleMonthly ? { lastMonthlySettle: null } : {}),
           ...(staleAuction ? { lastAuctionResults: null } : {}),
           ...(trimAuction ? { lastAuctionResults: auctionsNow!.slice(priorAuctions!.length) } : {}),
         }
@@ -5539,7 +5544,23 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   }
 
   // @source 0041d09e call 0x439bfa
-  if (newMonth) players = players.map((p) => (isAlive(p) ? settleMonthlyBank(p) : p));
+  // ★★ 第二十一份：结算那一刻的现场交给月结屏（`lastMonthlySettle`）—— 加息前的存款、清零前的累加器、
+  //   悲情人物 / 冠軍（状态 2 加息之后评，`0x00438240` / `0x0043824a`）。总资产用**当日行情**（`market`）。
+  let monthlyHint: MonthlySettleHint | null = null;
+  if (newMonth) {
+    const pre = players;
+    players = players.map((p) => (isAlive(p) ? settleMonthlyBank(p) : p));
+    const lands = allEffectiveLands(state, topo);
+    const facilities = allEffectiveFacilities(state, topo);
+    monthlyHint = monthlySettleHint(pre, players, priceIndex, (p) =>
+      calculatePlayerWealth(
+        p,
+        lands,
+        facilities,
+        (state.holdings[p.index] ?? []).map((h, i) => ({ amount: h.amount, price: market.stocks[i]?.price ?? 0 })),
+      ),
+    );
+  }
 
   // @source 0041d0ff 起：逐块地、逐处設施 —— 这组循环在
   //   `cmp edi,1 / jne 0x41d0ff` 的跨月守卫**之外**，**每天**都跑：
@@ -5589,6 +5610,7 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     rngState: rng.getState(),
     // 纯表现提示：只在开了奖的那一天写（其余日子沿用，`reduce` 出口会把旧的清掉）
     ...(lotteryHint !== null ? { lastLotteryDraw: lotteryHint } : {}),
+    ...(monthlyHint !== null ? { lastMonthlySettle: monthlyHint } : {}),
   };
   // @source 0x0042beba `call 0x40cd87` —— 负紅利把人压破產
   for (const who of dividendBankrupts) out = applyBankruptcy(out, who, topo);
