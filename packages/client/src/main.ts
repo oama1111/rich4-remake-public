@@ -124,6 +124,7 @@ import {
   SpriteCache,
   loadHolidayArt,
   loadMinigameBackground,
+  readRawBytes,
   loadMinimapBackground,
   screenDirection,
   type ArchiveName,
@@ -476,7 +477,8 @@ import {
   encodeConfig,
 } from './config-file.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
-import { onMinigameBackgroundReady, setMinigameBackground } from './minigame-bg.ts';
+import { onMinigameBackgroundReady, setMinigameBackground, setPenguinHitMask } from './minigame-bg.ts';
+import { PENGUIN_HIT_RES, parsePenguinHitMask } from './minigame-screen.ts';
 import {
   CURSOR_ARCHIVE,
   CURSOR_RESOURCE,
@@ -12652,6 +12654,9 @@ async function boot(): Promise<void> {
     // 走 raw 出口后交给 `minigame-bg.ts`；图异步到，到了催一帧（见 D-MINI-1）
     onMinigameBackgroundReady(requestRender);
     void loadMinigameBackground(archives).then(setMinigameBackground);
+    // 企鵝挖寶的命中表（Panel.mkf #81，640×480 每像素 = 格号）—— 同一个已过素材闸门的 Panel.mkf，
+    // 取原始字节即可（D-MINI-2 已解，原版 0x00414ae1..0x00414b2f 逐像素查）
+    setPenguinHitMask(parsePenguinHitMask(readRawBytes(archives, 'Panel.mkf', PENGUIN_HIT_RES)));
     // 新聞/命運 插画 + 抽卡 卡面也是无头 RGB555 块 —— 同一条 raw 出口，
     // 解好一张催一帧（图异步到，画的时候可能还没有）
     onEventBoxArtReady(requestRender);

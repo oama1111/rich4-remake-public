@@ -202,7 +202,7 @@ describe('企鵝挖寶：格子与命中 @source 0x474d7c / 0x00414abe', () => {
     expect([penguinCellX(40), penguinCellY(40)]).toEqual([0, 0]);
   });
 
-  it('★ 命中与命中表 #81 逐点一致（下表是 #81 的原始像素值）', () => {
+  it('★ 退回路径（无素材时的几何近似）在格内采样点上与 #81 一致（下表是 #81 的原始像素值；边缘见 penguin-hit-mask.test.ts）', () => {
     // 复核命令：`python3 -c "print(open('assets-clean/Panel/0081.bin','rb').read()[y*640+x])"`
     const samples: readonly (readonly [number, number, number])[] = [
       [80, 153, 3],

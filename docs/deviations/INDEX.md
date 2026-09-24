@@ -86,7 +86,7 @@
 | `D-MINI-1` | （**卡面错误，已接入**）財神屏的底图是 `Panel.mkf` **#92**，走无头 RGB555 出口 | ? | docs/deviations/T-042-044.md:56 |
 | `D-MINI-10` | ✅ （**已定案**）`scenes.ts` 的 `minigameScene(GIFT_FROM_SKY)` 返回 **92** | 结案 | docs/deviations/T-042-044.md:218 |
 | `D-MINI-11` | 小游戏音效 —— **2026-09-16 已接** | ? | docs/deviations/T-042-044.md:231 |
-| `D-MINI-2` | （**素材缺口，已用几何绕开**）企鵝的命中表 `Panel.mkf` **#81** 也取不到 | ? | docs/deviations/T-042-044.md:88 |
+| `D-MINI-2` | ✅ 企鵝的命中表 `Panel.mkf` **#81** —— **2026-09-24 已接**（gap-audit #19；旧条目「取不到、用几何绕开」作废） | 结案 | docs/deviations/T-042-044.md:109 |
 | `D-MINI-3` | 入场 FLIC `Panel.mkf` **#78** —— **2026-09-16 已接**（旧条目的「外壳」判断是误读） | ? | docs/deviations/T-042-044.md:115 |
 | `D-MINI-4` | （**接口订正**）action 是 `{ type: 'minigame', score }`，不是 `minigameScore` | ? | docs/deviations/T-042-044.md:144 |
 | `D-MINI-5` | （**有意偏离**）没有「不玩」这条路 —— 卡面那句「不玩送 null」在原版不存在 | 有意偏离 | docs/deviations/T-042-044.md:154 |
@@ -314,7 +314,7 @@
 - `D-MAGIC-9`（?）（**已修**，但记下取证过程）抠黑表第一版是猜的，漏了女巫与图标 —— docs/deviations/T-037.md:241
 - `D-MINI-1`（?）（**卡面错误，已接入**）財神屏的底图是 `Panel.mkf` **#92**，走无头 RGB555 出口 —— docs/deviations/T-042-044.md:56
 - `D-MINI-11`（?）小游戏音效 —— **2026-09-16 已接** —— docs/deviations/T-042-044.md:231
-- `D-MINI-2`（?）（**素材缺口，已用几何绕开**）企鵝的命中表 `Panel.mkf` **#81** 也取不到 —— docs/deviations/T-042-044.md:88
+- `D-MINI-2`（结案）✅ 企鵝的命中表 `Panel.mkf` **#81** —— **2026-09-24 已接**（gap-audit #19；旧条目「取不到、用几何绕开」作废） —— docs/deviations/T-042-044.md:109
 - `D-MINI-3`（?）入场 FLIC `Panel.mkf` **#78** —— **2026-09-16 已接**（旧条目的「外壳」判断是误读） —— docs/deviations/T-042-044.md:115
 - `D-MINI-4`（?）（**接口订正**）action 是 `{ type: 'minigame', score }`，不是 `minigameScore` —— docs/deviations/T-042-044.md:144
 - `D-MINI-8`（?）（原版分支走不到）冰屋那张图不画 —— docs/deviations/T-042-044.md:204
