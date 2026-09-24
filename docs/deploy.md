@@ -138,18 +138,18 @@ ls /srv/rich4/deploy/assets/game | head        # 期望：7 个 .mkf + 各 .br/.
 ### 4b. 高清素材（W-80 §8，2026-09-24 起默认开）
 
 高清舞台本身（文字 / 界面清晰）**不需要任何素材**，发前端就有。另外两样已验证的超分素材
-（钱夫人整套重绘 136 帧 + 全屏过场 1,086 帧，网页 2× 档）走单独的目录，**与 `/assets/game/` 同级**：
+（钱夫人整套重绘 136 帧 PNG + 全屏过场 1,086 帧 WebP，网页 2× 档，共 1,225 个文件 17.7 MB）走单独的目录，**与 `/assets/game/` 同级**：
 
 ```
 /srv/rich4/deploy/assets/
 ├── game/                      原版素材（第 4 步）
-├── hd-2x/                     超分 PNG：Data/19{1,2,3}-*.png、jump/{47..70}-*.png、Panel/{20,78}-*.png
+├── hd-2x/                     Data/19{1,2,3}-*.png、jump/{47..70}-*.webp、Panel/{20,78}-*.webp
 ├── hd-2x-manifest.json        瘦清单（只列上面这些）
 ├── hd-2x-manifest.json.br
 └── hd-2x-manifest.json.gz
 ```
 
-在**自己电脑上**出暂存（仓库外；源是 W-80 的超分产物根，含 `hd-2x/` 与 `hd-2x-manifest.json`），再推上去：
+在**自己电脑上**出暂存（仓库外；源是 W-80 的超分产物根，含 `hd-2x/` 与 `hd-2x-manifest.json`；要 `cwebp`：`brew install webp`），再推上去：
 
 ```bash
 node --experimental-strip-types tools/hd-deploy.ts --src <超分产物根> --out <仓库外暂存>
@@ -163,7 +163,8 @@ ssh root@<主机> 'chown -R rich4:rich4 /srv/rich4/deploy/assets'
 - 缓存：图的 URL 带 `?v=<内容哈希>` ⇒ 一年不可变；清单 `no-cache`（brotli 后约 17 KB）。
   想让清单也长期缓存：重跑 `pnpm precompress … --hd <暂存>/assets`，`assets-manifest.json` 会登记它（可选）。
 - 以后验证了新的一类（界面 / 建筑 / 其他角色…），把它加进 `tools/hd-deploy.ts` 的 `VERIFIED` 再出一次暂存。
-- 玩家端：门厅「高清畫面」勾选框 / `?hd=0` 关（每台设备各记各的）；手机平板倍率封顶 2。
+- 玩家端：门厅「高清畫面」勾选框 / `?hd=0` 关（每台设备各记各的）；手机平板倍率封顶 2、不拉超分过场。
+  一局额外流量实测：桌面约 6 MB、手机约 1.5 MB（W-80 §8.3）。
 
 ## 5. 两个密钥
 
