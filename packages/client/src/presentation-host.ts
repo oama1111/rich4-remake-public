@@ -24,6 +24,7 @@ import { noticeWaitingForSpeech, noticeShowing, noticePendingRanks } from './not
 import { eventBoxPending, eventBoxScreenState } from './event-box-screen.ts';
 import { wheelScreenState } from './wheel-screen.ts';
 import { godSlotState } from './god-slot.ts';
+import { auctionPresentationOnly } from './auction-screen.ts';
 import {
   SCREEN_BOX_TIER,
   boxMayStart,
@@ -139,6 +140,9 @@ export class PresentationHost {
     if (overlay === null) return false;
     if (overlay.id === 'magic' && this.deps.magicAwaitingPick()) return false;
     if (overlay.id === 'notice' && noticeWaitingForSpeech()) return false;
+    // ★ 第十八份：拍賣屏落槌之后那段结算 / 补演「开拍即流标」是纯演出（原版在模态窗口里）；
+    //   竞价进行中不算（每一口要靠驱动 / 收件箱送进来）
+    if (overlay.id === 'auction') return auctionPresentationOnly(this.deps.env());
     return BLOCKING_PRESENTATIONS.has(overlay.id);
   }
 }

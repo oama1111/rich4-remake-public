@@ -420,6 +420,16 @@ export interface ToolUseHint {
   toolId: number;
 }
 
+/** 一场拍卖落槌（纯表现；见 `GameState.lastAuctionResults`）*/
+export interface AuctionResultHint {
+  /** 落槌那一刻的 pending（开拍即流标：开拍那一份）*/
+  pending: AuctionRequest & Partial<Extract<PendingInteraction, { kind: 'auction' }>>;
+  /** 得标者玩家下标；−1 = 流标 */
+  winner: number;
+  /** 成交价（流标为 0）*/
+  price: number;
+}
+
 export interface CardPlayHint {
   /** 出牌者下标 0..3 */
   player: number;
@@ -1369,6 +1379,19 @@ export interface GameState {
    * 命運 6/7（出國 / 綁架）与航空公司的旅遊（`0x0041b05a`）共用。
    */
   lastDisappearSay?: { player: number; event: number } | null;
+
+  /**
+   * ★★ 第十八份（「怎么拍卖直接流标了」）：**这一条 action 里落槌的拍卖**（先后照落槌次序）——
+   * 纯表现提示（不进指纹、不进存档），只活一条 action。缺席 / `null` = 这一条没有。
+   *
+   * 为什么要它：拍賣屏先前靠**屏内自己记**「最后一口是谁加的」推结果 —— 电脑那几口若不是本屏
+   * 发的（单机回合驱动抢先答掉、联机由服务器出），屏就记不到 ⇒ 明明成交却演成「無人出價，宣佈流標。」。
+   * 另外「一开拍就全体不可出价」在 reducer 里当场流标，pending 从没挂出来 ⇒ 屏根本不开；
+   * 原版那种情形照样开窗、再弹「無人出價，宣佈流標。」（`0x0043b2c5`..`0x0043b2cd push 0x465063`）。
+   *
+   * `pending` = 落槌那一刻的那一份（开拍即流标时就是开拍那一份，座位状态照 `openAuction`）。
+   */
+  lastAuctionResults?: readonly AuctionResultHint[] | null;
 
   /**
    * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。

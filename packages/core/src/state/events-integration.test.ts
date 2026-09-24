@@ -421,6 +421,56 @@ describe('★ 新聞 7「公開拍賣公有土地一處」会当场开一场拍�
   });
 });
 
+describe('★★ 第十八份：新聞 7 开拍即流标 / 落槌提示 `lastAuctionResults`', () => {
+  run('★ 全员现金 ≤ 底价（存款再多也不算，`0x0043c12c` 只读现金）⇒ 当场流标，并留下一条落槌提示；下一条 action 清掉', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 5 });
+    const s1 = standOn(s0, map, SPECIAL_KIND.NEWS);
+    if (s1 === null) return;
+    const s2: GameState = {
+      ...s1,
+      newsDeck: { order: [7, ...s1.newsDeck.order.filter((x) => x !== 7)], cursor: 0 },
+      players: s1.players.map((p) => ({ ...p, cash: 34, moneyInBank: 120_734 })),
+    };
+    const unowned = topo.lands?.find((l) => (s2.landOwner[l.id] ?? l.owner) === 0);
+    if (unowned === undefined) return;
+    const s3 = reduce(s2, { type: 'settle' }, topo);
+    expect(s3.lastEvent).toEqual({ kind: 'news', id: 7 });
+    expect(s3.pending).toBeNull();
+    const hints = s3.lastAuctionResults ?? [];
+    expect(hints.length).toBe(1);
+    expect(hints[0]!.winner).toBe(-1);
+    expect(hints[0]!.price).toBe(0);
+    expect(hints[0]!.pending.seller).toBe(-1);
+    expect(hints[0]!.pending.status?.every((x) => x === 'givenUp')).toBe(true);
+    // 只活一条 action
+    const s4 = reduce(s3, { type: 'endTurn' }, topo);
+    expect(s4).not.toBe(s3);
+    expect(s4.lastAuctionResults ?? null).toBeNull();
+  });
+
+  run('★ 正常竞价落槌：提示里是得标者与成交价（屏据此演「%d元成交」）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 5 });
+    const s1 = standOn(s0, map, SPECIAL_KIND.NEWS);
+    if (s1 === null) return;
+    const s2: GameState = { ...s1, newsDeck: { order: [7, ...s1.newsDeck.order.filter((x) => x !== 7)], cursor: 0 } };
+    let s = reduce(s2, { type: 'settle' }, topo);
+    if (s.pending?.kind !== 'auction') return;
+    const seat = s.pending.bidders[s.pending.seat]!;
+    s = reduce(s, { type: 'auctionBid', bidder: seat, status: 'raise', step: 1000 }, topo);
+    const price = s.pending?.kind === 'auction' ? s.pending.price : 0;
+    for (let guard = 0; guard < 8 && s.pending?.kind === 'auction'; guard++) {
+      const who = s.pending.bidders[s.pending.seat]!;
+      s = reduce(s, { type: 'auctionBid', bidder: who, status: 'pass', step: 0 }, topo);
+    }
+    expect(s.pending).toBeNull();
+    expect(s.lastAuctionResults).toEqual([expect.objectContaining({ winner: seat, price })]);
+  });
+});
+
 describe('★ 公园格仍然什么都不发生（原版行为）', () => {
   run('状态除 phase 外不变', () => {
     const map = loadMap();

@@ -590,13 +590,19 @@ function withTenure(src: readonly number[], index: number, value: number): numbe
 }
 
 function settleAuctionExplicit(
-  state: GameState,
+  before: GameState,
   topo: MapTopology,
   pending: AuctionRequest,
   w: number,
   p: number,
 ): GameState {
   const entityId = pending.entityId;
+  // ★ 第十八份：把这一场的结果交给表现层（`GameState.lastAuctionResults`，只活一条 action；
+  //   同一条 action 里连拍几场就按落槌次序**追加** —— 出口 `reduce` 只留这一条 action 新添的那几项）
+  const state: GameState = {
+    ...before,
+    lastAuctionResults: [...(before.lastAuctionResults ?? []), { pending, winner: w, price: w < 0 ? 0 : p }],
+  };
 
   // 設施拍卖（拍賣卡踏在設施格上时挂出）——结算走同一条公库付款路径
   if (pending.facility === true) {
@@ -1270,8 +1276,21 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     raw !== state && (raw.lastGainSays ?? null) !== null && raw.lastGainSays === state.lastGainSays;
   const staleAway =
     raw !== state && (raw.lastDisappearSay ?? null) !== null && raw.lastDisappearSay === state.lastDisappearSay;
+  // ★ 第十八份：拍卖落槌提示（`lastAuctionResults`）同一套：只活一条 action。
+  //   写入点是**追加**（同一条 action 里可能连拍几场），所以新写了的那一份要把
+  //   上一条 action 留下的前缀切掉；只在最外层做（嵌套的 `reduce` 拿到的是中间态）。
+  //   ⚠️ 不是由前缀追加出来的（如時光機换回一份旧快照）一律当「没新写」清掉，免得演一场旧的。
+  const priorAuctions = state.lastAuctionResults ?? null;
+  const auctionsNow = raw.lastAuctionResults ?? null;
+  const auctionsAppended =
+    auctionsNow !== null &&
+    auctionsNow !== priorAuctions &&
+    auctionsNow.length > (priorAuctions?.length ?? 0) &&
+    (priorAuctions ?? []).every((x, i) => auctionsNow[i] === x);
+  const staleAuction = reduceDepth === 0 && raw !== state && auctionsNow !== null && !auctionsAppended;
+  const trimAuction = reduceDepth === 0 && auctionsAppended && priorAuctions !== null && priorAuctions.length > 0;
   const next =
-    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain || staleAway
+    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain || staleAway || staleAuction || trimAuction
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
@@ -1284,6 +1303,8 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           ...(staleSays ? { lastBlockedSays: null } : {}),
           ...(staleGain ? { lastGainSays: null } : {}),
           ...(staleAway ? { lastDisappearSay: null } : {}),
+          ...(staleAuction ? { lastAuctionResults: null } : {}),
+          ...(trimAuction ? { lastAuctionResults: auctionsNow!.slice(priorAuctions!.length) } : {}),
         }
       : raw;
   // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈，再轮到研究所面板
@@ -8590,7 +8611,15 @@ export function applyBankruptcy(
     );
   }
 
-  const players = freed.players.map((p, i) => (i === playerIndex ? markPlayerBankrupt(p) : p));
+  // ★ 第十八份（长局不变量现形）：破产处理**最先**把贴图坐标按所在格重同步一遍
+  //   @source `0x0040cdb0`..`0x0040cde4`：`x/y ← nodes[+0x0c].x/y`（在清 `who_plays` 之前）。
+  //   漏了它，住店 / 在押时破产的人会带着旅館 / 綠島的贴图坐标、却已没有阻碍计数。
+  //   （地图缺节点表的夹具里找不到那一格就不动，免得把人误判成离场）
+  const resynced = (p: Player): Player => {
+    const node = topo.nodes.find((n) => n.id === p.nodeId);
+    return node === undefined ? p : { ...p, xpos: node.x, ypos: node.y };
+  };
+  const players = freed.players.map((p, i) => (i === playerIndex ? markPlayerBankrupt(resynced(p)) : p));
   // ★★ 2026 本轮：破产还要**腾出监狱/医院的床位**。原版在清玩家结构**之前**
   //   就把两张占用表的那一格清了（**按玩家号**索引）：
   //   ```asm

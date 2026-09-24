@@ -698,11 +698,27 @@ export type AuctionSeatStatus = 'active' | 'passed' | 'givenUp';
  * - **出不起底价**（`cmp 现金, 底价 / jg`，即 `现金 <= 底价`）→ 状态 8；
  *   本引擎把 8 与「不可出价」合并成 `'givenUp'`——原版之所以分开，
  *   只是因为 8 要画另一张图（`giveUp` 那张），规则上是同一档（非 0）；
+ *   ⚠️ 只看**现金** `+0x1c`（`0x0043c12c mov eax, [eax+0x496b84]`），存款不算；
+ * - ★ 第十八份：**不在场**（住宿 / 消失 / 坐牢 / 住院 / 冬眠 / 夢遊，`+0x32..+0x37` 任一非 0）
+ *   → 状态 1..6（`0x0043c155`..`0x0043c220` 六次 `cmp byte [...], 0 / je` 各写一次，后写的盖前写的）；
+ *   同样非 0 ⇒ 不可出价：`0x0043c62e cmp word [座位+2], 0` 只给 0 号座位算心理价位 / 计入开场可出价数，
+ *   出价循环也只停在 0 号座位上。先前这里漏了这一条 ⇒ 坐牢 / 住院的人照样举牌；
  * - 其余 → 0（可出价）。
  *
  * ⚠️ 原版建表在 `fcn_00439f0d` **之前**（0x43c5d9 复查状态），故「出不起底价」
  *   的座位拿到的是心理价位 0。
  */
+/**
+ * 不在场（原版座位状态 1..6）：住宿 `+0x32` / 消失 `+0x33` / 坐牢 `+0x34` / 住院 `+0x35` /
+ * 冬眠 `+0x36` / 夢遊 `+0x37` 任一非 0。@source `0x0043c155`..`0x0043c220`（逐字节 `cmp byte, 0`）
+ */
+export function auctionAway(p: Player): boolean {
+  const b = p.blocking;
+  return (
+    b.inHotel !== 0 || b.disappearing !== 0 || b.inPrison !== 0 || b.inHospital !== 0 || b.sleeping !== 0 || b.sleepWalking !== 0
+  );
+}
+
 export function auctionSeatStatus(
   players: readonly Player[],
   bidders: readonly number[],
@@ -713,7 +729,9 @@ export function auctionSeatStatus(
     if (p.whoPlays === 0) return 'givenUp';
     if (!want.has(i)) return 'givenUp';
     // @source 0x43c140 `cmp 现金, 底价 / jg` —— 恰好等于底价也出不起
-    return p.cash <= basePrice ? 'givenUp' : 'active';
+    if (p.cash <= basePrice) return 'givenUp';
+    // @source 0x0043c155..0x0043c220：`+0x32..+0x37` 任一非 0 ⇒ 状态 1..6（不在场，不可出价）
+    return auctionAway(p) ? 'givenUp' : 'active';
   });
 }
 
