@@ -25,6 +25,7 @@ import {
 } from './dev-patch.ts';
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
+import { isTextEntryTarget } from './text-entry.ts';
 import { magicAwaitingPick, magicCursorHidden, magicHumanPickPoint, magicScreen, magicScreenState } from './magic-screen.ts';
 import {  autoAction,
   ACTOR_DOLL,
@@ -10803,6 +10804,11 @@ function bindInput(): void {
       fileReport('manual');
       return;
     }
+    // ★ 焦点在**文字输入框**里（门厅昵称、联机存档命名、回报说明…）⇒ 这是在打字，不是按熱鍵：
+    //   整条交给输入框自己，游戏一概不收、不 `preventDefault`。
+    //   先前这里没有这道闸，熱鍵表里的字母（S 存檔 / C / M / H …）被下面的熱鍵段吞掉，
+    //   昵称里那几个字母就打不进去（需求方 2026-09-24「输入昵称时有些字母输不进去」）。
+    if (isTextEntryTarget(e.target)) return;
     unlockAudio();
     // 开局过场：任意键跳过（原版同样可跳过）
     if (screen === 'intro') {
