@@ -434,3 +434,58 @@ describe('★ main.ts 接线（源码钉子）', () => {
     expect(src.split('if (!renderer.walkDone(now)) return;').length - 1).toBe(2);
   });
 });
+
+// ============================================================
+//  ★ 2026-09-24：飛彈 / 核彈 —— 归属与种类跟等级一起按住，到片中重画那一帧才放
+// ============================================================
+
+describe('★ 爆炸片（0x210）窗口里：建筑的归属 / 种类跟等级一起按住', () => {
+  /**
+   * 飛彈把 1 号地（3 级連鎖店）夷平成 0 级住宅（`0x40ad30 [+0x1a]=0 / [+0x18]=0`）、
+   * 核彈把 1 号設施的归属 / 种类清掉（`0x40ae45..`）—— 都写在 `damage_area` 里、**影片之前**。
+   */
+  function blastTick(): { before: GameState; after: GameState } {
+    const before = makeGameState({
+      landLevel: [0, 3],
+      landOwner: [0, 2],
+      landType: [0, 1],
+      facilityLevel: [0, 2],
+      facilityOwner: [0, 1],
+      facilityType: [0, 3],
+      players: [makePlayer({ index: 0, cash: 1000 })],
+    });
+    const after: GameState = {
+      ...before,
+      landLevel: [0, 0],
+      landType: [0, 0],
+      facilityLevel: [0, 0],
+      facilityOwner: [0, 0],
+      facilityType: [0, 0],
+    };
+    return { before, after };
+  }
+
+  it('窗口开着：等级、种类、归属全按 before 画（不会出现「3 级住宅」「无主的 2 级設施」这种拼出来的样子）', () => {
+    const { before, after } = blastTick();
+    const shown = visibleBoardState(after, before);
+    expect(shown.landLevel[1]).toBe(3);
+    expect(shown.landType[1]).toBe(1);
+    expect(shown.facilityLevel[1]).toBe(2);
+    expect(shown.facilityOwner[1]).toBe(1);
+    expect(shown.facilityType[1]).toBe(3);
+  });
+
+  it('片中重画那一帧（放开等级）之后：全按 after', () => {
+    const { before, after } = blastTick();
+    const shown = visibleBoardState(after, before, false);
+    expect(shown.landLevel[1]).toBe(0);
+    expect(shown.landType[1]).toBe(0);
+    expect(shown.facilityOwner[1]).toBe(0);
+    expect(shown.facilityType[1]).toBe(0);
+  });
+
+  it('窗口关着（before = null）：原样交 after', () => {
+    const { after } = blastTick();
+    expect(visibleBoardState(after, null)).toBe(after);
+  });
+});

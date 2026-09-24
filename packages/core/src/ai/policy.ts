@@ -65,7 +65,7 @@ import {
 } from '../state/reduce.ts';
 import { MAX_TOOL_ID, MIN_TOOL_ID, toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
-import { OBJECT_TYPE_UNIQUE_MAX } from '../rules/objects.ts';
+import { placementBlockedAt } from '../rules/object-landing.ts';
 import { decideStockSell, decideStockTrade } from './stock-policy.ts';
 
 /**
@@ -380,21 +380,12 @@ function toToolAction(toolId: number, choice: AiToolChoice, ctx: AiContext): Act
       if (objectType === undefined) return null;
       // 没有空物件槽时 placeObject 拒收（槽按种类分区，见 rules/objects.ts）
       if (!placeObject(state.objects, choice.nodeId, objectType).ok) return null;
-      // ★★ 需求方 2026-09-22（第九份試玩回報 #4）：引擎**不再允许**把 路障/地雷/定時炸彈
-      //   放到已经有「唯一物件」（神明/惡犬/禮物/寶箱/死神 —— 类型 1..15）的格子上
-      //   （`reduce.ts` 的 `hasUniqueObjectAt`）。
-      //   ⇒ 这里必须同判据挡一道：少了它，`reduce` 会原样退回而 AI 每次都重提同一个目标
-      //     ⇒ **活锁**（与上面那段注释同一类问题；实测 1..300 里 2 个种子卡死）。
-      //   ★ 放在这个**唯一收口**上、而不是逐个策略分支：`toToolAction` 是三种放置类道具
-      //     所有分支的必经之路（`luzhang` 两阶段 / `mineLike` 的直选与随机抽），
-      //     一处挡住就不可能再有漏网的策略分支。
-      if (
-        state.objects.some(
-          (o) => o.nodeId === choice.nodeId && o.attached === 0 && o.type <= OBJECT_TYPE_UNIQUE_MAX,
-        )
-      ) {
-        return null;
-      }
+      // ★★ 引擎拒收「有人 / 惡人 / 物件」的格子（`reduce.ts` → `placementBlockedAt`，
+      //   @source 0x00409f7c `test [node+0x24], 0xffff00`）。策略侧的候选本来就照原版
+      //   （0x409ef9）滤掉了这些格；这里是**保险丝**：同判据再挡一道，少了它 `reduce` 会原样退回、
+      //   AI 每次都重提同一个目标 ⇒ **活锁**（第九份 #4 那一轮实测 1..300 里 2 个种子卡死）。
+      //   ★ 放在这个**唯一收口**上：`toToolAction` 是三种放置类道具所有分支的必经之路。
+      if (placementBlockedAt(state, choice.nodeId)) return null;
       return { type: 'useTool', toolId, nodeId: choice.nodeId };
     }
     case 'missile':

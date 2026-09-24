@@ -28,7 +28,9 @@ import {
   ACTOR_DOLL,
   NPC_ACTORS,
   SPECIAL_ACTOR_BASE,
+  ACTOR_PLACE,
   actorActive,
+  npcBittenByDog,
   npcSteps,
   npcTurnSteps,
   releaseNpc,
@@ -98,6 +100,7 @@ import {
   MISSILE_HOSPITAL_DAYS,
   MISSILE_HOSTILITY_FACTOR,
   MISSILE_RADIUS,
+  NUKE_VIEW_HALF,
   PLACEMENT_TOOLS,
   VEHICLE_TOOLS,
   blastLand,
@@ -109,8 +112,7 @@ import {
   useVehicleTool,
 } from '../rules/tool-effects.ts';
 import { STOCKED_TOOL_MAX_ID, TOOL_SLOTS_PER_PLAYER, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
-// ★ 需求方 2026-09-22：放置类道具不许和「唯一物件」同格（见 `hasUniqueObjectAt`）
-import { OBJECT_TYPE_UNIQUE_MAX } from '../rules/objects.ts';import {
+import {
   AI_BOARD_LIST_CHANCE,
   AI_BOARD_REPRICE_CHANCE,
   AI_BOARD_SHOP_CHANCE,
@@ -168,6 +170,7 @@ import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/h
 import {
   objectNodeCandidates,
   runtimeOccupiedNodes,
+  placementBlockedAt,
   pickObjectNodeDistant,
   releaseObject,
   resolveArrival,
@@ -3282,13 +3285,43 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
     next = { ...next, stepsRemaining: 0, phase: 'settling' };
   }
 
-  // 炸彈把脚下的建筑降一级（連鎖店直接夷平退回住宅）
-  // @source `0x40ab4a(landId, 0)`，与拆除卡同一套，见 rules/land-mutation.ts
-  if (r.demolishLand !== 0 && land !== null) {
-    const d = demolishLand(land, state.priceIndex);
-    const landLevel = [...next.landLevel];
-    landLevel[land.id] = d.land.level;
-    next = { ...next, landLevel };
+  // 炸彈把脚下的建筑降一级 —— `0x40ab4a(node.type, 0)`（mode 0，**不记敌意**）：
+  // ```asm
+  // 0041b70c  mov di, word [node + 0x20] / test di,di / je 跳过
+  // 0041b715  push 0 / push edi / call 0x40ab4a
+  // ```
+  //   住宅（0x7d1..0xf9f）：等级 0 ⇒ 不动；否则 −1，**連鎖店**（`+0x18 ≠ 0`）直接夷平成 0 级住宅
+  //   （`0x40ab9e..0x40aba8`，种类也要落回）；
+  //   設施（0xfa1..0x176f）：等级 0 ⇒ 不动；否则 −1，减到 0 ⇒ 种类清 0 并 `call 0x40dffa` 放人
+  //   （`0x40ac20..0x40ac33`）。
+  // ★ 2026-09-24（需求方问「定時炸彈会不会炸周围建筑」时对照出来的）：先前只认住宅、
+  //   只写等级 ⇒ 炸在設施上什么都不发生、炸在連鎖店上留下「0 级連鎖店」。
+  if (r.events.some((e) => e.kind === 'bombExploded')) {
+    const fid = node === undefined ? null : facilityIndexOf(node.type);
+    if (r.demolishLand !== 0 && land !== null) {
+      const m = mutateLand(land, MUTATE_DEMOLISH_ONE);
+      if (m.changed) {
+        const landLevel = [...next.landLevel];
+        const landType = [...next.landType];
+        landLevel[land.id] = m.land.level;
+        landType[land.id] = m.land.type;
+        next = { ...next, landLevel, landType };
+      }
+    } else if (fid !== null) {
+      const fac = effectiveFacility(next, topo, fid);
+      if (fac !== null) {
+        const m = mutateFacility(fac, MUTATE_DEMOLISH_ONE);
+        if (m.changed) {
+          const facilityLevel = [...next.facilityLevel];
+          const facilityType = [...next.facilityType];
+          facilityLevel[fac.id] = m.facility.level;
+          facilityType[fac.id] = m.facility.type;
+          next = { ...next, facilityLevel, facilityType };
+          // 住院（下面那一段）在放人之后：原版 0x40ab4a 在 0x41b71f，送醫院在 0x41b775
+          if (m.releasesConfined) next = { ...next, players: releaseConfinedPlayers(next.players) };
+        }
+      }
+    }
   }
 
   // 住院
@@ -4188,7 +4221,9 @@ function landAtNode(state: GameState, topo: MapTopology, nodeId: number): LandIn
  *   原版把镜头移到目标上，再在一张 440×440 的**视图空间**格子里
  *   取 ±半径 的方窗（VA 0x0040a45c）。那需要等距投影与镜头，
  *   规则层拿不到。本引擎改用**节点坐标**的方窗，半径同为 100。
- *   核子飛彈的半径是 -1（全图），两者**完全一致**，那一发是精确的。
+ *   ★★ 2026-09-24 订正：核子飛彈的半径 −1 **不是全图** —— `0x40a45c` 收的是整幅 440×440 的
+ *   **画面**（镜头已移到目标上），见 `NUKE_VIEW_HALF`。先前「−1 = 全图、那一发是精确的」
+ *   让核彈把**整张地图**的房子全炸平了。
  */
 function fireMissile(
   state: GameState,
@@ -4200,10 +4235,9 @@ function fireMissile(
   if (target === undefined) return null;
 
   const inBlast = (n: MapNode): boolean => {
-    if (heavy) return true; // @source 半径 -1：整张图
-    return (
-      Math.abs(n.x - target.x) <= MISSILE_RADIUS && Math.abs(n.y - target.y) <= MISSILE_RADIUS
-    );
+    // @source 0x0040a469：半径 −1 ⇒ 整幅画面（节点坐标 ±220 近似，Q-TOOL-1）
+    const half = heavy ? NUKE_VIEW_HALF : MISSILE_RADIUS;
+    return Math.abs(n.x - target.x) <= half && Math.abs(n.y - target.y) <= half;
   };
 
   const landLevel = [...state.landLevel];
@@ -4252,10 +4286,14 @@ function fireMissile(
   //   （地块是「种类非 0 就直接夷平」），重击是「归属/等级/种类/租期全清」，
   //   见 `damage_area` VA 0x0040ad88..0x0040ae67 与 `cards/monster.ts` 的
   //   `mutateFacility`（mode 0/1 正是这两支）。
+  // ★ 一座設施占两个节点，但原版的 id 图里它只有**一张精灵 = 一个 id**（`0x409de7` 每张精灵只写一个点），
+  //   `0x40a45c` 收到的是 id 而不是节点 ⇒ 每座只挨一次（先前逐节点算 ⇒ 敌意记两遍）。
+  const facilitiesHit = new Set<number>();
   for (const n of topo.nodes) {
     if (!inBlast(n)) continue;
     const fid = facilityIndexOf(n.type);
-    if (fid === null) continue;
+    if (fid === null || facilitiesHit.has(fid)) continue;
+    facilitiesHit.add(fid);
     const fac = effectiveFacility(state, topo, fid);
     if (fac === null) continue;
     if (heavy) {
@@ -4321,24 +4359,62 @@ function fireMissile(
   //   「送医」互不影响 —— 这里按同样顺序：先按 releaseFlag 放人，再走送医。
   if (releaseFlag) players = releaseConfinedPlayers(players);
   let hospital = [...state.hospitalOccupancy];
+
+  // @source flags & 0x20 的另两段（`0x40aeb4..0x40aede` / `0x40aee0..0x40aefc`）：
+  //   id 的 bits 4..7 = **惡人** 4..7 ⇒ `send_to_hospital(惡人, 0)`（NPC 那一支 0x43ee0f：
+  //   撤下棋盘、`+10 = 2` 在醫院、占用表置 1，天数对 NPC 不起作用）；
+  //   bits 8..14 = **物件 handle**（`0x409de7` 只给**没附身**的物件盖 id，`0x409e8b`）⇒ `call 0x40e14d` 释放
+  //   （路障 / 地雷 / 定時炸彈回库存，神明离场、搭档另找地方登场 —— 与機器娃娃扫物件同一个函数）。
+  //   ★ 2026-09-24 补：先前这两段都没做（爆心里的惡人照站、地上的东西照留）。
+  const specialActors = state.specialActors.map((a) => ({ ...a }));
+  for (let slot = 0; slot < NPC_ACTORS.length && slot < specialActors.length; slot++) {
+    const a = specialActors[slot]!;
+    if (a.place !== ACTOR_PLACE.board || a.nodeId === 0 || !hitNodes.has(a.nodeId)) continue;
+    specialActors[slot] = npcBittenByDog(a);
+    hospital[SPECIAL_ACTOR_BASE + slot] = 1;
+  }
+  let rngState = state.rngState;
+  let tools = state.tools;
+  let stock = state.toolStock;
+  // id 表是爆炸那一刻一次收齐的（`0x40a45c` 在循环之前）⇒ 先定名单：被挤去别处登场的搭档不会再挨这一发
+  const blastObjects = objects.flatMap((o, i) =>
+    o.nodeId !== 0 && o.attached === 0 && hitNodes.has(o.nodeId) ? [i + 1] : [],
+  );
+  for (const handle of blastObjects) {
+    const rel = releaseObject({ players, objects, tools, toolStock: stock }, handle);
+    const after = respawnPartner(
+      { ...state, players: rel.players, objects: rel.objects, tools: rel.tools, toolStock: rel.toolStock, rngState, specialActors },
+      topo,
+      rel.partner >= 0 ? { partner: rel.partner, nearNode: rel.formerNode } : null,
+    );
+    players = after.players.map((q) => ({ ...q }));
+    objects = after.objects.map((q) => ({ ...q }));
+    tools = after.tools;
+    stock = after.toolStock;
+    rngState = after.rngState;
+  }
   // ★ 首次入院会清"另一张"占用表（原版 `call 0x40d761`，@source 0x0043d5e7）
   let prison = [...state.prisonOccupancy];
-  const toolStock = [...state.toolStock];
+  const toolStock = [...stock];
   for (let i = 0; i < players.length; i++) {
     const p = players[i];
     if (p === undefined || !isAlive(p) || !hitNodes.has(p.nodeId)) continue;
-    // @source 飛彈把镜头移到目标处再炸，自己站在别处；核彈打全图，自己也跑不掉
-    if (i === state.currentPlayer && !heavy) continue;
+    // ★ 2026-09-24：先前飛彈这里**跳过发射者自己**（注释说「自己站在别处」）—— 原版没有这一条：
+    //   `0x40ae8c..0x40aeaa` 对 id 里的每个玩家位都 `call 0x40cd07`，片后 `0x4470a1` 的循环也不看是谁。
+    // @source 0x40cd07：`+0x15`(who_plays) == 0 或 `+0x32` 那个 dword（住店 / 消失 / 監獄 / 醫院）≠ 0
+    //   ⇒ `jne 0x40cd70`，**不**挂 0x40 ⇒ 片后那一圈（`0x4470ac test [+0x15], 0x40`）既不记敌意也不送醫。
+    //   先前这几位照样被加敌意、住院天数还被续上。
+    const b = p.blocking;
+    const immune =
+      b.inHotel !== 0 || b.disappearing !== 0 || b.inPrison !== 0 || b.inHospital !== 0;
+    if (immune) continue;
     deltas.push({
       from: i,
       to: state.currentPlayer,
       delta: MISSILE_HOSTILITY_FACTOR * state.priceIndex,
     });
     // @source call 0x40cd07 —— 与地雷同一个毁车流程
-    const b = p.blocking;
-    const immune =
-      b.inHotel !== 0 || b.disappearing !== 0 || b.inPrison !== 0 || b.inHospital !== 0;
-    if (!immune && p.trafficMethod !== 0) {
+    if (p.trafficMethod !== 0) {
       const kind = p.trafficMethod & 3;
       if (kind === 1) toolStock[5] = (toolStock[5] ?? 0) + 1;
       else if (kind === 2) toolStock[6] = (toolStock[6] ?? 0) + 1;
@@ -4371,6 +4447,9 @@ function fireMissile(
   let out: GameState = {
     ...state,
     players: applyHostilityDeltas(players, deltas),
+    specialActors,
+    rngState,
+    tools,
     prisonOccupancy: prison,
     landLevel,
     landOwner,
@@ -4796,20 +4875,16 @@ export function useToolAction(
   const objectType = PLACEMENT_TOOLS.get(toolId);
   if (objectType !== undefined) {
     if (nodeId <= 0) return state;
-    // ★★ 需求方 2026-09-22（第九份試玩回報 #4）：「放置路障不能和地图上的神灵重叠」。
-    //   三个放置类道具（路障 2 / 地雷 3 / 定時炸彈 4）**不许**放在已经有唯一物件
-    //   （神明 / 惡犬 / 禮物 / 寶箱 / 死神 —— 类型 1..15）的格子上。
-    //
-    //   ⚠️ 这一条是**主动偏离原版**，需求方明确拍板（「按这个改」）：
-    //     · 原版放置侧**没有任何占用校验** —— `rich4-spec/docs/systems/tools.md:496`
-    //       「合法目标：任意格（无范围检查）」，`place_object` 只在自己 10 个槽里找空位；
-    //     · 原版靠地图节点反向索引 `node+0x26` **按位或**槽号（`rich4_objects.asm:118-126`），
-    //       所以重叠时读到的是路障、照样拦人 —— 原版**允许**重叠且两个都会画。
-    //   ⇒ 登记为有意偏离（见 PR 描述）。
+    // ★★ 目标格有人站着 / 有惡人 / 已经有物件 ⇒ 放不上去（`placementBlockedAt`）。
+    //   @source 0x00409bc0 / 0x00409f7c `test dword [node+0x24], 0xffff00 / jne 跳过` ——
+    //   真人的拾取图（0x445f51 → 0x409b18）与电脑的候选清单（0x409ef9）都用这一道掩码。
+    //   （需求方 2026-09-22 第九份 #4「路障不能和神灵重叠」是它的子集；当时的注释以为
+    //    原版放置侧没有任何占用校验 —— 那是只看了 `place_object`，漏了拾取这一层。
+    //    需求方 2026-09-24「Npc把地雷重叠放置了」就是只挡唯一物件、漏了地雷叠地雷。）
     //
     // ★ 放在 core 里就够了：客户端拾取走 `canUseTool`（= `useToolAction(...) !== state`，
     //   见 `state/preview.ts:86-94`），被这一条挡掉的格子**自动**不进候选、光标点不了。
-    if (hasUniqueObjectAt(state, nodeId)) return state;
+    if (placementBlockedAt(state, nodeId)) return state;
     const r = placeObject(state.objects, nodeId, objectType);
     if (!r.ok) return state; // 没有空物件槽
     const taken = takeTool(state.tools, state.toolStock, me.index, toolId);
@@ -4817,21 +4892,6 @@ export function useToolAction(
   }
 
   return state;
-}
-
-/**
- * 这一格上有没有**唯一物件**（神明 / 惡犬 / 禮物 / 寶箱 / 死神 —— 类型 1..15）。
- *
- * 与 `objectHandleAt` 同一套可见性判据（`nodeId` 相同且 `attached === 0`）：
- * 已经附身或被人带着走的物件跟着主人跑，不算「站在这一格」。
- */
-function hasUniqueObjectAt(state: GameState, nodeId: number): boolean {
-  for (const o of state.objects) {
-    if (o !== undefined && o.nodeId === nodeId && o.attached === 0 && o.type <= OBJECT_TYPE_UNIQUE_MAX) {
-      return true;
-    }
-  }
-  return false;
 }
 
 /**

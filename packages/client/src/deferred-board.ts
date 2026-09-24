@@ -43,6 +43,7 @@ import { wreckedThisAction } from './dog-fx.ts';
  * | 字段 | 谁写的 | 哪一段影片 | 出处 |
  * |---|---|---|---|
  * | `landLevel[i]` | `fcn_0040b110`（地块记录 `+0x1a` 加 1）| 大锤 `0x229` → 滿級 `0x20b` | `build-fx.ts` 文件头 |
+ * | `landOwner/landType/facilityOwner/facilityType[i]`（跟等级同进退）| `damage_area`（飛彈夷平連鎖店 / 核彈清归属）| 爆炸 `0x210` | `0x40ad30` / `0x40ad6b` |
  * | `facilityLevel[i]` | 同一支的**設施**分支（同是 `+0x1a`）| 同上 | `build-fx.ts` 文件头第 3 条 |
  * | `players[i].godInfo` | `attach_object`（`player + 0x3f`）| 神明 12 段 | `god-fx.ts` 文件头 |
  * | `objects[i].attached` | `attach_object`（`objects[i] + 5`）| 神明 12 段 | `god-fx.ts` + `rules/object-landing.ts` 的 `@source` |
@@ -89,6 +90,18 @@ export function visibleBoardState(
   const facilityLevel = holdLevels
     ? holdBackNumbers(after.facilityLevel, before.facilityLevel)
     : after.facilityLevel;
+  // ★ 2026-09-24：建筑的**归属 / 种类**与等级一起按住 —— 飛彈把連鎖店夷平（`0x40ad30 [+0x18]=0`）、
+  //   核彈连归属一起清（`0x40ad6b..0x40ad77`）都在 `damage_area`（`0x44707a` / `0x447b8c`）里、
+  //   **影片之前**写完；片中第 9 个计数（`0x90001` 的第三字节）才重画棋盘。
+  //   先前只按住等级 ⇒ 片子前段看到的是「旧等级 + 新种类 / 无主」拼出来的样子。
+  const landOwner = holdLevels ? holdBackNumbers(after.landOwner, before.landOwner) : after.landOwner;
+  const landType = holdLevels ? holdBackNumbers(after.landType, before.landType) : after.landType;
+  const facilityOwner = holdLevels
+    ? holdBackNumbers(after.facilityOwner, before.facilityOwner)
+    : after.facilityOwner;
+  const facilityType = holdLevels
+    ? holdBackNumbers(after.facilityType, before.facilityType)
+    : after.facilityType;
   const players = holdBackPlayers(after.players, before.players, { before, after });
   const objects = holdObjects ? holdBackObjects(after.objects, before.objects) : after.objects;
 
@@ -96,12 +109,16 @@ export function visibleBoardState(
   if (
     landLevel === after.landLevel
     && facilityLevel === after.facilityLevel
+    && landOwner === after.landOwner
+    && landType === after.landType
+    && facilityOwner === after.facilityOwner
+    && facilityType === after.facilityType
     && players === after.players
     && objects === after.objects
   ) {
     return after;
   }
-  return { ...after, landLevel, facilityLevel, players, objects };
+  return { ...after, landLevel, facilityLevel, landOwner, landType, facilityOwner, facilityType, players, objects };
 }
 
 /** 逐项按住：只换**真的变了**的那些下标，没变的沿用 after 的元素 */

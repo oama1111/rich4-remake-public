@@ -7,7 +7,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   actorTokens,
   playerAnchorWorld,
-  ASLEEP_FILTER,
   attachedObjectTokens,
   actorWalkSteps,
   BoardRenderer,
@@ -304,16 +303,14 @@ describe('★ T-047 替身的图组资源号 —— 全部照 exe，不许猜', 
     expect(isAsleep({ sleeping: 0 })).toBe(false);
     expect(isAsleep({ sleeping: 5 })).toBe(true);
     expect(isAsleep({ sleeping: 1 })).toBe(true);
-    // 去色 filter 必须真的去色（saturate(0)），不能只调亮度
-    expect(ASLEEP_FILTER).toContain('saturate(0)');
-    // ★ 结构断言：绘制那一支必须**在 drawImage 两侧**设/清 filter，
-    //   否则这个 filter 会漏到后面所有绘制（棋子、建筑全变灰）
+    // ★ 结构断言：绘制那一支用的是**灰版精灵**（`asleepSpriteOf`），不是 `ctx.filter`
+    //   （WebKit 不认 filter ⇒ iPhone 上从来不灰；2026-09-24）
     const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
-    const at = src.indexOf('if (asleep) ctx.filter = ASLEEP_FILTER;');
+    const at = src.indexOf('const img = asleep');
     expect(at).toBeGreaterThan(0);
     const after = src.slice(at, at + 200);
-    expect(after).toContain('ctx.drawImage(token.bitmap');
-    expect(after, '画完必须清掉 filter').toContain("if (asleep) ctx.filter = 'none';");
+    expect(after).toContain('asleepSpriteOf(token.bitmap');
+    expect(after).toContain('ctx.drawImage(img');
   });
 
   it('★★ 载具那一支：脚下节点 bit31（`noObjects`）置位时**走姿**换成 +2', () => {
@@ -1314,20 +1311,12 @@ describe('★ T-047：替身冬眠变灰（`record + 12`）@source `rich4.asm:15
     expect(after.map((t) => t.frozen)).toEqual([false, false, true, false]);
   });
 
-  it('★ 绘制那一条必须在 `drawImage` 两侧设/清 filter（否则会漏到建筑）', () => {
+  it('★ 替身那一条同样画灰版精灵（`asleepSpriteOf`），不设 `ctx.filter`', () => {
     const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
-    for (const marker of [
-      'if (t.frozen) ctx.filter = ASLEEP_FILTER;',
-      "if (t.frozen) ctx.filter = 'none';",
-    ]) {
-      expect(src, `缺标记：${marker}`).toContain(marker);
-    }
-    // 两个标记必须夹着那一次 `ctx.drawImage(`
-    const a = src.indexOf('if (t.frozen) ctx.filter = ASLEEP_FILTER;');
-    const b = src.indexOf("if (t.frozen) ctx.filter = 'none';");
+    const a = src.indexOf('const img = t.frozen ? (asleepSpriteOf(sp.bitmap');
     expect(a).toBeGreaterThan(0);
-    expect(b).toBeGreaterThan(a);
-    expect(src.slice(a, b)).toContain('ctx.drawImage(');
+    expect(src.slice(a, a + 300)).toContain('ctx.drawImage(');
+    expect(src).not.toMatch(/\bctx\.filter\s*=/);
   });
 });
 

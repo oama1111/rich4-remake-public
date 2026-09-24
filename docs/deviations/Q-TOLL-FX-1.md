@@ -86,3 +86,17 @@ pre 65.305 → 120ms 65.283（正峰）→ 330–360ms 64.630（负峰）→ 500
 按精灵 `brightness()` 近似原版的逐像素加亮 —— 接受，不再追。节拍与亮度表已对着 `fcn_00451985` 重新核过
 （16 帧 × 30 ms、每帧直接取表不累加、400 ms 静；负峰在 330 ms），见 `escalations.md` E-23。
 
+
+## 6. 2026-09-24：不再用 `ctx.filter`（iPhone 上闪烁「没了」）
+
+需求方在 iPhone（Safari）上报「连着一条街收过路费时地块闪烁特效怎么没了」。演出次序没有回归
+（Chromium 实测：闪 876 ms → 框；联机两端各 54 帧），是 **WebKit 不支持
+`CanvasRenderingContext2D.filter`**（WebKit bug 198416）—— 赋值被静默忽略，节拍照走、像素不变。
+
+现改为「画完本体再叠一层」（`client/src/sprite-brightness.ts`）：
+level > 0 用同一张图 `lighter` + `globalAlpha = level/32` 再画一次（c·(1+a)），
+level < 0 盖一张同形状的黑剪影、`globalAlpha = |level|/32`（c·(1−|a|)）。
+在不透明像素上与 `brightness(1 + level/32)` **逐像素相同**；第 2 节的近似本身不变。
+
+同一个坑的另一处（冬眠 / 冻住的棋子去色）已一并改掉（见 `deviations/T-047.md` D-T047-4）；
+`client/src/no-canvas-filter.test.ts` 钉住整个客户端不再给 `filter` 赋值。

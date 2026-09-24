@@ -36,6 +36,8 @@ import {
 //   屏幕 (0, 0x28) = 棋盘局部 (0, 0)，整块 440×440。见 `build-fx.ts`。
 import { BUILD_FX_BOARD_Y, BUILD_FX_H, BUILD_FX_W, BUILD_FX_X } from './build-fx.ts';
 import { godAscendPoseAt } from './god-ascend-fx.ts';
+import { asleepSpriteOf, paintBrightness } from './sprite-brightness.ts';
+import { TOLL_FLASH_FULL_SCALE } from './toll-flash-fx.ts';
 import { WHO_PLAYS_WRECKED, type MapNode, type Rich4Map } from '@rich4/core';
 import {
   VIEW_CENTER,
@@ -220,13 +222,14 @@ export function isActorAsleep(actor: { hibernating?: number; sleepwalkDays?: num
 }
 
 /**
- * 去色用的 canvas `filter` —— `fcn_004555eb` 那套 `(R+G+B+40)>>2` 的等价近似。
+ * 去色 —— `fcn_004555eb` 那套 `(R+G+B+40)>>2` 的等价近似（「去饱和 + 提亮 1.24」）。
  *
  * 原版把三个通道都写成同一个灰度值（保留最高位），并且因为 `+0x28` 那一下
- * 会整体**提亮**一点点，所以除了 `saturate(0)` 还要补一点 `brightness`。
+ * 会整体**提亮**一点点，所以除了去色还要补一点亮度。
  * ⚠️ 这是近似（canvas 的色彩空间与 RGB555 取整不完全一致），登记在 D-T047-4。
- */
-export const ASLEEP_FILTER = 'saturate(0) brightness(1.24)';
+ * ★★ 2026-09-24：**不再**用 `ctx.filter`（WebKit 不认 ⇒ iPhone 上从来不灰）——
+ *   改成逐像素算好一张灰版精灵（`sprite-brightness.ts` 的 `asleepSpriteOf`，与先前的 filter
+ *   在 Chromium 上逐像素相同）。
 
 /**
  * 视角模式。
@@ -374,8 +377,8 @@ export interface RenderInput {
    * 過路費閃爍（W-69）—— 這一幀要把**哪些地塊**調到多亮。
    *
    * ★ 原版 `fcn_00451985` 是改棋盤 **id 圖**上那幾格的像素（+`LEVEL[k]`，單位是
-   *   5 位色分量）；本引擎按**精靈**近似：畫那幾塊地上的建築時套一句
-   *   `ctx.filter = brightness(1 + level/32)`。差异登记在
+   *   5 位色分量）；本引擎按**精靈**近似：畫那幾塊地上的建築時疊成
+   *   `brightness(1 + level/32)`（`sprite-brightness.ts`，不靠 Safari 不支持的 `ctx.filter`）。差异登记在
    *   `docs/deviations/Q-TOLL-FX-1.md`。
    *
    * `level` = 0 或沒在播時整份給 `null`（= 不套）。
@@ -2973,15 +2976,24 @@ export class BoardRenderer {
         paint: () => {
           const sp = this.#sprite('map.mkf', it.res, it.img, true, it.ring);
           if (sp === null) return;
-          if (lit) ctx.filter = `brightness(${1 + flash.level / 32})`;
-          ctx.drawImage(
-            sp.bitmap,
-            p.x - sp.anchorX * k,
-            p.y - sp.anchorY * k,
-            sp.width * k,
-            sp.height * k,
-          );
-          if (lit) ctx.filter = 'none';
+          const dx = p.x - sp.anchorX * k;
+          const dy = p.y - sp.anchorY * k;
+          ctx.drawImage(sp.bitmap, dx, dy, sp.width * k, sp.height * k);
+          // ★ 不用 `ctx.filter`：WebKit（iPhone / iPad / Mac Safari）不支持，赋值被静默忽略
+          //   ⇒ 需求方在 iPhone 上看不到闪（2026-09-24）。改成叠一层，见 `sprite-brightness.ts`。
+          if (lit) {
+            paintBrightness(
+              ctx,
+              sp.bitmap,
+              dx,
+              dy,
+              sp.width * k,
+              sp.height * k,
+              flash.level / TOLL_FLASH_FULL_SCALE,
+              sp.width,
+              sp.height,
+            );
+          }
         },
       });
     }
@@ -3122,8 +3134,8 @@ export class BoardRenderer {
        * 即**逐像素去色**。触发条件：**玩家** `+0x36`（`days_sleeping`）非 0
        * （@source VA 0x004087d7）/ 替身 `record + 0x12` 非 0（@source 0x004089f6）。
        *
-       * 本引擎用 canvas 的 `filter` 做等价去色（`saturate(0)` + 一次提亮对齐
-       * `+0x28 >> 2` 那一下），省掉逐像素重写位图。
+       * 本引擎做等价去色（去饱和 + 一次提亮对齐 `+0x28 >> 2` 那一下）：逐像素算好一张灰版精灵、
+       * 按位图缓存（`asleepSpriteOf`）。★ 不用 `ctx.filter` —— WebKit 不认。
        * ⚠️ **近似**：原版在 RGB555 上取整平均，canvas 走自己的色彩空间 ——
        * 登记在 deviations D-T047-4。
        */
@@ -3159,9 +3171,10 @@ export class BoardRenderer {
             // ★ 第七份试玩回报 #2：这里原先给当前玩家脚下垫了一圈黄色光晕 —— **原版没有**
             //   （棋子绘制 `fcn_0040829d` 只贴精灵；「轮到谁」原版靠的是绘制次序 0xd 压在别人之上 + 側欄头像）。
             //   是早期为了好认自己加的，已删。
-            if (asleep) ctx.filter = ASLEEP_FILTER;
-            ctx.drawImage(token.bitmap, x, y, w, h);
-            if (asleep) ctx.filter = 'none';
+            const img = asleep
+              ? (asleepSpriteOf(token.bitmap, token.width, token.height) ?? token.bitmap)
+              : token.bitmap;
+            ctx.drawImage(img, x, y, w, h);
           },
         });
         continue;
@@ -3258,18 +3271,16 @@ export class BoardRenderer {
       slots.push({
         key: drawKey(p.y, t.klass),
         paint: () => {
-          // ★ 冬眠中画成灰 —— 与玩家那一条同一套 filter，且必须在 drawImage
-          //   **两侧**设/清，免得漏到后面所有绘制（建筑、别的棋子）
+          // ★ 冬眠中画成灰 —— 与玩家那一条同一张灰版（`asleepSpriteOf`，不靠 WebKit 不认的 `ctx.filter`）
           //   @source VA 0x004089c6 的 `_rich4_convert_sprite`
-          if (t.frozen) ctx.filter = ASLEEP_FILTER;
+          const img = t.frozen ? (asleepSpriteOf(sp.bitmap, sp.width, sp.height) ?? sp.bitmap) : sp.bitmap;
           ctx.drawImage(
-            sp.bitmap,
+            img,
             p.x - sp.anchorX * k,
             p.y - sp.anchorY * k,
             sp.width * k,
             sp.height * k,
           );
-          if (t.frozen) ctx.filter = 'none';
         },
       });
     }
