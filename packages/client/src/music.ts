@@ -310,7 +310,7 @@ export class OscillatorVoice implements MidiVoice {
     osc.connect(gain).connect(this.#dest);
     osc.start(at);
     osc.stop(end + 0.02);
-    this.#track(osc);
+    this.#track(osc, gain);
   }
 
   stop(): void {
@@ -345,7 +345,7 @@ export class OscillatorVoice implements MidiVoice {
       src.connect(gain).connect(this.#dest);
       src.start(at);
       src.stop(end + 0.01);
-      this.#track(src);
+      this.#track(src, gain);
     }
 
     if (spec.tone !== null) {
@@ -362,7 +362,7 @@ export class OscillatorVoice implements MidiVoice {
       osc.connect(gain).connect(this.#dest);
       osc.start(at);
       osc.stop(end + 0.01);
-      this.#track(osc);
+      this.#track(osc, gain);
     }
   }
 
@@ -394,11 +394,20 @@ export class OscillatorVoice implements MidiVoice {
     return buf;
   }
 
-  /** 登记一个已排出去的节点，响完自己摘牌 */
-  #track(node: AudioScheduledSourceNode): void {
+  /**
+   * 登记一个已排出去的节点，响完自己摘牌。
+   *
+   * ★ 第十九份（iPhone 发烫）：响完的那一对（音源 + 包络增益）**从图上拆下来**。
+   *   不拆的话它们一直挂在主增益上，要等 GC 才离开渲染图（一首曲子每秒几十个音，
+   *   WebKit 上渲染线程每个量子都要走过这一串已经没声的节点）。拆的时刻在 `ended`
+   *   之后 —— 声音早已结束，听感不变。
+   */
+  #track(node: AudioScheduledSourceNode, gain: AudioNode): void {
     this.#live.add(node);
     node.onended = () => {
       this.#live.delete(node);
+      node.disconnect();
+      gain.disconnect();
     };
   }
 }
@@ -461,6 +470,34 @@ export class MusicPlayer {
 
   get playing(): boolean {
     return this.#timer !== null;
+  }
+  /** 解锁后建好的音频上下文（音效 `SoundPlayer.attach` 共用这一个；没解锁 = null） */
+  get context(): AudioContext | null {
+    return this.#ctx;
+  }
+
+  /**
+   * ★ 第十九份（iPhone 发烫）：页面切到后台 / 回到前台。
+   *
+   * 后台时把**整个**音频上下文挂起（音乐与共用这个上下文的音效一起停；排程器的时间轴
+   * `currentTime` 也跟着停住，所以回前台时曲子从停下的那一拍接着放，不跳、不补）。
+   * 手机上一个 running 的 AudioContext 会让音频硬件一直开着 —— 看不见的页面没理由占着它。
+   *
+   * @returns 回前台时：上下文是否已经恢复运行（iOS 偶尔要再等一次手势，调用方据此补挂监听）
+   */
+  async setBackground(hidden: boolean): Promise<boolean> {
+    const ctx = this.#ctx;
+    if (ctx === null) return true;
+    try {
+      if (hidden) {
+        if (ctx.state === 'running') await ctx.suspend();
+        return false;
+      }
+      if (ctx.state !== 'running') await ctx.resume();
+    } catch {
+      return false;
+    }
+    return ctx.state === 'running';
   }
   get current(): string {
     return this.#name;

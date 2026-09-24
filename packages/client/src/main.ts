@@ -664,6 +664,7 @@ import { pendingScreens } from './overlay.ts';
 import { BLOCKING_PRESENTATIONS, DAY_AND_MAGIC_BOXES, PresentationHost } from './presentation-host.ts';
 import { dividendDayCrossed } from './shares-screen.ts';
 import { DisplayList, installBitmapCloseGuard } from './display-list.ts';
+import { installPageVisibility } from './page-visibility.ts';
 import {
   CURSOR_ARCHIVE,
   CURSOR_RESOURCE,
@@ -1963,7 +1964,21 @@ function stageBusyFlags(withScreens = true): StageFlags {
   };
 }
 
+/**
+ * ★ 第十九份（iPhone 发烫）：页面在后台。浏览器此时不跑 rAF ⇒ 演出全冻住，
+ *   回合驱动 / 联机收件箱若照旧按渲染周期重排，只是在后台每秒空转几十次。
+ */
+let pageHidden = false;
+/** 后台时有驱动被停在闸口上（回前台要叫醒它们） */
+let driversParked = false;
+
 function holdForActorWalk(reschedule: () => void): boolean {
+  // ★ 第十九份：后台时不重排 —— 停在这里，回前台由 `onPageShown()` 统一叫醒
+  //   （action 还没派 / 收件箱那条还没施加，醒来重新判一次，一条不丢）
+  if (pageHidden) {
+    driversParked = true;
+    return true;
+  }
   const held = holdForActorWalkReason();
   noteHold(held);
   if (held === null) return false;
@@ -3920,8 +3935,12 @@ const MUTED_BY_URL = new URLSearchParams(window.location.search).get('mute') ===
 
 function unlockAudio(): void {
   if (MUTED_BY_URL) return;
-  sound.unlock();
+  // ★ 第十九份（iPhone 发烫）：音效与背景音乐**共用一个** AudioContext（先前各建一个 ⇒
+  //   手机上两条音频渲染线程一直开着）。音乐先建，音效挂上去；万一没建成再退回音效自建。
   music.unlock();
+  const shared = music.context;
+  if (shared !== null) sound.attach(shared);
+  else sound.unlock();
   if (musicStarted) return;
   musicStarted = true;
   // ★ 解锁**之前**点过的那一首（标题 MIDI01 就是开机就点的）由
@@ -3949,6 +3968,67 @@ function unlockAudio(): void {
  * `capture` + `once`：捕获相先于任何业务监听，命中一次就摘掉。解锁后立刻
  * 补播当前该放的那首（见 `unlockAudio`）。桌面版与浏览器同源，**不写平台分支**。
  */
+/**
+ * ★ 第十九份（iPhone 发烫）：切后台 / 回前台。
+ *
+ * 后台：挂起音频上下文（音乐停在原处）、回合驱动与收件箱停在闸口（`holdForActorWalk`）、
+ *   演出看门狗不计时、GO 鈕闪烁不要帧。浏览器自己会停 rAF。
+ * 前台：恢复音频（iOS 若要求再来一次手势，就挂一次性监听）；整帧重画一次；叫醒驱动；
+ *   联机收件箱若在后台攒了一大截，**静默**施加到只剩最后 `NET_INBOX_KEEP` 条再照常播
+ *   （与中途进房的 `catchUpSilently` 同一口径：不补演看不见的那段；每条照样 `noteApplied` 报校验和）。
+ */
+function bindPageVisibility(): void {
+  pageHidden = document.hidden;
+  installPageVisibility(document, window, {
+    onHide: () => {
+      pageHidden = true;
+      void music.setBackground(true);
+    },
+    onShow: onPageShown,
+  });
+}
+
+function onPageShown(): void {
+  pageHidden = false;
+  presentationStallKey = '';
+  void music.setBackground(false).then((running) => {
+    if (running || pageHidden) return;
+    const once: AddEventListenerOptions = { once: true, capture: true };
+    for (const type of ['pointerdown', 'touchend', 'keydown'] as const) {
+      window.addEventListener(type, () => void music.setBackground(false), once);
+    }
+  });
+  displayList.invalidate();
+  stageBlitOwed = true;
+  requestRender();
+  if (net !== null) catchUpNetAfterHidden();
+  if (driversParked) {
+    driversParked = false;
+    resumeTurnDriver();
+    pumpNetInbox();
+  }
+}
+
+/** 回前台时收件箱积压过多 ⇒ 前面那一截静默施加（见 `bindPageVisibility`） */
+function catchUpNetAfterHidden(): void {
+  if (netInbox.length <= NET_INBOX_KEEP || screen === 'intro') return;
+  const burst = netInbox.splice(0, netInbox.length - NET_INBOX_KEEP);
+  if (netPumpTimer !== null) {
+    clearTimeout(netPumpTimer);
+    netPumpTimer = null;
+  }
+  for (const item of burst) {
+    const next = reduce(state, item.action, topo);
+    if (next !== state) history.push(item.action);
+    state = next;
+    if (item.action.type === 'rollDice') awaitingOwnRoll = false;
+    net?.noteApplied(item.seq);
+  }
+  settleAfterSilentRebuild();
+  log(`⟳ 回到前台：靜默施加 ${burst.length} 條 action（第 ${state.turnCount} 回合）`);
+  pumpNetInbox();
+}
+
 function bindAudioUnlock(): void {
   const once: AddEventListenerOptions = { once: true, capture: true };
   const types: readonly (keyof WindowEventMap)[] = [
@@ -8476,7 +8556,8 @@ function presentationSignature(): string {
 
 /** 每秒一次（`setInterval`，不靠渲染循环 —— 卡死时没人再要帧）*/
 function watchPresentationDeadlock(now: number): void {
-  if (screen !== 'game' || !presentationWaiting()) {
+  // ★ 第十九份：后台时演出冻住是浏览器停了 rAF，不是死锁 —— 不计时（回前台从零数起）
+  if (pageHidden || screen !== 'game' || !presentationWaiting()) {
     presentationStallKey = '';
     presentationUnwindLevel = 0;
     return;
@@ -9038,8 +9119,8 @@ const GO_BLINK_MS = 0x1f4;
 let goBlink = false;
 setInterval(() => {
   goBlink = !goBlink;
-  // 没在等人掷骰就不用重画（GO 鈕那时根本不显示）
-  if (screen === 'game') requestRender();
+  // 没在等人掷骰就不用重画（GO 鈕那时根本不显示）；后台也不用（第十九份）
+  if (screen === 'game' && !pageHidden) requestRender();
 }, GO_BLINK_MS);
 
 /**
@@ -11881,7 +11962,9 @@ function pumpNetInbox(delay = 0): void {
     //   演出（走子/買地/影片）會被靜默吞掉 —— 過場放完直接看到結果。
     //   排隊等它放完是安全的：過場有硬上限（4 人局 `introMs` ≤ 約 14.9 s），必然結束。
     if (screen === 'intro') {
-      pumpNetInbox(RENDER_MS);
+      // ★ 第十九份：后台时过场不会前进（没有 rAF），别每 20 ms 空转
+      if (pageHidden) driversParked = true;
+      else pumpNetInbox(RENDER_MS);
       return;
     }
     // ★★ 放行「本机自己在等的那条 `rollDice` 回包」（第九份试玩回报「掷骰延迟」）。
@@ -12590,6 +12673,8 @@ async function boot(): Promise<void> {
     bindTouchGestures(canvas, { longPress: longPressAllowedNow });
     // ★ 第一次交互就解锁音频 —— 画布之外的任意一点/任意一键也算（autoplay 政策）
     bindAudioUnlock();
+    // ★ 第十九份：切后台 / 回前台（音频挂起、驱动停在闸口、回来静默追上）
+    bindPageVisibility();
     // ★ W-74：「我还在这儿」——只要有鼠标 / 键盘输入就报一次（自己有 10 秒节流）
     for (const type of ['mousemove', 'mousedown', 'keydown', 'wheel'] as const) {
       window.addEventListener(type, noteAlive, { passive: true });

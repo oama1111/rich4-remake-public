@@ -106,6 +106,16 @@ export class SoundPlayer {
     this.#archives.set(name, new MkfArchive(data));
   }
 
+  /**
+   * ★ 第十九份（iPhone 发烫）：挂上一个**已经建好**的上下文（与背景音乐共用同一个）。
+   *   先前音效、音乐各建一个 AudioContext ⇒ 手机上两条音频渲染线程 / 两路硬件输出一直开着。
+   *   已经有上下文了就不换。
+   */
+  attach(ctx: AudioContext): void {
+    if (this.#ctx !== null) return;
+    this.#ctx = ctx;
+  }
+
   /** 在用户手势里调用，建立 AudioContext */
   unlock(): void {
     if (this.#ctx !== null) return;
@@ -253,6 +263,9 @@ export class SoundPlayer {
     //   所以它**必须**留在 `#voices` 里。
     src.addEventListener('ended', () => {
       if (this.#voices.get(key) === src) this.#voices.delete(key);
+      // ★ 第十九份：响完就从渲染图上拆下来（见 `music.ts` 的 `#track`）
+      src.disconnect();
+      gain.disconnect();
     });
     this.#voices.set(key, src);
     src.start();
