@@ -398,7 +398,7 @@ export async function pickSoundFont(): Promise<SoundFontPick> {
       options: {
         directory: false,
         multiple: false,
-        title: '选择音色库（.sf2）—— 本项目不附带，需自备',
+        title: '选择音色库（.sf2）',
         filters: [{ name: 'SoundFont 2', extensions: ['sf2'] }],
       },
     });

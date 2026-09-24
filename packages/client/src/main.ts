@@ -9906,7 +9906,7 @@ function musicButtons(): HTMLButtonElement[] {
     // Q8：原版没有这一颗 —— 它是本重制版新增的**音色库**入口（见 known-deviations）
     mk(
       music.usingSoundFont ? '♪ 音色庫✓' : '♪ 選音色庫',
-      '音色庫（.sf2，需自備）：有就用採樣還原音色，沒有就退回振盪器',
+      '音色庫（.sf2）：有就用採樣還原音色，沒有就退回振盪器',
       () => void chooseSoundFont(),
     ),
   ];
