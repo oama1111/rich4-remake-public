@@ -260,6 +260,12 @@ export function hammerFrame(elapsed: number, frames = AUCTION_HAMMER_FRAMES): nu
 /** 消息框停留 2000ms @source 0x44ee4f `cmp eax, 0x7d0` */
 export const AUCTION_BOX_MS = 2000;
 
+/**
+ * ★ pt23：开拍到第一位能出价要过两扇框 —— 开场那句（`0x0043a3eb`）+「底價%d元\n請意者出價。」（`0x0043af97`），
+ *   各 `AUCTION_BOX_MS`（没人点掉的话）。第一口（电脑自己出 / 真人点得动）不早于开屏后这么久。
+ */
+export const AUCTION_OPENING_MS = AUCTION_BOX_MS * 2;
+
 /** 每一下 `0x407` 的音效 @source 0x43a3fc（`0x475bc2` 首字节 = 0x3f）*/
 export const AUCTION_SOUND_BID = 0x3f;
 /** 成交那一下的音效 @source 0x43b412（`0x475bba` 首字节 = 0x1d）*/
@@ -822,8 +828,11 @@ interface ScreenState {
   messageUntil: number;
   /** 下一次问 core 要「电脑那一口」的时刻 */
   nextAt: number;
-  /** 「請意者出價」这一句已经出过了（真人那一格）*/
-  asked: boolean;
+  /**
+   * ★ pt23：开场那句收掉之后还要弹一次「底價%d元\n請意者出價。」（原版相位 1 → 2，每一场**只一次**，谁先举牌都一样）。
+   *   `true` = 还没弹。「开拍即流标」补演的那几场不弹（原版相位 1 找不到可出价座位就直接宣布流標）。
+   */
+  askPending: boolean;
   /** 待拍产业缩略图（`pending` 清掉之后结算演出还要用）*/
   entityImage: number;
   /** 结算演出：`pending` 已经没了，只剩消息框 */
@@ -876,6 +885,8 @@ let traceAnims: AuctionTraceAnim[] = [];
 let traceEchoes: { t: number; bidder: number; price: number }[] = [];
 /** 每一场开屏的时刻（开场那句 `AUCTION_BOX_MS` 从这里起算）*/
 let traceOpens: number[] = [];
+/** 「底價…請意者出價」弹出的时刻与文字（每一场应当恰好一次）*/
+let traceAsks: { t: number; text: string }[] = [];
 
 function traceAnim(env: UiScreenEnv, st: ScreenState, bidder: number, source: AuctionTraceAnim['source'], price: number): void {
   if (!traceOn || st.anim === null) return;
@@ -892,6 +903,7 @@ export function auctionTrace(on?: boolean): {
   anims: AuctionTraceAnim[];
   echoes: { t: number; bidder: number; price: number }[];
   opens: number[];
+  asks: { t: number; text: string }[];
 } {
   if (on !== undefined) {
     traceOn = on;
@@ -899,6 +911,7 @@ export function auctionTrace(on?: boolean): {
       traceAnims = [];
       traceEchoes = [];
       traceOpens = [];
+      traceAsks = [];
     }
   }
   return {
@@ -906,6 +919,7 @@ export function auctionTrace(on?: boolean): {
     anims: traceAnims.map((a) => ({ ...a, frames: [...a.frames] })),
     echoes: [...traceEchoes],
     opens: [...traceOpens],
+    asks: traceAsks.map((a) => ({ ...a })),
   };
 }
 
@@ -988,7 +1002,7 @@ function startView(env: UiScreenEnv, pending: PendingInteraction): ScreenState {
     message: AUCTION_INTRO_TEXT,
     messageUntil: env.now + AUCTION_BOX_MS,
     nextAt: env.now + AUCTION_BOX_MS,
-    asked: false,
+    askPending: true,
     settling: false,
     settleUntil: 0,
     outcome: null,
@@ -1071,7 +1085,7 @@ function humanTurn(env: UiScreenEnv, st: ScreenState): boolean {
   //   开场那句收掉（每拍先 `fcn_0044ee18(0)`，`0x0043aeb9`）、上一口挥槌走完（`0x0043ab40` → 相位 5 → 2）。
   //   ⇒ 开场那句 / 上一口挥槌没走完（= `nextAt` 之前）不是真人的回合。
   //   先前不挡：真人能在电脑那一口挥槌的第一帧就点下去，把那一口的挥槌截成一帧（联机时两端各截一次）。
-  if (env.now < st.nextAt) return false;
+  if (env.now < st.nextAt || st.askPending) return false;
   const p = seatPlayer(env, st.run);
   return p !== null && !isAiControlled(p) && seatIsLocal(env, st.run);
 }
@@ -1107,7 +1121,6 @@ function applyHumanBid(
     startedAt: env.now,
     until: env.now + AUCTION_FRAME_MS * AUCTION_HAMMER_FRAMES,
   };
-  st.asked = false;
   st.message = null;
   st.messageUntil = 0;
   st.nextAt = st.anim.until;
@@ -1191,6 +1204,7 @@ export const auctionScreen: UiScreen = {
       st.entityImage = b.entityImage;
       st.result = b.result;
       st.introHold = true;
+      st.askPending = false;
       screen = st;
       env.music?.('midi06.mid');
       env.requestRender();
@@ -1239,9 +1253,24 @@ export const auctionScreen: UiScreen = {
     if (st.messageUntil !== 0 && env.now >= st.messageUntil) {
       st.messageUntil = 0;
       st.message = null;
+      // ★ pt23：开场那句一收，紧接着「底價%d元\n請意者出價。」—— 同样挡住整场 2 秒（点一下收掉），之后才轮到第一位。
+      //   @source 0x0043a3e6 开场那句（0x465038）之后 0x0043a3f3 进相位 1；相位 1 找到第一位可出价座位
+      //   （0x0043af13..0x0043af45）⇒ 0x0043af75 进相位 2 并 sprintf(0x46507d, 现价 [0x48c488]) → 0x0043af97 call 0x44ecb6；
+      //   相位 2 要等这一框收掉（每拍先 0x44ee18(0)，0x0043aeb9；框 2000 ms，0x0044ee4e cmp 0x7d0）才看第一位是真人还是电脑。
+      //   相位 1 全场只进一次（唯一写点 0x0043a3f3）；之后轮转走 0x0043b406 直接回相位 2，不再弹这一句。
+      if (st.askPending && !st.settling && st.outcome === null) {
+        st.askPending = false;
+        st.message = AUCTION_ASK_FORMAT.replace('%d', String(st.run.price));
+        st.messageUntil = env.now + AUCTION_BOX_MS;
+        st.nextAt = Math.max(st.nextAt, st.messageUntil);
+        if (traceOn) traceAsks.push({ t: env.now, text: st.message });
+      }
       env.requestRender();
     }
     if (st.anim !== null && env.now < st.anim.until) env.requestRender();
+    // ★ pt23（活体 e2e 实测：「底價…」晚了 ~320 ms 才弹）：框挂着时也续帧 —— `tick` 只在渲染帧里收，
+    //   不续帧的话框到点那一拍要等别处碰巧要一帧才轮到，两扇框的交接 / 第一口都跟着迟到。
+    if (st.messageUntil !== 0 && env.now < st.messageUntil) env.requestRender();
     if (st.settling || st.outcome !== null) return;
 
     syncView(env, pending);
@@ -1251,13 +1280,7 @@ export const auctionScreen: UiScreen = {
     const p = seatPlayer(env, st.run);
     if (p === null) return;
     if (!isAiControlled(p)) {
-      // 真人：等点钮（原版相位 3）。摆一句「請意者出價」就够，不必续帧。
-      if (!st.asked && st.message === null) {
-        st.asked = true;
-        st.message = AUCTION_ASK_FORMAT.replace('%d', String(st.run.price));
-        st.messageUntil = env.now + AUCTION_BOX_MS;
-        env.requestRender();
-      }
+      // 真人：等点钮（原版相位 3）。★ pt23：不再每轮到真人就弹「請意者出價」—— 原版那一句全场只在开场后弹一次（见上）。
       return;
     }
     // ★ 联机：电脑（含掉线代打、託管）那一口**由服务器出**（`server/hub.ts` 的
@@ -1335,11 +1358,11 @@ export const auctionScreen: UiScreen = {
       env.requestRender();
       return;
     }
-    // ★ pt23：开场那句还挂着时点一下只把它收掉（`0x0043bb27 push 1 / call fcn_0044ee18` 先关訊息框），
-    //   这一下不算出价（此刻还不是相位 3，`0x0043bb2f`）；收掉之后下一拍就轮到第一位（与原版计时器下一拍进相位 2 同）。
-    if (st.message === AUCTION_INTRO_TEXT && st.messageUntil !== 0 && env.now < st.messageUntil && st.anim === null) {
-      st.message = null;
-      st.messageUntil = 0;
+    // ★ pt23：开场那句 / 「底價…請意者出價」还挂着时点一下只把这一框收掉（`0x0043bb27 push 1 / call fcn_0044ee18`
+    //   先关訊息框，`0x0044ee29 test [esp+0x14],1` → 立即收），这一下不算出价（此刻还不是相位 3，`0x0043bb2f`）。
+    //   收掉开场那句 ⇒ 下一拍弹「底價…」；收掉「底價…」⇒ 下一拍就轮到第一位（与原版计时器下一拍推相位同）。
+    if (st.message !== null && st.messageUntil !== 0 && env.now < st.messageUntil && st.anim === null) {
+      st.messageUntil = env.now;
       st.nextAt = Math.min(st.nextAt, env.now);
       env.requestRender();
       return;
@@ -1413,9 +1436,6 @@ function noteBroadcastBid(before: GameState, after: GameState, env: UiScreenEnv,
     st.topBidder = bidder;
     st.lastPrice = ap.price;
   }
-  // 与单机一致：真人那一口（`applyHumanBid`）会让下一位真人再听一次「請意者出價」，电脑那一口不会
-  const who = before.players[bidder];
-  if (who !== undefined && !isAiControlled(who)) st.asked = false;
   const seat = st.run.seats.findIndex((s) => s.player === bidder);
   env.playEffect(AUCTION_SOUND_BID);
   st.anim = {
@@ -1448,7 +1468,8 @@ export function auctionBidPacing(env: UiScreenEnv): boolean {
   const st = screen;
   if (st === null || st.key !== runKey(pending)) return true;
   if (st.settling || st.outcome !== null || st.localBid !== null) return false;
-  return env.now < st.nextAt;
+  // ★ pt23：「底價…請意者出價」还没弹出来（开场那句刚到点、`tick` 还没轮到）也挡 —— 下一拍 `tick` 必弹，不会死锁
+  return env.now < st.nextAt || st.askPending;
 }
 
 /** 只给单测用：把屏内的运行时清掉 */
@@ -1459,6 +1480,7 @@ export function resetAuctionScreenForTest(): void {
   traceAnims = [];
   traceEchoes = [];
   traceOpens = [];
+  traceAsks = [];
 }
 
 /**
@@ -1487,6 +1509,11 @@ export function auctionHumanPassPoint(env: UiScreenEnv): { x: number; y: number 
   if (st === null || !humanTurn(env, st)) return null;
   const r = auctionButtonRect(0);
   return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+}
+
+/** 只给单测用：屏上此刻的消息框文字（`null` = 没有框）*/
+export function auctionMessageForTest(): string | null {
+  return screen?.message ?? null;
 }
 
 /** 只给单测用：读回屏内的运行时 */

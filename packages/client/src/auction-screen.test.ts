@@ -15,6 +15,7 @@ import {
   AUCTION_BUTTON,
   AUCTION_BUTTONS,
   AUCTION_BOX_MS,
+  AUCTION_OPENING_MS,
   AUCTION_CHUNK,
   AUCTION_DEAL_FORMAT,
   AUCTION_FRAME_MS,
@@ -450,9 +451,14 @@ function withNow(env: UiScreenEnv, now: number): UiScreenEnv {
   return { ...env, now };
 }
 
-/** ★ pt23：开场那句（`AUCTION_BOX_MS`）走完才轮到真人举牌（原版相位 3，`0x0043bb2f`）—— 点钮的测试都从这一刻起 */
+/**
+ * ★ pt23：开场那句 +「底價…請意者出價」（各 `AUCTION_BOX_MS`）走完才轮到第一位（原版相位 1 → 2 → 3，`0x0043bb2f`）——
+ *   点钮的测试都从这一刻起。两扇框的交接要 `tick` 推，这里照帧推两下。
+ */
 function afterIntro(env: UiScreenEnv): UiScreenEnv {
-  return withNow(env, env.now + AUCTION_BOX_MS);
+  auctionScreen.tick!(withNow(env, env.now + AUCTION_BOX_MS));
+  auctionScreen.tick!(withNow(env, env.now + AUCTION_OPENING_MS));
+  return withNow(env, env.now + AUCTION_OPENING_MS);
 }
 
 describe('整屏接线（UiScreen 契约）', () => {
@@ -546,6 +552,7 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env, actions } = mkEnv(pending, players, 1000);
     auctionScreen.tick!(env); // 建桌，开场消息 2 秒
     auctionScreen.tick!(withNow(env, 3500));
+    auctionScreen.tick!(withNow(env, 5500)); // 「底價…請意者出價」收掉（pt23）
     expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'raise', step: 1000 }]);
   });
 
@@ -594,12 +601,14 @@ describe('整屏接线（UiScreen 契约）', () => {
     const netEnv: UiScreenEnv = { ...netSide.env, localSeat: 1 };
     auctionScreen.tick!(netEnv);
     auctionScreen.tick!(withNow(netEnv, 3500));
+    auctionScreen.tick!(withNow(netEnv, 5500)); // 「底價…請意者出價」收掉（pt23）
     expect(netSide.actions).toEqual([]);
 
     resetAuctionScreenForTest();
     const solo = mkEnv(pending, players, 1000);
     auctionScreen.tick!(solo.env);
     auctionScreen.tick!(withNow(solo.env, 3500));
+    auctionScreen.tick!(withNow(solo.env, 5500)); // 「底價…請意者出價」收掉（pt23）
     expect(solo.actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'raise', step: 1000 }]);
   });
 
@@ -679,7 +688,7 @@ describe('整屏接线（UiScreen 契约）', () => {
     const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
     const { env } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
     auctionScreen.tick!(env); // 建桌：开场
-    auctionScreen.tick!(withNow(env, 3500)); // 开场到期 → 拆掉，下一帧才请出价
+    auctionScreen.tick!(withNow(env, 3500)); // 开场到期 → 当拍弹「底價…請意者出價」（pt23：每一场一次，挡 2 秒）
     auctionScreen.tick!(withNow(env, 3600));
     // 走到这里没有崩、也没有 dispatch —— 真人那一格就等着点钮
     expect(auctionScreen.active(env)).toBe(true);

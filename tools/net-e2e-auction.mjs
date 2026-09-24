@@ -34,6 +34,8 @@ const B_RAISES = 3;
 /** `auction-screen.ts`：AUCTION_FRAME_MS × AUCTION_HAMMER_FRAMES、AUCTION_BOX_MS、AUCTION_SOUND_BID */
 const HAMMER_MS = 0x64 * 3;
 const BOX_MS = 2000;
+/** 开场那句 +「底價…請意者出價」两扇框（`AUCTION_OPENING_MS`，pt23 照原版 0x0043af97 补上第二扇）*/
+const OPENING_MS = BOX_MS * 2;
 const SOUND_BID = 0x3f;
 /** 节拍的容差：下限按 `env.now` 取样粒度留 20 ms；上限 = 收件箱 / 渲染节拍能迟到多少（「队里已有下一口」的那几对才查）*/
 const PACE_MIN = HAMMER_MS - 20;
@@ -286,7 +288,16 @@ for (const who of ['A', 'B']) {
   check(anims.every((x) => [0, 1, 2].every((f) => x.frames.includes(f))), `4d-${who}) 每一口三帧都画出来了`);
   check(sfxIn.length === total, `4e-${who}) 0x3f 恰好 ${total} 声（实 ${sfxIn.length}）—— 本机那口没放两遍`);
   check(sfxVsAnim.every((d) => d < 5), `4f-${who}) 每一声 0x3f 与挥槌同一拍（最大偏差 ${Math.max(...sfxVsAnim).toFixed(1)} ms）`);
-  check(firstGap !== null && firstGap >= BOX_MS - 20, `4g-${who}) 开场那句走完才出第一口（${firstGap} ms ≥ ${BOX_MS}）`);
+  check(
+    firstGap !== null && firstGap >= OPENING_MS - 20 && firstGap <= OPENING_MS + 250,
+    `4g-${who}) 开场那句 +「底價…請意者出價」两框走完才出第一口（${firstGap} ms ≈ ${OPENING_MS}）`,
+  );
+  const asks = e.trace.asks;
+  const askGap = open === null || asks[0] === undefined ? null : Math.round(asks[0].t - open);
+  check(
+    asks.length === 1 && /^底價\d+元\n請意者出價。$/.test(asks[0].text) && askGap !== null && askGap >= BOX_MS - 20 && askGap <= BOX_MS + 250,
+    `4l-${who}) 「底價…請意者出價」整场恰好弹一次、在开场那句之后（${asks.length} 次，开屏后 ${askGap} ms：${JSON.stringify(asks.map((a) => a.text))}）`,
+  );
   check(intervals.every((g) => g >= PACE_MIN), `4h-${who}) 任意两口不早于挥槌收尾（最小 ${Math.min(...intervals)} ms ≥ ${PACE_MIN}）`);
   check(
     queuedGaps.length > 0 && queuedGaps.every((g) => g <= PACE_MAX),
