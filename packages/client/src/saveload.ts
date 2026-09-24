@@ -27,8 +27,12 @@
  *   `localStorage`。桌面版理应写成文件，但那要走 Tauri 的文件 API，
  *   等 M4 收尾时再说 —— 记在 known-deviations 的 Q-SAVE-1。
  *
- * ⚠️ 每行右边那块宽区里写什么（原版画的是角色头像加日期/资产）只解出了
- *   头像的位置，文字位置没解。那部分的排版是**我们的**。
+ * ★ 一行里画的东西已经全照 exe 解齐（gap-audit #18，2026-09-24 逐条复核 0x00403f1d..0x00404094）：
+ *   粉底板上的 AUTO / 年 / 月日、地圖縮圖、参与角色头像循环 —— 见下面 `ROW` 的注释。
+ *   **没有资产、没有玩家名**：那一段只有这几次 `draw_text` / `fcn_004563f5`。
+ *   字是 `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`（0x00403f1d..0x00403f2d）= 16 号米白粗体
+ *   + 右下 1 px 深色阴影（`BOX_TEXT_STYLE`），三句都是 `draw_text(…, flag 2)`（横竖都居中）。
+ *   仍是我们自己的：悬停高亮、「存檔損毀」那行字、「匯入原版存檔」钮（原版遇到坏档直接跳过那一槽）。
  */
 
 import type { GameState } from '@rich4/core';
@@ -36,7 +40,7 @@ import { saveStore } from './host.ts';
 import { deserializeGame, serializeGame } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import { inRect, type Rect } from './gameui.ts';
-import { FONT_FAMILY } from './font.ts';
+import { BOX_TEXT_STYLE, drawGdiText, FONT_FAMILY, type GdiTextStyle } from './font.ts';
 
 /** Data.mkf 里这一屏的资源号 @source 0x00403d83 `push 0x208` */
 export const SAVELOAD_RESOURCE = 0x208;
@@ -102,6 +106,11 @@ export const ROW = { x: 0x81, y0: 0x18, pitch: 72, size: 72 } as const;
 export const ROW_TEXT_X = 0xa5;
 /** 三行字相对行顶的 y @source `edi + 0x0f / 0x24 / 0x39` */
 export const ROW_TEXT_DY = { auto: 0x0f, year: 0x24, date: 0x39 } as const;
+/**
+ * 三句字的字样 @source 0x00403f1d..0x00403f2d `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`
+ * —— 与框模板那一句逐字节同参（16 号米白、粗体 + 右下 1 px 阴影）。
+ */
+export const ROW_TEXT_STYLE: GdiTextStyle = BOX_TEXT_STYLE;
 /** 地圖縮圖的 x @source 0x00404011 `push 0xd1` */
 export const ROW_THUMB_X = 0xd1;
 
@@ -269,6 +278,26 @@ export function outsideSaveLoad(mode: SaveLoadMode, x: number, y: number): boole
 //  绘制
 // ============================================================
 
+/**
+ * 粉底板上要写的几句（`x` 是舞台坐标，`dy` 相对行顶）—— 纯函数。
+ *
+ * @source 0x00403f78 `test ebp, ebp / jne` → 只有 0 号槽写 `"AUTO"`（串 0x4630e9）；
+ *   0x00403f9c `[0x48a340] >> 16` → `itoa(10)` 写年；0x00403fe4 `sprintf("%d/%d", 月, 日)`（串 0x4630ee）。
+ *   ★ 打不开（0x00403e3d `je 0x4040a6`）或标识 ≠ 0x26（0x00403e55）的槽**整槽跳过**：
+ *   粉底板、AUTO、年月日、縮圖、头像一样都不画 ⇒ 空槽 / 坏档返回空。
+ */
+export function rowTexts(
+  slot: number,
+  st: Pick<GameState, 'year' | 'month' | 'day'> | null,
+): { text: string; x: number; dy: number }[] {
+  const out: { text: string; x: number; dy: number }[] = [];
+  if (st === null) return out;
+  if (slot === AUTOSAVE_SLOT) out.push({ text: 'AUTO', x: ROW_TEXT_X, dy: ROW_TEXT_DY.auto });
+  out.push({ text: String(st.year), x: ROW_TEXT_X, dy: ROW_TEXT_DY.year });
+  out.push({ text: `${st.month}/${st.day}`, x: ROW_TEXT_X, dy: ROW_TEXT_DY.date });
+  return out;
+}
+
 export type SpriteFn = (
   archive: 'Data.mkf' | 'Panel.mkf',
   resource: number,
@@ -321,21 +350,17 @@ export function drawSaveLoad(
 
     // ★ 一行三段，全照原版：粉底板（写年月日）｜ 地圖縮圖 ｜ 参与角色的头像
     const st = info?.state ?? null;
-    const plate = sprite('Data.mkf', SAVELOAD_RESOURCE, EMPTY_CELL_IMAGE, true);
+    // ★ 粉底板也只画在有档的槽上（空槽 / 坏档整槽跳过 @source 0x00403e3d / 0x00403e55 → 0x00403f70）
+    const plate = st === null ? null : sprite('Data.mkf', SAVELOAD_RESOURCE, EMPTY_CELL_IMAGE, true);
     if (plate !== null) ctx.drawImage(plate.bitmap, r.x, r.y, ROW.size, ROW.size);
 
+    // ★ 三句都是 `draw_text(…, 0xa5, 行顶 + dy, flag 2)`：横竖都以 (0xa5, 行顶 + dy) 为中心
+    //   @source 0x00403f82 / 0x00403fb3 / 0x00403ffc；字样见 `ROW_TEXT_STYLE`
     ctx.textAlign = 'center';
-    ctx.fillStyle = '#10231a';
-    if (slot === AUTOSAVE_SLOT) {
-      // @source 0x00403f82：只有 0 号槽写这四个字母
-      ctx.font = 'bold 13px ui-monospace, monospace';
-      ctx.fillText('AUTO', r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.auto);
+    for (const t of rowTexts(slot, st)) {
+      drawGdiText(ctx, t.text, t.x, r.y + t.dy, ROW_TEXT_STYLE);
     }
     if (st !== null) {
-      ctx.font = `bold 15px ${FONT_FAMILY}`;
-      ctx.fillText(String(st.year), r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.year);
-      ctx.font = `14px ${FONT_FAMILY}`;
-      ctx.fillText(`${st.month}/${st.day}`, r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.date);
 
       const thumb = sprite(
         'Data.mkf', SAVELOAD_RESOURCE, MAP_THUMB_BASE + (st.globalMapId & 7), true,
