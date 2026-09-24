@@ -140,6 +140,21 @@ describe('1 機器娃娃（0x00420efa）', () => {
     expect(aiToolChoice(1, view)).toEqual({ kind: 'plain' });
   });
 
+  it('★★ 骑機車 / 开汽車（惡犬咬不到）前方有惡犬 → **照样用**（第二十一份「忍太郎骑着机车还浪费機器娃娃」）', () => {
+    // 原版判定 0x00420efa..0x00421078 **从不读** `player+0x11`（交通方式）：只有
+    //   `0x420f09 call 0x40b221` 前瞻 4 格 → 逐格取物件类型 `[idx*24 + 0x496d08]` →
+    //   `0x420f7a cmp eax, 0xb / 0x420f83 mov esi, 1`（惡犬 ⇒ 用）。主线 0x447d97..0x448085
+    //   与個性闸门 0x420e9a 也都不看交通方式 ⇒ 电脑骑着车也会把狗扫掉。照原版保留。
+    for (const trafficMethod of [1, 2]) {
+      const view = viewOf({
+        nodes: lineNodes(8),
+        players: meOnLine(1, 0, { trafficMethod, ndices: trafficMethod + 1 }),
+        state: { objects: objectsWith(10, 3) }, // 槽 10 = 类型 11 惡犬
+      });
+      expect(aiToolChoice(1, view)).toEqual({ kind: 'plain' });
+    }
+  });
+
   it('前瞻遇岔路 → 不用（0x420f11 forked 即退）', () => {
     const nodes = lineNodes(8);
     nodes[1] = makeNode({ id: 2, x: 20, y: 0, adjacent: [1, 3, 4] }); // 2 号位分出两条
@@ -386,6 +401,15 @@ describe('5 機車（0x00421644）/ 6 汽車（0x00421675）', () => {
   it('機車：已骑车（traffic & 3 ≠ 0）→ 不用', () => {
     const players = meOnLine(1, 0, { trafficMethod: 1 });
     expect(aiToolChoice(5, viewOf({ players, state: { rngState: 4 } }))).toBeNull();
+  });
+
+  it('★ 背着定時炸彈照样上车（0x00421675 只看 `+0x11` 与 rand%4，不读 `+0x40`）—— 骰子数另由 0x4221c0 压（dice-policy）', () => {
+    const objects = objectsWith(36, 0); // 槽 36 = 类型 18 定時炸彈
+    objects[36]!.attached = 1;
+    objects[36]!.state = 7;
+    const players = meOnLine(1, 0, { f64: 37 });
+    expect(aiToolChoice(6, viewOf({ players, state: { rngState: 1, objects } }))).toEqual({ kind: 'plain' });
+    expect(aiToolChoice(5, viewOf({ players, state: { rngState: 4, objects } }))).toEqual({ kind: 'plain' });
   });
 
   it('汽車：traffic < 2 且 rand%4==0 → 用（rngState 1 → 0）；已开汽車 → 不用', () => {
