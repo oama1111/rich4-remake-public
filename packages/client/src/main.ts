@@ -465,6 +465,7 @@ import {
 } from './config-file.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
 import { onMinigameBackgroundReady, setMinigameBackground } from './minigame-bg.ts';
+import { minigameCursorHidden, minigamePointerAt, minigamePointerLeave } from './minigame-screen.ts';
 import {
   AUTOSAVE_SLOT,
   autosaveStep,
@@ -4841,6 +4842,21 @@ function syncMagicCursor(): void {
   canvas.style.cursor = hide ? 'none' : '';
 }
 
+/** 本模块替小游戏把系统指针藏了没有（同上：只撤自己藏的）*/
+let minigameCursorOff = false;
+
+/**
+ * 七彩氣球：系统指针藏起来，准星由小游戏屏自己画在舞台上（`minigameCursorHidden`）——
+ * @source 0x00414d8b `fcn_004021f8(9, 3, 5)`（`Data.mkf` #0 图 9..11），见 `BALLOON_CURSOR`。
+ */
+function syncMinigameCursor(): void {
+  // ★ 先看 pending：局一收（`minigame` 已施加）指针当拍就放回来 —— 不等小游戏屏下一次 `tick` 才把 run 清掉
+  const hide = screen === 'game' && state.pending?.kind === 'minigame' && minigameCursorHidden();
+  if (hide === minigameCursorOff) return;
+  minigameCursorOff = hide;
+  canvas.style.cursor = hide ? 'none' : '';
+}
+
 /** 棋盘 / 侧栏 / 镜头此刻该按哪一份状态看（逐段演的时候是那一段的 after） */
 function magicShownState(): GameState {
   return magicSeq?.shown ?? state;
@@ -8133,6 +8149,8 @@ function requestRender(): void {
     if (screen === 'game') tickMagicSequence();
     // ★ 女巫窗口里只有「等玩家点」那一拍有指针（`fcn_00402460`，见 `magicCursorHidden`）
     syncMagicCursor();
+    // ★ 七彩氣球：系统指针换成舞台上画的准星（第二十一份回报，见 `minigameCursorHidden`）
+    syncMinigameCursor();
 
     stageCtx.imageSmoothingEnabled = false;
     stageCtx.fillStyle = '#000';
@@ -9821,6 +9839,8 @@ function bindInput(): void {
   canvas.addEventListener('mousemove', (e) => {
     const p = eventToStage(e);
     if (p === null) return;
+    // 小游戏的准星画在指针所在处 —— 不论谁在接管，先记下（见 `minigamePointerAt`）
+    minigamePointerAt(p.x, p.y);
 
     // ── 名牌浮标：鼠标一动就擦（原版 0x200 那一支 `loc_00418b63` → `fcn_00417c67`）──
     if (nodeTip !== null) {
@@ -10246,6 +10266,12 @@ function bindInput(): void {
   // ★ 原先这里挂了一个**滚轮缩放**。原版**没有缩放** —— 人物视角的取景由投影表
   //   定死（只能左右旋转视角），那是本引擎自己发明的，随 `setViewMode` 一起删掉
   //   （D-086-5 / T-086）。滚轮在棋盘上现在什么都不做（也不拦浏览器默认行为）。
+
+  // 指针离开画布：小游戏的准星跟着收（系统指针在画布外照常显示）
+  canvas.addEventListener('mouseleave', () => {
+    minigamePointerLeave();
+    requestRender();
+  });
 
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext

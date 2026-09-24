@@ -53,15 +53,27 @@
  * - 生成 @0x00413189（每 tick **每个空槽**一次）：`r = rand() % 1000`
  *   `r < 20` → 类型 `r>>2`（0..4）；`r < 28` → `((27-r)>>1)+5`（5..8）；`r < 30` →
  *   `0x475039[rand()%10]` = `{9,9,10,10,10,10,10,11,11,11}`；`>= 30` → 不生成。
- *   落点：在 7 条道 `x = 0x28 + 0x50k (< 0x280)` 里挑一条**没有气球 y > 0x12c** 的，
+ *   落点：在 **8** 条道 `x = 0x28 + 0x50k (< 0x280)`（= 40..600）里挑一条**没有气球 y > 0x12c** 的，
  *   `rand() % 条数` 选一条，`y = 0x1a4`（420）。
  * - 上升 @0x004130de：`y -= 速度表[类型]`（`0x475004` = `[15,15,15,15,18,18,18,24,24,24,24,18]`），
  *   受 `[0x48bcc8]` 缩放（`-1` → 速度 ×2、`1` → 速度 ÷2）；
  *   `[0x48bd59] != 0` 时**整屏气球定住**（@0x004130de `jne`）。
  * - 点爆 @0x00414d9f：类型 `>= 6` 的命中框 ±18×±26、`< 6` 的 ±22×±30（跟着两张图的尺寸走）；
  *   点空放音效 20。计分 @0x00414dd2：`9` → 分数 ×2；`10` → 分数 ÷2；
- *   `11` → `rand()%6` 抽一个效果（见 `BALLOON_RANDOM`）；其余 → `分数 += 类型+1`，
- *   `>= 1000` 夹到 **999**。爆掉的那一格类型字写成 `0x3c`（画 2 帧爆开图后消失）。
+ *   `11` → 先把定住 / 速度两个效果清掉（0x00414e5c..0x00414e66），再 `rand()%6` 抽一个效果
+ *   （见 `BALLOON_RANDOM`）；其余 → `分数 += 类型+1`，`>= 1000` 夹到 **999**。
+ *   爆掉的那一格类型字写成 `0x3c`（之后两个 tick 画爆开图、第三个 tick 置空）。
+ *   ★ 能点的时段：`[0x48bd58] != 2 && [0x48bd84] == 0`（0x00414d9f / 0x00414dac）——
+ *   **时间到了、屏上还有气球的那一段也照样能打**。
+ * - ★ **没有炸彈氣球**（第二十一份回报追查）：本屏只载 0x4e/0x4f/0x5b 三个资源（0x00415518..0x0041554b），
+ *   #91 一共 14 张图（底图 + 12 种气球 + 爆开）；音效集 `0x47509f` 只有 19/20/21 三个（-1 结尾）；
+ *   点爆的分派只认 9/10/11（0x00414e23..0x00414e3a），别的类型都是「分数 += 类型+1」；
+ *   能收场的只有定时器（0x00414ce0）与「时间到 + 屏上清空」（0x00413222）两处。
+ *   最像「炸彈」的是 **?** 气球（类型 11）抽到 0（时间只剩 1 → 下一 tick 收场）或 4（分数清零）。
+ * - ★ **指针换成准星**：入场演出之后（0x405 那一支 0x00414d85..0x00414d95）
+ *   `fcn_004021f8(9, 3, 5)` + `fcn_00402460(1)` —— `Data.mkf` #0 的图 **9/10/11** 三帧轮播；
+ *   收场（`[0x48bd58] == 2`，0x00414d03..0x00414d13）`fcn_00402460(0)` 藏起、换回箭头 `0x29`。
+ *   见 `BALLOON_CURSOR`。
  * - 时限：定时器 100ms、`[0x48bd2c]` 从 **150**（15 秒）；入场 `[0x48bd84] = 5`（首帧后
  *   从 0x63 改成 5，@0x00414f6b）＝0.5 秒。时间到后等**屏上气球全清**才进结算
  *   （@0x00413229），画大号分数、等 2000ms 关屏。
@@ -108,6 +120,7 @@
  */
 
 import { SPECIAL_KIND, WatcomRng } from '@rich4/core';
+import type { GameState } from '@rich4/core';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { getMinigameBackground } from './minigame-bg.ts';
@@ -636,14 +649,18 @@ export function penguinStep(st: PenguinGame, now: number): PenguinGame {
 export const BALLOON_RES = 0x5b;
 /** 气球图 = 图 `类型 + 1` @source `loc_0041311b` 的 `lea edx, [eax + 1]` */
 export const BALLOON_IMAGE_FIRST = 1;
-/** 爆开图 = 图 13（类型字被改写成 0x3c → `(0x3c & 0xf) + 1`）@source `mov word […], 0x3c` @0x00414ef7 */
+/** 爆开图 = 图 13（类型字被改写成 0x3c → `(0x3c & 0xf) + 1`）@source `mov word […], 0x3c` @0x00414f01 */
 export const BALLOON_POP_IMAGE = 13;
 /** 16 个槽 @source `cmp ebx, 0x10` @0x00414f1d */
 export const BALLOON_SLOTS = 16;
 /** 生成高度 @source `mov word [… + 0x48bbc6], 0x1a4` @0x0041310f */
 export const BALLOON_SPAWN_Y = 0x1a4;
-/** 道 x：`0x28 + 0x50k`，`< 0x280` @0x0041301c */
-export const BALLOON_LANES: readonly number[] = [0x28, 0x78, 0xc8, 0x118, 0x168, 0x1b8, 0x208];
+/**
+ * 道 x：`0x28 + 0x50k`，`< 0x280` ⇒ **8 条**（40..600）
+ * @source 0x00413027 `mov ebx, 0x28` / 0x0041305b `add ebx, 0x50` / 0x0041305e `cmp ebx, 0x280` / `jge` 才出圈
+ *   —— `0x258`(600) < `0x280` 照样进圈（先前少了它，x = 600 那条道永远没有气球）
+ */
+export const BALLOON_LANES: readonly number[] = [0x28, 0x78, 0xc8, 0x118, 0x168, 0x1b8, 0x208, 0x258];
 /** 判定「这条道有气球」的高度 @source `cmp word [… + 0x48bc46], 0x12c` @0x00413036 */
 export const BALLOON_LANE_BUSY_Y = 0x12c;
 /** 上升速度表（按类型）@source `ref_00475004` VA 0x00475004 */
@@ -682,8 +699,67 @@ export const BALLOON_RANDOM = {
 } as const;
 /** 冻结 tick 数 @source `mov byte [0x48bd59], 0x14` @0x00414e99 */
 export const BALLOON_FREEZE_TICKS = 0x14;
-/** 爆开图停留几帧 @source 类型字 0x3c 每 tick 减 0x10，高位归零就置空 @0x004130b6 */
-export const BALLOON_POP_TICKS = 2;
+/**
+ * 爆开之后再过几个 tick 置空 @source 0x004130b6..0x004130d2：类型字写成 `0x3c`（0x00414f01），
+ * 之后每 tick `sub 0x10` 再 `test 0xf0`：`0x2c` 画、`0x1c` 画、`0x0c` 高位归零 ⇒ **第 3 个 tick** 置空。
+ * （本引擎点中那一拍就换爆开图；原版那一拍只重画 HUD，下一 tick 才画出来 —— 置空的时刻一致。）
+ */
+export const BALLOON_POP_TICKS = 3;
+
+// ── 准星指针（第二十一份試玩回報「打气球时鼠标指针没换成瞄准镜」）──
+
+/**
+ * 原版的指针是**软件画的**：`Data.mkf` #0 这一套图（@source 0x00402108..0x0040211a
+ * `read_mkf([0x48a0e4] = Data.mkf, 0)` → `[0x46cb10]`），开局 `ShowCursor(0)`（0x00402154）
+ * 把系统指针藏掉。`fcn_004021f8(图, 帧数, 每帧几拍)` 换形状（`[0x46cb10] + 0xc + 图*12`
+ * = SPR 帧表那一项，`+4/+6` 就是热点 = 图自带的锚点，见 0x004022ac / 0x004024ea）；
+ * `fcn_00402460(1/0)` 显示 / 藏起（`[0x48a178]`）。
+ */
+export const MINI_CURSOR_ARCHIVE: ArchiveName = 'Data.mkf';
+export const MINI_CURSOR_RES = 0;
+/**
+ * 指针动画的节拍 @source 0x004021a1..0x004021a5 `timeSetEvent(0x14, 5, 0x401f98, 0, 1)`
+ * —— 每 **20ms** 一拍；回调 0x00402015..0x0040205a 数够 `每帧几拍` 就换下一帧、到头回 0。
+ */
+export const MINI_CURSOR_TICK_MS = 20;
+
+/** 一种动画指针：从图 `image` 起连 `frames` 帧、每帧停 `delay` 拍 */
+export interface MiniCursorSpec {
+  readonly image: number;
+  readonly frames: number;
+  readonly delay: number;
+}
+
+/**
+ * 七彩氣球的**准星** @source 0x00414d85 `push 5` / 0x00414d87 `push 3` / 0x00414d89 `push 9` /
+ * 0x00414d8b `call fcn_004021f8` —— `Data.mkf` #0 图 **9 / 10 / 11**（31×29，热点 (15,14)，
+ * 红圈十字准星），三帧轮播、每帧 5 拍 = **100ms**；紧接着 0x00414d95 `fcn_00402460(1)` 放出来。
+ */
+export const BALLOON_CURSOR: MiniCursorSpec = { image: 9, frames: 3, delay: 5 };
+
+/**
+ * 从换上这支指针起过了 `elapsedMs`，此刻该画第几张图 —— 纯函数。
+ * @source 0x004021f8 换形状时把帧号 `[0x48a172]` 与拍数 `[0x48a176]` 都清 0；
+ *   回调每拍 `++拍数 >= 每帧几拍` 就 `拍数 = 0, ++帧号`，`帧号 == 帧数` 回 0（0x00402054..0x0040205a）。
+ */
+export function miniCursorImage(spec: MiniCursorSpec, elapsedMs: number): number {
+  if (spec.frames <= 1 || spec.delay <= 0) return spec.image;
+  const beats = Math.max(0, Math.floor(elapsedMs / MINI_CURSOR_TICK_MS));
+  return spec.image + (Math.floor(beats / spec.delay) % spec.frames);
+}
+
+/**
+ * 七彩氣球这一拍**画不画准星** —— 纯函数。
+ *
+ * @source 显示：入场结束的 0x405 那一支（0x00414d51 播完入场影片之后 → 0x00414d93 `fcn_00402460(1)`）；
+ *   藏起：`[0x48bd58] == 2`（时间到且屏上清空）那一拍 0x00414d03 `fcn_00402460(0)`、0x00414d13 换回箭头
+ *   `fcn_004021f8(0x29, 1, 0)`，然后才画大号分数、停 2000ms。
+ *   ⇒ 入场（`intro`）与结算（`score`）都**没有指针**；能打的两段（`play` / `ending`）才有。
+ *   （进小游戏之前指针本来就是藏着的：按 GO 那一刻 0x0040126f `fcn_00402460(0)`，见 `magicCursorHidden`。）
+ */
+export function balloonCursorShown(st: BalloonGame): boolean {
+  return balloonShootable(st);
+}
 
 export interface Balloon {
   /** 0 = 空槽 */
@@ -751,9 +827,18 @@ export function balloonOffscreen(b: Balloon): boolean {
   return b.y - s.ay + s.h <= 0;
 }
 
+/**
+ * 这一拍点下去算不算数 @source 0x00414d9f `cmp byte [0x48bd58], 2 / je 不理`、
+ * 0x00414dac `cmp dword [0x48bd84], 0 / jne 不理` —— 入场中、结算中不理；
+ * **时间到了但屏上还有气球**（`[0x48bd58] == 1`，本引擎的 `ending`）照样能打。
+ */
+export function balloonShootable(st: BalloonGame): boolean {
+  return st.phase === 'play' || st.phase === 'ending';
+}
+
 /** 点一下：把所有被点到的气球爆掉并计分 @source `loc_00414d9f` / `loc_00414dd2` */
 export function balloonClick(st: BalloonGame, mx: number, my: number): BalloonGame {
-  if (st.phase !== 'play') return st;
+  if (!balloonShootable(st)) return st;
   const holder = { rngState: st.rngState };
   let score = st.score;
   const balloons = st.balloons.map((b) => ({ ...b }));
@@ -761,7 +846,9 @@ export function balloonClick(st: BalloonGame, mx: number, my: number): BalloonGa
   let speed = st.speed;
   let ticks = st.ticks;
   for (const b of balloons) {
-    if (b.x === 0) continue; // 空槽不参与（原版 `cmp word […], 0 / je` @0x00414f26）
+    if (b.x === 0) continue; // 空槽不参与（原版 `cmp word […], 0 / je` @0x00414f2b）
+    // 已经在爆的也不参与（连「点空」的音都不放）@source 0x00414f35 `test byte […+0x48bc48], 0xf0 / jne 下一个`
+    if (b.popped > 0) continue;
     if (!balloonHit(b, mx, my)) {
       // 点空 → 20 @source `loc_00414f0d`（原版对**每一个没被打中的气球**都放一次）
       st.sfx.push({ id: BALLOON_MISS_SOUND });
@@ -775,6 +862,10 @@ export function balloonClick(st: BalloonGame, mx: number, my: number): BalloonGa
     } else if (b.type === 10) {
       score = Math.trunc(score / 2);
     } else if (b.type === 11) {
+      // ★ 抽之前先把上一个「?」留下的定住 / 变速清掉
+      //   @source 0x00414e5c `xor dh,dh / mov [0x48bd59], dh`、0x00414e64 `xor ecx,ecx / mov [0x48bcc8], ecx`
+      freeze = 0;
+      speed = 0;
       const roll = randMod(holder, 6);
       if (roll === BALLOON_RANDOM.endSoon) {
         ticks = 1;
@@ -792,7 +883,7 @@ export function balloonClick(st: BalloonGame, mx: number, my: number): BalloonGa
     } else {
       score += b.type + 1;
     }
-    b.popped = BALLOON_POP_TICKS; // 类型字 0x3c @0x00414ef7
+    b.popped = BALLOON_POP_TICKS; // 类型字 0x3c @0x00414f01
   }
   // ★ 上限 999 在**所有**加/倍分支之后统一夹一次 —— 原版只在普通那支
   //   （`loc_00414ece`：`cmp edx,0x3e8 / jl` → `0x3e7`）夹，×2 那一支
@@ -814,8 +905,10 @@ export function balloonStep(st: BalloonGame, now: number): BalloonGame {
   const holder = { rngState: st.rngState };
   let freeze = st.freeze;
   if (freeze > 0) freeze -= 1;
+  // @source 0x00414cc9..0x00414ce0：剩余 tick 非 0 就减 1，减到 0 那一拍置 `[0x48bd58] = 1`。
+  //   ★ 收场前（`ending`）也照减 —— 「?」抽到 0 会把它改回 1（0x00414e8d），下一拍再归 0。
   let ticks = st.ticks;
-  if (st.phase === 'play') ticks = Math.max(0, ticks - 1);
+  if (ticks > 0) ticks -= 1;
   const playing = st.phase === 'play' && ticks > 0;
   const balloons = st.balloons.map((b) => ({ ...b }));
   let anyActive = false;
@@ -1461,7 +1554,7 @@ export const PENGUIN_HUD = {
   scoreX: 0x225,
 } as const;
 
-function drawPenguin(ctx: CanvasRenderingContext2D, sprite: MiniSprite, st: PenguinGame): void {
+function drawPenguin(ctx: CanvasRenderingContext2D, sprite: MiniSprite, st: PenguinGame, bigScore = true): void {
   drawPlain(ctx, sprite(MINI_ARCHIVE, PENGUIN_RES, 0, false), 0, 0);
   // 土堆（入场画出来；走过就被背景重贴擦掉 —— 见 D-MINI-6）
   if (st.phase === 'intro' || st.phase === 'play') {
@@ -1506,7 +1599,7 @@ function drawPenguin(ctx: CanvasRenderingContext2D, sprite: MiniSprite, st: Peng
     drawAnchored(ctx, sprite(MINI_ARCHIVE, PENGUIN_RES, 1, true), px, py);
   }
   const score = penguinScore(st.counts);
-  if (st.phase === 'score') drawBigScore(ctx, sprite, score);
+  if (bigScore && st.phase === 'score') drawBigScore(ctx, sprite, score);
   // HUD（位数照原版的 `%03d` / `%02d` 固定宽 —— 见 `drawNumber`）
   drawDigitRow(ctx, sprite, pad(st.ticks, 3), PENGUIN_HUD.timeX, 3);
   drawPlain(ctx, sprite(MINI_ARCHIVE, MINI_FONT_RES, 0, false), PENGUIN_HUD.sepX, MINI_HUD_Y);
@@ -1526,14 +1619,14 @@ function drawPenguin(ctx: CanvasRenderingContext2D, sprite: MiniSprite, st: Peng
  */
 export const BALLOON_HUD = { timeX: 0x31, sepX: 0x72, scoreX: 0x211 } as const;
 
-function drawBalloon(ctx: CanvasRenderingContext2D, sprite: MiniSprite, st: BalloonGame): void {
+function drawBalloon(ctx: CanvasRenderingContext2D, sprite: MiniSprite, st: BalloonGame, bigScore = true): void {
   drawPlain(ctx, sprite(MINI_ARCHIVE, BALLOON_RES, 0, false), 0, 0);
   for (const b of st.balloons) {
     if (b.x === 0) continue;
     const img = b.popped > 0 ? BALLOON_POP_IMAGE : b.type + BALLOON_IMAGE_FIRST;
     drawAnchored(ctx, sprite(MINI_ARCHIVE, BALLOON_RES, img, true), b.x, b.y);
   }
-  if (st.phase === 'score') drawBigScore(ctx, sprite, st.score);
+  if (bigScore && st.phase === 'score') drawBigScore(ctx, sprite, st.score);
   drawDigitRow(ctx, sprite, pad(st.ticks, 3), BALLOON_HUD.timeX, 3);
   drawPlain(ctx, sprite(MINI_ARCHIVE, MINI_FONT_RES, 0, false), BALLOON_HUD.sepX, MINI_HUD_Y);
   // ★ 分数固定 **4** 位（`%04d`）—— 多出来的位一个也不画（否则画到 0x261 框外）
@@ -1557,6 +1650,7 @@ function drawGift(
   sprite: MiniSprite,
   st: GiftGame,
   catcherArchiveRes: number,
+  bigScore = true,
 ): void {
   // 底图 #92：无头 640×480 RGB555，不在 manifest 里 → `sprite()` 取不到。
   // ★ 两条路都留：`minigame-bg.ts` 里有位图就画它（`loadMinigameBackground` 载的），
@@ -1594,7 +1688,7 @@ function drawGift(
     GIFT_CATCHER_Y,
   );
   const score = giftScore(st.counts);
-  if (st.phase === 'score') drawBigScore(ctx, sprite, score);
+  if (bigScore && st.phase === 'score') drawBigScore(ctx, sprite, score);
   // HUD：时间是 `[0x48bd2c] >> 1` @0x0041419b
   drawDigitRow(ctx, sprite, pad(st.ticks >> 1, 3), GIFT_HUD.timeX, 3);
   drawPlain(ctx, sprite(MINI_ARCHIVE, MINI_FONT_RES, 0, false), GIFT_HUD.sepX, MINI_HUD_Y);
@@ -1648,9 +1742,31 @@ interface MiniRun {
   introTried: boolean;
   /** 从什么时候起在等这段影片（用来判「确实没有这个资源」，见 `MINI_INTRO_GIVE_UP_MS`）*/
   introWaitSince: number;
+  /**
+   * ★ 联机**旁观**这一局（本机坐的不是正在玩的那一位）。
+   *
+   * 小游戏只有落点的那位真人玩（core 的 `enterMinigame`），分数也只收他那一台送的
+   * `{type:'minigame'}`（别的座位送的服务器回 `notYourTurn`）。旁观端这一屏只是**看**：
+   * 气球照样在飘（本机自己的 PRNG，与玩家那台不同步 —— 玩法从来不进 core），但
+   * 点了不算、没有准星、不送分、也不亮自己那份「0 分」的大号分数；
+   * 玩家那一台的 `minigame` 广播到了、pending 清掉，这一屏自然就关了。
+   */
+  spectator: boolean;
+  /** 准星是从什么时刻换上的（`fcn_004021f8` 把帧号清 0 的那一刻）；`null` = 此刻没有准星 */
+  cursorAt: number | null;
 }
 
 let run: MiniRun | null = null;
+/**
+ * 最后一次看到的指针舞台坐标（鼠标移动 / 触屏的点与拖都会派 `move`）；`null` = 指针不在画布上。
+ * ★ 模块级而不是挂在 `run` 上：原版每拍都 `GetCursorPos`，开局那一刻指针在哪准星就在哪。
+ */
+let pointer: { x: number; y: number } | null = null;
+
+/** 联机时本机是不是只在旁观这一局（单机 / 热座永远不是）*/
+function spectating(env: UiScreenEnv): boolean {
+  return env.localSeat !== undefined && env.localSeat !== null && env.localSeat !== env.state.currentPlayer;
+}
 /** 每次开局的序号 —— 混进种子，让同一回合里反复玩不会抽到同一副牌 */
 let playNonce = 0;
 
@@ -1719,6 +1835,8 @@ function ensureRun(env: UiScreenEnv): MiniRun | null {
     intro: null,
     introTried: false,
     introWaitSince: env.now,
+    spectator: spectating(env),
+    cursorAt: null,
   };
   // ★ 定曲（`push 0xc/0xb/0xa; call fcn_004549cf` @source `rich4_small_games.asm:4335/4481/4638`）：
   //   与入场 FLIC **同一道闸门**（真人 + 「動畫過程」开着），见 `introGateOpen`。
@@ -1875,13 +1993,78 @@ function flushSounds(env: UiScreenEnv, st: MiniRun): void {
  *   所以 intro 期间也得先画这一层，否则就是黑屏。见 `draw()` 里的注释。
  */
 function drawMiniStage(env: UiScreenEnv, sprite: MiniSprite, st: MiniRun): void {
-  if (st.penguin !== null) drawPenguin(env.stage, sprite, st.penguin);
-  else if (st.balloon !== null) drawBalloon(env.stage, sprite, st.balloon);
-  else if (st.gift !== null) drawGift(env.stage, sprite, st.gift, catcherResource(env));
+  // 旁观端不亮自己那份分数（本机没人打，永远是 0 —— 真分数在玩家那一台）
+  const big = !st.spectator;
+  if (st.penguin !== null) drawPenguin(env.stage, sprite, st.penguin, big);
+  else if (st.balloon !== null) drawBalloon(env.stage, sprite, st.balloon, big);
+  else if (st.gift !== null) drawGift(env.stage, sprite, st.gift, catcherResource(env), big);
+}
+
+/**
+ * 这一局此刻该画的**软件指针**（准星）：`{图号, 舞台坐标}`；不画就 `null` —— 纯函数。
+ *
+ * 只有七彩氣球换指针（@source 0x00414d8b `fcn_004021f8(9,3,5)`）；
+ * 旁观端不画（他不能打）；指针不在画布上不画。
+ */
+export function miniCursorAt(
+  st: {
+    balloon: BalloonGame | null;
+    spectator: boolean;
+    cursorAt: number | null;
+    intro: { at: number; until: number } | null;
+  },
+  at: { x: number; y: number } | null,
+  now: number,
+): { image: number; x: number; y: number } | null {
+  if (st.spectator || at === null || st.intro !== null) return null;
+  if (st.balloon === null || !balloonCursorShown(st.balloon) || st.cursorAt === null) return null;
+  return { image: miniCursorImage(BALLOON_CURSOR, now - st.cursorAt), x: at.x, y: at.y };
+}
+
+/** 准星的换上 / 收起跟着氣球的阶段走（见 `balloonCursorShown`）*/
+function syncCursorClock(st: MiniRun, now: number): void {
+  const shown = st.balloon !== null && st.intro === null && balloonCursorShown(st.balloon);
+  if (!shown) st.cursorAt = null;
+  else if (st.cursorAt === null) st.cursorAt = now;
+}
+
+/**
+ * `main.ts` 每帧问一次：画布上的**系统指针**要不要藏起来。
+ *
+ * ★ 七彩氣球整局（入场、打、结算）都藏：原版的指针本来就是软件画的，
+ *   从按 GO 起就收着（0x0040126f `fcn_00402460(0)`），入场演出后才换成准星放出来
+ *   （0x00414d93），收场那一拍又收起（0x00414d05）—— 准星由本屏自己画在舞台上
+ *   （`miniCursorAt`），这样触屏的点 / 拖也能看到准星跟着手指走。
+ *   旁观端不藏（他什么都不能点，留着系统指针）。
+ */
+export function minigameCursorHidden(): boolean {
+  return run !== null && run.balloon !== null && !run.spectator;
+}
+
+/** 指针离开画布（`main.ts` 的 `mouseleave`）：准星跟着消失，回来时再出现 */
+export function minigamePointerLeave(): void {
+  pointer = null;
+}
+
+/**
+ * `main.ts` 的画布 `mousemove` 每次都报一下指针在哪（不论哪一屏在接管）——
+ * 这样进小游戏那一刻不用先晃一下鼠标，准星就出现在指针原来的位置（原版每拍 `GetCursorPos`）。
+ */
+export function minigamePointerAt(x: number, y: number): void {
+  pointer = { x, y };
 }
 
 export const minigameScreen: UiScreen = {
   id: 'minigame',
+
+  /** 旁观端：玩家那一台的分数广播到了 —— 记一笔（屏随 pending 清掉自己关）*/
+  event(before: GameState, after: GameState, env: UiScreenEnv): void {
+    if (run === null || !run.spectator) return;
+    if (before.pending?.kind !== 'minigame' || after.pending?.kind === 'minigame') return;
+    const who = before.currentPlayer;
+    const gained = (after.players[who]?.points ?? 0) - (before.players[who]?.points ?? 0);
+    env.log(`小遊戲（旁觀）：${who + 1} 號座位得點券 ${gained} 點`);
+  },
 
   active(env: UiScreenEnv): boolean {
     return env.state.pending?.kind === 'minigame';
@@ -1920,7 +2103,10 @@ export const minigameScreen: UiScreen = {
     }
     // ★ 本帧推过的 tick 里登记的（挖到 / 点爆 / 点空 / 生成 / 炸彈）一次倒出去
     flushSounds(env, st);
+    syncCursorClock(st, env.now);
     if (runDone(st, env.now)) {
+      // ★ 旁观端不送分（送了也是 `notYourTurn`）：停在这一屏，等玩家那台的 `minigame` 广播
+      if (st.spectator) return;
       finish(env, runScore(st));
       return;
     }
@@ -1956,18 +2142,28 @@ export const minigameScreen: UiScreen = {
       return;
     }
     drawMiniStage(env, sprite, st);
+    // ★ 准星画在最上面（原版的软件指针也是最后贴到主表面上的，0x00402250 → 0x00401e59）
+    const cur = miniCursorAt(st, pointer, env.now);
+    if (cur !== null) {
+      drawAnchored(env.stage, env.sprite(MINI_CURSOR_ARCHIVE, MINI_CURSOR_RES, cur.image, true), cur.x, cur.y);
+    }
   },
 
-  move(x: number, _y: number, env: UiScreenEnv): void {
+  move(x: number, y: number, env: UiScreenEnv): void {
+    pointer = { x, y };
     const st = ensureRun(env);
     if (st === null) return;
-    st.mx = x;
+    // 旁观端：財神那屏的小人不跟本机的鼠标走（他不在玩）
+    if (!st.spectator) st.mx = x;
     env.requestRender();
   },
 
   down(x: number, y: number, env: UiScreenEnv): void {
+    pointer = { x, y };
     const st = ensureRun(env);
     if (st === null) return;
+    // ★ 旁观端点了不算（分数只收玩家那一台的）
+    if (st.spectator) return;
     st.mx = x;
     if (st.penguin !== null) st.penguin = penguinClick(st.penguin, x, y);
     else if (st.balloon !== null) st.balloon = balloonClick(st.balloon, x, y);

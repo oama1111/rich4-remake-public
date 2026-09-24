@@ -80,8 +80,18 @@ import {
   PENGUIN_TICK_MS,
   PENGUIN_TREASURE_COUNT,
   PENGUIN_VALID_CELLS,
+  BALLOON_CURSOR,
+  MINI_CURSOR_ARCHIVE,
+  MINI_CURSOR_RES,
+  MINI_CURSOR_TICK_MS,
   balloonClick,
+  balloonCursorShown,
   balloonHit,
+  balloonShootable,
+  miniCursorAt,
+  miniCursorImage,
+  minigameCursorHidden,
+  minigamePointerAt,
   balloonOffscreen,
   balloonStart,
   balloonStep,
@@ -327,9 +337,10 @@ describe('企鵝挖寶：埋寶与计分 @source 0x00412014 / fcn_00413a4a', () 
 });
 
 describe('七彩氣球 @source 0x004154dc', () => {
-  it('16 个槽、7 条道、生成高度 420、入场 5 tick', () => {
+  it('16 个槽、8 条道、生成高度 420、入场 5 tick', () => {
     expect(BALLOON_SLOTS).toBe(16);
-    expect(BALLOON_LANES).toEqual([0x28, 0x78, 0xc8, 0x118, 0x168, 0x1b8, 0x208]);
+    // ★ `0x0041305e cmp ebx, 0x280 / jge 出圈` ⇒ 0x258(600) 也是一条道（先前漏了，右边那条永远空着）
+    expect(BALLOON_LANES).toEqual([0x28, 0x78, 0xc8, 0x118, 0x168, 0x1b8, 0x208, 0x258]);
     expect(BALLOON_SPAWN_Y).toBe(0x1a4);
     expect(BALLOON_INTRO_TICKS).toBe(5);
     // 气球图 = 图 `类型 + 1` @source `loc_0041311b`
@@ -369,9 +380,10 @@ describe('七彩氣球 @source 0x004154dc', () => {
     expect(balloonClick(make(9), 0x78, 200).score).toBe(14);
     expect(balloonClick(make(10), 0x78, 200).score).toBe(3); // sar 7 → 3
     expect(balloonClick(make(12), 0x78, 200).score).toBe(7 + 13);
-    // 爆掉的那一格类型字写成 0x3c：画 2 帧爆开图
+    // 爆掉的那一格类型字写成 0x3c：0x2c / 0x1c 两拍画爆开图、0x0c 那一拍置空
     const popped = balloonClick(make(3), 0x78, 200).balloons[0];
     expect(popped?.popped).toBe(BALLOON_POP_TICKS);
+    expect(BALLOON_POP_TICKS).toBe(3);
     expect(BALLOON_POP_IMAGE).toBe(13);
   });
 
@@ -1089,5 +1101,242 @@ describe('★★ 结算大号分数：透明贴、按锚点贴 @source fcn_00414
     const ctx = { drawImage: () => undefined } as unknown as CanvasRenderingContext2D;
     drawNumber(ctx, sprite, '123', 0, 0, MINI_DIGIT_PITCH, 0, 3);
     expect(keyed).toEqual([false, false, false]);
+  });
+});
+
+// ============================================================
+//  ★★ 第二十一份試玩回報（2026-09-24，联机第 12 回合）：
+//  「打气球游戏时鼠标指针没换成瞄准镜，没有出现炸弹气球以及配套规则」
+// ============================================================
+
+describe('★★ 七彩氣球的准星 @source 0x00414d85..0x00414d95 `fcn_004021f8(9,3,5)` + `fcn_00402460(1)`', () => {
+  it('★ 指针图是 `Data.mkf` #0 的图 9/10/11，每 20ms 一拍、每帧 5 拍 = 100ms 轮一张', () => {
+    // 0x00402108..0x0040211a `read_mkf([0x48a0e4] = Data.mkf, 0)`；0x004021a3 `timeSetEvent(0x14, …)`
+    expect(MINI_CURSOR_ARCHIVE).toBe('Data.mkf');
+    expect(MINI_CURSOR_RES).toBe(0);
+    expect(MINI_CURSOR_TICK_MS).toBe(20);
+    expect(BALLOON_CURSOR).toEqual({ image: 9, frames: 3, delay: 5 });
+    expect(miniCursorImage(BALLOON_CURSOR, 0)).toBe(9);
+    expect(miniCursorImage(BALLOON_CURSOR, 99)).toBe(9);
+    expect(miniCursorImage(BALLOON_CURSOR, 100)).toBe(10);
+    expect(miniCursorImage(BALLOON_CURSOR, 219)).toBe(11);
+    expect(miniCursorImage(BALLOON_CURSOR, 300)).toBe(9); // 帧号 == 帧数 回 0（0x00402058）
+    // 单帧的指针（例如收场换回的箭头 0x29）不动
+    expect(miniCursorImage({ image: 0x29, frames: 1, delay: 0 }, 12345)).toBe(0x29);
+  });
+
+  it('★ 入场、结算没有指针；能打的两段（play / ending）才有准星', () => {
+    const st = balloonStart(1);
+    expect(balloonCursorShown(st)).toBe(false); // intro：0x405 还没来
+    expect(balloonCursorShown({ ...st, phase: 'play' })).toBe(true);
+    expect(balloonCursorShown({ ...st, phase: 'ending' })).toBe(true);
+    // `[0x48bd58] == 2` 那一拍 0x00414d05 `fcn_00402460(0)` 收起，才画大号分数
+    expect(balloonCursorShown({ ...st, phase: 'score' })).toBe(false);
+  });
+
+  it('★ 准星跟着指针（鼠标 / 触屏的点与拖都派 move）；旁观端、指针不在画布上、入场影片中都不画', () => {
+    const balloon = { ...balloonStart(1), phase: 'play' as const };
+    const base = { balloon, spectator: false, cursorAt: 1000, intro: null };
+    expect(miniCursorAt(base, { x: 200, y: 150 }, 1000)).toEqual({ image: 9, x: 200, y: 150 });
+    expect(miniCursorAt(base, { x: 200, y: 150 }, 1100)).toEqual({ image: 10, x: 200, y: 150 });
+    expect(miniCursorAt(base, null, 1000)).toBeNull();
+    expect(miniCursorAt({ ...base, spectator: true }, { x: 1, y: 1 }, 1000)).toBeNull();
+    expect(miniCursorAt({ ...base, intro: { at: 0, until: 5000 } }, { x: 1, y: 1 }, 1000)).toBeNull();
+    expect(miniCursorAt({ ...base, balloon: null }, { x: 1, y: 1 }, 1000)).toBeNull();
+  });
+});
+
+describe('★★ 七彩氣球的规则细节（第二十一份回报追查时对 exe 逐条复核）', () => {
+  const withBalloons = (
+    list: { x: number; y: number; type: number; popped: number }[],
+    over: Partial<ReturnType<typeof balloonStart>> = {},
+  ): ReturnType<typeof balloonStart> => {
+    const st = balloonStart(99);
+    const balloons = st.balloons.map((b, i) => list[i] ?? { ...b });
+    return { ...st, balloons, phase: 'play', intro: 0, ...over };
+  };
+
+  it('★ 时间到了、屏上还有气球（ending）照样能打 @source 0x00414d9f 只拦 `[0x48bd58] == 2`', () => {
+    const st = withBalloons([{ x: 0x78, y: 200, type: 4, popped: 0 }], { phase: 'ending', ticks: 0, score: 10 });
+    expect(balloonShootable(st)).toBe(true);
+    expect(balloonClick(st, 0x78, 200).score).toBe(15);
+    // 入场中 / 结算中不理
+    expect(balloonClick({ ...st, phase: 'intro' }, 0x78, 200).score).toBe(10);
+    expect(balloonClick({ ...st, phase: 'score' }, 0x78, 200).score).toBe(10);
+  });
+
+  it('★「?」先清掉上一个效果再抽 @source 0x00414e5c / 0x00414e64', () => {
+    const st = withBalloons([{ x: 0x78, y: 200, type: 11, popped: 0 }], { freeze: 7, speed: -1, score: 9 });
+    const roll = new WatcomRng(st.rngState).next() % 6;
+    const after = balloonClick(st, 0x78, 200);
+    // 没抽到「定住」就不该还定着；没抽到「变速」速度就回到 ×1
+    expect(after.freeze).toBe(roll === 1 ? BALLOON_FREEZE_TICKS : 0);
+    expect(after.speed).toBe(roll === 2 ? -1 : roll === 3 ? 1 : 0);
+  });
+
+  it('★ 已在爆的气球不吃点、也不放「点空」音 @source 0x00414f35 `test 0xf0 / jne 下一个`', () => {
+    const st = withBalloons([
+      { x: 0x78, y: 200, type: 1, popped: 2 },
+      { x: 0xc8, y: 200, type: 1, popped: 0 },
+    ]);
+    const after = balloonClick({ ...st, sfx: [] }, 0x78, 200);
+    // 只有第二个（没爆、没点中）放一声 20
+    expect(after.sfx.map((s) => s.id)).toEqual([BALLOON_MISS_SOUND]);
+    expect(after.score).toBe(0);
+  });
+
+  it('★ 爆开后第 3 个 tick 置空（0x3c → 0x2c → 0x1c → 0x0c）@source 0x004130b6..0x004130d2', () => {
+    let st = balloonClick(withBalloons([{ x: 0x78, y: 200, type: 1, popped: 0 }], { ticks: 100 }), 0x78, 200);
+    st = balloonStep(st, 0);
+    expect(st.balloons[0]?.x).toBe(0x78); // 0x2c：还画爆开图
+    st = balloonStep(st, 100);
+    expect(st.balloons[0]?.x).toBe(0x78); // 0x1c：还画
+    st = balloonStep(st, 200);
+    expect(st.balloons[0]?.x).toBe(0); // 0x0c：置空
+  });
+
+  it('★ 收场前剩余时间照减（「?」抽到 0 把它改回 1，下一拍再归 0）@source 0x00414cc9..0x00414ce0', () => {
+    const st = withBalloons([{ x: 0x78, y: 100, type: 1, popped: 0 }], { phase: 'ending', ticks: 1 });
+    const after = balloonStep(st, 0);
+    expect(after.ticks).toBe(0);
+    expect(after.phase).toBe('ending'); // 屏上还有气球，接着等
+  });
+
+  it('★★ 没有「炸彈氣球」：生成出来的类型只有 0..11，12 种气球图（#91 图 1..12）+ 爆开图 13', () => {
+    // 生成 @0x004131a5 / 0x00412fe1 / 0x00413014：r<20 → 0..4、r<28 → 5..8、r<30 → 表 0x475039 = 9/10/11
+    let st: ReturnType<typeof balloonStart> = { ...balloonStart(20260924), phase: 'play', intro: 0, ticks: 100000 };
+    const seen = new Set<number>();
+    for (let i = 0; i < 4000; i++) {
+      st = balloonStep(st, i * BALLOON_TICK_MS);
+      for (const b of st.balloons) if (b.x !== 0 && b.popped === 0) seen.add(b.type);
+    }
+    expect([...seen].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    // 八条道都用得上（x = 600 那条也有）
+    expect(BALLOON_LANES).toContain(0x258);
+  });
+});
+
+describe('★★ 七彩氣球整屏：本机在玩 vs 联机旁观', () => {
+  interface Drawn {
+    archive: string;
+    res: number;
+    index: number;
+    x: number;
+    y: number;
+  }
+  const mkEnv = (
+    opts: { now: number; localSeat?: number | null | undefined; pending?: boolean },
+    sink: { dispatched: unknown[]; effects: number[]; drawn: Drawn[] },
+  ): UiScreenEnv => {
+    const state = {
+      pending: opts.pending === false ? null : { kind: 'minigame', game: SPECIAL_KIND.BALLOON },
+      currentPlayer: 0,
+      players: [{ whoPlays: 1, points: 0 }, { whoPlays: 1, points: 0 }],
+      day: 1,
+      month: 1,
+      year: 1,
+    } as unknown as GameState;
+    let last: Drawn | null = null;
+    const stage = {
+      drawImage: (bmp: unknown, x: number, y: number) => {
+        if (last !== null && bmp === last) sink.drawn.push({ ...(bmp as Drawn), x, y });
+      },
+    } as unknown as CanvasRenderingContext2D;
+    return {
+      screen: 'game',
+      state,
+      topo: { nodes: [], lands: [], facilities: [] } as never,
+      map: null as never,
+      now: opts.now,
+      stage,
+      animation: false, // 不播入场影片，直接进游戏
+      sprite: (archive: string, res: number, index: number) => {
+        const tag = { archive, res, index, x: 0, y: 0 };
+        last = tag as Drawn;
+        // 锚点照素材：准星 (15,14)，其余 (0,0)
+        const anchor = archive === 'Data.mkf' ? { anchorX: 15, anchorY: 14 } : { anchorX: 0, anchorY: 0 };
+        return { bitmap: tag as unknown as ImageBitmap, width: 31, height: 29, ...anchor };
+      },
+      flic: () => null,
+      dispatch: (a) => sink.dispatched.push(a),
+      requestRender: () => undefined,
+      log: () => undefined,
+      playEffect: (id: number) => sink.effects.push(id),
+      stopEffect: () => undefined,
+      ...(opts.localSeat === undefined ? {} : { localSeat: opts.localSeat }),
+    };
+  };
+
+  /** 跑到屏上有气球为止（最多 60 拍），返回此刻的时间 */
+  const playUntilBalloons = (localSeat: number | null | undefined, sink: { dispatched: unknown[]; effects: number[]; drawn: Drawn[] }): number => {
+    // 先把上一个用例的那一局清掉（pending 没了 ⇒ run = null）
+    minigameScreen.tick!(mkEnv({ now: 0, pending: false, localSeat }, sink));
+    let now = 1000;
+    minigameScreen.tick!(mkEnv({ now, localSeat }, sink));
+    for (let i = 0; i < 60; i++) {
+      now += BALLOON_TICK_MS;
+      minigameScreen.tick!(mkEnv({ now, localSeat }, sink));
+      sink.drawn.length = 0;
+      minigameScreen.draw(mkEnv({ now, localSeat }, sink));
+      if (sink.drawn.some((d) => d.archive === 'Panel.mkf' && d.res === BALLOON_RES && d.index >= 1 && d.index <= 12)) {
+        return now;
+      }
+    }
+    throw new Error('60 拍都没生成气球');
+  };
+
+  it('★★ 单机 / 联机的玩家本人：系统指针藏起、准星画在指针处（锚点对齐热点）、点空放 20、打完送分', () => {
+    const sink = { dispatched: [] as unknown[], effects: [] as number[], drawn: [] as Drawn[] };
+    for (const seat of [undefined, 0] as const) {
+      sink.dispatched.length = 0;
+      let now = playUntilBalloons(seat, sink);
+      expect(minigameCursorHidden()).toBe(true);
+      minigamePointerAt(200, 150);
+      sink.drawn.length = 0;
+      minigameScreen.draw(mkEnv({ now, localSeat: seat }, sink));
+      const cursor = sink.drawn.filter((d) => d.archive === 'Data.mkf');
+      expect(cursor).toHaveLength(1);
+      expect([9, 10, 11]).toContain(cursor[0]!.index);
+      expect(cursor[0]).toMatchObject({ res: 0, x: 200 - 15, y: 150 - 14 });
+      // 准星是最后画的（盖在气球与 HUD 上面）
+      expect(sink.drawn[sink.drawn.length - 1]?.archive).toBe('Data.mkf');
+      // 往左上角空处点一下：屏上的每个气球都放一声「点空」
+      sink.effects.length = 0;
+      minigameScreen.down!(2, 2, mkEnv({ now, localSeat: seat }, sink));
+      expect(sink.effects.length).toBeGreaterThan(0);
+      expect(new Set(sink.effects)).toEqual(new Set([BALLOON_MISS_SOUND]));
+      // 打完：送一条 `minigame`
+      for (let i = 0; i < 400 && sink.dispatched.length === 0; i++) {
+        now += BALLOON_TICK_MS * 5;
+        minigameScreen.tick!(mkEnv({ now, localSeat: seat }, sink));
+      }
+      expect(sink.dispatched).toEqual([{ type: 'minigame', score: 0 }]);
+    }
+  });
+
+  it('★★ 联机旁观：不藏系统指针、没有准星、点了不算、不送分、不亮自己那份 0 分', () => {
+    const sink = { dispatched: [] as unknown[], effects: [] as number[], drawn: [] as Drawn[] };
+    let now = playUntilBalloons(1, sink);
+    expect(minigameCursorHidden()).toBe(false);
+    minigamePointerAt(200, 150);
+    sink.drawn.length = 0;
+    minigameScreen.draw(mkEnv({ now, localSeat: 1 }, sink));
+    expect(sink.drawn.filter((d) => d.archive === 'Data.mkf')).toEqual([]);
+    sink.effects.length = 0;
+    minigameScreen.down!(2, 2, mkEnv({ now, localSeat: 1 }, sink));
+    expect(sink.effects).toEqual([]);
+    for (let i = 0; i < 400; i++) {
+      now += BALLOON_TICK_MS * 5;
+      minigameScreen.tick!(mkEnv({ now, localSeat: 1 }, sink));
+    }
+    expect(sink.dispatched).toEqual([]);
+    // 本机那一局早就演完了：画面停在空天上，不画大号分数（大号数字 = Panel #79 图 10..19）
+    sink.drawn.length = 0;
+    minigameScreen.draw(mkEnv({ now, localSeat: 1 }, sink));
+    expect(sink.drawn.filter((d) => d.res === MINI_FONT_RES && d.index >= 10)).toEqual([]);
+    // 玩家那台的分数广播到了 ⇒ pending 清掉 ⇒ 屏关、指针还原
+    minigameScreen.tick!(mkEnv({ now, localSeat: 1, pending: false }, sink));
+    expect(minigameScreen.active(mkEnv({ now, localSeat: 1, pending: false }, sink))).toBe(false);
+    expect(minigameCursorHidden()).toBe(false);
   });
 });
