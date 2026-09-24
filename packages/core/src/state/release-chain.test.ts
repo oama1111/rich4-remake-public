@@ -17,11 +17,19 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
-import { newGame } from '../rules/new-game.ts';
+import { newGame as newGameRaw } from '../rules/new-game.ts';
+import { landAll } from '../testing/factories.ts';
 import { anyoneConfined } from '../rules/confinement.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { reduce } from './reduce.ts';
 import { WHO_PLAYS_RETURN_TO_BOARD, WHO_PLAYS_SPECIAL_MASK, type GameState } from './types.ts';
+
+/**
+ * 夹具：「第一輪已经过去」—— 这里测的不是开局，要的是大家都已在盘上
+ * （`newGame` 只摆第 1 位，其余轮到自己才落地，见 `rules/start-placement.ts`）。
+ */
+const newGame = (o: Parameters<typeof newGameRaw>[0]): ReturnType<typeof newGameRaw> =>
+  landAll(newGameRaw(o), o.map.nodes);
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;

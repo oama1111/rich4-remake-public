@@ -48,7 +48,8 @@ const run = existsSync(MAP) ? it : it.skip;
 // ★ 2026-09-23 換種子（E-41 移植）：「走回棋盤」那一回合收尾不換人，改了輪轉；原 12 走不到（電腦回合、真人舉牌）現場，
 //   跟 `auction-acting-seat.test.ts` 的 `SEED_HUMAN_BIDS_ON_COMPUTER_TURN` 一起換成 5（搜索器：该现场 8 次）。
 // ★ 2026-09-23 再換（第十四份試玩回報 #2：開局擺人每人多抽一次「來路」）：跟著換成 14（搜索器：该现场 6 次）。
-const SEED = 14;
+// ★ 2026-09-24 再換（開局惰性擺人：第 2..N 位輪到自己才落地）：跟著換成 12（搜索器：该现场 6 次）。
+const SEED = 12;
 const HUMANS = 2;
 /** 第几回合让 H1 超时一次、第几回合让 H1 掉线 */
 const TIMEOUT_AT_TURN = 150;

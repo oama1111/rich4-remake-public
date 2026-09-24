@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import {
   RELEASE_PENDING,
   gateWalkPlan,
+  landAll,
   newGame,
   parseMap,
   reduce,
@@ -42,10 +43,14 @@ const load = () => {
  */
 function pendingRelease(field: 'inPrison' | 'inHospital', occ: 'prisonOccupancy' | 'hospitalOccupancy'): GameState {
   const { map } = load();
-  const s = newGame({
-    map,
-    players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
-  });
+  // 夹具：大家都已落地（开局只摆第 1 位，见 core 的 `rules/start-placement.ts`）
+  const s = landAll(
+    newGame({
+      map,
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+    }),
+    map.nodes,
+  );
   return {
     ...s,
     phase: 'turnEnd',

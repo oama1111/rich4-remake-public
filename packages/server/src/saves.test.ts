@@ -14,6 +14,7 @@ import {
   decideAction,
   defaultStartDate,
   deserializeGame,
+  isUnplaced,
   parseMap,
   reduce,
   roomJoinability,
@@ -505,7 +506,11 @@ describe('★ 存檔房：認領 / 離座 / 列表', () => {
     x.send(join('ABCDEF', 'X', { mode: 'join', claimSeat: 1 }));
     expect(x.h.seat).toBe(1);
     expect(x.conn.last('start')?.snapshot).toBeDefined();
-    expect(hub.room('ABCDEF')!.state.players[1]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    // ★ 存檔是開局那一刻存的：1 號座還沒上盤（`who_plays = 0`，輪到他才落地，見 core 的
+    //   `rules/start-placement.ts`）⇒ 認領改的是落地時生效的那一份（`landingWhoPlays`，原版 +0x64）
+    const seat1 = hub.room('ABCDEF')!.state.players[1]!;
+    expect(isUnplaced(seat1)).toBe(true);
+    expect(seat1.landingWhoPlays).toBe(WHO_PLAYS_HUMAN);
     const after = hub.listRooms(idFor('W'))[0]!;
     expect(after.vacant).toBeUndefined();
     expect(roomJoinability(after)).toBe('playing');

@@ -306,6 +306,25 @@ export interface Player {
   monthlyPaid: number;
   /** 本月收入累计 @source player_info +0x60（`add [player*0x68 + 0x496bc8], ebx`） */
   monthlyReceived: number;
+  /**
+   * 「落地之后是谁在打」—— `player_info +0x64`（存档里的 `f100`）。
+   *
+   * ★ 开局**只有它**记着人／电脑：玩家记录是整条从角色表抄来的（`0x004072e4 memcpy
+   *   (player, 0x47e80c + 角色 × 0x68, 0x68)`），表里 `+0x08..+0x10`（坐标 / 节点 / 来路 / 朝向）
+   *   与 `+0x15`（`who_plays`）**全是 0**；接着 `0x004072f9` 只写 `+0x64 = 1（人）/ 2（电脑）`。
+   *   ⇒ 开局所有人都是「没上盘」：`who_plays == 0` 且 `xpos == 0`。
+   * ★ 谁第一次被镜头对准（自己的第一个回合）才摆谁（`0x004082d9..0x004083a0`），
+   *   落地影片播完那一刻才把它抄回 `+0x15`：
+   * ```asm
+   * 00418d01  mov dl, byte [eax + 0x496bcc]   ; +0x64
+   * 00418d07  mov byte [eax + 0x496b7d], dl   ; → who_plays
+   * ```
+   * 之后原版不再拿它当「谁在打」读（`0x00447a49` 那件道具借它暂存交通工具，本引擎另有字段）。
+   * 破产的 `memset(player + 0x1c, 0, 0x4c)` 覆盖到它（`markPlayerBankrupt` 清成 0）。
+   *
+   * 可选：旧存档 / 测试工厂造的玩家没有这一格 = 0 = 「不会再落地」。
+   */
+  landingWhoPlays?: number;
 }
 
 // ============================================================
@@ -1640,6 +1659,31 @@ export interface GameState {
 
 export function isAlive(p: Player): boolean {
   return (p.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_DEAD;
+}
+
+/**
+ * 这一位**还没上盘**吗（开局之后、自己第一个回合之前）。
+ *
+ * @source 回合游标 `0x00418fee..0x00419006`：
+ * ```asm
+ * 00418ff5  cmp byte [player + 0x15], 0     ; who_plays
+ * 00418ffc  jne 收下
+ * 00418ffe  cmp word [player + 0x08], 0     ; xpos
+ * 00419006  jne 跳过                         ; ★ who_plays == 0 且 xpos != 0 才是出局者
+ * ```
+ *   ⇒ `who_plays == 0 且 xpos == 0` 的人**照样轮到**；轮到时镜头函数 `0x0040829d`
+ *   见 `(x, y) == (0, 0)`（`0x004082c9` / `0x004082d1`）就把他摆上盘。
+ * ★ 另加一条 `landingWhoPlays != 0`：原版里出局者一定已经上过盘（xpos 非 0），这一格把
+ *   「测试工厂 / 旧存档里 `whoPlays = 0` 又没填坐标的出局者」排除掉，免得被当成没上盘的人
+ *   复活；破产会把这一格清成 0（`memset` 覆盖 +0x64）。在原版可达的局面上两种判据等价。
+ */
+export function isUnplaced(p: Player): boolean {
+  return p.whoPlays === 0 && p.xpos === 0 && (p.landingWhoPlays ?? 0) !== 0;
+}
+
+/** 还在这一局里：在场，或还没上盘（等自己的第一个回合落地）*/
+export function isInGame(p: Player): boolean {
+  return isAlive(p) || isUnplaced(p);
 }
 
 /** 该玩家此刻由 AI 操作吗（电脑玩家，或被托管的人类） */

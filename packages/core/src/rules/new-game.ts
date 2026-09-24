@@ -9,7 +9,7 @@
  *   （资金分配、起始位置、牌堆数量）。真正开局要走本模块。
  */
 
-import type { MapNode, Rich4Map } from '../loaders/map.ts';
+import type { Rich4Map } from '../loaders/map.ts';
 import type { GameState, Player } from '../state/types.ts';
 import type { GameMode } from '../rng/policy.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
@@ -17,8 +17,7 @@ import { DEFAULT_INITIAL_FUND, NO_WIN_CONDITIONS, START_DATE_MAX, startingMoney 
 import type { WinConditions } from './setup.ts';
 import { CARDS, CHARACTERS } from '@rich4/data';
 import { traitsOf } from '../ai/personality.ts';
-import { placeOnNodeId } from './position.ts';
-import { directionOf } from '../state/reduce.ts';
+import { landAt, landUnplacedPlayer } from './start-placement.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
 import { CARD_IMPLS } from '@rich4/data';
 import { FORTUNE_DECK_SIZE, NEWS_DECK_SIZE, createDeck } from '../events/deck.ts';
@@ -78,7 +77,10 @@ export interface NewGameOptions {
   mode?: GameMode;
   /** PRNG 种子。★ 单机可随意；联机必须由服务器统一下发 */
   seed?: number;
-  /** 所有人的起始节点。原版是地图上的固定起点，尚未定位，故可注入 */
+  /**
+   * **测试用**：所有人开局当场落在这一格（不抽签、不走惰性摆人）。
+   * 缺省 0 = 照原版：第 1 位开局落地，其余轮到自己时才落地（`rules/start-placement.ts`）。
+   */
   startNodeId?: number;
   /**
    * 開局自帶載具：0 走路 / 1 機車 / 2 汽車。
@@ -149,94 +151,19 @@ export function initialCardAmounts(): number[] {
  * 见 docs/known-deviations.md 的 Q-INIT-2。
  */
 /**
- * ⚠️ **已废弃**：起始节点不是常数，是**随机抽**的（见 `drawStartNodes`）。
+ * ⚠️ **已废弃**：起始节点不是常数，是**随机抽**的（见 `drawStartPlacement`）。
  *   留着只为 `startNodeId` 这个测试用的覆盖项有个默认值；`0` 表示「照原版随机」。
  */
 export const UNVERIFIED_START_NODE = 0;
 
 /**
- * 每个玩家的起始节点 —— **在全图可放物件的节点里随机抽一格**。
+ * 每个玩家的起始节点 —— 在全图可放物件的节点里随机抽一格（Q-INIT-2 结案）。
  *
- * @source 開局摆人 VA 0x004082d9 `call 0x40aa0f` → 结果写进 `node_id`（0x004082fb）。
- *   `0x40aa0f`：
- * ```asm
- * 0040aa1d  for (i = 1; i <= 节点数; i++)
- * 0040aa37    if (node.flags & 0x80ffff00) continue    ; 特殊格 / 已被占用的都不要
- * 0040aa40    if (四个邻接全为 0) continue              ; 孤立格不要
- * 0040aa4c    候选[n++] = i
- * 0040aa53  return 候选[rand() % n]
- * ```
- *   这与物件登场挑格的 `objectNodeCandidates`/`pickObjectNode` 是**同一条**筛选
- *   （那两个函数就是照它写的），故直接复用。`flags` 的 bits 8..11 是「谁站在这格」，
- *   所以**后摆的人不会与先摆的人同格** —— 这里按下标顺序逐个抽、逐个排除。
- *   Q-INIT-2 结案。
+ * ★ 2026-09-24 起摆人是**惰性**的（轮到谁才摆谁，见 `rules/start-placement.ts`），
+ *   不再有「开局一次摆 N 个人」这件事；抽签本身（两次 `rand()`）在那边的
+ *   `drawStartPlacement`，这里只再导出，旧引用不断。
  */
-export function drawStartNodes(
-  nodes: Rich4Map['nodes'],
-  count: number,
-  rng: WatcomRng,
-): number[] {
-  return drawStartPlacements(nodes, count, rng).map((p) => p.nodeId);
-}
-
-/** 一名玩家开局落在哪一格、「从哪一格来」、面朝哪边 */
-export interface StartPlacement {
-  nodeId: number;
-  /** `last_node_id`（+0x0e）—— 起始格的一个**随机邻格**，第一步不会走回它 */
-  lastNodeId: number;
-  /** `direction`（+0x10）= 从 `lastNodeId` 指向 `nodeId` 的八向朝向 */
-  direction: number;
-}
-
-/**
- * 开局摆人 —— 起始格 + 「来路」+ 朝向，**每人两次 `rand()`**。
- *
- * @source 開局摆人（`fcn_0040829d` 里「当前玩家还没上盘」那一段）：
- * ```asm
- * 004082d9  call 0x40aa0f                      ; ① rand() 抽起始格（见 drawStartNodes）
- * 004082fb  mov  word [player + 0x0c], bx      ;    node_id
- * 00408302  for (slot = 0; slot < 4; slot++)   ; 起始格四个邻接槽（节点 +0x18 起 4 个 uint16）
- * 0040831b    if (adj[slot] != 0) cand[n++] = adj[slot]   ; ★ 只看非 0，不看封路位
- * 00408328  call 0x456f2d / cdq / idiv edi     ; ② rand() % n
- * 00408340  mov  word [player + 0x0e], dx      ;    last_node_id = cand[rand() % n]
- * 0040835e  call 0x407a8c(last, node)          ;    = 0x454fb4(node.x − last.x, node.y − last.y)
- * 0040836f  mov  byte [player + 0x10], al      ;    direction
- * ```
- * 即人物**背对一个随机邻格站着**，而那一格又是 `last_node_id` ⇒ 第一步
- * （`pickNextNode` 排除上一格）一定走别的方向 —— 站姿朝向与接下来要走的方向一致
- * （第十四份试玩回报 #2）。先前 `last_node_id = node_id`、`direction = 0`，
- * 人物一律朝同一个方向站着，第一步可能往任何一边走。
- *
- * ⚠️ 原版这一段是**惰性**的：谁第一次被镜头对准（自己的第一个回合）才摆谁，
- *   所以 P2..P4 那两次 `rand()` 与前面玩家的掷骰/走路交错。本引擎沿用既有做法在
- *   `newGame` 里一次摆完（Q-INIT-2），只把每人的两次抽签按原版的**先后**排好。
- */
-export function drawStartPlacements(
-  nodes: Rich4Map['nodes'],
-  count: number,
-  rng: WatcomRng,
-): StartPlacement[] {
-  const out: StartPlacement[] = [];
-  for (let i = 0; i < count; i++) {
-    const taken = out.map((p) => p.nodeId);
-    const free = objectNodeCandidates(nodes).filter((n) => !taken.includes(n));
-    const nodeId = pickObjectNode(free, rng.next());
-    out.push(startFacing(nodes, nodeId, rng));
-  }
-  return out;
-}
-
-/** `drawStartPlacements` 的第 ② 步：给定起始格，抽「来路」并求朝向 */
-function startFacing(nodes: Rich4Map['nodes'], nodeId: number, rng: WatcomRng): StartPlacement {
-  const node = nodes[nodeId - 1];
-  const cand = node === undefined ? [] : node.adjacentSlots.filter((n) => n !== 0);
-  // 候选为空时原版会 `idiv 0`（筛起始格时已排除孤立格，走不到这里）—— 不抽、原地
-  if (node === undefined || cand.length === 0) return { nodeId, lastNodeId: nodeId, direction: 0 };
-  const lastNodeId = cand[rng.next() % cand.length]!;
-  const last = nodes[lastNodeId - 1];
-  const direction = last === undefined ? 0 : directionOf(node.x - last.x, node.y - last.y);
-  return { nodeId, lastNodeId, direction };
-}
+export { drawStartPlacement, type StartPlacement } from './start-placement.ts';
 
 /**
  * 每家公司的总股本。
@@ -270,26 +197,26 @@ function commercialSharesOf(map: Rich4Map, globalMapId: number): number[] {
   return out;
 }
 
-function makeInitialPlayer(
-  index: number,
-  setup: PlayerSetup,
-  fund: number,
-  start: StartPlacement,
-  vehicle: number,
-  nodes: readonly MapNode[],
-): Player {
-  const startNode = start.nodeId;
+/**
+ * 一名玩家的开局记录 —— **还没上盘**（见 `rules/start-placement.ts` 的文件头）。
+ *
+ * @source `0x004072e4 memcpy(player, 0x47e80c + 角色 × 0x68, 0x68)`：角色表里
+ *   `+0x08..+0x10`（坐标 / 节点 / 来路 / 朝向）与 `+0x15`（`who_plays`）全是 0；
+ *   随后 `0x004072f9` 只写 `+0x64 = 1 / 2`（人 / 电脑）= 本引擎的 `landingWhoPlays`。
+ */
+function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, vehicle: number): Player {
   const money = startingMoney(setup.character, fund);
-  const base: Player = {
+  return {
     index,
     character: setup.character,
-    whoPlays: setup.kind === 'human' ? WHO_PLAYS_HUMAN : WHO_PLAYS_COMPUTER,
+    // @source 角色表 +0x15 = 0：落地（`0x00418d07`）之前谁都不是「在打」的
+    whoPlays: 0,
+    // @source 角色表 +0x08..+0x10 = 0：没上盘
     xpos: 0,
     ypos: 0,
-    nodeId: startNode,
-    // @source 0x00408340 / 0x0040836f：来路 = 随机邻格、朝向 = 来路 → 起始格（见 drawStartPlacements）
-    lastNodeId: start.lastNodeId,
-    direction: start.direction,
+    nodeId: 0,
+    lastNodeId: 0,
+    direction: 0,
     // @source VA 0x00407219：交通工具与骰子数都由开局设置定，`ndices = traffic + 1`
     trafficMethod: vehicle,
     ndices: vehicle + 1,
@@ -332,12 +259,9 @@ function makeInitialPlayer(
     hostility: [0, 0, 0, 0],
     monthlyPaid: 0,
     monthlyReceived: 0,
+    // @source 0x004072f9 `mov byte [player + 0x64], al`（1 = 人、2 = 电脑）
+    landingWhoPlays: setup.kind === 'human' ? WHO_PLAYS_HUMAN : WHO_PLAYS_COMPUTER,
   };
-  // ★★ 位置是**三元组**：`nodeId` / `xpos` / `ypos` 一起写（见 rules/position.ts）。
-  //   原版开局就把玩家放在起始格上、`xpos/ypos` = 该格坐标；而冬眠卡
-  //   （`@source 0x0044415d` `cmp word [player+0x08], 0`）等判据用 `xpos != 0`
-  //   当「在不在盘上」的哨兵 —— 先前这里写 0，于是**新局里冬眠卡一个人也冻不住**。
-  return placeOnNodeId(base, nodes, startNode);
 }
 
 /**
@@ -515,9 +439,7 @@ export function newGame(opts: NewGameOptions): GameState {
     objects = placeObjectOfType(objects, type, node).objects;
   }
 
-  const starts = drawStartPlacements(map.nodes, players.length, rng);
-
-  return {
+  const state: GameState = {
     mode,
     rngState: rng.getState(),
     globalMapId,
@@ -526,18 +448,7 @@ export function newGame(opts: NewGameOptions): GameState {
     //   `global_rich4_cfg` 的 day/month/year；钳位常量 0x7ce/0x7da 在
     //   VA 0x00411f30 / 0x00411f49。见 `rules/setup.ts` 的 `defaultStartDate`。
     ...(startDate ?? START_DATE_MAX),
-    players: players.map((s, i) =>
-      makeInitialPlayer(
-        i,
-        s,
-        initialFund,
-        startNodeId > 0
-          ? { nodeId: startNodeId, lastNodeId: startNodeId, direction: 0 }
-          : (starts[i] ?? { nodeId: 1, lastNodeId: 1, direction: 0 }),
-        vehicle,
-        map.nodes,
-      ),
-    ),
+    players: players.map((s, i) => makeInitialPlayer(i, s, initialFund, vehicle)),
     currentPlayer: 0,
     phase: 'turnStart',
     priceIndex: INITIAL_PRICE_INDEX,
@@ -626,4 +537,14 @@ export function newGame(opts: NewGameOptions): GameState {
     // ★ 46 项物件表（神明/路障/地雷/定時炸彈）
     objects,
   };
+
+  // ★ 测试用的覆盖项：所有人**当场**落在同一格（不抽签、不走惰性摆人）
+  if (startNodeId > 0) {
+    const at = { nodeId: startNodeId, lastNodeId: startNodeId, direction: 0 };
+    return { ...state, players: state.players.map((p) => landAt(p, map.nodes, at)) };
+  }
+  // ★★ 第 1 位在开局第一次重画时就落地（`fcn_0040829d` 见当前玩家 `(0,0)` 就摆人，
+  //   随后 `0x418c55` 开头播落地影片、`who_plays ← +0x64`）—— 两次抽签紧跟在开局摆物件之后。
+  //   第 2..N 位留着没上盘，轮到自己时才摆（`state/reduce.ts` 的 `startActorTurn`）。
+  return landUnplacedPlayer(state, map.nodes, 0);
 }

@@ -14,7 +14,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
-import { WHO_PLAYS_RETURN_TO_BOARD, isAlive } from './types.ts';
+import { WHO_PLAYS_RETURN_TO_BOARD, isAlive, isInGame } from './types.ts';
 import { gameOverCode, isGameOver, reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 
@@ -170,7 +170,8 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
     if (a === null) throw new Error(`无人可动：phase=${state.phase} 当前玩家=${state.currentPlayer}`);
     const next = reduce(state, a, topo);
     if (next === state) throw new Error(`卡死于 ${state.phase} / ${a.type}`);
-    const dead = next.players.filter((p) => !isAlive(p)).length;
+    // ★ 出局 = 不在局里了（还没上盘的第 2..N 位不算出局：他们轮到自己才落地）
+    const dead = next.players.filter((p) => !isInGame(p)).length;
     while (deaths.length < dead) deaths.push(next.turnCount);
     state = next;
     if (state.turnCount >= maxTurns) break;
