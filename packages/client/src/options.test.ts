@@ -277,9 +277,9 @@ describe('設定屏画了什么', () => {
   });
 
   it('灯：亮着才贴图 9；視窗那一盏贴在 (218, 218/250/281)', () => {
-    const log = record({ ...DEFAULT_OPTIONS, animation: false, music: 0, sound: 4, windowView: 2 }, 1, null, 0);
+    const log = record({ ...DEFAULT_OPTIONS, animation: false, music: 0, sound: 4, autoSave: false, windowView: 2 }, 1, null, 0);
     const lamps = imgs(log, IMG.LAMP).map((l) => [l.x, l.y]);
-    // 動畫關、音樂關、自動存檔預設關 → 只剩音效那一盏 + 視窗那一盏
+    // 動畫關、音樂關、自動存檔關 → 只剩音效那一盏 + 視窗那一盏
     expect(lamps).toEqual([
       [LAMP_AT.sound.x, LAMP_AT.sound.y],
       [WINDOW_LAMP.x, WINDOW_LAMP.y[2]],

@@ -137,8 +137,50 @@ export const ROW_FACE_PITCH = 0x48;
 /** LOAD 有 6 个槽（含自動存檔的 0 号），SAVE 只有 5 个 */
 export const LOAD_SLOTS = 6;
 export const SAVE_SLOTS = 5;
-/** 自動存檔占 0 号槽 */
+/** 自動存檔占 0 号槽 @source `0x0041904b push 0 / 0x0041904d call _rich4_save_game_to_file` */
 export const AUTOSAVE_SLOT = 0;
+
+/** 游戏日期折成一个可比较的数（年·月·日） */
+export function gameDateKey(s: Pick<GameState, 'year' | 'month' | 'day'>): number {
+  return s.year * 10000 + s.month * 100 + s.day;
+}
+
+/**
+ * 自動存檔**什么时候存** —— 每推进一天存一次，存在「新的一天的第一位行动者回合边界走完」之后。
+ *
+ * @source 回合游标推进 `fcn_00418ebd`（`rich4.asm:11704-11862`）：
+ * ```asm
+ * 00418fb6  cmp esi, 8 / jne …           ; 游标绕回（8 → 0）
+ * 00418fbe  mov [0x49910c], 0 / mov ebx, 1  ; ★ ebx = 1 只在「绕回来」这一次
+ * 0041902e  if (ebx) call 0x41cf67       ; 推日期 / 物价 / 行情 / 開獎 / 月結（拍卖在里面是阻塞的）
+ * 00419039  call 0x41c84f                ; 新当前行动者的回合边界（还款提醒窗是模态的）
+ * 00419041  test ebx,ebx / je …          ; ★ 只有推过日期这一次
+ * 00419045  cmp byte [cfg+4], 0 / je …   ; 且「自動存檔」开着
+ * 0041904b  push 0 / call 0x402fd1       ; ⇒ 存进 0 号槽
+ * ```
+ * 所以：**不分人机**（谁是新一天的第一位都存）、开局那一天**不存**（游标没绕回过）、
+ * 日期回退（時光機）**不算**推进。本引擎推日期里开出的拍卖 / 还款提醒窗是 `pending`
+ * （`deferredTurnStart`）⇒ 等它们收掉、相位落回 `turnStart` 才算「`0x41c84f` 返回」。
+ *
+ * @param lastKey 上一次「已经算过」的日期（`gameDateKey`）；`null` = 这一局还没看过（新局 / 读档之后）
+ * @returns `save`：现在存；`key`：调用方记下的新 `lastKey`
+ */
+export function autosaveStep(
+  state: Pick<GameState, 'year' | 'month' | 'day' | 'phase' | 'pending' | 'deferredTurnStart'>,
+  lastKey: number | null,
+): { save: boolean; key: number | null } {
+  const key = gameDateKey(state);
+  // 新局 / 读档之后第一次看到：只记下，不存（开局那天游标没绕回过）
+  if (lastKey === null) return { save: false, key };
+  // 日期往回走（時光機）：跟着记下，不存
+  if (key < lastKey) return { save: false, key };
+  if (key === lastKey) return { save: false, key: lastKey };
+  // 推过日期了，但回合边界还没走完（拍卖 / 还款提醒窗）⇒ 先不记，等它们收掉
+  if (state.phase !== 'turnStart' || state.pending !== null || (state.deferredTurnStart ?? null) !== null) {
+    return { save: false, key: lastKey };
+  }
+  return { save: true, key };
+}
 
 /** localStorage 的键 —— 照原版的文件名来，一眼能对上 */
 export function slotKey(slot: number): string {

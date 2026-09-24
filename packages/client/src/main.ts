@@ -164,6 +164,7 @@ import {
   applyOptionsHit,
   controlHit,
   drawOptions,
+  sidebarViewOf,
   hitControl,
   volumeOf,
   HOTKEY_NAMES,
@@ -439,6 +440,7 @@ import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
 import { onMinigameBackgroundReady, setMinigameBackground } from './minigame-bg.ts';
 import {
   AUTOSAVE_SLOT,
+  autosaveStep,
   LOAD_SLOTS,
   SAVE_SLOTS,
   drawSaveLoad,
@@ -798,10 +800,11 @@ let nodeTip: TipModel | null = null;
 let renderer: BoardRenderer;
 /**
  * 右下角那块 200×200 现在显示哪一面。
- * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流
- *   —— 原版默认哪一个没查证，这里先开日曆（那是它的原生面貌）。
+ * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流；
+ *   出厂值（没有 cfg）是 **01 小地圖**（`0x00411efc mov [0x49715d], ah`，`ah = 1`）。
+ * ★ 初值与开机、設定「確定」同源（`sidebarViewOf`），不再硬编码 —— 见 `DEFAULT_OPTIONS`。
  */
-let sidebarView: SidebarView = 'calendar';
+let sidebarView: SidebarView = sidebarViewOf(DEFAULT_OPTIONS.windowView);
 
 /**
  * 右上角面板现在显示第几页（0 資金 / 1 地產 / 2 股票 / 3 其他）—— **每个玩家一份**。
@@ -897,25 +900,30 @@ let optionsKeys: number[] = [...HOTKEY_DEFAULT_KEYS];
  */
 function loadConfigFromStore(): void {
   const cfg = decodeConfig(configStore().read());
-  if (cfg === null) return;
-  options = {
-    ...options,
-    speed: cfg.speed,
-    animation: cfg.animation,
-    music: cfg.music,
-    sound: cfg.sound,
-    autoSave: cfg.autoSave,
-    windowView: cfg.view,
-  };
+  if (cfg !== null) {
+    options = {
+      ...options,
+      speed: cfg.speed,
+      animation: cfg.animation,
+      music: cfg.music,
+      sound: cfg.sound,
+      autoSave: cfg.autoSave,
+      windowView: cfg.view,
+    };
+    optionsKeys = configHotkeyKeys(cfg);
+  }
+  // ★★ 2026-09-24（第十六份試玩回報「默认展示缩小地图…是不是没部署到多人模式」）：
+  //   **没有 cfg 也要走到这一行** —— 先前 `cfg === null` 就直接 return，侧栏停在硬编码的
+  //   `'calendar'` 上，而 `options` 是出厂值 ⇒ 新窗口（例如联机开的第二个窗口）里侧栏与設定屏各说各的。
+  //   单机与联机都只在这里定一次（三条开局路都不改 `options` / `sidebarView`）。
   // ★★ 2026-09-22（第十一份試玩回報 #8「开局默认是日月历模式，但是设置里打开默认是缩小地图模式」）：
   //   原版**每次重画侧栏都直接读 cfg**（`fcn_00416e6d` 的 `0x416e7d movzx ebp,byte [cfg+5]`、
   //   `fcn_004169bc` 的 `0x4169cd cmp byte [cfg+5],1`）⇒ 不存在「开机一套、设定屏另一套」。
-  //   本引擎的 `sidebarView` 是个**硬编码 `'calendar'` 的模块变量**，而 `applyOptions`
-  //   （唯一会改它的地方）只在設定屏「確定」时被调 —— 开机读 cfg 那条路**不经过它**
-  //   ⇒ 棋盘永远日月历、設定屏却亮着 cfg 里的「缩小地图」。
-  //   ⇒ 在这里补一次一致化（**不要**在开机跑 `applyOptions`：那会带上音量/写档的副作用）。
-  sidebarView = cfg.view === 1 ? 'map' : 'calendar';
-  optionsKeys = configHotkeyKeys(cfg);
+  //   `applyOptions`（設定屏「確定」）之外，开机读 cfg 这条路也得把侧栏一致化
+  //   （**不要**在开机跑 `applyOptions`：那会带上音量/写档的副作用）。
+  sidebarView = sidebarViewOf(options.windowView);
+  // 音量也在开机就按 cfg（或出厂值）作用上 —— 只有音量，不写档、不起停曲子（见 `applyVolumes`）
+  applyVolumes(options);
 }
 
 /**
@@ -1761,6 +1769,10 @@ function loadState(next: GameState, mapOverride: Rich4Map | null = null): void {
   hoverNode = null;
   nodeTip = null; // 换局面/读档时把名牌收掉（Q-HOVER-1）
   amountPage = null;
+  // ★ 读档进棋盘也走 `sub_00401981(1)`（標題读档 `0x401d08 push 1 / jmp 0x401cfe`）⇒ 同样 Post 0x401
+  //   ⇒ 面板页号归零（`0x48be24`）；自動存檔从读进来的那一天重新算起（`autosaveStep`）
+  panelPages.fill(0);
+  autosaveDateKey = null;
   const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? 1];
   camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   screen = 'game';
@@ -2008,22 +2020,27 @@ function holdForActorWalk(reschedule: () => void): boolean {
 let landingPause: LandingPause | null = null;
 
 /**
- * 自動存檔。
- *
- * @source RICH4.CFG offset 4 `auto save: 01 enabled`；原版的自動存檔占
- *   **0 号槽**，所以 LOAD 屏比 SAVE 屏多一行（见 saveload.ts）。
- *
- * ⚠️ 什么时机存、存几次，原版没查证。这里取「每个真人回合开始存一次」——
- *   与時光機的快照同一个时机，也是最有用的那个点。
+ * 自動存檔：上一次「已经算过」的游戏日期（`gameDateKey`）。`null` = 这一局还没看过 ——
+ * 新局（单机 `startGame` / 联机 `onStart`）与读档（`loadState`）都把它清成 `null`。
  */
-function autosaveIfEnabled(): void {
-  if (!options.autoSave) return;
-  if (screen !== 'game') return;
-  if (state.phase !== 'awaitingRoll') return;
-  if (isAiTurn(state)) return;
-  // 联机的局面由服务器的 action 流决定，读档会把本机拉离同步；先不存
+let autosaveDateKey: number | null = null;
+
+/**
+ * 自動存檔 —— **每推进一天存一次**（0 号槽），时机与判据见 `saveload.ts` 的 `autosaveStep`
+ * （@source `0x00419041..0x0041904d`：游标绕回 → 推日期 → 新行动者回合边界 → `cfg+4` 开着就存）。
+ *
+ * ★ 2026-09-24 订正：先前是「每个真人回合开始存一次」（当时注明「原版没查证」）。
+ *   原版不分人机、只在推过日期那一次存。
+ * ⚠️ 联机**不存**：局面由服务器的 action 流决定（服务器那边另有存档），本机 0 号槽
+ *   若存进联机局面，单机读档会把它当单机局开出来。
+ */
+function autosaveIfEnabled(next: GameState): void {
   if (net !== null) return;
-  const err = writeSlot(AUTOSAVE_SLOT, state);
+  // 只在对局里才有 action 施加（`reduceRecorded` 是唯一入口），不会误存標題那份占位局
+  const step = autosaveStep(next, autosaveDateKey);
+  autosaveDateKey = step.key;
+  if (!step.save || !options.autoSave) return;
+  const err = writeSlot(AUTOSAVE_SLOT, next);
   if (err !== null) log(`⚠ 自動存檔失敗：${err}`);
 }
 
@@ -3511,15 +3528,28 @@ function closeAiSettings(commit: boolean): void {
   requestRender();
 }
 
+/**
+ * 只把两档音量作用到播放器上 —— 開機（`loadConfigFromStore`）与設定「確定」（`applyOptions`）共用。
+ *
+ * ★ 2026-09-24：先前开机不调它 ⇒ cfg 里存的音量（包括「关掉」）要等打开設定屏按一次「確定」才生效。
+ *   第十一份 #8 当时不在开机跑 `applyOptions`，顾虑的是它另外那几件（`saveConfigToStore()` 写档、
+ *   「音乐刚打开」时补起播 `playBoardBgm(0)` / `music.stop()`）—— 这里只取音量那三行，那几件照旧只在「確定」时做。
+ * @source 原版的放音例程**每次起播都直接读 cfg**：音效 `cfg+3`（`rich4_sound_effect.asm:451/484/717`）、
+ *   配乐 `cfg+2`（`rich4_media_music.asm:331/344/370`）⇒ 不存在「开机一套、設定屏另一套」。
+ */
+function applyVolumes(o: GameOptions): void {
+  sound.setMuted(o.sound === 0);
+  sound.volume = volumeOf(o.sound);
+  music.setVolume(o.music === 0 ? 0 : volumeOf(o.music) * 0.25);
+}
+
 /** 把設定的取值真的作用到播放器与側欄上 */
 function applyOptions(next: GameOptions): void {
   options = next;
-  sound.setMuted(next.sound === 0);
-  sound.volume = volumeOf(next.sound);
-  music.setVolume(next.music === 0 ? 0 : volumeOf(next.music) * 0.25);
+  applyVolumes(next);
   // 設定里那三项：00 日曆 / 01 小地圖 / 02 兩者輪流（RICH4.CFG offset 5）
   // ⚠️ 「兩者輪流」怎么轮没查证，先当日曆（点一下可以手动换）
-  sidebarView = next.windowView === 1 ? 'map' : 'calendar';
+  sidebarView = sidebarViewOf(next.windowView);
   // ⚠️ 换曲**不在这里** —— 原版是点列表那一下就立刻换（见 `onOptionsDown`），
   //   「確定」只负责把 cfg 写回去、并按新的音量档调播放器（VA 0x004109e2）。
   //   这里只在「音乐本来是关的、现在打开了」时补一次起播。
@@ -4142,6 +4172,9 @@ function reduceRecorded(action: Action): GameState {
     const dayMoved = next.day !== before.day || next.month !== before.month || next.year !== before.year;
     if (dayMoved && action.type !== 'setDate') onDayAdvancedBgm(next);
   }
+  // ★ 自動存檔挂在**这个漏斗**上：真人（`applyAction`）与电脑（`scheduleAi` 的直路）两条都经过这里 ——
+  //   先前挂在 `applyAction` 末尾，电脑那条直路看不到（新一天第一位是电脑时就漏存，浏览器实测）。
+  autosaveIfEnabled(next);
   return next;
 }
 
@@ -4271,7 +4304,6 @@ function applyAction(action: Action): void {
   renderPanel();
   scheduleAi();
   scheduleHumanTurn();
-  autosaveIfEnabled();
 }
 
 /**
@@ -9369,6 +9401,12 @@ function startGame(): void {
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
   pendingCardRoute = null; // 亮牌后待走的那一张同理
+  // ★ 右上角面板四位玩家的页号一起归零 @source `fcn_00417e26` 的 0x401 分支
+  //   `xor edi,edi / mov dword [0x48be24], edi`（4 字节 = 四位）—— 0x401 由
+  //   `_rich4_start_game_loop`（0x401981）进棋盘时 Post 一次（新局 0x401cfe、標題读档 0x401d08 都走它）
+  panelPages.fill(0);
+  // 自動存檔的「上一次算过的日期」清掉：开局那一天不存（`autosaveStep`）
+  autosaveDateKey = null;
   // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
   goButton.reset();
 
@@ -11074,6 +11112,9 @@ function connectOnline(url: string, room: string, name: string): void {
           godAscend = null;
           pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
           pendingCardRoute = null; // 亮牌后待走的那一张同理
+          // ★ 与单机 `startGame()` 同一条：面板页号归零（`0x48be24`）、自動存檔日期清掉
+          panelPages.fill(0);
+          autosaveDateKey = null;
           // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
           goButton.reset();
 
@@ -11108,8 +11149,10 @@ function connectOnline(url: string, room: string, name: string): void {
           //   新开一局的路（`0x406de7 → … → 0x415872` 跳伞过场）不说。
           // 换地图要重新解底图 —— `setGround(null)` 会 close 掉旧位图，
           // 先前这里只把 `ground` 置 null，旧 bitmap 就泄漏了（与单机 7650 对齐）
+          // ★★ 第十六份试玩回报「以后两边模式都要同步」：先前这里漏了 `hdSource`（单机 `startGame()` 有）
+          //   ⇒ 开了高清底图的人一进联机就退回原图。与单机同一个调用。
           setGround(null);
-          void loadGround(archives, start.globalMapId).then((g) => {
+          void loadGround(archives, start.globalMapId, hdSource).then((g) => {
             ground = g;
             requestRender();
           });
