@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { encodePng } from '../../../packages/assets-pipeline/src/png.ts';
 import { prepFrame } from './e-build.ts';
 import { eFrame } from './e-post.ts';
-const [ch, out, idsArg] = process.argv.slice(2); const dir = `/Volumes/Kingston/大富翁4重制版/wt-hd/assets/work/fringe-pilot/cast/c${ch}`;
+const [ch, out, idsArg] = process.argv.slice(2); const dir = `/Volumes/Kingston/大富翁4重制版/wt-hd/assets/work/fringe-pilot/cast/${/^[0-9]+$/.test(String(ch)) ? "c" + (ch) : (ch)}`;
 const lay = JSON.parse(readFileSync(`${dir}/layout.json`, 'utf8'));
 const tiles: any[] = [];
 for (const id of idsArg!.split(',')) { const g = Object.keys(lay).find((k) => lay[k].frames.some((f: any) => f.id === id))!; const fr = lay[g].frames.find((f: any) => f.id === id); const prep = prepFrame(id);

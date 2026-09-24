@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { decodePng, encodePng } from '../../../packages/assets-pipeline/src/png.ts';
 const [chArg, out, which] = process.argv.slice(2); const ch = Number(chArg); const base = 128 + 21 * ch;
 const root = `/Volumes/Kingston/大富翁4重制版/wt-hd/assets/${which ?? 'hd'}/Data/`;
-const lay = JSON.parse(readFileSync(`/Volumes/Kingston/大富翁4重制版/wt-hd/assets/work/fringe-pilot/cast/c${ch}/layout.json`, 'utf8'));
+const lay = JSON.parse(readFileSync(`/Volumes/Kingston/大富翁4重制版/wt-hd/assets/work/fringe-pilot/cast/${/^[0-9]+$/.test(String(chArg ?? ch)) ? "c" + (chArg ?? ch) : (chArg ?? ch)}/layout.json`, 'utf8'));
 const nd = lay.dice0.frames.length, nw = lay.walk0.frames.length - 1;
 const rows = Array.from({ length: 8 }, (_, d) => [...Array.from({ length: nd }, (_, i) => `${base + 2}-${d * nd + i}`), `${base}-${d}`, `${base + 1}-${d * nw + Math.floor(nw / 2)}`].map((n) => decodePng(new Uint8Array(readFileSync(root + n + '.png')))));
 const cw = Math.max(...rows.flat().map((t) => t.width)), chh = Math.max(...rows.flat().map((t) => t.height)), n = rows[0]!.length, W = cw * n + 20, H = chh * 8, px = new Uint8ClampedArray(W * H * 4);

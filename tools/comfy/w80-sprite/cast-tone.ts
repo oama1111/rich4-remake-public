@@ -7,7 +7,7 @@ import { srgbToLab } from '../../../packages/assets-pipeline/src/seams.ts';
 import { labToSrgb } from '../../../packages/assets-pipeline/src/edge.ts';
 const ROOT = '/Volumes/Kingston/大富翁4重制版/wt-hd/assets';
 const [chArg, ...only] = process.argv.slice(2); const ch = Number(chArg);
-const lay = JSON.parse(readFileSync(`${ROOT}/work/fringe-pilot/cast/c${ch}/layout.json`, 'utf8'));
+const lay = JSON.parse(readFileSync(`${ROOT}/work/fringe-pilot/cast/${/^[0-9]+$/.test(String(chArg ?? ch)) ? "c" + (chArg ?? ch) : (chArg ?? ch)}/layout.json`, 'utf8'));
 const fileOf = (id: string) => { const [, r, i] = /^Data\/(\d+)_(\d+)$/.exec(id)!; return `${ROOT}/hd/Data/${Number(r)}-${Number(i)}.png`; };
 type Px = [number, number, number];
 function labs(files: string[], step = 2): Px[] { const out: Px[] = []; for (const f of files) { const im = decodePng(new Uint8Array(readFileSync(f)));

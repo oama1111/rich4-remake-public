@@ -8,7 +8,7 @@ import { prepFrame } from './e-build.ts';
 import { eFrame } from './e-post.ts';
 const ROOT = '/Volumes/Kingston/大富翁4重制版/wt-hd/assets';
 const [chArg, ...only] = process.argv.slice(2); const ch = Number(chArg);
-const dir = `${ROOT}/work/fringe-pilot/cast/c${ch}`;
+const dir = `${ROOT}/work/fringe-pilot/cast/${/^[0-9]+$/.test(String(chArg ?? ch)) ? "c" + (chArg ?? ch) : (chArg ?? ch)}`;
 const lay = JSON.parse(readFileSync(`${dir}/layout.json`, 'utf8'));
 const accept = new Set((process.env.ACCEPT ?? '').split(',').filter(Boolean));
 const pale = (p: Uint8ClampedArray, i: number) => Math.min(p[i]!, p[i + 1]!, p[i + 2]!) > 165 && Math.max(p[i]!, p[i + 1]!, p[i + 2]!) - Math.min(p[i]!, p[i + 1]!, p[i + 2]!) < 40;

@@ -1,7 +1,7 @@
 // 各组清晰度：6× 输出里角色区域（非绿）的拉普拉斯能量均值，对比同组输入（清晰参考图）
 import { readFileSync, existsSync } from 'node:fs';
 import { decodePng } from '../../../packages/assets-pipeline/src/png.ts';
-const ch = process.argv[2]; const dir = `/Volumes/Kingston/大富翁4重制版/wt-hd/assets/work/fringe-pilot/cast/c${ch}`;
+const ch = process.argv[2]; const dir = `/Volumes/Kingston/大富翁4重制版/wt-hd/assets/work/fringe-pilot/cast/${/^[0-9]+$/.test(String(ch)) ? "c" + (ch) : (ch)}`;
 const lay = JSON.parse(readFileSync(`${dir}/layout.json`, 'utf8'));
 function energy(f: string) { const im = decodePng(new Uint8Array(readFileSync(f))); const { width: w, height: h, rgba: p } = im;
   const L = (i: number) => 0.299 * p[i * 4]! + 0.587 * p[i * 4 + 1]! + 0.114 * p[i * 4 + 2]!; const fg = (i: number) => p[i * 4 + 1]! - Math.max(p[i * 4]!, p[i * 4 + 2]!) < 40;
