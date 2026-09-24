@@ -304,6 +304,13 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
     va: '换神：`god_activate` 先 `0x40eb3f call 0x40e32c`（升天 → 台词 `0x0040e659`）再播新神影片 / `0x40e2a2`',
   },
   {
+    // ★ 第 24 份的改动让长局里出现了「推日期那一整屏」与「神明任期到了」同一拍（g20 图 4 第 56 回合）
+    line: 'godLeft',
+    boxes: ['shares', 'lotteryDraw'],
+    exe: 'boxFirst',
+    va: '回合交接 `0x0041902e call 0x41cf67`（推日期：股息 `0x0041d08f call 0x42ba97`、樂透開獎 `0x0041d094 call 0x431712`）在 `0x00419039 call 0x41c84f`（逐人计数，神明任期 `0x0041cc9b call 0x40e32c` → 升天 → 「一場惡夢～」`0x0040e659`）之前',
+  },
+  {
     line: 'godArrived',
     boxes: ['eventBox:cardUse'],
     exe: 'boxFirst',

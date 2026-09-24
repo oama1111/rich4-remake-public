@@ -46,6 +46,7 @@ import { FACILITY_TYPE, FACILITY_MAX_LEVEL } from '../rules/facility.ts';
 import { MISSILE_RADIUS } from '../rules/tool-effects.ts';
 // ★ 需求方 2026-09-22：放置类道具不许和「唯一物件」同格 —— AI 必须与引擎同一条判据
 import { runtimeOccupiedNodes } from '../rules/object-landing.ts';
+import { nodeObjectIndex } from '../rules/special-actors.ts';
 import { anyPlayerConfined } from '../rules/confinement.ts';
 import {
   aiRoll,
@@ -116,9 +117,16 @@ function facilityById(view: ToolAiView, id: number): FacilityInfo | undefined {
   return view.facilities.find((f) => f.id === id);
 }
 
-/** 站在这格上的物件（原版的 node+0x24 bits 16-21 每格至多一件） */
+/**
+ * 站在这格上的物件（原版的 node+0x24 bits 16-21 每格至多一件）。
+ *
+ * ★★ 只认**地上**的（`attached == 0`）：附身的神明 / 被带着的定時炸彈不在那一字节里（见
+ *   `special-actors.ts` 的 `nodeObjectIndex`）。第 24 份 `20260924-182247766`：電腦的機器娃娃判据
+ *   （@source 0x00420efa「路径格上有坏神 → 用」）把**真人身上**的小窮神当成了路上的。
+ */
 function objectOnNode(view: ToolAiView, nodeId: number): MapObject | undefined {
-  return view.state.objects.find((o) => o.nodeId === nodeId);
+  const i = nodeObjectIndex(view.state.objects, nodeId);
+  return i === -1 ? undefined : view.state.objects[i];
 }
 
 /** 这格上有没有（活着的）玩家 @source node+0x24 bits 12-15 */

@@ -188,6 +188,7 @@ export function runNpc(
       const at = state.objects.findIndex(
         (o) =>
           o.nodeId === cur &&
+          o.attached === 0 &&
           (o.type === OBJECT_TYPE_ROADBLOCK || o.type === OBJECT_TYPE_MINE),
       );
       if (at !== -1) {
@@ -215,7 +216,8 @@ export function runNpc(
     // @source 五个分支都以 `cmp [0x49910c], 4` 开头，共用一句提示
     if (actor === NPC.thief) {
       const at = state.objects.findIndex(
-        (o, i) => o.nodeId === cur && !takenObjects.has(i) && thiefTakes(o.type),
+        // ★ 只认地上的（`attached == 0`）：别人身上带着的定時炸彈不在节点反向索引里（见 `nodeObjectIndex`）
+        (o, i) => o.nodeId === cur && o.attached === 0 && !takenObjects.has(i) && thiefTakes(o.type),
       );
       if (at !== -1) {
         takenObjects.add(at);

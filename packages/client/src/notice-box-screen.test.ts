@@ -684,6 +684,25 @@ describe('★★ 魔法屋那几扇 @source `0x431caa` / `0x004339bd`', () => {
     expect(noticeHoldsFilms()).toBe(false);
   });
 
+  it('★★ `closeSfx`（魔法屋向後轉）：框收掉那一刻放一次 56（`0x40c78c` 开头 0x0040c79a），再空等 500 ms', () => {
+    const played: number[] = [];
+    const env = (s: GameState, now: number): UiScreenEnv => ({ ...fakeEnv(s, now), playEffect: (id: number) => played.push(id) });
+    const before = stateWith([]);
+    const after = stateWith([
+      { key: 'magic.effect', args: ['宮本寶藏', '向後轉'], beforeFilms: true, afterMs: 500, closeSfx: 56 },
+    ]);
+    noticeBoxScreen.event!(before, after, env(after, 0));
+    noticeBoxScreen.tick!(env(after, NOTICE_HOLD_MS - 1));
+    expect(played).toEqual([]);
+    noticeBoxScreen.tick!(env(after, NOTICE_HOLD_MS));
+    expect(played).toEqual([56]);
+    noticeBoxScreen.tick!(env(after, NOTICE_HOLD_MS + 250));
+    expect(noticeBoxScreen.active(env(after, NOTICE_HOLD_MS + 250))).toBe(true);
+    noticeBoxScreen.tick!(env(after, NOTICE_HOLD_MS + 500));
+    expect(noticeBoxScreen.active(env(after, NOTICE_HOLD_MS + 500))).toBe(false);
+    expect(played).toEqual([56]);
+  });
+
   it('★ 普通的框照旧等闸、也不押影片', () => {
     setNoticeStartGate(() => true);
     const before = stateWith([]);

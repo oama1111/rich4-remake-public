@@ -3885,6 +3885,7 @@ function applyMagicHouse(
       priceIndex: before.priceIndex,
       initiator: caster,
       nodeOf,
+      nodes: topo.nodes,
       nextRandom: () => rng.next(),
     });
     const notice = magicNoticeFor(before, who, option, r);
@@ -3994,10 +3995,15 @@ function magicNoticeFor(state: GameState, who: number, option: number, r: MagicE
     return { key: 'magic.gotCard', args: [name, cardNameOf(got.value)], beforeFilms: true };
   }
   const afterMs = MAGIC_NOTICE_AFTER_MS[option];
-  return afterMs === undefined
+  const hint: NoticeHint = afterMs === undefined
     ? { key: 'magic.effect', args: [name, effectName], beforeFilms: true }
     : { key: 'magic.effect', args: [name, effectName], beforeFilms: true, afterMs };
+  // ★ 向後轉：框收掉 → `0x40c78c` 开头那一声（`[0x4823f2]` = 56，0x0040c79a）→ 掉头 → 空等 500 ms
+  return option === 7 ? { ...hint, closeSfx: MAGIC_TURN_BACK_SFX } : hint;
 }
+
+/** `0x40c78c`（掉头）开头放的音效 @source 0x0040c795 `push 0x4823f2` → 0x0040c79a `call 0x4542ce`；`[0x4823f2]` = 56 */
+export const MAGIC_TURN_BACK_SFX = 56;
 
 /**
  * 魔法屋几支在施加之后的**空等**（`fcn_0045285e(ms)`，忙等、点不掉）。
@@ -4824,13 +4830,30 @@ export function useToolAction(
     //   所以这里直接把 `pickNextNode` 交给它，不另造一套（C-ARC-2）。
     const rng = new WatcomRng();
     rng.setState(state.rngState);
-    const swept = runDoll(doll, state.objects, (from, prev) =>
-      pickNextNode(topo, from, prev, rng) ?? 0,
+    // ★★ 扫掉一件 = `release_object` 0x40e14d（0x0041b529）：路障 / 地雷 / 定時炸彈回库存，
+    //   神明离场、搭档另找地方登场（`0x40aa6c` 挑格要 `rand()`）—— 与飛彈炸掉地上物件同一个函数。
+    //   先前这里只把那一件清零：库存不回、搭档不登场。第 24 份试玩回报顺带查出。
+    let world: GameState = state;
+    const swept = runDoll(
+      doll,
+      state.objects,
+      (from, prev) => pickNextNode(topo, from, prev, rng) ?? 0,
+      (objs, index) => {
+        const rel = releaseObject({ players: world.players, objects: objs, tools: world.tools, toolStock: world.toolStock }, index + 1);
+        const after = respawnPartner(
+          { ...world, players: rel.players, objects: rel.objects, tools: rel.tools, toolStock: rel.toolStock, rngState: rng.getState() },
+          topo,
+          rel.partner >= 0 ? { partner: rel.partner, nearNode: rel.formerNode } : null,
+        );
+        rng.setState(after.rngState);
+        world = after;
+        return after.objects;
+      },
     );
     const specialActors = [...state.specialActors];
     specialActors[specialSlotOf(ACTOR_DOLL)] = swept.actor;
     return consume({
-      ...state,
+      ...world,
       objects: swept.objects,
       specialActors,
       rngState: rng.getState(),

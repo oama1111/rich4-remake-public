@@ -633,6 +633,13 @@ export interface NoticeHint {
    */
   afterMs?: number;
   /**
+   * 框收掉的那一刻（`afterMs` 空等之前）放的音效（`Effect.mkf` 资源号，纯表现）。
+   *
+   * ★ 魔法屋向後轉：訊息框 0x004321c1 之后紧接 0x004321d0 `call 0x40c78c`，
+   *   它开头 0x0040c793..0x0040c79a `push 0 / push 0x4823f2 / call 0x4542ce` —— `[0x4823f2]` = **56**。
+   */
+  closeSfx?: number;
+  /**
    * ★ 第十四份（2026-09-23）：**这扇框之后**原版紧跟着的那一句 `player_say`（纯表现）。
    *
    * 两种形状：

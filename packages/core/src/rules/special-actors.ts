@@ -410,12 +410,32 @@ export function npcBittenByDog(actor: SpecialActor): SpecialActor {
  *   写进物件表的 `+0x08..+0x14` 四个 float —— 纯动画，不进 core。
  */
 export function dollSweepNode(objects: readonly MapObject[], nodeId: number): MapObject[] | null {
-  const at = objects.findIndex((o) => o.nodeId === nodeId);
+  const at = nodeObjectIndex(objects, nodeId);
   if (at === -1) return null;
   const next = objects.map((o, i) =>
     i === at ? { ...o, nodeId: 0, state: 0, attached: 0 } : o,
   );
   return next;
+}
+
+/**
+ * 这一格**地上**的那件物件（在 `objects` 里的下标；没有 = −1）—— 原版读的是节点的反向索引
+ * `node+0x24` 的第 3 字节（`0x0041b4b4 and eax, 0xff0000 / shr eax, 0x10`）。
+ *
+ * ★★ **附身 / 被带着走的物件不算**：`attach_object`（0x40e2cc 一带）把它从那一字节里抹掉，
+ *   `release_object` 0x40e14d 也只在 `attached == 0` 时才清那一字节 —— 但附身物件的 `nodeId`
+ *   仍跟着主人走（`syncEscortNodes`），光比 `nodeId` 会把**别人身上的神明 / 定時炸彈**当成地上的。
+ *   第 24 份试玩回报 `20260924-182247766`「我身上背的窮神莫名其妙消失了」：電腦放機器娃娃，
+ *   九格里正好走过真人脚下，娃娃把他身上的小窮神「扫」掉（物件清零，玩家的 `godInfo` 却还指着它）。
+ * ★ 同格多件取**槽号最大**的那一件（与 `reduce.ts` 的 `objectHandleAt` 同一近似：那一字节是 `or` 进去的）。
+ */
+export function nodeObjectIndex(objects: readonly MapObject[], nodeId: number): number {
+  let found = -1;
+  for (let i = 0; i < objects.length; i++) {
+    const o = objects[i];
+    if (o !== undefined && o.nodeId === nodeId && o.nodeId !== 0 && o.attached === 0) found = i;
+  }
+  return found;
 }
 
 /**
@@ -456,6 +476,12 @@ export function runDoll(
   actor: SpecialActor,
   objects: readonly MapObject[],
   advance: (from: number, prev: number) => number,
+  /**
+   * 扫掉第 `index` 件（原版 `0x0041b529 call 0x40e14d(物件下标 + 1)` = `release_object`：
+   * 放置类回库存、神明的搭档另找地方登场）。缺省 = 只把那一件清零（老用例）。
+   * ★ 与 `advance` **交错**调用（每走一格先挑路、再扫这一格）—— 两边吃的是同一条随机流。
+   */
+  release?: (objs: MapObject[], index: number, node: number) => MapObject[],
 ): SweepResult {
   let cur = actor.nodeId;
   let prev = actor.lastNodeId;
@@ -469,11 +495,11 @@ export function runDoll(
     prev = cur;
     cur = next;
     path.push(cur);
-    const at = objs.findIndex((o) => o.nodeId === cur);
-    const swept = dollSweepNode(objs, cur);
-    if (swept !== null) {
+    // @source 0x0041b4b4 读节点反向索引（只认**地上**的，见 `nodeObjectIndex`）→ 0x0041b529 `call 0x40e14d`
+    const at = nodeObjectIndex(objs, cur);
+    if (at !== -1) {
       cleared.push({ index: at, step: path.length - 1 });
-      objs = swept;
+      objs = release === undefined ? (dollSweepNode(objs, cur) ?? objs) : release(objs, at, cur).map((o) => ({ ...o }));
     }
   }
 

@@ -277,6 +277,8 @@ interface QueuedNotice {
   beforeFilms: boolean;
   /** 框收掉之后还要**空等**多久（见 core 的 `NoticeHint.afterMs`）*/
   afterMs: number;
+  /** 框收掉那一刻放的音效（见 core 的 `NoticeHint.closeSfx`）*/
+  closeSfx?: number;
   /**
    * 这一扇在「框 / 台词」先后尺子上的档（`presentation-order.ts` 的 `NOTICE_TIER`）——
    * 起播前问台词那一侧：台上有气泡、或有档更小的台词还押着 ⇒ 先等（第十五份）。
@@ -326,6 +328,8 @@ export function noticePendingRanks(): number[] {
 let playingBeforeFilms = false;
 /** 正在弹的那一扇收掉之后要空等多久 */
 let playingAfterMs = 0;
+/** 正在弹的那一扇收掉那一刻要放的音效 */
+let playingCloseSfx: number | null = null;
 /** 正在弹的那一扇的文案键（`noticeKeyShowing` 用）*/
 let playingKey: NoticeKey | null = null;
 
@@ -401,6 +405,7 @@ export function resetNoticeBoxScreen(): void {
   pending = [];
   playingBeforeFilms = false;
   playingAfterMs = 0;
+  playingCloseSfx = null;
   playingKey = null;
   tail = null;
 }
@@ -451,6 +456,7 @@ function startNext(env: UiScreenEnv): void {
   }
   playingBeforeFilms = item.beforeFilms;
   playingAfterMs = item.afterMs;
+  playingCloseSfx = item.closeSfx ?? null;
   playingKey = item.key;
   playback = noticePlaybackStart(item.text, env.now, item.holdMs, item.shiftRight === true);
   env.log(`付费訊息框：${item.key}`);
@@ -478,6 +484,10 @@ function skip(env: UiScreenEnv): void {
 
 /** 一扇框收掉：要空等的先空等（`fcn_0045285e` 点不掉），否则直接接下一扇 */
 function finishBox(env: UiScreenEnv): void {
+  if (playingCloseSfx !== null) {
+    env.playEffect(playingCloseSfx);
+    playingCloseSfx = null;
+  }
   if (playingAfterMs > 0) {
     tail = { until: env.now + playingAfterMs, beforeFilms: playingBeforeFilms };
     return;
@@ -608,6 +618,7 @@ export const noticeBoxScreen: UiScreen = {
         holdMs: n.holdMs ?? NOTICE_HOLD_MS,
         beforeFilms: n.beforeFilms === true,
         afterMs: n.afterMs ?? 0,
+        ...(n.closeSfx === undefined ? {} : { closeSfx: n.closeSfx }),
         tier: noticeTier(n.key),
         ...(n.card === undefined ? {} : { card: n.card }),
         ...(n.shiftRight === true ? { shiftRight: true } : {}),

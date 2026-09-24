@@ -26,6 +26,8 @@ import { addPoints } from '../rules/points.ts';
 //   故这里直接调那两个已验证的纯函数，不再各抄一份 —— 抄一份就会各自漂移。
 //   通道 2 证据：`rich4-spec/tests/test_sell_all.py`（35/35）。
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
+import type { MapNode } from '../loaders/map.ts';
+import { pickTurnBackNode } from '../cards/turn-and-house.ts';
 
 // ============================================================
 //  目标转盘
@@ -235,6 +237,11 @@ export interface MagicEffectContext {
   nodeOf: (playerIndex: number) => MagicNodeInfo | null;
   /** `rand()`，只有「得一張卡片」会用 */
   nextRandom: () => number;
+  /**
+   * 地图节点表（下标 = 节点号 − 1），「向後轉」重挑来路用（`0x40c78c` 的 0x40c7c4..0x40c859）。
+   * 缺省时只掉头、不重挑来路（老用例兼容）—— **引擎里的调用点一律要给**，否则掉头不生效。
+   */
+  nodes?: readonly MapNode[];
 }
 
 /** 效果要外层代办的事 */
@@ -379,10 +386,20 @@ export function applyMagicEffect(
       }
 
       // ── 7 向後轉 ──
-      // @source `dl = direction + 4 ; dl &= 7`
+      // @source 0x00432160 闸 `[player+0x32]` → 0x00432174 `0x41906a(1)` → 訊息框 1500 ms（0x004321c1）
+      //   → ★ 0x004321d0 `call 0x40c78c(当前玩家)` —— 与轉向卡（0x00443025）**同一个函数**：
+      //   0x0040c79a 放音效 `[0x4823f2]` = 56；0x0040c7b8 `add dl,4 / and dl,7` 掉头；
+      //   0x0040c7c4..0x0040c859 **重挑来路**（候选 = 邻接非 0、未封路、≠ 旧来路，有候选才 `rand()`）
+      //   → 0x004321de `0x41d476(0,0,1)` 重画 → 0x004321e6 空等 500 ms。
+      // ★★ 第 24 份试玩回报（「财产最多的人向后转没生效」）：先前这里**只改朝向**、没重挑来路 ——
+      //   而走子只看 `lastNodeId`（`pickNextNode` 避开来路），于是被点到的人下一趟照原方向走。
       case 7: {
         if (!localizable(p)) break;
         p.direction = (p.direction + REVERSE_DIRECTION_STEP) & DIRECTION_MASK;
+        if (ctx.nodes !== undefined) {
+          const node = ctx.nodes[p.nodeId - 1];
+          p.lastNodeId = node === undefined ? 0 : pickTurnBackNode(node, p.lastNodeId, ctx.nextRandom);
+        }
         break;
       }
 
