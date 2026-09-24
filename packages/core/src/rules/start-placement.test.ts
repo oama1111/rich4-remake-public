@@ -69,6 +69,8 @@ function referencePlacement(map: Rich4Map, s: GameState, rngState: number) {
   const cand = map.nodes.filter((n) => !n.noObjects && n.adjacentSlots.some((x) => x !== 0) && !occupied.has(n.id));
   const rng = new WatcomRng();
   rng.setState(rngState);
+  // ★ 回合开头 `0x41c84f` 的第一句 `0x0041c868 call 0x42915a`：股本 > 1000 的股票各抽一次（在摆人之前）
+  for (const st of s.market.stocks) if (st.shares > 1000) rng.next();
   const node = cand[rng.next() % cand.length]!;
   const adj = node.adjacentSlots.filter((x) => x !== 0);
   const last = map.nodes[adj[rng.next() % adj.length]! - 1]!;

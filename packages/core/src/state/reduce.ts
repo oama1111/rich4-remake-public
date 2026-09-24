@@ -1018,9 +1018,22 @@ function npcRoundStep(state: GameState, topo: MapTopology, next: number): GameSt
  * `npcRoundStep` 的收尾（惡人段走完）。第 85 条就是因为在后者漏了这一步，
  * 导致**每一輪**都少给一位玩家走一天（在押/住宿/冬眠永不到期）。
  */
-function beginActorTurn(state: GameState, topo: MapTopology, index: number): GameState {
+function beginActorTurn(state0: GameState, topo: MapTopology, index: number): GameState {
+  // ★★ 0x41c84f 的第一句：股市可成交量重算（12 支里股本 > 1000 的各抽一次 `rand()`）。
+  //   @source
+  //   ```asm
+  //   0041c85f  cmp  ebx, 4 / jge 0x41ce39   ; 惡人槽（4..7）走另一段，不重算
+  //   0041c868  call 0x42915a                ; ★ 每位**玩家**回合开头都调 —— 在 who_plays 判定之前
+  //   0041c86d  call 0x436a5a                ;   还款日
+  //   0041c875  cmp  byte [player+0x15], 0   ;   出局 / 没上盘 ⇒ 后面全不走
+  //   ```
+  //   ⇒ 还没上盘的人（游标 `0x00418ffe` 收下他们）也照调；出局者游标就跳过了、走不到这里。
+  //   先前本引擎只在推日期里调一次（第 2..N 位回合开头那几次都少抽）。
+  //   `0x42915a` 的调用点全 exe 只有两处：这里与开局 `0x00407dfe`（`newGame`）。
+  const rng = new WatcomRng();
+  rng.setState(state0.rngState);
+  const state: GameState = { ...state0, market: refreshTradableShares(state0.market, rng), rngState: rng.getState() };
   // ★ 0x41c84f 的第二句 `0x0041c86d call 0x436a5a` —— 还款日检查排在**一切计数之前**
-  //   （第一句 `0x42915a` 是股市可成交量，本引擎在日推进里做）。
   const due = checkLoanDue(state, topo, index);
   // 真人还款提醒窗（`0x43695e` 是模态的）：剩下那一段等窗关了（`declineDecision`）才走
   if (due.pending?.kind === 'loanReminder' || due.phase === 'gameOver') return due;
@@ -5454,10 +5467,10 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     state.priceIndex,
   );
 
-  // @source 0041c868 call 0x42915a —— 每日重算可成交量
-  let market = refreshTradableShares(state.market, rng);
+  // ★ 可成交量（`0x42915a`）**不在**推日期里：它的调用点只有开局 `0x00407dfe` 与每位玩家回合开头
+  //   `0x0041c868`（`beginActorTurn`）—— 先前这里每天调一次，第 2..N 位回合开头那几次就少抽了。
   // @source 0041cff9 起的 12 次循环
-  market = tickStockCountdowns(market);
+  let market = tickStockCountdowns(state.market);
   // @source 0041d076 call 0x4291d6 —— 开头 `call 0x428d01 / cmp eax, 1 / je 结束`：
   //   ★ 休市日（星期日、節日、**新聞 26 的全股市暂停**）当天**不走行情**
   //   ⚠️ 这里读的是**推进过倒数之后**的 `market.closedDays`（`0041cff9` 那一段就在

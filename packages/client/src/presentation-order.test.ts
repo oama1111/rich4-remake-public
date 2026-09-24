@@ -204,6 +204,12 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
     exe: 'boxFirst',
     va: '航空：轉盤 `0x0041ac3f` → 框 `0x0041aeb4` → `0x0041b05a call 0x40d375` → 台词 `0x0040d3f8`',
   },
+  {
+    line: 'disappearSay',
+    boxes: ['card.scapegoatOn', 'card.scapegoatTo'],
+    exe: 'boxFirst',
+    va: '命運 6 / 7 被嫁禍：`0x0044c6c5` / `0x0044c7d7 call 0x441210` → `0x0044124e call 0x44476a`（嫁禍框 `0x004449df` / `0x00444a1d`）→ 共用尾巴 `0x0044c6e0 call 0x40d375` → 台词 `0x0040d3f8`',
+  },
   // 反应台词之后才弹的框（`tail` 档）
   ...(['moneyPaid', 'moneyGained', 'hotelStay', 'noticeSay', 'prisonEntered', 'hospitalEntered', 'disappearSay'] as const).map(
     (line): OrderRow => ({
