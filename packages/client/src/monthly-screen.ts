@@ -59,7 +59,7 @@ import { currency } from './panel.ts';
 import { drawGdiText, type GdiTextStyle } from './font.ts';
 import { playVoiceCode, stopVoice, voiceBusy } from './voice-sink.ts';
 import type { UiKeyEvent, UiScreen, UiScreenEnv } from './ui-screen.ts';
-import { drawSprite, drawSpriteRegion } from './hd-stage.ts';
+import { drawSprite, drawSpriteRegion, flicFrame } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type MonthlySprite = (
@@ -869,7 +869,7 @@ function drawOp(ctx: CanvasRenderingContext2D, get: MonthlySprite, flic: (resour
       return;
     case 'film': {
       const f = flic(op.resource);
-      const last = f?.frames[f.frames.length - 1];
+      const last = f === null ? undefined : flicFrame(f, f.frames.length - 1);
       // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
       if (f !== null && last !== undefined) drawSprite(ctx, { bitmap: last, width: f.width, height: f.height }, op.x, op.y);
       return;
@@ -915,7 +915,7 @@ export function drawMonthlyScreen(
       const ms = film.frameMs > 0 ? film.frameMs : 71;
       const k = Math.max(0, Math.floor((now - f.startedAt) / ms));
       const frame = Math.min(film.frames.length * f.plays - 1, k) % film.frames.length;
-      const bmp = film.frames[frame];
+      const bmp = flicFrame(film, frame);
       // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
       if (bmp !== undefined) drawSprite(ctx, { bitmap: bmp, width: film.width, height: film.height }, f.x, f.y);
     }

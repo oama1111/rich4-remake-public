@@ -106,7 +106,7 @@ import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { playVoiceCode, stopVoice, voiceBusy } from './voice-sink.ts';
 import { SCREEN_H, SCREEN_W } from './stage.ts';
-import { currentSurfaceScale, drawSprite, drawSpriteRegion, type SpriteLike } from './hd-stage.ts';
+import { currentSurfaceScale, drawSprite, drawSpriteRegion, flicFrame, type SpriteLike } from './hd-stage.ts';
 
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
@@ -961,7 +961,7 @@ function anmFrameNow(env: UiScreenEnv, p: Playing): SpriteLike | null {
   if (film === null || film.frames.length === 0) return null;
   const from = anmRunFrom(p);
   if (env.now < from) return null;
-  const bitmap = film.frames[anmFrameAt(env.now, from, film.frames.length, false)];
+  const bitmap = flicFrame(film, anmFrameAt(env.now, from, film.frames.length, false));
   // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
   return bitmap === undefined ? null : { bitmap, width: film.width, height: film.height };
 }
@@ -1226,7 +1226,7 @@ function bakeFinishedAnims(a: Active, ctx: CanvasRenderingContext2D, env: UiScre
     if (p === null) continue;
     if (!p.settled && !playingDone(p, env.now)) continue;
     const film = env.flic('Panel.mkf', p.resource);
-    const last = film?.frames[film.frames.length - 1];
+    const last = film === null ? undefined : flicFrame(film, film.frames.length - 1);
     // FLIC 帧按影片的**逻辑**尺寸画（超分帧塞回同一个框，`hd-stage.ts`）
     if (film !== null && last !== undefined) drawSprite(ctx, { bitmap: last, width: film.width, height: film.height }, p.at[0], p.at[1]);
     a[key] = null;

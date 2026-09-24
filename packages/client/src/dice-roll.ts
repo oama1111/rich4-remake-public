@@ -35,6 +35,7 @@
  */
 
 import type { LoadedFlic } from './assets.ts';
+import { flicFrame } from './hd-stage.ts';
 
 /** 这一段的三个子阶段 */
 export type DicePhase = 'idle' | 'anticipate' | 'tumble' | 'hold';
@@ -218,7 +219,8 @@ export class DiceRollFx {
   /** 当前这一帧的位图；不在滚骰段或没 FLIC 时 null */
   flicBitmap(now: number): ImageBitmap | null {
     const k = this.flicFrame(now);
-    return k === null ? null : (this.#flic?.frames[k] ?? null);
+    const f = this.#flic;
+    return k === null || f === null ? null : (flicFrame(f, k) ?? null);
   }
 
   /**

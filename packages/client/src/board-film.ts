@@ -21,6 +21,7 @@
  */
 
 import type { ArchiveName, LoadedFlic } from './assets.ts';
+import { flicFrame } from './hd-stage.ts';
 
 /** 一段棋盘影片的规格 —— 四个数都逐字节核过资源头/调用点 */
 export interface BoardFilmSpec {
@@ -186,7 +187,7 @@ export function boardFilmBitmap(
 ): ImageBitmap | null {
   if (flic === null || flic === undefined) return null;
   const frame = boardFilmFrame(film, now);
-  return flic.frames[frame] ?? flic.frames[flic.frames.length - 1] ?? null;
+  return flicFrame(flic, frame) ?? flicFrame(flic, flic.frames.length - 1) ?? null;
 }
 
 // ============================================================

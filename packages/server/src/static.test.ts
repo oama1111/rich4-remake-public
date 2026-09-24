@@ -20,6 +20,8 @@ import {
   SECURITY_HEADERS,
   acceptsEncoding,
   cacheControlFor,
+  hdRouteOf,
+  isAllowedHdPath,
   contentTypeFor,
   findOnDisk,
   isAllowedAssetName,
@@ -235,5 +237,31 @@ describe('★ 固定响应头与 robots.txt', () => {
 
   it('/robots.txt 正文逐字相等', () => {
     expect(ROBOTS_TXT).toBe('User-agent: *\nDisallow: /\n');
+  });
+});
+
+describe('★ 超分素材判据（W-80 §8）', () => {
+  it('路径白名单：`<档>/<资源>-<图>.png`', () => {
+    expect(isAllowedHdPath('Data/191-0.png')).toBe(true);
+    expect(isAllowedHdPath('jump/47-12.png')).toBe(true);
+    expect(isAllowedHdPath('Data/191-0.PNG')).toBe(false);
+    expect(isAllowedHdPath('Data/../191-0.png')).toBe(false);
+    expect(isAllowedHdPath('Speaking/1-0.png')).toBe(false);
+    expect(isAllowedHdPath('Data/191-0.png/x')).toBe(false);
+    expect(isAllowedHdPath('191-0.png')).toBe(false);
+  });
+
+  it('路由：清单 / 图 / 其他', () => {
+    expect(hdRouteOf('/assets/hd-2x-manifest.json')).toEqual({ kind: 'manifest', tier: 'hd-2x', file: 'hd-2x-manifest.json' });
+    expect(hdRouteOf('/assets/hd-2x/Data/191-0.png')).toEqual({ kind: 'image', tier: 'hd-2x', rel: 'Data/191-0.png' });
+    expect(hdRouteOf('/assets/hd/Data/191-0.png')).toEqual({ kind: 'image', tier: 'hd', rel: 'Data/191-0.png' });
+    expect(hdRouteOf('/assets/game/Data.mkf')).toBeNull();
+    expect(hdRouteOf('/assets/hd-3x/Data/1-0.png')).toBeNull();
+  });
+
+  it('缓存：带版本才不可变', () => {
+    expect(cacheControlFor('hd', 'Data/191-0.png', true)).toBe('private, max-age=31536000, immutable');
+    expect(cacheControlFor('hd', 'Data/191-0.png')).toBe('no-cache');
+    expect(cacheControlFor('hd', 'hd-2x-manifest.json')).toBe('no-cache');
   });
 });

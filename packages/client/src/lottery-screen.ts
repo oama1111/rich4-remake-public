@@ -107,7 +107,7 @@ import { clerkTextStyle, drawGdiText } from './font.ts';
 // 取消音（`[0x482332] = 4`）—— 与右键/ESC 那条梯子共用同一个号
 import { CANCEL_SOUND } from './panel-cancel.ts';
 import { DRAW_DRUM_RESOURCE, DRAW_FLOWER_RESOURCE } from './lottery-draw-screen.ts';
-import { drawSprite } from './hd-stage.ts';
+import { drawSprite, flicFrame } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type LotSprite = (
@@ -706,7 +706,7 @@ export function drawBonusMarquee(
 ): boolean {
   const film = flic(LOT_ARCHIVE, LOT_BONUS_RESOURCE);
   if (film === null || film.frames.length === 0) return false;
-  const frame = film.frames[bonusFrameAt(now) % film.frames.length];
+  const frame = flicFrame(film, bonusFrameAt(now) % film.frames.length);
   if (frame === undefined) return false;
   // 原版 `fcn_00450ced(sprite, x, y, flags)` 的 x/y 是**左上角**（帧缓冲从 (x,y) 起铺）
   // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）

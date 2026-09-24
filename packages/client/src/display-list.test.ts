@@ -296,3 +296,43 @@ describe('DisplayList（逐帧指令去重）', () => {
     expect(dl.stats).toMatchObject({ painted: 1, skipped: 2, verifyMismatches: 0 });
   });
 });
+
+describe('★ 高清舞台换倍率（W-80 §8）：离屏画布被外部改了尺寸', () => {
+  it('canvasResized：真上下文状态对齐回镜像，下一帧一定真画（不会拿一块清空的画布当成「与上一帧相同」）', () => {
+    const { real, dl, ctx } = setup();
+    for (let i = 0; i < 2; i++) {
+      dl.beginFrame();
+      drawStatic(ctx);
+      dl.endFrame();
+    }
+    // 第二帧与第一帧相同 ⇒ 跳过
+    expect(dl.stats.skipped).toBe(1);
+    // 帧外改尺寸：`canvas.width = …` 清空像素、把真上下文的状态全部重置
+    real.canvas.width = 1280;
+    real.font = '10px sans-serif';
+    real.fillStyle = '#000';
+    real.calls.length = 0;
+    dl.canvasResized(real.canvas);
+    // 镜像记着的状态（上一帧留下的 12px serif）重新抄回真上下文
+    expect(real.font).toBe('12px serif');
+    dl.beginFrame();
+    drawStatic(ctx);
+    expect(dl.endFrame()).toBe(true);
+    expect(real.calls.length).toBeGreaterThan(0);
+    // 再下一帧恢复去重
+    dl.beginFrame();
+    drawStatic(ctx);
+    expect(dl.endFrame()).toBe(false);
+  });
+
+  it('只动被改的那一块：别的画布的状态不碰', () => {
+    const { real, board, dl, ctx, bctx } = setup();
+    dl.beginFrame();
+    drawStatic(ctx);
+    drawStatic(bctx);
+    dl.endFrame();
+    board.font = 'changed';
+    dl.canvasResized(real.canvas);
+    expect(board.font).toBe('changed');
+  });
+});

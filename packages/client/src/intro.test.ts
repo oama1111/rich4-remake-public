@@ -424,6 +424,19 @@ describe('★ drawIntro 真的把每一段都畫到畫布上', () => {
     expect(s.texts.every((t) => t === INTRO_HINT)).toBe(true);
   });
 
+  it('★ 高清舞台（W-80 §8）：畫布像素 = 邏輯 × s 時「按任意鍵跳過」仍按**邏輯**尺寸排在底部正中', () => {
+    const at: { x: number; y: number }[] = [];
+    const ctx = {
+      canvas: { width: 1280, height: 960 },
+      getTransform: () => ({ a: 2, b: 0, c: 0, d: 2, e: 0, f: 0 }),
+      fillRect: () => undefined,
+      fillText: (_t: string, x: number, y: number) => at.push({ x, y }),
+      drawImage: () => undefined,
+    } as unknown as CanvasRenderingContext2D;
+    drawIntro(ctx, 0, {});
+    expect(at.at(0)).toEqual({ x: 320, y: 468 });
+  });
+
   it('三個入口用的都是同一份檔案（jump.mkf）', () => {
     expect(INTRO_ARCHIVE).toBe('jump.mkf');
   });

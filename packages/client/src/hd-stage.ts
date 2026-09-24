@@ -33,6 +33,24 @@ export interface SpriteLike {
 /** 高清舞台允许的最大像素倍率 —— 4× 素材再往上没有意义，只会白耗显存 */
 export const MAX_SURFACE_SCALE = 4;
 
+/**
+ * ★ 触屏设备（手机 / 平板）的倍率上限。
+ *
+ * 第十九份试玩回报「iPhone 上玩手机很烫」修过一轮（指令表去重、后台暂停…）；高清舞台
+ * 让三块离屏画布的像素按倍率平方涨 —— iPhone 13 横屏窗口倍数约 2.44，不封顶就是
+ * 1.9 Mpx × 每帧重画，封到 2 是 1.2 Mpx（关掉高清时 0.3 Mpx）。网页素材本来就是 2× 档，
+ * 再往上只多出文字的锐度，换不回发热。最后贴屏那一下补一次平滑放大（见 `main.ts` 的 `blitStage`）。
+ */
+export const TOUCH_SURFACE_SCALE_CAP = 2;
+
+/**
+ * 这台设备的倍率上限：触屏（粗指针或有触点）封到 `TOUCH_SURFACE_SCALE_CAP`，其余 `MAX_SURFACE_SCALE`。
+ * ⚠️ iPad 的 Safari 自称 Mac，但 `maxTouchPoints > 0` —— 故两条判据取「或」。
+ */
+export function surfaceScaleCap(env: { coarsePointer: boolean; maxTouchPoints: number }): number {
+  return env.coarsePointer || env.maxTouchPoints > 0 ? TOUCH_SURFACE_SCALE_CAP : MAX_SURFACE_SCALE;
+}
+
 /** 位图的像素尺寸；拿不到（测试里的假位图）返回 null */
 function pixelSize(bitmap: CanvasImageSource): { w: number; h: number } | null {
   const b = bitmap as { width?: unknown; height?: unknown };
@@ -114,6 +132,15 @@ function withSmoothing(ctx: CanvasRenderingContext2D, draw: () => void): void {
   }
 }
 
+/**
+ * 取影片第 `i` 帧来画：超分帧已解好就是它（`assets.ts` 的 `LoadedFlic.frameAt`），否则原帧。
+ * 画出来一律按影片的**逻辑**尺寸塞框（`drawSprite(ctx, { bitmap, width, height }, …)`）。
+ * 泛型是为了让只认 `frames` 的轻量类型（`intro.ts` 的 `IntroFlic`…）也能用。
+ */
+export function flicFrame<T>(f: { frames: readonly T[]; frameAt?: (i: number) => T | undefined }, i: number): T | undefined {
+  return f.frameAt?.(i) ?? f.frames[i];
+}
+
 // ============================================================
 //  离屏画布的像素倍率
 // ============================================================
@@ -130,9 +157,9 @@ function withSmoothing(ctx: CanvasRenderingContext2D, draw: () => void): void {
  *   那一下单独吃掉 9 ms/帧，走子因此掉到 30 帧、格与格之间多等 45 ms，人物明显变慢。
  *   小数倍下 1× 原图的最近邻放大像素宽窄不一，与关掉高清舞台时整窗放大的效果相同，不算退化。
  */
-export function surfaceScaleFor(blitScale: number, enabled: boolean): number {
+export function surfaceScaleFor(blitScale: number, enabled: boolean, cap: number = MAX_SURFACE_SCALE): number {
   if (!enabled || !Number.isFinite(blitScale) || blitScale <= 1) return 1;
-  return Math.min(MAX_SURFACE_SCALE, blitScale);
+  return Math.max(1, Math.min(MAX_SURFACE_SCALE, cap, blitScale));
 }
 
 /** 离屏画布 + 它的上下文 */
@@ -196,14 +223,19 @@ export function setCurrentSurfaceScale(s: number): void {
   currentScale = s;
 }
 
+/** 高清开关在 `localStorage` 里的键（每台设备各自记，不进存档、不上网）*/
+export const HD_STORAGE_KEY = 'rich4.hd';
+
 /**
- * 高清舞台开关：`?hd=1` 开、`?hd=0` 关；URL 没写就看 `localStorage['rich4.hd']`。
- * **默认关** —— 线上版本在没人明确打开之前与改造前逐像素一致。
+ * 高清舞台开关：`?hd=0` 关、`?hd=1` 开（URL 优先）；URL 没写就看 `localStorage['rich4.hd']`，
+ * 存的是 `'0'` 才关。
+ *
+ * ★ 2026-09-24 需求方拍板：**默认开**（W-80 §8 上线）。先前默认关是为了「不影响线上版本」。
  */
 export function hdStageRequested(search: string, stored: string | null): boolean {
   const q = new URLSearchParams(search).get('hd');
-  if (q !== null) return q === '1' || q === 'true';
-  return stored === '1';
+  if (q !== null) return !(q === '0' || q === 'false');
+  return stored !== '0';
 }
 
 /**

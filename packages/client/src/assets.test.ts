@@ -18,6 +18,9 @@ import {
   loadHdSource,
   groundLogicalSize,
   SpriteCache,
+  HdFlicFrames,
+  HD_FLIC_LOOKAHEAD,
+  parseSpriteKey,
   type HdSource,
   type LoadedArchives,
   type Sprite,
@@ -25,6 +28,7 @@ import {
   CHARACTER_POSE,
 } from './assets.ts';
 import { assetBase, hdBase, hdTierDir } from './host.ts';
+import { flicFrame } from './hd-stage.ts';
 
 // ============================================================
 //  浏览器全局的最小替身
@@ -591,6 +595,25 @@ describe('hdSourceFromManifest', () => {
     expect(seen).toEqual(['https://x/assets/hd/Panel/23-7.png']);
   });
 
+  it('★ 结果带 outHash → URL 拼上 `?v=<前 8 位>`（服务器据此长期缓存；产物重做 URL 就变）', async () => {
+    const hd = hdSourceFromManifest('/assets/hd-2x', {
+      tasks: [{ archive: 'Data', resource: 191, image: 0 }],
+      results: { 'Data/0191_000': { outAnchorX: 1, outAnchorY: 1, outHash: 'a341bbc2a552aadd' } },
+    });
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    (globalThis as unknown as { fetch: unknown }).fetch = (url: string) => {
+      seen.push(url);
+      return Promise.resolve({ ok: false } as Response);
+    };
+    try {
+      await hd.fetchBytes('Data.mkf', 191, 0);
+    } finally {
+      (globalThis as unknown as { fetch: unknown }).fetch = original;
+    }
+    expect(seen).toEqual(['/assets/hd-2x/Data/191-0.png?v=a341bbc2']);
+  });
+
   it('产物缺失（404）→ null，交由调用方回退', async () => {
     const hd = hdSourceFromManifest('/assets/hd', {
       tasks: [{ archive: 'Data', resource: 0, image: 0 }],
@@ -821,8 +844,10 @@ describe('★ loadGround：有 HD 就用 HD，缺了就按图回退原图', () =
 //  ★ FLIC 影片的超分帧（W-80 §4.4）：先原帧，超分帧到一帧换一帧
 // ============================================================
 
-describe('★ getFlic：有超分记录的帧后台换成 HD，逻辑尺寸仍是影片的', () => {
-  it('Panel.mkf #4（滚骰）：帧 0 有 HD、帧 1 没有 —— 各走各的；影片 width/height 不变', async () => {
+describe('★ getFlic：超分帧只留压缩字节、画到哪儿才解哪几帧（W-80 §8），逻辑尺寸仍是影片的', () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it('Panel.mkf #4（滚骰）：帧 0 有 HD、帧 1 没有 —— 各走各的；`frames[]` 始终是原帧；影片 width/height 不变', async () => {
     const { MkfArchive } = await import('@rich4/assets-pipeline');
     const panel = new MkfArchive(new Uint8Array(readFileSync(new URL('../../../assets/game/Panel.mkf', import.meta.url))));
     const archives: LoadedArchives = { get: () => panel };
@@ -837,11 +862,106 @@ describe('★ getFlic：有超分记录的帧后台换成 HD，逻辑尺寸仍�
     let upgrades = 0;
     c.addUpgradeListener(() => upgrades++);
     const film = await c.getFlic('Panel.mkf', 4);
-    expect(film!.frames[0]!.width).toBe(width); // 先原帧
+    expect(flicFrame(film!, 0)!.width).toBe(width); // 先原帧
     await c.settled();
-    expect(film!.frames[0]!.width).toBe(width * 4);
-    expect(film!.frames[1]!.width).toBe(width);
+    await flush();
+    expect(flicFrame(film!, 0)!.width).toBe(width * 4);
+    expect(flicFrame(film!, 1)!.width).toBe(width);
+    // `frames[]` 不再被原地替换：帧数、最后一帧照旧按原帧算
+    expect(film!.frames[0]!.width).toBe(width);
     expect({ w: film!.width, h: film!.height }).toEqual({ w: width, h: height });
-    expect(upgrades).toBe(1);
+    expect(upgrades).toBeGreaterThanOrEqual(1);
+  });
+
+  it('★ 窗口：只留「身后一帧 + 往后 N 帧」的位图，其余关掉（开场过场 8 段 × 50 帧不会全解成 2× 位图）', async () => {
+    let closed = 0;
+    const make = async (): Promise<ImageBitmap> =>
+      ({ width: 8, height: 8, close: () => closed++ }) as unknown as ImageBitmap;
+    let decodedCalls = 0;
+    const frames = new HdFlicFrames(30, make, () => decodedCalls++);
+    for (let k = 0; k < 30; k++) frames.setBytes(k, new Blob([new Uint8Array([k])]));
+    await flush();
+    // 还没人画 ⇒ 预热开头那几帧
+    expect(frames.decodedCount).toBe(HD_FLIC_LOOKAHEAD + 1);
+    expect(frames.get(0)).toBeDefined();
+    frames.get(20);
+    await flush();
+    // 跳到 20：开头那几帧全关掉，解 20..26（身后那一帧只「留」、不专门去解）
+    expect(frames.decodedCount).toBe(HD_FLIC_LOOKAHEAD + 1);
+    expect(frames.get(20)).toBeDefined();
+    expect(closed).toBe(HD_FLIC_LOOKAHEAD + 1);
+    // 顺播一帧：20 留作身后那一帧，窗口往后挪一格
+    frames.get(21);
+    await flush();
+    expect(frames.decodedCount).toBe(HD_FLIC_LOOKAHEAD + 2);
+    // 定格在最后一帧（开场降落伞那几段放完后每帧都还画最后一帧）⇒ 只剩两帧
+    frames.get(29);
+    await flush();
+    expect(frames.decodedCount).toBeLessThanOrEqual(2);
+    expect(frames.get(29)).toBeDefined();
+    frames.close();
+    expect(frames.decodedCount).toBe(0);
+    expect(frames.get(29)).toBeUndefined();
+    expect(decodedCalls).toBeGreaterThan(0);
+  });
+
+  it('★ flicFrame：没有 frameAt 的轻量影片（测试替身）照旧读 frames[i]', () => {
+    expect(flicFrame({ frames: ['a', 'b'] }, 1)).toBe('b');
+    expect(flicFrame({ frames: ['a', 'b'], frameAt: (i: number) => (i === 1 ? 'B' : undefined) }, 1)).toBe('B');
+    expect(flicFrame({ frames: ['a', 'b'], frameAt: () => undefined }, 0)).toBe('a');
+  });
+});
+
+describe('★ setHd：门厅「高清畫面」勾选框 —— 已交出去的精灵原地换回 / 换上', () => {
+  it('接上 → 升级；撤掉 → 换回原图；再接上 → 又升级（同一个对象）', async () => {
+    const hd = fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) });
+    const c = cacheWith({ hd });
+    const s = await c.get('Data.mkf', 0, 0);
+    await c.settled();
+    expect(bitmapSize(s!)).toEqual({ w: 8, h: 8 });
+    c.setHd(null);
+    await c.settled();
+    expect(bitmapSize(s!)).toEqual({ w: 2, h: 2 });
+    c.setHd(hd);
+    await c.settled();
+    expect(bitmapSize(s!)).toEqual({ w: 8, h: 8 });
+    expect(await c.get('Data.mkf', 0, 0)).toBe(s);
+  });
+
+  it('★ 升级还在路上时撤掉 → 到货也不换上（代次作废）', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const slow: HdSource = {
+      entry: () => ({ anchorX: 4, anchorY: 4 }),
+      fetchBytes: async () => {
+        await gate;
+        return pngOf(8, 8);
+      },
+    };
+    const c = cacheWith({ hd: slow });
+    const s = await c.get('Data.mkf', 0, 0);
+    c.setHd(null);
+    release();
+    await c.settled();
+    expect(bitmapSize(s!)).toEqual({ w: 2, h: 2 });
+  });
+
+  it('parseSpriteKey：缓存键逆回取图参数', () => {
+    expect(parseSpriteKey('Data.mkf:191:3::')).toEqual({
+      archive: 'Data.mkf',
+      resource: 191,
+      index: 3,
+      colorKeyBlack: false,
+      ring: undefined,
+    });
+    expect(parseSpriteKey('map.mkf:40:2:k:255,0,16')).toEqual({
+      archive: 'map.mkf',
+      resource: 40,
+      index: 2,
+      colorKeyBlack: true,
+      ring: [255, 0, 16],
+    });
+    expect(parseSpriteKey('nope.mkf:1:2::')).toBeNull();
+    expect(parseSpriteKey('Data.mkf:x:2::')).toBeNull();
   });
 });

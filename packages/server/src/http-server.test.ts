@@ -680,6 +680,7 @@ describe('★ 访问密码 —— 整站一道门（W-71）', () => {
       port: 1,
       host: '127.0.0.1',
       assetDir: '/a',
+      hdDir: '/h',
       webDir: '/w',
       map: {} as Rich4Map,
       globalMapId: 3,
@@ -811,5 +812,82 @@ describe('★ startServer —— 门从环境变量来', () => {
     leftovers.push({ close: () => running.close() });
     const port = (running.server.address() as AddressInfo).port;
     expect((await get(port, '/assets/game/Data.mkf')).status).toBe(200);
+  });
+});
+
+// ============================================================
+//  ★ W-80 §8：超分素材（高清上线）
+// ============================================================
+
+describe('★ 超分素材 /assets/hd-2x/…（W-80 §8）', () => {
+  /** 造 `<root>/game` + `<root>/hd-2x/Data/191-0.png` + `<root>/hd-2x-manifest.json(.br)`，服务器只拿到 `game` */
+  async function withHd(fn: (port: number, root: string) => Promise<void>, gate?: Gate): Promise<void> {
+    const root = tempDir('rich4-w80-hd-');
+    const game = join(root, 'game');
+    mkdirSync(join(root, 'hd-2x', 'Data'), { recursive: true });
+    mkdirSync(game);
+    writeFileSync(join(game, 'Data.mkf'), 'mkf');
+    writeFileSync(join(root, 'hd-2x', 'Data', '191-0.png'), 'PNGBYTES');
+    writeFileSync(join(root, 'hd-2x', 'secret.txt'), 'no');
+    writeFileSync(join(root, 'hd-2x-manifest.json'), '{"version":1}');
+    writeFileSync(join(root, 'hd-2x-manifest.json.br'), 'BR');
+    const server = createServer(createHttpHandler({ assetDir: game, ...(gate === undefined ? {} : { gate }) }));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    leftovers.push({
+      close: () => {
+        server.closeAllConnections();
+        server.close();
+      },
+    });
+    await fn((server.address() as AddressInfo).port, root);
+  }
+
+  it('带 `?v=` 的图：200 image/png、一年不可变；不带版本：no-cache；缺图 404（客户端按图回退原图）', async () => {
+    await withHd(async (port) => {
+      const v = await get(port, '/assets/hd-2x/Data/191-0.png?v=a341bbc2');
+      expect(v.status).toBe(200);
+      expect(v.headers['content-type']).toBe('image/png');
+      expect(v.headers['cache-control']).toBe('private, max-age=31536000, immutable');
+      expect(v.body.toString()).toBe('PNGBYTES');
+      for (const [k, want] of Object.entries(SECURITY_HEADERS)) expect(v.headers[k.toLowerCase()]).toBe(want);
+      const bare = await get(port, '/assets/hd-2x/Data/191-0.png');
+      expect(bare.status).toBe(200);
+      expect(bare.headers['cache-control']).toBe('no-cache');
+      expect((await get(port, '/assets/hd-2x/Data/191-1.png?v=a341bbc2')).status).toBe(404);
+      // 线上没放母版档：同样 404
+      expect((await get(port, '/assets/hd/Data/191-0.png')).status).toBe(404);
+    });
+  });
+
+  it('★ 白名单：档案名 + 数字 + .png 之外一律 404；穿越 400', async () => {
+    await withHd(async (port) => {
+      expect((await get(port, '/assets/hd-2x/secret.txt')).status).toBe(404);
+      expect((await get(port, '/assets/hd-2x/Data.mkf')).status).toBe(404);
+      expect((await get(port, '/assets/hd-2x/Other/1-0.png')).status).toBe(404);
+      expect((await get(port, '/assets/hd-2x/Data/..%2f..%2fgame%2fData.mkf')).status).toBe(400);
+      // 素材根本身（`<root>/game`）的上一级不许当成素材目录端出去
+      expect((await get(port, '/assets/game/../hd-2x-manifest.json')).status).not.toBe(200);
+    });
+  });
+
+  it('清单：no-cache、预压缩优先（带版本则长期缓存）', async () => {
+    await withHd(async (port) => {
+      const plain = await get(port, '/assets/hd-2x-manifest.json');
+      expect(plain.status).toBe(200);
+      expect(plain.headers['content-type']).toBe('application/json; charset=utf-8');
+      expect(plain.headers['cache-control']).toBe('no-cache');
+      expect(plain.body.toString()).toBe('{"version":1}');
+      const br = await get(port, '/assets/hd-2x-manifest.json?v=0123abcd', { headers: { 'Accept-Encoding': 'br' } });
+      expect(br.headers['content-encoding']).toBe('br');
+      expect(br.headers['cache-control']).toBe('private, max-age=31536000, immutable');
+      expect((await get(port, '/assets/hd-manifest.json')).status).toBe(404);
+    });
+  });
+
+  it('★ 同一道门：没带票 → 401（图与清单都是）', async () => {
+    await withHd(async (port) => {
+      expect((await get(port, '/assets/hd-2x/Data/191-0.png?v=a341bbc2')).status).toBe(401);
+      expect((await get(port, '/assets/hd-2x-manifest.json')).status).toBe(401);
+    }, makeGate());
   });
 });

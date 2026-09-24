@@ -73,6 +73,53 @@ export function isAllowedAssetName(name: string): boolean {
 }
 
 // ============================================================
+//  超分素材（W-80 §8：高清上线）
+// ============================================================
+
+/**
+ * 线上提供的超分档（目录名）。与客户端 `host.ts` 的 `hdTierDir()` 对齐：
+ * 网页默认读 `hd-2x`，`?hdtier=4` 读母版 `hd`（线上一般不放母版 —— 不在磁盘上就是 404，客户端退回原图）。
+ */
+export const HD_TIERS = ['hd-2x', 'hd'] as const;
+export type HdTier = (typeof HD_TIERS)[number];
+
+/**
+ * 超分图的路径形状：`<档案>/<资源>-<图>.png`（管线 `hdRelativePath`，档案名不带 `.mkf`）。
+ *
+ * ★ 同样走**白名单**：只认这 5 个档案名 + 纯数字 + `.png`，一段子目录都不多。
+ *   这些 PNG 是原版素材的**衍生物**（红线同 `.mkf`：只在服务器磁盘上、只在门后面）。
+ */
+const HD_PATH_RE = /^(Data|Panel|map|jump|help)\/\d{1,5}-\d{1,5}\.png$/;
+
+export function isAllowedHdPath(rel: string): boolean {
+  return HD_PATH_RE.test(rel);
+}
+
+/** `/assets/<档>-manifest.json` 那一份的文件名 */
+export function hdManifestName(tier: HdTier): string {
+  return `${tier}-manifest.json`;
+}
+
+export type HdRoute =
+  | { kind: 'manifest'; tier: HdTier; file: string }
+  | { kind: 'image'; tier: HdTier; rel: string }
+  | null;
+
+/**
+ * 请求路径是不是超分素材那几条（不是就返回 null，交给后面的路由）：
+ * - `/assets/hd-2x-manifest.json` → 清单；
+ * - `/assets/hd-2x/Data/191-0.png` → 一张图（`rel` 还**没**过安全校验，调用方先 `safeRelativePath`）。
+ */
+export function hdRouteOf(path: string): HdRoute {
+  for (const tier of HD_TIERS) {
+    if (path === `/assets/${hdManifestName(tier)}`) return { kind: 'manifest', tier, file: hdManifestName(tier) };
+    const prefix = `/assets/${tier}/`;
+    if (path.startsWith(prefix)) return { kind: 'image', tier, rel: path.slice(prefix.length) };
+  }
+  return null;
+}
+
+// ============================================================
 //  路径安全
 // ============================================================
 
@@ -186,7 +233,10 @@ const HASHED_ASSET_RE = /[-.][0-9A-Za-z_]{8,}\.(?:js|css)$/;
  * · 带哈希的 `assets/*.js|css`：不可变。
  * · 其余：`no-cache`（每次带 `ETag` 回源校验，比押错强）。
  */
-export function cacheControlFor(kind: 'asset' | 'web', rel: string): string {
+export function cacheControlFor(kind: 'asset' | 'web' | 'hd', rel: string, versioned = false): string {
+  // ★ 超分素材（W-80 §8）：带 `?v=<内容哈希>` 的才一年不可变（客户端按清单里的 `outHash` 拼）；
+  //   不带版本的（清单本身、旧客户端）一律 `no-cache` —— 重做过的图不能让浏览器一直拿旧的。
+  if (kind === 'hd') return versioned ? 'private, max-age=31536000, immutable' : 'no-cache';
   // ★ 清单是**版本指针**（W-72）：它一变，别的档案的 URL 就全变了 ——
   //   绝不能标 `immutable`，否则发了新版浏览器还拿旧的，客户端会去取一批
   //   已经不存在的 `?v=`。客户端那边也带 `cache: 'no-store'`，两头都堵住。

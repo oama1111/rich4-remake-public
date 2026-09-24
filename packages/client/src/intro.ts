@@ -85,7 +85,7 @@
  */
 import { FONT_FAMILY } from './font.ts';
 import type { ArchiveName } from './assets.ts';
-import { drawSprite } from './hd-stage.ts';
+import { drawSprite, flicFrame, surfaceScaleOf } from './hd-stage.ts';
 
 /** 過場整屏尺寸（原版主表面 640×480，`0x40163d` 的 `SetDisplayMode(0x280,0x1e0,0x10)`）*/
 export const INTRO_SIZE = { w: 0x280, h: 0x1e0 } as const;
@@ -363,7 +363,11 @@ export function drawIntro(
   elapsedMs: number,
   deps: IntroDeps = {},
 ): void {
-  const { width, height } = ctx.canvas;
+  // ★ 高清舞台下画布像素 = 逻辑 × s（挂着 s 倍变换）—— 版面要按**逻辑**尺寸排，
+  //   否则「按任意鍵跳過」会落到 (640s/2, 480s−12)，s > 1 时整行跑出画面
+  const s = surfaceScaleOf(ctx);
+  const width = ctx.canvas.width / s;
+  const height = ctx.canvas.height / s;
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, width, height);
 
@@ -432,7 +436,7 @@ function paintSegment(
   const flic = deps.flic?.(INTRO_ARCHIVE, seg.resource) ?? null;
   if (flic === null || flic.frames.length === 0) return;
   const i = Math.max(0, Math.min(frame, flic.frames.length - 1));
-  const bmp = flic.frames[i];
+  const bmp = flicFrame(flic, i);
   if (bmp === undefined) return;
   // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
   drawSprite(ctx, { bitmap: bmp, width: flic.width, height: flic.height }, seg.at.x, seg.at.y);

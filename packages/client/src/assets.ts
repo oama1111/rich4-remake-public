@@ -12,6 +12,7 @@ import { MkfArchive, parseSpriteSheet, decodeFlic, type SpriteSheet } from '@ric
 import { decodeImage, decodeGround, decodeRaw555, isGround, paletteRgb } from '@rich4/assets-pipeline';
 import { HOLIDAY_ART_SIZE, holidayArtResource } from '@rich4/core';
 import { hdRelativePath, taskIdOf } from '@rich4/assets-pipeline';
+import { hdRatio } from './hd-stage.ts';
 
 /** 原版的资源档案 */
 export const ARCHIVES = ['Data.mkf', 'Panel.mkf', 'map.mkf', 'jump.mkf', 'help.mkf'] as const;
@@ -83,6 +84,7 @@ export const RING_PALETTE_INDEX = 255;
 
 /** 一段解好的 FLIC 影片（逐帧位图） */
 export interface LoadedFlic {
+  /** 原版逐帧（1×，像素 = 逻辑尺寸）—— 帧数、最后一帧都按它算 */
   frames: ImageBitmap[];
   width: number;
   height: number;
@@ -90,7 +92,22 @@ export interface LoadedFlic {
   frameMs: number;
   /** 释放这一段的位图；释放后再取会重新解 */
   close: () => void;
+  /**
+   * 第 `i` 帧此刻该画哪张：有超分帧、而且已经解好就给它（位图比逻辑尺寸大，画的地方按
+   * `width/height` 塞框），否则原帧。**画帧一律走 `flicFrame()`**，别直接读 `frames[i]`。
+   * 没有这个方法 = 没接超分（测试里的假影片、`SpriteCache` 以外造的）。
+   */
+  frameAt?: (i: number) => ImageBitmap | undefined;
 }
+
+/**
+ * 超分影片帧的「窗口」：往后预解几帧、身后留一帧，其余一律关掉。
+ *
+ * ★ 为什么不像精灵那样整段换成超分帧：开场过场一次要播 4 人 × 2 段、每段 40–50 帧，
+ *   2× 帧 1280×960 一张 4.9 MB 位图 ⇒ 整段留着就是 1.7 GB（原图 440 MB），iPhone 的
+ *   Safari 撑不住。超分帧先只拉**压缩字节**（2× 一帧约 190 KB），画到哪一帧才解哪几帧。
+ */
+export const HD_FLIC_LOOKAHEAD = 6;
 
 /**
  * 一张解码好的图。
@@ -147,6 +164,8 @@ export function archiveKey(archive: ArchiveName): string {
 interface HdResultLike {
   outAnchorX: number;
   outAnchorY: number;
+  /** 产物的内容哈希（管线 `outHash`）—— 有就拼进 URL 当版本（`?v=` 前 8 位），线上据此长期缓存 */
+  outHash?: string;
 }
 
 export interface HdManifestLike {
@@ -164,10 +183,12 @@ export interface HdManifestLike {
  */
 export function hdSourceFromManifest(base: string, manifest: HdManifestLike): HdSource {
   const entries = new Map<string, HdEntry>();
+  const versions = new Map<string, string>();
   for (const t of manifest.tasks) {
     const id = taskIdOf({ archive: t.archive, resource: t.resource, image: t.image });
     const r = manifest.results[id];
     if (r === undefined) continue;
+    if (typeof r.outHash === 'string' && /^[0-9a-f]{8,}$/i.test(r.outHash)) versions.set(id, r.outHash.slice(0, 8));
     const e: HdEntry = { anchorX: r.outAnchorX, anchorY: r.outAnchorY };
     if (t.srcWidth !== undefined && t.srcHeight !== undefined) {
       e.srcWidth = t.srcWidth;
@@ -182,7 +203,10 @@ export function hdSourceFromManifest(base: string, manifest: HdManifestLike): Hd
   return {
     entry: (archive, resource, image) => entries.get(keyOf(archive, resource, image)) ?? null,
     fetchBytes: async (archive, resource, image) => {
-      const url = `${base}/${hdRelativePath(archiveKey(archive), resource, image)}`;
+      // ★ 带内容版本（`?v=`）：服务器对带版本的超分图回一年不可变（`static.ts` 的 `cacheControlFor`），
+      //   产物重做了哈希就变、URL 跟着变，浏览器不会拿旧图
+      const v = versions.get(keyOf(archive, resource, image));
+      const url = `${base}/${hdRelativePath(archiveKey(archive), resource, image)}${v === undefined ? '' : `?v=${v}`}`;
       try {
         const res = await fetch(url);
         if (!res.ok) return null;
@@ -201,14 +225,140 @@ export function hdSourceFromManifest(base: string, manifest: HdManifestLike): Hd
  * 清单路径与 hd 目录**同级**、名字是 `<目录名>-manifest.json`
  * （`cli-upscale.ts` 的 `manifestPath` 定的；清单入库、产物不入库）。
  */
-export async function loadHdSource(base: string): Promise<HdSource | null> {
+export async function loadHdSource(base: string, version: string | null = null): Promise<HdSource | null> {
   try {
-    const res = await fetch(`${base}-manifest.json`);
+    // 带版本（`assets-manifest.json` 登记过它）⇒ 服务器回长期缓存；不带 ⇒ 每次回源（服务器回 no-cache）
+    const res = await fetch(`${base}-manifest.json${version === null ? '' : `?v=${version}`}`);
     if (!res.ok) return null;
     return hdSourceFromManifest(base, (await res.json()) as HdManifestLike);
   } catch {
     return null;
   }
+}
+
+/** 一段影片同时在路上的超分帧请求数 */
+export const HD_FLIC_FETCH_CONCURRENCY = 4;
+
+/**
+ * 一段影片的超分帧（见 `HD_FLIC_LOOKAHEAD` 的说明）：压缩字节常驻，位图只留**正在画的这一帧
+ * 身后一帧 + 往后 `HD_FLIC_LOOKAHEAD` 帧**，其余关掉。
+ *
+ * - `get(i)`：解好了给超分帧，没解好给 `undefined`（调用方退回原帧）并顺手排上 i..i+N 的解码；
+ * - 解完的那一帧正是最近要画的 ⇒ 叫一次重画（`onDecoded`），免得停在原帧上的画面（最后一帧定格）
+ *   要等下一次别的事件才换上。
+ * - 不绕回开头（开场过场、小游戏入场都是只播一次；循环的滚骰 / 摇球没有超分帧）。
+ */
+export class HdFlicFrames {
+  readonly length: number;
+  readonly #create: BitmapFactory;
+  readonly #onDecoded: () => void;
+  #blobs: (Blob | null)[];
+  readonly #ready = new Map<number, ImageBitmap>();
+  readonly #pending = new Set<number>();
+  #last = -1;
+  #epoch = 0;
+  closed = false;
+
+  constructor(length: number, create: BitmapFactory, onDecoded: () => void) {
+    this.length = length;
+    this.#create = create;
+    this.#onDecoded = onDecoded;
+    this.#blobs = new Array<Blob | null>(length).fill(null);
+  }
+
+  /** 丢掉全部超分帧（换来源 / 撤掉高清） */
+  reset(): void {
+    this.#epoch++;
+    for (const b of this.#ready.values()) b.close();
+    this.#ready.clear();
+    this.#pending.clear();
+    this.#blobs = new Array<Blob | null>(this.length).fill(null);
+  }
+
+  close(): void {
+    this.closed = true;
+    this.reset();
+  }
+
+  /** 第 k 帧的压缩字节到了；正在画的窗口里就当场解 */
+  setBytes(k: number, blob: Blob): void {
+    if (this.closed || k < 0 || k >= this.length) return;
+    this.#blobs[k] = blob;
+    if (this.#inWindow(k)) this.#decode(k);
+  }
+
+  /** 此刻窗口里已解好的位图数（测试 / 量测用） */
+  get decodedCount(): number {
+    return this.#ready.size;
+  }
+
+  get(i: number): ImageBitmap | undefined {
+    if (this.closed || i < 0 || i >= this.length) return undefined;
+    if (i !== this.#last) {
+      this.#last = i;
+      for (const [k, b] of this.#ready) {
+        if (!this.#inWindow(k)) {
+          b.close();
+          this.#ready.delete(k);
+        }
+      }
+      for (let k = i; k <= Math.min(this.length - 1, i + HD_FLIC_LOOKAHEAD); k++) this.#decode(k);
+    }
+    return this.#ready.get(i);
+  }
+
+  /** 还没人画过（`#last = -1`）时，窗口是开头那几帧 —— 预热下一段时先把头几帧解好 */
+  #inWindow(k: number): boolean {
+    const at = Math.max(0, this.#last);
+    return k >= at - 1 && k <= at + HD_FLIC_LOOKAHEAD;
+  }
+
+  #decode(k: number): void {
+    if (this.#ready.has(k) || this.#pending.has(k)) return;
+    const blob = this.#blobs[k];
+    if (blob === null || blob === undefined) return;
+    const epoch = this.#epoch;
+    this.#pending.add(k);
+    void this.#create(blob).then(
+      (bmp) => {
+        this.#pending.delete(k);
+        if (epoch !== this.#epoch || this.closed || !this.#inWindow(k) || bmp.width === 0) {
+          bmp.close();
+          return;
+        }
+        this.#ready.set(k, bmp);
+        if (k === this.#last || this.#last === -1) this.#onDecoded();
+      },
+      () => {
+        // 坏帧：这一帧留原图
+        this.#pending.delete(k);
+      },
+    );
+  }
+}
+
+/** `SpriteCache` 的缓存键 → 取图参数（`setHd` 要按它重取）；形状对不上返回 null */
+export function parseSpriteKey(key: string): {
+  archive: ArchiveName;
+  resource: number;
+  index: number;
+  colorKeyBlack: boolean;
+  ring: readonly [number, number, number] | undefined;
+} | null {
+  const parts = key.split(':');
+  if (parts.length !== 5) return null;
+  const [archive, res, idx, k, ring] = parts as [string, string, string, string, string];
+  if (!(ARCHIVES as readonly string[]).includes(archive)) return null;
+  const resource = Number(res);
+  const index = Number(idx);
+  if (!Number.isInteger(resource) || !Number.isInteger(index)) return null;
+  let rgb: readonly [number, number, number] | undefined;
+  if (ring !== '') {
+    const c = ring.split(',').map(Number);
+    if (c.length !== 3 || c.some((x) => !Number.isFinite(x))) return null;
+    rgb = [c[0]!, c[1]!, c[2]!];
+  }
+  return { archive: archive as ArchiveName, resource, index, colorKeyBlack: k === 'k', ring: rgb };
 }
 
 /** 位图工厂 —— 测试注入假实现（Node 里没有 `createImageBitmap`）*/
@@ -325,7 +475,7 @@ export const DEFAULT_MAX_BYTES = 256;
  */
 export class SpriteCache {
   readonly #archives: LoadedArchives;
-  readonly #hd: HdSource | null;
+  #hd: HdSource | null;
   readonly #maxSprites: number;
   readonly #maxBytes: number;
   /**
@@ -340,6 +490,10 @@ export class SpriteCache {
   readonly #sprites = new Map<string, Sprite | null>();
   readonly #bytes = new Map<string, Uint8Array | null>();
   readonly #composeHd: HdCompose;
+  /** 已解好的影片各自的超分帧窗口（`setHd` 换来源时要逐段重挂） */
+  readonly #flicHd = new Map<string, { archive: ArchiveName; resource: number; frames: HdFlicFrames }>();
+  /** 超分来源的代次：换了来源，还在路上的旧请求一律作废 */
+  #hdGen = 0;
   /** 高清换上来之后要叫谁（重画一帧）—— 见 `addUpgradeListener` */
   readonly #upgradeListeners: (() => void)[] = [];
   /** 还在路上的高清升级 —— `settled()` 等它们 */
@@ -361,6 +515,43 @@ export class SpriteCache {
    */
   addUpgradeListener(fn: () => void): void {
     this.#upgradeListeners.push(fn);
+  }
+
+  #notifyUpgrade(): void {
+    for (const fn of this.#upgradeListeners) fn();
+  }
+
+  /**
+   * 换超分来源（门厅的「高清畫面」勾选框）：`null` = 撤掉。
+   *
+   * 已经交出去的精灵**原地换位图**（与「先原图、后高清」同一个办法，持有者下一帧自动用上）：
+   * 接上 → 有记录的拉高清换上；撤掉 → 已换成高清的重新解原图换回去。影片的超分帧整段丢掉 / 重新拉。
+   */
+  setHd(hd: HdSource | null): void {
+    if (hd === this.#hd) return;
+    this.#hd = hd;
+    this.#hdGen++;
+    for (const [key, sprite] of this.#sprites) {
+      if (sprite === null) continue;
+      const args = parseSpriteKey(key);
+      if (args === null) continue;
+      const { archive, resource, index, colorKeyBlack, ring } = args;
+      if (hd !== null) {
+        if (hd.entry(archive, resource, index) !== null) {
+          this.#track(this.#upgrade(key, sprite, archive, resource, index, colorKeyBlack, ring));
+        }
+      } else if (hdRatio(sprite) !== null) {
+        this.#track(
+          this.#originalSprite(archive, resource, index, colorKeyBlack, ring).then((orig) => {
+            if (orig === null || this.#sprites.get(key) !== sprite || this.#hd !== null) return false;
+            sprite.bitmap = orig.bitmap;
+            return true;
+          }),
+        );
+      }
+    }
+    for (const f of this.#flicHd.values()) this.#attachFlicHd(f.archive, f.resource, f.frames);
+    this.#notifyUpgrade();
   }
 
   /** 等所有在路上的高清升级落地（单测与截图验收用） */
@@ -451,41 +642,51 @@ export class SpriteCache {
     for (const rgba of decoded.frames) {
       frames.push(await this.#createBitmap(toImageData(decoded.info.width, decoded.info.height, rgba)));
     }
-    let closed = false;
+    const hdFrames = new HdFlicFrames(frames.length, this.#createBitmap, () => this.#notifyUpgrade());
     const out: LoadedFlic = {
       frames,
       width: decoded.info.width,
       height: decoded.info.height,
       frameMs: decoded.info.frameMs,
       close: () => {
-        closed = true;
+        hdFrames.close();
         for (const b of frames) b.close();
         this.#flics.delete(key);
+        this.#flicHd.delete(key);
       },
+      frameAt: (i) => hdFrames.get(i) ?? frames[i],
     };
     this.#flics.set(key, out);
-    // ★ 超分过的帧后台拉、到一帧换一帧（逻辑尺寸仍是 `width/height`，画的地方按它塞框）
-    const hd = this.#hd;
-    if (hd !== null) {
-      this.#track(
-        (async () => {
-          let changed = false;
-          for (let k = 0; k < frames.length; k++) {
-            if (hd.entry(archive, resource, k) === null) continue;
-            const bmp = await this.#hdBitmap(archive, resource, k);
-            if (bmp === null) continue;
-            if (closed) {
-              bmp.close();
-              return changed;
-            }
-            frames[k] = bmp; // 旧的 1× 帧交给 GC：别处可能还攥着这一帧正在画
-            changed = true;
-          }
-          return changed;
-        })(),
-      );
-    }
+    this.#flicHd.set(key, { archive, resource, frames: hdFrames });
+    // ★ 超分过的帧：后台只拉压缩字节，画到哪儿才解哪几帧（见 `HdFlicFrames`）
+    this.#attachFlicHd(archive, resource, hdFrames);
     return out;
+  }
+
+  /** 给一段已解好的影片挂上当前的超分来源（没有就撤掉） */
+  #attachFlicHd(archive: ArchiveName, resource: number, hdFrames: HdFlicFrames): void {
+    const hd = this.#hd;
+    hdFrames.reset();
+    if (hd === null) return;
+    const gen = this.#hdGen;
+    const wanted: number[] = [];
+    for (let k = 0; k < hdFrames.length; k++) if (hd.entry(archive, resource, k) !== null) wanted.push(k);
+    if (wanted.length === 0) return;
+    this.#track(
+      (async () => {
+        // 同时在路上的请求别太多：一段 50 帧一次全发，别的素材（精灵的高清）会被挤在后面
+        const queue = [...wanted];
+        const worker = async (): Promise<void> => {
+          for (let k = queue.shift(); k !== undefined; k = queue.shift()) {
+            const bytes = await hd.fetchBytes(archive, resource, k);
+            if (gen !== this.#hdGen || hdFrames.closed) return;
+            if (bytes !== null) hdFrames.setBytes(k, new Blob([bytes as BlobPart], { type: 'image/png' }));
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(HD_FLIC_FETCH_CONCURRENCY, queue.length) }, worker));
+        return false; // 字节到了不等于画面变了 —— 真解出帧时 `HdFlicFrames` 自己叫重画
+      })(),
+    );
   }
 
   /**
@@ -550,6 +751,7 @@ export class SpriteCache {
     colorKeyBlack: boolean,
     ring: readonly [number, number, number] | undefined,
   ): Promise<boolean> {
+    const gen = this.#hdGen;
     const hd = await this.#hdBitmap(archive, resource, index);
     if (hd === null) return false;
     let bmp = hd;
@@ -577,8 +779,8 @@ export class SpriteCache {
       if (composed === null) return false;
       bmp = composed;
     }
-    // 途中被 LRU 淘汰了（持有者已经把它丢了）⇒ 这张高清图没人要
-    if (this.#sprites.get(key) !== sprite) {
+    // 途中被 LRU 淘汰了（持有者已经把它丢了）/ 途中换了超分来源（门厅关掉了高清）⇒ 这张高清图没人要
+    if (this.#sprites.get(key) !== sprite || gen !== this.#hdGen) {
       bmp.close();
       return false;
     }

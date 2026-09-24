@@ -132,7 +132,7 @@ import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { getMinigameBackground, getPenguinHitMask } from './minigame-bg.ts';
 import { cursorShape, showCursor, type CursorShape, type CursorWant } from './soft-cursor.ts';
-import { drawSprite } from './hd-stage.ts';
+import { drawSprite, flicFrame } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同签名） */
 export type MiniSprite = (
@@ -2268,7 +2268,7 @@ export const minigameScreen: UiScreen = {
           flic.frames.length - 1,
           Math.max(0, Math.floor((env.now - st.intro.at) / ms)),
         );
-        const bmp = flic.frames[i];
+        const bmp = flicFrame(flic, i);
         // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
         if (bmp !== undefined) drawSprite(env.stage, { bitmap: bmp, width: flic.width, height: flic.height }, 0, 0);
       }

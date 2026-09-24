@@ -11,6 +11,9 @@ import {
   hdStageRequested,
   sizeSurface,
   surfaceScaleFor,
+  surfaceScaleCap,
+  TOUCH_SURFACE_SCALE_CAP,
+  MAX_SURFACE_SCALE,
   surfaceScaleOf,
 } from './hd-stage.ts';
 
@@ -101,6 +104,17 @@ describe('surfaceScaleFor', () => {
     expect(surfaceScaleFor(6, true)).toBe(4);
     expect(surfaceScaleFor(Number.NaN, true)).toBe(1);
   });
+
+  it('★ 触屏封顶 2（iPhone 横屏窗口倍数 ≈ 2.44 ⇒ 2），桌面仍封顶 4', () => {
+    const touch = surfaceScaleCap({ coarsePointer: true, maxTouchPoints: 5 });
+    const ipad = surfaceScaleCap({ coarsePointer: false, maxTouchPoints: 5 });
+    const desk = surfaceScaleCap({ coarsePointer: false, maxTouchPoints: 0 });
+    expect([touch, ipad, desk]).toEqual([TOUCH_SURFACE_SCALE_CAP, TOUCH_SURFACE_SCALE_CAP, MAX_SURFACE_SCALE]);
+    expect(surfaceScaleFor(2.4375, true, touch)).toBe(2);
+    expect(surfaceScaleFor(1.6, true, touch)).toBe(1.6);
+    expect(surfaceScaleFor(3, true, desk)).toBe(3);
+    expect(surfaceScaleFor(3, false, desk)).toBe(1);
+  });
 });
 
 describe('sizeSurface / drawSurface', () => {
@@ -135,10 +149,14 @@ describe('surfaceScaleOf', () => {
 });
 
 describe('hdStageRequested', () => {
-  it('★ 默认关；?hd=1 开、?hd=0 关（URL 优先于 localStorage）', () => {
-    expect(hdStageRequested('', null)).toBe(false);
-    expect(hdStageRequested('?hd=1', null)).toBe(true);
+  it('★ 默认开（2026-09-24 上线）；?hd=0 关、?hd=1 开（URL 优先于 localStorage）', () => {
+    expect(hdStageRequested('', null)).toBe(true);
+    expect(hdStageRequested('?hd=1', '0')).toBe(true);
     expect(hdStageRequested('?hd=0', '1')).toBe(false);
+    expect(hdStageRequested('?hd=false', null)).toBe(false);
     expect(hdStageRequested('?humans=1', '1')).toBe(true);
+    // 本机记过「关」
+    expect(hdStageRequested('?humans=1', '0')).toBe(false);
+    expect(hdStageRequested('', '0')).toBe(false);
   });
 });

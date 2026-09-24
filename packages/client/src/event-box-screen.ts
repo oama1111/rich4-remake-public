@@ -200,7 +200,7 @@ import type { UiScreen, UiScreenEnv,
   UiKeyEvent,
 } from './ui-screen.ts';
 import { playVoiceCode } from './voice-sink.ts';
-import { drawSprite } from './hd-stage.ts';
+import { drawSprite, flicFrame } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type EventBoxSprite = (
@@ -1050,7 +1050,7 @@ export function drawEventBoxScreen(
       film.frames.length - 1,
       Math.max(0, Math.floor(opts.elapsed / Math.max(1, film.frameMs))),
     );
-    const bitmap = film.frames[frame];
+    const bitmap = flicFrame(film, frame);
     if (bitmap === undefined) return;
     // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
     drawSprite(ctx, { bitmap, width: film.width, height: film.height }, at.x, at.y);

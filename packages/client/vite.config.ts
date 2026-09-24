@@ -11,6 +11,11 @@ const gameDir = fileURLToPath(new URL('../../assets/game', import.meta.url));
  * `hd` = 4× 母版，`hd-2x` = `pnpm upscale tier` 缩出来的网页档（见 `host.ts` 的 `hdTierDir`）。
  */
 const assetsRoot = fileURLToPath(new URL('../../assets', import.meta.url));
+/**
+ * 超分素材根的覆盖：`RICH4_HD_ROOT=<tools/hd-deploy.ts 的 out>/assets` 时开发服务器端的就是**线上那份**
+ * 已验证子集（清单 + 图），验收 / 量性能用；不设就是仓库的 `assets/`（全量产物，若有）。
+ */
+const hdRoot = process.env['RICH4_HD_ROOT'] ?? assetsRoot;
 const HD_TIERS = ['hd', 'hd-2x'] as const;
 
 /**
@@ -28,12 +33,12 @@ function serveGameAssets(): Plugin {
         if (req.url === undefined) return next();
         const url = req.url.split('?')[0]!;
         const tier = HD_TIERS.find((t) => url === `/assets/${t}-manifest.json`);
-        if (tier !== undefined) return streamFile(join(assetsRoot, `${tier}-manifest.json`), 'application/json', res, next);
+        if (tier !== undefined) return streamFile(join(hdRoot, `${tier}-manifest.json`), 'application/json', res, next);
         const hdTier = HD_TIERS.find((t) => url.startsWith(`/assets/${t}/`));
         const mount = url.startsWith('/assets/game/')
           ? { prefix: '/assets/game/', dir: gameDir, type: 'application/octet-stream' }
           : hdTier !== undefined
-            ? { prefix: `/assets/${hdTier}/`, dir: join(assetsRoot, hdTier), type: 'image/png' }
+            ? { prefix: `/assets/${hdTier}/`, dir: join(hdRoot, hdTier), type: 'image/png' }
             : null;
         if (mount === null) return next();
 

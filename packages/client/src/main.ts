@@ -513,7 +513,14 @@ import { holidayBgmOnDayAdvance } from './holiday-bgm.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
 import { installViewportFit } from './viewport.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
-import { drawIntro, introDone } from './intro.ts';
+import {
+  INTRO_ARCHIVE,
+  INTRO_DOOR_RESOURCE,
+  drawIntro,
+  introDone,
+  introFallResource,
+  introJumpResource,
+} from './intro.ts';
 import {
   activePlayers,
   assetRows,
@@ -722,7 +729,16 @@ import {
   setupUp,
   type SetupState,
 } from './setup.ts';
-import { drawSprite, drawSurface, hdStageRequested, setCurrentSurfaceScale, sizeSurface, surfaceScaleFor } from './hd-stage.ts';
+import {
+  HD_STORAGE_KEY,
+  drawSprite,
+  drawSurface,
+  hdStageRequested,
+  setCurrentSurfaceScale,
+  sizeSurface,
+  surfaceScaleCap,
+  surfaceScaleFor,
+} from './hd-stage.ts';
 
 /**
  * HD 清单的文件名 —— `hdBase()` 是 `${assetBase() 去掉 /game}/hd`，清单在它旁边。
@@ -731,17 +747,15 @@ import { drawSprite, drawSurface, hdStageRequested, setCurrentSurfaceScale, size
 const HD_MANIFEST_NAME = `${hdTierDir()}-manifest.json`;
 
 /**
- * 网页版要不要去问 HD 素材。
+ * 超分清单的版本（`assets-manifest.json` 里登记了它就有：sha256 前 8 位）。
  *
- * · `true`＝问一次（`loadHdSource` 内部拿到 404 自己会退回原图，不报错）；
- * · `false`＝**一次都不发**。
- *
- * ★ 初值 `true` 是有意的：桌面壳、以及**没有** `assets-manifest.json` 的
- *   开发服务器都要走老路（那时候没有清单可查）。只有网页版读到清单之后，
- *   才可能把它改成 `false`（任务书 W-72 §5）。
- * @see loadArchivesForWeb
+ * ★ 2026-09-24（W-80 §8 上线）改了口径：先前是「清单里**没有**就一次都不问」（W-72 §5 —— 那时
+ *   仓库里那份 3.8 MB 的规划清单没有一张产物，白拉）。线上的超分清单现在是 `tools/hd-deploy.ts`
+ *   只挑已验证那几组生成的小清单（brotli 后约 20 KB），没登记时问一次、404 就整包走原图，代价可忽略；
+ *   登记了就带 `?v=` 去拉，服务器按不可变长期缓存（`static.ts` 的 `cacheControlFor`）。
+ *   这样部署 HD 不必重跑 `precompress` 改 `assets-manifest.json`（那份清单同时管着 7 个档案的长度校验）。
  */
-let hdListed = true;
+let hdManifestVersion: string | null = null;
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -5495,38 +5509,84 @@ const hudOffCtx = (() => {
 })();
 
 /**
- * 高清舞台（`hd-stage.ts`）：开着时舞台 / 棋盘 / 側欄三块离屏画布按窗口的
+ * 高清（`hd-stage.ts` + 已验证的超分素材，W-80 §8）：开着时舞台 / 棋盘 / 側欄三块离屏画布按窗口的
  * 放大倍数开像素，文字与超分素材不再被压回 640×480。
  *
- * ★ **默认关**（`?hd=1` 或 `localStorage['rich4.hd'] = '1'` 才开）——
- *   关着时 `surfaceScale` 恒为 1，三块画布一次都不碰，画面与改造前逐像素一致。
+ * ★ 2026-09-24 起**默认开**；`?hd=0` 或 `localStorage['rich4.hd'] = '0'`（门厅的「高清畫面」勾选框）关。
+ *   关着时 `surfaceScale` 恒为 1，三块画布一次都不碰，也不去拉超分清单 —— 与改造前逐像素一致。
+ * ★ 这是**每台设备自己的显示设定**：不进存档、不上网，联机时各端各看各的（不影响同步）。
  */
-const hdStage = (() => {
+let hdStage = (() => {
   let stored: string | null = null;
   try {
-    stored = localStorage.getItem('rich4.hd');
+    stored = localStorage.getItem(HD_STORAGE_KEY);
   } catch {
-    // 隐私模式等拿不到 localStorage —— 按没开处理
+    // 隐私模式等拿不到 localStorage —— 按默认（开）处理
   }
   return hdStageRequested(window.location.search, stored);
 })();
+
+/**
+ * 这台设备的倍率上限（触屏封到 2，见 `TOUCH_SURFACE_SCALE_CAP`）—— 开机时判一次：
+ * 手机 / 平板不会中途变成桌面。
+ */
+const hdScaleCap = surfaceScaleCap({
+  coarsePointer: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches,
+  maxTouchPoints: navigator.maxTouchPoints || 0,
+});
 
 /** 三块离屏画布当前的像素倍率（1 = 改造前的 640×480） */
 let surfaceScale = 1;
 
 /**
- * 按当前窗口的放大倍数调三块离屏画布。每帧绘制之前调（紧跟 `resizeCanvas`）。
+ * 按当前窗口的放大倍数调三块离屏画布。每帧绘制之前调（紧跟 `resizeCanvas`，**帧外**）。
  *
  * ⚠️ 倍率一直是 1 时**什么都不做** —— 连变换都不重挂，保证关掉高清舞台时与改造前一致。
+ * ★ 改了尺寸 = 画布被清空、真上下文状态被重置 ⇒ 告诉指令表去重（`display-list.ts`）
+ *   把状态对齐回来、下一帧一定真画，并补一次贴屏。
  */
 function syncSurfaceScale(): void {
-  const s = surfaceScaleFor(currentMetrics().scale, hdStage);
+  const s = surfaceScaleFor(currentMetrics().scale, hdStage, hdScaleCap);
   if (s === 1 && surfaceScale === 1) return;
   surfaceScale = s;
   setCurrentSurfaceScale(s);
-  sizeSurface({ canvas: stage, ctx: stageCtx }, SCREEN_W, SCREEN_H, s);
-  sizeSurface({ canvas: boardCanvas, ctx: boardCtx }, LAYOUT.board.w, LAYOUT.board.h, s);
-  sizeSurface({ canvas: hudCanvasOff, ctx: hudOffCtx }, LAYOUT.panel.w, SCREEN_H, s);
+  const surfaces = [
+    { canvas: stage, ctx: stageCtx, w: SCREEN_W, h: SCREEN_H },
+    { canvas: boardCanvas, ctx: boardCtx, w: LAYOUT.board.w, h: LAYOUT.board.h },
+    { canvas: hudCanvasOff, ctx: hudOffCtx, w: LAYOUT.panel.w, h: SCREEN_H },
+  ];
+  for (const x of surfaces) {
+    if (sizeSurface(x, x.w, x.h, s)) {
+      displayList.canvasResized(x.canvas);
+      stageBlitOwed = true;
+    }
+  }
+}
+
+/**
+ * 门厅的「高清畫面」勾选框走这里：记到本机、当场换倍率，并把超分素材接上 / 撤掉（原地换位图）。
+ */
+function setHdStage(on: boolean): void {
+  if (on === hdStage) return;
+  hdStage = on;
+  try {
+    localStorage.setItem(HD_STORAGE_KEY, on ? '1' : '0');
+  } catch {
+    // 存不下（隐私模式）就只管这一次
+  }
+  void attachHdSource();
+  syncSurfaceScale();
+  requestRender();
+}
+
+/** 按 `hdStage` 把超分来源接到精灵缓存上（关 = 撤掉、已换上的高清图原地换回原图） */
+async function attachHdSource(): Promise<void> {
+  const cache = sprites;
+  if (cache === null) return;
+  if (hdStage && hdSource === null) hdSource = await loadHdSource(hdBase(), hdManifestVersion);
+  if (sprites !== cache) return;
+  cache.setHd(hdStage ? hdSource : null);
+  log(hdStage && hdSource !== null ? 'HD 素材：已接上（缺图的按图回退原图）' : 'HD 素材：未接（原图）');
 }
 
 /** 当前屏幕 */
@@ -6541,6 +6601,7 @@ function introCast(): number[] {
 function endIntro(): void {
   if (screen !== 'intro') return;
   screen = 'game';
+  releaseIntroFlics();
   // ★★ 进棋盘的第一次重画就摆第 1 位（core 的 `newGame` 已摆好），随后 `0x418c55` 开头
   //   播他那一段降落伞（`landing-fx.ts`）—— 回合驱动被影片挡着，播完才掷骰 / 电脑决策。
   //   其余几位要等轮到自己才落地（换人那条 action 里补播，见 `startActionFx`）。
@@ -6650,6 +6711,30 @@ let lastFrameScreen: Screen = 'title';
 const uiFlics = new Map<string, LoadedFlic | null>();
 const uiFlicPending = new Set<string>();
 
+/** 放掉时还在解码的那几段（解好当场关掉，不进 `uiFlics`） */
+const uiFlicDropped = new Set<string>();
+
+/** 放掉一段（关位图、下次再要就重解） */
+function releaseUiFlic(archive: string, resource: number): void {
+  const key = `${archive}#${resource}`;
+  uiFlics.get(key)?.close();
+  uiFlics.delete(key);
+  if (uiFlicPending.has(key)) uiFlicDropped.add(key);
+}
+
+/**
+ * ★ 片头那几段影片（开门 + 每人一段跳出去 + 一段降落伞）一局只播一次，播完 / 跳过就放掉。
+ *   先前一直攥着：4 人局 8 段 × 40–50 帧 × 640×480 ≈ 440 MB 位图常驻到关页面（W-80 §8 顺手修；
+ *   高清过场的超分帧也挂在这几段上，一并放掉）。
+ */
+function releaseIntroFlics(): void {
+  releaseUiFlic(INTRO_ARCHIVE, INTRO_DOOR_RESOURCE);
+  for (const c of introCast()) {
+    releaseUiFlic(INTRO_ARCHIVE, introJumpResource(c));
+    releaseUiFlic(INTRO_ARCHIVE, introFallResource(c));
+  }
+}
+
 function uiFlicNow(archive: string, resource: number): LoadedFlic | null {
   const key = `${archive}#${resource}`;
   const hit = uiFlics.get(key);
@@ -6658,8 +6743,13 @@ function uiFlicNow(archive: string, resource: number): LoadedFlic | null {
   if (cache !== null && !uiFlicPending.has(key)) {
     uiFlicPending.add(key);
     void cache.getFlic(archive as ArchiveName, resource).then((f) => {
-      uiFlics.set(key, f);
       uiFlicPending.delete(key);
+      // 解码途中这一段已经被放掉（片头提前跳过）⇒ 不留
+      if (uiFlicDropped.delete(key)) {
+        f?.close();
+        return;
+      }
+      uiFlics.set(key, f);
       requestRender();
     });
   }
@@ -8367,8 +8457,10 @@ function requestRender(): void {
     renderQueued = false;
     // ★ 第十九份：本帧的绘制指令从这里开始记（见 `display-list.ts`）；上一帧若异常中断没收尾，先收掉
     if (displayList.inFrame && displayList.endFrame()) stageBlitOwed = true;
-    displayList.beginFrame();
+    // ★ 先调尺寸、再开始记本帧：高清舞台换倍率会改离屏画布的尺寸（清空 + 重置上下文），
+    //   得在**帧外**做，指令表才能把状态对齐回来（`DisplayList.canvasResized`）
     resizeCanvas();
+    displayList.beginFrame();
     // ★★ W-60：**刚回到棋盘**的那一帧把回合驱动重新叫起来（阻断级 bug 的唯一闸门）。
     //
     //   两条驱动的排程入口都有 `if (screen !== 'game') return;`（别在標題屏/過場里
@@ -9349,8 +9441,10 @@ let letterboxFilled = false;
 
 function blitStage(): void {
   const m = currentMetrics();
-  // ★ 高清舞台下舞台已是 `surfaceScale`（= 窗口倍数）倍像素：这一下是 1:1 拷贝，不插值
-  ctx.imageSmoothingEnabled = false;
+  // ★ 高清舞台下舞台已是 `surfaceScale`（= 窗口倍数）倍像素：这一下是 1:1 拷贝，不插值。
+  //   只有触屏封了顶（`hdScaleCap`，舞台比窗口小）时是放大 —— 那一下要平滑，否则字边一格宽一格窄。
+  //   关着高清（倍率 1）仍是原来的最近邻整窗放大。
+  ctx.imageSmoothingEnabled = surfaceScale !== 1 && Math.abs(surfaceScale - m.scale) > 1e-6;
   ctx.fillStyle = '#000';
   const w = SCREEN_W * m.scale;
   const h = SCREEN_H * m.scale;
@@ -12112,9 +12206,8 @@ async function loadArchivesForWeb(): Promise<LoadedArchives> {
     try {
       showLoadingScreen();
       const loaded = await loadAllArchives(assetBase(), renderLoadProgress);
-      // ★ HD 素材：清单里**没有** `hd-manifest.json` 就一次都不问
-      //   （`assets/hd/` 是空的，那份 3.8 MB 的清单白拉 —— 任务书 W-72 §5）
-      hdListed = loaded.manifest?.files.some((f) => f.name === HD_MANIFEST_NAME) ?? true;
+      // ★ HD 素材：清单里登记了超分清单就记下它的版本（见 `hdManifestVersion`）
+      hdManifestVersion = loaded.manifest?.files.find((f) => f.name === HD_MANIFEST_NAME)?.sha256.slice(0, 8) ?? null;
       const speaking = loaded.archives.get('Speaking.mkf');
       const effect = loaded.archives.get('Effect.mkf');
       if (speaking !== undefined) {
@@ -12221,6 +12314,7 @@ async function openFoyer(opts: { view?: 'home' | 'rooms'; notice?: string; invit
     wsUrl: foyerUrl(),
     clientId: loadClientId(storage),
     storage,
+    hd: { on: hdStage, set: setHdStage },
   });
   if (choice.kind === 'solo') {
     enterTitleScreen();
@@ -12666,7 +12760,8 @@ async function boot(): Promise<void> {
     // 就整包走原图。**按图**回退在 SpriteCache 里（PRD §4.5）。
     // ★ W-72：网页版先看清单里有没有 `hd-manifest.json` —— `assets/hd/` 是空的，
     //   那份 3.8 MB 的清单白拉（任务书 §1 末条）。
-    hdSource = hdListed ? await loadHdSource(hdBase()) : null;
+    // ★ 高清关着（`?hd=0` / 门厅里取消勾选）就一次都不拉超分清单 —— 与改造前一致
+    hdSource = hdStage ? await loadHdSource(hdBase(), hdManifestVersion) : null;
     sprites = new SpriteCache(archives, hdSource === null ? {} : { hd: hdSource });
     // ★ 高清图是后台拉、到了原地换位图（先原图、后高清）—— 换上来那一刻重画一帧
     sprites.addUpgradeListener(() => requestRender());

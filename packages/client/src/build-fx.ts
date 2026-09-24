@@ -139,6 +139,7 @@
 import { SOUND_IDS } from '@rich4/assets-pipeline';
 import type { BuildUpgradeHint, BuildUpgradeSource, GameState } from '@rich4/core';
 import type { LoadedFlic } from './assets.ts';
+import { flicFrame } from './hd-stage.ts';
 
 /**
  * 觸發這段動效的道具号 —— 機器工人。
@@ -503,5 +504,5 @@ export function buildFxBitmap(
   const flic = flics[fx.clip] ?? null;
   if (flic === null || flic.frames.length === 0) return null;
   const k = Math.min(flic.frames.length - 1, buildFxFrame(fx, now));
-  return flic.frames[k] ?? null;
+  return flicFrame(flic, k) ?? null;
 }
