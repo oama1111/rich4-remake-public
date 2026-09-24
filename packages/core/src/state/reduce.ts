@@ -109,8 +109,7 @@ import {
   useVehicleTool,
 } from '../rules/tool-effects.ts';
 import { STOCKED_TOOL_MAX_ID, TOOL_SLOTS_PER_PLAYER, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
-// ★ 需求方 2026-09-22：放置类道具不许和「唯一物件」同格（见 `hasUniqueObjectAt`）
-import { OBJECT_TYPE_UNIQUE_MAX } from '../rules/objects.ts';import {
+import {
   AI_BOARD_LIST_CHANCE,
   AI_BOARD_REPRICE_CHANCE,
   AI_BOARD_SHOP_CHANCE,
@@ -168,6 +167,7 @@ import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/h
 import {
   objectNodeCandidates,
   runtimeOccupiedNodes,
+  placementBlockedAt,
   pickObjectNodeDistant,
   releaseObject,
   resolveArrival,
@@ -4805,20 +4805,16 @@ export function useToolAction(
   const objectType = PLACEMENT_TOOLS.get(toolId);
   if (objectType !== undefined) {
     if (nodeId <= 0) return state;
-    // ★★ 需求方 2026-09-22（第九份試玩回報 #4）：「放置路障不能和地图上的神灵重叠」。
-    //   三个放置类道具（路障 2 / 地雷 3 / 定時炸彈 4）**不许**放在已经有唯一物件
-    //   （神明 / 惡犬 / 禮物 / 寶箱 / 死神 —— 类型 1..15）的格子上。
-    //
-    //   ⚠️ 这一条是**主动偏离原版**，需求方明确拍板（「按这个改」）：
-    //     · 原版放置侧**没有任何占用校验** —— `rich4-spec/docs/systems/tools.md:496`
-    //       「合法目标：任意格（无范围检查）」，`place_object` 只在自己 10 个槽里找空位；
-    //     · 原版靠地图节点反向索引 `node+0x26` **按位或**槽号（`rich4_objects.asm:118-126`），
-    //       所以重叠时读到的是路障、照样拦人 —— 原版**允许**重叠且两个都会画。
-    //   ⇒ 登记为有意偏离（见 PR 描述）。
+    // ★★ 目标格有人站着 / 有惡人 / 已经有物件 ⇒ 放不上去（`placementBlockedAt`）。
+    //   @source 0x00409bc0 / 0x00409f7c `test dword [node+0x24], 0xffff00 / jne 跳过` ——
+    //   真人的拾取图（0x445f51 → 0x409b18）与电脑的候选清单（0x409ef9）都用这一道掩码。
+    //   （需求方 2026-09-22 第九份 #4「路障不能和神灵重叠」是它的子集；当时的注释以为
+    //    原版放置侧没有任何占用校验 —— 那是只看了 `place_object`，漏了拾取这一层。
+    //    需求方 2026-09-24「Npc把地雷重叠放置了」就是只挡唯一物件、漏了地雷叠地雷。）
     //
     // ★ 放在 core 里就够了：客户端拾取走 `canUseTool`（= `useToolAction(...) !== state`，
     //   见 `state/preview.ts:86-94`），被这一条挡掉的格子**自动**不进候选、光标点不了。
-    if (hasUniqueObjectAt(state, nodeId)) return state;
+    if (placementBlockedAt(state, nodeId)) return state;
     const r = placeObject(state.objects, nodeId, objectType);
     if (!r.ok) return state; // 没有空物件槽
     const taken = takeTool(state.tools, state.toolStock, me.index, toolId);
@@ -4826,21 +4822,6 @@ export function useToolAction(
   }
 
   return state;
-}
-
-/**
- * 这一格上有没有**唯一物件**（神明 / 惡犬 / 禮物 / 寶箱 / 死神 —— 类型 1..15）。
- *
- * 与 `objectHandleAt` 同一套可见性判据（`nodeId` 相同且 `attached === 0`）：
- * 已经附身或被人带着走的物件跟着主人跑，不算「站在这一格」。
- */
-function hasUniqueObjectAt(state: GameState, nodeId: number): boolean {
-  for (const o of state.objects) {
-    if (o !== undefined && o.nodeId === nodeId && o.attached === 0 && o.type <= OBJECT_TYPE_UNIQUE_MAX) {
-      return true;
-    }
-  }
-  return false;
 }
 
 /**

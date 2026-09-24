@@ -327,6 +327,33 @@ describe('3 地雷（0x004213c5）', () => {
     });
     expect(aiToolChoice(3, view)).toBeNull();
   });
+  // ★★ 需求方 2026-09-24「Npc把地雷重叠放置了」：0x409ef9 建「画面里的节点」清单时
+  //   `0x00409f7c test dword [node+0x24], 0xffff00 / jne 跳过` —— 有物件 / 有人的格子**不进清单**。
+  it('★★ 已经埋着地雷的格不进候选（0x409f7c）—— 两块别人的地、一块已有地雷 ⇒ 只剩另一块', () => {
+    const nodes = lineNodes(4, new Map([
+      [2, { kind: 'land', index: 1 }],
+      [3, { kind: 'land', index: 2 }],
+    ]));
+    const lands = [makeLand({ id: 1, owner: 2 }), makeLand({ id: 2, owner: 2 })];
+    // 先前 rngState 1 → 挑后者（3 号）；3 号上已有一件地雷（槽 26）⇒ 候选只剩 2 号
+    for (const rngState of [1, 2]) {
+      const view = viewOf({ nodes, lands, players: meOnLine(4, 3), state: { rngState, objects: objectsWith(26, 3) } });
+      expect(aiToolChoice(3, view)).toEqual({ kind: 'place', nodeId: 2 });
+      // 定時炸彈什么格都收（1 / 2 号都可能），但**决不**是已有地雷的 3 号
+      expect(aiToolChoice(4, view)).not.toEqual({ kind: 'place', nodeId: 3 });
+    }
+  });
+
+  it('★★ 唯一候选上已有地雷 / 有人站着 ⇒ 不用（不会叠上去）', () => {
+    const nodes = lineNodes(8, new Map([[3, { kind: 'land', index: 1 }]]));
+    const lands = [makeLand({ id: 1, owner: 2 })];
+    const mined = viewOf({ nodes, lands, players: meOnLine(8, 7), state: { objects: objectsWith(26, 3) } });
+    expect(aiToolChoice(3, mined)).toBeNull();
+    const players = meOnLine(8, 7);
+    players[2] = makePlayer({ index: 2, character: 2, nodeId: 3 });
+    const stood = viewOf({ nodes, lands, players });
+    expect(aiToolChoice(3, stood)).toBeNull();
+  });
 });
 
 describe('4 定時炸彈（0x00421574）', () => {

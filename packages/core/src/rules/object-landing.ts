@@ -943,6 +943,33 @@ export function runtimeOccupiedNodes(
 }
 
 /**
+ * 放置類道具（路障 / 地雷 / 定時炸彈）**放不上去**的格子：有人站着、有惡人、已经有物件。
+ *
+ * 真人与电脑在原版里是**两条路、同一道掩码**：
+ * ```asm
+ * ; 真人：拾取视窗 0x445e4d → 0x00445f51 call 0x409b18(1) 重建拾取图，逐节点
+ * 00409bc0  test dword [ebx + 0x24], 0xffff00     ; 有人 / 惡人 / 物件
+ * 00409bc7  jne  0x409c5b                         ; ⇒ 这一格**不进拾取图**（点不到）
+ * ; 电脑：路障阶段二 0x004212b5 / 地雷 0x004213e8 / 定時炸彈 0x00421597 / 傳送機 0x00421cc1
+ * ;       都 call 0x409ef9 取「画面里的节点」清单（0x48b8c4），它逐节点
+ * 00409f7c  test dword [esi + 0x24], 0xffff00
+ * 00409f83  jne  0x40a04a                         ; ⇒ 同样**不进候选**
+ * ```
+ * 本引擎不在节点上镜像 `+0x24` 的运行位，改由 `runtimeOccupiedNodes` 现算（同一份位语义）。
+ * ⇒ 原版**不可能**把两件物件叠在一格（`place_object` 0x0040e13c 只 `or` 进一个 6 位槽号）。
+ */
+export function placementBlockedAt(
+  state: {
+    players: Parameters<typeof runtimeOccupiedNodes>[0];
+    objects: Parameters<typeof runtimeOccupiedNodes>[1];
+    specialActors: Parameters<typeof runtimeOccupiedNodes>[2];
+  },
+  nodeId: number,
+): boolean {
+  return runtimeOccupiedNodes(state.players, state.objects, state.specialActors).has(nodeId);
+}
+
+/**
  * 从候选里挑一格（**不带参照点**）。
  *
  * @source `_rich4_find_random_unoccupied_node` VA 0x0040aa53：

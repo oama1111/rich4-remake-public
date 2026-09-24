@@ -93,9 +93,10 @@ describe('★ 放置类道具', () => {
    * ★★ 需求方 2026-09-22（第九份試玩回報 #4）拍板：
    *   「路障/炸弹/定时炸弹 我记得就是不能和神明重叠，按这个改」
    *
-   * ⚠️ 这是**主动偏离原版**：原版 `tools.md:496` 明说「任意格，无范围检查」，
-   *   放置侧本来就没有占用校验；原版靠 `node+0x26` 反向索引按位或槽号，
-   *   重叠时读到的仍是路障、照样拦人。需求方明确要求禁止，故按此实现。
+   * ★★ 2026-09-24 订正：这**不是**偏离 —— 原版拾取层就挡（`tools.md:496` 只看了效果函数）：
+   *   真人拾取图 0x409b18 与电脑候选 0x409ef9 都 `test dword [node+0x24], 0xffff00 / jne 跳过`
+   *   （0x00409bc0 / 0x00409f7c），有人 / 惡人 / 物件的格子都点不到、挑不到。
+   *   这一组钉「神明」那一支；地雷叠地雷 / 站着人那几支见下一组。
    */
   describe('★★ 不许和神明（唯一物件）同格', () => {
     /** 把 0 号物件槽（小財神）摆到某一格上 */
@@ -132,9 +133,11 @@ describe('★ 放置类道具', () => {
 
     it('★ 客户端候选会自动跟着 core 走（`canUseTool` = `useToolAction(...) !== state`）', () => {
       // 这一条钉的是「不用另写一套客户端过滤」——`picking.ts` 靠的就是 `canUseTool`
+      // （四个人都站在 1 号格上 ⇒ 1 号格本身就不空；「空的那一格」另开一个没人站的 3 号格）
+      const topo3 = { nodes: [...topo.nodes, makeNode({ id: 3, adjacent: [1] })] };
       const s = withGodAt(withTools({ 2: 1 }), 2);
-      expect(canUseTool(s, topo, 2, 2), '有神明那一格 ⇒ 不是合法目标').toBe(false);
-      expect(canUseTool(s, topo, 2, 1), '空的那一格 ⇒ 合法').toBe(true);
+      expect(canUseTool(s, topo3, 2, 2), '有神明那一格 ⇒ 不是合法目标').toBe(false);
+      expect(canUseTool(s, topo3, 2, 3), '空的那一格 ⇒ 合法').toBe(true);
     });
   });
 });
@@ -226,5 +229,62 @@ describe('★★ 道具台词的提示字段（第十一份回报 #3）', () => 
     const s = withTools({ 4: 1 });
     const after = reduce(s, { type: 'useTool', toolId: 4, nodeId: 2 }, topo);
     expect(after.lastToolUsed).toEqual({ player: 0, toolId: 4 });
+  });
+});
+
+/*
+ * ★★ 需求方 2026-09-24「Npc把地雷重叠放置了」（`20260924-025833909-manual-Charles.json` #108：
+ *   3 号电脑把地雷放到 37 号格，那格 #3 已经有 1 号电脑放的地雷）。
+ *
+ * @source 0x00409bc0（真人拾取图 0x409b18）/ 0x00409f7c（电脑候选 0x409ef9）：
+ *   `test dword [node+0x24], 0xffff00 / jne 跳过` —— bits 8..11 玩家、12..15 惡人、16..21 物件。
+ */
+describe('★★ 放置类道具：有人 / 惡人 / 任何物件的格子都放不上去（0xffff00）', () => {
+  /** 1 号物件槽之后第一个空的放置类槽里摆一件地雷到某格 */
+  const withMineAt = (base: GameState, nodeId: number): GameState => {
+    const r = reduce(base, { type: 'useTool', toolId: 3, nodeId }, topo);
+    expect(r.objects.some((o) => o.nodeId === nodeId && o.type === 17)).toBe(true);
+    return r;
+  };
+  /** 四个人都挪到 1 号格之外（2 号格留空） */
+  const onNode1 = (counts: Record<number, number>): GameState => withTools(counts);
+
+  it('★★ 地雷叠地雷 / 路障叠地雷 / 定時炸彈叠地雷 —— 一个都放不下，道具不收走', () => {
+    for (const tool of [2, 3, 4]) {
+      const s = withMineAt(onNode1({ 3: 1, [tool]: tool === 3 ? 2 : 1 }), 2);
+      const after = reduce(s, { type: 'useTool', toolId: tool, nodeId: 2 }, topo);
+      expect(after, `道具 ${tool} 不该叠上去`).toBe(s);
+      expect(after.objects.filter((o) => o.nodeId === 2 && o.attached === 0).length).toBe(1);
+    }
+  });
+
+  it('★ 有人站着的格子（包括自己脚下）放不上去', () => {
+    const s = onNode1({ 3: 1 });
+    expect(reduce(s, { type: 'useTool', toolId: 3, nodeId: 1 }, topo)).toBe(s);
+    expect(canUseTool(s, topo, 3, 1)).toBe(false);
+  });
+
+  it('★ 被关着的人不占位（0x0043d61d 清位不置）⇒ 关押格照样能放', () => {
+    const s = withTools({ 3: 1 }, {
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({
+          index: i,
+          character: i,
+          nodeId: i === 1 ? 2 : 1,
+          trafficMethod: TRAFFIC_WALK,
+          ndices: 1,
+          ...(i === 1 ? { blocking: { ...makePlayer({ index: 1 }).blocking, inPrison: 3 } } : {}),
+        }),
+      ),
+    });
+    const after = reduce(s, { type: 'useTool', toolId: 3, nodeId: 2 }, topo);
+    expect(after.objects.some((o) => o.nodeId === 2 && o.type === 17)).toBe(true);
+  });
+
+  it('★ 惡人站在棋盘上的那一格放不上去', () => {
+    const base = withTools({ 3: 1 });
+    const actors = base.specialActors.map((a, i) => (i === 0 ? { ...a, nodeId: 2, place: 0 } : a));
+    const s: GameState = { ...base, specialActors: actors as GameState['specialActors'] };
+    expect(reduce(s, { type: 'useTool', toolId: 3, nodeId: 2 }, topo)).toBe(s);
   });
 });
