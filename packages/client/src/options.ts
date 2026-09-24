@@ -64,7 +64,6 @@
  */
 
 import type { Sprite } from './assets.ts';
-import type { SidebarView } from './hud.ts';
 import { FONT_FAMILY } from './font.ts';
 
 /** Data.mkf 里这一屏的资源号 */
@@ -292,7 +291,7 @@ export const FONT_SIZE = { label: 15, big: 20, list: 12 } as const;
  * offset 2 music        00~04
  * offset 3 sound effect 00~04
  * offset 4 auto save    01 enabled
- * offset 5 view         00 日曆 / 01 小地圖 / 02 兩者輪流
+ * offset 5 view         00 日曆 / 01 小地圖 / 02 兩者輪流   ← ⚠️ 这句说明是猜的，见 windowView
  * ```
  */
 export interface GameOptions {
@@ -301,7 +300,11 @@ export interface GameOptions {
   music: number;
   sound: number;
   autoSave: boolean;
-  /** 右下角那块显示什么 0/1/2 */
+  /**
+   * 右栏版式 0 日、月曆 / 1 縮小地圖 / 2 **組合畫面**（窄版面板 + 小地图 + 日曆三块同屏）。
+   * 版式本身在 `hud.ts` 的 `sidebarLayout`（@source WM_PAINT 分派 VA 0x00418bcd）。
+   * ⚠️ `rich4_cfg.txt` 把 02 记成「兩者輪流」—— exe 里没有轮换代码，是那份说明猜错了。
+   */
   windowView: number;
   /**
    * 第几首配乐 0..7 —— `Midi.txt` 的前 8 条正好是这 8 首。
@@ -339,15 +342,6 @@ export const DEFAULT_OPTIONS: GameOptions = {
   windowView: 1,
   track: 0,
 };
-
-/**
- * 右下角那块该显示哪一面 —— **唯一**的换算处（开机、設定「確定」、新開局都走它）。
- * @source 原版每次重画侧栏都直接读 `cfg+5`（`fcn_00416e6d` `0x416e7d`、`fcn_004169bc` `0x4169cd cmp byte [cfg+5],1`）
- * ⚠️ `2`（兩者輪流）怎么轮没查证，暂按日曆（与先前一致）。
- */
-export function sidebarViewOf(windowView: number): SidebarView {
-  return windowView === 1 ? 'map' : 'calendar';
-}
 
 /** 音量档 0..4 → 0..1 */
 export function volumeOf(level: number): number {
