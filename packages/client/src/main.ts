@@ -350,6 +350,7 @@ import { interactionUi, type InteractionUi } from './interactions.ts';
 //   钩子把取消键变成 `WM_RBUTTONUP 0x205`，主窗口过程只交给栈顶那扇窗）。
 //   取证与全表见 `panel-cancel.ts` 头部。
 import { CANCEL_SOUND, cancelLayerOf, type CancelLayer, type CancelSnapshot } from './panel-cancel.ts';
+import { isExternalRejection } from './external-rejection.ts';
 // ★ 触屏的「右键」：长按 = 右键 + 可见的「取消」钮（需求方 2026-09-24，见 `touch-input.ts`）
 import {
   bindTouchGestures,
@@ -10817,7 +10818,16 @@ function bindInput(): void {
   });
   window.addEventListener('unhandledrejection', (e) => {
     const r: unknown = e.reason;
-    onUncaught('unhandledrejection', r instanceof Error ? r.message : String(r), r instanceof Error ? (r.stack ?? null) : null);
+    const message = r instanceof Error ? r.message : String(r);
+    const stack = r instanceof Error ? (r.stack ?? null) : null;
+    // ★ 扩展 / 系统注入脚本的消息桥失败（如 iOS Safari 的「NoResponse: No response from target」）
+    //   不是本程序的错：不上日志栏、不落回报，只记飞行记录仪 + 宿主日志（判据与取证见 `external-rejection.ts`）
+    if (isExternalRejection(message, stack)) {
+      recorder.error({ t: Date.now(), kind: 'note', message: `[外来 rejection，已忽略] ${message}`, stack: null });
+      hostLog(`[unhandledrejection·external] ${message}`);
+      return;
+    }
+    onUncaught('unhandledrejection', message, stack);
   });
 
   // ★★ 第十六份：演出死锁看门狗（见 `watchPresentationDeadlock`）—— 定时器驱动，卡死时渲染循环早停了
