@@ -1,6 +1,6 @@
 // 某角色整套落盘：切帧 → 抠像 → 缩 4× → 按身体对位 → 骰子逐帧自检（不过退回忠实版，ACCEPT 放行）
 // 用法：node cast-apply.ts <角色号> [组名…]   环境：DRY=1 只报告；ACCEPT=Data/xxxx_yyy,…
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { encodePng } from '../../../packages/assets-pipeline/src/png.ts';
 import { hdRelativePath } from '../../../packages/assets-pipeline/src/upscale.ts';
@@ -38,7 +38,8 @@ for (const [name, L] of Object.entries<any>(lay)) {
       if (!accept.has(fr.id) && ((ao >= 4 && (diou < 0.35 || an > ao * 2.2 || an < ao * 0.4)) || (ao < 2 && an >= 5))) { out = prep.A; note += ' ✗退回忠实版'; flagged.push(fr.id); }
     }
     ious.push(r.iou);
-    if (!process.env.DRY) writeFileSync(dst, encodePng(out));
+    // 写了新帧 ⇒ 旧的校色前备份作废（cast-tone 否则会拿旧帧重新校色、把新帧盖回旧帧）
+    if (!process.env.DRY) { writeFileSync(dst, encodePng(out)); rmSync(join(ROOT, 'work/pre-tone', rel), { force: true }); }
     lines.push(`${fr.id} IoU ${r.iou.toFixed(2)} 位移 ${r.dx},${r.dy}${note}`);
   }
 }
