@@ -105,7 +105,7 @@ import {
 import { CARDS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import type { AmountPage, DialogHit } from './dialog.ts';
 import { drawDialog, hitDialog } from './dialog.ts';
-import { AMOUNT_KEY_BY_ID, amountKeyStep, amountSlotOfId } from './amount-keys.ts';
+import { AMOUNT_KEY_BY_ID, amountKeySound, amountKeyStep, amountSlotOfId } from './amount-keys.ts';
 import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue, amountKeyOfSlotId } from './amount-window.ts';
 import type { InteractionUi } from './interactions.ts';
 import { FONT_FAMILY } from './font.ts';
@@ -1819,6 +1819,9 @@ function onPriceHit(env: UiScreenEnv, hit: DialogHit): void {
     case 'amountSlot': {
       const key = amountKeyOfSlotId(hit.id, amountSlotOfId, (n) => AMOUNT_KEY_BY_ID.get(n) ?? null);
       if (key === null) break;
+      // ★ 按键音 7（gap-audit #13）@source 0x00452d8e..0x00452d95（按在钮上）、表 `0x48234a`
+      const keySfx = amountKeySound(key);
+      if (keySfx !== null) env.playEffect(keySfx);
       const step = amountKeyStep(page.value, amount.max, key);
       if (step.submit) {
         const n = page.value;

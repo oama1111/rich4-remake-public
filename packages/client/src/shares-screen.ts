@@ -258,8 +258,15 @@ export const SHARES_TEXT_ORIGIN = SHARES_AT;
 /** 字号 @source VA 0x0042bae5（28）/ 0x0042bb1e（12）/ 0x0042bb6b（16）*/
 export const SHARES_FONT = { title: 0x1c, head: 0xc, body: 0x10 } as const;
 
-/** 音效表 `0x475590` 里本屏那一组的下标 @source VA 0x0042baa1 `push 0x4755a8` */
-export const SHARES_SOUND = { open: 0, page: 1, choice: 2 } as const;
+/**
+ * 开屏音效号 —— 本屏的音效集 `0x4755a8` 只有**一项 = 61**（`0x0042baa1` 装载、`0x0042be65` 卸载）。
+ *
+ * @source 窗口过程 `fcn_0042b3eb` 的 `WM_CREATE`：`SetTimer(…, 0x3e8)` + `InvalidateRect` 之后
+ *   0x0042b4c8..0x0042b4ce `_rich4_play_sound_effect(0, 0x4755a8)`（gap-audit #13）。
+ *   （先前这里是一个 `{open:0,page:1,choice:2}` 的下标表，全仓没人用，61 从来没放过。）
+ * ★ 这一屏每一台都开（15 日跨日，与谁的回合无关）⇒ 每一台都放。
+ */
+export const SHARES_OPEN_SOUND = 61;
 
 /**
  * 到点自动收屏的时限（毫秒）—— 原版跑 **3 拍 × 1000 ms**。
@@ -619,6 +626,12 @@ export function drawSharesScreen(
  */
 let presenting = false;
 let shownAt = -1;
+
+/** 真正上屏的那一刻（原版的 `WM_CREATE`）：起计时，放开屏音 61 */
+function markShown(env: UiScreenEnv): void {
+  shownAt = env.now;
+  env.playEffect(SHARES_OPEN_SOUND);
+}
 let view: SharesView | null = null;
 
 /**
@@ -698,7 +711,7 @@ export const sharesScreen: UiScreen = {
     if (v === null) return;
     // 计时起点在 `tick` 里落（见那里的长注释）—— 这里只兜底一次，防止
     // 「先 draw 后 tick」的调用序把这一帧白白等掉。
-    if (shownAt < 0) shownAt = env.now;
+    if (shownAt < 0) markShown(env);
     drawSharesScreen(env.stage, env.sprite, v);
   },
 
@@ -744,7 +757,7 @@ export const sharesScreen: UiScreen = {
     //   **3 秒自动收屏永不触发** ⇒ 本屏永久占着整屏，把 15 号那天排在它后面的
     //   **樂透開獎屏整个盖住**（開獎屏的 `tick` 一次都收不到，步号永远停在 0，
     //   所以「没有台词、没有界面」）。
-    if (shownAt < 0) shownAt = env.now;
+    if (shownAt < 0) markShown(env);
     if (env.now - shownAt >= SHARES_AUTO_CLOSE_MS) {
       dismiss(env);
       return;

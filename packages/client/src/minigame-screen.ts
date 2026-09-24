@@ -1837,7 +1837,8 @@ function ensureRun(env: UiScreenEnv): MiniRun | null {
     // ★ 入场 FLIC 是**异步**的：`env.flic` 第一次一定返回 null（后台在解）。
     //   所以「还没决定过」时每帧再判一次，别把整段演出丢掉（实测第一版就是
     //   被第一帧的 null 吞了）。判到「影片到手」或「等够久还是拿不到」为止。
-    if (!run.introTried) {
+    // ★ gap-audit #11：只在**入场拍数完之后**才起影片（见 `entryDone` / `tick`）。
+    if (!run.introTried && entryDone(run)) {
       const started = startIntro(env, run.game);
       if (started !== null) {
         run.intro = started;
@@ -1877,6 +1878,11 @@ function ensureRun(env: UiScreenEnv): MiniRun | null {
   if (me !== undefined && introGateOpen(me.whoPlays, env.animation)) {
     const bgm = minigameBgmFile(pending.game);
     if (bgm !== null) env.music?.(bgm);
+    // ★ gap-audit #11：影片要等入场拍数完才放 —— 趁这 0.5～1 秒先把它在后台解起来
+    env.flic(MINI_ARCHIVE, MINI_INTRO_FLIC_RES);
+  } else {
+    // 闸门关着：这一局不归它播，别在入场拍数完之后干等 `MINI_INTRO_GIVE_UP_MS`
+    run.introTried = true;
   }
   env.requestRender();
   return run;
@@ -1979,6 +1985,32 @@ function runScore(st: MiniRun): number | null {
   if (st.balloon !== null) return st.balloon.score;
   if (st.gift !== null) return giftScore(st.gift.counts);
   return null;
+}
+
+/**
+ * 入场拍数完了没有（三条状态机都已离开 `intro`）。
+ *
+ * ★ gap-audit #11 —— 原版的次序：WM_CREATE 先把整屏画好，定时器**在这一屏上**数入场拍
+ *   （企鵝 `[0x48bd7c]` 10 × 100ms，土堆画着；氣球 `[0x48bd84]` 5 × 100ms；財神 `[0x48bd8c]`
+ *   10 × 50ms），数到 0 那一拍才 `PostMessage 0x405`（企鵝 0x00414957..0x0041497b、
+ *   氣球 0x00414c93..0x00414ca9、財神 0x0041507a..0x0041508f），入场影片是在 **0x405 里**
+ *   阻塞放的（0x00414a60 / 0x00414d60 / 0x00415199），放完才换指针。
+ */
+function entryDone(st: MiniRun): boolean {
+  const phase = st.penguin?.phase ?? st.balloon?.phase ?? st.gift?.phase;
+  return phase !== 'intro';
+}
+
+/** 入场拍已经数完、0x405 那段影片还没放完（或还在等它解好）—— 这一段逻辑与点击都停着 */
+function introBlocking(st: MiniRun): boolean {
+  return st.intro !== null || (!st.introTried && entryDone(st));
+}
+
+/** 测试 / 调试用：这一局此刻在开场的哪一段（`null` = 没有这一屏） */
+export function minigameIntroStage(): 'entry' | 'film' | 'play' | null {
+  if (run === null) return null;
+  if (!entryDone(run)) return 'entry';
+  return introBlocking(run) ? 'film' : 'play';
 }
 
 /** 这一局演完了没有 */
@@ -2126,8 +2158,8 @@ export const minigameScreen: UiScreen = {
     // 已经送过分，等 core 把 pending 清掉（这中间别再开一局）
     if (st.sent) return;
 
-    // ★ 入场 FLIC 还在播：这一段是**阻塞**的（原版 `fcn_0045144f`），
-    //   期间游戏逻辑一步都不走 @source `rich4_small_games.asm:4239/4445/4531`
+    // ★ 入场 FLIC 还在播：这一段是**阻塞**的（原版 0x405 里的 `fcn_0045144f`），
+    //   期间游戏逻辑一步都不走 @source 0x00414a60 / 0x00414d60 / 0x00415199
     if (st.intro !== null) {
       if (env.now < st.intro.until) {
         env.requestRender();
@@ -2136,6 +2168,11 @@ export const minigameScreen: UiScreen = {
       st.intro = null;
       st.at = env.now;
       env.requestRender();
+    } else if (introBlocking(st)) {
+      // 入场拍已数完、影片还在后台解（`ensureRun` 每帧重试）：照样停着
+      st.at = env.now;
+      env.requestRender();
+      return;
     }
 
     const dt = Math.max(0, env.now - st.at);
@@ -2145,10 +2182,20 @@ export const minigameScreen: UiScreen = {
     const step = minigameTickMs(st.game);
     while (st.acc >= step) {
       st.acc -= step;
+      const inEntry = !entryDone(st);
       if (st.penguin !== null) st.penguin = penguinStep(st.penguin, env.now);
       else if (st.balloon !== null) st.balloon = balloonStep(st.balloon, env.now);
       else if (st.gift !== null) {
         st.gift = giftStep(st.gift, st.mx, giftBox(env, st.gift), env.now);
+      }
+      // ★ 入场拍数到 0 的这一拍 = 原版 `PostMessage 0x405`：接下来先放影片（阻塞），
+      //   剩下攒着的拍子作废（原版阻塞期间的 WM_TIMER 也不补）
+      if (inEntry && entryDone(st) && !st.introTried) {
+        st.acc = 0;
+        st.introWaitSince = env.now;
+        flushSounds(env, st);
+        env.requestRender();
+        return;
       }
     }
     // ★ 本帧推过的 tick 里登记的（挖到 / 点爆 / 点空 / 生成 / 炸彈）一次倒出去
@@ -2214,6 +2261,8 @@ export const minigameScreen: UiScreen = {
     if (st === null) return;
     // ★ 旁观端点了不算（分数只收玩家那一台的）
     if (st.spectator) return;
+    // ★ 0x405 的影片在阻塞放（或还在等它解好）：原版这时根本收不到点击
+    if (introBlocking(st)) return;
     st.mx = x;
     if (st.penguin !== null) st.penguin = penguinClick(st.penguin, x, y);
     else if (st.balloon !== null) st.balloon = balloonClick(st.balloon, x, y);

@@ -27,7 +27,17 @@ import {
   importRect,
   hitImport,
   formatGaps,
+  drawSaveLoad,
+  rowTexts,
+  ROW_TEXT_STYLE,
+  ROW_FACE_X0,
+  ROW_FACE_PITCH,
+  ROW_THUMB_X,
+  EMPTY_CELL_IMAGE,
+  PORTRAIT_RESOURCE,
+  type SlotInfo,
 } from './saveload.ts';
+import { BOX_TEXT_STYLE } from './font.ts';
 import { SCREEN_H, SCREEN_W } from './stage.ts';
 
 describe('存讀檔屏的版式', () => {
@@ -249,5 +259,80 @@ describe('★★ 自動存檔：推过日期、新一天第一位的回合边界
       Math.trunc(startKey / 10000), Math.trunc(startKey / 100) % 100 - 1, startKey % 100)) / 86_400_000);
     expect(days).toBeGreaterThan(5);
     expect(saves).toBe(days);
+  });
+});
+
+describe('★ gap-audit #18：一行的字与图全照 0x00403f1d..0x00404094', () => {
+  it('★ 字样 = `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`（16 号米白、粗体 + 阴影）', () => {
+    expect(ROW_TEXT_STYLE).toEqual({ size: 0x10, color: '#f0f0f0', color2: '#101010', flags: 3, spacing: 1 });
+    expect(ROW_TEXT_STYLE).toBe(BOX_TEXT_STYLE);
+  });
+
+  it('★ 0 号槽：AUTO / 年 / 月日，都以 x = 0xa5 为中心，dy = 0x0f / 0x24 / 0x39', () => {
+    expect(rowTexts(0, { year: 1998, month: 3, day: 7 })).toEqual([
+      { text: 'AUTO', x: 0xa5, dy: 0x0f },
+      { text: '1998', x: 0xa5, dy: 0x24 },
+      { text: '3/7', x: 0xa5, dy: 0x39 },
+    ]);
+  });
+
+  it('其余槽不写 AUTO；空槽 / 坏档一句都不写（整槽跳过 0x00403e55）', () => {
+    expect(rowTexts(2, { year: 1998, month: 12, day: 31 }).map((t) => t.text)).toEqual(['1998', '12/31']);
+    expect(rowTexts(0, null)).toEqual([]);
+    expect(rowTexts(3, null)).toEqual([]);
+  });
+
+  it('★ 画出来：有档的槽 = 粉底板 + 字 + 縮圖 + 每位玩家的头像；空槽什么都不画（连粉底板都没有）', () => {
+    const images: { res: number; index: number; x: number; y: number }[] = [];
+    const texts: { text: string; x: number; y: number; fill: string; font: string }[] = [];
+    const ctx = {
+      save: () => {},
+      restore: () => {},
+      fillRect: () => {},
+      strokeRect: () => {},
+      fillText(this: { fillStyle: string; font: string }, text: string, x: number, y: number) {
+        texts.push({ text, x, y, fill: String(this.fillStyle), font: String(this.font) });
+      },
+      drawImage: (b: { res: number; index: number }, x: number, y: number) => images.push({ ...b, x, y }),
+      fillStyle: '',
+      strokeStyle: '',
+      font: '',
+      textAlign: '',
+      textBaseline: '',
+      lineWidth: 1,
+    } as unknown as CanvasRenderingContext2D;
+    const sprite = (_a: string, res: number, index: number) =>
+      ({ bitmap: { res, index } as unknown as ImageBitmap, width: 72, height: 72, anchorX: 0, anchorY: 0 }) as never;
+    const st = {
+      year: 1999,
+      month: 5,
+      day: 20,
+      globalMapId: 5,
+      players: [{ character: 3 }, { character: 7 }, { character: 0 }],
+    } as unknown as GameState;
+    const slots: SlotInfo[] = [
+      { slot: 0, state: null, error: null },
+      { slot: 1, state: st, error: null },
+    ];
+    drawSaveLoad(ctx, 'load', slots, null, sprite);
+    const y1 = ROW.y0 + ROW.pitch;
+    // 空的 0 号槽：一张行图都没有
+    expect(images.filter((i) => i.y === ROW.y0)).toEqual([]);
+    expect(texts.some((t) => t.text === 'AUTO')).toBe(false);
+    // 1 号槽：粉底板、縮圖（2 + 5）、三位玩家头像
+    expect(images.filter((i) => i.y === y1)).toEqual([
+      { res: 0x208, index: EMPTY_CELL_IMAGE, x: ROW.x, y: y1 },
+      { res: 0x208, index: 2 + 5, x: ROW_THUMB_X, y: y1 },
+      { res: PORTRAIT_RESOURCE, index: 3, x: ROW_FACE_X0, y: y1 },
+      { res: PORTRAIT_RESOURCE, index: 7, x: ROW_FACE_X0 + ROW_FACE_PITCH, y: y1 },
+      { res: PORTRAIT_RESOURCE, index: 0, x: ROW_FACE_X0 + 2 * ROW_FACE_PITCH, y: y1 },
+    ]);
+    // 字：正文米白画在 (+0,+0)，阴影深色在 (+1,+1)；16 号粗体
+    const year = texts.filter((t) => t.text === '1999');
+    expect(year).toEqual([
+      { text: '1999', x: 0xa5 + 1, y: y1 + 0x24 + 1, fill: '#101010', font: expect.stringMatching(/^bold 16px /) },
+      { text: '1999', x: 0xa5, y: y1 + 0x24, fill: '#f0f0f0', font: expect.stringMatching(/^bold 16px /) },
+    ]);
+    expect(texts.filter((t) => t.text === '5/20').map((t) => t.y)).toEqual([y1 + 0x39 + 1, y1 + 0x39]);
   });
 });

@@ -112,6 +112,7 @@ import {
   MINI_INTRO_FLIC_RES,
   MINI_INTRO_GIVE_UP_MS,
   minigameBgmFile,
+  minigameIntroStage,
   minigameScreen,
   minigameSeed,
   minigameTickMs,
@@ -1511,5 +1512,99 @@ describe('★★ 企鵝挖寶整屏：本机在玩 vs 联机旁观', () => {
     // 玩家那台的分数广播到了 ⇒ pending 清掉 ⇒ 屏关
     minigameScreen.tick!(mkEnv({ now, localSeat: 1, pending: false }, sink));
     expect(minigameCursorHidden()).toBe(false);
+  });
+});
+
+describe('★ gap-audit #11：先在画好的舞台上数入场拍，归零（0x405）才放入场影片 @source 0x00414c93..0x00414ca9 / 0x00414d60', () => {
+  const mk = (game: number, now: number, flicReady: { v: boolean }, opts: { pending?: boolean; localSeat?: number } = {}): UiScreenEnv => {
+    const state = {
+      pending: opts.pending === false ? null : { kind: 'minigame', game },
+      currentPlayer: 0,
+      players: [{ whoPlays: 1, points: 0 }, { whoPlays: 1, points: 0 }],
+      day: 2,
+      month: 3,
+      year: 1,
+    } as unknown as GameState;
+    const frames = Array.from({ length: 20 }, () => ({}) as ImageBitmap);
+    return {
+      screen: 'game',
+      state,
+      topo: { nodes: [], lands: [], facilities: [] } as never,
+      map: null as never,
+      now,
+      stage: { drawImage: () => undefined } as unknown as CanvasRenderingContext2D,
+      animation: true,
+      sprite: () => null,
+      // 第一次问一定 null（后台在解），之后才到手 —— 与 `env.flic` 的契约一样
+      flic: () => {
+        if (!flicReady.v) {
+          flicReady.v = true;
+          return null;
+        }
+        return { frames, frameMs: 100 } as never;
+      },
+      dispatch: () => undefined,
+      requestRender: () => undefined,
+      log: () => undefined,
+      playEffect: () => undefined,
+      stopEffect: () => undefined,
+      music: () => undefined,
+      ...(opts.localSeat === undefined ? {} : { localSeat: opts.localSeat }),
+    };
+  };
+
+  const cases: [string, number, number][] = [
+    ['企鵝挖寶（10 × 100ms）', SPECIAL_KIND.PENGUIN_DIG, PENGUIN_INTRO_TICKS * 100],
+    ['七彩氣球（5 × 100ms）', SPECIAL_KIND.BALLOON, BALLOON_INTRO_TICKS * 100],
+    ['財神接金幣（10 × 50ms）', SPECIAL_KIND.GIFT_FROM_SKY, GIFT_INTRO_TICKS * 50],
+  ];
+  for (const localSeat of [undefined, 0, 1]) {
+    for (const [name, game, entryMs] of cases) {
+      it(`${name}：入场拍 → 影片（20 帧 × 100ms）→ 开玩${localSeat === undefined ? '（单机）' : localSeat === 0 ? '（联机·玩家）' : '（联机·旁观）'}`, () => {
+        const ready = { v: false };
+        const seat = localSeat === undefined ? {} : { localSeat };
+        minigameScreen.tick!(mk(game, 0, ready, { pending: false, ...seat }));
+        expect(minigameIntroStage()).toBeNull();
+        const t0 = 10_000;
+        const step = minigameTickMs(game);
+        minigameScreen.tick!(mk(game, t0, ready, seat));
+        // ① 一开场先数入场拍 —— 影片**还没**放（旧实现这里就在放影片）
+        expect(minigameIntroStage()).toBe('entry');
+        let now = t0;
+        while (now < t0 + entryMs - step) {
+          now += step;
+          minigameScreen.tick!(mk(game, now, ready, seat));
+          expect(minigameIntroStage(), `t=${now - t0}`).toBe('entry');
+        }
+        // ② 数到 0 的那一拍 = PostMessage 0x405 → 影片
+        now += step;
+        minigameScreen.tick!(mk(game, now, ready, seat));
+        minigameScreen.draw!(mk(game, now, ready, seat));
+        expect(minigameIntroStage()).toBe('film');
+        // ③ 影片放完之前一直阻塞，放完才开玩
+        now += 1900;
+        minigameScreen.tick!(mk(game, now, ready, seat));
+        expect(minigameIntroStage()).toBe('film');
+        now += 200;
+        minigameScreen.tick!(mk(game, now, ready, seat));
+        expect(minigameIntroStage()).toBe('play');
+      });
+    }
+  }
+
+  it('影片阻塞放的时候点击不算（原版在 `fcn_0045144f` 里，收不到 WM_LBUTTONDOWN）', () => {
+    const ready = { v: true };
+    const game = SPECIAL_KIND.PENGUIN_DIG;
+    minigameScreen.tick!(mk(game, 0, ready, { pending: false }));
+    let now = 50_000;
+    minigameScreen.tick!(mk(game, now, ready));
+    for (let i = 0; i < PENGUIN_INTRO_TICKS; i++) {
+      now += 100;
+      minigameScreen.tick!(mk(game, now, ready));
+    }
+    minigameScreen.draw!(mk(game, now, ready));
+    expect(minigameIntroStage()).toBe('film');
+    minigameScreen.down!(penguinCellX(3), penguinCellY(3), mk(game, now, ready));
+    expect(minigameIntroStage()).toBe('film');
   });
 });

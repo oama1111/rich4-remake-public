@@ -19,6 +19,9 @@ import {
   AI_ORIGIN,
   AI_PLATE_X,
   AI_PORTRAIT_AT,
+  AI_RESOURCE,
+  AI_ROW_OFF,
+  AI_ROW_ON,
   AI_RATIO_STEP,
   AI_ROW_PITCH,
   AI_SEG,
@@ -516,5 +519,51 @@ describe('drawAiSettings', () => {
     const f = fakeCtx();
     drawAiSettings(f.ctx, s, ROWS, null, () => null);
     expect(f.texts).toContain('託管AI');
+  });
+});
+
+describe('★ gap-audit #20 / Q-LAYOUT-1 结案：图 1 / 图 2（116×86）盖的是**一位玩家那一行**，不是选项组', () => {
+  // @source 入口 0x0041e61c..0x0041e62c：每位真人 `fcn_004562a5(图 2, 8, edi)`，edi 从 8 起、每行 +0x53；
+  //   WM_PAINT loc_0041dbe0：`i == [0x48be4c]`（选中的那一行）才 `fcn_00456418(图 1, 0x6e, 0x46 + 0x53·i)`
+  //   —— 屏幕 (0x6e, 0x46) − 对话框原点 (0x66, 0x3e) = 对话框内 (8, 8)，与图 2 同一块；整张贴，不裁。
+  it('当前那一行贴图 1、其余贴图 2，都整张落在 (8, 8 + 83n)', () => {
+    const draws: { res: number; index: number; x: number; y: number; n: number }[] = [];
+    const ctx = {
+      font: '',
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      textAlign: 'left',
+      textBaseline: 'top',
+      save: () => undefined,
+      restore: () => undefined,
+      translate: () => undefined,
+      beginPath: () => undefined,
+      rect: () => undefined,
+      clip: () => undefined,
+      drawImage: (b: { res: number; index: number }, x: number, y: number, ...rest: number[]) => {
+        draws.push({ ...b, x, y, n: rest.length });
+      },
+      fillRect: () => undefined,
+      fillText: () => undefined,
+      strokeText: () => undefined,
+      strokeRect: () => undefined,
+      measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
+    } as unknown as CanvasRenderingContext2D;
+    const sp = (_a: string, res: number, index: number): Sprite =>
+      ({ bitmap: { res, index } as unknown as ImageBitmap, width: 116, height: 86, anchorX: 0, anchorY: 0 });
+    const state = { players: [player({ index: 0 }), player({ index: 1 })], currentPlayer: 1 } as unknown as GameState;
+    const rows: AiSettingRow[] = [
+      { player: 0, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 0, cashRatio: 50, stockRatio: 30 },
+      { player: 1, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 0, cashRatio: 50, stockRatio: 30 },
+    ];
+    drawAiSettings(ctx, state, rows, null, sp);
+    const plates = draws.filter((d) => d.res === AI_RESOURCE && (d.index === AI_ROW_ON || d.index === AI_ROW_OFF));
+    expect(plates).toEqual([
+      { res: AI_RESOURCE, index: AI_ROW_OFF, x: AI_PLATE_X, y: rowY(0), n: 0 },
+      { res: AI_RESOURCE, index: AI_ROW_ON, x: AI_PLATE_X, y: rowY(1), n: 0 },
+    ]);
+    expect([rowY(0), rowY(1)]).toEqual([8, 8 + 0x53]);
+    expect(AI_ROW_PITCH).toBe(0x53);
   });
 });
