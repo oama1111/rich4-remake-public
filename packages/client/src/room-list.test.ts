@@ -12,7 +12,10 @@ import {
   formatAge,
   mapLabel,
   parseRoomSummary,
+  parseSaveSummary,
   rowAction,
+  saveDateLabel,
+  seatLabel,
   sortRooms,
   statusLabel,
 } from './room-list.ts';
@@ -149,5 +152,61 @@ describe('★ RoomListClient', () => {
     c.receive('not json');
     c.receive(JSON.stringify({ t: 'room' }));
     expect(got).toHaveLength(1);
+  });
+});
+
+describe('★ 聯機存檔（v6）', () => {
+  it('已開局的存檔房有空座 ⇒ 認領座位（可按）；排在可加入之後、已滿之前', () => {
+    const claim = room({ id: 'CLAIM1', started: true, fromSave: true, vacant: [{ seat: 2, name: 'C', character: 4 }] });
+    expect(rowAction(claim)).toEqual({ kind: 'claim', label: '認領座位', enabled: true });
+    // 自己的斷線座位仍然優先是「重新連線」
+    expect(rowAction({ ...claim, rejoin: true }).kind).toBe('rejoin');
+    const sorted = sortRooms([room({ id: 'FULL01', humans: 4 }), claim, room({ id: 'JOIN01' })]);
+    expect(sorted.map((r) => r.id)).toEqual(['JOIN01', 'CLAIM1', 'FULL01']);
+  });
+
+  it('房間行的 vacant / fromSave 照收；壞的空座丟掉', () => {
+    const r = parseRoomSummary({
+      ...room({ id: 'A' }),
+      fromSave: true,
+      vacant: [{ seat: 1, name: 'B', character: 3 }, { seat: 'x' }],
+    });
+    expect(r?.fromSave).toBe(true);
+    expect(r?.vacant).toEqual([{ seat: 1, name: 'B', character: 3 }]);
+  });
+
+  it('存檔摘要：形狀對的收下（mine / alive 缺省）；缺欄位丟掉', () => {
+    const good = {
+      id: 'm-1',
+      name: '週末',
+      kind: 'manual',
+      ageMs: 5,
+      globalMapId: 1,
+      year: 2010,
+      month: 2,
+      day: 3,
+      turnCount: 40,
+      seats: [{ seat: 0, name: '小明', character: 4, kind: 'human', mine: true }],
+    };
+    expect(parseSaveSummary(good)?.seats[0]).toEqual({ seat: 0, name: '小明', character: 4, kind: 'human', mine: true, alive: true });
+    expect(parseSaveSummary({ ...good, kind: 'other' })).toBeNull();
+    expect(parseSaveSummary({ ...good, turnCount: -1 })).toBeNull();
+    expect(parseSaveSummary({ ...good, seats: [{ seat: 0 }] })).toBeNull();
+    expect(saveDateLabel(good)).toBe('2010 年 2 月 3 日 · 第 40 回合');
+  });
+
+  it('座位叫法：「角色（暱稱）」—— 角色名取 @rich4/data 的角色表', () => {
+    expect(seatLabel(4, 'Charles')).toBe('阿土伯（Charles）');
+    expect(seatLabel(99, 'X')).toBe('X');
+  });
+
+  it('RoomListClient：listSaves 帶版本號與 clientId；saves 交給 onSaves', () => {
+    const sent: string[] = [];
+    const got: unknown[] = [];
+    const c = new RoomListClient({ send: (t) => sent.push(t) }, { clientId: 'b'.repeat(32), onRooms: () => {}, onSaves: (s) => got.push(s) });
+    c.listSaves();
+    expect(JSON.parse(sent[0]!)).toEqual({ t: 'listSaves', version: PROTOCOL_VERSION, clientId: 'b'.repeat(32) });
+    c.receive(JSON.stringify({ t: 'saves', saves: [{ junk: 1 }] }));
+    expect(got).toEqual([[]]);
   });
 });

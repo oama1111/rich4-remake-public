@@ -170,6 +170,7 @@ sudo journalctl -u rich4 -n 30 --no-pager
 rich4 聯機伺服器：http://127.0.0.1:8787/  ws ws://127.0.0.1:8787/ws  …  回合 60s
 回合計時：60s 不動就由電腦代打（連續兩回合 ⇒ 託管）
 素材目錄：/srv/rich4/deploy/assets/game
+聯機存檔：/srv/rich4/saves（現有 N 份，最多 30 份）
 訪問密碼：開著（RICH4_PASSWORD / RICH4_COOKIE_SECRET 從環境變數來）
 ```
 
@@ -219,7 +220,7 @@ sudo ufw status
    刷新 / 掉线后回列表，自己那一桌会显示 **重新連線**（凭本机的 `clientId` 认回原座）。
 
 > 房间列表走的是已有的 WebSocket（`/ws`，同一道访问密码），**服务器没有新参数、没有新端口**。
-> 协议版本升到 **5**：部署后还开着旧页面的人会看到「协议版本不符」，刷新一下即可。
+> 协议版本升到 **6**（房间列表 5、联机存档 + 开局日期 6）：部署后还开着旧页面的人会看到「协议版本不符」，刷新一下即可。
 
 首次打开要下 ≈130 MB（服务器发的是预压缩后的 `.br`），**之后会缓存在他们本机**，
 第二次打开 0 流量。
@@ -240,6 +241,28 @@ bash tools/pull-feedback.sh            # rsync 到 ./feedback/（已 .gitignore�
 bash tools/pull-feedback.sh --replay   # 再逐份重放验指纹（tools/replay-report.ts）
 node --experimental-transform-types tools/replay-report.ts feedback/<某一份>.json --shot out.png   # 单份细看
 ```
+
+## 联机存档（`--saves`，协议 v6 起）
+
+服务器把联机局存在 `--saves` 指的目录（生产：`/srv/rich4/saves/`，systemd 模板里已经带上）：
+
+- **自动存档**：每一桌**每过一个游戏日**覆盖一次它自己的那一份（`auto-<房间码>.json`）；
+- **手动存档**：房主在游戏里按「儲存進度」（工具列 / 热键 S）取个名字存一份（`m-<时刻>-<房间码>.json`）；
+- 最多 30 份，超了**先删最旧的自动存档**，自动的删光了才删最旧的手动存档。
+
+服务器重启 / 部署之后，房间都没了，但存档还在：房间列表 → **建立房間 → 從存檔繼續** → 选一份。
+原来的人凭各自浏览器里的 `clientId` 自动坐回原座（改了暱稱也认得）；换了浏览器的人在大厅点 **這是我**；
+开局时没人坐的真人座位由电脑代打，之后原主人回来（或别人从列表「認領座位」）就接回去。
+
+目录权限（里面有各人的 `clientId`，**不对外**）：
+
+```bash
+sudo install -d -o rich4 -g rich4 -m 0750 /srv/rich4/saves
+# 进程自己也会建（0750），单个文件 0640；systemd 的 ReadWritePaths=/srv/rich4 已经覆盖它
+```
+
+备份就是把这个目录拷走；恢复就是拷回来再重启（开机时整个目录读进内存）。
+坏掉的 / 不认识的文件会被跳过，不影响开机。
 
 ## 怎么更新
 

@@ -46,8 +46,15 @@ export function roomToasts(
   for (const s of after.seats) {
     const b = before?.seats.find((x) => x.seat === s.seat);
     if (s.kind !== 'human') continue;
-    // ① 新来的（之前没这号人，或者这一号原本是电脑）
-    if (b === undefined || b.kind !== 'human') {
+    // ★ 聯機存檔（v6）：存檔房裡沒人坐的座位不報「加入」；有人坐上 / 離座各報一句
+    if (s.vacant === true) {
+      if (b !== undefined && b.kind === 'human' && b.vacant !== true && !(b.connected === false)) {
+        lines.push({ seat: s.seat, text: `${b.name} 離座了` });
+      }
+      continue;
+    }
+    // ① 新来的（之前没这号人，或者这一号原本是电脑 / 存檔房裡原本沒人坐）
+    if (b === undefined || b.kind !== 'human' || b.vacant === true) {
       lines.push({ seat: s.seat, text: `${s.name} 加入了房間` });
       continue;
     }

@@ -51,7 +51,17 @@ import type { Action } from '../state/actions.ts';
  * **已經解散**的房間碼重新建出來、自己當房主，朋友們在列表裡看到的就是一間莫名其妙的空房。
  * 版本號一變，老頁面（瀏覽器裡沒刷新的那個分頁）進門就拿到一句清楚的「協議版本不符」。
  */
-export const PROTOCOL_VERSION = 5;
+/**
+ * ★ 2026-09-23（需求方批准的「聯機存檔」設計）→ **6**。
+ *
+ * 為什麼 +1：`start` / `replay` 可能帶 `snapshot`（從存檔繼續的局，起點是**存下來的局面**
+ * 而不是 `newGame`）—— 老客戶端不認識它，會拿種子 `newGame` 出一局**完全不同**的棋盤，
+ * 第一條校驗和就失步。另有 `listSaves`/`saves`、`claim`/`unclaim`、`save`/`saved`，
+ * `join` 多了 `fromSave` / `claimSeat`，`joined.seat` 可以是 `-1`（在房裡、還沒入座）。
+ */
+export const PROTOCOL_VERSION = 6;
+// ★ v6 同一次 +1 裡還有：`start` / `replay` 帶 `startDate`（服務器的今天）—— 聯機開局日期與單機同一個規則。
+//   老客戶端不認識它，會照 core 缺省日期（2010-01-01）開局 ⇒ 日期不同，第一次過日子就失步。
 
 // ============================================================
 //  客户端 → 服务器
@@ -86,6 +96,16 @@ export type ClientMessage =
        * · 不帶 —— 舊語義（有就進、沒有就建）：`?room=` 舊連結與 `tools/net-e2e.js` 走這條。
        */
       mode?: JoinMode;
+      /**
+       * ★ 聯機存檔（v6）：與 `mode: 'create'` 一起用 —— 這間新房**從這份存檔繼續**。
+       *   座位、地圖、開局設定都照存檔（鎖定），起點是存檔裡的局面。
+       */
+      fromSave?: string;
+      /**
+       * ★ 聯機存檔（v6）：與 `mode: 'join'` 一起用 —— 已經開局的存檔房裡，**認領**一個
+       *   沒人坐、由電腦代打的存檔座位（房間列表上的「認領座位」）。
+       */
+      claimSeat?: number;
     }
   /**
    * ★ 房間列表（v5）：**訂閱**房間列表。
@@ -97,6 +117,23 @@ export type ClientMessage =
    * 服務器**不回**任何人的 `clientId`（見 `RoomSummary`）。
    */
   | { t: 'listRooms'; version: number; clientId: string }
+  /**
+   * ★ 聯機存檔（v6）：要一份服務器上的存檔列表（一次性，不訂閱）。
+   * `clientId` 只用來標出「哪個座位是你」（`SaveSummary.seats[].mine`）—— 同樣**不回**任何人的 `clientId`。
+   */
+  | { t: 'listSaves'; version: number; clientId: string }
+  /**
+   * ★ 聯機存檔（v6）：存檔房開局前，「這是我」—— 認領一個還沒人坐的存檔真人座位。
+   * 只有**還沒入座**的連接能發（`joined.seat === -1`）。
+   */
+  | { t: 'claim'; seat: number }
+  /**
+   * ★ 聯機存檔（v6）：存檔房開局前，把一個座位**放回**「沒人坐」。
+   * 房主可以放任何人的（認錯人了），其他人只能放自己的。被放掉的連接退回「還沒入座」。
+   */
+  | { t: 'unclaim'; seat: number }
+  /** ★ 聯機存檔（v6）：房主手動存檔（開局後任何時候）。成功回 `saved`，失敗回 `error` */
+  | { t: 'save'; name: string }
   /** 房主（0 号座）开局：空座由电脑补位，服务器广播 start */
   | { t: 'start' }
   /**
@@ -191,7 +228,10 @@ export type ServerMessage =
   | {
       t: 'joined';
       version: number;
-      /** 本客户端控制的玩家下标 */
+      /**
+       * 本客户端控制的玩家下标。
+       * ★ 聯機存檔（v6）：`-1` = 在存檔房的大廳裡、**還沒入座**（等著點「這是我」）。
+       */
       seat: number;
       room: RoomInfo;
     }
@@ -209,6 +249,18 @@ export type ServerMessage =
       globalMapId: number;
       seats: SeatInfo[];
       options: LobbyOptions;
+      /**
+       * ★ v6（單機 / 聯機一致）：開局日期 = **服務器的今天**（與單機 `defaultStartDate(new Date())`
+       *   同一個函數、同一段鉗位）。由服務器定、隨 `start` 下發 —— 各客戶端各看各的時鐘，
+       *   跨午夜 / 跨時區就會開出不同日期的兩局。從存檔繼續的局不帶（快照裡有自己的日期）。
+       */
+      startDate?: { year: number; month: number; day: number };
+      /**
+       * ★ 聯機存檔（v6）：這一局的**起點局面**（`serializeGame` 的文本）。
+       *   有它 ⇒ 客戶端 `deserializeGame(snapshot)`，**不** `newGame`；之後的 action 從 0 號接著施加。
+       *   沒有 ⇒ 照舊用 `seed` + `options` `newGame`。
+       */
+      snapshot?: string;
       /**
        * ★★ 第十二份試玩回報（「斷線重連後莫名其妙又進入魔法屋」「所有文本提示又重新觸發了一輪」）：
        *   **进房那一刻日志已经排到第几号**（含；日志为空则 -1）。只在「局已开、有人进房/重连」
@@ -254,6 +306,10 @@ export type ServerMessage =
        *   少了它重建出来的局面与服务器镜像就不是同一局（初始资金/胜负条件都不同）。
        */
       options: LobbyOptions;
+      /** ★ v6：開局日期；見 `start.startDate` */
+      startDate?: { year: number; month: number; day: number };
+      /** ★ 聯機存檔（v6）：起點局面；見 `start.snapshot` */
+      snapshot?: string;
       through: number;
       actions: { seq: number; action: Action }[];
     }
@@ -272,6 +328,10 @@ export type ServerMessage =
    * 只含**可以出現在列表上**的房間（終局的、沒人在的不列，見 `hub.ts` 的 `#summaries`）。
    */
   | { t: 'rooms'; rooms: RoomSummary[] }
+  /** ★ 聯機存檔（v6）：對 `listSaves` 的答覆 */
+  | { t: 'saves'; saves: SaveSummary[] }
+  /** ★ 聯機存檔（v6）：手動存檔成功（廣播給全桌：大家都知道存了一份） */
+  | { t: 'saved'; name: string }
   | { t: 'error'; message: string };
 
 /** `join.mode`（v5）—— 見 `ClientMessage` 裡 `join` 的注釋 */
@@ -304,6 +364,34 @@ export interface RoomSummary {
   ageMs: number;
   /** 發 `listRooms` 的那個 `clientId` 在這桌有一個**斷線中**的座位 ⇒ 點了就是「重新連線」 */
   rejoin: boolean;
+  /** ★ 聯機存檔（v6）：從存檔繼續的房間（顯示用）*/
+  fromSave?: boolean;
+  /**
+   * ★ 聯機存檔（v6）：**已開局**的存檔房裡、由電腦代打的空座 —— 可以從列表「認領座位」。
+   * （開局前的存檔房直接「加入」，進大廳再點「這是我」。）
+   */
+  vacant?: { seat: number; name: string; character: number }[];
+}
+
+/**
+ * 服務器上的一份聯機存檔（v6）—— 列表那一行。
+ *
+ * ⚠️ 同 `RoomSummary`：**沒有 `clientId`**，只給看的人一個 `mine`。
+ */
+export interface SaveSummary {
+  id: string;
+  /** 手動存檔的名字；自動存檔是「<房主> 的房間」 */
+  name: string;
+  kind: 'auto' | 'manual';
+  /** 存了多久了（毫秒，服務器發出那一刻算的）*/
+  ageMs: number;
+  globalMapId: number;
+  /** 局面裡的日期與回合 */
+  year: number;
+  month: number;
+  day: number;
+  turnCount: number;
+  seats: { seat: number; name: string; character: number; kind: 'human' | 'computer'; mine: boolean; alive: boolean }[];
 }
 
 /**
@@ -316,10 +404,17 @@ export interface RoomSummary {
  *
  * ★ 順序是有意的：`rejoin` 先判 —— 滿了 / 開局了的那一桌，對「原來坐在裡面的人」仍然是能回去的。
  */
-export type RoomJoinability = 'join' | 'rejoin' | 'full' | 'playing';
+export type RoomJoinability = 'join' | 'rejoin' | 'claim' | 'full' | 'playing';
 
-export function roomJoinability(r: Pick<RoomSummary, 'rejoin' | 'started' | 'humans' | 'seatCount'>): RoomJoinability {
+/**
+ * ★ 聯機存檔（v6）多一種：`claim` —— 已開局的存檔房裡還有電腦代打的空座，可以「認領座位」。
+ *   順序：`rejoin` > `claim` > `playing` > `full` > `join`。
+ */
+export function roomJoinability(
+  r: Pick<RoomSummary, 'rejoin' | 'started' | 'humans' | 'seatCount'> & { vacant?: readonly unknown[] },
+): RoomJoinability {
   if (r.rejoin) return 'rejoin';
+  if (r.started && (r.vacant?.length ?? 0) > 0) return 'claim';
   if (r.started) return 'playing';
   if (r.humans >= r.seatCount) return 'full';
   return 'join';
@@ -342,6 +437,11 @@ export interface SeatInfo {
    * 缺省（`undefined`）＝ 玩家自己拿着。它随 `room` 消息广播给所有人。
    */
   autopilot?: 'offline' | 'idle';
+  /**
+   * ★ 聯機存檔（v6）：存檔房裡**沒人坐**的真人座位。
+   * 開局前 = 可以點「這是我」；開局後 = 由電腦代打，原來的人（或從列表「認領座位」的人）可以接回去。
+   */
+  vacant?: boolean;
 }
 
 export interface RoomInfo {
@@ -362,6 +462,20 @@ export interface RoomInfo {
    * （`RoomInfo` 是通用快照形状，旧测试/监控不必被迫填）——缺省按 `LOBBY_DEFAULT_OPTIONS` 读。
    */
   options?: LobbyOptions;
+  /**
+   * ★ 聯機存檔（v6）：這間房是**從存檔繼續**的 —— 地圖 / 角色 / 開局設定都鎖定成存檔的。
+   */
+  fromSave?: { name: string };
+  /**
+   * ★ 聯機存檔（v6）：房主坐在幾號座（`-1` = 房主還沒入座）。
+   * 缺省按 0 讀（一般房間的房主就是 0 號座）。存檔房的房主是**建房的那個人**，他可能坐在任何一座。
+   */
+  hostSeat?: number;
+}
+
+/** 房主坐在幾號座；舊快照沒帶 ⇒ 0 */
+export function roomHostSeat(room: RoomInfo | null | undefined): number {
+  return room?.hostSeat ?? 0;
 }
 
 /**
@@ -551,6 +665,18 @@ export function sanitizeName(raw: unknown): string | null {
   const stripped = raw.replace(/\p{Cc}/gu, '').trim();
   const points = [...stripped];
   if (points.length === 0 || points.length > MAX_NAME_CODE_POINTS) return null;
+  return stripped;
+}
+
+/** ★ 聯機存檔（v6）：存檔名最多幾個碼點 */
+export const MAX_SAVE_NAME_CODE_POINTS = 24;
+
+/** 存檔名的清洗 —— 與 `sanitizeName` 同一套（去控制字元、去首尾空白），只是上限 24 */
+export function sanitizeSaveName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const stripped = raw.replace(/\p{Cc}/gu, '').trim();
+  const points = [...stripped];
+  if (points.length === 0 || points.length > MAX_SAVE_NAME_CODE_POINTS) return null;
   return stripped;
 }
 

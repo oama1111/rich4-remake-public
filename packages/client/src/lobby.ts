@@ -47,6 +47,7 @@ import {
   LOBBY_CHARACTER_COUNT,
   LOBBY_MAP_COUNT,
   LOBBY_MIN_SEATS,
+  roomHostSeat,
   withLobbyDefaults,
   type LobbyOptions,
   type RoomInfo,
@@ -172,6 +173,8 @@ export interface LobbySlot {
   character: number;
   /** 是不是本机占了这一格 */
   isMe: boolean;
+  /** ★ 聯機存檔（v6）：存檔房裡沒人坐的真人座位 */
+  vacant: boolean;
 }
 
 /**
@@ -187,6 +190,10 @@ export function lobbySlots(
 ): LobbySlot[] {
   const bySeat = new Map<number, SeatInfo>();
   for (const s of room?.seats ?? []) bySeat.set(s.seat, s);
+  // ★ 聯機存檔（v6）：`-1` = 在存檔房裡、還沒入座 —— 哪一格都不是我
+  if (me !== null && me < 0) me = null;
+  // 存檔房的座位數是存檔定的（真人 + 電腦都已經在 `seats` 裡）
+  if (room?.fromSave !== undefined) seatCount = Math.max(seatCount, room.seats.length);
 
   const out: LobbySlot[] = [];
   for (let i = 0; i < seatCount; i++) {
@@ -201,6 +208,7 @@ export function lobbySlots(
       connected: s !== undefined && s.kind === 'human' && s.connected !== false,
       character: s?.character ?? i,
       isMe: me !== null && i === me,
+      vacant: s?.vacant === true,
     });
   }
   return out;
@@ -237,7 +245,11 @@ export type LobbyHit =
       kind: 'option';
       field: (typeof LOBBY_OPTION_ROWS)[number]['field'];
       delta: -1 | 1;
-    };
+    }
+  /** ★ 聯機存檔（v6）：存檔房開局前「這是我」*/
+  | { kind: 'claim'; seat: number }
+  /** ★ 聯機存檔（v6）：存檔房開局前「離座」（自己）/「請離座」（房主對別人）*/
+  | { kind: 'unclaim'; seat: number };
 
 export interface LobbyHitOptions {
   /** 本机是不是房主（0 号座）—— 只有房主点得动開始、也才点得动地圖 */
@@ -247,6 +259,33 @@ export interface LobbyHitOptions {
   me?: number | null;
   /** 房间是否已开局 —— 开局后角色/地图都锁死，两块选择器只读 */
   started?: boolean;
+  /** ★ 聯機存檔（v6）：房間快照 —— 存檔房的設定鎖定、座位上有「這是我 / 離座」 */
+  room?: RoomInfo | null;
+}
+
+/** ★ 聯機存檔（v6）：本機是不是房主（存檔房的房主可能坐在任何一座；`-1` = 還沒入座）*/
+export function lobbyIsHost(room: RoomInfo | null | undefined, me: number | null): boolean {
+  return me !== null && me >= 0 && me === roomHostSeat(room);
+}
+
+/** ★ 聯機存檔（v6）：座位卡上那顆小鈕（沒有就 `null`）*/
+export function seatButtonOf(
+  slot: Pick<LobbySlot, 'seat' | 'occupied' | 'kind' | 'vacant' | 'isMe'>,
+  me: number | null,
+  isHost: boolean,
+  room: RoomInfo | null | undefined,
+): { kind: 'claim' | 'unclaim'; label: string } | null {
+  if (room?.fromSave === undefined || room.started || !slot.occupied || slot.kind !== 'human') return null;
+  const seated = me !== null && me >= 0;
+  if (slot.vacant) return seated ? null : { kind: 'claim', label: '這是我' };
+  if (slot.isMe) return { kind: 'unclaim', label: '離座' };
+  if (isHost) return { kind: 'unclaim', label: '請離座' };
+  return null;
+}
+
+/** 座位卡上小鈕的矩形（卡片左下角）*/
+export function seatButtonRect(seat: number): { x: number; y: number; w: number; h: number } {
+  return { x: LOBBY_SEATS.x + seat * LOBBY_SEATS.pitch + 8, y: LOBBY_SEATS.y + 48, w: 60, h: 22 };
 }
 
 /** 角色格命中：返回 0..11；不在格子里返回 −1（本项目新增的版式，无原版对照） */
@@ -300,9 +339,19 @@ function optionRowRect(i: number): {
  *   `setCharacter`/`setMap` 校验），客户端全被绕过也改不动房间。
  */
 export function hitLobby(x: number, y: number, opts: LobbyHitOptions): LobbyHit | null {
-  const seats = opts.seats ?? MAX_SEATS;
-  const started = opts.started ?? false;
-  const me = opts.me ?? null;
+  const room = opts.room ?? null;
+  const seats = Math.max(opts.seats ?? MAX_SEATS, room?.fromSave !== undefined ? room.seats.length : 0);
+  // ★ 聯機存檔（v6）：存檔房的角色 / 地圖 / 設定照存檔 —— 與「已開局」一樣鎖死
+  const started = (opts.started ?? false) || room?.fromSave !== undefined;
+  const rawMe = opts.me ?? null;
+  const me = rawMe !== null && rawMe >= 0 ? rawMe : null;
+  // 座位卡上的小鈕（存檔房開局前）—— 先於「落在座位上」判
+  if (room?.fromSave !== undefined && !(opts.started ?? false)) {
+    for (const slot of lobbySlots(room, rawMe, seats)) {
+      const b = seatButtonOf(slot, rawMe, opts.isHost, room);
+      if (b !== null && inRect(x, y, seatButtonRect(slot.seat))) return { kind: b.kind, seat: slot.seat };
+    }
+  }
 
   // 角色格：改的是「自己的」角色，所以先得有自己的座位；开局后锁死
   if (me !== null && !started) {
@@ -360,7 +409,14 @@ export function drawLobby(
   mapId = 0,
   /** ★ 第十一份試玩回報 #1：房間的開局選項（顯示當前值；缺省用缺省值）*/
   options: LobbyOptions = withLobbyDefaults(undefined),
+  /** ★ 聯機存檔（v6）：房間快照（存檔房：鎖定設定、座位上的「這是我 / 離座」）*/
+  room: RoomInfo | null = null,
 ): void {
+  const fromSave = room?.fromSave;
+  const rawMe = me;
+  if (me !== null && me < 0) me = null;
+  // 存檔房的角色 / 地圖 / 設定照存檔 —— 畫成跟「已開局」一樣的唯讀
+  const locked = started || fromSave !== undefined;
   ctx.save();
 
   // 底色
@@ -375,17 +431,23 @@ export function drawLobby(
   ctx.font = `13px ${FONT}`;
   ctx.fillStyle = '#a8b6c8';
   // ★ 第十三份回報 #1 起：人數是**總人數**（不足補電腦），提示里把它说清楚
-  const hint = isHost
-    ? `你是房主（1 號座）：設定好按「開始」；不足 ${options.seatCount} 人的位子由電腦補上`
-    : `等房主開始；空位由電腦補上（本局共 ${options.seatCount} 人）`;
-  ctx.fillText(hint, 36, 50);
+  const hint =
+    fromSave !== undefined
+      ? `從存檔繼續「${fromSave.name}」：${
+          me === null ? '點自己原來那一座的「這是我」坐回去' : isHost ? '大家坐好後按「開始」；空著的座位由電腦代打' : '等房主開始；空著的座位由電腦代打'
+        }`
+      : isHost
+        ? `你是房主（1 號座）：設定好按「開始」；不足 ${options.seatCount} 人的位子由電腦補上`
+        : `等房主開始；空位由電腦補上（本局共 ${options.seatCount} 人）`;
+  ctx.fillText(clip(hint, 580, measure), 36, 50);
 
   // ★ Q-NET-2：两块大厅设置（本项目新增的界面，见文件头取证）
-  drawCharacterPicker(ctx, slots, me, started, hot, sprite);
-  drawMapPicker(ctx, mapId, isHost, started, hot, sprite);
+  const lockNote = started || fromSave === undefined ? '已開局' : '照存檔';
+  drawCharacterPicker(ctx, slots, me, locked, hot, sprite, lockNote);
+  drawMapPicker(ctx, mapId, isHost, locked, hot, sprite, lockNote);
 
   // ★★ 第十一份試玩回報 #1：「開局設定」六行（单机开局设定屏那六项，同一批串与表）
-  drawOptionColumn(ctx, options, isHost, started, hot);
+  drawOptionColumn(ctx, options, isHost, locked, hot);
 
   // 座位
   for (const slot of slots) {
@@ -421,9 +483,28 @@ export function drawLobby(
     ctx.fillText(clip(slot.name, LOBBY_SEATS.w - 24 - (portrait === null ? 0 : 44), measure), x + 10, y + 26);
 
     ctx.font = `12px ${FONT}`;
+    // ★ 聯機存檔（v6）：存檔房開局前，座位卡左下角換成「這是我 / 離座 / 請離座」
+    const btn = seatButtonOf(slot, rawMe, isHost, room);
+    if (btn !== null) {
+      const r = seatButtonRect(slot.seat);
+      const bhot = hot !== null && (hot.kind === 'claim' || hot.kind === 'unclaim') && hot.seat === slot.seat;
+      ctx.fillStyle = btn.kind === 'claim' ? (bhot ? '#9a7420' : '#7a5a14') : bhot ? '#4a6b8a' : '#33465c';
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = btn.kind === 'claim' ? '#e0b64a' : '#7fd0ff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+      ctx.fillStyle = '#fff3d0';
+      ctx.font = `12px ${FONT}`;
+      const tw = ctx.measureText(btn.label).width;
+      ctx.fillText(btn.label, r.x + (r.w - tw) / 2, r.y + 4);
+      continue;
+    }
     if (slot.kind === 'computer') {
       ctx.fillStyle = '#c8b273';
       ctx.fillText('電腦', x + 10, y + 50);
+    } else if (slot.vacant) {
+      ctx.fillStyle = '#c8b273';
+      ctx.fillText(started ? '空位（電腦代打）' : '空位', x + 10, y + 50);
     } else {
       ctx.fillStyle = slot.connected ? '#7fd08a' : '#e0736b';
       ctx.fillText(slot.connected ? '在線' : '離線（電腦代打）', x + 10, y + 50);
@@ -548,6 +629,7 @@ function drawCharacterPicker(
   started: boolean,
   hot: LobbyHit | null,
   sprite: SpriteFn,
+  lockNote = '已開局',
 ): void {
   const mine = me === null ? null : (slots.find((s) => s.seat === me)?.character ?? null);
   const taken = new Set(slots.filter((s) => s.occupied && !s.isMe).map((s) => s.character));
@@ -555,7 +637,7 @@ function drawCharacterPicker(
 
   ctx.font = `13px ${FONT}`;
   ctx.fillStyle = live ? '#a8b6c8' : '#6b7c90';
-  ctx.fillText(`角色${live ? '（點一下換成自己的）' : started ? '（已開局）' : ''}`, CHAR_PICK.x, CHAR_PICK.y - 20);
+  ctx.fillText(`角色${live ? '（點一下換成自己的）' : started ? `（${lockNote}）` : ''}`, CHAR_PICK.x, CHAR_PICK.y - 20);
 
   for (let i = 0; i < LOBBY_CHARACTER_COUNT; i++) {
     const r = pickRect(CHAR_PICK, i);
@@ -601,11 +683,12 @@ function drawMapPicker(
   started: boolean,
   hot: LobbyHit | null,
   sprite: SpriteFn,
+  lockNote = '已開局',
 ): void {
   const live = isHost && !started;
   ctx.font = `13px ${FONT}`;
   ctx.fillStyle = live ? '#a8b6c8' : '#6b7c90';
-  ctx.fillText(`地圖${live ? '（房主選）' : started ? '（已開局）' : '（房主才能改）'}`, MAP_PICK.x, MAP_PICK.y - 20);
+  ctx.fillText(`地圖${live ? '（房主選）' : started ? `（${lockNote}）` : '（房主才能改）'}`, MAP_PICK.x, MAP_PICK.y - 20);
 
   for (let i = 0; i < LOBBY_MAP_COUNT; i++) {
     const r = pickRect(MAP_PICK, i);

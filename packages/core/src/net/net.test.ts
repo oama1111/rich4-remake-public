@@ -276,7 +276,7 @@ describe('★ Q-NET-1 协议：resync / replay', () => {
 });
 
 describe('协议', () => {
-  it('★ 版本号：W-73 +1、W-74 再 +1、第十一份回報 #1 再 +1、房間列表再 +1', () => {
+  it('★ 版本号：W-73 +1、W-74 再 +1、第十一份回報 #1 再 +1、房間列表再 +1、聯機存檔再 +1', () => {
     // ⚠️ 这一条**不是**「为了变绿改断言」：任务书 W-73 §3 与 W-74 末尾各明写一次 `+1`。
     //    Q-NET-1 那次「加了消息但不动版本号」的理由（纯增量、语义没变）在这两次都不成立：
     //    · W-73：`join.clientId` 是**必填**，且「认回原座位」的判据从名字改成了它；
@@ -285,8 +285,10 @@ describe('协议', () => {
     //      地產期限/時間/勝利條件），老客戶端不認識 ⇒ 會靜默吃下一局**規則不同**的對局。
     //    · 房間列表（2026-09-23）：多了 `listRooms`/`rooms`，`join` 多了 `mode` —— 老頁面拿著
     //      已解散的房間碼會把它重新建出來（自己當房主），得擋在門外。
-    //    ⇒ 1 → 2 → 3 → 4 → 5
-    expect(PROTOCOL_VERSION).toBe(5);
+    //    · 聯機存檔（2026-09-23）：`start`/`replay` 可能帶 `snapshot`（起點是存檔局面）與 `startDate`
+    //      （服務器的今天）—— 老客戶端會照種子 / 缺省日期 `newGame`，第一條校驗和就失步。
+    //    ⇒ 1 → 2 → 3 → 4 → 5 → 6
+    expect(PROTOCOL_VERSION).toBe(6);
   });
 });
 
@@ -378,5 +380,9 @@ describe('★ 房間列表（v5）：`join.mode` 與可加入判據', () => {
     expect(roomJoinability({ ...base, started: true, humans: 4 })).toBe('playing');
     expect(roomJoinability({ ...base, rejoin: true, started: true, humans: 4 })).toBe('rejoin');
     expect(roomJoinability({ ...base, rejoin: true })).toBe('rejoin');
+    // ★ v6：已開局的存檔房還有電腦代打的空座 ⇒ 認領；沒開局的不算（直接加入、進大廳點「這是我」）
+    expect(roomJoinability({ ...base, started: true, vacant: [{}] })).toBe('claim');
+    expect(roomJoinability({ ...base, started: false, vacant: [{}] })).toBe('join');
+    expect(roomJoinability({ ...base, started: true, vacant: [{}], rejoin: true })).toBe('rejoin');
   });
 });

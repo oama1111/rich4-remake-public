@@ -41,6 +41,16 @@ export interface RoomOptions {
    *   与 `seats`/`globalMapId` 同一套：**开局那一刻冻结**，只由这一份进 `newGame`。
    */
   options: LobbyOptions;
+  /**
+   * ★ 聯機存檔（v6）：**從存檔繼續**的局 —— 起點就是這個局面（`deserializeGame` 讀回來的），
+   *   不再 `newGame`。`snapshot` 是它的原文，開局 / 重連 / 重放時原樣發給客戶端。
+   */
+  base?: { state: GameState; snapshot: string };
+  /**
+   * ★ v6：開局日期（服務器的今天，`defaultStartDate`）—— 與單機同一個規則。
+   * 不給 = core 缺省（2010-01-01，舊行為；測試用）。有 `base` 時不用（快照裡有日期）。
+   */
+  startDate?: { year: number; month: number; day: number };
 }
 
 export interface Broadcast {
@@ -65,6 +75,10 @@ export class Room {
    * 否则「我以为我选的是忍者、服务器记的是錢夫人」要到指纹对不上才暴露。
    */
   readonly lobby: { globalMapId: number; seats: readonly SeatInfo[]; options: LobbyOptions };
+  /** ★ 聯機存檔（v6）：起點局面的原文（從存檔繼續的局才有；新局為 `null`）*/
+  readonly snapshot: string | null;
+  /** ★ v6：開局日期（新局才有）—— 隨 `start` / `replay` 下發 */
+  readonly startDate: { year: number; month: number; day: number } | null;
 
   readonly #map: Rich4Map;
   readonly #topo: MapTopology;
@@ -96,12 +110,15 @@ export class Room {
       commercials: opts.map.commercials,
     };
 
-    this.#mirror = newGame({
+    this.snapshot = opts.base?.snapshot ?? null;
+    this.startDate = opts.base === undefined && opts.startDate !== undefined ? { ...opts.startDate } : null;
+    this.#mirror = opts.base?.state ?? newGame({
       map: opts.map,
       globalMapId: opts.globalMapId,
       players: opts.seats.map((s) => ({ character: s.character, kind: s.kind })),
       seed: opts.seed,
       mode: 'multiplayer',
+      ...(this.startDate === null ? {} : { startDate: this.startDate }),
       // ★★ 第十一份試玩回報 #1（需求方 2026-09-23）：单机那五项在联机也要能设。
       //   逐项照 `client/src/main.ts` 的 `startGame()`（单机的同一处），
       //   ⚠️ 必须与客户端 `onStart` **逐项同源**，否则 `stateFingerprint` 对不上。

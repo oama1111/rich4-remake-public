@@ -26,8 +26,18 @@ import {
   sanitizeName,
   type JoinMode,
   type RoomSummary,
+  type SaveSummary,
 } from '@rich4/core';
-import { RoomListClient, countLabel, formatAge, mapLabel, rowAction, statusLabel } from './room-list.ts';
+import {
+  RoomListClient,
+  countLabel,
+  formatAge,
+  mapLabel,
+  rowAction,
+  saveDateLabel,
+  seatLabel,
+  statusLabel,
+} from './room-list.ts';
 
 /** 上次用的名字 */
 export const NAME_STORAGE_KEY = 'rich4.name';
@@ -193,6 +203,10 @@ export type FoyerChoice =
       name: string;
       /** `'create'` = 建立房間；`'join'` = 从列表 / 旧链接进一间**已有的** */
       mode: JoinMode;
+      /** ★ 聯機存檔（v6）：建房時從這份存檔繼續 */
+      fromSave?: string;
+      /** ★ 聯機存檔（v6）：加入已開局的存檔房時認領這一座 */
+      claimSeat?: number;
     };
 
 /** 门厅用到的那一小截 WebSocket（单测 / 替身好塞）*/
@@ -304,6 +318,16 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
     let listError = '';
     let notice = opts.notice ?? '';
     let renderList: () => void = () => {};
+    /**
+     * ★ 聯機存檔（v6）：列表頁的哪一塊 —— 房間列表 / 「建立房間」的兩個選項 / 存檔列表 / 認領空座。
+     * 共用同一條連線（存檔列表也是從它要的）。
+     */
+    let panel: { kind: 'rooms' } | { kind: 'create' } | { kind: 'saves' } | { kind: 'claim'; room: RoomSummary } = {
+      kind: 'rooms',
+    };
+    let saves: SaveSummary[] | null = null;
+    let savesAt = 0;
+    let askSaves: () => void = () => {};
 
     const stopList = (): void => {
       listActive = false;
@@ -353,6 +377,11 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
             listError = '';
             renderList();
           },
+          onSaves: (next) => {
+            saves = next;
+            savesAt = Date.now();
+            renderList();
+          },
           onError: (message) => {
             listError = message.includes('版本')
               ? `${message} —— 請重新整理網頁（Ctrl+F5 / 下拉刷新）`
@@ -361,7 +390,13 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
           },
         },
       );
-      s.onopen = () => client.subscribe();
+      s.onopen = () => {
+        client.subscribe();
+        if (panel.kind === 'saves') client.listSaves();
+      };
+      askSaves = () => {
+        if (socket === s) client.listSaves();
+      };
       s.onmessage = (ev) => client.receive(String(ev.data));
       s.onerror = () => {
         /* onclose 会跟着来 */
@@ -456,10 +491,9 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
       card.replaceChildren();
       card.style.width = '560px';
       const header = el(doc, 'div', 'display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap');
-      header.append(
-        el(doc, 'h1', `margin:0;font-size:20px;font-weight:700;letter-spacing:2px;color:${GOLD}`, '在線聯機'),
-        el(doc, 'span', 'font-size:12px;color:#a9bcd4', `暱稱：${name}`),
-      );
+      const title = el(doc, 'h1', `margin:0;font-size:20px;font-weight:700;letter-spacing:2px;color:${GOLD}`, '在線聯機');
+      title.id = 'foyer-title';
+      header.append(title, el(doc, 'span', 'font-size:12px;color:#a9bcd4', `暱稱：${name}`));
       const noticeEl = el(
         doc,
         'p',
@@ -499,6 +533,30 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
         noticeEl.style.display = notice === '' ? 'none' : 'block';
         errEl.textContent = listError;
         list.replaceChildren();
+        const onRooms = panel.kind === 'rooms';
+        head.style.display = onRooms ? 'flex' : 'none';
+        title.textContent =
+          panel.kind === 'rooms'
+            ? '在線聯機'
+            : panel.kind === 'create'
+              ? '建立房間'
+              : panel.kind === 'saves'
+                ? '從存檔繼續'
+                : '認領座位';
+        create.style.display = onRooms ? '' : 'none';
+        reload.style.display = panel.kind === 'create' || panel.kind === 'claim' ? 'none' : '';
+        if (panel.kind === 'create') {
+          renderCreate();
+          return;
+        }
+        if (panel.kind === 'saves') {
+          renderSaves();
+          return;
+        }
+        if (panel.kind === 'claim') {
+          renderClaim(panel.room);
+          return;
+        }
         if (rooms === null) {
           list.append(el(doc, 'p', 'margin:18px 0;text-align:center;font-size:13px;color:#a9bcd4', '正在讀取房間列表…'));
           return;
@@ -552,6 +610,12 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
           go.disabled = !act.enabled;
           go.addEventListener('click', () => {
             if (!act.enabled) return;
+            // ★ 聯機存檔（v6）：已開局的存檔房 ⇒ 先挑要認領哪一座
+            if (act.kind === 'claim') {
+              panel = { kind: 'claim', room: r };
+              renderList();
+              return;
+            }
             finish({ kind: 'online', room: r.id, name, mode: 'join' });
           });
           row.append(who, count, status, go);
@@ -559,8 +623,104 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
         }
       };
 
+      /** 「建立房間」：新遊戲 / 從存檔繼續 */
+      const renderCreate = (): void => {
+        const box = el(doc, 'div', 'display:flex;flex-direction:column;gap:10px;margin:14px 0 4px');
+        const fresh = entryButton(doc, '新遊戲', '自己當房主，在大廳裡選地圖、角色與開局設定');
+        fresh.id = 'foyer-new-game';
+        const resume = entryButton(doc, '從存檔繼續', '伺服器上的存檔（每過一天自動存一份，房主也可以手動存）');
+        resume.id = 'foyer-from-save';
+        fresh.addEventListener('click', () => {
+          finish({ kind: 'online', room: newRoomCode(random), name, mode: 'create' });
+        });
+        resume.addEventListener('click', () => {
+          panel = { kind: 'saves' };
+          saves = null;
+          askSaves();
+          renderList();
+        });
+        box.append(fresh, resume);
+        list.append(box);
+      };
+
+      /** 存檔列表 */
+      const renderSaves = (): void => {
+        if (saves === null) {
+          list.append(el(doc, 'p', 'margin:18px 0;text-align:center;font-size:13px;color:#a9bcd4', '正在讀取存檔…'));
+          return;
+        }
+        if (saves.length === 0) {
+          const empty = el(doc, 'div', 'margin:22px 0;text-align:center;font-size:13px;color:#a9bcd4;line-height:1.7');
+          empty.id = 'foyer-saves-empty';
+          empty.append(
+            el(doc, 'div', 'font-size:15px;color:#e9eef7', '伺服器上還沒有存檔'),
+            el(doc, 'div', '', '聯機玩的時候每過一天會自動存一份；房主也可以在遊戲裡按「儲存進度」存一份。'),
+          );
+          list.append(empty);
+          return;
+        }
+        const elapsed = Date.now() - savesAt;
+        for (const sv of saves) {
+          const row = el(doc, 'div', 'display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid #22405f');
+          row.dataset.save = sv.id;
+          const info = el(doc, 'div', 'flex:1 1 auto;min-width:0');
+          const top = el(doc, 'div', 'font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis');
+          top.append(
+            el(
+              doc,
+              'span',
+              `display:inline-block;margin-right:6px;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600;${
+                sv.kind === 'auto' ? 'background:#22405f;color:#a9bcd4' : 'background:#7a5a14;color:#fff3d0'
+              }`,
+              sv.kind === 'auto' ? '自動' : '手動',
+            ),
+            doc.createTextNode(sv.name),
+          );
+          const seatsLine = sv.seats
+            .map((st) => `${seatLabel(st.character, st.kind === 'computer' ? '電腦' : st.name)}${st.mine ? '・你' : ''}${st.alive ? '' : '・破產'}`)
+            .join('　');
+          info.append(
+            top,
+            el(
+              doc,
+              'div',
+              'margin-top:2px;font-size:11px;color:#7f92aa',
+              `${mapLabel(sv.globalMapId)} · ${saveDateLabel(sv)} · 存於${formatAge(sv.ageMs + elapsed)}`,
+            ),
+            el(doc, 'div', 'margin-top:3px;font-size:12px;color:#c9d4e2;line-height:1.5', seatsLine),
+          );
+          const go = button(doc, `${BTN_MAIN};flex:0 0 84px;padding:8px 6px;font-size:13px`, '選這個');
+          go.addEventListener('click', () => {
+            finish({ kind: 'online', room: newRoomCode(random), name, mode: 'create', fromSave: sv.id });
+          });
+          row.append(info, go);
+          list.append(row);
+        }
+      };
+
+      /** 已開局的存檔房：挑一個電腦代打中的空座認領 */
+      const renderClaim = (r: RoomSummary): void => {
+        list.append(
+          el(
+            doc,
+            'p',
+            'margin:12px 0 6px;font-size:13px;color:#a9bcd4;line-height:1.6',
+            `「${r.host} 的房間」已經開局了。下面這些座位現在由電腦代打 —— 選你原來的那一座接回來：`,
+          ),
+        );
+        for (const v of r.vacant ?? []) {
+          const b = button(doc, `${BTN};display:block;width:100%;margin-top:8px;text-align:left`, `這是我：${seatLabel(v.character, v.name)}`);
+          b.dataset.seat = String(v.seat);
+          b.addEventListener('click', () => {
+            finish({ kind: 'online', room: r.id, name, mode: 'join', claimSeat: v.seat });
+          });
+          list.append(b);
+        }
+      };
+
       create.addEventListener('click', () => {
-        finish({ kind: 'online', room: newRoomCode(random), name, mode: 'create' });
+        panel = { kind: 'create' };
+        renderList();
       });
       reload.addEventListener('click', () => {
         notice = '';
@@ -568,15 +728,23 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
           if (retryTimer !== null) clearTimeout(retryTimer);
           retryTimer = null;
           connectList();
-        } else refresh();
+        } else if (panel.kind === 'saves') askSaves();
+        else refresh();
         renderList();
       });
       back.addEventListener('click', () => {
         notice = '';
+        // 子頁先回房間列表，房間列表再回首頁
+        if (panel.kind !== 'rooms') {
+          panel = { kind: 'rooms' };
+          renderList();
+          return;
+        }
         showHome();
       });
 
       listActive = true;
+      panel = { kind: 'rooms' };
       rooms = null;
       listError = '';
       renderList();

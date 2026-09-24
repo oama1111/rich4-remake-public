@@ -49,6 +49,7 @@ import {  autoAction,
   importOriginalSaveWithSnapshots,
   roomMapId,
   roomOptions,
+  roomHostSeat,
   specialSlotOf,
   SPECIAL_KIND,
   STOCK_STATUS,
@@ -73,6 +74,8 @@ import {  autoAction,
   type ConfineView,
 } from '@rich4/core';
 import { NetClient, defaultWsUrl, netParamsFrom } from './net-client.ts';
+import { initialNetState } from './net-start.ts';
+import { defaultSaveName, promptSaveName } from './net-save.ts';
 import {
   browserStorage,
   foyerEntry,
@@ -89,7 +92,7 @@ import { walkTweenFor } from './tween.ts';
 import {
   drawLobby,
   hitLobby,
-  isHostSeat,
+  lobbyIsHost,
   lobbySlots,
   LOBBY_OPTION_ROWS,
   optionIndexOf,
@@ -1704,6 +1707,12 @@ let saveLoadSlots: SlotInfo[] = [];
 let saveLoadHot: number | null = null;
 
 function openSaveLoad(mode: SaveLoadMode, from: Screen): void {
+  // ★ 聯機存檔（v6）：聯機時「存檔」存到**伺服器**（房主取名）；「讀檔」會把本機拉離大家的局面，不給
+  if (net !== null) {
+    if (mode === 'save') void promptNetSave();
+    else showNetNotice('聯機中不能讀檔：要接著玩以前的局，請從房間列表「建立房間 → 從存檔繼續」');
+    return;
+  }
   saveLoadMode = mode;
   saveLoadReturn = from;
   saveLoadSlots = readSlots(mode === 'load' ? LOAD_SLOTS : SAVE_SLOTS + 1);
@@ -7934,7 +7943,7 @@ function requestRender(): void {
         //   服务器 `#start` 负责）。画几格就按几格，别永远画四个。
         lobbySlots(lobbyRoom, net?.seat ?? null, roomOptions(lobbyRoom).seatCount),
         net?.seat ?? null,
-        isHostSeat(net?.seat ?? null),
+        lobbyIsHost(lobbyRoom, net?.seat ?? null),
         lobbyRoom?.started ?? false,
         lobbyHot,
         (archive, resource, index) => spriteNow(archive, resource, index),
@@ -7943,6 +7952,8 @@ function requestRender(): void {
         roomMapId(lobbyRoom),
         // ★★ 第十一份試玩回報 #1：開局設定六行也来自服务器快照（缺省补全，兼容旧快照）
         roomOptions(lobbyRoom),
+        // ★ 聯機存檔（v6）：存檔房的鎖定與「這是我 / 離座」
+        lobbyRoom,
       );
     } else if (screen === 'options') {
       // 設定是**盖在**原来那一屏上的对话框（原版就是这样）
@@ -9430,11 +9441,12 @@ function bindInput(): void {
     }
     if (screen === 'lobby') {
       const hit = hitLobby(p.x, p.y, {
-        isHost: isHostSeat(net?.seat ?? null),
+        isHost: lobbyIsHost(lobbyRoom, net?.seat ?? null),
         me: net?.seat ?? null,
         started: lobbyRoom?.started ?? false,
         // ⚠️ 与绘制**同一个数**：不然「画了两格、却点得动第三格」这种鬼事
         seats: roomOptions(lobbyRoom).seatCount,
+        room: lobbyRoom,
       });
       if (JSON.stringify(hit) !== JSON.stringify(lobbyHot)) {
         lobbyHot = hit;
@@ -9635,11 +9647,12 @@ function bindInput(): void {
     }
     if (screen === 'lobby') {
       const hit = hitLobby(p.x, p.y, {
-        isHost: isHostSeat(net?.seat ?? null),
+        isHost: lobbyIsHost(lobbyRoom, net?.seat ?? null),
         me: net?.seat ?? null,
         started: lobbyRoom?.started ?? false,
         // ⚠️ 与绘制**同一个数**：不然「画了两格、却点得动第三格」这种鬼事
         seats: roomOptions(lobbyRoom).seatCount,
+        room: lobbyRoom,
       });
       if (hit === null) return;
       // 座位只读（座位是服务器分的，见 Q-NET-2），点它不做事
@@ -9670,6 +9683,15 @@ function bindInput(): void {
       }
       if (hit.kind === 'start') {
         net?.start();
+        return;
+      }
+      // ★ 聯機存檔（v6）：存檔房的「這是我 / 離座」—— 同樣只是發請求，等 `room` 廣播回來
+      if (hit.kind === 'claim') {
+        net?.claim(hit.seat);
+        return;
+      }
+      if (hit.kind === 'unclaim') {
+        net?.unclaim(hit.seat);
         return;
       }
       // 离开：断开并回標題
@@ -10860,6 +10882,10 @@ function connectOnline(
     mode?: JoinMode;
     /** 还没坐下就被拒（房间不在了 / 满了 / 版本不符）—— 给了就断开并交给它（回列表）*/
     onJoinFailed?: (message: string) => void;
+    /** ★ 聯機存檔（v6）：建房時從這份存檔繼續 */
+    fromSave?: string;
+    /** ★ 聯機存檔（v6）：加入已開局的存檔房時認領這一座 */
+    claimSeat?: number;
   } = {},
 ): void {
   let closedByUs = false;
@@ -10877,7 +10903,15 @@ function connectOnline(
     // ★ 断线重连一律按「加入已有的」：头一次是「建房」的，重连时房间当然已经在了
     //   （照 `'create'` 再发一次只会撞上自己的房间被拒）
     const mode = opts.mode === undefined ? undefined : firstOpen ? opts.mode : 'join';
+    // ★ 聯機存檔（v6）：「從存檔建」「認領座位」都只在頭一次 —— 重連時憑 clientId 認回
+    const once = firstOpen
+      ? {
+          ...(opts.fromSave === undefined ? {} : { fromSave: opts.fromSave }),
+          ...(opts.claimSeat === undefined ? {} : { claimSeat: opts.claimSeat }),
+        }
+      : {};
     firstOpen = false;
+    let lastError: string | null = null;
     const client = new NetClient(
       { send: (text) => ws.send(text) },
       {
@@ -10885,9 +10919,14 @@ function connectOnline(
         name,
         clientId,
         ...(mode === undefined ? {} : { mode }),
+        ...once,
         ...(since === undefined ? {} : { since }),
         onJoined: (seat, info) => {
-          log(`✔ 進房 ${info.id}：我是 ${seat + 1} 號座${seat === 0 ? '（房主，按 START 開局）' : ''}`);
+          log(
+            seat < 0
+              ? `✔ 進房 ${info.id}（從存檔繼續）：還沒入座 —— 點自己那一座的「這是我」`
+              : `✔ 進房 ${info.id}：我是 ${seat + 1} 號座${seat === roomHostSeat(info) ? '（房主，按 START 開局）' : ''}`,
+          );
           // ★ 只有「进房时还没开局」才该播開局過場（见 `roomJoinedUnstarted` 的注释）
           roomJoinedUnstarted = !info.started;
           enterLobby(info);
@@ -10917,26 +10956,9 @@ function connectOnline(
           lobbyHot = null;
           map = parseMap(readMapData(archives, start.globalMapId));
           topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
-          // ★ 与服务器镜像（server/room.ts）逐字段一致，否则指纹对不上
-          state = newGame({
-            map,
-            globalMapId: start.globalMapId,
-            players: start.seats.map((s) => ({ character: s.character, kind: s.kind })),
-            seed: start.seed,
-            mode: 'multiplayer',
-            // ★★ 第十一份試玩回報 #1：房间的**开局选项**（总人数 + 单机那五项）。
-            //   ⚠️ 必须与 `server/room.ts` 的 `newGame` **逐字段同源**，否则 `stateFingerprint` 对不上。
-            // ★ 用 core 的规则表（不是 setup.ts 的显示表）—— 服务器 `room.ts` 用的就是它，
-            //   两处只有**逐字节同一个数**才能保证 `stateFingerprint` 一致。
-            initialFund: GAME_INITIAL_FUNDS[start.options.fundIndex] ?? DEFAULT_INITIAL_FUND,
-            startingVehicle: start.options.vehicle,
-            landTenure: start.options.landTenure,
-            winConditions: winConditionsOf(
-              start.options.fundIndex,
-              start.options.timeIndex,
-              start.options.victoryIndex,
-            ),
-          });
+          // ★ 与服务器镜像（server/room.ts）逐字段一致，否则指纹对不上 ——
+          //   新局 `newGame`，★ 聯機存檔（v6）從存檔繼續的局讀快照（`net-start.ts`，與 `onResync` 同一段）
+          state = initialNetState(start, map);
           history.length = 0;
           recorder.reset();
           hoverNode = null;
@@ -10962,7 +10984,7 @@ function connectOnline(
           // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
           goButton.reset();
 
-          const first = map.nodes[state.players[0]?.nodeId ?? 1];
+          const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? state.players[0]?.nodeId ?? 1];
           camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
           // ★★ 第九份试玩回报（2026-09-22，Charles）：「多人模式开局没有机舱跳伞的过场动画」。
           //   过场本身一直在（`intro.ts`，单机也一直在播）—— 是**联机这条路根本没接**：
@@ -10973,6 +10995,8 @@ function connectOnline(
           //      `roomJoinedUnstarted` 的注释。过场期间**不报** `awaiting`（`tickAwaiting`
           //      第一句就是 `screen !== 'game'` 闸），所以 60 秒不会被过场吃掉；
           //      但前提是过场时长短于服务端的兜底值（4 人局 ≤ 14.9 s ≪ `awaitingFallbackMs` 45 s）。
+          // ★ 聯機存檔（v6）：從存檔繼續的局不是「開局」，不播跳傘
+          if (start.snapshot !== undefined) roomJoinedUnstarted = false;
           if (roomJoinedUnstarted) {
             introStartedAt = performance.now();
             introSkipped = false;
@@ -11022,6 +11046,7 @@ function connectOnline(
         },
         onError: (message) => {
           log(`⚠ 伺服器：${message}`);
+          lastError = message;
           // ★ 本机那一掷被服务器拒了（`illegalAction` 等）⇒ 那条回包**不会来了**。
           //   当场把预测的滚骰收掉并松开节拍闸，别让它空转到 3 秒超时。
           //   （重复点 GO、超时被别人接管之后再发 intent，都会走到这里。）
@@ -11039,6 +11064,11 @@ function connectOnline(
             opts.onJoinFailed(message);
           }
         },
+        // ★ 聯機存檔（v6）：房主存了一份檔 —— 全桌都知道
+        onSaved: (name) => {
+          log(`💾 房主存檔：${name}`);
+          showNetNotice(`房主存了一份檔：「${name}」`);
+        },
         onDesync: (d) =>
           log(`⚠ 失步！第 ${d.seq} 號後 ${d.seat + 1} 號座的校驗和 ${d.got} ≠ ${d.expected}，已請求全量重放`),
         // ★ Q-NET-1 自愈：服务器把**完整** action 日志重放回来了 → 整体重建本地状态。
@@ -11048,22 +11078,8 @@ function connectOnline(
         onResync: (r) => {
           map = parseMap(readMapData(archives, r.globalMapId));
           topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
-          state = newGame({
-            map,
-            globalMapId: r.globalMapId,
-            players: r.seats.map((s) => ({ character: s.character, kind: s.kind })),
-            seed: r.seed,
-            mode: 'multiplayer',
-            // ★ 同上：重放重建也必须带上开局选项（否则重建出来的不是同一局）
-            initialFund: GAME_INITIAL_FUNDS[r.options.fundIndex] ?? DEFAULT_INITIAL_FUND,
-            startingVehicle: r.options.vehicle,
-            landTenure: r.options.landTenure,
-            winConditions: winConditionsOf(
-              r.options.fundIndex,
-              r.options.timeIndex,
-              r.options.victoryIndex,
-            ),
-          });
+          // ★ 同上：重放重建也必须带上开局选项 / 存檔快照（否则重建出来的不是同一局）
+          state = initialNetState(r, map);
           history.length = 0;
           recorder.reset();
           // 收着没播的那些已经包含在这份重放里了（`NetClient` 把序号指针接成了 `actions.length`）
@@ -11087,6 +11103,14 @@ function connectOnline(
     ws.onmessage = (ev) => client.receive(String(ev.data));
     ws.onclose = () => {
       if (closedByUs) return;
+      // ★ 聯機存檔（v6）：存檔房裡還沒入座的人，房主一開局就被請出去 ⇒ 回列表（那裡有「認領座位」）
+      if ((client.seat ?? -1) < 0 && lastError !== null && opts.onJoinFailed !== undefined) {
+        closedByUs = true;
+        if (net === client) net = null;
+        netClose = null;
+        opts.onJoinFailed(lastError);
+        return;
+      }
       log(`⚠ 與伺服器斷線，${RECONNECT_MS / 1000} 秒後重連…`);
       window.setTimeout(() => open(client.expectedSeq > 0 ? client.expectedSeq - 1 : undefined), RECONNECT_MS);
     };
@@ -11185,6 +11209,27 @@ function clearLoadingScreen(): void {
   metaEl.className = 'meta';
 }
 
+/** ★ 聯機提示（右下角那一疊）—— 聯機存檔等用 */
+function showNetNotice(text: string): void {
+  netToasts.push(text);
+}
+
+/**
+ * ★ 聯機存檔（v6）：遊戲內「儲存進度」在聯機時 —— 房主取個名字、存到伺服器。
+ * 非房主只給一句提示（伺服器那邊也會拒）。
+ */
+async function promptNetSave(): Promise<void> {
+  const client = net;
+  if (client === null) return;
+  if (client.seat === null || client.seat !== roomHostSeat(client.room)) {
+    showNetNotice('只有房主能存檔（伺服器每過一天也會自動存一份）');
+    return;
+  }
+  const name = await promptSaveName(defaultSaveName(state));
+  if (name === null || net !== client) return;
+  client.save(name);
+}
+
 /** 门厅 / 房间列表连哪台服务器：`?ws=` 给了就用它（本机调试），否则同源 `wss://<host>/ws` */
 let foyerWsUrl: string | null = null;
 
@@ -11212,14 +11257,23 @@ async function openFoyer(opts: { view?: 'home' | 'rooms'; notice?: string; invit
     enterTitleScreen();
     return;
   }
-  joinFromFoyer(choice.room, choice.name, choice.mode);
+  joinFromFoyer(choice.room, choice.name, choice.mode, {
+    ...(choice.fromSave === undefined ? {} : { fromSave: choice.fromSave }),
+    ...(choice.claimSeat === undefined ? {} : { claimSeat: choice.claimSeat }),
+  });
 }
 
 /** 从门厅 / 旧链接进一间房；进不去就回列表并把原因摆在最上面 */
-function joinFromFoyer(room: string, name: string, mode: JoinMode): void {
+function joinFromFoyer(
+  room: string,
+  name: string,
+  mode: JoinMode,
+  extra: { fromSave?: string; claimSeat?: number } = {},
+): void {
   log(`房間 ${room}（${name}，${mode === 'create' ? '建立' : '加入'}）`);
   connectOnline(foyerUrl(), room, name, {
     mode,
+    ...extra,
     onJoinFailed: (message) => void openFoyer({ view: 'rooms', notice: message }),
   });
 }

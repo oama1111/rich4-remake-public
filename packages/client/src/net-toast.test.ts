@@ -139,3 +139,14 @@ describe('★ W-75 多种变化一起来', () => {
     expect(prev.get(0)).toBe(1);
   });
 });
+
+describe('★ 聯機存檔（v6）：存檔房的空座', () => {
+  it('空座不報「加入」；有人坐上報「加入」；開局前離座報「離座了」', () => {
+    const seat = (over: Record<string, unknown>) => ({ seat: 0, name: 'A', character: 4, kind: 'human' as const, ...over });
+    const vacant = { id: 'X', started: false, seats: [seat({ connected: false, vacant: true })] };
+    const taken = { id: 'X', started: false, seats: [seat({ name: 'B', connected: true })] };
+    expect(roomToasts(null, vacant).lines).toEqual([]);
+    expect(roomToasts(vacant, taken).lines.map((l) => l.text)).toEqual(['B 加入了房間']);
+    expect(roomToasts(taken, vacant).lines.map((l) => l.text)).toEqual(['B 離座了']);
+  });
+});

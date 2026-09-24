@@ -17,6 +17,7 @@ import type { AddressInfo } from 'node:net';
 import type { Rich4Map } from '@rich4/core';
 import { baseOptions, createHttpHandler, startHttpServer, startServer } from './http-server.ts';
 import { GATE_COOKIE, Gate } from './gate.ts';
+import { MemorySaveStore } from './saves.ts';
 import { MANIFEST_ASSET, MKF_WHITELIST, SECURITY_HEADERS } from './static.ts';
 
 // ============================================================
@@ -695,6 +696,9 @@ describe('★ 访问密码 —— 整站一道门（W-71）', () => {
       hardCapMs: 17,
       maxRooms: 18,
       roomIdleMs: 19,
+      // ★ v6
+      saves: new MemorySaveStore(),
+      today: () => new Date(0),
     };
     const out = baseOptions({ ...full, noGate: true, env: { X: 'y' } }) as unknown as Record<string, unknown>;
     for (const [k, v] of Object.entries(full)) expect(out[k], k).toBe(v);

@@ -21,7 +21,9 @@ import {
   roomJoinability,
   type RoomJoinability,
   type RoomSummary,
+  type SaveSummary,
 } from '@rich4/core';
+import { characterById } from '@rich4/data';
 
 /**
  * 八張地圖的名字（`globalMapId` 0..7 = 舞台×4 + 地圖）。
@@ -60,6 +62,8 @@ export interface RowAction {
 const ACTION_LABELS: Record<RoomJoinability, string> = {
   join: '加入',
   rejoin: '重新連線',
+  // ★ 聯機存檔（v6）：已開局的存檔房裡還有電腦代打的空座
+  claim: '認領座位',
   full: '已滿',
   // 狀態欄已經寫了「遊戲中」，按鈕上再寫一次是廢話 —— 說清楚「為什麼按不了」
   playing: '無法加入',
@@ -68,11 +72,11 @@ const ACTION_LABELS: Record<RoomJoinability, string> = {
 /** 判據與服務器同一個（core 的 `roomJoinability`）；這裡只配字 */
 export function rowAction(r: RoomSummary): RowAction {
   const kind = roomJoinability(r);
-  return { kind, label: ACTION_LABELS[kind], enabled: kind === 'join' || kind === 'rejoin' };
+  return { kind, label: ACTION_LABELS[kind], enabled: kind === 'join' || kind === 'rejoin' || kind === 'claim' };
 }
 
-/** 排序的組別：能回去的 > 能加入的 > 滿了的 > 遊戲中的 */
-const GROUP: Record<RoomJoinability, number> = { rejoin: 0, join: 1, full: 2, playing: 3 };
+/** 排序的組別：能回去的 > 能加入的 > 能認領空座的 > 滿了的 > 遊戲中的 */
+const GROUP: Record<RoomJoinability, number> = { rejoin: 0, join: 1, claim: 2, full: 3, playing: 4 };
 
 /**
  * 列表排序：先按組（見 `GROUP`），組內**新建的在上**（`ageMs` 小的在前），最後按房間碼定序。
@@ -106,6 +110,14 @@ export function parseRoomSummary(raw: unknown): RoomSummary | null {
   if (!isNat(r.humans) || !isNat(r.seatCount) || !isNat(r.globalMapId)) return null;
   if (typeof r.started !== 'boolean' || typeof r.rejoin !== 'boolean') return null;
   const ageMs = typeof r.ageMs === 'number' && Number.isFinite(r.ageMs) ? Math.max(0, r.ageMs) : 0;
+  const vacant = Array.isArray(r.vacant)
+    ? r.vacant.flatMap((v: unknown) => {
+        const o = v as Record<string, unknown> | null;
+        return o !== null && typeof o === 'object' && isNat(o.seat) && typeof o.name === 'string' && isNat(o.character)
+          ? [{ seat: o.seat, name: o.name, character: o.character }]
+          : [];
+      })
+    : [];
   return {
     id: r.id,
     host: r.host,
@@ -115,7 +127,60 @@ export function parseRoomSummary(raw: unknown): RoomSummary | null {
     globalMapId: r.globalMapId,
     ageMs,
     rejoin: r.rejoin,
+    ...(r.fromSave === true ? { fromSave: true } : {}),
+    ...(vacant.length === 0 ? {} : { vacant }),
   };
+}
+
+/**
+ * 網路來的一份存檔摘要 → `SaveSummary`；形狀不對返回 `null`。
+ */
+export function parseSaveSummary(raw: unknown): SaveSummary | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== 'string' || typeof r.name !== 'string') return null;
+  if (r.kind !== 'auto' && r.kind !== 'manual') return null;
+  for (const k of ['globalMapId', 'year', 'month', 'day', 'turnCount'] as const) if (!isNat(r[k])) return null;
+  if (!Array.isArray(r.seats)) return null;
+  const seats: SaveSummary['seats'] = [];
+  for (const v of r.seats) {
+    const o = v as Record<string, unknown> | null;
+    if (o === null || typeof o !== 'object') return null;
+    if (!isNat(o.seat) || typeof o.name !== 'string' || !isNat(o.character)) return null;
+    if (o.kind !== 'human' && o.kind !== 'computer') return null;
+    seats.push({
+      seat: o.seat,
+      name: o.name,
+      character: o.character,
+      kind: o.kind,
+      mine: o.mine === true,
+      alive: o.alive !== false,
+    });
+  }
+  const ageMs = typeof r.ageMs === 'number' && Number.isFinite(r.ageMs) ? Math.max(0, r.ageMs) : 0;
+  return {
+    id: r.id,
+    name: r.name,
+    kind: r.kind,
+    ageMs,
+    globalMapId: r.globalMapId as number,
+    year: r.year as number,
+    month: r.month as number,
+    day: r.day as number,
+    turnCount: r.turnCount as number,
+    seats,
+  };
+}
+
+/** 存檔 / 空座上的一個座位怎麼叫：「角色（暱稱）」；角色名表缺就只給暱稱 */
+export function seatLabel(character: number, name: string): string {
+  const c = characterById(character)?.name;
+  return c === undefined ? name : `${c}（${name}）`;
+}
+
+/** 存檔列表那一行的日期：「2010 年 3 月 5 日 · 第 42 回合」 */
+export function saveDateLabel(s: Pick<SaveSummary, 'year' | 'month' | 'day' | 'turnCount'>): string {
+  return `${s.year} 年 ${s.month} 月 ${s.day} 日 · 第 ${s.turnCount} 回合`;
 }
 
 // ============================================================
@@ -130,6 +195,8 @@ export interface RoomListClientOptions {
   clientId: string;
   /** 一份新的列表（整份替換；已排好序）*/
   onRooms(rooms: RoomSummary[]): void;
+  /** ★ 聯機存檔（v6）：`listSaves` 的答覆（新的在前）*/
+  onSaves?(saves: SaveSummary[]): void;
   onError?(message: string): void;
 }
 
@@ -151,6 +218,11 @@ export class RoomListClient {
     this.#socket.send(JSON.stringify({ t: 'listRooms', version: PROTOCOL_VERSION, clientId: this.#opts.clientId }));
   }
 
+  /** ★ 聯機存檔（v6）：要一份存檔列表 */
+  listSaves(): void {
+    this.#socket.send(JSON.stringify({ t: 'listSaves', version: PROTOCOL_VERSION, clientId: this.#opts.clientId }));
+  }
+
   receive(text: string): void {
     let msg: unknown;
     try {
@@ -159,7 +231,16 @@ export class RoomListClient {
       return;
     }
     if (typeof msg !== 'object' || msg === null) return;
-    const m = msg as { t?: unknown; rooms?: unknown; message?: unknown };
+    const m = msg as { t?: unknown; rooms?: unknown; saves?: unknown; message?: unknown };
+    if (m.t === 'saves' && Array.isArray(m.saves)) {
+      const saves: SaveSummary[] = [];
+      for (const raw of m.saves) {
+        const sv = parseSaveSummary(raw);
+        if (sv !== null) saves.push(sv);
+      }
+      this.#opts.onSaves?.(saves);
+      return;
+    }
     if (m.t === 'rooms' && Array.isArray(m.rooms)) {
       const rooms: RoomSummary[] = [];
       for (const raw of m.rooms) {

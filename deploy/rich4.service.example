@@ -41,6 +41,7 @@ ExecStart=/usr/bin/node --experimental-transform-types packages/server/src/cli.t
 	--web packages/client/dist-web \
 	--assets /srv/rich4/deploy/assets/game \
 	--feedback /srv/rich4/feedback \
+	--saves /srv/rich4/saves \
 	--turn-ms 60000 \
 	--awaiting-fallback-ms 120000
 
