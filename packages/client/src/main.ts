@@ -89,6 +89,7 @@ import { NetToasts } from './net-toast.ts';
 import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
 import { RENDER_MS, tickMs } from './tick.ts';
 import { landingPauseRemaining, turnEndPauseTicks, type LandingPause } from './landing-pause.ts';
+import { hideLandingPlayer, landingFilmSpec, landingTrigger, openingLandingPlayer } from './landing-fx.ts';
 import { walkTweenFor } from './tween.ts';
 import {
   drawLobby,
@@ -4610,6 +4611,11 @@ function startActionFx(action: Action, before: GameState): void {
   //   （判据与出处见 `landing-pause.ts`）
   const pauseTicks = turnEndPauseTicks(before, state, topo);
   if (pauseTicks > 0) landingPause = { ticks: pauseTicks, idleAt: null };
+  // ★★ 降落伞落地（需求方 2026-09-24）：轮到一个还没上盘的人 ⇒ core 在回合交接时摆人 + 落地，
+  //   这里补那一段 `0x22f + 角色` 的影片（`landing-fx.ts`）。它在原版是新回合的**第一件事**
+  //   （`0x418c55` 开头，掷骰 / 电脑决策之前）⇒ 排在本 action 其余演出之后也无妨：换人那条 action 没有别的片。
+  const landed = landingTrigger(before, state);
+  if (landed !== null) startLandingFx(landed);
   // ★ D-MAGIC-16：魔法屋逐人分段由 `tickMagicSequence` 一段一段起（每段各自走这里一遍）
   if (freshMagicBeats(before, state) !== null) {
     magicSeqAction = action;
@@ -6144,6 +6150,11 @@ let introSoundPlayed = false;
 function endIntro(): void {
   if (screen !== 'intro') return;
   screen = 'game';
+  // ★★ 进棋盘的第一次重画就摆第 1 位（core 的 `newGame` 已摆好），随后 `0x418c55` 开头
+  //   播他那一段降落伞（`landing-fx.ts`）—— 回合驱动被影片挡着，播完才掷骰 / 电脑决策。
+  //   其余几位要等轮到自己才落地（换人那条 action 里补播，见 `startActionFx`）。
+  const opener = openingLandingPlayer(state);
+  if (opener !== null) startLandingFx(opener);
   requestRender();
   // ★★ **必须补这一拍**（2026-09-16 修「进游戏后 GO 鈕点不动」）：
   //   `startGame()` 起的那两个回合驱动都带 `if (screen !== 'game') return`
@@ -7722,7 +7733,54 @@ function currentBuildFxBitmap(now: number): CanvasImageSource | null {
  * ★ 窗口的判据是四条影片状态位（正在播 **或** 还没解码）—— 解码那几百毫秒
  *   棋盘是露着的，正是需求方看到「效果先于动画」的那一段。见 `deferred-board.ts`。
  */
+/**
+ * 正在落地的那一位与他那一段影片（`null` = 没有）。影片待播 / 在播期间棋盘与小地图**不画他**
+ * （原版 `0x00418cde` 播完才写坐标），播完 / 放弃就撤。
+ */
+let landingFx: { player: number; spec: BoardFilmSpec } | null = null;
+
+/**
+ * 起一段落地影片（原版 `fcn_00418c55` 开头那一段，见 `landing-fx.ts`）：
+ * 镜头先对准落点（摆人那一次重画 `0x0040829d` 就居中到那一格了 —— 不落小地图标记），
+ * 影片排进棋盘影片队列（点不掉、无音效、不看「動畫過程」开关）。
+ */
+function startLandingFx(player: number): void {
+  const me = state.players[player];
+  if (me === undefined) return;
+  const spec = landingFilmSpec(me.character);
+  landingFx = { player, spec };
+  camera = pixelCamera(me.xpos, me.ypos, camera.view);
+  queueBoardFilm(spec);
+  log(`影片：${CHARACTERS[me.character]?.name ?? `P${player + 1}`} 降落（0x${spec.resource.toString(16)}，${spec.frames} 帧 × ${spec.frameMs} ms）`);
+}
+
+/** 落地那一段还挂在影片队列里吗（待解码 / 在播 / 排队）—— 不在了就撤掉「先别画他」 */
+function landingHeld(): number | null {
+  const l = landingFx;
+  if (l === null) return null;
+  const queued =
+    boardFilm?.spec === l.spec ||
+    pendingBoardFilm === l.spec ||
+    pendingBoardFilmAfter === l.spec ||
+    boardFilmQueueRest.includes(l.spec);
+  if (!queued) {
+    landingFx = null;
+    return null;
+  }
+  return l.player;
+}
+
+/** 影片期间先别画正在落地的那一位（棋盘 / 小地图共用）*/
+function withLandingHidden(s: GameState): GameState {
+  const who = landingHeld();
+  return who === null ? s : hideLandingPlayer(s, who);
+}
+
 function boardDrawState(): GameState {
+  return withLandingHidden(boardDrawStateBase());
+}
+
+function boardDrawStateBase(): GameState {
   // ★★ 機器工人那一段的**中途放出**（第九份试玩回报，见 `startBuildFx` 的注释）：
   //   大锤片走到第 48 帧（2736 ms，烟尘散尽、工人立定成排）就放开等级 ⇒ 房子在这一拍
   //   换成修好的模型，工人接着演退场段。
@@ -8610,7 +8668,8 @@ function drawGameStage(): void {
   // ★ D-MAGIC-16：`0x41906a(1)` 重画主窗口时侧栏跟着「当前玩家」= 那位中签者
   const hudState = magicShownState();
   hud.draw({
-    state: hudState,
+    // ★ 降落伞那一段期间小地图上也先没有他（`0x00416fc9 cmp [player+0x08], 0`，坐标播完才写）
+    state: withLandingHidden(hudState),
     map,
     camera,
     minimapBg,
@@ -9434,6 +9493,7 @@ function startGame(): void {
   releaseBuildFlics();
   boardFilm = null;
   pendingBoardFilm = null;
+  landingFx = null;
   // 「狗咬 → 救护车」那一段的排队也要一起清（同一条理由：旧局的片子不该接着放）
   pendingBoardFilmAfter = null;
   boardFilmQueueRest = [];
@@ -11179,6 +11239,7 @@ function connectOnline(
           releaseBuildFlics();
           boardFilm = null;
           pendingBoardFilm = null;
+          landingFx = null;
           // 「狗咬 → 救护车」那一段的排队也要一起清（同一条理由）
           pendingBoardFilmAfter = null;
           boardFilmQueueRest = [];
