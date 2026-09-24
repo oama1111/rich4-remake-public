@@ -16,7 +16,8 @@ import {
   characterTaken,
   defaultStartDate,
   deserializeGame,
-  isAlive,
+  isInGame,
+  isUnplaced,
   isClientId,
   isJoinMode,
   isLobbyCharacter,
@@ -848,7 +849,7 @@ export class RoomHub {
     const vacant =
       t.fromSave !== null && t.room !== null
         ? humans
-            .filter((s) => s.vacant && s.conn === null && isAlive(t.room!.state.players[s.info.seat]!))
+            .filter((s) => s.vacant && s.conn === null && isInGame(t.room!.state.players[s.info.seat]!))
             .map((s) => ({ seat: s.info.seat, name: s.info.name, character: s.info.character }))
         : [];
     return {
@@ -1681,7 +1682,8 @@ export class RoomHub {
     for (const slot of t.seats) {
       if (slot.info.kind !== 'human') continue;
       const p = room.state.players[slot.info.seat];
-      if (p === undefined || !isAlive(p)) continue;
+      // ★ 还没上盘的座位（存檔是第一輪里存的）也算在局里 —— 落地时才生效的那一份见 `landingWhoPlays`
+      if (p === undefined || !isInGame(p)) continue;
       const seated = slot.conn !== null;
       const want = seated ? WHO_PLAYS_HUMAN : WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT;
       if (!seated) {
@@ -1690,7 +1692,7 @@ export class RoomHub {
         slot.info.autopilot = 'offline';
         slot.info.connected = false;
       }
-      if (p.whoPlays === want) continue;
+      if ((isUnplaced(p) ? p.landingWhoPlays : p.whoPlays) === want) continue;
       const r = room.submitSystem({ type: 'setAi', player: slot.info.seat, whoPlays: want });
       if (r.ok) this.#broadcast(t, { t: 'action', seq: r.broadcast.seq, action: r.broadcast.action });
     }
@@ -1748,7 +1750,7 @@ export class RoomHub {
           month: state.month,
           day: state.day,
           turnCount: state.turnCount,
-          alive: state.players.map((p) => isAlive(p)),
+          alive: state.players.map((p) => isInGame(p)),
         },
       });
     } catch (err) {

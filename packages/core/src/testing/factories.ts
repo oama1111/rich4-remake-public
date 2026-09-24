@@ -15,6 +15,7 @@ import { initialSpecialActors } from '../rules/special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { makeObjects } from '../cards/summon.ts';
 import { OBJECT_COUNT } from '../rules/objects.ts';
+import { landUnplacedPlayer } from '../rules/start-placement.ts';
 
 export function makePlayer(over: Partial<Player> = {}): Player {
   return {
@@ -223,4 +224,17 @@ export function topoOf(map: Rich4Map): {
     // ★ 首次关押的屏幕坐标取自景观表（`rules/confinement.ts`）
     landscapes: map.landscapes,
   };
+}
+
+/**
+ * 「第一輪已经过去」的局面：还没上盘的人**按下标顺序**当场落地（`rules/start-placement.ts`）。
+ *
+ * ★ 给**不是测开局**的测试当夹具用：`newGame` 之后只有第 1 位在盘上（原版的惰性摆人），
+ *   而破产 / 事件 / 神明…这些用例要的是「大家都已经在盘上」。每人仍是两次 `rand()`、
+ *   同一条候选筛选，只是把原版分散在各人第一回合开头的抽签挤到一起。
+ */
+export function landAll(state: GameState, nodes: readonly MapNode[]): GameState {
+  let s = state;
+  for (let i = 0; i < s.players.length; i++) s = landUnplacedPlayer(s, nodes, i);
+  return s;
 }

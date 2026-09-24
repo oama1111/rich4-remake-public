@@ -21,7 +21,7 @@ import type {
   Player,
 } from './types.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
-import { isAiControlled, isAlive } from './types.ts';
+import { isAiControlled, isAlive, isInGame, isUnplaced } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
 import { applyNpcEvents, runNpc, type NpcEvent } from '../rules/npc-walk.ts';
 import {
@@ -245,6 +245,8 @@ import {
   seizeHostilityDelta,
 } from '../rules/god-manifest.ts';
 import { facilityIndexOf } from '../rules/land.ts';
+import { directionOf } from '../rules/direction.ts';
+import { landUnplacedPlayer } from '../rules/start-placement.ts';
 import { tickBlocking, tickTurnCounters } from '../rules/blocking.ts';
 import { releaseConfinedPlayers } from '../rules/blocking.ts';
 import { DISAPPEARING_MASK, displayRemainingDays } from '../rules/blocking.ts';
@@ -839,48 +841,7 @@ export function pickNextNode(
   return candidates[rng.next() % candidates.length]!;
 }
 
-/**
- * 世界位移 → 八向朝向。
- *
- * @source VA 0x0040d639：
- * ```asm
- * push dy / push dx / call 0x00454fb4
- * mov  byte [player + 0x10], al         ; player.direction
- * ```
- * 而 `0x00454fb4` 是定点 atan2 加一次量化：
- * ```asm
- * 00454fc1  neg ecx                     ; ★ dy 取反（屏幕 y 向下，角度按数学向上算）
- * 00454fc3  call atan2_16bit            ; → ax ∈ 0..0xffff 表示 0..360°
- * 00454fc8  shr ax, 0xc                 ; → 0..15（每 22.5°）
- * 00454fcc  inc ax / shr ax, 1          ; → 四舍五入到 0..8
- * 00454fd1  and eax, 7                  ; → 八分圆 0..7
- * 00454fd4  movzx eax, byte [eax + 0x482414]   ; 再查一张 8 字节重映射表
- * ```
- * 那张表是 `[2,3,4,5,6,7,0,1]`，即 `direction = (八分圆 + 2) & 7`。
- */
-export const DIRECTION_REMAP: readonly number[] = [2, 3, 4, 5, 6, 7, 0, 1];
-
-/**
- * 1 / 2π。
- *
- * ⚠️ 写成常量而不是 `x / (2π)`：C-DET-3 那条 lint 规则不准出现裸除法
- *   （它管的是金额，但规则没法分辨用途）。这里是角度，与钱无关。
- */
-const TURNS_PER_RADIAN = 0.15915494309189535;
-
-export function directionOf(dx: number, dy: number): number {
-  // ★★ **零位移没有特例**（第 91 条通道 2 订正）。
-  //   先前这里写 `if (dx === 0 && dy === 0) return 0`，依据是内层
-  //   `atan2_16bit` 在 `0x00454fe5`（`or esi,ecx / je 0x45502b`）会提前 `ret`。
-  //   但那只是**内层**的提前返回（返回 `ax = 0`），外层 `0x00454fb4` 拿到 0 之后
-  //   **照样**走完 `shr ax,0xc / inc ax / shr ax,1 / and eax,7 / movzx [eax+0x482414]`
-  //   —— 八分圆 0 查表得 **2**。通道 2 实测 `0x454fb4(0, 0) = 2`
-  //   （`tests/test_walk_step.py` §A 末条）。
-  // atan2(-dy, dx) 归一到 0..1 圈，再量化到八分圆
-  const turns = Math.atan2(-dy, dx) * TURNS_PER_RADIAN;
-  const octant = Math.round((((turns % 1) + 1) % 1) * 8) & 7;
-  return DIRECTION_REMAP[octant]!;
-}
+export { DIRECTION_REMAP, directionOf } from '../rules/direction.ts';
 
 /**
  * 这一輪还有哪些惡人要走 —— 在盘上的槽位（0..3），按**槽位升序**。
@@ -1082,10 +1043,19 @@ function afterDayRollover(state: GameState, topo: MapTopology, next: number): Ga
   return startActorTurn(state, topo, next);
 }
 
-/** 当场给 `next` 走 `0x41c84f` 并进 `turnStart`（新回合自己开出来的 pending 照原样留着）*/
+/**
+ * 当场给 `next` 走 `0x41c84f` 并进 `turnStart`（新回合自己开出来的 pending 照原样留着）。
+ *
+ * ★★ 2026-09-24（需求方：「其他玩家在第一回合要轮到了才有个降落伞特效出现在地图上」）：
+ *   `next` 还没上盘 ⇒ `0x41c84f` 之后当场摆人 + 落地（`rules/start-placement.ts`）。
+ *   原版次序：`0x00419039 call 0x41c84f`（`0x0041c875 cmp who_plays, 0 / je` ⇒ 没上盘的人
+ *   什么都不走）→ 回合交还主循环 → 镜头对准他 `0x40829d(0, 0)` 摆人（两次 `rand()`）→
+ *   `0x418c55` 开头落地影片、`who_plays ← +0x64` → 这才掷骰 / 电脑决策。
+ */
 function startActorTurn(state: GameState, topo: MapTopology, next: number): GameState {
-  const ticked = beginActorTurn({ ...state, pending: null, deferredTurnStart: null }, topo, next);
-  if (ticked.phase === 'gameOver') return ticked;
+  const begun = beginActorTurn({ ...state, pending: null, deferredTurnStart: null }, topo, next);
+  if (begun.phase === 'gameOver') return begun;
+  const ticked = landUnplacedPlayer(begun, topo.nodes, next);
   // 下線拍卖（`awaitingDecision`）照原样；其余（含还款提醒窗）都停在 `turnStart`
   return { ...ticked, phase: ticked.phase === 'awaitingDecision' ? 'awaitingDecision' : 'turnStart' };
 }
@@ -2630,8 +2600,29 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       // ★ 任一字段越界就**整条拒绝**，不做「部分生效」——半个设置生效比不改更糟：
       //   玩家按了確定、屏上显示的和实际存的不一致，而错的那半要到对局里才显形。
       const target = state.players[action.player];
-      if (target === undefined || !isAlive(target)) return state;
+      if (target === undefined) return state;
       if (!isValidAiSetting(action)) return state;
+      // ★ 还没上盘的人（开局之后、自己第一个回合之前）：`who_plays` 此刻是 0，落地那一刻才从
+      //   `+0x64` 抄过来（`0x00418d07`）⇒ 託管 / 掉线代打改的是**落地之后**的那一份
+      //   （`landingWhoPlays`），性格旋钮照常改。否则开局就掉线的座位落地后仍是「真人」、干等。
+      if (isUnplaced(target)) {
+        const nextLanding = action.whoPlays ?? target.landingWhoPlays ?? 0;
+        const unchanged =
+          nextLanding === target.landingWhoPlays &&
+          (action.aiFlags ?? target.aiFlags) === target.aiFlags &&
+          (action.personality ?? target.personality) === target.personality &&
+          (action.cashRatio ?? target.cashRatio) === target.cashRatio &&
+          (action.stockRatio ?? target.stockRatio) === target.stockRatio;
+        if (unchanged) return state;
+        return withPlayer(state, action.player, (p) => {
+          p.landingWhoPlays = nextLanding;
+          p.aiFlags = action.aiFlags ?? target.aiFlags;
+          p.personality = action.personality ?? target.personality;
+          p.cashRatio = action.cashRatio ?? target.cashRatio;
+          p.stockRatio = action.stockRatio ?? target.stockRatio;
+        });
+      }
+      if (!isAlive(target)) return state;
 
       const next = {
         whoPlays: action.whoPlays ?? target.whoPlays,
@@ -5576,9 +5567,10 @@ export function orphanedAuction(state: GameState): boolean {
  * 00419006  jne  0x418f95                      ; ★ whoPlays==0 且 xpos!=0 → 跳过
  * ```
  * ⚠️ 原版这条判据**不是**"whoPlays==0 就跳过"：还要 `xpos != 0`。
- * `whoPlays==0 且 xpos==0` 的玩家**会被收下**，不过紧随其后的 `0x41c84f`
- * 开头就有 `cmp whoPlays,0 / je 返回`，对他们什么也不会发生
- * ⇒ 本引擎简化成"跳过所有出局者"，可观测结果一致。
+ * `whoPlays==0 且 xpos==0` 的玩家**会被收下** —— 那正是**还没上盘**的人
+ * （开局之后、自己第一个回合之前，见 `rules/start-placement.ts`）：紧随其后的 `0x41c84f`
+ * 开头 `cmp whoPlays,0 / je 返回` 对他们什么也不做，随后镜头对准他时摆人、落地
+ * （`startActorTurn`）。⇒ 收下 `isInGame`（在场 或 没上盘），跳过出局者。
  * 通道 2 证据：`rich4-spec/tests/test_turn_cursor.py`（31/31）。
  */
 export function nextAlivePlayer(s: GameState, from: number): number {
@@ -5586,7 +5578,7 @@ export function nextAlivePlayer(s: GameState, from: number): number {
   for (let i = 1; i <= n; i++) {
     const idx = (from + i) % n;
     const p = s.players[idx];
-    if (p !== undefined && isAlive(p)) return idx;
+    if (p !== undefined && isInGame(p)) return idx;
   }
   return from;
 }
@@ -8754,9 +8746,15 @@ export function settleBankruptcies(
   return next;
 }
 
-/** 对局是否已结束 */
+/**
+ * 对局是否已结束。
+ *
+ * ★ 兜底那一条数的是**还在这一局里**的人（`isInGame`：在场 或 还没上盘）——
+ *   开局时第 2..N 位 `who_plays == 0`（等自己的回合才落地），只数在场的会在开局就判成结束。
+ *   真正的终局（破产只剩一人 / 胜负条件）都会把相位写成 `gameOver`，与这条兜底无关。
+ */
 export function isGameOver(state: GameState): boolean {
-  return state.phase === 'gameOver' || aliveCount(state) <= 1;
+  return state.phase === 'gameOver' || state.players.filter((p) => isInGame(p)).length <= 1;
 }
 
 /**

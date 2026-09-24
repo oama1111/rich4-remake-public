@@ -510,6 +510,10 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     hostility: p.hostility.slice(0, 4),
     monthlyPaid: p.hostility[4] ?? 0,
     monthlyReceived: p.hostility[5] ?? 0,
+    // ★ `+0x64`：落地时抄进 `who_plays` 的那一份（`0x00418d07`）。第一輪里存的档
+    //   （实测 SAVE1.DAT：玩家 1..3 `who_plays = 0`、坐标 / 节点全 0、`+0x64 = 2`）
+    //   靠它在各自回合开头落地；破产者这一格是 0（Save0.dat 玩家 0/2/3）。
+    landingWhoPlays: p.f100,
   }));
 
   // 道具：原版存的是「每人每种道具的数量」，本引擎用一张扁平表

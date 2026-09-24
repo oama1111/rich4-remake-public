@@ -125,6 +125,8 @@ export function markPlayerBankrupt(player: Player): Player {
     // +0x46（加持）、+0x4c（敌意）与 +0x5c / +0x60 同在 memset 区间内
     savedTrafficMethod: 0,
     savedNdices: 0,
+    // +0x64（`landingWhoPlays`）也在 memset 区间里 —— 清掉，免得出局者被当成「没上盘」再落地
+    ...(player.landingWhoPlays !== undefined ? { landingWhoPlays: 0 } : {}),
     misfortune: 0,
     fortune: 0,
     luck: 0,
