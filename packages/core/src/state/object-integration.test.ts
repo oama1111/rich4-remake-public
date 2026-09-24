@@ -236,6 +236,49 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
     expect(after.players[0]!.points).toBe(66000 - 65536); // = 464
   });
 
+  /*
+   * ★★ 第十六份試玩回報（「我自己进医院或监狱没办法直接保释自己吧？看看原版逻辑」）：
+   *   最后一步踩到惡犬 ⇒ 人被送进醫院、站在醫院格上 ⇒ 先前 `settle` 照跑醫院格落点，
+   *   给他开了保釋屏、名单第一个就是他自己。
+   *   原版走完之后先问 `0x40c912(1)`（`0x0040d889 call 0x418e7f` → `0x00418e81`），
+   *   `dword [+0x32]`（住院）非 0 ⇒ 返回 0 ⇒ `0x00418ead mov dl,0x83`，**落点例程 `0x41982d` 不进**。
+   *   0007 号图的醫院关押格本身就是醫院落点格（specialKind 5），不挡就会开保釋屏。
+   */
+  const MAP7 = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0007.bin';
+  for (const who of [1, 2] as const) {
+    run(`★★ 踩到惡犬被送进醫院：醫院格的落点（保釋屏）不进 —— ${who === 1 ? '真人' : '电脑'} @source 0x00418e81 / 0x00418ead`, () => {
+      const map = parseMap(new Uint8Array(readFileSync(MAP7)));
+      const topo = topoOf(map);
+      const state = newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })), seed: 7 });
+      const from = state.players[0]!.nodeId;
+      const to = topo.nodes[from - 1]!.adjacent[0]!;
+      const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+      const start: GameState = {
+        ...state,
+        players: state.players.map((p, i) => (i === 0 ? { ...p, whoPlays: who } : p)),
+        objects: placeObjectOfType(cleared, 11, to).objects,
+        phase: 'moving',
+        stepsRemaining: 1,
+        stepsTotal: 1,
+      };
+      const after = reduce(start, { type: 'step' }, topo);
+      const me = after.players[0]!;
+      expect(me.blocking.inHospital).not.toBe(0);
+      expect(after.hospitalOccupancy[0]).toBe(1);
+      expect(after.phase).toBe('settling');
+      // 人确实站在醫院格上（specialKind 5）—— 不挡就会开保釋屏
+      expect(topo.nodes[me.nodeId - 1]!.specialKind).toBe(5);
+      const settled = reduce(after, { type: 'settle' }, topo);
+      expect(settled.phase).toBe('turnEnd');
+      expect(settled.pending).toBeNull();
+      // 电脑那一支（`0x43e9a4` 的 `rand & 1`）也没掷、没人被放
+      expect(settled.rngState).toBe(after.rngState);
+      expect(settled.hospitalOccupancy).toEqual(after.hospitalOccupancy);
+      expect(settled.players[0]!.blocking.inHospital).toBe(me.blocking.inHospital);
+      expect(settled.players[0]!.points).toBe(me.points);
+    });
+  }
+
   run('★ 惡犬被踩掉之后，土地公会补到场上 —— 物件不会越打越少', () => {
     const { after } = stepOnto(11);
     const left = onMap(after);

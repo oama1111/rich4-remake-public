@@ -220,21 +220,13 @@ describe('★ 不建、不加蓋設施 @source 0x0041a1de / 0x0041a86b 的 `cmp 
     expect(after.facilityLevel[fac.id]).toBe(0); // 没建
   });
 
-  have('★ 无主設施：原版那里**没有** `+0x37` 那道闸，框照样开（照原版）', () => {
-    // ── 核查（2026-09-16）────────────────────────────────────────
-    // `rich4_player_core_actions.asm:1641` 的 `loc_0041a86b` 首条是
-    // `cmp byte [eax + 0x496b9f], 0 / jne 结束`。`0x496b9f − 0x496b68 = 0x37`
-    // **是 `days_sleep_walking`**，但这条路进来之前已经判过 `+55`
-    // （= `0x496b9f`？不 —— `loc_0041a86b` 的入口判定链在 `:1105`
-    //  `cmp byte [edx+0x19], 0 / je loc_0041a86b`，即**无主**那一支），
-    // 而 `loc_0041a86b` 里**只有** `+55`（`disappearing`）与 `+63`（土地公）
-    // 两条早退 —— 没有 `+0x37`。
-    //
-    // ⇒ 原版**夢遊中也会弹「要不要買」**。本引擎照此：`landOnFacility` 的
-    //   「无主」分支不做夢遊判断，`pending` 会挂出来。
-    //   ⚠️ 这一条先前我写成「原版没闸、故不接」又改成「原版有闸」——
-    //   两遍都错。**定案：无主設施没有夢遊闸**（`loc_0041a1de` 那一条只覆盖
-    //   「自己的設施」）。
+  have('★ 无主設施：夢遊中**不**弹「要不要買」@source 0x0041a86b / 0x0041a872', () => {
+    // ── 订正（2026-09-24，E-43，首席裁定）────────────────────────
+    // `loc_0041a86b` 首条 `cmp byte [eax + 0x496b9f], 0` / `0x0041a872 jne 0x41b077`，
+    // eax = 当前玩家 × 0x68（`0x0041a1ab` 起不再改）⇒ 字段 = `0x496b9f − 0x496b68 = +0x37`
+    // = **夢遊天数**（`days_sleep_walking`，与買地 `0x0041a01a` 同一个字段）。
+    // 先前（2026-09-16）把 `+55` 读成 `disappearing` —— 那是 `+0x33`；55 = 0x37。
+    // ⇒ 夢遊中走到无主設施：直接进尾块，不开「買」框。
     const { state, topo } = sleepwalkingGame();
     const fac = topo.facilities[0]!;
     const node = topo.nodes.find((n) => n.ref.kind === 'facility' && n.ref.index === fac.id);
@@ -247,8 +239,9 @@ describe('★ 不建、不加蓋設施 @source 0x0041a1de / 0x0041a86b 的 `cmp 
       ),
     };
     const after = reduce(at, { type: 'settle' }, topo);
-    expect(after.pending?.kind).toBe('buyFacility');
-    // 地还是无主的（还没答）
+    expect(after.pending).toBeNull();
+    expect(after.phase).toBe('turnEnd');
+    // 没買
     expect(after.facilityOwner[fac.id]).toBe(0);
   });
 });

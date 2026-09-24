@@ -68,7 +68,7 @@ import type {
   CommercialInfo,
   LandscapeInfo,
 } from '../loaders/map.ts';
-import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
+import { GOD_BLOCKS_PURCHASE, housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent, LAND_TOLL_FEE_NAME } from '../rules/rent.ts';
 import { PARTY_POOL, PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
 import {
@@ -1300,8 +1300,31 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           ...(staleAway ? { lastDisappearSay: null } : {}),
         }
       : raw;
-  // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈
-  return landingTailDue(state, next, action, topo) ? manifestGodOnLanding(state, next, topo) : next;
+  // ★ 落点例程的**尾块**（`0x0041b077`）：買地 / 升級 / 收费各支收完之后神明顯靈，再轮到研究所面板
+  if (!landingTailDue(state, next, action, topo)) return next;
+  return labPanelTail(manifestGodOnLanding(state, next, topo), topo);
+}
+
+/**
+ * 尾块的最后一段：站在自己的研究所上就开研究所面板（`afterOwnLab`）。
+ *
+ * ★★ 第十六份試玩回報（「研究所修完后是不是马上可以选择开始研究什么东西」）：**是**。
+ *   付費首建（`0x0041a25a` 起：`inc [+0x1a]` → `0x0041a2ae jmp 0x419a48`）→ 福神 `0x00419a48 call 0x40f8be`
+ *   → `0x00419a4d jmp 0x41b074`（`add esp,8`）→ 落进尾块 `0x0041b077`：
+ * ```asm
+ * 0041b086  call 0x40f381        ; 顯靈（天使加蓋 / 惡魔拆 / 土地公佔）
+ * 0041b09d  call 0x448a7e
+ * 0041b0b3  ...                  ; 設施、我的、没夢遊、type == 4 且 level != 0、没被查封
+ * 0041b109  call 0x44101d        ; ★ 研究所面板（真人点选 / 电脑 `0x4411e7` 当场开一项）
+ * ```
+ *   ⇒ 刚蓋好的 1 级研究所当场就问研發項目；加蓋 / 谢绝加蓋 / 满级 / 被衰神挡掉也都走到这里。
+ *   面板排在**顯靈之后**：天使先加一层（项目多一档）、惡魔先拆（拆到 0 级就不问）。
+ *   神明代蓋那扇免费选种类框（`pending.free`）就在尾块里面，选完接着走到这一段（见 `buildFacility`）。
+ */
+function labPanelTail(state: GameState, topo: MapTopology): GameState {
+  if (state.phase !== 'turnEnd' || state.pending !== null) return state;
+  const fac = facilityAtPlayer(state, topo);
+  return fac === null ? state : afterOwnLab(state, topo, fac.id);
 }
 
 /**
@@ -1650,6 +1673,22 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       const node = topo.nodes[player.nodeId - 1];
       if (node === undefined) return { ...state, phase: 'turnEnd' };
 
+      // ★★ 第十六份試玩回報（「我自己进医院或监狱没办法直接保释自己吧？」）：
+      //   走完之后**先问一次回合判定**（安静版 `0x40c912(1)`），被挡就**整段落点例程不进**。
+      // ```asm
+      // 0040d92b  mov  byte [..+0x498ea5], 5           ; 走完：倒数 5 tick（bit7 不置）
+      // 0040d889  call 0x418e7f                        ; 数完 ⇒
+      // 00418e81  call 0x40c912(1)                     ;   who & 0x30 / dword[+0x32] 住宿·消失·坐牢·住院 / byte[+0x36] 冬眠 ⇒ 0
+      // 00418e8b  je   0x418ead                        ;   0 ⇒ 不进落点
+      // 00418ea1  call 0x41982d                        ;   否则才是落点例程（全 exe 唯一调用点）
+      // 00418ead  mov  dl, 0x83                        ;   被挡：停 3 tick 换人
+      // ```
+      //   ⇒ 最后一步踩到惡犬 / 地雷（`0x41b42d` 在这之前、`0x43ec3f` 把人送进醫院）的人，
+      //   人已在醫院格上，但落点例程（保釋屏 `0x43e9a4`、神明顯靈尾块…）一概不跑。
+      //   保釋屏的名单本身不排除当前玩家（`0x43c9a6` / `0x43cc1c` 只扫占用表），
+      //   是这道闸让「被关着的人给自己办保釋」不可能发生。
+      if (!evaluateTurnStart(player, true).canAct) return { ...state, phase: 'turnEnd' };
+
       // 特殊格优先：原版按 node.flags & 0xff 走 17 路跳表
       if (node.specialKind !== 0) {
         // ★★ 2026-09-19 补：**夢遊中的落点闸门**（原版分派器开头的第一道判据）。
@@ -1828,6 +1867,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           //   玩家看到的就是「踩到空地什么都不发生」。拦截与提示统一在 `godBlockedPurchase()`。
           const buy = canPurchase(land, player, state.priceIndex);
           if (!buy.ok) {
+            // ★ 第十六份：夢遊 / 土地公两道闸都过了、只差现金 ⇒ 弹「您的現金不足！」（1500 ms，真人电脑都弹），
+            //   然后照常落进尾块。@source `0x0041a053 cmp ebp, [現金] / jg 0x41a159` →
+            //   `0x0041a159 push 0x5dc / push 0x46398b / jmp 0x419a5d`（`call 0x440cac`）→ `0x00419a62 jmp 0x41b074`
+            if (buy.reason === 'notEnoughCash') {
+              return appendFreshNotice({ ...state, phase: 'turnEnd' }, { key: 'land.cashShort', args: [] });
+            }
             return { ...state, phase: 'turnEnd' };
           }
           // ★ 价钱由 core 算好放进 `pending`。UI 与联机对端都不该自己再算一遍
@@ -2029,10 +2074,11 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         //   **不收钱、不看归属、不过衰神闸**（`0x40b110` 整支没有 `call 0x40fa61`）
         if (!state.pending.choices.includes(action.facilityType)) return state;
         const built = freeBuildFacilityById(state, topo, fac.id, action.facilityType);
-        if (built === null) return { ...state, pending: null, phase: 'turnEnd' };
-        return withSingleBuildUpgrade(
-          { ...built.state, pending: null, phase: 'turnEnd' },
-          buildHintOf(built, 'godManifest'),
+        if (built === null) return labPanelTail({ ...state, pending: null, phase: 'turnEnd' }, topo);
+        // 这扇框在尾块里（福神 `0x40f8be` / 天使 `0x40f381` 都在 `0x0041b0b3` 之前）⇒ 选完接着问研究所
+        return labPanelTail(
+          withSingleBuildUpgrade({ ...built.state, pending: null, phase: 'turnEnd' }, buildHintOf(built, 'godManifest')),
+          topo,
         );
       }
       if (fac.owner !== state.currentPlayer + 1 || fac.level !== 0) return state;
@@ -2139,10 +2185,8 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   （`rich4_player_core_actions.asm:1218`）⇒ 与「升級房子」同构地进 `0x40f8be`。
       //   剛好到 5 级那一支 `cmp dh,5 / je near loc_004199f1` **绕过**福神（照抄，与
       //   `upgradeLand` 的 `land.level + 1 === MAX_LAND_LEVEL` 同一条规矩）。
-      const luckyFacility =
-        fac.level + 1 === 5 ? upgradedFacility : luckyGodBonus(state, upgradedFacility, topo, 0xfa0 + fac.id);
-      // 尾块在顯靈**之后**（`0x41b0b3 call 0x44101d`），故先福神、后研究所面板
-      return afterOwnLab(luckyFacility, topo, fac.id);
+      // 研究所面板在尾块里（顯靈之后），由 `labPanelTail` 统一接
+      return fac.level + 1 === 5 ? upgradedFacility : luckyGodBonus(state, upgradedFacility, topo, 0xfa0 + fac.id);
     }
 
     case 'upgradeLand': {
@@ -2277,9 +2321,8 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         return runTollTail(state, topo, state.pending.tail, { scapegoat: -1 });
       }
       if (state.phase === 'awaitingDecision') {
-        const done: GameState = { ...state, pending: null, phase: 'turnEnd' };
-        // 不加蓋也照样走到落点收尾：自己的研究所要问研發（0x0041b0b3）
-        return state.pending?.kind === 'upgradeFacility' ? afterOwnLab(done, topo, state.pending.facilityId) : done;
+        // 不加蓋也照样走到落点尾块：自己的研究所要问研發（0x0041b0b3，由 `labPanelTail` 接）
+        return { ...state, pending: null, phase: 'turnEnd' };
       }
       if (state.pending === null) return state;
       // ★ 还款提醒窗（`0x436034`）关了 ⇒ `0x43695e` 返回、`0x436a5a` 返回，`0x41c84f` 接着走完这一天
@@ -2819,7 +2862,8 @@ const LANDING_PENDING_KINDS: ReadonlySet<string> = new Set([
   'buyFacility',
   'buildFacility',
   'upgradeFacility',
-  'research',
+  // ★ 第十六份：`research` 不在表里 —— 研究所面板是尾块的**最后一段**（`0x0041b109`，顯靈之后），
+  //   它收掉时顯靈已经跑过了（见 `labPanelTail`）
 ]);
 
 /** 当前玩家脚下那一格的**格值**（`0x7d0+地块` / `0xfa0+設施`）；不是这两类返回 null */
@@ -2853,6 +2897,9 @@ function landingTailDue(before: GameState, next: GameState, action: Action, topo
     LANDING_PENDING_KINDS.has(pend.kind) &&
     !(pend.kind === 'buildFacility' && pend.free === true);
   if (!fromSettle && !fromDecision) return false;
+  // 被 `0x40c912(1)` 挡下的落点（见 `settle`）连尾块也不进 —— 尾块在 `0x41982d` 里面
+  const mover = before.players[before.currentPlayer];
+  if (fromSettle && (mover === undefined || !evaluateTurnStart(mover, true).canAct)) return false;
   return estateEntityAtPlayer(next, topo) !== null;
 }
 
@@ -8075,6 +8122,14 @@ function afterOwnLab(state: GameState, topo: MapTopology, facilityId: number): G
  *   本引擎的住宅那边已在 rules/rent.ts 做了同盟分账；設施这一路**没有同盟分账**
  *   （只一次 pay_money），照原版。查封／死神两条見 Q-FAC-2。
  */
+/**
+ * 落点「買 / 蓋 / 加蓋」只差现金：弹「您的現金不足！」（`0x46398b`，1500 ms），然后照常进尾块
+ * （`0x00419a62 jmp 0x41b074` → `0x0041b077` 顯靈 → 研究所面板）。真人电脑都弹（这几道闸之前没有 `who_plays` 判断）。
+ */
+function cashShortLanding(state: GameState): GameState {
+  return appendFreshNotice({ ...state, phase: 'turnEnd' }, { key: 'land.cashShort', args: [] });
+}
+
 function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo): GameState {
   const me = state.currentPlayer;
   const player = state.players[me];
@@ -8083,8 +8138,12 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   // ── 无主：买不买 ──
   if (fac.owner === 0) {
     // @source 0x0041a86b `cmp [+0x37] 梦游, 0 / jne 结束`；`cmp [+0x3f] 神明, 0xc / je 结束`（土地公）
+    //   ★ 第十六份（E-43 裁定）：两道闸都接上 —— 夢遊 `0x0041a86b cmp byte [eax+0x496b9f], 0 / 0x0041a872 jne 0x41b077`
+    //   （`0x496b9f − 0x496b68 = +0x37` = 夢遊天数；消失是 `+0x33`），土地公 `0x0041a878 cmp byte [+0x3f], 0xc / je 0x41b077`。
+    if (player.blocking.sleepWalking !== 0 || player.godInfo === GOD_BLOCKS_PURCHASE) return { ...state, phase: 'turnEnd' };
     const price = facilityBuyPrice(fac.landPrice, state.priceIndex);
-    if (price > player.cash) return { ...state, phase: 'turnEnd' };
+    // ★ 第十六份：只差现金 ⇒「您的現金不足！」@source `0x0041a897 cmp ebp, [現金] / jg 0x41a159` → `0x440cac`
+    if (price > player.cash) return cashShortLanding(state);
     return {
       ...state,
       phase: 'awaitingDecision',
@@ -8098,7 +8157,9 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
     if (player.blocking.sleepWalking !== 0) return { ...state, phase: 'turnEnd' };
     if (fac.level === 0) {
       const price = facilityBuildPrice(fac.landPrice, state.priceIndex);
-      if (price > player.cash) return { ...state, phase: 'turnEnd' };
+      // ★ 第十六份：只差现金 ⇒「您的現金不足！」@source `0x0041a210 cmp ebp, [現金] / jg 0x419a52` →
+      //   `0x00419a52 push 0x5dc / mov eax, 0x46398b / call 0x440cac`（真人电脑都弹，在选种类之前）
+      if (price > player.cash) return cashShortLanding(state);
       // @source 0x0041a21f `cmp byte [player+0x15], 1 / jne` —— ★ 是**整字节**
       //   「等于 1 才算真人」（§7.141 E2 订正）：`whoPlays = 5`（真人|托管）原版
       //   走电脑支、旧实现 `& 3 == 1` 走了真人支。
@@ -8115,7 +8176,15 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
         const facilityLevel = [...paid.facilityLevel];
         facilityType[fac.id] = chosen;
         facilityLevel[fac.id] = 1;
-        return { ...paid, facilityType, facilityLevel, phase: 'turnEnd' };
+        // ★ 第十六份：电脑这一支（`0x0041a23e` rand）与真人那一支在 `0x0041a25a` **汇合**，之后同一段：
+        //   `0x0041a27c inc [+0x1a]` → `0x0041a289 push 0x4823da / call 0x4542ce`（音效 50）→
+        //   `0x0041a2ae jmp 0x419a48`（福神 `0x40f8be`）→ 尾块（顯靈 → 研究所 `0x0041b109`）。
+        //   先前这里只写了种类与等级，音效与福神都漏了（与 `buildFacility` 那条 case 对齐）。
+        const builtByAi = withSingleBuildUpgrade(
+          { ...paid, facilityType, facilityLevel, phase: 'turnEnd' },
+          { entity: 0xfa0 + fac.id, reachedMaxLevel: false, source: 'facilityFirstBuild' },
+        );
+        return luckyGodBonus(state, builtByAi, topo, 0xfa0 + fac.id);
       }
       return {
         ...state,
@@ -8129,11 +8198,12 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
         },
       };
     }
-    if (!canUpgradeFacility(fac.type, fac.level)) return afterOwnLab({ ...state, phase: 'turnEnd' }, topo, fac.id);
+    // 蓋满了 / 钱不够：直接进尾块（研究所面板由 `labPanelTail` 接）
+    if (!canUpgradeFacility(fac.type, fac.level)) return { ...state, phase: 'turnEnd' };
     const cost = facilityUpgradePrice(fac.housePrice, state.priceIndex);
-    if (cost > player.cash) {
-      return afterOwnLab({ ...state, phase: 'turnEnd' }, topo, fac.id);
-    }
+    // ★ 第十六份：只差现金 ⇒「您的現金不足！」@source `0x0041a2e0 cmp ebp, [現金] / jg 0x41a159` → `0x440cac`
+    //   （满级那道 `0x0041a2c2 cmp bl, [type + 0x474940] / jae` 在它之前，满级不弹）
+    if (cost > player.cash) return cashShortLanding(state);
     return {
       ...state,
       phase: 'awaitingDecision',

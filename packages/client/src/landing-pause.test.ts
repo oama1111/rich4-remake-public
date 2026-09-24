@@ -23,8 +23,18 @@ const topo = {
   ],
 } as unknown as Pick<MapTopology, 'nodes'>;
 
-function st(phase: string, nodeId: number, currentPlayer = 0, whoPlays = 1): GameState {
-  return { phase, currentPlayer, players: [{ nodeId, whoPlays }, { nodeId, whoPlays }] } as unknown as GameState;
+const FREE = { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0 };
+
+function st(phase: string, nodeId: number, currentPlayer = 0, whoPlays = 1, inHospital = 0): GameState {
+  const blocking = { ...FREE, inHospital };
+  return {
+    phase,
+    currentPlayer,
+    players: [
+      { nodeId, whoPlays, blocking },
+      { nodeId, whoPlays, blocking },
+    ],
+  } as unknown as GameState;
 }
 
 describe('★ 落点收尾的换人停顿 @source 0x0041b111 (0x88) / 0x0040d840 / 0x0040d86f', () => {
@@ -79,6 +89,14 @@ describe('★ 回合开头就被挡：框收掉后停 3 tick 才换人 @source 0
   it('正常开局（进 awaitingRoll）/ 换了人 ⇒ 0', () => {
     expect(blockedTurnPauseTicks(st('turnStart', 3), st('awaitingRoll', 3))).toBe(0);
     expect(blockedTurnPauseTicks(st('turnStart', 3), st('turnEnd', 3, 1))).toBe(0);
+  });
+
+  it('★ 第十六份：最后一步被送进醫院 ⇒ settle 被 `0x40c912(1)` 挡下，也是 3（不是 0x88 / 0x80）@source 0x0040d889 / 0x00418ead', () => {
+    // 醫院格（特殊格）与地块格都一样：落点例程没进
+    expect(turnEndPauseTicks(st('settling', 3, 0, 1, 5), st('turnEnd', 3, 0, 1, 5), topo)).toBe(3);
+    expect(turnEndPauseTicks(st('settling', 1, 0, 1, 5), st('turnEnd', 1, 0, 1, 5), topo)).toBe(3);
+    // 没被关：照旧（特殊格 0 / 地块 8）
+    expect(blockedTurnPauseTicks(st('settling', 3), st('turnEnd', 3))).toBe(0);
   });
 
   it('turnEndPauseTicks：落点收尾仍是 8，特殊格落点 0（0x80 = 下一 tick）', () => {
