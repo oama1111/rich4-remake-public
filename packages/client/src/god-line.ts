@@ -8,14 +8,15 @@
  *
  * @source `fcn_0040e2a2(串)` @ VA 0x0040e2a2（12 个调用点见 `GOD_LINES` 各项）：
  * ```asm
- * 0040e2b5  call [vtbl+0x64]                  ; 把存下来的那份棋盘贴回去（擦上一帧）
+ * 0040e2b5  call [vtbl+0x64]                  ; 锁屏幕面 [0x48a0dc]（IDirectDrawSurface::Lock）——
+ *                                           ;   **不**重画棋盘：字直接写在此刻屏上那一幅上
  * 0040e2b8  eax = [0x48a078] >> 1             ; 屏宽 / 2 = 320
  * 0040e2bf  mov word [0x46caec], ax           ; ★ 换行宽 = 320
  * 0040e2cf  push 0 / push 6 / push 0x101010 / push 0xffffff / push 0x1c
  * 0040e2df  call 0x44f9d8                     ; ★ 字：28 px、白、阴影 #101010
  * 0040e2e7  push 7 / push 0x1cc / push 0xdc / push 串 / push 0x46caec
  * 0040e2fd  call 0x44fabc                     ; ★ draw_text(串, x=220, y=460, 对齐 7)
- * 0040e30f  call [vtbl+0x80]                  ; 翻页
+ * 0040e30f  call [vtbl+0x80]                  ; Unlock（字就此上屏）
  * 0040e315  mov word [0x46caec], 0x280        ; 换行宽还原 640
  * 0040e31e  push 0x960 / call 0x4528b9        ; ★ 等 2400 ms（任意鼠标键跳过）
  * ```
@@ -24,6 +25,22 @@
  *
  * 次序（以小福神 `0x0040edc0` 为例）：影片 `0x45144f`（動畫過程开着才播）→ **本开场白** →
  * `view_to` → 效果（发卡 / 收钱窗…）→ 訊息框 → 台词。即：**紧跟在附身影片之后**、效果之前。
+ *
+ * ★★ 第十八份（「神明动画和白字文案应该同步出现」）：白字与神明**同屏** —— 不是影片收掉、
+ *   棋盘露出来之后才出字。原版十二支都是同一个形状（逐支核过：小財神 `0x0040ec40` 影片 →
+ *   `0x0040ec49 call 0x456e11`（释放的是 `read_mkf` 读进来的**资源缓冲**，不碰屏幕）→
+ *   `0x0040ec56 call 0x40e2a2`；其余 `0x0040ed33`/`0x0040edd1`/`0x0040ee92`/`0x0040ef8e`/
+ *   `0x0040f057`/`0x0040f0f6`/`0x0040f1c8`/`0x0040f24b`（天使 / 惡魔 / 土地公共用）/`0x0040f35e`）：
+ *   · 影片 `flags` = 1（`push 1`）⇒ `fcn_00450ced` 里 `[0x48c85c]`（flags 第三字节）= 0、
+ *     `[0x48c881]`（bit3）= 0 ⇒ `0x00450ddc je 0x450e41` 不开背景缓冲，`0x00451552 cmp [0x48c881], 2`
+ *     不成立 ⇒ 片尾**不** `call 0x409b18` 重画地图 ⇒ **最后一帧（神明立像）留在屏上**；
+ *   · `0x40e2a2` 只 Lock / 写字 / Unlock（见上），不重画 ⇒ 白字写在那一帧上，同屏停 2400 ms。
+ *   ⇒ 本引擎：附身影片播完把最后一帧**钉住**，与开场白一起上、一起收（`godFilmFrameHeld`）。
+ *
+ * ★★ 开场白在「動畫過程」闸**里面**：十二支的 `cmp byte [0x497159], 0 / je` 都跳过影片**连同**
+ *   `0x40e2a2`（小財神 `0x0040ec1b je 0x40ec5e`、小窮神 `0x0040ef53 je 0x40ef96`、
+ *   天使 / 惡魔 / 土地公 `je 0x40ece6`、死神 `0x0040f323 je 0x40f366` …，落点都在 `call 0x40e2a2` 之后）
+ *   ⇒ 動畫過程关掉时**没有**开场白（`godLineShown`）。
  */
 
 /** 停多久 @source `0x0040e31e push 0x960` */
@@ -125,6 +142,24 @@ export function godLineRows(text: string, measure: (s: string) => number, wrap =
     if (cur !== '') rows.push(cur);
   }
   return rows;
+}
+
+/**
+ * 「動畫過程」关掉时不说（见文件头：十二支的 `je` 连 `0x40e2a2` 一起跳过）。
+ * @param animation 设定屏的「動畫過程」（RICH4.CFG+1 = `[0x497159]`）
+ */
+export function godLineShown(animation: boolean): boolean {
+  return animation;
+}
+
+/**
+ * 这一段棋盘影片播完要不要把**最后一帧钉住**（等开场白一起收）。
+ *
+ * = 它是神明附身影片（`god-fx.ts` 的 `god-<编号>`），且紧接着就是开场白（排着 / 已上）。
+ * 原版片尾不重画（见文件头），而开场白直接写在那一帧上 ⇒ 神明立像与白字同屏。
+ */
+export function godFilmFrameHeld(filmId: string, godLineQueued: boolean): boolean {
+  return godLineQueued && /^god-\d+$/.test(filmId);
 }
 
 /** 还在演吗（2400 ms 内）*/

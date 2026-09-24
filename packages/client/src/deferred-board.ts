@@ -224,11 +224,17 @@ export interface BoardFilmWindow {
    *   原版两次 `fcn_0045144f` 是背靠背的阻塞调用，中间没有重绘。
    */
   filmQueued?: boolean;
+  /**
+   * ★ 第十八份：附身影片播完、最后一帧**钉在屏上**等开场白（`god-line.ts` 的 `godFilmFrameHeld`）。
+   *   原版片尾不重画（`fcn_0045144f` flags = 1 ⇒ 不走 `0x409b18`），`0x40e2a2` 直接往那一幅上写字 ⇒
+   *   这 2400 ms 里棋盘仍是影片之前的样子、镜头也不动。
+   */
+  filmHeld?: boolean;
 }
 
-/** 窗口开着吗 = 五条里有一条非空 */
+/** 窗口开着吗 = 六条里有一条非空 */
 export function boardFilmWindowOpen(w: BoardFilmWindow): boolean {
-  return w.buildPlaying || w.buildPending || w.filmPlaying || w.filmPending || w.filmQueued === true;
+  return w.buildPlaying || w.buildPending || w.filmPlaying || w.filmPending || w.filmQueued === true || w.filmHeld === true;
 }
 
 /**

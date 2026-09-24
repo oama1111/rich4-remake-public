@@ -234,7 +234,18 @@ import {
 } from './speech-bubble.ts';
 // 台词字幕用的是 canvas 文字（原版 `_rich4_create_font(0x10, 0x101010, …)` 那一路）
 import { font } from './font.ts';
-import { GOD_LINE_AT, GOD_LINE_COLOR, GOD_LINE_FONT_PX, GOD_LINE_LINE_HEIGHT, GOD_LINE_SHADOW, godLineActive, godLineRows, godLineTrigger } from './god-line.ts';
+import {
+  GOD_LINE_AT,
+  GOD_LINE_COLOR,
+  GOD_LINE_FONT_PX,
+  GOD_LINE_LINE_HEIGHT,
+  GOD_LINE_SHADOW,
+  godFilmFrameHeld,
+  godLineActive,
+  godLineRows,
+  godLineShown,
+  godLineTrigger,
+} from './god-line.ts';
 import { MusicPlayer, shouldResumeAfterUnlock } from './music.ts';
 // Q8：音色库（.sf2）—— 用户自备，有就用采样还原音色，没有就退回振荡器
 import { parseSoundFont } from './soundfont.ts';
@@ -4682,7 +4693,8 @@ function startActionFx(action: Action, before: GameState): void {
   startGodAscend(before, state);
   // ★ 神明降臨／發威（Q-ANIM-1）—— 判据是 `player.godInfo` 刚变（`god-fx.ts`）
   startGodFx(before, state);
-  // ★ 第八份试玩回报 #5：附身影片之后那句开场白（`fcn_0040e2a2`，2400 ms）—— 没影片就当场说
+  // ★ 第八份试玩回报 #5：附身影片之后那句开场白（`fcn_0040e2a2`，2400 ms）—— 写在影片钉住的最后一帧上；
+  //   ★ 第十八份：「動畫過程」关掉时没有（与影片同一道闸）
   startGodLine(before, state);
   // ★ 第十二份試玩回報：新聞 5 / 15 / 20 / 21「随机挑一处建筑」那一族的整块影片
   //   （龍捲風 0x217 等，`news-place-fx.ts` 的表）。判据是 `lastEvent` 刚变成带 `place` 的
@@ -6414,8 +6426,10 @@ let godLine: { text: string; at: number } | null = null;
 /** 已经该说、但附身影片还在播 —— 影片收屏那一拍才上（原版是影片 `0x45144f` 之后紧接着 `0x40e2a2`）*/
 let pendingGodLine: string | null = null;
 
-/** 这一拍有神明刚附身 ⇒ 排一句开场白（有影片就等影片，没有就当场说）*/
+/** 这一拍有神明刚附身 ⇒ 排一句开场白（等附身影片播完）*/
 function startGodLine(before: GameState, after: GameState): void {
+  // ★ 第十八份：「動畫過程」关掉时没有开场白 —— 十二支的 `je` 连 `0x40e2a2` 一起跳过（`god-line.ts` 文件头）
+  if (!godLineShown(options.animation)) return;
   const text = godLineTrigger(before, after);
   if (text === null) return;
   pendingGodLine = text;
@@ -6444,6 +6458,8 @@ function tickGodLine(now: number): void {
     godLine = null;
     requestRender();
   }
+  // ★ 第十八份：开场白收了（到点 / 点掉 / 自愈清掉）⇒ 钉着的那一帧一起收
+  if (heldGodFilm !== null && godLine === null && pendingGodLine === null) releaseHeldGodFilm();
   // 演着的时候每帧都要再来一拍（到点才收得掉；`stageBusy()` 读的是这里的变量）
   if (godLine !== null || pendingGodLine !== null) requestRender();
 }
@@ -7086,6 +7102,26 @@ let pendingBoardFilmAfter: BoardFilmSpec | null = null;
  */
 let boardFilmQueueRest: BoardFilmSpec[] = [];
 
+/**
+ * ★★ 第十八份（「神明动画和白字文案应该同步出现」）：附身影片播完**钉在屏上**的最后一帧。
+ *   原版片尾不重画（`flags` = 1 ⇒ `fcn_0045144f` 不走 `0x409b18`），开场白 `0x40e2a2` 直接写在这一幅上
+ *   ⇒ 神明立像与白字同屏 2400 ms（出处见 `god-line.ts` 文件头）。开场白收场那一拍一起收（`tickGodLine`）。
+ */
+let heldGodFilm: { film: BoardFilm; flic: LoadedFlic | null } | null = null;
+
+/** 放掉钉着的那一帧；棋盘此时才按 after 画（没有别的影片窗口还开着的话）*/
+function releaseHeldGodFilm(): void {
+  const held = heldGodFilm;
+  if (held === null) return;
+  heldGodFilm = null;
+  held.flic?.close();
+  if (!boardFilmWindowOpen(boardFilmWindowFlags())) {
+    deferredBoardBefore = null;
+    boardFilmRedrawKeepsPlayersFor = null;
+  }
+  requestRender();
+}
+
 /** 接下一段排队的片子（`pendingBoardFilmAfter` 被取走 / 放弃之后）*/
 function shiftBoardFilmQueue(): void {
   pendingBoardFilmAfter = boardFilmQueueRest.shift() ?? null;
@@ -7488,6 +7524,14 @@ function tickBoardFilm(now: number): void {
     requestRender();
     return;
   }
+  // ★ 第十八份：附身影片后面紧跟着开场白 ⇒ 最后一帧钉住（位图从缓存里摘出来，不随下面一起 close）
+  const holdFrame = pendingBoardFilmAfter === null && godFilmFrameHeld(film.spec.id, pendingGodLine !== null || godLine !== null);
+  if (holdFrame) {
+    releaseHeldGodFilm();
+    const key = `${film.spec.archive}:${film.spec.resource}`;
+    heldGodFilm = { film, flic: boardFilmFlics.get(key) ?? null };
+    boardFilmFlics.delete(key);
+  }
   boardFilm = null;
   releaseBoardFilmFlics();
   applyFilmView(film.spec, 'to');
@@ -7503,8 +7547,11 @@ function tickBoardFilm(now: number): void {
     //   而 `holdBackPlayers` 的判据是 `before.inHospital===0 && after.inHospital!==0`
     //   ⇒ 一份**过期快照**会把「期间才被关押的人」在画面上**复活**，
     //   并因 `wreckedThisAction(staleBefore, after, i)` 为真而画成乞丐、站在很久以前的旧坐标上。
-    deferredBoardBefore = null;
-    boardFilmRedrawKeepsPlayersFor = null;
+    // ★ 第十八份：钉着最后一帧时屏幕还没重画 ⇒ 快照留到开场白收场（`releaseHeldGodFilm` 清）
+    if (!holdFrame) {
+      deferredBoardBefore = null;
+      boardFilmRedrawKeepsPlayersFor = null;
+    }
     resumeTurnDriver();
   }
   requestRender();
@@ -7550,10 +7597,12 @@ function currentBoardFilmFrame(now: number): {
   w: number;
   h: number;
 } | null {
-  const film = boardFilm;
+  // ★ 第十八份：附身影片播完钉住的最后一帧（开场白写在它上面）
+  const film = boardFilm ?? heldGodFilm?.film ?? null;
   if (film === null) return null;
   const spec = film.spec;
-  const bitmap = boardFilmBitmap(film, now, boardFilmFlics.get(`${spec.archive}:${spec.resource}`) ?? null);
+  const flic = boardFilm !== null ? (boardFilmFlics.get(`${spec.archive}:${spec.resource}`) ?? null) : (heldGodFilm?.flic ?? null);
+  const bitmap = boardFilmBitmap(film, now, flic);
   if (bitmap === null) return null;
   // ★ 交给渲染器的必须是**棋盘局部**坐标：规格里的 (x,y) 是原版的**屏幕**坐标
   //   （住院 (0,210)、入獄/神明 (0,40)），而棋盘的离屏画布 439×440 最后被贴到
@@ -7792,6 +7841,8 @@ function boardFilmWindowFlags(): BoardFilmWindow {
     filmPending: pendingBoardFilm !== null,
     // ★ 第八份 #8：狗咬 → 救护车之间那一拍也算窗口开着（见 `BoardFilmWindow.filmQueued`）
     filmQueued: pendingBoardFilmAfter !== null,
+    // ★ 第十八份：附身影片的最后一帧钉着等开场白（见 `BoardFilmWindow.filmHeld`）
+    filmHeld: heldGodFilm !== null,
   };
 }
 
@@ -8390,6 +8441,7 @@ function unwindPresentations(level: number): void {
   pendingBoardFilm = null;
   pendingBoardFilmAfter = null;
   boardFilm = null;
+  releaseHeldGodFilm();
   pendingBuildFx = null;
   buildFx = null;
   buildFxSeamHeld = false;
@@ -9499,6 +9551,7 @@ function startGame(): void {
   boardFilmQueueRest = [];
   boardFilmPending.clear();
   releaseBoardFilmFlics();
+  releaseHeldGodFilm();
   deferredBoardBefore = null;
   manifestHold = null;
   godAscend = null;
@@ -11238,6 +11291,7 @@ function connectOnline(
           boardFilmQueueRest = [];
           boardFilmPending.clear();
           releaseBoardFilmFlics();
+          releaseHeldGodFilm();
           deferredBoardBefore = null;
           manifestHold = null;
           godAscend = null;
