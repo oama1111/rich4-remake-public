@@ -1037,6 +1037,45 @@ describe('挂东西：选物 → 填数 → dispatch(list) @source VA 0x00453544
     expect(boardScreenState().mode).toBe('board');
   });
 
+  it('★★ 金额栏按住拖动改值（通用填数窗 `fcn_00453544` 的 `loc_00453394`；舞台坐标，与画出来的栏同一处）', () => {
+    const state = makeGameState({ players: [makePlayer({ index: 0, cards: [7] })] });
+    const h = harness(state);
+    const sounds: number[] = [];
+    h.env.playEffect = (id: number) => void sounds.push(id);
+    openBoard(h.env);
+    drag(h.env, 500, 90, 545, 170);
+    click(h.env, 177, 209);
+    expect(boardScreenState().mode).toBe('price');
+    const max = boardScreenState().amount!.market * LIST_PRICE_MAX_FACTOR;
+    // 栏在舞台上：窗 AMOUNT_WINDOW (0x100,0x90) + 栏 (9,41,110,14)
+    const y = 0x90 + 41 + 7;
+    const left = 0x100 + 9;
+    const right = 0x100 + 117;
+    // 没按着：鼠标划过栏不改值（第七份试玩回报 #4）
+    boardScreen.move?.(right, y, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(1500);
+    // 按在栏上 → 拖到最右 = 上限；拖到最左 = 0
+    boardScreen.down?.(left + 50, y, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(1500); // 按下那一拍不改值
+    boardScreen.move?.(right, y, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(max);
+    boardScreen.move?.(left, y, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(0);
+    expect(sounds).toEqual([9, 9]);
+    // 拖出栏外：值不动
+    boardScreen.move?.(right, y + 40, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(0);
+    // 抬手 = 松开；之后再划过栏不改值
+    boardScreen.up?.(left, y, h.env);
+    boardScreen.move?.(right, y, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(0);
+    expect(boardScreenState().mode).toBe('price');
+    // 按在钮上（不是栏）再划到栏上：不改值
+    boardScreen.down?.(0x100 + 60, 0x90 + 170, h.env);
+    boardScreen.move?.(right, y, h.env);
+    expect(boardScreenState().amountPage?.value).not.toBe(max);
+  });
+
   it('★ 填数页的初值是「市價」，上限是市價 × 10', () => {
     const state = makeGameState({ players: [makePlayer({ index: 0, cards: [7] })] });
     const h = harness(state);

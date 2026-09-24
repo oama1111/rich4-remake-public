@@ -106,7 +106,7 @@ import { CARDS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import type { AmountPage, DialogHit } from './dialog.ts';
 import { drawDialog, hitDialog } from './dialog.ts';
 import { AMOUNT_KEY_BY_ID, amountKeyStep, amountSlotOfId } from './amount-keys.ts';
-import { amountKeyOfSlotId } from './amount-window.ts';
+import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue, amountKeyOfSlotId } from './amount-window.ts';
 import type { InteractionUi } from './interactions.ts';
 import { FONT_FAMILY } from './font.ts';
 import { LAYOUT } from './stage.ts';
@@ -1249,6 +1249,11 @@ interface BoardUiState {
   /** `price`：哪一件、可挂多少、市價 */
   amount: { kind: number; id: number; amount: number; market: number } | null;
   amountPage: AmountPage | null;
+  /**
+   * `price`：左键**按在金额栏上**还没松（= 原版 `[0x48cac2] == 0x10`，
+   * `WM_LBUTTONDOWN` `0x00452d5e` 写、抬手 `0x00452e4b` 清）—— 这时 `move` 才改值。
+   */
+  barHeld: boolean;
   /** 訊息框（「公佈欄已滿…」）*/
   message: string | null;
   messageUntil: number;
@@ -1269,6 +1274,7 @@ function freshState(): BoardUiState {
     confirm: null,
     amount: null,
     amountPage: null,
+    barHeld: false,
     message: null,
     messageUntil: 0,
   };
@@ -1823,9 +1829,36 @@ function onPriceHit(env: UiScreenEnv, hit: DialogHit): void {
   env.requestRender();
 }
 
+/** 出价填数页的上限；`null` = 没开 */
+function priceMax(): number | null {
+  const page = ui.amountPage;
+  if (page === null) return null;
+  return priceUi()?.choices[page.choice]?.amount?.max ?? null;
+}
+
+/**
+ * 按住金额栏拖动 → 改值（原版 `WM_MOUSEMOVE` `loc_00453394`：按下时在栏上、此刻也还在栏上）。
+ *
+ * ★ 原版这扇就是通用填数窗 `fcn_00453544`（公佈欄的五处调用 0x00425ee9 / 0x00425f6b /
+ *   0x00426631 / 0x00426b35 / 0x00426f57），窗过程恒为 `0x452c02`，`0x200` → `0x45320b`
+ *   → `0x453394` 拖栏那一支 —— 与棋盘对话框、股市屏那两扇同一段代码，所以这里也拖得动。
+ *   坐标是**舞台坐标**（`AMOUNT_WINDOW` 就是舞台坐标），与 `main.ts` 的 `dragAmountBar` 同一条式子。
+ */
+function dragPriceBar(env: UiScreenEnv, x: number, y: number): void {
+  const page = ui.amountPage;
+  const max = priceMax();
+  if (!ui.barHeld || page === null || max === null) return;
+  const next = amountBarDragValue(x, y, max);
+  if (next === null) return;
+  ui.amountPage = { ...page, value: next };
+  env.playEffect(AMOUNT_BAR_DRAG_SOUND);
+  env.requestRender();
+}
+
 /** 填数页收掉 → 回主屏（原版成交后也是把两扇窗一起关掉）*/
 function closePrice(): void {
   ui.amountPage = null;
+  ui.barHeld = false;
   ui.amount = null;
   ui.mode = 'board';
   ui.press = null;
@@ -1915,6 +1948,9 @@ function detailKindOf(env: UiScreenEnv): number {
 /** 按下这一拍 @source `WM_LBUTTONDOWN` VA 0x00427ea1（主屏）/ 0x00427a18（详情框）等 */
 function onDown(env: UiScreenEnv, x: number, y: number): void {
   if (ui.mode === 'price') {
+    // ★ 金额栏：只记「按在栏上」，不改值（值是随后的 `WM_MOUSEMOVE` 改的）@source `0x00452d5e`
+    const max = priceMax();
+    ui.barHeld = max !== null && amountBarDragValue(x, y, max) !== null;
     const hit = hitPricePage(env, x, y);
     if (hit !== null && hit !== 'inside') onPriceHit(env, hit);
     else env.requestRender();
@@ -2052,6 +2088,7 @@ function onDown(env: UiScreenEnv, x: number, y: number): void {
 function onUp(env: UiScreenEnv, at: { x: number; y: number } | null = null): void {
   const p = ui.press;
   ui.press = null;
+  ui.barHeld = false; // @source `0x00452e4b`：抬手清掉按下的控件号
 
   if (ui.mode === 'price') return; // 填数页在按下那一把就处理完了
 
@@ -2227,6 +2264,10 @@ export const boardScreen: UiScreen = {
    * 挂牌格、SALE／EXIT、详情框那两颗钮原版**都没有悬停**，这里也不加。
    */
   move(x: number, y: number, env: UiScreenEnv): void {
+    if (ui.mode === 'price') {
+      dragPriceBar(env, x, y);
+      return;
+    }
     // ★ YES/NO 确认是模态的：它开着时鼠标只用来高亮哪一半
     //   @source `_rich4_ui_yesno` 的 `0x200`（`:145-155` 换图）
     if (ui.confirm !== null) {
