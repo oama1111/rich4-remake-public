@@ -383,7 +383,7 @@ import {
   type LoanReminderUi,
 } from './loan-reminder.ts';
 // ★ 股市柜台的填数页壳 —— 与銀行/公佈欄/上市企業**同一个**通用填数页。
-import { stockAmountForm } from './amount-form.ts';
+import { stockAmountForm, stockCounterTradeSound } from './amount-form.ts';
 // ★ 通用填数窗**自己那张键盘表**（@source `loc_00452e4b`）：0-9 / 退格 / C / M / H / Enter。
 import {
   amountKeyOfVk,
@@ -2966,6 +2966,9 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
         return;
       }
       log(`▶ ${ui.title === '' ? '' : `${ui.title}：`}${amount.label} ${n}`);
+      // ★★ 第二十一份：股市柜台成交那一下 —— 買進 40 / 賣出 41（`0x0042afab` / `0x0042b093`，在买卖之前）
+      const tradeSfx = stockCounterTradeSound(stockAmount, n);
+      if (tradeSfx !== null) sound.play('Effect.mkf', tradeSfx);
       dispatch(amount.fill(n));
       return;
     }
