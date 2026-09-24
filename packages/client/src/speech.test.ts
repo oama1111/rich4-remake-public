@@ -1748,6 +1748,7 @@ describe('★★ W-51 台词时机：每个探测器的 order（W-50 §2.2 裁�
     // ★★ 第九份试玩回报 #6：命運 0 強制拆除房屋 —— 镜头(`0x0044bee8`) → 赔款(`0x0044bf36`)
     //   → 镜头复位(`0x0044bf51`) → sleep 300(`0x0044bf5e`) → 台词(`0x0044bf9f`) ⇒ afterStage
     ['demolishedHouse', 'afterStage', '第九份 #6：`0x0044bf9f` 排在 sleep 300 与镜头复位之后'],
+    ['birthdayLine', 'afterStage', 'WP-3 补：命運 5 生日收卡 —— 事件框 → 逐人收（「搶得」框 / 真人选牌窗）→ `0x0044c5c5` 台词'],
     // ★★ 第十二份：新聞 5/15/19/21 房主那句 —— view_to → mutate_land →（影片 → sleep）→ 台词（函数最后一步）
     ['newsPlaceOwner', 'afterStage', '第十二份：新聞 21 `0x0044ae84` 排在影片 `0x0044ae2c` 与 sleep 300 之后'],
     // ★ 魔法屋（2026-09-23）：加蓋 / 拆除两支 —— 訊息框 `0x440cac` → 影片 `0x45144f`（→ 0x20b）→ 台词 `0x004320a2`

@@ -309,6 +309,13 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
     exe: 'boxFirst',
     va: '請神符：亮牌 `0x00441def` → 卡片函数（出牌台词 `0x00444e8a` → 飞 `0x00444efa`）→ 附身台词',
   },
+  // ── 命運 5 生日收卡：事件框（pass 0 `0x0044c3e2`）→ 逐人收（电脑支每张一扇「搶得」框 `0x00441ab1`）→ 台词 `0x0044c5c5` ──
+  {
+    line: 'birthdayLine',
+    boxes: [...EVENT, 'card.robbed'],
+    exe: 'boxFirst',
+    va: '`fcn_0044c3b7`：入参 0 那一趟画事件框字（`0x0044c3e2`），施加那一趟循环里 `0x0044c46e call 0x441e77` / `0x0044c47e call 0x4412e4`（「搶得%s的」框 `0x00441ab1`）都在 `0x0044c57b` 之前 → `0x0044c5c5 player_say`',
+  },
   // ── 事件框之后的一切后果台词 ──
   ...CONSEQUENCE_LINES.map(
     (line): OrderRow => ({

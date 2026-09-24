@@ -17,6 +17,7 @@
  * | `0x0044f5e1` | `fcn_0044f567` 罰款免付 | `and eax,1` | 事件 12 \| 13 |
  * | `0x0044f67b` | `fcn_0044f627` 街區獨佔（加蓋支） | `idiv 3 / test edx,edx / jne 不说` | 1/3 说事件 17 |
  * | `0x0044bf86` | 命運 0 強制拆除房屋 | `and eax,1` | 事件 3 \| 4 |
+ * | `0x0044c5ad` | 命運 5 生日收卡（收完之后寿星那一句） | `and eax,1` | 事件 0 \| 1 |
  * | `0x004494b4` / `0x0044a5b0` / `0x0044ab00` / `0x0044ae74` | 新聞 5 / 15 / 19 / 21 房主 | `and eax,1` | 事件 3 \| 4 |
  *
  * ## 本引擎
@@ -57,6 +58,8 @@ export const SPEECH_RAND_SITE = {
   areaMonopoly: 0x0044f67b,
   /** 命運 0「強制拆除房屋」房主 3/4 @source 0x0044bf86 */
   demolished: 0x0044bf86,
+  /** 命運 5「生日收卡」收完之后寿星 0/1 @source 0x0044c5ad `call rand / and eax,1` → 0x0044c5c5 `player_say` */
+  birthday: 0x0044c5ad,
 } as const;
 
 /**

@@ -943,6 +943,48 @@ export function detectNewsPlaceOwner(before: GameState, after: GameState): Detec
   return [{ player: owner - 1, event: 3 + speechCoin(after, owner - 1, site), expression: 2 }];
 }
 
+/**
+ * 命運 5「今天是你生日 向每人收取一張卡片」—— **收完之后**寿星说一句「好消息」（事件 0 | 1）。
+ *
+ * @source `fcn_0044c3b7`（施加那一趟，入参 ≠ 0）：
+ * ```asm
+ * 0044c41b  ebx = 0 ; edi = 0                       ; edi = 「问过几个人」
+ * 0044c42b  跳过自己（cmp ebx,[0x49910c]）/ 出局的（[+0x15] == 0）/ 没牌的（call 0x441262）
+ * 0044c45f  ebp = edi + 1
+ * 0044c468  寿星 [+0x15] > 1（电脑）⇒ 0x441e77 抽一张 → 0x4412e4 收下
+ *           寿星 == 1（真人）       ⇒ 0x44192a(对方, 寿星, 0) 模态选牌窗（返回值不看）
+ * 0044c573  edi = ebp                               ; 两支都 +1（取消也算）
+ * 0044c57b  test edi,edi / je 返回                   ; ★ 一个合格的人都没有 ⇒ 不说
+ * 0044c585  call 0x41d476(0, 0, 3)                  ; 重画棋盘（bit0，不移镜头）
+ * 0044c5ad  call rand / and eax,1                   ; ★ 二选一（WP-3：`speechCoin` 站点 0x0044c5ad）
+ * 0044c5b5  ebp = [角色*108 + eax*4 + 0x48084a]     ; = 事件 0 | 1
+ * 0044c5c5  call 0x44ef41(当前玩家, 0, ebp)
+ * ```
+ * 本引擎两条路（`events/fortune-effects.ts` 的 `birthdayCard`）：
+ *   - **电脑寿星**：抽到命運的那一条 action 里当场收完，每收一张弹一扇 `card.robbed`（`0x00441ab1`）
+ *     ⇒ 判据 = 本条抽到命運 5、且本条新写的 `notices` 里有 `card.robbed`（= `edi != 0`）；
+ *   - **真人寿星**：挂 `pending{birthdayCard, seats}` 逐个问（T-055）⇒ 判据 = **最后一位答完**那一条
+ *     （`pending` 由 `birthdayCard` 变没）；挂出来时 `seats` 非空 ⇒ `edi != 0` 恒成立。
+ * 联机旁观端重放同一条 action ⇒ 同一个判据、同一枚硬币。
+ * 次序：选牌窗 / 「搶得」框都在前 ⇒ `afterStage`。
+ */
+export function detectBirthdayLine(before: GameState, after: GameState): DetectedSay[] {
+  const humanDone = before.pending?.kind === 'birthdayCard' && after.pending?.kind !== 'birthdayCard';
+  const computerDone =
+    fortuneIdThisAction(before, after) === BIRTHDAY_FORTUNE_ID &&
+    after.pending?.kind !== 'birthdayCard' &&
+    after.notices !== before.notices &&
+    after.notices.some((n) => n.key === 'card.robbed');
+  if (!humanDone && !computerDone) return [];
+  const player = after.currentPlayer;
+  const p = after.players[player];
+  if (p === undefined || !isAlive(p) || !speechGatesOpen(p)) return [];
+  return [{ player, event: speechCoin(after, player, SPEECH_RAND_SITE.birthday), expression: 0 }];
+}
+
+/** 命運 5「今天是你生日」@source 命運表 `event-table.ts` id 5 = `0x0044c3b7` */
+const BIRTHDAY_FORTUNE_ID = 5;
+
 /** 尾巴有「房主说一句」的那几条新聞 @source 见 `detectNewsPlaceOwner` */
 export const NEWS_PLACE_OWNER_LINE: ReadonlySet<number> = new Set([5, 15, 19, 21]);
 
@@ -1646,6 +1688,8 @@ export const DETECTORS: readonly SpeechDetector[] = [
   // ★★ 第十二份試玩回報：新聞 5 / 15 / 19 / 21「随机挑一处建筑」—— 那一处的**房主**说一句。
   //   调用点都在 `view_to` → `mutate_land` →（影片 → sleep）**之后**、函数的最后一步 ⇒ `afterStage`。
   { name: 'newsPlaceOwner', source: [0x004494cd, 0x0044a5c3, 0x0044ab19, 0x0044ae84], order: 'afterStage', detect: detectNewsPlaceOwner },
+  // 命運 5 生日收卡：收完（电脑当场 / 真人最后一位答完）之后寿星说 0|1；选牌窗与「搶得」框在前
+  { name: 'birthdayLine', source: [0x0044c57b, 0x0044c5ad, 0x0044c5c5], order: 'afterStage', detect: detectBirthdayLine },
   // ★ 魔法屋（2026-09-23）：加蓋 / 拆除两支收尾「？？？...」—— 框 → 影片 →（0x20b）→ 台词 ⇒ `afterStage`
   { name: 'magicPonder', source: [0x00432094, 0x004320a2], order: 'afterStage', detect: detectMagicPonder },
   // ★ 魔法屋拍賣那一支：拍賣窗口关掉之后才说
