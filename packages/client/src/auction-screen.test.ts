@@ -50,6 +50,7 @@ import {
   AUCTION_SELLER_TEXT,
   AUCTION_PASSED_IN_TEXT,
   auctionPresentationOnly,
+  drawAuctionScreen,
 } from './auction-screen.ts';
 import type { Sprite } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
@@ -778,5 +779,60 @@ describe('★★ 第十八份「怎么拍卖直接流标了」：结果以 core 
     const seats = seatViewOf(auctionPending({ bidders: [0, 1], seat: 1, status: ['givenUp', 'active'] }), players, -1);
     expect(seats[0]!.state).toBe('away');
     expect(seats[0]!.away).toBe(3);
+  });
+});
+
+describe('★★ 第十八份：「賣方」是发起拍卖者（arg0 = pending.seller），不是地主 @source 0x0043c109 / 0x0043c22a / 0x0043c23c', () => {
+  it('★ 发起者不在 bidders 里也占一格（按玩家号排）、显示賣方；地主照常是可出价的一格', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1), mkPlayer(1, 2), mkPlayer(2, 2)];
+    // 拍賣卡：1 号用卡（arg0 = 1）→ core 的 bidders 不含他；待拍地的地主是 0 号
+    const pending = { ...auctionPending({ bidders: [0, 2], seat: 1 }), seller: 1 };
+    const { env } = mkEnv(pending as never, players);
+    const landOwner = [1, 1, 1, 1]; // 四块地都归 0 号（owner 编码 = 玩家号 + 1）
+    const e = { ...env, state: { ...env.state, landOwner } as GameState };
+    auctionScreen.tick!(e);
+    const run = auctionRunForTest()!;
+    expect(run.seats.map((x) => [x.player, x.state])).toEqual([
+      [0, 'canBid'], // 地主能举牌（0x43c11f 只看 who_plays，不看 owner）
+      [1, 'seller'],
+      [2, 'canBid'],
+    ]);
+    // pending.seat 是 bidders 下标（1 → 2 号）⇒ 屏上座位下标 2
+    expect(run.current).toBe(2);
+  });
+
+  it('★ 新聞 7 / 破產清算（seller = −1）没有賣方那一格', () => {
+    const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
+    const seats = seatViewOf({ ...auctionPending({ bidders: [0, 1] }), seller: -1 } as never, players, -1);
+    expect(seats.map((x) => x.state)).toEqual(['canBid', 'canBid']);
+  });
+
+  it('★ 开场建桌时賣方画自己的 `3×角色+0x1b` 第 0 帧、不在场画 `3×角色+0x1c` @source 0x0043c486..0x0043c4cb', () => {
+    const calls: [number, number][] = [];
+    const sprite = (_a: 'Panel.mkf', res: number, idx: number) => {
+      calls.push([res, idx]);
+      return null;
+    };
+    const ctx = {
+      save() {}, restore() {}, drawImage() {}, fillText() {}, strokeText() {}, measureText: () => ({ width: 10 }),
+      fillStyle: '', strokeStyle: '', lineWidth: 0, font: '', textAlign: 'left', textBaseline: 'alphabetic',
+    } as unknown as CanvasRenderingContext2D;
+    drawAuctionScreen(ctx, sprite, {
+      seats: [
+        { player: 0, character: 2, state: 'seller', away: 0, cash: 1 },
+        { player: 1, character: 5, state: 'away', away: 3, cash: 1 },
+      ],
+      current: -1,
+      top: -1,
+      price: 0,
+      entityImage: 0x5a,
+      pressed: null,
+      humanTurn: false,
+      animating: null,
+      message: null,
+    });
+    expect(calls).toContainEqual([3 * 2 + 0x1b, 0]);
+    expect(calls).toContainEqual([3 * 5 + 0x1c, 0]);
   });
 });
