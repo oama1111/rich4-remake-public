@@ -441,8 +441,9 @@ describe('★ 宿主接線：交出去的是**全桌**角色，不是 `players[0
   const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
 
   it('★ 交出去的是 `state.players.map(...)`（NPC 也在裡面）', () => {
-    expect(main).toContain('const introCast = state.players.map((p) => p.character);');
-    expect(main).toContain('characters: introCast,');
+    // 审计 #15 起抽成函数（收场判据挪到帧首，两处共用同一份）
+    expect(main).toContain('function introCast(): number[] {\n  return state.players.map((p) => p.character);\n}');
+    expect(main).toContain('characters: introCast(),');
   });
 
   it('★ 舊版那一行（只給 `players[0]`）已經不在了 —— 寫回去就紅', () => {
@@ -450,7 +451,7 @@ describe('★ 宿主接線：交出去的是**全桌**角色，不是 `players[0
   });
 
   it('★ 時長判據吃的是同一份角色表（不是 `Airplane.avi` 的 15 幀）', () => {
-    expect(main).toContain('introDone(introStartedAt, performance.now(), introSkipped, introCast)');
+    expect(main).toContain('introDone(introStartedAt, performance.now(), introSkipped, introCast())');
     // 舊版的 1 秒時鐘常數已不再被宿主引用
     expect(main).not.toContain('INTRO_FRAMES');
   });

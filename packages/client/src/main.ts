@@ -410,7 +410,7 @@ import { DICE_FLIC_BASE, GO_IMAGE, YESNO_IMAGE, YESNO_RESOURCE, type SpriteFn } 
 import { GO_SIZE, goButton, boardToScreen } from './go-button.ts';
 import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './cursor-warp.ts';
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
-import { shouldResumeDriver } from './driver-resume.ts';
+import { driverParkedByScreen, shouldResumeDriver } from './driver-resume.ts';
 import { tollFlashLevel } from './toll-flash-fx.ts';
 import {
   noticeHoldsFilms,
@@ -1991,6 +1991,8 @@ function holdForActorWalk(reschedule: () => void): boolean {
 
 /** `holdForActorWalk` 的判据本体：挡着就返回原因，放行返回 null（第十六份：拆出来好计时）*/
 function holdForActorWalkReason(): string | null {
+  // ★★ 审计 #15：过场期间一步都不派（定时器在过场开始前就排好的那一拍也挡住）
+  if (driverParkedByScreen(screen)) return 'intro';
   if (screen !== 'game') return null;
   // ★ D-MAGIC-16：魔法屋逐人那几段还没演完（原版 `0x431caa` 整个循环是阻塞的）
   if (magicSeq !== null) {
@@ -5193,6 +5195,10 @@ function scheduleAi(): void {
     clearTimeout(aiTimer);
     aiTimer = null;
   }
+  // ★★ 审计 #15：開局跳伞过场期间不下棋（原版过场 `fcn_00415872` 是进棋盘之前的阻塞调用）。
+  //   先前这里没有屏号闸 ⇒ 全电脑对局在过场底下全速开打、第一扇框一开过场就再也收不了场。
+  //   `endIntro()` 与 W-60 的 `shouldResumeDriver('intro', 'game')` 会在过场放完时叫醒它。
+  if (driverParkedByScreen(screen)) return;
   // ★ 出局者的回合由引擎推进，与「是否开着托管」无关——
   //   否则人类玩家一破产，整局就停在他身上不动了。
   // ★ 但**出局者名下排着拍卖**时 `autoAction` 同样返回 null（它不认竞价），
@@ -6335,6 +6341,11 @@ let introSkipped = false;
  *   不许有跨帧状态（C-DET-4）。
  */
 let introSoundPlayed = false;
+
+/** 过场里出场的角色（`players[].character`）—— 每位两段 FLIC，时长也按它算（`introMs`）*/
+function introCast(): number[] {
+  return state.players.map((p) => p.character);
+}
 
 /** 过场结束 → 进棋盘 */
 function endIntro(): void {
@@ -8077,6 +8088,9 @@ function requestRender(): void {
     //
     //   ⚠️ 位置必须在 `resizeCanvas()` 之后、**这一帧的绘制之前**：驱动起来要排在
     //      这一帧的 rAF 尾巴上（`schedule*` 用 `setTimeout`），绘制不该等它。
+    // ★★ 审计 #15：过场的收场判据放在渲染链**之前** —— 先前它只写在下面 `screen === 'intro'`
+    //   那一支里，整屏接管（訊息框 / 老虎机…）一开那一支就不跑，过场便永远收不了场。
+    if (screen === 'intro' && introDone(introStartedAt, performance.now(), introSkipped, introCast())) endIntro();
     if (shouldResumeDriver(lastFrameScreen, screen)) resumeTurnDriver();
     lastFrameScreen = screen;
     // ★★ W-67-a：**訊息框收掉之后商店窗才开得起来** —— `syncShopUi()` 见到
@@ -8217,7 +8231,6 @@ function requestRender(): void {
       //   资源号由**该玩家的 `character`** 索引（`0x2f+角色` / `0x3b+角色`），
       //   所以这里必须把**全桌**的角色号交给它，不能只给 `players[0]`。
       //   @source `fcn_00415872` VA 0x004158e0（预载）与 0x00415b58 / 0x00415c76（播放）。
-      const introCast = state.players.map((p) => p.character);
       drawIntro(stageCtx, performance.now() - introStartedAt, {
         sprite: spriteNow,
         flic: uiFlicNow,
@@ -8228,11 +8241,11 @@ function requestRender(): void {
           introSoundPlayed = true;
           sound.play('Effect.mkf', id);
         },
-        characters: introCast,
+        characters: introCast(),
         soundPlayed: introSoundPlayed,
       });
-      if (introDone(introStartedAt, performance.now(), introSkipped, introCast)) endIntro();
-      else requestRender();
+      // 收场判据在帧首（见 rAF 回调开头的 ★★ 审计 #15），这里只管续帧
+      requestRender();
     } else if (screen === 'assets') {
       // ★ **不要在这里 `return`** —— `blitStage()` 在这条链的末尾，
       //   提前返回等于画了不上屏（上一轮就是这样：`screen` 都切过去了，
@@ -12017,7 +12030,9 @@ function applyNetAction(item: { action: Action; seq: number }): void {
 
 function pumpNetInbox(delay = 0): void {
   if (netPumpTimer !== null || netInbox.length === 0) return;
-  if (netInbox.length > NET_INBOX_FAST_FORWARD) {
+  // ★ 审计 #15：过场期间连「积压太多就静默快进」也不做（与 `catchUpNetAfterHidden` 同一条闸）——
+  //   快进施加出来的框会占住整屏；过场放完再快进
+  if (netInbox.length > NET_INBOX_FAST_FORWARD && screen !== 'intro') {
     while (netInbox.length > NET_INBOX_KEEP) applyNetAction(netInbox.shift()!);
   }
   netPumpTimer = window.setTimeout(() => {

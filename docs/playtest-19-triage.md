@@ -10,5 +10,5 @@
 `index-wOsPVnya.js`。`pnpm check` 347 files / 7794 tests，0 skipped；`net-e2e-pw` 连续两轮 1–5 全 PASS。
 
 ## 待办
-- 全电脑对局时开场跳伞过场可能结束不了（AI 在过场底下先走、覆盖层挡住）—— 既有问题，未修。
+- ✅ 全电脑对局时开场跳伞过场可能结束不了（AI 在过场底下先走、覆盖层挡住）—— pt22 审计 #15 修：`scheduleAi` 入口与节拍闸在过场期间停（`driverParkedByScreen`），过场收场判据挪到 rAF 回调开头；`intro-driver.test.ts`。
 - iPhone 真机上的温度与音频恢复（iOS 可能要点一下才恢复声音）需需求方确认。
