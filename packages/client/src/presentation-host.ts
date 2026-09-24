@@ -49,6 +49,9 @@ export const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
   'notice',
   'wheel',
   'god-slot',
+  // ★ 第二十五份：破產那一刻的整屏影片（`Data.mkf` 0x22b，见 `bankrupt-screen.ts`）——
+  //   原版是阻塞的 `fcn_0045144f` + 2 s 静置，期间谁也不许往前走
+  'bankrupt',
 ]);
 
 /** 推日期那几屏 + 魔法屋女巫窗：都是 `lead` 档、起播即在屏上（见 `SCREEN_BOX_TIER`）*/

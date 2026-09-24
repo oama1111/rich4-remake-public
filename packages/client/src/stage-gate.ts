@@ -96,6 +96,15 @@ export interface StageFlags {
    *   原版是阻塞的：演完才 `0x40e14d` 拆下来、才说「一場惡夢～」（事件 23，`afterStage`）。
    */
   godAscend: boolean;
+  /**
+   * ★★ 第二十五份：破產那一刻的整屏影片（`Data.mkf` 0x22b，`bankrupt-screen.ts`）排着 / 在播。
+   *
+   * 原版 `_rich4_player_bankrupt` 里 `fcn_0045144f` + `0x45285e(0x7d0)` 是**阻塞**的
+   * （VA 0x0040cfac / 0x0040cfbb），破產者那句「不過是運氣差了點～」（事件 25，`afterStage`）
+   * 排在整段清算 / 拍賣**之后**（`0x0040d211`）。这里至少要挡住台词与回合驱动，
+   * 免得它盖在「破產」两个大字上。
+   */
+  bankruptFx: boolean;
 }
 
 /**
@@ -117,7 +126,8 @@ export function stageBusy(f: StageFlags): boolean {
     f.diceFxActive ||
     f.tollFlash ||
     f.godLine ||
-    f.godAscend
+    f.godAscend ||
+    f.bankruptFx
   );
 }
 

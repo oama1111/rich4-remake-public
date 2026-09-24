@@ -195,6 +195,7 @@ describe('台上还忙着 —— 升天是阻塞的（演完才拆、才说「�
       tollFlash: false,
       godLine: false,
       godAscend: false,
+      bankruptFx: false,
     };
     expect(stageBusy(idle)).toBe(false);
     expect(stageBusy({ ...idle, godAscend: true })).toBe(true);

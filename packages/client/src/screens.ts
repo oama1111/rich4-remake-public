@@ -18,6 +18,7 @@
 
 import type { UiScreen } from './ui-screen.ts';
 import { boardScreen } from './board-screen.ts';
+import { bankruptScreen } from './bankrupt-screen.ts';
 import { auctionScreen } from './auction-screen.ts';
 import { lotteryScreen } from './lottery-screen.ts';
 import { lotteryDrawScreen } from './lottery-draw-screen.ts';
@@ -80,6 +81,13 @@ export const SCREENS: readonly UiScreen[] = [
   // ★ 第十四份（D-008 收口）：嫁禍卡的选人窗（真人、候选两位以上）—— 排在訊息框之后：
   //   原版先亮牌「嫁禍卡生效！」（`0x00444889`）再开这扇窗（`0x004448a1`）。
   scapegoatPickerScreen,
+  // ★★ 第二十五份試玩回報「为什么忽然出现拍卖」：破產那一刻原版先阻塞播一段
+  //   `Data.mkf` 0x22b（碎裂的「破產」二字，10 帧 × 71 ms @ (0,40)，+2 s 静置，见
+  //   `bankrupt-screen.ts` 的文件头），**演完才** `_rich4_ui_auction_entry`。
+  //   本引擎一条 action 就把 `pending = auction` 写好了 ⇒ 拍賣屏会抢在影片之前。
+  //   故这一屏排在 `boardScreen` / `auctionScreen` **之前**：影片期间它接管，演完让位。
+  //   （訊息框 / 事件框仍排在它前面：原版也是「框 → 影片 → 拍賣」。）
+  bankruptScreen,
   // 待决交互类
   boardScreen,
   auctionScreen,

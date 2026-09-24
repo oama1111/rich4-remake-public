@@ -321,6 +321,10 @@ import {
 // ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1 的「受管辖但仍未接」之一）——
 //   与建屋影片同一套：整幅 FLIC 直接盖在棋盘上、**阻塞**、播完才放行回合驱动。
 import { confineAfterEventBox, confineClip, confineFxTriggers } from './confine-fx.ts';
+// ★★ 第二十五份試玩回報「为什么忽然出现拍卖」：破產那一刻的整屏影片（`Data.mkf` 0x22b）。
+//   它是一条**整屏**（`screens.ts` 里排在拍賣屏之前），宿主这边只需要它的「还在演」那一位，
+//   用来把事件 25（`afterStage`）与回合驱动押到影片之后。
+import { bankruptFilmActive, resetBankruptScreen } from './bankrupt-screen.ts';
 // ★ 神明降臨／發威那一段影片（Q-ANIM-1）—— 与住院/入獄同一支 `fcn_0045144f`，
 //   于是共用 `board-film.ts` 的播放与下面那一份「棋盘影片」宿主状态。
 import { godFilmSpec, godFxTrigger } from './god-fx.ts';
@@ -2060,6 +2064,10 @@ function stageBusyFlags(withScreens = true): StageFlags {
     tollFlash: tollFlash !== null || newsFlash !== null,
     godLine: godLine !== null || pendingGodLine !== null,
     godAscend: godAscend !== null,
+    // ★★ 第二十五份：破產影片（`Data.mkf` 0x22b，排在拍賣屏之前的那条整屏）——
+    //   原版它是阻塞的，事件 25「不過是運氣差了點～」（`afterStage`）排在它后面。
+    //   ⚠️ 判据直接问那一屏自己的状态（它不含任何规则，也不回头问这里 ⇒ 不成环）。
+    bankruptFx: bankruptFilmActive(),
   };
 }
 
@@ -10296,6 +10304,7 @@ function startGame(): void {
   releaseBoardFilmFlics();
   releaseHeldGodFilm();
   deferredBoardBefore = null;
+  resetBankruptScreen(); // ★ 第二十五份：破產影片（整屏）同属「这一刻在播」
   newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
   manifestHold = null;
   godAscend = null;
@@ -12054,6 +12063,7 @@ function connectOnline(
           releaseBoardFilmFlics();
           releaseHeldGodFilm();
           deferredBoardBefore = null;
+          resetBankruptScreen(); // ★ 第二十五份：破產影片（整屏）同属「这一刻在播」
           newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
           manifestHold = null;
           godAscend = null;
