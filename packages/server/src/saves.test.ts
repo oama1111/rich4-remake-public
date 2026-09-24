@@ -30,6 +30,7 @@ import {
   FileSaveStore,
   MemorySaveStore,
   SAVE_CAP,
+  SaveFullError,
   parseStoredSave,
   pruneOrder,
   type StoredSave,
@@ -137,13 +138,13 @@ const dayOf = (s: GameState): string => `${s.year}-${s.month}-${s.day}`;
 describe('★ 存檔倉庫', () => {
   const sv = (id: string, kind: 'auto' | 'manual', savedAt: number) => ({ id, kind, savedAt });
 
-  it('pruneOrder：先刪最舊的自動存檔；自動的刪光了才輪到最舊的手動；剛寫的那份不刪', () => {
+  it('pruneOrder：只刪最舊的自動存檔；手動存檔一份都不動（不夠數由 put 拒絕）；剛寫的那份不刪', () => {
     const saves = [sv('a1', 'auto', 1), sv('m1', 'manual', 0), sv('a2', 'auto', 5), sv('m2', 'manual', 3)];
     expect(pruneOrder(saves, 4)).toEqual([]);
     expect(pruneOrder(saves, 3)).toEqual(['a1']);
     expect(pruneOrder(saves, 2)).toEqual(['a1', 'a2']);
-    expect(pruneOrder(saves, 1)).toEqual(['a1', 'a2', 'm1']);
-    expect(pruneOrder(saves, 2, 'a1')).toEqual(['a2', 'm1']);
+    expect(pruneOrder(saves, 1)).toEqual(['a1', 'a2']);
+    expect(pruneOrder(saves, 2, 'a1')).toEqual(['a2']);
     expect(SAVE_CAP).toBe(30);
   });
 
@@ -167,6 +168,15 @@ describe('★ 存檔倉庫', () => {
     expect(store.list().map((s) => s.id)).toEqual(['a1', 'm1']);
     store.put(mk('m2', 'manual', 4));
     expect(store.list().map((s) => s.id)).toEqual(['m2', 'm1']);
+    // ★ 滿了、全是手動存檔 ⇒ 拒絕新的（手動 / 新 id 的自動都一樣），**一份都不刪**
+    expect(() => store.put(mk('m3', 'manual', 5))).toThrow(SaveFullError);
+    expect(() => store.put(mk('a9', 'auto', 6))).toThrow('存檔已滿');
+    expect(store.list().map((s) => s.id)).toEqual(['m2', 'm1']);
+    // 覆蓋同一份不增加份數 ⇒ 照樣寫得進去
+    store.put(mk('m2', 'manual', 7));
+    store.delete('m1');
+    store.put(mk('m3', 'manual', 8));
+    expect(store.list().map((s) => s.id)).toEqual(['m3', 'm2']);
   });
 
   it('★ 目錄版：寫得進去、重開讀得回來；檔案 0640、目錄 0750；壞檔 / 名字對不上的跳過；超過上限刪檔', () => {
@@ -201,6 +211,11 @@ describe('★ 存檔倉庫', () => {
       'm-2.json',
     ]);
     expect(parseStoredSave('{"format":1,"id":"../x"}')).toBeNull();
+    // 刪除：檔案也沒了；不合法的 id 什麼都不做
+    again.delete('m-1');
+    expect(existsSync(pjoin(dir, 'm-1.json'))).toBe(false);
+    again.delete('../../etc');
+    expect(new FileSaveStore(dir, 2).list().map((s) => s.id)).toEqual(['m-2']);
   });
 });
 
@@ -550,5 +565,77 @@ describe('★ 開局日期 = 服務器的今天（與單機同一個 defaultStar
     c.send(join('K7M2QP', 'C'));
     c.send({ t: 'start' });
     expect(c.conn.last('start')?.startDate).toEqual(defaultStartDate(new Date()));
+  });
+});
+
+describe('★ 手動存檔滿了 / 刪除存檔', () => {
+  run('全是手動存檔、滿了 ⇒ 「存檔已滿，請先刪除舊存檔」；存檔裡坐過的人能刪（刪完再存就行），別人不能', () => {
+    const store = new MemorySaveStore(1);
+    const now = { t: 100 };
+    const hub = hubWith(store, now);
+    const a = client(hub);
+    const b = client(hub);
+    a.send(join('K7M2QP', 'A', { mode: 'create' }));
+    b.send(join('K7M2QP', 'B', { mode: 'join' }));
+    a.send({ t: 'start' });
+    a.send({ t: 'save', name: '第一份' });
+    expect(a.conn.last('saved')?.name).toBe('第一份');
+    now.t += 10;
+    a.send({ t: 'save', name: '第二份' });
+    expect(a.conn.last('error')?.message).toBe('存檔已滿，請先刪除舊存檔');
+    expect(store.list().map((s) => s.name)).toEqual(['第一份']);
+    const id = store.list()[0]!.id;
+
+    // 外人不能刪（服務器照樣回一份列表）
+    const w = client(hub);
+    w.send({ t: 'deleteSave', version: PROTOCOL_VERSION, clientId: idFor('W'), id });
+    expect(w.conn.last('error')?.message).toContain('存檔裡的玩家');
+    expect(w.conn.last('saves')?.saves).toHaveLength(1);
+    // 版本不符 / clientId 不合法
+    w.send({ t: 'deleteSave', version: 5, clientId: idFor('W'), id });
+    expect(w.conn.last('error')?.message).toContain('协议版本');
+    // B 坐過 ⇒ 能刪；回來的列表是空的
+    const bl = client(hub);
+    bl.send({ t: 'deleteSave', version: PROTOCOL_VERSION, clientId: idFor('B'), id });
+    expect(bl.conn.last('saves')?.saves).toEqual([]);
+    expect(store.list()).toEqual([]);
+    a.send({ t: 'save', name: '第二份' });
+    expect(a.conn.last('saved')?.name).toBe('第二份');
+  });
+});
+
+describe('★ 存檔房的房主交接', () => {
+  run('存檔房房主離開 ⇒ 交給坐著的下一位；沒人坐 ⇒ 關房（還沒入座的人被請出去），存檔留著', () => {
+    const store = new MemorySaveStore();
+    const now = { t: 1 };
+    const hub0 = hubWith(store, now);
+    const p = client(hub0);
+    const q = client(hub0);
+    p.send(join('K7M2QP', 'A', { mode: 'create' }));
+    q.send(join('K7M2QP', 'B', { mode: 'join' }));
+    p.send({ t: 'start' });
+    p.send({ t: 'save', name: '兩個人' });
+    const id = store.list()[0]!.id;
+
+    const hub = hubWith(store, now);
+    const a = client(hub);
+    const b = client(hub);
+    a.send(join('ABCDEF', 'A', { mode: 'create', fromSave: id }));
+    b.send(join('ABCDEF', 'B', { mode: 'join' }));
+    expect(b.h.seat).toBe(1);
+    a.send({ t: 'leave' });
+    const info = hub.roomInfo('ABCDEF')!;
+    expect(info.hostSeat).toBe(1);
+    expect(info.seats[0]).toMatchObject({ name: 'A', vacant: true });
+    // B 是新房主了：能開局
+    const g = client(hub);
+    g.send(join('ABCDEF', 'G', { mode: 'join' }));
+    expect(g.h.seat).toBeNull();
+    b.send({ t: 'leave' });
+    // 沒人坐了 ⇒ 關房；還沒入座的 G 收到原因並被斷開
+    expect(hub.roomInfo('ABCDEF')).toBeNull();
+    expect(g.conn.last('error')?.message).toContain('房間已關閉');
+    expect(g.conn.closed).toBe(true);
+    expect(store.get(id)).not.toBeNull();
   });
 });

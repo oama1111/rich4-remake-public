@@ -486,3 +486,11 @@ describe('★ 聯機存檔（v6）', () => {
     expect(saved).toEqual(['週末']);
   });
 });
+
+describe('★ 房主交接（v6）', () => {
+  it('leave 發一條 {t:leave}', () => {
+    const { client, sent } = harness();
+    client.leave();
+    expect(sent).toEqual([{ t: 'leave' }]);
+  });
+});

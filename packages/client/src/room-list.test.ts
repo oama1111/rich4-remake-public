@@ -8,6 +8,7 @@ import { PROTOCOL_VERSION, roomJoinability, type RoomSummary } from '@rich4/core
 import {
   MAP_LABELS,
   RoomListClient,
+  canDeleteSave,
   countLabel,
   formatAge,
   mapLabel,
@@ -208,5 +209,17 @@ describe('★ 聯機存檔（v6）', () => {
     expect(JSON.parse(sent[0]!)).toEqual({ t: 'listSaves', version: PROTOCOL_VERSION, clientId: 'b'.repeat(32) });
     c.receive(JSON.stringify({ t: 'saves', saves: [{ junk: 1 }] }));
     expect(got).toEqual([[]]);
+  });
+});
+
+describe('★ 刪除存檔（v6）', () => {
+  it('只有存檔裡坐過的人露出「刪除」；deleteSave 帶版本號、clientId、id', () => {
+    const seat = (mine: boolean) => ({ seat: 0, name: 'A', character: 1, kind: 'human' as const, mine, alive: true });
+    expect(canDeleteSave({ seats: [seat(false), seat(true)] })).toBe(true);
+    expect(canDeleteSave({ seats: [seat(false)] })).toBe(false);
+    const sent: string[] = [];
+    const c = new RoomListClient({ send: (t) => sent.push(t) }, { clientId: 'c'.repeat(32), onRooms: () => {} });
+    c.deleteSave('m-1');
+    expect(JSON.parse(sent[0]!)).toEqual({ t: 'deleteSave', version: PROTOCOL_VERSION, clientId: 'c'.repeat(32), id: 'm-1' });
   });
 });

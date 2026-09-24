@@ -265,6 +265,11 @@ export class NetClient {
     this.#send({ t: 'unclaim', seat });
   }
 
+  /** ★ 房主交接（v6）：大廳裡主動「離開」（之後宿主自己斷線）*/
+  leave(): void {
+    this.#send({ t: 'leave' });
+  }
+
   /** ★ 聯機存檔（v6）：房主存一份檔 */
   save(name: string): void {
     this.#send({ t: 'save', name });

@@ -6188,6 +6188,8 @@ function enterTitleScreen(): void {
  * 离开大厅：断开连接 —— 网页版回**房间列表**（需求方 2026-09-23），桌面壳回標題。
  */
 function leaveLobby(): void {
+  // ★ 房主交接（v6）：先告訴服務器「我是主動走的」—— 當場讓座 / 交接房主，不用等 30 秒斷線判定
+  net?.leave();
   netClose?.();
   netClose = null;
   net = null;
@@ -11114,8 +11116,10 @@ function connectOnline(
           roomJoinedUnstarted = !info.started;
           enterLobby(info);
           // ★ W-75：第一次拿到快照 ⇒ 屋里已经在的人按「加入了」报一遍
-          lastToastRoom = null;
-          netToasts.update(null, info, seat);
+          //   ★ v6：同一間房裡又來一條 `joined`（「這是我」坐下、前面有人離開往前挪了座）不重報
+          const sameRoom = lastToastRoom !== null && lastToastRoom.id === info.id;
+          if (!sameRoom) lastToastRoom = null;
+          netToasts.update(lastToastRoom, info, seat);
           lastToastRoom = info;
         },
         onRoom: (info) => {
@@ -11467,19 +11471,12 @@ function joinFromFoyer(
 }
 
 /**
- * 网页版的入口：旧邀请链接（`?room=`）**直接进那一间**（名字存过的话连门厅都不停），
- * 其余一律进门厅首页。
+ * 网页版的旧邀请链接（`?room=`）：**直接进那一间**（名字存过的话连门厅都不停）。
  *
  * ★ `?room=` 用过一次就从地址里拿掉：之后从大厅退回列表、再刷新，不该又被拽回那一间
  *   （真断线了，列表上那一行会是「重新連線」）。
  */
-function startFoyer(entry: { wsUrl: string | null; inviteRoom: string | null }): void {
-  foyerWsUrl = entry.wsUrl;
-  const invite = entry.inviteRoom;
-  if (invite === null) {
-    void openFoyer();
-    return;
-  }
+function startFoyerInvite(invite: string): void {
   try {
     window.history.replaceState(null, '', window.location.pathname + withoutRoomParam(window.location.search));
   } catch {
@@ -12316,7 +12313,11 @@ async function boot(): Promise<void> {
     if (online !== null) connectOnline(online.url, online.room, online.name);
     else if (straightToGame) startGame();
     else if (isDesktop() || debugScreen) enterTitleScreen();
-    else if (entry.kind === 'foyer') startFoyer(entry);
+    else if (entry.kind === 'foyer') {
+      foyerWsUrl = entry.wsUrl;
+      if (entry.inviteRoom === null) void openFoyer();
+      else startFoyerInvite(entry.inviteRoom);
+    }
     // ★ 一进標題就点 MIDI01（原版 `ui_main.asm:187` → `fcn_004549cf(0)`）。
     //   此刻通常还没有用户手势：`MusicPlayer.play()` 会把它记成 **pending**，
     //   第一次交互时立刻补播，不用再等一次 fetch —— 这就是「打开游戏后

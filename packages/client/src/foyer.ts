@@ -33,6 +33,7 @@ import {
   countLabel,
   formatAge,
   mapLabel,
+  canDeleteSave,
   rowAction,
   saveDateLabel,
   seatLabel,
@@ -328,6 +329,9 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
     let saves: SaveSummary[] | null = null;
     let savesAt = 0;
     let askSaves: () => void = () => {};
+    let delSave: (id: string) => void = () => {};
+    /** 正在問「確定刪除？」的那一份 */
+    let confirmDelete: string | null = null;
 
     const stopList = (): void => {
       listActive = false;
@@ -396,6 +400,9 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
       };
       askSaves = () => {
         if (socket === s) client.listSaves();
+      };
+      delSave = (id) => {
+        if (socket === s) client.deleteSave(id);
       };
       s.onmessage = (ev) => client.receive(String(ev.data));
       s.onerror = () => {
@@ -689,11 +696,39 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
             ),
             el(doc, 'div', 'margin-top:3px;font-size:12px;color:#c9d4e2;line-height:1.5', seatsLine),
           );
-          const go = button(doc, `${BTN_MAIN};flex:0 0 84px;padding:8px 6px;font-size:13px`, '選這個');
+          const go = button(doc, `${BTN_MAIN};padding:8px 6px;font-size:13px`, '選這個');
           go.addEventListener('click', () => {
             finish({ kind: 'online', room: newRoomCode(random), name, mode: 'create', fromSave: sv.id });
           });
-          row.append(info, go);
+          const actions = el(doc, 'div', 'flex:0 0 84px;display:flex;flex-direction:column;gap:6px');
+          actions.append(go);
+          // ★ 刪除：只給存檔裡坐過的人（服務器同一個判據），而且要再按一次確認
+          if (canDeleteSave(sv)) {
+            const small = `${BTN};padding:5px 6px;font-size:12px`;
+            if (confirmDelete === sv.id) {
+              const yes = button(doc, `${small};background:#6a2020;border-color:#b04040`, '確定刪除');
+              yes.dataset.confirmDelete = sv.id;
+              const no = button(doc, small, '取消');
+              yes.addEventListener('click', () => {
+                confirmDelete = null;
+                delSave(sv.id);
+              });
+              no.addEventListener('click', () => {
+                confirmDelete = null;
+                renderList();
+              });
+              actions.append(yes, no);
+            } else {
+              const del = button(doc, small, '刪除');
+              del.dataset.deleteSave = sv.id;
+              del.addEventListener('click', () => {
+                confirmDelete = sv.id;
+                renderList();
+              });
+              actions.append(del);
+            }
+          }
+          row.append(info, actions);
           list.append(row);
         }
       };

@@ -178,6 +178,11 @@ export function seatLabel(character: number, name: string): string {
   return c === undefined ? name : `${c}（${name}）`;
 }
 
+/** 這份存檔我能不能刪：我在裡面坐過（服務器同一個判據，這裡只決定要不要露出「刪除」）*/
+export function canDeleteSave(s: Pick<SaveSummary, 'seats'>): boolean {
+  return s.seats.some((st) => st.mine);
+}
+
 /** 存檔列表那一行的日期：「2010 年 3 月 5 日 · 第 42 回合」 */
 export function saveDateLabel(s: Pick<SaveSummary, 'year' | 'month' | 'day' | 'turnCount'>): string {
   return `${s.year} 年 ${s.month} 月 ${s.day} 日 · 第 ${s.turnCount} 回合`;
@@ -216,6 +221,11 @@ export class RoomListClient {
 
   subscribe(): void {
     this.#socket.send(JSON.stringify({ t: 'listRooms', version: PROTOCOL_VERSION, clientId: this.#opts.clientId }));
+  }
+
+  /** ★ 聯機存檔（v6）：刪一份存檔（服務器只讓存檔裡坐過的人刪；回一份新的存檔列表）*/
+  deleteSave(id: string): void {
+    this.#socket.send(JSON.stringify({ t: 'deleteSave', version: PROTOCOL_VERSION, clientId: this.#opts.clientId, id }));
   }
 
   /** ★ 聯機存檔（v6）：要一份存檔列表 */

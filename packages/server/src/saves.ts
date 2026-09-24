@@ -28,7 +28,10 @@ import {
 import { join } from 'node:path';
 import type { LobbyOptions } from '@rich4/core';
 
-/** 服務器上最多留幾份存檔（超了先刪最舊的自動存檔，再刪最舊的手動存檔）*/
+/**
+ * 服務器上最多留幾份存檔。超了**只刪最舊的自動存檔**；
+ * 手動存檔**永不靜默刪除**（需求方 2026-09-24）—— 滿了就拒絕新的（`SaveFullError`），請玩家自己刪。
+ */
 export const SAVE_CAP = 30;
 
 /** 存檔檔案格式版本 */
@@ -72,7 +75,8 @@ export function autoSaveId(roomId: string): string {
 }
 
 /**
- * 超過上限時該刪哪幾份：**先刪最舊的自動存檔**，自動的刪光了還超，再刪最舊的手動存檔。
+ * 超過上限時該刪哪幾份：**只刪最舊的自動存檔**（手動存檔一份都不動）。
+ * 自動的刪光了還超 ⇒ 返回的清單不夠數，由 `put` 拒絕這次寫入。
  *
  * ★ 純函數（單測釘著）。`keep` = 這次剛寫進去的那一份，無論如何不刪它。
  */
@@ -85,11 +89,25 @@ export function pruneOrder(
   if (over <= 0) return [];
   const byAge = (a: { savedAt: number; id: string }, b: { savedAt: number; id: string }): number =>
     a.savedAt - b.savedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  const candidates = [
-    ...saves.filter((s) => s.kind === 'auto' && s.id !== keep).sort(byAge),
-    ...saves.filter((s) => s.kind === 'manual' && s.id !== keep).sort(byAge),
-  ];
+  const candidates = saves.filter((s) => s.kind === 'auto' && s.id !== keep).sort(byAge);
   return candidates.slice(0, over).map((s) => s.id);
+}
+
+/** 存檔已滿（全是手動存檔、刪不出位子）—— hub 回給玩家「存檔已滿，請先刪除舊存檔」*/
+export class SaveFullError extends Error {
+  constructor() {
+    super('存檔已滿，請先刪除舊存檔');
+  }
+}
+
+/**
+ * 寫入 `next` 之前算好要刪哪些；刪完仍超上限就拋 `SaveFullError`（**寫入前**判，不會寫了一半）。
+ */
+function planPut(existing: readonly StoredSave[], next: StoredSave, cap: number): string[] {
+  const after = [...existing.filter((s) => s.id !== next.id), next];
+  const drop = pruneOrder(after, cap, next.id);
+  if (after.length - drop.length > cap) throw new SaveFullError();
+  return drop;
 }
 
 /** 存檔倉庫 —— hub 只認這個介面（測試用記憶體版，生產用目錄版）*/
@@ -97,8 +115,10 @@ export interface SaveStore {
   /** 全部存檔（新的在前）*/
   list(): StoredSave[];
   get(id: string): StoredSave | null;
-  /** 寫入（同 id 覆蓋）；超過上限就按 `pruneOrder` 刪 */
+  /** 寫入（同 id 覆蓋）；超過上限就按 `pruneOrder` 刪自動存檔，刪不出位子拋 `SaveFullError` */
   put(save: StoredSave): void;
+  /** 刪一份（不存在就什麼都不做）*/
+  delete(id: string): void;
 }
 
 function newestFirst(a: StoredSave, b: StoredSave): number {
@@ -123,8 +143,9 @@ export class MemorySaveStore implements SaveStore {
   }
 
   put(save: StoredSave): void {
+    const drop = planPut([...this.#saves.values()], save, this.#cap);
     this.#saves.set(save.id, save);
-    for (const id of pruneOrder([...this.#saves.values()], this.#cap, save.id)) this.#saves.delete(id);
+    for (const id of drop) this.#saves.delete(id);
   }
 
   delete(id: string): void {
@@ -185,15 +206,19 @@ export class FileSaveStore implements SaveStore {
 
   put(save: StoredSave): void {
     if (!isSaveId(save.id)) throw new Error(`存檔 id 不合法：${save.id}`);
+    const drop = planPut(this.#mem.list(), save, this.#cap);
     const path = join(this.#dir, `${save.id}.json`);
     const tmp = `${path}.tmp`;
     writeFileSync(tmp, JSON.stringify(save), { mode: 0o640 });
     chmodSync(tmp, 0o640);
     renameSync(tmp, path);
     this.#mem.put(save);
-    for (const id of pruneOrder(this.#mem.list(), this.#cap, save.id)) {
-      rmSync(join(this.#dir, `${id}.json`), { force: true });
-      this.#mem.delete(id);
-    }
+    for (const id of drop) this.delete(id);
+  }
+
+  delete(id: string): void {
+    if (!isSaveId(id)) return;
+    rmSync(join(this.#dir, `${id}.json`), { force: true });
+    this.#mem.delete(id);
   }
 }

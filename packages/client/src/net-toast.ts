@@ -81,6 +81,13 @@ export function roomToasts(
     //   （第一次超时之后回合结束）**不清零**。这里照抄同一条规则，清零由
     //   `NetToasts.noteIntent()` 在「看见这个座位派了一条 action」时做。
   }
+  // ★ 房主交接（v6）：房主換人了（原房主離開）
+  const hb = before?.hostSeat ?? 0;
+  const ha = after.hostSeat ?? 0;
+  if (before !== null && ha >= 0 && ha !== hb && !after.started) {
+    const h = after.seats.find((x) => x.seat === ha);
+    if (h !== undefined) lines.push({ seat: ha, text: `房主離開了，${h.name} 成為新房主` });
+  }
   return { lines, strikes: next };
 }
 

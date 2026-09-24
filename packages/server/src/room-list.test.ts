@@ -373,3 +373,95 @@ describe('★ listRooms 的校驗', () => {
     expect(w.conn.count('rooms')).toBe(n);
   });
 });
+
+describe('★ 房主交接（v6）', () => {
+  run('房主按「離開」⇒ 後面的人往前挪、下一位在線真人當房主（能改設定、能開局）；列表照樣看得到', () => {
+    const { hub } = setup();
+    const a = client(hub);
+    const b = client(hub);
+    const c = client(hub);
+    a.send(join('K7M2QP', 'A', 'create'));
+    b.send(join('K7M2QP', 'B', 'join'));
+    c.send(join('K7M2QP', 'C', 'join'));
+    a.send({ t: 'leave' });
+    a.h.onClose(0);
+    expect(b.h.seat).toBe(0);
+    expect(c.h.seat).toBe(1);
+    expect(b.conn.last('joined')?.seat).toBe(0);
+    expect(c.conn.last('joined')?.seat).toBe(1);
+    const info = hub.roomInfo('K7M2QP')!;
+    expect(info.seats.map((s) => [s.seat, s.name])).toEqual([
+      [0, 'B'],
+      [1, 'C'],
+    ]);
+    expect(info.hostSeat).toBe(0);
+    // 新房主能改設定；C 不能
+    c.send({ t: 'setOptions', options: { seatCount: 3 } });
+    expect(c.conn.last('error')?.message).toContain('房主');
+    b.send({ t: 'setOptions', options: { seatCount: 3 } });
+    expect(hub.roomInfo('K7M2QP')!.options?.seatCount).toBe(3);
+    expect(hub.listRooms(idFor('W'))).toMatchObject([{ host: 'B', humans: 2 }]);
+    b.send({ t: 'start' });
+    expect(hub.room('K7M2QP')).not.toBeNull();
+  });
+
+  run('非房主「離開」⇒ 只讓出座位，房主不變', () => {
+    const { hub } = setup();
+    const a = client(hub);
+    const b = client(hub);
+    const c = client(hub);
+    a.send(join('K7M2QP', 'A', 'create'));
+    b.send(join('K7M2QP', 'B', 'join'));
+    c.send(join('K7M2QP', 'C', 'join'));
+    b.send({ t: 'leave' });
+    expect(hub.roomInfo('K7M2QP')!.seats.map((s) => s.name)).toEqual(['A', 'C']);
+    expect(hub.roomInfo('K7M2QP')!.hostSeat).toBe(0);
+    expect(c.h.seat).toBe(1);
+  });
+
+  run('★ 最後一個人（房主）按「離開」⇒ 房間當場關掉，列表上消失', () => {
+    const { hub } = setup();
+    const w = client(hub);
+    w.send(list('W'));
+    const a = client(hub);
+    a.send(join('K7M2QP', 'A', 'create'));
+    expect(w.conn.rooms()).toHaveLength(1);
+    a.send({ t: 'leave' });
+    expect(hub.roomInfo('K7M2QP')).toBeNull();
+    expect(w.conn.rooms()).toEqual([]);
+  });
+
+  run('★ 房主只是斷線（刷新 / 網路）⇒ 給 takeoverAfterMs 的時間回來；過了還沒回來才交接', () => {
+    const t = setup({ takeoverAfterMs: 30_000 });
+    const a = client(t.hub);
+    const b = client(t.hub);
+    a.send(join('K7M2QP', 'A', 'create'));
+    b.send(join('K7M2QP', 'B', 'join'));
+    a.h.onClose(t.now);
+    t.hub.sweepDisconnected(t.now);
+    t.hub.sweepDisconnected(t.tick(29_999));
+    expect(t.hub.roomInfo('K7M2QP')!.hostSeat).toBe(0); // 還是 A 的
+    t.hub.sweepDisconnected(t.tick(1));
+    const info = t.hub.roomInfo('K7M2QP')!;
+    expect(info.seats.map((s) => s.name)).toEqual(['B']);
+    expect(info.hostSeat).toBe(0);
+    expect(b.h.seat).toBe(0);
+    expect(b.conn.last('room')?.room.hostSeat).toBe(0);
+  });
+
+  run('房主斷線、趕在時限內回來 ⇒ 原座原房主，什麼都不變', () => {
+    const t = setup({ takeoverAfterMs: 30_000 });
+    const a = client(t.hub);
+    const b = client(t.hub);
+    a.send(join('K7M2QP', 'A', 'create'));
+    b.send(join('K7M2QP', 'B', 'join'));
+    a.h.onClose(t.now);
+    t.hub.sweepDisconnected(t.tick(10_000));
+    const a2 = client(t.hub);
+    a2.send(join('K7M2QP', 'A', 'join'));
+    expect(a2.h.seat).toBe(0);
+    t.hub.sweepDisconnected(t.tick(60_000));
+    expect(t.hub.roomInfo('K7M2QP')!.hostSeat).toBe(0);
+    expect(t.hub.roomInfo('K7M2QP')!.seats.map((s) => s.name)).toEqual(['A', 'B']);
+  });
+});

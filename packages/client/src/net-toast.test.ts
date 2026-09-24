@@ -150,3 +150,17 @@ describe('★ 聯機存檔（v6）：存檔房的空座', () => {
     expect(roomToasts(taken, vacant).lines.map((l) => l.text)).toEqual(['B 離座了']);
   });
 });
+
+describe('★ 房主交接（v6）', () => {
+  it('開局前 hostSeat 變了 ⇒「房主離開了，X 成為新房主」；開局後 / 第一份快照不報', () => {
+    const seats = [
+      { seat: 0, name: 'B', character: 1, kind: 'human' as const, connected: true },
+      { seat: 1, name: 'C', character: 2, kind: 'human' as const, connected: true },
+    ];
+    const before = { id: 'X', started: false, seats, hostSeat: 0 };
+    const after = { id: 'X', started: false, seats, hostSeat: 1 };
+    expect(roomToasts(before, after).lines.map((l) => l.text)).toEqual(['房主離開了，C 成為新房主']);
+    expect(roomToasts(null, after).lines.map((l) => l.text)).toEqual(['B 加入了房間', 'C 加入了房間']);
+    expect(roomToasts({ ...before, started: true }, { ...after, started: true }).lines).toEqual([]);
+  });
+});

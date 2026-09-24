@@ -41,7 +41,7 @@ import {
   type ServerMessage,
 } from '@rich4/core';
 import { Room } from './room.ts';
-import { autoSaveId, isSaveId, type SaveStore, type StoredSave } from './saves.ts';
+import { SaveFullError, autoSaveId, isSaveId, type SaveStore, type StoredSave } from './saves.ts';
 
 /** 一条到客户端的连接：集线器只会往里 send */
 export interface Conn {
@@ -241,6 +241,12 @@ interface Table {
   autoSaveId: string;
   /** ★ 聯機存檔（v6）：上一次看到的局面日期（`年-月-日`）—— 變了就自動存一次 */
   lastSavedDay: string | null;
+  /**
+   * ★ 房主交接（v6）：開局前房主從哪一刻起**不在**（斷線 / 還沒回來）。
+   * 滿 `takeoverAfterMs` 還沒回來 ⇒ 房主交給下一位在線的真人；一個都沒有 ⇒ 關房。
+   * （主動按「離開」的不等，當場交接。）
+   */
+  hostAwaySince: number | null;
 }
 
 /** 一條連接在 hub 裡的身分（v6 起登記在 `#members`，別的連接的操作也可能改它的座位）*/
@@ -415,6 +421,49 @@ export class RoomHub {
           this.#sendTo(conn, { t: 'saves', saves: this.listSaves(msg.clientId) });
           return;
         }
+        // ★ 房主交接（v6）：大廳裡按「離開」—— 開局前當場讓出座位（房主則當場交接）
+        case 'leave': {
+          const t = me.table;
+          if (t === null) return;
+          if (t.guests.delete(conn)) {
+            me.table = null;
+            this.#broadcast(t, { t: 'room', room: this.#info(t) });
+            return;
+          }
+          if (me.seat === null) return;
+          const slot = t.seats[me.seat];
+          if (slot === undefined || slot.conn !== conn) return;
+          if (t.room !== null) return; // 開局後「離開」= 斷線，照舊走掉線代打
+          me.table = null;
+          me.seat = null;
+          slot.conn = null;
+          this.#leaveUnstarted(t, slot);
+          // 存檔房：`#vacate` 會把人放進「還沒入座」—— 主動離開的不留
+          t.guests.delete(conn);
+          return;
+        }
+        // ★ 聯機存檔（v6）：刪一份存檔 —— 只有**存檔裡坐過**的人（按 clientId）
+        case 'deleteSave': {
+          if (msg.version !== PROTOCOL_VERSION) {
+            this.#sendTo(conn, { t: 'error', message: `协议版本不符：服务器 ${PROTOCOL_VERSION}，客户端 ${msg.version}` });
+            return;
+          }
+          if (!isClientId(msg.clientId)) {
+            this.#sendTo(conn, { t: 'error', message: '拒絕：clientId 必須是 32 位小寫十六進位' });
+            conn.close?.();
+            return;
+          }
+          const sv = isSaveId(msg.id) ? (this.#saves?.get(msg.id) ?? null) : null;
+          if (sv === null) {
+            this.#sendTo(conn, { t: 'error', message: '這份存檔不在了' });
+          } else if (!sv.seats.some((st) => st.kind === 'human' && st.clientId === msg.clientId)) {
+            this.#sendTo(conn, { t: 'error', message: '只有這份存檔裡的玩家能刪除它' });
+          } else {
+            this.#saves?.delete(sv.id);
+          }
+          this.#sendTo(conn, { t: 'saves', saves: this.listSaves(msg.clientId) });
+          return;
+        }
         // ★ 聯機存檔（v6）：存檔房開局前「這是我」
         case 'claim': {
           const t = me.table;
@@ -482,7 +531,15 @@ export class RoomHub {
           }
           const now = this.#now();
           const id = `m-${now.toString(36)}-${t.id}`;
-          this.#writeSave(t, id, 'manual', name, now);
+          const wrote = this.#writeSave(t, id, 'manual', name, now);
+          if (wrote === 'full') {
+            this.#sendTo(conn, { t: 'error', message: '存檔已滿，請先刪除舊存檔' });
+            return;
+          }
+          if (wrote !== 'ok') {
+            this.#sendTo(conn, { t: 'error', message: '存檔寫入失敗（伺服器那邊的磁碟 / 權限）' });
+            return;
+          }
           this.#broadcast(t, { t: 'saved', name });
           return;
         }
@@ -594,7 +651,7 @@ export class RoomHub {
         case 'start': {
           if (me.table === null || me.seat === null) return;
           if (!this.#isHost(me.table, me)) {
-            this.#sendTo(conn, { t: 'error', message: '只有房主（0 号座）能开局' });
+            this.#sendTo(conn, { t: 'error', message: '只有房主能開局' });
             return;
           }
           if (me.table.room !== null) return;
@@ -669,7 +726,7 @@ export class RoomHub {
             this.#sendTo(conn, { t: 'error', message: '還沒進房' });
             return;
           }
-          this.#setMap(me.table, me.seat, msg.globalMapId, conn);
+          this.#setMap(me.table, this.#isHost(me.table, me) ? 0 : -1, msg.globalMapId, conn);
           return;
         }
         // ★★ 第十一份試玩回報 #1：大厅开局选项（总人数 + 单机那五项）。同一套权限。
@@ -678,7 +735,7 @@ export class RoomHub {
             this.#sendTo(conn, { t: 'error', message: '還沒進房' });
             return;
           }
-          this.#setOptions(me.table, me.seat, msg.options, conn);
+          this.#setOptions(me.table, this.#isHost(me.table, me) ? 0 : -1, msg.options, conn);
           return;
         }
         // ★ W-74：本机座位**演完了、停在等输入上** —— 从这一刻起才开始数 60 秒。
@@ -787,9 +844,7 @@ export class RoomHub {
       if (t.room === null && !this.#hostPresent(t)) return null;
     }
     const hostName =
-      t.fromSave === null
-        ? (t.seats[0]?.info.name ?? '')
-        : (this.#hostName(t) ?? t.fromSave.name);
+      this.#hostName(t) ?? t.seats.find((s) => s.clientId === t.hostClientId)?.info.name ?? t.fromSave?.name ?? t.seats[0]?.info.name ?? '';
     const vacant =
       t.fromSave !== null && t.room !== null
         ? humans
@@ -814,7 +869,6 @@ export class RoomHub {
 
   /** 房主此刻在不在（坐著或還沒入座都算）*/
   #hostPresent(t: Table): boolean {
-    if (t.fromSave === null) return (t.seats[0]?.conn ?? null) !== null;
     for (const s of t.seats) if (s.conn !== null && s.clientId === t.hostClientId) return true;
     for (const g of t.guests) if (this.#members.get(g)?.clientId === t.hostClientId) return true;
     return false;
@@ -869,7 +923,10 @@ export class RoomHub {
           continue;
         }
       }
-      if (t.room === null) continue;
+      if (t.room === null) {
+        this.#sweepLobby(t, now);
+        continue;
+      }
       for (const slot of t.seats) {
         if (slot.info.kind !== 'human' || slot.conn !== null || slot.takenOver) continue;
         if (slot.disconnectedAt !== null && now - slot.disconnectedAt >= this.#opts.takeoverAfterMs) {
@@ -895,6 +952,28 @@ export class RoomHub {
     // ★ 房間列表（v5）：回收、掉線代打、超時都可能改變列表；v6：超時代打也可能過了一天
     this.#afterEvents();
     return out;
+  }
+
+  /**
+   * ★ 房主交接（v6）：開局前的大廳 —— 斷線超過 `takeoverAfterMs` 的座位讓出來（一般房間），
+   * 房主不在超過同樣久 ⇒ 交接 / 關房。給刷新頁面、網路抖一下的人留足時間。
+   */
+  #sweepLobby(t: Table, now: number): void {
+    if (!this.#tables.has(t.id)) return;
+    if (t.fromSave === null) {
+      for (const slot of [...t.seats]) {
+        if (slot.info.kind !== 'human' || slot.conn !== null || slot.disconnectedAt === null) continue;
+        if (now - slot.disconnectedAt < this.#opts.takeoverAfterMs) continue;
+        this.#leaveUnstarted(t, slot, false);
+        if (!this.#tables.has(t.id)) return;
+      }
+    }
+    if (this.#hostPresent(t)) {
+      t.hostAwaySince = null;
+      return;
+    }
+    t.hostAwaySince ??= now;
+    if (now - t.hostAwaySince >= this.#opts.takeoverAfterMs) this.#handOver(t, false);
   }
 
   // ------------------------------------------------------------
@@ -1081,6 +1160,7 @@ export class RoomHub {
       guests: new Set(),
       autoSaveId: autoSaveId(id),
       lastSavedDay: null,
+      hostAwaySince: null,
       options: {
         ...LOBBY_DEFAULT_OPTIONS,
         // ★ 第十一份試玩回報 #1：`--seats` 从「服务器全局固定人数」降级成**新房间的初值** ——
@@ -1135,6 +1215,7 @@ export class RoomHub {
       // 從自動存檔繼續 ⇒ 接著寫**同一份**自動存檔（一局一份，不越續越多）
       autoSaveId: save.kind === 'auto' ? save.id : autoSaveId(id),
       lastSavedDay: null,
+      hostAwaySince: null,
       options: { ...save.options, seatCount: seats.length },
     };
     this.#tables.set(id, t);
@@ -1143,17 +1224,92 @@ export class RoomHub {
 
   /** 這條連接是不是這間房的房主 */
   #isHost(t: Table, me: Member): boolean {
-    if (t.fromSave === null) return me.seat === 0;
+    // 一般房間按**座位**認（同一個瀏覽器開兩個分頁 = 同一個 clientId 坐兩座，只有第一座是房主）；
+    // 存檔房按 clientId 認（房主可能還沒入座，也得能「請離座」）
+    if (t.fromSave === null) return me.seat !== null && me.seat === this.#hostSeat(t);
     return me.clientId !== null && me.clientId === t.hostClientId;
   }
 
-  /** 房主坐在幾號座；還沒入座 = -1 */
+  /**
+   * 房主坐在幾號座；還沒入座 = -1。
+   * ★ 房主交接（v6）起一般房間的房主也不一定是 0 號座了 —— 一律按 `hostClientId` 找。
+   */
   #hostSeat(t: Table): number {
-    if (t.fromSave === null) return 0;
     const slot = t.seats.find(
       (s) => s.info.kind === 'human' && !s.vacant && s.clientId !== null && s.clientId === t.hostClientId,
     );
     return slot?.info.seat ?? -1;
+  }
+
+  /**
+   * ★ 房主交接（v6）：開局前房主走了 ⇒ 房主交給**下一位在線的真人**（座位號最小的那位）；
+   * 一個都沒有 ⇒ 關房（還沒入座的人收到一句話、被斷開 —— 客戶端會回房間列表）。
+   * 存檔房的存檔不動（它本來就在倉庫裡）。
+   */
+  #handOver(t: Table, closeIfEmpty: boolean): void {
+    t.hostAwaySince = null;
+    const next = t.seats.find((s) => s.info.kind === 'human' && !s.vacant && s.conn !== null && s.clientId !== null);
+    if (next !== undefined) {
+      t.hostClientId = next.clientId;
+      this.#broadcast(t, { t: 'room', room: this.#info(t) });
+      return;
+    }
+    // ★ 只有**主動離開**才當場關房；斷線（可能只是刷新 / 網路抖）一個人都沒剩時不關 ——
+    //   交給原來那條「全桌無人滿 `roomIdleMs` 就回收」（W-73 §4），他回來還進得去
+    if (closeIfEmpty) this.#closeTable(t, '房主離開了，房間已關閉');
+    else this.#broadcast(t, { t: 'room', room: this.#info(t) });
+  }
+
+  /** 關掉一間房：還在裡面的連接都收到 `message` 並被斷開 */
+  #closeTable(t: Table, message: string): void {
+    const conns = [...t.seats.flatMap((s) => (s.conn === null ? [] : [s.conn])), ...t.guests];
+    this.#tables.delete(t.id);
+    for (const c of conns) {
+      const m = this.#members.get(c);
+      if (m !== undefined) {
+        m.table = null;
+        m.seat = null;
+      }
+      this.#sendTo(c, { t: 'error', message });
+      c.close?.();
+    }
+  }
+
+  /**
+   * ★ 房主交接（v6）：開局前**讓出一座**（主動「離開」、或斷線超過 `takeoverAfterMs`）。
+   * · 存檔房：座位放回「沒人坐」（座位是存檔定的，不能少一座）；
+   * · 一般房間：**拿掉這一座**，後面的人往前挪（開局前座位號只是順序，還沒燒進任何局面）——
+   *   挪了座的人各收到一條新的 `joined`，照新座位號繼續。
+   * 讓出的是房主 ⇒ 當場交接。
+   */
+  #leaveUnstarted(t: Table, slot: SeatSlot, closeIfEmpty = true): void {
+    if (t.room !== null) return;
+    const wasHost = slot.clientId !== null && slot.clientId === t.hostClientId && this.#hostSeat(t) === slot.info.seat;
+    if (t.fromSave !== null) {
+      this.#vacate(t, slot);
+    } else {
+      const idx = t.seats.indexOf(slot);
+      if (idx < 0) return;
+      t.seats.splice(idx, 1);
+      t.seats.forEach((s, i) => {
+        if (s.info.seat === i) return;
+        s.info.seat = i;
+        if (s.conn !== null) {
+          const m = this.#members.get(s.conn);
+          if (m !== undefined) m.seat = i;
+        }
+      });
+      for (const s of t.seats) {
+        if (s.conn !== null && s.info.seat >= idx) {
+          this.#sendTo(s.conn, { t: 'joined', version: PROTOCOL_VERSION, seat: s.info.seat, room: this.#info(t) });
+        }
+      }
+    }
+    if (wasHost) {
+      this.#handOver(t, closeIfEmpty);
+      return;
+    }
+    this.#broadcast(t, { t: 'room', room: this.#info(t) });
   }
 
   /**
@@ -1338,8 +1494,9 @@ export class RoomHub {
       this.#sendTo(conn, { t: 'error', message: '已開局：地圖不能再改' });
       return;
     }
+    // ★ v6：`seat` 在這裡是「是不是房主」（0 = 是）—— 房主交接之後不一定坐 0 號座
     if (seat !== 0) {
-      this.#sendTo(conn, { t: 'error', message: '只有房主（0 號座）能換地圖' });
+      this.#sendTo(conn, { t: 'error', message: '只有房主能換地圖' });
       return;
     }
     if (!isLobbyMapId(globalMapId)) {
@@ -1565,9 +1722,9 @@ export class RoomHub {
   }
 
   /** 把這一桌此刻的鏡像寫成一份存檔 */
-  #writeSave(t: Table, id: string, kind: 'auto' | 'manual', name: string, now: number): void {
+  #writeSave(t: Table, id: string, kind: 'auto' | 'manual', name: string, now: number): 'ok' | 'full' | 'failed' {
     const room = t.room;
-    if (room === null || this.#saves === null) return;
+    if (room === null || this.#saves === null) return 'failed';
     const state = room.state;
     try {
       this.#saves.put({
@@ -1595,9 +1752,12 @@ export class RoomHub {
         },
       });
     } catch (err) {
+      if (err instanceof SaveFullError) return 'full';
       // 寫不進去（磁碟滿、權限）不許把房間帶走 —— 留痕，下一天再試
       console.error(`[rich4] 存檔寫入失敗（${id}）：`, err);
+      return 'failed';
     }
+    return 'ok';
   }
 
   /**

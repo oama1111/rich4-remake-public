@@ -134,6 +134,17 @@ export type ClientMessage =
   | { t: 'unclaim'; seat: number }
   /** ★ 聯機存檔（v6）：房主手動存檔（開局後任何時候）。成功回 `saved`，失敗回 `error` */
   | { t: 'save'; name: string }
+  /**
+   * ★ 聯機存檔（v6）：刪一份存檔 —— 只有**存檔裡坐過**的人（按 `clientId`）能刪。
+   * 服務器回一份新的 `saves`（刪不了另外先回 `error`）。
+   */
+  | { t: 'deleteSave'; version: number; clientId: string; id: string }
+  /**
+   * ★ 房主交接（v6）：大廳裡主動「離開」。開局前 ⇒ 當場讓出座位（一般房間後面的人往前挪、
+   * 各收到新的 `joined`；存檔房那一座放回「沒人坐」）；走的是房主 ⇒ 房主交給下一位在線真人，
+   * 一個都沒有就關房。開局後等同斷線（照舊走掉線代打）。
+   */
+  | { t: 'leave' }
   /** 房主（0 号座）开局：空座由电脑补位，服务器广播 start */
   | { t: 'start' }
   /**

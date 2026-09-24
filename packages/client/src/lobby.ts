@@ -437,7 +437,7 @@ export function drawLobby(
           me === null ? '點自己原來那一座的「這是我」坐回去' : isHost ? '大家坐好後按「開始」；空著的座位由電腦代打' : '等房主開始；空著的座位由電腦代打'
         }`
       : isHost
-        ? `你是房主（1 號座）：設定好按「開始」；不足 ${options.seatCount} 人的位子由電腦補上`
+        ? `你是房主（${roomHostSeat(room) + 1} 號座）：設定好按「開始」；不足 ${options.seatCount} 人的位子由電腦補上`
         : `等房主開始；空位由電腦補上（本局共 ${options.seatCount} 人）`;
   ctx.fillText(clip(hint, 580, measure), 36, 50);
 
