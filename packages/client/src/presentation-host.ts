@@ -24,7 +24,7 @@ import { noticeWaitingForSpeech, noticeShowing, noticePendingRanks } from './not
 import { eventBoxPending, eventBoxScreenState } from './event-box-screen.ts';
 import { wheelScreenState } from './wheel-screen.ts';
 import { godSlotState } from './god-slot.ts';
-import { auctionPresentationOnly } from './auction-screen.ts';
+import { auctionBidPacing, auctionPresentationOnly } from './auction-screen.ts';
 import {
   SCREEN_BOX_TIER,
   boxMayStart,
@@ -142,7 +142,12 @@ export class PresentationHost {
     if (overlay.id === 'notice' && noticeWaitingForSpeech()) return false;
     // ★ 第十八份：拍賣屏落槌之后那段结算 / 补演「开拍即流标」是纯演出（原版在模态窗口里）；
     //   竞价进行中不算（每一口要靠驱动 / 收件箱送进来）
-    if (overlay.id === 'auction') return auctionPresentationOnly(this.deps.env());
+    // ★ gap-audit #4（仅联机）：竞价中上一口的挥槌 / 开场那句还没走完 ⇒ 收件箱先别放下一口
+    //   （节拍 = 单机本屏自己出电脑那一口的 `nextAt`；到点自己放，不会死锁）
+    if (overlay.id === 'auction') {
+      const env = this.deps.env();
+      return auctionPresentationOnly(env) || auctionBidPacing(env);
+    }
     return BLOCKING_PRESENTATIONS.has(overlay.id);
   }
 }
