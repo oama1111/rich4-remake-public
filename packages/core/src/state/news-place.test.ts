@@ -138,3 +138,32 @@ describe('★ reduce：新聞 21 落地 ⇒ `lastEvent.place` + 镜头移过去�
     }
   });
 });
+
+describe('★★ 第二十一份：新聞 4「外星人攻打地球」⇒ 镜头移到**爆心**（`view_to(x, y, 2)` @ 0x0044921d）', () => {
+  // 回报 `20260924-143640603`（第 28 回合 `settle`）：0 号踩上新聞格（节点 69，(791,1512)），
+  //   爆心挑中的是远在 (1933,537) 的那块房子 ⇒ 他不在半径 0x64 的窗里、不住院（规则对）；
+  //   可镜头没动，整幅盖在棋盘上的飛碟影片看着像射中了他本人。
+  run('★★ 唯一盖了房子的地块远离新聞格 ⇒ `lastViewTarget` = 那块地；踩新聞格的人不住院', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP)));
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })), seed: 5 });
+    const news = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.NEWS)!;
+    const far = map.lands.find((l) => Math.abs(l.x - news.x) > 300 && Math.abs(l.y - news.y) > 300)!;
+    const s1: GameState = {
+      ...s0,
+      players: s0.players.map((p) => ({ ...p, nodeId: news.id })),
+      landOwner: s0.landOwner.map((o, i) => (i === far.id ? 3 : o)),
+      landLevel: s0.landLevel.map((_, i) => (i === far.id ? 1 : 0)),
+      facilityLevel: s0.facilityLevel.map(() => 0),
+      phase: 'settling',
+      newsDeck: { order: [4, ...s0.newsDeck.order.filter((x) => x !== 4)], cursor: 0 },
+    };
+    const s2 = reduce(s1, { type: 'settle' }, topo);
+    expect(s2.lastEvent).toMatchObject({ kind: 'news', id: 4 });
+    expect(s2.lastViewTarget).toEqual({ x: far.x, y: far.y });
+    expect(s2.lastViewTarget).not.toEqual({ x: news.x, y: news.y });
+    // 爆心那块被重击清掉；踩新聞格的人（全站在新聞格上）一个都没住院
+    expect(s2.landLevel[far.id]).toBe(0);
+    for (const p of s2.players) expect(p.blocking.inHospital).toBe(0);
+  });
+});
