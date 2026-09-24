@@ -876,7 +876,7 @@ export const CHARACTER_SPRITE_STRIDE = 21;
  * | 6..8 | 8/24/32 | 另一种载具 |
  * | 9..12 | 8/16/32/40 | 工程车 |
  * | 13..15 | 8/24/32 | 飛行器 |
- * | 16..17 | 8/72 | 走路（另一套） |
+ * | 16..17 | 8/72 | ★ **夢遊**（睡衣；@source 0x0040ba58 / 0x0040ba75，见 `characterSleepwalkSprite`）|
  * | 18 | 8 | ★ **乞丐**（出局者 `who_plays == 0` 与刚被毁车 `& 0x40` 共用，@source 0x0040b9b7 `edi + 0x12`；见 `characterBeggarSprite`）|
  * | 19 | 8 | 白衣（住院？） |
  * | 20 | 8 | 條紋囚衣（坐牢） |
@@ -904,6 +904,33 @@ export const CHARACTER_POSE = { stand: 0, walk: 1, dice: 2 } as const;
 export function characterSetBase(character: number, traffic: number): number {
   return CHARACTER_SPRITE_BASE + character * CHARACTER_SPRITE_STRIDE + (traffic & 3) * 3;
 }
+
+/**
+ * **夢遊**中的人物图（第十九份试玩回报「约翰乔梦游没有变色」）：换成表里 k16 / k17 那套
+ * 「走路（另一套）」—— 就是**睡衣**那身（颜色与平时不同）。
+ *
+ * @source `_rich4_update_player_sprite`（VA 0x0040b93b）—— 不是乞丐（`who_plays` 非 0 且无 0x40）时
+ *   **先**查夢遊，再轮到常规那支（交通方式 / 船格）：
+ * ```asm
+ * 0040b966  add edi, 0x80                       ; edi = 0x80 + 角色×21
+ * 0040ba16  cmp byte [player + 0x37], 0         ; ★ 夢遊天數
+ * 0040ba1d  je  0x40bace                        ; 没夢遊 → 常规（交通方式三张）
+ * 0040ba58  lea eax, [edi + 0x10] / read_mkf → [+0x498eb4]   ; 站
+ * 0040ba75  lea eax, [edi + 0x11] / read_mkf → [+0x498ebc]   ; 走
+ * 0040ba91  add edi, 2            / read_mkf → [+0x498ec4]   ; 手持骰子 = **走路那一组**的 k2
+ * 0040bac3  mov byte [+0x498ea1], 0                          ; 用第 0 组槽（不看交通方式 / 船格）
+ * ```
+ * ⇒ 夢遊期间**不看交通方式**：站 = k16、走 = k17、掷骰 = k2。
+ */
+export function characterSleepwalkSprite(character: number, pose: number): number {
+  const base = CHARACTER_SPRITE_BASE + character * CHARACTER_SPRITE_STRIDE;
+  if (pose === CHARACTER_POSE.walk) return base + CHARACTER_SLEEPWALK_OFFSET + 1;
+  if (pose === CHARACTER_POSE.dice) return base + CHARACTER_POSE.dice;
+  return base + CHARACTER_SLEEPWALK_OFFSET;
+}
+
+/** 夢遊那套站姿的位移 @source VA 0x0040ba58 `lea eax, [edi + 0x10]` */
+export const CHARACTER_SLEEPWALK_OFFSET = 0x10;
 
 /** 21 张里乞丐那一张的位移 @source `_rich4_update_player_sprite` VA 0x0040b9b7 `add edi, 0x12` */
 export const CHARACTER_BEGGAR_OFFSET = 0x12;

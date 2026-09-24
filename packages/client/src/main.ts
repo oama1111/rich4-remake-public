@@ -455,7 +455,7 @@ export const inputTrace: {
   earlyReturn: string | null;
 } = { stage: null, diceToggle: null, goPressed: false, rollRequested: false, earlyReturn: null };
 import { moveSoundId } from './move-sound.ts';
-import { CHARACTER_POSE, characterSetBase, type LoadedFlic } from './assets.ts';
+import { CHARACTER_POSE, characterSetBase, characterSleepwalkSprite, type LoadedFlic } from './assets.ts';
 import { HOTKEY, hotkeyOf, vkOf, type KeyBinding } from './hotkeys.ts';
 import {
   configHotkeyKeys,
@@ -2684,8 +2684,13 @@ function diceFlicNow(count: number): LoadedFlic | null {
  * 「手持骰子的走路」每向几帧 —— 预动作要几个 tick。
  * @source VA 0x0040d975：数到 `图数 / 8` 那一 tick 才掷
  */
-function diceAnticipateTicks(me: { character: number; trafficMethod: number }): number {
-  const count = sprites?.imageCount('Data.mkf', characterSetBase(me.character, me.trafficMethod) + CHARACTER_POSE.dice) ?? 0;
+function diceAnticipateTicks(me: { character: number; trafficMethod: number; blocking: { sleepWalking: number } }): number {
+  // ★ 夢遊中掷骰那一组是**走路那组的 k2**（不看交通方式）@source 0x0040ba91 `add edi, 2`
+  const res =
+    me.blocking.sleepWalking !== 0
+      ? characterSleepwalkSprite(me.character, CHARACTER_POSE.dice)
+      : characterSetBase(me.character, me.trafficMethod) + CHARACTER_POSE.dice;
+  const count = sprites?.imageCount('Data.mkf', res) ?? 0;
   return count > 0 ? Math.max(1, count >> 3) : 9;
 }
 

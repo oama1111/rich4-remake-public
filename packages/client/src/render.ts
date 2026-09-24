@@ -64,6 +64,7 @@ import {
   toolbarIconImage,
   characterSetBase,
   characterBeggarSprite,
+  characterSleepwalkSprite,
   CHARACTER_POSE,
   directionalImage,
   screenDirection,
@@ -191,8 +192,9 @@ const PLAYER_COLORS = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
  *           or  byte [esi + 0x498ea0], 0x40            ; 记下「已转」
  * ```
  * ⇒ 判据是 `blocking.sleeping`（= `+0x36`）= **冬眠**，
- *   **不是** `sleepWalking`（`+0x37`）—— 夢遊走的是另一条视觉（换 `+3` 走姿图组，
- *   见 `specialActorImageSet`）。
+ *   **不是** `sleepWalking`（`+0x37`）—— 夢遊走的是另一条视觉：玩家换睡衣那套图
+ *   （`characterSleepwalkSprite`，@source 0x0040ba16）、替身换 `+3` 走姿图组（`specialActorImageSet`），
+ *   两者头上都再贴一张「ZZZ」（`SLEEPWALK_MARK_RESOURCE`，@source 0x00408870 / 0x00408acb）。
  */
 export function isAsleep(blocking: { sleeping: number }): boolean {
   return blocking.sleeping !== 0;
@@ -533,7 +535,37 @@ export const DRAW_CLASS = {
    * ⇒ 同屏幕 Y 时替身排在玩家**下面**（0x8 < 0xc）。
    */
   npc: 0x8,
+  /**
+   * ★ 夢遊标记（「ZZZ」）：**非**当前行动者 0xe、当前行动者 0xf ——
+   *   同屏幕 Y 时压在棋子（0xc / 0xd）之上。
+   * @source `0x004088a3 cmp ebx, [0x49910c] / jne` → `or byte [..], 0xf` / `or byte [..], 0xe`
+   *   （替身那一段同形：`0x00408b02` / `0x00408b0a` / `0x00408b13`）
+   */
+  sleepwalkMark: 0xe,
+  currentSleepwalkMark: 0xf,
 } as const;
+
+/**
+ * 夢遊标记（「ZZZ」，6 张 = 6 帧，**不分方向**）的图组 = 物件图集表下标 **19**
+ * ⇒ `Data.mkf` 资源 `0x18c + 19 − 1 = 0x19e`（414；目视核过：黄色「zzz」六帧）。
+ *
+ * @source `fcn_0040829d` 玩家那一段（替身那一段 `0x00408b26` 同形）：
+ * ```asm
+ * 00408870  cmp  byte [player + 0x496b9f], 0     ; ★ +0x37 夢遊天數；0 ⇒ 不加这一槽
+ * 004088c7  mov  eax, [0x496978]                 ; ★ 0x496978 = 0x49692c + 19×4（物件图集表）
+ * 004088e8  mov  al, [player×0x34 + 0x498ea4]    ; 图号 = 这个人自己的「ZZZ 帧」（见 `SLEEPWALK_MARK_FRAMES`）
+ * 004088f5  坐标 = 棋子同一个屏幕点（[esp+0x30] / [esp+0x3c]）
+ * ```
+ */
+export const SLEEPWALK_MARK_RESOURCE = objectSpriteResource(19) ?? 0x19e;
+
+/**
+ * 「ZZZ」帧数：**走子时一 tick 进一帧**，数到 6 回零（不走就停在那一帧）。
+ * @source `fcn_0040c05c` 玩家那支 `0x0040c455..0x0040c47e`（`+0x37` 非 0 才进：
+ *   `inc byte [+0x498ea4] / cmp bh, 6 / jne / mov byte [+0x498ea4], 0`）；
+ *   替身那支 `0x0040c71f..0x0040c744`（看替身记录 `+13`）同形。
+ */
+export const SLEEPWALK_MARK_FRAMES = 6;
 
 /**
  * 原版绘制槽的排序键。
@@ -1086,6 +1118,11 @@ export interface ActorToken {
    * 与「夢遊走姿」（`+13`）是**两个不同的字段**：冬眠画成灰、夢遊换走姿图组。
    */
   frozen: boolean;
+  /**
+   * ★ **夢遊中**（替身记录 `+13`）—— 棋子上方再贴一张「ZZZ」（`SLEEPWALK_MARK_RESOURCE`）。
+   * @source `0x00408acb cmp byte [rec + 0x498e35], 0` → `0x00408b26 mov eax, [0x496978]`
+   */
+  sleepwalking: boolean;
   /** 绘制槽类别：当前行动者 0xd，其余 0x8 */
   klass: number;
 }
@@ -1238,6 +1275,7 @@ export function actorTokens(
       walking,
       /** ★ 冬眠中 —— 绘制时套 `ASLEEP_FILTER`（原版 `_rich4_convert_sprite`）*/
       frozen,
+      sleepwalking: asleep,
       klass: current === actor ? DRAW_CLASS.currentPlayer : DRAW_CLASS.npc,
     });
   }
@@ -1750,6 +1788,14 @@ export class BoardRenderer {
    */
   #walkFrame = 0;
   /**
+   * 夢遊标记（「ZZZ」）的帧号 —— **每人一份**（原版 `[0x498ea4 + 编号×0x34]`），
+   * 键同 `#held`：玩家 `p0..p3`、替身 `a0..a4`。只在**这个人夢遊着走子**时一 tick 进一帧
+   * （见 `SLEEPWALK_MARK_FRAMES`），不走就停在那一帧。纯表现，不进 state。
+   */
+  readonly #sleepwalkMarkFrame = new Map<string, number>();
+  /** 这一帧谁在夢遊（`draw` 开头从 state 抄一份，补间推帧那里要用）：键同上 */
+  #sleepwalkingNow: ReadonlySet<string> = new Set();
+  /**
    * 正在播的走子补间 —— 世界坐标的起终点 + 起始时刻 + 这一格几个 tick。
    * ★ 纯表现：不进 state，丢了只是少一段平滑（C-DET-4）。
    */
@@ -2194,6 +2240,7 @@ export class BoardRenderer {
     const absolute = step.tickAt + k;
     if (absolute > w.ticked) {
       this.#actorFrame.set(slot, (this.#actorFrame.get(slot) ?? 0) + (absolute - w.ticked));
+      this.#advanceSleepwalkMark(`a${slot}`, absolute - w.ticked);
       w.ticked = absolute;
     }
     const p = walkFramesFor(step.from, step.to, step.ticks, step.exactTicks)[k - 1];
@@ -2290,6 +2337,7 @@ export class BoardRenderer {
     const k = Math.min(w.ticks, Math.floor((now - w.start) / w.tickMs) + 1);
     if (k > w.ticked) {
       this.#walkFrame = (this.#walkFrame + (k - w.ticked)) & 0xff;
+      this.#advanceSleepwalkMark(`p${playerIndex}`, k - w.ticked);
       w.ticked = k;
     }
     const frames = walkFramesFor(w.from, w.to, w.ticks, w.exactTicks);
@@ -2387,6 +2435,7 @@ export class BoardRenderer {
 
     const { map, state, camera, hoverNode } = input;
     const ctx = this.#ctx;
+    this.#sleepwalkingNow = sleepwalkingKeys(state);
     const width = input.viewport.w;
     const height = input.viewport.h;
     // 棋盘画进一块 1:1 的离屏画布，缩放交给舞台统一做
@@ -3117,11 +3166,17 @@ export class BoardRenderer {
       //   `deferred-board.ts` 挂上）—— 原版 `0x40b93b` 见 `who_plays == 0 || & 0x40` 就只装 +18 那 8 张
       //   （@source 0x0040b972 / 0x0040b976 / 0x0040b9b7），没有走姿与骰子姿。
       const beggar = pl.whoPlays === 0 || (pl.whoPlays & WHO_PLAYS_WRECKED) !== 0;
-      const res = beggar ? characterBeggarSprite(pl.character) : characterSetBase(pl.character, pl.trafficMethod) + pose;
+      // ★ 夢遊：换睡衣那套（`characterSleepwalkSprite`，@source 0x0040ba16）—— 排在乞丐之后、交通方式之前
+      const sleepwalking = pl.blocking.sleepWalking !== 0;
+      const res = beggar
+        ? characterBeggarSprite(pl.character)
+        : sleepwalking
+          ? characterSleepwalkSprite(pl.character, pose)
+          : characterSetBase(pl.character, pl.trafficMethod) + pose;
       const count = this.#imageCount('Data.mkf', res);
       const dir = screenDirection(pl.direction, cam.view);
       /**
-       * ★ 夢遊/冬眠中的棋子**画成灰的**（外部审查 D-T047-4）。
+       * ★ **冬眠**中的棋子**画成灰的**（外部审查 D-T047-4）。夢遊不变灰 —— 换睡衣 + ZZZ（见上面 `res` 与下面的标记槽）。
        *
        * @source `_rich4_convert_sprite`（VA 0x004555c5 → `fcn_004555eb`）：
        * ```asm
@@ -3177,6 +3232,11 @@ export class BoardRenderer {
             ctx.drawImage(img, x, y, w, h);
           },
         });
+        // ★ 夢遊中：棋子上再贴一张「ZZZ」（与棋子同一个屏幕点、类别 0xe / 0xf）@source 0x00408870
+        if (sleepwalking) {
+          const mark = this.#sleepwalkMarkSlot(`p${pl.index}`, p.x + off, p.y - off, p.y, pl.index === state.currentPlayer);
+          if (mark !== null) slots.push(mark);
+        }
         continue;
       }
 
@@ -3283,9 +3343,59 @@ export class BoardRenderer {
           );
         },
       });
+      // ★ 夢遊中的替身同样贴「ZZZ」@source 0x00408acb / 0x00408b26
+      if (t.sleepwalking) {
+        const mark = this.#sleepwalkMarkSlot(`a${t.slot}`, p.x, p.y, p.y, t.klass === DRAW_CLASS.currentPlayer);
+        if (mark !== null) slots.push(mark);
+      }
     }
     return slots;
   }
+
+  /** 夢遊着走子：这个人的「ZZZ」帧跟着 tick 走（数到 6 回零）@source 0x0040c455 / 0x0040c71f */
+  #advanceSleepwalkMark(key: string, ticks: number): void {
+    if (ticks <= 0 || !this.#sleepwalkingNow.has(key)) return;
+    this.#sleepwalkMarkFrame.set(key, nextSleepwalkMarkFrame(this.#sleepwalkMarkFrame.get(key) ?? 0, ticks));
+  }
+
+  /**
+   * 「ZZZ」那一槽：贴在棋子**同一个屏幕点**上（图自带锚点），类别 0xe / 0xf。
+   * 图还没解好就不画（这一槽原版也是常驻指针，晚到一帧只是少画一帧标记）。
+   */
+  #sleepwalkMarkSlot(key: string, x: number, y: number, sortY: number, current: boolean): DrawSlot | null {
+    const count = this.#imageCount('Data.mkf', SLEEPWALK_MARK_RESOURCE);
+    if (count <= 0) return null;
+    const frame = (this.#sleepwalkMarkFrame.get(key) ?? 0) % count;
+    const sp = this.#spriteHeld(`z${key}`, 'Data.mkf', SLEEPWALK_MARK_RESOURCE, frame, (frame + 1) % count);
+    if (sp === null) return null;
+    const ctx = this.#ctx;
+    return {
+      key: drawKey(sortY, current ? DRAW_CLASS.currentSleepwalkMark : DRAW_CLASS.sleepwalkMark),
+      paint: () => {
+        ctx.drawImage(sp.bitmap, x - sp.anchorX, y - sp.anchorY, sp.width, sp.height);
+      },
+    };
+  }
+}
+
+/**
+ * 这一帧**谁在夢遊** —— 键同 `#held`：玩家 `p0..p3`（`+0x37`）、替身 `a0..a4`（记录 `+13`）。
+ * 纯函数，单测直接钉。
+ */
+export function sleepwalkingKeys(state: GameState): ReadonlySet<string> {
+  const out = new Set<string>();
+  state.players.forEach((p, i) => {
+    if (p.blocking.sleepWalking !== 0) out.add(`p${i}`);
+  });
+  state.specialActors.forEach((a, i) => {
+    if ((a?.sleepwalkDays ?? 0) !== 0) out.add(`a${i}`);
+  });
+  return out;
+}
+
+/** 「ZZZ」帧走 `ticks` 拍之后是第几帧（`inc / cmp 6 / 归零`）@source 0x0040c465..0x0040c47e */
+export function nextSleepwalkMarkFrame(frame: number, ticks: number): number {
+  return (frame + ticks) % SLEEPWALK_MARK_FRAMES;
 }
 
 /**
