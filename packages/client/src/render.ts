@@ -385,7 +385,11 @@ export interface RenderInput {
    *
    * `level` = 0 或沒在播時整份給 `null`（= 不套）。
    */
-  landFlash?: { lands: ReadonlySet<number>; level: number } | null;
+  /**
+   * ★ 第二十二份（gap-audit #6）：新聞 18 / 19 的白闪也走这里（同一支 `fcn_00451985`）；
+   *   它们可能闪到**設施**（挑中設施那一支 `0x0044a8d3` / `0x0044aa9f`）⇒ 多一张 `facilities`（設施 id）。
+   */
+  landFlash?: { lands: ReadonlySet<number>; facilities?: ReadonlySet<number>; level: number } | null;
 }
 
 /**
@@ -1608,6 +1612,8 @@ export interface BuildingArtItem {
    *   必须能认出每一件是哪个地块。其它三张表与过路费无关，故可缺省。
    */
   landId?: number;
+  /** 设施那一支带上**自己的設施 id**（新聞 18 / 19 的白闪按它认，见 `RenderInput.landFlash`） */
+  facilityId?: number;
 }
 
 /**
@@ -1705,6 +1711,7 @@ export function buildingArtItems(
         y: f.y,
         res: EMPTY_LAND_LOGO_RESOURCE,
         img: state.players[owner - 1]?.character ?? 0,
+        facilityId: f.id,
       });
       continue;
     }
@@ -1715,6 +1722,7 @@ export function buildingArtItems(
       res: base + facilitySlot(type, level),
       // @source VA 0x004093c3：与建筑同一算式，朝向在 facility +0x1b
       img: buildingImageIndex(f.facing, view),
+      facilityId: f.id,
       // @source VA 0x004093f9 `mov al,[ebp+0x19] / mov [槽+0x48a852],al` —— 原值照抄，0 也照抄
       ...withRing(ringColor(state, owner)),
     });
@@ -3008,7 +3016,7 @@ export class BoardRenderer {
     state: GameState,
     cam: Camera,
     vp: { w: number; h: number },
-    flash: { lands: ReadonlySet<number>; level: number } | null = null,
+    flash: { lands: ReadonlySet<number>; facilities?: ReadonlySet<number>; level: number } | null = null,
   ): DrawSlot[] {
     const ctx = this.#ctx;
     const k = 1;
@@ -3019,7 +3027,10 @@ export class BoardRenderer {
       if (p === null) continue;
       // ★ W-69：算进这笔过路费的地块这一帧要调亮（原版是 id 图上逐像素加）。
       //   level 为 0 时 `landFlash` 整份是 null，所以这里不必再判。
-      const lit = flash !== null && it.landId !== undefined && flash.lands.has(it.landId);
+      const lit =
+        flash !== null &&
+        ((it.landId !== undefined && flash.lands.has(it.landId)) ||
+          (it.facilityId !== undefined && flash.facilities?.has(it.facilityId) === true));
       slots.push({
         key: drawKey(p.y, DRAW_CLASS.building),
         paint: () => {

@@ -247,11 +247,25 @@ export interface BoardFilmWindow {
    *   这 2400 ms 里棋盘仍是影片之前的样子、镜头也不动。
    */
   filmHeld?: boolean;
+  /**
+   * ★ 第二十二份（gap-audit #6）：新聞 18 地震 / 19 山洪那一段**闪完重画之前**（排着等事件框 + 闪 880 ms）。
+   *   原版 pass 0 只画訊息框、pass 1 拆完（18 直接减 `+0x1a`、19 `0x40ab4a` 只重画小地图）也不重画棋盘，
+   *   直到 `0x451985` 闪完的 `view_to(0, 0, 1)`（18 `0x0044a8fe` / 19 `0x0044aac2`）⇒ 这段时间棋盘仍是拆之前。
+   */
+  newsFlash?: boolean;
 }
 
-/** 窗口开着吗 = 六条里有一条非空 */
+/** 窗口开着吗 = 七条里有一条非空 */
 export function boardFilmWindowOpen(w: BoardFilmWindow): boolean {
-  return w.buildPlaying || w.buildPending || w.filmPlaying || w.filmPending || w.filmQueued === true || w.filmHeld === true;
+  return (
+    w.buildPlaying ||
+    w.buildPending ||
+    w.filmPlaying ||
+    w.filmPending ||
+    w.filmQueued === true ||
+    w.filmHeld === true ||
+    w.newsFlash === true
+  );
 }
 
 /**

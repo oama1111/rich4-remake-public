@@ -324,6 +324,8 @@ import { dogBiteFxTrigger, filmPrecedesSendToHospital } from './dog-fx.ts';
 import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
 // 第十二份試玩回報：新聞 5 / 15 / 20 / 21 的整块影片（龍捲風 0x217 等），见 `news-place-fx.ts`
 import { newsPlaceFxTrigger } from './news-place-fx.ts';
+// ★ 第二十二份（gap-audit #6）：新聞 18 地震 / 19 山洪的白闪 + 静置 —— 规格见 `news-flash-fx.ts`
+import { newsFlashPhase, newsFlashTrigger, type NewsFlashCue } from './news-flash-fx.ts';
 import { disappearFxTrigger } from './disappear-fx.ts';
 // ★ 魔法屋「就地拆除房屋」那一段 0x211（女巫窗口关掉之后 `0x431caa` 里播的）—— 规格/判据见 `magic-fx.ts`
 import {
@@ -348,6 +350,7 @@ import {
   beginBoardFilm,
   boardFilmBitmap,
   boardFilmDone,
+  boardFilmHolding,
   boardFilmRedrawn,
   boardFilmWaitsForEventBox,
   type BoardFilm,
@@ -412,7 +415,7 @@ import { GO_SIZE, goButton, boardToScreen } from './go-button.ts';
 import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './cursor-warp.ts';
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
 import { shouldResumeDriver } from './driver-resume.ts';
-import { tollFlashLevel } from './toll-flash-fx.ts';
+import { TOLL_FLASH_TOTAL_MS, tollFlashLevel } from './toll-flash-fx.ts';
 import {
   noticeHoldsFilms,
   noticeKeyShowing,
@@ -1961,7 +1964,8 @@ function stageBusyFlags(withScreens = true): StageFlags {
     walkDone: renderer.walkDone(),
     diceFxActive: diceFx.active,
     // ★ W-69：過路費閃爍（`fcn_00451985` 是阻塞的，原版在費用訊息框之前）
-    tollFlash: tollFlash !== null,
+    // ★ 第二十二份：新聞 18 / 19 那一段（排着 / 闪 / 静置）同算这一位 —— 同一支阻塞的 `fcn_00451985`
+    tollFlash: tollFlash !== null || newsFlash !== null,
     godLine: godLine !== null || pendingGodLine !== null,
     godAscend: godAscend !== null,
   };
@@ -4818,6 +4822,9 @@ function startActionFx(action: Action, before: GameState): void {
   //   （龍捲風 0x217 等，`news-place-fx.ts` 的表）。判据是 `lastEvent` 刚变成带 `place` 的
   //   那几条新聞；与新聞 4 同样**不看**「動畫過程」开关、同样等訊息框收屏（`afterOverlay`）。
   startNewsPlaceFx(before, state);
+  // ★ 第二十二份（gap-audit #6）：新聞 18 地震 / 19 山洪 —— 没有整块影片，是受灾地块白闪一遍再停一下
+  //   （`news-flash-fx.ts`）。同样等事件框收屏；19 的房主台词排在它之后（`stageBusy` 押着）。
+  startNewsFlash(before, state);
   // ★ 第八份试玩回报 #3：被外星人綁架的飛碟 / 出國的飛機（`disappear-fx.ts`，`fcn_0040d375` 的尾巴）——
   //   判据是 `blocking.disappearing` 刚从 0 变非 0；原版这一支同样没有「動畫過程」开关。
   startDisappearFx(before, state);
@@ -6540,7 +6547,7 @@ let objectFlight: ObjectFlight | null = null;
  * 提示本身来自 `state.lastTollLands`（core 的瞬态字段，只有算进去的 > 1 块才写），
  * 与 `lastCardPlay` / `lastNpcWalks` 同一套「比引用」的判据。
  */
-let tollFlash: { lands: ReadonlySet<number>; at: number } | null = null;
+let tollFlash: { lands: ReadonlySet<number>; facilities?: ReadonlySet<number>; at: number } | null = null;
 /** 已经认过的 `state.lastTollLands`（比引用，见上面） */
 let tollLandsSeen: readonly number[] | null = null;
 
@@ -6562,11 +6569,97 @@ function noticeTollLands(now: number): void {
 }
 
 /** 这一拍该给渲染器的那份（没在播 / 亮度 0 ⇒ null） */
-function tollFlashInput(now: number): { lands: ReadonlySet<number>; level: number } | null {
+function tollFlashInput(
+  now: number,
+): { lands: ReadonlySet<number>; facilities?: ReadonlySet<number>; level: number } | null {
   if (tollFlash === null) return null;
   const level = tollFlashLevel(now - tollFlash.at);
   if (level === null || level === 0) return null;
-  return { lands: tollFlash.lands, level };
+  return tollFlash.facilities === undefined
+    ? { lands: tollFlash.lands, level }
+    : { lands: tollFlash.lands, facilities: tollFlash.facilities, level };
+}
+
+// ============================================================
+//  新聞 18「強烈地震」/ 19「山洪」：受灾地块白闪 → 重画 → 静置（gap-audit #6）
+// ============================================================
+
+/**
+ * 正在演（或排着等事件框收屏）的那一段；`null` = 没有。纯表现，不进 state。
+ *
+ * 时间轴（逐条 VA 见 `news-flash-fx.ts`）：事件框收屏（pass 0 → pass 1）→ **闪**（借 `tollFlash`
+ * 那一套：同一支 `fcn_00451985`，16 × 30 ms + 400 ms，期间棋盘按 before 画）→ 重画成 after
+ * （`view_to(0, 0, 1)`）→ **静置** 500 / 300 ms（`fcn_004528b9`）→ 收场。
+ * 整段算「台上还忙」（`stageBusyFlags` 的 `tollFlash` 位）⇒ 回合驱动 / 联机收件箱 / 19 的房主台词都等它。
+ */
+let newsFlash: { cue: NewsFlashCue; before: GameState; at: number | null; holdSkipped: boolean } | null = null;
+
+/** 这一条 action 刚抽到新聞 18 / 19 ⇒ 排上（等事件框收屏才闪）*/
+function startNewsFlash(before: GameState, after: GameState): void {
+  const cue = newsFlashTrigger(before, after);
+  if (cue === null) return;
+  newsFlash = { cue, before, at: null, holdSkipped: false };
+  // 事件框期间（pass 0）原版还一格没拆：棋盘按 before 画，闪完重画那一拍才放开
+  deferredBoardBefore = before;
+  log(`演出：新聞 ${cue.newsId} 标白 ${cue.lands.length} 块地 / ${cue.facilities.length} 处設施，静置 ${cue.holdMs} ms`);
+  requestRender();
+}
+
+/** 每帧推一次（与 `tickTollFlash` 同一处调）*/
+function tickNewsFlash(now: number): void {
+  const f = newsFlash;
+  if (f === null) return;
+  if (f.at === null) {
+    // ★ pass 1 在訊息框停满之后（`fcn_0044b6df` 0x0044b862 → 0x0044b873）；只等事件框那一屏
+    //   （与 `afterEventBox` 同一条理由：等「任何一屏」会与排在后面的訊息框互等）。走子补间也要先播完。
+    if (eventBoxScreen.active(uiEnv()) || !renderer.walkDone(now)) {
+      requestRender();
+      return;
+    }
+    f.at = now;
+    tollFlash = { lands: new Set(f.cue.lands), facilities: new Set(f.cue.facilities), at: now };
+    requestRender();
+    return;
+  }
+  let phase = f.holdSkipped ? 'done' : newsFlashPhase(now - f.at, f.cue.holdMs);
+  // 闪那一截被滑鼠鍵点掉了（`skipTollFlash`）⇒ `fcn_00451985` 提前返回，照常重画、从现在起静置
+  if (phase === 'flash' && tollFlash === null) {
+    f.at = now - TOLL_FLASH_TOTAL_MS;
+    phase = newsFlashPhase(now - f.at, f.cue.holdMs);
+  }
+  if (phase === 'flash') {
+    requestRender();
+    return;
+  }
+  // 闪完 ⇒ `view_to(0, 0, 1)`：只重画棋盘（bit0 ⇒ 不动标记，镜头仍停在那一处）—— 这时才露出拆过的样子
+  if (deferredBoardBefore === f.before) deferredBoardBefore = null;
+  if (phase === 'hold') {
+    requestRender();
+    return;
+  }
+  newsFlash = null;
+  resumeTurnDriver();
+  requestRender();
+}
+
+/**
+ * 静置那一截被滑鼠鍵点掉（`fcn_004528b9` 收到滑鼠鍵就返回）：新聞 18 / 19 闪完之后那一段，
+ * 以及 15 / 20 / 21 片后那一段（`BoardFilmSpec.holdMs`）。点掉了返回 `true`（这一下被它吃掉）。
+ */
+function skipPresentationHold(now: number): boolean {
+  const f = newsFlash;
+  if (f !== null && f.at !== null && tollFlash === null && !f.holdSkipped && newsFlashPhase(now - f.at, f.cue.holdMs) === 'hold') {
+    f.holdSkipped = true;
+    requestRender();
+    return true;
+  }
+  const film = boardFilm;
+  if (film !== null && boardFilmHolding(film, now)) {
+    boardFilm = { ...film, holdSkipped: true };
+    requestRender();
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -8059,6 +8152,8 @@ function boardFilmWindowFlags(): BoardFilmWindow {
     filmQueued: pendingBoardFilmAfter !== null,
     // ★ 第十八份：附身影片的最后一帧钉着等开场白（见 `BoardFilmWindow.filmHeld`）
     filmHeld: heldGodFilm !== null,
+    // ★ 第二十二份：新聞 18 / 19 白闪、重画之前（见 `BoardFilmWindow.newsFlash`）
+    newsFlash: newsFlash !== null && deferredBoardBefore === newsFlash.before,
   };
 }
 
@@ -8165,6 +8260,8 @@ function requestRender(): void {
     }
     // ★ W-69：過路費閃爍（纯表现）—— 认下 `state.lastTollLands`、到点收摊、没完就续帧
     if (screen === 'game') tickTollFlash(performance.now());
+    // ★ 第二十二份：新聞 18 / 19 的白闪（排着等事件框 → 闪 → 重画 → 静置）
+    if (screen === 'game') tickNewsFlash(performance.now());
     // ★ 原版会替玩家把系统指针挪到按钮上（试玩3 #2）：时机刚从关变开就挪一次
     cursorWarper.update();
     if (screen === 'game') shopTick(performance.now());
@@ -9801,6 +9898,7 @@ function startGame(): void {
   releaseBoardFilmFlics();
   releaseHeldGodFilm();
   deferredBoardBefore = null;
+  newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
   manifestHold = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
@@ -10321,6 +10419,8 @@ function bindInput(): void {
       skipTollFlash();
       return;
     }
+    // ★ 第二十二份：片后 / 闪后那一段静置（`fcn_004528b9`）同样「任意滑鼠鍵」提前返回，这一下被它吃掉
+    if (skipPresentationHold(performance.now())) return;
     // ★ 神明开场白同样「任意滑鼠鍵跳過」，这一下被它吃掉
     if (skipGodLine()) return;
 
@@ -11075,6 +11175,11 @@ function bindInput(): void {
       skipTollFlash();
       return;
     }
+    // ★ 第二十二份：静置那一截（右键也算「任意滑鼠鍵」`0x205`）
+    if (skipPresentationHold(performance.now())) {
+      e.preventDefault();
+      return;
+    }
     // ── 登记的整屏（契约见 ui-screen.ts）：**声明了** `contextmenu` 的屏先收 ──
     // ★ 原版 `WM_RBUTTONUP`（0x205）就是各屏「关掉最上面那扇窗」的那一拍；
     //   大地圖彈窗（`fcn_0040a801`）只有这一条出口。
@@ -11551,6 +11656,7 @@ function connectOnline(
           releaseBoardFilmFlics();
           releaseHeldGodFilm();
           deferredBoardBefore = null;
+          newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
           manifestHold = null;
           godAscend = null;
           pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
@@ -11975,6 +12081,7 @@ function settleAfterSilentRebuild(): void {
   releaseBuildFlics();
   // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
   deferredBoardBefore = null;
+  newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
   manifestHold = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局

@@ -1254,7 +1254,8 @@ describe('★ 設施 level == 0 是**空地**：不画公園贴片（需求方�
     });
     const items = buildingArtItems(facMap({ level: 0, owner: 2, type: 0 }), state, 3);
     expect(items).toEqual([
-      { x: 100, y: 200, res: EMPTY_LAND_LOGO_RESOURCE, img: state.players[1]!.character },
+      // `facilityId`：新聞 18 / 19 的白闪按它认（第二十二份）
+      { x: 100, y: 200, res: EMPTY_LAND_LOGO_RESOURCE, img: state.players[1]!.character, facilityId: 1 },
     ]);
     // 这一支**不吃视角**（图号是角色号，不是 `8 − (朝向+视角)`）
     for (let v = 0; v < 8; v++) {

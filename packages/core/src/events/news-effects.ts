@@ -116,13 +116,27 @@ export interface NewsEffectResult {
    */
   shares?: readonly { player: number; amount: number }[];
   /**
-   * ★ 「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21）**挑中的那一处**
+   * ★ 「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21，外加 18 地震）**挑中的那一处**
    *   —— 实体编码 + 改之前的主人（1 基）。**挑中了就带**，与改没改动无关：
    *   原版 pass 0 就把名字填进訊息框、pass 1 照样移镜头、播影片（新聞 21 挑到
    *   一块空地时 `mutate_land` 什么都不改，但前后那几步一步不少）。
    *   纯表现（见 `GameState.lastEvent.place`）；规则只看 `landMutations` / `facilityMutations`。
    */
   place?: { entity: number; owner: number };
+  /**
+   * ★ 新聞 18「強烈地震」/ 19「山洪」：pass 1 在 id 图上**标白**（`0x456c0a(id 图, 0x2f440, 实体, 0xffff)`）
+   *   然后一起闪一遍（`fcn_00451985`，与過路費同一支）的那几处 —— 实体编码（`0x7d0 + 地块 id` /
+   *   `0xfa0 + 設施 id`），顺序 = 原版标记顺序。纯表现（见 `GameState.lastEvent.flashLots`）。
+   *
+   * @source 18 `fcn_0044a6e0` pass 1：挑中地块 ⇒ `0x0044a7ef view_to(x, y, 2)` → `0x0044a7f9 0x409b18(1)`
+   *   → `0x0044a80c..0x0044a86b` 逐块 `strcmp(名字)`，**同名的每一块都标**（`0x0044a846`，等级 0 的也标，
+   *   标完才看 `+0x1a` 拆一级）；挑中設施 ⇒ `0x0044a8aa view_to` → `0x0044a8d3` 只标它自己
+   *   → `0x0044a8f3 0x451985` 闪 → `0x0044a8fe view_to(0, 0, 1)` 重画 → `0x0044a90b sleep(0x1f4)`。
+   * @source 19 `fcn_0044a91e` pass 1：`0x0044aa75 view_to` → `0x0044aa7f 0x409b18(1)` →
+   *   `0x0044aa9f` 标挑中那一处 → `0x0044aaaf mutate_land(实体, 1)` → `0x0044aab7 0x451985` 闪 →
+   *   `0x0044aac2 view_to(0, 0, 1)` → `0x0044aacf sleep(0x12c)` → 房主台词。
+   */
+  flashLots?: readonly number[];
   /**
    * ★ 新聞 4：**被这发爆炸送进医院的玩家**（原版尾巴那个 `push 3 / call 0x43ec3f`
    *   的落点，VA 0x00449285）。排序 = 原版 `for (i = 0; i < num_players; i++)` 的下标序。
@@ -1030,11 +1044,17 @@ export function applyNewsEffect(
     }
     const pick = rng.below(lands.length + facilities.length);
     if (pick < lands.length) {
-      const name = lands[pick]!.name;
+      const picked = lands[pick]!;
+      const name = picked.name;
+      // ★ 挑中的那一处（訊息框 `%s` 的地名、镜头 `view_to` @ 0x0044a7ef）+ 标白的同名地块
+      //   （`0x0044a846`：strcmp 相等就标，**不看等级**）—— 见 `NewsEffectResult.flashLots`
+      const place = { entity: ESTATE_LAND_BASE + picked.id, owner: picked.owner };
+      const flashLots: number[] = [];
       const landMutations: LandMutation[] = [];
       const releaseFlags: boolean[] = [];
       for (const l of lands) {
         if (l.name !== name) continue;
+        flashLots.push(ESTATE_LAND_BASE + l.id);
         const after = mutateLand(l, MUTATE_DEMOLISH_ONE);
         if (!after.changed) continue;
         releaseFlags.push(after.releasesConfined);
@@ -1050,13 +1070,20 @@ export function applyNewsEffect(
         players: applyRelease(base.players, releaseFlags),
         amount: landMutations.length,
         landMutations,
+        place,
+        flashLots,
       };
     }
     const fac = facilities[pick - lands.length]!;
+    // ★ 設施那一支只标它自己（`0x0044a8d3`，实体 = `[0x48c59c]`）
+    const place = { entity: ESTATE_FACILITY_BASE + fac.id, owner: fac.owner };
+    const flashLots = [place.entity];
     const after = mutateFacility(fac, MUTATE_DEMOLISH_ONE);
-    if (!after.changed) return { ...base, amount: 0 };
+    if (!after.changed) return { ...base, amount: 0, place, flashLots };
     return {
       ...base,
+      place,
+      flashLots,
       players: applyRelease(base.players, [after.releasesConfined]),
       amount: 1,
       facilityMutations: [
@@ -1099,11 +1126,14 @@ export function applyNewsEffect(
     //   pass 1 照样 `view_to` + 影片；新聞 21 挑到空地时 `mutate_land` 什么都不改）。
     //   `owner` 取**改之前**的值：原版 pass 0 就 `[0x48c5a0] = byte [实体 + 0x19]`
     //   （新聞 21 `0x0044ad70..0x0044ad79`；5 / 15 / 19 同形），房主台词看的是它。
+    // ★ 新聞 19「山洪」：挑中那一处标白、一起闪一遍（`0x0044aa9f` → `0x0044aab7`），见 `flashLots`
+    const flashes = entry.effects.includes('clearOwnerAny');
     if (pick < landCand.length) {
       const before = landCand[pick]!;
       const place = { entity: ESTATE_LAND_BASE + before.id, owner: before.owner };
+      const flash = flashes ? { flashLots: [place.entity] } : {};
       const after = mutateLand(before, razeMode);
-      if (!after.changed) return { ...base, amount: 0, place };
+      if (!after.changed) return { ...base, amount: 0, place, ...flash };
       return {
         ...base,
         players: applyRelease(base.players, [after.releasesConfined]),
@@ -1112,15 +1142,18 @@ export function applyNewsEffect(
           { id: after.land.id, level: after.land.level, type: after.land.type, owner: after.land.owner },
         ],
         place,
+        ...flash,
       };
     }
     const before = facCand[pick - landCand.length]!;
     const place = { entity: ESTATE_FACILITY_BASE + before.id, owner: before.owner };
+    const flash = flashes ? { flashLots: [place.entity] } : {};
     const after = mutateFacility(before, razeMode);
-    if (!after.changed) return { ...base, amount: 0, place };
+    if (!after.changed) return { ...base, amount: 0, place, ...flash };
     return {
       ...base,
       place,
+      ...flash,
       players: applyRelease(base.players, [after.releasesConfined]),
       amount: 1,
       facilityMutations: [

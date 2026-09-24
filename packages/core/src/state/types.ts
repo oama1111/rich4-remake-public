@@ -1279,6 +1279,15 @@ export interface GameState {
      */
     place?: { readonly entity: number; readonly owner: number };
     /**
+     * ★ 新聞 18「強烈地震」/ 19「山洪」：一起**闪一遍**的那几处（实体编码，同 `place`）。
+     *   18 = 与挑中那一块**同名的每一块地**（挑中設施就只它自己）；19 = 挑中那一处。
+     *   表现层据此在事件框收屏之后闪 16 帧 + 静 400 ms（`fcn_00451985`，与過路費同一支），
+     *   再重画、再停 500 / 300 ms。纯表现提示，不参与规则、不进指纹。
+     * @source 见 `events/news-effects.ts` 的 `NewsEffectResult.flashLots`（18 `0x0044a846` / `0x0044a8d3`，
+     *   19 `0x0044aa9f`；闪 `0x0044a8f3` / `0x0044aab7`）
+     */
+    flashLots?: readonly number[];
+    /**
      * ★ 魔法屋那一支（`kind === 'magicHouse'`）：**目标转盘抽中的条件号 0..11**。
      *
      * @source `spinMagicHouse` 的 `criterion`（VA 0x0043390b 一带：

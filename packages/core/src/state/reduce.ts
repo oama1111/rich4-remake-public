@@ -6126,8 +6126,10 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
       id: draw.eventId,
       ...(out.shares === undefined ? {} : { shares: out.shares }),
       // ★ 第十二份試玩回報：「龙卷风摧毁房屋没有看到具体哪个房子受影响」——
-      //   「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21）挑中的是哪一处（地名 / 房主）
+      //   「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21，外加 18 地震）挑中的是哪一处（地名 / 房主）
       ...(out.place === undefined ? {} : { place: { entity: out.place.entity, owner: out.place.owner } }),
+      // ★ 新聞 18 / 19：pass 1 标白、一起闪的那几处（`0x456c0a` → `0x451985`），见 `NewsEffectResult.flashLots`
+      ...(out.flashLots === undefined ? {} : { flashLots: out.flashLots }),
     },
     // ★ 第十四份：新聞 8/9/10 的受奖人 —— 共用尾巴 `0x00449a24`：`0x00449a5c call 0x41d3f4`（进现金）
     //   → `0x00449a80 call 0x44f354([0x48c59c], [0x48c5a0])`（進帳台词 6/7/8）。
@@ -6140,6 +6142,7 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
   //   `0x40af12(实体)` 取坐标 → `view_to(x, y, 2)`（flags 无 bit0 ⇒ 真的移镜头），
   //   然后才 `mutate_land` / `damage_area` + 影片：
   //   新聞 5 `0x00449424/0x0044943e`、15 `0x0044a52e`（直接读地块 +0/+2）、
+  //   18 `0x0044a7ef` / `0x0044a8aa`（直接读实体 +0/+2，地块 / 設施两支；第二十二份补上）、
   //   19 `0x0044aa5b/0x0044aa75`、20 `0x0044ac19/0x0044ac33`、21 `0x0044add3/0x0044aded`。
   //   与命運 0 那一支（上面 `out.demolished`）同一条通道：客户端 `syncViewTarget()`
   //   居中、演出收完自动复位（= 原版 `refresh_screen`）。

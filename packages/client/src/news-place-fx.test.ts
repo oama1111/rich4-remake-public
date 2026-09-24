@@ -126,6 +126,12 @@ describe('★ 訊息框 `%s` = 地名 @source 0x0044acfe strcpy(地块 + 4) → 
     expect(eventBoxDescription(newsEvent(21), 1, '合肥')).toBe('龍捲風侵襲合肥\n摧毀房屋一棟');
   });
 
+  it('★ 第二十二份：18 地震 core 现在也交 `place` ⇒ `%s` 同样是地名（pass 0 `0x0044a76f strcpy(名字)` → `0x0044a789 sprintf`）', () => {
+    expect(eventBoxDescription(newsEvent(18), 1, '合肥')).toBe('合肥強烈地震房屋倒塌');
+    // 18 没有房主那一句（pass 0 不写 [0x48c5a0]、pass 1 尾巴只有 sleep 500）
+    expect(NEWS_PLACE_OWNER_LINE.has(18)).toBe(false);
+  });
+
   it('★ 事件框那一屏真的拿 `place` 去换地名（源码钉子）', () => {
     const src = readFileSync(new URL('./event-box-screen.ts', import.meta.url), 'utf8');
     expect(src).toContain('newsPlaceName(env.topo, ev.place.entity)');
