@@ -149,10 +149,14 @@ import {
   PICKER_HIT,
   PICKER_STRIDE,
   PICKER_TOOL_ID,
+  facilityPickerOpen,
   openFacilityPicker,
   pickerNeededFor,
+  resetFacilityPicker,
+  setFacilityPickerGate,
 } from './facility-picker.ts';
-import { needsStealPick, openStealPicker } from './steal-picker.ts';
+import { needsStealPick, openStealPicker, resetStealPicker, stealPickerOpen } from './steal-picker.ts';
+import { staleLocalModals, type LocalModal } from './turn-modals.ts';
 import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue } from './amount-window.ts';
 import {
   Hud,
@@ -472,6 +476,7 @@ import {
   CURSOR_RESOURCE,
   createSoftCursorLayer,
   cursorShape,
+  localTurn,
   resolveCursor,
   type CursorFrame,
   type CursorShape,
@@ -1106,6 +1111,55 @@ function dismissAtm(): void {
   closeAtm();
   if (state.pending?.kind === 'atm') dispatch({ type: 'declineDecision' });
   requestRender();
+}
+
+/**
+ * 本机模态窗跟着回合走（判据在 `turn-modals.ts`）：ATM 只随本机回合里的 `pending{atm}` 活着；
+ * 选目标 / 点数盘 / 选股 / 設施类别 / 搶奪挑件在回合离开本机真人时收掉。
+ * ★ 被收走不是「本人取消」：不回调、不放取消音、不重开卡片欄、不派 action。
+ */
+function dropStaleLocalModals(): void {
+  const stale = staleLocalModals(
+    { pendingKind: state.pending?.kind ?? null, localTurn: localTurn({ state, localSeat: net?.seat ?? null }) },
+    {
+      atm: atm !== null,
+      pick: pick !== null,
+      dicePick: dicePick !== null,
+      stockPick: stockPick !== null,
+      facilityPicker: facilityPickerOpen(),
+      stealPicker: stealPickerOpen(),
+    },
+  );
+  for (const k of stale) dropLocalModal(k);
+  if (stale.length > 0) {
+    log(`▷ 回合已不在本機：收掉 ${stale.join(' / ')}`);
+    requestRender();
+  }
+}
+
+function dropLocalModal(k: LocalModal): void {
+  switch (k) {
+    case 'atm':
+      closeAtm();
+      return;
+    case 'pick':
+      endPick();
+      return;
+    case 'dicePick':
+      dicePick = null;
+      return;
+    case 'stockPick':
+      stockPick = null;
+      stockPickAt = null;
+      if (screen === 'stock') closeStock();
+      return;
+    case 'facilityPicker':
+      resetFacilityPicker();
+      return;
+    case 'stealPicker':
+      resetStealPicker();
+      return;
+  }
 }
 
 /**
@@ -4537,6 +4591,9 @@ function notifyApplied(before: GameState): void {
   //   （`pending` 换了一种，甚至换了人）。一律收掉。
   amountPage = null;
   dialogHot = null;
+  // ★ pt22：本机那几扇只属于这一回合的窗（ATM、选目标、点数盘、选股…）—— `pending` 在别处答掉 /
+  //   回合被计时託管拿走时收掉（不论谁答的都经过这里；放在下面那道「电脑逛店」闸之外）
+  dropStaleLocalModals();
   // ★ 商店的界面状态跟着 `pending` 走：进店时快照货架、铺开场；离店时清掉。
   //   放在这里是因为不管谁答的（本地点、AI、服务器广播）都会经过这一条。
   // ⚠️ 电脑自己逛店 / 进銀行时**不铺场**（保持先前的行为：那两屏是给真人点的，
@@ -4862,6 +4919,7 @@ function notifyMagicApplied(before: GameState, beats: MagicSequence['beats']): v
   // 音效那一半照放（落点那一声等），台词一句不要 —— 逐段演的时候各段自己说
   playSoundFor(before, state);
   amountPage = null;
+  dropStaleLocalModals();
   dialogHot = null;
   if (!aiVenuePending(state)) {
     syncShopUi();
@@ -6671,6 +6729,8 @@ setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
 // ★ 第十四份（D-008 收口）：嫁禍卡的选人窗 —— 与对话框同一道闸（`currentDialog`）：
 //   联机只让当前座位答、电脑 / 託管不开（它们由 `decidePending` / reducer 答）
 setScapegoatPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
+// ★ pt22：「請選擇設施類別」的待决交互那一支同一道闸（旁观端 / 电脑不开，见 `setFacilityPickerGate`）
+setFacilityPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
 // ★ 第十四份：訊息框队列里的亮牌那一扇（收費那一段的被动卡）交给事件提示框播
 setNoticeCardPopup(
   (cardId, text) => startCardRevealPopup(cardId, text, uiEnv()),
@@ -11978,6 +12038,8 @@ function settleAfterSilentRebuild(): void {
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
   pendingCardRoute = null; // 亮牌后待走的那一张同理
   npcWalksDrawn = null;
+  // ★ pt22：追上之后回合已不在本机 / 那一格已答掉 ⇒ 本机留着的模态窗一并收掉（同 `notifyApplied`）
+  dropStaleLocalModals();
   // ★ 第十二份試玩回報：追上之后此刻仍挂着的**场所**（商店 / 銀行 / 路過銀行）照常铺起来 ——
   //   与 `notifyApplied` 同一道人机闸；它们平时只在「一条 action 落地」时同步。
   if (!aiVenuePending(state)) {
