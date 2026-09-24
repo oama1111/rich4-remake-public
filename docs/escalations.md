@@ -1635,3 +1635,9 @@ Playwright 的 WebKit 构建里 Cache Storage 连一个 1 KB 的探针都留不�
   `presentation-order` 补一行「命運 6/7 被嫁禍：框先、台词后」（`0x0044c6c5`/`0x0044c7d7` → `0x0044124e` → `0x0044c6e0`）、
   第十六份卡死回报的 fixture 改从原第 105 条起、两条 endTurn 按录制冻结（重放到底 = 回报录下的终局指纹）、
   演出长跑 48 → 96 局（旧规矩对照 3 局卡死）。
+  **✅ 同日补**：开局还走一次行情 —— 新开一局主干 `0x00401ce1 call 0x407ad2`（含可成交量 `0x00407dfe`）→
+  `0x00401ce6 call 0x4190cf`（只 read_mkf）→ **`0x00401ceb call 0x4291d6`**（开头 `0x004291e2 call 0x428d01 / cmp eax,1 / je`
+  休市整段不走）→ `0x00401cf0` 跳伞过场（无 rand）→ `0x401981` 进棋盘才摆第 1 位。其间 `0x407ad2` 余下的直接调用
+  （`0x40a4e1`/`0x40b93b`/`0x428caf`/read_mkf…）与 `0x4190cf` 都不调 `rand`。`newGame` 照此在可成交量之后、摆第 1 位之前
+  按开局日期问 `marketOpenOn`，开市才 `tickStockMarket`；`tradable-volume.test.ts` 钉调用链字节、开市日次序（对独立重建的
+  随机状态）与休市日（元旦 / 星期日）一次不抽。既有测试缺省开局日 = 2010-01-01（元旦休市）⇒ 没有种子 / 夹具需要改。

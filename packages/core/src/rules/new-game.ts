@@ -26,7 +26,7 @@ import { CONFINEMENT_SLOTS } from './confinement.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { emptyBoard } from '../places/notice-board.ts';
 import { initialConfinement, initialSpecialActors } from './special-actors.ts';
-import { newStockMarket, refreshTradableShares } from '../places/stock-market.ts';
+import { marketOpenOn, newStockMarket, refreshTradableShares, tickStockMarket } from '../places/stock-market.ts';
 import { emptyOwnership, type CommercialOwnership } from '../places/commercial.ts';
 import { makeObjects } from '../cards/summon.ts';
 import { OBJECT_COUNT } from './objects.ts';
@@ -439,7 +439,22 @@ export function newGame(opts: NewGameOptions): GameState {
     objects = placeObjectOfType(objects, type, node).objects;
   }
 
-  const market = refreshTradableShares(newStockMarket(globalMapId, map.commercials), rng);
+  // ★ 开局重算一次可成交量 @source `0x00407dfe call 0x42915a`（摆完物件、算完各企业自留股之后）
+  const refreshed = refreshTradableShares(newStockMarket(globalMapId, map.commercials), rng);
+  // ★★ 然后**走一次行情**（开局那一天）—— 新开一局的主干：
+  //   ```asm
+  //   00401ce1  call 0x407ad2      ; 载图（开局摆物件 0x00407d6a、可成交量 0x00407dfe 都在这里面）
+  //   00401ce6  call 0x4190cf      ; 只读图（read_mkf）
+  //   00401ceb  call 0x4291d6      ; ★ 行情：开头 `0x004291e2 call 0x428d01 / cmp eax,1 / je` 休市日整段不走
+  //   00401cf0  call 0x415872      ; 跳伞过场（没有 rand）
+  //   00401cfe  call 0x401981      ; 进棋盘 —— 第一次重画才摆第 1 位（两次 rand）
+  //   ```
+  //   休市判据与日推进里那一次同一支（`marketOpenOn`：节日 / 星期日 / 暂停天数），日期 = 开局日期；
+  //   开局没有暂停天数（`closedDays` 初值 0），也不走 `0x41cff9` 那段倒数（那在 `0x41cf67` 里）。
+  const openDate = startDate ?? START_DATE_MAX;
+  const market = marketOpenOn(globalMapId, openDate.year, openDate.month, openDate.day, refreshed.closedDays)
+    ? tickStockMarket(refreshed, rng, (i) => map.commercials.find((c) => c.id === i)?.assetValue ?? null)
+    : refreshed;
 
   const state: GameState = {
     mode,

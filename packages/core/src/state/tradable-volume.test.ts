@@ -19,6 +19,9 @@ import { newGame } from '../rules/new-game.ts';
 import { createDeck, FORTUNE_DECK_SIZE, NEWS_DECK_SIZE } from '../events/deck.ts';
 import { INITIAL_OBJECT_TYPES } from '../rules/object-landing.ts';
 import { WatcomRng } from '../rng/watcom.ts';
+import { marketOpenOn, tickStockMarket } from '../places/stock-market.ts';
+import { drawStartPlacement } from '../rules/start-placement.ts';
+import { runtimeOccupiedNodes } from '../rules/object-landing.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 import { landAll, topoOf } from '../testing/factories.ts';
@@ -125,5 +128,83 @@ describe('★ 每位玩家回合开头（`0x0041c868`）', () => {
     expect(after.currentPlayer).toBe(0);
     expect(after.market).toBe(before.market);
     expect(after.rngState).toBe(before.rngState);
+  });
+});
+
+// ============================================================
+//  开局那一次行情（`0x4291d6`）
+// ============================================================
+
+/** `rich4.exe` 的 VA → 文件字节 */
+function exeAt(va: number, n: number): number[] {
+  const d = readFileSync(EXE);
+  const off = va - 0x401000 + 1024;
+  return [...d.subarray(off, off + n)];
+}
+const callTarget = (va: number): number => {
+  const b = Buffer.from(exeAt(va, 5));
+  expect(b[0]).toBe(0xe8);
+  return va + 5 + b.readInt32LE(1);
+};
+
+describe('★ 开局那一次行情（`0x00401ceb call 0x4291d6`）', () => {
+  runExe('新开一局的主干：载图（含可成交量）→ 读图 → 行情 → 跳伞过场；行情开头先问休市', () => {
+    expect([0x401ce1, 0x401ce6, 0x401ceb, 0x401cf0].map(callTarget)).toEqual([0x407ad2, 0x4190cf, 0x4291d6, 0x415872]);
+    // 0x00407dfe（可成交量）在 0x407ad2 里
+    expect(callTarget(0x407dfe)).toBe(0x42915a);
+    // 004291e2  call 0x428d01 / 004291e7  cmp eax, 1 / 004291ea  je …（休市整段不走）
+    expect(callTarget(0x4291e2)).toBe(0x428d01);
+    expect(exeAt(0x4291e7, 5)).toEqual([0x83, 0xf8, 0x01, 0x0f, 0x84]);
+  });
+
+  /** 独立重建「洗牌 + 摆物件」之后的随机状态 */
+  const preMarket = (seed: number): number => {
+    const rng = new WatcomRng(seed >>> 0);
+    createDeck(rng, NEWS_DECK_SIZE);
+    createDeck(rng, FORTUNE_DECK_SIZE);
+    for (let i = 0; i < INITIAL_OBJECT_TYPES.length; i++) rng.next();
+    return rng.getState();
+  };
+
+  run('开市日开局：可成交量 → 行情各一次（次序照 exe），之后才摆第 1 位', () => {
+    const map = loadMap();
+    const openDay = { year: 2005, month: 3, day: 2 }; // 星期三、不是节日
+    expect(marketOpenOn(0, openDay.year, openDay.month, openDay.day)).toBe(true);
+    for (const seed of [1, 99, 4242]) {
+      const hook = newGame({ map, players: computers(4), seed, startNodeId: 1, startDate: openDay });
+      const vol = refRefresh(hook.market.stocks, preMarket(seed));
+      // 行情本体的算式由 `stock-market.test.ts` 钉着；这里钉的是**有没有走、走在哪**
+      const rng = new WatcomRng();
+      rng.setState(vol.rngState);
+      const plain = newGame({ map, players: computers(4), seed, startNodeId: 1, startDate: { year: 2010, month: 1, day: 1 } });
+      const ticked = tickStockMarket(
+        { ...plain.market, stocks: plain.market.stocks.map((st, i) => ({ ...st, f10: vol.f10[i]! })) },
+        rng,
+        (i) => map.commercials.find((c) => c.id === i)?.assetValue ?? null,
+      );
+      expect(hook.market, `种子 ${seed}`).toEqual(ticked);
+      expect(hook.rngState, `种子 ${seed}`).toBe(rng.getState());
+      // 行情真的动了价钱（有鉴别力）
+      expect(hook.market.stocks.map((x) => x.price)).not.toEqual(plain.market.stocks.map((x) => x.price));
+      // 第 1 位的两次摆人抽签紧跟在行情之后
+      const real = newGame({ map, players: computers(4), seed, startDate: openDay });
+      const p = drawStartPlacement(map.nodes, runtimeOccupiedNodes([], real.objects, real.specialActors), rng)!;
+      expect({ nodeId: real.players[0]!.nodeId, lastNodeId: real.players[0]!.lastNodeId, direction: real.players[0]!.direction }).toEqual(p);
+      expect(real.rngState).toBe(rng.getState());
+    }
+  });
+
+  run('休市日开局（元旦 / 星期日）：行情整段不走，一次 rand 都不抽', () => {
+    const map = loadMap();
+    for (const day of [
+      { year: 2010, month: 1, day: 1 },
+      { year: 2005, month: 3, day: 6 },
+    ]) {
+      expect(marketOpenOn(0, day.year, day.month, day.day)).toBe(false);
+      const s = newGame({ map, players: computers(4), seed: 7, startNodeId: 1, startDate: day });
+      const vol = refRefresh(s.market.stocks, preMarket(7));
+      expect(s.market.stocks.map((x) => x.f10)).toEqual(vol.f10);
+      expect(s.rngState).toBe(vol.rngState);
+    }
   });
 });
