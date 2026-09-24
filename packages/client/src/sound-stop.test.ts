@@ -47,6 +47,8 @@ class FakeSource {
   connect(): this {
     return this;
   }
+  /** 真 WebAudio 节点都有；`SoundPlayer` 在 `ended` 时把节点拆下（第十九份）*/
+  disconnect(): void { /* 不关心 */ }
   /** 手动静悄悄地模拟「自然播完」 */
   emitEnded(): void {
     for (const cb of this.#ended) cb();
@@ -57,6 +59,7 @@ class FakeGain {
   connect(): this {
     return this;
   }
+  disconnect(): void { /* 不关心 */ }
 }
 class FakeCtx {
   readonly sampleRate = 22050;

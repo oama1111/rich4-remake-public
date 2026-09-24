@@ -262,8 +262,23 @@ export function longPressAllowed(s: LongPressSnapshot): boolean {
 export function isTouchDevice(
   win: { matchMedia?: (q: string) => { matches: boolean }; navigator?: { maxTouchPoints?: number } },
 ): boolean {
-  if (win.matchMedia?.('(pointer: coarse)').matches === true) return true;
+  if (coarseQuery(win)?.matches === true) return true;
   return (win.navigator?.maxTouchPoints ?? 0) > 0;
+}
+
+/**
+ * ★ 第十九份（iPhone 发烫）：`isTouchDevice` 每帧都问（`syncTouchCancel`），而每次
+ *   `matchMedia()` 都新建一个查询对象。`MediaQueryList.matches` 本身是**活的**（接上 / 拔掉
+ *   键盘触控板时会跟着变），所以缓存查询对象、每次读它的 `matches`，结果与先前逐次新建完全一样。
+ */
+const coarseQueries = new WeakMap<object, { matches: boolean } | null>();
+function coarseQuery(win: { matchMedia?: (q: string) => { matches: boolean } }): { matches: boolean } | null {
+  let q = coarseQueries.get(win);
+  if (q === undefined) {
+    q = win.matchMedia?.('(pointer: coarse)') ?? null;
+    coarseQueries.set(win, q);
+  }
+  return q;
 }
 
 // ============================================================

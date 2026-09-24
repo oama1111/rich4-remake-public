@@ -663,6 +663,8 @@ import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { pendingScreens } from './overlay.ts';
 import { BLOCKING_PRESENTATIONS, DAY_AND_MAGIC_BOXES, PresentationHost } from './presentation-host.ts';
 import { dividendDayCrossed } from './shares-screen.ts';
+import { DisplayList, installBitmapCloseGuard } from './display-list.ts';
+import { installPageVisibility } from './page-visibility.ts';
 import {
   CURSOR_ARCHIVE,
   CURSOR_RESOURCE,
@@ -727,7 +729,8 @@ installViewportFit(window, document.body.style);
 // ⚠️ 側欄不再是独立的 HTML 画布 —— 它是舞台 640×480 里的一块
 //   （见 stage.ts 的 LAYOUT.panel），跟着一起缩放，命中判定也走舞台坐标。
 const ctx = (() => {
-  const c = canvas.getContext('2d');
+  // ★ 第十九份：不透明画布（每帧先铺黑再贴舞台，本来就没有透明像素）—— 合成时少一次与页面的混合
+  const c = canvas.getContext('2d', { alpha: false });
   if (c === null) throw new Error('无法取得 2D 绘图上下文');
   return c;
 })();
@@ -1961,7 +1964,21 @@ function stageBusyFlags(withScreens = true): StageFlags {
   };
 }
 
+/**
+ * ★ 第十九份（iPhone 发烫）：页面在后台。浏览器此时不跑 rAF ⇒ 演出全冻住，
+ *   回合驱动 / 联机收件箱若照旧按渲染周期重排，只是在后台每秒空转几十次。
+ */
+let pageHidden = false;
+/** 后台时有驱动被停在闸口上（回前台要叫醒它们） */
+let driversParked = false;
+
 function holdForActorWalk(reschedule: () => void): boolean {
+  // ★ 第十九份：后台时不重排 —— 停在这里，回前台由 `onPageShown()` 统一叫醒
+  //   （action 还没派 / 收件箱那条还没施加，醒来重新判一次，一条不丢）
+  if (pageHidden) {
+    driversParked = true;
+    return true;
+  }
   const held = holdForActorWalkReason();
   noteHold(held);
   if (held === null) return false;
@@ -3918,8 +3935,12 @@ const MUTED_BY_URL = new URLSearchParams(window.location.search).get('mute') ===
 
 function unlockAudio(): void {
   if (MUTED_BY_URL) return;
-  sound.unlock();
+  // ★ 第十九份（iPhone 发烫）：音效与背景音乐**共用一个** AudioContext（先前各建一个 ⇒
+  //   手机上两条音频渲染线程一直开着）。音乐先建，音效挂上去；万一没建成再退回音效自建。
   music.unlock();
+  const shared = music.context;
+  if (shared !== null) sound.attach(shared);
+  else sound.unlock();
   if (musicStarted) return;
   musicStarted = true;
   // ★ 解锁**之前**点过的那一首（标题 MIDI01 就是开机就点的）由
@@ -3947,6 +3968,67 @@ function unlockAudio(): void {
  * `capture` + `once`：捕获相先于任何业务监听，命中一次就摘掉。解锁后立刻
  * 补播当前该放的那首（见 `unlockAudio`）。桌面版与浏览器同源，**不写平台分支**。
  */
+/**
+ * ★ 第十九份（iPhone 发烫）：切后台 / 回前台。
+ *
+ * 后台：挂起音频上下文（音乐停在原处）、回合驱动与收件箱停在闸口（`holdForActorWalk`）、
+ *   演出看门狗不计时、GO 鈕闪烁不要帧。浏览器自己会停 rAF。
+ * 前台：恢复音频（iOS 若要求再来一次手势，就挂一次性监听）；整帧重画一次；叫醒驱动；
+ *   联机收件箱若在后台攒了一大截，**静默**施加到只剩最后 `NET_INBOX_KEEP` 条再照常播
+ *   （与中途进房的 `catchUpSilently` 同一口径：不补演看不见的那段；每条照样 `noteApplied` 报校验和）。
+ */
+function bindPageVisibility(): void {
+  pageHidden = document.hidden;
+  installPageVisibility(document, window, {
+    onHide: () => {
+      pageHidden = true;
+      void music.setBackground(true);
+    },
+    onShow: onPageShown,
+  });
+}
+
+function onPageShown(): void {
+  pageHidden = false;
+  presentationStallKey = '';
+  void music.setBackground(false).then((running) => {
+    if (running || pageHidden) return;
+    const once: AddEventListenerOptions = { once: true, capture: true };
+    for (const type of ['pointerdown', 'touchend', 'keydown'] as const) {
+      window.addEventListener(type, () => void music.setBackground(false), once);
+    }
+  });
+  displayList.invalidate();
+  stageBlitOwed = true;
+  requestRender();
+  if (net !== null) catchUpNetAfterHidden();
+  if (driversParked) {
+    driversParked = false;
+    resumeTurnDriver();
+    pumpNetInbox();
+  }
+}
+
+/** 回前台时收件箱积压过多 ⇒ 前面那一截静默施加（见 `bindPageVisibility`） */
+function catchUpNetAfterHidden(): void {
+  if (netInbox.length <= NET_INBOX_KEEP || screen === 'intro') return;
+  const burst = netInbox.splice(0, netInbox.length - NET_INBOX_KEEP);
+  if (netPumpTimer !== null) {
+    clearTimeout(netPumpTimer);
+    netPumpTimer = null;
+  }
+  for (const item of burst) {
+    const next = reduce(state, item.action, topo);
+    if (next !== state) history.push(item.action);
+    state = next;
+    if (item.action.type === 'rollDice') awaitingOwnRoll = false;
+    net?.noteApplied(item.seq);
+  }
+  settleAfterSilentRebuild();
+  log(`⟳ 回到前台：靜默施加 ${burst.length} 條 action（第 ${state.turnCount} 回合）`);
+  pumpNetInbox();
+}
+
 function bindAudioUnlock(): void {
   const once: AddEventListenerOptions = { once: true, capture: true };
   const types: readonly (keyof WindowEventMap)[] = [
@@ -5213,10 +5295,21 @@ function aiDelay(): number {
 const stage = document.createElement('canvas');
 stage.width = SCREEN_W;
 stage.height = SCREEN_H;
+/**
+ * ★ 第十九份（iPhone 发烫）：三块离屏画布的绘制指令逐帧去重 —— 指令表与上一帧一样
+ *   就整帧不画、不贴屏（tick / 演出计时照旧逐帧跑）。原理与安全性见 `display-list.ts`。
+ *   `?dlverify=1`（仅开发构建）：一律照画，并逐像素核对「本该跳过」的帧。
+ */
+const displayList = new DisplayList({
+  verify: import.meta.env.DEV && new URLSearchParams(window.location.search).get('dlverify') === '1',
+});
+installBitmapCloseGuard(displayList);
+/** 舞台画过、还没贴上屏（异常中断的帧 / 提前 return 的帧留下的账） */
+let stageBlitOwed = true;
 const stageCtx = (() => {
   const c = stage.getContext('2d');
   if (c === null) throw new Error('无法取得舞台绘图上下文');
-  return c;
+  return displayList.wrap(c);
 })();
 
 /** 棋盘的离屏画布 —— 439×440，正是原版棋盘区的大小 */
@@ -5226,7 +5319,7 @@ boardCanvas.height = LAYOUT.board.h;
 const boardCtx = (() => {
   const c = boardCanvas.getContext('2d');
   if (c === null) throw new Error('无法取得棋盘绘图上下文');
-  return c;
+  return displayList.wrap(c);
 })();
 
 /** 側欄的离屏画布 —— 200×480 */
@@ -5236,7 +5329,7 @@ hudCanvasOff.height = SCREEN_H;
 const hudOffCtx = (() => {
   const c = hudCanvasOff.getContext('2d');
   if (c === null) throw new Error('无法取得側欄绘图上下文');
-  return c;
+  return displayList.wrap(c);
 })();
 
 /** 当前屏幕 */
@@ -7915,6 +8008,9 @@ function requestRender(): void {
   renderQueued = true;
   requestAnimationFrame(() => {
     renderQueued = false;
+    // ★ 第十九份：本帧的绘制指令从这里开始记（见 `display-list.ts`）；上一帧若异常中断没收尾，先收掉
+    if (displayList.inFrame && displayList.endFrame()) stageBlitOwed = true;
+    displayList.beginFrame();
     resizeCanvas();
     // ★★ W-60：**刚回到棋盘**的那一帧把回合驱动重新叫起来（阻断级 bug 的唯一闸门）。
     //
@@ -8111,6 +8207,7 @@ function requestRender(): void {
       // ★ 拉幕播完（最后一名小人走出画面）→ 这才真的开局。
       //   原版是自己给自己 PostMessage 一个 WM_KEYDOWN，见 setup.ts 的注释。
       if (drawSetup(stageCtx, setup, spriteNow, now, setupScene, outro)) {
+        if (displayList.endFrame()) stageBlitOwed = true;
         finishSetupOutro();
         return;
       }
@@ -8277,7 +8374,11 @@ function requestRender(): void {
     // 图到货（spriteArrived）时补一次，这一条不能省。
     if (pick !== null && spriteArrived) refreshPickCursor();
 
-    blitStage();
+    // ★ 第十九份：指令表与上一帧相同 ⇒ 舞台一个像素都没变，不贴屏（手机上省掉一整屏的合成提交）
+    if (displayList.endFrame() || stageBlitOwed) {
+      stageBlitOwed = false;
+      blitStage();
+    }
     // 触屏「取消」钮：放在这一帧**画完之后**判 —— 本帧的 `tick` 可能刚把某一屏收掉
     syncTouchCancel();
 
@@ -8455,7 +8556,8 @@ function presentationSignature(): string {
 
 /** 每秒一次（`setInterval`，不靠渲染循环 —— 卡死时没人再要帧）*/
 function watchPresentationDeadlock(now: number): void {
-  if (screen !== 'game' || !presentationWaiting()) {
+  // ★ 第十九份：后台时演出冻住是浏览器停了 rAF，不是死锁 —— 不计时（回前台从零数起）
+  if (pageHidden || screen !== 'game' || !presentationWaiting()) {
     presentationStallKey = '';
     presentationUnwindLevel = 0;
     return;
@@ -8862,12 +8964,25 @@ function drawShopStage(): void {
 }
 
 /** 舞台 → 窗口：整数倍放大、居中、不插值 */
+/**
+ * 画布四周的黑边铺过了（画布尺寸不变就一直在）。
+ *
+ * ★ 第十九份：先前每帧 `fillRect` 整块画布（手机横屏 2250×1026 ≈ 230 万像素）再贴舞台，
+ *   而黑边一辈子不变 —— 改成尺寸变了才整块铺一次，平时只铺舞台那一块（向外多取一像素，
+ *   小数倍放大时边缘那一列的混色与先前完全一样：都是「先黑、再贴」）。
+ */
+let letterboxFilled = false;
+
 function blitStage(): void {
   const m = currentMetrics();
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(stage, m.offsetX, m.offsetY, SCREEN_W * m.scale, SCREEN_H * m.scale);
+  const w = SCREEN_W * m.scale;
+  const h = SCREEN_H * m.scale;
+  if (letterboxFilled) ctx.fillRect(m.offsetX, m.offsetY, Math.ceil(w) + 1, Math.ceil(h) + 1);
+  else ctx.fillRect(0, 0, canvas.width, canvas.height);
+  letterboxFilled = true;
+  ctx.drawImage(stage, m.offsetX, m.offsetY, w, h);
 }
 
 /** 当前的放大倍数与居中偏移（按**设备像素**算） */
@@ -9004,8 +9119,8 @@ const GO_BLINK_MS = 0x1f4;
 let goBlink = false;
 setInterval(() => {
   goBlink = !goBlink;
-  // 没在等人掷骰就不用重画（GO 鈕那时根本不显示）
-  if (screen === 'game') requestRender();
+  // 没在等人掷骰就不用重画（GO 鈕那时根本不显示）；后台也不用（第十九份）
+  if (screen === 'game' && !pageHidden) requestRender();
 }, GO_BLINK_MS);
 
 /**
@@ -9173,14 +9288,19 @@ function rotateView(delta: number): void {
  *   放大倍数变成非整数，像素糊掉——那正是要避免的事。
  *   高 DPI 屏上多出来的物理像素用更大的整数倍吃掉。
  */
-function resizeCanvas(): void {
+function resizeCanvas(): boolean {
   const dpr = window.devicePixelRatio || 1;
   const w = Math.round(canvas.clientWidth * dpr);
   const h = Math.round(canvas.clientHeight * dpr);
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
+    // 改尺寸会把画布清空 ⇒ 下一帧无论如何都要贴一次，黑边也要重铺
+    stageBlitOwed = true;
+    letterboxFilled = false;
+    return true;
   }
+  return false;
 }
 
 // ============================================================
@@ -11842,7 +11962,9 @@ function pumpNetInbox(delay = 0): void {
     //   演出（走子/買地/影片）會被靜默吞掉 —— 過場放完直接看到結果。
     //   排隊等它放完是安全的：過場有硬上限（4 人局 `introMs` ≤ 約 14.9 s），必然結束。
     if (screen === 'intro') {
-      pumpNetInbox(RENDER_MS);
+      // ★ 第十九份：后台时过场不会前进（没有 rAF），别每 20 ms 空转
+      if (pageHidden) driversParked = true;
+      else pumpNetInbox(RENDER_MS);
       return;
     }
     // ★★ 放行「本机自己在等的那条 `rollDice` 回包」（第九份试玩回报「掷骰延迟」）。
@@ -12165,6 +12287,8 @@ async function boot(): Promise<void> {
          * 他自己跟价 / 放弃、落槌演出」只能在这块屏上验收。
          * @returns 真的开出一场返回 true（`state.pending.kind === 'auction'`）
          */
+        /** ★ 第十九份：绘制指令去重的计数（帧 / 真画 / 跳过 / 自检不符）—— 给 `tools/perf-mobile-pw.mjs` 用 */
+        renderStats: () => ({ ...displayList.stats }),
         /** 此刻接管整屏的那一屏的 id（`null` = 棋盘）—— 给自动化用 */
         overlayId: () => activeUiScreen()?.id ?? null,
         /**
@@ -12549,6 +12673,8 @@ async function boot(): Promise<void> {
     bindTouchGestures(canvas, { longPress: longPressAllowedNow });
     // ★ 第一次交互就解锁音频 —— 画布之外的任意一点/任意一键也算（autoplay 政策）
     bindAudioUnlock();
+    // ★ 第十九份：切后台 / 回前台（音频挂起、驱动停在闸口、回来静默追上）
+    bindPageVisibility();
     // ★ W-74：「我还在这儿」——只要有鼠标 / 键盘输入就报一次（自己有 10 秒节流）
     for (const type of ['mousemove', 'mousedown', 'keydown', 'wheel'] as const) {
       window.addEventListener(type, noteAlive, { passive: true });
