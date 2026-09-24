@@ -34,6 +34,22 @@ describe('破产标记', () => {
     expect(after.hospitalOccupancy[2]).toBe(1);    // 别人的床位不动
   });
 
+  run('★★ 第十八份：破产先把贴图坐标按所在格重同步（住店时的旅館坐标不留下）@source 0x0040cdb0..0x0040cde4', () => {
+    const map = loadMap();
+    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
+    const base = fresh();
+    const node = map.nodes.find((n) => n.id === base.players[1]!.nodeId)!;
+    const s: GameState = {
+      ...base,
+      players: base.players.map((p, i) =>
+        i === 1 ? { ...p, xpos: node.x + 24, ypos: node.y + 71, blocking: { ...p.blocking, inHotel: 0x80 } } : p,
+      ),
+    };
+    const after = applyBankruptcy(s, 1, topo);
+    expect([after.players[1]!.xpos, after.players[1]!.ypos]).toEqual([node.x, node.y]);
+    expect(after.players[1]!.blocking.inHotel).toBe(0);
+  });
+
   run('出局者 whoPlays 归零、现金清空', () => {
     const s = applyBankruptcy(fresh(), 1);
     expect(isAlive(s.players[1]!)).toBe(false);

@@ -56,7 +56,7 @@
  *   `docs/deviations/T-034.md` 的 `D-T034-1`，本屏照抄。
  */
 
-import type { PendingInteraction, Player } from '@rich4/core';
+import type { GameState, PendingInteraction, Player } from '@rich4/core';
 import {
   auctionCanAfford,
   auctionNextBid,
@@ -363,14 +363,19 @@ export function auctionSeatCode(seat: {
   }
 }
 
-/** 六个「不在场」里的第几号；都不是返回 0 @source 0x496b9a..0x496b9f 的六次 `cmp` */
+/**
+ * 六个「不在场」里的第几号；都不是返回 0 @source 0x496b9a..0x496b9f 的六次 `cmp`。
+ *
+ * ★ 第十八份订正：六次是**顺序执行、各写一次**（`0x0043c155 cmp [+0x32] / je 0x43c176` …
+ *   每个 `je` 只跳过自己那一句 `mov word [座位+2], n`）⇒ 几项同时非 0 时**后写的赢**（号大者）。
+ */
 export function awayCodeOf(p: Player): number {
-  if (p.blocking.inHotel !== 0) return 1;
-  if (p.blocking.disappearing !== 0) return 2;
-  if (p.blocking.inPrison !== 0) return 3;
-  if (p.blocking.inHospital !== 0) return 4;
-  if (p.blocking.sleeping !== 0) return 5;
   if (p.blocking.sleepWalking !== 0) return 6;
+  if (p.blocking.sleeping !== 0) return 5;
+  if (p.blocking.inHospital !== 0) return 4;
+  if (p.blocking.inPrison !== 0) return 3;
+  if (p.blocking.disappearing !== 0) return 2;
+  if (p.blocking.inHotel !== 0) return 1;
   return 0;
 }
 
@@ -472,11 +477,13 @@ export function seatViewOf(
     const st = status[i] ?? 'active';
     let state: AuctionSeatState;
     if (i === seller) state = 'seller';
+    // ★ 第十八份：不在场（1..6）写在「出不起底价」(8) **之后**、会盖掉它，且整场不变（这几位举不了牌）
+    //   @source `0x0043c140`（写 8）→ `0x0043c155`..`0x0043c220`（写 1..6）
+    else if (away !== 0) state = 'away';
     else if (st !== 'active') {
       state = counted || top >= 0 ? 'passed' : 'broke';
       if (p.cash <= pending.basePrice) state = 'broke';
-    } else if (away !== 0) state = 'away';
-    else if (p.cash <= pending.basePrice) state = 'broke';
+    } else if (p.cash <= pending.basePrice) state = 'broke';
     else state = 'canBid';
     seats.push({
       player: i,
@@ -810,9 +817,43 @@ interface ScreenState {
   topBidder: number;
   /** 最后一次加价后的现价（`pending` 清掉之后就没地方读了）*/
   lastPrice: number;
+  /**
+   * ★ 第十八份：core 交来的落槌结果（`GameState.lastAuctionResults`）—— 有它就以它为准，
+   *   不靠屏内自己记（电脑那几口若不是本屏发的就记不到）。
+   */
+  result: { winner: number; price: number } | null;
+  /** ★ 第十八份：这一屏是替「开拍即流标」补开的 —— 开场那句要先走完再宣布流标 */
+  introHold: boolean;
 }
 
 let screen: ScreenState | null = null;
+
+type AuctionPendingView = Extract<PendingInteraction, { kind: 'auction' }>;
+
+/**
+ * ★★ 第十八份：「一开拍就没人能出价」的那几场（core 当场流标，`pending` 从没挂出来）。
+ *   原版照样开窗，窗口过程第一次复查就弹「無人出價，宣佈流標。」然后关窗
+ *   （`0x0043b295`..`0x0043b2da`：座位数 `esi` == 不可出价数 `edi` ⇒ `push 0x465063 / call 0x44ecb6`，状态 0xb）。
+ *   按落槌次序排着，本屏一场一场补演。
+ */
+let backlog: { pending: AuctionPendingView; entityImage: number; result: { winner: number; price: number } }[] = [];
+
+type AuctionHint = NonNullable<GameState['lastAuctionResults']>[number];
+
+/** 开拍即流标那一份 pending 补成屏能画的完整形状（缺的字段按 `openAuction` 的开场值）*/
+function hintPending(h: AuctionHint, players: readonly Player[]): AuctionPendingView {
+  const p = h.pending;
+  return {
+    ...p,
+    kind: 'auction',
+    price: p.price ?? p.basePrice,
+    top: p.top ?? -1,
+    topCash: p.topCash ?? 0,
+    seat: p.seat ?? -1,
+    status: p.status ?? players.map(() => 'givenUp' as const),
+    limits: p.limits ?? players.map(() => 0),
+  };
+}
 
 function runKey(p: PendingInteraction): string {
   if (p.kind !== 'auction') return '';
@@ -877,6 +918,8 @@ function startView(env: UiScreenEnv, pending: PendingInteraction): ScreenState {
     outcome: null,
     topBidder: -1,
     lastPrice: run.price,
+    result: null,
+    introHold: false,
   };
 }
 
@@ -895,6 +938,8 @@ function syncView(env: UiScreenEnv, pending: PendingInteraction): void {
  * 有人加过价就是成交（价 = 最后那口），没人加过就是流拍。
  */
 function finalOutcomeOf(st: ScreenState): { winner: number; price: number } {
+  // ★ 第十八份：core 交来的结果优先（屏内记账只是兜底 —— 电脑那几口未必是本屏发的）
+  if (st.result !== null) return st.result;
   if (st.topBidder < 0) return { winner: -1, price: 0 };
   return { winner: st.topBidder, price: st.lastPrice };
 }
@@ -909,8 +954,9 @@ function beginSettle(env: UiScreenEnv, st: ScreenState, out: { winner: number; p
   // ★ 同时把座位状态按**落槌那一份** `pending` 重新铺一遍：`pending` 是 core 清掉的，
   //   但 `pendingQueue` 里可能还有下一场（破产清算 / 魔法屋连拍），
   //   `syncView` 只认 `kind === 'auction'`，排队的那些不会把它带歪。
+  // ★ 第十八份：连拍时下一场的 pending 已经挂上了 —— 只认**同一场**的
   const frozen = env.state.pending;
-  if (frozen !== null && frozen.kind === 'auction') syncView(env, frozen);
+  if (frozen !== null && frozen.kind === 'auction' && runKey(frozen) === st.key) syncView(env, frozen);
   if (out.winner < 0) {
     st.message = AUCTION_PASSED_IN_TEXT;
   } else {
@@ -1000,7 +1046,30 @@ export const auctionScreen: UiScreen = {
    */
   active(env: UiScreenEnv): boolean {
     if (env.state.pending?.kind === 'auction') return true;
-    return screen !== null && (screen.settling || screen.outcome === null);
+    // ★ 第十八份：还有「开拍即流标」没补演的（`backlog`）也接管
+    return (screen !== null && (screen.settling || screen.outcome === null)) || backlog.length > 0;
+  },
+
+  /**
+   * ★★ 第十八份：认 core 交来的落槌结果（`GameState.lastAuctionResults`，只活一条 action）。
+   *   · 正在屏上的这一场 ⇒ 记下结果，结算演出以它为准；
+   *   · 屏没开过的（开拍即流标）⇒ 排进 `backlog` 补演。
+   */
+  event(before: GameState, after: GameState, env: UiScreenEnv): void {
+    const results = after.lastAuctionResults ?? null;
+    if (results === null || results === (before.lastAuctionResults ?? null)) return;
+    for (const h of results) {
+      const pending = hintPending(h, after.players);
+      const key = runKey(pending);
+      const result = { winner: h.winner, price: h.price };
+      if (screen !== null && !screen.settling && screen.result === null && screen.key === key) {
+        screen.result = result;
+        continue;
+      }
+      // 开拍那一刻的缩略图（落槌之后归属可能已经变了）
+      backlog.push({ pending, entityImage: entityImageOf({ ...env, state: before }, pending), result });
+    }
+    env.requestRender();
   },
 
   /**
@@ -1013,11 +1082,26 @@ export const auctionScreen: UiScreen = {
 
   tick(env: UiScreenEnv): void {
     const pending = env.state.pending;
-    if (pending === null || pending.kind !== 'auction') {
+    // ★ 第十八份：上一场的结算还在演 ⇒ 演完再轮到下一场（连拍时下一场的 pending 已经挂上了）
+    const live = pending !== null && pending.kind === 'auction' && screen !== null && screen.key === runKey(pending);
+    if (screen === null && backlog.length > 0) {
+      // 补演「开拍即流标」那一场：照常开屏、开场那句走完再宣布流标
+      const b = backlog.shift()!;
+      const st = startView({ ...env, state: { ...env.state, pending: b.pending } }, b.pending);
+      st.entityImage = b.entityImage;
+      st.result = b.result;
+      st.introHold = true;
+      screen = st;
+      env.music?.('midi06.mid');
+      env.requestRender();
+      return;
+    }
+    if (pending === null || pending.kind !== 'auction' || (screen !== null && !live)) {
       // core 已经落槌 —— 先起一段结算演出，演完收摊
       const st = screen;
       if (st === null) return;
       if (!st.settling) {
+        if (st.introHold && st.messageUntil !== 0 && env.now < st.messageUntil) return;
         beginSettle(env, st, finalOutcomeOf(st));
         return;
       }
@@ -1098,8 +1182,9 @@ export const auctionScreen: UiScreen = {
     const pending = env.state.pending;
     const st = screen;
     if (st === null) return;
+    // ★ 第十八份：只认屏上这一场的 pending（连拍时下一场可能已经挂上、而这一场还在演结算）
     const frozen =
-      pending !== null && pending.kind === 'auction'
+      pending !== null && pending.kind === 'auction' && runKey(pending) === st.key
         ? (pending as Extract<PendingInteraction, { kind: 'auction' }>)
         : null;
     drawAuctionScreen(env.stage, (a, r, i, k) => env.sprite(a, r, i, k), {
@@ -1171,6 +1256,21 @@ export const auctionScreen: UiScreen = {
 /** 只给单测用：把屏内的运行时清掉 */
 export function resetAuctionScreenForTest(): void {
   screen = null;
+  backlog = [];
+}
+
+/**
+ * ★ 第十八份：此刻本屏是**纯演出**（这一场已经落槌、只剩结算那段 / 补演「开拍即流标」）——
+ *   原版这段在模态窗口里（`0x43bde5` 阻塞），回合驱动与联机收件箱都该等它演完
+ *   （`presentation-host.ts` 的 `screensBlocking`）。还在竞价（`pending` 就是屏上这一场）时不算：
+ *   那时要靠驱动 / 收件箱把每一口送进来，挡了就死锁。
+ */
+export function auctionPresentationOnly(env: UiScreenEnv): boolean {
+  const pending = env.state.pending;
+  const live = pending !== null && pending.kind === 'auction' && screen !== null && screen.key === runKey(pending) && !screen.settling;
+  if (live) return false;
+  if (pending !== null && pending.kind === 'auction' && screen === null && backlog.length === 0) return false;
+  return screen !== null || backlog.length > 0;
 }
 
 /**

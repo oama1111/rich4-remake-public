@@ -48,6 +48,8 @@ import {
   AUCTION_SELLER_CODE,
   AUCTION_BROKE_CODE,
   AUCTION_SELLER_TEXT,
+  AUCTION_PASSED_IN_TEXT,
+  auctionPresentationOnly,
 } from './auction-screen.ts';
 import type { Sprite } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
@@ -322,11 +324,12 @@ describe('六个「不在场」@source 0x496b9a 起', () => {
     expect(AUCTION_STATUS_TEXT).toEqual(['住宿中', '消失中', '坐牢中', '住院中', '冬眠中', '夢遊中']);
   });
 
-  it('★ awayCodeOf 按 +0x32..+0x37 的先后取第一个非 0', () => {
+  it('★ awayCodeOf：+0x32..+0x37 六次顺序各写一次，同时非 0 时**后写的赢** @source 0x0043c155..0x0043c220', () => {
     const base = mkPlayer(0, 1);
     expect(awayCodeOf(base)).toBe(0);
     expect(awayCodeOf(withBlocking(base, { inHospital: 3 }))).toBe(4);
-    expect(awayCodeOf(withBlocking(base, { inHotel: 1, inPrison: 2 }))).toBe(1);
+    // 第十八份订正：每个 `je` 只跳过自己那一句 `mov word [座位+2], n`，后面几次照样比 ⇒ 3 盖掉 1
+    expect(awayCodeOf(withBlocking(base, { inHotel: 1, inPrison: 2 }))).toBe(3);
     expect(awayCodeOf(withBlocking(base, { sleepWalking: 1 }))).toBe(6);
   });
 });
@@ -711,5 +714,69 @@ describe('★★ 试玩 4 回归：落槌那一刻屏**不能**立刻退场（�
     auctionScreen.tick!(settled);
     // 一次都没人加价 ⇒ 流拍
     expect(auctionRunForTest()!.phase).toBe('passedIn');
+  });
+});
+
+describe('★★ 第十八份「怎么拍卖直接流标了」：结果以 core 的落槌提示为准', () => {
+  it('★ 电脑那几口不是本屏发的（单机回合驱动 / 联机服务器）⇒ 屏照样演「成交」，不再演成流標', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1, 34), mkPlayer(1, 2), mkPlayer(2, 2)];
+    const pending = auctionPending({ basePrice: 2500, bidders: [0, 1, 2], seat: 1, status: ['givenUp', 'active', 'active'] });
+    const { env } = mkEnv(pending, players);
+    auctionScreen.tick!(env); // 建桌
+    // 屏外有人把几口出完、core 落槌：1 号 4500 成交
+    const after = {
+      ...env.state,
+      pending: null,
+      lastAuctionResults: [{ pending: { ...pending, price: 4500, top: 1 }, winner: 1, price: 4500 }],
+    } as unknown as GameState;
+    auctionScreen.event!(env.state, after, env);
+    const settled = { ...env, state: after };
+    auctionScreen.tick!(settled);
+    expect(auctionRunForTest()!.phase).toBe('sold');
+    expect(auctionRunForTest()!.winner).toBe(1);
+    // 结算这段是纯演出：驱动 / 收件箱都该等它（原版模态窗）
+    expect(auctionPresentationOnly(settled)).toBe(true);
+    auctionScreen.tick!({ ...settled, now: settled.now + 5000 });
+    expect(auctionScreen.active({ ...settled, now: settled.now + 5000 })).toBe(false);
+    expect(auctionPresentationOnly({ ...settled, now: settled.now + 5000 })).toBe(false);
+  });
+
+  it('★ 竞价进行中不算纯演出（每一口要靠驱动 / 收件箱送进来）', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
+    const { env } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
+    expect(auctionPresentationOnly(env)).toBe(false);
+    auctionScreen.tick!(env);
+    expect(auctionPresentationOnly(env)).toBe(false);
+  });
+
+  it('★ 开拍即流标（pending 从没挂出来）⇒ 照原版开窗、开场那句走完再「無人出價，宣佈流標。」@source 0x0043b2c5..0x0043b2cd', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1, 10), mkPlayer(1, 2, 10)];
+    const { env } = mkEnv(null, players);
+    const opened = auctionPending({ basePrice: 2500, bidders: [0, 1], seat: -1, status: ['givenUp', 'givenUp'] });
+    const after = { ...env.state, lastAuctionResults: [{ pending: opened, winner: -1, price: 0 }] } as unknown as GameState;
+    auctionScreen.event!(env.state, after, env);
+    const e2 = { ...env, state: after };
+    expect(auctionScreen.active(e2)).toBe(true);
+    expect(auctionPresentationOnly(e2)).toBe(true);
+    auctionScreen.tick!(e2); // 开窗：开场那句
+    expect(auctionRunForTest()!.phase).toBe('bidding');
+    auctionScreen.tick!({ ...e2, now: e2.now + 500 }); // 开场那句还没走完
+    expect(auctionRunForTest()!.phase).toBe('bidding');
+    auctionScreen.tick!({ ...e2, now: e2.now + AUCTION_BOX_MS }); // 走完 ⇒ 宣布流標
+    expect(auctionRunForTest()!.phase).toBe('passedIn');
+    expect(AUCTION_PASSED_IN_TEXT).toBe('無人出價，宣佈流標。');
+    const done = { ...e2, now: e2.now + AUCTION_BOX_MS * 3 };
+    auctionScreen.tick!(done);
+    expect(auctionScreen.active(done)).toBe(false);
+  });
+
+  it('★ 不在场（1..6）盖掉「出不起底价」(8)：坐牢又没钱的那位显示「坐牢中」@source 0x0043c140 → 0x0043c19d', () => {
+    const players = [withBlocking(mkPlayer(0, 1, 10), { inPrison: 2 }), mkPlayer(1, 2)];
+    const seats = seatViewOf(auctionPending({ bidders: [0, 1], seat: 1, status: ['givenUp', 'active'] }), players, -1);
+    expect(seats[0]!.state).toBe('away');
+    expect(seats[0]!.away).toBe(3);
   });
 });

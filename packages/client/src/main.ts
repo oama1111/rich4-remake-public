@@ -5090,6 +5090,12 @@ function scheduleAi(): void {
   //   （`server/hub.ts` 的 `#driveComputers`）；提交权此刻属于举牌者而不是回合主人
   //   （core `actingSeat`），本机再发只会被定序器拒掉（issue #9）。
   if (net !== null && state.pending?.kind === 'auction') return;
+  // ★★ 第十八份（「怎么拍卖直接流标了」）：单机的竞价也**只由拍賣屏出**（`auction-screen.ts` 问同一个
+  //   `auctionNextBid`，一口一段挥槌）。原版电脑那一口是拍賣窗口自己的 100 ms 定时器在出
+  //   （窗口过程 `0x43a2dd`，`0x43a365 SetTimer`），窗口不开就不会有人举牌。先前回合主人是电脑时
+  //   这里也照 `decidePending` 答 ⇒ 新聞框还没收、拍賣屏还没开，几口就被回合驱动抢着出完了，
+  //   屏内也记不到是谁加的价 ⇒ 成交被演成「無人出價，宣佈流標。」。
+  if (state.pending?.kind === 'auction') return;
   aiTimer = window.setTimeout(() => {
     aiTimer = null;
     // ★ 节拍闸（T-047）：替身还在滑就重排、绝不派下一步 —— 判据见 holdForActorWalk

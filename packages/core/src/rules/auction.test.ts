@@ -674,6 +674,25 @@ describe('★ 座位表（loc_0043c110 / loc_00439f72 的建表段）', () => {
     ]);
   });
 
+  it('★★ 第十八份：不在场（+0x32..+0x37 任一非 0）不可出价 @source 0x0043c155..0x0043c220 写 1..6、0x0043c62e 只认 0', () => {
+    const fields = ['inHotel', 'disappearing', 'inPrison', 'inHospital', 'sleeping', 'sleepWalking'] as const;
+    for (const f of fields) {
+      const ps = four();
+      ps[2] = { ...ps[2]!, blocking: { ...ps[2]!.blocking, [f]: 1 } };
+      expect(auctionSeatStatus(ps, [0, 1, 2, 3], 1000), f).toEqual(['active', 'active', 'givenUp', 'active']);
+    }
+    // 停留 / 烏龜（+0x38 / +0x39）不在那六次比较里 ⇒ 照常可出价
+    const ps = four();
+    ps[1] = { ...ps[1]!, blocking: { ...ps[1]!.blocking, stopping: 1, tortoiseWalking: 1 } };
+    expect(auctionSeatStatus(ps, [0, 1], 1000)[1]).toBe('active');
+  });
+
+  it('★ 只看现金、不看存款（`0x0043c12c mov eax, [player+0x1c]`）', () => {
+    const ps = four();
+    ps[0] = { ...ps[0]!, cash: 34, moneyInBank: 120_734 };
+    expect(auctionSeatStatus(ps, [0, 1], 2500)[0]).toBe('givenUp');
+  });
+
   it('★ 恰好等于底价也出不起（原版 `cmp / jg`）', () => {
     const ps = four();
     ps[1] = { ...ps[1]!, cash: 1000 };
