@@ -721,6 +721,7 @@ import {
   setupUp,
   type SetupState,
 } from './setup.ts';
+import { drawSprite, drawSurface, hdStageRequested, setCurrentSurfaceScale, sizeSurface, surfaceScaleFor } from './hd-stage.ts';
 
 /**
  * HD 清单的文件名 —— `hdBase()` 是 `${assetBase() 去掉 /game}/hd`，清单在它旁边。
@@ -5492,6 +5493,41 @@ const hudOffCtx = (() => {
   return displayList.wrap(c);
 })();
 
+/**
+ * 高清舞台（`hd-stage.ts`）：开着时舞台 / 棋盘 / 側欄三块离屏画布按窗口的
+ * 放大倍数开像素，文字与超分素材不再被压回 640×480。
+ *
+ * ★ **默认关**（`?hd=1` 或 `localStorage['rich4.hd'] = '1'` 才开）——
+ *   关着时 `surfaceScale` 恒为 1，三块画布一次都不碰，画面与改造前逐像素一致。
+ */
+const hdStage = (() => {
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem('rich4.hd');
+  } catch {
+    // 隐私模式等拿不到 localStorage —— 按没开处理
+  }
+  return hdStageRequested(window.location.search, stored);
+})();
+
+/** 三块离屏画布当前的像素倍率（1 = 改造前的 640×480） */
+let surfaceScale = 1;
+
+/**
+ * 按当前窗口的放大倍数调三块离屏画布。每帧绘制之前调（紧跟 `resizeCanvas`）。
+ *
+ * ⚠️ 倍率一直是 1 时**什么都不做** —— 连变换都不重挂，保证关掉高清舞台时与改造前一致。
+ */
+function syncSurfaceScale(): void {
+  const s = surfaceScaleFor(currentMetrics().scale, hdStage);
+  if (s === 1 && surfaceScale === 1) return;
+  surfaceScale = s;
+  setCurrentSurfaceScale(s);
+  sizeSurface({ canvas: stage, ctx: stageCtx }, SCREEN_W, SCREEN_H, s);
+  sizeSurface({ canvas: boardCanvas, ctx: boardCtx }, LAYOUT.board.w, LAYOUT.board.h, s);
+  sizeSurface({ canvas: hudCanvasOff, ctx: hudOffCtx }, LAYOUT.panel.w, SCREEN_H, s);
+}
+
 /** 当前屏幕 */
 type Screen =
   | 'title' | 'setup' | 'options' | 'saveload' | 'lobby' | 'aiSettings' | 'intro' | 'assets'
@@ -5810,18 +5846,18 @@ function drawBailStage(): void {
     if (flow.stage === 'thanks' && flow.slot !== null && flow.slot >= 4) {
       const at = BAIL_INMATE_AT[place];
       const img = spriteNow('Panel.mkf', BAIL_INMATE_RESOURCE, flow.slot - 4, true);
-      if (img !== null) stageCtx.drawImage(img.bitmap, at.x - img.anchorX, at.y - img.anchorY);
+      if (img !== null) drawSprite(stageCtx, img, at.x - img.anchorX, at.y - img.anchorY);
     }
     if (flow.stage === 'farewell') {
       const img = spriteNow('Panel.mkf', BAIL_PLACES.hospital.resource, HOSPITAL_BYE_NURSE.image, true);
-      if (img !== null) stageCtx.drawImage(img.bitmap, HOSPITAL_BYE_NURSE.x - img.anchorX, HOSPITAL_BYE_NURSE.y - img.anchorY);
+      if (img !== null) drawSprite(stageCtx, img, HOSPITAL_BYE_NURSE.x - img.anchorX, HOSPITAL_BYE_NURSE.y - img.anchorY);
     }
     // YES/NO（`_rich4_ui_yesno` 居中 (320,240)）：光标在哪一半就亮哪一半
     if (flow.stage === 'confirm') {
       const which = flow.yesNo === 'yes' ? YESNO_IMAGE.yes : flow.yesNo === 'no' ? YESNO_IMAGE.no : YESNO_IMAGE.none;
       const img = spriteNow('Data.mkf', YESNO_RESOURCE, which, true);
       if (img !== null) {
-        stageCtx.drawImage(img.bitmap, BAIL_YESNO_CENTER.x - img.width / 2, BAIL_YESNO_CENTER.y - img.height / 2);
+        drawSprite(stageCtx, img, BAIL_YESNO_CENTER.x - img.width / 2, BAIL_YESNO_CENTER.y - img.height / 2);
       }
     }
   }
@@ -9092,8 +9128,9 @@ function drawStepsCounter(now: number): void {
     const img = spriteNow(STEPS_COUNTER_ARCHIVE, STEPS_COUNTER_RESOURCE, d.image, true);
     if (img === null) continue;
     // 屏幕坐标 → 棋盘画布（减棋盘原点），再减图自带的锚点（数字的锚点在中心）
-    boardCtx.drawImage(
-      img.bitmap,
+    drawSprite(
+      boardCtx,
+      img,
       d.x - img.anchorX - LAYOUT.board.x,
       d.y - img.anchorY - LAYOUT.board.y,
     );
@@ -9209,7 +9246,7 @@ function drawGameStage(): void {
   if (nodeTip !== null && dlg === null) {
     drawTip(boardCtx, spriteNow(TIP_ARCHIVE, TIP_RESOURCE, nodeTip.image, true), nodeTip);
   }
-  stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
+  drawSurface(stageCtx, boardCanvas, LAYOUT.board.x, LAYOUT.board.y, LAYOUT.board.w, LAYOUT.board.h, surfaceScale);
 
   // 工具栏画在棋盘上方（直接画到舞台上）
   renderer.drawToolbarTo(stageCtx, LAYOUT.toolbar.x, LAYOUT.toolbar.y, hotTool);
@@ -9236,7 +9273,7 @@ function drawGameStage(): void {
     panelPage: panelPages[hudState.currentPlayer] ?? 0,
     panelRows: panelRows(hudState, topo, hudState.currentPlayer, panelPages[hudState.currentPlayer] ?? 0),
   });
-  stageCtx.drawImage(hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y);
+  drawSurface(stageCtx, hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y, LAYOUT.panel.w, SCREEN_H, surfaceScale);
 }
 
 /**
@@ -9251,14 +9288,14 @@ function drawGameStage(): void {
  */
 function drawSceneStage(resource: number, ui: InteractionUi): void {
   const bg = spriteNow(SCENE_ARCHIVE, resource, 0);
-  if (bg !== null) stageCtx.drawImage(bg.bitmap, 0, 0, SCREEN_W, SCREEN_H);
+  if (bg !== null) drawSprite(stageCtx, bg, 0, 0, SCREEN_W, SCREEN_H);
   else {
     stageCtx.fillStyle = '#1a1d24';
     stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
   }
   boardCtx.clearRect(0, 0, LAYOUT.board.w, LAYOUT.board.h);
   drawDialog(boardCtx, uiSprite, ui, amountPage, dialogHot);
-  stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
+  drawSurface(stageCtx, boardCanvas, LAYOUT.board.x, LAYOUT.board.y, LAYOUT.board.w, LAYOUT.board.h, surfaceScale);
 }
 
 /**
@@ -9311,7 +9348,9 @@ let letterboxFilled = false;
 
 function blitStage(): void {
   const m = currentMetrics();
-  ctx.imageSmoothingEnabled = false;
+  // ★ 高清舞台下舞台已是 `surfaceScale` 倍像素：倍数正好相等就是 1:1 贴；
+  //   窗口倍数是小数（舞台向上取整开了更大）时是略缩一点 —— 那一下要平滑，否则会跳像素
+  ctx.imageSmoothingEnabled = surfaceScale !== 1 && surfaceScale !== m.scale;
   ctx.fillStyle = '#000';
   const w = SCREEN_W * m.scale;
   const h = SCREEN_H * m.scale;
@@ -9693,8 +9732,10 @@ function resizeCanvas(): boolean {
     // 改尺寸会把画布清空 ⇒ 下一帧无论如何都要贴一次，黑边也要重铺
     stageBlitOwed = true;
     letterboxFilled = false;
+    syncSurfaceScale();
     return true;
   }
+  syncSurfaceScale();
   return false;
 }
 

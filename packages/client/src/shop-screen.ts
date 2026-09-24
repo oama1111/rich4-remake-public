@@ -40,6 +40,7 @@ import { CARDS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { InvEntry } from './inventory.ts';
 import { FONT_FAMILY, clerkTextStyle, drawGdiText } from './font.ts';
+import { drawSprite, drawSpriteRegion } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type ShopSprite = (
@@ -786,7 +787,7 @@ function shopText(
  */
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**
@@ -945,8 +946,9 @@ export function drawShopScreen(
     ctx.clip();
     // 连底图那一块一起挪 —— 原版挪的是已经画好的像素
     if (gridBase !== null) {
-      ctx.drawImage(
-        gridBase.bitmap,
+      drawSpriteRegion(
+        ctx,
+        gridBase,
         SHOP_CELL_ORIGIN.x + (pressed % SHOP_CELL.cols) * SHOP_CELL.w,
         SHOP_CELL_ORIGIN.y + Math.floor(pressed / SHOP_CELL.cols) * SHOP_CELL.h,
         SHOP_CELL.w,

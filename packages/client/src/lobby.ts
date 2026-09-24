@@ -65,6 +65,7 @@ import { portraitResource, type ArchiveName, type Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
 // ★ 地圖縮圖沿用存讀檔屏那一套（同一资源、同一图号算法），不另起一套。
 import { MAP_THUMB_BASE, SAVELOAD_RESOURCE } from './saveload.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 最多几个座位 —— 与开局设置一致（原版四人） */
 export const MAX_SEATS = 4;
@@ -475,7 +476,7 @@ export function drawLobby(
     // 头像（map.mkf 的 27..38，与开局设置同一套）；抓不到就只画文字，不挡信息
     const portrait = sprite('map.mkf', portraitResource(slot.character), 0);
     if (portrait !== null) {
-      ctx.drawImage(portrait.bitmap, x + LOBBY_SEATS.w - 48, y + 20, 40, 40);
+      drawSprite(ctx, portrait, x + LOBBY_SEATS.w - 48, y + 20, 40, 40);
     }
 
     ctx.fillStyle = '#f0e6d2';
@@ -661,10 +662,10 @@ function drawCharacterPicker(
     if (isTaken) {
       ctx.save();
       ctx.globalAlpha = 0.35;
-      ctx.drawImage(portrait.bitmap, r.x, r.y, r.w, r.h);
+      drawSprite(ctx, portrait, r.x, r.y, r.w, r.h);
       ctx.restore();
     } else {
-      ctx.drawImage(portrait.bitmap, r.x, r.y, r.w, r.h);
+      drawSprite(ctx, portrait, r.x, r.y, r.w, r.h);
     }
   }
 }
@@ -702,7 +703,7 @@ function drawMapPicker(
 
     const thumb = sprite('Data.mkf', SAVELOAD_RESOURCE, MAP_THUMB_BASE + (i & 7));
     if (thumb !== null) {
-      ctx.drawImage(thumb.bitmap, r.x, r.y, r.w, r.h);
+      drawSprite(ctx, thumb, r.x, r.y, r.w, r.h);
     } else {
       ctx.fillStyle = '#6b7c90';
       ctx.font = `12px ${FONT}`;

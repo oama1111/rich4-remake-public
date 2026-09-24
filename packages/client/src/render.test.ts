@@ -306,11 +306,15 @@ describe('★ T-047 替身的图组资源号 —— 全部照 exe，不许猜', 
     // ★ 结构断言：绘制那一支用的是**灰版精灵**（`asleepSpriteOf`），不是 `ctx.filter`
     //   （WebKit 不认 filter ⇒ iPhone 上从来不灰；2026-09-24）
     const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
-    const at = src.indexOf('const img = asleep');
+    const at = src.indexOf('drawSprite(ctx, asleep ? asleepSprite(token)');
     expect(at).toBeGreaterThan(0);
     const after = src.slice(at, at + 200);
-    expect(after).toContain('asleepSpriteOf(token.bitmap');
-    expect(after).toContain('ctx.drawImage(img');
+    expect(after).toContain('asleepSprite(token)');
+    expect(after).toContain('drawSprite(ctx');
+    // 灰版按位图**像素**尺寸做（高清舞台下超分图更大），见 `asleepSprite`
+    const g = src.indexOf('function asleepSprite(');
+    expect(g).toBeGreaterThan(0);
+    expect(src.slice(g, g + 300)).toContain('asleepSpriteOf(s.bitmap');
   });
 
   it('★★ 载具那一支：脚下节点 bit31（`noObjects`）置位时**走姿**换成 +2', () => {
@@ -1314,9 +1318,9 @@ describe('★ T-047：替身冬眠变灰（`record + 12`）@source `rich4.asm:15
 
   it('★ 替身那一条同样画灰版精灵（`asleepSpriteOf`），不设 `ctx.filter`', () => {
     const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
-    const a = src.indexOf('const img = t.frozen ? (asleepSpriteOf(sp.bitmap');
+    const a = src.indexOf('t.frozen ? asleepSprite(sp) : sp');
     expect(a).toBeGreaterThan(0);
-    expect(src.slice(a, a + 300)).toContain('ctx.drawImage(');
+    expect(src.slice(a - 100, a)).toContain('drawSprite(');
     expect(src).not.toMatch(/\bctx\.filter\s*=/);
   });
 });

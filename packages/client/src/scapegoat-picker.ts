@@ -32,6 +32,7 @@ import { BOX_TEXT_STYLE, drawGdiText } from './font.ts';
 import { PASSIVE_CARD_TEXT } from '@rich4/data';
 import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 export const SCAPEGOAT_PICKER_ARCHIVE = 'Data.mkf' as const;
 /** 头像框 @source 0x00440e29 push 0x206 */
@@ -137,7 +138,7 @@ export const scapegoatPickerScreen: UiScreen = {
     const ctx = env.stage;
     const sprite = env.sprite as unknown as PickerSprite;
     const skin = sprite(SCAPEGOAT_PICKER_ARCHIVE, SCAPEGOAT_SKIN.resource, SCAPEGOAT_SKIN.chunk, true);
-    if (skin !== null) ctx.drawImage(skin.bitmap, SCAPEGOAT_SKIN.x - skin.anchorX, SCAPEGOAT_SKIN.y - skin.anchorY);
+    if (skin !== null) drawSprite(ctx, skin, SCAPEGOAT_SKIN.x - skin.anchorX, SCAPEGOAT_SKIN.y - skin.anchorY);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     // `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` @source 0x00440f10 —— 粗体 + 右下 1 px 阴影（`font.ts`）
@@ -146,13 +147,13 @@ export const scapegoatPickerScreen: UiScreen = {
     const n = p.candidates.length;
     const frame = frameOf(env, n);
     if (frame === null) return;
-    ctx.drawImage(frame.bitmap, SCAPEGOAT_FRAME_AT.x - frame.anchorX, SCAPEGOAT_FRAME_AT.y - frame.anchorY);
+    drawSprite(ctx, frame, SCAPEGOAT_FRAME_AT.x - frame.anchorX, SCAPEGOAT_FRAME_AT.y - frame.anchorY);
     const o = scapegoatOrigin(frame);
     p.candidates.forEach((who, i) => {
       const character = env.state.players[who]?.character ?? 0;
       const face = sprite(SCAPEGOAT_PICKER_ARCHIVE, SCAPEGOAT_PORTRAIT_RESOURCE, character);
       // 头像是**贴进框里**的（0x456280 按像素坐标合成），不看头像自己的锚点
-      if (face !== null) ctx.drawImage(face.bitmap, o.x + SCAPEGOAT_CELL_STRIDE * i, o.y);
+      if (face !== null) drawSprite(ctx, face, o.x + SCAPEGOAT_CELL_STRIDE * i, o.y);
     });
     if (hover !== null) {
       ctx.strokeStyle = SCAPEGOAT_HOVER_COLOR;

@@ -72,6 +72,7 @@ import type { Sprite } from './assets.ts';
 import { portraitResource } from './assets.ts';
 import type { SayEvent } from './speech.ts';
 import { drawGdiText, type GdiTextStyle } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /**
  * 取图出口 —— 与 `main.ts` 的 `spriteNow` 同形。
@@ -626,7 +627,7 @@ export interface SpeechDrawEnv {
  */
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**

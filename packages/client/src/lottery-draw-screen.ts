@@ -106,6 +106,7 @@ import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { playVoiceCode, stopVoice, voiceBusy } from './voice-sink.ts';
 import { SCREEN_H, SCREEN_W } from './stage.ts';
+import { currentSurfaceScale, drawSprite, drawSpriteRegion } from './hd-stage.ts';
 
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
@@ -638,20 +639,38 @@ export interface CeremonySurface {
  * （Node 下的单测就是这种情形，走 `setCeremonySurfaceFactory` 注入假表面）。
  */
 function defaultSurface(): CeremonySurface | null {
+  // ★ 高清舞台：表面按**建它那一刻**的离屏倍率开像素、挂变换（`hd-stage.ts`）；
+  //   贴回舞台时按逻辑 640×480 贴（`drawCeremonySurface`），中途倍率变了也不会错位。
+  //   倍率为 1 时一行不多做 —— 与改造前相同。
+  const s = currentSurfaceScale();
+  const scaled = (ctx: CanvasRenderingContext2D): CanvasRenderingContext2D => {
+    if (s !== 1) {
+      ctx.setTransform(s, 0, 0, s, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+    }
+    return ctx;
+  };
   if (typeof OffscreenCanvas !== 'undefined') {
-    const c = new OffscreenCanvas(SCREEN_W, SCREEN_H);
+    const c = new OffscreenCanvas(Math.round(SCREEN_W * s), Math.round(SCREEN_H * s));
     const ctx = c.getContext('2d');
-    if (ctx !== null) return { canvas: c as unknown as CanvasImageSource, ctx: ctx as unknown as CanvasRenderingContext2D };
+    if (ctx !== null) return { canvas: c as unknown as CanvasImageSource, ctx: scaled(ctx as unknown as CanvasRenderingContext2D) };
     return null;
   }
   if (typeof document !== 'undefined') {
     const c = document.createElement('canvas');
-    c.width = SCREEN_W;
-    c.height = SCREEN_H;
+    c.width = Math.round(SCREEN_W * s);
+    c.height = Math.round(SCREEN_H * s);
     const ctx = c.getContext('2d');
-    if (ctx !== null) return { canvas: c, ctx };
+    if (ctx !== null) return { canvas: c, ctx: scaled(ctx) };
   }
   return null;
+}
+
+/** 把持久表面贴回舞台 —— 表面比 640×480 大（高清舞台）就按逻辑尺寸塞回去 */
+function drawCeremonySurface(ctx: CanvasRenderingContext2D, surface: CeremonySurface): void {
+  const w = (surface.canvas as { width?: unknown }).width;
+  if (typeof w === 'number' && w !== SCREEN_W) ctx.drawImage(surface.canvas, 0, 0, SCREEN_W, SCREEN_H);
+  else ctx.drawImage(surface.canvas, 0, 0);
 }
 
 let surfaceFactory: () => CeremonySurface | null = defaultSurface;
@@ -905,7 +924,7 @@ function advance(a: Active, env: UiScreenEnv): void {
 /** 抠黑画（`fcn_00456418`：索引 0 透明）/ 不透明画（`fcn_004563f5`）—— 位图已带透明，同一个调用 */
 function drawWhole(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**
@@ -920,7 +939,7 @@ function blit(ctx: CanvasRenderingContext2D, s: Sprite | null, b: CeremonyBlit):
   }
   const c = clipSrc(b.src, s.width, s.height);
   if (c === null) return;
-  ctx.drawImage(s.bitmap, c.sx, c.sy, c.w, c.h, b.at[0], b.at[1], c.w, c.h);
+  drawSpriteRegion(ctx, s, c.sx, c.sy, c.w, c.h, b.at[0], b.at[1], c.w, c.h);
 }
 
 /** 源矩形 `[sx, sy, w, h]` 夹到子图里（**宽高**口径，不是端点）*/
@@ -1118,7 +1137,7 @@ export function drawCeremony(ctx: CanvasRenderingContext2D, env: UiScreenEnv, v:
   }
 
   // ① 持久表面（底图 + 主持人 + 奖金 + 走过的每一步）
-  ctx.drawImage(surface.canvas, 0, 0);
+  drawCeremonySurface(ctx, surface);
 
   // ② 摇球 / 礼花 ANM 的**当前帧**（原版每拍把一帧贴进后台面，压在其余东西上面）
   drawAnim(ctx, env, a.drum);

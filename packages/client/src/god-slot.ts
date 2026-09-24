@@ -86,6 +86,7 @@ import { drawGdiText, type GdiTextStyle } from './font.ts';
 import { DIALOG_LINE_H, dialogRowMiddles } from './dialog.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv, UiKeyEvent } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type SlotSprite = (
@@ -565,7 +566,7 @@ export function godSlotClick(spin: GodSlotSpin): GodSlotSpin {
 
 function anchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**
@@ -577,7 +578,7 @@ function anchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y:
  */
 function opaque(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**

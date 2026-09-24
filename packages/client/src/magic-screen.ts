@@ -132,6 +132,7 @@ import { FONT_FAMILY, clerkTextStyle, drawGdiText } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite, drawSpriteRegion } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type MagicSprite = (
@@ -1094,7 +1095,7 @@ export const MAGIC_SOUND_HOVER = 0x27;
 /** 锚点落点绘制 @source `fcn_00456418`（`to_left = x − src->x`）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**
@@ -1274,7 +1275,7 @@ function drawFacePatch(ctx: CanvasRenderingContext2D, sprite: MagicSprite, p: Ma
       const s = sprite('Panel.mkf', MAGIC_RESOURCE, MAGIC_CHUNK.witchIntro, false);
       if (s === null) return;
       const r = MAGIC_MOUTH_REST_SRC;
-      ctx.drawImage(s.bitmap, r.x, r.y, r.w, r.h, MAGIC_MOUTH_AT.x, MAGIC_MOUTH_AT.y, r.w, r.h);
+      drawSpriteRegion(ctx, s, r.x, r.y, r.w, r.h, MAGIC_MOUTH_AT.x, MAGIC_MOUTH_AT.y, r.w, r.h);
       return;
     }
   }

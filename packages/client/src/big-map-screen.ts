@@ -66,6 +66,7 @@ import { isAlive } from '@rich4/core';
 import { MINIMAP_MARK_RESOURCE, drawMinimapMarks, minimapMarks } from './minimap-marks.ts';
 import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 面板落点 **(20, 60)** @source VA 0x0040a883 `push 0x3c` / 0x0040a885 `push 0x14` */
 export const BIG_MAP_AT = { x: 0x14, y: 0x3c } as const;
@@ -209,12 +210,12 @@ export function resetBigMap(): void {
 /** 按锚点贴一张图（原版 `draw_image_in_rect` 也减 `graph_info` 的 x/y）*/
 function drawAt(
   ctx: CanvasRenderingContext2D,
-  s: { bitmap: ImageBitmap; anchorX: number; anchorY: number } | null,
+  s: { bitmap: ImageBitmap; width: number; height: number; anchorX: number; anchorY: number } | null,
   x: number,
   y: number,
 ): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 export const bigMapScreen: UiScreen = {

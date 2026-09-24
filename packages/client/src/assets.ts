@@ -92,12 +92,19 @@ export interface LoadedFlic {
   close: () => void;
 }
 
-/** 一张解码好、可直接 drawImage 的图 */
+/**
+ * 一张解码好的图。
+ *
+ * ★ `width/height/anchorX/anchorY` 一律是**逻辑**值（= 原版这张图的尺寸与锚点，
+ *   舞台 640×480 坐标里的像素）。超分图的 `bitmap` 像素比它大，但画的时候
+ *   塞回同一个框里 —— 所以**不许**直接 `drawImage(sprite.bitmap, x, y)`，
+ *   一律走 `hd-stage.ts` 的 `drawSprite` / `drawSpriteRegion`（lint 强制）。
+ */
 export interface Sprite {
   bitmap: ImageBitmap;
   width: number;
   height: number;
-  /** 绘制锚点 —— 原版精灵以此对齐，超分后需同步缩放（C-AST-6） */
+  /** 绘制锚点 —— 原版精灵以此对齐（逻辑坐标，超分图不用另行缩放） */
   anchorX: number;
   anchorY: number;
 }
@@ -110,6 +117,12 @@ export interface Sprite {
 export interface HdEntry {
   anchorX: number;
   anchorY: number;
+  /**
+   * 源图（原版）尺寸 —— 清单的 `tasks[].srcWidth/srcHeight`。
+   * 精灵用不着它（逻辑尺寸直接读原版表头），**底图**要靠它知道 HD 位图是几倍。
+   */
+  srcWidth?: number;
+  srcHeight?: number;
 }
 
 /**
@@ -137,7 +150,7 @@ interface HdResultLike {
 }
 
 export interface HdManifestLike {
-  tasks: { archive: string; resource: number; image: number }[];
+  tasks: { archive: string; resource: number; image: number; srcWidth?: number; srcHeight?: number }[];
   results: Record<string, HdResultLike | undefined>;
 }
 
@@ -154,7 +167,13 @@ export function hdSourceFromManifest(base: string, manifest: HdManifestLike): Hd
   for (const t of manifest.tasks) {
     const id = taskIdOf({ archive: t.archive, resource: t.resource, image: t.image });
     const r = manifest.results[id];
-    if (r !== undefined) entries.set(id, { anchorX: r.outAnchorX, anchorY: r.outAnchorY });
+    if (r === undefined) continue;
+    const e: HdEntry = { anchorX: r.outAnchorX, anchorY: r.outAnchorY };
+    if (t.srcWidth !== undefined && t.srcHeight !== undefined) {
+      e.srcWidth = t.srcWidth;
+      e.srcHeight = t.srcHeight;
+    }
+    entries.set(id, e);
   }
 
   const keyOf = (archive: ArchiveName, resource: number, image: number): string =>
@@ -384,8 +403,10 @@ export class SpriteCache {
       return hit;
     }
 
+    // ★ 要换色槽（建筑外圈的归属色）的图**先不走 HD**：换色靠逐像素比对调色板 #255
+    //   的占位色，超分后那圈颜色早已不是一个精确值。等管线交出换色遮罩再接。
     const sprite =
-      (await this.#hdSprite(archive, resource, index)) ??
+      (ring === undefined ? await this.#hdSprite(archive, resource, index) : null) ??
       (await this.#originalSprite(archive, resource, index, colorKeyBlack, ring));
     this.#insert(key, sprite);
     return sprite;
@@ -413,14 +434,17 @@ export class SpriteCache {
       //   二是 4× 的图很大，原生解码比 JS 快得多。
       const bitmap = await this.#createBitmap(new Blob([bytes as BlobPart], { type: 'image/png' }));
       if (bitmap.width === 0 || bitmap.height === 0) return null;
+      // ★ 逻辑尺寸与锚点 = **原版表头**（高清舞台按逻辑坐标画，见 `hd-stage.ts`）。
+      //   清单里的 `outAnchorX/Y` 是 HD 像素里的锚点，给管线自检用；
+      //   这里若拿它当逻辑锚点，精灵会整体偏出去 4 倍。
+      const info = this.#sheetOf(archive, resource)?.images[index];
+      if (info === undefined || info.width === 0 || info.height === 0) return null;
       return {
         bitmap,
-        width: bitmap.width,
-        height: bitmap.height,
-        // 锚点由清单给出——管线已按**实际输出尺寸**算好（C-AST-6），
-        // 这里不再自己乘 scale：工具常把结果对齐到 4 的倍数，自己算会偏。
-        anchorX: entry.anchorX,
-        anchorY: entry.anchorY,
+        width: info.width,
+        height: info.height,
+        anchorX: info.x,
+        anchorY: info.y,
       };
     } catch {
       // HD 产物损坏不该让这张图消失——回退原图即可
@@ -519,6 +543,17 @@ export function readMapData(archives: LoadedArchives, globalMapId: number): Uint
   return archives.get('map.mkf').read(globalMapId * 2 + 1);
 }
 
+/** HD 底图的逻辑尺寸（原版像素）；现解的原图不登记 = 像素就是逻辑 */
+const groundLogical = new WeakMap<ImageBitmap, { width: number; height: number }>();
+
+/**
+ * 底图的**逻辑**尺寸 —— 棋盘按它来数格子（32 像素一格）。
+ * 超分过的底图位图更大，但格子数不变。
+ */
+export function groundLogicalSize(bmp: ImageBitmap): { width: number; height: number } {
+  return groundLogical.get(bmp) ?? { width: bmp.width, height: bmp.height };
+}
+
 /**
  * 读取并解码一张地图的**底图**。
  *
@@ -542,12 +577,17 @@ export async function loadGround(
   //   `SpriteCache` 的「按图回退」同一条规矩，不是整包降级。
   if (hd !== null) {
     const resource = globalMapId * 2;
-    if (hd.entry('map.mkf', resource, 0) !== null) {
+    const entry = hd.entry('map.mkf', resource, 0);
+    // ★ 没有源图尺寸就不知道 HD 是几倍 —— 棋盘按 32 像素一格取块，倍数错了整张地面就乱了，
+    //   宁可回退原图
+    if (entry !== null && entry.srcWidth !== undefined && entry.srcHeight !== undefined) {
       const bytes = await hd.fetchBytes('map.mkf', resource, 0);
       if (bytes !== null) {
         try {
           // 交给浏览器原生解码（与 `SpriteCache` 的 HD 分支同一条）
-          return await decode(new Blob([bytes as BlobPart], { type: 'image/png' }));
+          const bmp = await decode(new Blob([bytes as BlobPart], { type: 'image/png' }));
+          groundLogical.set(bmp, { width: entry.srcWidth, height: entry.srcHeight });
+          return bmp;
         } catch {
           // HD 坏图不致命：往下走原图
         }

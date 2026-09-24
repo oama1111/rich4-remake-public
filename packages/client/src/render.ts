@@ -75,7 +75,24 @@ import {
   directionalImage,
   screenDirection,
   DeferredSpriteClose,
+  groundLogicalSize,
 } from './assets.ts';
+import { drawSprite, hdRatio, surfaceScaleOf, type SpriteLike } from './hd-stage.ts';
+
+/**
+ * 精灵位图的**像素**尺寸：原图 = 逻辑尺寸（与改造前逐字相同）；超分图按位图实际像素
+ * （高清舞台，`hd-stage.ts`）—— 做灰版 / 剪影时不能按逻辑尺寸画，否则超分图先被压回 1×。
+ */
+function spritePixelSize(s: Sprite): { w: number; h: number } {
+  return hdRatio(s) === null ? { w: s.width, h: s.height } : { w: s.bitmap.width, h: s.bitmap.height };
+}
+
+/** 冬眠 / 冻住的灰版（`asleepSpriteOf`），仍按**逻辑**尺寸画；做不出来退回原精灵 */
+function asleepSprite(s: Sprite): SpriteLike {
+  const px = spritePixelSize(s);
+  const grey = asleepSpriteOf(s.bitmap, px.w, px.h);
+  return grey === null ? s : { bitmap: grey, width: s.width, height: s.height };
+}
 
 /**
  * 顶部工具栏的摆位 —— **等距 40，从 x=0 起铺满 440**。
@@ -2547,8 +2564,10 @@ export class BoardRenderer {
     this.#sleepwalkingNow = sleepwalkingKeys(state);
     const width = input.viewport.w;
     const height = input.viewport.h;
-    // 棋盘画进一块 1:1 的离屏画布，缩放交给舞台统一做
-    const dpr = 1;
+    // 棋盘画进一块离屏画布，缩放交给舞台统一做。
+    // ★ 高清舞台下这块画布挂着 `s` 倍的基础变换（`hd-stage.ts` 的 `sizeSurface`），
+    //   而底图那段要逐块 `setTransform` —— 会把基础变换顶掉，故把 `s` 取出来自己乘回去。
+    const dpr = surfaceScaleOf(ctx);
 
     ctx.fillStyle = '#0e1016';
     ctx.fillRect(0, 0, width, height);
@@ -2631,13 +2650,9 @@ export class BoardRenderer {
     //   原版也是直接贴屏幕。落点/尺寸由宿主按规格给（已是棋盘局部坐标）。
     const boardFrame = input.boardFilm ?? null;
     if (boardFrame !== null) {
-      this.#ctx.drawImage(
-        boardFrame.bitmap,
-        boardFrame.x,
-        boardFrame.y,
-        boardFrame.w,
-        boardFrame.h,
-      );
+      // 影片帧不是精灵：落点与**目标尺寸**都由宿主给死，位图多大都塞进这个框
+      const { bitmap: film, x, y, w, h } = boardFrame;
+      this.#ctx.drawImage(film, x, y, w, h);
     }
 
     // 调试层画在清单之上（它只是排错用的参考图形，不该被建筑挡住）——
@@ -2654,7 +2669,7 @@ export class BoardRenderer {
    */
   drawToolbarTo(ctx: CanvasRenderingContext2D, x: number, y: number, hot: number | null): void {
     const strip = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, TOOLBAR_STRIP_IMAGE);
-    if (strip !== null) ctx.drawImage(strip.bitmap, x, y);
+    if (strip !== null) drawSprite(ctx, strip, x, y);
     for (let i = 0; i < TOOLBAR_ICON_COUNT; i++) {
       // ★ 图标是 SMP，黑色是抠图底色，不抠的话每个图标都顶着一块黑底
       const icon = this.#sprite(
@@ -2663,8 +2678,9 @@ export class BoardRenderer {
       if (icon === null) continue;
       // 原版是 `fcn_00456418`（带锚点）—— 落点 = 画点 − 图自带的 x/y
       const at = toolbarIconAt(i);
-      ctx.drawImage(
-        icon.bitmap,
+      drawSprite(
+        ctx,
+        icon,
         Math.round(x + at.x - icon.anchorX),
         Math.round(y + at.y - icon.anchorY),
       );
@@ -2715,11 +2731,18 @@ export class BoardRenderer {
     dpr: number,
   ): void {
     const ctx = this.#ctx;
-    const tilesAcross = ground.width >> 5;
-    const tilesDown = ground.height >> 5;
+    // ★ 按**逻辑**尺寸数格子：超分过的底图位图更大，但还是那么多格
+    const logical = groundLogicalSize(ground);
+    const tilesAcross = logical.width >> 5;
+    const tilesDown = logical.height >> 5;
+    // 位图上一格占几像素（原图 32；超分图按实际倍率）
+    const tileW = (32 * ground.width) / logical.width;
+    const tileH = (32 * ground.height) / logical.height;
+    const hd = ground.width !== logical.width || ground.height !== logical.height;
 
     ctx.save();
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = hd;
+    if (hd) ctx.imageSmoothingQuality = 'high';
     // ★ 镜头的亚格余量：整层地面的角点一律**加**上镜头余量过矩阵的那一对偏移。
     //   @source `fcn_0040829d`：`004083cc call fcn_00407a2c(camX, camY, …)` 得 (oX, oY)，
     //   `004083e1 add [esp+0x34],0xdc / add [esp+0x20],0x104` 并进棋盘区中心，
@@ -2753,7 +2776,7 @@ export class BoardRenderer {
           (cx + tl.x) * dpr,
           (cy + tl.y) * dpr,
         );
-        ctx.drawImage(ground, tx * 32, ty * 32, 32, 32, -0.01, -0.01, 1.02, 1.02);
+        ctx.drawImage(ground, tx * tileW, ty * tileH, tileW, tileH, -0.01, -0.01, 1.02, 1.02);
       }
     }
     ctx.restore();
@@ -2775,8 +2798,9 @@ export class BoardRenderer {
       if (sp === null) continue;
       const p = worldToScreen(n.x, n.y, cam, vp);
       if (p === null) continue;
-      ctx.drawImage(
-        sp.bitmap,
+      drawSprite(
+        ctx,
+        sp,
         p.x - sp.anchorX * k,
         p.y - sp.anchorY * k,
         sp.width * k,
@@ -2888,8 +2912,9 @@ export class BoardRenderer {
         // 物件图是 SPR（索引 0 透明），不需要抠黑
         const sp = this.#sprite('Data.mkf', resource, image);
         if (sp === null) return;
-        ctx.drawImage(
-          sp.bitmap,
+        drawSprite(
+          ctx,
+          sp,
           p.x - sp.anchorX * k,
           p.y - sp.anchorY * k,
           sp.width * k,
@@ -2944,8 +2969,9 @@ export class BoardRenderer {
         paint: () => {
           const sp = this.#sprite('Data.mkf', t.resource, t.frame);
           if (sp === null) return;
-          ctx.drawImage(
-            sp.bitmap,
+          drawSprite(
+            ctx,
+            sp,
             x - sp.anchorX * k,
             y - sp.anchorY * k,
             sp.width * k,
@@ -3011,8 +3037,9 @@ export class BoardRenderer {
     }
     const sp = this.#sprite('Data.mkf', t.resource, pose.image);
     if (sp === null) return;
-    this.#ctx.drawImage(
-      sp.bitmap,
+    drawSprite(
+      this.#ctx,
+      sp,
       x - sp.anchorX * k,
       y + pose.dy * k - sp.anchorY * k,
       sp.width * k,
@@ -3042,8 +3069,9 @@ export class BoardRenderer {
     // 原版每帧先向零截断再贴（`__round_toward_zero`，VA 0x0040e808 那一段）
     const x = Math.trunc(at.x);
     const y = Math.trunc(at.y);
-    this.#ctx.drawImage(
-      sp.bitmap,
+    drawSprite(
+      this.#ctx,
+      sp,
       x - sp.anchorX * k,
       y - sp.anchorY * k,
       sp.width * k,
@@ -3092,8 +3120,9 @@ export class BoardRenderer {
       //   （@source VA 0x00408ee2 `8 − 视角 + 朝向`，这里用飞行分支的 `+0x07`）
       const sp = this.#sprite('Data.mkf', res, objectImageIndex(frame.facing, cam.view));
       if (sp === null) continue;
-      ctx.drawImage(
-        sp.bitmap,
+      drawSprite(
+        ctx,
+        sp,
         Math.trunc(p.x) - sp.anchorX * k,
         Math.trunc(p.y) - sp.anchorY * k,
         sp.width * k,
@@ -3139,10 +3168,12 @@ export class BoardRenderer {
           if (sp === null) return;
           const dx = p.x - sp.anchorX * k;
           const dy = p.y - sp.anchorY * k;
-          ctx.drawImage(sp.bitmap, dx, dy, sp.width * k, sp.height * k);
+          drawSprite(ctx, sp, dx, dy, sp.width * k, sp.height * k);
           // ★ 不用 `ctx.filter`：WebKit（iPhone / iPad / Mac Safari）不支持，赋值被静默忽略
           //   ⇒ 需求方在 iPhone 上看不到闪（2026-09-24）。改成叠一层，见 `sprite-brightness.ts`。
+          //   剪影按位图**像素**尺寸做（高清舞台下超分图比逻辑尺寸大，见 `spritePixelSize`）。
           if (lit) {
+            const px = spritePixelSize(sp);
             paintBrightness(
               ctx,
               sp.bitmap,
@@ -3151,8 +3182,8 @@ export class BoardRenderer {
               sp.width * k,
               sp.height * k,
               flash.level / TOLL_FLASH_FULL_SCALE,
-              sp.width,
-              sp.height,
+              px.w,
+              px.h,
             );
           }
         },
@@ -3340,10 +3371,7 @@ export class BoardRenderer {
             // ★ 第七份试玩回报 #2：这里原先给当前玩家脚下垫了一圈黄色光晕 —— **原版没有**
             //   （棋子绘制 `fcn_0040829d` 只贴精灵；「轮到谁」原版靠的是绘制次序 0xd 压在别人之上 + 側欄头像）。
             //   是早期为了好认自己加的，已删。
-            const img = asleep
-              ? (asleepSpriteOf(token.bitmap, token.width, token.height) ?? token.bitmap)
-              : token.bitmap;
-            ctx.drawImage(img, x, y, w, h);
+            drawSprite(ctx, asleep ? asleepSprite(token) : token, x, y, w, h);
           },
         });
         // ★ 夢遊中：棋子上再贴一张「ZZZ」（与棋子同一个屏幕点、类别 0xe / 0xf）@source 0x00408870
@@ -3447,9 +3475,9 @@ export class BoardRenderer {
         paint: () => {
           // ★ 冬眠中画成灰 —— 与玩家那一条同一张灰版（`asleepSpriteOf`，不靠 WebKit 不认的 `ctx.filter`）
           //   @source VA 0x004089c6 的 `_rich4_convert_sprite`
-          const img = t.frozen ? (asleepSpriteOf(sp.bitmap, sp.width, sp.height) ?? sp.bitmap) : sp.bitmap;
-          ctx.drawImage(
-            img,
+          drawSprite(
+            ctx,
+            t.frozen ? asleepSprite(sp) : sp,
             p.x - sp.anchorX * k,
             p.y - sp.anchorY * k,
             sp.width * k,
@@ -3486,7 +3514,7 @@ export class BoardRenderer {
     return {
       key: drawKey(sortY, current ? DRAW_CLASS.currentSleepwalkMark : DRAW_CLASS.sleepwalkMark),
       paint: () => {
-        ctx.drawImage(sp.bitmap, x - sp.anchorX, y - sp.anchorY, sp.width, sp.height);
+        drawSprite(ctx, sp, x - sp.anchorX, y - sp.anchorY, sp.width, sp.height);
       },
     };
   }

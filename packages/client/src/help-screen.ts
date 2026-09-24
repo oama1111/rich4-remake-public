@@ -169,6 +169,7 @@ import { HOTKEY } from './hotkeys.ts';
 import { FONT_FAMILY } from './font.ts';
 // 取消音（`[0x482332] = 4`）—— 与右键/ESC 那条梯子共用同一个号
 import { CANCEL_SOUND } from './panel-cancel.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 这一屏的素材资源 @source 入口 `push 0` 的 `read_mkf` @0x44eb7d */
 export const HELP_RESOURCE = 0;
@@ -2099,12 +2100,12 @@ export interface HelpDraw {
 /** 锚点落点绘制 —— `help.mkf` 的 12 张锚点都是 (0,0)，所以就是左上角贴图 */
 function drawAt(
   ctx: CanvasRenderingContext2D,
-  s: { bitmap: ImageBitmap; anchorX: number; anchorY: number } | null,
+  s: { bitmap: ImageBitmap; width: number; height: number; anchorX: number; anchorY: number } | null,
   x: number,
   y: number,
 ): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**
@@ -2232,7 +2233,7 @@ export function helpImagePlan(chapter: number, scroll: number): readonly HelpIma
 
 export function drawHelpScreen(
   ctx: CanvasRenderingContext2D,
-  sprite: (i: number) => { bitmap: ImageBitmap; anchorX: number; anchorY: number } | null,
+  sprite: (i: number) => { bitmap: ImageBitmap; width: number; height: number; anchorX: number; anchorY: number } | null,
   d: HelpDraw,
 ): void {
   const chapter = clampChapter(d.chapter);

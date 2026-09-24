@@ -71,6 +71,7 @@ import {
   atmPressedImage,
   bankSprite,
 } from './bank-dynamic.ts';
+import { drawSprite, drawSpriteRegion } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type AtmSprite = (
@@ -302,7 +303,7 @@ export function drawBankAtm(
   const oy = ATM_ORIGIN.y;
   const at = (index: number, x: number, y: number): void => {
     const s = bankSprite(sprite, 'Panel.mkf', ATM_RESOURCE, index);
-    if (s !== null) ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+    if (s !== null) drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
   };
 
   at(0, ox, oy); // 面板底（图 0，锚点 (0,0)）
@@ -350,14 +351,15 @@ export function drawAtmBar(
   const w = atmBarWidth(atmPercent(amount, limit));
   const fill = bankSprite(sprite, 'Panel.mkf', ATM_RESOURCE, ATM_BAR.fillImage);
   if (w > 0 && fill !== null) {
-    ctx.drawImage(fill.bitmap, 0, 0, w, ATM_BAR.h, ATM_BAR.x, ATM_BAR.y, w, ATM_BAR.h);
+    drawSpriteRegion(ctx, fill, 0, 0, w, ATM_BAR.h, ATM_BAR.x, ATM_BAR.y, w, ATM_BAR.h);
   }
   if (w < ATM_BAR.w) {
     const rest = ATM_BAR.w - w;
     const plate = bankSprite(sprite, 'Panel.mkf', ATM_RESOURCE, 0);
     if (plate !== null) {
-      ctx.drawImage(
-        plate.bitmap,
+      drawSpriteRegion(
+        ctx,
+        plate,
         ATM_BAR.emptySrcX + w,
         ATM_BAR.emptySrcY,
         rest,
