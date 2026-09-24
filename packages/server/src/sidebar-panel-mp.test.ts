@@ -1,0 +1,105 @@
+/*
+ * 联机：侧栏面板（pt22 WP-2 #2 / #3 / #16）—— 服务器与客户端镜像交给侧栏的输入逐字段相同
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * 侧栏各端自己画（`client/src/hud.ts`），画什么只取：
+ *   - #2 惡人回合：`lastNpcWalks`（哪个槽在走）+ `specialActors[槽].owner`（小头像画谁）
+ *     @source 0x00415fc1 判 `[0x49910c]`、0x0041603d 取替身记录 +8；
+ *   - #3 结盟小头像：`players[*].alliedPlayer`（`[p+0x41]`，0x00416256 / 0x0041685a）；
+ *   - #16 落地影片期间：`currentPlayer` 已是新玩家（换人后 0x41c84f → 0x436a5a → 0x41906a(1) 那次
+ *     WM_PAINT 就把侧栏换过去了，早于 0x418c55 的落地影片）。
+ * 这些都在 core 的状态里、随广播重放 ⇒ 这里钉「服务器 = 镜像」；同一份输入画出同一组调用钉在
+ * `packages/client/src/sidebar-panel.test.ts` ④。
+ */
+import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import {
+  LOBBY_DEFAULT_OPTIONS,
+  isUnplaced,
+  landAll,
+  newGame,
+  parseMap,
+  reduce,
+  releaseNpc,
+  stateFingerprint,
+  type Action,
+  type GameState,
+  type SeatInfo,
+} from '@rich4/core';
+import { Room } from './room.ts';
+
+const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
+const run = existsSync(MAP) ? it : it.skip;
+const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
+type Map0 = ReturnType<typeof loadMap>;
+const topoOf = (map: Map0) => ({ nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials });
+
+const seats = (): SeatInfo[] => [0, 1, 2, 3].map((i) => ({ seat: i, name: `P${i}`, character: (i * 5) % 12, kind: 'human' as const }));
+
+function submitBoth(room: Room, mirror: { s: GameState }, topo: ReturnType<typeof topoOf>, seat: number, action: Action) {
+  const r = room.submit(seat, action);
+  if (r.ok) {
+    mirror.s = reduce(mirror.s, r.broadcast.action, topo);
+    expect(stateFingerprint(mirror.s)).toBe(room.fingerprint);
+  }
+  return r;
+}
+
+/** 侧栏要读的那几样 */
+const sidebarInputs = (s: GameState) => ({
+  currentPlayer: s.currentPlayer,
+  walks: s.lastNpcWalks.map((w) => w.slot),
+  owners: s.specialActors.map((a) => a.owner),
+  allies: s.players.map((p) => p.alliedPlayer),
+  characters: s.players.map((p) => p.character),
+});
+
+describe('★★ 联机：侧栏面板的输入两端一致', () => {
+  run('#2/#3 最后一位收回合、强盜（2 号保釋的）走一趟；1、3 号结盟 ⇒ 服务器与镜像逐字段相同', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const base = landAll(
+      newGame({ map, players: seats().map((s) => ({ character: s.character, kind: s.kind })), seed: 9, mode: 'multiplayer' }),
+      map.nodes,
+    );
+    const specialActors = [...base.specialActors];
+    specialActors[1] = releaseNpc(map.nodes[10]!.id, 2, 0);
+    const state: GameState = {
+      ...base,
+      currentPlayer: 3,
+      phase: 'turnEnd',
+      pending: null,
+      pendingNpcSlots: [],
+      specialActors,
+      players: base.players.map((p, i) =>
+        i === 1 ? { ...p, alliedPlayer: 4, alliedDays: 7 } : i === 3 ? { ...p, alliedPlayer: 2, alliedDays: 7 } : p,
+      ),
+    };
+    const room = new Room({ id: 'PANMP1', map, globalMapId: 0, seed: 9, seats: seats(), options: LOBBY_DEFAULT_OPTIONS, base: { state, snapshot: '' } });
+    room.start();
+    const mirror = { s: state };
+    expect(submitBoth(room, mirror, topo, 3, { type: 'endTurn' }).ok).toBe(true);
+    // 强盜这一趟交给了两端的表现层（槽 1 = actor 5），主人仍是 2 号
+    expect(room.state.lastNpcWalks.some((w) => w.slot === 1)).toBe(true);
+    expect(room.state.specialActors[1]!.owner).toBe(2);
+    expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(room.state));
+    // 结盟还在（天数只在推日期里减），两端一样
+    expect(room.state.players[1]!.alliedPlayer).toBe(4);
+  });
+
+  run('#16 换人让下一位落地 ⇒ 两端 `currentPlayer` 都已是他（侧栏在影片期间画他）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const base = newGame({ map, players: seats().map((s) => ({ character: s.character, kind: s.kind })), seed: 3, mode: 'multiplayer' });
+    const state: GameState = { ...base, phase: 'turnEnd', pending: null, pendingNpcSlots: [] };
+    expect(isUnplaced(state.players[1]!)).toBe(true);
+    const room = new Room({ id: 'PANMP2', map, globalMapId: 0, seed: 3, seats: seats(), options: LOBBY_DEFAULT_OPTIONS, base: { state, snapshot: '' } });
+    room.start();
+    const mirror = { s: state };
+    expect(submitBoth(room, mirror, topo, 0, { type: 'endTurn' }).ok).toBe(true);
+    expect(room.state.currentPlayer).toBe(1);
+    expect(isUnplaced(room.state.players[1]!)).toBe(false);
+    expect(mirror.s.currentPlayer).toBe(1);
+    expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(room.state));
+  });
+});

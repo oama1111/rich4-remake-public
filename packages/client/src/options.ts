@@ -314,6 +314,12 @@ export interface GameOptions {
    *   本引擎多存一个字段只是为了知道自己点了哪首；反白仍以正在放的那首为准。
    */
   track: number;
+  /**
+   * 日曆那一面画哪个版式：0 日曆 / 1 月曆 —— `RICH4.CFG` +12（`[0x497164]`），由日曆面上的
+   * 太阳 / 月亮两颗钮切换（`0x004183c6` / `0x0041840c`），**不在設定屏上**。
+   * 与 `windowView`（`cfg+5`）互相独立：那一格决定日曆那一面在不在屏上，这一格决定画哪个版式。
+   */
+  calendar: number;
 }
 
 /**
@@ -341,6 +347,8 @@ export const DEFAULT_OPTIONS: GameOptions = {
   autoSave: true,
   windowView: 1,
   track: 0,
+  // @source `rich4_read_config()` 找不到文件时 `0x00411f02 xor ch, ch / 0x00411f04 mov [0x497164], ch` ⇒ 日曆
+  calendar: 0,
 };
 
 /** 音量档 0..4 → 0..1 */

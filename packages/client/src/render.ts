@@ -2257,8 +2257,11 @@ export class BoardRenderer {
    * 原版那一趟 `[0x49910c]` = 替身号（4..8），坐标在替身记录 `+0x00/+0x02`
    * （`fcn_0040dd1f` 那一族逐 tick 写）。镜头（`actorCenterWorld`）与侧栏小地图的
    * 白框（`hud.ts` 的 `minimapFrameCenter`，VA 0x00416f3d 那一支）都认它。
+   *
+   * `slot` = actor − 4（0..3 四大惡人、4 機器娃娃）—— 侧栏面板据此换成惡人那一版
+   * （`hud.ts` 的 `panelSubject`，VA 0x00415fc1 / 0x00416767 判 `[0x49910c]`）。
    */
-  npcWalkWorld(now: number): { x: number; y: number } | null {
+  npcWalkWorld(now: number): { x: number; y: number; slot: number } | null {
     for (const slot of [...this.#actorWalks.keys()].sort((a, b) => a - b)) {
       const w = this.#actorWalks.get(slot);
       if (w === undefined) continue;
@@ -2276,7 +2279,7 @@ export class BoardRenderer {
       }
       const kk = Math.min(step.ticks, Math.floor((elapsed - step.at) / w.tickMs) + 1);
       const pt = walkFramesFor(step.from, step.to, step.ticks, step.exactTicks)[kk - 1];
-      if (pt !== undefined) return { x: pt.x, y: pt.y };
+      if (pt !== undefined) return { x: pt.x, y: pt.y, slot };
     }
     return null;
   }

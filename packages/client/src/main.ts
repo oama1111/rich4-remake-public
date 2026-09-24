@@ -840,10 +840,16 @@ let renderer: BoardRenderer;
  *   `sidebarView: 'calendar' | 'month' | 'map'` —— 右栏版式（`cfg+5`）与日/月曆版式（`[0x497164]`）。
  *   于是 `cfg+5 = 2`（組合畫面）没处可放，被当成日曆。现在拆开：
  *   **右栏版式每帧直接读 `options.windowView`**（原版每次重画都直接读 `cfg+5`，
- *   `fcn_00416e6d` 的 `0x416e74`、`fcn_004169bc` 的 `0x4169c3`、WM_PAINT 的 `0x418bcd`），
- *   这里只留日/月曆那一格。版式见 `hud.ts` 的 `sidebarLayout`。
+ *   `fcn_00416e6d` 的 `0x416e74`、`fcn_004169bc` 的 `0x4169c3`、WM_PAINT 的 `0x418bcd`）。
+ *
+ * ★★ pt22 #12：日/月曆那一格也不再是模块级变量 —— 它就是 cfg 的 +12（`options.calendar`），
+ *   开机随 cfg 读回（`loadConfigFromStore`）、点太阳 / 月亮时写回（`saveConfigToStore`），
+ *   刷新 / 重开不再回到日曆。原版 `fcn_004169bc` 每次重画都直接读 `[0x497164]`（`0x004169fd`），
+ *   这里同样每帧从 `options` 取，没有另存的一份。
  */
-let calendarPage: CalendarPage = 'calendar';
+function calendarPageOf(o: GameOptions): CalendarPage {
+  return o.calendar !== 0 ? 'month' : 'calendar';
+}
 
 /**
  * 右上角面板现在显示第几页（0 資金 / 1 地產 / 2 股票 / 3 其他）—— **每个玩家一份**。
@@ -948,6 +954,8 @@ function loadConfigFromStore(): void {
       sound: cfg.sound,
       autoSave: cfg.autoSave,
       windowView: cfg.view,
+      // cfg+12 日/月曆（pt22 #12）；旧档没有这一格时 decode 读到的是 0 = 日曆（与出厂同）
+      calendar: cfg.calendar ?? 0,
     };
     optionsKeys = configHotkeyKeys(cfg);
   }
@@ -977,6 +985,7 @@ function saveConfigToStore(): void {
     sound: options.sound,
     autoSave: options.autoSave,
     view: options.windowView,
+    calendar: options.calendar,
     year: d.year,
     month: d.month,
     day: d.day,
@@ -8940,6 +8949,8 @@ function drawGameStage(): void {
 
   // ★ D-MAGIC-16：`0x41906a(1)` 重画主窗口时侧栏跟着「当前玩家」= 那位中签者
   const hudState = magicShownState();
+  // ★ 替身那一趟：小地图白框框它、侧栏换成惡人那一版（VA 0x00415fc1 / 0x00416767 判 `[0x49910c]`）
+  const npcWalk = renderer.npcWalkWorld(performance.now());
   hud.draw({
     // ★ 降落伞那一段期间小地图上也先没有他（`0x00416fc9 cmp [player+0x08], 0`，坐标播完才写）
     state: withLandingHidden(hudState),
@@ -8947,10 +8958,11 @@ function drawGameStage(): void {
     camera,
     minimapBg,
     windowView: options.windowView,
-    calendarPage,
+    calendarPage: calendarPageOf(options),
     minimapMarker,
     // ★ 替身那一趟小地图白框框替身（`hud.ts` 的 `minimapFrameCenter`，VA 0x00416f3d）
-    npcFrame: renderer.npcWalkWorld(performance.now()),
+    npcFrame: npcWalk,
+    npcSlot: npcWalk?.slot ?? null,
     pressedMinimapArrow,
     hotMinimapArrow,
     holidayArt,
@@ -10691,9 +10703,13 @@ function bindInput(): void {
       // **只有純小地圖那一态（cfg+5 = 1）没有这一面**（`0x0041835f cmp [cfg+5], 1 / je`）。
       const to = hitCalendarToggle(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y - SIDEBAR.y);
       // 已经是这一面 → 什么都不做（原版连音效都不放）
-      if (to !== null && to !== calendarPage) {
+      if (to !== null && to !== calendarPageOf(options)) {
         sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
-        calendarPage = to;
+        // @source 0x004183c6 `mov [0x497164], 0`（太阳）/ 0x0041840c `mov [0x497164], 1`（月亮）——
+        //   写的是 cfg 本体；原版随下一次 `rich4_write_config()` 整份存盘（熱鍵「切換視窗組」同样当场存，
+        //   见上面 `saveConfigToStore` 那一处），这里当场写回，关页 / 刷新不丢
+        options = { ...options, calendar: to === 'month' ? 1 : 0 };
+        saveConfigToStore();
         requestRender();
       }
       return;

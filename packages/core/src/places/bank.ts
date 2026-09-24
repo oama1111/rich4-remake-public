@@ -352,7 +352,9 @@ export const LOAN_DUE_CHECK_DAYS = 3;
  *
  * ⚠️ 判的**只有日期**，不看 `loan` —— 电脑提前还贷后 `+0x2c` 还留着（`0x43682d` 不清它），
  *   届时照样弹「還剩２天」「還剩１天」，到期那天照样「強制執行」（扣 0 元）并把两格清零。
- *   `+0x2c == 0`（从没借过）时差是 `−1 − 今天的天号`，必为负 ⇒ 什么都不做。
+ *   `+0x2c == 0`（从没借过）时差是 `−1 − 今天的天号`，必为负 ⇒ 规则上什么都不做（`ja` 挡掉）——
+ *   ★ 但 `jg` 是**有符号**的，所以 `0x00436a87 call 0x41906a(1)` 那次整窗重画**照样发生**（纯表现：
+ *   侧栏换成新玩家、摆没上盘的人；见 `docs/escalations.md` E-44 ①、`client/src/sidebar-panel.test.ts`）。
  */
 export type LoanDueStep = 'forced' | 'oneDay' | 'twoDays' | 'reminder';
 

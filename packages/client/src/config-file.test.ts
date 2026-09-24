@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import {
+  CONFIG_CALENDAR_OFFSET,
   CONFIG_DATE_OFFSET,
   CONFIG_FILE_SIZE,
   CONFIG_HOTKEY_COUNT,
@@ -49,6 +50,7 @@ describe('★ 编解码往返', () => {
     sound: 1,
     autoSave: true,
     view: 2,
+    calendar: 1,
     year: 2002,
     month: 4,
     day: 14,
@@ -71,10 +73,23 @@ describe('★ 编解码往返', () => {
     expect(b[11]).toBe(0x12);
   });
 
-  it('dummy 两段保持 0（原版不写）', () => {
+  it('dummy 两段保持 0（原版不写）—— +12 是日/月曆，不算 dummy', () => {
     const b = encodeConfig(cfg);
     expect([...b.slice(6, 8)]).toEqual([0, 0]);
-    expect([...b.slice(12, 16)]).toEqual([0, 0, 0, 0]);
+    expect([...b.slice(13, 16)]).toEqual([0, 0, 0]);
+  });
+
+  it('★ pt22 #12：+12 = 日曆 0 / 月曆 1（`[0x497164]`），编进去、读回来', () => {
+    expect(CONFIG_CALENDAR_OFFSET).toBe(0x497164 - 0x497158);
+    expect(encodeConfig({ ...cfg, calendar: 1 })[12]).toBe(1);
+    expect(encodeConfig({ ...cfg, calendar: 0 })[12]).toBe(0);
+    // 省略 = 0（出厂日曆）
+    const { calendar: _drop, ...noCal } = cfg;
+    void _drop;
+    expect(encodeConfig(noCal)[12]).toBe(0);
+    const raw = encodeConfig(cfg);
+    raw[12] = 1;
+    expect(decodeConfig(raw)!.calendar).toBe(1);
   });
 
   it('键位不足 28 条时后面补 0；多了丢掉', () => {
@@ -137,6 +152,10 @@ describe('★ 直接对原版 `RICH4.CFG` 逐字节校验', () => {
     expect(cfg.sound).toBe(4);
     expect(cfg.autoSave).toBe(true);
     expect(cfg.view).toBe(1);
+  });
+
+  have('★ +12 = 0（那份文件存的是日曆）', () => {
+    expect(decodeConfig(new Uint8Array(readFileSync(CFG)))!.calendar).toBe(0);
   });
 
   have('★ 日期 = 2002-04-14（`0e 04 d2 07`，与原版文件头一致）', () => {
