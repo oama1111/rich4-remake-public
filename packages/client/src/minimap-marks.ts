@@ -52,6 +52,7 @@
 import type { GameState } from '@rich4/core';
 import { CHARACTERS, characterColorRgb } from '@rich4/data';
 import type { Sprite } from './assets.ts';
+import { markStaticSource } from './display-list.ts';
 
 /** 色块图集 = `Data.mkf` 资源 517 @source `[0x48bad8]`（0x0040a5d5）*/
 export const MINIMAP_MARK_RESOURCE = 0x205;
@@ -159,6 +160,8 @@ function silhouette(s: Sprite, color: number): CanvasImageSource | null {
   const [r, g, b] = characterColorRgb(color);
   c.fillStyle = `rgb(${r},${g},${b})`;
   c.fillRect(0, 0, w, h);
+  // 画完就不再改 ⇒ 绘制指令去重可按身份比（`display-list.ts`）
+  markStaticSource(canvas);
   byColor.set(color, canvas);
   return canvas;
 }

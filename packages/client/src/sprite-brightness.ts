@@ -16,6 +16,8 @@
  * 近似本身（按精靈而非按 id 圖像素、乘性近似加性）不变 —— 见 `docs/deviations/Q-TOLL-FX-1.md`。
  */
 
+import { markStaticSource } from './display-list.ts';
+
 /** 建一张 w×h 的离屏 2D 画布；环境里没有（单测 / 无 DOM）返回 null */
 export type SurfaceFactory = (w: number, h: number) => {
   canvas: CanvasImageSource;
@@ -60,6 +62,8 @@ export function blackMaskOf(
     s.ctx.fillStyle = '#000';
     s.ctx.fillRect(0, 0, w, h);
     out = s.canvas;
+    // 画完就不再改 ⇒ 绘制指令去重可按身份比（`display-list.ts`）
+    markStaticSource(out);
   }
   masks.set(key, out);
   return out;
@@ -151,6 +155,7 @@ export function asleepSpriteOf(
       greyPixels(px.data);
       s.ctx.putImageData(px, 0, 0);
       out = s.canvas;
+      markStaticSource(out);
     } catch {
       out = null;
     }
