@@ -132,6 +132,13 @@ export interface QwenRepaintJob extends JobBase {
   reference?: string;
   /** 参考图的本地来源（同 `upload`） */
   referenceUpload?: string;
+  /** 另加的参考图（依次作为 image_2、image_3…，如角色头像定造型）：服务器路径 + 本地来源 */
+  extraRefs?: { path: string; upload?: string }[];
+  /**
+   * 不接 SeedVR2：Qwen 画完直接 lanczos 缩放到 `width×height`。
+   * 精灵「大画再缩」用：Qwen 在 6× 画布上画，缩到 4× 本身就清晰平滑，再过 SeedVR2 反而添颗粒。
+   */
+  noUpscale?: boolean;
 }
 
 export type Job = SeedVr2ImageJob | SeedVr2VideoJob | QwenRepaintJob;
@@ -268,9 +275,13 @@ export function buildGraph(job: Job): Graph {
           negative_prompt: job.negative,
           resolution: exact ? 0 : job.resolution,
           'images.image_1': ref,
+          ...Object.fromEntries((job.extraRefs ?? []).map((_, k) => [`images.image_${k + 2}`, [`${30 + k}`, 0]])),
           vae: ['5', 0],
         },
       };
+      (job.extraRefs ?? []).forEach((r, k) => {
+        g[`${30 + k}`] = { class_type: 'LoadImage', inputs: { image: r.path } };
+      });
       const fromStart = (job.denoise !== undefined && job.denoise < 1) || job.mask !== undefined;
       let latent: [string, number] = ['6', 2];
       if (fromStart) {
@@ -300,7 +311,10 @@ export function buildGraph(job: Job): Graph {
       g['8'] = { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['5', 0] } };
       // 重绘后的中间图也存一份：过审时要能看出「是重绘改的，还是放大改的」
       g['9'] = { class_type: 'SaveImage', inputs: { images: ['8', 0], filename_prefix: `${prefix}-repaint` } };
-      seedvr2Tail(g, ['8', 0], job, 'lab', prefix);
+      if (job.noUpscale === true) {
+        g['110'] = { class_type: 'ImageScale', inputs: { image: ['8', 0], upscale_method: 'lanczos', width: job.width, height: job.height, crop: 'disabled' } };
+        g['111'] = { class_type: 'SaveImage', inputs: { images: ['110', 0], filename_prefix: prefix } };
+      } else seedvr2Tail(g, ['8', 0], job, 'lab', prefix);
       return g;
     }
   }
@@ -440,6 +454,7 @@ async function stageInputs(root: string, job: Job): Promise<void> {
   if (job.kind === 'qwen-repaint') {
     if (job.maskUpload !== undefined && job.mask !== undefined) await put(job.maskUpload, job.mask);
     if (job.referenceUpload !== undefined && job.reference !== undefined) await put(job.referenceUpload, job.reference);
+    for (const r of job.extraRefs ?? []) if (r.upload !== undefined) await put(r.upload, r.path);
   }
   if (j.uploadDir !== undefined && job.kind === 'seedvr2-video') {
     for (const f of listPngs(join(root, j.uploadDir))) {
