@@ -336,16 +336,18 @@ describe('★★ 第十六份：线上卡死（老虎机排着 × 「使用地�
 const MAP_BIN = (id: number) => `${process.env.RICH4_WORKSPACE ?? ''}/extracted/map/${String(id * 2 + 1).padStart(4, '0')}.bin`;
 const runSoak = existsSync(MAP_BIN(0)) ? it : it.skip;
 
-describe('★★ 第十六份：24 局长跑灌进同一台宿主 —— 从不卡死、从不同屏', () => {
+describe('★★ 第十六份：48 局长跑灌进同一台宿主 —— 从不卡死、从不同屏', () => {
   runSoak(
-    '8 张图 × 3 局；action 到达间隔 0–400 ms（含联机补帧那种 0 间隔的一串）；百分之二的 action 之前旁观端跟着行动者收场',
+    '8 张图 × 6 局；action 到达间隔 0–400 ms（含联机补帧那种 0 间隔的一串）；百分之二的 action 之前旁观端跟着行动者收场',
     () => {
       const failures: string[] = [];
       let toolUses = 0;
       let possessions = 0;
       let actions = 0;
       let oldStuck = 0;
-      for (let g = 0; g < 24; g++) {
+      // ★ 48 局（原 24 局）：第十六份規則修正（研究所面板 / 被关者不进落点）改了电脑长局的轨迹，
+      //   旧规矩在前 24 局里恰好不再撞上那种互等；对照组要撞得到才有意义 ⇒ 每张图多跑 3 局。
+      for (let g = 0; g < 48; g++) {
         const globalMapId = g % 8;
         const map = parseMap(new Uint8Array(readFileSync(MAP_BIN(globalMapId))));
         const topo: MapTopology = {
@@ -397,7 +399,7 @@ describe('★★ 第十六份：24 局长跑灌进同一台宿主 —— 从不�
       expect(toolUses).toBeGreaterThan(100);
       expect(possessions).toBeGreaterThan(20);
       expect(actions).toBeGreaterThan(10_000);
-      expect(oldStuck, '旧规矩在这 24 局里至少卡死一局（否则这套长跑测不出那一类问题）').toBeGreaterThan(0);
+      expect(oldStuck, '旧规矩在这 48 局里至少卡死一局（否则这套长跑测不出那一类问题）').toBeGreaterThan(0);
     },
     600_000,
   );

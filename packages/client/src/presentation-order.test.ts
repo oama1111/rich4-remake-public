@@ -194,9 +194,9 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
   },
   {
     line: 'noticeSay',
-    boxes: [...RENT_FREE, ...RENT_PAY, ...GOD_TOLL, ...BLESSING, 'facility.hotel', 'facility.mall', 'wheel'],
+    boxes: [...RENT_FREE, ...RENT_PAY, ...GOD_TOLL, ...BLESSING, 'facility.hotel', 'facility.mall', 'facility.gasStation', 'wheel'],
     exe: 'boxFirst',
-    va: '免收 框 `0x0041d6ae` → `0x0041d6dd`；大財神 框 `0x0041d7ac` → `0x0041d7c1`；命運加持 `0x0044ce69` → `0x0044ce7e`、`0x0044d83f` → `0x0044d873`',
+    va: '免收 框 `0x0041d6ae` → `0x0041d6dd`；大財神 框 `0x0041d7ac` → `0x0041d7c1`；命運加持 `0x0044ce69` → `0x0044ce7e`、`0x0044d83f` → `0x0044d873`；加油站 框 `0x0041a579` → `0x0041a58a call 0x41d709`（与旅館 / 購物中心同一段）',
   },
   {
     line: 'disappearSay',
