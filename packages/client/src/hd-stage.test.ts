@@ -94,10 +94,10 @@ describe('surfaceScaleFor', () => {
     expect(surfaceScaleFor(3, false)).toBe(1);
   });
 
-  it('开着：取窗口倍数向上取整，封顶 4', () => {
+  it('开着：直接取窗口倍数（可以是小数 —— 贴屏才是 1:1、不重采样），封顶 4', () => {
     expect(surfaceScaleFor(1, true)).toBe(1);
     expect(surfaceScaleFor(2, true)).toBe(2);
-    expect(surfaceScaleFor(2.4, true)).toBe(3);
+    expect(surfaceScaleFor(2.4, true)).toBe(2.4);
     expect(surfaceScaleFor(6, true)).toBe(4);
     expect(surfaceScaleFor(Number.NaN, true)).toBe(1);
   });

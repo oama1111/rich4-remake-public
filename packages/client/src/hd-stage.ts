@@ -124,13 +124,15 @@ function withSmoothing(ctx: CanvasRenderingContext2D, draw: () => void): void {
  * @param blitScale 舞台贴到窗口时的放大倍数（`stageMetrics().scale`，设备像素）
  * @param enabled   高清舞台开没开；关着恒为 1（= 改造前）
  *
- * ★ 取**整数**（向上取整）：离屏画布的像素尺寸要是整数，且整数倍时 1× 原图的
- *   最近邻放大每个像素一样宽。窗口倍数是小数（如 2.4）时舞台开 3×，
- *   最后贴屏那一下略缩一点（贴屏时开平滑，见 `blitStage`）。
+ * ★ 直接取窗口倍数（**可以是小数**），封顶 4：舞台像素正好等于它在窗口上占的像素，
+ *   贴屏那一下是 1:1 拷贝、不做重采样。
+ *   ⚠️ 先前取的是向上取整（2.4 → 3），贴屏时还得平滑缩一次 —— 实测（2880×1800）
+ *   那一下单独吃掉 9 ms/帧，走子因此掉到 30 帧、格与格之间多等 45 ms，人物明显变慢。
+ *   小数倍下 1× 原图的最近邻放大像素宽窄不一，与关掉高清舞台时整窗放大的效果相同，不算退化。
  */
 export function surfaceScaleFor(blitScale: number, enabled: boolean): number {
   if (!enabled || !Number.isFinite(blitScale) || blitScale <= 1) return 1;
-  return Math.min(MAX_SURFACE_SCALE, Math.ceil(blitScale - 1e-6));
+  return Math.min(MAX_SURFACE_SCALE, blitScale);
 }
 
 /** 离屏画布 + 它的上下文 */

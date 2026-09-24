@@ -1790,6 +1790,13 @@ interface DrawSlot {
 }
 
 
+/**
+ * 相邻两格补间的衔接窗口（毫秒）：下一格在上一格理论结束后这么久之内起步，
+ * 就当作原版那样「同一个 tick 首尾相接」，起点回拨到上一格的结束时刻。
+ * 超过它说明中间真的停过（等玩家、开了窗），照常从现在起算。见 `startWalk`。
+ */
+export const WALK_CHAIN_MS = 150;
+
 export class BoardRenderer {
   readonly #ctx: CanvasRenderingContext2D;
   readonly #sprites: SpriteCache;
@@ -2003,17 +2010,28 @@ export class BoardRenderer {
     const ticks = tweenTickCount(to.x - from.x, to.y - from.y, traffic, special);
     // ★★ 每拍位移除的是**未截断**的 N_f（原版 `0x0040c2ae`），只有末拍吸附落点
     const exactTicks = tweenTickExact(to.x - from.x, to.y - from.y, traffic, special);
+    // ★★ 接着上一格走的，从上一格的**理论结束时刻**起算，不从「这一帧才发现走完」起算。
+    //   原版是同一个 tick 里上一格收尾、下一格起步（`0x0040d936..0x0040d950`），缝是 0；
+    //   本引擎要等一帧画完、再经 setTimeout 才派下一步，缝约等于一帧。帧一慢（高清舞台
+    //   实测 30 帧时缝中位 49 ms），每格多等一截，人物整体就慢了。起点回拨后补间时间轴
+    //   首尾相接，走子速度与帧率无关（缝只让这一格开头少画一两帧）。
+    //   ⚠️ 只接**同一个人、首尾相接、缝在窗口内**的那一段 —— 停下来再走（等 GO、开窗）不能回拨。
     // 上一趟若是「走进旅館」且已隐去，换下一趟之前把结论记下（见 `#enteredHidden`）
     const prev = this.#walk;
     if (prev !== null && prev.relocate?.kind === 'enter' && !relocateVisible('enter', prev.ticks, prev.ticks + 1)) {
       this.#enteredHidden.add(prev.player);
     }
+    let start = now;
+    if (prev !== null && prev.player === player && prev.to.x === from.x && prev.to.y === from.y) {
+      const gap = now - (prev.start + prev.ticks * prev.tickMs);
+      if (gap >= 0 && gap <= WALK_CHAIN_MS) start = now - gap;
+    }
     this.#parked.delete(player);
-    this.#walk = { player, from, to, ticks, exactTicks, tickMs, start: now, ticked: 0, relocate };
+    this.#walk = { player, from, to, ticks, exactTicks, tickMs, start, ticked: 0, relocate };
     // ★ W-66-b 的量测口径：这一段的**理论结束时刻**（`start + ticks × tickMs`）。
     //   下一段起步时拿它相减就是「格与格之间的缝」——原版同一个 tick 里收尾并起步，
     //   缝是 0。只给 DEV 量测读，正常路径不用它（见 `lastWalkEndAt`）。
-    this.#lastWalkEndAt = now + ticks * tickMs;
+    this.#lastWalkEndAt = start + ticks * tickMs;
     this.#dirty = true;
   }
 
