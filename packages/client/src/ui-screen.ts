@@ -154,6 +154,14 @@ export interface UiScreen {
    */
   active(env: UiScreenEnv): boolean;
 
+  /**
+   * ★★ 第十六份（线上卡死）：本屏 `active()` 为真**只是因为有一段排着、还没起播**（在等起播闸）——
+   *   屏上什么都没画。这种屏不能抢走「接管整屏」的位置：先前老虎机排着等台词，而台词在等一扇
+   *   **正开着**的訊息框收掉，訊息框却因为不是「第一屏」而收不到 `tick`，永远收不掉 ⇒ 三方互等。
+   *   见 `overlay.ts` 的 `selectOverlay` / `pendingScreens`。不给 = 从不处于这种状态。
+   */
+  pendingOnly?(env: UiScreenEnv): boolean;
+
   /** 画整屏（`windowed` 的屏则是画那一扇浮窗）。只在 `active` 为真时调用 */
   draw(env: UiScreenEnv): void;
 

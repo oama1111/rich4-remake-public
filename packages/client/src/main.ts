@@ -630,6 +630,7 @@ import { openBigMap } from './big-map-screen.ts';
 //   ESC 与右键都走那条登记契约（本屏的 `hotkey` / `contextmenu` 是同一支）。
 import { openHelpAt } from './help-screen.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { pendingScreens, selectOverlay } from './overlay.ts';
 import { dividendDayCrossed } from './shares-screen.ts';
 import {
   CURSOR_ARCHIVE,
@@ -4523,7 +4524,7 @@ function deliverScreenEvent(s: UiScreen, before: GameState, after: GameState, en
 /** 每帧：闸开了就把押着的那几条按原先后派出去 */
 function flushDeferredScreenEvents(): void {
   if (deferredScreenEvents.length === 0) return;
-  if (!boxMayStart(SCREEN_BOX_TIER.monthly, speechSnapshot())) {
+  if (!boxMayStart(SCREEN_BOX_TIER.monthly, speechSnapshot()) || boxSnapshot().showing) {
     requestRender();
     return;
   }
@@ -6234,11 +6235,9 @@ function uiEnv(): UiScreenEnv {
 
 /** 此刻接管整屏的那一屏（登记表里 `active()` 为真的第一项）；没有则 null */
 function activeUiScreen(): UiScreen | null {
-  const env = uiEnv();
-  for (const s of SCREENS) {
-    if (s.active(env)) return s;
-  }
-  return null;
+  // ★★ 第十六份（线上卡死）：**开着**的屏优先 —— 排着等起播的屏（`pendingOnly`）不抢接管位置，
+  //   否则开着的那扇收不到 `tick`、永远收不掉（见 `overlay.ts` 文件头那三方互等）。
+  return selectOverlay(SCREENS, uiEnv());
 }
 
 /**
@@ -6336,6 +6335,8 @@ function tickGodLine(now: number): void {
     // ★ 第十五份：台上有气泡 / 押着排在它前面的台词 ⇒ 等（原版台词 `0x0040ef44` → 影片 → `0x40e2a2`；
     //   没有影片时（「動畫過程」关掉）先前会与那句台词同屏）；亮牌 / 事件框还开着也等（它们在更前面）
     boxMayStart(SCREEN_BOX_TIER.godSay, speechSnapshot()) &&
+    // ★ 第十六份：屏上已经开着一扇框（訊息框 / 老虎机…）⇒ 等它收（原版同一时刻只有一扇）
+    !boxSnapshot().showing &&
     !eventBoxScreen.active(uiEnv())
   ) {
     godLine = { text: pendingGodLine, at: now };
@@ -6402,7 +6403,9 @@ setGodSlotStartGate(
     godLine !== null ||
     pendingGodLine !== null ||
     // ★ 第十五份：台上有气泡 / 押着排在它前面的台词 ⇒ 等（`presentation-order.ts`）
-    !boxMayStart(SCREEN_BOX_TIER.godSlot, speechSnapshot()),
+    !boxMayStart(SCREEN_BOX_TIER.godSlot, speechSnapshot()) ||
+    // ★ 第十六份：屏上已经开着一扇框 ⇒ 等它收
+    boxSnapshot().showing,
 );
 
 setNoticeStartGate(
@@ -6426,10 +6429,12 @@ setNoticeStartGate(
 // ★★ 第十五份：**每一扇**訊息框起播前都问台词那一侧（`presentation-order.ts` 的 `boxMayStart`）——
 //   台上有气泡 ⇒ 等（互斥：原版 `player_say` 阻塞）；有档更小的台词押着 ⇒ 等（先后）。
 //   先前只有回合開始被挡（第十三份 #2）、保險理賠、小衰神丢卡这几扇等，其余一律与台词同屏。
-setNoticeSpeechGate((tier) => !boxMayStart(tier, speechSnapshot()));
+// ★★ 第十六份（线上卡死）：屏上已经开着别的框（老虎机 / 事件框 / 神明台词窗…）⇒ 也不起 ——
+//   原版全是阻塞调用，同一时刻只有一扇；先前「使用地雷」框在排着的老虎机之外照起，才有那三方互等。
+setNoticeSpeechGate((tier) => !boxMayStart(tier, speechSnapshot()) || boxSnapshot().showing);
 // ★ 第十五份：事件框 / 亮牌 / 抽卡卡面（`lead` 档）与轉盤（`stage` 档）同一道闸
-setEventBoxStartGate(() => !boxMayStart(SCREEN_BOX_TIER.eventBox, speechSnapshot()));
-setWheelStartGate(() => !boxMayStart(SCREEN_BOX_TIER.wheel, speechSnapshot()));
+setEventBoxStartGate(() => !boxMayStart(SCREEN_BOX_TIER.eventBox, speechSnapshot()) || boxSnapshot().showing);
+setWheelStartGate(() => !boxMayStart(SCREEN_BOX_TIER.wheel, speechSnapshot()) || boxSnapshot().showing);
 // ★ 第十四份：命運 / 新聞的施加阶段（加持框、理賠框…）排在事件提示框收掉之后
 setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
 // ★ 第十四份（D-008 收口）：嫁禍卡的选人窗 —— 与对话框同一道闸（`currentDialog`）：
@@ -7738,6 +7743,9 @@ function requestRender(): void {
     //   **屏幕自己要续帧就调 `env.requestRender()`**，别指望这里无条件重排（会死循环）。
     flushDeferredScreenEvents();
     let overlay = activeUiScreen();
+    // ★★ 第十六份：排着等起播的几屏每帧也问一次闸（它们的 `tick` 只做「闸开了就起播」），
+    //   不必等轮到自己当第一屏 —— 否则两屏都排着时，靠后的那一屏永远起不来（`overlay.ts`）。
+    for (const s of pendingScreens(SCREENS, overlay, uiEnv())) s.tick?.(uiEnv());
     if (overlay !== null) {
       overlay.tick?.(uiEnv());
       // ★★ 2026-09-16 修「收屏那一帧整屏全黑」（外部审查 B-10）：`tick()` 可能
@@ -8104,6 +8112,8 @@ function requestRender(): void {
  *   （先前那次 `for (…) sound.play(…)` 登记为 Q-SPEECH-6，已订正）。
  */
 let spokenBubble: SpeechBubble | null = null;
+/** 台上换过几句（演出看门狗认「有没有进展」用）*/
+let speechSerial = 0;
 /** 填数页：鼠标键此刻是不是**按在金额栏上**没松（= 原版 `[0x48cac2] == 0x10`）*/
 let amountBarHeld = false;
 
@@ -8132,6 +8142,134 @@ function viewToSpeaker(bubble: SpeechBubble): void {
   minimapMarker = { x: at.x, y: at.y };
   viewTargetActive = true;
   camera = pixelCamera(at.x, at.y, camera.view);
+}
+
+/**
+ * ★★ 第十六份（线上卡死 `20260923-234517253`）：**演出死锁看门狗**。
+ *
+ * 判据：台上有东西在排 / 押（押着的台词、排着的框 / 屏、排着的影片 / 建屋片 / 飞行…），
+ * 而整条演出链的**签名**（谁开着、各段起播时刻、台上换过几句、局面进度）`PRESENTATION_STALL_MS`
+ * 都没变过 —— 能自己走完的东西（訊息框 ≤ 2 s、一句台词 ≤ 语音 + 1 s、影片几秒）早该变了。
+ * 等人点的屏（月结 / 開獎 / 分紅 / 魔法屋 / 轉盤 / 老虎机…开着时）不算。
+ *
+ * 发现就**按 exe 的先后强行放行**并记 `⚠ 演出死锁自解`、自动落一份 stall 回报（一局一次）：
+ *   第一级：各演出屏落到终态（`fastForward`，与联机「跟着行动者收场」同一条路），押着的台词按档放上台；
+ *   第二级（再停滞一轮）：排着的影片 / 建屋片 / 飞行 / 升天 / 神明台词窗一并作废。
+ */
+const PRESENTATION_STALL_MS = 15_000;
+/** 开着时是在等人点一下的屏 —— 停多久都不算死锁 */
+const HUMAN_PACED_SCREENS: ReadonlySet<string> = new Set([
+  'shares', 'lottery-draw', 'monthly', 'magic', 'wheel', 'god-slot', 'auction', 'lottery', 'research', 'minigame',
+]);
+let presentationStallKey = '';
+let presentationStallSince = 0;
+let presentationUnwindLevel = 0;
+let presentationStallReported = false;
+
+/** 有没有东西在排 / 押着等（没有就不计时）*/
+function presentationWaiting(): boolean {
+  const env = uiEnv();
+  return (
+    heldSpeech.length > 0 ||
+    deferredScreenEvents.length > 0 ||
+    SCREENS.some((s) => s.active(env) && s.pendingOnly?.(env) === true) ||
+    pendingBoardFilm !== null ||
+    pendingBoardFilmAfter !== null ||
+    pendingBuildFx !== null ||
+    buildFxSeamHeld ||
+    pendingGodLine !== null ||
+    pendingCardFlight !== null ||
+    objectFlightAwaitsSpeech ||
+    dollWalkHeld ||
+    pendingDisappearFx !== null ||
+    (godAscend !== null && godAscend.start === null)
+  );
+}
+
+/** 演出链此刻的签名：任何一段在走，它都会变 */
+function presentationSignature(): string {
+  const env = uiEnv();
+  const screens = SCREENS.filter((s) => s.active(env)).map((s) => `${s.id}${s.pendingOnly?.(env) === true ? '?' : ''}`);
+  const n = noticeBoxScreenState();
+  return [
+    screens.join(','),
+    `h${heldSpeech.length}`,
+    `q${speechQueue.length}:${speechSerial}`,
+    `n${n.queued}:${n.playback?.at ?? '-'}`,
+    `f${boardFilm?.startedAt ?? '-'}:${pendingBoardFilm !== null ? 1 : 0}${pendingBoardFilmAfter !== null ? 1 : 0}`,
+    `b${buildFx?.clip ?? '-'}:${buildFx?.startedAt ?? '-'}:${pendingBuildFx !== null ? 1 : 0}${buildFxSeamHeld ? 1 : 0}`,
+    `a${godAscend?.start ?? (godAscend === null ? '-' : 'q')}`,
+    `g${godLine?.at ?? '-'}:${pendingGodLine !== null ? 1 : 0}`,
+    `o${objectFlight?.start ?? '-'}:${pendingCardFlight !== null ? 1 : 0}`,
+    `d${deferredScreenEvents.length}`,
+    `w${renderer.walkDone() ? 1 : 0}`,
+    `${state.turnCount}:${state.phase}:${state.currentPlayer}:${history.length}`,
+  ].join('|');
+}
+
+/** 每秒一次（`setInterval`，不靠渲染循环 —— 卡死时没人再要帧）*/
+function watchPresentationDeadlock(now: number): void {
+  if (screen !== 'game' || !presentationWaiting()) {
+    presentationStallKey = '';
+    presentationUnwindLevel = 0;
+    return;
+  }
+  const overlay = activeUiScreen();
+  if (overlay !== null && overlay.pendingOnly?.(uiEnv()) !== true && HUMAN_PACED_SCREENS.has(overlay.id)) {
+    presentationStallKey = '';
+    return;
+  }
+  const key = presentationSignature();
+  if (key !== presentationStallKey) {
+    presentationStallKey = key;
+    presentationStallSince = now;
+    return;
+  }
+  if (now - presentationStallSince < PRESENTATION_STALL_MS) return;
+  presentationUnwindLevel++;
+  const message = `⚠ 演出死锁自解（第 ${presentationUnwindLevel} 级，${PRESENTATION_STALL_MS / 1000} 秒无进展）：${key}`;
+  log(message);
+  hostLog(`[stall] ${message}`);
+  unwindPresentations(presentationUnwindLevel);
+  presentationStallKey = '';
+  if (!presentationStallReported) {
+    presentationStallReported = true;
+    recorder.error({ t: Date.now(), kind: 'stall', message, stack: null });
+    fileReport('stall', message);
+  }
+  requestRender();
+  resumeTurnDriver();
+}
+
+/** 按 exe 的先后强行放行（见 `watchPresentationDeadlock`）*/
+function unwindPresentations(level: number): void {
+  // 第一级：演出屏落到终态（含排着没起播的），推日期那几屏的派发作废，押着的台词按档上台
+  followPresenter();
+  deferredScreenEvents.length = 0;
+  pendingGodLine = null;
+  godLine = null;
+  if (heldSpeech.length > 0) {
+    const lines = heldSpeech.map((h) => h.bubble);
+    heldSpeech = [];
+    speechQueue.push(lines, performance.now());
+  }
+  if (level < 2) return;
+  // 第二级：影片 / 建屋片 / 飞行 / 升天一并作废
+  pendingBoardFilm = null;
+  pendingBoardFilmAfter = null;
+  boardFilm = null;
+  pendingBuildFx = null;
+  buildFx = null;
+  buildFxSeamHeld = false;
+  godAscend = null;
+  pendingCardFlight = null;
+  pendingDisappearFx = null;
+  if (objectFlight !== null) finishObjectFlight();
+  objectFlightAwaitsSpeech = false;
+  if (dollWalkHeld) {
+    dollWalkHeld = false;
+    renderer.releaseActorWalks(performance.now());
+  }
 }
 
 /**
@@ -8184,6 +8322,7 @@ function speechTick(now: number): void {
   if (cur === spokenBubble) return;
   // 换段了（含「从无到有」与「清空」）
   spokenBubble = cur;
+  speechSerial++;
   if (cur !== null) viewToSpeaker(cur);
   if (cur === null || cur.voice === null) return;
   sound.play('Speaking.mkf', cur.voice);
@@ -10552,6 +10691,9 @@ function bindInput(): void {
     onUncaught('unhandledrejection', r instanceof Error ? r.message : String(r), r instanceof Error ? (r.stack ?? null) : null);
   });
 
+  // ★★ 第十六份：演出死锁看门狗（见 `watchPresentationDeadlock`）—— 定时器驱动，卡死时渲染循环早停了
+  window.setInterval(() => watchPresentationDeadlock(Date.now()), 1_000);
+
   // ★★ 停摆看门狗：**电脑的回合** 60 秒没有任何进展 = 回合链断了（电脑不需要等人）。
   //   真人回合不算 —— 人可以想多久都行。只落一次回报；浏览器下不自动弹下载，只记一行。
   let stallKey = '';
@@ -10565,11 +10707,14 @@ function bindInput(): void {
       stallSince = now;
       return;
     }
-    if (stallReported || screen !== 'game' || state.phase === 'gameOver' || !isAiTurn(state)) return;
-    if (net !== null && !localSeatActive()) return; // 联机：别人的回合卡不卡不由本机判
+    // ★ 第十六份：回合开始 / 走子 / 落点结算这几段**不等人**（真人回合也是自动派的）⇒ 停着就是断了
+    //   （线上那一次停在真人的 `turnStart`，先前这里只认电脑回合，一份回报都没落）
+    const autoPhase = state.phase === 'turnStart' || state.phase === 'moving' || state.phase === 'settling';
+    if (stallReported || screen !== 'game' || state.phase === 'gameOver' || (!isAiTurn(state) && !autoPhase)) return;
+    if (net !== null && !localSeatActive() && !autoPhase) return; // 联机：别人的回合卡不卡不由本机判
     // 电脑的回合里也可能在**等人**：竞价轮到真人举牌（core `actingSeat`）⇒ 不算停摆
     const acting = state.players[actingSeat(state)];
-    if (acting === undefined || !isAiControlled(acting)) return;
+    if (!autoPhase && (acting === undefined || !isAiControlled(acting))) return;
     // 整屏演出（月結、開獎…）可能在等人点一下才收 ⇒ 放宽到 3 分钟，免得误报
     const limit = activeUiScreen() === null ? 60_000 : 180_000;
     if (now - stallSince < limit) return;

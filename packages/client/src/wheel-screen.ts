@@ -772,6 +772,9 @@ export const wheelScreen: UiScreen = {
   /** 演出期間接管整屏；停完 `WHEEL_HOLD_MS` 自己關（排着没起播的那一盘也算，见 `pendingCue`）*/
   active: () => playback !== null || pendingCue !== null,
 
+  /** ★ 第十六份：排着等台词说完（见 `UiScreen.pendingOnly`）*/
+  pendingOnly: () => playback === null && pendingCue !== null,
+
   draw(env: UiScreenEnv): void {
     const play = playback;
     if (play === null) return;

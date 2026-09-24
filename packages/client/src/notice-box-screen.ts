@@ -500,6 +500,9 @@ export const noticeBoxScreen: UiScreen = {
   //   已经变假，就再也没人来起播了（浏览器实测：閃完 880 ms 后框**永远不出来**）。
   active: () => playback !== null || pending.length > 0 || tail !== null,
 
+  /** ★ 第十六份：只剩排着的几扇、一扇都没在弹（见 `UiScreen.pendingOnly`）*/
+  pendingOnly: () => playback === null && tail === null && pending.length > 0,
+
   draw(env: UiScreenEnv): void {
     const p = playback;
     if (p === null) return;

@@ -703,6 +703,9 @@ export const godSlotScreen: UiScreen = {
   //   `draw()` 在 `playback === null` 时直接 return，所以押后期间不会画出东西。
   active: () => playback !== null || pendingCue !== null,
 
+  /** ★ 第十六份：排着等附身影片 / 开场白 / 台词（见 `UiScreen.pendingOnly`）*/
+  pendingOnly: () => playback === null && pendingCue !== null,
+
   draw(env: UiScreenEnv): void {
     const spin = playback;
     if (spin === null) return;

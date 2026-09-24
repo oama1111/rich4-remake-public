@@ -1290,6 +1290,9 @@ export const eventBoxScreen: UiScreen = {
 
   active: () => playback !== null || deferredStart !== null,
 
+  /** ★ 第十六份：排着等台上的气泡收掉（见 `UiScreen.pendingOnly`）*/
+  pendingOnly: () => playback === null && deferredStart !== null,
+
   draw(env: UiScreenEnv): void {
     const p = playback;
     if (p === null) return;
