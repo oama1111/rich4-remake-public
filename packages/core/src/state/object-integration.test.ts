@@ -14,6 +14,7 @@ import type { GameState } from './types.ts';
 import { INITIAL_OBJECT_TYPES, OBJECT_TYPE_ROADBLOCK, placeObjectOfType } from '../rules/object-landing.ts';
 import { OBJECT_NAMES } from '../rules/purchase.ts';
 import { stateFingerprint } from '../net/protocol.ts';
+import { facilityIndexOf, housingIndexOf } from '../rules/land.ts';
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -457,4 +458,67 @@ describe('★ 确定性没被破坏', () => {
     expect(alive.length).toBeGreaterThan(0);
     expect(alive.length).toBeLessThanOrEqual(INITIAL_OBJECT_TYPES.length);
   }, 120_000);
+});
+
+/*
+ * ★★ 需求方 2026-09-24「炸弹定时炸弹…爆炸时是否会摧毁周围建筑物」—— 定時炸彈只动**脚下那一格**，
+ *   走 `0x40ab4a(node.type, 0)`（`0x0041b70c..0x0041b71f`）：
+ *   住宅：0 级不动；否则 −1，連鎖店（`+0x18 ≠ 0`）直接夷平成 0 级住宅（种类也落回）；
+ *   設施：0 级不动；否则 −1，减到 0 ⇒ 种类清 0 并放人（`0x40ac20..0x40ac33`）。
+ *   邻格一律不动。
+ */
+describe('★★ 定時炸彈爆在脚下：只动这一格（0x40ab4a mode 0）', () => {
+  /**
+   * 0 号背着一颗还剩 1 步的炸彈，照「踩上去」那一组的走法走一步（当前格 → 第一个邻居），
+   * 那一格的 `node.type` 换成要测的实体（住宅 0x7d0+id / 設施 0xfa0+id）。
+   */
+  function explodeOnto(entityType: number) {
+    const { state, topo: topo0 } = fresh();
+    const from = state.players[0]!.nodeId;
+    const to = topo0.nodes[from - 1]!.adjacent[0]!;
+    const nodes = topo0.nodes.map((n) => (n.id === to ? { ...n, type: entityType } : n));
+    const topo = { ...topo0, nodes };
+    const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+    const placed = placeObjectOfType(cleared, 18, from, 1, 1);
+    expect(placed.slot).toBeGreaterThanOrEqual(0);
+    const start: GameState = {
+      ...state,
+      players: state.players.map((p, i) => (i === 0 ? { ...p, f64: placed.slot + 1 } : p)),
+      objects: placed.objects,
+      phase: 'moving',
+      stepsRemaining: 3,
+      stepsTotal: 3,
+    };
+    return { start, topo, to };
+  }
+
+  run('★★ 炸在設施上：等级 −1（先前什么都不发生）', () => {
+    const fid = loadMap().facilities[0]!.id;
+    const { start, topo, to } = explodeOnto(0xfa0 + fid);
+    expect(facilityIndexOf(topo.nodes[to - 1]!.type)).toBe(fid);
+    const facilityLevel = [...start.facilityLevel];
+    facilityLevel[fid] = 2;
+    const after = reduce({ ...start, facilityLevel }, { type: 'step' }, topo);
+    // 炸了：炸彈没了、人送醫院 5 天（`push 5 / call send_to_hospital`，人被搬到醫院格）
+    expect(after.players[0]!.f64).toBe(0);
+    expect(after.players[0]!.blocking.inHospital).toBe(5);
+    expect(after.facilityLevel[fid]).toBe(1);
+  });
+
+  run('★★ 炸在連鎖店上：夷平成 0 级**住宅**（种类也要落回），邻格不动', () => {
+    const idx = loadMap().lands[3]!.id;
+    const { start, topo, to } = explodeOnto(0x7d0 + idx);
+    expect(housingIndexOf(topo.nodes[to - 1]!.type)).toBe(idx);
+    const landLevel = start.landLevel.map(() => 2);
+    const landType = [...start.landType];
+    landType[idx] = 1;
+    landLevel[idx] = 3;
+    const after = reduce({ ...start, landLevel, landType }, { type: 'step' }, topo);
+    expect(after.players[0]!.blocking.inHospital).toBe(5);
+    expect(after.landLevel[idx]).toBe(0);
+    expect(after.landType[idx]).toBe(0);
+    // 其它地块一块都没动（不炸周围）
+    const changed = after.landLevel.map((v, i) => (v !== landLevel[i] ? i : -1)).filter((i) => i >= 0);
+    expect(changed).toEqual([idx]);
+  });
 });

@@ -299,12 +299,24 @@ export function buildOneLevel(landType: number, level: number, maxLevel: number)
  * @source 两处 `call 0x40ac7b`（damage_area）的压栈：
  * ```asm
  * 飛彈  (7):  push 攻击者 / push 0 / push 0x26 / push 0x64   ; 半径 100
- * 核彈 (13):  push 攻击者 / push 1 / push 0x26 / push -1     ; ★ 半径 -1 = 全图
+ * 核彈 (13):  push 攻击者 / push 1 / push 0x26 / push -1     ; ★ 半径 -1 = 整幅画面（不是全图，见 NUKE_VIEW_HALF）
  * ```
  * `0x26 = 0x20|0x4|0x2`：2 打住宅、4 打设施、0x20 打站在范围里的人。
  */
 export const MISSILE_RADIUS = 0x64;
 export const NUKE_RADIUS = -1;
+/**
+ * 半径 −1 的**实际**范围：`0x40a45c` 收的是 440×440 的**棋盘画面**，不是整张地图 ——
+ * ```asm
+ * 0040a464  cmp edi, -1 / jne 0x40a472
+ * 0040a469  xor esi, esi / mov edi, 0x1b8     ; 起点 0、边长 440（整幅画面）
+ * 0040a494  call 0x409de7                     ; 按**当前镜头**重建那张 440×440 的 id 图
+ * ```
+ * 而核彈（`0x447b77`）与飛彈（`0x447065`）一样，先 `call 0x41d476` 把镜头移到目标上。
+ * ⇒ 核彈炸的是「以目标为中心、画面里看得见的那一片」—— 与 AI 的「画面」同一个近似
+ *   （节点坐标 ±220，`ai/card-policy.ts` 的 `VIEW_HALF`，Q-TOOL-1）。
+ */
+export const NUKE_VIEW_HALF = 0xdc; // = 0x1b8 ÷ 2（`0x40a472 mov ebp, 0xdc` 就是画面中心）
 export const MISSILE_FLAGS = 0x26;
 
 /** 被炸的人要住院几天 @source `push 3 / call send_to_hospital`（VA 0x004470dc） */
