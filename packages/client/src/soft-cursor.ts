@@ -51,8 +51,13 @@
  * 画在一块**盖在画布上的透明画布**上（`createSoftCursorLayer`），不进舞台 —— 鼠标一动只重画
  * 这块小东西，不用整屏重绘；放大倍数与舞台同一个（原版指针也是 640×480 屏上的 32×32 点阵）。
  *
- * ★ **仅本机**：指针不进 `GameState`、不上线。联机旁观（别人的回合）不作答 ⇒ 藏起，
- *   别人那几屏的专用指针（樂透铅笔、ATM 手指…）旁观端一概不换。
+ * ★ **仅本机**：指针不进 `GameState`、不上线。别人那几屏的专用指针（樂透铅笔、ATM 手指、
+ *   小游戏准星…）旁观端一概不换。
+ * ★ **有意偏离（仅联机，需求方 2026-09-24 拍板，`known-deviations.md` D-CURSOR-ONLINE-1）**：
+ *   联机里轮到**别的座位**（别的真人或电脑座位）时，本机指针**不藏**，一律放出默认箭头 0x29 ——
+ *   别人走子 / 落点、各种演出（新聞、命運、寶箱、神明老虎机、分紅、月結、開獎）、旁观别人的拍賣 /
+ *   商店 / 銀行、旁观小游戏（给普通箭头，不给准星）都一样。原版没有联机，无对应物；
+ *   单机 / 热座照原版（电脑的回合、按过 GO 都藏）。联机**本机自己的回合**也照原版（按 GO 就藏…）。
  * ★ **触屏**没有指针：只有鼠标（`pointerType === 'mouse'`）才画；唯一的例外是
  *   七彩氣球 / 企鵝挖寶的准星 / 靶圈（`CursorRequest.touch`），它跟着手指走。
  */
@@ -201,6 +206,12 @@ export interface CursorFrame {
   readonly localInput: boolean;
   /** 轮到本机真人、GO 鈕在场等掷骰（0x00417e1c / 0x00418db9）*/
   readonly goPhase: boolean;
+  /**
+   * ★ 联机旁观：此刻是**别的座位**的回合（`main.ts` 的 `!localSeatActive()`：联机且当前玩家不是本机座位 ——
+   * 别的真人、电脑座位都算；本机座位被託管的那一回合不算）。单机 / 热座恒为 false。
+   * 为真 ⇒ 本该藏起的一律放出箭头（D-CURSOR-ONLINE-1，需求方要求的有意偏离）。
+   */
+  readonly spectator: boolean;
 }
 
 /** 不在棋盘上的那几屏（标题、设定、存读档、大厅、資產表…）：原版都是放出箭头的窗口 */
@@ -213,6 +224,19 @@ const BOARD_SCREENS: ReadonlySet<string> = new Set(['game', 'stock', 'inventory'
  * 别的作答窗 → GO 鈕；都没有 = 「按过 GO、还没到下一次要人作答」⇒ 藏起。
  */
 export function resolveCursor(f: CursorFrame): CursorWant {
+  const want = resolveOriginal(f);
+  // ★ D-CURSOR-ONLINE-1（仅联机、需求方要求）：别人的回合里本机指针不藏，给默认箭头。
+  //   本机真在作答的窗（如轮到本机那一口的拍賣出价）照它自己那一支；
+  //   小游戏准星（`touch` 请求）是玩家那一台的，旁观端换成普通箭头（触屏照样不画）。
+  //   开局入场不算谁的回合，照原版藏着。
+  if (f.spectator && f.screen !== 'intro' && (want === null || want.touch === true)) {
+    return showCursor(ARROW_CURSOR);
+  }
+  return want;
+}
+
+/** 照原版的那一套（`fcn_00402460` 的调用点，出处见文件头）*/
+function resolveOriginal(f: CursorFrame): CursorWant {
   // 开局入场（角色逐个登场，`fcn_00415872`）：开局设定窗收场时 0x0040698e `fcn_00402460(0)` 收起，
   // 这一段没有地方再放出来，直到第一位真人的 GO 鈕上场（0x00417e1c）
   if (f.screen === 'intro') return null;
