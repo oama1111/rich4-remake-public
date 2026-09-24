@@ -163,6 +163,7 @@
  *   要么前一个字节是 `A1..FE` 的 Big5 首字节。）
  */
 
+import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { HOTKEY } from './hotkeys.ts';
 import { FONT_FAMILY } from './font.ts';
@@ -2330,6 +2331,9 @@ export function applyHelpHit(hit: { label: number; cell: number }, env: UiScreen
 
 export const helpScreen: UiScreen = {
   id: 'help',
+
+  /** 软件指针：說明屏放出箭头 @source 0x0044e53c `fcn_00402460(1)`（关屏 0x0044e557 收起）；本机自己开的屏 */
+  cursor: (): CursorWant => showCursor(ARROW_CURSOR),
 
   /**
    * ★ **浮窗**（原版从不擦屏，靠存底/还原）：

@@ -101,6 +101,7 @@ import type { GameState } from '@rich4/core';
 import { playVoiceCode } from './voice-sink.ts';
 import { LOTTERY } from '@rich4/data';
 import type { ArchiveName, LoadedFlic, Sprite } from './assets.ts';
+import { LOTTERY_CURSOR, localTurn, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { clerkTextStyle, drawGdiText } from './font.ts';
 // 取消音（`[0x482332] = 4`）—— 与右键/ESC 那条梯子共用同一个号
@@ -886,6 +887,15 @@ export const lotteryScreen: UiScreen = {
     // ★ 买中之后 reducer 立刻收了 `pending`，但原版还会把「拜拜」那一拍画完（100 ms）
     if (ui.phase === 'bye') return true;
     return lotteryPending(env.state) !== null;
+  },
+
+  /**
+   * 软件指针：投注屏整段是**铅笔**（图 0x1c）—— @source `WM_CREATE` 尾 0x0042f912 `fcn_004021f8(0x1c, 1, 0)`
+   * + 0x0042f91c `fcn_00402460(1)`；关屏（状态 5）0x0042fafa `fcn_00402460(0)`、0x0042fb08 换回 0x29。
+   * 联机旁观 / 电脑的回合不换、不放（`localTurn`）。
+   */
+  cursor(env: UiScreenEnv): CursorWant {
+    return localTurn(env) ? showCursor(LOTTERY_CURSOR) : null;
   },
 
   draw(env: UiScreenEnv): void {

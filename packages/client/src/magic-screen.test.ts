@@ -58,7 +58,7 @@ import {
   MAGIC_TARGET_ICON_BASE,
   magicCriterionLine,
   magicAwaitingPick,
-  magicCursorHidden,
+  magicCursor,
   magicHumanPickPoint,
   magicLineExpired,
   magicScreen,
@@ -1352,15 +1352,26 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
 });
 
 describe('★ 指针：只有等玩家点那一拍有（`fcn_00402460`：0x00432a16 放出、0x00432fd4 收起）', () => {
-  it('★ 开窗（开场白）藏；状态 7 放；点下去（状态 8）又藏；关窗后不管', () => {
+  it('★ 开窗（开场白）藏；状态 7 放出箭头 0x29；点下去（状态 8）又藏；关窗后也藏（交回棋盘那套判据）', () => {
     const f = open(null, false);
-    expect(magicCursorHidden()).toBe(true);
+    expect(magicCursor()).toBeNull();
+    expect(magicScreen.cursor!(f.env)).toBeNull();
     for (let t = 100; t <= 5000 && magicScreenState().state !== 7; t += 100) tickTo(f, t);
-    expect(magicCursorHidden()).toBe(false);
+    expect(magicCursor()).toEqual({ shape: { image: 0x29, frames: 1, ticks: 0 } });
+    expect(magicScreen.cursor!(f.env)).toEqual(magicCursor());
     const p = MAGIC_RING_AT[3]!;
     magicScreen.down!(p.x, p.y, f.env);
-    expect(magicCursorHidden()).toBe(true);
+    expect(magicCursor()).toBeNull();
     resetMagicScreen();
-    expect(magicCursorHidden()).toBe(false);
+    expect(magicCursor()).toBeNull();
+  });
+
+  it('★ 联机：本机就是触发者 ⇒ 状态 7 放出箭头；旁观端（触发者是 1 号、本机坐 0 号）一直藏着', () => {
+    openAtPick(1);
+    expect(magicCursor()).toEqual({ shape: { image: 0x29, frames: 1, ticks: 0 } });
+    openAtPick(0);
+    expect(magicScreenState().state).toBe(7);
+    expect(magicCursor()).toBeNull();
+    resetMagicScreen();
   });
 });

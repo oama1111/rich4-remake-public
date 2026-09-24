@@ -11,7 +11,7 @@
  *
  * | msg | 做什么 | @source |
  * |---|---|---|
- * | `0x401` WM_USER+1 | 开窗初始化：`fcn_0040a4e1(1)` 把图 1 从原始副本刷回工作面并补画地块/设施/企业的图标，`fcn_00402460(1)` 开脏矩形记账，`InvalidateRect` | 0x0040a82b |
+ * | `0x401` WM_USER+1 | 开窗初始化：`fcn_0040a4e1(1)` 把图 1 从原始副本刷回工作面并补画地块/设施/企业的图标，`fcn_00402460(1)` 放出软件指针（`soft-cursor.ts`），`InvalidateRect` | 0x0040a82b |
  * | `0xf` WM_PAINT | 见下 | 0x0040a86d |
  * | `0x205` WM_RBUTTONUP | `fcn_00402460(0)` + `Post_0402_Message(0)` ⇒ **关窗** | 0x0040a854 |
  * | 其余 | `DefWindowProc` ⇒ **左键不关、中键不关、键盘不关，只有右键抬起关** | 0x0040a9a4 |
@@ -64,6 +64,7 @@
 import type { GameState } from '@rich4/core';
 import { isAlive } from '@rich4/core';
 import { MINIMAP_MARK_RESOURCE, drawMinimapMarks, minimapMarks } from './minimap-marks.ts';
+import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 面板落点 **(20, 60)** @source VA 0x0040a883 `push 0x3c` / 0x0040a885 `push 0x14` */
@@ -218,6 +219,9 @@ function drawAt(
 
 export const bigMapScreen: UiScreen = {
   id: 'big-map',
+
+  /** 软件指针：大地圖 `0x401` 放出箭头 @source 0x0040a837 `fcn_00402460(1)`（右键关窗 0x0040a856 收起）；本机自己开的窗 */
+  cursor: (): CursorWant => showCursor(ARROW_CURSOR),
 
   /**
    * ★ 浮窗：原版只把 (20,60)–(420,460) 那块盖上去，周围的棋盘/工具栏/侧栏

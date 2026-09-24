@@ -44,6 +44,7 @@
 import type { GameState, MapTopology } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import { drawGdiText } from './font.ts';
+import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 面板与立绘板所在的档案 @source `[0x48bad8]`（= `read_mkf(Data.mkf, 0x205)`）*/
@@ -305,9 +306,21 @@ export type PickerAnswer = (type: number | null) => void;
 let pending: PickerAnswer | null = null;
 let hover: number | null = null;
 
+/**
+ * 「待决交互」那一支该不该在本机开窗（`main.ts` 注入：联机只给当前座位、电脑 / 託管不开）。
+ * @source `0x0041a1f0` 那一支：现金够 → **真人**才开这扇窗（电脑由 AI 直接选）。
+ *   先前没有这道闸 ⇒ 联机旁观端也弹出别人的「請選擇設施類別」（还能点，服务器回 `notYourTurn`），
+ *   单机电脑那一手也会一闪而过。与嫁禍窗的 `setScapegoatPickerGate` 同一条闸。
+ * `null` = 不设闸（单测）。
+ */
+let gate: (() => boolean) | null = null;
+export function setFacilityPickerGate(f: (() => boolean) | null): void {
+  gate = f;
+}
+
 /** 这一次开窗是不是「待决交互」那一支（决定选完派什么 action）*/
 function isPendingPick(env: UiScreenEnv): boolean {
-  return env.state.pending?.kind === 'buildFacility';
+  return env.state.pending?.kind === 'buildFacility' && gate?.() !== false;
 }
 
 /** 调试 / 单测用：关掉这一屏 */
@@ -329,6 +342,12 @@ export function openFacilityPicker(answer: PickerAnswer): void {
 
 export const facilityPickerScreen: UiScreen = {
   id: 'facility-picker',
+
+  /**
+   * 软件指针：浮窗 `WM_CREATE` 放出箭头 @source 0x0043fb5d `fcn_00402460(1)`（紧跟 0x0043fb54 挪指针）；
+   * 只在本机真人这边开（加蓋流程的 `openFacilityPicker`，或 `buildFacility` 待决交互过了 `gate`），旁观端没有这扇窗。
+   */
+  cursor: (): CursorWant => showCursor(ARROW_CURSOR),
 
   /**
    * ★ **浮窗**：原版先 `fcn_00451e7e` 存下 (0,0x28)-(0x1b8,0x1e0) 那块

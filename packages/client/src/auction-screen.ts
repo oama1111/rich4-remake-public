@@ -66,6 +66,7 @@ import {
 } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import { FONT_FAMILY, clerkTextStyle, drawGdiText } from './font.ts';
+import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
@@ -1101,6 +1102,15 @@ export const auctionScreen: UiScreen = {
    */
   amountEntry(): boolean {
     return true;
+  },
+
+  /**
+   * 软件指针：轮到**本机真人**举牌那一拍放出箭头 —— @source 0x0043b08a `[0x48c4ac] = 3` +
+   * 0x0043b093 `fcn_00402460(1)`；点下去（0x0043b0e7）/ 落槌（0x0043b3a7 / 0x0043b5b7）`fcn_00402460(0)`。
+   * 电脑那一口、联机里别人的那一口：藏着（`humanTurn` 已含 `seatIsLocal`）。
+   */
+  cursor(env: UiScreenEnv): CursorWant {
+    return screen !== null && humanTurn(env, screen) ? showCursor(ARROW_CURSOR) : null;
   },
 
   tick(env: UiScreenEnv): void {

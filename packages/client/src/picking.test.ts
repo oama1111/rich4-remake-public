@@ -29,6 +29,7 @@ import {
   pickScrollNextStep,
   startPick,
 } from './picking.ts';
+import { CARD_CURSOR, cursorImageAt } from './soft-cursor.ts';
 
 describe('指针形状 @source VA 0x445ec1', () => {
   it('★ 形状 = 选择参数的高 16 位（次高字节清掉）—— 所以指针就是那件道具的图标', () => {
@@ -45,15 +46,27 @@ describe('指针形状 @source VA 0x445ec1', () => {
     expect(pickCursorSpec(0xe0c0202).image).toBe(12);
   });
 
-  it('★ 热点 x = 高 16 位的**高字节** + 1、y 固定 0xa', () => {
-    expect(pickCursorSpec(0x1)).toEqual({ image: 0, hotX: 1, hotY: 0xa });
-    expect(pickCursorSpec(0x10001).hotX).toBe(1);
-    // 各张卡：与 asm 里的 `fcn_004021f8(12, 15, 10)` 逐位对上
-    expect(pickCursorSpec(0xe0c0202)).toEqual({ image: 12, hotX: 15, hotY: 10 });
+  it('★ gap-audit #5：`[0x48c58c]` / 0xa 是**帧数 / 每帧几拍**（VA 0x004465d3 `fcn_004021f8(图, 帧数, 0xa)`），不是热点', () => {
+    // 道具：高字节 0 ⇒ 1 帧（不动）；每帧 10 拍照传（单帧时不起作用）
+    expect(pickCursorSpec(0x1)).toEqual({ image: 0, frames: 1, ticks: 0xa });
+    expect(pickCursorSpec(0x10001)).toEqual({ image: 1, frames: 1, ticks: 0xa });
+    // 各张卡 `0xe0c….`：高 16 位 0x0e0c ⇒ 图 12 起 **15 帧**、每帧 10 拍 × 20 ms = **200 ms**
+    //   —— 与紅卡/黑卡选股那一支（0x00444ff0 `fcn_004021f8(0xc, 0xf, 0xa)`）一模一样
+    expect(pickCursorSpec(0xe0c0202)).toEqual(CARD_CURSOR);
+    expect(pickCursorSpec(0xe0c0202)).toEqual({ image: 12, frames: 15, ticks: 10 });
+    // 機器工人 / 傳送機 `0x209….` ⇒ 图 9 起 3 帧（准星那一组）
+    expect(pickCursorSpec(0x2090006)).toEqual({ image: 9, frames: 3, ticks: 10 });
+    // 真的会动：图 12 → 13 → … → 26 → 12，每 200 ms 换一张
+    const card = pickCursorSpec(0xe0c0202);
+    expect(cursorImageAt(card, 0)).toBe(12);
+    expect(cursorImageAt(card, 199)).toBe(12);
+    expect(cursorImageAt(card, 200)).toBe(13);
+    expect(cursorImageAt(card, 14 * 200)).toBe(26);
+    expect(cursorImageAt(card, 15 * 200)).toBe(12);
   });
 
-  it('★ 选不中时是红叉（图 5）', () => {
-    expect(PICK_CURSOR_INVALID).toEqual({ image: 5, hotX: 1, hotY: 0 });
+  it('★ 选不中时是红叉（图 5，单帧；VA 0x00446606 `fcn_004021f8(5, 1, 0)`）', () => {
+    expect(PICK_CURSOR_INVALID).toEqual({ image: 5, frames: 1, ticks: 0 });
   });
 
   it('★ 道具的选择参数表与 asm 对得上（路障只认格子、bit3 才是「目标必选」）', () => {

@@ -54,6 +54,7 @@
  */
 
 import type { CardTarget, GameState } from '@rich4/core';
+import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import {
   cardEntries,
@@ -304,6 +305,12 @@ function close(): void {
 
 export const stealPickerScreen: UiScreen = {
   id: 'steal-picker',
+
+  /**
+   * 软件指针：浮窗放出箭头 @source 0x00441461 / 0x00441752 `fcn_00402460(1)`；
+   * 只由本机真人的拾取流程打开（`openStealPicker`）。
+   */
+  cursor: (): CursorWant => showCursor(ARROW_CURSOR),
 
   /** ★ 浮窗（原版 `fcn_00451e7e` 存下中间那块再贴回）*/
   windowed: true,

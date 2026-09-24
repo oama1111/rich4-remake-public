@@ -26,7 +26,7 @@ import {
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
 import { isTextEntryTarget } from './text-entry.ts';
-import { magicAwaitingPick, magicCursorHidden, magicHumanPickPoint, magicScreen, magicScreenState } from './magic-screen.ts';
+import { magicAwaitingPick, magicHumanPickPoint, magicScreen, magicScreenState } from './magic-screen.ts';
 import {  autoAction,
   ACTOR_DOLL,
   directionOf,
@@ -151,10 +151,14 @@ import {
   PICKER_HIT,
   PICKER_STRIDE,
   PICKER_TOOL_ID,
+  facilityPickerOpen,
   openFacilityPicker,
   pickerNeededFor,
+  resetFacilityPicker,
+  setFacilityPickerGate,
 } from './facility-picker.ts';
-import { needsStealPick, openStealPicker } from './steal-picker.ts';
+import { needsStealPick, openStealPicker, resetStealPicker, stealPickerOpen } from './steal-picker.ts';
+import { staleLocalModals, type LocalModal } from './turn-modals.ts';
 import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue } from './amount-window.ts';
 import {
   Hud,
@@ -473,7 +477,17 @@ import {
 } from './config-file.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
 import { onMinigameBackgroundReady, setMinigameBackground } from './minigame-bg.ts';
-import { minigameCursorHidden, minigamePointerAt, minigamePointerLeave } from './minigame-screen.ts';
+import {
+  CURSOR_ARCHIVE,
+  CURSOR_RESOURCE,
+  createSoftCursorLayer,
+  cursorShape,
+  localTurn,
+  resolveCursor,
+  type CursorFrame,
+  type CursorShape,
+  type CursorWant,
+} from './soft-cursor.ts';
 import {
   AUTOSAVE_SLOT,
   autosaveStep,
@@ -677,8 +691,6 @@ import { dividendDayCrossed } from './shares-screen.ts';
 import { DisplayList, installBitmapCloseGuard } from './display-list.ts';
 import { installPageVisibility } from './page-visibility.ts';
 import {
-  CURSOR_ARCHIVE,
-  CURSOR_RESOURCE,
   PICK_CLASS,
   PICK_CURSOR_INVALID,
   PICK_EDGE,
@@ -1114,6 +1126,55 @@ function dismissAtm(): void {
   closeAtm();
   if (state.pending?.kind === 'atm') dispatch({ type: 'declineDecision' });
   requestRender();
+}
+
+/**
+ * 本机模态窗跟着回合走（判据在 `turn-modals.ts`）：ATM 只随本机回合里的 `pending{atm}` 活着；
+ * 选目标 / 点数盘 / 选股 / 設施类别 / 搶奪挑件在回合离开本机真人时收掉。
+ * ★ 被收走不是「本人取消」：不回调、不放取消音、不重开卡片欄、不派 action。
+ */
+function dropStaleLocalModals(): void {
+  const stale = staleLocalModals(
+    { pendingKind: state.pending?.kind ?? null, localTurn: localTurn({ state, localSeat: net?.seat ?? null }) },
+    {
+      atm: atm !== null,
+      pick: pick !== null,
+      dicePick: dicePick !== null,
+      stockPick: stockPick !== null,
+      facilityPicker: facilityPickerOpen(),
+      stealPicker: stealPickerOpen(),
+    },
+  );
+  for (const k of stale) dropLocalModal(k);
+  if (stale.length > 0) {
+    log(`▷ 回合已不在本機：收掉 ${stale.join(' / ')}`);
+    requestRender();
+  }
+}
+
+function dropLocalModal(k: LocalModal): void {
+  switch (k) {
+    case 'atm':
+      closeAtm();
+      return;
+    case 'pick':
+      endPick();
+      return;
+    case 'dicePick':
+      dicePick = null;
+      return;
+    case 'stockPick':
+      stockPick = null;
+      stockPickAt = null;
+      if (screen === 'stock') closeStock();
+      return;
+    case 'facilityPicker':
+      resetFacilityPicker();
+      return;
+    case 'stealPicker':
+      resetStealPicker();
+      return;
+  }
 }
 
 /**
@@ -4560,6 +4621,9 @@ function notifyApplied(before: GameState): void {
   //   （`pending` 换了一种，甚至换了人）。一律收掉。
   amountPage = null;
   dialogHot = null;
+  // ★ pt22：本机那几扇只属于这一回合的窗（ATM、选目标、点数盘、选股…）—— `pending` 在别处答掉 /
+  //   回合被计时託管拿走时收掉（不论谁答的都经过这里；放在下面那道「电脑逛店」闸之外）
+  dropStaleLocalModals();
   // ★ 商店的界面状态跟着 `pending` 走：进店时快照货架、铺开场；离店时清掉。
   //   放在这里是因为不管谁答的（本地点、AI、服务器广播）都会经过这一条。
   // ⚠️ 电脑自己逛店 / 进銀行时**不铺场**（保持先前的行为：那两屏是给真人点的，
@@ -4875,33 +4939,6 @@ let magicSeq: MagicSequence | null = null;
 /** 带出这一趟的那条 action（`startActionFx` 按 action 种类分流的几处要它；魔法屋这条不命中任何一处）*/
 let magicSeqAction: Action | null = null;
 
-/** 本模块把指针藏了没有（只撤自己藏的，别抢拾取那条的 CSS 指针）*/
-let magicCursorOff = false;
-
-/** 女巫窗口的指针：`magicCursorHidden()` 为真就藏，窗口一关 / 到了等点那一拍就放回来 */
-function syncMagicCursor(): void {
-  const hide = screen === 'game' && magicCursorHidden();
-  if (hide === magicCursorOff) return;
-  magicCursorOff = hide;
-  canvas.style.cursor = hide ? 'none' : '';
-}
-
-/** 本模块替小游戏把系统指针藏了没有（同上：只撤自己藏的）*/
-let minigameCursorOff = false;
-
-/**
- * 七彩氣球 / 企鵝挖寶：系统指针藏起来，准星 / 靶圈由小游戏屏自己画在舞台上（`minigameCursorHidden`）——
- * @source 0x00414d8b `fcn_004021f8(9, 3, 5)`（`Data.mkf` #0 图 9..11），见 `BALLOON_CURSOR`；
- *   0x00414a95 `fcn_004021f8(0x2a, 1, 0)`（图 42），见 `PENGUIN_CURSOR`。
- */
-function syncMinigameCursor(): void {
-  // ★ 先看 pending：局一收（`minigame` 已施加）指针当拍就放回来 —— 不等小游戏屏下一次 `tick` 才把 run 清掉
-  const hide = screen === 'game' && state.pending?.kind === 'minigame' && minigameCursorHidden();
-  if (hide === minigameCursorOff) return;
-  minigameCursorOff = hide;
-  canvas.style.cursor = hide ? 'none' : '';
-}
-
 /** 棋盘 / 侧栏 / 镜头此刻该按哪一份状态看（逐段演的时候是那一段的 after） */
 function magicShownState(): GameState {
   return magicSeq?.shown ?? state;
@@ -4915,6 +4952,7 @@ function notifyMagicApplied(before: GameState, beats: MagicSequence['beats']): v
   // 音效那一半照放（落点那一声等），台词一句不要 —— 逐段演的时候各段自己说
   playSoundFor(before, state);
   amountPage = null;
+  dropStaleLocalModals();
   dialogHot = null;
   if (!aiVenuePending(state)) {
     syncShopUi();
@@ -5530,49 +5568,24 @@ let pick: PickSession | null = null;
 /** 光标底下是第几个候选 */
 let pickHover: number | null = null;
 
-/** 拾取时的自定义指针缓存（用原版指针图集生成 CSS cursor）*/
-const pickCursorCss = new Map<number, string | null>();
-
 /**
- * 把原版的指针图（`Data.mkf` 资源 0）变成 CSS cursor。
+ * 选目标此刻那一支指针（交给 `soft-cursor.ts` 画；不在选 = `null`）。
  *
- * ★ 原版选目标的反馈**就是换指针**（`fcn_004021f8`，VA 0x4465ba / 0x4465f4），
+ * ★ 原版选目标的反馈**就是换指针**（`fcn_004021f8`，VA 0x004465dd / 0x00446606），
  *   棋盘上不画任何东西 —— 所以这里也不在棋盘上画标记。
- * 返回 `null` 说明图还没解码好；到货后 `spriteArrived` 会让下一帧重来。
+ * ★ 贴边时**指针就是那支箭头**，优先于「悬停在候选上」那支
+ *   @source `loc_0044609b`：贴边分支里 `[0x48c564] != 0` 会让悬停判定直接返回
+ *   ⇒ 优先级 箭头 > 道具/卡片自己的指针 > 红叉。箭头是单帧（0x00446180 `push 0` / `push 1` / `push ecx`）。
  */
-function pickCursorSprite(shape: number, hotX: number, hotY: number): string | null {
-  const hit = pickCursorCss.get(shape);
-  if (hit !== undefined) return hit;
-  const s = spriteNow(CURSOR_ARCHIVE, CURSOR_RESOURCE, shape, true);
-  if (s === null) return null; // 还没解码：**别缓存**，下一帧再问
-  const c = document.createElement('canvas');
-  c.width = s.width;
-  c.height = s.height;
-  c.getContext('2d')?.drawImage(s.bitmap, 0, 0);
-  const css = `url(${c.toDataURL()}) ${hotX} ${hotY}, auto`;
-  pickCursorCss.set(shape, css);
-  return css;
+function pickCursorShape(): CursorShape | null {
+  if (pick === null) return null;
+  if (pickEdge !== PICK_EDGE.none) return cursorShape(PICK_EDGE_ARROW.get(pickEdge) ?? PICK_CURSOR_INVALID.image);
+  return pickCursorFor(pick, pickHover !== null);
 }
 
-/** 按当前拾取状态换指针 */
+/** 拾取状态变了（悬停 / 贴边 / 结束）：指针当场换，不等下一帧 */
 function refreshPickCursor(): void {
-  if (pick === null) {
-    canvas.style.cursor = '';
-    return;
-  }
-  // ★ 贴边时**指针就是那支箭头**，优先于「悬停在候选上」那支
-  //   @source `loc_0044609b`：贴边分支里 `[0x48c564] != 0` 会让悬停判定直接返回
-  //   ⇒ 优先级 箭头 > 道具/卡片自己的指针 > 红叉。
-  if (pickEdge !== PICK_EDGE.none) {
-    const arrow = PICK_EDGE_ARROW.get(pickEdge) ?? PICK_CURSOR_INVALID.image;
-    const cssArrow = pickCursorSprite(arrow, 1, 0);
-    canvas.style.cursor = cssArrow ?? '';
-    return;
-  }
-  const shape = pickCursorFor(pick, pickHover !== null);
-  const css = pickCursorSprite(shape.image, shape.hotX, shape.hotY);
-  // 图还没到 → 先别把系统指针藏掉，否则会出现「没有指针」
-  canvas.style.cursor = css ?? '';
+  syncCursor();
 }
 
 /**
@@ -5629,7 +5642,7 @@ function endPick(): void {
   stopPickEdgeScroll();
   pick = null;
   pickHover = null;
-  canvas.style.cursor = '';
+  refreshPickCursor();
   requestRender();
 }
 
@@ -6951,6 +6964,8 @@ setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
 // ★ 第十四份（D-008 收口）：嫁禍卡的选人窗 —— 与对话框同一道闸（`currentDialog`）：
 //   联机只让当前座位答、电脑 / 託管不开（它们由 `decidePending` / reducer 答）
 setScapegoatPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
+// ★ pt22：「請選擇設施類別」的待决交互那一支同一道闸（旁观端 / 电脑不开，见 `setFacilityPickerGate`）
+setFacilityPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
 // ★ 第十四份：訊息框队列里的亮牌那一扇（收費那一段的被动卡）交给事件提示框播
 setNoticeCardPopup(
   (cardId, text) => startCardRevealPopup(cardId, text, uiEnv()),
@@ -8416,10 +8431,9 @@ function requestRender(): void {
     speechTick(performance.now());
     // ★ D-MAGIC-16：魔法屋逐人分段 —— 上一段的框 / 影片 / 台词都收了才起下一段
     if (screen === 'game') tickMagicSequence();
-    // ★ 女巫窗口里只有「等玩家点」那一拍有指针（`fcn_00402460`，见 `magicCursorHidden`）
-    syncMagicCursor();
-    // ★ 七彩氣球 / 企鵝挖寶：系统指针换成舞台上画的准星 / 靶圈（第二十一份回报，见 `minigameCursorHidden`）
-    syncMinigameCursor();
+    // ★ 软件指针（`soft-cursor.ts`）：此刻谁在接管、要不要本机作答 ⇒ 要哪一支 / 藏起
+    //   （女巫窗口、七彩氣球 / 企鵝挖寶的准星、选目标、各屏专用那几支都从这一处出去）
+    syncCursor();
 
     stageCtx.imageSmoothingEnabled = false;
     stageCtx.fillStyle = '#000';
@@ -8668,10 +8682,8 @@ function requestRender(): void {
     //   明确要求的非叙事提示（F9 回报的落盘确认），所以不必与哪一屏对齐。
     drawToast(stageCtx, toast, performance.now(), SCREEN_W, SCREEN_H);
 
-    // 拾取模式的指针图要**解码完才能用**。首帧拿不到就返回 null，
-    // 而光标只在 hover 变化时才刷新 —— 于是「一次都没悬停到」时指针会空着。
-    // 图到货（spriteArrived）时补一次，这一条不能省。
-    if (pick !== null && spriteArrived) refreshPickCursor();
+    // 指针图要**解码完才能画**（`Data.mkf` #0）；到货那一帧补一次（上面那次可能还没图）
+    if (spriteArrived) syncCursor();
 
     // ★ 第十九份：指令表与上一帧相同 ⇒ 舞台一个像素都没变，不贴屏（手机上省掉一整屏的合成提交）
     if (displayList.endFrame() || stageBlitOwed) {
@@ -9335,6 +9347,63 @@ function cursorWarpFrame(): CursorWarpFrame {
 }
 
 const cursorWarper = createCursorWarper(warpCursor, cursorWarpFrame);
+
+// ============================================================
+//  软件指针（gap-audit WP-1：#5 #8 #9 #10）—— 判据与出处全在 `soft-cursor.ts`
+// ============================================================
+//
+//  原版的指针是自己画的（`Data.mkf` #0、20 ms 一拍、热点 = 贴图锚点），开局就把系统指针藏了。
+//  这里只把「此刻谁在接管、哪几扇作答窗开着」现取出来交给 `resolveCursor`，画由那一层自己画。
+
+/** 盖在 `#board` 上的那一层（仅本机；触屏不画，小游戏准星例外）*/
+const softCursor = createSoftCursorLayer({
+  board: canvas,
+  sprite: (image) => spriteNow(CURSOR_ARCHIVE, CURSOR_RESOURCE, image, true),
+  toStage: (clientX, clientY) => {
+    const r = canvas.getBoundingClientRect();
+    const dpr = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+    return toStage((clientX - r.left) * dpr, (clientY - r.top) * dpr, currentMetrics());
+  },
+  metrics: currentMetrics,
+  now: () => performance.now(),
+});
+
+/** `resolveCursor` 要看的那几项（现取）*/
+function cursorFrame(): CursorFrame {
+  const onBoard = screen === 'game' || screen === 'stock';
+  const overlay = onBoard ? activeUiScreen() : null;
+  const dlg = currentDialog();
+  // 棋盘上几扇整屏 / 浮窗的作答窗（商店、銀行貸款、还款提醒、監獄/醫院）：只给本机真人的回合放
+  //   @source 商店 0x0042dc08、銀行 0x0043479a / 0x004356db / 0x00435e98、監獄/醫院 0x0043cb5a / 0x0043daf0
+  const localHuman = screen === 'game' && localSeatActive() && !isAiTurn(state);
+  return {
+    screen,
+    overlay: overlay === null ? undefined : (overlay.cursor?.(uiEnv()) ?? null),
+    pick: screen === 'game' ? pickCursorShape() : null,
+    dicePick: screen === 'game' && dicePick !== null,
+    stockPick: stockPick !== null,
+    // 通用填数窗（`fcn_00453544`）：棋盘 / 銀行里挂在 `currentDialog()` 上，股市屏里挂在 `stockAmount` 上
+    amountWindow: amountPage !== null && (screen === 'stock' ? stockAmount !== null : dlg !== null),
+    atm: screen === 'game' && atm !== null,
+    localInput:
+      dlg !== null ||
+      (localHuman && (shopUi !== null || loanUi !== null || reminderUi !== null || bailScreenOn())) ||
+      // 终局：勝利畫面放出箭头（@source 0x0041de1d `fcn_00402460(1)`）
+      (screen === 'game' && state.phase === 'gameOver'),
+    // 轮到本机真人、GO 鈕在场（按下去骰子一滚就收起：0x004182de）
+    goPhase: awaitingHumanRoll() && !diceFx.active,
+  };
+}
+
+/** 此刻要哪一支指针（`null` = 藏起）*/
+function cursorWant(): CursorWant {
+  return resolveCursor(cursorFrame());
+}
+
+/** 按当前状态重算一次指针（每帧一次；拾取状态变了也当场叫一次）*/
+function syncCursor(): void {
+  softCursor.update(cursorWant());
+}
 
 /**
  * 把镜头对到当前行动者身上 —— **逐像素**，不是逐格。
@@ -10120,8 +10189,6 @@ function bindInput(): void {
   canvas.addEventListener('mousemove', (e) => {
     const p = eventToStage(e);
     if (p === null) return;
-    // 小游戏的准星画在指针所在处 —— 不论谁在接管，先记下（见 `minigamePointerAt`）
-    minigamePointerAt(p.x, p.y);
 
     // ── 名牌浮标：鼠标一动就擦（原版 0x200 那一支 `loc_00418b63` → `fcn_00417c67`）──
     if (nodeTip !== null) {
@@ -10548,11 +10615,7 @@ function bindInput(): void {
   //   定死（只能左右旋转视角），那是本引擎自己发明的，随 `setViewMode` 一起删掉
   //   （D-086-5 / T-086）。滚轮在棋盘上现在什么都不做（也不拦浏览器默认行为）。
 
-  // 指针离开画布：小游戏的准星跟着收（系统指针在画布外照常显示）
-  canvas.addEventListener('mouseleave', () => {
-    minigamePointerLeave();
-    requestRender();
-  });
+  // 指针离开画布：软件指针跟着收（`soft-cursor.ts` 自己听 `mouseleave`；系统指针在画布外照常显示）
 
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
@@ -12265,6 +12328,8 @@ function settleAfterSilentRebuild(): void {
   renderer.clearRelocate();
   pendingCardRoute = null; // 亮牌后待走的那一张同理
   npcWalksDrawn = null;
+  // ★ pt22：追上之后回合已不在本机 / 那一格已答掉 ⇒ 本机留着的模态窗一并收掉（同 `notifyApplied`）
+  dropStaleLocalModals();
   // ★ 第十二份試玩回報：追上之后此刻仍挂着的**场所**（商店 / 銀行 / 路過銀行）照常铺起来 ——
   //   与 `notifyApplied` 同一道人机闸；它们平时只在「一条 action 落地」时同步。
   if (!aiVenuePending(state)) {
@@ -12616,6 +12681,14 @@ async function boot(): Promise<void> {
         get screen() { return screen; },
         /** 目标拾取会话（T-026）—— `null` = 没在拾取 */
         get pickSession() { return pick; },
+        /** 软件指针（`soft-cursor.ts`）：此刻要哪一支 + 画着的图号 / 舞台落点（没画 = `null`）+ 画布上的系统指针 */
+        cursor: () => ({
+          frame: cursorFrame(),
+          want: cursorWant(),
+          drawn: softCursor.drawn(),
+          os: canvas.style.cursor,
+          seat: net?.seat ?? null,
+        }),
         /** 個人資產表的故事板状态 */
         get sheetUi() { return sheetUi; },
         /** 卡片商店／道具商店的界面状态（页号、滑入位置、气泡、货架快照）*/

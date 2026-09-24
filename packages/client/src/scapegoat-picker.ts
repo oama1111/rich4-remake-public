@@ -30,6 +30,7 @@
 import type { Sprite } from './assets.ts';
 import { BOX_TEXT_STYLE, drawGdiText } from './font.ts';
 import { PASSIVE_CARD_TEXT } from '@rich4/data';
+import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 export const SCAPEGOAT_PICKER_ARCHIVE = 'Data.mkf' as const;
@@ -120,6 +121,11 @@ function answer(env: UiScreenEnv, target: number): void {
 
 export const scapegoatPickerScreen: UiScreen = {
   id: 'scapegoat-picker',
+  /**
+   * 软件指针：窗口过程 `fcn_0043ff56` 的 `WM_CREATE` 挪指针（0x0043ffc2）后放出箭头
+   * @source 0x0043ffcb `fcn_00402460(1)`；点中 / 右键（0x00440239 / 0x00440266）收起。只有本机真人开这扇窗。
+   */
+  cursor: (): CursorWant => showCursor(ARROW_CURSOR),
   /** 浮窗：原版只存 (0,0x28)-(0x1b8,0x1e0) 那一块（0x00440f38）*/
   windowed: true,
 

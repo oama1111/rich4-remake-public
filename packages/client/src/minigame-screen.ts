@@ -129,6 +129,7 @@ import type { GameState } from '@rich4/core';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { getMinigameBackground } from './minigame-bg.ts';
+import { cursorShape, showCursor, type CursorShape, type CursorWant } from './soft-cursor.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同签名） */
 export type MiniSprite = (
@@ -712,46 +713,16 @@ export const BALLOON_FREEZE_TICKS = 0x14;
 export const BALLOON_POP_TICKS = 3;
 
 // ── 准星指针（第二十一份試玩回報「打气球时鼠标指针没换成瞄准镜」）──
-
-/**
- * 原版的指针是**软件画的**：`Data.mkf` #0 这一套图（@source 0x00402108..0x0040211a
- * `read_mkf([0x48a0e4] = Data.mkf, 0)` → `[0x46cb10]`），开局 `ShowCursor(0)`（0x00402154）
- * 把系统指针藏掉。`fcn_004021f8(图, 帧数, 每帧几拍)` 换形状（`[0x46cb10] + 0xc + 图*12`
- * = SPR 帧表那一项，`+4/+6` 就是热点 = 图自带的锚点，见 0x004022ac / 0x004024ea）；
- * `fcn_00402460(1/0)` 显示 / 藏起（`[0x48a178]`）。
- */
-export const MINI_CURSOR_ARCHIVE: ArchiveName = 'Data.mkf';
-export const MINI_CURSOR_RES = 0;
-/**
- * 指针动画的节拍 @source 0x004021a1..0x004021a5 `timeSetEvent(0x14, 5, 0x401f98, 0, 1)`
- * —— 每 **20ms** 一拍；回调 0x00402015..0x0040205a 数够 `每帧几拍` 就换下一帧、到头回 0。
- */
-export const MINI_CURSOR_TICK_MS = 20;
-
-/** 一种动画指针：从图 `image` 起连 `frames` 帧、每帧停 `delay` 拍 */
-export interface MiniCursorSpec {
-  readonly image: number;
-  readonly frames: number;
-  readonly delay: number;
-}
+//
+// 原版的指针是**软件画的**（`Data.mkf` #0 图集、20 ms 一拍、热点 = 贴图锚点），整套在 `soft-cursor.ts`；
+// 本屏只报「此刻要哪一支」（`minigameScreen.cursor`），画由那边统一画。
 
 /**
  * 七彩氣球的**准星** @source 0x00414d85 `push 5` / 0x00414d87 `push 3` / 0x00414d89 `push 9` /
  * 0x00414d8b `call fcn_004021f8` —— `Data.mkf` #0 图 **9 / 10 / 11**（31×29，热点 (15,14)，
  * 红圈十字准星），三帧轮播、每帧 5 拍 = **100ms**；紧接着 0x00414d95 `fcn_00402460(1)` 放出来。
  */
-export const BALLOON_CURSOR: MiniCursorSpec = { image: 9, frames: 3, delay: 5 };
-
-/**
- * 从换上这支指针起过了 `elapsedMs`，此刻该画第几张图 —— 纯函数。
- * @source 0x004021f8 换形状时把帧号 `[0x48a172]` 与拍数 `[0x48a176]` 都清 0；
- *   回调每拍 `++拍数 >= 每帧几拍` 就 `拍数 = 0, ++帧号`，`帧号 == 帧数` 回 0（0x00402054..0x0040205a）。
- */
-export function miniCursorImage(spec: MiniCursorSpec, elapsedMs: number): number {
-  if (spec.frames <= 1 || spec.delay <= 0) return spec.image;
-  const beats = Math.max(0, Math.floor(elapsedMs / MINI_CURSOR_TICK_MS));
-  return spec.image + (Math.floor(beats / spec.delay) % spec.frames);
-}
+export const BALLOON_CURSOR: CursorShape = cursorShape(9, 3, 5);
 
 /**
  * 七彩氣球这一拍**画不画准星** —— 纯函数。
@@ -760,7 +731,7 @@ export function miniCursorImage(spec: MiniCursorSpec, elapsedMs: number): number
  *   藏起：`[0x48bd58] == 2`（时间到且屏上清空）那一拍 0x00414d03 `fcn_00402460(0)`、0x00414d13 换回箭头
  *   `fcn_004021f8(0x29, 1, 0)`，然后才画大号分数、停 2000ms。
  *   ⇒ 入场（`intro`）与结算（`score`）都**没有指针**；能打的两段（`play` / `ending`）才有。
- *   （进小游戏之前指针本来就是藏着的：按 GO 那一刻 0x0040126f `fcn_00402460(0)`，见 `magicCursorHidden`。）
+ *   （进小游戏之前指针本来就是藏着的：按 GO 那一刻 0x0040126f `fcn_00402460(0)`，见 `soft-cursor.ts`。）
  */
 export function balloonCursorShown(st: BalloonGame): boolean {
   return balloonShootable(st);
@@ -771,7 +742,7 @@ export function balloonCursorShown(st: BalloonGame): boolean {
  * @source 入场结束的 0x405 那一支：0x00414a60 播完入场影片 → 0x00414a8f `push 0` / 0x00414a91 `push 1` /
  *   0x00414a93 `push 0x2a` / 0x00414a95 `call fcn_004021f8`，0x00414a9f `fcn_00402460(1)` 放出来。
  */
-export const PENGUIN_CURSOR: MiniCursorSpec = { image: 0x2a, frames: 1, delay: 0 };
+export const PENGUIN_CURSOR: CursorShape = cursorShape(0x2a, 1, 0);
 
 /**
  * 企鵝挖寶这一拍**画不画指针** —— 纯函数。
@@ -1783,16 +1754,9 @@ interface MiniRun {
    * 玩家那一台的 `minigame` 广播到了、pending 清掉，这一屏自然就关了。
    */
   spectator: boolean;
-  /** 准星是从什么时刻换上的（`fcn_004021f8` 把帧号清 0 的那一刻）；`null` = 此刻没有准星 */
-  cursorAt: number | null;
 }
 
 let run: MiniRun | null = null;
-/**
- * 最后一次看到的指针舞台坐标（鼠标移动 / 触屏的点与拖都会派 `move`）；`null` = 指针不在画布上。
- * ★ 模块级而不是挂在 `run` 上：原版每拍都 `GetCursorPos`，开局那一刻指针在哪准星就在哪。
- */
-let pointer: { x: number; y: number } | null = null;
 
 /** 联机时本机是不是只在旁观这一局（单机 / 热座永远不是）*/
 function spectating(env: UiScreenEnv): boolean {
@@ -1868,7 +1832,6 @@ function ensureRun(env: UiScreenEnv): MiniRun | null {
     introTried: false,
     introWaitSince: env.now,
     spectator: spectating(env),
-    cursorAt: null,
   };
   // ★ 定曲（`push 0xc/0xb/0xa; call fcn_004549cf` @source `rich4_small_games.asm:4335/4481/4638`）：
   //   与入场 FLIC **同一道闸门**（真人 + 「動畫過程」开着），见 `introGateOpen`。
@@ -2063,12 +2026,11 @@ function drawMiniStage(env: UiScreenEnv, sprite: MiniSprite, st: MiniRun): void 
   else if (st.gift !== null) drawGift(env.stage, sprite, st.gift, catcherResource(env), big);
 }
 
-/** `miniCursorAt` / `syncCursorClock` 要看的那几项 */
+/** `miniCursorSpec` / `miniCursorWant` 要看的那几项 */
 interface MiniCursorRun {
   balloon: BalloonGame | null;
   penguin?: PenguinGame | null;
   spectator: boolean;
-  cursorAt: number | null;
   intro: { at: number; until: number } | null;
 }
 
@@ -2080,7 +2042,7 @@ interface MiniCursorRun {
  * `fcn_004021f8` / `fcn_00402460`（指针一直藏着，接盘跟着 `GetCursorPos` 走）。
  * 入场影片还在放（0x405 那一支还没走到换指针那句）也没有。
  */
-function miniCursorSpec(st: MiniCursorRun): MiniCursorSpec | null {
+function miniCursorSpec(st: MiniCursorRun): CursorShape | null {
   if (st.intro !== null) return null;
   if (st.balloon !== null) return balloonCursorShown(st.balloon) ? BALLOON_CURSOR : null;
   const penguin = st.penguin ?? null;
@@ -2089,51 +2051,18 @@ function miniCursorSpec(st: MiniCursorRun): MiniCursorSpec | null {
 }
 
 /**
- * 这一局此刻该画的**软件指针**（准星 / 靶圈）：`{图号, 舞台坐标}`；不画就 `null` —— 纯函数。
+ * 这一局此刻要的**软件指针**（交给 `soft-cursor.ts` 画）；`null` = 藏着 —— 纯函数。
  *
- * 哪一屏换哪一支见 `miniCursorSpec`；旁观端不画（他不能打）；指针不在画布上不画。
+ * - 七彩氣球 / 企鵝挖寶：能打的那几段换上准星 / 靶圈（`miniCursorSpec`），**触屏上也画**
+ *   （`touch: true`）—— 跟着手指的点 / 拖走，这是触屏上唯一画出来的指针；
+ * - 財神接金幣：整局藏着（#10：这一屏从不 `fcn_00402460(1)`，接盘跟着 `GetCursorPos` 走）；
+ * - 入场影片、结算（大号分数）那几拍：藏着（放出来之前 / 收起之后）；
+ * - 联机旁观（本机坐的不是正在玩的那一位）：藏着 —— 他不能打，不给准星。
  */
-export function miniCursorAt(
-  st: MiniCursorRun,
-  at: { x: number; y: number } | null,
-  now: number,
-): { image: number; x: number; y: number } | null {
-  if (st.spectator || at === null || st.cursorAt === null) return null;
+export function miniCursorWant(st: MiniCursorRun | null): CursorWant {
+  if (st === null || st.spectator) return null;
   const spec = miniCursorSpec(st);
-  if (spec === null) return null;
-  return { image: miniCursorImage(spec, now - st.cursorAt), x: at.x, y: at.y };
-}
-
-/** 指针的换上 / 收起跟着这一局的阶段走（见 `balloonCursorShown` / `penguinCursorShown`）*/
-function syncCursorClock(st: MiniRun, now: number): void {
-  if (miniCursorSpec(st) === null) st.cursorAt = null;
-  else if (st.cursorAt === null) st.cursorAt = now;
-}
-
-/**
- * `main.ts` 每帧问一次：画布上的**系统指针**要不要藏起来。
- *
- * ★ 七彩氣球 / 企鵝挖寶整局（入场、玩、结算）都藏：原版的指针本来就是软件画的，
- *   从按 GO 起就收着（0x0040126f `fcn_00402460(0)`），入场演出后才换上放出来
- *   （氣球 0x00414d93、企鵝 0x00414a9f），收场那一拍又收起（氣球 0x00414d05、企鵝 0x00414a2f）
- *   —— 指针由本屏自己画在舞台上（`miniCursorAt`），这样触屏的点 / 拖也能看到它跟着手指走。
- *   旁观端不藏（他什么都不能点，留着系统指针）。
- */
-export function minigameCursorHidden(): boolean {
-  return run !== null && (run.balloon !== null || run.penguin !== null) && !run.spectator;
-}
-
-/** 指针离开画布（`main.ts` 的 `mouseleave`）：准星跟着消失，回来时再出现 */
-export function minigamePointerLeave(): void {
-  pointer = null;
-}
-
-/**
- * `main.ts` 的画布 `mousemove` 每次都报一下指针在哪（不论哪一屏在接管）——
- * 这样进小游戏那一刻不用先晃一下鼠标，准星就出现在指针原来的位置（原版每拍 `GetCursorPos`）。
- */
-export function minigamePointerAt(x: number, y: number): void {
-  pointer = { x, y };
+  return spec === null ? null : showCursor(spec, true);
 }
 
 export const minigameScreen: UiScreen = {
@@ -2200,7 +2129,6 @@ export const minigameScreen: UiScreen = {
     }
     // ★ 本帧推过的 tick 里登记的（挖到 / 点爆 / 点空 / 生成 / 炸彈）一次倒出去
     flushSounds(env, st);
-    syncCursorClock(st, env.now);
     if (runDone(st, env.now)) {
       // ★ 旁观端不送分（送了也是 `notYourTurn`）：停在这一屏，等玩家那台的 `minigame` 广播
       if (st.spectator) return;
@@ -2239,15 +2167,15 @@ export const minigameScreen: UiScreen = {
       return;
     }
     drawMiniStage(env, sprite, st);
-    // ★ 准星画在最上面（原版的软件指针也是最后贴到主表面上的，0x00402250 → 0x00401e59）
-    const cur = miniCursorAt(st, pointer, env.now);
-    if (cur !== null) {
-      drawAnchored(env.stage, env.sprite(MINI_CURSOR_ARCHIVE, MINI_CURSOR_RES, cur.image, true), cur.x, cur.y);
-    }
+    // ★ 准星 / 靶圈不画在舞台上：由 `soft-cursor.ts` 画在最上面（`cursor` 出口）
+  },
+
+  /** 软件指针：见 `miniCursorWant`（这一屏接管期间，`main.ts` 每帧问一次）*/
+  cursor(): CursorWant {
+    return miniCursorWant(run);
   },
 
   move(x: number, y: number, env: UiScreenEnv): void {
-    pointer = { x, y };
     const st = ensureRun(env);
     if (st === null) return;
     // 旁观端：財神那屏的小人不跟本机的鼠标走（他不在玩）
@@ -2256,7 +2184,6 @@ export const minigameScreen: UiScreen = {
   },
 
   down(x: number, y: number, env: UiScreenEnv): void {
-    pointer = { x, y };
     const st = ensureRun(env);
     if (st === null) return;
     // ★ 旁观端点了不算（分数只收玩家那一台的）

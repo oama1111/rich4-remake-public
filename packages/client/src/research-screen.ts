@@ -56,6 +56,7 @@ import { RESEARCH_MIN_PROJECT, RESEARCH_MAX_PROJECT, researchTool } from '@rich4
 import { TOOLS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { drawGdiText } from './font.ts';
+import { ARROW_CURSOR, localTurn, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 立绘板与五格条所在的档案 @source `read_mkf(Data.mkf, 0x205)`（VA 0x00408072 尾）*/
@@ -523,6 +524,14 @@ export const researchScreen: UiScreen = {
 
   active(env: UiScreenEnv): boolean {
     return env.screen === 'game' && isResearchPending(env.state.pending);
+  },
+
+  /**
+   * 软件指针：面板 `WM_CREATE` 里放出箭头 @source 0x0044035e `fcn_00402460(1)`（与 0x00440355 挪指针同一拍）；
+   * 联机旁观 / 电脑的回合藏着。
+   */
+  cursor(env: UiScreenEnv): CursorWant {
+    return localTurn(env) ? showCursor(ARROW_CURSOR) : null;
   },
 
   draw(env: UiScreenEnv): void {

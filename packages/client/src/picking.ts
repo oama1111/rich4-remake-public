@@ -40,6 +40,7 @@
  *   （8 个视角各一项，与棋盘旋转共用）—— 见下面的 `PICK_SCROLL_*`。
  */
 
+import { cursorShape, type CursorShape } from './soft-cursor.ts';
 import {
   ACTOR_MIN,
   canUseCard,
@@ -89,10 +90,11 @@ export interface PickSession {
 }
 
 /**
- * 光标底下的目标**不能选**时的指针 —— **红叉**（图 5）
- * @source VA 0x4465f4 `fcn_004021f8(5, 1, 0)`
+ * 光标底下的目标**不能选**时的指针 —— **红叉**（图 5，热点 = 锚点 (16,16) 正中）
+ * @source VA 0x00446602 `push 1` / 0x00446604 `push 5` / 0x00446606 `call fcn_004021f8`（前一句 `push 0`）
+ *   = `fcn_004021f8(5, 1, 0)`；另一处 0x00446637 同一组数。
  */
-export const PICK_CURSOR_INVALID = { image: 5, hotX: 1, hotY: 0 } as const;
+export const PICK_CURSOR_INVALID: CursorShape = cursorShape(5, 1, 0);
 
 /**
  * 光标底下的目标**能选**时的指针 —— 形状由**选择参数**算出来。
@@ -102,11 +104,21 @@ export const PICK_CURSOR_INVALID = { image: 5, hotX: 1, hotY: 0 } as const;
  * mov edx, ecx ; shr edx, 0x10      ; edx = 选择参数的高 16 位
  * mov eax, edx ; xor ah, dh         ; ★ ah ^= dh（两个字节本来就相等）→ 把次高字节清掉
  * and eax, 0xffff
- * mov [0x48c588], eax               ; → 形状 = 高 16 位的**低字节**
+ * mov [0x48c588], eax               ; → 起始图 = 高 16 位的**低字节**
  * xor bl, dl ; xor eax,eax ; mov ax,bx ; sar eax,8 ; inc eax
- * mov [0x48c58c], eax               ; → 热点 x = 高 16 位的**高字节 + 1**
- *                                   ;   （热点 y 固定 0xa，见 VA 0x4465ba 的 `push 0xa`）
+ * mov [0x48c58c], eax               ; → **帧数** = 高 16 位的**高字节 + 1**
  * ```
+ * 两个全局只在悬停到候选上那一拍用（VA 0x004465d3）：
+ * ```asm
+ * 004465d3  push 0xa                ; 每帧 10 拍（× 20 ms = 200 ms）
+ * 004465d5  mov ecx, [0x48c58c]     ; 帧数
+ * 004465db  push ecx
+ * 004465dc  push edx                ; 起始图（= [0x48c588]）
+ * 004465dd  call fcn_004021f8       ; (图, 帧数, 每帧几拍)
+ * ```
+ * ⇒ `fcn_004021f8` 的第 2、3 个实参是**帧数 / 每帧几拍**，不是热点（热点一律取贴图锚点，
+ *   `soft-cursor.ts` 的 0x004022ac）。先前这里把 `[0x48c58c]` 读成「热点 x」、把 0xa 读成
+ *   「热点 y」（gap-audit #5），卡片指针于是成了静止的图 12、热点还偏在 (15,10)。
  * 于是「指针变成**那件道具自己的图标**」这件事是自动的：
  *
  * | 选择参数 | 形状 | 长什么样 |
@@ -115,15 +127,12 @@ export const PICK_CURSOR_INVALID = { image: 5, hotX: 1, hotY: 0 } as const;
  * | `0x10001`（地雷）| **1** | 尖刺球 |
  * | `0x20001`（定時炸彈）| **2** | 炸彈 |
  * | `0x300c0`（飛彈）/ `0x400c0`（核子飛彈）| **3 / 4** | — |
- * | `0xe0c0XYZ`（各张卡）| **12** | 「卡片」光标 |
+ * | `0xe0c0XYZ`（各张卡）| **12 起 15 帧**、每帧 200 ms | 翻转的「卡片」（= 紅卡/黑卡选股那一支，`CARD_CURSOR`）|
+ * | `0x2090006` / `0x2090001`（機器工人 / 傳送機）| **9 起 3 帧** | 与七彩氣球同一组准星图 |
  */
-export function pickCursorSpec(selectionParam: number): {
-  image: number;
-  hotX: number;
-  hotY: number;
-} {
+export function pickCursorSpec(selectionParam: number): CursorShape {
   const hi = (selectionParam >>> 16) & 0xffff;
-  return { image: hi & 0xff, hotX: ((hi >>> 8) & 0xff) + 1, hotY: 0xa };
+  return cursorShape(hi & 0xff, ((hi >>> 8) & 0xff) + 1, 0xa);
 }
 
 /**
@@ -239,10 +248,6 @@ export function instanceAnchor(
   }
   return { x: node.x, y: node.y };
 }
-
-/** 指针图集 @source VA 0x4020fa 的 `read_mkf(data_mkf, 0, 0, 0)` */
-export const CURSOR_ARCHIVE = 'Data.mkf' as const;
-export const CURSOR_RESOURCE = 0;
 
 /**
  * 这类目标在这个引擎里**还没有能点的落点** —— 需要各自的列表 UI。
@@ -420,10 +425,7 @@ export function startPick(
 }
 
 /** 这一刻该用哪个指针（`hovering` = 光标底下有没有候选）*/
-export function pickCursorFor(
-  session: PickSession,
-  hovering: boolean,
-): { image: number; hotX: number; hotY: number } {
+export function pickCursorFor(session: PickSession, hovering: boolean): CursorShape {
   return hovering ? pickCursorSpec(session.param) : PICK_CURSOR_INVALID;
 }
 

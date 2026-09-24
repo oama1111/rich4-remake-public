@@ -38,6 +38,7 @@
 
 import type { Action, GameState, MapTopology, Rich4Map } from '@rich4/core';
 import type { LoadedFlic, Sprite } from './assets.ts';
+import type { CursorWant } from './soft-cursor.ts';
 
 /** 交给每一屏的环境 —— 只读的现状 + 三个副作用出口 */
 export interface UiScreenEnv {
@@ -195,6 +196,16 @@ export interface UiScreen {
    * 不给 = 不在填金额。
    */
   amountEntry?(env: UiScreenEnv): boolean;
+
+  /**
+   * 这一屏接管期间要哪一支**软件指针**（`soft-cursor.ts`）；`null` = 藏起 —— 纯查询，不许改状态。
+   *
+   * ★ 不给 = 一直藏着：原版的**演出类**窗口（分紅 / 開獎 / 月結 / 新聞命運框 / 轉盤 / 神明老虎机 /
+   *   訊息框）一处都不调 `fcn_00402460(1)`，按过 GO 收起的指针就一直收着。
+   *   要人作答的屏在自己的 `WM_CREATE` 里放出来（出处见 `soft-cursor.ts` 文件头），
+   *   就在这里返回那一支 —— 联机旁观 / 电脑的回合记得返回 `null`（`localTurn`）。
+   */
+  cursor?(env: UiScreenEnv): CursorWant;
 
   /**
    * 键盘按下（原版 `WM_KEYDOWN` = **0x101**）。
