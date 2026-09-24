@@ -26,7 +26,7 @@ import { CONFINEMENT_SLOTS } from './confinement.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { emptyBoard } from '../places/notice-board.ts';
 import { initialConfinement, initialSpecialActors } from './special-actors.ts';
-import { newStockMarket } from '../places/stock-market.ts';
+import { newStockMarket, refreshTradableShares } from '../places/stock-market.ts';
 import { emptyOwnership, type CommercialOwnership } from '../places/commercial.ts';
 import { makeObjects } from '../cards/summon.ts';
 import { OBJECT_COUNT } from './objects.ts';
@@ -439,6 +439,8 @@ export function newGame(opts: NewGameOptions): GameState {
     objects = placeObjectOfType(objects, type, node).objects;
   }
 
+  const market = refreshTradableShares(newStockMarket(globalMapId, map.commercials), rng);
+
   const state: GameState = {
     mode,
     rngState: rng.getState(),
@@ -527,7 +529,9 @@ export function newGame(opts: NewGameOptions): GameState {
     tools,
     toolStock,
     // ★ 12 支股票取自本地图那一段（`地图编号 × 12`）
-    market: newStockMarket(globalMapId, map.commercials),
+    // ★ 开局摆完物件、算完各企业自留股之后就重算一次可成交量（12 支里股本 > 1000 的各抽一次 `rand()`）
+    //   @source `0x00407dc6..0x00407df8`（自留股循环）→ `0x00407dfe call 0x42915a`；在第 1 位摆人之前
+    market,
     // 开局全员空仓 @source `_rich4_player_stocks` 全零
     holdings: players.map(() => Array.from({ length: STOCKS_PER_MAP }, () => ({ ...EMPTY_HOLDING }))),
     // ★ 各企业的可售股数取自地图记录的 +0x30；下标 = 企业 1 基序号

@@ -22,6 +22,7 @@ import {
   parseMap,
   reduce,
   replayTrail,
+  stateFingerprint,
   type Action,
   type GameState,
   type MapTopology,
@@ -98,6 +99,13 @@ function loadReport(): { steps: Step[]; topo: MapTopology; map: ReturnType<typeo
   const report = JSON.parse(readFileSync(REPORT, 'utf8')) as {
     base: string;
     trail: { t: number; action: Action; seed: number }[];
+    /** 时间零点（原第 100 条的时刻；rebase 之后 trail 从原第 105 条起，零点不变）*/
+    t0?: number;
+    /**
+     * trail 下标 → 录制时那一条的结果（`serializeGame`）。只冻结换人那两条 `endTurn`：可成交量 `0x42915a`
+     * 挪到每位玩家回合开头（`0x0041c868`）之后，这两条的抽签与线上录制不同，而后续录下的 action 是照旧结果走的。
+     */
+    frozen?: Record<string, string>;
   };
   const base = deserializeGame(report.base);
   const map = parseMap(new MkfArchive(new Uint8Array(readFileSync(MAP_MKF))).read(base.globalMapId * 2 + 1));
@@ -110,12 +118,18 @@ function loadReport(): { steps: Step[]; topo: MapTopology; map: ReturnType<typeo
   };
   // 把每一条施加后的前后局面先算好（与 `replay-report.ts` 同一个 `replayTrail`）
   const all: Step[] = [];
-  replayTrail(base, report.trail, topo, (i, before, after) => {
-    all.push({ before, after, action: report.trail[i]!.action, at: report.trail[i]!.t });
+  let cur = base;
+  report.trail.forEach((e, i) => {
+    const pinned = report.frozen?.[String(i)];
+    const after = pinned !== undefined ? deserializeGame(pinned) : replayTrail(cur, [e], topo);
+    all.push({ before: cur, after, action: e.action, at: e.t });
+    cur = after;
   });
-  // 从第 100 条起按回报里的时间差灌（前面的已经演完）
-  const START = 100;
-  const t0 = all[START]!.at;
+  // 按回报里的时间差灌。★ 2026-09-24 起 fixture 的 base 已是原第 105 条之前的局面（见 fixture 的 `rebased`：
+  //   可成交量 `0x42915a` 挪到每位玩家回合开头之后，从原 base 重放会在第 11 条 endTurn 就与线上录制分叉）
+  //   ⇒ 从头灌（先前是从原第 100 条起灌，那 5 条是上一位的收尾，与这次卡死无关）
+  const START = 0;
+  const t0 = report.t0 ?? all[START]!.at;
   return { steps: all.slice(START).map((x) => ({ ...x, at: x.at - t0 })), topo, map };
 }
 
@@ -389,6 +403,12 @@ function runPipeline(
 }
 
 describe('★★ 第十六份：线上卡死（老虎机排着 × 「使用地雷」框开着 × 道具台词押着）', () => {
+  run('fixture 忠实：rebase + 冻结两条 endTurn 之后，重放到底的指纹 = 回报里录下的终局指纹', () => {
+    const { steps } = loadReport();
+    const report = JSON.parse(readFileSync(REPORT, 'utf8')) as { finalFingerprint: string };
+    expect(stateFingerprint(steps.at(-1)!.after)).toBe(report.finalFingerprint);
+  });
+
   run('旧规矩（第一个 active 的屏接管、排着的不另 tick、框不看别的框）⇒ 复现卡死', () => {
     const { steps, topo, map } = loadReport();
     const r = runPipeline(steps, topo, map, true);
@@ -413,9 +433,9 @@ describe('★★ 第十六份：线上卡死（老虎机排着 × 「使用地�
 const MAP_BIN = (id: number) => `${process.env.RICH4_WORKSPACE ?? ''}/extracted/map/${String(id * 2 + 1).padStart(4, '0')}.bin`;
 const runSoak = existsSync(MAP_BIN(0)) ? it : it.skip;
 
-describe('★★ 第十六份：48 局长跑灌进同一台宿主 —— 从不卡死、从不同屏', () => {
+describe('★★ 第十六份：96 局长跑灌进同一台宿主 —— 从不卡死、从不同屏', () => {
   runSoak(
-    '8 张图 × 6 局；action 到达间隔 0–400 ms（含联机补帧那种 0 间隔的一串）；百分之二的 action 之前旁观端跟着行动者收场；再走一遍联机收件箱（驱动放行才施加）',
+    '8 张图 × 12 局；action 到达间隔 0–400 ms（含联机补帧那种 0 间隔的一串）；百分之二的 action 之前旁观端跟着行动者收场；再走一遍联机收件箱（驱动放行才施加）',
     () => {
       const failures: string[] = [];
       let toolUses = 0;
@@ -424,10 +444,14 @@ describe('★★ 第十六份：48 局长跑灌进同一台宿主 —— 从不�
       let oldStuck = 0;
       // ★ 48 局（原 24 局）：第十六份規則修正（研究所面板 / 被关者不进落点）改了电脑长局的轨迹，
       //   旧规矩在前 24 局里恰好不再撞上那种互等；对照组要撞得到才有意义 ⇒ 每张图多跑 3 局。
+      // ★ 96 局（2026-09-24）：开局惰性摆人 + 可成交量 `0x42915a` 挪到每位玩家回合开头（`0x0041c868`）
+      //   又改了轨迹，前 48 局旧规矩一局都不卡；照上一次的做法**加局数、不挑种子**：
+      //   96 局里旧规矩卡死 3 局（g62 / g73 / g90），新规矩 96 局全收场（整段约 15 s）。
+      const GAMES = 96;
       let longestStall = 0;
       let worstRatio = 0;
       let compared = 0;
-      for (let g = 0; g < 48; g++) {
+      for (let g = 0; g < GAMES; g++) {
         const globalMapId = g % 8;
         const map = parseMap(new Uint8Array(readFileSync(MAP_BIN(globalMapId))));
         const topo: MapTopology = {
@@ -497,7 +521,7 @@ describe('★★ 第十六份：48 局长跑灌进同一台宿主 —— 从不�
       expect(toolUses).toBeGreaterThan(100);
       expect(possessions).toBeGreaterThan(20);
       expect(actions).toBeGreaterThan(10_000);
-      expect(oldStuck, '旧规矩在这 48 局里至少卡死一局（否则这套长跑测不出那一类问题）').toBeGreaterThan(0);
+      expect(oldStuck, '旧规矩在这 96 局里至少卡死一局（否则这套长跑测不出那一类问题）').toBeGreaterThan(0);
       // 收件箱那条路：从不停滞到看门狗那一步；吞吐不比旧规矩差多少
       console.log(`[收件箱] 最长停滞 ${longestStall} ms；与旧规矩对照 ${compared} 局，施加完用时之比最差 ${worstRatio.toFixed(2)}`);
       expect(longestStall).toBeLessThan(15_000);
