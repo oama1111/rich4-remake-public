@@ -25,11 +25,19 @@ const byId = new Map(
   clean.images.map((i) => [`${i.archive}/${String(i.resource).padStart(4, '0')}_${String(i.image).padStart(3, '0')}`, i]),
 );
 
+// 上面盖着从它身上抠出来的图层的底图不换（`w80-overlay-bases.ts`：重绘挪了色调，图层对不上会露方框）
+const overlayPath = join(work, 'overlay-bases.json');
+const overlays = existsSync(overlayPath) ? (JSON.parse(readFileSync(overlayPath, 'utf8')) as Record<string, string[]>) : {};
+
 const choice: Record<string, unknown> = {};
 let taken = 0;
 for (const id of routes.Q) {
   const info = byId.get(id);
   if (info === undefined) continue;
+  if (overlays[id] !== undefined) {
+    choice[id] = { chosen: 'faithful', why: `上面盖着抠图图层：${overlays[id].slice(0, 3).join(' ')}` };
+    continue;
+  }
   const rel = `${info.archive}/${String(info.resource).padStart(4, '0')}_f${String(info.image).padStart(3, '0')}.png`;
   const cand = join(work, 'q-done', rel);
   if (!existsSync(cand)) {

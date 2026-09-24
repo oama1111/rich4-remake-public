@@ -300,6 +300,21 @@ export function cmdPack(queueDir: string, packDir: string, opts: PackOptions = {
   return layout;
 }
 
+/**
+ * 分片：环境变量 `RICH4_SHARD=i/n`（0 ≤ i < n）时本进程只做第 i 份，n 个进程并行跑同一条命令。
+ * 不设 = 全做。unpack 按拼图、merge 按帧取模分；merge 的超大帧（底图）一律归 0 号，
+ * 免得几个进程同时各开一张 9216² 把内存撑爆。
+ */
+export function shardFromEnv(env: string | undefined = process.env['RICH4_SHARD']): { index: number; count: number } | null {
+  if (env === undefined || env === '') return null;
+  const m = /^(\d+)\/(\d+)$/.exec(env);
+  if (m === null || Number(m[1]) >= Number(m[2])) throw new Error(`RICH4_SHARD 应为 i/n（0 ≤ i < n），收到 ${env}`);
+  return { index: Number(m[1]), count: Number(m[2]) };
+}
+
+/** 超过这个输出像素数的帧只归 0 号分片（9216² 底图 ≈ 85M；普通 4× 帧都在 5M 以内） */
+const SHARD_HUGE_PX = 16_000_000;
+
 export interface UnpackReport {
   /** 切回的帧数 */
   frames: number;
@@ -326,7 +341,9 @@ export function cmdUnpack(packDir: string, packDoneDir: string, doneDir: string)
   const layout = JSON.parse(readFileSync(layoutPath, 'utf8')) as PackLayout;
 
   const report: UnpackReport = { frames: 0, sheets: 0, absent: 0, rejected: [], scaleWarnings: [] };
-  for (const sheet of layout.sheets) {
+  const shard = shardFromEnv();
+  for (const [si, sheet] of layout.sheets.entries()) {
+    if (shard !== null && si % shard.count !== shard.index) continue;
     const rgbPath = join(packDoneDir, sheet.rgb);
     const alphaPath = join(packDoneDir, sheet.alpha);
     const hasRgb = existsSync(rgbPath);
@@ -410,8 +427,13 @@ export function cmdMerge(queueDir: string, doneDir: string): void {
   const rejections: MergeRejection[] = [];
   const mergedIds: string[] = [];
   let absent = 0;
+  const shard = shardFromEnv();
 
-  for (const frame of queue.frames) {
+  for (const [fi, frame] of queue.frames.entries()) {
+    if (shard !== null) {
+      const huge = frame.width * frame.height * frame.scale * frame.scale > SHARD_HUGE_PX;
+      if (huge ? shard.index !== 0 : fi % shard.count !== shard.index) continue;
+    }
     const rgbRel = frame.rgb.replace(/^rgb\//, '');
     const alphaRel = frame.alpha.replace(/^alpha\//, '');
     const rgbPath = join(doneDir, 'rgb', rgbRel);
@@ -462,7 +484,9 @@ export function cmdMerge(queueDir: string, doneDir: string): void {
     absent,
   };
   mkdirSync(doneDir, { recursive: true });
-  writeFileSync(join(doneDir, 'merge-report.json'), `${JSON.stringify(report, null, 2)}\n`);
+  // 分片跑时各写各的报告（merge-report.2of6.json），不互相覆盖
+  const reportName = shard === null ? 'merge-report.json' : `merge-report.${shard.index}of${shard.count}.json`;
+  writeFileSync(join(doneDir, reportName), `${JSON.stringify(report, null, 2)}\n`);
 
   console.log(`合并 ${mergedIds.length} 帧 → ${join(doneDir, 'merged')}/`);
   if (rejections.length > 0) {
@@ -471,7 +495,7 @@ export function cmdMerge(queueDir: string, doneDir: string): void {
     if (rejections.length > 20) console.log(`  …还有 ${rejections.length - 20} 项`);
   }
   if (absent > 0) console.log(`\n${absent} 帧尚未交出产物。`);
-  console.log(`报告：${join(doneDir, 'merge-report.json')}`);
+  console.log(`报告：${join(doneDir, reportName)}`);
 }
 
 // ============================================================
@@ -935,7 +959,8 @@ export function cmdIngest(cleanDir: string, hdDir: string, model: string): void 
   }
 
   const srcHashes = new Map<string, string>();
-  const still = pendingTasks(m, srcHashes, model);
+  // 不按本次模型名筛：分路线跑时别的路线做完的也算做完（否则 Q 路线 ingest 会把 S/V/G 全报成待处理）
+  const still = pendingTasks(m, srcHashes);
   console.log(`\n仍待处理 ${still.length} 张。`);
 }
 

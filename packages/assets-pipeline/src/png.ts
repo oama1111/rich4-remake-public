@@ -18,7 +18,7 @@ import type { DecodedImage } from './sprite.ts';
  *
  * 手写实现以保持 assets-pipeline 的零依赖（避免为一个编码器引入整条图像库链）。
  * 逐行按「绝对值和最小」挑 filter（None/Sub/Up/Average/Paeth，libpng 的默认启发式），
- * 再交给 `node:zlib` 的 deflate（level 9）。
+ * 再交给 `node:zlib` 的 deflate（level 6，见下）。
  *
  * ⚠️ 先前是 zlib **store**（不压缩）：超分产物是原图的 16 倍像素，一轮 4× 能到几十 GB，
  *   网页档（`tier`）更是直接上线的体积 —— 压缩后通常只剩 1/3～1/10。像素逐字节不变（无损）。
@@ -29,37 +29,48 @@ export function encodePng(img: DecodedImage): Uint8Array {
 
   // 每行前置 1 字节 filter type
   const raw = new Uint8Array(height * (1 + stride));
-  const cand = [0, 1, 2, 3, 4].map(() => new Uint8Array(stride));
+  const zero = new Uint8Array(stride);
   for (let y = 0; y < height; y++) {
     const cur = rgba.subarray(y * stride, (y + 1) * stride);
-    const prev = y > 0 ? rgba.subarray((y - 1) * stride, y * stride) : null;
-    let best = 0;
-    let bestScore = Infinity;
-    for (let f = 0; f < 5; f++) {
-      const out = cand[f]!;
-      let score = 0;
-      for (let i = 0; i < stride; i++) {
-        const a = i >= 4 ? cur[i - 4]! : 0;
-        const b = prev !== null ? prev[i]! : 0;
-        const c = prev !== null && i >= 4 ? prev[i - 4]! : 0;
-        const v = (cur[i]! - filterPredict(f, a, b, c)) & 0xff;
-        out[i] = v;
-        score += v < 128 ? v : 256 - v;
-      }
-      if (score < bestScore) {
-        bestScore = score;
-        best = f;
-      }
+    const prev = y > 0 ? rgba.subarray((y - 1) * stride, y * stride) : zero;
+    // ★ 一趟算完五种 filter 的得分，再只写赢家那一种（旧写法五趟各写一份 + 每字节一次函数调用：
+    //   1760² 一帧光滤波就 4 s）。得分与平手取小号的规则不变 ⇒ 选出的 filter 逐行相同。
+    let s0 = 0;
+    let s1 = 0;
+    let s2 = 0;
+    let s3 = 0;
+    let s4 = 0;
+    for (let i = 0; i < stride; i++) {
+      const x = cur[i]!;
+      const a = i >= 4 ? cur[i - 4]! : 0;
+      const b = prev[i]!;
+      const c = i >= 4 ? prev[i - 4]! : 0;
+      s0 += absByte(x);
+      s1 += absByte(x - a);
+      s2 += absByte(x - b);
+      s3 += absByte(x - ((a + b) >> 1));
+      s4 += absByte(x - paeth(a, b, c));
     }
+    let best = 0;
+    let bestScore = s0;
+    if (s1 < bestScore) [best, bestScore] = [1, s1];
+    if (s2 < bestScore) [best, bestScore] = [2, s2];
+    if (s3 < bestScore) [best, bestScore] = [3, s3];
+    if (s4 < bestScore) best = 4;
     const dst = y * (1 + stride);
     raw[dst] = best;
-    raw.set(cand[best]!, dst + 1);
+    for (let i = 0; i < stride; i++) {
+      const a = i >= 4 ? cur[i - 4]! : 0;
+      const c = i >= 4 ? prev[i - 4]! : 0;
+      raw[dst + 1 + i] = (cur[i]! - filterPredict(best, a, prev[i]!, c)) & 0xff;
+    }
   }
 
   const chunks: Uint8Array[] = [
     new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     pngChunk('IHDR', ihdr(width, height)),
-    pngChunk('IDAT', new Uint8Array(deflateSync(raw, { level: 9 }))),
+    // level 6：滤波后的超分图上 level 9 慢 10 倍（1760² 一帧 9 s vs 0.9 s）只小 4%
+    pngChunk('IDAT', new Uint8Array(deflateSync(raw, { level: 6 }))),
     pngChunk('IEND', new Uint8Array(0)),
   ];
 
@@ -97,6 +108,12 @@ function pngChunk(type: string, data: Uint8Array): Uint8Array {
   return out;
 }
 
+/** 残差按有符号字节取绝对值（libpng 启发式的计分） */
+function absByte(d: number): number {
+  const v = d & 0xff;
+  return v < 128 ? v : 256 - v;
+}
+
 /** PNG filter 的预测值（a = 左、b = 上、c = 左上）@see PNG 规范 §9.2 */
 function filterPredict(f: number, a: number, b: number, c: number): number {
   switch (f) {
@@ -106,13 +123,8 @@ function filterPredict(f: number, a: number, b: number, c: number): number {
       return b;
     case 3:
       return (a + b) >> 1;
-    case 4: {
-      const p = a + b - c;
-      const pa = Math.abs(p - a);
-      const pb = Math.abs(p - b);
-      const pc = Math.abs(p - c);
-      return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-    }
+    case 4:
+      return paeth(a, b, c);
     default:
       return 0;
   }

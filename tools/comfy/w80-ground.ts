@@ -111,6 +111,11 @@ function stitch(work: string): void {
     const xs = tileStarts(f.width).map((s) => s * SCALE);
     const ys = tileStarts(f.height).map((s) => s * SCALE);
     const T = TILE * SCALE;
+    // alpha 最后写 ⇒ 它在就说明这张已拼完（重跑收尾脚本不重拼）
+    if (existsSync(join(work, 'upscale-done', f.alpha))) {
+      console.log(`${f.id}：已拼过，跳过`);
+      continue;
+    }
     const missing = ys.flatMap((sy) => xs.map((sx) => join(work, 'g-done', tileName(f, sy / SCALE, sx / SCALE)))).filter((p) => !existsSync(p));
     if (missing.length > 0) {
       console.log(`${f.id}：还缺 ${missing.length} 块，跳过`);
