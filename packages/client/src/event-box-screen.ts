@@ -1248,6 +1248,19 @@ export function startOwnCardUsePopup(cardId: number, player: number, turnCount: 
 }
 
 /**
+ * ★ v8（gap-audit #7）：**联机旁观端**收到行动方「卡片欄选定」那一刻的亮牌（`present{cardReveal}`）——
+ *   与行动方同一扇（`0x00441cbc call 0x441f73`，在选目标之前），同样记下「这一张已经亮过」，
+ *   随后那条 `useCard` 落地时不再亮第二遍；没用成（`present{cardFailed}`）⇒ `dropOwnCardUse`，再用一张再亮一次。
+ */
+export function startRemoteCardUsePopup(cardId: number, player: number, turnCount: number, env: UiScreenEnv): void {
+  playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(cardId)), env.now);
+  ownCardUse = { player, cardId, turnCount };
+  env.playEffect(CARD_REVEAL_SOUND);
+  env.log(`事件提示框：使用卡片 #${cardId}（P${player + 1}，联机：行动方卡片欄选定）`);
+  env.requestRender();
+}
+
+/**
  * 那一张没用成（卡片函数返回 0：目标取消 / 用不了）⇒ 忘掉「已亮过」。
  * 原版之后是失败音 + 卡片欄重开，再选一张会**再亮一次**。
  */

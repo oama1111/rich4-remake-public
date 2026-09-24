@@ -68,7 +68,18 @@ import type { Action } from '../state/actions.ts';
  * 拍賣的出價資格與結果提示、放置禁令擴到「格上有人／物」。老頁面（沒刷新的分頁）若照舊連進來，
  * 第一次落地或第一次購物就失步 —— 版本號一變，它進門就拿到清楚的「協議版本不符」。
  */
-export const PROTOCOL_VERSION = 7;
+/**
+ * ★ 2026-09-24（gap-audit #7「联机用卡/道具：旁观端看不到亮牌，或看得晚」）→ **8**。
+ *
+ * 為什麼 +1：多了一對**純演出**消息 `present`（客户端 → 服务器 → 其餘各端）：真人在卡片欄選定一張卡的那一刻
+ * 亮牌（`_rich4_ui_use_card_entry` `0x00441cbc call 0x441f73`，在選目標**之前**）、卡片函數返回 0 的失敗
+ * （`0x00441cd9` 失敗音 3 → `0x00441ce3` 卡片欄重開）、選定道具時先說的那一句（`0x00446bcc` 等）與選格取消
+ * （`0x4466b8` 音效 4）。老客戶端不認識它，照舊只在 `useCard` 到達時亮牌 —— 規則沒變，但同一桌裡新老頁面
+ * 的演出時序不同、而且老頁面不會**發**這條 ⇒ 新頁面上看它用卡又退回「亮得晚」。與 v5 同一個理由：
+ * 版本號一變，沒刷新的舊分頁進門就拿到一句清楚的「協議版本不符」。
+ * ⚠️ `present` **不進** action 日誌、不進 `replay`、不進 `stateFingerprint` —— 它不改局面。
+ */
+export const PROTOCOL_VERSION = 8;
 // ★ v6 同一次 +1 裡還有：`start` / `replay` 帶 `startDate`（服務器的今天）—— 聯機開局日期與單機同一個規則。
 //   老客戶端不認識它，會照 core 缺省日期（2010-01-01）開局 ⇒ 日期不同，第一次過日子就失步。
 
@@ -237,7 +248,55 @@ export type ClientMessage =
    * 服务器收到 ⇒ `strikes` 清零、镜像里改回 `HUMAN`、广播。
    * 回合中途收回也允许（与「掉线重连归还」走同一段代码）。
    */
-  | { t: 'resume' };
+  | { t: 'resume' }
+  /**
+   * ★ v8（gap-audit #7）：**纯演出**提示 —— 本机真人此刻在自己的 UI 里做了一件原版全桌都看得见的事
+   *   （亮牌 / 用卡失败 / 道具台词 / 选格取消），请服务器转给其余各端（见 `PresentCue`）。
+   *
+   * ⚠️ 服务器**必须**校验：只收**轮到的那一座**（`actingSeat`，且不是服务器在代打）、手里真有那张卡 / 那件道具；
+   *   限速（`PRESENT_RATE`）；**不进** action 日志 / 重放 / 指纹 —— 它不改局面。
+   *   座位号由服务器从连接上认（消息里没有 `seat`）。
+   */
+  | { t: 'present'; cue: PresentCue };
+
+/**
+ * ★ v8（gap-audit #7）：一条纯演出提示的内容。
+ *
+ * | kind | 行动方那一刻 | 原版 | 旁观端演什么 |
+ * |---|---|---|---|
+ * | `cardReveal` | 卡片欄选定一张卡 | `0x00441cbc call 0x441f73`（亮牌，在卡片函数 / 选目标之前）| 同一扇亮牌（卡面 + 「使用X卡」+ 音效）；随后那条 `useCard` 不再亮第二遍 |
+ * | `cardFailed` | 卡片函数返回 0（目标取消 / 用不成）| `0x00441cd9` 失败音 3 → `0x00441ce3` 卡片欄重开 | 失败音 3（卡片欄是行动方自己的 UI）；忘掉「已亮过」—— 再用一张会再亮一次 |
+ * | `toolLine` | 选定要选目标的道具 | 道具函数第一个 `player_say`（路障 `0x00446bcc` 等，在选格 `0x446ae8` 之前）| 同一句道具台词；随后那条 `useTool` 不再说第二遍 |
+ * | `toolCancel` | 选格 / 骰面盘右键取消 | `0x4466b8` / `loc_00446a68` 音效 4 | 音效 4 |
+ */
+export type PresentCue =
+  | { kind: 'cardReveal'; cardId: number }
+  | { kind: 'cardFailed'; cardId: number }
+  | { kind: 'toolLine'; toolId: number }
+  | { kind: 'toolCancel'; toolId: number };
+
+/**
+ * ★ v8：`present` 的限速 —— 每座每 `windowMs` 最多 `max` 条（超出的静默丢弃）。
+ *   原版一次用卡最多「亮牌 → 失败」两件事，人手点卡片欄再快也到不了这个数；只防刷屏。
+ */
+export const PRESENT_RATE = { max: 8, windowMs: 4000 } as const;
+
+/** 网络来的 `present.cue` 形状对不对（卡号 / 道具号只查是正整数且不离谱，**持有与否**由服务器对镜像查）*/
+export function isPresentCue(v: unknown): v is PresentCue {
+  if (typeof v !== 'object' || v === null) return false;
+  const c = v as Record<string, unknown>;
+  const id = (x: unknown): boolean => typeof x === 'number' && Number.isInteger(x) && x >= 1 && x <= 255;
+  switch (c.kind) {
+    case 'cardReveal':
+    case 'cardFailed':
+      return id(c.cardId);
+    case 'toolLine':
+    case 'toolCancel':
+      return id(c.toolId);
+    default:
+      return false;
+  }
+}
 
 // ============================================================
 //  服务器 → 客户端
@@ -352,6 +411,13 @@ export type ServerMessage =
   | { t: 'saves'; saves: SaveSummary[] }
   /** ★ 聯機存檔（v6）：手動存檔成功（廣播給全桌：大家都知道存了一份） */
   | { t: 'saved'; name: string }
+  /**
+   * ★ v8（gap-audit #7）：别的座位转来的纯演出提示（**不发回**发起者本人）。
+   *
+   * `after` = 服务器转发那一刻日志排到第几号（含；空 = -1）—— 行动方做这件事时已经演完了
+   * 这之前的全部 action，旁观端据此把它排进收件箱里**同一个位置**（第 `after` 号之后、下一号之前）。
+   */
+  | { t: 'present'; seat: number; after: number; cue: PresentCue }
   | { t: 'error'; message: string };
 
 /** `join.mode`（v5）—— 見 `ClientMessage` 裡 `join` 的注釋 */

@@ -842,6 +842,11 @@ interface ScreenState {
   result: { winner: number; price: number } | null;
   /** ★ 第十八份：这一屏是替「开拍即流标」补开的 —— 开场那句要先走完再宣布流标 */
   introHold: boolean;
+  /**
+   * ★ gap-audit #4（仅联机）：本机真人刚点出去、回包还没到的那一口（出价者 + 点的时候的现价）。
+   *   这一口的挥槌 / 音效点钮时已经演了 —— 回包落地（`event`）时认出来就不演第二遍，收件箱也不挡它。
+   */
+  localBid: { bidder: number; price: number } | null;
 }
 
 let screen: ScreenState | null = null;
@@ -933,6 +938,7 @@ function startView(env: UiScreenEnv, pending: PendingInteraction): ScreenState {
     lastPrice: run.price,
     result: null,
     introHold: false,
+    localBid: null,
   };
 }
 
@@ -1017,6 +1023,8 @@ function applyHumanBid(
   const seat = st.run.seats[st.run.current];
   if (seat === undefined) return;
   const status = action.kind === 'raise' ? 'raise' : action.kind;
+  // ★ gap-audit #4：联机时这一口要等服务器回包才落地（`event` 认它）—— 先记下「这一口本机已经演了」
+  if (online(env)) st.localBid = { bidder: seat.player, price: st.run.price };
   env.dispatch({
     type: 'auctionBid',
     bidder: seat.player,
@@ -1069,6 +1077,8 @@ export const auctionScreen: UiScreen = {
    *   · 屏没开过的（开拍即流标）⇒ 排进 `backlog` 补演。
    */
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
+    // ★ gap-audit #4（仅联机）：广播来的每一口（电脑 / 别的真人）也照单机那样挥槌 + 音效 0x3f
+    if (screen !== null) noteBroadcastBid(before, after, env, screen);
     const results = after.lastAuctionResults ?? null;
     if (results === null || results === (before.lastAuctionResults ?? null)) return;
     for (const h of results) {
@@ -1265,6 +1275,76 @@ export const auctionScreen: UiScreen = {
     applyHumanBid(env, st, { kind: btn.kind });
   },
 };
+
+/** 联机（本机只控制一个座位）？单机 `localSeat` 为 null / 不给 */
+function online(env: UiScreenEnv): boolean {
+  return env.localSeat !== undefined && env.localSeat !== null;
+}
+
+/**
+ * ★★ gap-audit #4（**仅联机**）：一口出价刚落地 —— 若不是本屏自己点出去的那一口，就补演挥槌 + 音效。
+ *
+ * 为什么只有联机要补：单机每一口都是本屏发的（电脑那一口 `tick` 问 core、真人那一口点钮），
+ * 发的那一刻就起了挥槌（`AUCTION_FRAME_MS × AUCTION_HAMMER_FRAMES`）并放音效 0x3f（`0x43a3fc`，每一下 `0x407` 都放）。
+ * 联机时电脑那几口由服务器在同一瞬间连着出（`hub.ts` 的 `#driveComputers`），别的真人那一口在他自己那台点 ——
+ * 本屏只在 action 落地时才知道。收件箱按 `auctionBidPacing` 一口一口放，这里每落一口就演一口，
+ * 节拍与单机相同（下一口不早于这一口挥槌收尾 = `nextAt`）。
+ *
+ * 判据：施加前挂着的正是屏上这一场，施加后它落槌了或轮转 / 现价变了 ⇒ `bidders[seat]` 那位刚出了一口。
+ */
+function noteBroadcastBid(before: GameState, after: GameState, env: UiScreenEnv, st: ScreenState): void {
+  if (!online(env) || st.settling || st.outcome !== null) return;
+  const bp = before.pending;
+  if (bp === null || bp.kind !== 'auction' || !('seat' in bp) || runKey(bp) !== st.key) return;
+  const ap = after.pending;
+  const same = ap !== null && ap.kind === 'auction' && runKey(ap) === st.key;
+  if (same && ap.seat === bp.seat && ap.price === bp.price) return;
+  const bidder = bp.bidders[bp.seat];
+  if (bidder === undefined) return;
+  const mine = st.localBid;
+  st.localBid = null;
+  // 本机真人点出去的那一口：挥槌 / 音效点钮时已经演了
+  if (mine !== null && mine.bidder === bidder && mine.price === bp.price) return;
+  if (same && ap.price > bp.price) {
+    st.topBidder = bidder;
+    st.lastPrice = ap.price;
+  }
+  // 与单机一致：真人那一口（`applyHumanBid`）会让下一位真人再听一次「請意者出價」，电脑那一口不会
+  const who = before.players[bidder];
+  if (who !== undefined && !isAiControlled(who)) st.asked = false;
+  const seat = st.run.seats.findIndex((s) => s.player === bidder);
+  env.playEffect(AUCTION_SOUND_BID);
+  st.anim = {
+    seat: seat < 0 ? st.run.current : seat,
+    startedAt: env.now,
+    until: env.now + AUCTION_FRAME_MS * AUCTION_HAMMER_FRAMES,
+  };
+  st.message = null;
+  st.messageUntil = 0;
+  st.nextAt = st.anim.until;
+  env.requestRender();
+}
+
+/**
+ * ★★ gap-audit #4（**仅联机**）：收件箱此刻该不该**先别放下一口**（`presentation-host.ts` 的 `screensBlocking`）。
+ *
+ * 单机的节拍是本屏自己掐的：电脑那一口不早于 `nextAt`（开场那句 `AUCTION_BOX_MS` 走完 / 上一口挥槌收尾）。
+ * 联机时那几口是服务器一口气广播来的 ⇒ 用同一个 `nextAt` 挡收件箱，放出来的节拍就与单机一样。
+ *
+ * 不会死锁：`nextAt` 是**时刻**，到点自己放（不等任何人点、不等任何 action）；屏还没开起来那一拍
+ * （`pending` 刚挂出、`tick` 还没轮到）也挡 —— 此刻接管整屏的就是本屏，下一帧 `tick` 必开屏。
+ * 本机真人点出去那一口的回包（`localBid`）不挡：挥槌已经在演，回包早一点落地只是让座位状态跟上。
+ * 单机一律不挡（电脑那一口本来就是本屏按 `nextAt` 出的）。
+ */
+export function auctionBidPacing(env: UiScreenEnv): boolean {
+  if (!online(env)) return false;
+  const pending = env.state.pending;
+  if (pending === null || pending.kind !== 'auction' || !('seat' in pending)) return false;
+  const st = screen;
+  if (st === null || st.key !== runKey(pending)) return true;
+  if (st.settling || st.outcome !== null || st.localBid !== null) return false;
+  return env.now < st.nextAt;
+}
 
 /** 只给单测用：把屏内的运行时清掉 */
 export function resetAuctionScreenForTest(): void {
