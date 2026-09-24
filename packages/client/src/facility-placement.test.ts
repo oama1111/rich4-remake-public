@@ -21,7 +21,7 @@
  *   「偏左」是原版精灵锚点自带的（建筑图普遍锚在 `宽/2 + 4` 左右），不是本引擎摆错。
  *   扫描查出的唯一差别是整块棋盘的投影中心 x 差半像素（棋盘区 439 宽，`w / 2` = 219.5 ≠ 0xdc），已修（`boardCenter`）。
  */
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { makeGameState, makePlayer, parseMap } from '@rich4/core';
 import { MkfArchive, parseSpriteSheet } from '../../assets-pipeline/src/mkf.ts';
@@ -32,6 +32,13 @@ const WS = process.env.RICH4_WORKSPACE ?? '';
 const EXE = WS + '/Rich4/rich4.exe';
 const MAP_MKF = WS + '/Rich4/map.mkf';
 const d = existsSync(EXE) && existsSync(MAP_MKF) ? describe : describe.skip;
+
+/**
+ * 这两样在 `beforeAll` 里才读盘（见套件里那段注释）—— 没有原版素材时套件被跳过，
+ * 它们保持未赋值，且没有任何 `it` 会去用。
+ */
+let exe: Exe;
+let mkf: MkfArchive;
 
 /** DGROUP 映射（同 `data/src/binary-truth.test.ts`）*/
 const DGROUP_VA = 0x463000;
@@ -101,8 +108,14 @@ const COMBOS: { type: number; level: number }[] = [
 ];
 
 d('★★ 設施落点：八张地图 × 每块商業用地 × 每种每级 × 八视角，对 exe 公式逐像素', () => {
-  const exe = loadExe();
-  const mkf = new MkfArchive(new Uint8Array(readFileSync(MAP_MKF)));
+  // ★★ 2026-09-24（CI「三绿」红）：这两个 `readFileSync` 先前写在**回调体里**、
+  //   在**收集期**执行 —— 而 `describe.skip` 只是把套件**标记**成跳过，回调照样会跑，
+  //   于是没有原版素材的 CI 上照样 `ENOENT: …/Rich4/rich4.exe`（整个文件报失败）。
+  //   挪进 `beforeAll`：被跳过的套件不会执行它，有素材时行为一字不变。
+  beforeAll(() => {
+    exe = loadExe();
+    mkf = new MkfArchive(new Uint8Array(readFileSync(MAP_MKF)));
+  });
   const vp = { w: LAYOUT.board.w, h: LAYOUT.board.h };
   const sheets = new Map<number, ReturnType<typeof parseSpriteSheet> & object>();
   const ourSheet = (res: number) => {

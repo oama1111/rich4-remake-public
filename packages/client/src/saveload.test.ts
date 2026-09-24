@@ -233,8 +233,13 @@ describe('★★ 自動存檔：推过日期、新一天第一位的回合边界
     expect(autosaveStep(at(1998, 1, 4), back.key).save).toBe(true);
   });
 
-  it('★ 真跑一局（4 电脑）：存的次数 = 推过的天数，且每次都在 turnStart', () => {
-    const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
+  // ★★ 2026-09-24（CI「三绿」红）：CI 里 `RICH4_WORKSPACE` 指向仓库上一级、并没有
+  //   `extracted/`，先前这一条直接 `expect(existsSync(MAP)).toBe(true)` 把整个门禁打红。
+  //   没有原版素材 ⇒ **跳过**（与仓库里其余 51 个文件同一条口径）；有素材时断言一字不动。
+  const AUTOSAVE_MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
+
+  it.skipIf(!existsSync(AUTOSAVE_MAP))('★ 真跑一局（4 电脑）：存的次数 = 推过的天数，且每次都在 turnStart', () => {
+    const MAP = AUTOSAVE_MAP;
     expect(existsSync(MAP), MAP).toBe(true);
     const map = parseMap(new Uint8Array(readFileSync(MAP)));
     const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
