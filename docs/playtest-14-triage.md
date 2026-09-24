@@ -29,5 +29,5 @@
 - ✅ 合并后长跑抓到的**卡死**：推日期里分红破产开出的下線拍卖被新回合抹掉而相位停在 `awaitingDecision` ⇒ 离场者的 pending 改在推日期**之前**清，拍卖链收尾后才跑新玩家那一天（`deferredTurnStart`，照 `0x41cf67` → `0x41c84f` 的先后）；惡人段同病同治。
 - 部署 `index-DOu-entJ.js`：`pnpm check` 327 files / 7101 tests，0 skipped；静音 net-e2e 1)–5) PASS。
 - 部署 `index-DortxU6b.js`：`pnpm check` 320 files / 6976 tests，0 skipped；静音 net-e2e 1)–5) PASS。
-- ⏸ 「走回棋盘」那一回合的换人停顿（`0x40dd1f` 与 `0x83` 的交互要读 `0x40d7b4` 跳表）暂保持现状。
+- ✅ 「走回棋盘」那一回合的换人停顿（pt22 审计 #21）：跳表 `0x40d7b4` 读过 —— 走子相（`[1]` = `0x40d8d3`）不数 `[0x498ea5]`，走完 `0x0040d92b` 把 0x83 覆盖成 5，数完 `0x418e7f` 再写 0x83 ⇒ 补间播完后 5 + 3 = 8 tick 才换人（`landing-pause.ts` 的 `relocateWalkPauseTicks`；住进旅館同一条路）。
 - ⚠️ 本轮改了开局抽签、命运 10 台词、魔法屋等随机序列 ⇒ 之前的回报在新代码上从头重放会分叉。

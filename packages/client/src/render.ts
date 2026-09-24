@@ -20,7 +20,7 @@ import {
   type SweptObject,
 } from '@rich4/core';
 import { CHARACTERS, characterColorRgb } from '@rich4/data';
-import { tweenTickCount, tweenTickExact, walkFramesFor } from './tween.ts';
+import { relocateVisible, tweenTickCount, tweenTickExact, walkFramesFor, type RelocateWalk } from './tween.ts';
 import {
   attachedFrameIndex,
   attachedImageIndex,
@@ -38,7 +38,13 @@ import { BUILD_FX_BOARD_Y, BUILD_FX_H, BUILD_FX_W, BUILD_FX_X } from './build-fx
 import { godAscendPoseAt } from './god-ascend-fx.ts';
 import { asleepSpriteOf, paintBrightness } from './sprite-brightness.ts';
 import { TOLL_FLASH_FULL_SCALE } from './toll-flash-fx.ts';
-import { WHO_PLAYS_WRECKED, type MapNode, type Rich4Map } from '@rich4/core';
+import {
+  WHO_PLAYS_RELOCATED,
+  WHO_PLAYS_RETURN_TO_BOARD,
+  WHO_PLAYS_WRECKED,
+  type MapNode,
+  type Rich4Map,
+} from '@rich4/core';
 import {
   VIEW_CENTER,
   VIEW_COUNT,
@@ -1812,7 +1818,20 @@ export class BoardRenderer {
     start: number;
     /** 已经推过几次「走路帧」——渲染一帧可能跨多个 tick */
     ticked: number;
+    /** ★ 审计 #17：「被挪」那两支（走进旅館 / 走回棋盘）的显隐与朝向；普通走子为 null */
+    relocate: RelocateWalk | null;
   } | null = null;
+  /**
+   * ★ 审计 #17：住进旅館**走完**、已经隐去的人 —— core 的 `+0x15 & 0x20` 要到他回合收尾才清
+   *   （原版在走路例程半程就清了，`0x0040c3dc`），这段空档里 `confinedPlayerDrawn` 仍会放行，这里挡住。
+   */
+  readonly #enteredHidden = new Set<number>();
+  /**
+   * ★ 审计 #17：「站在这里等着走进旅館」—— core 已把贴图位写成設施坐标，但原版要等落点例程
+   *   （訊息框 / 台词 / 理賠框）全部收完才起步（`0x41a85e` 是落点例程**最后**一件事，
+   *   走路在之后的 tick 里），这段时间人还站在旅館格上。键 = 玩家、值 = 世界坐标。
+   */
+  readonly #parked = new Map<number, { x: number; y: number }>();
   /**
    * 正在播的替身走子补间 —— **一个替身一条、一条串多格**（T-047）。
    *
@@ -1954,11 +1973,18 @@ export class BoardRenderer {
     special = false,
     tickMs = 20,
     now = performance.now(),
+    relocate: RelocateWalk | null = null,
   ): void {
     const ticks = tweenTickCount(to.x - from.x, to.y - from.y, traffic, special);
     // ★★ 每拍位移除的是**未截断**的 N_f（原版 `0x0040c2ae`），只有末拍吸附落点
     const exactTicks = tweenTickExact(to.x - from.x, to.y - from.y, traffic, special);
-    this.#walk = { player, from, to, ticks, exactTicks, tickMs, start: now, ticked: 0 };
+    // 上一趟若是「走进旅館」且已隐去，换下一趟之前把结论记下（见 `#enteredHidden`）
+    const prev = this.#walk;
+    if (prev !== null && prev.relocate?.kind === 'enter' && !relocateVisible('enter', prev.ticks, prev.ticks + 1)) {
+      this.#enteredHidden.add(prev.player);
+    }
+    this.#parked.delete(player);
+    this.#walk = { player, from, to, ticks, exactTicks, tickMs, start: now, ticked: 0, relocate };
     // ★ W-66-b 的量测口径：这一段的**理论结束时刻**（`start + ticks × tickMs`）。
     //   下一段起步时拿它相减就是「格与格之间的缝」——原版同一个 tick 里收尾并起步，
     //   缝是 0。只给 DEV 量测读，正常路径不用它（见 `lastWalkEndAt`）。
@@ -1992,6 +2018,78 @@ export class BoardRenderer {
   /** 丢掉没播完的补间（读档、换屏时用） */
   cancelWalk(): void {
     this.#walk = null;
+    this.#parked.clear();
+    this.#enteredHidden.clear();
+  }
+
+  /** ★ 审计 #17：新局 / 读档 —— 旧局「被挪」那两支的站位与隐去记录一并作废 */
+  clearRelocate(): void {
+    this.#parked.clear();
+    this.#enteredHidden.clear();
+    if (this.#walk?.relocate) this.#walk = null;
+  }
+
+  /** ★ 审计 #17：这一位先原地站在 `at`（世界坐标），等 `startWalk` 起步（见 `#parked`）*/
+  parkPlayer(player: number, at: { x: number; y: number }): void {
+    this.#parked.set(player, at);
+    this.#dirty = true;
+  }
+
+  /** 放掉 `parkPlayer`（不起步就作废时用）*/
+  unparkPlayer(player: number): void {
+    if (this.#parked.delete(player)) this.#dirty = true;
+  }
+
+  /**
+   * ★ 审计 #17：「被挪」那两支的**显隐** —— `true`/`false` = 由这里说了算，`null` = 照常（`confinedPlayerDrawn`）。
+   *
+   * - 走进旅館（`0x20`）：过半之前画、之后隐；走完隐到 core 把 0x20 清掉为止（`#enteredHidden`）。
+   * - 走回棋盘（`0x10`）：过半之前隐、之后画。**起步之前**也隐：原版释放 `0x43d7bf`/… 不写计数，
+   *   计数停在 0x80（`blocking.ts` 的 `tickBlockingCounter`），`0x00408691` 照样不画；复刻在释放时
+   *   已把计数清 0（D-CONFINE-1 折叠），故以「0x10 还挂着、贴图位还不在所在格上」代之。
+   *
+   * @source 半程判据 `0x0040c3b4..0x0040c3dc`，画不画 `0x00408691` / `0x0040869a`（见 `tween.ts` 的 `relocateToggleTick`）
+   */
+  relocateDrawn(
+    pl: { index: number; whoPlays: number; nodeId: number; xpos: number; ypos: number },
+    node: { x: number; y: number } | undefined,
+    now = performance.now(),
+  ): boolean | null {
+    const w = this.#walk;
+    if (w !== null && w.player === pl.index && w.relocate !== null) {
+      const k = Math.floor((now - w.start) / w.tickMs) + 1;
+      const vis = relocateVisible(w.relocate.kind, w.ticks, k);
+      if (k <= w.ticks) return vis;
+      // 走完了
+      if (w.relocate.kind === 'enter') {
+        if (!vis && (pl.whoPlays & WHO_PLAYS_RELOCATED) !== 0) return false;
+        return null;
+      }
+    }
+    if (this.#enteredHidden.has(pl.index)) {
+      if ((pl.whoPlays & WHO_PLAYS_RELOCATED) !== 0) return false;
+      this.#enteredHidden.delete(pl.index);
+    }
+    if (
+      (pl.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0 &&
+      node !== undefined &&
+      (pl.xpos !== node.x || pl.ypos !== node.y) &&
+      !this.#parked.has(pl.index)
+    ) {
+      return false;
+    }
+    return null;
+  }
+
+  /**
+   * ★ 审计 #17：「被挪」那一趟摆的朝向（`null` = 照 state）。走出来那一趟一直摆到 0x10 被清
+   * （原版 `0x418ebd` 的 `0x00418f3c` 才把 `+0x1b` 存的原朝向写回 `+0x10`）。
+   */
+  relocateFacing(pl: { index: number; whoPlays: number }, now = performance.now()): number | null {
+    const w = this.#walk;
+    if (w === null || w.player !== pl.index || w.relocate === null) return null;
+    if (now - w.start < w.ticks * w.tickMs) return w.relocate.facing;
+    return w.relocate.kind === 'emerge' && (pl.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0 ? w.relocate.facing : null;
   }
 
   /** 上一条补间要播多久（毫秒）—— 宿主拿它当走一步的节拍 */
@@ -3131,8 +3229,10 @@ export class BoardRenderer {
       //   @source 棋子绘制 `0x00408691 cmp dword [player+0x32],0 / je 画` —— 四个计数字节合成一个 dword 比；
       //   非 0 时只有 `0x0040869a test byte [player+0x15],0x20 / jne` 才画（位置被外力挪过那一支）。
       //   先前一律画：被綁架的人还站在地图上、住院的人站在醫院大樓上。
-      if (!confinedPlayerDrawn(pl)) continue;
-      const world = playerAnchorWorld(pl);
+      // ★ 审计 #17：走进旅館 / 走回棋盘那一趟的半程显隐（原版同一段机器码，见 `relocateDrawn`）
+      const relocated = this.relocateDrawn(pl, map.nodes[pl.nodeId - 1], nowMs);
+      if (relocated === false || (relocated === null && !confinedPlayerDrawn(pl))) continue;
+      const world = this.#parked.get(pl.index) ?? playerAnchorWorld(pl);
       if (world === null) continue;
       const key = `${world.x},${world.y}`;
       const seen = perNode.get(key) ?? 0;
@@ -3174,7 +3274,7 @@ export class BoardRenderer {
           ? characterSleepwalkSprite(pl.character, pose)
           : characterSetBase(pl.character, pl.trafficMethod) + pose;
       const count = this.#imageCount('Data.mkf', res);
-      const dir = screenDirection(pl.direction, cam.view);
+      const dir = screenDirection(this.relocateFacing(pl, nowMs) ?? pl.direction, cam.view);
       /**
        * ★ **冬眠**中的棋子**画成灰的**（外部审查 D-T047-4）。夢遊不变灰 —— 换睡衣 + ZZZ（见上面 `res` 与下面的标记槽）。
        *

@@ -81,9 +81,11 @@ describe('★ 回合开头就被挡：框收掉后停 3 tick 才换人 @source 0
     expect(turnEndPauseTicks(st('turnStart', 1), st('turnEnd', 1), topo)).toBe(3);
   });
 
-  it('走回棋盘 / 被外力挪过（whoPlays & 0x30）那一支不接（控制流待核，见文件头）', () => {
+  it('走回棋盘 / 被外力挪过（whoPlays & 0x30）不归 0x83 这一档 —— 走 `relocateWalkPauseTicks`（审计 #21，跳表 0x40d7b4）', () => {
     expect(blockedTurnPauseTicks(st('turnStart', 3, 0, 1 | 0x10), st('turnEnd', 3, 0, 1 | 0x10))).toBe(0);
     expect(blockedTurnPauseTicks(st('turnStart', 3, 0, 1 | 0x20), st('turnEnd', 3, 0, 1 | 0x20))).toBe(0);
+    // ★ 走回棋盘那一回合：走完 `0x0040d92b` 数 5、`0x00418ead` 再数 3 ⇒ 8（先前是 0）
+    expect(turnEndPauseTicks(st('turnStart', 3, 0, 1 | 0x10), st('turnEnd', 3, 0, 1 | 0x10), topo)).toBe(8);
   });
 
   it('正常开局（进 awaitingRoll）/ 换了人 ⇒ 0', () => {

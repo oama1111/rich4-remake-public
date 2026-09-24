@@ -90,7 +90,7 @@ import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
 import { RENDER_MS, tickMs } from './tick.ts';
 import { landingPauseRemaining, turnEndPauseTicks, type LandingPause } from './landing-pause.ts';
 import { hideLandingPlayer, landingFilmSpec, landingTrigger, openingLandingPlayer } from './landing-fx.ts';
-import { walkTweenFor } from './tween.ts';
+import { walkTweenFor, type WalkTween } from './tween.ts';
 import {
   drawLobby,
   hitLobby,
@@ -2009,6 +2009,10 @@ function holdForActorWalkReason(): string | null {
   //   （否则押后的台词永远等它，而它又在等台词），回合驱动单独在这里等
   if (pendingDisappearFx !== null) {
     return 'disappearFx';
+  }
+  // ★ 审计 #17：住进旅館那一段还没起步（等落点例程的框 / 台词收完）—— 同上，不进 `stageBusy`
+  if (pendingRelocateWalk !== null) {
+    return 'relocateWalk';
   }
   // ★ 第十五份：命運 pass 1 里的演出之后还要对着棋盘停 800 ms（`0x0044dd7b`），数完才轮下一步
   if (eventBoxTailPending()) {
@@ -4970,11 +4974,22 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
   // ★ 走一格的终点 = **踏上的那一格**（用引擎自己的 `pickNextNode` 从 before 回放），不是 after 的 `nodeId`
   //   —— 踩惡犬 / 地雷时 after 已经在醫院，拿它当终点是一段 4 秒横跨地图的补间（第八份 #8）
   const landing = action.type === 'step' ? nextNodeOf(before, topo) : null;
-  const t =
-    action.type === 'step' || action.type === 'startTurn'
-      ? walkTweenFor(action.type, before, state, (id) => map.nodes[id - 1], landing)
-      : null;
+  // ★ 审计 #17：其余 action 也问一次 —— 住进旅館那一趟（`0x40d5a5` 支 A）出在落点结算里
+  const t = walkTweenFor(action.type, before, state, (id) => map.nodes[id - 1], landing);
   if (t === null) return;
+  // ★★ 审计 #17：走进旅館要等落点例程**全部**收完才起步（`0x41a85e call 0x40d5a5` 是落点例程最后一件事，
+  //   之前是訊息框、住宿台词 `0x0041a7e0`、理賠框 `0x0041a82d`；走路在之后的 tick 里）⇒ 先原地站着，
+  //   由 `tickPendingRelocateWalk` 等台上空了再起。
+  if (t.relocate?.kind === 'enter') {
+    pendingRelocateWalk = t;
+    renderer.parkPlayer(t.player, t.from);
+    return;
+  }
+  beginTween(t);
+}
+
+/** 起一段玩家位移补间（`tweenStepIfMoved` 与挂起的「走进旅館」共用）*/
+function beginTween(t: WalkTween): void {
   const p = state.players[t.player];
   // ★ `t.special`（不写死 false）：走回棋盘走 `dist × 0.125` 那一支 —— 见 `tween.ts`
   noteWalkGap();
@@ -4985,7 +5000,37 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
     (p?.trafficMethod ?? 0) & 3,
     t.special,
     tickMs(options.speed),
+    performance.now(),
+    t.relocate ?? null,
   );
+}
+
+/**
+ * ★★ 审计 #17：挂起的「走进旅館」—— `tweenStepIfMoved` 记下，台上全空了（訊息框 / 台词 / 理賠框 /
+ *   影片都收了）才起步。**不进** `stageBusy`（否则押后的住宿台词等它、它又等台词 ⇒ 互等），
+ *   回合驱动 / 联机收件箱在 `holdForActorWalkReason` 里单独等它（与 `pendingDisappearFx` 同一种闸）。
+ */
+let pendingRelocateWalk: WalkTween | null = null;
+
+function tickPendingRelocateWalk(): void {
+  const t = pendingRelocateWalk;
+  if (t === null) return;
+  if (
+    speechQueue.length > 0 ||
+    heldSpeech.length > 0 ||
+    deferredScreenEvents.length > 0 ||
+    activeUiScreen() !== null ||
+    presentationHost.boxSnapshot().pendingRanks.length > 0 ||
+    stageBusy(stageBusyFlags()) ||
+    pendingDisappearFx !== null ||
+    eventBoxTailPending()
+  ) {
+    requestRender();
+    return;
+  }
+  pendingRelocateWalk = null;
+  beginTween(t);
+  requestRender();
 }
 
 /**
@@ -5273,8 +5318,9 @@ function scheduleAi(): void {
     // ★ 与 `applyAction` 同一个宿主播种漏斗（日推进后重播种）
     state = reduceRecorded(action);
     if (walker !== null && state !== before) startStepTween(walker, before);
-    // ★ 「走回棋盘」那一回合也要演一段位移（与 `tweenStepIfMoved` 同源）
-    if (action.type === 'startTurn' && state !== before) tweenStepIfMoved(action, before);
+    // ★ 「走回棋盘」那一回合也要演一段位移（与 `tweenStepIfMoved` 同源）；
+    //   ★ 审计 #17：住进旅館那一趟出在落点结算里 ⇒ 除 `step`（上面 `startStepTween`）之外都问一次
+    if (action.type !== 'step' && state !== before) tweenStepIfMoved(action, before);
     // ★ 动效出口**与 `applyAction` 共用同一个函数**（Q-TOOL-5 ⑤14）：
     //   电脑这一步是**绕开 `applyAction` 的直路**（它自己 `reduce`），
     //   先前只在这里补了 `useCard` —— 于是电脑用道具（路障/地雷/炸彈的投掷、
@@ -8146,6 +8192,8 @@ function requestRender(): void {
     if (screen === 'game') tickPendingToolPicker();
     // ★ 第十四份：飛機 / 飛碟那一段等台词与理賠框（`0x40d375` 里台词 → 理賠 → 影片）
     if (screen === 'game') tickPendingDisappearFx();
+    // ★ 审计 #17：住进旅館 —— 落点例程的框 / 台词都收了才走进去
+    if (screen === 'game') tickPendingRelocateWalk();
     if (screen === 'game') tickObjectFlight(performance.now());
     // ★ 第十四份 #5：機器娃娃等台词说完才上路
     if (screen === 'game') tickDollRelease();
@@ -8598,6 +8646,7 @@ function presentationWaiting(): boolean {
     objectFlightAwaitsSpeech ||
     dollWalkHeld ||
     pendingDisappearFx !== null ||
+    pendingRelocateWalk !== null ||
     (godAscend !== null && godAscend.start === null)
   );
 }
@@ -8683,6 +8732,12 @@ function unwindPresentations(level: number): void {
   godAscend = null;
   pendingCardFlight = null;
   pendingDisappearFx = null;
+  // 住进旅館那一段：直接起步（它不等任何人，只是排在框 / 台词后面）
+  if (pendingRelocateWalk !== null) {
+    const t = pendingRelocateWalk;
+    pendingRelocateWalk = null;
+    beginTween(t);
+  }
   if (objectFlight !== null) finishObjectFlight();
   objectFlightAwaitsSpeech = false;
   if (dollWalkHeld) {
@@ -9812,6 +9867,8 @@ function startGame(): void {
   manifestHold = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+  pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
+  renderer.clearRelocate();
   pendingCardRoute = null; // 亮牌后待走的那一张同理
   // ★ 右上角面板四位玩家的页号一起归零 @source `fcn_00417e26` 的 0x401 分支
   //   `xor edi,edi / mov dword [0x48be24], edi`（4 字节 = 四位）—— 0x401 由
@@ -11562,6 +11619,8 @@ function connectOnline(
           manifestHold = null;
           godAscend = null;
           pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+          pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
+          renderer.clearRelocate();
           pendingCardRoute = null; // 亮牌后待走的那一张同理
           // ★ 与单机 `startGame()` 同一条：面板页号归零（`0x48be24`）、自動存檔日期清掉
           panelPages.fill(0);
@@ -11986,6 +12045,8 @@ function settleAfterSilentRebuild(): void {
   manifestHold = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+  pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
+  renderer.clearRelocate();
   pendingCardRoute = null; // 亮牌后待走的那一张同理
   npcWalksDrawn = null;
   // ★ 第十二份試玩回報：追上之后此刻仍挂着的**场所**（商店 / 銀行 / 路過銀行）照常铺起来 ——
