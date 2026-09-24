@@ -36,9 +36,14 @@ import {
   SHOP_SLOTS,
   SHOP_SWITCH_AT,
   SHOP_SWITCH_HIT,
+  SHOP_SOLD_TEXT,
+  SHOP_TEXT,
   blinkStart,
   blinkStep,
   cellItemAt,
+  drawShopScreen,
+  keeperPaintAfter,
+  keeperPaintStart,
   hitShopCell,
   hitShopExit,
   hitShopShelf,
@@ -368,12 +373,73 @@ describe('货架行', () => {
     expect(shopRows(SHOP_PAGE.cards, { kind: 'bank' } as unknown as PendingInteraction)).toEqual([]);
   });
 
-  it('★ 只带 id / name / price 三样（stock 之类不进这一层）', () => {
+  it('★ 只带 id / name / price / sold 四样（stock 之类不进这一层）', () => {
     expect(shopRows(SHOP_PAGE.tools, mkShop(cards, tools))[0]).toEqual({
       id: 1,
       name: '道具1',
       price: 50,
+      sold: false,
     });
+  });
+
+  it('★★ 第十七份：买过的行留在原位、`sold` 为真（core 记的 ∪ 本机刚点、回包未到的）', () => {
+    const c = cards.slice(0, 6).map((x, i) => (i === 2 ? { ...x, sold: true as const } : x));
+    const rows = shopRows(SHOP_PAGE.cards, mkShop(c, tools));
+    expect(rows.map((r) => r.id)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(rows.map((r) => r.sold)).toEqual([false, false, true, false, false, false]);
+    // 本机刚点第 5 行（联机回包还没到）也算
+    const local = shopRows(SHOP_PAGE.cards, mkShop(c, tools), new Set([4]));
+    expect(local.map((r) => r.sold)).toEqual([false, false, true, false, true, false]);
+  });
+});
+
+describe('★★ 第十七份：买过的那一行画灰字 @source 0x0042e23f / 0x0042e4c3 `push 0xa0a0a0`', () => {
+  it('常态白 0xffffff（0x0042ead9）、买过灰 0xa0a0a0；描边 0x101010 宽 3 不变', () => {
+    expect(SHOP_TEXT).toBe('#ffffff');
+    expect(SHOP_SOLD_TEXT).toBe('#a0a0a0');
+    const fills: { t: string; fill: string; stroke: string; lw: number }[] = [];
+    const ctx = {
+      save: () => undefined,
+      restore: () => undefined,
+      beginPath: () => undefined,
+      rect: () => undefined,
+      clip: () => undefined,
+      fillRect: () => undefined,
+      drawImage: () => undefined,
+      strokeText: () => undefined,
+      fillText(this: { fillStyle: string; strokeStyle: string; lineWidth: number }, t: string) {
+        fills.push({ t, fill: String(this.fillStyle), stroke: String(this.strokeStyle), lw: this.lineWidth });
+      },
+      font: '',
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      globalAlpha: 1,
+      textAlign: 'left',
+      textBaseline: 'top',
+    } as unknown as CanvasRenderingContext2D;
+    const shelf = [
+      { id: 1, name: '換屋卡', price: 20, sold: false },
+      { id: 2, name: '拍賣卡', price: 20, sold: true },
+    ];
+    drawShopScreen(ctx, () => null, {
+      page: SHOP_PAGE.cards,
+      panelX: SHOP_SLIDE.panelTo,
+      gridX: SHOP_SLIDE.gridTo,
+      points: 90,
+      shelf,
+      cells: [],
+      bubble: null,
+      pressed: null,
+    });
+    const of = (t: string) => fills.filter((f) => f.t === t);
+    expect(of('換屋卡').map((f) => f.fill)).toEqual(['#ffffff']);
+    expect(of('拍賣卡').map((f) => f.fill)).toEqual(['#a0a0a0']);
+    expect(of('$20').map((f) => f.fill)).toEqual(['#ffffff', '#a0a0a0']);
+    for (const f of [...of('拍賣卡'), ...of('換屋卡')]) {
+      expect(f.stroke).toBe('#101010');
+      expect(f.lw).toBe(3);
+    }
   });
 });
 
@@ -558,7 +624,22 @@ describe('★★ W-67-b 老板娘的眨眼 / 换脸状态机', () => {
     expect(faces).toEqual([7, 8, 7, 5]);
     expect(b.mode).toBe(0);
     expect(b.face).toBe(2); // S = 0x200
-    expect(b.frame).toBe(4);
+    // ★ `mov dword [0x48c32f], 0x200`（0x0042d902）是**整字写死** ⇒ 帧计数（bit 4–7）也归 0。
+    //   （先前这里断言 4 —— 那是实现漏了清零，照抄了 bug；见下一条「第二次眨眼」）
+    expect(b.frame).toBe(0);
+  });
+
+  it('★★ 第二次眨眼照样贴满四帧（先前帧计数没归 0 ⇒ 第二次一帧都不贴）', () => {
+    const b = blinkStart(0);
+    b.mode = 1;
+    expect(run(b, 0, 5, fixed(0.5))).toEqual([7, 8, 7, 5]);
+    b.mode = 1; // 空闲里 r == 0 且脸号 ≠ 0 ⇒ `S |= 页 + 1`
+    const again: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const d = blinkStep(b, 0, 1000 + (i + 1) * 100, fixed(0.5));
+      if (d !== null && d.face !== 0) again.push(d.face);
+    }
+    expect(again).toEqual([7, 8, 7, 5]);
   });
 
   it('★★ 道具页眨眼：四帧 `[21, 22, 21, 23]`，第五拍回空闲并记脸号 1', () => {
@@ -570,7 +651,15 @@ describe('★★ W-67-b 老板娘的眨眼 / 换脸状态机', () => {
     expect(b.face).toBe(1); // S = 0x100
   });
 
-  it('★★ 10,000 拍里「有动作的拍数」占比在 5%–12%（旧实现 ≈ 100%）', () => {
+  /*
+   * 占比按原版的状态机直接算得出来（每拍 r = rand15() >> 10 ∈ 0..31 均匀）：
+   * 空闲里 r ∈ {0, 1} 的概率 2/32 ⇒ 平均 16 拍出一次动作；r == 0 ⇒ 眨眼（贴 4 拍 + 1 拍收场），
+   * r == 1 ⇒ 换脸（脸号清 0，下一拍的 pick ∈ 1..3 必 ≠ 0 ⇒ 贴 1 拍）。
+   * ⇒ 一轮平均 16 + ½·5 + ½·1 = 19 拍，其中贴图 ½·4 + ½·1 = 2.5 拍 ⇒ **≈ 13.2%**。
+   * ★ 第十七份订正：先前上界写 12%，是照着「帧计数不归 0 ⇒ 第二次起眨眼一帧都不贴」的实现量出来的；
+   *   `S = 0x200`（0x0042d902）整字写死之后眨眼每次都贴满四帧，占比回到上面这个数。
+   */
+  it('★★ 10,000 拍里「有动作的拍数」≈ 2.5 / 19 ≈ 13.2%（旧实现 ≈ 100%）', () => {
     const b = blinkStart(0);
     b.mode = 0;
     b.face = 1;
@@ -586,8 +675,8 @@ describe('★★ W-67-b 老板娘的眨眼 / 换脸状态机', () => {
       if (d !== null && d.face !== 0) acted += 1;
     }
     const ratio = acted / 10000;
-    expect(ratio, `有动作的拍数占比 ${(ratio * 100).toFixed(1)}%`).toBeGreaterThan(0.05);
-    expect(ratio).toBeLessThan(0.12);
+    expect(ratio, `有动作的拍数占比 ${(ratio * 100).toFixed(1)}%`).toBeGreaterThan(0.11);
+    expect(ratio).toBeLessThan(0.155);
   });
 
   it('★ 100 ms 不到不推进（原版「隔一次 50 ms 定时器」）', () => {
@@ -596,5 +685,117 @@ describe('★★ W-67-b 老板娘的眨眼 / 换脸状态机', () => {
     expect(blinkStep(b, 0, 50, fixed(0.5))).toBeNull();
     expect(blinkStep(b, 0, 99, fixed(0.5))).toBeNull();
     expect(blinkStep(b, 0, 100, fixed(0.5))).not.toBeNull();
+  });
+});
+
+/*
+ * ★★ 第十七份試玩回報（20260924-021515602）「卡片商店老板一直在闪烁」。
+ *
+ * 原版的脸 / 嘴是**不透明整块贴进后台缓冲**的（`fcn_004563f5`），贴上去就一直留着；
+ * 本引擎每帧重画，先前只在动画机推进的那一帧画一下 ⇒ 每张图只在屏上待一帧。
+ */
+describe('★★ 第十七份：老板娘脸上贴过的图一直留着（不再只闪一帧）', () => {
+  const fixed = (v: number): (() => number) => () => v;
+
+  it('贴过的脸在之后「什么都不贴」的拍里仍然在（keeperPaintAfter(prev, null) = prev）', () => {
+    let k = keeperPaintStart();
+    expect(k).toEqual({ face: 0, mouth: 0, mouthOnTop: false });
+    const b = blinkStart(0);
+    // 第一拍：进店换脸（模式 3）⇒ 贴 pick + 3
+    k = keeperPaintAfter(k, blinkStep(b, 0, 100, fixed(0.5)));
+    expect(k.face).toBe(5);
+    // 之后 50 拍都是空闲（r = 7）⇒ blinkStep 返回 null，但脸一直是 5
+    for (let i = 2; i <= 50; i++) {
+      const d = blinkStep(b, 0, i * 100, fixed(7 / 32));
+      expect(d).toBeNull();
+      k = keeperPaintAfter(k, d);
+      expect(k.face).toBe(5);
+    }
+  });
+
+  it('眨眼四帧之后留着的是最后一帧（卡片页 5 = 脸号 2 + 3；道具页 23 = 脸号 1 + 0x16）', () => {
+    for (const [page, last] of [[0, 5], [1, 23]] as const) {
+      const b = blinkStart(page);
+      b.mode = page === 0 ? 1 : 2;
+      let k = keeperPaintStart();
+      for (let i = 1; i <= 8; i++) k = keeperPaintAfter(k, blinkStep(b, page, i * 100, fixed(0.5)));
+      expect(k.face).toBe(last);
+      expect(b.mode).toBe(0);
+    }
+  });
+
+  it('★ 不说话（没有气泡）时嘴不动 @source 0x0042dc36 `call 0x44ef3b / jne` + `cmp [0x48c314], 0 / je`', () => {
+    const b = blinkStart(0);
+    b.mode = 0;
+    b.face = 1;
+    // rnd 恒 0 ⇒ 若没有这道闸，每拍都会 1/4 命中动嘴
+    for (let i = 1; i <= 100; i++) {
+      const d = blinkStep(b, 0, i * 100, fixed(0.99), false);
+      expect(d === null || d.mouth === 0).toBe(true);
+    }
+    expect(b.hold).toBe(0);
+  });
+
+  it('★ 说话时：倒数 0 ⇒ 1/4 机会贴 10/11（道具页 26/27）、倒数 = rand & 7（0 取 1）；倒到 0 贴基准 9 / 25', () => {
+    for (const [page, base, first] of [[0, 9, 10], [1, 25, 26]] as const) {
+      const b = blinkStart(page);
+      b.mode = 0;
+      b.face = 1;
+      // rnd = 0 ⇒ `rand15() >> 11` = 0 < 4 命中、`rand & 1` = 0、`rand & 7` = 0 ⇒ 取 1；空闲那拍 r = 0 会进眨眼，无妨
+      const d = blinkStep(b, page, 100, fixed(0), true);
+      expect(d?.mouth).toBe(first);
+      expect(b.hold).toBe(1);
+      // 下一拍倒数 1 → 0 ⇒ 贴基准嘴（说不说话都走这一支）
+      const e = blinkStep(b, page, 200, fixed(0.99), false);
+      expect(e?.mouth).toBe(base);
+      expect(b.hold).toBe(0);
+    }
+  });
+
+  it('★ 同一拍脸先贴、嘴后贴 ⇒ 嘴压在上面；只贴脸的那一拍 ⇒ 脸压在上面（两块上下重叠两行）', () => {
+    let k = keeperPaintAfter(keeperPaintStart(), { face: 5, mouth: 10 });
+    expect(k).toEqual({ face: 5, mouth: 10, mouthOnTop: true });
+    k = keeperPaintAfter(k, { face: 7, mouth: 0 });
+    expect(k).toEqual({ face: 7, mouth: 10, mouthOnTop: false });
+    k = keeperPaintAfter(k, { face: 0, mouth: 9 });
+    expect(k).toEqual({ face: 7, mouth: 9, mouthOnTop: true });
+  });
+
+  it('★ drawShopScreen 每帧都画留着的那两块（落点 = 表 SHOP_BLINK_AT，按贴的先后）', () => {
+    const draws: number[] = [];
+    const ctx = {
+      save: () => undefined,
+      restore: () => undefined,
+      drawImage: (b: { idx: number }) => draws.push(b.idx),
+      strokeText: () => undefined,
+      fillText: () => undefined,
+      font: '',
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      textAlign: 'left',
+      textBaseline: 'top',
+    } as unknown as CanvasRenderingContext2D;
+    const sprite = ((_a: string, res: number, idx: number) =>
+      res === 10 ? { bitmap: { idx }, width: 10, height: 10, anchorX: 0, anchorY: 0 } : null) as never;
+    const base = {
+      page: SHOP_PAGE.cards,
+      panelX: SHOP_SLIDE.panelTo,
+      gridX: SHOP_SLIDE.gridTo,
+      points: 0,
+      shelf: [],
+      cells: [],
+      bubble: null,
+      pressed: null,
+    } as const;
+    drawShopScreen(ctx, sprite, { ...base, keeper: { face: 5, mouth: 9, mouthOnTop: true } });
+    // 底图 0 → 老板娘 2 → 脸 5 → 嘴 9 → 货架栏 1 …
+    expect(draws.slice(0, 5)).toEqual([0, 2, 5, 9, 1]);
+    draws.length = 0;
+    drawShopScreen(ctx, sprite, { ...base, keeper: { face: 5, mouth: 9, mouthOnTop: false } });
+    expect(draws.slice(0, 5)).toEqual([0, 2, 9, 5, 1]);
+    draws.length = 0;
+    drawShopScreen(ctx, sprite, { ...base, keeper: keeperPaintStart() });
+    expect(draws.slice(0, 3)).toEqual([0, 2, 1]);
   });
 });

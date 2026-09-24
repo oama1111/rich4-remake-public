@@ -14,6 +14,7 @@ import { STORE_INDUSTRY } from '../places/shop.ts';
 import { TRAFFIC_WALK } from '../rules/tool-effects.ts';
 import { initialCardAmounts } from '../rules/new-game.ts';
 import { initialToolStock } from '../rules/tools.ts';
+import { decidePending } from '../ai/policy.ts';
 
 const node = makeNode({ id: 1, adjacent: [1], flags: SPECIAL_KIND.DEPARTMENT_STORE, specialKind: SPECIAL_KIND.DEPARTMENT_STORE });
 const topo = { nodes: [node] };
@@ -66,19 +67,31 @@ describe('★ 百貨公司落点', () => {
     expect(s.players[0]!.cards).toContain(onShelf);
   });
 
-  it('★ 买一件少一件 —— 卡片与道具**两页都**如此', () => {
-    // @source 原版两页各清自己那一格：卡片 `mov byte [edi+0x48c31c],0`、
-    //   道具 `mov byte [ebx+0x48c2f8],0`（rich4_shop.asm 0x42e1eb / 0x42e466 尾）
+  it('★ 买过的那一行本次进店不能再买（原版变灰）—— 卡片与道具**两页都**如此', () => {
+    // @source 原版两页各清自己那一格：卡片 `mov byte [ebx+0x48c31c],0`（0x0042e379）、
+    //   道具 `mov byte [ebx+0x48c2f8],0`（0x0042e5f6）；之前先用灰字 0xa0a0a0 把那一行重画进货架栏
     let s = landed(500);
     if (s.pending?.kind !== 'shop') throw new Error('商店没开');
-    const shelfTool = s.pending.tools.find((t) => t.id === 6)!.id;
+    const toolRow = s.pending.tools.findIndex((t) => t.id === 6);
+    const shelfTool = s.pending.tools[toolRow]!.id;
     const shelfCard = s.pending.cards[0]!.id;
-    s = reduce(s, { type: 'shop', op: 'buyTool', id: shelfTool }, topo);
-    expect(s.pending?.kind === 'shop' && s.pending.tools.some((t) => t.id === shelfTool)).toBe(false);
-    s = reduce(s, { type: 'shop', op: 'buyCard', id: shelfCard }, topo);
-    expect(s.pending?.kind === 'shop' && s.pending.cards.some((c) => c.id === shelfCard)).toBe(false);
-    // ★ 买过的再买一次：reducer 拒绝（返回同一个 state），而不是凭空再来一件
+    const toolIds = s.pending.tools.map((t) => t.id);
+    s = reduce(s, { type: 'shop', op: 'buyTool', id: shelfTool, row: toolRow }, topo);
+    if (s.pending?.kind !== 'shop') throw new Error('商店该还开着');
+    // 行不删、位置不动，只是记 sold
+    expect(s.pending.tools.map((t) => t.id)).toEqual(toolIds);
+    expect(s.pending.tools[toolRow]!.sold).toBe(true);
+    s = reduce(s, { type: 'shop', op: 'buyCard', id: shelfCard, row: 0 }, topo);
+    if (s.pending?.kind !== 'shop') throw new Error('商店该还开着');
+    expect(s.pending.cards[0]!.sold).toBe(true);
+    // ★ 买过的再买一次：reducer 拒绝（返回同一个 state），而不是凭空再来一件 —— 带不带行号都一样
     expect(reduce(s, { type: 'shop', op: 'buyTool', id: shelfTool }, topo)).toBe(s);
+    expect(reduce(s, { type: 'shop', op: 'buyTool', id: shelfTool, row: toolRow }, topo)).toBe(s);
+    expect(toolCount(s.tools, 0, shelfTool)).toBe(1);
+    // 卖掉再买也不行：货架那一格已经清 0（原版卖只动自己那 5×3 格，不碰货架）
+    const sold = reduce(s, { type: 'shop', op: 'sellTool', id: shelfTool, count: 1 }, topo);
+    expect(toolCount(sold.tools, 0, shelfTool)).toBe(0);
+    expect(reduce(sold, { type: 'shop', op: 'buyTool', id: shelfTool, row: toolRow }, topo)).toBe(sold);
   });
 
   it('點數不够时什么都不发生', () => {
@@ -178,5 +191,19 @@ describe('★★ W-67-a 董事長蒞臨的贈禮', () => {
     const s = chairmanLanded();
     const cleared = reduce(s, { type: 'rotateView', delta: 1 }, topo);
     expect(cleared.lastShopGift ?? null).toBeNull();
+  });
+});
+
+describe('★ 电脑买过的那一行不再提（货架记 sold 之后）', () => {
+  it('买完汽車 ⇒ 下一步不再提汽車（否则 reducer 必拒、原样重提，卡死在 turnEnd/shop）', () => {
+    let s = landed(500);
+    const first = decidePending(s);
+    expect(first).toEqual({ type: 'shop', op: 'buyTool', id: 6 });
+    s = reduce(s, first!, topo);
+    expect(toolCount(s.tools, 0, 6)).toBe(1);
+    // 汽車那一行已卖掉 ⇒ 不再提汽車；提出来的（機車或 null）必须是 reducer 收得下的
+    const next = decidePending(s);
+    expect(next).not.toEqual({ type: 'shop', op: 'buyTool', id: 6 });
+    if (next !== null) expect(reduce(s, next, topo)).not.toBe(s);
   });
 });

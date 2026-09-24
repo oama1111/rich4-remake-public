@@ -344,7 +344,10 @@ export const SHOP_CELL_ORIGIN = {
  * | 4 道具页换脸 | `0x42daf1` | `pick = (rand15() & 1) + 1`；同上，贴图 `pick + 0x16`（23 / 24）到 (0x1a1, 0x32）|
  *
  * 进店 / 换页时模式 = `页 + 3`（`loc_0042d5d8`）。第二处（嘴，`[0x48c314]` 倒数器）
- * 的逻辑**不动**（倒到 0 先画基准帧 9 / 25，随后约 1/4 的机会换成 10/11 或 26/27）。
+ * **只在气泡挂着（说话）或倒数没走完时**才动（`0x0042dc36`）：倒到 0 画基准帧 9 / 25，
+ * 倒数为 0 时约 1/4 的机会换成 10/11 或 26/27（见 `blinkStep` 尾部）。
+ *
+ * ★ 贴上去的图**一直留着**（原版贴在后台缓冲上）—— 见 `ShopKeeperPaint`（第十七份「老板一直在闪烁」）。
  *
  * ⚠️ 2026-09-20 订正（W-67-b）：先前这里**每 100 ms 无条件换一张脸**（没有任何空闲态），
  *   于是老板娘一直在抽动、平均 3 秒多才动一下的原版完全不是这样。
@@ -386,6 +389,42 @@ export function blinkStart(page: ShopPage = SHOP_PAGE.cards): ShopBlink {
 }
 
 /**
+ * 老板娘脸上**此刻留着**的那两块贴图（图号；`0` = 没贴过，露出老板娘原图）。
+ *
+ * ★★ 第十七份試玩回報「卡片商店老板一直在闪烁」的根因：原版那几帧是**不透明整块贴进后台缓冲**
+ *   （`fcn_004563f5` @ 0x0042d977 / 0x0042daba / 0x0042db73 / 0x0042dcf6 / 0x0042ddbb）的，
+ *   贴上去就**一直留着**，直到下一次贴别的、或整屏重画（换页 `fcn_0042d299`）。
+ *   本引擎每帧从头重画，先前只在 `blinkStep` 推进的**那一帧**画一下（返回 `null` 的帧画回原图）
+ *   ⇒ 每张脸 / 嘴只在屏上待一帧（16 ms / 8 ms），其余时间是原图 —— 就是「一直在闪」。
+ *   现在把「最后贴的是哪张」记下来、每帧都画。
+ *
+ * `mouthOnTop`：两块矩形上下重叠两行（脸 `y ∈ [0x3c, 0x5d)`、嘴 `y ∈ [0x5b, 0x6e)`，
+ *   @source 0x0042d919/0x0042d929 与 0x0042dc98/0x0042dca4），后贴的盖先贴的 —— 照贴的先后画。
+ */
+export interface ShopKeeperPaint {
+  face: number;
+  mouth: number;
+  mouthOnTop: boolean;
+}
+
+/** 进店 / 换页（整屏重画）⇒ 什么都没贴 */
+export function keeperPaintStart(): ShopKeeperPaint {
+  return { face: 0, mouth: 0, mouthOnTop: false };
+}
+
+/** 把这一拍贴的（`blinkStep` 的返回值）叠到「此刻留着的」上 */
+export function keeperPaintAfter(
+  prev: ShopKeeperPaint,
+  step: { face: number; mouth: number } | null,
+): ShopKeeperPaint {
+  if (step === null) return prev;
+  // 同一拍里脸先贴（`0x0042d8ab..0x0042dba5`）、嘴后贴（`0x0042dc4c` 起）
+  if (step.mouth !== 0) return { face: step.face !== 0 ? step.face : prev.face, mouth: step.mouth, mouthOnTop: true };
+  if (step.face !== 0) return { face: step.face, mouth: prev.mouth, mouthOnTop: false };
+  return prev;
+}
+
+/**
  * 推进一次这个动画机；返回这一帧要画哪两张图（`null` = 这一帧什么都不画）。
  *
  * @param rnd 取 `[0, 1)` 的随机数 —— 原版用的是 `_libc_rand`，注入进来是为了单测能钉住序列
@@ -397,6 +436,7 @@ export function blinkStep(
   page: ShopPage,
   now: number,
   rnd: () => number,
+  talking = false,
 ): { face: number; mouth: number } | null {
   if (now - b.at < SHOP_BLINK_MS) return null;
   b.at = now;
@@ -417,8 +457,11 @@ export function blinkStep(
     // ── 1 / 2 眨眼：贴四帧，第四拍回空闲并记下脸号 ──
     const seq = SHOP_BLINK_SEQ[cardPage ? 0 : 1]!;
     if (b.frame >= seq.length) {
+      // `S = 0x200` / `S = 0x100`（0x0042d902 / 0x0042d9b7）：**整个字写死** ⇒ 帧计数也归 0。
+      //   先前漏了这一句 ⇒ 帧计数停在 4，之后每一次眨眼一进来就「满 4 帧」直接收场，一帧都不贴。
       b.mode = 0;
-      b.face = cardPage ? 2 : 1; // `S = 0x200` / `S = 0x100`
+      b.face = cardPage ? 2 : 1;
+      b.frame = 0;
     } else {
       drawFace = seq[b.frame]!;
       b.frame += 1;
@@ -433,13 +476,19 @@ export function blinkStep(
     }
   }
 
-  // 第二处（嘴）：原版是另一个倒数器 `[0x48c314]`，逻辑不动
+  // 第二处（嘴）：倒数器 `[0x48c314]`。
+  // @source 0x0042dc36：`call 0x44ef3b`（= 读 `[0x4762c4]`，**气泡还挂着** ⇒ 非 0）`/ jne`，
+  //   否则 `cmp [0x48c314], 0 / je 跳过` ⇒ **只在说话（气泡在）或倒数没走完时**才动嘴。
+  //   ★ 先前没有这道闸 ⇒ 不说话时嘴也每拍 1/4 的机会乱动（又一处「一直在闪」）。
+  // - 倒数 ≠ 0：减 1，减到 0 贴基准嘴（图 9 / 25，`[0x48c308]+0x78` / `+0x138`）；
+  // - 倒数 = 0：`rand15() >> 11 < 4`（1/4）⇒ 贴 `(rand & 1) + 10`（10/11）/ `+ 0x1a`（26/27），
+  //   倒数 = `rand & 7`，抽到 0 取 1（0x0042ddc3..0x0042dddb）。
   let mouth = 0;
   if (b.hold > 0) {
     b.hold -= 1;
     if (b.hold === 0) mouth = cardPage ? 9 : 25;
-  } else if (rnd() < 1 / 4) {
-    mouth = cardPage ? (rnd() < 0.5 ? 11 : 10) : rnd() < 0.5 ? 27 : 26;
+  } else if (talking && Math.floor(rnd() * 16) < 4) {
+    mouth = (cardPage ? 10 : 26) + Math.floor(rnd() * 2);
     b.hold = Math.floor(rnd() * 8) || 1;
   }
 
@@ -554,20 +603,32 @@ export interface ShopShelfRow {
   id: number;
   name: string;
   price: number;
+  /** 本次进店已经买掉 —— 画灰字、点了没反应（core 的 `pending.cards[行].sold`）*/
+  sold: boolean;
 }
 
 /**
  * 把待决交互里的货架摆成行。
  *
- * ★ **开店时算一次就够**：买过的行**不从清单里去掉** —— 原版是把货名烤进货架栏那张图的，
- *   之后不重画，所以买过的行仍然显示，只是再点没反应。
- *   调用方因此要在 `pending` 首次出现时**快照**一份，之后一直用这份快照。
+ * ★ 买过的行**不从清单里去掉**，而是变灰：原版买成之后用灰字
+ *   `create_font(0x14, 0xa0a0a0, 0x101010, 3, 0)` 把那一行的货名与价格重画进货架栏那张图、
+ *   再把货架字节清 0（之后点它 `je` 直接返回）@source 0x0042e236..0x0042e379（卡片页）/
+ *   0x0042e4ba..0x0042e5f6（道具页）。core 那边行留在原位、记 `sold`，所以这里**每帧照 `pending` 摆**
+ *   就行（旁观的客户端、断线重连补回来的也一样灰）。
+ *
+ * @param localSold 本机已经点过、回包还没到的行（联机时 `pending` 要等服务器回包才变）
  */
-export function shopRows(page: ShopPage, pending: PendingInteraction): readonly ShopShelfRow[] {
+export function shopRows(
+  page: ShopPage,
+  pending: PendingInteraction,
+  localSold: ReadonlySet<number> = new Set(),
+): readonly ShopShelfRow[] {
   if (pending.kind !== 'shop') return [];
   const src = page === SHOP_PAGE.cards ? pending.cards : pending.tools;
   const rows = page === SHOP_PAGE.cards ? SHOP_SHELF.cards.rows : SHOP_SHELF.tools.rows;
-  return src.slice(0, rows).map((it) => ({ id: it.id, name: it.name, price: it.price }));
+  return src
+    .slice(0, rows)
+    .map((it, i) => ({ id: it.id, name: it.name, price: it.price, sold: it.sold === true || localSold.has(i) }));
 }
 
 /** 一行在货架栏**局部**坐标下的画字位置 */
@@ -619,7 +680,7 @@ export interface ShopDraw {
   panelX: number;
   gridX: number;
   points: number;
-  /** 开店时的货架快照 */
+  /** 这一页的货架（买过的行 `sold`，画灰字）*/
   shelf: readonly ShopShelfRow[];
   /** 自己格子的内容（按槽序）*/
   cells: readonly ShopCellEntry[];
@@ -627,8 +688,8 @@ export interface ShopDraw {
   bubble: string | null;
   /** 正被按住的那个钮（画按下图）*/
   pressed: 'switch' | 'exit' | null;
-  /** 这一帧老板娘要换的脸与第二处（见 `blinkStep`）；`undefined` / `null` = 本帧不重画 */
-  blink?: { face: number; mouth: number } | null;
+  /** 老板娘脸上此刻留着的那两块（见 `ShopKeeperPaint`）—— **每帧都画**；`undefined` = 什么都没贴 */
+  keeper?: ShopKeeperPaint;
   /** 正被按住的**自己那一格**（见 `SHOP_CELL_PRESS`）；`null` = 没有 */
   pressedCell?: number | null;
 }
@@ -662,6 +723,10 @@ export const SHOP_CELL_PRESS = {
 
 const SHOP_FONT = FONT_FAMILY;
 
+/** 货架上的字色：常态白 @source 0x0042ead9 `push 0xffffff`；买过的那一行灰 @source 0x0042e23f / 0x0042e4c3 `push 0xa0a0a0` */
+export const SHOP_TEXT = '#ffffff';
+export const SHOP_SOLD_TEXT = '#a0a0a0';
+
 /** 20 号白字 + 3px 深色描边 —— 与 T-024 道具欄同一套 @source 0x42ea2b */
 function shopText(
   ctx: CanvasRenderingContext2D,
@@ -670,6 +735,7 @@ function shopText(
   y: number,
   align: CanvasTextAlign,
   baseline: CanvasTextBaseline,
+  fill: string = SHOP_TEXT,
 ): void {
   ctx.font = `${SHOP_FONT_SIZE}px ${SHOP_FONT}`;
   ctx.textAlign = align;
@@ -677,7 +743,7 @@ function shopText(
   ctx.lineWidth = 3;
   ctx.strokeStyle = '#101010';
   ctx.strokeText(text, x, y);
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = fill;
   ctx.fillText(text, x, y);
 }
 
@@ -751,17 +817,23 @@ export function drawShopScreen(
     SHOP_KEEPER_AT.y,
   );
 
-  // 老板娘脸上的小动作 —— 紧跟着她画（原版也是这一段），不透明整块盖上去
-  if (d.blink !== undefined && d.blink !== null) {
+  // 老板娘脸上的小动作 —— 紧跟着她画（原版也是这一段），不透明整块盖上去；
+  //   贴过的一直留着（见 `ShopKeeperPaint`），按贴的先后画
+  const k = d.keeper;
+  if (k !== undefined) {
     const at = SHOP_BLINK_AT[page];
-    drawAnchored(ctx, shopSprite(sprite, d.blink.face), at.face.x, at.face.y);
-    if (d.blink.mouth !== 0) {
-      drawAnchored(
-        ctx,
-        shopSprite(sprite, d.blink.mouth),
-        at.mouth.x,
-        at.mouth.y,
-      );
+    const face = (): void => {
+      if (k.face !== 0) drawAnchored(ctx, shopSprite(sprite, k.face), at.face.x, at.face.y);
+    };
+    const mouth = (): void => {
+      if (k.mouth !== 0) drawAnchored(ctx, shopSprite(sprite, k.mouth), at.mouth.x, at.mouth.y);
+    };
+    if (k.mouthOnTop) {
+      face();
+      mouth();
+    } else {
+      mouth();
+      face();
     }
   }
 
@@ -776,8 +848,10 @@ export function drawShopScreen(
     const it = d.shelf[row];
     if (it === undefined) continue;
     const at = shelfRowTextAt(page, row);
-    shopText(ctx, it.name, d.panelX + at.nameX, SHOP_PANEL_Y + at.nameY, 'center', 'middle');
-    shopText(ctx, `$${it.price}`, d.panelX + at.priceX, SHOP_PANEL_Y + at.priceY, 'right', 'top');
+    // ★ 买过的那一行灰字 @source 0x0042e23f / 0x0042e4c3 `push 0xa0a0a0`（描边 0x101010 与宽 3 不变）
+    const fill = it.sold ? SHOP_SOLD_TEXT : SHOP_TEXT;
+    shopText(ctx, it.name, d.panelX + at.nameX, SHOP_PANEL_Y + at.nameY, 'center', 'middle', fill);
+    shopText(ctx, `$${it.price}`, d.panelX + at.priceX, SHOP_PANEL_Y + at.priceY, 'right', 'top', fill);
   }
 
   // ── 右下 5×3 格 ──

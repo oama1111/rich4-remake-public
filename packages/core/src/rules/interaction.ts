@@ -273,10 +273,17 @@ export type PendingInteraction =
       kind: 'shop';
       /** 手上的點數 —— 买得起什么由 UI/AI 自己算 */
       points: number;
-      /** 可买的卡片：编号与標價 */
-      cards: { id: number; name: string; price: number }[];
-      /** 可买的道具：编号、標價、全局库存（编号 > 8 不限量，给 null） */
-      tools: { id: number; name: string; price: number; stock: number | null }[];
+      /**
+       * 货架上的卡片：编号与標價，**按行**（下标 = 货架第几行）。
+       *
+       * ★ `sold` = 本次进店已经买掉的那一行 —— **留在原位、不删**：原版买完把那一行的货名与价格
+       *   用灰字（`create_font(0x14, 0xa0a0a0, 0x101010, 3, 0)`）重画进货架栏那张图、再把货架字节
+       *   清 0（点上去 `je` 直接返回）@source 0x0042e236..0x0042e379（卡片）/ 0x0042e4ba..0x0042e5f6（道具）。
+       *   没买过的行不带这个字段（进店时的形状与先前一样）。
+       */
+      cards: { id: number; name: string; price: number; sold?: true }[];
+      /** 可买的道具：编号、標價、全局库存（编号 > 8 不限量，给 null）；`sold` 同上 */
+      tools: { id: number; name: string; price: number; stock: number | null; sold?: true }[];
       /**
        * **自己手上**的卡片与道具 —— 这一屏能卖，退九成點數。
        *

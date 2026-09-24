@@ -517,10 +517,10 @@ export function decidePending(state: GameState): Action | null {
     //   必拒的 action 就会被原样重提，卡死在 turnEnd/shop。
     //   与卡片、买地两次事故同一类，处理办法也一样：**先预演一遍**。
     // ★ **货架也在这条预演里**：reducer 要求「还在 `pending.tools` 上」才卖
-    //   （买一件少一件，@source rich4_shop.asm 0x42e466 尾
+    //   （买过的那一行记 `sold`、不能再买，@source rich4_shop.asm 0x42e466 尾
     //   `mov byte [ebx + 0x48c2f8], 0`）。漏了它，AI 买走车之后再提一次
     //   同一件，reducer 必拒 → 同样卡死在 turnEnd/shop。
-    const onShelf = (id: number): boolean => p.tools.some((t) => t.id === id);
+    const onShelf = (id: number): boolean => p.tools.some((t) => t.id === id && t.sold !== true);
     const canBuy = (id: number): boolean =>
       onShelf(id) && buyTool(me, state.tools, state.toolStock, id).ok;
     // 已有更好的车就别买了
