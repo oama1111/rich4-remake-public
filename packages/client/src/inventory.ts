@@ -74,10 +74,22 @@ export const INV_CELL = {
 /** 格数 = 5×3 = 15（也是手牌上限）*/
 export const INV_SLOTS = INV_CELL.cols * INV_CELL.rows;
 
-/** 底图**局部**里各元素的偏移 @source VA 0x447cde（道具）/ 0x441b5b（卡片）*/
+/**
+ * 底图**局部**里各元素的偏移 —— 相对**底图左上角**（= `origin`），**不是**相对命中格。
+ *
+ * @source 道具 `fcn_00447c6e`：`dst == 0` 时 `dst = sheet + 0x18`（**底图那张图自己**，0x00447ca2..0x00447cad），
+ *   图标 `0x4562a5(dst, 图, esi − 0x10, [esp+0x28])` 画进**底图的像素缓冲**，
+ *   `esi` 从 0x2d 起每格 +0x50（0x00447cc5 / 0x00447d71），`[esp+0x28]` 从 0x21 起每行 +0x38（0x00447cca / 0x00447d85）；
+ *   数量 `0x44fabc(dst, "×%d", esi + 0x22, [esp+0x28] − 0xa, flag 1)`（0x00447d46..0x00447d5e）。
+ *   卡片 `fcn_00441b0a` 同形：`dst == 0` → `sheet + 0xc`（图 0），卡名 `0x44fabc(dst, 名, ebx, edi, flag 2)`，
+ *   `ebx` 从 0x2d 起 +0x50、`edi` 从 0x21 起 +0x38（0x00441b49 / 0x00441b4e / 0x00441b95 / 0x00441ba5）。
+ *   画好之后整张底图才贴到屏幕 (14,130)（0x00447e97..0x00447ea9 `0x4563f5(…, 0xe, 0x82)`，底图锚点 (0,0)）。
+ * ★★ 第 24 份试玩回报「道具栏中的道具位置也有点偏移」：先前这里把偏移加在**命中格**的左上角
+ *   （`INV_CELL` = 底图 +5,+5）上 ⇒ 图标、数量、卡名整体**右下偏 5px**。
+ */
 export const INV_LOCAL = {
   /**
-   * 道具图标：锚点落在 (29+80c, 33+56r)。
+   * 道具图标：锚点落在底图局部 (0x1d + 80c, 0x21 + 56r)。
    *
    * ★ 图号 = **槽 + 2**，而槽 = 道具号 − 1（原版 `player_tool_amount` 是 0 基的
    *   13 格，`ebx` 就是槽号）—— 所以图号 = **道具号 + 1**。
@@ -88,16 +100,27 @@ export const INV_LOCAL = {
   iconDx: 0x2d - 0x10,
   iconDy: 0x21,
   iconFirst: 1,
-  /** 数量 `×N`：右上行首（flag 1）在 (79+80c, 23+56r) */
+  /** 数量 `×N`：右上行首（flag 1）在底图局部 (0x4f + 80c, 0x17 + 56r) */
   countDx: 0x2d + 0x22,
   countDy: 0x21 - 0xa,
-  /** 卡名：居中（flag 2）在 (45+80c, 33+56r) */
+  /** 卡名：居中（flag 2）在底图局部 (0x2d + 80c, 0x21 + 56r) */
   cardDx: 0x2d,
   cardDy: 0x21,
+  /** 每格步长（`add esi, 0x50` / `add [esp+0x28], 0x38`）*/
+  stepX: 0x50,
+  stepY: 0x38,
   /** 载具徽章落到末格（4,2）左上角 */
   vehicleX: 0x145,
   vehicleY: 0x75,
 } as const;
+
+/** 第 `slot` 格内容的**参照点**（= 底图左上角 + 列 / 行步长，屏幕坐标）—— `INV_LOCAL` 的偏移加在它上面 */
+export function invContentOrigin(slot: number, origin: InvOrigin = INV_ORIGIN): { x: number; y: number } {
+  return {
+    x: origin.x + (slot % INV_CELL.cols) * INV_LOCAL.stepX,
+    y: origin.y + Math.floor(slot / INV_CELL.cols) * INV_LOCAL.stepY,
+  };
+}
 
 /** 载具徽章：`traffic_method` → 图号 @source VA 0x447e08 */
 export const INV_VEHICLE_IMAGE: ReadonlyMap<number, number> = new Map([
@@ -328,7 +351,8 @@ export function drawInventory(
   if (base !== null) ctx.drawImage(base.bitmap, ox, oy);
 
   for (const { slot, id, count } of entries) {
-    const { x, y } = invCellRect(slot, origin);
+    // ★ 相对**底图**（不是命中格），见 `INV_LOCAL`
+    const { x, y } = invContentOrigin(slot, origin);
 
     if (kind === 'tools') {
       const icon = sprite('Panel.mkf', INV_RESOURCE, INV_LOCAL.iconFirst + id, true);

@@ -174,7 +174,16 @@ export const SHOP_CELL = {
 /** 格数 = 5×3 = 15（也是手牌上限） */
 export const SHOP_SLOTS = SHOP_CELL.cols * SHOP_CELL.rows;
 
-/** 格里各元素的**格内**偏移 @source `fcn_00441b0a`（卡片）/ `fcn_00447c6e`（道具） */
+/**
+ * 格里各元素的偏移 —— 相对**格子底图左上角 + 列 × 80 / 行 × 56**（`shopContentAt`），**不是**相对命中格。
+ *
+ * @source `fcn_00441b0a`（卡片）/ `fcn_00447c6e`（道具）：商店传进去的 `dst` 是一张新建的空图
+ *   （`0x0042eaa1 call 0x451a5a(图 1 的宽高)` → `[0x48c304]`），两个函数先把底图原样贴进去
+ *   （`0x00447cb9 / 0x00441b3f call 0x456280(dst, 底图, 0, 0)`），再在**这张图的局部坐标**里画
+ *   （图标 `esi − 0x10`、`esi` 从 0x2d 起 +0x50；行从 0x21 起 +0x38），最后整张贴到 (0xe3, 0x125)
+ *   （`0x0042e5c5..0x0042e5dc call 0x456418`）。
+ * ★★ 第 24 份试玩回报（「道具栏中的道具位置也有点偏移」）：先前加在命中格左上角（底图 +6,+6）上 ⇒ 整体右下偏 6px。
+ */
 export const SHOP_CELL_LOCAL = {
   /** 道具图标：`fcn_00447c6e` 传 `esi − 0x10 = 0x1d`、y = `0x21` */
   iconDx: 0x1d,
@@ -345,6 +354,14 @@ export interface ShopOpenGate {
  */
 export function shopWindowMayOpen(g: ShopOpenGate): boolean {
   return !g.blocking && !g.noticeShowing && g.noticeQueued === 0 && g.speechOnStage === 0 && g.speechHeld === 0;
+}
+
+/** 第 `slot` 格内容的参照点（屏幕坐标）= 格子底图左上角 `(gridX, SHOP_GRID_Y)` + 列 × 80 / 行 × 56 */
+export function shopContentAt(gridX: number, slot: number): { x: number; y: number } {
+  return {
+    x: gridX + (slot % SHOP_CELL.cols) * SHOP_CELL.w,
+    y: SHOP_GRID_Y + Math.floor(slot / SHOP_CELL.cols) * SHOP_CELL.h,
+  };
 }
 
 /**
@@ -902,6 +919,9 @@ export function drawShopScreen(
     y: SHOP_GRID_Y + SHOP_CELL_ORIGIN.y + Math.floor(slot / SHOP_CELL.cols) * SHOP_CELL.h,
   });
 
+  /** 一格**内容**的参照点：格子底图左上角 + 列 / 行步长（见 `SHOP_CELL_LOCAL`）*/
+  const contentAt = (slot: number): { x: number; y: number } => shopContentAt(d.gridX, slot);
+
   /** 画一格的内容（卡片只画名、道具画图标 + 数量）*/
   const paintCell = (e: ShopCellEntry, x: number, y: number): void => {
     if (cardPage) {
@@ -926,7 +946,7 @@ export function drawShopScreen(
   };
 
   for (const e of d.cells) {
-    const { x, y } = cellAt(e.slot);
+    const { x, y } = contentAt(e.slot);
     paintCell(e, x, y);
   }
 
@@ -958,7 +978,10 @@ export function drawShopScreen(
       );
     }
     const still = d.cells.find((e) => e.slot === pressed);
-    if (still !== undefined) paintCell(still, x + shift, y + shift);
+    if (still !== undefined) {
+      const c = contentAt(pressed);
+      paintCell(still, c.x + shift, c.y + shift);
+    }
     // 空出来的上边一条与左边一条压暗（−16 那张换算表 = 每个 5 位分量减半）
     ctx.globalAlpha = edgeAlpha;
     ctx.fillStyle = '#000000';

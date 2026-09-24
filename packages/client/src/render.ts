@@ -416,7 +416,20 @@ export function worldToScreen(
   //   连同 `fitCamera` 一并删掉（D-086-5 结案）。
   const p = projectWorld(cam.view, x, y, cam.tileX, cam.tileY, cam.subX ?? 0, cam.subY ?? 0);
   if (p === null) return null;
-  return { x: viewport.w / 2 + p.x, y: viewport.h / 2 + p.y };
+  const c = boardCenter(viewport);
+  return { x: c.x + p.x, y: c.y + p.y };
+}
+
+/**
+ * 棋盘区的投影中心（棋盘区局部坐标）。
+ *
+ * @source `fcn_0040829d`：`004083e1 add [esp+0x34], 0xdc` / `004083e9 add [esp+0x20], 0x104` ——
+ *   屏幕 (220, 260) = 棋盘区 (0, 40) 起的 (220, 220)。棋盘区是 **439** 宽（`LAYOUT.board.w`），
+ *   `w / 2` = 219.5 ⇒ 先前整块棋盘（地面 + 建筑 + 棋子）都画在 x 的**半像素**上、比原版左偏 0.5px
+ *   （第 24 份「公园没居中」那一轮的全图扫描查出来的）。取 `(w + 1) >> 1`：439 / 440 都是 220。
+ */
+export function boardCenter(viewport: { w: number; h: number }): { x: number; y: number } {
+  return { x: (viewport.w + 1) >> 1, y: (viewport.h + 1) >> 1 };
 }
 
 /** 兼容旧调用：地图节点的屏幕坐标（地图视角的平移缩放） */
@@ -2728,8 +2741,9 @@ export class BoardRenderer {
     //   `setTransform` 会把它整个顶掉 ⇒ 地面其实从不跟余量走，镜头逐像素动时
     //   地面按整格跳、棋子与建筑却在滑 —— 两层错位最多一格。
     const camOff = subtileOffset(cam.view, (cam.subX ?? 0) & 0x1f, (cam.subY ?? 0) & 0x1f);
-    const cx = vp.w / 2 + camOff.x;
-    const cy = vp.h / 2 + camOff.y;
+    const center = boardCenter(vp);
+    const cx = center.x + camOff.x;
+    const cy = center.y + camOff.y;
     // 表是 29×29，取相邻角点故只能铺 28×28 格
     // ⚠️ 余量存在时要多铺一圈：可见范围会跨界（`subX/subY != 0` 时最多偏一格）
     for (let row = 0; row < VIEW_SPAN - 1; row++) {
