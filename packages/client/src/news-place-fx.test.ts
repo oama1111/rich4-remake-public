@@ -23,6 +23,7 @@ import { LAYOUT } from './stage.ts';
 import { NEWS_PLACE_FILMS, NEWS_TORNADO_ID, newsPlaceFilmMs, newsPlaceFxTrigger } from './news-place-fx.ts';
 import { eventBoxDescription, newsPlaceName } from './event-box-screen.ts';
 import { DETECTORS, detectNewsPlaceOwner, NEWS_PLACE_OWNER_LINE } from './speech.ts';
+import { NEWS_OWNER_RAND_SITE, speechCoin } from './speech-coin.ts';
 
 const DATA_MKF = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Data.mkf';
 const runData = existsSync(DATA_MKF) ? it : it.skip;
@@ -144,9 +145,22 @@ describe('★ 房主那一句 @source 0x0044ae4a owner != 0 ⇒ player_say(owner
   const after = (ev: Ev) => makeGameState({ players, lastEvent: ev as never });
   const before = makeGameState({ players, lastEvent: null });
 
-  it('★★ 有主 ⇒ **房主**（不是抽牌人）说事件 3、表情 2', () => {
+  it('★★ 有主 ⇒ **房主**（不是抽牌人）说事件 3|4（`0x0044ae74 rand()&1`，WP-3）、表情 2', () => {
     const a = after({ kind: 'news', id: 21, place: { entity: 0x7d1, owner: 3 } });
-    expect(detectNewsPlaceOwner(before, a)).toEqual([{ player: 2, event: 3, expression: 2 }]);
+    const coin = speechCoin(a, 2, NEWS_OWNER_RAND_SITE.get(21)!);
+    expect(detectNewsPlaceOwner(before, a)).toEqual([{ player: 2, event: 3 + coin, expression: 2 }]);
+  });
+
+  it('★ 3 与 4 两句都会出现（换局面 ⇒ 换硬币；四条新聞各用自己的站点 VA）', () => {
+    expect([...NEWS_OWNER_RAND_SITE.keys()].sort((x, y) => x - y)).toEqual([...NEWS_PLACE_OWNER_LINE].sort((x, y) => x - y));
+    for (const id of NEWS_PLACE_OWNER_LINE) {
+      const seen = new Set<number>();
+      for (let r = 0; r < 32; r++) {
+        const a = makeGameState({ players, rngState: r * 2654435761, lastEvent: { kind: 'news', id, place: { entity: 0x7d1, owner: 3 } } as never });
+        for (const e of detectNewsPlaceOwner(before, a)) seen.add(e.event);
+      }
+      expect([...seen].sort()).toEqual([3, 4]);
+    }
   });
 
   it('★ 无主（回报现场：合肥是空地）⇒ 不说', () => {

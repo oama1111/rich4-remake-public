@@ -5007,7 +5007,7 @@ alpha 0.55）。那张「按格子类型给中性色」的表是**重制版自�
 ### `docs/deviations/T-052.md`
 
 - 已接线（22 槽）
-- Q-SPEECH-3　中间档的 `rand() & 1` 被改成「一律取前一句」
+- ✅ Q-SPEECH-3　中间档的 `rand() & 1`（原「一律取前一句」）—— **2026-09-24 WP-3 改判**：客户端对进指纹的共享状态做哈希掷硬币（`speech-coin.ts`），各端同一句、分布同原版、不碰 core RNG
 - Q-SPEECH-4　「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的
 - Q-SPEECH-5　没解的 5 个槽位
 - ✅ Q-SPEECH-7（**2026-09-16 汇总人订正**）事件 15 的判据是**地块的 `+0x1a`（等级）**升到 5，不是玩家结构 —— `packages/data/src/speech.ts:162` 的 gloss 原是错的，已改
