@@ -44,6 +44,7 @@
 import type { GameState, MapTopology } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import { drawGdiText } from './font.ts';
+import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 面板与立绘板所在的档案 @source `[0x48bad8]`（= `read_mkf(Data.mkf, 0x205)`）*/
@@ -329,6 +330,12 @@ export function openFacilityPicker(answer: PickerAnswer): void {
 
 export const facilityPickerScreen: UiScreen = {
   id: 'facility-picker',
+
+  /**
+   * 软件指针：浮窗 `WM_CREATE` 放出箭头 @source 0x0043fb5d `fcn_00402460(1)`（紧跟 0x0043fb54 挪指针）；
+   * 只由本机真人的加蓋流程打开（`openFacilityPicker`），旁观端没有这扇窗。
+   */
+  cursor: (): CursorWant => showCursor(ARROW_CURSOR),
 
   /**
    * ★ **浮窗**：原版先 `fcn_00451e7e` 存下 (0,0x28)-(0x1b8,0x1e0) 那块

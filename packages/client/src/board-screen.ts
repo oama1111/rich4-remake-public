@@ -119,6 +119,7 @@ import {
   yesNoHalves,
 } from './gameui.ts';
 import { portraitResource, type Sprite } from './assets.ts';
+import { ARROW_CURSOR, HAND_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /**
@@ -2251,6 +2252,16 @@ export const boardScreen: UiScreen = {
   contextmenu(_x, _y, env: UiScreenEnv): void {
     if (!boardScreen.active(env)) return;
     cancelBoardLayer(env);
+  },
+
+  /**
+   * 软件指针：公佈欄各层在自己的 `WM_CREATE` 里放出箭头（@source 0x00425af1 / 0x004261b0 / 0x00426954 /
+   * 0x00426d69 / 0x004279f7 / 0x00427ce4 / 0x004283ab `fcn_00402460(1)`）；出价 / 挂牌那一页是
+   * 通用填数窗 `fcn_00453544`，换**手指**（@source 0x00452cb1 `fcn_004021f8(0x1b, 1, 0)`）。
+   * 这一屏只由本机的工具列 / 熱鍵打开，不会出现在旁观端。
+   */
+  cursor(env: UiScreenEnv): CursorWant {
+    return showCursor(boardScreen.amountEntry!(env) ? HAND_CURSOR : ARROW_CURSOR);
   },
 
   /** 出价填数页（通用填数窗：金额条 + 数字键盘）开着 ⇒ 触屏长按不算右键（`touch-input.ts` 的 `longPressAllowed`）*/
