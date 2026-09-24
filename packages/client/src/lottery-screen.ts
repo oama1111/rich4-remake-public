@@ -514,6 +514,14 @@ export interface LotView {
 }
 
 /** 待决交互里那一份 —— 不是樂透就给 `null` */
+/** 成交音效号 @source 表 `0x47566b` = `[31, 0]`（0x00430030 `call _rich4_play_sound_effect`）*/
+export const LOTTERY_BUY_SOUND = 31;
+
+/** 联机时本机只是在旁观这一注（单机 / 热座永远不是）*/
+function lotterySpectating(env: UiScreenEnv): boolean {
+  return env.localSeat !== undefined && env.localSeat !== null && env.localSeat !== env.state.currentPlayer;
+}
+
 export function lotteryPending(state: GameState): Extract<GameState['pending'], { kind: 'lottery' }> | null {
   const p = state.pending;
   return p !== null && p.kind === 'lottery' ? p : null;
@@ -990,6 +998,8 @@ export const lotteryScreen: UiScreen = {
 
     const p = lotteryPending(env.state);
     if (p === null) return;
+    // ★ 联机旁观：这一注不归本机买（送了也是 `notYourTurn`），也就没有成交音
+    if (lotterySpectating(env)) return;
     const n = hitNumber(x, y);
     if (n === null) return;
     // 已售出的号码点不动 @source `cmp byte [ebx+0x4990b8], 0 / jne 不认`
@@ -1003,6 +1013,10 @@ export const lotteryScreen: UiScreen = {
     // ★ 一次落点只买 1 注：reducer 收到这个 action 就把 `pending` 收了 ——
     //   先把「拜拜」那一拍的画面定格下来（原版是 0x406 里画完、下一拍才关屏）
     ui.byeView = lotView(env.state, 'bye', n, ui.eye, ui.mouth, bonusFrameAt(env.now));
+    // ★ 成交音 31（gap-audit #13）@source 0x00430029..0x00430030 `_rich4_play_sound_effect(0, 0x47566b)`
+    //   —— 扣 1000、奖池 +1000、`PostMessage 0x406, 3` 之后紧接着放。只在买的那一台放：
+    //   旁观端这一注到的时候 `pending` 直接收掉、屏就关了（没有「拜拜」那一拍），原版也没有那一屏可放。
+    env.playEffect(LOTTERY_BUY_SOUND);
     env.dispatch({ type: 'lottery', number: n });
   },
 
@@ -1032,6 +1046,7 @@ export const lotteryScreen: UiScreen = {
       return;
     }
     if (lotteryPending(env.state) === null) return;
+    if (lotterySpectating(env)) return;
     env.playEffect(CANCEL_SOUND);
     ui.picked = null;
     ui.phase = 'bye';

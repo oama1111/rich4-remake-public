@@ -290,7 +290,7 @@
 | `0x4750f8` | `0x41595b`/`0x415cb2` | `0x415872` | 25,26 | 25 = `intro.ts:52`（`INTRO_SOUND`）；**26 未见** | 部分 | ❌ / ❌ |
 | `0x475590` | `0x42b74a`/`0x42ba65` | 股市行情屏 | 40,41 | `stock-screen.ts` 全文 **0 处播放** | ❌ **未播** | ❌ / ❌ |
 | `0x4755a8` | `0x42baa6`/`0x42be65` | 公司分红屏 | **61（1 项）** | `shares-screen.ts:262` 定义 `SHARES_SOUND={open:0,page:1,choice:2}` 且**全仓无使用** | ❌ **未播**，且把 1 项表当 3 项下标 | ❌ / ❌ |
-| `0x47566b` | `0x4315ec`/`0x431691` | 樂透/開獎 `0x4315cc` | 31 | `lottery-screen.ts:943` 只播 4 | ❌ **未播** | ❌ / ❌ |
+| `0x47566b` | `0x4315ec`/`0x431691` | 樂透/開獎 `0x4315cc` | 31 | `lottery-screen.ts:943` 只播 4 | ❌ **未播** | ❌ / ❌ | ✅ 2026-09-24 已补（gap-audit #13）：`lottery-screen.ts` 的 `LOTTERY_BUY_SOUND` 买中那一下放（只在买的那一台） |
 | `0x47567b` | `0x431737`/`0x431805` | 樂透/開獎 `0x431712` | 57,58 | `lottery-draw-screen.ts` 全文 **0 处播放** | ❌ **未播** | ❌ / ❌ |
 | `0x4757e7` | `0x43382d`/`0x4338c3` | 魔法屋转盘 | 39 | `magic-screen.ts:1476`（`MAGIC_SOUND_RESULT=0x27`） | ✅ | ❌ / ❌ |
 | `0x475b17` | `0x439c09`/`0x439efa` | 银行月结 | 27,28,60 | `monthly-screen.ts:1787-1789`（`STEP=27`/`DETAIL=60`/`CLOSE=28`） | ✅ 三条全对 | ❌ / ❌ |
@@ -327,8 +327,8 @@ remake 对 `0x47509f`（19,20,21）有播放（`minigame-screen.ts:229-233`）�
 
 | # | 原版 | remake | 类型 | 严重度 |
 |---|---|---|---|---|
-| S11 | 公司分红屏音效集 `0x4755a8` = **61**（1 项） | `shares-screen.ts:262` 定义 `SHARES_SOUND={open:0,page:1,choice:2}`（定义未用）；**61 未播** | 数值错 | 严重 |
-| S12 | 通用填数窗按键音 = 表 `0x48234a` 第 0 项 = **7**（VA `0x00452f0e`，remake 自记于 `amount-keys.ts:15`） | `main.ts:2185-2196`（`onAmountKey`）与 `:2117-2138` 全程**无播放** | 缺失 | 轻微 |
+| S11 | 公司分红屏音效集 `0x4755a8` = **61**（1 项） | `shares-screen.ts:262` 定义 `SHARES_SOUND={open:0,page:1,choice:2}`（定义未用）；**61 未播** | 数值错 | 严重 | ✅ 2026-09-24 已补（gap-audit #13）：`shares-screen.ts` 的 `SHARES_OPEN_SOUND` 上屏那一刻放 61，旧下标表删了 |
+| S12 | 通用填数窗按键音 = 表 `0x48234a` 第 0 项 = **7**（VA `0x00452f0e`，remake 自记于 `amount-keys.ts:15`） | `main.ts:2185-2196`（`onAmountKey`）与 `:2117-2138` 全程**无播放** | 缺失 | 轻微 | ✅ 2026-09-24 已补（gap-audit #13）：`amount-keys.ts` 的 `amountKeySound`（`H` 不放），`main.ts` `onAmountKey` 与 `board-screen.ts` 填数钮都放 |
 | S13 | 股市屏 **40/41**、樂透 **31**、開獎 **57/58** | `stock-screen.ts`、`lottery-draw-screen.ts` 全文 0 处；`lottery-screen.ts:943` 只播 4 | 缺失 | 严重 |
 | S14 | remake 播 **90/91**（`0x5a`/`0x5b`），**超出规格 §三「最大 63」** | `build-fx.ts:161,167`（`BUILD_HAMMER_SOUND=0x5b`、`BUILD_MAX_SOUND=0x5a`）→ `main.ts:4554` 播放 | 无法判定 | 轻微 |
 

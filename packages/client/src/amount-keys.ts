@@ -354,6 +354,25 @@ export type AmountKey =
   | { readonly kind: 'ok' };
 
 /**
+ * 填数窗的按键音 —— 表 `0x48234a` = `[7, 0]`（`_rich4_play_sound_effect(0, 0x48234a)`）。
+ *
+ * @source 键盘：`loc_00452e4b` 把键翻成钮序号后落 0x00452f0e..0x00452f15 放它，再合成 0x202；
+ *   鼠标：`WM_LBUTTONDOWN` 按在钮上（序号不是 1 = 拖窗、也不是 0x10 = 金额栏）
+ *   0x00452d8e..0x00452d95 放它（gap-audit #13）。
+ */
+export const AMOUNT_KEY_SOUND = 7;
+
+/**
+ * 这一键要放的音效号；不放就 `null` —— 纯函数。
+ *
+ * ★ `H`（金额栏，序号 0x10）那一支 `loc_00452f73` 自己算好坐标直接跳 0x00452fb9 合成
+ *   `WM_MOUSEMOVE`，**不经过** 0x00452f0e ⇒ 没有按键音；鼠标按在金额栏上（0x00452d75 `cmp al, 0x10`）同样不放。
+ */
+export function amountKeySound(key: AmountKey): number | null {
+  return key.kind === 'bar' ? null : AMOUNT_KEY_SOUND;
+}
+
+/**
  * 钮序号 → 语义。序号的**字**来自表 `0x47e714`（`mov dl, byte [eax + 0x47e714]`，
  * eax = 序号）：`[5]='0'`、`[7..9]='7','8','9'`、`[0xa..0xc]='4','5','6'`、
  * `[0xd..0xf]='1','2','3'`；序号 2/3/4/6 由跳表 `0x452bca` 决定：

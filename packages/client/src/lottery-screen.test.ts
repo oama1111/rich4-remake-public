@@ -54,6 +54,7 @@ import {
   lotMessageOf,
   lotView,
   lotteryPending,
+  LOTTERY_BUY_SOUND,
   lotteryPhase,
   lotteryPicked,
   lotteryScreen,
@@ -441,13 +442,16 @@ function mkEnv(
   state: GameState,
   now: number,
   animation?: boolean,
+  localSeat?: number | null,
 ): {
   env: UiScreenEnv;
   actions: Action[];
+  effects: number[];
   renders: () => number;
   flics: { archive: string; resource: number }[];
 } {
   const actions: Action[] = [];
+  const effects: number[] = [];
   const flics: { archive: string; resource: number }[] = [];
   let renders = 0;
   const env = {
@@ -456,7 +460,9 @@ function mkEnv(
     now,
     // `animation` 省略 = 按 true 算（契约里就是 optional）
     ...(animation === undefined ? {} : { animation }),
+    ...(localSeat === undefined ? {} : { localSeat }),
     dispatch: (a: Action) => actions.push(a),
+    playEffect: (id: number) => effects.push(id),
     requestRender: () => {
       renders++;
     },
@@ -466,7 +472,7 @@ function mkEnv(
       return null;
     },
   } as unknown as UiScreenEnv;
-  return { env, actions, renders: () => renders, flics };
+  return { env, actions, effects, renders: () => renders, flics };
 }
 
 /** 让这一屏一路演到「可以点号」那一段，返回当时的时刻 */
@@ -1043,5 +1049,50 @@ describe('★ T-036 残留：買中定格的「拜拜」那一拍**不能画成�
     resetLotteryScreenState();
     expect(lotteryPhase()).toBe('hello');
     expect(lotteryPicked()).toBeNull();
+  });
+});
+
+describe('★ gap-audit #13：买中那一下放成交音 31 @source 0x00430029..0x00430030（表 0x47566b）', () => {
+  it('★ 单机：点中未售出的号 → 31，且在 dispatch 之前', () => {
+    resetLotteryScreenState();
+    const s = mkState({ pending: mkPending([7, 8, 9]) });
+    lotteryScreen.tick!(mkEnv(s, 0, false).env);
+    const { env, actions, effects } = mkEnv(s, 10, false);
+    const cell = numberRect(8)!;
+    lotteryScreen.down!(cell.x + 1, cell.y + 1, env);
+    expect(LOTTERY_BUY_SOUND).toBe(31);
+    expect(effects).toEqual([31]);
+    expect(actions).toEqual([{ type: 'lottery', number: 8 }]);
+  });
+
+  it('点空 / 点已售出的号 → 不放', () => {
+    resetLotteryScreenState();
+    const s = mkState({ pending: mkPending([7, 8, 9]) });
+    lotteryScreen.tick!(mkEnv(s, 0, false).env);
+    const { env, effects } = mkEnv(s, 10, false);
+    lotteryScreen.down!(5, 5, env);
+    const sold = numberRect(3)!;
+    lotteryScreen.down!(sold.x + 1, sold.y + 1, env);
+    expect(effects).toEqual([]);
+  });
+
+  it('★ 联机·行动者那台：照样放；联机·旁观那台：点了不算、不放、不送', () => {
+    resetLotteryScreenState();
+    const s = mkState({ pending: mkPending([7, 8, 9]) });
+    lotteryScreen.tick!(mkEnv(s, 0, false, 1).env);
+    const spect = mkEnv(s, 10, false, 1);
+    const cell = numberRect(7)!;
+    lotteryScreen.down!(cell.x + 1, cell.y + 1, spect.env);
+    expect(spect.effects).toEqual([]);
+    expect(spect.actions).toEqual([]);
+    expect(lotteryPhase()).toBe('pick');
+    // 旁观端右键也不替人家放弃
+    lotteryScreen.contextmenu!(0, 0, spect.env);
+    expect(spect.actions).toEqual([]);
+
+    const actor = mkEnv(s, 20, false, s.currentPlayer);
+    lotteryScreen.down!(cell.x + 1, cell.y + 1, actor.env);
+    expect(actor.effects).toEqual([31]);
+    expect(actor.actions).toEqual([{ type: 'lottery', number: 7 }]);
   });
 });

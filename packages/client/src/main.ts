@@ -388,6 +388,7 @@ import { stockAmountForm, stockCounterTradeSound } from './amount-form.ts';
 // ★ 通用填数窗**自己那张键盘表**（@source `loc_00452e4b`）：0-9 / 退格 / C / M / H / Enter。
 import {
   amountKeyOfVk,
+  amountKeySound,
   amountKeyStep,
   amountSlotOfId,
   amountVkOf,
@@ -2999,6 +3000,10 @@ function onAmountKey(ui: InteractionUi, key: AmountKey): void {
   const page = amountPage;
   const amount = page === null ? undefined : ui.choices[page.choice]?.amount;
   if (page === null || amount === undefined) return;
+  // ★ 按键音 7（gap-audit #13）：键盘 0x00452f0e / 鼠标按钮 0x00452d95，表 `0x48234a`。
+  //   填数窗只开在本机行动者那一台（别的座位没有 `amountPage`），各端自己放。
+  const keySfx = amountKeySound(key);
+  if (keySfx !== null) sound.play('Effect.mkf', keySfx);
   const step = amountKeyStep(page.value, amount.max, key);
   if (step.submit) {
     onDialogHit(ui, { kind: 'amountOk' });
