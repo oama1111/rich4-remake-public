@@ -125,6 +125,7 @@ import {
   playMiniSounds,
 } from './minigame-screen.ts';
 import {
+  ARROW_CURSOR,
   CURSOR_ARCHIVE,
   CURSOR_RESOURCE,
   CURSOR_TICK_MS,
@@ -145,6 +146,7 @@ const BOARD_IDLE: CursorFrame = {
   atm: false,
   localInput: false,
   goPhase: false,
+  spectator: false,
 };
 
 describe('三个小游戏的出处与资源 @source rich4_small_games.asm', () => {
@@ -1334,12 +1336,15 @@ describe('★★ 七彩氣球整屏：本机在玩 vs 联机旁观', () => {
     }
   });
 
-  it('★★ 联机旁观：没有准星（软件指针藏着）、点了不算、不送分、不亮自己那份 0 分', () => {
+  it('★★ 联机旁观：没有准星（给普通箭头，D-CURSOR-ONLINE-1）、点了不算、不送分、不亮自己那份 0 分', () => {
     const sink = { dispatched: [] as unknown[], effects: [] as number[], drawn: [] as Drawn[] };
     let now = playUntilBalloons(1, sink);
-    // 旁观端不作答 ⇒ 不换准星、也不放箭头（别人那一屏的指针不归本机）
+    // 旁观端不作答 ⇒ 这一屏不换准星（别人那一屏的指针不归本机）
     expect(minigameScreen.cursor!(mkEnv({ now, localSeat: 1 }, sink))).toBeNull();
-    expect(resolveCursor({ ...BOARD_IDLE, overlay: minigameScreen.cursor!(mkEnv({ now, localSeat: 1 }, sink)) })).toBeNull();
+    // ★ 需求方要求的联机偏离：别人的回合里放出默认箭头 0x29（不是准星；触屏照样不画）
+    expect(
+      resolveCursor({ ...BOARD_IDLE, spectator: true, overlay: minigameScreen.cursor!(mkEnv({ now, localSeat: 1 }, sink)) }),
+    ).toEqual({ shape: ARROW_CURSOR });
     sink.drawn.length = 0;
     minigameScreen.draw(mkEnv({ now, localSeat: 1 }, sink));
     expect(sink.drawn.filter((d) => d.archive === 'Data.mkf')).toEqual([]);
@@ -1478,7 +1483,12 @@ describe('★★ 企鵝挖寶整屏：本机在玩 vs 联机旁观', () => {
     sink.drawn.length = 0;
     minigameScreen.draw(mkEnv({ now, localSeat }, sink));
     // main.ts 每帧：接管整屏的那一屏要什么，就是最终那一支（`resolveCursor`）
-    lastCursor = resolveCursor({ ...BOARD_IDLE, overlay: minigameScreen.cursor!(mkEnv({ now, localSeat }, sink)) });
+    //   联机旁观（坐 1 号、当前 0 号）= `main.ts` 的 `!localSeatActive()`
+    lastCursor = resolveCursor({
+      ...BOARD_IDLE,
+      spectator: localSeat === 1,
+      overlay: minigameScreen.cursor!(mkEnv({ now, localSeat }, sink)),
+    });
   };
 
   it('★★ 单机 / 联机的玩家本人：入场无指针 → 挖宝与结算姿势换靶圈（软件指针，触屏也画）→ 大号分数前收起', () => {
@@ -1509,17 +1519,18 @@ describe('★★ 企鵝挖寶整屏：本机在玩 vs 联机旁观', () => {
     }
   });
 
-  it('★★ 联机旁观：整局没有靶圈（软件指针藏着）、点了不算、不送分', () => {
+  it('★★ 联机旁观：整局没有靶圈（给普通箭头，D-CURSOR-ONLINE-1）、点了不算、不送分', () => {
     const sink: Sink = { dispatched: [], drawn: [] };
+    const ARROW = { shape: ARROW_CURSOR };
     minigameScreen.tick!(mkEnv({ now: 0, pending: false, localSeat: 1 }, sink));
     let now = 1000;
     frame(now, 1, sink);
-    expect(cursorOf(sink)).toBeNull();
+    expect(cursorOf(sink)).toEqual(ARROW);
     for (let i = 0; i <= PENGUIN_INTRO_TICKS; i++) frame((now += PENGUIN_TICK_MS), 1, sink);
-    expect(cursorOf(sink)).toBeNull();
+    expect(cursorOf(sink)).toEqual(ARROW);
     for (let i = 0; i < PENGUIN_PLAY_TICKS + 60; i++) {
       frame((now += PENGUIN_TICK_MS), 1, sink);
-      expect(cursorOf(sink)).toBeNull();
+      expect(cursorOf(sink)).toEqual(ARROW);
     }
     expect(sink.dispatched).toEqual([]);
     // 玩家那台的分数广播到了 ⇒ pending 清掉 ⇒ 屏关

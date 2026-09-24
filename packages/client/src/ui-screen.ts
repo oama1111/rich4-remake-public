@@ -203,7 +203,8 @@ export interface UiScreen {
    * ★ 不给 = 一直藏着：原版的**演出类**窗口（分紅 / 開獎 / 月結 / 新聞命運框 / 轉盤 / 神明老虎机 /
    *   訊息框）一处都不调 `fcn_00402460(1)`，按过 GO 收起的指针就一直收着。
    *   要人作答的屏在自己的 `WM_CREATE` 里放出来（出处见 `soft-cursor.ts` 文件头），
-   *   就在这里返回那一支 —— 联机旁观 / 电脑的回合记得返回 `null`（`localTurn`）。
+   *   就在这里返回那一支 —— 联机旁观 / 电脑的回合记得返回 `null`（`localTurn`）；
+   *   联机旁观端再由 `resolveCursor` 统一换成默认箭头（D-CURSOR-ONLINE-1），各屏不用管。
    */
   cursor?(env: UiScreenEnv): CursorWant;
 

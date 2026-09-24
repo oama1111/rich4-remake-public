@@ -22,7 +22,8 @@ import {
 import { SCREENS } from './screens.ts';
 import { lotteryScreen } from './lottery-screen.ts';
 import { researchScreen } from './research-screen.ts';
-import { minigameScreen } from './minigame-screen.ts';
+import { BALLOON_CURSOR, minigameScreen } from './minigame-screen.ts';
+import { auctionScreen } from './auction-screen.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
 
 /** 棋盘上什么都没开、也不是本机真人等掷骰 —— 按过 GO 之后的那一段 */
@@ -35,6 +36,7 @@ const IDLE: CursorFrame = {
   atm: false,
   localInput: false,
   goPhase: false,
+  spectator: false,
 };
 
 const ARROW = showCursor(ARROW_CURSOR);
@@ -255,5 +257,83 @@ describe('★ 哪几屏放指针、哪几屏不放（与 exe 的 `fcn_00402460(1
     expect(SCREENS.map((s) => s.id).sort()).toEqual(
       [...input, 'shares', 'lottery-draw', 'monthly', 'eventBox', 'wheel', 'god-slot', 'notice', 'eventTail'].sort(),
     );
+  });
+});
+
+// ============================================================
+//  D-CURSOR-ONLINE-1：联机里别人的回合放出箭头（需求方 2026-09-24 拍板的有意偏离）
+// ============================================================
+
+describe('★★ D-CURSOR-ONLINE-1：联机旁观端放出默认箭头 0x29；单机 / 热座与联机本机回合照原版', () => {
+  /** 联机旁观端的一帧：坐 1 号、当前 0 号（`main.ts` 的 `!localSeatActive()`）*/
+  const SPECTATOR: CursorFrame = { ...IDLE, spectator: true };
+  const spectatorEnv = (): UiScreenEnv => envOf({ localSeat: 1, currentPlayer: 0 });
+  const PRESENTATION = ['shares', 'lottery-draw', 'monthly', 'eventBox', 'wheel', 'god-slot', 'notice', 'eventTail'];
+
+  it('★ 单机不变：电脑的回合（走子 / 落点 / 演出）照原版藏着', () => {
+    // 电脑回合：没有 GO、没有作答窗，`spectator` 恒 false（单机 `net === null`）
+    expect(resolveCursor(IDLE)).toBeNull();
+    for (const id of PRESENTATION) {
+      const s = SCREENS.find((x) => x.id === id)!;
+      expect(resolveCursor({ ...IDLE, overlay: s.cursor?.(envOf({ players: [player(2), player(1)] })) ?? null }), id).toBeNull();
+    }
+    // 电脑的樂透 / 研究所 / 小游戏：一样藏着
+    const ai = envOf({ players: [player(2), player(1)] });
+    expect(resolveCursor({ ...IDLE, overlay: lotteryScreen.cursor!(ai) })).toBeNull();
+    expect(resolveCursor({ ...IDLE, overlay: researchScreen.cursor!(ai) })).toBeNull();
+  });
+
+  it('★ 联机本机自己的回合：按过 GO（走子 / 落点 / 演出）照原版藏着；GO 鈕在场 ⇒ 箭头', () => {
+    expect(resolveCursor({ ...IDLE, spectator: false })).toBeNull();
+    expect(resolveCursor({ ...IDLE, spectator: false, overlay: null })).toBeNull();
+    expect(resolveCursor({ ...IDLE, spectator: false, goPhase: true })).toEqual(ARROW);
+    // 本机座位被託管的那一回合仍算本机的回合（`localSeatActive()` 为真）⇒ 照原版藏
+    expect(resolveCursor({ ...IDLE, spectator: false, overlay: lotteryScreen.cursor!(envOf({ localSeat: 0, players: [player(5), player(1)] })) })).toBeNull();
+  });
+
+  it('★ 旁观别人（真人或电脑座位）走子 / 落点：箭头', () => {
+    expect(resolveCursor(SPECTATOR)).toEqual(ARROW);
+    expect(resolveCursor({ ...SPECTATOR, screen: 'stock' })).toEqual(ARROW);
+    expect(resolveCursor({ ...SPECTATOR, screen: 'stock', overlay: null })).toEqual(ARROW);
+  });
+
+  it('★ 旁观演出屏（新聞 / 命運 / 寶箱、神明老虎机、分紅、月結、開獎、轉盤、訊息框）：箭头', () => {
+    for (const id of PRESENTATION) {
+      const s = SCREENS.find((x) => x.id === id)!;
+      // 演出屏没有 `cursor` 出口 ⇒ main.ts 交 `overlay: null`
+      expect(resolveCursor({ ...SPECTATOR, overlay: s.cursor?.(spectatorEnv()) ?? null }), id).toEqual(ARROW);
+    }
+  });
+
+  it('★ 旁观别人的樂透投注 / 研究所 / 拍賣：箭头（不换铅笔）', () => {
+    expect(resolveCursor({ ...SPECTATOR, overlay: lotteryScreen.cursor!(spectatorEnv()) })).toEqual(ARROW);
+    expect(resolveCursor({ ...SPECTATOR, overlay: researchScreen.cursor!(spectatorEnv()) })).toEqual(ARROW);
+    expect(resolveCursor({ ...SPECTATOR, overlay: auctionScreen.cursor!(spectatorEnv()) })).toEqual(ARROW);
+  });
+
+  it('★ 旁观别人的商店 / 銀行 / 監獄醫院 / ATM：箭头（这几扇窗只给本机真人算 `localInput`）', () => {
+    expect(resolveCursor({ ...SPECTATOR, localInput: false })).toEqual(ARROW);
+    expect(resolveCursor({ ...SPECTATOR, localInput: true })).toEqual(ARROW);
+  });
+
+  it('★ 旁观小游戏：普通箭头，不给准星 / 靶圈（触屏照样不画 —— 请求里没有 `touch`）', () => {
+    expect(resolveCursor({ ...SPECTATOR, overlay: null })).toEqual(ARROW);
+    expect(resolveCursor({ ...SPECTATOR, overlay: showCursor(BALLOON_CURSOR, true) })).toEqual(ARROW);
+    expect(resolveCursor({ ...SPECTATOR, overlay: showCursor(BALLOON_CURSOR, true) })!.touch).toBeUndefined();
+    // 財神接金幣：玩家那台整局藏着（#10），旁观端照这条偏离给箭头
+    const pending = { kind: 'minigame', game: SPECIAL_KIND.GIFT_FROM_SKY };
+    const env = envOf({ localSeat: 1, pending, now: 0 });
+    minigameScreen.tick!(env);
+    expect(resolveCursor({ ...SPECTATOR, overlay: minigameScreen.cursor!(env) })).toEqual(ARROW);
+    minigameScreen.tick!(envOf({ localSeat: 1, pending: null, now: 4000 })); // 收局
+  });
+
+  it('★ 别人的回合里本机真在作答（轮到本机举牌的拍賣出价、填数窗）：照它那一支', () => {
+    expect(resolveCursor({ ...SPECTATOR, overlay: showCursor(ARROW_CURSOR) })).toEqual(ARROW);
+    expect(resolveCursor({ ...SPECTATOR, amountWindow: true, localInput: true })).toEqual(showCursor(HAND_CURSOR));
+  });
+
+  it('★ 开局入场不算谁的回合：照原版藏着', () => {
+    expect(resolveCursor({ ...SPECTATOR, screen: 'intro' })).toBeNull();
   });
 });

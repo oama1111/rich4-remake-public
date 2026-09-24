@@ -9392,6 +9392,8 @@ function cursorFrame(): CursorFrame {
       (screen === 'game' && state.phase === 'gameOver'),
     // 轮到本机真人、GO 鈕在场（按下去骰子一滚就收起：0x004182de）
     goPhase: awaitingHumanRoll() && !diceFx.active,
+    // 联机里别的座位的回合 ⇒ 放出箭头（D-CURSOR-ONLINE-1，需求方要求的有意偏离；单机恒 false）
+    spectator: !localSeatActive(),
   };
 }
 
