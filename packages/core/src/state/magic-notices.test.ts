@@ -61,6 +61,8 @@ const effect = (who: number, option: number): NoticeHint => ({
   args: [nameOf(who), MAGIC_HOUSE_OPTIONS[option]!.name],
   beforeFilms: true,
   ...(AFTER[option] === undefined ? {} : { afterMs: AFTER[option] }),
+  // 向後轉：框收掉那一刻 `0x40c78c` 开头的音效 56（0x0040c79a）
+  ...(option === 7 ? { closeSfx: 56 } : {}),
 });
 
 describe('★ 魔法屋訊息框：每个中签者一扇（`0x431caa` 每一支开头的 `0x440cac(…, 0x5dc)`）', () => {

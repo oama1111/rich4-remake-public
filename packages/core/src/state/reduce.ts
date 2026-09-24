@@ -3885,6 +3885,7 @@ function applyMagicHouse(
       priceIndex: before.priceIndex,
       initiator: caster,
       nodeOf,
+      nodes: topo.nodes,
       nextRandom: () => rng.next(),
     });
     const notice = magicNoticeFor(before, who, option, r);
@@ -3994,10 +3995,15 @@ function magicNoticeFor(state: GameState, who: number, option: number, r: MagicE
     return { key: 'magic.gotCard', args: [name, cardNameOf(got.value)], beforeFilms: true };
   }
   const afterMs = MAGIC_NOTICE_AFTER_MS[option];
-  return afterMs === undefined
+  const hint: NoticeHint = afterMs === undefined
     ? { key: 'magic.effect', args: [name, effectName], beforeFilms: true }
     : { key: 'magic.effect', args: [name, effectName], beforeFilms: true, afterMs };
+  // ★ 向後轉：框收掉 → `0x40c78c` 开头那一声（`[0x4823f2]` = 56，0x0040c79a）→ 掉头 → 空等 500 ms
+  return option === 7 ? { ...hint, closeSfx: MAGIC_TURN_BACK_SFX } : hint;
 }
+
+/** `0x40c78c`（掉头）开头放的音效 @source 0x0040c795 `push 0x4823f2` → 0x0040c79a `call 0x4542ce`；`[0x4823f2]` = 56 */
+export const MAGIC_TURN_BACK_SFX = 56;
 
 /**
  * 魔法屋几支在施加之后的**空等**（`fcn_0045285e(ms)`，忙等、点不掉）。
