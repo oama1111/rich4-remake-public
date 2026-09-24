@@ -470,9 +470,15 @@ export function seatViewOf(
   const status = pending.status;
   const counted = pending.bidders.filter((i) => (status[i] ?? 'active') !== 'active').length > 0;
   const seats: AuctionSeat[] = [];
-  for (const i of pending.bidders) {
+  // ★ 第十八份：座位 = **所有在场玩家按玩家号**（`loc_0043c110` 遍历 0..人数−1，`who_plays == 0` 才不占座），
+  //   发起者（arg0，core 的 `pending.seller`）也占一格、状态 7「賣方」（`0x0043c22a cmp ebx, ebp` →
+  //   `0x0043c23c mov word [座位+2], 7`）。core 的 `bidders` 不含他（他不能举牌），所以这里补回来。
+  const inTable = new Set(pending.bidders);
+  if (seller >= 0) inTable.add(seller);
+  for (let i = 0; i < players.length; i++) {
+    if (!inTable.has(i)) continue;
     const p = players[i];
-    if (p === undefined) continue;
+    if (p === undefined || p.whoPlays === 0) continue;
     const away = awayCodeOf(p);
     const st = status[i] ?? 'active';
     let state: AuctionSeatState;
@@ -724,6 +730,18 @@ export function drawAuctionScreen(
     //   先前只画剪影（且把角色错画在状态 7 上），所以框里是空的。见 `docs/deviations/T-034.md`。
     const figureVisible = code === 0;
     const broke = code === AUCTION_BROKE_CODE;
+    // ★ 第十八份订正：开场建桌时状态 1..7 **也画小人** —— 状态字那一支 `0x0043c67b jmp 0x43c46d`
+    //   与状态 8 汇合：`0x0043c486 cmp [座位+2], 7 / je` ⇒ 7（賣方）画 `3×角色+0x1b` 第 0 帧（`0x0043c4be`），
+    //   其余（1..6 不在场）画 `3×角色+0x1c`（`0x0043c49f`），都经 `0x0043c4cb call 0x45663e` 贴在 (0x24e, 座位 y)。
+    //   PASS（竞价中写的状态 1，`0x0043a426`）不重画，不在此列（仍按 D-T034-1 只换字）。
+    if (seat.state === 'seller' || seat.state === 'away') {
+      drawAnchored(
+        ctx,
+        auctionCharacterSprite(sprite, seat.character, seat.state === 'seller' ? 'bid' : 'giveUp', 0),
+        AUCTION_SEAT.figureX,
+        y,
+      );
+    }
 
     if (figureVisible) {
       drawAnchored(
@@ -860,15 +878,6 @@ function runKey(p: PendingInteraction): string {
   return `${p.entityId}:${p.facility === true ? 'f' : 'l'}:${p.basePrice}`;
 }
 
-/** 待拍实体现在是谁的（0 = 无主）*/
-function entityOwnerOf(env: UiScreenEnv, pending: PendingInteraction): number {
-  if (pending.kind !== 'auction') return 0;
-  if (pending.facility === true) {
-    return effectiveFacility(env.state, env.topo, pending.entityId)?.owner ?? 0;
-  }
-  return effectiveLand(env.state, env.topo, pending.entityId)?.owner ?? 0;
-}
-
 /** 从 core 查待拍实体的等级/种类/归属，再按原版算法挑缩略图 */
 function entityImageOf(env: UiScreenEnv, pending: PendingInteraction): number {
   if (pending.kind !== 'auction') return 0x5a;
@@ -887,12 +896,16 @@ function entityImageOf(env: UiScreenEnv, pending: PendingInteraction): number {
 function viewOf(env: UiScreenEnv, pending: PendingInteraction): AuctionRun {
   if (pending.kind !== 'auction') throw new Error('auction-screen: pending 不是 auction');
   const p = pending;
-  const owner = entityOwnerOf(env, pending);
-  const seller = owner > 0 ? owner - 1 : -1;
+  // ★ 第十八份：「賣方」是**发起拍卖者**（arg0 = core 的 `pending.seller`：拍賣卡用卡者 / 魔法屋中签者；
+  //   新聞 7、破產清算为 −1 = 没有这一格），**不是**地主 —— 地主照样能举牌（`0x43c11f` 不看 owner）。
+  //   @source `0x0043c109 mov ebp, [esp+0xac]`（arg0）→ `0x0043c22a cmp ebx, ebp` → 状态 7
+  const seller = p.seller ?? -1;
   const seats = seatViewOf(p, env.state.players, seller);
+  // `pending.seat` 是 `bidders` 里的下标；屏上座位多了賣方那一格 ⇒ 按玩家号换算成屏上座位下标
+  const actor = p.bidders[p.seat];
   return {
     seats,
-    current: p.seat,
+    current: actor === undefined ? -1 : seats.findIndex((s) => s.player === actor),
     price: p.price,
     top: p.top,
     basePrice: p.basePrice,
