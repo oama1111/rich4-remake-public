@@ -59,7 +59,16 @@ import type { Action } from '../state/actions.ts';
  * 第一條校驗和就失步。另有 `listSaves`/`saves`、`claim`/`unclaim`、`save`/`saved`，
  * `join` 多了 `fromSave` / `claimSeat`，`joined.seat` 可以是 `-1`（在房裡、還沒入座）。
  */
-export const PROTOCOL_VERSION = 6;
+/**
+ * ★ 2026-09-24（第十八份試玩回報一批）→ **7**。
+ *
+ * 為什麼 +1：這一批改了**核心規則與局面形狀**，新老客戶端對同一串 action 會算出不同局面：
+ * 商店貨架「買過的留在原位標 sold」（`buyCard`/`buyTool` 帶 `row`）、玩家 2..N **延後落地**
+ * （`landingWhoPlays`，第一回合才抽出生格）、每位玩家回合開始重算可成交量、開局走一次行情、
+ * 拍賣的出價資格與結果提示、放置禁令擴到「格上有人／物」。老頁面（沒刷新的分頁）若照舊連進來，
+ * 第一次落地或第一次購物就失步 —— 版本號一變，它進門就拿到清楚的「協議版本不符」。
+ */
+export const PROTOCOL_VERSION = 7;
 // ★ v6 同一次 +1 裡還有：`start` / `replay` 帶 `startDate`（服務器的今天）—— 聯機開局日期與單機同一個規則。
 //   老客戶端不認識它，會照 core 缺省日期（2010-01-01）開局 ⇒ 日期不同，第一次過日子就失步。
 
