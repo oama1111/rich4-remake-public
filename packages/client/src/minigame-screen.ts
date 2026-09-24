@@ -1110,28 +1110,44 @@ function giftSpawn(st: GiftGame, x: number, bomb: boolean): void {
   it.speed = GIFT_ITEM_SPEED0;
 }
 
-/** 財神的走行状态机 @source `loc_0041386a` 的 5 路跳表 `ref_00413234` VA 0x00413234 */
+/**
+ * 財神的走行状态机 @source `loc_0041386a` 的 5 路跳表 `ref_00413234` VA 0x00413234：
+ * 状态 0 → `loc_00413886`（往右走）、1 → `loc_00413a2b`（**什么都不做**）、
+ * 2 → `loc_00413934`（右端转身）、3 → `loc_00413964`（左端转身）、4 → `loc_00413986`（往左走）。
+ *
+ * ★★ 2026-09-24（第十六份回报「财神只在一小片区域活动」—— 第十一份 #4 只修了一半）：
+ *   「走完 5 帧、轮到拿主意」那一拍，**两条出路都把帧清零**：转身那条落 `loc_00413926`，
+ *   继续走那条（`loc_004138fd`）也是**贯穿**进 `loc_00413926 xor ebx,ebx / mov [0x48bd46],bx`
+ *   （向左对称：`loc_004139f9` 贯穿进 `loc_00413a22 xor ecx,ecx / mov [0x48bd46],cx`）。
+ *   先前「继续走」那条**没清帧** ⇒ 帧永远停在 5 ⇒ 之后**每一拍**都是拿主意的一拍：
+ *   过了中线每走 12px 就掷一次 `rand()%4`（原版是每 72px 掷一次）⇒ 一过中线几拍内就转身，
+ *   财神只在中线两侧一小片来回；而且「这一趟第几帧撒幣」那一帧再也走不到 ⇒ 几乎不撒幣。
+ *   原版一趟 = 5 帧走（各 ±12、第 `[0x48bd40]` 帧撒幣）+ 1 拍拿主意（±12）= **72px**，
+ *   拿主意的落点恒为 170/242/314/386/458/530（往右）与 470/398/326/254/182/110（往左），
+ *   所以两个端点一定踩得到（`== 0x212` / `== 0x6e` 那条兜底转身）。
+ */
 function giftWalkGod(st: GiftGame): void {
   const holder = { rngState: st.rngState };
   if (st.godState === 0) {
-    // 往右走：帧 0..4，其中第 `godSpawnFrame` 帧撒一个幣
+    // 往右走：帧 0..4，其中第 `godSpawnFrame` 帧撒一个幣 @0x00413886..0x004138c2
     if (st.godFrame < 5) {
       if (st.godFrame === st.godSpawnFrame) giftSpawn(st, st.godX, false);
       st.godFrame += 1;
       st.godX += GIFT_GOD_STEP;
-    // ★★ 2026-09-22（第十一份回报 #4「财神的活动范围不应该只有那么一点点」）：
-    //   原版（`rich4_small_games.asm:2147-2166`）是「**x > 320 才擲 rand()%4**，且 x == 530 也转身」；
-    //   先前写成 `x <= MID || ...` ⇒ 因为 x 起手就 ≤ MID，**第一拍就短路转身**，
-    //   `randMod` 根本没被调用过 ⇒ 财神永远只在 [110,170] 之间来回（实测 40 种子 × 3000 tick）。
-    //   `&&` 的短路恰好等于原版「x ≤ 320 不掷」；`randMod` 必须在 `=== MAX` **之前**
-    //   （原版 x>320 时无论是否 530 都先掷一次）。
+    // ★ 第十一份回报 #4：`cmp [0x48bd4c],0x140 / jle` —— **x > 320 才掷** `rand()%4`，
+    //   掷中 0 或 x == 530（`loc_004138e7`）就转身（`loc_004138f2`：状态 2）。
+    //   `&&` 的短路恰好等于「x ≤ 320 不掷」；`randMod` 在 `=== MAX` **之前**（x>320 时先掷一次）。
     } else if (st.godX > GIFT_MID_X && (randMod(holder, 4) === 0 || st.godX === GIFT_GOD_X_MAX)) {
       st.godState = 2;
-      st.godFrame = 0;
+      st.godFrame = 0; // `loc_00413926`
     } else {
+      // `loc_004138fd`：重掷撒幣帧、x += 12，**贯穿**进 `loc_00413926` 把帧清零
       st.godSpawnFrame = randMod(holder, 5);
       st.godX += GIFT_GOD_STEP;
+      st.godFrame = 0;
     }
+  } else if (st.godState === 1) {
+    // 跳表第 1 项直接落 `loc_00413a2b`：原版没有任何一处把状态写成 1，照抄成不动
   } else if (st.godState === 2) {
     st.godFrame += 1;
     if (st.godFrame >= 5) {
@@ -1145,18 +1161,20 @@ function giftWalkGod(st: GiftGame): void {
       st.godFrame = 0;
     }
   } else {
-    // 状态 4：往左走
+    // 状态 4：往左走 @0x00413986..0x004139bf
     if (st.godFrame < 5) {
       if (st.godFrame === st.godSpawnFrame) giftSpawn(st, st.godX, false);
       st.godFrame += 1;
       st.godX -= GIFT_GOD_STEP;
-    // ★ 向左对称（`rich4_small_games.asm:2224-2253`）：x < 320 才掷，x == 110 也转身
+    // ★ 向左对称（`loc_004139c4 … jge`）：x < 320 才掷，x == 110（`loc_004139e4`）也转身
     } else if (st.godX < GIFT_MID_X && (randMod(holder, 4) === 0 || st.godX === GIFT_GOD_X_MIN)) {
       st.godState = 3;
-      st.godFrame = 0;
+      st.godFrame = 0; // `loc_00413a22`
     } else {
+      // `loc_004139f9`：重掷撒幣帧、x −= 12，贯穿进 `loc_00413a22` 把帧清零
       st.godSpawnFrame = randMod(holder, 5);
       st.godX -= GIFT_GOD_STEP;
+      st.godFrame = 0;
     }
   }
   st.rngState = holder.rngState;
@@ -1372,7 +1390,10 @@ function drawPlain(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y
 }
 
 /**
- * 数字串。原版一个字符贴一次 `fcn_004563f5`（不透明），
+ * 数字串。原版一个字符贴一次 —— HUD 小号用 `fcn_004563f5`（`draw_image_in_rect`，**不透明**），
+ * 结算大号用 `fcn_00456418`（`draw_non_zero_image_in_rect`，**0 像素不画** ⇒ `keyed = true`）；
+ * 两者都是 `to_left = x − 图自带原点`（`rich4_drawing.c` 的 `x - src->x`），所以一律按锚点贴
+ * （小号 `Panel.mkf` #79 图 0..9 的锚点是 (0,0)，大号 10..19 是 (≈30,≈40)）。
  * 图号 = `字符 − 0x30 + first`（小号 `first = 0` @0x00413fe3…，大号 `first = 10` @0x004147e5 的 `sub edx, 0x26`）。
  *
  * ★ **只画前 `width` 个字符**：原版画的是**固定位数** —— 氣球 HUD 是 `%04d`
@@ -1389,12 +1410,13 @@ export function drawNumber(
   pitch: number,
   first: number,
   width: number,
+  keyed = false,
 ): void {
   const chars = text.slice(0, Math.max(0, width));
   for (let i = 0; i < chars.length; i++) {
     const code = chars.charCodeAt(i);
     if (code < 0x30 || code > 0x39) continue;
-    drawPlain(ctx, sprite(MINI_ARCHIVE, MINI_FONT_RES, code - 0x30 + first, false), x0 + i * pitch, y);
+    drawAnchored(ctx, sprite(MINI_ARCHIVE, MINI_FONT_RES, code - 0x30 + first, keyed), x0 + i * pitch, y);
   }
 }
 
@@ -1410,12 +1432,21 @@ function drawDigitRow(
   drawNumber(ctx, sprite, text, x0, y, MINI_DIGIT_PITCH, 0, width);
 }
 
-/** 结算时的大号分数 @source `fcn_00414789` VA 0x00414789（居中在 x = 0x161、y = 0x96）*/
-function drawBigScore(ctx: CanvasRenderingContext2D, sprite: MiniSprite, score: number): void {
+/**
+ * 结算时的大号分数 @source `fcn_00414789` VA 0x00414789（居中在 x = 0x161、y = 0x96）；
+ * 企鵝那屏另有同形的一段 `loc_00412e36`。
+ *
+ * ★★ 2026-09-24（第十六份回报「天降鸿福最后获得的点券数字有黑底，没抠干净」）：
+ *   两处都是 `call fcn_00456418`（0x00414816 / 0x00412e9e）= `draw_non_zero_image_in_rect`
+ *   —— **0 像素跳过**（透明）、且按图自带原点贴。先前这里走的是 HUD 那条不透明、
+ *   不减锚点的贴法 ⇒ 每个大字带一块黑底，整串还往右下偏了一个锚点（≈30,≈41）。
+ *   三个小游戏共用这一支，一起修好。
+ */
+export function drawBigScore(ctx: CanvasRenderingContext2D, sprite: MiniSprite, score: number): void {
   const text = String(Math.min(MINI_SCORE_CAP, Math.max(0, score)));
   const x0 = MINI_BIG_CENTER_X - Math.trunc((text.length * MINI_BIG_PITCH) / 2);
   // 原版 `fcn_00414789` 先 `sprintf` 再按 `strlen` 一个字符一个字符画 —— 位数是变长的
-  drawNumber(ctx, sprite, text, x0, MINI_BIG_Y, MINI_BIG_PITCH, MINI_BIG_DIGIT_FIRST, text.length);
+  drawNumber(ctx, sprite, text, x0, MINI_BIG_Y, MINI_BIG_PITCH, MINI_BIG_DIGIT_FIRST, text.length, true);
 }
 
 // ── 一、企鵝挖寶 ──

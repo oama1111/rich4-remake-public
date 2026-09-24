@@ -58,6 +58,9 @@ import {
   GIFT_WARN_RES,
   GIFT_WARN_SPAN,
   GIFT_WARN_FRAMES,
+  MINI_BIG_CENTER_X,
+  MINI_BIG_PITCH,
+  MINI_BIG_Y,
   MINI_DIGIT_PITCH,
   MINI_END_MS,
   MINI_FONT_RES,
@@ -83,6 +86,7 @@ import {
   balloonStart,
   balloonStep,
   catchBoxOf,
+  drawBigScore,
   drawNumber,
   giftCatcherImage,
   giftGodImage,
@@ -949,5 +953,141 @@ describe('★ 三处定曲 @source rich4_small_games.asm:4335/4481/4638', () => 
     // ③ 「動畫過程」关掉 → 也不点
     minigameScreen.tick!(mk(SPECIAL_KIND.GIFT_FROM_SKY, 1, false));
     expect(played).toEqual(['midi13.mid']);
+  });
+});
+
+// ============================================================
+//  ★★ 第十六份试玩回报（2026-09-24）：天降鴻福
+// ============================================================
+
+describe('★★ 天降鴻福：財神走满全场 @source loc_00413886..loc_00413a22（第十六份回报）', () => {
+  const offBox = catchBoxOf(null, -5000, GIFT_CATCHER_Y);
+  /** 跑一局真实时长（360 tick），记下每一拍的財神状态 */
+  function run(seed: number, ticks = GIFT_PLAY_TICKS): ReturnType<typeof giftStart>[] {
+    let st: ReturnType<typeof giftStart> = { ...giftStart(seed), phase: 'play', intro: 0, ticks: 100000 };
+    const out = [st];
+    for (let i = 0; i < ticks; i++) {
+      st = giftStep(st, -5000, offBox, 0);
+      out.push(st);
+    }
+    return out;
+  }
+
+  it('★ 拿主意那一拍的落点恒为 170+72k（往右）/ 470−72k（往左）—— 一趟 5 帧 + 1 拍 = 72px', () => {
+    // `loc_004138fd` / `loc_004139f9` 贯穿进 `loc_00413926` / `loc_00413a22` 把帧清零 ⇒
+    // 两次拿主意之间一定隔着 5 帧走行（各 ±12）+ 拿主意那一拍（±12）
+    const right = new Set<number>();
+    const left = new Set<number>();
+    for (let seed = 1; seed <= 40; seed++) {
+      const trail = run(seed * 7919);
+      for (let i = 1; i < trail.length; i++) {
+        const prev = trail[i - 1]!;
+        if (prev.godState === 0 && prev.godFrame === 5) right.add(prev.godX);
+        if (prev.godState === 4 && prev.godFrame === 5) left.add(prev.godX);
+        // 拿主意那一拍之后帧一定回到 0（不论转身还是继续走）
+        if ((prev.godState === 0 || prev.godState === 4) && prev.godFrame === 5) {
+          expect(trail[i]!.godFrame, `seed ${seed} tick ${i}`).toBe(0);
+        }
+      }
+    }
+    expect([...right].sort((a, b) => a - b)).toEqual([170, 242, 314, 386, 458, 530]);
+    expect([...left].sort((a, b) => a - b)).toEqual([110, 182, 254, 326, 398, 470]);
+  });
+
+  it('★ 一局（360 tick）里两个端点 110 / 530 都走得到，且只在 [110, 530] 里、步距 12', () => {
+    let hitMax = 0;
+    let backToMin = 0;
+    for (let seed = 1; seed <= 40; seed++) {
+      const xs = run(seed * 7919).map((s) => s.godX);
+      if (xs.includes(GIFT_GOD_X_MAX)) hitMax++;
+      // 起手就在 110（`[0x48bd4c] = 0x6e`），所以左端要看「离开之后又回来过」
+      const firstLeave = xs.findIndex((x) => x !== GIFT_GOD_X_MIN);
+      if (xs.slice(firstLeave).includes(GIFT_GOD_X_MIN)) backToMin++;
+      for (const x of xs) {
+        expect(x).toBeGreaterThanOrEqual(GIFT_GOD_X_MIN);
+        expect(x).toBeLessThanOrEqual(GIFT_GOD_X_MAX);
+        expect((x - GIFT_GOD_X_MIN) % 12).toBe(0);
+      }
+    }
+    // 修后实测 40/40 到过 530、39/40 回到过 110；旧实现（帧不清零）只有 7/40 到过 530
+    expect(hitMax).toBeGreaterThanOrEqual(36);
+    expect(backToMin).toBeGreaterThanOrEqual(36);
+  });
+
+  it('★ 停留时间铺满全场，不再挤在中线两侧（旧实现 80% 时间在 [242, 398]）', () => {
+    let inMiddle = 0;
+    let total = 0;
+    for (let seed = 1; seed <= 40; seed++) {
+      for (const s of run(seed * 7919)) {
+        total++;
+        if (s.godX >= 242 && s.godX <= 398) inMiddle++;
+      }
+    }
+    // 修后实测 ≈ 44%；[242, 398] 占整段 [110, 530] 的 37%。旧实现（帧不清零）实测 ≈ 80%。
+    expect(inMiddle / total).toBeLessThan(0.55);
+  });
+
+  it('★ 走行的每一趟（5 帧）撒且只撒一个幣 @0x00413899 / @0x0041399a', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const trail = run(seed * 104729);
+      let walks = 0;
+      let coins = 0;
+      for (let i = 1; i < trail.length; i++) {
+        const prev = trail[i - 1]!;
+        const cur = trail[i]!;
+        if ((prev.godState === 0 || prev.godState === 4) && prev.godFrame === 4) walks++;
+        // 这一拍刚生成的：还停在起点、速度还是初速（已有的每拍都 +2，不会再是 −16）
+        coins += cur.items.filter((it) => it.x !== 0 && it.type !== 4 && it.y === GIFT_ITEM_Y0 && it.speed === -16).length;
+      }
+      // 起手那一趟从帧 0 开始（状态 3 → 0 时清零），之后每趟都有一个撒幣帧；槽满（16 个）才会丢
+      // 最后一拍可能停在一趟的半路：撒幣帧已过、那一趟还没走完
+      expect(coins - walks, `seed ${seed}`).toBeGreaterThanOrEqual(0);
+      expect(coins - walks, `seed ${seed}`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('状态 1 原版跳表直接落 `loc_00413a2b`（什么都不做）', () => {
+    const st = { ...giftStart(5), phase: 'play' as const, intro: 0, godState: 1, godFrame: 2, godX: 300 };
+    const next = giftStep(st, -5000, offBox, 0);
+    expect(next.godState).toBe(1);
+    expect(next.godFrame).toBe(2);
+    expect(next.godX).toBe(300);
+  });
+});
+
+describe('★★ 结算大号分数：透明贴、按锚点贴 @source fcn_00414789 → 0x00414816 call fcn_00456418', () => {
+  it('每个大字都要抠黑（`draw_non_zero_image_in_rect`）并减去图自带原点', () => {
+    const calls: { index: number; keyed: boolean }[] = [];
+    const sprite = ((_a: string, _r: number, index: number, keyed?: boolean) => {
+      calls.push({ index, keyed: keyed === true });
+      return { bitmap: {} as ImageBitmap, width: 60, height: 76, anchorX: 30, anchorY: 41 };
+    }) as unknown as Parameters<typeof drawBigScore>[1];
+    const at: [number, number][] = [];
+    const ctx = {
+      drawImage: (_b: unknown, x: number, y: number) => {
+        at.push([x, y]);
+      },
+    } as unknown as CanvasRenderingContext2D;
+    drawBigScore(ctx, sprite, 47);
+    // 图号：大号从 10 起 @0x004147e5 `sub edx, 0x26`
+    expect(calls.map((c) => c.index)).toEqual([14, 17]);
+    expect(calls.every((c) => c.keyed)).toBe(true);
+    // x0 = 0x161 − 33×位数；每字 +0x42；落点 = x − 锚点
+    const x0 = MINI_BIG_CENTER_X - 33 * 2;
+    expect(at).toEqual([
+      [x0 - 30, MINI_BIG_Y - 41],
+      [x0 + MINI_BIG_PITCH - 30, MINI_BIG_Y - 41],
+    ]);
+  });
+
+  it('HUD 小号数字仍是不透明贴（`fcn_004563f5`）', () => {
+    const keyed: boolean[] = [];
+    const sprite = ((_a: string, _r: number, _i: number, k?: boolean) => {
+      keyed.push(k === true);
+      return { bitmap: {} as ImageBitmap, width: 15, height: 28, anchorX: 0, anchorY: 0 };
+    }) as unknown as Parameters<typeof drawNumber>[1];
+    const ctx = { drawImage: () => undefined } as unknown as CanvasRenderingContext2D;
+    drawNumber(ctx, sprite, '123', 0, 0, MINI_DIGIT_PITCH, 0, 3);
+    expect(keyed).toEqual([false, false, false]);
   });
 });
