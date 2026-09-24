@@ -412,7 +412,9 @@ describe('★ main.ts 接线（源码钉子）', () => {
     // 2026-09-23 第十二份：新聞 5/15/20/21 的整块影片（`startNewsPlaceFx`，龍捲風 0x217 等）⇒ 8 处。
     // 2026-09-23 魔法屋「就地拆除房屋」0x211（`startMagicDemolishFx`：框那 1500 ms 房子还在，
     //   起播那一刻由 `releaseBoardOnStart` 放开 —— 原版先拆、重画、再播）⇒ 9 处。
-    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(9);
+    // 2026-09-24 第二十二份：新聞 18 地震 / 19 山洪的白闪（`startNewsFlash`：事件框 + 闪 880 ms 期间房子还在，
+    //   闪完 `view_to(0, 0, 1)` 那一拍才放开）⇒ 10 处。
+    expect(src.split('deferredBoardBefore = before;').length - 1).toBe(10);
     expect(src).toContain('if (pending.releaseBoardOnStart === true) deferredBoardBefore = null;');
     expect(src).toContain('deferredBoardBefore = after;');
   });

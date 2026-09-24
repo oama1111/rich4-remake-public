@@ -167,3 +167,75 @@ describe('★★ 第二十一份：新聞 4「外星人攻打地球」⇒ 镜头
     for (const p of s2.players) expect(p.blocking.inHospital).toBe(0);
   });
 });
+
+describe('★ 第二十二份（gap-audit #6）：新聞 18 地震 / 19 山洪 ⇒ 挑中那一处 + 一起闪的那几处（`flashLots`）', () => {
+  // 同名地块用 `name` 相等判（原版 `0x0044a823 call 0x458370` = strcmp(地块 +4, 挑中 +4)）
+  const named = (id: number, name: string, level: number, owner = 0) =>
+    ({ id, name, level, type: 0, owner, landPrice: 100, x: id * 10, y: id * 20 }) as never;
+
+  it('★★ 18 挑中地块 ⇒ `place` = 它；`flashLots` = **同名的每一块**（等级 0 的也标，`0x0044a846` 在拆之前、不看等级）', () => {
+    const lands = [named(1, '合肥', 2, 1), named(2, '南京', 3, 2), named(3, '合肥', 0), named(4, '合肥', 1, 3)];
+    const r = applyNewsEffect(18, ctx({ lands, facilities: [], rng: { below: () => 2 } }));
+    expect(r.place).toEqual({ entity: 0x7d0 + 3, owner: 0 });
+    expect(r.flashLots).toEqual([0x7d0 + 1, 0x7d0 + 3, 0x7d0 + 4]);
+    // 规则不变：只有等级 > 0 的同名地块降一级
+    expect(r.landMutations?.map((m) => m.id)).toEqual([1, 4]);
+  });
+
+  it('★ 18 挑中設施 ⇒ 只标它自己（`0x0044a8d3`）；没拆动（等级 0）也照样带', () => {
+    const r = applyNewsEffect(18, ctx({ lands: [named(1, '合肥', 1)], facilities: [fac(1, 0, 2)], rng: { below: () => 1 } }));
+    expect(r.amount).toBe(0);
+    expect(r.place).toEqual({ entity: 0xfa0 + 1, owner: 2 });
+    expect(r.flashLots).toEqual([0xfa0 + 1]);
+  });
+
+  it('★ 19 ⇒ 闪挑中那一处（`0x0044aa9f`）；同一支的 5 / 15 / 21 不带（它们播整块影片）', () => {
+    const r19 = applyNewsEffect(19, ctx({ lands: [land(1, 0, 2)], facilities: [], rng: { below: () => 0 } }));
+    expect(r19.flashLots).toEqual([0x7d0 + 1]);
+    const r19f = applyNewsEffect(19, ctx({ lands: [], facilities: [fac(2, 1, 1)], rng: { below: () => 0 } }));
+    expect(r19f.flashLots).toEqual([0xfa0 + 2]);
+    for (const id of [5, 15, 21]) {
+      const r = applyNewsEffect(id, ctx({ lands: [land(1, 2, 1)], facilities: [], rng: { below: () => 0 } }));
+      expect(r.flashLots).toBeUndefined();
+    }
+  });
+
+  it('★ 随机仍只消耗**一次**（`flashLots` 是纯表现）', () => {
+    const calls: number[] = [];
+    applyNewsEffect(18, ctx({ lands: [named(1, 'A', 1), named(2, 'A', 1)], facilities: [fac(1, 1)], rng: { below: (n: number) => (calls.push(n), 0) } }));
+    expect(calls).toEqual([3]);
+  });
+
+  run('★★ reduce：18 落地 ⇒ `lastEvent.place` / `flashLots` + 镜头移到挑中那一处（`view_to` @ 0x0044a7ef）', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP)));
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })), seed: 5 });
+    const node = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.NEWS)!;
+    const s1: GameState = {
+      ...s0,
+      players: s0.players.map((p, i) => (i === s0.currentPlayer ? { ...p, nodeId: node.id } : p)),
+      landOwner: s0.landOwner.map((_, i) => (i === 0 ? 0 : 2)),
+      landLevel: s0.landLevel.map((_, i) => (i === 0 ? 0 : 2)),
+      phase: 'settling',
+      newsDeck: { order: [18, ...s0.newsDeck.order.filter((x) => x !== 18)], cursor: 0 },
+    };
+    const s2 = reduce(s1, { type: 'settle' }, topo);
+    expect(s2.lastEvent).toMatchObject({ kind: 'news', id: 18 });
+    const place = s2.lastEvent!.place!;
+    const flash = s2.lastEvent!.flashLots!;
+    expect(flash).toContain(place.entity);
+    const at = place.entity >= 0xfa0
+      ? map.facilities.find((f) => f.id === place.entity - 0xfa0)!
+      : map.lands.find((l) => l.id === place.entity - 0x7d0)!;
+    expect(s2.lastViewTarget).toEqual({ x: at.x, y: at.y });
+    if (place.entity < 0xfa0) {
+      // 同名的每一块都标了、也都拆了一级
+      const name = map.lands.find((l) => l.id === place.entity - 0x7d0)!.name;
+      const same = map.lands.filter((l) => l.name === name).map((l) => 0x7d0 + l.id);
+      expect([...flash]).toEqual(same);
+      for (const e of same) expect(s2.landLevel[e - 0x7d0]).toBe(1);
+    } else {
+      expect(flash).toEqual([place.entity]);
+    }
+  });
+});

@@ -57,9 +57,11 @@
  * ★ **什么时候播**：原版次序是訊息框（pass 0 画字、`fcn_0044b6df` 停 2400 ms）→ pass 1
  *   才移镜头 + 播片 —— 与新聞 4 完全同形，故同样带 `afterOverlay`（等事件框收屏再起播）。
  *
- * ⚠️ 未照抄的一小段：21 / 15 播完之后的 `sleep 300`（`push 0x12c`）、20 的 `sleep 500`
- *   （`0x0044ac82 push 0x1f4`）—— `board-film.ts` 没有「片后静置」这一档，片子播完就收。
- *   新聞 18「強烈地震」/ 19「山洪」的尾巴形状不同（18 逐块循环、19 走 `0x409b18` + `0x456c0a` 而**没有**整块影片），不在本表。
+ * ★ 片后静置（第二十二份补上，gap-audit #14）：21 / 15 播完之后 `sleep 300`（`0x0044ae3d` /
+ *   `0x0044a582 push 0x12c`）、20 `sleep 500`（`0x0044ac82 push 0x1f4`）、5 没有 —— 走
+ *   `BoardFilmSpec.holdMs`（最后一帧留在屏上，滑鼠鍵可点掉）；房主那一句在静置之后。
+ *   新聞 18「強烈地震」/ 19「山洪」的尾巴形状不同（标白 `0x456c0a` + 闪 `0x451985`，**没有**整块影片），
+ *   在 `news-flash-fx.ts`。
  */
 
 import { boardFilmTotalMs, type BoardFilmSpec } from './board-film.ts';
@@ -78,8 +80,10 @@ function film(
   frameMs: number,
   sound: number,
   flags: number,
+  holdMs = 0,
 ): BoardFilmSpec {
   return {
+    ...(holdMs > 0 ? { holdMs } : {}),
     id: `news-${newsId}`,
     archive: NEWS_PLACE_FX_ARCHIVE,
     resource,
@@ -102,16 +106,20 @@ function film(
  * @source 见文件头那张表（每一行的三个调用点 VA）。
  */
 export const NEWS_PLACE_FILMS: ReadonlyMap<number, BoardFilmSpec> = new Map([
+  // 5：`0x00449486 libc_free` 之后直接 `0x0044948e` 看房主，没有 sleep
   [5, film(5, 0x21b, 46, 71, 0x54, 0x200001)],
-  [15, film(15, 0x20f, 41, 71, 0x57, 0x50001)],
-  [20, film(20, 0x216, 15, 71, 0x59, 0x80001)],
-  [21, film(21, 0x217, 15, 71, 0x58, 0x80001)],
+  // 15：`0x0044a582 push 0x12c / call 0x4528b9`
+  [15, film(15, 0x20f, 41, 71, 0x57, 0x50001, 0x12c)],
+  // 20：`0x0044ac82 push 0x1f4 / call 0x4528b9`
+  [20, film(20, 0x216, 15, 71, 0x59, 0x80001, 0x1f4)],
+  // 21：`0x0044ae3d push 0x12c / call 0x4528b9`
+  [21, film(21, 0x217, 15, 71, 0x58, 0x80001, 0x12c)],
 ]);
 
 /** 新聞 21「龍捲風」@source 新聞表 `0x475e24[21]` = `0x0044ac99` */
 export const NEWS_TORNADO_ID = 21;
 
-/** 这一段总共播多久（毫秒）；表外为 0 */
+/** 这一段总共播多久（毫秒，**不含**片后静置）；表外为 0 */
 export function newsPlaceFilmMs(newsId: number): number {
   const spec = NEWS_PLACE_FILMS.get(newsId);
   return spec === undefined ? 0 : boardFilmTotalMs(spec);

@@ -13,7 +13,7 @@
 
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import type { Rich4Map } from '@rich4/core';
-import { makeGameState, makeLand, makeNode, makePlayer } from '@rich4/core';
+import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '@rich4/core';
 import { BoardRenderer, type RenderInput } from './render.ts';
 import { SpriteCache } from './assets.ts';
 
@@ -252,5 +252,31 @@ describe('★ W-69：`landFlash` 只调亮那几块地', () => {
     log.length = 0;
     renderer.draw({ ...input, landFlash: { lands: new Set([11, 12, 13]), level: 12 } });
     expect(log.filter((s) => s.endsWith('@lighter/0.375'))).toHaveLength(3);
+  });
+
+  it('★ 第二十二份（新聞 18 / 19 挑中設施）：`facilities` 里的設施同样调亮；地块集合空着 ⇒ 地块一块不亮', async () => {
+    const { input } = streetMap();
+    const fac = makeFacility({ id: 3, x: 96, y: 0 });
+    const map = { ...input.map, facilities: [fac] } as unknown as Rich4Map;
+    const facilityLevel = [...input.state.facilityLevel];
+    const facilityOwner = [...input.state.facilityOwner];
+    const facilityType = [...input.state.facilityType];
+    facilityLevel[3] = 1;
+    facilityOwner[3] = 2;
+    facilityType[3] = 1;
+    const withFac = { ...input, map, state: { ...input.state, facilityLevel, facilityOwner, facilityType } };
+    const { ctx, log } = recordingCtx();
+    const renderer = new BoardRenderer(ctx, fakeCache());
+    renderer.draw(withFac);
+    await new Promise((r) => setTimeout(r, 0));
+
+    log.length = 0;
+    renderer.draw({ ...withFac, landFlash: { lands: new Set(), facilities: new Set([3]), level: 16 } });
+    expect(log.filter((s) => s.includes('@lighter/0.5'))).toHaveLength(1);
+    expect(log.some((s) => s.startsWith('filter:'))).toBe(false);
+    // 同一个号放在「地块」那一张里不算（地块 3 不存在；設施按自己那一张认）
+    log.length = 0;
+    renderer.draw({ ...withFac, landFlash: { lands: new Set([3]), level: 16 } });
+    expect(log.some((s) => s.includes('@'))).toBe(false);
   });
 });

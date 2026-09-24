@@ -86,6 +86,18 @@ export interface BoardFilmSpec {
    * 那一扇訊息框（1500 ms）期间房子还在。未置位 = 整段都按 before 画（其它影片的口径）。
    */
   releaseBoardOnStart?: boolean;
+  /**
+   * ★ 片后静置（毫秒）：影片播完之后调用方还**阻塞等**这么久，最后一帧留在屏上，然后才往下走
+   *   （房主台词 / 收场）。未置位 = 0（播完即收）。
+   *
+   * 新聞「随机挑一处建筑」那一族在 `fcn_0045144f` 返回、`0x456e11` 放掉影片之后紧跟一句
+   * `sleep`（`fcn_004528b9`）：15 `0x0044a582 push 0x12c`、21 `0x0044ae3d push 0x12c`（300 ms），
+   * 20 `0x0044ac82 push 0x1f4`（500 ms）；5 没有（`0x00449486` 之后直接看房主）。
+   * 片尾不重画（这几段 `flags` bit3 = 0 ⇒ `[0x48c881]` ≠ 2，`0x00451552` 不走 `0x409b18`）⇒ 静置期间
+   * 屏上仍是最后一帧。`fcn_004528b9` 收到滑鼠鍵（`0x202` / `0x205` / `0x101`）就提前返回
+   * ⇒ 这一段**可以点掉**（影片本身按 `flags` bit1，这几段点不掉）。
+   */
+  holdMs?: number;
 }
 
 /** 正在播的这一段（纯数据，宿主自己拿着）*/
@@ -93,6 +105,8 @@ export interface BoardFilm {
   spec: BoardFilmSpec;
   /** 这一段是什么时候开始的（`performance.now()` 时基）*/
   startedAt: number;
+  /** 片后静置被滑鼠鍵点掉了（`fcn_004528b9` 提前返回），见 `BoardFilmSpec.holdMs` */
+  holdSkipped?: boolean;
 }
 
 /** 一段影片总共播多久（毫秒）= 帧数 × 每帧毫秒（不循环、不重复）*/
@@ -126,9 +140,29 @@ export function boardFilmFrame(film: BoardFilm, now: number): number {
   return Math.min(film.spec.frames - 1, k);
 }
 
-/** 这一段播完了吗（时间到）*/
+/** 片后静置多久（毫秒；未置位 = 0）@source 见 `BoardFilmSpec.holdMs` */
+export function boardFilmHoldMs(spec: BoardFilmSpec): number {
+  return Math.max(0, spec.holdMs ?? 0);
+}
+
+/**
+ * 这一段收场了吗 —— 帧放完**且**片后静置也等完了（或被点掉）。
+ *
+ * 静置期间 `boardFilmFrame` 钉在最后一帧上（原版片尾不重画，屏上留着那一帧）。
+ */
 export function boardFilmDone(film: BoardFilm, now: number): boolean {
-  return now - film.startedAt >= boardFilmTotalMs(film.spec);
+  const played = now - film.startedAt;
+  const total = boardFilmTotalMs(film.spec);
+  if (played < total) return false;
+  if (film.holdSkipped === true) return true;
+  return played >= total + boardFilmHoldMs(film.spec);
+}
+
+/** 帧已放完、正处在片后静置里（这时滑鼠鍵能把它点掉）*/
+export function boardFilmHolding(film: BoardFilm, now: number): boolean {
+  const played = now - film.startedAt;
+  const total = boardFilmTotalMs(film.spec);
+  return played >= total && !boardFilmDone(film, now);
 }
 
 /**
