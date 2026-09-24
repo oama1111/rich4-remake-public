@@ -53,7 +53,13 @@
  * ★ C-ARC-2 / C-DET-4：只决定「回合驱动什么时候可以派下一步」，不读写规则。
  */
 
-import { WHO_PLAYS_RELOCATED, WHO_PLAYS_RETURN_TO_BOARD, type GameState, type MapTopology } from '@rich4/core';
+import {
+  WHO_PLAYS_RELOCATED,
+  WHO_PLAYS_RETURN_TO_BOARD,
+  evaluateTurnStart,
+  type GameState,
+  type MapTopology,
+} from '@rich4/core';
 
 /** 类型 0 格落点收尾后的倒数 @source 0x0041b111 `mov byte [esp+0xf4], 0x88`（低 7 位 = 8）*/
 export const LANDING_TAIL_TICKS = 0x88 & 0x7f;
@@ -80,21 +86,27 @@ export function landingPauseTicks(before: GameState, after: GameState, topo: Pic
 export const BLOCKED_TURN_TICKS = 0x83 & 0x7f;
 
 /**
- * 回合开头就被挡、直接进 `turnEnd` 的那一拍（`startTurn` 的 `skip` 支）⇒ 3；否则 0。
+ * 被挡、不进落点例程就进 `turnEnd` 的那一拍 ⇒ 3；否则 0。两个来路走的是同一个 `0x418e7f`：
+ * - 回合开头就被挡（`startTurn` 的 `skip` 支，`0x00418d88 call 0x418e7f`）；
+ * - ★ 第十六份：走完这一步**才**被关（最后一步踩到惡犬 / 地雷被送进醫院），`settle` 被
+ *   `0x40c912(1)` 挡下（`0x0040d889 call 0x418e7f` → `0x00418ead mov dl,0x83`，见 core 的 `settle`）。
  * 走回棋盘 / 被外力挪过（`whoPlays & 0x30`）那一支不接（见文件头）。
  */
 export function blockedTurnPauseTicks(before: GameState, after: GameState): number {
-  if (after === before || before.phase !== 'turnStart' || after.phase !== 'turnEnd') return 0;
+  if (after === before || after.phase !== 'turnEnd') return 0;
   if (after.currentPlayer !== before.currentPlayer) return 0;
   const me = before.players[before.currentPlayer];
   if (me === undefined) return 0;
   if ((me.whoPlays & (WHO_PLAYS_RETURN_TO_BOARD | WHO_PLAYS_RELOCATED)) !== 0) return 0;
-  return BLOCKED_TURN_TICKS;
+  if (before.phase === 'turnStart') return BLOCKED_TURN_TICKS;
+  if (before.phase === 'settling' && !evaluateTurnStart(me, true).canAct) return BLOCKED_TURN_TICKS;
+  return 0;
 }
 
 /** 这一条 action 之后换人前要停几个 tick（落点收尾 8 / 被挡的回合 3 / 其余 0）*/
 export function turnEndPauseTicks(before: GameState, after: GameState, topo: Pick<MapTopology, 'nodes'>): number {
-  return landingPauseTicks(before, after, topo) || blockedTurnPauseTicks(before, after);
+  // 被挡的落点根本没进落点例程 ⇒ 不是 0x88，先判
+  return blockedTurnPauseTicks(before, after) || landingPauseTicks(before, after, topo);
 }
 
 /** 已武装的那一次停顿 */

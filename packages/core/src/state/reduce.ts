@@ -1673,6 +1673,22 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       const node = topo.nodes[player.nodeId - 1];
       if (node === undefined) return { ...state, phase: 'turnEnd' };
 
+      // ★★ 第十六份試玩回報（「我自己进医院或监狱没办法直接保释自己吧？」）：
+      //   走完之后**先问一次回合判定**（安静版 `0x40c912(1)`），被挡就**整段落点例程不进**。
+      // ```asm
+      // 0040d92b  mov  byte [..+0x498ea5], 5           ; 走完：倒数 5 tick（bit7 不置）
+      // 0040d889  call 0x418e7f                        ; 数完 ⇒
+      // 00418e81  call 0x40c912(1)                     ;   who & 0x30 / dword[+0x32] 住宿·消失·坐牢·住院 / byte[+0x36] 冬眠 ⇒ 0
+      // 00418e8b  je   0x418ead                        ;   0 ⇒ 不进落点
+      // 00418ea1  call 0x41982d                        ;   否则才是落点例程（全 exe 唯一调用点）
+      // 00418ead  mov  dl, 0x83                        ;   被挡：停 3 tick 换人
+      // ```
+      //   ⇒ 最后一步踩到惡犬 / 地雷（`0x41b42d` 在这之前、`0x43ec3f` 把人送进醫院）的人，
+      //   人已在醫院格上，但落点例程（保釋屏 `0x43e9a4`、神明顯靈尾块…）一概不跑。
+      //   保釋屏的名单本身不排除当前玩家（`0x43c9a6` / `0x43cc1c` 只扫占用表），
+      //   是这道闸让「被关着的人给自己办保釋」不可能发生。
+      if (!evaluateTurnStart(player, true).canAct) return { ...state, phase: 'turnEnd' };
+
       // 特殊格优先：原版按 node.flags & 0xff 走 17 路跳表
       if (node.specialKind !== 0) {
         // ★★ 2026-09-19 补：**夢遊中的落点闸门**（原版分派器开头的第一道判据）。
@@ -2875,6 +2891,9 @@ function landingTailDue(before: GameState, next: GameState, action: Action, topo
     LANDING_PENDING_KINDS.has(pend.kind) &&
     !(pend.kind === 'buildFacility' && pend.free === true);
   if (!fromSettle && !fromDecision) return false;
+  // 被 `0x40c912(1)` 挡下的落点（见 `settle`）连尾块也不进 —— 尾块在 `0x41982d` 里面
+  const mover = before.players[before.currentPlayer];
+  if (fromSettle && (mover === undefined || !evaluateTurnStart(mover, true).canAct)) return false;
   return estateEntityAtPlayer(next, topo) !== null;
 }
 
