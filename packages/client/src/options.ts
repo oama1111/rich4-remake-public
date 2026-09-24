@@ -65,6 +65,7 @@
 
 import type { Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** Data.mkf 里这一屏的资源号 */
 export const OPTIONS_RESOURCE = 3;
@@ -483,7 +484,7 @@ function blit(
   y: number,
 ): void {
   const s = sprite(index, KEYED_IMAGES.includes(index));
-  if (s !== null) ctx.drawImage(s.bitmap, x, y);
+  if (s !== null) drawSprite(ctx, s, x, y);
 }
 
 /** 白字黑边（原版是点阵字自带描边） */
@@ -511,7 +512,7 @@ export function drawOptions(
 
   // ——— 底图 0：不抠黑 ———
   const panel = sprite(IMG.PANEL, false);
-  if (panel !== null) ctx.drawImage(panel.bitmap, 0, 0);
+  if (panel !== null) drawSprite(ctx, panel, 0, 0);
   else {
     ctx.fillStyle = '#6b7b6b';
     ctx.fillRect(0, 0, DIALOG.w, DIALOG.h);

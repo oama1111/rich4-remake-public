@@ -200,6 +200,7 @@ import type { UiScreen, UiScreenEnv,
   UiKeyEvent,
 } from './ui-screen.ts';
 import { playVoiceCode } from './voice-sink.ts';
+import { drawSprite, flicFrame } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type EventBoxSprite = (
@@ -995,7 +996,7 @@ export function eventBoxPlaybackSkip(p: EventBoxPlayback, now: number): EventBox
 /** 锚点落点绘制 @source `fcn_00456418` / `fcn_004563f5`（`to_left = x − src->x`）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 function drawItem(
@@ -1049,9 +1050,10 @@ export function drawEventBoxScreen(
       film.frames.length - 1,
       Math.max(0, Math.floor(opts.elapsed / Math.max(1, film.frameMs))),
     );
-    const bitmap = film.frames[frame];
+    const bitmap = flicFrame(film, frame);
     if (bitmap === undefined) return;
-    ctx.drawImage(bitmap, at.x, at.y);
+    // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+    drawSprite(ctx, { bitmap, width: film.width, height: film.height }, at.x, at.y);
     return;
   }
   for (const it of plan.items) drawItem(ctx, sprite, raw, it);

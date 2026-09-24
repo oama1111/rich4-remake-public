@@ -121,6 +121,7 @@ import {
 import { portraitResource, type Sprite } from './assets.ts';
 import { ARROW_CURSOR, HAND_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /**
  * 挂牌栏里的一项 —— 直接用 core 的 `Listing`（`places/notice-board.ts`）。
@@ -1386,7 +1387,7 @@ function blit(
   y: number,
 ): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**
@@ -1601,7 +1602,7 @@ function drawYesNo(
   const s = env.sprite('Data.mkf', YESNO_RESOURCE, img, false);
   const x0 = YESNO_CENTER_SCREEN.x - YESNO_SIZE.w / 2;
   const y0 = YESNO_CENTER_SCREEN.y - YESNO_SIZE.h / 2;
-  if (s !== null) ctx.drawImage(s.bitmap, x0, y0);
+  if (s !== null) drawSprite(ctx, s, x0, y0);
   // 图还没解好时至少给出可点的一半，别让玩家对着空屏
   else {
     const h = yesNoHalves();

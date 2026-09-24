@@ -235,6 +235,11 @@ export interface FoyerOptions {
   random?: RandomBytes;
   doc?: Document;
   openSocket?: (url: string) => FoyerSocket;
+  /**
+   * 「高清畫面」勾选框（W-80 §8）—— 每台设备自己的显示设定（存在本机、不上网、联机各看各的）。
+   * 不给就不显示。`set` 当场生效（倍率 + 超分素材原地换），不必重新整理。
+   */
+  hd?: { on: boolean; set: (on: boolean) => void };
 }
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'PingFang TC', 'Microsoft JhengHei', sans-serif";
@@ -459,6 +464,17 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
         err,
         entries,
       );
+      const hd = opts.hd;
+      if (hd !== undefined) {
+        const row = el(doc, 'label', 'display:flex;align-items:flex-start;gap:8px;margin-top:12px;font-size:12px;color:#a9bcd4;cursor:pointer;line-height:1.5');
+        const box = el(doc, 'input', 'margin:2px 0 0;flex:none;cursor:pointer');
+        box.type = 'checkbox';
+        box.id = 'foyer-hd';
+        box.checked = hd.on;
+        box.addEventListener('change', () => hd.set(box.checked));
+        row.append(box, el(doc, 'span', '', '高清畫面（文字更清晰、部分美術重繪；手機發燙可以關掉）'));
+        card.append(row);
+      }
 
       /** 名字过了才返回它；顺便存起来 */
       const takeName = (): string | null => {

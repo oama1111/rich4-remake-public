@@ -10,6 +10,10 @@
  *   VITE=5402 [THROTTLE=4] [SECS=10] [SCENES=foyer,title,idle,ai,shop,hidden] [AUDIO=1] \
  *     node tools/perf-mobile-pw.mjs > .qa-tmp/perf-mobile.json
  *
+ * ★ W-80 §8（高清上线）：`HD=0|1` 在地址上加 `&hd=`（不给 = 页面缺省，即开）；
+ *   `DEVICE=iphone`（缺省，iPhone 13 横屏）/ `desktop1440`（2560×1440、DPR 1、鼠标，不降速时给 `THROTTLE=1`）；
+ *   每个场景多记 `hdStats`（倍率、三块离屏画布像素）与 JS 堆；`intro` 场景量开场过场（超分帧按窗口解码）。
+ *
  * 口径：
  *   · 「帧」= 实际执行过回调的 `requestAnimationFrame` 时间戳（同一时间戳的多个回调算一帧）。
  *     这是**游戏要了几帧**，与浏览器 vsync 无关；静止画面理想值是 0。
@@ -32,6 +36,9 @@ const THROTTLE = Number(process.env.THROTTLE ?? '4');
 const SECS = Number(process.env.SECS ?? '10');
 const AUDIO = process.env.AUDIO !== '0';
 const SCENES = (process.env.SCENES ?? 'foyer,title,idle,ai,shop,hidden,hidden-ai').split(',');
+const HD = process.env.HD ?? null;
+const DEVICE = process.env.DEVICE ?? 'iphone';
+const hdq = HD === null ? '' : `&hd=${HD}`;
 const BASE = `http://localhost:${VITE}/`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const err = (...a) => console.error(...a);
@@ -144,7 +151,10 @@ const INSTRUMENT = () => {
 };
 
 const browser = await chromium.launch({ headless: true, args: ['--mute-audio', '--autoplay-policy=no-user-gesture-required'] });
-const dev = devices['iPhone 13 landscape'];
+const dev =
+  DEVICE === 'desktop1440'
+    ? { viewport: { width: 2560, height: 1440 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false }
+    : devices['iPhone 13 landscape'];
 
 async function openScene(url) {
   const ctx = await browser.newContext({ ...dev });
@@ -209,6 +219,8 @@ async function measure(s, label, secs = SECS) {
       canvas: c ? { w: c.width, h: c.height, cssW: c.clientWidth, cssH: c.clientHeight } : null,
       dpr: devicePixelRatio,
       renderStats: r?.renderStats?.() ?? null,
+      hdStats: r?.hdStats?.() ?? null,
+      jsHeapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
       audioStates: (globalThis.__pmCtxs ?? []).map((c) => c.state),
     };
   });
@@ -236,6 +248,14 @@ async function measure(s, label, secs = SECS) {
     // 贴屏像素吞吐：真正贴屏的帧 × 画布后备存储（去重之前每一帧都贴）
     blitMpxPerSec: Math.round(((px * (info.renderStats && rs0 ? info.renderStats.painted - rs0.painted : frames)) / dt / 1e6) * 10) / 10,
     bitmapsPerSec: per('bitmaps'),
+    // 真画的帧 / 全部帧（指令表去重的命中率 = 1 − 这个）
+    skipRatio:
+      info.renderStats && rs0 && info.renderStats.frames - rs0.frames > 0
+        ? Math.round(((info.renderStats.skipped - rs0.skipped) / (info.renderStats.frames - rs0.frames)) * 1000) / 1000
+        : null,
+    // 离屏画布 + 显示画布的后备存储（RGBA）估算
+    canvasMB: info.hdStats && info.canvas ? Math.round(((info.hdStats.surfacePx + info.canvas.w * info.canvas.h) * 4) / 1048576) : null,
+    jsHeapUsedMB: Math.round(metric(mb, 'JSHeapUsedSize') / 1048576),
     rafRequestsWhileHiddenPerSec: per('rafReqHidden'),
     // 真正光栅化 + 贴屏的帧（有指令去重之后才有这个数；之前 = fps）
     paintedPerSec:
@@ -251,7 +271,7 @@ async function measure(s, label, secs = SECS) {
 }
 
 const waitRich4 = (page) => page.waitForFunction(() => !!(globalThis.__rich4 && globalThis.__rich4.state), null, { timeout: 180_000 });
-const mute = AUDIO ? '' : '&mute=1';
+const mute = (AUDIO ? '' : '&mute=1') + hdq;
 const results = [];
 
 async function idleBoard() {
@@ -313,6 +333,13 @@ for (const scene of SCENES) {
     await s.page.waitForFunction(() => globalThis.__rich4.shopUi != null, null, { timeout: 60_000 });
     await sleep(6000);
     results.push(await measure(s, 'shop'));
+    await s.ctx.close();
+  } else if (scene === 'intro') {
+    const s = await openScene(`${BASE}?screen=game&humans=0&ai=4&chars=3,0,5,7&map=0&seed=7${mute}`);
+    await waitRich4(s.page);
+    await s.page.waitForFunction(() => globalThis.__rich4.screen === 'intro', null, { timeout: 180_000 });
+    await sleep(1500);
+    results.push(await measure(s, 'intro (cutscene)', 9));
     await s.ctx.close();
   } else if (scene === 'hidden') {
     const s = await idleBoard();

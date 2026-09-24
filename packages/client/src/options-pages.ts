@@ -67,6 +67,7 @@ import { daysInMonth, weekdayOf } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
 import { IMG, OPTIONS_RESOURCE, type Rect } from './options.ts';
+import { drawSprite, drawSpriteRegion } from './hd-stage.ts';
 
 /** 这一屏的绘制素材出口（第 1 个参数 = 资源号，方便 YES/NO 框用 440）*/
 export type PageSpriteFn = (resource: number, index: number, colorKeyBlack?: boolean) => Sprite | null;
@@ -81,7 +82,7 @@ function blit(
   keyed = false,
 ): void {
   const s = sprite(resource, index, keyed);
-  if (s !== null) ctx.drawImage(s.bitmap, x, y);
+  if (s !== null) drawSprite(ctx, s, x, y);
 }
 
 /** 居中文字 + 描边（原版是点阵字自带描边：`create_font(size, 前景, 0x101010, …)`）*/
@@ -713,7 +714,7 @@ export function drawHotkeyPage(
   ctx.translate(HOTKEY_AT.x, HOTKEY_AT.y);
 
   const bg = sprite(OPTIONS_RESOURCE, IMG.HOTKEY_PAGE, true);
-  if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0);
+  if (bg !== null) drawSprite(ctx, bg, 0, 0);
 
   // 三个钮的字（入口 0x411bed 往图 1 里写过的那三条）
   for (let i = 0; i < HOTKEY_BUTTON_LABELS.length; i++) {
@@ -762,7 +763,7 @@ export function drawHotkeyPage(
     ctx.rect(rect.x, rect.y, rect.w, rect.h);
     ctx.clip();
     // 连底图那一块一起挪（原版挪的就是屏幕上已经画好的像素）
-    ctx.drawImage(bg.bitmap, rect.x, rect.y, rect.w, rect.h, rect.x + shift, rect.y + shift, rect.w, rect.h);
+    drawSpriteRegion(ctx, bg, rect.x, rect.y, rect.w, rect.h, rect.x + shift, rect.y + shift, rect.w, rect.h);
     const spot = hotkeySpot(pressed);
     if (spot !== null) {
       const slot = spot.col === 0 ? pressed - 1 : pressed - 16;

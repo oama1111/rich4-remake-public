@@ -107,6 +107,7 @@ import { CHARACTERS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type SharesSprite = (
@@ -523,7 +524,7 @@ export function drawSharesScreen(
 
   // ── 底图：592×432 贴到 (24,24)（**不抠黑**，见 SHARES_KEYED）──
   const bg = sharesSprite(sprite, SHARES_IMAGE);
-  if (bg !== null) ctx.drawImage(bg.bitmap, SHARES_AT.x, SHARES_AT.y);
+  if (bg !== null) drawSprite(ctx, bg, SHARES_AT.x, SHARES_AT.y);
 
   // ── ★ 以下所有坐标都是**底图本地坐标**，要加上底图落点（见 `SHARES_TEXT_ORIGIN`）──
   const ox = SHARES_TEXT_ORIGIN.x;

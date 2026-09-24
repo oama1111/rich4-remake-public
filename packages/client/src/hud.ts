@@ -34,6 +34,7 @@ import type { Camera } from './render.ts';
 import { FONT_FAMILY } from './font.ts';
 import { currency } from './panel.ts';
 import { MINIMAP_MARK_RESOURCE, drawMinimapMarks, minimapMarks } from './minimap-marks.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 侧栏整图尺寸 @source Panel.mkf 资源 0 的图 0 */
 export const PANEL_WIDTH = 200;
@@ -933,7 +934,7 @@ export class Hud {
 
     // 底图在分支**之前**画（惡人那一支也是图 4）@source 0x00416748
     const bg = this.#sprite('Panel.mkf', 0, COMPACT.image);
-    if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0, COMPACT.w, COMPACT.h);
+    if (bg !== null) drawSprite(ctx, bg, 0, 0, COMPACT.w, COMPACT.h);
     else {
       ctx.fillStyle = '#e8dcc0';
       ctx.fillRect(0, 0, COMPACT.w, COMPACT.h);
@@ -967,7 +968,7 @@ export class Hud {
     // 头像（抠黑、按锚点）@source 0x00416852
     const face = this.#sprite('map.mkf', portraitResource(me.character), 0, true);
     if (face !== null) {
-      ctx.drawImage(face.bitmap, COMPACT.portrait.x - face.anchorX, COMPACT.portrait.y - face.anchorY);
+      drawSprite(ctx, face, COMPACT.portrait.x - face.anchorX, COMPACT.portrait.y - face.anchorY);
     }
     // 结盟期间盟友的小头像 @source 0x0041685a..0x0041688b
     const ally = allyPortraitPlayer(me);
@@ -1010,7 +1011,7 @@ export class Hud {
     const p = state.players[player];
     if (p === undefined) return;
     const img = this.#sprite('map.mkf', portraitResource(p.character), MINI_PORTRAIT.image, true);
-    if (img !== null) this.#ctx.drawImage(img.bitmap, MINI_PORTRAIT.x - img.anchorX, MINI_PORTRAIT.y - img.anchorY);
+    if (img !== null) drawSprite(this.#ctx, img, MINI_PORTRAIT.x - img.anchorX, MINI_PORTRAIT.y - img.anchorY);
   }
 
   /**
@@ -1030,7 +1031,7 @@ export class Hud {
       ctx.drawImage(input.holidayArt, ox, oy, w, h);
     } else {
       const bg = this.#sprite('Panel.mkf', 2, sceneOfMonth(month));
-      if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
+      if (bg !== null) drawSprite(ctx, bg, ox, oy, w, h);
       else {
         ctx.fillStyle = '#7f9fbf';
         ctx.fillRect(ox, oy, w, h);
@@ -1039,9 +1040,9 @@ export class Hud {
 
     // 太阳与月亮 —— 图 0..3 没有烤这两个，所以这里必须画
     const sun = this.#sprite('Panel.mkf', 2, SUN_IMAGE, true);
-    if (sun !== null) ctx.drawImage(sun.bitmap, ox + CAL.sun.x, oy + CAL.sun.y);
+    if (sun !== null) drawSprite(ctx, sun, ox + CAL.sun.x, oy + CAL.sun.y);
     const moon = this.#sprite('Panel.mkf', 2, MOON_IMAGE, true);
-    if (moon !== null) ctx.drawImage(moon.bitmap, ox + CAL.moon.x, oy + CAL.moon.y);
+    if (moon !== null) drawSprite(ctx, moon, ox + CAL.moon.x, oy + CAL.moon.y);
 
     const holiday = isHoliday(globalMapId, year, month, day);
     /**
@@ -1125,7 +1126,7 @@ export class Hud {
     const { x: ox, y: oy, w, h } = SIDEBAR;
 
     const bg = this.#sprite('Panel.mkf', 2, MONTH_VIEW_BASE + sceneOfMonth(month));
-    if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
+    if (bg !== null) drawSprite(ctx, bg, ox, oy, w, h);
     else {
       ctx.fillStyle = '#7f9fbf';
       ctx.fillRect(ox, oy, w, h);
@@ -1196,7 +1197,7 @@ export class Hud {
     const page = input.panelPage % PANEL_PAGE_COUNT;
     const bg = this.#sprite('Panel.mkf', 0, page);
     if (bg !== null) {
-      ctx.drawImage(bg.bitmap, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+      drawSprite(ctx, bg, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
     } else {
       ctx.fillStyle = '#e8dcc0';
       ctx.fillRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
@@ -1231,7 +1232,7 @@ export class Hud {
     if (face !== null) {
       // @source VA 0x0041624e `fcn_00456418(surface, 头像图, 0x1e2(482), 0x28(40))`
       //   —— 那两数是**锚点**落点，故按锚点画（侧栏局部 = 屏幕 − 440）
-      ctx.drawImage(face.bitmap, 0x1e2 - 440 - face.anchorX, 0x28 - face.anchorY);
+      drawSprite(ctx, face, 0x1e2 - 440 - face.anchorX, 0x28 - face.anchorY);
     }
     // 结盟期间盟友的小头像（在名字之前画）@source 0x00416256..0x00416285
     const ally = allyPortraitPlayer(me);
@@ -1288,7 +1289,7 @@ export class Hud {
   #drawVillainPanel(state: GameState, subject: Extract<PanelSubject, { kind: 'villain' }>): void {
     const ctx = this.#ctx;
     const bg = this.#sprite('Panel.mkf', 0, VILLAIN_PANEL.image);
-    if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+    if (bg !== null) drawSprite(ctx, bg, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
     else {
       ctx.fillStyle = '#e8dcc0';
       ctx.fillRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
@@ -1364,7 +1365,7 @@ export class Hud {
       );
       // ★ `fcn_00456418` 把图按**锚点**摆（VA 0x00455c64 `sub [ebp+0x18], anchorX`），
       //   所以「画在 (443, 顶+3)」指的是锚点落在那儿。
-      if (img !== null) ctx.drawImage(img.bitmap, r.x - img.anchorX, top + r.y - img.anchorY);
+      if (img !== null) drawSprite(ctx, img, r.x - img.anchorX, top + r.y - img.anchorY);
     }
 
     // 棋子标记，并记下**当前玩家**那一枚的位置
@@ -1386,7 +1387,7 @@ export class Hud {
       const dx = minimapAt(p.xpos);
       const dy = top + minimapAt(p.ypos);
       const head = this.#sprite('map.mkf', portraitResource(p.character), MINIMAP_HEAD_IMAGE, true);
-      if (head !== null) ctx.drawImage(head.bitmap, dx - head.anchorX, dy - head.anchorY);
+      if (head !== null) drawSprite(ctx, head, dx - head.anchorX, dy - head.anchorY);
     }
 
     // 取景框：**当前行动者**（玩家，或正在走的替身）上画 30×30 白框 @source VA 0x00417041

@@ -132,6 +132,7 @@ import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { getMinigameBackground, getPenguinHitMask } from './minigame-bg.ts';
 import { cursorShape, showCursor, type CursorShape, type CursorWant } from './soft-cursor.ts';
+import { drawSprite, flicFrame } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同签名） */
 export type MiniSprite = (
@@ -1571,17 +1572,17 @@ function drawAnchored(
 ): void {
   if (s === null) return;
   if (scale === 1) {
-    ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+    drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
     return;
   }
   // `fcn_004568c2`：锚点**不跟着缩放**、只有宽高乘 scale（@0x004568c2 的 `sub [ebp+0x14], eax` 在前）
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY, s.width * scale, s.height * scale);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY, s.width * scale, s.height * scale);
 }
 
 /** 整块不透明贴图（`fcn_004563f5`）*/
 function drawPlain(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x, y);
+  drawSprite(ctx, s, x, y);
 }
 
 /**
@@ -2267,8 +2268,9 @@ export const minigameScreen: UiScreen = {
           flic.frames.length - 1,
           Math.max(0, Math.floor((env.now - st.intro.at) / ms)),
         );
-        const bmp = flic.frames[i];
-        if (bmp !== undefined) env.stage.drawImage(bmp, 0, 0);
+        const bmp = flicFrame(flic, i);
+        // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+        if (bmp !== undefined) drawSprite(env.stage, { bitmap: bmp, width: flic.width, height: flic.height }, 0, 0);
       }
       return;
     }

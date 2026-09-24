@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  *   node --experimental-strip-types tools/precompress-assets.ts \
- *        [--from assets/game] [--out deploy] [--force] [--only Data.mkf]
+ *        [--from assets/game] [--out deploy] [--force] [--only Data.mkf] [--hd <超分素材根>]
  *
  * 对**白名单里的 7 个 `.mkf`** 各生成一份 `.br`（brotli q9）与一份 `.gz`（gzip 9），
  * 落在 `<out>/assets/game/` 下 —— 与 `http-server.ts` 的取法一一对应：
@@ -32,7 +32,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { MANIFEST_NAME } from '../packages/client/src/asset-loader.ts';
-import { MKF_WHITELIST } from '../packages/server/src/static.ts';
+import { HD_TIERS, MKF_WHITELIST } from '../packages/server/src/static.ts';
 
 function argStr(name: string, dflt: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -44,6 +44,11 @@ function argStr(name: string, dflt: string): string {
 const fromDir = resolve(argStr('from', 'assets/game'));
 const outRoot = resolve(argStr('out', 'deploy'));
 const only = argStr('only', '');
+/**
+ * 超分素材的根（里面是 `hd-2x/` 与 `hd-2x-manifest.json`，`tools/hd-deploy.ts` 的 `<out>/assets`）。
+ * 缺省 = `--from` 的上一级（仓库的 `assets/`）。
+ */
+const hdRoot = resolve(argStr('hd', resolve(fromDir, '..')));
 const force = process.argv.includes('--force');
 
 /** 压缩产物落在哪 —— 与站点根下的 `/assets/game/` 对应 */
@@ -79,27 +84,29 @@ interface ManifestFile {
 const sha256Of = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
 /**
- * 清单里除了 7 个 `.mkf`，还要**如实**记一笔 `hd-manifest.json` 在不在（W-72 §5）——
- * 网页版据此决定要不要去拉那份 3.8 MB 的 HD 清单。
+ * 清单里除了 7 个 `.mkf`，还**如实**记下超分清单在不在（W-72 §5 → W-80 §8）：
+ * 网页版读到登记就带 `?v=<sha256 前 8 位>` 去拉超分清单（服务器回长期缓存）；没登记也会问一次（404 就整包走原图）。
  *
- * ⚠️ **光有 `hd-manifest.json` 不算数**：仓库里那份一直在（3.9 MB），但
- *   `assets/hd/` 是**空的**（超分管线没跑过），拉回来一张图也用不上 ——
- *   任务书 §1 末条说的「3.8 MB 白下」就是这件事。
- *   所以判据是「**清单在，而且 `assets/hd/` 里真的有图**」，两条都满足才登记。
- *
- * 位置按 `hdBase()` 的形状算：`<from>` 是 `assets/game`，隔壁就是 `assets/`。
+ * ⚠️ **光有清单不算数**：仓库里那份 `hd-manifest.json`（3.9 MB，只是规划）一直在，但 `assets/hd/` 是空的。
+ *   所以判据是「**清单在，而且同名目录里真的有图**」，两条都满足才登记。
+ *   分档按 `HD_TIERS`（服务器 `static.ts`）：网页读 `hd-2x`，母版 `hd` 一般不上线。
  */
-function hdManifestEntry(): ManifestFile | null {
-  const manifestPath = resolve(fromDir, '..', 'hd-manifest.json');
-  const pixelDir = resolve(fromDir, '..', 'hd');
-  try {
-    if (!statSync(manifestPath).isFile()) return null;
-    if (readdirSync(pixelDir).length === 0) return null;
-    const bytes = readFileSync(manifestPath);
-    return { name: 'hd-manifest.json', size: bytes.byteLength, sha256: sha256Of(bytes) };
-  } catch {
-    return null;
+function hdManifestEntries(): ManifestFile[] {
+  const out: ManifestFile[] = [];
+  for (const tier of HD_TIERS) {
+    const name = `${tier}-manifest.json`;
+    const manifestPath = resolve(hdRoot, name);
+    const pixelDir = resolve(hdRoot, tier);
+    try {
+      if (!statSync(manifestPath).isFile()) continue;
+      if (readdirSync(pixelDir).length === 0) continue;
+      const bytes = readFileSync(manifestPath);
+      out.push({ name, size: bytes.byteLength, sha256: sha256Of(bytes) });
+    } catch {
+      // 没有这一档
+    }
   }
+  return out;
 }
 
 /**
@@ -178,8 +185,8 @@ function main(): void {
     );
   }
 
-  const hd = hdManifestEntry();
-  if (hd !== null) manifest.push(hd);
+  const hd = hdManifestEntries();
+  manifest.push(...hd);
 
   if (rawTotal > 0) {
     console.log('');
@@ -194,10 +201,11 @@ function main(): void {
   writeFileSync(resolve(outDir, MANIFEST_NAME), JSON.stringify(doc, null, 2) + '\n');
   console.log('');
   console.log(`清單：${resolve(outDir, MANIFEST_NAME)}  version=${doc.version}  ${manifest.length} 個檔案`);
-  if (manifest.length !== MKF_WHITELIST.length) {
+  if (manifest.length - hd.length !== MKF_WHITELIST.length) {
     console.log(`⚠ 清單裡只有 ${manifest.length} 個檔案（完整要 ${MKF_WHITELIST.length} 個）：客戶端這版會退回逐個按名字下載。`);
   }
-  if (hd === null) console.log('（沒有 hd-manifest.json —— 網頁版據此跳過 HD 素材，不白拉 3.8 MB）');
+  if (hd.length === 0) console.log(`（${hdRoot} 下沒有超分清單 + 圖 —— 網頁版照樣會問一次超分清單，404 就全走原圖）`);
+  else console.log(`超分清單：${hd.map((h) => h.name).join('、')}（網頁版帶 ?v= 拉，長期緩存）`);
   console.log('');
   console.log(`伺服器用法：node --experimental-transform-types packages/server/src/cli.ts --web <站點> --assets ${outDir}`);
 }

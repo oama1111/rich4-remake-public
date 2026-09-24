@@ -72,6 +72,7 @@ import {
 // ★ W-62：画的位置与命中框必须**同源** —— 命中框走 `boardRect()`（见 `dialog.ts`），
 //   画这一半先前直接拿屏幕坐标往棋盘画布上画，于是整块面板低了 `LAYOUT.board.y`（40 px）。
 import { boardRect } from './gameui.ts';
+import { drawSprite, drawSpriteRegion } from './hd-stage.ts';
 
 /** 取图 —— 与 `UiScreenEnv.sprite` / `bank-screen.ts` 的 `BankSprite` 同一个签名 */
 /**
@@ -218,21 +219,21 @@ export function drawAmountWindow(
   });
   const wx = o.x;
   const wy = o.y;
-  ctx.drawImage(base.bitmap, wx + plan.panel.x, wy + plan.panel.y);
+  drawSprite(ctx, base, wx + plan.panel.x, wy + plan.panel.y);
   // 比例条：先整条暗，再把左边那一截从面板图上原样盖回来（= 亮）
   const dim = sprite('Panel.mkf', AMOUNT_RESOURCE, plan.gaugeDim.image);
   if (dim !== null) {
-    ctx.drawImage(dim.bitmap, wx + plan.gaugeDim.x - dim.anchorX, wy + plan.gaugeDim.y - dim.anchorY);
+    drawSprite(ctx, dim, wx + plan.gaugeDim.x - dim.anchorX, wy + plan.gaugeDim.y - dim.anchorY);
     const lit = plan.gaugeLit;
     if (lit !== null && lit.w > 0) {
-      ctx.drawImage(base.bitmap, lit.x, lit.y, lit.w, lit.h, wx + lit.x, wy + lit.y, lit.w, lit.h);
+      drawSpriteRegion(ctx, base, lit.x, lit.y, lit.w, lit.h, wx + lit.x, wy + lit.y, lit.w, lit.h);
     }
   }
   for (const d of plan.digits) {
     const s = sprite('Panel.mkf', AMOUNT_RESOURCE, d.image);
     if (s === null) continue;
     // 字库的锚点全是 0 ⇒ 直接减锚点（`fcn_00456512` 的 `[esi+4]/[esi+6]`）
-    ctx.drawImage(s.bitmap, wx + d.x - s.anchorX, wy + d.y - s.anchorY);
+    drawSprite(ctx, s, wx + d.x - s.anchorX, wy + d.y - s.anchorY);
   }
   return true;
 }

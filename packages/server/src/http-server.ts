@@ -5,6 +5,8 @@
  * ```
  *   GET /robots.txt              固定正文（不让搜索引擎收录）
  *   GET /assets/game/<白名单>     原版素材（预压缩 .br/.gz 优先）
+ *   GET /assets/hd-2x/<档>/<r>-<i>.png  超分素材（W-80 §8；缺图 404 ⇒ 客户端按图回退原图）
+ *   GET /assets/hd-2x-manifest.json      超分清单（预压缩 .br/.gz 优先）
  *   GET /*                        静态站 = packages/client/dist-web（--web 才开）
  *   WS  /ws                       联机集线器（hub.ts）
  * ```
@@ -18,7 +20,7 @@
 
 import { createReadStream, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { LOGIN_PATH, ROBOTS_PATH, clientIp, gateFromEnv, readBody, type Gate } from './gate.ts';
 import { FEEDBACK_BODY_LIMIT, FEEDBACK_PATH, FeedbackInbox } from './feedback.ts';
 import {
@@ -28,7 +30,9 @@ import {
   cacheControlFor,
   contentTypeFor,
   findOnDisk,
+  hdRouteOf,
   isAllowedAssetName,
+  isAllowedHdPath,
   precompressedFor,
   resolveUnder,
   safeRelativePath,
@@ -49,6 +53,11 @@ export interface HttpServerOptions extends WsServerOptions {
   /** 原版素材目录（`cli.ts` 缺省 = 仓库的 `assets/game`） */
   assetDir: string;
   /**
+   * 超分素材的根（里面是 `hd-2x/` 与 `hd-2x-manifest.json`，W-80 §8）。
+   * @default `assetDir` 的上一级 —— 线上即 `/srv/rich4/deploy/assets/`，与 `/assets/game/` 同级
+   */
+  hdDir?: string;
+  /**
    * 整站那道门（W-71）。不给 = 不装门 —— 只有 `startServer({noGate:true})`
    * 与单测会这么用，`cli.ts` 走的是 `startServer`。
    */
@@ -67,6 +76,8 @@ export interface RunningHttpServer {
 
 export interface HandlerOptions {
   assetDir: string;
+  /** @see HttpServerOptions.hdDir */
+  hdDir?: string;
   webDir?: string;
   /** 整站那道门（W-71）；不给 = 全放行 */
   gate?: Gate;
@@ -89,6 +100,7 @@ export interface HandlerOptions {
  */
 export function createHttpHandler(opts: HandlerOptions): (req: IncomingMessage, res: ServerResponse) => void {
   const assetDir = opts.assetDir;
+  const hdDir = opts.hdDir ?? resolve(assetDir, '..');
   const webDir = opts.webDir;
   const gate = opts.gate;
   const feedback = opts.feedback;
@@ -156,6 +168,11 @@ export function createHttpHandler(opts: HandlerOptions): (req: IncomingMessage, 
     }
     if (path.startsWith(ASSET_PREFIX)) {
       serveAsset(req, res, path.slice(ASSET_PREFIX.length), assetDir, head);
+      return;
+    }
+    const hd = hdRouteOf(path);
+    if (hd !== null) {
+      serveHd(req, res, hd, q === -1 ? '' : raw.slice(q + 1), hdDir, head);
       return;
     }
     if (webDir !== undefined) {
@@ -253,6 +270,76 @@ function serveAsset(
     headers['Vary'] = 'Accept-Encoding';
   }
   streamFile(res, pre?.file ?? file, headers, head);
+}
+
+/**
+ * 超分素材（W-80 §8）—— 与 `/assets/game/` 同一道门、同一套路径校验，白名单换成
+ * `<档>/<资源>-<图>.png`（`isAllowedHdPath`）。
+ *
+ * ★ 缺图一律 404：清单里有、磁盘上没有（只传了一部分）时客户端**按图**退回原图，不报错。
+ * ★ 缓存：带 `?v=`（清单里 `outHash` 的前 8 位）的图一年不可变；清单本身与不带版本的请求 `no-cache`。
+ */
+function serveHd(
+  req: IncomingMessage,
+  res: ServerResponse,
+  route: NonNullable<ReturnType<typeof hdRouteOf>>,
+  query: string,
+  hdDir: string,
+  head: boolean,
+): void {
+  const versioned = /(?:^|&)v=[0-9a-f]{8}(?:&|$)/i.test(query);
+  if (route.kind === 'manifest') {
+    const file = resolveUnder(hdDir, route.file);
+    if (file === null) return notFound(res, head);
+    try {
+      if (!statSync(file).isFile()) return notFound(res, head);
+    } catch {
+      return notFound(res, head);
+    }
+    const pre = precompressedFor(req.headers['accept-encoding'], file);
+    const headers: Record<string, string> = {
+      'Content-Type': contentTypeFor(file),
+      'Cache-Control': cacheControlFor('hd', route.file, versioned),
+    };
+    if (pre !== null) {
+      headers['Content-Encoding'] = pre.encoding;
+      headers['Vary'] = 'Accept-Encoding';
+    }
+    streamFile(res, pre?.file ?? file, headers, head);
+    return;
+  }
+  const check = safeRelativePath(route.rel);
+  if (!check.ok) {
+    send(res, 400, { 'Content-Type': 'text/plain; charset=utf-8' }, 'Bad Request', head);
+    return;
+  }
+  // 白名单之外一律 404（与 `/assets/game/` 同一条规矩：不暴露「存在但不给」）
+  if (!isAllowedHdPath(check.rel)) return notFound(res, head);
+  const tierDir = join(hdDir, route.tier);
+  const abs = resolveUnder(tierDir, check.rel);
+  if (abs === null) {
+    send(res, 403, { 'Content-Type': 'text/plain; charset=utf-8' }, 'Forbidden', head);
+    return;
+  }
+  let size: number;
+  try {
+    const st = statSync(abs);
+    if (!st.isFile()) return notFound(res, head);
+    size = st.size;
+  } catch {
+    return notFound(res, head);
+  }
+  streamFile(
+    res,
+    abs,
+    {
+      'Content-Type': contentTypeFor(check.rel),
+      'Cache-Control': cacheControlFor('hd', check.rel, versioned),
+      'Accept-Ranges': 'none',
+    },
+    head,
+    size,
+  );
 }
 
 /** 静态站 —— `packages/client/dist-web` */
@@ -358,6 +445,7 @@ function streamFile(
 export async function startHttpServer(opts: HttpServerOptions): Promise<RunningHttpServer> {
   const handler = createHttpHandler({
     assetDir: opts.assetDir,
+    ...(opts.hdDir === undefined ? {} : { hdDir: opts.hdDir }),
     ...(opts.webDir === undefined ? {} : { webDir: opts.webDir }),
     ...(opts.gate === undefined ? {} : { gate: opts.gate }),
     ...(opts.feedbackDir === undefined ? {} : { feedback: new FeedbackInbox({ dir: opts.feedbackDir, ...(opts.now === undefined ? {} : { now: opts.now }) }) }),
@@ -437,6 +525,7 @@ export function baseOptions(opts: StartServerOptions): HttpServerOptions {
   return {
     port: opts.port,
     assetDir: opts.assetDir,
+    ...(opts.hdDir === undefined ? {} : { hdDir: opts.hdDir }),
     map: opts.map,
     globalMapId: opts.globalMapId,
     seedFor: opts.seedFor,

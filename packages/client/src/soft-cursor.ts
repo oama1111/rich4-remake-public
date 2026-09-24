@@ -65,6 +65,7 @@
 import { isAiTurn } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 指针图集 @source 0x00402108..0x0040211a `read_mkf([0x48a0e4] = Data.mkf, 0)` */
 export const CURSOR_ARCHIVE = 'Data.mkf' as const;
@@ -383,8 +384,9 @@ export function createSoftCursorLayer(deps: SoftCursorDeps): SoftCursorLayer {
         if (next !== null && sprite !== null) {
           ctx.imageSmoothingEnabled = false;
           // @source 0x004022ac..0x004022bf：画在 (光标 − 锚点)
-          ctx.drawImage(
-            sprite.bitmap,
+          drawSprite(
+            ctx,
+            sprite,
             m.offsetX + (next.x - sprite.anchorX) * m.scale,
             m.offsetY + (next.y - sprite.anchorY) * m.scale,
             sprite.width * m.scale,

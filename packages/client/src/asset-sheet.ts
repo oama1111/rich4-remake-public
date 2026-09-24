@@ -66,6 +66,7 @@ import { portraitResource, type ArchiveName, type Sprite } from './assets.ts';
 import { currency } from './panel.ts';
 import { inRect } from './gameui.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 同步取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type SheetSprite = (
@@ -588,7 +589,7 @@ function drawAnchored(
 ): void {
   const s = sprite(archive, resource, index, colorKeyBlack);
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /** 16 号白字带深色描边 @source VA 0x423215 `create_font(0, 3, 0x101010, 0xffffff, 0x10)` */
@@ -642,7 +643,7 @@ export function drawAssetSheet(
 ): void {
   // ── 底图（图号 = 视图号）@source VA 0x423088 ──
   const bg = sprite('Panel.mkf', SHEET_RESOURCE, view, false);
-  if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0);
+  if (bg !== null) drawSprite(ctx, bg, 0, 0);
   else {
     ctx.fillStyle = '#1a2030';
     ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
@@ -694,7 +695,7 @@ export function drawAssetSheet(
     const r = sheetBtnRect(i);
     if (press.btn === i) {
       const plate = sprite('Panel.mkf', SHEET_RESOURCE, SHEET_BTN_PLATE, false);
-      if (plate !== null) ctx.drawImage(plate.bitmap, r.x, r.y);
+      if (plate !== null) drawSprite(ctx, plate, r.x, r.y);
     }
     // 当前视图那颗白字、其余暗灰 @source VA 0x4231e3 的 0xffffff / 0xc0c0c0
     ctx.font = `${SHEET_BTN_TEXT.size}px ${FONT}`;
@@ -714,7 +715,7 @@ export function drawAssetSheet(
       who === selectedPlayer ? SHEET_TAB.sel : SHEET_TAB.normal,
       false,
     );
-    if (tab !== null) ctx.drawImage(tab.bitmap, x - tab.anchorX, SHEET_TAB.y - tab.anchorY);
+    if (tab !== null) drawSprite(ctx, tab, x - tab.anchorX, SHEET_TAB.y - tab.anchorY);
     const p = state.players[who];
     blackText(
       ctx,
@@ -762,7 +763,7 @@ function drawEstateList(
     const x = SHEET_KIND_CELL.x0 + i * SHEET_KIND_CELL.w;
     if (i === press.kind) {
       const plate = sprite('Panel.mkf', SHEET_RESOURCE, SHEET_KIND_CELL.plate, false);
-      if (plate !== null) ctx.drawImage(plate.bitmap, x, SHEET_KIND_CELL.y);
+      if (plate !== null) drawSprite(ctx, plate, x, SHEET_KIND_CELL.y);
     }
     blackText(
       ctx,
@@ -794,7 +795,7 @@ function drawEstateList(
   ] as const) {
     if (press.arrow !== which) continue;
     const arrow = sprite('Panel.mkf', SHEET_RESOURCE, img, false);
-    if (arrow !== null) ctx.drawImage(arrow.bitmap, SHEET_ARROW.x, y0);
+    if (arrow !== null) drawSprite(ctx, arrow, SHEET_ARROW.x, y0);
   }
 }
 
@@ -853,7 +854,7 @@ function drawSummary(
     const { x, y } = sheetCell(k, SHEET_TOOL_GRID_Y0);
     const icon = sprite('Panel.mkf', SHEET_TOOL_RESOURCE, id - 1, true);
     if (icon !== null) {
-      ctx.drawImage(icon.bitmap, x - 0x10 - icon.anchorX, y - icon.anchorY);
+      drawSprite(ctx, icon, x - 0x10 - icon.anchorX, y - icon.anchorY);
     }
     outlinedText(ctx, `×${n}`, x + 0x1e, y, 'right');
     k++;

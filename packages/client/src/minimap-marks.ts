@@ -53,6 +53,7 @@ import type { GameState } from '@rich4/core';
 import { CHARACTERS, characterColorRgb } from '@rich4/data';
 import type { Sprite } from './assets.ts';
 import { markStaticSource } from './display-list.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 色块图集 = `Data.mkf` 资源 517 @source `[0x48bad8]`（0x0040a5d5）*/
 export const MINIMAP_MARK_RESOURCE = 0x205;
@@ -154,7 +155,8 @@ function silhouette(s: Sprite, color: number): CanvasImageSource | null {
   } else return null;
   const c = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
   if (c === null) return null;
-  c.drawImage(s.bitmap, 0, 0);
+  // ★ 剪影按位图**像素**尺寸做（高清舞台下超分图比逻辑尺寸大），贴的时候再按逻辑尺寸塞回框（`drawSprite`）
+  c.drawImage(s.bitmap as CanvasImageSource, 0, 0);
   // 非 0（= 非透明）像素一律写成地主色 —— `0x004563df mov word [edi], bx`
   c.globalCompositeOperation = 'source-in';
   const [r, g, b] = characterColorRgb(color);
@@ -183,6 +185,6 @@ export function drawMinimapMarks(
     if (s === null) continue;
     const img = silhouette(s, m.color);
     if (img === null) continue;
-    ctx.drawImage(img, ox + m.x - s.anchorX, oy + m.y - s.anchorY);
+    drawSprite(ctx, { bitmap: img, width: s.width, height: s.height }, ox + m.x - s.anchorX, oy + m.y - s.anchorY);
   }
 }

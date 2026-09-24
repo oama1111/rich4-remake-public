@@ -24,6 +24,7 @@
  */
 
 import type { Sprite } from './assets.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 標題底图与按钮都在 Data.mkf 资源 1 */
 export const TITLE_RESOURCE = 1;
@@ -103,7 +104,7 @@ export function drawTitle(
 ): void {
   // ⚠️ 底图是整屏 SMP，**不能抠黑**——海洋与夜空里的黑是真的黑。
   const bg = need('Data.mkf', TITLE_RESOURCE, TITLE_BACKGROUND, false);
-  if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0);
+  if (bg !== null) drawSprite(ctx, bg, 0, 0);
 
   // ★ 按钮反过来：它们是叠在底图上的 SMP 小图，**黑就是透明**。
   //   不抠的话每个按钮都顶着一个黑方块，一眼假。
@@ -116,6 +117,6 @@ export function drawTitle(
     const normal = need('Data.mkf', TITLE_RESOURCE, titleSpriteIndex(i, false), true);
     const s = hot === i ? hotSprite : normal;
     if (s === null) continue;
-    ctx.drawImage(s.bitmap, a.x - s.anchorX, a.y - s.anchorY);
+    drawSprite(ctx, s, a.x - s.anchorX, a.y - s.anchorY);
   }
 }

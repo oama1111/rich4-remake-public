@@ -129,6 +129,7 @@ import type { GameState } from '@rich4/core';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { comma, magnitudeClass, priceText } from './stock-screen.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type DetailSprite = (
@@ -551,7 +552,7 @@ export function drawStockDetail(
   const oy = DETAIL_ORIGIN.y;
 
   const card = sprite('Panel.mkf', DETAIL_RESOURCE, DETAIL_IMAGE, false);
-  if (card !== null) ctx.drawImage(card.bitmap, ox, oy);
+  if (card !== null) drawSprite(ctx, card, ox, oy);
 
   text(ctx, view.name, DETAIL_TITLE.x, DETAIL_TITLE.y, DETAIL_TITLE.size, '#f0f0f0', 'center');
 
@@ -565,7 +566,7 @@ export function drawStockDetail(
   const icon = view.icon === null
     ? null
     : sprite('Panel.mkf', DETAIL_RESOURCE, view.icon, false);
-  if (icon !== null) ctx.drawImage(icon.bitmap, DETAIL_ICON.x, DETAIL_ICON.y);
+  if (icon !== null) drawSprite(ctx, icon, DETAIL_ICON.x, DETAIL_ICON.y);
 
   const cols = [DETAIL_VALUE_X.c1, DETAIL_VALUE_X.c2, DETAIL_VALUE_X.c3];
   for (let r = 0; r < view.cells.length && r < DETAIL_VALUE_Y.length; r++) {

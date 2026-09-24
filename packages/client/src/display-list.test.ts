@@ -223,6 +223,23 @@ describe('DisplayList（逐帧指令去重）', () => {
     expect(dl.endFrame()).toBe(true);
   });
 
+  it('★ W-80 §8：关掉的位图上一帧 / 这一帧都没画过 ⇒ 不强制重画（过场超分帧窗口换帧时关旧帧）', () => {
+    const { dl, ctx } = setup();
+    const OLD = { id: 'old' };
+    for (let i = 0; i < 2; i++) {
+      dl.beginFrame();
+      drawStatic(ctx);
+      if (i === 0) dl.beforeBitmapClose(OLD);
+      dl.endFrame();
+    }
+    expect(dl.stats.skipped).toBe(1);
+    // 画过的那一张关掉 ⇒ 照旧强制
+    dl.beforeBitmapClose(SPRITE);
+    dl.beginFrame();
+    drawStatic(ctx);
+    expect(dl.endFrame()).toBe(true);
+  });
+
   it('压着不执行时 measureText 仍按本帧设的字体量（走镜像）', () => {
     const { dl, ctx } = setup();
     const widths: number[] = [];
@@ -294,5 +311,45 @@ describe('DisplayList（逐帧指令去重）', () => {
     }
     expect(real.calls.filter((c) => c.startsWith('drawImage')).length).toBe(3);
     expect(dl.stats).toMatchObject({ painted: 1, skipped: 2, verifyMismatches: 0 });
+  });
+});
+
+describe('★ 高清舞台换倍率（W-80 §8）：离屏画布被外部改了尺寸', () => {
+  it('canvasResized：真上下文状态对齐回镜像，下一帧一定真画（不会拿一块清空的画布当成「与上一帧相同」）', () => {
+    const { real, dl, ctx } = setup();
+    for (let i = 0; i < 2; i++) {
+      dl.beginFrame();
+      drawStatic(ctx);
+      dl.endFrame();
+    }
+    // 第二帧与第一帧相同 ⇒ 跳过
+    expect(dl.stats.skipped).toBe(1);
+    // 帧外改尺寸：`canvas.width = …` 清空像素、把真上下文的状态全部重置
+    real.canvas.width = 1280;
+    real.font = '10px sans-serif';
+    real.fillStyle = '#000';
+    real.calls.length = 0;
+    dl.canvasResized(real.canvas);
+    // 镜像记着的状态（上一帧留下的 12px serif）重新抄回真上下文
+    expect(real.font).toBe('12px serif');
+    dl.beginFrame();
+    drawStatic(ctx);
+    expect(dl.endFrame()).toBe(true);
+    expect(real.calls.length).toBeGreaterThan(0);
+    // 再下一帧恢复去重
+    dl.beginFrame();
+    drawStatic(ctx);
+    expect(dl.endFrame()).toBe(false);
+  });
+
+  it('只动被改的那一块：别的画布的状态不碰', () => {
+    const { real, board, dl, ctx, bctx } = setup();
+    dl.beginFrame();
+    drawStatic(ctx);
+    drawStatic(bctx);
+    dl.endFrame();
+    board.font = 'changed';
+    dl.canvasResized(real.canvas);
+    expect(board.font).toBe('changed');
   });
 });

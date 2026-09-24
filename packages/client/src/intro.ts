@@ -85,6 +85,7 @@
  */
 import { FONT_FAMILY } from './font.ts';
 import type { ArchiveName } from './assets.ts';
+import { drawSprite, flicFrame, surfaceScaleOf } from './hd-stage.ts';
 
 /** 過場整屏尺寸（原版主表面 640×480，`0x40163d` 的 `SetDisplayMode(0x280,0x1e0,0x10)`）*/
 export const INTRO_SIZE = { w: 0x280, h: 0x1e0 } as const;
@@ -314,6 +315,9 @@ export type IntroSpriteFn = (
 
 export interface IntroSprite {
   bitmap: CanvasImageSource;
+  /** 逻辑宽高（超分图的像素比它大，见 `hd-stage.ts`）*/
+  width: number;
+  height: number;
   anchorX: number;
   anchorY: number;
 }
@@ -324,6 +328,9 @@ export type IntroFlicFn = (archive: ArchiveName, resource: number) => IntroFlic 
 export interface IntroFlic {
   frames: readonly CanvasImageSource[];
   frameMs: number;
+  /** 逻辑宽高（超分帧位图更大，画时塞回这个框；见 `hd-stage.ts`）*/
+  width: number;
+  height: number;
 }
 
 /** 播過場要的外部句柄；不傳就退化成「只畫一行跳過提示」*/
@@ -356,7 +363,11 @@ export function drawIntro(
   elapsedMs: number,
   deps: IntroDeps = {},
 ): void {
-  const { width, height } = ctx.canvas;
+  // ★ 高清舞台下画布像素 = 逻辑 × s（挂着 s 倍变换）—— 版面要按**逻辑**尺寸排，
+  //   否则「按任意鍵跳過」会落到 (640s/2, 480s−12)，s > 1 时整行跑出画面
+  const s = surfaceScaleOf(ctx);
+  const width = ctx.canvas.width / s;
+  const height = ctx.canvas.height / s;
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, width, height);
 
@@ -419,13 +430,14 @@ function paintSegment(
   if (seg.frameMs === 0) {
     // 底圖：SMP 的一張，不透明鋪在落點（原版 `blitRect(surface, 表+0xc/0x18, 0, 0)`）
     const img = deps.sprite?.(INTRO_ARCHIVE, seg.resource, seg.image, false) ?? null;
-    if (img !== null) ctx.drawImage(img.bitmap, seg.at.x, seg.at.y);
+    if (img !== null) drawSprite(ctx, img, seg.at.x, seg.at.y);
     return;
   }
   const flic = deps.flic?.(INTRO_ARCHIVE, seg.resource) ?? null;
   if (flic === null || flic.frames.length === 0) return;
   const i = Math.max(0, Math.min(frame, flic.frames.length - 1));
-  const bmp = flic.frames[i];
+  const bmp = flicFrame(flic, i);
   if (bmp === undefined) return;
-  ctx.drawImage(bmp, seg.at.x, seg.at.y);
+  // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+  drawSprite(ctx, { bitmap: bmp, width: flic.width, height: flic.height }, seg.at.x, seg.at.y);
 }

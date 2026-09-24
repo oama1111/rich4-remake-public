@@ -6,6 +6,7 @@
  *                                    [--web packages/client/dist-web] [--assets assets/game]
  *                                    [--no-gate] [--map 0] [--seats 4] [--takeover 30000]
  *                                    [--turn-ms 60000] [--seed N] [--saves /srv/rich4/saves]
+ *                                    [--hd <超分素材根，缺省 = --assets 的上一级>]
  *
  * ★ 整站一道**访问密码**（W-71）：`RICH4_PASSWORD` 与 `RICH4_COOKIE_SECRET`
  *   只从环境变量来，缺一个就**拒绝启动**（没有缺省密码，也不许写进仓库）。
@@ -68,6 +69,13 @@ const defaultAssets = fileURLToPath(new URL('../../../assets/game', import.meta.
 const assetsArg = argStr('assets');
 const assetDir = assetsArg === null ? defaultAssets : resolve(assetsArg);
 
+/**
+ * 超分素材的根（`--hd <dir>`，里面是 `hd-2x/` 与 `hd-2x-manifest.json`）。
+ * 缺省 = 素材目录的上一级（线上 `/srv/rich4/deploy/assets/`）—— 目录不在就是 404，客户端整包走原图。
+ */
+const hdArg = argStr('hd');
+const hdDir = hdArg === null ? resolve(assetDir, '..') : resolve(hdArg);
+
 /** 静态站目录。**不给就不开静态服务**（只留 /robots.txt 与 /assets/game）*/
 const webArg = argStr('web');
 const webDir = webArg === null ? undefined : resolve(webArg);
@@ -118,6 +126,7 @@ try {
     port,
     host,
     assetDir,
+    hdDir,
     ...(webDir === undefined ? {} : { webDir }),
     ...(feedbackDir === undefined ? {} : { feedbackDir }),
     noGate,
@@ -142,6 +151,7 @@ console.log(
 );
 console.log(turnMs === 0 ? '回合計時：**關掉了**（--turn-ms 0）' : `回合計時：${turnMs / 1000}s 不動就由電腦代打（連續兩回合 ⇒ 託管）`);
 console.log(`素材目錄：${assetDir}`);
+console.log(`高清素材：${hdDir}（/assets/hd-2x/…、/assets/hd-2x-manifest.json；沒有就全走原圖）`);
 console.log(webDir === undefined ? '靜態站：未開（沒給 --web）' : `靜態站：${webDir}`);
 console.log(feedbackDir === undefined ? '一鍵回報：未開（沒給 --feedback）' : `一鍵回報：存到 ${feedbackDir}`);
 console.log(

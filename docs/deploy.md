@@ -135,6 +135,37 @@ ls /srv/rich4/deploy/assets/game | head        # 期望：7 个 .mkf + 各 .br/.
 > ★ 脚本**只压不复制**，也**只压白名单里的 7 个 `.mkf`**（`rich4.exe` / 存档 / `.avi`
 > 一个都不会进部署目录）。它还会拒绝 `--out` 落在素材目录里。
 
+### 4b. 高清素材（W-80 §8，2026-09-24 起默认开）
+
+高清舞台本身（文字 / 界面清晰）**不需要任何素材**，发前端就有。另外两样已验证的超分素材
+（钱夫人整套重绘 136 帧 PNG + 全屏过场 1,086 帧 WebP，网页 2× 档，共 1,225 个文件 17.7 MB）走单独的目录，**与 `/assets/game/` 同级**：
+
+```
+/srv/rich4/deploy/assets/
+├── game/                      原版素材（第 4 步）
+├── hd-2x/                     Data/19{1,2,3}-*.png、jump/{47..70}-*.webp、Panel/{20,78}-*.webp
+├── hd-2x-manifest.json        瘦清单（只列上面这些）
+├── hd-2x-manifest.json.br
+└── hd-2x-manifest.json.gz
+```
+
+在**自己电脑上**出暂存（仓库外；源是 W-80 的超分产物根，含 `hd-2x/` 与 `hd-2x-manifest.json`；要 `cwebp`：`brew install webp`），再推上去：
+
+```bash
+node --experimental-strip-types tools/hd-deploy.ts --src <超分产物根> --out <仓库外暂存>
+rsync -a --delete <暂存>/assets/hd-2x/ root@<主机>:/srv/rich4/deploy/assets/hd-2x/
+rsync -a <暂存>/assets/hd-2x-manifest.json* root@<主机>:/srv/rich4/deploy/assets/
+ssh root@<主机> 'chown -R rich4:rich4 /srv/rich4/deploy/assets'
+```
+
+- 服务器缺省就从 `--assets` 的上一级找 `hd-2x/`（`cli.ts --hd` 可改），**同一道访问密码**、白名单
+  （5 个档案名 + 数字 + `.png`）、缺图 404 ⇒ 客户端**按图**退回原图；目录整个不在 ⇒ 全走原图，不报错。
+- 缓存：图的 URL 带 `?v=<内容哈希>` ⇒ 一年不可变；清单 `no-cache`（brotli 后约 17 KB）。
+  想让清单也长期缓存：重跑 `pnpm precompress … --hd <暂存>/assets`，`assets-manifest.json` 会登记它（可选）。
+- 以后验证了新的一类（界面 / 建筑 / 其他角色…），把它加进 `tools/hd-deploy.ts` 的 `VERIFIED` 再出一次暂存。
+- 玩家端：门厅「高清畫面」勾选框 / `?hd=0` 关（每台设备各记各的）；手机平板倍率封顶 2、不拉超分过场。
+  一局额外流量实测：桌面约 6 MB、手机约 1.5 MB（W-80 §8.3）。
+
 ## 5. 两个密钥
 
 ```bash
@@ -305,6 +336,6 @@ sudo systemctl restart rich4
 
 ## 这台机器上**不该**出现的东西
 
-- 仓库之外的第二份素材副本（除了 `/srv/rich4/deploy/`）；
+- 仓库之外的第二份素材副本（除了 `/srv/rich4/deploy/`；`deploy/assets/hd-2x/` 的超分 PNG 同属衍生素材）；
 - 任何 `.mkf` / `.br` / `.gz` 被推到公开的地方；
 - `--no-gate` 出现在 systemd 单元里（那等于把门拆了）。

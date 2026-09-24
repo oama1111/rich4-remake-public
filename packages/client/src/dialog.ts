@@ -53,6 +53,7 @@ import { drawAmountWindow } from './amount-window.ts';
 import { boardToScreen, pointInGo, type GoPos } from './go-button.ts';
 import { LAYOUT } from './stage.ts';
 import { BOX_TEXT_STYLE, FONT_FAMILY, drawGdiText, gdiFont } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 框心（棋盘区坐标）—— 由屏幕坐标换算，见 gameui.ts */
 export const DIALOG_ANCHOR = toBoard(DIALOG_ANCHOR_SCREEN);
@@ -235,7 +236,7 @@ export function drawAdvance(
   // `pos` 已经是棋盘画布坐标（原版那个全局是屏幕坐标，换算在 `GoButton` 里做过了）
   const at = pos;
   const go = sprite('Panel.mkf', GO_RESOURCE, goImage, true);
-  if (go !== null) ctx.drawImage(go.bitmap, at.x, at.y);
+  if (go !== null) drawSprite(ctx, go, at.x, at.y);
 
   for (let i = 0; i < maxDice; i++) {
     const pair = DICE_TOGGLE_IMAGE[i];
@@ -245,7 +246,7 @@ export function drawAdvance(
     const img = sprite('Panel.mkf', GO_RESOURCE, lit ? pair[1] : pair[0], true);
     if (img === null) continue;
     const r = diceToggleRect(i, pos, traffic);
-    ctx.drawImage(img.bitmap, r.x, r.y);
+    drawSprite(ctx, img, r.x, r.y);
   }
 }
 
@@ -278,7 +279,7 @@ export function drawDice(
     const img = sprite('Panel.mkf', DICE_RESOURCE, diceImage(i, dice[i] ?? 1), true);
     if (img === null) continue;
     // ★ 锚点在精灵里（`Sprite.anchorX/Y` = 资源自己的 x/y），按它反推左上角
-    ctx.drawImage(img.bitmap, at.x - img.anchorX, at.y - img.anchorY);
+    drawSprite(ctx, img, at.x - img.anchorX, at.y - img.anchorY);
   }
 }
 
@@ -308,9 +309,12 @@ export function drawDiceFlic(
   ctx: CanvasRenderingContext2D,
   frame: ImageBitmap,
   screenDir: number,
+  /** 影片的逻辑尺寸；不给就当原图（像素 = 逻辑）*/
+  size: { width: number; height: number } | null = null,
 ): void {
   const at = diceFlicOrigin(screenDir);
-  ctx.drawImage(frame, at.x, at.y);
+  // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+  drawSprite(ctx, { bitmap: frame, width: size?.width ?? frame.width, height: size?.height ?? frame.height }, at.x, at.y);
 }
 
 /** 一次点击可能落在哪 */
@@ -600,7 +604,7 @@ export function drawDialog(
   // ——— 框：原版的 Data.mkf 资源 517 图 5 ———
   const skin = sprite('Data.mkf', DIALOG_SKIN_RESOURCE, DIALOG_SKIN_IMAGE, true);
   if (skin !== null) {
-    ctx.drawImage(skin.bitmap, l.box.x, l.box.y);
+    drawSprite(ctx, skin, l.box.x, l.box.y);
   } else {
     ctx.fillStyle = '#6b4a21';
     ctx.fillRect(l.box.x, l.box.y, l.box.w, l.box.h);
@@ -647,7 +651,7 @@ export function drawDialog(
       y: YESNO_CENTER_SCREEN.y - YESNO_SIZE.h / 2,
       ...YESNO_SIZE,
     });
-    if (img !== null) ctx.drawImage(img.bitmap, at.x, at.y);
+    if (img !== null) drawSprite(ctx, img, at.x, at.y);
   } else {
     for (const b of l.buttons) {
       const on = hot !== null && JSON.stringify(hot) === JSON.stringify(b.hit);

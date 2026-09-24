@@ -144,6 +144,7 @@ import type { GameState } from '@rich4/core';
 import { STOCK_STATUS, marketOpenOn, stockStatus } from '@rich4/core';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type StockSprite = (
@@ -683,7 +684,7 @@ export function drawStockScreen(
 ): void {
   const page = view.page % STOCK_PAGE_COUNT;
   const bg = sprite('Panel.mkf', STOCK_RESOURCE, page, false);
-  if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0);
+  if (bg !== null) drawSprite(ctx, bg, 0, 0);
 
   // 页码牌与 EXIT 上的字是**烘在图里**的；这里补**运行时画的那几处**。
   text(ctx, PAGE_TITLES[page] ?? '', 70, 24, 16, '#f0f0f0', 'center');

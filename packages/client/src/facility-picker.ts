@@ -202,6 +202,7 @@ export function pickerNeededFor(state: GameState, topo: MapTopology, nodeId: num
 
 /** 上面那两个助手 —— 从 `@rich4/core` 转出来，免得宿主再导一次 */
 import { effectiveFacility, facilityIndexOf } from '@rich4/core';
+import { drawSprite } from './hd-stage.ts';
 
 /**
  * 改建卡（7）打**脚下的設施**时，要不要先过这扇「請選擇設施類別」窗。
@@ -268,7 +269,7 @@ export function drawFacilityPicker(
 
   const panel = img(PICKER_PANEL.chunk);
   if (panel !== null) {
-    ctx.drawImage(panel.bitmap, PICKER_PANEL.x - panel.anchorX, PICKER_PANEL.y - panel.anchorY);
+    drawSprite(ctx, panel, PICKER_PANEL.x - panel.anchorX, PICKER_PANEL.y - panel.anchorY);
   }
 
   if (d.hover !== null) {
@@ -280,7 +281,7 @@ export function drawFacilityPicker(
     }
     const board = img(PICKER_BOARD.chunk);
     if (board !== null) {
-      ctx.drawImage(board.bitmap, PICKER_BOARD.x - board.anchorX, PICKER_BOARD.y - board.anchorY);
+      drawSprite(ctx, board, PICKER_BOARD.x - board.anchorX, PICKER_BOARD.y - board.anchorY);
     }
   }
 

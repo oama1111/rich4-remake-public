@@ -59,6 +59,7 @@ import { currency } from './panel.ts';
 import { drawGdiText, type GdiTextStyle } from './font.ts';
 import { playVoiceCode, stopVoice, voiceBusy } from './voice-sink.ts';
 import type { UiKeyEvent, UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite, drawSpriteRegion, flicFrame } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type MonthlySprite = (
@@ -824,7 +825,7 @@ function sprite(get: MonthlySprite, chunk: number, keyed: boolean): Sprite | nul
 
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 function drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, align: 'left' | 'right', style: GdiTextStyle): void {
@@ -842,13 +843,13 @@ function drawOp(ctx: CanvasRenderingContext2D, get: MonthlySprite, flic: (resour
       const s = sprite(get, op.chunk, false);
       if (s === null) return;
       // 同坐标还原底图（图 0 锚点 0,0）；眨眼 / 嘴型那几笔是从姿势图的局部坐标拷
-      ctx.drawImage(s.bitmap, op.sx, op.sy, op.w, op.h, op.x, op.y, op.w, op.h);
+      drawSpriteRegion(ctx, s, op.sx, op.sy, op.w, op.h, op.x, op.y, op.w, op.h);
       return;
     }
     case 'figure': {
       // y 实参 = 330 − 高 + 锚点 y（0x004384d9..0x004384e2）⇒ 按锚点贴之后左上角 = 330 − 高（脚底落在 330）
       const s = sprite(get, monthlyAvatarChunk(op.character, 0), true);
-      if (s !== null) ctx.drawImage(s.bitmap, op.x - s.anchorX, MONTHLY_LINEUP_FOOT_Y - s.height);
+      if (s !== null) drawSprite(ctx, s, op.x - s.anchorX, MONTHLY_LINEUP_FOOT_Y - s.height);
       return;
     }
     case 'plate': {
@@ -868,8 +869,9 @@ function drawOp(ctx: CanvasRenderingContext2D, get: MonthlySprite, flic: (resour
       return;
     case 'film': {
       const f = flic(op.resource);
-      const last = f?.frames[f.frames.length - 1];
-      if (last !== undefined) ctx.drawImage(last, op.x, op.y);
+      const last = f === null ? undefined : flicFrame(f, f.frames.length - 1);
+      // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+      if (f !== null && last !== undefined) drawSprite(ctx, { bitmap: last, width: f.width, height: f.height }, op.x, op.y);
       return;
     }
   }
@@ -913,8 +915,9 @@ export function drawMonthlyScreen(
       const ms = film.frameMs > 0 ? film.frameMs : 71;
       const k = Math.max(0, Math.floor((now - f.startedAt) / ms));
       const frame = Math.min(film.frames.length * f.plays - 1, k) % film.frames.length;
-      const bmp = film.frames[frame];
-      if (bmp !== undefined) ctx.drawImage(bmp, f.x, f.y);
+      const bmp = flicFrame(film, frame);
+      // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+      if (bmp !== undefined) drawSprite(ctx, { bitmap: bmp, width: film.width, height: film.height }, f.x, f.y);
     }
   }
 }

@@ -42,6 +42,7 @@ import { classNeedsItsOwnList } from './picking.ts';
 import { stockPickModeOfCard, type StockPickMode } from './stock-screen.ts';
 import { rebuildPickerNeeded } from './facility-picker.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type InvSprite = (
@@ -348,7 +349,7 @@ export function drawInventory(
     kind === 'tools' ? INV_BASE.tools : INV_BASE.cards,
     false,
   );
-  if (base !== null) ctx.drawImage(base.bitmap, ox, oy);
+  if (base !== null) drawSprite(ctx, base, ox, oy);
 
   for (const { slot, id, count } of entries) {
     // ★ 相对**底图**（不是命中格），见 `INV_LOCAL`
@@ -357,8 +358,9 @@ export function drawInventory(
     if (kind === 'tools') {
       const icon = sprite('Panel.mkf', INV_RESOURCE, INV_LOCAL.iconFirst + id, true);
       if (icon !== null) {
-        ctx.drawImage(
-          icon.bitmap,
+        drawSprite(
+          ctx,
+          icon,
           x + INV_LOCAL.iconDx - icon.anchorX,
           y + INV_LOCAL.iconDy - icon.anchorY,
         );
@@ -375,7 +377,7 @@ export function drawInventory(
   if (kind === 'tools' && vehicleImage !== null) {
     const badge = sprite('Panel.mkf', INV_RESOURCE, vehicleImage, false);
     if (badge !== null) {
-      ctx.drawImage(badge.bitmap, ox + INV_LOCAL.vehicleX, oy + INV_LOCAL.vehicleY);
+      drawSprite(ctx, badge, ox + INV_LOCAL.vehicleX, oy + INV_LOCAL.vehicleY);
     }
   }
 }

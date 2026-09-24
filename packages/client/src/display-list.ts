@@ -422,8 +422,27 @@ export class DisplayList {
     return !skip;
   }
 
+  /**
+   * 某块被包过的画布让外部改了尺寸（高清舞台换倍率：`canvas.width = …`）。
+   *
+   * 改尺寸会**清空像素**、并把真上下文的状态（变换、字体、平滑…）全部重置，而镜像还记着旧状态 ——
+   * 不对齐的话，后面「压着不执行、帧尾整帧跳过」那条就会拿一块空画布当成「与上一帧相同」。
+   * 这里把真上下文重新对齐到镜像，并让下一帧（帧内调则是这一帧）一定真画。
+   */
+  canvasResized(canvas: unknown): void {
+    this.#reals.forEach((r, i) => {
+      if (r.canvas === canvas) restoreSnapshot(r, this.#mirrors[i]!.snapshot());
+    });
+    if (this.#inFrame) this.#diverge();
+    else this.#forceNext = true;
+  }
+
   /** 位图 `close()` 之前调（`installBitmapCloseGuard`） */
-  beforeBitmapClose(): void {
+  beforeBitmapClose(bitmap?: object): void {
+    // ★ W-80 §8：上一帧、这一帧的指令表里都没出现过的位图，关掉它不影响「与上一帧相同」的判断 ——
+    //   高清过场的超分帧窗口每换一帧就关一张早就不画的旧帧，先前每次都强制下一帧整帧重画，
+    //   过场里去重几乎失效（实测跳帧率 0.5 → 0.05）。
+    if (bitmap !== undefined && !this.#prev.includes(bitmap) && !this.#cur.includes(bitmap)) return;
     if (this.#inFrame) this.#diverge();
     this.#forceNext = true;
   }
@@ -517,7 +536,7 @@ export function installBitmapCloseGuard(list: DisplayList): void {
   if (proto.__dlGuard === true) return;
   const orig = proto.close;
   proto.close = function (this: ImageBitmap): void {
-    list.beforeBitmapClose();
+    list.beforeBitmapClose(this);
     orig.call(this);
   };
   proto.__dlGuard = true;
