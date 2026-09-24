@@ -1594,3 +1594,14 @@ Playwright 的 WebKit 构建里 Cache Storage 连一个 1 KB 的探针都留不�
   - B：`soak.test.ts` 那条改成**总账**（玩家 + 公库 + 企業帳户）扣掉上述每一台印钞机（表内逐条 VA），断言只减不增；
     跑 seed 2024 / 1 / 7（16 个种子余量都在 −6 万 ~ −16 万）。
 
+
+### E-43（2026-09-24，`ds/pt16-rules`）無主設施「要不要買」有没有夢遊闸：exe 与 `sleepwalk-behavior.test.ts` 的真值断言冲突
+- 关联：第十六份「您的現金不足！」补四条路径（買地 / 買設施 / 設施首建 / 設施加蓋）时，照 exe 给買設施接前置闸。
+- exe：`0x0041a1ab imul eax, [0x49910c], 0x68`（eax = 当前玩家偏移，到 `0x0041a1bd je 0x41a86b` 之间不再改）→
+  `0x0041a86b cmp byte [eax + 0x496b9f], 0 / jne 0x41b077`；`0x496b9f − 0x496b68 = 0x37`（十进制 55）= `days_sleep_walking`
+  （与買地 `0x0041a01a` 那条同一个字段，`canPurchase` 早已照接）。随后 `0x0041a878 cmp [+0x3f], 0xc / je`（土地公）。
+- 断言：`packages/core/src/state/sleepwalk-behavior.test.ts:223`「无主設施：原版那里**没有** `+0x37` 那道闸，框照样开」。
+  其注释把 `+55` 当成 `disappearing`（實为 `+0x33`）—— `55 = 0x37` 正是夢遊天数。
+- 我的做法：**没改这条断言**；買設施只接了土地公那道闸与现金不足框，夢遊那道留着没接（代码里有 ⚠️ 注释）。
+- 请裁定：若采纳 exe 读法，改这条断言为「夢遊中无主設施不弹框」，并在 `landOnFacility` 的无主分支加 `sleepWalking !== 0` 早退。
+- 阻塞程度：不阻塞；只影响「夢遊者走到无主設施」这一种。

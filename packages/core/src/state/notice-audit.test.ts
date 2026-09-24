@@ -7,8 +7,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { CARDS, stocksOfMap } from '@rich4/data';
-import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
-import { HOUSING_TYPE_MIN } from '../rules/land.ts';
+import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
+import { FACILITY_TYPE_MIN, GOD_BLOCKS_PURCHASE, HOUSING_TYPE_MIN } from '../rules/land.ts';
+import { FACILITY_TYPE } from '../rules/facility.ts';
 import { npcNotices, reduce, type MapTopology } from './reduce.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN, type GameState } from './types.ts';
 import { newStockMarket } from '../places/stock-market.ts';
@@ -136,6 +137,109 @@ describe('★ 自己的地升级、只差现金 ⇒「您的現金不足！」@s
     const r = reduce(s, { type: 'settle' }, ownLandTopo);
     expect(r.pending).toMatchObject({ kind: 'upgradeLand' });
     expect(r.notices).toBe(s.notices);
+  });
+});
+
+describe('★ 第十六份：買地 / 買設施 / 設施首建 / 設施加蓋 只差现金也弹「您的現金不足！」@source 0x0041a159 / 0x00419a52 → 0x440cac(0x46398b, 0x5dc)', () => {
+  const CASH_SHORT = [{ key: 'land.cashShort', args: [] }];
+  const LAND = 1;
+  const landTopo: MapTopology = {
+    nodes: [
+      makeNode({ id: 1, type: 0x7d0 + LAND, adjacent: [2], adjacentSlots: [2, 0, 0, 0], walkable: true }),
+      makeNode({ id: 2, adjacent: [1], adjacentSlots: [1, 0, 0, 0], walkable: true }),
+    ],
+    lands: [makeLand({ id: LAND, name: '測試路', type: 0, owner: 0, level: 0, landPrice: 1000, housePrice: 1000 })],
+  };
+  const FAC = 1;
+  const facTopo: MapTopology = {
+    nodes: [
+      makeNode({ id: 1, type: FACILITY_TYPE_MIN + FAC, ref: { kind: 'facility', index: FAC }, adjacent: [2] }),
+      makeNode({ id: 2, adjacent: [1] }),
+    ],
+    lands: [],
+    facilities: [makeFacility({ id: FAC, landPrice: 3000, housePrice: 1500 })],
+  };
+  const standing = (cash: number, whoPlays: number, over: Partial<GameState> = {}, player: Record<string, unknown> = {}): GameState => {
+    const s = makeGameState({
+      players: [0, 1].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: i === 0 ? 1 : 2, cash, moneyInBank: 0, whoPlays, ...(i === 0 ? player : {}) }),
+      ),
+      phase: 'settling',
+      priceIndex: 1,
+    });
+    return { ...s, ...over };
+  };
+  const fac = (owner: number, level: number, type: number): Partial<GameState> => {
+    const base = makeGameState();
+    const facilityOwner = [...base.facilityOwner];
+    const facilityLevel = [...base.facilityLevel];
+    const facilityType = [...base.facilityType];
+    facilityOwner[FAC] = owner;
+    facilityLevel[FAC] = level;
+    facilityType[FAC] = type;
+    return { facilityOwner, facilityLevel, facilityType };
+  };
+
+  for (const who of [WHO_PLAYS_HUMAN, WHO_PLAYS_COMPUTER]) {
+    it(`whoPlays ${who}：買地（0x0041a059 jg 0x41a159）`, () => {
+      const r = reduce(standing(999, who, { landOwner: [0, 0], landLevel: [0, 0], landType: [0, 0] }), { type: 'settle' }, landTopo);
+      expect(r.pending).toBeNull();
+      expect(r.phase).toBe('turnEnd');
+      expect(r.notices).toEqual(CASH_SHORT);
+    });
+    it(`whoPlays ${who}：買設施（0x0041a89d jg 0x41a159）`, () => {
+      const r = reduce(standing(2999, who, fac(0, 0, 0)), { type: 'settle' }, facTopo);
+      expect(r.pending).toBeNull();
+      expect(r.notices).toEqual(CASH_SHORT);
+    });
+    it(`whoPlays ${who}：設施首建（0x0041a216 jg 0x419a52）—— 选种类框之前、电脑也不掷 rand`, () => {
+      const s = standing(2999, who, fac(1, 0, 0));
+      const r = reduce(s, { type: 'settle' }, facTopo);
+      expect(r.pending).toBeNull();
+      expect(r.facilityLevel[FAC]).toBe(0);
+      expect(r.rngState).toBe(s.rngState);
+      expect(r.notices).toEqual(CASH_SHORT);
+    });
+    it(`whoPlays ${who}：設施加蓋（0x0041a2e6 jg 0x41a159）`, () => {
+      const r = reduce(standing(1499, who, fac(1, 1, FACILITY_TYPE.mall)), { type: 'settle' }, facTopo);
+      expect(r.pending).toBeNull();
+      expect(r.facilityLevel[FAC]).toBe(1);
+      expect(r.notices).toEqual(CASH_SHORT);
+    });
+  }
+
+  it('钱刚好够 ⇒ 照常问，不弹', () => {
+    const land = standing(1000, WHO_PLAYS_HUMAN, { landOwner: [0, 0], landLevel: [0, 0], landType: [0, 0] });
+    expect(reduce(land, { type: 'settle' }, landTopo).pending).toMatchObject({ kind: 'buyLand' });
+    expect(reduce(standing(3000, WHO_PLAYS_HUMAN, fac(0, 0, 0)), { type: 'settle' }, facTopo).pending).toMatchObject({ kind: 'buyFacility' });
+    expect(reduce(standing(3000, WHO_PLAYS_HUMAN, fac(1, 0, 0)), { type: 'settle' }, facTopo).pending).toMatchObject({ kind: 'buildFacility' });
+    expect(reduce(standing(1500, WHO_PLAYS_HUMAN, fac(1, 1, FACILITY_TYPE.mall)), { type: 'settle' }, facTopo).pending).toMatchObject({ kind: 'upgradeFacility' });
+  });
+
+  it('前面的闸没过就不弹：夢遊 / 土地公（買地 0x0041a01a / 0x0041a027）、土地公（買設施 0x0041a878）、設施已满级（0x0041a2c8）', () => {
+    const noLand = { landOwner: [0, 0], landLevel: [0, 0], landType: [0, 0] };
+    // （土地公那一支落进尾块后照样「強佔」—— 只看有没有現金不足那一扇）
+    for (const player of [{ blocking: { ...makePlayer().blocking, sleepWalking: 3 } }, { godInfo: GOD_BLOCKS_PURCHASE }]) {
+      const l = standing(0, WHO_PLAYS_HUMAN, noLand, player);
+      expect(reduce(l, { type: 'settle' }, landTopo).notices).not.toContainEqual(CASH_SHORT[0]);
+    }
+    // 買設施：只接土地公那道（夢遊那道与 sleepwalk-behavior.test.ts 的真值断言冲突，已上报）
+    {
+      const player = { godInfo: GOD_BLOCKS_PURCHASE };
+      const f = standing(0, WHO_PLAYS_HUMAN, fac(0, 0, 0), player);
+      const rf = reduce(f, { type: 'settle' }, facTopo);
+      expect(rf.notices).not.toContainEqual(CASH_SHORT[0]);
+      expect(rf.pending).toBeNull();
+    }
+    // 加油站只有一级：满级那道闸先挡 ⇒ 不弹
+    const full = standing(0, WHO_PLAYS_HUMAN, fac(1, 1, FACILITY_TYPE.gasStation));
+    expect(reduce(full, { type: 'settle' }, facTopo).notices).toBe(full.notices);
+  });
+
+  it('★ 框之后照常进尾块：自己的研究所加蓋不起 ⇒ 先框、再问研發（0x00419a62 jmp 0x41b074 → 0x0041b109）', () => {
+    const r = reduce(standing(1499, WHO_PLAYS_HUMAN, fac(1, 1, FACILITY_TYPE.lab)), { type: 'settle' }, facTopo);
+    expect(r.notices).toEqual(CASH_SHORT);
+    expect(r.pending).toMatchObject({ kind: 'research', facilityId: FAC, choices: [1] });
   });
 });
 

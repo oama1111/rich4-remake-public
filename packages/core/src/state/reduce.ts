@@ -68,7 +68,7 @@ import type {
   CommercialInfo,
   LandscapeInfo,
 } from '../loaders/map.ts';
-import { housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
+import { GOD_BLOCKS_PURCHASE, housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent, LAND_TOLL_FEE_NAME } from '../rules/rent.ts';
 import { PARTY_POOL, PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
 import {
@@ -1867,6 +1867,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           //   玩家看到的就是「踩到空地什么都不发生」。拦截与提示统一在 `godBlockedPurchase()`。
           const buy = canPurchase(land, player, state.priceIndex);
           if (!buy.ok) {
+            // ★ 第十六份：夢遊 / 土地公两道闸都过了、只差现金 ⇒ 弹「您的現金不足！」（1500 ms，真人电脑都弹），
+            //   然后照常落进尾块。@source `0x0041a053 cmp ebp, [現金] / jg 0x41a159` →
+            //   `0x0041a159 push 0x5dc / push 0x46398b / jmp 0x419a5d`（`call 0x440cac`）→ `0x00419a62 jmp 0x41b074`
+            if (buy.reason === 'notEnoughCash') {
+              return appendFreshNotice({ ...state, phase: 'turnEnd' }, { key: 'land.cashShort', args: [] });
+            }
             return { ...state, phase: 'turnEnd' };
           }
           // ★ 价钱由 core 算好放进 `pending`。UI 与联机对端都不该自己再算一遍
@@ -8116,6 +8122,14 @@ function afterOwnLab(state: GameState, topo: MapTopology, facilityId: number): G
  *   本引擎的住宅那边已在 rules/rent.ts 做了同盟分账；設施这一路**没有同盟分账**
  *   （只一次 pay_money），照原版。查封／死神两条見 Q-FAC-2。
  */
+/**
+ * 落点「買 / 蓋 / 加蓋」只差现金：弹「您的現金不足！」（`0x46398b`，1500 ms），然后照常进尾块
+ * （`0x00419a62 jmp 0x41b074` → `0x0041b077` 顯靈 → 研究所面板）。真人电脑都弹（这几道闸之前没有 `who_plays` 判断）。
+ */
+function cashShortLanding(state: GameState): GameState {
+  return appendFreshNotice({ ...state, phase: 'turnEnd' }, { key: 'land.cashShort', args: [] });
+}
+
 function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo): GameState {
   const me = state.currentPlayer;
   const player = state.players[me];
@@ -8124,8 +8138,13 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   // ── 无主：买不买 ──
   if (fac.owner === 0) {
     // @source 0x0041a86b `cmp [+0x37] 梦游, 0 / jne 结束`；`cmp [+0x3f] 神明, 0xc / je 结束`（土地公）
+    //   ★ 第十六份：土地公那道闸接上（`0x0041a878 cmp byte [+0x3f], 0xc / je 0x41b077`）。
+    //   ⚠️ 夢遊那道（`0x0041a86b cmp byte [eax+0x496b9f], 0`，`0x496b9f − 0x496b68 = 0x37`）与
+    //   `sleepwalk-behavior.test.ts` 的真值断言「无主設施没有夢遊闸」冲突 ⇒ 暂不接，已上报（C 级）。
+    if (player.godInfo === GOD_BLOCKS_PURCHASE) return { ...state, phase: 'turnEnd' };
     const price = facilityBuyPrice(fac.landPrice, state.priceIndex);
-    if (price > player.cash) return { ...state, phase: 'turnEnd' };
+    // ★ 第十六份：只差现金 ⇒「您的現金不足！」@source `0x0041a897 cmp ebp, [現金] / jg 0x41a159` → `0x440cac`
+    if (price > player.cash) return cashShortLanding(state);
     return {
       ...state,
       phase: 'awaitingDecision',
@@ -8139,7 +8158,9 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
     if (player.blocking.sleepWalking !== 0) return { ...state, phase: 'turnEnd' };
     if (fac.level === 0) {
       const price = facilityBuildPrice(fac.landPrice, state.priceIndex);
-      if (price > player.cash) return { ...state, phase: 'turnEnd' };
+      // ★ 第十六份：只差现金 ⇒「您的現金不足！」@source `0x0041a210 cmp ebp, [現金] / jg 0x419a52` →
+      //   `0x00419a52 push 0x5dc / mov eax, 0x46398b / call 0x440cac`（真人电脑都弹，在选种类之前）
+      if (price > player.cash) return cashShortLanding(state);
       // @source 0x0041a21f `cmp byte [player+0x15], 1 / jne` —— ★ 是**整字节**
       //   「等于 1 才算真人」（§7.141 E2 订正）：`whoPlays = 5`（真人|托管）原版
       //   走电脑支、旧实现 `& 3 == 1` 走了真人支。
@@ -8181,7 +8202,9 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
     // 蓋满了 / 钱不够：直接进尾块（研究所面板由 `labPanelTail` 接）
     if (!canUpgradeFacility(fac.type, fac.level)) return { ...state, phase: 'turnEnd' };
     const cost = facilityUpgradePrice(fac.housePrice, state.priceIndex);
-    if (cost > player.cash) return { ...state, phase: 'turnEnd' };
+    // ★ 第十六份：只差现金 ⇒「您的現金不足！」@source `0x0041a2e0 cmp ebp, [現金] / jg 0x41a159` → `0x440cac`
+    //   （满级那道 `0x0041a2c2 cmp bl, [type + 0x474940] / jae` 在它之前，满级不弹）
+    if (cost > player.cash) return cashShortLanding(state);
     return {
       ...state,
       phase: 'awaitingDecision',
