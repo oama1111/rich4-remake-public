@@ -98,5 +98,5 @@ level > 0 用同一张图 `lighter` + `globalAlpha = level/32` 再画一次（c�
 level < 0 盖一张同形状的黑剪影、`globalAlpha = |level|/32`（c·(1−|a|)）。
 在不透明像素上与 `brightness(1 + level/32)` **逐像素相同**；第 2 节的近似本身不变。
 
-⚠️ 同一个坑还在：冬眠 / 冻住的棋子去色（`render.ts` 的 `ASLEEP_FILTER`）也是 `ctx.filter`，
-Safari 上同样不生效 —— 不在本轮范围，另行处理。
+同一个坑的另一处（冬眠 / 冻住的棋子去色）已一并改掉（见 `deviations/T-047.md` D-T047-4）；
+`client/src/no-canvas-filter.test.ts` 钉住整个客户端不再给 `filter` 赋值。

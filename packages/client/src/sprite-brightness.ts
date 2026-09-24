@@ -17,7 +17,7 @@
  */
 
 /** 建一张 w×h 的离屏 2D 画布；环境里没有（单测 / 无 DOM）返回 null */
-type SurfaceFactory = (w: number, h: number) => {
+export type SurfaceFactory = (w: number, h: number) => {
   canvas: CanvasImageSource;
   ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
 } | null;
@@ -98,4 +98,63 @@ export function paintBrightness(
   ctx.globalAlpha = Math.min(1, -a);
   ctx.drawImage(mask, dx, dy, dw, dh);
   ctx.restore();
+}
+
+// ============================================================
+//  冬眠 / 冻住的棋子去色（D-T047-4）—— 同样不靠 `ctx.filter`
+// ============================================================
+
+/**
+ * 去色的逐像素算式：与先前 `ctx.filter = 'saturate(0) brightness(1.24)'` 在 Chromium 上
+ * **逐像素相同**（Playwright 实测 4096 个随机色 0 误差：Chromium 的 saturate 矩阵系数是
+ * 0.213 / 0.715 / 0.072，先取整、再 ×1.24 向下取整、封顶 255）。
+ *
+ * 近似本身（原版 `fcn_004555eb` 在 RGB555 调色板上 `(R+G+B+0x28)>>2`）不变，登记在 D-T047-4；
+ * 这里只把「靠 filter」换成「自己算」—— 因为 WebKit 不认 `ctx.filter`，iPhone 上冬眠的棋子从来不灰。
+ */
+export function asleepGrey(r: number, g: number, b: number): number {
+  const luma = Math.round(0.213 * r + 0.715 * g + 0.072 * b);
+  return Math.min(255, Math.floor(luma * 1.24));
+}
+
+/** 同一张精灵的灰版只做一次 */
+const greys = new WeakMap<object, CanvasImageSource | null>();
+
+/** 就地把一块 RGBA 像素去色（透明度不动）—— 抽出来好单测 */
+export function greyPixels(data: Uint8ClampedArray): void {
+  for (let i = 0; i < data.length; i += 4) {
+    const v = asleepGrey(data[i]!, data[i + 1]!, data[i + 2]!);
+    data[i] = v;
+    data[i + 1] = v;
+    data[i + 2] = v;
+  }
+}
+
+/**
+ * 精灵的灰版（离屏画布，`getImageData` 逐像素算）；做不出来返回 null（调用方照画原图）。
+ */
+export function asleepSpriteOf(
+  img: CanvasImageSource,
+  w: number,
+  h: number,
+  surface: SurfaceFactory = defaultSurface,
+): CanvasImageSource | null {
+  const key = img as unknown as object;
+  const hit = greys.get(key);
+  if (hit !== undefined) return hit;
+  let out: CanvasImageSource | null = null;
+  const s = w > 0 && h > 0 ? surface(w, h) : null;
+  if (s !== null) {
+    try {
+      s.ctx.drawImage(img, 0, 0, w, h);
+      const px = s.ctx.getImageData(0, 0, w, h);
+      greyPixels(px.data);
+      s.ctx.putImageData(px, 0, 0);
+      out = s.canvas;
+    } catch {
+      out = null;
+    }
+  }
+  greys.set(key, out);
+  return out;
 }

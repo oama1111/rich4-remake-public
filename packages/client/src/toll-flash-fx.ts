@@ -43,9 +43,9 @@ export const TOLL_FLASH_TOTAL_MS =
   TOLL_FLASH_FRAMES * TOLL_FLASH_FRAME_MS + TOLL_FLASH_HOLD_MS;
 
 /**
- * 亮度 16（半程）對應的濾鏡分母 —— `brightness(1 + level/32)`。
+ * 亮度 16（半程）對應的分母 —— 畫成 `brightness(1 + level/32)`。
  *
- * 5 位分量的滿量程是 31，故 ±16 就是 ±50% 亮度；用 `ctx.filter` 近似原版的
+ * 5 位分量的滿量程是 31，故 ±16 就是 ±50% 亮度；用精靈疊層（`sprite-brightness.ts`）近似原版的
  * **逐像素加**（原版是改 id 圖上的像素值）。見 `docs/deviations/Q-TOLL-FX-1.md`。
  */
 export const TOLL_FLASH_FULL_SCALE = 32;
@@ -65,13 +65,15 @@ export function tollFlashLevel(elapsedMs: number): number | null {
 }
 
 /**
- * 這一刻該給那些地塊套的 `ctx.filter`；`null` = 不套（= 原樣）。
+ * 這一刻那些地塊的亮度增益 `a`（畫成 `brightness(1 + a)`）；`null` = 不疊（= 原樣）。
  *
+ * ★ 2026-09-24：先前這裡交的是 `ctx.filter` 字串 —— WebKit 不認 `ctx.filter`，已改成
+ *   `sprite-brightness.ts` 的疊層（`paintBrightness(…, a)`）。
  * ★ 原版是按 id 圖**逐像素**加亮度，本引擎按**精靈**近似（整張建築一起亮）——
  *   登記在 `docs/deviations/Q-TOLL-FX-1.md`。
  */
-export function tollFlashFilter(elapsedMs: number): string | null {
+export function tollFlashGain(elapsedMs: number): number | null {
   const level = tollFlashLevel(elapsedMs);
   if (level === null || level === 0) return null;
-  return `brightness(${1 + level / TOLL_FLASH_FULL_SCALE})`;
+  return level / TOLL_FLASH_FULL_SCALE;
 }

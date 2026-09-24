@@ -14,7 +14,7 @@ import {
   TOLL_FLASH_HOLD_MS,
   TOLL_FLASH_LEVELS,
   TOLL_FLASH_TOTAL_MS,
-  tollFlashFilter,
+  tollFlashGain,
   tollFlashLevel,
 } from './toll-flash-fx.ts';
 
@@ -77,29 +77,27 @@ describe('tollFlashLevel —— 第 k 幀取表、400 ms 靜止、之後 null', 
   });
 });
 
-describe('tollFlashFilter —— 給 ctx.filter 用的近似', () => {
-  it('★ 正峰值 → 亮 1.5 倍；負峰值 → 暗 0.5 倍', () => {
-    expect(tollFlashFilter(90)).toBe(`brightness(${1 + 16 / 32})`);
-    expect(tollFlashFilter(330)).toBe(`brightness(${1 - 16 / 32})`);
+describe('tollFlashGain —— 疊層的亮度增益（`brightness(1 + a)` 的 a）', () => {
+  it('★ 正峰值 → +0.5（亮 1.5 倍）；負峰值 → −0.5（暗 0.5 倍）', () => {
+    expect(tollFlashGain(90)).toBe(16 / 32);
+    expect(tollFlashGain(330)).toBe(-16 / 32);
   });
 
-  it('★ 0 與演完都不套濾鏡（null）', () => {
-    expect(tollFlashFilter(210)).toBeNull();
-    expect(tollFlashFilter(450)).toBeNull();
-    expect(tollFlashFilter(TOLL_FLASH_TOTAL_MS)).toBeNull();
+  it('★ 0 與演完都不疊（null）', () => {
+    expect(tollFlashGain(210)).toBeNull();
+    expect(tollFlashGain(450)).toBeNull();
+    expect(tollFlashGain(TOLL_FLASH_TOTAL_MS)).toBeNull();
   });
 
-  it('★ 濾鏡字串只在 16 幀內非 null，亮度 = 1 + level/32', () => {
+  it('★ 只在 16 幀內非 null，增益 = level/32', () => {
     for (let k = 0; k < TOLL_FLASH_FRAMES; k++) {
-      const f = tollFlashFilter(k * 30);
+      const a = tollFlashGain(k * 30);
       const level = TOLL_FLASH_LEVELS[k]!;
       if (level === 0) {
-        expect(f, `第 ${k} 幀`).toBeNull();
+        expect(a, `第 ${k} 幀`).toBeNull();
         continue;
       }
-      const m = /^brightness\(([\d.]+)\)$/.exec(f ?? '');
-      expect(m, `第 ${k} 幀：${f}`).not.toBeNull();
-      expect(Number(m![1])).toBeCloseTo(1 + level / TOLL_FLASH_FULL_SCALE, 6);
+      expect(a, `第 ${k} 幀`).toBeCloseTo(level / TOLL_FLASH_FULL_SCALE, 6);
     }
   });
 });
