@@ -3,9 +3,13 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { decideAction, newGame, parseMap, reduce, type GameState } from '@rich4/core';
 import { initSaveStore, saveStore, type SaveStore } from './host.ts';
 import {
   AUTOSAVE_SLOT,
+  autosaveStep,
+  gameDateKey,
   LOAD_SLOTS,
   ROW,
   SAVELOAD_AT,
@@ -167,5 +171,83 @@ describe('★ 匯入原版存檔的入口（T-054）', () => {
     const cx = b.x + b.w / 2;
     const cy = b.y + b.h / 2;
     expect(hitSaveLoad('load', cx, cy)).toBeNull();
+  });
+});
+
+// ============================================================
+//  ★★ 自動存檔的时机（第十六份回报续，2026-09-24）
+// ============================================================
+
+describe('★★ 自動存檔：推过日期、新一天第一位的回合边界走完才存 @source 0x00419041..0x0041904d', () => {
+  const at = (
+    y: number,
+    m: number,
+    d: number,
+    extra: Partial<Pick<GameState, 'phase' | 'pending' | 'deferredTurnStart'>> = {},
+  ) => ({ year: y, month: m, day: d, phase: 'turnStart' as const, pending: null, deferredTurnStart: null, ...extra });
+
+  it('`gameDateKey` 按年·月·日单调', () => {
+    expect(gameDateKey({ year: 1998, month: 1, day: 31 })).toBeLessThan(gameDateKey({ year: 1998, month: 2, day: 1 }));
+    expect(gameDateKey({ year: 1998, month: 12, day: 31 })).toBeLessThan(gameDateKey({ year: 1999, month: 1, day: 1 }));
+  });
+
+  it('新局 / 读档之后第一次看到：只记下、不存（开局那天游标没绕回过）', () => {
+    expect(autosaveStep(at(1998, 1, 1), null)).toEqual({ save: false, key: gameDateKey(at(1998, 1, 1)) });
+  });
+
+  it('同一天里的回合（不分人机）都不存；推过日期那一刻存一次', () => {
+    const k0 = gameDateKey(at(1998, 1, 1));
+    expect(autosaveStep(at(1998, 1, 1), k0)).toEqual({ save: false, key: k0 });
+    const step = autosaveStep(at(1998, 1, 2), k0);
+    expect(step.save).toBe(true);
+    // 记下之后同一天不再存
+    expect(autosaveStep(at(1998, 1, 2), step.key).save).toBe(false);
+  });
+
+  it('推日期里开出了拍卖 / 还款提醒窗 ⇒ 等它们收掉、落回 turnStart 才存（原版是阻塞调用）', () => {
+    const k0 = gameDateKey(at(1998, 1, 1));
+    const auction = autosaveStep(at(1998, 1, 2, { phase: 'awaitingDecision', deferredTurnStart: 0 }), k0);
+    expect(auction).toEqual({ save: false, key: k0 });
+    const reminder = autosaveStep(
+      at(1998, 1, 2, { pending: { kind: 'loanReminder' } as unknown as GameState['pending'] }),
+      k0,
+    );
+    expect(reminder).toEqual({ save: false, key: k0 });
+    expect(autosaveStep(at(1998, 1, 2), auction.key).save).toBe(true);
+  });
+
+  it('日期往回走（時光機）不算推进：跟着记下、不存；之后再推进才存', () => {
+    const k5 = gameDateKey(at(1998, 1, 5));
+    const back = autosaveStep(at(1998, 1, 3), k5);
+    expect(back).toEqual({ save: false, key: gameDateKey(at(1998, 1, 3)) });
+    expect(autosaveStep(at(1998, 1, 4), back.key).save).toBe(true);
+  });
+
+  it('★ 真跑一局（4 电脑）：存的次数 = 推过的天数，且每次都在 turnStart', () => {
+    const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
+    expect(existsSync(MAP), MAP).toBe(true);
+    const map = parseMap(new Uint8Array(readFileSync(MAP)));
+    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
+    let state = newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })), seed: 4242 });
+    let key: number | null = null;
+    let saves = 0;
+    const startKey = gameDateKey(state);
+    for (let i = 0; i < 20_000 && state.turnCount < 60; i++) {
+      const step = autosaveStep(state, key);
+      key = step.key;
+      if (step.save) {
+        saves++;
+        expect(state.phase).toBe('turnStart');
+      }
+      const a = decideAction({ state, map });
+      if (a === null) break;
+      state = reduce(state, a, topo);
+    }
+    const lastStep = autosaveStep(state, key);
+    if (lastStep.save) saves++;
+    const days = Math.round((Date.UTC(state.year, state.month - 1, state.day) - Date.UTC(
+      Math.trunc(startKey / 10000), Math.trunc(startKey / 100) % 100 - 1, startKey % 100)) / 86_400_000);
+    expect(days).toBeGreaterThan(5);
+    expect(saves).toBe(days);
   });
 });

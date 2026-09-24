@@ -327,17 +327,15 @@ export interface GameOptions {
  * - `speed: 2`（3 格、最快）—— ⚠️ **有意偏离**：需求方 2026-09-23 拍板（「3 格的整体节奏与他对
  *   原版的体感一致」，当时那一笔 `9835a02` 落在 `ds/hd-stage` 分支上、没有进主线）。
  *   原版出厂值是 1（`0x00411edc mov [0x497158], ah`，`ah = 1`）。
- *
- * ⚠️ 其余三项与原版出厂值不同、未改（待需求方裁定，见 `docs/known-deviations.md` D-OPT-DEFAULT-1）：
- *   原版 `music = 4` / `sound = 4`（`0x00411eea` / `0x00411ef0`，`dh = 4`）、
- *   `autoSave = 1`（`0x00411ef6`）。
+ * - `music: 4` / `sound: 4`（`0x00411eea` / `0x00411ef0`，`dh = 4`）、`autoSave: true`（`0x00411ef6`，`ah = 1`）、
+ *   `animation: true`（`0x00411ee2`）—— 原版出厂值（2026-09-24 需求方拍板照原版，先前是 3 / 3 / 关）。
  */
 export const DEFAULT_OPTIONS: GameOptions = {
   speed: 2,
   animation: true,
-  music: 3,
-  sound: 3,
-  autoSave: false,
+  music: 4,
+  sound: 4,
+  autoSave: true,
   windowView: 1,
   track: 0,
 };

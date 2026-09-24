@@ -34,6 +34,10 @@ const onStart = slice('onStart: (start) => {', '// ★★ 第七份试玩回报�
 const onResync = slice('onResync: (r) => {', 'fingerprint: () => stateFingerprint(state),');
 const boot = slice('async function boot(): Promise<void> {', 'void boot();');
 const loadCfg = slice('function loadConfigFromStore(): void {', 'function saveConfigToStore(): void {');
+const loadState = slice('function loadState(', 'log(`▶ 讀檔：');
+const autosave = slice('function autosaveIfEnabled(next: GameState): void {', '/** 真人那条驱动这一次排程是不是');
+const applyVolumesFn = slice('function applyVolumes(o: GameOptions): void {', '/** 把設定的取值真的作用到播放器与側欄上 */');
+const applyOptionsFn = slice('function applyOptions(next: GameOptions): void {', 'requestRender();');
 
 describe('★★ 出厂设定（没有 RICH4.CFG 时）', () => {
   it('視窗 = 01 小地圖 @source 0x00411efc `mov byte [0x49715d], ah`（ah = 1）', () => {
@@ -43,6 +47,13 @@ describe('★★ 出厂设定（没有 RICH4.CFG 时）', () => {
 
   it('速度 = 2（3 格、最快）—— 需求方 2026-09-23 拍板；原版出厂是 1（0x00411edc）', () => {
     expect(DEFAULT_OPTIONS.speed).toBe(2);
+  });
+
+  it('音樂 4 / 音效 4 / 自動存檔 开 / 動畫 开 @source 0x00411eea / 0x00411ef0 / 0x00411ef6 / 0x00411ee2', () => {
+    expect(DEFAULT_OPTIONS.music).toBe(4);
+    expect(DEFAULT_OPTIONS.sound).toBe(4);
+    expect(DEFAULT_OPTIONS.autoSave).toBe(true);
+    expect(DEFAULT_OPTIONS.animation).toBe(true);
   });
 
   it('`sidebarViewOf`：01 → 小地圖；00 / 02 → 日曆（02 輪流未查证，维持暂定）', () => {
@@ -124,5 +135,49 @@ describe('★★ 单机与联机同源：只在开机定一次，两条开局路
       expect(startGame, `startGame 缺 ${line}`).toContain(line);
       expect(onStart, `onStart 缺 ${line}`).toContain(line);
     }
+  });
+});
+
+describe('★★ 开机音量 / 面板页号 / 自動存檔（第十六份回报续，需求方 2026-09-24）', () => {
+  it('切片都取到了', () => {
+    for (const [name, x] of Object.entries({ loadState, autosave, applyVolumesFn, applyOptionsFn })) {
+      expect(x.length, name).toBeGreaterThan(80);
+    }
+  });
+
+  it('★ 开机就按 cfg（或出厂值）作用音量 —— 只作用音量，不写档、不起停曲子', () => {
+    expect(loadCfg).toContain('applyVolumes(options);');
+    expect(applyOptionsFn).toContain('applyVolumes(next);');
+    for (const line of ['sound.setMuted(o.sound === 0);', 'sound.volume = volumeOf(o.sound);', 'music.setVolume(']) {
+      expect(applyVolumesFn, line).toContain(line);
+    }
+    for (const banned of ['saveConfigToStore(', 'playBoardBgm(', 'music.stop(']) {
+      expect(applyVolumesFn, banned).not.toContain(banned);
+      expect(loadCfg, banned).not.toContain(banned);
+    }
+    expect(applyVolumesFn).not.toContain('options =');
+  });
+
+  it('★ 新局（单机 / 联机）与读档都把四位的面板页号归零（`0x48be24` 由 0x401 分支清零）', () => {
+    for (const [name, x] of Object.entries({ startGame, onStart, loadState })) {
+      expect(x, name).toContain('panelPages.fill(0);');
+      expect(x, name).toContain('autosaveDateKey = null;');
+    }
+    // 失步重建是同一局，不清
+    expect(onResync).not.toContain('panelPages.fill(0);');
+  });
+
+  it('★ 自動存檔走 `autosaveStep`（推过日期才存、不分人机），联机不存', () => {
+    expect(autosave).toContain('if (net !== null) return;');
+    expect(autosave).toContain('autosaveStep(next, autosaveDateKey)');
+    expect(autosave).toContain('writeSlot(AUTOSAVE_SLOT, next)');
+    // ★ 挂在真人 / 电脑两条施加路共用的漏斗上（电脑走 `scheduleAi` 的直路，不经 `applyAction`）
+    const funnel = slice('function reduceRecorded(action: Action): GameState {', 'return next;');
+    expect(funnel).toContain('autosaveIfEnabled(next);');
+    expect(main.match(/autosaveIfEnabled\(/g)?.length).toBe(2); // 定义 + 漏斗里那一处
+    expect(main.match(/state = reduceRecorded\(action\)/g)?.length).toBe(2); // applyAction + scheduleAi
+    // 旧判据（只在真人 awaitingRoll 存）不许回来
+    expect(autosave).not.toContain('isAiTurn(');
+    expect(autosave).not.toContain("'awaitingRoll'");
   });
 });

@@ -440,6 +440,7 @@ import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
 import { onMinigameBackgroundReady, setMinigameBackground } from './minigame-bg.ts';
 import {
   AUTOSAVE_SLOT,
+  autosaveStep,
   LOAD_SLOTS,
   SAVE_SLOTS,
   drawSaveLoad,
@@ -921,6 +922,8 @@ function loadConfigFromStore(): void {
   //   `applyOptions`（設定屏「確定」）之外，开机读 cfg 这条路也得把侧栏一致化
   //   （**不要**在开机跑 `applyOptions`：那会带上音量/写档的副作用）。
   sidebarView = sidebarViewOf(options.windowView);
+  // 音量也在开机就按 cfg（或出厂值）作用上 —— 只有音量，不写档、不起停曲子（见 `applyVolumes`）
+  applyVolumes(options);
 }
 
 /**
@@ -1766,6 +1769,10 @@ function loadState(next: GameState, mapOverride: Rich4Map | null = null): void {
   hoverNode = null;
   nodeTip = null; // 换局面/读档时把名牌收掉（Q-HOVER-1）
   amountPage = null;
+  // ★ 读档进棋盘也走 `sub_00401981(1)`（標題读档 `0x401d08 push 1 / jmp 0x401cfe`）⇒ 同样 Post 0x401
+  //   ⇒ 面板页号归零（`0x48be24`）；自動存檔从读进来的那一天重新算起（`autosaveStep`）
+  panelPages.fill(0);
+  autosaveDateKey = null;
   const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? 1];
   camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   screen = 'game';
@@ -2013,22 +2020,27 @@ function holdForActorWalk(reschedule: () => void): boolean {
 let landingPause: LandingPause | null = null;
 
 /**
- * 自動存檔。
- *
- * @source RICH4.CFG offset 4 `auto save: 01 enabled`；原版的自動存檔占
- *   **0 号槽**，所以 LOAD 屏比 SAVE 屏多一行（见 saveload.ts）。
- *
- * ⚠️ 什么时机存、存几次，原版没查证。这里取「每个真人回合开始存一次」——
- *   与時光機的快照同一个时机，也是最有用的那个点。
+ * 自動存檔：上一次「已经算过」的游戏日期（`gameDateKey`）。`null` = 这一局还没看过 ——
+ * 新局（单机 `startGame` / 联机 `onStart`）与读档（`loadState`）都把它清成 `null`。
  */
-function autosaveIfEnabled(): void {
-  if (!options.autoSave) return;
-  if (screen !== 'game') return;
-  if (state.phase !== 'awaitingRoll') return;
-  if (isAiTurn(state)) return;
-  // 联机的局面由服务器的 action 流决定，读档会把本机拉离同步；先不存
+let autosaveDateKey: number | null = null;
+
+/**
+ * 自動存檔 —— **每推进一天存一次**（0 号槽），时机与判据见 `saveload.ts` 的 `autosaveStep`
+ * （@source `0x00419041..0x0041904d`：游标绕回 → 推日期 → 新行动者回合边界 → `cfg+4` 开着就存）。
+ *
+ * ★ 2026-09-24 订正：先前是「每个真人回合开始存一次」（当时注明「原版没查证」）。
+ *   原版不分人机、只在推过日期那一次存。
+ * ⚠️ 联机**不存**：局面由服务器的 action 流决定（服务器那边另有存档），本机 0 号槽
+ *   若存进联机局面，单机读档会把它当单机局开出来。
+ */
+function autosaveIfEnabled(next: GameState): void {
   if (net !== null) return;
-  const err = writeSlot(AUTOSAVE_SLOT, state);
+  // 只在对局里才有 action 施加（`reduceRecorded` 是唯一入口），不会误存標題那份占位局
+  const step = autosaveStep(next, autosaveDateKey);
+  autosaveDateKey = step.key;
+  if (!step.save || !options.autoSave) return;
+  const err = writeSlot(AUTOSAVE_SLOT, next);
   if (err !== null) log(`⚠ 自動存檔失敗：${err}`);
 }
 
@@ -3516,12 +3528,25 @@ function closeAiSettings(commit: boolean): void {
   requestRender();
 }
 
+/**
+ * 只把两档音量作用到播放器上 —— 開機（`loadConfigFromStore`）与設定「確定」（`applyOptions`）共用。
+ *
+ * ★ 2026-09-24：先前开机不调它 ⇒ cfg 里存的音量（包括「关掉」）要等打开設定屏按一次「確定」才生效。
+ *   第十一份 #8 当时不在开机跑 `applyOptions`，顾虑的是它另外那几件（`saveConfigToStore()` 写档、
+ *   「音乐刚打开」时补起播 `playBoardBgm(0)` / `music.stop()`）—— 这里只取音量那三行，那几件照旧只在「確定」时做。
+ * @source 原版的放音例程**每次起播都直接读 cfg**：音效 `cfg+3`（`rich4_sound_effect.asm:451/484/717`）、
+ *   配乐 `cfg+2`（`rich4_media_music.asm:331/344/370`）⇒ 不存在「开机一套、設定屏另一套」。
+ */
+function applyVolumes(o: GameOptions): void {
+  sound.setMuted(o.sound === 0);
+  sound.volume = volumeOf(o.sound);
+  music.setVolume(o.music === 0 ? 0 : volumeOf(o.music) * 0.25);
+}
+
 /** 把設定的取值真的作用到播放器与側欄上 */
 function applyOptions(next: GameOptions): void {
   options = next;
-  sound.setMuted(next.sound === 0);
-  sound.volume = volumeOf(next.sound);
-  music.setVolume(next.music === 0 ? 0 : volumeOf(next.music) * 0.25);
+  applyVolumes(next);
   // 設定里那三项：00 日曆 / 01 小地圖 / 02 兩者輪流（RICH4.CFG offset 5）
   // ⚠️ 「兩者輪流」怎么轮没查证，先当日曆（点一下可以手动换）
   sidebarView = sidebarViewOf(next.windowView);
@@ -4147,6 +4172,9 @@ function reduceRecorded(action: Action): GameState {
     const dayMoved = next.day !== before.day || next.month !== before.month || next.year !== before.year;
     if (dayMoved && action.type !== 'setDate') onDayAdvancedBgm(next);
   }
+  // ★ 自動存檔挂在**这个漏斗**上：真人（`applyAction`）与电脑（`scheduleAi` 的直路）两条都经过这里 ——
+  //   先前挂在 `applyAction` 末尾，电脑那条直路看不到（新一天第一位是电脑时就漏存，浏览器实测）。
+  autosaveIfEnabled(next);
   return next;
 }
 
@@ -4276,7 +4304,6 @@ function applyAction(action: Action): void {
   renderPanel();
   scheduleAi();
   scheduleHumanTurn();
-  autosaveIfEnabled();
 }
 
 /**
@@ -9374,6 +9401,12 @@ function startGame(): void {
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
   pendingCardRoute = null; // 亮牌后待走的那一张同理
+  // ★ 右上角面板四位玩家的页号一起归零 @source `fcn_00417e26` 的 0x401 分支
+  //   `xor edi,edi / mov dword [0x48be24], edi`（4 字节 = 四位）—— 0x401 由
+  //   `_rich4_start_game_loop`（0x401981）进棋盘时 Post 一次（新局 0x401cfe、標題读档 0x401d08 都走它）
+  panelPages.fill(0);
+  // 自動存檔的「上一次算过的日期」清掉：开局那一天不存（`autosaveStep`）
+  autosaveDateKey = null;
   // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
   goButton.reset();
 
@@ -11079,6 +11112,9 @@ function connectOnline(url: string, room: string, name: string): void {
           godAscend = null;
           pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
           pendingCardRoute = null; // 亮牌后待走的那一张同理
+          // ★ 与单机 `startGame()` 同一条：面板页号归零（`0x48be24`）、自動存檔日期清掉
+          panelPages.fill(0);
+          autosaveDateKey = null;
           // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
           goButton.reset();
 
