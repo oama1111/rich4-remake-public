@@ -66,6 +66,7 @@ import { MAX_TOOL_ID, MIN_TOOL_ID, toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
 import { placementBlockedAt } from '../rules/object-landing.ts';
 import { decideStockSell, decideStockTrade } from './stock-policy.ts';
+import { aiDiceCount } from './dice-policy.ts';
 
 /**
  * 性格参数。
@@ -156,7 +157,10 @@ export function decideAction(ctx: AiContext): Action | null {
         case 2:
           return (state.aiBranch === 1 ? decideCard(ctx) : decideTool(ctx)) ?? { type: 'aiNext' };
         default:
-          return { type: 'rollDice' };
+          // ★ 第二十一份：起步前先按 `fcn_004221c0` 改骰子数（VA 0x00418e70，紧接着才
+          //   `0x00418e75 call 0x40dd1f` 起步）—— 背着定時炸彈、引信 < 15 只掷 1 颗等，见 `dice-policy.ts`。
+          //   只在**真要改**时出 `setDiceCount`（同值 reduce 原样退回 ⇒ 会活锁）。
+          return decideDiceCount(state, map) ?? { type: 'rollDice' };
       }
     case 'moving':
       // ★ 路过銀行的 ATM 窗（`pending.kind === 'atm'`）只给**恰好** who_plays == 1 的真人开；
@@ -199,6 +203,19 @@ export function decideAction(ctx: AiContext): Action | null {
     default:
       return null;
   }
+}
+
+/**
+ * 电脑起步前要不要改骰子数（`fcn_004221c0`，见 `dice-policy.ts`）。
+ * 要改就给 `setDiceCount`，否则 null（照常掷骰）。
+ */
+export function decideDiceCount(state: GameState, map: Rich4Map): Action | null {
+  const me = state.players[state.currentPlayer];
+  if (me === undefined) return null;
+  const topo: MapTopology = map;
+  const want = aiDiceCount(state, topo, allEffectiveLands(state, topo), allEffectiveFacilities(state, topo));
+  if (want === null || want === me.ndices) return null;
+  return { type: 'setDiceCount', count: want };
 }
 
 /**
