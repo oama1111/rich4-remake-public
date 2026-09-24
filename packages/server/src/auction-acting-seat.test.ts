@@ -53,8 +53,11 @@ const run = existsSync(MAP) ? it : it.skip;
 // ★ 2026-09-24 換種子（開局惰性擺人：第 2..N 位輪到自己才落地、兩次抽籤挪到各自回合開頭）：
 //   重掃 1..40：12 = 電腦回合真人舉牌 6 次，18 = 真人回合電腦舉牌 7 次。
 // ★ 2026-09-24 可成交量 `0x42915a` 挪到每位玩家回合開頭之後重掃：12 = 8 次、18 = 7 次，兩個種子不用換。
-const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 12;
-const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 18;
+// ★ 2026-09-24 換種子（第 24 份：魔法屋「向後轉」重挑來路要 `rand()`、機器娃娃不掃附身物件並走 `0x40e14d`、
+//   電腦用娃娃的判據不再把別人身上的神明當路上的 —— 對局走向又變了）：重掃 1..40：
+//   14 = 電腦回合真人舉牌 8 次，21 = 真人回合電腦舉牌 8 次（原 12 / 18 都掉到 0）。
+const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 14;
+const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 21;
 const TURNS = 200;
 const HUMANS = 2;
 

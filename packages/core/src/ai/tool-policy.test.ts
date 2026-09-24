@@ -131,6 +131,20 @@ describe('1 機器娃娃（0x00420efa）', () => {
     expect(aiToolChoice(1, view)).toEqual({ kind: 'plain' });
   });
 
+  it('★★ 前方站着一个**背着**小窮神的人 → 不算路上有坏神、不用（第 24 份 `20260924-182247766`）', () => {
+    // @source 0x00420efa 逐格取物件读的是节点反向索引 `node+0x24` 第 3 字节；附身的不在那里
+    //   （同 0x0041b4b4）。本引擎附身物件的 `nodeId` 跟着主人走，先前被当成地上的。
+    const objects = objectsWith(4, 3); // 槽 4 = 类型 5 小窮神
+    objects[4]!.attached = 2;
+    const players = meOnLine(1, 0);
+    players[1] = makePlayer({ index: 1, character: 1, nodeId: 3, lastNodeId: 2, godInfo: 5 });
+    const view = viewOf({ nodes: lineNodes(8), players, state: { objects } });
+    expect(aiToolChoice(1, view)).toBeNull();
+    // 同一只落在地上 ⇒ 照用
+    objects[4]!.attached = 0;
+    expect(aiToolChoice(1, viewOf({ nodes: lineNodes(8), players, state: { objects } }))).toEqual({ kind: 'plain' });
+  });
+
   it('前方有惡犬（类型 11）→ 用', () => {
     const view = viewOf({
       nodes: lineNodes(8),

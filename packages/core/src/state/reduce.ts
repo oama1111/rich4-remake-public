@@ -4830,13 +4830,30 @@ export function useToolAction(
     //   所以这里直接把 `pickNextNode` 交给它，不另造一套（C-ARC-2）。
     const rng = new WatcomRng();
     rng.setState(state.rngState);
-    const swept = runDoll(doll, state.objects, (from, prev) =>
-      pickNextNode(topo, from, prev, rng) ?? 0,
+    // ★★ 扫掉一件 = `release_object` 0x40e14d（0x0041b529）：路障 / 地雷 / 定時炸彈回库存，
+    //   神明离场、搭档另找地方登场（`0x40aa6c` 挑格要 `rand()`）—— 与飛彈炸掉地上物件同一个函数。
+    //   先前这里只把那一件清零：库存不回、搭档不登场。第 24 份试玩回报顺带查出。
+    let world: GameState = state;
+    const swept = runDoll(
+      doll,
+      state.objects,
+      (from, prev) => pickNextNode(topo, from, prev, rng) ?? 0,
+      (objs, index) => {
+        const rel = releaseObject({ players: world.players, objects: objs, tools: world.tools, toolStock: world.toolStock }, index + 1);
+        const after = respawnPartner(
+          { ...world, players: rel.players, objects: rel.objects, tools: rel.tools, toolStock: rel.toolStock, rngState: rng.getState() },
+          topo,
+          rel.partner >= 0 ? { partner: rel.partner, nearNode: rel.formerNode } : null,
+        );
+        rng.setState(after.rngState);
+        world = after;
+        return after.objects;
+      },
     );
     const specialActors = [...state.specialActors];
     specialActors[specialSlotOf(ACTOR_DOLL)] = swept.actor;
     return consume({
-      ...state,
+      ...world,
       objects: swept.objects,
       specialActors,
       rngState: rng.getState(),

@@ -232,14 +232,35 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
     expect(r.objects[0]?.nodeId).toBe(1);
   });
 
-  it('★ 附身状态一并清掉 —— 被请走的神明不该还挂在谁身上', () => {
-    const attached: MapObject[] = [{ type: 1, nodeId: 5, state: 3, attached: 2 }];
+  // ★★ 2026-09-24 订正（第 24 份试玩回报 `20260924-182247766`「我身上背的窮神莫名其妙消失了」）：
+  //   先前这一例断言「附身的神明也被扫掉」—— 与原版相反。娃娃找物件读的是**节点反向索引**
+  //   `node+0x24` 第 3 字节（@source 0x0041b4b4 `and eax,0xff0000 / shr eax,0x10`），附身时
+  //   那一字节被抹掉（`release_object` 0x40e14d 也只在 `attached == 0` 时清它）⇒ 附身的**不在路上**。
+  //   本引擎的附身物件 `nodeId` 跟着主人走（`syncEscortNodes`），光比 `nodeId` 才会误扫。
+  it('★★ 附身的神明**不扫** —— 它不在节点反向索引里（0x0041b4b4），主人照背着', () => {
+    const attached: MapObject[] = [{ type: 5, nodeId: 5, state: 3, attached: 2 }];
     const r = runDoll(
       { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
       attached,
       line,
     );
-    expect(r.objects[0]).toEqual({ type: 1, nodeId: 0, state: 0, attached: 0 });
+    expect(r.objects[0]).toEqual({ type: 5, nodeId: 5, state: 3, attached: 2 });
+    expect(r.cleared).toEqual([]);
+  });
+
+  it('★ 同格有附身的也有地上的：只扫地上那一件（取槽号最大者，同 `objectHandleAt`）', () => {
+    const mixed: MapObject[] = [
+      { type: 5, nodeId: 4, state: 3, attached: 1 },
+      { type: 16, nodeId: 4, state: 0, attached: 0 },
+    ];
+    const r = runDoll(
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
+      mixed,
+      line,
+    );
+    expect(r.cleared).toEqual([{ index: 1, step: 3 }]);
+    expect(r.objects[0]).toEqual(mixed[0]);
+    expect(r.objects[1]!.nodeId).toBe(0);
   });
 
   it('走完就收场 —— 替身不留在场上', () => {
@@ -295,12 +316,52 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
     expect(UNIMPLEMENTED_TOOLS).toEqual([]);
   });
 
-  it('用掉一件，把路上的物件扫光', () => {
-    const s = withDoll(objs(2, 3));
+  /**
+   * 物件表按**槽位**分种类（`OBJECT_TYPE_TABLE`：0..11 神明、16..25 路障…）—— 路障只能在 16 号槽起。
+   * ⚠️ 先前这里把路障摆在 0 / 1 号槽：扫物件改走 `release_object`（0x40e14d）之后，
+   *   `i < 12` 那一支会把「搭档」重新放回棋盘（神明才有的事），那种摆法就不成立了。
+   */
+  function roadblocksAt(...at: number[]): MapObject[] {
+    const out: MapObject[] = Array.from({ length: 16 }, (_, i) => ({ type: i + 1, nodeId: 0, state: 0, attached: 0 }));
+    for (const nodeId of at) out.push({ type: 16, nodeId, state: 0, attached: 0 });
+    return out;
+  }
+
+  it('用掉一件，把路上的物件扫光；路障回库存（`release_object` 0x40e14d：`inc [0x497321]`）', () => {
+    const s = withDoll(roadblocksAt(2, 3));
     const after = reduce(s, { type: 'useTool', toolId: 1 }, topo);
     expect(after).not.toBe(s);
     expect(toolCount(after.tools, 0, 1)).toBe(0);
     expect(after.objects.every((o) => o.nodeId === 0)).toBe(true);
+    // 路障 = 道具 2（`OBJECT_TO_TOOL`）：两件都回库存
+    expect(after.toolStock[2]).toBe((s.toolStock[2] ?? 0) + 2);
+  });
+
+  it('★ 地上的神明被扫走 = `release_object`：它离场、搭档另找地方登场（`i < 12` 那一支）', () => {
+    const objects = roadblocksAt();
+    objects[4] = { type: 5, nodeId: 2, state: 0, attached: 0 }; // 小窮神在 2 号格地上；5 号槽（大窮神）没出场
+    const s = withDoll(objects);
+    const after = reduce(s, { type: 'useTool', toolId: 1 }, topo);
+    // 这条 4 格小路上娃娃来回走（1→4→1→4），搭档一登场就又被踩到 —— 正是原版逐格 `0x40e14d` 的样子
+    const cleared = after.lastNpcWalks[0]!.cleared!;
+    expect(cleared[0]).toEqual({ index: 4, step: 1 });
+    // 小窮神离场后，大窮神（5 号槽）被放上棋盘，随后在第 2 步被扫
+    expect(cleared[1]).toEqual({ index: 5, step: 2 });
+  });
+
+  it('★★ 路上站着一个**背着神明**的玩家：神明不被扫、玩家照背着（第 24 份 `20260924-182247766`）', () => {
+    const objects = roadblocksAt();
+    objects[4] = { type: 5, nodeId: 3, state: 7, attached: 2 }; // 小窮神附在 1 号玩家身上
+    const base = withDoll(objects);
+    const s = {
+      ...base,
+      players: [base.players[0]!, makePlayer({ index: 1, nodeId: 3, lastNodeId: 2, godInfo: 5 })],
+    };
+    const after = reduce(s, { type: 'useTool', toolId: 1 }, topo);
+    expect(toolCount(after.tools, 0, 1)).toBe(0);
+    expect(after.objects[4]).toEqual({ type: 5, nodeId: 3, state: 7, attached: 2 });
+    expect(after.players[1]!.godInfo).toBe(5);
+    expect(after.lastNpcWalks[0]!.cleared).toEqual([]);
   });
 
   it('★ 主人不动 —— 走的是替身，不是他自己', () => {
