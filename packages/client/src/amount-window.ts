@@ -274,7 +274,8 @@ export const AMOUNT_BAR_RECT = { x: 9, y: 41, w: 110, h: 14 } as const;
 export const AMOUNT_BAR_DRAG_SOUND = 9;
 
 /**
- * **鼠标在金额栏上滑动** → 新的值（桌上坐标：棋盘画布内）。
+ * **鼠标在金额栏上滑动** → 新的值（**舞台坐标** 640×480 —— 与 `AMOUNT_WINDOW` 同一套；
+ *   ★ 不是棋盘坐标：2026-09-24 以前 `main.ts` 传的是 `p − LAYOUT.board`，命中区比画出来的栏低 40px）。
  *
  * @source `loc_00453394`（`0x200` 那一支，`cmp dh, 0x10`）全文：
  *   先把窗内坐标夹进 `0 ≤ x ≤ 0x80`、`0 ≤ y ≤ 0xc0`，再查逐像素 id 图

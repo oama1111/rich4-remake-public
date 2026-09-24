@@ -270,6 +270,26 @@ describe('★★ 逐像素 id 图（Panel#0x16）＝ 命中的真值（2026-09-1
     expect(AMOUNT_BAR_DRAG_SOUND).toBe(9);
   });
 
+  it('★★ 金额栏的拖动命中区与**画出来的栏**在同一处（舞台坐标；2026-09-24 订正 40px 错位）', () => {
+    // 画：窗内矩形 + AMOUNT_WINDOW（舞台）→ boardRect 换成棋盘坐标 → 棋盘画布贴在舞台的 LAYOUT.board 处
+    const drawn = boardRect({
+      x: AMOUNT_WINDOW.x + AMOUNT_BAR_RECT.x,
+      y: AMOUNT_WINDOW.y + AMOUNT_BAR_RECT.y,
+      w: AMOUNT_BAR_RECT.w,
+      h: AMOUNT_BAR_RECT.h,
+    });
+    const onStage = { x: drawn.x + LAYOUT.board.x, y: drawn.y + LAYOUT.board.y };
+    // 画出来的栏正中（舞台坐标）拖得动
+    expect(amountBarDragValue(onStage.x + 55, onStage.y + 7, 100)).not.toBeNull();
+    // main.ts 两处调用都直接给舞台坐标（不再减 LAYOUT.board）
+    const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(main).toContain('amountBarDragValue(pt.x, pt.y, max)');
+    expect(main).toContain('amountBarDragValue(p.x, p.y, max)');
+    expect(main).not.toMatch(/amountBarDragValue\(\s*p?t?\.x - LAYOUT\.board\.x/);
+    // 股市屏那一扇也拖得动：股市分支先交给同一支 dragAmountBar 再 return
+    expect(main).toMatch(/if \(stockAmount !== null\) \{\s*dragAmountBar\(p\);/);
+  });
+
   it('★ 窗外的点一律不认；没有 id 图时退回矩形表', () => {
     if (!hasMap || bytes === null) return;
     const map = parseAmountHitMap(bytes);

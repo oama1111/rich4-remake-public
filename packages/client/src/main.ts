@@ -351,7 +351,14 @@ import { interactionUi, type InteractionUi } from './interactions.ts';
 //   取证与全表见 `panel-cancel.ts` 头部。
 import { CANCEL_SOUND, cancelLayerOf, type CancelLayer, type CancelSnapshot } from './panel-cancel.ts';
 // ★ 触屏的「右键」：长按 = 右键 + 可见的「取消」钮（需求方 2026-09-24，见 `touch-input.ts`）
-import { bindTouchGestures, cancelButtonPlacement, dispatchMouse, isTouchDevice, rightClickMeaningful } from './touch-input.ts';
+import {
+  bindTouchGestures,
+  cancelButtonPlacement,
+  dispatchMouse,
+  isTouchDevice,
+  longPressAllowed,
+  rightClickMeaningful,
+} from './touch-input.ts';
 import {
   REMINDER_BGM,
   REMINDER_CANCEL_SOUND,
@@ -2203,6 +2210,19 @@ function rightClickMeaningfulNow(): boolean {
     cancel: cancelSnapshot(),
     pickCancellable: pick?.cancellable ?? false,
     minimapMarker: minimapMarker !== null,
+  });
+}
+
+/**
+ * 触屏：这一次落指，长按算不算右键 —— 金额条 / 数字键盘那几屏不算
+ * （需求方 2026-09-24「在金额条界面就不要用长按取消逻辑了，反正还有按钮」；
+ * 判定本身在 `touch-input.ts` 的 `longPressAllowed`，单测钉着）。
+ */
+function longPressAllowedNow(): boolean {
+  const overlay = activeUiScreen();
+  return longPressAllowed({
+    overlayAmountEntry: overlay === null ? null : (overlay.amountEntry?.(uiEnv()) ?? false),
+    cancel: cancelSnapshot(),
   });
 }
 
@@ -8192,6 +8212,38 @@ let speechSerial = 0;
 let amountBarHeld = false;
 
 /**
+ * 此刻开着的填数窗的上限（金额栏按比例算值要用）；`null` = 没开。
+ * 棋盘上的填数页挂在 `currentDialog()` 那一项上；股市屏那一扇挂在 `stockAmountUi()` 上
+ * （`currentDialog()` 只在 `screen === 'game'` 时有）。
+ */
+function amountBarMax(): number | null {
+  if (amountPage === null) return null;
+  const ui = screen === 'stock' ? stockAmountUi() : currentDialog();
+  return ui?.choices[amountPage.choice]?.amount?.max ?? null;
+}
+
+/**
+ * 按住金额栏拖动（`WM_MOUSEMOVE`）→ 改值。坐标是**舞台坐标**（`AMOUNT_WINDOW` 就是舞台坐标，
+ * 画的时候才经 `boardRect` 换成棋盘坐标）。
+ *
+ * ★ 2026-09-24 订正：先前这里（与 `mousedown` 那一拍）传的是 `p − LAYOUT.board`（棋盘坐标）⇒
+ *   命中区比画出来的栏**低 40px**（落在 MAX/↵ 与 C/0/← 两行之间的缝上），按在栏上拖**不改值**；
+ *   股市屏那一扇则因为 `currentDialog()` 为 `null`、且股市分支提前 return，**完全拖不动**。
+ */
+function dragAmountBar(p: { x: number; y: number }): void {
+  if (amountPage === null) amountBarHeld = false;
+  if (amountPage === null || !amountBarHeld) return;
+  const max = amountBarMax();
+  if (max === null) return;
+  const next = amountBarDragValue(p.x, p.y, max);
+  if (next !== null) {
+    amountPage = { ...amountPage, value: next };
+    sound.play('Effect.mkf', AMOUNT_BAR_DRAG_SOUND);
+    requestRender();
+  }
+}
+
+/**
  * ★★ 第七份试玩回报 #3：角色开口说话时，镜头切到**他**身上。
  *
  * @source `_rich4_player_say`（VA 0x0044ef41）画气泡之前：
@@ -9539,7 +9591,10 @@ function bindInput(): void {
 
     // ── 股市屏：悬停整行（原版 0x200 那条路）@source loc_0042abbb ──
     if (screen === 'stock') {
-      if (stockAmount !== null) return; // 填数页开着：不理会行的悬停
+      if (stockAmount !== null) {
+        dragAmountBar(p); // 填数页开着：只认拖金额栏，不理会行的悬停
+        return;
+      }
       const row = hitStockRow(p.x, p.y);
       if (row !== stockHover) {
         stockHover = row;
@@ -9741,23 +9796,7 @@ function bindInput(): void {
     //     （`0x00452e4b xor dl,dl / mov [0x48cac2],dl`）；同一个字节 == 1 时是拖窗（`0x00453211 cmp dh,1`）。
     //     像素 id 是后面**另一次**查的（`0x004533f9 cmp byte [edx+eax],0x10`）。
     //   ⇒ 条件是两条都要：**在栏上按下的**、且此刻光标**还在栏上**。每换一次放一声音效 9（`[0x482352]`）。
-    if (amountPage === null) amountBarHeld = false;
-    if (amountPage !== null && amountBarHeld) {
-      const barUi = currentDialog();
-      const barAmount = barUi?.choices[amountPage.choice]?.amount;
-      if (barAmount !== undefined) {
-        const next = amountBarDragValue(
-          p.x - LAYOUT.board.x,
-          p.y - LAYOUT.board.y,
-          barAmount.max,
-        );
-        if (next !== null) {
-          amountPage = { ...amountPage, value: next };
-          sound.play('Effect.mkf', AMOUNT_BAR_DRAG_SOUND);
-          requestRender();
-        }
-      }
-    }
+    dragAmountBar(p);
 
     // 对话框盖在棋盘上：它在的时候，先问它
     const dlgHover = currentDialog();
@@ -9955,10 +9994,8 @@ function bindInput(): void {
     amountBarHeld = false;
     if (e.button === 0 && amountPage !== null) {
       const pt = eventToStage(e);
-      const bar = currentDialog()?.choices[amountPage.choice]?.amount;
-      if (pt !== null && bar !== undefined) {
-        amountBarHeld = amountBarDragValue(pt.x - LAYOUT.board.x, pt.y - LAYOUT.board.y, bar.max) !== null;
-      }
+      const max = amountBarMax();
+      if (pt !== null && max !== null) amountBarHeld = amountBarDragValue(pt.x, pt.y, max) !== null;
     }
 
     // ★ W-69：過路費那段闪在播时，任意滑鼠鍵**跳过**它，而且这一下被它吃掉
@@ -12370,7 +12407,8 @@ async function boot(): Promise<void> {
     document.body.classList.add('no-debug');
     bindInput();
     // ★ 触屏：长按 = 右键；点 / 拖照旧派成鼠标事件，由上面同一批监听收（见 `touch-input.ts`）
-    bindTouchGestures(canvas);
+    //   金额条那几屏长按不算右键（`longPressAllowedNow`）
+    bindTouchGestures(canvas, { longPress: longPressAllowedNow });
     // ★ 第一次交互就解锁音频 —— 画布之外的任意一点/任意一键也算（autoplay 政策）
     bindAudioUnlock();
     // ★ W-74：「我还在这儿」——只要有鼠标 / 键盘输入就报一次（自己有 10 秒节流）

@@ -11,6 +11,7 @@ import {
   TouchGesture,
   cancelButtonPlacement,
   isTouchDevice,
+  longPressAllowed,
   rightClickMeaningful,
   type RightClickSnapshot,
 } from './touch-input.ts';
@@ -129,6 +130,37 @@ describe('TouchGesture —— 长按 = 右键，点 / 拖照旧是左键', () =>
   });
 });
 
+describe('TouchGesture —— start(…, longPress = false)：金额条那几屏，长按不算右键', () => {
+  it('按住多久都不派右键：没有定时器；抬手 = 一次点（在按下点）', () => {
+    const g = new TouchGesture();
+    expect(g.start(1, 200, 150, 0, false)).toEqual([]);
+    expect(g.deadline()).toBeNull();
+    expect(g.due(LONG_PRESS_MS * 10)).toEqual([]);
+    expect(g.move(1, 203, 151, LONG_PRESS_MS * 4)).toEqual([]); // 阈值内抖动、时限早过：仍不算长按
+    const out = g.end(1, 203, 151, LONG_PRESS_MS * 6);
+    expect(kinds(out)).toEqual(['move', 'down', 'up', 'click']);
+    for (const o of out) expect([o.x, o.y]).toEqual([200, 150]);
+    expect(g.active()).toBe(false);
+  });
+
+  it('手指在金额条上停了一会儿再拖：照样是拖（按下在起点、逐拍移动、抬手 抬起 → click）', () => {
+    const g = new TouchGesture();
+    g.start(1, 100, 100, 0, false);
+    expect(kinds(g.move(1, 100 + TAP_SLOP_PX + 1, 100, 2 * LONG_PRESS_MS))).toEqual(['move', 'down', 'move']);
+    expect(kinds(g.move(1, 160, 100, 3 * LONG_PRESS_MS))).toEqual(['move']);
+    expect(kinds(g.end(1, 160, 100, 4 * LONG_PRESS_MS))).toEqual(['up', 'click']);
+  });
+
+  it('只管这一次落指：下一次 start 不带 false 就恢复长按', () => {
+    const g = new TouchGesture();
+    g.start(1, 5, 5, 0, false);
+    g.end(1, 5, 5, 2 * LONG_PRESS_MS);
+    g.start(2, 5, 5, 10_000);
+    expect(g.deadline()).toBe(10_000 + LONG_PRESS_MS);
+    expect(g.due(10_000 + LONG_PRESS_MS)).toEqual([{ kind: 'rightClick', x: 5, y: 5 }]);
+  });
+});
+
 // ------------------------------------------------------------
 
 const BASE: CancelSnapshot = {
@@ -207,6 +239,56 @@ describe('rightClickMeaningful —— 与 contextmenu 处理同一串判据', ()
   it('標題 / 開局設定屏 ⇒ 没有', () => {
     expect(rightClickMeaningful(snap({ cancel: { screen: 'title' } }))).toBe(false);
     expect(rightClickMeaningful(snap({ cancel: { screen: 'setup' } }))).toBe(false);
+  });
+});
+
+describe('longPressAllowed —— 金额条 / 数字键盘那几屏长按不算右键（需求方 2026-09-24）', () => {
+  const lp = (overlayAmountEntry: boolean | null, cancel: Partial<CancelSnapshot> = {}): boolean =>
+    longPressAllowed({ overlayAmountEntry, cancel: { ...BASE, ...cancel } });
+
+  it('通用填数窗（棋盘对话框里的填数页：貸款借/還、特別融資、上市企業認購）⇒ 不算', () => {
+    expect(lp(null, { dialog: true, amountPage: true })).toBe(false);
+    // 貸款屏上开的那一页：填数页在貸款屏之上（梯子先收它）
+    expect(lp(null, { dialog: true, amountPage: true, loan: true })).toBe(false);
+  });
+
+  it('股市的買進 / 賣出填数页、銀行 ATM ⇒ 不算', () => {
+    expect(lp(null, { screen: 'stock', stockAmount: true })).toBe(false);
+    expect(lp(null, { atm: true })).toBe(false);
+  });
+
+  it('整屏自己报在填金额（公佈欄出价页 / 拍賣）⇒ 不算；整屏没报 ⇒ 照旧', () => {
+    expect(lp(true, { overlay: true })).toBe(false);
+    expect(lp(false, { overlay: true })).toBe(true);
+  });
+
+  it('其余各屏照旧算：棋盘、訊息框（YES/NO）、貸款屏本身、卡片欄、股市行情页、目标拾取', () => {
+    expect(lp(null)).toBe(true);
+    expect(lp(null, { dialog: true })).toBe(true);
+    expect(lp(null, { loan: true })).toBe(true);
+    expect(lp(null, { screen: 'inventory' })).toBe(true);
+    expect(lp(null, { screen: 'stock' })).toBe(true);
+    // 拾取压在填数页之上时，最上面那一层是拾取 ⇒ 长按照旧可取消拾取
+    expect(lp(null, { pick: true, dialog: true, amountPage: true })).toBe(true);
+  });
+
+  it('「取消」钮不受影响：这几屏右键照样有用（钮照样露着）', () => {
+    expect(rightClickMeaningful(snap({ cancel: { dialog: true, amountPage: true } }))).toBe(true);
+    expect(rightClickMeaningful(snap({ cancel: { screen: 'stock', stockAmount: true } }))).toBe(true);
+    expect(rightClickMeaningful(snap({ cancel: { atm: true } }))).toBe(true);
+  });
+});
+
+describe('UiScreen.amountEntry', () => {
+  it('拍賣屏：整屏都是出价钮 ⇒ 恒为真', async () => {
+    const { auctionScreen } = await import('./auction-screen.ts');
+    expect(auctionScreen.amountEntry?.({} as never)).toBe(true);
+  });
+
+  it('公佈欄：没开 ⇒ 假（出价填数页开着才真，见 board-screen.test）', async () => {
+    const { boardScreen } = await import('./board-screen.ts');
+    const env = { screen: 'game', state: { currentPlayer: 0 } } as never;
+    expect(boardScreen.amountEntry?.(env)).toBe(false);
   });
 });
 
@@ -304,7 +386,7 @@ describe('源码检查：桌面鼠标那一路不变', () => {
     const bind = main.slice(main.indexOf('function bindInput(): void {'), main.indexOf('\nfunction ', main.indexOf('function bindInput(): void {') + 10));
     expect(bind).not.toMatch(/touch|Touch|pointerType/);
     expect(main.match(/bindTouchGestures\(/g)?.length).toBe(1);
-    expect(main).toContain('bindTouchGestures(canvas);');
+    expect(main).toContain('bindTouchGestures(canvas, { longPress: longPressAllowedNow });');
   });
 
   it('触屏模块只听 touch* 事件（鼠标从来不发），contextmenu 那道闸只吞「手指在屏上时」系统自己发的那一个', () => {
@@ -312,6 +394,13 @@ describe('源码检查：桌面鼠标那一路不变', () => {
     expect(listened.sort()).toEqual(['contextmenu', 'touchcancel', 'touchend', 'touchmove', 'touchstart']);
     expect(touch).toContain('if (synthetic.has(e)) return;');
     expect(touch).toContain('if (!g.active() && now() - lastTouchAt > 1_000) return; // 真鼠标的右键：照旧放行');
+  });
+
+  it('长按开关在落指那一刻问（`longPressAllowedNow` = 整屏的 amountEntry + 同一把梯子）', () => {
+    expect(touch).toContain('g.start(t.identifier, t.clientX, t.clientY, now(), longPress())');
+    const fn = main.slice(main.indexOf('function longPressAllowedNow(): boolean {'), main.indexOf('\n}\n', main.indexOf('function longPressAllowedNow(): boolean {')));
+    expect(fn).toContain('overlay.amountEntry?.(uiEnv())');
+    expect(fn).toContain('cancel: cancelSnapshot()');
   });
 
   it('「取消」钮 = 在画布上派一次 contextmenu（同一条右键处理），只在触屏且右键有用时露出', () => {

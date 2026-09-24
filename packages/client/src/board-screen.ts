@@ -2189,6 +2189,11 @@ export const boardScreen: UiScreen = {
     cancelBoardLayer(env);
   },
 
+  /** 出价填数页（通用填数窗：金额条 + 数字键盘）开着 ⇒ 触屏长按不算右键（`touch-input.ts` 的 `longPressAllowed`）*/
+  amountEntry(env: UiScreenEnv): boolean {
+    return boardScreen.active(env) && ui.mode === 'price';
+  },
+
   toolbar(index: number, env: UiScreenEnv): boolean {
     // 工具列第 10 颗「SALE? 房子」就是这一屏 @source VA 0x00417dee `call 0x4284be`
     if (index !== 9) return false;

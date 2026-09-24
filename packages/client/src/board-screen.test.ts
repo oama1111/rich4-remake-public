@@ -993,6 +993,22 @@ describe('挂东西：选物 → 填数 → dispatch(list) @source VA 0x00453544
     expect(boardScreenState().amountPage?.value).toBe(1500);
   });
 
+  it('触屏：只有出价填数页（金额条 + 数字键盘）开着时 amountEntry 为真 ⇒ 长按不算右键', () => {
+    const state = makeGameState({ players: [makePlayer({ index: 0, cards: [7] })] });
+    resetBoardScreen();
+    const h = harness(state);
+    expect(boardScreen.amountEntry?.(h.env)).toBe(false);
+    openBoard(h.env);
+    expect(boardScreen.amountEntry?.(h.env)).toBe(false); // 主屏
+    drag(h.env, 500, 90, 545, 170);
+    expect(boardScreen.amountEntry?.(h.env)).toBe(false); // 选物窗
+    click(h.env, 177, 209);
+    expect(boardScreenState().mode).toBe('price');
+    expect(boardScreen.amountEntry?.(h.env)).toBe(true);
+    boardScreen.contextmenu?.(0, 0, h.env); // 右键 / 「取消」钮 退回
+    expect(boardScreen.amountEntry?.(h.env)).toBe(false);
+  });
+
   it('★ 填数页按「確定」→ noticeBoard op:list，卖价就是填的那个数', () => {
     const state = makeGameState({ players: [makePlayer({ index: 0, cards: [7] })] });
     const h = harness(state);

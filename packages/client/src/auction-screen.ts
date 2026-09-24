@@ -1003,6 +1003,14 @@ export const auctionScreen: UiScreen = {
     return screen !== null && (screen.settling || screen.outcome === null);
   },
 
+  /**
+   * 整屏都是出价钮（PASS / +100…+10000 / 放棄）⇒ 触屏长按不算右键（`touch-input.ts` 的 `longPressAllowed`）。
+   * 原版这一屏本来就不收右键（`rich4_ui_auction.asm` 全文没有 0x205），长按只会把那一下点吞掉。
+   */
+  amountEntry(): boolean {
+    return true;
+  },
+
   tick(env: UiScreenEnv): void {
     const pending = env.state.pending;
     if (pending === null || pending.kind !== 'auction') {

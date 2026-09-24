@@ -16,13 +16,14 @@
  * 本文件分三块：
  *   · `TouchGesture` —— 长按状态机（纯逻辑，时间与坐标都由调用方喂，单测钉着）；
  *   · `rightClickMeaningful` —— 「此刻右键有没有用」（纯函数，与右键处理同一套判据）；
+ *   · `longPressAllowed` —— 「此刻长按算不算右键」（纯函数；金额条那几屏不算）；
  *   · `cancelButtonPlacement` —— 「取消」钮放哪（纯函数）；
  *   · `bindTouchGestures` —— 把状态机接到画布的 touch 事件上（DOM 胶水，浏览器里验收）。
  *
  * ⚠️ 桌面鼠标一行不变：本模块只听 `touchstart/move/end/cancel`，鼠标从来不发这几种。
  */
 
-import { cancelLayerOf, type CancelSnapshot } from './panel-cancel.ts';
+import { cancelLayerOf, type CancelLayer, type CancelSnapshot } from './panel-cancel.ts';
 
 // ============================================================
 //  长按状态机
@@ -44,7 +45,15 @@ type Phase =
   /** 没有手指 */
   | { readonly k: 'idle' }
   /** 一根手指按着、还没动、还没到时限 —— 这时**什么都没派**（点还是长按还说不准）*/
-  | { readonly k: 'pending'; readonly id: number; readonly x0: number; readonly y0: number; readonly t0: number }
+  | {
+      readonly k: 'pending';
+      readonly id: number;
+      readonly x0: number;
+      readonly y0: number;
+      readonly t0: number;
+      /** 这一次按下时长按**算不算**右键（金额条那几屏不算，见 `longPressAllowed`）*/
+      readonly lp: boolean;
+    }
   /** 挪过阈值 ⇒ 已派了按下，之后逐拍派移动，抬手派抬起 */
   | { readonly k: 'drag'; readonly id: number; readonly x: number; readonly y: number }
   /** 长按已派出右键 ⇒ 这根手指剩下的一切（移动、抬手）都吞掉 */
@@ -62,6 +71,9 @@ type Phase =
  * | 长按（按住 ≥ 500 ms，挪动 ≤ 10 px）| 到点：右键；抬手**什么都不派**（后面那一下点被吞掉）|
  * | 第二根手指在「还没定性」时落下 | 这一轮作废，什么都不派，直到全部手指离开 |
  *
+ * ★ `start(…, longPress = false)`（金额条那几屏，见 `longPressAllowed`）：这一次按下**没有长按**，
+ *   按多久都只是「点」或「拖」—— 手指搁在金额条上不会把整页取消掉（需求方 2026-09-24）。
+ *
  * ★ 按下**推迟**到能判定的那一刻才派 —— 否则长按时左键早已按下（工具列会记下按下号、
  *   抬手就成立），后面那一下右键再取消也晚了。代价是点按的「按下图」只闪一帧。
  */
@@ -71,7 +83,7 @@ export class TouchGesture {
 
   /** 下一次该叫 `due()` 的时刻；`null` = 不用定时 */
   deadline(): number | null {
-    return this.phase.k === 'pending' ? this.phase.t0 + LONG_PRESS_MS : null;
+    return this.phase.k === 'pending' && this.phase.lp ? this.phase.t0 + LONG_PRESS_MS : null;
   }
 
   /** 此刻有没有手指在屏上（给「吞掉系统长按菜单」那道闸用）*/
@@ -79,11 +91,12 @@ export class TouchGesture {
     return this.fingers.size > 0;
   }
 
-  start(id: number, x: number, y: number, t: number): GestureOut[] {
+  /** @param longPress 这一次按下长按算不算右键（落指那一刻定，之后不再变）*/
+  start(id: number, x: number, y: number, t: number, longPress = true): GestureOut[] {
     this.fingers.add(id);
     const p = this.phase;
     if (p.k === 'idle' && this.fingers.size === 1) {
-      this.phase = { k: 'pending', id, x0: x, y0: y, t0: t };
+      this.phase = { k: 'pending', id, x0: x, y0: y, t0: t, lp: longPress };
     } else if (p.k === 'pending') {
       // 第二根手指：双指缩放 / 误触 —— 既不是点也不是长按
       this.phase = { k: 'void' };
@@ -96,7 +109,7 @@ export class TouchGesture {
     const p = this.phase;
     if (p.k === 'pending' && p.id === id) {
       // 时限已过而定时器还没来得及跑：按长按算（与 `due` 同一条判据）
-      if (t - p.t0 >= LONG_PRESS_MS) return this.fire(p);
+      if (p.lp && t - p.t0 >= LONG_PRESS_MS) return this.fire(p);
       if (Math.hypot(x - p.x0, y - p.y0) <= TAP_SLOP_PX) return [];
       this.phase = { k: 'drag', id, x, y };
       return [
@@ -117,7 +130,7 @@ export class TouchGesture {
     const p = this.phase;
     let out: GestureOut[] = [];
     if (p.k === 'pending' && p.id === id) {
-      if (t - p.t0 >= LONG_PRESS_MS) {
+      if (p.lp && t - p.t0 >= LONG_PRESS_MS) {
         out = this.fire(p);
       } else {
         out = [
@@ -157,7 +170,7 @@ export class TouchGesture {
   /** 定时器到点 */
   due(t: number): GestureOut[] {
     const p = this.phase;
-    if (p.k !== 'pending' || t - p.t0 < LONG_PRESS_MS) return [];
+    if (p.k !== 'pending' || !p.lp || t - p.t0 < LONG_PRESS_MS) return [];
     return this.fire(p);
   }
 
@@ -206,6 +219,43 @@ export function rightClickMeaningful(s: RightClickSnapshot): boolean {
   if (layer === 'pick') return s.pickCancellable;
   if (layer !== null) return true;
   return s.cancel.screen === 'game' && s.minimapMarker;
+}
+
+// ============================================================
+//  「此刻长按算不算右键」—— 金额条那几屏不算
+// ============================================================
+
+/**
+ * 画着**金额条 / 数字键盘**的那几层（`cancelLayerOf` 的口径）：
+ *   · `amountPage`  —— 通用填数窗 `fcn_00453544`（棋盘对话框里的填数页；貸款屏借/還、
+ *     特別融資、上市企業認購都开这一扇）；
+ *   · `stockAmount` —— 同一扇填数窗，借股市屏开的（買進 / 賣出股数）；
+ *   · `atm`         —— 銀行 ATM（`Panel.mkf` #24，自己的数字键盘 + 拖动金额栏）。
+ * 整屏（`UiScreen`）那一类由各屏自己报 `amountEntry`（公佈欄的出价填数页、拍賣的加价钮）。
+ */
+export const AMOUNT_ENTRY_LAYERS: ReadonlySet<CancelLayer> = new Set<CancelLayer>(['amountPage', 'stockAmount', 'atm']);
+
+export interface LongPressSnapshot {
+  /** 接管整屏的那一屏此刻在不在填金额（`UiScreen.amountEntry`，没给就当不在）；`null` = 没有整屏 */
+  readonly overlayAmountEntry: boolean | null;
+  /** 通用取消梯子的输入（与 `cancelTopPanel()` 同一份）*/
+  readonly cancel: CancelSnapshot;
+}
+
+/**
+ * 这一次落指，**长按算不算右键**。
+ *
+ * ★ 需求方 2026-09-24：「在金额条界面就不要用长按取消逻辑了，反正还有按钮」——
+ *   金额条要按住拖，手指在条上一停过 500 ms 就被当成右键、把整页填数窗取消掉。
+ *   这几屏上长按**整个关掉**（不是只在条上关）：按多久都只是点 / 拖；
+ *   取消走「取消」钮（`rightClickMeaningful` 不受影响，钮照样露着）或 ESC。
+ *
+ * ⚠️ 只影响触屏手势；桌面鼠标右键一行不变。
+ */
+export function longPressAllowed(s: LongPressSnapshot): boolean {
+  if (s.overlayAmountEntry === true) return false;
+  const layer = cancelLayerOf(s.cancel);
+  return layer === null || !AMOUNT_ENTRY_LAYERS.has(layer);
 }
 
 /** 这台设备是不是触屏（粗指针或有触点）—— 只有触屏才露「取消」钮 */
@@ -343,7 +393,16 @@ export function dispatchMouse(
  * ★ Android Chrome 长按会自己发一个 `contextmenu`：手指在屏上时那一个吞掉
  *   （捕获相、只认不是本模块派的），不然长按一次会取消两层。
  */
-export function bindTouchGestures(canvas: HTMLCanvasElement, now: () => number = () => performance.now()): TouchGesture {
+export function bindTouchGestures(
+  canvas: HTMLCanvasElement,
+  opts: {
+    /** 落指那一刻问一次：长按算不算右键（金额条那几屏不算，见 `longPressAllowed`）*/
+    readonly longPress?: () => boolean;
+    readonly now?: () => number;
+  } = {},
+): TouchGesture {
+  const now = opts.now ?? (() => performance.now());
+  const longPress = opts.longPress ?? (() => true);
   const g = new TouchGesture();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastTouchAt = -Infinity;
@@ -375,11 +434,15 @@ export function bindTouchGestures(canvas: HTMLCanvasElement, now: () => number =
     arm();
   };
 
-  const opts: AddEventListenerOptions = { passive: false };
-  canvas.addEventListener('touchstart', (e) => each(e, (t) => g.start(t.identifier, t.clientX, t.clientY, now())), opts);
-  canvas.addEventListener('touchmove', (e) => each(e, (t) => g.move(t.identifier, t.clientX, t.clientY, now())), opts);
-  canvas.addEventListener('touchend', (e) => each(e, (t) => g.end(t.identifier, t.clientX, t.clientY, now())), opts);
-  canvas.addEventListener('touchcancel', (e) => each(e, (t) => g.cancel(t.identifier)), opts);
+  const lo: AddEventListenerOptions = { passive: false };
+  canvas.addEventListener(
+    'touchstart',
+    (e) => each(e, (t) => g.start(t.identifier, t.clientX, t.clientY, now(), longPress())),
+    lo,
+  );
+  canvas.addEventListener('touchmove', (e) => each(e, (t) => g.move(t.identifier, t.clientX, t.clientY, now())), lo);
+  canvas.addEventListener('touchend', (e) => each(e, (t) => g.end(t.identifier, t.clientX, t.clientY, now())), lo);
+  canvas.addEventListener('touchcancel', (e) => each(e, (t) => g.cancel(t.identifier)), lo);
   canvas.addEventListener(
     'contextmenu',
     (e) => {

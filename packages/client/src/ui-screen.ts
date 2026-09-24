@@ -189,6 +189,14 @@ export interface UiScreen {
   contextmenuLive?(env: UiScreenEnv): boolean;
 
   /**
+   * 这一屏此刻是不是在**填金额**（金额条 / 数字键盘 / 加价钮）—— 纯查询，不许改状态。
+   * 只给触屏手势用：为真时长按**不算**右键（见 `touch-input.ts` 的 `longPressAllowed`，
+   * 需求方 2026-09-24「在金额条界面就不要用长按取消逻辑了，反正还有按钮」）。
+   * 不给 = 不在填金额。
+   */
+  amountEntry?(env: UiScreenEnv): boolean;
+
+  /**
    * 键盘按下（原版 `WM_KEYDOWN` = **0x101**）。
    *
    * ★ 为什么要有这个出口：原版那一族**可跳过的等待**（`fcn_004544f6` /
