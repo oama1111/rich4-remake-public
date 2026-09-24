@@ -83,3 +83,35 @@ describe('★★ 魔法屋「向後轉」= `0x40c78c`：掉头 **并重挑来路
     expect(hit).toBeGreaterThan(0);
   });
 });
+
+describe('★★ 轉向卡（6）走同一个 `0x40c78c`（0x00443025）：reducer 路径同样重挑来路', () => {
+  it('★ 1 号对 0 号出轉向卡 ⇒ 朝向 +4、来路换到另一头（3 号），随机流前进；卡扣掉', () => {
+    const t = table(WHO_PLAYS_HUMAN);
+    const s: GameState = {
+      ...t,
+      phase: 'awaitingRoll',
+      players: t.players.map((p, i) => (i === 1 ? { ...p, cards: [6] } : p)),
+    };
+    const r = reduce(s, { type: 'useCard', cardId: 6, target: { kind: 'player', index: 0 } }, topo);
+    expect(r.players[0]!.direction).toBe(7);
+    expect(r.players[0]!.lastNodeId).toBe(3);
+    expect(r.players[1]!.cards).toEqual([]);
+    expect(r.rngState).not.toBe(s.rngState);
+    const rng = new WatcomRng();
+    rng.setState(r.rngState);
+    expect(pickNextNode(topo, 2, r.players[0]!.lastNodeId, rng)).toBe(1);
+  });
+
+  it('★ 对自己出（anyPlayer 组可对自己）：同样掉头 + 重挑来路', () => {
+    const t = table(WHO_PLAYS_HUMAN);
+    const s: GameState = {
+      ...t,
+      phase: 'awaitingRoll',
+      players: t.players.map((p, i) => (i === 1 ? { ...p, cards: [6] } : p)),
+    };
+    const r = reduce(s, { type: 'useCard', cardId: 6, target: { kind: 'player', index: 1 } }, topo);
+    expect(r.players[1]!.direction).toBe(7);
+    // 1 号站在 3 号格、从 2 号来 ⇒ 另一头 = 4 号
+    expect(r.players[1]!.lastNodeId).toBe(4);
+  });
+});

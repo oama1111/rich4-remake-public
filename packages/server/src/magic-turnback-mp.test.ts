@@ -55,4 +55,30 @@ describe('★★ 联机：魔法屋向後轉两端一致', () => {
     // 没被点到的人不动
     expect(room.state.players[3]!.lastNodeId).toBe(a);
   });
+
+  run('★ 轉向卡（同一个 0x40c78c，0x00443025）：真人对 2 号出牌 ⇒ 服务器与镜像指纹相同；2 号朝向 +4、来路换到另一头', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const node = map.nodes.find((n) => n.adjacent.length === 2 && n.walkable)!;
+    const [a, b] = node.adjacent as [number, number];
+    const base = newGame({ map, players: seats().map((s) => ({ character: s.character, kind: s.kind })), seed: 9, mode: 'multiplayer' });
+    const state: GameState = {
+      ...base,
+      currentPlayer: 1,
+      phase: 'awaitingRoll',
+      pending: null,
+      players: base.players.map((p, i) => ({ ...p, whoPlays: 1, nodeId: node.id, lastNodeId: a, direction: 2, cards: i === 1 ? [6] : [] })),
+    };
+    const room = new Room({ id: 'TURNC1', map, globalMapId: 0, seed: 9, seats: seats(), options: LOBBY_DEFAULT_OPTIONS, base: { state, snapshot: '' } });
+    room.start();
+    const r = room.submit(1, { type: 'useCard', cardId: 6, target: { kind: 'player', index: 2 } });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const mirror = reduce(state, r.broadcast.action, topo);
+    expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+    expect(room.state.players[2]!.direction).toBe(6);
+    expect(room.state.players[2]!.lastNodeId).toBe(b);
+    expect(mirror.players[2]).toEqual(room.state.players[2]);
+    expect(room.state.players[1]!.cards).toEqual([]);
+  });
 });

@@ -291,6 +291,7 @@ import {
   CARD_FLIGHT_TYPE,
   THROW_SETTLE_MS,
   cardFlightPlan,
+  cardLandSfx,
   flightDone,
   makeObjectFlight,
   objectFacing,
@@ -4867,7 +4868,7 @@ function startActionFx(action: Action, before: GameState): void {
   // ★★ 第十二份試玩回報：原版用卡是「亮牌 1500 ms（`fcn_00441f73`，阻塞）→ 卡片函数」，
   //   飞行在卡片函数**里面** ⇒ 先挂起，等亮牌收屏再起（`tickPendingCardFlight`）。
   //   亮牌本身由事件框那一屏认 `lastCardPlay` 起播（`event-box-screen.ts` 的 `cardUseView`）。
-  if (action.type === 'useCard') pendingCardFlight = { before, action };
+  if (action.type === 'useCard') pendingCardFlight = { before, action, landSfx: cardLandSfx(action.cardId, before, state) };
   // ★★ 「踩到惡犬」那一段（試玩回報：踩到狗直接進醫院、没有咬人动画/配音）——
   //   **必须排在 `startConfineFx` 之前**：原版那一支先把 0x214 播完、才走到
   //   `send_to_hospital` 里的 0x20c（VA 0x0041b837 → 0x0043ed59）。
@@ -7277,6 +7278,8 @@ function beginObjectFlight(args: {
 let pendingCardFlight: {
   before: GameState;
   action: { type: 'useCard'; cardId: number; target?: CardTarget };
+  /** 卡片函数里飞完之后放的那一声（轉向卡 = 56，见 `throw-fx.ts` 的 `cardLandSfx`）；`null` = 没有 */
+  landSfx: number | null;
 } | null = null;
 
 function tickPendingCardFlight(): void {
@@ -7289,18 +7292,34 @@ function tickPendingCardFlight(): void {
     return;
   }
   pendingCardFlight = null;
-  startCardFlight(p.before, p.action);
+  startCardFlight(p.before, p.action, p.landSfx);
   requestRender();
 }
 
+/**
+ * 起卡片那一段飞行；`landSfx` 是卡片函数里**飞完之后**那一声（轉向卡 = 56）。
+ * ★ 轉向卡：飞完（含 100 ms 停顿）才 `0x40c78c`（0x00443025）；真人出牌不飞（0x00442fe4）⇒ 当场响。
+ */
 function startCardFlight(
   before: GameState,
   action: { type: 'useCard'; cardId: number; target?: CardTarget },
+  landSfx: number | null,
 ): void {
+  const flying = beginCardFlight(before, action);
+  if (landSfx === null) return;
+  if (flying) objectFlightSound = landSfx;
+  else sound.play('Effect.mkf', landSfx);
+}
+
+/** @returns 真的起播了一段飞行（飞完那一刻 `finishObjectFlight` 放 `objectFlightSound`）*/
+function beginCardFlight(
+  before: GameState,
+  action: { type: 'useCard'; cardId: number; target?: CardTarget },
+): boolean {
   const me = before.players[before.currentPlayer];
-  if (me === undefined) return;
+  if (me === undefined) return false;
   const here = map.nodes[me.nodeId - 1];
-  if (here === undefined) return;
+  if (here === undefined) return false;
 
   const plan: CardFlightPlan | null = cardFlightPlan({
     cardId: action.cardId,
@@ -7339,13 +7358,13 @@ function startCardFlight(
       },
     },
   });
-  if (plan === null) return;
+  if (plan === null) return false;
 
   const vp = { w: LAYOUT.board.w, h: LAYOUT.board.h };
   const a = worldToScreen(plan.from.x, plan.from.y, camera, vp);
   const b = worldToScreen(plan.to.x, plan.to.y, camera, vp);
   if (plan.sprite.kind === 'card') {
-    beginObjectFlight({
+    return beginObjectFlight({
       objectIndex: CARD_FLIGHT_NO_OBJECT,
       type: CARD_FLIGHT_TYPE,
       facing: 0,
@@ -7354,9 +7373,8 @@ function startCardFlight(
       to: b,
       settleMs: plan.settleMs,
     });
-    return;
   }
-  beginObjectFlight({
+  const started = beginObjectFlight({
     objectIndex: plan.sprite.objectIndex - 1,
     type: plan.sprite.type,
     facing: plan.sprite.facing,
@@ -7364,8 +7382,10 @@ function startCardFlight(
     to: b,
     settleMs: plan.settleMs,
   });
-  // ★ 卡片飞行**没有**收尾音效：23 个调用点后面都没有 `play_sound_effect`
+  // ★ 卡片飞行本身**没有**收尾音效：23 个调用点后面都没有直接的 `play_sound_effect`
   //   （`xref 0x4542ce` 在这 23 个点之后一条都没有）—— 与放置類道具不同。
+  //   唯一的例外是轉向卡：飞完调 `0x40c78c`，**那个函数**开头放 56（见 `cardLandSfx`）。
+  return started;
 }
 
 // ============================================================

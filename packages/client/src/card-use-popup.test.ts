@@ -186,7 +186,8 @@ describe('★ main.ts 的接线：亮牌在卡片函数**之前**、阻塞（源
   it('★ 卡片飞行挂起，等亮牌收屏才起（`tickPendingCardFlight`）', () => {
     const at = src.indexOf('function startActionFx(');
     const body = src.slice(at, src.indexOf('\n}\n', at));
-    expect(body).toContain("if (action.type === 'useCard') pendingCardFlight = { before, action };");
+    // ★ 第 24 份：挂起时顺带记下「飞完那一声」（轉向卡 56，`cardLandSfx`）
+    expect(body).toContain("if (action.type === 'useCard') pendingCardFlight = { before, action, landSfx: cardLandSfx(action.cardId, before, state) };");
     expect(body).not.toContain('startCardFlight(before, action)');
     expect(src).toContain('function tickPendingCardFlight(): void {');
     expect(src).toContain('if (screen === \'game\') tickPendingCardFlight();');

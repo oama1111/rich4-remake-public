@@ -714,3 +714,33 @@ export function attachedOwnerVisible(blocking: {
     && blocking.inPrison === 0
     && blocking.inHospital === 0;
 }
+
+// ============================================================
+//  轉向卡（6）飞完之后那一声 —— `0x40c78c` 开头的音效 56
+// ============================================================
+
+/**
+ * 掉头函数 `0x40c78c` 开头放的音效号。
+ * @source 0x0040c793 `push 0` / 0x0040c795 `push 0x4823f2` / 0x0040c79a `call 0x4542ce`；`[0x4823f2]` = **56**。
+ *   全 exe 只有两个调用点：轉向卡 0x00443025、魔法屋向後轉 0x004321d0（后者走訊息框的 `closeSfx`）。
+ */
+export const TURN_AROUND_SFX = 56;
+
+/**
+ * 这一次用卡落地之后（卡片飞完 / 不飞就是当场）要不要放掉头那一声。
+ *
+ * @source 轉向卡函数：出牌台词 0x00442fc1 → 选目标 → 电脑才飞 0x0044301c `animate_object(…, 100)`
+ *   （真人 `who_plays == 1` 跳过，0x00442fe4）→ ★ 0x00443025 `call 0x40c78c` = 音效 56 + 掉头 + 重挑来路。
+ *   ⇒ 声音在**飞行（含 100 ms 收尾停顿）之后**；判据看状态：有人 / 惡人的朝向真的变了 = 0x40c78c 真的跑了。
+ */
+export function cardLandSfx(
+  cardId: number,
+  before: { players: readonly { direction: number }[]; specialActors: readonly { direction: number }[] },
+  after: { players: readonly { direction: number }[]; specialActors: readonly { direction: number }[] },
+): number | null {
+  if (cardId !== 6) return null;
+  const turned =
+    after.players.some((p, i) => p.direction !== before.players[i]?.direction) ||
+    after.specialActors.some((a, i) => a.direction !== before.specialActors[i]?.direction);
+  return turned ? TURN_AROUND_SFX : null;
+}
