@@ -223,6 +223,23 @@ describe('DisplayList（逐帧指令去重）', () => {
     expect(dl.endFrame()).toBe(true);
   });
 
+  it('★ W-80 §8：关掉的位图上一帧 / 这一帧都没画过 ⇒ 不强制重画（过场超分帧窗口换帧时关旧帧）', () => {
+    const { dl, ctx } = setup();
+    const OLD = { id: 'old' };
+    for (let i = 0; i < 2; i++) {
+      dl.beginFrame();
+      drawStatic(ctx);
+      if (i === 0) dl.beforeBitmapClose(OLD);
+      dl.endFrame();
+    }
+    expect(dl.stats.skipped).toBe(1);
+    // 画过的那一张关掉 ⇒ 照旧强制
+    dl.beforeBitmapClose(SPRITE);
+    dl.beginFrame();
+    drawStatic(ctx);
+    expect(dl.endFrame()).toBe(true);
+  });
+
   it('压着不执行时 measureText 仍按本帧设的字体量（走镜像）', () => {
     const { dl, ctx } = setup();
     const widths: number[] = [];

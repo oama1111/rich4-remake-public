@@ -244,6 +244,8 @@ describe('★ 超分素材判据（W-80 §8）', () => {
   it('路径白名单：`<档>/<资源>-<图>.png`', () => {
     expect(isAllowedHdPath('Data/191-0.png')).toBe(true);
     expect(isAllowedHdPath('jump/47-12.png')).toBe(true);
+    expect(isAllowedHdPath('jump/47-12.webp')).toBe(true);
+    expect(isAllowedHdPath('jump/47-12.gif')).toBe(false);
     expect(isAllowedHdPath('Data/191-0.PNG')).toBe(false);
     expect(isAllowedHdPath('Data/../191-0.png')).toBe(false);
     expect(isAllowedHdPath('Speaking/1-0.png')).toBe(false);

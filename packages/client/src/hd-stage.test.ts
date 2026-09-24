@@ -19,13 +19,13 @@ import {
 
 /** 记下每一次 drawImage 的参数与当时的平滑开关 */
 function fakeCtx() {
-  const calls: { args: unknown[]; smoothing: boolean }[] = [];
+  const calls: { args: unknown[]; smoothing: boolean; quality: ImageSmoothingQuality }[] = [];
   const transforms: number[][] = [];
   const ctx = {
     imageSmoothingEnabled: false,
     imageSmoothingQuality: 'low' as ImageSmoothingQuality,
     drawImage(...args: unknown[]) {
-      calls.push({ args, smoothing: this.imageSmoothingEnabled });
+      calls.push({ args, smoothing: this.imageSmoothingEnabled, quality: this.imageSmoothingQuality });
     },
     setTransform(...m: number[]) {
       transforms.push(m);
@@ -89,6 +89,27 @@ describe('drawSpriteRegion', () => {
     drawSpriteRegion(ctx, hd4, 1, 2, 3, 4, 5, 6, 7, 8);
     expect(calls[0]!.args).toEqual([hd4.bitmap, 4, 8, 12, 16, 5, 6, 7, 8]);
     expect(calls[0]!.smoothing).toBe(true);
+  });
+});
+
+describe('★ 插值档位：只有大幅缩小才用 high（软件光栅下 high 很贵，W-80 §8）', () => {
+  const withScale = (a: number) => {
+    const f = fakeCtx();
+    (f.raw as unknown as { getTransform: () => { a: number } }).getTransform = () => ({ a });
+    return f;
+  };
+  it('4× 图画到 1× 舞台（每设备像素 4 个位图像素）→ high', () => {
+    const { ctx, calls } = withScale(1);
+    drawSprite(ctx, hd4, 0, 0);
+    expect(calls[0]!.quality).toBe('high');
+  });
+  it('4× 图画到 3× 舞台 / 2× 图画到 3× 舞台 → low；画完恢复原来的档位', () => {
+    const { ctx, calls, raw } = withScale(3);
+    drawSprite(ctx, hd4, 0, 0);
+    drawSprite(ctx, { bitmap: bmp(40, 20), width: 20, height: 10 }, 0, 0);
+    expect(calls.map((c) => c.quality)).toEqual(['low', 'low']);
+    expect(raw.imageSmoothingQuality).toBe('low');
+    expect(raw.imageSmoothingEnabled).toBe(false);
   });
 });
 

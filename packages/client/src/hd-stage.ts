@@ -92,7 +92,23 @@ export function drawSprite(
     else ctx.drawImage(s.bitmap, dx, dy, dw, dh);
     return;
   }
-  withSmoothing(ctx, () => ctx.drawImage(s.bitmap, dx, dy, dw ?? s.width, dh ?? s.height));
+  const w = dw ?? s.width;
+  withSmoothing(ctx, smoothingFor(ctx, r, w / s.width), () => ctx.drawImage(s.bitmap, dx, dy, w, dh ?? s.height));
+}
+
+/**
+ * 这一次缩放该用多贵的插值。
+ *
+ * ★ 只有**大幅缩小**（位图 ≥ 2 个像素落到 1 个设备像素上，如 4× 母版画到 1× 舞台）才要 `'high'`
+ *   （防闪烁锯齿）；放大或小幅缩小用 `'low'`（双线性）就够。`'high'` 在软件光栅（无 GPU 的机器、
+ *   headless）下极贵：开场过场 2× 帧贴到 3× 舞台，实测每帧 86 ms → 见 W-80 §8 的量测。
+ *
+ * @param r    位图像素 / 逻辑像素
+ * @param k    目标尺寸 / 逻辑尺寸（按逻辑尺寸画 = 1）
+ */
+function smoothingFor(ctx: CanvasRenderingContext2D, r: { x: number; y: number }, k: number): ImageSmoothingQuality {
+  const devicePerBitmapPx = (surfaceScaleOf(ctx) * Math.abs(k)) / Math.max(r.x, r.y);
+  return devicePerBitmapPx < 0.5 ? 'high' : 'low';
 }
 
 /**
@@ -116,14 +132,16 @@ export function drawSpriteRegion(
     ctx.drawImage(s.bitmap, sx, sy, sw, sh, dx, dy, dw, dh);
     return;
   }
-  withSmoothing(ctx, () => ctx.drawImage(s.bitmap, sx * r.x, sy * r.y, sw * r.x, sh * r.y, dx, dy, dw, dh));
+  withSmoothing(ctx, smoothingFor(ctx, r, sw === 0 ? 1 : dw / sw), () =>
+    ctx.drawImage(s.bitmap, sx * r.x, sy * r.y, sw * r.x, sh * r.y, dx, dy, dw, dh),
+  );
 }
 
-function withSmoothing(ctx: CanvasRenderingContext2D, draw: () => void): void {
+function withSmoothing(ctx: CanvasRenderingContext2D, quality: ImageSmoothingQuality, draw: () => void): void {
   const prev = ctx.imageSmoothingEnabled;
   const prevQ = ctx.imageSmoothingQuality;
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
+  ctx.imageSmoothingQuality = quality;
   try {
     draw();
   } finally {

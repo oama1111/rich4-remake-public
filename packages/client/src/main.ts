@@ -731,6 +731,7 @@ import {
 } from './setup.ts';
 import {
   HD_STORAGE_KEY,
+  MAX_SURFACE_SCALE,
   drawSprite,
   drawSurface,
   hdStageRequested,
@@ -5530,10 +5531,16 @@ let hdStage = (() => {
  * 这台设备的倍率上限（触屏封到 2，见 `TOUCH_SURFACE_SCALE_CAP`）—— 开机时判一次：
  * 手机 / 平板不会中途变成桌面。
  */
-const hdScaleCap = surfaceScaleCap({
+const hdDevice = {
   coarsePointer: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches,
   maxTouchPoints: navigator.maxTouchPoints || 0,
-});
+};
+const hdScaleCap = surfaceScaleCap(hdDevice);
+/**
+ * ★ 触屏设备（手机 / 平板）不拉超分过场帧 —— 需求方 2026-09-24 的流量预算：移动端整局高清额外下载
+ *   ≤ ~5 MB（高清舞台本身不花流量，钱夫人 136 帧全拉也才 2.2 MB）；桌面 ≤ ~30 MB（过场 WebP 一局约 4 MB）。
+ */
+const hdFlics = hdScaleCap === MAX_SURFACE_SCALE;
 
 /** 三块离屏画布当前的像素倍率（1 = 改造前的 640×480） */
 let surfaceScale = 1;
@@ -12762,7 +12769,7 @@ async function boot(): Promise<void> {
     //   那份 3.8 MB 的清单白拉（任务书 §1 末条）。
     // ★ 高清关着（`?hd=0` / 门厅里取消勾选）就一次都不拉超分清单 —— 与改造前一致
     hdSource = hdStage ? await loadHdSource(hdBase(), hdManifestVersion) : null;
-    sprites = new SpriteCache(archives, hdSource === null ? {} : { hd: hdSource });
+    sprites = new SpriteCache(archives, { hdFlics, ...(hdSource === null ? {} : { hd: hdSource }) });
     // ★ 高清图是后台拉、到了原地换位图（先原图、后高清）—— 换上来那一刻重画一帧
     sprites.addUpgradeListener(() => requestRender());
     if (hdSource !== null) log('HD 素材：已接上（缺图的按图回退原图）');
@@ -12892,6 +12899,23 @@ async function boot(): Promise<void> {
          */
         /** ★ 第十九份：绘制指令去重的计数（帧 / 真画 / 跳过 / 自检不符）—— 给 `tools/perf-mobile-pw.mjs` 用 */
         renderStats: () => ({ ...displayList.stats }),
+        /**
+         * ★ W-80 §8：高清舞台此刻的状态 —— 开没开、倍率 / 上限、三块离屏画布的像素、超分来源接没接。
+         *   给 `tools/perf-mobile-pw.mjs`（`HD=1`）量「高清把画布像素放大了多少」用。
+         */
+        hdStats: () => ({
+          hd: hdStage,
+          scale: surfaceScale,
+          cap: hdScaleCap,
+          flics: hdFlics,
+          hdSource: hdSource !== null,
+          stage: [stage.width, stage.height],
+          board: [boardCanvas.width, boardCanvas.height],
+          hud: [hudCanvasOff.width, hudCanvasOff.height],
+          surfacePx: stage.width * stage.height + boardCanvas.width * boardCanvas.height + hudCanvasOff.width * hudCanvasOff.height,
+        }),
+        /** ★ W-80 §8：门厅那个勾选框的同一条路（自动化切换高清用） */
+        setHd: (on: boolean) => setHdStage(on),
         /** 此刻接管整屏的那一屏的 id（`null` = 棋盘）—— 给自动化用 */
         overlayId: () => activeUiScreen()?.id ?? null,
         /**

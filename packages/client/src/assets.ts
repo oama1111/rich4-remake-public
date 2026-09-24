@@ -166,6 +166,23 @@ interface HdResultLike {
   outAnchorY: number;
   /** 产物的内容哈希（管线 `outHash`）—— 有就拼进 URL 当版本（`?v=` 前 8 位），线上据此长期缓存 */
   outHash?: string;
+  /**
+   * 产物相对路径（`tools/hd-deploy.ts` 把过场帧转成 WebP 时写：`jump/50-0.webp`）；
+   * 不写 = `hdRelativePath`（`<档>/<资源>-<图>.png`）
+   */
+  file?: string;
+}
+
+/** 清单里给的相对路径只认 `<档>/<名>.png|webp` 这种形状（不许 `..` / 绝对路径 / 子目录） */
+const HD_FILE_RE = /^[A-Za-z]+\/[0-9]+-[0-9]+\.(?:png|webp)$/;
+
+/** 按文件头认图片类型（`createImageBitmap(Blob)` 要一个对的 MIME 才稳：WebKit 对错标的 Blob 不宽容） */
+export function imageMimeOf(bytes: Uint8Array): string {
+  const isWebp =
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+  return isWebp ? 'image/webp' : 'image/png';
 }
 
 export interface HdManifestLike {
@@ -184,11 +201,13 @@ export interface HdManifestLike {
 export function hdSourceFromManifest(base: string, manifest: HdManifestLike): HdSource {
   const entries = new Map<string, HdEntry>();
   const versions = new Map<string, string>();
+  const files = new Map<string, string>();
   for (const t of manifest.tasks) {
     const id = taskIdOf({ archive: t.archive, resource: t.resource, image: t.image });
     const r = manifest.results[id];
     if (r === undefined) continue;
     if (typeof r.outHash === 'string' && /^[0-9a-f]{8,}$/i.test(r.outHash)) versions.set(id, r.outHash.slice(0, 8));
+    if (typeof r.file === 'string' && HD_FILE_RE.test(r.file)) files.set(id, r.file);
     const e: HdEntry = { anchorX: r.outAnchorX, anchorY: r.outAnchorY };
     if (t.srcWidth !== undefined && t.srcHeight !== undefined) {
       e.srcWidth = t.srcWidth;
@@ -205,8 +224,10 @@ export function hdSourceFromManifest(base: string, manifest: HdManifestLike): Hd
     fetchBytes: async (archive, resource, image) => {
       // ★ 带内容版本（`?v=`）：服务器对带版本的超分图回一年不可变（`static.ts` 的 `cacheControlFor`），
       //   产物重做了哈希就变、URL 跟着变，浏览器不会拿旧图
-      const v = versions.get(keyOf(archive, resource, image));
-      const url = `${base}/${hdRelativePath(archiveKey(archive), resource, image)}${v === undefined ? '' : `?v=${v}`}`;
+      const id = keyOf(archive, resource, image);
+      const v = versions.get(id);
+      const rel = files.get(id) ?? hdRelativePath(archiveKey(archive), resource, image);
+      const url = `${base}/${rel}${v === undefined ? '' : `?v=${v}`}`;
       try {
         const res = await fetch(url);
         if (!res.ok) return null;
@@ -370,6 +391,12 @@ export interface SpriteCacheOptions {
   /** HD 来源；不给就整包走原图 */
   hd?: HdSource;
   /**
+   * 影片（FLIC）要不要接超分帧 @default true。
+   * ★ 手机 / 平板传 `false`（需求方 2026-09-24 的流量预算：移动端整局高清额外下载 ≤ ~5 MB）——
+   *   过场帧就算转成 WebP 一局也要几 MB，移动端只留高清舞台 + 精灵。
+   */
+  hdFlics?: boolean;
+  /**
    * 精灵缓存上限（张）。超过就按 LRU 淘汰最久未用的。
    *
    * 4× 素材单张就是原图的 16 倍大，一张 640×480 的底图超分后是 2560×1920
@@ -492,6 +519,7 @@ export class SpriteCache {
   readonly #composeHd: HdCompose;
   /** 已解好的影片各自的超分帧窗口（`setHd` 换来源时要逐段重挂） */
   readonly #flicHd = new Map<string, { archive: ArchiveName; resource: number; frames: HdFlicFrames }>();
+  readonly #hdFlics: boolean;
   /** 超分来源的代次：换了来源，还在路上的旧请求一律作废 */
   #hdGen = 0;
   /** 高清换上来之后要叫谁（重画一帧）—— 见 `addUpgradeListener` */
@@ -502,6 +530,7 @@ export class SpriteCache {
   constructor(archives: LoadedArchives, options: SpriteCacheOptions = {}) {
     this.#archives = archives;
     this.#hd = options.hd ?? null;
+    this.#hdFlics = options.hdFlics ?? true;
     this.#maxSprites = options.maxSprites ?? DEFAULT_MAX_SPRITES;
     this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     if (options.onEvict !== undefined) this.#evictListeners.push(options.onEvict);
@@ -667,7 +696,7 @@ export class SpriteCache {
   #attachFlicHd(archive: ArchiveName, resource: number, hdFrames: HdFlicFrames): void {
     const hd = this.#hd;
     hdFrames.reset();
-    if (hd === null) return;
+    if (hd === null || !this.#hdFlics) return;
     const gen = this.#hdGen;
     const wanted: number[] = [];
     for (let k = 0; k < hdFrames.length; k++) if (hd.entry(archive, resource, k) !== null) wanted.push(k);
@@ -680,7 +709,7 @@ export class SpriteCache {
           for (let k = queue.shift(); k !== undefined; k = queue.shift()) {
             const bytes = await hd.fetchBytes(archive, resource, k);
             if (gen !== this.#hdGen || hdFrames.closed) return;
-            if (bytes !== null) hdFrames.setBytes(k, new Blob([bytes as BlobPart], { type: 'image/png' }));
+            if (bytes !== null) hdFrames.setBytes(k, new Blob([bytes as BlobPart], { type: imageMimeOf(bytes) }));
           }
         };
         await Promise.all(Array.from({ length: Math.min(HD_FLIC_FETCH_CONCURRENCY, queue.length) }, worker));
@@ -861,7 +890,7 @@ export class SpriteCache {
       // ★ 交给**浏览器原生解码**（`createImageBitmap` 直接吃 Blob），不自己解 PNG：
       //   一是不必把 `decodePng` 拖进前端（它依赖 `node:zlib`，见 Q-BUILD-1），
       //   二是 4× 的图很大，原生解码比 JS 快得多。
-      const bitmap = await this.#createBitmap(new Blob([bytes as BlobPart], { type: 'image/png' }));
+      const bitmap = await this.#createBitmap(new Blob([bytes as BlobPart], { type: imageMimeOf(bytes) }));
       if (bitmap.width === 0 || bitmap.height === 0) return null;
       return bitmap;
     } catch {
@@ -1003,7 +1032,7 @@ export async function loadGround(
       if (bytes !== null) {
         try {
           // 交给浏览器原生解码（与 `SpriteCache` 的 HD 分支同一条）
-          const bmp = await decode(new Blob([bytes as BlobPart], { type: 'image/png' }));
+          const bmp = await decode(new Blob([bytes as BlobPart], { type: imageMimeOf(bytes) }));
           groundLogical.set(bmp, { width: entry.srcWidth, height: entry.srcHeight });
           return bmp;
         } catch {

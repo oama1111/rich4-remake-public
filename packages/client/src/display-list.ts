@@ -438,7 +438,11 @@ export class DisplayList {
   }
 
   /** 位图 `close()` 之前调（`installBitmapCloseGuard`） */
-  beforeBitmapClose(): void {
+  beforeBitmapClose(bitmap?: object): void {
+    // ★ W-80 §8：上一帧、这一帧的指令表里都没出现过的位图，关掉它不影响「与上一帧相同」的判断 ——
+    //   高清过场的超分帧窗口每换一帧就关一张早就不画的旧帧，先前每次都强制下一帧整帧重画，
+    //   过场里去重几乎失效（实测跳帧率 0.5 → 0.05）。
+    if (bitmap !== undefined && !this.#prev.includes(bitmap) && !this.#cur.includes(bitmap)) return;
     if (this.#inFrame) this.#diverge();
     this.#forceNext = true;
   }
@@ -532,7 +536,7 @@ export function installBitmapCloseGuard(list: DisplayList): void {
   if (proto.__dlGuard === true) return;
   const orig = proto.close;
   proto.close = function (this: ImageBitmap): void {
-    list.beforeBitmapClose();
+    list.beforeBitmapClose(this);
     orig.call(this);
   };
   proto.__dlGuard = true;

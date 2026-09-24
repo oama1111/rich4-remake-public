@@ -38,7 +38,7 @@ function serveGameAssets(): Plugin {
         const mount = url.startsWith('/assets/game/')
           ? { prefix: '/assets/game/', dir: gameDir, type: 'application/octet-stream' }
           : hdTier !== undefined
-            ? { prefix: `/assets/${hdTier}/`, dir: join(hdRoot, hdTier), type: 'image/png' }
+            ? { prefix: `/assets/${hdTier}/`, dir: join(hdRoot, hdTier), type: url.endsWith('.webp') ? 'image/webp' : 'image/png' }
             : null;
         if (mount === null) return next();
 

@@ -21,6 +21,7 @@ import {
   HdFlicFrames,
   HD_FLIC_LOOKAHEAD,
   parseSpriteKey,
+  imageMimeOf,
   type HdSource,
   type LoadedArchives,
   type Sprite,
@@ -595,6 +596,38 @@ describe('hdSourceFromManifest', () => {
     expect(seen).toEqual(['https://x/assets/hd/Panel/23-7.png']);
   });
 
+  it('★ 结果带 file（过场帧转成 WebP）→ 照它取；形状不对的 file 不认，退回 .png 命名', async () => {
+    const hd = hdSourceFromManifest('/assets/hd-2x', {
+      tasks: [
+        { archive: 'jump', resource: 50, image: 3 },
+        { archive: 'jump', resource: 50, image: 4 },
+      ],
+      results: {
+        'jump/0050_003': { outAnchorX: 0, outAnchorY: 0, file: 'jump/50-3.webp' },
+        'jump/0050_004': { outAnchorX: 0, outAnchorY: 0, file: '../../etc/passwd' },
+      },
+    });
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    (globalThis as unknown as { fetch: unknown }).fetch = (url: string) => {
+      seen.push(url);
+      return Promise.resolve({ ok: false } as Response);
+    };
+    try {
+      await hd.fetchBytes('jump.mkf', 50, 3);
+      await hd.fetchBytes('jump.mkf', 50, 4);
+    } finally {
+      (globalThis as unknown as { fetch: unknown }).fetch = original;
+    }
+    expect(seen).toEqual(['/assets/hd-2x/jump/50-3.webp', '/assets/hd-2x/jump/50-4.png']);
+  });
+
+  it('imageMimeOf：按文件头认 WebP / PNG', () => {
+    const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+    expect(imageMimeOf(webp)).toBe('image/webp');
+    expect(imageMimeOf(pngOf(2, 2))).toBe('image/png');
+  });
+
   it('★ 结果带 outHash → URL 拼上 `?v=<前 8 位>`（服务器据此长期缓存；产物重做 URL 就变）', async () => {
     const hd = hdSourceFromManifest('/assets/hd-2x', {
       tasks: [{ archive: 'Data', resource: 191, image: 0 }],
@@ -903,6 +936,24 @@ describe('★ getFlic：超分帧只留压缩字节、画到哪儿才解哪几�
     expect(frames.decodedCount).toBe(0);
     expect(frames.get(29)).toBeUndefined();
     expect(decodedCalls).toBeGreaterThan(0);
+  });
+
+  it('★ hdFlics: false（手机平板）→ 影片的超分帧一张都不拉', async () => {
+    const { MkfArchive } = await import('@rich4/assets-pipeline');
+    const panel = new MkfArchive(new Uint8Array(readFileSync(new URL('../../../assets/game/Panel.mkf', import.meta.url))));
+    let fetched = 0;
+    const hd: HdSource = {
+      entry: () => ({ anchorX: 0, anchorY: 0 }),
+      fetchBytes: () => {
+        fetched++;
+        return Promise.resolve(null);
+      },
+    };
+    const c = new SpriteCache({ get: () => panel }, { createBitmap: fakeBitmapOf, hd, hdFlics: false });
+    const film = await c.getFlic('Panel.mkf', 4);
+    await c.settled();
+    expect(film).not.toBeNull();
+    expect(fetched).toBe(0);
   });
 
   it('★ flicFrame：没有 frameAt 的轻量影片（测试替身）照旧读 frames[i]', () => {

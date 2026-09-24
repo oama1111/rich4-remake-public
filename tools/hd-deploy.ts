@@ -7,7 +7,7 @@
  *
  * 产出（`<out>` 下，形状与服务器 `/srv/rich4/deploy/` 一一对应，整棵 rsync 过去即可）：
  *
- *   assets/hd-2x/<档>/<资源>-<图>.png     只含下面 VERIFIED 那几组
+ *   assets/hd-2x/<档>/<资源>-<图>.png     只含下面 VERIFIED 那几组（过场帧转成 .webp，见 `encode`）
  *   assets/hd-2x-manifest.json(.br/.gz)   只含这几组的瘦清单（客户端 `hdSourceFromManifest` 读的那几个字段）
  *
  * ★ 为什么不直接传整个 `hd-2x/`（1.3 GB、16,141 张）：需求方 2026-09-24 拍板**只上已验证的**——
@@ -17,6 +17,12 @@
  * ★ 红线同 `precompress-assets.ts`：这些 PNG 是原版素材的**衍生物** —— 只放服务器磁盘、只在访问密码后面；
  *   不进仓库（暂存目录必须在仓库外，见 `assertOutsideRepo`）、不上公开 CDN。
  *
+ * ★ 流量预算（需求方 2026-09-24：现在整局约 130 MB，高清不许变成 GB 级；桌面一局 ≤ ~30 MB、手机 ≤ ~5 MB）：
+ *   过场帧 2× PNG 共 197 MB 太重 ⇒ 转有损 WebP（q 80、alpha 无损，`cwebp`）约 16 MB（整段 24+2 段全算），
+ *   开场一局（4 人 8 段）约 4 MB；手机平板客户端根本不拉超分过场（`SpriteCache` 的 `hdFlics`）。
+ *   WebP 在 Chrome 与 Safari 14+ / iOS 14+ 的 `createImageBitmap` 都能解。清单结果里写 `file`（相对路径），
+ *   客户端照它取；没写 `file` 的仍按 `<档>/<资源>-<图>.png`。
+ *
  * ★ `outHash` 一律按**暂存里那份文件**现算（sha256 前 16 位，与管线同一口径）：客户端拿它的前 8 位
  *   当 `?v=`，服务器对带版本的图回一年不可变 —— 产物若在清单生成之后被改过（钱夫人重绘就改过好几轮），
  *   用旧哈希会让浏览器永远拿着旧图。
@@ -24,6 +30,7 @@
 
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,7 +51,12 @@ interface VerifiedSet {
    * 来源清单里还挂着全量批次的 SeedVR2 配方，照抄会误导。
    */
   model?: string;
+  /** 转码：`webp` = 有损 WebP（过场帧；`WEBP_ARGS`），不给 = 原样拷 PNG */
+  encode?: 'webp';
 }
+
+/** 过场帧的 WebP 参数：q 80（2× 帧放大到 3× 舞台看不出块）、alpha 无损（FLIC 的透明像素要叠在底图上）、最慢最小的 m 6 */
+export const WEBP_ARGS = ['-quiet', '-q', '80', '-alpha_q', '100', '-m', '6'] as const;
 
 export const VERIFIED: readonly VerifiedSet[] = [
   {
@@ -65,6 +77,7 @@ export const VERIFIED: readonly VerifiedSet[] = [
       { archive: 'Panel', resource: 20, frames: 25 },
       { archive: 'Panel', resource: 78, frames: 20 },
     ],
+    encode: 'webp',
   },
 ];
 
@@ -88,6 +101,8 @@ interface Result {
   outAnchorX: number;
   outAnchorY: number;
   outHash?: string;
+  /** 产物相对路径（转码过的才写；不写 = `<档>/<资源>-<图>.png`） */
+  file?: string;
 }
 
 interface Manifest {
@@ -109,6 +124,27 @@ function pngSize(bytes: Uint8Array): { w: number; h: number } | null {
   return { w: dv.getUint32(16), h: dv.getUint32(20) };
 }
 
+/** 同时跑几个 cwebp */
+const ENCODE_CONCURRENCY = 8;
+let running = 0;
+const waiting: (() => void)[] = [];
+
+/** PNG → WebP（`cwebp` 须在 PATH 上：`brew install webp`）*/
+async function cwebp(src: string, dst: string): Promise<void> {
+  if (running >= ENCODE_CONCURRENCY) await new Promise<void>((r) => waiting.push(r));
+  running++;
+  try {
+    await new Promise<void>((ok, fail) => {
+      const p = spawn('cwebp', [...WEBP_ARGS, src, '-o', dst], { stdio: 'ignore' });
+      p.on('error', fail);
+      p.on('exit', (code) => (code === 0 ? ok() : fail(new Error(`cwebp ${src} 退出碼 ${code}`))));
+    });
+  } finally {
+    running--;
+    waiting.shift()?.();
+  }
+}
+
 const sha16 = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex').slice(0, 16);
 
 export interface DeployReport {
@@ -123,7 +159,12 @@ export interface DeployReport {
  * 从超分产物根挑出 VERIFIED 那几组，写进 `<out>/assets/`。
  * @throws 选中的哪一张缺任务 / 缺结果 / 缺文件 / 尺寸与清单不符 —— 宁可不出暂存，也不出一份残的
  */
-export function buildHdDeploy(srcRoot: string, outRoot: string, tier: string, sets: readonly VerifiedSet[] = VERIFIED): DeployReport {
+export async function buildHdDeploy(
+  srcRoot: string,
+  outRoot: string,
+  tier: string,
+  sets: readonly VerifiedSet[] = VERIFIED,
+): Promise<DeployReport> {
   const manifestPath = resolve(srcRoot, `${tier}-manifest.json`);
   const full = JSON.parse(readFileSync(manifestPath, 'utf8')) as Manifest;
   const byId = new Map(full.tasks.map((t) => [taskIdOf(t.archive, t.resource, t.image), t] as const));
@@ -150,30 +191,37 @@ export function buildHdDeploy(srcRoot: string, outRoot: string, tier: string, se
       if (r.frames !== undefined && ids.length !== r.frames) {
         problems.push(`${r.archive}#${r.resource}：清单里 ${ids.length} 帧，应为 ${r.frames}`);
       }
-      for (const id of ids) {
+      const jobs = ids.map(async (id) => {
         const t = byId.get(id)!;
         const res = full.results[id];
         if (res === undefined) {
           problems.push(`${id}：没有结果（没出产物）`);
-          continue;
+          return;
         }
         const rel = relPathOf(t.archive, t.resource, t.image);
         const src = resolve(srcRoot, tier, rel);
         if (!existsSync(src)) {
           problems.push(`${id}：缺文件 ${src}`);
-          continue;
+          return;
         }
         const data = new Uint8Array(readFileSync(src));
         const px = pngSize(data);
         if (px === null || px.w !== res.outWidth || px.h !== res.outHeight) {
           problems.push(`${id}：PNG ${px?.w}×${px?.h} 与清单 ${res.outWidth}×${res.outHeight} 不符`);
-          continue;
+          return;
         }
-        const dst = resolve(outTier, rel);
+        const outRel = set.encode === 'webp' ? rel.replace(/\.png$/, '.webp') : rel;
+        const dst = resolve(outTier, outRel);
         mkdirSync(dirname(dst), { recursive: true });
-        copyFileSync(src, dst);
-        const hash = sha16(data);
-        if (res.outHash !== hash) report.hashFixed++;
+        let shipped = data;
+        if (set.encode === 'webp') {
+          await cwebp(src, dst);
+          shipped = new Uint8Array(readFileSync(dst));
+        } else {
+          copyFileSync(src, dst);
+          if (res.outHash !== sha16(data)) report.hashFixed++;
+        }
+        const hash = sha16(shipped);
         slim.tasks.push({
           id,
           archive: t.archive,
@@ -189,15 +237,19 @@ export function buildHdDeploy(srcRoot: string, outRoot: string, tier: string, se
           outAnchorX: res.outAnchorX,
           outAnchorY: res.outAnchorY,
           outHash: hash,
+          ...(outRel === rel ? {} : { file: outRel }),
         };
         frames++;
-        bytes += data.byteLength;
-      }
+        bytes += shipped.byteLength;
+      });
+      // 同一资源的帧并行转码（`cwebp` 自己限 8 路）
+      await Promise.all(jobs);
     }
     report.sets.push({ name: set.name, frames, bytes });
     report.files += frames;
     report.bytes += bytes;
   }
+  slim.tasks.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   if (problems.length > 0) throw new Error(`暂存没出（${problems.length} 处不对）：\n  ${problems.slice(0, 20).join('\n  ')}`);
 
   const json = Buffer.from(JSON.stringify(slim) + '\n', 'utf8');
@@ -247,9 +299,9 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
   }
   const outAbs = resolve(out);
   assertOutsideRepo(outAbs);
-  const r = buildHdDeploy(resolve(src), outAbs, tier);
+  const r = await buildHdDeploy(resolve(src), outAbs, tier);
   for (const s of r.sets) console.log(`· ${s.name.padEnd(12)} ${String(s.frames).padStart(5)} 張  ${mb(s.bytes).padStart(9)}`);
-  console.log(`合計 ${r.files} 張 PNG ${mb(r.bytes)}；清單 ${(r.manifestBytes / 1024).toFixed(1)} KB（另附 .br/.gz）`);
+  console.log(`合計 ${r.files} 張 ${mb(r.bytes)}；清單 ${(r.manifestBytes / 1024).toFixed(1)} KB（另附 .br/.gz）`);
   if (r.hashFixed > 0) console.log(`（${r.hashFixed} 張的 outHash 與來源清單不同 —— 產物在清單之後改過，已按暫存裡的檔案重算）`);
   console.log('');
   console.log(`暫存：${resolve(outAbs, 'assets')}`);

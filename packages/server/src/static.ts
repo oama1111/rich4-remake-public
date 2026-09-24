@@ -84,12 +84,13 @@ export const HD_TIERS = ['hd-2x', 'hd'] as const;
 export type HdTier = (typeof HD_TIERS)[number];
 
 /**
- * 超分图的路径形状：`<档案>/<资源>-<图>.png`（管线 `hdRelativePath`，档案名不带 `.mkf`）。
+ * 超分图的路径形状：`<档案>/<资源>-<图>.png`（管线 `hdRelativePath`，档案名不带 `.mkf`）；
+ * 过场帧由 `tools/hd-deploy.ts` 转成 `.webp`（流量预算，W-80 §8.3）。
  *
  * ★ 同样走**白名单**：只认这 5 个档案名 + 纯数字 + `.png`，一段子目录都不多。
  *   这些 PNG 是原版素材的**衍生物**（红线同 `.mkf`：只在服务器磁盘上、只在门后面）。
  */
-const HD_PATH_RE = /^(Data|Panel|map|jump|help)\/\d{1,5}-\d{1,5}\.png$/;
+const HD_PATH_RE = /^(Data|Panel|map|jump|help)\/\d{1,5}-\d{1,5}\.(?:png|webp)$/;
 
 export function isAllowedHdPath(rel: string): boolean {
   return HD_PATH_RE.test(rel);

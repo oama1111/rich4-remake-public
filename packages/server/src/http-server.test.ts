@@ -828,6 +828,8 @@ describe('★ 超分素材 /assets/hd-2x/…（W-80 §8）', () => {
     mkdirSync(game);
     writeFileSync(join(game, 'Data.mkf'), 'mkf');
     writeFileSync(join(root, 'hd-2x', 'Data', '191-0.png'), 'PNGBYTES');
+    mkdirSync(join(root, 'hd-2x', 'jump'));
+    writeFileSync(join(root, 'hd-2x', 'jump', '50-0.webp'), 'RIFFWEBP');
     writeFileSync(join(root, 'hd-2x', 'secret.txt'), 'no');
     writeFileSync(join(root, 'hd-2x-manifest.json'), '{"version":1}');
     writeFileSync(join(root, 'hd-2x-manifest.json.br'), 'BR');
@@ -854,6 +856,9 @@ describe('★ 超分素材 /assets/hd-2x/…（W-80 §8）', () => {
       expect(bare.status).toBe(200);
       expect(bare.headers['cache-control']).toBe('no-cache');
       expect((await get(port, '/assets/hd-2x/Data/191-1.png?v=a341bbc2')).status).toBe(404);
+      const webp = await get(port, '/assets/hd-2x/jump/50-0.webp?v=0123abcd');
+      expect(webp.status).toBe(200);
+      expect(webp.headers['content-type']).toBe('image/webp');
       // 线上没放母版档：同样 404
       expect((await get(port, '/assets/hd/Data/191-0.png')).status).toBe(404);
     });

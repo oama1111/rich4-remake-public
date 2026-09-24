@@ -333,7 +333,7 @@ function serveHd(
     res,
     abs,
     {
-      'Content-Type': 'image/png',
+      'Content-Type': contentTypeFor(check.rel),
       'Cache-Control': cacheControlFor('hd', check.rel, versioned),
       'Accept-Ranges': 'none',
     },
