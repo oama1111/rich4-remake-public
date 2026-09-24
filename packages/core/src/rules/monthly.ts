@@ -12,7 +12,7 @@
  * @source rich4.asm:16815 fcn_00437e61 @ VA 0x00437e61  结算主流程
  */
 
-import type { Player } from '../state/types.ts';
+import type { MonthlySettleHint, MonthlySettleRow, Player } from '../state/types.ts';
 
 // ============================================================
 //  存款利息
@@ -312,4 +312,60 @@ export function settleMonthlyBank(player: Player): Player {
   const cleared = clearMonthlyAccumulators(player);
   const newBank = applyMonthlyInterest(cleared.moneyInBank, cleared.loan);
   return newBank === cleared.moneyInBank ? cleared : { ...cleared, moneyInBank: newBank };
+}
+
+/**
+ * ★★ 第二十一份：把**这一次月结的现场**交给表现层（`GameState.lastMonthlySettle`）。
+ *
+ * @param pre  结算之前的玩家（累加器还在，存款未加息）
+ * @param post 结算之后的玩家（`settleMonthlyBank` 的结果：存款已 ×1.1、累加器已清零）
+ * @param priceIndex 当日物價指數（`[0x4990e8]`，评悲情分用）
+ * @param wealthOf 加息之后的总资产（`_rich4_calculate_player_wealth` @0x004239b9，评冠軍 / 冠軍表用）
+ *
+ * 在场名单照 `0x00439caa`：`cmp byte [p+0x15], 0 / je 跳过`（= `isAlive`），按下标序。
+ * 悲情人物 `fcn_00437d1a`（`monthlyScore` + `pickAwardWinner`）、冠軍 `fcn_00437dfe`（`pickRichest`）
+ * 都在状态 2 **加息之后**评（`0x00438201` 乘完才 `0x00438240 call 0x437d1a`）—— 累加器那时还没清。
+ */
+export function monthlySettleHint(
+  pre: readonly Player[],
+  post: readonly Player[],
+  priceIndex: number,
+  wealthOf: (p: Player) => number,
+): MonthlySettleHint {
+  const rows: MonthlySettleRow[] = [];
+  for (let i = 0; i < pre.length; i++) {
+    const a = pre[i]!;
+    const b = post[i] ?? a;
+    if ((a.whoPlays & 0x03) === 0) continue;
+    rows.push({
+      player: i,
+      bankBefore: a.moneyInBank,
+      interest: b.moneyInBank - a.moneyInBank,
+      loan: a.loan,
+      unexpectedLoss: a.monthlyPaid,
+      unexpectedGain: a.monthlyReceived,
+      unluckyDays: a.totalWinterSleepDays,
+      cash: b.cash,
+      bank: b.moneyInBank,
+      wealth: wealthOf(b),
+    });
+  }
+  const scores = rows.map((r) =>
+    monthlyScore(
+      {
+        unexpectedLoss: r.unexpectedLoss,
+        windfall: r.unexpectedGain,
+        f42: r.unluckyDays,
+        f68: pre[r.player]!.misfortune,
+      },
+      priceIndex,
+    ),
+  );
+  const u = pickAwardWinner(scores);
+  const c = pickRichest(rows.map((r) => r.wealth));
+  return {
+    rows,
+    unlucky: u < 0 ? -1 : rows[u]!.player,
+    champion: rows[c]?.player ?? 0,
+  };
 }

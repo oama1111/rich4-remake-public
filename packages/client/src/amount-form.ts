@@ -68,3 +68,28 @@ export function stockAmountForm(a: StockCounterAmount, name: string): Interactio
     choices: [{ label, amount: { label, max: a.max, step: 1, fill }, action: fill(a.max) }],
   };
 }
+
+/**
+ * ★★ 第二十一份（`20260924-122205095`「获得经营权好像有个提示音」）顺查：股市柜台**成交那一下**的音效。
+ *
+ * 原版在填数窗返回非 0 股之后、真正买卖（`0x428d2a` / 卖出那一支）**之前**各放一声：
+ *
+ * | 哪一支 | 调用点 | 表项 | `[表项]` = Effect.mkf 号 |
+ * |---|---|---|---|
+ * | 買進 | `0x0042af9c test eax,eax / je` → `0x0042afa6 push 0x475590` → `0x0042afab call 0x4542ce` | `0x475590` | **40** |
+ * | 賣出 | `0x0042b088 test eax,eax / je` → `0x0042b08e push 0x475598` → `0x0042b093 call 0x4542ce` | `0x475598` | **41** |
+ *
+ * （`disasm.py dump 0x475590 16 1` → `40 0 0 0 0 0 0 0 41 …`；`play_sound_effect` 取 `[表项]` 当资源号，VA 0x004542d8。）
+ * ⚠️ 上市企業落点认購（`fcn_0041d1a9`）那一支与「恭喜您獲得經營權！」框（`0x0041d2aa call 0x440cac`）**都不放音效**
+ *   —— `0x41d1a9` 往下三层调用里一处 `0x4542ce` / 语音都没有；「經營權」的提示音若有，只可能是这里的 40。
+ * 只有本机真人在股市柜台上点「確定」才会走到这里（电脑买卖股票 `0x0042c72d` 那一支不放音）。
+ *
+ * @param a 股市柜台那扇填数页（`null` = 不是股市柜台开的那扇）
+ * @param shares 填出来的股数（0 = 没成交，原版 `je` 跳过、不响）
+ */
+export const STOCK_COUNTER_SOUND = { buy: 40, sell: 41 } as const;
+
+export function stockCounterTradeSound(a: StockCounterAmount | null, shares: number): number | null {
+  if (a === null || !(shares > 0)) return null;
+  return a.kind === 'buy' ? STOCK_COUNTER_SOUND.buy : STOCK_COUNTER_SOUND.sell;
+}

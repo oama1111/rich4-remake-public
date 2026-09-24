@@ -353,6 +353,33 @@ export const BOARD_MSG_MS = 0x5dc;
 /** 板满时那一句 @source 串 0x463f03 */
 export const BOARD_FULL_MSG = '公佈欄已滿\n\n請先撤件！';
 
+/**
+ * ★★ 第二十一份（`20260924-122205095`「获得经营权…」那一条的兄弟框）：在公佈欄**买股票**买成了董事長 ——
+ *   公佈欄自己那只訊息框弹「恭喜您獲得經營權！」1500 ms（**只给真人**，門派也是这一句）。
+ *
+ * @source `fcn_004255da`（公佈欄成交）股票那一支：`0x0042571e call 0x4294d5(買家, 股票號)`（重排持股名次）→
+ *   `0x00425726 cmp eax,1 / jne`（易主才弹）→ `0x00425732 cmp byte [買家+0x15],1 / jne`（真人）→
+ *   `0x0042573d push 0x463e5f`（串「恭喜您獲得經營權！」）`/ call 0x424502`（公佈欄訊息框）→
+ *   `0x0042574a push 0x5dc / call 0x4528b9`（等 1500 ms）→ `0x00425757 call 0x424620`（收框）。
+ * ⚠️ 这条路**没有音效**：`0x4255da` 起到 `0x4258ac` 付款之间一处 `0x4542ce` 都没有（`disasm.py callers 0x4542ce`）。
+ */
+export const BOARD_CHAIRMAN_MSG = '恭喜您獲得經營權！';
+
+/**
+ * 这一条 action 让 `buyer` **新**当上了哪家企業的董事長（公佈欄买股票之后 `0x4294d5` 返回 1 那一种）。
+ * 纯函数：比 `commercialOwners[*].owner`（1 基）前后。
+ */
+export function boardChairmanGained(before: GameState, after: GameState, buyer: number): boolean {
+  if (before.noticeBoard === after.noticeBoard) return false; // 不是公佈欄成交
+  const n = Math.max(before.commercialOwners.length, after.commercialOwners.length);
+  for (let i = 0; i < n; i++) {
+    const was = before.commercialOwners[i]?.owner ?? 0;
+    const now = after.commercialOwners[i]?.owner ?? 0;
+    if (now === buyer + 1 && was !== now) return true;
+  }
+  return false;
+}
+
 // ============================================================
 //  选物窗几何
 // ============================================================
@@ -2243,6 +2270,17 @@ export const boardScreen: UiScreen = {
       env.requestRender();
     }
     return true;
+  },
+
+  /** 公佈欄买股票买成了董事長 ⇒ 公佈欄訊息框「恭喜您獲得經營權！」（见 `BOARD_CHAIRMAN_MSG`）*/
+  event(before: GameState, after: GameState, env: UiScreenEnv): void {
+    if (!ui.open || after.currentPlayer !== ui.forPlayer) return;
+    if (after.players[ui.forPlayer]?.whoPlays !== 1) return; // `0x00425732`：只给真人
+    if (!boardChairmanGained(before, after, ui.forPlayer)) return;
+    ui.message = BOARD_CHAIRMAN_MSG;
+    ui.messageUntil = env.now + BOARD_MSG_MS;
+    env.log('公佈欄：恭喜您獲得經營權！');
+    env.requestRender();
   },
 
   tick(env: UiScreenEnv): void {

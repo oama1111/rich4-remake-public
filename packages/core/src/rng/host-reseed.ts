@@ -29,7 +29,11 @@ export function reduceWithSeed(state: GameState, action: Action, topo: MapTopolo
   const next = reduce(state, action, topo);
   if (next === state || !dayAdvanced(state, next)) return next;
   if (!needsReseed(policyFor(next.mode), 'turnAdvance')) return next;
-  return reduce(next, { type: 'reseed', seed }, topo);
+  // ★★ 第二十一份：这一步是**同一次**日推进里的 `srand`（原版 `0x0041D06E` 在 `0x41cf67` 里面），
+  //   不是一条新 action ⇒ 不走 `reduce`（它的出口会把刚才那一条写下的瞬态提示当成「上一条留下的」清掉：
+  //   先前单机跨月时 `lastMonthlySettle`、15 号的 `lastLotteryDraw` 就这样丢了）。
+  //   与 `reduce(next, { type: 'reseed', seed })` 的唯一差别就是不清瞬态 —— `reseed` 那一支本来只换 `rngState`。
+  return { ...next, rngState: seed >>> 0 };
 }
 
 /** 从一份起点状态逐条重放一段轨迹；`onStep` 供调试时逐步观察 */

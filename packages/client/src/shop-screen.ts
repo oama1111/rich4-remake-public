@@ -314,6 +314,39 @@ export function shopEntryOf(page: ShopPage, playOpening: boolean): ShopEntry {
     : { slide: slideEnd(), entry: null };
 }
 
+/** 商店窗起开那一刻，地图屏上还在演的东西（`shopWindowMayOpen` 的入参）*/
+export interface ShopOpenGate {
+  /** 演出类整屏在接管（`presentationHost.screensBlocking()`）*/
+  blocking: boolean;
+  /** 屏上正有一扇訊息框（含收掉后那段空等）*/
+  noticeShowing: boolean;
+  /** 排着、还没起播的訊息框几扇 */
+  noticeQueued: number;
+  /** 台上的台词句数 */
+  speechOnStage: number;
+  /** 押着、还没上台的台词句数 */
+  speechHeld: number;
+}
+
+/**
+ * ★★ 第二十一份（`20260924-144217689`）：董事長踩到商店 —— **先在地图屏上**弹「歡迎董事長光臨 送您%s！」、
+ *   再说那句「好消息」台词，**然后**才开商店窗（老板娘招呼 `#0000` 在开窗之后）。
+ *
+ * @source `_rich4_ui_shop_entry`（`fcn_0042e931`）：
+ *   `0x0042e977 cmp [企業+0x18], 玩家+1`（落点那家企業的董事長）→ `0x0042e97d rand() & 1` 选道具 / 卡片 →
+ *   `0x0042ea02 sprintf(0x464378)` → `0x0042ea14 call 0x440cac(buf, 0x5dc)`（棕色訊息框 1500 ms，阻塞）→
+ *   `0x0042ea23 call 0x44f230(玩家, 點數价)`（台词，阻塞）→ `0x0042ea2b` 起才判真人 `cmp [+0x15],1` 并建商店窗
+ *   （`0x0042ea4c` 起读 Shop 素材、`0x0042eae0` 起铺货架）。
+ *
+ * 本引擎一条 action 把这三样一次写完（`notices` + `lastShopGift` + `pending{shop}`），表现层事后补演 ⇒
+ * 商店窗必须等**訊息框（开着或排着）与台词（台上或押着）都演完**才建，否则窗口盖在框上、
+ * 框里的字与招呼语音同时出（回报现场：`付费訊息框：shop.chairmanGift` → `♪ midi07.mid` → `結束`）。
+ * 纯函数，单机与联机（行动者 / 旁观者）共用同一条判据。
+ */
+export function shopWindowMayOpen(g: ShopOpenGate): boolean {
+  return !g.blocking && !g.noticeShowing && g.noticeQueued === 0 && g.speechOnStage === 0 && g.speechHeld === 0;
+}
+
 /**
  * 格子底图**局部**坐标下第 0 格的左上角。
  * 底图 412×180 = 5×80 + 2×6 = 3×56 + 2×6，所以边缘就是 6。

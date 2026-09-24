@@ -384,7 +384,7 @@ import {
   type LoanReminderUi,
 } from './loan-reminder.ts';
 // ★ 股市柜台的填数页壳 —— 与銀行/公佈欄/上市企業**同一个**通用填数页。
-import { stockAmountForm } from './amount-form.ts';
+import { stockAmountForm, stockCounterTradeSound } from './amount-form.ts';
 // ★ 通用填数窗**自己那张键盘表**（@source `loc_00452e4b`）：0-9 / 退格 / C / M / H / Enter。
 import {
   amountKeyOfVk,
@@ -415,6 +415,8 @@ import { tollFlashLevel } from './toll-flash-fx.ts';
 import {
   noticeHoldsFilms,
   noticeKeyShowing,
+  noticePendingRanks,
+  noticeShowing,
   setNoticeCardPopup,
   setNoticeOverlayGate,
   setNoticeSpeechGate,
@@ -617,6 +619,7 @@ import {
   shopEntryOf,
   shopMessage,
   shopRows,
+  shopWindowMayOpen,
   slideDone,
   slideStart,
   slideStep,
@@ -2972,6 +2975,9 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
         return;
       }
       log(`▶ ${ui.title === '' ? '' : `${ui.title}：`}${amount.label} ${n}`);
+      // ★★ 第二十一份：股市柜台成交那一下 —— 買進 40 / 賣出 41（`0x0042afab` / `0x0042b093`，在买卖之前）
+      const tradeSfx = stockCounterTradeSound(stockAmount, n);
+      if (tradeSfx !== null) sound.play('Effect.mkf', tradeSfx);
       dispatch(amount.fill(n));
       return;
     }
@@ -4530,7 +4536,7 @@ function notifyApplied(before: GameState): void {
   //   电脑那一手由 `decidePending` 直接答掉；原版此刻是否铺场未查证，不擅自改）。
   const aiVenue = aiVenuePending(state);
   if (!aiVenue) {
-    syncShopUi();
+    // ★★ 第二十一份：商店窗挪到下面「台词上账 + 各屏 `event()` 登记」**之后**才同步（见 `syncShopUi` 的闸）
     // ★ 銀行貸款屏的界面状态（T-029c）同理：`pending.kind === 'bank'` 时铺场，
     //   离场时清掉。状态机自己会跨 action 活着，所以只在**首次**看见它时建。
     syncLoanUi();
@@ -4545,6 +4551,10 @@ function notifyApplied(before: GameState): void {
   const env = uiEnv();
   for (const s of SCREENS) deliverScreenEvent(s, before, state, env);
   releaseHeldSpeech(performance.now());
+  // ★★ 第二十一份（`20260924-144217689`「董事长踩到商店…首先地图界面上说欢迎董事长光临送xx东西」）：
+  //   商店窗**在这里**才同步 —— 董事長赠礼框（`0x0042ea14`）与那句台词（`0x0042ea23`）此刻已上账，
+  //   `shopWindowMayOpen` 看得见它们 ⇒ 先框、再台词、最后开窗（每帧那一处补呼负责演完之后开窗）。
+  if (!aiVenue) syncShopUi();
   if (heldSpeech.length > 0) requestRender();
 }
 
@@ -4689,7 +4699,8 @@ const deferredScreenEvents: { screen: UiScreen; before: GameState; after: GameSt
 function screenStarts(id: string, before: GameState, after: GameState): boolean {
   switch (id) {
     case 'monthly':
-      return after.totalMonths > before.totalMonths;
+      // ★ 第二十一份：与 `monthlyScreen.event` 同一道门 —— 跨月且 core 交下了这一次的月结现场
+      return after.totalMonths > before.totalMonths && (after.lastMonthlySettle ?? null) !== null;
     case 'shares':
       return dividendDayCrossed(before, after);
     case 'lottery-draw':
@@ -5897,10 +5908,23 @@ function syncShopUi(): void {
   //   1500 ms）在 `0x0042ea28` 开窗**之前** —— 原版是模态的，框收掉才轮到商店。
   //   本引擎的訊息框在 `BLOCKING_PRESENTATIONS` 里、回合驱动会等它，
   //   但 `syncShopUi` 是每次 action 后无条件跑的 ⇒ 这里补一道闸。
-  if (blockingPresentation()) return;
   // ★ 第十五份：董事長贈禮那一句（`0x0042ea23 call 0x44f230`）也在开窗（`0x0042ea28`）之前 ——
   //   台上还有气泡 / 押着的台词就先别开（开了气泡就叠在商店窗上）
-  if (shopUi === null && (speechQueue.length > 0 || heldSpeech.length > 0)) return;
+  // ★★ 第二十一份（`20260924-144217689`）：闸收成纯函数 `shopWindowMayOpen`，并把**排着没起播**的訊息框也算上 ——
+  //   先前 `notifyApplied` 在訊息框 `event()` 登记之前就调了本函数，那一拍框与台词都还没上账 ⇒ 商店窗当场建起、
+  //   框反而弹在商店窗上（`shop.chairmanGift` → `♪ midi07.mid` → `結束`）。现在 `notifyApplied` 也挪到登记之后才调。
+  if (
+    shopUi === null &&
+    !shopWindowMayOpen({
+      blocking: blockingPresentation(),
+      noticeShowing: noticeShowing(),
+      noticeQueued: noticePendingRanks().length,
+      speechOnStage: speechQueue.length,
+      speechHeld: heldSpeech.length,
+    })
+  ) {
+    return;
+  }
   // ★ 只在**第一次**看见这个商店时铺界面状态（货架不再快照：core 的行留在原位、买过的记 `sold`）
   if (shopUi === null) {
     const ui: ShopUi = {
