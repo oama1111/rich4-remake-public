@@ -446,7 +446,7 @@ describe('★ gap-audit #7：main.ts 的接线（源码钉子）—— 单机不
     expect(src).toContain('onPresent: ({ seat, cue }) => {\n          netInbox.push({ cue, seat });\n          pumpNetInbox();');
     const pump = bodyOf('function pumpNetInbox(delay = 0): void {');
     // 队首是别人的提示 ⇒ 跟着收场（在节拍闸之前）；过了节拍闸才演
-    const follow = pump.indexOf(': head.seat !== (net?.seat ?? null))');
+    const follow = pump.indexOf('!isNetAction(queuedHead) && queuedHead.seat !== (net?.seat ?? null)) followPresenter();');
     expect(follow).toBeGreaterThan(-1);
     expect(follow).toBeLessThan(pump.indexOf('holdForActorWalk('));
     expect(pump.indexOf('holdForActorWalk(')).toBeLessThan(pump.indexOf('applyNetCue(item.seat, item.cue);'));

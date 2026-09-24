@@ -12134,22 +12134,19 @@ function pumpNetInbox(delay = 0): void {
     //   ⚠️ 只放行**这一种**：`awaitingOwnRoll` 只在本机发出 `rollDice` 时置位，
     //   且要求队首就是 `rollDice`。电脑座位那一串 action 照旧受闸 —— 那正是
     //   第七份试玩回报第 1 条要的（别把电脑回合秒播完、别互相顶掉骰子动画）。
-    const head = netInbox[0];
+    const queuedHead = netInbox[0];
+    // ★ v8：队首若是演出提示（`present`），`head` 为空 —— 下面那几道只认 action 的判据都不适用
+    const head = queuedHead !== undefined && isNetAction(queuedHead) ? queuedHead : undefined;
     // ★★ 第十二份試玩回報续（需求方拍板：点得掉的整屏提示，旁观端跟着行动者一起关）：
     //   队首是**别的真人座位**派的下一条 ⇒ 他那台已经把此前的演出全部演完（点掉）了，
     //   本台还在演的那几屏直接落到终态，不再自己一段段放完（判据与边界见 `follow-presenter.ts`）。
     //   ⚠️ 必须在 `holdForActorWalk` 之前：那几屏正占着台，节拍闸会一直挡着。
     //   队首还没施加，此刻的 `state` 就是服务器受理它那一刻的镜像。
+    if (head !== undefined && presenterMovedOn(state, head.action, net?.seat ?? null)) followPresenter();
     // ★ v8：队首是别的真人转来的演出提示（`present`）⇒ 同样说明他那台已经把此前的演出演完（点掉）了
     //   （服务器只收「轮到的那一座、不是代打」的 `present`，故发起者必是真人自己的客户端）
-    if (
-      head !== undefined &&
-      (isNetAction(head)
-        ? presenterMovedOn(state, head.action, net?.seat ?? null)
-        : head.seat !== (net?.seat ?? null))
-    )
-      followPresenter();
-    const ownRollEcho = awaitingOwnRoll && head !== undefined && isNetAction(head) && head.action.type === 'rollDice';
+    else if (queuedHead !== undefined && !isNetAction(queuedHead) && queuedHead.seat !== (net?.seat ?? null)) followPresenter();
+    const ownRollEcho = awaitingOwnRoll && head !== undefined && head.action.type === 'rollDice';
     if (!ownRollEcho && holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
     const item = netInbox.shift();
     if (item === undefined) return;
