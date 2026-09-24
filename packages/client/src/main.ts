@@ -63,6 +63,7 @@ import {  autoAction,
   type Action,
   type CardTarget,
   type GameState,
+  type JoinMode,
   type MapTopology,
   type Rich4Map,
   type RoomInfo,
@@ -72,7 +73,14 @@ import {  autoAction,
   type ConfineView,
 } from '@rich4/core';
 import { NetClient, defaultWsUrl, netParamsFrom } from './net-client.ts';
-import { browserStorage, inviteLink, inviteRoomFrom, loadClientId, showFoyer } from './foyer.ts';
+import {
+  browserStorage,
+  foyerEntry,
+  loadClientId,
+  loadName,
+  showFoyer,
+  withoutRoomParam,
+} from './foyer.ts';
 import { NetToasts } from './net-toast.ts';
 import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
 import { RENDER_MS, tickMs } from './tick.ts';
@@ -710,8 +718,6 @@ const loadBarEl = $('loadbar');
 const loadFillEl = $('loadfill');
 const loadHintEl = $('loadhint');
 const loadRetryEl = $<HTMLButtonElement>('loadretry');
-// ★ W-73 大厅里的「複製邀請連結」（DOM，盖在 canvas 下缘）
-const inviteEl = $<HTMLButtonElement>('invite');
 // ★ 一键回报（左下角）
 const feedbackBtnEl = $<HTMLButtonElement>('feedback');
 const feedbackPanelEl = $<HTMLDivElement>('feedbackpanel');
@@ -6136,7 +6142,9 @@ function enterTitleScreen(): void {
   requestRender();
 }
 
-/** 离开大厅：断开连接、回標題 */
+/**
+ * 离开大厅：断开连接 —— 网页版回**房间列表**（需求方 2026-09-23），桌面壳回標題。
+ */
 function leaveLobby(): void {
   netClose?.();
   netClose = null;
@@ -6144,7 +6152,14 @@ function leaveLobby(): void {
   lobbyRoom = null;
   lobbyHot = null;
   log('已離開聯機大廳');
-  enterTitleScreen();
+  if (isDesktop()) {
+    enterTitleScreen();
+    return;
+  }
+  // 门厅覆盖层整个盖住画布；底下停在標題（不点曲 —— 从列表选「單人模式」时才进標題点 MIDI01）
+  screen = 'title';
+  requestRender();
+  void openFoyer({ view: 'rooms' });
 }
 /** 標題畫面上鼠标悬着的按钮 */
 let titleHot: number | null = null;
@@ -7723,7 +7738,6 @@ function requestRender(): void {
     //   原版 `_rich4_ui_shop_entry` 的 `0x0042ea32 cmp [who_plays],1 / jne 0x42ed8d`
     //   ⇒ 只有真人才开窗（訊息框与「董事長贈禮」台词在分流**之前**，NPC 说那句是对的，别动）。
     if (screen === 'game' && !aiVenuePending(state)) syncShopUi();
-    syncInviteButton();
     syncClockOverlay();
     syncBailBgm();
     // 场所都收了、放的还是场所曲 ⇒ 把背景曲从被打断的位置接回来（`sub_00454bcc`）
@@ -10837,8 +10851,19 @@ const RECONNECT_MS = 1500;
  *   之后**只**施加服务器广播的 action。断线就带着 `since`（本地已施加到几号）
  *   重连，同名认回原座位，服务器补发漏掉的那段。
  */
-function connectOnline(url: string, room: string, name: string): void {
+function connectOnline(
+  url: string,
+  room: string,
+  name: string,
+  opts: {
+    /** 房间列表（v5）：建房 / 加入已有的；不给 = 旧语义（老调试入口）*/
+    mode?: JoinMode;
+    /** 还没坐下就被拒（房间不在了 / 满了 / 版本不符）—— 给了就断开并交给它（回列表）*/
+    onJoinFailed?: (message: string) => void;
+  } = {},
+): void {
   let closedByUs = false;
+  let firstOpen = true;
   // ★ W-73：身份令牌 —— 断线重连**认回原座位**只认它，不认名字。
   //   老的 `?ws=…&room=…&name=…` 调试入口也走这一条（从同一个 localStorage 取 / 生成）。
   const clientId = loadClientId(browserStorage());
@@ -10849,12 +10874,17 @@ function connectOnline(url: string, room: string, name: string): void {
       closedByUs = true;
       ws.close();
     };
+    // ★ 断线重连一律按「加入已有的」：头一次是「建房」的，重连时房间当然已经在了
+    //   （照 `'create'` 再发一次只会撞上自己的房间被拒）
+    const mode = opts.mode === undefined ? undefined : firstOpen ? opts.mode : 'join';
+    firstOpen = false;
     const client = new NetClient(
       { send: (text) => ws.send(text) },
       {
         room,
         name,
         clientId,
+        ...(mode === undefined ? {} : { mode }),
         ...(since === undefined ? {} : { since }),
         onJoined: (seat, info) => {
           log(`✔ 進房 ${info.id}：我是 ${seat + 1} 號座${seat === 0 ? '（房主，按 START 開局）' : ''}`);
@@ -10999,6 +11029,14 @@ function connectOnline(url: string, room: string, name: string): void {
             awaitingOwnRoll = false;
             diceFx.cancel();
             resumeTurnDriver();
+          }
+          // ★ 房间列表：还没坐下就被拒 ⇒ 这条连接没用了，回列表（把原因摆出来）
+          if (client.seat === null && opts.onJoinFailed !== undefined) {
+            closedByUs = true;
+            ws.close();
+            if (net === client) net = null;
+            netClose = null;
+            opts.onJoinFailed(message);
           }
         },
         onDesync: (d) =>
@@ -11147,57 +11185,67 @@ function clearLoadingScreen(): void {
   metaEl.className = 'meta';
 }
 
+/** 门厅 / 房间列表连哪台服务器：`?ws=` 给了就用它（本机调试），否则同源 `wss://<host>/ws` */
+let foyerWsUrl: string | null = null;
+
+function foyerUrl(): string {
+  return foyerWsUrl ?? defaultWsUrl(window.location);
+}
+
 /**
- * ★ W-73 门厅：**只在网页版、且地址里没有 `screen=` 调试参数时**，
+ * ★ 门厅：**只在网页版、且地址里没有 `screen=` 调试参数时**，
  * 在素材载入完成之后、標題畫面之前出现（任务书 W-73 §1）。
  *
- * · **單機遊戲** ⇒ 关掉覆盖层，走现有標題畫面；
- * · **建立 / 加入房間** ⇒ 用 `defaultWsUrl(location)` + 房间码 + 名字进大厅。
+ * · **單人模式** ⇒ 关掉覆盖层，走现有標題畫面；
+ * · **在線聯機** ⇒ 房间列表 ⇒ 「加入 / 重新連線 / 建立房間」⇒ 进大厅。
+ *   进房失败（房间刚解散、人满了……）⇒ 带着那句话回到列表。
  */
-async function openFoyer(): Promise<void> {
-  const choice = await showFoyer({ inviteRoom: inviteRoomFrom(window.location.search) });
+async function openFoyer(opts: { view?: 'home' | 'rooms'; notice?: string; inviteRoom?: string | null } = {}): Promise<void> {
+  const storage = browserStorage();
+  const choice = await showFoyer({
+    ...opts,
+    wsUrl: foyerUrl(),
+    clientId: loadClientId(storage),
+    storage,
+  });
   if (choice.kind === 'solo') {
     enterTitleScreen();
     return;
   }
-  log(`房間 ${choice.room}（${choice.name}）`);
-  connectOnline(defaultWsUrl(window.location), choice.room, choice.name);
+  joinFromFoyer(choice.room, choice.name, choice.mode);
+}
+
+/** 从门厅 / 旧链接进一间房；进不去就回列表并把原因摆在最上面 */
+function joinFromFoyer(room: string, name: string, mode: JoinMode): void {
+  log(`房間 ${room}（${name}，${mode === 'create' ? '建立' : '加入'}）`);
+  connectOnline(foyerUrl(), room, name, {
+    mode,
+    onJoinFailed: (message) => void openFoyer({ view: 'rooms', notice: message }),
+  });
 }
 
 /**
- * ★ W-73：大厅那颗「複製邀請連結」是 **DOM** 按钮。
+ * 网页版的入口：旧邀请链接（`?room=`）**直接进那一间**（名字存过的话连门厅都不停），
+ * 其余一律进门厅首页。
  *
- * 为什么不做进 canvas：复制要用 `navigator.clipboard`，而且这段文字是本项目自己的，
- * 不该往复刻屏里加（任务书 W-73 §1 的同一条理由）。
- *
- * 每帧同步一次可见性 —— 幂等，比在十几个「离开大厅」的出口上各挂一次可靠。
+ * ★ `?room=` 用过一次就从地址里拿掉：之后从大厅退回列表、再刷新，不该又被拽回那一间
+ *   （真断线了，列表上那一行会是「重新連線」）。
  */
-function syncInviteButton(): void {
-  const show = screen === 'lobby' && net !== null;
-  if (inviteEl.hidden !== show) return; // `hidden === !show` ⇒ 已经对了
-  inviteEl.hidden = !show;
-}
-
-/** 点一下：把 `https://<host>/?room=<码>` 放进剪贴板 */
-function copyInviteLink(): void {
-  const room = net?.room?.id ?? '';
-  if (room === '') return;
-  const link = inviteLink(window.location.origin, room);
-  const done = (text: string): void => {
-    inviteEl.textContent = text;
-    window.setTimeout(() => {
-      inviteEl.textContent = '複製邀請連結';
-    }, 1600);
-  };
-  const clip = navigator.clipboard;
-  if (clip === undefined) {
-    done('請手動複製：' + link);
+function startFoyer(entry: { wsUrl: string | null; inviteRoom: string | null }): void {
+  foyerWsUrl = entry.wsUrl;
+  const invite = entry.inviteRoom;
+  if (invite === null) {
+    void openFoyer();
     return;
   }
-  clip.writeText(link).then(
-    () => done('已複製邀請連結！'),
-    () => done('複製失敗，請手動複製'),
-  );
+  try {
+    window.history.replaceState(null, '', window.location.pathname + withoutRoomParam(window.location.search));
+  } catch {
+    /* 拿不掉也不影响进房 */
+  }
+  const name = loadName(browserStorage());
+  if (name !== '') joinFromFoyer(invite, name, 'join');
+  else void openFoyer({ inviteRoom: invite });
 }
 
 // ============================================================
@@ -12012,21 +12060,21 @@ async function boot(): Promise<void> {
     bindInput();
     // ★ 第一次交互就解锁音频 —— 画布之外的任意一点/任意一键也算（autoplay 政策）
     bindAudioUnlock();
-    // ★ W-73：大厅那颗 DOM 按钮（可见性由 `syncInviteButton` 每帧同步）
-    inviteEl.addEventListener('click', copyInviteLink);
     // ★ W-74：「我还在这儿」——只要有鼠标 / 键盘输入就报一次（自己有 10 秒节流）
     for (const type of ['mousemove', 'mousedown', 'keydown', 'wheel'] as const) {
       window.addEventListener(type, noteAlive, { passive: true });
     }
     // ★ W-73：老的 `?ws=…&room=…&name=…` 调试入口**保留**（`tools/net-e2e.js` 在用），
     //   它优先级最高；其次是 `?screen=` 调试屏；两者都没有才轮到门厅。
+    //   ★ 房间列表（2026-09-23）：`?ws=` **单独**出现时不再算老入口 —— 只换门厅连的服务器地址。
     const debugScreen = new URLSearchParams(window.location.search).has('screen');
-    const online = netParamsFrom(window.location.search);
+    const entry = foyerEntry(window.location.search);
+    const online = entry.kind === 'direct' ? netParamsFrom(window.location.search) : null;
     lastToastRoom = null;
     if (online !== null) connectOnline(online.url, online.room, online.name);
     else if (straightToGame) startGame();
     else if (isDesktop() || debugScreen) enterTitleScreen();
-    else void openFoyer();
+    else if (entry.kind === 'foyer') startFoyer(entry);
     // ★ 一进標題就点 MIDI01（原版 `ui_main.asm:187` → `fcn_004549cf(0)`）。
     //   此刻通常还没有用户手势：`MusicPlayer.play()` 会把它记成 **pending**，
     //   第一次交互时立刻补播，不用再等一次 fetch —— 这就是「打开游戏后

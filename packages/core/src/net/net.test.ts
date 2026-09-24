@@ -26,6 +26,8 @@ import {
   type ClientMessage,
   type LobbyOptions,
   type ServerMessage,
+  isJoinMode,
+  roomJoinability,
 } from './protocol.ts';
 import { Sequencer } from './sequencer.ts';
 import { topoOf } from '../testing/factories.ts';
@@ -274,15 +276,17 @@ describe('★ Q-NET-1 协议：resync / replay', () => {
 });
 
 describe('协议', () => {
-  it('★ 版本号：W-73 +1、W-74 再 +1、第十一份回報 #1 再 +1（三次都改了语义）', () => {
+  it('★ 版本号：W-73 +1、W-74 再 +1、第十一份回報 #1 再 +1、房間列表再 +1', () => {
     // ⚠️ 这一条**不是**「为了变绿改断言」：任务书 W-73 §3 与 W-74 末尾各明写一次 `+1`。
     //    Q-NET-1 那次「加了消息但不动版本号」的理由（纯增量、语义没变）在这两次都不成立：
     //    · W-73：`join.clientId` 是**必填**，且「认回原座位」的判据从名字改成了它；
     //    · W-74：不发 `awaiting` 的老客户端，那一回合到点会被电脑接走 —— 推进方式变了。
     //    · 第十一份試玩回報 #1（大廳設置）：`start` 多带了 `options`（總人數/起始資金/載具/
     //      地產期限/時間/勝利條件），老客戶端不認識 ⇒ 會靜默吃下一局**規則不同**的對局。
-    //    ⇒ 1 → 2 → 3 → 4
-    expect(PROTOCOL_VERSION).toBe(4);
+    //    · 房間列表（2026-09-23）：多了 `listRooms`/`rooms`，`join` 多了 `mode` —— 老頁面拿著
+    //      已解散的房間碼會把它重新建出來（自己當房主），得擋在門外。
+    //    ⇒ 1 → 2 → 3 → 4 → 5
+    expect(PROTOCOL_VERSION).toBe(5);
   });
 });
 
@@ -355,5 +359,24 @@ describe('★★ 大廳開局設定：範圍與補全', () => {
     const full = { ...legacy, globalMapId: 5, options: withLobbyDefaults({ seatCount: 3, victoryIndex: 2 }) };
     expect(roomOptions(full)).toEqual({ ...LOBBY_DEFAULT_OPTIONS, seatCount: 3, victoryIndex: 2 });
     expect(roomMapId(full)).toBe(5);
+  });
+});
+
+describe('★ 房間列表（v5）：`join.mode` 與可加入判據', () => {
+  it('`mode` 只認 create / join', () => {
+    expect(isJoinMode('create')).toBe(true);
+    expect(isJoinMode('join')).toBe(true);
+    for (const bad of ['', 'Create', 'spectate', null, undefined, 1]) expect(isJoinMode(bad), String(bad)).toBe(false);
+  });
+
+  it('★ 重新連線優先於「已開局 / 已滿」；其次遊戲中；再其次已滿', () => {
+    const base = { rejoin: false, started: false, humans: 1, seatCount: 4 };
+    expect(roomJoinability(base)).toBe('join');
+    expect(roomJoinability({ ...base, humans: 4 })).toBe('full');
+    expect(roomJoinability({ ...base, humans: 5 })).toBe('full');
+    expect(roomJoinability({ ...base, started: true })).toBe('playing');
+    expect(roomJoinability({ ...base, started: true, humans: 4 })).toBe('playing');
+    expect(roomJoinability({ ...base, rejoin: true, started: true, humans: 4 })).toBe('rejoin');
+    expect(roomJoinability({ ...base, rejoin: true })).toBe('rejoin');
   });
 });

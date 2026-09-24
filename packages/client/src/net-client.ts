@@ -12,6 +12,7 @@ import {
   PROTOCOL_VERSION,
   type Action,
   type ClientMessage,
+  type JoinMode,
   type RoomInfo,
   type LobbyOptions,
   type SeatInfo,
@@ -33,6 +34,11 @@ export interface NetClientOptions {
    * 老的 `?ws=…&room=…&name=…` 调试入口也一样，从同一个地方取。
    */
   clientId: string;
+  /**
+   * ★ 房間列表（v5）：`'create'` = 建房（码必须还没人用）；`'join'` = 进一间**已有的**；
+   *   不给 = 旧语义（有就进、没有就建）—— 见 core `protocol.ts` 的 `join.mode`。
+   */
+  mode?: JoinMode;
   /** 重连：本地已施加到第几号（含） */
   since?: number;
   /** 每几号 action 上报一次校验和 @default 10 */
@@ -154,6 +160,7 @@ export class NetClient {
       clientId: this.#opts.clientId,
     };
     if (this.#opts.since !== undefined) msg.since = this.#opts.since;
+    if (this.#opts.mode !== undefined) msg.mode = this.#opts.mode;
     this.#send(msg);
   }
 

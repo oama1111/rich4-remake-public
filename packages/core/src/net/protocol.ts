@@ -43,7 +43,15 @@ import type { Action } from '../state/actions.ts';
  * 而老客戶端不認識它們 ⇒ 會**靜默吃下一局規則不同的對局**（分紅、勝負條件、初始資金都不同）。
  * 這與 W-73（門廳）/ W-74（回合计时）两次 +1 同一性质。
  */
-export const PROTOCOL_VERSION = 4;
+/**
+ * ★ 2026-09-23（需求方：「改成單人模式 / 在線聯機兩個入口、在線聯機展示房間列表」）→ **5**。
+ *
+ * 為什麼 +1：多了 `listRooms` / `rooms` 一對消息，`join` 多了 `mode`（建房 / 加入要求房間
+ * 「不存在 / 存在」）。老客戶端沒有房間列表、只會拿房間碼硬闖 —— 在新服務器上它會把一個
+ * **已經解散**的房間碼重新建出來、自己當房主，朋友們在列表裡看到的就是一間莫名其妙的空房。
+ * 版本號一變，老頁面（瀏覽器裡沒刷新的那個分頁）進門就拿到一句清楚的「協議版本不符」。
+ */
+export const PROTOCOL_VERSION = 5;
 
 // ============================================================
 //  客户端 → 服务器
@@ -69,7 +77,26 @@ export type ClientMessage =
       clientId: string;
       /** 重连时：本地已施加到第几号 action（含），服务器从下一号补发；不带 = 全量补发 */
       since?: number;
+      /**
+       * ★ 房間列表（v5）：這次 `join` 的意圖。
+       *
+       * · `'create'` —— 「建立房間」：房間碼**必須還沒人用**（撞上了回 error，客戶端換一個碼再建）；
+       * · `'join'`   —— 從列表點「加入 / 重新連線」：房間**必須還在**（列表與點擊之間它可能剛被回收，
+       *   這時若照舊「沒有就建一間」，點的人會莫名其妙變成一間空房的房主）；
+       * · 不帶 —— 舊語義（有就進、沒有就建）：`?room=` 舊連結與 `tools/net-e2e.js` 走這條。
+       */
+      mode?: JoinMode;
     }
+  /**
+   * ★ 房間列表（v5）：**訂閱**房間列表。
+   *
+   * 服務器立刻回一條 `rooms`，之後列表每變一次（有人進出、開局、終局、回收）就再推一條，
+   * 直到這條連接 `join` 了某個房間或斷開。
+   *
+   * `clientId` 只用來算每一行的 `rejoin`（「你在這桌有一個斷線中的座位」）——
+   * 服務器**不回**任何人的 `clientId`（見 `RoomSummary`）。
+   */
+  | { t: 'listRooms'; version: number; clientId: string }
   /** 房主（0 号座）开局：空座由电脑补位，服务器广播 start */
   | { t: 'start' }
   /**
@@ -239,7 +266,64 @@ export type ServerMessage =
    * 发三回：**开始数**、被 `alive` **延长**、以及**作废**（`remainingMs: -1`）。
    */
   | { t: 'clock'; seat: number; remainingMs: number; hardRemainingMs: number }
+  /**
+   * ★ 房間列表（v5）：對 `listRooms` 的答覆，以及之後每一次變化的推送（**整份**替換，不發增量）。
+   *
+   * 只含**可以出現在列表上**的房間（終局的、沒人在的不列，見 `hub.ts` 的 `#summaries`）。
+   */
+  | { t: 'rooms'; rooms: RoomSummary[] }
   | { t: 'error'; message: string };
+
+/** `join.mode`（v5）—— 見 `ClientMessage` 裡 `join` 的注釋 */
+export type JoinMode = 'create' | 'join';
+
+/** 是不是合法的 `join.mode`（不帶 = 舊語義，另算） */
+export function isJoinMode(v: unknown): v is JoinMode {
+  return v === 'create' || v === 'join';
+}
+
+/**
+ * 房間列表的一行（v5）。
+ *
+ * ⚠️ **沒有 `clientId`、沒有座位明細**：列表是發給**還沒進房**的人看的，
+ *   別人的身份令牌一個字都不能出去（拿到它就能在斷線時冒名頂替那個座位）。
+ */
+export interface RoomSummary {
+  /** 房間碼（內部 id；介面上只小字顯示，給除錯用） */
+  id: string;
+  /** 房主（0 號座）的暱稱 */
+  host: string;
+  /** 已經入座的**真人**數 */
+  humans: number;
+  /** 總人數（開局時不足的座位補電腦）*/
+  seatCount: number;
+  /** 已開局 */
+  started: boolean;
+  globalMapId: number;
+  /** 房間建立了多久（毫秒，服務器發出這一條的那一刻算的；客戶端自己往上加）*/
+  ageMs: number;
+  /** 發 `listRooms` 的那個 `clientId` 在這桌有一個**斷線中**的座位 ⇒ 點了就是「重新連線」 */
+  rejoin: boolean;
+}
+
+/**
+ * 列表上這一行的按鈕該是什麼（v5）—— 服務器與客戶端**同一個判據**。
+ *
+ * · `rejoin`  —— 你在這桌有斷線中的座位：永遠可點（開局了、滿了都一樣，`clientId` 認回原座）；
+ * · `playing` —— 已開局、你不在裡面：不可點；
+ * · `full`    —— 還沒開局但人滿了：不可點；
+ * · `join`    —— 可以加入。
+ *
+ * ★ 順序是有意的：`rejoin` 先判 —— 滿了 / 開局了的那一桌，對「原來坐在裡面的人」仍然是能回去的。
+ */
+export type RoomJoinability = 'join' | 'rejoin' | 'full' | 'playing';
+
+export function roomJoinability(r: Pick<RoomSummary, 'rejoin' | 'started' | 'humans' | 'seatCount'>): RoomJoinability {
+  if (r.rejoin) return 'rejoin';
+  if (r.started) return 'playing';
+  if (r.humans >= r.seatCount) return 'full';
+  return 'join';
+}
 
 export interface SeatInfo {
   seat: number;

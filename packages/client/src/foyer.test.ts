@@ -1,9 +1,12 @@
 /*
- * W-73：门厅的**纯逻辑** —— 房间码、名字、邀请链接、身份令牌
+ * W-73：门厅的**纯逻辑** —— 房间码、名字、旧邀请链接、身份令牌、入口路由
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * ★ 覆盖层本身（`showFoyer`）不在这里测：那要引一个 DOM 实现，为一个覆盖层不值。
- *   它的三条路（單機 / 建立 / 加入）在浏览器里验收，见 `docs/acceptance/w73-20260920.md`。
+ *   它的两个入口（單人模式 / 在線聯機 → 房间列表）在浏览器里验收。
+ * ★ 2026-09-23 房间列表：房间码输入框与「複製邀請連結」从主路径拿掉了 ——
+ *   `looksLikeRoomCode` / `inviteLink` 随之删除（它们测的是我们自己的 UI，不是原版真值）；
+ *   旧 `?room=` 链接仍然要认（`inviteRoomFrom`），下面那组照旧钉着。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -13,16 +16,16 @@ import {
   CLIENT_ID_STORAGE_KEY,
   NAME_STORAGE_KEY,
   type FoyerStorage,
-  inviteLink,
+  foyerEntry,
   inviteRoomFrom,
   loadClientId,
   loadName,
-  looksLikeRoomCode,
   newClientId,
   newRoomCode,
   normalizeRoomCode,
   saveName,
   validateName,
+  withoutRoomParam,
 } from './foyer.ts';
 
 /** 只存在内存里的假 localStorage */
@@ -72,28 +75,11 @@ describe('★ 房间码', () => {
   });
 });
 
-describe('★ 房间码的输入清洗', () => {
+describe('★ 旧邀请链接（`?room=`）仍然认', () => {
   it('去空格、转大写', () => {
     expect(normalizeRoomCode(' k7m2 qp ')).toBe('K7M2QP');
     expect(normalizeRoomCode('k7m2qp')).toBe('K7M2QP');
     expect(normalizeRoomCode('\tk7m2qp\n')).toBe('K7M2QP');
-  });
-
-  it('长度不对 / 含被排除的字符 → 不合法', () => {
-    expect(looksLikeRoomCode('K7M2QP')).toBe(true);
-    expect(looksLikeRoomCode('K7M2Q')).toBe(false);
-    expect(looksLikeRoomCode('K7M2QPX')).toBe(false);
-    expect(looksLikeRoomCode('')).toBe(false);
-    // I / O / 0 / 1 都在字符集之外
-    for (const bad of ['IK7M2Q', 'OK7M2Q', '0K7M2Q', '1K7M2Q']) expect(looksLikeRoomCode(bad), bad).toBe(false);
-    expect(looksLikeRoomCode('k7m2q-')).toBe(false);
-  });
-});
-
-describe('★ 邀请链接', () => {
-  it('生成：`https://<host>/?room=<码>`', () => {
-    expect(inviteLink('https://rich4.example.com', 'K7M2QP')).toBe('https://rich4.example.com/?room=K7M2QP');
-    expect(inviteLink('http://localhost:8787/', 'K7M2QP')).toBe('http://localhost:8787/?room=K7M2QP');
   });
 
   it('解析：读得回来；缺参数 / 不合法一律 `null`', () => {
@@ -105,10 +91,37 @@ describe('★ 邀请链接', () => {
     expect(inviteRoomFrom('?room=IK7M2Q')).toBeNull(); // 含 I
   });
 
-  it('生成 → 解析 走一圈回得来', () => {
-    const code = newRoomCode(bytesFrom([3, 9, 27, 31, 0, 12]));
-    const url = new URL(inviteLink('https://rich4.example.com', code));
-    expect(inviteRoomFrom(url.search)).toBe(code);
+  it('用过一次就从地址里拿掉 `room`，其余参数原样保留', () => {
+    expect(withoutRoomParam('?room=K7M2QP')).toBe('');
+    expect(withoutRoomParam('?mute=1&room=K7M2QP')).toBe('?mute=1');
+    expect(new URLSearchParams(withoutRoomParam('?room=K7M2QP&ws=ws://h:1/ws&mute=1')).get('ws')).toBe('ws://h:1/ws');
+    expect(withoutRoomParam('')).toBe('');
+  });
+});
+
+describe('★ 入口路由（`foyerEntry`）', () => {
+  it('`?ws=` + `?room=` 同时出现 ⇒ 老调试入口（`tools/net-e2e.js`），不经门厅', () => {
+    expect(foyerEntry('?ws=ws://localhost:8787/ws&room=K7M2QP&name=A')).toEqual({ kind: 'direct' });
+    // 老入口对房间码不做本地校验（服务器会校验）—— 路由只看参数在不在
+    expect(foyerEntry('?ws=ws://x/ws&room=r1')).toEqual({ kind: 'direct' });
+  });
+
+  it('只有 `?ws=` ⇒ 门厅，但列表 / 进房都连这台服务器（本机调试）', () => {
+    expect(foyerEntry('?mute=1&ws=ws://localhost:8799/ws')).toEqual({
+      kind: 'foyer',
+      wsUrl: 'ws://localhost:8799/ws',
+      inviteRoom: null,
+    });
+  });
+
+  it('只有 `?room=` ⇒ 门厅带着邀请（直接进那一间）；码不合法当没有', () => {
+    expect(foyerEntry('?room=k7m2qp')).toEqual({ kind: 'foyer', wsUrl: null, inviteRoom: 'K7M2QP' });
+    expect(foyerEntry('?room=nope')).toEqual({ kind: 'foyer', wsUrl: null, inviteRoom: null });
+  });
+
+  it('什么都没有 ⇒ 门厅首页；`?ws=` 为空串当没给', () => {
+    expect(foyerEntry('')).toEqual({ kind: 'foyer', wsUrl: null, inviteRoom: null });
+    expect(foyerEntry('?ws=')).toEqual({ kind: 'foyer', wsUrl: null, inviteRoom: null });
   });
 });
 

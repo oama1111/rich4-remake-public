@@ -15,6 +15,7 @@ import {
   WHO_PLAYS_HUMAN,
   characterTaken,
   isClientId,
+  isJoinMode,
   isLobbyCharacter,
   isLobbyMapId,
   isLobbySeatCount,
@@ -28,6 +29,7 @@ import {
   type LobbyOptions,
   type Rich4Map,
   type RoomInfo,
+  type RoomSummary,
   type SeatInfo,
   type ServerMessage,
 } from '@rich4/core';
@@ -193,6 +195,15 @@ interface Table {
   emptySince: number | null;
   /** ★ W-74：回合计时器；没在等任何人时为 `null` */
   clock: TableClock | null;
+  /** ★ 房間列表（v5）：建房時刻（服務器時鐘），列表顯示「幾分鐘前」用 */
+  createdAt: number;
+}
+
+/** ★ 房間列表（v5）：一條訂閱了列表的連接 */
+interface ListWatcher {
+  clientId: string;
+  /** 上一次推給它的內容（去掉 `ageMs` 後的 JSON）—— 沒變就不推 */
+  last: string;
 }
 
 /** 一个客户端连接在集线器里的句柄 */
@@ -224,6 +235,8 @@ export class RoomHub {
     HubOptions;
   readonly #tables = new Map<string, Table>();
   readonly #nowFn: () => number;
+  /** ★ 房間列表（v5）：訂閱了列表、還沒進房的連接 */
+  readonly #watchers = new Map<Conn, ListWatcher>();
 
   constructor(opts: HubOptions) {
     this.#opts = {
@@ -293,218 +306,330 @@ export class RoomHub {
         return seat;
       },
       onMessage: (msg: ClientMessage): void => {
-        switch (msg.t) {
-          case 'join': {
-            if (msg.version !== PROTOCOL_VERSION) {
-              this.#sendTo(conn, { t: 'error', message: `协议版本不符：服务器 ${PROTOCOL_VERSION}，客户端 ${msg.version}` });
-              return;
-            }
-            if (table !== null) {
-              this.#sendTo(conn, { t: 'error', message: '已经在房间里了' });
-              return;
-            }
-            // ★ W-73 §3：三样都**服务器校验**，不信客户端；任何一样不合就
-            //   `error` + **断开**（不是只回一句错误让它接着试）。
-            if (!isClientId(msg.clientId)) {
-              this.#sendTo(conn, { t: 'error', message: '拒絕：clientId 必須是 32 位小寫十六進位' });
-              conn.close?.();
-              return;
-            }
-            const name = sanitizeName(msg.name);
-            if (name === null) {
-              this.#sendTo(conn, { t: 'error', message: '拒絕：名字必須是 1–12 個字元（不含控制字元）' });
-              conn.close?.();
-              return;
-            }
-            if (!isRoomCode(msg.room)) {
-              this.#sendTo(conn, { t: 'error', message: '拒絕：房間碼必須是 6 位（字母去 I/O、數字去 0/1）' });
-              conn.close?.();
-              return;
-            }
-            const t = this.#tableFor(msg.room);
-            if (t === null) {
-              this.#sendTo(conn, { t: 'error', message: '伺服器房間已滿' });
-              return;
-            }
-            const s = this.#assignSeat(t, name, msg.clientId, conn);
-            if (s === null) {
-              this.#sendTo(conn, { t: 'error', message: '房间已满' });
-              return;
-            }
-            t.emptySince = null;
-            table = t;
-            seat = s;
-            this.#sendTo(conn, { t: 'joined', version: PROTOCOL_VERSION, seat: s, room: this.#info(t) });
-            this.#broadcast(t, { t: 'room', room: this.#info(t) });
-            // 重连：补发开局参数与漏掉的 action
-            if (t.room !== null) {
-              this.#sendTo(conn, {
-                t: 'start',
-                seed: t.room.seed,
-                globalMapId: t.room.globalMapId,
-                seats: t.seats.map((x) => x.info),
-                options: t.options,
-                // ★ 第十二份試玩回報：补发到第几号为止是「进房之前的事」—— 客户端静默追上，不重演
-                through: t.room.sequenceLength - 1,
-              });
-              const from = msg.since === undefined ? 0 : msg.since + 1;
-              for (const b of t.room.since(from)) this.#sendTo(conn, { t: 'action', seq: b.seq, action: b.action });
-              // ★ 首席复核：这一桌可能正「停手等人」（见 `#anyonePresent`）—— 人回来了，接着走
-              this.#driveComputers(t);
-              this.#advance(t, this.#now());
-            }
-            return;
-          }
-          case 'start': {
-            if (table === null || seat === null) return;
-            if (seat !== 0) {
-              this.#sendTo(conn, { t: 'error', message: '只有房主（0 号座）能开局' });
-              return;
-            }
-            if (table.room !== null) return;
-            this.#start(table);
-            return;
-          }
-          case 'intent': {
-            if (table === null || seat === null || table.room === null) {
-              this.#sendTo(conn, { t: 'error', message: '还没开局' });
-              return;
-            }
-            if (typeof msg.action !== 'object' || msg.action === null || typeof msg.action.type !== 'string') {
-              this.#sendTo(conn, { t: 'error', message: '拒绝：action 格式不对' });
-              return;
-            }
-            this.#submit(table, seat, msg.action, conn);
-            return;
-          }
-          case 'checksum': {
-            if (table === null || seat === null || table.room === null) return;
-            const expected = table.room.fingerprintAt(msg.seq);
-            if (expected !== null && expected !== msg.hash) {
-              this.#broadcast(table, { t: 'desync', seq: msg.seq, expected, got: msg.hash, seat });
-            }
-            return;
-          }
-          // ★ Q-NET-1 失步自愈：把**完整** action 日志重放给请求者。
-          //   权限只认 `join` 时绑在这条连接上的座位（下面的所有权检查），
-          //   消息体里没有任何座位/名字可填 —— 所以索取不到别人的重放。
-          //   也谈不上额外泄密：这条连接本来就收得到每一条广播 action。
-          case 'resync': {
-            if (table === null || seat === null || table.room === null) {
-              this.#sendTo(conn, { t: 'error', message: '還沒開局' });
-              return;
-            }
-            if (table.seats[seat]?.conn !== conn) {
-              // 掉线后沿用旧句柄、或别的连接想蹭同一个座位，都在这里挡住
-              this.#sendTo(conn, { t: 'error', message: '拒絕：這條連接不是該座位' });
-              return;
-            }
-            const log = table.room.since(0);
-            // ⚠️ 只回请求者，不广播（重放是给一个人的）
-            this.#sendTo(conn, {
-              t: 'replay',
-              seed: table.room.seed,
-              globalMapId: table.room.globalMapId,
-              seats: table.seats.map((s) => ({ ...s.info })),
-              // ★ 第十一份試玩回報 #1：重放也要带开局选项 —— `onResync` 用它 `newGame`，
-              //   少了它重建出来的局面与服务器镜像就不是同一局。
-              options: table.options,
-              through: log.length === 0 ? -1 : log[log.length - 1]!.seq,
-              actions: log.map((b) => ({ seq: b.seq, action: b.action })),
-            });
-            return;
-          }
-          // ★ Q-NET-2 大厅设置：改**自己**座位的角色。
-          //   座位号取自 `join` 时绑在这条连接上的 `seat`，消息体里没有座位号 ——
-          //   所以「改别人的角色」不是被拒绝，而是根本表达不出来。
-          case 'setCharacter': {
-            if (table === null || seat === null) {
-              this.#sendTo(conn, { t: 'error', message: '還沒進房' });
-              return;
-            }
-            this.#setCharacter(table, seat, msg.character, conn);
-            return;
-          }
-          // ★ Q-NET-2 大厅设置：换房间地图。只有房主（0 号座）。
-          case 'setMap': {
-            if (table === null || seat === null) {
-              this.#sendTo(conn, { t: 'error', message: '還沒進房' });
-              return;
-            }
-            this.#setMap(table, seat, msg.globalMapId, conn);
-            return;
-          }
-          // ★★ 第十一份試玩回報 #1：大厅开局选项（总人数 + 单机那五项）。同一套权限。
-          case 'setOptions': {
-            if (table === null || seat === null) {
-              this.#sendTo(conn, { t: 'error', message: '還沒進房' });
-              return;
-            }
-            this.#setOptions(table, seat, msg.options, conn);
-            return;
-          }
-          // ★ W-74：本机座位**演完了、停在等输入上** —— 从这一刻起才开始数 60 秒。
-          case 'awaiting': {
-            if (table === null || seat === null || table.room === null) return;
-            const slot = table.seats[seat];
-            if (slot === undefined || slot.conn !== conn) return;
-            // `seq` 必须是**最新**的那条广播：演出期间又来了一条 action 的话，
-            // 「画面停在等输入」这个判断已经不成立
-            if (msg.seq !== table.room.sequenceLength - 1) return;
-            // ★ 先**记下来**（哪怕此刻表还没装上 —— 见 `lastAwaitingSeq` 的注释）
-            slot.lastAwaitingSeq = msg.seq;
-            const clock = table.clock;
-            if (clock === null || clock.seat !== seat || clock.startedAt !== null) return;
-            this.#startCounting(table, this.#now());
-            return;
-          }
-          // ★ W-74：「我还在这儿，只是还在操作」—— 把截止时刻往后延（有硬上限）
-          case 'alive': {
-            if (table === null || seat === null) return;
-            if (table.seats[seat]?.conn !== conn) return;
-            const clock = table.clock;
-            if (clock === null || clock.seat !== seat || clock.startedAt === null) return;
-            const at = this.#now();
-            const capped = clock.hardAt ?? clock.deadline;
-            clock.deadline = Math.min(Math.max(clock.deadline, at + this.#opts.aliveExtendMs), capped);
-            this.#broadcast(table, this.#clockMessage(clock, at));
-            return;
-          }
-          // ★ W-74：被超时託管的玩家点一下画面 —— 把座位收回来
-          case 'resume': {
-            if (table === null || seat === null || table.room === null) return;
-            const slot = table.seats[seat];
-            if (slot === undefined || slot.conn !== conn) return;
-            // 掉线代打不归这条管（那条是重连时归还）
-            if (slot.info.autopilot !== 'idle') return;
-            slot.strikes = 0;
-            slot.pendingRestore = false;
-            delete slot.info.autopilot;
-            const r = table.room.submitSystem({ type: 'setAi', player: seat, whoPlays: WHO_PLAYS_HUMAN });
-            if (r.ok) this.#broadcast(table, { t: 'action', seq: r.broadcast.seq, action: r.broadcast.action });
-            this.#broadcast(table, { t: 'room', room: this.#info(table) });
-            this.#driveComputers(table);
-            this.#advance(table, this.#now());
-            return;
-          }
-          default:
-            return;
+        try {
+          onMessage(msg);
+        } finally {
+          // ★ 房間列表（v5）：任何一條消息都可能改變列表（進房、開局、改人數、終局……）——
+          //   統一在出口推一次（內容沒變就不發），比在十幾個分支上各掛一句可靠
+          this.#publishRooms();
         }
       },
       onClose: (now: number): void => {
-        if (table === null || seat === null) return;
-        const slot = table.seats[seat];
-        if (slot === undefined || slot.conn !== conn) return;
-        slot.conn = null;
-        slot.disconnectedAt = now;
-        slot.info.connected = false;
-        // ★ W-74：他掉线了，这一回合不必再等他（`#advance` 会按新局面重装表）
-        this.#clearClock(table);
-        this.#broadcast(table, { t: 'room', room: this.#info(table) });
-        this.#advance(table, now);
+        try {
+          onClose(now);
+        } finally {
+          this.#watchers.delete(conn);
+          this.#publishRooms();
+        }
       },
     };
+
+    const onMessage = (msg: ClientMessage): void => {
+      switch (msg.t) {
+        case 'listRooms': {
+          if (msg.version !== PROTOCOL_VERSION) {
+            this.#sendTo(conn, { t: 'error', message: `协议版本不符：服务器 ${PROTOCOL_VERSION}，客户端 ${msg.version}` });
+            return;
+          }
+          if (table !== null) return; // 已經進房了：列表對它沒意義
+          if (!isClientId(msg.clientId)) {
+            this.#sendTo(conn, { t: 'error', message: '拒絕：clientId 必須是 32 位小寫十六進位' });
+            conn.close?.();
+            return;
+          }
+          this.#watchers.set(conn, { clientId: msg.clientId, last: '' });
+          return; // 出口的 `#publishRooms` 會把第一份發出去
+        }
+        case 'join': {
+          if (msg.version !== PROTOCOL_VERSION) {
+            this.#sendTo(conn, { t: 'error', message: `协议版本不符：服务器 ${PROTOCOL_VERSION}，客户端 ${msg.version}` });
+            return;
+          }
+          if (table !== null) {
+            this.#sendTo(conn, { t: 'error', message: '已经在房间里了' });
+            return;
+          }
+          // ★ W-73 §3：三样都**服务器校验**，不信客户端；任何一样不合就
+          //   `error` + **断开**（不是只回一句错误让它接着试）。
+          if (!isClientId(msg.clientId)) {
+            this.#sendTo(conn, { t: 'error', message: '拒絕：clientId 必須是 32 位小寫十六進位' });
+            conn.close?.();
+            return;
+          }
+          const name = sanitizeName(msg.name);
+          if (name === null) {
+            this.#sendTo(conn, { t: 'error', message: '拒絕：名字必須是 1–12 個字元（不含控制字元）' });
+            conn.close?.();
+            return;
+          }
+          if (!isRoomCode(msg.room)) {
+            this.#sendTo(conn, { t: 'error', message: '拒絕：房間碼必須是 6 位（字母去 I/O、數字去 0/1）' });
+            conn.close?.();
+            return;
+          }
+          if (msg.mode !== undefined && !isJoinMode(msg.mode)) {
+            this.#sendTo(conn, { t: 'error', message: '拒絕：mode 只能是 create / join' });
+            conn.close?.();
+            return;
+          }
+          // ★ 房間列表（v5）：建房要「還沒有」、從列表加入要「還在」—— 見 protocol.ts 的 `mode`
+          const exists = this.#tables.has(msg.room);
+          if (msg.mode === 'create' && exists) {
+            this.#sendTo(conn, { t: 'error', message: '房間碼撞上了別人的房間，請再建一次' });
+            return;
+          }
+          if (msg.mode === 'join' && !exists) {
+            this.#sendTo(conn, { t: 'error', message: '這個房間已經不在了（可能剛解散）' });
+            return;
+          }
+          const t = this.#tableFor(msg.room);
+          if (t === null) {
+            this.#sendTo(conn, { t: 'error', message: '伺服器房間已滿' });
+            return;
+          }
+          const s = this.#assignSeat(t, name, msg.clientId, conn);
+          if (s === null) {
+            this.#sendTo(conn, { t: 'error', message: '房间已满' });
+            return;
+          }
+          t.emptySince = null;
+          table = t;
+          seat = s;
+          // 進房了就不再看列表
+          this.#watchers.delete(conn);
+          this.#sendTo(conn, { t: 'joined', version: PROTOCOL_VERSION, seat: s, room: this.#info(t) });
+          this.#broadcast(t, { t: 'room', room: this.#info(t) });
+          // 重连：补发开局参数与漏掉的 action
+          if (t.room !== null) {
+            this.#sendTo(conn, {
+              t: 'start',
+              seed: t.room.seed,
+              globalMapId: t.room.globalMapId,
+              seats: t.seats.map((x) => x.info),
+              options: t.options,
+              // ★ 第十二份試玩回報：补发到第几号为止是「进房之前的事」—— 客户端静默追上，不重演
+              through: t.room.sequenceLength - 1,
+            });
+            const from = msg.since === undefined ? 0 : msg.since + 1;
+            for (const b of t.room.since(from)) this.#sendTo(conn, { t: 'action', seq: b.seq, action: b.action });
+            // ★ 首席复核：这一桌可能正「停手等人」（见 `#anyonePresent`）—— 人回来了，接着走
+            this.#driveComputers(t);
+            this.#advance(t, this.#now());
+          }
+          return;
+        }
+        case 'start': {
+          if (table === null || seat === null) return;
+          if (seat !== 0) {
+            this.#sendTo(conn, { t: 'error', message: '只有房主（0 号座）能开局' });
+            return;
+          }
+          if (table.room !== null) return;
+          this.#start(table);
+          return;
+        }
+        case 'intent': {
+          if (table === null || seat === null || table.room === null) {
+            this.#sendTo(conn, { t: 'error', message: '还没开局' });
+            return;
+          }
+          if (typeof msg.action !== 'object' || msg.action === null || typeof msg.action.type !== 'string') {
+            this.#sendTo(conn, { t: 'error', message: '拒绝：action 格式不对' });
+            return;
+          }
+          this.#submit(table, seat, msg.action, conn);
+          return;
+        }
+        case 'checksum': {
+          if (table === null || seat === null || table.room === null) return;
+          const expected = table.room.fingerprintAt(msg.seq);
+          if (expected !== null && expected !== msg.hash) {
+            this.#broadcast(table, { t: 'desync', seq: msg.seq, expected, got: msg.hash, seat });
+          }
+          return;
+        }
+        // ★ Q-NET-1 失步自愈：把**完整** action 日志重放给请求者。
+        //   权限只认 `join` 时绑在这条连接上的座位（下面的所有权检查），
+        //   消息体里没有任何座位/名字可填 —— 所以索取不到别人的重放。
+        //   也谈不上额外泄密：这条连接本来就收得到每一条广播 action。
+        case 'resync': {
+          if (table === null || seat === null || table.room === null) {
+            this.#sendTo(conn, { t: 'error', message: '還沒開局' });
+            return;
+          }
+          if (table.seats[seat]?.conn !== conn) {
+            // 掉线后沿用旧句柄、或别的连接想蹭同一个座位，都在这里挡住
+            this.#sendTo(conn, { t: 'error', message: '拒絕：這條連接不是該座位' });
+            return;
+          }
+          const log = table.room.since(0);
+          // ⚠️ 只回请求者，不广播（重放是给一个人的）
+          this.#sendTo(conn, {
+            t: 'replay',
+            seed: table.room.seed,
+            globalMapId: table.room.globalMapId,
+            seats: table.seats.map((s) => ({ ...s.info })),
+            // ★ 第十一份試玩回報 #1：重放也要带开局选项 —— `onResync` 用它 `newGame`，
+            //   少了它重建出来的局面与服务器镜像就不是同一局。
+            options: table.options,
+            through: log.length === 0 ? -1 : log[log.length - 1]!.seq,
+            actions: log.map((b) => ({ seq: b.seq, action: b.action })),
+          });
+          return;
+        }
+        // ★ Q-NET-2 大厅设置：改**自己**座位的角色。
+        //   座位号取自 `join` 时绑在这条连接上的 `seat`，消息体里没有座位号 ——
+        //   所以「改别人的角色」不是被拒绝，而是根本表达不出来。
+        case 'setCharacter': {
+          if (table === null || seat === null) {
+            this.#sendTo(conn, { t: 'error', message: '還沒進房' });
+            return;
+          }
+          this.#setCharacter(table, seat, msg.character, conn);
+          return;
+        }
+        // ★ Q-NET-2 大厅设置：换房间地图。只有房主（0 号座）。
+        case 'setMap': {
+          if (table === null || seat === null) {
+            this.#sendTo(conn, { t: 'error', message: '還沒進房' });
+            return;
+          }
+          this.#setMap(table, seat, msg.globalMapId, conn);
+          return;
+        }
+        // ★★ 第十一份試玩回報 #1：大厅开局选项（总人数 + 单机那五项）。同一套权限。
+        case 'setOptions': {
+          if (table === null || seat === null) {
+            this.#sendTo(conn, { t: 'error', message: '還沒進房' });
+            return;
+          }
+          this.#setOptions(table, seat, msg.options, conn);
+          return;
+        }
+        // ★ W-74：本机座位**演完了、停在等输入上** —— 从这一刻起才开始数 60 秒。
+        case 'awaiting': {
+          if (table === null || seat === null || table.room === null) return;
+          const slot = table.seats[seat];
+          if (slot === undefined || slot.conn !== conn) return;
+          // `seq` 必须是**最新**的那条广播：演出期间又来了一条 action 的话，
+          // 「画面停在等输入」这个判断已经不成立
+          if (msg.seq !== table.room.sequenceLength - 1) return;
+          // ★ 先**记下来**（哪怕此刻表还没装上 —— 见 `lastAwaitingSeq` 的注释）
+          slot.lastAwaitingSeq = msg.seq;
+          const clock = table.clock;
+          if (clock === null || clock.seat !== seat || clock.startedAt !== null) return;
+          this.#startCounting(table, this.#now());
+          return;
+        }
+        // ★ W-74：「我还在这儿，只是还在操作」—— 把截止时刻往后延（有硬上限）
+        case 'alive': {
+          if (table === null || seat === null) return;
+          if (table.seats[seat]?.conn !== conn) return;
+          const clock = table.clock;
+          if (clock === null || clock.seat !== seat || clock.startedAt === null) return;
+          const at = this.#now();
+          const capped = clock.hardAt ?? clock.deadline;
+          clock.deadline = Math.min(Math.max(clock.deadline, at + this.#opts.aliveExtendMs), capped);
+          this.#broadcast(table, this.#clockMessage(clock, at));
+          return;
+        }
+        // ★ W-74：被超时託管的玩家点一下画面 —— 把座位收回来
+        case 'resume': {
+          if (table === null || seat === null || table.room === null) return;
+          const slot = table.seats[seat];
+          if (slot === undefined || slot.conn !== conn) return;
+          // 掉线代打不归这条管（那条是重连时归还）
+          if (slot.info.autopilot !== 'idle') return;
+          slot.strikes = 0;
+          slot.pendingRestore = false;
+          delete slot.info.autopilot;
+          const r = table.room.submitSystem({ type: 'setAi', player: seat, whoPlays: WHO_PLAYS_HUMAN });
+          if (r.ok) this.#broadcast(table, { t: 'action', seq: r.broadcast.seq, action: r.broadcast.action });
+          this.#broadcast(table, { t: 'room', room: this.#info(table) });
+          this.#driveComputers(table);
+          this.#advance(table, this.#now());
+          return;
+        }
+        default:
+          return;
+      }
+    };
+    const onClose = (now: number): void => {
+      if (table === null || seat === null) return;
+      const slot = table.seats[seat];
+      if (slot === undefined || slot.conn !== conn) return;
+      slot.conn = null;
+      slot.disconnectedAt = now;
+      slot.info.connected = false;
+      // ★ W-74：他掉线了，这一回合不必再等他（`#advance` 会按新局面重装表）
+      this.#clearClock(table);
+      this.#broadcast(table, { t: 'room', room: this.#info(table) });
+      this.#advance(table, now);
+    };
     return handle;
+  }
+
+  // ------------------------------------------------------------
+  //  房間列表（v5）
+  // ------------------------------------------------------------
+
+  /**
+   * 供測試 / 監控：以 `clientId` 這個人的眼光看到的房間列表（與推給他的那份同一個函數）。
+   *
+   * 列哪些房間 —— **能對看列表的人有用**的才列：
+   * · **終局的不列**（`phase === 'gameOver'`）：進去也只能看結算；
+   * · **一個真人都沒入座的不列**（`join` 失敗留下的空殼）；
+   * · **沒有一個真人在線的不列** —— 等著被回收的死房間；
+   * · **還沒開局、房主（0 號座）不在線的不列** —— 只有房主能按開始，進去只會乾等；
+   * 例外：你自己在這桌有**斷線中**的座位（`rejoin`）⇒ 上面後兩條不擋（終局照樣不列），
+   *   好讓刷新 / 掉線的人從列表點「重新連線」回去。
+   */
+  listRooms(clientId: string | null, now: number = this.#now()): RoomSummary[] {
+    const out: RoomSummary[] = [];
+    for (const t of this.#tables.values()) {
+      const s = this.#summary(t, clientId, now);
+      if (s !== null) out.push(s);
+    }
+    return out;
+  }
+
+  #summary(t: Table, clientId: string | null, now: number): RoomSummary | null {
+    if (t.room !== null && t.room.state.phase === 'gameOver') return null;
+    const humans = t.seats.filter((s) => s.info.kind === 'human');
+    if (humans.length === 0) return null;
+    const rejoin = clientId !== null && humans.some((s) => s.clientId === clientId && s.conn === null);
+    if (!rejoin) {
+      if (!humans.some((s) => s.conn !== null)) return null;
+      if (t.room === null && (t.seats[0]?.conn ?? null) === null) return null;
+    }
+    return {
+      id: t.id,
+      host: t.seats[0]?.info.name ?? '',
+      humans: humans.length,
+      // 開局後以實際座位數為準（= 開局那一刻的 `seatCount`）
+      seatCount: t.room === null ? t.options.seatCount : t.seats.length,
+      started: t.room !== null,
+      globalMapId: t.globalMapId,
+      ageMs: Math.max(0, now - t.createdAt),
+      rejoin,
+    };
+  }
+
+  /**
+   * 把列表推給每一個訂閱者 —— **內容沒變就不推**（比較時去掉 `ageMs`，它每一刻都在變）。
+   *
+   * 在每條消息、每次斷線、每一拍掃描的出口各叫一次；沒有訂閱者時什麼都不算。
+   */
+  #publishRooms(): void {
+    if (this.#watchers.size === 0) return;
+    const now = this.#now();
+    for (const [conn, w] of this.#watchers) {
+      const rooms = this.listRooms(w.clientId, now);
+      const key = JSON.stringify(rooms.map((r) => ({ ...r, ageMs: 0 })));
+      if (key === w.last) continue;
+      w.last = key;
+      this.#sendTo(conn, { t: 'rooms', rooms });
+    }
   }
 
   /**
@@ -552,6 +677,8 @@ export class RoomHub {
       this.#advance(t, now);
       this.#sweepClock(t, now);
     }
+    // ★ 房間列表（v5）：回收、掉線代打、超時都可能改變列表
+    this.#publishRooms();
     return out;
   }
 
@@ -718,7 +845,7 @@ export class RoomHub {
     if (hit !== undefined) return hit;
     if (this.#tables.size >= this.#opts.maxRooms) return null;
     // `emptySince` 初值 `null`：下一次扫描会把「此刻还全桌无人」的那一间记上时间戳。
-    // 这里不能填 `now`（集线器没有时钟，时间一律由外部注入 —— 那是同一条规矩）。
+    // 这里不填 `now`：「此刻是否无人」只由扫描判定（建房这一刻 join 还没坐下，填了反而是错的）。
     const t: Table = {
       id,
       seats: [],
@@ -726,6 +853,7 @@ export class RoomHub {
       globalMapId: this.#opts.globalMapId,
       emptySince: null,
       clock: null,
+      createdAt: this.#now(),
       options: {
         ...LOBBY_DEFAULT_OPTIONS,
         // ★ 第十一份試玩回報 #1：`--seats` 从「服务器全局固定人数」降级成**新房间的初值** ——
