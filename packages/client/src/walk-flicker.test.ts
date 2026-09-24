@@ -451,7 +451,7 @@ describe('★ 真人走子也必须逐格滑（T-047 ④ 第 1 条，2026-09-16 
     expect(src).toContain('tweenStepIfMoved(action, before);');
     // ★ 第 87 条：**要不要起、起终点在哪**的判据搬进纯函数 `walkTweenFor`
     //   （`tween.ts`，有 5 条单测），这里只剩"按它的结论去 startWalk"。
-    expect(src).toContain("import { walkTweenFor } from './tween.ts';");
+    expect(src).toContain("import { walkTweenFor, type WalkTween } from './tween.ts';");
     expect(src).toContain('walkTweenFor(action.type, before, state,');
     // AI 那条仍在它自己的 `reduce` 直路上起走子补间（定义 1 处 + 调用 1 处）
     expect(src.split('startStepTween(').length - 1).toBe(2);

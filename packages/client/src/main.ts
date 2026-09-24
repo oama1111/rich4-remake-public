@@ -90,7 +90,7 @@ import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
 import { RENDER_MS, tickMs } from './tick.ts';
 import { landingPauseRemaining, turnEndPauseTicks, type LandingPause } from './landing-pause.ts';
 import { hideLandingPlayer, landingFilmSpec, landingTrigger, openingLandingPlayer } from './landing-fx.ts';
-import { walkTweenFor } from './tween.ts';
+import { walkTweenFor, type WalkTween } from './tween.ts';
 import {
   drawLobby,
   hitLobby,
@@ -414,7 +414,7 @@ import { DICE_FLIC_BASE, GO_IMAGE, YESNO_IMAGE, YESNO_RESOURCE, type SpriteFn } 
 import { GO_SIZE, goButton, boardToScreen } from './go-button.ts';
 import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './cursor-warp.ts';
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
-import { shouldResumeDriver } from './driver-resume.ts';
+import { driverParkedByScreen, shouldResumeDriver } from './driver-resume.ts';
 import { TOLL_FLASH_TOTAL_MS, tollFlashLevel } from './toll-flash-fx.ts';
 import {
   noticeHoldsFilms,
@@ -2005,6 +2005,8 @@ function holdForActorWalk(reschedule: () => void): boolean {
 
 /** `holdForActorWalk` 的判据本体：挡着就返回原因，放行返回 null（第十六份：拆出来好计时）*/
 function holdForActorWalkReason(): string | null {
+  // ★★ 审计 #15：过场期间一步都不派（定时器在过场开始前就排好的那一拍也挡住）
+  if (driverParkedByScreen(screen)) return 'intro';
   if (screen !== 'game') return null;
   // ★ D-MAGIC-16：魔法屋逐人那几段还没演完（原版 `0x431caa` 整个循环是阻塞的）
   if (magicSeq !== null) {
@@ -2021,6 +2023,10 @@ function holdForActorWalkReason(): string | null {
   //   （否则押后的台词永远等它，而它又在等台词），回合驱动单独在这里等
   if (pendingDisappearFx !== null) {
     return 'disappearFx';
+  }
+  // ★ 审计 #17：住进旅館那一段还没起步（等落点例程的框 / 台词收完）—— 同上，不进 `stageBusy`
+  if (pendingRelocateWalk !== null) {
+    return 'relocateWalk';
   }
   // ★ 第十五份：命運 pass 1 里的演出之后还要对着棋盘停 800 ms（`0x0044dd7b`），数完才轮下一步
   if (eventBoxTailPending()) {
@@ -4989,11 +4995,22 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
   // ★ 走一格的终点 = **踏上的那一格**（用引擎自己的 `pickNextNode` 从 before 回放），不是 after 的 `nodeId`
   //   —— 踩惡犬 / 地雷时 after 已经在醫院，拿它当终点是一段 4 秒横跨地图的补间（第八份 #8）
   const landing = action.type === 'step' ? nextNodeOf(before, topo) : null;
-  const t =
-    action.type === 'step' || action.type === 'startTurn'
-      ? walkTweenFor(action.type, before, state, (id) => map.nodes[id - 1], landing)
-      : null;
+  // ★ 审计 #17：其余 action 也问一次 —— 住进旅館那一趟（`0x40d5a5` 支 A）出在落点结算里
+  const t = walkTweenFor(action.type, before, state, (id) => map.nodes[id - 1], landing);
   if (t === null) return;
+  // ★★ 审计 #17：走进旅館要等落点例程**全部**收完才起步（`0x41a85e call 0x40d5a5` 是落点例程最后一件事，
+  //   之前是訊息框、住宿台词 `0x0041a7e0`、理賠框 `0x0041a82d`；走路在之后的 tick 里）⇒ 先原地站着，
+  //   由 `tickPendingRelocateWalk` 等台上空了再起。
+  if (t.relocate?.kind === 'enter') {
+    pendingRelocateWalk = t;
+    renderer.parkPlayer(t.player, t.from);
+    return;
+  }
+  beginTween(t);
+}
+
+/** 起一段玩家位移补间（`tweenStepIfMoved` 与挂起的「走进旅館」共用）*/
+function beginTween(t: WalkTween): void {
   const p = state.players[t.player];
   // ★ `t.special`（不写死 false）：走回棋盘走 `dist × 0.125` 那一支 —— 见 `tween.ts`
   noteWalkGap();
@@ -5004,7 +5021,37 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
     (p?.trafficMethod ?? 0) & 3,
     t.special,
     tickMs(options.speed),
+    performance.now(),
+    t.relocate ?? null,
   );
+}
+
+/**
+ * ★★ 审计 #17：挂起的「走进旅館」—— `tweenStepIfMoved` 记下，台上全空了（訊息框 / 台词 / 理賠框 /
+ *   影片都收了）才起步。**不进** `stageBusy`（否则押后的住宿台词等它、它又等台词 ⇒ 互等），
+ *   回合驱动 / 联机收件箱在 `holdForActorWalkReason` 里单独等它（与 `pendingDisappearFx` 同一种闸）。
+ */
+let pendingRelocateWalk: WalkTween | null = null;
+
+function tickPendingRelocateWalk(): void {
+  const t = pendingRelocateWalk;
+  if (t === null) return;
+  if (
+    speechQueue.length > 0 ||
+    heldSpeech.length > 0 ||
+    deferredScreenEvents.length > 0 ||
+    activeUiScreen() !== null ||
+    presentationHost.boxSnapshot().pendingRanks.length > 0 ||
+    stageBusy(stageBusyFlags()) ||
+    pendingDisappearFx !== null ||
+    eventBoxTailPending()
+  ) {
+    requestRender();
+    return;
+  }
+  pendingRelocateWalk = null;
+  beginTween(t);
+  requestRender();
 }
 
 /**
@@ -5214,6 +5261,10 @@ function scheduleAi(): void {
     clearTimeout(aiTimer);
     aiTimer = null;
   }
+  // ★★ 审计 #15：開局跳伞过场期间不下棋（原版过场 `fcn_00415872` 是进棋盘之前的阻塞调用）。
+  //   先前这里没有屏号闸 ⇒ 全电脑对局在过场底下全速开打、第一扇框一开过场就再也收不了场。
+  //   `endIntro()` 与 W-60 的 `shouldResumeDriver('intro', 'game')` 会在过场放完时叫醒它。
+  if (driverParkedByScreen(screen)) return;
   // ★ 出局者的回合由引擎推进，与「是否开着托管」无关——
   //   否则人类玩家一破产，整局就停在他身上不动了。
   // ★ 但**出局者名下排着拍卖**时 `autoAction` 同样返回 null（它不认竞价），
@@ -5288,8 +5339,9 @@ function scheduleAi(): void {
     // ★ 与 `applyAction` 同一个宿主播种漏斗（日推进后重播种）
     state = reduceRecorded(action);
     if (walker !== null && state !== before) startStepTween(walker, before);
-    // ★ 「走回棋盘」那一回合也要演一段位移（与 `tweenStepIfMoved` 同源）
-    if (action.type === 'startTurn' && state !== before) tweenStepIfMoved(action, before);
+    // ★ 「走回棋盘」那一回合也要演一段位移（与 `tweenStepIfMoved` 同源）；
+    //   ★ 审计 #17：住进旅館那一趟出在落点结算里 ⇒ 除 `step`（上面 `startStepTween`）之外都问一次
+    if (action.type !== 'step' && state !== before) tweenStepIfMoved(action, before);
     // ★ 动效出口**与 `applyAction` 共用同一个函数**（Q-TOOL-5 ⑤14）：
     //   电脑这一步是**绕开 `applyAction` 的直路**（它自己 `reduce`），
     //   先前只在这里补了 `useCard` —— 于是电脑用道具（路障/地雷/炸彈的投掷、
@@ -6356,6 +6408,11 @@ let introSkipped = false;
  *   不许有跨帧状态（C-DET-4）。
  */
 let introSoundPlayed = false;
+
+/** 过场里出场的角色（`players[].character`）—— 每位两段 FLIC，时长也按它算（`introMs`）*/
+function introCast(): number[] {
+  return state.players.map((p) => p.character);
+}
 
 /** 过场结束 → 进棋盘 */
 function endIntro(): void {
@@ -8186,6 +8243,9 @@ function requestRender(): void {
     //
     //   ⚠️ 位置必须在 `resizeCanvas()` 之后、**这一帧的绘制之前**：驱动起来要排在
     //      这一帧的 rAF 尾巴上（`schedule*` 用 `setTimeout`），绘制不该等它。
+    // ★★ 审计 #15：过场的收场判据放在渲染链**之前** —— 先前它只写在下面 `screen === 'intro'`
+    //   那一支里，整屏接管（訊息框 / 老虎机…）一开那一支就不跑，过场便永远收不了场。
+    if (screen === 'intro' && introDone(introStartedAt, performance.now(), introSkipped, introCast())) endIntro();
     if (shouldResumeDriver(lastFrameScreen, screen)) resumeTurnDriver();
     lastFrameScreen = screen;
     // ★★ W-67-a：**訊息框收掉之后商店窗才开得起来** —— `syncShopUi()` 见到
@@ -8241,6 +8301,8 @@ function requestRender(): void {
     if (screen === 'game') tickPendingToolPicker();
     // ★ 第十四份：飛機 / 飛碟那一段等台词与理賠框（`0x40d375` 里台词 → 理賠 → 影片）
     if (screen === 'game') tickPendingDisappearFx();
+    // ★ 审计 #17：住进旅館 —— 落点例程的框 / 台词都收了才走进去
+    if (screen === 'game') tickPendingRelocateWalk();
     if (screen === 'game') tickObjectFlight(performance.now());
     // ★ 第十四份 #5：機器娃娃等台词说完才上路
     if (screen === 'game') tickDollRelease();
@@ -8328,7 +8390,6 @@ function requestRender(): void {
       //   资源号由**该玩家的 `character`** 索引（`0x2f+角色` / `0x3b+角色`），
       //   所以这里必须把**全桌**的角色号交给它，不能只给 `players[0]`。
       //   @source `fcn_00415872` VA 0x004158e0（预载）与 0x00415b58 / 0x00415c76（播放）。
-      const introCast = state.players.map((p) => p.character);
       drawIntro(stageCtx, performance.now() - introStartedAt, {
         sprite: spriteNow,
         flic: uiFlicNow,
@@ -8339,11 +8400,11 @@ function requestRender(): void {
           introSoundPlayed = true;
           sound.play('Effect.mkf', id);
         },
-        characters: introCast,
+        characters: introCast(),
         soundPlayed: introSoundPlayed,
       });
-      if (introDone(introStartedAt, performance.now(), introSkipped, introCast)) endIntro();
-      else requestRender();
+      // 收场判据在帧首（见 rAF 回调开头的 ★★ 审计 #15），这里只管续帧
+      requestRender();
     } else if (screen === 'assets') {
       // ★ **不要在这里 `return`** —— `blitStage()` 在这条链的末尾，
       //   提前返回等于画了不上屏（上一轮就是这样：`screen` 都切过去了，
@@ -8696,6 +8757,7 @@ function presentationWaiting(): boolean {
     objectFlightAwaitsSpeech ||
     dollWalkHeld ||
     pendingDisappearFx !== null ||
+    pendingRelocateWalk !== null ||
     (godAscend !== null && godAscend.start === null)
   );
 }
@@ -8781,6 +8843,12 @@ function unwindPresentations(level: number): void {
   godAscend = null;
   pendingCardFlight = null;
   pendingDisappearFx = null;
+  // 住进旅館那一段：直接起步（它不等任何人，只是排在框 / 台词后面）
+  if (pendingRelocateWalk !== null) {
+    const t = pendingRelocateWalk;
+    pendingRelocateWalk = null;
+    beginTween(t);
+  }
   if (objectFlight !== null) finishObjectFlight();
   objectFlightAwaitsSpeech = false;
   if (dollWalkHeld) {
@@ -9914,6 +9982,8 @@ function startGame(): void {
   manifestHold = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+  pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
+  renderer.clearRelocate();
   pendingCardRoute = null; // 亮牌后待走的那一张同理
   // ★ 右上角面板四位玩家的页号一起归零 @source `fcn_00417e26` 的 0x401 分支
   //   `xor edi,edi / mov dword [0x48be24], edi`（4 字节 = 四位）—— 0x401 由
@@ -11676,6 +11746,8 @@ function connectOnline(
           manifestHold = null;
           godAscend = null;
           pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+          pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
+          renderer.clearRelocate();
           pendingCardRoute = null; // 亮牌后待走的那一张同理
           // ★ 与单机 `startGame()` 同一条：面板页号归零（`0x48be24`）、自動存檔日期清掉
           panelPages.fill(0);
@@ -12101,6 +12173,8 @@ function settleAfterSilentRebuild(): void {
   manifestHold = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+  pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
+  renderer.clearRelocate();
   pendingCardRoute = null; // 亮牌后待走的那一张同理
   npcWalksDrawn = null;
   // ★ 第十二份試玩回報：追上之后此刻仍挂着的**场所**（商店 / 銀行 / 路過銀行）照常铺起来 ——
@@ -12145,7 +12219,9 @@ function applyNetAction(item: { action: Action; seq: number }): void {
 
 function pumpNetInbox(delay = 0): void {
   if (netPumpTimer !== null || netInbox.length === 0) return;
-  if (netInbox.length > NET_INBOX_FAST_FORWARD) {
+  // ★ 审计 #15：过场期间连「积压太多就静默快进」也不做（与 `catchUpNetAfterHidden` 同一条闸）——
+  //   快进施加出来的框会占住整屏；过场放完再快进
+  if (netInbox.length > NET_INBOX_FAST_FORWARD && screen !== 'intro') {
     while (netInbox.length > NET_INBOX_KEEP) applyNetAction(netInbox.shift()!);
   }
   netPumpTimer = window.setTimeout(() => {

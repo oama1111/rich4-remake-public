@@ -95,7 +95,7 @@ describe('★ main.ts 接线（源码钉子）', () => {
   it('★ 逐段演：回合驱动 / 联机收件箱在整趟演完之前不往下走；旁观跟着行动者时剩下的不演', () => {
     expect(src).toContain('if (screen === \'game\') tickMagicSequence();');
     // 第十六份：判据本体在 `holdForActorWalkReason`（挡着交原因，外层统一 `reschedule`）
-    expect(src).toMatch(/function holdForActorWalkReason[\s\S]{0,200}if \(magicSeq !== null\) \{\s*return 'magicSeq';/);
+    expect(src).toMatch(/function holdForActorWalkReason[\s\S]{0,400}if \(magicSeq !== null\) \{\s*return 'magicSeq';/);
     expect(src).toMatch(/function followPresenter[\s\S]{0,400}if \(magicSeq !== null\) \{\s*magicSeq = null;/);
   });
   it('★ 棋盘 / 侧栏 / 镜头按「演到哪一段」看；镜头的 view_to 等那一段的框收掉', () => {
