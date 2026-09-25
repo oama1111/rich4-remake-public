@@ -68,6 +68,15 @@ export function makePlayer(over: Partial<Player> = {}): Player {
   };
 }
 
+/**
+ * 测试用行情：今日可成交量 `f10` 先铺成流通股数。
+ * 真局里开局 `0x407dfe` / 每回合 `0x41c868` 会跑 `refreshTradableShares` 把它填上；夹具直接跳过那一步。
+ * （2026-09-24 审计起柜台买入按 `f10` 夹上限 —— `0x0042af43`。）
+ */
+export function tradableMarket<M extends { stocks: readonly { shares: number }[] }>(m: M): M {
+  return { ...m, stocks: m.stocks.map((s) => ({ ...s, f10: s.shares })) };
+}
+
 export function makeGameState(over: Partial<GameState> = {}): GameState {
   return {
     mode: 'single',
@@ -148,7 +157,7 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     pendingQueue: [],
     tools: new Array<number>(4 * 15).fill(0),
     toolStock: new Array<number>(14).fill(99),
-    market: newStockMarket(0),
+    market: tradableMarket(newStockMarket(0)),
     holdings: [0, 1, 2, 3].map(() => Array.from({ length: 12 }, () => ({ amount: 0, avgCost: 0 }))),
     commercialShares: [],
     commercialOwners: [],

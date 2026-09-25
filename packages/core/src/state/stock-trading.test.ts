@@ -4,9 +4,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
+import { makeGameState, makeNode, makePlayer, tradableMarket } from '../testing/factories.ts';
 import { applyBankruptcy, reduce, valuationsOf } from './reduce.ts';
 import type { GameState } from './types.ts';
+import { WHO_PLAYS_HUMAN } from './types.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import type { Action } from './actions.ts';
 
@@ -18,7 +19,7 @@ function base(over: Partial<GameState> = {}): GameState {
     year: 1998,
     month: 1,
     day: 5,
-    market: newStockMarket(0),
+    market: tradableMarket(newStockMarket(0)),
     players: [0, 1, 2, 3].map((i) =>
       makePlayer({ index: i, character: i, cash: 50_000, moneyInBank: 1_000_000 }),
     ),
@@ -184,5 +185,28 @@ describe('破产清算', () => {
   it('空仓破产不改动公库', () => {
     const s = base({ pool: 777 });
     expect(applyBankruptcy(s, 0).pool).toBe(777);
+  });
+});
+
+describe('★ 2026-09-24 审计：柜台买入上限 = min(今日可成交量 f10, trunc(存款 ÷ 現價)) @source 0x0042af43 / 0x0042af66', () => {
+  it('超过今日可成交量（+0x0a）就买不成，哪怕流通股（+8）还够', () => {
+    const s0 = base();
+    const s1: GameState = {
+      ...s0,
+      market: { ...s0.market, stocks: s0.market.stocks.map((x, i) => (i === 0 ? { ...x, f10: 50 } : x)) },
+    };
+    expect(act(s1, { type: 'buyStock', stock: 0, shares: 51 })).toBe(s1);
+    expect(act(s1, { type: 'buyStock', stock: 0, shares: 50 }).holdings[0]![0]!.amount).toBe(50);
+  });
+
+  it('真人：存款 99、價 9.95 ⇒ 最多 9 股（成本 99.5 截断成 99 也不放行第 10 股）', () => {
+    const s0 = base();
+    const s1: GameState = {
+      ...s0,
+      players: s0.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_HUMAN, moneyInBank: 99 } : p)),
+      market: { ...s0.market, stocks: s0.market.stocks.map((x, i) => (i === 0 ? { ...x, price: 9.95, openPrice: 9.95 } : x)) },
+    };
+    expect(act(s1, { type: 'buyStock', stock: 0, shares: 10 })).toBe(s1);
+    expect(act(s1, { type: 'buyStock', stock: 0, shares: 9 }).holdings[0]![0]!.amount).toBe(9);
   });
 });

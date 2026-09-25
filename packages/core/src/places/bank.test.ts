@@ -105,6 +105,10 @@ describe('还款', () => {
 
   it('还款额被负债截断', () => {
     const p = repay(makePlayer({ loan: 10_000 }), 999_999);
+    // ★ 审计补：还款额超过 現金+存款 ⇒ 原样不动（0x0043538c cmp edx, 現金+存款 / jle）
+    const short = makePlayer({ loan: 10_000, cash: 3_000, moneyInBank: 2_000 });
+    expect(repay(short, 6_000)).toBe(short);
+    expect(repay(short, 5_000).loan).toBe(5_000);
     expect(p.loan).toBe(0);
     expect(p.moneyInBank).toBe(40_000); // 只扣了 1 万
   });

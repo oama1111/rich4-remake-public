@@ -72,6 +72,7 @@ import type {
 } from '../loaders/map.ts';
 import { GOD_BLOCKS_PURCHASE, housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent, LAND_TOLL_FEE_NAME, rentHostility } from '../rules/rent.ts';
+import { truncTowardZero } from '../rules/rounding.ts';
 import { PARTY_POOL, PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
 import {
   aiScapegoat,
@@ -4764,8 +4765,12 @@ function tradeStock(
   });
 
   if (action.type === 'buyStock') {
-    // 可流通股不够就买不到
-    if (action.shares > stock.shares) return state;
+    // ★ 2026-09-24 审计订正：上限是**今日可成交量** `+0x0a`（`f10`），不是流通股 `+8` ——
+    //   真人柜台 `0x0042af43 mov cx, word [股*36 + 0x49698a]`、电脑 `0x0042c716` 都夹这个。
+    if (action.shares > stock.f10) return state;
+    // 真人柜台的第二道：`0x0042af66 fild 存款 / fdiv 現價 / 0x457dbc / fistp` ⇒ 最多 trunc(存款 ÷ 現價) 股
+    //   （存款 99、價 9.95 ⇒ 9 股；按「成本 ≤ 存款」会放行 10 股）。电脑那一支（0x42c6e2 起）另算，不走这道。
+    if (isPlainHuman(me) && action.shares > truncTowardZero(me.moneyInBank / stock.price)) return state;
     const cost = Math.trunc(action.shares * stock.price);
     // @source 柜台买入扣的是存款
     if (cost > me.moneyInBank) return state;
