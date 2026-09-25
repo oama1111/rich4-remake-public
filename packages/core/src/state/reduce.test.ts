@@ -97,6 +97,7 @@ describe('回合流程', () => {
   });
 
   it('被阻碍的玩家直接进入回合结束', () => {
+    // ★ `startTurn` 只在 `turnStart` 相位受理（loop 审计 2026-09-25 加的相位闸）⇒ 从 turnStart 起
     const st = makeState({ phase: 'turnStart' });
     st.players[0]!.blocking.inPrison = 2;
     const s = reduce(st, { type: 'startTurn' }, ring);

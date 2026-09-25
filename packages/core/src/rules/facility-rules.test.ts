@@ -388,8 +388,9 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     // ★ 审计订正：本月支出**只有**住宿費（pay_money 累计的那一笔）。原版写 `+0x5c` 的只有 pay_money
     //   （`xref 0x496bc4`），`0x44ba63` 保險理賠也不碰它 —— 先前多记的「2000×天×物價」是自拟的
     expect(r.players[0]!.monthlyPaid).toBe(paid);
-    // 敌意：收費 `0x0041a5c0` 记 費/100，旅館再 `0x0041a7bc` 记 20×天×物價（主语 = 当前玩家，对象 = 主人）
-    expect(r.players[0]!.hostility[1]).toBe(Math.trunc(paid / 100) + 20 * days);
+    // 敌意：旅館**只有**落点这一句 `0x0041a7bc` 的 20×天×物價（主语 = 当前玩家，对象 = 主人）
+    //   —— 收費那句 `0x0041a5c0`（費/100）被 `0x0041a5d5 cmp byte [設施+0x18], 1 / je 0x41a63d` 跳过
+    expect(r.players[0]!.hostility[1]).toBe(20 * days);
   });
 
   it('★ 审计订正：死神顯靈换成**主人自己**付 ⇒ 不付钱、不记這一筆，但旅館照住（0x0041a709 je 0x41a761）', () => {
@@ -570,8 +571,12 @@ describe('★ 間諜：取走這塊地上一次收的過路費', () => {
     expect(spyTollAt(s, landNode)).toEqual({ landlord: 1, amount: 8000 });
     const rng = new WatcomRng();
     rng.setState(1);
-    const w = runNpc(NPC.spy, releaseNpc(1, 0, 3), s, spyTopo, (f) => f + 1, rng);
+    // ★★ 2026-09-24（provenance 审计）：只在**停下来的那一格**取（`0x0041c447`）⇒ 走 2 步停在地块上
+    const w = runNpc(NPC.spy, releaseNpc(1, 0, 2), s, spyTopo, (f) => f + 1, rng);
     expect(w.events).toContainEqual({ kind: 'toll', landlord: 1, amount: 8000 });
+    // 路过（走 3 步、停在后一格）不取
+    const passing = runNpc(NPC.spy, releaseNpc(1, 0, 3), s, spyTopo, (f) => f + 1, new WatcomRng(1));
+    expect(passing.events.filter((e) => e.kind === 'toll')).toEqual([]);
   });
 
   it('从没收过租的地取不到；主人自己的地不取', () => {

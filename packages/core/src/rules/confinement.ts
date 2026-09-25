@@ -121,7 +121,10 @@ export function confine(
   // @source 加刑：(existing + days) & 0x7f；新判：直接赋值
   const value = extended ? (existing + days) & 0x7f : days;
 
-  nextOcc[index] = 1; // @source mov byte [idx + 表基址], 1（0x0043d674）
+  // @source mov byte [idx + 表基址], 1（0x0043d674）—— ★★ 2026-09-24（provenance 审计）：**只在首次那一支**。
+  //   加刑支 `0x0043d6bd..0x0043d6d0` 写完计数直接到 `0x43d6d6`，不碰占用表 ⇒ 被保釋过（计数 0x80、占用 0）
+  //   又在放出来之前再被关的人，占用表保持 0（原版里这时保釋屏里看不到他）。
+  if (!extended) nextOcc[index] = 1;
 
   // ★★ P4 修复（2026-09-17）：**首次**关押必须先清掉"别的"阻碍状态。
   //   原版在首次分支里先 `call 0x40d761`（@source 0x0043d5e7），该函数做两件事：

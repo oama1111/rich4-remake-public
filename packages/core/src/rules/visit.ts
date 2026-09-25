@@ -74,8 +74,17 @@ export function bailCost(slot: number): number {
   return slot < OBJECT_SLOT_BASE ? BAIL_COST_PLAYER : BAIL_COST_INMATE;
 }
 
-/** 點券够不够保这个槽位 */
-export function canAffordBail(points: number, slot: number): boolean {
+/**
+ * 點券够不够保这个槽位。
+ *
+ * @param human 真人在保釋窗里点的那一支（默认 false = 电脑那一支）。
+ *   ★★ 2026-09-24（provenance 审计）：两支判据**不一样** ——
+ *   真人 `0x0043d0c3 mov ax,[点券] / 0x0043d0d4 cmp eax,[槽*4+0x475c44] / 0x0043d0da jl 不够`
+ *   ⇒ **点券 ≥ 赎金**（30 / 300），没有 700 那道门槛；电脑那一支才是「> 30 / ≥ 700」。
+ *   先前真人也套电脑的判据（有 30 點券保不了人、有 300~699 保不了惡人）。
+ */
+export function canAffordBail(points: number, slot: number, human = false): boolean {
+  if (human) return points >= bailCost(slot);
   // @source 玩家：cmp eax, esi / jg 继续 —— **严格大于**
   if (slot < OBJECT_SLOT_BASE) return points > bailCost(slot);
   // @source NPC：cmp word [+0x30], 0x2bc / jb 放弃
@@ -99,6 +108,8 @@ export function bailCandidates(
   players: readonly Player[],
   visitorPoints: number,
   nameOf: (playerIndex: number) => string,
+  /** 候选名单只给真人的保釋窗用 ⇒ 缺省按真人判据 */
+  human = true,
 ): BailCandidate[] {
   const out: BailCandidate[] = [];
   for (let slot = 0; slot < occupancy.length; slot++) {
@@ -109,7 +120,7 @@ export function bailCandidates(
       player: isPlayer ? slot : -1,
       name: isPlayer ? nameOf(slot) : (INMATE_NAMES[slot - OBJECT_SLOT_BASE] ?? `犯人${slot}`),
       cost: bailCost(slot),
-      affordable: canAffordBail(visitorPoints, slot),
+      affordable: canAffordBail(visitorPoints, slot, human),
     });
   }
   void players;
@@ -256,6 +267,8 @@ export function applyBail(
   kind: ConfinementKind,
   visitor: number,
   slot: number,
+  /** 真人窗口那一支（判据见 `canAffordBail`） */
+  human = false,
 ): BailResult {
   const fail: BailResult = {
     ok: false,
@@ -266,7 +279,7 @@ export function applyBail(
   const me = players[visitor];
   if (me === undefined) return fail;
   if ((occupancy[slot] ?? 0) === 0) return fail;
-  if (!canAffordBail(me.points, slot)) return fail;
+  if (!canAffordBail(me.points, slot, human)) return fail;
 
   const cost = bailCost(slot);
   const nextOcc = [...occupancy];

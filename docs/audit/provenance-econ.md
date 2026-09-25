@@ -14,13 +14,43 @@
 | 状态 | 行数 | 覆盖的规则条数（`X-a..b` 一行算多条） |
 |---|---|---|
 | verified | 90 | 204 |
-| fixed | 30 | 35（合并成 21 项修复，见下表） |
+| fixed | 39 | 44（其中「修复（commit）」表 F1..F21 = 30 行 / 35 条，两处后续修复表合计 9 行 / 9 条） |
 | approx | 11 | 11 |
-| follow-up | 14 | 14 |
+| follow-up | 5 | 5 |
 | n/a | 7 | 8 |
+
+（合计 152 行 / 272 条规则，与台账逐行数出来的结果一致。）
+
+### 后续修复（合并 `ds/audit-provenance` 前后各一批）
+
+| # | 原来 → 原版 | VA | commit |
+|---|---|---|---|
+| F22 | 旅館住店**多记**一笔 費/100 敌意（收費那句 `0x0041a5c0` 也被旅館走到） → 只有非旅館設施记 費/100；旅館只留落点那句 20×天×物價 | 0x0041a5d5 `cmp byte [設施+0x18],1 / je 0x41a63d` | 见「合并 `ds/audit-provenance`」那个提交 |
+| F23 | 拍賣卡在掷骰前打出时用卡者**丢掉这一掷**（落槌一律 `turnEnd`） → 落槌回到出卡时的相位（`pending{auction}.resumePhase`） | 0x0044336b `mov ebx,1`、电脑支 0x00418e75 `call 0x40dd1f` | f6af0f1（AUC-45） |
+| F24 | 拍賣出价时判真人的是 `& 6`（带 0x10/0x20 位的真人被当电脑等） → 整字节 `== 1`；現金 < 现价 的真人由 core 替他按「放棄」 | 0x0043b001 / 0x0043b06c..0x0043b085 | f4ed239（AUC-22 / AUC-23） |
+| F25 | 全场不能出价但有最高出价者时判**流拍** → 按现价成交给最高出价者 | 0x0043b2cd → 0x0043b5ce `push [0x48c4a8]` | f4ed239（AUC-34） |
+| F26 | 加价额收任意 > 0 且付得起的数（联机可伪造） → 只收档位表里的值 | 0x0043a49b `add eax,[ebx*4 + 0x475ba2]`、表 dump 0x475ba2 = 100/500/1000/5000/10000 | f4ed239（AUC-46） |
+
+另有六条 follow-up 在本分支合并前后被自己修掉（行里已改标 `fixed`，规则条数一并从 follow-up 移过来）：
+**STK-50** 建設公司真人选地窗（aac1ed5）、**BNK-22** 真人关股市屏强制收回特別融資（7993aef）、
+**MON-16** 节日查找跳过 0x80 记录（32ef122）、**LOT-09** 現金 <1000 也开樂透投注屏（d286ade）、
+以及 AUC-45 的相位那一条（f6af0f1，见 F23）。
 
 **是否改动状态：是。** 几乎每一项修复都改变对局状态或随机流（敌意、付款去向、终局判定、分紅、拍賣首座、行情精度……）。
 **需要协议号 +1**（本分支没有改 `PROTOCOL_VERSION`，由协调人统一改）。
+
+逐条回答协调人最关心的那一问（**改状态 / 改随机流**）：
+
+| 修复 | 改状态？ | 改随机流？ | 说明 |
+|---|---|---|---|
+| F1..F21 | 是 | 部分是 | 敌意、付款去向、终局、分紅、拍賣首座；拍賣首座与心理价位顺序会改 `rand()` 的**归属**（次数不变） |
+| F22 旅館不记 費/100 | 是 | 否 | 只少加一笔敌意，不掷 |
+| F23 AUC-45 `resumePhase` | 是 | 否 | 相位从 `turnEnd` 变成 `awaitingRoll`；**不消耗随机数**（掷骰仍由后续 `rollDice` 那一条 action 掷） |
+| F24 拍賣真人判据 | 是 | 否 | 分流不同 ⇒ 等不等真人点、谁被替按「放棄」；竞价里的 `rand()`（心理价位）在**开拍时**已掷完，不受影响 |
+| F25 全堵有最高者成交 | 是 | 否 | 落槌判据 |
+| F26 加价档位校验 | 是 | 否 | 只拒非法档位（正常对局本来就只发档位值） |
+| `stockScreen`（BNK-22） | 是 | 否 | 新 action：真人关股市屏的那一条出口，先例同公佈欄 `open/close` |
+| 魔法屋二级判定补记牌堆（跨区 events） | 是 | 否 | 只把用掉的免罪/嫁禍卡记回牌堆（守恒），不掷 |
 
 ### 修复（commit）
 
@@ -31,7 +61,7 @@
 | F3 | 同盟得 = trunc(fround(总额 × 比例)) → 乘积按扩展精度，不压回 float32（10、7:3 ⇒ 同盟得 6 不是 7） | 0x00419f7d / 0x00419f84 | 87cd1b2 |
 | F4 | 神明把过路费抹成 0 仍走尾巴、把「上次过路费」写成 0 → 当场收尾 | 0x00419d7e je 0x41b077 | 87cd1b2 |
 | F5 | 嫁禍 / 死神换成地主或地主的同盟时照样付钱（钱挪进他自己的存款、白记本月收支） → 整段跳过 | 0x00419f30 / 0x00419f40 | 87cd1b2 |
-| F6 | 設施收费不记敌意 → 費/100；旅館另记 20×天×物價 | 0x0041a5c0 / 0x0041a7bc | 87cd1b2 |
+| F6 | 設施收费不记敌意 → 費/100；旅館另记 20×天×物價（★ 旅館**不**记 費/100，见 F22） | 0x0041a5c0 / 0x0041a7bc、0x0041a5d5 | 87cd1b2 |
 | F7 | 設施一律不问免費卡 → 只有旅館跳过，購物中心 / 加油站照问 | 0x0041a5d5 je 0x41a63d | 87cd1b2 |
 | F8 | 設施付款人换成主人自己时照付 → 不付、不记 `[+0x30]`，但旅館照住 | 0x0041a709 je 0x41a761 | 87cd1b2 |
 | F9 | 住旅館额外把 2000×天×物價 记进本月支出（自拟） → 删掉；`+0x5c` 只有 pay_money 写 | xref 0x496bc4 | 87cd1b2 |
@@ -57,7 +87,21 @@
 `state/notice.test.ts`（加油站问免費卡）、`places/stock-market.test.ts`（波动率 f32）、`rules/auction.test.ts`（首座、流拍按调用点）、
 `cards/registry.test.ts`（拍賣卡请求带 `clearOnPassIn`）、股票夹具铺 `f10`（`testing/factories.ts` 的 `tradableMarket`）、
 `server/auction-acting-seat.test.ts` 换种子（21 → 18）、`client/presentation-order.test.ts` 补一对先后。
-服务器镜像：`packages/server/src/econ-audit-mp.test.ts`（收费敌意、真人全出局收局、分紅加总、百貨营业额）。
+服务器镜像：`packages/server/src/econ-audit-mp.test.ts`（收费敌意、真人全出局收局、分紅加总、百貨营业额、股市屏、
+樂透投注屏、**AUC-45 拍賣卡两条**）。
+
+★ 合并 `ds/audit-provenance`（其它区已并入）之后**又动过的测试**，逐条说明理由：
+- `rules/facility-rules.test.ts`（旅館敌意）：F22 之后旅館不再记 費/100 ⇒ 断言从 `費/100 + 20×天` 改成 `20×天`（原版 VA 见 F22）。
+- `state/confinement-audit.test.ts`（events 区的 C-29）与上一条同一个事实，同一个值 —— 两区对同一局面各有一条用例，
+  现在都按原版断言；**不是**为了变绿放宽（改前 112、原版 80）。
+- `events/event-balance.test.ts`：换种子 43 → 46（本区修复改了随机流，43 那局 **新聞 0** 掉出覆盖；
+  重扫 13..120 只有 46 能同时补齐 0 / 2 / 28 / 35）—— 断言一个字没动。
+- `state/full-game.test.ts`：**输入与断言都没换**（三个种子仍是 177 / 58 / 230），只更新了那行读数注释。
+  它先前红是因为（a）本区把夹具的四位改成「真人 + 託管」（`0x0040d029` 数的是在场真人，见 F11），
+  （b）合并进来的魔法屋二级判定漏记牌堆（见跨区 events 那条）—— (b) 修好后三个种子都恢复 3 人出局。
+- `state/god-power.test.ts`（events 区）：小財神那两条「前面的人破产、后面的照付」用例，
+  2/3 号位开局 `who_plays == 0`（惰性摆人）⇒ 先前收钱循环里**一个对手都没进**（`autoSlot` 掷 0 时还会整条 return）。
+  现在把 2/3 号位摆成在场（真人档），用例才真的在验它标题写的那件事；断言本身没动。
 
 ---
 
@@ -94,12 +138,12 @@
 | FAC-02 | 旅館 / 購物中心单价 = `word[+0x24+lv*2]` × 物價，涨价位 ×2 | rules/facility.ts:197 | 0x0041a429..0x0041a44c / 0x0041a485..0x0041a4a8 | verified | |
 | FAC-03 | 轉盤倍数（表 0x475d0c） | rules/facility.ts:304 | 0x0043f7da / 0x0043facb | approx | D-003：真人转盘步数与点击时机有关，统一用起点均匀的分布 |
 | FAC-04 | 加油站 = 步数 × 500 × 2^((tm&3)−1) × 物價；无交通工具不收不弹 | rules/god-toll.ts:136 | 0x0041a4db..0x0041a529 | verified | 移位链 500k 自算一遍 |
-| FAC-05 | 设施敌意 = 調整後費/100 | state/reduce.ts `settleFacility` | 0x0041a59e..0x0041a5c0 | fixed | 87cd1b2（F6） |
+| FAC-05 | 设施敌意 = 調整後費/100（**旅館除外**） | state/reduce.ts `settleFacility` | 0x0041a59e..0x0041a5c0；跳过它的是 0x0041a5d5 `cmp byte [設施+0x18],1 / je 0x41a63d` | fixed | 87cd1b2（F6）+ 合并时补的旅館闸（F22） |
 | FAC-06 | 免費卡只有旅館跳过 | state/reduce.ts `settleFacility` | 0x0041a5d5 / 0x0041a5db..0x0041a63b | fixed | 87cd1b2（F7） |
 | FAC-07 | 死神：費 != 0 或是旅館 | state/reduce.ts `finishToll` | 0x0041a692..0x0041a6a1 | verified | |
 | FAC-08 | 付款人是主人 ⇒ 不付、不记，旅館照住 | state/reduce.ts `finishToll` | 0x0041a709 | fixed | 87cd1b2（F8） |
 | FAC-09 | `[fac+0x30]` = 这一笔 | state/reduce.ts `finishToll` | 0x0041a75e | verified | |
-| FAC-10 | 旅館敌意 20×天×物價（主语 = 当前玩家） | state/reduce.ts `finishToll` | 0x0041a78f..0x0041a7bc | fixed | 87cd1b2（F6） |
+| FAC-10 | 旅館敌意 20×天×物價（主语 = 当前玩家 = `c.payer`，对象 = 主人 −1） | state/reduce.ts `finishToll` | 0x0041a78f（天 → 20×天 → ×物價）→ 0x0041a7a8 `[設施+0x19]−1` → 0x0041a7b6 `[0x49910c]` → 0x0041a7bc `call 0x40df69` | fixed | 87cd1b2（F6）；旅館**只有**这一笔（F22） |
 | FAC-11 | 住店前 `0x40d761`（出獄 / 出院、清 +0x32 dword） | state/reduce.ts `finishToll` | 0x0041a7c5、0x0040d761 | fixed | 87cd1b2（F10） |
 | FAC-12 | `+0x32 = 天−1`（0 → 0x80）；`+0x42 += 天`（8 位） | state/reduce.ts `finishToll` | 0x0041a7e8..0x0041a7fe / 0x0041a83f | verified | |
 | FAC-13 | 本月支出不另记住店损失 | state/reduce.ts `finishToll` | xref 0x496bc4（只有 0x0041d381 / 0x00439ee6） | fixed | 87cd1b2（F9） |
@@ -190,7 +234,7 @@
 | STK-43..44 | 各行業收费、费名表 | places/company.ts:49..152 | 0x0041ab6d..0x0041ae34、0x0047528e / 0x0047528b / 0x0047517c | verified | |
 | STK-45 | 别人的建設公司没地可蓋 ⇒ 1000×物價 | state/reduce.ts `landOnCompany` | 0x0041adff..0x0041ae1a | fixed | 01e4bb9（F15） |
 | STK-46..49 | 工程費 = 地價×物價；自家公司蓋两次；电脑挑地 | state/reduce.ts / places/company.ts:293 | 0x0041adb9、0x0041aae8 / 0x0041aafb、0x0040b455 | verified | |
-| STK-50 | 真人选地窗的候选筛选、取消时的返回值 | state/reduce.ts `buildableEntities` | 0x00446ae8(0x2090086) | follow-up | 未追完；若取消返回 0 则也要收 1000×物價 |
+| STK-50 | 真人选地窗的候选筛选（全图地块/設施）、右键取消交回 0、蓋不成也收工程費、选中等级 0 的設施先选种类 | state/reduce.ts `chooseBuildTarget` | 0x00446ae8(0x2090086) → 0x00445ee6；0x004466c6；0x0041ad28 je 0x41adff；0x0041ad7e call 0x40b110 | fixed | aac1ed5 |
 | STK-51 | 保險 / 航空轉盤 | rules/facility.ts:304 | 0x0044090e | approx | D-003 |
 | STK-52 | 企業费进企業（100+id），不是董事長 | state/reduce.ts `payCompany` | 0x0041b022 | verified | 收费尾巴与住宅同构（免費卡问地主 −1、嫁禍、死神）已对过 0x0041aec5..0x0041b022 |
 | STK-53..55 | 分紅比例 f32、乘积不压 f32、有人持股才清盈餘 | places/company.ts:352 | 0x0042bc0a..0x0042bd42 | fixed | 16790f5（F13，乘积）；其余 verified |
@@ -204,7 +248,7 @@
 | id | rule | our code (file:line) | exe VA(s) | status | note |
 |---|---|---|---|---|---|
 | LOT-01..08 | 36 个号、表存 下标+1、落点、夢遊跳过、真人判据 ==1、票价 1000 不乘物價、真人 現金 ≥1000 | places/lottery.ts:19..71 | 0x004316b1、0x0042fff0、0x004315da、0x0042f8d7 | verified | |
-| LOT-09 | 真人現金 <1000 也开投注屏（說 #0015 / #0016 后关） | state/reduce.ts `landOnLottery` | 0x0042f8e3..0x0042f930、0x0042fa16 | follow-up | 纯流程差（状态不变），要 core 挂 pending + client 关窗派发 declineDecision |
+| LOT-09 | 真人現金 <1000 也开投注屏（說 #0015 / #0016 后关 = 不买） | state/reduce.ts `landOnLottery`、client `declineDecision` | 投注窗 0x004315e7..0x00431653 `call 0x4018e7` 先开；窗里 WM_CREATE 0x0042f8d7 `cmp [現金],0x3e8 / jge`，否则 0x0042f8e3 状态 4 → 0x0042fae5 状态 5 → 0x0042faf8 关窗（返回 0） | fixed | d286ade；服务器镜像见 `econ-audit-mp.test.ts` |
 | LOT-10..20 | 只能买未售号、不限张数、直接扣現金进公库、一次一张；电脑 現金 >1000、`未售[rand()%n]` | places/lottery.ts:127..194 | 0x0042ff1d、0x0043000e、0x0043169e..0x00431700 | verified | |
 | LOT-21..23 | 日期推进后的 15 日開獎；达标当天不開；顺序 行情→分紅→開獎→月结 | state/reduce.ts `advanceGameDay` | 0x0041cfa1、0x0041d080..0x0041d09e | verified | |
 | LOT-24 | 分紅破产者的号码不参加当天開獎 | state/reduce.ts:5722 | 0x0042beba → 0x0040d1a8，早于 0x0041d094 | fixed | 01e4bb9（F14） |
@@ -227,11 +271,11 @@
 | BNK-17 | 电脑借款额 = imul32(比例, 身家)/100（身家 ≤0 不另拦） | ai/personality.ts:95 | 0x004368e5..0x00436912 | follow-up | 在 ai/ 目录，交 ai-econ（`wealth <= 0` 那一拦是自拟的） |
 | BNK-18..20 | 特別融資：董事長 = 銀行企業主、额度 = 别人存款合计、还款闸 | places/special-finance.ts:118..177 | 0x00436711、0x00434571..0x004346bb | verified | |
 | BNK-21 | 電腦重分之后查準備（模式 1） | state/reduce.ts:6863 | 0x00437c12 | fixed | 9c1c8a8（F20） |
-| BNK-22 | 真人关股市屏（三种模式）/ 关公佈欄后强制收回特別融資（模式 0） | state/reduce.ts `sweepSpecialFinance` | 0x0042ba88、0x0042885e | follow-up | 需要一个「关屏」action（协议变化）；电脑那两处已有 |
+| BNK-22 | 真人关股市屏（三种模式）/ 关公佈欄后强制收回特別融資（模式 0） | state/reduce.ts `sweepSpecialFinance`、新增 action `stockScreen` | 0x0042b58f 三个入口 → 0x0042ba86 push 0 / 0x0042ba88 call 0x436b0a；0x0042885e | fixed | 7993aef（新 action `stockScreen`：协议变化，由协调人统一 +1） |
 | MON-1..9 | 月结：存款 ×1.1 向零（有貸款不给）、悲情人物 / 冠軍评分与门槛、奖项不动钱、清 +0x42/+0x5c/+0x60 | rules/monthly.ts:60..302 | 0x004381f8..0x00438212、0x00437d43..0x00437e2e、0x00439ec4 | verified | |
 | MON-11 | 物价指数 32 位合计、每日 | rules/wealth.ts:157 | 0x00423af5 | fixed | 同 IDX-02 |
 | MON-12..15 | 月数、日期推进 / 闰年、星期、节日表（8 图逐字节） | rules/calendar.ts、places/calendar.ts | 0x00452117、0x00451f8c..0x004521aa、0x004523d5、0x0047ff4a | verified | |
-| MON-16 | 节日查找跳过 bit 0x80 的记录 | places/calendar.ts:333 | 0x004523b3 | follow-up | 只影响节日图的下标（显示），是否放假不变 |
+| MON-16 | 节日查找跳过 bit 0x80 的记录 | places/calendar.ts:333 | 0x004523b3 `test byte [记录+0x47ff4a],0x80 / jne 0x452205` | fixed | 32ef122（地图 0 的 10/31 取 13 号） |
 | MON-17 | 每月重摆禮物 / 寶箱 | rules/monthly-objects.ts | 0x0041d0a3..0x0041d0f6 | n/a | loop 区已在 ds/audit-provenance 修（9b59144），本分支合并得到 |
 | MON-18 | 农历节日覆盖比较值 | places/calendar.ts:337 | 0x00452285 | verified | 各图都无影响 |
 
@@ -246,16 +290,16 @@
 | AUC-14..19 | 同名数、v1/v2、取 min(v1,v2,現金)、每家两次 rand | rules/auction.ts:566 | 0x00439f72..0x0043a13f | verified | |
 | AUC-20 | 开场席位 = 最后一个在座者 | rules/auction.ts:844 | 0x0043af13..0x0043af45 | fixed | a52570e（F18） |
 | AUC-21 | `(座位+1)&3` 绕圈 | rules/auction.ts | 0x0043b3c2 | verified | |
-| AUC-22 | 出价时真人判据是 `who_plays == 1`（带 0x10/0x20 的真人走电脑支） | ai/policy.ts、client | 0x0043b001 | follow-up | 流程差，涉及 client 与 hub 的驱动 |
-| AUC-23 | 真人現金 < 现价自动弃权 | — | 0x0043b06c..0x0043b085 | follow-up | 结局相同，流程多问一次（联机要等他） |
+| AUC-22 | 出价时真人判据是 `who_plays == 1`（带 0x10/0x20 的真人走电脑支） | rules/auction.ts `auctionSeatWaitsForHuman`（core / 拍賣屏 / 服务器共用） | 0x0043b001 `cmp byte [p+0x15],1 / jne 0x43b0a0` | fixed | f4ed239（F24） |
+| AUC-23 | 真人現金 < 现价自动弃权 | rules/auction.ts `auctionSeatWaitsForHuman`、ai/policy.ts `auctionNextBid` | 0x0043b06c `/ jle 0x43b08a`，否则 0x0043b07a 按钮 6「放棄」 | fixed | f4ed239（F24） |
 | AUC-24..33 | 电脑加价档、夹到最高者現金+500、只剩一席、真人加价闸、加价后全体复活、PASS / 弃权、落槌判据 | rules/auction.ts:640..1059、state/reduce.ts `auctionBid` | 0x0043b10c..0x0043b2fd、0x0043a426..0x0043a6c7、表 0x00475ba2 | verified | |
-| AUC-34 | 全员不能出价但有最高者 ⇒ 成交 | rules/auction.ts `auctionOutcome` | 0x0043b2cd → 0x0043b5ce | follow-up | 正常对局不可达 |
+| AUC-34 | 全员不能出价但有最高者 ⇒ 成交 | rules/auction.ts `auctionOutcome` | 0x0043b2cd `push 0x465063`（只说「無人出價」）→ 状态 0xb（0x0043aee2）→ 0x0043b5ce `push [0x48c4a8] / call 0x401966` | fixed | f4ed239（F25）；正常对局只由外部塞进来的 pending 触发（README §「外部审查」同条） |
 | AUC-35..39 | 窗口返回 −1 不写；得标者≠原主才写 owner；到期日三道闸；`pay_money(得标者, arg0, 价, 0)` | rules/auction.ts:283 | 0x0043c71d..0x0043c855 | verified | |
 | AUC-40..42 | 流拍收尾按调用点 | rules/auction.ts:283、state/reduce.ts `settleAuctionExplicit` | 0x0044335b / 0x0044335f / 0x0044348a、0x004324da、0x004498a6、0x0040d1e8 | fixed | ab76320（F19） |
 | AUC-43 | 破产拍卖：抽一处就开拍一场（拍卖里还要掷 rand），再抽下一处 | state/reduce.ts:9347 | 0x0040d1f7 ↔ 0x0040d1e3 | follow-up | 本引擎先抽 3 处再排队 ⇒ 随机流次序不同；需要「下一抽」队列项 |
 | AUC-44 | 候选表：地块升序在前、設施升序在后 | state/reduce.ts:9156 | 0x0040d095..0x0040d109 | verified | |
-| AUC-45 | 拍賣卡用完之后回合相位（卡返回 1，不结束回合） | state/reduce.ts `settleAuctionExplicit` | 0x0044336b、0x00443496 | follow-up | 用卡者会丢掉这一掷；卡片 / 回合流程边界，交 cards 复核回合函数 0x418ebd |
-| AUC-46 | 加价额只能是档位表里的值 | state/reduce.ts `auctionBid` | 0x0043a49b | follow-up | 加固（联机防伪），不影响正常对局 |
+| AUC-45 | 拍賣卡用完之后回合相位（卡返回 1，不结束回合） | state/reduce.ts `settleAuctionExplicit`（按 `pending.resumePhase`）、`playCard` | 卡尾 0x0044336b `mov ebx,1`（`jmp 0x443496` 那一条是**函数出口**，两条分支都汇到这里；成功/流拍只分 `0x00443357 test eax,eax / jne` → 0x0044335b 清地主）；电脑支 0x00418e21 `call 0x441baa` → 0x00418e75 `call 0x40dd1f`；真人支选卡面板 0x00441c90 起（`0x00441cc6 call [卡号*4+0x475d5c]`）→ 0x00441ce1 `test esi,esi`（返回非 0 才走、返回 0 回选卡屏）；回合函数 0x418ebd 对卡返回值**不做任何判断** | fixed | f6af0f1（F23）；服务器镜像见 `packages/server/src/econ-audit-mp.test.ts` |
+| AUC-46 | 加价额只能是档位表里的值 | state/reduce.ts `auctionBid`（`AUCTION_RAISE_STEPS.includes`） | 0x0043a49b `add eax,[ebx*4 + 0x475ba2]`；表 dump 0x475ba2（40 字节）= 100 / 500 / 1000 / 5000 / 10000 | fixed | f4ed239（F26）；`rules/auction.test.ts` 已钉（300 被拒 / 500 收） |
 | AUC-47 | 拍賣卡敌意 = double 压栈的低 dword | rules/auction.ts | 0x00443286..0x004432c6 | verified | |
 | AUC-48 | 排队开拍在调用点之后才开（调用点之后若还掷 rand 会错位） | state/reduce.ts `chainQueuedAuction` | 0x0043bde5 阻塞 | follow-up | 未逐个调用点追；与 AUC-43 同源 |
 | AUC-49 | `eligibleBidders` 的 seller === undefined 支 | rules/auction.ts | — | n/a | 死代码 |
@@ -268,27 +312,39 @@
    清算拍卖里收款人的現金多了这一笔。
 2. **STK-57** 分紅破产应当场清算（`0x0042beba`），在開獎 / 月结 / 地契到期之前；目前只提前放了樂透号码。要把 `advanceGameDay` 拆成可以中途跑 `applyBankruptcy` 的形状。
 3. **AUC-43 / AUC-48** 破产拍卖的抽签与开拍交错（`0x0040d1f7` → `0x0040d1e3` 循环），以及排队开拍与调用点之后的 rand 次序。
-4. **AUC-45** 拍賣卡之后相位应回到出卡前（卡函数返回 1），现在一律 `turnEnd` ⇒ 用卡者丢一掷。需要先确认回合函数 `0x418ebd` 对卡返回值的处理。
-5. **AUC-22 / AUC-23 / AUC-34 / AUC-46** 拍賣的真人判据、穷真人自动弃权、全堵有最高者、加价额校验（见上表 VA）。
-6. **BNK-22** 真人关股市屏（`0x0042ba88`，三种模式都走）/ 关公佈欄（`0x0042885e`）之后的特別融資强制收回：需要「关屏」action，是协议变化。
-7. **BNK-17**（ai/）`autoLoanAmount` 的 `wealth <= 0` 拦截无出处（`0x00436902 test eax,eax / je` 只拦 0）。
-8. **LOT-09** 真人現金 <1000 仍应开投注屏（`0x0042f8d7 jge` 否则 `0x0042f8e3` 进状态 4 → 說 #0015 → #0016 → 关）。
-9. **STK-50** 真人选建設地的候选筛选与取消返回值（`0x446ae8(0x2090086)`）；若取消返回 0，也要收 1000×物價。
-10. **MON-16** 节日查找跳过 0x80 记录（`0x004523b3`），只影响节日图。
-11. **FAC-15 / PUR-16** 住店 / 街區台词里的 `rand()`（`0x44f2c2` / `0x0044f67b`）原版走同一个发生器；本项目的台词随机另走 speechRand —— 项目级口径（T-052），要改需统一决策。
-12. **WLT-02** 身家 >2^31 的 32 位行为。
+4. **BNK-17**（ai/）`autoLoanAmount` 的 `wealth <= 0` 拦截无出处（`0x00436902 test eax,eax / je` 只拦 0）。
+5. **FAC-15 / PUR-16** 住店 / 街區台词里的 `rand()`（`0x44f2c2` / `0x0044f67b`）原版走同一个发生器；本项目的台词随机另走 speechRand —— 项目级口径（T-052），要改需统一决策。
+6. **WLT-02** 身家 >2^31 的 32 位行为。
+
+（AUC-45、AUC-22 / AUC-23 / AUC-34 / AUC-46、BNK-22、LOT-09、STK-50、MON-16 都已修掉，从本表移出，
+见上表对应行与「后续修复」表。）
 
 ## 跨区
 
-- **cards**：拍賣卡（`cards/registry.ts`）为 F19 只加了一个 `clearOnPassIn: true` 标志；AUC-45（卡后相位）请 cards 复核。
+- **cards**：拍賣卡（`cards/registry.ts`）为 F19 只加了一个 `clearOnPassIn: true` 标志。
+  ★ **AUC-45（卡后相位）已由本区在协调人的集成分支上解决 —— 请 cards 不要重复修**：
+  回合函数 `0x418ebd` 对卡返回值**不做任何判断**（电脑支 0x00418e75 `call 0x40dd1f` 在出牌循环之后无条件走；
+  真人支选卡面板 `0x00441c90` 的返回只决定「回选卡屏还是往下走」，与回合相位无关），
+  相位回跳由 core 的 `pending{auction}.resumePhase` 承担（f6af0f1）。相关 VA 见 AUC-45 行。
   拆除卡 `0x00443c0c dec byte [land+0x1a]` 无下限 ⇒ 0 级会绕成 255，`demolishLand` 夹在 0（调用方大概只挑 >0 的地，请确认）。
   设施免費卡现在在購物中心 / 加油站也会问（F7），真人那一问与电脑 `aiUsesFreeCard` 的判定仍归 cards。
 - **ai / ai-econ**：BNK-17；F17 之后柜台对**真人**多了 `trunc(存款÷價)` 一道，电脑那一支（`0x0042c716` 只夹 f10）不受影响。
   F20 与 ai-econ 修的是同一处，已合并。
 - **loop / npc**：破产里 0x498e30 那 4 条记录（`0x43d593` / `0x43ec3f`）不在本区。
 - **events**：`percentage.ts` 的四条新聞税额与 `fortune` 金额未重开。
-- **全局**：单机 / 联机都走同一个 `reduce`；新增的服务器镜像见 `packages/server/src/econ-audit-mp.test.ts`。
+  ★ 合并 `ds/audit-provenance` 时发现两区**互相踩到**，两处都在本分支按原版修掉（不在 events 区重复修）：
+  （a）旅館的 費/100 敌意（F22，见 AUC-45 那一节与 FAC-05/FAC-10）：events 区的 C-29 用例
+  `confinement-audit.test.ts` 期望 80、本区修前是 112 —— 原版 `0x0041a5d5 je 0x41a63d` 让旅館跳过那句，
+  两个用例（C-29 与本区 `facility-rules.test.ts`）现在都按「旅館只有 20×天×物價」断言；
+  （b）魔法屋的關押/住院两支过「免罪(21) → 嫁禍(19)」二级判定后**只改手牌**、
+  没把用掉的卡记回牌堆（`conserveCardPool`）⇒ 长局的「牌堆 + 四人手牌 ≡ 開局」不变量会红
+  （full-game.test.ts 的哨兵在 seed 177 的 step 8680 抓到）。已在 `reduce.ts` 的魔法屋出口按守恒补记。
+- **全局**：单机 / 联机都走同一个 `reduce`；新增的服务器镜像见 `packages/server/src/econ-audit-mp.test.ts`
+  （AUC-45 两条：成交与开拍即流拍，都断言服务器与镜像的 `stateFingerprint` 与 `actingSeat` 一致）。
 
 ## 门禁
 
-`RICH4_WORKSPACE=/Volumes/Kingston/大富翁4重制版 pnpm check` —— 见最终报告。
+`pnpm typecheck && pnpm lint && RICH4_WORKSPACE=/Volumes/Kingston/大富翁4重制版 npx vitest run packages/core packages/server packages/client`
+—— 全绿：**372 个测试文件 / 8065 条用例、0 skipped**（`RICH4_WORKSPACE` 已设，原版素材找得到）。
+合并前本分支自己的基线是 7995 条（366 个文件），合并进来的其它区（ai-move / ai-econ / cards / events / loop）带来 70 条。
+另：本区新增的服务器镜像 `econ-audit-mp.test.ts` 从 6 条加到 8 条（AUC-45 成交 / 开拍即流拍）。

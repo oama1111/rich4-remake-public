@@ -199,19 +199,23 @@ describe('★ 同格有人', () => {
     expect(w.events).toEqual([]);
   });
 
-  it('★ 強盜/流氓/間諜 抽一张牌给主人', () => {
+  // ★★ 2026-09-24（provenance 审计）订正：只有**強盜**奪卡 —— `0x0041c194 cmp ebp,4 / je` ·
+  //   `0x0041c199 cmp ebp,5 / jne 0x41c447`：流氓 / 間諜直接跳去地產那一段，**不偷**。先前三个都偷。
+  it('★ 強盜抽一张牌给主人；流氓 / 間諜不偷', () => {
     const s = makeGameState({
       players: [
         makePlayer({ index: 0, nodeId: 20, cards: [] }),
         makePlayer({ index: 1, nodeId: 3, cards: [7] }),
       ],
     });
-    for (const actor of [NPC.robber, NPC.thug, NPC.spy]) {
-      const w = runNpc(actor, releaseNpc(1, 0, 5), s, map, line, rng());
-      expect(w.events, `actor ${actor}`).toContainEqual({ kind: 'card', victim: 1, card: 7 });
-      const out = applyNpcEvents(s, 0, w.events).state;
-      expect(out.players[1]?.cards).toEqual([]);
-      expect(out.players[0]?.cards).toEqual([7]);
+    const w = runNpc(NPC.robber, releaseNpc(1, 0, 5), s, map, line, rng());
+    expect(w.events).toContainEqual({ kind: 'card', victim: 1, card: 7 });
+    const out = applyNpcEvents(s, 0, w.events).state;
+    expect(out.players[1]?.cards).toEqual([]);
+    expect(out.players[0]?.cards).toEqual([7]);
+    for (const actor of [NPC.thug, NPC.spy]) {
+      const w2 = runNpc(actor, releaseNpc(1, 0, 5), s, map, line, rng());
+      expect(w2.events.filter((e) => e.kind === 'card'), `actor ${actor}`).toEqual([]);
     }
   });
 
@@ -351,9 +355,10 @@ describe('★ 流氓勒索保護費', () => {
     expect(w.events.filter((e) => e.kind === 'protection')).toEqual([]);
   });
 
+  // ★★ 2026-09-24（provenance 审计）：只在停下来的那一格勒索（`0x0041c447`）⇒ 走 2 步停在 3 号（台北市）
   it('钱从地主转给主人', () => {
     const s = withOwners([2, 0, 2]);
-    const w = runNpc(NPC.thug, releaseNpc(1, 0, 4), s, map, line, rng());
+    const w = runNpc(NPC.thug, releaseNpc(1, 0, 2), s, map, line, rng());
     expect(w.events).toContainEqual({ kind: 'protection', landlord: 1, amount: 3000 });
     // ★ 保護費那笔**進存款**（@source `push 0`）—— 与搶銀行不同口
     const out = applyNpcEvents(s, 0, w.events).state;

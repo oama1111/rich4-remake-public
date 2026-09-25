@@ -47,7 +47,7 @@ interface Played {
  */
 function assertPositionInvariant(
   state: GameState,
-  nodeIndex: ReadonlyMap<number, { x: number; y: number; gate: boolean }>,
+  nodeIndex: ReadonlyMap<number, { x: number; y: number; gate: boolean; facility: { x: number; y: number } | null }>,
   where: string,
   /**
    * 「贴图位置」的合法取值集合 —— `x/y` 是**贴图位置**，不是"所在格坐标"：
@@ -102,6 +102,11 @@ function assertPositionInvariant(
     //   路径只有关押传送，而关押传送必把 `nodeId` 设成该格；别处仍按节点坐标
     //   严格判，抓漏能力不受影响。
     if (n!.gate && spritePositions.some((g) => g.x === p.xpos && g.y === p.ypos)) continue;
+    // ★★ 第七个窗口（2026-09-24，provenance 审计换轨迹后现形）：**旅館住店中被綁架/出國**
+    //   （嫁禍的替死鬼可以是住店的人）。`0x40d375` 首次那一支 `call 0x40d761` 清掉住店计数，
+    //   **不写 x/y**（`0x0040d3d4/0x0040d3de` 只读来喂飞走动画），释放 `0x40d4e5` 也不写 ⇒
+    //   消失结束后留着**旅館設施坐标**、`nodeId` = 旅館那一格。只放行「脚下就是設施格、坐标 = 它」。
+    if (n!.facility !== null && n!.facility.x === p.xpos && n!.facility.y === p.ypos) continue;
     expect([p.xpos, p.ypos], `${where}: 玩家${p.index} 坐标与其节点不符`)
       .toEqual([n!.x, n!.y]);
   }
@@ -148,6 +153,7 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
           n.specialKind === SPECIAL_KIND.HOSPITAL ||
           n.type === CONFINEMENT_GATE_TYPE.prison ||
           n.type === CONFINEMENT_GATE_TYPE.hospital,
+        facility: n.ref.kind === 'facility' ? (map.facilities.find((f) => f.id === (n.ref as { index: number }).index) ?? null) : null,
       },
     ]),
   );
@@ -307,6 +313,9 @@ describe('★ M2 验收：完整一局', () => {
     //   （step 15384 / turn 1263，玩家3 在 nodeId=23 上留着醫院大樓贴图坐标）。
     //   ⇒ 换成重新扫出来的 177 / 58 / 230：三个都能在 4000 回合内打出 3 人出局
     //   （分别倒在 521/2904/3274、638/1595/1645、644/834/915 回合），全程不变量干净。
+    // ★ 2026-09-25（econ 区审计合入 provenance 之后复核，**输入一个字没换**）：三个种子在合并后的
+    //   reduce 上仍是 3 人出局（177 → 830/2059/3471、58 → 1005/1500/1592、230 → 1300/1311/…），
+    //   坐标与「牌堆 + 手牌 ≡ 開局」两套不变量都干净 —— 只更新这行读数。
     let withDeaths = 0;
     for (const seed of [177, 58, 230]) {
       if (playFullGame(seed, 4000).deaths.length > 0) withDeaths++;
