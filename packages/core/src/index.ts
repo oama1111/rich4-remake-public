@@ -36,6 +36,7 @@ export * from './rules/god-toll.ts';
 export * from './rules/facility.ts';
 export * from './rules/blocking.ts';
 export * from './rules/confinement.ts';
+export { NEWS_OWNER_SITE, SPEECH_SITE, type SpeechRoll } from './rules/speech-rand.ts';
 export * from './rules/confine-view.ts';
 export * from './rules/gate-walk.ts';
 export * from './rules/blessing.ts';

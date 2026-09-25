@@ -39,6 +39,7 @@ import type { StockMarketState } from '../places/stock-market.ts';
 //    与新聞 29 共用（见 `news-effects.ts` 的 `secondaryJudgement` 的 @source 块）。
 //    不 import `rules/toll-flow.ts` 的 `aiScapegoat`：那个镜像的是 mode 1。
 import { secondaryJudgement } from './news-effects.ts';
+import { SPEECH_SITE, speechDraw } from '../rules/speech-rand.ts';
 
 /**
  * 本模块要的随机出口：`below(n)`（挑人）+ `next()`（事件 5 抽牌）。
@@ -626,6 +627,9 @@ export function applyFortuneEffect(
       robbed.push({ victim: i, card });
       taken++;
     }
+    // ★★ FU-1：`0x0044c57b test edi,edi / je` → `0x0044c5ad call rand / and eax,1` —— 寿星那一句（事件 0 | 1）
+    //   的二选一与规则共用同一个发生器 ⇒ 这里掷（合格的人都有牌 ⇒ `edi` = `taken`）。
+    if (taken > 0) speechDraw(rng, SPEECH_SITE.birthday, ctx.currentPlayer);
     return { ...base, players: next, amount: taken, robbed, cardAmount: deck };
   }
 

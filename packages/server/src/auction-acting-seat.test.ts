@@ -61,8 +61,11 @@ const run = existsSync(MAP) ? it : it.skip;
 // ★ 2026-09-25 換種子（events 區審計合入 provenance 之後：神明老虎機自動轉 4 輪、新聞開拍接著同一隨機流、
 //   首次關押倒霉台詞的 rand、惡人只在停步那格勒索…對局走向又變了）：重掃 1..60：
 //   10 = 電腦回合真人舉牌 6 次，18 = 真人回合電腦舉牌 7 次（原 12 / 21 掉到 0）。
+// ★ 2026-09-25 換種子（events 區審計第二輪 FU-1：台詞階梯那幾次 `rand()` 從客戶端哈希改成 core 在
+//   exe 擲的那一刻擲進全局流 —— 對局走向又變了）：重掃 1..60（`RICH4_AUCTION_SEARCH=60`）：
+//   10 = 電腦回合真人舉牌 6 次（不用換），19 = 真人回合電腦舉牌 5 次（原 18 掉到 0）。
 const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 10;
-const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 18;
+const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 19;
 const TURNS = 200;
 const HUMANS = 2;
 

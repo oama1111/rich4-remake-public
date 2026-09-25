@@ -31,7 +31,7 @@ import {
   type GameState,
 } from '@rich4/core';
 import { boxRank, lineRank, noticeTier } from './presentation-order.ts';
-import { SPEECH_RAND_SITE, speechCoin } from './speech-coin.ts';
+import { SPEECH_RAND_SITE, speechCoin, speechRand } from './speech-roll.ts';
 import { DETECTORS, detectBirthdayLine, speechEventsFor } from './speech.ts';
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
@@ -101,7 +101,9 @@ describe('★ 命運 5 生日收卡之后寿星那一句（`0x0044c5c5`）', () 
     expect(detectBirthdayLine(s1, s2)).toEqual([]);
     const s3 = reduce(s2, { type: 'birthdayCard', seat: 2, cardId: 9 }, topo);
     expect(s3.pending).toBeNull();
-    const coin = speechCoin(s3, 0, SPEECH_RAND_SITE.birthday);
+    // ★ FU-1：那一次 `rand()`（`0x0044c5ad`）由 core 在最后一位答完时掷
+    expect(speechRand(s2, s3, 0, SPEECH_RAND_SITE.birthday)).not.toBeNull();
+    const coin = speechCoin(s2, s3, 0, SPEECH_RAND_SITE.birthday);
     expect(detectBirthdayLine(s2, s3)).toEqual([{ player: 0, event: coin, expression: 0 }]);
     expect(keys(s2, s3, topo)).toEqual([{ player: 0, event: coin, order: 'afterStage' }]);
   });
@@ -123,7 +125,8 @@ describe('★ 命運 5 生日收卡之后寿星那一句（`0x0044c5c5`）', () 
     const s1 = reduce(s, { type: 'settle' }, topo);
     expect(s1.pending?.kind).not.toBe('birthdayCard');
     expect(s1.notices.filter((n) => n.key === 'card.robbed')).toHaveLength(0);
-    const coin = speechCoin(s1, 0, SPEECH_RAND_SITE.birthday);
+    expect(speechRand(s, s1, 0, SPEECH_RAND_SITE.birthday)).not.toBeNull();
+    const coin = speechCoin(s, s1, 0, SPEECH_RAND_SITE.birthday);
     expect(detectBirthdayLine(s, s1)).toEqual([{ player: 0, event: coin, expression: 0 }]);
     // 框（`stage` 档）先、台词（`afterStage`）后 —— 同一把尺子（`presentation-order.ts`）
     expect(lineRank('afterStage')).toBeGreaterThan(boxRank(noticeTier('card.robbed')));

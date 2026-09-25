@@ -39,6 +39,7 @@ import {
 import { giveTool } from './tools.ts';
 import { giveCard } from '../cards/rob.ts';
 import { conserveCardPool, toolPrice } from './inventory.ts';
+import { goodNewsSpeechDrawsRand, SPEECH_SITE, speechDraw } from './speech-rand.ts';
 import {
   ACTOR_PLACE,
   idleActor,
@@ -221,7 +222,7 @@ export function runNpc(
             //   （`0x0044f262 cmp edx,0x32 / jle` → `0x0044f280 call 0x456f2d`）。台词归表现层，随机数是规则态。
             if (type === OBJECT_TYPE_GIFT) {
               const price = toolPrice(tool);
-              if (price > 0x32 && price <= 0x64) rng.next();
+              if (goodNewsSpeechDrawsRand(price)) speechDraw(rng, SPEECH_SITE.smallGain, owner);
             }
           }
         }
