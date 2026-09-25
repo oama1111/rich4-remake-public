@@ -184,6 +184,10 @@ describe('★★ 第二十一份：董事長進店 —— 地图屏赠礼框 →
         landTenure: undefined,
         landType: undefined,
         landLastToll: undefined,
+        companyFunds: undefined,
+        companyProfit: undefined,
+        commercialShares: undefined,
+        commercialOwners: undefined,
         players: after.players.map((p) => ({
           ...p,
           xpos: undefined,

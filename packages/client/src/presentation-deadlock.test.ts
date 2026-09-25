@@ -418,6 +418,10 @@ describe('★★ 第十六份：线上卡死（老虎机排着 × 「使用地�
         landTenure: undefined,
         landType: undefined,
         landLastToll: undefined,
+        companyFunds: undefined,
+        companyProfit: undefined,
+        commercialShares: undefined,
+        commercialOwners: undefined,
         players: last.players.map((p) => ({
           ...p,
           xpos: undefined,
