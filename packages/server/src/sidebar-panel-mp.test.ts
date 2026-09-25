@@ -51,6 +51,11 @@ const sidebarInputs = (s: GameState) => ({
   currentPlayer: s.currentPlayer,
   // ★★ 第二十六份 panel #1：侧栏画惡人那一版的判据 = 行动者游标（core 的 `lastNpcTurn`）
   turn: s.lastNpcTurn ?? null,
+  // ★★ 换人那次重画（`0x436a5a`）：演完之后画谁 + 两段各自画谁
+  panel: s.lastPanelTurn ?? null,
+  beats:
+    s.lastTurnBeats?.map((b) => ({ cp: b.after.currentPlayer, npc: b.after.lastNpcTurn ?? null, panel: b.after.lastPanelTurn ?? null })) ??
+    null,
   walks: s.lastNpcWalks.map((w) => w.slot),
   owners: s.specialActors.map((a) => a.owner),
   allies: s.players.map((p) => p.alliedPlayer),
@@ -111,6 +116,12 @@ describe('★★ 联机：侧栏面板的输入两端一致', () => {
     expect(room.state.lastNpcWalks).toEqual([]); // 停留 ⇒ 没有补间
     expect(room.state.lastNpcTurn).toEqual({ actor: 6 });
     expect(room.state.phase).toBe('turnStart'); // 最后一个惡人那一条连推日期、换到 0 号
+    // ★★ 前段（流氓停留 + 推日期）侧栏是流氓；0 号没借钱 ⇒ `0x436a5a` 那次重画之后是 0 号
+    expect(sidebarInputs(room.state).beats).toEqual([
+      { cp: 3, npc: { actor: 6 }, panel: null },
+      { cp: 0, npc: { actor: 6 }, panel: { actor: 0 } },
+    ]);
+    expect(room.state.lastPanelTurn).toEqual({ actor: 0 });
     expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(room.state));
     expect(submitBoth(room, mirror, topo, room.actingSeat, { type: 'startTurn' }).ok).toBe(true);
     expect(room.state.lastNpcTurn ?? null).toBeNull();

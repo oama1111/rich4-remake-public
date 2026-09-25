@@ -31,7 +31,9 @@ import {
   MINI_PORTRAIT,
   VILLAIN_PANEL,
   allyPortraitPlayer,
+  panelActorOf,
   panelActorSlot,
+  panelPlayerOf,
   panelSubject,
   type HudInput,
 } from './hud.ts';
@@ -232,6 +234,27 @@ describe('② `panelSubject` / `allyPortraitPlayer`', () => {
     expect(panelActorSlot({ lastNpcTurn: { actor: 8 } })).toBeNull();
     const s = { ...state(), lastNpcTurn: { actor: 5 } };
     expect(panelSubject(s, panelActorSlot(s))).toEqual({ kind: 'villain', actor: 5, name: '強盜', owner: 2 });
+  });
+
+  it('★★ 第二十六份 panel：`panelActorOf` —— 换人那次重画（`lastPanelTurn`）> 惡人回合（`lastNpcTurn`）> 当前玩家', () => {
+    expect(panelActorOf({ currentPlayer: 2 })).toBe(2);
+    expect(panelActorOf({ currentPlayer: 2, lastNpcTurn: { actor: 6 } })).toBe(6);
+    // 最后一个惡人那一条演完：已重画成下一位 / 距还款日 > 3 天留着惡人 / 留着离场的玩家
+    expect(panelActorOf({ currentPlayer: 0, lastNpcTurn: { actor: 6 }, lastPanelTurn: { actor: 0 } })).toBe(0);
+    expect(panelActorOf({ currentPlayer: 0, lastNpcTurn: { actor: 6 }, lastPanelTurn: { actor: 6 } })).toBe(6);
+    expect(panelActorOf({ currentPlayer: 0, lastPanelTurn: { actor: 3 } })).toBe(3);
+    expect(panelPlayerOf({ currentPlayer: 0, lastPanelTurn: { actor: 3 } })).toBe(3);
+    expect(panelPlayerOf({ currentPlayer: 0, lastPanelTurn: { actor: 6 } })).toBe(0);
+    expect(panelActorSlot({ currentPlayer: 0, lastPanelTurn: { actor: 6 } })).toBe(2);
+    // 离场者那一版：名字 / 数值画他，不画当前玩家
+    expect(panelSubject(state(), null, 1)).toEqual({ kind: 'player', player: 1 });
+  });
+
+  it('★★ main.ts：换人那一条按两段逐段演（与魔法屋逐人同一台 `tickMagicSequence`），还款提醒窗等分界', () => {
+    const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(main).toContain("notifyMagicApplied(before, turnBeats, 'turn');");
+    expect(main).toMatch(/if \(freshTurnBeats\(before, state\) !== null\) \{\n    magicSeqAction = action;\n    return;\n  \}\n  \/\/ ★★ 降落伞落地/);
+    expect(main).toContain('if (turnHandoffPending()) return;');
   });
 
   it('`alliedPlayer` = 玩家号 + 1；0 = 没有', () => {
@@ -477,19 +500,27 @@ describe('④ 单机 / 联机画的是同一个东西', () => {
       const walk = host.lastNpcWalks.find((w) => w.slot === 1);
       expect(walk, '强盜这一趟交给了表现层').toBeTruthy();
       expect(remote.lastNpcWalks).toEqual(host.lastNpcWalks);
-      // ★★ 第二十六份 panel #1：侧栏跟的是行动者游标（`lastNpcTurn`），整条 action 都是他 —— 补间走没走完都一样
-      expect(panelActorSlot(host)).toBe(1);
-      expect(panelActorSlot(remote)).toBe(1);
-      expect(panelSubject(host, panelActorSlot(host))).toEqual({ kind: 'villain', actor: 5, name: '強盜', owner: 2 });
-      expect(panelSubject(remote, panelActorSlot(remote))).toEqual(panelSubject(host, panelActorSlot(host)));
-      // 下一条 action（下一位行动者）⇒ 两端都回到当前玩家（含结盟小头像）
+      // ★★ 第二十六份 panel：这一条连推日期、换到 0 号 ⇒ 切成两段逐段演（`lastTurnBeats`）。
+      //   分界之前那一段（惡人那一趟 / 推日期）侧栏是强盜；0 号没借过钱 ⇒ `0x436a5a` 那次重画之后是 0 号。
+      const beatsA = host.lastTurnBeats!;
+      const beatsB = remote.lastTurnBeats!;
+      expect(beatsA).toHaveLength(2);
+      const midA = beatsA[0]!.after;
+      const midB = beatsB[0]!.after;
+      expect(panelActorSlot(midA)).toBe(1);
+      expect(panelActorSlot(midB)).toBe(1);
+      expect(panelSubject(midA, panelActorSlot(midA))).toEqual({ kind: 'villain', actor: 5, name: '強盜', owner: 2 });
+      expect(panelActorOf(host)).toBe(0);
+      expect(panelActorOf(beatsA[1]!.after)).toBe(0);
+      expect(panelActorOf(remote)).toBe(0);
+      // 下一条 action（他回合开头）⇒ 两端都是当前玩家（含结盟小头像）
       const hostNext = reduce(host, { type: 'startTurn' }, topo);
       const remoteNext = reduce(remote, { type: 'startTurn' }, topo);
       expect(panelActorSlot(hostNext)).toBeNull();
       expect(panelActorSlot(remoteNext)).toBeNull();
       for (const view of [0, 1, 2]) {
-        const a = await drawTwice(host, map, view, panelActorSlot(host));
-        const b = await drawTwice(remote, map, view, panelActorSlot(remote));
+        const a = await drawTwice(midA, map, view, panelActorSlot(midA));
+        const b = await drawTwice(midB, map, view, panelActorSlot(midB));
         expect(b).toEqual(a);
         expect(images(a).some((i) => i.tag === `Panel.mkf:0:${view === 2 ? COMPACT.image : VILLAIN_PANEL.image}`)).toBe(true);
         const c = await drawTwice(hostNext, map, view, panelActorSlot(hostNext));
@@ -512,10 +543,13 @@ describe('④ 单机 / 联机画的是同一个东西', () => {
       const host = reduce(before, { type: 'endTurn' }, topo);
       const remote = reduce(structuredClone(before), { type: 'endTurn' }, topo);
       expect(host.lastNpcWalks, '停留 ⇒ 没有补间').toEqual([]);
-      expect(panelActorSlot(host)).toBe(1);
-      expect(panelActorSlot(remote)).toBe(1);
-      const a = await drawTwice(host, map, 1, panelActorSlot(host));
-      expect(a).toEqual(await drawTwice(remote, map, 1, panelActorSlot(remote)));
+      // 分界之前那一段（他停留的那一回合 + 推日期）侧栏是他
+      const midA = host.lastTurnBeats![0]!.after;
+      const midB = remote.lastTurnBeats![0]!.after;
+      expect(panelActorSlot(midA)).toBe(1);
+      expect(panelActorSlot(midB)).toBe(1);
+      const a = await drawTwice(midA, map, 1, panelActorSlot(midA));
+      expect(a).toEqual(await drawTwice(midB, map, 1, panelActorSlot(midB)));
       expect(strip(texts(a))).toContainEqual({ s: '強盜', x: 142, y: 40 });
     });
   }
@@ -550,7 +584,8 @@ describe('#16 落地影片期间：侧栏已是**新**玩家（原版在影片�
   it('main.ts：侧栏按 `hudState`（当前玩家）画，落地期间只藏坐标，不回退到上一位', () => {
     const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
     expect(main).toContain('state: withLandingHidden(hudState),');
-    expect(main).toContain('panelPage: panelPages[hudState.currentPlayer] ?? 0,');
+    expect(main).toContain('const panelPlayer = panelPlayerOf(hudState);');
+    expect(main).toContain('panelPage: panelPages[panelPlayer] ?? 0,');
     // ★★ 第二十六份 panel #1：侧栏跟行动者游标（core 的 `lastNpcTurn`），不跟补间
     expect(main).toContain('npcSlot: panelActorSlot(hudState),');
     expect(main).not.toContain('npcSlot: npcWalk?.slot ?? null,');

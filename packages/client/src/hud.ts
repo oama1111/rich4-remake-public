@@ -442,19 +442,47 @@ export type PanelSubject =
  * 起、到下一位行动者那条 action 为止 = 原版 `[0x49910c]` 停在他身上、侧栏没被重画走的那一段）。
  * 单机 / 联机同一份状态、同一条判据（各端重放同一串 action ⇒ 同一份提示）。
  */
-export function panelActorSlot(state: Pick<GameState, 'lastNpcTurn'>): number | null {
-  const actor = state.lastNpcTurn?.actor;
-  if (actor === undefined) return null;
+export function panelActorSlot(state: PanelActorState): number | null {
+  const actor = panelActorOf(state);
   const slot = actor - SPECIAL_ACTOR_BASE;
   return slot >= 0 && slot < NPC_NAMES.length ? slot : null;
 }
 
-export function panelSubject(state: GameState, npcSlot: number | null | undefined): PanelSubject {
-  if (npcSlot === null || npcSlot === undefined) return { kind: 'player', player: state.currentPlayer };
+type PanelActorState = Pick<GameState, 'lastNpcTurn' | 'lastPanelTurn'> & { currentPlayer?: number };
+
+/**
+ * ★★ 第二十六份 panel：侧栏此刻画的**行动者**（0..3 玩家 / 4..7 惡人）—— 原版「上一次整窗重画时的 `[0x49910c]`」。
+ *
+ * 1. `lastPanelTurn`（换人那条 action 演完之后）：`0x436a5a` 那次重画换成下一位；距还款日 > 3 天没有那次重画 ⇒ 留着上一位
+ *    （见 core `withTurnHandoff`）；
+ * 2. `lastNpcTurn`：惡人回合开头那次重画（`0x00418d69`）起就是他；
+ * 3. 否则当前玩家（他回合开头 `0x00418d5f` 那次重画）。
+ * 换人那一条逐段演时（`lastTurnBeats`），分界之前那一段的状态没有 1、只有 2 或离场者 ⇒ 自然画上一位。
+ */
+export function panelActorOf(state: PanelActorState): number {
+  const turn = state.lastPanelTurn?.actor;
+  if (turn !== undefined) return turn;
+  const npc = state.lastNpcTurn?.actor;
+  if (npc !== undefined) return npc;
+  return state.currentPlayer ?? 0;
+}
+
+/** 侧栏画哪位**玩家**（行动者是惡人时 = 当前玩家，惡人那一版不看它）*/
+export function panelPlayerOf(state: PanelActorState & { currentPlayer: number }): number {
+  const actor = panelActorOf(state);
+  return actor < SPECIAL_ACTOR_BASE ? actor : state.currentPlayer;
+}
+
+export function panelSubject(
+  state: GameState,
+  npcSlot: number | null | undefined,
+  player: number = state.currentPlayer,
+): PanelSubject {
+  if (npcSlot === null || npcSlot === undefined) return { kind: 'player', player };
   const actor = SPECIAL_ACTOR_BASE + npcSlot;
   // @source 0x00415fc6 `jl` / 0x00415fd2 `je 8`：替身号 ≥ 4 ≥ 玩家数，只剩娃娃那一格回到玩家
   if (actor === ACTOR_DOLL || actor < state.players.length) {
-    return { kind: 'player', player: state.currentPlayer };
+    return { kind: 'player', player };
   }
   return {
     kind: 'villain',
@@ -661,6 +689,11 @@ export interface HudInput {
    * 惡人那一版（见 `panelSubject`；`main.ts` 传 `panelActorSlot(state)`）。`null` / 缺省 = 轮的是玩家。
    */
   npcSlot?: number | null;
+  /**
+   * ★★ 第二十六份 panel：侧栏画哪位玩家（`panelPlayerOf`）—— 换人那次重画之前 / 距还款日 > 3 天时仍是上一位。
+   * 缺省 = `state.currentPlayer`。小地图等其余部分照旧按 `state`。
+   */
+  panelPlayer?: number;
   /** 正被按下的箭头（1 = 左，2 = 右）；没按返回 null */
   pressedMinimapArrow: MinimapArrowId | null;
   /** 鼠标悬停的箭头；没悬停返回 null */
@@ -948,7 +981,7 @@ export class Hud {
    */
   #drawCompactPanel(input: HudInput): void {
     const ctx = this.#ctx;
-    const subject = panelSubject(input.state, input.npcSlot);
+    const subject = panelSubject(input.state, input.npcSlot, input.panelPlayer ?? input.state.currentPlayer);
 
     // 底图在分支**之前**画（惡人那一支也是图 4）@source 0x00416748
     const bg = this.#sprite('Panel.mkf', 0, COMPACT.image);
@@ -1203,7 +1236,7 @@ export class Hud {
 
   #drawPanel(input: HudInput): void {
     const ctx = this.#ctx;
-    const subject = panelSubject(input.state, input.npcSlot);
+    const subject = panelSubject(input.state, input.npcSlot, input.panelPlayer ?? input.state.currentPlayer);
     if (subject.kind === 'villain') {
       this.#drawVillainPanel(input.state, subject);
       return;

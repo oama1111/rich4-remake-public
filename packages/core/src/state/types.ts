@@ -1386,6 +1386,20 @@ export interface GameState {
   lastNpcTurn?: NpcTurnHint | null;
 
   /**
+   * ★★ 第二十六份 panel：换人那条 action 演完之后侧栏画谁（行动者号 0..3 / 4..7）—— 纯表现提示，
+   * 只活一条 action，不进指纹 / 存档。见 `reduce.ts` 的 `withTurnHandoff`（`0x436a5a` 的 `0x41906a(1)` 重画：
+   * 距还款日 ≤ 3（含没借过）当场换成下一位；否则留着上一位直到他回合开头 `0x00418d5f`）。
+   */
+  lastPanelTurn?: NpcTurnHint | null;
+
+  /**
+   * ★★ 第二十六份 panel：换人那条 action 在「游标交给下一位、`0x41c84f`」处切成两段的前后状态 ——
+   * `[before → mid]`（惡人那一趟 / 推日期，侧栏仍是上一位）、`[mid → final]`（下一位的「走一天」，侧栏已换）。
+   * 纯表现提示（与 `lastMagicBeats` 同形、同规矩：只活一条 action、不进指纹 / 存档）。分界之前没有演出时不写。
+   */
+  lastTurnBeats?: readonly MagicBeat[] | null;
+
+  /**
    * **上一次用出的卡**（出牌者 + 卡号）—— 纯表现提示，见 `CardPlayHint`。
    *
    * 消费者：`client/src/speech.ts` 的 `cardPlaySpeech()`（用卡时角色说那句话）

@@ -21,6 +21,7 @@ import { SPECIAL_KIND } from '../loaders/map.ts';
 import { TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
 import { stateFingerprint } from '../net/protocol.ts';
 import { WatcomRng } from '../rng/watcom.ts';
+import { advanceDate, packDate } from '../rules/calendar.ts';
 import type { GameState } from './types.ts';
 
 /** 一条 30 格的环 */
@@ -553,5 +554,81 @@ describe('★★ 第二十六份 panel #1：`lastNpcTurn` —— 行动者游标
     const other = { ...a, lastNpcTurn: { actor: 6 } };
     expect(stateFingerprint(blanked)).toBe(base);
     expect(stateFingerprint(other)).toBe(base);
+  });
+});
+
+describe('★★ 第二十六份 panel：换人那次整窗重画（`0x41c84f` → `0x436a5a` → `0x41906a(1)`）—— `lastPanelTurn` / `lastTurnBeats`', () => {
+  /** 推日期之后的「今天」再往后 n 天（打包值），给 `loanDueDate` 用 */
+  function dueIn(s: GameState, n: number): number {
+    let d = advanceDate({ year: s.year, month: s.month, day: s.day }).date;
+    for (let i = 0; i < n; i++) d = advanceDate(d).date;
+    return packDate(d);
+  }
+
+  it('最后一个惡人那一条：切成两段 —— 前段（惡人 + 推日期）侧栏仍是他、后段起换成下一位（没借过钱）', () => {
+    const s = withThief({ rngState: 7 });
+    const after = reduce(s, { type: 'endTurn' }, ring);
+    expect(after.phase).toBe('turnStart');
+    expect(after.currentPlayer).toBe(0);
+    expect(after.lastPanelTurn).toEqual({ actor: 0 });
+    const beats = after.lastTurnBeats!;
+    expect(beats).toHaveLength(2);
+    const [b1, b2] = beats as [NonNullable<GameState['lastTurnBeats']>[number], NonNullable<GameState['lastTurnBeats']>[number]];
+    // 前段：游标还没交出去的样子 —— 当前玩家仍是离场者、日期已推、惡人那一回合还挂着、没有换人提示
+    expect(b1.after.currentPlayer).toBe(1);
+    expect(b1.after.day).not.toBe(s.day);
+    expect(b1.after.lastNpcTurn).toEqual({ actor: 4 });
+    expect(b1.after.lastPanelTurn ?? null).toBeNull();
+    // 后段：接着前段、落到最终那一份（含换人提示）
+    expect(b2.before).toBe(b1.after);
+    expect(b2.after.currentPlayer).toBe(0);
+    expect(b2.after.lastPanelTurn).toEqual({ actor: 0 });
+    // 分段里不再挂分段（不串成链）
+    for (const b of beats) {
+      expect(b.before.lastTurnBeats ?? null).toBeNull();
+      expect(b.after.lastTurnBeats ?? null).toBeNull();
+    }
+  });
+
+  it('@source 0x00436a7c `cmp eax,3 / jg`（有符号）：距还款日 ≤ 3 天 ⇒ 重画换人；> 3 天 ⇒ 不重画，侧栏留着上一位（这里是惡人）', () => {
+    for (const [days, actor] of [[3, 0], [2, 0], [4, 4], [10, 4]] as const) {
+      const s0 = withThief({ rngState: 7 });
+      const s: GameState = { ...s0, players: s0.players.map((p, i) => (i === 0 ? { ...p, loan: 1000, loanDueDate: dueIn(s0, days) } : p)) };
+      const after = reduce(s, { type: 'endTurn' }, ring);
+      expect(after.lastPanelTurn, `距还款日 ${days} 天`).toEqual({ actor });
+    }
+  });
+
+  it('不绕回的 `endTurn`（1 → 0 号之前的 0 → 1）：没有分段；距还款日 > 3 天侧栏留离场者，否则换人', () => {
+    const s = withThief({ currentPlayer: 0 }, { place: ACTOR_PLACE.prison });
+    const plain = reduce(s, { type: 'endTurn' }, ring);
+    expect(plain.currentPlayer).toBe(1);
+    expect(plain.lastTurnBeats ?? null).toBeNull();
+    expect(plain.lastPanelTurn).toEqual({ actor: 1 });
+    const owed: GameState = { ...s, players: s.players.map((p, i) => (i === 1 ? { ...p, loan: 500, loanDueDate: dueIn({ ...s, day: s.day - 1 } as GameState, 9) } : p)) };
+    expect(reduce(owed, { type: 'endTurn' }, ring).lastPanelTurn).toEqual({ actor: 0 });
+  });
+
+  it('绕回但盘上没有惡人：前段是推日期（侧栏仍是离场者）', () => {
+    const s = withThief({}, { place: ACTOR_PLACE.prison });
+    const after = reduce(s, { type: 'endTurn' }, ring);
+    const b1 = after.lastTurnBeats![0]!;
+    expect(b1.after.currentPlayer).toBe(1);
+    expect(b1.after.day).not.toBe(s.day);
+    expect(after.lastPanelTurn).toEqual({ actor: 0 });
+  });
+
+  it('惡人段没走完（停在 turnEnd）不算换人；只活一条 action；不进指纹', () => {
+    const s = withThief({ rngState: 7 });
+    const after = reduce(s, { type: 'endTurn' }, ring);
+    const next = reduce(after, { type: 'startTurn' }, ring);
+    expect(next.lastPanelTurn ?? null).toBeNull();
+    expect(next.lastTurnBeats ?? null).toBeNull();
+    const base = stateFingerprint(after);
+    const blanked: GameState = { ...after, lastPanelTurn: null, lastTurnBeats: null };
+    expect(stateFingerprint(blanked)).toBe(base);
+    const b = reduce(structuredClone(s), { type: 'endTurn' }, ring);
+    expect(b.lastPanelTurn).toEqual(after.lastPanelTurn);
+    expect(b.lastTurnBeats![0]!.after.lastNpcTurn).toEqual(after.lastTurnBeats![0]!.after.lastNpcTurn);
   });
 });
