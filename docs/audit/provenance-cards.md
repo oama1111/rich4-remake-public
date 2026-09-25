@@ -10,11 +10,11 @@
 | 状态 | 条数 |
 |---|---|
 | verified | 208 |
-| fixed | 70（其中 10 条由 loop / ai-move 分支修，合并进来后复核） |
-| approx | 15 |
-| follow-up | 28 |
+| fixed | 97（其中 10 条由 loop / ai-move 分支修，合并进来后复核；2026-09-25 复核时 19 条旧 `follow-up`/`approx` 转 `fixed`、新增 8 条） |
+| approx | 14 |
+| follow-up | 10 |
 | n/a | 3 |
-| 合计 | 324 |
+| 合计 | 332 |
 
 ### 本分支的修正（提交）
 
@@ -29,28 +29,63 @@
 - `946757e` 敌意 32 位回绕；紅 / 黑卡停牌股照写；購物中心 / 加油站過路費也问免費卡（0x0041a5d5 只跳旅館）。
 - `cccb4a4` 飛彈 / 核彈把爆心的乞丐挪走（0x40cd7d → 0x40cc56）。
 - `97dc964` 联机镜像测试（出牌回牌堆 / 走子中出牌被拒 / 路障不回库存）。
+- `5290899`（net，已并入的 `ds/audit-provenance` 上）指紋加入道具庫存 `toolStock`（`[0x49731f+id]`）與牌堆 `cardAmount`（`[0x499197+卡號]`，`0x0044133b` / `0x004413a2` / `0x00441f54`）—— I-25 结案。
+- `471ef9e` 夢遊 / 陷害 / 查稅卡打到**真人**持卡人時照原版問他：嫁禍卡確認框 / 選人窗（`0x44476a` 真人支 `0x004447a1` / `0x00444834` / `0x004448a1`）、查稅的免費卡確認框（`0x444a60` 真人支 `0x00444ad8`→`0x00444af4`）；卡片效果**掛起**、答完同卡同目標續跑（`CardPassiveTail`），`actingSeat` 歸持卡人（C16-7b / C19-1 / C20-2 结案）。
+- `7b9d645` 卡片路徑裡被動卡的亮牌與訊息框 —— 免罪卡生效 `0x00444be8 push 0x46539d` / `0x00444bff call 0x441f73(0x15)`、復仇卡生效 `0x004446c7 push 0x46532c` / `0x004446de call 0x441f73(0x12)`、電腦嫁禍（`0x00444982` 亮牌 + `0x004449df`「嫁禍給%s！」）、電腦用免費卡（`0x00444b0e` 亮牌「使用%s」），聯機各端同一份 notices（CG-3 / C18-5 / C21-3 / C19-7 / C20-3 结案）。
+- `5b5d6b9` 送神符送走神明時搭檔登場的參照格取出牌者此刻所在格（`0x00444cc4 call 0x40e32c` → `0x0040e356` / `0x0040e3cd..0x0040e3d4` → `0x40e14d`；炸彈那一支 `0x00444c4b` 直接 `0x40e14d` 不改格）；生日真人答覆的牌堆記賬補測試；先後表補卡片路徑被動卡亮牌。
+- `d0b8fdd` 補「下車」（道具表第 14 項 `0x447c00`；道具欄末格載具徽章 = `0x00447e24 mov byte [0x48c556], 0xe`；只給真人 `0x00447dab`、只在騎機車 / 開汽車時出現 `0x00447dee..`）：機車退回道具 5 / 汽車退回道具 6、步行一顆骰子。
+- `5256fa6` 真人傳送機照原版兩段拾取（先來源 `0x00447469 push 0x1200036`，再目標 `0x004474f5` / `0x00447598` / `0x00447653`），可搬惡人 / 地上物件 / 附身物件，來源不看歸屬；第二段取消 `0x00447506` / `0x004475a9` ⇒ `0x4479b3` 不扣道具。
+- `c40f2f8` 天使卡打 0 級設施的首建種類照原版分電腦 / 真人（`0x004436ad call 0x40b110`：`0x0040b1ad test [+0x15],6` → 電腦 `0x0040b1c5 rand()%4+1` / 公園 0、真人 `0x0040b1e4 call 0x440aac(0)`）；不在棋盤上的惡人點不中（拾取精靈表 `0x00408b82..0x00408b8e` ⇒ 新錯誤 `actorOffBoard`）。
 
 改过的旧测试（原来钉的是错的行为）：`tax.test.ts`（放弃转嫁也扣 19）、`notice.test.ts`（設施一律不问免費卡）、
 `land-cards.test.ts`（惡魔卡 0 级設施「不生效」）、`registry.test.ts`（機器娃娃可选、拍賣 followUp 形状）、
 `tool-effects.test.ts` / `use-tool.test.ts`（遙控骰子 1..18）、`reduce.test.ts` / `tool-landing.test.ts` /
 `tool-robot-worker.test.ts`（機器工人盖不成不扣）、多处测试把出牌 / 用道具的相位改成 `awaitingRoll`。
 
+2026-09-25 复核补的三处（同样是原来钉错了行为）：
+- `c40f2f8`：`registry.test.ts` 两条「不在棋盘上的惡人 ⇒ 状态不动但**卡照扣**、判成功」（停留卡 14、夢遊卡 16）与
+  `use-card.test.ts` 一条「对在監獄的惡人出停留卡 ⇒ 卡照样消失」—— 三条都改成「**点不中**（`actorOffBoard`）、卡不扣」：
+  拾取精灵表只收 `+0x0a == 0` 的惡人（`0x00408b87 cmp byte [惡人+0x0a],0 / jne 跳过`），卡片函数根本走不到那一步。
+- `5256fa6`：`teleport.test.ts` 两条 —— 「无主設施搬不动」（`teleportFacility(two(), 2, 5)` 由 `toBeNull()` 改成
+  `not.toBeNull()`，来源不看归属）与「★ 設施那一路还没做 —— 不生效也不消耗道具（Q-TOOL-2）」（整条改成搬惡人 /
+  地上物件 / 附身物件）。
+- `471ef9e`：`reduce.test.ts` 里用機器工人的旧用例补上 `awaitingRoll` 相位（`canUseItemsNow` 的相位闸），
+  不是规则断言本身变了。
+
 **状态会变**：几乎每条修正都改规则态或随机数消耗 ⇒ 需要协调方统一 bump `PROTOCOL_VERSION`（本分支未动）。
-`cardAmount` / `toolStock` 仍不在 `stateFingerprint` 里（I-25）。
+2026-09-25 复核的逐条（含 `97dc964` 之后落在 `ds/audit-provenance` 上、已经并进来的三个提交）：
+
+- `5b5d6b9` **改状态**（送神符送走神明时，附身物件的格 = 出牌者此刻所在格 ⇒ 搭档登场格不同）、**随机数消耗会变**
+  （搭档挑格 `0x40aa6c`（`rand % n`）的候选集随参照格变 ⇒ 掷不掷 / 掷几次可能不同）。
+- `d0b8fdd` **改状态**（`trafficMethod` → 0、`ndices` → 1、道具欄里機車 / 汽車 +1 件）；**不掷随机数**
+  （`0x447c00` 里没有 `rand`，也没有台词）。
+- `5256fa6` **改状态**（真人傳送機现在能搬惡人 / 地上物件 / 附身者、来源不看归属、目标格须空；
+  `useTool` 的 `nodeId` / `value` 编码也换成精灵码 ⇒ 联机两端必须同版）；**不新增随机数**
+  （`pickFacingAt` 与搬人都是确定性的，`0x447857..` 那一段没有 `rand`）。
+- `c40f2f8` **改状态**（天使卡打 0 级設施的首建种类；不在盘上的惡人不再能点中 ⇒ 卡不再被白扣）、
+  **改随机数消耗**（电脑 / 託管这一支**新增一次** `rand()`，`0x0040b1c5 call 0x456f2d`；此前一律取
+  `buildType ?? 0`、一次都不掷）。
+- `471ef9e` **改状态**（真人持卡人那一问：挂起时不落任何状态、答完同卡同目标重跑；`actingSeat` 归持卡人）；
+  挂起那一问本身不掷随机数，续跑把同一手前面几步重放（真人局此前一律「放弃」，故后续分支会变）。
+- `7b9d645` 只加 notices（`card.absolved` / `card.revenge` / `card.scapegoatOn` / `card.scapegoatTo` / `card.use`）
+  ⇒ 不改规则态，但联机各端要认这些 key（`@rich4/data` 的 `PASSIVE_CARD_TEXT`）。
+- `5290899` 指纹加入 `toolStock` / `cardAmount` ⇒ **校验和口径变了**（两侧不同版即判 desync；
+  旧回报 fixture 仍按不含这两格的口径比）。
+
+`cardAmount` / `toolStock` **已进** `stateFingerprint`（`net/protocol.ts:887-888`，I-25 结案）。
+本分支仍**未动** `PROTOCOL_VERSION`。
 
 ### follow-up（未改，原因）
 
-- **C16-7b / C19-1 / C20-2 / C20-3** 真人持有者在卡片路径（夢遊 / 陷害 / 查稅）的嫁禍确认框 / 选人窗、查稅路径的免費卡确认框：需要一个能把卡片效果挂起再续跑的待决交互（约半天）；现在真人一律「放弃」、查稅对真人自动用免費卡。
-- **CG-3 / C18-5 / C21-3 / C19-7** 被动卡在卡片路径的亮牌 / 「免罪卡生效」「復仇卡生效」框：纯表现，需要新 notice key + 客户端。
-- **C09-5** 天使卡对 0 级設施、电脑出牌时原版 `rand()%4+1` 选种类（潜在：AI 不会这么出）。
-- **C06-4** 轉向卡打不在盘上的惡人：原版不查在不在盘上（会重挑来路、可能掷随机），取决于拾取能否点中 —— 未核实。
-- **TX-1 / T14** 「下車」（道具表第 14 项 0x447c00）整个缺失：要新 action + 道具欄菜单。
-- **T11-1 / T11-3 / T11-10 / T11-11 / T11-12 / T09-2** 真人傳送機两段拾取、搬惡人 / 地上物件 / 附身物件、目标格须空：客户端 + core 各一段（M–L）。
+（2026-09-25 复核：原先这里的 C16-7b / C19-1 / C20-2 / C20-3、CG-3 / C18-5 / C21-3 / C19-7、C09-5、C06-4、
+TX-1 / T14、T11-1 / T11-3 / T11-10 / T11-11 / T11-12、I-25 都已由 `471ef9e` / `7b9d645` / `5b5d6b9` /
+`d0b8fdd` / `5256fa6` / `c40f2f8` / `5290899` 改掉或补齐，见下面的提交列表。）
+
+- **T09-2** 機器工人（9）真人拾取 `0x2090006`「任意地產 / 設施」的候选集（`0x44624e`）：客户端。
 - **T01-6 / T08-4** AI 用娃娃后再跑一遍起步前决策（ai-move）、电脑遙控骰子不说台词（表现）。
 - **O-8 / O-38 / O-40 / O-41 / O-52** 只影响随机数条数（原版每天 `srand(GetTickCount())`，跨日本来对不齐）或需要再核 `0x41d2c6` 对破产付款方的行为。
 - **O-53** 惡人踩惡犬（npc-walk，跨区）。
 - **C23-1** 請神符真人自动挑「视野内最近」的物件 —— 视野不在 core 状态里（客户端）。
-- **I-25** 牌堆 / 道具库存不在指纹里。
 
 ### 跨区发现（未改，交给对应区）
 
@@ -101,7 +136,7 @@
 | C06-1 | 轉向: card removed right after pick (even no effect) | cards/registry.ts | 0x442f8a | verified | |
 | C06-2 | 轉向: dir=(d+4)&7, no confinement check | cards/turn-and-house.ts:38-40,113-120 | 0x40c7b2-0x40c7be | verified | |
 | C06-3 | 轉向: re-pick 来路: slots 0..3 non-0, not blocked, != old; rand()%n only if candidates | cards/turn-and-house.ts:71-88 | 0x40c7df-0x40c852 | verified | |
-| C06-4 | 轉向 on inactive NPC: exe has no on-board check | cards/registry.ts (noEffect) | 0x40c85e-0x40c903 | follow-up | depends on picker hit-test of off-board NPC; unverified |
+| C06-4 | 轉向 打不在盤上的惡人：卡片函數本身不查（`0x40c85e-0x40c903`），但拾取精靈表不收（`+0x0a != 0`）⇒ 點不中、卡不扣 | cards/registry.ts:528-536 | 0x40c85e-0x40c903, 0x00408b82-0x00408b8e | fixed c40f2f8 | 舊碼 `noEffect()`（卡照扣、判成功）；拾取層見 CX-4 |
 | C06-5 | 轉向: self allowed | cards/target.ts | 0x44630a | verified | |
 | C06-7 | 轉向/停留/夢遊/烏龜: actor 8 (doll) not pickable (doll pick code 0; CTZ of low byte) | cards/target.ts ACTOR_MAX | 0x00408a4a, 0x0040d297, 0x4462bc | fixed fdeb399 | ACTOR_MAX 8 → 7 |
 | C07-1 | 改建 land: level 0 → return 0 | cards/rebuild.ts:72-74 | 0x4430e9 | verified | |
@@ -118,11 +153,12 @@
 | CX-1 | failed use: state untouched, card kept | state/reduce.ts playCard | per-card | verified | |
 | CX-2 | picker rejects who_plays==0 player targets | cards/registry.ts | 0x4462c6-0x4462e0 | fixed 4d50c54 | new 'targetNotAlive' |
 | CX-3 | cards / tools only usable before GO (move state 0) | state/reduce.ts canUseItemsNow | 0x00417d65 / 0x0040defe, AI 0x00418e28 before 0x40dd1f | fixed df14113 | useCard/useTool accepted in any phase (online untrusted input) |
+| CX-4 | actor 目標必須在棋盤上（拾取精靈表只收 `+0x0a == 0` 的惡人）：轉向 / 停留 / 夢遊 / 陷害 / 烏龜 對不在盤上的惡人 ⇒ **點不中、卡不扣** | cards/registry.ts:536, 555, 603, 691, 738 | 0x00408b82-0x00408b8e (`cmp byte [惡人+0x0a],0 / jne`) | fixed c40f2f8 | 新錯誤 `actorOffBoard`；registry.ts 內三處舊註釋仍寫「卡照扣」未清理（本輪不改源碼） |
 | C09-1 | 天使: picker 0xe0c0006 / AI 0x41e6f2(0); 0 → card kept | cards/registry.ts, cards/target.ts:156-159 | 0x4434d3-0x4434f6 | verified | |
 | C09-2 | 天使: consumed after pick | cards/registry.ts | 0x443505 | verified | |
 | C09-3 | 天使 land: all same-name lands (strcmp +4) incl. unowned/others | cards/registry.ts | 0x443541-0x4435e4 | verified | |
 | C09-4 | 天使 land: skip level>=5; house +1; chain 0→1 | cards/land-cards.ts:49-57 | 0x443593-0x4435cb | verified | |
-| C09-5 | 天使 facility lvl0 (0x40b110): human type UI; computer rand()%4+1 if owner==user else 0 | cards/land-cards.ts:270-277 | 0x40b1a0-0x40b1f4 | follow-up | latent (AI never aims at facility); needs rng in card path |
+| C09-5 | 天使 facility lvl0（`0x004436ad call 0x40b110`）：電腦（含託管）自己的設施 ⇒ `rand()%4+1`，別人的 ⇒ 公園 0；真人 ⇒ 選類別窗 `0x440aac(0)` 給的 `buildType` | cards/registry.ts:954-964, rules/facility.ts:407-409, client/main.ts:11786-11795 | 0x004436ad, 0x40b1ad, 0x40b1c5, 0x40b1dc, 0x40b1e4 | fixed c40f2f8 | 先前一律 `buildType ?? 0`：電腦不掷隨機、真人沒給也當公園；電腦新吃一次 rand |
 | C09-6 | 天使 facility: upgrade while level < max table 0x474940=[1,5,5,1,5] | cards/land-cards.ts:278-285, rules/facility.ts:53 | 0x40b1f9-0x40b21a | verified | table dumped |
 | C09-7 | 天使: at max → no change, consumed | cards/registry.ts | 0x4436d9 | verified | |
 | C09-8 | 天使: no hostility / passives / gods | — | whole fn | verified | |
@@ -164,7 +200,7 @@
 | C16-5 | 夢遊: hostility 150*pi before passives | cards/sleepwalk.ts:257 | 0x4442cb-0x4442ea | verified | |
 | C16-6 | 夢遊: 免罪 consumes 21, ends | cards/sleepwalk.ts:274-287 | 0x4442f2-0x44430b, 0x444c11 | verified | |
 | C16-7 | 夢遊/陷害: 嫁禍 19 mode 0 via 0x44476a, computer holder (most hated after this card's hostility, else random) | state/reduce.ts playCard, cards/passive.ts aiScapegoatPick | 0x444310-0x444332, 0x4448b0-0x444971 | fixed d69e009 | was always declined |
-| C16-7b | same, human holder: YES/NO box (1 candidate) or pick window | state/reduce.ts playCard (declines) | 0x004447ae..0x004448ab | follow-up | needs a pending interaction that resumes the card effect (~½ day) |
+| C16-7b | same, human holder: YES/NO box (1 candidate) or pick window; 問前亮牌；答 −1 ⇒ 不嫁禍、19 留著 | state/reduce.ts:5828-5872 (suspendCardPassive), state/reduce.ts:5519-5550 (resumeCardPassive), client/main.ts:3048-3059 | 0x004447ae..0x004448ab | fixed 471ef9e | 卡片效果掛起（不落任何狀態、卡不扣），答完同卡同目標重跑 |
 | C16-8 | 夢遊: days 4 self/5 other → +0x37; +0x42+=5; save vehicle; refund tool 5/6 (no stock/cap) | cards/sleepwalk.ts:152-184 | 0x44435e-0x4443df | verified | |
 | C16-9 | 夢遊 復仇 bounce: user +0x37=5, vehicle refund, NO +0x42 | cards/sleepwalk.ts:329 | 0x444414-0x444499 | fixed d69e009 | |
 | C16-10 | 夢遊 復仇: only when final==original target and holds 18; 18 consumed; days 5 | cards/sleepwalk.ts:318-333 | 0x4443ef-0x44440c | verified | |
@@ -180,38 +216,39 @@
 | C17-11 | 陷害 復仇: consume 18, send_to_prison(user,5) | cards/frame.ts:222-249 | 0x444652-0x444678 | verified | |
 | C17-12 | 陷害: consumed after pick | — | 0x4444fc | verified | |
 | CG-1 | hostility applied at end of useCard (exe immediately) | cards/registry.ts | 0x40df69 sites | approx | the scapegoat picker now sees hostility-applied players (d69e009) |
-| CG-3 | passive popups 免罪卡生效 0x46539d / 復仇卡生效 0x46532c / 嫁禍 in card paths | state/reduce.ts | 0x444bfd, 0x4446dc, 0x444999/0x4449df | follow-up | presentation only (new notice keys + client) |
+| CG-3 | passive popups 免罪卡生效 0x46539d / 復仇卡生效 0x46532c / 嫁禍 / 免費卡 in card paths | state/reduce.ts:5782-5803, state/types.ts:870-878, data/messages.ts:493-496 | 0x444bfd, 0x4446dc, 0x444999/0x4449df | fixed 7b9d645 | 卡片函數中段亮牌，按觸發次序（先前只做了收費那一段） |
 | CG-4 | 「使用%s」 popup before card fn | client | 0x441ca6-0x441cbc | n/a | presentation |
 | C18-1 | 18-21 → stub xor eax,eax; can't be played | cards/registry.ts | 0x4420d5 | verified | |
 | C18-2 | 復仇 checked only from 16 and 17 | cards/sleepwalk.ts, cards/frame.ts | 0x4443fa, 0x444659 | verified | |
 | C18-3 | 夢遊 revenge: after effect, final==original; 18 consumed; caster +0x37=5, vehicle refund, no +0x42 | cards/sleepwalk.ts | 0x4443ef-0x444492 | fixed d69e009 | (= C16-9) |
 | C18-4 | 陷害 revenge: caster prison 5 days | cards/frame.ts | 0x444652-0x44467d | verified | |
-| C18-5 | revenge flash 「%s\n\n復仇卡生效！」 0x46532c | state/reduce.ts | 0x4446c0-0x444752 | follow-up | presentation |
-| C19-1 | 0x44476a human branch: candidates who_plays!=0 and != holder; 1 → YES/NO, many → pick window; no threshold | toll: runTollTail pending | 0x4447a1-0x4448ab | follow-up | verified for tolls; card paths (16/17/26) decline for humans → C16-7b |
+| C18-5 | revenge flash 「%s\n\n復仇卡生效！」 0x46532c | state/reduce.ts:5789-5790 | 0x4446c0-0x444752 | fixed 7b9d645 | `card.revenge` notice（卡片路徑） |
+| C19-1 | 0x44476a human branch: candidates who_plays!=0 and != holder; 1 → YES/NO, many → pick window; no threshold | state/reduce.ts:5828-5872（卡片路徑，471ef9e）, state/reduce.ts:5519-5550（續跑）, toll: runTollTail pending | 0x4447a1-0x4448ab | fixed 471ef9e | 卡片路徑（16/17/26）與收費同一支；問前亮牌 |
 | C19-2 | computer pick: 0x40d2d3 most hated (>0, first max, who_plays!=0) else 0x40d31c random (dword +0x32==0) | cards/passive.ts aiScapegoatPick, rules/toll-flow.ts, events/news-effects.ts | 0x40d2d3, 0x40d31c | verified | |
 | C19-3 | mode 0 (16,17,0x441210): take candidate, no threshold | cards/passive.ts + state/reduce.ts playCard | 0x444320 / 0x4445f7 → 0x444971 | fixed d69e009 | card paths never redirected |
 | C19-4 | mode 1 (tolls): threshold rand drawn even when candidate −1 | rules/toll-flow.ts aiScapegoat | 0x4448fc-0x444932 | fixed (ai-move 1b3c7eb) | |
 | C19-5 | mode 2 (tax): computer only; 0.2×cash > 4000×pi in x87 extended ⇒ cash >= 20000×pi | cards/passive.ts aiScapegoatPick | 0x444934-0x44496f | fixed d69e009 | was `>`, human branch had threshold too |
 | C19-6 | 19 consumed only when ebx != -1 | cards/tax.ts | 0x4449e7/0x4449ef | fixed d69e009 | tax consumed 19 before the pick; test updated |
-| C19-7 | computer redirect: 「%s\n\n嫁禍卡生效！」 + 「嫁禍給%s！」 1500ms | toll ✓; cards | 0x444978-0x4449e4 | follow-up | presentation, card paths |
+| C19-7 | computer redirect: 「%s\n\n嫁禍卡生效！」 + 「嫁禍給%s！」 1500ms | state/reduce.ts:5791-5794 | 0x444978-0x4449e4 | fixed 7b9d645 | 收費早已有；卡片路徑由 `passiveEvents` 補上 |
 | C19-8 | tax asks 19 only if tax > 0x7d0; args (ebx, 2, 0) | cards/tax.ts | 0x44534e-0x445360 | verified | |
 | C19-9 | 16/17/26: hostility before 21/19 checks; AI pick reads updated table | cards/frame.ts, sleepwalk.ts, tax.ts | 0x4442ea, 0x4445c1, 0x445305 | fixed d69e009 | |
 | C19-10 | toll: new payer used for reaper check | state/reduce.ts finishToll | 0x419ec5, 0x41a690 | verified | |
 | C20-1 | 0x444a60 computer: rand first, thr=(r%3000+3000)×pi; use iff amt>cash or thr<amt | rules/toll-flow.ts:85, cards/tax.ts | 0x444a9b-0x444ad3 | verified | |
-| C20-2 | 免費 human: confirm box; not 1 ⇒ not used | toll ✓; cards/tax.ts auto-yes for humans | 0x444ad8-0x444b01 | follow-up | tax path human prompt missing |
-| C20-3 | on use: flash 「使用%s」, remove_card, speech | toll ✓; tax no notice | 0x444b07-0x444b98 | follow-up | presentation (tax) |
+| C20-2 | 免費 human: confirm box; not 1 ⇒ not used | state/reduce.ts:5616-5620 (humanFreeCard), cards/tax.ts:174,198, client/main.ts:3048-3059 | 0x444ad8-0x444b01 | fixed 471ef9e | 收費與卡片路徑（查稅）共用同一問 |
+| C20-3 | on use: flash 「使用%s」, remove_card, speech | state/reduce.ts:5544-5548（續跑時）, state/reduce.ts:5795-5801（`passiveEvents`） | 0x444b07-0x444b98 | fixed 7b9d645 | 收費已有；卡片路徑的免費卡亮牌 471ef9e + 7b9d645 |
 | C20-4 | toll gate amt >= 2000×pi or amt > cash+bank | cards/passive.ts:189 | 0x419e01-0x419e98, 0x41aed7-0x41af60 | verified | |
 | C20-5 | facility toll: free card offered unless facility type == 1 (hotel) | state/reduce.ts toll facility path | 0x41a5d5 → 0x41a60e-0x41a63b | fixed 946757e | mall/gas station never offered; test updated |
 | C20-6 | tax: has 20 → 0x444a60(target,cur,tax); ==1 ⇒ return | cards/tax.ts:185-196 | 0x44530d-0x445338 | verified | |
 | C20-7 | remove_card pool +1 (toll passives) | state/reduce.ts runTollTail | 0x4413a2 | fixed e524c60 | |
 | C21-1 | 16/17: 21 first; consumes, ends | cards/passive.ts | 0x4442f2, 0x4445c9 | verified | |
 | C21-2 | 21 not checked by 26 / tolls | cards/tax.ts | xref | verified | |
-| C21-3 | flash 「%s\n\n免罪卡生效！」 0x46539d | state/reduce.ts | 0x444be1-0x444c3d | follow-up | presentation |
+| C21-3 | flash 「%s\n\n免罪卡生效！」 0x46539d | state/reduce.ts:5787-5788 | 0x444be1-0x444c3d | fixed 7b9d645 | `card.absolved` notice（卡片路徑） |
 | C22-1 | 送神 f64 (+0x40) removed, no type check | cards/dispel.ts:52 | 0x444c4b-0x444c6c | verified | |
 | C22-2 | 送神 god_info removed if type ∈ {5,6,7,8,10,15} | cards/dispel.ts:57 | 0x444c71-0x444ccc | verified | |
 | C22-3 | nothing removed ⇒ 0, card kept | cards/dispel.ts:62 | 0x444cd3 | verified | |
 | C22-4 | remove_object semantics | state/reduce.ts playCard releaseObject | 0x40e14d | verified | |
 | C22-5 | no hostility; human = computer | — | 0x444cec-0x444d15 | verified | |
+| C22-6 | 送神符送走神明時：搭檔登場的參照格 = **出牌者此刻所在格**（未被關 ⇒ 物件格改成附身者當前格）；炸彈那一支不改格 | state/reduce.ts:5758-5762, rules/object-landing.ts:310-320 (withDispelNode) | 0x00444cc4 → 0x40e32c → 0x40e356 / 0x40e3cd..0x40e3d4 → 0x40e14d；炸彈 0x00444c4b → 0x40e14d | fixed 5b5d6b9 | 先前用走路留下的舊格 ⇒ 搭檔挑格（`0x40aa6c`）候選集與原版不同 |
 | C23-1 | 請神 human: nearest attachable object visible in the view (0x40a45c(-1) 440×440), strict < | client/object-pick.ts | 0x444d1a-0x444e10 | follow-up | client viewport not in core state |
 | C23-2 | esi==0 ⇒ card kept; else consumed even if attach fails | cards/registry.ts | 0x444e41, 0x444e52 | approx | unreachable |
 | C23-3 | attach sequence | rules/object-landing.ts attachGod | 0x40ead7-0x40ec0d | verified | partner respawn order low |
@@ -241,7 +278,7 @@
 | C30-2 | self +0x39=2, other 3, actor +15=3 | cards/tortoise.ts:56-80 | 0x4459f6, 0x445a2d, 0x445a41 | verified | inactive actor approx |
 | C30-3 | tortoise decrement skipped while confined (gate 0x41caf7) | rules/blocking.ts | 0x41cafe → 0x41cb6d | fixed (loop 9b59144, L37) | cards auditor's row said ungated; objects auditor + loop confirmed the gate |
 | C30-4 | tortoise ⇒ exactly 1 step, no dice | state/reduce.ts rollDice | 0x40dd7e → 0x40dd40 | fixed (loop 9b59144, L52) | my duplicate removed in df14113 |
-| TX-1 | dispatch 0x475dd5 ids 1..13 + id 14 下車 0x447c00 | — | 0x475dd5[14], 0x447e24, 0x447f51 | follow-up | 下車 missing (new action + client menu) |
+| TX-1 | dispatch 0x475dd5 ids 1..13 + id 14 下車 0x447c00 | rules/tool-effects.ts:432 (TOOL_GET_OFF), state/reduce.ts:5198 | 0x475dd5[14], 0x447e24, 0x447f51 | fixed d0b8fdd | id 14 已接通（先前整個缺失） |
 | TX-2 | human menu only when byte[+0x15]==1; 託管 AI path | ai/policy.ts | 0x447dab | verified | |
 | TX-3 | menu lists count>0 | state/reduce.ts useToolAction | 0x447cf3 | verified | |
 | TX-4 | AI loop: skip 10; rand start n>4; 4 tries; notice 「使用%s」 before call | state/reduce.ts | 0x447f82-0x448085 | approx | AI choice → ai-move |
@@ -295,25 +332,31 @@
 | T10-4 | restored blocks list | rules/time-machine.ts | 0x448544 | approx | whole JSON |
 | T10-5 | after restore back before GO; no re-tick | state/reduce.ts | — | fixed (loop L50) | snapshot now taken at GO |
 | T10-6 | snapshot slot not cleared | rules/time-machine.ts:97 | 0x448544 | verified | |
-| T11-1 | human teleport two-stage pick | client | 0x447469.. | follow-up | client |
+| T11-1 | human teleport two-stage pick（第一段選來源、第二段選目標） | client/picking.ts:678-683, 691-740, client/main.ts:11808-11819 | 0x447469, 0x4474f5, 0x447598, 0x447653, 0x4478df | fixed 5256fa6 | 第二段取消 = 不扣道具；見 T11-15 |
 | T11-2 | AI source self | ai/policy.ts | 0x447478 | verified | |
-| T11-3 | attached-object source moves carrier | — | 0x44749a-0x4474cd | follow-up | |
+| T11-3 | attached-object source moves carrier | rules/teleport.ts:75-95 (decodeTeleportSource) | 0x00447495..0x004474cd | fixed 5256fa6 | 附身中 ⇒ `1 << (附身者−1) \| 0x8000` |
 | T11-4 | land move carries +0x30 tenure; source +0x2c cleared | rules/teleport.ts | 0x447546-0x447553 | fixed df14113 | |
 | T11-5 | target must be owner 0 & level 0 | rules/teleport.ts | 0x44657c-0x4465b4 | fixed df14113 | |
-| T11-6 | unowned land source allowed | rules/teleport.ts | kind 0 | approx | |
+| T11-6 | unowned land/facility source allowed（來源不看歸屬） | rules/teleport.ts:213-215, 254-256 | 0x447469（`0x1200036` 組字節 0 = 不設限） | fixed 5256fa6 | 先前 `owner == 0` 直接拒收 |
 | T11-7 | facility move | rules/teleport.ts:168 | 0x4475d8-0x44760f | verified | |
 | T11-8 | facing circular distance | rules/teleport.ts:82 | 0x447705-0x4477a8 | verified | |
 | T11-9 | self-teleport: snapshot, steps 0, stop processing, no roll | state/reduce.ts | 0x4477bb-0x4477dc | fixed df14113 | |
-| T11-10 | NPC source | — | 0x447857-0x4478b5 | follow-up | |
-| T11-11 | ground object source | — | 0x4478cb-0x4479ae | follow-up | |
-| T11-12 | player target node must be free | rules/teleport.ts | 0x409bc0 | follow-up | low |
-| T11-13 | consume on success | state/reduce.ts | 0x4479b3 | verified | |
+| T11-10 | NPC source | rules/teleport.ts:101-115 (teleportActorTo), state/reduce.ts:5163-5168 | 0x447857-0x4478b5 | fixed 5256fa6 | 寫 +4 所在格 / +6 來路 / +9 朝向 / 坐標 |
+| T11-11 | ground object source | rules/teleport.ts:122-130 (teleportObjectTo), state/reduce.ts:5169-5172 | 0x4478cb-0x4479ae | fixed 5256fa6 | 寫 `[物件+2]` = 新格、新格置物件位（朝向那格不復刻） |
+| T11-12 | player target node must be free | state/reduce.ts:5162 (placementBlockedAt), rules/teleport.ts 目標檢查 | 0x409bc0 | fixed 5256fa6 | 只對真人（拾取子類）；電腦走 `0x00447661 call 0x420eee(0)` 用策略給的格 |
+| T11-13 | consume on success | state/reduce.ts | 0x4479b3 | verified | 第二段取消（`0x447506` / `0x4475a9` / `0x447673` / `0x4478f2 je 0x4479b3`）也走這裡 ⇒ 不扣 |
+| T11-14 | 來源精靈碼：`0x8000 \| (1 << 下標)`（玩家 0..3 / 惡人 4..7）、`0x8000 \| ((槽+1) << 8)`（物件）、附身物件 ⇒ 附身者 | rules/teleport.ts:58-95 | 0x44761c, 0x447637, 0x4478cb, 0x00447495..0x004474cd | fixed 5256fa6 | 舊碼只認 `玩家下標 + 1`（電腦自搬那一路仍收） |
+| T11-15 | 第二段參數按來源：地塊 `0x2090802` / 設施 `0x2090804` / 其餘 `0x2090001` | client/picking.ts:678-683 | 0x4474f5, 0x447598, 0x447653, 0x4478df | fixed 5256fa6 | 子類 8 = 目標須無主 0 級（`0x0044658c`） |
 | T12-1 | refuse when (traffic&3)==3 | rules/tool-effects.ts:105 | 0x4479e2 | fixed df14113 | (traffic&3)==3 |
 | T12-2 | refund moto/car | rules/tool-effects.ts:111 | 0x4479f1-0x447a34 | verified | |
 | T12-3 | save previous traffic/dice +0x64/+0x65 | — | 0x447a43-0x447a55 | fixed df14113 | engineSavedTraffic/Dice |
 | T12-4 | traffic 0x1f, 1 die, direct dec | rules/tool-effects.ts:55 | 0x447a5b, 0x447ac2 | verified | |
 | T12-5 | daily −4; (t&0xfc)==0 → restore saved vehicle if owned else walk | — | 0x41cca3-0x41cd83 | fixed (loop L44) | |
-| T14 | 下車 | — | 0x447c00, 0x447dee | follow-up | |
+| T14 | 下車（道具表第 14 項 `0x447c00`）：真人道具欄末格徽章 ⇒ 載具退回道具欄、步行一顆骰子 | rules/tool-effects.ts:432-450, state/reduce.ts:5197-5207, client/main.ts:11348-11352 | 0x447c00, 0x00447e24, 0x00447dab | fixed d0b8fdd | 子規則見 T14-1..T14-4 |
+| T14-1 | 下車退款：`traffic == 1` ⇒ 道具 5 +1（`add [p*15+0x499160], dl`）、`== 2` ⇒ 道具 6 +1；直接加，不查 9 件上限、**不動庫存** `[0x49731f+id]` | rules/tool-effects.ts:443-449 | 0x447c1e/0x447c23, 0x447c2b/0x447c30 | fixed d0b8fdd | 與 TX-8 的「直接 dec」同一口徑（上車那一支同理） |
+| T14-2 | 下車狀態：`+0x11`（traffic）→ 0、`+0x12`（ndices）→ 1 | rules/tool-effects.ts:449 | 0x447c3f, 0x447c45 | fixed d0b8fdd | 步行、一顆骰子 |
+| T14-3 | 下車恒成功、**沒有台詞**（`jmp 0x446ba3` = `mov eax,1`） | state/reduce.ts:2538 | 0x447c69 | fixed d0b8fdd | 故不寫 `lastToolUsed` |
+| T14-4 | 下車只給**恰好** who_plays == 1 的真人、只在 traffic 1/2 時出現（末格命中值 = 0xe）；工程車 0x1f 與電腦都不出現（電腦迴圈只掃 1..13） | state/reduce.ts:5198-5199, client/main.ts:11344-11352 | 0x447dab, 0x447dee..0x447e24, 0x447f82 | fixed d0b8fdd | 步行 / 工程車 ⇒ `getOffVehicle` 不 ok，狀態原樣 |
 | O-1 | slot→type table 46 bytes | rules/objects.ts:50 | 0x47ed3c, 0x407d4e..68 | verified | dumped |
 | O-2 | slot ranges per type (15/16/17/18 multi) | rules/objects.ts:145 | 0x40e03e..0x40e080, 0x40e023 | verified | |
 | O-3 | place_object: first free slot; node/state/attached; OR slot+1 into node byte | rules/object-landing.ts:156 | 0x40e082..0x40e13c | verified | type15+attached→attach_god only from 0x411b35 (debug) n/a |
@@ -341,7 +384,7 @@
 | O-25 | first hospitalisation 0x44f2c2: rand()&1 when 3<days<=6 | rules/confinement.ts | 0x43eca5, 0x44f2f4..0x44f312 | fixed fdeb399 | sendToConfinement rng param; wired for bomb hospital + 陷害; fortune/news/magic-house callers = cross-area |
 | O-26 | bomb pass target: node bitmask (confined/hotel/away cleared, beggars kept), lowest bit, then alive & f64==0 | state/reduce.ts applyArrival, rules/object-landing.ts passBomb | 0x41b5fd..0x41b613, 0x41b78b..0x41b7dc | fixed 879d5f7 | occupantsOfNode, also used by beggarAt |
 | O-27 | wreck vehicle | rules/object-landing.ts:488 | 0x40cd07..0x40cd6f | verified | |
-| O-28 | carried god/bomb nodeId follows player every step | state/reduce.ts step | 0x40c1cc → 0x40fc00 | fixed 879d5f7 | also teleport 0x447844 |
+| O-28 | carried god/bomb nodeId follows player every step | state/reduce.ts step | 0x40c1cc → 0x40fc00 | fixed 879d5f7 | also teleport 0x447844；5b5d6b9 複核：`0x40fc23 mov [eax*8+0x496d0a], dx` 是**變址寫**（xref 掃不到），放出後走回棋盤 `0x40d6be` 那一下**不**同步 ⇒ 送神符另走 C22-6 |
 | O-29 | god duration tick at holder turn start; 0 → dispel + partner | rules/object-landing.ts:811 | 0x41cc6c..0x41cc9b | verified | 7 days (reaper 13) |
 | O-31 | placement candidates bit31 static + walkable | rules/object-landing.ts:869 | 0x40aac3..0x40aad6 | verified | |
 | O-32 | occupied-node semantics | rules/object-landing.ts:921 | 0x43d59b, 0x40d5d2, 0x40ce0e, 0x40c1e9 | verified | |
@@ -384,9 +427,9 @@
 | I-17 | magic house item 6: receive_random_card (full-hand discard) | places/magic-house.ts | 0x004320ee → 0x00441e64 | fixed e524c60 | pushed a 16th card |
 | I-18 | notice-board card listing: remove from seller, receive_card to buyer | state/reduce.ts transferListing | 0x0042587a, 0x00425893 | fixed e524c60 | no full-hand discard before |
 | I-19 | thief steals card: drop_random_card(victim) → receive_card(owner) | rules/npc-walk.ts applyNpcEvents | 0x0041c294, 0x0041c307 | fixed e524c60 | pushed a 16th card |
-| I-20 | birthday (fortune 5) filter: not self, who_plays byte ≠ 0, hand non-empty; host who_plays ≤ 1 → human picker, else computer drop_random + receive | events/fortune-effects.ts, state/reduce.ts answerBirthdayCard | 0x0044c41f..0x0044c486 | verified | pool via fortune wrapper e524c60 |
+| I-20 | birthday (fortune 5) filter: not self, who_plays byte ≠ 0, hand non-empty; host who_plays ≤ 1 → human picker, else computer drop_random + receive | events/fortune-effects.ts, state/reduce.ts answerBirthdayCard | 0x0044c41f..0x0044c486 | verified | pool via fortune wrapper e524c60；真人答覆的牌堆記賬（`0x441343` +1 / `0x4412e4` −1、滿手棄最便宜 +1）補測試 5b5d6b9（use-card.test.ts） |
 | I-21 | holiday card gift: holiday flags & 8 → each player with who_plays ≠ 0 gets receive_random_card; map-specific box; speech rand | state/reduce.ts advanceGameDay, places/calendar.ts holidayGivesCard | 0x0041d07b → 0x00452444, 0x00452637..0x00452753; table 0x0047ff4a | fixed e677c67 | was entirely missing |
 | I-22 | good-news speech 0x44f230: rand when 50 < points ≤ 100 | rules/speech-rand.ts | 0x0044f23f..0x0044f280 | fixed e677c67 | wired: gift, 福神, 董事長, holiday (card square already) |
 | I-23 | research lab grants tool project+8 via give_tool | state/reduce.ts tickOwnResearch | 0x0041ce1b..0x0041ce25 | verified (loop L45) | |
 | I-24 | shop human buy/sell card pool ±1 | state/reduce.ts shopAction | 0x0042d242 / 0x0042d152 | verified | |
-| I-25 | card/tool pool not in stateFingerprint | net/protocol.ts | — | follow-up | desync in cardAmount/toolStock would not be detected; coordinator's call (fingerprint whitelist) |
+| I-25 | card/tool pool in stateFingerprint | net/protocol.ts:887-888 | — | fixed 5290899 | `toolStock` / `cardAmount` 缺席 = 不參與（舊回報 fixture 仍不含這兩格）；I-25 结案 |

@@ -143,9 +143,9 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
   },
   {
     line: 'cardLine',
-    boxes: ['card.robbed', 'card.useOnStock', 'card.taxed', 'godSay', 'godSlot', 'god.gotCard', 'god.gotCardTwo', 'insurance.payout'],
+    boxes: ['card.robbed', 'card.useOnStock', 'card.taxed', 'godSay', 'godSlot', 'god.gotCard', 'god.gotCardTwo', 'insurance.payout', 'card.absolved', 'card.revenge', 'card.scapegoatOn', 'card.scapegoatTo', 'card.use'],
     exe: 'lineFirst',
-    va: '出牌台词在卡片函数最前（陷害卡 `0x00444534 call 0x44ef41` → 入獄 `0x0044461c call 0x43d593` → 理賠 `0x0043d749`）：股票卡 `0x00444f5b` → 框 `0x00444fdb`、`0x00445079` → `0x00445154`；查稅 `0x0044526b` → `0x004453ef`；搶奪 `0x00443e9c` → 取物；請神符 `0x00444e8a` → 飞 `0x00444efa` → 附身（福神得卡框 `0x0040ee2f` 在附身里）',
+    va: '出牌台词在卡片函数最前（陷害卡 `0x00444534 call 0x44ef41` → 入獄 `0x0044461c call 0x43d593` → 理賠 `0x0043d749`；卡片路径的被动卡亮牌 免罪 `0x00444bff` / 嫁禍 `0x00444999` / 復仇 `0x004446de` / 查稅免費卡 `0x00444b25` 都在卡片函数中段）：股票卡 `0x00444f5b` → 框 `0x00444fdb`、`0x00445079` → `0x00445154`；查稅 `0x0044526b` → `0x004453ef`；搶奪 `0x00443e9c` → 取物；請神符 `0x00444e8a` → 飞 `0x00444efa` → 附身（福神得卡框 `0x0040ee2f` 在附身里）',
   },
   {
     line: 'cardLine@afterStage',

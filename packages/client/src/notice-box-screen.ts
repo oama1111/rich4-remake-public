@@ -190,6 +190,8 @@ export const NOTICE_TEXT = {
   'card.use': PASSIVE_CARD_TEXT.use.text,
   'card.scapegoatOn': PASSIVE_CARD_TEXT.scapegoatOn.text,
   'card.scapegoatTo': PASSIVE_CARD_TEXT.scapegoatTo.text,
+  'card.absolved': PASSIVE_CARD_TEXT.absolved.text,
+  'card.revenge': PASSIVE_CARD_TEXT.revenge.text,
   // ★ 2026-09-23 框模板反查补齐（`0x440cac` 调用点里先前没弹的那些；VA 见 `NOTICE_BOX` 各条）
   'npc.stealPoints': NOTICE_BOX.stealPoints.text,
   'npc.stealCard': NOTICE_BOX.stealCard.text,

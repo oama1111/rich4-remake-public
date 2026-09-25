@@ -71,6 +71,7 @@ import {
   applySealCard,
 } from './land-cards.ts';
 import { markFacility, PRICE_STATUS } from '../rules/land-mutation.ts';
+import { FACILITY_TYPE, aiPickFacilityType } from '../rules/facility.ts';
 
 export type HostilityDelta = { from: number; to: number; delta: number };
 
@@ -88,7 +89,12 @@ export type UseCardError =
   /** 購地卡：现金不够（原版弹「您的現金不足！」`0x004425fb`，卡不扣）*/
   | 'notEnoughCash'
   /** 目标玩家已出局（选择器 `0x004462d9` 不收）*/
-  | 'targetNotAlive';
+  | 'targetNotAlive'
+  /**
+   * 惡人不在棋盘上（关着 / 未出场）—— 他根本不在拾取的精灵表里：`0x00408b87 cmp byte [惡人+0x0a], 0 / jne 跳过`
+   * （0x0a = 所在处：0 棋盘、1 監獄、2 醫院、3 未出场）⇒ 选不中、卡不扣。
+   */
+  | 'actorOffBoard';
 
 /** 卡片使用的结果 */
 export interface UseCardResult {
@@ -148,6 +154,11 @@ export interface UseCardResult {
    * 的保險理赔要 `GameState`，由 reduce 的 `playCard` 逐个赔。
    */
   confined?: { player: number; days: number }[];
+  /**
+   * 这一手里**被动卡被触发**的次序（亮牌 / 訊息框要按它弹）：免罪 21、嫁禍 19（`to` = 替死鬼）、
+   * 免費 20、復仇 18。`holder` = 持卡人。
+   */
+  passiveEvents?: { kind: 'absolved' | 'scapegoat' | 'free' | 'revenge'; holder: number; to?: number }[];
   /**
    * 本次要送回物件表的物件 handle（下标 + 1）。
    *
@@ -231,6 +242,8 @@ export interface UseCardContext {
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
    */
   scapegoatPicker?: ScapegoatPicker;
+  /** 查稅卡：真人持卡人对免費卡那一问的答案（`0x444a60` 真人支）；缺省 = 默认为是 */
+  humanFreeCard?: () => boolean | null;
 }
 
 /**
@@ -450,6 +463,7 @@ export function useCard(
   let defended = false;
   let taxed: { victim: number; amount: number } | undefined;
   let confined: { player: number; days: number }[] | undefined;
+  const passiveEvents: NonNullable<UseCardResult['passiveEvents']> = [];
   let releasedObjects: number[] = [];
   // ★ 拍賣那一条是**开拍请求**（AuctionRequest）：座位/心理价位等由 reduce 补齐
   let followUp: PendingInteraction | AuctionRequest | null = null;
@@ -519,7 +533,7 @@ export function useCard(
         //   @source `0x00442f8a call 0x441343`（remove_card）在选完掩码之后、
         //   `0x00443025 call 0x40c78c`（真正掉头）之前；收尾 `0x00443069 mov eax, ebx`
         //   （`ebx` = 掩码，恒非 0）。故走 `noEffect()` 而不是 `fail`。
-        if (!actorActive(a)) return noEffect();
+        if (!actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) =>
           i === slot ? applyTurnCardToActor(x, ctx.nodes, draw) : x,
         );
@@ -538,7 +552,7 @@ export function useCard(
         // 不在棋盘上不生效。★ **卡照扣、原版算成功** ——
         //   @source `0x00443fca call 0x441343`（remove_card）在 `0x00443fb5 call 0x40d293`
         //   （掩码取位号）之后；之后只剩「目标≠自己就说一句」的台词分支。
-        if (!actorActive(a)) return noEffect();
+        if (!actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) => (i === slot ? applyStayCardToActor(x) : x));
         break;
       }
@@ -586,7 +600,7 @@ export function useCard(
         // 不在棋盘上（監獄/醫院/未出场）不生效 —— 与停留/轉向/烏龜同一条规矩。
         // ⚠️ 原版那一支没有 `actorActive` 这个判断（它按鼠标点得到谁就是谁），
         //   但 picker 画的就是在场的那几个，故行为一致。
-        if (!actorActive(a)) return noEffect();
+        if (!actorActive(a)) return fail('actorOffBoard');
         // ★★ 已经冬眠的替身：**不写天数**，但原版在 `0x004444b3` 只做
         //   `call 0x41d546` 收尾 + `mov eax, esi`（`esi` = 选中的目标，恒非 0）
         //   ⇒ 返回值非 0 = **成功**，而 `remove_card` 早在 `0x00444219` 执行过了。
@@ -613,6 +627,12 @@ export function useCard(
       // ★ 夢遊卡的敌意（`150 × priceIndex`，`@source 0x004442ea`）——
       //   位置在防御卡判定**之前**，故被免罪卡挡下时**照样**记。
       hostilityDeltas = r.hostilityDeltas;
+      if (target.kind === 'player' && r.outcome !== null) {
+        const o = r.outcome;
+        if (o.kind === 'applied' && o.absolved === true) passiveEvents.push({ kind: 'absolved', holder: target.index });
+        else if (o.kind === 'applied' && o.victim !== target.index) passiveEvents.push({ kind: 'scapegoat', holder: target.index, to: o.victim });
+        else if (o.kind === 'reflected') passiveEvents.push({ kind: 'revenge', holder: target.index });
+      }
       // @source 復仇卡(18) 把效果反弹给出牌者（applySleepwalkCard 内部处理），
       //   反弹不算「被防御性被动卡挡下」，defended 保持 false
       break;
@@ -647,11 +667,15 @@ export function useCard(
       break;
     }
     case 26: {
-      const r = applyTaxCard(players, cur, target, ctx.priceIndex, ctx.scapegoatPicker, ctx.rng);
+      const r = applyTaxCard(players, cur, target, ctx.priceIndex, ctx.scapegoatPicker, ctx.rng, ctx.humanFreeCard);
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       defended = r.defended;
       if (!r.defended && r.victim !== undefined && r.victim !== cur) taxed = { victim: r.victim, amount: r.tax };
+      if (target.kind === 'player') {
+        if (r.defended) passiveEvents.push({ kind: 'free', holder: target.index });
+        else if (r.victim !== undefined && r.victim !== target.index) passiveEvents.push({ kind: 'scapegoat', holder: target.index, to: r.victim });
+      }
       hostilityDeltas = [{ from: targetPlayer, to: cur, delta: r.hostilityDelta }];
       break;
     }
@@ -664,7 +688,7 @@ export function useCard(
         //   先前 17 不收惡人目标。
         const slot = specialSlotOf(target.actor);
         const a = slot >= 0 ? actors[slot] : undefined;
-        if (a === undefined || !actorActive(a)) return noEffect();
+        if (a === undefined || !actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) => (i === slot ? npcBittenByDog(x, ACTOR_PLACE.prison) : x));
         prisonOccupancy = prisonOccupancy.map((v, i) => (i === target.actor ? 1 : v));
         break;
@@ -684,6 +708,13 @@ export function useCard(
       prisonOccupancy = r.prisonOccupancy;
       hospitalOccupancy = r.hospitalOccupancy;
       defended = r.outcome?.kind === 'absolved';
+      if (target.kind === 'player' && r.outcome !== null) {
+        if (r.outcome.kind === 'absolved') passiveEvents.push({ kind: 'absolved', holder: target.index });
+        else {
+          if (r.outcome.redirected) passiveEvents.push({ kind: 'scapegoat', holder: target.index, to: r.outcome.victim });
+          if (r.outcome.revenged === true) passiveEvents.push({ kind: 'revenge', holder: target.index });
+        }
+      }
       if (r.outcome?.kind === 'imprisoned') {
         confined = [{ player: r.outcome.victim, days: r.outcome.victim === cur ? 4 : 5 }];
         if (r.outcome.revenged === true) confined.push({ player: cur, days: 5 });
@@ -704,7 +735,7 @@ export function useCard(
         // 不在棋盘上不生效。★ **卡照扣、原版算成功** ——
         //   @source `0x00445929 call 0x441343`（remove_card）在 `0x00445914 call 0x40d293`
         //   之后；收尾 `0x004458d8 mov eax, esi`（`esi` = 选中目标，恒非 0）。
-        if (!actorActive(a)) return noEffect();
+        if (!actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) => (i === slot ? applyTortoiseCardToActor(x) : x));
         break;
       }
@@ -915,7 +946,22 @@ export function useCard(
       if (target.kind === 'facility') {
         const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
         if (fac === null) return fail('facilityOutOfRange');
-        const r = applyAngelFacilityCard(fac, target.buildType ?? 0);
+        // ★★ 0 级設施首建的种类 —— 设施支走 `0x004436ad call 0x40b110`，里面分电脑 / 真人：
+        //   `0x0040b1ad test byte [出牌者+0x15], 6 / je 真人支`：
+        //   电脑（含託管）：設施是自己的 ⇒ `rand()%4+1`（`0x0040b1c5 call 0x456f2d`），不是 ⇒ 公園 0；
+        //   真人：选類別窗 `0x0040b1e4 call 0x440aac(0)`（这一窗不能取消），种类由 `buildType` 带进来。
+        //   先前一律取 `buildType ?? 0`：电脑不掷随机、真人没给也当公園。
+        let buildType = 0;
+        if (fac.level === 0) {
+          if ((me.whoPlays & 0x06) !== 0) {
+            buildType = fac.owner === cur + 1 ? aiPickFacilityType(ctx.rng?.next() ?? 0) : FACILITY_TYPE.park;
+          } else {
+            const t = target.buildType;
+            if (t === undefined || !Number.isInteger(t) || t < 0 || t > FACILITY_TYPE.lab) return fail('wrongTargetKind');
+            buildType = t;
+          }
+        }
+        const r = applyAngelFacilityCard(fac, buildType);
         // ★ 满级不动 → 状态不变，**但卡照扣、原版算成功**。
         //   先前这里写着「原版返回 0」，那是**读反了**：
         //   @source `0x004436b7 je 0x4436c0` → `0x004436ce cmp dword [esp],0` →
@@ -1097,5 +1143,5 @@ export function useCard(
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
   // ★ 走到这里 = 原版返回非 0（成功）：效果已落地，卡已被扣
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset, ...(taxed === undefined ? {} : { taxed }), ...(confined === undefined ? {} : { confined }) };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset, ...(taxed === undefined ? {} : { taxed }), ...(confined === undefined ? {} : { confined }), ...(passiveEvents.length === 0 ? {} : { passiveEvents }) };
 }

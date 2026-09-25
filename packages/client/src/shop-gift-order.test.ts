@@ -173,7 +173,8 @@ function simulate(oldOrder: boolean): Timeline {
 describe('★★ 第二十一份：董事長進店 —— 地图屏赠礼框 → 台词 → 商店窗', () => {
   run('fixture 忠实：回报最后一条（settle）重放出 pending{shop} + 赠礼框 + 赠礼提示，指纹与回报一致', () => {
     const { before, after, fp } = load();
-    expect(stateFingerprint(after)).toBe(fp);
+    // 回报录于 2026-09-25 之前：那时指纹还不含道具库存 / 牌堆 ⇒ 按旧口径比（去掉这两格）
+    expect(stateFingerprint({ ...after, toolStock: undefined, cardAmount: undefined })).toBe(fp);
     expect(before.pending).toBeNull();
     expect(after.pending?.kind).toBe('shop');
     expect(after.notices.map((n) => n.key)).toEqual(['shop.chairmanGift']);

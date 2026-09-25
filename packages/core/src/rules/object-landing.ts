@@ -302,10 +302,12 @@ export function releaseObject(w: ObjectWorld, handle: number): ReleaseOutcome {
  * 0040e3d4  mov [obj+0x496d0a], ax
  * 0040e604  call 0x40e14d                                 ; 再放（0x40e253 读的就是这一格 → 0x40aa6c 挑 ≥300 像素远）
  * ```
- *   走路从不更新附身物件的格（xref 0x496d0a），先前直接用那个旧格 ⇒ 搭档登场的候选格与原版不同（随机结果也不同）。
+ *   走路每一格其实**会**更新附身物件的格（`0x0040c1cc call 0x40fc00`，`0x0040fc23 mov [eax*8+0x496d0a], dx`
+ *   —— 变址写法 xref 扫不到；cards 审计已在 `step` 里接上），但**放出来走回棋盘**那一下（`0x40d6be`）不更新，
+ *   所以这里仍要按附身者当前格重写一次。
  *   原版的关押计数在「放出来、还没走回棋盘」期间仍是 0x80（非 0）；本引擎那时计数已清、改挂 0x10 ⇒ 一并当作「关着」。
  */
-function withDispelNode(w: ObjectWorld, playerIndex: number, handle: number): ObjectWorld {
+export function withDispelNode(w: ObjectWorld, playerIndex: number, handle: number): ObjectWorld {
   const host = w.players[playerIndex];
   const obj = w.objects[handle - 1];
   if (host === undefined || obj === undefined) return w;

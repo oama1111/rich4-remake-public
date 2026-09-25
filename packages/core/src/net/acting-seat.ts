@@ -22,10 +22,15 @@
  */
 
 import type { GameState } from '../state/types.ts';
+import { cardPassiveHolder } from '../rules/interaction.ts';
 
 /** 此刻在等哪个座位（玩家下标）拿主意 */
 export function actingSeat(state: GameState): number {
   const p = state.pending;
+  // ★★ 卡片路径里被打的那一位答他的被动卡（免費卡 / 嫁禍卡）—— 答的是**持卡人**，不是出牌者
+  //   （`0x444a60` / `0x44476a` 真人支问的是 `[esp+..]` 那个持卡人，见 `CardPassiveTail`）
+  const holder = cardPassiveHolder(p);
+  if (holder >= 0) return holder;
   // 只认**完整**的拍賣 pending（带 seat 那一支）；刚挂出来的「开拍请求」还没人举牌
   if (p !== null && p.kind === 'auction' && 'seat' in p) {
     const bidder = p.bidders[p.seat];

@@ -65,6 +65,9 @@ import {  autoAction,
   stockStatus,
   serializeGame,
   actingSeat,
+  cardPassiveHolder,
+  TOOL_GET_OFF,
+  TOOL_TELEPORTER,
   isAiControlled,
   stateFingerprint,
   toolCount,
@@ -638,6 +641,7 @@ import {
   type LoanUi,
 } from './bank-dynamic.ts';
 import {
+  INV_SLOTS,
   INV_VEHICLE_IMAGE,
   REMOTE_DICE_TOOL,
   cardEntries,
@@ -734,6 +738,7 @@ import {
   pickScrollCamera,
   pickScrollNextStep,
   startPick,
+  teleportTargetParam,
   type PickEdge,
   type PickSession,
 } from './picking.ts';
@@ -3035,8 +3040,23 @@ function awaitingHumanRoll(): boolean {
  *   联机的 `localSeatActive()` 管的是另一头（别的**真人**座位别替他答），
  *   两者都要有。
  */
+/**
+ * ★★ 卡片路径里「持卡人那一问」（免費卡 / 嫁禍卡，core `CardPassiveTail`）由**持卡人**答，
+ *   与轮到谁无关：出牌的可能是电脑（热座下仍要弹给真人持卡人）、联机下只有持卡人那一端弹。
+ *   返回 null = 这一刻不是这种问；否则 = 本机该不该弹。
+ */
+function cardPassiveDialogOpen(): boolean | null {
+  const holder = cardPassiveHolder(state.pending);
+  if (holder < 0) return null;
+  if (net !== null && net.seat !== holder) return false;
+  const h = state.players[holder];
+  return h !== undefined && !isAiControlled(h);
+}
+
 function currentDialog(): InteractionUi | null {
   if (screen !== 'game') return null;
+  const passive = cardPassiveDialogOpen();
+  if (passive !== null) return passive && state.pending !== null ? interactionUi(state.pending, state) : null;
   // 联机：待决交互只由当前座位的客户端回答；旁人不弹窗，免得替别人答
   if (!localSeatActive()) return null;
   // 电脑/托管的回合由 AI 自己答，人不要替他答
@@ -5558,7 +5578,7 @@ function scheduleAi(): void {
       // ★ 例外：拍賣 pending 期间 core 会**故意**返回 null —— 竞价循环由
       //   `auction-screen.ts` 驱动（它每次问 core 的 `auctionNextBid`），
       //   这里不是卡住，别刷屏（Q-AUC-1）。
-      if (isAiTurn(state) && state.pending?.kind !== 'auction') {
+      if (isAiTurn(state) && state.pending?.kind !== 'auction' && cardPassiveHolder(state.pending) < 0) {
         log(`⚠ 电脑在 ${state.phase} 无事可做，已停手`);
       }
       return;
@@ -7299,7 +7319,7 @@ setWheelStartGate(() => presentationHost.boxBlocked(SCREEN_BOX_TIER.wheel));
 setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
 // ★ 第十四份（D-008 收口）：嫁禍卡的选人窗 —— 与对话框同一道闸（`currentDialog`）：
 //   联机只让当前座位答、电脑 / 託管不开（它们由 `decidePending` / reducer 答）
-setScapegoatPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
+setScapegoatPickerGate(() => screen === 'game' && (cardPassiveDialogOpen() ?? (localSeatActive() && !isAiTurn(state))));
 // ★ pt22：「請選擇設施類別」的待决交互那一支同一道闸（旁观端 / 电脑不开，见 `setFacilityPickerGate`）
 setFacilityPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
 // ★ 第十四份：訊息框队列里的亮牌那一扇（收費那一段的被动卡）交给事件提示框播
@@ -11321,6 +11341,14 @@ function bindInput(): void {
           ? toolEntries(state, state.currentPlayer)
           : cardEntries(state, state.currentPlayer);
       const hit = entries.find((it) => it.slot === slot);
+      // ★ 道具欄末格的载具徽章 = 「下車」（道具表第 14 项 `0x447c00`；`0x00447e24 mov byte [0x48c556], 0xe`
+      //   把末格的命中值写成 14 —— 只有骑機車 / 开汽車时才画、才点得中）
+      const traffic = state.players[state.currentPlayer]?.trafficMethod ?? 0;
+      if (hit === undefined && invKind === 'tools' && slot === INV_SLOTS - 1 && (traffic === 1 || traffic === 2)) {
+        invPicked = TOOL_GET_OFF;
+        sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+        return;
+      }
       if (hit === undefined) return;
       invPicked = hit.id;
       sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
@@ -11755,6 +11783,17 @@ function bindInput(): void {
           });
           return;
         }
+        // ★★ 天使卡（9）打**0 级設施**：原版在 `0x40b110` 里给真人开「請選擇設施類別」
+        //   （`0x0040b1e4 call 0x440aac(0)`），种类挂在 facility 目标的 `buildType` 上
+        const tgt = hit.target;
+        if (source.cardId === 9 && tgt.kind === 'facility' && pickerNeededFor(state, topo, hit.nodeId)) {
+          const cardId = source.cardId;
+          openFacilityPicker((type) => {
+            if (type === null) return;
+            dispatch({ type: 'useCard', cardId, target: { ...tgt, buildType: type } });
+          });
+          return;
+        }
         dispatch({ type: 'useCard', cardId: source.cardId, target: hit.target });
       } else if (source.toolId === PICKER_TOOL_ID && pickerNeededFor(state, topo, hit.nodeId)) {
         // ★ 機器工人盖**等级 0 的設施**：原版先开「請選擇設施類別」
@@ -11766,6 +11805,17 @@ function bindInput(): void {
           if (type === null) return;
           dispatch({ type: 'useTool', toolId, nodeId, value: type });
         });
+      } else if (source.toolId === TOOL_TELEPORTER && source.teleportFrom === undefined) {
+        // ★★ 傳送機第一段选完来源 ⇒ 马上开第二段（地块 `0x2090802` / 設施 `0x2090804` / 其余 `0x2090001`）；
+        //   第二段右键取消 = 道具不消耗（`0x00447506` / `0x004475a9` / `0x00447673` / `0x004478f2 je 0x4479b3`）
+        const from = hit.code ?? 0;
+        pick = startPick(state, topo, { kind: 'tool', toolId: TOOL_TELEPORTER, teleportFrom: from }, 'none', teleportTargetParam(from));
+        pickHover = null;
+        if (pick.candidates.length === 0) log('「傳送機」这一件现在搬不到任何地方');
+        refreshPickCursor();
+        requestRender();
+      } else if (source.toolId === TOOL_TELEPORTER && source.teleportFrom !== undefined) {
+        dispatch({ type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: source.teleportFrom, value: hit.code ?? hit.nodeId });
       } else {
         dispatch({ type: 'useTool', toolId: source.toolId, nodeId: hit.nodeId });
       }

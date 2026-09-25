@@ -416,3 +416,35 @@ export const UNIMPLEMENTED_TOOLS: readonly number[] = [];
 export function isToolImplemented(toolId: number): boolean {
   return !UNIMPLEMENTED_TOOLS.includes(toolId);
 }
+
+// ============================================================
+//  下車（道具表第 14 项）
+// ============================================================
+
+/**
+ * 「下車」—— 道具欄末格那张载具徽章，原版道具函数表的**第 14 项**（`0x475dd5 + 14*4` → `0x447c00`）。
+ *
+ * 只给**恰好** who_plays == 1 的真人（道具欄浮窗那一支，`0x00447dab cmp dl,1 / jne 0x447f82`；
+ * 电脑的道具循环只扫 1..13），且只在骑機車 / 开汽車时出现
+ * （`0x00447dee mov cl,[p+0x11] / cmp cl,1` / `cmp cl,2` → `0x00447e24 mov byte [0x48c556], 0xe`）——
+ * 工程車（0x1f 那一族）不出现。
+ */
+export const TOOL_GET_OFF = 14;
+
+/**
+ * @source `0x00447c00`：
+ * ```asm
+ * 00447c1e  cmp dl, 1 / jne → 00447c23 add byte [p*15 + 0x499160], dl   ; 機車退回道具 5（不查上限、不动库存）
+ * 00447c2b  cmp dl, 2 / jne → 00447c30 inc byte [p*15 + 0x499161]       ; 汽車退回道具 6
+ * 00447c3f  mov byte [p+0x11], 0 / 00447c45 mov byte [p+0x12], 1          ; 步行、一颗骰子
+ * 00447c69  jmp 0x446ba3（mov eax, 1）                                    ; 恒成功 —— 没有台词
+ * ```
+ */
+export function getOffVehicle(player: Player, tools: readonly number[]): VehicleResult {
+  const refund = player.trafficMethod === 1 ? 5 : player.trafficMethod === 2 ? 6 : 0;
+  if (refund === 0) return { ok: false, player, tools: [...tools] };
+  const next = [...tools];
+  const at = player.index * TOOL_SLOTS_PER_PLAYER + refund;
+  next[at] = (next[at] ?? 0) + 1;
+  return { ok: true, player: { ...player, trafficMethod: 0, ndices: 1 }, tools: next };
+}
