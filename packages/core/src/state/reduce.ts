@@ -172,6 +172,8 @@ import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
   objectNodeCandidates,
+  withDispelNode,
+  OBJECT_TYPE_BOMB,
   occupantsOfNode,
   syncEscortNodes,
   runtimeOccupiedNodes,
@@ -5725,7 +5727,10 @@ function playCard(
     }
   }
   for (const handle of r.releasedObjects) {
-    const rel = releaseObject(next, handle);
+    // ★ 送神符送走的是**神明**（`0x00444cc4 call 0x40e32c`）⇒ 搭档登场的参照格 = 出牌者此刻所在的格
+    //   （`0x0040e3cd..0x0040e3d4`，见 `withDispelNode`）；炸彈那一支是直接 `0x40e14d`，不改格
+    const isGod = (next.objects[handle - 1]?.type ?? 0) !== OBJECT_TYPE_BOMB;
+    const rel = releaseObject(isGod ? withDispelNode(next, state.currentPlayer, handle) : next, handle);
     next = respawnPartner(
       {
         ...next,

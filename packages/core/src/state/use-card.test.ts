@@ -509,3 +509,23 @@ describe('★★ 烏龜卡生效：不掷骰、只走 1 格（0x0040dd7e → 0x0
     expect(rolled.forcedDice).toBe(5);
   });
 });
+
+describe('★ 生日收卡（真人寿星）答一位：牌堆守恒（0x441343 +1 / 0x4412e4 −1、满手弃最便宜 +1）', () => {
+  it('寿星满 15 张收一张 ⇒ 交出的那张 +1−1 相抵，弃掉的最便宜那张回牌堆', () => {
+    const { state, topo } = scene();
+    const s: GameState = {
+      ...state,
+      phase: 'awaitingDecision',
+      cardAmount: new Array<number>(30).fill(0),
+      pending: { kind: 'birthdayCard', seats: [1] },
+      players: state.players.map((p, i) =>
+        i === 0 ? { ...p, cards: new Array<number>(15).fill(7) } : i === 1 ? { ...p, cards: [1] } : p,
+      ),
+    };
+    const after = reduce(s, { type: 'birthdayCard', seat: 1, cardId: 1 }, topo);
+    expect(after.players[0]!.cards).toContain(1);
+    expect(after.players[0]!.cards).toHaveLength(15);
+    expect(after.cardAmount[6]).toBe(1);
+    expect(after.cardAmount[0]).toBe(0);
+  });
+});
