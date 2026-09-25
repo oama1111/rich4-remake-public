@@ -141,3 +141,13 @@ describe('applyHostilityDeltas', () => {
     expect(ps[2]!.hostility[0]).toBe(200);
   });
 });
+
+describe('★ update_hostility 的 32 位回绕（0x0040dfa1 add edi, ecx）', () => {
+  it('两笔 1717986918 叠加越过 2^31 ⇒ 回绕成负 ⇒ 清 0', () => {
+    let ps = [0, 1].map((i) => makePlayer({ index: i }));
+    ps = updateHostility(ps, 0, 1, 1717986918).players;
+    expect(ps[0]!.hostility[1]).toBe(1717986918);
+    ps = updateHostility(ps, 0, 1, 1717986918).players;
+    expect(ps[0]!.hostility[1]).toBe(0);
+  });
+});

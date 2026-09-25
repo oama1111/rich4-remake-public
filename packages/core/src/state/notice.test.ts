@@ -1139,7 +1139,20 @@ describe('★★ 第十四份（D-008 收口）：企業 / 設施两条路的真
     expect(after.pending?.kind ?? null).not.toBe('freeCard');
   });
 
-  it('★ 設施：没有免費卡那一问（`0x0041a648`），嫁禍卡照问', () => {
+  // ★★ 2026-09-24 审计订正：設施这一路**有**免費卡那一问，只有旅館跳过（`0x0041a5d5 cmp [fac+0x18],1 / je`）
+  it('★ 設施（旅館）：跳过免費卡，直接问嫁禍卡（`0x0041a5d9 je 0x41a63d`）', () => {
+    const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.hotel, steps: 12 });
+    const withCards: typeof state = {
+      ...state,
+      players: [
+        ...state.players.map((p, i) => (i === 0 ? { ...p, cash: 100, moneyInBank: 0, cards: [20, 19] } : p)),
+        makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 }),
+      ],
+    };
+    expect(reduce(withCards, { type: 'settle' }, t).pending?.kind).toBe('scapegoat');
+  });
+
+  it('★ 設施（加油站）：先问免費卡（`0x0041a62e`），不用再问嫁禍卡', () => {
     const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.gasStation, steps: 12 });
     const withCards: typeof state = {
       ...state,
@@ -1148,7 +1161,9 @@ describe('★★ 第十四份（D-008 收口）：企業 / 設施两条路的真
         makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 }),
       ],
     };
-    const asked = reduce(withCards, { type: 'settle' }, t);
+    const freeAsked = reduce(withCards, { type: 'settle' }, t);
+    expect(freeAsked.pending?.kind).toBe('freeCard');
+    const asked = reduce(freeAsked, { type: 'answerFreeCard', use: false }, t);
     expect(asked.pending?.kind).toBe('scapegoat');
     const after = reduce(asked, { type: 'answerScapegoat', target: 2 }, t);
     expect(after.players[0]!.cards).toEqual([20]);

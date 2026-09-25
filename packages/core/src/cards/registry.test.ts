@@ -756,6 +756,15 @@ describe('★ 紅卡/黑卡经统一入口（T-005）', () => {
     expect(r.market.stocks.filter((s) => s.newsFlag !== 0).length).toBe(1);
   });
 
+  it('★ 停牌股（f6 ≠ 0）照写 newsFlag、照算当日价（0x00444f88 → 0x429040 都不看 f6）', () => {
+    const base = makeCtx({});
+    const market = { ...base.market, stocks: base.market.stocks.map((st, i) => (i === 3 ? { ...st, f6: 2 } : st)) };
+    const r = useCard(ctxWithCard(24, { market }), 24, { kind: 'stock', index: 3 });
+    expect(r.ok).toBe(true);
+    expect(r.market.stocks[3]!.newsFlag).toBe(0x20);
+    expect(r.players[0]!.cards).toEqual([]);
+  });
+
   it('黑卡(25)把目标股 newsFlag 置为 0x02（利空 2 天）并扣卡', () => {
     const r = useCard(ctxWithCard(25), 25, { kind: 'stock', index: 5 });
     expect(r.ok).toBe(true);

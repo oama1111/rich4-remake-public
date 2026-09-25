@@ -8107,7 +8107,12 @@ function runTollTail(
         use = aiUsesFreeCard(c.toll, p, s.priceIndex, rng.next());
       }
       if (use) {
-        const owner = c.route.path === 'rent' ? rentOwnerOf(s, topo, c.route.landId) : -1;
+        const owner =
+          c.route.path === 'rent'
+            ? rentOwnerOf(s, topo, c.route.landId)
+            : c.route.path === 'facility'
+              ? (effectiveFacility(s, topo, c.route.facilityId)?.owner ?? 0) - 1
+              : -1;
         // ★ 免費卡用掉 = `remove_card(付款人, 20)`（`0x00444b30 call 0x441343`）⇒ 回牌堆 +1（`0x004413a2`）
         s = withPlayer(s, c.payer, (q) => {
           Object.assign(q, consumeCard(q, PASSIVE_CARDS.FREE));
@@ -8852,7 +8857,7 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   if (godNotice !== null) notices.push(godNotice);
   if (god.toll === 0) return { ...withRng, notices, phase: 'turnEnd' };
 
-  // ★ 尾巴照 0x0041a648 起：嫁禍卡（設施这条没有免費卡）→ 死神顯靈由他人賠償（費 != 0 或是旅館）→ 付钱（`runTollTail`）
+  // ★ 尾巴：免費卡（**旅館除外**）→ 嫁禍卡 → 死神顯靈由他人賠償（費 != 0 或是旅館）→ 付钱（`runTollTail`）
   let pre: GameState = { ...withRng, rngState: rng.getState() };
   for (const n of notices) pre = appendFreshNotice(pre, n);
   return runTollTail(pre, topo, {
@@ -8861,7 +8866,11 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
     who: payer,
     toll: god.toll,
     feeName,
-    freeDone: true, // @source 0x0041a648：設施这一路没有免費卡那一问
+    // ★★ 2026-09-24 审计订正：設施这一路**有**免費卡，只有旅館跳过 ——
+    //   @source `0x0041a5d5 cmp byte [fac+0x18], 1 / je 0x41a63d`（旅館 ⇒ 直接到嫁禍）；
+    //   否则同一道门槛（`0x0041a5f7` ≥ 2000×物價 / `0x0041a60a` > 现金+存款）→ `0x0041a611 has_card(20)` →
+    //   `0x0041a62e call 0x444a60(付款人, 設施主−1, 費)`。先前一律 `freeDone`，購物中心/加油站从不问免費卡。
+    freeDone: fac.type === FACILITY_TYPE.hotel,
   });
 }
 

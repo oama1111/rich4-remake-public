@@ -1048,12 +1048,9 @@ export function useCard(
       if (target.kind !== 'stock') return fail('wrongTargetKind');
       const stock = market.stocks[target.index];
       if (stock === undefined) return fail('stockOutOfRange');
-      // f6 非 0 = 停牌中，当日不波动，置数无意义 @source loc_00429470
-      // ★ 原版没有这道闸门：真人在股市屏里点下去就写了 `newsFlag`（`0x00444f88`
-      //   / `0x004450f6`，在「选到了没有」判定之**后**），AI 那条更是**无条件**写；
-      //   两边随后都在 `0x0044502a` / `0x004451db` 扣卡并返回选中编号（非 0）。
-      //   所以停牌股上也该扣卡 ⇒ `noEffect()`（本闸门只挡住无意义的写）。
-      if (stock.f6 !== 0) return noEffect();
+      // ★★ 2026-09-24 审计订正：停牌股（f6 ≠ 0）**照写照算** —— 原版写 `newsFlag`（`0x00444f88` /
+      //   `0x004450f6`，股市屏那一路 `0x0042b114` / `0x0042b12f`）之后紧接着 `call 0x429040` 重算当日价，
+      //   两处都不看 f6（`0x429040` 函数体里也没有停牌判断）。先前这里 `noEffect()` 只扣卡不写。
       // ★ 黑卡尾部要「旧价 − 现价」，故先把旧价留下（原版函数开头就快照了 12 支旧价）
       const oldPrice = stock.price;
       const r =
