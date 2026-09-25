@@ -672,6 +672,7 @@ import {
   shopEntryOf,
   shopMessage,
   shopRows,
+  shopShellMayAnswer,
   shopWindowMayOpen,
   slideDone,
   slideStart,
@@ -3078,6 +3079,23 @@ function cardPassiveDialogOpen(): boolean | null {
 
 function currentDialog(): InteractionUi | null {
   if (screen !== 'game') return null;
+  // ★★ 20260925-134801926（「为什么直接没让我进商店」）：商店那一趟**开窗之前**不许有能作答的东西。
+  //   原版进店三段全是阻塞的（框 → 台词 → 建窗，@source 见 `shopWindowMayOpen`），
+  //   而本引擎的商店窗要等框 / 台词都下了台才建 —— 这中间若把 `interactions.ts` 那份
+  //   后备壳画到棋盘上并收点击，玩家在框上多点一下就当场 `declineDecision`：
+  //   回报现场日志 `付费訊息框：shop.chairmanGift` → `付费訊息框：跳过` → `▶ 百貨公司：EXIT`，
+  //   全程没有 `♪ midi07.mid`（商店窗从没建起来）。判据与开窗共用 `shopOpenGate()`。
+  //   ⚠️ 这一处也是键盘（是/否/確定）、右键取消梯子与触屏「取消」钮的唯一入口
+  //   （`cancelSnapshot().dialog` 读的就是本函数），所以框住这里 = 四条路一起框住。
+  if (
+    !shopShellMayAnswer({
+      pendingKind: state.pending?.kind ?? null,
+      windowOpen: shopUi !== null,
+      windowMayOpen: shopOpenGate,
+    })
+  ) {
+    return null;
+  }
   const passive = cardPassiveDialogOpen();
   if (passive !== null) return passive && state.pending !== null ? interactionUi(state.pending, state) : null;
   // 联机：待决交互只由当前座位的客户端回答；旁人不弹窗，免得替别人答
@@ -6321,6 +6339,24 @@ function shopGotoPage(ui: ShopUi, page: ShopPage, now: number): void {
   ui.keeper = keeperPaintStart();
 }
 
+/**
+ * 商店窗此刻开得起来吗 —— `shopWindowMayOpen` 的**宿主取值**。
+ *
+ * ★★ `20260925-134801926`：抽成一处是因为它有**两个**消费者 ——
+ *   `syncShopUi`（建窗）与 `currentDialog`（框 / 台词还在台上时不许摆出后备壳，见 `shopShellMayAnswer`）。
+ *   两处各写一套必然漂移：壳比窗早放开一拍，玩家就能在进店演出还没演完时把这一趟
+ *   `declineDecision` 掉（正是那份回报）。
+ */
+function shopOpenGate(): boolean {
+  return shopWindowMayOpen({
+    blocking: blockingPresentation(),
+    noticeShowing: noticeShowing(),
+    noticeQueued: noticePendingRanks().length,
+    speechOnStage: speechQueue.length,
+    speechHeld: heldSpeech.length,
+  });
+}
+
 /** 开店 / 换玩家换局时把界面状态按当前 `pending` 重铺 */
 function syncShopUi(): void {
   const pending = state.pending;
@@ -6338,18 +6374,9 @@ function syncShopUi(): void {
   // ★★ 第二十一份（`20260924-144217689`）：闸收成纯函数 `shopWindowMayOpen`，并把**排着没起播**的訊息框也算上 ——
   //   先前 `notifyApplied` 在訊息框 `event()` 登记之前就调了本函数，那一拍框与台词都还没上账 ⇒ 商店窗当场建起、
   //   框反而弹在商店窗上（`shop.chairmanGift` → `♪ midi07.mid` → `結束`）。现在 `notifyApplied` 也挪到登记之后才调。
-  if (
-    shopUi === null &&
-    !shopWindowMayOpen({
-      blocking: blockingPresentation(),
-      noticeShowing: noticeShowing(),
-      noticeQueued: noticePendingRanks().length,
-      speechOnStage: speechQueue.length,
-      speechHeld: heldSpeech.length,
-    })
-  ) {
-    return;
-  }
+  // ★★ 20260925-134801926：闸的取值抽到 `shopOpenGate()` —— 商店那份后备壳要读**同一份**
+  //   （见 `currentDialog` 里的 `shopShellMayAnswer`）。
+  if (shopUi === null && !shopOpenGate()) return;
   // ★ 只在**第一次**看见这个商店时铺界面状态（货架不再快照：core 的行留在原位、买过的记 `sold`）
   if (shopUi === null) {
     const ui: ShopUi = {

@@ -357,6 +357,46 @@ export function shopWindowMayOpen(g: ShopOpenGate): boolean {
   return !g.blocking && !g.noticeShowing && g.noticeQueued === 0 && g.speechOnStage === 0 && g.speechHeld === 0;
 }
 
+/** `shopShellMayAnswer` 的入参 */
+export interface ShopShellGate {
+  /** 此刻待决交互的种类（`null` = 没有）*/
+  pendingKind: PendingInteraction['kind'] | null;
+  /** 商店窗已经建起来了吗（`main.ts` 的 `shopUi !== null`）*/
+  windowOpen: boolean;
+  /**
+   * 「进店那三段演完了、商店窗此刻开得起来」吗 —— 传 `shopWindowMayOpen` 的宿主取值。
+   * 是个**函数**：不是商店待决时调用方（`currentDialog` 每帧都调）不必去算它。
+   */
+  windowMayOpen: () => boolean;
+}
+
+/**
+ * ★★ `20260925-134801926`（「为什么直接没让我进商店」）：商店那一趟的**后备交互壳**
+ *   此刻能不能作答。
+ *
+ * 原版 `_rich4_ui_shop_entry` 的进店三段全是**阻塞**调用 ——
+ * `0x0042ea14 call 0x440cac`（董事長赠礼框，1500 ms）→ `0x0042ea23 call 0x44f230`
+ * （「好消息」台词）→ `0x0042ea28` 之后才建商店窗（见 `shopWindowMayOpen` 的 @source）。
+ * ⇒ **窗开之前屏上根本没有可以作答的东西**：那位玩家唯一能碰的就是那扇框。
+ *
+ * 本引擎一条 action 把框 / 台词 / `pending{shop}` 一次写完，演出事后补演，而
+ * `interactions.ts` 给商店留了一份最小后备壳（万一商店屏没画出来，还剩一个「EXIT」能走人）。
+ * 那份壳若在开窗之前就画到棋盘上并收点击，玩家**在框上多点一下**（第二下就落到壳的 EXIT 上）
+ * 就当场 `declineDecision` —— 回报现场（董事长踩到百貨公司，日志逐条）：
+ * `▶ 股市：買進 …` → `付费訊息框：shop.chairmanGift` → `付费訊息框：跳过` → `▶ 百貨公司：EXIT`，
+ * 全程**没有** `♪ midi07.mid`（商店窗从没建起来），玩家报「为什么直接没让我进商店」。
+ *
+ * ⇒ 窗还没建起来时，只认「进店演出演完了没有」：没演完就**别把壳摆出来**
+ * （框与台词还在台上时，原版那一拍本来就无从作答）；演出演完而窗仍没建起来
+ * （万一 `syncShopUi` 那条路出了别的岔子）才把壳当兜底放出来。
+ * 纯函数，单机与联机（行动者 / 旁观者）共用同一条判据。
+ */
+export function shopShellMayAnswer(g: ShopShellGate): boolean {
+  if (g.pendingKind !== 'shop') return true;
+  if (g.windowOpen) return true;
+  return g.windowMayOpen();
+}
+
 /** 第 `slot` 格内容的参照点（屏幕坐标）= 格子底图左上角 `(gridX, SHOP_GRID_Y)` + 列 × 80 / 行 × 56 */
 export function shopContentAt(gridX: number, slot: number): { x: number; y: number } {
   return {
