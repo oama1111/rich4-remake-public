@@ -368,8 +368,16 @@ describe('协议', () => {
     //      `pending{auction}` 的 `resumePhase` / `keepOwnerOnPass`、`pending.birthdayCard` 的
     //      `receiver` / `magicResume`、`SpecialActor.home`、傳送機兩段拾取與道具「下車」。
     //      逐條出處見 `docs/audit/provenance-*.md` 六份台賬。
-    //    ⇒ 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11
-    expect(PROTOCOL_VERSION).toBe(11);
+    //    · **审计 follow-up 收尾（2026-09-25，協調方再一次性 +1）**：`stateFingerprint` 補上先前漏掉的
+    //      規則狀態（玩家的 `xpos/ypos/direction/lastNodeId`、`specialActors` 整表、
+    //      `landTenure/landType/landLastToll`、企業的 `companyFunds/companyProfit/commercialShares/
+    //      commercialOwners`）⇒ 校驗和口徑本身又變了；`Room` 的 topo 補上 `landscapes`（伺服器與
+    //      客戶端在入監 / 入院的座標上先前不一致）；`pendingQueue` 的項擴成 `QueuedStep[]`
+    //      （`bankruptcyDraw` / `credit` / `dayRolloverTail`）；電腦 / 託管的每一次決策改吃全局
+    //      `rand()`；惡人搶破產改在 `pay_money` 裡當場發生；同一格多件物件的反向索引改按位或。
+    //      （`viewRotation` 刻意**不**進指紋。）
+    //    ⇒ 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12
+    expect(PROTOCOL_VERSION).toBe(12);
   });
 });
 
