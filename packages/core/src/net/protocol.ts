@@ -820,6 +820,13 @@ export function stateFingerprint(
   lottery: readonly number[];
   /** 道具持有表 */
   tools: readonly number[];
+  /**
+   * 道具库存（`0x49731f + 道具号`）与牌堆（`0x499197 + 卡号`）—— 禮物 / 抽卡格 / 福神 / 董事長 /
+   * 節日 / 货架都按它们**加权抽**，两端不一致就会抽到不同的东西（2026-09-25 审计补入指纹）。
+   * 可选：旧的测试夹具没有这两格 = 不参与。
+   */
+  toolStock?: readonly number[] | undefined;
+  cardAmount?: readonly number[] | undefined;
   /** 股市 —— 只取收盘价与流通量，历史不入指纹（144 天太长且可由价格推出） */
   market: { stocks: readonly { price: number; shares: number }[] };
   /** 各玩家持仓 */
@@ -876,6 +883,9 @@ export function stateFingerprint(
   parts.push('|', state.pool);
   parts.push('|', ...state.lottery);
   parts.push('|', ...state.tools);
+  // 缺席 = 不参与（旧回报里录下的指纹不含这两格，见 client 那两条 fixture 测试）
+  if (state.toolStock !== undefined) parts.push('|stock', ...state.toolStock);
+  if (state.cardAmount !== undefined) parts.push('|deck', ...state.cardAmount);
   parts.push('|');
   for (const st of state.market.stocks) parts.push(st.price, st.shares);
   parts.push('|');

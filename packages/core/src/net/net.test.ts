@@ -30,7 +30,7 @@ import {
   roomJoinability,
 } from './protocol.ts';
 import { Sequencer } from './sequencer.ts';
-import { topoOf } from '../testing/factories.ts';
+import { makeGameState, topoOf } from '../testing/factories.ts';
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -392,5 +392,17 @@ describe('★ 房間列表（v5）：`join.mode` 與可加入判據', () => {
     expect(roomJoinability({ ...base, started: true, vacant: [{}] })).toBe('claim');
     expect(roomJoinability({ ...base, started: false, vacant: [{}] })).toBe('join');
     expect(roomJoinability({ ...base, started: true, vacant: [{}], rejoin: true })).toBe('rejoin');
+  });
+});
+
+describe('★ 指纹含道具库存与牌堆（2026-09-25 审计）', () => {
+  it('牌堆 / 道具库存不同 ⇒ 指纹不同', () => {
+    const s = makeGameState({});
+    const deck = [...s.cardAmount];
+    deck[0] = (deck[0] ?? 0) + 1;
+    expect(stateFingerprint({ ...s, cardAmount: deck })).not.toBe(stateFingerprint(s));
+    const stock = [...s.toolStock];
+    stock[2] = (stock[2] ?? 0) + 1;
+    expect(stateFingerprint({ ...s, toolStock: stock })).not.toBe(stateFingerprint(s));
   });
 });
