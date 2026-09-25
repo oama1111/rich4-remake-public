@@ -373,6 +373,22 @@ export type PendingInteraction =
       kind: 'birthdayCard';
       /** 还没处理的座位（升序）；空数组不会挂出来（那一位都不合格时当场收尾）*/
       seats: readonly number[];
+      /**
+       * ★★ FU-3：收卡的寿星（`0x0044c517 mov eax,[0x49910c]` = 抽命運的那一位）。缺省 = `currentPlayer`
+       *   （旧存档 / 普通命運格）。魔法屋「抽取命運三張」里是**中签者**，不是施法者。
+       */
+      receiver?: number;
+      /**
+       * ★★ FU-3：这一窗是魔法屋「抽取命運三張」（`0x00431dbc` 循环）里抽出来的 —— 挑完之后回到那个循环：
+       *   `targets[0]`（= 寿星）还剩 `drawsLeft` 张，然后才轮到其余中签者；`caster` 最后还原成当前玩家。
+       */
+      magicResume?: {
+        caster: number;
+        criterion: number;
+        option: number;
+        targets: readonly number[];
+        drawsLeft: number;
+      };
     }
   /**
    * 魔法屋（**真人**那一支）：目标转盘已经转完，等玩家在女巫窗口里**点一个效果**。

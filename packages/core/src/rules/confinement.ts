@@ -16,6 +16,7 @@
  * 医院代码整体比监狱晚约 0xF30，两张占用表相距 0x30。
  */
 
+import { smallLossDrawsRand, SPEECH_SITE, speechDraw } from './speech-rand.ts';
 import type { BlockingDays, Player } from '../state/types.ts';
 import type { MapNode, LandscapeInfo } from '../loaders/map.ts';
 import type { MapObject } from '../cards/summon.ts';
@@ -381,7 +382,10 @@ export function sendToConfinement(
 ): ConfineOutcome {
   const c = confine(players, occupancy, kind, index, days, otherOccupancy);
   const target = c.players[index];
-  if (!c.extended && target !== undefined && rng !== undefined && days > 3 && days <= 6) rng.next();
+  // ★★ 2026-09-25：值记进台词随机（`lastSpeechRolls`，站点 0x0044f312），客户端挑 3 | 4
+  if (!c.extended && target !== undefined && rng !== undefined && smallLossDrawsRand(days)) {
+    speechDraw(rng, SPEECH_SITE.smallLoss, index);
+  }
   // 加刑分支（`0x43d6bd`）不传送，跟班也不动；下标越界同样什么都不做
   if (c.extended || target === undefined) {
     return { ...c, objects: [...objects], teleported: false };

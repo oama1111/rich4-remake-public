@@ -16,6 +16,7 @@ import type { CommercialOwnership } from '../places/commercial.ts';
 import type { Listing } from '../places/notice-board.ts';
 import type { MapObject } from '../cards/summon.ts';
 import type { SpecialActor, SweptObject } from '../rules/special-actors.ts';
+import type { SpeechRoll } from '../rules/speech-rand.ts';
 import type { WinConditions } from '../rules/setup.ts';
 import type { VictoryOutcome } from '../rules/victory.ts';
 
@@ -1590,6 +1591,14 @@ export interface GameState {
    *   客户端直接从 `god.seize` 訊息框认出来即可，不需要本字段。
    */
   lastGodLine?: GodLineHint | null;
+  /**
+   * ★★ 2026-09-25（provenance 审计 events 第二轮）：**这一条 action 里台词阶梯掷过的 `rand()`**，按先后
+   *   （站点 VA、说话人、原值）。原版这些 `rand()` 走全局流（见 `rules/speech-rand.ts`），core 在 exe 掷的
+   *   那一刻掷、记在这里；客户端按站点 + 说话人查它挑那一句（取代先前的 speech-coin 状态哈希）。
+   *   纯表现瞬态：不进指纹 / 存档；最外层 `reduce` 出口整份覆写（没掷就是 null）。
+   *   逐段演出（魔法屋 `lastMagicBeats`）的中间状态带「到那一段为止」的前缀。
+   */
+  lastSpeechRolls?: readonly SpeechRoll[] | null;
 
   /**
    * ★ **这一次神明發威掷出来的金额**（W-55 行 7）—— 纯表现提示。
