@@ -338,13 +338,17 @@ export function holidayIndexOf(
       const l = lunarOf(dayNumberSince1998(year, month, day));
       // 表走完了就判不了 —— 原版会读到表外，这里直接跳过
       if (l === null) continue;
-      if (l.month === e.month && l.day === e.day) return e.index;
+      // ★ 2026-09-25 审计：命中后同样要过 0x80 那道（见下）
+      if (l.month === e.month && l.day === e.day && (e.holiday & 0x80) === 0) return e.index;
       continue;
     } else if (e.kind === 2) {
       const d = nthWeekdayOfMonth(year, e.month, e.day, e.weekday);
       match = d === null ? 0 : (e.month << 8) | d;
     }
-    if (match !== 0 && match === want) return e.index;
+    // ★ 2026-09-25 审计补：命中的记录若首字节带 0x80 就**跳过**、接着往下找 ——
+    //   @source `0x004523b3 test byte [记录 + 0x47ff4a], 0x80 / 0x004523bb jne 0x452205`。
+    //   地图 0 的 10/31 有两条（12 号 0x80、13 号 0x01）⇒ 原版取 13 号（节日图不同；算不算假日两条都一样）。
+    if (match !== 0 && match === want && (e.holiday & 0x80) === 0) return e.index;
   }
   return -1;
 }

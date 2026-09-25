@@ -148,3 +148,11 @@ describe('★ 停牌中柜台不能买卖 @source 0x0042aef4 / 0x0042b02f', () =
     expect(reduce(s, { type: 'buyStock', stock: 0, shares: 10 }, topo)).not.toBe(s);
   });
 });
+
+describe('★ 2026-09-25 审计：節日查找跳过首字节带 0x80 的记录（0x004523b3）', () => {
+  it('地图 0 的 10/31：取 13 号（0x01）而不是 12 号（0x80）；仍是假日', async () => {
+    const { holidayIndexOf } = await import('./calendar.ts');
+    expect(holidayIndexOf(0, 1999, 10, 31)).toBe(13);
+    expect(isHoliday(0, 1999, 10, 31)).toBe(true);
+  });
+});
