@@ -21,6 +21,7 @@ import {
   auctionNextBid,
   decideAction,
   decideAtLanding,
+  decidePending,
   isAiTurn,
   toCardTarget,
 } from './policy.ts';
@@ -580,5 +581,24 @@ describe('★ 拍賣：电脑那一手不再走 declineDecision', () => {
       { whoPlays: WHO_PLAYS_COMPUTER },
     ]), phase: 'turnEnd' as const };
     expect(decideAction({ state: s, map: topo })?.type).toBe('auctionBid');
+  });
+});
+
+describe('审计（ai-move）：开着保釋窗被托管的真人', () => {
+  it('★★ 不再自拟「挑最便宜的同伴」—— 按关窗处理（declineDecision，不花點券）', () => {
+    const s = makeGameState({
+      players: [
+        makePlayer({ index: 0, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT, points: 500 }),
+        makePlayer({ index: 1 }),
+      ],
+      phase: 'turnEnd',
+      pending: {
+        kind: 'bail',
+        place: 'prison',
+        candidates: [{ slot: 1, player: 1, name: '沙隆巴斯', cost: 30, affordable: true }],
+        points: 500,
+      },
+    });
+    expect(decidePending(s)).toEqual({ type: 'declineDecision' });
   });
 });

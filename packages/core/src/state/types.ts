@@ -325,6 +325,16 @@ export interface Player {
    * 可选：旧存档 / 测试工厂造的玩家没有这一格 = 0 = 「不会再落地」。
    */
   landingWhoPlays?: number;
+  /**
+   * 開**工程車**之前的交通方式 / 骰子数 —— 原版借 `+0x64` / `+0x65` 暂存
+   * （`0x00447a49 mov [p+0x64], +0x11` / `0x00447a55 mov [p+0x65], +0x12`，道具 12 那一支）。
+   * 工程車（`+0x11 = 0x1f`）每天 `−4`，`(v & 0xfc) == 0` 那天按它还原（`0x0041ccd0..0x0041cd83`，
+   * 见 `reduce.ts` 的 `tickEngineVehicle`）。缺省 = 0（还原成步行）。
+   * ⚠️ 写入一侧（用道具 12 时存下来）归道具区，审计时尚未接（`docs/audit/provenance-loop.md` 的 cross-area）。
+   */
+  engineSavedTraffic?: number;
+  /** 见 `engineSavedTraffic`（`+0x65`） */
+  engineSavedDice?: number;
 }
 
 // ============================================================
