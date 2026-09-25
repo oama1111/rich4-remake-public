@@ -212,7 +212,7 @@ import {
   tickStockMarket,
 } from '../places/stock-market.ts';
 import { advanceDate, daysInMonth, packDate } from '../rules/calendar.ts';
-import { packedDayDiff } from '../places/calendar.ts';
+import { holidayGivesCard, holidayIndexOf, packedDayDiff } from '../places/calendar.ts';
 import { misfortuneDaysAfter, monthlySettleHint, settleMonthlyBank } from '../rules/monthly.ts';
 import {
   WHO_PLAYS_AUTOPILOT,
@@ -276,6 +276,7 @@ import {
   blessingLevelWithDraw,
 } from '../rules/blessing.ts';
 import { conserveCardPool, sellAllCards, sellAllTools } from '../rules/inventory.ts';
+import { goodNewsSpeechDrawsRand } from '../rules/speech-rand.ts';
 import { ALIEN_HOSPITAL_DAYS, applyNewsEffect, type CompanyMutation, type LandMutation, type PriceChange } from '../events/news-effects.ts';
 // ★ 第 160 条：飛彈/核彈那一路**不再**用 `mutateFacility` —— `damage_area` 的
 //   設施轻击是另一份内联逻辑（`level == 0` 时照样清种类 + 放人，见 `fireMissile`）。
@@ -3442,6 +3443,14 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
   for (const ev of r.events) {
     if (ev.kind === 'gift') {
       arrivalNotices.push({ key: 'object.gift', args: [toolNameOf(ev.toolId)] });
+      // ★ 禮物之后的「好消息」台词 `0x0041b97a mov al,[道具價] → 0x0041b98b call 0x44f230`：
+      //   50 < 點數 ≤ 100（機車 80 / 飛彈 100）时掷一次 `rand()`
+      if (goodNewsSpeechDrawsRand(toolPrice(ev.toolId))) {
+        const srng = new WatcomRng();
+        srng.setState(next.rngState);
+        srng.next();
+        next = { ...next, rngState: srng.getState() };
+      }
     } else if (ev.kind === 'treasure') {
       arrivalNotices.push({ key: 'object.treasure', args: [] });
     }
@@ -3672,6 +3681,12 @@ function applyGodPower(
         drawn.push(id);
       }
       if (drawn.length === 0) return { ...state, players, cardAmount };
+      // ★ 「好消息」台词 `0x0040ee46 call 0x44f230`：小福神传那张卡的點數价（`0x0040ee39`），
+      //   大福神传两张之和（`0x0040eefd..0x0040ef0c`）；50 < 值 ≤ 100 时掷一次 `rand()`
+      {
+        const speechValue = drawn.reduce((acc, id) => acc + priceOf(id), 0);
+        if (goodNewsSpeechDrawsRand(speechValue)) rng.next();
+      }
       // ★★ 大福神（種類 4）拿到**两张**时，原版弹的是**一扇两卡名**的框，不是两扇：
       //   `0x0040eed7 push 0x463353`（`大福神附身\n\n得到%s及%s！`）+
       //   `0x0040eee9 push 0x5dc`（1500 ms），两个 `%s` = `[ebx]`（先抽到）× `[esi]`（後抽到）
@@ -5670,6 +5685,13 @@ export function valuationsOf(s: GameState, playerIndex: number): StockValuation[
  *   `inc [0x4990e4]` 之后、更新物价指数之前判一次，达标就**当场返回**
  *   （行情/開獎/月結/地契到期全部跳过）。见 rules/victory.ts。
  */
+/** 節日送卡的框文按**全局地图号**选 @source 0x004526c5：4 / 5 / 6 各一句，其余「聖誕節」 */
+const HOLIDAY_CARD_NOTICE: Readonly<Record<number, NoticeKey>> = {
+  4: 'holiday.cardGalaxy',
+  5: 'holiday.cardDino',
+  6: 'holiday.cardNewYearEve',
+};
+
 function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   const rng = new WatcomRng();
   rng.setState(state.rngState);
@@ -5740,6 +5762,28 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   let players = state.players;
   let lottery = state.lottery;
   let pool = state.pool;
+
+  // ★★ 節日送卡（`0x0041d07b call 0x452444`，股市收盘之后、分紅/開獎之前）—— 先前整段缺失：
+  //   聖誕節（地图 0..3）/ 銀河系和平日 / 恐龍蛋節 / 除夕那天，每位在场玩家各从牌堆抽一张
+  //   （`0x00452664 call 0x441e12` → receive_card，满手先弃最便宜的一张），逐位弹框、说「好消息」台词。
+  let cardAmount = state.cardAmount;
+  const holidayNotices: NoticeHint[] = [];
+  if (holidayGivesCard(state.globalMapId, holidayIndexOf(state.globalMapId, date.year, date.month, date.day))) {
+    const key = HOLIDAY_CARD_NOTICE[state.globalMapId] ?? 'holiday.cardXmas';
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      // @source 0x00452656 cmp byte [+0x15], 0 / je 下一位
+      if (p === undefined || (p.whoPlays & 0xff) === 0) continue;
+      const id = drawRandomCard(rng, cardAmount);
+      if (id === 0) continue;
+      const before = players;
+      players = players.map((q, k) => (k === i ? giveCard(q, id) : q));
+      cardAmount = conserveCardPool(cardAmount, before, cardAmount, players);
+      holidayNotices.push({ key, args: [playerName(state, i), cardNameOf(id)], cardId: id });
+      // @source 0x0045274a mov al,[卡價] → 0x00452753 call 0x44f230
+      if (goodNewsSpeechDrawsRand(priceOf(id))) rng.next();
+    }
+  }
 
   // @source 0041d080 `cmp eax, 0xf` → 先 0x42ba97 上市公司分紅，再 0x431712 樂透開獎
   const companyFunds = [...state.companyFunds];
@@ -5857,11 +5901,13 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     facilityTenure,
     facilityPriceStatus,
     companyFunds,
+    cardAmount,
     rngState: rng.getState(),
     // 纯表现提示：只在开了奖的那一天写（其余日子沿用，`reduce` 出口会把旧的清掉）
     ...(lotteryHint !== null ? { lastLotteryDraw: lotteryHint } : {}),
     ...(monthlyHint !== null ? { lastMonthlySettle: monthlyHint } : {}),
   };
+  for (const n of holidayNotices) out = appendFreshNotice(out, n);
   // @source 0x0042beba `call 0x40cd87` —— 负紅利把人压破產
   for (const who of dividendBankrupts) out = applyBankruptcy(out, who, topo);
   return out;
@@ -7401,6 +7447,9 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
         };
       }
     }
+    // ★ 贈禮之后那句「好消息」台词：`0x0042e9e4 mov bl,[價]` → `0x0042ea23 call 0x44f230` ——
+    //   50 < 點數 ≤ 100 时掷一次 `rand()`（見 `rules/speech-rand.ts`）
+    if (gift !== null && goodNewsSpeechDrawsRand(gift.points)) rng.next();
   }
 
   // ★★ 第二十六份（「约翰乔的汽车哪里来的」）：**恰好** who_plays == 1 的真人才开窗、抽货架；

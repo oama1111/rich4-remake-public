@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
+import { initialCardAmounts } from '../rules/new-game.ts';
 import type { GameState } from './types.ts';
 import { LOTTERY_DRAW_DAY } from '../places/lottery.ts';
 import { newStockMarket } from '../places/stock-market.ts';
@@ -186,5 +187,27 @@ describe('股市', () => {
     expect(a.rngState).toBe(b.rngState);
     expect(a.rngState).not.toBe(12345);
     expect(a.market.stocks.map((x) => x.price)).toEqual(b.market.stocks.map((x) => x.price));
+  });
+});
+
+describe('★★ 節日送卡（0x00452444：節日表旗标 & 8）', () => {
+  it('地图 0 的聖誕節：在场的每人从牌堆抽一张（出局者不送），牌堆守恒，逐位弹「聖誕節」框', () => {
+    const base = makeGameState({
+      year: 1998,
+      month: 12,
+      day: 24,
+      globalMapId: 0,
+      cardAmount: initialCardAmounts(),
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i, whoPlays: i === 2 ? 0 : 1 })),
+    });
+    const poolBefore = base.cardAmount.reduce((a, b) => a + b, 0);
+    const s = endTurn(base);
+    expect([s.month, s.day]).toEqual([12, 25]);
+    expect(s.players.map((p) => p.cards.length)).toEqual([1, 1, 0, 1]);
+    expect(s.cardAmount.reduce((a, b) => a + b, 0)).toBe(poolBefore - 3);
+    expect(s.notices.filter((n) => n.key === 'holiday.cardXmas')).toHaveLength(3);
+    // 别的日子不送
+    const plain = endTurn({ ...base, day: 20 });
+    expect(plain.players.every((p) => p.cards.length === 0)).toBe(true);
   });
 });
