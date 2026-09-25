@@ -624,17 +624,98 @@ describe('整屏出口 @source 窗口过程 0x0042f7fc', () => {
 
   it('★ 现金不足：说 #0015 → #0016 → 自己关屏', () => {
     resetLotteryScreenState();
-    const s = mkState({ pending: mkPending(), cash: 999 });
-    expect(lotteryScreen.active(mkEnv(s, 0).env)).toBe(true);
-    lotteryScreen.tick!(mkEnv(s, 0).env);
-    expect(lotteryPhase()).toBe('noCash');
-    lotteryScreen.tick!(mkEnv(s, 2000).env);
-    expect(lotteryPhase()).toBe('closing');
-    const last = mkEnv(s, 4000);
-    lotteryScreen.tick!(last.env);
-    expect(lotteryScreen.active(mkEnv(s, 4000).env)).toBe(false);
-    // ★ 审计（LOT-09）：关屏那一拍交「不买」（core 现在也给現金不足的真人挂 pending）
-    expect(last.actions).toEqual([{ type: 'declineDecision' }]);
+    const played: number[] = [];
+    setVoiceSink((v) => played.push(v));
+    try {
+      const s = mkState({ pending: mkPending(), cash: 999 });
+      expect(lotteryScreen.active(mkEnv(s, 0).env)).toBe(true);
+      lotteryScreen.tick!(mkEnv(s, 0).env);
+      expect(lotteryPhase()).toBe('noCash');
+      // ★ 開屏那一拍只放 #0015（原版 0x0042f8e3 `push 4 / push 4` 直接置状态 4）——
+      //   这一条先前只看相位、没接语音池，所以「先放一声 #0011」这个错漏了出去。
+      expect(played, '开屏不许有 #0011').toEqual([15]);
+      lotteryScreen.tick!(mkEnv(s, 2000).env);
+      expect(lotteryPhase()).toBe('closing');
+      expect(played, '下一段是 #0016').toEqual([15, 16]);
+      const last = mkEnv(s, 4000);
+      lotteryScreen.tick!(last.env);
+      expect(lotteryScreen.active(mkEnv(s, 4000).env)).toBe(false);
+      // ★ 审计（LOT-09）：关屏那一拍交「不买」（core 现在也给現金不足的真人挂 pending）
+      expect(last.actions).toEqual([{ type: 'declineDecision' }]);
+      expect(played, '整段一声 #0011 都没有').toEqual([15, 16]);
+    } finally {
+      setVoiceSink(null);
+    }
+  });
+
+  it('★★ 現金 < 1000 踩樂透：建窗那一下**当场**就是状态 4 —— 只放 #0015，一声 #0011 都不说', () => {
+    // @source 0x0042f8d0 `imul eax, [0x49910c], 0x68`（eax = 当前玩家 × 0x68）
+    //   0x0042f8d7 `cmp dword [eax + 0x496b84], 0x3e8`（现金 vs 1000）
+    //   0x0042f8e1 `jge 0x42f8f6`        ← ★ ≥ 1000 才走招呼那一条
+    //   0x0042f8e3 `push 4 / push 4`     ← lParam 4（串号）/ wParam 4（状态）
+    //   0x0042f8f4 `jmp 0x42f90c`        ← ★ 把「動畫過程」后面整段都跳过
+    //   → 0x0042f930 `mov [0x48c370], bl`（状态 4）→ 0x0042f936 `mov ebp,[edi*4 + 0x4755f8]`
+    //     （edi = lParam = 4 ⇒ 串 #0015）→ 0x0042f93e `call 0x44ecb6`（气泡 → 播）。
+    // 修前：`event()` 开屏先 `lotSay('hello')` ⇒ 相位是 hello、语音池是 [11]（再等一拍才多出 15）。
+    resetLotteryScreenState();
+    const played: number[] = [];
+    setVoiceSink((v) => played.push(v));
+    try {
+      const before = mkState(); // 上一刻：还没有待决交互
+      const poor = mkState({ pending: mkPending(), cash: 999 });
+      const open = mkEnv(poor, 0);
+      lotteryScreen.event!(before, poor, open.env);
+      expect(lotteryPhase(), '开屏当场就是 noCash（状态 4），不是先 hello').toBe('noCash');
+      expect(lotteryBubbleForTest(open.env)).toBe(LOTTERY.counterNoCash.text);
+      expect(played, '★ 只许 #0015 —— 修前这里是 [11]（下一拍还会变成 [11, 15]）').toEqual([15]);
+
+      // 状态 4 说完 ⇒ 下一段状态 5（`0x42fae5` → `#0016`）⇒ 自己关屏
+      lotteryScreen.tick!(mkEnv(poor, 2000).env);
+      expect(lotteryPhase()).toBe('closing');
+      expect(played).toEqual([15, 16]);
+      lotteryScreen.tick!(mkEnv(poor, 4000).env);
+      expect(played, '整段一声 #0011 都没有').toEqual([15, 16]);
+      expect(played).not.toContain(11);
+    } finally {
+      setVoiceSink(null);
+    }
+  });
+
+  it('★★ 現金 < 1000 时「動畫過程」开着关着一样（0x0042f8f4 那条 `jmp` 跳过整段）', () => {
+    resetLotteryScreenState();
+    const played: number[] = [];
+    setVoiceSink((v) => played.push(v));
+    try {
+      const s = mkState({ pending: mkPending(), cash: 999 });
+      lotteryScreen.tick!(mkEnv(s, 0, false).env);
+      expect(lotteryPhase(), '動畫关也**不**落到 pick').toBe('noCash');
+      expect(played).toEqual([15]);
+    } finally {
+      setVoiceSink(null);
+    }
+  });
+
+  it('★★ 边界：现金正好 1000 走正常那一条（`jge`）—— #0011 → #0012 → #0013；999 只说 #0015', () => {
+    resetLotteryScreenState();
+    const played: number[] = [];
+    setVoiceSink((v) => played.push(v));
+    try {
+      // 1000 ⇒ `jge 0x42f8f6` 成立：正常开屏，三句招呼各一次
+      const rich = mkState({ pending: mkPending(), cash: 1000 });
+      expect(advanceToPick(rich)).toBeGreaterThan(0);
+      expect(lotteryPhase()).toBe('pick');
+      expect(played, '正好 1000 走正常那一条').toEqual([11, 12, 13]);
+
+      // 999 ⇒ 差一元就买不起：建窗直接状态 4，只说 #0015
+      resetLotteryScreenState();
+      played.length = 0;
+      const poor = mkState({ pending: mkPending(), cash: 999 });
+      lotteryScreen.event!(mkState(), poor, mkEnv(poor, 0).env);
+      expect(lotteryPhase()).toBe('noCash');
+      expect(played, '999 只说 #0015').toEqual([15]);
+    } finally {
+      setVoiceSink(null);
+    }
   });
 
   it('★ 现金刚好 1000 可以买（原版是 `jge 0x3e8`）', () => {

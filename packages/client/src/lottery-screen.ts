@@ -864,27 +864,58 @@ function lotSay(phase: LotPhase, now: number, text: string | null = lotMessageOf
 }
 
 /**
+ * 这一注买得起吗 —— 原版建窗（`WM_CREATE` = `0x401`）那一下拿**当前玩家**的现金
+ * 跟票价 `0x3e8` 直接比，判据是 `jge`（**≥** 才买得起：正好 1000 走正常那一条）。
+ *
+ * @source 0x0042f8d0 `imul eax, dword [0x49910c], 0x68`（eax = 当前玩家 × 0x68）
+ *   → 0x0042f8d7 `cmp dword [eax + 0x496b84], 0x3e8` → 0x0042f8e1 `jge 0x42f8f6`。
+ *   `[player + 0x496b84]` 就是现金：买号那一下也是同一个字段
+ *   （0x0043000e `sub dword [eax + 0x496b84], 0x3e8`）。
+ */
+function canAffordTicket(state: GameState): boolean {
+  const me = state.players[state.currentPlayer];
+  const p = lotteryPending(state);
+  // 缺字段（单测替身）时按「买得起」算 —— 与 `tick()` 里那条 `me !== undefined &&` 同一口径
+  if (me === undefined || p === null) return true;
+  return me.cash >= p.price;
+}
+
+/**
  * 开一屏。
  *
  * ★ `animate`（= `UiScreenEnv.animation`，即 `RICH4.CFG+1` bit0）关掉时**直接从
  *   「可点号」那一段开始** —— 跳过 `hello` / `price` 两句招呼。
  *   @source `loc_0042f8f6`（VA 0x0042f8f6，`0x401` 铺场那一支的尾巴）：
  *   ```asm
- *   0042f8e0  cmp dword [eax + 0x496b84], 0x3e8   ; 现金 < 1000
- *   0042f8f1  jge short loc_0042f8f6
- *   0042f8e5  push 4 / push 4 / push 0x405 / PostMessage   ; → 一闪即关（本屏的 noCash）
+ *   0042f8d7  cmp dword [eax + 0x496b84], 0x3e8   ; 现金 vs 1000（eax = 当前玩家 * 0x68）
+ *   0042f8e1  jge short loc_0042f8f6              ; ★ ≥ 1000 才走下面那两条招呼
+ *   0042f8e3  push 4                              ; lParam = 4 ⇒ 串 #0015
+ *   0042f8e5  push 4                              ; wParam = 4 ⇒ 状态 4
+ *   0042f8e7  push 0x405 / push ebp / call PostMessage
+ *   0042f8f4  jmp 0x42f90c                        ; ★ 直接跳过下面整段（连動畫那条判据都不看）
  *   0042f8f6  cmp byte [0x497159], 0              ; ← 「動畫過程」
  *   0042f8fd  je short loc_0042f905
- *   0042f8ff  push 0 / push 1 / jmp 0x42f8e7      ; 开：PostMessage(0x405, 1) → 走 hello
+ *   0042f8ff  push 0 / push 1 / jmp 0x42f8e7      ; 开：PostMessage(0x405, 1, 0) → 走 hello
  *   0042f905  mov byte [0x48c370], 3              ; 关：状态直接置 3 = pick
  *   ```
  *   状态 3 就是 `pick`（见 `LOT_PHASE_CODE`，与 `[0x48c370]` 一一对应）。
+ *
+ * ★★ **現金 < 1000 时连招呼都不说**：那条判据在「動畫過程」那条**之前**，而且
+ *   `jmp 0x42f90c` 把后面整段跳过去了 ⇒ 建窗**当场**就是状态 4、只说 `#0015`
+ *   （`0x42f930 mov [0x48c370], bl` = wParam 4 → `0x42f936 mov ebp,[edi*4+0x4755f8]`
+ *   edi = lParam 4 ⇒ `#0015` → `0x42f93e call 0x44ecb6` 画气泡 + 播）。
+ *   先前这里是先 `lotSay('hello')`（放 `#0011`）、等下一拍 `tick()` 才发现买不起 ——
+ *   那一声招呼原版根本不存在。
  */
-function resetUi(now: number, animate: boolean): void {
+function resetUi(now: number, animate: boolean, canAfford: boolean): void {
   ui.byeText = null;
-  // 动画关：`0x0042f905` 直接置 3、**不**调 `0x44ecb6` ⇒ 没有气泡
-  if (animate) lotSay('hello', now);
-  else {
+  if (!canAfford) {
+    // 0x0042f8e3 `push 4 / push 4`：状态 4 + 串 4 ⇒ **只说 #0015**（動畫开关都一样，见上面那条 `jmp`）
+    lotSay('noCash', now);
+  } else if (animate) {
+    lotSay('hello', now);
+  } else {
+    // 动画关：`0x0042f905` 直接置 3、**不**调 `0x44ecb6` ⇒ 没有气泡
     ui.phase = 'pick';
     ui.at = now;
     ui.bubbleUp = false;
@@ -928,9 +959,10 @@ function resetUi(now: number, animate: boolean): void {
  * **没有** `#NNNN` 前缀（如買地那句 `0x4639e1` =「%s\n\n費用:%d元\n\n是否買下此地？」，
  * 逐字节核过）⇒ 原版在那些待决交互上**一声不出**，本屏也不该出。
  *
- * @param pending 这一条 action 之后的那份 `state.pending`
+ * @param state 这一条 action 之后的那份状态（`pending` 就从它上面取）
  */
-function syncPending(pending: GameState['pending'], now: number, animate: boolean): void {
+function syncPending(state: GameState, now: number, animate: boolean): void {
+  const pending = state.pending;
   if (pending === ui.lastPending) return;
   if (pending === null) {
     ui.lastPending = null;
@@ -940,7 +972,9 @@ function syncPending(pending: GameState['pending'], now: number, animate: boolea
   //   它一走，下一个樂透 `pending` 依旧是「新的一屏」，照常从头演）。
   if (pending.kind !== 'lottery') return;
   ui.lastPending = pending;
-  resetUi(now, animate);
+  // ★ 买不买得起要在**开屏这一下**就判（原版 `WM_CREATE` 0x0042f8d7 那一条）：
+  //   買不起 ⇒ 直接状态 4（`#0015`），一声 `#0011` 都不说。
+  resetUi(now, animate, canAffordTicket(state));
 }
 
 /**
@@ -983,7 +1017,7 @@ export const lotteryScreen: UiScreen = {
   },
 
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
-    syncPending(after.pending, env.now, env.animation !== false);
+    syncPending(after, env.now, env.animation !== false);
     // ★ 樂透投注開屏的配乐 @source `ui_letou.asm:2938` `push 6 / call fcn_004549cf`
     //   ⇒ id 6 → `MIDI07.MID` → `midi07.mid`（见 `SCREEN_BGM.lottery`；
     //     開獎屏那一处是 `:3063` 的 `push 8` → MIDI09，归開獎屏）
@@ -1022,7 +1056,7 @@ export const lotteryScreen: UiScreen = {
       }
       return;
     }
-    syncPending(env.state.pending, env.now, env.animation !== false);
+    syncPending(env.state, env.now, env.animation !== false);
 
     const me = env.state.players[env.state.currentPlayer];
     // 现金不足 → 一闪即关（原版 `WM_CREATE` 里就 PostMessage(0x405, 4, 4)）
