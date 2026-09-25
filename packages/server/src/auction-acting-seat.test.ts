@@ -56,8 +56,10 @@ const run = existsSync(MAP) ? it : it.skip;
 // ★ 2026-09-24 換種子（第 24 份：魔法屋「向後轉」重挑來路要 `rand()`、機器娃娃不掃附身物件並走 `0x40e14d`、
 //   電腦用娃娃的判據不再把別人身上的神明當路上的 —— 對局走向又變了）：重掃 1..40：
 //   14 = 電腦回合真人舉牌 8 次，21 = 真人回合電腦舉牌 8 次（原 12 / 18 都掉到 0）。
+// ★ 2026-09-24 換種子（events 區 provenance 審計：神明老虎機自動轉 4 輪、新聞開拍接著同一隨機流、惡人只在停步那格勒索…
+//   對局走向又變了）：重掃 1..40：14 = 電腦回合真人舉牌 2 次（仍可用），10 = 真人回合電腦舉牌 5 次（原 21 掉到 0）。
 const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 14;
-const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 21;
+const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 10;
 const TURNS = 200;
 const HUMANS = 2;
 
