@@ -152,3 +152,64 @@ export function sellAllCards(
   }
   return { player: { ...player, cards: [] }, cardAmount: stock, points };
 }
+
+// ============================================================
+//  牌堆守恒（`0x499198[卡号 − 1]` + 全体手牌 = 開局 initAmount）
+// ============================================================
+
+/**
+ * 按原版「牌堆 + 手牌守恒」把牌堆校正到位 —— **幂等**：已经显式记过账的调用点不受影响。
+ *
+ * ★ 原版里手牌（`0x499120`，4 × 15 槽）只有三处写入，每一处都把**同一张卡**同时记进牌堆：
+ * ```asm
+ * ; receive_card 0x004412e4（抽卡格 / 福神 / 董事長 / 魔法屋 / 節日 / 搶奪 / 生日 / 公佈欄 / 小偷）
+ * 004412f2  cmp eax, 0xf / jne         ; 满 15 张
+ * 00441302  call 0x441343              ;   → 先 remove_card(最便宜的一张 0x44128f) ⇒ 那张 +1 回牌堆
+ * 00441331  mov byte [手牌空槽], 卡号
+ * 0044133b  dec byte [卡号 + 0x499197] ; ★ 收进来的那张 −1
+ * ; remove_card 0x00441343（出牌扣卡 30 处 / 被动卡 18..21 触发 / 卖卡 / 衰神丢卡 / 被抢）
+ * 0044139b  mov byte [末槽], 0          ; 左移一格
+ * 004413a2  inc byte [卡号 + 0x499197] ; ★ 回牌堆 +1
+ * ; sell_all_the_card 0x00441f21（破产 / 死神 / 魔法屋 / 命運 32）
+ * 00441f54  inc byte [卡号 + 0x499197] / 00441f6b 清槽
+ * ```
+ *   `xref 0x499197` 全库只有这三条写入（`0x0044133b` / `0x004413a2` / `0x00441f54`），
+ *   `xref 0x499120` 的写入也只有 `0x00441331` / `0x0044139b` / `0x00441f6b`（外加開局 memset、
+ *   存读档与時光機的整块拷贝 —— 这几处牌堆 `0x499198` 也一并拷）。
+ *   ⇒ 对每一张卡号，**牌堆 + 四人手牌之和**在原版里恒等于開局的 initAmount。
+ *
+ * 本引擎的卡片效果（`cards/*.ts`）、被动卡触发、`giveCard` 都只改 `player.cards`，
+ * 不碰牌堆 —— 先前**出牌从不回牌堆**、满手弃牌也不回，牌堆一路只减不增。本函数按上面的守恒
+ * 把「手牌这一段的净变化」反记到牌堆上：
+ *
+ *   defect[id] = (after 牌堆 − before 牌堆) + (after 手牌 − before 手牌)，after 牌堆 −= defect
+ *
+ * 显式记过账的（卖卡 / 衰神 / 抽卡扣牌堆 …）defect 已经是 0，不会被记两次。
+ */
+export function conserveCardPool(
+  beforePool: readonly number[],
+  beforePlayers: readonly Player[],
+  afterPool: readonly number[],
+  afterPlayers: readonly Player[],
+): number[] {
+  const n = Math.max(beforePool.length, afterPool.length);
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) out.push(afterPool[i] ?? 0);
+  let changed = false;
+  const held = (ps: readonly Player[]): Map<number, number> => {
+    const m = new Map<number, number>();
+    for (const p of ps) for (const id of p.cards) if (id > 0) m.set(id, (m.get(id) ?? 0) + 1);
+    return m;
+  };
+  const hb = held(beforePlayers);
+  const ha = held(afterPlayers);
+  for (let i = 0; i < n; i++) {
+    const id = i + 1;
+    const defect = (out[i]! - (beforePool[i] ?? 0)) + ((ha.get(id) ?? 0) - (hb.get(id) ?? 0));
+    if (defect !== 0) {
+      out[i] = out[i]! - defect;
+      changed = true;
+    }
+  }
+  return changed ? out : [...afterPool];
+}

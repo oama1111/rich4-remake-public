@@ -272,7 +272,7 @@ import {
 import {
   blessingLevelWithDraw,
 } from '../rules/blessing.ts';
-import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
+import { conserveCardPool, sellAllCards, sellAllTools } from '../rules/inventory.ts';
 import { ALIEN_HOSPITAL_DAYS, applyNewsEffect, type CompanyMutation, type LandMutation, type PriceChange } from '../events/news-effects.ts';
 // ★ 第 160 条：飛彈/核彈那一路**不再**用 `mutateFacility` —— `damage_area` 的
 //   設施轻击是另一份内联逻辑（`level == 0` 时照样清种类 + 放人，见 `fireMissile`）。
@@ -1831,16 +1831,17 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           }
         }
         if (out.cardDrawn !== 0) {
-          const cardAmount = [...next.cardAmount];
-          const at = out.cardDrawn - 1;
-          cardAmount[at] = Math.max(0, (cardAmount[at] ?? 0) - 1);
           // ★ 满手牌口径修正（2026-09-17）：原版抽卡走 `giveCard`（`0x004412e4`，
           //   `0x00441e12` 的抽卡格在 `0x00441e64` 正是 `call 0x4412e4`）——
           //   **满了先丢最便宜的一张再收新的**，不是"满了就不发"。
           //   见 `cards/rob.ts` 的 `giveCard`（照 `0x0044128f` 实现）。
-          next = withPlayer({ ...next, cardAmount }, state.currentPlayer, (p) => {
+          // ★★ 牌堆：抽到的那张 −1（`0x0044133b`），满手弃掉的那张 +1（`0x00441302` → `0x004413a2`）
+          //   —— 按守恒一次记齐（先前弃掉的那张不回牌堆）。
+          const handsBefore = next.players;
+          next = withPlayer(next, state.currentPlayer, (p) => {
             Object.assign(p, giveCard(p, out.cardDrawn));
           });
+          next = { ...next, cardAmount: conserveCardPool(state.cardAmount, handsBefore, next.cardAmount, next.players) };
           // ★★ 抽卡格的棕色訊息框「得到%s！」—— `%s` = 抽到的**卡片名**：
           //   @source 0x0041b355 `mov edi, [eax*8 + 0x47fdea]`（卡片表第 0 项 =
           //   name 指针，1 基编号 ⇒ `0x47fdea + id*8` 正是 `0x47fdf2 + id*8`）
@@ -3552,7 +3553,7 @@ function applyGodPower(
     // ── 福神：得 1 / 2 张随机卡 @source 0x0040ede7 / 0x0040eea8 ──
     case 'receiveCards': {
       let players = state.players;
-      const cardAmount = [...state.cardAmount];
+      let cardAmount = [...state.cardAmount];
       const godInfo = state.players[host]?.godInfo ?? 0;
       const godType = godInfo > 0 ? (state.objects[godInfo - 1]?.type ?? 0) : 0;
       // ★ 第八份试玩回报 #5：得卡时弹訊息框，`%s` = 神明名 `[0x47ed76 + 種類*4]`、
@@ -3565,8 +3566,10 @@ function applyGodPower(
         // @source `_rich4_player_receive_random_card` 0x441e12：袋空返回 0
         const id = drawRandomCard(rng, cardAmount);
         if (id === 0) break;
-        cardAmount[id - 1] = Math.max(0, (cardAmount[id - 1] ?? 0) - 1);
+        // ★ 牌堆：收的那张 −1、满手弃的最便宜那张 +1（`0x004412e4`）—— 第二张抽之前就要记好
+        const before = players;
         players = players.map((p, i) => (i === host ? giveCard(p, id) : p));
+        cardAmount = conserveCardPool(cardAmount, before, cardAmount, players);
         drawn.push(id);
       }
       if (drawn.length === 0) return { ...state, players, cardAmount };
@@ -5789,6 +5792,16 @@ export function reduceAll(
  * 故这里必须把更新后的牌堆写回状态，否则会反复抽到同一张。
  */
 function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
+  // ★★ 牌堆守恒：生日收卡（`0x441e77` 丢 +1 / `0x4412e4` 收 −1、满手弃 +1）、
+  //   嫁禍 19 / 免罪 21 触发扣卡（`0x441343` +1）都只改了手牌 —— 出口一次记齐（见 `conserveCardPool`）。
+  //   事件 32 变卖、破产清算已显式记账，守恒式里的 defect 为 0，不会重复。
+  const out = drawAndApplyFortuneInner(state, topo);
+  if (out === state || out.players === state.players) return out;
+  const cardAmount = conserveCardPool(state.cardAmount, state.players, out.cardAmount, out.players);
+  return cardAmount.every((v, i) => v === out.cardAmount[i]) ? out : { ...out, cardAmount };
+}
+
+function drawAndApplyFortuneInner(state: GameState, topo: MapTopology): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return state;
   // ★ `checkFortune` 的可行性判据要真数据：
@@ -6060,11 +6073,13 @@ function answerBirthdayCard(state: GameState, seat: number, cardId: number): Gam
     const r = applyRobCardCard(players, state.currentPlayer, seat, cardId);
     if (r.ok) players = r.players;
   }
+  // ★ 牌堆：交出的那张 +1 / 收进的 −1 相抵，寿星满手弃掉的最便宜那张 +1（`0x004412e4`）
+  const cardAmount = conserveCardPool(state.cardAmount, state.players, state.cardAmount, players);
   const rest = pending.seats.slice(1);
   // ★ 最后一位答完要把相位放回 `turnEnd` —— 否则 `endTurn`（它只认这一相位）
   //   永远轮不到，回合卡死在这里。
-  if (rest.length === 0) return { ...state, players, pending: null, phase: 'turnEnd' };
-  return { ...state, players, pending: { kind: 'birthdayCard', seats: rest } };
+  if (rest.length === 0) return { ...state, players, cardAmount, pending: null, phase: 'turnEnd' };
+  return { ...state, players, cardAmount, pending: { kind: 'birthdayCard', seats: rest } };
 }
 
 /**
@@ -6083,6 +6098,14 @@ const FORTUNE_MOTORBIKE_STOLEN = 10;
 const NEWS_AWARD_IDS: ReadonlySet<number> = new Set([8, 9, 10]);
 
 function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng): GameState {
+  // ★★ 牌堆守恒：新聞里嫁禍 19 / 免罪 21 触发扣卡（`0x441343` +1）只改了手牌 —— 出口一次记齐。
+  const out = drawAndApplyNewsInner(state, topo, rng);
+  if (out === state || out.players === state.players) return out;
+  const cardAmount = conserveCardPool(state.cardAmount, state.players, out.cardAmount, out.players);
+  return cardAmount.every((v, i) => v === out.cardAmount[i]) ? out : { ...out, cardAmount };
+}
+
+function drawAndApplyNewsInner(state: GameState, topo: MapTopology, rng?: WatcomRng): GameState {
   const lands = allEffectiveLands(state, topo);
   // ★★ 2026-09-19 修（§7.141，通道 2 `test_event_dispatch.py` 259/259 的 D2–D5）：
   //   先前这里给「設施 / 持股 / 企業 / 停牌」全传了空数组、`checkCommercialOwner` 恒 false
@@ -7116,8 +7139,13 @@ function transferListing(
       const at = from.cards.indexOf(item.id);
       if (at < 0) return null;
       from.cards.splice(at, 1);
-      to.cards.push(item.id);
-      return { ...state, players };
+      // ★ `0x00425893 call 0x4412e4`（receive_card）：买家满 15 张先弃最便宜的一张（回牌堆）
+      players[buyer] = giveCard(to, item.id);
+      return {
+        ...state,
+        players,
+        cardAmount: conserveCardPool(state.cardAmount, state.players, state.cardAmount, players),
+      };
     }
     default:
       return null;
@@ -7177,12 +7205,13 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
     } else {
       const cardId = drawRandomCard(rng, next.cardAmount);
       if (cardId !== 0) {
-        const cardAmount = [...next.cardAmount];
-        cardAmount[cardId - 1] = (cardAmount[cardId - 1] ?? 0) - 1;
-        // ★ 同上：满手牌时先丢最便宜的再收（原版统一走 `giveCard` 0x004412e4）
-        next = withPlayer({ ...next, cardAmount }, me, (p) => {
+        // ★ 同上：满手牌时先丢最便宜的再收（原版统一走 `giveCard` 0x004412e4）；
+        //   牌堆：收的 −1、弃的 +1（按守恒记，见 `conserveCardPool`）
+        const before = next;
+        next = withPlayer(next, me, (p) => {
           Object.assign(p, giveCard(p, cardId));
         });
+        next = { ...next, cardAmount: conserveCardPool(before.cardAmount, before.players, next.cardAmount, next.players) };
         gift = {
           kind: 'card',
           id: cardId,
@@ -7849,9 +7878,11 @@ function runTollTail(
       }
       if (use) {
         const owner = c.route.path === 'rent' ? rentOwnerOf(s, topo, c.route.landId) : -1;
+        // ★ 免費卡用掉 = `remove_card(付款人, 20)`（`0x00444b30 call 0x441343`）⇒ 回牌堆 +1（`0x004413a2`）
         s = withPlayer(s, c.payer, (q) => {
           Object.assign(q, consumeCard(q, PASSIVE_CARDS.FREE));
         });
+        s = { ...s, cardAmount: poolDelta(s.cardAmount, PASSIVE_CARDS.FREE, 1) };
         s = appendFreshNotice(s, {
           key: 'card.use',
           args: [CARDS.find((d) => d.id === PASSIVE_CARDS.FREE)?.name ?? ''],
@@ -7915,9 +7946,11 @@ function runTollTail(
         }
       }
       if (target !== -1) {
+        // ★ 嫁禍卡用掉 = `remove_card(付款人, 19)`（`0x004449ef call 0x441343`）⇒ 回牌堆 +1（`0x004413a2`）
         s = withPlayer(s, c.payer, (q) => {
           Object.assign(q, consumeCard(q, PASSIVE_CARDS.SCAPEGOAT));
         });
+        s = { ...s, cardAmount: poolDelta(s.cardAmount, PASSIVE_CARDS.SCAPEGOAT, 1) };
         s = { ...s, lastCardPlay: { player: c.payer, cardId: PASSIVE_CARDS.SCAPEGOAT, popup: false, answeredBy: target } };
         c = { ...c, who: target };
       }
