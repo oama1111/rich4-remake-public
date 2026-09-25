@@ -58,7 +58,7 @@ describe('命運 0 強制拆除房屋一棟', () => {
     const { rng, calls } = fakeRng(0);
     const out = applyFortuneEffect(0, { ...base(), rng });
     expect(out.unimplemented, '不再卡在 unimplemented').toBe(false);
-    expect(out.demolished).toEqual({ landId: 0, x: 111, y: 222, payout: 6000 });
+    expect(out.demolished).toEqual({ landId: 0, x: 111, y: 222, payout: 6000, kind: 'demolish' });
     // 3 × 2000 = 6000，**没有**乘 priceIndex(7)
     expect(out.amount).toBe(6000);
     expect(out.players[0]!.cash).toBe(7000);

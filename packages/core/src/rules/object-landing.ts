@@ -485,7 +485,7 @@ export interface ArrivalOutcome extends ObjectWorld {
  * ⚠️ 车是回**全局库存**，不是回玩家的道具栏——与換乘（`useVehicleTool`
  *   把旧车退成道具）方向不同。撞毁就是撞毁，捡不回来。
  */
-function wreckVehicle(p: Player, toolStock: number[]): boolean {
+export function wreckVehicle(p: Player, toolStock: number[]): boolean {
   // @source cmp dword [player + 0x32], 0 / jne 直接返回
   const b = p.blocking;
   if (b.inHotel !== 0 || b.disappearing !== 0 || b.inPrison !== 0 || b.inHospital !== 0) {

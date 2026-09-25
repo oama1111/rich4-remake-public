@@ -6021,12 +6021,22 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
   //   客户端 `syncViewTarget()` 会居中、演出收完自动复位
   //   —— 对应原版 `0x0044bee8 call 0x41d476(x, y, 2)` 与 `0x0044bf51` 的复位。
   if (out.demolished !== null) {
-    const { landId, x, y } = out.demolished;
-    const landLevel = [...applied.landLevel];
-    const landType = [...applied.landType];
-    landLevel[landId] = 0;
-    landType[landId] = 0;
-    applied = { ...applied, landLevel, landType, lastViewTarget: { x, y } };
+    const { landId, x, y, kind } = out.demolished;
+    if (kind === 'confiscate') {
+      // ★★ 2026-09-24（provenance 审计）：事件 1「強制徵收」`0x0044c0ce mov byte [ebx+0x19],0`
+      //   （owner）+ `0x0044c0d2 mov dword [ebx+0x30],0`（地契到期日）；等级 / 种类不动。
+      const landOwner = [...applied.landOwner];
+      const landTenure = [...applied.landTenure];
+      landOwner[landId] = 0;
+      landTenure[landId] = 0;
+      applied = { ...applied, landOwner, landTenure, lastViewTarget: { x, y } };
+    } else {
+      const landLevel = [...applied.landLevel];
+      const landType = [...applied.landType];
+      landLevel[landId] = 0;
+      landType[landId] = 0;
+      applied = { ...applied, landLevel, landType, lastViewTarget: { x, y } };
+    }
   }
   // ★ 事件 32：道具表 / 卡片库存写回 + 变卖所得进**點券**
   if (out.tools !== null || out.cardAmount !== null) {
@@ -6046,10 +6056,9 @@ function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
   }
   // ★ 事件 8/9 尾巴的特別融資收回：`push 0 / call 0x436b0a`
   if (out.recallFinance) applied = sweepSpecialFinance(applied, topo);
-  // ★ 2026-09-23：生日收卡（电脑寿星）每收一张弹一扇「搶得%s的\n\n%s」（`fcn_0044192a` 电脑支 `0x00441ab1`）
-  for (const rb of out.robbed ?? []) {
-    applied = appendFreshNotice(applied, { key: 'card.robbed', args: [playerName(applied, rb.victim), cardNameOf(rb.card)] });
-  }
+  // ★★ 2026-09-24（provenance 审计）：电脑寿星那一支**没有**框 —— `0x0044c46d push ebx / call 0x441e77`
+  //   → `0x0044c47e call 0x4412e4` → `0x0044c486 jmp 0x44c573`，根本不进 `fcn_0044192a`（那扇
+  //   「搶得%s的\n\n%s」是搶奪卡电脑支 `0x00441ab1` 的）。先前这里每收一张弹一扇，是借错了出处。
   // ★ 保險理賠的三处命運调用点：坐牢/住院走 send_to_*（0x0043d749 / 0x0043edf8）；
   //   「冒貸」（id 2，0x0044c218）与**命運罰款共用尾巴**（0x0044cf11）直接赔金额。
   // ★★ 第十四份試玩回報 #1：`0x0044cf11` 不只「行人闖越馬路罰款」（14）一条 ——

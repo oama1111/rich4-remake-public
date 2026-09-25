@@ -5,7 +5,6 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-import { CARDS } from '@rich4/data';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame as newGameRaw } from '../rules/new-game.ts';
 import { landAll } from '../testing/factories.ts';
@@ -292,21 +291,19 @@ describe('★ 命運 5 生日收卡：真人寿星**分帧**问每一位（T-055
     expect(s2.players[0]!.cards).toEqual([]);
   });
 
-  run('★ 2026-09-23：**电脑**寿星当场收完，每收一张弹一扇「搶得%s的\\n\\n%s」（`fcn_0044192a` 电脑支 0x00441ab1）', () => {
+  // ★★ 2026-09-24（provenance 审计）订正：电脑寿星那一支**没有**框（`0x0044c46d call 0x441e77` →
+  //   `0x0044c47e call 0x4412e4` → `jmp 0x44c573`），「搶得%s的」是搶奪卡 `0x00441ab1` 的，先前借错了出处。
+  run('★ **电脑**寿星当场收完、不弹「搶得」框；收走的牌先回牌堆再发给寿星（牌堆总数不变）', () => {
     const { topo, s } = birthdayScene();
     if (s === null) return;
     const ai: GameState = { ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, whoPlays: 2 } : p)) };
     const s2 = reduce(ai, { type: 'settle' }, topo);
     expect(s2.pending?.kind).not.toBe('birthdayCard');
     const got = s2.players[0]!.cards;
-    const robbed = s2.notices.filter((n) => n.key === 'card.robbed');
-    expect(robbed).toHaveLength(got.length);
     expect(got.length).toBeGreaterThan(0);
-    const names = ['沙隆巴斯', '忍太郎'];
-    robbed.forEach((n, k) => {
-      expect(n.args[0]).toBe(names[k]);
-      expect(n.args[1]).toBe(CARDS[got[k]! - 1]!.name);
-    });
+    expect(s2.notices.filter((n) => n.key === 'card.robbed')).toHaveLength(0);
+    const sum = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0);
+    expect(sum(s2.cardAmount)).toBe(sum(ai.cardAmount));
   });
 
   run('★ 答一位走一位：挑中的牌进寿星手里，全答完 pending 清空', () => {
