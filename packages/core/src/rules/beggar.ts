@@ -53,8 +53,14 @@ export function almsAmount(priceIndex: number): number {
  */
 export function beggarAt(players: readonly Player[], nodeId: number, me: number): number {
   // @source edi = 位图 & ~(1 << 我) —— 位图只有 4 位，即玩家 0..3
+  // ★★ 2026-09-24（provenance 审计）：位图是节点 +0x24 的占用位 —— 关押 / 住店 / 消失的人那一位是**清掉的**
+  //   （`0x0043d61d` / `0x0040d5d2` / `0x0040d444`），不能按 `nodeId` 算他在这一格。
   const others = players
-    .filter((p) => p.index !== me && p.nodeId === nodeId)
+    .filter((p) => {
+      if (p.index === me || p.nodeId !== nodeId) return false;
+      const b = p.blocking;
+      return b.inPrison === 0 && b.inHospital === 0 && b.inHotel === 0 && b.disappearing === 0;
+    })
     .map((p) => p.index)
     .sort((a, b) => a - b);
   const first = others[0];

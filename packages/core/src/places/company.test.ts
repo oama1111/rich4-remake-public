@@ -323,6 +323,8 @@ describe('★ 每日：保險期倒数；15 日分紅', () => {
   });
 });
 
+// ★★ 2026-09-24（provenance 审计）订正：間諜只在**停下来的那一格**取（`0x0041c447 cmp [0x48baf8],0 / jne`）
+//   ⇒ 这几条改成「走 1 步正好停在企業格上」；取款的记账（企業自己付、+0x28 归 0）见 `npc-audit.test.ts`。
 describe('★ 間諜取走盈餘 —— 负数就反向', () => {
   const topo = topoWith(INDUSTRY.bank);
   const line = (f: number): number => f + 1;
@@ -334,18 +336,18 @@ describe('★ 間諜取走盈餘 —— 负数就反向', () => {
     companyFunds[CID] = amount;
     return { ...s, companyFunds };
   }
-  it('盈餘 8000 → 間諜取 8000 给主人（進存款），公司盈餘不清', () => {
+  it('盈餘 8000 → 間諜取 8000 给主人（進存款）', () => {
     const s = withSurplus(8000);
     const rng = new WatcomRng();
     rng.setState(1);
-    const w = runNpc(NPC.spy, releaseNpc(1, 0, 2), s, topo, line, rng);
+    const w = runNpc(NPC.spy, releaseNpc(1, 0, 1), s, topo, line, rng);
     expect(w.events).toContainEqual({ kind: 'surplus', landlord: 1, amount: 8000, company: CID });
   });
-  it('★ 盈餘 −3000 → 主人替企業主掏 3000', () => {
+  it('★ 盈餘 −3000 → 事件带负数（企業账反而增加、主人存款减少）', () => {
     const s = withSurplus(-3000);
     const rng = new WatcomRng();
     rng.setState(1);
-    const w = runNpc(NPC.spy, releaseNpc(1, 0, 2), s, topo, line, rng);
+    const w = runNpc(NPC.spy, releaseNpc(1, 0, 1), s, topo, line, rng);
     expect(w.events).toContainEqual({ kind: 'surplus', landlord: 1, amount: -3000, company: CID });
   });
   it('自家公司不取；其他三个不取', () => {
@@ -353,7 +355,7 @@ describe('★ 間諜取走盈餘 —— 负数就反向', () => {
     for (const actor of [NPC.thief, NPC.robber, NPC.thug]) {
       const rng = new WatcomRng();
       rng.setState(1);
-      expect(runNpc(actor, releaseNpc(1, 0, 2), s, topo, line, rng).events.filter((e) => e.kind === 'surplus')).toEqual([]);
+      expect(runNpc(actor, releaseNpc(1, 0, 1), s, topo, line, rng).events.filter((e) => e.kind === 'surplus')).toEqual([]);
     }
   });
 });

@@ -943,6 +943,21 @@ function npcStepOnce(
     back[actorId] = 1;
     next = { ...next, hospitalOccupancy: back };
   }
+  // ★★ 2026-09-24（provenance 审计）：惡人停在惡犬上 —— 狗走（`0x0041b845 call 0x40e14d`，搭档土地公当场挑格，
+  //   那时惡人还站在那一格上）→ 進醫院（`0x0041b8ef call 0x43ec3f`，占用表置 1）。
+  const dog = walk.events.find((e) => e.kind === 'dog');
+  if (dog !== undefined && dog.kind === 'dog') {
+    const standing = next.specialActors.map((a, i) => (i === slot ? { ...a, nodeId: dog.node, place: ACTOR_PLACE.board } : a));
+    const rel = releaseObject(next, dog.object + 1);
+    const respawned = respawnPartner(
+      { ...next, specialActors: standing, objects: rel.objects, tools: rel.tools, toolStock: rel.toolStock },
+      topo,
+      rel.partner >= 0 ? { partner: rel.partner, nearNode: rel.formerNode } : null,
+    );
+    const back = [...next.hospitalOccupancy];
+    back[actorId] = 1;
+    next = { ...respawned, specialActors: next.specialActors, hospitalOccupancy: back };
+  }
   for (const who of settled.bankrupted) next = applyBankruptcy(next, who, topo);
   return next;
 }
@@ -2690,7 +2705,10 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         const gate = gateNodeOf(topo, place);
         if (gate > 0) {
           const specialActors = [...paid.specialActors];
-          specialActors[slotIdx] = releaseNpc(gate, state.currentPlayer, 0);
+          specialActors[slotIdx] = releaseNpc(gate, state.currentPlayer, 0, {
+            place,
+            gateSpecialKind: topo.nodes[gate - 1]?.specialKind ?? 0,
+          });
           paid = { ...paid, specialActors };
         }
       }
@@ -3294,29 +3312,38 @@ export function giveAlmsIfBeggar(state: GameState, topo: MapTopology, nodeId: nu
   // @source pay_money(我, -1, 金额, 0) —— 收款方 -1 即公库
   const r = transferMoney(state.players, [], state.pool, state.currentPlayer, -1, amount, 0);
 
+  // ★★ 2026-09-24（provenance 审计）：`pay_money` 付不出**当场**破产（`0x41d375 call 0x40cd87`，拍卖要 rand），
+  //   之后才 `0x0041b68f call 0x40cc56` 挪乞丐（`0x40aa6c` 挑格也要 rand）⇒ 破产在前。先前反过来。
+  let base: GameState = { ...state, players: r.players, pool: r.pool, notices };
+  if (r.bankrupted) base = applyBankruptcy(base, state.currentPlayer, topo);
+
   // @source call 0x40cc56 —— 清掉原格的占位，再挑一格把乞丐挪过去
   const rng = new WatcomRng();
-  rng.setState(state.rngState);
+  rng.setState(base.rngState);
   // ★ 挑格走的是 `0x40aa6c`（物件投放那个挑格器），它的筛选是
   //   `test dword [node + 0x24], 0x80ffff00` —— **玩家与物件一起跳过**。
   //   只看物件（或只看自己那一格）会漏：乞丐会落到「有人站着」或
   //   「已经有神明」的格子上，原版不可能出现。见 `rules/beggar.ts`、
   //   `rich4-spec/docs/systems/places.md` §5b.4。
-  const occupied = runtimeOccupiedNodes(r.players, state.objects, state.specialActors);
+  const occupied = runtimeOccupiedNodes(base.players, base.objects, base.specialActors);
   const spots = objectNodeCandidates(topo.nodes).filter((n) => !occupied.has(n));
   // ★ 走**远距**那一支：原版 `fcn_0040cc56` 把玩家当前节点当参照点传给
   //   `_rich4_find_random_unoccupied_distant_node`（`rich4.asm:6843` 的 `push eax`）
   //   —— 刚被施捨过的那一格不该立刻又冒出乞丐。
   const moved = pickObjectNodeDistant(spots, nodeId, nodeXyOf(topo), () => rng.next());
 
-  const players = r.players.map((p, i) => {
+  const players = base.players.map((p, i) => {
     if (i !== who || moved === 0) return p;
-    // ★ 位置三元组一起走（`@source 0x0040cc56` 把乞丐挪到另一格）
-    return placeOnNode({ ...p, lastNodeId: p.nodeId }, topo.nodes[moved - 1]);
+    const to = topo.nodes[moved - 1];
+    if (to === undefined) return p;
+    // ★★ 2026-09-24（provenance 审计）：来路 = 新格**第一个非 0 的邻居槽**（`0x0040ccb9..0x0040ccc6`），
+    //   朝向 = `0x407a8c(来路, 新格)`（`0x0040ccf2`）。先前把来路写成旧格。
+    const from = to.adjacentSlots.find((n) => n !== 0) ?? 0;
+    const fromNode = from === 0 ? undefined : topo.nodes[from - 1];
+    const direction = fromNode === undefined ? p.direction : directionOf(to.x - fromNode.x, to.y - fromNode.y);
+    return placeOnNode({ ...p, lastNodeId: from, direction }, to);
   });
-  const paid: GameState = { ...state, players, pool: r.pool, rngState: rng.getState(), notices };
-  // 施捨也可能把自己掏空 —— 与过路费同一条收口
-  return r.bankrupted ? applyBankruptcy(paid, state.currentPlayer, topo) : paid;
+  return { ...base, players, rngState: rng.getState() };
 }
 
 /**
@@ -4823,7 +4850,10 @@ function enterVisit(state: GameState, topo: MapTopology, specialKind: number): G
     const gate = gateNodeOf(topo, kind);
     if (gate > 0) {
       const specialActors = [...paid.specialActors];
-      specialActors[slotIdx] = releaseNpc(gate, state.currentPlayer, 0);
+      specialActors[slotIdx] = releaseNpc(gate, state.currentPlayer, 0, {
+        place: kind,
+        gateSpecialKind: topo.nodes[gate - 1]?.specialKind ?? 0,
+      });
       paid = { ...paid, specialActors };
     }
   }

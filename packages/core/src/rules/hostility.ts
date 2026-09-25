@@ -86,7 +86,10 @@ export function updateHostility(
     return { players: next, allianceBroken: false };
   }
 
-  const raw = current + delta;
+  // ★★ 2026-09-24（provenance 审计）：`0x0040dfa1 add edi, ecx` 是 **32 位有符号**加法，溢出会回绕成负
+  //   （之后 `0x0040dfa9 test edi,edi / jge` ⇒ 清 0）。几张卡把 double 当 int 压栈（`misalignedDoubleInt`）
+  //   一次就能加上 ~1.7e9，两次就溢出 —— JS 不回绕会存成 3.4e9。
+  const raw = (current + delta) | 0;
   const hostility = [...pa.hostility];
   // @source test edi,edi / jge / 置 0 —— 下限 0，无上限
   hostility[b] = raw < 0 ? 0 : raw;

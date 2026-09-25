@@ -400,6 +400,8 @@ function importedSpecialActors(save: SaveGame): SpecialActor[] {
       singleStep: rec.singleStep,
       hibernating: rec.hibernating,
       sleepwalkDays: rec.sleepwalkDays,
+      // +11 = 「老家」（`0x0041c7b1` 读它决定回哪儿），见 `SpecialActor.home`
+      ...(rec.nodeId > 0 ? { home: rec.f11 } : {}),
       place: rec.nodeId > 0 ? ACTOR_PLACE.board : initialPlace,
     };
   });

@@ -189,6 +189,15 @@ export interface SpecialActor {
    * ⚠️ 可省略 = 0（既有存档与测试替身不必补字段）。
    */
   sleepwalkDays?: number;
+  /**
+   * ★★ 2026-09-24（provenance 审计）：替身记录 **+11**（`0x498df3`）—— 「老家」：低 7 位 1 = 監獄 / 2 = 醫院，
+   *   bit7 = 已离开过（再踩到老家那一格就回去）。只在保釋放人时写（監獄 `0x0043d84e` = 1、醫院 `0x0043eefd` = 2，
+   *   门口那一格恰是監獄 / 醫院**落点格**（4 / 5）才当场 |0x80）；被送回去（`0x43d760` / `0x43ee0f` 的 NPC 支）清 0。
+   *   回老家的判据读它（`0x0041c7b1`），不是 actor 号。
+   *
+   * ⚠️ 可省略：老状态 / 老存档没有这一项 ⇒ 按 actor 号推（4/5 監獄、6/7 醫院）且视为已离开过（旧行为）。
+   */
+  home?: number;
   /** 在哪儿：棋盘 / 監獄 / 醫院 / 未出场 */
   place: ActorPlace;
 }
@@ -333,8 +342,14 @@ export function spawnDoll(state: GameState, owner: number): SpecialActor | null 
  * ⚠️ `last_node = 0` 是有讲究的：`pickNextNode` 拿 `prev === 0` 当
  *   「没有来路」，于是出獄第一步**四个方向都可以走**，不受「不走回头路」限制。
  */
-export function releaseNpc(gateNodeId: number, owner: number, steps: number): SpecialActor {
-  return {
+export function releaseNpc(
+  gateNodeId: number,
+  owner: number,
+  steps: number,
+  /** 从哪儿放出来的 + 门口那一格的落点类型（`node.flags & 0xff`）—— 写 +11，见 `SpecialActor.home` */
+  from?: { place: 'prison' | 'hospital'; gateSpecialKind: number },
+): SpecialActor {
+  const base: SpecialActor = {
     nodeId: gateNodeId,
     lastNodeId: 0,
     direction: 0,
@@ -344,6 +359,11 @@ export function releaseNpc(gateNodeId: number, owner: number, steps: number): Sp
     singleStep: 0,
     place: ACTOR_PLACE.board,
   };
+  if (from === undefined) return base;
+  // @source 監獄 0x0043d84e `mov byte [+0x0b],1` → 0x0043d86f `cmp edx,4 / jne` → `or byte [+0x0b],0x80`；醫院 0x0043eefd 同形（2 / 5）
+  const low = from.place === 'prison' ? 1 : 2;
+  const armed = from.gateSpecialKind === (from.place === 'prison' ? 4 : 5) ? 0x80 : 0;
+  return { ...base, home: low | armed };
 }
 
 /**
