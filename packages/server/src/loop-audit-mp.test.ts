@@ -88,4 +88,16 @@ describe('★ 审计 2026-09-24：回合循环修正在联机里同一条路', (
     expect(ok.ok).toBe(true);
     expect(room.state.phase).toBe('moving');
   });
+
+  run('★ 走子中再发 startTurn（想重掷）⇒ 拒收，镜像不动', () => {
+    const map = loadMap();
+    const s0 = newGame({ map, players: seats().map((s) => ({ character: s.character, kind: s.kind })), seed: 11, mode: 'multiplayer' });
+    const base: GameState = { ...s0, phase: 'awaitingRoll', players: s0.players.map((p) => ({ ...p, whoPlays: p.landingWhoPlays ?? p.whoPlays })) };
+    const room = new Room({ id: 'LOOPD', map, globalMapId: 0, seed: 11, seats: seats(), options: LOBBY_DEFAULT_OPTIONS, base: { state: base, snapshot: '' } });
+    room.start();
+    expect(room.submit(0, { type: 'rollDice' }).ok).toBe(true);
+    const fp = room.fingerprint;
+    expect(room.submit(0, { type: 'startTurn' }).ok).toBe(false);
+    expect(room.fingerprint).toBe(fp);
+  });
 });

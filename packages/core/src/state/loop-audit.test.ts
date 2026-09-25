@@ -214,3 +214,14 @@ describe('★ 读原版存档：工程車暂存（+0x64/+0x65）与朝向后备�
     expect([out[at + 0x11], out[at + 0x64], out[at + 0x65], out[at + 0x1b]]).toEqual([0x1b, 2, 3, 6]);
   });
 });
+
+describe('★ startTurn 只在 turnStart 相位受理（回合不能中途重开）', () => {
+  it('awaitingDecision / moving / awaitingRoll 里发 startTurn ⇒ 原样返回', () => {
+    for (const phase of ['awaitingDecision', 'moving', 'awaitingRoll', 'settling', 'turnEnd'] as const) {
+      const s = makeGameState({ players: [makePlayer({ index: 0, nodeId: 1 })], phase, stepsRemaining: 3 });
+      expect(reduce(s, { type: 'startTurn' }, ring)).toBe(s);
+    }
+    const ok = makeGameState({ players: [makePlayer({ index: 0, nodeId: 1 })], phase: 'turnStart' });
+    expect(reduce(ok, { type: 'startTurn' }, ring).phase).toBe('awaitingRoll');
+  });
+});

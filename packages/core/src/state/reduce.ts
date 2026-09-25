@@ -1561,6 +1561,11 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     }
 
     case 'startTurn': {
+      // ★ 审计 2026-09-25（loop，回放 20260924-181812507 现形）：只在 `turnStart` 相位受理。
+      //   先前没有相位闸 ⇒ 挂着落点问答（`awaitingDecision`）/ 走子中（`moving`）时再发一条 `startTurn`
+      //   会把这一回合**从头再开**（再掷一次骰）—— 联机里当班座位随手就能做到。原版回合开始只由
+      //   游标推进后的 `0x418c55` 进一次（`0x00418ebd` → 主循环），不存在「中途重开」。
+      if (state.phase !== 'turnStart') return state;
       const player = state.players[state.currentPlayer];
       if (player === undefined) return state;
       // ★ 还款提醒窗还开着（`0x43695e` 模态，在 `0x41c84f` 里）⇒ 回合还没真正开始，先关窗
