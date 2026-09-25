@@ -152,14 +152,18 @@ describe('★ 付租金会动用存款（与买地不同）', () => {
     expect(r.bankrupted).toBe(false);
   });
 
-  it('两个口袋都空则破产，地主只收到实付部分', () => {
+  it('两个口袋都空则破产，地主只收到实付部分（★ PAY-05：那一笔等清算拍卖打完才入账）', () => {
     const ps = players(false);
     ps[0] = makePlayer({ index: 0, cash: 300, moneyInBank: 200 });
     const lands = scene();
     const r = collectRent(ps, lands, 0, lands[0]!, 1);
     expect(r.bankrupted).toBe(true);
     expect(r.shares[0]!.amount).toBe(500); // 不是 1000
-    expect(r.players[1]!.moneyInBank).toBe(500);
+    // ★★ PAY-05（`0x0041d376 call 0x40cd87` 早于 `0x0041d387` 的收款分支）：
+    //   付款人破产时这一笔**不当场入账** —— 原版清算里的拍卖是阻塞调用，
+    //   收款人拿钱排在拍卖之后 ⇒ 由调用方（`finishToll`）挂进 `pendingQueue`。
+    expect(r.players[1]!.moneyInBank, '清算拍卖期间地主还没拿到钱').toBe(0);
+    expect(r.credits).toEqual([{ payee: 1, amount: 500, toCash: false }]);
   });
 });
 

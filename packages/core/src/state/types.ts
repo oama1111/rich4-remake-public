@@ -9,7 +9,7 @@
 
 import type { GameMode } from '../rng/policy.ts';
 import type { EventDeck } from '../events/deck.ts';
-import type { AuctionRequest, PendingInteraction } from '../rules/interaction.ts';
+import type { AuctionRequest, PendingInteraction, QueuedStep } from '../rules/interaction.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import type { StockHolding } from '../places/stock.ts';
 import type { CommercialOwnership } from '../places/commercial.ts';
@@ -1744,8 +1744,12 @@ export interface GameState {
    *   （见 `state/reduce.ts` 的 `startAuction` / `settleAuctionExplicit`）。
    *
    * 空数组 = 没有排队的拍卖（绝大多数时候）。
+   *
+   * ★ 2026-09-25（follow-up 审计）：队列项不只是「一场拍卖」了 —— 还有
+   *   「破产清算的下一抽」「挂着没入账的那笔钱」「推日期剩下的半段」，
+   *   见 `rules/interaction.ts` 的 `QueuedStep`。
    */
-  pendingQueue: AuctionRequest[];
+  pendingQueue: QueuedStep[];
 
   /**
    * ★ 推日期（`0x41cf67`）里开出了拍卖（分紅打破產的下線拍卖）时，新当前玩家的回合边界

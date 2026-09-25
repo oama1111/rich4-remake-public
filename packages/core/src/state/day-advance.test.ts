@@ -4,11 +4,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
+import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
 import { initialCardAmounts } from '../rules/new-game.ts';
 import type { GameState } from './types.ts';
 import { LOTTERY_DRAW_DAY } from '../places/lottery.ts';
+import { DIVIDEND_DAY } from '../places/company.ts';
+import { isAlive } from './types.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 
 const topo = { nodes: [makeNode({ id: 1, adjacent: [1] })] };
@@ -209,5 +211,106 @@ describe('★★ 節日送卡（0x00452444：節日表旗标 & 8）', () => {
     // 别的日子不送
     const plain = endTurn({ ...base, day: 20 });
     expect(plain.players.every((p) => p.cards.length === 0)).toBe(true);
+  });
+});
+
+/**
+ * ★★ STK-57：分紅破产**当场**清算（`0x0042beba call 0x40cd87`），
+ *   而開獎 / 月结 / 地契到期都排在它**之后**。
+ *
+ * ```asm
+ * 0042be6d  …逐位玩家：存款 += 累計… 0042beba call 0x40cd87   ; ★ 清算 + 拍卖（阻塞）
+ * 0042bec5  ret
+ * 0041d080  cmp eax, 0xf → 分紅                                  ; 上面那一段
+ * 0041d094  call 0x431712                                        ; 樂透開獎（之后）
+ * 0041d09e  call 0x439bfa                                        ; 月結（之后）
+ * 0041d0ff  …逐块地/設施：到期日 == 今天 → 无主                     ; （之后）
+ * ```
+ * ★ 本引擎的拍卖是待决交互 ⇒ 清算把下线拍卖挂出来后，剩下的半段
+ *   （`{kind:'dayRolloverTail'}`）要等那串拍卖打完才跑。
+ */
+describe('★★ STK-57：分紅破产当场清算，開獎 / 地契到期排在清算之后', () => {
+  const lands = [1, 2, 3, 4, 5].map((id) => makeLand({ id, name: 'A', type: 0, landPrice: 1000, housePrice: 100 }));
+  const topo2 = {
+    nodes: [makeNode({ id: 1, adjacent: [1] })],
+    lands,
+    // 一家盈餘為負的企業（`companyFunds[id]`），玩家 0 持股 1000
+    commercials: [{ id: 0, x: 0, y: 0, name: 'C', stockIndex: 0, landPrice: 0, type: 0, assetValue: 0 }],
+  } as unknown as Parameters<typeof reduce>[2];
+
+  const scenario = (): GameState => {
+    const lottery = new Array<number>(36).fill(0);
+    for (let i = 0; i < 4; i++) lottery[i] = 1; // 玩家 0：4 张
+    for (let i = 10; i < 22; i++) lottery[i] = 2; // 玩家 1：12 张（>10 ⇒ 必开）
+    const holdings = [0, 1, 2, 3].map(() => Array.from({ length: 12 }, () => ({ amount: 0, avgCost: 0 })));
+    holdings[0]![0] = { amount: 1000, avgCost: 0 };
+    const companyFunds = new Array<number>(16).fill(0);
+    companyFunds[0] = -100_000; // 亏损企业 ⇒ 每人分紅 = trunc(-100000 × 1.0) = -100000
+    const landOwner = new Array<number>(64).fill(0);
+    for (const l of lands) landOwner[l.id] = 1; // 玩家 0 名下 5 块 ⇒ 清算要开 3 场拍卖
+    landOwner[9] = 2; // 玩家 1 另有一块，地契明天到期（见下）
+    const landTenure = new Array<number>(64).fill(0);
+    const day15 = ((1998 << 16) | (3 << 8) | 15) >>> 0;
+    landTenure[9] = day15; // @source 到期日 == 今天 ⇒ 无主
+    return makeGameState({
+      year: 1998,
+      month: 3,
+      day: 14, // 推进后 = 15 = 分紅日 = 開獎日
+      players: [
+        makePlayer({ index: 0, character: 0, whoPlays: 1, cash: 0, moneyInBank: 1000 }),
+        makePlayer({ index: 1, character: 1, whoPlays: 1 }),
+        makePlayer({ index: 2, character: 2, whoPlays: 1 }),
+        makePlayer({ index: 3, character: 3, whoPlays: 1 }),
+      ],
+      landOwner,
+      landTenure,
+      landLevel: new Array<number>(64).fill(0),
+      landType: new Array<number>(64).fill(0),
+      holdings,
+      companyFunds,
+      lottery,
+      pool: 500_000,
+    });
+  };
+
+  /** 用**本场景的 topo**（带地块与企業）推进一天 */
+  const rollDay = (): GameState =>
+    reduce({ ...scenario(), phase: 'turnEnd', currentPlayer: 3 }, { type: 'endTurn' }, topo2);
+
+  it('★ 分紅压破產 ⇒ 先挂清算拍卖；開獎 / 地契到期都还没走', () => {
+    const s = rollDay();
+    expect(s.day).toBe(DIVIDEND_DAY);
+    expect(isAlive(s.players[0]!), '分紅压破產').toBe(false);
+    expect(s.pending?.kind, '清算拍卖已经挂出来').toBe('auction');
+    // ★ 出局者的 4 张号码在**抽签之前**就放掉了（`0x40d1a8..0x40d1c4`），
+    //   但他不参加今天的開獎 ⇒ 号码表里只剩玩家 1 的 12 张
+    expect(s.lottery.filter((v) => v === 1)).toHaveLength(0);
+    expect(s.lottery.filter((v) => v !== 0)).toHaveLength(12);
+    // ★ 開獎还没发生（`0x41d094` 排在 `0x42beba` 之后）
+    expect(s.lastLotteryDraw, '清算拍卖没打完就不開獎').toBeNull();
+    // 奖池只会因清算变卖破产者持股而**增加**（`0x0040d16f` 的卖股进公库），绝不减少
+    // —— 開獎把奖池发出去这一步还没走
+    expect(s.pool).toBeGreaterThanOrEqual(500_000);
+    // ★ 地契到期也还没扫（`0x41d0ff` 同样在后）
+    expect(s.landOwner[9], '到期地仍挂在原主名下').toBe(2);
+  });
+
+  it('★ 三场清算拍卖打完 ⇒ 才開獎、才清到期地契', () => {
+    let cur = rollDay();
+    let auctions = 0;
+    while (cur.pending?.kind === 'auction' && auctions < 10) {
+      auctions++;
+      cur = reduce(cur, { type: 'auction', winner: -1, price: 0 }, topo2);
+    }
+    expect(auctions, '释放 5 处 ⇒ 拍 3 场').toBe(3);
+    expect(cur.pending).toBeNull();
+    expect(cur.pendingQueue, '队列清空（剩下的半段已跑完）').toEqual([]);
+    // 開獎：只有玩家 1 的号码在池子里
+    expect(cur.lastLotteryDraw, '拍卖打完才開獎').not.toBeNull();
+    expect(cur.pool, '奖池全数派出').toBe(0);
+    expect(cur.players[1]!.cash).toBeGreaterThanOrEqual(500_000);
+    // 地契到期：那块地变无主
+    expect(cur.landOwner[9]).toBe(0);
+    expect(cur.landTenure[9]).toBe(0);
   });
 });
