@@ -41,6 +41,7 @@ import {
   detectAreaMonopoly,
   detectBankrupt,
   detectBigWealthLine,
+  detectDemolishedHouse,
   detectDreamCard,
   detectGodArrived,
   detectGodLeft,
@@ -674,6 +675,30 @@ describe('付錢 / 罰款 ⇒ 事件 9..11 / 12..14 / 18', () => {
     // 9 那一面就是回报里要的那句
     const nine = speechLinesFor(a, [{ player: 0, event: 9, order: 'afterStage' }]);
     expect(nine.map((l) => l.bubble.lines.join(''))).toEqual(['啊啊啊…世事無常…']);
+  });
+
+  it('★★ A-2：命運 1「強制徵收土地」⇒ 被徵收的人也说要倒霉台词（事件 3|4，`0x0044c0e3 jmp 0x44bf46`）', () => {
+    // @source 事件 1 施加支 `0x0044c0e3 jmp 0x44bf46` → 与事件 0 共用尾巴：
+    //   `0x0044bf86 call rand / and eax,1` → `0x0044bf9f call 0x44ef41(cur, 2, 台词)`。
+    //   先前 `demolishedHouseThisAction` 只认 `ev.id === 0` ⇒ 被徵收的人一声不吭。
+    for (const id of [0, 1]) {
+      const [b, a] = step((before, after) => {
+        before.rngState = 12345;
+        after.rngState = 54321;
+        after.lastEvent = { kind: 'fortune', id };
+        // core 在 `0x0044bf86` 掷的那一次（奇数 ⇒ 槽 4「唉呦喂呀」）
+        after.lastSpeechRolls = [{ site: SPEECH_RAND_SITE.demolished, player: 0, value: 1 }];
+      });
+      expect(detectDemolishedHouse(b, a), `命運 ${id}`).toEqual([{ player: 0, event: 4, expression: 2 }]);
+      // 偶数那一面 ⇒ 槽 3「我慘了」
+      expect(detectDemolishedHouse(b, { ...a, lastSpeechRolls: [{ site: SPEECH_RAND_SITE.demolished, player: 0, value: 0 }] }))
+        .toEqual([{ player: 0, event: 3, expression: 2 }]);
+    }
+    // 其余命運（没有 `0x451985` / 没有这句台词）不认
+    const [b2, a2] = to((s) => {
+      s.lastEvent = { kind: 'fortune', id: 2 };
+    });
+    expect(detectDemolishedHouse(b2, a2)).toEqual([]);
   });
 
   it('★★ 钱进了企业（董事長收費 / 保險費）⇒ 付款人**照样**说 9..11（第八份试玩回报 #1；@source 0x0041b006 call 0x44f42d）', () => {
