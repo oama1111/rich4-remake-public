@@ -209,6 +209,12 @@ export class Room {
    * 故校验以回调形式交给定序器，而不是事后回滚。
    */
   submit(seat: number, action: Action): { ok: true; broadcast: Broadcast } | { ok: false; reason: string } {
+    // ★ pt26：座位发来的 `setAi` **只能改自己那一座**。原版託管AI 屏是一台机器一只鼠标，
+    //   联机里「别人的座位」就是别人的机器 —— 客户端那一屏也只提交本机座位那一行（`aiCanEdit`）。
+    //   服务器自己的接管 / 归还走 `submitSystem`，不经过这里。「只在轮到自己时受理」那一道由定序器照旧把关。
+    if (action.type === 'setAi' && action.player !== seat) {
+      return { ok: false, reason: 'notYourSeat' };
+    }
     // ★ 把「镜像能否推进」作为合法性判据交给定序器：
     //   只有推进成功才会拿到序号，故日志里绝不会出现无法施加的记录。
     let advanced: GameState | null = null;

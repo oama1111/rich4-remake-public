@@ -311,6 +311,45 @@ export function parseAmountHitMap(bytes: Uint8Array | null): Uint8Array | null {
 }
 
 /**
+ * 本局载到的那张 id 图（`main.ts` 开局 `readRawBytes(Panel.mkf, 0x16)` 交进来）；
+ * `null` = 没载到（无素材的单测 / 素材闸门没过）→ 各处退回矩形表。
+ */
+let amountHitMap: Uint8Array | null = null;
+
+/** `main.ts` 开局调：交上 `parseAmountHitMap(readRawBytes(archives, 'Panel.mkf', AMOUNT_WINDOW.hitResource))` */
+export function setAmountHitMap(map: Uint8Array | null): void {
+  amountHitMap = map;
+}
+
+/** `dialog.ts` 的 `hitDialog` 取这张图 */
+export function getAmountHitMap(): Uint8Array | null {
+  return amountHitMap;
+}
+
+/**
+ * **照 exe 取号**：舞台坐标 → 窗内坐标 → 查 id 图那一个字节。窗外返回 `null`。
+ *
+ * @source `fcn_00452c02` 的 0x201 / 0x203（`loc_00452d0e`）：
+ * ```asm
+ * 00452d13  sub eax, [0x48cab8]             ; lx = x − 窗 x
+ * 00452d38  test ebx,ebx / jl 走 · cmp ebx,0x80 / jg 走    ; 0 ≤ lx ≤ 0x80（★ 两端都含）
+ * 00452d44  test eax,eax / jl 走 · cmp eax,0xc0 / jg 走    ; 0 ≤ ly ≤ 0xc0
+ * 00452d4f  edi = (ly << 7) + lx
+ * 00452d5b  mov al, [edi + [0x48ca9c]]     ; ★ 就是这个字节，0 也照收
+ * ```
+ * ★ 闭区间：`lx = 0x80` 读到的是下一行第 0 格（同一个线性下标），这里照同一个式子算；
+ *   `ly = 0xc0` 那一行已在图外（原版读到图后面的内存），按 0 处理。
+ * ★ 实际素材（`assets-clean/Panel/0022.bin`）里**没有 0**：窗底整片是 1（拖窗把手），
+ *   钮是 2..0xf，金额栏是 0x10 —— 所以原版点窗里空白是**拖窗、不响**。
+ */
+export function amountPixelId(map: Uint8Array, sx: number, sy: number): number | null {
+  const lx = Math.floor(sx - AMOUNT_WINDOW.x);
+  const ly = Math.floor(sy - AMOUNT_WINDOW.y);
+  if (lx < 0 || lx > 0x80 || ly < 0 || ly > 0xc0) return null;
+  return map[(ly << 7) + lx] ?? 0;
+}
+
+/**
  * 用**逐像素 id 图**判命中 —— 与原版完全同一条路（鼠标 → 窗内坐标 → 取字节）。
  *
  * @param map `parseAmountHitMap` 的产物；`null` 时退回矩形表（`amountWindowHit`）

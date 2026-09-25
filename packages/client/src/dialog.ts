@@ -49,7 +49,7 @@ import {
   type SpriteFn,
 } from './gameui.ts';
 import { AMOUNT_KEY_RECTS, AMOUNT_WINDOW, amountButtonDownSound, amountSlotOfId } from './amount-keys.ts';
-import { drawAmountWindow } from './amount-window.ts';
+import { amountPixelId, drawAmountWindow, getAmountHitMap } from './amount-window.ts';
 import { boardToScreen, pointInGo, type GoPos } from './go-button.ts';
 import { LAYOUT } from './stage.ts';
 import { BOX_TEXT_STYLE, FONT_FAMILY, drawGdiText, gdiFont } from './font.ts';
@@ -330,7 +330,12 @@ export type DialogHit =
    * ★ 2026-09-16 加（B-5(i)/B-6(i)）：把命中交给 `AMOUNT_SLOT_BY_ID`
    *   那套语义（数字/退格/C/M/Enter/金额栏光标），而不是自己排五颗钮。
    */
-  | { kind: 'amountSlot'; id: number };
+  | { kind: 'amountSlot'; id: number }
+  /**
+   * 按在填数窗里、但不是 2..0xf 那几颗钮：id 图上的 `0`（空白）/ `1`（拖窗把手）/ `0x10`（金额栏）等。
+   * 只在载到 id 图时出现（`getAmountHitMap`）；抬手什么都不办，按下要不要响由 `amountButtonDownSound` 定。
+   */
+  | { kind: 'amountPad'; id: number };
 
 /** 正在填数的那一页；`null` 表示还在选项页 */
 export interface AmountPage {
@@ -595,6 +600,10 @@ export class AmountPressLatch {
       case 'amountSlot':
         this.pressed = hit;
         return { consumed: true, sound: amountButtonDownSound(hit.id) };
+      case 'amountPad':
+        // 0 = 空白：照样响 7（0x00452d8e 之前只拦 1 和 0x10）；1 = 拖窗、0x10 = 金额栏：不响。
+        // 抬手（`loc_00452fce`）只认 2..0xf ⇒ 这几号都不记，抬手不办事。
+        return { consumed: true, sound: amountButtonDownSound(hit.id) };
       case 'amountStep':
       case 'amountMax':
       case 'amountOk':
@@ -648,6 +657,16 @@ export function hitDialog(
   y: number,
 ): DialogHit | 'inside' | null {
   const l = layoutDialog(ctx, ui, page);
+  // ★ 填数窗：载到 `Panel.mkf` #0x16 那张逐像素 id 图时，**照 exe 取号**（`amountPixelId`）——
+  //   窗内（闭区间 0..0x80 × 0..0xc0）一律以那一个字节为准；没载到就走下面的矩形表。
+  //   本引擎自己补的「取消」钮在窗下方、不在这一块里，仍由按钮表接。
+  if (l.amountWindow === true) {
+    const map = getAmountHitMap();
+    if (map !== null) {
+      const id = amountPixelId(map, x + LAYOUT.board.x, y + LAYOUT.board.y);
+      if (id !== null) return id >= 2 && id <= 0xf ? { kind: 'amountSlot', id } : { kind: 'amountPad', id };
+    }
+  }
   for (const b of l.buttons) if (inRect(x, y, b.rect)) return b.hit;
   // ★ 落在框上但没中按钮：也要**吃掉**这一次点击，否则会穿透到棋盘上
   //   去选格子 —— 那正是「点了个按钮结果棋子动了」这类怪事的来源。

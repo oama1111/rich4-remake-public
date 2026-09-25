@@ -480,7 +480,7 @@ describe('drawAiSettings', () => {
 
   it('★ 原版的字面写法照抄（「個 性」中间有空格）', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, ROWS, null, () => sprite());
+    drawAiSettings(f.ctx, s, ROWS, () => sprite());
     expect(f.texts).toContain('託管AI');
     expect(f.texts).toContain('個 性');
     expect(f.texts).toContain('資金運用比例');
@@ -492,7 +492,7 @@ describe('drawAiSettings', () => {
 
   it('★ 比例只画**填充**，不画数字（原版没有百分比文字，加数字属「改良」）', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 70, stockRatio: 15 }], null, () => sprite());
+    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 70, stockRatio: 15 }], () => sprite());
 
     expect(f.texts.some((t) => t.includes('%'))).toBe(false);
     // ★ 格数 = [比例 / 10]：70 → 7 格，15 → 1 格（不是两条按比例的长条）
@@ -510,25 +510,25 @@ describe('drawAiSettings', () => {
 
   it('★ 满档 = 10 格（不是 11 格，也不是「长度铺满」）', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 100, stockRatio: 100 }], null, () => sprite());
+    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 100, stockRatio: 100 }], () => sprite());
     expect(f.rects).toHaveLength(20);
   });
 
   it('比例为 0 时不填（免得画出一条 0 宽的线）', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 0, stockRatio: 0 }], null, () => sprite());
+    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 0, stockRatio: 0 }], () => sprite());
     expect(f.rects).toHaveLength(0);
   });
 
   it('没有草稿（没人是真人）也画得出来', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, [], null, () => sprite());
+    drawAiSettings(f.ctx, s, [], () => sprite());
     expect(f.texts).toContain('託管AI');
   });
 
   it('精灵全缺也不抛（底图没到就只剩文字）', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, ROWS, null, () => null);
+    drawAiSettings(f.ctx, s, ROWS, () => null);
     expect(f.texts).toContain('託管AI');
   });
 });
@@ -568,7 +568,7 @@ describe('★ gap-audit #20 / Q-LAYOUT-1 结案：图 1 / 图 2（116×86）盖�
       { player: 0, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 0, cashRatio: 50, stockRatio: 30 },
       { player: 1, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 0, cashRatio: 50, stockRatio: 30 },
     ];
-    drawAiSettings(ctx, state, rows, null, sp);
+    drawAiSettings(ctx, state, rows, sp);
     const plates = draws.filter((d) => d.res === AI_RESOURCE && (d.index === AI_ROW_ON || d.index === AI_ROW_OFF));
     expect(plates).toEqual([
       { res: AI_RESOURCE, index: AI_ROW_OFF, x: AI_PLATE_X, y: rowY(0), n: 0 },
@@ -726,7 +726,7 @@ describe('★ pt26 #1：玩家行 —— 点没选中的只选中，点已选中
     const sp = (_a: string, _res: number, index: number): Sprite =>
       ({ bitmap: { index } as unknown as ImageBitmap, width: 15, height: 15, anchorX: 0, anchorY: 0 });
     const state = { players: [player({ index: 0 }), player({ index: 1 }), player({ index: 2 })], currentPlayer: 0 } as unknown as GameState;
-    drawAiSettings(ctx, state, two(), null, sp, 1);
+    drawAiSettings(ctx, state, two(), sp, 1);
     // 第 1 行：aiFlags 1（只亮「使用卡片」）+ 個性 2（大老奸）→ 两颗亮点，都在圆点列上
     const dots = images.filter((d) => d.x === AI_DOT_X - 7);
     expect(dots.map((d) => d.y + 7)).toEqual([AI_DOT_AT[0], AI_DOT_AT[4]]);
@@ -752,5 +752,23 @@ describe('★ pt26 #1：確定只发变过的行；联机只发本机座位那�
     expect(acts).toEqual([
       { type: 'setAi', player: 2, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 1, cashRatio: 50, stockRatio: 30 },
     ]);
+  });
+});
+
+describe('★ pt26：託管AI 屏没有悬停高亮 @source loc_0041de2e（WM_MOUSEMOVE 只管按住滑槽）', () => {
+  it('drawAiSettings 不画任何描边框', () => {
+    let strokes = 0;
+    const ctx = {
+      font: '', fillStyle: '', strokeStyle: '', lineWidth: 1, textAlign: 'left', textBaseline: 'top',
+      save: () => undefined, restore: () => undefined, translate: () => undefined,
+      drawImage: () => undefined, fillRect: () => undefined, fillText: () => undefined, strokeText: () => undefined,
+      strokeRect: () => {
+        strokes++;
+      },
+      measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
+    } as unknown as CanvasRenderingContext2D;
+    const s = { players: [player({ index: 0 })], currentPlayer: 0 } as unknown as GameState;
+    drawAiSettings(ctx, s, ROWS, () => null, 0);
+    expect(strokes).toBe(0);
   });
 });

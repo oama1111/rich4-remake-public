@@ -114,7 +114,6 @@ import {
   aiCommitActions,
   openAiSettingsModel,
   type AiSettingRow,
-  type AiSettingsHit,
   type AiSettingsModel,
 } from './ai-settings.ts';
 import {
@@ -163,7 +162,7 @@ import {
 } from './facility-picker.ts';
 import { needsStealPick, openStealPicker, resetStealPicker, stealPickerOpen } from './steal-picker.ts';
 import { staleLocalModals, type LocalModal } from './turn-modals.ts';
-import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue } from './amount-window.ts';
+import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue, parseAmountHitMap, setAmountHitMap } from './amount-window.ts';
 import {
   Hud,
   SIDEBAR,
@@ -406,6 +405,7 @@ import {
 import { stockAmountForm, stockCounterTradeSound } from './amount-form.ts';
 // ★ 通用填数窗**自己那张键盘表**（@source `loc_00452e4b`）：0-9 / 退格 / C / M / H / Enter。
 import {
+  AMOUNT_WINDOW,
   amountKeyOfVk,
   amountKeySound,
   amountKeyStep,
@@ -3779,7 +3779,6 @@ function openAiSettings(from: Screen): void {
   // 选中行的初值：轮到的那位（原版 `[0x49910c]`）；联机里本机只动得了自己那一座 ⇒ 用本机座位
   aiModel = openAiSettingsModel(state, net !== null ? net.seat : state.currentPlayer, aiLastSel);
   aiLastSel = aiModel.sel;
-  aiHot = null;
   screen = 'aiSettings';
   requestRender();
 }
@@ -3794,7 +3793,6 @@ function closeAiSettings(commit: boolean): void {
   const draft = aiModel?.rows ?? null;
   if (aiModel !== null) aiLastSel = aiModel.sel;
   aiModel = null;
-  aiHot = null;
   screen = aiReturn;
 
   if (commit && draft !== null) {
@@ -6721,7 +6719,6 @@ let aiModel: AiSettingsModel | null = null;
  * 轮到的不是真人时沿用上一次的值（`aiInitialSelection`）。
  */
 let aiLastSel = 0;
-let aiHot: AiSettingsHit | null = null;
 let aiReturn: Screen = 'game';
 
 /** 联机大厅的房间快照（服务器给的；本机不改它）——不在大厅时为 null */
@@ -8801,7 +8798,7 @@ function requestRender(): void {
       stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
       const m = aiModel;
       drawAiSettings(
-        stageCtx, state, m?.rows ?? [], aiHot,
+        stageCtx, state, m?.rows ?? [],
         (archive, resource, index) => spriteNow(archive, resource, index, true),
         m?.sel ?? 0,
       );
@@ -10607,20 +10604,14 @@ function bindInput(): void {
       return;
     }
     if (screen === 'aiSettings') {
-      // 命中测试用的是**对话框相对坐标**，这里减掉居中偏移
+      // ★ 原版 `WM_MOUSEMOVE`（`loc_0041de2e`）只做一件事：按住滑槽时跟着改值 —— **没有悬停高亮**
       const local = { x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y };
-      // ★ 按住滑槽拖动：跟着改值（原版 `WM_MOUSEMOVE` `loc_0041de2e`）
       if (aiModel !== null) {
         const dragged = aiSettingsDrag(aiModel, local, aiCanEdit);
         if (dragged !== aiModel) {
           aiModel = dragged;
           requestRender();
         }
-      }
-      const hit = hitAiSettings(local, aiModel?.rows ?? [], aiModel?.sel ?? 0);
-      if (JSON.stringify(hit) !== JSON.stringify(aiHot)) {
-        aiHot = hit;
-        requestRender();
       }
       return;
     }
@@ -12954,6 +12945,9 @@ async function boot(): Promise<void> {
     // 企鵝挖寶的命中表（Panel.mkf #81，640×480 每像素 = 格号）—— 同一个已过素材闸门的 Panel.mkf，
     // 取原始字节即可（D-MINI-2 已解，原版 0x00414ae1..0x00414b2f 逐像素查）
     setPenguinHitMask(parsePenguinHitMask(readRawBytes(archives, 'Panel.mkf', PENGUIN_HIT_RES)));
+    // 通用填数窗的逐像素 id 图（Panel.mkf #0x16，128×192，每像素 = 钮号）—— 同一条 raw 出口；
+    //   载到了 `hitDialog` 就照 exe 取号（`amountPixelId`，0x00452d4f..0x00452d5b），没载到退回矩形表
+    setAmountHitMap(parseAmountHitMap(readRawBytes(archives, 'Panel.mkf', AMOUNT_WINDOW.hitResource)));
     // 新聞/命運 插画 + 抽卡 卡面也是无头 RGB555 块 —— 同一条 raw 出口，
     // 解好一张催一帧（图异步到，画的时候可能还没有）
     onEventBoxArtReady(requestRender);

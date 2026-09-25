@@ -314,3 +314,100 @@ describe('★ 訊息框 / 询问框的字：整块竖直居中在锚点 (0xdc,0x
     expect(Math.abs((m[0]! - 8 + (m[1]! + 7)) / 2 - 100)).toBeLessThanOrEqual(0.5);
   });
 });
+
+describe('★ pt26 #3b：填数窗照 exe 的逐像素 id 图取号（Panel.mkf #0x16）@source 0x00452d38..0x00452d95', () => {
+  // 延迟导入：这几样只这一段用
+  const load = async () => {
+    const d = await import('./dialog.ts');
+    const w = await import('./amount-window.ts');
+    const k = await import('./amount-keys.ts');
+    return { ...d, ...w, ...k };
+  };
+  const amountUi = ui({
+    choices: [
+      {
+        label: '存款',
+        action: { type: 'bank', op: 'deposit', amount: 0 },
+        amount: { label: '存多少', max: 9000, step: 1000, fill: (n) => ({ type: 'bank', op: 'deposit', amount: n }) },
+      },
+    ],
+  });
+  const page = { choice: 0, value: 3000 };
+  /** 窗内坐标 → hitDialog 的棋盘坐标 */
+  const at = (W: { x: number; y: number }, lx: number, ly: number) => ({ x: W.x + lx - LAYOUT.board.x, y: W.y + ly - LAYOUT.board.y });
+
+  it('合成的 id 图：2..0xf = 钮（响 7、抬手办）；0 = 空白（响 7、抬手不办）；1 = 拖窗、0x10 = 金额栏（不响、不办）', async () => {
+    const m = await load();
+    const W = m.AMOUNT_WINDOW;
+    const map = new Uint8Array(W.w * W.h);
+    const paint = (x0: number, y0: number, id: number) => {
+      for (let y = y0; y < y0 + 4; y++) for (let x = x0; x < x0 + 4; x++) map[y * W.w + x] = id;
+    };
+    paint(10, 100, 0xb);
+    paint(40, 100, 1);
+    paint(70, 100, 0x10);
+    // (100,100) 留 0
+    m.setAmountHitMap(map);
+    try {
+      const ctx = fakeCtx();
+      const hitAt = (lx: number, ly: number) => { const p = at(W, lx, ly); return m.hitDialog(ctx, amountUi, page, p.x, p.y); };
+      expect(hitAt(11, 101)).toEqual({ kind: 'amountSlot', id: 0xb });
+      expect(hitAt(41, 101)).toEqual({ kind: 'amountPad', id: 1 });
+      expect(hitAt(71, 101)).toEqual({ kind: 'amountPad', id: 0x10 });
+      expect(hitAt(101, 101)).toEqual({ kind: 'amountPad', id: 0 });
+      // ★ 闭区间：lx = 0x80 仍在窗内（读下一行第 0 格），lx = 0x81 才出窗
+      expect(hitAt(0x80, 5)).toEqual({ kind: 'amountPad', id: 0 });
+      expect(hitAt(0x81, 5)).not.toMatchObject({ kind: 'amountPad' });
+
+      const latch = new m.AmountPressLatch();
+      const press = (lx: number, ly: number) => {
+        const r = latch.down(hitAt(lx, ly));
+        return { sound: r.sound, consumed: r.consumed, act: latch.up() };
+      };
+      expect(press(11, 101)).toEqual({ sound: 7, consumed: true, act: { kind: 'amountSlot', id: 0xb } });
+      expect(press(101, 101)).toEqual({ sound: 7, consumed: true, act: null }); // 空白：响、不办
+      expect(press(41, 101)).toEqual({ sound: null, consumed: true, act: null }); // 拖窗把手
+      expect(press(71, 101)).toEqual({ sound: null, consumed: true, act: null }); // 金额栏
+    } finally {
+      m.setAmountHitMap(null);
+    }
+  });
+
+  it('没载到 id 图：退回矩形表（钮照中、空白是 inside 不响）', async () => {
+    const m = await load();
+    m.setAmountHitMap(null);
+    const W = m.AMOUNT_WINDOW;
+    const r = m.AMOUNT_KEY_RECTS[0xb]!;
+    const ctx = fakeCtx();
+    const p = at(W, r.x + 3, r.y + 3);
+    expect(m.hitDialog(ctx, amountUi, page, p.x, p.y)).toEqual({ kind: 'amountSlot', id: 0xb });
+    const q = at(W, 2, 2);
+    const h = m.hitDialog(ctx, amountUi, page, q.x, q.y);
+    expect(h === 'inside' || h === null).toBe(true);
+    expect(new m.AmountPressLatch().down(h).sound).toBeNull();
+  });
+
+  const REAL = (process.env.RICH4_WORKSPACE ?? '') + '/assets-clean/Panel/0022.bin';
+  (existsSync(REAL) ? it : it.skip)('★ 真素材：窗底整片是 1（拖窗、不响），每颗钮取到自己的号，金额栏是 0x10', async () => {
+    const m = await load();
+    const map = m.parseAmountHitMap(new Uint8Array(readFileSync(REAL)));
+    expect(map).not.toBeNull();
+    m.setAmountHitMap(map);
+    try {
+      const W = m.AMOUNT_WINDOW;
+      const ctx = fakeCtx();
+      const hitAt = (lx: number, ly: number) => { const p = at(W, lx, ly); return m.hitDialog(ctx, amountUi, page, p.x, p.y); };
+      expect(hitAt(2, 2)).toEqual({ kind: 'amountPad', id: 1 });
+      expect(hitAt(W.w - 2, W.h - 2)).toEqual({ kind: 'amountPad', id: 1 });
+      expect(hitAt(m.AMOUNT_BAR_RECT.x + 5, m.AMOUNT_BAR_RECT.y + 5)).toEqual({ kind: 'amountPad', id: 0x10 });
+      for (let id = 2; id <= 0xf; id++) {
+        const r = m.AMOUNT_KEY_RECTS[id]!;
+        expect(hitAt(r.x + (r.w >> 1), r.y + (r.h >> 1)), `钮 ${id}`).toEqual({ kind: 'amountSlot', id });
+      }
+      // 素材里根本没有 0：点窗里任何空白都不会响
+      expect(map!.includes(0)).toBe(false);
+    } finally {
+      m.setAmountHitMap(null);
+    }
+  });
+});

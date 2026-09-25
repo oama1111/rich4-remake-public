@@ -663,13 +663,14 @@ const FONT = FONT_FAMILY;
  *
  * @param rows 草稿（可编辑的真人座位）
  * @param state 当前状态（取头像用）
- * @param hot 当前悬停的命中项
+ *
+ * ★ **没有悬停高亮**：原版窗口过程 `fcn_0041dda9` 的 `WM_MOUSEMOVE`（`loc_0041de2e`）只在
+ *   按住滑槽（`[0x48be54]` = 13/14）时改比例，别的什么都不画 —— 先前那圈半透明白框是本引擎自己加的。
  */
 export function drawAiSettings(
   ctx: CanvasRenderingContext2D,
   state: GameState,
   rows: readonly AiSettingRow[],
-  hot: AiSettingsHit | null,
   sprite: SpriteFn,
   selected?: number,
 ): void {
@@ -774,14 +775,6 @@ export function drawAiSettings(
     }
   });
 
-  // 悬停高亮
-  if (hot !== null && hot.kind !== 'ok' && hot.kind !== 'cancel') {
-    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-    ctx.lineWidth = 1;
-    const r = hotRect(hot);
-    if (r !== null) ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
-  }
-
   ctx.restore();
 }
 
@@ -794,24 +787,6 @@ export function rowFlags(row: AiSettingRow): boolean[] {
     row.personality === 1,
     row.personality === 2,
   ];
-}
-
-function hotRect(hit: AiSettingsHit): { x: number; y: number; w: number; h: number } | null {
-  switch (hit.kind) {
-    case 'row':
-    case 'autopilot':
-      return { x: AI_PLATE_X, y: rowY(hit.row), w: 116, h: AI_ROW_PITCH };
-    case 'ability':
-      return AI_OPTION_ROWS[hit.bit]!;
-    case 'personality':
-      return AI_OPTION_ROWS[2 + hit.value]!;
-    case 'ratio':
-      return hit.which === 'cash' ? AI_SLIDERS.cash : AI_SLIDERS.stock;
-    case 'ratioStep':
-      return AI_ARROWS[hit.which].find((a) => a.delta === hit.delta) ?? null;
-    default:
-      return null;
-  }
 }
 
 /**

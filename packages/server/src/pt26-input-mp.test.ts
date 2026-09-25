@@ -8,7 +8,7 @@
  *   · `packages/client/src/touch-input.test.ts` / `board-screen.test.ts` / `amount-keys.test.ts`（填数窗按下放音、抬手动作）。
  * 这里钉住服务器与两端重放：
  *   ① 託管AI 的「確定」只发本机座位那一行 `setAi` —— 轮到自己时受理、两端重放一致；旁观座位改自己的
- *      `setAi` 仍按原规矩被拒（`notYourTurn`，定序器那一道不变）。
+ *      `setAi` 仍按原规矩被拒（`notYourTurn`，定序器那一道不变）；改**别人座位**的 `setAi` 一律拒（`notYourSeat`，`room.ts`）。
  *   ② 樂透：电脑落点**不挂** `pending{lottery}`（0x004315e1 `jne` 电脑那支不开窗）；真人落点挂出、服务器不替他答；
  *      旁观答不了；超时託管（`setAi 5`）后 AI 替他收掉这扇窗 —— 此刻客户端那扇窗已不认人点（`lotteryLocked`）。
  *   ③ 填数窗的音与动作只在本机那一台：抬手派的那一条 action 与先前同形（协议不变），由行动座位受理、旁观被拒。
@@ -92,6 +92,24 @@ describe('★ pt26-input 联机', () => {
     const r = h.submit(1, { type: 'setAi', player: 1, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT });
     expect(r).toMatchObject({ ok: false });
     expect(h.room.state.players[1]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+  });
+
+  run('①b 託管AI：setAi 只能改**发送者自己那一座** —— 轮到自己时改别人的座位也被拒（notYourSeat），镜像不动', () => {
+    const map = loadMap();
+    const h = harness(map, { ...scene(map, 0, SPECIAL_KIND.PARK), phase: 'awaitingRoll' });
+    const fp = h.room.fingerprint;
+    // 0 号（行动者）想替 1 号（另一位真人）开託管
+    expect(h.submit(0, { type: 'setAi', player: 1, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT })).toEqual({ ok: false, reason: 'notYourSeat' });
+    // 也不能改电脑座位
+    expect(h.submit(0, { type: 'setAi', player: 2, whoPlays: WHO_PLAYS_HUMAN })).toEqual({ ok: false, reason: 'notYourSeat' });
+    // 旁观（1 号）改 0 号：同样拒
+    expect(h.submit(1, { type: 'setAi', player: 0, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT })).toMatchObject({ ok: false });
+    expect(h.room.fingerprint).toBe(fp);
+    expect(h.room.state.players.map((p) => p.whoPlays)).toEqual([WHO_PLAYS_HUMAN, WHO_PLAYS_HUMAN, 2, 2]);
+    // 自己那一座照常受理
+    expect(h.submit(0, { type: 'setAi', player: 0, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT }).ok).toBe(true);
+    // 服务器自己的接管 / 归还（系统 action）不受这一道限制
+    expect(h.room.submitSystem({ type: 'setAi', player: 1, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT }).ok).toBe(true);
   });
 
   run('② 樂透：电脑落点不开窗；真人落点开窗、旁观答不了、超时託管后 AI 收窗 —— 两端一致', () => {
