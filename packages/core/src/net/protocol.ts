@@ -86,7 +86,15 @@ import type { Action } from '../state/actions.ts';
  * （`0x0042ea2b cmp byte [player+0x15], 1 / jne 0x42ed8d`）在 `settle` 裡當場買賣完就走（`places/ai-shop.ts`），
  * 而且**不抽貨架**（少耗隨機數）。老客戶端對同一條 `settle` 會算出「店還開著」的局面，下一條 `endTurn` 起就失步。
  */
-export const PROTOCOL_VERSION = 9;
+/**
+ * ★ 2026-09-25（pt27 回报「忍太郎怎么一下就买了3000股保险公司？」，pt27-stock）→ **10**。
+ *
+ * 為什麼 +1：電腦踩上市企業的認購股數改照原版（`0x0041d267 push esi / call 0x41d839`：上限
+ * `min(1000, 現金÷單價, 餘量)`、再扣 trunc(開局×0.30)×物價 的安全墊），而且 reducer 的 `buyShares`
+ * 現在拒收**超過 `pending.max`** 的股數（先前只比餘量）。老客戶端照舊收 `buyShares 3000` 的局面、
+ * 新的拒收 ⇒ 同一串 action 算出不同局面；版本號一變，沒刷新的舊分頁進門就拿到「協議版本不符」。
+ */
+export const PROTOCOL_VERSION = 10;
 // ★ v6 同一次 +1 裡還有：`start` / `replay` 帶 `startDate`（服務器的今天）—— 聯機開局日期與單機同一個規則。
 //   老客戶端不認識它，會照 core 缺省日期（2010-01-01）開局 ⇒ 日期不同，第一次過日子就失步。
 

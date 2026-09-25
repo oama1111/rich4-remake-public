@@ -9,8 +9,11 @@ import {
   FEE_NAMES,
   INDUSTRY,
   INDUSTRY_FEE_NAME_INDEX,
+  AI_SHARE_RESERVE_RATIO,
   addInsuranceDays,
+  aiCommercialShareCount,
   aiPickConstructionTarget,
+  shareWindowLimit,
   applyDividend,
   chairmanEffect,
   companyDividends,
@@ -361,5 +364,35 @@ describe('轉盤表', () => {
   });
   it('WHO_PLAYS_HUMAN 常量仍是 1（上面的电脑分支用 2）', () => {
     expect(WHO_PLAYS_HUMAN).toBe(1);
+  });
+});
+
+describe('★ 电脑认购上市企業股份 `0x41d839(單價, 上限)`（pt27-stock「忍太郎一下买了 3000 股」）', () => {
+  it('★★ 回报现场：單價 28、現金 188000、餘量 3000、開局 300000 ⇒ 上限 1000（不是 3000）', () => {
+    // 上限 = shareWindowLimit：`0x0041d20a cmp eax,0x3e8` 在 `0x0041d22a` 真人/电脑分叉之前
+    const limit = shareWindowLimit(28, 188_000, 3000);
+    expect(limit).toBe(1000);
+    // 188000 − trunc(300000×0.30)×1 = 98000 > 28×1000 ⇒ 上限（`0x0041d885 mov ecx, edi`）
+    expect(aiCommercialShareCount(28, limit, 188_000, 300_000, 1)).toBe(1000);
+  });
+  it('安全垫 = trunc(開局 × 0.30) × 物價，现金只够垫子 ⇒ 0（`0x0041d874 jle`）', () => {
+    expect(AI_SHARE_RESERVE_RATIO).toBe(0.3);
+    expect(aiCommercialShareCount(28, 1000, 90_000, 300_000, 1)).toBe(0);
+    expect(aiCommercialShareCount(28, 1000, 90_028, 300_000, 1)).toBe(1);
+    // 物價 2 ⇒ 垫子 180000
+    expect(aiCommercialShareCount(28, 1000, 188_000, 300_000, 2)).toBe(Math.trunc(8000 / 28));
+  });
+  it('d ≤ 單價 × 上限 ⇒ d ÷ 單價（向零）；d 恰等于 單價×上限 也走除法（`jle`）', () => {
+    expect(aiCommercialShareCount(70, 1000, 100_000, 150_000, 1)).toBe(785); // 差分 B14
+    expect(aiCommercialShareCount(50, 100, 50_000, 150_000, 1)).toBe(100); // d = 5000 = 50×100
+    expect(aiCommercialShareCount(7, 1000, 45_001, 150_000, 1)).toBe(0); // 差分 B16
+  });
+  it('存款不参与；没有 [A] 支的 7000 封顶（差分 B7 / B11）', () => {
+    expect(aiCommercialShareCount(1, 1000, 45_000, 150_000, 1)).toBe(0);
+    expect(aiCommercialShareCount(1, 1000, 7_001, 300_000, 1)).toBe(0);
+  });
+  it('上限 0 / 單價 0 ⇒ 0（原版连 0x41d839 都走不到）', () => {
+    expect(aiCommercialShareCount(28, 0, 188_000, 300_000, 1)).toBe(0);
+    expect(aiCommercialShareCount(0, 1000, 188_000, 300_000, 1)).toBe(0);
   });
 });

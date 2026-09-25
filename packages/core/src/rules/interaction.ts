@@ -256,8 +256,9 @@ export type PendingInteraction =
        * 通用填数窗的**上限** = `min(1000, 現金 ÷ 每股售價, available)`
        * —— 原版 `fcn_00453544(上限)` 吃到的就是这个数。
        *
-       * ⚠️ 电脑那条（`_rich4_calculate_max_purchase_count`，VA 0x0041d839）
-       *   **没有 1000 这层闸**，AI 策略层要买多少照旧用 `available` 自己算。
+       * ★ **电脑也吃这个上限**：`0x0041d267 push esi` 把同一个夹好的数交给
+       *   `_rich4_calculate_max_purchase_count`（VA 0x0041d839）当上限（见
+       *   `places/company.ts` 的 `aiCommercialShareCount`）；reducer 拒收超过它的股数。
        */
       max: number;
       /** 买家现金 —— 只在题面上显示；能买多少股已经由 `max` 定死 */

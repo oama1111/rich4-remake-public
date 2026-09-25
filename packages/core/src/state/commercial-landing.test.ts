@@ -11,6 +11,7 @@ import { landAll } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 import { commercialUnitPrice } from '../places/stock.ts';
+import { decideAction } from '../ai/policy.ts';
 
 /**
  * 夹具：「第一輪已经过去」—— 这里测的不是开局，要的是大家都已在盘上
@@ -199,6 +200,46 @@ describe('★ 上市企业落点', () => {
     expect(reduce(state, { type: 'buyShares', shares: state.pending.available + 1 }, topo)).toBe(
       state,
     );
+  });
+
+  have('★ 买超过上限 max（1000）会被拒 —— 真人电脑同一道 @source 0x0041d20a..0x0041d21d → 0x0041d267 push esi', () => {
+    // 現金 150000 ÷ 40 = 3750、餘量 5000 ⇒ max = 1000：1001 股先前只比 available 会放行
+    const { state, topo } = landOnCommercial();
+    if (state.pending === null || state.pending.kind !== 'buyShares') {
+      throw new Error('没拿到待决交互');
+    }
+    expect(state.pending.max).toBe(1000);
+    expect(state.pending.available).toBeGreaterThan(1001);
+    expect(reduce(state, { type: 'buyShares', shares: 1001 }, topo)).toBe(state);
+    expect(reduce(state, { type: 'buyShares', shares: 1000 }, topo)).not.toBe(state);
+  });
+
+  have('★★ 电脑认购 = 0x41d839(單價, max)：现金扣 30% 开局资金×物價 后能买几股，最多 max', () => {
+    // 回报 20260925-030023875：忍太郎（电脑）現金 188000、餘量 3000 ⇒ 先前买 3000（现金一半 ÷ 單價，只夹餘量）
+    const rich = landOnCommercial({ cash: 188_000 });
+    const p = rich.state.pending;
+    if (p === null || p.kind !== 'buyShares') throw new Error('没拿到待决交互');
+    expect(p.max).toBe(1000);
+    const fund = rich.state.initialFund ?? 0;
+    expect(188_000 - Math.trunc(fund * 0.3) * rich.state.priceIndex).toBeGreaterThan(p.unitPrice * 1000);
+    expect(decideAction({ state: rich.state, map: loadMap() })).toEqual({ type: 'buyShares', shares: 1000 });
+    // 现金刚好压在垫子上 ⇒ 不买（`0x0041d273 test edi, edi / je`）
+    const reserve = Math.trunc(fund * 0.3) * rich.state.priceIndex;
+    const tight = landOnCommercial({ cash: reserve });
+    expect(tight.state.pending?.kind).toBe('buyShares');
+    expect(decideAction({ state: tight.state, map: loadMap() })).toEqual({ type: 'declineDecision' });
+    const d = 4000;
+    const some = landOnCommercial({ cash: reserve + d });
+    const q = some.state.pending;
+    if (q === null || q.kind !== 'buyShares') throw new Error('没拿到待决交互');
+    expect(decideAction({ state: some.state, map: loadMap() })).toEqual({
+      type: 'buyShares',
+      shares: Math.trunc(d / q.unitPrice),
+    });
+    // 不认购 ⇒ 待决收掉、股数不动
+    const declined = reduce(tight.state, { type: 'declineDecision' }, tight.topo);
+    expect(declined.pending).toBeNull();
+    expect(declined.commercialShares).toEqual(tight.state.commercialShares);
   });
 
   have('现金不够会被拒', () => {
