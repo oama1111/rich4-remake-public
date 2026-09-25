@@ -31,7 +31,7 @@ for (const [name, L] of Object.entries<any>(lay)) {
     if (!existsSync(bak)) { mkdirSync(dirname(bak), { recursive: true }); copyFileSync(dst, bak); }
     const prep = prepFrame(fr.id); const r = eFrame('', name, fr, prep, file);
     let out = r.img, note = '';
-    if (dice) {
+    if (dice || fr.dice) {
       const mo = diceBlocks(prep.A, (i) => prep.a4.rgba[i * 4]!), mn = diceBlocks(r.img, (i) => r.img.rgba[i * 4 + 3]!);
       let inter = 0, uni = 0, ao = 0, an = 0; for (let i = 0; i < mo.length; i++) { ao += mo[i]!; an += mn[i]!; if (mo[i] && mn[i]) inter++; if (mo[i] || mn[i]) uni++; }
       const diou = uni ? inter / uni : 1; note = ` 骰子 原${ao}/新${an} 重合${diou.toFixed(2)}`;

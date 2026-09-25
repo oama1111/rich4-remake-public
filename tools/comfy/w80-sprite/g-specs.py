@@ -21,7 +21,7 @@ for ch in range(12):
                 p=per(r); ids+= [iid(r,d*p+i) for i in range(p)]
                 if vk!='walkb' and j==len(rs)-1: hasdice=True
             n=len(ids); cols=3 if n<=9 else 4
-            groups.append({'name':f'{vk}{d}','ids':ids,'cols':cols,'sig':4,'dir':d,'vehicle':desc,'dice':hasdice})
+            groups.append({'name':f'{vk}{d}','ids':ids,'cols':cols,'sig':4,'dir':d,'vehicle':desc,'dice':hasdice,'diceRes':rs[-1] if hasdice else None})
     for k,(nm,desc) in {18:('beggar','换上了破破烂烂、打着补丁的乞丐装（不再穿上面描述的平时服装；帽子/头饰也变得旧旧的、有补丁，脸和发型不变）'),19:('hospital','换上了白色的病号服/住院服（不再穿上面描述的平时服装，帽子/头饰、脸和发型不变）'),20:('prison','换上了黑白横条纹的囚服（不再穿上面描述的平时服装，帽子/头饰、脸和发型不变）')}.items():
         r=base+k; ids=[iid(r,d) for d in range(8)]
         groups.append({'name':nm,'ids':ids,'cols':4,'sig':4,'dir':'mixed','outfit':desc})

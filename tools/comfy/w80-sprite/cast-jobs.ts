@@ -1,5 +1,6 @@
 // 生成某个角色 16 组的重绘任务。用法：node cast-jobs.ts <角色号>
 import { readFileSync, writeFileSync } from 'node:fs';
+import { KEY_NAME } from './keycolor.ts';
 const ch = process.argv[2]!; const B = JSON.parse(readFileSync(new URL('./cast-briefs.json', import.meta.url), 'utf8'))[ch];
 const W = '/Volumes/Kingston/大富翁4重制版/wt-hd/assets/work'; const rel = `fringe-pilot/cast/c${ch}`;
 const lay = JSON.parse(readFileSync(`${W}/${rel}/layout.json`, 'utf8'));
@@ -21,13 +22,13 @@ const TAIL = '画面干净清晰：颜色过渡平滑自然，没有色带、没
 const NEG = '独眼, 只有一只眼睛, 眼睛长在脸中间, 畸形的脸, 色带, 色阶断层, 噪点, 颗粒, 抖动, 黑边, 描边, 模糊, 杂物, 畸形的手, 多余的手指, 悬空的手, 没有手臂的手掌, 丢失物体, 新增物体, 改变姿态, 改变配色, 绿色进入角色, 平板状的头发, 塑料质感的头发, 二维动画风格, 写实照片风格, 文字, 水印';
 const refs = [{ path: `rich4-pilot/work/cast/c${ch}/portrait.png`, upload: `${rel}/portrait.png` }, { path: `rich4-pilot/work/cast/c${ch}/turnaround.png`, upload: `${rel}/turnaround.png` }];
 const jobs = Object.keys(lay).map((name) => {
-  const d = Number(name.slice(-1)), dice = name.startsWith('dice'), back = d >= 2 && d <= 4, L = lay[name];
+  const d = Number(name.slice(-1)), dice = name.startsWith('dice'), back = d >= 2 && d <= 4, L = lay[name]; const KN = KEY_NAME[(L.key ?? 'green') as 'green'];
   const body = back ? `这一组画的是${B.name}的背影：人物${BACKDIR[d]}，画面里看不到脸、眼睛、鼻子和嘴。${B.back}` : B.brief + DIR[d] + ARM;
   return { id: `C${ch}-${name}`, kind: 'qwen-repaint', upload: `${rel}/${name}-soft${dice ? '4' : ''}.png`, input: `rich4-pilot/work/cast/c${ch}/${name}-soft${dice ? '4' : ''}.png`,
     reference: `rich4-pilot/work/cast/c${ch}/${name}.png`, referenceUpload: `${rel}/${name}.png`, extraRefs: refs,
     out: `${rel}/out2/${name}.png`, width: L.CW, height: L.CH, seed: 7,
-    prompt: HEAD + (back ? '' : REF) + body + (dice ? DICE : '') + DETAIL(B.detail) + SAME + TAIL,
-    negative: NEG + ', 平滑的色块, 缺少细节' + (back ? ', 脸, 眼睛, 正脸, 面向镜头, 五官' : '') + (dice ? ', 两颗骰子, 多颗骰子, 没有骰子, 小骰子' : ''),
+    prompt: HEAD.replace('纯绿色', KN) + (back ? '' : REF) + body + (dice ? DICE : '') + DETAIL(B.detail) + SAME + TAIL,
+    negative: NEG.replace('绿色进入角色', KN.slice(1) + '进入角色') + ', 平滑的色块, 缺少细节' + (back ? ', 脸, 眼睛, 正脸, 面向镜头, 五官' : '') + (dice ? ', 两颗骰子, 多颗骰子, 没有骰子, 小骰子' : ''),
     resolution: 0, repaintWidth: L.CW, repaintHeight: L.CH, steps: 30, denoise: back ? 0.96 : 0.95, noUpscale: true };
 });
 writeFileSync(`${W}/cast-c${ch}.jobs.json`, JSON.stringify({ jobs }, null, 1));

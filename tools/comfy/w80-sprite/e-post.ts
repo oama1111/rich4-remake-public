@@ -6,7 +6,8 @@ import { cutCell } from '../../../packages/assets-pipeline/src/grid.ts';
 import { srgbToLab } from '../../../packages/assets-pipeline/src/seams.ts';
 import { labToSrgb } from '../../../packages/assets-pipeline/src/edge.ts';
 import { prepFrame } from './e-build.ts';
-const W = process.env.RICH4_ASSETS ?? 'assets/work', P = W + '/fringe-pilot';
+import { keyOut } from './keycolor.ts';
+const W = '/Volumes/Kingston/大富翁4重制版/wt-hd/assets/work', P = W + '/fringe-pilot';
 const L = JSON.parse(readFileSync(join(W, 'pack/layout.json'), 'utf8'));
 const cells = new Map<string, any>(); for (const s of L.sheets) for (const c of s.cells) cells.set(c.id, { sheet: s, cell: c });
 const cache = new Map<string, any>(); const load = (p: string) => { let v = cache.get(p); if (!v) { v = decodePng(new Uint8Array(readFileSync(p))); cache.set(p, v); } return v; };
@@ -121,7 +122,7 @@ export function eFrame(tag: string, name: string, fr: any, prep: any, file?: str
   const big = load(file ?? join(P, 'done-E' + tag, name + '.png'));
   const c6 = crop(big, fr.x, fr.y, fr.w, fr.h);
   // 先抠像再缩（抠像在大图上更准），缩后再对齐
-  const k6 = keyGreen(c6);
+  const k6 = keyOut(c6, fr.key ?? 'green');
   const d4 = areaDown(k6, prep.cell.width * 4, prep.cell.height * 4);
   const base4 = deband({ ...upBilinear(prep.orig1, 4) }, 6, 12, 3);
   const al = align(d4, prep.a4, 12, base4);

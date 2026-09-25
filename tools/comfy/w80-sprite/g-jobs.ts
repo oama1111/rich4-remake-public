@@ -1,5 +1,6 @@
 // 通用 spec → 重绘任务。用法：node g-jobs.ts <spec.json>
 import { readFileSync, writeFileSync } from 'node:fs';
+import { KEY_NAME } from './keycolor.ts';
 const spec = JSON.parse(readFileSync(process.argv[2]!, 'utf8'));
 const briefs = JSON.parse(readFileSync(new URL('./cast-briefs.json', import.meta.url), 'utf8'));
 const W = '/Volumes/Kingston/大富翁4重制版/wt-hd/assets/work'; const rel = `fringe-pilot/cast/${spec.key}`;
@@ -16,7 +17,7 @@ const ch = spec.char; const B = ch !== undefined ? briefs[String(ch)] : null;
 if (spec.portrait) refs.push({ path: `rich4-pilot/work/cast/${spec.key}/portrait.png`, upload: `${rel}/portrait.png` });
 if (spec.turnaround) refs.push({ path: `rich4-pilot/work/cast/${spec.key}/turnaround.png`, upload: `${rel}/turnaround.png` });
 const jobs = spec.groups.map((g: any) => {
-  const L = lay[g.name];
+  const L = lay[g.name]; const KN = KEY_NAME[(L.key ?? 'green') as 'green'];
   const who = B ? B.brief : g.brief ? `角色是${g.brief}。` : `角色是《大富翁4》里的${spec.name}——${spec.brief}`;
   const detail = B ? '每一处都要有清晰的材质细节：' + B.detail + '大面积的同色区域也要画出结构和纹理，不能是一块平滑的色块。' : '每一处都要有清晰的材质细节：头发的发丝、布料的褶皱和纹理、金属和皮革的光泽；大面积的同色区域也要画出结构和纹理，不能是一块平滑的色块。';
   const ref = refs.length ? '造型以' + (spec.portrait ? '图2的头像和图3' : '图2') + '各个角度的样子为准：' : '';
@@ -25,8 +26,8 @@ const jobs = spec.groups.map((g: any) => {
   return { id: `G-${spec.key}-${g.name}`, kind: 'qwen-repaint', upload: `${rel}/${g.name}-soft.png`, input: `rich4-pilot/work/cast/${spec.key}/${g.name}-soft.png`,
     reference: `rich4-pilot/work/cast/${spec.key}/${g.name}.png`, referenceUpload: `${rel}/${g.name}.png`, extraRefs: refs,
     out: `${rel}/out2/${g.name}.png`, width: L.CW, height: L.CH, seed: 7,
-    prompt: HEAD + ref + who + scene + (DIR[String(g.dir)] ?? '') + ARM + (g.dice ? DICE : '') + detail + TAIL,
-    negative: NEG + (back ? ', 正脸, 面向镜头' : ''), resolution: 0, repaintWidth: L.CW, repaintHeight: L.CH, steps: 30, denoise: back ? 0.96 : 0.95, noUpscale: true };
+    prompt: HEAD.replace('纯绿色', KN) + ref + who + scene + (DIR[String(g.dir)] ?? '') + ARM + (g.dice ? DICE : '') + detail + TAIL,
+    negative: NEG.replace('绿色进入角色', KN.slice(1) + '进入角色') + (back ? ', 正脸, 面向镜头' : ''), resolution: 0, repaintWidth: L.CW, repaintHeight: L.CH, steps: 30, denoise: back ? 0.96 : 0.95, noUpscale: true };
 });
 writeFileSync(`${W}/g-${spec.key}.jobs.json`, JSON.stringify({ jobs }, null, 1));
 console.log(spec.key, jobs.length);
