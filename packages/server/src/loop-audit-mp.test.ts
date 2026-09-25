@@ -63,4 +63,29 @@ describe('★ 审计 2026-09-24：回合循环修正在联机里同一条路', (
     expect(room.state.dice).toEqual([]);
     expect(room.state.rngState).toBe(base.rngState);
   });
+
+  run('★ F1：客户端带 `forced` 的 rollDice 一律拒收（不编号、镜像不动）；不带的照常', () => {
+    const map = loadMap();
+    const s0 = newGame({ map, players: seats().map((s) => ({ character: s.character, kind: s.kind })), seed: 11, mode: 'multiplayer' });
+    const base: GameState = {
+      ...s0,
+      phase: 'awaitingRoll',
+      players: s0.players.map((p) => ({ ...p, whoPlays: p.landingWhoPlays ?? p.whoPlays })),
+    };
+    const room = new Room({ id: 'LOOPC', map, globalMapId: 0, seed: 11, seats: seats(), options: LOBBY_DEFAULT_OPTIONS, base: { state: base, snapshot: '' } });
+    room.start();
+    const fp = room.fingerprint;
+    const seq = room.sequenceLength;
+    for (const forced of [6, 100, 0, -1]) {
+      const r = room.submit(0, { type: 'rollDice', forced });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe('forcedDiceNotAllowed');
+    }
+    expect(room.fingerprint).toBe(fp);
+    expect(room.sequenceLength).toBe(seq);
+    expect(room.submitSystem({ type: 'rollDice', forced: 3 }).ok).toBe(false);
+    const ok = room.submit(0, { type: 'rollDice' });
+    expect(ok.ok).toBe(true);
+    expect(room.state.phase).toBe('moving');
+  });
 });
