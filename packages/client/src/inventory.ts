@@ -216,10 +216,28 @@ export function cardEntries(state: GameState, playerIndex: number): InvEntry[] {
  * 需要**再选一个目标/数字**才能用的道具 —— 那一小段属 T-026（目标拾取模式）。
  *
  * 判据来自 core 的既有实现：`PLACEMENT_TOOLS`（路障/地雷/定時炸彈，要 `nodeId`）、
- * 飛彈/核子飛彈/機器工人/傳送機/工程車（要目标格）、遙控骰子（要 `value`）。
- * 剩下能用「只用道具号」直接发出去的只有 機車 / 汽車 / 時光機。
+ * 飛彈/核子飛彈/機器工人/傳送機（要目标格）、遙控骰子（要 `value`）。
+ * 剩下能用「只用道具号」直接发出去的是 機器娃娃 / 機車 / 汽車 / 時光機 / **工程車**。
+ *
+ * ★ **工程車（12）不在本表**（2026-09-25 订正）—— 先前误把它列进来，于是
+ *   `applyInventoryPick` 走 `TOOL_SELECT_PARAM.get(12) === undefined` 的兜底分支：
+ *   点一下只写一条日志，**一个 action 都不发**，这件道具对真人等于不存在。
+ *   原版真人那一支**没有**拾取这一步 —— 弹窗的返回值就是道具号，直接进道具函数表：
+ * ```asm
+ * 00447f4b  test esi, esi                        ; esi = 道具欄弹窗（fcn_00445c14）的返回值 = 道具号
+ * 00447f4d  je       0x447f5a                    ; 没选中 ⇒ 跳过
+ * 00447f4f  mov  eax, esi
+ * 00447f51  call dword ptr [eax*4 + 0x475dd5]    ; ★ 直接 call 道具函数表[道具号]
+ * ```
+ *   表项 12 → `0x4479d2` = `_rich4_use_tool_gongchengche`（`rich4-re/asm/rich4_tool_gongchengche.asm`）；
+ *   该函数整支只有 3 个 call（`0x40b93b` 换精灵 / `0x41d476` / `0x44ef41` 报台词），
+ *   **没有** `call 0x446ae8`（拾取器）；`disasm.py callers 0x446ae8` 的 32 个调用点
+ *   无一落在 `0x4479d2..0x447ace`（表项 12..13 之间）之内。
+ *   ⇒ 工程車与 機車/汽車 同形，是**无参**的 `useTool{toolId:12}`：core 的 `VEHICLE_TOOLS`
+ *   早已支持（不需要 `nodeId`），电脑那一支也回 `plain`（`ai/tool-policy.ts` 的 `gongcheng`，
+ *   `@source 0x00421e20`）—— 缺的只是真人这一侧的闸门。
  */
-export const TOOLS_NEEDING_TARGET: readonly number[] = [2, 3, 4, 7, 9, 11, 12, 13];
+export const TOOLS_NEEDING_TARGET: readonly number[] = [2, 3, 4, 7, 9, 11, 13];
 /** 遙控骰子：要一个 1..18 的点数 */
 export const REMOTE_DICE_TOOL = 8;
 

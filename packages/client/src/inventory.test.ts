@@ -16,6 +16,7 @@ import {
   INV_RESOURCE,
   INV_SLOTS,
   INV_VEHICLE_IMAGE,
+  TOOLS_NEEDING_TARGET,
   cardEntries,
   routeCardPick,
   hitInventory,
@@ -23,6 +24,7 @@ import {
   toolEntries,
   toolIsDirect,
 } from './inventory.ts';
+import { TOOL_SELECT_PARAM } from './picking.ts';
 
 describe('浮窗几何 @source VA 0x445c8f', () => {
   it('★ 底图是 Panel.mkf 资源 11，道具用图 1、卡片用图 0，落在 (14,130)', () => {
@@ -183,16 +185,65 @@ describe('卡片欄：选一张卡之后走哪条路（T-025）@source VA 0x441c
 });
 
 describe('选中之后归谁管', () => {
-  it('★ 機器娃娃 / 机車 / 汽車 / 時光機 不用再问，直接发 useTool', () => {
+  it('★ 機器娃娃 / 机車 / 汽車 / 時光機 / **工程車** 不用再问，直接发 useTool', () => {
     // 機器娃娃是自动的（原版 AI 那一支直接回 `PLAIN`，VA 0x420f4d 一带）
     expect(toolIsDirect(1)).toBe(true);
     expect(toolIsDirect(5)).toBe(true); // 機車
     expect(toolIsDirect(6)).toBe(true); // 汽車
     expect(toolIsDirect(10)).toBe(true); // 時光機（只需要快照，不需要目标）
+    // ★ 工程車（12）：原版真人那一支拿到弹窗返回值就**直接** `call 道具函数表[12]`
+    //   （@source 0x00447f51 `call dword ptr [eax*4 + 0x475dd5]`，eax = esi = 道具号；
+    //    表项 12 = `0x4479d2` = `_rich4_use_tool_gongchengche`），
+    //   那一支里**没有**拾取器 `call 0x446ae8` ⇒ 没有目标要选。
+    expect(toolIsDirect(12)).toBe(true);
   });
 
   it('★ 其他的都要先选目标/点数 —— 那段属 T-026', () => {
-    for (const id of [2, 3, 4, 7, 8, 9, 11, 12, 13]) expect(toolIsDirect(id)).toBe(false);
+    for (const id of [2, 3, 4, 7, 8, 9, 11, 13]) expect(toolIsDirect(id)).toBe(false);
+  });
+
+  it('★★ 工程車（12）不进拾取：它本来就没有拾取参数，兜底分支会把 action 吞掉', () => {
+    // 这就是本次 bug 的**根因**：12 曾在 TOOLS_NEEDING_TARGET 里，却没有 TOOL_SELECT_PARAM 项
+    // ⇒ `applyInventoryPick` 落进 `param === undefined` 的兜底分支（只写一条日志、**一个 action 都不发**）。
+    expect(toolIsDirect(12)).toBe(true);
+    expect(TOOL_SELECT_PARAM.has(12)).toBe(false);
+  });
+
+  it('★★ 不变量：凡是要选目标的道具，都必须有拾取参数（否则点击静默失效）', () => {
+    // 对**任何**道具都成立 —— 改坏 TOOLS_NEEDING_TARGET 与 TOOL_SELECT_PARAM 的对应关系就变红。
+    for (const id of TOOLS_NEEDING_TARGET) {
+      expect(
+        TOOL_SELECT_PARAM.has(id),
+        `道具 ${id} 列在 TOOLS_NEEDING_TARGET 却没进 TOOL_SELECT_PARAM ⇒ 点击会静默失效`,
+      ).toBe(true);
+    }
+  });
+
+  it('★ 1..13 全部道具的归宿（没有遗漏、没有重复，别的道具一件都没被顺手拿掉）', () => {
+    const direct = [1, 5, 6, 10, 12];
+    const pick = [2, 3, 4, 7, 9, 11, 13];
+    const dice = 8; // 遙控骰子：自己开点数盘，不进棋盘拾取
+    expect([...direct, ...pick, dice].sort((a, b) => a - b)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+    ]);
+    for (const id of direct) expect(toolIsDirect(id), `道具 ${id} 应直接发 useTool`).toBe(true);
+    for (const id of pick) expect(toolIsDirect(id), `道具 ${id} 应先进拾取`).toBe(false);
+    expect(toolIsDirect(dice), '遙控骰子走点数盘').toBe(false);
+    expect([...TOOLS_NEEDING_TARGET].sort((a, b) => a - b)).toEqual(pick);
+  });
+
+  it('★★ main.ts：`toolIsDirect` 那一支就是发 `useTool`，且在拾取兜底**之前**（源码钉子）', () => {
+    // 上面几条证明「12 直接发」，这一条钉住「直接发 = 发 useTool 且 return」这条路径本身
+    // —— 与文件末尾「浮窗只认左键按下」同样的源码钉子做法。
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain(
+      "if (toolIsDirect(id)) {\n    dispatch({ type: 'useTool', toolId: id });\n    return;\n  }",
+    );
+    const directAt = src.indexOf('if (toolIsDirect(id)) {');
+    const pickAt = src.indexOf('const param = TOOL_SELECT_PARAM.get(id);');
+    expect(directAt).toBeGreaterThan(-1);
+    expect(pickAt).toBeGreaterThan(-1);
+    expect(directAt, '直接发那一支必须排在拾取兜底之前，否则又会静默失效').toBeLessThan(pickAt);
   });
 
   it('★ 载具徽章：机車 = 图 15、汽車 = 图 16，其余（走路）没有', () => {
