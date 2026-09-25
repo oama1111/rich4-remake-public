@@ -17,6 +17,11 @@
         margin: 0; overflow: hidden; overscroll-behavior: none; display: flex; background: #000; color: #e6e8ee;
         font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
       }
+      /* ★ 第二十七份（iPhone Safari）「输入文字后画面显示不全」：iOS 聚焦**计算字号 < 16px** 的
+         文字框会自动放大整页、失焦后不缩回 ⇒ 舞台只剩放大后的一角。兜底：所有文字类输入框
+         至少 16px（盖过内联样式，将来新加的框也吃得到）。复位与重钉见 viewport.ts。 */
+      input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]):not([type=button]):not([type=submit]):not([type=reset]):not([type=image]),
+      textarea, select { font-size: 16px !important; }
       /* ★ 游戏画面是一块 640×480 的定屏，整数倍放大居中 —— 见 stage.ts */
       #board {
         flex: 1 1 0; min-width: 0; width: 100%; height: 100%; display: block;
@@ -92,6 +97,8 @@
       #feedbackpanel textarea {
         width: 100%; box-sizing: border-box; height: 74px; resize: vertical; margin: 6px 0 8px;
         padding: 6px 8px; border-radius: 6px; border: 1px solid #3a5a83; background: #0e2138; color: #e9eef7; font: inherit;
+        /* ★ 第二十七份：≥ 16px —— 13px 时 iPhone Safari 一聚焦就自动放大、失焦不缩回（见下面的兜底规则） */
+        font-size: 16px;
       }
       #feedbackpanel .row { display: flex; gap: 8px; justify-content: flex-end; }
       #feedbackpanel button { padding: 6px 12px; border-radius: 6px; border: 0; cursor: pointer; font: 600 12px/1.2 inherit; }

@@ -21,3 +21,13 @@ export function isTextEntryTarget(t: EventTarget | null): boolean {
   return !['button', 'submit', 'reset', 'checkbox', 'radio', 'range', 'color', 'file', 'image'].includes(type);
 }
 
+
+/**
+ * ★ 第二十七份（iPhone Safari 横屏、聯機第 36 回合）「输入文字后画面显示不全」：
+ *   iOS Safari 聚焦一个**计算字号 < 16px** 的文字框会自动放大页面（visualViewport.scale > 1），
+ *   失焦后**不会缩回**；页面矩形（viewport.ts）在缩放时按设计不跟 ⇒ 看到的只是舞台放大后的一角
+ *   （回报截图是画布本身，所以是完整的；用户眼里下半截被裁掉）。
+ *   门厅暱稱框 / 聯機存檔取名框原是 14px、回報說明框 13px。**所有**文字输入框一律至少 16px ——
+ *   index.html 另有一条 `!important` 的兜底规则，将来新加的框也吃得到。
+ */
+export const TEXT_ENTRY_FONT_PX = 16;
