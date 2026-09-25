@@ -48,7 +48,7 @@
 
 import type { Player } from '../state/types.ts';
 import type { MapObject } from '../cards/summon.ts';
-import { isAlive } from '../state/types.ts';
+import { WHO_PLAYS_RETURN_TO_BOARD, isAlive } from '../state/types.ts';
 import { godModifiersOf, partnerSlot, slotRangeForType } from './objects.ts';
 import { addPoints } from './points.ts';
 import {
@@ -292,6 +292,31 @@ export function releaseObject(w: ObjectWorld, handle: number): ReleaseOutcome {
   return { ...out, formerNode, partner: partnerSlot(i) };
 }
 
+/**
+ * ★★ 2026-09-24（provenance 审计）：神明**离身**（`0x40e32c`，附身满期 `0x0041cc9b` / 被新神挤走 `0x0040eb3f` /
+ *   送神符 `0x00444cc4`）时，搭档登场的参照格是**附身者此刻所在的格**，不是神明当初被踩到的那一格：
+ * ```asm
+ * 0040e356  cmp dword [host+0x32], 0 / je 0x40e36e      ; 住店/消失/坐牢/住院？
+ * 0040e361  call 0x40e14d                                 ; 是 ⇒ 用物件表里存着的格（关押时 0x40fc00 已同步过）
+ * 0040e3cd  mov ax, [host+0x0c]                          ; 否 ⇒ 先把物件的格改成附身者当前的格
+ * 0040e3d4  mov [obj+0x496d0a], ax
+ * 0040e604  call 0x40e14d                                 ; 再放（0x40e253 读的就是这一格 → 0x40aa6c 挑 ≥300 像素远）
+ * ```
+ *   走路从不更新附身物件的格（xref 0x496d0a），先前直接用那个旧格 ⇒ 搭档登场的候选格与原版不同（随机结果也不同）。
+ *   原版的关押计数在「放出来、还没走回棋盘」期间仍是 0x80（非 0）；本引擎那时计数已清、改挂 0x10 ⇒ 一并当作「关着」。
+ */
+function withDispelNode(w: ObjectWorld, playerIndex: number, handle: number): ObjectWorld {
+  const host = w.players[playerIndex];
+  const obj = w.objects[handle - 1];
+  if (host === undefined || obj === undefined) return w;
+  const b = host.blocking;
+  const confined =
+    b.inHotel !== 0 || b.disappearing !== 0 || b.inPrison !== 0 || b.inHospital !== 0 ||
+    (host.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0;
+  if (confined || obj.nodeId === host.nodeId) return w;
+  return { ...w, objects: w.objects.map((o, k) => (k === handle - 1 ? { ...o, nodeId: host.nodeId } : o)) };
+}
+
 // ============================================================
 //  附身
 // ============================================================
@@ -333,7 +358,7 @@ export function attachGod(w: ObjectWorld, playerIndex: number, handle: number): 
 
   // @source if (player.god_info != 0) call 0x40e32c —— 旧的先送走
   const displaced = who.godInfo;
-  const dispelled = displaced !== 0 ? releaseObject(w, displaced) : null;
+  const dispelled = displaced !== 0 ? releaseObject(withDispelNode(w, playerIndex, displaced), displaced) : null;
   const cleared: ObjectWorld = dispelled ?? w;
   const respawn =
     dispelled !== null && dispelled.partner >= 0
@@ -485,7 +510,7 @@ export interface ArrivalOutcome extends ObjectWorld {
  * ⚠️ 车是回**全局库存**，不是回玩家的道具栏——与換乘（`useVehicleTool`
  *   把旧车退成道具）方向不同。撞毁就是撞毁，捡不回来。
  */
-function wreckVehicle(p: Player, toolStock: number[]): boolean {
+export function wreckVehicle(p: Player, toolStock: number[]): boolean {
   // @source cmp dword [player + 0x32], 0 / jne 直接返回
   const b = p.blocking;
   if (b.inHotel !== 0 || b.disappearing !== 0 || b.inPrison !== 0 || b.inHospital !== 0) {
@@ -843,7 +868,7 @@ export function tickGod(w: ObjectWorld, playerIndex: number): GodTickOutcome {
   god.state -= 1;
   if (god.state !== 0) return idle;
 
-  const r = releaseObject(out, p.godInfo);
+  const r = releaseObject(withDispelNode(out, playerIndex, p.godInfo), p.godInfo);
   return {
     players: r.players,
     objects: r.objects,

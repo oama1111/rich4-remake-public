@@ -433,6 +433,11 @@ export const GOD_MANIFEST = {
    * 手里没卡（`0x0040f11c test eax,eax / je`）就不弹。格式串自己写着「小衰神」，不含神明名。
    */
   lostCard: t('小衰神附身\n\n遺失%s！', 0x4633ab),
+  /**
+   * **大衰神**附身丢掉一半手牌（`0x0040f1e6 call 0x441ece` → `0x0040f1ee test eax,eax / je`（没丢就不弹）→
+   * `0x0040f1f6 push 0x5dc` / `0x0040f1fb push 0x4633d5` → `jmp 0x40f148 call 0x440cac`）。无 `%s`。
+   */
+  lostHalf: t('大衰神附身\n\n遺失一半卡片！', 0x4633d5),
 } as const;
 
 /**

@@ -83,9 +83,10 @@ describe('時光機', () => {
     };
     expect(toolCount(s.tools, 0, TOOL_TIME_MACHINE)).toBe(1);
 
-    const back = reduce(s, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
+    const back = reduce({ ...s, phase: 'awaitingRoll' }, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
     expect(back.players[0]!.cash).toBe(before);
     expect(back.players[0]!.nodeId).toBe(1);
+    expect(back.phase).toBe('awaitingRoll');
     expect(back.day).toBe(withTool().day);
     expect(back.phase).toBe('awaitingRoll');
     // ★ 道具要扣 —— 否则可以无限后悔

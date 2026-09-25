@@ -119,6 +119,7 @@ export const NOTICE_TIER = {
   'god.gotCardTwo': 'stage',
   // 小衰神：台词 `0x0040f0ac`（`beforeStage`）→ 影片 → 神明台词窗 → 框 `0x0040f148`
   'god.lostCard': 'stage',
+  'god.lostHalf': 'stage',
   'bank.rejected': 'stage',
   'bank.frozen': 'stage',
   // 董事長贈禮：框 `0x0042ea14` → 台词 `0x0042ea23`

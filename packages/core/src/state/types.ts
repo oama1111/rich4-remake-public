@@ -797,6 +797,7 @@ export type NoticeKey =
    * `0x0040f148 call 0x440cac`）—— `args[0]` = 丢掉的卡名；手里没卡（`0x441e77` 返回 0）不弹。
    */
   | 'god.lostCard'
+  | 'god.lostHalf'
   /**
    * 路过 / 落在銀行格但被拒絕往來（`0x004379ef push 0x464bed`，**1000 ms**）—— `args[0]` = 还剩几天
    * = `(+0x3b & 0x7f) + 1`（@source `0x004379e6 and al,0x7f` / `0x004379ed inc eax`）

@@ -424,6 +424,8 @@ export function writeStateBlock(input: WriteStateBlockInput): Uint8Array {
     u16(out, o + 6, a.lastNodeId);
     out[o + 8] = a.owner & 0xff;
     out[o + 9] = a.direction & 0xff;
+    // +11 = 「老家」（`SpecialActor.home`，2026-09-24 起建模）；没有这一项的老状态照旧 carry
+    if (a.home !== undefined) out[o + 11] = a.home & 0xff;
     out[o + 12] = (a.hibernating ?? 0) & 0xff;
     out[o + 13] = (a.sleepwalkDays ?? 0) & 0xff;
     out[o + 14] = a.halted & 0xff;

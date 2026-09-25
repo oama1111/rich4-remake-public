@@ -214,10 +214,22 @@ export interface LandMutation {
   level: number;
   type: number;
   owner: number;
+  /**
+   * ★★ 2026-09-24（provenance 审计）：地契到期日（住宅 `+0x30` / 設施 `+0x34`）也被清的那几条带 0：
+   *   `mutate_land` mode 1（`0x0040abba mov [eax+0x30], edx(=0)` / 設施 `0x0040ac46 mov dword [eax+0x34], 0`，
+   *   新聞 5/19）与 `damage_area` 重击（住宅 `0x0040ad77` / 設施 `0x0040ae51`，新聞 4）。
+   *   缺省 = 不动。先前没有这一项 ⇒ 旧的到期日留着，日后在别人名下「到期」把地收走。
+   */
+  tenure?: number;
 }
 
 export interface EffectRng {
   below(n: number): number;
+}
+
+/** `rand()` 本身（0..0x7fff）—— `below(0x8000)` 与 `next()` 同值（`rand() % 0x8000`） */
+function nextOf(rng: EffectRng): { next(): number } {
+  return { next: () => rng.below(0x8000) };
 }
 
 /**
@@ -432,6 +444,13 @@ export interface NewsEffectContext {
    *   且与「演出不许碰引擎随机」那条规矩不冲突（这里是 core）。
    */
   rng?: EffectRng;
+  /**
+   * ★★ 2026-09-24（provenance 审计）：稅類（11/12/13）的**第二趟收钱交给调用方**逐人做。
+   *   原版 `pay_money` 付不出当场 `0x41d375 call 0x40cd87` 破产（拍卖地产要掷 `rand()`），
+   *   而第二趟循环每一人之前查终局码（`0x00449dad cmp byte [0x46caf8],0 / jne 出去`）——
+   *   破产要动整局状态，效果层做不了。为 true 时只交出 `shares`、一分不收。
+   */
+  deferTaxPayments?: boolean;
   /** 覆盖天数；通常取自事件表的 literal */
   days?: number;
   /** 神明加持倍率档位：2 加倍、1 归零、0 不变（见 rules/blessing.ts） */
@@ -777,6 +796,8 @@ export function applyNewsEffect(
       days,
       hospitalOccupancy,
       ctx.landscapes,
+      // ★ 首次入獄 5 天 ⇒ 倒霉台词掷一次 rand（`0x0043d5f9 call 0x44f2c2`），在二级判定之后
+      nextOf(rng),
     );
     return {
       ...base,
@@ -810,16 +831,19 @@ export function applyNewsEffect(
       for (const l of lands) {
         // 同名的都改（原版逐块 `strcmp(name)`）；顺序 = 表序
         if (l.name !== target.name) continue;
-        landPrice.push({ id: l.id, price: Math.trunc(l.landPrice * factor) });
+        // ★★ 2026-09-24（provenance 审计）：存回是 `0x0044967b mov word [ebx+0x1c], ax` ⇒ 16 位回绕
+        landPrice.push({ id: l.id, price: Math.trunc(l.landPrice * factor) & 0xffff });
       }
       const changed = landPrice.find((c) => c.id === target.id);
       return { ...base, amount: changed?.price ?? 0, landPrice };
     }
     const fac = facilities[pick - lands.length]!;
+    // 同上：設施 `0x00449721 mov word [ebx+0x22], ax`
+    const facPrice = Math.trunc(fac.landPrice * factor) & 0xffff;
     return {
       ...base,
-      amount: Math.trunc(fac.landPrice * factor),
-      facilityPrice: [{ id: fac.id, price: Math.trunc(fac.landPrice * factor) }],
+      amount: facPrice,
+      facilityPrice: [{ id: fac.id, price: facPrice }],
     };
   }
 
@@ -846,32 +870,34 @@ export function applyNewsEffect(
     };
     const inBlast = (e: { x: number; y: number }): boolean =>
       Math.abs(e.x - origin.x) <= TYPHOON_RADIUS && Math.abs(e.y - origin.y) <= TYPHOON_RADIUS;
+    // ★★ 2026-09-24（provenance 审计）：轻击是 `damage_area` **自己的**内联逻辑，不是 `mutate_land` mode 0
+    //   （后者在 `level == 0` 时整条不动）：
+    // ```asm
+    // ; 住宅 0x0040ad1c：level != 0 ⇒ −1；然后**不看等级**：type != 0 ⇒ level = type = 0
+    // 0040ad1c  mov cl,[ebx+0x1a] / test cl,cl / je 0x40ad2a / dec
+    // 0040ad2a  cmp byte [ebx+0x18],0 / je 结束 / mov [+0x1a],0 / mov [+0x18],0
+    // ; 設施 0x0040adf5：level != 0 ⇒ −1；然后**再读一次**：为 0（刚减到 / 本来就是）⇒ 种类清 0 并放人
+    // 0040ae03  mov al,[ebx+0x1a] / test al,al / jne 结束
+    // 0040ae0a  mov [ebx+0x18],al / 0040ae0d call 0x40dffa
+    // ```
+    //   ⇒ 窗里的 **0 级設施**也会放出全部旅館住客；0 级带种类的地块也清种类。攻击者 −1 ⇒ 不记敌意。
+    //   与 `fireMissile` 的轻击同一段（`blastLand(…, heavy=false)` 与設施那段内联）。
     const landMutations: LandMutation[] = [];
     const releaseFlags: boolean[] = [];
     for (const l of lands) {
       if (!inBlast(l)) continue;
-      const after = mutateLand(l, MUTATE_DEMOLISH_ONE);
-      if (!after.changed) continue;
-      releaseFlags.push(after.releasesConfined);
-      landMutations.push({
-        id: after.land.id,
-        level: after.land.level,
-        type: after.land.type,
-        owner: after.land.owner,
-      });
+      const after = blastLand(l.owner, l.level, l.type, ctx.priceIndex, false);
+      if (after.level === l.level && after.type === l.type) continue;
+      landMutations.push({ id: l.id, level: after.level, type: after.type, owner: l.owner });
     }
     const facilityMutations: LandMutation[] = [];
     for (const f of facilities) {
       if (!inBlast(f)) continue;
-      const after = mutateFacility(f, MUTATE_DEMOLISH_ONE);
-      if (!after.changed) continue;
-      releaseFlags.push(after.releasesConfined);
-      facilityMutations.push({
-        id: after.facility.id,
-        level: after.facility.level,
-        type: after.facility.type,
-        owner: after.facility.owner,
-      });
+      const level = f.level > 0 ? f.level - 1 : 0;
+      const type = level === 0 ? 0 : f.type;
+      if (level === 0) releaseFlags.push(true);
+      if (level === f.level && type === f.type) continue;
+      facilityMutations.push({ id: f.id, level, type, owner: f.owner });
     }
     return {
       ...base,
@@ -937,13 +963,13 @@ export function applyNewsEffect(
     //     @source `damage_area` 0x0040ad3a..0x0040ad85：`+0x19/+0x1a/+0x18` 全写 0
     //     再写 `+0x30`(地契)。原版对窗内**每一块**都写这 4 项；全 0 的地块写了也一样，
     //     故只把**真变了**的那几格带出去（`LandMutation` 的约定）。
-    //     ⚠️ `+0x30`（地契）本引擎的 `LandMutation` 带不了 —— 与已登记的 P4/#7 同一处。
+    //     `+0x30`（地契）由 `LandMutation.tenure` 带出（2026-09-24 起）。
     const landMutations: LandMutation[] = [];
     for (const l of lands) {
       if (!inBlast(l)) continue;
       const after = blastLand(l.owner, l.level, l.type, ctx.priceIndex, ALIEN_BLAST_HEAVY !== 0);
       if (after.owner === l.owner && after.level === l.level && after.type === l.type) continue;
-      landMutations.push({ id: l.id, level: after.level, type: after.type, owner: after.owner });
+      landMutations.push({ id: l.id, level: after.level, type: after.type, owner: after.owner, tenure: 0 });
     }
 
     // ②b 設施：重击支与 `mutate_land` 的 **mode 1** 逐字相同
@@ -961,6 +987,7 @@ export function applyNewsEffect(
         level: after.facility.level,
         type: after.facility.type,
         owner: after.facility.owner,
+        tenure: 0,
       });
     }
 
@@ -1006,6 +1033,8 @@ export function applyNewsEffect(
         ALIEN_HOSPITAL_DAYS,
         prison,
         ctx.landscapes,
+        // 3 天 ⇒ `0x44f2c2` 不掷；照样传，口径统一
+        ctx.rng === undefined ? undefined : nextOf(ctx.rng),
       );
       nextPlayers = c.players.map((q) => ({ ...q }));
       nextObjects = c.objects;
@@ -1139,7 +1168,13 @@ export function applyNewsEffect(
         players: applyRelease(base.players, [after.releasesConfined]),
         amount: 1,
         landMutations: [
-          { id: after.land.id, level: after.land.level, type: after.land.type, owner: after.land.owner },
+          {
+            id: after.land.id,
+            level: after.land.level,
+            type: after.land.type,
+            owner: after.land.owner,
+            ...(razeMode === MUTATE_CLEAR_OWNER ? { tenure: 0 } : {}),
+          },
         ],
         place,
         ...flash,
@@ -1162,6 +1197,7 @@ export function applyNewsEffect(
           level: after.facility.level,
           type: after.facility.type,
           owner: after.facility.owner,
+          ...(razeMode === MUTATE_CLEAR_OWNER ? { tenure: 0 } : {}),
         },
       ],
     };
@@ -1312,7 +1348,10 @@ export function applyNewsEffect(
     const market = ctx.market;
     if (market === undefined) return { ...base, unimplemented: true };
     const stocks = market.stocks.map((s) => ({ ...s, newsFlag: flag }));
-    return { ...base, amount: 1, market: { ...market, stocks } };
+    // ★★ 2026-09-24（provenance 审计）：写完标记**当场改价** —— `0x0044b049 push 0 / 0x0044b04b call 0x429040`
+    //   （25 在 `0x0044b094/0x0044b096`）：参数 0 = 全部 12 支，按新标记重算趋势 ±10、今日价、并覆盖当天那笔历史。
+    //   先前只写标记 ⇒ 今天的价、身家、同日交易都还是旧价，要等明天的日推进才动。
+    return { ...base, amount: 1, market: applyStockNews({ ...market, stocks }, 0) };
   }
 
   // ── 新聞 26「股市暫停交易１０天」──────────────────────────────
@@ -1396,6 +1435,7 @@ export function applyNewsEffect(
       const each = perPlayer(p, who, ctx);
       shares.push({ player: who, amount: each });
       if (each <= 0) continue;
+      if (entry.effects.includes('pay') && ctx.deferTaxPayments === true) continue;
       if (entry.effects.includes('pay')) {
         const r = transferMoney(players, [], pool, who, PARTY_POOL, each, 0);
         players = r.players;
@@ -1461,6 +1501,7 @@ export function applyNewsEffect(
         days,
         other,
         ctx.landscapes,
+        ctx.rng === undefined ? undefined : nextOf(ctx.rng),
       );
       players = out.players;
       objects = out.objects;

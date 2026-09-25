@@ -20,10 +20,11 @@ import type { MapNode, LandscapeInfo } from '../loaders/map.ts';
 import type { MapObject } from '../cards/summon.ts';
 import { isAiControlled, isAlive } from '../state/types.ts';
 import { FORTUNE_EVENTS, eventAmount, fortuneEvent } from '@rich4/data';
-import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
-import { giveCard } from '../cards/rob.ts';
+import { PARTY_POOL, PAY_FLAG_DEBIT_FROM_BANK, receiveMoney, transferMoney } from '../rules/payment.ts';
+import { receiveCard } from '../rules/receive-card.ts';
 import { pickCardToSteal } from '../rules/npc-actions.ts';
 import { sendToConfinement } from '../rules/confinement.ts';
+import { wreckVehicle } from '../rules/object-landing.ts';
 import { addMisfortuneDays } from '../rules/monthly.ts';
 import { BLESSING_DOUBLE, BLESSING_VOID, blessingMultiplier } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
@@ -182,6 +183,9 @@ export const FORTUNE_SELL_ALL_ITEMS = 32;
 export const FORTUNE_DEMOLISH_HOUSE = 0;
 /** 事件 1「強制徵收土地一處」（未开发的那一块，同一条族） */
 export const FORTUNE_CONFISCATE_LAND = 1;
+/** 事件 4「侵入銀行電腦」@source 0x0044c2d4 `mov ecx, 0xa` → `[0x48c5b0]` */
+export const FORTUNE_BANK_HACK = 4;
+export const FORTUNE_BANK_HACK_PCT = 10;
 /** 事件 8 的百分比字面量 @source 事件表 `literal: 10` */
 export const FORTUNE_STOCK_DEFAULT_PCT = 10;
 /** 事件 8 的除数 @source `fdiv dword [0x465a24]` = 100.0 */
@@ -272,7 +276,7 @@ export interface FortuneEffectResult {
    * 调用方据此把 `landLevel[landId]` / `landType[landId]` 清 0（**owner 不变**）。
    * `null` = 本次没拆任何东西。
    */
-  demolished: { landId: number; x: number; y: number; payout: number } | null;
+  demolished: { landId: number; x: number; y: number; payout: number; kind: 'demolish' | 'confiscate' } | null;
   /**
    * ★ 命運 5「生日收卡」**寿星是真人**时要挂出去的分帧信息：还没处理的座位
    *   （升序）。非 `null` 表示「这次一位都没收，等上层把这些人逐个问完」
@@ -318,6 +322,11 @@ export interface FortuneEffectLand {
   level: number;
   /** 房屋单价；原版 `+0x1e`（uint16），赔款 = level × 它，**不乘物價指數** */
   housePrice: number;
+  /**
+   * 地价；原版 `+0x1c`（uint16）—— 事件 1「強制徵收」的补偿额（`0x0044c0ba mov ax, word [ebx+0x1c]`），
+   * **不乘物價指數**。缺省按 0 算（老单测）。
+   */
+  landPrice?: number;
   /** 屏幕坐标 —— 表现层要把镜头移过去（`0x41d476` 收的就是这两个） */
   x: number;
   y: number;
@@ -516,8 +525,24 @@ export function applyFortuneEffect(
     //   **也**没传另一张。
     const occ = kind === 'prison' ? prisonOccupancy : hospitalOccupancy;
     const other = kind === 'prison' ? hospitalOccupancy : prisonOccupancy;
+    // ★★ 2026-09-24（provenance 审计）：住院那两条（12/13）在送醫院**之前**先毁车：
+    //   `0x0044cd54 push eax / call 0x40cd07`（替死鬼 / 本人）→ `0x0044cd65 call 0x43ec3f`。
+    //   坐牢（33..36，`0x44d8a9 → 0x44d8c2`）没有这一句。先前漏了 ⇒「騎機車摔傷」住完院车还在。
+    let toolStock: number[] | null = null;
+    let playersIn = players2;
+    if (kind === 'hospital') {
+      const v = players2[victim];
+      if (v !== undefined && isAlive(v)) {
+        const stock = [...(ctx.toolStock ?? [])];
+        const w = { ...v };
+        if (wreckVehicle(w, stock)) {
+          toolStock = stock;
+          playersIn = players2.map((q, i) => (i === victim ? w : q));
+        }
+      }
+    }
     const out = sendToConfinement(
-      players2,
+      playersIn,
       objects,
       ctx.nodes ?? [],
       occ,
@@ -526,6 +551,9 @@ export function applyFortuneEffect(
       days,
       other,
       ctx.landscapes,
+      // ★ 首次关押的倒霉台词 4..6 天掷一次 rand（`0x0043d5f9` / `0x0043eca5 call 0x44f2c2`）——
+      //   在二级判定（`0x441210`）之后、同一条随机流（cards 审计 cross-area (a)）
+      ctx.rng,
     );
     objects = out.objects;
     return {
@@ -536,6 +564,7 @@ export function applyFortuneEffect(
       hospitalOccupancy: kind === 'hospital' ? out.occupancy : (out.otherOccupancy ?? hospitalOccupancy),
       amount: days,
       fortuneVictim: victim,
+      ...(toolStock === null ? {} : { toolStock }),
     };
   }
 
@@ -543,7 +572,7 @@ export function applyFortuneEffect(
   //   @source `fcn_0044c3b7`：逐人筛（不是自己 / 没出局 / 手上有牌）；
   //   电脑当寿星时 `player_drop_random_card(对方)`（0x441e77 —— 与本引擎
   //   `pickCardToSteal` 是**同一个 exe 函数**）→ `receive_card(自己)`（0x4412e4，
-  //   满手先弃最便宜的一张 —— 复用 `giveCard`）。
+  //   满手先弃最便宜的一张、弃牌回牌堆 —— `rules/receive-card.ts`）。
   //   ★ 真人那条原版弹**选牌窗**（`fcn_0044192a` 模式 0）—— 那一窗本引擎已经有了
   //     （`client/src/steal-picker.ts`，T-053）；因为它是**模态、逐个问**的，
   //     这里对真人寿星**分帧**（见下），电脑寿星照旧当场收完。
@@ -572,6 +601,7 @@ export function applyFortuneEffect(
     const rng = ctx.rng;
     if (rng === undefined) return { ...base, unimplemented: true };
     const next = [...players];
+    const deck = [...(ctx.cardAmount ?? new Array<number>(30).fill(0))];
     let taken = 0;
     const robbed: { victim: number; card: number }[] = [];
     for (let i = 0; i < next.length; i++) {
@@ -583,12 +613,20 @@ export function applyFortuneEffect(
       const hand = [...other.cards];
       hand.splice(hand.indexOf(card), 1);
       next[i] = { ...other, cards: hand };
+      // ★★ 2026-09-24（provenance 审计）：牌堆计数 —— `0x441e77` 移除用的是 `0x441343`
+      //   （尾 `0x004413a2 inc byte [卡+0x499197]`：**这张先回牌堆**），`0x4412e4` 收下时再 −1，
+      //   满手弃掉的那张也回牌堆。先前只动手牌 ⇒ 寿星满手时弃牌凭空消失。
+      deck[card - 1] = ((deck[card - 1] ?? 0) + 1) & 0xff;
       const me = next[ctx.currentPlayer];
-      if (me !== undefined) next[ctx.currentPlayer] = giveCard(me, card);
+      if (me !== undefined) {
+        const got = receiveCard(me, card, deck);
+        deck.splice(0, deck.length, ...got.cardAmount);
+        next[ctx.currentPlayer] = got.player;
+      }
       robbed.push({ victim: i, card });
       taken++;
     }
-    return { ...base, players: next, amount: taken, robbed };
+    return { ...base, players: next, amount: taken, robbed, cardAmount: deck };
   }
 
   // ── 命運 6/7：強迫出國觀光 / 被外星人綁架 ───────────────────────
@@ -596,7 +634,7 @@ export function applyFortuneEffect(
   //   `fcn_0040d375(玩家, 天数, 原因)` ⇒ `blocking.disappearing = 天数 | (原因 << 6)`；
   //   调用前两处各有一次 `fcn_00441210(玩家)`（6 在 `0x44c6c5`、
   //   7 在 `0x44c7d7`，两者共用 `0x44c6d8` 起的同一段尾巴）。
-  //   ★ 已经在外的人原版直接跳过（`cmp byte [+0x33], 0 / jne 出去`）。
+  //   ★ 已经在外的人是**续期**（`0x0040d4c5`：`(旧 & 0x3f) + 打包值`），见下。
   //   ★ 神明加持与坐牢同一支：档位 1 → 逃過此劫（整条作废）、档位 2 → 天数翻倍。
   if (entry.effects.includes('disappear')) {
     const raw = ctx.days ?? entry.literal;
@@ -623,13 +661,26 @@ export function applyFortuneEffect(
     const victim = judged === null ? ctx.currentPlayer : judged.victim;
     const target = players2[victim];
     if (target === undefined) return { ...base, players: players2, unimplemented: true };
-    if (target.blocking.disappearing !== 0) {
-      // 原版 `cmp byte [player+0x33], 0 / jne 出去`：不动天数、不放第二句
-      return { ...base, players: players2, amount: 0, fortuneVictim: victim };
-    }
     const days = raw * mult;
     const reason =
       eventId === FORTUNE_ABDUCTED ? DISAPPEAR_REASON_ABDUCTED : DISAPPEAR_REASON_ABROAD;
+    if (target.blocking.disappearing !== 0) {
+      // ★★ 2026-09-24（provenance 审计）：已经在外的人是**续期**，不是跳过：
+      // ```asm
+      // 0040d38e  al = 原因 << 6 / ah = 天数 | al / [esp] = ah      ; 打包值（字节）
+      // 0040d39e  ah = [+0x33] / test ah,ah / jne 0x40d4c5
+      // 0040d4c5  dl = ah & 0x3f / dh = dl + [esp] / [+0x33] = dh    ; ★ (旧 & 0x3f) + 打包值
+      // ```
+      //   这一支**只写这一个字节**：不清别的计数、不说台词、不理赔、不加倒楣天数 ⇒ `amount: 0`
+      //   让调用方跳过台词与理赔。嫁禍的替死鬼可能正在国外（最恨的人 `0x40d2d3` 只看 `+0x15`）。
+      const packed = ((days & 0xff) | (reason << 6)) & 0xff;
+      const next = players2.map((q, i) =>
+        i === victim
+          ? { ...q, blocking: { ...q.blocking, disappearing: ((q.blocking.disappearing & 0x3f) + packed) & 0xff } }
+          : q,
+      );
+      return { ...base, players: next, amount: 0, fortuneVictim: victim };
+    }
     // ★★ 首次「消失」时原版会先 `call 0x40d761(player)`（@source 0x0040d3ad，
     //   在 `cmp byte [+0x33],0 / jne 出去` 之后）—— 也就是与坐牢/住院首次同一段收尾：
     //     · `[+0x34] != 0` ⇒ 清**监狱**占用表那一格
@@ -797,13 +848,48 @@ export function applyFortuneEffect(
 
   // ★ 支票跳票：银行拒绝往来 30 天
   // @source add byte [player + 0x3b], 0x1e（VA 0x0044c2ba）
+  // ★★ 2026-09-24（provenance 审计）：
+  //   `0x0044c27c push 1 / push 0 / call 0x44b896`（罰金档）→ `0x0044c28d cmp eax,1 / jne` ——
+  //   档位 1 弹「免付」框后 `ret`，**不加天数**；档位 2 不加倍（只有 1 被判）。
+  //   `add byte` ⇒ 8 位回绕。先前两样都没有。
   if (entry.effects.includes('bankBan')) {
+    if (cancelledByBlessing(ctx)) return { ...base, cancelled: true };
     const next = players.map((q, i) =>
       i === ctx.currentPlayer
-        ? { ...q, daysRejectedByBank: q.daysRejectedByBank + BANK_BAN_DAYS }
+        ? { ...q, daysRejectedByBank: (q.daysRejectedByBank + BANK_BAN_DAYS) & 0xff }
         : q,
     );
     return { ...base, players: next };
+  }
+
+  // ── 事件 4「侵入銀行電腦 挪用其他人存款10％」──────────────────────
+  // ★★ 2026-09-24（provenance 审计）：先前 `factor: null` ⇒ 落到下面的 unimplemented，**什么都不发生**。
+  // ```asm
+  // 0044c342  fild [0x48c5b0](=10) / fdiv dword [0x4659a0](100.0f) / fstp dword  ; ★ float32 0.1
+  // 0044c357  for (ebx = 0; ebx < 人数; ebx++)
+  // 0044c365    跳过自己；0044c36c who_plays == 0 跳过；0044c375 存款 == 0 跳过
+  // 0044c37e    amt = trunc(存款 × 0.1f)       ; fild / fmul dword / 0x457dbc 截断 / fistp
+  // 0044c397    pay_money(ebx → cur, amt, 4)    ; ★ flags 4：先扣**存款**；4&1==0 ⇒ 进收款方**存款**
+  // ```
+  //   没有神明加持、没有台词、没有理赔。
+  if (eventId === FORTUNE_BANK_HACK) {
+    const rate = Math.fround(Math.fround(FORTUNE_BANK_HACK_PCT) / Math.fround(100));
+    let cur = players;
+    let curPool = pool;
+    let total = 0;
+    let anyBankrupt = false;
+    for (let i = 0; i < cur.length; i++) {
+      if (i === ctx.currentPlayer) continue;
+      const q = cur[i];
+      if (q === undefined || !isAlive(q) || q.moneyInBank === 0) continue;
+      const amt = Math.trunc(q.moneyInBank * rate);
+      const r = transferMoney(cur, [], curPool, i, ctx.currentPlayer, amt, PAY_FLAG_DEBIT_FROM_BANK);
+      cur = r.players;
+      curPool = r.pool;
+      total += r.paid;
+      anyBankrupt = anyBankrupt || r.bankrupted;
+    }
+    return { ...base, players: [...cur], pool: curPool, amount: total, bankrupted: anyBankrupt };
   }
 
   // ── 事件 0/1：強制拆除房屋一棟 / 強制徵收土地一處 ──
@@ -845,12 +931,18 @@ export function applyFortuneEffect(
     //      `player_say` 的实参里。本引擎的台词不走 core（由客户端探测器选），
     //      故那一次**没有**照抄 —— 这是有意偏离，登记在 PR 描述里。
     const pick = candidates[rng.below(candidates.length)] ?? candidates[0]!;
-    const payout = pick.level * pick.housePrice;
+    // ★★ 2026-09-24（provenance 审计）：两条事件**写的东西不同**，先前按事件 0 一律处理：
+    //   事件 0 `0x0044bf1e..0x0044bf42`：`add_money(cur, level(u8) × word[+0x1e], 1)` → `+0x1a = 0`、`+0x18 = 0`
+    //   事件 1 `0x0044c0b6..0x0044c0d2`：`add_money(cur, word[+0x1c], 1)`（**地价**）→ `+0x19 = 0`（owner）、
+    //     `dword [+0x30] = 0`（地契到期日）；等级 / 种类一个字不碰。
+    //   ⇒ 先前事件 1 赔 `0 × 房价 = 0`、地还是自己的 —— 「徵收」什么都没收走。
+    const confiscate = eventId === FORTUNE_CONFISCATE_LAND;
+    const payout = confiscate ? (pick.landPrice ?? 0) & 0xffff : pick.level * pick.housePrice;
     return {
       ...base,
       players: receiveMoney(players, ctx.currentPlayer, payout),
       amount: payout,
-      demolished: { landId: pick.id, x: pick.x, y: pick.y, payout },
+      demolished: { landId: pick.id, x: pick.x, y: pick.y, payout, kind: confiscate ? 'confiscate' : 'demolish' },
     };
   }
 

@@ -116,11 +116,13 @@ describe('★ 命運 5 生日收卡之后寿星那一句（`0x0044c5c5`）', () 
     expect(detectBirthdayLine(before, st)).toHaveLength(1);
   });
 
-  run('★★ ② 电脑寿星：抽到那一条当场收完就说；排在「搶得」框（`card.robbed`）之后', () => {
+  // ★★ 2026-09-24（provenance 审计）订正：电脑寿星那一支**没有**「搶得」框（`0x0044c46d call 0x441e77` →
+  //   `0x0044c47e call 0x4412e4` → `jmp 0x44c573`），先前那扇是借了搶奪卡 `0x00441ab1` 的出处。
+  run('★★ ② 电脑寿星：抽到那一条当场收完就说（不弹「搶得」框）', () => {
     const { topo, s } = scene({ drawer: 'computer' });
     const s1 = reduce(s, { type: 'settle' }, topo);
     expect(s1.pending?.kind).not.toBe('birthdayCard');
-    expect(s1.notices.filter((n) => n.key === 'card.robbed')).toHaveLength(2);
+    expect(s1.notices.filter((n) => n.key === 'card.robbed')).toHaveLength(0);
     const coin = speechCoin(s1, 0, SPEECH_RAND_SITE.birthday);
     expect(detectBirthdayLine(s, s1)).toEqual([{ player: 0, event: coin, expression: 0 }]);
     // 框（`stage` 档）先、台词（`afterStage`）后 —— 同一把尺子（`presentation-order.ts`）

@@ -534,8 +534,12 @@ describe('★ 間諜：取走這塊地上一次收的過路費', () => {
     expect(spyTollAt(s, landNode)).toEqual({ landlord: 1, amount: 8000 });
     const rng = new WatcomRng();
     rng.setState(1);
-    const w = runNpc(NPC.spy, releaseNpc(1, 0, 3), s, spyTopo, (f) => f + 1, rng);
+    // ★★ 2026-09-24（provenance 审计）：只在**停下来的那一格**取（`0x0041c447`）⇒ 走 2 步停在地块上
+    const w = runNpc(NPC.spy, releaseNpc(1, 0, 2), s, spyTopo, (f) => f + 1, rng);
     expect(w.events).toContainEqual({ kind: 'toll', landlord: 1, amount: 8000 });
+    // 路过（走 3 步、停在后一格）不取
+    const passing = runNpc(NPC.spy, releaseNpc(1, 0, 3), s, spyTopo, (f) => f + 1, new WatcomRng(1));
+    expect(passing.events.filter((e) => e.kind === 'toll')).toEqual([]);
   });
 
   it('从没收过租的地取不到；主人自己的地不取', () => {
