@@ -4601,7 +4601,20 @@ function fireMissile(
   const toolStock = [...stock];
   for (let i = 0; i < players.length; i++) {
     const p = players[i];
-    if (p === undefined || !isAlive(p) || !hitNodes.has(p.nodeId)) continue;
+    if (p === undefined || p.nodeId === 0 || !hitNodes.has(p.nodeId)) continue;
+    if (!isAlive(p)) {
+      // ★★ 爆心里的**乞丐**（出局者的棋子）被炸到别处去：`0x40cd07` 头一道 `cmp [+0x15],0 / je 0x40cd70` →
+      //   `0x0040cd73` 再判一次 → `0x0040cd7d call 0x40cc56`（与施捨之后同一个挪乞丐函数：清原格占位、
+      //   `0x0040cc95 call 0x40aa6c` 以原格为参照挑远处一格、改坐标/来路/朝向）。先前乞丐原地不动，也少掷随机数。
+      const rng = new WatcomRng();
+      rng.setState(rngState);
+      const occupied = runtimeOccupiedNodes(players, objects, specialActors);
+      const spots = objectNodeCandidates(topo.nodes).filter((n) => !occupied.has(n));
+      const moved = pickObjectNodeDistant(spots, p.nodeId, nodeXyOf(topo), () => rng.next());
+      rngState = rng.getState();
+      if (moved !== 0) players[i] = placeOnNode({ ...p, lastNodeId: p.nodeId }, topo.nodes[moved - 1]);
+      continue;
+    }
     // ★ 2026-09-24：先前飛彈这里**跳过发射者自己**（注释说「自己站在别处」）—— 原版没有这一条：
     //   `0x40ae8c..0x40aeaa` 对 id 里的每个玩家位都 `call 0x40cd07`，片后 `0x4470a1` 的循环也不看是谁。
     // @source 0x40cd07：`+0x15`(who_plays) == 0 或 `+0x32` 那个 dword（住店 / 消失 / 監獄 / 醫院）≠ 0

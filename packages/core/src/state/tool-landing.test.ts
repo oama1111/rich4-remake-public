@@ -117,6 +117,21 @@ describe('★ 飛彈（7）', () => {
     expect(toolCount(r.tools, 0, 7)).toBe(0);
   });
 
+  run('★★ 爆心里的乞丐（出局者）被挪到别处（0x40cd7d call 0x40cc56），不住院、不记仇', () => {
+    const { state, topo } = setup({ 7: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const s: GameState = {
+      ...state,
+      players: state.players.map((p, i) => (i === 2 ? { ...p, whoPlays: 0, nodeId: node.id } : p)),
+    };
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    expect(r.players[2]!.nodeId).not.toBe(node.id);
+    expect(r.players[2]!.nodeId).not.toBe(0);
+    expect(r.players[2]!.blocking.inHospital).toBe(0);
+    expect(r.rngState).not.toBe(s.rngState);
+  });
+
   run('★★ 設施也在范围内（`flags = 0x26` 里那一位）—— 掉一级 + 地主同样记仇 30×物價', () => {
     const { state, topo } = setup({ 7: 1 });
     const node = firstHousingNode(topo);
