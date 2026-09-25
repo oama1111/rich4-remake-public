@@ -58,22 +58,17 @@ describe('★ insurancePayoutTo', () => {
     expect(s.players[0]!.cash).toBe(1100);
   });
 
-  it('★★ 保險期递减**永不归零**（@source 0x41cc4b 无 0x80 特判）', () => {
-    // §7.141 订正：先前借用了阻碍计数器的 `tickBlockingCounter`（0x80 → 0），
-    //   复刻会在次日停赔；原版是整字节递减 ⇒ 1 → 0x80 → 0x7f → … → 1 → 0x80…
+  it('★★ 审计 2026-09-24：保險期**会到期** —— 1 → 0x80 → 0（`0x41cae3` 先清 0x80，再 `0x41cc4b` 递减）', () => {
+    // 先前（§7.141）只看了 `0x41cc48..0x41cc6c` 那一小段，得出 0x80 → 0x7f、永不归零 —— 漏了同一函数前面那句清 0x80。
     let v = 1;
     const seq: number[] = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 3; i++) {
       v = tickInsuranceDays(v);
       seq.push(v);
     }
-    expect(seq).toEqual([0x80, 0x7f, 0x7e, 0x7d, 0x7c]);
-    expect(v).not.toBe(0);
+    expect(seq).toEqual([0x80, 0, 0]);
     expect(tickInsuranceDays(0)).toBe(0);
-    // 走满一圈仍不归零
-    let w = 1;
-    for (let i = 0; i < 200; i++) w = tickInsuranceDays(w);
-    expect(w).not.toBe(0);
+    expect(tickInsuranceDays(5)).toBe(4);
   });
 });
 
