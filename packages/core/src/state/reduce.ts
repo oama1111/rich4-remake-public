@@ -2163,11 +2163,19 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         if (!state.pending.choices.includes(action.facilityType)) return state;
         const built = freeBuildFacilityById(state, topo, fac.id, action.facilityType);
         if (built === null) return labPanelTail({ ...state, pending: null, phase: 'turnEnd' }, topo);
+        let done: GameState = withSingleBuildUpgrade({ ...built.state, pending: null, phase: 'turnEnd' }, buildHintOf(built, 'godManifest'));
+        // ★★ 2026-09-24（provenance 审计）：福神那一支（`0x40f8be`）在 `0x40b110` 返回成功、且没带 0x80 时
+        //   `0x0040fa49 call rand / and eax,1` 选台词 —— 真人空設施的选种类框就在 `0x40b110` 里，选完才轮到它。
+        //   先前 `luckyGodBonus` 在挂框那一刻读了**上一条 action 留下的** `lastBuildUpgrades` 决定掷不掷（常常不掷），
+        //   选完这里又不掷 ⇒ 少一次 rand。天使（`0x40f381`）那一支没有这句。
+        if (isLuckyGod(player.godInfo) && !buildUpgradeBit7(0, 1)) {
+          const rng = new WatcomRng();
+          rng.setState(done.rngState);
+          const line = rng.next();
+          done = { ...done, rngState: rng.getState(), lastGodLine: { player: state.currentPlayer, event: line & 1 } };
+        }
         // 这扇框在尾块里（福神 `0x40f8be` / 天使 `0x40f381` 都在 `0x0041b0b3` 之前）⇒ 选完接着问研究所
-        return labPanelTail(
-          withSingleBuildUpgrade({ ...built.state, pending: null, phase: 'turnEnd' }, buildHintOf(built, 'godManifest')),
-          topo,
-        );
+        return labPanelTail(done, topo);
       }
       if (fac.owner !== state.currentPlayer + 1 || fac.level !== 0) return state;
       if (!state.pending.choices.includes(action.facilityType)) return state;
@@ -3101,6 +3109,9 @@ function luckyGodBonus(before: GameState, next: GameState, topo: MapTopology, en
   const me = next.players[next.currentPlayer];
   if (me === undefined || !isLuckyGod(me.godInfo)) return next;
   const out = godFreeBuild(before, next, topo, entity, me.godInfo);
+  // ★★ 2026-09-24（provenance 审计）：只认**这一次**写下的加蓋提示 —— `lastBuildUpgrades` 不在每条 action 清，
+  //   挂出选种类框（没盖）时读到的是旧的那一条。挂框那一支的台词 rand 在答框时掷（`case 'buildFacility'`）。
+  if (out.lastBuildUpgrades === next.lastBuildUpgrades) return out;
   const hints = out.lastBuildUpgrades ?? [];
   const last = hints[hints.length - 1];
   if (out === next || last === undefined || last.source !== 'godManifest' || last.reachedMaxLevel) return out;
@@ -3408,6 +3419,12 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
     }
   }
 
+  // ★★ 2026-09-24（provenance 审计）：搭档登场**在送醫院之前** —— 惡犬那一支 `0x0041b845 call 0x40e14d`
+  //   当场挑格（`0x40e28c call 0x40aa6c`，要 rand），那时被咬的人还站在这一格上（节点位占着）；
+  //   送醫院在后面 `0x0041b8ef call 0x43ec3f`。被挤走的旧神同理（`0x40eb3f call 0x40e32c` 在附身当中）。
+  //   先前先住院再挑格 ⇒ 这一格也进了候选（`rand()%n` 的 n 多 1）。
+  next = respawnPartner(next, topo, r.respawn);
+
   // 住院
   if (r.hospitalDays !== 0) {
     const c = sendToConfinement(
@@ -3436,10 +3453,8 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
     );
   }
 
-  // 神明离场后，搭档换上来
-  const withPartner = respawnPartner(next, topo, r.respawn);
   // ★ 神明**附身那一刻**的發威（跳表 `ref_0040ea9b`，见 rules/god-power.ts）
-  return applyGodPowerOnAttach(state, withPartner, topo);
+  return applyGodPowerOnAttach(state, next, topo);
 }
 
 /**
@@ -3473,9 +3488,13 @@ function applyGodPowerOnAttach(
 
   const rng = new WatcomRng();
   rng.setState(after.rngState);
-  const power = godPowerOf(god.type, rng);
+  // @source 0x0043f306..0x0043f316：当前玩家 who_plays > 1（无符号）或夢遊中 ⇒ 老虎机自动转 4 轮
+  const cur = after.players[after.currentPlayer];
+  const auto = cur !== undefined && (cur.whoPlays > WHO_PLAYS_HUMAN || cur.blocking.sleepWalking !== 0);
+  const power = godPowerOf(god.type, rng, auto);
   if (power.kind === 'none') return after;
-  const out = applyGodPower(after, topo, host, power, rng);
+  // ★★ 2026-09-24（provenance 审计）：掷完金额的随机流先写回，付款途中的破产（拍卖要 rand）接着掷
+  const out = applyGodPower({ ...after, rngState: rng.getState() }, topo, host, power, rng);
   // ★★ W-55 行 7：把这次掷出来的**金额**交给表现层 —— 財神那两支的额外台词
   //   都以它为闸门（小財神 `0x0040eca4 cmp esi,0x2bc`、
   //   大財神 `0x0040ed74 cmp esi, 5000×物價`），而这个数先前掷完就丢。
@@ -3511,10 +3530,15 @@ function applyGodPower(
         players = r.players;
         pool = r.pool;
         out = { ...out, players, pool };
-        // @source 每次 `pay_money` 内部就地破产；随后 `cmp [0x46caf8],0 / jne 跳出`
+        // @source 每次 `pay_money` 内部就地破产；循环头 `0x0040ec7b cmp [0x46caf8],0 / jne 跳出` ——
+        //   ★★ 2026-09-24（provenance 审计）：**只有终局才跳出**，一个人付不起破产后照样轮下一个
+        //   （先前 `break` ⇒ 后面的人都不用付）。
         if (r.bankrupted) {
           out = applyBankruptcy(out, i, topo);
-          break;
+          rng.setState(out.rngState);
+          if (out.phase === 'gameOver') break;
+          players = out.players;
+          pool = out.pool;
         }
       }
       return out;
@@ -3539,7 +3563,9 @@ function applyGodPower(
         pool = r.pool;
         out = { ...out, players, pool };
         if (r.bankrupted) {
+          // 附身者自己破产：`0x40cd87` 清 who_plays，之后原版照样循环但付 0（同一结果）⇒ 直接结束
           out = applyBankruptcy(out, host, topo);
+          rng.setState(out.rngState);
           break;
         }
       }
@@ -3550,7 +3576,10 @@ function applyGodPower(
     case 'payBank': {
       const r = transferMoney(state.players, [], state.pool, host, PARTY_POOL, power.amount, 0);
       const paid: GameState = { ...state, players: r.players, pool: r.pool };
-      return r.bankrupted ? applyBankruptcy(paid, host, topo) : paid;
+      if (!r.bankrupted) return paid;
+      const broke = applyBankruptcy(paid, host, topo);
+      rng.setState(broke.rngState);
+      return broke;
     }
 
     // ── 福神：得 1 / 2 张随机卡 @source 0x0040ede7 / 0x0040eea8 ──
@@ -3662,6 +3691,15 @@ function applyGodPower(
           consumeFirst(id);
           if (id > 0) cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) + 1;
         }
+        // ★★ 2026-09-24（provenance 审计）：丢了一半就弹「大衰神附身\n\n遺失一半卡片！」（1500 ms）——
+        //   `0x0040f1ee test eax,eax / je` → `0x0040f1f6 push 0x5dc / 0x0040f1fb push 0x4633d5 / jmp 0x40f148`。
+        //   先前这一扇没弹（小衰神那扇 2026-09-23 已补）。
+        return {
+          ...state,
+          players: state.players.map((p, i) => (i === host ? { ...p, cards } : p)),
+          cardAmount,
+          notices: [{ key: 'god.lostHalf', args: [], holdMs: 1500 }],
+        };
       }
       return {
         ...state,

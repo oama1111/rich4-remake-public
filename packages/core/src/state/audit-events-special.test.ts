@@ -285,3 +285,29 @@ describe('★ 傳送機（0x004474a9 / 0x00447844）', () => {
     expect(r.objects[0]!.nodeId).toBe(3);
   });
 });
+
+describe('★ 福神代蓋空設施（真人选种类框）：选完才掷台词 rand（0x0040fa49）', () => {
+  it('答框成功 ⇒ rngState 前进 1、交出 lastGodLine', () => {
+    const topo: MapTopology = {
+      nodes: [makeNode({ id: 1, adjacent: [2], type: 0xfa0 + 5 }), makeNode({ id: 2, adjacent: [1] })],
+      lands: [],
+      facilities: [makeFacility({ id: 5 })],
+    };
+    const base = makeGameState({ rngState: 999, currentPlayer: 0, phase: 'awaitingDecision' });
+    // 福神附身：handle 3（固定槽 2 = 小福神；`0x0040f8da cmp dl,3` 比的就是 +0x3f 的 handle）
+    const objects = base.objects.map((o, i) => (i === 2 ? { ...o, type: 3, attached: 1, state: 5 } : o));
+    const s: GameState = {
+      ...base,
+      objects,
+      players: base.players.map((p, i) => (i === 0 ? { ...p, nodeId: 1, whoPlays: WHO_PLAYS_HUMAN, godInfo: 3 } : p)),
+      pending: { kind: 'buildFacility', facilityId: 5, name: 'x', price: 0, choices: [0, 1, 2, 3, 4], free: true },
+    };
+    const r = reduce(s, { type: 'buildFacility', facilityType: 1 }, topo);
+    expect(r.facilityLevel[5]).toBe(1);
+    const g = new WatcomRng();
+    g.setState(999);
+    const v = g.next();
+    expect(r.rngState).toBe(g.getState());
+    expect(r.lastGodLine).toEqual({ player: 0, event: v & 1 });
+  });
+});

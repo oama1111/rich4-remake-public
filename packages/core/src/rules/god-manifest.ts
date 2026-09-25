@@ -94,16 +94,20 @@ export const DEVIL_HOSTILITY_FACTOR = 30;
  * 0040f705  call 0x40df69
  * ```
  * 而 `0x40df69` 的第三个形参是 **int**（`mov ecx,[esp+0x14]`）⇒ 它读到的是那个 double 的
- * **低 32 位**。`地價×物價×(level+2)/5` 是整数且 < 2²¹ 时低 32 位全 0 ⇒ `delta = 0`
- * （地價都是 100 的倍数 ⇒ 实战里几乎恒为 0：土地公強佔**不结仇**）；
- * 不整除或 ≥ 2²¹ 时是尾数的低位（可正可负）。
+ * **低 32 位**：乘积恰为「小」整数时低 32 位全 0 ⇒ `delta = 0`；否则是尾数的低位（可正可负）。
+ * ⚠️ 次序是 `地價×物價 × ((level+2)/5)`（见函数体），商多半不精确 ⇒ **常常不为 0**。
  *
  * ⚠️ x87 是 80 位中间精度、这里是 double 直算 —— 整除时两者逐位相同；
  *   不整除时理论上可能差最后一位（地價是 100 的倍数，构造上不可达）。
  */
 export function seizeHostilityDelta(landPrice: number, priceIndex: number, level: number): number {
+  // ★★ 2026-09-24（provenance 审计）订正**求值次序**：原版是 `A × ((level + 2) / 5)` ——
+  //   `0x0040f6d4 fild A` 先压、`0x0040f6e7 fild level / fadd 2.0f / fdiv 5.0f` 在 st0 里先算完商、
+  //   `0x0040f6fa fmulp` 最后才乘。`(level+2)/5` 多半不是精确二进制小数（1.4、0.4…）⇒ 乘积带尾数，
+  //   低 32 位**常常不是 0**（700×1.4 = 979.9999999999999 ⇒ −1）。先前写成 `(A × (level+2)) / 5`
+  //   （整除 ⇒ 恒 0），把「土地公強佔几乎恒不结仇」当成了结论。`A` 是 32 位 `imul`（0x0040f6ca）。
   // eslint-disable-next-line no-restricted-syntax -- C-DET-3 的定向豁免：原版这里就是 x87 浮点除（0x0040f6f4 fdiv），要的正是那个 double 的位型
-  const value = (landPrice * priceIndex * (level + 2)) / 5;
+  const value = Math.imul(landPrice, priceIndex) * ((level + 2) / 5);
   const view = new DataView(new ArrayBuffer(8));
   view.setFloat64(0, value, true);
   return view.getInt32(0, true);

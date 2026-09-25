@@ -12,7 +12,8 @@ import { decideAction } from '../ai/policy.ts';
 import { applyBankruptcy, reduce, isGameOver } from './reduce.ts';
 import { isAlive } from './types.ts';
 import type { GameState } from './types.ts';
-import { INITIAL_OBJECT_TYPES, OBJECT_TYPE_ROADBLOCK, placeObjectOfType } from '../rules/object-landing.ts';
+import { INITIAL_OBJECT_TYPES, OBJECT_TYPE_ROADBLOCK, objectNodeCandidates, pickObjectNodeDistant, placeObjectOfType, runtimeOccupiedNodes } from '../rules/object-landing.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 import { OBJECT_NAMES } from '../rules/purchase.ts';
 import { stateFingerprint } from '../net/protocol.ts';
 import { facilityIndexOf, housingIndexOf } from '../rules/land.ts';
@@ -287,6 +288,27 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
       expect(settled.players[0]!.points).toBe(me.points);
     });
   }
+
+  // ★★ 2026-09-24（provenance 审计）：土地公登场在**送醫院之前**挑格（`0x0041b845 call 0x40e14d` 早于
+  //   `0x0041b8ef call 0x43ec3f`）⇒ 被咬的人还占着那一格。按这个次序手算候选与抽签，与引擎逐位一致。
+  run('★★ 惡犬：搭档挑格时被咬的人还占着那一格（先挑格、后住院）', () => {
+    const { before, after, topo, node } = stepOnto(11);
+    // 走这一步本身不掷随机（单邻居起步）⇒ 以「走完」的状态为抽签起点
+    const walkedOnly = reduce({ ...before, objects: before.objects.map((o) => ({ ...o, nodeId: 0 })) }, { type: 'step' }, topo);
+    const rng = new WatcomRng(walkedOnly.rngState);
+    const playersAtBite = before.players.map((p, i) => (i === 0 ? { ...p, nodeId: node } : p));
+    const objectsAfterRelease = after.objects.map((o) => (o.type === 12 ? { ...o, nodeId: 0 } : o));
+    const occupied = runtimeOccupiedNodes(playersAtBite, objectsAfterRelease, before.specialActors);
+    const spots = objectNodeCandidates(topo.nodes).filter((n) => !occupied.has(n));
+    const xy = (id: number) => {
+      const n = topo.nodes[id - 1];
+      return n === undefined ? null : { x: n.x, y: n.y };
+    };
+    const want = pickObjectNodeDistant(spots, node, xy, () => rng.next());
+    const earthGod = after.objects.find((o) => o.type === 12)!;
+    expect(earthGod.nodeId).toBe(want);
+    expect(after.players[0]!.blocking.inHospital).toBe(3);
+  });
 
   run('★ 惡犬被踩掉之后，土地公会补到场上 —— 物件不会越打越少', () => {
     const { after } = stepOnto(11);

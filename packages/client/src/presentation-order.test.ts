@@ -277,9 +277,9 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
   // ── 神明 ──
   {
     line: 'godArrived',
-    boxes: ['godSay', 'godSlot', 'god.lostCard'],
+    boxes: ['godSay', 'godSlot', 'god.lostCard', 'god.lostHalf'],
     exe: 'lineFirst',
-    va: '壞神：台词 `0x0040ef44` → 影片 `0x0040ef78` → `0x40e2a2` `0x0040ef8e` → `0x440706` `0x0040ef98`；小衰神 `0x0040f0ac` → … → 框 `0x0040f148`',
+    va: '壞神：台词 `0x0040ef44` → 影片 `0x0040ef78` → `0x40e2a2` `0x0040ef8e` → `0x440706` `0x0040ef98`；小衰神 `0x0040f0ac` → … → 框 `0x0040f148`；大衰神 `0x0040f1f6` → `jmp 0x40f148`（同一扇框的出口）',
   },
   {
     line: 'moneyPaid',
@@ -307,7 +307,7 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
   },
   {
     line: 'godLeft',
-    boxes: ['godSay', 'godSlot', 'god.gotCard', 'god.gotCardTwo', 'god.lostCard'],
+    boxes: ['godSay', 'godSlot', 'god.gotCard', 'god.gotCardTwo', 'god.lostCard', 'god.lostHalf'],
     exe: 'lineFirst',
     va: '换神：`god_activate` 先 `0x40eb3f call 0x40e32c`（升天 → 台词 `0x0040e659`）再播新神影片 / `0x40e2a2`',
   },
