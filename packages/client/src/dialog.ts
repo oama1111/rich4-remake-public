@@ -48,7 +48,7 @@ import {
   type Rect,
   type SpriteFn,
 } from './gameui.ts';
-import { AMOUNT_KEY_RECTS, AMOUNT_WINDOW, amountSlotOfId } from './amount-keys.ts';
+import { AMOUNT_KEY_RECTS, AMOUNT_WINDOW, amountButtonDownSound, amountSlotOfId } from './amount-keys.ts';
 import { drawAmountWindow } from './amount-window.ts';
 import { boardToScreen, pointInGo, type GoPos } from './go-button.ts';
 import { LAYOUT } from './stage.ts';
@@ -561,6 +561,82 @@ export function layoutDialog(
   if (overflow > 0) for (const b of buttons) b.rect.y -= overflow;
 
   return { box, inner, title: ui.title, lines, yesNo: false, buttons };
+}
+
+/**
+ * 通用填数窗（`fcn_00453544`）上鼠标的「**按下记账、抬手动作**」—— 原版 `[0x48cac2]` 那一个字节。
+ *
+ * @source `fcn_00452c02`：
+ *   - `WM_LBUTTONDOWN`/`DBLCLK`（`loc_00452d0e`）：记下按在第几号（`0x00452d5e`）、**放按键音 7**
+ *     （`0x00452d8e..0x00452d95`，见 `amountButtonDownSound`）、贴按下图 —— **不动数值**；
+ *   - `WM_LBUTTONUP`（`loc_00452fce`）：`[0x48cac2]` 为 0 ⇒ 什么都不做；否则照**它**（不是抬手处的坐标）
+ *     查跳表 `0x452bca` 接数字 / C / 退格 / M / Enter，**不再放音**，最后清 0。
+ *
+ * ★ 浏览器在 `mouseup` 之后还会补一个 `click`（触屏的点按由 `touch-input.ts` 派 `down → up → click`
+ *   三连）。抬手已经办过的这一下，紧跟的 `click` 必须**吞掉** —— 不然「確定」关了填数页之后，
+ *   同一点落到底下那页的选项钮上，就成了一下点两件事（`swallowClick`）。
+ *
+ * 纯状态、不碰 DOM：`main.ts`（棋盘 / 銀行 / 股市三处的填数页）与 `board-screen.ts`（公佈欄出价）各持一个。
+ */
+export class AmountPressLatch {
+  private pressed: DialogHit | null = null;
+  private swallow = false;
+
+  /**
+   * 左键按下。`hit` 是 `hitDialog` 在按下点的结果。
+   * @returns `consumed` = 这一下落在填数窗上（调用方不要再往下传）；`sound` = 此刻要放的音
+   */
+  down(hit: DialogHit | 'inside' | null): { consumed: boolean; sound: number | null } {
+    this.pressed = null;
+    this.swallow = false;
+    if (hit === null) return { consumed: false, sound: null };
+    if (hit === 'inside') return { consumed: true, sound: null };
+    switch (hit.kind) {
+      case 'amountSlot':
+        this.pressed = hit;
+        return { consumed: true, sound: amountButtonDownSound(hit.id) };
+      case 'amountStep':
+      case 'amountMax':
+      case 'amountOk':
+      case 'amountCancel':
+        // 本引擎自己补的那颗「取消」等：原版没有这几颗 ⇒ 不放音，但同样抬手才办
+        this.pressed = hit;
+        return { consumed: true, sound: null };
+      default:
+        return { consumed: false, sound: null };
+    }
+  }
+
+  /** 左键抬手：返回**按下时记下的**那一颗（要办的事）；没有就 `null`。办了就吞掉紧跟的 `click` */
+  up(): DialogHit | null {
+    const p = this.pressed;
+    this.pressed = null;
+    if (p !== null) this.swallow = true;
+    return p;
+  }
+
+  /** 浏览器补来的 `click`：`true` = 抬手已经办过，吞掉 */
+  click(): boolean {
+    const s = this.swallow;
+    this.swallow = false;
+    return s;
+  }
+
+  /** 新的一次按下开始：上一次抬手留下的「吞掉 click」作废 */
+  newGesture(): void {
+    this.swallow = false;
+  }
+
+  /** 填数页收掉 / 换页时清账 */
+  reset(): void {
+    this.pressed = null;
+    this.swallow = false;
+  }
+
+  /** 此刻按着哪一颗（画按下图 / 单测用）*/
+  get held(): DialogHit | null {
+    return this.pressed;
+  }
 }
 
 /** 棋盘区坐标 → 点中了什么 */

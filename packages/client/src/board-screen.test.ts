@@ -1214,3 +1214,63 @@ describe('撤件 / 購買 @source VA 0x00427ad9 / 0x00427b19 / 0x00427b3b', () =
     expect(boardScreen.active(h.env)).toBe(true); // 屏还开着
   });
 });
+
+describe('★ pt26 #3：公佈欄出价填数页 —— 按下放按键音 7、抬手才动作（只认按下那一颗）@source 0x00452d95 / loc_00452fce', () => {
+  function priceHarness() {
+    const state = makeGameState({ players: [makePlayer({ index: 0, cards: [7] })] });
+    resetBoardScreen();
+    const h = harness(state);
+    const sounds: number[] = [];
+    h.env.playEffect = (id: number) => void sounds.push(id);
+    openBoard(h.env);
+    drag(h.env, 500, 90, 545, 170);
+    click(h.env, 177, 209);
+    expect(boardScreenState().mode).toBe('price');
+    sounds.length = 0;
+    const a = boardScreenState().amount!;
+    const layout = layoutDialog(h.env.stage, boardPriceUi(a.kind, a.id, a.amount, a.market), boardScreenState().amountPage);
+    const at = (id: number) => {
+      const b = layout.buttons.find((x) => x.hit.kind === 'amountSlot' && x.hit.id === id)!;
+      return { x: b.rect.x + LAYOUT.board.x + 2, y: b.rect.y + LAYOUT.board.y + 2 };
+    };
+    return { h, sounds, at, a };
+  }
+
+  it('数字钮：按下只放 7、值不变；抬手才接上那一位', () => {
+    const { h, sounds, at } = priceHarness();
+    const before = boardScreenState().amountPage!.value;
+    const c = at(4); // C = 清零
+    boardScreen.down?.(c.x, c.y, h.env);
+    expect(sounds).toEqual([7]);
+    expect(boardScreenState().amountPage!.value).toBe(before);
+    boardScreen.up?.(c.x, c.y, h.env);
+    expect(sounds).toEqual([7]); // 抬手不再放
+    expect(boardScreenState().amountPage!.value).toBe(0);
+    const five = at(0xb); // '5'
+    boardScreen.down?.(five.x, five.y, h.env);
+    boardScreen.up?.(five.x, five.y, h.env);
+    expect(boardScreenState().amountPage!.value).toBe(5);
+    expect(sounds).toEqual([7, 7]);
+  });
+
+  it('★ 抬手照**按下那一颗**办（抬手时指针已挪到别处也一样）', () => {
+    const { h, at, a } = priceHarness();
+    boardScreenState().amountPage!.value = 4200;
+    const ok = at(3);
+    boardScreen.down?.(ok.x, ok.y, h.env);
+    expect(h.actions).toEqual([]); // 按下不成交
+    boardScreen.up?.(5, 5, h.env); // 抬在屏外
+    expect(h.actions).toEqual([{ type: 'noticeBoard', op: 'list', kind: LISTING.card, id: a.id, price: 4200 }]);
+    expect(boardScreenState().mode).toBe('board');
+  });
+
+  it('按在窗里的空白 / 金额栏上：不放音，抬手也不办事', () => {
+    const { h, sounds } = priceHarness();
+    const v = boardScreenState().amountPage!.value;
+    boardScreen.down?.(0x100 + 50, 0x90 + 41 + 7, h.env); // 金额栏（原版 0x10：不放音）
+    boardScreen.up?.(0x100 + 50, 0x90 + 41 + 7, h.env);
+    expect(sounds).toEqual([]);
+    expect(boardScreenState().amountPage!.value).toBe(v);
+    expect(h.actions).toEqual([]);
+  });
+});

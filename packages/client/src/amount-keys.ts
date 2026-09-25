@@ -373,6 +373,24 @@ export function amountKeySound(key: AmountKey): number | null {
 }
 
 /**
+ * **鼠标**按在填数窗第 `id` 号上那一下要放的音 —— 放在**按下**（`WM_LBUTTONDOWN`），不是抬手。
+ *
+ * @source `fcn_00452c02` 的 0x201 / 0x203 → `loc_00452d0e`：
+ * ```asm
+ * 00452d5e  mov [0x48cac2], al            ; 记下按在哪一号（抬手只认它）
+ * 00452d63  cmp al, 1  / jne 0x452d75     ; 1 = 拖窗：只记坐标，不放音
+ * 00452d75  cmp al, 0x10 / jne 0x452d8e   ; 0x10 = 金额栏：合成 WM_MOUSEMOVE，不放音
+ * 00452d8e  push 0 / push 0x48234a
+ * 00452d95  call _rich4_play_sound_effect  ; ★ 其余 ⇒ 按下这一拍放 7，再贴「按下」图
+ * ```
+ * 动作本身在**抬手**：`WM_LBUTTONUP`（0x202）落 `loc_00452fce`，照 `[0x48cac2]`（按下时记的）
+ * 查跳表 `0x452bca` —— **不再看抬手的坐标**；键盘那一路也是「放 7 → 合成 0x202」进同一段。
+ */
+export function amountButtonDownSound(id: number): number | null {
+  return id === 1 || id === 0x10 ? null : AMOUNT_KEY_SOUND;
+}
+
+/**
  * 钮序号 → 语义。序号的**字**来自表 `0x47e714`（`mov dl, byte [eax + 0x47e714]`，
  * eax = 序号）：`[5]='0'`、`[7..9]='7','8','9'`、`[0xa..0xc]='4','5','6'`、
  * `[0xd..0xf]='1','2','3'`；序号 2/3/4/6 由跳表 `0x452bca` 决定：

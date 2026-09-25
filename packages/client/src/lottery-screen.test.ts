@@ -1096,3 +1096,70 @@ describe('★ gap-audit #13：买中那一下放成交音 31 @source 0x00430029.
     expect(actor.actions).toEqual([{ type: 'lottery', number: 7 }]);
   });
 });
+
+describe('★ pt26 #2：投注窗只归「正好 who_plays == 1」的那位 @source 0x004315d3..0x004315e1（`cmp byte [+0x15],1 / jne` 电脑那支不开窗）', () => {
+  /** 当前玩家（0 号）被託管：真人 + 託管位 = 5 */
+  const autopiloted = (s: GameState): GameState =>
+    ({ ...s, players: [{ ...s.players[0]!, whoPlays: 0x05 }] }) as unknown as GameState;
+  const human = (s: GameState): GameState =>
+    ({ ...s, players: [{ ...s.players[0]!, whoPlays: 0x01 }] }) as unknown as GameState;
+
+  it('★ 单机：这一回合归电脑（被託管的真人）时，点号 / 跳开场白 / 右键 都不动；「取消」钮也不露', () => {
+    resetLotteryScreenState();
+    const s = autopiloted(mkState({ pending: mkPending([7, 8, 9]) }));
+    lotteryScreen.tick!(mkEnv(s, 0, true).env);
+    expect(lotteryPhase()).toBe('hello');
+    const { env, actions, effects } = mkEnv(s, 10, true);
+    const cell = numberRect(8)!;
+    lotteryScreen.down!(cell.x + 1, cell.y + 1, env);
+    expect(lotteryPhase()).toBe('hello'); // 连开场白都不替电脑跳
+    expect(actions).toEqual([]);
+    expect(effects).toEqual([]);
+    expect(lotteryScreen.contextmenuLive!(env)).toBe(false);
+    lotteryScreen.contextmenu!(0, 0, env);
+    expect(actions).toEqual([]);
+    expect(lotteryPhase()).toBe('hello');
+  });
+
+  it('单机：正好 who_plays == 1 的真人照常能买、能右键走人', () => {
+    resetLotteryScreenState();
+    const s = human(mkState({ pending: mkPending([7, 8, 9]) }));
+    lotteryScreen.tick!(mkEnv(s, 0, false).env);
+    const { env, actions, effects } = mkEnv(s, 10, false);
+    expect(lotteryScreen.contextmenuLive!(env)).toBe(true);
+    const cell = numberRect(9)!;
+    lotteryScreen.down!(cell.x + 1, cell.y + 1, env);
+    expect(actions).toEqual([{ type: 'lottery', number: 9 }]);
+    expect(effects).toEqual([LOTTERY_BUY_SOUND]);
+
+    resetLotteryScreenState();
+    lotteryScreen.tick!(mkEnv(s, 20, false).env);
+    const r = mkEnv(s, 30, false);
+    lotteryScreen.contextmenu!(0, 0, r.env);
+    expect(r.actions).toEqual([{ type: 'declineDecision' }]);
+  });
+
+  it('★ 联机：本机座位此刻被超时託管（服务器 setAi 5）→ 本机也点不动；旁观端照旧点不动', () => {
+    resetLotteryScreenState();
+    const s = autopiloted(mkState({ pending: mkPending([7, 8, 9]) }));
+    lotteryScreen.tick!(mkEnv(s, 0, false, 0).env);
+    const own = mkEnv(s, 10, false, 0);
+    const cell = numberRect(7)!;
+    lotteryScreen.down!(cell.x + 1, cell.y + 1, own.env);
+    lotteryScreen.contextmenu!(0, 0, own.env);
+    expect(own.actions).toEqual([]);
+    expect(own.effects).toEqual([]);
+    expect(lotteryScreen.contextmenuLive!(own.env)).toBe(false);
+
+    const spect = mkEnv(human(s), 20, false, 1);
+    lotteryScreen.down!(cell.x + 1, cell.y + 1, spect.env);
+    lotteryScreen.contextmenu!(0, 0, spect.env);
+    expect(spect.actions).toEqual([]);
+    expect(lotteryScreen.contextmenuLive!(spect.env)).toBe(false);
+
+    // 託管收回（服务器 setAi 1）之后，本机那一座又能买了
+    const back = mkEnv(human(s), 30, false, 0);
+    lotteryScreen.down!(cell.x + 1, cell.y + 1, back.env);
+    expect(back.actions).toEqual([{ type: 'lottery', number: 7 }]);
+  });
+});

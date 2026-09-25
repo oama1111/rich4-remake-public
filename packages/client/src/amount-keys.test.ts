@@ -33,6 +33,7 @@ import {
   amountWindowHit,
   amountKeyOfVk,
   AMOUNT_KEY_SOUND,
+  amountButtonDownSound,
   amountKeySound,
   amountKeyStep,
   appendDigitKey,
@@ -572,5 +573,26 @@ describe('★ gap-audit #13：填数窗按键音 7 @source 0x00452f0e（键盘�
       expect(amountKeySound(k!)).toBe(7);
     }
     expect(amountKeySound(amountKeyOfVk(0x48)!)).toBeNull();
+  });
+});
+
+describe('★ pt26 #3：鼠标按在填数窗上 —— 音在**按下**放 @source 0x00452d63..0x00452d95', () => {
+  it('2..0xf 号钮（数字 / C / 退格 / M / Enter）按下放 7', () => {
+    for (let id = 2; id <= 0xf; id++) expect(amountButtonDownSound(id), `id ${id}`).toBe(7);
+  });
+  it('1 = 拖窗、0x10 = 金额栏：不放（`cmp al,1` / `cmp al,0x10` 两道先跳走）', () => {
+    expect(amountButtonDownSound(1)).toBeNull();
+    expect(amountButtonDownSound(0x10)).toBeNull();
+  });
+  it('★ 源码：main.ts 的三扇填数页走同一个「按下记账 + 放音 / 抬手动作」闩，click 先问它', async () => {
+    const { readFileSync } = await import('node:fs');
+    const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    const click = main.indexOf("canvas.addEventListener('click', (e) => {");
+    expect(main.indexOf('if (amountPress.click()) return;', click)).toBeGreaterThan(click);
+    expect(main.indexOf('if (amountPress.click()) return;', click)).toBeLessThan(main.indexOf('reclaimIfAutopiloted()', click));
+    expect(main).toContain('if (q !== null && amountWindowDown(q)) return;');
+    expect(main).toContain('if (e.button === 0 && amountWindowUp()) return;');
+    // 鼠标那一路进 onAmountKey 时不再放音（音已在按下放过）
+    expect(main).toContain("onAmountKey(ui, { kind: 'ok' }, false);");
   });
 });

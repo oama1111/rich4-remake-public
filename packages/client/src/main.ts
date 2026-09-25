@@ -105,14 +105,17 @@ import {
 import { PANEL_ROWS } from './hud.ts';
 import { panelRows } from './panel.ts';
 import {
-  aiSettingsDraft,
-  applyAiSettingsHit,
+  aiSettingsDown,
+  aiSettingsDrag,
+  aiSettingsUp,
   AI_ORIGIN,
   drawAiSettings,
   hitAiSettings,
-  rowMatchesPlayer,
+  aiCommitActions,
+  openAiSettingsModel,
   type AiSettingRow,
   type AiSettingsHit,
+  type AiSettingsModel,
 } from './ai-settings.ts';
 import {
   archivesFromBytes,
@@ -420,6 +423,7 @@ import {
   hitDialog,
   layoutDialog,
   usesYesNo,
+  AmountPressLatch,
   type AmountPage,
   type DialogHit,
 } from './dialog.ts';
@@ -3004,6 +3008,51 @@ function closeAmountPage(): void {
   dialogHot = null;
 }
 
+/**
+ * 填数窗鼠标的「按下记账、抬手动作」（原版 `[0x48cac2]`，见 `dialog.ts` 的 `AmountPressLatch`）。
+ * 棋盘对话框、銀行（貸款屏借 / 還、特別融資）、股市屏三处的填数页共用这一个 —— 它们本来就是同一扇窗。
+ */
+const amountPress = new AmountPressLatch();
+
+/** 此刻开着的填数页属于哪一份交互：股市屏借的那一扇，或棋盘 / 銀行上的对话框；没开就 `null` */
+function amountDialogUi(): InteractionUi | null {
+  if (amountPage === null) return null;
+  if (screen === 'stock') return stockAmount !== null ? stockAmountUi() : null;
+  return currentDialog();
+}
+
+/**
+ * 填数窗**按下**（`WM_LBUTTONDOWN` → `loc_00452d0e`）：记下按在哪一号、放按键音 7 —— 数值不动。
+ * @returns 这一下落在填数窗上（调用方不再往下传）
+ */
+function amountWindowDown(q: { x: number; y: number }): boolean {
+  const ui = amountDialogUi();
+  if (ui === null || amountPage === null) {
+    amountPress.reset();
+    return false;
+  }
+  const h = hitDialog(boardCtx, ui, amountPage, q.x - LAYOUT.board.x, q.y - LAYOUT.board.y);
+  const r = amountPress.down(h);
+  if (r.sound !== null) sound.play('Effect.mkf', r.sound);
+  if (r.consumed) requestRender();
+  return r.consumed;
+}
+
+/**
+ * 填数窗**抬手**（`WM_LBUTTONUP` → `loc_00452fce`）：照按下时记下的那一号动作（不看抬手坐标，不再放音）。
+ * @returns 这一下办了事
+ */
+function amountWindowUp(): boolean {
+  const pressed = amountPress.up();
+  if (pressed === null) return false;
+  const ui = amountDialogUi();
+  if (ui !== null) onDialogHit(ui, pressed);
+  // 股市屏借的那一扇：確定 / 取消都会把填数页关掉 ⇒ 顺手收掉 `stockAmount`
+  if (screen === 'stock' && amountPage === null) stockAmount = null;
+  requestRender();
+  return true;
+}
+
 /** 对话框上点到了什么 */
 const __devHits: unknown[] = [];
 function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
@@ -3040,21 +3089,22 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
     case 'amountSlot': {
       const slot = amountSlotOfId(hit.id);
       if (slot === null) return;
+      // ★ 鼠标那一路：按键音已在**按下**放过（`amountWindowDown`，0x00452d95），这里只动作
       switch (slot.kind) {
         case 'digit':
-          onAmountKey(ui, { kind: 'digit', digit: slot.digit });
+          onAmountKey(ui, { kind: 'digit', digit: slot.digit }, false);
           return;
         case 'backspace':
-          onAmountKey(ui, { kind: 'backspace' });
+          onAmountKey(ui, { kind: 'backspace' }, false);
           return;
         case 'clear':
-          onAmountKey(ui, { kind: 'clear' });
+          onAmountKey(ui, { kind: 'clear' }, false);
           return;
         case 'max':
-          onAmountKey(ui, { kind: 'max' });
+          onAmountKey(ui, { kind: 'max' }, false);
           return;
         case 'ok':
-          onAmountKey(ui, { kind: 'ok' });
+          onAmountKey(ui, { kind: 'ok' }, false);
           return;
         default:
           return; // 金额栏光标不在这张表里（原版是拖动）
@@ -3108,13 +3158,15 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
  *
  * ⚠️ 取消不在那张表里 —— 见 `amount-keys.ts` 头部：ESC 是钩子补成 `0x205` 关的窗。
  */
-function onAmountKey(ui: InteractionUi, key: AmountKey): void {
+function onAmountKey(ui: InteractionUi, key: AmountKey, playSfx = true): void {
   const page = amountPage;
   const amount = page === null ? undefined : ui.choices[page.choice]?.amount;
   if (page === null || amount === undefined) return;
-  // ★ 按键音 7（gap-audit #13）：键盘 0x00452f0e / 鼠标按钮 0x00452d95，表 `0x48234a`。
+  // ★ 按键音 7（gap-audit #13）：键盘 0x00452f0e（放完才合成 0x202 ⇒ 音与动作同一拍）。
+  //   ★ 鼠标那一路**不在这里放**：原版在**按下**就放了（0x00452d95，`amountWindowDown`），
+  //   抬手（0x202）进这里只动作 ⇒ `playSfx = false`。
   //   填数窗只开在本机行动者那一台（别的座位没有 `amountPage`），各端自己放。
-  const keySfx = amountKeySound(key);
+  const keySfx = playSfx ? amountKeySound(key) : null;
   if (keySfx !== null) sound.play('Effect.mkf', keySfx);
   const step = amountKeyStep(page.value, amount.max, key);
   if (step.submit) {
@@ -3724,7 +3776,9 @@ function hotkeyCaptureSlot(sub: { capture: number | null }): number | null {
  */
 function openAiSettings(from: Screen): void {
   aiReturn = from;
-  aiDraft = aiSettingsDraft(state);
+  // 选中行的初值：轮到的那位（原版 `[0x49910c]`）；联机里本机只动得了自己那一座 ⇒ 用本机座位
+  aiModel = openAiSettingsModel(state, net !== null ? net.seat : state.currentPlayer, aiLastSel);
+  aiLastSel = aiModel.sel;
   aiHot = null;
   screen = 'aiSettings';
   requestRender();
@@ -3737,28 +3791,50 @@ function openAiSettings(from: Screen): void {
  * 免得往 `history` 里塞一堆空动作、也免得联机时白占序号。
  */
 function closeAiSettings(commit: boolean): void {
-  const draft = aiDraft;
-  aiDraft = null;
+  const draft = aiModel?.rows ?? null;
+  if (aiModel !== null) aiLastSel = aiModel.sel;
+  aiModel = null;
   aiHot = null;
   screen = aiReturn;
 
   if (commit && draft !== null) {
-    let changed = 0;
-    for (const row of draft) {
-      const p = state.players[row.player];
-      if (p === undefined || rowMatchesPlayer(row, p)) continue;
-      dispatch({
-        type: 'setAi',
-        player: row.player,
-        whoPlays: row.whoPlays,
-        aiFlags: row.aiFlags,
-        personality: row.personality,
-        cashRatio: row.cashRatio,
-        stockRatio: row.stockRatio,
-      });
-      changed++;
-    }
-    log(changed === 0 ? '託管設定：未變更' : `託管設定：已更新 ${changed} 位`);
+    // 联机：只提交本机座位那一行（别人的行本来就改不动，见 `aiCanEdit`）
+    const acts = aiCommitActions(draft, state.players, aiCanEdit);
+    for (const a of acts) dispatch(a);
+    log(acts.length === 0 ? '託管設定：未變更' : `託管設定：已更新 ${acts.length} 位`);
+  }
+  requestRender();
+}
+
+/**
+ * 託管AI 屏上这一行本机能不能改。
+ *
+ * - 单机 / 热座：每一行都能（原版一台机器、一只鼠标，谁点都算）。
+ * - 联机：**只有本机座位那一行** —— 别人的行照样能点选（看他的设置），但不翻托管、不改选项，
+ *   「確定」也只提交自己那一行。服务器那一道（`sequencer` 只收轮到那一座的 `setAi`）不变。
+ */
+function aiCanEdit(row: AiSettingRow): boolean {
+  return net === null || row.player === net.seat;
+}
+
+/** 託管AI 屏的**按下**（原版 `WM_LBUTTONDOWN` / `WM_LBUTTONDBLCLK` → `loc_0041de95`）*/
+function onAiSettingsDown(p: { x: number; y: number }): void {
+  if (aiModel === null) return;
+  const local = { x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y };
+  const hit = hitAiSettings(local, aiModel.rows, aiModel.sel);
+  aiModel = aiSettingsDown(aiModel, hit, aiCanEdit);
+  aiLastSel = aiModel.sel;
+  requestRender();
+}
+
+/** 託管AI 屏的**抬手**（原版 `WM_LBUTTONUP` → `loc_0041e0b1`：只认按下时记下的控件）*/
+function onAiSettingsUp(): void {
+  if (aiModel === null) return;
+  const { model, close } = aiSettingsUp(aiModel, aiCanEdit);
+  aiModel = model;
+  if (close !== null) {
+    closeAiSettings(close === 'ok');
+    return;
   }
   requestRender();
 }
@@ -6635,8 +6711,16 @@ function endIntro(): void {
   scheduleHumanTurn();
 }
 
-/** 託管AI 屏的编辑草稿（原版也是先编一份暂存表、按確定才拷回）——不在这一屏时为 null */
-let aiDraft: AiSettingRow[] | null = null;
+/**
+ * 託管AI 屏：编辑草稿 + 选中行 + 按下的控件（原版也是先编一份暂存表、按確定才拷回）——不在这一屏时为 null。
+ * 见 `ai-settings.ts` 的 `AiSettingsModel`。
+ */
+let aiModel: AiSettingsModel | null = null;
+/**
+ * 选中行（原版 `[0x48be4c]`）**跨开屏保留** —— 原版入口的 memset 恰好不含它，
+ * 轮到的不是真人时沿用上一次的值（`aiInitialSelection`）。
+ */
+let aiLastSel = 0;
 let aiHot: AiSettingsHit | null = null;
 let aiReturn: Screen = 'game';
 
@@ -8715,9 +8799,11 @@ function requestRender(): void {
       if (aiReturn === 'game') drawGameStage();
       stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
       stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
-      const draft = aiDraft ?? [];
-      drawAiSettings(stageCtx, state, draft, aiHot, (archive, resource, index) =>
-        spriteNow(archive, resource, index, true),
+      const m = aiModel;
+      drawAiSettings(
+        stageCtx, state, m?.rows ?? [], aiHot,
+        (archive, resource, index) => spriteNow(archive, resource, index, true),
+        m?.sel ?? 0,
       );
     } else if (screen === 'lobby') {
       drawLobby(
@@ -10522,7 +10608,16 @@ function bindInput(): void {
     }
     if (screen === 'aiSettings') {
       // 命中测试用的是**对话框相对坐标**，这里减掉居中偏移
-      const hit = hitAiSettings({ x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y }, aiDraft ?? [], state.currentPlayer);
+      const local = { x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y };
+      // ★ 按住滑槽拖动：跟着改值（原版 `WM_MOUSEMOVE` `loc_0041de2e`）
+      if (aiModel !== null) {
+        const dragged = aiSettingsDrag(aiModel, local, aiCanEdit);
+        if (dragged !== aiModel) {
+          aiModel = dragged;
+          requestRender();
+        }
+      }
+      const hit = hitAiSettings(local, aiModel?.rows ?? [], aiModel?.sel ?? 0);
       if (JSON.stringify(hit) !== JSON.stringify(aiHot)) {
         aiHot = hit;
         requestRender();
@@ -10647,6 +10742,10 @@ function bindInput(): void {
   });
 
   canvas.addEventListener('click', (e) => {
+    // ★ 填数窗那一下已经在 mousedown（记账 + 音）/ mouseup（动作）上办完 —— 浏览器补来的这个
+    //   `click` 整个吞掉；否则「確定」刚关掉填数页，同一点又落到底下选项页的钮上（一下办两件事）。
+    //   触屏手势模块派的点按也是「按下 → 抬手 → click」三连，同一条路。
+    if (amountPress.click()) return;
     const p = eventToStage(e);
     if (p === null) return;
     unlockAudio();
@@ -10677,24 +10776,9 @@ function bindInput(): void {
     // ── 登记的整屏在的时候，`click` 这一路不碰棋盘（同商店那条注释的道理：
     //   按下的处理已经在 mousedown/mouseup 上做过了，这里再来一次就成两遍）──
     if (activeUiScreen() !== null) return;
-    if (screen === 'aiSettings') {
-      const hit = hitAiSettings({ x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y }, aiDraft ?? [], state.currentPlayer);
-      if (hit === null) return;
-      if (hit.kind === 'ok') {
-        closeAiSettings(true);
-        return;
-      }
-      if (hit.kind === 'cancel') {
-        closeAiSettings(false);
-        return;
-      }
-      // 其余都是改草稿；改完重画，还没进引擎（按「確定」才发 action）
-      if (aiDraft !== null) {
-        aiDraft = applyAiSettingsHit(aiDraft, hit);
-        requestRender();
-      }
-      return;
-    }
+    // 託管AI 屏全在 mousedown / mouseup 上处理（原版 0x201 / 0x202 两条分支）——
+    //   `click` 这一路不碰它，否则同一次点会被处理两遍（行上那一下就会「选中 + 立刻翻」）。
+    if (screen === 'aiSettings') return;
     if (screen === 'lobby') {
       const hit = hitLobby(p.x, p.y, {
         isHost: lobbyIsHost(lobbyRoom, net?.seat ?? null),
@@ -10788,7 +10872,8 @@ function bindInput(): void {
         p.x - LAYOUT.board.x, p.y - LAYOUT.board.y,
       );
       if (h !== null) {
-        if (h !== 'inside') onDialogHit(dlg, h);
+        // 填数页上的钮归 mousedown / mouseup（原版 0x201 记账、0x202 动作），这里只管选项页
+        if (h !== 'inside' && amountPage === null) onDialogHit(dlg, h);
         return; // ★ 落在框上但没中按钮也要吃掉，别穿透到棋盘去选格子
       }
     }
@@ -10806,6 +10891,8 @@ function bindInput(): void {
 
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
+    // 新的一次按下：上一次抬手留下的「吞掉 click」作废（那个 click 要么已经来过、要么不会来了）
+    amountPress.newGesture();
 
     // ★ 填数页金额栏：记下「这一下是不是按在栏上」（@source `0x00452d5e mov [0x48cac2], al`）。
     //   只记账、不改值、不吞事件 —— 原版按下那一拍对 id 0x10 什么都不做，值是随后的 `WM_MOUSEMOVE` 改的。
@@ -10848,6 +10935,26 @@ function bindInput(): void {
     //   按下这一拍**只吞掉**（原版 0x201 只记高亮），选中的那一下在**抬手**
     //   （0x202 = `loc_00446a2c`）；右键的取消走 `contextmenu` 那一路。
     if (dicePick !== null) return;
+
+    // ── 託管AI 屏（原版 0x201 → `loc_0041de95`）──
+    // ★ 点玩家行：没选中的只**选中**，已选中的才**翻托管**（按下这一拍就办）；
+    //   滑槽按下就改值；其余控件只记账，抬手才动作。见 `ai-settings.ts` 的 `aiSettingsDown`。
+    if (screen === 'aiSettings') {
+      if (e.button !== 0) return;
+      const q = eventToStage(e);
+      if (q !== null) onAiSettingsDown(q);
+      return;
+    }
+
+    // ── 通用填数窗（棋盘 / 銀行 / 股市三处，原版 `fcn_00452c02` 的 0x201）──
+    // ★ 按下只**记账 + 放按键音 7**（0x00452d8e..0x00452d95），数值在抬手才动（见 `mouseup`）。
+    //   先前棋盘 / 銀行那两扇挂在 `click` 上（音与动作都在松手之后），股市那扇在按下就连音带动作一起办了。
+    if (e.button === 0 && amountPage !== null) {
+      const q = eventToStage(e);
+      if (q !== null && amountWindowDown(q)) return;
+    } else {
+      amountPress.reset();
+    }
 
     // ── 設定屏（原版 0x201）──
     // 每颗控件的**立即动作**都在按下这一刻发生（改值 / 换曲 / 亮灯 / 贴按下图），
@@ -10896,19 +11003,11 @@ function bindInput(): void {
       //   休市日（或任何 `closedDays` 非 0 的日子）点计算器上任何一颗数字钮
       //   都等于「点了一下股市屏」⇒ 直接 `closeStock()` 退屏
       //   （试玩 4 报的「鼠标点计算器的数字按钮没反应」）。
+      //   ★ pt26：按下 / 抬手已经在上面的通用填数窗那一支（`amountWindowDown` / `amountWindowUp`）办了 ——
+      //   这里只把落在窗外的点**吞掉**（模态：别漏给股市柜台）。
       if (stockAmount !== null) {
-        const q0 = eventToStage(e);
         if (import.meta.env.DEV) {
-          __devHits.push({ q0, cx: e.clientX, cy: e.clientY, box: boardCtx.canvas.getBoundingClientRect().width });
-        }
-        if (q0 === null) return;
-        const ui0 = stockAmountUi();
-        if (ui0 !== null) {
-          const h0 = hitDialog(boardCtx, ui0, amountPage, q0.x - LAYOUT.board.x, q0.y - LAYOUT.board.y);
-          if (import.meta.env.DEV) __devHits.push({ hit: h0 });
-          if (h0 !== null && h0 !== 'inside') onDialogHit(ui0, h0);
-          if (amountPage === null) stockAmount = null; // 確定/取消都会关掉它
-          requestRender();
+          __devHits.push({ cx: e.clientX, cy: e.clientY, held: amountPress.held });
         }
         return;
       }
@@ -11321,6 +11420,15 @@ function bindInput(): void {
         return;
       }
     }
+    // ── 託管AI 屏：抬手照按下时记下的控件动作（原版 0x202 → `loc_0041e0b1`）──
+    // ★ 只认左键：右键抬手是 `0x205` = 关屏（走 `contextmenu` → `cancelTopPanel` 那一路）
+    if (screen === 'aiSettings') {
+      if (e.button === 0) onAiSettingsUp();
+      return;
+    }
+    // ── 通用填数窗：抬手照**按下时记下的那一号**动作（原版 0x202 → `loc_00452fce`）──
+    // ★ 只认左键：右键抬手是 `0x205` = 关窗（走 `contextmenu` → `cancelTopPanel` 那一路）
+    if (e.button === 0 && amountWindowUp()) return;
     // ── 銀行两屏（T-029c）：抬手才收尾 ──
     //   · 貸款屏 EXIT：`loc_00435ea2`（0x202）—— 按下只记 `[0x48c3e1]`，
     //     抬手的 **那一下**才出「謝謝您的惠顧」并把状态推到 0xb。
@@ -12885,6 +12993,11 @@ async function boot(): Promise<void> {
         }),
         /** 個人資產表的故事板状态 */
         get sheetUi() { return sheetUi; },
+        /** 託管AI 屏：草稿 + 选中行 + 按下的控件（`null` = 没开）*/
+        get aiModel() { return aiModel; },
+        /** 通用填数页（`null` = 没开）+ 按下时记下的那一颗 */
+        get amountPage() { return amountPage; },
+        get amountHeld() { return amountPress.held; },
         /** 卡片商店／道具商店的界面状态（页号、滑入位置、气泡、货架快照）*/
         get shopUi() { return shopUi; },
         /** 还款提醒窗的演出状态（`null` = 没开）*/

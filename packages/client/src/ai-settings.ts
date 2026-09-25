@@ -33,7 +33,7 @@
  * 圆点在 x=193、文字中心在 x=244（居中对齐），两者的 y 最多差 2 像素。
  */
 
-import type { GameState, Player } from '@rich4/core';
+import type { Action, GameState, Player } from '@rich4/core';
 import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_HUMAN, WHO_PLAYS_MASK } from '@rich4/core';
 import type { ArchiveName, Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
@@ -341,7 +341,12 @@ export function rowY(n: number): number {
 // ============================================================
 
 export type AiSettingsHit =
-  /** 托管总开关（左侧那颗 LED）*/
+  /**
+   * 点在第 `row` 位玩家那一行（行底板）上 —— **命中**只报这一种；
+   * 选中 / 翻托管由 `aiSettingsDown` 按「是不是已选中那一行」决定（`loc_0041def4`）。
+   */
+  | { kind: 'row'; row: number }
+  /** 翻托管位（真人 ↔ 真人+托管）—— 只作为**动作**出现，命中测试不直接给它 */
   | { kind: 'autopilot'; row: number }
   /** 会用卡（bit0）/ 会用道具（bit1）*/
   | { kind: 'ability'; row: number; bit: number }
@@ -356,6 +361,23 @@ export type AiSettingsHit =
 
 const inRect = (x: number, y: number, r: { x: number; y: number; w: number; h: number }): boolean =>
   x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
+
+/**
+ * 第 `n` 行的行底板命中 —— **两端都不含**（开区间）。
+ *
+ * @source `loc_0041de95` 起（屏幕坐标，`ecx = 0x46 + 0x53·n`）：
+ * ```asm
+ * 0041decd  cmp esi, 0x6e / jle 跳过      ; x > 110
+ * 0041ded2  cmp esi, 0xe2 / jge 跳过      ; x < 226
+ * 0041deda  cmp edi, ecx  / jle 跳过      ; y > 70 + 83n
+ * 0041dede  lea ebx,[ecx+0x53] / cmp edi, ebx / jge 跳过   ; y < 153 + 83n
+ * ```
+ * 减对话框原点 (0x66, 0x3e) → 相对 `8 < x < 124`、`8+83n < y < 91+83n`。
+ */
+function inRowPlate(x: number, y: number, n: number): boolean {
+  const ry = rowY(n);
+  return x > AI_PLATE_X && x < AI_PLATE_X + 116 && y > ry && y < ry + AI_ROW_PITCH;
+}
 
 /**
  * 滑槽上点在 x 处的值（0..100，**只能取 10 的整数倍**）。
@@ -383,33 +405,29 @@ export function ratioFromX(x: number, r: { x: number; w: number }): number {
  *
  * @param local 已减去 `AI_ORIGIN` 的点
  * @param rows  当前草稿（决定有几行、能点哪里）
- * @param currentPlayer 轮到的玩家下标 —— 底图上只有**一对**滑槽，它编的是
- *   「当前玩家」那一行（原版 `if (i == 当前玩家) [0x48be4c] = n` 就是记这个）。
+ * @param sel   **选中的那一行**（草稿下标，原版 `[0x48be4c]`）—— 底图上只有**一套**
+ *   选项与**一对**滑槽，它们改的都是选中那一行（`loc_0041e0d7..0x0041e228` 全以 `[0x48be4c]` 取行）。
  */
 export function hitAiSettings(
   local: { x: number; y: number },
   rows: readonly AiSettingRow[],
-  currentPlayer: number,
+  sel: number,
 ): AiSettingsHit | null {
   const { x, y } = local;
 
   // ★ 顺序照原版 `loc_0041de95`：**先判玩家行底板，再判那张控件表**。
   //   两块区域不重叠，但摆成同一个顺序省得以后改动时踩到。
   for (let n = 0; n < rows.length; n++) {
-    const ry = rowY(n);
-    // 行底板：屏幕 x ∈ (110,226)、y ∈ (70+83n, 153+83n) → 相对 (8, y) 起 116×86
-    if (inRect(x, y, { x: AI_PLATE_X, y: ry, w: 116, h: AI_ROW_PITCH })) {
-      return { kind: 'autopilot', row: n };
-    }
+    if (inRowPlate(x, y, n)) return { kind: 'row', row: n };
   }
 
-  // 使用卡片 / 使用道具 / 乖寶寶 / 普通人 / 大老奸 —— 直接用 exe 的矩形表
-  for (let n = 0; n < rows.length; n++) {
+  // 使用卡片 / 使用道具 / 乖寶寶 / 普通人 / 大老奸 —— 直接用 exe 的矩形表；改的是**选中那一行**
+  if (rows.length > 0) {
     for (const [k, r] of AI_OPTION_ROWS.entries()) {
       if (!inRect(x, y, r)) continue;
       return k < 2
-        ? { kind: 'ability', row: n, bit: k }
-        : { kind: 'personality', row: n, value: k - 2 };
+        ? { kind: 'ability', row: sel, bit: k }
+        : { kind: 'personality', row: sel, value: k - 2 };
     }
   }
 
@@ -417,8 +435,8 @@ export function hitAiSettings(
   if (inRect(x, y, AI_BTN_OK)) return { kind: 'ok' };
   if (inRect(x, y, AI_BTN_CANCEL)) return { kind: 'cancel' };
 
-  // 那对滑槽改的是「当前玩家」那一行；他不在可编辑之列（电脑/出局）就退回第一行
-  const ratioRow = Math.max(0, rows.findIndex((r) => r.player === currentPlayer));
+  // 那对滑槽同样改选中那一行
+  const ratioRow = sel;
   for (const which of ['cash', 'stock'] as const) {
     for (const arrow of AI_ARROWS[which]) {
       if (inRect(x, y, arrow)) {
@@ -441,6 +459,9 @@ export function applyAiSettingsHit(rows: readonly AiSettingRow[], hit: AiSetting
   if (row === undefined) return out;
 
   switch (hit.kind) {
+    case 'row':
+      // 命中行本身不改数据 —— 选中 / 翻托管由 `aiSettingsDown` 决定
+      break;
     case 'autopilot':
       // 原版那颗 LED 就是托管总开关：在「真人」与「真人+托管」之间翻
       row.whoPlays = (row.whoPlays & ~WHO_PLAYS_AUTOPILOT) | ((row.whoPlays & WHO_PLAYS_AUTOPILOT) ? 0 : WHO_PLAYS_AUTOPILOT);
@@ -468,6 +489,168 @@ export function applyAiSettingsHit(rows: readonly AiSettingRow[], hit: AiSetting
 }
 
 // ============================================================
+//  按下 / 抬手 —— 原版的「先选中、再点一次才翻」
+// ============================================================
+
+/**
+ * 这一屏的交互状态（草稿之外那两个全局）。
+ *
+ * - `sel` = 原版 `[0x48be4c]`：**选中的那一行**。选项圆点、两条滑槽都只显示/只改这一行，
+ *   行底板图 1（亮）也只贴在这一行（WM_PAINT `loc_0041dbe0 cmp ebx, [0x48be4c]`）。
+ * - `pressed` = 原版 `[0x48be54]`：`WM_LBUTTONDOWN` 那一刻按在哪颗控件上；`WM_LBUTTONUP`
+ *   **只认它、不再看抬手的坐标**（`loc_0041e0b1` 直接按 `[0x48be54] − 2` 查跳表 `0x41dd7d`），
+ *   处理完清 0（`0x0041e2af`）。
+ */
+export interface AiSettingsModel {
+  rows: AiSettingRow[];
+  sel: number;
+  pressed: AiSettingsHit | null;
+}
+
+/** 这一行本机能不能改 —— 单机/热座恒真；联机只有本机座位那一行（见 `main.ts` 的 `aiCanEdit`）*/
+export type AiRowEditable = (row: AiSettingRow) => boolean;
+
+/**
+ * 开屏时选中哪一行。
+ *
+ * @source 入口 `0x0041e5b3..0x0041e5be`：逐位真人建行时 `if (i == [0x49910c]) [0x48be4c] = 行号` ——
+ *   即**轮到的那位**（联机里本机能动的只有自己那一座，调用方传 `net.seat`）。
+ *   ⚠️ `[0x48be4c]` **不在** `memset(0x48be34, 0, 0x18)` 的范围里（0x48be34 + 0x18 = 0x48be4c，恰好不含），
+ *   所以轮到的不是真人时它保留**上一次开屏**的值 —— 这里照样沿用 `prev`；越界（行数变少了）才退回 0。
+ */
+export function aiInitialSelection(rows: readonly AiSettingRow[], seat: number | null, prev: number): number {
+  const i = seat === null ? -1 : rows.findIndex((r) => r.player === seat);
+  if (i >= 0) return i;
+  return prev >= 0 && prev < rows.length ? prev : 0;
+}
+
+/** 开屏：抄草稿、定选中行、清按下 */
+export function openAiSettingsModel(state: GameState, seat: number | null, prev: number): AiSettingsModel {
+  const rows = aiSettingsDraft(state);
+  return { rows, sel: aiInitialSelection(rows, seat, prev), pressed: null };
+}
+
+/**
+ * `WM_LBUTTONDOWN`（以及 `WM_LBUTTONDBLCLK` 0x203，同一支 `loc_0041de95`）。
+ *
+ * ★ 点在**玩家行**上 —— 按下这一拍就生效：
+ * ```asm
+ * 0041dee5  cmp edx, [0x48be4c] / jne 0x41def4   ; 点的不是已选中那一行 ⇒ 只选中
+ * 0041deed  xor byte [行 + 0x48be35], 4           ; ★ 已选中那一行 ⇒ 翻托管位
+ * 0041def4  mov [0x48be4c], edx                   ; 选中它
+ * 0041defa  mov byte [0x48be54], 1                ; 记「按在行上」（抬手那一支对 1 什么都不做）
+ * ```
+ * ★ 点在**滑槽**上（控件号 13/14）按下就改值（`0x0041e09a → loc_0041de44`），按住拖也跟着改（见 `aiSettingsDrag`）。
+ * ★ 其余控件（五个选项、四颗箭头、確定/取消）按下**只记账**，抬手才动作（见 `aiSettingsUp`）。
+ *
+ * @param editable 联机时别人座位那一行：**照样能选中**（看他的设置），但不翻、不改
+ */
+export function aiSettingsDown(
+  m: AiSettingsModel,
+  hit: AiSettingsHit | null,
+  editable: AiRowEditable = () => true,
+): AiSettingsModel {
+  if (hit === null) return { ...m, pressed: null };
+  if (hit.kind === 'row') {
+    const row = m.rows[hit.row];
+    if (row === undefined) return { ...m, pressed: null };
+    const rows =
+      hit.row === m.sel && editable(row) ? applyAiSettingsHit(m.rows, { kind: 'autopilot', row: hit.row }) : m.rows;
+    return { rows, sel: hit.row, pressed: hit };
+  }
+  if (hit.kind === 'ratio') {
+    const row = m.rows[hit.row];
+    const rows = row !== undefined && editable(row) ? applyAiSettingsHit(m.rows, hit) : m.rows;
+    return { ...m, rows, pressed: hit };
+  }
+  return { ...m, pressed: hit };
+}
+
+/**
+ * `WM_MOUSEMOVE`：按在滑槽上没松手 ⇒ 按 x 跟着改（`loc_0041de2e`：`[0x48be54]` 是 13/14 才做）。
+ *
+ * ⚠️ 原版这里**不夹紧**（拖出槽外 `(x − 310) / 8 × 10` 会写出负数或 > 100 的字节）；
+ *   本引擎照 `ratioFromX` 夹在 0..100 —— 引擎的 `setAi` 本来就拒越界值，照抄只会让「確定」整条被拒。
+ */
+export function aiSettingsDrag(
+  m: AiSettingsModel,
+  local: { x: number; y: number },
+  editable: AiRowEditable = () => true,
+): AiSettingsModel {
+  const p = m.pressed;
+  if (p === null || p.kind !== 'ratio') return m;
+  const row = m.rows[p.row];
+  if (row === undefined || !editable(row)) return m;
+  const value = ratioFromX(local.x, AI_SLIDERS[p.which]);
+  const cur = p.which === 'cash' ? row.cashRatio : row.stockRatio;
+  if (value === cur) return m;
+  return { ...m, rows: applyAiSettingsHit(m.rows, { ...p, value }) };
+}
+
+/**
+ * `WM_LBUTTONUP`：照**按下时记下的**控件动作（不看抬手的坐标），然后清掉。
+ *
+ * @source `loc_0041e0b1`：`[0x48be54]` 为 0 ⇒ 什么都不做；否则 `−2` 查跳表 `0x41dd7d`
+ *   （2 卡片 / 3 道具 / 4..6 個性 / 7..10 箭头 / 11 確定 / 12 取消），越界（1 = 行、13/14 = 滑槽）
+ *   只重画 + 清 0（`loc_0041e2a8`）。確定 = 把暂存表拷回玩家（`0x0041e234..0x0041e295`）再
+ *   `PostMessage(0x205)` 关窗；取消 = 直接 `PostMessage(0x205)`。
+ *
+ * @returns `close`：`'ok'` / `'cancel'` = 该关屏了（前者要提交草稿）
+ */
+export function aiSettingsUp(
+  m: AiSettingsModel,
+  editable: AiRowEditable = () => true,
+): { model: AiSettingsModel; close: 'ok' | 'cancel' | null } {
+  const p = m.pressed;
+  const cleared: AiSettingsModel = { ...m, pressed: null };
+  if (p === null) return { model: cleared, close: null };
+  switch (p.kind) {
+    case 'ok':
+      return { model: cleared, close: 'ok' };
+    case 'cancel':
+      return { model: cleared, close: 'cancel' };
+    case 'ability':
+    case 'personality':
+    case 'ratioStep': {
+      const row = m.rows[p.row];
+      if (row === undefined || !editable(row)) return { model: cleared, close: null };
+      return { model: { ...cleared, rows: applyAiSettingsHit(m.rows, p) }, close: null };
+    }
+    default:
+      // 行（1）与滑槽（13/14）在按下 / 拖动时就办完了
+      return { model: cleared, close: null };
+  }
+}
+
+/**
+ * 「確定」要发的 action：草稿里**变过、且本机能改**的每一行一条 `setAi`。
+ *
+ * @source 確定 `0x0041e234..0x0041e295`：逐行把暂存表拷回玩家结构（引擎这边按玩家给 action）；
+ *   没变过的行不发，免得往 `history` 里塞空动作、联机时白占序号。
+ */
+export function aiCommitActions(
+  rows: readonly AiSettingRow[],
+  players: readonly Player[],
+  editable: AiRowEditable = () => true,
+): Action[] {
+  const out: Action[] = [];
+  for (const row of rows) {
+    const p = players[row.player];
+    if (p === undefined || rowMatchesPlayer(row, p) || !editable(row)) continue;
+    out.push({
+      type: 'setAi',
+      player: row.player,
+      whoPlays: row.whoPlays,
+      aiFlags: row.aiFlags,
+      personality: row.personality,
+      cashRatio: row.cashRatio,
+      stockRatio: row.stockRatio,
+    });
+  }
+  return out;
+}
+
+// ============================================================
 //  绘制
 // ============================================================
 
@@ -488,7 +671,11 @@ export function drawAiSettings(
   rows: readonly AiSettingRow[],
   hot: AiSettingsHit | null,
   sprite: SpriteFn,
+  selected?: number,
 ): void {
+  // 选中的那一行（原版 `[0x48be4c]`）；没给就按「轮到的玩家那一行」（开屏时的初值，见 `aiInitialSelection`）
+  const sel = selected ?? Math.max(0, rows.findIndex((r) => r.player === state.currentPlayer));
+  const selRow = rows[sel];
   const ox = AI_ORIGIN.x;
   const oy = AI_ORIGIN.y;
 
@@ -504,17 +691,17 @@ export function drawAiSettings(
 
   // 五个选项：底图里那排暗圆点就是「关」，图 3 那颗亮的是「开」——
   // **不换底板**（先前拿图 2 去盖一行底色，是把「玩家行底板」当成「选项行底板」用了）。
-  if (dotOn !== null) {
-    rows.forEach((row) => {
-      rowFlags(row).forEach((on, k) => {
-        if (!on) return;
-        drawSprite(
-          ctx,
-          dotOn,
-          AI_DOT_X - (dotOn.width >> 1),
-          AI_DOT_AT[k]! - (dotOn.height >> 1),
-        );
-      });
+  // ★ 只画**选中那一行**的（WM_PAINT `0x0041dc7b..0x0041dd26` 全以 `[0x48be4c]` 取行）——
+  //   先前把每一行的圆点叠画在同一组位置上，两位真人时互相串味。
+  if (dotOn !== null && selRow !== undefined) {
+    rowFlags(selRow).forEach((on, k) => {
+      if (!on) return;
+      drawSprite(
+        ctx,
+        dotOn,
+        AI_DOT_X - (dotOn.width >> 1),
+        AI_DOT_AT[k]! - (dotOn.height >> 1),
+      );
     });
   }
 
@@ -534,10 +721,9 @@ export function drawAiSettings(
   label(ctx, AI_LABELS.normal, AI_TEXT.normal);
   label(ctx, AI_LABELS.villain, AI_TEXT.villain);
 
-  // 比例：两侧标签 + 滑槽里的**分段填充**
-  const row0 = rows[0];
-  const cash = row0?.cashRatio ?? 0;
-  const stock = row0?.stockRatio ?? 0;
+  // 比例：两侧标签 + 滑槽里的**分段填充** —— 选中那一行的（`fcn_0041da61` 同样按 `[0x48be4c]` 取）
+  const cash = selRow?.cashRatio ?? 0;
+  const stock = selRow?.stockRatio ?? 0;
   label(ctx, AI_LABELS.cash, AI_TEXT.cash);
   label(ctx, AI_LABELS.deposit, AI_TEXT.deposit);
   label(ctx, AI_LABELS.stock, AI_TEXT.stock);
@@ -558,10 +744,8 @@ export function drawAiSettings(
   ctx.strokeStyle = OUTLINE;
 
   // 每位真人一行：底板 + 头像 + 点亮的圆点。
-  // @source `_rich4_ui_ai_settings_entry` VA 0x0041e61c 那两句 blit
-  //   「当前行」= `[0x48be4c]`，入口里只在 `i == [0x49910c]`（轮到的玩家）时写入；
-  //   轮到的不是真人时它保持 memset 后的 0 —— 与 `sel` 的兜底一致。
-  const sel = Math.max(0, rows.findIndex((r) => r.player === state.currentPlayer));
+  // @source `_rich4_ui_ai_settings_entry` VA 0x0041e61c 那两句 blit；
+  //   「选中行」= `[0x48be4c]`（开屏初值见 `aiInitialSelection`，之后随点行改）。
   rows.forEach((row, n) => {
     const ry = rowY(n);
     // ① 行底板：图 1 = 当前行（亮）、图 2 = 其余。锚点是 (0,0)，直接落点
@@ -614,6 +798,7 @@ export function rowFlags(row: AiSettingRow): boolean[] {
 
 function hotRect(hit: AiSettingsHit): { x: number; y: number; w: number; h: number } | null {
   switch (hit.kind) {
+    case 'row':
     case 'autopilot':
       return { x: AI_PLATE_X, y: rowY(hit.row), w: 116, h: AI_ROW_PITCH };
     case 'ability':

@@ -519,9 +519,23 @@ export interface LotView {
 /** 成交音效号 @source 表 `0x47566b` = `[31, 0]`（0x00430030 `call _rich4_play_sound_effect`）*/
 export const LOTTERY_BUY_SOUND = 31;
 
-/** 联机时本机只是在旁观这一注（单机 / 热座永远不是）*/
-function lotterySpectating(env: UiScreenEnv): boolean {
-  return env.localSeat !== undefined && env.localSeat !== null && env.localSeat !== env.state.currentPlayer;
+/**
+ * 本机**不该**碰这一屏：联机旁观（这一注不归本机买），或者这一回合此刻归电脑管（被託管的真人）。
+ *
+ * ★ 投注窗**只开给「恰好 who_plays == 1」的真人**：
+ * ```asm
+ * 004315d3  imul eax, [0x49910c], 0x68
+ * 004315da  cmp byte [eax + 0x496b7d], 1     ; 轮到的那位是不是**正好** 1（真人、没託管）
+ * 004315e1  jne 0x43169e                     ; 不是 ⇒ 电脑那一支：当场买完，**不开窗**
+ * 0043164e  push 0x42f7fc / call 0x4018e7    ; 是 ⇒ 模态开窗（只有他这一扇窗收鼠标）
+ * ```
+ * 所以原版里「电脑的回合」根本没有这扇窗可点；core 的 `landOnLottery` 也照此不给电脑挂 `pending`。
+ * 本引擎还剩一个缝：窗开着时这一座**被託管**（联机超时 / 掉线接管，或热座里托管位被翻上）——
+ * 此刻回合已归电脑（`isAiTurn`），AI 马上替他答掉；这一拍人再点就是替电脑买号。故一并挡掉。
+ * 判据与投注铅笔指针同一条（`soft-cursor.ts` 的 `localTurn`）。
+ */
+function lotteryLocked(env: UiScreenEnv): boolean {
+  return !localTurn(env);
 }
 
 export function lotteryPending(state: GameState): Extract<GameState['pending'], { kind: 'lottery' }> | null {
@@ -998,6 +1012,9 @@ export const lotteryScreen: UiScreen = {
    * ★ 所以「先把开场白跳过」和「判号格」是**同一下**里连着做的，不能 `return`。
    */
   down(x: number, y: number, env: UiScreenEnv): void {
+    // ★ 联机旁观 / 电脑（被託管）的回合：这扇窗不归本机点 —— 连「跳过开场白」都不做
+    //   （原版这扇窗只在正好 who_plays == 1 的那位自己的回合里存在，见 `lotteryLocked`）
+    if (lotteryLocked(env)) return;
     if (ui.phase === 'hello' || ui.phase === 'price') {
       ui.phase = 'pick';
       ui.at = env.now;
@@ -1010,8 +1027,6 @@ export const lotteryScreen: UiScreen = {
 
     const p = lotteryPending(env.state);
     if (p === null) return;
-    // ★ 联机旁观：这一注不归本机买（送了也是 `notYourTurn`），也就没有成交音
-    if (lotterySpectating(env)) return;
     const n = hitNumber(x, y);
     if (n === null) return;
     // 已售出的号码点不动 @source `cmp byte [ebx+0x4990b8], 0 / jne 不认`
@@ -1047,8 +1062,9 @@ export const lotteryScreen: UiScreen = {
    * ⚠️ 本屏原来只有 ESC 一条出口（需求方第 3 条报的正是这一类）。
    */
   contextmenuLive(env: UiScreenEnv): boolean {
-    // 与 `contextmenu` 同两道闸
+    // 与 `contextmenu` 同三道闸（触屏的「取消」钮据此露不露）
     if (ui.dismissed || ui.phase === 'bye' || ui.phase === 'closing' || ui.phase === 'noCash') return false;
+    if (lotteryLocked(env)) return false;
     return lotteryPending(env.state) !== null;
   },
 
@@ -1058,7 +1074,7 @@ export const lotteryScreen: UiScreen = {
       return;
     }
     if (lotteryPending(env.state) === null) return;
-    if (lotterySpectating(env)) return;
+    if (lotteryLocked(env)) return;
     env.playEffect(CANCEL_SOUND);
     ui.picked = null;
     ui.phase = 'bye';
