@@ -8,7 +8,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
 import { newGame as newGameRaw } from '../rules/new-game.ts';
 import { landAll } from '../testing/factories.ts';
-import { WHO_PLAYS_DEAD, isAlive } from './types.ts';
+import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_DEAD, WHO_PLAYS_HUMAN, isAlive } from './types.ts';
 import { applyBankruptcy, applyMagicRequest, gameOverCode, isGameOver, reduce } from './reduce.ts';
 import { decideAction } from '../ai/policy.ts';
 import type { GameState } from './types.ts';
@@ -23,8 +23,10 @@ const newGame = (o: Parameters<typeof newGameRaw>[0]): ReturnType<typeof newGame
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
+// ★ 2026-09-24 审计：0 号是真人。原版破产后数的是**在场真人**（`0x0040d029 test esi, esi`），
+//   全电脑的局第一次破产就收局（码 1）—— 清算 / 拍卖那几条要在「还有真人在场」的局里测。
 const players = (n = 4) =>
-  Array.from({ length: n }, (_, i) => ({ character: i, kind: 'computer' as const }));
+  Array.from({ length: n }, (_, i) => ({ character: i, kind: i === 0 ? ('human' as const) : ('computer' as const) }));
 
 const fresh = (n = 4): GameState => newGame({ map: loadMap(), players: players(n), seed: 1 });
 
@@ -317,7 +319,11 @@ describe('★ 破产者的拍卖不会卡死', () => {
     const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
     const base = fresh();
     // 玩家 0 出局（他正是 currentPlayer），玩家 1 名下有 4 块地 → 触发下線拍卖
-    const players = base.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_DEAD } : p));
+    // 3 号换成**託管的真人**（1|4）：0 号（唯一的真人）出局后还得有真人在场，否则原版直接收局
+    //   （0x0040d029 数的是 `who_plays & 1`，託管也算）；託管照样由 `decideAction` 替他举牌
+    const players = base.players.map((p, i) =>
+      i === 0 ? { ...p, whoPlays: WHO_PLAYS_DEAD } : i === 3 ? { ...p, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT } : p,
+    );
     const landOwner = [...base.landOwner];
     for (let i = 1; i <= 4; i++) landOwner[i] = 2;
     const s = applyBankruptcy({ ...base, players, landOwner }, 1, topo);
@@ -361,9 +367,10 @@ describe('终局判定', () => {
     const s: GameState = {
       ...base,
       players: base.players.map((p, i) => (i === 0 ? p : { ...p, whoPlays: WHO_PLAYS_DEAD })),
+      phase: 'gameOver',
     };
     expect(isGameOver(s)).toBe(true);
-    expect(gameOverCode(s)).toBeGreaterThan(0);
+    expect(gameOverCode(s)).toBe(2);
   });
 
   run('★ 全员出局给出终局码 1', () => {
@@ -371,8 +378,45 @@ describe('终局判定', () => {
     const s: GameState = {
       ...base,
       players: base.players.map((p) => ({ ...p, whoPlays: WHO_PLAYS_DEAD })),
+      phase: 'gameOver',
     };
     expect(gameOverCode(s)).toBe(1);
+  });
+});
+
+describe('★ 审计订正：真人全出局即收局 @source 0x0040cfdb..0x0040d034', () => {
+  run('单人类局：唯一的真人破产 ⇒ 当场终局（码 1），清算跳过 —— 电脑还剩 3 家也一样', () => {
+    const base = fresh();
+    const landOwner = [...base.landOwner];
+    landOwner[1] = 1; // 真人 0 号有一块地
+    const s = applyBankruptcy({ ...base, landOwner }, 0);
+    expect(s.phase).toBe('gameOver');
+    expect(gameOverCode(s)).toBe(1);
+    expect(s.landOwner[1]).toBe(1); // 终局路径不清算
+  });
+
+  run('2 真人局：一个真人破产、另一个还在 ⇒ 照常清算；第二个也破产 ⇒ 收局', () => {
+    const base = fresh();
+    const two: GameState = {
+      ...base,
+      humanPlayers: 2,
+      players: base.players.map((p, i) => (i === 1 ? { ...p, whoPlays: WHO_PLAYS_HUMAN } : p)),
+    };
+    const first = applyBankruptcy(two, 0);
+    expect(first.phase).not.toBe('gameOver');
+    const second = applyBankruptcy({ ...first, pending: null, pendingQueue: [] }, 1);
+    expect(second.phase).toBe('gameOver');
+    expect(gameOverCode(second)).toBe(1);
+  });
+
+  run('破产者被别人记着的敌意清零 @source 0x0040cf47..0x0040cf6b', () => {
+    const base = fresh();
+    const s0: GameState = {
+      ...base,
+      players: base.players.map((p, i) => (i === 2 ? { ...p, hostility: [5, 7, 0, 9] } : p)),
+    };
+    const s = applyBankruptcy(s0, 1);
+    expect(s.players[2]!.hostility).toEqual([5, 0, 0, 9]);
   });
 });
 

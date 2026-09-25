@@ -15,7 +15,7 @@ import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
 import { CONFINEMENT_GATE_TYPE } from '../rules/confinement.ts';
-import { WHO_PLAYS_RETURN_TO_BOARD, isAlive, isInGame } from './types.ts';
+import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_RETURN_TO_BOARD, isAlive, isInGame } from './types.ts';
 import { gameOverCode, isGameOver, reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 
@@ -161,11 +161,23 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
   //   原来那张设施的坐标上（soak 实测：设施 2 从旅館变成 4 号种类，客人还在里面）。
   //   ⇒ 判据放宽成"**任何設施坐标**都算合法贴图位置"，仍然能抓住 0/坐标错位/写错格。
   const spritePositionsFor = () => [...gateLandscapes, ...map.facilities];
-  let state = newGame({
+  // ★ 2026-09-24 审计：四位都是**託管的真人**（who_plays = 1|4）。原版破产后数的是「在场真人」
+  //   （`0x0040d029 test esi, esi`，託管也算真人），全电脑的局第一次破产就收局（码 1）——
+  //   这条验收要的是「打到只剩一人」，所以让四位都算真人、由 AI 代打。
+  const fresh = newGame({
     map,
-    players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+    players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'human' as const })),
     seed,
   });
+  let state: GameState = {
+    ...fresh,
+    // 还没上盘的（`whoPlays = 0`）把託管位挂在 `landingWhoPlays` 上，落地时才生效
+    players: fresh.players.map((p) =>
+      p.whoPlays === 0
+        ? { ...p, landingWhoPlays: (p.landingWhoPlays ?? 0) | WHO_PLAYS_AUTOPILOT }
+        : { ...p, whoPlays: p.whoPlays | WHO_PLAYS_AUTOPILOT },
+    ),
+  };
 
   const deaths: number[] = [];
   let steps = 0;

@@ -256,9 +256,9 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
   // ── 得点 / 商店 / 寶箱 ──
   {
     line: 'pointsGained',
-    boxes: ['points.10', 'object.treasure', 'object.gift'],
+    boxes: ['points.10', 'object.treasure', 'object.gift', 'shop.chairmanGift'],
     exe: 'boxFirst',
-    va: '得点格 框 `0x0041b972` → `0x0041b98b`；寶箱 框 `0x0041bc9c` → `0x0041bcde`',
+    va: '得点格 框 `0x0041b972` → `0x0041b98b`；寶箱 框 `0x0041bc9c` → `0x0041bcde`；董事長贈禮 框 `0x0042ea14` → `0x0042ea23 call 0x44f230`',
   },
   {
     line: 'pointsSquarePhrase',

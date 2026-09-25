@@ -8768,6 +8768,11 @@ export function npcNotices(state: GameState, events: readonly NpcEvent[], owner:
 }
 
 /** 在场人数 */
+/** 在场的真人数 @source `0x0040d013..0x0040d024`：`who_plays != 0 && (who_plays & 1)`（託管 1|4 也算） */
+function aliveHumanCount(players: readonly Player[]): number {
+  return players.filter((p) => isAlive(p) && (p.whoPlays & WHO_PLAYS_HUMAN) !== 0).length;
+}
+
 function aliveCount(state: GameState): number {
   return state.players.filter((p) => isAlive(p)).length;
 }
@@ -8830,7 +8835,16 @@ export function applyBankruptcy(
     const node = topo.nodes.find((n) => n.id === p.nodeId);
     return node === undefined ? p : { ...p, xpos: node.x, ypos: node.y };
   };
-  const players = freed.players.map((p, i) => (i === playerIndex ? markPlayerBankrupt(resynced(p)) : p));
+  // ★ 2026-09-24 审计补：别人对他的敌意也清零 —— @source `0x0040cf47..0x0040cf6b`：
+  //   `for (b = 0; b < 人数; b++) if (b != 破产者) hostility[b][破产者] = 0`（`[b*0x68 + 破产者*4 + 0x496bb4]`），
+  //   在 memset（他自己那一行）之后、终局判定之前，两条路都走。
+  const players = freed.players.map((p, i) => {
+    if (i === playerIndex) return markPlayerBankrupt(resynced(p));
+    if ((p.hostility[playerIndex] ?? 0) === 0) return p;
+    const hostility = [...p.hostility];
+    hostility[playerIndex] = 0;
+    return { ...p, hostility };
+  });
   // ★★ 2026 本轮：破产还要**腾出监狱/医院的床位**。原版在清玩家结构**之前**
   //   就把两张占用表的那一格清了（**按玩家号**索引）：
   //   ```asm
@@ -8847,7 +8861,7 @@ export function applyBankruptcy(
   let next: GameState = { ...freed, players, prisonOccupancy, hospitalOccupancy };
 
   const remaining = players.filter((p) => isAlive(p)).length;
-  const outcome = resolveBankruptcyOutcome(remaining, humanCount(state));
+  const outcome = resolveBankruptcyOutcome(remaining, humanCount(state), aliveHumanCount(players));
 
   // 樂透号码无论哪条路径都要释放 —— @source 破产处理 VA 0x0040d1a8
   next = { ...next, lottery: releaseTickets(next.lottery, playerIndex) };
@@ -9073,8 +9087,8 @@ export function isGameOver(state: GameState): boolean {
 /**
  * 终局码 —— 与原版 `ref_0046caf8` 同制。
  *
- * 1 = 全员出局、2 = 只剩一人且本局只有一名人类、3 = 只剩一人且多名人类。
- * 返回 0 表示尚未结束。
+ * 1 = 真人全出局、2 = 只剩一人且本局只有一名人类、3 = 只剩一人且多名人类。
+ * 返回 0 表示尚未结束（`isGameOver` 为假）。
  *
  * ★ **因勝利條件（遊戲時間／勝利條件）达标而结束**的对局不适用上面那套
  *   「还剩几个人」的推算——原版那条路是拿**赢家是不是真人**定的
@@ -9084,6 +9098,8 @@ export function isGameOver(state: GameState): boolean {
  */
 export function gameOverCode(state: GameState): 0 | 1 | 2 | 3 {
   if (state.victory !== null) return state.victory.code;
-  const outcome = resolveBankruptcyOutcome(aliveCount(state), humanCount(state));
+  // 全电脑的局（测试 / 旁观）一开局「在场真人」就是 0 —— 没结束就是没结束，别凭人数推出一个码
+  if (!isGameOver(state)) return 0;
+  const outcome = resolveBankruptcyOutcome(aliveCount(state), humanCount(state), aliveHumanCount(state.players));
   return outcome.kind === 'gameOver' ? outcome.code : 0;
 }
