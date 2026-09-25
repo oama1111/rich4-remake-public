@@ -11,7 +11,8 @@
  *   ① 真人座位（董事長）`settle` 进店 ⇒ 服务器镜像出 `pending{shop}` + 赠礼框 + 赠礼提示，
  *      客户端按广播重放逐条指纹一致（旁观者看到的是同一扇框、同一句台词的依据）；
  *   ② 服务器不替真人答商店（`decideForCurrent` 为 null）⇒ 不会在框还没演完时就把店关掉；
- *   ③ 赠礼提示（`lastShopGift`）是一次性的，下一条 action 就清掉（不会在旁观端重复说那句）。
+ *   ③ 赠礼提示（`lastShopGift`）是一次性的，下一条 action 就清掉（不会在旁观端重复说那句）；
+ *   ④ 空袋那一支（道具 1..8 全 0）**也弹框、也掷台词那一拍**（原版框无条件走，名字别名到卡 30 烏龜卡）。
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
@@ -21,6 +22,7 @@ import {
   newGame,
   parseMap,
   reduce,
+  SPEECH_SITE,
   stateFingerprint,
   type Action,
   type GameState,
@@ -123,5 +125,41 @@ describe('★★ 联机：董事長進店的赠礼框 / 台词与单机同一条
     expect(room.state.pending?.kind).toBe('shop');
     expect(room.state.notices).toEqual([]);
     expect(room.state.lastShopGift ?? null).toBeNull();
+  });
+
+  /*
+   * ★★ 2026-09-25（本轮订正）：**空袋也照弹框**。
+   *
+   * @source `0x0042e99a mov ebp,[ebx + 0x47feda]` / `0x0042e9b1 mov bl,[ebx + 0x47fedf]`（ebx = id*8）：
+   *   道具名表本体是 `0x47fee2 + (id−1)*8`（取证见 `packages/data/src/tools.ts`），
+   *   故 id = 0 读到的那一位**不在道具表里** —— 两张名表在 DGROUP 里首尾相接
+   *   （卡片名表 30 项 + 0 号空位 = `0x47fdea..0x47fee2`）⇒ 别名到**卡片表末项**：
+   *   `dump 0x47feda` = {name 0x00466b89「烏龜卡」, init 3, price 70} = 卡 30。
+   *   两支 `je`/`jmp`（`0x42e984` / `0x42e9b7`）只挑送什么，框在 `0x42e9ea` 汇合后无条件走
+   *   ⇒ 空袋那一拍照弹「送您烏龜卡！」、台词按 70 走中档（`0x0044f280`，**掷一次 rand**），
+   *     手里一件不多。（对照：禮物格那一路 `0x41b91f test eax,eax / je 0x41c164` **有**这一道闸，
+   *     空袋连框都不弹 —— 商店这一路没有那道闸。）
+   */
+  run('★ 空袋（道具 1..8 全 0）⇒ 也照弹框、照掷台词那一拍，手里一件不多；服务器与镜像一致', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const base = scene(map, 12);
+    const state: GameState = {
+      ...base,
+      rngState: 2111915288, // 夹具取值：这一支恰好 `rand()&1 == 1`（道具那一支）
+      toolStock: new Array<number>(base.toolStock.length).fill(0),
+    };
+    const room = roomFrom(map, state);
+    const mirror = { s: state };
+    expect(submitBoth(room, mirror, topo, 0, { type: 'settle' }).ok).toBe(true);
+    expect(room.state.notices).toContainEqual(
+      expect.objectContaining({ key: 'shop.chairmanGift', args: ['烏龜卡'] }),
+    );
+    expect(room.state.lastShopGift).toEqual({ kind: 'tool', id: 0, points: 70 });
+    expect((room.state.lastSpeechRolls ?? []).map((r) => r.site)).toEqual([SPEECH_SITE.smallGain]);
+    // 谁都没拿到（开局发的那六件照旧）
+    expect(room.state.tools).toEqual(base.tools);
+    expect(mirror.s.rngState).toBe(room.state.rngState);
+    expect(room.state.pending?.kind).toBe('shop');
   });
 });

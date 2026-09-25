@@ -1355,8 +1355,9 @@ export function detectLuckyGodLine(before: GameState, after: GameState): Detecte
  *   ★ 入参是**點數价**（`toolPrice` / `cardPrice`），不是现金价 —— 商店里买东西
  *     花的就是點數。
  *
- * 判据 = `after.lastShopGift` 与 `before` **引用不同**（core 只在真的送成时才写，
- * 规矩同 `lastCardPlay`）。事件号用同一支阶梯 `smallGainTierFor`（阈值 100 / 50）。
+ * 判据 = `after.lastShopGift` 与 `before` **引用不同**（core 在那一拍**弹框**时写，规矩同 `lastCardPlay`；
+ *   ★ 空袋那一支也写 —— 原版框是无条件走的，點數价取别名项的 70，见 `reduce.ts` 的 `enterShop`）。
+ *   事件号用同一支阶梯 `smallGainTierFor`（阈值 100 / 50）。
  */
 export function detectShopGift(before: GameState, after: GameState): DetectedSay[] {
   const hint = after.lastShopGift ?? null;
