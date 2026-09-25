@@ -817,7 +817,7 @@ export function auctionAdvanceSeat(
  *        `status[卖家] === 'active'`，开场席位就落回**卖家**身上 ——
  *        真人卖家在屏上等自己点钮、三台电脑一口不出。
  *
- * ⇒ 现在：从 slot 0 起找第一个 **`'active'` 且不是卖家** 的座位；
+ * ⇒ 现在：找**下标最大**的 **`'active'` 且不是卖家** 的座位（见函数体里 2026-09-24 的订正）；
  *   都没有返回 **-1**（此时 `auctionFinished` 已判流标/成交，调用方不该再拿它当座位）。
  *
  * @param seller 卖家（= 待拍实体的现主，取不到就传当前行动者）的**玩家下标**；
@@ -829,7 +829,11 @@ export function auctionFirstSeat(
   seller = -1,
 ): number {
   const n = bidders.length;
-  for (let i = 0; i < n; i++) {
+  // ★ 2026-09-24 审计订正：从**最后**一个座位往前找 —— 原版状态 1 那段（`0x0043af13 xor ebx,ebx /
+  //   0x0043af15 mov esi,-1 / 0x0043af1a mov [0x48c4a4],esi / 0x0043af20 mov esi,[0x48c4a4]`）把 −1 缓存进
+  //   `esi` 后**再也不更新**，于是 `0x0043af40 cmp esi,-1 / jne` 恒不跳、每个非空座位都 `0x0043af45` 覆盖一遍
+  //   ⇒ 起拍落在**下标最大**的在场座位上（非在场与卖家的座位已在 `0x43c4de` 删掉），之后才 `(座位+1)&3` 绕回 0。
+  for (let i = n - 1; i >= 0; i--) {
     const player = bidders[i];
     if (player === undefined || player === seller) continue;
     if ((status[player] ?? 'active') === 'active') return i;

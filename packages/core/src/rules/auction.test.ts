@@ -717,11 +717,11 @@ describe('★ 座位表（loc_0043c110 / loc_00439f72 的建表段）', () => {
     expect(auctionAdvanceSeat([0, 1], ['passed', 'passed'], 0)).toBe(0);
   });
 
-  it('★★ 开场席位从 slot 0 起找第一个 active 的（loc_0043a365 的清零 + 绕圈）', () => {
-    const status: AuctionSeatStatus[] = ['passed', 'active', 'active', 'active'];
-    expect(auctionFirstSeat([0, 1, 2, 3], status)).toBe(1);
-    // 从 slot 0 起 —— 不是「从 currentPlayer 起」（旧行为，见 A-3 订正）
-    expect(auctionFirstSeat([0, 1, 2, 3], ['active', 'active', 'active', 'active'])).toBe(0);
+  it('★★ 审计订正：开场席位是**下标最大**的 active 座位（0x0043af20 把 −1 缓存进 esi 后不再更新，每个非空座位都覆盖一遍）', () => {
+    const status: AuctionSeatStatus[] = ['passed', 'active', 'active', 'passed'];
+    expect(auctionFirstSeat([0, 1, 2, 3], status)).toBe(2);
+    // 不是「从 currentPlayer 起」，也不是「从 slot 0 起第一个」
+    expect(auctionFirstSeat([0, 1, 2, 3], ['active', 'active', 'active', 'active'])).toBe(3);
   });
 
   it('★★ 一个可出价的都没有时返回 -1，**绝不能返回 0**（A-3 的卡死根因）', () => {
@@ -729,9 +729,9 @@ describe('★ 座位表（loc_0043c110 / loc_00439f72 的建表段）', () => {
     //   那正好可能是卖家那一格 ⇒ 客户端把出价权交给卖家、屏上等真人点，整局卡死。
     expect(auctionFirstSeat([0, 1, 2, 3], ['givenUp', 'givenUp', 'givenUp', 'givenUp'])).toBe(-1);
     expect(auctionFirstSeat([], [])).toBe(-1);
-    // 卖家被跳过：slot 0 是卖家（givenUp），第一个可出价的是 slot 1
-    const sellerFirst: AuctionSeatStatus[] = ['givenUp', 'active', 'active', 'active'];
-    expect(auctionFirstSeat([0, 1, 2, 3], sellerFirst)).toBe(1);
+    // 卖家被跳过：slot 3 是卖家（givenUp），开场落到 slot 2
+    const sellerLast: AuctionSeatStatus[] = ['active', 'active', 'active', 'givenUp'];
+    expect(auctionFirstSeat([0, 1, 2, 3], sellerLast)).toBe(2);
   });
 
   it('★ 无主地自拍（bidders 含卖家自己）时，出价权必须给**别人**', () => {
@@ -740,13 +740,15 @@ describe('★ 座位表（loc_0043c110 / loc_00439f72 的建表段）', () => {
     //   原版此时 slot 0 就是出卡人自己（原版建表不看「谁是卖家」以外的资格）。
     //   ★ 这里钉住的是**引擎不再把出价权丢给卖家**这条不变量：
     //     一旦卖家被标成非 active（自己的地 / 出不起），首个席位必须跳过它。
-    expect(auctionFirstSeat([0, 1, 2, 3], ['givenUp', 'active', 'active', 'active'])).toBe(1);
+    expect(auctionFirstSeat([0, 1, 2, 3], ['active', 'active', 'active', 'active'], 3)).toBe(2);
     // 卖家在中间（bidders 不含它时下标会错位）—— 用 bidders 与玩家号**不同**的数组钉住
     //   「用 bidders[i] 取 status，而不是用 i 取 status」：
-    //   bidders=[2,0,3]，status 按**玩家下标**索引 ⇒ slot0=玩家2(active) → 返回 0
-    expect(auctionFirstSeat([2, 0, 3], ['givenUp', 'active', 'active', 'active'])).toBe(0);
-    // 玩家2 出不起、玩家0 与玩家3 可出价 ⇒ slot0 被跳过，返回 slot1
-    expect(auctionFirstSeat([2, 0, 3], ['active', 'active', 'givenUp', 'active'])).toBe(1);
+    //   bidders=[3,0,2]，status 按**玩家下标**索引 ⇒ 末格 slot2=玩家2(active) → 返回 2
+    expect(auctionFirstSeat([3, 0, 2], ['givenUp', 'active', 'active', 'active'])).toBe(2);
+    //   末格玩家 2 出不起 ⇒ 往前找：slot1 = 玩家 0（active）
+    expect(auctionFirstSeat([3, 0, 2], ['active', 'active', 'givenUp', 'active'])).toBe(1);
+    // 玩家2 出不起、玩家0 与玩家3 可出价 ⇒ 从末格起：slot2 = 玩家3（active）
+    expect(auctionFirstSeat([2, 0, 3], ['active', 'active', 'givenUp', 'active'])).toBe(2);
   });
 });
 
@@ -1052,7 +1054,7 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
       expect(first, '第一格出不起底价时开场席位不能是他').not.toBe(1);
       expect(after.pending.status[first!]).toBe('active');
     }
-    expect(s.pending.bidders[s.pending.seat]).toBe(1); // 正常局面下 1 号可出价
+    expect(s.pending.bidders[s.pending.seat]).toBe(3); // 正常局面下开场是末位的 3 号（0x0043af45 覆盖到最后一格）
     expect(s.pending.status[s.pending.bidders[s.pending.seat]!]).toBe('active');
 
     const { state, actions } = runAuction(s);
