@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { GameState, MapTopology } from '@rich4/core';
+import { LAYOUT } from './stage.ts';
+import { worldToScreen, type Camera } from './render.ts';
 import {
   SUMMON_CARD_ID,
   nearestSummonableObject,
@@ -157,5 +159,42 @@ describe('★★ 请不到「看不见」的那一尊 @source `0x40a45c` / `0x40
     expect(pickableObjects(s, custom).map((c) => c.handle)).toEqual([1, 2]);
     expect(nearestSummonableObject(s, custom), '不筛视野 ⇒ 节点 2 那尊').toBe(2);
     expect(nearestSummonableObject(s, custom, view), '筛视野 ⇒ 只剩节点 3 那尊').toBe(1);
+  });
+});
+
+/*
+ * ★★ 与**真实**镜头/棋盘区接起来 —— 出牌那端用的就是这一套
+ *   （`main.ts` 的 `routeCardUse`：`worldToScreen(…, camera, LAYOUT.board)`）。
+ *   原版那张图是屏幕空间的（`0x409de7` 按当前镜头重建），且物件的屏幕坐标就是
+ *   它**所在节点**投出来的位置（`0x00408ea0` 起）—— 所以「镜头中心那一格一定在图上、
+ *   半个视口以外的格子一定不在」这两条正是拾取筛子的地基。
+ */
+describe('★★ 棋盘区 = 镜头中心那 440×440（与 `worldToScreen` 的约定）', () => {
+  // 这一段不需要原版素材（几何契约与地图无关）—— 普通 `it`
+  it('★ 镜头中心投到棋盘区正中 (220,220)，中心那一格可见、远处的出画', () => {
+    const vp = { w: LAYOUT.board.w, h: LAYOUT.board.h };
+    const cam: Camera = {
+      view: 0,
+      tileX: 100 >> 5,
+      tileY: 100 >> 5,
+      scale: 1,
+      x: 0,
+      y: 0,
+      subX: 100 & 31,
+      subY: 100 & 31,
+    };
+    const view: BoardView = {
+      project: (x, y) => worldToScreen(x, y, cam, vp),
+      width: vp.w,
+      height: vp.h,
+    };
+    expect(worldToScreen(100, 100, cam, vp), '镜头自己的位置 = 棋盘区中心').toEqual({
+      x: (vp.w + 1) >> 1,
+      y: (vp.h + 1) >> 1,
+    });
+    expect(visibleInBoard(view, 100, 100)).toBe(true);
+    // 投影表只覆盖镜头周围 ±14 块（≈448 px）：半个视口以外既投不出来、也不在图里
+    expect(worldToScreen(100 + 5000, 100, cam, vp)).toBeNull();
+    expect(visibleInBoard(view, 100 + 5000, 100)).toBe(false);
   });
 });
