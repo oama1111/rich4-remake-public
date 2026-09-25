@@ -7091,6 +7091,12 @@ function noticeBoardAction(
   if (me === undefined || !isAlive(me)) return state;
   const board = state.noticeBoard;
 
+  // ★ 真人从工具列打开公佈欄（`0x00417dee call 0x4284be`）与电脑调度步走的是**同一个函数**：
+  //   进门 `0x004284c5 call 0x42483e` 清理（在 `0x004284d1 cmp [+0x15],1` 分流之前），
+  //   窗关上后 `0x00428853` 释放图 → `0x0042885c push 0 / call 0x436b0a` 收回特別融資（两支共用收尾）。
+  if (action.op === 'open') return sweepStaleListings(state, topo);
+  if (action.op === 'close') return sweepSpecialFinance(state, topo);
+
   if (action.op === 'withdraw') {
     const col = withdrawItem(board[state.currentPlayer] ?? emptyColumn(), action.slot);
     if (col === null) return state;

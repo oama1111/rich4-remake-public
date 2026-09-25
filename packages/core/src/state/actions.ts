@@ -163,6 +163,14 @@ export type Action =
     }
   | { type: 'noticeBoard'; op: 'withdraw'; slot: number }
   | { type: 'noticeBoard'; op: 'buy'; seller: number; slot: number }
+  /**
+   * 打开 / 关上公佈欄（真人从工具列 / 熱鍵，`0x00417dee call 0x4284be`）。
+   * - `open`：进门清理 —— 撤掉挂着却已不归挂牌人的东西（`0x004284c5 call 0x42483e`）；
+   * - `close`：收尾收回特別融資（`0x0042885c push 0 / call 0x436b0a`）。
+   * 没有可做的就原样返回（客户端只在会生效时才发，联机不会被当成非法）。
+   */
+  | { type: 'noticeBoard'; op: 'open' }
+  | { type: 'noticeBoard'; op: 'close' }
 
   /**
    * 百貨公司买卖。买的两种可带 `row` = **货架第几行**（`pending.cards` / `pending.tools` 的下标）：
