@@ -231,6 +231,8 @@ export interface UseCardContext {
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
    */
   scapegoatPicker?: ScapegoatPicker;
+  /** 查稅卡：真人持卡人对免費卡那一问的答案（`0x444a60` 真人支）；缺省 = 默认为是 */
+  humanFreeCard?: () => boolean | null;
 }
 
 /**
@@ -647,7 +649,7 @@ export function useCard(
       break;
     }
     case 26: {
-      const r = applyTaxCard(players, cur, target, ctx.priceIndex, ctx.scapegoatPicker, ctx.rng);
+      const r = applyTaxCard(players, cur, target, ctx.priceIndex, ctx.scapegoatPicker, ctx.rng, ctx.humanFreeCard);
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
       defended = r.defended;

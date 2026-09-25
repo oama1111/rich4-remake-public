@@ -65,6 +65,7 @@ import {  autoAction,
   stockStatus,
   serializeGame,
   actingSeat,
+  cardPassiveHolder,
   isAiControlled,
   stateFingerprint,
   toolCount,
@@ -3035,8 +3036,23 @@ function awaitingHumanRoll(): boolean {
  *   联机的 `localSeatActive()` 管的是另一头（别的**真人**座位别替他答），
  *   两者都要有。
  */
+/**
+ * ★★ 卡片路径里「持卡人那一问」（免費卡 / 嫁禍卡，core `CardPassiveTail`）由**持卡人**答，
+ *   与轮到谁无关：出牌的可能是电脑（热座下仍要弹给真人持卡人）、联机下只有持卡人那一端弹。
+ *   返回 null = 这一刻不是这种问；否则 = 本机该不该弹。
+ */
+function cardPassiveDialogOpen(): boolean | null {
+  const holder = cardPassiveHolder(state.pending);
+  if (holder < 0) return null;
+  if (net !== null && net.seat !== holder) return false;
+  const h = state.players[holder];
+  return h !== undefined && !isAiControlled(h);
+}
+
 function currentDialog(): InteractionUi | null {
   if (screen !== 'game') return null;
+  const passive = cardPassiveDialogOpen();
+  if (passive !== null) return passive && state.pending !== null ? interactionUi(state.pending, state) : null;
   // 联机：待决交互只由当前座位的客户端回答；旁人不弹窗，免得替别人答
   if (!localSeatActive()) return null;
   // 电脑/托管的回合由 AI 自己答，人不要替他答
@@ -5558,7 +5574,7 @@ function scheduleAi(): void {
       // ★ 例外：拍賣 pending 期间 core 会**故意**返回 null —— 竞价循环由
       //   `auction-screen.ts` 驱动（它每次问 core 的 `auctionNextBid`），
       //   这里不是卡住，别刷屏（Q-AUC-1）。
-      if (isAiTurn(state) && state.pending?.kind !== 'auction') {
+      if (isAiTurn(state) && state.pending?.kind !== 'auction' && cardPassiveHolder(state.pending) < 0) {
         log(`⚠ 电脑在 ${state.phase} 无事可做，已停手`);
       }
       return;
@@ -7299,7 +7315,7 @@ setWheelStartGate(() => presentationHost.boxBlocked(SCREEN_BOX_TIER.wheel));
 setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
 // ★ 第十四份（D-008 收口）：嫁禍卡的选人窗 —— 与对话框同一道闸（`currentDialog`）：
 //   联机只让当前座位答、电脑 / 託管不开（它们由 `decidePending` / reducer 答）
-setScapegoatPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
+setScapegoatPickerGate(() => screen === 'game' && (cardPassiveDialogOpen() ?? (localSeatActive() && !isAiTurn(state))));
 // ★ pt22：「請選擇設施類別」的待决交互那一支同一道闸（旁观端 / 电脑不开，见 `setFacilityPickerGate`）
 setFacilityPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
 // ★ 第十四份：訊息框队列里的亮牌那一扇（收費那一段的被动卡）交给事件提示框播

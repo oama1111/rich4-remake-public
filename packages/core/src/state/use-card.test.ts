@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
+import { actingSeat } from '../net/acting-seat.ts';
 import type { GameState } from './types.ts';
 import { IMPLEMENTED_CARD_IDS } from '../cards/registry.ts';
 import { stateFingerprint } from '../net/protocol.ts';
@@ -197,11 +198,53 @@ describe('★ 出牌入口', () => {
     expect(after.players[1]!.blocking.sleepWalking).toBe(0);
     expect(after.players[0]!.blocking.sleepWalking).toBe(4);
     expect(after.rngState).toBe(s.rngState);
-    // 真人持有者：原版弹确认框 —— 卡片路径暂按放弃，19 留着、原目标照中
-    const human = { ...s, players: s.players.map((p, i) => (i === 1 ? { ...p, whoPlays: 1 } : p)) };
-    const h = reduce(human, { type: 'useCard', cardId: 16, target: { kind: 'player', index: 1 } }, topo);
-    expect(h.players[1]!.cards).toEqual([19]);
-    expect(h.players[1]!.blocking.sleepWalking).toBe(5);
+  });
+
+  it('★★ 真人持嫁禍卡：挂起问他（0x004447ae 真人支，候选含出牌者）；答「嫁给出牌者」⇒ 出牌者 4 天、19 扣；答不 ⇒ 他自己 5 天、19 留着', () => {
+    const { state, topo } = scene();
+    let s = give(state, 0, 16);
+    s = { ...s, phase: 'awaitingRoll', players: s.players.map((p, i) => (i === 1 ? { ...p, whoPlays: 1, cards: [19] } : p)) };
+    const asked = reduce(s, { type: 'useCard', cardId: 16, target: { kind: 'player', index: 1 } }, topo);
+    expect(asked.phase).toBe('awaitingDecision');
+    expect(asked.pending?.kind).toBe('scapegoat');
+    if (asked.pending?.kind !== 'scapegoat') return;
+    expect(asked.pending.candidates).toEqual([0, 2, 3]);
+    // 挂起时一点不落：卡没扣、没敌意、没人夢遊
+    expect(asked.players[0]!.cards).toEqual([16]);
+    expect(asked.players[1]!.hostility).toEqual(s.players[1]!.hostility);
+    // 联机：这一问归持卡人（1 号）答
+    expect(actingSeat(asked)).toBe(1);
+    const yes = reduce(asked, { type: 'answerScapegoat', target: 0 }, topo);
+    expect(yes.pending).toBeNull();
+    expect(yes.phase).toBe('awaitingRoll');
+    expect(yes.players[0]!.cards).toEqual([]);
+    expect(yes.players[1]!.cards).toEqual([]);
+    expect(yes.players[0]!.blocking.sleepWalking).toBe(4);
+    expect(yes.players[1]!.blocking.sleepWalking).toBe(0);
+    const no = reduce(asked, { type: 'answerScapegoat', target: -1 }, topo);
+    expect(no.players[1]!.cards).toEqual([19]);
+    expect(no.players[1]!.blocking.sleepWalking).toBe(5);
+  });
+
+  it('★★ 查稅卡打真人持免費卡：先问免費卡（0x00444af4）；不用 ⇒ 再问嫁禍卡；都不用 ⇒ 照收', () => {
+    const { state, topo } = scene();
+    let s = give(state, 0, 26);
+    s = {
+      ...s,
+      phase: 'awaitingRoll',
+      players: s.players.map((p, i) => (i === 1 ? { ...p, whoPlays: 1, cash: 100_000, cards: [20, 19] } : p)),
+    };
+    const q1 = reduce(s, { type: 'useCard', cardId: 26, target: { kind: 'player', index: 1 } }, topo);
+    expect(q1.pending?.kind).toBe('freeCard');
+    const used = reduce(q1, { type: 'answerFreeCard', use: true }, topo);
+    expect(used.players[1]!.cash).toBe(100_000);
+    expect(used.players[1]!.cards).toEqual([19]);
+    const q2 = reduce(q1, { type: 'answerFreeCard', use: false }, topo);
+    expect(q2.pending?.kind).toBe('scapegoat');
+    const paid = reduce(q2, { type: 'answerScapegoat', target: -1 }, topo);
+    expect(paid.pending).toBeNull();
+    expect(paid.players[1]!.cash).toBe(80_000);
+    expect(paid.players[1]!.cards).toEqual([20, 19]);
   });
 
   it('★★ 陷害卡（17）：首次入狱 5 天掷一次倒霉台词的 rand（0x0043d5f9 → 0x44f2c2）、有保險就理赔（0x0043d749）', () => {

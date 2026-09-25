@@ -84,4 +84,30 @@ describe('★ 审计 2026-09-24：卡片 / 道具修正在联机里同一条路'
     expect(room.state.toolStock).toEqual(base.toolStock);
     expect(room.state.tools[2]).toBe(0);
   });
+
+  run('④ 电脑出夢遊卡打真人持嫁禍卡的人：挂起、提交权归持卡人（actingSeat），他答完两端一致', () => {
+    const { room, base, topo } = roomWith('CARDD', (s) => ({
+      ...s,
+      phase: 'awaitingRoll',
+      currentPlayer: 1,
+      players: s.players.map((p, i) =>
+        i === 1 ? { ...p, cards: [16] } : i === 0 ? { ...p, cards: [19] } : p,
+      ),
+    }));
+    const r1 = room.submit(1, { type: 'useCard', cardId: 16, target: { kind: 'player', index: 0 } });
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const mid = reduce(base, r1.broadcast.action, topo);
+    expect(mid.pending?.kind).toBe('scapegoat');
+    expect(room.actingSeat).toBe(0);
+    // 出牌者那一端替他答 ⇒ 被拒
+    expect(room.submit(1, { type: 'answerScapegoat', target: 2 }).ok).toBe(false);
+    const r2 = room.submit(0, { type: 'answerScapegoat', target: 1 });
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    const mirror = reduce(mid, r2.broadcast.action, topo);
+    expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+    expect(room.state.players[1]!.blocking.sleepWalking).toBe(4);
+    expect(room.state.players[0]!.cards).toEqual([]);
+  });
 });

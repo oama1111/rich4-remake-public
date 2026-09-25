@@ -17,6 +17,7 @@
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import type { ConfinementKind } from './confinement.ts';
 import type { AuctionSeatStatus } from './auction.ts';
+import type { CardTarget } from '../cards/target.ts';
 
 /**
  * 落点要求玩家做的决定。
@@ -82,13 +83,13 @@ export type PendingInteraction =
    *   `0x00444a92 cmp byte [+0x15],1 / je 0x444ad8` → `0x00444af4 call 0x440ba8`，YES = 1 才用）。
    *   `name` = 付款方名字（问句 `%s\n\n是否使用免費卡？` 的 `%s`）；`tail` = 答完接着走的那一段。
    */
-  | { kind: 'freeCard'; name: string; tail: TollTailCtx }
+  | { kind: 'freeCard'; name: string; tail: TollTailCtx | CardPassiveTail }
   /**
    * ★ 第十四份（D-008 收口）：真人嫁禍卡 —— 候选 = 在场、不是自己（`0x004447bf` / `0x004447c8`，按下标序）。
    *   恰好 1 位 ⇒ YES/NO「是否嫁禍給%s？」（`0x00444849`）；否则 ⇒ 选人窗（`0x004448a1 call 0x440e1a`）。
    *   答 −1（NO / 右键）⇒ 不嫁禍、卡留着。
    */
-  | { kind: 'scapegoat'; candidates: readonly number[]; names: readonly string[]; tail: TollTailCtx }
+  | { kind: 'scapegoat'; candidates: readonly number[]; names: readonly string[]; tail: TollTailCtx | CardPassiveTail }
   /**
    * 银行：存、取、借、还，外加董事長专属的特別融資。
    *
@@ -510,6 +511,30 @@ export interface TollTailCtx {
   feeName: string;
   /** 免費卡那一步已经走过 */
   freeDone: boolean;
+}
+
+/**
+ * ★★ 卡片路径（夢遊 16 / 陷害 17 / 查稅 26）里**真人持有者**的被动卡那一问 —— 挂起卡片效果、答完续跑。
+ *
+ * 原版这两问是卡片函数**中途**的模态框（`0x444a60` 真人支 `0x00444af4 call 0x440ba8`；
+ * `0x44476a` 真人支 `0x00444849 call 0x440ba8` / `0x004448a1 call 0x440e1a`），问的是**被打的那一位**
+ * （持卡人），不是出牌者。这两问之前卡片函数只做了扣卡 / 台词 / 记敌意（都在 core 里一步算完），
+ * 之后的一切都取决于回答 ⇒ 本引擎挂起时**什么都不落**（卡也不扣），答完用同一张卡、同一个目标
+ * 把 `playCard` 从头再跑一遍，把已经答过的那几问喂进去（`answers`）。中间不掷随机数，所以重跑与原版逐步一致。
+ */
+export interface CardPassiveTail {
+  /** 被挂起的那一手：卡号与目标（回合主人 = 出牌者）*/
+  card: { cardId: number; target: CardTarget };
+  /** 持卡人（被打的那一位；这一问由他答）*/
+  holder: number;
+  /** 已经答过的：免費卡用不用（查稅卡先问它）*/
+  free?: boolean | null;
+}
+
+/** 这个待决交互是不是「卡片路径里持卡人那一问」—— 是就返回持卡人下标，否则 −1 */
+export function cardPassiveHolder(pending: PendingInteraction | null): number {
+  if (pending === null || (pending.kind !== 'freeCard' && pending.kind !== 'scapegoat')) return -1;
+  return 'card' in pending.tail ? pending.tail.holder : -1;
 }
 
 /** 答复与待决交互是否配套——防止 UI 送回驴唇不对马嘴的 action */

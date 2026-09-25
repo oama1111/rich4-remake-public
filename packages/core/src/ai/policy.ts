@@ -16,6 +16,7 @@
  *   把性格留成 `AiPersonality` 接口，等那几个字段解出来再接。
  */
 
+import { cardPassiveHolder } from '../rules/interaction.ts';
 import type { GameState } from '../state/types.ts';
 import type { LandInfo, Rich4Map } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
@@ -141,6 +142,18 @@ export function decideAction(ctx: AiContext): Action | null {
       const bid = auctionNextBid(state, p);
       if (bid !== null) return bid;
     }
+  }
+
+  // ★★ 卡片路径里持卡人那一问（免費卡 / 嫁禍卡）归**持卡人**答，与轮到谁无关（core `actingSeat`）：
+  //   持卡人是真人 ⇒ 交给他的屏（返回 null）；被託管了 ⇒ `null` 答复 = reducer 按电脑那一支判
+  //   （随机数不能进 AI）。
+  const holder = cardPassiveHolder(state.pending);
+  if (holder >= 0 && state.phase === 'awaitingDecision') {
+    const h = state.players[holder];
+    if (h === undefined || !isAiControlled(h)) return null;
+    return state.pending?.kind === 'freeCard'
+      ? { type: 'answerFreeCard', use: null }
+      : { type: 'answerScapegoat', target: null };
   }
 
   if (!isAiTurn(state)) return null;

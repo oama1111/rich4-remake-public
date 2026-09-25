@@ -80,7 +80,7 @@ import {
   tollExemption,
   type TollExemption,
 } from '../rules/toll-flow.ts';
-import { PASSIVE_CARDS, aiScapegoatPick, consumeCard, playerHasCard, tollTriggersPassive } from '../cards/passive.ts';
+import { CardDecisionNeeded, PASSIVE_CARDS, aiScapegoatPick, consumeCard, playerHasCard, tollTriggersPassive } from '../cards/passive.ts';
 import {
   markPlayerBankrupt,
   resolveBankruptcyOutcome,
@@ -299,6 +299,7 @@ import {
   type AuctionRequest,
   type PendingInteraction,
   type TollTailCtx,
+  type CardPassiveTail,
 } from '../rules/interaction.ts';
 import {
   aiBorrowGate,
@@ -2545,10 +2546,14 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       // ★ 第十四份：收費那一段的被动卡 —— NO / 右键 = 不用（免費卡 `0x00444afe cmp eax,1 / jne`；
       //   嫁禍卡 `0x00444863 mov ebx,-1` / 选人窗右键 −1），**收費照走**（不是结束回合）
       if (state.phase === 'awaitingDecision' && state.pending?.kind === 'freeCard') {
-        return runTollTail(state, topo, state.pending.tail, { free: false });
+        const tail = state.pending.tail;
+        if ('card' in tail) return resumeCardPassive(state, topo, tail, { free: false });
+        return runTollTail(state, topo, tail, { free: false });
       }
       if (state.phase === 'awaitingDecision' && state.pending?.kind === 'scapegoat') {
-        return runTollTail(state, topo, state.pending.tail, { scapegoat: -1 });
+        const tail = state.pending.tail;
+        if ('card' in tail) return resumeCardPassive(state, topo, tail, { scapegoat: -1 });
+        return runTollTail(state, topo, tail, { scapegoat: -1 });
       }
       if (state.phase === 'awaitingDecision') {
         // 不加蓋也照样走到落点尾块：自己的研究所要问研發（0x0041b0b3，由 `labPanelTail` 接）
@@ -2886,15 +2891,19 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       return answerBirthdayCard(state, action.seat, action.cardId);
 
     // ★ 第十四份（D-008 收口）：真人答收費那一段的被动卡
-    case 'answerFreeCard':
+    case 'answerFreeCard': {
       if (state.phase !== 'awaitingDecision' || state.pending?.kind !== 'freeCard') return state;
-      return runTollTail(state, topo, state.pending.tail, { free: action.use });
+      const tail = state.pending.tail;
+      if ('card' in tail) return resumeCardPassive(state, topo, tail, { free: action.use });
+      return runTollTail(state, topo, tail, { free: action.use });
+    }
 
     case 'answerScapegoat': {
       if (state.phase !== 'awaitingDecision' || state.pending?.kind !== 'scapegoat') return state;
       const pend = state.pending;
       // 只认候选里的人；−1 = 不嫁禍（卡留着）
       if (action.target !== null && action.target !== -1 && !pend.candidates.includes(action.target)) return state;
+      if ('card' in pend.tail) return resumeCardPassive(state, topo, pend.tail, { scapegoat: action.target });
       return runTollTail(state, topo, pend.tail, { scapegoat: action.target });
     }
 
@@ -5319,11 +5328,58 @@ function canUseItemsNow(state: GameState): boolean {
   return state.phase === 'awaitingRoll' && (state.pending === null || state.pending.kind === 'none');
 }
 
+/**
+ * 卡片路径里真人持卡人已经答过的被动卡那几问（见 `CardPassiveTail`）。
+ * `null` = 按电脑那一支判（持卡人被託管）；缺席 = 还没问。
+ */
+interface CardPassiveAnswers {
+  free?: boolean | null;
+  scapegoat?: number | null;
+}
+
+/**
+ * 持卡人答完那一问：清掉待决、用同一张卡同一个目标把 `playCard` 重跑一遍（喂进已答的几问）。
+ * 重跑时若还有下一问（查稅卡：先免費卡、后嫁禍卡），会再挂起一次。
+ */
+function resumeCardPassive(
+  state: GameState,
+  topo: MapTopology,
+  tail: CardPassiveTail,
+  answer: CardPassiveAnswers,
+): GameState {
+  const answers: CardPassiveAnswers = {
+    ...(tail.free === undefined ? {} : { free: tail.free }),
+    ...answer,
+  };
+  const before: GameState = { ...state, pending: null, phase: 'awaitingRoll' };
+  const after = playCard(before, topo, tail.card.cardId, tail.card.target, answers);
+  if (after === before) return { ...before, lastViewTarget: state.lastViewTarget };
+  // ★ 出牌者那句台词在挂起时已经说过了 —— 这里换成持卡人用掉的那张被动卡（与收費那一段同一个口径）
+  const holder = tail.holder;
+  const used =
+    answers.scapegoat !== undefined && answers.scapegoat !== null && answers.scapegoat >= 0
+      ? { player: holder, cardId: PASSIVE_CARDS.SCAPEGOAT, popup: false as const, answeredBy: answers.scapegoat }
+      : answers.free === true
+        ? { player: holder, cardId: PASSIVE_CARDS.FREE, popup: false as const, answeredBy: state.currentPlayer }
+        : null;
+  let withHint: GameState = used === null || after.pending !== null ? after : { ...after, lastCardPlay: used };
+  // ★ 免費卡用掉那一刻亮牌「使用%s」（`0x00444b07 call 0x441f73(0x14)`，在扣卡 `0x00444b30` 之前）
+  if (answers.free === true && after.pending === null) {
+    withHint = appendFreshNotice(withHint, {
+      key: 'card.use',
+      args: [CARDS.find((d) => d.id === PASSIVE_CARDS.FREE)?.name ?? ''],
+      card: PASSIVE_CARDS.FREE,
+    });
+  }
+  return afterAiStep(before, withHint, topo, 3);
+}
+
 function playCard(
   state: GameState,
   topo: MapTopology,
   cardId: number,
   target: CardTarget,
+  answers?: CardPassiveAnswers,
 ): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined || !isAlive(me)) return state;
@@ -5334,7 +5390,11 @@ function playCard(
   //   ⇒ 与其它随机出口同一套：传 `rng` 进去、出口之后把 `rngState` 写回。
   const rng = new WatcomRng();
   rng.setState(state.rngState);
-  const r = useCard(
+  /** 持卡人是不是**恰好** who_plays == 1 的真人（`0x004447a1` / `0x00444a92 cmp byte [+0x15],1`）*/
+  const plainHuman = (i: number): boolean => ((state.players[i]?.whoPlays ?? 0) & 0xff) === WHO_PLAYS_HUMAN;
+  let r: ReturnType<typeof useCard>;
+  try {
+  r = useCard(
     {
       players: state.players,
       lands,
@@ -5368,8 +5428,20 @@ function playCard(
       //   暂按「放弃转嫁」（卡不扣），见 docs/audit/provenance-cards.md 的 follow-up。
       scapegoatPicker: (holder, now, mode) => {
         const h = now[holder];
-        if (h === undefined || (h.whoPlays & 0xff) === WHO_PLAYS_HUMAN) return -1;
+        if (h === undefined) return -1;
+        if (plainHuman(holder)) {
+          // ★★ 真人持卡人：原版弹确认框 / 选人窗（`0x004447ae..0x004448ab`，**不套**模式门槛）——
+          //   还没答就挂起（`CardDecisionNeeded`），答了就用；`null` = 他被託管了，按电脑那一支判
+          if (answers?.scapegoat === undefined) throw new CardDecisionNeeded('scapegoat', holder);
+          if (answers.scapegoat !== null) return answers.scapegoat;
+        }
         return aiScapegoatPick(now, holder, mode, state.priceIndex, rng);
+      },
+      // ★★ 查稅卡：真人持卡人「是否使用免費卡？」（`0x00444af4 call 0x440ba8`）
+      humanFreeCard: () => {
+        const holder = target.kind === 'player' ? target.index : -1;
+        if (answers?.free === undefined) throw new CardDecisionNeeded('freeCard', holder);
+        return answers.free;
       },
       // 轉向卡要的那一次 `rand()`（只在真有候选时被调用）
       rng,
@@ -5377,6 +5449,10 @@ function playCard(
     cardId,
     target,
   );
+  } catch (e) {
+    if (!(e instanceof CardDecisionNeeded)) throw e;
+    return suspendCardPassive(state, cardId, target, e, answers);
+  }
   // ★ `ok === false` ⟺ 原版卡片函数返回 0 ⟺ **卡还在手上、状态一点不动**。
   //   这条等价关系是机械核验过的：`rich4-spec/tools/scratch/consume_invariant_check.py`
   //   证明「30 张卡从 `remove_card` 之后的每一条出口都返回非 0」。
@@ -5540,6 +5616,59 @@ function playCard(
   // ★ 請神符把神明**附身**上去那一刻的發威 —— 与落点那条走同一个助手
   //   （原版两条都汇到 `_rich4_attach_god` 的跳表，见 rules/god-power.ts）
   return applyGodPowerOnAttach(state, next, topo);
+}
+
+/**
+ * 把卡片效果挂在「持卡人那一问」上：状态**一点不落**（卡也不扣），只挂待决交互、交出出牌台词。
+ *
+ * 嫁禍卡（真人支 `0x004447ae`）：候选 = 在场（`+0x15` 整字节 ≠ 0）、不是持卡人（**含出牌者**），按下标序；
+ * 问之前先亮牌「%s\n\n嫁禍卡生效！」（`0x004447fe` / `0x0044488b call 0x441f73`）。
+ * 免費卡（真人支 `0x00444ad8`）：直接问「%s\n\n是否使用免費卡？」。
+ */
+function suspendCardPassive(
+  state: GameState,
+  cardId: number,
+  target: CardTarget,
+  need: CardDecisionNeeded,
+  answers: CardPassiveAnswers | undefined,
+): GameState {
+  const holder = need.holder;
+  const tail: CardPassiveTail = {
+    card: { cardId, target },
+    holder,
+    ...(answers?.free === undefined ? {} : { free: answers.free }),
+  };
+  // 第一次挂起才说出牌台词（续跑时已经说过）
+  const hint = answers === undefined ? { lastCardPlay: { player: state.currentPlayer, cardId } } : {};
+  if (need.decision === 'freeCard') {
+    return {
+      ...state,
+      ...hint,
+      phase: 'awaitingDecision',
+      pending: { kind: 'freeCard', name: playerName(state, holder), tail },
+    };
+  }
+  const candidates: number[] = [];
+  for (let i = 0; i < state.players.length; i++) {
+    if (i === holder || ((state.players[i]?.whoPlays ?? 0) & 0xff) === 0) continue;
+    candidates.push(i);
+  }
+  const shown = appendFreshNotice(state, {
+    key: 'card.scapegoatOn',
+    args: [playerName(state, holder)],
+    card: PASSIVE_CARDS.SCAPEGOAT,
+  });
+  return {
+    ...shown,
+    ...hint,
+    phase: 'awaitingDecision',
+    pending: {
+      kind: 'scapegoat',
+      candidates,
+      names: candidates.map((i) => playerName(state, i)),
+      tail,
+    },
+  };
 }
 
 /**

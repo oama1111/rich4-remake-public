@@ -81,6 +81,11 @@ function usesFreeCard(
   amount: number,
   priceIndex: number,
   rng: TaxRandomSource | undefined,
+  /**
+   * 真人那一问的答案（`0x00444af4 call 0x440ba8`，YES = 1 才用）。返回 `null` = 按电脑那一支判
+   * （託管）；缺省 = 旧口径「默认为是」（预览 / 单元测试）。reduce 在还没答时抛 `CardDecisionNeeded` 挂起。
+   */
+  humanAnswer?: () => boolean | null,
 ): boolean {
   // @source 0x444a92 `cmp byte [ebx+0x496b7d], 1` / 0x444a99 `je 0x444ad8`
   //   ★ 整字节**精确等于 1**（不是位测试）：带托管位(0x04)／走回棋盘位(0x10)的
@@ -88,7 +93,10 @@ function usesFreeCard(
   //   真人支是确认框；core 里没有可停下来问的地方，沿用既有行为「默认为是」
   //   （弹窗属 P2；D-008 记的是「真人先按电脑判据替他决定」，此处按原版结构分流，
   //     并**不消耗**随机数 —— 见报告「不确定的点」）。
-  if (victim.whoPlays === WHO_PLAYS_HUMAN) return true;
+  if (victim.whoPlays === WHO_PLAYS_HUMAN) {
+    const a = humanAnswer === undefined ? true : humanAnswer();
+    if (a !== null) return a;
+  }
   // @source 0x444a9b `call 0x456f2d` —— ★ 无条件、恰好一次，且在任何比较之前
   const roll = rng?.next() ?? 0;
   // @source 0x444abe `cmp eax,[ebx+0x496b84] / jg` + 0x444ac6 `cmp esi,eax / 0x444ac8 jge`
@@ -162,6 +170,8 @@ export function applyTaxCard(
    *   传 `undefined`（退化成 `rand() == 0`）。
    */
   freeCardRng: TaxRandomSource | undefined,
+  /** 真人持卡人对免費卡那一问的答案（见 `usesFreeCard`）*/
+  humanFreeCard?: () => boolean | null,
 ): TaxResult {
   const cls = targetClassOf(TAX_SELECTION_PARAM);
   const error = validateTarget(cls, target, currentPlayer, players.length);
@@ -185,7 +195,7 @@ export function applyTaxCard(
   //   此前 remake 只要有卡就免单并扣卡 ⇒ AI 受害者小额查稅被白烧一张免费卡，
   //   而且**一次 `rand()` 都没消耗**（全局 RNG 流从此错位）。
   const defended = playerHasCard(victim, PASSIVE_CARDS.FREE)
-    && usesFreeCard(victim, tax, priceIndex, freeCardRng);
+    && usesFreeCard(victim, tax, priceIndex, freeCardRng, humanFreeCard);
 
   if (defended) {
     // ★★ 免费卡被**消耗**：原版 `0x444a60` 内部 `0x444b30 push 0x14 / call 0x441343`

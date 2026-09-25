@@ -324,3 +324,19 @@ export function aiScapegoatPick(
   }
   return cand;
 }
+
+/**
+ * 卡片路径里**真人持卡人**要答一问（免費卡 / 嫁禍卡）而还没答 —— 由 `state/reduce.ts` 的 `playCard`
+ * 接住并挂成待决交互（见 `rules/interaction.ts` 的 `CardPassiveTail`）。卡片效果都是纯函数，
+ * 抛出时一个状态都还没落。
+ */
+export class CardDecisionNeeded extends Error {
+  readonly decision: 'freeCard' | 'scapegoat';
+  readonly holder: number;
+  // ⚠️ 不用 TS 参数属性：`tools/*.ts` 走 node 的 strip-only 模式，不认那种写法
+  constructor(decision: 'freeCard' | 'scapegoat', holder: number) {
+    super(`card passive decision needed: ${decision} by ${holder}`);
+    this.decision = decision;
+    this.holder = holder;
+  }
+}
