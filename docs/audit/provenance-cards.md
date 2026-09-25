@@ -9,12 +9,30 @@
 
 | 状态 | 条数 |
 |---|---|
-| verified | 208 |
-| fixed | 97（其中 10 条由 loop / ai-move 分支修，合并进来后复核；2026-09-25 复核时 19 条旧 `follow-up`/`approx` 转 `fixed`、新增 8 条） |
+| verified | 209 |
+| fixed | 98（其中 10 条由 loop / ai-move 分支修，合并进来后复核；2026-09-25 复核时 19 条旧 `follow-up`/`approx` 转 `fixed`、新增 8 条；2026-09-25 第二轮 `ds/fu-cards` 再修 1 条（C23-1）、`follow-up`→`verified` 1 条（T09-2）） |
 | approx | 14 |
-| follow-up | 10 |
+| follow-up | 8 |
 | n/a | 3 |
 | 合计 | 332 |
+
+### `ds/fu-cards` 分支（2026-09-25，收尾剩余 follow-up）
+
+- `c8fe7c7` **O-37 结案**：同格多件的节点反向索引改成**按位或**（`0x0040e13c`
+  `or dword [node+0x24], (槽+1)<<16`），不再取最大槽号。两者在 `1|17 = 17`、`17|27 = 27`
+  这两对上恰好相同（所以先前看不出来），但死神（槽 14 ⇒ handle 15）压路障（槽 16 ⇒ handle 17）
+  的 `15|17 = 31` 落在**槽 30**（`OBJECT_TYPE_TABLE[30] = 17` = 地雷）⇒ 那一格原版是**炸人**
+  （住院 3 天），取最大只会当路障拦下。`objectHandleAt`（落地）与 `nodeObjectIndex`（娃娃扫格）
+  两处同一口径；联机镜像 `packages/server/src/object-or-index-mp.test.ts`。
+- `e35447d` **C23-1 结案**：請神符真人那一路的候选集本来就不是「全地图」——
+  `0x00444d2b push -1 / call 0x40a45c` 摊平的是**屏幕空间**那张 id 图
+  （`0x00409dea push 0x5e880` = 440×440×2、`0x00409e99`/`0x00409ea5` 把不在棋盘区里的实例剔掉、
+  `0x00409ede` 每个实例只写一粒）⇒ 画不进画面的尊神**请不到**。现在出牌那端把当前镜头
+  （含玩家拖过 / 贴边推过）投到 `LAYOUT.board` 筛一遍。
+- `8dbf719` **T12-3 复核**：写侧（`useVehicleTool` 的 `engineSavedTraffic/Dice`）与到期侧
+  （`tickEngineVehicle`）本分支复核**都已在**（`df14113` / loop），补一条**端到端**用例
+  （`reduce(useTool 12)` → 第 8 次日结 → 骑回機車）。
+- 本轮**没有**改 `PROTOCOL_VERSION`（协调方统一 bump）。
 
 ### 本分支的修正（提交）
 
@@ -79,13 +97,22 @@
 
 （2026-09-25 复核：原先这里的 C16-7b / C19-1 / C20-2 / C20-3、CG-3 / C18-5 / C21-3 / C19-7、C09-5、C06-4、
 TX-1 / T14、T11-1 / T11-3 / T11-10 / T11-11 / T11-12、I-25 都已由 `471ef9e` / `7b9d645` / `5b5d6b9` /
-`d0b8fdd` / `5256fa6` / `c40f2f8` / `5290899` 改掉或补齐，见下面的提交列表。）
+`d0b8fdd` / `5256fa6` / `c40f2f8` / `5290899` 改掉或补齐，见下面的提交列表。2026-09-25 第二轮
+（`ds/fu-cards`）：C23-1 已由 `e35447d` 修掉、T09-2 复核后转 `verified`（见下），O-37 的残余写在上面。）
 
-- **T09-2** 機器工人（9）真人拾取 `0x2090006`「任意地產 / 設施」的候选集（`0x44624e`）：客户端。
 - **T01-6 / T08-4** AI 用娃娃后再跑一遍起步前决策（ai-move）、电脑遙控骰子不说台词（表现）。
+  本轮复核 T08-4 的 VA：`0x00447250 push 0 / call 0x420eee`（电脑取点数）与
+  `0x0044723f` 真人那一支之间只差 `0x00447246 call 0x456e11`（把选中的骰面交给声音层），
+  两支汇合后是 `0x0044725c test ebx,ebx / je` → `0x00447260 call 0x40dd1f` →
+  `0x00447275 mov [0x475dd8], bl` —— 全程**没有** `player_say`/台词随机数，
+  故这一条纯表现、不动随机数（仍留作 follow-up，属 ai-move / 表现）。
 - **O-8 / O-38 / O-40 / O-41 / O-52** 只影响随机数条数（原版每天 `srand(GetTickCount())`，跨日本来对不齐）或需要再核 `0x41d2c6` 对破产付款方的行为。
 - **O-53** 惡人踩惡犬（npc-walk，跨区）。
-- **C23-1** 請神符真人自动挑「视野内最近」的物件 —— 视野不在 core 状态里（客户端）。
+- **O-37 的残余**（2026-09-25）：OR 已经逐位复刻（`c8fe7c7`），但原版那一字节是**存下来的** ——
+  `release_object`（`0x0040e243 mov byte [node+0x26], 0`）与 `attach_object`（`0x0040ebc7`）
+  都把它**整字节清零**。⇒ 「同格两件、先收走一件」时原版那一格就空了（剩下那件虽然还在物件表里、
+  `nodeId` 也没清，落地却看不见它），本引擎按现存物件重算 OR 仍看得见。要逐位复刻得在 state 里
+  存这张反向索引（`docs/gaps/04-events-places-gods.md` G26），属独立一步、本轮未做。
 
 ### 跨区发现（未改，交给对应区）
 
@@ -95,7 +122,14 @@ TX-1 / T14、T11-1 / T11-3 / T11-10 / T11-11 / T11-12、I-25 都已由 `471ef9e`
 - `rollDice.forced` 由客户端传入、服务器不剥离 ⇒ 联机真人不用遙控骰子也能指定点数（`actions.ts` / `reduce.ts` rollDice）。
 - 傳送機自搬之后企業收費读旧的 `stepsTotal`（`[0x48bafc]` 陈值，原版也是 —— 仅提示 toll 区知悉）。
 - 魔法屋拍卖流拍：原版 `0x4324d5` 不看 `run_auction` 返回值 ⇒ 流拍**不**清地主；本引擎 `settleAuction` 一律清（places / events 区；拍賣卡那一支本分支已用 `fromCard` 区分到期日，地主清零仍共用）。
-- 同一格多个物件时按最高槽位取（`objectHandleAt`，approx，已登记）。
+- 同一格多个物件时按**按位或**取（`objectHandleAt`，`c8fe7c7`；残余见上面 O-37）。
+- ★★ **`Room.#topo` 少了 `landscapes`**（`packages/server/src/room.ts:106-111`；文件里那句「与客户端
+  main.ts 的 topo 逐项一致」不成立 —— 客户端四处构造都带了 `landscapes`，如 `main.ts:10536`）。
+  后果：**服务器**算出来的入監/入院者停在**格心**，而每个客户端把他挪到監獄／醫院**景观**坐标
+  （`send_to_hospital` 的 `0x43ecef` 读景观记录 1、入監同理）⇒ 联机里 `xpos/ypos` 服务器与客户端
+  不一致，而 `stateFingerprint` 不收 `xpos/ypos`（见 `provenance-summary.md` §八.3），**指纹照样相等**。
+  本轮实测：`packages/server/src/object-or-index-mp.test.ts` 里同一条 `step`，镜像（带 landscapes）
+  `xpos/ypos = 319/990`（醫院大樓）、服务器 `384/1056`（格心）。属 net / loop 区，未改。
 
 ## 台账
 
@@ -249,7 +283,7 @@ TX-1 / T14、T11-1 / T11-3 / T11-10 / T11-11 / T11-12、I-25 都已由 `471ef9e`
 | C22-4 | remove_object semantics | state/reduce.ts playCard releaseObject | 0x40e14d | verified | |
 | C22-5 | no hostility; human = computer | — | 0x444cec-0x444d15 | verified | |
 | C22-6 | 送神符送走神明時：搭檔登場的參照格 = **出牌者此刻所在格**（未被關 ⇒ 物件格改成附身者當前格）；炸彈那一支不改格 | state/reduce.ts:5758-5762, rules/object-landing.ts:310-320 (withDispelNode) | 0x00444cc4 → 0x40e32c → 0x40e356 / 0x40e3cd..0x40e3d4 → 0x40e14d；炸彈 0x00444c4b → 0x40e14d | fixed 5b5d6b9 | 先前用走路留下的舊格 ⇒ 搭檔挑格（`0x40aa6c`）候選集與原版不同 |
-| C23-1 | 請神 human: nearest attachable object visible in the view (0x40a45c(-1) 440×440), strict < | client/object-pick.ts | 0x444d1a-0x444e10 | follow-up | client viewport not in core state |
+| C23-1 | 請神 human: nearest attachable object **visible in the view** (0x40a45c(-1) 扫屏幕空间 id 图 0x474938，440×440、每实例一粒), strict < | client/object-pick.ts:105-190（`BoardView` / `visibleInBoard`）, client/main.ts:6731-6745 | 0x444d1a-0x444e10, 0x40a45c-0x40a4e0, 0x409de7-0x409ef0, 0x408ea0-0x408f38 | fixed e35447d | 先前只做「全地图最近」⇒ 隔半张地图也请得到、一个都看不见时照样扣卡；视野 = 出牌那端**当前镜头**（原版 0x48c570/0x48c574 只在客户端）⇒ 客户端算，core 不动 |
 | C23-2 | esi==0 ⇒ card kept; else consumed even if attach fails | cards/registry.ts | 0x444e41, 0x444e52 | approx | unreachable |
 | C23-3 | attach sequence | rules/object-landing.ts attachGod | 0x40ead7-0x40ec0d | verified | partner respawn order low |
 | C24-1 | 紅 newsFlag=0x20 / 黑 0x02 | cards/swap-and-stock.ts:118-119 | 0x444f88, 0x4450f6 | verified | |
@@ -323,7 +357,7 @@ TX-1 / T14、T11-1 / T11-3 / T11-10 / T11-11 / T11-12、I-25 都已由 `471ef9e`
 | T08-3 | next roll 1 die = value, no rand | rng/watcom.ts:108 | 0x40d9a4, 0x419572 | verified | |
 | T08-4 | AI remote dice no player_say | state/reduce.ts | 0x447250 | follow-up | presentation |
 | T09-1 | robot worker take_tool before 0x40b110; consumed even when nothing built | state/reduce.ts | 0x4472fb, 0x447345 | fixed c53cd65 | tests updated |
-| T09-2 | human picker 0x2090006 any land/facility | client | 0x44624e | follow-up | client |
+| T09-2 | human picker 0x2090006 any land/facility（类别位 `0x6` = 地块\|設施，不看 owner/level；盖不成照样扣） | client/picking.ts:300-330（候选 = core 的 `canUseTool`）+ pick-anchor.test.ts | 0x44624e, 0x44627d, 0x4472fb / 0x447345 | verified | 2026-09-25 复核：候选集与那两位类别位**同一集合**（5 级地 / 0 级設施都在、路面与企業都不在），补 2 例钉住 |
 | T09-3 | 0x40b110 rules | rules/tool-effects.ts:284 | 0x40b110-0x40b21f | verified | |
 | T09-5 | bit7 → 0x20b | state/reduce.ts | 0x44736d | verified | |
 | T10-1 | no snapshot → kept | rules/time-machine.ts:83 | 0x4473b9 | verified | |
@@ -340,7 +374,7 @@ TX-1 / T14、T11-1 / T11-3 / T11-10 / T11-11 / T11-12、I-25 都已由 `471ef9e`
 | T11-6 | unowned land/facility source allowed（來源不看歸屬） | rules/teleport.ts:213-215, 254-256 | 0x447469（`0x1200036` 組字節 0 = 不設限） | fixed 5256fa6 | 先前 `owner == 0` 直接拒收 |
 | T11-7 | facility move | rules/teleport.ts:168 | 0x4475d8-0x44760f | verified | |
 | T11-8 | facing circular distance | rules/teleport.ts:82 | 0x447705-0x4477a8 | verified | |
-| T11-9 | self-teleport: snapshot, steps 0, stop processing, no roll | state/reduce.ts | 0x4477bb-0x4477dc | fixed df14113 | |
+| T11-9 | self-teleport: snapshot, steps 0, stop processing, no roll | state/reduce.ts:5406-5413 | 0x4477bb-0x4477dc | fixed df14113 | 2026-09-25 复核：`0x004477c3 call 0x44808a` 快照已在（`snapshotForTimeMachine`）；联机镜像 teleport-mp.test.ts:151 钉住 `snapshots[0]` |
 | T11-10 | NPC source | rules/teleport.ts:101-115 (teleportActorTo), state/reduce.ts:5163-5168 | 0x447857-0x4478b5 | fixed 5256fa6 | 寫 +4 所在格 / +6 來路 / +9 朝向 / 坐標 |
 | T11-11 | ground object source | rules/teleport.ts:122-130 (teleportObjectTo), state/reduce.ts:5169-5172 | 0x4478cb-0x4479ae | fixed 5256fa6 | 寫 `[物件+2]` = 新格、新格置物件位（朝向那格不復刻） |
 | T11-12 | player target node must be free | state/reduce.ts:5162 (placementBlockedAt), rules/teleport.ts 目標檢查 | 0x409bc0 | fixed 5256fa6 | 只對真人（拾取子類）；電腦走 `0x00447661 call 0x420eee(0)` 用策略給的格 |
@@ -349,7 +383,7 @@ TX-1 / T14、T11-1 / T11-3 / T11-10 / T11-11 / T11-12、I-25 都已由 `471ef9e`
 | T11-15 | 第二段參數按來源：地塊 `0x2090802` / 設施 `0x2090804` / 其餘 `0x2090001` | client/picking.ts:678-683 | 0x4474f5, 0x447598, 0x447653, 0x4478df | fixed 5256fa6 | 子類 8 = 目標須無主 0 級（`0x0044658c`） |
 | T12-1 | refuse when (traffic&3)==3 | rules/tool-effects.ts:105 | 0x4479e2 | fixed df14113 | (traffic&3)==3 |
 | T12-2 | refund moto/car | rules/tool-effects.ts:111 | 0x4479f1-0x447a34 | verified | |
-| T12-3 | save previous traffic/dice +0x64/+0x65 | — | 0x447a43-0x447a55 | fixed df14113 | engineSavedTraffic/Dice |
+| T12-3 | save previous traffic/dice +0x64/+0x65（在退车 inc 之后、写 0x1f 之前） | rules/tool-effects.ts:122-137 useVehicleTool, state/reduce.ts:1336-1352 tickEngineVehicle | 0x447a43-0x447a55, 0x41ccd0-0x41cd32 | fixed df14113 (+8dbf719 端到端用例) | 2026-09-25 复核：写侧与到期侧都在；补 `reduce(useTool 12)` → 第 8 次日结 → 骑回機車 的整条用例 |
 | T12-4 | traffic 0x1f, 1 die, direct dec | rules/tool-effects.ts:55 | 0x447a5b, 0x447ac2 | verified | |
 | T12-5 | daily −4; (t&0xfc)==0 → restore saved vehicle if owned else walk | — | 0x41cca3-0x41cd83 | fixed (loop L44) | |
 | T14 | 下車（道具表第 14 項 `0x447c00`）：真人道具欄末格徽章 ⇒ 載具退回道具欄、步行一顆骰子 | rules/tool-effects.ts:432-450, state/reduce.ts:5197-5207, client/main.ts:11348-11352 | 0x447c00, 0x00447e24, 0x00447dab | fixed d0b8fdd | 子規則見 T14-1..T14-4 |
@@ -392,7 +426,7 @@ TX-1 / T14、T11-1 / T11-3 / T11-10 / T11-11 / T11-12、I-25 都已由 `471ef9e`
 | O-34 | distant pick: either axis >= 300 | rules/object-landing.ts:1026 | 0x40ab08..0x40ab3b | approx | 64-try cap documented (Q-OBJ-2) |
 | O-35 | initial placement types 1,3,5,7,9,11,13,14 | rules/new-game.ts:434 | 0x407d6a..0x407db9 | verified | |
 | O-36 | monthly gift/treasure relocation | state/reduce.ts advanceGameDay | 0x41d0a3..0x41d0f6 | fixed (loop, monthly-objects.ts) | |
-| O-37 | multiple objects on node → highest slot | state/reduce.ts objectHandleAt | 0x41b4b4 / 0x40e13c | approx | documented |
+| O-37 | 同格多件：节点反向索引 = 各次放置的**按位或**（`or [node+0x24],(槽+1)<<16`），落地按 `objects[字节-1].type` 分派 | state/reduce.ts:3555-3600 objectHandleAt, rules/special-actors.ts:445-463 nodeObjectIndex | 0x40e13c（写）、0x41b4b4（读）、0x41b4ca-0x41b4db（查种类）、0x41b529（remove_object） | approx | c8fe7c7 把「最大槽号」改成逐位 OR（15\|17=31 ⇒ 槽 30 地雷）；残余：那一字节是**存下来**的，release/attach 整字节清零（0x40e243 / 0x40ebc7）⇒ 「同格两件先收走一件」仍近似 |
 | O-44 | confinement counters 0x80 release / dec / &0x3f | rules/blocking.ts:74 | 0x41c88f..0x41c955 | verified | |
 | O-45 | release day still counts as confined for +0x36/+0x37/+0x39 gate | rules/blocking.ts | 0x41c89b/0x41c902/0x41c936, 0x41c95e/0x41caf7 | fixed (loop L38) | |
 | O-46 | tortoise +0x39 skipped while confined | rules/blocking.ts:261 | 0x41c965 → 0x41ca8f; 0x41cafe → 0x41cb6d | fixed (loop L37) | |
