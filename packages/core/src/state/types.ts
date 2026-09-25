@@ -871,6 +871,10 @@ export type NoticeKey =
   | 'card.scapegoatOn'
   /** ★ 第十四份：电脑嫁禍之后「嫁禍給%s！」（`0x004449df`，1500 ms）—— `args[0]` = 替死鬼名 */
   | 'card.scapegoatTo'
+  /** 免罪卡亮牌「%s\n\n免罪卡生效！」（`0x00444be8 push 0x46539d` → `call 0x441f73(0x15)`，带 `card`）—— `args[0]` = 持卡人 */
+  | 'card.absolved'
+  /** 復仇卡亮牌「%s\n\n復仇卡生效！」（`0x004446c7 push 0x46532c` → `call 0x441f73(0x12)`，带 `card`）—— `args[0]` = 持卡人 */
+  | 'card.revenge'
   // ── ★ 2026-09-23 框模板反查补齐（格式串见 `@rich4/data` 的 `NOTICE_BOX`；时长缺席 = 1500）──
   /** 惡人：小偷偷點券 `[受害者, 點數]`（0x0041c255，1000 ms）*/
   | 'npc.stealPoints'

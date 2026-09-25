@@ -198,6 +198,18 @@ describe('★ 出牌入口', () => {
     expect(after.players[1]!.blocking.sleepWalking).toBe(0);
     expect(after.players[0]!.blocking.sleepWalking).toBe(4);
     expect(after.rngState).toBe(s.rngState);
+    // 电脑支：亮牌「%s\n\n嫁禍卡生效！」→「嫁禍給%s！」（0x00444982 / 0x004449df）
+    expect(after.notices.map((n) => n.key)).toEqual(['card.scapegoatOn', 'card.scapegoatTo']);
+  });
+
+  it('★ 陷害卡打持免罪卡 / 復仇卡的人：亮牌「免罪卡生效！」/「復仇卡生效！」（0x00444be8 / 0x004446c7）', () => {
+    const { state, topo } = scene();
+    const s = { ...give(state, 0, 17), phase: 'awaitingRoll' as const };
+    const withCard = (c: number): typeof s => ({ ...s, players: s.players.map((p, i) => (i === 1 ? { ...p, cards: [c] } : p)) });
+    const a = reduce(withCard(21), { type: 'useCard', cardId: 17, target: { kind: 'player', index: 1 } }, topo);
+    expect(a.notices.some((n) => n.key === 'card.absolved' && n.card === 21)).toBe(true);
+    const r = reduce(withCard(18), { type: 'useCard', cardId: 17, target: { kind: 'player', index: 1 } }, topo);
+    expect(r.notices.some((n) => n.key === 'card.revenge' && n.card === 18)).toBe(true);
   });
 
   it('★★ 真人持嫁禍卡：挂起问他（0x004447ae 真人支，候选含出牌者）；答「嫁给出牌者」⇒ 出牌者 4 天、19 扣；答不 ⇒ 他自己 5 天、19 留着', () => {

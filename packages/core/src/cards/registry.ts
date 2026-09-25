@@ -149,6 +149,11 @@ export interface UseCardResult {
    */
   confined?: { player: number; days: number }[];
   /**
+   * 这一手里**被动卡被触发**的次序（亮牌 / 訊息框要按它弹）：免罪 21、嫁禍 19（`to` = 替死鬼）、
+   * 免費 20、復仇 18。`holder` = 持卡人。
+   */
+  passiveEvents?: { kind: 'absolved' | 'scapegoat' | 'free' | 'revenge'; holder: number; to?: number }[];
+  /**
    * 本次要送回物件表的物件 handle（下标 + 1）。
    *
    * ★ 卡片只改玩家结构里的 `godInfo`/`f64` 两个引用；**物件本身**
@@ -452,6 +457,7 @@ export function useCard(
   let defended = false;
   let taxed: { victim: number; amount: number } | undefined;
   let confined: { player: number; days: number }[] | undefined;
+  const passiveEvents: NonNullable<UseCardResult['passiveEvents']> = [];
   let releasedObjects: number[] = [];
   // ★ 拍賣那一条是**开拍请求**（AuctionRequest）：座位/心理价位等由 reduce 补齐
   let followUp: PendingInteraction | AuctionRequest | null = null;
@@ -615,6 +621,12 @@ export function useCard(
       // ★ 夢遊卡的敌意（`150 × priceIndex`，`@source 0x004442ea`）——
       //   位置在防御卡判定**之前**，故被免罪卡挡下时**照样**记。
       hostilityDeltas = r.hostilityDeltas;
+      if (target.kind === 'player' && r.outcome !== null) {
+        const o = r.outcome;
+        if (o.kind === 'applied' && o.absolved === true) passiveEvents.push({ kind: 'absolved', holder: target.index });
+        else if (o.kind === 'applied' && o.victim !== target.index) passiveEvents.push({ kind: 'scapegoat', holder: target.index, to: o.victim });
+        else if (o.kind === 'reflected') passiveEvents.push({ kind: 'revenge', holder: target.index });
+      }
       // @source 復仇卡(18) 把效果反弹给出牌者（applySleepwalkCard 内部处理），
       //   反弹不算「被防御性被动卡挡下」，defended 保持 false
       break;
@@ -654,6 +666,10 @@ export function useCard(
       players = r.players;
       defended = r.defended;
       if (!r.defended && r.victim !== undefined && r.victim !== cur) taxed = { victim: r.victim, amount: r.tax };
+      if (target.kind === 'player') {
+        if (r.defended) passiveEvents.push({ kind: 'free', holder: target.index });
+        else if (r.victim !== undefined && r.victim !== target.index) passiveEvents.push({ kind: 'scapegoat', holder: target.index, to: r.victim });
+      }
       hostilityDeltas = [{ from: targetPlayer, to: cur, delta: r.hostilityDelta }];
       break;
     }
@@ -686,6 +702,13 @@ export function useCard(
       prisonOccupancy = r.prisonOccupancy;
       hospitalOccupancy = r.hospitalOccupancy;
       defended = r.outcome?.kind === 'absolved';
+      if (target.kind === 'player' && r.outcome !== null) {
+        if (r.outcome.kind === 'absolved') passiveEvents.push({ kind: 'absolved', holder: target.index });
+        else {
+          if (r.outcome.redirected) passiveEvents.push({ kind: 'scapegoat', holder: target.index, to: r.outcome.victim });
+          if (r.outcome.revenged === true) passiveEvents.push({ kind: 'revenge', holder: target.index });
+        }
+      }
       if (r.outcome?.kind === 'imprisoned') {
         confined = [{ player: r.outcome.victim, days: r.outcome.victim === cur ? 4 : 5 }];
         if (r.outcome.revenged === true) confined.push({ player: cur, days: 5 });
@@ -1099,5 +1122,5 @@ export function useCard(
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
   // ★ 走到这里 = 原版返回非 0（成功）：效果已落地，卡已被扣
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset, ...(taxed === undefined ? {} : { taxed }), ...(confined === undefined ? {} : { confined }) };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset, ...(taxed === undefined ? {} : { taxed }), ...(confined === undefined ? {} : { confined }), ...(passiveEvents.length === 0 ? {} : { passiveEvents }) };
 }

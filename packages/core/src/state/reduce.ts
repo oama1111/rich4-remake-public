@@ -5601,6 +5601,28 @@ function playCard(
   // ★★ 陷害卡入狱的保險理赔（`send_to_prison` 尾部 `0x0043d749 call 0x44ba63`，首次与加刑都赔）——
   //   先前卡片路径从不赔（受害者与復仇卡反弹的出牌者都一样）
   for (const c of r.confined ?? []) next = insureConfinement(next, topo, c.player, c.days);
+  // ★★ 被动卡在卡片路径里被触发时的亮牌 / 訊息框（按触发次序；真人持卡人那一问前的亮牌挂起时已弹过）：
+  //   免罪 `0x00444be8`（「%s\n\n免罪卡生效！」）、復仇 `0x004446c7`（「%s\n\n復仇卡生效！」）、
+  //   嫁禍电脑支 `0x00444982` 亮牌 → `0x004449df`「嫁禍給%s！」、免費卡电脑支 `0x00444b0e` 亮牌「使用%s」
+  for (const ev of r.passiveEvents ?? []) {
+    const who = playerName(state, ev.holder);
+    if (ev.kind === 'absolved') {
+      next = appendFreshNotice(next, { key: 'card.absolved', args: [who], card: PASSIVE_CARDS.ABSOLUTION });
+    } else if (ev.kind === 'revenge') {
+      next = appendFreshNotice(next, { key: 'card.revenge', args: [who], card: PASSIVE_CARDS.REVENGE });
+    } else if (!plainHuman(ev.holder) || answers?.scapegoat === null || (ev.kind === 'free' && answers?.free === null)) {
+      if (ev.kind === 'scapegoat') {
+        next = appendFreshNotice(next, { key: 'card.scapegoatOn', args: [who], card: PASSIVE_CARDS.SCAPEGOAT });
+        next = appendFreshNotice(next, { key: 'card.scapegoatTo', args: [playerName(state, ev.to ?? -1)] });
+      } else {
+        next = appendFreshNotice(next, {
+          key: 'card.use',
+          args: [CARDS.find((d) => d.id === PASSIVE_CARDS.FREE)?.name ?? ''],
+          card: PASSIVE_CARDS.FREE,
+        });
+      }
+    }
+  }
   // ★ 2026-09-23（框模板反查）：卡片函数**里面**弹的那几扇訊息框（1500 ms）
   const cardNotice = cardEffectNotice(state, cardId, target, r.taxed);
   if (cardNotice !== null) next = appendFreshNotice(next, cardNotice);

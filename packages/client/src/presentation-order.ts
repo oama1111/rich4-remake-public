@@ -154,6 +154,9 @@ export const NOTICE_TIER = {
   'card.use': 'stage',
   'card.scapegoatOn': 'stage',
   'card.scapegoatTo': 'stage',
+  // 卡片路径的免罪 / 復仇亮牌：出牌台词（卡片函数最前）→ 亮牌（`0x00444bff` / `0x004446de call 0x441f73`）
+  'card.absolved': 'stage',
+  'card.revenge': 'stage',
   'npc.stealPoints': 'stage',
   'npc.stealCard': 'stage',
   'npc.robBank': 'stage',

@@ -485,6 +485,10 @@ export const PASSIVE_CARD_TEXT = {
   scapegoatPick: t('請選擇嫁禍對象...', 0x46535d),
   /** 电脑嫁禍之后那一扇：`%s` = 替死鬼名 */
   scapegoatTo: t('嫁禍給%s！', 0x46536f),
+  /** 免罪卡亮牌（夢遊 / 陷害卡命中持卡人，`0x444bb2` 里 `0x00444be8 push 0x46539d`）：`%s` = 持卡人 */
+  absolved: t('%s\n\n免罪卡生效！', 0x46539d),
+  /** 復仇卡亮牌（`0x444691` 里 `0x004446c7 push 0x46532c`）：`%s` = 持卡人 */
+  revenge: t('%s\n\n復仇卡生效！', 0x46532c),
 } as const;
 
 /**
