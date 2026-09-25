@@ -3,6 +3,11 @@
  * 回合循环的出处审计（2026-09-24，`docs/audit/provenance-loop.md`）—— 每条修正一组断言。
  */
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { parseSave } from '../loaders/save.ts';
+import { parseMap } from '../loaders/map.ts';
+import { importOriginalSave } from '../loaders/savegame.ts';
+import { ORIGINAL_STATE_BLOCK_SIZE, writeStateBlock } from '../loaders/save-writer.ts';
 import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce, type MapTopology } from './reduce.ts';
 import { RELEASE_PENDING, tickTurnCounters } from '../rules/blocking.ts';
@@ -11,7 +16,8 @@ import { relocateMonthlyObjects } from '../rules/monthly-objects.ts';
 import { OBJECT_TYPE_GIFT, OBJECT_TYPE_TREASURE } from '../rules/object-landing.ts';
 import { TOOL_SLOTS_PER_PLAYER, toolCount } from '../rules/tools.ts';
 import { TRAFFIC_ENGINEERING, TRAFFIC_MOTORCYCLE, TRAFFIC_WALK } from '../rules/tool-effects.ts';
-import type { GameState, Player } from './types.ts';
+import { WHO_PLAYS_HUMAN, WHO_PLAYS_RETURN_TO_BOARD, type GameState, type Player } from './types.ts';
+import { CONFINEMENT_GATE_TYPE, sendToConfinement } from '../rules/confinement.ts';
 
 const ring: MapTopology = {
   nodes: [1, 2, 3, 4, 5, 6].map((id) =>
@@ -139,5 +145,72 @@ describe('★ 工程車到期 @source 0x0041cca3..0x0041cd89', () => {
     expect(r.players[0]!.trafficMethod).toBe(TRAFFIC_MOTORCYCLE);
     expect(r.players[0]!.ndices).toBe(2);
     expect(toolCount(r.tools, 0, 5)).toBe(0);
+  });
+});
+
+describe('★ 走回棋盘：清四项计数要走够 32 像素（loop F4）@source 0x0040c276..0x0040c3cf', () => {
+  const walkBack = (xpos: number): GameState => {
+    const s = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 2, xpos, ypos: 0, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_RETURN_TO_BOARD, blocking: { ...NO_BLOCK, inHotel: RELEASE_PENDING } })],
+      phase: 'turnStart',
+    });
+    return reduce(s, { type: 'startTurn' }, ring);
+  };
+  it('贴图位离格子 ≥ 32（dx²+dy² ≥ 1024）⇒ 清；< 32 ⇒ 不清（仍 0x80）', () => {
+    // 2 号格在 (800, 0)
+    expect(walkBack(800 - 32).players[0]!.blocking.inHotel).toBe(0);
+    expect(walkBack(800 - 31).players[0]!.blocking.inHotel).toBe(RELEASE_PENDING);
+    expect(walkBack(800).players[0]!.blocking.inHotel).toBe(RELEASE_PENDING);
+    // 两种都落定到格子坐标
+    expect(walkBack(800 - 31).players[0]!.xpos).toBe(800);
+  });
+});
+
+describe('★ 住店前的朝向（+0x1b）在走回棋盘收尾还原（loop F2）@source 0x00418f2e..0x00418f3c', () => {
+  const ending = (savedFacing: number | undefined): GameState => {
+    const s = makeGameState({
+      players: [0, 1].map((i) =>
+        makePlayer({ index: i, nodeId: 2, direction: 5, ...(i === 0 ? { whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_RETURN_TO_BOARD, ...(savedFacing === undefined ? {} : { savedFacing }) } : {}) }),
+      ),
+      phase: 'turnEnd',
+      currentPlayer: 0,
+    });
+    return reduce(s, { type: 'endTurn' }, ring);
+  };
+  it('存的是 3 ⇒ 还原成 3；哨兵 0xf / 缺省 ⇒ 不动；游标不推进', () => {
+    const r = ending(3);
+    expect(r.players[0]!.direction).toBe(3);
+    expect(r.currentPlayer).toBe(0);
+    expect(r.players[0]!.whoPlays & WHO_PLAYS_RETURN_TO_BOARD).toBe(0);
+    expect(ending(0xf).players[0]!.direction).toBe(5);
+    expect(ending(undefined).players[0]!.direction).toBe(5);
+  });
+  it('关押写哨兵 0xf（`0x43d637`）', () => {
+    const gate = makeNode({ id: 1, type: CONFINEMENT_GATE_TYPE.prison });
+    const out = sendToConfinement([makePlayer({ index: 0, nodeId: 3, savedFacing: 4 })], [], [gate], new Array(8).fill(0), 'prison', 0, 3);
+    expect(out.players[0]!.savedFacing).toBe(0xf);
+  });
+});
+
+describe('★ 读原版存档：工程車暂存（+0x64/+0x65）与朝向后备（+0x1b）', () => {
+  const ROOT = process.env.RICH4_WORKSPACE ?? '';
+  const SAVE = `${ROOT}/Rich4/Save0.dat`;
+  const MAP = `${ROOT}/extracted/map/0001.bin`;
+  const t = existsSync(SAVE) && existsSync(MAP) ? it : it.skip;
+  t('开着工程車的人：engineSaved* = +0x64/+0x65；写回逐字节一致', () => {
+    const bytes = new Uint8Array(readFileSync(SAVE));
+    const at = 0x10 + 1 * 0x68; // 玩家 1
+    bytes[at + 0x11] = 0x1b; // 工程車还剩 6 天
+    bytes[at + 0x64] = 2; // 開車前是汽車
+    bytes[at + 0x65] = 3;
+    bytes[at + 0x1b] = 6;
+    const save = parseSave(bytes);
+    const { state } = importOriginalSave(save, parseMap(new Uint8Array(readFileSync(MAP))));
+    const p = state.players[1]!;
+    expect(p.engineSavedTraffic).toBe(2);
+    expect(p.engineSavedDice).toBe(3);
+    expect(p.savedFacing).toBe(6);
+    const out = writeStateBlock({ state, carry: bytes.subarray(0, ORIGINAL_STATE_BLOCK_SIZE), mapDataSize: save.mapData.length });
+    expect([out[at + 0x11], out[at + 0x64], out[at + 0x65], out[at + 0x1b]]).toEqual([0x1b, 2, 3, 6]);
   });
 });

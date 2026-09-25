@@ -186,6 +186,13 @@ function writePlayerBlock(out: Uint8Array, state: GameState, off: number): void 
     // ★ `+0x64`（落地时抄进 `who_plays` 的那一份，见 `Player.landingWhoPlays`）——
     //   第一輪里存的档，还没上盘的人全靠它；没有这一格（旧状态）就保持 carry
     if (p.landingWhoPlays !== undefined) out[o + 0x64] = p.landingWhoPlays & 0xff;
+    // ★ 审计 2026-09-25（loop）：开着工程車时 `+0x64/+0x65` 是開車前的交通方式 / 骰子数（`0x00447a49` / `0x00447a55`）
+    if ((p.trafficMethod & 3) === 3 && p.engineSavedTraffic !== undefined) {
+      out[o + 0x64] = p.engineSavedTraffic & 0xff;
+      out[o + 0x65] = (p.engineSavedDice ?? 0) & 0xff;
+    }
+    // `+0x1b`：朝向后备（`Player.savedFacing`）；旧状态没有这一格就 carry
+    if (p.savedFacing !== undefined) out[o + 0x1b] = p.savedFacing & 0xff;
     u32(out, o + 0x1c, p.cash);
     u32(out, o + 0x20, p.moneyInBank);
     u32(out, o + 0x24, p.loan);
@@ -238,11 +245,11 @@ function writePlayerBlock(out: Uint8Array, state: GameState, off: number): void 
  *
  * | 块内偏移 | `parsePlayer` 的名字 | 实测值（Save0 玩家0 / SAVE1 玩家0）| 为什么没写 |
  * |---|---|---|---|
- * | `+0x1b` | `f27` | 非 0（仅 Save0）| **一次移动内的瞬时量**（移动前的朝向备份），原子移动的引擎里没有对应字段 |
+ * | ~~`+0x1b`~~ | `f27` | 非 0（仅 Save0）| **已写**（审计 2026-09-25）：= `Player.savedFacing`（住店前朝向 / 关押哨兵 0xf，`0x00418f2e` 读）|
  * | `+0x4a` (u16) | `f74` | 非 0（仅 Save0）| 同上（本次移动的目标节点，唯一读者是行走函数 `0x40c05c`）|
  * | `+0x43` | `f67` | 恒 0 | **全 exe 无读无写的死字节**（`0x496bab` 的读写点都为空）|
  * | ~~`+0x64`~~ | `f100` | — | **已写**（2026-09-24）：= `Player.landingWhoPlays`（开局写 1/2 `0x004072f9`、落地时抄进 `+0x15` `0x00418d07`、破产 memset 清 0 ⇒ Save0 的 `0,1,0,0` 正是三人破产后剩一名真人，不再矛盾）；旧状态没有这一格时仍 carry |
- * | `+0x65` | `f101` | 恒 0 | 只有 `0x41c84f` 读、无写者 ⇒ **未决** |
+ * | `+0x65` | `f101` | 恒 0 | **已解**（审计 2026-09-25）：工程車開車前的骰子数，`0x00447a55` 写、`0x0041cd26` 读 ⇒ `Player.engineSavedDice`（开着工程車才写）|
  *
  * ★★ **`+0x00` 与 `+0x04` 已解决，且不需要新增状态字段**（2026-09-17 订正）：
  *   先前这张表把它们记成「`GameState.Player` 里没有名字/颜色字段」，那是**看错了方向**。

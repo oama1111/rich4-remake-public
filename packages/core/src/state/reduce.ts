@@ -780,6 +780,12 @@ function withPlayer(s: GameState, index: number, fn: (p: Player) => void): GameS
  * 它就是「这条支线此刻不通」的标记。台湾图（地图 0）两个岔路各封掉一条，
  * 于是那两处实际只剩一条路可走。
  */
+/**
+ * 「走回棋盘」清四项计数所需的最短距离（平方）：帧数 `trunc(d × 0.125) >= 4` ⇔ `dx²+dy² >= 32²`。
+ * @source `0x0040c276 fmul [0x4631dc]`（f32 0.125）/ `0x0040c318 sar 1` / `0x0040c3ba cmp 剩余, 半程`
+ */
+export const WALK_BACK_CLEAR_MIN_SQ = 32 * 32;
+
 export function linkBlockedMask(slot: number): number {
   return 0x40000000 >>> slot;
 }
@@ -1580,15 +1586,35 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         //   收尾 `0x418ebd` 消费（`00418f87 and byte [player+0x15], 0xf`），
         //   并且**不推进游标**（`00418f8e jmp 0x419058`）。见 `endTurn` 开头那一支。
         const cleared = withPlayer(state, state.currentPlayer, (p) => {
-          p.blocking = {
-            ...p.blocking,
-            inHotel: 0,
-            disappearing: 0,
-            inPrison: 0,
-            inHospital: 0,
-          };
           const gate = topo.nodes[p.nodeId - 1];
+          // ★★ 审计 2026-09-25（loop F4）：四项计数的清账**有条件** —— 走路例程 0x10 支按距离定帧数，
+          //   过了半程才清：
+          //   ```asm
+          //   0040c249  fild [dx²+dy²] / call 0x4582bc(sqrt) / fstp f32 d     ; d = 贴图位 → 格子
+          //   0040c276  fld d / fmul f32 [0x4631dc](=0.125)                    ; 0x30 那一支：步长 8 像素
+          //   0040c304  call 0x457dbc(截断) / fistp [0x4749dc]                 ; 帧数 n = trunc(d / 8)
+          //   0040c318  sar eax,1 / mov [0x48baf4], eax                         ; 半程 = n >> 1（n == 0 ⇒ 当 1）
+          //   0040c338  dec [0x4749dc] / jle 到格                               ; 每帧先减
+          //   0040c3ba  cmp 剩余, 半程 / jge 跳过 → 0040c3cf mov dword [p+0x32], 0   ; 剩余 < 半程才清
+          //   ```
+          //   剩余依次是 n−1..1，要有一个 < n>>1 ⇔ n ≥ 4 ⇔ d ≥ 32 ⇔ dx²+dy² ≥ 1024（d 是 f32，
+          //   √1023 < 32）。八张图的綠島 / 醫院大樓 / 各設施到格子都远大于此（最小 dx²+dy² = 4356），
+          //   ⇒ 实战恒清；只在贴图位离格子太近（如已经站在格上又被放一次）时不清 —— 那时计数仍 0x80，
+          //   下一回合交接再「释放」一次（原版就是这样）。
+          const dx = gate === undefined ? 0 : gate.x - p.xpos;
+          const dy = gate === undefined ? 0 : gate.y - p.ypos;
+          if (dx * dx + dy * dy >= WALK_BACK_CLEAR_MIN_SQ) {
+            p.blocking = {
+              ...p.blocking,
+              inHotel: 0,
+              disappearing: 0,
+              inPrison: 0,
+              inHospital: 0,
+            };
+          }
           if (gate !== undefined) {
+            // ★ 住宿释放（`0x40d6be` 同一支）：朝向 = directionOf(格子 − 贴图位)；贴图位此刻 = 旅館設施坐标
+            const hotelFacing = gate.ref.kind === 'landscape' ? null : directionOf(dx, dy);
             p.xpos = gate.x;
             p.ypos = gate.y;
             // ★★ 朝向也要重算（`docs/escalations.md` E-13）：原版释放那一支
@@ -1622,6 +1648,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
             //   ⇒ `directionOf(**關押格 − 景觀位**)`，`0x40d717` 寫進 `player+0x10`。
             //   先前兩個減數寫反 ⇒ 棋子朝景觀位（背對棋盤）倒退走出去。
             if (land !== undefined) p.direction = directionOf(gate.x - land.x, gate.y - land.y);
+            else if (hotelFacing !== null && (dx !== 0 || dy !== 0)) p.direction = hotelFacing;
           }
         });
         // ★★ 第十五份試玩回報（「从监狱里出来那一步为什么没有踩到天使上身？」）：
@@ -2886,6 +2913,11 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   不清位），回合末 `0x418f07` 看不到它 ⇒ 照常换人，即下面第 92 条那条路。
       if (departing !== undefined && (departing.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0) {
         const again = withPlayer(state, state.currentPlayer, (p) => {
+          // ★ 审计 2026-09-25（loop F2）：收尾先把朝向还原成住店前存下的那个（`+0x1b`）
+          //   @source `0x00418f2e mov bl,[p+0x1b] / and bl,0xf / cmp bl,0xf / je` → `0x00418f3c mov [p+0x10], bl`
+          //   关押写的是哨兵 0xf（`0x43d637` / `0x43ece3`）⇒ 不还原；缺省（旧状态）同样视为 0xf。
+          const saved = (p.savedFacing ?? 0xf) & 0xf;
+          if (saved !== 0xf) p.direction = saved;
           p.whoPlays &= ~(WHO_PLAYS_RETURN_TO_BOARD | WHO_PLAYS_RELOCATED);
         });
         return {
@@ -8125,6 +8157,14 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
       //   本引擎在这一行置位、在 `endTurn` 给离场者清掉（原版清在**当班者**的
       //   回合边界上 —— `0x418ebd` 的 `and byte [player+0x15], 0xf`）。
       p.whoPlays |= WHO_PLAYS_RELOCATED;
+      // ★ 审计 2026-09-25（loop F2）：住店前的朝向存进 `+0x1b`，走回棋盘那一回合收尾还原（`0x00418f2e`）。
+      //   @source 支 A（住店的就是当班者且站在旅館格上）`0x0040d615 mov cl,[p+0x10] / 0x0040d61b mov [p+0x1b], cl`；
+      //   支 B（别人：嫁禍 / 死神换来的付款人）`0x0040d688 mov al,[当班者+0x10] / 0x0040d68e mov [p+0x1b], al`
+      //   —— 存的是**当班者**的朝向。
+      const mover = s.players[s.currentPlayer];
+      p.savedFacing = who === s.currentPlayer && mover !== undefined && p.nodeId === mover.nodeId
+        ? p.direction
+        : (mover?.direction ?? p.direction);
       // ⚠️ `fac` 是 `effectiveFacility()` 合成的记录，**自带 x/y**（来自地图模板）。
       //   别去 `topo.facilities[fac.id]` 取 —— 那张表是 0 基数组、`id` 是 1 基，
       //   按下标取会取到**下一家設施**（本行第一版就写错了）。

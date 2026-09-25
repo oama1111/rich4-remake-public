@@ -335,6 +335,11 @@ export interface Player {
   engineSavedTraffic?: number;
   /** 见 `engineSavedTraffic`（`+0x65`） */
   engineSavedDice?: number;
+  /**
+   * `+0x1b`：挪去住店 / 关押之前的朝向，「走回棋盘」那一回合收尾时还原（`0x00418f2e`，低 4 位 == 0xf 不还原）。
+   * 住店存朝向（`0x0040d61b` / `0x0040d68e`），关押写哨兵 0xf（`0x0043d637` / `0x0043ece3`）。缺省 = 0xf。
+   */
+  savedFacing?: number;
 }
 
 // ============================================================
