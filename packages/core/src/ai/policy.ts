@@ -50,7 +50,14 @@ function initialFundOf(state: { initialFund?: number }): number {
 }
 import { CARDS, TOOLS } from '@rich4/data';
 import { aiCanUseCards, aiCanUseTools, personalityAllows } from './personality.ts';
-import { aiCardChoice, aiRoll, cardsToConsider, type AiCardChoice, type CardAiView } from './card-policy.ts';
+import {
+  aiCardChoice,
+  aiRoll,
+  cardLoopEsiAfterFill,
+  cardsToConsider,
+  type AiCardChoice,
+  type CardAiView,
+} from './card-policy.ts';
 import { aiToolChoice, toolsToConsider, TOOL_RING_SALT, type AiToolChoice } from './tool-policy.ts';
 import {
   allEffectiveFacilities,
@@ -261,9 +268,12 @@ export function decideCard(ctx: AiContext): Action | null {
     return personalityAllows(f7, me.personality, gateRoll(state, cardId));
   };
 
-  const view: CardAiView = { state, topo, meIndex: state.currentPlayer, me, lands, facilities };
   // @source 0x00441d4a：手牌 > 8 时 `rand() % 张数` 当起点
-  const hand = cardsToConsider(me.cards, aiRoll(state, 0x441d4a, me.cards.length));
+  const roll = aiRoll(state, 0x441d4a, me.cards.length);
+  const hand = cardsToConsider(me.cards, roll);
+  // 填表之后 `esi` 的残值 —— 漲價卡的設施一支会读到它（见 card-policy.ts 的 `zhangjia`）
+  const cardLoopEsi = cardLoopEsiAfterFill(me.cards.length, me.cards.length > 8 ? roll % me.cards.length : 0);
+  const view: CardAiView = { state, topo, meIndex: state.currentPlayer, me, lands, facilities, cardLoopEsi };
   for (const cardId of hand) {
     if (!gated(cardId)) continue;
     const choice = aiCardChoice(cardId, view);
