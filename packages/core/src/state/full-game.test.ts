@@ -12,7 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
-import { newGame } from '../rules/new-game.ts';
+import { initialCardAmounts, newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
 import { CONFINEMENT_GATE_TYPE } from '../rules/confinement.ts';
 import { WHO_PLAYS_RETURN_TO_BOARD, isAlive, isInGame } from './types.ts';
@@ -177,6 +177,9 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
     //   任何一条**移动了玩家却忘了同步坐标**的新路径都会在这里当场现形。
     assertPositionInvariant(state, nodeIndex, `step ${steps}`, spritePositionsFor());
     invariantChecks += 4;
+    // ★ 牌堆守恒：原版手牌只经 `0x4412e4` / `0x441343` / `0x441f21` 三个口子进出，每个口子都把
+    //   同一张卡记进牌堆 `0x499197` ⇒ 牌堆 + 四人手牌 ≡ 開局 initAmount（见 `conserveCardPool`）。
+    assertCardConservation(state, `step ${steps}`);
     const a = decideAction({ state, map });
     if (a === null) throw new Error(`无人可动：phase=${state.phase} 当前玩家=${state.currentPlayer}`);
     const next = reduce(state, a, topo);
@@ -358,3 +361,19 @@ describe('★ M2 验收：完整一局', () => {
     expect(moved).toBeGreaterThan(0);
   });
 });
+
+const INITIAL_CARD_AMOUNTS = initialCardAmounts();
+
+/** 牌堆 + 全体手牌 = 開局 initAmount（逐卡号），见 `rules/inventory.ts` 的 `conserveCardPool` */
+function assertCardConservation(state: GameState, where: string): void {
+  const held = new Array<number>(INITIAL_CARD_AMOUNTS.length).fill(0);
+  for (const p of state.players) for (const id of p.cards) held[id - 1] = (held[id - 1] ?? 0) + 1;
+  for (let i = 0; i < INITIAL_CARD_AMOUNTS.length; i++) {
+    const total = (state.cardAmount[i] ?? 0) + (held[i] ?? 0);
+    if (total !== INITIAL_CARD_AMOUNTS[i]) {
+      expect(total, `${where}: 卡 ${i + 1} 牌堆 ${state.cardAmount[i]} + 手牌 ${held[i]} ≠ 開局 ${INITIAL_CARD_AMOUNTS[i]}`).toBe(
+        INITIAL_CARD_AMOUNTS[i],
+      );
+    }
+  }
+}

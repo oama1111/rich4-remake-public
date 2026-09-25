@@ -206,6 +206,45 @@ describe('地块类卡片', () => {
     expect(r.lands[0]!.owner).toBe(1); // owner = currentPlayer + 1
   });
 
+  it('★★ 购地卡站在**設施**上：同一套规矩强买那座設施（@source 0x004424be..0x004425ec）', () => {
+    const fac = makeFacility({ id: 1, owner: 2, level: 2, landPrice: 1001, housePrice: 300 });
+    const ctx = makeCtx({
+      lands: [],
+      facilities: [fac],
+      nodes: [makeNode({ id: 1, type: FACILITY_TYPE_MIN + 1 })],
+      players: [
+        makePlayer({ index: 0, cash: 10000, cards: [3], nodeId: 1 }),
+        makePlayer({ index: 1, cash: 500, moneyInBank: 0 }),
+      ],
+    });
+    const r = useCard(ctx, 3);
+    expect(r.ok).toBe(true);
+    // (地价 +0x22 + 房价 +0x24 × 等级) × 物价 = (1001 + 600) × 1
+    expect(r.players[0]!.cash).toBe(10000 - 1601);
+    expect(r.players[1]!.moneyInBank).toBe(1601);
+    expect(r.facilities[0]!.owner).toBe(1);
+    // 敌意 = double 低 32 位（地价 1001 不是 5 的倍数 ⇒ 非 0）
+    expect(r.hostilityDeltas).toHaveLength(1);
+    expect(r.hostilityDeltas[0]!.from).toBe(1);
+    // 现金不够 → notEnoughCash（弹「您的現金不足！」、卡不扣）
+    const poor = makeCtx({ ...ctx, players: [makePlayer({ index: 0, cash: 100, cards: [3], nodeId: 1 }), makePlayer({ index: 1 })] });
+    expect(useCard(poor, 3).error).toBe('notEnoughCash');
+    // 自己的 / 无主的 → noEffect
+    const own = makeCtx({ ...ctx, facilities: [{ ...fac, owner: 1 }] });
+    expect(useCard(own, 3).error).toBe('noEffect');
+    const none = makeCtx({ ...ctx, facilities: [{ ...fac, owner: 0 }] });
+    expect(useCard(none, 3).error).toBe('noEffect');
+  });
+
+  it('★ 目标玩家已出局（who_plays 0）→ 选择器不收（0x004462d9），卡不扣', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [2] }), makePlayer({ index: 1, whoPlays: 0 })],
+    });
+    const r = useCard(ctx, 2, { kind: 'player', index: 1 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('targetNotAlive');
+  });
+
   it('购地卡买自己的地 → 不生效、不扣卡', () => {
     const land = makeLand({ id: 1, owner: 1, level: 0, landPrice: 1000 });
     const ctx = makeCtx({
@@ -864,6 +903,7 @@ describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
       //   地主反而可以举牌把自己的地买回来。
       bidders: [1, 2],
       seller: 0,
+      fromCard: true,
     });
     // 敌意是 double 压栈的原版 bug：常规地价恒为 0
     expect(r.hostilityDeltas).toEqual([{ from: 2, to: 0, delta: 0 }]);
@@ -898,6 +938,7 @@ describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
       // ★★ 同上：排除用卡者（0 号），只剩 1 号 → 其实没人能出价（原版也会这么建表）
       bidders: [1],
       seller: 0,
+      fromCard: true,
       facility: true,
     });
   });

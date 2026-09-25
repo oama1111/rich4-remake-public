@@ -43,7 +43,7 @@ import { applyTurnCard, applyTurnCardToActor, applySwapHouseCard, applySwapHouse
 import { applyTaxCard } from './tax.ts';
 import { applyDispelCard } from './dispel.ts';
 import { applyFrameCard } from './frame.ts';
-import { applyBuyLandCard, buyLandCardHostility } from './buy-land.ts';
+import { applyBuyFacilityCard, applyBuyLandCard, buyLandCardHostility } from './buy-land.ts';
 import { applyRebuildCard, applyRebuildFacilityCard } from './rebuild.ts';
 import { applyRobCard, applyRobCardCard } from './rob.ts';
 import { applyMonsterCard, applyMonsterFacilityCard, MONSTER_HOSTILITY_PER_LEVEL } from './monster.ts';
@@ -85,7 +85,9 @@ export type UseCardError =
   | 'notStandingOnLand'
   | 'marketClosed'
   /** 購地卡：现金不够（原版弹「您的現金不足！」`0x004425fb`，卡不扣）*/
-  | 'notEnoughCash';
+  | 'notEnoughCash'
+  /** 目标玩家已出局（选择器 `0x004462d9` 不收）*/
+  | 'targetNotAlive';
 
 /** 卡片使用的结果 */
 export interface UseCardResult {
@@ -412,6 +414,12 @@ export function useCard(
     allowActor: cardId === 6 || cardId === 14 || cardId === 16 || cardId === 30,
   });
   if (targetError !== null) return fail(targetError);
+  // ★ 已出局（`who_plays` 整字节 == 0）的玩家点不中 —— 选择器的类别判据：
+  //   @source 0x004462c7 `call 0x40d293` / `cmp eax,4 / jge 收`（特殊棋子不查）/
+  //   `0x004462d9 cmp byte [玩家+0x15], 0 / je 不收`。先前联机里可以对破产者出均貧/查稅等卡。
+  if (target.kind === 'player' && (ctx.players[target.index]?.whoPlays ?? 0) === 0) {
+    return fail('targetNotAlive');
+  }
 
   const targetPlayer = target.kind === 'player' ? target.index : -1;
   const targetLand =
@@ -712,6 +720,7 @@ export function useCard(
           //   且落槌款 `pay_money(得标者, arg0, …)`（`0x43c855`）归他。
           bidders: eligibleBidders(players, land, cur),
           seller: cur,
+          fromCard: true,
         };
         break;
       }
@@ -733,12 +742,33 @@ export function useCard(
         bidders: eligibleBidders(players, fac, cur),
         seller: cur,
         facility: true,
+        fromCard: true,
       };
       break;
     }
     case 3: {
       const here = standingLand(ctx, cur);
-      if (here === null || here.land === null) return fail('notStandingOnLand');
+      if (here === null || here.land === null) {
+        // ★★ 設施支 @source 0x004424be..0x004425ec（先前整支缺失 ⇒ 站在設施上用卡恒失败）
+        const fac = standingFacility(ctx, cur);
+        if (fac === null) return fail('notStandingOnLand');
+        const rf = applyBuyFacilityCard(fac, me, ctx.priceIndex);
+        if (!rf.ok) return fail(rf.reason === 'notEnoughCash' ? 'notEnoughCash' : 'noEffect');
+        // @source 0x00442574 call 0x40df69 —— 敌意在改主之前记；地价取 `+0x22`
+        hostilityDeltas = [
+          {
+            from: rf.previousOwner,
+            to: cur,
+            delta: buyLandCardHostility(fac.landPrice, ctx.priceIndex, fac.level),
+          },
+        ];
+        // @source 0x004425b7 mov [fac+0x19], 当前+1
+        putFacility({ ...fac, owner: cur + 1 });
+        // @source 0x004425cc → 0x0044246f push 0 / edi / esi / 当前 / call 0x41d2c6
+        const payF = transferMoney(players, [], 0, cur, rf.previousOwner, rf.price, 0);
+        players = payF.players;
+        break;
+      }
       const r = applyBuyLandCard(here.node.type, here.land, me, ctx.priceIndex);
       // @source `0x004423b5 cmp edi, [現金] / jg 0x4425f1`：只差现金那一支弹「您的現金不足！」（卡不扣）
       if (!r.ok) return fail(r.reason === 'notEnoughCash' ? 'notEnoughCash' : 'noEffect');

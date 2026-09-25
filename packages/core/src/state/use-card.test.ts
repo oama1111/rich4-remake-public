@@ -16,6 +16,8 @@ import { stateFingerprint } from '../net/protocol.ts';
 import { applyBlackCard, blackCardHostilityDeltas } from '../cards/swap-and-stock.ts';
 import { applyStockNews } from '../places/stock-market.ts';
 import { HOUSING_TYPE_MIN } from '../rules/land.ts';
+import { tenureExpiry } from '../rules/facility.ts';
+import { packDate } from '../rules/calendar.ts';
 
 /** 一块住宅地 + 站在上面的四个玩家 */
 function scene(over: Partial<GameState> = {}): {
@@ -53,6 +55,33 @@ describe('★ 出牌入口', () => {
     expect(new Set(cash).size, `现金应当被拉平，实际 ${cash.join('/')}`).toBe(1);
     // 卡被消耗
     expect(after.players[0]!.cards).toHaveLength(0);
+  });
+
+  it('★★ 出的那张**回牌堆**（`remove_card` 0x004413a2 `inc [卡号+0x499197]`）；搶奪卡满手弃掉的也回', () => {
+    const { state, topo } = scene();
+    const pool = new Array<number>(30).fill(0);
+    let s: GameState = { ...give(state, 0, 1), cardAmount: pool };
+    s = { ...s, players: s.players.map((p, i) => ({ ...p, cash: [100_000, 0, 0, 0][i]! })) };
+    const after = reduce(s, { type: 'useCard', cardId: 1 }, topo);
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.cardAmount[0]).toBe(1);
+    // 搶奪卡（13）：自己满 15 张（14 张改建卡 7 + 搶奪卡本身）抢到 1 张均富卡 ——
+    //   出的搶奪卡 +1；对方交出的均富卡 +1 −1 相抵；满手弃掉的最便宜那张（改建卡 15 點）+1。
+    //   ⚠️ 搶奪卡本身要等抢完才扣（`0x00443f08 call 0x44192a` 在 `0x00443f40 call 0x441343` 之前）
+    //   ⇒ 收牌那一刻手上正好 15 张 ⇒ 弃牌，最后剩 14 张。
+    const robber: GameState = {
+      ...s,
+      cardAmount: new Array<number>(30).fill(0),
+      players: s.players.map((p, i) =>
+        i === 0 ? { ...p, cards: [13, ...new Array<number>(14).fill(7)] } : i === 1 ? { ...p, cards: [1] } : p,
+      ),
+    };
+    const robbed = reduce(robber, { type: 'useCard', cardId: 13, target: { kind: 'player', index: 1, steal: { kind: 'card', id: 1 } } }, topo);
+    expect(robbed.players[0]!.cards).toHaveLength(14);
+    expect(robbed.players[0]!.cards).toContain(1);
+    expect(robbed.cardAmount[12]).toBe(1);
+    expect(robbed.cardAmount[6]).toBe(1);
+    expect(robbed.cardAmount[0]).toBe(0);
   });
 
   it('★ 手上没有这张卡就什么都不发生', () => {
@@ -130,6 +159,29 @@ describe('★ 出牌入口', () => {
     expect(after.landOwner[1]).toBe(1); // 玩家 0 → 编码 1
     // 地图静态表没被改动
     expect(topo.lands[0]!.owner).toBe(0);
+  });
+
+  it('★★ 購地卡（3）：土地權限非無限期 ⇒ 买下的地**从今天重算到期日**（0x0044246c `mov [land+0x30], eax`）', () => {
+    const { state, topo } = scene({ landOwner: [0, 2], landTenure: [0, 12345], landTenureIndex: 2 });
+    const s = give(state, 0, 3);
+    const after = reduce(s, { type: 'useCard', cardId: 3 }, topo);
+    expect(after.landOwner[1]).toBe(1);
+    expect(after.landTenure[1]).toBe(tenureExpiry(packDate(s), 2));
+    expect(after.landTenure[1]).not.toBe(12345);
+    // 無限期（0）⇒ 不写（`0x00442453 je`）
+    const { state: st0 } = scene({ landOwner: [0, 2], landTenure: [0, 777], landTenureIndex: 0 });
+    const after0 = reduce(give(st0, 0, 3), { type: 'useCard', cardId: 3 }, topo);
+    expect(after0.landTenure[1]).toBe(777);
+  });
+
+  it('★★ 拍賣卡（8）流拍 ⇒ 该地变无主、**到期日清零**（0x0044335b / 0x0044335f）', () => {
+    const { state, topo } = scene({ landOwner: [0, 2], landTenure: [0, 12345], landTenureIndex: 2 });
+    const s = give(state, 0, 8);
+    const opened = reduce(s, { type: 'useCard', cardId: 8 }, topo);
+    expect(opened.pending?.kind).toBe('auction');
+    const settled = reduce(opened, { type: 'auction', winner: -1, price: 0 }, topo);
+    expect(settled.landOwner[1]).toBe(0);
+    expect(settled.landTenure[1]).toBe(0);
   });
 
   it('★ 停留卡（14）给目标挂上停留天数', () => {

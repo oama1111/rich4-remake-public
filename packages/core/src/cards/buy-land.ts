@@ -6,7 +6,7 @@
  *   函数 VA 0x00442325
  */
 
-import type { LandInfo } from '../loaders/map.ts';
+import type { FacilityInfo, LandInfo } from '../loaders/map.ts';
 import type { Player } from '../state/types.ts';
 import { housingIndexOf } from '../rules/land.ts';
 import { misalignedDoubleInt } from '../rules/hostility.ts';
@@ -72,6 +72,40 @@ export function applyBuyLandCard(
     return { ok: false, reason: 'notEnoughCash', price, previousOwner: land.owner - 1 };
   }
   return { ok: true, reason: null, price, previousOwner: land.owner - 1 };
+}
+
+/**
+ * 购地卡的**設施支**：脚下是設施格（`0xfa0 < code < 0x1770`）时强买那座設施。
+ *
+ * @source VA 0x004424be..0x004425ec —— 与地块支同形，只换了字段：
+ * ```asm
+ * 004424eb  cmp byte [fac+0x19], 0 / je 失败          ; 无主 → 返回 0（不扣卡、不弹框）
+ * 00442501  cmp owner, 当前+1 / je 失败               ; 自己的 → 同上
+ * 0044250b  dl = [fac+0x1a]（等级）× word [fac+0x24]  ; 房价
+ * 00442519  + word [fac+0x22]（地价）→ edi
+ * 00442520  imul edi, [0x4990e8]（物价）
+ * 0044252e  cmp edi, [当前+0x1c] / jg 0x4425f1        ; 现金不够 → 「您的現金不足！」，卡不扣
+ * 00442574  call 0x40df69（敌意，同一个 double 低 32 位公式，地价取 +0x22）
+ * 004425b7  mov [fac+0x19], 当前+1
+ * 004425c4  到期日 +0x34（見 reduce 的 playCard）→ jmp 0x44246f pay_money(当前, 原主, edi, 0)
+ * ```
+ */
+export function applyBuyFacilityCard(
+  facility: FacilityInfo,
+  player: Player,
+  priceIndex: number,
+): BuyLandResult {
+  if (facility.owner === 0) {
+    return { ok: false, reason: 'unowned', price: 0, previousOwner: -1 };
+  }
+  if (facility.owner === player.index + 1) {
+    return { ok: false, reason: 'alreadyMine', price: 0, previousOwner: -1 };
+  }
+  const price = (facility.landPrice + facility.housePrice * facility.level) * priceIndex;
+  if (price > player.cash) {
+    return { ok: false, reason: 'notEnoughCash', price, previousOwner: facility.owner - 1 };
+  }
+  return { ok: true, reason: null, price, previousOwner: facility.owner - 1 };
 }
 
 /**

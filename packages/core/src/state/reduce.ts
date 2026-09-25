@@ -625,6 +625,8 @@ function settleAuctionExplicit(
       players: fr.players,
       facilityOwner,
       ...(fr.tenure === 0 ? {} : { facilityTenure: withTenure(state.facilityTenure, entityId, fr.tenure) }),
+      // ★ 拍賣卡流拍：到期日也清零 @source 0x0044348a `mov dword [fac+0x34], eax`（eax = 0）
+      ...(w < 0 && pending.fromCard === true ? { facilityTenure: withTenure(state.facilityTenure, entityId, 0) } : {}),
       pool: fr.pool,
       pending: null,
       phase: 'turnEnd',
@@ -648,6 +650,9 @@ function settleAuctionExplicit(
     players: r.players,
     landOwner,
     ...(r.tenure === 0 ? {} : { landTenure: withTenure(state.landTenure, entityId, r.tenure) }),
+    // ★ 拍賣卡流拍：到期日也清零 @source 0x0044335f `mov dword [esi+0x30], eax`（eax = 0）——
+    //   先前留着原主的日子，之后被換地卡换到手的人会按那个旧日子失去它
+    ...(w < 0 && pending.fromCard === true ? { landTenure: withTenure(state.landTenure, entityId, 0) } : {}),
     pool: r.pool,
     pending: null,
     phase: 'turnEnd',
@@ -5203,6 +5208,26 @@ function playCard(
     facilityPriceStatus[f.id] = f.priceStatus;
   }
 
+  // ★★ 購地卡（3）：土地權限不是「無限期」时，强买下来的那块/那座**重写到期日**（从今天起算）——
+  //   @source 地块 `0x0044244b mov edx,[0x499110] / test / je` → `0x00442464 call 0x4521cb(今天, [0x4751f0+idx*4])`
+  //   → `0x0044246c mov [land+0x30], eax`；設施 `0x004425c4..0x004425e9`（`+0x34`）。
+  //   先前沿用原主的到期日 ⇒ 买下来的地会按**原主**的日子到期。
+  let landTenure = state.landTenure;
+  let facilityTenure = state.facilityTenure;
+  if (cardId === 3 && state.landTenureIndex !== 0) {
+    const expiry = tenureExpiry(packDate(state), state.landTenureIndex);
+    for (const l of r.lands) {
+      if (l.owner === state.currentPlayer + 1 && (state.landOwner[l.id] ?? 0) !== l.owner) {
+        landTenure = withTenure(landTenure, l.id, expiry);
+      }
+    }
+    for (const f of r.facilities) {
+      if (f.owner === state.currentPlayer + 1 && (state.facilityOwner[f.id] ?? 0) !== f.owner) {
+        facilityTenure = withTenure(facilityTenure, f.id, expiry);
+      }
+    }
+  }
+
   // 查封卡封到研究所时，+0x1e（研发剩余天数）被清零 @source 0x004456d5
   const facilityResearchDays = [...state.facilityResearchDays];
   for (const facId of r.researchReset) {
@@ -5224,7 +5249,11 @@ function playCard(
   // ★ 纯表现提示：把「刚刚谁用出了哪张卡」交给表现层（原版卡片函数里那句
   //   `player_say(出牌者, flag, 卡牌台词表[角色][卡号-1])` 是**调用点参数**，
   //   状态差分推不出来）。只保留最近一次、不进指纹/存档/快照，见 `CardPlayHint`。
-  let next: GameState = { ...state, lastBuildUpgrades: [], lastCardPlay: { player: state.currentPlayer, cardId }, lastViewTarget: cardViewTarget(state, topo, target), players, rngState: rng.getState(), landOwner, landLevel, landType, landPriceStatus, facilityOwner, facilityLevel, facilityType, facilityPriceStatus, facilityResearchDays, specialActors: r.actors, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market, prisonOccupancy: r.prisonOccupancy, hospitalOccupancy: r.hospitalOccupancy };
+  // ★★ 牌堆：出的那张（`remove_card` 0x004413a2 `inc [卡号+0x499197]`）、被动卡触发扣的 18..21、
+  //   搶奪卡满手时弃掉的最便宜那张 —— 全都**回牌堆**；搶來的那张 −1（`0x0044133b`）。
+  //   registry 只改手牌，这里按守恒一次记齐（见 `conserveCardPool`）。先前出牌从不回牌堆。
+  const cardAmount = conserveCardPool(state.cardAmount, state.players, state.cardAmount, players);
+  let next: GameState = { ...state, cardAmount, lastBuildUpgrades: [], lastCardPlay: { player: state.currentPlayer, cardId }, lastViewTarget: cardViewTarget(state, topo, target), players, rngState: rng.getState(), landOwner, landLevel, landType, landPriceStatus, landTenure, facilityTenure, facilityOwner, facilityLevel, facilityType, facilityPriceStatus, facilityResearchDays, specialActors: r.actors, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market, prisonOccupancy: r.prisonOccupancy, hospitalOccupancy: r.hospitalOccupancy };
   // ★★ 天使卡（9）是**唯一**会把地块/設施等级推上去的卡，也就是唯一会撞到
   //   `0x40b110` 返回值的 bit7 的那张 —— README §7.142(5) E6 的第 2 条消费点。
   //
