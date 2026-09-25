@@ -343,3 +343,20 @@ describe('★ 13 个道具逐个点名', () => {
     expect(TOOLS.filter((t) => isToolImplemented(t.id))).toHaveLength(13);
   });
 });
+
+describe('★★ 工程車（12）存下原座驾、按 (traffic&3)==3 判「已在开」（0x004479e2 / 0x00447a49 / 0x00447a55）', () => {
+  it('骑機車开工程車：機車退回道具、原交通方式 1 / 骰子 2 存进 engineSaved*', () => {
+    const p = makePlayer({ index: 0, trafficMethod: 1, ndices: 2 });
+    const r = useVehicleTool(p, new Array<number>(60).fill(0), 12);
+    expect(r.ok).toBe(true);
+    expect(r.player.trafficMethod).toBe(0x1f);
+    expect(r.player.ndices).toBe(1);
+    expect(r.player.engineSavedTraffic).toBe(1);
+    expect(r.player.engineSavedDice).toBe(2);
+    expect(r.tools[5]).toBe(1);
+  });
+  it('工程車过了一天（0x1b）再开 → 不生效、不消耗', () => {
+    const p = makePlayer({ index: 0, trafficMethod: 0x1b, ndices: 1 });
+    expect(useVehicleTool(p, new Array<number>(60).fill(0), 12).ok).toBe(false);
+  });
+});

@@ -41,7 +41,8 @@ function setup(counts: Record<number, number>) {
   });
   const tools = [...base.tools];
   for (const [id, n] of Object.entries(counts)) tools[Number(id)] = n;
-  return { state: { ...base, tools } as GameState, topo, map };
+  // 道具只能在按 GO 之前用（`canUseItemsNow`）
+  return { state: { ...base, tools, phase: 'awaitingRoll' } as GameState, topo, map };
 }
 
 /** 第一个住宅节点 */
@@ -68,7 +69,8 @@ describe('★ 機器工人（9）', () => {
     expect(toolCount(r.tools, 0, 9)).toBe(0);
   });
 
-  run('满级的地盖不上去，道具也不消耗', () => {
+  // ★ 2026-09-24 审计订正：take_tool（`0x004472fb`）在 `0x40b110`（`0x00447345`）之前 ⇒ 盖不上也扣道具
+  run('满级的地盖不上去，但道具照扣', () => {
     const { state, topo } = setup({ 9: 1 });
     const node = firstHousingNode(topo);
     if (node === undefined) return;
@@ -76,7 +78,9 @@ describe('★ 機器工人（9）', () => {
     const landLevel = [...state.landLevel];
     landLevel[idx] = 5;
     const s: GameState = { ...state, landLevel };
-    expect(reduce(s, { type: 'useTool', toolId: 9, nodeId: node.id }, topo)).toBe(s);
+    const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: node.id }, topo);
+    expect(after.landLevel[idx]).toBe(5);
+    expect(after.tools[9]).toBe(0);
   });
 });
 

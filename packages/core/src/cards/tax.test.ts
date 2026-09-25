@@ -273,7 +273,8 @@ describe('★★ 接驳：AI 门槛真的动了全局随机流（rngState）', (
   const scene = (victimCash: number, roll: number) => {
     const node = makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1, adjacent: [1] });
     const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
-    const base = makeGameState({ rngState: stateWithRoll(roll), priceIndex: 1 });
+    const base = makeGameState({
+    phase: 'awaitingRoll', rngState: stateWithRoll(roll), priceIndex: 1 });
     const state = {
       ...base,
       players: base.players.map((p, i) =>

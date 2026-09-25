@@ -1765,16 +1765,6 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         return { ...snap, dice: [], stepsRemaining: 1, phase: 'moving' };
       }
 
-      // ★★ 烏龜卡（`+0x39 ≠ 0`）：**不掷骰、只走 1 格** —— 先前这张卡对走子毫无作用
-      //   （docs/gaps/02-cards.md 的缺口 #2）。
-      //   @source `fcn_0040dd1f`：`0x0040dd7e cmp byte [p+0x39], 0 / jne 0x40dd40` →
-      //   `0x0040dd40 mov dword [0x48baf8], 1`（剩余步数 1）/ `mov byte [走子记录+2], 1`（模式 1 = 不掷骰）。
-      //   ⇒ 不消耗随机数、不读遙控骰子（`[0x475dd8]` 只在掷骰那一支 `0x00447285` 读）；
-      //   掷骰点数和 `[0x48bafc]`（`stepsTotal`，企業收費要读）都不写，沿用旧值。
-      if (player.blocking.tortoiseWalking !== 0) {
-        return { ...state, dice: [], stepsRemaining: 1, phase: 'moving' };
-      }
-
       const rng = new WatcomRng();
       rng.setState(state.rngState);
       // ★ 遙控骰子留下的点数优先，且**用完即消**
@@ -2439,9 +2429,11 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       return buySharesFromCommercial(state, action.shares, topo);
 
     case 'useCard':
+      if (!canUseItemsNow(state)) return state;
       return afterAiStep(state, playCard(state, topo, action.cardId, action.target ?? { kind: 'none' }), topo, 3);
 
     case 'useTool': {
+      if (!canUseItemsNow(state)) return state;
       const used = useToolAction(state, topo, action.toolId, action.nodeId ?? 0, action.value ?? 0);
       // ★★ 第十一份試玩回報 #3：道具台词（原版 `player_say(角色, 0, _tool_strings[角色][道具号−1])`，
       //   在 human/AI 分流**之前** ⇒ 电脑也说）。
@@ -4917,7 +4909,15 @@ function teleportWith(
   // 搬人：source 是玩家下标 + 1，target 是节点号
   const playerIndex = source - 1;
   if (playerIndex < 0 || playerIndex >= state.players.length) return null;
-  return teleportPlayer(state, topo.nodes, playerIndex, target);
+  const self = playerIndex === state.currentPlayer;
+  // ★★ 搬的是**自己**：先拍時光機快照（`0x004477c3 call 0x44808a`，道具还在手上），
+  //   然后 `0x004477ca [0x48baf8] = 0`（剩余步数 0）/ `0x004477d6 走子态 = 1` —— 这一回合**不再掷骰**，
+  //   直接在新格做停步处理（`0x41982d`）；落点物件那一段（`0x41b42d`）不跑（没有「走到一格」）。
+  //   先前自搬之后还停在 awaitingRoll，电脑接着掷骰再走一趟。
+  const base = self ? snapshotForTimeMachine(state) : state;
+  const moved = teleportPlayer(base, topo.nodes, playerIndex, target);
+  if (moved === null) return null;
+  return self ? { ...moved, stepsRemaining: 0, phase: 'settling' } : moved;
 }
 
 export function useToolAction(
@@ -5217,6 +5217,16 @@ function nodeViewTarget(
  * ⚠️ 只在 `ok` 时才落地。原版多处是 `test eax,eax / je end` 之后才扣卡，
  *   registry 已经照此实现，故失败时状态原样返回（连卡都不扣）。
  */
+/**
+ * 卡片 / 道具只能在**按 GO 之前**用（走子态 0：真人的面板选单、电脑的起步前那一串决策）。
+ * @source 真人：面板「卡片」「道具」钮只在回合态 0 响应（`0x00417d65` / `0x0040defe`）；
+ *   电脑：`0x00418e28` 起的出牌 / 用道具循环在 `0x40dd1f`（起步）之前。
+ *   先前 `useCard` / `useTool` 任何相位都收（走子中、挂着待决交互时也能出牌）—— 联机不可信输入。
+ */
+function canUseItemsNow(state: GameState): boolean {
+  return state.phase === 'awaitingRoll' && (state.pending === null || state.pending.kind === 'none');
+}
+
 function playCard(
   state: GameState,
   topo: MapTopology,

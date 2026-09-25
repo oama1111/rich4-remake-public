@@ -27,6 +27,7 @@ function scene(over: Partial<GameState> = {}): {
   const node = makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1, adjacent: [1] });
   const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
   const state = makeGameState({
+    phase: 'awaitingRoll',
     players: [0, 1, 2, 3].map((i) =>
       makePlayer({ index: i, character: i, nodeId: 1, cash: 100_000 }),
     ),
@@ -266,6 +267,7 @@ describe('★ T-008：設施目标经 reduce 端到端落回 GameState', () => {
     const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
     const fac = makeFacility({ id: 1, type: 1, level: 3, owner: 2, ...facOver });
     const state = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) =>
         makePlayer({ index: i, character: i, nodeId: 1, cash: 100_000 }),
       ),
@@ -394,6 +396,7 @@ describe('★★ 黑卡（25）接入 reduce：持股循环真的落敌意', () 
     const node = makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1, adjacent: [1] });
     const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
     const state = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i, nodeId: 1, cash: 100_000 })),
       landOwner: [0, 0],
       landLevel: [0, 0],

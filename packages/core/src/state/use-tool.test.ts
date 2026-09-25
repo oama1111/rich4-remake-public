@@ -18,6 +18,7 @@ function withTools(counts: Record<number, number>, over: Partial<GameState> = {}
   const tools = new Array<number>(4 * TOOL_SLOTS_PER_PLAYER).fill(0);
   for (const [id, n] of Object.entries(counts)) tools[Number(id)] = n;
   return makeGameState({
+    phase: 'awaitingRoll',
     players: [0, 1, 2, 3].map((i) =>
       makePlayer({ index: i, character: i, nodeId: 1, trafficMethod: TRAFFIC_WALK, ndices: 1 }),
     ),

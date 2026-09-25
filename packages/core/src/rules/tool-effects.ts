@@ -102,7 +102,12 @@ export function useVehicleTool(
   if (traffic === undefined) return { ok: false, player, tools: [...tools] };
 
   // @source cmp dl, 1 / jne … / xor edx,edx / jmp 结束
-  if (player.trafficMethod === traffic) {
+  //   ★ 工程車那一支比的是 `(+0x11 & 3) == 3`（`0x004479e2 and dl,3 / cmp dl,3`）——
+  //   工程車每天 −4（0x1f → 0x1b → …），只比整字节 0x1f 会让第二天起又能再开一台
+  const same = traffic === TRAFFIC_ENGINEERING
+    ? (player.trafficMethod & 3) === 3
+    : player.trafficMethod === traffic;
+  if (same) {
     return { ok: false, player, tools: [...tools] };
   }
 
@@ -121,6 +126,11 @@ export function useVehicleTool(
       trafficMethod: traffic,
       // @source byte [player + 0x12] = 2 / 3 / 1
       ndices: VEHICLE_DICE.get(traffic) ?? 1,
+      // ★ 工程車：开之前的交通方式 / 骰子数存进 `+0x64` / `+0x65`（`0x00447a49` / `0x00447a55`，
+      //   在退车 `inc` 之后、写 0x1f 之前 —— 存的是**退车前**那个值），到期时 `tickEngineVehicle` 按它还原
+      ...(traffic === TRAFFIC_ENGINEERING
+        ? { engineSavedTraffic: player.trafficMethod, engineSavedDice: player.ndices }
+        : {}),
     },
     tools: nextTools,
   };

@@ -30,6 +30,7 @@ const MAP0 = `${ROOT}/extracted/map/0001.bin`;
 /** 委托共享工厂——新增 GameState 字段时不必逐个测试文件补 */
 function makeState(over: Partial<GameState> = {}): GameState {
   return makeGameState({
+    phase: 'awaitingRoll',
     players: [makePlayer(0), makePlayer(1), makePlayer(2), makePlayer(3)],
     landOwner: [],
     landLevel: [],

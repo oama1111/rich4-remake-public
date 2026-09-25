@@ -71,7 +71,8 @@ function setup(over: Partial<GameState> = {}) {
   const node = map.nodes.find((n) => housingIndexOf(n.type) !== null)!;
   const idx = housingIndexOf(node.type)!;
   const template = topo.lands!.find((l) => l.id === idx)!;
-  const state: GameState = { ...base, tools, ...over };
+  // 道具只能在按 GO 之前用（`canUseItemsNow`）
+  const state: GameState = { ...base, tools, phase: 'awaitingRoll', ...over };
   /** 把某块地的（owner, level, type）写进状态 */
   const withLand = (o: Partial<LandInfo> = {}): GameState => {
     const landOwner = [...state.landOwner];
@@ -110,11 +111,15 @@ describe('★ 機器工人（9）：自己的地', () => {
     expect(use(s, topo, node.id).landLevel[idx]).toBe(2);
   });
 
-  run('滿級（5）→ 不生效、道具也不消耗', () => {
-    const { topo, node, withLand } = setup();
+  // ★ 2026-09-24 审计订正：真人拾取 `0x2090006` 收任何地块/設施；take_tool（`0x004472fb`）在
+  //   `0x40b110`（`0x00447345`）之前 ⇒ 满级也能点、点了道具照扣、等级不动
+  run('滿級（5）→ 等级不动，但道具照扣（拾取照收）', () => {
+    const { topo, node, idx, withLand } = setup();
     const s = withLand({ owner: 1, level: MAX_LAND_LEVEL });
-    expect(canUseTool(s, topo, TOOL, node.id)).toBe(false);
-    expect(use(s, topo, node.id)).toBe(s);
+    expect(canUseTool(s, topo, TOOL, node.id)).toBe(true);
+    const r = use(s, topo, node.id);
+    expect(r.landLevel[idx]).toBe(MAX_LAND_LEVEL);
+    expect(r.tools[TOOL]).toBe(0);
   });
 });
 
@@ -157,8 +162,9 @@ describe('★ 機器工人（9）：归属与钱（exe 全都**不看**，与需
     const fresh = withLand({ owner: 1, level: 0, type: 1 });
     expect(use(fresh, topo, node.id).landLevel[idx]).toBe(1);
     const built = withLand({ owner: 1, level: 1, type: 1 });
-    expect(canUseTool(built, topo, TOOL, node.id)).toBe(false);
-    expect(use(built, topo, node.id)).toBe(built);
+    // 盖不动，但道具照扣（见上）
+    expect(use(built, topo, node.id).landLevel[idx]).toBe(1);
+    expect(use(built, topo, node.id).tools[TOOL]).toBe(0);
   });
 });
 
