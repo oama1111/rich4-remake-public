@@ -329,6 +329,7 @@ import {
   auctionAiLimits,
   auctionBasePrice,
   auctionCanAfford,
+  AUCTION_RAISE_STEPS,
   auctionFinished,
   auctionFirstSeat,
   auctionOutcome,
@@ -2731,7 +2732,9 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (me === undefined || me.whoPlays === 0) return state;
 
       const raising = action.status === 'raise';
-      if (raising && (action.step <= 0 || !auctionCanAfford(pending.price, action.step, me.cash))) {
+      // ★ 2026-09-25 审计补：加价额只能是档位表里的值 —— 原版只有五个钮，`0x0043a49b` 按钮号取 `[钮*4 + 0x475ba2]`
+      //   （100/500/1000/5000/10000），没有任意金额的入口。先前任何 > 0 且付得起的数都收（联机可以伪造）。
+      if (raising && (!AUCTION_RAISE_STEPS.includes(action.step) || !auctionCanAfford(pending.price, action.step, me.cash))) {
         return state;
       }
 

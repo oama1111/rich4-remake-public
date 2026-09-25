@@ -803,7 +803,7 @@ describe('★ 终局判据（loc_0043b295）', () => {
   //    复查在每一次出价后都跑）⇒ 这组用例是**契约钉子**，防的是「外部塞进来的
   //    pending（读档还原的中途状态）」以及日后有人把这条判据删掉。
   // ══════════════════════════════════════════════════════════════════
-  it('★★ 全场座位都被挡住 + 有人出过价 ⇒ **流拍**（不是判给最后出价的人）', () => {
+  it('★★ 审计订正：全场座位都被挡住 + 有人出过价 ⇒ **按现价成交给最高出价者**（状态 0xb 收尾 0x0043b5ce push [0x48c4a8]）', () => {
     const status = ['active', 'passed', 'passed', 'passed'] as const;
     expect(auctionAllBlocked({ bidders: [1, 2, 3], status: [...status] })).toBe(true);
     expect(
@@ -814,7 +814,7 @@ describe('★ 终局判据（loc_0043b295）', () => {
         price: 4000,
         basePrice: 3000,
       }),
-    ).toEqual({ winner: -1, price: 0 });
+    ).toEqual({ winner: 2, price: 4000 });
   });
 
   it('★ 只要还有一个 active 就不算「全被挡住」', () => {
@@ -1453,5 +1453,16 @@ describe('★★ 审计：心理价位里的系数与缺地系数都存成 f32�
       );
       expect(got).toBe(want);
     }
+  });
+});
+
+describe('★ 2026-09-25 审计（AUC-46）：加价额只能是档位表里的值（0x0043a49b [钮*4 + 0x475ba2]）', () => {
+  it('300 这种不在表里的加价被拒；500 收', () => {
+    const s = reduce(auctionGame(), { type: 'useCard', cardId: 8 }, topo);
+    if (s.pending?.kind !== 'auction' || !('seat' in s.pending)) throw new Error('no auction');
+    const bidder = s.pending.bidders[s.pending.seat]!;
+    expect(reduce(s, { type: 'auctionBid', bidder, status: 'raise', step: 300 }, topo)).toBe(s);
+    const ok = reduce(s, { type: 'auctionBid', bidder, status: 'raise', step: 500 }, topo);
+    expect(ok).not.toBe(s);
   });
 });

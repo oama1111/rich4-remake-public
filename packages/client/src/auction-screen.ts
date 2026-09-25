@@ -63,7 +63,7 @@ import {
   auctionNextBid,
   effectiveFacility,
   effectiveLand,
-  isAiControlled,
+  auctionSeatWaitsForHuman,
 } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import { FONT_FAMILY, clerkTextStyle, drawGdiText } from './font.ts';
@@ -1104,7 +1104,8 @@ function humanTurn(env: UiScreenEnv, st: ScreenState): boolean {
   //   先前不挡：真人能在电脑那一口挥槌的第一帧就点下去，把那一口的挥槌截成一帧（联机时两端各截一次）。
   if (env.now < st.nextAt || st.askPending) return false;
   const p = seatPlayer(env, st.run);
-  return p !== null && !isAiControlled(p) && seatIsLocal(env, st.run);
+  // ★ 2026-09-25 审计：真人支只认整字节 == 1 且现价 ≤ 現金（`0x0043b001` / `0x0043b06c`），见 core `auctionSeatWaitsForHuman`
+  return p !== null && auctionSeatWaitsForHuman(p, st.run.price) && seatIsLocal(env, st.run);
 }
 
 /**
@@ -1318,7 +1319,7 @@ export const auctionScreen: UiScreen = {
     //   这里不预判：屏只负责「该谁 → 把这一口送出去」。
     const p = seatPlayer(env, st.run);
     if (p === null) return;
-    if (!isAiControlled(p)) {
+    if (auctionSeatWaitsForHuman(p, pending.price)) {
       // 真人：等点钮（原版相位 3）。★ pt23：不再每轮到真人就弹「請意者出價」—— 原版那一句全场只在开场后弹一次（见上）。
       return;
     }

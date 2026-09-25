@@ -1138,6 +1138,18 @@ export function auctionAllBlocked(pending: {
   return pending.bidders.every((i) => (pending.status[i] ?? 'active') !== 'active');
 }
 
+/**
+ * 轮到这一席时是不是**等真人点钮**。
+ *
+ * @source `0x0043b001 cmp byte [p+0x15], 1 / jne 0x43b0a0`（整字节 == 1 才是真人支）→
+ *   `0x0043b06c mov edx,[0x48c488] / cmp edx,[p+0x1c] / jle 0x43b08a`（现价 ≤ 現金才等他点；
+ *   否则 `0x0043b07a` 直接替他按钮 6「放棄」）。其余（电脑 / 託管 / 带 0x10、0x20 位的真人）走电脑支。
+ *   core（`auctionNextBid`）、客户端拍賣屏、服务器驱动都按这一条分流。
+ */
+export function auctionSeatWaitsForHuman(who: { whoPlays: number; cash: number }, price: number): boolean {
+  return who.whoPlays === 1 && price <= who.cash;
+}
+
 /** 终局：`winner < 0` = 流拍 */
 export function auctionOutcome(pending: {
   bidders: readonly number[];
@@ -1147,11 +1159,10 @@ export function auctionOutcome(pending: {
   basePrice: number;
 }): { winner: number; price: number } {
   if (pending.top < 0) return { winner: -1, price: 0 };
-  // ★★ N3（第 161 条）：原版 `0x43b2c9 cmp esi,edi / jne 0x43b2e6` 先于成交判据 ——
-  //   全场座位都被挡住时**先**走到 `0x43b2cd`「無人出價，宣佈流標」，
-  //   于是「有人出过价但之后所有人都 PASS/放棄」= **流拍**（地主被清 0），
-  //   而不是把地判给最后一个出价的人。
-  if (auctionAllBlocked(pending)) return { winner: -1, price: 0 };
+  // ★★ 2026-09-25 审计订正（N3 推翻）：全场都被挡住时走的 `0x0043b2cd` 只是**说**一句「無人出價，宣佈流標」
+  //   （`push 0x465063 / call 0x44ecb6`）再进状态 0xb；状态 0xb（`0x0043aee2 cmp al,0xb / je 0x43b5b5`）收尾是
+  //   `0x0043b5ce mov ecx, [0x48c4a8] / push ecx / call 0x401966` —— 窗口交回的是**最高出价者**，不是 −1。
+  //   ⇒ 有人出过价就按现价成交（台词归台词）；只有 `top == −1`（开场就没人能出，`0x0043af61` 同一个状态 0xb）才流拍。
   return { winner: pending.top, price: pending.price };
 }
 
