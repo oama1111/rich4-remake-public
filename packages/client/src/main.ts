@@ -218,7 +218,7 @@ import {
   type DateDraft,
   type OptionsOutcome,
 } from './options-pages.ts';
-import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
+import { SoundPlayer, VoiceChannel, shouldRetriggerVoice } from './audio.ts';
 import {
   cardPlaySpeechLines,
   toolUseSpeechLines,
@@ -1401,9 +1401,9 @@ function syncLoanUi(): void {
 function loanEffect(ui: LoanUi, effect: ReturnType<typeof loanStep>['effect']): void {
   const hadBubble = loanUi?.bubble ?? null;
   loanUi = ui;
-  // ★★ 第二十六份 panel #2：换句 / 点掉（`0x44ee18(1)`，`0x00434b6c` / `0x00435c1f` …）都先停上一句语音
-  //   （原版只有一路语音缓冲：`0x45441a` 起播前 `call 0x454493`；`0x0044ee30` 收框时同一个 call）——
-  //   不停的话，字框按「语音放完才到期」会被上一句拖住
+  // ★★ 第二十六份 panel #2：点掉 / 右键（`0x44ee18(1)`，`0x00434b6c` / `0x00435c1f` / `0x00435f8b` …，`0x0044ee30`
+  //   停语音）—— 这几条路都会换掉或收掉气泡，故「气泡变了」就停。换成带语音的新句时这一停是多余的
+  //   （`VoiceChannel` 起新句本来就先停旧句），但换成无语音 / 收掉那几条路少不了它，留着。
   if (hadBubble !== null && ui.bubble !== hadBubble) stopVoice();
   if (loanBubbleVoice(hadBubble, ui.bubble)) loanBubbleAt = performance.now();
   if (effect === null) return;
@@ -3898,6 +3898,13 @@ const sound = new SoundPlayer();
 //   `VOICE_RETRIGGER_GAP_MS`。这里记住上一声真正起播的号与时刻。
 let lastVoiceCode: number | null = null;
 let lastVoiceAt = 0;
+// ★★ 第二十六份 panel：语音**只有一路**（原版 `[0x47e750]`，`0x45441a` 起播前 `call 0x454493`）——
+//   `#NNNN`（下面的 sink）与角色台词（`speechTick`）都经这一个出口放，起一句新的就停上一句。见 `audio.ts` 的 `VoiceChannel`。
+const voiceChannel = new VoiceChannel({
+  play: (r) => sound.play('Speaking.mkf', r),
+  stop: (r) => sound.stop('Speaking.mkf', r),
+  isPlaying: (r) => sound.isPlaying('Speaking.mkf', r),
+});
 setVoiceSink((voice) => {
   // ★ 语音档案按需装载：`Speaking.mkf` 57MB，开机不装。此前只有**角色台词**
   //   那条路（`playSoundFor` → `ensureSpeakingArchive`）会拉它，于是文本里的
@@ -3911,16 +3918,13 @@ setVoiceSink((voice) => {
   if (!shouldRetriggerVoice(lastVoiceCode, lastVoiceAt, voice, now, stillPlaying)) return;
   lastVoiceCode = voice;
   lastVoiceAt = now;
-  sound.play('Speaking.mkf', voice);
+  voiceChannel.play(voice);
 });
 // ★ 字框的到期判据要问「语音还在响吗」（`fcn_0044ee18` → `0x4544b9`，音效档 `[0x49715b]` 关掉不问）
 //   与「立刻收起时停掉语音」（`fcn_0044ee18(1)` → `0x454493`）—— 见 `voice-sink.ts`。
-setVoiceBusyProbe(
-  () => options.sound > 0 && lastVoiceCode !== null && sound.isPlaying('Speaking.mkf', lastVoiceCode),
-);
-setVoiceStopper(() => {
-  if (lastVoiceCode !== null) sound.stop('Speaking.mkf', lastVoiceCode);
-});
+//   ★★ 两者问的都是**那一路**（`0x4544b9` / `0x454493` 只认 `[0x47e750]`，不分是谁起的）。
+setVoiceBusyProbe(() => options.sound > 0 && voiceChannel.busy());
+setVoiceStopper(() => voiceChannel.stop());
 
 /**
  * 背景音乐。
@@ -5236,8 +5240,7 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   // ⚠️ 判据不能看替身记录：`runDoll` 走完就把它收回 `idleActor()`
   //   （`specialActors[4]` 在动作前后都是「未出场」），看记录等于永远认不出来。
   //   能认的只有 core **刚交出来的那趟路径** —— `lastNpcWalks` 是整体覆写，
-  //   数组换了身份就说明刚发生了一趟；槽 4 只可能是娃娃（`npcRound` 走 0..3、
-  //   `bail` 走被保釋那个惡人的槽）。看动作类型也行，但这条对
+  //   数组换了身份就说明刚发生了一趟；槽 4 只可能是娃娃（`npcStepOnce` 走 0..3；保釋那一下不走）。看动作类型也行，但这条对
   //   「AI 用 / 服务器广播用」同样成立 —— 原版也是谁在场都听得见。
   if (
     after.lastNpcWalks !== before.lastNpcWalks &&
@@ -9186,7 +9189,8 @@ function speechTick(now: number): void {
   speechSerial++;
   if (cur !== null) viewToSpeaker(cur);
   if (cur === null || cur.voice === null) return;
-  sound.play('Speaking.mkf', cur.voice);
+  // ★★ 第二十六份 panel：同一路语音 —— 起这一句就停掉正在响的上一句（`0x45441a` → `0x454493`）
+  voiceChannel.play(cur.voice);
   // ★ 语音比字幕长就把字幕撑到语音播完 —— 原版是「播完再数 1000 ms」
   const voiceMs = sound.durationOf('Speaking.mkf', cur.voice);
   if (voiceMs !== null) speechQueue.extend(voiceMs);

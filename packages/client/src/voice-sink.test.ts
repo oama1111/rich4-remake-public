@@ -47,6 +47,8 @@ describe('★★ 第二十六份 panel #2：字框到期 `fcn_0044ee18(0)` —�
     // `#NNNN`：0x44fabc 画字时认 '#'（0044fb00 cmp ah,0x23）→ 0044fb4e call 0x45441a（放语音）
     expect(exeHex(0x44fb00, 3)).toBe('80 fc 23');
     expect(callTo(0x44fb4e)).toBe(0x45441a);
+    // 一路语音：play_speech 起播前先停上一句 —— 0045442e call 0x454493
+    expect(callTo(0x45442e)).toBe(0x454493);
     // 对照：訊息框 0x440cac 是死时长 —— 00440de7 push esi(毫秒) / call 0x4528b9（不问语音）
     expect(exeHex(0x440de7, 1)).toBe('56');
     expect(callTo(0x440de8)).toBe(0x4528b9);
@@ -72,7 +74,12 @@ describe('★★ 第二十六份 panel #2：字框到期 `fcn_0044ee18(0)` —�
 
   it('main.ts：「语音还在响」带音效档闸（`[0x49715b] == 0` ⇒ 不问）；各屏接上同一条判据', () => {
     const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
-    expect(main).toContain("() => options.sound > 0 && lastVoiceCode !== null && sound.isPlaying('Speaking.mkf', lastVoiceCode),");
+    expect(main).toContain('setVoiceBusyProbe(() => options.sound > 0 && voiceChannel.busy());');
+    expect(main).toContain('setVoiceStopper(() => voiceChannel.stop());');
+    // ★★ 一路语音：`#NNNN` 与角色台词都经同一个出口放（起新句先停旧句，`0x0045442e call 0x454493`）
+    expect(main).toContain('  voiceChannel.play(voice);');
+    expect(main).toContain('  voiceChannel.play(cur.voice);');
+    expect(main.match(/sound\.play\('Speaking\.mkf'/g) ?? []).toHaveLength(1); // 只剩 VoiceChannel 构造里那一处
     expect(main).toContain("if (bubble === null || captionExpired(loanBubbleAt, now)) {");
     expect(main).toContain('reminderTick(reminderUi, now, reminderName(), voiceBusy())');
     expect(main).toContain('shopBubbleExpired(ui.bubble, ui.closing, now, voiceBusy())');

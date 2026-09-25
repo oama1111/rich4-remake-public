@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { SoundPlayer, VOICE_RETRIGGER_GAP_MS, shouldRetriggerVoice } from './audio.ts';
+import { SoundPlayer, VOICE_RETRIGGER_GAP_MS, VoiceChannel, shouldRetriggerVoice } from './audio.ts';
 
 describe('★ `durationOf` —— 给台词队列撑时长用（T-052 的 Q-SPEECH-6/9）', () => {
   it('没解码好 / 没播过 → null（纯查询，不触发加载）', () => {
@@ -100,5 +100,53 @@ describe('★ `main.ts` 主机接线 —— 解锁 / 语音出口', () => {
     // 魔法屋女巫那三句 `#0037/#0038/#0039` 走的就是这个 sink
     expect(sinkBlock, '语音出口要按需拉 Speaking.mkf').toContain('ensureSpeakingArchive();');
     expect(sinkBlock, '同一句不能每帧重起').toContain('shouldRetriggerVoice(');
+  });
+});
+
+describe('★★ 第二十六份 panel：语音只有一路（`[0x47e750]`；`0x45441a` 起播前 `0x0045442e call 0x454493`）', () => {
+  function fake() {
+    const playing = new Set<number>();
+    const log: string[] = [];
+    const ch = new VoiceChannel({
+      play: (r) => {
+        playing.add(r);
+        log.push(`play ${r}`);
+      },
+      stop: (r) => {
+        playing.delete(r);
+        log.push(`stop ${r}`);
+      },
+      isPlaying: (r) => playing.has(r),
+    });
+    return { ch, playing, log };
+  }
+
+  it('起一句新的 ⇒ 正在响的上一句当场停；任何时刻至多一句在响', () => {
+    const { ch, playing, log } = fake();
+    ch.play(131);
+    ch.play(12);
+    expect(log).toEqual(['play 131', 'stop 131', 'play 12']);
+    expect([...playing]).toEqual([12]);
+    expect(ch.current).toBe(12);
+  });
+
+  it('上一句已经放完就不再 stop；同一句重起交给播放器自己的 Stop→Play', () => {
+    const { ch, playing, log } = fake();
+    ch.play(5);
+    playing.delete(5); // 自然放完
+    ch.play(6);
+    ch.play(6);
+    expect(log).toEqual(['play 5', 'play 6', 'play 6']);
+  });
+
+  it('`busy` / `stop` 只认这一路最近起的那一句（`0x4544b9` / `0x454493`）', () => {
+    const { ch, playing } = fake();
+    expect(ch.busy()).toBe(false);
+    ch.play(37);
+    expect(ch.busy()).toBe(true);
+    ch.stop();
+    expect(ch.busy()).toBe(false);
+    expect(playing.size).toBe(0);
+    ch.stop(); // 已停：不再重复停
   });
 });
