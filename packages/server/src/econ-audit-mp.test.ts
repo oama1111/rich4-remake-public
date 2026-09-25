@@ -22,6 +22,8 @@ import {
   reduce,
   stateFingerprint,
   WHO_PLAYS_COMPUTER,
+  WHO_PLAYS_HUMAN,
+  releaseNpc,
   type Action,
   type GameState,
   type MapTopology,
@@ -362,5 +364,250 @@ describe('★ AUC-45：拍賣卡在掷骰前打出 —— 服务器与旁观端�
     // 还能掷骰（用卡者不丢这一掷）—— 服务器与旁观端都受理
     expect(room.submit(0, { type: 'rollDice' }).ok).toBe(true);
     expect(room.state.phase).not.toBe('awaitingRoll');
+  });
+});
+
+// ============================================================
+//  follow-up 审计（2026-09-25）：PAY-05 / AUC-43 / STK-57
+// ============================================================
+
+/**
+ * 手工拓扑：一格站人（`LAND_HOME` = 1 号地主的地）+ `spare` 块破产者名下的地。
+ * 地块表与 `state.landOwner` 一一对应（id 即下标）。
+ */
+function fuScene(opts: {
+  payerCash: number;
+  spareLands: number;
+  commercial?: boolean;
+}): { map: Rich4Map; topo: MapTopology; state: GameState } {
+  const home = 1;
+  const ids = [home, ...Array.from({ length: opts.spareLands }, (_, i) => i + 2)];
+  const map = {
+    nodes: [
+      makeNode({ id: 1, adjacent: [1], type: 0x7d0 + home, ref: { kind: 'land', index: home } }),
+      makeNode({ id: 2, adjacent: [2], type: 0 }),
+    ],
+    lands: ids.map((id) =>
+      makeLand({
+        id,
+        name: id === home ? '地主區' : '破產者的地',
+        landPrice: id === home ? 1000 : 100,
+        housePrice: 100,
+        owner: 0,
+      }),
+    ),
+    facilities: [],
+    commercials: opts.commercial
+      ? [{ id: 0, x: 0, y: 0, name: '測試企業', stockIndex: 0, landPrice: 0, type: 0, assetValue: 0 }]
+      : [],
+    landscapes: [],
+    dataSize: 0,
+  } as unknown as Rich4Map;
+  const topo: MapTopology = {
+    nodes: map.nodes,
+    lands: map.lands,
+    facilities: [],
+    commercials: (map.commercials ?? []) as NonNullable<MapTopology['commercials']>,
+  };
+  const players = [
+    // 0 号：欠租的人（真人，付不起）
+    makePlayer({ index: 0, character: 0, whoPlays: WHO_PLAYS_HUMAN, nodeId: 1, cash: opts.payerCash, moneyInBank: 0 }),
+    // 1 号：地主（真人）—— 收款人，本用例要盯他的存款
+    makePlayer({ index: 1, character: 1, whoPlays: WHO_PLAYS_HUMAN, nodeId: 2, cash: 10_000, moneyInBank: 0 }),
+    makePlayer({ index: 2, character: 2, whoPlays: WHO_PLAYS_COMPUTER, nodeId: 2, cash: 500_000, moneyInBank: 0 }),
+    makePlayer({ index: 3, character: 3, whoPlays: WHO_PLAYS_COMPUTER, nodeId: 2, cash: 500_000, moneyInBank: 0 }),
+  ];
+  const landOwner = new Array<number>(64).fill(0);
+  landOwner[home] = 2; // 归玩家 1
+  for (let i = 2; i <= opts.spareLands + 1; i++) landOwner[i] = 1; // 归玩家 0（破产者）
+  const state: GameState = makeGameState({
+    mode: 'multiplayer',
+    players,
+    humanPlayers: 2, // ★ 两位真人：只剩一位时清算整段被跳过（`0x0040cfdb`）
+    currentPlayer: 0,
+    phase: 'settling',
+    pending: null,
+    priceIndex: 1,
+    landOwner,
+    landLevel: new Array<number>(64).fill(0),
+  });
+  return { map, topo, state };
+}
+
+function fuRoom(map: Rich4Map, state: GameState, id: string): Room {
+  const room = new Room({
+    id,
+    map,
+    globalMapId: 0,
+    seed: 11,
+    seats: seats(),
+    options: LOBBY_DEFAULT_OPTIONS,
+    base: { state, snapshot: '' },
+  });
+  room.start();
+  return room;
+}
+
+describe('★★ follow-up：PAY-05 入账排在清算拍卖之后 + AUC-43 抽签与开拍交错（联机）', () => {
+  it('0 号欠租破产（名下 4 块地）⇒ 三场清算拍卖逐场由服务器受理，地主打完才收到钱；旁观端一致', () => {
+    const { map, topo, state } = fuScene({ payerCash: 150, spareLands: 4 });
+    const room = fuRoom(map, state, 'FUPAY');
+    let mirror = state;
+    const submit = (seat: number, action: Action) => {
+      const r = room.submit(seat, action);
+      expect(r.ok, `座位 ${seat} 的 ${action.type} 被拒`).toBe(true);
+      if (!r.ok) return;
+      mirror = reduce(mirror, r.broadcast.action, topo);
+      expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+      expect(room.actingSeat).toBe(actingSeat(mirror));
+    };
+    // ① 结算：过路费 200（地主 1 级地租金 200×物價 1）> 0 号的 150 ⇒ 破产 + 3 场清算拍卖
+    submit(0, { type: 'settle' });
+    expect(room.state.players[0]!.whoPlays).toBe(0);
+    expect(room.state.pending?.kind).toBe('auction');
+    // ★ PAY-05：拍卖期间地主**还没拿到**那 150
+    expect(room.state.players[1]!.moneyInBank).toBe(0);
+    expect(room.state.pendingQueue.some((q) => q.kind === 'credit')).toBe(true);
+    expect(mirror.pendingQueue).toEqual(room.state.pendingQueue);
+    // ★ AUC-43：队列里是「下一抽」，不是「已经抽好的下一场」
+    expect(room.state.pendingQueue.filter((q) => q.kind === 'bankruptcyDraw')).toHaveLength(1);
+
+    // ② 三场逐场落槌（流拍，免得中标者又付不起）；每场都由服务器当前的 `actingSeat` 提交
+    for (let i = 0; i < 3; i++) {
+      expect(room.state.pending?.kind).toBe('auction');
+      submit(room.actingSeat, { type: 'auction', winner: -1, price: 0 });
+      if (i < 2) expect(room.state.players[1]!.moneyInBank, `${i + 1} 场打完还没轮到入账`).toBe(0);
+    }
+    expect(room.state.pending).toBeNull();
+    expect(room.state.pendingQueue).toEqual([]);
+    expect(room.state.players[1]!.moneyInBank, '★ 三场打完才入账 150').toBe(150);
+    expect(mirror.players[1]!.moneyInBank).toBe(150);
+    expect(mirror.players[1]!.monthlyReceived).toBe(room.state.players[1]!.monthlyReceived);
+  });
+});
+
+describe('★★ follow-up：STK-57 分紅破产当场清算（联机）', () => {
+  it('15 日分紅把 0 号压破产 ⇒ 先打三场清算拍卖，再開獎 / 清地契；旁观端一致', () => {
+    const { map, topo, state } = fuScene({ payerCash: 0, spareLands: 4, commercial: true });
+    const holdings = state.holdings.map((row) => row.map((h) => ({ ...h })));
+    holdings[0]![0] = { amount: 1000, avgCost: 0 };
+    const companyFunds = [...state.companyFunds];
+    companyFunds[0] = -100_000; // 亏损企业 ⇒ 0 号分紅 −100000
+    const lottery = new Array<number>(36).fill(0);
+    for (let i = 0; i < 4; i++) lottery[i] = 1; // 0 号的 4 张（清算时释放）
+    for (let i = 10; i < 22; i++) lottery[i] = 2; // 1 号的 12 张（>10 ⇒ 必开奖）
+    const landTenure = new Array<number>(64).fill(0);
+    landTenure[1] = ((1998 << 16) | (3 << 8) | 15) >>> 0; // 地主那块地的到期日 == 推进后的今天
+    const s: GameState = {
+      ...state,
+      year: 1998,
+      month: 3,
+      day: 14,
+      currentPlayer: 3, // 最后一位 ⇒ 这一回合推日期
+      phase: 'turnEnd',
+      holdings,
+      companyFunds,
+      lottery,
+      landTenure,
+      pool: 500_000,
+    };
+    const room = fuRoom(map, s, 'FUSTK');
+    let mirror = s;
+    const submit = (seat: number, action: Action) => {
+      const r = room.submit(seat, action);
+      expect(r.ok, `座位 ${seat} 的 ${action.type} 被拒`).toBe(true);
+      if (!r.ok) return;
+      mirror = reduce(mirror, r.broadcast.action, topo);
+      expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+    };
+    submit(3, { type: 'endTurn' });
+    expect(room.state.day).toBe(15);
+    expect(room.state.players[0]!.whoPlays, '分紅压破产').toBe(0);
+    expect(room.state.pending?.kind, '★ 清算拍卖挂着').toBe('auction');
+    expect(room.state.lottery.filter((v) => v === 1), '出局者的号码已释放').toHaveLength(0);
+    expect(room.state.lastLotteryDraw, '★ 開獎排在清算之后').toBeNull();
+    expect(room.state.landOwner[1], '地契到期也还没扫').toBe(2);
+
+    for (let i = 0; i < 3; i++) {
+      expect(room.state.pending?.kind).toBe('auction');
+      submit(room.actingSeat, { type: 'auction', winner: -1, price: 0 });
+    }
+    expect(room.state.pending).toBeNull();
+    expect(room.state.pendingQueue).toEqual([]);
+    expect(room.state.lastLotteryDraw, '★ 拍卖打完才開獎').not.toBeNull();
+    expect(room.state.pool).toBe(0);
+    expect(room.state.landOwner[1], '到期地契已清').toBe(0);
+    expect(mirror.lastLotteryDraw).toEqual(room.state.lastLotteryDraw);
+  });
+});
+
+describe('★★ follow-up：掃 `pending: null`（惡人段里破产，联机）', () => {
+  it('流氓把 0 号勒索到破产 ⇒ 服务器留着清算拍卖、惡人段接着走；旁观端一致', () => {
+    // 6 格环、3 号格是 0 号的一块地（地价 10 万 ⇒ 勒索費 10 万×物價）
+    const map = {
+      nodes: Array.from({ length: 6 }, (_, i) =>
+        makeNode({
+          id: i + 1,
+          adjacent: [((i + 1) % 6) + 1],
+          ...(i === 2 ? { type: 0x7d0 + 3, ref: { kind: 'land' as const, index: 3 } } : {}),
+        }),
+      ),
+      lands: [3, 4, 5, 6].map((id) => makeLand({ id, name: 'A', landPrice: 100_000 })),
+      facilities: [],
+      commercials: [],
+      landscapes: [],
+      dataSize: 0,
+    } as unknown as Rich4Map;
+    const topo: MapTopology = {
+      nodes: map.nodes,
+      lands: map.lands,
+      facilities: [],
+      commercials: [],
+    };
+    const landOwner = new Array<number>(64).fill(0);
+    for (const l of map.lands) landOwner[l.id] = 1; // 0 号名下 4 块 ⇒ 清算拍 3 场
+    const base = makeGameState({
+      mode: 'multiplayer',
+      players: [
+        makePlayer({ index: 0, character: 0, whoPlays: WHO_PLAYS_HUMAN, nodeId: 1, cash: 0, moneyInBank: 0 }),
+        makePlayer({ index: 1, character: 1, whoPlays: WHO_PLAYS_HUMAN, nodeId: 1, cash: 1_000_000 }),
+        makePlayer({ index: 2, character: 2, whoPlays: WHO_PLAYS_COMPUTER, nodeId: 1, cash: 1_000_000 }),
+        makePlayer({ index: 3, character: 3, whoPlays: WHO_PLAYS_COMPUTER, nodeId: 1, cash: 1_000_000 }),
+      ],
+      humanPlayers: 2,
+      currentPlayer: 3, // 最后一位 ⇒ 这一回合先走惡人段
+      phase: 'turnEnd',
+      landOwner,
+      landLevel: new Array<number>(64).fill(0),
+    });
+    const specialActors = [...base.specialActors];
+    specialActors[2] = { ...releaseNpc(2, 1, 0), singleStep: 1, lastNodeId: 1 }; // 流氓走到 3 号格
+    specialActors[3] = { ...releaseNpc(6, 1, 0), singleStep: 1, lastNodeId: 5 }; // 间谍还在盘上
+    const state: GameState = { ...base, specialActors };
+    const room = fuRoom(map, state, 'FUNPC');
+    let mirror = state;
+    const submit = (seat: number, action: Action) => {
+      const r = room.submit(seat, action);
+      expect(r.ok, `座位 ${seat} 的 ${action.type} 被拒`).toBe(true);
+      if (!r.ok) return;
+      mirror = reduce(mirror, r.broadcast.action, topo);
+      expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+      expect(room.actingSeat).toBe(actingSeat(mirror));
+    };
+    submit(3, { type: 'endTurn' });
+    expect(room.state.players[0]!.whoPlays, '被勒索到出局').toBe(0);
+    expect(room.state.pending?.kind, '★ 清算拍卖留着').toBe('auction');
+    expect(room.state.pendingNpcSlots, '惡人段还剩一位').toEqual([3]);
+    for (let i = 0; i < 3; i++) {
+      expect(room.state.pending?.kind).toBe('auction');
+      submit(room.actingSeat, { type: 'auction', winner: -1, price: 0 });
+    }
+    expect(room.state.pending).toBeNull();
+    expect(room.state.pendingQueue).toEqual([]);
+    expect(room.state.pendingNpcSlots, '惡人段接得上').toEqual([3]);
+    // 惡人段的下一条就是服务器能受理的 `npcStep`（不卡死）—— 走完最后那一位才轮到下一位玩家
+    submit(3, { type: 'npcStep' });
+    expect(room.state.pendingNpcSlots).toEqual([]);
+    expect(room.state.day, '惡人段走完 ⇒ 推日期、轮到下一位').toBe(6);
   });
 });
