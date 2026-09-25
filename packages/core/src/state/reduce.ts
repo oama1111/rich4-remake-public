@@ -6871,9 +6871,10 @@ function landOnLottery(state: GameState): GameState {
     };
   }
 
-  // @source 0x0042f8ba `cmp dword [eax + 0x496b84], 0x3e8 / jge`
-  if (me.cash < LOTTERY_TICKET_PRICE) return state;
-
+  // ★ 2026-09-25 审计订正（LOT-09）：現金不足 1000 **也开屏** —— 投注窗在 `0x004315e7..0x00431653 call 0x4018e7`
+  //   就开了，现金是窗里 `WM_CREATE` 才判（`0x0042f8d7 cmp [現金], 0x3e8 / jge`，否则 `0x0042f8e3` 进状态 4
+  //   → 说 #0015「太可惜了！您的現金不足～」→ `0x0042fae5` 状态 5 #0016「下次再來吧！」→ `0x0042faf8` 关窗）。
+  //   先前这里直接返回，客户端那段 `noCash` 永远走不到。买是买不成的（`buyTicket` 拦 `notEnoughCash`），关窗 = `declineDecision`。
   return {
     ...state,
     pending: {

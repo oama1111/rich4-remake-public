@@ -78,12 +78,18 @@ describe('★ 樂透', () => {
     expect(r.pending.owned).toBe(0);
   });
 
-  run('★ 真人现金 < 1000 连屏都不开', () => {
-    // @source VA 0x0042f8ba `cmp .., 0x3e8 / jge`：不满足则那个窗口一闪即关
+  run('★ 审计订正（LOT-09）：真人现金 < 1000 也开屏（0x004315e7 先开窗、0x0042f8d7 窗里才判钱），但买不成、关屏 = 不买', () => {
     const { map, topo: t } = topo();
     const s = standOn(newGame({ map, players: humans() }), map, SPECIAL_KIND.LOTTERY);
     if (s === null) return;
-    expect(reduce(withCash(s, 999), { type: 'settle' }, t).pending).toBeNull();
+    const opened = reduce(withCash(s, 999), { type: 'settle' }, t);
+    expect(opened.pending?.kind).toBe('lottery');
+    if (opened.pending?.kind !== 'lottery') return;
+    const n = opened.pending.available[0]!;
+    expect(reduce(opened, { type: 'lottery', number: n }, t).lottery).toEqual(opened.lottery);
+    const closed = reduce(opened, { type: 'declineDecision' }, t);
+    expect(closed.pending).toBeNull();
+    expect(closed.players[closed.currentPlayer]!.cash).toBe(999);
   });
 
   run('★ 买完就收摊 —— 一次落点只买一注', () => {

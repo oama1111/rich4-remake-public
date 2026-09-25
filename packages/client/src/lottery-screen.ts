@@ -1029,6 +1029,9 @@ export const lotteryScreen: UiScreen = {
       case 'closing':
         // 说完 `#0016` 就关屏（原版 0x42faf8：收掉定时器 + `_Post_0402_Message(0)`）
         ui.dismissed = true;
+        // ★ 2026-09-25 审计：现金不足那一路 core 也挂了 `pending{lottery}`（窗返回 0 = 没买）⇒ 关屏就交「不买」
+        //   （只由这扇窗的主人交；联机旁观端 / 被託管时不交，由服务器 / AI 那一支答）
+        if (!lotteryLocked(env) && lotteryPending(env.state) !== null) env.dispatch({ type: 'declineDecision' });
         break;
       default:
         break;

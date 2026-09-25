@@ -203,4 +203,25 @@ describe('★ econ 审计：收费敌意 / 真人全出局收局 —— 联机�
     // 不是本人回合的座位交这一条 ⇒ 被拒
     expect(room.submit(2, { type: 'stockScreen', op: 'close' }).ok).toBe(false);
   });
+
+  run('真人 0 号現金 999 踩樂透 ⇒ 也挂投注屏，关屏不买；服务器与旁观端一致（LOT-09）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const lot = map.nodes.find((n) => n.specialKind === 9)!;
+    const s0 = scene(map, 'multiplayer', 0, 1, 999);
+    const state: GameState = { ...s0, players: s0.players.map((p, i) => (i === 0 ? { ...p, nodeId: lot.id } : p)) };
+    const room = roomFrom(map, state);
+    let mirror = state;
+    const submit = (action: Action) => {
+      const r = room.submit(0, action);
+      expect(r.ok).toBe(true);
+      if (r.ok) mirror = reduce(mirror, r.broadcast.action, topo);
+      expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+    };
+    submit({ type: 'settle' });
+    expect(room.state.pending?.kind).toBe('lottery');
+    submit({ type: 'declineDecision' });
+    expect(room.state.pending).toBeNull();
+    expect(room.state.players[0]!.cash).toBe(999);
+  });
 });
