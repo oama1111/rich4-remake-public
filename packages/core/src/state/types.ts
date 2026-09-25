@@ -592,12 +592,15 @@ export interface GodLineHint {
 /**
  * 董事長在商店送出的那一件（W-67-a）—— 纯表现提示，见 `GameState.lastShopGift`。
  *
+ * ★ 道具袋全空那一支也写：原版框是无条件走的，`{kind:'tool', id:0, points:70}` 表示
+ *   「框里那个名字是别名到卡 30 的那一项、手里一件都没多」（见 `reduce.ts` 的 `enterShop`）。
+ *
  * 消费者：`client/src/speech.ts` 的 `detectShopGift`（走 `fcn_0044f230` 那一支阶梯）。
  */
 export interface ShopGiftHint {
   /** 送的是道具还是卡 */
   readonly kind: 'tool' | 'card';
-  /** 道具号 / 卡号 */
+  /** 道具号 / 卡号（`0` = 空袋：原版读了道具名表 index 0 那个别名项）*/
   readonly id: number;
   /** 那件的**點數价** —— 原版传给 `0x44f230` 的就是它（不是现金价）*/
   readonly points: number;

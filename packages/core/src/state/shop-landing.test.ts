@@ -11,9 +11,11 @@ import { SPECIAL_KIND } from '../loaders/map.ts';
 import { toolCount } from '../rules/tools.ts';
 import { CARDS, TOOLS } from '@rich4/data';
 import { STORE_INDUSTRY } from '../places/shop.ts';
+import { SPEECH_SITE } from '../rules/speech-rand.ts';
 import { TRAFFIC_WALK } from '../rules/tool-effects.ts';
 import { initialCardAmounts } from '../rules/new-game.ts';
 import { initialToolStock } from '../rules/tools.ts';
+import { deserializeGame, serializeGame } from '../loaders/savegame.ts';
 import { decidePending } from '../ai/policy.ts';
 
 const node = makeNode({ id: 1, adjacent: [1], flags: SPECIAL_KIND.DEPARTMENT_STORE, specialKind: SPECIAL_KIND.DEPARTMENT_STORE });
@@ -117,11 +119,15 @@ describe('★ 百貨公司落点', () => {
  *
  * @source `_rich4_ui_shop_entry` `0x0042e97d..0x0042ea28`：
  *   ① `rand() & 1` 决定送道具（`0x445ada`）还是送卡（`0x441e12`）；
- *   ② 真的送成了才 `sprintf(buf, 0x464378(=「歡迎董事長光臨\n\n送您%s！」), 名字)`
+ *   ② `sprintf(buf, 0x464378(=「歡迎董事長光臨\n\n送您%s！」), 名字)`
  *      → `push 0x5dc / call 0x440cac`（棕色訊息框 1500 ms，**在商店窗打开之前**）
  *      → `call 0x44f230(玩家, 那件的**點數价**)`（「好消息」台词阶梯）。
  *   ⇒ core 侧的交接口 = `notices` 新出现 `shop.chairmanGift`（`args[0]` = 名字）
  *     与瞬态 `lastShopGift`（`{kind, id, points}`）。
+ *
+ * ★★ 2026-09-25（本轮订正）：第 ② 步是**无条件**的 —— 框与台词不看「送成没送成」，
+ *   两支 `je`/`jmp` 只挑送什么。空袋（`0x445ada` 返回 0）也弹框（名字/價别名到卡 30，
+ *   见下面那两条用例），只有「牌堆空」那一支（原版 `strcpy(NULL)` 崩）在本引擎里不弹。
  */
 describe('★★ W-67-a 董事長蒞臨的贈禮', () => {
   /**
@@ -178,13 +184,61 @@ describe('★★ W-67-a 董事長蒞臨的贈禮', () => {
     );
   });
 
-  it('★ 库存与牌堆都空 ⇒ 不弹框、也不写 `lastShopGift`', () => {
-    const s = chairmanLanded({
-      cardAmount: new Array<number>(30).fill(0),
-      toolStock: new Array<number>(14).fill(0),
-    });
+  it('★★ 贈禮**真的落到手牌**上（查 `state.tools` / `players[].cards`，不是已废弃的 `players[].tools`）', () => {
+    // 回报 `20260925-134801926`（Charles、单机、P0 = 阿土伯）现场就是这么走的：
+    // 買下大宇百貨 ⇒ 当上董事長 ⇒ 用遙控骰子走 1 格踩到節點 8 百貨公司 ⇒ `shop.chairmanGift` 框。
+    // 该回报的 `finalState` 里 P0 的 `players[0].tools` 是 `[]` —— 那是**已废弃**字段
+    // （`newGame` 建局恒写 `[]`，见 types.ts 的 `Player.tools`），礼物其实在 `state.tools` 里：
+    // 回报基态 `{1,3,4,8,9}` → 终态 `{1,3,4,5,9}`（8 = 遙控骰子被那一步走子用掉，多出来的 5 = 機車）。
+    const s = chairmanLanded();
+    const notice = s.notices.find((n) => n.key === 'shop.chairmanGift');
+    const gift = s.lastShopGift ?? null;
+    expect(notice, '董事長赠礼框应当出现').toBeDefined();
+    expect(gift, '这个夹具下应当真的送出了一件').not.toBeNull();
+    // ★ 框里说的那一件必须**真的在手上**：送道具 ⇒ `state.tools` 里 +1；送卡 ⇒ 手牌里多一张
+    if (gift!.kind === 'tool') {
+      expect(toolCount(s.tools, 0, gift!.id)).toBe(1);
+    } else {
+      expect(s.players[0]!.cards.filter((c) => c === gift!.id)).toHaveLength(1);
+    }
+    // ★ 反例钉：真手牌在 `GameState.tools` 那张扁平表里（见 types.ts 的 `Player.tools`）——
+    //   过一层序列化 / 反序列化它还在原处，而那个已废弃的 `Player.tools` 里一件都没有。
+    const round = deserializeGame(serializeGame(s));
+    if (gift!.kind === 'tool') expect(toolCount(round.tools, 0, gift!.id)).toBe(1);
+    expect(round.players[0]!.tools.filter((n) => n !== 0)).toEqual([]);
+  });
+
+  it('★★ 空袋（道具 1..8 全 0）＋ `rand()&1 == 1` ⇒ 照弹框、照说台词，手里一件不多', () => {
+    // @source `0x0042e99a mov ebp,[ebx + 0x47feda]` / `0x0042e9b1 mov bl,[ebx + 0x47fedf]`，ebx = id*8。
+    //   道具名表本体是 `0x47fee2 + (id−1)*8`（取证见 `packages/data/src/tools.ts`），
+    //   故 id = 0 读到的 `0x47feda` **不在道具表里** —— 两张名表在 DGROUP 里首尾相接，
+    //   卡片名表（30 项 + 0 号空位）正好占 `0x47fdea..0x47fee2` ⇒ id 0 别名到**卡片表末项**：
+    //   `dump 0x47feda` = {name 0x00466b89「烏龜卡」, init 3, price 70} = 卡 30
+    //   （`@rich4/data` 的 `{id:30, name:'烏龜卡', initAmount:3, price:70}` 逐项对上）。
+    //   ⇒ 原版那一拍弹「送您烏龜卡！」，台词按 70 走中档（50 < 70 ≤ 100 ⇒ **掷一次 rand**），手里一件不多。
+    // 夹具的 `rngState`（`2111915288`）恰好是 `rand()&1 == 1` 那一支；空袋时 `0x445ada` 内部
+    // 不掷 rand（`0x445b0e test ebx,ebx / je` 在 `call rand` 之前），所以礼物那一拍只多台词那一掷。
+    const s = chairmanLanded({ toolStock: new Array<number>(14).fill(0) });
+    const notice = s.notices.find((n) => n.key === 'shop.chairmanGift');
+    expect(notice, '空袋也照弹框（原版框是无条件走的）').toBeDefined();
+    expect(notice!.args).toEqual([CARDS.find((c) => c.id === 30)!.name]);
+    expect(s.lastShopGift ?? null).toEqual({ kind: 'tool', id: 0, points: 70 });
+    // 手里一件都没多
+    expect([1, 2, 3, 4, 5, 6, 7, 8].reduce((n, id) => n + toolCount(s.tools, 0, id), 0)).toBe(0);
+    expect(s.players[0]!.cards).toEqual([]);
+    // 台词那一掷真的掷了（`0x0044f280` 点入帳中档）—— 掷出来的值记在 `lastSpeechRolls` 里
+    expect((s.lastSpeechRolls ?? []).map((r) => r.site)).toEqual([SPEECH_SITE.smallGain]);
+  });
+
+  it('★ 牌袋空 ＋ `rand()&1 == 0` ⇒ 原版会 `strcpy(NULL)` 崩；本引擎按「不弹框、不送」收场', () => {
+    // 名字表 `0x47fdea + 0*8` 是 0 号空位里的 NULL，而 `0x457d96` 是逐字节 strcpy 循环
+    //（`mov cl,[edx] ... cmp cl,0 / jne`）⇒ 原版读地址 0。改不了「崩」，只能不送、不弹。
+    const s = chairmanLanded({ cardAmount: new Array<number>(30).fill(0), rngState: 1 });
     expect(s.notices.filter((n) => n.key === 'shop.chairmanGift')).toHaveLength(0);
     expect(s.lastShopGift ?? null).toBeNull();
+    expect(s.players[0]!.cards).toEqual([]);
+    // 商店照开（框只是那一拍的表现）
+    expect(s.pending?.kind).toBe('shop');
   });
 
   it('★ 瞬态：下一条 action 把它清成 null（只活一条 action）', () => {

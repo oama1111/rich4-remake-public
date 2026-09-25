@@ -8691,12 +8691,17 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
   rng.setState(state.rngState);
   let next: GameState = state;
   /**
-   * ★★ W-67-a：董事長送出的那一件（`0` = 什么都没送）。
+   * ★★ W-67-a：董事長那一拍送出的东西（`null` = **连框都不弹**）。
    *
-   * @source `_rich4_ui_shop_entry` `0x0042e97d..0x0042ea28`：真的送出去了才
-   *   `sprintf(buf, 0x464378, 名字)` → `push 0x5dc / call 0x440cac`（棕色訊息框 1500 ms）
+   * @source `_rich4_ui_shop_entry` `0x0042e97d..0x0042ea28`：`sprintf(buf, 0x464378, 名字)`
+   *   → `push 0x5dc / call 0x440cac`（棕色訊息框 1500 ms）
    *   → `call 0x44f230(玩家, 那件的**點數价**)`（「好消息」台词阶梯），
    *   而商店窗是**框之后**才开的（`0x0042ea28` 之后）。
+   *
+   * ★★ 2026-09-25（本轮订正）：框与台词是**无条件**走到那两句 `sprintf` / `0x440cac` 的 ——
+   *   两支 `je`/`jmp`（`0x42e984 je 卡片支`、`0x42e9b7 jmp 0x42e9ea`）只挑**送什么**，
+   *   跳过的从来不是框。故「空袋」（`0x445ada` 返回 0）照样弹框、照样说台词，
+   *   只是手里一件都不多（名字/價见空袋那一支的注释）。`null` 只留给牌堆空那一支。
    */
   let gift: { kind: 'tool' | 'card'; id: number; name: string; points: number } | null = null;
 
@@ -8715,8 +8720,24 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
           name: TOOLS.find((x) => x.id === toolId)?.name ?? `道具${toolId}`,
           points: toolPrice(toolId),
         };
+      } else {
+        // ★★ 2026-09-25（本轮）：空袋（`0x445ada` 返回 0）—— 原版**照弹框、照说台词**，
+        //   只是手里一件都不多：名字与價读的是 `0x47feda + 0*8`，而那一位**不在道具名表里**
+        //   （道具名表本体 = `0x47fee2 + (id−1)*8`，取证见 `packages/data/src/tools.ts`）。
+        //   两张名表在 DGROUP 里**首尾相接**：卡片名表 30 项 + 0 号空位 = `0x47fdea..0x47fee2`，
+        //   道具名表紧接着从 `0x47fee2` 起 ⇒ 「道具 id 0」正好别名到**卡片表最后一项**：
+        //   `dump 0x47feda` = {name 0x00466b89「烏龜卡」, init 3, price 70, 0, 0} = 卡 30（價 70，逐项对上
+        //   `packages/data/src/cards.ts` 的 `{id:30, name:'烏龜卡', initAmount:3, price:70}`）。
+        //   ⇒ 原版那一拍弹的是「送您烏龜卡！」，台词按 **70** 走「好消息」中档（50 < 70 ≤ 100 ⇒ 掷一次 rand）。
+        //   ⚠️ 这一支**不是**「什么都没送就不弹框」：`je`/`jmp` 跳的是「送什么」，框在 `0x42e9ea` 汇合后无条件走。
+        const aliasCard = CARDS[CARDS.length - 1]!; // 卡片表按 id 升序 ⇒ 末项 = 卡 30 烏龜卡
+        gift = { kind: 'tool', id: 0, name: aliasCard.name, points: cardPrice(aliasCard.id) };
       }
     } else {
+      // ★ 牌袋空（`0x441e12` 返回 0）那一支**不能**照抄：名字表 `0x47fdea + 0*8` 是 0 号空位里的
+      //   **NULL**，而 `0x457d96` 是个逐字节 strcpy 循环（`mov cl,[edx] ... cmp cl,0 / jne`）
+      //   ⇒ 原版当场读地址 0（崩）。本引擎按「什么都没送、框也不弹」收场；
+      //   正常局里到不了这里：牌堆开局 ≥ 15 张，且只有卖卡才回牌堆。
       const cardId = drawRandomCard(rng, next.cardAmount);
       if (cardId !== 0) {
         // ★ 同上：满手牌时先丢最便宜的再收（原版统一走 `giveCard` 0x004412e4）；
