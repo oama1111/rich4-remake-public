@@ -531,7 +531,7 @@ import { clockSeed, reduceWithHostRng, reseedAfterLoad } from './rng-host.ts';
 import { FlightRecorder, reportFileName } from './flight-recorder.ts';
 import { holidayBgmOnDayAdvance } from './holiday-bgm.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
-import { installViewportFit } from './viewport.ts';
+import { installTextEntryRecovery, installViewportFit, iosViewportContent, isIosWebKit } from './viewport.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import {
   INTRO_ARCHIVE,
@@ -786,7 +786,22 @@ const $ = <T extends HTMLElement>(id: string): T => {
 const canvas = $<HTMLCanvasElement>('board');
 // ★ 第十二份試玩回報：iPad Safari 地址栏遮住工具栏 —— 页面钉在 `visualViewport` 上，
 //   不再用 `100vh`（见 viewport.ts）。越早越好：大厅/门厅也在这块区域里。
-installViewportFit(window, document.body.style);
+const refitViewport = installViewportFit(window, document.body.style);
+// ★ 第二十七份（iPhone Safari）「输入文字后画面显示不全」：iOS 上 meta viewport 常驻
+//   `maximum-scale=1`（只挡聚焦自动放大，双指缩放照旧），文字框失焦 / 转向后把卷动、缩放
+//   收拾回来并按可视区重钉舞台（见 viewport.ts 的 `installTextEntryRecovery`）。
+const viewportMeta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+if (viewportMeta !== null && isIosWebKit(navigator)) viewportMeta.content = iosViewportContent(viewportMeta.content);
+installTextEntryRecovery({
+  win: window,
+  doc: document,
+  meta: viewportMeta,
+  isTextEntry: (t) => isTextEntryTarget(t as EventTarget | null),
+  refit: () => {
+    refitViewport();
+    requestRender();
+  },
+});
 // ⚠️ 側欄不再是独立的 HTML 画布 —— 它是舞台 640×480 里的一块
 //   （见 stage.ts 的 LAYOUT.panel），跟着一起缩放，命中判定也走舞台坐标。
 const ctx = (() => {

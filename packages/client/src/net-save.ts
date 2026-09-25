@@ -8,6 +8,7 @@
  */
 
 import { MAX_SAVE_NAME_CODE_POINTS, sanitizeSaveName } from '@rich4/core';
+import { TEXT_ENTRY_FONT_PX } from './text-entry.ts';
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'PingFang TC', 'Microsoft JhengHei', sans-serif";
 
@@ -39,7 +40,8 @@ export function promptSaveName(defaultName: string, doc: Document = document): P
     input.maxLength = 48;
     input.value = defaultName;
     input.placeholder = `1~${MAX_SAVE_NAME_CODE_POINTS} 個字`;
-    input.style.cssText = `width:100%;box-sizing:border-box;padding:9px 10px;font:14px/1.4 ${FONT};border-radius:6px;border:1px solid #3a5a83;background:#0e2138;color:#e9eef7`;
+    // ★ 第二十七份：≥ 16px，iOS Safari 聚焦不自动放大（见 text-entry.ts）
+    input.style.cssText = `width:100%;box-sizing:border-box;padding:9px 10px;font:${TEXT_ENTRY_FONT_PX}px/1.4 ${FONT};border-radius:6px;border:1px solid #3a5a83;background:#0e2138;color:#e9eef7`;
     const err = doc.createElement('div');
     err.style.cssText = 'margin-top:6px;font-size:12px;color:#ff9d9d;min-height:1em';
     const row = doc.createElement('div');

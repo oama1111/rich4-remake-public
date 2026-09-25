@@ -39,6 +39,7 @@ import {
   seatLabel,
   statusLabel,
 } from './room-list.ts';
+import { TEXT_ENTRY_FONT_PX } from './text-entry.ts';
 
 /** 上次用的名字 */
 export const NAME_STORAGE_KEY = 'rich4.name';
@@ -264,7 +265,8 @@ function el<K extends keyof HTMLElementTagNameMap>(
 const GOLD = '#f3d27a';
 const BTN = `padding:10px 14px;font:600 14px/1.2 ${FONT};border:1px solid #3a5a83;border-radius:8px;background:#22405f;color:#e9eef7;cursor:pointer`;
 const BTN_MAIN = `padding:10px 14px;font:600 14px/1.2 ${FONT};border:1px solid #b08a2e;border-radius:8px;background:#7a5a14;color:#fff3d0;cursor:pointer`;
-const INPUT = `width:100%;box-sizing:border-box;padding:9px 10px;font:14px/1.4 ${FONT};border-radius:6px;border:1px solid #3a5a83;background:#0e2138;color:#e9eef7`;
+// ★ 第二十七份：文字框字号 ≥ 16px，iOS Safari 聚焦时才不会自动放大且失焦不缩回（见 text-entry.ts）
+const INPUT = `width:100%;box-sizing:border-box;padding:9px 10px;font:${TEXT_ENTRY_FONT_PX}px/1.4 ${FONT};border-radius:6px;border:1px solid #3a5a83;background:#0e2138;color:#e9eef7`;
 const ENTRY = `display:block;width:100%;box-sizing:border-box;text-align:left;padding:14px 16px;border-radius:10px;border:1px solid #3a5a83;background:#1d3a5c;color:#e9eef7;cursor:pointer;font-family:${FONT}`;
 
 function button(doc: Document, style: string, text: string): HTMLButtonElement {
