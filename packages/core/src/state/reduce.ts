@@ -2316,10 +2316,19 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     case 'buildFacility': {
       if (state.phase !== 'awaitingDecision' || state.pending?.kind !== 'buildFacility') return state;
       const player = state.players[state.currentPlayer];
-      const fac = facilityAtPlayer(state, topo);
+      // 建設公司那一支选的設施不在脚下 ⇒ 按 pending 里记的那一处
+      const fac =
+        state.pending.company === undefined
+          ? facilityAtPlayer(state, topo)
+          : effectiveFacility(state, topo, state.pending.facilityId);
       if (player === undefined || fac === null) return state;
       // ★ `facilityType: null` = 电脑那一支定种类（开着选种类窗被托管的真人，由 AI 代答）；真人座位不收
       if (action.facilityType === null && !isAiControlled(player)) return state;
+      if (state.pending.free === true && state.pending.company !== undefined) {
+        if (action.facilityType !== null && !state.pending.choices.includes(action.facilityType)) return state;
+        const built = freeBuildFacilityById(state, topo, fac.id, action.facilityType ?? -1);
+        return companyBuildTail(state, topo, state.pending.company, 0xfa0 + fac.id, built);
+      }
       if (state.pending.free === true) {
         // ★ 神明顯靈代蓋的那一次（`0x40b110` 里的 `0x0040b1e4 call 0x440aac`）：
         //   **不收钱、不看归属、不过衰神闸**（`0x40b110` 整支没有 `call 0x40fa61`）
@@ -2398,11 +2407,28 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (state.pending?.kind !== 'chooseBuildTarget') return state;
       const pend = state.pending;
       if (!pend.choices.includes(action.entityId)) return state;
+      const company = { commercialId: pend.commercialId, charge: pend.charge };
+      // ★ 2026-09-25 审计：选中等级 0 的設施（真人）⇒ `0x40b110` 里先弹选种类窗（`0x0040b1e4 call 0x440aac`），
+      //   种类定了再接着走建設公司收尾（`companyBuildTail`）
+      const picked = decodeEstate(action.entityId);
+      const me = state.players[state.currentPlayer];
+      if (picked.kind === 'facility' && me !== undefined && (me.whoPlays & 0x06) === 0) {
+        const fac = effectiveFacility(state, topo, picked.index);
+        if (fac !== null && fac.level === 0) {
+          return {
+            ...state,
+            phase: 'awaitingDecision',
+            pending: { kind: 'buildFacility', facilityId: fac.id, name: fac.name, price: 0, choices: [0, 1, 2, 3, 4], free: true, company },
+          };
+        }
+      }
       // ★ 第十五份：自家公司（`charge` 为假）蓋两次（`ownCompanyBuild`）；别人的公司一次
       const built = pend.charge
         ? freeBuildEntity(state, topo, action.entityId, -1)
         : ownCompanyBuild(state, topo, action.entityId);
-      if (built === null) return state;
+      // ★ 2026-09-25 审计：蓋不成（满级 / 連鎖店…，`0x40b110` 返回 0）也照走收尾 —— 原版 `0x0041ad7e call 0x40b110`
+      //   不看返回值，大锤照播、工程費照收（`0x0041adb9` 起）
+      if (built === null) return companyBuildTail(state, topo, company, action.entityId, null);
       // ⚠️ 建設公司这一支在原版里也播 0x229 大锤 + 消费 bit7
       //   （@source 0x0041ad7e → 0x0041ad99 call 0x45144f（大锤）→ 0x0041adaa
       //   test byte [esp+0xbc], 0x80 → 0x0041adb4 call 0x40b0cd）。
@@ -2573,6 +2599,19 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       }
       if (state.phase === 'awaitingDecision' && state.pending?.kind === 'scapegoat') {
         return runTollTail(state, topo, state.pending.tail, { scapegoat: -1 });
+      }
+      // ★ 2026-09-25 审计：建設公司选地窗右键 ⇒ 窗交回 0（`0x004466c6` 掩码没有 8 位 ⇒ 可取消）：
+      //   别人家 `0x0041ad28 je 0x41adff` ⇒ 照收 1000 × 物價；自家 `0x0041aa95 je 0x41b062` ⇒ 直接到出口。
+      if (state.pending?.kind === 'chooseBuildTarget') {
+        const pend = state.pending;
+        const c = topo.commercials?.find((x) => x.id === pend.commercialId);
+        const cleared: GameState = { ...state, pending: null, phase: 'turnEnd' };
+        if (pend.charge && c !== undefined) return chargeCompanyFee(cleared, topo, state.currentPlayer, c, 1000 * state.priceIndex);
+        return afterCompany(cleared, topo, pend.commercialId);
+      }
+      // 建設公司那一支的选种类窗取消 ⇒ 不蓋（有意偏离同神明代蓋，见上），但收尾照走（工程費照收）
+      if (state.pending?.kind === 'buildFacility' && state.pending.company !== undefined) {
+        return companyBuildTail(state, topo, state.pending.company, 0xfa0 + state.pending.facilityId, null);
       }
       if (state.phase === 'awaitingDecision') {
         // 不加蓋也照样走到落点尾块：自己的研究所要问研發（0x0041b0b3，由 `labPanelTail` 接）
@@ -8137,6 +8176,44 @@ function freeBuildEntity(
   return freeBuildFacilityById(state, topo, e.index, chosenType);
 }
 
+/**
+ * 建設公司选定一处之后的收尾（真人那一支）：自家公司再蓋一次、别人家付工程費，然后到企業出口。
+ *
+ * @source 自家 `0x0041aae8 call 0x40b110` / `0x0041aaf2 test [esp+0xbc],0x80` / `0x0041aafb call 0x40b110`（第二次）；
+ *   别人家 `0x0041ad7e call 0x40b110`（不看返回值）→ 大锤 → `0x0041adb9..0x0041adfd` 工程費 = 那处地價 × 物價 →
+ *   `0x0041ae37` 收費段。`built === null` = 蓋不成（满级 / 連鎖店 / 选种类窗取消），工程費照收。
+ */
+function companyBuildTail(
+  state: GameState,
+  topo: MapTopology,
+  company: { commercialId: number; charge: boolean },
+  entityId: number,
+  built: FreeBuildOutcome | null,
+): GameState {
+  let outcome = built;
+  if (outcome !== null && !company.charge && !outcome.reachedMaxLevel) {
+    // 自家公司第二次（选种类那一下已经是第一次）
+    const second = freeBuildEntity(outcome.state, topo, entityId, -1);
+    if (second !== null) outcome = { ...second, reachedMaxLevel: outcome.reachedMaxLevel };
+  }
+  const viewTarget = entityViewTarget(state, topo, entityId);
+  let next: GameState = {
+    ...(outcome === null ? state : withSingleBuildUpgrade(outcome.state, buildHintOf(outcome, 'companyBuild'))),
+    pending: null,
+    phase: 'turnEnd',
+    ...(viewTarget === null ? {} : { lastViewTarget: viewTarget }),
+  };
+  if (company.charge) {
+    const fee = entityLandPrice(next, topo, entityId) * next.priceIndex;
+    const c = topo.commercials?.find((x) => x.id === company.commercialId);
+    if (c !== undefined) return chargeCompanyFee(next, topo, state.currentPlayer, c, fee);
+    next = payCompany(next, topo, state.currentPlayer, company.commercialId, fee);
+    if (next.phase === 'gameOver') return next;
+    if (!isAlive(next.players[state.currentPlayer]!)) return bankruptLandingExit(next);
+  }
+  return afterCompany(next, topo, company.commercialId);
+}
+
 /** 实体（地块/設施）的地價 —— 建設公司算工程費用 @source 0x0041adc7 / 0x0041ade3 */
 /**
  * 某个实体（`0x7d0 + land.id` / `0xfa0 + facility.id`）的**屏幕坐标** —— 给 `lastViewTarget` 用。
@@ -8173,23 +8250,23 @@ function entityLandPrice(state: GameState, topo: MapTopology, entityId: number):
 }
 
 /** 当前玩家名下可加蓋的实体编码（给建設公司的选择框） */
-function buildableEntities(state: GameState, topo: MapTopology, player: number, human: boolean): number[] {
-  const out: number[] = [];
-  for (const l of topo.lands ?? []) {
-    if ((state.landOwner[l.id] ?? 0) !== player + 1) continue;
-    const eff = effectiveLand(state, topo, l.id);
-    if (eff !== null && buildOneLevel(eff.type, eff.level, MAX_LAND_LEVEL).ok) out.push(0x7d0 + l.id);
-  }
-  for (const f of topo.facilities ?? []) {
-    if ((state.facilityOwner[f.id] ?? 0) !== player + 1) continue;
-    const level = state.facilityLevel[f.id] ?? 0;
-    const type = state.facilityType[f.id] ?? 0;
-    // 真人对等级 0 的設施还得选种类，那个界面属 P2 —— 先不列进来
-    if (level === 0 && human) continue;
-    if (level === 0 || canUpgradeFacility(type, level)) out.push(0xfa0 + f.id);
-  }
-  return out;
+/**
+ * 建設公司真人选地窗的候选 —— **全图每一块地、每一处設施**（不看归属、不看等级）。
+ *
+ * @source 自家 `0x0041aa6a` / 别人家 `0x0041acff push 0x2090086 / call 0x446ae8` → 窗口过程 `0x445e4d`：
+ *   `0x00445ee6` 低字 = 0x0086 → `0x0044624e test [0x48c594],2`（地块 0x7d0..0xfa0 都算）/
+ *   `0x0044627d test …,4`（設施 0xfa0..0x1770 都算）；高字节 `[0x48c595]` = 0 ⇒ `0x0044630a` 不再按归属细筛。
+ *   点中的就交回（`0x00446691 push [0x48c584] / call 0x401966`）；右键（`0x004466c6 test …,8` 未置）交回 0。
+ *   选了蓋不成的（别人的、满级的…）`0x40b110` 什么都不做，但别人家公司的工程費照收。
+ *   （先前只列「自己的、还能蓋的」，并排除等级 0 的設施 —— 原版没有这层筛选。）
+ */
+function buildTargetCandidates(topo: MapTopology): number[] {
+  return [
+    ...(topo.lands ?? []).map((l) => 0x7d0 + l.id),
+    ...(topo.facilities ?? []).map((f) => 0xfa0 + f.id),
+  ];
 }
+
 
 /**
  * 保險理賠 @source 0x0044ba63(玩家, 損失, 旗标)：
@@ -8792,7 +8869,7 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
         // ★ 2026-09-23：真人先弹「%s\n\n請選擇欲加蓋地點」（`%s` = 企業名，1500 ms）再选地
         //   @source 自己的建設公司 `0x0041aa3c cmp [+0x15],1` → `0x0041aa46 push 0x463a4a` → `0x0041aa62 call 0x440cac`
         next = appendFreshNotice(next, { key: 'company.pickBuildSite', args: [c.name] });
-        const choices = buildableEntities(next, topo, me, true);
+        const choices = buildTargetCandidates(topo);
         if (choices.length > 0) {
           return {
             ...next,
@@ -8856,7 +8933,7 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
     } else {
       // ★ 2026-09-23：别人的建設公司同一句（`0x0041acd1 cmp [+0x15],1` → `0x0041acdb push 0x463a4a` → `0x0041acf7`）
       next = appendFreshNotice(next, { key: 'company.pickBuildSite', args: [c.name] });
-      const choices = buildableEntities(next, topo, me, true);
+      const choices = buildTargetCandidates(topo);
       if (choices.length > 0) {
         return {
           ...next,

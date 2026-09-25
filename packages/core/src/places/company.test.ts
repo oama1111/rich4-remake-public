@@ -21,7 +21,7 @@ import {
   feeNameOf,
 } from './company.ts';
 import { WHEEL, WHEEL_TABLE, spinWheel } from '../rules/facility.ts';
-import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
+import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce, type MapTopology } from '../state/reduce.ts';
 import { decidePending } from '../ai/policy.ts';
 import { emptyOwnership } from './commercial.ts';
@@ -294,9 +294,41 @@ describe('★ 踩到上市企業', () => {
     expect(decidePending({ ...piloted, landLevel: [0, 5] }, map)).toEqual({ type: 'declineDecision' });
   });
 
-  it('★ 真人没有可加蓋的地：不弹选地，直接問認購', () => {
-    const r = reduce(landing(1), { type: 'settle' }, topoWith(INDUSTRY.construction));
-    expect(r.pending?.kind).toBe('buyShares');
+  it('★ 审计订正：真人选地窗照开（候选 = 全图每块地 / 每处設施，0x2090086 不按归属筛）；右键 ⇒ 别人家照收 1000×物價', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const r = reduce(landing(1), { type: 'settle' }, topo);
+    expect(r.pending?.kind).toBe('chooseBuildTarget');
+    if (r.pending?.kind !== 'chooseBuildTarget') return;
+    expect(r.pending.choices).toEqual((topo.lands ?? []).map((l) => 0x7d0 + l.id));
+    const cancelled = reduce(r, { type: 'declineDecision' }, topo);
+    expect(cancelled.players[0]!.cash).toBe(99_000); // 1000 × 物價 1（0x0041adff）
+    expect(cancelled.pending?.kind).toBe('buyShares');
+  });
+
+  it('★ 审计：选中等级 0 的設施（真人）⇒ 先选种类，再收工程費（地價 × 物價）', () => {
+    const topo: MapTopology = {
+      ...topoWith(INDUSTRY.construction),
+      facilities: [makeFacility({ id: 1, name: '空地', owner: 2, level: 0, landPrice: 3000 })],
+    };
+    const r = reduce(landing(1), { type: 'settle' }, topo);
+    if (r.pending?.kind !== 'chooseBuildTarget') throw new Error('no picker');
+    expect(r.pending.choices).toContain(0xfa0 + 1);
+    const asked = reduce(r, { type: 'buildTarget', entityId: 0xfa0 + 1 }, topo);
+    expect(asked.pending).toMatchObject({ kind: 'buildFacility', free: true, company: { commercialId: CID, charge: true } });
+    const done = reduce(asked, { type: 'buildFacility', facilityType: 2 }, topo);
+    expect(done.facilityType[1]).toBe(2);
+    expect(done.facilityLevel[1]).toBe(1);
+    expect(done.players[0]!.cash).toBe(100_000 - 3000);
+  });
+
+  it('★ 审计订正：选了蓋不成的（别人的 5 级地）⇒ 不蓋，但工程費照收（0x0041ad7e 不看 0x40b110 的返回值）', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const s0 = landing(1);
+    const r = reduce({ ...s0, landOwner: [0, 2], landLevel: [0, 5] }, { type: 'settle' }, topo);
+    if (r.pending?.kind !== 'chooseBuildTarget') throw new Error('no picker');
+    const done = reduce(r, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(5);
+    expect(done.players[0]!.cash).toBeLessThan(100_000);
   });
 });
 

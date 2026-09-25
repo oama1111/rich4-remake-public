@@ -60,6 +60,11 @@ export type PendingInteraction =
        * 不收钱、不看归属。缺席 = 落点问出来的那个普通首建。
        */
       free?: true;
+      /**
+       * ★ 2026-09-25 审计：建設公司那一支选中了**等级 0 的設施**（真人，`0x40b110` 的 `0x0040b1e4 call 0x440aac`）——
+       *   选完种类还要接着走建設公司的收尾（自家：再蓋一次 `0x0041aafb`；别人家：付工程費 `0x0041adb9` 起）。
+       */
+      company?: { commercialId: number; charge: boolean };
     }
   /** 自己的設施（等级 ≥ 1）：加蓋一级。价 = 房價 × 物價指數 */
   | { kind: 'upgradeFacility'; facilityId: number; name: string; cost: number; level: number }
