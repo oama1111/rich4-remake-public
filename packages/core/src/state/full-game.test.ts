@@ -14,6 +14,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
 import { newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
+import { CONFINEMENT_GATE_TYPE } from '../rules/confinement.ts';
 import { WHO_PLAYS_RETURN_TO_BOARD, isAlive, isInGame } from './types.ts';
 import { gameOverCode, isGameOver, reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
@@ -136,7 +137,17 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
       {
         x: n.x,
         y: n.y,
-        gate: n.specialKind === SPECIAL_KIND.PRISON || n.specialKind === SPECIAL_KIND.HOSPITAL,
+        // ★ 关押传送落的是**关押格**（节点 type 0x1f41 / 0x1f42，0001.bin 的 23 / 1），
+        //   不是落点特殊格（specialKind 4/5 = 12 / 16）—— 见 `rules/confinement.ts` 的
+        //   `CONFINEMENT_GATE_TYPE`（@source 0x0040803f / 0x0043d621）。先前这里只认 specialKind，
+        //   第六个窗口（被关 → 被綁架 → 消失结束，`0x40d375` / `0x40d4e5` 不写 x/y）在監獄那一侧
+        //   从没真正放行过；pt27-stock 改了认购股数后轨迹换了，种子 2024 第 9829 步正好走到
+        //   「命運三張：入監 + 消失」⇒ 綠島贴图 + 監獄關押格 1。
+        gate:
+          n.specialKind === SPECIAL_KIND.PRISON ||
+          n.specialKind === SPECIAL_KIND.HOSPITAL ||
+          n.type === CONFINEMENT_GATE_TYPE.prison ||
+          n.type === CONFINEMENT_GATE_TYPE.hospital,
       },
     ]),
   );

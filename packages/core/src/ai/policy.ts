@@ -34,6 +34,7 @@ import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { pickFacingAt } from '../rules/teleport.ts';
 import { canUpgradeFacility } from '../rules/facility.ts';
 import { aiShouldPurchase } from '../rules/purchase.ts';
+import { aiCommercialShareCount } from '../places/company.ts';
 import { auctionActiveSeatCount, auctionAiChoice } from '../rules/auction.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 
@@ -584,13 +585,15 @@ export function decidePending(state: GameState): Action | null {
     return t === undefined ? null : { type: 'buildFacility', facilityType: t };
   }
   if (p.kind === 'buyShares') {
-    // 简单策略：留够安全垫，剩下的钱买得起多少买多少，且不超过企业余量。
-    // ★ 这是**策略**不是规则——买不买、买多少原版由 AI 性格决定（M3），
-    //   这里先给一个不会把自己买破产的保守解。
-    if (p.unitPrice <= 0) return null;
-    const spendable = Math.trunc(p.cash / 2);
-    const want = Math.min(Math.trunc(spendable / p.unitPrice), p.available);
-    return want > 0 ? { type: 'buyShares', shares: want } : null;
+    // ★ 照原版电脑那支（pt27-stock「忍太郎怎么一下就买了3000股保险公司？」）：
+    //   `0x0041d267 push esi / push ecx / call 0x41d839` —— 上限 esi 就是真人填数窗那个
+    //   `min(1000, 現金 ÷ 單價, 企業餘量)`（`p.max`），再扣 30% 开局资金×物價 的安全垫。
+    //   先前这里是自拟的「现金一半能买多少买多少、只夹企業餘量」，一口气买下 3000 股。
+    const me = state.players[state.currentPlayer];
+    if (me === undefined) return null;
+    const n = aiCommercialShareCount(p.unitPrice, p.max, me.cash, initialFundOf(state), state.priceIndex);
+    // `0x0041d273 test edi, edi / je 0x41d2bb` —— 0 股 = 不买
+    return n > 0 ? { type: 'buyShares', shares: n } : { type: 'declineDecision' };
   }
   return null;
 }

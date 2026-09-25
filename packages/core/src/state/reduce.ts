@@ -5378,7 +5378,11 @@ function buySharesFromCommercial(state: GameState, shares: number, topo: MapTopo
   const pending = state.pending;
   if (pending === null || pending.kind !== 'buyShares') return state;
   if (!Number.isInteger(shares) || shares <= 0) return state;
-  if (shares > pending.available) return state;
+  // ★ 上限是 `pending.max` = `min(1000, 現金 ÷ 單價, 企業餘量)`，**真人电脑同一道**：
+  //   `0x0041d20a..0x0041d21d` 夹进 esi 在 `0x0041d22a` 真人/电脑分叉之前；真人的填数窗
+  //   `0x0041d25b push esi / call 0x453544`、电脑的 `0x0041d267 push esi / call 0x41d839`
+  //   都拿它当上限 ⇒ 一次认购**最多 1000 股**（先前只夹 `available`，电脑一口买下 3000 股）。
+  if (shares > pending.max || shares > pending.available) return state;
 
   const me = state.players[state.currentPlayer];
   const stock = state.market.stocks[pending.stock];
