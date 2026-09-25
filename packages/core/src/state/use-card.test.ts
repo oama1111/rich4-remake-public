@@ -184,6 +184,25 @@ describe('★ 出牌入口', () => {
     expect(settled.landTenure[1]).toBe(0);
   });
 
+  it('★★ 夢遊卡（16）打电脑持嫁禍卡的人：敌意先记 ⇒ 电脑支挑「最恨的人」= 出牌者 ⇒ 嫁回出牌者 4 天、19 扣掉、不掷随机', () => {
+    const { state, topo } = scene();
+    let s = give(state, 0, 16);
+    s = {
+      ...s,
+      players: s.players.map((p, i) => (i === 1 ? { ...p, whoPlays: 2, cards: [19] } : p)),
+    };
+    const after = reduce(s, { type: 'useCard', cardId: 16, target: { kind: 'player', index: 1 } }, topo);
+    expect(after.players[1]!.cards).toEqual([]);
+    expect(after.players[1]!.blocking.sleepWalking).toBe(0);
+    expect(after.players[0]!.blocking.sleepWalking).toBe(4);
+    expect(after.rngState).toBe(s.rngState);
+    // 真人持有者：原版弹确认框 —— 卡片路径暂按放弃，19 留着、原目标照中
+    const human = { ...s, players: s.players.map((p, i) => (i === 1 ? { ...p, whoPlays: 1 } : p)) };
+    const h = reduce(human, { type: 'useCard', cardId: 16, target: { kind: 'player', index: 1 } }, topo);
+    expect(h.players[1]!.cards).toEqual([19]);
+    expect(h.players[1]!.blocking.sleepWalking).toBe(5);
+  });
+
   it('★ 停留卡（14）给目标挂上停留天数', () => {
     const { state, topo } = scene();
     const s = give(state, 0, 14);

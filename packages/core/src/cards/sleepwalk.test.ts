@@ -128,6 +128,9 @@ describe('★ 復仇卡(18)：把效果反弹给出牌者', () => {
     expect(r.outcome).toEqual({ kind: 'reflected', victim: 0, days: REVENGE_DAYS });
     expect(r.players[2]!.blocking.sleepWalking).toBe(SLEEPWALK_DAYS_OTHER); // ★ 目标照样中
     expect(r.players[0]!.blocking.sleepWalking).toBe(REVENGE_DAYS); // ★ 施卡者也中 5 天
+    // ★ 反弹那一支**不加** `+0x42`（`0x00444414..0x00444499` 没有 `add [+0x42]`）；目标照加 5
+    expect(r.players[0]!.totalWinterSleepDays).toBe(ps[0]!.totalWinterSleepDays);
+    expect(r.players[2]!.totalWinterSleepDays).toBe(ps[2]!.totalWinterSleepDays + SLEEPWALK_WINTER_DAYS);
   });
 
   // ★ 原版是**硬编码 5**：`0x0044441d mov byte ptr [eax+0x496b9f], 5`

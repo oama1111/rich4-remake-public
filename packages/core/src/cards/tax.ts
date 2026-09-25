@@ -7,6 +7,7 @@
  */
 
 import type { Player } from '../state/types.ts';
+import type { ScapegoatPicker } from './passive.ts';
 import { WHO_PLAYS_HUMAN } from '../state/types.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import { targetClassOf, validateTarget } from './target.ts';
@@ -18,6 +19,7 @@ import { consumeCard, playerHasCard, PASSIVE_CARDS } from './passive.ts';
  */
 export const SEAPGOAT_TAX_THRESHOLD = 0x7d0;
 import { transferMoney } from '../rules/payment.ts';
+import { applyHostilityDeltas } from '../rules/hostility.ts';
 import { aiUsesFreeCard } from '../rules/toll-flow.ts';
 import { HOSTILITY_DIVISOR } from './average-cash.ts';
 
@@ -152,7 +154,7 @@ export function applyTaxCard(
    * 嫁祸卡(19) 改写后的新目标，由外部（UI/AI）给出，`-1` 表示放弃。
    * 与原版 `0x00445368 cmp eax,-1 / je` 同义。默认不转嫁。
    */
-  scapegoatPicker: (from: number) => number = () => -1,
+  scapegoatPicker: ScapegoatPicker = () => -1,
   /**
    * ★ 免費卡 AI 門檻要消耗的那一次 `rand()`（`@source 0x444a9b`）。
    *   必须传 `state.rngState` 装出来的那条流（C-DET-4），否则 AI 受害者这条路上
@@ -222,15 +224,20 @@ export function applyTaxCard(
     //   ⇒ 只有 `0.2×cash > 4000×pi` 才转嫁；否则返回 −1、**卡不扣**、保持原目标。
     //   （注意是双精度比较：`cash=20000, pi=1` 时 `0.2×cash` 四舍五入**恰好等于 4000**
     //   ⇒ **不转嫁**。整数等价式 `cash > 20000×pi` 在该边界上一致。）
-    if (victim.cash > 20000 * priceIndex) {
-      // 嫁祸卡命中即**消耗**（`0x44476a` 内部 `0x4449ef call 0x441343`）——
-      //   但扣卡点在 mode 2 门槛之后（`0x4449e7 cmp ebx,-1` 也在它之前）：
-      //   门槛不过 / 放弃转嫁 ⇒ 都不扣。
+    //   ★★ 2026-09-24 审计订正：门槛只在**电脑支**里（`0x4448b0` 之后），而且**候选先定**
+    //   （`0x40d31c` 可能先掷一次 `rand()`）再过门槛 —— 整条交给 `scapegoatPicker(…, 2)`
+    //   （电脑持有者走 `passive.ts` 的 `aiScapegoatPick`）。先前这里先判门槛、过了才问、
+    //   **问之前就扣了 19** ⇒ 放弃转嫁（返回 −1）时 19 被白扣（`0x004449e7 cmp ebx,-1 / je` 在扣卡点之前）。
+    // ★ 敌意 `0x00445305 call 0x40df69(目标, 当前, 税/100)` 在查免費/嫁禍**之前**就写了 ——
+    //   电脑支挑「最恨的人」读的是记过之后的表（往往就是查稅的人）
+    const now = applyHostilityDeltas(players, [{ from: target.index, to: currentPlayer, delta: hostilityDelta }]);
+    const picked = scapegoatPicker(target.index, now, 2);
+    if (picked !== -1 && picked >= 0 && picked < players.length && picked !== target.index) {
+      // 嫁祸卡真的换了人才**消耗**（`0x004449ef call 0x441343`）
       playersAfterRedirect = players.map((p, i) =>
         i === target.index ? consumeCard(p, PASSIVE_CARDS.SCAPEGOAT) : p,
       );
-      const picked = scapegoatPicker(target.index);
-      if (picked !== -1 && picked >= 0 && picked < players.length) finalIndex = picked;
+      finalIndex = picked;
     }
   }
 
@@ -248,6 +255,19 @@ export function applyTaxCard(
   // ★★ `tax2` **按最终目标的现金重算**（`@source 0x0044537d`–`0x00445391`）：
   //   `fild [最终目标+0x1c] / fmul 0.2 / __round_toward_zero / fistp [esp+0x94]`
   //   —— 不是沿用最初那个 `tax`。所以换目标后金额会变。
+  // ★★ 嫁禍到**查稅的人自己**头上 ⇒ 不收税、不弹框，照样算成功（卡已扣）
+  //   @source 0x00445375 cmp ebx, [0x49910c] / 0x00445377 je 0x445421
+  if (finalIndex === currentPlayer) {
+    return {
+      ok: true,
+      error: null,
+      tax: 0,
+      defended: false,
+      victim: finalIndex,
+      hostilityDelta,
+      players: [...playersAfterRedirect],
+    };
+  }
   const finalPlayer = playersAfterRedirect[finalIndex];
   const tax2 = finalPlayer === undefined ? tax : Math.trunc(finalPlayer.cash * TAX_RATE);
 

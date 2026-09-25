@@ -80,7 +80,7 @@ import {
   tollExemption,
   type TollExemption,
 } from '../rules/toll-flow.ts';
-import { PASSIVE_CARDS, consumeCard, playerHasCard, tollTriggersPassive } from '../cards/passive.ts';
+import { PASSIVE_CARDS, aiScapegoatPick, consumeCard, playerHasCard, tollTriggersPassive } from '../cards/passive.ts';
 import {
   markPlayerBankrupt,
   resolveBankruptcyOutcome,
@@ -5161,8 +5161,15 @@ function playCard(
       //   且首次入狱要清医院那一格 —— 这两张表以前根本没进卡牌路径。
       prisonOccupancy: state.prisonOccupancy,
       hospitalOccupancy: state.hospitalOccupancy,
-      // 嫁祸的新目标：交给上层决定；没给就放弃转嫁（返回 -1）
-      scapegoatPicker: () => -1,
+      // ★★ 嫁禍卡 `0x44476a` 的电脑支（`who_plays != 1`，含託管）：最恨的人 / 随机一位 + 按模式过门槛
+      //   （`cards/passive.ts` 的 `aiScapegoatPick`）。先前恒 −1 ⇒ 夢遊/陷害/查稅卡里嫁禍卡**从不生效**。
+      //   ⚠️ 真人持有者原版弹确认框 / 选人窗（`0x004447ae..0x004448ab`）—— 卡片路径里还没有这一问，
+      //   暂按「放弃转嫁」（卡不扣），见 docs/audit/provenance-cards.md 的 follow-up。
+      scapegoatPicker: (holder, now, mode) => {
+        const h = now[holder];
+        if (h === undefined || (h.whoPlays & 0xff) === WHO_PLAYS_HUMAN) return -1;
+        return aiScapegoatPick(now, holder, mode, state.priceIndex, rng);
+      },
       // 轉向卡要的那一次 `rand()`（只在真有候选时被调用）
       rng,
     },

@@ -187,7 +187,8 @@ describe('★★ 免費卡(20) 的 AI 門檻（原版 0x444a60）', () => {
     const r = applyTaxCard(ps, 0, { kind: 'player', index: 1 }, 1, () => -1, rng);
 
     expect(r.defended).toBe(false);
-    expect(r.players[1]!.cards).toEqual([PASSIVE_CARDS.FREE]); // ★ 免費卡还在
+    // ★ 免費卡还在；嫁祸卡也还在：决定者返回 −1（放弃）⇒ 不扣 19（`0x004449e7` 在扣卡点之前）
+    expect(r.players[1]!.cards).toEqual([PASSIVE_CARDS.FREE, PASSIVE_CARDS.SCAPEGOAT]);
     expect(r.players[1]!.cash).toBe(25_000 - 5000); // 照付
     expect(r.players[0]!.moneyInBank).toBe(ps[0]!.moneyInBank + 5000);
     expect(rng.calls).toBe(1); // 只消耗这一次（嫁祸那支没有 rand）
@@ -356,12 +357,26 @@ describe('★ 查稅卡的嫁祸分支与 tax2 重算', () => {
     expect(r.players[1]!.cards).toContain(PASSIVE_CARDS.SCAPEGOAT); // 没被消耗
   });
 
-  it('放弃转嫁（-1）⇒ 保持原目标，但嫁祸卡**照样被消耗**', () => {
+  // ★★ 2026-09-24 审计订正：旧用例钉的是「放弃也扣 19」—— 原版 `0x004449e7 cmp ebx,-1 / je 0x444a53`
+  //   在扣卡点 `0x004449ef call 0x441343` **之前** ⇒ 放弃转嫁**不扣**。
+  it('放弃转嫁（-1）⇒ 保持原目标，嫁祸卡**不扣**（0x004449e7 在 0x004449ef 之前）', () => {
     const ps = four(0).map((p, i) =>
       i === 1 ? { ...p, cash: 100_000, cards: [PASSIVE_CARDS.SCAPEGOAT] } : { ...p, cash: 1_000 },
     );
     const r = applyTaxCard(ps, 0, { kind: 'player', index: 1 }, 1, () => -1, undefined);
     expect(r.tax).toBe(Math.trunc(ps[1]!.cash * 0.2));
+    expect(r.players[1]!.cards).toContain(PASSIVE_CARDS.SCAPEGOAT);
+  });
+
+  it('★ 嫁禍回查稅的人自己 ⇒ 不收税（0x00445375 je 0x445421），嫁祸卡照扣', () => {
+    const ps = four(0).map((p, i) =>
+      i === 1 ? { ...p, cash: 100_000, cards: [PASSIVE_CARDS.SCAPEGOAT] } : { ...p, cash: 1_000 },
+    );
+    const r = applyTaxCard(ps, 0, { kind: 'player', index: 1 }, 1, () => 0, undefined);
+    expect(r.ok).toBe(true);
+    expect(r.tax).toBe(0);
+    expect(r.players[0]!.cash).toBe(1_000);
+    expect(r.players[1]!.cash).toBe(100_000);
     expect(r.players[1]!.cards).not.toContain(PASSIVE_CARDS.SCAPEGOAT);
   });
 

@@ -9,7 +9,9 @@
  * 也独立印证了 `cards/passive.ts` 里记的检查顺序（免罪 21 → 嫁祸 19）。
  */
 
+import { applyHostilityDeltas } from '../rules/hostility.ts';
 import type { Player } from '../state/types.ts';
+import type { ScapegoatPicker } from './passive.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import type { MapNode, LandscapeInfo } from '../loaders/map.ts';
 import type { MapObject } from './summon.ts';
@@ -119,7 +121,7 @@ export function applyFrameCard(
   currentPlayer: number,
   target: CardTarget,
   priceIndex: number,
-  scapegoatPicker: (from: number) => number = () => -1,
+  scapegoatPicker: ScapegoatPicker = () => -1,
   prisonOccupancy: readonly number[] = new Array<number>(CONFINEMENT_SLOTS).fill(0),
   hospitalOccupancy: readonly number[] = new Array<number>(CONFINEMENT_SLOTS).fill(0),
   nodes: readonly MapNode[] = [],
@@ -174,7 +176,8 @@ export function applyFrameCard(
   //    ★ 同上：命中时消耗（`0x4449ef call 0x441343`）
   let playersAfterDefense: readonly Player[] = players;
   if (def.trigger.kind === 'scapegoat') {
-    const picked = scapegoatPicker(target.index);
+    // ★ 敌意在 `0x004445c1` 就已写进去了，`0x44476a` 电脑支挑「最恨的人」读的是**记过之后**的表
+    const picked = scapegoatPicker(target.index, applyHostilityDeltas(players, hostilityDeltas), 0);
     // @source cmp eax, -1 / je 保持原目标 / mov ebx, eax
     if (picked !== -1 && picked >= 0 && picked < players.length) {
       victimIndex = picked;

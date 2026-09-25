@@ -24,6 +24,7 @@ import { summonableObjects } from './summon.ts';
 import { attachGod } from '../rules/object-landing.ts';
 import { cardImpl, CARDS } from '@rich4/data';
 import { consumeCard, playerHasCard } from './passive.ts';
+import type { ScapegoatPicker } from './passive.ts';
 import { housingIndexOf, facilityIndexOf } from '../rules/land.ts';
 import { transferMoney } from '../rules/payment.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
@@ -223,7 +224,7 @@ export interface UseCardContext {
    * 嫁祸卡的新目标选择器（陷害卡等有害卡在被嫁祸时调用）。
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
    */
-  scapegoatPicker?: (from: number) => number;
+  scapegoatPicker?: ScapegoatPicker;
 }
 
 /**
