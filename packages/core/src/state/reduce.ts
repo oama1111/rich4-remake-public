@@ -51,7 +51,7 @@ import {
   teleportPlayer,
   teleportFacility,
 } from '../rules/teleport.ts';
-import { TRAFFIC_WALK, VEHICLE_DICE } from '../rules/tool-effects.ts';
+import { TOOL_GET_OFF, TRAFFIC_WALK, VEHICLE_DICE, getOffVehicle } from '../rules/tool-effects.ts';
 import {
   bankChairman,
   bankReserveCall,
@@ -2532,7 +2532,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   在 human/AI 分流**之前** ⇒ 电脑也说）。
       //   与 `lastCardPlay` 同一条规矩：**真的用出去了**才写（`used === state` = 没生效 ⇒ 不说）。
       let stamped: GameState =
-        used === state
+        used === state || action.toolId === TOOL_GET_OFF // 下車没有台词（`0x447c00` 里没有 `player_say`）
           ? used
           : { ...used, lastToolUsed: { player: state.currentPlayer, toolId: action.toolId } };
       // ★ 2026-09-23：**电脑**用道具先弹「使用%s」（`%s` = 道具名 `[id*8+0x47feda]`，1500 ms），再施加 ——
@@ -5176,6 +5176,17 @@ export function useToolAction(
 ): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined || !isAlive(me)) return state;
+  // ── 下車（道具表第 14 项，`0x447c00`）：只有真人的道具欄里有（见 `TOOL_GET_OFF`）──
+  if (toolId === TOOL_GET_OFF) {
+    if ((me.whoPlays & 0xff) !== WHO_PLAYS_HUMAN) return state;
+    const off = getOffVehicle(me, state.tools);
+    if (!off.ok) return state;
+    return {
+      ...state,
+      players: state.players.map((p, i) => (i === state.currentPlayer ? off.player : p)),
+      tools: off.tools,
+    };
+  }
   if (!isToolImplemented(toolId)) return state;
   if (toolCount(state.tools, me.index, toolId) <= 0) return state;
 

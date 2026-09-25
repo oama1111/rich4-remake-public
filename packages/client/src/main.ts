@@ -66,6 +66,7 @@ import {  autoAction,
   serializeGame,
   actingSeat,
   cardPassiveHolder,
+  TOOL_GET_OFF,
   isAiControlled,
   stateFingerprint,
   toolCount,
@@ -639,6 +640,7 @@ import {
   type LoanUi,
 } from './bank-dynamic.ts';
 import {
+  INV_SLOTS,
   INV_VEHICLE_IMAGE,
   REMOTE_DICE_TOOL,
   cardEntries,
@@ -11337,6 +11339,14 @@ function bindInput(): void {
           ? toolEntries(state, state.currentPlayer)
           : cardEntries(state, state.currentPlayer);
       const hit = entries.find((it) => it.slot === slot);
+      // ★ 道具欄末格的载具徽章 = 「下車」（道具表第 14 项 `0x447c00`；`0x00447e24 mov byte [0x48c556], 0xe`
+      //   把末格的命中值写成 14 —— 只有骑機車 / 开汽車时才画、才点得中）
+      const traffic = state.players[state.currentPlayer]?.trafficMethod ?? 0;
+      if (hit === undefined && invKind === 'tools' && slot === INV_SLOTS - 1 && (traffic === 1 || traffic === 2)) {
+        invPicked = TOOL_GET_OFF;
+        sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+        return;
+      }
       if (hit === undefined) return;
       invPicked = hit.id;
       sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);

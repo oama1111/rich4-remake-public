@@ -301,3 +301,22 @@ describe('★★ 上车 / 放置用掉的道具直接 dec、不回库存（0x004
     expect(r.toolStock).toEqual(s.toolStock);
   });
 });
+
+describe('★★ 下車（道具表第 14 项 0x447c00）', () => {
+  it('骑機車的真人：機車退回道具 5、步行一颗骰子；汽車退回道具 6；步行 / 工程車 / 电脑不生效', () => {
+    const moto = withTools({}, { phase: 'awaitingRoll' });
+    const onMoto = { ...moto, players: moto.players.map((p, i) => (i === 0 ? { ...p, trafficMethod: 1, ndices: 2 } : p)) };
+    const r = reduce(onMoto, { type: 'useTool', toolId: 14 }, topo);
+    expect(r.players[0]!.trafficMethod).toBe(0);
+    expect(r.players[0]!.ndices).toBe(1);
+    expect(toolCount(r.tools, 0, 5)).toBe(1);
+    expect(r.lastToolUsed ?? null).toBe(onMoto.lastToolUsed ?? null); // 没有台词
+    const onCar = { ...moto, players: moto.players.map((p, i) => (i === 0 ? { ...p, trafficMethod: 2, ndices: 3 } : p)) };
+    expect(toolCount(reduce(onCar, { type: 'useTool', toolId: 14 }, topo).tools, 0, 6)).toBe(1);
+    expect(reduce(moto, { type: 'useTool', toolId: 14 }, topo)).toBe(moto);
+    const eng = { ...moto, players: moto.players.map((p, i) => (i === 0 ? { ...p, trafficMethod: 0x1f } : p)) };
+    expect(reduce(eng, { type: 'useTool', toolId: 14 }, topo)).toBe(eng);
+    const cpu = { ...onMoto, players: onMoto.players.map((p, i) => (i === 0 ? { ...p, whoPlays: 2 } : p)) };
+    expect(reduce(cpu, { type: 'useTool', toolId: 14 }, topo)).toBe(cpu);
+  });
+});

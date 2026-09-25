@@ -110,4 +110,18 @@ describe('★ 审计 2026-09-24：卡片 / 道具修正在联机里同一条路'
     expect(room.state.players[1]!.blocking.sleepWalking).toBe(4);
     expect(room.state.players[0]!.cards).toEqual([]);
   });
+
+  run('⑤ 真人下車（道具 14）：两端一致', () => {
+    const { room, base, topo } = roomWith('CARDE', (s) => ({
+      ...s,
+      phase: 'awaitingRoll',
+      players: s.players.map((p, i) => (i === 0 ? { ...p, trafficMethod: 2, ndices: 3 } : p)),
+    }));
+    const r = room.submit(0, { type: 'useTool', toolId: 14 });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const mirror = reduce(base, r.broadcast.action, topo);
+    expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+    expect(room.state.players[0]!.trafficMethod).toBe(0);
+  });
 });
