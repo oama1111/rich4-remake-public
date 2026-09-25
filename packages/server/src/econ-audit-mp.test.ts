@@ -150,4 +150,32 @@ describe('★ econ 审计：收费敌意 / 真人全出局收局 —— 联机�
     expect(room.state.players[1]!.whoPlays).not.toBe(0);
     expect(room.state.players[1]!.moneyInBank).toBe(3_000);
   });
+
+  run('真人 0 号在百貨格买道具 ⇒ 百貨企業盈餘 += 標價×10（0x0042ed75）；旁观端一致', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const store = map.nodes.find((n) => n.type > 0x1770 && n.type < 0x1f40 && n.specialKind !== 0)!;
+    const s0 = scene(map, 'multiplayer', 0, 1, 500_000);
+    const state: GameState = {
+      ...s0,
+      players: s0.players.map((p, i) => (i === 0 ? { ...p, nodeId: store.id, points: 1000 } : p)),
+    };
+    const room = roomFrom(map, state);
+    let mirror = state;
+    const submit = (action: Action) => {
+      const r = room.submit(0, action);
+      expect(r.ok).toBe(true);
+      if (r.ok) mirror = reduce(mirror, r.broadcast.action, topo);
+      expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+    };
+    submit({ type: 'settle' });
+    const p = room.state.pending;
+    if (p === null || p.kind !== 'shop') throw new Error('没进商店');
+    const item = p.tools.find((t) => t.price <= 1000 && (t.stock ?? 1) > 0)!;
+    const cid = store.type - 0x1770;
+    const before = room.state.companyFunds[cid] ?? 0;
+    submit({ type: 'shop', op: 'buyTool', id: item.id });
+    expect(room.state.companyFunds[cid]).toBe(before + item.price * 10);
+    expect(mirror.companyFunds).toEqual(room.state.companyFunds);
+  });
 });

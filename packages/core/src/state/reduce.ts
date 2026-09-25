@@ -2311,7 +2311,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         chosen = action.facilityType;
       }
       const bought = purchase(player, facilityBuildPrice(fac.landPrice, state.priceIndex));
-      if (!bought.ok) return godBlockedPurchase(rolledState, bought.reason);
+      if (!bought.ok) return godBlockedPurchase(withFacilityType(rolledState, fac.id, chosen, bought.reason), bought.reason);
       const paid = withPlayer(rolledState, state.currentPlayer, (p) => {
         p.cash = bought.player.cash;
       });
@@ -2502,7 +2502,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     }
 
     case 'shop':
-      return shopAction(state, action);
+      return shopAction(state, action, topo);
 
     case 'noticeBoard':
       return noticeBoardAction(state, topo, action);
@@ -3119,6 +3119,19 @@ function landingTailDue(before: GameState, next: GameState, action: Action, topo
  * 现金不够（`notEnoughCash`）到不了这里 —— 框只在现金够时才弹；真到了就原样返回（交互留着），
  * 与先前一致。
  */
+/**
+ * 首建設施被衰神 / 死神挡下时，**种类已经写进去了** —— 留下一块「等级 0 但有种类」的地。
+ * @source 真人 `0x0041a228 call 0x440aac` → `0x0041a239 mov [設施+0x18], al`、电脑 `0x0041a257 mov [設施+0x18], dl`，
+ *   都在 `0x0041a261 call 0x40fa61`（衰神闸）**之前**；闸一挡就 `jne 0x41b077`，种类不回滚。
+ *   （2026-09-24 审计补，ai-econ 审计转来。）
+ */
+function withFacilityType(state: GameState, facId: number, type: number, reason: PurchaseFailure | null): GameState {
+  if (reason !== 'blockedByGod') return state;
+  const facilityType = [...state.facilityType];
+  facilityType[facId] = type;
+  return { ...state, facilityType };
+}
+
 function godBlockedPurchase(state: GameState, reason: PurchaseFailure | null): GameState {
   if (reason !== 'blockedByGod') return state;
   const player = state.players[state.currentPlayer];
@@ -7588,7 +7601,31 @@ function poolDelta(cardAmount: readonly number[], cardId: number, delta: number)
   return out;
 }
 
-function shopAction(state: GameState, action: Action & { type: 'shop' }): GameState {
+/**
+ * ★ 2026-09-24 审计补（ai-econ 审计转来）：百貨公司的**營業額**进这家上市企業的盈餘（→ 15 日分紅）。
+ *
+ * @source 真人那一支每一笔都把返回值累加进 `[0x48c343]`（进店 `0x0042d441` 清零）：
+ *   买卡 `0x0042e214`（`0x42d237` 返回 **標價 × 10**，`0x0042d267..0x0042d26e`）、
+ *   买道具 `0x0042e498`（`0x42d272` 同一尾巴，× 10）、卖卡 `0x0042e0c5`（`0x42d145` 返回 **標價**）、
+ *   卖道具 `0x0042e126`（`0x42d1b2` 返回 **標價 × 个数**）；关窗 `0x0042e8b2 call 0x401966([0x48c343])` 交回，
+ *   `0x0042ed0d mov ebp, eax` → 节点格值在 (0x1770, 0x1f40) 之间（百貨格的格值 = 百貨企業的实体码）⇒
+ *   `0x0042ed75 add [企業+0x28], ebp` / `0x0042ed7e add [企業+0x2c], ebp`。电脑那一支（`0x0042ed8d` 起）不记。
+ *   窗是模态的、期间没人读盈餘 ⇒ 这里每成交一笔就加一笔，与关窗时一次加总等价。
+ */
+function shopRevenueTo(state: GameState, topo: MapTopology, amount: number): GameState {
+  const me = state.players[state.currentPlayer];
+  const node = me === undefined ? undefined : topo.nodes[me.nodeId - 1];
+  if (node === undefined || amount === 0) return state;
+  if (node.type <= 0x1770 || node.type >= 0x1f40) return state;
+  const cid = node.type - 0x1770;
+  const companyFunds = [...state.companyFunds];
+  const companyProfit = [...state.companyProfit];
+  companyFunds[cid] = ((companyFunds[cid] ?? 0) + amount) | 0;
+  companyProfit[cid] = ((companyProfit[cid] ?? 0) + amount) | 0;
+  return { ...state, companyFunds, companyProfit };
+}
+
+function shopAction(state: GameState, action: Action & { type: 'shop' }, topo: MapTopology): GameState {
   const pending = state.pending;
   if (pending === null || pending.kind !== 'shop') return state;
   const me = state.players[state.currentPlayer];
@@ -7598,14 +7635,20 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
     player: Player,
     tools: readonly number[] = state.tools,
     stock: readonly number[] = state.toolStock,
-  ): GameState => ({
-    ...state,
-    players: state.players.map((p, i) => (i === state.currentPlayer ? player : p)),
-    tools: [...tools],
-    toolStock: [...stock],
-    // 刷新待决交互里的點數，商店还开着
-    pending: { ...pending, points: player.points },
-  });
+    revenue = 0,
+  ): GameState =>
+    shopRevenueTo(
+      {
+        ...state,
+        players: state.players.map((p, i) => (i === state.currentPlayer ? player : p)),
+        tools: [...tools],
+        toolStock: [...stock],
+        // 刷新待决交互里的點數，商店还开着
+        pending: { ...pending, points: player.points },
+      },
+      topo,
+      revenue,
+    );
 
   switch (action.op) {
     case 'buyCard': {
@@ -7622,7 +7665,7 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
       //   手牌满 15 在 `buyCard` 里已拦（原版 `0x0042e1ec call 0x441262 / cmp eax,0xf / jge`），
       //   receive_card 的「满手先丢最便宜」那一支真人这里走不到。
       const cardAmount = poolDelta(state.cardAmount, action.id, -1);
-      const bought = { ...commit(r.player), cardAmount };
+      const bought = { ...commit(r.player, state.tools, state.toolStock, cardPrice(action.id) * 10), cardAmount };
       const cards = pending.cards.map((c, i) => (i === at ? { ...c, sold: true as const } : c));
       return { ...bought, pending: { ...pending, points: r.player.points, cards } };
     }
@@ -7632,7 +7675,7 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
       // ★★ 第二十六份（pt26-car）：卖掉的那张**回牌堆**。
       //   @source 真人卖卡 `0x0042e0bd call 0x42d145` → `0x0042d152 call 0x441343`（consume_card，删第一张同号）
       //   → `0x004413a2 inc byte [卡号 + 0x499197]`。
-      return { ...commit(r.player), cardAmount: poolDelta(state.cardAmount, action.id, 1) };
+      return { ...commit(r.player, state.tools, state.toolStock, cardPrice(action.id)), cardAmount: poolDelta(state.cardAmount, action.id, 1) };
     }
     case 'buyTool': {
       // ★ 与 buyCard 同构：买过的那一行记 `sold`、本次进店不能再买 —— 原版两页都这么干
@@ -7646,13 +7689,13 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
       if (at === -1) return state;
       const r = buyTool(me, state.tools, state.toolStock, action.id);
       if (!r.ok) return state;
-      const bought = commit(r.player, r.tools, r.stock);
+      const bought = commit(r.player, r.tools, r.stock, toolPrice(action.id) * 10);
       const tools = pending.tools.map((t, i) => (i === at ? { ...t, sold: true as const } : t));
       return { ...bought, pending: { ...pending, points: r.player.points, tools } };
     }
     case 'sellTool': {
       const r = sellTool(me, state.tools, state.toolStock, action.id, action.count ?? 1);
-      return r.ok ? commit(r.player, r.tools, r.stock) : state;
+      return r.ok ? commit(r.player, r.tools, r.stock, toolPrice(action.id) * (action.count ?? 1)) : state;
     }
     default:
       return state;
@@ -8787,7 +8830,9 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
         rng.setState(state.rngState);
         const chosen = aiPickFacilityType(rng.next());
         const bought = purchase(player, price);
-        if (!bought.ok) return godBlockedPurchase({ ...state, rngState: rng.getState() }, bought.reason);
+        if (!bought.ok) {
+          return godBlockedPurchase(withFacilityType({ ...state, rngState: rng.getState() }, fac.id, chosen, bought.reason), bought.reason);
+        }
         const paid = withPlayer({ ...state, rngState: rng.getState() }, me, (p) => {
           p.cash = bought.player.cash;
         });

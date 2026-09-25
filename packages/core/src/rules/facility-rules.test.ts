@@ -33,7 +33,7 @@ import { reduce, type MapTopology } from '../state/reduce.ts';
 import { FACILITY_TYPE_MIN } from './land.ts';
 import { RELEASE_PENDING } from './blocking.ts';
 import { toolCount } from './tools.ts';
-import { WHO_PLAYS_HUMAN, WHO_PLAYS_RELOCATED, type GameState } from '../state/types.ts';
+import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN, WHO_PLAYS_RELOCATED, type GameState } from '../state/types.ts';
 import { evaluateTurnStart } from './turn-start.ts';
 import { NPC } from './npc-actions.ts';
 import { runNpc, spyTollAt } from './npc-walk.ts';
@@ -229,6 +229,25 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     expect(built.facilityType[FAC_ID]).toBe(FACILITY_TYPE.hotel);
     expect(built.facilityLevel[FAC_ID]).toBe(1);
     expect(built.players[0]?.cash).toBe(97_000);
+  });
+
+  it('★ 审计补：首建被小衰神挡下 ⇒ 钱与等级不动，但**种类已经写上**（0x0041a239 在 0x0041a261 衰神闸之前）', () => {
+    const owner = [...standing().facilityOwner];
+    owner[FAC_ID] = 1;
+    const s0 = standing({ facilityOwner: owner });
+    const s: GameState = { ...s0, players: s0.players.map((p, i) => (i === 0 ? { ...p, godInfo: 7 } : p)) };
+    const asked = reduce(s, { type: 'settle' }, topo);
+    expect(asked.pending?.kind).toBe('buildFacility');
+    const blocked = reduce(asked, { type: 'buildFacility', facilityType: FACILITY_TYPE.mall }, topo);
+    expect(blocked.notices.map((n) => n.key)).toEqual(['god.blockPurchase']);
+    expect(blocked.players[0]?.cash).toBe(100_000);
+    expect(blocked.facilityLevel[FAC_ID]).toBe(0);
+    expect(blocked.facilityType[FAC_ID]).toBe(FACILITY_TYPE.mall);
+    // 电脑那一支（0x0041a257）同样先写种类
+    const ai: GameState = { ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_COMPUTER } : p)) };
+    const aiBlocked = reduce(ai, { type: 'settle' }, topo);
+    expect(aiBlocked.facilityLevel[FAC_ID]).toBe(0);
+    expect([1, 2, 3, 4]).toContain(aiBlocked.facilityType[FAC_ID]);
   });
 
   it('★★ 选种类窗开着时被托管（座位变成 1|4）：AI 代答 `facilityType: null` ⇒ reducer 走电脑支 rand()%4+1（0x0041a23e）', () => {
