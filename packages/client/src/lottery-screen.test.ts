@@ -706,6 +706,42 @@ describe('整屏出口 @source 窗口过程 0x0042f7fc', () => {
     expect(lotteryBubbleForTest(mkEnv(s, CAPTION_MIN_MS * 3).env)).toBeNull();
   });
 
+  it('★★ 第三十一份試玩回報「钱夫人一直在反复触发乐透的语音」：别的待决交互不许把本屏打回 hello（否则每挂一次買地 / 買設施就放一声 #0011）', () => {
+    resetLotteryScreenState();
+    const played: number[] = [];
+    setVoiceSink((v) => played.push(v));
+    try {
+      // ① 人类踩樂透格开屏 → 一路说到「請圈選」（状态 3）：`#0011` / `#0012` / `#0013` 各一次
+      const mine = mkState({ pending: mkPending([4, 5, 6]) });
+      const t0 = advanceToPick(mine);
+      expect(lotteryPhase()).toBe('pick');
+      expect(played, '开屏那三句各一次').toEqual([11, 12, 13]);
+      expect(lotteryScreen.active(mkEnv(mine, t0).env)).toBe(true);
+
+      // ② 之后每一个**别的**待决交互挂出来（人机的買地 / 買設施 / 銀行 / 商店 / 拍賣…）——
+      //    `event()` 是每一条 action 对每一屏都派的，先前这里会 `resetUi` ⇒ 放 `#0011`。
+      //    原版只在投注窗建窗那一下说 `#0011`（0x42f930），别的落点的訊息框里没有 `#NNNN`。
+      let t = t0 + 100;
+      for (const kind of ['buyLand', 'buyFacility', 'bank', 'shop', 'atm', 'auction', 'bail']) {
+        const other = mkState({ pending: { kind } });
+        lotteryScreen.event!(mine, other, mkEnv(other, t).env);
+        t += 100;
+      }
+      expect(played, '别的待决交互一声都不许出').toEqual([11, 12, 13]);
+      expect(lotteryPhase(), '别的待决交互不许把本屏打回 hello').toBe('pick');
+      expect(lotteryScreen.active(mkEnv(mine, t).env), '乐透屏本身照旧开着').toBe(true);
+
+      // ③ 反过来：真的又来一次樂透落点（新的 `pending` 对象）⇒ 照常从头演（不能因为上面
+      //    那几个别的 pending 就把「新的一屏」吃掉）
+      const again = mkState({ pending: mkPending([7, 8]) });
+      lotteryScreen.event!(mine, again, mkEnv(again, t).env);
+      expect(played, '新的樂透 pending ⇒ 再说一遍招呼').toEqual([11, 12, 13, 11]);
+      expect(lotteryPhase()).toBe('hello');
+    } finally {
+      setVoiceSink(null);
+    }
+  });
+
   it('★★ 第二十六份 panel #2：开场白里点一下 ⇒ 收掉那一句并停语音，直接到 pick、**不**再挂「請圈選」（0x0042fe9d）', () => {
     resetLotteryScreenState();
     let stopped = 0;

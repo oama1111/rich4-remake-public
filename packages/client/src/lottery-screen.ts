@@ -903,6 +903,32 @@ function resetUi(now: number, animate: boolean): void {
  * ⚠️ **`pending` 变成 `null` 时绝不能 reset**：买中的那一下 reducer 就把 `pending`
  *   收了，而原版还要把「拜拜」那一拍画完（见 `byeView`）。reset 会把相位打回
  *   `hello`、那一拍就再也画不出来 —— 这条是**目视**才抓到的，单测原先没盖住。
+ *
+ * ★★ **不是樂透的待决交互绝不能 reset**（第三十一份試玩回報「钱夫人一直在反复触发乐透的语音」）。
+ *
+ * 为什么必须挡：`event()` 是**每一条 action、对每一屏**都派的（`main.ts` 的
+ * `deliverScreenEvent`），而 `resetUi` 会 `lotSay('hello')` —— 也就是**播 `#0011`**。
+ * 先前这里只比「`pending` 换了身份没有」、不看种类 ⇒ 只要**任何**新的待决交互挂出来
+ * （買地 `buyLand` / 買設施 `buyFacility` / 銀行 / 商店 / 拍賣…，人机都算），本屏的
+ * 状态机就被打回 `hello` 并**说出樂透投注站的招呼語**：屏上一个樂透界面都没有
+ * （`active()` 仍是假、`♪ midi07.mid` 也不点），只有那句语音一声声冒出来。
+ * 实测（本机 Chrome，`__rich4` 的落点探针）：人类踩樂透格买完 / 不买之后，
+ * AI 的每一次買地、買設施都各放一声 `#0011` —— 需求方听到的「一直在反复触发」。
+ *
+ * 原版对照：`#0011`（串 `0x4755f8[0]`）**只有投注窗建窗之后那一个 `0x405` 才说** ——
+ * ```asm
+ * 0042f8ff  push 0 / push 1 / jmp 0x42f8e7   ; WM_CREATE（0x401）：PostMessage(0x405, 1, 0)
+ * 0042f834  jbe  0x42f930                    ; 窗口过程的 0x405 分支
+ * 0042f930  mov  byte ptr [0x48c370], bl     ; bl = wParam = 1 ⇒ 状态 1（哈囉）
+ * 0042f936  mov  ebp, dword ptr [edi*4 + 0x4755f8]   ; edi = lParam = 0 ⇒ `#0011`
+ * 0042f93e  call 0x44ecb6                    ; 画气泡 → `0x44fabc` 认 `#` → `0x45441a` 播
+ * ```
+ * 而那扇窗只在**踩到樂透格**时建（`0x0041b17a call 0x4315cc` → `0x0043164e
+ * push 0x42f7fc / call 0x4018e7`）。别的落点走的是**別的**訊息框，且那些串里
+ * **没有** `#NNNN` 前缀（如買地那句 `0x4639e1` =「%s\n\n費用:%d元\n\n是否買下此地？」，
+ * 逐字节核过）⇒ 原版在那些待决交互上**一声不出**，本屏也不该出。
+ *
+ * @param pending 这一条 action 之后的那份 `state.pending`
  */
 function syncPending(pending: GameState['pending'], now: number, animate: boolean): void {
   if (pending === ui.lastPending) return;
@@ -910,6 +936,9 @@ function syncPending(pending: GameState['pending'], now: number, animate: boolea
     ui.lastPending = null;
     return;
   }
+  // ★ 别的待决交互与本屏无关：既不换屏、也不说话（`lastPending` 也**不**记它 ——
+  //   它一走，下一个樂透 `pending` 依旧是「新的一屏」，照常从头演）。
+  if (pending.kind !== 'lottery') return;
   ui.lastPending = pending;
   resetUi(now, animate);
 }
