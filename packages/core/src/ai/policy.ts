@@ -543,15 +543,12 @@ export function decidePending(state: GameState): Action | null {
   //   `null` = 让 reducer 按电脑那一支判（`aiUsesFreeCard` / `aiScapegoat`，随机数不能进 AI）。
   if (p.kind === 'freeCard') return { type: 'answerFreeCard', use: null };
   if (p.kind === 'scapegoat') return { type: 'answerScapegoat', target: null };
-  // ★ 保釋：电脑玩家那条路在 reducer 里就掷完了（随机数不能进 AI），
-  //   走到这里的只会是**被托管的真人**。按 `personality` 的精神保守处理：
-  //   救得起同伴就救，不去放犯人。
-  if (p.kind === 'bail') {
-    const cheap = p.candidates
-      .filter((c) => c.affordable && c.player >= 0)
-      .sort((a, b) => a.cost - b.cost)[0];
-    return cheap === undefined ? null : { type: 'bail', slot: cheap.slot };
-  }
+  // ★ 保釋：电脑玩家那条路在 reducer 里就掷完了（`enterVisit`，`0x0043d3d8` 起 rand&1 / 個性 / rand%n），
+  //   走到这里的只会是**开着保釋窗被托管的真人**。
+  //   ★★ 审计（ai-move）：先前这里是自拟的「挑最便宜的、救得起的同伴」—— 原版没有这条规则。
+  //   原版保釋窗（`0x0043d33e..0x0043d3d3`）是模态的，托管位在窗里冒不出来；与商店 / ATM 同一口径
+  //   按「关窗 = 不保釋」处理（窗口的離開键，不花點券）。
+  if (p.kind === 'bail') return { type: 'declineDecision' };
   // ★ 貸款屏：电脑（与托管）**收不到**这一扇 —— 原版 `0x004366a3 cmp byte [+0x15],1 / jne 0x4367ab`
   //   让它们当场走电脑那一支（提前还贷 / `rand()%10` 放款，reducer 的 `aiBankRoom`），不开窗。
   //   走到这里的只会是**开着貸款屏被托管的真人** —— 托管就是由电脑代打 ⇒ 按电脑那一支替他办完
