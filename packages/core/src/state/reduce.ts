@@ -114,6 +114,7 @@ import { placeOnNode } from '../rules/position.ts';
 import { rotateViewBy } from '../rules/view.ts';
 import { applyRobCardCard, giveCard, priceOf } from '../cards/rob.ts';
 import { GOD_BIG_LUCK, godPowerOf, type GodPower } from '../rules/god-power.ts';
+import { boardInstancePresent, inBoardWindow } from '../rules/board-window.ts';
 import {
   MISSILE_DEMOLISH_HOSTILITY,
   MISSILE_HOSPITAL_DAYS,
@@ -5107,13 +5108,16 @@ function landAtNode(state: GameState, topo: MapTopology, nodeId: number): LandIn
  * @source `damage_area` VA 0x0040ac7b，参数见 rules/tool-effects.ts 的
  *   `MISSILE_RADIUS` / `NUKE_RADIUS`。逐块地的效果走 `blastLand`。
  *
- * ⚠️ **爆炸范围是本引擎与原版最明确的一处偏离**（Q-TOOL-1）：
- *   原版把镜头移到目标上，再在一张 440×440 的**视图空间**格子里
- *   取 ±半径 的方窗（VA 0x0040a45c）。那需要等距投影与镜头，
- *   规则层拿不到。本引擎改用**节点坐标**的方窗，半径同为 100。
- *   ★★ 2026-09-24 订正：核子飛彈的半径 −1 **不是全图** —— `0x40a45c` 收的是整幅 440×440 的
- *   **画面**（镜头已移到目标上），见 `NUKE_VIEW_HALF`。先前「−1 = 全图、那一发是精确的」
- *   让核彈把**整张地图**的房子全炸平了。
+ * ★★ Q-TOOL-1（2026-09-25）：范围口径改成**原版那一套屏幕方窗**，见 `rules/board-window.ts`。
+ *   镜头由调用点先挪到目标上（`0x00447065` 飛彈 / `0x00447b77` 核彈 `call 0x41d476`），
+ *   所以窗心就是**目标格子的世界坐标**；候选是 id 图里的**实例锚点**：
+ *   地块/設施用它们**记录自己的 x/y**（`0x4090fc` 的 `[ebp]/[ebp+2]`，与所在节点差 ~40 像素），
+ *   棋子/惡人/物件用**节点**坐标。半径 −1 那一档 = 整幅 440×440（`0x40a469 mov edi,0x1b8`）。
+ *   先前两处都按「节点坐标的 ±半径 方窗」近似（Q-TOOL-1 的原状）。
+ *   ★ 攻击者的目标是一名玩家时（AI 的 `[0x48be64] = 0x80xx`），`0x40af12` 返回的是**那位玩家的**
+ *     世界坐标 —— 本引擎 `useTool` 的目标是**格子**，故窗心 = 那个格子的坐标（同一位玩家站着不动时
+ *     两者本来就相同）。真人点着**建筑**发弹时原版会把镜头对到**建筑锚点**上，那一点靠 action 里的
+ *     `nodeId` 恢复不出来，登记为残余。
  */
 function fireMissile(
   state: GameState,
@@ -5124,11 +5128,13 @@ function fireMissile(
   const target = topo.nodes[targetNode - 1];
   if (target === undefined) return null;
 
-  const inBlast = (n: MapNode): boolean => {
-    // @source 0x0040a469：半径 −1 ⇒ 整幅画面（节点坐标 ±220 近似，Q-TOOL-1）
-    const half = heavy ? NUKE_VIEW_HALF : MISSILE_RADIUS;
-    return Math.abs(n.x - target.x) <= half && Math.abs(n.y - target.y) <= half;
-  };
+  // @source 0x0040a469：半径 −1 ⇒ 整幅画面；否则就是 `push 0x64`
+  const half = heavy ? NUKE_VIEW_HALF : MISSILE_RADIUS;
+  /** 窗心 = 镜头被挪到的那一点 @source `0x00447065 call 0x41d476(x, y, 0)` */
+  const center = { x: target.x, y: target.y };
+  /** 某个**实例锚点**在不在窗里 @source `0x40a472..0x40a4c5` */
+  const inBlast = (point: { x: number; y: number }): boolean =>
+    inBoardWindow(center, point, half);
 
   const landLevel = [...state.landLevel];
   const landOwner = [...state.landOwner];
@@ -5151,13 +5157,20 @@ function fireMissile(
   let releaseFlag = false;
 
   for (const n of topo.nodes) {
-    if (!inBlast(n)) continue;
-    hitNodes.add(n.id);
+    // ★ 棋子 / 惡人 / 物件的锚点 = **节点**坐标（他们站在节点上）
+    //   @source `0x408ea0` 一族写实例 +0x48a854/+0x48a856 = 节点投影
+    if (inBlast(n)) hitNodes.add(n.id);
     // @source flags & 2 —— 住宅
     const idx = housingIndexOf(n.type);
     if (idx === null) continue;
     const land = effectiveLand(state, topo, idx);
     if (land === null) continue;
+    // ★ 地块的实例锚点是**地块记录自己的 x/y**（`0x4090fc`：`movsx eax, word [ebp]` /
+    //   `[ebp+2]`，ebp = 地块记录）—— 与所在节点差 ~40 像素，用节点坐标会整体挪窗
+    if (!inBlast(land)) continue;
+    // ★ 「既没房子又没主」的地块不在 id 图里 ⇒ 扫不到它
+    //   @source 0x4091df..0x409240（level==0 && owner==0 ⇒ 贴图指针 +4 写 0 ⇒ 0x409e3d 跳过）
+    if (!boardInstancePresent(land.level, land.owner)) continue;
     const out = blastLand(land.owner, land.level, land.type, state.priceIndex, heavy);
     landLevel[land.id] = out.level;
     landOwner[land.id] = out.owner;
@@ -5180,12 +5193,15 @@ function fireMissile(
   //   `0x40a45c` 收到的是 id 而不是节点 ⇒ 每座只挨一次（先前逐节点算 ⇒ 敌意记两遍）。
   const facilitiesHit = new Set<number>();
   for (const n of topo.nodes) {
-    if (!inBlast(n)) continue;
     const fid = facilityIndexOf(n.type);
     if (fid === null || facilitiesHit.has(fid)) continue;
     facilitiesHit.add(fid);
     const fac = effectiveFacility(state, topo, fid);
     if (fac === null) continue;
+    // ★ 設施的实例锚点同样是**設施记录自己的 x/y**（`0x40930e`，与地块同形）
+    if (!inBlast(fac)) continue;
+    // ★ 没盖过又没主的設施不在 id 图里 @source 0x4093f3..0x409488（与地块那段同形）
+    if (!boardInstancePresent(fac.level, fac.owner)) continue;
     if (heavy) {
       // @source 重击：敌意 = level × 30 × 物價，随后 owner/level/type/+0x34 全清
       if (fac.owner !== 0) {
@@ -7594,7 +7610,9 @@ function drawAndApplyNewsInner(state: GameState, topo: MapTopology, rng?: Watcom
  *   次序：两段都在 `damage_area` 里、**早于**新聞那一圈送醫院（`0x0044926c`）⇒ 搭档挑格时被炸的玩家
  *   还站在原地（占着格子），惡人已经撤下。故这里用**施加之前**的玩家位置（`before.players`）
  *   算占用、用已撤下惡人的替身表；只取回物件 / 道具 / 库存 / 随机流。
- *   窗口口径与效果层同一条近似（Q-TOOL-1：地图坐标方窗，半径 0x64）。
+ *   ★★ Q-TOOL-1（2026-09-25）：窗口改成原版那套屏幕方窗（`rules/board-window.ts`）——
+ *   惡人/物件的锚点就是他们**站着的节点**（窗口中心 = 爆心 = `0x40af12` 取的地块/設施坐标，
+ *   见 `0x0044921d call 0x41d476`）。先前是地图坐标方窗（半径 0x64）。
  */
 function alienBlastActorsAndObjects(
   applied: GameState,
@@ -7604,7 +7622,7 @@ function alienBlastActorsAndObjects(
 ): GameState {
   const hitNodes = new Set<number>();
   for (const n of topo.nodes) {
-    if (Math.abs(n.x - origin.x) <= ALIEN_BLAST_RADIUS && Math.abs(n.y - origin.y) <= ALIEN_BLAST_RADIUS) hitNodes.add(n.id);
+    if (inBoardWindow(origin, n, ALIEN_BLAST_RADIUS)) hitNodes.add(n.id);
   }
   const specialActors = applied.specialActors.map((a) => ({ ...a }));
   const hospital = [...applied.hospitalOccupancy];

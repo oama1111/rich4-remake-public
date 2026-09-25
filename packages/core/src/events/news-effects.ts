@@ -26,6 +26,8 @@ import {
 import type { CommercialInfo } from '../loaders/map.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { WHO_PLAYS_HUMAN, isAlive } from '../state/types.ts';
+// ★ Q-TOOL-1：爆炸范围 = 原版那张 440×440 id 图里的屏幕方窗（見 rules/board-window.ts）
+import { boardInstancePresent, inBoardWindow } from '../rules/board-window.ts';
 /*
  * ★ 新聞 29 的「免罪(21) → 嫁禍(19)」二级判定**复用** `0x441210` 那一段的既有镜像
  *   —— `cards/passive.ts` 的 `applyDefensiveCards`（顺序、扣卡点都在那里钉过）。
@@ -850,8 +852,10 @@ export function applyNewsEffect(
   // ── 新聞 20「超級颱風侵襲，多處房屋受損」────────────────────────
   //   挑一处 → 以它为心打一发 `damage_area(半径 100, flags 6, 轻重 0, 攻击者 -1)`：
   //   范围内的**住宅与設施**各拆一级，**不打人、不记敌意**。
-  //   ⚠️ 范围口径沿用本引擎对 Q-TOOL-1 的近似：原版是 440×440 视图空间的方窗
-  //     （要镜头与等距投影），这里改用**地图坐标**的方窗，半径同为 100。
+  //   ⚠️ 范围口径 = 原版那套**屏幕方窗**（见 `rules/board-window.ts`，Q-TOOL-1 已按 exe 改）：
+  //     镜头由 `0x0044ac33 call 0x41d476(x, y, 2)` 先挪到挑中的那一处（`0x40af12` 的锚点），
+  //     窗心 = 它的坐标；地块/設施的锚点也是它们**记录自己的 x/y**。
+  //     先前用的是地图坐标的方窗（半径同为 100）。
   if (entry.effects.includes('typhoonBlast')) {
     const rng = ctx.rng;
     const lands = ctx.lands ?? [];
@@ -869,7 +873,7 @@ export function applyNewsEffect(
       owner: picked.owner,
     };
     const inBlast = (e: { x: number; y: number }): boolean =>
-      Math.abs(e.x - origin.x) <= TYPHOON_RADIUS && Math.abs(e.y - origin.y) <= TYPHOON_RADIUS;
+      inBoardWindow(origin, e, TYPHOON_RADIUS);
     // ★★ 2026-09-24（provenance 审计）：轻击是 `damage_area` **自己的**内联逻辑，不是 `mutate_land` mode 0
     //   （后者在 `level == 0` 时整条不动）：
     // ```asm
@@ -886,6 +890,8 @@ export function applyNewsEffect(
     const releaseFlags: boolean[] = [];
     for (const l of lands) {
       if (!inBlast(l)) continue;
+      // ★ 没盖房又没主的地块不在 id 图里 ⇒ 扫不到它（`0x4091df..0x409240`，见 board-window.ts）
+      if (!boardInstancePresent(l.level, l.owner)) continue;
       const after = blastLand(l.owner, l.level, l.type, ctx.priceIndex, false);
       if (after.level === l.level && after.type === l.type) continue;
       landMutations.push({ id: l.id, level: after.level, type: after.type, owner: l.owner });
@@ -893,6 +899,9 @@ export function applyNewsEffect(
     const facilityMutations: LandMutation[] = [];
     for (const f of facilities) {
       if (!inBlast(f)) continue;
+      // ★ 同上：没盖过又没主的設施不在 id 图里（`0x4093f3..0x409488`）——
+      //   先前这种格子照样会 push 一个 releaseFlag（原版扫不到 ⇒ 不放人）
+      if (!boardInstancePresent(f.level, f.owner)) continue;
       const level = f.level > 0 ? f.level - 1 : 0;
       const type = level === 0 ? 0 : f.type;
       if (level === 0) releaseFlags.push(true);
@@ -952,12 +961,11 @@ export function applyNewsEffect(
       pick < landCand.length
         ? { x: landCand[pick]!.x, y: landCand[pick]!.y }
         : { x: facCand[pick - landCand.length]!.x, y: facCand[pick - landCand.length]!.y };
-    // ② 爆心方窗。⚠️ 范围口径沿用本引擎对 Q-TOOL-1 的近似：原版是 440×440
-    //    **视图空间**的 ±半径（要镜头与等距投影），这里改用**地图坐标**的方窗，
-    //    半径同为 0x64 —— 与 `typhoonBlast` 及飛彈那条完全同一口径。
+    // ② 爆心方窗 —— 原版那套**屏幕方窗**（`rules/board-window.ts`，Q-TOOL-1 已按 exe 改）：
+    //    镜头先被 `0x0044921d call 0x41d476` 挪到爆心（`0x40af12` 取的地块/設施锚点），
+    //    窗心 = 它；半径同为 0x64 —— 与 `typhoonBlast` 及飛彈同一条判据。
     const inBlast = (e: { x: number; y: number }): boolean =>
-      Math.abs(e.x - origin.x) <= ALIEN_BLAST_RADIUS &&
-      Math.abs(e.y - origin.y) <= ALIEN_BLAST_RADIUS;
+      inBoardWindow(origin, e, ALIEN_BLAST_RADIUS);
 
     // ②a 住宅：**重击**支 —— owner/level/type 全清（`blastLand` 的 heavy 支）。
     //     @source `damage_area` 0x0040ad3a..0x0040ad85：`+0x19/+0x1a/+0x18` 全写 0
@@ -967,6 +975,8 @@ export function applyNewsEffect(
     const landMutations: LandMutation[] = [];
     for (const l of lands) {
       if (!inBlast(l)) continue;
+      // ★ 没盖房又没主的地块不在 id 图里 ⇒ 扫不到（`0x4091df..0x409240`）
+      if (!boardInstancePresent(l.level, l.owner)) continue;
       const after = blastLand(l.owner, l.level, l.type, ctx.priceIndex, ALIEN_BLAST_HEAVY !== 0);
       if (after.owner === l.owner && after.level === l.level && after.type === l.type) continue;
       landMutations.push({ id: l.id, level: after.level, type: after.type, owner: after.owner, tenure: 0 });
@@ -980,6 +990,8 @@ export function applyNewsEffect(
     const releaseFlags: boolean[] = [];
     for (const f of facilities) {
       if (!inBlast(f)) continue;
+      // ★ 同上：没盖过又没主的設施不在 id 图里（`0x4093f3..0x409488`）
+      if (!boardInstancePresent(f.level, f.owner)) continue;
       const after = mutateFacility(f, MUTATE_CLEAR_OWNER);
       releaseFlags.push(after.releasesConfined);
       facilityMutations.push({
@@ -992,8 +1004,7 @@ export function applyNewsEffect(
     }
 
     // ③ 范围里的人：`0x40cd07`（毁车 + 挂「被炸」位）→ `send_to_hospital(玩家, 3)`
-    //    复刻对「谁在范围里」用的是既有的近似：玩家的**节点**落在爆心方窗内
-    //    （与 `fireMissile` 的 `hitNodes` 同一条口径）。
+    //    判据 = 玩家**自己那粒实例**（站在节点上时锚点就是节点坐标）落在窗里。
     const nodes = ctx.nodes ?? [];
     const hitNodes = new Set<number>();
     for (const n of nodes) if (inBlast(n)) hitNodes.add(n.id);

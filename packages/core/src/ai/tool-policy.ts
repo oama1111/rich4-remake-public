@@ -21,13 +21,14 @@
  * - `b8c4` 可见表：`0x409ef9()` 扫出画面内**节点 id**；`0x40a45c(-1)` 扫出画面内
  *   实体（地块 2000+/設施 4000+/企業 6000+）与玩家标记 0x80xx；
  *   `0x40a0b1(x, y, r)` 以地图点为中心的实体表 + 只画**当前玩家**的 0x80xx。
- *   本引擎一律用「以我为中心 ±220px 的方形视野」（card-policy.ts 的 VIEW_HALF），
- *   镜头钳位差异记 D-005；爆风半径用节点坐标方窗，与效果侧一致（Q-TOOL-1）。
- *   **节点表的次序**照原版复刻（`screenScanOrder`：按视角档位投影后屏幕行优先），
- *   并列候选因此与原版取同一格（§7.139(6) 第 2 条）。`0x40a45c` 那一路（`visibleEntities`）
- *   收集也是同一张 440×440 格表的行优先扫，但那张表是 `0x409de7` 按**精灵遮罩**画的
- *   （锚点是地块记录 / 玩家 xpos,ypos / 物件节点 y−0x28），不是节点点的投影 ⇒ `screenScanOrder`
- *   不适用，仍按 (y,x) 近似（见 card-policy.ts，登记在 ai-move V-1）。
+ *   **成员**判据（Q-TOOL-1 已按 exe 改，`rules/board-window.ts`）：三者都是**同一套投影**下的
+ *   屏幕方窗 —— 节点用节点坐标、地块/設施用它们记录自己的 x/y、棋子用他的世界坐标。
+ *   先前一律按「以我为中心 ±220px 的**节点坐标**方窗」近似；镜头钳位差异记 D-005。
+ *   **收集次序**也照原版：那张 440×440 格表是**行优先**扫出的（先屏幕 Y 后屏幕 X）——
+ *   节点表 `0x409ef9` 走 `screenScanOrder`（并列候选因此与原版取同一格，§7.139(6) 第 2 条）；
+ *   `0x40a45c` 那一路（`visibleEntities`）同样是这张格表的行优先扫，但锚点不同
+ *   （地块记录自己的 x/y、玩家 xpos/ypos、物件节点 y−0x28）⇒ 次序仍按 (y,x) 近似
+ *   （见 card-policy.ts，登记在 ai-move V-1）。
  *
  * ## 参数语义（`[0x48be64]`）
  *
@@ -50,6 +51,7 @@ import { isAlive } from '../state/types.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
 import { FACILITY_TYPE, FACILITY_MAX_LEVEL } from '../rules/facility.ts';
 import { MISSILE_RADIUS } from '../rules/tool-effects.ts';
+import { BOARD_VIEW_HALF, inBoardWindow } from '../rules/board-window.ts';
 // ★ 需求方 2026-09-22：放置类道具不许和「唯一物件」同格 —— AI 必须与引擎同一条判据
 import { runtimeOccupiedNodes } from '../rules/object-landing.ts';
 import { nodeObjectIndex } from '../rules/special-actors.ts';
@@ -180,8 +182,9 @@ const ROW_BIAS = 0x8000;
  * 按**视角档位**而非地图取）⇒ 次序随 `state.viewRotation` 变：同一盘面转过视角后，
  * 两个同等级候选里 AI 先看到的是另一格。这是原版行为，照抄。
  *
- * 只复刻**次序**：谁算「在画面里」仍由调用方决定（D-005 的 ±220 方窗，原版另有
- * 「投影落在 440×440 格表内」一道闸 —— 那条属可见集合，见 ai-move V-1/FU-1）。
+ * 只复刻**次序**：谁算「在画面里」由调用方给（`visibleNodeIds` 现在用 Q-TOOL-1 的**屏幕方窗**
+ * `inView` / `inBoardWindow`，见 ai-move V-1；原版另有「投影落在 440×440 格表内」一道闸，
+ * 那一半现在也由同一个窗覆盖）。
  * 同一像素上的两个节点原版只剩后写的（节点表靠后、id 大）那个——这里照样去重；
  * 八张原版地图在八个视角下都没有这种重叠（见 tool-policy.test.ts），只在人造盘面里出现。
  *
@@ -448,12 +451,23 @@ const feidan: Handler = (view) => {
   const myNode = nodeAt(view, me.nodeId);
   const tNode = nodeAt(view, tp.nodeId);
   if (myNode === undefined || tNode === undefined || !inView(myNode, tNode)) return null;
-  // 爆风扫描：a0b1 只画**当前玩家**的 0x80xx，故任何玩家标记都是我（Q-TOOL-1 的方窗）
+  // 爆风扫描 @source `0x40a0b1(目标x, 目标y, 0x64)`：同一个屏幕方窗，中心 = **目标玩家**的坐标
+  //   （AI 的参数表存的是玩家标记 `0x80xx`，`0x40af12` 把它翻成那位玩家的世界坐标）。
+  //   清单里只有：**当前玩家**的 0x80xx 与**有主的**地块/設施（`0x40a220 cmp byte [esi+0x19],0 / je 跳过`）
+  //   ⇒ 凡出现「我的标记 / 我的地 / 我的設施」就不打。★ Q-TOOL-1：先前是节点坐标方窗，
+  //   且地块/設施按**节点**坐标判 —— 锚点其实是记录自己的 x/y（差 ~40 像素）。
   for (const n of view.topo.nodes) {
-    if (Math.abs(n.x - tNode.x) > MISSILE_RADIUS || Math.abs(n.y - tNode.y) > MISSILE_RADIUS) continue;
-    if (n.id === me.nodeId) return null;
-    if (n.ref.kind === 'land' && landById(view, n.ref.index)?.owner === me1) return null;
-    if (n.ref.kind === 'facility' && facilityById(view, n.ref.index)?.owner === me1) return null;
+    if (n.id === me.nodeId) {
+      if (inBoardWindow(tNode, n, MISSILE_RADIUS)) return null;
+      continue;
+    }
+    if (n.ref.kind === 'land') {
+      const l = landById(view, n.ref.index);
+      if (l !== undefined && l.owner === me1 && inBoardWindow(tNode, l, MISSILE_RADIUS)) return null;
+    } else if (n.ref.kind === 'facility') {
+      const f = facilityById(view, n.ref.index);
+      if (f !== undefined && f.owner === me1 && inBoardWindow(tNode, f, MISSILE_RADIUS)) return null;
+    }
   }
   return { kind: 'missile', nodeId: tp.nodeId };
 };
@@ -604,10 +618,6 @@ const gongcheng: Handler = (view) => {
   return aiRand(view.state, view.roll, SALT.gongcheng, 15) <= view.me.personality ? PLAIN : null;
 };
 
-/** 核子飛彈爆风窗的半宽（格）@source 0x0040a236 `add ebx,0xe` / 0x0040a251 `cmp ebx,0x1c` */
-const NUKE_WINDOW_HALF = 0xe;
-/** 原版格距口径的 32px/格 @source 0x0040a22d `sar ebx,5`（与 `test_nuke_card_ai.py` 同） */
-const NUKE_TILE_SHIFT = 5;
 /** 原版最多重摇候选的次数 @source 0x00422160 `cmp ecx,0xa` */
 const NUKE_MAX_TRIES = 10;
 
@@ -624,9 +634,17 @@ const NUKE_MAX_TRIES = 10;
  * 多大范围（`@source 0x0040a3e9 cmp edx,-1 / 0x0040a3f4 mov ebp,0x1b8` = 全图）
  * ——即「把刚建好的那一窗全要了」，不是全地图的地产。
  * ⇒ 中止判据 `test bh,0x80`（`@source 0x00421fe2`）的真语义是
- * **「我的棋子落在候选 ±14 格（448px）内」**，对随机挑中的候选完全可能为假
+ * **「我的棋子落在以候选为心的那一幅画面里」**，对随机挑中的候选完全可能为假
  * ⇒ 原版会发核彈。差分实证：`rich4-spec/tests/test_nuke_card_ai.py` 的 [Q] 组
  * （113 例全绿），以及该文件头部的 Q-TOOL-3 裁决。
+ *
+ * ★★ Q-TOOL-1（2026-09-25）：那一幅画面里到底有谁，**不是「格距 ≤ 14 格」** ——
+ *   建图那两段的判据是「**投影后**的屏幕点落在 440×440 棋盘区内」
+ *   （`@source 0x0040a27f..0x0040a2c4`：`屏幕X ∈ [0,0x1b8)` 且 `屏幕Y ∈ [0,0x1b8)`，
+ *   相对量就是 ±220），格距 ±14 只是它的前置筛子（画得进 29×29 表的实例才可能进棋盘区）。
+ *   ⇒ 判据 = `inBoardWindow(候选, 锚点, BOARD_VIEW_HALF)`（视角 0，见 `rules/board-window.ts`）。
+ *   格距口径下「14 格 = 448px 也进窗」是错的：视角 0 的实测边界是 **行 ±8 格、列 ±6 格**
+ *   （±9 行 → py = 229、±7 列 → px = 251，都出窗）。
  *
  * ## 算法（逐条照机器码）
  * ```
@@ -709,10 +727,9 @@ const hedan: Handler = (view) => {
     if (v !== 0 && !nodeByValue.has(v)) nodeByValue.set(v, n.id);
   }
 
-  // ── 爆风窗 = 以候选为中心、格距 ≤ 14 格（原版 0x40a0b1 的建图口径）──
-  //    原版比较的是 `(要素像素 >> 5) − (候选像素 >> 5) + 0xe ∈ [0,0x1c]`，
-  //    即两侧格号的差 ≤ 14；这里同口径（`>> 5` = `sar 5`）。
-  const tileOf = (v: number): number => v >> NUKE_TILE_SHIFT;
+  // ── 爆风窗 = 以候选为心的**画面**（原版 `0x40a0b1(x, y, -1)` 建图 + 全图回收）──
+  //    @source 0x0040a27f..0x0040a2c4：投影后的屏幕点要在 440×440 棋盘区内
+  //    （格距 ±14 只是「画得进 29×29 表」的前置筛子）。
   const myNode = nodeAt(view, me.nodeId);
   // @source 0x40a117：住店/消失/坐牢/住院（+0x32 起的 4 字节）任一非 0 ⇒ 不画我的标记
   const b = me.blocking;
@@ -726,10 +743,9 @@ const hedan: Handler = (view) => {
 
   for (let attempt = 0; attempt < NUKE_MAX_TRIES; attempt++) {
     const pick = cands[aiRand(state, view.roll, SALT.hedan + attempt, cands.length)]!; // @source 0x42216f
-    const cx = tileOf(pick.x);
-    const cy = tileOf(pick.y);
+    /** 这一窗里有谁：以候选的锚点为心的那幅画面（±220 屏幕像素，Q-TOOL-1） */
     const inWindow = (x: number, y: number): boolean =>
-      Math.abs(tileOf(x) - cx) <= NUKE_WINDOW_HALF && Math.abs(tileOf(y) - cy) <= NUKE_WINDOW_HALF;
+      inBoardWindow(pick, { x, y }, BOARD_VIEW_HALF);
 
     // 中止：我的棋子也进了这一窗 ⇒ 放弃**本候选**（换下一个，中止标志每候选重置）
     // @source 0x421fd4 test bh,0x80 / 0x421fe7 mov [esp+0x414],1
@@ -795,8 +811,8 @@ const HANDLERS: Readonly<Record<number, Handler>> = {
  *   『我在爆风内』恒真 ⇒ 原版 AI 从不放核彈」。**Q-TOOL-3 已用机器码推翻**
  *   （差分见 `rich4-spec/tests/test_nuke_card_ai.py`，113 例；裁决见文件头）：
  *   半径 −1 只决定 `0x40a0b1` 回收时扫**它刚重建的那张图**的多大范围，而那张图
- *   里只有候选周围 ±14 格的有主地块/設施 + 当前玩家一个标记 ⇒ 中止判据可假
- *   ⇒ 原版会发核彈。13 已接线（见 `hedan`）。
+ *   里只有**候选那幅画面**（投影 ±220）里的有主地块/設施 + 当前玩家一个标记
+ *   ⇒ 中止判据可假 ⇒ 原版会发核彈。13 已接线（见 `hedan`）。
  */
 export const AI_NEVER_USES: readonly number[] = [10];
 

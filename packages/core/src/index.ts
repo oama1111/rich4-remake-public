@@ -44,6 +44,7 @@ export * from './rules/view.ts';
 export * from './rules/percentage.ts';
 export * from './rules/tools.ts';
 export * from './rules/tool-effects.ts';
+export * from './rules/board-window.ts';
 export * from './rules/object-landing.ts';
 export * from './rules/beggar.ts';
 export * from './rules/visit.ts';
