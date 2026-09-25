@@ -80,6 +80,51 @@ describe('校验和', () => {
     );
   });
 
+  run('★ 位置 / 惡人表 / 地產三项也参与指纹（2026-09-25 六区审计收口：此前漏了）', () => {
+    const map = loadMap();
+    const a = newGame({ map, players: allComputer(), seed: 5 });
+    const moved = (patch: { xpos?: number; ypos?: number; direction?: number; lastNodeId?: number }) => ({
+      ...a,
+      players: a.players.map((p, i) => (i === 0 ? { ...p, ...patch } : p)),
+    });
+    // ① 坐标 / 朝向 / 来路 —— 傳送機与走子写这些。实测过：只挪 137 px 时旧指纹照样相等
+    //    （server xpos 1385 vs mirror 1248，两边都是 d2243728）。
+    expect(stateFingerprint(moved({ xpos: a.players[0]!.xpos + 137 }))).not.toBe(stateFingerprint(a));
+    expect(stateFingerprint(moved({ ypos: a.players[0]!.ypos + 1 }))).not.toBe(stateFingerprint(a));
+    expect(stateFingerprint(moved({ direction: (a.players[0]!.direction + 1) % 8 }))).not.toBe(stateFingerprint(a));
+    expect(stateFingerprint(moved({ lastNodeId: a.players[0]!.lastNodeId + 1 }))).not.toBe(stateFingerprint(a));
+    // ② 惡人 / 機器娃娃 / 跟班整张表 —— 搬惡人（0x00447857..0x004478b5）之后必须看得出来
+    expect(stateFingerprint({ ...a, specialActors: a.specialActors.map((x, i) => (i === 0 ? { ...x, nodeId: x.nodeId + 1 } : x)) }))
+      .not.toBe(stateFingerprint(a));
+    // ③ 地產到期日 / 種類 / 上次過路費 —— 傳送機搬地、拆除卡、首建都写
+    expect(stateFingerprint({ ...a, landTenure: a.landTenure.map((v, i) => (i === 0 ? v + 1 : v)) })).not.toBe(stateFingerprint(a));
+    expect(stateFingerprint({ ...a, landType: a.landType.map((v, i) => (i === 0 ? v + 1 : v)) })).not.toBe(stateFingerprint(a));
+    expect(stateFingerprint({ ...a, landLastToll: a.landLastToll.map((v, i) => (i === 0 ? v + 1 : v)) })).not.toBe(stateFingerprint(a));
+  });
+
+  run('★ 旧回报口径：把后补的字段全部去掉 ⇒ 少一段参与（缺席 = 不参与）', () => {
+    const map = loadMap();
+    const a = newGame({ map, players: allComputer(), seed: 5 });
+    const legacy = {
+      ...a,
+      toolStock: undefined,
+      cardAmount: undefined,
+      specialActors: undefined,
+      landTenure: undefined,
+      landType: undefined,
+      landLastToll: undefined,
+      players: a.players.map((p) => ({
+        ...p,
+        xpos: undefined,
+        ypos: undefined,
+        direction: undefined,
+        lastNodeId: undefined,
+      })),
+    };
+    // 旧回报录下的指纹靠这个口径仍然可比：去掉那几组之后是另一套（旧版）指纹
+    expect(stateFingerprint(legacy)).not.toBe(stateFingerprint(a));
+  });
+
   run('★ 指纹对**键序**不敏感（C-DET-5：规范化 JSON）', () => {
     const map = loadMap();
     const a = newGame({ map, players: allComputer(), seed: 5 });

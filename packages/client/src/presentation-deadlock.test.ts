@@ -406,8 +406,27 @@ describe('★★ 第十六份：线上卡死（老虎机排着 × 「使用地�
   run('fixture 忠实：rebase + 冻结两条 endTurn 之后，重放到底的指纹 = 回报里录下的终局指纹', () => {
     const { steps } = loadReport();
     const report = JSON.parse(readFileSync(REPORT, 'utf8')) as { finalFingerprint: string };
-    // 回报录于 2026-09-25 之前：那时指纹还不含道具库存 / 牌堆 ⇒ 按旧口径比（去掉这两格）
-    expect(stateFingerprint({ ...steps.at(-1)!.after, toolStock: undefined, cardAmount: undefined })).toBe(report.finalFingerprint);
+    // 回报录于 2026-09-25 之前：那时指纹还不含道具库存 / 牌堆，也不含坐标朝向 / 惡人表 /
+    // 地產三项（種類 / 到期日 / 上次過路費）⇒ 按**旧口径**比：把后来补进的字段全部去掉。
+    const last = steps.at(-1)!.after;
+    expect(
+      stateFingerprint({
+        ...last,
+        toolStock: undefined,
+        cardAmount: undefined,
+        specialActors: undefined,
+        landTenure: undefined,
+        landType: undefined,
+        landLastToll: undefined,
+        players: last.players.map((p) => ({
+          ...p,
+          xpos: undefined,
+          ypos: undefined,
+          direction: undefined,
+          lastNodeId: undefined,
+        })),
+      }),
+    ).toBe(report.finalFingerprint);
   });
 
   run('旧规矩（第一个 active 的屏接管、排着的不另 tick、框不看别的框）⇒ 复现卡死', () => {

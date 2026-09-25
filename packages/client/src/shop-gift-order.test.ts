@@ -173,8 +173,26 @@ function simulate(oldOrder: boolean): Timeline {
 describe('★★ 第二十一份：董事長進店 —— 地图屏赠礼框 → 台词 → 商店窗', () => {
   run('fixture 忠实：回报最后一条（settle）重放出 pending{shop} + 赠礼框 + 赠礼提示，指纹与回报一致', () => {
     const { before, after, fp } = load();
-    // 回报录于 2026-09-25 之前：那时指纹还不含道具库存 / 牌堆 ⇒ 按旧口径比（去掉这两格）
-    expect(stateFingerprint({ ...after, toolStock: undefined, cardAmount: undefined })).toBe(fp);
+    // 回报录于 2026-09-25 之前：那时指纹还不含道具库存 / 牌堆，也不含坐标朝向 / 惡人表 /
+    // 地產三项（種類 / 到期日 / 上次過路費）⇒ 按**旧口径**比：把后来补进的字段全部去掉。
+    expect(
+      stateFingerprint({
+        ...after,
+        toolStock: undefined,
+        cardAmount: undefined,
+        specialActors: undefined,
+        landTenure: undefined,
+        landType: undefined,
+        landLastToll: undefined,
+        players: after.players.map((p) => ({
+          ...p,
+          xpos: undefined,
+          ypos: undefined,
+          direction: undefined,
+          lastNodeId: undefined,
+        })),
+      }),
+    ).toBe(fp);
     expect(before.pending).toBeNull();
     expect(after.pending?.kind).toBe('shop');
     expect(after.notices.map((n) => n.key)).toEqual(['shop.chairmanGift']);

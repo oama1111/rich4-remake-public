@@ -845,6 +845,19 @@ export function stateFingerprint(
     loan: number;
     nodeId: number;
     whoPlays: number;
+    /**
+     * ★ 2026-09-25（六区审计收口）：**坐标 / 朝向 / 来路**也进指纹。
+     *
+     * 先前只覆盖 `nodeId` —— 而傳送機（`0x004477c3` 自己那一段、`0x40fc00` 跟班同格）、
+     * 走子（`xpos/ypos` 逐帧推进）、掉头卡（`lastNodeId`）写的都是这几个。
+     * 补镜像用例时实测过：把服务器的 node 20 挪 137 px（`xpos` 1385 vs 镜像 1248），
+     * 两边指纹**仍然相等**（`d2243728`）⇒ 「指纹相等」当时并不能证明位置没分叉。
+     * 口径同 `toolStock` / `cardAmount`：**缺席 = 不参与**，旧回报里录下的指纹照旧可比。
+     */
+    xpos?: number | undefined;
+    ypos?: number | undefined;
+    direction?: number | undefined;
+    lastNodeId?: number | undefined;
   }[];
   landOwner: readonly number[];
   landLevel: readonly number[];
@@ -890,6 +903,21 @@ export function stateFingerprint(
   pending?: unknown;
   /** 排队中的后续拍卖（一次流程里连开多场时用）—— 同上，是规则状态 */
   pendingQueue?: readonly unknown[];
+  /**
+   * 惡人 / 機器娃娃 / 跟班那一张表（位置、朝向、主人、剩几步、各天数、在場与否）。
+   *
+   * ★ 2026-09-25（六区审计收口）补：先前**整张表都不在**指纹里 —— 傳送機搬惡人
+   *   （`0x00447857..0x004478b5`）、惡人走子、保釋 / 关押都写它，两端分叉时校验和照样相等。
+   *   整表走**规范化 JSON**（键排序），与 `pending` 同一口径。
+   *   缺席 = 不参与（旧回报里录下的指纹照旧可比，见 client 的 fixture 测试）。
+   */
+  specialActors?: readonly unknown[] | undefined;
+  /** 地產到期日 —— 傳送機搬地（`0x00447546..0x00447553`）与日推进都写 */
+  landTenure?: readonly number[] | undefined;
+  /** 地產種類（連鎖店 / 設施种类）—— 拆除、首建、天使卡都写 */
+  landType?: readonly number[] | undefined;
+  /** 上次過路費（`land + 0x2c`）—— 过路费与傳送機清源头都写 */
+  landLastToll?: readonly number[] | undefined;
   },
   opts: { rng?: boolean } = {},
 ): string {
@@ -907,10 +935,20 @@ export function stateFingerprint(
   //   复刻↔复刻（联机）必须保留它：那是 desync 的早期信号。
   //   见 `rich4-spec/docs/verification.md` 通道 3、`docs/deviations/T-052.md`。
   if (opts.rng !== false) parts.push(state.rngState);
+  // ★ 位置组是「整组一起进 / 一起不进」：缺一个就当作旧口径（旧回报里录下的指纹不含这四格）
+  const spatial = state.players.every(
+    (p) => p.xpos !== undefined && p.ypos !== undefined && p.direction !== undefined && p.lastNodeId !== undefined,
+  );
   for (const p of state.players) {
     parts.push(p.index, p.cash, p.moneyInBank, p.loan, p.nodeId, p.whoPlays);
+    if (spatial) parts.push(p.xpos ?? 0, p.ypos ?? 0, p.direction ?? 0, p.lastNodeId ?? 0);
   }
   parts.push('|', ...state.landOwner, '|', ...state.landLevel);
+  // ★ 2026-09-25（六区审计收口）：到期日 / 種類 / 上次過路費 —— 傳送機、拆除卡、首建、日推进都写；
+  //   先前不在指纹里，两端在这三项上分叉时校验和照样相等。缺席 = 不参与（同 toolStock 口径）。
+  if (state.landTenure !== undefined) parts.push('|tenure', ...state.landTenure);
+  if (state.landType !== undefined) parts.push('|ltype', ...state.landType);
+  if (state.landLastToll !== undefined) parts.push('|ltoll', ...state.landLastToll);
   // ★ 下面这几项是后来补进引擎的，一度不在指纹里——那意味着
   //   两端在公库、樂透、股市上分歧时**校验和照样相等**，
   //   desync 会一直拖到有人破产才暴露。指纹必须覆盖所有会变的共享状态。
@@ -926,6 +964,10 @@ export function stateFingerprint(
   for (const row of state.holdings) for (const h of row) parts.push(h.amount);
   parts.push('|');
   for (const o of state.objects) parts.push(o.nodeId, o.state, o.attached);
+  // ★ 2026-09-25（六区审计收口）：惡人 / 機器娃娃 / 跟班**整张表** —— 傳送機搬惡人
+  //   （`0x00447857..0x004478b5`）、惡人走子、保釋 / 关押、停留 / 龜行天数都写它；
+  //   先前整张表都不在指纹里 ⇒ 两端在「惡人在哪一格、还剩几步」上分叉时校验和照样相等。
+  if (state.specialActors !== undefined) parts.push('|actors', canonicalJson(state.specialActors));
   // ★ 规则相位的三项（第 50 条补）：游标、待决交互、排队的拍卖
   parts.push('|');
   for (const slot of state.pendingNpcSlots ?? []) parts.push(slot);
