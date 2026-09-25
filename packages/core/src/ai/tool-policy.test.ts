@@ -5,9 +5,12 @@
  * 含 rand() 的分支用钉死的 rngState 验证 D-004 确定性替身（取值由同式预先算出，注释写明）。
  */
 
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { GameState } from '../state/types.ts';
 import type { FacilityInfo, LandInfo, MapNode, Rich4Map } from '../loaders/map.ts';
+import { parseMap } from '../loaders/map.ts';
+import { inView } from './card-policy.ts';
 import type { MapTopology } from '../state/reduce.ts';
 import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { makeObjects } from '../cards/summon.ts';
@@ -20,6 +23,7 @@ import { decideTool, type AiContext } from './policy.ts';
 import {
   AI_NEVER_USES,
   aiToolChoice,
+  screenScanOrder,
   toolsToConsider,
   type ToolAiView,
 } from './tool-policy.ts';
@@ -100,6 +104,48 @@ function ctxOf(f: Fixture & { tools?: Record<number, number> }): AiContext {
 // ============================================================
 //  共用机制
 // ============================================================
+
+/**
+ * 可见节点表的收集次序 @source 0x00409ef9（填 440×440 格表）/ 0x0040a050（行优先收集）。
+ *
+ * 期望值全部取自 `rich4-spec` 的 Unicorn 测试台**实跑原版 `0x409ef9`**：
+ * `0x409b18(1)` 那次精灵拾取图重建打桩成 `ret`，节点表 / 镜头 `[0x48b2ac]`·`[0x48b2b0]` /
+ * 视角 `[0x499088]` 由测试台直接铺（另注意 `emulate.MAX_INSN` 默认 40 万条不够跑完这支，
+ * 须调大 —— 指令钩子比的是模块常量）。下面每条都单独实跑过。
+ */
+describe('screenScanOrder —— 原版可见节点表的次序', () => {
+  const at = (id: number, x: number, y: number) => makeNode({ id, x, y });
+
+  it('同一块里 x 递增：视角 0 反序（画得越来越靠上），视角 4 正序', () => {
+    const nodes = [at(1, 0, 0), at(2, 10, 0), at(3, 20, 0), at(4, 30, 0)];
+    expect(screenScanOrder(nodes, { x: 0, y: 0 }, 0)).toEqual([4, 3, 2, 1]);
+    expect(screenScanOrder(nodes, { x: 0, y: 0 }, 4)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('同一像素两个节点：只剩节点表里靠后的那个（0x40a046 后写覆盖）', () => {
+    const nodes = [at(1, 320, 320), at(2, 300, 300), at(3, 300, 300)];
+    expect(screenScanOrder(nodes, { x: 320, y: 320 }, 0)).toEqual([3, 1]);
+  });
+
+  it('29×29 块窗口外不收（0x409fb0 `cmp ebx,0x1c`）', () => {
+    expect(screenScanOrder([at(1, 0, 0), at(2, 15 * 32, 0)], { x: 0, y: 0 }, 0)).toEqual([1]);
+  });
+
+  const MAP_DIR = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map';
+  const runMaps = existsSync(`${MAP_DIR}/0001.bin`) ? it : it.skip;
+  runMaps('八张原版地图 × 八个视角：画面里没有两个节点投到同一像素（去重只在人造盘面里生效）', () => {
+    for (let id = 0; id < 8; id++) {
+      // 地图文件 = globalMapId × 2 + 1（同 soak.test.ts）
+      const map = parseMap(new Uint8Array(readFileSync(`${MAP_DIR}/${String(id * 2 + 1).padStart(4, '0')}.bin`)));
+      for (const me of map.nodes) {
+        const visible = map.nodes.filter((n) => inView(me, n));
+        for (let v = 0; v < 8; v++) {
+          expect(screenScanOrder(visible, me, v).length, `地图 ${id} 节点 ${me.id} 视角 ${v}`).toBe(visible.length);
+        }
+      }
+    }
+  });
+});
 
 describe('共用机制', () => {
   it('一回合最多试 4 件：种类 > 4 时从 rand%种类 起环形取（0x00447fec）', () => {
@@ -322,8 +368,11 @@ describe('3 地雷（0x004213c5）', () => {
     const lands = [makeLand({ id: 1, owner: 2 }), makeLand({ id: 2, owner: 2 })];
     const first = viewOf({ nodes, lands, players: meOnLine(4, 3), state: { rngState: 2 } });
     const second = viewOf({ nodes, lands, players: meOnLine(4, 3), state: { rngState: 1 } });
-    expect(aiToolChoice(3, first)).toEqual({ kind: 'place', nodeId: 2 });
-    expect(aiToolChoice(3, second)).toEqual({ kind: 'place', nodeId: 3 });
+    // 候选按原版屏幕行序收：视角 0 下 x=30 的 node3 画得比 x=20 的 node2 靠上 ⇒ 候选 [3, 2]
+    //   （`screenScanOrder` 实跑 0x409ef9：镜头 (40,0)、node4 置我这一位、视角 0 → 次序 [3,2,1]；
+    //   先前按 (y,x) 排成 [2,3]）
+    expect(aiToolChoice(3, first)).toEqual({ kind: 'place', nodeId: 3 });
+    expect(aiToolChoice(3, second)).toEqual({ kind: 'place', nodeId: 2 });
   });
 
   it('监狱格有人坐牢 → 立即直选（不等扫完，0x421451）', () => {
@@ -411,10 +460,16 @@ describe('3 地雷（0x004213c5）', () => {
 });
 
 describe('4 定時炸彈（0x00421574）', () => {
-  it('不查归属：无主地所在的普通反瞻格也进候选（rngState 1 → 候选[1,2,3] 取第 2 个）', () => {
+  it('不查归属：无主地所在的普通反瞻格也进候选（候选按原版屏幕行序 [2,1]，rngState 1 → 取第 2 个）', () => {
     const nodes = lineNodes(3, new Map([[2, { kind: 'land', index: 1 }]]));
-    const view = viewOf({ nodes, lands: [makeLand({ id: 1, owner: 0 })], players: meOnLine(3, 2) });
-    expect(aiToolChoice(4, view)).toEqual({ kind: 'place', nodeId: 2 });
+    const lands = [makeLand({ id: 1, owner: 0 })];
+    // 候选 = 反瞻 ∩ 画面 = node2（x=20）、node1（x=10）；我在 node3 上，故它不进清单。
+    // 原版 0x409ef9 实跑（镜头 (30,0)、node3 置我这一位、视角 0）次序 = **[2, 1]** ——
+    //   x 越大画得越靠上；先前按 (y,x) 排成 [1, 2]。`rand()%候选数` 因此按下标取：
+    const second = viewOf({ nodes, lands, players: meOnLine(3, 2), state: { rngState: 1 } });
+    const first = viewOf({ nodes, lands, players: meOnLine(3, 2), state: { rngState: 0 } });
+    expect(aiToolChoice(4, second)).toEqual({ kind: 'place', nodeId: 1 });
+    expect(aiToolChoice(4, first)).toEqual({ kind: 'place', nodeId: 2 });
   });
 
   it('医院格有人住院 → 直选', () => {
@@ -758,8 +813,30 @@ describe('11 傳送機（0x00421cb6）——AI 用来搬自己', () => {
       ],
       players: meOnLine(1, 0),
     });
-    // 住宅与旅館同为 4 级：行序最先的 node2 胜出
-    expect(aiToolChoice(11, view)).toEqual({ kind: 'teleportSelf', nodeId: 2 });
+    // 住宅与旅館同为 4 级：画面行序最先的胜出。
+    // ★ 视角 0 下 x 越大画得越**靠上**（矩阵 0x474910 的 m1 = +11）⇒ 原版收集次序是
+    //   4,3,2,1（`0x409ef9` 实跑，本文件 `screenScanOrder` 那组同一条），旅館 node3 先到。
+    //   先前按 (y,x) 排、钉的是 node2。
+    expect(aiToolChoice(11, view)).toEqual({ kind: 'teleportSelf', nodeId: 3 });
+  });
+
+  /**
+   * ★ §7.139(6) 第 2 条「并列次序」：两块同为 3 级的无主住宅，一左一右各隔一格、世界 y 相同。
+   * 期望值取自 Unicorn 测试台**实跑原版 `0x409ef9`**
+   * （节点表 3 项、镜头 = 我脚下 (320,320)、`[0x499088]` = 视角档位，`0x409b18` 打桩成 ret）：
+   *   视角 0/5/6/7 → 收集次序 [3,1,2]；视角 1/2/3/4 → [2,1,3]。
+   * 旧实现按 (y,x) 排，恒取左边的 node2 —— 视角 0（开局默认）下与原版相反。
+   */
+  it('★ 并列等级取原版屏幕行序：随视角档位变（0x409ef9 / 0x40a050）', () => {
+    const nodes = [makeNode({ id: 1, x: 320, y: 320 }), landNode(2, 1, 256, 320), landNode(3, 2, 384, 320)];
+    const lands = [
+      makeLand({ id: 1, owner: 0, level: 3, housePrice: 100 }),
+      makeLand({ id: 2, owner: 0, level: 3, housePrice: 100 }),
+    ];
+    const pick = (viewRotation: number) =>
+      aiToolChoice(11, viewOf({ nodes, lands, players: meOnLine(1, 0), state: { viewRotation } }));
+    for (const v of [0, 5, 6, 7]) expect(pick(v), `视角 ${v}`).toEqual({ kind: 'teleportSelf', nodeId: 3 });
+    for (const v of [1, 2, 3, 4]) expect(pick(v), `视角 ${v}`).toEqual({ kind: 'teleportSelf', nodeId: 2 });
   });
 });
 

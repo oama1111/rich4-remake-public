@@ -14,7 +14,7 @@
 | 状态 | 条数 |
 |---|---|
 | verified | 47 |
-| fixed | 10（台账行；对应 8 处修复，V-10/C-27b、V-19/C-12 各是同一修复的两面） |
+| fixed | 11（台账行；对应 9 处修复，V-10/C-27b、V-19/C-12 各是同一修复的两面） |
 | approx | 6 |
 | follow-up | 4（FU-1 / FU-3 / FU-4 / FU-5，列在「跟进」一节；FU-2 已结项） |
 | n/a | 2 |
@@ -32,10 +32,21 @@
    **只在差一档时掷**）、卡/道具判定里的 `%4`/`%n`、前瞻岔路 `0x40b221`/`0x40b343`、骰子数 `0x4221c0`；
    掷数由 reducer 在同一局面上复算写回（真人座位不补、被拒的 action 不补），骰子数那一步同时搬进
    `aiAdvance` 第 3 步 — `81e1940`
+9. **AI 可见节点表的「并列次序」照原版屏幕行序**（本分支 F-2 手工并入；源提交 `ds/ai-visible-cell-order`
+   的 `9bf8cbb` 落后 404 个提交、AI 区已被审计重写，逐条按**当前**代码并入并重跑 exe 取证）——
+   路障阶段二 / 地雷 / 定時炸彈 / 傳送機 的候选表 `visibleNodeIds` 改由 `screenScanOrder` 收：
+   `0x409ef9` 把节点按 `[0x499088]` 投影到 440×440 格表、`0x40a050` 行优先（先屏幕 Y 后屏幕 X）扫出，
+   同像素后写覆盖；旧实现按世界 (y,x) 排。见 V-1a。**这条不改 `reduce`、也不改一次决策的掷数**
+   （候选**集合**没变、`rand()%n` 仍是 1 次）—— 老客户端重放新服务器的 action 串照样得到同一局面
+   ⇒ **不需要为「重放兼容」升协议**；是否搭协调方下一次批量 +1 只是版本记账口径，留给协调方定。
+   ★ 但它让 AI 依 **`state.viewRotation`** 取景，而该字段**不在 `stateFingerprint`** 白名单里
+   （net/protocol.ts 明写「每个客户端各自的镜头」）—— 见 FU-1 的确定性分析：`rotateView` 走
+   `dispatch` → 定序器 → 全端重放，故两端始终同档；真分岔也会由它引起的 `rngState`/action 差异在指纹上现形。
 
 联机镜像测试：`packages/server/src/audit-ai-move-mp.test.ts`（漲價卡 esi 残值 / 保釋关窗 / ③ 出牌吃全局随机流：
 服务器 = 旁观端重放、`rngState` 恰好前进决策掷数）；`packages/server/src/pt21-ai-mp.test.ts` ② 按新接线改
-（骰子数由 reducer 第 3 步写，不再出 `setDiceCount`）。
+（骰子数由 reducer 第 3 步写，不再出 `setDiceCount`）；`packages/server/src/visible-cell-order-mp.test.ts`
+（第 9 条：傳送機并列候选取屏幕行序先到者 —— 服务器 = 单机同一手、重放一致；转视角后两端镜像同档、AI 换格）。
 
 ## 台账
 
@@ -43,7 +54,8 @@
 
 | id | rule | our code (file:line) | exe VA(s) | status | note |
 |---|---|---|---|---|---|
-| V-1 | 「画面」可见集（候选成员与次序） | `ai/card-policy.ts:146` `inView` / `:151` `visibleEntities` / `:166` `visibleRivals` / `:184` `visibleObjects`；`ai/tool-policy.ts:160` `visibleNodeIds` | 0x409ef9、0x40a45c、0x409de7、0x407a2c、投影表 0x46ccf0（旋转 [0x499088]）、镜头 [0x48b2ac]/[0x48b2b0] | approx | 原版是**投影后的屏幕**：镜头 ±14 格 → 按旋转表投影 → 只留屏幕 0..440；次序 = 屏幕行序；精灵锚点：建筑 = 地块记录 (x,y)、玩家 = xpos/ypos、物件 = 节点，y−0x28。TS 用节点坐标 ±220 方窗、(y,x) 排序。D-005 已补写。见 FU-1 |
+| V-1 | 「画面」可见集（候选**成员**） | `ai/card-policy.ts:146` `inView` / `:151` `visibleEntities` / `:166` `visibleRivals` / `:184` `visibleObjects`；`ai/tool-policy.ts` `visibleNodeIds` | 0x409ef9、0x40a45c、0x409de7、0x407a2c、投影表 0x46ccf0（旋转 [0x499088]）、镜头 [0x48b2ac]/[0x48b2b0] | approx | 原版成员 = 镜头 ±14 格 → 投影后落在屏幕 0..440 内、且 `+0x24 & 0xffff00` 无占用；精灵锚点：建筑 = 地块记录 (x,y)、玩家 = xpos/ypos、物件 = 节点，y−0x28。TS 用节点坐标 ±220 方窗（占用那道闸已按 `68be042` 补上）。**次序那一半已修，见 V-1a**；剩下的是成员口径，见 FU-1 |
+| V-1a | 「画面」可见集的**次序**（并列取先到者） | `ai/tool-policy.ts` `screenScanOrder`（`visibleNodeIds` 用它） | 0x409ef9（填 440×440 格表：`0x409fde imul eax,[0x499088],0xd24` / `0x40a010 cmp ecx,0x1b8` / `0x40a046 mov word [buf+…],di`）、0x40a050（`0x40a073` 内层列 / `0x40a064` 外层行）、0x407a2c、0x474910、0x46ccf0 | fixed | 本分支 F-2（源提交 `9bf8cbb`）。四个消费点：路障阶段二 `0x4212b5`、地雷 `0x4213e8`、定時炸彈 `0x421597`、傳送機 `0x421cc1`（并列取先到：`cmp best,this / jge 跳过`）。真值 = Unicorn 测试台实跑 `0x409ef9`（复跑脚本 `tools/audit/visible-order-emu.py`）：① 四组构造盘面（x 递增行 / 同像素 / 15 块越窗 / 并列随视角翻转）逐条与 TS 一致；② **320 组随机盘面 × 8 视角 320/320 一致**（exe 序 = TS 序限制在 exe 可见集上；其中 **201/320** 与旧 (y,x) 序不同 ⇒ 这条改动真会改局）；③ 八张地图 × 每节点当镜头 × 8 视角 7,896 组的同像素重叠 **0 次**。`0x40a45c` 那一路（`visibleEntities`）收集也是同一张格表的行优先扫，但填表者 `0x409de7` 是**精灵遮罩**、锚点不同 ⇒ 不复用 `screenScanOrder`，仍 (y,x) |
 | V-2 | 谁由 AI 出手（who_plays 分派） | `state/types.ts:1829` `isAiControlled`（掩码 6）；`ai/policy.ts:109` | 0x40c912 返回 who_plays → 跳表 0x418c3d：1 真人 / 2、5 电脑支 0x418dc6 / 3、4、>5 什么都不做 | verified | 2 与 5（真人+託管）都进 0x418dc6 ✓。`whoPlays = 3` 原版不动、TS 当电脑 —— 只有读档可达，见 FU-4 |
 | V-3 | 性格表 / f7 表逐字节 | `packages/data/src/characters.ts:134-145`、`cards.ts`、`tools.ts` | 角色表 0x47e80c（步长 0x68，+0x11 +0x12 +0x16..+0x1a）；卡片 0x47fdea+id×8 的 +7；道具 0x47fee1+id×8 | verified | 脚本 dump 对比：12 角色 × 7 字节、30 张卡 f7、13 件道具 f7 全等 |
 | V-4 | 能力位：会出牌 / 会用道具 | `ai/personality.ts:62,65`；`ai/policy.ts:248,346` | 0x00441d09 `test [+0x16],1`；0x00447f87 `test [+0x16],2`（其前 `test dl,6`） | verified | |
@@ -131,10 +143,15 @@
 
 ## 跟进（未修，附证据）
 
-- **FU-1 画面投影**（V-1、T-7、T-13）—— 未修，**明确不做**（>半天、且是纯保真度：差异只在屏幕边缘几格）。
-  原版 AI 的候选集与「第一个」次序 = **投影到屏幕之后**落在 `0..0x1b8`（440）方窗里的东西
-  （`0x409ef9` / `0x409de7` / `0x40a45c` / `0x40a0b1`），本引擎是「±220 像素方窗 + (y,x) 排序」。
-  要复刻得搬进 core 的件（逐件都已定位）：
+- **FU-1 画面投影**（V-1、T-7、T-13）—— **次序那一半已修（V-1a，本分支 F-2）；成员那一半未修，
+  仍是「明确不做」**（>半天、且是纯保真度：差异只在屏幕边缘几格）。
+  原版 AI 的候选集 = **投影到屏幕之后**落在 `0..0x1b8`（440）方窗里、且无运行时占用的东西
+  （`0x409ef9` / `0x409de7` / `0x40a45c` / `0x40a0b1`），本引擎是「±220 像素方窗 + 占用掩码」。
+  ⇒ 复刻的可见集**更大**（本轮随机对拍 320 组、采样故意偏边缘：**846/2128** 的候选节点
+  落在原版 440×440 格表外），
+  这些节点在原版根本不会成为候选；`screenScanOrder` 给它们的位次是对**格表内**节点相对次序的延伸
+  （行优先键留了 2^16 的宽度，不与格内节点串行；投影表实测 |值| ≤ 715）。
+  要复刻**成员**得搬进 core 的件（逐件都已定位）：
   1. 取景原点：视图扫描用**相机像素坐标** `[0x48b2ac]` / `[0x48b2b0]`（`0x409b44` / `0x409b4e`，
      随后 `0x409b5c sar ecx,5` 得格号）；窗口函数 `0x40a0b1(xpos, ypos, 半径)` 另取**当前玩家**的
      `xpos/ypos`（`0x40a125 mov dx,[eax+0x496b70]` = +0x08、`0x40a138 mov ax,[eax+0x496b72]` = +0x0a；
@@ -148,11 +165,20 @@
   5. 屏幕格 OR 合并（同一次调用里逐类写）：玩家 `0x40a1bb..0x40a202` 写 `cx = 0x8000 | 1<<当前玩家`
      （其前 `0x40a1cd` / `0x40a1d9` 判 0..0x1b8 越界）、地块 `0x40a2c8 add ecx,0x7d0`、
      設施 `0x40a3ba add ecx,0xfa0`；物件那一趟与 V-1 编码表一致（`(槽+1)<<8`）。
-  影响 V-1 / T-1 / T-2a / T-7 / T-13 等约 20 个判定函数的候选成员与次序。
+  影响 V-1 / T-1 / T-2a / T-7 / T-13 等约 20 个判定函数的候选**成员**（次序那半已按 V-1a 收口）。
   ⚠️ 确定性面：镜头位置可由行动者推出，旋转 `state.viewRotation` **已经在状态里**（`rotateView` 动作，
   原版存 `+0x2743`）—— 但它**不在 `stateFingerprint` 的白名单里**（`net/protocol.ts` 的 parts 只收
   turnCount/currentPlayer/日期/物价/rngState/玩家几项/地产/公库/樂透/道具/库存/牌堆/股市/持股/物件/
-  pending），真要接投影，**必须先把 `viewRotation` 纳入指纹**，否则一端转视角就能让 AI 的取舍分岔而对账看不见。
+  pending），真要接投影的**成员**，**必须先把 `viewRotation` 纳入指纹**，否则一端转视角就能让 AI 的取舍
+  分岔而对账看不见（协议注释里也写着这条前置）。
+  ★ V-1a 之后 AI 的**次序**已经吃 `viewRotation`，那一条前置怎么办 —— 本轮核过：
+  ① 联机里 `rotateView` 也是**动作**（`client/src/main.ts` 的 `rotateView` → `dispatch` → 定序器 →
+  广播 → 全端重放），不是本地镜头；`Sequencer.submit` 只收当前回合那一座（`sequencer.ts:119`），
+  被拒时本机状态也不动 ⇒ 两端**始终同档**（`visible-cell-order-mp.test.ts` ② 钉住这一点）。
+  ② 万一哪天真分岔：次序变了 ⇒ AI 选到别的格 ⇒ action 串与 `rngState` 跟着变，而这两样**都在指纹里**
+  ⇒ 会在那一拍现形（只是比「直接比 viewRotation」晚一拍）。故**没有**为此改指纹 / 升协议。
+  真要把 `viewRotation` 也纳入指纹，得先回答「两个客户端各自转视角算不算合法」——那是需求方口径，
+  见 `docs/escalations.md`。
 - **FU-3 `0x4216ab` 的垃圾返回值**（T-7 / T-13）—— 未修，**静态定不出值**。
   追了一遍 `edx` 的来路：`0x4216ab` 只在「是我的」那支写 `mov edx,1`（`0x42170f`），
   「不是我的」直接落到 `0x421714 mov eax,edx / ret` ⇒ 返回的是**调用方手里那个 edx**。

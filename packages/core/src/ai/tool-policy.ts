@@ -23,6 +23,11 @@
  *   `0x40a0b1(x, y, r)` 以地图点为中心的实体表 + 只画**当前玩家**的 0x80xx。
  *   本引擎一律用「以我为中心 ±220px 的方形视野」（card-policy.ts 的 VIEW_HALF），
  *   镜头钳位差异记 D-005；爆风半径用节点坐标方窗，与效果侧一致（Q-TOOL-1）。
+ *   **节点表的次序**照原版复刻（`screenScanOrder`：按视角档位投影后屏幕行优先），
+ *   并列候选因此与原版取同一格（§7.139(6) 第 2 条）。`0x40a45c` 那一路（`visibleEntities`）
+ *   收集也是同一张 440×440 格表的行优先扫，但那张表是 `0x409de7` 按**精灵遮罩**画的
+ *   （锚点是地块记录 / 玩家 xpos,ypos / 物件节点 y−0x28），不是节点点的投影 ⇒ `screenScanOrder`
+ *   不适用，仍按 (y,x) 近似（见 card-policy.ts，登记在 ai-move V-1）。
  *
  * ## 参数语义（`[0x48be64]`）
  *
@@ -36,6 +41,7 @@
  *   ★ FU-2（2026-09-25 审计）：走 `view.roll`（真随机流），与卡片同一条路（`ai/rand.ts`）。
  */
 
+import { projectWorld } from '@rich4/data';
 import type { MapNode } from '../loaders/map.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
 import type { MapObject } from '../cards/summon.ts';
@@ -149,22 +155,79 @@ function backtrack(view: ToolAiView, n: number, salt: number): { nodes: number[]
   return lookahead(view.topo, view.state, view.me.lastNodeId, view.me.nodeId, n, salt, view.roll);
 }
 
+/** `screenScanOrder` 的行优先键：每行 2^16 宽、坐标先挪成非负 */
+const ROW_STRIDE = 0x10000;
+const ROW_BIAS = 0x8000;
+
 /**
- * 画面里的**空**节点 id，按屏幕行序（先 y 后 x）@source 0x409ef9 的行序扫描。
+ * 原版「可见节点表」的收集次序 @source 0x00409ef9（填表）/ 0x0040a050（收集）
+ *
+ * 原版不按世界坐标排：它先把每个节点**投影到屏幕**，把节点 id 写进一张 440×440 的
+ * word 格表（`[0x474938]`），再**逐行、行内逐列**扫出非 0 项进 `0x48b8c4`：
+ * ```asm
+ * 00409f3c  memset([0x474938], 0, 0x5e880)                        ; 440×440 word 格表
+ * 00409f4a  镜头X/Y = 0x407a2c(镜头) + 0xdc                       ; 镜头落在格表正中
+ * 00409f89  col = (node.x >> 5) − (cam.x >> 5) + 0xe ; row 同理   ; 0x409fb0 起：0..0x1c 才收
+ * 00409fd6  call 0x407a2c(node.x, node.y, &oX, &oY)             ; 块内余量过 0x474910 矩阵
+ * 00409fde  imul eax, [0x499088], 0xd24                          ; ★ [0x499088] = 视角档位
+ * 00409fef  屏幕X = 表[row][col] 第 2 个 int16（0x46ccf2）− oX + 镜头X
+ * 0040a000  屏幕Y = 表[row][col] 第 1 个 int16（0x46ccf0）− oY + 镜头Y
+ * 0040a010  屏幕X/Y 必须落在 0..0x1b8（440）内，越界跳过
+ * 0040a046  mov word [buf + (屏幕Y×440 + 屏幕X)×2], di           ; 同一像素：后写覆盖先写
+ * 0040a064  for 屏幕Y in 0..439: for 屏幕X in 0..439: 非 0 → 收   ; ★ 行优先（0x40a077 内层列）
+ * ```
+ * 投影与 `@rich4/data` 的 `projectWorld` 是同一套（表 `0x46ccf0` + 矩阵 `0x474910`，
+ * 按**视角档位**而非地图取）⇒ 次序随 `state.viewRotation` 变：同一盘面转过视角后，
+ * 两个同等级候选里 AI 先看到的是另一格。这是原版行为，照抄。
+ *
+ * 只复刻**次序**：谁算「在画面里」仍由调用方决定（D-005 的 ±220 方窗，原版另有
+ * 「投影落在 440×440 格表内」一道闸 —— 那条属可见集合，见 ai-move V-1/FU-1）。
+ * 同一像素上的两个节点原版只剩后写的（节点表靠后、id 大）那个——这里照样去重；
+ * 八张原版地图在八个视角下都没有这种重叠（见 tool-policy.test.ts），只在人造盘面里出现。
+ *
+ * @param nodes 候选节点，**按节点表顺序**（id 升序，与原版 `edi = 1..N` 同序）
+ * @param cam   镜头中心（世界像素）；本引擎恒为我脚下那格（D-005）
+ * @param viewRotation 视角档位 0..7（`state.viewRotation`，原版 `[0x499088]`）
+ * @returns 节点 id，按原版收集次序；投影落在 29×29 块窗口外的节点不收（原版同样跳过）
+ */
+export function screenScanOrder(
+  nodes: readonly MapNode[],
+  cam: { x: number; y: number },
+  viewRotation: number,
+): number[] {
+  const camTileX = cam.x >> 5;
+  const camTileY = cam.y >> 5;
+  const byPixel = new Map<number, number>();
+  for (const n of nodes) {
+    const p = projectWorld(viewRotation, n.x, n.y, camTileX, camTileY, cam.x, cam.y);
+    if (p === null) continue;
+    // 行优先的键。不用原版的 `屏幕Y×440 + 屏幕X`：D-005 的方窗里有投影落在 440 格表外的节点，
+    //   那样算会串行；这里给每行留足 2^16 宽（投影表实测 |值| ≤ 715，远小于 2^15）。
+    //   常数偏移 0xdc 不影响次序，略去。
+    byPixel.set((p.y + ROW_BIAS) * ROW_STRIDE + (p.x + ROW_BIAS), n.id);
+  }
+  return [...byPixel.entries()].sort((a, b) => a[0] - b[0]).map(([, id]) => id);
+}
+
+/**
+ * 画面里的**空**节点 id，按原版收集次序 @source 0x409ef9 / 0x40a050。
  *
  * ★★ 「空」：0x409ef9 逐节点先 `0x00409f7c test dword [node+0x24], 0xffff00 / jne 跳过` ——
  *   有人站着 / 有惡人 / 已经有物件的格子**根本不进清单**（`placementBlockedAt` 同一道掩码）。
  *   先前漏了这一层 ⇒ 地雷 / 定時炸彈会挑到已经有地雷的格（需求方 2026-09-24「Npc把地雷重叠放置了」）。
  *   四个调用点（路障阶段二 0x4212b5 / 地雷 0x4213e8 / 定時炸彈 0x421597 / 傳送機 0x421cc1）都吃这一条。
+ * ★★ 次序：原版这张表是**投影后的屏幕行序**（见 `screenScanOrder`），先前按世界 (y,x) 排
+ *   ⇒ 并列候选选到不同格（§7.139(6) 第 2 条「并列次序」）。
  */
 function visibleNodeIds(view: ToolAiView): number[] {
   const center = nodeAt(view, view.me.nodeId);
   if (center === undefined) return [];
   const occupied = runtimeOccupiedNodes(view.state.players, view.state.objects, view.state.specialActors);
-  return view.topo.nodes
-    .filter((n) => inView(center, n) && !occupied.has(n.id))
-    .sort((a, b) => a.y - b.y || a.x - b.x)
-    .map((n) => n.id);
+  return screenScanOrder(
+    view.topo.nodes.filter((n) => inView(center, n) && !occupied.has(n.id)),
+    center,
+    view.state.viewRotation,
+  );
 }
 
 /**

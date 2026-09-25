@@ -168,6 +168,15 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
     }),
   ),
   {
+    // 夢遊卡打到**持嫁禍卡**的人：嫁禍把人改打之后，夢遊台词（事件 21）才由改打后的目标说 ⇒ 框在前。
+    // 本行由 `screenScanOrder`（可见节点表按原版屏幕行序，ai-move V-1a）改了 AI 选牌之后的长局撞出来：
+    // 24 局里第一次走到「夢遊卡 × 嫁禍卡」这一拍（g16 图0 第114回合 useCard）。
+    line: 'dreamCard',
+    boxes: ['card.scapegoatOn', 'card.scapegoatTo'],
+    exe: 'boxFirst',
+    va: '夢遊卡 `_rich4_use_card_mengyouka` @ 0x004441dc：扣卡 `0x00444210 call 0x441343` → 出牌台词 `0x0044424d call 0x44ef41` → 免罪支 `0x004442f2 call 0x4413ad(0x15)`；**嫁禍支 `0x00444310 call 0x4413ad(0x13)` 成立则 `0x00444325 call 0x44476a`（= 亮牌 `0x004447ff` / `0x0044488b` `call 0x441f73(0x13)` → 确认框 / 选人窗 `0x00444849 call 0x440ba8` / `0x004448a1 call 0x440e1a` → 电脑支 `0x00444996` 亮牌 → 「嫁禍給%s！」`0x004449df`），返回 -1 才不改目标**；之后**才 `0x00444356 call 0x44ef41`（事件 21，说的人是改打后的目标）',
+  },
+  {
     line: 'moneyPaid',
     boxes: ['card.taxed'],
     exe: 'boxFirst',
