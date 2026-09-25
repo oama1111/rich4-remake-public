@@ -104,8 +104,8 @@ import {
 } from '@rich4/core';
 import { CARDS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import type { AmountPage, DialogHit } from './dialog.ts';
-import { drawDialog, hitDialog } from './dialog.ts';
-import { AMOUNT_KEY_BY_ID, amountKeySound, amountKeyStep, amountSlotOfId } from './amount-keys.ts';
+import { AmountPressLatch, drawDialog, hitDialog } from './dialog.ts';
+import { AMOUNT_KEY_BY_ID, amountKeyStep, amountSlotOfId, resetAmountWindowPos } from './amount-keys.ts';
 import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue, amountKeyOfSlotId } from './amount-window.ts';
 import type { InteractionUi } from './interactions.ts';
 import { FONT_FAMILY } from './font.ts';
@@ -1314,6 +1314,7 @@ let ui: BoardUiState = freshState();
 /** 测试用：把本屏的子状态清干净 */
 export function resetBoardScreen(): void {
   ui = freshState();
+  pricePress.reset();
 }
 
 /** 测试用：现在开着吗 / 在哪一页 */
@@ -1805,10 +1806,16 @@ function hitPricePage(env: UiScreenEnv, x: number, y: number): DialogHit | 'insi
 }
 
 /**
- * 填数页上的点击 —— 与 main.ts 的 `onDialogHit` 同一套动作。
+ * 填数页鼠标的「按下记账 + 放音、抬手动作」—— 与 `main.ts` 那三扇同一个闩（`AmountPressLatch`）。
+ * @source `fcn_00452c02`：0x201 放 7 并记 `[0x48cac2]`（0x00452d5e..0x00452d95），0x202 照它动作（`loc_00452fce`）
+ */
+const pricePress = new AmountPressLatch();
+
+/**
+ * 填数页上**抬手**要办的那一颗 —— 与 main.ts 的 `onDialogHit` 同一套动作。
  *
- * 填数窗（`fcn_00453544`）的钮在**按下**就生效（与銀行/股市那两屏的
- * `hitDialog` 同一条路），所以这一步放在 `down` 里。
+ * ★ pt26：先前这一步放在 `down` 里（按下就连音带动作一起办）。原版填数窗（`fcn_00453544`）
+ *   是**按下放音、抬手动作**（见 `pricePress`），按键音已在 `down` 放过，这里不再放。
  */
 function onPriceHit(env: UiScreenEnv, hit: DialogHit): void {
   const page = ui.amountPage;
@@ -1821,9 +1828,7 @@ function onPriceHit(env: UiScreenEnv, hit: DialogHit): void {
     case 'amountSlot': {
       const key = amountKeyOfSlotId(hit.id, amountSlotOfId, (n) => AMOUNT_KEY_BY_ID.get(n) ?? null);
       if (key === null) break;
-      // ★ 按键音 7（gap-audit #13）@source 0x00452d8e..0x00452d95（按在钮上）、表 `0x48234a`
-      const keySfx = amountKeySound(key);
-      if (keySfx !== null) env.playEffect(keySfx);
+      // 按键音 7 已在**按下**放过（`onDown` → `pricePress.down`，0x00452d95）
       const step = amountKeyStep(page.value, amount.max, key);
       if (step.submit) {
         const n = page.value;
@@ -1889,6 +1894,7 @@ function dragPriceBar(env: UiScreenEnv, x: number, y: number): void {
 
 /** 填数页收掉 → 回主屏（原版成交后也是把两扇窗一起关掉）*/
 function closePrice(): void {
+  pricePress.reset();
   ui.amountPage = null;
   ui.barHeld = false;
   ui.amount = null;
@@ -1920,6 +1926,9 @@ function openPrice(env: UiScreenEnv, i: number): void {
   const market = marketPriceOf(env.state, env.topo, ui.pickKind, it.id, it.amount);
   ui.amount = { kind: ui.pickKind, id: it.id, amount: it.amount, market };
   // ★ 出价默认值 = 市價（原 stub 的说法）；股数那一类就是持有股數
+  // 开窗：落点回到 (0x100, 0x90) @source `fcn_00453544` 0x0045359c..0x004535a5
+  resetAmountWindowPos();
+  pricePress.reset();
   ui.amountPage = { choice: 0, value: ui.pickKind === LISTING.stock ? it.amount : market };
   ui.press = null;
   ui.pickHot = null;
@@ -1983,9 +1992,10 @@ function onDown(env: UiScreenEnv, x: number, y: number): void {
     // ★ 金额栏：只记「按在栏上」，不改值（值是随后的 `WM_MOUSEMOVE` 改的）@source `0x00452d5e`
     const max = priceMax();
     ui.barHeld = max !== null && amountBarDragValue(x, y, max) !== null;
-    const hit = hitPricePage(env, x, y);
-    if (hit !== null && hit !== 'inside') onPriceHit(env, hit);
-    else env.requestRender();
+    // ★ 按下只记账 + 放按键音 7，数值在抬手才动（`onUp`）@source 0x00452d5e..0x00452d95
+    const r = pricePress.down(hitPricePage(env, x, y), { x, y });
+    if (r.sound !== null) env.playEffect(r.sound);
+    env.requestRender();
     return;
   }
 
@@ -2122,7 +2132,12 @@ function onUp(env: UiScreenEnv, at: { x: number; y: number } | null = null): voi
   ui.press = null;
   ui.barHeld = false; // @source `0x00452e4b`：抬手清掉按下的控件号
 
-  if (ui.mode === 'price') return; // 填数页在按下那一把就处理完了
+  if (ui.mode === 'price') {
+    // ★ 抬手照**按下时记下的那一颗**动作（不看抬手坐标）@source `loc_00452fce`
+    const pressed = pricePress.up();
+    if (pressed !== null) onPriceHit(env, pressed);
+    return;
+  }
 
   // ★ YES/NO 确认：抬手那一拍才判定（原版 `_rich4_ui_yesno` 的 `:205-257`
   //   就是「抬手返回 1/0」），YES 才真的下单
@@ -2318,6 +2333,11 @@ export const boardScreen: UiScreen = {
    */
   move(x: number, y: number, env: UiScreenEnv): void {
     if (ui.mode === 'price') {
+      // ★ 按在拖窗把手（id 1）上：窗跟着走（`0x0045320b cmp dh,1` 那一支，先于金额栏）
+      if (pricePress.drag({ x, y })) {
+        env.requestRender();
+        return;
+      }
       dragPriceBar(env, x, y);
       return;
     }

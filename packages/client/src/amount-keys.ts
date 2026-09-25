@@ -195,6 +195,65 @@ export const AMOUNT_WINDOW = {
   percentAt: { dx: 0xa, dy: 0x2a },
 } as const;
 
+// ============================================================
+//  窗的落点 —— 可拖（原版 `[0x48cab8]` / `[0x48cab6]`）
+// ============================================================
+
+/**
+ * 这扇窗**此刻**的左上角（舞台坐标）。`AMOUNT_WINDOW.x/.y` 只是**开窗时的初值**。
+ *
+ * @source 入口 `fcn_00453544`：`0x0045359c mov word [0x48cab8], 0x100` / `0x004535a5 mov word [0x48cab6], 0x90`
+ *   —— **每次开窗都重置**回 (0x100, 0x90)，不记上一次拖到哪；拖窗那一支（`0x00453293` / `0x0045329a`）改它。
+ *   全 exe 只有这一扇窗用这支窗口过程（`push 0x452c02` 仅 0x00453603 一处），所以棋盘 / 銀行 / 股市 / 公佈欄
+ *   四处的填数页共用这一个落点。
+ */
+const amountAt = { x: AMOUNT_WINDOW.x as number, y: AMOUNT_WINDOW.y as number };
+
+/** 窗此刻的左上角（舞台坐标）*/
+export function amountWindowPos(): { readonly x: number; readonly y: number } {
+  return amountAt;
+}
+
+/** 开窗：落点回到初值 (0x100, 0x90) @source 0x0045359c..0x004535a5 */
+export function resetAmountWindowPos(): void {
+  amountAt.x = AMOUNT_WINDOW.x;
+  amountAt.y = AMOUNT_WINDOW.y;
+}
+
+/** 直接摆到某处（拖窗 / 单测用）*/
+export function setAmountWindowPos(x: number, y: number): void {
+  amountAt.x = x;
+  amountAt.y = y;
+}
+
+/** 拖窗时窗左上角能到的最右 / 最下 @source `0x00453241 cmp ebx,0x200` / `0x00453256 cmp edx,0x120`（= 640−128 / 480−192）*/
+export const AMOUNT_DRAG_MAX = { x: 0x200, y: 0x120 } as const;
+
+/**
+ * 拖窗那一步的纯算式：光标 − 按下时的抓点（窗内偏移）→ 新左上角，夹在 `[0, 0x200] × [0, 0x120]`。
+ *
+ * @source `0x0045320b` 起（`WM_MOUSEMOVE` 且 `[0x48cac2] == 1`）：
+ * ```asm
+ * 0045321f  sub ebx, [0x48caba]        ; x = 光标 x − 抓点 x（按下时 0x00452d67 记的窗内 x）
+ * 00453233  sub edx, [0x48cabe]        ; y = 光标 y − 抓点 y
+ * 00453239  test ebx,ebx / jge · xor ebx,ebx          ; < 0 ⇒ 0
+ * 00453241  cmp ebx,0x200 / jle · mov ebx,0x200        ; > 0x200 ⇒ 0x200
+ * 0045324e  （y 同理，上限 0x120）
+ * 00453293  mov [0x48cab8], bx / mov [0x48cab6], dx    ; 写回落点，重画
+ * ```
+ */
+export function amountDragTo(
+  cursor: { x: number; y: number },
+  grab: { x: number; y: number },
+): { x: number; y: number } {
+  const x = Math.trunc(cursor.x) - grab.x;
+  const y = Math.trunc(cursor.y) - grab.y;
+  return {
+    x: Math.max(0, Math.min(AMOUNT_DRAG_MAX.x, x)),
+    y: Math.max(0, Math.min(AMOUNT_DRAG_MAX.y, y)),
+  };
+}
+
 /**
  * 16 颗钮在**面板内**的矩形 `{x, y, w, h}` @source 表 `0x47e6d8`（每钮 4 字节）。
  *
@@ -310,8 +369,8 @@ export function amountSlotOfId(id: number): AmountSlot | null {
  *   命中的 —— 原版靠逐像素图上左右两半不同的 id 来分，本表没有那一层信息。
  */
 export function amountWindowHit(sx: number, sy: number): number | null {
-  const lx = sx - AMOUNT_WINDOW.x;
-  const ly = sy - AMOUNT_WINDOW.y;
+  const lx = sx - amountAt.x;
+  const ly = sy - amountAt.y;
   for (let i = 0; i < AMOUNT_KEY_RECTS.length; i++) {
     const r = AMOUNT_KEY_RECTS[i];
     if (r === undefined) continue;
@@ -370,6 +429,24 @@ export const AMOUNT_KEY_SOUND = 7;
  */
 export function amountKeySound(key: AmountKey): number | null {
   return key.kind === 'bar' ? null : AMOUNT_KEY_SOUND;
+}
+
+/**
+ * **鼠标**按在填数窗第 `id` 号上那一下要放的音 —— 放在**按下**（`WM_LBUTTONDOWN`），不是抬手。
+ *
+ * @source `fcn_00452c02` 的 0x201 / 0x203 → `loc_00452d0e`：
+ * ```asm
+ * 00452d5e  mov [0x48cac2], al            ; 记下按在哪一号（抬手只认它）
+ * 00452d63  cmp al, 1  / jne 0x452d75     ; 1 = 拖窗：只记坐标，不放音
+ * 00452d75  cmp al, 0x10 / jne 0x452d8e   ; 0x10 = 金额栏：合成 WM_MOUSEMOVE，不放音
+ * 00452d8e  push 0 / push 0x48234a
+ * 00452d95  call _rich4_play_sound_effect  ; ★ 其余 ⇒ 按下这一拍放 7，再贴「按下」图
+ * ```
+ * 动作本身在**抬手**：`WM_LBUTTONUP`（0x202）落 `loc_00452fce`，照 `[0x48cac2]`（按下时记的）
+ * 查跳表 `0x452bca` —— **不再看抬手的坐标**；键盘那一路也是「放 7 → 合成 0x202」进同一段。
+ */
+export function amountButtonDownSound(id: number): number | null {
+  return id === 1 || id === 0x10 ? null : AMOUNT_KEY_SOUND;
 }
 
 /**

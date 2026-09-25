@@ -16,6 +16,8 @@ import {
   type RightClickSnapshot,
 } from './touch-input.ts';
 import { stageMetrics, SCREEN_H, SCREEN_W } from './stage.ts';
+import { AmountPressLatch, type DialogHit } from './dialog.ts';
+import { amountWindowPos, resetAmountWindowPos } from './amount-keys.ts';
 
 const kinds = (out: readonly { kind: string }[]): string[] => out.map((o) => o.kind);
 
@@ -427,4 +429,118 @@ describe('magicScreen.contextmenuLive', () => {
 // 防呆：舞台尺寸没被改（位置测试依赖 640×480）
 it('舞台仍是 640×480', () => {
   expect([SCREEN_W, SCREEN_H]).toEqual([640, 480]);
+});
+
+describe('★ pt26 #3：触屏点填数窗 —— 按键音、动作各只一次（长按逻辑不双发）', () => {
+  /**
+   * 照 `main.ts` 那三条监听的次序喂同一个闩：mousedown → `down`（放音）、mouseup → `up`（动作）、
+   * click → 先问 `click()`（抬手办过就吞），没吞才轮到「选项页」那一路。contextmenu = 右键（取消）。
+   */
+  function run(out: readonly { kind: string; x: number; y: number }[], hitAt: (x: number) => DialogHit | 'inside' | null) {
+    const latch = new AmountPressLatch();
+    const log: string[] = [];
+    for (const o of out) {
+      if (o.kind === 'down') {
+        latch.newGesture();
+        const r = latch.down(hitAt(o.x));
+        if (r.sound !== null) log.push(`sound${r.sound}`);
+      } else if (o.kind === 'up') {
+        const h = latch.up();
+        if (h !== null) log.push(`act:${h.kind === 'amountSlot' ? h.id : h.kind}`);
+      } else if (o.kind === 'click') {
+        if (!latch.click()) log.push('click-through');
+      } else if (o.kind === 'rightClick') {
+        log.push('cancel');
+      }
+    }
+    return log;
+  }
+  /** x < 100 = 「5」那颗钮（序号 0xb），100..199 = 窗里空白，其余 = 窗外 */
+  const hitAt = (x: number): DialogHit | 'inside' | null =>
+    x < 100 ? { kind: 'amountSlot', id: 0xb } : x < 200 ? 'inside' : null;
+
+  it('点一下（金额页不认长按，`lp = false`）：放音一次、动作一次，补来的 click 被吞', () => {
+    const g = new TouchGesture();
+    g.start(1, 50, 50, 0, false);
+    expect(g.deadline()).toBeNull(); // 金额页：没有长按定时器
+    expect(run(g.end(1, 50, 50, 80), hitAt)).toEqual(['sound7', 'act:11']);
+  });
+
+  it('★ 手指按住很久（> 500 ms）再抬：金额页不当右键 —— 仍是一次放音 + 一次动作，不取消', () => {
+    const g = new TouchGesture();
+    g.start(1, 50, 50, 0, false);
+    expect(g.due(LONG_PRESS_MS + 100)).toEqual([]);
+    expect(run(g.end(1, 50, 50, LONG_PRESS_MS + 900), hitAt)).toEqual(['sound7', 'act:11']);
+  });
+
+  it('按在钮上拖出去再抬：按下那一刻放音，抬手照按下那一颗办（原版不看抬手坐标）', () => {
+    const g = new TouchGesture();
+    g.start(1, 50, 50, 0, false);
+    const out = [...g.move(1, 50 + TAP_SLOP_PX + 200, 50, 30), ...g.end(1, 260, 50, 60)];
+    expect(run(out, hitAt)).toEqual(['sound7', 'act:11']);
+  });
+
+  it('非金额页（长按算右键）：长按只派一次右键，抬手什么都不派 ⇒ 不放音、不动作', () => {
+    const g = new TouchGesture();
+    g.start(1, 50, 50, 0, true);
+    const out = [...g.due(LONG_PRESS_MS), ...g.end(1, 50, 50, LONG_PRESS_MS + 50)];
+    expect(run(out, hitAt)).toEqual(['cancel']);
+  });
+
+  it('点在窗里空白：不放音、不动作；闩不吞 click（没办事）—— 由对话框那一路按「inside」自己吃掉', () => {
+    const g = new TouchGesture();
+    g.start(1, 150, 50, 0, false);
+    expect(run(g.end(1, 150, 50, 40), hitAt)).toEqual(['click-through']);
+  });
+
+  it('点在窗外：click 照常往下传（选项页那一路还要用它）', () => {
+    const g = new TouchGesture();
+    g.start(1, 300, 50, 0, false);
+    expect(run(g.end(1, 300, 50, 40), hitAt)).toEqual(['click-through']);
+  });
+
+  it('桌面鼠标：按下 → 抬手 → click 同样只办一次；下一次按下前那个吞 click 的记号作废', () => {
+    const latch = new AmountPressLatch();
+    expect(latch.down({ kind: 'amountSlot', id: 3 })).toEqual({ consumed: true, sound: 7 });
+    expect(latch.up()).toEqual({ kind: 'amountSlot', id: 3 });
+    // click 没来（抬在画布外），下一次按下
+    latch.newGesture();
+    expect(latch.down(null)).toEqual({ consumed: false, sound: null });
+    expect(latch.up()).toBeNull();
+    expect(latch.click()).toBe(false);
+  });
+});
+
+describe('★ pt26 #3c：触屏单指拖填数窗 —— 不触发长按取消', () => {
+  it('金额页（lp = false）：手指按住把手、停超过 500 ms 再拖 —— 只有 按下 → 移动…… → 抬起，没有右键', () => {
+    const g = new TouchGesture();
+    g.start(1, 100, 100, 0, false);
+    expect(g.due(LONG_PRESS_MS + 200)).toEqual([]);
+    const out = [
+      ...g.move(1, 100, 100 + TAP_SLOP_PX + 5, LONG_PRESS_MS + 300),
+      ...g.move(1, 160, 180, LONG_PRESS_MS + 320),
+      ...g.end(1, 160, 180, LONG_PRESS_MS + 400),
+    ];
+    expect(kinds(out)).toEqual(['move', 'down', 'move', 'move', 'up', 'click']);
+    expect(out.some((o) => o.kind === 'rightClick')).toBe(false);
+    // 按下落在起点（抓点 = 手指最初落的位置），之后逐拍跟手
+    expect(out[1]).toMatchObject({ kind: 'down', x: 100, y: 100 });
+  });
+
+  it('按下点走闩：抓点记在起点，移动把窗挪过去，抬手停', () => {
+    const latch = new AmountPressLatch();
+    const g = new TouchGesture();
+    g.start(1, 0x100 + 4, 0x90 + 4, 0, false);
+    const out = [...g.move(1, 0x100 + 4 + 40, 0x90 + 4 + 30, 50), ...g.end(1, 0x100 + 44, 0x90 + 34, 90)];
+    let moved = 0;
+    for (const o of out) {
+      if (o.kind === 'down') latch.down({ kind: 'amountPad', id: 1 }, o);
+      else if (o.kind === 'move' && latch.drag(o)) moved++;
+      else if (o.kind === 'up') expect(latch.up()).toBeNull();
+    }
+    expect(moved).toBe(1);
+    expect(latch.dragging).toBe(false);
+    expect(amountWindowPos()).toEqual({ x: 0x100 + 40, y: 0x90 + 30 });
+    resetAmountWindowPos();
+  });
 });
