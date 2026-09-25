@@ -197,6 +197,12 @@ export type PendingInteraction =
        * `0x0044335f mov dword [esi+0x30],eax`(=0)；設施 `0x00443486` / `0x0044348a` `+0x34`）。
        */
       fromCard?: boolean;
+      /**
+       * ★★ 2026-09-25（cards 审计 cross-area (d)）：魔法屋「拍賣當格土地」挂出的这一场 ——
+       *   `0x004324d5 call 0x43bde5` 之后**不看返回值**（直接 `0x004324dd push 1 / call 0x41906a`），
+       *   流拍时地主照旧（不变无主）。
+       */
+      keepOwnerOnPass?: boolean;
       /** 现价 `[0x48c488]`：每一口加价都改写它；还没人出价时 = `basePrice` */
       price: number;
       /** 当前最高出价者的**玩家下标**；-1 = 还没人出价 @source `[0x48c4a8]` */
@@ -393,7 +399,7 @@ export type PendingInteraction =
  */
 export type AuctionRequest = Pick<
   Extract<PendingInteraction, { kind: 'auction' }>,
-  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller' | 'fromCard'
+  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller' | 'fromCard' | 'keepOwnerOnPass'
 >;
 
 /** `auction` 的**完整**形状（竞价循环进行中，字段一定齐） */

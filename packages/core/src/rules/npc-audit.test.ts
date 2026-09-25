@@ -198,3 +198,22 @@ describe('B-02 乞丐：占用位里清掉了被关的人（0x0043d61d / 0x0040d
     expect(beggarAt(players, 5, 0)).toBe(2);
   });
 });
+
+describe('小偷捡到禮物后主人那一句的 rand（0x0041bafa call 0x44f230，价 50 < p ≤ 100）', () => {
+  function draws(stockTool: number): number {
+    const stock = new Array<number>(14).fill(0);
+    stock[stockTool] = 3;
+    const s = makeGameState({ players: [makePlayer({ index: 0, nodeId: 20 })], objects: [obj(13, 2)], toolStock: stock });
+    const r = rng(11);
+    const start = r.getState();
+    runNpc(NPC.thief, releaseNpc(1, 0, 1), s, straight(), line, r);
+    const probe = new WatcomRng(start);
+    for (let k = 1; k <= 5; k++) {
+      probe.next();
+      if (probe.getState() === r.getState()) return k;
+    }
+    return -1;
+  }
+  it('抽到機車（80）⇒ 抽签 1 次 + 台词 1 次', () => expect(draws(5)).toBe(2));
+  it('抽到路障（30）⇒ 只抽签 1 次', () => expect(draws(2)).toBe(1));
+});

@@ -551,6 +551,9 @@ export function applyFortuneEffect(
       days,
       other,
       ctx.landscapes,
+      // ★ 首次关押的倒霉台词 4..6 天掷一次 rand（`0x0043d5f9` / `0x0043eca5 call 0x44f2c2`）——
+      //   在二级判定（`0x441210`）之后、同一条随机流（cards 审计 cross-area (a)）
+      ctx.rng,
     );
     objects = out.objects;
     return {

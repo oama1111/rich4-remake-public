@@ -1174,7 +1174,8 @@ describe('★★ 新聞 29：隨機挑一家有主企業的經營者关 5 天', 
       commercials: [co(1, 0), co(2, 2), co(3, 0), co(4, 4), co(5, 3)],
       rng: { below: (n: number) => { sizes.push(n); return 1; } },
     }));
-    expect(sizes).toEqual([3]);
+    // ★★ 2026-09-25：第二个是首次入獄 5 天的倒霉台词 rand（`0x0043d5f9 call 0x44f2c2`，`below(0x8000)` = `rand()`）
+    expect(sizes).toEqual([3, 0x8000]);
     // 候选表 = [2, 4, 5]，挑下标 1 ⇒ 4 号 ⇒ owner 4 ⇒ 玩家下标 3
     expect(r.chairmanPrison).toEqual({ companyId: 4, chairman: 3, victim: 3, days: 5 });
     expect(r.players[3]!.blocking.inPrison).toBe(5);
@@ -1214,8 +1215,9 @@ describe('★★ 新聞 29：隨機挑一家有主企業的經營者关 5 天', 
       rng,
     }));
     expect(r.chairmanPrison?.companyId).toBe(2);
-    expect(rng.getState()).toBe(afterOne);
-    expect(rng.getState()).not.toBe(afterTwo);
+    // ★★ 2026-09-25：抽企業一次 + 首次入獄 5 天的倒霉台词一次（`0x0043d5f9 call 0x44f2c2`）= 两次
+    expect(rng.getState()).toBe(afterTwo);
+    expect(rng.getState()).not.toBe(afterOne);
   });
 
   it('⑥ 无候选企業 ⇒ 不动任何人、**一次随机数都不掷**', () => {
@@ -1288,7 +1290,8 @@ describe('★★ 新聞 29：隨機挑一家有主企業的經營者关 5 天', 
     expect(r.players[0]!.blocking.inPrison).toBe(0);
     expect(r.players[0]!.cards).toEqual([]); // ★ 19 被扣
     expect(r.chairmanPrison).toEqual({ companyId: 1, chairman: 0, victim: 2, days: 5 });
-    // 最恨的人那条路**不再掷随机**（mode 0 也没有门槛那一次）⇒ 仍只有抽企業那一步
+    // 最恨的人那条路**不再掷随机**（mode 0 也没有门槛那一次）⇒ 抽企業一步 + 入獄台词一步
+    probe.next();
     expect(rng.getState()).toBe(probe.getState());
   });
 
@@ -1311,7 +1314,10 @@ describe('★★ 新聞 29：隨機挑一家有主企業的經營者关 5 天', 
     expect(r.players[1 + randForPick]!.blocking.inPrison).toBe(5);
     expect(r.players[0]!.blocking.inPrison).toBe(0);
     expect(r.players[0]!.cards).toEqual([]);
-    expect(rng.getState()).toBe(afterTwo);
+    // 再加首次入獄 5 天的倒霉台词那一次
+    const afterThree = new WatcomRng(afterTwo);
+    afterThree.next();
+    expect(rng.getState()).toBe(afterThree.getState());
   });
 
   it('⑤c 持嫁禍卡(19) 但**无人可嫁** ⇒ chairman 自己被关、**19 留着**（原版不掉卡）', () => {

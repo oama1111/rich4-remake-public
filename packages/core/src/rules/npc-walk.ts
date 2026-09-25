@@ -38,7 +38,7 @@ import {
 } from './object-landing.ts';
 import { giveTool } from './tools.ts';
 import { giveCard } from '../cards/rob.ts';
-import { conserveCardPool } from './inventory.ts';
+import { conserveCardPool, toolPrice } from './inventory.ts';
 import {
   ACTOR_PLACE,
   idleActor,
@@ -216,6 +216,13 @@ export function runNpc(
             const r = giveTool(tools, stock, owner, tool);
             tools = r.tools;
             stock = r.stock;
+            // ★★ 2026-09-25（cards 审计 cross-area (b)）：禮物那一支抽到东西后主人说一句
+            //   `0x0041bafa call 0x44f230(主人, 道具價 [id*8+0x47fedf])` —— 价 50 < p ≤ 100 时掷一次 `rand()&1`
+            //   （`0x0044f262 cmp edx,0x32 / jle` → `0x0044f280 call 0x456f2d`）。台词归表现层，随机数是规则态。
+            if (type === OBJECT_TYPE_GIFT) {
+              const price = toolPrice(tool);
+              if (price > 0x32 && price <= 0x64) rng.next();
+            }
           }
         }
       } else if (actor !== NPC.thief && type === OBJECT_TYPE_ROADBLOCK) {

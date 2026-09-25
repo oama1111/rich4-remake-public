@@ -625,7 +625,8 @@ function settleAuctionExplicit(
       expiry: tenureExpiry(packDate(state), state.landTenureIndex),
     });
     const facilityOwner = [...state.facilityOwner];
-    facilityOwner[entityId] = fr.facility.owner;
+    // 魔法屋那一场流拍不改归属（`keepOwnerOnPass`，见 interaction.ts）
+    facilityOwner[entityId] = w < 0 && pending.keepOwnerOnPass === true ? fac.owner : fr.facility.owner;
     const settled: GameState = {
       ...state,
       players: fr.players,
@@ -650,7 +651,8 @@ function settleAuctionExplicit(
     expiry: tenureExpiry(packDate(state), state.landTenureIndex),
   });
   const landOwner = [...state.landOwner];
-  landOwner[entityId] = r.land.owner;
+  // 魔法屋那一场流拍不改归属（`keepOwnerOnPass`，见 interaction.ts）
+  landOwner[entityId] = w < 0 && pending.keepOwnerOnPass === true ? land.owner : r.land.owner;
   const settled: GameState = {
     ...state,
     players: r.players,
@@ -4362,10 +4364,13 @@ export function applyMagicRequest(
         otherOcc,
         // ★ 首次关押的屏幕坐标取特殊景观记录（綠島／醫院大樓）—— 见 confinement.ts
         topo.landscapes,
+        // ★ 倒霉台词 `0x44f2c2` 的 rand（4..6 天才掷；魔法屋是 3 天 ⇒ 实际不掷），接在二级判定之后
+        rng,
       );
       const confined: GameState = kind === 'prison'
         ? {
             ...judgedState,
+            rngState: rng.getState(),
             players: c.players,
             objects: c.objects,
             prisonOccupancy: c.occupancy,
@@ -4373,6 +4378,7 @@ export function applyMagicRequest(
           }
         : {
             ...judgedState,
+            rngState: rng.getState(),
             players: c.players,
             objects: c.objects,
             hospitalOccupancy: c.occupancy,
@@ -4483,6 +4489,8 @@ export function applyMagicRequest(
         //   （`0x4324d4` 附近的压栈），与原版建表 `0x43c22a cmp ebx,ebp` 同义。
         bidders: eligibleBidders(state.players, entity, req.player),
         seller: req.player,
+        // ★ `0x004324d5 call 0x43bde5` 之后不看返回值 ⇒ 流拍不清地主
+        keepOwnerOnPass: true,
         ...(node.ref.kind === 'facility' ? { facility: true } : {}),
       });
     }
@@ -8726,6 +8734,14 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
     }
     // ★ 住店的是实际付款的那个人（0x0041a772 起全用 edi）
     const curPlayer = paid.players[meNow];
+    // ★★ 2026-09-25（cards 审计 cross-area (a)）：住店者就是当前玩家时 `0x0041a7e0 call 0x44f2c2(当前, 天数)` ——
+    //   倒霉台词，4..6 天掷一次 `rand()`（`0x0044f2f4 cmp edx,3 / jle` → `0x0044f312 call 0x456f2d`），在 0x40d761 之后、写天数之前。
+    if (who === meNow && hotelDays > 3 && hotelDays <= 6) {
+      const hr = new WatcomRng();
+      hr.setState(paid.rngState);
+      hr.next();
+      paid = { ...paid, rngState: hr.getState() };
+    }
     paid = withPlayer(paid, who, (p) => {
       p.blocking = { ...p.blocking, inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0 };
       // @source 0x0041a7f4 `[+0x32] = 天数 − 1`，为 0 时挂 0x80（当天就出）

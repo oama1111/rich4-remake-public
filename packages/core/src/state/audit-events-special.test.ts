@@ -311,3 +311,25 @@ describe('★ 福神代蓋空設施（真人选种类框）：选完才掷台词
     expect(r.lastGodLine).toEqual({ player: 0, event: v & 1 });
   });
 });
+
+describe('★ 魔法屋「拍賣當格土地」流拍不清地主（0x004324d5 call 0x43bde5 之后不看返回值）', () => {
+  it('没人出得起 ⇒ 流拍，地还是原主的', () => {
+    const topo: MapTopology = {
+      nodes: [makeNode({ id: 1, adjacent: [2], type: 0x7d0 + 3 }), makeNode({ id: 2, adjacent: [1] })],
+      lands: [makeLand({ id: 3, landPrice: 5000 })],
+    };
+    const base = makeGameState({
+      currentPlayer: 1,
+      phase: 'turnEnd',
+      pending: { kind: 'magicHouse', criterion: 11, targets: [0] },
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, whoPlays: i === 1 ? WHO_PLAYS_HUMAN : WHO_PLAYS_COMPUTER, nodeId: 1, cash: 0, moneyInBank: 0 }),
+      ),
+    });
+    const landOwner = [...base.landOwner];
+    landOwner[3] = 3;
+    const r = reduce({ ...base, landOwner }, { type: 'magicHouse', option: 11 }, topo);
+    expect(r.pending).toBeNull();
+    expect(r.landOwner[3]).toBe(3);
+  });
+});

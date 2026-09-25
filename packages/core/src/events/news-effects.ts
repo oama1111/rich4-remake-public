@@ -227,6 +227,11 @@ export interface EffectRng {
   below(n: number): number;
 }
 
+/** `rand()` 本身（0..0x7fff）—— `below(0x8000)` 与 `next()` 同值（`rand() % 0x8000`） */
+function nextOf(rng: EffectRng): { next(): number } {
+  return { next: () => rng.below(0x8000) };
+}
+
 /**
  * 新聞 29 的 chairman 持嫁禍卡(19) 时，原版 `0x44476a(chairman, 0, 0)` 挑谁替他坐牢。
  *
@@ -791,6 +796,8 @@ export function applyNewsEffect(
       days,
       hospitalOccupancy,
       ctx.landscapes,
+      // ★ 首次入獄 5 天 ⇒ 倒霉台词掷一次 rand（`0x0043d5f9 call 0x44f2c2`），在二级判定之后
+      nextOf(rng),
     );
     return {
       ...base,
@@ -1026,6 +1033,8 @@ export function applyNewsEffect(
         ALIEN_HOSPITAL_DAYS,
         prison,
         ctx.landscapes,
+        // 3 天 ⇒ `0x44f2c2` 不掷；照样传，口径统一
+        ctx.rng === undefined ? undefined : nextOf(ctx.rng),
       );
       nextPlayers = c.players.map((q) => ({ ...q }));
       nextObjects = c.objects;
@@ -1492,6 +1501,7 @@ export function applyNewsEffect(
         days,
         other,
         ctx.landscapes,
+        ctx.rng === undefined ? undefined : nextOf(ctx.rng),
       );
       players = out.players;
       objects = out.objects;

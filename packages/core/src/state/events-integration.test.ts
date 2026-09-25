@@ -220,7 +220,8 @@ describe('★★ 新聞 29「違法超貸」：目標由效果層隨機抽，不
     // ★ 抽牌者（当前玩家）**一根汗毛都没动** —— 关抽牌者是「关错人」
     expect(s3.players[s2.currentPlayer]!.blocking.inPrison).toBe(0);
     expect(s3.prisonOccupancy[s2.currentPlayer]).toBe(0);
-    // ★ 恰好消耗一次 rand()（抽企業那一步）
+    // ★ 抽企業一次 + 首次入獄 5 天的倒霉台词一次（`0x0043d5f9 call 0x44f2c2`，2026-09-25 起接进随机流）
+    probe.next();
     expect(s3.rngState).toBe(probe.getState());
     // ★ 保險理賠（原版 `0x43edf8 call 0x44ba63` 在 `send_to_prison` 函數體內）：
     //   2000 × 天 × 物價，落在**實際受害者**身上

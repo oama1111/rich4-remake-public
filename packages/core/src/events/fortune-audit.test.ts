@@ -132,3 +132,20 @@ describe('F-12 命運 12/13 住院前先毁车（0x0044cd54 call 0x40cd07）', (
     expect(out.toolStock).toBeNull();
   });
 });
+
+describe('首次关押 4..6 天的倒霉台词 rand（0x0043d5f9 call 0x44f2c2 → 0x0044f312）', () => {
+  it('命運 34 坐牢 5 天 ⇒ 多掷一次；33 坐牢 3 天 ⇒ 不掷', () => {
+    const count = (id: number): number => {
+      let n = 0;
+      applyFortuneEffect(id, {
+        players: [makePlayer({ index: 0 }), makePlayer({ index: 1 })],
+        currentPlayer: 0,
+        priceIndex: 1,
+        rng: { below: (m: number) => { n++; return 0 % m; }, next: () => { n++; return 0; } },
+      });
+      return n;
+    };
+    expect(count(34)).toBe(1);
+    expect(count(33)).toBe(0);
+  });
+});
