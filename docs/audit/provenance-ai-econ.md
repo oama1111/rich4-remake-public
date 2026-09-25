@@ -11,9 +11,9 @@
 | 状态 | 条数 |
 |---|---|
 | verified | 43 |
-| fixed | 19（明细行；合并成 16 项修复，见下表） |
+| fixed | 23（明细行；合并成 20 项修复，见下表） |
 | approx | 4 |
-| follow-up | 4 |
+| follow-up | 0（原 4 条 L7 / L45 / L48 / L62 已全部结项，见下表 F17..F20） |
 | n/a | 1 |
 
 ### 修复（commit）
@@ -36,8 +36,15 @@
 | F14 | 拍賣心理价位的随机系数 / 缺地系数 / 地價×物價按 f64 算 → 各过一趟 f32（★ 6 组边界与原版逐组相同，旧式逐组差 1） | 0x00439f3b / 0x00439fc7 / 0x0043a011 | 9b3ea27 |
 | F16 | 真人从工具列开 / 关公佈欄（协调方追加）：原先只是客户端开屏 → 与电脑同一个函数：开窗先 `0x42483e` 清理、关窗后 `0x436b0a(0)` 收回特別融資（`noticeBoard` 新增 `open` / `close`，客户端只在会生效且本机是回合主人时才交；服务器定序、单机同一 reducer） | 0x00417dee / 0x004284c5 / 0x0042885c | 6274d16 |
 | F15 | 选地窗 / 选種類窗开着时被托管：自拟「取第一个」「不蓋公園取最小非 0（恒旅館）」→ 电脑那一支（`0x40b455` 挑地；`rand()%4+1`，新增 `facilityType: null`） | 0x0041ad12 / 0x0041a23e / 0x0040b1c5 | 2719f64 |
+| F17 | 首建設施被衰神 / 死神挡下时**种类已经写进 `+0x18`**（留下一块「0 级但有种类」的地）：两支都写、闸在后（真人 `0x0041a239 mov [設施+0x18],al` / 电脑 `0x0041a257 mov [設施+0x18],dl`，都在 `0x0041a261 call 0x40fa61` 之前）→ `withFacilityType` | 0x0041a239 / 0x0041a257 / 0x0041a261 | ef0482c |
+| F18 | 别人的建設公司**挑不出地也照收 1000×物價**（电脑 `0x40b455` 返回 0 / 真人选地窗右键交回 0）：`0x0041ad28 test ebp,ebp / je 0x41adff` → `0x0041adff..0x0041ae18`（物價 ×3 ×8 ×8 ×… = ×1000）→ `0x0041ae1a call 0x41d546` 同一段收費 | 0x0041ad28 / 0x0041adff..0x0041ae1a | 01e4bb9 |
+| F19 | 百貨公司那一趟的**營業額**进这家上市企業的 `+0x28 / +0x2c`（真人电脑两支共用）：电脑支把每次买卖的返回值累加在 `ebp`，T 段走完 `0x0042f24f cmp eax,6 / jge 0x42ed50` **跳进真人支的同一段收尾** → `0x0042ed75` / `0x0042ed7e` | 0x0042ed50..0x0042ed7e / 0x0042f24f / 0x0042d237 / 0x0042d272 / 0x0042d145 / 0x0042d1b2 | ef0482c（真人支）+ 63412d6（电脑支） |
+| F20 | 开着保釋窗被托管的真人：自拟「救得起同伴就救」→ 原版保釋窗是模态窗（`0x0043d331 cmp byte [+0x15],1` 只给恰好真人开），按关窗处理 | 0x0043d331 / 0x0043d33e..0x0043d3d3 / 0x0043d3d8 | 0e14efc（ai-move 区修，本表结项） |
 
-**状态会变**（都进指纹：rngState、存款、持股、股价 / 流通量、公佈欄、董事長垫付、拍賣价位）⇒ 需要协调方统一 bump `PROTOCOL_VERSION`。
+**状态会变**（都进指纹：rngState、存款、持股、股价 / 流通量、公佈欄、董事長垫付、拍賣价位、`companyFunds`/`companyProfit`）
+⇒ 需要协调方统一 bump `PROTOCOL_VERSION`。
+（`companyFunds` / `companyProfit` 那一对在 `stateFingerprint` 里**没收**——F19 改的正是它们：真人 / 电脑进百貨都会动，
+影响 15 日分紅与电脑选股打分里的月均盈餘。协调方若要在协议里对账这一项，得先把它加进 `net/protocol.ts` 的 parts。）
 随改的测试（旧断言复述的是错行为）：`stock-policy.test.ts`（入口闸 / 排名 / 卖股两条 / 壓力循环）、`policy.test.ts`（0→1 步现在掷一次）、
 `notice-audit.test.ts`（电脑买卖框改由调度步出）、`notice-board-market.test.ts`（候选成对）、`soak.test.ts`（账本把调度步里的卖股盈亏记进印钞机）、
 换种子：`event-balance.test.ts` 43→46、`auction-acting-seat.test.ts` 14→12（意图不变，扫描记录在注释里）。
@@ -52,7 +59,7 @@
 | L4 | 自有地加蓋：电脑够钱就蓋一级，无保留额 | core/src/ai/policy.ts:623 | 0x419976 `test [+0x15],6 / jne` | verified | 每次落点一级 |
 | L5 | 設施加蓋：电脑够钱就蓋，无保留额 | core/src/ai/policy.ts:571 | 0x41a30d | verified | |
 | L6 | 設施首建：`who_plays != 1`（整字节）⇒ `rand()%4+1` | core/src/state/reduce.ts:8548、rules/facility.ts:407 | 0x41a21f / 0x41a23e | verified | 衰神闸之前掷（rng 照推进） |
-| L7 | 首建被衰神挡下时原版已把 `+0x18` 种类写进去（两支都是） | core/src/state/reduce.ts:8548 / 2153 | 0x41a257 / 0x41a239 → 0x41a261 | follow-up | 0 级設施带种类；读者（研究所 tick、面板）要逐个核，归 facility 区 |
+| L7 | 首建被衰神挡下时原版已把 `+0x18` 种类写进去（两支都是） | core/src/state/reduce.ts 的 `withFacilityType`（`buildFacility` / `landOnFacility` 两条） | 0x41a257 / 0x41a239 → 0x41a261 | fixed | ef0482c。★ 0 级設施带种类的**读者逐个核过**：研究所 tick `0x41cda6` 只判 `type==4` 与 `+0x1e`（**不判 level**，与 `tickResearch` 的「项目 > 等级 ⇒ 作废」一致）；落点收費 `0x41a377 cmp [+0x1a],0 / je` 先分流；研究所面板 `0x41b0fc cmp [+0x1a],0 / je` 先分流；棋盘绘制 `0x4093f3` / 悬浮提示 `0x417999` 都是 level==0 先分流成「空地」；面板收费列 `0x424e06` 同；建設公司电脑挑地 `0x40b4db` 只比 `FACILITY_MAX_LEVEL[type]`、不排除 0 级；傳送機 `0x004475f2` 无条件搬 `+0x18`。均一致 |
 | L8 | 钱不够时：没有「卖什么换钱」的电脑决策 —— `pay_money` 现金→存款→破產，唯一的 +0x15 读是重画 | core/src/rules/bankruptcy.ts:43 | 0x41d2c6（0x41d3dd 只重画） | verified | 破產清算的拍賣见 L9–L12 |
 | L9 | 拍賣心理价位公式（两次 rand、v1/v2/现金取小） | core/src/rules/auction.ts:552 | 0x439f0d..0x43a149 | fixed | F14 |
 | L10 | 谁算心理价位：座位非空、`& 6`、状态 0，座位序 | core/src/rules/auction.ts:912 | 0x43c5d0..0x43c61e | verified | |
@@ -90,10 +97,10 @@
 | L42 | 認購上限 `min(1000, 现金÷單價, 企業餘量)`，真人电脑共用 | core/src/places/company.ts:207 | 0x41d1ea..0x41d221 | verified | pt27 的修复复核无误 |
 | L43 | 电脑認購 `0x41d839`：d = 现金 − trunc(開局×0.30)×物價；≤0 不买；> 單價×上限 ⇒ 上限；否则 d÷單價 | core/src/places/company.ts:243、ai/policy.ts:595 | 0x41d839..0x41d896；0x41d267；0x41d273 | verified | 读的是 `[0x49910c]` 的现金（= 落点者） |
 | L44 | 建設公司电脑挑地：自家住宅 <5 级取当前租金最高；設施取地價最高且 < 种类上限 | core/src/places/company.ts:293 | 0x40b455；表 0x474940 | verified | |
-| L45 | 别人的建設公司、电脑挑不出地 ⇒ 仍收 1000×物價 | core/src/state/reduce.ts:8272 | 0x41adff..0x41ae1a | follow-up | 本引擎挑不出就不收（真人那支同样）；收費规则归 company 区，见「跨区」 |
+| L45 | 别人的建設公司、挑不出地 ⇒ 仍收 1000×物價 | core/src/state/reduce.ts `landOnCompany` 的 construction 支（电脑「target == 0」与真人「候选为空」两条） | 0x41ad28 / 0x41adff..0x41ae1a | fixed | 01e4bb9：电脑那支 `aiPickConstructionTarget` 返回 0 ⇒ 收 1000×物價；真人那支选地窗交回 0（`0x446ae8`）同样收 |
 | L46 | 电脑百貨公司 S1（按**槽号**取 f7）/ S2 / S3 / 离店 / 半点卡半点道具 / 機車汽車 / 六件表 | core/src/places/ai-shop.ts:97 | 0x42ed8d..0x42f307；表 0x4755f0 | verified | pt26 的重写逐段复核无误（价表 0x47fdef / 0x47fedf） |
 | L47 | 买卡候选排序 | core/src/places/ai-shop.ts:97 | 0x42f0e4 / 0x42d0ef | fixed | F1（★） |
-| L48 | 离店时这趟买卖 `10×价` 记进那家企業 +0x28/+0x2c | —（未建模） | 0x42ed50..0x42ed7e | follow-up | 真人电脑两支共用；影响分紅与电脑选股打分。归 shop / company 区 |
+| L48 | 离店时这趟买卖的營業額记进那家企業 `+0x28/+0x2c` | `state/reduce.ts` 的 `shopRevenueTo`（真人支逐笔 / 电脑支离店一次）；`places/ai-shop.ts` 的 `revenue` | 0x0042ed50..0x0042ed7e（两支汇合）；每笔返回值 0x0042d237 / 0x0042d272（標價×10）、0x0042d145（標價）、0x0042d1b2（標價×数量） | fixed | 真人支 ef0482c；**电脑支 63412d6**（原注释误以为电脑支不记，漏了 `0x0042f24f cmp eax,6 / jge 0x42ed50` 那句回跳）。影响 15 日分紅与电脑选股打分 |
 | L49 | 托管真人开着商店窗 ⇒ 关窗 | core/src/ai/policy.ts:520 | —（原版窗模态，没有这回事） | approx | |
 | L50 | 樂透：恰好真人才开屏；电脑现金 > 1000 且有空号 ⇒ `rand()%空号数` 买一注 | core/src/state/reduce.ts:6470、places/lottery.ts:182 | 0x4315da / 0x43169e..0x431700 | verified | |
 | L51 | 公佈欄进门清理 `0x42483e` | core/src/state/reduce.ts:7055、places/notice-board.ts:394 | 0x42483e..0x4249b4；跳表 0x42482e；0x4413ad | fixed | F12；真人工具栏那一路见「跨区」 |
@@ -107,7 +114,7 @@
 | L59 | 托管真人开着认购窗 ⇒ 电脑那支 `0x41d839` | core/src/ai/policy.ts:595 | 0x41d267 | verified | |
 | L60 | 托管真人开着选地窗 ⇒ 电脑那支 `0x40b455` | core/src/ai/policy.ts:576 | 0x41ad12 / 0x41aa3c | fixed | F15 |
 | L61 | 托管真人开着选種類窗 ⇒ `rand()%4+1`（付费首建 / 神明代蓋两型） | core/src/ai/policy.ts:589、state/reduce.ts:2153 | 0x41a23e / 0x40b1c5 | fixed | F15 |
-| L62 | 托管真人开着保釋窗 ⇒ 自拟「救得起同伴就救」 | core/src/ai/policy.ts:539 | 电脑支 0x43d331 / 0x43e9d1 → `decideBail` | follow-up | 应走电脑那一支（要给 `bail` 加 null 槽并在 reducer 掷）；保釋归 ai-move，见「跨区」 |
+| L62 | 托管真人开着保釋窗 ⇒ 自拟「救得起同伴就救」 | core/src/ai/policy.ts 的 `decidePending`（`p.kind === 'bail'` ⇒ `declineDecision`） | 窗 `0x0043d331 cmp byte [+0x15],1 / jne 0x43d3d8`、`0x0043d33e..0x0043d3d3` 模态；电脑支 `0x0043d3d8..0x0043d4fd` | fixed | 0e14efc（ai-move 区）：模态窗里托管位冒不出来 ⇒ 与商店 / ATM 同口径按关窗处理；电脑 / 托管的保釋由 reducer 的 `enterVisit` 按电脑支掷（与 P-3 同一处） |
 | L63 | 托管真人开着 ATM / 还款提醒窗 ⇒ 关窗 | core/src/ai/policy.ts:514 / 552 | 0x437a18 / 0x43695e 只给恰好真人开 | approx | 原版窗模态 |
 | L64 | 设 `aiRoll` 替身的剩余用法（出牌 / 道具个性闸） | core/src/ai/policy.ts | 0x41e69e / 0x420e9a | n/a | 不在本区（ai-move），D-004 |
 | L65 | 电脑百貨变卖 / 退货不说「得點」 | client/src/speech.ts（`soldInventory`） | 0x42d145 / 0x42d1b2；0x44f230 调用点 | fixed | F2（纯表现） |
@@ -120,19 +127,23 @@
 
 ## 跨区（发现但不归本区，未改）
 
-- **company 区**：别人的建設公司，挑不出可加蓋的地（电脑 `0x40b455` 返回 0 / 真人选地窗取消）时原版照收 **1000×物價** 工程費（`0x0041adff..0x0041ae1a`：`ebp = ((pi·3·8+pi)·8)·5 = 1000·pi`，随后同一段收費）。本引擎两支都不收。
-- **shop / company 区**：百貨公司离店把这趟买卖额 `ebp`（卖 = 价、买 = 10×价的返回值累加）加进那家企業的 `+0x28` 与 `+0x2c`（`0x0042ed75` / `0x0042ed7e`）—— 真人电脑两支共用，影响分紅与电脑选股打分里的月均盈餘。未建模。
-- **facility 区**：設施首建时种类字节在衰神闸之前就写了（电脑 `0x0041a257`、真人 `0x0041a239`，闸在 `0x0041a261`），被挡下后留下「0 级 + 有种类」的空地。本引擎不写。
+- ~~**company 区**：别人的建設公司，挑不出可加蓋的地时原版照收 **1000×物價** 工程費（`0x0041adff..0x0041ae1a`）~~ —— **已修**（F18 / `01e4bb9`，电脑与真人两支都收）。
+- ~~**shop / company 区**：百貨公司离店把这趟买卖额加进那家企業的 `+0x28 / +0x2c`（`0x0042ed75` / `0x0042ed7e`）~~ —— **已修**（F19：真人支 `ef0482c`、电脑支 `63412d6`）。
+- ~~**facility 区**：設施首建时种类字节在衰神闸之前就写了（`0x0041a239` / `0x0041a257`，闸在 `0x0041a261`）~~ —— **已修**（F17 / `ef0482c`）。
 - ~~**notice-board / UI 区**：真人从工具栏打开公佈欄不清理、不收回~~ —— 协调方转回本区，已修（F16 / L71）。
-- **ai-move 区**：托管真人开着保釋窗时，`decidePending` 的「救得起同伴就救」是自拟的；应当走电脑那一支（`decideBail`，要在 reducer 里掷）。
+- ~~**ai-move 区**：托管真人开着保釋窗时，`decidePending` 的「救得起同伴就救」是自拟的~~ —— **已修**（F20 / `0e14efc`；ai-move 区的 P-4，电脑支由 reducer 掷）。
 - **client 区**（已顺手修，见 F2）：`detectPointsGained` 把百貨公司变卖当成 `0x44f230` 的「得點」台词。
 
 ## follow-up 汇总
 
-1. L7 設施首建种类先写后闸（facility 区）。
-2. L45 建設公司无地可蓋仍收 1000×物價（company 区）。
-3. L48 百貨公司营业额进企業帐（shop / company 区）。
-4. L62 托管真人的保釋代答（ai-move 区）。
+**已全部结项（2026-09-25）**——原 4 条都不在 ai-econ 本区，由对应区修完、这里按协调方口径标记：
+
+1. L7 設施首建种类先写后闸（facility 区）→ **fixed** `ef0482c`；本表另做了「0 级設施带种类的读者逐个核」（见 L7 行的 note）。
+2. L45 建設公司无地可蓋仍收 1000×物價（company 区）→ **fixed** `01e4bb9`。
+3. L48 百貨公司营业额进企業帐（shop / company 区）→ **fixed** 真人支 `ef0482c` + **电脑支 `63412d6`（本分支）**。
+4. L62 托管真人的保釋代答（ai-move 区）→ **fixed** `0e14efc`。
+
+（本表没有留下新的 follow-up；ai-econ 区自身 **71** 条明细全部 verified / fixed / approx / n/a：43 / 23 / 4 / 0 / 1。）
 
 ## 工具
 
