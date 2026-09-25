@@ -1671,7 +1671,7 @@ function aiDecisionRollAdvance(state: GameState, action: Action, topo: MapTopolo
   if (me === undefined || !isAiControlled(me)) return null;
   const rng = new WatcomRng();
   rng.setState(state.rngState);
-  // 与调用方同一条路（客户端 main.ts / 服务器 room.ts 都传 `roll`）
+  // 与调用方同一条路：`decideAction` 缺省也是从 `state.rngState` 播种一条本地流
   decideAction({ state, map: topo, roll: () => rng.next() });
   const next = rng.getState();
   return next === state.rngState ? null : next;
