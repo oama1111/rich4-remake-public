@@ -1506,15 +1506,41 @@ const CONFINEMENT_NOTICE: Readonly<
 };
 
 /**
+ * 几项阻碍同时成立时框里写哪一项 —— **最后一项**（原版不是多行拼接，是逐项**覆写**同一个缓冲区）。
+ *
+ * @source `fcn_0040c912` 被挡那一支（审计 2026-09-25，loop F3）：五条 `sprintf` 的目的地都是同一个
+ *   `[esp]`，参数只有（名字, 天数）、模板里**没有**把前一段 `%s` 接进来 ⇒ 后一项整个盖掉前一项：
+ * ```asm
+ * 0040c9a1  mov byte [esp], 0                          ; 缓冲区清空
+ * 0040c9d2  sprintf([esp], 0x4631e0「%s住宿中…」, 名, (+0x32 & 0x7f)+1)   ; +0x32 != 0
+ * 0040ca08  sprintf([esp], 0x4631f5「%s消失中…」, 名, (+0x33 & 0x3f)+1)   ; +0x33 != 0
+ * 0040ca81  sprintf([esp], 0x46320a「%s坐牢中…」, 名, (+0x34 & 0x7f)+1)   ; +0x34 != 0（台词 rand 在前）
+ * 0040cafa  sprintf([esp], 0x46321f「%s住院中…」, 名, (+0x35 & 0x7f)+1)   ; +0x35 != 0（台词 rand 在前）
+ * 0040cb7c  sprintf([esp], 0x463234「%s冬眠中…」, 名, (+0x36 & 0x7f)+1)   ; +0x36 != 0 且 dword[+0x32] == 0
+ * 0040cb84  cmp byte [esp], 0 / je  → 0040cb98 call 0x440cac([esp], 0x5dc)   ; 一扇、1500 ms
+ * ```
+ * ⇒ 优先级 住院 > 坐牢 > 消失 > 住宿；冬眠只在前四项全 0 时出现。先前取的是**第一项**（住宿优先）。
+ */
+export function confinementBoxReason(b: Player['blocking']): BlockReason {
+  let reason: BlockReason = 'sleeping';
+  if (b.inHotel !== 0) reason = 'inHotel';
+  if (b.disappearing !== 0) reason = 'disappearing';
+  if (b.inPrison !== 0) reason = 'inPrison';
+  if (b.inHospital !== 0) reason = 'inHospital';
+  return reason;
+}
+
+/**
  * 当前玩家这一回合「被阻碍」时要弹的那一扇；不该弹（`special` / `notAlive` / 可行动）时 `null`。
  *
  * `args` 顺序 = 原版 `sprintf` 的顺序：[玩家名, 剩余天数]。
  */
 function confinementNotice(state: GameState, reason: BlockReason | null): NoticeHint | null {
   if (reason === null) return null;
-  const spec = CONFINEMENT_NOTICE[reason];
   const player = state.players[state.currentPlayer];
-  if (spec === undefined || player === undefined) return null;
+  if (CONFINEMENT_NOTICE[reason] === undefined || player === undefined) return null;
+  const spec = CONFINEMENT_NOTICE[confinementBoxReason(player.blocking)];
+  if (spec === undefined) return null;
   return {
     key: spec.key,
     args: [
