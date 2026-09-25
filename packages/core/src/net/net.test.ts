@@ -376,8 +376,11 @@ describe('协议', () => {
     //      （`bankruptcyDraw` / `credit` / `dayRolloverTail`）；電腦 / 託管的每一次決策改吃全局
     //      `rand()`；惡人搶破產改在 `pay_money` 裡當場發生；同一格多件物件的反向索引改按位或。
     //      （`viewRotation` 刻意**不**進指紋。）
-    //    ⇒ 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12
-    expect(PROTOCOL_VERSION).toBe(12);
+    //    · **董事長空袋（2026-09-25）**：踩自家百貨公司時原版無條件彈框並擲一次台詞隨機數
+    //      （`0x0042ea23 call 0x44f230`，袋空時 id=0、名/價別名到卡 30、價 70），本引擎先前跳過
+    //      ⇒ 少擲一次 `rand()`；`rngState` 進指紋。
+    //    ⇒ 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13
+    expect(PROTOCOL_VERSION).toBe(13);
   });
 });
 
