@@ -98,8 +98,8 @@
  */
 
 import type { GameState } from '@rich4/core';
-import { playVoiceCode } from './voice-sink.ts';
-import { LOTTERY } from '@rich4/data';
+import { captionExpired, playVoiceCode, stopVoice } from './voice-sink.ts';
+import { LOTTERY, parseVoiceCode } from '@rich4/data';
 import type { ArchiveName, LoadedFlic, Sprite } from './assets.ts';
 import { LOTTERY_CURSOR, localTurn, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
@@ -787,7 +787,9 @@ export function drawLotteryScreen(
   drawAnchored(ctx, b, LOT_BUBBLE_AT.x, LOT_BUBBLE_AT.y);
   const cx = LOT_BUBBLE_AT.x + (b?.width ?? 237) / 2 + LOT_BUBBLE_TEXT.dx;
   const cy = LOT_BUBBLE_AT.y + Math.trunc((b?.height ?? 192) / 2) + LOT_BUBBLE_TEXT.dy;
-  const lines = stripVoice(v.message).split('\n').filter((l) => l !== '');
+  // ★★ 第二十六份 panel #2：这里只**剥**不播 —— 语音在换句那一拍放一次（`lotSay`，= 原版 `0x44ecb6` 只在换句时调）。
+  //   先前每帧 `stripVoice` 都去播：一句念完、气泡还挂着（pick 那句永远挂着）就又被重放，循环不止。
+  const lines = parseVoiceCode(v.message).rest.split('\n').filter((l) => l !== '');
   const lh = LOT_BUBBLE_TEXT.size + 6;
   // ★ 2026-09-23：字效照 `fcn_0044ecb6` 的 `create_font(0x14, 正文色, 第二色=0, 2, 1)` —— 20 号深色**粗体**（`font.ts` 的 `clerkTextStyle`）
   ctx.textAlign = 'center';
@@ -816,6 +818,14 @@ interface LotUi {
   /** 现金不足那一条路：说完 `#0016` 就自己关 */
   dismissed: boolean;
   /**
+   * ★★ 第二十六份 panel #2：气泡此刻还挂着吗（原版 `[0x4762c4] != 0`）。
+   * 到期（`captionExpired`：满 2000 ms 且语音放完）就收掉 —— **pick 那句也收**（状态 3 的跳表项
+   * `0x0042fa9e` 什么都不做，气泡由 `0x44ee18` 自己擦掉）；「動畫過程」关掉直达 pick 时根本没有气泡。
+   */
+  bubbleUp: boolean;
+  /** 拜拜那一拍说哪句：买了 `#0014`（`0x406` wParam 3）/ 不买 `#0016`（wParam 5）@source 0x0042fa1d `[ebx*4 + 0x4755f8]` */
+  byeText: string | null;
+  /**
    * 买中那一刻**定格**的画面。
    *
    * ★ 原版收到 `0x406` 之后（`loc_0042f974`）会画上图 2、「拜拜」气泡并把状态置 5，
@@ -836,9 +846,22 @@ const ui: LotUi = {
   eye: null,
   mouth: null,
   dismissed: false,
+  bubbleUp: false,
+  byeText: null,
   byeView: null,
   lastPending: null,
 };
+
+/**
+ * 换一句：相位 + 起算时刻 + 挂气泡 + **放一次**语音（原版 `0x44ecb6` → `0x44fabc` 认 `#` → `0x45441a`）。
+ * `text` 缺省 = 这一相位的那句（`lotMessageOf`）。
+ */
+function lotSay(phase: LotPhase, now: number, text: string | null = lotMessageOf(phase)): void {
+  ui.phase = phase;
+  ui.at = now;
+  ui.bubbleUp = text !== null;
+  if (text !== null) playVoiceCode(text);
+}
 
 /**
  * 开一屏。
@@ -858,8 +881,14 @@ const ui: LotUi = {
  *   状态 3 就是 `pick`（见 `LOT_PHASE_CODE`，与 `[0x48c370]` 一一对应）。
  */
 function resetUi(now: number, animate: boolean): void {
-  ui.phase = animate ? 'hello' : 'pick';
-  ui.at = now;
+  ui.byeText = null;
+  // 动画关：`0x0042f905` 直接置 3、**不**调 `0x44ecb6` ⇒ 没有气泡
+  if (animate) lotSay('hello', now);
+  else {
+    ui.phase = 'pick';
+    ui.at = now;
+    ui.bubbleUp = false;
+  }
   ui.picked = null;
   ui.anim = animStart(now);
   ui.eye = null;
@@ -891,8 +920,12 @@ function syncPending(pending: GameState['pending'], now: number, animate: boolea
  */
 function currentView(env: UiScreenEnv): LotView | null {
   const live = lotView(env.state, ui.phase, ui.picked, ui.eye, ui.mouth, bonusFrameAt(env.now));
-  if (live !== null) return live;
-  return ui.phase === 'bye' ? ui.byeView : null;
+  const v = live ?? (ui.phase === 'bye' ? ui.byeView : null);
+  if (v === null) return null;
+  // ★★ 第二十六份 panel #2：气泡到期就擦掉（`0x0044ee83` 起把存下的底图贴回去）
+  if (!ui.bubbleUp) return v.message === null ? v : { ...v, message: null };
+  if (ui.phase === 'bye' && ui.byeText !== null) return { ...v, message: ui.byeText };
+  return v;
 }
 
 export const lotteryScreen: UiScreen = {
@@ -942,8 +975,12 @@ export const lotteryScreen: UiScreen = {
   tick(env: UiScreenEnv): void {
     const p = lotteryPending(env.state);
     if (p === null) {
-      // 买中之后：`pending` 已经收了，把「拜拜」这一拍走完（一拍 = 100 ms）再关屏
-      if (ui.phase === 'bye' && env.now - ui.at >= LOT_TICK_MS) {
+      // 买中 / 不买之后：`pending` 已经收了，把「拜拜 / 下次再來吧」那一句挂完再关屏 ——
+      // ★★ 第二十六份 panel #2：`0x406`（0x0042fa16）置状态 5 并挂那一句，关屏（`0x0042faf8`）要等
+      //   每拍的 `0x44ee18` 判它到期（`0x0042fa5d` → `je 0x42fa9e` 不进跳表）= 满 2000 ms 且语音放完。
+      //   先前按「下一拍 100 ms」就关，这一句一闪而过、语音被截。
+      if (ui.phase === 'bye' && captionExpired(ui.at, env.now)) {
+        ui.bubbleUp = false;
         ui.dismissed = true;
         // ⚠️ **不要**在这里把 `byeView` 清掉。
         //   `main.ts` 的帧序是「先 `tick` 再画」，而画的那张 `overlay` 是
@@ -961,8 +998,7 @@ export const lotteryScreen: UiScreen = {
     const me = env.state.players[env.state.currentPlayer];
     // 现金不足 → 一闪即关（原版 `WM_CREATE` 里就 PostMessage(0x405, 4, 4)）
     if (me !== undefined && me.cash < p.price && ui.phase !== 'noCash' && ui.phase !== 'closing') {
-      ui.phase = 'noCash';
-      ui.at = env.now;
+      lotSay('noCash', env.now);
       env.requestRender();
       return;
     }
@@ -973,18 +1009,22 @@ export const lotteryScreen: UiScreen = {
     // 跑馬燈是逐帧的 —— 有它就得一直续帧
     env.requestRender();
 
-    if (env.now - ui.at < LOT_PHASE_MS) return;
-    ui.at = env.now;
+    // ★★ 第二十六份 panel #2：每拍先问 `0x44ee18`（`0x0042fa5d`）—— 气泡还挂着（< 2000 ms 或语音还在响）就不换句；
+    //   没有气泡时它恒为真（pick 那一段就一直停在跳表的空项 `0x0042fa9e`）。
+    if (ui.bubbleUp && !captionExpired(ui.at, env.now)) return;
+    if (!ui.bubbleUp && ui.phase === 'pick') return;
+    ui.bubbleUp = false;
 
     switch (ui.phase) {
       case 'hello':
-        ui.phase = 'price';
+        lotSay('price', env.now); // 0x0042fa88
         break;
       case 'price':
-        ui.phase = 'pick';
+        lotSay('pick', env.now); // 0x0042fac5
         break;
       case 'noCash':
-        ui.phase = 'closing';
+        // 0x0042fae5 PostMessage(0x406, 5) → 0x0042fa16 状态 5 + 「下次再來吧」
+        lotSay('closing', env.now);
         break;
       case 'closing':
         // 说完 `#0016` 就关屏（原版 0x42faf8：收掉定时器 + `_Post_0402_Message(0)`）
@@ -1016,8 +1056,11 @@ export const lotteryScreen: UiScreen = {
     //   （原版这扇窗只在正好 who_plays == 1 的那位自己的回合里存在，见 `lotteryLocked`）
     if (lotteryLocked(env)) return;
     if (ui.phase === 'hello' || ui.phase === 'price') {
+      // `0x0042fe9d push 1 / call 0x44ee18`：当场收掉这一句并停语音（`0x0044ee30`），置 3 —— **不**再挂「請圈選」
+      stopVoice();
       ui.phase = 'pick';
       ui.at = env.now;
+      ui.bubbleUp = false;
       env.requestRender();
       // ★ 不 return —— 原版置成 3 之后紧接着就判号格（0x42fe8c 直落 0x42feae）
     } else if (ui.phase !== 'pick') {
@@ -1033,9 +1076,9 @@ export const lotteryScreen: UiScreen = {
     if (!p.available.includes(n)) return;
 
     ui.picked = n;
-    ui.phase = 'bye';
-    // 「拜拜」那一拍从**买中这一刻**起算（100 ms）
-    ui.at = env.now;
+    // 「拜拜」那一句从**买中这一刻**起算（`0x406` wParam 3 → `0x4755f8[3]` = `#0014`）
+    lotSay('bye', env.now);
+    ui.byeText = null;
     env.requestRender();
     // ★ 一次落点只买 1 注：reducer 收到这个 action 就把 `pending` 收了 ——
     //   先把「拜拜」那一拍的画面定格下来（原版是 0x406 里画完、下一拍才关屏）
@@ -1077,8 +1120,10 @@ export const lotteryScreen: UiScreen = {
     if (lotteryLocked(env)) return;
     env.playEffect(CANCEL_SOUND);
     ui.picked = null;
-    ui.phase = 'bye';
-    ui.at = env.now;
+    // ★★ 第二十六份 panel #2：不买走的是 `0x406` wParam **5** ⇒ 挂 `0x4755f8[5]` =「下次再來吧！」（`#0016`），
+    //   不是买中那句「拜拜！祝您中獎！」
+    lotSay('bye', env.now, LOTTERY.counterComeAgain.text);
+    ui.byeText = LOTTERY.counterComeAgain.text;
     // 先把「拜拜」那一拍定格（dispatch 之后 `pending` 就被 reducer 收了）
     ui.byeView = lotView(env.state, 'bye', null, ui.eye, ui.mouth, bonusFrameAt(env.now));
     env.requestRender();
@@ -1098,8 +1143,15 @@ export function resetLotteryScreenState(): void {
   ui.eye = null;
   ui.mouth = null;
   ui.dismissed = false;
+  ui.bubbleUp = false;
+  ui.byeText = null;
   ui.byeView = null;
   ui.lastPending = null;
+}
+
+/** 此刻气泡里画的那句（含 `#NNNN`；`null` = 没有气泡）—— 单测用 */
+export function lotteryBubbleForTest(env: UiScreenEnv): string | null {
+  return currentView(env)?.message ?? null;
 }
 
 /** 当前相位 / 当前圈中的号 —— 单测用 */

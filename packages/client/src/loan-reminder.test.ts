@@ -58,6 +58,16 @@ describe('定时器 50 ms 一拍、每句 2000 ms（`0x44ee18` 的 `cmp eax, 0x7
     expect(t.close).toBe(true);
   });
 
+  it('★★ 第二十六份 panel #2：满 2000 ms 但（上一句的）语音还在响 ⇒ 不换（`0x0044ee6c call 0x4544b9`）', () => {
+    const ui = reminderStart(NAME, 0);
+    const held = reminderTick(ui, 2000, NAME, true);
+    expect(held.ui.st).toBe(1);
+    expect(held.close).toBe(false);
+    expect(reminderTick(held.ui, 2600, NAME, false).ui.st).toBe(2);
+    // 已被点掉（`text === null`）的那一句不再等语音（点的那一下 main.ts 已经停了语音）
+    expect(reminderTick(reminderClick(ui), 60, NAME, true).ui.st).toBe(2);
+  });
+
   it('左键：这一句当场收掉（`push 1 / call 0x44ee18`），下一拍就换', () => {
     const ui = reminderClick(reminderStart(NAME, 0));
     expect(ui.text).toBeNull();

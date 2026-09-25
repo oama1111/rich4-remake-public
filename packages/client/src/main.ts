@@ -10,7 +10,15 @@
 
 import { BAIL_CLERK_TEXT, CARD_IMPLS, CHARACTERS, INMATE_THANKS, TOOLS, stocksOfMap } from '@rich4/data';
 import { parseVoiceCode } from '@rich4/data';
-import { playVoiceCode, setVoiceBusyProbe, setVoiceSink, setVoiceStopper, voiceBusy } from './voice-sink.ts';
+import {
+  captionExpired,
+  playVoiceCode,
+  setVoiceBusyProbe,
+  setVoiceSink,
+  setVoiceStopper,
+  stopVoice,
+  voiceBusy,
+} from './voice-sink.ts';
 import { LogRing } from './log-ring.ts';
 // ★ 开发用的状态注入口（`__rich4.debug.patch` 与三个现成配方，W-53）——
 //   只在 DEV 下挂；它**绕过 reduceRecorded**，故调用时会把记录仪标脏。
@@ -102,7 +110,7 @@ import {
   optionValueOf,
   type LobbyHit,
 } from './lobby.ts';
-import { PANEL_ROWS } from './hud.ts';
+import { PANEL_ROWS, panelActorSlot, panelPlayerOf } from './hud.ts';
 import { panelRows } from './panel.ts';
 import {
   aiSettingsDown,
@@ -212,7 +220,7 @@ import {
   type DateDraft,
   type OptionsOutcome,
 } from './options-pages.ts';
-import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
+import { SoundPlayer, VoiceChannel, shouldRetriggerVoice } from './audio.ts';
 import {
   cardPlaySpeechLines,
   toolUseSpeechLines,
@@ -346,6 +354,7 @@ import { disappearFxTrigger } from './disappear-fx.ts';
 import {
   MAGIC_DEMOLISH_FILM,
   freshMagicBeats,
+  freshTurnBeats,
   magicDemolishFxTrigger,
   magicSequenceStart,
   magicSequenceStep,
@@ -611,7 +620,6 @@ import {
 } from './bank-screen.ts';
 import {
   ATM_BAR,
-  LOAN_BUBBLE_MS,
   LOAN_SLIDE,
   LOAN_TICK_MS,
   atmApplyCode,
@@ -1401,6 +1409,10 @@ function syncLoanUi(): void {
 function loanEffect(ui: LoanUi, effect: ReturnType<typeof loanStep>['effect']): void {
   const hadBubble = loanUi?.bubble ?? null;
   loanUi = ui;
+  // ★★ 第二十六份 panel #2：点掉 / 右键（`0x44ee18(1)`，`0x00434b6c` / `0x00435c1f` / `0x00435f8b` …，`0x0044ee30`
+  //   停语音）—— 这几条路都会换掉或收掉气泡，故「气泡变了」就停。换成带语音的新句时这一停是多余的
+  //   （`VoiceChannel` 起新句本来就先停旧句），但换成无语音 / 收掉那几条路少不了它，留着。
+  if (hadBubble !== null && ui.bubble !== hadBubble) stopVoice();
   if (loanBubbleVoice(hadBubble, ui.bubble)) loanBubbleAt = performance.now();
   if (effect === null) return;
   if (effect.kind === 'close') {
@@ -1474,6 +1486,8 @@ function syncLoanReminder(now: number): void {
   if (reminderUi !== null) return;
   // ★ 这扇窗在 `0x41c84f` 里，排在同一条 `endTurn` 的日推进（月結屏 / 開獎 / 訊息框…）之后 ⇒ 那些先收场
   if (activeUiScreen() !== null) return;
+  // ★★ 第二十六份 panel：换人那一条还在演分界之前那一段（惡人那一趟 / 推日期）⇒ 等它
+  if (turnHandoffPending()) return;
   reminderUi = reminderStart(reminderName(), now);
   // @source `0x004369e0 push 4 / call 0x4549cf` —— 貸款屏那一首
   void playTrackFile(REMINDER_BGM);
@@ -1484,7 +1498,7 @@ function syncLoanReminder(now: number): void {
 function reminderFrame(now: number): void {
   syncLoanReminder(now);
   if (reminderUi === null) return;
-  const r = reminderTick(reminderUi, now, reminderName());
+  const r = reminderTick(reminderUi, now, reminderName(), voiceBusy());
   if (r.ui !== reminderUi) {
     reminderUi = r.ui;
     requestRender();
@@ -1529,7 +1543,8 @@ function bankTick(now: number): void {
   // 先走滑入那一段（退净 + 办成过一笔 → st = 0xb），再轮到气泡到点那张表 —— 与原版同一拍的次序
   loanUi = loanTickSlide(loanUi);
   const bubble = loanUi.bubble;
-  if (bubble === null || now - loanBubbleAt >= LOAN_BUBBLE_MS) {
+  // ★★ 第二十六份 panel #2：`fcn_0044ee18(0)`（`0x00434766` / `0x00435669`）—— 满 `LOAN_BUBBLE_MS` **且**语音放完才到点
+  if (bubble === null || captionExpired(loanBubbleAt, now)) {
     loanSend({ kind: 'bubbleEnd' });
   }
 }
@@ -2492,6 +2507,7 @@ function applyCancelLayer(layer: CancelLayer): boolean {
       const cut = reminderUi === null ? null : reminderCancel(reminderUi);
       if (cut !== null) {
         sound.play('Effect.mkf', REMINDER_CANCEL_SOUND);
+        stopVoice(); // `0x004365c3 … push 1 / call 0x44ee18` —— 收框连语音一起停（0x0044ee30）
         reminderUi = cut;
         requestRender();
       }
@@ -3972,6 +3988,13 @@ const sound = new SoundPlayer();
 //   `VOICE_RETRIGGER_GAP_MS`。这里记住上一声真正起播的号与时刻。
 let lastVoiceCode: number | null = null;
 let lastVoiceAt = 0;
+// ★★ 第二十六份 panel：语音**只有一路**（原版 `[0x47e750]`，`0x45441a` 起播前 `call 0x454493`）——
+//   `#NNNN`（下面的 sink）与角色台词（`speechTick`）都经这一个出口放，起一句新的就停上一句。见 `audio.ts` 的 `VoiceChannel`。
+const voiceChannel = new VoiceChannel({
+  play: (r) => sound.play('Speaking.mkf', r),
+  stop: (r) => sound.stop('Speaking.mkf', r),
+  isPlaying: (r) => sound.isPlaying('Speaking.mkf', r),
+});
 setVoiceSink((voice) => {
   // ★ 语音档案按需装载：`Speaking.mkf` 57MB，开机不装。此前只有**角色台词**
   //   那条路（`playSoundFor` → `ensureSpeakingArchive`）会拉它，于是文本里的
@@ -3985,16 +4008,13 @@ setVoiceSink((voice) => {
   if (!shouldRetriggerVoice(lastVoiceCode, lastVoiceAt, voice, now, stillPlaying)) return;
   lastVoiceCode = voice;
   lastVoiceAt = now;
-  sound.play('Speaking.mkf', voice);
+  voiceChannel.play(voice);
 });
 // ★ 字框的到期判据要问「语音还在响吗」（`fcn_0044ee18` → `0x4544b9`，音效档 `[0x49715b]` 关掉不问）
 //   与「立刻收起时停掉语音」（`fcn_0044ee18(1)` → `0x454493`）—— 见 `voice-sink.ts`。
-setVoiceBusyProbe(
-  () => options.sound > 0 && lastVoiceCode !== null && sound.isPlaying('Speaking.mkf', lastVoiceCode),
-);
-setVoiceStopper(() => {
-  if (lastVoiceCode !== null) sound.stop('Speaking.mkf', lastVoiceCode);
-});
+//   ★★ 两者问的都是**那一路**（`0x4544b9` / `0x454493` 只认 `[0x47e750]`，不分是谁起的）。
+setVoiceBusyProbe(() => options.sound > 0 && voiceChannel.busy());
+setVoiceStopper(() => voiceChannel.stop());
 
 /**
  * 背景音乐。
@@ -4727,6 +4747,12 @@ function notifyApplied(before: GameState): void {
     notifyMagicApplied(before, beats);
     return;
   }
+  // ★★ 第二十六份 panel：换人那一条（惡人那一趟 / 推日期 | 下一位走一天）同样逐段演
+  const turnBeats = freshTurnBeats(before, state);
+  if (turnBeats !== null) {
+    notifyMagicApplied(before, turnBeats, 'turn');
+    return;
+  }
   // ★ W-69：先认出「这笔过路费算进了哪几块地」—— 下面那一圈 `s.event?.()` 里
   //   訊息框那一屏要靠它押着不起播（闪 880 ms 之后才轮到框）。
   //   （`speech.test.ts` 数的是这个函数名带左括号的出现次数，注释里别写全。）
@@ -4961,6 +4987,12 @@ function startActionFx(action: Action, before: GameState): void {
   //   （判据与出处见 `landing-pause.ts`）
   const pauseTicks = turnEndPauseTicks(before, state, topo);
   if (pauseTicks > 0) landingPause = { ticks: pauseTicks, idleAt: null };
+  // ★★ 第二十六份 panel：换人那一条切成两段逐段演（`tickMagicSequence`，每段各自走这里一遍）——
+  //   落地影片属于下一位回合开头，归第二段
+  if (freshTurnBeats(before, state) !== null) {
+    magicSeqAction = action;
+    return;
+  }
   // ★★ 降落伞落地（需求方 2026-09-24）：轮到一个还没上盘的人 ⇒ core 在回合交接时摆人 + 落地，
   //   这里补那一段 `0x22f + 角色` 的影片（`landing-fx.ts`）。它在原版是新回合的**第一件事**
   //   （`0x418c55` 开头，掷骰 / 电脑决策之前）⇒ 排在本 action 其余演出之后也无妨：换人那条 action 没有别的片。
@@ -5057,6 +5089,16 @@ function startActionFx(action: Action, before: GameState): void {
 let magicSeq: MagicSequence | null = null;
 /** 带出这一趟的那条 action（`startActionFx` 按 action 种类分流的几处要它；魔法屋这条不命中任何一处）*/
 let magicSeqAction: Action | null = null;
+/** 正在逐段演的是哪一种：魔法屋逐人（`lastMagicBeats`）/ 换人那一条的两段（`lastTurnBeats`，第二十六份 panel）*/
+let magicSeqKind: 'magic' | 'turn' = 'magic';
+
+/**
+ * ★★ 第二十六份 panel：换人那一条还在分界**之前**那一段（`0x41c84f` 还没轮到）——
+ * 还款提醒窗（`0x436a5a` → `0x43695e`）等它演完才开。
+ */
+function turnHandoffPending(): boolean {
+  return magicSeq !== null && magicSeqKind === 'turn' && magicSeq.next < 2;
+}
 
 /** 棋盘 / 侧栏 / 镜头此刻该按哪一份状态看（逐段演的时候是那一段的 after） */
 function magicShownState(): GameState {
@@ -5067,7 +5109,7 @@ function magicShownState(): GameState {
  * 魔法屋那一条 action 落地：与演出无关的收尾照做，演出交给 `tickMagicSequence`。
  * 女巫窗口要看到 `pending{magicHouse}` 撤掉才会收场（联机旁观 / 託管），所以只给它发 `event`。
  */
-function notifyMagicApplied(before: GameState, beats: MagicSequence['beats']): void {
+function notifyMagicApplied(before: GameState, beats: MagicSequence['beats'], kind: 'magic' | 'turn' = 'magic'): void {
   // 音效那一半照放（落点那一声等），台词一句不要 —— 逐段演的时候各段自己说
   playSoundFor(before, state);
   amountPage = null;
@@ -5078,9 +5120,10 @@ function notifyMagicApplied(before: GameState, beats: MagicSequence['beats']): v
     syncLoanUi();
     syncAtmPending();
   }
-  magicScreen.event?.(before, state, uiEnv());
+  if (kind === 'magic') magicScreen.event?.(before, state, uiEnv());
+  magicSeqKind = kind;
   magicSeq = magicSequenceStart(beats);
-  log(`魔法屋：逐人演出 ${beats.length} 段`);
+  log(kind === 'magic' ? `魔法屋：逐人演出 ${beats.length} 段` : '換人：先演上一位 / 推日期，再換側欄');
   requestRender();
 }
 
@@ -5097,7 +5140,7 @@ function tickMagicSequence(): void {
   const step = magicSequenceStep(seq, magicSequenceBusy());
   if (step.done) {
     magicSeq = null;
-    log('魔法屋：逐人演出結束');
+    log(magicSeqKind === 'magic' ? '魔法屋：逐人演出結束' : '換人：逐段演出結束');
     requestRender();
     renderPanel();
     return;
@@ -5111,8 +5154,16 @@ function tickMagicSequence(): void {
   // ★ 每一支开头的 `0x41906a(1)`：把主窗口 WM_PAINT 过程（`0x417e26` 的 `0x418bb9` 那一支）当场跑一遍 ——
   //   `fcn_00415e70` 居中（有小地图标记就停在标记上，否则居中到**当前玩家** = 这位中签者）、重画侧栏。
   //   影片待播时 `centerOnCurrentPlayer` 是冻住的，所以在这里当场居中一次。
-  if (minimapMarker === null && followPlayer) {
-    const who = beat.before.players[beat.before.currentPlayer];
+  // ★★ 第二十六份 panel：换人那一条 —— 第一段（惡人那一趟 / 推日期）没有这次重画；第二段开头只有
+  //   `0x436a5a` 真的重画了（`lastPanelTurn` 已是下一位）才居中到他，侧栏由 hud 按 `magicShownState` 换。
+  const recentre =
+    magicSeqKind === 'magic'
+      ? beat.before.currentPlayer
+      : step.seq.next === 2 && beat.after.lastPanelTurn?.actor === beat.after.currentPlayer
+        ? beat.after.currentPlayer
+        : null;
+  if (recentre !== null && minimapMarker === null && followPlayer) {
+    const who = (magicSeqKind === 'magic' ? beat.before : beat.after).players[recentre];
     const at = cameraFollowTarget(null, who, (id) => map.nodes[id - 1]);
     if (at !== null) camera = pixelCamera(at.x, at.y, camera.view);
   }
@@ -5126,8 +5177,9 @@ function tickMagicSequence(): void {
     state = real;
   }
   const who = beat.after.players[beat.after.currentPlayer];
-  log(`魔法屋：第 ${step.seq.next}/${step.seq.beats.length} 段（P${(who?.index ?? 0) + 1}）`);
+  log(`${magicSeqKind === 'magic' ? '魔法屋' : '換人'}：第 ${step.seq.next}/${step.seq.beats.length} 段（P${(who?.index ?? 0) + 1}）`);
   requestRender();
+  if (magicSeqKind === 'turn') renderPanel();
 }
 
 /** 魔法屋「就地拆除房屋」那一段 0x211 —— 判据见 `magic-fx.ts` 的 `magicDemolishFxTrigger` */
@@ -5314,8 +5366,7 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   // ⚠️ 判据不能看替身记录：`runDoll` 走完就把它收回 `idleActor()`
   //   （`specialActors[4]` 在动作前后都是「未出场」），看记录等于永远认不出来。
   //   能认的只有 core **刚交出来的那趟路径** —— `lastNpcWalks` 是整体覆写，
-  //   数组换了身份就说明刚发生了一趟；槽 4 只可能是娃娃（`npcRound` 走 0..3、
-  //   `bail` 走被保釋那个惡人的槽）。看动作类型也行，但这条对
+  //   数组换了身份就说明刚发生了一趟；槽 4 只可能是娃娃（`npcStepOnce` 走 0..3；保釋那一下不走）。看动作类型也行，但这条对
   //   「AI 用 / 服务器广播用」同样成立 —— 原版也是谁在场都听得见。
   if (
     after.lastNpcWalks !== before.lastNpcWalks &&
@@ -6167,6 +6218,8 @@ function shopSay(ui: ShopUi, text: string, now: number): void {
  * @source 语音号 → `Speaking.mkf` 资源，与 `event-box-screen.ts` / `speechTick` 同一条路
  */
 function voiceDurationOf(text: string): number | null {
+  // ★★ 第二十六份 panel #2：音效档 = 0 时原版根本不放语音（`0x0045442c` / `0x0044ee63` 同一道闸），字框恰好 2000 ms
+  if (options.sound <= 0) return null;
   const { voice } = parseVoiceCode(text);
   if (voice === null) return null;
   const ms = sound.durationOf('Speaking.mkf', voice);
@@ -9296,7 +9349,8 @@ function speechTick(now: number): void {
   speechSerial++;
   if (cur !== null) viewToSpeaker(cur);
   if (cur === null || cur.voice === null) return;
-  sound.play('Speaking.mkf', cur.voice);
+  // ★★ 第二十六份 panel：同一路语音 —— 起这一句就停掉正在响的上一句（`0x45441a` → `0x454493`）
+  voiceChannel.play(cur.voice);
   // ★ 语音比字幕长就把字幕撑到语音播完 —— 原版是「播完再数 1000 ms」
   const voiceMs = sound.durationOf('Speaking.mkf', cur.voice);
   if (voiceMs !== null) speechQueue.extend(voiceMs);
@@ -9319,7 +9373,7 @@ function shopTick(now: number): void {
     // 滑入到位才说「請挑選…」—— 原版是动画走完那一刻才发 0x40d（`loc_0042d75e` 尾）
     if (slideDone(ui.slide)) shopSay(ui, shopMessage(ui.page, 'hint'), now);
   }
-  if (!shopBubbleExpired(ui.bubble, ui.closing, now)) return;
+  if (!shopBubbleExpired(ui.bubble, ui.closing, now, voiceBusy())) return;
   ui.bubble = null;
   // ★ 道别那句话说完才真的关门 @source `loc_0042e686` → 状态 2→3→4
   if (ui.closing) dispatch({ type: 'declineDecision' });
@@ -9508,8 +9562,10 @@ function drawGameStage(): void {
 
   // ★ D-MAGIC-16：`0x41906a(1)` 重画主窗口时侧栏跟着「当前玩家」= 那位中签者
   const hudState = magicShownState();
-  // ★ 替身那一趟：小地图白框框它、侧栏换成惡人那一版（VA 0x00415fc1 / 0x00416767 判 `[0x49910c]`）
+  // ★ 替身那一趟：小地图白框框它（补间在走的那几格，VA 0x00416f3d）
   const npcWalk = renderer.npcWalkWorld(performance.now());
+  // ★★ 第二十六份 panel：侧栏画「上一次整窗重画时的行动者」—— 换人那次重画（`0x436a5a`）之前 / 距还款日 > 3 天时仍是上一位
+  const panelPlayer = panelPlayerOf(hudState);
   hud.draw({
     // ★ 降落伞那一段期间小地图上也先没有他（`0x00416fc9 cmp [player+0x08], 0`，坐标播完才写）
     state: withLandingHidden(hudState),
@@ -9521,12 +9577,16 @@ function drawGameStage(): void {
     minimapMarker,
     // ★ 替身那一趟小地图白框框替身（`hud.ts` 的 `minimapFrameCenter`，VA 0x00416f3d）
     npcFrame: npcWalk,
-    npcSlot: npcWalk?.slot ?? null,
+    // ★★ 第二十六份 panel #1：侧栏换成惡人那一版 = 行动者 `[0x49910c]` 是他的整个回合（VA 0x00415fc1 / 0x00416767；
+    //   回合开头 0x00418d69 那次整窗重画起、到下一位行动者那次重画止）——
+    //   含走完之后的訊息框 / 台词、停留不走的那一回合；取 core 的 `lastNpcTurn`（见 `hud.ts` 的 `panelActorSlot`）
+    npcSlot: panelActorSlot(hudState),
+    panelPlayer,
     pressedMinimapArrow,
     hotMinimapArrow,
     holidayArt,
-    panelPage: panelPages[hudState.currentPlayer] ?? 0,
-    panelRows: panelRows(hudState, topo, hudState.currentPlayer, panelPages[hudState.currentPlayer] ?? 0),
+    panelPage: panelPages[panelPlayer] ?? 0,
+    panelRows: panelRows(hudState, topo, panelPlayer, panelPages[panelPlayer] ?? 0),
   });
   drawSurface(stageCtx, hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y, LAYOUT.panel.w, SCREEN_H, surfaceScale);
   // 填数窗盖在最上面（它是另开的窗，拖到哪画到哪）
@@ -11125,6 +11185,7 @@ function bindInput(): void {
     // ── 还款提醒窗：左键（`0x201`/`0x203`）哪儿都行 —— 音效 1 + 这一句当场收掉 @source 0x00436596 ──
     if (e.button === 0 && reminderUi !== null) {
       sound.play('Effect.mkf', REMINDER_CLICK_SOUND);
+      stopVoice(); // `0x004365a5 push 1 / 0x004365a7 call 0x44ee18` —— 收框连语音一起停（0x0044ee30）
       reminderUi = reminderClick(reminderUi);
       requestRender();
       return;
@@ -11300,6 +11361,9 @@ function bindInput(): void {
         //   原版这一拍是 `fcn_0044ee18(1)`（@source `loc_0042de09`：提前收掉限时訊息框）——
         //   框一收，后续照常推进（状态 2→3→4，`loc_0042e686`）。故道别那一句**改成立刻到期**，
         //   交给 `shopTick` 走同一条关门路；别的气泡照旧直接收。
+        // ★★ 第二十六份 panel #2：`0x44ee18(1)` 收框时连语音一起停（`0x0044ee30 call 0x454493`）——
+        //   否则字框按「语音放完才到期」还会挂着
+        if (ui.bubble !== null) stopVoice();
         ui.bubble = shopBubbleAfterClick(ui.bubble, ui.closing);
         requestRender();
         return;

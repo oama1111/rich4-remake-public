@@ -32,7 +32,6 @@ import {
   ACTOR_PLACE,
   actorActive,
   npcBittenByDog,
-  npcSteps,
   npcTurnSteps,
   releaseNpc,
   runDoll,
@@ -210,6 +209,7 @@ import {
   tickStockMarket,
 } from '../places/stock-market.ts';
 import { advanceDate, daysInMonth, packDate } from '../rules/calendar.ts';
+import { packedDayDiff } from '../places/calendar.ts';
 import { misfortuneDaysAfter, monthlySettleHint, settleMonthlyBank } from '../rules/monthly.ts';
 import {
   WHO_PLAYS_AUTOPILOT,
@@ -301,6 +301,7 @@ import {
   borrow,
   deposit,
   forceLoanRepayment,
+  LOAN_DUE_CHECK_DAYS,
   loanCapacity,
   loanDueStep,
   rebalanceCashByRatio,
@@ -876,7 +877,7 @@ function activeNpcSlots(state: GameState): number[] {
  * 讓**一个**惡人走一趟 @source 0x0040dd1f（步数：停留 0 / 龜行 1 / 其余 rand()%9+2）
  * + `tick_blocking` 的 actor 分支（他**轮到时**先走一天计数）。
  *
- * 与保釋当场那一趟同一条 `runNpc`；不同点是这一条**只看一个槽**，
+ * 刚被保釋出来的惡人也走这一条（保釋那一下只摆到门口，0x0043d7e0）；这一条**只看一个槽**，
  * 好让表现层拿到「一趟一条」的 `lastNpcWalks`（串行播放，T-047 的 D-T047-5）。
  *
  * 返回 `null` 表示这个槽不在了（不在盘上 / 已出局），调用方跳过它。
@@ -898,9 +899,12 @@ function npcStepOnce(
     specialActors[slot] = a;
     return { ...st, specialActors };
   };
+  // ★★ 第二十六份 panel #1：游标交给了他 ⇒ 侧栏画他那一版，直到下一位行动者（见 `NpcTurnHint`）。
+  //   停留的那一回合也算（原版 `0x00418c55` 照样开回合、整窗重画，`0x0040de2b` 才判停留）。
+  const turn = { actor: actorId };
   if (steps === 0) {
     // 停留（`+14 halted != 0`）：这一趟不走，但计数照样走了一天
-    return put({ ...state, rngState: rng.getState(), lastNpcWalks: [] }, ticked);
+    return put({ ...state, rngState: rng.getState(), lastNpcWalks: [], lastNpcTurn: turn }, ticked);
   }
   const walk = runNpc(
     actorId,
@@ -919,6 +923,7 @@ function npcStepOnce(
       ...settled.state,
       rngState: rng.getState(),
       lastNpcWalks: [{ slot, path: walk.path, steps }],
+      lastNpcTurn: turn,
       ...(notices.length > 0 ? { notices } : {}),
     },
     walk.actor,
@@ -955,7 +960,7 @@ function npcStepOnce(
  * 本引擎的 `currentPlayer` 只装 0..3（玩家），惡人那一段由 `pendingNpcSlots`
  * 表示 —— 顺序与上面那条游标**同序**（槽位升序），推日期也压在最后一个之后。
  */
-function npcRoundStep(state: GameState, topo: MapTopology, next: number): GameState {
+function npcRoundStep(state: GameState, topo: MapTopology, next: number): { next: GameState; mid: GameState | null } {
   let rest = state.pendingNpcSlots ?? [];
   let done: GameState = state;
   // ★ 一条 action **只走一个**惡人 —— 表现层要靠这个粒度一趟一趟播。
@@ -972,41 +977,95 @@ function npcRoundStep(state: GameState, topo: MapTopology, next: number): GameSt
     // 这个槽不在盘上了：把这一格空转掉，继续看下一个
     done = { ...state, pendingNpcSlots: rest, lastNpcWalks: [] };
   }
-  if (done.phase === 'gameOver') return { ...done, pendingNpcSlots: [] };
+  if (done.phase === 'gameOver') return { next: { ...done, pendingNpcSlots: [] }, mid: null };
   // 还有惡人没走 —— 停在 turnEnd 等下一条 `npcStep`（**不**换玩家、**不**推日期）
-  if (rest.length > 0) return { ...done, pendingNpcSlots: rest };
+  if (rest.length > 0) return { next: { ...done, pendingNpcSlots: rest }, mid: null };
   // ★ 最后一个走完了 —— 这一輪到此结束：推日期（含物价指数 / 行情 / 開獎 / 月結），
   //   然后轮到下一位玩家。原版那两件事在**同一次**游标推进里
   //   （`rich4.asm:11826 call 0x41cf67` 之后才 `ret`，下一轮从 `currentPlayer` 起算）。
   const rolled = advanceGameDay({ ...done, pendingNpcSlots: [] }, topo);
-  if (rolled.phase === 'gameOver') return rolled;
+  if (rolled.phase === 'gameOver') return { next: rolled, mid: null };
   // ★ 推日期里开出了拍卖（分紅打破產的下線拍卖）⇒ 拍卖先打，`0x41c84f` 押到拍卖链收尾（见 `afterDayRollover`）
   if (rolled.pending !== null || rolled.pendingQueue.length > 0) {
     return {
-      ...rolled,
-      currentPlayer: next,
-      phase: 'awaitingDecision',
-      deferredTurnStart: next,
-      dice: [],
-      stepsRemaining: 0,
-      stepsTotal: 0,
-      turnCount: state.turnCount + 1,
+      next: {
+        ...rolled,
+        currentPlayer: next,
+        phase: 'awaitingDecision',
+        deferredTurnStart: next,
+        dice: [],
+        stepsRemaining: 0,
+        stepsTotal: 0,
+        turnCount: state.turnCount + 1,
+      },
+      mid: null,
     };
   }
   // ★ 下一位玩家由**调用方**算好传进来（`endTurn` 里已经算过 `nextAlivePlayer`）——
   //   在这一段里再算一遍会看到惡人段开始之后才变化的状态，与原版那条游标不同。
   //   ⚠️ 「给新玩家走一天」由**调用方**补：`endTurn`（同一 action 内走完）或
   //   `npcStep`（跨 action 走完）—— 两处都必须调 `beginActorTurn`（第 85 条）。
+  // ★★ 第二十六份 panel：`mid` = 惡人那一趟 + 推日期演完、游标交给下一位**之前**那一刻（侧栏换人的分界，见 `withTurnHandoff`）
   return {
-    ...rolled,
-    currentPlayer: next,
-    phase: 'turnStart',
-    pending: null,
-    dice: [],
-    stepsRemaining: 0,
-    stepsTotal: 0,
-    turnCount: state.turnCount + 1,
+    next: {
+      ...rolled,
+      currentPlayer: next,
+      phase: 'turnStart',
+      pending: null,
+      dice: [],
+      stepsRemaining: 0,
+      stepsTotal: 0,
+      turnCount: state.turnCount + 1,
+    },
+    mid: rolled,
   };
+}
+
+/**
+ * ★★ 第二十六份 panel：换人那次整窗重画 —— 侧栏什么时候从上一位（离场者 / 刚走完的惡人）换成下一位。
+ *
+ * ```asm
+ * 00418f9c  mov [0x49910c], esi                ; 游标先换人（侧栏不重画）
+ * 0041902e  call 0x41cf67                      ; 绕回：推日期（開獎 / 月結 / 分紅 …，侧栏仍是上一位）
+ * 00419039  call 0x41c84f(新行动者)
+ *   0041c86d  call 0x436a5a                    ; ★ 走一天的第一件事
+ *     00436a72  eax = 0x4521aa(今天, [p+0x2c])  ; 距还款日
+ *     00436a7c  cmp eax, 3 / jg 返回             ; 有符号：从没借过（负数）/ ≤ 3 天 ⇒ 往下
+ *     00436a87  push 1 / call 0x41906a          ; ★ 整窗重画（WM_PAINT → 0x415f69）⇒ 侧栏换成他
+ *     00436a94  jmp [还款日跳表]                  ; 然后才是「還剩 N 天」框 / 強制執行 / 提醒窗
+ *   0041c875  …                                ; 之后才是他的计数 / 释放 / 神明任期（那几句台词、框）
+ * ; 距还款日 > 3 天：这里不重画 ⇒ 侧栏留着上一位，直到他回合开头 fcn_00418c55 的 0x00418d5f 那次
+ * ```
+ *
+ * 本引擎这些都在同一条 action 里写完，于是交出两样纯表现提示（只活一条 action，不进指纹）：
+ * - `lastPanelTurn`：这一条演完之后侧栏画谁 —— 距还款日 ≤ 3（含没借过）= 下一位；否则 = 上一位（`carried`）；
+ * - `lastTurnBeats`：分界之前有演出（惡人那一趟 / 推日期）时，把整条切成两段
+ *   `[before → mid]`（侧栏仍是上一位）、`[mid → final]`（`0x41c84f` 那一段，侧栏已换），表现层逐段演 ——
+ *   框 / 台词 / 影片各自落在分界的哪一侧由这两段的状态差决定。
+ *
+ * 推日期里开出了拍卖（`deferredTurnStart`）⇒ `0x41c84f` 还没走，这一条不算换人（侧栏照旧）。
+ *
+ * @param dueState 走 `0x41c84f` 之前、日期已推、游标已是下一位的那一份（判还款日用）
+ * @param carried 重画之前侧栏上的行动者（0..3 玩家 / 4..7 惡人）
+ */
+function withTurnHandoff(
+  before: GameState,
+  mid: GameState | null,
+  dueState: GameState,
+  final: GameState,
+  carried: number,
+): GameState {
+  if (final.phase === 'gameOver' || (final.deferredTurnStart ?? null) !== null) return final;
+  const next = dueState.currentPlayer;
+  const p = dueState.players[next];
+  const repaint = p === undefined || packedDayDiff(packDate(dueState), p.loanDueDate) <= LOAN_DUE_CHECK_DAYS;
+  const panel: GameState = { ...final, lastPanelTurn: { actor: repaint ? next : carried } };
+  if (mid === null) return panel;
+  // 分段里的状态**不再挂**分段（否则一条条 action 串成一根无限长的链）
+  const bare = (s: GameState): GameState => ({ ...s, lastTurnBeats: null, lastMagicBeats: null });
+  const b0 = bare({ ...before, lastPanelTurn: null });
+  const m = bare({ ...mid, lastPanelTurn: null });
+  return { ...panel, lastTurnBeats: [{ before: b0, after: m }, { before: m, after: bare(panel) }] };
 }
 
 /**
@@ -1278,6 +1337,15 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     raw !== state && (raw.lastGainSays ?? null) !== null && raw.lastGainSays === state.lastGainSays;
   const staleAway =
     raw !== state && (raw.lastDisappearSay ?? null) !== null && raw.lastDisappearSay === state.lastDisappearSay;
+  // ★★ 第二十六份 panel #1：惡人回合（`lastNpcTurn`，侧栏画他那一版）同一套：只活一条 action ——
+  //   下一条 action 就是下一位行动者（原版 `0x00418c55` 那次整窗重画把侧栏换走）。
+  const staleNpcTurn =
+    raw !== state && (raw.lastNpcTurn ?? null) !== null && raw.lastNpcTurn === state.lastNpcTurn;
+  // ★★ 第二十六份 panel：换人那次重画（`lastPanelTurn`）与分段（`lastTurnBeats`）同一套
+  const stalePanelTurn =
+    raw !== state && (raw.lastPanelTurn ?? null) !== null && raw.lastPanelTurn === state.lastPanelTurn;
+  const staleTurnBeats =
+    raw !== state && (raw.lastTurnBeats ?? null) !== null && raw.lastTurnBeats === state.lastTurnBeats;
   // ★★ 第二十一份：月结现场（`lastMonthlySettle`）同一套：只活一条 action。
   const staleMonthly =
     raw !== state && (raw.lastMonthlySettle ?? null) !== null && raw.lastMonthlySettle === state.lastMonthlySettle;
@@ -1295,7 +1363,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   const staleAuction = reduceDepth === 0 && raw !== state && auctionsNow !== null && !auctionsAppended;
   const trimAuction = reduceDepth === 0 && auctionsAppended && priorAuctions !== null && priorAuctions.length > 0;
   const next =
-    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain || staleAway || staleMonthly || staleAuction || trimAuction
+    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain || staleAway || staleNpcTurn || stalePanelTurn || staleTurnBeats || staleMonthly || staleAuction || trimAuction
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
@@ -1308,6 +1376,9 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           ...(staleSays ? { lastBlockedSays: null } : {}),
           ...(staleGain ? { lastGainSays: null } : {}),
           ...(staleAway ? { lastDisappearSay: null } : {}),
+          ...(staleNpcTurn ? { lastNpcTurn: null } : {}),
+          ...(stalePanelTurn ? { lastPanelTurn: null } : {}),
+          ...(staleTurnBeats ? { lastTurnBeats: null } : {}),
           ...(staleMonthly ? { lastMonthlySettle: null } : {}),
           ...(staleAuction ? { lastAuctionResults: null } : {}),
           ...(trimAuction ? { lastAuctionResults: auctionsNow!.slice(priorAuctions!.length) } : {}),
@@ -2564,67 +2635,26 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (!r.ok) return { ...state, pending: null, phase: 'turnEnd' };
       let paid: GameState = { ...state, players: r.players, pending: null, phase: 'turnEnd' };
 
-      // ★ 保釋的若是 NPC（槽 4..7），他会**当场上路** —— 从監獄/醫院那一格
-      //   起步走 rand()%9+2 步，主人记成保釋他的人。
-      //   @source 0x0043d7e0（出獄）/ 0x0043ee8f（出院），两段同构。
-      let occupancy = r.occupancy;
+      // ★★ 第二十六份 panel（协调方拍板）：保釋的若是 NPC（槽 4..7），原版**只把他摆到门口**，不当场上路：
+      //   ```asm
+      //   0043d7e6  mov dl, [0x49910c] / mov [slot×16 + 0x498e30], dl   ; +8 主人 = 保釋他的人
+      //   0043d7f4  mov [slot×16 + 0x498e32], 0                         ; +0x0a = 0 ⇒ 在盘上（游标 0x00418fdc 不再跳过他）
+      //   0043d801  mov [slot×16 + 0x498e2c], [0x48bae0] / +0x0e 上一格 = 0 ; 監獄门口那一格
+      //   0043d82b  +0 / +2 = 那一格的世界坐标；0043d84e +0x0b = 1（节点类型 4 再 |0x80）
+      //   0043d884  call 0x40b93b                                        ; 只重画他的精灵，然后返回
+      //   ```
+      //   出院 `0x0043ee8f` 同构（+0x0b = 2）。**不**掷步数（`rand()%9+2` 在他自己的回合 `0x0040de50` 才掷）、
+      //   **不**动 `[0x49910c]` ⇒ 他要等行动者游标轮到 4..7（`0x00418f93..`，本引擎 `endTurn` 绕回时的
+      //   `activeNpcSlots`）才按槽位顺序走那一趟 —— 与其他在盘上的惡人同一条路（`npcStepOnce`，侧栏 / `lastNpcTurn` 也跟着）。
+      //   先前这里当场 `runNpc` 走完一趟（多耗一次随机数、第一轮多走一趟）。
+      const occupancy = r.occupancy;
       const slotIdx = specialSlotOf(action.slot);
       if (slotIdx >= 0) {
         const gate = gateNodeOf(topo, place);
         if (gate > 0) {
-          const rng = new WatcomRng();
-          rng.setState(paid.rngState);
-          const npc = releaseNpc(gate, state.currentPlayer, npcSteps(rng));
-
-          // ★ 放出来就**立刻上路** —— 原版把 [0x49910c] 切成 4..7 走完再切回，
-          //   期间没有玩家输入，所以对 core 来说这就是同一个动作（与機器娃娃同理）。
-          const walk = runNpc(
-            action.slot,
-            npc,
-            paid,
-            topo,
-            (from, prev) => pickNextNode(topo, from, prev, rng) ?? 0,
-            rng,
-          );
-          const settled = applyNpcEvents(paid, npc.owner, walk.events);
-
           const specialActors = [...paid.specialActors];
-          specialActors[slotIdx] = walk.actor;
-          // ★ 保釋当场那一趟也交给表现层（纯表现提示，覆写；见 GameState.lastNpcWalks）
-          const notices = npcNotices(state, walk.events, npc.owner);
-          paid = {
-            ...settled.state,
-            specialActors,
-            rngState: rng.getState(),
-            lastNpcWalks: [{ slot: slotIdx, path: walk.path, steps: npc.stepsRemaining }],
-            ...(notices.length > 0 ? { notices } : {}),
-          };
-
-          // 半路又被收回去了 —— 占用表要跟着改（可能换了一张表）
-          const home = walk.events.find((e) => e.kind === 'home');
-          if (home !== undefined) {
-            const back = [...(home.place === 'prison' ? paid.prisonOccupancy : paid.hospitalOccupancy)];
-            back[action.slot] = 1;
-            paid = home.place === 'prison'
-              ? { ...paid, prisonOccupancy: back }
-              : { ...paid, hospitalOccupancy: back };
-            // 他是从**另一处**被保釋出来的，原表那一格已经清了，不要再写回去
-            if (home.place !== place) occupancy = r.occupancy;
-          }
-
-          // 被榨破产的人逐个收口 —— 与过路费同一条路
-          let after: GameState = place === 'prison'
-            ? { ...paid, prisonOccupancy: home?.place === 'prison' ? paid.prisonOccupancy : occupancy }
-            : { ...paid, hospitalOccupancy: home?.place === 'hospital' ? paid.hospitalOccupancy : occupancy };
-          // ★ 半路踩到地雷被送医（@source 0x41be5f → `0x43ec3f(actor, 3)`）：
-          //   出狱的那张表照旧（源已清），**医院表要置上**。
-          if (walk.events.some((e) => e.kind === 'trap' && e.hospital)) {
-            const back = [...after.hospitalOccupancy];
-            back[action.slot] = 1;
-            after = { ...after, hospitalOccupancy: back };
-          }
-          for (const who of settled.bankrupted) after = applyBankruptcy(after, who, topo);
-          return after;
+          specialActors[slotIdx] = releaseNpc(gate, state.currentPlayer, 0);
+          paid = { ...paid, specialActors };
         }
       }
 
@@ -2740,13 +2770,14 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (state.phase !== 'turnEnd') return state;
       if ((state.pendingNpcSlots ?? []).length === 0) return state;
       // 下一位玩家 = 当前玩家之后的第一个在场者（`endTurn` 里那一条同源）
-      const after = npcRoundStep(state, topo, nextAlivePlayer(state, state.currentPlayer));
+      const { next: after, mid } = npcRoundStep(state, topo, nextAlivePlayer(state, state.currentPlayer));
       // ★★ 第 85 条：惡人段**在这一条 action 里走完**的 ⇒ 该给下一位玩家走一天了。
       //   递减/释放/神明任期本来在 `endTurn` 里做，而惡人段把"轮到下一位"交给了
       //   `npcStep` —— 这里不补，**每一輪**都会漏掉这位玩家的一天
       //   （在押/住宿/冬眠永不到期）。走完的标志是 `npcRoundStep` 切到了 `turnStart`。
       if (after.phase !== 'turnStart') return after;
-      return startActorTurn(after, topo, after.currentPlayer);
+      // ★★ 第二十六份 panel：侧栏在推完日期、`0x41c84f` 的 `0x436a5a` 那次重画才换回下一位（见 `withTurnHandoff`）
+      return withTurnHandoff(state, mid, after, startActorTurn(after, topo, after.currentPlayer), after.lastNpcTurn?.actor ?? state.currentPlayer);
     }
 
     case 'endTurn': {
@@ -2817,6 +2848,9 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       const wraps = next <= cleared.currentPlayer;
       // ①②：惡人段逐个走 / 推日期 —— 都在 tick 之前
       let base: GameState = cleared;
+      // ★★ 第二十六份 panel：换人那次重画之前侧栏上是谁（离场者 / 这一条里走了的惡人）、分界之前那一刻的状态
+      let handoffMid: GameState | null = null;
+      let carried = state.currentPlayer;
       if (wraps) {
         // ★ 惡人段**逐个**走（T-047 的 D-T047-5，2026-09-16）：
         //   先把「这一輪还有哪些惡人」记进相位，然后当场走**第一个**；
@@ -2825,7 +2859,8 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         //   原版 `[0x49910c]` 那条游标就是逐个停的（`rich4.asm:11766-11832`）。
         const queue = activeNpcSlots(cleared);
         if (queue.length > 0) {
-          const first = npcRoundStep({ ...cleared, pendingNpcSlots: queue }, topo, next);
+          const stepped = npcRoundStep({ ...cleared, pendingNpcSlots: queue }, topo, next);
+          const first = stepped.next;
           if (first.phase === 'gameOver') return first;
           // 还有惡人没走 —— 停在 turnEnd，等 `npcStep`；**不**换玩家、**不**推日期
           if ((first.pendingNpcSlots ?? []).length > 0) {
@@ -2833,6 +2868,8 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           }
           // 一轮的惡人已经走完（`npcRoundStep` 已推日期并轮到下一位玩家）
           base = first;
+          handoffMid = stepped.mid;
+          carried = first.lastNpcTurn !== state.lastNpcTurn ? (first.lastNpcTurn?.actor ?? carried) : carried;
         } else {
           // 没有惡人在盘上 —— 照旧直接推日期
           const roundEnd = advanceGameDay({ ...cleared, pendingNpcSlots: [] }, topo);
@@ -2840,6 +2877,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           //   @source 0x0041cfb1 `call 0x41d89e` / 0x0041cfb9 `je 0x41d1a5`
           if (roundEnd.phase === 'gameOver') return roundEnd;
           base = roundEnd;
+          handoffMid = roundEnd;
         }
       }
 
@@ -2859,7 +2897,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   与惡人段那条路径共用 `beginActorTurn`（第 85 条：两处都不能漏）。
       //   ★ 推日期里开了拍卖（`0x41cf67` 里分紅打破產 → 下線拍卖，原版是**阻塞**调用，
       //   跑完才轮到 `0x419039 call 0x41c84f`）⇒ 先把拍卖打完，`0x41c84f` 押到拍卖链收尾再走。
-      return afterDayRollover(moved, topo, next);
+      return withTurnHandoff(state, handoffMid, moved, afterDayRollover(moved, topo, next), carried);
     }
   }
 }

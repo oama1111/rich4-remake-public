@@ -95,6 +95,20 @@ export function freshMagicBeats(
   return beats;
 }
 
+/**
+ * ★★ 第二十六份 panel：这一条换人 action 刚交出的两段（`GameState.lastTurnBeats`，引用变了才算）；不是 ⇒ `null`。
+ * 与魔法屋逐人分段同一套逐段演（`MagicSequence`）：分界之前一段（惡人那一趟 / 推日期，侧栏仍是上一位）演完，
+ * 才起下一位「走一天」那一段（`0x41c84f`：`0x436a5a` 的重画、还款日框、释放 / 神明任期的台词）。
+ */
+export function freshTurnBeats(
+  before: Pick<GameState, 'lastTurnBeats'>,
+  after: Pick<GameState, 'lastTurnBeats'>,
+): readonly MagicBeat[] | null {
+  const beats = after.lastTurnBeats ?? null;
+  if (beats === null || beats === (before.lastTurnBeats ?? null) || beats.length === 0) return null;
+  return beats;
+}
+
 /** 逐段演到哪了 */
 export interface MagicSequence {
   readonly beats: readonly MagicBeat[];

@@ -1057,8 +1057,15 @@ export function shopBubbleAfterClick<T extends { until: number }>(bubble: T | nu
  * ★ `closing && bubble === null` 也算到期 —— 兜底：任何一条路把道别气泡弄没了，门照样要关
  *   （先前的卡死形态正是这个）。
  */
-export function shopBubbleExpired(bubble: { until: number } | null, closing: boolean, now: number): boolean {
+export function shopBubbleExpired(
+  bubble: { until: number } | null,
+  closing: boolean,
+  now: number,
+  voiceBusy = false,
+): boolean {
   if (bubble === null) return closing;
-  return now >= bubble.until;
+  // ★★ 第二十六份 panel #2：`fcn_0044ee18(0)` —— 满 2000 ms **且**语音放完（音效开着时）才算到期
+  //   （`voice-sink.ts` 的 `captionExpired`）。点掉那一下（`until = 0`，原版 `0x44ee18(1)`）同时停了语音。
+  return now >= bubble.until && !voiceBusy;
 }
 

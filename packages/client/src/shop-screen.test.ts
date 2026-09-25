@@ -537,6 +537,12 @@ describe('★★ 气泡与关门 @source loc_0042de09（fcn_0044ee18(1)）/ loc_
     expect(shopBubbleExpired({ until: 500 }, true, 499)).toBe(false);
     expect(shopBubbleExpired({ until: 500 }, true, 500)).toBe(true);
   });
+
+  it('★★ 第二十六份 panel #2：到点但语音还在响 ⇒ 不收（`fcn_0044ee18` 的 `0x0044ee6c call 0x4544b9`）', () => {
+    expect(shopBubbleExpired({ until: 500 }, false, 900, true)).toBe(false);
+    expect(shopBubbleExpired({ until: 500 }, true, 900, true)).toBe(false);
+    expect(shopBubbleExpired({ until: 500 }, true, 900, false)).toBe(true);
+  });
 });
 
 
