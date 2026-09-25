@@ -231,7 +231,7 @@ export function displayRemainingDays(raw: number, mask = 0x7f): number {
  * 0041caf7  cmp dword [p+0x32], 0 / jne 跳过冬眠与梦游   ; ★ 住宿/消失/监狱/医院期间这两项不走
  * 0041cb04  +0x36 冬眠：dec；到 0 → |0x80
  * 0041cb28  +0x37 梦游：同上
- * 0041cb4c  +0x39 龜行：同上（不受上面那条 cmp 限制）
+ * 0041cb4c  +0x39 龜行：同上（★ 也在那条 cmp 的跳过范围里，`jne 0x41cb6d`）
  * 0041cb70  +0x38 停留：同上
  * 0041cb94  +0x3b 銀行拒貸：同上
  * 0041cbb8  +0x3c 銀行暫停放款（新聞 #171，Q-TURN-1 已解）：同上
@@ -253,12 +253,22 @@ export interface TurnCounterTick {
 }
 
 /** 后半段各项走一天（不含 +0x3c 未名字段与保險）。纯函数，只动这名玩家自己的字段 */
-export function tickTurnCounters(player: Player): TurnCounterTick {
+/**
+ * @param releasedToday 本次前半段**刚释放**的住宿／监狱／医院（不含消失）。
+ *   ★★ 2026-09-24（provenance 审计）：这三支的释放函数**不写计数**（`0x41c89a call … / jmp 0x41c8bc`），
+ *   计数仍停在 0x80（非 0）⇒ 紧接着的两道闸 `0x0041c95e` / `0x0041caf7 cmp dword [+0x32],0 / jne` 都**挡住**
+ *   冬眠／夢遊／龜行（释放与递减两段都挡）。本引擎释放时把计数清成 0 ⇒ 由调用方把「今天刚放出来」传进来。
+ *   消失那一支自己清 `+0x33`（`0x0040d52c`）⇒ 不算。
+ */
+export function tickTurnCounters(player: Player, releasedToday = false): TurnCounterTick {
   const b = player.blocking;
-  const confined = (b.inHotel | b.disappearing | b.inPrison | b.inHospital) !== 0;
+  const confined = releasedToday || (b.inHotel | b.disappearing | b.inPrison | b.inHospital) !== 0;
   const sleeping = confined ? { value: b.sleeping, release: false } : tickBlockingCounter(b.sleeping);
   const sleepWalking = confined ? { value: b.sleepWalking, release: false } : tickBlockingCounter(b.sleepWalking);
-  const tortoise = tickBlockingCounter(b.tortoiseWalking);
+  // ★★ 2026-09-24（provenance 审计）：龜行**也在两道闸里面** —— 释放 `0x0041ca7e test byte [+0x39],0x80`
+  //   在 `0x0041c965 jne 0x41ca8f` 跳过的那一段里，递减 `0x0041cb4c` 在 `0x0041cafe jne 0x41cb6d` 跳过的那一段里。
+  //   先前注释写「不受上面那条 cmp 限制」是读错了跳转目标。
+  const tortoise = confined ? { value: b.tortoiseWalking, release: false } : tickBlockingCounter(b.tortoiseWalking);
   const stopping = tickBlockingCounter(b.stopping);
   const rejected = tickBlockingCounter(player.daysRejectedByBank);
   // @source 0x0041cbb8 +0x3c 銀行暫停放款

@@ -49,15 +49,32 @@ describe('時光機', () => {
     expect(snapshotOnTurnStart(ai).snapshots[0]).toBeNull();
   });
 
-  it('startTurn 会拍快照', () => {
+  // ★★ 2026-09-24（provenance 审计）订正：快照**不在回合开头**拍，在**起步掷骰**那一刻（`0x0040dd53 call 0x44808a`）；
+  //   另外被挡的回合（`0x0040c97c`）与傳送機搬自己（`0x004477c3`）也拍。先前这几条用例按「startTurn 拍」写。
+  it('startTurn 不拍；起步掷骰那一刻拍（0x0040dd53）', () => {
     const s = reduce(withTool(), { type: 'startTurn' }, ring);
     expect(s.phase).toBe('awaitingRoll');
+    expect(s.snapshots[0]).toBeNull();
+    const rolled = reduce(s, { type: 'rollDice' }, ring);
+    expect(rolled.snapshots[0]).toBeTypeOf('string');
+    expect(JSON.parse(rolled.snapshots[0]!).phase).toBe('awaitingRoll');
+  });
+
+  it('★ 被挡的回合也拍（0x0040c97c）', () => {
+    const base = withTool();
+    const jailed = {
+      ...base,
+      players: base.players.map((p, i) => (i === 0 ? { ...p, blocking: { ...p.blocking, inPrison: 2 } } : p)),
+    };
+    const s = reduce(jailed, { type: 'startTurn' }, ring);
+    expect(s.phase).toBe('turnEnd');
     expect(s.snapshots[0]).toBeTypeOf('string');
   });
 
-  it('★ 用掉之后回到回合开始的局面，而且道具被扣掉', () => {
+  it('★ 用掉之后回到上一次起步掷骰那一刻，而且道具被扣掉', () => {
     let s = reduce(withTool(), { type: 'startTurn' }, ring);
     const before = s.players[0]!.cash;
+    s = reduce(s, { type: 'rollDice' }, ring);
     // 造点既成事实：花掉一笔钱、走到别的格子
     s = {
       ...s,
@@ -66,9 +83,10 @@ describe('時光機', () => {
     };
     expect(toolCount(s.tools, 0, TOOL_TIME_MACHINE)).toBe(1);
 
-    const back = reduce(s, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
+    const back = reduce({ ...s, phase: 'awaitingRoll' }, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
     expect(back.players[0]!.cash).toBe(before);
     expect(back.players[0]!.nodeId).toBe(1);
+    expect(back.phase).toBe('awaitingRoll');
     expect(back.day).toBe(withTool().day);
     // ★ 道具要扣 —— 否则可以无限后悔
     expect(toolCount(back.tools, 0, TOOL_TIME_MACHINE)).toBe(0);
@@ -87,18 +105,19 @@ describe('時光機', () => {
     const first = reduce(s, { type: 'rollDice' }, ring);
     // 掷过之后 rng 已经推进
     expect(first.rngState).not.toBe(s.rngState);
-    const back = reduce(first, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
+    const back = reduce({ ...first, phase: 'awaitingRoll' }, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
     expect(back.rngState).toBe(first.rngState); // ★ 没有回滚
-    // 快照是在 startTurn **处理之前**拍的，所以退回去是「回合还没开始」
-    expect(back.phase).toBe('turnStart');
-    const second = reduce(reduce(back, { type: 'startTurn' }, ring), { type: 'rollDice' }, ring);
+    // 快照是在起步掷骰**之前**那一刻拍的 ⇒ 退回去是「正要掷骰」
+    expect(back.phase).toBe('awaitingRoll');
+    const second = reduce(back, { type: 'rollDice' }, ring);
     expect(second.dice).not.toEqual(first.dice);
   });
 
   it('★ 快照本身不回滚 —— 否则「用掉一个時光機」这件事也会被撤销', () => {
-    let s = reduce(withTool(), { type: 'startTurn' }, ring);
-    s = { ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, cash: 1 } : p)) };
+    let s = reduce(reduce(withTool(), { type: 'startTurn' }, ring), { type: 'rollDice' }, ring);
+    s = { ...s, phase: 'awaitingRoll', players: s.players.map((p, i) => (i === 0 ? { ...p, cash: 1 } : p)) };
     const back = reduce(s, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
+    expect(back).not.toBe(s);
     // 再用一次：道具已经没了，用不动
     const again = reduce(back, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
     expect(again).toBe(back);

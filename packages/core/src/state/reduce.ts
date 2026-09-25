@@ -179,6 +179,7 @@ import {
   drawGiftTool,
   giftToolBagEmpty,
   OBJECT_TYPE_ROADBLOCK,
+  syncEscortNodes,
 } from '../rules/object-landing.ts';
 import type { MapObject } from '../cards/summon.ts';
 import { isSealedStrict, sweepPriceStatus } from '../rules/land-mutation.ts';
@@ -1231,7 +1232,7 @@ function tickActorDay(state: GameState, topo: MapTopology, index: number): GameS
     });
   }
   // ★ 回合边界的后半段（`0x41caf4` 起）：冬眠/梦游/停留/龜行/拒貸/同盟/保險各走一天
-  const blocked = tickDailyCounters(afterTick, index);
+  const blocked = tickDailyCounters(afterTick, index, tick.released.some((key) => key !== 'disappearing'));
   // ★ 神明的任期也在这里走一天 —— 原版就紧挨着阻碍计数
   //   （tick_blocking @ 0x41c8d5，神明 @ 0x41cc6c，同一个函数）。
   //   附身写的 7（死神 13）是天数，减到 0 神明自己走人，搭档登场。
@@ -1249,10 +1250,10 @@ function tickActorDay(state: GameState, topo: MapTopology, index: number): GameS
  * （0x0041c9bc..0x0041ca72），同盟每日互减敌意 20×物價（0x0041cbe5..0x0041cc2e），
  * 到期解除双方（0x40cc1a）。
  */
-function tickDailyCounters(state: GameState, index: number): GameState {
+function tickDailyCounters(state: GameState, index: number, releasedToday = false): GameState {
   const me = state.players[index];
   if (me === undefined) return state;
-  const t = tickTurnCounters(me);
+  const t = tickTurnCounters(me, releasedToday);
   let players = state.players.map((p, i) => (i === index ? t.player : p));
   let tools = state.tools;
   if (t.wakeFromSleepwalk) {
@@ -1602,17 +1603,22 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         // ★ 第十三份試玩回報：框之前那几句台词**各有 1/2 概率**（见 `GameState.lastBlockedSays`）。
         //   与弹框同一个闸（`special` / `notAlive` 两支原版走 `0x40dd1f` / 直接返回，不掷）。
         const rolled = rollBlockedSays(state.rngState, player.blocking);
+        // ★★ 2026-09-24（provenance 审计）：被挡的这一回合原版**也拍時光機快照** ——
+        //   `0x0040c969 test [+0x15],0x30 / je 0x40c97c` → `0x0040c97c call 0x44808a`（只给 bit0 的真人，`0x004480a0`）。
         const end = {
-          ...state,
+          ...snapshotOnTurnStart(state),
           rngState: rolled.rngState,
           lastBlockedSays: rolled.says,
           phase: 'turnEnd' as const,
         };
         return appendNotice(state, end, notice);
       }
-      // ★ 時光機的后悔药：真人回合开局先拍一张快照（@source VA 0x004480a0）
+      // ★★ 2026-09-24（provenance 审计）订正：時光機快照**不在回合开头拍**，在**起步走子**那一刻 ——
+      //   `0x44808a` 只有 3 个调用点：起步 `0x0040dd53`（`0x40dd1f` 里、`test [+0x15],0x30` 之后、停留闸之前）、
+      //   被挡回合 `0x0040c97c`、傳送機搬自己 `0x004477c3`。先前在这里拍 ⇒ 同一回合掷骰前用時光機
+      //   只能退回「这一回合开头」（几乎等于没用）；原版退回的是**上一次起步掷骰那一刻**。见 `rollDice`。
       //   电脑的调度步归零（公佈欄那一步挪到了 aiAdvance：原版是买股卖股之后才轮到它）
-      let snapped: GameState = { ...snapshotOnTurnStart(state), aiStep: 0, aiBranch: 0 };
+      let snapped: GameState = { ...state, aiStep: 0, aiBranch: 0 };
       // @source 0x0041cc4b：保險期每日 −1，归零挂 0x80，下一次推进清掉 —— 与阻碍计数同一套
       snapped = withPlayer(snapped, snapped.currentPlayer, (p) => {
         // ★★ 2026-09-19 修（§7.141，通道 2 `test_insurance_richest.py`）：
@@ -1683,6 +1689,12 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //
       // ⚠️ 放在 `rng` 之前 ⇒ **不消耗隨機數**（原版這道閘也在 `rand()` 之前，
       //   C-DET-4 的同種子重放一致性不能被這一條打亂）。
+      // ★★ 2026-09-24（provenance 审计）：時光機快照在起步这一刻拍（`0x0040dd53 call 0x44808a`），
+      //   在停留闸（`0x0040dd64 cmp byte [+0x38],0`）**之前**；带 0x30 的「走回棋盘 / 被挪过」那一支
+      //   （`0x0040dd37 test [+0x15],0x30 / jne`）不拍。
+      if ((player.whoPlays & (WHO_PLAYS_RETURN_TO_BOARD | WHO_PLAYS_RELOCATED)) === 0) {
+        state = snapshotOnTurnStart(state);
+      }
       if (player.blocking.stopping !== 0) {
         return { ...state, phase: 'turnEnd' };
       }
@@ -2643,9 +2655,22 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (state.pending === null || state.pending.kind !== 'bail') return state;
       const place = state.pending.place;
       const occ = place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
-      const r = applyBail(state.players, occ, place, state.currentPlayer, action.slot);
+      const r = applyBail(state.players, occ, place, state.currentPlayer, action.slot, true);
       if (!r.ok) return { ...state, pending: null, phase: 'turnEnd' };
-      let paid: GameState = { ...state, players: r.players, pending: null, phase: 'turnEnd' };
+      let bailedPlayers = r.players;
+      // ★★ 2026-09-24（provenance 审计）：真人保釋**玩家**时，被保的人对保釋者的敌意 −max(剩余天数,1)×100×物價 ——
+      //   監獄 `0x0043cf21 al = [目标+0x34] & 0x7f / jne / mov eax,1 / 0x0043cf38 imul 0x64 / imul [物價] / neg`
+      //   → `0x0043cf4d call 0x40df69(目标, 当前, 值)`，**在** `0x0043cf69` 写 0x80 **之前**；醫院 `0x0043de5d..0x0043de8d` 同形（+0x35）。
+      //   电脑那一支（`0x0043d3d8` 起）没有这一句。
+      if (action.slot < OBJECT_SLOT_BASE) {
+        const target = state.players[action.slot];
+        if (target !== undefined) {
+          const raw = (place === 'prison' ? target.blocking.inPrison : target.blocking.inHospital) & 0x7f;
+          const delta = -(Math.max(raw, 1) * 100 * state.priceIndex);
+          bailedPlayers = updateHostility(bailedPlayers, action.slot, state.currentPlayer, delta).players;
+        }
+      }
+      let paid: GameState = { ...state, players: bailedPlayers, pending: null, phase: 'turnEnd' };
 
       // ★★ 第二十六份 panel（协调方拍板）：保釋的若是 NPC（槽 4..7），原版**只把他摆到门口**，不当场上路：
       //   ```asm
@@ -4921,7 +4946,10 @@ function teleportWith(
   // 搬人：source 是玩家下标 + 1，target 是节点号
   const playerIndex = source - 1;
   if (playerIndex < 0 || playerIndex >= state.players.length) return null;
-  return teleportPlayer(state, topo.nodes, playerIndex, target);
+  // ★★ 2026-09-24（provenance 审计）：搬的是**自己**时先拍時光機快照（`0x004477bb cmp eax,[0x49910c] / jne` →
+  //   `0x004477c3 call 0x44808a`），在写新位置（`0x004477e2` 起）与扣道具之前。
+  const base = playerIndex === state.currentPlayer ? snapshotOnTurnStart(state) : state;
+  return teleportPlayer(base, topo.nodes, playerIndex, target);
 }
 
 export function useToolAction(
@@ -8198,8 +8226,23 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
     };
   // @source 0x0041a7aa 旅館：住 N 天、記「本月意外損失」2000×N×物價、倒楣天数 +N
   if (hotelDays > 0 && !r.bankrupted) {
+    // ★★ 2026-09-24（provenance 审计）补两步（都在写天数之前）：
+    //   ① 敌意：`0x0041a78f..0x0041a7bc` `0x40df69([0x49910c] 当前玩家, 设施主人−1, 20×天×物價)` ——
+    //      记在**当前玩家**头上（死神换人付钱时也是当前玩家记仇），不是住店的人；
+    //   ② `0x0041a7c5 call 0x40d761(住店者)`：先把他原来的住宿/消失/監獄/醫院四项清零、在押的占用表清掉。
+    const meNow = s.currentPlayer;
+    if (ownerIdx >= 0) {
+      paid = { ...paid, players: updateHostility(paid.players, meNow, ownerIdx, 20 * hotelDays * s.priceIndex).players };
+    }
+    const lodger0 = paid.players[who];
+    if (lodger0 !== undefined) {
+      if (lodger0.blocking.inPrison !== 0) paid = { ...paid, prisonOccupancy: release(paid.prisonOccupancy, who) };
+      if (lodger0.blocking.inHospital !== 0) paid = { ...paid, hospitalOccupancy: release(paid.hospitalOccupancy, who) };
+    }
     // ★ 住店的是实际付款的那个人（0x0041a772 起全用 edi）
+    const curPlayer = paid.players[meNow];
     paid = withPlayer(paid, who, (p) => {
+      p.blocking = { ...p.blocking, inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0 };
       // @source 0x0041a7f4 `[+0x32] = 天数 − 1`，为 0 时挂 0x80（当天就出）
       const left = hotelDays - 1;
       p.blocking = { ...p.blocking, inHotel: left === 0 ? RELEASE_PENDING : left };
@@ -8220,13 +8263,27 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
       //   `rich4-spec/tests/test_turn_start.py` §C/§D、`test_walk_step.py` §I。
       //   本引擎在这一行置位、在 `endTurn` 给离场者清掉（原版清在**当班者**的
       //   回合边界上 —— `0x418ebd` 的 `and byte [player+0x15], 0xf`）。
-      p.whoPlays |= WHO_PLAYS_RELOCATED;
+      // ★★ 2026-09-24（provenance 审计）订正：`0x40d5a5` **只有支 A 置 0x20** ——
+      //   支 A 的判据是「住店者所在格 == 传入的格 **且** 住店者 == 当前玩家」（`0x0040d5fc` / `0x0040d606`），
+      //   之后 `0x0040d60e or byte [+0x15],0x20`。支 B（死神换人付钱，住店者不是当前玩家，`0x0040d650` 起）：
+      //   x/y ← 設施坐标、所在格 / 来路 ← **当前玩家的**（`0x0040d665..0x0040d681`）、
+      //   `0x0040d6a2 call 0x40fc00` 跟班同格，**不置 0x20**、不走路。先前两支都当 A 处理。
+      if (who === meNow || curPlayer === undefined) {
+        p.whoPlays |= WHO_PLAYS_RELOCATED;
+      } else {
+        p.nodeId = curPlayer.nodeId;
+        p.lastNodeId = curPlayer.lastNodeId;
+      }
       // ⚠️ `fac` 是 `effectiveFacility()` 合成的记录，**自带 x/y**（来自地图模板）。
       //   别去 `topo.facilities[fac.id]` 取 —— 那张表是 0 基数组、`id` 是 1 基，
       //   按下标取会取到**下一家設施**（本行第一版就写错了）。
       p.xpos = fac.x;
       p.ypos = fac.y;
     });
+    if (who !== meNow) {
+      const lodger = paid.players[who];
+      if (lodger !== undefined) paid = { ...paid, objects: syncEscortNodes(paid.objects, lodger) };
+    }
     // @source 0x0041a82d：保險期内由保險公司赔这笔損失
     paid = insureConfinement(paid, topo, who, hotelDays);
   }
