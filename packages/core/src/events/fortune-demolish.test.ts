@@ -35,12 +35,12 @@ function fakeRng(pick = 0) {
 }
 
 const LANDS: readonly FortuneEffectLand[] = [
-  // 0 号：自己的、已开发（候选）
-  { id: 0, owner: 1, level: 3, housePrice: 2000, x: 111, y: 222 },
-  // 1 号：自己的、空地（事件 0 不要）
-  { id: 1, owner: 1, level: 0, housePrice: 900, x: 7, y: 8 },
+  // 0 号：自己的、已开发（事件 0 的候选）
+  { id: 0, owner: 1, level: 3, housePrice: 2000, landPrice: 4200, x: 111, y: 222 },
+  // 1 号：自己的、空地（事件 1 的候选）
+  { id: 1, owner: 1, level: 0, housePrice: 900, landPrice: 3300, x: 7, y: 8 },
   // 2 号：别人的（候选都不要）
-  { id: 2, owner: 2, level: 5, housePrice: 5000, x: 9, y: 9 },
+  { id: 2, owner: 2, level: 5, housePrice: 5000, landPrice: 7700, x: 9, y: 9 },
 ];
 
 const base = (currentPlayer = 0) => ({
@@ -104,13 +104,44 @@ describe('命運 0 強制拆除房屋一棟', () => {
 });
 
 describe('命運 1 強制徵收土地一處', () => {
-  it('★ 候选反过来：只认**未开发**（level == 0）的那一块', () => {
+  it('★ 候选反过来：只认**未开发**（level == 0）的那一块；赔的是地价 `word[+0x1c]`（不是 level×house_price）', () => {
     const { rng, calls } = fakeRng(0);
     const out = applyFortuneEffect(1, { ...base(), rng });
     expect(calls[0], '候选 = 1 号那一块空地').toBe(1);
-    expect(out.demolished!.landId).toBe(1);
-    // 空地 level 0 ⇒ 赔款 0（原版照 level×house_price 算）
-    expect(out.demolished!.payout).toBe(0);
+    expect(out.demolished).toEqual({ landId: 1, x: 7, y: 8, payout: 3300, kind: 'confiscate' });
+    // @source `0x0044c0ba mov ax, word [ebx + 0x1c]` → `0x0044c0c6 call 0x41d3f4(_, _, 1)`：
+    //   地价，**不乘物價指數**（priceIndex = 7 也不乘），更不是 `level(0) × housePrice`
+    expect(out.amount).toBe(3300);
+    expect(out.players[0]!.cash).toBe(1000 + 3300);
+  });
+
+  it('★ 多块空地 ⇒ `rand() % 候选数` 挑一块（只消耗一次随机数）', () => {
+    const lands: FortuneEffectLand[] = [
+      { id: 3, owner: 1, level: 0, housePrice: 900, landPrice: 1200, x: 1, y: 1 },
+      { id: 4, owner: 1, level: 0, housePrice: 900, landPrice: 2400, x: 2, y: 2 },
+      { id: 5, owner: 1, level: 4, housePrice: 900, landPrice: 9999, x: 3, y: 3 },
+    ];
+    const a = fakeRng(0);
+    expect(applyFortuneEffect(1, { ...base(), lands, rng: a.rng }).demolished).toEqual({
+      landId: 3, x: 1, y: 1, payout: 1200, kind: 'confiscate',
+    });
+    expect(a.calls, '一次 `rand()`，模数是候选数 2').toEqual([2]);
+    // 余数 1 ⇒ 另一块
+    const b = fakeRng(1);
+    expect(applyFortuneEffect(1, { ...base(), lands, rng: b.rng }).demolished).toEqual({
+      landId: 4, x: 2, y: 2, payout: 2400, kind: 'confiscate',
+    });
+  });
+
+  it('★ 只有已开发地 / 一块地都没有 ⇒ 没有候选、不生效（原版靠 `0x44bb4b` 的可行性判定先把它筛掉，见 `fortune.ts`）', () => {
+    // 只有已开发地
+    const developed: FortuneEffectLand[] = [{ id: 3, owner: 1, level: 2, housePrice: 900, landPrice: 1200, x: 1, y: 1 }];
+    expect(applyFortuneEffect(1, { ...base(), lands: developed, rng: fakeRng(0).rng }).unimplemented).toBe(true);
+    // 一块地都没有
+    expect(applyFortuneEffect(1, { ...base(), lands: [], rng: fakeRng(0).rng }).unimplemented).toBe(true);
+    // 有地但全是别人的
+    const others: FortuneEffectLand[] = [{ id: 3, owner: 2, level: 0, housePrice: 900, landPrice: 1200, x: 1, y: 1 }];
+    expect(applyFortuneEffect(1, { ...base(), lands: others, rng: fakeRng(0).rng }).unimplemented).toBe(true);
   });
 });
 

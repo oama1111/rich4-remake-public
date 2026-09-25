@@ -351,7 +351,8 @@ import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
 // 第十二份試玩回報：新聞 5 / 15 / 20 / 21 的整块影片（龍捲風 0x217 等），见 `news-place-fx.ts`
 import { newsPlaceFxTrigger } from './news-place-fx.ts';
 // ★ 第二十二份（gap-audit #6）：新聞 18 地震 / 19 山洪的白闪 + 静置 —— 规格见 `news-flash-fx.ts`
-import { newsFlashPhase, newsFlashTrigger, type NewsFlashCue } from './news-flash-fx.ts';
+// ★ A-2：命運 0 拆屋 / 1 徵收走同一支 `fcn_00451985`（共用尾巴 `0x0044bf46`）⇒ `fortuneFlashTrigger`
+import { fortuneFlashTrigger, newsFlashPhase, newsFlashTrigger, type NewsFlashCue } from './news-flash-fx.ts';
 import { disappearFxTrigger } from './disappear-fx.ts';
 // ★ 魔法屋「就地拆除房屋」那一段 0x211（女巫窗口关掉之后 `0x431caa` 里播的）—— 规格/判据见 `magic-fx.ts`
 import {
@@ -2129,6 +2130,7 @@ function stageBusyFlags(withScreens = true): StageFlags {
     diceFxActive: diceFx.active,
     // ★ W-69：過路費閃爍（`fcn_00451985` 是阻塞的，原版在費用訊息框之前）
     // ★ 第二十二份：新聞 18 / 19 那一段（排着 / 闪 / 静置）同算这一位 —— 同一支阻塞的 `fcn_00451985`
+    // ★ A-2：命運 0 / 1 那一支（共用尾巴 `0x0044bf46 call 0x451985`）也走这同一个槽
     tollFlash: tollFlash !== null || newsFlash !== null,
     godLine: godLine !== null || pendingGodLine !== null,
     godAscend: godAscend !== null,
@@ -5156,6 +5158,7 @@ function startActionFx(action: Action, before: GameState): void {
   startNewsPlaceFx(before, state);
   // ★ 第二十二份（gap-audit #6）：新聞 18 地震 / 19 山洪 —— 没有整块影片，是受灾地块白闪一遍再停一下
   //   （`news-flash-fx.ts`）。同样等事件框收屏；19 的房主台词排在它之后（`stageBusy` 押着）。
+  // ★ A-2：命運 0 拆屋 / 1 徵收那一块也在这条路上（同一支 `0x451985`，见 `startNewsFlash`）。
   startNewsFlash(before, state);
   // ★ 第八份试玩回报 #3：被外星人綁架的飛碟 / 出國的飛機（`disappear-fx.ts`，`fcn_0040d375` 的尾巴）——
   //   判据是 `blocking.disappearing` 刚从 0 变非 0；原版这一支同样没有「動畫過程」开关。
@@ -7185,6 +7188,8 @@ function tollFlashInput(
 
 // ============================================================
 //  新聞 18「強烈地震」/ 19「山洪」：受灾地块白闪 → 重画 → 静置（gap-audit #6）
+//  ★ A-2：命運 0「強制拆除房屋」/ 1「強制徵收土地」共用**同一条**尾巴，闪的是同一支
+//    `0x451985`（`0x0044c0e3 jmp 0x44bf46` → `0x0044bf46 call 0x451985`）⇒ 同一个槽
 // ============================================================
 
 /**
@@ -7194,17 +7199,29 @@ function tollFlashInput(
  * 那一套：同一支 `fcn_00451985`，16 × 30 ms + 400 ms，期间棋盘按 before 画）→ 重画成 after
  * （`view_to(0, 0, 1)`）→ **静置** 500 / 300 ms（`fcn_004528b9`）→ 收场。
  * 整段算「台上还忙」（`stageBusyFlags` 的 `tollFlash` 位）⇒ 回合驱动 / 联机收件箱 / 19 的房主台词都等它。
+ *
+ * ★ 名字沿用 ticket 里的 `newsFlash`：新聞 18/19 与命運 0/1 共用这一个槽（`cue.kind` 区分，
+ *   只影响日志）—— 两族的静置时长也相同（19 与命運都是 `push 0x12c`）。
  */
 let newsFlash: { cue: NewsFlashCue; before: GameState; at: number | null; holdSkipped: boolean } | null = null;
 
-/** 这一条 action 刚抽到新聞 18 / 19 ⇒ 排上（等事件框收屏才闪）*/
+/**
+ * 这一条 action 刚抽到新聞 18 / 19（`lastEvent.flashLots`）或命運 0 / 1（那两块地表里的差）
+ * ⇒ 排上（等事件框收屏才闪）。
+ *
+ * ★ A-2：命運那一支补的是「徵收 / 拆屋之后看不出是哪一块」—— 原版在共用尾巴里把那一块
+ *   标白再闪（`0x0044c092 call 0x456c0a` 标白 → `0x0044bf46 call 0x451985` 闪），
+ *   先前复刻只改了归属色块，一声不响。
+ */
 function startNewsFlash(before: GameState, after: GameState): void {
-  const cue = newsFlashTrigger(before, after);
+  const cue = newsFlashTrigger(before, after) ?? fortuneFlashTrigger(before, after);
   if (cue === null) return;
   newsFlash = { cue, before, at: null, holdSkipped: false };
   // 事件框期间（pass 0）原版还一格没拆：棋盘按 before 画，闪完重画那一拍才放开
   deferredBoardBefore = before;
-  log(`演出：新聞 ${cue.newsId} 标白 ${cue.lands.length} 块地 / ${cue.facilities.length} 处設施，静置 ${cue.holdMs} ms`);
+  log(
+    `演出：${cue.kind === 'news' ? '新聞' : '命運'} ${cue.eventId} 标白 ${cue.lands.length} 块地 / ${cue.facilities.length} 处設施，静置 ${cue.holdMs} ms`,
+  );
   requestRender();
 }
 

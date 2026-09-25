@@ -98,6 +98,139 @@ describe('★ 落在命運格会真的抽牌并施加', () => {
   });
 });
 
+/*
+ * ★★ A-2：命運 1「強制徵收土地一處」的三种受害者形状（回报 `20260925-032752009-manual-Charles.json`
+ *   「强制征收土地一处好像没生效」）。
+ *
+ * exe 的两处判据（都重新核过）：
+ *   ① **挑哪一块**（`0x0044bfca..0x0044c012`，pass 0）：`i = 1..地块数`，收
+ *      `owner == 当前玩家+1 && level == 0` 的那些，`call rand / idiv ebx` ⇒ `候选[rand() % 候选数]`；
+ *   ② **没有合格的地时根本抽不到它**（`0x0044bb4b` 的 `0x0044bc2f` 那一段：循环里找不到
+ *      「自己的 + 空着的」就 `jmp 0x44be0d` → `xor edi,edi` 返回 0；调用方
+ *      `0x0044dbf5 cmp esi,1 / jne 0x44dcaa` 跳过整个事件、`0x44dcc4 test edi,edi / je 0x44dbba`
+ *      再去抽下一张）⇒ 原版**不弹框、也不说话**。
+ *      本引擎的对应物是 `checkFortune(1)` + `drawEvent` 的跳过循环（`events/fortune.ts`）。
+ *   ③ **神明闸不管这两条**：`fcn_0044b896` 全 exe 15 个调用点里**没有** 0/1
+ *      （最近的落在事件 2 的 `0x0044c184`）⇒ 不存在「逃過此劫」那一句、也不作废。
+ */
+describe('★★ A-2 命運 1「強制徵收土地一處」：三种受害者形状', () => {
+  /** 把下一张命運钉成 1（`lastEvent.id` 一定是它，除非可行性判定跳过了它）*/
+  const forceDraw1 = (s: GameState): GameState => ({
+    ...s,
+    fortuneDeck: { ...s.fortuneDeck, order: [1, ...s.fortuneDeck.order.filter((x) => x !== 1)], cursor: 0 },
+  });
+  /** 給盘面安排地权 + 一块已开发地的等级 / 种类（`landType` 1 = 連鎖店，事件 1 一个字都不该碰）*/
+  const withLands = (s: GameState, owned: readonly (readonly [number, number])[], typed: readonly number[] = []): GameState => {
+    const landOwner = [...s.landOwner];
+    const landLevel = [...s.landLevel];
+    const landType = [...s.landType];
+    for (const [id, level] of owned) {
+      landOwner[id] = s.currentPlayer + 1;
+      landLevel[id] = level;
+    }
+    for (const id of typed) landType[id] = 1;
+    return { ...s, landOwner, landLevel, landType };
+  };
+  /** 地图模板里某一块地的记录（`map.lands` 是 1..n 的紧凑表，`id` 就是下标）*/
+  const landOf = (map: ReturnType<typeof loadMap>, id: number) => map.lands.find((l) => l.id === id)!;
+
+  run('① 有多块未开发地 ⇒ 挑中其中一块：owner 清 0、地契清 0、赔 word[+0x1c] 地价进现金；等级/种类一个字不碰', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 11 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    // 三块自己的空地（16/17/18）+ 一块自己的**已开发**地（19，不算候选）；19 还带地契与連鎖店身份
+    const base = withLands(forceDraw1(on), [[16, 0], [17, 0], [18, 0], [19, 2]], [19]);
+    const landTenure = [...base.landTenure];
+    landTenure[16] = 7;
+    landTenure[17] = 7;
+    landTenure[18] = 7;
+    landTenure[19] = 7;
+    const before: GameState = { ...base, landTenure };
+    const cash = before.players[before.currentPlayer]!.cash;
+    const s2 = reduce(before, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id, '抽到的就是事件 1（可行性判定放过它）').toBe(1);
+    const cleared = [16, 17, 18].filter((i) => s2.landOwner[i] === 0);
+    expect(cleared, '三块候选里**恰好一块**被收走').toHaveLength(1);
+    const taken = cleared[0]!;
+    // 另外两块候选还是自己的、地契也没动
+    for (const i of [16, 17, 18]) {
+      if (i === taken) continue;
+      expect(s2.landOwner[i]).toBe(before.currentPlayer + 1);
+      expect(s2.landTenure[i]).toBe(7);
+    }
+    // 被收走那一块：`0x0044c0ce owner=0` + `0x0044c0d2 地契=0`
+    expect(s2.landTenure[taken]).toBe(0);
+    // 已开发的那一块**不是候选**：归属 / 等级 / 种类 / 地契原样
+    expect(s2.landOwner[19]).toBe(before.currentPlayer + 1);
+    expect(s2.landLevel[19]).toBe(2);
+    expect(s2.landType[19]).toBe(1);
+    expect(s2.landTenure[19]).toBe(7);
+    // 收走的是空地 ⇒ 等级 / 种类一个字没碰（事件 1 只写 `+0x19` 与 `+0x30`）
+    expect(s2.landLevel[taken]).toBe(0);
+    expect(s2.landType[taken]).toBe(0);
+    // 赔的是**地价** `word[+0x1c]`（不是 level × house_price、也不乘物價指數）
+    const price = landOf(map, taken).landPrice;
+    expect(price, '地图模板里那一块地价非 0（否则这条断言没有区分力）').toBeGreaterThan(0);
+    expect(s2.players[s2.currentPlayer]!.cash).toBe(cash + price);
+    // 镜头交给被收走的那一块（`0x0044c080 call 0x41d476(x, y, 2)`）
+    expect(s2.lastViewTarget).toEqual({ x: landOf(map, taken).x, y: landOf(map, taken).y });
+  });
+
+  run('② 只有已开发地 ⇒ 事件 1 不可行：换抽下一张、这一块地一动不动（也不弹框）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 13 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const s1 = withLands(forceDraw1(on), [[16, 2], [17, 5]]);
+    const snapshot = { owner: [...s1.landOwner], level: [...s1.landLevel], tenure: [...s1.landTenure] };
+    const cash = s1.players[s1.currentPlayer]!.cash;
+    const s2 = reduce(s1, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id, '跳过了事件 1').not.toBe(1);
+    // 跳过 1、抽中下一张 ⇒ 游标至少前进两张（下一张本身也可能是不可行的，故只钉「走过了 1」）
+    expect(s2.fortuneDeck.cursor).not.toBe(s1.fortuneDeck.cursor);
+    expect(s2.landOwner).toEqual(snapshot.owner);
+    expect(s2.landLevel).toEqual(snapshot.level);
+    expect(s2.landTenure).toEqual(snapshot.tenure);
+    expect(s2.players[s2.currentPlayer]!.cash).toBe(cash);
+  });
+
+  run('③ 一块地都没有 ⇒ 同上：事件 1 不可行、跳过、什么都不发生', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 17 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const s1 = forceDraw1(on);
+    expect(s1.landOwner.every((o) => o !== s1.currentPlayer + 1), '这位名下真的一块地都没有').toBe(true);
+    const cash = s1.players[s1.currentPlayer]!.cash;
+    const s2 = reduce(s1, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id).not.toBe(1);
+    expect(s2.fortuneDeck.cursor).not.toBe(s1.fortuneDeck.cursor);
+    expect(s2.players[s2.currentPlayer]!.cash).toBe(cash);
+    expect(s2.landOwner).toEqual(s1.landOwner);
+  });
+
+  run('④ 神明加持是**满档**也照收（事件 1 没有 `fcn_0044b896` 那一支）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 19 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    // 加持值拉满（> 100 ⇒ 档位 2）：别的命運会「加倍 / 免付」，事件 1 照收
+    const s1: GameState = {
+      ...withLands(forceDraw1(on), [[16, 0]]),
+      players: on.players.map((p, i) => (i === on.currentPlayer ? { ...p, fortune: 101 } : p)),
+    };
+    const s2 = reduce(s1, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id).toBe(1);
+    expect(s2.landOwner[16]).toBe(0);
+    expect(s2.notices.some((n) => n.key.startsWith('blessing.')), '没有「逃過此劫 / 免付罰金」那一句').toBe(false);
+  });
+});
+
 describe('★ 新聞 11/12/13/23 的「先算好」逐人金额带进 `lastEvent.shares`', () => {
   run('★ 抽到 11（所得稅）→ `lastEvent.shares` 是逐人算好的金额，且钱已收进公库', () => {
     const map = loadMap();

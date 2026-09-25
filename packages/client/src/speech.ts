@@ -923,6 +923,13 @@ function pointsSquareEventThisAction(
  * 查證：core 那邊**根本沒拆**（事件 0/1 是 `factor: null`，直接 `unimplemented`），
  * 已由 `fortune-effects.ts` 补上（含镜头）。這一條补的是**台词**。
  *
+ * ★★ A-2（回報「强制征收土地一处好像没生效」）：**事件 1 走的是同一条尾巴**。
+ *   事件 0 的施加支 `0x0044bf42` 之后直接落进 `0x0044bf46`；事件 1 的施加支末尾是
+ *   `0x0044c0e3 jmp 0x44bf46` —— 从那里起两边**逐字节相同**：
+ *   `0x0044bf46 call 0x451985`（闪）→ `0x0044bf51 view_to(0,0,1)`（镜头复位）
+ *   → `0x0044bf59 push 0x12c / call 0x4528b9`（sleep 300）→ `0x0044bf9f player_say`。
+ *   先前这里只认 `ev.id === 0` ⇒ 被徵收的人一声不吭。
+ *
  * @source `0x0044bf9f call 0x44ef41`：`player_say(current_player, 2, 台词[rand()&1])`
  *   —— 槽 3/4 =「我慘了」/「唉呦喂呀」，`packages/data/src/speech.ts:137,139`
  *   （`sites` 里就含 `0x0044bf8e`；调用点清单 `docs/tasks/speech-callsites.md:98` 第 91 条）。
@@ -1021,18 +1028,21 @@ const BIRTHDAY_FORTUNE_ID = 5;
 export const NEWS_PLACE_OWNER_LINE: ReadonlySet<number> = new Set([5, 15, 19, 21]);
 
 /**
- * 这一条 action 写下的「命運 0 強制拆除房屋」事件；不是这一条写的返回 null。
+ * 这一条 action 写下的「命運 0 強制拆除房屋 / 1 強制徵收土地」事件；不是这一条写的返回 null。
  *
  * ★ 判据是 `before.lastEvent !== after.lastEvent`（**引用不同**）—— 与
  *   `pointsSquareEventThisAction` / `lastCardPlay` 同一条规矩：`lastEvent` 不是瞬态字段，
  *   只看 `after` 会让这一句在之后每一条 action 上重说一遍。
+ *
+ * ★★ A-2：**0 与 1 一起认** —— 两条事件共用尾巴（`0x0044c0e3 jmp 0x44bf46`），
+ *   台词那一句 `0x0044bf9f` 在共用段里（见 `detectDemolishedHouse` 的 @source 块）。
  */
 function demolishedHouseThisAction(
   before: Pick<GameState, 'lastEvent'>,
   after: Pick<GameState, 'lastEvent'>,
 ): NonNullable<GameState['lastEvent']> | null {
   const ev = after.lastEvent ?? null;
-  if (ev === null || ev.kind !== 'fortune' || ev.id !== 0) return null;
+  if (ev === null || ev.kind !== 'fortune' || (ev.id !== 0 && ev.id !== 1)) return null;
   if (before.lastEvent === ev) return null;
   return ev;
 }
@@ -1718,6 +1728,7 @@ export const DETECTORS: readonly SpeechDetector[] = [
   // ★★ 第九份试玩回报 #6：命運 0「強制拆除房屋一棟」—— 房主（= 抽到的人自己）的倒霉台词。
   //   §2.2 表：镜头（`0x0044bee8`）→ 赔款（`0x0044bf36`）→ 镜头复位（`0x0044bf51`）
   //   → sleep 300 → 台词（`0x0044bf9f`）⇒ `afterStage`。
+  //   ★ A-2：命運 1「強制徵收土地一處」`0x0044c0e3 jmp 0x44bf46` **汇进同一段** ⇒ 同一句、同一档。
   { name: 'demolishedHouse', source: [0x0044bf9f], order: 'afterStage', detect: detectDemolishedHouse },
   // ★★ 第十二份試玩回報：新聞 5 / 15 / 19 / 21「随机挑一处建筑」—— 那一处的**房主**说一句。
   //   调用点都在 `view_to` → `mutate_land` →（影片 → sleep）**之后**、函数的最后一步 ⇒ `afterStage`。
