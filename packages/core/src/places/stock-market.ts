@@ -231,7 +231,10 @@ export function newStockMarket(
       commercialIndex: t.hasCommercial,
       f6: t.f6,
       newsFlag: t.f7,
-      volatility: t.volatility,
+      // ★ 2026-09-24 审计订正：波动率是 **float32**（`0x00429266 fmul dword [股 + 0x18]`，
+      //   表 0x47f072 每行 +0x18 就是 4 字节单精度）；数据表里存的是十进制近似（0.6 而非 0.60000002），
+      //   不压回单精度的话 10 个非精确值的趋势约 1/3 次差 1 ulp。读档那条路本来就是 float32。
+      volatility: Math.fround(t.volatility),
       trend: t.f28,
       shock: t.f32,
     });
@@ -378,8 +381,12 @@ export function tickStockMarket(
 
   // @source lea ecx,[eax+1] / cmp ecx,0x90 / 归零
   const day = (market.day + 1) % HISTORY_DAYS;
-  // @source fmul [0x463fec] / __round_toward_zero / fistp [0x499078]
-  const index = Math.trunc(Math.fround(total * INDEX_SCALE));
+  // @source 0x004294b9 fld dword [合计] / 0x004294bc fmul dword [0x463fec](=10.0f) / 0x004294c2 call 0x457dbc /
+  //   0x004294c7 fistp [0x499078] —— 乘积留在 x87 里直接截断，**中途没有** `fstp dword`。
+  // ★ 2026-09-24 审计订正：去掉乘积外那层 `Math.fround`（与 `loaders/savegame.ts` 同一条式子；
+  //   那边已用两份真存档的 `[0x499078]` 74637 / 13490 证实多一次 fround 会差 1）。
+  //   float32 × 10 的精确积只需 27 位，double 精确。
+  const index = Math.trunc(total * INDEX_SCALE);
 
   return { stocks, day, history, index, closedDays: market.closedDays };
 }

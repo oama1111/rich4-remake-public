@@ -138,6 +138,14 @@ describe('★ 月中分紅 @source 0x0042bd61', () => {
   it('★ 没人持股：不分、也不清零（盈餘留着累积）', () => {
     expect(companyDividends(10_000, [0, 0, 0, 0], players)).toEqual({ rows: [], cleared: false });
   });
+  it('★ 审计订正：比例是 float32、乘积不是 —— 盈餘 6、持股 5:1 ⇒ 5/6 那份得 4（0x0042bc93 fmul → 0x457dbc，无 fstp dword）', () => {
+    // fround(5/6) = 0.83333331；6 × 它 = 4.99999988 → 向零 4（旧式先 fround 成 5.0 → 5）
+    const d = companyDividends(6, [5, 1, 0, 0], players);
+    expect(d.rows).toEqual([
+      { player: 0, amount: 4 },
+      { player: 1, amount: 1 },
+    ]);
+  });
   it('★ 恰好 .5 时向零截断（0x0042bc9a 的 `call 0x457dbc`）', () => {
     const two = [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
     // 两份各半，盈餘 1 ⇒ 0.5：截断 0、Math.round 1（0 不进 rows）

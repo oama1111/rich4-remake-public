@@ -137,8 +137,8 @@ export const INITIAL_PRICE_INDEX = 1;
  *
  * ⚠️ 两次除法都是**有符号整数除法**（`idiv`，向零取整），不是浮点。
  *
- * ★ **全局唯一的运行时写入点是 VA 0x00423b1b**，由回合推进处
- *   （VA 0x0041cfbf）每回合调用一次。另两处写入分别是开局置 1
+ * ★ **全局唯一的运行时写入点是 VA 0x00423b1b**，由**日推进**
+ *   `fcn_0041cf67`（VA 0x0041cfbf）每天调用一次。另两处写入分别是开局置 1
  *   与读档还原。也就是说物价指数**只在回合边界采样**。
  *
  * ★ 这解释了 `Save0.dat` 的疑点（原 Q17 遗留）：该存档指数为 5，
@@ -164,7 +164,8 @@ export function updatePriceIndex(
   let count = 0;
   for (const p of players) {
     if (!isAlive(p)) continue; // @source cmp byte [player+21], 0 / je skip
-    sum += wealthOf(p);
+    // ★ 2026-09-24 审计订正：`0x00423af5 add esi, eax` 是 32 位累加（总身家 > 2^31 时回绕），照抄
+    sum = (sum + wealthOf(p)) | 0;
     count++;
   }
   if (count === 0 || initialFund === 0) return currentPriceIndex;

@@ -553,12 +553,14 @@ export function auctionAiLimit(input: AuctionAiInputs, rnd: () => number): numbe
   const rand = (): number => rnd() * 32768;
 
   // @source fdiv rand() / 32767.0（0x465014 = 32767.0f）、×0.3（0x465018）、+0.5（0x465020）
+  // ★ 2026-09-24 审计订正：`0x00439f3b fstp dword [esp+8]` —— 算完**存成 float32**，之后才被 `fmul` 读回
   // eslint-disable-next-line no-restricted-syntax -- 原版这一段就是浮点（`fdiv`/`fmul`/`fadd`），产出的是**心理价位**不是账目金额
-  const factor = (rand() / AUCTION_LIMIT_RAND_DIVISOR) * 0.3 + 0.5;
+  const factor = Math.fround((rand() / AUCTION_LIMIT_RAND_DIVISOR) * 0.3 + 0.5);
 
   // @source fdivp（无主数 / 总数）、×4.0（0x465028）、fsubr 6.0（0x46502c）
+  // ★ 2026-09-24 审计订正：`0x00439fc7 fstp dword [esp]` —— 同样存成 float32
   // eslint-disable-next-line no-restricted-syntax -- 同上，这是「缺地系数」而非金额
-  const scarcity = 6 - 4 * (input.total === 0 ? 0 : input.unowned / input.total);
+  const scarcity = Math.fround(6 - 4 * (input.total === 0 ? 0 : input.unowned / input.total));
 
   const scale = (Math.floor(input.level / 2) + 1 + (input.sameNameOwned ?? 0)) *
     input.basePrice * input.priceIndex;

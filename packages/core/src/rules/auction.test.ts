@@ -372,6 +372,14 @@ describe('★ 拍賣卡敌意 = double 压栈的原版 bug（0x00443286 起）',
 // ============================================================
 
 describe('★ AI 心理价位 auctionAiLimit（fcn_00439f0d）', () => {
+  it('★ 审计订正：系数与缺地系数都存成 float32（0x00439f3b / 0x00439fc7 fstp dword）', () => {
+    // 起拍 60000、无主 7/24、rand 32277：float32 系数下精确积 230699.012 → 230699（全双精度算 230698）
+    const v = auctionAiLimit(
+      { level: 0, landPrice: 1_000_000, cash: 10_000_000, priceIndex: 1, basePrice: 60_000, total: 24, unowned: 7 },
+      () => 32277 / 32768,
+    );
+    expect(v).toBe(230699);
+  });
   /** 序列恒为 0 或 0.5 的假随机源（0 → rand() = 0；0.5 → rand() = 16384） */
   const fixed = (v: number) => () => v;
 
