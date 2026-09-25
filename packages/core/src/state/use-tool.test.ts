@@ -166,17 +166,19 @@ describe('出局者', () => {
 describe('★ 遙控骰子（8）', () => {
   it('指定点数 → 存进 forcedDice，道具被收走', () => {
     const s = withTools({ 8: 1 });
-    const r = reduce(s, { type: 'useTool', toolId: 8, value: 12 }, topo);
-    expect(r.forcedDice).toBe(12);
+    const r = reduce(s, { type: 'useTool', toolId: 8, value: 6 }, topo);
+    expect(r.forcedDice).toBe(6);
+    // ★ 点数窗只有 1..6（`0x00446847 cmp esi, 6`）
+    expect(reduce(s, { type: 'useTool', toolId: 8, value: 7 }, topo)).toBe(s);
     expect(toolCount(r.tools, 0, 8)).toBe(0);
   });
 
   it('★ 下一次掷骰吃掉它，然后**用完即消**', () => {
     const s = withTools({ 8: 1 });
-    const set = reduce(s, { type: 'useTool', toolId: 8, value: 7 }, topo);
+    const set = reduce(s, { type: 'useTool', toolId: 8, value: 5 }, topo);
     const rolled = reduce({ ...set, phase: 'awaitingRoll' }, { type: 'rollDice' }, topo);
-    expect(rolled.dice).toEqual([7]);
-    expect(rolled.stepsRemaining).toBe(7);
+    expect(rolled.dice).toEqual([5]);
+    expect(rolled.stepsRemaining).toBe(5);
     // @source 0x00447285 读出来就把 [0x475dd8] 清零
     expect(rolled.forcedDice).toBe(0);
   });
@@ -286,5 +288,15 @@ describe('★★ 放置类道具：有人 / 惡人 / 任何物件的格子都放
     const actors = base.specialActors.map((a, i) => (i === 0 ? { ...a, nodeId: 2, place: 0 } : a));
     const s: GameState = { ...base, specialActors: actors as GameState['specialActors'] };
     expect(reduce(s, { type: 'useTool', toolId: 3, nodeId: 2 }, topo)).toBe(s);
+  });
+});
+
+describe('★★ 上车 / 放置用掉的道具直接 dec、不回库存（0x00446ef9 / 0x00446c7e …）', () => {
+  it('機車：道具 −1，库存不变（车被毁时 0x0040cd3b 才还）', () => {
+    const s = withTools({ 5: 1 }, { toolStock: new Array<number>(14).fill(3) });
+    const r = reduce(s, { type: 'useTool', toolId: 5 }, topo);
+    expect(r.players[0]!.trafficMethod).toBe(1);
+    expect(toolCount(r.tools, 0, 5)).toBe(0);
+    expect(r.toolStock).toEqual(s.toolStock);
   });
 });

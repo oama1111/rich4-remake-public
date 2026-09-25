@@ -111,7 +111,7 @@ import {
   placeObject,
   useVehicleTool,
 } from '../rules/tool-effects.ts';
-import { STOCKED_TOOL_MAX_ID, TOOL_SLOTS_PER_PLAYER, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
+import { STOCKED_TOOL_MAX_ID, TOOL_SLOTS_PER_PLAYER, decTool, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
 import {
   AI_BOARD_LIST_CHANCE,
   AI_BOARD_REPRICE_CHANCE,
@@ -1689,6 +1689,16 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       //   C-DET-4 的同種子重放一致性不能被這一條打亂）。
       if (player.blocking.stopping !== 0) {
         return { ...state, phase: 'turnEnd' };
+      }
+
+      // ★★ 烏龜卡（`+0x39 ≠ 0`）：**不掷骰、只走 1 格** —— 先前这张卡对走子毫无作用
+      //   （docs/gaps/02-cards.md 的缺口 #2）。
+      //   @source `fcn_0040dd1f`：`0x0040dd7e cmp byte [p+0x39], 0 / jne 0x40dd40` →
+      //   `0x0040dd40 mov dword [0x48baf8], 1`（剩余步数 1）/ `mov byte [走子记录+2], 1`（模式 1 = 不掷骰）。
+      //   ⇒ 不消耗随机数、不读遙控骰子（`[0x475dd8]` 只在掷骰那一支 `0x00447285` 读）；
+      //   掷骰点数和 `[0x48bafc]`（`stepsTotal`，企業收費要读）都不写，沿用旧值。
+      if (player.blocking.tortoiseWalking !== 0) {
+        return { ...state, dice: [], stepsRemaining: 1, phase: 'moving' };
       }
 
       const rng = new WatcomRng();
@@ -4933,7 +4943,9 @@ export function useToolAction(
     const land = landAtNode(state, topo, nodeId);
     if (land !== null) {
       const b = buildOneLevel(land.type, land.level, MAX_LAND_LEVEL);
-      if (!b.ok) return state;
+      // ★★ 盖不了（5 级 / 連鎖店）**照样扣道具**：`0x004472fb call 0x445aa2`（take_tool）在
+      //   `0x00447345 call 0x40b110` **之前**，后者的返回值只拿来判 bit7。真人拾取 `0x2090006` 收任何地块/設施。
+      if (!b.ok) return consume({ ...state, lastViewTarget: { x: land.x, y: land.y } });
       const landLevel = [...state.landLevel];
       landLevel[land.id] = b.level;
       // ★ bit7 = `0x40b110` 返回值的 bit7，原版在 0x0044736d 消费它。
@@ -4956,7 +4968,14 @@ export function useToolAction(
     //   等级 0 → 定种类再蓋第一级；等级 ≥ 1 → 不超过该种类上限就 +1
     //   ★ 等级 ≥ 1 的設施到 5 级时**照样置 bit7**（`0x0040b21a mov eax, 0x81`）。
     const built = freeBuildFacility(state, topo, nodeId, value);
-    if (built === null) return state;
+    if (built === null) {
+      // ★ 同上：已到顶的設施照样扣道具；只有「0 级設施、真人还没选种类」（选類別窗那一问）不扣
+      const fnode = topo.nodes[nodeId - 1];
+      const fidx = fnode === undefined ? null : facilityIndexOf(fnode.type);
+      const fac = fidx === null ? null : effectiveFacility(state, topo, fidx);
+      if (fac === null || fac.level === 0) return state;
+      return consume({ ...state, lastViewTarget: nodeViewTarget(state, topo, nodeId) });
+    }
     return consume(
       withSingleBuildUpgrade(
         { ...built.state, lastViewTarget: nodeViewTarget(state, topo, nodeId) },
@@ -4978,12 +4997,11 @@ export function useToolAction(
   if (VEHICLE_TOOLS.has(toolId)) {
     const r = useVehicleTool(me, state.tools, toolId);
     if (!r.ok) return state; // 已经是同一种车 → 原版不消耗道具
-    const taken = takeTool(r.tools, state.toolStock, me.index, toolId);
+    // ★ 直接 `dec`，**不回库存**（`0x00446ef9` / `0x00446fb1` / `0x00447ac2`，见 `decTool`）
     return {
       ...state,
       players: state.players.map((p, i) => (i === state.currentPlayer ? r.player : p)),
-      tools: taken.tools,
-      toolStock: taken.stock,
+      tools: decTool(r.tools, me.index, toolId),
     };
   }
 
@@ -5003,8 +5021,8 @@ export function useToolAction(
     if (placementBlockedAt(state, nodeId)) return state;
     const r = placeObject(state.objects, nodeId, objectType);
     if (!r.ok) return state; // 没有空物件槽
-    const taken = takeTool(state.tools, state.toolStock, me.index, toolId);
-    return { ...state, objects: r.objects, tools: taken.tools, toolStock: taken.stock };
+    // ★ 直接 `dec`，**不回库存**（`0x00446c7e` 等，见 `decTool`）—— 物件被收走时 `release_object` 才还
+    return { ...state, objects: r.objects, tools: decTool(state.tools, me.index, toolId) };
   }
 
   return state;

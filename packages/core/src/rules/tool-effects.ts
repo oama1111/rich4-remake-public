@@ -195,8 +195,12 @@ export function placeObject(
  *   只是把回合状态推到「该掷了」）。
  */
 export const REMOTE_DICE_MIN = 1;
-/** 遙控骰子能指定的最大点数 —— 与三颗骰子的上限一致 */
-export const REMOTE_DICE_MAX = 18;
+/**
+ * 遙控骰子能指定的最大点数 —— **6**（2026-09-24 审计订正，原为 18）。
+ * @source 真人点数窗 `0x00446847 cmp esi, 6`（六个钮）/ `0x0044685b lea eax, [esi+1]` ⇒ 1..6；
+ *   电脑的参数也是 1..6（`ai/tool-policy.ts`，`0x00421827`）。掷骰那一支按**一颗骰子**用它（`0x40d9a4`）。
+ */
+export const REMOTE_DICE_MAX = 6;
 
 export function isValidRemoteDice(value: number): boolean {
   return Number.isInteger(value) && value >= REMOTE_DICE_MIN && value <= REMOTE_DICE_MAX;

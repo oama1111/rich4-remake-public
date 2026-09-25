@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { WatcomRng } from '../rng/watcom.ts';
 import { readFileSync, existsSync } from 'node:fs';
+import { toolCount } from '../rules/tools.ts';
 import { reduce, reduceAll, nextCandidates, nextAlivePlayer, applyMagicRequest, pickNextNode } from './reduce.ts';
 import type { MapTopology } from './reduce.ts';
 import type { Action } from './actions.ts';
@@ -507,12 +508,14 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     ]);
   });
 
-  it('★ 蓋不成（住宅已满 5）⇒ 状态一点不动、也没有加蓋事件', () => {
+  // ★ 2026-09-24 审计订正：take_tool（`0x004472fb`）在 `0x40b110`（`0x00447345`）之前 ⇒ 蓋不成**照样扣道具**
+  it('★ 蓋不成（住宅已满 5）⇒ 等级不动、没有加蓋事件，但道具照扣', () => {
     const topo = twoEntityMap();
     const s = withTool(makeState({ landLevel: [0, 5], landType: [0, 0] }));
     const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
-    expect(after).toBe(s);
-    expect(after.lastBuildUpgrades).toBeUndefined();
+    expect(after.landLevel).toEqual([0, 5]);
+    expect(after.lastBuildUpgrades ?? []).toEqual([]);
+    expect(toolCount(after.tools, 0, 9)).toBe(toolCount(s.tools, 0, 9) - 1);
   });
 
   it('★ 魔法屋「就地加蓋房屋」也记 bit7（@source 0x00432085）', () => {

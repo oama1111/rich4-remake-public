@@ -239,12 +239,12 @@ describe('★ 13 个道具逐个点名', () => {
     expect(blastLand(2, 0, 0, 2, true).hostility).toBe(0);
   });
 
-  it('8 遙控骰子 —— 指定点数 1..18，越界不收', () => {
+  it('8 遙控骰子 —— 指定点数 1..6（`0x00446847 cmp esi,6`），越界不收', () => {
     expect(isToolImplemented(8)).toBe(true);
     expect(isValidRemoteDice(1)).toBe(true);
-    expect(isValidRemoteDice(18)).toBe(true);
+    expect(isValidRemoteDice(6)).toBe(true);
     expect(isValidRemoteDice(0)).toBe(false);
-    expect(isValidRemoteDice(19)).toBe(false);
+    expect(isValidRemoteDice(7)).toBe(false);
     expect(isValidRemoteDice(2.5)).toBe(false);
   });
 

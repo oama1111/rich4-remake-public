@@ -435,3 +435,19 @@ describe('★★ 黑卡（25）接入 reduce：持股循环真的落敌意', () 
     expect(after.players[1]!.hostility[0]).toBe(858_993_459);
   });
 });
+
+describe('★★ 烏龜卡生效：不掷骰、只走 1 格（0x0040dd7e → 0x0040dd40）', () => {
+  it('汽車 3 颗骰子的人中了烏龜 ⇒ rollDice 只给 1 步、不动随机流、不吃遙控骰子', () => {
+    const { state, topo } = scene();
+    let s = give(state, 0, 30);
+    s = { ...s, phase: 'awaitingRoll', players: s.players.map((p, i) => (i === 1 ? { ...p, ndices: 3, trafficMethod: 2 } : p)) };
+    s = reduce(s, { type: 'useCard', cardId: 30, target: { kind: 'player', index: 1 } }, topo);
+    expect(s.players[1]!.blocking.tortoiseWalking).toBe(3);
+    const t: GameState = { ...s, currentPlayer: 1, phase: 'awaitingRoll', forcedDice: 5 };
+    const rolled = reduce(t, { type: 'rollDice' }, topo);
+    expect(rolled.phase).toBe('moving');
+    expect(rolled.stepsRemaining).toBe(1);
+    expect(rolled.rngState).toBe(t.rngState);
+    expect(rolled.forcedDice).toBe(5);
+  });
+});
