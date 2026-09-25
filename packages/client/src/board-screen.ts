@@ -98,6 +98,7 @@ import {
   allEffectiveLands,
   calculateLandToll,
   isColumnFull,
+  reduce,
   stockListPrice,
   toolCount,
   toolListPrice,
@@ -1936,8 +1937,31 @@ function openPrice(env: UiScreenEnv, i: number): void {
   env.requestRender();
 }
 
+/**
+ * 开 / 关公佈欄时交给 core 的那两步（`{ op: 'open' }` 进门清理 `0x42483e`、`{ op: 'close' }` 收尾收回特別融資
+ * `0x436b0a(0)`，见 `state/actions.ts`）。**只在真会改局面时才发** —— 空操作在联机里会被定序器当成非法拒掉。
+ */
+function dispatchBoardEdge(env: UiScreenEnv, op: 'open' | 'close'): void {
+  // 联机：只有回合主人那一端交（别人的回合里本机开着看，交了也是 notYourTurn）
+  if (env.localSeat !== undefined && env.localSeat !== null && env.localSeat !== env.state.currentPlayer) return;
+  const a: Action = { type: 'noticeBoard', op };
+  if (reduce(env.state, a, env.topo) !== env.state) env.dispatch(a);
+}
+
+function openBoard(env: UiScreenEnv): void {
+  ui.open = true;
+  ui.forPlayer = env.state.currentPlayer;
+  ui.mode = 'board';
+  // @source `0x004284c5 call 0x42483e` —— 开窗之前先清理
+  dispatchBoardEdge(env, 'open');
+  env.requestRender();
+}
+
 function closeAll(env: UiScreenEnv): void {
+  // @source `0x0042885c push 0 / call 0x436b0a` —— 窗关上后收回特別融資（只在本人回合里关的那一次）
+  const mine = ui.open && env.state.currentPlayer === ui.forPlayer;
   resetBoardScreen();
+  if (mine) dispatchBoardEdge(env, 'close');
   env.requestRender();
 }
 
@@ -2242,10 +2266,7 @@ export const boardScreen: UiScreen = {
       if (env.screen !== 'game') return false;
       const me = env.state.players[env.state.currentPlayer];
       if (me === undefined) return false;
-      ui.open = true;
-      ui.forPlayer = env.state.currentPlayer;
-      ui.mode = 'board';
-      env.requestRender();
+      openBoard(env);
       return true;
     }
     if (!boardScreen.active(env)) return false;
@@ -2293,12 +2314,7 @@ export const boardScreen: UiScreen = {
     if (index !== 9) return false;
     if (env.screen !== 'game') return false;
     if (ui.open) closeAll(env);
-    else {
-      ui.open = true;
-      ui.forPlayer = env.state.currentPlayer;
-      ui.mode = 'board';
-      env.requestRender();
-    }
+    else openBoard(env);
     return true;
   },
 

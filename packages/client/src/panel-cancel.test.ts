@@ -15,6 +15,7 @@
  *      右键能关」。
  */
 import { readFileSync } from 'node:fs';
+import { makeGameState } from '@rich4/core';
 import { describe, expect, it } from 'vitest';
 import {
   CANCEL_LADDER,
@@ -216,8 +217,11 @@ function mkEnv(): { env: UiScreenEnv; effects: number[] } {
   const effects: number[] = [];
   const env = {
     screen: 'game',
-    // 公佈欄那两条要用到 `state.currentPlayer`（开屏时记下是哪一位的回合）
-    state: { currentPlayer: 0 },
+    // 公佈欄那两条要用到 `state.currentPlayer`（开屏时记下是哪一位的回合）；开 / 关窗还会拿局面问一次 core
+    //   「清理 / 收回有没有事可做」（`noticeBoard` 的 open / close），故给一个真局面
+    state: makeGameState({ currentPlayer: 0 }),
+    topo: { nodes: [] },
+    dispatch: () => undefined,
     now: 0,
     requestRender: () => undefined,
     log: () => undefined,
