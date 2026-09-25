@@ -97,3 +97,72 @@
    但 `teleport-mp.test.ts` 里已改用「指纹 + 整份 `toEqual`」双保险。
    注意 `5290899` 已经开过这个口子（`toolStock` / `cardAmount` 进指纹），且旧回报 fixture 仍按不含这两格比对 ——
    要做的话建议与 fixture 口径一起处理，并同时 bump 协议号。
+
+---
+
+# 九、follow-up 收尾 + 第二次上线（2026-09-25 下午）
+
+> 本节**取代**第五、七、八节里被它更新的条目（协议号、未修清单、指纹缺口）。
+
+需求方指令：「继续做完查出来的问题并部署上线」。于是把第七节列的 follow-up 逐条做完，
+**能修的修、能证伪的证伪、剩下的写清为什么不能修**，然后重新上线。
+
+## 9.1 修掉的
+
+| 区 | 项 | 原来 → 按原版 |
+|---|---|---|
+| 全局 | **指纹字段不全** | `stateFingerprint` 只覆盖 `players[].nodeId` ⇒ 补上玩家的 `xpos/ypos/direction/lastNodeId`、`specialActors` 整表、`landTenure/landType/landLastToll`、企業的 `companyFunds/companyProfit/commercialShares/commercialOwners`。实测反例：服务器 `xpos` 1385 vs 镜像 1248，两边指纹都是 `d2243728`。`viewRotation` **刻意不进**（每个客户端各自的镜头），并用测试反向钉住 |
+| 全局 | **服务器与客户端局面不一致** | `Room` 的 topo 补上 `landscapes`（`0x43ecef` 读景观记录）—— 入監 / 入院时服务器留**格心**、客户端摆**景观**；先前看不见是因为指纹不收坐标，补了坐标就会直接报失步 |
+| events | FU-6 | 惡人抢银行把人抢破产改到 `pay_money` 里**当场**发生（`0x0041d375` 早于 `0x0041d37e` 收款）—— 先前整趟走完才收口，后面几步还看得见已出局的人、清算那几掷也排在后面 |
+| events | FU-5 剩项 | 老虎机窗金额改读 `lastGodPower.amount`（`0x0043f68c` = 状态机返回值 `0x004408c8`），删掉「按钱差反推」 |
+| econ | PAY-05 | 收款方入账挪到**整条清算拍卖链之后**（`0x0041d376` 早于 `0x0041d387`），新增队列项 `{kind:'credit'}` |
+| econ | STK-57 | 分红当场清算（`0x0042beba` 早于開獎 `0x0041d094` / 月结 `0x0041d09e`）：`advanceGameDay` 拆成「分红逐人结」+「尾段」，尾段挂 `dayRolloverTail` |
+| econ | AUC-43 | 破产拍卖「抽一处 → 开一场 → 再抽下一处」（`0x0040d1f7` ↔ `0x0040d1e3`），逐位对 `rngState` 钉住 |
+| econ | WLT-02 | 身家是 32 位整数：**用 Unicorn 跑原版真码实测** `INT_MAX+1 → -2147483648`、`1000×3e6 → -2147483648` |
+| econ | 扫 `pending: null`（45 处） | 1 处真错：`endTurn` 的惡人段出口会把清算拍卖丢掉 ⇒ 队列接不上、卡死；其余 44 处逐个核过是对的 |
+| econ/ai | BNK-17 / FAC-15 / PUR-16 / L7 / L45 / L62 | **复核后确认早已修好**（台账文字过期），逐条重开 VA 验证并补测试，没有重复改代码 |
+| ai | L48 | 电脑 / 托管逛百貨的營業額也记进企業帳 —— 旧注释「电脑那支不记」读漏了 `0x0042f24f cmp eax,6 / jge 0x42ed50`（两支共用 `0x42ed75/0x42ed7e`） |
+| ai | FU-2 | 电脑 / 托管**每一次决策**的 `rand()` 改吃全局序列（出牌起点、个性闸门改懒求值、道具环形起点、判定里的 `%n`、前瞻岔路、骰子数）—— 这是本轮改动面最大的一条 |
+| cards | 同格多件 | 节点反向索引按**位或**取（`0x0040e13c`），不是「最大槽号」：死神槽压路障槽 `15\|17=31` ⇒ 槽 30 的地雷 ⇒ 原版那一格**炸人住院 3 天** |
+| cards | C23-1 | 請神符候选按**当前镜头**筛视野（`0x00444d2b` / `0x40a45c` 摊平的是屏幕空间 440×440 id 图）—— 先前「全地图最近」隔半张地图也请得到 |
+| cards | 工程車 / 傳送機快照 | 复核确认已在 `df14113`，补端到端用例与镜像断言 |
+
+## 9.2 复核后**证伪**的（不是缺陷，不改代码）
+
+- **events FU-4**：住店走回棋盘那一回合的「神明尾块」看似会生效，实际 `0x40f381` 头一道闸
+  `0x40f39e cmp byte [p+0x32],0 / jne` 在住店期间**恒为真**（`+0x32` 是 1..N-1 或 0x80）⇒ 天使 / 惡魔 / 土地公
+  在旅館格上**零效果**；監獄 / 醫院那一条虽进得去，但那一格是 landscape、没有地块 / 設施句柄，三支同样直接返回。
+  台账原先那句「在旅館格上生效」是**读反了**。
+- **econ BNK-17 / FAC-15 / PUR-16、ai L7 / L45 / L62**：均已在更早的提交里修好（见 9.1 末两行）。
+
+## 9.3 仍未修（有证据、说清为什么）
+
+- **ai FU-5 预演顺延**：写了实测工具（`tools/audit/fu5-card-rehearsal-scan.ts`）跑 20 局全电脑长局 ——
+  判定肯出 **806** 次、预演挡下 **0** 次 ⇒ 这条偏差**当前不可观测**。要修需要 reducer 能非活锁地收下
+  「出了但没生效」的 AI 出牌，并逐卡核 `consume_card`（`0x441343`）的 36 个调用点在失败分支之前还是之后。
+- **ai FU-3**：`0x421714 mov eax,edx` 的 `edx` 来自 `0x409b18` 出口残值，取决于循环最后一次迭代走哪一支
+  —— 与运行时实体表相关，**静态定不出**，只能原版跟一次。
+- **ai FU-4（`whoPlays == 3`）**：分派表 `0x418c3d` 的 `[3]=[4]=0x418e7a`（什么都不做），照抄会让该座位
+  这一回合不发生任何事、**游标不推进 = 软锁**；要跳过就得发明原版没有的规则。只有读档可达。
+- **ai FU-1 画面投影**：复刻镜头 / 旋转 / 投影表是一大块图形保真工作，本轮不做；台账已写到可施工粒度。
+  ⚠️ 前提：`state.viewRotation` 在状态里但**不在指纹**（每个客户端各自的镜头）——要接投影必须先解决这一点。
+- **econ AUC-48**：魔法屋多位中签者那一条要把逐人循环挂起（状态可见差别只在第 2 场开拍时的心理价位）。
+- **econ 嵌套清算的拍卖次序**：本引擎按 FIFO 追加，原版嵌在外层第 1 场收官处 —— 不改钱数，只改先后。
+- **cards O-37 残余**：那一字节是**存下来**的，`release_object`（`0x0040e243`）与 `attach_object`（`0x0040ebc7`）
+  整字节清零 ⇒「同格两件、先收走一件」这一种仍近似；要逐位复刻得在 state 里存每格反向索引。
+
+## 9.4 协议与门禁
+
+- **`PROTOCOL_VERSION` 11 → 12**（协调方对收尾批次一次性升）。理由四类：①指纹口径本身变了；
+  ②服务器 topo 补 `landscapes` 改了服务器局面；③`pendingQueue` 的项扩成 `QueuedStep[]`
+  （`bankruptcyDraw` / `credit` / `dayRolloverTail`）；④电脑决策改吃全局流、惡人抢破产当场发生等随机流次序变化。
+- **门禁**：`RICH4_WORKSPACE=... pnpm check` ⇒ typecheck ✓ / lint ✓ / **412 个测试文件、8660 条用例全过、0 skipped**。
+
+## 9.5 上线
+
+- 本机构建 `pnpm --filter @rich4/client build` ⇒ `assets/index-DJTES4Ou.js`（上一版 `index-722CyCqV.js`）。
+- `rsync` 源码（`packages/{core,data,assets-pipeline,server}`）+ `dist-web/`（`--delete`）到
+  `root@<SERVER_IP>:/srv/rich4/rich4-remake`，`chown -R rich4:rich4`，`systemctl restart rich4`。
+- 校验：`pnpm-lock.yaml` / `package.json` 与线上**逐字节一致** ⇒ 无需 `pnpm install`；
+  服务 `active`；线上 `PROTOCOL_VERSION = 12`；`index.html` 指向新 bundle；站点 401 = 共享密码门（正常）。
+- 需求方测试入口：<https://rich4.locoko.com>
