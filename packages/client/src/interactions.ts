@@ -142,19 +142,19 @@ export function interactionUi(
         ],
       };
 
-    // ★ 建設公司：原版是点地图选一处自己的地（0x446ae8）；先用按钮列出可选项，画面属 P2
+    // ★★ 建設公司「請選擇欲加蓋地點」：原版**没有清单** ——
+    //   `0x0041aa6a` / `0x0041acff push 0x2090086 / call 0x446ae8` 开的是一扇
+    //   **盖在棋盘上的窗口**（窗口过程 `0x00445e4d`）：光标底下能选就换成准星
+    //   （`0x004465dd`）、不能选就红叉（`0x00446602`）、贴边推镜头（`0x0044609b`）、
+    //   左键抬手交回光标底下那个实例（`0x00446691`）、右键交回 0（`0x004466c6` 掩码没有 bit3）。
+    //   全图每一块地 / 每一处設施都算（`0x0044624e` / `0x0044627d`，高字节 `[0x48c595] == 0`）。
+    //   所以**这一屏由 `picking.ts` 的地图拾取接管**（`{ kind: 'buildTarget' }`，
+    //   参数 `BUILD_PICK_PARAM` = `0x2090086`），这里返回 null、连通用对话框都不画 ——
+    //   同 `buildFacility`（0x440aac 那扇整屏窗）的处理。
+    //   先前这里是一列「土地 #N / 設施 #N」的按钮：那是本引擎自己的替代画面
+    //   （需求方 20260925-153539948 回报「不是展现列表，是我可以自己在地图上任意选择」）。
     case 'chooseBuildTarget':
-      return {
-        title: pending.name,
-        detail: pending.charge ? '選一處加蓋一級，工程費 = 該地地價 × 物價指數' : '董事長免費加蓋一級',
-        choices: [
-          ...pending.choices.map((id) => ({
-            label: id >= 0xfa0 ? `設施 #${id - 0xfa0}` : `土地 #${id - 0x7d0}`,
-            action: { type: 'buildTarget' as const, entityId: id },
-          })),
-          { label: BUTTON.cancel.text, action: { type: 'declineDecision' } },
-        ],
-      };
+      return null;
 
     case 'bank':
       return {

@@ -8,7 +8,9 @@
 import { describe, expect, it } from 'vitest';
 import type { GameState, MapTopology } from '@rich4/core';
 import {
+  BUILD_PICK_PARAM,
   PICK_CLASS,
+  buildPickMayOpen,
   PICK_CURSOR_INVALID,
   PICK_EDGE,
   PICK_EDGE_ARROW,
@@ -154,6 +156,134 @@ describe('会话与候选', () => {
     // 越出画布的候选点不到（`toScreen` 返回 null）
     const offscreen = startPick(stateOf(), topo, { kind: 'tool', toolId: 2 }, 'none', 0x1);
     expect(hitCandidate(offscreen, 0, 0, () => null)).toBeNull();
+  });
+});
+
+// ============================================================
+//  建設公司「請選擇欲加蓋地點」@source `0x0041aa6a` / `0x0041acff`
+// ============================================================
+
+/**
+ * 需求方 20260925-153539948：「建设公司加盖房子不是展现列表，是我可以自己在地图上任意选择」。
+ *
+ * 原版那一问开的是**盖在棋盘上的窗口**（窗口过程 `0x00445e4d`），
+ * 候选由选择参数 `0x2090086` 的类别位 + `[0x48c595] == 0` 决定 ——
+ * **全图每一块地 / 每一处設施**，不看归属、不看等级。
+ */
+describe('★ 建設公司选地窗（真人）@source `0x0041aa6a` / `0x0041acff push 0x2090086`', () => {
+  const topo = {
+    nodes: [
+      // 节点坐标与地块/設施记录的坐标**故意不同**：原版按光标底下的实例查表
+      // （`0x40a9d7`），地块 / 設施画在**各自的 x/y** 上（见 `instanceAnchor`）。
+      { id: 1, x: 10, y: 10, ref: { kind: 'land', index: 1 }, adjacent: [] },
+      { id: 2, x: 20, y: 20, ref: { kind: 'land', index: 2 }, adjacent: [] },
+      { id: 3, x: 30, y: 30, ref: { kind: 'facility', index: 1 }, adjacent: [] },
+    ],
+    lands: [
+      { id: 1, x: 100, y: 110 },
+      { id: 2, x: 200, y: 210 },
+    ],
+    facilities: [{ id: 1, x: 300, y: 310 }],
+    commercials: [],
+  } as unknown as MapTopology;
+
+  /** 地块 2 是**别人的、已满级**；設施 1 是**别人的、满级** —— 原版照样列进候选 */
+  const stateWith = (choices: readonly number[]): GameState =>
+    ({
+      players: [{ index: 0, nodeId: 1, cards: [] }],
+      tools: new Array<number>(30).fill(0),
+      objects: [],
+      specialActors: [],
+      currentPlayer: 0,
+      pending: { kind: 'chooseBuildTarget', commercialId: 0, name: '建設公司', choices, charge: true },
+      landOwner: [0, 1, 2],
+      landLevel: [0, 3, 5],
+      landType: [0, 0, 0],
+      facilityOwner: [2],
+      facilityLevel: [5],
+      facilityType: [0],
+    }) as unknown as GameState;
+
+  it('★ 选择参数 `0x2090086`：低字 = 地块 | 設施 | 贴边推镜头，**没有** bit3 ⇒ 右键能取消', () => {
+    // 低 16 位就是写进 `[0x48c594]` 的那个字（`0x00445ee6 mov [0x48c594],eax`）
+    expect(BUILD_PICK_PARAM & 0xffff).toBe(0x86);
+    expect(pickClasses(BUILD_PICK_PARAM)).toBe(
+      PICK_CLASS.land | PICK_CLASS.facility | PICK_CLASS.edgeScroll,
+    );
+    expect((pickClasses(BUILD_PICK_PARAM) & PICK_CLASS.required) === 0).toBe(true);
+    const s = startPick(stateWith([0x7d0 + 1]), topo, { kind: 'buildTarget' }, 'none', BUILD_PICK_PARAM);
+    expect(s.cancellable).toBe(true);
+    // 高 16 位 `0x0209` ⇒ 指针 = 图 9 起 3 帧（与機器工人同一组准星）
+    expect(pickCursorSpec(BUILD_PICK_PARAM)).toEqual({ image: 9, frames: 3, ticks: 0xa });
+  });
+
+  it('★★ 候选 = core 给的 `pending.choices` 原样（全图每块地 / 每处設施，别人的、满级的也算）', () => {
+    const choices = [0x7d0 + 1, 0x7d0 + 2, 0xfa0 + 1];
+    const s = startPick(stateWith(choices), topo, { kind: 'buildTarget' }, 'none', BUILD_PICK_PARAM);
+    expect(s.candidates.map((c) => c.code)).toEqual(choices);
+  });
+
+  it('★★ 落点是**地块 / 設施记录的坐标**（不是节点坐标）—— 否则点白格/房子永远吃红叉', () => {
+    const s = startPick(
+      stateWith([0x7d0 + 1, 0x7d0 + 2, 0xfa0 + 1]),
+      topo,
+      { kind: 'buildTarget' },
+      'none',
+      BUILD_PICK_PARAM,
+    );
+    expect(s.candidates.map((c) => [c.wx, c.wy])).toEqual([
+      [100, 110],
+      [200, 210],
+      [300, 310],
+    ]);
+    // 命中测试用的就是这一对坐标：光标压在 (100,110) 上 ⇒ 第 0 个候选
+    expect(hitCandidate(s, 104, 108, (wx, wy) => ({ x: wx, y: wy }))).toBe(0);
+  });
+
+  it('★ 不是那一条 pending 时一个候选都没有（不会误开）', () => {
+    const s = startPick(
+      {
+        players: [{ index: 0, nodeId: 1, cards: [] }],
+        tools: [],
+        objects: [],
+        specialActors: [],
+        pending: null,
+      } as unknown as GameState,
+      topo,
+      { kind: 'buildTarget' },
+      'none',
+      BUILD_PICK_PARAM,
+    );
+    expect(s.candidates).toEqual([]);
+  });
+
+  it('★★ 选地窗开窗的闸：「請選擇欲加蓋地點」那个訊息框收了才开（原版 `0x0041aa62 call 0x440cac` 是阻塞的）', () => {
+    const clear = {
+      pendingKind: 'chooseBuildTarget',
+      pickOpen: false,
+      openedForThisPending: false,
+      localSeat: true,
+      aiTurn: false,
+      dialogOpen: false,
+      blocking: false,
+      noticeShowing: false,
+    };
+    expect(buildPickMayOpen(clear)).toBe(true);
+    // 訊息框还在台上 / 还排着 ⇒ 不许摆出一个能作答的窗口
+    expect(buildPickMayOpen({ ...clear, noticeShowing: true })).toBe(false);
+    // 整屏演出（`blockingPresentation()`，含 `notice` 屏）同理
+    expect(buildPickMayOpen({ ...clear, blocking: true })).toBe(false);
+    // 别的待决交互 / 别的拾取模式开着时不抢屏
+    expect(buildPickMayOpen({ ...clear, dialogOpen: true })).toBe(false);
+    expect(buildPickMayOpen({ ...clear, pickOpen: true })).toBe(false);
+    // 同一次只开一次（联机下 `dispatch` 落地前 state 还是旧的，不许重复开窗把这一趟答两遍）
+    expect(buildPickMayOpen({ ...clear, openedForThisPending: true })).toBe(false);
+    // 联机只由本座位答；电脑 / 託管自己答
+    expect(buildPickMayOpen({ ...clear, localSeat: false })).toBe(false);
+    expect(buildPickMayOpen({ ...clear, aiTurn: true })).toBe(false);
+    // 不是那一条待决交互
+    expect(buildPickMayOpen({ ...clear, pendingKind: 'buyShares' })).toBe(false);
+    expect(buildPickMayOpen({ ...clear, pendingKind: null })).toBe(false);
   });
 });
 
