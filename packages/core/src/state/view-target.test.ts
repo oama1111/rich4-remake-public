@@ -61,6 +61,7 @@ function scene(over: Partial<GameState> = {}): {
     makeFacility({ id: 1, x: 960, y: 640, landPrice: 5000, housePrice: 1000 }),
   ];
   const state = makeGameState({
+    phase: 'awaitingRoll',
     // ★ 每个人的**像素**坐标都不同（原版 `view_to` 读 `player+0x08/+0x0a`，
     //   不是格心坐标）—— 这样「用的是人自己的坐标」才验得出来
     players: [0, 1, 2, 3].map((i) =>

@@ -30,6 +30,7 @@
  * 让它落地之后还是朝着原来那个大方向走（见 `pickFacingAt`）。
  */
 
+import { syncEscortNodes } from './object-landing.ts';
 import type { GameState } from '../state/types.ts';
 import type { MapNode } from '../loaders/map.ts';
 import { placeOnNode } from './position.ts';
@@ -138,16 +139,26 @@ export function teleportLand(state: GameState, from: number, to: number): GameSt
   const owner = state.landOwner[from] ?? 0;
   // 空地没什么好搬的
   if (owner === 0) return null;
+  // ★ 目标必须是**无主、0 级**的空地（真人拾取子类 8：`0x0044658c` owner == 0 且 level == 0）
+  if ((state.landOwner[to] ?? 0) !== 0 || (state.landLevel[to] ?? 0) !== 0) return null;
   const landOwner = [...state.landOwner];
   const landLevel = [...state.landLevel];
   const landType = [...state.landType];
+  const landTenure = [...state.landTenure];
+  const landLastToll = [...state.landLastToll];
   landOwner[to] = owner;
   landLevel[to] = state.landLevel[from] ?? 0;
   landType[to] = state.landType[from] ?? 0;
+  // ★★ 到期日随地搬走、源的「上次過路費」清零 —— 先前漏了这两句
+  //   @source 0x00447546 mov ecx,[源+0x30] / 0x00447549 mov [标+0x30],ecx / 0x0044754c mov [源+0x30],0 /
+  //           0x00447553 mov dword [源+0x2c], 0
+  landTenure[to] = state.landTenure[from] ?? 0;
   landOwner[from] = 0;
   landLevel[from] = 0;
   landType[from] = 0;
-  return { ...state, landOwner, landLevel, landType };
+  landTenure[from] = 0;
+  landLastToll[from] = 0;
+  return { ...state, landOwner, landLevel, landType, landTenure, landLastToll };
 }
 
 /**
@@ -169,6 +180,8 @@ export function teleportFacility(state: GameState, from: number, to: number): Ga
   if (from === to) return null;
   const owner = state.facilityOwner[from] ?? 0;
   if (owner === 0) return null;
+  // ★ 目标同样要**无主、0 级**（拾取子类 8，`0x0044658c`）
+  if ((state.facilityOwner[to] ?? 0) !== 0 || (state.facilityLevel[to] ?? 0) !== 0) return null;
   const facilityOwner = [...state.facilityOwner];
   const facilityLevel = [...state.facilityLevel];
   const facilityType = [...state.facilityType];
@@ -204,12 +217,11 @@ export function teleportPlayer(
   if (p.nodeId === targetNodeId) return null;
   const facing = pickFacingAt(nodes, targetNodeId, p.direction);
   if (facing === null) return null;
+  const moved = placeOnNode({ ...p, lastNodeId: facing.from, direction: facing.direction }, node);
   return {
     ...state,
-    players: state.players.map((x, i) =>
-      i === playerIndex
-        ? placeOnNode({ ...x, lastNodeId: facing.from, direction: facing.direction }, node)
-        : x,
-    ),
+    players: state.players.map((x, i) => (i === playerIndex ? moved : x)),
+    // ★ 身上的神明 / 炸彈跟着搬（`0x00447844 call 0x40fc00`）
+    objects: syncEscortNodes(state.objects, moved),
   };
 }

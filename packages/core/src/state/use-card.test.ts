@@ -16,6 +16,8 @@ import { stateFingerprint } from '../net/protocol.ts';
 import { applyBlackCard, blackCardHostilityDeltas } from '../cards/swap-and-stock.ts';
 import { applyStockNews } from '../places/stock-market.ts';
 import { HOUSING_TYPE_MIN } from '../rules/land.ts';
+import { tenureExpiry } from '../rules/facility.ts';
+import { packDate } from '../rules/calendar.ts';
 
 /** 一块住宅地 + 站在上面的四个玩家 */
 function scene(over: Partial<GameState> = {}): {
@@ -25,6 +27,7 @@ function scene(over: Partial<GameState> = {}): {
   const node = makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1, adjacent: [1] });
   const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
   const state = makeGameState({
+    phase: 'awaitingRoll',
     players: [0, 1, 2, 3].map((i) =>
       makePlayer({ index: i, character: i, nodeId: 1, cash: 100_000 }),
     ),
@@ -53,6 +56,33 @@ describe('★ 出牌入口', () => {
     expect(new Set(cash).size, `现金应当被拉平，实际 ${cash.join('/')}`).toBe(1);
     // 卡被消耗
     expect(after.players[0]!.cards).toHaveLength(0);
+  });
+
+  it('★★ 出的那张**回牌堆**（`remove_card` 0x004413a2 `inc [卡号+0x499197]`）；搶奪卡满手弃掉的也回', () => {
+    const { state, topo } = scene();
+    const pool = new Array<number>(30).fill(0);
+    let s: GameState = { ...give(state, 0, 1), cardAmount: pool };
+    s = { ...s, players: s.players.map((p, i) => ({ ...p, cash: [100_000, 0, 0, 0][i]! })) };
+    const after = reduce(s, { type: 'useCard', cardId: 1 }, topo);
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.cardAmount[0]).toBe(1);
+    // 搶奪卡（13）：自己满 15 张（14 张改建卡 7 + 搶奪卡本身）抢到 1 张均富卡 ——
+    //   出的搶奪卡 +1；对方交出的均富卡 +1 −1 相抵；满手弃掉的最便宜那张（改建卡 15 點）+1。
+    //   ⚠️ 搶奪卡本身要等抢完才扣（`0x00443f08 call 0x44192a` 在 `0x00443f40 call 0x441343` 之前）
+    //   ⇒ 收牌那一刻手上正好 15 张 ⇒ 弃牌，最后剩 14 张。
+    const robber: GameState = {
+      ...s,
+      cardAmount: new Array<number>(30).fill(0),
+      players: s.players.map((p, i) =>
+        i === 0 ? { ...p, cards: [13, ...new Array<number>(14).fill(7)] } : i === 1 ? { ...p, cards: [1] } : p,
+      ),
+    };
+    const robbed = reduce(robber, { type: 'useCard', cardId: 13, target: { kind: 'player', index: 1, steal: { kind: 'card', id: 1 } } }, topo);
+    expect(robbed.players[0]!.cards).toHaveLength(14);
+    expect(robbed.players[0]!.cards).toContain(1);
+    expect(robbed.cardAmount[12]).toBe(1);
+    expect(robbed.cardAmount[6]).toBe(1);
+    expect(robbed.cardAmount[0]).toBe(0);
   });
 
   it('★ 手上没有这张卡就什么都不发生', () => {
@@ -132,6 +162,59 @@ describe('★ 出牌入口', () => {
     expect(topo.lands[0]!.owner).toBe(0);
   });
 
+  it('★★ 購地卡（3）：土地權限非無限期 ⇒ 买下的地**从今天重算到期日**（0x0044246c `mov [land+0x30], eax`）', () => {
+    const { state, topo } = scene({ landOwner: [0, 2], landTenure: [0, 12345], landTenureIndex: 2 });
+    const s = give(state, 0, 3);
+    const after = reduce(s, { type: 'useCard', cardId: 3 }, topo);
+    expect(after.landOwner[1]).toBe(1);
+    expect(after.landTenure[1]).toBe(tenureExpiry(packDate(s), 2));
+    expect(after.landTenure[1]).not.toBe(12345);
+    // 無限期（0）⇒ 不写（`0x00442453 je`）
+    const { state: st0 } = scene({ landOwner: [0, 2], landTenure: [0, 777], landTenureIndex: 0 });
+    const after0 = reduce(give(st0, 0, 3), { type: 'useCard', cardId: 3 }, topo);
+    expect(after0.landTenure[1]).toBe(777);
+  });
+
+  it('★★ 拍賣卡（8）流拍 ⇒ 该地变无主、**到期日清零**（0x0044335b / 0x0044335f）', () => {
+    const { state, topo } = scene({ landOwner: [0, 2], landTenure: [0, 12345], landTenureIndex: 2 });
+    const s = give(state, 0, 8);
+    const opened = reduce(s, { type: 'useCard', cardId: 8 }, topo);
+    expect(opened.pending?.kind).toBe('auction');
+    const settled = reduce(opened, { type: 'auction', winner: -1, price: 0 }, topo);
+    expect(settled.landOwner[1]).toBe(0);
+    expect(settled.landTenure[1]).toBe(0);
+  });
+
+  it('★★ 夢遊卡（16）打电脑持嫁禍卡的人：敌意先记 ⇒ 电脑支挑「最恨的人」= 出牌者 ⇒ 嫁回出牌者 4 天、19 扣掉、不掷随机', () => {
+    const { state, topo } = scene();
+    let s = give(state, 0, 16);
+    s = {
+      ...s,
+      players: s.players.map((p, i) => (i === 1 ? { ...p, whoPlays: 2, cards: [19] } : p)),
+    };
+    const after = reduce(s, { type: 'useCard', cardId: 16, target: { kind: 'player', index: 1 } }, topo);
+    expect(after.players[1]!.cards).toEqual([]);
+    expect(after.players[1]!.blocking.sleepWalking).toBe(0);
+    expect(after.players[0]!.blocking.sleepWalking).toBe(4);
+    expect(after.rngState).toBe(s.rngState);
+    // 真人持有者：原版弹确认框 —— 卡片路径暂按放弃，19 留着、原目标照中
+    const human = { ...s, players: s.players.map((p, i) => (i === 1 ? { ...p, whoPlays: 1 } : p)) };
+    const h = reduce(human, { type: 'useCard', cardId: 16, target: { kind: 'player', index: 1 } }, topo);
+    expect(h.players[1]!.cards).toEqual([19]);
+    expect(h.players[1]!.blocking.sleepWalking).toBe(5);
+  });
+
+  it('★★ 陷害卡（17）：首次入狱 5 天掷一次倒霉台词的 rand（0x0043d5f9 → 0x44f2c2）、有保險就理赔（0x0043d749）', () => {
+    const { state, topo } = scene();
+    let s = give(state, 0, 17);
+    s = { ...s, players: s.players.map((p, i) => (i === 1 ? { ...p, insuranceDays: 10, cash: 0 } : p)) };
+    const after = reduce(s, { type: 'useCard', cardId: 17, target: { kind: 'player', index: 1 } }, topo);
+    expect(after.players[1]!.blocking.inPrison).toBe(5);
+    expect(after.rngState).not.toBe(s.rngState);
+    // 2000 × 5 天 × 物價（scene 的 priceIndex）
+    expect(after.players[1]!.cash).toBe(2000 * 5 * s.priceIndex);
+  });
+
   it('★ 停留卡（14）给目标挂上停留天数', () => {
     const { state, topo } = scene();
     const s = give(state, 0, 14);
@@ -184,6 +267,7 @@ describe('★ T-008：設施目标经 reduce 端到端落回 GameState', () => {
     const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
     const fac = makeFacility({ id: 1, type: 1, level: 3, owner: 2, ...facOver });
     const state = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) =>
         makePlayer({ index: i, character: i, nodeId: 1, cash: 100_000 }),
       ),
@@ -312,6 +396,7 @@ describe('★★ 黑卡（25）接入 reduce：持股循环真的落敌意', () 
     const node = makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1, adjacent: [1] });
     const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
     const state = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i, nodeId: 1, cash: 100_000 })),
       landOwner: [0, 0],
       landLevel: [0, 0],
@@ -351,5 +436,21 @@ describe('★★ 黑卡（25）接入 reduce：持股循环真的落敌意', () 
     // ★★ 关键 2：**只落一次**。`useCard` 尾部已经落过一次，`playCard` 先前又落了一次
     //   ⇒ 全引擎的卡片敌意被加了两倍（本条用例就是那次回归的钉子）。
     expect(after.players[1]!.hostility[0]).toBe(858_993_459);
+  });
+});
+
+describe('★★ 烏龜卡生效：不掷骰、只走 1 格（0x0040dd7e → 0x0040dd40）', () => {
+  it('汽車 3 颗骰子的人中了烏龜 ⇒ rollDice 只给 1 步、不动随机流、不吃遙控骰子', () => {
+    const { state, topo } = scene();
+    let s = give(state, 0, 30);
+    s = { ...s, phase: 'awaitingRoll', players: s.players.map((p, i) => (i === 1 ? { ...p, ndices: 3, trafficMethod: 2 } : p)) };
+    s = reduce(s, { type: 'useCard', cardId: 30, target: { kind: 'player', index: 1 } }, topo);
+    expect(s.players[1]!.blocking.tortoiseWalking).toBe(3);
+    const t: GameState = { ...s, currentPlayer: 1, phase: 'awaitingRoll', forcedDice: 5 };
+    const rolled = reduce(t, { type: 'rollDice' }, topo);
+    expect(rolled.phase).toBe('moving');
+    expect(rolled.stepsRemaining).toBe(1);
+    expect(rolled.rngState).toBe(t.rngState);
+    expect(rolled.forcedDice).toBe(5);
   });
 });

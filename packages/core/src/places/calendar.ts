@@ -494,3 +494,35 @@ export function holidayArtResource(globalMapId: number, holidayIndex: number): n
 
 /** 插画的边长 —— 原版备的是一个 200×200 的 `graph_st` @source VA 0x00451a5a `allocate_graph_st(0xc8, 0xc8, 0, 0)` */
 export const HOLIDAY_ART_SIZE = 0xc8;
+
+// ============================================================
+//  節日送卡（節日表旗标 & 8）
+// ============================================================
+
+/**
+ * 每张地图**送卡**的那一条節日（節日表 `0x0047ff4a` 记录 `+5` 旗标的 bit3）——稀疏表，实 dump：
+ * | 地图 | 槽 | 節日 |
+ * |---|---|---|
+ * | 0 / 1 / 2 / 3 | 15 / 10 / 18 / 19 | 聖誕節 12/25 |
+ * | 4 / 5 / 6 / 7 | 7 / 9 / 12 / 9 | 銀河系和平日 / 恐龍蛋節 / 除夕 / 聖誕節 |
+ * 其余 184 条 bit3 都是 0。
+ */
+const HOLIDAY_CARD_GIFT_SLOT: readonly number[] = [15, 10, 18, 19, 7, 9, 12, 9];
+
+/**
+ * 今天这条節日送不送卡。
+ *
+ * @source `sub_00452444`（日推进 `0x0041d07b` 调，在股市收盘 `0x0041d076` 之后、分紅/開獎之前）：
+ * ```asm
+ * 00452637  test byte [记录 + 5], 8 / je 结束
+ * 00452645  for (esi = 0; esi < 人数; esi++)
+ * 00452656    cmp byte [esi + 0x15], 0 / je 下一位          ; 出局者不送
+ * 00452664    call 0x441e12(esi)                          ; 按牌堆加权抽一张（袋空返回 0、不掷）
+ * 00452670    test eax,eax / je 下一位
+ * 0045268e    call 0x41d476（镜头）→ 00452740 call 0x441f73（按地图选框文）
+ * 00452753    call 0x44f230(esi, 卡價)                    ; 「好消息」台词（50 < 價 ≤ 100 掷一次 rand）
+ * ```
+ */
+export function holidayGivesCard(globalMapId: number, holidayIndex: number): boolean {
+  return holidayIndex >= 0 && HOLIDAY_CARD_GIFT_SLOT[globalMapId] === holidayIndex;
+}

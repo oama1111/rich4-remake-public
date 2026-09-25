@@ -291,6 +291,7 @@ describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起',
 
   it('landPriceStatus / facilityPriceStatus 每天 −0x10', () => {
     const s = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
       landPriceStatus: [0, 0x50, 0x51, 0],
       facilityPriceStatus: [0, 0x51, 0x20],
@@ -302,6 +303,7 @@ describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起',
 
   it('★ 查封 5 天后整字节解封（查封位不残存）', () => {
     let s = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
       landPriceStatus: [0, 0x51],
     });
@@ -315,6 +317,7 @@ describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起',
 
   it('★ 漲價 5 天后回落', () => {
     let s = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
       facilityPriceStatus: [0, 0x50],
     });
@@ -324,6 +327,7 @@ describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起',
 
   it('高 nibble 为 0 的状态不被误伤', () => {
     const s = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
       landPriceStatus: [0, 0, 1],
     });
@@ -447,6 +451,7 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
     const tools = new Array<number>(4 * TOOL_SLOTS_PER_PLAYER).fill(0);
     tools[1] = 1; // 道具 1 = 機器娃娃
     const s = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, lastNodeId: 0 })),
       tools,
     });
@@ -515,7 +520,8 @@ describe('★★ 第二十六份 panel #1：`lastNpcTurn` —— 行动者游标
     expect(reduce(withThief({}, { place: ACTOR_PLACE.prison }), { type: 'endTurn' }, ring).lastNpcTurn ?? null).toBeNull();
     const tools = new Array<number>(4 * TOOL_SLOTS_PER_PLAYER).fill(0);
     tools[1] = 1;
-    const s = makeGameState({ players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, lastNodeId: 0 })), tools });
+    const s = makeGameState({
+    phase: 'awaitingRoll', players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, lastNodeId: 0 })), tools });
     const doll = reduce(s, { type: 'useTool', toolId: 1 }, ring);
     expect(doll.lastNpcWalks[0]?.slot).toBe(4);
     expect(doll.lastNpcTurn ?? null).toBeNull();

@@ -102,7 +102,12 @@ export function useVehicleTool(
   if (traffic === undefined) return { ok: false, player, tools: [...tools] };
 
   // @source cmp dl, 1 / jne … / xor edx,edx / jmp 结束
-  if (player.trafficMethod === traffic) {
+  //   ★ 工程車那一支比的是 `(+0x11 & 3) == 3`（`0x004479e2 and dl,3 / cmp dl,3`）——
+  //   工程車每天 −4（0x1f → 0x1b → …），只比整字节 0x1f 会让第二天起又能再开一台
+  const same = traffic === TRAFFIC_ENGINEERING
+    ? (player.trafficMethod & 3) === 3
+    : player.trafficMethod === traffic;
+  if (same) {
     return { ok: false, player, tools: [...tools] };
   }
 
@@ -121,6 +126,11 @@ export function useVehicleTool(
       trafficMethod: traffic,
       // @source byte [player + 0x12] = 2 / 3 / 1
       ndices: VEHICLE_DICE.get(traffic) ?? 1,
+      // ★ 工程車：开之前的交通方式 / 骰子数存进 `+0x64` / `+0x65`（`0x00447a49` / `0x00447a55`，
+      //   在退车 `inc` 之后、写 0x1f 之前 —— 存的是**退车前**那个值），到期时 `tickEngineVehicle` 按它还原
+      ...(traffic === TRAFFIC_ENGINEERING
+        ? { engineSavedTraffic: player.trafficMethod, engineSavedDice: player.ndices }
+        : {}),
     },
     tools: nextTools,
   };
@@ -195,8 +205,12 @@ export function placeObject(
  *   只是把回合状态推到「该掷了」）。
  */
 export const REMOTE_DICE_MIN = 1;
-/** 遙控骰子能指定的最大点数 —— 与三颗骰子的上限一致 */
-export const REMOTE_DICE_MAX = 18;
+/**
+ * 遙控骰子能指定的最大点数 —— **6**（2026-09-24 审计订正，原为 18）。
+ * @source 真人点数窗 `0x00446847 cmp esi, 6`（六个钮）/ `0x0044685b lea eax, [esi+1]` ⇒ 1..6；
+ *   电脑的参数也是 1..6（`ai/tool-policy.ts`，`0x00421827`）。掷骰那一支按**一颗骰子**用它（`0x40d9a4`）。
+ */
+export const REMOTE_DICE_MAX = 6;
 
 export function isValidRemoteDice(value: number): boolean {
   return Number.isInteger(value) && value >= REMOTE_DICE_MIN && value <= REMOTE_DICE_MAX;

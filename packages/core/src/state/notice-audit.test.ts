@@ -20,6 +20,7 @@ const tiny: MapTopology = { nodes: [makeNode({ id: 1, adjacent: [1] })] };
 describe('★ 电脑买卖股 @source 0x0042c78c（買進）/ 0x0042d092（賣出）', () => {
   const base = (whoPlays: number): GameState =>
     makeGameState({
+    phase: 'awaitingRoll',
       year: 1998,
       month: 1,
       day: 5,
@@ -104,7 +105,8 @@ describe('★ 电脑贷款 @source 0x0043694b', () => {
 });
 
 describe('★ 惡人那六句 @source 0x0041c255 / 0x0041c2ea / 0x0041c415 / 0x0041c56e / 0x0041c692 / 0x0041c778', () => {
-  const s = makeGameState({ players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i })) });
+  const s = makeGameState({
+    phase: 'awaitingRoll', players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i })) });
 
   it('偷點券 / 奪卡是 1000 ms（`push 0x3e8`），搶銀行 2000 ms（`push 0x7d0`），其余 1500', () => {
     expect(
@@ -274,6 +276,7 @@ describe('★ 卡片函数里的那几扇 @source 0x004425fb / 0x00441ab1 / 0x00
     const node = makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1, adjacent: [1] });
     const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
     const state = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) =>
         makePlayer({ index: i, character: i, nodeId: 1, cash: 100_000, whoPlays: i === 0 ? whoPlays : WHO_PLAYS_COMPUTER }),
       ),

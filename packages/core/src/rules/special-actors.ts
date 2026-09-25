@@ -375,10 +375,14 @@ export function releaseNpc(gateNodeId: number, owner: number, steps: number): Sp
  *   所以 NPC 不会自己出院，只能等人花 300 點券保釋（见 `rules/visit.ts`）。
  *   这正是需求方说的「玩家可以选择继续支付 300 点把他们救出来」。
  */
-export function npcBittenByDog(actor: SpecialActor): SpecialActor {
+export function npcBittenByDog(
+  actor: SpecialActor,
+  /** 关到哪儿：缺省醫院（惡犬/飛彈）；陷害卡是監獄（`0x0043d788 mov byte [+0x0a], 1`）*/
+  place: ActorPlace = ACTOR_PLACE.hospital,
+): SpecialActor {
   return {
     ...idleActor(),
-    place: ACTOR_PLACE.hospital,
+    place,
     // ★ 主人不清 —— 原版那一支只动 +10 与 +11..15，没碰 +8
     owner: actor.owner,
   };

@@ -134,6 +134,11 @@ export const NOTICE_TEXT = {
   'points.30': MESSAGE_BOX.points30.text,
   'points.10': MESSAGE_BOX.points10.text,
   'points.card': MESSAGE_BOX.got.text,
+  // ★ 節日送卡（按地图选框文）@source 0x004526e7 / 0x004526fd / 0x00452713 / 0x0045272a
+  'holiday.cardGalaxy': MESSAGE_BOX.holidayCardGalaxy.text,
+  'holiday.cardDino': MESSAGE_BOX.holidayCardDino.text,
+  'holiday.cardNewYearEve': MESSAGE_BOX.holidayCardNewYearEve.text,
+  'holiday.cardXmas': MESSAGE_BOX.holidayCardXmas.text,
   'points.minigame': MESSAGE_BOX.pointsMinigame.text,
   'object.gift': MESSAGE_BOX.got.text,
   'object.treasure': MESSAGE_BOX.got500Points.text,

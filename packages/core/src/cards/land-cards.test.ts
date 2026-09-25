@@ -174,9 +174,12 @@ describe('惡魔卡对設施 —— 夷平退回公園', () => {
     expect(r.hostilityDeltas).toEqual([]);
   });
 
-  it('0 级空地不生效', () => {
+  // ★ 2026-09-24 审计订正：设施支无条件直写 level/type = 0 并放住店的人（0x004438c4..0x004438cc）
+  it('0 级空地：照写 0、照放住店的人（不走 mutate_land 的「没变」闸）', () => {
     const r = applyDevilFacilityCard(makeFacility({ type: 0, level: 0 }), 1, 0);
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    expect(r.facility.level).toBe(0);
+    expect(r.releasesConfined).toBe(true);
   });
 });
 

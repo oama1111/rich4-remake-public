@@ -80,7 +80,7 @@ import {
   tollExemption,
   type TollExemption,
 } from '../rules/toll-flow.ts';
-import { PASSIVE_CARDS, consumeCard, playerHasCard, tollTriggersPassive } from '../cards/passive.ts';
+import { PASSIVE_CARDS, aiScapegoatPick, consumeCard, playerHasCard, tollTriggersPassive } from '../cards/passive.ts';
 import {
   markPlayerBankrupt,
   resolveBankruptcyOutcome,
@@ -111,7 +111,7 @@ import {
   placeObject,
   useVehicleTool,
 } from '../rules/tool-effects.ts';
-import { STOCKED_TOOL_MAX_ID, TOOL_SLOTS_PER_PLAYER, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
+import { STOCKED_TOOL_MAX_ID, TOOL_SLOTS_PER_PLAYER, decTool, giveTool, takeTool, toolCount, toolsOf } from '../rules/tools.ts';
 import {
   AI_BOARD_LIST_CHANCE,
   AI_BOARD_REPRICE_CHANCE,
@@ -172,6 +172,8 @@ import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
   objectNodeCandidates,
+  occupantsOfNode,
+  syncEscortNodes,
   runtimeOccupiedNodes,
   placementBlockedAt,
   pickObjectNodeDistant,
@@ -211,7 +213,7 @@ import {
   tickStockMarket,
 } from '../places/stock-market.ts';
 import { advanceDate, daysInMonth, packDate } from '../rules/calendar.ts';
-import { packedDayDiff } from '../places/calendar.ts';
+import { holidayGivesCard, holidayIndexOf, packedDayDiff } from '../places/calendar.ts';
 import { misfortuneDaysAfter, monthlySettleHint, settleMonthlyBank } from '../rules/monthly.ts';
 import {
   WHO_PLAYS_AUTOPILOT,
@@ -274,7 +276,8 @@ import {
 import {
   blessingLevelWithDraw,
 } from '../rules/blessing.ts';
-import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
+import { conserveCardPool, sellAllCards, sellAllTools } from '../rules/inventory.ts';
+import { goodNewsSpeechDrawsRand } from '../rules/speech-rand.ts';
 import { ALIEN_HOSPITAL_DAYS, applyNewsEffect, type CompanyMutation, type LandMutation, type PriceChange } from '../events/news-effects.ts';
 // ★ 第 160 条：飛彈/核彈那一路**不再**用 `mutateFacility` —— `damage_area` 的
 //   設施轻击是另一份内联逻辑（`level == 0` 时照样清种类 + 放人，见 `fireMissile`）。
@@ -628,6 +631,8 @@ function settleAuctionExplicit(
       players: fr.players,
       facilityOwner,
       ...(fr.tenure === 0 ? {} : { facilityTenure: withTenure(state.facilityTenure, entityId, fr.tenure) }),
+      // ★ 拍賣卡流拍：到期日也清零 @source 0x0044348a `mov dword [fac+0x34], eax`（eax = 0）
+      ...(w < 0 && pending.fromCard === true ? { facilityTenure: withTenure(state.facilityTenure, entityId, 0) } : {}),
       pool: fr.pool,
       pending: null,
       phase: 'turnEnd',
@@ -651,6 +656,9 @@ function settleAuctionExplicit(
     players: r.players,
     landOwner,
     ...(r.tenure === 0 ? {} : { landTenure: withTenure(state.landTenure, entityId, r.tenure) }),
+    // ★ 拍賣卡流拍：到期日也清零 @source 0x0044335f `mov dword [esi+0x30], eax`（eax = 0）——
+    //   先前留着原主的日子，之后被換地卡换到手的人会按那个旧日子失去它
+    ...(w < 0 && pending.fromCard === true ? { landTenure: withTenure(state.landTenure, entityId, 0) } : {}),
     pool: r.pool,
     pending: null,
     phase: 'turnEnd',
@@ -1875,8 +1883,13 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         }
       });
       const remaining = state.stepsRemaining - 1;
+      // ★ 身上的神明 / 定時炸彈每走一格都跟着换格（`0x0040c1be mov [p+0x0c], di` → `0x0040c1cc call 0x40fc00`）——
+      //   先前只在关押时同步，神明离场时搭档的「离原地 ≥ 300」参照点就停在附身那一格
+      const walker = moved.players[state.currentPlayer];
+      const objects = walker === undefined ? moved.objects : syncEscortNodes(moved.objects, walker);
       return applyArrival({
         ...moved,
+        objects,
         rngState: rng.getState(),
         stepsRemaining: remaining,
         phase: remaining > 0 ? 'moving' : 'settling',
@@ -1965,16 +1978,17 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           }
         }
         if (out.cardDrawn !== 0) {
-          const cardAmount = [...next.cardAmount];
-          const at = out.cardDrawn - 1;
-          cardAmount[at] = Math.max(0, (cardAmount[at] ?? 0) - 1);
           // ★ 满手牌口径修正（2026-09-17）：原版抽卡走 `giveCard`（`0x004412e4`，
           //   `0x00441e12` 的抽卡格在 `0x00441e64` 正是 `call 0x4412e4`）——
           //   **满了先丢最便宜的一张再收新的**，不是"满了就不发"。
           //   见 `cards/rob.ts` 的 `giveCard`（照 `0x0044128f` 实现）。
-          next = withPlayer({ ...next, cardAmount }, state.currentPlayer, (p) => {
+          // ★★ 牌堆：抽到的那张 −1（`0x0044133b`），满手弃掉的那张 +1（`0x00441302` → `0x004413a2`）
+          //   —— 按守恒一次记齐（先前弃掉的那张不回牌堆）。
+          const handsBefore = next.players;
+          next = withPlayer(next, state.currentPlayer, (p) => {
             Object.assign(p, giveCard(p, out.cardDrawn));
           });
+          next = { ...next, cardAmount: conserveCardPool(state.cardAmount, handsBefore, next.cardAmount, next.players) };
           // ★★ 抽卡格的棕色訊息框「得到%s！」—— `%s` = 抽到的**卡片名**：
           //   @source 0x0041b355 `mov edi, [eax*8 + 0x47fdea]`（卡片表第 0 项 =
           //   name 指针，1 基编号 ⇒ `0x47fdea + id*8` 正是 `0x47fdf2 + id*8`）
@@ -2479,9 +2493,11 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       return buySharesFromCommercial(state, action.shares, topo);
 
     case 'useCard':
+      if (!canUseItemsNow(state)) return state;
       return afterAiStep(state, playCard(state, topo, action.cardId, action.target ?? { kind: 'none' }), topo, 3);
 
     case 'useTool': {
+      if (!canUseItemsNow(state)) return state;
       const used = useToolAction(state, topo, action.toolId, action.nodeId ?? 0, action.value ?? 0);
       // ★★ 第十一份試玩回報 #3：道具台词（原版 `player_say(角色, 0, _tool_strings[角色][道具号−1])`，
       //   在 human/AI 分流**之前** ⇒ 电脑也说）。
@@ -3458,9 +3474,8 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
     handle,
     landId: land === null ? 0 : land.id,
     stepsRemaining: afterAlms.stepsRemaining,
-    othersHere: afterAlms.players
-      .filter((p) => p.index !== me.index && isAlive(p) && p.nodeId === me.nodeId)
-      .map((p) => p.index),
+    // ★ 节点占位位（被关着的人不算、乞丐算），传不传再由 `passBomb` 看 who_plays / 已有炸彈
+    othersHere: occupantsOfNode(afterAlms.players, me.nodeId, me.index),
     randValue,
   });
 
@@ -3489,6 +3504,14 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
   for (const ev of r.events) {
     if (ev.kind === 'gift') {
       arrivalNotices.push({ key: 'object.gift', args: [toolNameOf(ev.toolId)] });
+      // ★ 禮物之后的「好消息」台词 `0x0041b97a mov al,[道具價] → 0x0041b98b call 0x44f230`：
+      //   50 < 點數 ≤ 100（機車 80 / 飛彈 100）时掷一次 `rand()`
+      if (goodNewsSpeechDrawsRand(toolPrice(ev.toolId))) {
+        const srng = new WatcomRng();
+        srng.setState(next.rngState);
+        srng.next();
+        next = { ...next, rngState: srng.getState() };
+      }
     } else if (ev.kind === 'treasure') {
       arrivalNotices.push({ key: 'object.treasure', args: [] });
     }
@@ -3499,6 +3522,11 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
   if (r.stopMovement) {
     next = { ...next, stepsRemaining: 0, phase: 'settling' };
   }
+
+  // ★ 离场物件的搭档**当场**另找地方登场 —— `release_object` 内部就挑格（`0x0040e28c → 0x40aa6c`），
+  //   在送醫院（惡犬 `0x0041b8ef` / 炸彈 `0x0041b775`）**之前**：那一刻玩家还占着这一格。
+  //   先前搭档在住院之后才挑，人已被搬走，这一格多成了一个空位候选。
+  next = respawnPartner(next, topo, r.respawn);
 
   // 炸彈把脚下的建筑降一级 —— `0x40ab4a(node.type, 0)`（mode 0，**不记敌意**）：
   // ```asm
@@ -3541,6 +3569,9 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
 
   // 住院
   if (r.hospitalDays !== 0) {
+    // ★ 首次住院 4..6 天（定時炸彈 5 天）掷一次倒霉台词的 rand（`0x0043eca5 call 0x44f2c2`）
+    const hrng = new WatcomRng();
+    hrng.setState(next.rngState);
     const c = sendToConfinement(
       next.players,
       next.objects,
@@ -3552,10 +3583,12 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
       // ★ 首次关押会清掉"另一张"占用表（原版 `call 0x40d761`，@source 0x0043d5e7）
       next.prisonOccupancy,
       topo.landscapes,
+      hrng,
     );
     next = insureConfinement(
       {
         ...next,
+        rngState: hrng.getState(),
         players: c.players,
         objects: c.objects,
         hospitalOccupancy: c.occupancy,
@@ -3567,10 +3600,8 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
     );
   }
 
-  // 神明离场后，搭档换上来
-  const withPartner = respawnPartner(next, topo, r.respawn);
   // ★ 神明**附身那一刻**的發威（跳表 `ref_0040ea9b`，见 rules/god-power.ts）
-  return applyGodPowerOnAttach(state, withPartner, topo);
+  return applyGodPowerOnAttach(state, next, topo);
 }
 
 /**
@@ -3642,10 +3673,14 @@ function applyGodPower(
         players = r.players;
         pool = r.pool;
         out = { ...out, players, pool };
-        // @source 每次 `pay_money` 内部就地破产；随后 `cmp [0x46caf8],0 / jne 跳出`
+        // @source 每次 `pay_money` 内部就地破产；循环**只在分出胜负时**跳出
+        //   （`0x0040ec7b cmp byte [0x46caf8], 0 / jne 0x40eca4`）——一个人被收破产，后面的人照收。
+        //   先前第一个破产就 `break`，后面的对手一分不付。
         if (r.bankrupted) {
           out = applyBankruptcy(out, i, topo);
-          break;
+          players = out.players;
+          pool = out.pool;
+          if (out.phase === 'gameOver') break;
         }
       }
       return out;
@@ -3687,7 +3722,7 @@ function applyGodPower(
     // ── 福神：得 1 / 2 张随机卡 @source 0x0040ede7 / 0x0040eea8 ──
     case 'receiveCards': {
       let players = state.players;
-      const cardAmount = [...state.cardAmount];
+      let cardAmount = [...state.cardAmount];
       const godInfo = state.players[host]?.godInfo ?? 0;
       const godType = godInfo > 0 ? (state.objects[godInfo - 1]?.type ?? 0) : 0;
       // ★ 第八份试玩回报 #5：得卡时弹訊息框，`%s` = 神明名 `[0x47ed76 + 種類*4]`、
@@ -3700,11 +3735,19 @@ function applyGodPower(
         // @source `_rich4_player_receive_random_card` 0x441e12：袋空返回 0
         const id = drawRandomCard(rng, cardAmount);
         if (id === 0) break;
-        cardAmount[id - 1] = Math.max(0, (cardAmount[id - 1] ?? 0) - 1);
+        // ★ 牌堆：收的那张 −1、满手弃的最便宜那张 +1（`0x004412e4`）—— 第二张抽之前就要记好
+        const before = players;
         players = players.map((p, i) => (i === host ? giveCard(p, id) : p));
+        cardAmount = conserveCardPool(cardAmount, before, cardAmount, players);
         drawn.push(id);
       }
       if (drawn.length === 0) return { ...state, players, cardAmount };
+      // ★ 「好消息」台词 `0x0040ee46 call 0x44f230`：小福神传那张卡的點數价（`0x0040ee39`），
+      //   大福神传两张之和（`0x0040eefd..0x0040ef0c`）；50 < 值 ≤ 100 时掷一次 `rand()`
+      {
+        const speechValue = drawn.reduce((acc, id) => acc + priceOf(id), 0);
+        if (goodNewsSpeechDrawsRand(speechValue)) rng.next();
+      }
       // ★★ 大福神（種類 4）拿到**两张**时，原版弹的是**一扇两卡名**的框，不是两扇：
       //   `0x0040eed7 push 0x463353`（`大福神附身\n\n得到%s及%s！`）+
       //   `0x0040eee9 push 0x5dc`（1500 ms），两个 `%s` = `[ebx]`（先抽到）× `[esi]`（後抽到）
@@ -4619,7 +4662,20 @@ function fireMissile(
   const toolStock = [...stock];
   for (let i = 0; i < players.length; i++) {
     const p = players[i];
-    if (p === undefined || !isAlive(p) || !hitNodes.has(p.nodeId)) continue;
+    if (p === undefined || p.nodeId === 0 || !hitNodes.has(p.nodeId)) continue;
+    if (!isAlive(p)) {
+      // ★★ 爆心里的**乞丐**（出局者的棋子）被炸到别处去：`0x40cd07` 头一道 `cmp [+0x15],0 / je 0x40cd70` →
+      //   `0x0040cd73` 再判一次 → `0x0040cd7d call 0x40cc56`（与施捨之后同一个挪乞丐函数：清原格占位、
+      //   `0x0040cc95 call 0x40aa6c` 以原格为参照挑远处一格、改坐标/来路/朝向）。先前乞丐原地不动，也少掷随机数。
+      const rng = new WatcomRng();
+      rng.setState(rngState);
+      const occupied = runtimeOccupiedNodes(players, objects, specialActors);
+      const spots = objectNodeCandidates(topo.nodes).filter((n) => !occupied.has(n));
+      const moved = pickObjectNodeDistant(spots, p.nodeId, nodeXyOf(topo), () => rng.next());
+      rngState = rng.getState();
+      if (moved !== 0) players[i] = placeOnNode({ ...p, lastNodeId: p.nodeId }, topo.nodes[moved - 1]);
+      continue;
+    }
     // ★ 2026-09-24：先前飛彈这里**跳过发射者自己**（注释说「自己站在别处」）—— 原版没有这一条：
     //   `0x40ae8c..0x40aeaa` 对 id 里的每个玩家位都 `call 0x40cd07`，片后 `0x4470a1` 的循环也不看是谁。
     // @source 0x40cd07：`+0x15`(who_plays) == 0 或 `+0x32` 那个 dword（住店 / 消失 / 監獄 / 醫院）≠ 0
@@ -4945,7 +5001,15 @@ function teleportWith(
   // 搬人：source 是玩家下标 + 1，target 是节点号
   const playerIndex = source - 1;
   if (playerIndex < 0 || playerIndex >= state.players.length) return null;
-  return teleportPlayer(state, topo.nodes, playerIndex, target);
+  const self = playerIndex === state.currentPlayer;
+  // ★★ 搬的是**自己**：先拍時光機快照（`0x004477c3 call 0x44808a`，道具还在手上），
+  //   然后 `0x004477ca [0x48baf8] = 0`（剩余步数 0）/ `0x004477d6 走子态 = 1` —— 这一回合**不再掷骰**，
+  //   直接在新格做停步处理（`0x41982d`）；落点物件那一段（`0x41b42d`）不跑（没有「走到一格」）。
+  //   先前自搬之后还停在 awaitingRoll，电脑接着掷骰再走一趟。
+  const base = self ? snapshotForTimeMachine(state) : state;
+  const moved = teleportPlayer(base, topo.nodes, playerIndex, target);
+  if (moved === null) return null;
+  return self ? { ...moved, stepsRemaining: 0, phase: 'settling' } : moved;
 }
 
 export function useToolAction(
@@ -5045,7 +5109,9 @@ export function useToolAction(
     const land = landAtNode(state, topo, nodeId);
     if (land !== null) {
       const b = buildOneLevel(land.type, land.level, MAX_LAND_LEVEL);
-      if (!b.ok) return state;
+      // ★★ 盖不了（5 级 / 連鎖店）**照样扣道具**：`0x004472fb call 0x445aa2`（take_tool）在
+      //   `0x00447345 call 0x40b110` **之前**，后者的返回值只拿来判 bit7。真人拾取 `0x2090006` 收任何地块/設施。
+      if (!b.ok) return consume({ ...state, lastViewTarget: { x: land.x, y: land.y } });
       const landLevel = [...state.landLevel];
       landLevel[land.id] = b.level;
       // ★ bit7 = `0x40b110` 返回值的 bit7，原版在 0x0044736d 消费它。
@@ -5068,7 +5134,14 @@ export function useToolAction(
     //   等级 0 → 定种类再蓋第一级；等级 ≥ 1 → 不超过该种类上限就 +1
     //   ★ 等级 ≥ 1 的設施到 5 级时**照样置 bit7**（`0x0040b21a mov eax, 0x81`）。
     const built = freeBuildFacility(state, topo, nodeId, value);
-    if (built === null) return state;
+    if (built === null) {
+      // ★ 同上：已到顶的設施照样扣道具；只有「0 级設施、真人还没选种类」（选類別窗那一问）不扣
+      const fnode = topo.nodes[nodeId - 1];
+      const fidx = fnode === undefined ? null : facilityIndexOf(fnode.type);
+      const fac = fidx === null ? null : effectiveFacility(state, topo, fidx);
+      if (fac === null || fac.level === 0) return state;
+      return consume({ ...state, lastViewTarget: nodeViewTarget(state, topo, nodeId) });
+    }
     return consume(
       withSingleBuildUpgrade(
         { ...built.state, lastViewTarget: nodeViewTarget(state, topo, nodeId) },
@@ -5090,12 +5163,11 @@ export function useToolAction(
   if (VEHICLE_TOOLS.has(toolId)) {
     const r = useVehicleTool(me, state.tools, toolId);
     if (!r.ok) return state; // 已经是同一种车 → 原版不消耗道具
-    const taken = takeTool(r.tools, state.toolStock, me.index, toolId);
+    // ★ 直接 `dec`，**不回库存**（`0x00446ef9` / `0x00446fb1` / `0x00447ac2`，见 `decTool`）
     return {
       ...state,
       players: state.players.map((p, i) => (i === state.currentPlayer ? r.player : p)),
-      tools: taken.tools,
-      toolStock: taken.stock,
+      tools: decTool(r.tools, me.index, toolId),
     };
   }
 
@@ -5115,8 +5187,8 @@ export function useToolAction(
     if (placementBlockedAt(state, nodeId)) return state;
     const r = placeObject(state.objects, nodeId, objectType);
     if (!r.ok) return state; // 没有空物件槽
-    const taken = takeTool(state.tools, state.toolStock, me.index, toolId);
-    return { ...state, objects: r.objects, tools: taken.tools, toolStock: taken.stock };
+    // ★ 直接 `dec`，**不回库存**（`0x00446c7e` 等，见 `decTool`）—— 物件被收走时 `release_object` 才还
+    return { ...state, objects: r.objects, tools: decTool(state.tools, me.index, toolId) };
   }
 
   return state;
@@ -5237,6 +5309,16 @@ function nodeViewTarget(
  * ⚠️ 只在 `ok` 时才落地。原版多处是 `test eax,eax / je end` 之后才扣卡，
  *   registry 已经照此实现，故失败时状态原样返回（连卡都不扣）。
  */
+/**
+ * 卡片 / 道具只能在**按 GO 之前**用（走子态 0：真人的面板选单、电脑的起步前那一串决策）。
+ * @source 真人：面板「卡片」「道具」钮只在回合态 0 响应（`0x00417d65` / `0x0040defe`）；
+ *   电脑：`0x00418e28` 起的出牌 / 用道具循环在 `0x40dd1f`（起步）之前。
+ *   先前 `useCard` / `useTool` 任何相位都收（走子中、挂着待决交互时也能出牌）—— 联机不可信输入。
+ */
+function canUseItemsNow(state: GameState): boolean {
+  return state.phase === 'awaitingRoll' && (state.pending === null || state.pending.kind === 'none');
+}
+
 function playCard(
   state: GameState,
   topo: MapTopology,
@@ -5273,13 +5355,22 @@ function playCard(
         state.market.closedDays,
       ),
       facilities,
+      // ★ 首次入狱的屏幕坐标取特殊景观记录（綠島），`0x0043d643` —— 先前卡片路径没传，落回节点坐标
+      ...(topo.landscapes === undefined ? {} : { landscapes: topo.landscapes }),
       actors: state.specialActors,
       // ★★ 2026 本轮：嫁禍/復仇卡入狱要**占床位**（客户端关押动效靠 0→1 跳变触发），
       //   且首次入狱要清医院那一格 —— 这两张表以前根本没进卡牌路径。
       prisonOccupancy: state.prisonOccupancy,
       hospitalOccupancy: state.hospitalOccupancy,
-      // 嫁祸的新目标：交给上层决定；没给就放弃转嫁（返回 -1）
-      scapegoatPicker: () => -1,
+      // ★★ 嫁禍卡 `0x44476a` 的电脑支（`who_plays != 1`，含託管）：最恨的人 / 随机一位 + 按模式过门槛
+      //   （`cards/passive.ts` 的 `aiScapegoatPick`）。先前恒 −1 ⇒ 夢遊/陷害/查稅卡里嫁禍卡**从不生效**。
+      //   ⚠️ 真人持有者原版弹确认框 / 选人窗（`0x004447ae..0x004448ab`）—— 卡片路径里还没有这一问，
+      //   暂按「放弃转嫁」（卡不扣），见 docs/audit/provenance-cards.md 的 follow-up。
+      scapegoatPicker: (holder, now, mode) => {
+        const h = now[holder];
+        if (h === undefined || (h.whoPlays & 0xff) === WHO_PLAYS_HUMAN) return -1;
+        return aiScapegoatPick(now, holder, mode, state.priceIndex, rng);
+      },
       // 轉向卡要的那一次 `rand()`（只在真有候选时被调用）
       rng,
     },
@@ -5325,6 +5416,26 @@ function playCard(
     facilityPriceStatus[f.id] = f.priceStatus;
   }
 
+  // ★★ 購地卡（3）：土地權限不是「無限期」时，强买下来的那块/那座**重写到期日**（从今天起算）——
+  //   @source 地块 `0x0044244b mov edx,[0x499110] / test / je` → `0x00442464 call 0x4521cb(今天, [0x4751f0+idx*4])`
+  //   → `0x0044246c mov [land+0x30], eax`；設施 `0x004425c4..0x004425e9`（`+0x34`）。
+  //   先前沿用原主的到期日 ⇒ 买下来的地会按**原主**的日子到期。
+  let landTenure = state.landTenure;
+  let facilityTenure = state.facilityTenure;
+  if (cardId === 3 && state.landTenureIndex !== 0) {
+    const expiry = tenureExpiry(packDate(state), state.landTenureIndex);
+    for (const l of r.lands) {
+      if (l.owner === state.currentPlayer + 1 && (state.landOwner[l.id] ?? 0) !== l.owner) {
+        landTenure = withTenure(landTenure, l.id, expiry);
+      }
+    }
+    for (const f of r.facilities) {
+      if (f.owner === state.currentPlayer + 1 && (state.facilityOwner[f.id] ?? 0) !== f.owner) {
+        facilityTenure = withTenure(facilityTenure, f.id, expiry);
+      }
+    }
+  }
+
   // 查封卡封到研究所时，+0x1e（研发剩余天数）被清零 @source 0x004456d5
   const facilityResearchDays = [...state.facilityResearchDays];
   for (const facId of r.researchReset) {
@@ -5346,7 +5457,11 @@ function playCard(
   // ★ 纯表现提示：把「刚刚谁用出了哪张卡」交给表现层（原版卡片函数里那句
   //   `player_say(出牌者, flag, 卡牌台词表[角色][卡号-1])` 是**调用点参数**，
   //   状态差分推不出来）。只保留最近一次、不进指纹/存档/快照，见 `CardPlayHint`。
-  let next: GameState = { ...state, lastBuildUpgrades: [], lastCardPlay: { player: state.currentPlayer, cardId }, lastViewTarget: cardViewTarget(state, topo, target), players, rngState: rng.getState(), landOwner, landLevel, landType, landPriceStatus, facilityOwner, facilityLevel, facilityType, facilityPriceStatus, facilityResearchDays, specialActors: r.actors, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market, prisonOccupancy: r.prisonOccupancy, hospitalOccupancy: r.hospitalOccupancy };
+  // ★★ 牌堆：出的那张（`remove_card` 0x004413a2 `inc [卡号+0x499197]`）、被动卡触发扣的 18..21、
+  //   搶奪卡满手时弃掉的最便宜那张 —— 全都**回牌堆**；搶來的那张 −1（`0x0044133b`）。
+  //   registry 只改手牌，这里按守恒一次记齐（见 `conserveCardPool`）。先前出牌从不回牌堆。
+  const cardAmount = conserveCardPool(state.cardAmount, state.players, state.cardAmount, players);
+  let next: GameState = { ...state, cardAmount, lastBuildUpgrades: [], lastCardPlay: { player: state.currentPlayer, cardId }, lastViewTarget: cardViewTarget(state, topo, target), players, rngState: rng.getState(), landOwner, landLevel, landType, landPriceStatus, landTenure, facilityTenure, facilityOwner, facilityLevel, facilityType, facilityPriceStatus, facilityResearchDays, specialActors: r.actors, tools: r.tools, toolStock: r.toolStock, objects: r.objects, market: r.market, prisonOccupancy: r.prisonOccupancy, hospitalOccupancy: r.hospitalOccupancy };
   // ★★ 天使卡（9）是**唯一**会把地块/設施等级推上去的卡，也就是唯一会撞到
   //   `0x40b110` 返回值的 bit7 的那张 —— README §7.142(5) E6 的第 2 条消费点。
   //
@@ -5407,6 +5522,9 @@ function playCard(
   for (const rs of r.respawns) {
     next = respawnPartner(next, topo, rs);
   }
+  // ★★ 陷害卡入狱的保險理赔（`send_to_prison` 尾部 `0x0043d749 call 0x44ba63`，首次与加刑都赔）——
+  //   先前卡片路径从不赔（受害者与復仇卡反弹的出牌者都一样）
+  for (const c of r.confined ?? []) next = insureConfinement(next, topo, c.player, c.days);
   // ★ 2026-09-23（框模板反查）：卡片函数**里面**弹的那几扇訊息框（1500 ms）
   const cardNotice = cardEffectNotice(state, cardId, target, r.taxed);
   if (cardNotice !== null) next = appendFreshNotice(next, cardNotice);
@@ -5631,6 +5749,13 @@ export function valuationsOf(s: GameState, playerIndex: number): StockValuation[
  *   `inc [0x4990e4]` 之后、更新物价指数之前判一次，达标就**当场返回**
  *   （行情/開獎/月結/地契到期全部跳过）。见 rules/victory.ts。
  */
+/** 節日送卡的框文按**全局地图号**选 @source 0x004526c5：4 / 5 / 6 各一句，其余「聖誕節」 */
+const HOLIDAY_CARD_NOTICE: Readonly<Record<number, NoticeKey>> = {
+  4: 'holiday.cardGalaxy',
+  5: 'holiday.cardDino',
+  6: 'holiday.cardNewYearEve',
+};
+
 function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   const rng = new WatcomRng();
   rng.setState(state.rngState);
@@ -5701,6 +5826,28 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   let players = state.players;
   let lottery = state.lottery;
   let pool = state.pool;
+
+  // ★★ 節日送卡（`0x0041d07b call 0x452444`，股市收盘之后、分紅/開獎之前）—— 先前整段缺失：
+  //   聖誕節（地图 0..3）/ 銀河系和平日 / 恐龍蛋節 / 除夕那天，每位在场玩家各从牌堆抽一张
+  //   （`0x00452664 call 0x441e12` → receive_card，满手先弃最便宜的一张），逐位弹框、说「好消息」台词。
+  let cardAmount = state.cardAmount;
+  const holidayNotices: NoticeHint[] = [];
+  if (holidayGivesCard(state.globalMapId, holidayIndexOf(state.globalMapId, date.year, date.month, date.day))) {
+    const key = HOLIDAY_CARD_NOTICE[state.globalMapId] ?? 'holiday.cardXmas';
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      // @source 0x00452656 cmp byte [+0x15], 0 / je 下一位
+      if (p === undefined || (p.whoPlays & 0xff) === 0) continue;
+      const id = drawRandomCard(rng, cardAmount);
+      if (id === 0) continue;
+      const before = players;
+      players = players.map((q, k) => (k === i ? giveCard(q, id) : q));
+      cardAmount = conserveCardPool(cardAmount, before, cardAmount, players);
+      holidayNotices.push({ key, args: [playerName(state, i), cardNameOf(id)], cardId: id });
+      // @source 0x0045274a mov al,[卡價] → 0x00452753 call 0x44f230
+      if (goodNewsSpeechDrawsRand(priceOf(id))) rng.next();
+    }
+  }
 
   // @source 0041d080 `cmp eax, 0xf` → 先 0x42ba97 上市公司分紅，再 0x431712 樂透開獎
   const companyFunds = [...state.companyFunds];
@@ -5818,11 +5965,13 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     facilityTenure,
     facilityPriceStatus,
     companyFunds,
+    cardAmount,
     rngState: rng.getState(),
     // 纯表现提示：只在开了奖的那一天写（其余日子沿用，`reduce` 出口会把旧的清掉）
     ...(lotteryHint !== null ? { lastLotteryDraw: lotteryHint } : {}),
     ...(monthlyHint !== null ? { lastMonthlySettle: monthlyHint } : {}),
   };
+  for (const n of holidayNotices) out = appendFreshNotice(out, n);
   // @source 0x0042beba `call 0x40cd87` —— 负紅利把人压破產
   for (const who of dividendBankrupts) out = applyBankruptcy(out, who, topo);
   return out;
@@ -5934,6 +6083,16 @@ export function reduceAll(
  * 故这里必须把更新后的牌堆写回状态，否则会反复抽到同一张。
  */
 function drawAndApplyFortune(state: GameState, topo: MapTopology): GameState {
+  // ★★ 牌堆守恒：生日收卡（`0x441e77` 丢 +1 / `0x4412e4` 收 −1、满手弃 +1）、
+  //   嫁禍 19 / 免罪 21 触发扣卡（`0x441343` +1）都只改了手牌 —— 出口一次记齐（见 `conserveCardPool`）。
+  //   事件 32 变卖、破产清算已显式记账，守恒式里的 defect 为 0，不会重复。
+  const out = drawAndApplyFortuneInner(state, topo);
+  if (out === state || out.players === state.players) return out;
+  const cardAmount = conserveCardPool(state.cardAmount, state.players, out.cardAmount, out.players);
+  return cardAmount.every((v, i) => v === out.cardAmount[i]) ? out : { ...out, cardAmount };
+}
+
+function drawAndApplyFortuneInner(state: GameState, topo: MapTopology): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return state;
   // ★ `checkFortune` 的可行性判据要真数据：
@@ -6205,11 +6364,13 @@ function answerBirthdayCard(state: GameState, seat: number, cardId: number): Gam
     const r = applyRobCardCard(players, state.currentPlayer, seat, cardId);
     if (r.ok) players = r.players;
   }
+  // ★ 牌堆：交出的那张 +1 / 收进的 −1 相抵，寿星满手弃掉的最便宜那张 +1（`0x004412e4`）
+  const cardAmount = conserveCardPool(state.cardAmount, state.players, state.cardAmount, players);
   const rest = pending.seats.slice(1);
   // ★ 最后一位答完要把相位放回 `turnEnd` —— 否则 `endTurn`（它只认这一相位）
   //   永远轮不到，回合卡死在这里。
-  if (rest.length === 0) return { ...state, players, pending: null, phase: 'turnEnd' };
-  return { ...state, players, pending: { kind: 'birthdayCard', seats: rest } };
+  if (rest.length === 0) return { ...state, players, cardAmount, pending: null, phase: 'turnEnd' };
+  return { ...state, players, cardAmount, pending: { kind: 'birthdayCard', seats: rest } };
 }
 
 /**
@@ -6228,6 +6389,14 @@ const FORTUNE_MOTORBIKE_STOLEN = 10;
 const NEWS_AWARD_IDS: ReadonlySet<number> = new Set([8, 9, 10]);
 
 function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng): GameState {
+  // ★★ 牌堆守恒：新聞里嫁禍 19 / 免罪 21 触发扣卡（`0x441343` +1）只改了手牌 —— 出口一次记齐。
+  const out = drawAndApplyNewsInner(state, topo, rng);
+  if (out === state || out.players === state.players) return out;
+  const cardAmount = conserveCardPool(state.cardAmount, state.players, out.cardAmount, out.players);
+  return cardAmount.every((v, i) => v === out.cardAmount[i]) ? out : { ...out, cardAmount };
+}
+
+function drawAndApplyNewsInner(state: GameState, topo: MapTopology, rng?: WatcomRng): GameState {
   const lands = allEffectiveLands(state, topo);
   // ★★ 2026-09-19 修（§7.141，通道 2 `test_event_dispatch.py` 259/259 的 D2–D5）：
   //   先前这里给「設施 / 持股 / 企業 / 停牌」全传了空数组、`checkCommercialOwner` 恒 false
@@ -7407,8 +7576,13 @@ function transferListing(
       const at = from.cards.indexOf(item.id);
       if (at < 0) return null;
       from.cards.splice(at, 1);
-      to.cards.push(item.id);
-      return { ...state, players };
+      // ★ `0x00425893 call 0x4412e4`（receive_card）：买家满 15 张先弃最便宜的一张（回牌堆）
+      players[buyer] = giveCard(to, item.id);
+      return {
+        ...state,
+        players,
+        cardAmount: conserveCardPool(state.cardAmount, state.players, state.cardAmount, players),
+      };
     }
     default:
       return null;
@@ -7468,12 +7642,13 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
     } else {
       const cardId = drawRandomCard(rng, next.cardAmount);
       if (cardId !== 0) {
-        const cardAmount = [...next.cardAmount];
-        cardAmount[cardId - 1] = (cardAmount[cardId - 1] ?? 0) - 1;
-        // ★ 同上：满手牌时先丢最便宜的再收（原版统一走 `giveCard` 0x004412e4）
-        next = withPlayer({ ...next, cardAmount }, me, (p) => {
+        // ★ 同上：满手牌时先丢最便宜的再收（原版统一走 `giveCard` 0x004412e4）；
+        //   牌堆：收的 −1、弃的 +1（按守恒记，见 `conserveCardPool`）
+        const before = next;
+        next = withPlayer(next, me, (p) => {
           Object.assign(p, giveCard(p, cardId));
         });
+        next = { ...next, cardAmount: conserveCardPool(before.cardAmount, before.players, next.cardAmount, next.players) };
         gift = {
           kind: 'card',
           id: cardId,
@@ -7482,6 +7657,9 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
         };
       }
     }
+    // ★ 贈禮之后那句「好消息」台词：`0x0042e9e4 mov bl,[價]` → `0x0042ea23 call 0x44f230` ——
+    //   50 < 點數 ≤ 100 时掷一次 `rand()`（見 `rules/speech-rand.ts`）
+    if (gift !== null && goodNewsSpeechDrawsRand(gift.points)) rng.next();
   }
 
   // ★★ 第二十六份（「约翰乔的汽车哪里来的」）：**恰好** who_plays == 1 的真人才开窗、抽货架；
@@ -8139,10 +8317,17 @@ function runTollTail(
         use = aiUsesFreeCard(c.toll, p, s.priceIndex, rng.next());
       }
       if (use) {
-        const owner = c.route.path === 'rent' ? rentOwnerOf(s, topo, c.route.landId) : -1;
+        const owner =
+          c.route.path === 'rent'
+            ? rentOwnerOf(s, topo, c.route.landId)
+            : c.route.path === 'facility'
+              ? (effectiveFacility(s, topo, c.route.facilityId)?.owner ?? 0) - 1
+              : -1;
+        // ★ 免費卡用掉 = `remove_card(付款人, 20)`（`0x00444b30 call 0x441343`）⇒ 回牌堆 +1（`0x004413a2`）
         s = withPlayer(s, c.payer, (q) => {
           Object.assign(q, consumeCard(q, PASSIVE_CARDS.FREE));
         });
+        s = { ...s, cardAmount: poolDelta(s.cardAmount, PASSIVE_CARDS.FREE, 1) };
         s = appendFreshNotice(s, {
           key: 'card.use',
           args: [CARDS.find((d) => d.id === PASSIVE_CARDS.FREE)?.name ?? ''],
@@ -8206,9 +8391,11 @@ function runTollTail(
         }
       }
       if (target !== -1) {
+        // ★ 嫁禍卡用掉 = `remove_card(付款人, 19)`（`0x004449ef call 0x441343`）⇒ 回牌堆 +1（`0x004413a2`）
         s = withPlayer(s, c.payer, (q) => {
           Object.assign(q, consumeCard(q, PASSIVE_CARDS.SCAPEGOAT));
         });
+        s = { ...s, cardAmount: poolDelta(s.cardAmount, PASSIVE_CARDS.SCAPEGOAT, 1) };
         s = { ...s, lastCardPlay: { player: c.payer, cardId: PASSIVE_CARDS.SCAPEGOAT, popup: false, answeredBy: target } };
         c = { ...c, who: target };
       }
@@ -8888,7 +9075,7 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   if (godNotice !== null) notices.push(godNotice);
   if (god.toll === 0) return { ...withRng, notices, phase: 'turnEnd' };
 
-  // ★ 尾巴照 0x0041a648 起：嫁禍卡（設施这条没有免費卡）→ 死神顯靈由他人賠償（費 != 0 或是旅館）→ 付钱（`runTollTail`）
+  // ★ 尾巴：免費卡（**旅館除外**）→ 嫁禍卡 → 死神顯靈由他人賠償（費 != 0 或是旅館）→ 付钱（`runTollTail`）
   let pre: GameState = { ...withRng, rngState: rng.getState() };
   for (const n of notices) pre = appendFreshNotice(pre, n);
   return runTollTail(pre, topo, {
@@ -8897,7 +9084,11 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
     who: payer,
     toll: god.toll,
     feeName,
-    freeDone: true, // @source 0x0041a648：設施这一路没有免費卡那一问
+    // ★★ 2026-09-24 审计订正：設施这一路**有**免費卡，只有旅館跳过 ——
+    //   @source `0x0041a5d5 cmp byte [fac+0x18], 1 / je 0x41a63d`（旅館 ⇒ 直接到嫁禍）；
+    //   否则同一道门槛（`0x0041a5f7` ≥ 2000×物價 / `0x0041a60a` > 现金+存款）→ `0x0041a611 has_card(20)` →
+    //   `0x0041a62e call 0x444a60(付款人, 設施主−1, 費)`。先前一律 `freeDone`，購物中心/加油站从不问免費卡。
+    freeDone: fac.type === FACILITY_TYPE.hotel,
   });
 }
 
