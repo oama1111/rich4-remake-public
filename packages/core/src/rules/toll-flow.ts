@@ -123,10 +123,13 @@ export function aiScapegoat(
       if ((bl.inHotel | bl.disappearing | bl.inPrison | bl.inHospital) !== 0) return;
       cands.push(i);
     });
-    if (cands.length === 0) return -1;
-    target = cands[rand() % cands.length]!;
+    // ★★ 审计（ai-move）：候选空时 `0x40d31c` 不掷、返回 −1，但 mode 1 那一支**照样掷门槛**
+    //   （`0x004448fc call rand` 在 `0x00444971 mov ebx, ebp` 之前，候选 −1 到 `0x00444973 cmp ebx,-1`
+    //   才被挡下）⇒ 随机流仍要走一格。旧实现在这里直接返回，少掷一次。
+    if (cands.length > 0) target = cands[rand() % cands.length]!;
   }
   const threshold = ((rand() % 4000) + 4000) * priceIndex;
+  if (target === -1) return -1;
   return toll > me.cash || threshold < toll ? target : -1;
 }
 
