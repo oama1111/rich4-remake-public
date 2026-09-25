@@ -16,12 +16,16 @@
 
 | 状态 | 条数 |
 |---|---|
-| verified | 121 |
-| fixed | 83 |
+| verified | 122 |
+| fixed | 85 |
 | approx | 13 |
-| follow-up | 3 |
+| follow-up | 0 |
 | n/a | 2 |
 | **合计** | **222**（多条同构的规则合并成一行；第二轮新增「台词随机」15 行 —— 13 个站点 + 过路费三句 / 消失各一行） |
+
+**第三轮（2026-09-25，FU-4 / FU-5 剩项 / FU-6 的收尾）后的变化**：`fixed` 83 → 85（G-06、P-37 各一行转 `fixed`）；
+`verified` 121 → 122（G-24 由 `follow-up` 转 `verified` —— 核完是**没有**缺陷，见那一行的注）；`follow-up` 3 → **0**（G-06 / G-24 / P-37 全部落地）。
+`approx` 13 与 `n/a` 2 未动，合计仍 222。
 
 **第二轮（2026-09-25，FU-1 / FU-3 / FU-5 的收尾）后的变化**：`fixed` 58 → 83
 （原有 5 条 `approx` + 5 条 `follow-up` 转 `fixed`，另加新增 15 行）；`approx` 18 → 13（少 N-owner-say / N-08s / G-10 / G-13a / C-30）；
@@ -54,6 +58,16 @@
   且不看返回值；卡号 0 的名字指针 `[0x47fdea]` 与點數价 `[0x47fdef]` 都是 0）。后半（老虎机窗显示金额）仍未改，见 FU-5 剩项。
 - **d2e347c**：客户端那一侧改查 core 掷出来的值（`speech-coin` 退役 → `speech-roll`，附单测）；
   **467f899**：三处联机镜像用例（新聞 19 房主 / 命運 5 寿星 / 魔法屋 FU-3 续演）+ 拍卖用例换种子。
+- **7911c37 第三轮 FU-6（惡人抢银行把人抢破产）**：破产改到 `pay_money` **里面**当场发生（`0x41d375 call 0x40cd87`）——
+  `runNpc` 新增付款落盘口 `NpcSettle`（付款那一刻把已产出未落盘的事件 + 当前随机流交回，落定后的 `rngState` 写回本趟的 `rng` 续走），
+  `reduce.ts` 新增 `payInWalk`（扣款 → 破产 → 入账，原版次序）与 `settleWalkBatch`（非付款事件仍走 `applyNpcEvents`）。
+  先前整趟走完才收口 ⇒ 后面几步还看得见那个本该出局的人、破产那几掷排到了后面几步的随机数之后。
+  用例 `packages/core/src/state/npc-pay-bankrupt.test.ts`（先红后绿）+ 镜像 **0274d89** `packages/server/src/npc-pay-bankrupt-mp.test.ts`。
+- **4077f43 第三轮 FU-5 剩项（老虎机窗金额）**：`client/src/god-slot.ts` 的 `godSlotCue` 删掉「钱 / 存款 / 公库差额」反推，
+  改成读 core 的 `GameState.lastGodPower.amount`（窗口里那个数就是状态机 `fcn_0043f23e` 的返回值，`0x004408c8`）。
+- **第三轮 FU-4（住店走回棋盘那一回合的神明尾块）→ 核完**：不是缺陷。调用点 `0x418f59` 确实在这条支上，
+  但 `0x40f381` 头一条闸 `cmp byte [p+0x32],0 / jne` 在住店期间与走回棋盘那一回合都成立（`+0x32` = 0x80）⇒ 整段返回；
+  監獄 / 醫院刑满那一条虽进得去，但那一格是 landscape、三支都在「没有地块 / 設施句柄」上直接返回。见 G-24 行。
 
 与 provenance 分支上其它区**重叠**的修正（合并时取了对方写法）：敌意回绕（cards）、龜行闸 / 時光機快照点 / 保險与研究所倒数挪到 0x41c84f（loop）、
 傳送機地契与自搬（cards）、奪卡 / 福神 / 抽卡格牌堆守恒（cards 的 `conserveCardPool`）、乞丐占用位（cards 的 `occupantsOfNode`）、小財神破产后照收。
@@ -80,11 +94,24 @@
   旁观端 / 断线重连端缺了这份提示不会被判失步，只是那一句按前一句（`speechCoin` 的 `null` ⇒ 0）。
 - **旧存档**：`lastSpeechRolls` 缺省 `undefined`，客户端 `speechRand` 返回 `null` ⇒ 不说错话、不崩。
 
-### follow-up（有证据、未改）
+★★ **第三轮追加（同样要协调方那一次升版，本区仍未升）**：
+
+- **FU-6（7911c37）改的是随机流次序与「谁在什么时候出局」，两端必须一起升级**：
+  `GameState` 的**形状没变**（没有新字段），但同一串 action 跑出来的 `rngState` 与状态都可能不同 ——
+  ① 破产清算那几掷（搭档挑格 `0x40e297` / 下線拍卖 `0x40d1f7`）从「整趟走完之后」挪到「付款那一刻」，
+  与后面几步的掷数**换了位置**（总次数可能一样，抽到的值按位置分配不同）；
+  ② 被抢破产的那位在**那一格**就出局 ⇒ 后面几步的 `victimAt` / `bankRobbery` 会跳过他，夺卡那一掷可能整个不发生；
+  ③ 收款方入账改到破产**之后**（`0x41d37e`），若破产拍卖当场开拍（> 3 处释放），
+  开拍读的是**还没收到这笔钱**的现金（座位状态 `0x43c140` / 心理价位 `0x439f0d` 的 `min(…, 现金)`）。
+  旧 core 与新 core 对同一条 `npcStep` 会算出不同的 `rngState` ⇒ **不升 `PROTOCOL_VERSION` 会当场判失步**。
+- **FU-5 剩项（4077f43）只动客户端**：窗口金额改读 core 交出来的 `lastGodPower.amount`（core 一侧第二轮就写好了），
+  不进指纹、不改状态；但**客户端必须与 core 同版**才拿得到提示 —— 缺提示时宁可不演（不反推、不崩）。
+
+### follow-up 清单（第三轮收尾后**无剩余项**：FU-1..FU-6 全部已修或已核）
 
 - **FU-1 台词随机（WP-3 口径）→ 已修（5f14c39 core / d2e347c 客户端）**：13 个站点全部收进 core，逐条见新表「台词随机」。
   无剩余项。
-- **FU-2 傳送機搬惡人 / 物件 → cards 区已实现（`5256fa6`；本分支尚未合并，只记录引用）**：真人傳送機改成原版的两段拾取
+- **FU-2 傳送機搬惡人 / 物件 → cards 区已实现（`5256fa6`，已并入 `ds/audit-provenance`；镜像 0d28598）**：真人傳送機改成原版的两段拾取
   （先选来源：地塊 / 設施 / 玩家 / 惡人 / 物件，再选目标），新增 `teleportActorTo` / `teleportObjectTo`；
   来源拾取 `0x00447469 push 0x1200036`（类别 0x36、组字节 0 = 不设限）⇒ **源不看归属**，
   原先「空地（owner==0）不能搬」那条限制随之删掉；目标仍是子类 8（`0x004474f5 push 0x2090802` /
@@ -93,21 +120,26 @@
   另外 cards 那一提交没带 `packages/server` 的联机镜像用例 —— 见「跨区发现」。
 - **FU-3 魔法屋「抽取命運三張」遇真人寿星 → 已修（5f14c39）**：见修正清单；镜像用例在
   `packages/server/src/events-audit-mp.test.ts`（挂 pending → 答完 → 接着抽两张 → 循环收尾）。
-- **FU-4 住店走回棋盘那一回合的神明尾块**（`0x418f25..0x418f59 call 0x40f381`）：**仍是 follow-up**（本轮未动）；
-  天使 / 惡魔 / 土地公在旅館格上生效；时序未逐拍核，信心中等。
-- **FU-5 老虎机窗显示金额 → 剩项（后半）**：`0x43f68c` 那一半**仍未改** —— `client/src/god-slot.ts:292-315`
-  依旧按「钱 / 存款 / 公库的差分」反推金额，没读 core 交出来的 `lastGodPower.amount`。
-  「大福神袋空 / 1 张仍弹两卡名框」那一半已修（5f14c39）。
-- **FU-6 惡人抢银行抢到破产**：**仍是 follow-up**（本轮未动）。原版在 `pay_money` 里当场破产（`0x41d375`），
-  之后的步里对方已是出局者、破产拍卖的 rand 在后续步的 rand 之前；本引擎走完一趟再破产。
+- **FU-4 住店走回棋盘那一回合的神明尾块 → 已核，不是缺陷（2026-09-25 第三轮）**：逐拍核过，
+  结论是这一段**被闸挡掉**：`0x40f381` 第一条 `0x40f39e cmp byte [p+0x32],0 / jne 0x40f8b3`，
+  而 `+0x32`（`days_in_hotel`）在住店期间与走回棋盘那一回合恒为 1..N−1 或 0x80（`0x41a7f4` / `0x41a7fe` / `0x41c8b5`），
+  清计数要等走回棋盘走完（`0x40c3cf`）⇒ 天使 / 惡魔 / 土地公在旅館格上零效果。
+  原台账那句「在旅館格上生效」是读反了。同一调用点的監獄 / 醫院那一条也零状态变化（landscape 格没有地块 / 設施句柄，
+  三支都在范围检查处返回；只有天使那一支的 `view_to` 是纯镜头）。**无剩余项、无需改码**，见 G-24 行。
+- **FU-5 老虎机窗显示金额 → 已修（4077f43）**：`0x43f68c` 那一半落地 —— `godSlotCue` 改读 `lastGodPower.amount`，
+  差额反推整段删掉；「大福神袋空 / 1 张仍弹两卡名框」那一半先前已修（5f14c39）。无剩余项。
+- **FU-6 惡人抢银行抢到破产 → 已修（7911c37，镜像 0274d89）**：付款那一刻落盘（`payInWalk`：扣款 → `0x40cd87` → 入账），
+  后面几步看不到那个已出局的人、破产清算的 rand 排在后面几步之前。无剩余项。
 
 ### 跨区发现
 
 - **cards**：`answerBirthdayCard` → `applyRobCardCard` 的牌堆记账；送神符（`0x444cc4 call 0x40e32c`）离身参照格同 G-27；陷害 / 復仇卡关人不理赔（`0x43d749` 在 send_to_* 公共尾段）。
-- **cards / 傳送機（`5256fa6`，第二轮核对时发现）**：那一提交**改了 core 规则**（新增 `teleportActorTo` / `teleportObjectTo`、
-  源不再看归属、`teleportLand` / `teleportFacility` 删掉 `owner == 0` 的早退），但 `git show 5256fa6 --stat` 里
-  **只有 `packages/client/src/*` 与 `packages/core/src/*`，没有 `packages/server/src/*mp*.test.ts`** ——
-  按审计口径「改状态 / 改随机消耗的修复要有联机镜像用例」，这一条缺镜像；本区不代劳，转给 cards / 协调方。
+- **cards / 傳送機（`5256fa6`）→ 已结案（第三轮核对）**：那一提交本身只带 `packages/client/src/*` 与 `packages/core/src/*`
+  （`git show 5256fa6 --stat`），按审计口径缺联机镜像；**集成分支上的 `0d28598` 已补**：
+  `packages/server/src/teleport-mp.test.ts` 8 条用例（① 搬自己 0x8001 ② 搬惡人 actor 4 ③ 搬地上物件槽 0
+  ④ 點附身物件 ⇒ 搬附身者 ⑤ 地產→地產两段；拒收：⑥ 目标格有人 ⑦ 空物件槽 ⑧ 地產目标非「无主 0 级」），
+  判据除 `stateFingerprint` 外逐字段 `toEqual(room.state, mirror)`（指纹不收 `specialActors` / `xpos,ypos,direction,lastNodeId` /
+  `landTenure,landType,landLastToll`）。本区第二轮那句「缺镜像、转给 cards / 协调方」**已过期**，作废。
 - **econ / 破产**：破产清算拍卖流拍是否清地主（`0x40d1e3` 一带）未核；本区只给魔法屋那一场加了 `keepOwnerOnPass`。
 - **stock**：命運 8 对 0 股持仓也调 `sell_stock`（跑 `0x4294d5`），本引擎跳过（无状态差，记录在案）。
 - **文档**：`docs/deviations/Q-FORTUNE-1.md` 的神明加持表（19 应为罰金档、22 应为獎金档）；`state/types.ts:67`（命運 10/11 不走 `0x40cd07`，12/13 才走）；
@@ -218,7 +250,7 @@
 | G-04a | 三张修正表 | rules/objects.ts | 0x4749e2 / 0x474a06 / 0x474a2a | verified | 逐字节 |
 | G-05 | 老虎机：当前玩家 who_plays>1 或夢遊 ⇒ 自动转 **4 轮 16 次 rand**；真人按 1 轮 | rules/god-power.ts godPowerOf, reduce.ts applyGodPowerOnAttach | 0x43f2bc..0x43f327, 0x43f44a | fixed (8644694) | 真人点击时机 D-003（approx） |
 | G-05a | 千位只给大財神/大窮神、digit 次序 | god-power.ts rollGodAmounts | 0x4407b9, 0x43f630..0x43f685 | verified | |
-| G-06 | 老虎机窗显示的金额 | client god-slot.ts:292-315（仍按钱差反推） | 0x43f68c | follow-up | 表现；FU-5 **剩项**：应读 `lastGodPower.amount`，本轮未改 |
+| G-06 | 老虎机窗显示的金额 | client god-slot.ts godSlotCue（现读 `lastGodPower.amount`） | 0x43f68c（值来自 `0x0043f23e` 的返回值 `0x004408c8 mov ebx,eax`，窗口只按位摆到四个转轮 `0x0043f630..0x0043f685`） | fixed (4077f43) | 表现；先前按钱 / 存款 / 公库差额反推，付不起被截断或同一 action 还有别的账目时会显示成别的数 —— 改成读 core 在附身那一刻掷出来的那个数；没有新提示就不开窗 |
 | G-07 | 發威跳表 1..15 | god-power.ts | 0x40ea9b | verified | |
 | G-08 | 小財神：每个在场对手付附身者（现金），**一人破产后照轮下一位**（只在终局跳出） | reduce.ts applyGodPower | 0x40ec6a..0x40eca2 | fixed (8644694) | |
 | G-09/11/12 | 大財神进现金；小窮神付对手存款；大窮神付公库 | reduce.ts | 0x40ed3b, 0x40efa2, 0x40f05f | verified | |
@@ -233,7 +265,7 @@
 | G-20 | 福神白送一级：只认本次写下的加蓋；真人空設施选种类后才掷台词 rand | reduce.ts luckyGodBonus / buildFacility(free) | 0x40f8be..0x40fa51 | fixed (8644694) | |
 | G-22 | 土地公強佔敌意 = `A×((lvl+2)/5)` double 的低 32 位（求值次序） | rules/god-manifest.ts seizeHostilityDelta | 0x40f6c0..0x40f705 | fixed (8644694) | |
 | G-23 | 土地公附身不能买无主地 | rules/land.ts | 0x41a027, 0x41a878 | verified | |
-| G-24 | 住店走回棋盘那一回合的神明尾块（0x40f381 第二调用点） | reduce.ts endTurn 走回棋盘支 | 0x418f25..0x418f59 | follow-up | FU-4（本轮未动，信心中等） |
+| G-24 | 住店走回棋盘那一回合的神明尾块（`0x40f381` 第二调用点）—— **实测被闸挡掉，不生效** | reduce.ts endTurn 走回棋盘支（不调这一段，与 exe 等效） | 0x418f25..0x418f59；闸 0x40f39e / 0x40f3ab；`+0x32` 写点 0x41a7f4 / 0x41a7fe / 0x41c8b5 / 0x41c88f | verified | ★ FU-4 已核（2026-09-25，第三轮）：调用点确认在「当班者带 0x10」那条支上（`0x418f25 test byte [p+0x15],0x10`），参数 = 当班者**当前格** = 旅館格。但 `0x40f381` 的**头两条**就是闸：`0x40f39e cmp byte [p+0x32],0 / jne 0x40f8b3`（住店计数 ≠ 0 ⇒ 整段返回）+ `0x40f3ab cmp byte [p+0x15],0 / je`。而 `+0x32`（`days_in_hotel`）在住店期间与**走回棋盘那一回合**恒为 1..N−1 或 **0x80**：入住写 `天数−1`、为 0 时写 0x80（`0x41a7f4` / `0x41a7fe`）；之后每回合开始那一拍 `0x41c88f..0x41c8bc` 见到 0x80 只 `call 0x40d6be`（置 0x10 走回棋盘标记）**不动计数**，递减到 0 时也是 `or 0x80`（`0x41c8b5`）；清四个计数要等走回棋盘**走完**（`0x40c3cf`）。⇒ 天使 / 惡魔 / 土地公在旅館格上**什么都不做**，本引擎不调这一段是对的（先前台账写「在旅館格上生效」，是**读反了**）。同一调用点在監獄 / 醫院刑满那一条也会进（那里 `+0x32` = 0，闸开着），但那一格是 landscape（`type 0x1f40+n`、没有地块 / 設施句柄）：天使 `0x40f492 call 0x40b110` 的范围检查失败返回 0 ⇒ `0x40f4a2 test [esp+0x88],1 / je 0x40f4e1` → `je 0x40f8b3` 直接返回，惡魔 `0x40f574 → 0x40f5d0`、土地公 `0x40f753 → 0x40f83c` 两处也都是 `cmp [esp+0x88],0 / je 0x40f8b3` 直接返回 ⇒ 同样零状态变化（只有天使那一支的 `0x40f427 call 0x41d476` = `view_to` 是纯镜头）。 |
 | G-25/26 | 衰神/死神拦消费；过路费按付款人 god_info 调整 | rules/purchase.ts, god-toll.ts | 0x40fa61, 0x41d709..0x41d7c9 | verified | |
 | G-27 | 离身时搭档参照格 = 附身者当前格（未被关时） | rules/object-landing.ts withDispelNode | 0x40e356, 0x40e3cd..0x40e3d4 | fixed (8644694) | 送神符 0x444cc4 属 cards |
 | G-28 | 任期在 0x41c84f 递减 | reduce.ts tickActorDay | 0x41cc6c..0x41cca0 | verified | |
@@ -264,7 +296,7 @@
 | P-32 | 老家读 +11（放人时写 1/2，门口是落点格才 \|0x80）；第一次踩老家只置位 | special-actors.ts releaseNpc, npc-walk.ts | 0x41c7a6..0x41c83e, 0x43d84e, 0x43eefd | fixed (757e7de) | 新可选字段 SpecialActor.home（存档 +11 读写） |
 | P-33 | 查老家在尾段最后（先偷抢再回） | npc-walk.ts | 0x41c7a6 | fixed (757e7de) | |
 | P-34..36/38 | 送回 NPC 支、保釋放人、赎金、飛彈打惡人 | npc-walk.ts, reduce.ts | 0x43d760.., 0x43d7e0.., 0x43ee0f | verified | |
-| P-37 | 惡人抢银行把人抢破产：破产在 pay_money 里当场发生（之后的 rand / 占用看出局者） | reduce.ts npcStepOnce（走完再破产） | 0x41d375 → 0x40cd87 | follow-up | FU-6（本轮未动） |
+| P-37 | 惡人抢银行把人抢破产：破产在 pay_money 里当场发生（之后的 rand / 后面几步看出局者） | reduce.ts npcStepOnce 的 settle 落盘口 + payInWalk / settleWalkBatch；npc-walk.ts runNpc 的 `NpcSettle` | 0x41d375 → 0x40cd87；逐人付 0x41c39b；后续步的两处判据 0x41c35a / 0x41c1d6 | fixed (7911c37) | FU-6 已修：付款那一刻落盘（扣款 → 破产 → 入账，原版次序），破产清算的 rand（搭档挑格 0x40e297 / 下線拍卖 0x40d1f7）排在后面几步之前，后面几步也看不到那个已经出局的人；勒索 / 取過路費那两处付款（0x41c576 / 0x41c64e）同一口径。镜像 `packages/server/src/npc-pay-bankrupt-mp.test.ts`（0274d89）。⚠️ 已知近似（本区旧账，未随本轮修）：原版**走一格就更新替身的格**（`0x0040c1cc call 0x40fc00` → `0x40fc23`），破产清算挑格（`0x40e297` → `0x40aa6c` 的占用位）因此看得见他**当前**那一格；本引擎一趟走完才写回 `specialActors`，落盘那一刻他的格还是这一趟的**起步格**（原先「整趟走完再破产」时是终点格）——两种写法都与逐格更新差一格。可观测差别：搭档/开局物件挑格可能落在惡人此刻站的那一格上（原版会跳过）。`packages/core/src/state/npc-pay-bankrupt.test.ts` 的夹具把 1..3 号格设成 `noObjects` 就是为了让这条正交于随机数次序。 |
 | P-39 | 若干惡人訊息框/影片 | client | 0x41bab8 等 | approx | 表现 |
 | B-01/03/04 | 乞丐：最低位且已出局、停步才给；1000×物價给公库；挑远格 | beggar.ts, reduce.ts giveAlmsIfBeggar | 0x41b5fd..0x41b686, 0x40aa6c | verified | |
 | B-02 | 占用位排除被关/住店/消失者 | beggar.ts beggarAt | 0x43d61d / 0x40d5d2 / 0x40d444 | fixed (757e7de) | |
@@ -358,8 +390,8 @@
 | T-02 | 傳送機設施：+0x19/+0x1a/+0x18/+0x34 搬，+0x30 清源 | rules/teleport.ts teleportFacility | 0x004475d8..0x0044760f | verified | |
 | T-03 | 傳送機搬人：候选邻居（非 0、未封）中朝向圆周距离最小者；来路 = 第一个不同的候选 | rules/teleport.ts pickFacingAt | 0x0044768f..0x004477ae | verified | |
 | T-04 | 搬人后 0x40fc00：跟班物件同格 | rules/teleport.ts teleportPlayer | 0x00447844 | fixed (d679e70) | |
-| T-05 | 傳送機搬惡人（槽 ≥4）/ 地上物件 | cards 区 `5256fa6`：rules/teleport.ts teleportActorTo / teleportObjectTo | 0x004476ef, 0x00447857..0x004478b5, 0x004478cb..0x004479ae | fixed (5256fa6，cards 区；本分支未合并) | 两段拾取；第二段取消 `0x4479b3` 不扣道具；本区只记录引用 |
-| T-06 | 傳送機住宅空地不能搬（owner==0 返回 null） | cards 区 `5256fa6`：rules/teleport.ts teleportLand 删掉该限制 | 0x00447469 push 0x1200036（类别 0x36、组字节 0 = 不设限）；目标 0x004474f5 push 0x2090802 / 0x00447598 push 0x2090804（子类 8 = 无主 0 级） | fixed (5256fa6，cards 区；本分支未合并) | 源不看归属 ⇒「空地不能搬」是错的；子类 8 管的是**目标** |
+| T-05 | 傳送機搬惡人（槽 ≥4）/ 地上物件 | cards 区 `5256fa6`：rules/teleport.ts teleportActorTo / teleportObjectTo | 0x004476ef, 0x00447857..0x004478b5, 0x004478cb..0x004479ae | fixed (5256fa6，cards 区；已并入 `ds/audit-provenance`，`rules/teleport.ts:101/122`) | 两段拾取；第二段取消 `0x4479b3` 不扣道具；镜像见 `packages/server/src/teleport-mp.test.ts`（0d28598） |
+| T-06 | 傳送機住宅空地不能搬（owner==0 返回 null） | cards 区 `5256fa6`：rules/teleport.ts teleportLand 删掉该限制 | 0x00447469 push 0x1200036（类别 0x36、组字节 0 = 不设限）；目标 0x004474f5 push 0x2090802 / 0x00447598 push 0x2090804（子类 8 = 无主 0 级） | fixed (5256fa6，cards 区；已并入 `ds/audit-provenance`，`rules/teleport.ts:101/122`) | 源不看归属 ⇒「空地不能搬」是错的；子类 8 管的是**目标** |
 | TM-01 | 時光機：回合开始只给 who_plays bit0 的人存快照 | rules/time-machine.ts:68 | 0x004480a0/0x004480a7 | verified | |
 | TM-02 | 時光機还原：没快照不消耗道具 | reduce.ts useToolAction | 0x00448568, 0x004473b2 | verified | |
 | TM-03 | 時光機还原的范围：原版逐块 memcpy（玩家/替身/物件/手牌/道具/牌堆/股市/地图/占用表/若干全局），rand 不还原 | rules/time-machine.ts:84 | 0x0044857d..0x00448a46 | approx | 引擎整局还原（除 rng/快照）；块清单已列在 VA 段，未逐字段比 |

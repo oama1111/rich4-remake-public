@@ -138,7 +138,7 @@ describe('版面与素材 @source 0x00440714 / 0x004407ec / 0x00440811 / 0x0043f
 });
 
 // ============================================================
-//  这一趟该演什么（从金钱差额反推）
+//  这一趟该演什么（金额 = core 交出来的 `lastGodPower.amount`）
 // ============================================================
 
 interface Mini {
@@ -146,6 +146,14 @@ interface Mini {
   bank: number;
 }
 
+/**
+ * `before → after` 这一对。
+ *
+ * ★★ FU-5（2026-09-25）：金额不再是「钱 / 存款 / 公库的差额」，而是 core 在附身那一刻
+ *   掷出来、记进 `GameState.lastGodPower` 的那一个（原版窗口里显示的就是它）。
+ *   `amountHint` 给了才写一条**新的**提示（引用不相等 = 本 action 新写的）；
+ *   不给就是「这条 action 没写新提示」。
+ */
 function stateOf(
   players: Mini[],
   godType: number,
@@ -153,6 +161,7 @@ function stateOf(
   pool = 0,
   prevGod = 0,
   godHandle = 1,
+  amountHint?: number,
 ): { before: GameState; after: GameState } {
   const mk = (p: Mini, god: number): unknown => ({
     cash: p.cash,
@@ -166,17 +175,20 @@ function stateOf(
     pool,
     players: players.map((p) => mk(p, 0)),
     objects: [{ type: godType, nodeId: 3, attached: 0, state: 0 }],
+    lastGodPower: null,
   } as unknown as GameState;
   const after = {
     ...before,
     players: players.map((p, i) => mk(p, i === host ? godHandle : 0)),
+    lastGodPower:
+      amountHint === undefined ? null : { player: host, type: godType, amount: amountHint },
   } as unknown as GameState;
   void prevGod;
   return { before, after };
 }
 
-describe('★ 反推这一趟：金额从金钱差额来、不重掷随机数', () => {
-  it('1 小財神：对手的现金减少额（三位數机体）', () => {
+describe('★★ FU-5：金额直接读 core 的 `lastGodPower.amount`（0x43f68c 那一半）', () => {
+  it('1 小財神：读提示里的数，三位數机体', () => {
     const { before, after } = stateOf(
       [
         { cash: 100, bank: 0 },
@@ -184,8 +196,12 @@ describe('★ 反推这一趟：金额从金钱差额来、不重掷随机数', 
         { cash: 400, bank: 0 },
       ],
       1,
+      0,
+      0,
+      0,
+      1,
+      300,
     );
-    after.players[1]!.cash = 100; // 付了 300
     const cue = godSlotCue(before, after);
     expect(cue).not.toBeNull();
     expect(cue!.godType).toBe(1);
@@ -195,37 +211,75 @@ describe('★ 反推这一趟：金额从金钱差额来、不重掷随机数', 
     expect(cue!.text).toBe('小財神附身\n\n向所有對手收...');
   });
 
-  it('2 大財神：附身者的现金增加额（四位數机体）', () => {
-    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2);
-    after.players[0]!.cash = 5199;
+  it('2 大財神：四位數机体', () => {
+    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2, 0, 0, 0, 1, 5099);
     const cue = godSlotCue(before, after);
     expect(cue!.variant).toBe(0);
     expect(cue!.amount).toBe(5099);
     expect(cue!.text).toBe('大財神附身\n\n送您...');
   });
 
-  it('5 小窮神：对手的**存款**增加额', () => {
+  it('5 小窮神：三位數机体', () => {
     const { before, after } = stateOf(
       [
         { cash: 100, bank: 0 },
         { cash: 100, bank: 10 },
       ],
       5,
+      0,
+      0,
+      0,
+      1,
+      250,
     );
-    after.players[1]!.moneyInBank = 260;
     const cue = godSlotCue(before, after);
     expect(cue!.variant).toBe(1);
     expect(cue!.amount).toBe(250);
     expect(cue!.text).toBe('小窮神附身\n\n付給每個人...');
   });
 
-  it('6 大窮神：公库增加额（四位數机体）', () => {
-    const { before, after } = stateOf([{ cash: 900, bank: 0 }], 6, 0, 0);
-    after.pool = 1234;
+  it('6 大窮神：四位數机体', () => {
+    const { before, after } = stateOf([{ cash: 900, bank: 0 }], 6, 0, 0, 0, 1, 1234);
     const cue = godSlotCue(before, after);
     expect(cue!.variant).toBe(0);
     expect(cue!.amount).toBe(1234);
     expect(cue!.text).toBe('大窮神附身\n\n損失...');
+  });
+
+  it('★★ 金额**不**从金钱差额反推 —— 差额与提示不一致时按提示走', () => {
+    // 小財神：对手实际只少了 300（`pay_money` 截断过），而掷出来的数是 700
+    const { before, after } = stateOf(
+      [
+        { cash: 100, bank: 0 },
+        { cash: 400, bank: 0 },
+      ],
+      1,
+      0,
+      0,
+      0,
+      1,
+      700,
+    );
+    after.players[1]!.cash = 100; // 差额只有 300
+    expect(godSlotCue(before, after)!.amount).toBe(700);
+
+    // 大窮神：公库这一条 action 里另外还被别的事加过（差额 334），提示是 1234
+    const g6 = stateOf([{ cash: 900, bank: 0 }], 6, 0, 900, 0, 1, 1234);
+    g6.after.pool = 1234;
+    expect(godSlotCue(g6.before, g6.after)!.amount).toBe(1234);
+  });
+
+  it('★ 这条 action 没写新提示（引用相等 / 缺字段）⇒ 不开窗', () => {
+    const none = stateOf([{ cash: 100, bank: 0 }], 2);
+    expect(godSlotCue(none.before, none.after)).toBeNull();
+    // 同一份提示（引用相等）也不算「本 action 新写的」
+    const stale = stateOf([{ cash: 100, bank: 0 }], 2, 0, 0, 0, 1, 900);
+    const same = { ...stale.after, lastGodPower: stale.after.lastGodPower } as GameState;
+    expect(godSlotCue(stale.after, same)).toBeNull();
+    // 提示给的是别人 / 别种神 ⇒ 也不认
+    const other = stateOf([{ cash: 100, bank: 0 }], 2, 0, 0, 0, 1, 900);
+    other.after.lastGodPower = { player: 1, type: 2, amount: 900 };
+    expect(godSlotCue(other.before, other.after)).toBeNull();
   });
 
   it('★ 不是那四种金額型（福神/衰神/死神）→ 不开这扇窗', () => {
@@ -547,7 +601,8 @@ describe('★ 屏幕本体', () => {
   it('★ 大財神附身 → 起播循环音 51（0x004408b2 起、0x004408bf 停、0x0043f2ab 再起 ⇒ 转动全程在响）', () => {
     resetGodSlot();
     const { env, effects, stops } = mkEnv();
-    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2);
+    // ★ FU-5 起：金额由 core 的 `lastGodPower` 交出来（本用例只关心屏幕行为）
+    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2, 0, 0, 0, 1, 1000);
     after.players[0]!.cash = 1100;
     godSlotScreen.event?.(before, after, env);
     // ★ 2026-09-22（第十一份試玩回報 #6）：`event()` 现在只**记下** cue，要等
@@ -576,7 +631,8 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
   it('★ 在转 ⇒ 关窗并停掉 51', () => {
     resetGodSlot();
     const { env, stops } = mkEnv();
-    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2);
+    // ★ FU-5 起：金额由 core 的 `lastGodPower` 交出来（本用例只关心屏幕行为）
+    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2, 0, 0, 0, 1, 1000);
     after.players[0]!.cash = 1100;
     godSlotScreen.event?.(before, after, env);
     godSlotScreen.tick?.(env);
@@ -590,7 +646,8 @@ describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
   it('★ 还在等附身影片收场（`pendingCue`）的那一局也作废 —— 之后闸开了也不再起播', () => {
     resetGodSlot();
     const { env } = mkEnv();
-    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2);
+    // ★ FU-5 起：金额由 core 的 `lastGodPower` 交出来（本用例只关心屏幕行为）
+    const { before, after } = stateOf([{ cash: 100, bank: 0 }], 2, 0, 0, 0, 1, 1000);
     after.players[0]!.cash = 1100;
     godSlotScreen.event?.(before, after, env);
     expect(godSlotScreen.active(env)).toBe(true); // 押着，没起播

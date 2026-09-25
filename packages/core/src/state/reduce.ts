@@ -24,7 +24,7 @@ import type {
 import type { SpecialActor } from '../rules/special-actors.ts';
 import { isAiControlled, isAlive, isInGame, isUnplaced } from './types.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
-import { applyNpcEvents, runNpc, type NpcEvent } from '../rules/npc-walk.ts';
+import { ROB_BANK_FLAGS, applyNpcEvents, runNpc, type NpcEvent } from '../rules/npc-walk.ts';
 import {
   ACTOR_DOLL,
   NPC_ACTORS,
@@ -76,7 +76,16 @@ import type {
 import { GOD_BLOCKS_PURCHASE, housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
 import { collectRent, LAND_TOLL_FEE_NAME, rentHostility } from '../rules/rent.ts';
 import { truncTowardZero } from '../rules/rounding.ts';
-import { PARTY_POOL, PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
+import {
+  PARTY_POOL,
+  PAY_FLAG_CREDIT_TO_CASH,
+  PAY_FLAG_DEBIT_FROM_BANK,
+  companyParty,
+  debitPlayer,
+  receiveMoney,
+  transferMoney,
+  type Company,
+} from '../rules/payment.ts';
 import {
   aiScapegoat,
   aiUsesFreeCard,
@@ -919,6 +928,107 @@ function activeNpcSlots(state: GameState): number[] {
  *
  * 返回 `null` 表示这个槽不在了（不在盘上 / 已出局），调用方跳过它。
  */
+/**
+ * 走子里的一笔 `pay_money` —— **按原版的次序**：先扣款、当场破产、**再**入账。
+ *
+ * @source VA 0x0041d2c6（`pay_money`）：
+ * ```asm
+ * 0041d2fd / 0041d33d  …              ; 两级级联扣款（先存款 / 先现金两支对称）
+ * 0041d375  push esi / call 0x40cd87  ; ★ 两个口袋都空 ⇒ **在这一刻**破产
+ * 0041d37e  add  [payer + 0x5c], ebx  ; 付款方累计**实付额**
+ * 0041d387..0041d3ca                  ; ★ 收款方**在破产之后**才按实付额入账
+ * ```
+ *
+ * ★ 与纯函数 `transferMoney` 的唯一差别就是**破产的时机**：那里先入账、再由调用方收口，
+ *   而原版是「扣款 → 破产 → 入账」。这不是无关紧要的次序：破产清算要掷 `rand()`
+ *   （`0x40e297` 搭档挑格 / `0x40d1f7` 下線拍卖），开拍又要按**当时的现金**定座位状态与
+ *   心理价位（`0x43c140 cmp 现金,底价` / `0x439f0d` 尾句 `min(…, 现金)`）——
+ *   收款人那一刻**还没**拿到这笔钱。
+ *
+ * ⚠️ 只处理玩家↔玩家：走子里三处付款的收款方都是惡人的**主人**、付款方都是玩家
+ *   （抢银行 `0x0041c39b` / 勒索 `0x0041c576` / 取過路費 `0x0041c64e`），
+ *   走不到公库与企业那两支。
+ */
+function payInWalk(
+  state: GameState,
+  topo: MapTopology,
+  payer: number,
+  payee: number,
+  amount: number,
+  flags: number,
+): GameState {
+  const p = state.players[payer];
+  if (p === undefined) return state;
+  const out = debitPlayer(p.cash, p.moneyInBank, amount, (flags & PAY_FLAG_DEBIT_FROM_BANK) !== 0);
+  let next: GameState = {
+    ...state,
+    players: state.players.map((q, i) =>
+      i === payer
+        ? { ...p, cash: out.cash, moneyInBank: out.bank, monthlyPaid: p.monthlyPaid + out.paid }
+        : q,
+    ),
+  };
+  // @source 0x0041d375 `call 0x40cd87` —— 破产就在扣款与入账之间
+  if (out.bankrupted) next = applyBankruptcy(next, payer, topo);
+  // @source 0x0041d3af..0x0041d3ca：收款方按**实付额**入账（bit0 置位 = 進現金）
+  const q = next.players[payee];
+  if (q !== undefined && out.paid !== 0) {
+    const toCash = (flags & PAY_FLAG_CREDIT_TO_CASH) !== 0;
+    next = {
+      ...next,
+      players: next.players.map((r, i) =>
+        i === payee
+          ? {
+              ...q,
+              cash: toCash ? q.cash + out.paid : q.cash,
+              moneyInBank: toCash ? q.moneyInBank : q.moneyInBank + out.paid,
+              monthlyReceived: q.monthlyReceived + out.paid,
+            }
+          : r,
+      ),
+    };
+  }
+  return next;
+}
+
+/**
+ * 走子里的**付款落盘口** —— `runNpc` 每付一笔就把它已产出的事件交过来一次（见 `NpcSettle`）。
+ *
+ * 非付款事件照旧批量走 `applyNpcEvents`；三处会把人付破产的付款（抢银行 / 勒索 / 取過路費）
+ * 单独走 `payInWalk`。两类事件交替出现时**按原顺序分段**应用，不重排。
+ */
+function settleWalkBatch(
+  state: GameState,
+  owner: number,
+  batch: readonly NpcEvent[],
+  topo: MapTopology,
+): GameState {
+  let out = state;
+  let plain: NpcEvent[] = [];
+  const flushPlain = (): void => {
+    if (plain.length === 0) return;
+    const r = applyNpcEvents(out, owner, plain);
+    out = r.state;
+    // ⚠️ 走子里只有那三处付款会破产（`robBank` / `protection` / `toll`），
+    //   非付款事件正常一个都带不出来；真带出来也照样当场收口，不留到整趟之后。
+    for (const who of r.bankrupted) out = applyBankruptcy(out, who, topo);
+    plain = [];
+  };
+  for (const e of batch) {
+    if (e.kind === 'robBank') {
+      flushPlain();
+      out = payInWalk(out, topo, e.from, owner, e.amount, ROB_BANK_FLAGS);
+    } else if (e.kind === 'protection' || e.kind === 'toll') {
+      flushPlain();
+      out = payInWalk(out, topo, e.landlord, owner, e.amount, 0);
+    } else {
+      plain.push(e);
+    }
+  }
+  flushPlain();
+  return out;
+}
+
 function npcStepOnce(
   state: GameState,
   topo: MapTopology,
@@ -943,6 +1053,10 @@ function npcStepOnce(
     // 停留（`+14 halted != 0`）：这一趟不走，但计数照样走了一天
     return put({ ...state, rngState: rng.getState(), lastNpcWalks: [], lastNpcTurn: turn }, ticked);
   }
+  // ★★ FU-6：**付款那一刻**就把这一批事件落盘 —— 原版 `pay_money` 在里面就破产
+  //   （`0x0041d375 call 0x40cd87`）。破产清算的随机数（搭档挑格 / 下線拍卖）因此排在
+  //   后面几步之前，后面几步看到的也是**已经出局**的那一位（`0x0041c35a` / `0x0041c1d6`）。
+  let live = state;
   const walk = runNpc(
     actorId,
     { ...ticked, stepsRemaining: steps },
@@ -950,8 +1064,12 @@ function npcStepOnce(
     topo,
     (from, prev) => pickNextNode(topo, from, prev, rng) ?? 0,
     rng,
+    (batch: readonly NpcEvent[], rngState: number) => {
+      live = settleWalkBatch({ ...live, rngState }, ticked.owner, batch, topo);
+      return live;
+    },
   );
-  const settled = applyNpcEvents(state, ticked.owner, walk.events);
+  const settled = applyNpcEvents(live, ticked.owner, walk.unapplied);
   // ★ 小偷五种战利品那一句「小偷偷得%s\n\n給%s！」（见 `npcNotices`）
   const notices = npcNotices(state, walk.events, ticked.owner);
   let next = put(
