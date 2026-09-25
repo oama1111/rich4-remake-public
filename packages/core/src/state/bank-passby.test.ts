@@ -188,3 +188,29 @@ describe('★ 路过銀行', () => {
     expect(r.pending).toBeNull();
   });
 });
+
+describe('★ 2026-09-24 审计：电脑路过銀行重分現金/存款之后查銀行準備（0x00437c12 push 1 / call 0x436b0a）', () => {
+  run('重分过 ⇒ 别人存款合计 < 董事長欠的特別融資 ⇒ 董事長垫付缺口', () => {
+    const { state, topo } = beforeBank({
+      steps: 2,
+      whoPlays: WHO_PLAYS_COMPUTER,
+      over: (p) => ({ ...p, cashRatio: 20, cash: 8000, moneyInBank: 0 }),
+    });
+    const bankCo = (topo.commercials ?? []).find((c) => c.type === 7);
+    expect(bankCo, '这张图应该有銀行企業').toBeDefined();
+    const commercialOwners = [...state.commercialOwners];
+    commercialOwners[bankCo!.id] = { owner: 2, ranking: [2, 0, 0, 0] };
+    const s: GameState = {
+      ...state,
+      commercialOwners,
+      players: state.players.map((p, i) =>
+        i === 1 ? { ...p, specialFinance: 900_000, moneyInBank: 2_000_000 } : i === 0 ? p : { ...p, moneyInBank: 0 },
+      ),
+    };
+    const r = reduce(s, { type: 'step' }, topo);
+    // 0 号確實重分过（5000 / 3000 这个比例离目标很远）
+    expect(r.players[0]!.moneyInBank).not.toBe(s.players[0]!.moneyInBank);
+    expect(r.notices.some((n) => n.key === 'bank.reserveShortfall')).toBe(true);
+    expect(r.players[1]!.specialFinance).toBeLessThan(900_000);
+  });
+});
