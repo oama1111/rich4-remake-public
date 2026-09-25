@@ -257,7 +257,7 @@ export interface GodSlotCue {
   arg: number;
   /** `(arg & 1) ^ 1` —— 0 四位數机体 / 1 三位數机体 */
   variant: number;
-  /** 这一趟的金额（从金钱差额反推，见文件头）*/
+  /** 这一趟的金额 = core 交出来的 `lastGodPower.amount`（原版窗口里那个数）*/
   amount: number;
   /** 附身的那位（玩家下标）*/
   host: number;
@@ -270,13 +270,15 @@ export interface GodSlotCue {
 /**
  * 刚刚是不是「四种金額型的神明附身」？是的话把这一趟要演的东西解出来。
  *
- * 金额**从金钱差额反推**（不重掷随机数）：
- * - 1 小財神：取第一个对手的**现金**减少额；
- * - 2 大財神：附身者的**现金**增加额；
- * - 5 小窮神：第一个对手的**存款**增加额；
- * - 6 大窮神：**公库**增加额。
- *
- * ⚠️ 破产被截断时反推出来的是**实付额**（与屏幕上该显示的一致）。
+ * ★★ FU-5（2026-09-25）**金额直接读 core 的那一个**（`GameState.lastGodPower.amount`，W-55 行 7），
+ *   不再按「钱 / 存款 / 公库的差额」反推：
+ * - 原版窗口里显示的数就是状态机 `fcn_0043f23e` 的返回值（`0x004408c8 mov ebx,eax`），
+ *   而它就是 `godPowerOf` 掷出来的那个三位/四位数 —— 窗口只是把它**按位摆到四个转轮上**
+ *   （`0x0043f630..0x0043f685` 由 `[0x48c504..0x48c507]` 四个转轮字节拼出 `%d元`）。
+ *   引擎那边同一个数已经在附身那一刻记进 `lastGodPower`。
+ * - 反推在两种情形下与原版显示的不是同一个数：`pay_money` 付不起时实付额被截断
+ *   （`0x0041d32e` 那条级联，被抢的人少付 ⇒ 差额比掷出来的数小），
+ *   以及同一 action 里还有别的账目变动（同盟分账、理赔、破产清算）时会挑错人 / 挑错栏。
  */
 export function godSlotCue(before: GameState, after: GameState): GodSlotCue | null {
   const host = after.currentPlayer;
@@ -289,34 +291,12 @@ export function godSlotCue(before: GameState, after: GameState): GodSlotCue | nu
   const arg = GOD_SLOT_ARG[god.type];
   if (arg === undefined) return null;
 
-  let amount = 0;
-  switch (god.type) {
-    case 1: {
-      for (let i = 0; i < before.players.length && amount === 0; i++) {
-        if (i === host) continue;
-        amount = Math.max(0, (before.players[i]?.cash ?? 0) - (after.players[i]?.cash ?? 0));
-      }
-      break;
-    }
-    case 2:
-      amount = Math.max(0, now.cash - was.cash);
-      break;
-    case 5: {
-      for (let i = 0; i < before.players.length && amount === 0; i++) {
-        if (i === host) continue;
-        amount = Math.max(
-          0,
-          (after.players[i]?.moneyInBank ?? 0) - (before.players[i]?.moneyInBank ?? 0),
-        );
-      }
-      break;
-    }
-    case 6:
-      amount = Math.max(0, after.pool - before.pool);
-      break;
-    default:
-      return null;
-  }
+  // ★★ FU-5：金额 = core 在附身那一刻掷出来、记进 `lastGodPower` 的那一个。
+  //   引用相等 = 这条 action 没写新提示（见 `reduce` 出口的清理与 `speech.ts` 同一口径）
+  //   ⇒ 这一趟不该开窗（老存档 / 缺提示的旁观端也一样：宁可不演，不许演错数）。
+  const hint = after.lastGodPower ?? null;
+  if (hint === null || before.lastGodPower === hint) return null;
+  if (hint.player !== host || hint.type !== god.type) return null;
 
   const fmt =
     god.type === 1
@@ -330,7 +310,7 @@ export function godSlotCue(before: GameState, after: GameState): GodSlotCue | nu
     godType: god.type,
     arg,
     variant: godSlotVariant(arg),
-    amount,
+    amount: hint.amount,
     host,
     text: formatOriginal(fmt, godNameOf(god.type)),
     // @source `0x0043f75e cmp byte [+0x15], 1 / jne` —— ★ 整字节：託管（1|4）不认点击（2026-09-23 订正）
