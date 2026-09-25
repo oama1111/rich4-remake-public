@@ -32,25 +32,47 @@
 
 ## A. 需求方回报里还没处理的（优先级最高）
 
-### A-1　iPhone Safari：「输入文字后画面显示不全」
+### A-1　iPhone Safari：「输入文字后画面显示不全」　【2026-09-25 晚复核：`a247124` 早已修过，只差真机确认】
 - **回报**：`feedback/20260925-030128992-manual-Charles.json`
   - 联机，第 36 回合；
   - UA `iPhone OS 18_7 … Safari`，canvas 2496×1128 @dpr3，横屏。
-- **现状 ✅已核**：没有任何提交处理过它。`provenance-loop.md:188` 只把它当回放样本用过，没有修。
+- **现状 ❌本条有误 → ✅已核（2026-09-25 晚复核）**：原文写「没有任何提交处理过它」——**不对**。
+  `a247124`（2026-09-24 23:15 -0400 = 这份回报提交后 **14 分钟**）就是修它的，标题一字不差：
+  「fix(web): iPhone Safari 打完字画面显示不全」。它已在 `ds/audit-provenance` 里（是本清单基线的祖先），
+  也已在线上 bundle `index-Deqvkkj1.js` 里（`packages/client/dist-web/index.html` 有那条 `!important`、
+  bundle 里有 `maximum-scale`）。当时只按**回报文件名** grep 提交信息，而提交信息里没写文件名，于是漏了。
   回报截图是 canvas 自己的内容（正常），**看不到页面视口**，所以截图里看不出问题。
 - **最可能的触发点**：「一键回报」那个备注输入框。需求方写这条回报时本身就在里面打了字。
   其次是联机大厅的昵称框。
-- **待核的两个原因**：
+- **待核的两个原因**（两个都成立，都已被 `a247124` 按下列办法关掉）：
   1. iOS 对 `font-size < 16px` 的 `<input>` / `<textarea>` 聚焦时会自动放大页面，收起键盘后不复原；
   2. 收键盘后 `visualViewport` 变了，而舞台布局（`stage.ts` / `currentMetrics()`）没有重算，`window.scrollY` 也没归零 ⇒ 舞台被切掉一截。
-- **修复目标**：
-  1. 所有文本输入在触屏上 `font-size ≥ 16px`（CSS 里对 `input, textarea` 统一设），从根上阻止自动缩放；
-  2. 输入框 `blur` 和 `visualViewport` `resize` / `scroll` 时，重算舞台尺寸、`window.scrollTo(0, 0)`；
-  3. 输入期间别让画布跟着 `visualViewport` 抖动；关掉输入框后画面必须回到进框前的完整取景。
+- **已做的修复**（`a247124`，与上面三条修复目标逐条对上）：
+  1. `text-entry.ts:33` 的 `TEXT_ENTRY_FONT_PX = 16`：门厅昵称（`foyer.ts:269`）、联机存档取名（`net-save.ts:44`）、
+     回报备注框（`index.html:97-102`）都改 16px，`index.html:23-24` 再加一条 `!important` 兜底规则盖住后来的框；
+  2. `viewport.ts:221` 的 `installTextEntryRecovery`：文字框 `focusout` / `orientationchange` 后
+     0/120/350/700ms 各收拾一次（卷回原点、打字引起的放大用 meta 复位招夹回 1、重钉 body + 排一帧），
+     `main.ts:802` 装上；`currentMetrics()`（`main.ts:9838`）本来就每次从 `canvas.width/height` 现算，
+     `resizeCanvas()` 每帧开头都调（`main.ts:8811`）⇒ 舞台一定会跟着重算；
+  3. iOS UA 下 meta viewport 常驻 `maximum-scale=1`（`main.ts:801` + `viewport.ts:158`）——
+     这条是**只挡聚焦自动放大**的那一层，也是真机上唯一还没实测过的一条（见下面「待真机确认」）。
 - **验收**：
   - Playwright WebKit + `devices['iPhone 13 landscape']`：打开回报框、输入、提交或关闭，然后对比 `canvas.getBoundingClientRect()` 与 `window.visualViewport`，比例与位置恢复原样、无页面滚动；
   - 昵称输入框同样测一遍；
   - 再请需求方真机复测。
+- **验收结果（2026-09-25 晚补做，新工具 `tools/ios-text-pw.mjs`）**：上面三条**全过**（28 条断言 0 失败，见该文件头部的用法）。
+  四个场景：回报框「取消」/「送出」、门厅昵称框、可视区真的伸缩一次；每个场景都断
+  画布矩形 / body 矩形 / `visualViewport` 三者与进框前**逐字段相同**，且 `scrollX/Y = 0`。
+  反向验过这个工具不是空跑的：把 `index.html` 的兜底规则改成 13px，两条字号断言立刻 failed。
+  ⚠️ **桌面 WebKit 为什么验不到 iOS 那一半**：iOS 的「聚焦 `font-size < 16px` 文字框自动放大」是
+  **iOS Safari 自己的**行为，Playwright 那份桌面 WebKit 里没有 —— 没有软键盘，`visualViewport`
+  永远等于布局视口、`scale` 永远是 1，聚焦文字框不产生任何位移。所以这个工具断得了
+  「引擎里那条路走完没留下位移」，断不了「iOS 压根不会放大」。后者只有真机能测。
+- **⚠️ 这一节不算「全验过」—— 下面两条必须需求方真机点头才算收口**：
+  1. 在备注框 / 昵称框打完字、收键盘后，画面是不是整块回来（原因 1 + 原因 2 的 iOS 那一半）；
+  2. `maximum-scale=1` 会不会把**双指缩放**一起挡掉。`viewport.ts:131` 的注释按「iOS 10 起只挡聚焦放大、
+     双指照旧」写，但这句**没有实测过**；棋盘本身已经 `touch-action: none`（`index.html:31`，手势全归
+     `touch-input.ts`），所以就算真挡掉，玩家侧大概也看不出差别 —— 但要顺手问一句，别把注释当成事实。
 
 ### A-2　「强制征收土地一处好像没生效」（命運事件 1）
 - **回报**：`feedback/20260925-032752009-manual-Charles.json`
