@@ -1070,7 +1070,8 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
 
     const { state, actions } = runAuction(s);
     expect(state.pending).toBeNull();
-    expect(state.phase).toBe('turnEnd');
+    // ★ 审计（AUC-45）：拍賣卡落槌后回到出卡时的相位，用卡者照常掷骰（0x0044336b 返回 1 → 0x00418e75 call 0x40dd1f）
+    expect(state.phase).not.toBe('turnEnd');
     // 至少有人举过牌（原缺口下这里一口都没有）
     expect(actions.some((a) => a.includes('"status":"raise"'))).toBe(true);
   });
@@ -1307,7 +1308,7 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
     s = reduce(s, { type: 'useCard', cardId: 8 }, topo);
     // 所有座位一开拍就 givenUp → **当场**流标（pending 都不挂）
     expect(s.pending).toBeNull();
-    expect(s.phase).toBe('turnEnd');
+    expect(s.phase).not.toBe('turnEnd'); // 审计（AUC-45）：用卡者不丢这一掷
     expect(s.landOwner[LAND]).toBe(0); // 变无主
     expect(s.players.map((p) => p.cash)).toEqual([2999, 2999, 2999, 2999]); // 一分钱没动
   });
@@ -1464,5 +1465,15 @@ describe('★ 2026-09-25 审计（AUC-46）：加价额只能是档位表里的�
     expect(reduce(s, { type: 'auctionBid', bidder, status: 'raise', step: 300 }, topo)).toBe(s);
     const ok = reduce(s, { type: 'auctionBid', bidder, status: 'raise', step: 500 }, topo);
     expect(ok).not.toBe(s);
+  });
+});
+
+describe('★ 2026-09-25 审计（AUC-45）：掷骰前打拍賣卡，落槌后照样能掷骰', () => {
+  it('awaitingRoll 打卡 → 拍完回到 awaitingRoll，能 roll', () => {
+    const s0: GameState = { ...auctionGame(2999), phase: 'awaitingRoll' };
+    const s = reduce(s0, { type: 'useCard', cardId: 8 }, topo);
+    expect(s.pending).toBeNull();
+    expect(s.phase).toBe('awaitingRoll');
+    expect(reduce(s, { type: 'rollDice' }, topo).phase).not.toBe('awaitingRoll');
   });
 });

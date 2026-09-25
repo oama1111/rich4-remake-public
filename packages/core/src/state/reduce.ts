@@ -637,7 +637,7 @@ function settleAuctionExplicit(
       ...(fr.clearTenure === true ? { facilityTenure: withTenure(state.facilityTenure, entityId, 0) } : {}),
       pool: fr.pool,
       pending: null,
-      phase: 'turnEnd',
+      phase: pending.resumePhase ?? 'turnEnd',
     };
     // 中标者若因付款破产，破产流程本身会把该结的都结掉，队列交给它继续
     return fr.bankrupted ? applyBankruptcy(settled, w, topo) : chainQueuedAuction(settled, topo);
@@ -662,7 +662,7 @@ function settleAuctionExplicit(
     ...(r.clearTenure === true ? { landTenure: withTenure(state.landTenure, entityId, 0) } : {}),
     pool: r.pool,
     pending: null,
-    phase: 'turnEnd',
+    phase: pending.resumePhase ?? 'turnEnd',
   };
   return r.bankrupted ? applyBankruptcy(settled, w, topo) : chainQueuedAuction(settled, topo);
 }
@@ -5616,7 +5616,9 @@ function playCard(
   //   挂出来时就把座位表、心理价位、现价、轮到谁一并建好（见 openAuction）。
   if (r.followUp !== null) {
     if (r.followUp.kind === 'auction') {
-      return startAuction(next, topo, r.followUp);
+      // ★ 2026-09-25 审计（AUC-45）：落槌之后回到出卡时的相位（掷骰前），不是 turnEnd —— 见 `resumePhase`
+      const resume = state.phase === 'awaitingRoll' || state.phase === 'turnStart' ? state.phase : undefined;
+      return startAuction(next, topo, { ...r.followUp, ...(resume === undefined ? {} : { resumePhase: resume }) });
     } else {
       next = { ...next, pending: r.followUp, phase: 'awaitingDecision' };
     }

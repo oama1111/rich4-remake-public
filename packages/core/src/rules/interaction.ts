@@ -202,6 +202,12 @@ export type PendingInteraction =
        * `0x0044335f mov dword [esi+0x30],eax`(=0)；設施 `0x00443486` / `0x0044348a` `+0x34`）。
        */
       fromCard?: boolean;
+      /**
+       * ★ 2026-09-25 审计：落槌之后回到哪个相位。拍賣卡在掷骰前打出，卡函数 `0x0044336b mov ebx,1` 返回成功，
+       *   回合照常往下走（电脑支 `0x00418e21 call 0x441baa` 之后 `0x00418e75 call 0x40dd1f` 掷骰走子；真人回到选单）
+       *   ⇒ 用卡者**不丢这一掷**。缺省 = `turnEnd`（落点 / 新聞 / 破产那几场本来就在回合收尾里）。
+       */
+      resumePhase?: 'awaitingRoll' | 'turnStart';
       /** 现价 `[0x48c488]`：每一口加价都改写它；还没人出价时 = `basePrice` */
       price: number;
       /** 当前最高出价者的**玩家下标**；-1 = 还没人出价 @source `[0x48c4a8]` */
@@ -398,7 +404,7 @@ export type PendingInteraction =
  */
 export type AuctionRequest = Pick<
   Extract<PendingInteraction, { kind: 'auction' }>,
-  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller' | 'fromCard'
+  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller' | 'fromCard' | 'resumePhase'
 >;
 
 /** `auction` 的**完整**形状（竞价循环进行中，字段一定齐） */
