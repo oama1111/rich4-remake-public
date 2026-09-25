@@ -229,7 +229,8 @@ describe('目标合法性校验 · 新变体（T-001）', () => {
     expect(validateTarget('anyPlayer', A(4), 0)).toBe('wrongTargetKind');
     expect(validateTarget('player', A(4), 0)).toBe('wrongTargetKind');
     expect(validateTarget('anyPlayer', A(4), 0, 4, { allowActor: true })).toBeNull();
-    expect(validateTarget('player', A(8), 0, 4, { allowActor: true })).toBeNull();
+    expect(validateTarget('player', A(7), 0, 4, { allowActor: true })).toBeNull();
+    expect(validateTarget('player', A(8), 0, 4, { allowActor: true })).toBe('actorOutOfRange'); // 機器娃娃点不中
     expect(validateTarget('anyPlayer', A(9), 0, 4, { allowActor: true })).toBe('actorOutOfRange');
   });
 

@@ -59,7 +59,8 @@ function fresh(seed = 7): { state: GameState; topo: ReturnType<typeof topoOf> } 
   return {
     state: newGame({
       map,
-      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+      // 0 号真人：原版破产后数「在场真人」（0x0040d029），全电脑的局第一次破产就收局
+      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: i === 0 ? ('human' as const) : ('computer' as const) })),
       seed,
     }),
     topo: topoOf(map),
@@ -144,6 +145,15 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
     expect(after.players[0]!.godInfo).toBe(1);
     for (const i of [1, 2, 3]) expect(after.players[i]!.cash, `玩家 ${i}`).toBe(100_000 - amount);
     expect(after.players[0]!.cash).toBe(100_000 + amount * 3);
+  });
+
+  run('★★ 小財神：前面的对手被收破产，**后面的照收**（循环只在分出胜负时跳出，0x0040ec7b）', () => {
+    const { state } = fresh();
+    const players = rich(state).players.map((p, i) => (i === 1 ? { ...p, cash: 0, moneyInBank: 0 } : p));
+    const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH, { players });
+    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    expect(after.players[1]!.whoPlays).toBe(0); // 1 号付不起 ⇒ 破产
+    for (const i of [2, 3]) expect(after.players[i]!.cash, `玩家 ${i} 照付`).toBe(100_000 - amount);
   });
 
   run('★ 大財神：附身者進帳（現金），三位數 @source 0x0040ed4c', () => {

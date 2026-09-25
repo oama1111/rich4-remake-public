@@ -28,6 +28,7 @@ import {
   releaseObject,
   resolveArrival,
   tickGod,
+  occupantsOfNode,
 } from './object-landing.ts';
 
 /** 四人世界，物件表按原版布局，道具库存为初始值 */
@@ -552,5 +553,17 @@ describe('★ 远距重抽（Q-OBJ-2）', () => {
   it('★ 无参照那一半仍然照旧（`pickObjectNode` 直接取模）', () => {
     expect(pickObjectNode([4, 5, 6], 7)).toBe(5);
     expect(pickObjectNode([], 7)).toBe(0);
+  });
+});
+
+describe('★★ occupantsOfNode：节点占位位（0x0041b4a1 / 0x0041b5fd / 0x0041b790）', () => {
+  it('被关着的人不算、乞丐（出局者）算，按下标升序、去掉自己', () => {
+    const ps = [
+      makePlayer({ index: 0, nodeId: 7 }),
+      makePlayer({ index: 1, nodeId: 7, blocking: { ...makePlayer({ index: 1 }).blocking, inPrison: 3 } }),
+      makePlayer({ index: 2, nodeId: 7, whoPlays: 0 }),
+      makePlayer({ index: 3, nodeId: 7 }),
+    ];
+    expect(occupantsOfNode(ps, 7, 0)).toEqual([2, 3]);
   });
 });

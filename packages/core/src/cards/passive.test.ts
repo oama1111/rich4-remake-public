@@ -8,6 +8,8 @@ import {
   PASSIVE_CARDS, CARD_SLOTS_PER_PLAYER,
   TOLL_PASSIVE_THRESHOLD_FACTOR, tollTriggersPassive, checkTollPassives,
 } from './passive.ts';
+import { aiScapegoatPick } from './passive.ts';
+import type { Player } from '../state/types.ts';
 import { makePlayer } from '../testing/factories.ts';
 import { PASSIVE_CARD_IDS } from '@rich4/data';
 
@@ -126,5 +128,35 @@ describe('★ 免费卡与嫁祸卡的效果根本不同', () => {
   it('★ 免罪卡(21)/复仇卡(18) 不在这条路径上', () => {
     const other = payer([PASSIVE_CARDS.ABSOLUTION, PASSIVE_CARDS.REVENGE]);
     expect(checkTollPassives(999_999, other, 1).kind).toBe('none');
+  });
+});
+
+describe('★ 嫁禍卡 0x44476a 电脑支（aiScapegoatPick）', () => {
+  const mk = (i: number, over: Partial<Player> = {}): Player =>
+    makePlayer({ index: i, whoPlays: 2, cash: 10_000, ...over });
+  const counting = (...vals: number[]) => {
+    let k = 0;
+    const o = { calls: 0, next: () => { o.calls++; return vals[k++] ?? 0; } };
+    return o;
+  };
+  it('最恨的人（严格最大且 > 0）优先，不掷随机', () => {
+    const ps = [mk(0), mk(1, { hostility: [5, 0, 9, 9] }), mk(2), mk(3)];
+    const rng = counting(1);
+    expect(aiScapegoatPick(ps, 1, 0, 1, rng)).toBe(2); // 同值取先到的
+    expect(rng.calls).toBe(0);
+  });
+  it('没有最恨的人 ⇒ 在场、没被关的人里 rand() % n', () => {
+    const ps = [mk(0), mk(1), mk(2, { whoPlays: 0 }), mk(3)];
+    const rng = counting(1);
+    expect(aiScapegoatPick(ps, 1, 0, 1, rng)).toBe(3); // 候选 [0,3]，1 % 2 = 1
+    expect(rng.calls).toBe(1);
+  });
+  it('mode 2（查稅）：现金 >= 20000×物價 才嫁禍；门槛不过也已掷过候选那一次随机', () => {
+    const rich = [mk(0), mk(1, { cash: 20_000 }), mk(2), mk(3)];
+    expect(aiScapegoatPick(rich, 1, 2, 1, counting(0))).toBe(0);
+    const poor = [mk(0), mk(1, { cash: 19_999 }), mk(2), mk(3)];
+    const rng = counting(0);
+    expect(aiScapegoatPick(poor, 1, 2, 1, rng)).toBe(-1);
+    expect(rng.calls).toBe(1);
   });
 });

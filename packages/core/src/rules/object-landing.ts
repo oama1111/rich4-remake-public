@@ -606,6 +606,27 @@ function tickCarriedBomb(
   return true;
 }
 
+/**
+ * 这一格上**占着位**的其他玩家（下标升序）—— 原版节点 `+0x24` 的玩家占位位（bit 8..11）。
+ *
+ * @source `0x0041b4a1`：`edi = (node[+0x24] & 0xf00) >> 8`，`0x0041b5fd..0x0041b613` 去掉自己那一位，
+ *   再 `0x40d293` 取最低位（乞丐 `0x0041b616`、传炸彈 `0x0041b790` 两处共用）。
+ *   住店 / 消失 / 坐牢 / 住院时那一位**被清掉**（`0x0040d5d2` / `0x0040d444` / `0x0043d61d` / 醫院同形），
+ *   ⇒ 被关着的人**不在**这张表里；出局者（乞丐）的位**还在**。
+ *   先前按 `nodeId` 现算、还额外滤掉出局者：炸彈能传给关在監獄/醫院门口格上的人，
+ *   下标更小的乞丐又挡不住传递。
+ */
+export function occupantsOfNode(players: readonly Player[], nodeId: number, me: number): number[] {
+  return players
+    .filter((p) => {
+      if (p.index === me || nodeId === 0 || p.nodeId !== nodeId) return false;
+      const b = p.blocking;
+      return (b.inHotel | b.disappearing | b.inPrison | b.inHospital) === 0;
+    })
+    .map((p) => p.index)
+    .sort((a, b) => a - b);
+}
+
 /** 把炸彈塞给同格的下一个人 @source VA 0x0041b78b */
 function passBomb(
   out: ArrivalOutcome,

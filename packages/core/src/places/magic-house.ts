@@ -25,7 +25,8 @@ import { addPoints } from '../rules/points.ts';
 // ★ 變賣类效果与破产清算、財神/死神共用**同一段**机器码（`0x445b3f` / `0x441f21`），
 //   故这里直接调那两个已验证的纯函数，不再各抄一份 —— 抄一份就会各自漂移。
 //   通道 2 证据：`rich4-spec/tests/test_sell_all.py`（35/35）。
-import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
+import { conserveCardPool, sellAllCards, sellAllTools } from '../rules/inventory.ts';
+import { giveCard } from '../cards/rob.ts';
 import type { MapNode } from '../loaders/map.ts';
 import { pickTurnBackNode } from '../cards/turn-and-house.ts';
 
@@ -379,8 +380,13 @@ export function applyMagicEffect(
         if (bag.length === 0) break;
         const id = bag[ctx.nextRandom() % bag.length] ?? 0;
         if (id === 0) break;
-        cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) - 1;
-        p.cards = [...p.cards, id];
+        // ★ `0x004320ee call 0x441e12` → `0x00441e64 call 0x4412e4`（receive_card）：
+        //   满 15 张先弃最便宜的一张（`0x44128f`，回牌堆 +1），不是硬塞第 16 张；
+        //   收的那张 −1（`0x0044133b`）—— 两笔都按守恒记（`conserveCardPool`）
+        const kept = giveCard(p, id);
+        const fixed = conserveCardPool(cardAmount, [p], cardAmount, [kept]);
+        cardAmount.splice(0, cardAmount.length, ...fixed);
+        p.cards = kept.cards;
         log.push({ player: who, note: '得一張卡片', value: id });
         break;
       }

@@ -255,7 +255,7 @@ export interface AuctionSettlementOptions {
    *   `0x00443357 test eax,eax / jne` → `0x0044335b mov byte [land+0x19],0` / `0x0044335f mov [land+0x30],eax(=0)`
    *   （設施 `0x00443486` / `0x0044348a mov [fac+0x34],eax`）。魔法屋 `0x004324da` 直接丢掉返回值、
    *   新聞 7 `0x004498a6` / 破产 `0x0040d1e8` 也丢（那两处的地本来就无主）。
-   *   `true` = 拍賣卡：流拍 ⇒ 无主 + 到期日清零；缺省 = 原样不动。
+   *   `true` = 拍賣卡（调用方按 `AuctionRequest.fromCard` 传）：流拍 ⇒ 无主 + 到期日清零；缺省 = 原样不动。
    */
   clearOnPassIn?: boolean;
 }

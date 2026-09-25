@@ -192,10 +192,11 @@ export type PendingInteraction =
       /** 設施拍卖（拍賣卡踏在設施格上时挂出） */
       facility?: boolean;
       /**
-       * ★ 2026-09-24 审计补：流拍后清归属与到期日 —— 只有**拍賣卡**（`0x0044335b` / `0x00443486`）这么做；
-       *   魔法屋 / 新聞 7 / 破产清算丢掉 `run_auction` 的返回值，原样不动。见 `AuctionSettlementOptions.clearOnPassIn`。
+       * 拍賣卡（8）挂出的这一场。**只有这条调用点**看 `run_auction` 的返回值：流拍（返回 0）⇒
+       * 该地/設施**变无主、到期日清零**（地块 `0x0044335b mov byte [esi+0x19],0` /
+       * `0x0044335f mov dword [esi+0x30],eax`(=0)；設施 `0x00443486` / `0x0044348a` `+0x34`）。
        */
-      clearOnPassIn?: true;
+      fromCard?: boolean;
       /** 现价 `[0x48c488]`：每一口加价都改写它；还没人出价时 = `basePrice` */
       price: number;
       /** 当前最高出价者的**玩家下标**；-1 = 还没人出价 @source `[0x48c4a8]` */
@@ -392,7 +393,7 @@ export type PendingInteraction =
  */
 export type AuctionRequest = Pick<
   Extract<PendingInteraction, { kind: 'auction' }>,
-  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller' | 'clearOnPassIn'
+  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller' | 'fromCard'
 >;
 
 /** `auction` 的**完整**形状（竞价循环进行中，字段一定齐） */

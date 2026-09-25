@@ -348,8 +348,8 @@ export interface ConfineOutcome extends ConfineResult {
  *      "动画中途"这一状态（见 `docs/systems/save-scalars.md` §2.17(b)）；它唯一
  *      的读者 `0x418f2e` 只用它在**释放回棋盘**时恢复朝向，而关押写的是哨兵
  *      `0xf`（= 不恢复）；
- *   ③ `0x41d476`（重绘）、`0x44f2c2`（换立绘）、`0x44ef41`（换动作）
- *      三条**纯表现**调用按 C-ARC-2 留给客户端。
+ *   ③ `0x41d476`（重绘）、`0x44ef41`（换动作）两条**纯表现**调用按 C-ARC-2 留给客户端；
+ *      `0x44f2c2`（倒霉台词）**不是**纯表现 —— 4..6 天会掷一次 `rand()`，见 `rng` 参数。
  *
  * ⚠️ 保险理赔**不在**本函数里：原版紧随其后 `push days; push idx; call 0x44ba63`
  *   （`0x43d749`，金额 = `天数 × 2000 × 物价指数`，见 `fortune.md` §2.5），
@@ -368,9 +368,17 @@ export function sendToConfinement(
   days: number,
   otherOccupancy?: readonly number[],
   landscapes?: readonly LandscapeInfo[],
+  /**
+   * 全局随机流。★ 首次关押那一支调 `0x44f2c2(玩家, 天数)`（監獄 `0x0043d5f9`、醫院 `0x0043eca5`）——
+   * 它挑那句「倒霉台词」：`> 6` 天固定一句、**`4..6` 天 `rand() & 1`**（`0x0044f2f4 cmp edx,3 / jle` →
+   * `0x0044f312 call 0x456f2d`）、`≤ 3` 天固定一句。台词本身归表现层，但那一次 `rand()` 是规则态。
+   * 缺省（不传）= 不消耗（旧调用点；命運/新聞那几处见 docs/audit/provenance-cards.md 的 cross-area）。
+   */
+  rng?: { next(): number },
 ): ConfineOutcome {
   const c = confine(players, occupancy, kind, index, days, otherOccupancy);
   const target = c.players[index];
+  if (!c.extended && target !== undefined && rng !== undefined && days > 3 && days <= 6) rng.next();
   // 加刑分支（`0x43d6bd`）不传送，跟班也不动；下标越界同样什么都不做
   if (c.extended || target === undefined) {
     return { ...c, objects: [...objects], teleported: false };

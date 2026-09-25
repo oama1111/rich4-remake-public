@@ -766,6 +766,11 @@ export type NoticeKey =
   | 'points.30'
   | 'points.10'
   | 'points.card'
+  /** 節日送卡（按地图选框文，`[玩家名, 卡名]`）@source 0x004526c5..0x0045272a */
+  | 'holiday.cardGalaxy'
+  | 'holiday.cardDino'
+  | 'holiday.cardNewYearEve'
+  | 'holiday.cardXmas'
   /** 小遊戲「不玩」白拿的點券（`0x00415472 push 0x463797`，2000 ms）—— `args[0]` = 點數 */
   | 'points.minigame'
   | 'object.gift'

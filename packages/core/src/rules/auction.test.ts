@@ -659,7 +659,8 @@ function auctionGame(cash: number | ((i: number) => number) = 60_000): GameState
   return makeGameState({
     players,
     currentPlayer: 0,
-    phase: 'turnStart',
+    // 卡片只能在按 GO 之前出（`canUseItemsNow`）
+    phase: 'awaitingRoll',
     landOwner: [0, 2],
     landLevel: [0, 0],
   });
@@ -1098,7 +1099,7 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
     const s0 = makeGameState({
       players,
       currentPlayer: 0,
-      phase: 'turnStart',
+      phase: 'awaitingRoll',
       landOwner: [0, 1], // ★ 1 号编码 = 0 号玩家 ⇒ 0 号卖自己的地
       landLevel: [0, 0],
     });
@@ -1141,7 +1142,7 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
       makeGameState({
         players,
         currentPlayer: 0,
-        phase: 'turnStart',
+        phase: 'awaitingRoll',
         landOwner: [0, 0],
         landLevel: [0, 0],
       }),

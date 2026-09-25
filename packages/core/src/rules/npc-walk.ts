@@ -35,6 +35,8 @@ import {
   giftToolBagEmpty,
 } from './object-landing.ts';
 import { giveTool } from './tools.ts';
+import { giveCard } from '../cards/rob.ts';
+import { conserveCardPool } from './inventory.ts';
 import {
   ACTOR_PLACE,
   idleActor,
@@ -449,7 +451,8 @@ export function applyNpcEvents(
           cards.splice(at, 1);
           return { ...p, cards };
         });
-        give(owner, (p) => ({ ...p, cards: [...p.cards, e.card] }));
+        // ★ `0x0041c307 call 0x4412e4`（receive_card）：主人满 15 张先弃最便宜的一张 —— 不是硬塞第 16 张
+        give(owner, (p) => giveCard(p, e.card));
         break;
       }
       case 'robBank': {
@@ -488,7 +491,9 @@ export function applyNpcEvents(
     }
   }
 
-  return { state: { ...state, players, objects, pool, tools, toolStock }, bankrupted };
+  // ★ 牌堆：偷卡是 `0x441e77`（受害者 remove_card +1）+ `0x4412e4`（主人收 −1、满手弃 +1）—— 按守恒记
+  const cardAmount = conserveCardPool(state.cardAmount, state.players, state.cardAmount, players);
+  return { state: { ...state, players, objects, pool, tools, toolStock, cardAmount }, bankrupted };
 }
 
 /**

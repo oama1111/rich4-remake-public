@@ -96,6 +96,11 @@ export const NOTICE_TIER = {
   'points.30': 'stage',
   'points.10': 'stage',
   'points.card': 'stage',
+  // 節日送卡：`0x00452740 call 0x441f73`（框）在 `0x00452753 call 0x44f230`（台词）之前
+  'holiday.cardGalaxy': 'stage',
+  'holiday.cardDino': 'stage',
+  'holiday.cardNewYearEve': 'stage',
+  'holiday.cardXmas': 'stage',
   'points.minigame': 'stage',
   'object.gift': 'stage',
   'object.treasure': 'stage',

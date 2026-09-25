@@ -86,7 +86,9 @@ export function updateHostility(
     return { players: next, allianceBroken: false };
   }
 
-  const raw = current + delta;
+  // @source 0x0040dfa1 `add edi, ecx` —— **32 位**加法、会回绕（黑卡/購地卡那种 double 低 32 位的
+  //   垃圾值叠两次就能越过 2^31），回绕成负数再被下面那道闸清 0
+  const raw = (current + delta) | 0;
   const hostility = [...pa.hostility];
   // @source test edi,edi / jge / 置 0 —— 下限 0，无上限
   hostility[b] = raw < 0 ? 0 : raw;

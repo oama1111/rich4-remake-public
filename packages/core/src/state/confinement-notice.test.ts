@@ -91,10 +91,12 @@ describe('★★ 回合开始被阻碍：`○○住院中／還剩 N 天！`（0
     expect(after.notices[0]?.args[0]).not.toBe(CHARACTERS[0]!.name);
   });
 
-  it('★★★ 可证伪：判定顺序照原版 —— 同时住院 + 住宿时印**住宿**（@source 6596 在 6660 之前）', () => {
+  // ★ 审计 2026-09-25（loop F3）订正：住宿那句先写、住院那句**后写同一个缓冲区**（`0x0040c9d2` / `0x0040cafa`
+  //   都 `sprintf([esp], 模板, 名, 天)`，模板里没有前文）⇒ 框里是**住院**，且只有一扇。先前按「谁先判」取了住宿。
+  it('★★★ 可证伪：同时住院 + 住宿时印**住院**（后写覆盖先写，@source 0x0040c9d2 / 0x0040cafa）', () => {
     const after = start({ blocking: confined({ inHotel: 2, inHospital: 5 }) });
-    expect(after.notices[0]?.key).toBe('confinement.hotel');
-    expect(after.notices[0]?.key).not.toBe('confinement.hospital');
+    expect(after.notices.map((n) => n.key)).toEqual(['confinement.hospital']);
+    expect(after.notices[0]?.args[1]).toBe(displayRemainingDays(5));
   });
 
   it('★★★ 可证伪：冬眠只在**前四项都为空**时才印（@source 6702 排在最后）', () => {

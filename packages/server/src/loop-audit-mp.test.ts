@@ -100,4 +100,29 @@ describe('★ 审计 2026-09-24：回合循环修正在联机里同一条路', (
     expect(room.submit(0, { type: 'startTurn' }).ok).toBe(false);
     expect(room.fingerprint).toBe(fp);
   });
+
+  run('★ F3：住宿 + 坐牢的真人回合开头 —— 服务器与旁观端都只弹「坐牢中」一扇（最后一项覆写）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: seats().map((s) => ({ character: s.character, kind: s.kind })), seed: 11, mode: 'multiplayer' });
+    const base: GameState = {
+      ...s0,
+      phase: 'turnStart',
+      players: s0.players.map((p, i) => ({
+        ...p,
+        whoPlays: p.landingWhoPlays ?? p.whoPlays,
+        ...(i === 0 ? { blocking: { ...p.blocking, inHotel: 4, inPrison: 2 } } : {}),
+      })),
+    };
+    const room = new Room({ id: 'LOOPE', map, globalMapId: 0, seed: 11, seats: seats(), options: LOBBY_DEFAULT_OPTIONS, base: { state: base, snapshot: '' } });
+    room.start();
+    const r = room.submit(0, { type: 'startTurn' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const viewer = reduce(base, r.broadcast.action, topo);
+    for (const s of [room.state, viewer]) {
+      expect(s.notices.map((n) => n.key)).toEqual(['confinement.prison']);
+      expect(s.notices[0]!.args[1]).toBe(3);
+    }
+  });
 });

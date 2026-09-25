@@ -24,12 +24,13 @@ import { summonableObjects } from './summon.ts';
 import { attachGod } from '../rules/object-landing.ts';
 import { cardImpl, CARDS } from '@rich4/data';
 import { consumeCard, playerHasCard } from './passive.ts';
+import type { ScapegoatPicker } from './passive.ts';
 import { housingIndexOf, facilityIndexOf } from '../rules/land.ts';
 import { transferMoney } from '../rules/payment.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
 import type { AuctionRequest, PendingInteraction } from '../rules/interaction.ts';
 import { auctionBasePrice, auctionCardHostility, eligibleBidders } from '../rules/auction.ts';
-import { actorActive, specialSlotOf } from '../rules/special-actors.ts';
+import { ACTOR_PLACE, actorActive, npcBittenByDog, specialSlotOf } from '../rules/special-actors.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 
 import { applyAverageCashCard } from './average-cash.ts';
@@ -43,7 +44,7 @@ import { applyTurnCard, applyTurnCardToActor, applySwapHouseCard, applySwapHouse
 import { applyTaxCard } from './tax.ts';
 import { applyDispelCard } from './dispel.ts';
 import { applyFrameCard } from './frame.ts';
-import { applyBuyLandCard, buyLandCardHostility } from './buy-land.ts';
+import { applyBuyFacilityCard, applyBuyLandCard, buyLandCardHostility } from './buy-land.ts';
 import { applyRebuildCard, applyRebuildFacilityCard } from './rebuild.ts';
 import { applyRobCard, applyRobCardCard } from './rob.ts';
 import { applyMonsterCard, applyMonsterFacilityCard, MONSTER_HOSTILITY_PER_LEVEL } from './monster.ts';
@@ -85,7 +86,9 @@ export type UseCardError =
   | 'notStandingOnLand'
   | 'marketClosed'
   /** 購地卡：现金不够（原版弹「您的現金不足！」`0x004425fb`，卡不扣）*/
-  | 'notEnoughCash';
+  | 'notEnoughCash'
+  /** 目标玩家已出局（选择器 `0x004462d9` 不收）*/
+  | 'targetNotAlive';
 
 /** 卡片使用的结果 */
 export interface UseCardResult {
@@ -139,6 +142,12 @@ export interface UseCardResult {
    * 「抽取%s\n\n%d元稅金！」那扇框（`0x004453ef`）要用，调用方弹。
    */
   taxed?: { victim: number; amount: number };
+  /**
+   * 陷害卡（17）送進監獄的玩家与**这一次的天数参数**（按入狱次序：受害者、復仇卡反弹的出牌者）——
+   * `send_to_prison` 尾部 `0x0043d724..0x0043d749 call 0x44ba63(玩家, 2000×天數×物價, 0)`（首次与加刑都走）
+   * 的保險理赔要 `GameState`，由 reduce 的 `playCard` 逐个赔。
+   */
+  confined?: { player: number; days: number }[];
   /**
    * 本次要送回物件表的物件 handle（下标 + 1）。
    *
@@ -221,7 +230,7 @@ export interface UseCardContext {
    * 嫁祸卡的新目标选择器（陷害卡等有害卡在被嫁祸时调用）。
    * 返回 -1 表示放弃转嫁。目标选择属表现层，由 UI/AI 提供。
    */
-  scapegoatPicker?: (from: number) => number;
+  scapegoatPicker?: ScapegoatPicker;
 }
 
 /**
@@ -409,9 +418,15 @@ export function useCard(
     // ★ 夢遊卡(16) 也有替身那一支 —— @source `rich4_card_mengyouka.asm:252-257`
     //   （`cmp ebx,4 / jl 跳过` 之后写替身记录 `+13`），
     //   2026-09-16 订正后再接上（先前误判「索引空间没核清」，见 D-T047-5）。
-    allowActor: cardId === 6 || cardId === 14 || cardId === 16 || cardId === 30,
+    allowActor: cardId === 6 || cardId === 14 || cardId === 16 || cardId === 17 || cardId === 30,
   });
   if (targetError !== null) return fail(targetError);
+  // ★ 已出局（`who_plays` 整字节 == 0）的玩家点不中 —— 选择器的类别判据：
+  //   @source 0x004462c7 `call 0x40d293` / `cmp eax,4 / jge 收`（特殊棋子不查）/
+  //   `0x004462d9 cmp byte [玩家+0x15], 0 / je 不收`。先前联机里可以对破产者出均貧/查稅等卡。
+  if (target.kind === 'player' && (ctx.players[target.index]?.whoPlays ?? 0) === 0) {
+    return fail('targetNotAlive');
+  }
 
   const targetPlayer = target.kind === 'player' ? target.index : -1;
   const targetLand =
@@ -434,6 +449,7 @@ export function useCard(
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
   let taxed: { victim: number; amount: number } | undefined;
+  let confined: { player: number; days: number }[] | undefined;
   let releasedObjects: number[] = [];
   // ★ 拍賣那一条是**开拍请求**（AuctionRequest）：座位/心理价位等由 reduce 补齐
   let followUp: PendingInteraction | AuctionRequest | null = null;
@@ -640,12 +656,25 @@ export function useCard(
       break;
     }
     case 17: {
+      if (target.kind === 'actor') {
+        // ★★ 陷害卡打四大惡人（選擇參數 0xe0c0710 与夢遊卡同组，收 4..7）：
+        //   @source `0x00444599 cmp ebx,4 / jge 0x44467a` → `push 5 / push ebx / call 0x43d593`
+        //   → 惡人支 `0x0043d760`：清节点占位位、`+0x0a = 1`（監獄）、`+0x0b..+0x0f = 0`、
+        //   `0x0043d7b3 mov byte [0x496b30 + actor], 1`（占監獄床位）。无敌意、不查被动卡、无保險。
+        //   先前 17 不收惡人目标。
+        const slot = specialSlotOf(target.actor);
+        const a = slot >= 0 ? actors[slot] : undefined;
+        if (a === undefined || !actorActive(a)) return noEffect();
+        actors = actors.map((x, i) => (i === slot ? npcBittenByDog(x, ACTOR_PLACE.prison) : x));
+        prisonOccupancy = prisonOccupancy.map((v, i) => (i === target.actor ? 1 : v));
+        break;
+      }
       // 陷害卡：嫁祸的新目标由外部给出；core 只用结果（C-ARC-2）
       const r = applyFrameCard(
         players, cur, target, ctx.priceIndex, ctx.scapegoatPicker,
         prisonOccupancy, hospitalOccupancy,
         // ★ 首次入狱要传送到监狱格 + 跟班搬家（`send_to_prison` 函数体内的事）
-        ctx.nodes, objects, ctx.landscapes,
+        ctx.nodes, objects, ctx.landscapes, ctx.rng,
       );
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
@@ -655,6 +684,10 @@ export function useCard(
       prisonOccupancy = r.prisonOccupancy;
       hospitalOccupancy = r.hospitalOccupancy;
       defended = r.outcome?.kind === 'absolved';
+      if (r.outcome?.kind === 'imprisoned') {
+        confined = [{ player: r.outcome.victim, days: r.outcome.victim === cur ? 4 : 5 }];
+        if (r.outcome.revenged === true) confined.push({ player: cur, days: 5 });
+      }
       break;
     }
     case 29: {
@@ -712,8 +745,7 @@ export function useCard(
           //   且落槌款 `pay_money(得标者, arg0, …)`（`0x43c855`）归他。
           bidders: eligibleBidders(players, land, cur),
           seller: cur,
-          // @source 0x00443357 test eax,eax / jne → 0x0044335b / 0x0044335f：流拍 ⇒ 无主 + 到期日清零
-          clearOnPassIn: true,
+          fromCard: true,
         };
         break;
       }
@@ -735,14 +767,33 @@ export function useCard(
         bidders: eligibleBidders(players, fac, cur),
         seller: cur,
         facility: true,
-        // @source 0x0044347e test eax,eax / jne → 0x00443486 / 0x0044348a
-        clearOnPassIn: true,
+        fromCard: true,
       };
       break;
     }
     case 3: {
       const here = standingLand(ctx, cur);
-      if (here === null || here.land === null) return fail('notStandingOnLand');
+      if (here === null || here.land === null) {
+        // ★★ 設施支 @source 0x004424be..0x004425ec（先前整支缺失 ⇒ 站在設施上用卡恒失败）
+        const fac = standingFacility(ctx, cur);
+        if (fac === null) return fail('notStandingOnLand');
+        const rf = applyBuyFacilityCard(fac, me, ctx.priceIndex);
+        if (!rf.ok) return fail(rf.reason === 'notEnoughCash' ? 'notEnoughCash' : 'noEffect');
+        // @source 0x00442574 call 0x40df69 —— 敌意在改主之前记；地价取 `+0x22`
+        hostilityDeltas = [
+          {
+            from: rf.previousOwner,
+            to: cur,
+            delta: buyLandCardHostility(fac.landPrice, ctx.priceIndex, fac.level),
+          },
+        ];
+        // @source 0x004425b7 mov [fac+0x19], 当前+1
+        putFacility({ ...fac, owner: cur + 1 });
+        // @source 0x004425cc → 0x0044246f push 0 / edi / esi / 当前 / call 0x41d2c6
+        const payF = transferMoney(players, [], 0, cur, rf.previousOwner, rf.price, 0);
+        players = payF.players;
+        break;
+      }
       const r = applyBuyLandCard(here.node.type, here.land, me, ctx.priceIndex);
       // @source `0x004423b5 cmp edi, [現金] / jg 0x4425f1`：只差现金那一支弹「您的現金不足！」（卡不扣）
       if (!r.ok) return fail(r.reason === 'notEnoughCash' ? 'notEnoughCash' : 'noEffect');
@@ -997,12 +1048,9 @@ export function useCard(
       if (target.kind !== 'stock') return fail('wrongTargetKind');
       const stock = market.stocks[target.index];
       if (stock === undefined) return fail('stockOutOfRange');
-      // f6 非 0 = 停牌中，当日不波动，置数无意义 @source loc_00429470
-      // ★ 原版没有这道闸门：真人在股市屏里点下去就写了 `newsFlag`（`0x00444f88`
-      //   / `0x004450f6`，在「选到了没有」判定之**后**），AI 那条更是**无条件**写；
-      //   两边随后都在 `0x0044502a` / `0x004451db` 扣卡并返回选中编号（非 0）。
-      //   所以停牌股上也该扣卡 ⇒ `noEffect()`（本闸门只挡住无意义的写）。
-      if (stock.f6 !== 0) return noEffect();
+      // ★★ 2026-09-24 审计订正：停牌股（f6 ≠ 0）**照写照算** —— 原版写 `newsFlag`（`0x00444f88` /
+      //   `0x004450f6`，股市屏那一路 `0x0042b114` / `0x0042b12f`）之后紧接着 `call 0x429040` 重算当日价，
+      //   两处都不看 f6（`0x429040` 函数体里也没有停牌判断）。先前这里 `noEffect()` 只扣卡不写。
       // ★ 黑卡尾部要「旧价 − 现价」，故先把旧价留下（原版函数开头就快照了 12 支旧价）
       const oldPrice = stock.price;
       const r =
@@ -1049,5 +1097,5 @@ export function useCard(
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
   // ★ 走到这里 = 原版返回非 0（成功）：效果已落地，卡已被扣
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset, ...(taxed === undefined ? {} : { taxed }) };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset, ...(taxed === undefined ? {} : { taxed }), ...(confined === undefined ? {} : { confined }) };
 }
