@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
 import { canUseTool } from './preview.ts';
-import type { GameState } from './types.ts';
+import { WHO_PLAYS_HUMAN, type GameState } from './types.ts';
 import { TOOL_SLOTS_PER_PLAYER, toolCount } from '../rules/tools.ts';
 import { TRAFFIC_CAR, TRAFFIC_ENGINEERING, TRAFFIC_MOTORCYCLE, TRAFFIC_WALK } from '../rules/tool-effects.ts';
 
@@ -93,6 +93,29 @@ describe('★ 交通工具', () => {
     expect(t.players[0]!.trafficMethod).toBe(TRAFFIC_MOTORCYCLE);
     expect(t.players[0]!.ndices).toBe(2);
     expect(toolCount(t.tools, 0, 5)).toBe(0);
+  });
+
+  /*
+   * ★★ 2026-09-25（真人道具欄接不上工程車）：客户端 `applyInventoryPick` 对
+   *   `toolIsDirect` 的道具只发 `useTool{toolId}` —— **没有 nodeId / value**。
+   *   这一条钉住「core 收得下这个动作」：真人（`makePlayer` 缺省 `whoPlays = 1`）、
+   *   不给目标，照样开得起来。原版真人那一支同样没有拾取那一步
+   *   （@source 0x00447f51 `call dword ptr [eax*4 + 0x475dd5]`，表项 12 = `0x4479d2`）。
+   */
+  it('★★ 工程車（12）无参可用：真人只发道具号、不给 nodeId，照样开得起来', () => {
+    const s = withTools({ 12: 1 });
+    expect(s.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    expect(s.players[0]!.trafficMethod).toBe(TRAFFIC_WALK);
+    const used = reduce(s, { type: 'useTool', toolId: 12 }, topo);
+    expect(used, '无参也必须生效').not.toBe(s);
+    expect(used.players[0]!.trafficMethod).toBe(TRAFFIC_ENGINEERING);
+    expect(used.players[0]!.ndices).toBe(1);
+    expect(toolCount(used.tools, 0, 12)).toBe(0);
+    // 这件道具本来就不带目标：给一个 nodeId 不影响结果
+    // （`nodeId <= 0` 那道闸只在 `PLACEMENT_TOOLS` 那一支，见 `useToolAction`）
+    expect(reduce(s, { type: 'useTool', toolId: 12, nodeId: 2 }, topo)).toEqual(used);
+    // 客户端拾取模式的预演也认同「现在用得了」
+    expect(canUseTool(s, topo, 12, 0)).toBe(true);
   });
 });
 
