@@ -55,7 +55,8 @@ class FakeConn implements Conn {
 }
 
 type Map0 = ReturnType<typeof loadMap>;
-const topoOf = (map: Map0) => ({ nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials });
+// ★ 2026-09-25：与客户端（main.ts 建 topo 那一行）逐项一致，含 `landscapes`。
+const topoOf = (map: Map0) => ({ nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes });
 
 /** 客户端镜像：`start` 的参数 newGame，再按广播的 action 重放 */
 function mirror(map: Map0, conn: FakeConn): GameState {

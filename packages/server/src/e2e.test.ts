@@ -80,7 +80,8 @@ describe('★ 联机端到端', () => {
   run('四客户端 + 服务器代打三個電腦，跑 120 回合：镜像一致，且与单机同决策逐字节一致', () => {
     const map = parseMap(new Uint8Array(readFileSync(MAP)));
     // ★ 客户端与服务器镜像必须用同一份完整 topo（含設施、企业表）
-    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+    // ★ 2026-09-25：与客户端（main.ts 建 topo 那一行）逐项一致，含 `landscapes`。
+    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
     const hub = new RoomHub({ map, globalMapId: 0, seedFor: () => 20240914 });
     const host = new Client(map, topo);
     const watchers = [new Client(map, topo), new Client(map, topo), new Client(map, topo)];

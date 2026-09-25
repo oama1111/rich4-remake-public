@@ -140,7 +140,9 @@ interface Played {
 
 function play(seed: number, turns: number): Played {
   const map = parseMap(new Uint8Array(readFileSync(MAP)));
-  const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+  // ★ 2026-09-25：`landscapes` 也要带上 —— 客户端（main.ts 建 topo 那一行）一直带着它，
+  //   服务器先前漏了（room.ts 同步修正）；不带的话入監 / 入院的坐标两端会差（格心 vs 景观）。
+  const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
   const hub = new RoomHub({ map, globalMapId: 0, seedFor: () => seed });
   const clients = Array.from({ length: HUMANS }, () => new Client(map, topo));
   const handles = clients.map((c, i) => {

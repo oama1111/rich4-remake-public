@@ -103,11 +103,17 @@ export class Room {
     this.#map = opts.map;
     // ★ 与客户端 main.ts 的 topo **逐项一致**：少了設施表或企业表，镜像在
     //   設施落点、股市锚点上就会与客户端走岔，指纹对不上却谁也没错。
+    //   ★★ 2026-09-25（cards 审计跨区发现，实测抓到）：**还少 `landscapes`** ——
+    //   入監 / 入院的坐标要读景观记录（`0x43ecef` 读醫院 / 監獄那一笔），客户端四处都带
+    //   （如 main.ts 建 topo 那一行），服务器先前不带 ⇒ 服务器把当事人留在**格心**
+    //   （384/1056），每个客户端把他挪到**景观**坐标（319/990）。过去这处分叉看不见，
+    //   是因为指纹不收 `xpos/ypos`；指纹补上坐标之后（同一次收口）它会直接报失步。
     this.#topo = {
       nodes: opts.map.nodes,
       lands: opts.map.lands,
       facilities: opts.map.facilities,
       commercials: opts.map.commercials,
+      landscapes: opts.map.landscapes,
     };
 
     this.snapshot = opts.base?.snapshot ?? null;

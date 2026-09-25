@@ -297,7 +297,8 @@ describe('★ 自動存檔 / 手動存檔', () => {
 describe('★★ 服務器重啟後從存檔繼續（確定性）', () => {
   run('三真人一電腦打幾天 → 存檔 → 換一台 hub（= 重啟）→ 從存檔建房 → A 換了暱稱憑 clientId 自動坐回、B 換了瀏覽器點「這是我」、C 沒來由電腦代打 → 接著打：與「沒中斷、同一串 action」逐字節一致', () => {
     const map = loadMap();
-    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+    // ★ 2026-09-25：与客户端（main.ts 建 topo 那一行）逐项一致，含 `landscapes`。
+    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
     const dir = tempDir();
     const now = { t: 10_000_000 };
 
