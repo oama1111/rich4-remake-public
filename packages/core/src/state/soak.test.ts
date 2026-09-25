@@ -141,6 +141,17 @@ function soakLedger(seed: number, maxTurns: number): { state: GameState; printed
       next = { ...next, players: next.players.map((p, k) => ({ ...p, moneyInBank: before[k]! })) };
     } else if (a.type === 'sellStock') {
       printed += d(bank, i) - (costBefore[i]! - cost(next, i));
+    } else if (a.type === 'aiNext' && state.aiStep === 1) {
+      // ★ 审计（provenance-ai-econ）：电脑卖股挪进了调度步 1 → 2（reducer 按原版 `0x42c79f` 卖）。
+      //   这一步里还有特別融資收回 / 公佈欄，故只按**卖掉的那几支**记已实现盈亏：
+      //   卖价 trunc(股数 × 現價)（这一步里行情不动）− 那一支的成本减少量。
+      state.holdings[i]!.forEach((h, j) => {
+        const after = next.holdings[i]![j]!;
+        const sold = h.amount - after.amount;
+        if (sold <= 0) return;
+        const px = state.market.stocks[j]!.price;
+        printed += Math.trunc(sold * px) - (Math.round(h.amount * h.avgCost) - Math.round(after.amount * after.avgCost));
+      });
     }
     const ev = next.lastEvent;
     if (ev !== null && ev !== state.lastEvent) {

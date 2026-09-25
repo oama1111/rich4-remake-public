@@ -126,6 +126,7 @@ import {
   decodeEstate,
   encodeEstate,
   duplicateCards,
+  sweepStaleColumn,
   emptyColumn,
   estateListPrice,
   isColumnFull,
@@ -311,6 +312,7 @@ import {
   withdraw,
 } from '../places/bank.ts';
 import { autoLoanAmount } from '../ai/personality.ts';
+import { aiStockBuy, aiStockSellPick } from '../ai/stock-policy.ts';
 import {
   LOTTERY_TICKET_PRICE,
   aiBuyTicket,
@@ -2015,7 +2017,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         //     答掉之后才换成貸款屏（第十三份试玩回报 #2，见 `enterBankRoom`）；
         //   - 其余（电脑 / 托管）：按 `cashRatio`(+0x19) 重分現金／存款（`loc_00437acd`），再进柜台。
         if (node.specialKind === SPECIAL_KIND.BANK) {
-          next = bankAtmEntry(next, true);
+          next = bankAtmEntry(next, true, topo);
           if (next.pending?.kind === 'atm') return next;
           // ★ ATM 入口返回 ⇒ `0x0041b3af call 0x436668`：真人开貸款屏，其余当场走电脑那一支
           return enterBankRoom(next, topo);
@@ -2259,11 +2261,14 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       const player = state.players[state.currentPlayer];
       const fac = facilityAtPlayer(state, topo);
       if (player === undefined || fac === null) return state;
+      // ★ `facilityType: null` = 电脑那一支定种类（开着选种类窗被托管的真人，由 AI 代答）；真人座位不收
+      if (action.facilityType === null && !isAiControlled(player)) return state;
       if (state.pending.free === true) {
         // ★ 神明顯靈代蓋的那一次（`0x40b110` 里的 `0x0040b1e4 call 0x440aac`）：
         //   **不收钱、不看归属、不过衰神闸**（`0x40b110` 整支没有 `call 0x40fa61`）
-        if (!state.pending.choices.includes(action.facilityType)) return state;
-        const built = freeBuildFacilityById(state, topo, fac.id, action.facilityType);
+        //   `null`：`freeBuildFacilityById` 见座位 `& 6` 非 0 就自己走电脑支（`0x0040b1c5` rand()%4+1 / 非本人 0）
+        if (action.facilityType !== null && !state.pending.choices.includes(action.facilityType)) return state;
+        const built = freeBuildFacilityById(state, topo, fac.id, action.facilityType ?? -1);
         if (built === null) return labPanelTail({ ...state, pending: null, phase: 'turnEnd' }, topo);
         // 这扇框在尾块里（福神 `0x40f8be` / 天使 `0x40f381` 都在 `0x0041b0b3` 之前）⇒ 选完接着问研究所
         return labPanelTail(
@@ -2272,15 +2277,26 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         );
       }
       if (fac.owner !== state.currentPlayer + 1 || fac.level !== 0) return state;
-      if (!state.pending.choices.includes(action.facilityType)) return state;
+      let chosen: number;
+      let rolledState: GameState = state;
+      if (action.facilityType === null) {
+        // @source `0x0041a23e call rand / idiv 4 / inc edx` —— 电脑支，在衰神闸（`0x0041a261`）**之前**掷
+        const rng = new WatcomRng();
+        rng.setState(state.rngState);
+        chosen = aiPickFacilityType(rng.next());
+        rolledState = { ...state, rngState: rng.getState() };
+      } else {
+        if (!state.pending.choices.includes(action.facilityType)) return state;
+        chosen = action.facilityType;
+      }
       const bought = purchase(player, facilityBuildPrice(fac.landPrice, state.priceIndex));
-      if (!bought.ok) return godBlockedPurchase(state, bought.reason);
-      const paid = withPlayer(state, state.currentPlayer, (p) => {
+      if (!bought.ok) return godBlockedPurchase(rolledState, bought.reason);
+      const paid = withPlayer(rolledState, state.currentPlayer, (p) => {
         p.cash = bought.player.cash;
       });
       const facilityType = [...paid.facilityType];
       const facilityLevel = [...paid.facilityLevel];
-      facilityType[fac.id] = action.facilityType;
+      facilityType[fac.id] = chosen;
       facilityLevel[fac.id] = 1;
       // ★★ W-55 行 3 的**第 4 个**音效点：**付费首建設施（0 → 1 级）**也响
       //   `Effect.mkf` 50（`0x4823da`）—— 先前只接了天使/福神/自己加蓋三处。
@@ -2419,29 +2435,11 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     }
 
     case 'buyStock':
-    case 'sellStock': {
-      let traded = tradeStock(state, action);
-      // ★ 2026-09-23：**电脑**买 / 卖股各弹一扇「%s\n\n買進%s%d張」/「賣出」（1500 ms）——
-      //   `[玩家名, 股名 [股*36+0x496980], 张数]`。真人在股市柜台（`0x0042afc6`）买卖**不弹**。
-      //   @source 买 `0x0042c770 push 0x464186` → `0x0042c78c call 0x440cac`；
-      //           卖 `0x0042d076 push 0x4641cc` → `0x0042d092 call 0x440cac`
-      const trader = state.players[state.currentPlayer];
-      if (traded !== state && trader !== undefined && isAiControlled(trader)) {
-        traded = appendFreshNotice(traded, {
-          key: action.type === 'buyStock' ? 'stock.aiBuy' : 'stock.aiSell',
-          args: [
-            playerName(state, state.currentPlayer),
-            stocksOfMap(state.globalMapId)[action.stock]?.name ?? '',
-            action.shares,
-          ],
-        });
-      }
-      // @source 0x0042d0a2：還款壓力下賣完一支若 現金+存款 仍 < 貸款×1.1，就回头再賣 —— 调度步停在 1
-      const seller = traded.players[state.currentPlayer];
-      const keepSelling =
-        action.type === 'sellStock' && seller !== undefined && loanSellPressure(seller, traded) && loanStillUncovered(seller);
-      return afterAiStep(state, traded, topo, action.type === 'buyStock' ? 1 : keepSelling ? 1 : 2);
-    }
+    case 'sellStock':
+      // ★★ 审计（provenance-ai-econ）：这条 action 只剩**真人**的股市柜台（`0x0042afc6`，不弹框）在用 ——
+      //   电脑的买卖在调度步里由 reducer 按原版跑（`aiStockBuyTurn` / `aiStockSellTurn`，见 `aiAdvance`），
+      //   不再经这里。先前电脑也发这条、在这里补「買進 / 賣出」框与「壓力下回头再卖」，已挪走。
+      return tradeStock(state, action);
 
     case 'aiNext': {
       // @source 0x00418dc6 的顺序：策略层在某一步没事可做就发它把步数推进
@@ -4846,17 +4844,7 @@ function tradeStock(
   if (action.type === 'buyStock' && isLimitUp(stock.openPrice, stock.price)) return state;
   if (action.type === 'sellStock' && isLimitDown(stock.openPrice, stock.price)) return state;
 
-  const commit = (r: TradeResult): GameState => ({
-    ...state,
-    players: state.players.map((p, i) => (i === state.currentPlayer ? r.player : p)),
-    market: {
-      ...state.market,
-      stocks: state.market.stocks.map((s, i) => (i === action.stock ? r.stock : s)),
-    },
-    holdings: state.holdings.map((row, i) =>
-      i === state.currentPlayer ? row.map((h, j) => (j === action.stock ? r.holding : h)) : row,
-    ),
-  });
+  const commit = (r: TradeResult): GameState => commitTrade(state, state.currentPlayer, action.stock, r);
 
   if (action.type === 'buyStock') {
     // 可流通股不够就买不到
@@ -6666,7 +6654,7 @@ function passingBank(state: GameState, topo: MapTopology): GameState {
   if (state.stepsRemaining <= 0) return state;
   const handle = objectHandleAt(state, me.nodeId);
   if (handle !== 0 && state.objects[handle - 1]?.type === OBJECT_TYPE_ROADBLOCK) return state;
-  return bankAtmEntry(state, false);
+  return bankAtmEntry(state, false, topo);
 }
 
 /**
@@ -6685,7 +6673,7 @@ function passingBank(state: GameState, topo: MapTopology): GameState {
  *
  * @param landing 落点那台（关掉之后接着进貸款屏）；`false` = 路过那台
  */
-function bankAtmEntry(state: GameState, landing: boolean): GameState {
+function bankAtmEntry(state: GameState, landing: boolean, topo: MapTopology): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return state;
   if (me.daysRejectedByBank !== 0) {
@@ -6699,7 +6687,7 @@ function bankAtmEntry(state: GameState, landing: boolean): GameState {
     if (me.bankFreezeDays === 0) return opened;
     return { ...opened, notices: [{ key: 'bank.frozen', args: [displayRemainingDays(me.bankFreezeDays)] }] };
   }
-  return rebalanceBankOnArrival(state);
+  return rebalanceBankOnArrival(state, topo);
 }
 
 /**
@@ -6821,7 +6809,7 @@ function aiBankRoom(state: GameState, topo: MapTopology): GameState {
  * ⚠️ 原版对电脑也照样往下开柜台（`_rich4_ui_bank_entry` 的电脑支去借款），
  *   所以这里只做「重分」，`pending` 照旧由 `pendingForSpecial` 给出。
  */
-function rebalanceBankOnArrival(state: GameState): GameState {
+function rebalanceBankOnArrival(state: GameState, topo: MapTopology): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined || !isAlive(me)) return state;
   // @source 0x00437a04 `cmp byte [player + 0x3b], 0 / jne`（+0x3b = days_rejected_by_bank）
@@ -6831,10 +6819,15 @@ function rebalanceBankOnArrival(state: GameState): GameState {
 
   const next = rebalanceCashByRatio(me, state.day);
   if (next === me) return state;
-  return withPlayer(state, state.currentPlayer, (p) => {
+  const moved = withPlayer(state, state.currentPlayer, (p) => {
     p.cash = next.cash;
     p.moneyInBank = next.moneyInBank;
   });
+  // ★★ 审计（provenance-ai-econ）：重分之后原版紧跟一次**銀行資金準備对账** ——
+  //   `0x00437c0a call 0x41d433`（重画侧栏）→ `0x00437c12 push 1 / call 0x436b0a`，与真人 ATM 取款之后
+  //   （`0x0043784d push 1 / call 0x436b0a`）同一个函数：别家存款合计不够董事長的特別融資 ⇒ 董事長垫差额。
+  //   电脑把存款挪成现金同样会掏空準備金；先前这一支漏了。只在真的重分了才调（「差不多就不动」那一支直接返回）。
+  return settleBankReserve(moved, topo);
 }
 
 /**
@@ -6941,17 +6934,115 @@ function pendingForSpecial(
  */
 function aiAdvance(state: GameState, topo: MapTopology, step: number): GameState {
   let s = state;
+  // @source 0x00418de6 `call 0x42bf03` —— 买股（入口 `rand()%3` 每回合必掷）
+  if (s.aiStep < 1 && step >= 1) s = aiStockBuyTurn(s, topo);
   if (s.aiStep < 2 && step >= 2) {
+    // @source 0x00418df4 `call 0x42c79f` —— 卖股
+    s = aiStockSellTurn(s, topo);
     s = sweepSpecialFinance(s, topo);
     if (s.phase !== 'awaitingRoll') return { ...s, aiStep: step };
     // ★ 三道随机闸都在 reducer 里掷，AI 策略层不碰随机数（与保釋同一做法）
     s = aiNoticeBoardTurn(s, topo);
+    // @source `0x0042885c push 0 / call 0x436b0a` —— 公佈欄收尾**再收一次**特別融資
+    //   （公佈欄上买下銀行股可能换了董事長 ⇒ 旧董事長欠着的那笔此刻就要收回）
+    s = sweepSpecialFinance(s, topo);
+    if (s.phase !== 'awaitingRoll') return { ...s, aiStep: step };
     const rng = new WatcomRng();
     rng.setState(s.rngState);
     const branch = rng.next() & 1;
     s = { ...s, rngState: rng.getState(), aiBranch: branch };
   }
   return s.aiStep >= step ? s : { ...s, aiStep: step };
+}
+
+/**
+ * 电脑买股 —— `fcn_0042bf03` 的落账那一段（决定在 `ai/stock-policy.ts` 的 `aiStockBuy`）。
+ *
+ * @source `0x0042c72d call 0x428d2a(玩家, 股, 股数, 1)`（柜台买：扣存款、减流通量与可成交量、重算均价、
+ *   `0x428e14 call 0x4294d5` 重排企業名次）→ `0x0042c736 call 0x41d433`（重画侧栏）→
+ *   `0x0042c770 push 0x464186`「%s\n\n買進%s%d張」→ `0x0042c78c call 0x440cac`（1500 ms）。
+ *   ★ 原版这一路**没有**柜台那几道检查（流通量 / 存款够不够）—— 直接落账。
+ */
+function aiStockBuyTurn(state: GameState, topo: MapTopology): GameState {
+  const idx = state.currentPlayer;
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const t = aiStockBuy(state, topo, () => rng.next());
+  const rolled: GameState = { ...state, rngState: rng.getState() };
+  if (t === null) return rolled;
+  const me = rolled.players[idx];
+  const held = rolled.holdings[idx]?.[t.stock];
+  const stock = rolled.market.stocks[t.stock];
+  if (me === undefined || held === undefined || stock === undefined) return rolled;
+  const bought = reownCommercial(commitTrade(rolled, idx, t.stock, buyStock(me, held, stock, t.shares, 'market')), t.stock, idx);
+  return appendFreshNotice(bought, {
+    key: 'stock.aiBuy',
+    args: [playerName(rolled, idx), stocksOfMap(rolled.globalMapId)[t.stock]?.name ?? '', t.shares],
+  });
+}
+
+/**
+ * 电脑卖股 —— `fcn_0042c79f` 整段（打分在 `ai/stock-policy.ts` 的 `aiStockSellPick`）。
+ *
+ * @source VA 0x0042c79f：
+ * ```asm
+ * 0042c7ca  壓力 = 距還款日 <= 6 && 現金+存款 < 貸款         ; [esp+0xd0]，整趟只算这一次
+ * 0042c802  没壓力：rand()%3 != 0 ⇒ 返回                     ; ★ 有壓力**不掷**
+ * 0042c81b  call 0x428d01 / cmp eax,1 / je 返回              ; 休市不卖
+ * 0042c829  打分挑一支（分最高且 > 0）
+ * 0042d033  call 0x428e23(玩家, 股, 全部持股, 1)             ; 卖进存款、重排企業名次
+ * 0042d076  push 0x4641cc「%s\n\n賣出%s%d張」/ 0x0042d092 call 0x440cac
+ * 0042d0a2  壓力 && 挑到了 && 貸款×1.1 > 現金+存款 ⇒ jmp 0x42c829   ; ★ 回头再挑一支（旗不重算）
+ * ```
+ * ★★ 审计订正：先前「回头再卖」时每一步重算壓力（`現金+存款 < 貸款`），卖到 貸款 ≤ 現金+存款 < 貸款×1.1
+ *   这一段就停了、打分也少了壓力那 +1 / ×2；原版旗是入口那一份，要一直卖到盖住 貸款×1.1。
+ */
+function aiStockSellTurn(state: GameState, topo: MapTopology): GameState {
+  const idx = state.currentPlayer;
+  const me = state.players[idx];
+  if (me === undefined) return state;
+  const pressure = loanSellPressure(me, state);
+  let s = state;
+  if (!pressure) {
+    const rng = new WatcomRng();
+    rng.setState(state.rngState);
+    const gate = rng.next() % 3;
+    s = { ...state, rngState: rng.getState() };
+    if (gate !== 0) return s;
+  }
+  if (!marketOpenOn(s.globalMapId, s.year, s.month, s.day, s.market.closedDays)) return s;
+  for (let guard = 0; guard < 12; guard++) {
+    const t = aiStockSellPick(s, topo, pressure);
+    if (t === null) break;
+    const p = s.players[idx]!;
+    const held = s.holdings[idx]?.[t.stock];
+    const stock = s.market.stocks[t.stock];
+    if (held === undefined || stock === undefined) break;
+    s = reownCommercial(commitTrade(s, idx, t.stock, sellStock(p, held, stock, t.shares, 'bank')), t.stock, idx);
+    s = appendFreshNotice(s, {
+      key: 'stock.aiSell',
+      args: [playerName(s, idx), stocksOfMap(s.globalMapId)[t.stock]?.name ?? '', t.shares],
+    });
+    if (!pressure) break;
+    // @source 0x0042d0de：`fild 現金+存款 / fild 貸款 / fmul 1.1 / fcompp / ja 0x42c829`
+    if (!loanStillUncovered(s.players[idx]!)) break;
+  }
+  return s;
+}
+
+/** 一笔股票买卖落账（`tradeStock` 与电脑买卖共用） */
+function commitTrade(state: GameState, player: number, stockIndex: number, r: TradeResult): GameState {
+  return {
+    ...state,
+    players: state.players.map((p, i) => (i === player ? r.player : p)),
+    market: {
+      ...state.market,
+      stocks: state.market.stocks.map((x, i) => (i === stockIndex ? r.stock : x)),
+    },
+    holdings: state.holdings.map((row, i) =>
+      i === player ? row.map((h, j) => (j === stockIndex ? r.holding : h)) : row,
+    ),
+  };
 }
 
 /** 电脑在 awaitingRoll 做完某一步后把调度步推到 `step`；真人或没生效的 action 原样返回 */
@@ -6990,7 +7081,9 @@ function sweepSpecialFinance(state: GameState, topo: MapTopology): GameState {
  * 电脑玩家的公佈欄回合 —— 挂东西 / 重估 / 买别人的，逐条照 VA 0x0042886e。
  * 规则常量与判据见 places/notice-board.ts 的 AI 一节。
  */
-function aiNoticeBoardTurn(state: GameState, topo: MapTopology): GameState {
+function aiNoticeBoardTurn(state0: GameState, topo: MapTopology): GameState {
+  // @source `0x004284c5 call 0x42483e` —— 进门先把挂着却已不归挂牌人的东西撤掉（在一切随机闸之前）
+  const state = sweepStaleListings(state0, topo);
   const me = state.currentPlayer;
   const player = state.players[me];
   if (player === undefined || !isAlive(player)) return state;
@@ -7083,6 +7176,41 @@ function aiNoticeBoardTurn(state: GameState, topo: MapTopology): GameState {
   }
 
   return { ...next, rngState: rng.getState() };
+}
+
+/**
+ * 公佈欄开张前的清理 `fcn_0042483e` —— 每个玩家一栏，判据见 `places/notice-board.ts` 的 `sweepStaleColumn`。
+ * ⚠️ 真人从工具栏打开公佈欄（`0x00417dee call 0x4284be`）原版也先走这一步；本引擎的真人公佈欄屏
+ *   目前没接（跨区，见 `docs/audit/provenance-ai-econ.md`）。
+ */
+function sweepStaleListings(state: GameState, topo: MapTopology): GameState {
+  let changed = false;
+  const board = state.noticeBoard.map((col, p) => {
+    const valid = (it: Listing): boolean => {
+      switch (it.kind) {
+        case LISTING.stock:
+          // @source 0x00424886 `cmp 挂牌股数, 持股 / jle 留`
+          return it.amount <= (state.holdings[p]?.[it.id]?.amount ?? 0);
+        case LISTING.estate: {
+          const e = decodeEstate(it.id);
+          const rec = e.kind === 'land' ? effectiveLand(state, topo, e.index) : effectiveFacility(state, topo, e.index);
+          if (rec === null || rec.owner !== p + 1) return false;
+          // @source 0x004248e0 / 0x004248eb：`+0x18` / `+0x1a` 与挂牌快照（槽 +0x0a / +0x0b）逐字节比
+          return rec.type === (it.estateType ?? rec.type) && rec.level === (it.estateLevel ?? rec.level);
+        }
+        case LISTING.tool:
+          return toolCount(state.tools, p, it.id) !== 0;
+        case LISTING.card:
+          return state.players[p]?.cards.includes(it.id) ?? false;
+        default:
+          return true;
+      }
+    };
+    const next = sweepStaleColumn(col, valid);
+    if (next !== col) changed = true;
+    return next;
+  });
+  return changed ? { ...state, noticeBoard: board } : state;
 }
 
 function noticeBoardAction(

@@ -34,7 +34,7 @@ import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { pickFacingAt } from '../rules/teleport.ts';
 import { canUpgradeFacility } from '../rules/facility.ts';
 import { aiShouldPurchase } from '../rules/purchase.ts';
-import { aiCommercialShareCount } from '../places/company.ts';
+import { aiCommercialShareCount, aiPickConstructionTarget } from '../places/company.ts';
 import { auctionActiveSeatCount, auctionAiChoice } from '../rules/auction.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 
@@ -70,7 +70,6 @@ import {
 import { MAX_TOOL_ID, MIN_TOOL_ID, toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
 import { placementBlockedAt } from '../rules/object-landing.ts';
-import { decideStockSell, decideStockTrade } from './stock-policy.ts';
 import { aiDiceCount } from './dice-policy.ts';
 
 /**
@@ -149,16 +148,17 @@ export function decideAction(ctx: AiContext): Action | null {
   switch (state.phase) {
     case 'turnStart':
       // ★ 回合开始时挂着的还款提醒窗（真人开着窗被托管）先答掉，否则 `startTurn` 被原样退回、卡死
-      if (state.pending?.kind === 'loanReminder') return decidePending(state);
+      if (state.pending?.kind === 'loanReminder') return decidePending(state, map);
       return { type: 'startTurn' };
     case 'awaitingRoll':
       // ★ 掷骰前的顺序照 0x00418dc6：买股 → 卖股 → [特別融資收回 → 公佈欄 → rand&1] → 用卡 | 用道具 → 掷骰
-      //   中括号里三件在 reducer 的 aiAdvance 里做；这里按 aiStep 只答当前那一步
+      //   ★★ 审计（provenance-ai-econ）：买股、卖股两步也挪进 reducer 的 aiAdvance —— 原版这两段
+      //   都要掷全局 `rand()`（买股入口 `0x0042bf14` 每回合必掷），策略层碰不得随机数（C-DET-1）。
+      //   这里在第 0、1 步只发 `aiNext`，由 reducer 按原版买 / 卖；第 2 步起才是策略的活。
       switch (state.aiStep) {
         case 0:
-          return decideStockTrade(state, map) ?? { type: 'aiNext' };
         case 1:
-          return decideStockSell(state, map) ?? { type: 'aiNext' };
+          return { type: 'aiNext' };
         case 2:
           return (state.aiBranch === 1 ? decideCard(ctx) : decideTool(ctx)) ?? { type: 'aiNext' };
         default:
@@ -179,13 +179,13 @@ export function decideAction(ctx: AiContext): Action | null {
       // 落点可能留下一个待决交互（例如落在上市企业上），先把它答掉。
       // ★ 拍賣例外：轮到真人举牌时 core 不替他把竞价「答掉」（那会清空 pending、
       //   把屏顶掉）。返回 null 让表现层收那一手 —— 见下面 awaitingDecision。
-      if (state.pending?.kind === 'auction') return decidePending(state);
-      return decidePending(state) ?? { type: 'endTurn' };
+      if (state.pending?.kind === 'auction') return decidePending(state, map);
+      return decidePending(state, map) ?? { type: 'endTurn' };
 
     case 'awaitingDecision': {
       // ★ 設施那三种（買/首建/加蓋）是 pending 而不是地块决策，先让 decidePending 答；
       //   只有真正的買地/盖房才轮到 decideAtLanding。
-      const answered = decidePending(state);
+      const answered = decidePending(state, map);
       if (answered !== null) return answered;
       const kind = state.pending?.kind;
       // ★ 其余 pending（研究所面板、未实现的场所）**不能**掉进 decideAtLanding
@@ -515,7 +515,7 @@ export function auctionNextBid(
  * ⚠️ 只处理**已实现**的那几种；其余返回 null，由调用方继续推进回合——
  *   未实现的场所会以 `unimplemented` 留在 `pending` 里，上层看得见。
  */
-export function decidePending(state: GameState): Action | null {
+export function decidePending(state: GameState, map?: Rich4Map): Action | null {
   const p = state.pending;
   if (p === null) return null;
   // ★ 落点那台 ATM（`landing`，phase = turnEnd）只给**恰好** who_plays == 1 的真人开；走到这里说明他开着窗
@@ -581,15 +581,23 @@ export function decidePending(state: GameState): Action | null {
     return { type: 'upgradeFacility' };
   }
   if (p.kind === 'chooseBuildTarget') {
-    // 电脑在 reducer 里已按 0x40b455 挑过；走到这里的是被托管的真人 —— 取第一个可选
-    const t = p.choices[0];
-    return t === undefined ? { type: 'declineDecision' } : { type: 'buildTarget', entityId: t };
+    // ★★ 审计（provenance-ai-econ）：走到这里的只会是**开着选地窗被托管的真人**（电脑在 reducer 里当场挑）。
+    //   原版那扇窗是模态的、托管位冒不出来，没有「窗开着被托管」这回事 ⇒ 按座位现在的身份走**电脑那一支**：
+    //   `0x0041ad12 call 0x40b455`（自家公司 `0x0041aa3c` 同一个函数）—— 自己的住宅地挑当前等级租金最高的、
+    //   設施挑地價最高的（`aiPickConstructionTarget`）。先前这里是自拟的「取第一个可选」。
+    //   挑不出（或不在可选里）就关窗。
+    if (map === undefined) return { type: 'declineDecision' };
+    const t = aiPickConstructionTarget(
+      state.currentPlayer, map.lands, state.landOwner, state.landLevel, state.landType,
+      map.facilities, state.facilityOwner, state.facilityLevel, state.facilityType,
+    );
+    return t !== 0 && p.choices.includes(t) ? { type: 'buildTarget', entityId: t } : { type: 'declineDecision' };
   }
   if (p.kind === 'buildFacility') {
-    // 走到这里的只会是被托管的真人（电脑在 reducer 里已抽完）：照电脑的口味，
-    // 不蓋公園，取可选里最小的非 0 种类 —— 确定性的
-    const t = p.choices.find((c) => c !== 0) ?? p.choices[0];
-    return t === undefined ? null : { type: 'buildFacility', facilityType: t };
+    // ★★ 审计（provenance-ai-econ）：同上，只会是**开着选种类窗被托管的真人**。按电脑那一支定种类
+    //   （付费首建 `0x0041a23e` / 神明代蓋 `0x0040b1c5`：`rand()%4+1`）—— 随机数不能进 AI，交 `null` 由 reducer 掷。
+    //   先前这里是自拟的「不蓋公園、取最小的非 0 种类」（恒为旅館）。
+    return { type: 'buildFacility', facilityType: null };
   }
   if (p.kind === 'buyShares') {
     // ★ 照原版电脑那支（pt27-stock「忍太郎怎么一下就买了3000股保险公司？」）：

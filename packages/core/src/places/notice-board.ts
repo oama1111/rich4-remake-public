@@ -350,20 +350,61 @@ export const AI_CARD_LIST_MIN_HAND = 12;
 /** 道具数量到这个数就考虑挂 @source `cmp ch, 3 / jae` */
 export const AI_TOOL_LIST_MIN_COUNT = 3;
 
-/** 手上重复的卡片编号（去重后） @source 0x004288a9 的双重循环 */
+/**
+ * 电脑挂卡的候选表 —— 手上**成对**的卡，**不去重**。
+ *
+ * @source 0x004288a9 的双重循环：
+ * ```asm
+ * for (i = 0; i < 张数; i++)            ; 0x004288a9
+ *   for (j = 0; j < 张数; j++)          ; 0x004288af
+ *     if (j != i && 手牌[i] == 手牌[j]) ; 0x004288b3 / 0x004288dc
+ *       buf[n++] = 手牌[j]              ; 0x004288e4 —— ★ 没有 break、没有去重
+ * 0x004288fb  rand() % n                ; 在这张表里等概率挑
+ * ```
+ * ⇒ 同一种卡有 k 张就进表 k·(k−1) 次 —— 张数越多越容易被挑中。
+ * ★★ 审计订正：先前去重且每个 i 只记一次（`[1,2,2,3,3,3]` ⇒ `[2,3]`），原版是 `[2,2,3,3,3,3,3,3]`；
+ *   `rand()` 的除数与落点分布都不同。
+ */
 export function duplicateCards(hand: readonly number[]): number[] {
   const out: number[] = [];
   for (let i = 0; i < hand.length; i++) {
     for (let j = 0; j < hand.length; j++) {
-      if (i === j) continue;
-      if (hand[i] === hand[j]) {
-        const id = hand[j]!;
-        if (!out.includes(id)) out.push(id);
-        break;
-      }
+      if (i !== j && hand[i] === hand[j]) out.push(hand[j]!);
     }
   }
   return out;
+}
+
+/**
+ * 公佈欄开张前的**清理** —— 挂着但已经不归挂牌人的东西撤掉（`fcn_0042483e`，
+ * `0x4284be` 一进门就调，电脑调度步与真人工具栏两路都走）。
+ *
+ * @source VA 0x0042483e：每个玩家（`0 .. [0x499114]−1`，不看出局）的 7 格，按类型（跳表 `0x42482e`）：
+ * | 类型 | 判据（不满足 ⇒ `0x4247d5` 撤件） |
+ * |---|---|
+ * | 1 股票 | `挂牌股数 <= 持股`（`0x00424886 cmp / jle`）|
+ * | 2 地產/設施 | 归属仍是本人 **且** `+0x18`/`+0x1a` 与挂牌时的快照相同（`0x004248d3` / `0x004248e0` / `0x004248eb`）|
+ * | 3 道具 | 手上这种道具数 ≠ 0（`0x0042494b`）|
+ * | 4 卡片 | 手上还有这张（`0x004413ad`）|
+ *
+ * ★ 原版的游标有个怪癖（照抄）：一共只看 7 次（`ebp`）；**一旦撤过一件**（`edi = 1`），
+ *   槽号 `esi` 就**不再前进**（`0x004249ad test edi,edi / jne`）—— 之后 7 次里剩下的几次都盯着同一格
+ *   （后面的东西挪上来一件看一件），更后面的格子这一趟不再检查。
+ */
+export function sweepStaleColumn(col: BoardColumn, valid: (item: Listing) => boolean): BoardColumn {
+  let c = col;
+  let slot = 0;
+  let withdrew = false;
+  for (let n = 0; n < BOARD_SLOTS; n++) {
+    const it = c[slot] ?? null;
+    if (it !== null && !valid(it)) {
+      c = withdrawItem(c, slot) ?? c;
+      withdrew = true;
+      continue;
+    }
+    if (!withdrew) slot++;
+  }
+  return c;
 }
 
 /** 这件道具 AI 想不想挂出去 @source 0x00428990..0x004289b5 */
