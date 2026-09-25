@@ -11,8 +11,12 @@
  *
  * 1. **视野**（`0x40a45c(-1)`）：候选目标不是全地图，而是**此刻画面上画出来的**——它扫的是
  *    440×440 的屏幕格（memset 0x5e880 = 440×440×2 字节，见 0x409de7 由精灵表填格），
- *    行序扫描（先 y 后 x）。回合开始时镜头对准当前玩家，故「画面内」≈ 以我为中心 ±220 像素。
- *    本引擎照此做 `visibleEntities`，屏幕边缘的镜头钳位未复刻，记 D-005。
+ *    行序扫描（先 y 后 x）。格子里只放每张精灵**锚点那一个像素**（`0x409ede or word [..], ax`），
+ *    所以「画面内」= **锚点**的投影落在 `−220 ≤ px < 220` 那一块屏幕方窗里。
+ *    本引擎照此做 `visibleEntities`（`rules/board-window.ts`，Q-TOOL-1 已按 exe 改）。
+ *    ★ 先前这里是「节点坐标 ±220 的方窗」近似 —— 等距投影下画面在世界空间里是斜的，两者不等价。
+ *    镜头位置：回合开始时镜头对准当前玩家（`0x415e70` 取 `[0x49910c]`），故中心 = 我的节点。
+ *    屏幕边缘的镜头钳位未复刻，记 D-005。
  *    格值：`0x8000 | (1 << 玩家)`（低 4 位是玩家位）、`0x8000 | (物件下标+1) << 8`（物件），
  *    `2001..3999` 地块（−2000 = 地块 id）、`4001..5999` 設施、`6001..7999` 企業。
  * 2. **最恨的人**（`0x40d2d3(me)`）：`hostility[b]` 最大且 > 0 的对手，没有则 −1。
@@ -32,6 +36,7 @@ import { CARDS } from '@rich4/data';
 import { isAlive } from '../state/types.ts';
 import { nextCandidates } from '../state/reduce.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
+import { inBoardWindow, boardInstancePresent } from '../rules/board-window.ts';
 import { DISPELLABLE_TYPES, objectTypeOf } from '../rules/objects.ts';
 import { ATTACH_STATE_REAPER, canAttach } from '../cards/summon.ts';
 import { truncTowardZero } from '../rules/rounding.ts';
@@ -75,7 +80,10 @@ export { aiRoll, type AiRoll } from './rand.ts';
 //  视野、最恨的人、同區
 // ============================================================
 
-/** 画面半宽：440×440 屏幕格，镜头居中于当前玩家 @source 0x40a45c / 0x409de7 */
+/**
+ * 画面半宽：440×440 的屏幕格，镜头居中于当前玩家
+ * @source `0x40a45c` 的 `0x40a469 xor esi,esi / mov edi,0x1b8`（= `BOARD_VIEW_HALF` × 2）
+ */
 export const VIEW_HALF = 220;
 
 /** 最恨的对手：`hostility[b]` 最大且 > 0；没有则 −1 @source 0x0040d2d3 */
@@ -147,22 +155,46 @@ function nodeOf(topo: MapTopology, nodeId: number): MapNode | undefined {
   return topo.nodes[nodeId - 1];
 }
 
-/** 节点是否在以 `center` 为中心的画面里 */
-export function inView(center: MapNode, node: MapNode): boolean {
-  return Math.abs(node.x - center.x) <= VIEW_HALF && Math.abs(node.y - center.y) <= VIEW_HALF;
+/**
+ * 这一点落在以 `center` 为中心的画面里吗。
+ *
+ * ★★ Q-TOOL-1（2026-09-25）：先前是「节点坐标 ±220 的方窗」，现在是**原版那一套**：
+ *   画面 = `0x40a45c(-1)` 摊平的那张 440×440 **屏幕空间** id 图，判据是
+ *   `−220 ≤ 投影偏移 < 220`（两个轴、半开区间）。见 `rules/board-window.ts` 的逐条取证。
+ *   于是画面在世界空间里是**斜的**（等距投影 + 透视），不是方框。
+ */
+export function inView(center: MapNode, point: { x: number; y: number }): boolean {
+  return inBoardWindow(center, point, VIEW_HALF);
 }
 
-/** 画面里的地块/設施/企業，按屏幕行序（先 y 后 x） */
+/**
+ * 画面里的地块/設施/企業，按屏幕行序（先 y 后 x）。
+ *
+ * ★ 锚点用**实体记录自己的 x/y**（`0x4090fc` 的 `[ebp]/[ebp+2]`，与所在节点差 ~40 像素，
+ *   同 `render.ts` 的 Q-LAYOUT-4）—— 原版扫的是实例锚点，不是节点。
+ * ★ 而且扫的是 id 图，**图上没有的实例根本不在候选里**：地块/設施要「有房子或有主」
+ *   （`0x4091df..0x409240` / `0x4093f3..0x409488`），企業要有精灵
+ *   （`0x409559 cmp word [ebp+0x20],0 / je 跳过` = `spriteIndex == 0` 不画）。
+ */
 export function visibleEntities(view: CardAiView): VisibleEntity[] {
   const center = nodeOf(view.topo, view.me.nodeId);
   if (center === undefined) return [];
   const out: VisibleEntity[] = [];
   for (const node of view.topo.nodes) {
-    if (!inView(center, node)) continue;
     const ref = node.ref;
-    if (ref.kind === 'land') out.push({ kind: 'land', id: ref.index, node });
-    else if (ref.kind === 'facility') out.push({ kind: 'facility', id: ref.index, node });
-    else if (ref.kind === 'commercial') out.push({ kind: 'commercial', id: ref.index, node });
+    if (ref.kind === 'land') {
+      const l = landById(view, ref.index);
+      if (l === undefined || !boardInstancePresent(l.level, l.owner) || !inView(center, l)) continue;
+      out.push({ kind: 'land', id: ref.index, node });
+    } else if (ref.kind === 'facility') {
+      const f = facilityById(view, ref.index);
+      if (f === undefined || !boardInstancePresent(f.level, f.owner) || !inView(center, f)) continue;
+      out.push({ kind: 'facility', id: ref.index, node });
+    } else if (ref.kind === 'commercial') {
+      const c = view.topo.commercials?.find((x) => x.id === ref.index);
+      if (c === undefined || c.spriteIndex === 0 || !inView(center, c)) continue;
+      out.push({ kind: 'commercial', id: ref.index, node });
+    }
   }
   return out.sort((a, b) => a.node.y - b.node.y || a.node.x - b.node.x);
 }

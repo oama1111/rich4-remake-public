@@ -484,9 +484,26 @@ describe('7 飛彈（0x00421717）', () => {
     expect(aiToolChoice(7, view)).toBeNull();
   });
 
-  it('我的地在爆风内（±100）→ 放弃', () => {
-    const view = viewOf({ nodes, lands: [makeLand({ id: 1, owner: 1 })], players: playersAt(1, 2) });
+  it('我的地在爆风里（`0x40a0b1` 的屏幕窗）→ 放弃', () => {
+    // ★ Q-TOOL-1：地块的锚点是**地块记录自己的 x/y**，判据是 `0x40a0b1(目标x, 目标y, 0x64)`
+    //   那一张屏幕方窗。这里把这块地放到目标格（150,0）上：偏移 (0,0) ⇒ 必然在窗里。
+    const view = viewOf({
+      nodes,
+      lands: [makeLand({ id: 1, owner: 1, x: 150, y: 20 })],
+      players: playersAt(1, 2),
+    });
     expect(aiToolChoice(7, view)).toBeNull();
+  });
+
+  it('★ 我的地世界距离 100、投影后却出窗（旧口径会误判）→ 照打', () => {
+    // 目标格 (150,0)，我的地在 (250,0)：世界距离 100，但视角 0 下投影偏移 px = 110 > 100
+    //   （`+x` 方向被等距投影拉长约 1.1 倍）⇒ 原版扫不到它 ⇒ 打。
+    const view = viewOf({
+      nodes,
+      lands: [makeLand({ id: 1, owner: 1, x: 250, y: 0 })],
+      players: playersAt(1, 2),
+    });
+    expect(aiToolChoice(7, view)).toEqual({ kind: 'missile', nodeId: 2 });
   });
 
   it('我在爆风内 → 放弃', () => {
@@ -829,19 +846,30 @@ describe('13 核子飛彈（0x00421e62）—— Q-TOOL-3 已结案：原版 AI �
     expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
   });
 
-  // ── ① / ② 中止判据 = 我的棋子落在候选 ±14 格（原版像素 448px）内 ──
-  it('① 候选恰在 14 格（448px）→ 我的棋子进窗 → 放弃本候选 ⇒ 不用', () => {
-    const view = nukeView({ lands: [foeLand({ id: 1, x: 14 * TILE, y: 0 })] });
+  // ── ① / ② 中止判据 = 我的棋子落在**以候选为心的那幅画面**里（`0x40a0b1` 的建图口径）
+  //    ★★ Q-TOOL-1 订正：先前这里按「格距 ≤ 14 格」判（448px），那是把建图的前置筛子
+  //      当成了判据。真正的判据是投影后的屏幕点落在 440×440 棋盘区内（±220），
+  //      视角 0 的实测边界是**行 ±8 格、列 ±6 格**（`rules/board-window.test.ts` 的预言机）。
+  it('① 候选在 +y 8 格（256px）→ 我的棋子进窗（投影 py = 203 < 220）⇒ 放弃本候选 ⇒ 不用', () => {
+    const view = nukeView({ lands: [foeLand({ id: 1, x: 0, y: 8 * TILE })] });
     expect(aiToolChoice(13, view)).toBeNull();
   });
 
-  it('② 候选在 15 格（480px）外 → 不中止 ⇒ 出牌（★ 把 14 改成 13 即变红）', () => {
-    const view = nukeView({ lands: [foeLand({ id: 1, x: 15 * TILE, y: 0 })] });
+  it('② 候选在 +y 9 格（288px）→ 投影 py = 229 出窗 ⇒ 不中止 ⇒ 出牌（★ 改成 8 格即变红）', () => {
+    const view = nukeView({ lands: [foeLand({ id: 1, x: 0, y: 9 * TILE })] });
     expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
   });
 
-  it('① 两轴都要在 ±14 内：x 差 14 格、y 差 15 格 ⇒ 不中止 ⇒ 出牌', () => {
-    const view = nukeView({ lands: [foeLand({ id: 1, x: 14 * TILE, y: 15 * TILE })] });
+  it('★ x 方向另有边界：+x 6 格（192px）在窗里（px = 215）、7 格（224px）出窗（px = 251）', () => {
+    expect(aiToolChoice(13, nukeView({ lands: [foeLand({ id: 1, x: 6 * TILE, y: 0 })] }))).toBeNull();
+    expect(aiToolChoice(13, nukeView({ lands: [foeLand({ id: 1, x: 7 * TILE, y: 0 })] }))).toEqual({
+      kind: 'missile',
+      nodeId: 2,
+    });
+  });
+
+  it('★ 两轴各自判：x 差 6 格在窗内、y 差 9 格外 ⇒ 只要有一轴出窗就不中止 ⇒ 出牌', () => {
+    const view = nukeView({ lands: [foeLand({ id: 1, x: 6 * TILE, y: 9 * TILE })] });
     expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
   });
 

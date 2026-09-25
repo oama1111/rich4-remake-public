@@ -43,7 +43,7 @@
 
 | id | rule | our code (file:line) | exe VA(s) | status | note |
 |---|---|---|---|---|---|
-| V-1 | 「画面」可见集（候选成员与次序） | `ai/card-policy.ts:146` `inView` / `:151` `visibleEntities` / `:166` `visibleRivals` / `:184` `visibleObjects`；`ai/tool-policy.ts:160` `visibleNodeIds` | 0x409ef9、0x40a45c、0x409de7、0x407a2c、投影表 0x46ccf0（旋转 [0x499088]）、镜头 [0x48b2ac]/[0x48b2b0] | approx | 原版是**投影后的屏幕**：镜头 ±14 格 → 按旋转表投影 → 只留屏幕 0..440；次序 = 屏幕行序；精灵锚点：建筑 = 地块记录 (x,y)、玩家 = xpos/ypos、物件 = 节点，y−0x28。TS 用节点坐标 ±220 方窗、(y,x) 排序。D-005 已补写。见 FU-1 |
+| V-1 | 「画面」可见集（候选成员与次序） | `rules/board-window.ts`、`ai/card-policy.ts` `inView` / `visibleEntities` / `visibleRivals` / `visibleObjects`；`ai/tool-policy.ts` `visibleNodeIds` | 0x409ef9、0x40a45c、0x409de7、0x407a2c、投影表 0x46ccf0（旋转 [0x499088]）、镜头 [0x48b2ac]/[0x48b2b0] | fixed | 2026-09-25（Q-TOOL-1）：成员判据已按**投影后的屏幕**窗口复刻（±220，恒用视角 0；锚点：建筑 = 地块记录 (x,y)、玩家/物件 = 节点）；残余：镜头钳位、**次序**仍是世界 (y,x) 而非屏幕行序（`ds/ai-visible-cell-order`）、视角口径。D-005 已补写 |
 | V-2 | 谁由 AI 出手（who_plays 分派） | `state/types.ts:1829` `isAiControlled`（掩码 6）；`ai/policy.ts:109` | 0x40c912 返回 who_plays → 跳表 0x418c3d：1 真人 / 2、5 电脑支 0x418dc6 / 3、4、>5 什么都不做 | verified | 2 与 5（真人+託管）都进 0x418dc6 ✓。`whoPlays = 3` 原版不动、TS 当电脑 —— 只有读档可达，见 FU-4 |
 | V-3 | 性格表 / f7 表逐字节 | `packages/data/src/characters.ts:134-145`、`cards.ts`、`tools.ts` | 角色表 0x47e80c（步长 0x68，+0x11 +0x12 +0x16..+0x1a）；卡片 0x47fdea+id×8 的 +7；道具 0x47fee1+id×8 | verified | 脚本 dump 对比：12 角色 × 7 字节、30 张卡 f7、13 件道具 f7 全等 |
 | V-4 | 能力位：会出牌 / 会用道具 | `ai/personality.ts:62,65`；`ai/policy.ts:248,346` | 0x00441d09 `test [+0x16],1`；0x00447f87 `test [+0x16],2`（其前 `test dl,6`） | verified | |
@@ -103,13 +103,13 @@
 | T-2b | 路障判定 | `:253` | 0x42107f（阶段一：无主住宅 / 無主設施 / 百貨且點券 > 200；阶段二反瞻 6 ∩ 可见节点、> 6000×物價 且严格大于） | verified | |
 | T-3/4 | 地雷 / 定時炸彈 | `:309` `mineLike` | 0x4213c5 / 0x421574（監獄/醫院格 `dword [0x496b30]/[0x496b60]` 直选；`rand()%候选`） | verified | |
 | T-5/6 | 機車 / 汽車 | `:350,354` | 0x421644 / 0x421675（先看 `+0x11 & 3`，过了才掷 `rand()%4`） | verified | |
-| T-7 | 飛彈 | `:364` | 0x421717（最恨 / 0x40d31c；须在画面；0x40a0b1(目标 xpos,ypos,100) 窗内有标记或我的地产 ⇒ 放弃） | approx | 爆风窗用节点方窗（Q-TOOL-1 / V-1）；`0x4216ab` 的「不是我的」出口返回调用方 `edx`，首项的 `edx` 来自 0x40a0b1 → 0x409b18 的残值，未能静态定值，见 FU-3 |
+| T-7 | 飛彈 | `:364` | 0x421717（最恨 / 0x40d31c；须在画面；0x40a0b1(目标 xpos,ypos,100) 窗内有标记或我的地产 ⇒ 放弃） | fixed | 爆风窗 2026-09-25 起按原版屏幕方窗（Q-TOOL-1 结项，`rules/board-window.ts`；地块/設施用自己的锚点）；`0x4216ab` 的「不是我的」出口返回调用方 `edx`，首项的 `edx` 来自 0x40a0b1 → 0x409b18 的残值，未能静态定值，见 FU-3 |
 | T-8 | 遙控骰子 | `:413` | 0x421827（0x00421a12 `and edx,0xf000` = **惡人**；物件 {5,6,7,8,10,11,16,17,18}；×2.5 = [0x463d48]） | fixed | 293b6ce：旧实现查的是玩家 |
 | T-9 | 機器工人 | `:473` | 0x421ba6（租金表 / 費率表 [+0x24+级×2]、上限表 0x474940） | verified | |
 | T-10 | 時光機 | `AI_NEVER_USES` | 0x420edf 桩 + 主循环跳槽 9 | verified | |
 | T-11 | 傳送機 | `:506` | 0x421cb6（无主 ≥3 级、房價×物價 < 现金、等级严格大于；钱闸在找到候选后） | verified | |
 | T-12 | 工程車 | `:539` | 0x421e20（`&3==3` 不掷；否则 `rand()%15 <= 個性`） | verified | |
-| T-13 | 核子飛彈 | `:619` | 0x421e62（候选地块/設施、10 次 `rand()%n`、0x40a0b1(x,y,−1)、两比值 < 1/(存活+2)） | approx | 窗口按「±14 格」建模，原版还要投影后落在 0..440 屏幕内（V-1）；`0x4216ab` 首项 `edx` 同 FU-3 |
+| T-13 | 核子飛彈 | `:619` | 0x421e62（候选地块/設施、10 次 `rand()%n`、0x40a0b1(x,y,−1)、两比值 < 1/(存活+2)） | fixed | 2026-09-25（Q-TOOL-1）：窗口 = 以候选为心的那幅画面（投影 ±220、视角 0），先前只按「±14 格」；`0x4216ab` 首项 `edx` 同 FU-3 |
 
 ### D · 骰子数
 

@@ -182,7 +182,7 @@
 | N-02/03 | 2/3 醫院同形（+0x35、0x496b60） | news-effects.ts:675-701 | 0x44903d..0x449135 | verified | |
 | N-04a | 4：候选 = 有等级地块 + 有等级設施，`rand()%n` 挑爆心 | news-effects.ts 外星人支 | 0x44918d..0x4491e7 | verified | 空集原版除零，本引擎不动 |
 | N-04b | 4：damage_area(0x64, 0x26, 重击, 攻击者 −1)，无敌意 | news-effects.ts | 0x449225..0x44922d | verified | |
-| N-04c | 爆炸窗用地图坐标 | news-effects.ts | 0x40a45c | approx | 已登记 Q-TOOL-1 |
+| N-04c | 爆炸窗（外星人/颱風）| news-effects.ts, rules/board-window.ts | 0x40a45c, 0x409de7 | fixed | Q-TOOL-1 2026-09-25 结项：屏幕方窗，恒用视角 0；「没房子又没主」不进 id 图 |
 | N-04d | 重击住宅清 owner/level/type **与地契 +0x30** | news-effects.ts, reduce.ts applyMutations | 0x40ad6b..0x40ad77 | fixed (88034b4) | 先前地契不清 |
 | N-04e | 重击設施清四项 + `0x40dffa` | news-effects.ts | 0x40ae45..0x40ae58 | fixed (88034b4) | 同上补 +0x34 |
 | N-04f | 窗内玩家 0x40cd07（毁车、挂 0x40），之后逐人住院 3 天 + 理赔 | news-effects.ts, reduce.ts | 0x40cd07, 0x44926c..0x449285, 0x43edf8 | verified | |

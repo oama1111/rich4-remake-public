@@ -168,6 +168,14 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
     }),
   ),
   {
+    // ★ 长局撞到（Q-TOOL-1 改了爆风窗之后的对局走向，g16 图 0 第 114 回合）：
+    //   夢遊卡打到手里有嫁禍卡的人 ⇒ 那两扇嫁禍框与夢遊台词同拍。
+    line: 'dreamCard',
+    boxes: ['card.scapegoatOn', 'card.scapegoatTo'],
+    exe: 'boxFirst',
+    va: '夢遊卡那一支：`0x00444325 call 0x44476a`（被動卡那一趟 `0x00444799 call 0x41d476` 移镜头 → `0x00444801 call 0x441f73(0x13)` 亮嫁禍框）返回后才 `0x00444356 call 0x44ef41` 说夢遊台词（说的是已改嫁后的受害者）',
+  },
+  {
     line: 'moneyPaid',
     boxes: ['card.taxed'],
     exe: 'boxFirst',
