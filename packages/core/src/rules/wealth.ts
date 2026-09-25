@@ -64,6 +64,32 @@ export const STOCK_COUNT = 12;
  *
  * @source 现金/存款/贷款：`player[+28] + player[+32] − player[+36]`
  *   （0x1c cash / 0x20 money_in_bank / 0x24 loan）
+ *
+ * ★★ WLT-02（2026-09-25 follow-up 审计）：这整个累加器是**32 位整数**（帧里那一格 `[esp]`），
+ *   不是 JS 双精度：
+ * ```asm
+ * 004239c7  mov edx, [eax + 0x496b84]      ; 現金（int32）
+ * 004239cd  add edx, [eax + 0x496b88]      ; + 存款（32 位加法，溢出回绕）
+ * 004239d3  mov esi, [eax + 0x496b8c]
+ * 004239d9  sub edx, esi                   ; − 貸款
+ * 004239db  mov [esp], edx                 ; 运行中的总资产 = int32
+ * 00423a17  fistp dword [esp]              ; 股票那一轮**存回 int32**
+ * 00423a4a  add ebp, ecx                   ; 地块/設施：32 位加法
+ * 00423ac4  mov eax, [esp] / ret           ; ★ 返回值就是那个 int32
+ * ```
+ *   `fistp dword` 在**超出 int32 范围**时存的是 x87 的「整数不确定值」`0x80000000`
+ *   （= −2147483648）：无效操作异常默认**屏蔽**（原版从不解除屏蔽，`0x457dbc` 只临时改
+ *   取整方向、之后 `fldcw` 还原）。
+ *
+ *   ★ 这一条不是照文档推的 —— 用原版真码（Unicorn）实测过（`0x4239db..0x423a20`，
+ *   注入口袋与持股/股价，回读 `[esp]`）：
+ *   ```
+ *   total=INT_MAX、无持股          → -2147483648
+ *   持股 1000×2e6 = 2e9、total=0   → 2000000000   （范围内精确）
+ *   持股 1000×3e6 = 3e9、total=0   → -2147483648  （fistp 溢出）
+ *   total=2e9 + 1000×3e5           → -2147483648
+ *   ```
+ *   回归用例见 `rules/wealth-f32.test.ts` 的「32 位回绕」一节。
  */
 export function calculatePlayerWealth(
   player: Player,
@@ -71,7 +97,8 @@ export function calculatePlayerWealth(
   facilities: readonly FacilityInfo[],
   stocks: readonly StockValuation[] = [],
 ): number {
-  let total = player.cash + player.moneyInBank - player.loan;
+  // @source 0x004239c7..0x004239db —— 32 位加/减，溢出回绕（`| 0`）
+  let total = (player.cash + player.moneyInBank - player.loan) | 0;
 
   // 股票：逐支累加并截断 @source loc_004239e0
   //
@@ -87,20 +114,22 @@ export function calculatePlayerWealth(
     const price = h?.price ?? 0;
     // ★ `f32(total)`：原版 0x423a0a 的 `fstp dword [esp+4]` 把运行中的总资产
     //   也舍入到 float32（>2^24 丢低位），见上方 @source 注释与 wealth-f32.test.ts
-    total = Math.trunc(amount * price + Math.fround(total));
+    // ★ `fistpInt32`：0x423a17 `fistp dword [esp]` —— 截断后存回 **int32**（越界 ⇒ INT_MIN）
+    total = fistpInt32(Math.trunc(amount * price + Math.fround(total)));
   }
 
   const ownerId = player.index + 1;
 
-  // 住宅地块 @source loc_00423a2d
+  // 住宅地块 @source loc_00423a2d —— 每一步都是 32 位整数加法（`0x423a4a add ebp, ecx`），
+  //   溢出**回绕**（`| 0`）；地价/房价在表里是 u16，`movzx` 零扩展后相加
   for (const land of lands) {
     if (land.owner !== ownerId) continue;
-    total += land.landPrice;
+    total = (total + land.landPrice) | 0;
     if (land.type !== LAND_TYPE_HOUSE) {
       // 连锁店：固定加一份房价，**不乘等级**
-      total += land.housePrice;
+      total = (total + land.housePrice) | 0;
     } else if (land.level !== 0) {
-      total += land.level * land.housePrice;
+      total = (total + land.level * land.housePrice) | 0;
     }
   }
 
@@ -108,10 +137,24 @@ export function calculatePlayerWealth(
   //   total += level × house_price(0x24) + land_price(0x22)
   for (const fac of facilities) {
     if (fac.owner !== ownerId) continue;
-    total += fac.level * fac.housePrice + fac.landPrice;
+    total = (total + fac.level * fac.housePrice + fac.landPrice) | 0;
   }
 
   return total;
+}
+
+/**
+ * x87 `fistp dword` 的落地语义：截断之后存成 **int32**；超出范围存**整数不确定值**
+ * `0x80000000`（= −2147483648）。
+ *
+ * @source 身家 0x00423a17 `fistp dword [esp]`。无效操作异常默认屏蔽、原版从不解除
+ *   （`0x457dbc` 只临时改取整方向，`0x457dcf fldcw` 立刻还原）⇒ 越界时存的是
+ *   那个保留值。★ 用原版真码（Unicorn）实测确认，见 `calculatePlayerWealth` 的注释。
+ */
+function fistpInt32(v: number): number {
+  if (!Number.isFinite(v)) return -0x80000000;
+  const t = Math.trunc(v);
+  return t >= -0x80000000 && t <= 0x7fffffff ? t : -0x80000000;
 }
 
 /**
